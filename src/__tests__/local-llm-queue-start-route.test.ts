@@ -6,7 +6,7 @@ import type http from 'node:http'
 import { Readable } from 'node:stream'
 import { initDatabase, getDb } from '../db.js'
 import { tryHandleLocalLlm } from '../web/routes/local-llm.js'
-import { stats } from '../local-llm-queue.js'
+import { stats, startDirect } from '../local-llm-queue.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 interface MockRes {
@@ -110,5 +110,34 @@ describe('POST /api/local-llm/queue/start', () => {
     )
     expect(res.statusCode).toBe(200)
     expect(json().status).toBe('pending')
+  })
+})
+
+// Regression guard for card 30a82c61. Deleting local-llm-worker.sh removed the only caller of
+// /queue/claim, which was the only live path for reclaimStaleRunning. Direct-sync rows created
+// by local-llm.sh (via /queue/start) would never be reclaimed. This asserts that /queue/start
+// itself now reclaims stale rows, so a crashed direct-sync call is cleaned up on the next
+// healthy call -- the "whenever a live caller is present" guarantee restored.
+describe('POST /api/local-llm/queue/start reclaim trigger (card 30a82c61 regression)', () => {
+  it('reclaims a stale direct-sync running row before registering the new one', async () => {
+    const db = getDb()
+    const STALE_MS = 20 * 60 * 1000
+    const stalePast = Date.now() - STALE_MS - 1000
+
+    // Plant a stale direct-sync row: started_at is in the past, status running.
+    const staleId = startDirect(
+      db,
+      { agent: 'backend', prompt: '', cardId: null, taskType: null, source: 'direct-sync' },
+      stalePast,
+    )
+    const before = (db.prepare('SELECT status FROM local_llm_queue WHERE id = ?').get(staleId) as { status: string })?.status
+    expect(before).toBe('running')
+
+    // Trigger /queue/start -- should reclaim the stale row first.
+    await call('/api/local-llm/queue/start', JSON.stringify({ agent: 'backend3' }))
+
+    // Direct-sync rows go to `failed` on reclaim (no worker can pick them up, no real prompt).
+    const after = (db.prepare('SELECT status FROM local_llm_queue WHERE id = ?').get(staleId) as { status: string })?.status
+    expect(after).toBe('failed')
   })
 })

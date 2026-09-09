@@ -16,7 +16,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DASH="${DASHBOARD_URL:-http://localhost:3420}"
 TOK="$(cat "$HERE/.dashboard-token" 2>/dev/null || true)"
-CAP="${OFFLOAD_BATCH_CAP:-20}"   # max cards drafted per night (keeps a runaway bounded)
+CAP="${OFFLOAD_BATCH_CAP:-20}"           # max cards dispatched per run
+SCAN_CAP="${OFFLOAD_BATCH_SCAN_CAP-200}" # max candidates inspected (HTTP checks) per run
 LOG="$HERE/offload-batch.log"
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
@@ -35,7 +36,7 @@ log() { echo "[$(ts)] $*" >>"$LOG"; }
 BATCH_END_STATUS="aborted"
 ATTEMPTED=0
 DRAFTED=0
-emit_end_line() { log "batch END status=${BATCH_END_STATUS} attempted=${ATTEMPTED} drafted=${DRAFTED}"; }
+emit_end_line() { log "batch END status=${BATCH_END_STATUS} scanned=${scanned:-0} attempted=${ATTEMPTED} drafted=${DRAFTED}"; }
 
 # Candidate selection/ordering/BLOKKOLT-filter logic (card 3e094b1e, alfeladat f8c72a5a), shared
 # verbatim between the real run (fed from curl) and --test-select (fed from stdin) so a test can
@@ -91,7 +92,8 @@ if [[ "${1:-}" == "--status" ]]; then
   status="$(printf '%s' "$last_end" | sed -n 's/.*status=\([a-z-]*\).*/\1/p')"
   if [[ "$status" != "ok" ]]; then echo "LAST-RUN-FAILED status=$status age=${age_h}h"; exit 1; fi
   if (( age_h > MAX_AGE_H )); then echo "STALE last ok run ${age_h}h ago (max ${MAX_AGE_H}h)"; exit 1; fi
-  echo "FRESH last ok run ${age_h}h ago, ${last_end##*drafted=} card(s)"
+  scanned_n="$(printf '%s' "$last_end" | sed -n 's/.*scanned=\([0-9]*\).*/\1/p')"
+  echo "FRESH last ok run ${age_h}h ago, ${last_end##*drafted=} card(s) scanned=${scanned_n:-?}"
   exit 0
 fi
 
@@ -108,6 +110,13 @@ fi
 hdr_file=""   # declared before the trap so `set -u` cannot kill the handler
 trap 'rm -f "$hdr_file"; emit_end_line' EXIT
 if [[ -z "$TOK" ]]; then BATCH_END_STATUS="no-token"; log "no dashboard token; abort"; echo "ERROR no-token"; exit 0; fi
+
+# Validate SCAN_CAP. The same class as MAX_AGE_H in --status (see line 81): a non-numeric value
+# makes `(( scanned >= SCAN_CAP ))` treat it as 0, so the check fires on every iteration and the
+# cap is silently disabled for the entire run. Tested with the same character-class pattern.
+case "$SCAN_CAP" in
+  ''|*[!0-9]*) BATCH_END_STATUS="invalid-scan-cap"; log "invalid SCAN_CAP '$SCAN_CAP'; abort"; echo "ERROR:invalid-scan-cap:$SCAN_CAP"; exit 0 ;;
+esac
 
 # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): the token must never be a curl
 # argv (/proc/<pid>/cmdline is world-readable). Private 0600 header file instead, -H @"$hdr_file",
@@ -136,15 +145,20 @@ printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
 # too, but filtering here avoids spinning the model up for nothing).
 mapfile -t CARDS < <(curl -s -H @"$hdr_file" "$DASH/api/kanban" | python3 -c "$SELECT_PY")
 
-log "batch start: ${#CARDS[@]} candidate cards, cap $CAP"
+log "batch start: ${#CARDS[@]} candidate cards, cap $CAP, scan-cap $SCAN_CAP"
 attempted=0
 drafted=0
+scanned=0
 for id in "${CARDS[@]}"; do
   (( attempted >= CAP )) && { log "cap $CAP reached; stopping"; break; }
-  # skip if already drafted
+  (( scanned >= SCAN_CAP )) && { log "scan-cap $SCAN_CAP reached; stopping"; break; }
+  # Already-drafted cards are skipped WITHOUT consuming the scan budget. A run whose first N
+  # candidates are all drafted must still reach beyond them: counting the draft-skip against
+  # SCAN_CAP would freeze the batch at the same N candidates on every subsequent night.
   has=$(curl -s -H @"$hdr_file" "$DASH/api/kanban/$id/comments" \
         | python3 -c "import json,sys; d=json.load(sys.stdin); print('Y' if any('LOCAL-LLM DRAFT' in (c.get('content') or '') for c in d) else 'N')" 2>/dev/null || echo Y)
   [[ "$has" == "Y" ]] && continue
+  scanned=$(( scanned + 1 ))
   log "offload -> card $id"
   # "attempted" counts every dispatch call (what CAP bounds, for runtime); "drafted" counts only
   # the ones that actually posted a draft (offload-dispatch.sh exits 0 either way, so the earlier
@@ -162,6 +176,6 @@ done
 ATTEMPTED="$attempted"
 DRAFTED="$drafted"
 BATCH_END_STATUS="ok"
-log "batch done: attempted=$attempted drafted=$drafted this run"
-echo "OK attempted=$attempted drafted=$drafted"
+log "batch done: scanned=$scanned attempted=$attempted drafted=$drafted this run"
+echo "OK scanned=$scanned attempted=$attempted drafted=$drafted"
 exit 0

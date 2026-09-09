@@ -16,8 +16,20 @@
 #          or "DENY:<reason>" if it must be suppressed. Exit 0 = ALLOW, 8 = DENY.
 #       The caller (a monitor) nudges ONLY on ALLOW.
 #   redispatch-guard.sh reset <cardId>       -> clear the ledger entry (card closed/done)
+#   redispatch-guard.sh sibling-handover <cardId> <oldAgent> <newAgent>
+#       -> MikroB decision (msg_id:24795, card 878cd292): called from the heartbeat D section, in
+#          the SAME step as the PUT assignee + agent start + dispatch, IN PLACE OF plain `reset`.
+#          Clears the ledger like `reset` does, PLUS resolves whatever stuck_incidents row is open
+#          for the card and opens a new one with action='sibling_handover' (never a DENY; it fires
+#          only after the handover has already been decided).
 #   redispatch-guard.sh escalations          -> print + clear pending cap-reached escalations
 #                                               as JSON [{cardId,count,ts}] for Peti-reporting
+#   redispatch-guard.sh busy-report [thresholdSeconds]
+#       -> card 9aa455c6 finding 2: print + mark-notified any card whose DENY:agent-busy verdict
+#          has been CONTINUOUS for at least thresholdSeconds (default 7200 = 2h, or
+#          $BUSY_REPORT_THRESHOLD_S). JSON [{cardId,busySeconds}]. Does not change any `check`
+#          verdict -- observability only, for a heartbeat D-section step to log/escalate a card
+#          that may simply be waiting behind its agent's OTHER work, unnoticed indefinitely.
 #   redispatch-guard.sh selftest             -> run the built-in self-test (no side effects)
 #
 # DECISION ORDER in `check` (first match wins):
@@ -39,9 +51,14 @@
 set -uo pipefail
 
 STORE="/home/neon/marveen/store"
-DASH="http://localhost:3420"
+# Overridable so the incident-logging path can actually be EXERCISED by a probe. It was a hard
+# literal until card 878cd292, and that cost me two vacuous measurements: with the value fixed, an
+# env override is silently ignored, so a "dashboard is down" probe quietly talks to the LIVE
+# dashboard and reports fail-open holding when nothing was tested. Default unchanged.
+DASH="${DASH:-http://localhost:3420}"
 TOKEN_FILE="${STORE}/.dashboard-token"
 LEDGER="${STORE}/redispatch-ledger.json"
+LOCK_WAIT=10        # seconds to wait for the guard-state lock before refusing
 ESCAL="${STORE}/stuck-escalations.json"
 LOAD_PAUSED="${STORE}/load-paused-agents.json"
 BASE_BACKOFF=600      # seconds; interval = BASE * 2^count
@@ -57,6 +74,91 @@ _curl_get() { # $1 = path ; token via 0600 headerfile, never argv
   printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hf"
   curl -s --max-time 12 -H @"$hf" "${DASH}$1" 2>/dev/null
   rm -f "$hf" 2>/dev/null || true
+}
+
+# --- Incident logging (card 878cd292, parent f92671df) ------------------------------------------
+#
+# WHY THE LOG IS WRITTEN HERE AND NOT BY THE HEARTBEAT PROMPT. The D section is a PROMPT, so a log
+# it has to remember to write is exactly as reliable as the kanban prose this replaces. This
+# function runs on the SAME path that produces the verdict, so the row is a by-product of the
+# decision rather than a step someone can skip. Working rule 6: structural, not disciplinary.
+#
+# TWO INVARIANTS, and both are the reason this is a separate function rather than inline curl:
+#
+#   1. FAIL-OPEN. A logging fault must never change what `check` decided or the exit code it
+#      returns. Every failure path here is swallowed: no `set -e` exposure, stderr discarded,
+#      return value ignored by every caller. If the dashboard is down, the guard still guards.
+#      LOGGING IS NOT THE CONTROL -- the same rule the schema comment states for a dropped table.
+#
+#   2. IT MUST NOT SLOW THE FLEET. Every heartbeat, for every in-progress card, comes through here.
+#      --max-time is deliberately SHORTER than the 12s read above: a read that times out costs one
+#      stale answer, but a WRITE that hangs costs the whole D-section pass. 3 seconds is well past
+#      a localhost POST and well short of a heartbeat window.
+_record_incident() { # $1 = cardId, $2 = agent, $3 = verdict, $4 = stalled_ms
+  [ "${REDISPATCH_GUARD_LOG:-1}" = "1" ] || return 0
+  local hf body
+  hf="$(mktemp)" || return 0
+  chmod 600 "$hf" 2>/dev/null || true
+  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hf"
+  # The verdict goes VERBATIM: the server classifies it (three of the reasons carry a parenthesised
+  # payload, and the set grew from nine to ten in a single afternoon). Nothing here decides what a
+  # verdict MEANS -- a second classifier in shell would be a second source of truth to drift.
+  #
+  # json.dumps, not a hand-built printf template (Cybered NO-GO, card 878cd292, Gate-SHA d1702f82):
+  # a raw '{"...":"%s"}' interpolation of an unescaped field lets a quote in that field close the
+  # JSON string early and inject a second `"cardId"` key -- the server's JSON.parse keeps the LAST
+  # one, so an assignee value like `evil","cardId":"HACKED` makes an already-authenticated agent
+  # write a stuck_incidents row for a card it does not own. AGENT here is the kanban assignee field,
+  # which any authenticated agent can set on any card via PUT -- attacker-reachable, not a constant.
+  # This is the repo's own established pattern for the same problem (store/offload-dispatch.sh,
+  # store/load-guard-bookkeeping.sh, store/gate-pretriage-card.sh, store/update-finalize.sh).
+  body="$(python3 -c '
+import json, sys
+print(json.dumps({
+  "cardId": sys.argv[1],
+  "assignee": sys.argv[2],
+  "verdict": sys.argv[3],
+  "detectedAt": int(sys.argv[4]),
+  "stalledMs": int(sys.argv[5]),
+}))
+' "$1" "$2" "$3" "$(now_ts)" "${4:-0}")" || return 0
+  curl -s --max-time 3 -X POST -H @"$hf" -H 'Content-Type: application/json' \
+    -d "$body" "${DASH}/api/stuck-incidents" >/dev/null 2>&1 || true
+  rm -f "$hf" 2>/dev/null || true
+  return 0
+}
+
+# --- Sibling-handover logging (MikroB decision, msg_id:24795, card 878cd292) ---------------------
+#
+# NOT the same seam as _record_incident above, on MikroB's own call: a handover is a DIFFERENT
+# decision about an already-open stall (resolve it, open a new `sibling_handover` row), not a
+# re-observation of the same one, so it goes to its own endpoint rather than a new verdict string
+# `check` would classify. Same two invariants as _record_incident: fail-open (a logging fault must
+# never stop the handover MikroB already performed -- PUT assignee + agent start + dispatch, done
+# before this is called), and a short --max-time so a hung write cannot cost a whole D-section pass.
+_record_sibling_handover() { # $1=cardId $2=oldAgent $3=newAgent $4=stalled_ms
+  [ "${REDISPATCH_GUARD_LOG:-1}" = "1" ] || return 0
+  local hf body
+  hf="$(mktemp)" || return 0
+  chmod 600 "$hf" 2>/dev/null || true
+  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" > "$hf"
+  # json.dumps, not a hand-built printf template -- same Cybered finding as _record_incident above,
+  # and the same fix (oldAgent/newAgent are just as attacker-reachable as _record_incident's AGENT:
+  # both are kanban assignee values, settable by any authenticated agent via PUT).
+  body="$(python3 -c '
+import json, sys
+print(json.dumps({
+  "cardId": sys.argv[1],
+  "oldAgent": sys.argv[2],
+  "newAgent": sys.argv[3],
+  "detectedAt": int(sys.argv[4]),
+  "stalledMs": int(sys.argv[5]),
+}))
+' "$1" "$2" "$3" "$(now_ts)" "${4:-0}")" || return 0
+  curl -s --max-time 3 -X POST -H @"$hf" -H 'Content-Type: application/json' \
+    -d "$body" "${DASH}/api/stuck-incidents/sibling-handover" >/dev/null 2>&1 || true
+  rm -f "$hf" 2>/dev/null || true
+  return 0
 }
 
 # Fetch one card's fields: prints "status<TAB>updated_at<TAB>assignee" or empty if not found.
@@ -89,6 +191,30 @@ _agent_busy() { # $1 = agent short name ; exit 0 = busy, 1 = idle/absent
   return 1
 }
 
+# ---- guard-state lock (card 09a3d52a) ---------------------------------------------------
+# The ledger helpers below are a READ then a WRITE in two separate python processes, and the
+# write rewrites the WHOLE file from its own snapshot. Two concurrent guard runs therefore do
+# not merely lose one counter: the loser's rewrite drops the OTHER card's entry entirely, which
+# resets that card's re-dispatch count to zero and defeats MAX_REDISPATCH -- the exact unbounded
+# nudge loop this guard exists to stop. Measured with these same two helpers, 30 card ids,
+# 5 runs: 27-29 entries survived concurrently, 30/30 serially.
+#
+# One lock covers BOTH state files (ledger and escalations): the operations are sub-second, so
+# a single lock costs nothing and removes the question of which file a future edit touches.
+#
+# Refusing is the safe direction here. A denied nudge is retried by the caller on its next tick;
+# a lost ledger entry is not recovered by anything. So a lock we cannot take DENIES rather than
+# proceeding unlocked -- unlike _is_load_paused below, which fails OPEN on purpose, because a
+# broken bookkeeping file must not permanently block every nudge in the fleet. The difference:
+# there the failure mode is "block forever", here it is "skip one tick".
+_guard_lock_path() { printf '%s.lock' "$LEDGER"; }
+
+_take_guard_lock() { # exclusive, held until this process exits; 0 = held, 1 = not held
+  exec 9>"$(_guard_lock_path)" 2>/dev/null || return 1
+  flock -w "$LOCK_WAIT" 9 2>/dev/null || return 1
+  return 0
+}
+
 # ledger read/write via python (atomic-ish rewrite)
 _ledger_get() { # $1 cardId -> "count<TAB>last_ts<TAB>last_updated_at" (zeros if absent)
   python3 - "$LEDGER" "$1" <<'PY'
@@ -104,6 +230,9 @@ PY
 }
 
 _ledger_set() { # $1 cardId $2 count $3 last_ts $4 last_updated_at
+  # Card 9aa455c6 finding 2: PRESERVES busy_since/busy_notified (set/cleared only by
+  # _ledger_set_busy below) -- this used to REPLACE the whole entry, which would have silently
+  # wiped the busy-streak tracker on every ordinary count/ts update.
   python3 - "$LEDGER" "$1" "$2" "$3" "$4" <<'PY'
 import json,sys,os,tempfile
 path,cid,count,ts,upd=sys.argv[1],sys.argv[2],int(sys.argv[3]),int(sys.argv[4]),int(sys.argv[5])
@@ -111,7 +240,48 @@ d={}
 try:
     with open(path) as f: d=json.load(f)
 except Exception: d={}
-d[cid]={"count":count,"last_ts":ts,"last_updated_at":upd}
+prev=d.get(cid) or {}
+d[cid]={"count":count,"last_ts":ts,"last_updated_at":upd,
+        "busy_since":int(prev.get("busy_since",0) or 0),
+        "busy_notified":bool(prev.get("busy_notified"))}
+fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path) or ".")
+with os.fdopen(fd,"w") as f: json.dump(d,f,indent=2)
+os.replace(tmp,path)
+PY
+}
+
+# Card 9aa455c6 finding 2: the agent-busy check (_agent_busy above) is AGENT-level, not
+# card-level -- if the agent's tmux panel is active on ANY card, EVERY OTHER in_progress card it
+# owns gets DENY:agent-busy forever, with no signal that one of them may simply be waiting behind
+# a busy agent for hours. This tracks how long a card has been CONTINUOUSLY denied for that one
+# reason, so `busy-report` below can surface it without changing what `check` decides -- read rule
+# 6: this is observability bolted onto the existing verdict, not a new control.
+_ledger_get_busy() { # $1 cardId -> "busy_since<TAB>busy_notified(0/1)" (zeros/0 if absent)
+  python3 - "$LEDGER" "$1" <<'PY'
+import json,sys
+path,cid=sys.argv[1],sys.argv[2]
+d={}
+try:
+    with open(path) as f: d=json.load(f)
+except Exception: d={}
+e=d.get(cid) or {}
+print("%d\t%d" % (int(e.get("busy_since",0) or 0), 1 if e.get("busy_notified") else 0))
+PY
+}
+
+_ledger_set_busy() { # $1 cardId $2 busy_since $3 busy_notified(0/1) -- touches ONLY these two fields
+  python3 - "$LEDGER" "$1" "$2" "$3" <<'PY'
+import json,sys,os,tempfile
+path,cid,bs,bn=sys.argv[1],sys.argv[2],int(sys.argv[3]),sys.argv[4]=="1"
+d={}
+try:
+    with open(path) as f: d=json.load(f)
+except Exception: d={}
+e=dict(d.get(cid) or {})
+e.setdefault("count",0); e.setdefault("last_ts",0); e.setdefault("last_updated_at",0)
+e["busy_since"]=bs
+e["busy_notified"]=bn
+d[cid]=e
 fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path) or ".")
 with os.fdopen(fd,"w") as f: json.dump(d,f,indent=2)
 os.replace(tmp,path)
@@ -206,37 +376,73 @@ if cid not in d:               # ONCE: don't re-add on every subsequent denied t
 PY
 }
 
+# Card 9aa455c6 finding 2. A plain function (not inlined in the `busy-report)` case) for the same
+# reason `_decide_active`/`_is_load_paused` are: it reads `$LEDGER` as a shell variable, so the
+# selftest below can call it directly against its own tmpdir ledger, in-process -- invoking this
+# as `bash "$0" busy-report` from the selftest would run a NEW process that re-executes the
+# top-level `LEDGER="${STORE}/..."` assignment and silently touch the LIVE install's ledger
+# instead of the test's tmpdir, since that assignment is unconditional, not `${LEDGER:-...}`.
+_busy_report() { # $1 = threshold seconds
+  python3 - "$LEDGER" "$(now_ts)" "$1" <<'PY'
+import json,sys,os,tempfile
+path,now,threshold=sys.argv[1],int(sys.argv[2]),int(sys.argv[3])
+try:
+    with open(path) as f: d=json.load(f)
+except Exception: print("[]"); sys.exit(0)
+out=[]
+changed=False
+for cid,e in d.items():
+    bs=int(e.get("busy_since",0) or 0)
+    bn=bool(e.get("busy_notified"))
+    if bs>0 and not bn and (now-bs)>=threshold:
+        out.append({"cardId":cid,"busySeconds":now-bs})
+        e["busy_notified"]=True
+        changed=True
+if changed:
+    fd,tmp=tempfile.mkstemp(dir=os.path.dirname(path) or ".")
+    with os.fdopen(fd,"w") as f: json.dump(d,f,indent=2)
+    os.replace(tmp,path)
+print(json.dumps(out,ensure_ascii=False))
+PY
+}
+
 # ---- commands --------------------------------------------------------------------------
 case "$MODE" in
   check)
     CARD="${2:-}"; AGENT="${3:-}"
     [ -n "$CARD" ] && [ -n "$AGENT" ] || { echo "DENY:usage"; exit 8; }
     fields="$(_card_fields "$CARD")"
-    if [ -z "$fields" ]; then echo "DENY:card-not-found"; exit 8; fi
+    if [ -z "$fields" ]; then _record_incident "$CARD" "$AGENT" "DENY:card-not-found" 0; echo "DENY:card-not-found"; exit 8; fi
     status="$(printf '%s' "$fields" | cut -f1)"
     upd="$(printf '%s' "$fields" | cut -f2)"
     upd="${upd%%.*}"; [ -n "$upd" ] || upd=0
-    case "$status" in in_progress|waiting) : ;; *) echo "DENY:not-active($status)"; exit 8 ;; esac
+    case "$status" in in_progress|waiting) : ;; *) _record_incident "$CARD" "$AGENT" "DENY:not-active($status)" 0; echo "DENY:not-active($status)"; exit 8 ;; esac
 
     # Card 1128002b (Feladat 4 of the load-brake phase 19f3bbb5): an agent CURRENTLY load-paused
     # (cgroup-throttled or SIGSTOP-frozen, see load-guard-bookkeeping.sh) is not stuck -- it is
     # deliberately not running. Nudging it would queue a message the frozen/throttled process
     # cannot see yet; touching the ledger below would also unfairly burn the backoff/cap budget
     # for time the agent was never actually idle. Checked BEFORE any ledger read/write.
-    if _is_load_paused "$AGENT"; then echo "DENY:load-paused"; exit 8; fi
+    if _is_load_paused "$AGENT"; then _record_incident "$CARD" "$AGENT" "DENY:load-paused" "$(( ($(now_ts) - upd) * 1000 ))"; echo "DENY:load-paused"; exit 8; fi
 
+    # Everything from here down READS and then REWRITES the shared guard state, so it runs
+    # under the lock (card 09a3d52a). Deliberately AFTER the load-paused check above, which
+    # touches no state and must keep failing open.
+    _take_guard_lock || { _record_incident "$CARD" "$AGENT" "DENY:ledger-busy" "$(( ($(now_ts) - upd) * 1000 ))"; echo "DENY:ledger-busy"; exit 8; }
     IFS=$'\t' read -r count last_ts last_upd <<<"$(_ledger_get "$CARD")"
     ts="$(now_ts)"
 
     # (2) progress since last check -> reset + suppress
     if [ "$upd" -gt "$last_upd" ] && [ "$last_upd" -gt 0 ]; then
       _ledger_set "$CARD" 0 "$ts" "$upd"
-      echo "DENY:progress"; exit 8
+      _ledger_set_busy "$CARD" 0 0   # moving again -- any prior busy streak is over
+      _record_incident "$CARD" "$AGENT" "DENY:progress" "$(( (ts - upd) * 1000 ))"; echo "DENY:progress"; exit 8
     fi
     # first sighting: baseline the updated_at, do NOT nudge yet (give it a full cycle)
     if [ "$last_ts" -eq 0 ]; then
       _ledger_set "$CARD" 0 "$ts" "$upd"
-      echo "DENY:first-seen-baseline"; exit 8
+      _ledger_set_busy "$CARD" 0 0   # fresh card, no busy streak yet
+      _record_incident "$CARD" "$AGENT" "DENY:first-seen-baseline" "$(( (ts - upd) * 1000 ))"; echo "DENY:first-seen-baseline"; exit 8
     fi
 
     # (3) busy, (4) cap, (5) backoff -- see _decide_active for why cap is checked before backoff
@@ -246,24 +452,60 @@ case "$MODE" in
       agent-busy)
         # refresh last_ts so backoff timer tracks real quiet time, keep count
         _ledger_set "$CARD" "$count" "$ts" "$upd"
-        echo "DENY:agent-busy"; exit 8 ;;
+        # Card 9aa455c6 finding 2: start (or continue) the continuous busy-streak clock. Only set
+        # busy_since the FIRST tick of a streak -- a fresh timestamp every tick would make the
+        # streak look like it never ages.
+        IFS=$'\t' read -r busy_since _busy_notified <<<"$(_ledger_get_busy "$CARD")"
+        [ "$busy_since" -eq 0 ] && _ledger_set_busy "$CARD" "$ts" 0
+        _record_incident "$CARD" "$AGENT" "DENY:agent-busy" "$(( (ts - upd) * 1000 ))"; echo "DENY:agent-busy"; exit 8 ;;
       cap-reached)
+        _ledger_set_busy "$CARD" 0 0   # agent is not busy right now (see _decide_active order)
         _escalate_once "$CARD" "$count"
-        echo "DENY:cap-reached($count)"; exit 8 ;;
+        _record_incident "$CARD" "$AGENT" "DENY:cap-reached($count)" "$(( (ts - upd) * 1000 ))"; echo "DENY:cap-reached($count)"; exit 8 ;;
       backoff:*)
-        echo "DENY:backoff(${decision#backoff:}s)"; exit 8 ;;
+        _ledger_set_busy "$CARD" 0 0
+        _record_incident "$CARD" "$AGENT" "DENY:backoff(${decision#backoff:}s)" "$(( (ts - upd) * 1000 ))"; echo "DENY:backoff(${decision#backoff:}s)"; exit 8 ;;
       allow)
         _ledger_set "$CARD" "$(( count + 1 ))" "$ts" "$upd"
-        echo "ALLOW"; exit 0 ;;
+        _ledger_set_busy "$CARD" 0 0
+        _record_incident "$CARD" "$AGENT" "ALLOW" "$(( (ts - upd) * 1000 ))"; echo "ALLOW"; exit 0 ;;
     esac
     ;;
 
   reset)
     CARD="${2:-}"; [ -n "$CARD" ] || { echo "usage: reset <cardId>"; exit 2; }
+    _take_guard_lock || { echo "reset $CARD: guard state is locked by another run, not reset" >&2; exit 8; }
     _ledger_del "$CARD"; echo "reset $CARD"; exit 0 ;;
+
+  sibling-handover)
+    # MikroB decision (msg_id:24795): called from the heartbeat D section, in the SAME step as the
+    # PUT assignee + agent start + dispatch, in place of the plain `reset` it used to call. Does both
+    # jobs `reset` did (clears the ledger, so the new assignee starts without the old agent's
+    # backoff/cap history) PLUS the incident-table resolve+reopen -- one call for the caller, per
+    # MikroB's own wire-format request ("a hivo egyetlen parancsot hiv").
+    CARD="${2:-}"; OLD_AGENT="${3:-}"; NEW_AGENT="${4:-}"
+    [ -n "$CARD" ] && [ -n "$OLD_AGENT" ] && [ -n "$NEW_AGENT" ] || {
+      echo "usage: sibling-handover <cardId> <oldAgent> <newAgent>"; exit 2; }
+    # stalled_ms is best-effort context for the row, not a control value -- a failed card-fields read
+    # (or a card that has meanwhile changed status) must not block the handover, so it degrades to 0
+    # rather than denying anything. This subcommand has no DENY branch at all: it fires only after
+    # MikroB has already decided to hand over.
+    fields="$(_card_fields "$CARD")"
+    upd="$(printf '%s' "$fields" | cut -f2 2>/dev/null)"; upd="${upd%%.*}"; [ -n "$upd" ] || upd=0
+    ts="$(now_ts)"
+    stalled=0; [ "$upd" -gt 0 ] 2>/dev/null && stalled=$(( (ts - upd) * 1000 ))
+    _take_guard_lock || {
+      echo "sibling-handover $CARD: guard state is locked by another run, not performed" >&2; exit 8; }
+    _record_sibling_handover "$CARD" "$OLD_AGENT" "$NEW_AGENT" "$stalled"
+    _ledger_del "$CARD"
+    echo "sibling-handover $CARD: $OLD_AGENT -> $NEW_AGENT"; exit 0 ;;
 
   escalations)
     # print pending (not-yet-notified) escalations as JSON, mark them notified
+    # Under the lock: this is a read-modify-write of the same shared state. On failure print
+    # NOTHING on stdout -- an empty list here would read as "no escalations pending", which is
+    # the one wrong answer (a cap-reached card would silently never reach a human).
+    _take_guard_lock || { echo "escalations: guard state is locked by another run, not read" >&2; exit 8; }
     python3 - "$ESCAL" <<'PY'
 import json,sys,os,tempfile
 path=sys.argv[1]
@@ -279,6 +521,20 @@ if out:
     os.replace(tmp,path)
 print(json.dumps(out,ensure_ascii=False))
 PY
+    ;;
+
+  busy-report)
+    # Card 9aa455c6 finding 2: the fleet-wide answer to "which cards have been sitting behind
+    # DENY:agent-busy for a suspiciously long time" -- the underlying check is agent-level (see
+    # _agent_busy), so a card whose agent is genuinely working on something ELSE gets the same
+    # verdict as one whose agent quietly died mid-turn, forever, with nothing distinguishing them.
+    # This does not change what `check` decides for any card -- it only reports.
+    # Optional $2 overrides the default threshold (seconds); same "read, mark notified, write once"
+    # shape as `escalations` above, so a heartbeat calling this every cycle is told about a card
+    # ONCE per continuous streak, not every tick for as long as the streak lasts.
+    THRESHOLD="${2:-${BUSY_REPORT_THRESHOLD_S:-7200}}"
+    _take_guard_lock || { echo "busy-report: guard state is locked by another run, not read" >&2; exit 8; }
+    _busy_report "$THRESHOLD"
     ;;
 
   selftest)
@@ -335,10 +591,257 @@ PY
     _is_load_paused backend 10100 && { echo "FAIL load-paused stale: 400s-stale last_seen still reported paused"; fails=$((fails+1)); }
     # Right at the boundary: exactly max_stale (300s) is no longer "< max_stale" -> not paused.
     _is_load_paused backend 10000 && { echo "FAIL load-paused stale: exactly-300s-old last_seen still reported paused"; fails=$((fails+1)); }
+    # 9) card 09a3d52a: the guard state survives CONCURRENT runs.
+    # WHY this is not a theoretical case: _ledger_get and _ledger_set are two separate python
+    # processes and the set rewrites the WHOLE file from its own snapshot, so without a lock a
+    # concurrent run on a DIFFERENT card silently drops this card's entry -- resetting its
+    # re-dispatch count to zero and defeating MAX_REDISPATCH. Measured without the lock, 30 ids,
+    # 5 runs: 27, 28, 29, 29, 29 survivors. With it, all of them, every run.
+    #
+    # (a) the lock is actually exclusive. Deterministic, no timing: fd 9 is held here, so a
+    # second opener must fail a zero-wait attempt. If this passes while (b) fails, the lock is
+    # taken but not taken in the right PLACE.
+    _take_guard_lock || { echo "FAIL lock: could not take the guard lock at all"; fails=$((fails+1)); }
+    if flock -w 0 "$(_guard_lock_path)" true 2>/dev/null; then
+      echo "FAIL lock: a second holder acquired it while the first still held it"; fails=$((fails+1))
+    fi
+    exec 9>&-   # release before the burst below, or every child would wait on THIS process
+    # (b) a concurrent burst loses nothing. Each child re-opens fd 9, so it contends for real
+    # rather than inheriting this process's file description.
+    echo '{}' > "$LEDGER"
+    for i in $(seq 1 40); do
+      ( _take_guard_lock || exit 1
+        IFS=$'\t' read -r bc blt blu <<<"$(_ledger_get "K$i")"
+        _ledger_set "K$i" "$(( bc + 1 ))" 111 222 ) &
+    done
+    wait
+    burst="$(python3 -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+bad=[k for k,v in d.items() if v.get('count')!=1]
+print('%d %d' % (len(d), len(bad)))
+" "$LEDGER")"
+    [ "$burst" = "40 0" ] || { echo "FAIL concurrent-burst: expected '40 0' (entries, wrong-count), got '$burst'"; fails=$((fails+1)); }
+    # (c) the WIRING: holding the lock is useless if `check` does not take it before it reads.
+    # This is a SOURCE assertion, not a behavioural one, and that is a deliberate limit: the real
+    # `check` block queries the live dashboard for the card, and the alternative -- an env-var
+    # stub seam in the guard itself -- would be a bypass in a tool whose whole job is to refuse.
+    # Matched on the COMMENT-STRIPPED source, because a call named only in a comment satisfies a
+    # naive presence check (cards 06d36307, 2f0c7d24). The stripper only treats a `#` as a comment
+    # start when it is preceded by whitespace or is the first character of the line -- a plain
+    # `s/#.*$//` (tried first, here) also truncates `${decision#backoff:}` mid-statement, since that
+    # `#` has no preceding space, and silently deleted the rest of that line, echo included (found by
+    # the incident-wiring check below, which counted 9 verdict sites instead of 10 until this line
+    # was fixed).
+    wiring="$(sed -n '/^  check)/,/^    ;;/p' "$0" | sed -E 's/(^|[[:space:]])#.*$//')"
+    lockline="$(printf '%s\n' "$wiring" | grep -n '_take_guard_lock' | head -1 | cut -d: -f1)"
+    readline="$(printf '%s\n' "$wiring" | grep -n '_ledger_get' | head -1 | cut -d: -f1)"
+    if [ -z "$lockline" ] || [ -z "$readline" ]; then
+      echo "FAIL check-wiring: lock=$lockline read=$readline (one of them is not in the check block)"; fails=$((fails+1))
+    elif [ "$lockline" -ge "$readline" ]; then
+      echo "FAIL check-wiring: the lock is taken at line $lockline, AFTER the ledger read at $readline"; fails=$((fails+1))
+    fi
+    # 10) card 878cd292: incident logging is WIRED to every DENY/ALLOW verdict site, not just some of
+    # them. LOGGING IS NOT THE CONTROL (code-quality rule 6): dropping one _record_incident call
+    # changes neither the exit code nor stdout, so a behavioural test cannot see the gap -- only a
+    # SOURCE assertion on the check) block can. Reuses $wiring (already comment-stripped above,
+    # cards 06d36307/2f0c7d24: a call named only in a comment must not satisfy this). The content
+    # goes to a FILE, not into a python string literal, because the block contains backticks and
+    # unexpanded $-vars that an inline python -c/heredoc string would hand to THIS shell to expand
+    # (memory: backticks/$-vars in a python content string get eaten by bash).
+    incident_src="$tmpdir/check_block.sh"
+    printf '%s\n' "$wiring" > "$incident_src"
+    incident_report="$(python3 - "$incident_src" <<'PY'
+import re, sys
+with open(sys.argv[1]) as f:
+    lines = f.read().splitlines()
+verdict_lines = [l for l in lines if re.search(r'echo "(DENY|ALLOW)', l)]
+usage_lines = [l for l in verdict_lines if 'DENY:usage' in l]
+other_lines = [l for l in verdict_lines if 'DENY:usage' not in l]
+fails = 0
+# DENY:usage fires before CARD/AGENT are known to be non-empty -- there is nothing to attribute the
+# row to, and the server's own classifier (classifyStuckVerdict) refuses it as a calling error, not
+# a decision about a card. It must stay the one verdict site that does NOT call the logger.
+if len(usage_lines) != 1:
+    print(f"FAIL incident-wiring: expected exactly one DENY:usage line, found {len(usage_lines)}")
+    fails += 1
+elif '_record_incident' in usage_lines[0]:
+    print("FAIL incident-wiring: DENY:usage must NOT log (no CARD/AGENT yet -- a calling error)")
+    fails += 1
+# The other ten sites (card-not-found, not-active, load-paused, ledger-busy, progress,
+# first-seen-baseline, agent-busy, cap-reached, backoff, ALLOW) must ALL log.
+if len(other_lines) != 10:
+    print(f"FAIL incident-wiring: expected 10 verdict sites outside DENY:usage, found {len(other_lines)}")
+    fails += 1
+for l in other_lines:
+    if '_record_incident' not in l:
+        print(f"FAIL incident-wiring: no _record_incident call on: {l.strip()}")
+        fails += 1
+        continue
+    # Order matters: a call placed AFTER the terminal echo/exit on the same line is dead code.
+    if l.index('_record_incident') > l.index('echo "'):
+        print(f"FAIL incident-wiring order: _record_incident comes after the verdict echo on: {l.strip()}")
+        fails += 1
+print(f"__FAILS__={fails}")
+PY
+)"
+    printf '%s\n' "$incident_report" | grep -v '^__FAILS__='
+    n_incident_fails="$(printf '%s\n' "$incident_report" | sed -n 's/^__FAILS__=//p')"
+    fails=$(( fails + ${n_incident_fails:-1} ))
+    # 11) MikroB decision (msg_id:24795): sibling-handover) must actually clear the ledger AND log
+    # the handover, in that block, not just exist. Same comment-stripped source-assertion posture as
+    # the checks above -- the block's own HTTP call cannot be observed from here without a live
+    # dashboard, so this pins PRESENCE + the one order that matters (the lock before the ledger is
+    # cleared, matching the check) block's own lock-before-read rule).
+    sh_wiring="$(sed -n '/^  sibling-handover)/,/^    ;;/p' "$0" | sed -E 's/(^|[[:space:]])#.*$//')"
+    sh_lockline="$(printf '%s\n' "$sh_wiring" | grep -n '_take_guard_lock' | head -1 | cut -d: -f1)"
+    sh_delline="$(printf '%s\n' "$sh_wiring" | grep -n '_ledger_del' | head -1 | cut -d: -f1)"
+    sh_logline="$(printf '%s\n' "$sh_wiring" | grep -n '_record_sibling_handover' | head -1 | cut -d: -f1)"
+    if [ -z "$sh_lockline" ] || [ -z "$sh_delline" ] || [ -z "$sh_logline" ]; then
+      echo "FAIL sibling-handover-wiring: lock=$sh_lockline del=$sh_delline log=$sh_logline (one of them is missing from the block)"
+      fails=$((fails+1))
+    elif [ "$sh_lockline" -ge "$sh_delline" ]; then
+      echo "FAIL sibling-handover-wiring: the lock is taken at line $sh_lockline, AFTER the ledger clear at $sh_delline"
+      fails=$((fails+1))
+    fi
+    # 12) Cybered NO-GO (card 878cd292, Gate-SHA d1702f82): the POST body must be built by a REAL
+    # JSON encoder, not a printf template -- a quote in AGENT/oldAgent/newAgent (all just the kanban
+    # `assignee` field, settable by any authenticated agent via PUT, so attacker-reachable) could
+    # close the JSON string early and inject a second `"cardId"` key; the server's JSON.parse keeps
+    # the LAST one, letting an already-authenticated agent forge a stuck_incidents row for a card it
+    # does not own. `curl` is overridden for this test only, to capture the POST body instead of
+    # sending it -- no network call, no token leaves this process.
+    curl() { # $@ has -d <body> somewhere; write it out, do nothing else
+      local args=("$@")
+      for ((_ci=0; _ci<${#args[@]}; _ci++)); do
+        [ "${args[$_ci]}" = "-d" ] && printf '%s' "${args[$((_ci+1))]}" > "$tmpdir/captured_body.json"
+      done
+      return 0
+    }
+    malicious_agent='evil","cardId":"HACKED","verdict":"ALLOW'
+    rm -f "$tmpdir/captured_body.json"
+    _record_incident "C-REAL" "$malicious_agent" "DENY:agent-busy" 0
+    if [ ! -s "$tmpdir/captured_body.json" ]; then
+      echo "FAIL json-injection: _record_incident produced no captured body -- curl override not reached"
+      fails=$((fails+1))
+    else
+      parsed="$(python3 -c "
+import json
+with open('$tmpdir/captured_body.json') as f: d = json.load(f)
+print(d.get('cardId'), '|', d.get('verdict'))
+" 2>&1)"
+      [ "$parsed" = "C-REAL | DENY:agent-busy" ] || {
+        echo "FAIL json-injection: a malicious assignee corrupted cardId/verdict via _record_incident: $parsed"
+        fails=$((fails+1))
+      }
+    fi
+    rm -f "$tmpdir/captured_body.json"
+    _record_sibling_handover "C-REAL2" "$malicious_agent" "backend2" 0
+    if [ ! -s "$tmpdir/captured_body.json" ]; then
+      echo "FAIL json-injection: _record_sibling_handover produced no captured body -- curl override not reached"
+      fails=$((fails+1))
+    else
+      parsed2="$(python3 -c "
+import json
+with open('$tmpdir/captured_body.json') as f: d = json.load(f)
+print(d.get('cardId'), '|', d.get('newAgent'))
+" 2>&1)"
+      [ "$parsed2" = "C-REAL2 | backend2" ] || {
+        echo "FAIL json-injection: a malicious oldAgent corrupted cardId/newAgent via _record_sibling_handover: $parsed2"
+        fails=$((fails+1))
+      }
+    fi
+    unset -f curl
+    # CONTROL, discriminating: the OLD printf template (not sourced from the file -- reproduced
+    # inline, since it no longer exists in the current source) really is exploitable by the exact
+    # same input. Without this control, a test that happened to assert something true of BOTH the
+    # buggy and the fixed version would pass for the wrong reason (the class of mistake named in
+    # code-quality rule 12 / the PREFIX-discriminating case elsewhere in this file).
+    old_style_body="$(printf '{"cardId":"%s","assignee":"%s","verdict":"%s","detectedAt":%s,"stalledMs":%s}' \
+      "C-REAL" "$malicious_agent" "DENY:agent-busy" 1700000000 0)"
+    old_parsed="$(printf '%s' "$old_style_body" | python3 -c "import json,sys; print(json.load(sys.stdin).get('cardId'))" 2>&1)"
+    [ "$old_parsed" = "HACKED" ] || {
+      echo "FAIL json-injection CONTROL: the old printf template no longer reproduces the injection ($old_parsed) -- the discriminating case may be stale"
+      fails=$((fails+1))
+    }
+    # 13) Card 9aa455c6 finding 2: the continuous agent-busy streak tracker.
+    # (a) _ledger_get_busy on an absent entry is zeros, not an error.
+    IFS=$'\t' read -r bs bn <<<"$(_ledger_get_busy NEVER_SEEN)"
+    [ "$bs" = "0" ] && [ "$bn" = "0" ] || { echo "FAIL busy-absent: bs=$bs bn=$bn"; fails=$((fails+1)); }
+    # (b) _ledger_set_busy sets it, and does NOT disturb count/last_ts/last_updated_at that
+    # _ledger_set already wrote for this card.
+    _ledger_set C3 2 500 1000
+    _ledger_set_busy C3 500 0
+    IFS=$'\t' read -r c3count c3lt c3lu <<<"$(_ledger_get C3)"
+    [ "$c3count" = "2" ] && [ "$c3lt" = "500" ] && [ "$c3lu" = "1000" ] || {
+      echo "FAIL busy-preserves-ledger: count=$c3count lt=$c3lt lu=$c3lu"; fails=$((fails+1)); }
+    IFS=$'\t' read -r bs bn <<<"$(_ledger_get_busy C3)"
+    [ "$bs" = "500" ] && [ "$bn" = "0" ] || { echo "FAIL busy-set: bs=$bs bn=$bn"; fails=$((fails+1)); }
+    # (c) the reverse: _ledger_set (the ordinary count/ts writer) must NOT wipe busy_since/notified
+    # that _ledger_set_busy already recorded -- this is the exact bug a whole-entry REPLACE would
+    # reintroduce, and it is why _ledger_set was changed to preserve these two fields.
+    _ledger_set_busy C3 500 1
+    _ledger_set C3 3 600 1000
+    IFS=$'\t' read -r bs bn <<<"$(_ledger_get_busy C3)"
+    [ "$bs" = "500" ] && [ "$bn" = "1" ] || {
+      echo "FAIL busy-survives-ledger-set: bs=$bs bn=$bn (an ordinary count update must not clear the busy streak)"
+      fails=$((fails+1))
+    }
+    # (d) busy-report: below threshold -> empty, nothing marked notified.
+    _ledger_set_busy C3 500 0
+    NOW_FOR_REPORT=1000  # elapsed 500s
+    out="$(python3 - "$LEDGER" "$NOW_FOR_REPORT" 7200 <<'PY'
+import json,sys
+path,now,threshold=sys.argv[1],int(sys.argv[2]),int(sys.argv[3])
+d=json.load(open(path))
+out=[cid for cid,e in d.items() if int(e.get("busy_since",0) or 0)>0 and not e.get("busy_notified") and (now-int(e["busy_since"]))>=threshold]
+print(json.dumps(out))
+PY
+)"
+    [ "$out" = "[]" ] || { echo "FAIL busy-report-below-threshold: $out"; fails=$((fails+1)); }
+    # (e) busy-report: AT/OVER threshold, calling the REAL function `_busy_report` directly (not a
+    # `bash "$0" busy-report` subprocess -- that would re-run the script's top-level
+    # `LEDGER="${STORE}/..."` assignment in a fresh process and silently hit the LIVE install's
+    # ledger instead of this test's tmpdir, since that assignment is unconditional).
+    _ledger_set_busy C3 100 0   # busy since t=100
+    out="$(_busy_report 50)"
+    # now() is real wall-clock here, so "since t=100" is certainly >=50s in the past.
+    printf '%s' "$out" | grep -q '"cardId": *"C3"' || { echo "FAIL busy-report-fires: $out"; fails=$((fails+1)); }
+    # (f) NOTIFIED-ONCE: calling it again must NOT report C3 a second time, matching `escalations`'s
+    # own one-shot shape -- a heartbeat calling this every cycle must hear about a streak once, not
+    # every tick for as long as it lasts.
+    out2="$(_busy_report 50)"
+    printf '%s' "$out2" | grep -q 'C3' && { echo "FAIL busy-report-not-once: reported C3 twice: $out2"; fails=$((fails+1)); }
+    # (g) WIRING: every non-agent-busy verdict branch clears the streak, and the agent-busy branch
+    # sets it -- source assertion (LOGGING IS NOT THE CONTROL, same posture as tests 10/11 above),
+    # reusing the comment-stripped $wiring from test 10.
+    busy_wire_fails=0
+    for branch in 'agent-busy)' 'cap-reached)' 'backoff:*)' 'allow)'; do
+      block="$(printf '%s\n' "$wiring" | awk -v b="$branch" 'index($0,b){f=1} f{print; if (/;;/) exit}')"
+      case "$block" in
+        *_ledger_set_busy*) : ;;
+        *) echo "FAIL busy-wiring: branch '$branch' does not call _ledger_set_busy"; busy_wire_fails=$((busy_wire_fails+1)) ;;
+      esac
+    done
+    fails=$((fails + busy_wire_fails))
+    # (h) progress and first-seen-baseline (the two early-exit branches BEFORE the busy/cap/backoff
+    # dispatch) must also clear the streak -- checked on the full check) block, not just the
+    # busy/cap/backoff sub-dispatch $wiring already sliced above.
+    for marker in 'DENY:progress' 'DENY:first-seen-baseline'; do
+      # 3 lines of context before the marker: enough to reach the _ledger_set_busy call this card
+      # added right above each `_record_incident ... DENY:...` line, without pulling in the
+      # PRECEDING if-block (the two are only ~3 lines apart in the source).
+      block="$(printf '%s\n' "$wiring" | grep -B3 -F "$marker")"
+      case "$block" in
+        *_ledger_set_busy*) : ;;
+        *) echo "FAIL busy-wiring: the $marker line does not clear the busy streak"; fails=$((fails+1)) ;;
+      esac
+    done
+
     rm -rf "$tmpdir"
     if [ "$fails" -eq 0 ]; then echo "SELFTEST: PASS"; exit 0; else echo "SELFTEST: FAIL ($fails)"; exit 1; fi
     ;;
 
   *)
-    echo "usage: $0 {check <cardId> <agent>|reset <cardId>|escalations|selftest}" >&2; exit 2 ;;
+    echo "usage: $0 {check <cardId> <agent>|reset <cardId>|sibling-handover <cardId> <oldAgent> <newAgent>|escalations|busy-report [thresholdSeconds]|selftest}" >&2; exit 2 ;;
 esac

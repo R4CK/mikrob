@@ -159,6 +159,10 @@ rebuild_live_install() {
 # its gate ran. Same shape as downward_check above: shared code, different default.
 # shellcheck source=./landing-gate-verdict-check.sh
 . "$(dirname "$0")/landing-gate-verdict-check.sh"
+# find_conflict_markers (card 4b4c89eb): shared with cleancore-land.sh, same reason as the two
+# libraries above -- one copy of the check, not two that can drift.
+# shellcheck source=./conflict-marker-check.sh
+. "$(dirname "$0")/conflict-marker-check.sh"
 
 if [ "${1:-}" = "--selftest" ]; then
   fail=0; n=0
@@ -170,6 +174,8 @@ if [ "${1:-}" = "--selftest" ]; then
   # Downward range check (card dfff9b37) -- the cases live in the shared lib so the two landers
   # cannot end up testing different things about the same code.
   downward_selftest_cases
+  # Conflict-marker check (card 4b4c89eb) -- same sharing reason.
+  conflict_marker_selftest_cases
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -178,6 +184,11 @@ fi
 DEFAULT_BRANCH="$(g symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
 [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="develop"
 TEST_CMD="${MARVEEN_LAND_TEST:-$MAIN/store/fleet-test.sh --ref}"
+# fleet-test.sh posts PAUSED-SEMAPHORE / RESUMED-SEMAPHORE to the landing agent's card while it
+# queues for a shared CPU slot (card 492a6d5c). It cannot find that card on its own -- it takes a
+# ref, not an agent -- so the caller that DOES know which agent it is landing for passes the name.
+# Exported rather than argument-passed so MARVEEN_LAND_TEST overrides keep working unchanged.
+export FLEET_TEST_AGENT=""
 # Card f1b3f2f0. Same seam as MARVEEN_LAND_TEST and for the same reason: the selftest must exercise
 # the rebuild branch without running a real 16s tsc against the live install.
 BUILD_CMD="${MARVEEN_LAND_BUILD:-npm run build}"
@@ -185,6 +196,9 @@ MAX_ATTEMPTS="${MARVEEN_LAND_MAX_ATTEMPTS:-3}"
 
 land_one() {
   local agent="$1" dry="$2"
+  # Scoped to this landing: --all lands several agents in one run, and a stale name here would post
+  # one agent's queueing notice onto another agent's card.
+  export FLEET_TEST_AGENT="$agent"
   local branch="agent/${agent}/work"
 
   g show-ref --verify --quiet "refs/heads/$branch" || { say "$agent: no branch $branch -- nothing to land"; return 0; }
@@ -366,6 +380,18 @@ land_one() {
     return 4
   fi
   say "$agent: fleet-test green on the merge result"
+
+  # Merge-conflict marker check (card 4b4c89eb) -- see store/conflict-marker-check.sh for the
+  # incident this closes and why only the two unambiguous markers are checked.
+  local conflict_markers
+  conflict_markers="$(find_conflict_markers "$wt")"
+  if [ -n "$conflict_markers" ]; then
+    echo "$agent: REFUSED -- unresolved merge-conflict markers are in the merge result. Nothing pushed; $branch is untouched."
+    echo "$conflict_markers" | sed 's/^/    /'
+    git -C "$wt" reset -q --hard "$base_sha"
+    return 4
+  fi
+  say "$agent: no merge-conflict markers in the merge result"
 
   if [ "$dry" = "1" ]; then say "$agent: DRY-RUN -- not pushing"; return 0; fi
 

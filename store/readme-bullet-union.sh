@@ -27,3 +27,45 @@ try_readme_bullet_union() {
   rm -rf "$tmp"
   return "$rc"
 }
+
+# NOT A MERGE DRIVER, AND THE REFUSAL IS LOUD (Cybersec, card 3ae71df1). Measured: this file is mode
+# 775 and, invoked with three path arguments, returned 0 -- which is exactly `git merge.<name>.driver`
+# calling convention (%O %A %B). Nothing wires it that way today, but nothing structural prevents it
+# either: one `merge.*.driver` config line plus a .gitattributes entry would be enough, and the
+# failure mode is SILENT DATA LOSS -- a driver that exits 0 tells git the merge succeeded, so git
+# keeps %A (ours) and discards theirs, with no conflict and no message.
+#
+# A comment cannot prevent that; an exit code can. Direct execution with anything other than
+# --selftest now fails loudly. Sourcing is unaffected (BASH_SOURCE differs from $0), which is how
+# every real caller uses this file, and this file has no --selftest path of its own.
+if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" != "--selftest" ]; then
+  echo "$(basename "${BASH_SOURCE[0]}"): this file is a SOURCED helper, not an executable." >&2
+  echo "  It takes no positional arguments. If you reached this from a git merge driver" >&2
+  echo "  configuration, REMOVE IT: exiting 0 there would make git keep ours and silently" >&2
+  echo "  discard theirs." >&2
+  echo "  There is NO supported merge-driver configuration for this file -- do not wire one." >&2
+  echo "  (Source it and call its function instead. Note the guard cannot see a driver that SOURCES" >&2
+  echo "   this file: sourcing inherits the caller's positional parameters, so a caller invoked with" >&2
+  echo "   three arguments would be indistinguishable from a driver call. Cybered R-2.)" >&2
+  exit 2
+fi
+
+# `--selftest` USED TO SUCCEED SILENTLY, and a silent success is indistinguishable from "everything
+# is green" (Cybersec N-2, comment 21236). The exemption above exists so the driver guard does not
+# block the selftest -- but this file has no inline cases of its own, so the flag fell through to a
+# bare rc=0 with no output. Nothing was actually uncovered (CI discovers selftests by the
+# `store/*.selftest.{sh,py}` glob, and readme-bullet-union.selftest.py really does run, 17/17), so
+# this was a misleading MANUAL entry point rather than a coverage hole -- which is exactly why it
+# had to be fixed rather than left: the next person to type it would have believed the zero.
+#
+# It now runs the real thing and hands back its exit code. Naming the file rather than globbing:
+# if it is ever renamed, this fails loudly instead of quietly finding nothing.
+if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
+  _rbu_selftest="$(dirname "${BASH_SOURCE[0]}")/readme-bullet-union.selftest.py"
+  if [ ! -f "$_rbu_selftest" ]; then
+    echo "readme-bullet-union.sh: selftest not found at $_rbu_selftest" >&2
+    exit 2
+  fi
+  exec python3 "$_rbu_selftest"
+fi
+

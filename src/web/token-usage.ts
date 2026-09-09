@@ -1,5 +1,5 @@
-import { statSync, readdirSync, existsSync } from 'node:fs'
-import { join, basename } from 'node:path'
+import { statSync, readdirSync, existsSync, realpathSync } from 'node:fs'
+import { join, basename, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { createReadStream } from 'node:fs'
 import { createInterface } from 'node:readline'
@@ -20,6 +20,32 @@ function encodeProjectPath(p: string): string {
   return p.replace(/[^a-zA-Z0-9-]/g, '-')
 }
 
+// True when `dir` is the shared ~/.claude/projects wearing another name,
+// reached through a symlink. Compared by realpath, so a symlinked parent
+// counts too. A missing path is not the shared root. `sharedRoot` is a
+// parameter only so the test can point both sides at a fixture.
+//
+// Provisioning points agents/<name>/.claude-config/projects straight back at ~/.claude/projects,
+// so the two paths name one physical tree. Comparing the strings cannot see that; comparing the
+// resolved paths can (card 0c4cf655). Fails toward TREATING IT AS ISOLATED (returns false) when
+// either path cannot be resolved: a dir we cannot stat is one we should still try to read rather
+// than silently drop.
+//
+// THE DUPLICATE THAT DIRECTION RISKS IS NOT CAUGHT TODAY, and this comment used to say it was
+// (Cybersec, card 0c4cf655 gate). Measured on the live database: idx_token_usage_dedup is
+// (agent, session_id, timestamp, input_tokens, output_tokens) -- `agent` is the FIRST field, so the
+// same event booked under two names is two rows, not one. Dropping `agent` from that key is card
+// b774f057, which is still planned and blocked. Until it lands, the duplicate is unguarded; the
+// direction is still the right one, because dropping an agent's usage outright is worse than
+// double-counting it, but that is a trade rather than a protection.
+export function resolvesToSharedProjectsRoot(dir: string, sharedRoot: string = PROJECTS_DIR): boolean {
+  try {
+    return realpathSync(dir) === realpathSync(sharedRoot)
+  } catch {
+    return false
+  }
+}
+
 interface AgentTranscriptSource {
   agent: string
   projectDir: string
@@ -28,13 +54,19 @@ interface AgentTranscriptSource {
 // `projectRootOverride` exists for the tests, matching the convention
 // resolveAgentConfigDirForRead() already uses: the isolated dir is found by
 // probing the filesystem, so the probe root has to be redirectable to a
-// fixture. Production callers pass nothing.
-export function discoverAgentSources(projectRootOverride?: string): AgentTranscriptSource[] {
+// fixture. Production callers pass nothing. `sharedRootOverride` is the same
+// convention for the shared side, added with the symlink check below so that
+// check can be exercised end to end without touching the live ~/.claude tree.
+export function discoverAgentSources(
+  projectRootOverride?: string,
+  sharedRootOverride?: string,
+): AgentTranscriptSource[] {
   const sources: AgentTranscriptSource[] = []
-  if (!existsSync(PROJECTS_DIR)) return sources
+  const sharedProjects = sharedRootOverride ?? PROJECTS_DIR
+  if (!existsSync(sharedProjects)) return sources
   const mainDirName = encodeProjectPath(PROJECT_ROOT)
-  for (const entry of readdirSync(PROJECTS_DIR)) {
-    const full = join(PROJECTS_DIR, entry)
+  for (const entry of readdirSync(sharedProjects)) {
+    const full = join(sharedProjects, entry)
     let stat
     try { stat = statSync(full) } catch { continue }
     if (!stat.isDirectory()) continue
@@ -58,22 +90,46 @@ export function discoverAgentSources(projectRootOverride?: string): AgentTranscr
   // three days of fleet consumption missing from the monitor a model-assignment decision was about
   // to be based on.
   //
-  // MEASURED HERE BEFORE ADOPTING, and it does NOT currently bite on this install: provisioning
-  // symlinks agents/<name>/.claude-config/projects straight back to ~/.claude/projects, so both
-  // roots are the same physical tree and the shared-root loop already sees everything. What this
-  // adds is independence from that provisioning detail -- an agent given a real isolated tree stops
-  // being invisible. Duplicates are impossible either way: the UNIQUE INDEX on
-  // (agent, session_id, timestamp, input, output) plus INSERT OR IGNORE absorbs the overlap, which
-  // is exactly the case a symlinked layout produces.
+  // THE PARAGRAPH THAT USED TO STAND HERE WAS WRONG, and it is left named rather than deleted
+  // because it is the reason the defect survived review (Cybered, card 07f4cd2f). It said: the
+  // symlinked layout is harmless, because "duplicates are impossible either way -- the UNIQUE INDEX
+  // on (agent, session_id, timestamp, input, output) plus INSERT OR IGNORE absorbs the overlap".
+  // The index has `agent` as its FIRST column, so it absorbs overlap only WITHIN one agent name.
+  // Every isolated agent walking the shared tree therefore books the WHOLE fleet's consumption
+  // under its own name, and each name's copy is unique as far as that index is concerned.
   //
-  // Both roots are kept for a migrated agent, not swapped: the pre-migration history is real and
-  // lives only in the shared root.
+  // Measured on the main clone's store/claudeclaw.db before this fix: 4,033,380 rows, 398,952
+  // distinct events by (session_id, timestamp, input, output) -- 90.1% of the table was the same
+  // consumption counted once per agent. jogasz/penzugy/qa2/teszter/videooo reported byte-identical
+  // totals, and one session id appeared under 16 different agent names.
+  //
+  // So: an isolated projects dir that RESOLVES to the shared root is skipped -- the loop above
+  // already covered it, with correct per-directory attribution. A genuinely separate tree is still
+  // read, which is what this block was added for (an agent given a real isolated dir must not go
+  // silently missing), and both roots are still kept for a migrated agent, because the
+  // pre-migration history is real and lives only in the shared root.
   for (const name of listAgentNames()) {
     let configDir: string | null = null
     try { configDir = resolveAgentConfigDirForRead(name, projectRootOverride) } catch { continue }
     if (!configDir) continue
     const isolatedProjects = join(configDir, 'projects')
     if (!existsSync(isolatedProjects)) continue
+    // ...unless the agent was never actually migrated, in which case
+    // agents/<name>/.claude-config/projects is a SYMLINK back to the shared
+    // ~/.claude/projects. Then the comment below is false: the dir holds
+    // EVERY agent's work, and all of it gets booked under this one name.
+    //
+    // MEASURED 2026-09-04 18:40 on a live install: three sub-agents each
+    // reported the whole fleet's consumption, byte-identical down to the
+    // field (43844 calls, 28.5M output, 8.82G cache-read, 636 sessions),
+    // because all three symlinks resolve to the same root; only the main
+    // agent's row was real. 73% of the table was duplicate.
+    // The cursor table cannot absorb it either, being keyed by file path, and
+    // the same transcript reached the parser under three different paths.
+    //
+    // Skipping it loses nothing: the shared root is walked in the loop above,
+    // where attribution comes from the encoded directory name.
+    if (resolvesToSharedProjectsRoot(isolatedProjects, sharedProjects)) continue
     let entries: string[]
     try { entries = readdirSync(isolatedProjects) } catch { continue }
     for (const entry of entries) {
@@ -81,6 +137,19 @@ export function discoverAgentSources(projectRootOverride?: string): AgentTranscr
       let stat
       try { stat = statSync(full) } catch { continue }
       if (!stat.isDirectory()) continue
+      // An entry inside a genuinely isolated tree can itself be a symlink pointing at a
+      // project directory inside the shared root (e.g. an operator symlinks pre-migration
+      // dirs into the new isolated tree to preserve history access).  That project was
+      // already counted by the shared-root walk above with correct per-directory attribution;
+      // including it here would re-book every event under `name` instead, reproducing the
+      // attribution error this block was introduced to fix.  Fail toward KEEPING the entry
+      // (i.e. skip the check) when either realpath cannot be resolved -- same direction as
+      // resolvesToSharedProjectsRoot. (card 0333ab9f, L3 shape)
+      try {
+        const er = realpathSync(full)
+        const sr = realpathSync(sharedProjects)
+        if (er === sr || er.startsWith(sr + sep)) continue
+      } catch { /* keep */ }
       // Attribution comes from WHOSE config dir this is, not from the encoded project name: an
       // agent's isolated dir holds only that agent's work.
       if (sources.some((s) => s.agent === name && s.projectDir === full)) continue
@@ -264,7 +333,7 @@ export async function collectTokenUsage(): Promise<{ inserted: number; files: nu
     INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens,
       cache_read_tokens, cache_creation_tokens, thinking_tokens, model, content_preview, tool_name)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(agent, session_id, timestamp, input_tokens, output_tokens) DO UPDATE SET
+    ON CONFLICT(session_id, timestamp, input_tokens, output_tokens) DO UPDATE SET
       model = CASE WHEN token_usage.model IS NULL AND excluded.model IS NOT NULL THEN excluded.model ELSE token_usage.model END,
       thinking_tokens = CASE WHEN (token_usage.thinking_tokens IS NULL OR token_usage.thinking_tokens = 0) AND excluded.thinking_tokens > 0 THEN excluded.thinking_tokens ELSE token_usage.thinking_tokens END
   `)
@@ -567,12 +636,23 @@ export function correlateWithKanban(): void {
     // DISCARDED correct attribution instead of fixing a wrong one. The two changes are one change and
     // must never be split -- the conflict-map entry for this file recorded that condition and named
     // this card as the trigger.
+    // Card 9005b6a0 (Cybersec measurement): "HAS a child" is not the condition that matters --
+    // "the STAMP IS AMBIGUOUS" is. The original NOT EXISTS excluded a parent for merely having ANY
+    // child, regardless of when that child last touched it, and measured live this misattributed
+    // 91% of parent cards (201 of 221, 12.7% of correlated rows) to the wrong (earlier) card: a
+    // parent worked on YESTERDAY with a child created TODAY has a non-matching updated_at and was
+    // being thrown out for no reason bubbling would ever cause. The comment above names the actual
+    // failure mode -- a TIE between a parent's own updated_at and a child's, from touchAncestorChain
+    // stamping both at once -- so that is the condition to test for, not mere parenthood.
     const cards = db.prepare(`
       SELECT id, title, project, assignee, updated_at
       FROM kanban_cards
       WHERE (assignee = ? OR assignee LIKE '%' || ? || '%')
         AND updated_at BETWEEN ? AND ?
-        AND NOT EXISTS (SELECT 1 FROM kanban_cards child WHERE child.parent_id = kanban_cards.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM kanban_cards child
+          WHERE child.parent_id = kanban_cards.id AND child.updated_at = kanban_cards.updated_at
+        )
       ORDER BY updated_at ASC
     `).all(row.agent, row.agent, row.minTs, row.maxTs) as any[]
 

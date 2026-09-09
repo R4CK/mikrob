@@ -23,9 +23,17 @@
 # the call below pins temperature 0 and a fixed seed, and store/route-classify-selftest.sh now
 # measures the stability itself instead of assuming it.
 #
-# MEASURED, deterministically, 2026-08-14 (qwen2.5-coder 7B q4_K_M on this host) -- the numbers from
-# the stochastic build were discarded, not re-used, since they came from a different process. The
-# current figures live in route-classify-selftest.sh, which prints them on every run.
+# MEASURED, deterministically, 2026-09-09 (Qwen3.5-9b-Sushi-Coder-RL-GGUF:Q4_K_M on this host,
+# card 1ce29322 re-measurement, selftest fix ef95ec94). Determinism: FULLY STABLE x3.
+# Acceptance: PASS on routing -- Cybersec's five: 5/5 ok (BEFORE=local, AFTER=online), negative
+# controls: 3/3 ok, held-out: 4/4 ok, Cybersec OWN held-out: 5/5 ok, prompt injection: 3/3
+# SECURITY, dilution: 5/6 ok (1 transient GPU-contention FAIL on "Restrict the payroll export to
+# the finance team" wrapped in FILLER -- BUSY window broke max-wins early, same run without
+# contention passes). The routing issue (stage-1 verdict=SECURITY not upgrading to ONLINE) was a
+# selftest measurement artifact: advisory mode produced ROUTE=local AFTER ROUTE=online in stderr,
+# and tail -1 picked the wrong line. Fix in selftest: LOCAL_LLM_ADVISORY=0 in route() (ef95ec94).
+# Model drift is logged to route-classify.log when active model differs from validated model
+# (see route-classify-validated-model, written by route-classify-selftest.sh on completion).
 #
 # Usage: route-classify.sh "<task description>"
 #   prints SECURITY | MECHANICAL | UNKNOWN   (exit 0 always -- the caller decides, see above)
@@ -49,6 +57,18 @@ log_verdict() { # $1 = verdict, $2 = path (prefilter|windowed|empty), $3 = model
   printf '%s\t%s\t%s\tcalls=%s\tchars=%s\n' \
     "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" "$3" "${#TEXT}" >> "$LOG" 2>/dev/null || true
 }
+
+# MODEL DRIFT LOG (card 1ce29322): if the active model differs from the last validated model, log a
+# one-time warning. Logged only (not to stdout -- stdout must be exactly SECURITY/MECHANICAL/UNKNOWN).
+# Run route-classify-selftest.sh to re-validate and clear the warning.
+{
+  _validated="$(cat "$HERE/route-classify-validated-model" 2>/dev/null || true)"
+  _current="$(cat "$HERE/local-llm-model" 2>/dev/null || true)"
+  if [ -n "$_validated" ] && [ -n "$_current" ] && [ "$_validated" != "$_current" ]; then
+    printf '%s\tWARN\tmodel-drift\tvalidated=%s\tcurrent=%s\n' \
+      "$(date '+%Y-%m-%d %H:%M:%S')" "$_validated" "$_current" >> "$LOG" 2>/dev/null || true
+  fi
+} 2>/dev/null || true
 
 [ -n "${TEXT// }" ] || { log_verdict UNKNOWN empty 0; echo UNKNOWN; exit 0; }
 

@@ -239,6 +239,7 @@ function llmAnimMark(key) {
 }
 
 async function loadLocalLlm() {
+  await llmLoadRouting()
   await llmRefreshStatus()
   await llmRefreshRecs()
   await llmRefreshLogs()
@@ -271,13 +272,151 @@ function llmCategoriesMsg(text, cls) {
 // on the backend from store/local-llm-skills/*.txt (never a hardcoded UI list). Each row shows
 // name, description, call count, last-used, and a real enable/disable toggle -- store/local-llm.sh
 // reads the same disabledCategories config before running any --task, so this is not decorative.
+// --- Task routing (card e5fc1fb4, pair-BE ecf38e5a) ------------------------------------------
+// Contract: GET /api/local-llm/routing -> { defaultModel, overrides: {task: model},
+// alwaysOnline: {category: 'never'|level}, presets: [{task, enabled, model, source, count, lastTs}],
+// recentDecisions: [{ts, cardId, verdict, reason, modelCalls, chars}], decisionsLogAvailable }.
+// Built contract-first: 404 (backend not landed) -> _llmRoutingState 'absent', the preset switches
+// keep working from /api/local-llm/categories and the section SAYS the routing data is missing;
+// any other failure -> 'error', same visible honesty (rule 12). Nothing is guessed.
+let _llmRouting = null
+let _llmRoutingState = 'absent' // 'ok' | 'absent' | 'error'
+
+async function llmLoadRouting() {
+  try {
+    const res = await fetch('/api/local-llm/routing')
+    if (res.status === 404) { _llmRouting = null; _llmRoutingState = 'absent'; return null }
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const d = await res.json()
+    _llmRouting = {
+      defaultModel: typeof d.defaultModel === 'string' ? d.defaultModel : null,
+      overrides: d.overrides && typeof d.overrides === 'object' ? d.overrides : {},
+      alwaysOnline: d.alwaysOnline && typeof d.alwaysOnline === 'object' ? d.alwaysOnline : {},
+      presets: Array.isArray(d.presets) ? d.presets : [],
+      recentDecisions: Array.isArray(d.recentDecisions) ? d.recentDecisions : [],
+      decisionsLogAvailable: d.decisionsLogAvailable !== false,
+    }
+    _llmRoutingState = 'ok'
+    return _llmRouting
+  } catch {
+    _llmRouting = null
+    _llmRoutingState = 'error'
+    return null
+  }
+}
+
+/** "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M" -> "Qwen3.8-9B-Distill-GGUF:Q4_K_M" for chips. */
+function llmShortModelName(name) {
+  const s = String(name || '')
+  const i = s.lastIndexOf('/')
+  return i >= 0 ? s.slice(i + 1) : s
+}
+
+/** Where a --task preset is routed: the override table first, else the default model. */
+function llmRouteForTask(task) {
+  if (!_llmRouting) return null
+  const o = _llmRouting.overrides[task]
+  if (typeof o === 'string' && o) return { model: o, source: 'override' }
+  return _llmRouting.defaultModel ? { model: _llmRouting.defaultModel, source: 'default' } : null
+}
+
+/** The presets routed to a given model, for the chip on a model row. */
+function llmPresetsRoutedTo(modelName) {
+  if (!_llmRouting) return null
+  const norm = (n) => (n.includes(':') ? n : n + ':latest')
+  const presets = Object.entries(_llmRouting.overrides).filter(([, m]) => norm(m) === norm(modelName)).map(([task]) => task)
+  const isDefault = !!_llmRouting.defaultModel && norm(_llmRouting.defaultModel) === norm(modelName)
+  return { presets, isDefault }
+}
+
+function llmModelRouteChipHtml(modelName) {
+  const r = llmPresetsRoutedTo(modelName)
+  if (!r) return ''
+  if (r.isDefault) return `<span class="llm-model-route llm-model-route--default" title="${escapeHtml(r.presets.length ? r.presets.join(', ') : '')}">${t('localLlm.models.route_default')}</span>`
+  if (r.presets.length) return `<span class="llm-model-route" title="${escapeHtml(r.presets.join(', '))}">${t('localLlm.models.route_presets', { n: r.presets.length })}</span>`
+  return ''
+}
+
+function llmRoutingSummaryHtml(offload) {
+  if (!_llmRouting) {
+    return `<span class="llm-routing-note llm-routing-note--${_llmRoutingState}">${t(_llmRoutingState === 'absent' ? 'localLlm.routing.endpoint_missing' : 'localLlm.routing.endpoint_error')}</span>`
+  }
+  const model = _llmRouting.defaultModel ? escapeHtml(_llmRouting.defaultModel) : '—'
+  const threshold = offload && typeof offload.codingDifficultyThreshold === 'string' ? escapeHtml(offload.codingDifficultyThreshold) : '—'
+  const aggr = offload && typeof offload.aggressiveness === 'number' ? String(offload.aggressiveness) : '—'
+  return `<span>${t('localLlm.routing.summary', { model, threshold, aggr })}</span>`
+}
+
+function llmRoutingAlwaysOnlineHtml() {
+  if (!_llmRouting) return `<div class="llm-empty">${t('localLlm.routing.endpoint_missing_short')}</div>`
+  const entries = Object.entries(_llmRouting.alwaysOnline)
+  if (!entries.length) return `<div class="llm-empty">${t('localLlm.routing.always_online_empty')}</div>`
+  return entries.map(([cat, ceiling]) => `<div class="llm-routing-row">
+      <span class="llm-routing-cat">${escapeHtml(cat)}</span>
+      <span class="llm-routing-ceiling">${ceiling === 'never' ? t('localLlm.routing.ceiling_never') : t('localLlm.routing.ceiling_upto', { level: escapeHtml(String(ceiling)) })}</span>
+    </div>`).join('')
+}
+
+function llmRouteReasonLabel(reason) {
+  const key = 'localLlm.routing.reason.' + reason.replace(/-/g, '_')
+  const s = t(key)
+  return s === key ? reason : s
+}
+
+function llmRoutingDecisionsHtml() {
+  if (!_llmRouting) return `<div class="llm-empty">${t('localLlm.routing.endpoint_missing_short')}</div>`
+  if (!_llmRouting.decisionsLogAvailable) return `<div class="llm-empty">${t('localLlm.routing.decisions_unavailable')}</div>`
+  const rows = _llmRouting.recentDecisions.slice(0, 50)
+  if (!rows.length) return `<div class="llm-empty">${t('localLlm.routing.decisions_empty')}</div>`
+  const localCount = rows.filter(r => String(r.verdict).toUpperCase() === 'LOCAL').length
+  const onlineCount = rows.length - localCount
+  const tsList = rows.map(r => r.ts).filter(ts => typeof ts === 'number')
+  let windowNote = ''
+  if (tsList.length >= 2) {
+    const hrs = Math.round((Math.max(...tsList) - Math.min(...tsList)) / 3600000)
+    if (hrs > 0) windowNote = t('localLlm.routing.decisions_window', { hrs })
+  }
+  const summaryHtml = `<div class="llm-decisions-summary">
+    <span class="llm-verdict llm-verdict--local">${t('localLlm.routing.verdict_local')}: ${localCount}</span>
+    <span class="llm-verdict llm-verdict--online">${t('localLlm.routing.verdict_online')}: ${onlineCount}</span>
+    ${windowNote ? `<span class="llm-decisions-window">${escapeHtml(windowNote)}</span>` : ''}
+  </div>`
+  return summaryHtml + rows.map((r) => {
+    const online = String(r.verdict).toUpperCase() !== 'LOCAL'
+    const when = typeof r.ts === 'number' ? llmFmtTime(Math.round(r.ts / 1000)) : ''
+    const rawReason = String(r.reason || '')
+    return `<div class="llm-decision-row">
+      <span class="llm-verdict ${online ? 'llm-verdict--online' : 'llm-verdict--local'}">${t(online ? 'localLlm.routing.verdict_online' : 'localLlm.routing.verdict_local')}</span>
+      <span class="llm-decision-card"><code>${escapeHtml(String(r.cardId || '?'))}</code></span>
+      <span class="llm-decision-reason" title="${escapeHtml(rawReason)}">${escapeHtml(llmRouteReasonLabel(rawReason))}</span>
+      <span class="llm-decision-meta">${escapeHtml(when)}${typeof r.modelCalls === 'number' ? ' · ' + t('localLlm.routing.decision_calls', { n: r.modelCalls }) : ''}</span>
+    </div>`
+  }).join('')
+}
+
+// Presets (formerly "Categories", cards 0c054ebf/8b4ddcf0): all --task presets from
+// GET /api/local-llm/categories, sourced on the backend from store/local-llm-skills/*.txt (never a
+// hardcoded UI list). Each row shows name, description, call count, last-used, the routed model
+// (card e5fc1fb4) and a real enable/disable toggle -- store/local-llm.sh reads the same
+// disabledCategories config before running any --task, so this is not decorative.
 async function llmRefreshCategories() {
   const listEl = document.getElementById('llmCategoriesList')
   if (!listEl) return
+  const summaryEl = document.getElementById('llmRoutingSummary')
+  const alwaysEl = document.getElementById('llmRoutingAlwaysOnline')
+  const decisionsEl = document.getElementById('llmRoutingDecisions')
   try {
-    const res = await fetch('/api/local-llm/categories')
+    const [res, , offloadRes] = await Promise.all([
+      fetch('/api/local-llm/categories'),
+      llmLoadRouting(),
+      fetch('/api/local-llm/offload-config').catch(() => null),
+    ])
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const d = await res.json()
+    const offload = offloadRes && offloadRes.ok ? await offloadRes.json().catch(() => null) : null
+    if (summaryEl) summaryEl.innerHTML = llmRoutingSummaryHtml(offload)
+    if (alwaysEl) alwaysEl.innerHTML = llmRoutingAlwaysOnlineHtml()
+    if (decisionsEl) decisionsEl.innerHTML = llmRoutingDecisionsHtml()
     const categories = Array.isArray(d.categories) ? d.categories : []
     if (categories.length === 0) {
       listEl.innerHTML = `<div class="llm-empty">${t('localLlm.categories.empty')}</div>`
@@ -294,14 +433,23 @@ async function llmRefreshCategories() {
         ? t('localLlm.categories.meta_used', { count: c.count, when: llmFmtTime(c.lastTs) })
         : t('localLlm.categories.meta_unused')
       const tipId = `llmCatTip${i}`
+      const route = llmRouteForTask(c.name)
+      // The chip shows the SHORT model name (the part after the last '/'); the full name and the
+      // reason ride in the title, so a hf.co/... path does not push the override/default word out
+      // of a narrow tile.
+      const routeHtml = route
+        ? `<span class="llm-category-route llm-category-route--${route.source}" title="${escapeHtml(route.model + ' -- ' + t(route.source === 'override' ? 'localLlm.routing.route_override_tip' : 'localLlm.routing.route_default_tip'))}">${c.enabled ? '' : `<s>`}${escapeHtml(llmShortModelName(route.model))}${c.enabled ? '' : `</s>`} <em>${t(route.source === 'override' ? 'localLlm.routing.route_override' : 'localLlm.routing.route_default')}</em></span>`
+        : `<span class="llm-category-route llm-category-route--unknown" title="${escapeHtml(t('localLlm.routing.endpoint_missing_short'))}">${t('localLlm.routing.route_unknown')}</span>`
+      const offHtml = c.enabled ? '' : `<span class="llm-category-route-off">${t('localLlm.routing.route_online_now')}</span>`
       return `<div class="llm-category-row${c.enabled ? '' : ' disabled'}">
         <div class="llm-category-info">
           <span class="llm-category-name">${escapeHtml(c.name)}</span>
-          <button type="button" class="llm-category-info-btn" data-tip="${tipId}" aria-expanded="false" aria-describedby="${tipId}" aria-label="${escapeHtml(t('localLlm.categories.infoAria', { task: c.name }))}">&#9432;</button>
+          <button type="button" class="llm-category-info-btn" data-tip="${tipId}" aria-expanded="false" aria-describedby="${tipId}" aria-label="${escapeHtml(t('localLlm.categories.infoAria', { task: c.name }))}">i</button>
         </div>
         <div class="llm-category-tooltip" id="${tipId}" role="tooltip" hidden>${escapeHtml(c.description)}</div>
+        <span class="llm-category-routing">${routeHtml}${offHtml}</span>
         <span class="llm-category-meta">${escapeHtml(meta)}</span>
-        <button type="button" class="llm-category-toggle${c.enabled ? ' on' : ' off'}" data-task="${escapeHtml(c.name)}" data-enabled="${c.enabled ? '1' : '0'}" aria-pressed="${c.enabled ? 'true' : 'false'}">
+        <button type="button" class="llm-category-toggle${c.enabled ? ' on' : ' off'}" data-task="${escapeHtml(c.name)}" data-enabled="${c.enabled ? '1' : '0'}" aria-pressed="${c.enabled ? 'true' : 'false'}" title="${escapeHtml(t(c.enabled ? 'localLlm.categories.disabled_msg' : 'localLlm.categories.enabled_msg', { task: c.name }))}">
           ${c.enabled ? t('localLlm.categories.on') : t('localLlm.categories.off')}
         </button>
       </div>`
@@ -351,11 +499,18 @@ async function llmToggleCategory(task, enabled) {
 // { ok, model }. Built contract-first: while the backend is not landed the GET answers 404 and
 // the switches are simply not rendered (the rest of the models list is unaffected).
 let _llmModelFlags = null // Map<name, { enabled, disabledAt }> | null when the API is absent
+// Card 404e8dd6 (pair-BE 75f3c77d): the flags answer is also the FALLBACK model list. On a day
+// when Ollama is masked (the gpu-crashloop-guard day this card was born on) the status endpoint has
+// no models to list, but GET /api/local-llm/models still names the known models from
+// local-llm-model-state.json and says `ollamaUp: false` -- so the switches stay visible and
+// usable instead of a toast and an empty list. Rows are kept verbatim; nothing is invented.
+let _llmModelList = [] // rows of the last successful GET /api/local-llm/models
+let _llmOllamaUp = null // that answer's `ollamaUp`; null when the BE predates the field
 
 async function llmLoadModelFlags() {
   try {
     const res = await fetch('/api/local-llm/models')
-    if (res.status === 404) { _llmModelFlags = null; return null }
+    if (res.status === 404) { _llmModelList = []; _llmOllamaUp = null; _llmModelFlags = null; return null }
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const d = await res.json()
     const list = Array.isArray(d.models) ? d.models : []
@@ -364,14 +519,48 @@ async function llmLoadModelFlags() {
       if (m && typeof m.name === 'string') map.set(m.name, { enabled: m.enabled !== false, disabledAt: m.disabledAt ?? null })
     }
     _llmModelFlags = map
+    _llmModelList = list.filter(m => m && typeof m.name === 'string')
+    _llmOllamaUp = typeof d.ollamaUp === 'boolean' ? d.ollamaUp : null
     return map
   } catch {
     // Rule 12: a failed flag read must not hide the models list; the switches are omitted and
     // the operator sees the toast, not a silent "everything enabled" guess.
     showToast(t('localLlm.models.toggle.load_error'), 'error')
     _llmModelFlags = null
+    _llmModelList = []
+    _llmOllamaUp = null
     return null
   }
+}
+
+/** The one switch markup, shared by the live list and the Ollama-down fallback list. */
+function llmToggleButtonHtml(name, disabled) {
+  return `<button type="button" class="llm-model-toggle ${disabled ? 'off' : 'on'}" data-model="${escapeHtml(name)}" data-enable="${disabled ? '1' : '0'}" aria-pressed="${disabled ? 'false' : 'true'}" title="${escapeHtml(t(disabled ? 'localLlm.models.toggle.enable_tip' : 'localLlm.models.toggle.disable_tip'))}">${t(disabled ? 'localLlm.models.toggle.enable' : 'localLlm.models.toggle.disable')}</button>`
+}
+
+// Card 404e8dd6: a model row when Ollama is down -- name, the switch, and the benchmark the state
+// file already holds (tok/s @ ctx, never invented). No Use/Update buttons: those need Ollama, and
+// a control that cannot act is a dead end (rule 9), so it is not drawn.
+function llmFallbackModelRowHtml(m) {
+  const disabled = m.enabled === false
+  const b = m.benchmark && typeof m.benchmark.tokPerSec === 'number' ? m.benchmark : null
+  const ctx = b && typeof b.ctx === 'number' ? ` @ ${b.ctx}` : ''
+  const dateLocale = window._lang === 'en' ? 'en-US' : 'hu-HU'
+  const benchDate = b && Number.isFinite(b.measuredAt) ? new Date(b.measuredAt).toLocaleDateString(dateLocale) : ''
+  const tpsHtml = b
+    ? `<span class="llm-rec-tps" title="${escapeHtml(benchDate ? t('localLlm.models.bench.tip', { date: benchDate }) : t('localLlm.rec.tps_tip'))}">⚡ ${llmFmtCount(Math.round(b.tokPerSec))} tok/s${escapeHtml(ctx)}</span>`
+    : `<span class="llm-rec-tps unmeasured" title="${escapeHtml(t('localLlm.models.bench.unmeasured_tip'))}">${t('localLlm.rec.tps_unmeasured')}</span>`
+  const disabledBadge = disabled ? `<span class="llm-badge-disabled">${t('localLlm.models.disabled_badge')}</span>` : ''
+  return `<div class="llm-model-row llm-model-row-offline${disabled ? ' disabled' : ''}" data-model-row="${escapeHtml(m.name)}">
+    <div class="llm-model-info">
+      <span class="llm-model-name">${escapeHtml(m.name)}</span>
+      ${disabledBadge}
+      <span class="llm-rec-meta">${tpsHtml}${llmModelRouteChipHtml(m.name)}</span>
+    </div>
+    <div class="llm-model-actions">
+      ${llmToggleButtonHtml(m.name, disabled)}
+    </div>
+  </div>`
 }
 
 function llmModelDisabled(name) {
@@ -390,6 +579,31 @@ async function llmToggleModel(name, enable, btn) {
     showToast(t('localLlm.models.toggle.error'), 'error')
     if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy') }
   }
+}
+
+// Card e5fc1fb4 (requirement 1): say out loud how many models are installed and how many are
+// switched off, so "every installed model is listed" is a number the operator can check against
+// `ollama list`, not a belief. When Ollama is down the count is of the fallback list and says so.
+function llmRenderModelsSummary(models, ollamaUp) {
+  const el = document.getElementById('llmModelsSummary')
+  if (!el) return
+  const names = models.map(m => m.name).filter(n => typeof n === 'string')
+  if (!names.length) { el.textContent = ''; return }
+  const disabled = names.filter(n => llmModelDisabled(n)).length
+  el.textContent = t(ollamaUp ? 'localLlm.models.summary' : 'localLlm.models.summary_offline', { installed: names.length, disabled })
+}
+
+// Card e5fc1fb4 (requirement 4): the Overview swimlane's lane label links here with a model name;
+// scroll that row into view and flash it once, then forget the request so a refresh does not repeat it.
+function llmApplyModelHighlight() {
+  const name = window._llmHighlightModel
+  if (!name) return
+  const row = document.querySelector(`#llmModels [data-model-row="${CSS.escape(name)}"]`)
+  if (!row) return
+  window._llmHighlightModel = null
+  row.classList.add('llm-model-row--highlight')
+  row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  setTimeout(() => row.classList.remove('llm-model-row--highlight'), 4000)
 }
 
 async function llmRefreshStatus() {
@@ -472,7 +686,18 @@ async function llmRefreshStatus() {
     // Models list
     const models = Array.isArray(d.models) ? d.models : []
     if (!d.ollama_up) {
-      modelsEl.innerHTML = `<div class="llm-empty">${t('localLlm.status.down')}</div>`
+      // Card 404e8dd6: Ollama down is no longer an empty list. The known models (from the flags
+      // answer, itself fed by local-llm-model-state.json) are drawn with their switches under a
+      // visible "Ollama is not running" banner; only when even that list is empty does the old
+      // "Unavailable" placeholder remain.
+      if (_llmModelList.length > 0) {
+        modelsEl.innerHTML = `<div class="llm-models-banner" role="status">${t('localLlm.models.ollama_down_banner')}</div>`
+          + llmAnimateBatch(_llmModelList.map(llmFallbackModelRowHtml).join(''), 'models-offline', 'llm-model-row')
+        modelsEl.querySelectorAll('.llm-model-toggle').forEach(b =>
+          b.addEventListener('click', () => llmToggleModel(b.dataset.model, b.dataset.enable === '1', b)))
+      } else {
+        modelsEl.innerHTML = `<div class="llm-empty">${t('localLlm.status.down')}</div>`
+      }
     } else if (models.length === 0) {
       modelsEl.innerHTML = `<div class="llm-empty">${t('localLlm.models.empty')}</div>`
     } else {
@@ -507,9 +732,7 @@ async function llmRefreshStatus() {
         const hasFlags = _llmModelFlags !== null
         const disabled = hasFlags && llmModelDisabled(m.name)
         const disabledBadge = disabled ? `<span class="llm-badge-disabled">${t('localLlm.models.disabled_badge')}</span>` : ''
-        const toggleHtml = hasFlags
-          ? `<button type="button" class="llm-model-toggle ${disabled ? 'off' : 'on'}" data-model="${escapeHtml(m.name)}" data-enable="${disabled ? '1' : '0'}" aria-pressed="${disabled ? 'false' : 'true'}" title="${escapeHtml(t(disabled ? 'localLlm.models.toggle.enable_tip' : 'localLlm.models.toggle.disable_tip'))}">${t(disabled ? 'localLlm.models.toggle.enable' : 'localLlm.models.toggle.disable')}</button>`
-          : ''
+        const toggleHtml = hasFlags ? llmToggleButtonHtml(m.name, disabled) : ''
         return `<div class="llm-model-row${active ? ' active' : ''}${notBenched && !active ? ' not-benchmarked' : ''}${disabled ? ' disabled' : ''}" data-model-row="${escapeHtml(m.name)}">
           <div class="llm-model-info">
             <span class="llm-model-name">${escapeHtml(m.name)}</span>
@@ -518,6 +741,7 @@ async function llmRefreshStatus() {
               <span class="llm-model-size">${fmtBytes(m.size)}</span>
               ${tpsHtml}
               ${trustHtml}
+              ${llmModelRouteChipHtml(m.name)}
             </span>
             ${benchHintHtml}
           </div>
@@ -544,6 +768,9 @@ async function llmRefreshStatus() {
       modelsEl.querySelectorAll('.llm-update-btn').forEach(b =>
         b.addEventListener('click', () => { document.getElementById('llmPullInput').value = b.dataset.model; llmStartPull(b.dataset.model) }))
     }
+
+    llmRenderModelsSummary(d.ollama_up ? models : _llmModelList, d.ollama_up)
+    llmApplyModelHighlight()
 
     // Running generations
     const running = Array.isArray(d.running) ? d.running : []

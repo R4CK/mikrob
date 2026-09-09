@@ -21,6 +21,7 @@
 #   store/fleet-test.sh --ref <sha|branch>  # test a specific commit instead of HEAD
 #   store/fleet-test.sh --path              # print the worktree path and exit (for scripting)
 #   store/fleet-test.sh --lock-path         # print the RESOLVED lock path and exit (for scripting)
+#   store/fleet-test.sh --cpu-slot-path     # print the RESOLVED shared CPU-slot prefix and exit
 #
 # Exit: the vitest exit code | 2 bad usage | 3 setup failed
 set -uo pipefail
@@ -36,6 +37,24 @@ LOCK_WAIT_SECONDS="${FLEET_TEST_LOCK_WAIT:-900}"
 # the same path the shared tree's lock already used, so a run started before card 2f0c7d24 and a run
 # started after it still contend on one file.
 LOCK_FILE="${ROOT}-test.lock"
+
+# THE SHARED CPU-CAPACITY POOL (card 492a6d5c, backend3's measurement on card 779cd6a7). This is a
+# SEPARATE question from LOCK_FILE above: that lock says "is it safe to touch the tree" (correctness,
+# capped at 1); this says "is there room to run" (CPU, capped at CLEANCORE_SUITE_SLOTS). A fleet-test
+# run and a CleanCore full-suite run (store/cleancore-suite-run.sh) are independently correct but
+# both start one vitest worker per core, so left uncoordinated they still starve each other's CPU into
+# false reds. This deliberately reads the exact CLEANCORE_SUITE_* variables cleancore-suite-run.sh
+# reads (not same-shaped new ones) and defaults to the exact same lock-file prefix, so the two scripts
+# are provably contending on the same files rather than two same-looking pools that quietly drift
+# apart. See the acquisition block below (right before the tree lock) for the full reasoning.
+CPU_SLOTS="${CLEANCORE_SUITE_SLOTS:-2}"
+CPU_LOCK_PREFIX="${CLEANCORE_SUITE_LOCK_PREFIX:-${MARVEEN_MAIN:-/home/neon/marveen}/store/.cleancore-suite-slot}"
+CPU_WAIT_MAX_S="${CLEANCORE_SUITE_WAIT_MAX_S:-7200}"
+CPU_POLL_S="${CLEANCORE_SUITE_POLL_S:-20}"
+# < the 10-minute stuck threshold, with margin -- same value and same reason as
+# cleancore-suite-run.sh's KEEPALIVE_S: the point of the refresh is to move `updated_at` before the
+# monitor decides the card is dead, so it has to be shorter than that window, not merely periodic.
+CPU_KEEPALIVE_S="${CLEANCORE_SUITE_KEEPALIVE_S:-300}"
 
 die() { echo "fleet-test.sh: $2" >&2; exit "$1"; }
 
@@ -55,6 +74,7 @@ while [ $# -gt 0 ]; do
     # check was satisfied by a COMMENT carrying the right literal, while the code below it took a
     # per-tree lock). Exits before any lock is taken, so asking is free and never queues.
     --lock-path) echo "$LOCK_FILE"; exit 0 ;;
+    --cpu-slot-path) echo "$CPU_LOCK_PREFIX"; exit 0 ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) ARGS+=("$1"); shift ;;
   esac
@@ -94,6 +114,77 @@ TARGET="$(git rev-parse "$REF" 2>/dev/null)" || die 2 "unknown ref '$REF'"
 # produces false reds is the expensive kind: on a gate it sends correct work back to in_progress.
 # FLEET_TEST_TREE still chooses WHERE you run; it no longer chooses WHETHER you queue.
 command -v flock >/dev/null 2>&1 || die 3 "flock is required to serialise suite runs (util-linux)"
+
+# SHARE CLEANCORE'S CPU-CAPACITY POOL, NOT A SEPARATE ONE (card 492a6d5c, full reasoning in the
+# CPU_SLOTS block near the top of this file). Measured live: an agent landing here (this script)
+# while ALSO running a CleanCore suite in its own correctly-slotted 2/2 (rule 17) starved itself --
+# loadavg 10-24, cross-tenant-canary-callers.test.ts timing out with zero assertion failures, while
+# the identical diff under identical load (loadavg 10.6) run alone was 9/9 green. Acquired BEFORE the
+# tree mutex below, so a run never holds that lock uselessly while still waiting for CPU capacity.
+acquire_cpu_slot() { # sets CPU_FD on success. Same split-redirection shape as cleancore-suite-run.sh's
+  # own acquire(): `exec {FD}>"$f" 2>/dev/null` applies the redirection to the SHELL itself and it
+  # persists, silently swallowing every later `echo >&2` in this script -- found by that script's own
+  # selftest. So: probe/create the file with an ORDINARY command first, and let `exec` run bare.
+  local i f
+  for ((i = 1; i <= CPU_SLOTS; i++)); do
+    f="${CPU_LOCK_PREFIX}-${i}.lock"
+    : >>"$f" 2>/dev/null || continue
+    exec {CPU_FD}>>"$f" || continue
+    if flock -n "$CPU_FD"; then return 0; fi
+    exec {CPU_FD}>&-
+  done
+  return 1
+}
+
+# A WAITER MUST NOT LOOK STUCK (Cybersec NO-GO on card 492a6d5c, comment 712a8349).
+#
+# The queueing above was announced to stderr only. cleancore-suite-run.sh -- the other consumer of
+# this same slot pool, and the accepted pattern -- also posts PAUSED-SEMAPHORE / RESUMED-SEMAPHORE
+# to the waiting agent's card, and it does that for a reason that applies here identically: fleet
+# rule 3 calls an in_progress card stuck when `updated_at` stops moving, and rule 3a hands it to a
+# sibling agent after 60 minutes. A landing that legitimately queues behind two full suites can wait
+# far longer than that. Without these comments the waiting agent's card would be taken away from it
+# for waiting correctly -- strictly worse than the CPU contention this pool exists to prevent, and
+# the exact asymmetry Cybersec refused: one consumer of the pool announcing itself and the other not.
+#
+# KANBAN_COMMENT_AGENT is what makes the card findable, and it is set by marveen-land.sh, which is
+# the caller that knows which agent it is landing for. Run by hand with no agent, the library is a
+# silent no-op -- correct, because a hand run has no card to annotate.
+KANBAN_COMMENT_AGENT="${FLEET_TEST_AGENT:-}"
+export KANBAN_COMMENT_AGENT
+# shellcheck source=./kanban-comment-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/kanban-comment-lib.sh"
+
+cpu_started="$(date +%s)"; cpu_announced=0; cpu_last_note="$cpu_started"
+while ! acquire_cpu_slot; do
+  cpu_waited=$(( $(date +%s) - cpu_started ))
+  if [ "$cpu_waited" -ge "$CPU_WAIT_MAX_S" ]; then
+    [ "$cpu_announced" -eq 1 ] && kanban_comment "INFO-ONLY RESUMED-SEMAPHORE (GIVING UP)
+
+Nem kaptam megosztott CPU-slotot ${CPU_WAIT_MAX_S} masodperc alatt (${CPU_SLOTS} egyideju futas a felso korlat, a CleanCore suite-futasok is ide szamitanak). A suite NEM futott le -- ez NEM teszt-eredmeny."
+    die 3 "no shared CPU slot after $((cpu_waited / 60)) min (${CPU_SLOTS} in use, CleanCore suite runs count against this too). Another run is stuck, or raise CLEANCORE_SUITE_SLOTS."
+  fi
+  if [ "$cpu_announced" -eq 0 ]; then
+    cpu_announced=1
+    echo "fleet-test.sh: all ${CPU_SLOTS} shared CPU slot(s) busy (CleanCore suite runs count against this too) -- queueing (cap ${CPU_WAIT_MAX_S}s)" >&2
+    kanban_comment "INFO-ONLY PAUSED-SEMAPHORE
+
+A marveen fleet-test SORBAN ALL, nem ragadt be: mind a ${CPU_SLOTS} megosztott CPU-slot foglalt (kartya 492a6d5c; a CleanCore suite-futasok ugyanebbe a poolba szamitanak). Amint felszabadul egy, indul, es RESUMED-SEMAPHORE kommentet kap.
+
+Ez a komment azert van itt, hogy az updated_at mozogjon: a 3. szabaly szerint egy nem mozdulo in_progress kartya beragadtnak szamit, a 3a. szerint 60 perc utan testverre szall. Egy nema varakozas pont azt valtana ki, amit a pool elkerulni hivatott."
+  elif [ $(( $(date +%s) - cpu_last_note )) -ge "$CPU_KEEPALIVE_S" ]; then
+    cpu_last_note="$(date +%s)"
+    kanban_comment "INFO-ONLY PAUSED-SEMAPHORE (meg mindig sorban, $((cpu_waited / 60)) perce)"
+  fi
+  sleep "$CPU_POLL_S"
+done
+
+if [ "$cpu_announced" -eq 1 ]; then
+  kanban_comment "INFO-ONLY RESUMED-SEMAPHORE
+
+Kaptam megosztott CPU-slotot $(( ( $(date +%s) - cpu_started ) / 60 )) perc varakozas utan, a marveen fleet-test most indul."
+fi
+
 # $LOCK_FILE is set with the other constants at the top, so `--lock-path` can report it without
 # reaching this point. Its independence from $TEST_TREE is the whole point of the change above.
 exec 9>"$LOCK_FILE" || die 3 "cannot open the lock file $LOCK_FILE"
@@ -130,6 +221,24 @@ $checkout_err
 Inspect by hand: git -C $TEST_TREE status"
   git -C "$TEST_TREE" reset --hard "$TARGET" >/dev/null 2>&1
   git -C "$TEST_TREE" clean -fdq -e node_modules >/dev/null 2>&1
+
+  # A LIVE MARKER LEFT BY THE SUITE'S OWN PRIOR RUN IS NOISE, NOT A MISCONFIGURATION (card 5dcde7d3).
+  # These three names are all gitignored, so `git clean -fdq` above NEVER removes them -- if some
+  # test in a prior run opened one of them for real (its own DB/token) via a path that resolved into
+  # THIS tree instead of a temp/override path, it survives forever and permanently trips the
+  # belt-and-braces check below on every later run, refusing hundreds of unrelated files with ZERO
+  # test failures (measured: 553 of 649 files REFUSED off a single stray store/claudeclaw.db).
+  #
+  # SAFE ONLY BECAUSE THIS BRANCH PROVES THE TREE IS A LINKED WORKTREE, NEVER THE LIVE INSTALL.
+  # `git worktree`'s own on-disk shape guarantees it: a linked worktree's .git is ALWAYS A FILE (a
+  # "gitdir: <path>" pointer, line 199's own check above already relies on this); the primary clone's
+  # .git is ALWAYS A DIRECTORY. If FLEET_TEST_TREE were ever mispointed at a real install, its .git
+  # would be a directory, this wipe would be skipped, and the belt-and-braces check below still
+  # refuses loudly exactly as before -- this addition narrows WHEN the check can trip, it does not
+  # weaken what it protects.
+  if [ -f "$TEST_TREE/.git" ]; then
+    rm -f "$TEST_TREE/store/.dashboard-token" "$TEST_TREE/store/claudeclaw.db" "$TEST_TREE/store/.claude-oauth-token"
+  fi
 fi
 
 # Share the live install's node_modules by symlink instead of installing a second copy: the deps are

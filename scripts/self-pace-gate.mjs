@@ -12,7 +12,8 @@
 //   - the Claude Code runtime tools ScheduleWakeup / CronCreate / CronList /
 //     CronDelete / RemoteTrigger (the autonomous-loop machinery), AND
 //   - the Bash escape routes that achieve the same self-injection: writing the
-//     Claude scheduled_tasks.json directly, tmux send-keys into a session, or
+//     Claude scheduled_tasks.json (or the directory-format scheduled-tasks/<name>/)
+//     directly, tmux send-keys into a session, or
 //     POSTing a new schedule to the dashboard.
 //
 // Why a hook and not only a permissions deny-list: permissive profiles launch
@@ -375,7 +376,132 @@ const SCHED_BOUNDARY = CMD_POSITION
 //
 // `["']*` rather than `["']?`: `at"" now` is also a working invocation, and a quantifier that
 // only allows one quote is the same incomplete-enumeration mistake one level down.
-const AT_INVOCATION = String.raw`(?=["']*\s*$|["']*\s+["']*-|["']*\s*<|["']*\s+["']*(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b))`
+//
+// THE TIMESPEC LIST AND THE SHAPES BUILT ON IT ARE NAMED ONCE AND SHARED (card 79bb0364). Before
+// this they were one inline alternation written out twice, and the redirect alternative inside
+// them read `["']*\s*<` -- "anything after a `<` is a real submit". That is true for batch(1) and
+// FALSE for at(1), and that difference is this card's whole defect: an ordinary comparison of a
+// variable named `at` was read as `at < FILE` and denied. Measured by backend2 while gating
+// 51273fc0 -- three blocked Bash calls in three languages, the common line being a `<=` comparison
+// against zero -- with the difference test that settles the diagnosis instead of guessing at it:
+// the SAME code with the variable renamed `pos` passes. `at` is not an exotic name for an index.
+//
+// CYBERSEC'S INDEPENDENT REPORT (23941, filed as a second false-positive class on the same card)
+// IS THE SAME ROOT, seen through a markdown code span: a backtick is a command-position character,
+// so quoting that condition inside a code span in a heredoc body put the word in command position
+// too. Their diagnosis named the or-operator in the quoted condition as half the trigger; measured
+// here it is not part of it at all -- the same code span WITHOUT the or-operator denies
+// identically, and the same span with the variable renamed passes. That matters because the remedy
+// they proposed for it -- skip a heredoc body whose delimiter is QUOTED, "since there is no
+// substitution there" -- would have opened four measured holes at once. A quoted delimiter stops
+// the OUTER shell from substituting; it does not stop `bash <<'EOF'` or `python3 <<'PY'` from
+// EXECUTING that body, which is exactly how the tmux/crontab/schedule-API vectors this branch was
+// built for (card 46c4ad4a) are written.
+//
+// WHY at(1) LOSES THE BARE REDIRECT AND batch(1) KEEPS IT -- the same distinction, and the same
+// argument, that already licensed dropping the end-of-segment branch for at(1) alone (card
+// 12f80902, documented at AT_INVOCATION_UNANCHORED below). at(1) REQUIRES a timespec: `at < job`
+// exits with a usage error and schedules nothing, so that shape never described a working submit
+// in the first place. batch(1) takes NO timespec, so `batch < job` IS a working submit and keeps
+// the bare form. at(1)'s redirect alternative instead demands what a real one always carries: the
+// file word, then a timespec. This keeps `at < job now + 5 minutes` denied, and it also keeps the
+// adversarial `at <=0 now` denied -- a redirect from a file literally named `=0` -- which the
+// narrower fix the card proposed (reject a `<` followed by `=` or `<`) would have let through.
+//
+// RESIDUAL, STATED RATHER THAN IMPLIED: `at < job "$WHEN"`, a redirect whose timespec is a
+// variable, was denied before and is allowed now. That is less "coverage lost" than "arbitrary
+// coverage made consistent" -- `at "$WHEN" < job`, the same invocation with the words in the other
+// order, was ALREADY allowed, because every branch here only inspects what immediately follows the
+// binary. A variable timespec is not matchable as text either way; this file's own stated residual
+// about `$(echo at) now` is the same limit.
+const AT_TIMESPEC = String.raw`(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b)`
+const AT_BARE = String.raw`["']*\s*$`
+const AT_FLAG = String.raw`["']*\s+["']*-`
+const AT_TIMESPEC_ARG = String.raw`["']*\s+["']*${AT_TIMESPEC}`
+// batch(1) takes no timespec, so an input redirect IS already a working submit -- with ONE shape
+// carved out, and the carve-out is the QA FAIL on the first round of this card (comment 21161).
+//
+// THE ASYMMETRY THAT WAS SHIPPED. The first fix hardened at(1)'s redirect and left batch(1)'s alone,
+// so `at <= 0` passed while `batch <= 0` -- the same ordinary comparison, the same collision class --
+// still denied. The card's title promised BOTH binaries; only one had been done. QA reproduced it
+// independently against gateDecision rather than from this file's fixtures.
+//
+// WHY at(1)'s FIX DOES NOT TRANSPLANT. at(1) could be closed by demanding a timespec after the file
+// word, because at(1) requires one. batch(1) requires none, so that lever does not exist here. The
+// lever it DOES have is the mirror image: batch(1) accepts NO OPERANDS. `batch <= 0` is, to bash,
+// a redirect from a file named `=` plus the operand `0` -- and an operand makes batch exit with a
+// usage error, so that shape never described a working submit either.
+//
+// So the carve-out is exactly `<` `=` whitespace OPERAND, and nothing wider:
+//     batch <= 0        -> redirect from `=`, operand `0`  -> usage error   -> allowed (the FP)
+//     batch <=          -> redirect from `=`, no operand    -> WORKING      -> still denied
+//     batch <=0         -> redirect from `=0`, no operand   -> WORKING      -> still denied
+//     batch << EOF      -> a heredoc into batch's stdin     -> WORKING      -> still denied
+//     batch < n         -> redirect from `n`, no operand    -> WORKING      -> still denied
+// The last row is a residual and is named as one: `batch < n` is a genuine comparison in code AND a
+// genuine submit in bash, indistinguishable as text, so it stays fail-closed.
+//
+// The inner `(?![0-9]*[<>&])` keeps the carve-out from being a door: what follows must be a WORD, so
+// `batch <= 2>/dev/null` / `<= >out` / `<= &1` are redirections rather than operands, still leave
+// batch with none, and stay denied.
+//
+// THE CARVE-OUT'S PREMISE HELD FOR ONE CLASS OF TOKEN AND NOT ANOTHER (Cybersec, comment 21227 --
+// they attacked the exact expression I asked them to). The premise is "if something follows the `=`
+// after a space, batch got an OPERAND, therefore a usage error". That is false for any token bash
+// CONSUMES rather than passes on: a named-fd redirect (`{fd}>out`, `{fd}<in`, bash 4.1+) leaves
+// batch with argv(0) and the job body on stdin, byte-identical to the bare `<=` form the gate still
+// denies. The first enumeration listed the redirect SPELLINGS it had thought of -- numeric fds,
+// `>`, `&` -- rather than asking whether the token survives word-splitting as an operand, which is
+// the same shape of mistake as the class this whole card is about.
+//
+// `\{[A-Za-z_]\w*\}[<>]` closes the two named-fd forms at zero measured cost (Cybersec's 20-case
+// battery: 4 divergences before, 2 after, and both remaining ones are the residual below).
+//
+// WHAT IS NOT CLOSED, AND WHY IT IS A RESIDUAL RATHER THAN A MISSING BRANCH: a substitution or an
+// unquoted variable that expands to ZERO words -- `batch <= $(echo)`, `batch <= $EMPTY` -- also
+// leaves batch operandless, and is indistinguishable AS TEXT from `batch <= $count`, an ordinary
+// comparison this round exists to allow. Measured, all three read identically. Any `$`-aware
+// extension would re-open the false positive this round removed, so it goes on the stated residual
+// list next to `batch < n` instead of into the pattern.
+const BATCH_REDIRECT = String.raw`["']*\s*<(?!=\s+(?![0-9]*[<>&]|\{[A-Za-z_]\w*\}[<>])\S)`
+// at(1): the redirect has to be followed by a file word and then a timespec. `[^\s;&|<]` on the
+// ADJACENT branch keeps a file name that STARTS with `=` matchable (that is the `at <=0 now`
+// bypass), and the run stops at a command separator so the timespec it finds has to belong to THIS
+// invocation rather than to a later command on the same line.
+//
+// THE SENTENCE THAT USED TO STAND HERE SAID THAT CLASS "REFUSES THE HEREDOC OPERATOR `<<`", AND IT
+// WAS FALSE IN THE DANGEROUS DIRECTION (Cybersec F-2, comment 21173). `[^\s;&|<]` does not MATCH a
+// `<`, and in a denying regex not matching is PERMITTING -- so what read as a guard was a hole, and
+// `at <<'EOF' now` went through. The concrete assertion written under that name was fine (`at << JOB`
+// with no timespec really cannot submit); the NAME and the comment generalised it into a claim about
+// the operator that the very next probe disproved. Corrected rather than deleted, because the wrong
+// sentence is the useful part: it is why the operator is now spelled `<{1,3}` below.
+// at(1)'s redirect branch is a UNION of two readings, not one pattern (Cybersec R-5, comment 21173,
+// measured on a 34-case battery across five variants). The first round's single pattern demanded
+// that the timespec sit IMMEDIATELY after the file word, and it spelled the redirect operator as a
+// character class that `<<` and `<<<` do not match. In a DENYING regex a non-match is a PERMIT, so
+// both of those were holes rather than guards, and seven working submits changed from denied to
+// allowed. Each was measured with an argv/stdin-printing stub, not inferred: X1 (`<<'EOF' now`) and
+// X4 (`< job 2>/dev/null now`) produce argv and stdin BYTE-IDENTICAL to the `at < job now` form that
+// stayed denied. The rest put a flag, a flag with its own argument, a second redirect, or a quoted
+// filename containing a space between the file word and the timespec.
+//
+// WHY A UNION AND WHY THE WIDE BRANCH GETS A NARROWER WORD LIST. The wide branch alone, carrying the
+// full timespec list, false-denies ordinary code: `if (at < len - 1500) return` matches, because a
+// bare four-digit number is a valid at(1) timespec. Dropping the bare `\d{3,4}` and `\d{1,2}[./]\d{1,2}`
+// alternatives from the WIDE branch removes that, and the ADJACENT branch keeps its full list, so
+// `at < job 1530` and `at < job 12.25` stay denied. Neither branch alone reaches 34/34; the union
+// does, and Cybersec's own five-variant table is what shows the intermediate candidates do not.
+//
+// AND THE MEASUREMENT THAT MATTERS MORE THAN THE MUTATION SCORE, in Cybersec's words: R-5 changes
+// behaviour on seven shapes and the 169 shipped tests notice NONE of them. A suite that stays green
+// across a real behaviour change is not evidence of coverage; the seven shapes are pinned below.
+const AT_TIMESPEC_WORDY = String.raw`(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm)\b|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b)`
+const AT_REDIRECT_ADJACENT = String.raw`["']*\s*<{1,3}\s*["']*[^\s;&|<]\S*\s+["']*${AT_TIMESPEC}`
+const AT_REDIRECT_ANYWHERE = String.raw`["']*\s*<{1,3}[^;&|\n]*?\s["']*${AT_TIMESPEC_WORDY}`
+const AT_REDIRECT = String.raw`(?:${AT_REDIRECT_ADJACENT}|${AT_REDIRECT_ANYWHERE})`
+const AT_INVOCATION = String.raw`(?=${AT_BARE}|${AT_FLAG}|${AT_REDIRECT}|${AT_TIMESPEC_ARG})`
+const BATCH_INVOCATION = String.raw`(?=${AT_BARE}|${AT_FLAG}|${BATCH_REDIRECT}|${AT_TIMESPEC_ARG})`
 // `launchctl` needed the SAME narrowing, for a different reason than at/batch, and
 // the comment above ("not English words, so prose cannot collide") was measured
 // wrong on 2026-07-26 (found by Hacker). It is not an English word -- but the
@@ -401,7 +527,7 @@ const AT_INVOCATION = String.raw`(?=["']*\s*$|["']*\s+["']*-|["']*\s*<|["']*\s+[
 // is neither. Fixing only the leading side leaves every quoted-subcommand form still passing.
 const LAUNCHCTL_SUBCOMMAND = String.raw`(?=["']*\s*$|["']*\s+["']*-|["']*\s+["']*[a-z][a-z-]*["']*(?:\s|$))`
 const SCHEDULER_RX = new RegExp(
-  String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|(?:batch|at)\b(?!-)(?!\s*=)${AT_INVOCATION})`,
+  String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|batch\b(?!-)(?!\s*=)${BATCH_INVOCATION}|at\b(?!-)(?!\s*=)${AT_INVOCATION})`,
   'i',
 )
 // ...but allow a pure READ-listing of one's own schedule (parity with the store /
@@ -462,7 +588,7 @@ const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_
 // in command-word position, `ls $(which node)` in argument position) while `${CMD}` would still
 // pass -- a race that cannot be won by matching text.
 const SCHEDULER_CMDWORD_RX = new RegExp(
-  String.raw`^\s*${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|(?:batch|at)\b(?!-)(?!\s*=)${AT_INVOCATION})`,
+  String.raw`^\s*${SCHED_PREFIX}(?:(?:crontab|systemd-run)\b(?!-)(?!\s*=)|launchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|batch\b(?!-)(?!\s*=)${BATCH_INVOCATION}|at\b(?!-)(?!\s*=)${AT_INVOCATION})`,
   'i',
 )
 // The read exemption needs no quote tolerance here: the expansion approximation already removed
@@ -522,7 +648,7 @@ const SCHEDULER_CMDWORD_READ_RX = new RegExp(
 // This is the THIRD member of the same collision class in this file: ">= 80%" and the
 // "declared trivial difficulty" case are both already documented above. Each previous fix narrowed
 // WHAT may follow the word; this one removes the branch where NOTHING follows it.
-const AT_INVOCATION_UNANCHORED = String.raw`(?=["']*\s+["']*-|["']*\s*<|["']*\s+["']*(?:now|noon|midnight|teatime|today|tomorrow|next\b|\+\s*\d|\d{1,2}:\d{2}|\d{3,4}\b|\d{1,2}\s*(?:am|pm)\b|\d{1,2}[./]\d{1,2}|(?:mon|tue|wed|thu|fri|sat|sun)\b|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b))`
+const AT_INVOCATION_UNANCHORED = String.raw`(?=${AT_FLAG}|${AT_REDIRECT}|${AT_TIMESPEC_ARG})`
 const SCHED_BARE_SHAPE = String.raw`(?!\s+[a-z])`
 // COMMAND POSITION WITHIN ONE LINE -- the axis all previous fixes in this class missed
 // (card 442f3289). at(1) and batch(1) are ordinary English words, and in THIS regex, unlike the
@@ -556,7 +682,7 @@ const SCHED_BARE_SHAPE = String.raw`(?!\s+[a-z])`
 // Derived from the ONE grammar above -- see its header for why there is no second list here.
 const LINE_CMD_POSITION = String.raw`(?:^|${CMD_POSITION})\s*`
 const UNANCHORED_SCHEDULER_RX = new RegExp(
-  String.raw`\b(?:crontab|systemd-run)\b(?!-)(?!\s*=)${SCHED_BARE_SHAPE}|\blaunchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|${LINE_CMD_POSITION}${SCHED_PREFIX}batch\b(?!-)(?!\s*=)${AT_INVOCATION}|${LINE_CMD_POSITION}${SCHED_PREFIX}at\b(?!-)(?!\s*=)${AT_INVOCATION_UNANCHORED}`,
+  String.raw`\b(?:crontab|systemd-run)\b(?!-)(?!\s*=)${SCHED_BARE_SHAPE}|\blaunchctl\b(?!-)(?!\s*=)${LAUNCHCTL_SUBCOMMAND}|${LINE_CMD_POSITION}${SCHED_PREFIX}batch\b(?!-)(?!\s*=)${BATCH_INVOCATION}|${LINE_CMD_POSITION}${SCHED_PREFIX}at\b(?!-)(?!\s*=)${AT_INVOCATION_UNANCHORED}`,
   'i',
 )
 const UNANCHORED_SCHEDULER_READ_RX = new RegExp(
@@ -567,9 +693,13 @@ const UNANCHORED_SCHEDULER_READ_RX = new RegExp(
 // schedule-WRITING is left. See the heredoc loop below for why matching is not enough.
 const UNANCHORED_SCHEDULER_READ_RX_G = new RegExp(UNANCHORED_SCHEDULER_READ_RX.source, 'gi')
 
-// The Claude self-schedule store. Blocked for WRITE on any route (a Bash write,
-// or the native Write/Edit/NotebookEdit tool); a read/grep is legit diagnostics.
-const SCHEDULE_STORE_RX = /scheduled_tasks\.json/i
+// The Claude self-schedule store. Two formats are guarded:
+//   legacy:    scheduled_tasks.json  (single flat file)
+//   directory: scheduled-tasks/<name>/<file>  (e.g. task-config.json, SKILL.md)
+// Blocked for WRITE on any route (a Bash write, or the native Write/Edit/NotebookEdit
+// tool); a read/grep is legit diagnostics. The directory branch is fail-closed: ANY
+// file under a named task subdirectory is blocked, not only task-config.json.
+const SCHEDULE_STORE_RX = /(?:scheduled_tasks\.json|[\\/]scheduled-tasks[\\/][^\\/]+[\\/])/i
 // Write-intent shell tokens (redirect / tee / in-place edit / dd / copy-move).
 const WRITE_INTENT_RX = /(>>?|\btee\b|\bsed\b[\s\S]*\s-i|\bdd\b|\bcp\b|\bmv\b)/i
 // Dashboard schedule API. A WRITE method (POST/PUT/PATCH/DELETE) creates/edits a
@@ -2207,7 +2337,8 @@ export function gateDecision(toolName, toolInput) {
 const GATE_MSG =
   'Self-pace TILTOTT (governance hard-gate). Sub-agentkent NEM utemezhetsz sajat ' +
   'jovobeli turn-t: se ScheduleWakeup/Cron*/RemoteTrigger, se tmux send-keys, se ' +
-  'scheduled_tasks.json iras, se /api/schedules POST, se /loop self-pace. Input-vezerelt ' +
+  'scheduled_tasks.json / scheduled-tasks/<nev>/task-config.json iras, se /api/schedules POST, ' +
+  'se /loop self-pace. Input-vezerelt ' +
   'vagy: csak az operator (channel) vagy egy peer (inter-agent) uzenete inditson. Ha varakozol, ' +
   'maradj idle a prompt-on -- a beerkezo uzenet majd ujrainditja a turn-t. SOHA ne valaszolj ' +
   'magadnak es SOHA ne dontsd el az operator helyett egy hozza intezett kerdest.'

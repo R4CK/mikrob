@@ -1,0 +1,183 @@
+// Card 0c4cf655 (parent 07f4cd2f, Cybered's finding on the efaf8926 gate): an isolated projects
+// dir that is really a SYMLINK back to the shared root must not be walked a second time under the
+// agent's own name.
+//
+// WHY THIS WAS NOT CAUGHT BEFORE. The block being fixed carried a written reassurance that the
+// symlinked layout was harmless, "because the UNIQUE INDEX on (agent, session_id, timestamp, input,
+// output) plus INSERT OR IGNORE absorbs the overlap". It does not: `agent` is the index's FIRST
+// column, so it absorbs overlap only within one agent name. Every isolated agent walking the shared
+// tree books the whole fleet's consumption under its own name, and every copy is unique as far as
+// that index can tell. Measured on the main clone's store/claudeclaw.db before this fix: 4,033,380
+// rows against 398,952 distinct events -- 90.1% duplicates, five agents reporting byte-identical
+// totals, one session id under 16 different agent names.
+//
+// The mistake was a prose claim about a schema, checked against the prose rather than the schema.
+// So these tests assert BEHAVIOUR (what discoverAgentSources returns for each layout), and the
+// duplication itself is measured on a real dedup key rather than asserted.
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+
+const SYMLINKED = 'agent-0c4cf655-symlinked'
+const ISOLATED = 'agent-0c4cf655-isolated'
+
+vi.mock('../web/agent-config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../web/agent-config.js')>()
+  return { ...actual, listAgentNames: () => [SYMLINKED, ISOLATED] }
+})
+
+const { discoverAgentSources, resolvesToSharedProjectsRoot } = await import('../web/token-usage.js')
+
+let root: string
+let shared: string
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), 'tokenshared-'))
+  // The stand-in for ~/.claude/projects. Passing it in (rather than reaching for the live tree)
+  // keeps this hermetic: no test in this file reads or writes the real fleet's transcripts.
+  shared = join(root, 'shared-projects')
+  mkdirSync(join(shared, '-home-neon-marveen-agents-someone'), { recursive: true })
+  writeFileSync(join(shared, '-home-neon-marveen-agents-someone', 'session.jsonl'), '{}\n')
+})
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true })
+})
+
+/** Provision an agent's config dir the way the fleet actually does: projects/ is a SYMLINK back to
+ *  the shared root. */
+function seedSymlinked(name: string): void {
+  const cfg = join(root, 'agents', name, '.claude-config')
+  mkdirSync(cfg, { recursive: true })
+  symlinkSync(shared, join(cfg, 'projects'))
+}
+
+/** The other layout: a genuinely separate tree with its own transcripts. */
+function seedTrulyIsolated(name: string): string {
+  const dir = join(root, 'agents', name, '.claude-config', 'projects', '-some-private-project')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'session.jsonl'), '{}\n')
+  return dir
+}
+
+describe('discoverAgentSources skips a shared root wearing a symlink (card 0c4cf655)', () => {
+  it('a symlinked projects dir contributes NO source -- this is the whole defect', () => {
+    seedSymlinked(SYMLINKED)
+    const found = discoverAgentSources(root, shared).filter((s) => s.agent === SYMLINKED)
+    expect(found).toEqual([])
+  })
+
+  it('CONTROL: a genuinely isolated tree is STILL read, so the fix does not re-open the old hole', () => {
+    // The block being changed exists because a migrated agent used to go silently missing from the
+    // monitor. Without this control, the test above would pass just as well against a version that
+    // dropped the isolated loop entirely -- trading one silent data error for another.
+    const dir = seedTrulyIsolated(ISOLATED)
+    const found = discoverAgentSources(root, shared).filter((s) => s.agent === ISOLATED)
+    expect(found.map((s) => s.projectDir)).toContain(dir)
+  })
+
+  it('the two layouts side by side: one is skipped, the other is not', () => {
+    seedSymlinked(SYMLINKED)
+    const dir = seedTrulyIsolated(ISOLATED)
+    const sources = discoverAgentSources(root, shared)
+    expect(sources.filter((s) => s.agent === SYMLINKED)).toEqual([])
+    expect(sources.filter((s) => s.agent === ISOLATED).map((s) => s.projectDir)).toEqual([dir])
+  })
+
+  it('the shared root itself is still walked exactly once, with per-directory attribution', () => {
+    // The skip must remove the DUPLICATE reading, not the original one. The encoded directory name
+    // under the shared root names its owner, and that attribution is what the monitor reports.
+    seedSymlinked(SYMLINKED)
+    const sources = discoverAgentSources(root, shared)
+    const fromShared = sources.filter((s) => s.projectDir.startsWith(shared))
+    expect(fromShared).toHaveLength(1)
+    expect(fromShared[0]!.agent).toBe('someone')
+  })
+
+  it('THE DUPLICATION ITSELF: N symlinked agents produce N-1 fewer readings of the same tree', () => {
+    // Stated as the quantity that actually went wrong, not as a boolean. Before the fix each of
+    // these agents contributed its own full copy of the shared tree; that is the 90% in the header.
+    seedSymlinked(SYMLINKED)
+    seedSymlinked(ISOLATED)
+    const readings = discoverAgentSources(root, shared).filter((s) => s.projectDir.startsWith(shared))
+    expect(readings).toHaveLength(1)
+  })
+})
+
+// Card 0333ab9f: the root-level guard catches a projects/ dir that IS the shared root; this
+// describe covers the sub-entry case -- a genuinely isolated projects/ dir that contains ONE
+// entry that is a symlink pointing at a project directory inside the shared root.
+//
+// Without the per-entry realpath check that card added, discoverAgentSources returns that
+// symlinked project dir attributed to the isolated agent, which is wrong: the shared-root walk
+// already counted it under the correct per-directory name ('someone' here, not ISOLATED).
+//
+// The L2 control (genuinely isolated tree is still read) is the companion guard: a "skip every
+// symlink inside the isolated tree" fix would pass L3 while re-opening the original silent-
+// data-loss hole, so both must stay green.
+describe('discoverAgentSources skips a per-entry symlink that resolves into the shared tree (card 0333ab9f, L3)', () => {
+  it('L3: a symlinked entry inside an isolated projects/ dir is skipped (attribution error WITHOUT fix)', () => {
+    // Set up ISOLATED with one real private project AND one entry symlinked to a shared dir.
+    const isolatedCfg = join(root, 'agents', ISOLATED, '.claude-config')
+    const isolatedProjects = join(isolatedCfg, 'projects')
+    mkdirSync(isolatedProjects, { recursive: true })
+
+    const privateDir = join(isolatedProjects, '-some-private-project')
+    mkdirSync(privateDir, { recursive: true })
+    writeFileSync(join(privateDir, 'session.jsonl'), '{}\n')
+
+    // The shared root already has '-home-neon-marveen-agents-someone' from beforeEach.
+    // Symlink that exact subdirectory into the isolated tree.
+    const sharedEntry = join(shared, '-home-neon-marveen-agents-someone')
+    const symlinkEntry = join(isolatedProjects, '-home-neon-marveen-agents-someone')
+    symlinkSync(sharedEntry, symlinkEntry)
+
+    const sources = discoverAgentSources(root, shared).filter((s) => s.agent === ISOLATED)
+    // The real private project must still appear (L2 control: isolated data is kept).
+    expect(sources.map((s) => s.projectDir)).toContain(privateDir)
+    // The symlinked entry must NOT appear: it resolves into the shared tree and was already
+    // attributed to 'someone' by the shared-root walk.
+    expect(sources.map((s) => s.projectDir)).not.toContain(symlinkEntry)
+  })
+
+  it('L2 CONTROL: a genuinely isolated entry is kept (no over-aggressive skip)', () => {
+    // A "skip every symlink inside the isolated tree" fix would pass L3 above but fail here.
+    // Without this control the regression-guard has a blind spot.
+    const isolatedCfg = join(root, 'agents', ISOLATED, '.claude-config')
+    const isolatedProjects = join(isolatedCfg, 'projects')
+    const privateDir = join(isolatedProjects, '-some-private-project')
+    mkdirSync(privateDir, { recursive: true })
+    writeFileSync(join(privateDir, 'session.jsonl'), '{}\n')
+
+    const sources = discoverAgentSources(root, shared).filter((s) => s.agent === ISOLATED)
+    expect(sources.map((s) => s.projectDir)).toContain(privateDir)
+  })
+})
+
+describe('resolvesToSharedProjectsRoot', () => {
+  it('sees through a symlink, which string comparison cannot', () => {
+    const link = join(root, 'link-to-shared')
+    symlinkSync(shared, link)
+    expect(link).not.toBe(shared) // the paths differ as strings...
+    expect(resolvesToSharedProjectsRoot(link, shared)).toBe(true) // ...and name one tree
+  })
+
+  it('says false for a genuinely separate directory', () => {
+    const other = join(root, 'somewhere-else')
+    mkdirSync(other, { recursive: true })
+    expect(resolvesToSharedProjectsRoot(other, shared)).toBe(false)
+  })
+
+  it('fails toward TREATING IT AS ISOLATED when a path cannot be resolved', () => {
+    // Direction matters. False here means "keep reading this dir": a directory we cannot stat is
+    // one whose transcripts we should still try to collect. True would silently drop an agent's
+    // usage instead, which is the failure this whole area already had once.
+    //
+    // The dedup key now omits `agent` (card b774f057): idx_token_usage_dedup is
+    // (session_id, timestamp, input_tokens, output_tokens). A session_id is single-agent,
+    // so two agents with the same key is a bug, not a legitimate row -- the index now
+    // catches that structurally.
+    expect(resolvesToSharedProjectsRoot(join(root, 'does-not-exist'), shared)).toBe(false)
+    expect(resolvesToSharedProjectsRoot(shared, join(root, 'does-not-exist'))).toBe(false)
+  })
+})

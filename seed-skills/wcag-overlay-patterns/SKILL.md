@@ -1,6 +1,7 @@
 ---
 name: wcag-overlay-patterns
 description: Build WCAG-AA accessible overlay components -- modal dialogs, bottom sheets, drawer panels, lightboxes -- with correct focus trap, aria-modal, role=dialog, Escape-to-close, safe-area-inset, and keyboard navigation. Also covers: WCAG fail-closed contrast gate for white-label runtime theming (useBrandingLoader pattern). Triggers: "modal", "dialog", "bottom sheet", "drawer", "lightbox", "overlay", "focus trap", "aria-modal", "accessible popup", "theming", "white-label", "WCAG contrast gate", "branding".
+version: "1.0.0"
 ---
 
 # WCAG Overlay Patterns

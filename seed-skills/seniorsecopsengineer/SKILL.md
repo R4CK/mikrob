@@ -1,6 +1,8 @@
 ---
 name: seniorsecopsengineer
 description: Complete Security Operations toolkit for vulnerability management, compliance verification, secure coding, and security automation. Use this skill whenever the user mentions security, secops, vulnerability scanning, CVEs, dependency audits, hardcoded secrets, SQL injection, XSS, command injection, path traversal, compliance (SOC 2, PCI-DSS, HIPAA, GDPR), secure coding review, security audit, CI/CD security gates, incident response, CVE triage, OWASP Top 10, secret scanning (gitleaks, detect-secrets, truffleHog), or wants to harden a codebase before shipping. Triggers on "security review", "scan for vulnerabilities", "check compliance", "audit the code for secrets", "biztonsagi audit", "sebezhetoseg", "van-e hardcoded secret".
+version: "1.0.0"
+related_skills: [cloud-container-security, defensive-security-analysis, incident-response, skill-security-auditor, supplychainsecurity, threat-modeling, white-hat-security-testing]
 ---
 
 # Senior SecOps Engineer

@@ -193,6 +193,65 @@ describe('agent-worktree-deps.sh', () => {
   })
 })
 
+// Cybersec finding on card 65cc3860 (comment on 9ed6971f): on the ABSENT branch there is no
+// `[ -L "$NM" ]` re-check before the final swap, unlike the symlink branch (line 120 above). If a
+// concurrent, idempotent bootstrap (agent-worktree-marveen.sh, run by something else against the
+// same tree) recreates the shared symlink DURING the ~9s copy, the final `mv "$STAGE" "$NM"`
+// follows the now-existing symlink-to-directory and nests STAGE inside the shared main clone's
+// node_modules instead of replacing it -- exit 0, and the "REAL directory now at" message prints
+// as if nothing were wrong.
+//
+// `-T` does NOT turn the race into a clean replace -- `mv` refuses to put a directory where a
+// non-directory (the symlink) sits, and exits non-zero instead. That is still the fix: silent
+// success that corrupts the SHARED tree becomes a loud failure that corrupts nothing. These
+// tests demonstrate the underlying `mv` mechanism directly (same style as "the wedge, before and
+// after" above) rather than trying to win a real race against the script's own timing, which
+// would make the test flaky by construction.
+describe('the final mv, before and after -T (card 9ed6971f)', () => {
+  it('TODAY-WOULD-BE-BUG: a bare mv onto a symlink-to-directory silently nests STAGE inside the shared target', () => {
+    const shared = join(dir, 'shared-target')
+    mkdirSync(shared, { recursive: true })
+    const stage = join(dir, 'stage')
+    mkdirSync(stage, { recursive: true })
+    writeFileSync(join(stage, 'marker.js'), 'x')
+    const nm = join(dir, 'node_modules')
+    execFileSync('ln', ['-s', shared, nm])
+
+    execFileSync('mv', [stage, nm])
+
+    // The bug, reproduced: STAGE landed INSIDE the shared directory the symlink pointed at, not
+    // in place of it -- silently, exit 0. The symlink itself is untouched -- exactly the
+    // silent-success-that-corrupts-shared-ground shape.
+    expect(lstatSync(nm).isSymbolicLink()).toBe(true)
+    expect(existsSync(join(shared, 'stage', 'marker.js'))).toBe(true)
+    expect(existsSync(join(dir, 'stage'))).toBe(false)
+  })
+
+  it('AFTER: mv -T refuses instead of nesting -- loud failure, not silent corruption', () => {
+    const shared = join(dir, 'shared-target')
+    mkdirSync(shared, { recursive: true })
+    const stage = join(dir, 'stage')
+    mkdirSync(stage, { recursive: true })
+    writeFileSync(join(stage, 'marker.js'), 'x')
+    const nm = join(dir, 'node_modules')
+    execFileSync('ln', ['-s', shared, nm])
+
+    expect(() => execFileSync('mv', ['-T', stage, nm], { stdio: 'ignore' })).toThrow()
+
+    // Nothing moved: the shared target the symlink points at is exactly as it was...
+    expect(readdirSync(shared)).toEqual([])
+    // ...the symlink itself is untouched...
+    expect(lstatSync(nm).isSymbolicLink()).toBe(true)
+    // ...and STAGE is still sitting right where it was, ready for the caller to clean up or retry.
+    expect(existsSync(join(stage, 'marker.js'))).toBe(true)
+  })
+
+  it('the script itself carries -T on the final swap, not just in this demonstration', () => {
+    const src = execFileSync('bash', ['-c', `grep -n '^mv ' "${DEPS_SH}"`], { encoding: 'utf-8' })
+    expect(src).toMatch(/^\d+:mv -T "\$STAGE" "\$NM"$/m)
+  })
+})
+
 describe('agent-worktree-marveen.sh keeps the fast path fast', () => {
   it('still links by default -- the new shape is opt-in, not a sweep over live worktrees', () => {
     const r = run(WORKTREE_SH, ['agentx'])

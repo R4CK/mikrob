@@ -138,6 +138,7 @@ describe('template substitution for a non-marveen identity', () => {
     botName: AGENT_DISPLAY,
     ownerName: OWNER,
     webPort: 3420,
+    chatId: '1',
   }
 
   it('substitutes every identity placeholder with the non-marveen values', () => {

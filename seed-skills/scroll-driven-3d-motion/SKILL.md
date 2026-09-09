@@ -1,6 +1,8 @@
 ---
 name: scroll-driven-3d-motion
 description: Build creative, high-end motion and 3D web experiences -- scroll storytelling, Three.js/WebGL scenes, GSAP + ScrollTrigger scrubbed timelines, camera paths, fly-throughs and room/site walkthroughs, plus modern CSS animation (scroll-driven animations, View Transitions, clip-path/mask reveals). Use for landing/marketing/onboarding/hero and product showcases where wow-factor matters. Triggers: "scroll animation", "3D", "Three.js", "WebGL", "GSAP", "ScrollTrigger", "fly-through", "walkthrough", "scroll storytelling", "parallax", "camera path", "make it creative", "legyen kreatív", "látványos", "animáció".
+version: "1.0.0"
+related_skills: [d3-data-visualization, frontend-design-research, ui-visual-design-styles]
 ---
 
 # Scroll-Driven 3D & Creative Motion

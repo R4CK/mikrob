@@ -1,6 +1,8 @@
 ---
 name: skill-management
 description: List, inspect, patch, or delete skills from ~/.claude/skills/. Use when the user asks about available skills, wants to modify an existing skill, or when a retrospective proposes skill changes. Trigger on "/skills" command or skill-related retrospective actions.
+version: "1.0.0"
+related_skills: [github-pr-rebase-merge, retrospective]
 ---
 
 # Skill Management -- CRUD for the Skill Library
@@ -69,6 +71,9 @@ Interactive skill creation workflow:
 ---
 name: {name}
 description: {one-line, specific about triggers}
+version: "1.0.0"
+related_skills: [{comma-separated names this skill explicitly references or is typically chained
+  with -- omit the whole line if there are none; see docs/skill-factory.md}]
 ---
 
 # {Title}
@@ -93,6 +98,9 @@ Rules:
 - Large reference material goes in `references/` subdirectory
 - Description must be specific enough for L0 matching (not "does stuff")
 - Procedure steps must be concrete and executable
+- New skill starts at `version: "1.0.0"`; add `related_skills` only where another skill is
+  explicitly named in the body or is a typical next/previous step (see docs/skill-factory.md) --
+  omit the line entirely otherwise, do not write an empty `related_skills: []`
 
 ### action=patch
 
@@ -108,6 +116,9 @@ Rules:
 - Never rewrite the entire skill for a small change
 - Preserve existing pitfalls and procedure steps unless explicitly removing
 - If the patch changes triggers, update the description in frontmatter too
+- If the patch changes the PROCEDURE or triggers in a way another agent should notice (not a pure
+  formatting fix), bump `version` per docs/skill-factory.md's rule (patch/minor/major); a skill
+  with no `version` field yet gets one added as part of the same patch, starting at `"1.0.0"`
 
 ### action=delete
 
@@ -176,6 +187,19 @@ if [ -f ~/.claude/skills/.skill-index.md ]; then
 fi
 ```
 
+5. **Missing version** (card eb70cb13): own (non-vendored, non `sp-*`) skills without a `version`
+   field -- advisory only, not auto-patched
+```bash
+for dir in ~/.claude/skills/*/; do
+  name=$(basename "$dir")
+  case "$name" in sp-*) continue ;; esac
+  skill_file="$dir/SKILL.md"
+  if [ -f "$skill_file" ] && ! grep -q '^version:' "$skill_file"; then
+    echo "NO VERSION: $name"
+  fi
+done
+```
+
 Present findings as:
 ```
 ## Skill Audit Results
@@ -188,6 +212,7 @@ Disk usage: {size}
 - [DUPLICATE] skill-a / skill-b: overlapping trigger "when deploying..."
 - [OVERSIZED] skill-name: 720 lines (max 500)
 - [UNINDEXED] skill-name: exists on disk but not in .skill-index.md
+- [NO VERSION] skill-name: missing `version` frontmatter field (own skill, not vendored)
 
 ### Recommended Actions
 1. DELETE skill-a (superseded by skill-b)

@@ -1,6 +1,7 @@
 ---
 name: social-media
 description: Multi-platform social media content strategy and post creation — LinkedIn, Twitter/X, Instagram, TikTok, Facebook. Hook formulas, content pillars, repurposing rendszer. Triggerek: "social media poszt", "LinkedIn/Twitter tartalom", "közösségi média stratégia", "írj posztot", "social content".
+version: "1.0.0"
 ---
 # Social Media Content
 

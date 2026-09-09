@@ -247,6 +247,7 @@ try:
     _write("package.json", '{"version":"1.0.2"}\n')
     _g("add", "-A"); _g("commit", "-qm", "chore(version): bump to 1.0.2+mikrob.1 (marveen-land, selftest)")
     BUMP = _rev()
+    BUMP_PARENT = _rev(BUMP + "^")
 
     _write("DECISIONS.md", "- first\n- someone else's entry\n- a docs-only card\n")
     _g("add", "-A"); _g("commit", "-qm", "docs(decisions): a docs-only card")
@@ -305,6 +306,33 @@ try:
     case("CONTROL: a delivery with REAL files that simply did not differ keeps its pass, even "
          "though the churn files moved",
          [c("backend", R % WORK), c("qa", V % LAND)], "AGREE", env=ENV)
+
+    # --- card cb8ef4f5: the EQUAL-sha branch never asked content_verdict's question at all --------
+    # Everyone -- the REVIEW and the gate -- can name the SAME bump sha, which short-circuits straight
+    # to AGREE before content_verdict (and its churn-subtraction fix above) ever runs. This is the
+    # other door into the identical 74aa46a5 hazard: nobody can say what a version-bump commit was
+    # reviewed for, whether the shas agree with each other or with a declared one.
+    case("EQUAL shas that are BOTH a version bump: not AGREE, even though every side names it",
+         [c("backend", R % BUMP), c("qa", V % BUMP)], "BUMPSHA", env=ENV)
+    n += 1
+    _out = run([c("backend", R % BUMP), c("qa", V % BUMP)], None, None, (), ENV)
+    _ok = "version-bump" in _out and "0711c19b" in _out and BUMP_PARENT in _out
+    print("%s %-9s <- %-9s %s" % ("OK  " if _ok else "FAIL", "says-why+hint",
+                                  "says-why+hint" if _ok else "bare",
+                                  "...and it names the cause AND hints the real landing merge "
+                                  "(the bump's own parent)"))
+    if not _ok:
+        failures.append(("BUMPSHA must name the cause and the parent hint", "version-bump + 0711c19b + " + BUMP_PARENT, _out))
+
+    case("the SAME equal-bump-sha hazard reached through --expect instead of a REVIEW",
+         [c("qa", V % BUMP)], "BUMPSHA", expect_sha=BUMP, env=ENV)
+
+    case("CONTROL: equal shas on a GENUINE work commit, same real repo, still AGREE",
+         [c("backend", R % WORK), c("qa", V % WORK)], "AGREE", env=ENV)
+
+    case("CONTROL: an unresolvable equal sha (no clone can confirm it is a bump) stays AGREE, "
+         "not a guess",
+         [c("backend", R % "bbbb2222"), c("qa", V % "bbbb2222")], "AGREE", env=ENV)
 finally:
     shutil.rmtree(_TMP, ignore_errors=True)
 
@@ -364,6 +392,29 @@ case("a sibling PASS after the other sibling's FAIL is a re-review, and closes",
 case("a sibling FAIL after the other sibling's PASS still refuses the closure",
      [c("qa2", "QA2 PASS\nGate-SHA: bbbb2222"), c("qa", "QA FAIL\nGate-SHA: bbbb2222"),
       c("cybersec", S % "bbbb2222")], "FAILED", "qa,cybersec")
+# ...and the case NEITHER of the two above covers, which was AGREE until card c52e2823 measured it:
+# the sibling PASS comes last on the SAME sha. "Re-review" is what makes the different-sha case safe
+# -- there the refusal is about code that is gone. On ONE sha there is nothing to re-review: two gate
+# agents simply disagree about the same commit, and rule 4a reads AGREE as "safe to close".
+case("a sibling PASS on the SAME sha does not bury the other sibling's FAIL",
+     [c("qa", "QA FAIL\nGate-SHA: bbbb2222"), c("qa2", "QA2 PASS\nGate-SHA: bbbb2222"),
+      c("cybersec", S % "bbbb2222")], "FAILED", "qa,cybersec")
+# A refusal that names no commit cannot be shown to be superseded -- and it cannot be shown to still
+# stand either. This answered FAILED until card c52e2823 round 2 (MikroB's ruling 21139, folding in
+# card e4b7096e): FAILED asserts that the sibling PASS is a disagreement about this same commit,
+# when the other reading -- a re-review of a commit that is gone -- fits the same evidence. With no
+# sha on either side the tool has no way to choose, so it names the ambiguity instead of guessing.
+case("a refusal with NO Gate-SHA is not superseded by a sibling's PASS, and cannot be judged either",
+     [c("qa", "QA FAIL\nthe fixture carries no sha"), c("qa2", "QA2 PASS\nGate-SHA: bbbb2222"),
+      c("cybersec", S % "bbbb2222")], "UNSUPERSEDED", "qa,cybersec")
+# CONTROL. Measured, so it says what it actually catches rather than what it sounds like: this case
+# goes red when standing refusals are keyed by the ROLE instead of by the AUTHOR -- the shape where a
+# gate can never clear its own FAIL and every self-correction refuses forever. The OTHER over-block
+# ("block every standing refusal, sha be damned") is caught by the different-sha re-review case
+# above, not by this one. Two mutations, two different cases; neither covers both.
+case("CONTROL: a gate that re-checks ITSELF on the same sha still closes",
+     [c("qa", "QA FAIL\nGate-SHA: bbbb2222"), c("qa", "QA PASS\nGate-SHA: bbbb2222"),
+      c("cybersec", S % "bbbb2222")], "AGREE", "qa,cybersec")
 case("the siblings are ONE gate: qa2 alone does not satisfy a designated cybersec",
      [c("qa2", "QA2 PASS\nGate-SHA: bbbb2222")], "MISSING", "qa,cybersec")
 # Future siblings are recognised by shape rather than by an enumerated list, so CYBERSEC2/CYBERED2
@@ -388,6 +439,297 @@ print("%s %-9s <- %-9s %s" % ("OK  " if ok else "FAIL", "exit 0", "exit %d" % p.
                               "always exits 0 -- the caller decides"))
 if not ok:
     failures.append(("exit code", "0", str(p.returncode)))
+
+# --- AUTHOR ATTRIBUTION (card 44849954, Cybered's finding) -------------------------------------
+# The tool authenticated a verdict by its TEXT and never by its AUTHOR. Comment authorship on the
+# kanban API comes from the request body under one shared token, so the shape check was the only
+# thing between a maker and their own sign-off.
+SHA_A = "a" * 40
+SHA_B = "b" * 40
+
+case("THE DEFECT: a maker's own 'QA PASS' with no verdict from QA is not a sign-off",
+     [c("backend2", "REVIEW: kesz\nGate-SHA: " + SHA_A),
+      c("backend2", V % SHA_A),
+      c("cybersec", S % SHA_A)],
+     "UNVERIFIED-AUTHOR", gates="qa,cybersec")
+
+case("FALLBACK: a relayed PASS defers to the gate's OWN earlier verdict, and recovers its sha",
+     [c("qa", V % SHA_A),
+      c("cybersec", S % SHA_A),
+      c("mikrob", "QA PASS -- osszefoglalo, a gate mar zoldre tette")],   # no Gate-SHA of its own
+     "AGREE", gates="qa,cybersec", expect_sha=SHA_A)
+
+# THE ASYMMETRY, and the reason this is not a plain "prefer the gate's own comment". Without it,
+# preferring QA's older PASS would close a card over a stated refusal -- worse than the bug fixed.
+# The asymmetry SURVIVES card c52e2823 round 2 unchanged in its own direction: the answer is still
+# not AGREE and the card still does not close. What changed is the word. A relay carrying no sha is
+# read as unjudgeable rather than as a refusal, because on this board the same shape is far more
+# often an acknowledgement of a refusal the gate has already answered (Cybersec's live count, 21176:
+# 18 non-role verdict-shaped comments, 11 of them refusals, on 9 cards).
+case("ASYMMETRY: a relayed FAIL is still not overridden by the gate's own earlier PASS",
+     [c("qa", V % SHA_A),
+      c("cybersec", S % SHA_A),
+      c("mikrob", "QA FAIL -- ujranyitva, a gate visszadobta")],
+     "UNSUPERSEDED", gates="qa,cybersec")
+
+case("an unattributed FAIL still reads as FAILED, not UNVERIFIED-AUTHOR",
+     [c("backend2", "QA FAIL\nGate-SHA: " + SHA_A), c("cybersec", S % SHA_A)],
+     "FAILED", gates="qa,cybersec")
+
+# The author fold MIRRORS the verdict-word fold (the note on GATES). Applying it to one side only
+# is its own bug: measured, an unfolded author check calls 245 legitimate QA2 verdicts foreign.
+case("SIBLING: qa2 speaks for the QA gate, exactly as the verdict word QA2 does",
+     [c("qa2", V % SHA_A), c("cybersec", S % SHA_A)],
+     "AGREE", gates="qa,cybersec", expect_sha=SHA_A)
+
+case("FUTURE SIBLING: cybersec2 needs no edit here -- trailing digits are stripped by rule",
+     [c("qa", V % SHA_A), c("cybersec2", S % SHA_A)],
+     "AGREE", gates="qa,cybersec", expect_sha=SHA_A)
+
+case("ALIAS: the subagent_type name qa-engineer is the same actor as qa",
+     [c("qa-engineer", V % SHA_A), c("cybersec", S % SHA_A)],
+     "AGREE", gates="qa,cybersec", expect_sha=SHA_A)
+
+case("CONTROL: an ordinary pair of gate-authored verdicts is untouched",
+     [c("qa", V % SHA_A), c("cybersec", S % SHA_A)],
+     "AGREE", gates="qa,cybersec", expect_sha=SHA_A)
+
+case("CONTROL: attribution does not mask a real sha DISAGREEMENT between two gates",
+     [c("qa", V % SHA_A), c("cybersec", S % SHA_B)],
+     "DISAGREE", gates="qa,cybersec")
+
+case("CONTROL: a gate that never posted at all is MISSING, not UNVERIFIED-AUTHOR",
+     [c("qa", V % SHA_A)],
+     "MISSING", gates="qa,cybersec")
+
+# --- WHO MAY BLOCK, AND WHEN IT CANNOT BE JUDGED (card c52e2823, round 2) ----------------------
+# QA measured the regression the first round shipped (21135) and Cybersec reproduced it independently
+# and wider (21176): the standing-refusal rule read EVERY author, so any sentence of verdict shape
+# from anyone stood in permanently for a refusal. Two failure directions have to be pinned here, and
+# a suite that pins only one is green while the check is absent -- so every author class below gets
+# BOTH: a real refusal that must block, and a relay/quote that must not.
+#
+# The three author classes exist because the population differs, not for symmetry: the coordinator's
+# "<GATE> <VERDICT> ELFOGADVA" is the routine fleet shape, and Cybersec measured a BUILDER's quote
+# ("QA FAIL elfogadva, javitottam") doing the same thing on the same run.
+RELAY = "CYBERED NO-GO ELFOGADVA (21038), vissza in_progress-be."
+QUOTE = "QA FAIL elfogadva, javitottam."
+
+# THE MEASURED DEFECT (QA 21135, Cybersec case A). The gate itself refused, was answered, and passed
+# on the delivered sha. Only the coordinator's acknowledgement in between made this FAILED.
+case("a coordinator's acknowledgement BEFORE the gate's own later GO does not block",
+     [c("cybered", "CYBERED NO-GO\nGate-SHA: " + SHA_A), c("mikrob", RELAY),
+      c("cybered", "CYBERED GO\nGate-SHA: " + SHA_B), c("qa", V % SHA_B)],
+     "AGREE", gates="qa,cybered", expect_sha=SHA_B)
+# CONTROL for it: the same history with the acknowledgement removed. Without this, the case above
+# passing would not tell us the acknowledgement was the cause.
+case("CONTROL: the same history without the acknowledgement -- the relay was the only difference",
+     [c("cybered", "CYBERED NO-GO\nGate-SHA: " + SHA_A),
+      c("cybered", "CYBERED GO\nGate-SHA: " + SHA_B), c("qa", V % SHA_B)],
+     "AGREE", gates="qa,cybered", expect_sha=SHA_B)
+# THE OTHER DIRECTION, and the reason the fix is not simply "ignore non-gate authors": if the relay
+# is the LAST word on that gate, the gate never answered it, and dropping it would close the card
+# over a possibly-open refusal. Cybersec's case C, which also shows why time order is load-bearing:
+# the two cases above and below differ ONLY in where the same line sits.
+case("...but the SAME acknowledgement AFTER the gate's GO cannot be judged, and does not close",
+     [c("cybered", "CYBERED NO-GO\nGate-SHA: " + SHA_A),
+      c("cybered", "CYBERED GO\nGate-SHA: " + SHA_B), c("qa", V % SHA_B), c("mikrob", RELAY)],
+     "UNSUPERSEDED", gates="qa,cybered", expect_sha=SHA_B)
+
+# THE BUILDER CLASS, measured by Cybersec in the same run (case G) and NOT covered by the
+# coordinator cases: the fix filters by ROLE, not by name, so a maker's quote behaves identically.
+case("a builder's quote of an old FAIL before the gate's PASS does not block",
+     [c("backend", QUOTE), c("qa", V % SHA_A), c("cybersec", S % SHA_A)],
+     "AGREE", gates="qa,cybersec", expect_sha=SHA_A)
+case("...and after the gate's PASS it is unjudgeable, exactly as the coordinator's is",
+     [c("qa", V % SHA_A), c("backend", QUOTE), c("cybersec", S % SHA_A)],
+     "UNSUPERSEDED", gates="qa,cybersec", expect_sha=SHA_A)
+
+# FAIL-CLOSED PRECONDITIONS. These two are what stop the new word from becoming a way through, and
+# each removes a different half of the reasoning:
+#   - nothing attributable to weigh the relay against -> it keeps blocking, unchanged;
+#   - the refusal names a commit -> it is judgeable, so it is judged, unchanged.
+case("FAIL-CLOSED: a relayed refusal with no verdict from that gate at all still blocks",
+     [c("mikrob", "QA FAIL -- a gate visszadobta"), c("cybersec", S % SHA_A)],
+     "FAILED", gates="qa,cybersec")
+case("FAIL-CLOSED: a non-gate refusal that NAMES a sha is judgeable, and still blocks",
+     [c("backend2", "QA FAIL\nGate-SHA: " + SHA_A), c("cybersec", S % SHA_A)],
+     "FAILED", gates="qa,cybersec")
+# ...and the same WITH the gate's own PASS present, which is what actually exercises the sha guard.
+# Measured: without this case, dropping `v[2] is not None` from the relay rule leaves the suite
+# green -- the case above cannot catch it, because there the rule is already stopped one step
+# earlier by having no gate verdict to fall back to. Two guards, two cases; neither covers both.
+case("FAIL-CLOSED: a non-gate refusal naming the PASSED sha blocks even with the gate's PASS present",
+     [c("qa", V % SHA_A), c("cybersec", S % SHA_A),
+      c("backend2", "QA FAIL\nGate-SHA: " + SHA_A)],
+     "FAILED", gates="qa,cybersec")
+# THE GATE'S OWN REFUSAL IS NEVER UNJUDGEABLE, whatever it omits. A sha makes a refusal checkable by
+# a stranger; the gate's own name makes it checkable by asking the gate. Only the second is missing
+# in the relay case, so the new word must not reach here. This case is deliberately kept even though
+# the code carries no line dedicated to it: the property is delivered by the fallback precondition
+# (a gate's own last refusal IS its role's last verdict, so there is no passing verdict to fall back
+# to), and a behaviour that holds only as a side effect is exactly the kind that a later, innocent
+# refactor drops.
+case("a gate's OWN later refusal blocks even with no Gate-SHA on it",
+     [c("qa", V % SHA_A), c("cybersec", S % SHA_A), c("qa", "QA FAIL\nujranyitva, nincs sha")],
+     "FAILED", gates="qa,cybersec")
+# PRECEDENCE. A readable refusal outranks an unreadable one: a card carrying both is bounced on the
+# one a human can act on, not parked.
+case("a real refusal on one gate outranks an unjudgeable one on another",
+     [c("qa", V % SHA_A), c("mikrob", "QA FAIL -- relay, no sha"),
+      c("cybersec", "CYBERSEC NO-GO\nGate-SHA: " + SHA_A)],
+     "FAILED", gates="qa,cybersec")
+
+# --- MULTI-SHA `Gate-SHA:` LINES COMPARE BY SET, NOT BY FIRST TOKEN (card f53ef8e4) -------------
+# Rule 4b lets one Gate-SHA line name several commits. Cybersec measured the real board: 16 of 93
+# cards using this shape got a false DISAGREE because the old code kept only the FIRST token, and
+# the sha lists on this board are written OLDEST-first, so "first" is systematically the PRE-FIX
+# commit -- exactly the sha this tool exists to catch a gate NOT re-reviewing. Cases below are the
+# three concrete ones Cybersec named (f00b3a7f, 7d45ecbb, 54fd9c02) plus the negative control that
+# proves set-intersection did not just start saying AGREE to everything.
+case("cumulative list vs delta list, same closing pair (real case f00b3a7f)",
+     [c("qa", V % "77c91c28, 3893a9a7, 510ca707, 07e9dbfb, e2e5ce48, bcda4a1e, 1d220756, b9191faf"),
+      c("cybersec", S % "1d220756, b9191faf"), c("cybered", D % "1d220756, b9191faf")],
+     "AGREE", gates="qa,cybersec,cybered")
+case("cumulative list vs delta list, same closing sha (real case 7d45ecbb)",
+     [c("qa", V % "ba35cb26, 8c587e08"), c("cybersec", S % "8c587e08")],
+     "AGREE", gates="qa,cybersec")
+case("BYTE-IDENTICAL two-sha lists in REVERSED order -- 'last token' would still fail this one "
+     "(real case 54fd9c02, the case that tells set-intersection apart from 'take the last sha')",
+     [c("cybersec", S % "ac307faf, 24d5778d"), c("cybered", D % "24d5778d, ac307faf")],
+     "AGREE", gates="cybersec,cybered")
+case("CONTROL: genuinely disjoint sha lists still DISAGREE -- the fix does not just say AGREE to "
+     "everything (real case edb721ec)",
+     [c("qa", V % "71fc1576, 94ea791b"), c("cybersec", S % "71fc1576, 94ea791b"),
+      c("cybered", D % "21834b10, bb8208a4")],
+     "DISAGREE", gates="qa,cybersec,cybered")
+
+# --- A CARD ID EMBEDDED IN A BRANCH NAME IS NOT A SECOND SHA (card f53ef8e4, real case 4a6c47f0) -
+# Ported filter, not re-derived: src/web/kanban-gate-completeness-guard.ts's extractGateShas()
+# already solved this for a sibling consumer (card a20f0aa7, incident 5bc8f740). A card id is 8 hex
+# chars -- indistinguishable in SHAPE from a short sha -- and this fleet's own citation habit names
+# the branch in parentheses after the sha, so a naive "collect every hex run on the line" scan picks
+# the card id up as a second commit.
+case("a card id inside a branch-name annotation is not a cited sha",
+     [c("cybersec", "CYBERSEC GO\nGate-SHA: d49e9c7af5d5b976b0a328e11cffc95b24b06965 "
+                    "(CleanCore, ág feat/tenant-auth-ip-coarsen-4a6c47f0, NEM landolt main-re)"),
+      c("qa", V % "d49e9c7af5d5b976b0a328e11cffc95b24b06965")],
+     "AGREE", gates="qa,cybersec")
+case("...and the same shape STILL disagrees when the real shas genuinely differ -- the path filter "
+     "does not accidentally widen agreement",
+     [c("cybersec", "CYBERSEC GO\nGate-SHA: aaaa1111 (CleanCore, ág fix/some-card-bbbb2222, "
+                    "NEM landolt)"),
+      c("qa", V % "cccc3333")],
+     "DISAGREE", gates="qa,cybersec")
+case("a merge-base / parent marker beside the real sha is not a cited sha (real incident a20f0aa7)",
+     [c("cybersec", "CYBERSEC GO\nGate-SHA: 8b8377cf (CleanCore, merge-base 0d5ebb6c, NEM landolt)"),
+      c("qa", V % "8b8377cf")],
+     "AGREE", gates="qa,cybersec")
+case("...and it is blanked only where it is MARKED as a parent -- a gate that genuinely verdicted "
+     "on the ancestor commit still disagrees, it is not silently folded into the child's citation",
+     [c("cybersec", "CYBERSEC GO\nGate-SHA: 8b8377cf (CleanCore, merge-base 0d5ebb6c, NEM landolt)"),
+      c("qa", V % "0d5ebb6c")],
+     "DISAGREE", gates="qa,cybersec")
+
+# --- A NON-REVIEW COMMENT CAN DECLARE A NEWER, UNGATED COMMIT (card 3e4dc2c3, Cybered) -----------
+# Real shape: REVIEW declares X, both gates pass X (default would be AGREE). Then the BUILDER posts
+# a later comment that is neither a REVIEW nor a verdict -- "<finding> JAVITVA -- delta-gate kell" --
+# naming a newer commit Y. No gate ever verdicts on Y. The default (REVIEW-sourced) answer must not
+# stay AGREE on X: nobody who matters has looked at Y.
+case("a builder's post-REVIEW, non-REVIEW comment names a newer sha no gate ever verdicted on",
+     [c("backend", "REVIEW\nGate-SHA: 58c498f2"), c("qa", V % "58c498f2"), c("cybersec", S % "58c498f2"),
+      c("backend", "F-1 JAVITVA -- delta-gate kell\nGate-SHA: 1c5a41b4")],
+     "STALE", gates="qa,cybersec")
+case("CONTROL: the same history, but a gate DID delta-gate the newer sha -- the orphan check no "
+     "longer fires (the sha IS gate-verdicted now), so the ANSWER IS NOT STALE-for-being-undeclared. "
+     "It falls through to the pre-existing stale-REVIEW-pointer path instead (no real clone in this "
+     "harness -> UNRESOLVED): this fix's job is 'was it reviewed at all', not 'does the REVIEW "
+     "comment's own pointer also need updating', which is a separate, pre-existing gap this card "
+     "does not claim to close",
+     [c("backend", "REVIEW\nGate-SHA: 58c498f2"), c("qa", V % "58c498f2"), c("cybersec", S % "58c498f2"),
+      c("backend", "F-1 JAVITVA -- delta-gate kell\nGate-SHA: 1c5a41b4"),
+      c("qa", V % "1c5a41b4"), c("cybersec", S % "1c5a41b4")],
+     "UNRESOLVED", gates="qa,cybersec")
+case("CONTROL: the same history, but the later comment IS a new REVIEW -- the normal declared_shas "
+     "path already covers it, this is not the orphan case",
+     [c("backend", "REVIEW\nGate-SHA: 58c498f2"), c("qa", V % "58c498f2"), c("cybersec", S % "58c498f2"),
+      c("backend", "REVIEW\nGate-SHA: 1c5a41b4"), c("qa", V % "1c5a41b4"), c("cybersec", S % "1c5a41b4")],
+     "AGREE", gates="qa,cybersec")
+case("CONTROL: an explicit --expect on the OLD sha is the caller's own assertion and is not "
+     "second-guessed by the orphan check",
+     [c("backend", "REVIEW\nGate-SHA: 58c498f2"), c("qa", V % "58c498f2"), c("cybersec", S % "58c498f2"),
+      c("backend", "F-1 JAVITVA -- delta-gate kell\nGate-SHA: 1c5a41b4")],
+     "AGREE", gates="qa,cybersec", expect_sha="58c498f2")
+case("CONTROL: --no-expect also bypasses the orphan check -- the caller asked for no comparison at all",
+     [c("backend", "REVIEW\nGate-SHA: 58c498f2"), c("qa", V % "58c498f2"), c("cybersec", S % "58c498f2"),
+      c("backend", "F-1 JAVITVA -- delta-gate kell\nGate-SHA: 1c5a41b4")],
+     "AGREE", gates="qa,cybersec", extra=("--no-expect",))
+case("CONTROL: a post-REVIEW comment with NO Gate-SHA at all is not an orphan -- nothing to flag",
+     [c("backend", "REVIEW\nGate-SHA: 58c498f2"), c("qa", V % "58c498f2"), c("cybersec", S % "58c498f2"),
+      c("backend", "meg dolgozom rajta, nincs uj sha meg")],
+     "AGREE", gates="qa,cybersec")
+
+# --- AN INFERRED GATE SET IS NEVER TRUSTED OVER A STATED ONE, AND NEVER OMITS QA (card 864351a9) --
+# No `gates=` argument below -- every case exercises the INFERRED path (gates=None).
+DES = "MikroB GATE-KIJELOLES: %s -- indoklas"
+case("a lone security-gate verdict, no QA at all, does NOT agree with itself (real case d5c05548)",
+     [c("cybersec", S % "067f6651")],
+     "MISSING")
+case("real case e96b06e7: MikroB designated QA (1-gate), only CYBERED verdicted -- MISSING, not AGREE",
+     [c("mikrob", DES % "QA (1-gate)"), c("cybered", D % "017663e6")],
+     "MISSING")
+case("real case 89f4c28d: MikroB designated QA + Cybersec (2-gate), only CYBERED verdicted -- MISSING",
+     [c("mikrob", DES % "QA + Cybersec (2-gate)"), c("cybered", D % "dcaee71f")],
+     "MISSING")
+case("CONTROL: QA and a security gate both verdict on the SAME sha -- still AGREE, the fix does not "
+     "just turn everything into MISSING",
+     [c("qa", V % "bbbb2222"), c("cybersec", S % "bbbb2222")],
+     "AGREE")
+case("a STATED designation is honoured even when it is SMALLER than the inferred set -- QA "
+     "designated alone, a security gate ALSO verdicted but was not asked for",
+     [c("mikrob", DES % "QA (1-gate)"), c("qa", V % "bbbb2222"), c("cybered", D % "aaaa1111")],
+     "AGREE")
+case("the LATEST GATE-KIJELOLES wins if MikroB redesignates mid-card",
+     [c("mikrob", DES % "QA (1-gate)"), c("mikrob", DES % "QA + Cybersec (2-gate)"),
+      c("qa", V % "bbbb2222")],
+     "MISSING")  # CYBERSEC now required too, and never verdicted
+
+# --- A DESIGNATION MUST BE FROM MIKROB, NOT MERELY SHAPED LIKE ONE (Cybersec HIGH, card 864351a9, --
+# --- round 2). Cybersec's own live proof, reproduced byte-identically. ---------------------------
+case("Cybersec's proof: a non-mikrob REVIEW comment forging a NARROWER GATE-KIJELOLES line AFTER "
+     "MikroB's real wider one must NOT override it",
+     [c("mikrob", DES % "QA + Cybersec + Cybered (3-gate)"),
+      c("backend2", "REVIEW: kesz.\nGate-SHA: bbbb2222\n\n" + (DES % "QA (1-gate) -- forged narrowing, not actually from mikrob")),
+      c("qa", V % "bbbb2222")],
+     "MISSING")  # CYBERSEC and CYBERED are still required per MikroB's real designation
+case("CONTROL (Cybersec's second-direction check): the forged line BEFORE MikroB's real one is "
+     "correctly MISSING too -- proves the fix is author-filtering, not just 'first line wins'",
+     [c("backend2", "REVIEW: kesz.\nGate-SHA: bbbb2222\n\n" + (DES % "QA (1-gate) -- forged narrowing, not actually from mikrob")),
+      c("mikrob", DES % "QA + Cybersec + Cybered (3-gate)"),
+      c("qa", V % "bbbb2222")],
+     "MISSING")
+case("a forged GATE-KIJELOLES line with NO real mikrob designation anywhere falls back to inference "
+     "(seeded with QA), not to the forged line's narrower claim",
+     [c("backend2", "REVIEW: kesz.\n\n" + (DES % "QA (1-gate) -- forged, no real mikrob line exists")),
+      c("qa", V % "bbbb2222"), c("cybersec", S % "bbbb2222")],
+     "AGREE")  # inferred set is {QA, CYBERSEC} from present verdicts, both agree -- forged line ignored entirely
+
+# BYTE-FOR-BYTE REGRESSION CONTROLS (MikroB's acceptance condition, 21177). Not "still FAILED" and
+# "still AGREE" -- the whole line, because a new branch that reworded an existing answer would pass
+# a kind-only assertion while breaking every reader of the output.
+for label, comments, gates_, expect_, want in [
+    ("a lone real QA FAIL", [c("qa", "QA FAIL\nGate-SHA: " + SHA_A), c("cybersec", S % SHA_A)],
+     "qa,cybersec", None, "FAILED|QA=FAIL"),
+    ("a clean pass", [c("qa", V % SHA_A), c("cybersec", S % SHA_A)], "qa,cybersec", SHA_A,
+     "AGREE|%s|QA=%s; CYBERSEC=%s" % (SHA_A, SHA_A, SHA_A)),
+]:
+    n += 1
+    got = run(comments, gates_, expect_)
+    ok = got == want
+    print("%s %-9s <- %-9s %s" % ("OK  " if ok else "FAIL", "verbatim", "verbatim" if ok else "differs",
+                                  "UNCHANGED, byte for byte: " + label))
+    if not ok:
+        failures.append((label, want, got))
 
 print()
 print("selftest: %d case(s), %s" % (n, "PASS" if not failures else "FAIL"))

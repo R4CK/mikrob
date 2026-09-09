@@ -1,6 +1,7 @@
 ---
 name: tenant-pure-domain
 description: Build a backend feature as a PURE, dependency-free domain module with injected ports (the IO/crypto/DB seam), a binding tenant-scope invariant, and non-vacuous tests (mutation-proof + negative controls + fail-closed). Use for any multi-tenant SaaS backend card/feature where persistence, HTTP, crypto, image/DNS/network IO are deferred to a later adapter — especially in a workspace where modules resolve via tsconfig paths / test aliases. Distilled from ~25 real multi-tenant SaaS domain cards.
+version: "1.0.0"
 ---
 # Tenant-scoped pure-domain module
 

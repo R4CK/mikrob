@@ -287,6 +287,13 @@ online() { # $1 = the reason string the caller would have printed
     *"stale build"*)
       echo "local-llm-rag: advisory draft SKIPPED -- no current router judged this task; run \`npm run build\`" >&2
       exit 9 ;;
+    # VRAM PRESSURE (card f9bad591). This one MUST skip the advisory draft, and that is the whole
+    # point: the advisory path still calls the local model, so letting it run would put work on the
+    # exact GPU the guard just said is full. Every other online reason is about the TASK; this one
+    # is about the machine, and a draft cannot be "advisory" with respect to capacity.
+    *"vram-hold"*)
+      echo "local-llm-rag: advisory draft SKIPPED -- the GPU is under pressure, that is what was measured" >&2
+      exit 9 ;;
   esac
   ADVISORY_REASON="$reason"
 }
@@ -382,6 +389,25 @@ if [[ "$AUTO" == "1" ]]; then
 NODE
 )"
   ROUTE="${VERDICT%%$'\t'*}"; REASON="${VERDICT#*$'\t'}"
+
+  # VRAM PRESSURE (card f9bad591), checked AFTER the content router and only when it said local.
+  # Order matters and is deliberate: asking the GPU first would spend an nvidia-smi call on every
+  # task, including the ones that were going online anyway on their content. The guard is about
+  # capacity, so it is the LAST question, not the first.
+  #
+  # A MISSING guard is skipped (a host that never had one is not doubt); any non-zero exit, usage
+  # errors included, routes online -- the direction the guard itself documents.
+  if [[ "$ROUTE" == "local" ]]; then
+    VRAM_GUARD="${LOCAL_LLM_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
+    if [[ -f "$VRAM_GUARD" ]]; then
+      vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)"; vram_rc=$?
+      if [[ "$vram_rc" -ne 0 ]]; then
+        ROUTE=online
+        REASON="vram-hold (${vram_line:-no output}, rc=$vram_rc)"
+      fi
+    fi
+  fi
+
   if [[ "$ROUTE" != "local" ]]; then
     # In advisory mode `online` RETURNS instead of exiting (card ee43a6ac), so everything below --
     # stage 1 and the "drafting on the 7B" line -- must be skipped: those belong to a LOCAL verdict

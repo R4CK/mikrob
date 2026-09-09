@@ -124,4 +124,4 @@ Add tests that make the durable write misbehave and assert the ack never happens
 - [ ] Synchronous fail-closed siblings kept sync via their own sync port (no needless
       async cascade).
 - [ ] Prettier clean; commit only your own files by explicit pathspec (shared checkout).
-- [ ] Card → `waiting` + REVIEW; QA + Cybersec gate (never self-sign-off).
+- [ ] Card → REVIEW comment first, THEN `waiting` (card e98a34d3); QA + Cybersec gate (never self-sign-off).

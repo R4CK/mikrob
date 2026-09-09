@@ -115,6 +115,25 @@ describe('the detector is actually WIRED, not just present (card ec7bdad8)', () 
     // Order matters: after the parse, the duplicate is already gone.
     expect(check).toBeLessThan(parse)
   })
+
+  // Card 725b159a (backend2's observation): writeAgentSettingsFromProfile has the exact same
+  // read-then-parse shape as ensureAgentHooks above, but was never wired to the same check --
+  // upstream only drotozza (wires) ensureAgentHooks too, so this was a scope decision, not a
+  // merge artefact. It is HIGHER-risk in one way: this function only INJECTS specific guard
+  // entries into the parsed object rather than re-deriving the whole hooks tree the way
+  // ensureAgentHooks' merge does, so anything a dup-key collapse already dropped stays dropped
+  // silently, with no later merge pass to restore it.
+  it('writeAgentSettingsFromProfile checks the raw text BEFORE JSON.parse too', () => {
+    const src = readFileSync(join(REPO_ROOT, 'src/web/agent-scaffold.ts'), 'utf-8')
+    const fn = src.indexOf('export function writeAgentSettingsFromProfile')
+    expect(fn).toBeGreaterThan(-1)
+    const body = src.slice(fn, fn + 4000)
+    const check = body.indexOf('findDuplicateJsonKeys(rawExisting)')
+    const parse = body.indexOf('JSON.parse(rawExisting)')
+    expect(check, 'the dup-key check is not wired into writeAgentSettingsFromProfile').toBeGreaterThan(-1)
+    expect(parse, 'the raw text is not reused for the parse').toBeGreaterThan(-1)
+    expect(check).toBeLessThan(parse)
+  })
 })
 
 describe('AGENT_API_ORIGIN is validated too -- the new parameter is not a new door (ec7bdad8 merge)', () => {

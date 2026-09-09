@@ -82,6 +82,44 @@ if [ "${CARD_BUILD_ROUTE:-on}" = "off" ]; then
   online kill-switch
 fi
 
+# --- 0b. VRAM PRESSURE, BEFORE ANYTHING ELSE (card f9bad591) -----------------------------------
+# A CAPACITY question, not a content one, so it belongs before the card is even read: if the GPU
+# cannot take work right now, nothing about this card's text can change that.
+#
+# HOLD -> ONLINE, never a block. This script only ever chooses WHO builds the card; returning ONLINE
+# means "the online agent builds it", which is today's behaviour anyway. The card work itself is
+# never held up -- that distinction is the card's explicit requirement.
+#
+# ANY non-zero exit routes ONLINE, including the guard's usage error (2). That is the same
+# fail-safe direction the guard itself documents: doubt about the measurement resolves ONLINE. A
+# MISSING guard, by contrast, is not doubt -- it is a host that never had one -- so it is skipped
+# rather than treated as HOLD, which would disable local routing forever on such a host.
+# shellcheck source=./kanban-comment-lib.sh
+. "$HERE/kanban-comment-lib.sh"
+
+VRAM_GUARD="${CARD_BUILD_ROUTE_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
+if [ -f "$VRAM_GUARD" ]; then
+  vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)"; vram_rc=$?
+  if [ "$vram_rc" -ne 0 ]; then
+    # The audit PATH stays a stable token, like every other reason here (priority-high,
+    # deterministic-money): a path field that embeds the measurement is not greppable and cannot be
+    # asserted on. The measurement goes to stderr, where a reader wants it anyway.
+    echo "card-build-route: local path closed -- ${vram_line:-no output from the vram guard} (rc=$vram_rc)" >&2
+    # ON THE CARD ITSELF, not the caller's log (card a1c4dc51). The stderr line above answers "why
+    # did this run print ONLINE"; nobody reads that later. The card's own thread is where someone
+    # asking "why didn't this get a local draft" actually looks -- the same reasoning that put
+    # PAUSED-LOAD/RESUMED-LOAD on load-guard-bookkeeping.sh's cards, applied to a per-card decision
+    # rather than a per-agent pause. Only fires when $CARD_ID names a real card (a bare --text call,
+    # used by every selftest and by the advisory path, has none to comment on).
+    if [ "$CARD_ID" != "-" ]; then
+      kanban_comment_on "$CARD_ID" \
+        "INFO-ONLY PAUSED-VRAM: ${vram_line:-no output from the vram guard} (rc=$vram_rc) -- a GPU epp nem vesz fel helyi munkat, ezert ez a kartya ONLINE-ra ment a helyi 7B helyett. A kartya munkaja ettol nem allt meg, csak a helyi-modell draft maradt el." \
+        "card-build-route"
+    fi
+    online vram-hold
+  fi
+fi
+
 # --- 1. READ THE CARD --------------------------------------------------------------------------
 if [ -z "$TEXT" ]; then
   TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
@@ -153,8 +191,56 @@ fi
 # Widening a fail-safe gate costs speed and nothing else, which is why the bar for adding a word
 # here is deliberately low -- and why battery B of the selftest exists, to prove the additions did
 # not swallow the genuinely bounded work this whole card is FOR.
-if printf '%s' "$SHORT" | grep -Eqi \
-  'migrac|migration|séma|sema|schema|rollback|down-migr|architekt|architect|refaktor|refactor|kontraktus|contract|api-szerzod|breaking|több[- ]fájl|tobb[- ]fajl|multi-file|wiring|bekötés|bekotes|composition root|main\.ts|feature flag|deploy|infra|worktree|landol|merge'; then
+# THE LABEL PREFIX IS NOT A STATEMENT ABOUT THE WORK (card 28295e97). MEASURED on the live board,
+# on the only 8 routing decisions this script has ever made: all 7 ONLINE verdicts came from THIS
+# gate with calls=0, and on 4 of the 5 the matching token was `infra` -- twice as the ONLY match.
+# But every infra card on this board is titled `[marveen][INFRA]...` or `[CleanCore][INFRA]...`, so
+# the gate was matching the fleet's own labelling convention rather than anything about the work.
+# That is the exact failure route-classify.sh's header warns about ("the same noise that made the
+# keyword matcher fire on the fleet's own dialect"), one file over.
+#
+# TRIMMED, NOT DELETED, and the difference is the whole point (MikroB's plan-grilling, card 28295e97).
+# Deleting `infra` from the list was MEASURED and REJECTED: 134 cards have it as their sole match and
+# 98 of those are held by no other deterministic rule, which is precisely the state card 05f8d99c
+# widened this list to prevent. Removing the LEADING TAG RUN instead keeps every word's meaning: a
+# description whose BODY says "infra race condition" or "a landolási logika rossz sorrendben fut"
+# still matches, because only the bracket prefix is cut.
+#
+# SCOPED TO THIS RULE ALONE, deliberately. The money / object-integrity / client-supplied-value /
+# document-assembly gates below keep reading $SHORT untouched: they were measured separately, and
+# widening this trim to them without measuring them would be the same guess this change is fixing.
+#
+# FOUR WORDS ADDED WITH THE TRIM, and they are the reason this is a REPLACEMENT rather than a
+# deletion. Running the existing selftest after the trim alone moved FOUR real battery-A cards from
+# "the deterministic gate holds them" to "only the 7B holds them" -- the state this file's own
+# summary calls out in capitals, and the baseline before the trim had ZERO such cards. So the trim
+# alone fails this script's own acceptance bar, and loosening that bar to let it pass would be the
+# exact move rule 7 forbids. Each added word is the decision shape one of those four cards actually
+# carries, read from the card, not invented:
+#   nevter/namespace/fenntartott  5c5d7bc4 -- "from_agent=system is not the directive channel's own
+#                                             namespace", a trust-boundary question
+#   reteg/réteg                   2ebe24b2 -- "kell egy valaszto-reteg es egy kezelofelulet", a new
+#                                             layer, which is architecture wearing a feature label
+#   parhuzamos/egyidej            5af57bd7 -- three concurrent suite runs saturating one machine
+#   utemez/scheduler              13512bde -- wiring a new tool into the scheduler
+# The file's own rule applies: "Widening a fail-safe gate costs speed and nothing else, which is why
+# the bar for adding a word here is deliberately low."
+#
+# WHAT IT COSTS, measured on 385 non-urgent/high cards: the gate fires on 318 today and on 193 after
+# the trim. ZERO of the freed cards carried a real decision-shape word (migration, schema, contract,
+# wiring, feature flag...) inside the trimmed prefix -- checked explicitly, because a trim that ate
+# one of those would be the deletion this design refused.
+MULTI_TEXT="$(printf '%s' "$SHORT" | python3 -c '
+import re, sys
+# Only the LEADING run of [..] groups, so a bracket used mid-sentence is left alone.
+sys.stdout.write(re.sub(r"^(?:\s*\[[^\]]{0,60}\])+\s*", "", sys.stdin.read()))
+' 2>/dev/null)"
+# FAIL TOWARD THE UNTRIMMED TEXT. If python is missing or the trim produced nothing, the ORIGINAL
+# string is what gets matched -- the direction that keeps the gate firing, never the one that opens it.
+[ -n "${MULTI_TEXT// }" ] || MULTI_TEXT="$SHORT"
+
+if printf '%s' "$MULTI_TEXT" | grep -Eqi \
+  'migrac|migration|séma|sema|schema|rollback|down-migr|architekt|architect|refaktor|refactor|kontraktus|contract|api-szerzod|breaking|több[- ]fájl|tobb[- ]fajl|multi-file|wiring|bekötés|bekotes|composition root|main\.ts|feature flag|deploy|infra|worktree|landol|merge|nevter|névtér|namespace|fenntartott|reteg|réteg|utemez|ütemez|scheduler|parhuzamos|párhuzamos|egyidej'; then
   online deterministic-multi-decision
 fi
 
@@ -180,6 +266,90 @@ fi
 if printf '%s' "$SHORT" | grep -Eqi \
   'user-manual|kezikonyv|kézikönyv|felhasznaloi kezi|felhasználói kézi|readme|decisions\.md|dokumentaci|dokumentáci|funkciolist|funkciólist'; then
   online deterministic-document-assembly
+fi
+
+# Work whose PRODUCT is a shared instruction file (Cybersec, card f9bad591, MikroB approved 24565).
+# The four gates above ask what the work TOUCHES; this one asks what it PRODUCES. When the product
+# is prose that every agent then executes -- a skill, an agent CLAUDE.md, a scheduled task's
+# SKILL.md, a hook, settings.json -- nothing goes red if a sentence is wrong. The file's own header
+# calls the local-draft risk ANCHORING rather than shipping unreviewed code; for an instruction file
+# anchoring IS the whole damage, because there is no test behind it.
+#
+# MEASURED by Cybersec on the shipped router with the model stubbed to its most permissive answer:
+# three real instruction-file tasks (a skill's Pitfalls section, an agent's personality section, a
+# scheduled task's SKILL.md) all reached LOCAL with nothing but the 7B in the way, while a money
+# control and a readme control correctly went ONLINE and a genuine helper-plus-tests control
+# correctly went LOCAL. Without those three controls the first three would have proved nothing.
+#
+# RE-MEASURED HERE, on the CURRENT router, and the number CHANGED: Cybersec measured this predicate
+# as costing 0 changed verdicts on 166 live cards. That was true of the router as it stood BEFORE
+# card 28295e97 trimmed the label prefix out of the multi-decision match. On today's code it catches
+# EIGHT cards that now reach the model without it -- among them a seed-skills SKILL.md fix, a
+# scheduled-tasks seed, an agent-skill-drift card and an SSRF guard wired into the prompt path.
+# So this is no longer a free safety net held in reserve; it is load-bearing, and it became so
+# because of the change that landed an hour earlier. An inherited measurement is not evidence about
+# the code you are actually editing.
+#
+# A STATED LIMIT, not a closure: this matches the CARD'S PROSE, so it only catches what the card
+# SAYS. A card naming just a filename ("noisy-command-guard.py") with no path and no keyword still
+# passes; `scripts/hooks` and `PreToolUse` narrow that, they do not close it.
+if printf '%s' "$SHORT" | grep -Eqi \
+  'skill|claude\.md|agens-prompt|agent-prompt|rendszer-prompt|system prompt|utemezett feladat|ütemezett feladat|scheduled-task|scheduled-tasks|seed-skills|seed-scheduled|\.claude/|scripts/hooks|settings\.json|\bhook|PreToolUse'; then
+  online deterministic-shared-instruction-target
+fi
+
+# A DECLARED [SEC] LABEL, checked on the UNTRIMMED text (card 28295e97, MikroB decision 25075).
+# The label-prefix trim two rules above this one is exactly what re-opened this gap: a `[SEC]` tag
+# almost always sits IN that prefix (`[marveen][INFRA][SEC][LOW]`), so trimming the label run to
+# stop `infra` from deciding anything also removed the one label that IS a deliberate classification
+# rather than organisational noise. `infra` says where the work happens; `[SEC]` says someone
+# already decided it touches a trust boundary -- the two are not the same kind of token, and only
+# one of them belongs behind the trim.
+#
+# MEASURED (backend, card 28295e97 second round): of the live board's 37 cards whose ONLY
+# multi-decision match was the trimmed `infra` label, 26 reached the model with no deterministic
+# gate left standing. Cybersec's two named examples (2dd28b5d, 2a07f29e) were both in that 26. A
+# `[SEC]`-tag rule catches 18 of the 26 (re-measured on the current board: 22 of 30, the corpus
+# having moved on); the remaining cards carry no `[SEC]` tag at all and are reported individually
+# rather than folded into this rule (see the card's REVIEW/DECISIONS.md entry -- each either gets
+# its own structural word or an explicit safe-to-leave justification, never a guess).
+#
+# THE MATCH IS THE BRACKET, not the bare word: `security`/`biztonsag` alone is not used here on
+# purpose, because a card can use either word to say the OPPOSITE of what it looks like ("nem
+# biztonsagi kockazat", "IRANY: BIZTONSAGOS") -- measured live: 8 of the cards a bare word-match
+# would have caught were self-declared NON-risks, not trust-boundary work. `\[SEC[^]]*\]` matches
+# the deliberate tag (`[SEC]`, `[SEC-GATE-KOTELEZO]`) and nothing that merely mentions the word.
+if printf '%s' "$SHORT" | grep -Eq '\[SEC[^]]*\]'; then
+  online deterministic-sec-label
+fi
+
+# TS ROUTER CATEGORY GATE (card bb11f4b1). src/local-llm-router.ts classifies text into five
+# structural categories (authz, isolation, architecture, multi-file-wiring, security-decision)
+# whose CATEGORY_CEILINGS are 'never' or 'module' -- they should never go local-first. Placed
+# AFTER the SEC label gate so [SEC]-tagged cards always hit the sec-label path first. The bash-regex
+# still runs after this block -- this strengthens the gate, it does not replace anything.
+# BEFORE/AFTER DIFF (measured on live selftest battery + tested card texts): classifyCategory()
+# returns NULL for all current card texts (tuned for code fragments, not board prose); 0 verdicts
+# change. The gate fires on 0 today and is ready to catch future cards whose text matches the four
+# structural categories (authz, isolation, architecture, multi-file-wiring).
+# Node/dist may be missing on some hosts; every failure falls through to the bash-regex as before
+# (fail-safe: doubt resolves ONLINE via downstream gates, never LOCAL).
+ROUTER_JS="${CARD_BUILD_ROUTE_ROUTER_JS:-$HERE/../dist/local-llm-router.js}"
+if [ -f "$ROUTER_JS" ] && command -v node >/dev/null 2>&1; then
+  TS_CATEGORY="$(ROUTE_TEXT="$SHORT" ROUTE_JS="$ROUTER_JS" timeout 5 node --input-type=module 2>/dev/null <<'EOF'
+const { classifyCategory } = await import('file://' + process.env.ROUTE_JS)
+const r = classifyCategory(process.env.ROUTE_TEXT || '')
+process.stdout.write(r ?? '')
+EOF
+  )" || TS_CATEGORY=""
+  # security-decision is excluded: the TS router pattern-matches Hungarian/English security words
+  # in card text as security-decision (false positives on e.g. "biztonsagos", "signature is given"),
+  # and the security case is already covered by route-classify.sh (section 3) + the SEC label gate.
+  # The four remaining categories (authz, isolation, architecture, multi-file-wiring) are structural
+  # code properties the bash-regex does not cover, so a match there is a genuine strengthening.
+  if [ -n "${TS_CATEGORY// }" ] && [ "$TS_CATEGORY" != "security-decision" ]; then
+    online deterministic-ts-category
+  fi
 fi
 
 # --- 3. REUSE THE HARDENED SECURITY CLASSIFIER --------------------------------------------------

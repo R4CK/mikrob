@@ -103,6 +103,7 @@ describe('buildSystemDirectiveAuthBody', () => {
   it('names the in-scope prefixes and excludes the nudges', () => {
     const body = buildSystemDirectiveAuthBody('agent-a')
     expect(body).toContain('[CONTEXT-GUARD]')
+    expect(body).toContain('[CONTEXT-RESTART-GATE]')
     expect(body).toContain('[SYSTEM: ...]')
     // The low-impact nudges are explicitly OUT of scope, so an agent does not
     // start treating every routine wake as an injection.
@@ -110,26 +111,23 @@ describe('buildSystemDirectiveAuthBody', () => {
     expect(body).toContain('[Inbox]')
   })
 
-  // FORK DIVERGENCE from the upstream version of this test, which asserts
-  // [CONTEXT-RESTART-GATE] is one of the IN-SCOPE prefixes. It is not, here.
-  // Upstream's restart gate wakes the agent with a directive; ours does not
-  // exist -- our only [CONTEXT-RESTART-GATE] message is
-  // createAgentMessage(name -> MAIN_AGENT_ID) in context-restart-gate-runner.ts,
-  // an ALERT to the coordinator from a real agent id. It asks nothing of its
-  // recipient and already carries provenance, so listing it as in-scope would
-  // tell agents to authenticate a message that will never carry a msg_id.
-  //
-  // Asserting the string alone would pass either way (our body does mention
-  // it, as an exclusion), so this pins the SENTENCE it appears in.
-  it('places [CONTEXT-RESTART-GATE] OUT of scope, matching this fork\'s sender', () => {
+  // NO LONGER A FORK DIVERGENCE (card 4f15966e, backend, 2026-09-07): this test used to pin
+  // [CONTEXT-RESTART-GATE] as OUT of scope, because the fork's only message with that prefix was
+  // createAgentMessage(agent -> coordinator), an alert FROM an agent carrying no msg_id. The test's
+  // own comment anticipated this: "if we ever adopt upstream's gate wake nudge, this test is the
+  // reminder that the rule text has to move it back in-scope in the same change." That adoption
+  // happened -- non-conflicting during this merge, not a deliberate card -- when LEDGERACK905
+  // (db.ts's openInboundQuestionMessageId + context-restart-gate-runner.ts's
+  // gateWakePrompt/deliverPendingWake) landed as a matched pair and started sending a real
+  // [CONTEXT-RESTART-GATE] wake-nudge TO the recipient via sendSystemDirective. This is the "same
+  // change" the old comment asked for.
+  it('places [CONTEXT-RESTART-GATE] IN scope, now that the runner sends it via sendSystemDirective', () => {
     const body = buildSystemDirectiveAuthBody('agent-a')
     const line = body.split('\n').find((l) => l.includes('[CONTEXT-RESTART-GATE]'))
     expect(line).toBeDefined()
-    expect(line).toContain('NEM tartoznak ide')
-    // If we ever adopt upstream's gate wake nudge, this test is the reminder
-    // that the rule text has to move it back in-scope in the same change.
+    expect(line).not.toContain('NEM tartoznak ide')
     const runner = readFileSync(join(SRC, 'context-restart-gate-runner.ts'), 'utf-8')
-    expect(runner).not.toContain('sendSystemDirective')
+    expect(runner).toContain('sendSystemDirective')
   })
 
   it('hands the agent a verification command that does NOT leak the token into argv', () => {
@@ -232,5 +230,59 @@ describe('the directive channel owns a sender id that no other writer uses (card
     for (const id of ['backend', 'mikrob', 'systematic', 'system-directives', 'subsystem']) {
       expect(isReservedSenderId(id), id).toBe(false)
     }
+  })
+})
+
+// Card f390a08e (backend2's proposal, dc09da2f/2dd28b5d kore): the main agent's own PROJECT_ROOT/
+// CLAUDE.md carries a STATICALLY COMMITTED copy of this section (ensureSystemDirectiveAuthSection
+// no-ops for the main agent -- see the test above -- so nothing keeps that copy synced at runtime).
+// A future change to buildSystemDirectiveAuthBody's wording could drift silently from what is
+// actually committed there, exactly as card 22e4c0d9 once did.
+//
+// MikroB's OWN first attempt at this test failed on the trap this one is built around: the
+// generated text embeds PROJECT_ROOT-derived absolute paths (tokenPath, dashboardOrigin) that are
+// NOT the same in every environment a gate-worktree runs in as in the real install -- so a naive
+// full-body byte-equality test would fail FALSELY in every QA/Cybersec/Cybered gate-worktree
+// (each pinned to its own sha in its own directory), independent of whether the static block is
+// actually correct.
+//
+// This file already mocks PROJECT_ROOT to a fixed, test-controlled tmpRoot (see the top of this
+// file), so buildSystemDirectiveAuthBody's output here is already fully deterministic -- the ONLY
+// remaining variable is that tmpRoot is not the SAME literal path the real, committed CLAUDE.md
+// was generated against. Solved the same way on both sides: normalise the one environment-derived
+// path segment to a fixed placeholder before comparing, rather than hardcoding either side's
+// literal PROJECT_ROOT into the assertion (approach (a)/(b) from the card, combined: the structural
+// comparison is exact -- every word, every line -- and only the path VALUE is abstracted away).
+describe('the STATIC CLAUDE.md block matches the generator (card f390a08e)', () => {
+  const TOKEN_PATH_RE = /cat [^)]+\/store\/\.dashboard-token/g
+  const normalize = (s: string) => s.replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
+
+  it('the committed section in THIS checkout\'s own CLAUDE.md equals the generator output, modulo PROJECT_ROOT', async () => {
+    const { REPO_ROOT } = await import('./helpers/repo-location.js')
+    const claudeMd = readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8')
+    const start = claudeMd.indexOf(MARKER_BEGIN)
+    const end = claudeMd.indexOf(MARKER_END)
+    expect(start, 'the generated marker is missing from CLAUDE.md -- has the section never been committed?').toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    const committedBlock = claudeMd.slice(start + MARKER_BEGIN.length, end).trim()
+
+    // The committed block was generated for the REAL install's main agent, whatever THIS
+    // checkout currently names it in the "to_agent=" line -- read it back rather than assume
+    // "mikrob", so a renamed install does not make this test lie about what it is comparing.
+    const toAgentMatch = committedBlock.match(/to_agent="([^"]+)"/)
+    expect(toAgentMatch, 'no to_agent="..." line in the committed block -- did the wording change?').not.toBeNull()
+    const committedName = toAgentMatch![1]
+
+    const generated = buildSystemDirectiveAuthBody(committedName).trim()
+
+    expect(normalize(generated)).toBe(normalize(committedBlock))
+  })
+
+  it('CONTROL: the normaliser actually changes something -- it is not vacuously a no-op', () => {
+    // Without this, a normaliser regex that stopped matching anything (a future refactor moves
+    // the token path expression, say) would make the test above an exact-match test again,
+    // silently reintroducing the false-fail-in-every-worktree trap it exists to avoid.
+    const sample = "cat /home/neon/marveen/store/.dashboard-token"
+    expect(normalize(sample)).not.toBe(sample)
   })
 })

@@ -1,6 +1,8 @@
 ---
 name: redteam
 description: Red team engagement planning and attack path analysis for AUTHORIZED offensive security simulations. Builds structured, kill-chain-ordered attack plans from MITRE ATT&CK technique selection, access level, and crown jewel targets — scoring techniques by effort and detection risk, identifying choke points, and flagging OPSEC risks. Use this skill whenever the user mentions red team, red teaming, adversary simulation, adversary emulation, attack path analysis, kill chain, MITRE ATT&CK, engagement planning, Rules of Engagement (RoE), crown jewels, choke points, OPSEC risk, assumed breach, purple team detection validation, or asks to plan/scope an offensive security exercise. NOT for vulnerability scanning (use security-pen-testing) or incident response (use incident-response).
+version: "1.0.0"
+related_skills: [incident-response]
 ---
 
 # Red Team

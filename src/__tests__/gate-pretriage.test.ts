@@ -152,6 +152,36 @@ describe('gate-pretriage.sh -- checks fire on a planted defect', () => {
     expect(checks(r)).not.toContain('tsc-errors')
   })
 
+  // Card b143a439, Cybered's finding: the note above fired on EVERY CleanCore card regardless of
+  // whether the changed file was already covered by a SEPARATE project in the typecheck chain that
+  // DOES include test files (packages/control-plane/tsconfig.test.json, root tsconfig.tests.json --
+  // card 2c0b2002's real 7-member chain). A gate had already taken the note as fact once, unverified.
+  it('does NOT warn when a per-package tsconfig.test.json exists elsewhere in the tree', () => {
+    const r = commitAndTriage({
+      'tsconfig.json': JSON.stringify({ exclude: ['node_modules', '**/*.test.ts'] }, null, 2),
+      'packages/control-plane/tsconfig.test.json': JSON.stringify({ include: ['**/*.test.ts'] }, null, 2),
+    })
+    expect(checks(r)).not.toContain('tsc-excludes-tests')
+  })
+
+  it('does NOT warn when a root tsconfig.tests.json exists', () => {
+    const r = commitAndTriage({
+      'tsconfig.json': JSON.stringify({ exclude: ['node_modules', '**/*.test.ts'] }, null, 2),
+      'tsconfig.tests.json': JSON.stringify({ include: ['packages/**/*.test.ts'] }, null, 2),
+    })
+    expect(checks(r)).not.toContain('tsc-excludes-tests')
+  })
+
+  it('CONTROL: a DIFFERENTLY-named project file (not tsconfig.test.json / tsconfig.tests.json) does not suppress the warning', () => {
+    // Otherwise this fix would silence the note on any tsconfig sprawl, not specifically the
+    // test-covering chain members it exists to recognise.
+    const r = commitAndTriage({
+      'tsconfig.json': JSON.stringify({ exclude: ['node_modules', '**/*.test.ts'] }, null, 2),
+      'packages/control-plane/tsconfig.json': JSON.stringify({ compilerOptions: {} }, null, 2),
+    })
+    expect(checks(r)).toContain('tsc-excludes-tests')
+  })
+
   // The OTHER direction, and the one that keeps the fix honest (card aae6632c). Reporting
   // "unavailable" unconditionally would make the test above pass while silently disabling the
   // type-check for every repo. So: give the fixture a local ./node_modules/.bin/tsc and prove the

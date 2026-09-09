@@ -823,8 +823,18 @@ class TestClaudeTokenSources(unittest.TestCase):
 
     def test_keychain_beats_env_file(self):
         """The .env token answers 403, so it must never win over the keychain."""
+        # SECURITY (card 4f15966e, backend, 2026-09-07): os.path.exists was mocked
+        # unconditionally True, so the credentials-file branch's os.path.exists(cred_path)
+        # check saw THIS MACHINE'S REAL ~/.claude/.credentials.json as present, read it,
+        # and the test then asserted the REAL, live OAuth token against the expected fake
+        # value -- pytest's diff printed it to stdout on failure. _read_claude_token()'s
+        # own docstring says "Never logs the value"; this test violated that by
+        # construction. Fix: scope the mock to the ONE path this test actually controls
+        # (matching the established pattern at test_credentials_file_still_wins_over_keychain
+        # and test_non_darwin_never_shells_out_to_security in this same file), so every
+        # other path -- including the real credentials file -- correctly reads as absent.
         with patch.object(uc.sys, "platform", "darwin"), \
-             patch.object(uc.os.path, "exists", return_value=True), \
+             patch.object(uc.os.path, "exists", side_effect=lambda p: p == self._tmp.name), \
              patch.object(uc, "ENV_PATH", self._tmp.name), \
              patch.object(uc.subprocess, "run", return_value=self._security_ok()):
             token, source = uc._read_claude_token()

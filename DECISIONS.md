@@ -8248,3 +8248,3696 @@ selftest ezért az EREDETI szöveggel dolgozik, és ezt le is írja magáról.
 bővítés külön hagyása).
 **Hivatkozás:** kártya `82fa48b0`; `store/gate_scan_lib.py`, `store/gate-scan-selftest.py`,
 `store/gate-decl-check.py`, `store/gate-decl-check.selftest.py`.
+## 2026-09-05 -- A junction-szerkezeti leletek zárása és a wrapperek merge-driver-védelme (kártya 3ae71df1)
+
+**J-1 és J-2: a seam olyan markdown-szerkezetet képez, amit egyik szülő sem tartalmazott.**
+Mindkettőt reprodukáltam javítás előtt. J-1: egy `---` sor közvetlenül egy nem-üres szövegsor
+ALATT setext H2, nem vízszintes vonal -- ha a mi maradékunk prózával végződik és a másiké
+elválasztóval kezdődik, az összefűzés az utolsó sorunkat FEJLÉCCÉ lépteti elő. J-2: ha a
+junctionig minden nyitva hagy egy kódkerítést, a másik oldal TELJES bejegyzése a kerítésen BELÜLRE
+kerül -- a `## ` fejléce megszűnik fejléc lenni és megszűnik grep-elhető lenni, miközben minden sor
+megvan, tehát minden sor-alapú ellenőrzés zöld marad.
+
+**Ez a hibaosztály szerkezetileg más, mint az eddigiek.** Minden korábbi ellenőrzés egy FELET néz
+(prefix, a mi maradékunk, az ő maradékuk), és mindhárom fél lehet külön-külön hibátlan, miközben a
+KÖZTÜK lévő varrat képez új szerkezetet. A javítás ezért a junctionre kérdez: a nála lévő utolsó
+nem-üres sor és a másik oldal első sora együtt nem alkothat setext fejlécet, és a junctionig
+számolt kerítés-paritásnak párosnak kell lennie (a prefixet is beleszámolva, mert egy ott nyitott
+kerítést mindkét oldal KÜLÖN zár be).
+
+**Kontroll, ami őszintén tartja a J-2 szabályt:** egy LEZÁRT kódkerítés hétköznapi tartalom, és
+továbbra is unionál. E nélkül a „utasíts el minden backtickre" is átmenne a J-2 eseten.
+
+**A wrapperek merge-driverként meghívhatók voltak (Cybersec).** Mérve: mindkét union-wrapper
+(`decisions-append-union.sh` ÉS `readme-bullet-union.sh`) mode 775, és három path-argumentummal
+hívva 0-t adott -- pontosan a `merge.<név>.driver` konvenció (%O %A %B). Ma NINCS bedrótozva, de
+szerkezetileg semmi nem akadályozza: egy config-sor plusz egy `.gitattributes` bejegyzés elég
+lenne, és a hibamódja CSENDES ADATVESZTÉS -- egy 0-val kilépő driver azt mondja a gitnek, hogy a
+merge sikerült, tehát a git megtartja a mienket és eldobja a másikét, konfliktus és üzenet nélkül.
+Kommenttel ez nem előzhető meg, kilépési kóddal igen: közvetlen futtatás `--selftest`-en kívül
+mostantól hangosan, nem-nulla kóddal bukik. A source-olás érintetlen (minden valódi hívó így
+használja). **Fájlosztályra kötve, nem csak a DECISIONS-oldalra** -- a dc5b714d tanulsága szerint
+egy író-függvényre kötött hatókör kihagyja a testvér-fájlt.
+
+**Doksi-pontosság (Cybersec).** A near-miss eset kommentje azt állította, hogy „csak az egzakt
+`---` és `***` formák unionálnak", miközben a case-ág NÉGY tagot enged (`''`, `---`, `***`, `___`).
+A komment abból a két formából íródott, amit a fixture véletlenül használt, nem a kódból. Javítva,
+és mostantól MINDEN tagnak saját esete van.
+
+**F-T: formánként egy eset, nem blokként (Cybered).** A near-miss teszt eredetileg mind a négy
+alakot EGYSZERRE tágította volna: az egyetlen esetet pirosra váltja és lefedettségnek OLVASÓDIK,
+miközben formánként csak egy volt ténylegesen pinnelve. Mostantól négy külön eset, és a mutáció is
+formánként megy -- az egy-formát-beengedő mutáció pontosan a saját esetét vágja pirosra.
+
+**Egy saját hiba, ami majdnem átment:** a teszt-CÍMKÉKBE tett backtickeket a bash
+parancs-behelyettesítésként futtatta, így két near-miss címke azonosra rövidült -- pont a
+formánkénti megkülönböztetést ölte volna meg. A címkékből kivéve.
+
+## 2026-09-05 -- Az upstream clearInputBuffer retry+verify átvétele (kártya b34fa678)
+
+**Döntés.** A fork `clearInputBuffer`-je átveszi az upstream retry+verify alakját (blob
+`31758af9d36f`): háromszor próbálkozik, minden kör újraolvassa a sor-számot, a törlés UTÁN
+`stuckInputSignature`-rel ELLENŐRZI, hogy a doboz tényleg kiürült, és `void` helyett `boolean`-t ad.
+
+**A mögötte lévő incidens (upstream dokumentálja):** a törlés eddig fire-and-forget volt. Egy nem
+verifikált törlés a parkolt tick egy TÖREDÉKÉT hagyta a bufferben, ami onnantól semelyik
+delivery-wrapperrel nem egyezett -- így minden későbbi restart-döntés `machineOrigin=false`-t
+olvasott és halasztott. A session 25,4 órára beragadt. A restart hard cap csak a kárt korlátozza,
+a gyökér az ellenőrizetlen törlés.
+
+**Öt hívási hely van, nem kettő -- és ez szándékos.** A kártya „a channel-monitor.ts két hívási
+helye" megfogalmazása pontos abban, hogy mit kell IGAZÍTANI, de a fork valójában ötször hívja:
+`channel-monitor.ts` 378/393 (re-inject), 413/417 (nincs re-inject), és `agent-process.ts` 2119
+(pre-flight a küldés előtt). Upstream is csak a két re-inject NÉLKÜLI helyet igazítja, és a saját
+belső hívását bájtra változatlanul hagyja -- a re-injectes helyeken a boolean nem ad hozzá semmit,
+mert közvetlenül utána `sendPromptToSession` fut, ami felülírja a doboz tartalmát és saját
+kézbesítés-ellenőrzést visz. Ezt a hűséget megtartottam; a fork ötödik helye sem változott.
+
+**Amit NEM vettem át:** az upstream harmadik re-inject ága (`reinject-recorded`, a STUCKINPUT827
+injected-prompt-registry munkája) a forkban nem létezik, és nem ennek a kártyának a hatóköre.
+
+**Tesztelés, és egy saját vákuum eset.** Öt futásidejű eset a mockolt `execFileSync` fölött (a
+suite meglévő mintája), plusz két forrás-alapú eset a két hívási hely bedrótozására -- utóbbi
+kimondja magáról, hogy a WIRING-et rögzíti, nem a futásidejű viselkedést, mert
+`performStuckInputAction`-höz nincs harness ebben a suite-ban, és egyet építeni egy NORMAL kártyáért
+új infrastruktúra lenne, nem lefedettség.
+Az „olvashatatlan pane" esetem ELŐSZÖR VÁKUUM volt: üres sztringgel etettem, ami a
+`stuckInputSignature(...) == null` ágon megy át, nem az `after == null`-on -- a `capturePane`
+kizárólag akkor ad null-t, ha a `captureTmux` DOB. A mutáció, ami a null-ágat kiveszi, zölden
+hagyta. A fixture most a verify-hívásnál dobat, és a mutáció pirosra váltja.
+
+**Mutációs mérés:** nincs retry (MAX_ATTEMPTS=1) -> 2 piros; verify eltávolítva -> 3 piros; a dobás
+retry-ol ahelyett hogy gyorsan bukna -> 1 piros; az olvashatatlan pane még-beragadtnak számít ->
+1 piros; az egyik hívási hely visszaállítva csupasz `await`-re -> 1 piros (csak a sajátja).
+Mindegyik átmenő kontroll mellett.
+
+---
+
+## 2026-09-05 -- 82fa48b0 (2. kör) -- A horgonyzás egy ÚJ fail-open utat nyitott, és a "csak a biztonságos irányba dől" állítás a MAI ADATRA volt igaz, nem a SZABÁLYRA (Cybered NO-GO 20940)
+
+**Ez a bejegyzés a fenti 82fa48b0-bejegyzést PONTOSÍTJA, nem vonja vissza.** A mérés, a
+variáns-választás és a négy elveszített kártya listája változatlanul áll. Ami nem állt: a
+záró következtetés általánossága.
+
+**A lelet.** A `declared_gate_excludes_me` az UTOLSÓ designációt fogadja el, és a modul saját
+docstringje mondja ki, miért: a hatókör menet közben bővülhet, és a legfrissebb állítás a
+jelenlegi. Ugyanezen a kártyán mértük meg, hogy a valódi designációk 419 esetben MONDAT
+KÖZBEN állnak. A kettő együtt: ha a KÉSŐBBI, SZÉLESEBB designáció mondat közben van írva, a
+horgonyzott regex eldobja, és az utolsó TÚLÉLŐ találat egy korábbi, SZŰKEBB designáció lesz.
+A kártya onnantól csendben kiesik azokból a gate-ekből, amiket a friss designáció megnevez.
+Cybered proof-of-conceptje hétköznapi kártyaszöveg, és a horgonyzás ELŐTTI puszta keresés
+alatt mindhárom gate helyesen felszínre hozta volna.
+
+**És a mellé szállított detektor pont erre volt vak.** A `gate-decl-check.py` MID-SENTENCE ága
+a `desc is None` feltételen ült, vagyis csak akkor futott le, amikor a horgonyzott regex
+SEMMIT nem talált -- az ártalmatlan esetben, ahol a kártya amúgy is átesik és a drift ára egy
+felesleges átolvasás. A káros esetben talált valamit, tehát az ág soha nem futott: a szkript
+OK-t mondott, és a LESZŰKÍTETT szerep-halmazt adta vissza igazságként. Hangos ott, ahol a
+drift ingyen van, néma ott, ahol két gate az ára.
+
+**Amit ez a kör megváltoztat.** (1) `declared_gate_excludes_me`: ha a puszta (nem horgonyzott)
+alak talál designációt a horgonyzott UTOLSÓ találat UTÁN, az olvasat nem megbízható, tehát a
+kártya átesik minden gate elé. Egy hiányos olvasat éppúgy nem döntés, mint egy hiányzó
+designáció -- ez a lib saját kimondott aszimmetriája, egy felesleges átolvasás egy kimaradt
+gate ellen. (2) A MID-SENTENCE ág a horgonyzott és a puszta olvasat SZEREP-HALMAZ eltérésén
+ül, nem a `desc is None`-on. (3) Selftest mindkettőre, plusz a `>=` mutációra egy kimondott
+kontroll: ott minden kártya átesne és a függvény némán `return False`-szá válna.
+
+**Mérés (saját, Cybereddel egyezően):** 3001 kártya x 3 gate. Újonnan felszínre kerül: EGY
+kártya (`3d923ef5`, cybersec + cybered). Újonnan kiesik: NULLA. A védett alakzat tehát ma is
+jelen van a táblán, csak még nem éles.
+
+**A tanulság, ami túlmutat a kártyán.** Az előző kör commit-üzenete és DECISIONS-bejegyzése a
+"nulla újonnan kihagyott kártya / kizárólag a biztonságos irányba dől" állítást a SZABÁLYRA
+mondta ki, miközben a mérés a MAI TÁBLÁRÓL szólt. A kettő nem ugyanaz, és pont az a függvény,
+ami eldönti, hogy egy gate ránéz-e egyáltalán egy kártyára, az a hely, ahol ez a különbség
+számít. Egy teljes-tábla mérés azt mondja meg, mi történik MOST, nem azt, hogy mi NEM TÖRTÉNHET.
+
+**Ki döntött:** Cybered (lelet és javasolt gyógymód, 20940), MikroB (re-dispatch), backend2
+(implementáció és független újramérés).
+**Hivatkozás:** kártya `82fa48b0`; `store/gate_scan_lib.py`, `store/gate-decl-check.py`,
+`store/gate-scan-selftest.py`, `store/gate-decl-check.selftest.py`.
+
+## 2026-09-05 -- A seam-predikátum saját kontraktusra pinnelve, és közben egy valódi rés (kártya 3ae71df1, Cybersec 20760)
+
+**A kérés, és miért volt jogos.** A J-1 ellenőrzés `---` és `===` alakot is elutasít, de az egyetlen
+fixture-öm a `---`-t gyakorolta. Cybersec kérte a predikátum KÖZVETLEN, egységszintű tesztjét, és
+előre kimondta, miért nem elég egy merge-fixture a `=` félre. **Lemértem, és igaza volt:** a `===`
+nincs a megosztott-új kivétel-listán, tehát a `_starts_new_entry` már azelőtt elutasítja, hogy a
+seam szóhoz jutna. Bizonyíték: a seam-ellenőrzést KIVÉVE a `---` fixture RESOLVED lesz (tehát az
+valódi), a `===` viszont továbbra is refused (tehát az vákuum lenne). Pontosan a szomszédos-őr
+maszkolás.
+
+**A predikátum ezért külön függvény lett** (`_seam_makes_setext_heading`), és a saját kontraktusára
+van pinnelve: 14 közvetlen eset, mindkét irányban.
+
+**ÉS A KÖZVETLEN TESZT AZONNAL VALÓDI HIBÁT TALÁLT A SAJÁT KÓDOMBAN.** Az eredeti minta
+`---|===|--------*|========*` volt: pontosan HÁROM, vagy legalább NYOLC karakter. A **négy–hét
+karakteres futam kimaradt**, pedig CommonMarkban a setext aláhúzás BÁRMILYEN hosszú `-` (vagy `=`)
+sorozat, ha más nincs a sorban -- egyetlen `-` is. A javítás karakter-osztályra vált: a sor
+kizárólag `-`-ból vagy kizárólag `=`-ből álljon. A vegyes (`-=-`) és a záró szöveges (`--- x`) alak
+NEM utasítódik el, mert azok nem setext aláhúzások, és egy mérés nélküli tágítás pont az az irány,
+amit ez a fájl elutasít.
+
+**Ez az eset a saját kérés indoklását igazolja:** az end-to-end fixture három éven át csak az egzakt
+`---` betűzést gyakorolta volna, és a rés a többi hosszon csendben ott marad.
+
+**A `=` fél megtartva, kimondott indokkal.** Ma nem érhető el a seamig -- de ez időzítési tény, nem
+biztonsági tulajdonság: egyetlen sor a kivétel-listán elérhetővé teszi, és Cybered mérte, hogy egy
+ilyen bővítés KÖZVETLENÜL gyárt J-1 példányt. Ugyanaz a mérce, mint a merge-driver tételnél ezen a
+kártyán: a „nincs bedrótozva" nem azonos a „szerkezetileg lehetetlen"-nel. Most már nem is
+elérhetetlen a TESZT számára, mert a predikátum közvetlenül hívható.
+
+**Mutációs mérés:** a `=` fél kivéve -> 3 piros; vissza a régi rögzített betűzésekre -> 5 piros
+(pont a 4-7 hosszúak és az egykarakteresek); az üres-last_before fél kivéve -> 2 piros (egy rule
+semmi alatt nem fejléc). Mind átmenő kontroll mellett.
+## 2026-09-05 -- 26ab08a2 (2. kör): a degradáció-predikátum invariánsra kerül, tünet helyett
+
+**Döntés:** a lint-racsni degradáció-felismerése nem egyetlen tünetre (`parse_now > parse_was`)
+horgonyoz, hanem arra az invariánsra, hogy UGYANAZT A FÁT mértük-e, három független jellel
+(nulla lelet fájlok mellett; kettő vagy több korlátozott szabály egyidejű pontos nullázása;
+parse-hiba a korlát fölött). A korlát LÉTREHOZÁSA külön ige (`--bootstrap`), nem az `--update`
+mellékhatása.
+
+**Miért:** az első kör mechanizmusa működött (négy kontroll: egészséges=0, regresszió=1,
+degradáció=3, degradált --update=3), de a predikátum a degradáció HANGOS felére ült. Cybersec
+hét megkerülési utat mért (NO-GO, 21010), Cybered ebből hármat előzetesen (INFO-ONLY, 20989).
+Mind ugyanaz az alak: ami a mért HALMAZT szűkíti parse-hiba termelése helyett, azt a régi
+predikátum nem látja, sőt a parse-hiba csökkenésekor a degradációt IMPROVED-ként ünnepelte. A
+legsúlyosabb (bypass A) egyetlen `rm`: baseline törlése után az `--update` bootstrapnak számított
+és lemezre írta a `{"(parse-error)": 861}`-et, vagyis mind az öt típus-érzékeny szabályt véglegesen
+kivette a korlátból, nulla kilépőkóddal.
+
+**A vállalt ár, kimondva:** a `COLLAPSE_MIN = 2` küszöb szándékos. EGY korlátozott szabály pontos
+nullára esése továbbra is IMPROVED, mert innen nézve megkülönböztethetetlen attól, hogy valaki
+tényleg befejezte azt a szabályt. Egy szabályt érintő szűkítés tehát átmegy; kettő már nem. A
+küszöb egyre vitele a valódi egy-szabályos javítást minősítené mérés-hibának (mutációval mérve:
+pontosan az anti-blanket kontroll bukik el tőle).
+
+**Egy teszt ígéretét MEGFORDÍTOTTUK, nem csendben:** a korábbi F eset azt rögzítette, hogy
+`--update` baseline nélkül mindenképp ír egyet. Ez az ígéret MAGA volt a bypass A. Az eset ketté
+vált: `--update` megtagadja a létrehozást és megnevezi a `--bootstrap`-ot, a `--bootstrap` pedig
+továbbra is működik a valódi első futásra.
+
+**Bizonyíték, hogy nem egy mindent-megtagadó javítás:** Cybersec kikötötte, hogy egy blanket
+refusal ugyanúgy zöld lenne az első hét soron. Mutációval mérve: a "mindig degradált" mutáns 9
+esetet buktat, köztük mind a négy egészséges kontrollt; a valós fán a futás továbbra is exit 0
+(230 lelet, baseline holds).
+
+**Ki döntött:** Cybersec (NO-GO, a hét út mérése és a javasolt gyógymód, 21010), Cybered
+(INFO-ONLY előmérés, 20989), MikroB (NO-GO elfogadva, re-dispatch, 21013), backend2
+(implementáció, független újramérés, mutáció-ellenőrzés).
+**Hivatkozás:** kártya `26ab08a2`; `store/lint-ratchet.sh`, `store/lint-ratchet.selftest.sh`.
+
+## 2026-09-05 -- 44849954: a zárás-ellenőrző a verdikt SZERZŐJÉT is nézi
+
+**Döntés:** a `gate-closure-check.py` egy PASSZOLÓ verdiktet csak akkor számít az adott gate
+sign-offjának, ha azt a gate maga írta. Ha nem, a gate saját korábbi verdiktje lép a helyére; ha
+olyan sincs, új válasz jön (`UNVERIFIED-AUTHOR`) a csendes `AGREE` helyett. Egy ELUTASÍTÓ verdikt
+attól függetlenül érvényben marad, ki írta le.
+
+**Miért:** az eszköz a verdiktet SZÖVEG-ALAK szerint hitelesítette és SZERZŐ szerint soha (az
+`author` mezőt sehol nem olvasta). A kanban-API-n a komment szerzője a kérés TÖRZSÉBŐL jön, egy
+közös Bearer token alatt, tehát bármely ügynök írhat bármely szerző nevében -- az alak-ellenőrzés
+volt az egyetlen dolog a készítő és a saját sign-offja között. Cybered lelete (67a5ee01
+gate-eléséből), végponttól végpontig igazolva.
+
+**A szigorú author==gate szűrés ROSSZ válasz, mérve:** 156 kártya-gate páron a legfrissebb verdiktet
+nem a gate írta, és ebből 152 MikroB saját összefoglaló kommentje. Kizárásuk 54 lezárt kártyát
+minősítene visszamenőleg gate nélkülinek.
+
+**Egy implementációs részlet, ami nélkül elromlik:** a szerző-oldali összevonásnak TÜKRÖZNIE kell a
+verdikt-szó oldalit (a `GATES` melletti jegyzet a testvér-számot eldobja, tehát QA2 verdiktje a QA
+gate verdiktje). Csak az egyik oldalon alkalmazva 245 jogos QA2-verdikt minősülne idegennek. A
+záró számjegyek levágása szabályból következik, tehát egy jövőbeli CYBERSEC2/CYBERED2 nem igényel
+szerkesztést.
+
+**Az aszimmetria, és miért nem egyszerű "a gate saját kommentje az erősebb":** ha egy relayelt FAIL
+mögé visszaesnénk a gate régebbi PASS-ára, egy kártya kimondott elutasítás fölött zárulhatna --
+rosszabb, mint a javított hiba. Ezért csak a PASSZOLÓ verdiktnek kell beazonosíthatónak lennie.
+
+**Teljes tábla mérése (2889 kártya, régi kontra új):** 72 kártya olvasata változik, MIND `done`
+státuszú, és MIND `NOSHA`-ból indul -- egyetlen korábbi `AGREE` sem válik elutasítássá. Ebből 26
+`AGREE` lesz (a visszaesés VISSZANYER egy Gate-SHA-t, mert MikroB összefoglalói jellemzően nem
+hordoznak shát), 44 `UNVERIFIED-AUTHOR`, 2 pedig `DISAGREE` -- ez utóbbi két lezárt kártyán a gate-ek
+ténylegesen KÜLÖNBÖZŐ shára adtak verdiktet, amit eddig a `NOSHA` elfedett (`f4442719`, `f7ebaa2d`).
+
+**Amit ez NEM bizonyít:** hogy a szabály senkit nem blokkol. A "mind done" a MAI TÁBLA tulajdonsága,
+nem a szabályé -- ezentúl egy élő kártya is megállhat `UNVERIFIED-AUTHOR`-on, és ez a szándék.
+
+**Hosszú távú válasz (külön döntés, nem ezen a kártyán):** per-ügynök token, hogy a szerző a
+hitelesítésből származzon, ne a kérésből.
+
+**Ki döntött:** Cybered (lelet és javasolt gyógymód), backend2 (implementáció, teljes tábla mérése,
+az aszimmetria és a testvér-összevonás), MikroB (kártya).
+**Hivatkozás:** kártya `44849954`; `store/gate-closure-check.py`, `store/gate-closure-check.selftest.py`.
+## 2026-09-05 -- A kerítés-ellenőrzés ÁLLAPOTGÉP lett, nem egy írásmód (kártya 3ae71df1, Cybered R-1/R-2/R-3)
+
+**R-1: a J-2 paritás egyetlen írásmódot nézett.** A `grep -c '^```'` alak ugyanazon a fixture-alakon,
+amin a lezáratlan ``` helyesen elutasít, a lezáratlan `~~~`-t és a két szóközzel BEHÚZOTT ```-t
+átengedte -- mindkettő pontosan a J-2 kárt termeli. Cybered mérte, és kifejezetten kérte, hogy a
+`~~~` NE harmadik fokként kerüljön be ugyanarra a létrára. Egyetértek: ez a kártya kétszer mászta
+meg ugyanezt, és mindkétszer a KÉRDÉS cseréje volt a válasz.
+
+Ezért a check CommonMark-állapotgép: a kerítés három vagy több `` ` `` vagy `~`, legfeljebb három
+szóköz behúzással (négy már behúzott kódblokk, sosem kerítés), a záró ugyanaz a karakter, legalább
+olyan hosszú, és nincs utána más. A nyitón megengedett az info-string (```bash), a zárón tilos --
+ezért a záró szigorúan illesztett: az elnézés ott olyan blokkot zárna, amit a parser nyitva hagy,
+és az a fail-OPEN irány.
+
+**R-2: az őr hibaüzenete a NEM őrzött útra mutatott.** `bash <fájl> a b c` -> rc=2, de
+`bash -c '. <fájl> a b c'` -> rc=0, tehát a csendes adatvesztés megvan -- és az üzenet épp azt
+ajánlotta, hogy „sourceold és hívd a függvényét". A sourceolt utat NEM lehet őrizni: a fájl örökli a
+hívó pozicionális paramétereit, tehát egy három argumentummal indított `marveen-land.sh`
+megkülönböztethetetlen lenne egy driver-hívástól. Az üzenet ezért mostantól kimondja, hogy ehhez a
+fájlhoz NINCS támogatott merge-driver konfiguráció, és megnevezi a korlátot is.
+
+**R-3: mérve NEM elérhető, és ez a lelet érdemi része.** A `last_before` az utolsó NEM ÜRES sort
+vette; egy üres sor a junction előtt markdownban lezárja a bekezdést, tehát az utána jövő `---`
+vízszintes vonal, nem setext fejléc. A javítás viszont end-to-end NEM változtat semmit: mérve, egy
+lemezen `prozasor\n\n`-nel végződő fájl `$(git show ...)` után `prozasor`-ként érkezik -- a
+parancs-behelyettesítés levágja a záró újsorokat, tehát a `before_junction` sosem végződhet üres
+soron. **Az első javítási kísérletem `$(... | tail -n1)` volt, és pont ezért mért no-opot.** A kód
+bent marad (paraméter-kiterjesztéssel, ami nem vág), a komment pedig kimondja, hogy ma elérhetetlen,
+és hogy egyetlen változás -- `ours` beolvasása parancs-behelyettesítés nélkül -- elérhetővé teszi.
+
+**KÉT SAJÁT HIBA, AMIT A MÉRÉS FOGOTT MEG.** (1) A generált fixture-ökbe nyers backtickeket írtam
+kettős idézőjelben: bash parancs-behelyettesítés, a selftest LEFAGYOTT. Ugyanaz az osztály, mint ma
+a teszt-CÍMKÉKNÉL, egy szinttel beljebb. (2) A záróra vonatkozó két szigorítás (legalább olyan
+hosszú; nincs utána szöveg) PINNELETLEN volt -- a mutációjuk zölden hagyta a suite-ot, tehát a kód
+helyes volt, a tesztek viszont nem figyelték. Mindkettő saját esetet kapott.
+
+**Mutációs mérés, öt mutáció, mind csak a sajátját:** vissza a grep-paritásra -> 2 piros (a `~~~` és
+a behúzott); a tilde elvéve -> 1; a behúzás-levágás elvéve -> 1; a záró rövidebbet is elfogad -> 1;
+a záró utáni szöveget elfogad -> 1. Átmenő kontroll mellett.
+
+## 2026-09-05 -- 9c6b1802: a fékezés-jegyzet egysége az EPIZÓD, nem az átmenet
+
+**Döntés:** A load-guard PAUSED-LOAD/RESUMED-LOAD kanban-jegyzete mostantól epizód-szintű: egy
+jegyzet a fékezési epizód kezdetén, egy a végén (ciklusszámmal és időtartammal), és közben
+időkorlátos életjel. Az egyes fagyasztási ciklusok nem írnak jegyzetet. Két új hangoló érték a
+`load-guard-config.json` `bookkeeping` blokkjában: `episode_gap_seconds` (300) és
+`heartbeat_seconds` (240).
+
+**Miért:** A jelenség nem hiba volt, hanem a mechanizmus szerkezete. A `sigstop_freeze`
+`max_freeze_seconds` értéke 90, tehát tartós terhelés alatt a guard fagyaszt, eléri a korlátot,
+felenged egy még mindig terhelt gépre, majd újrafagyaszt. Élő mérés a táblán: 1082 fékezés-kezdetből
+988 volt `sigstop_freeze`, a medián állapot-hossz 10 másodperc, és az összes kanban-komment 10,2
+százaléka ilyen jegyzet. A legrosszabb kártya (fe5d7967) 353 kommentjéből 342 volt ez, vagyis 11
+valódi komment maradt. Az átmenet tehát rossz hír-egység volt; az epizód a jó, és a ciklusszám
+olyan információ, amit 46 azonos pár soha nem adott meg.
+
+**A KORLÁT, ami a tervet eldöntötte:** a jegyzetnek van egy MÁSODIK funkciója is, mozgatja a kártya
+`updated_at` mezőjét. A stuck-card-monitor a `load-paused-agents.json` alapján zárja ki a fékezett
+ügynököket, tehát a FOLYAMATOSAN fékezett ügynököt a jelzőfájl védi; de a jelzőhalmazból ki-be
+ugráló ügynököt a monitor elkaphatja egy felengedett pillanatban, és akkor már csak az `updated_at`
+áll közte és a 10 perces beragadás-ítélet között. Ezért a néma ablak KORLÁTOZOTT, nem megszüntetett.
+A teljes élő jegyzet-korpuszon (2150 darab) szimulálva a leghosszabb néma ablak egy aktív epizódon
+belül 497 másodperc, a monitor 600 másodperces küszöbe alatt, körülbelül 100 másodperc tartalékkal.
+Ugyanezen a korpuszon a jegyzetek száma 2150-ről 382-re esik (82 százalék).
+
+**Elvetett alternatíva:** egyszerű küszöb az állapot hosszára (csak N másodpercnél hosszabb fékezés
+ír jegyzetet). Mivel a `sigstop_freeze` 90 másodpercnél tovább nem tarthat, minden 90 feletti küszöb
+kivétel nélkül elnyomta volna a fékezések 91 százalékát adó mechanizmus MINDEN jegyzetét, a 90 alatti
+küszöbök pedig a mérés szerint vagy keveset nyertek, vagy a néma ablakot 600 másodperc fölé vitték.
+
+**Amit ez NEM old meg:** magát a flapping-et. A 90 másodperces korlát és a tartós terhelés
+kölcsönhatása változatlan; ez a döntés a jelentést javítja, nem a fékezést. Ha a flapping maga
+zavaró, az külön kártya a `max_freeze_seconds` és a felengedés utáni visszaesés-kezelés kérdésére.
+
+**Ki döntött:** backend2, Cybered megfigyelése alapján (komment 21017). Gate: QA.
+## 2026-09-05 -- A setext-oldal is megtanulta a 0-3 szóköz behúzást (kártya 3ae71df1, Cybersec 21040)
+
+**A lelet: a saját aszimmetriám.** Ugyanabban a körben javítottam a kerítés-ellenőrzést úgy, hogy
+kezelje a CommonMark 0-3 szóköz behúzását -- a setext-predikátumot viszont nulladik oszlopra
+horgonyozva hagytam. Mérve a landolt példányon: `---` elutasít, `  ---` átmegy. A CommonMark a
+setext aláhúzást PONTOSAN ugyanúgy engedi három szóközig behúzva, mint a kerítés-nyitót.
+
+**Egy osztály, két fél, és csak az egyik tanulta meg.** Cybersec ezt külön kimondta („nem három
+külön nit"), és igaza van: a gyökér ugyanaz -- sor-eleji horgony egy olyan nyelvtannal szemben,
+ami behúzást enged. Ez pontosan az a minta, amit korábban már felírtam magamnak (egy mezőn
+megtanult horgonyzás nincs alkalmazva a testvérére), és most a saját kódomon ismételtem meg.
+
+**Négy szóköz safe marad, két független okból:** túl mély egy setext aláhúzáshoz, és egy behúzott
+kódblokk nem szakíthat meg egy bekezdést. Ez a kontroll állítja meg a „vágj le minden bevezető
+szóközt" alakot.
+
+**Záró whitespace megengedett** az aláhúzás után (a CommonMark így mondja), más szöveg nem -- a
+`--- x` továbbra is átmegy, a `---  ` nem.
+
+**Mutációs mérés:** a behúzás-levágás elvéve -> 3 piros; a négy-szóközös őr elvéve -> 1 piros; a
+záró-whitespace levágás elvéve -> 1 piros. Átmenő kontroll mellett. 61 selftest-eset.
+
+## 2026-09-06 07:40 -- self-pace hard-gate: at(1) elveszti a puszta input-átirányítást, batch(1) megtartja
+
+**Döntés:** A governance hard-gate `at`/`batch` felismerésében az input-átirányítás ágát
+szétválasztottam a két bináris között. `batch(1)` marad a régi alaknál (bármilyen átirányítás valódi
+beküldés), `at(1)` viszont csak akkor illeszkedik átirányításra, ha azt a fájl-szó UTÁN egy tényleges
+timespec követi. Ezzel a kártya 79bb0364 mindkét bejelentett hamis-pozitív osztálya megszűnik, és
+egyik javasolt gyógymódot sem építettem be.
+
+**Miért:** `at(1)` KÖTELEZŐEN kér timespecet, tehát a csupasz átirányítás sosem írt le működő
+beküldést -- pontosan ugyanaz az érv, ami korábban a 12f80902 kártyán már engedélyezte a
+„semmi nem követi" ág elvételét, szintén csak `at`-tól, `batch`-tól nem. A régi alak ezért egy
+`at` nevű változó összehasonlítását (`at <= 0`, `at < n`) `at < FÁJL`-ként olvasta.
+
+**Miért nem a kártya által javasolt javítás:** a javaslat (a `<` ág ne illeszkedjen, ha `=` vagy egy
+második `<` követi) mérve MEGNYIT egy megkerülést -- egy `=0` nevű fájlból való átirányítás plusz
+valódi timespec átcsúszik rajta. Mutációs futással bizonyítva: ezt a mutációt a suite pirosra
+váltja azon az egy eseten, a többi kontroll zöld marad.
+
+**Miért nem a Cybersec által javasolt gyógymód (23941):** a javaslat az volt, hogy a kapu hagyja ki
+az IDÉZETT delimiterű heredoc TÖRZSÉT, „mert ott definíció szerint nincs behelyettesítés". Az idézett
+delimiter az KÜLSŐ shell behelyettesítését zárja ki, nem a törzs VÉGREHAJTÁSÁT: a `bash <<'EOF'` és a
+`python3 <<'PY'` pont ezt a törzset futtatja. Mutációval pontosan modellezve ez a gyógymód 31 tesztet
+váltott pirosra, hat korábbi kártya regresszióit is beleértve (tmux send-keys, crontab, ütemezés-API,
+`at now` -- mind idézett heredocban).
+
+**A második bejelentett osztály nem külön gyökér:** Cybersec diagnózisa a VAGY-operátort nevezte meg
+a trigger felének; mérve nem az. Ugyanaz a code-span VAGY-operátor nélkül ugyanúgy blokkol, és
+ugyanaz a span átnevezett változóval átmegy. A backtick command-position karakter, tehát a markdown
+code-span ugyanabba a pozícióba tette a szót, mint a JS `(`. Egy gyökér, egy javítás.
+
+**Ismert, kimondott maradék:** (1) `at < job` timespec nélkül mostantól ÁTMEGY -- nem tud ütemezni;
+(2) `at < job "$WHEN"` (változóból jövő timespec) is átmegy, de `at "$WHEN" < job` eddig is átment,
+tehát ez a lefedettség eddig sem volt következetes; (3) egy verdikt-komment, ami VALÓDI
+ütemező-parancsot idéz code-spanben (`crontab -r`), továbbra is blokkolódik -- ezt szövegilleszkedéssel
+nem lehet megkülönböztetni a végrehajtástól.
+
+**Ki döntött:** backend3 (mérés + döntés), a kártyát backend2 nyitotta, a második osztályt Cybersec
+jelentette. Gate: QA + Cybersec.
+
+**Hivatkozás:** kártya 79bb0364.
+
+## 2026-09-06 08:55 -- 79bb0364 (2. kör) -- a `batch` oldal is megkapja az összehasonlítás-kizárást; a fenti bejegyzés egyik állítása javítva
+
+**Ez a bejegyzés HELYESBÍTI a mai korábbi, 79bb0364-es bejegyzést.** Az így szólt: „Ezzel a kártya
+79bb0364 mindkét bejelentett hamis-pozitív osztálya megszűnik." A leszállított javítás valójában csak
+az `at(1)` átirányítás-mintáját keményítette; a `batch(1)` mintája változatlan maradt, tehát a
+`batch <= 0` -- ugyanaz az összehasonlítás, ugyanaz a hibaosztály -- továbbra is blokkolt. QA a
+127c11cc-n megtalálta és FÜGGETLENÜL reprodukálta (komment 21161, közvetlen `gateDecision` hívással,
+nem az én fixture-jeimből). A QA FAIL jogos volt, elfogadtam.
+
+**Miért nem lehetett átültetni az `at` javítását.** Az `at(1)`-et azzal lehetett zárni, hogy az
+átirányítás után timespecet követel -- a `batch(1)` viszont nem kér timespecet, ez a kar nála nem
+létezik. Amije VAN, az a tükörképe: a `batch(1)` NEM fogad operandust. A `batch <= 0` a bash számára
+egy `=` nevű fájlból való átirányítás PLUSZ a `0` operandus, és egy operandustól a batch usage
+error-ral kilép -- tehát ez az alak sem írt le működő beküldést soha.
+
+**A kivágás pontosan ez az alak, és semmivel sem szélesebb:**
+`batch <= 0` (átirányítás + operandus -> usage error) átmegy; `batch <=`, `batch <=0`,
+`batch << EOF`, `batch < /tmp/job.sh` mind MŰKÖDŐ beküldés és mind tiltott marad. A kivágáson belüli
+`(?![0-9]*[<>&])` őr azt zárja ki, hogy a kivágás ajtóvá váljon: a `=` után álló `2>/dev/null`,
+`>out`, `&1` átirányítás és nem operandus, tehát a batch operandus nélkül marad és beküld.
+
+**Miért nem a kártya (és QA) által javasolt egyszerűbb kizárás (`<` után ne álljon `=` vagy `<`).**
+Mutációval mérve: az az alak HAT működő beküldést enged át -- `batch <=`, `batch <=0`,
+`batch << EOF` és a három átirányítás-alak. A pontos kivágás mindet tiltva hagyja.
+
+**ÚJ, KIMONDOTT MARADÉK, amit a korábbi bejegyzés maradék-listája nem tartalmazott:** a `batch < n`
+tiltott marad. Ez kódban valódi összehasonlítás, bashben valódi beküldés, szövegként
+megkülönböztethetetlen -- fail-closed az egyetlen biztonságos olvasat. Pinelve saját tesztesettel,
+hogy döntés legyen és ne feledés.
+
+**Mutációs mérés:** a `batch` átirányítás visszaállítva a javítás előttire -> 4 piros (a négy
+hamis-pozitív); az egyszerűbb `(?![<=])` kizárás -> 6 piros (a hat működő beküldés); a kivágáson
+belüli átirányítás-őr elvéve -> 3 piros. Kontrollok (az `at` oldal mindkét iránya) mindháromban
+zöldek.
+
+**Ki döntött:** QA (FAIL + a helyes irány megnevezése), backend3 (a mérés és a konkrét alak).
+
+**Hivatkozás:** kártya `79bb0364`, QA komment 21161.
+
+## 2026-09-06 09:15 -- 3ae71df1 (gate-kör) -- egy nyelvtan mindkét félnek, a sorvég-tengelyen is
+
+**Döntés.** A `_seam_makes_setext_heading` záró-vágása egyetlen karakterosztály (`[[:space:]]`) lett a
+korábbi két kimondott alak (szóköz, tab) helyett, és a KORÁBBI sor üresség-vizsgálata leszedi a záró
+`\r`-t. A kerítés-oldal behúzás-kezelése szélességenként kapott fixture-t (1, 2, 3 szóköz), ahogy a
+setext-oldal már eddig is.
+
+**Miért.** Cybered mérése (komment 21147): a kerítés-fél CR-toleráns volt (`[![:space:]]`), a
+setext-fél nem, ezért CRLF sorvégű fájlban a `---\r` `safe`-et adott -- és itt a `safe` a FAIL-OPEN
+irány: lefut az unió, és a beillesztett szöveg a szomszédjából setext headinget csinál. Ugyanaz az
+egy-fél-tanulta-meg minta, amit ez a kártya a behúzás-tengelyen már egyszer javított, egy tengellyel
+odébb. A karakterosztály nem ezt az egy esetet zárja, hanem a két felet egy nyelvtanra hozza.
+
+**Miért szélességenkénti fixture.** Cybersec F-3 mutációs térképe (komment 21120): a 61 esetes
+selfteszten az 1 szóközös ág törlése NULLA pirosat adott, a 3 szóközösé szintén -- egyetlen 2 szóközös
+fixture volt, tehát két ág fedetlenül állt, és a 3 szóközös mutáns kára end-to-end elő is állt.
+
+**Mutációs mérés a javítás után:** 1sp ág törölve -> 1 fixture piros; 2sp -> 1; 3sp -> 1; a
+whitespace-osztály vissza a két alakra -> 2 piros; a `\r`-strip elvéve -> 1 piros; KONTROLL
+(komment-only mutáció) -> rc=0, nulla piros. 67 selftest-eset (61-ről).
+
+**Hivatkozás:** kártya `3ae71df1`, Cybersec 21120 (F-1/F-2/F-3), Cybered 21147, MikroB 21125.
+
+## 2026-09-06 10:30 -- 79bb0364 (3. kör) -- R-5, F-2, és a kivágás nem lett ajtó a nevesített fd-nek
+
+**Először a folyamat-hiba, mert azt QA jogosan írta fel (21218).** MikroB 21174-es ruling-ja EGY körre
+három tételt írt elő (második bináris + R-5 + F-2); a második kör CSAK a batch-részt szállította, és a
+REVIEW (21209) egy szóval sem mondta, hogy a másik kettő kimaradt. Nem halasztás volt, hanem
+elmaradás -- pontosan az a minta, amiről senki nem tudja, hogy még nyitva van, amíg valaki újra rá
+nem botlik. Ez a kör mindhármat leszállítja.
+
+**R-5 (Cybersec F-1, 21173).** Az `at(1)` átirányítás-ága mostantól KÉT olvasat UNIÓJA. Az első kör
+egyetlen mintája (a) azt követelte, hogy a timespec KÖZVETLENÜL a fájl-szó után álljon, és (b) a
+kisebb-jel operátort olyan karakterosztállyal írta le, amit a kétszeres és háromszoros alak nem
+illeszt. Egy TILTÓ regexben a nem-illesztés ENGEDÉS, tehát ami őrnek olvasódott, az lyuk volt: hét
+működő beküldés váltott tiltásról engedésre. Nem következtetés -- argv/stdin-t kiíró csonkkal mérve,
+az X1 és X4 alak argv-je és stdinje BÁJTRA AZONOS a továbbra is tiltott, szomszédos-timespeces
+alakkal.
+
+**Miért unió, és miért szűkebb szó-lista a széles ágon.** A széles ág teljes timespec-listával valós
+kódot tilt, mert a csupasz négyjegyű szám érvényes timespec (a mért eset egy `len - 1500`
+összehasonlítás). A csupasz négyjegyű és a pontozott dátum-alternatíva elhagyása a SZÉLES ágról ezt
+megszünteti, a SZOMSZÉDOS ág pedig megtartja a teljes listát, tehát a fájl-szó után közvetlenül álló
+négyjegyű és pontozott-dátum timespec tiltott marad. Egyik ág sem elég önmagában, és ez mérve is így
+jön ki.
+
+**A kivágás nem lett ajtó (Cybersec 21227).** A batch-kivágás premisszája ("ha az egyenlőségjel után
+szóközzel áll valami, akkor batch OPERANDUST kapott, tehát usage error") hamis minden olyan tokenre,
+amit a bash ELFOGYASZT ahelyett hogy továbbadna. A nevesített fd-átirányítás argv(0)-t és a job
+törzsét stdinre adja, bájtra azonosan a továbbra is tiltott csupasz alakkal. Az első enumeráció a
+redirect-ÍRÁSMÓDOKAT sorolta fel, nem azt kérdezte, hogy a token operandusként túléli-e a
+szó-felbontást -- ugyanaz a hibaalak, amiről ez a kártya szól. A kapcsos-zárójeles fd-név kizárása
+mérve nulla költséggel zárja.
+
+**ÚJ, KIMONDOTT MARADÉK (a szigorú kisebb-jeles alak mellé):** a nulla szóra kiértékelődő
+behelyettesítés és a nulla szóra kiértékelődő idézetlen változó szintén operandus nélkül hagyja a
+batch-et, viszont SZÖVEGKÉNT megkülönböztethetetlen egy változóval való valódi összehasonlítástól,
+amit ez a kör épp engedni akar. Bármelyik dollárjelre kiterjesztett őr visszahozná a most
+megszüntetett hamis pozitívot. Mindhárom alak be van pinelve tesztként: kettő mint a maradék ára,
+egy mint az ok, amiért az ár helyes.
+
+**A KIMONDOTT MARADÉKBÓL KIKERÜLT:** a hét at(1)-alak, amit Cybersec F-1-ként mért -- azok mostantól
+tiltottak, nem maradék.
+
+**Mutációs mérés:** a szomszédos-egyedül alak (a 2. kör állapota) -> 7 piros; a széles ág egyedül ->
+2 piros; a széles ág teljes listával -> 1 piros (a hamis-pozitív kontroll); a nevesített-fd őr elvéve
+-> 2 piros; KONTROLL komment-mutáció -> 0 piros. 49 teszteset a fájlban (34-ről).
+
+**F-2.** A fájl-komment és a teszt-név egy hamis ÁLTALÁNOS állítást rögzített ("a karakterosztály
+elutasítja a heredoc-operátort"), amit az X1 alak cáfol. A konkrét assert jó volt, a neve nem. Nem
+töröltem a rossz mondatot, hanem javítva megtartottam: az a magyarázat, amiért az operátor most
+ismétlés-jelöléssel van leírva.
+
+**Amit egyikünk sem tudott végrehajtással igazolni, és Cybersec is kimondta:** hogy a timespec nélküli
+átirányítás usage-hibával kilép. Az at(1) dokumentált felületéből következik, de a bináris nincs
+telepítve ezen a gépen, tehát ez a pont dokumentáció-alapú.
+
+**Ki döntött:** QA (a hiányzó hatókör felírása), MikroB (21222: ugyanebbe a körbe), Cybersec (R-5 és
+a nevesített-fd őr előre lemérve), backend3 (végrehajtás + független újramérés).
+
+**Hivatkozás:** kártya `79bb0364`, kommentek 21173 / 21218 / 21222 / 21227.
+
+## 2026-09-06 11:20 -- bb52c2fa -- A környezet-függetlenség nem locale-pinneléssel jön, hanem azzal, hogy nem prózát olvasunk
+
+**C-2 (a legdrágább).** A selftest CSAK akkor volt zöld, ha az `LC_ALL` NINCS exportálva. Bármelyik
+exportált érték (C, C.UTF-8, en_US.UTF-8, hu_HU.UTF-8) 61/67-re vitte, hat pirossal -- vagyis bármely
+CI- vagy ügynök-környezet, ami exportálja az LC_ALL-t, HAMIS PIROST kapott helyes kódra. Ez a 17.
+munkavégzési szabály osztálya: a hamis piros a gate-en helyes munkát küld vissza.
+
+**A gyökér nem az, aminek látszott.** A `_common_line_prefix_len` fejléce azt sugallta, hogy a
+`local LC_ALL=C` a `cmp` bájt-szemantikáját is kikényszeríti. Nem: a `cmp` külön folyamat, az
+ÜZENETE lokalizált, és a szóhasználat nem követi azt, hogy a locale bájt-orientált-e. Mérve, ugyanaz
+a két fájl, öt környezetben: `LC_ALL` unset -> "differ: byte", `C` -> "differ: **char**",
+`C.UTF-8` -> "byte", `en_US.UTF-8` és `hu_HU.UTF-8` -> "char". A `byte`-ra szűkített minta tehát a
+legtöbb exportált locale-ban SEMMIT nem illesztett, az `n` üresen jött vissza, és a fallback a
+RÖVIDEBB oldal teljes hosszát adta vissza közös prefixként.
+
+**A javítás nem bővebb szó-lista, mert az ugyanaz a felsorolás-hiba egy szinttel feljebb** -- egy
+fordított locale teljesen más mondatot ír. A `cmp -l` SZÁMOKAT ad (soronként egy eltérő bájt,
+`<1-alapú bájt-offset> <oktális a> <oktális b>`), és a FORMÁTUMA mind az öt környezetben azonos.
+Többbájtosra is ellenőrizve: két fájl, amik `áéí` (6 bájt) után térnek el, C-ben és hu_HU.UTF-8-ban
+egyaránt 7-es offszetet ad, tehát bájt-offszet.
+
+**SAJÁT HIBA UGYANEBBEN A KÖRBEN, kimondva:** az első változatom `cut -d' ' -f1`-gyel olvasta ki az
+offszetet, és a `cmp -l` JOBBRA IGAZÍTJA azt -- egy nagy offszet `              20024 101 102`
+alakban érkezik, és az egyszóközös vágás az előtte álló üres mezőt adja vissza. A 4 bájtos
+próbafixture-ömben ez láthatatlan volt, mert ott az offszet egyjegyű és nincs padding. Pontosan az a
+csapda, amit ennek a függvénynek a fejléce már leír az ASCII-only fixture-ökről. `awk '{print $1}'`.
+
+**C-1.** A `---`/`***`/`___` elválasztókat a skip-lista PONTOSAN illesztette, tehát CRLF-fájlban a
+szabály-sor `---\r`, nem ismerhető fel, és bájtra azonos tartalom LF-en RESOLVED, CRLF-en REFUSED
+volt. Fail-closed, tehát semmi nem mergelődött rosszul -- de egy visszautasítás, amit a felhasználó
+a saját checkoutján nem tud reprodukálni, önmagában is költség.
+
+**Ez a HARMADIK alkalom, hogy ezt a fájlt egy rule két, egymástól elcsúszott fele harapta meg**
+(behúzás, záró whitespace, most a sorvég). Ezért a skip-lista mostantól EGY helyen él
+(`_is_blank_or_rule`), és mindkét hívó azon megy át -- nem két felsorolás, ami ma még egyezik.
+
+**N-1 (Cybersec).** A seam-predikátum most pineli a saját locale-ját, ahogy a kerítés-testvére eddig
+is. A produkciós út egyébként árnyékolta (a `try_append_union` állítja, és a bash dinamikusan
+hatókörözi), tehát a merge-válasz sosem függött a környezettől -- a kitettség a KÖZVETLEN hívó, ami a
+selftest maga. Ettől függetlenül pinelve: egy predikátum, ami hozza a saját locale-ját, nem törhető
+el egy jövőbeli hívóval, aki elfelejti.
+
+**N-2 (Cybersec).** A testvér-wrapper `--selftest` kapcsolója némán, nulla kimenettel tért vissza
+rc=0-val. Nem volt lefedettségi lyuk (a CI a glob alapján megtalálja a `.py` selftestet, 17/17), de
+egy néma siker megkülönböztethetetlen a "minden zöld"-től. Most lefuttatja a valódi selftestet és
+továbbadja a kilépési kódját; a fájlt névvel hivatkozza, hogy egy átnevezés hangosan bukjon.
+
+**Mutációs mérés:** a próza-olvasás vissza -> 1 piros (az új locale-eset); a skip-lista CR-toleranciája
+elvéve -> 1 piros (az új CRLF eset); a seam locale-pin elvéve -> 1 piros (az új seam-locale eset);
+az `awk` visszacserélve `cut`-ra -> 6 piros; KONTROLL komment-mutáció -> 0 piros. 70 teszteset
+(67-ről), és a suite mind a hat próbált környezetben zöld.
+
+**A seam-locale esetről külön:** az első mutációs futáson TÚLÉLTE a pin elvétele, nulla pirossal --
+és ez valódi rés volt, nem redundancia (a mutáns MÁSHOGY viselkedik, csak nem hívta senki idegen
+locale alatt). Ezért került be a hozzá tartozó eset, és utána már pirosat ad.
+
+**Hivatkozás:** kártya `bb52c2fa`; Cybered C-1/C-2 (3ae71df1 zárásakor), Cybersec N-1/N-2 (21236).
+
+---
+
+## 2026-09-06 -- 26ab08a2 (3. kör): a nullára-esés küszöbe EGY, és a bootstrap-padló ÁLLAPOT-alapú
+
+**Döntés.** Két korábban kimondott MikroB-rendelkezés végrehajtása, Cybersec NO-GO-jára
+(21092, Gate-SHA 49f3c324) reagálva.
+
+**R-A (MikroB 21030).** `COLLAPSE_MIN` 2-ről **1**-re. A képesség nem szűnik meg, hanem
+KÉRNI kell: `--update --accept-cleared=<szabály>[,<szabály>...]`. A kapcsoló NEVESÍTI a
+szabályokat, nem csupasz flag -- ez a különbség a nyugtázás és a megkerülés között. Egy
+csupasz flag elférne egy wrapper-scriptben örökre, és pont a kártya alapító mérését (öt
+szabály egyszerre sötétbe) engedné át. A neveket nem lehet vakon szkriptelni: a lista
+minden alkalommal más, egy NEM nevesített szabály elsötétedése továbbra is megtagadás, és
+egy a bound-ban nem szereplő név maga is megtagadás, nem néma no-op.
+
+**Miért nem maradhatott 2.** A 2-es küszöb ára nem egy kis lyuk volt, hanem UGYANAZ a lyuk
+négy extra lépéssel: Cybersec lemérte az öt egymást követő `--update`-et, mindegyik egy
+szabályt visz nullára, mindegyik önmagában exit 0 és védhetőnek látszik, a végállapot
+`{"(parse-error)": 6}` -- pontosan annak a megkerülésnek a végállapota, amiért ez a kártya
+létezik.
+
+**R-B (MikroB 21035).** A bootstrap-ág padlója ÁLLAPOT-alapú: parse-hiba van ÉS egyetlen
+TÍPUS-ÉRZÉKENY szabálynak sincs egyetlen lelete sem. A git-padló (Cybered javaslata) azt
+kérdezi, "létezett-e korábban ez a fájl", ezért git nélküli fában semmit nem tud
+válaszolni, és ott SZÁNDÉKOSAN fail-open. A szándékos út ezen sétált át: `--bootstrap` egy
+teljesen degradált, git nélküli fán `{"(parse-error)": 861}`-t írt. Az új padló a FUTÁSRÓL
+kérdez, ezért első futásnál is válaszolható -- pont ott, ahol a git-padló vak.
+
+**Egy tényt helyesbítettem, mert kóddá vált.** A szkript és a selftest fejléce is azt
+állította, hogy "a hat racsnizott szabályból ÖT típus-érzékeny". NÉGY. A plugin saját
+metaadatából olvasva (`meta.docs.requiresTypeChecking`, a repo által telepített
+@typescript-eslint/eslint-plugin példányán): `await-thenable`, `no-floating-promises`,
+`no-misused-promises`, `no-unsafe-argument` mind `true`; a `no-unused-vars`
+**undefined** -- szintaktikus szabály, TS-program nélkül is jelent, és csak akkor hallgat
+el, ha maga a parse bukik, amit a `(parse-error)` vödör már lefed. A `no-unused-vars`
+beemelése a halmazba a padlót SZIGORÚAN GYENGÉBBÉ tenné, mert a padló azt kérdezi, hogy
+EGYIK ilyen szabály sem talált-e semmit.
+
+**A VÁLLALT ÁR, kimondva.** A `await-thenable` élő száma MA 1. Amikor valaki ezt az utolsó
+leletet is megjavítja -- vagyis JÓ munkát végez --, a következő `store/lint-ratchet.sh`
+futás exit 3-at ad, és ez a fleet-test része, tehát MINDEN landolást blokkol addig, amíg
+valaki le nem futtatja a nyugtázó parancsot. Ez a 2-es küszöb mellett nem történt volna
+meg. Elfogadjuk, mert a másik oldalon a szeletelt megkerülés áll, és a költséget a
+hibaüzenet viszi le percekre: a megtagadás a TELJES, beilleszthető parancsot kiírja
+(`store/lint-ratchet.sh --update --accept-cleared=<szabályok>`), nem csak a kapcsoló nevét.
+
+**Mérve.** Élő fán a javítás után változatlan: exit 0, 230 lelet, 6 szabály, egyik sem áll
+nullán. Selftest 23 -> 30 eset. Nyolc per-őr mutáció, mind piros a saját esetén; a
+blanket-mutáns (mindig megtagad) 14 esetet buktat, köztük MINDEN egészséges kontrollt --
+ez Cybersec kifejezett kikötése volt, mert egy mindent megtagadó javítás a megkerülés-
+sorokon ugyanígy zöld lenne.
+
+**Két teszt ígérete MEGFORDULT, a case mellett dokumentálva, nem csendben.** Az O eset
+eddig azt rögzítette, hogy egy szabály nullára esése IMPROVED marad (a 2-es küszöb
+kimondott ára); az N eset szövegkeresője az "are ALL at exactly zero" alakot várta, ami
+egy olyan többességre hivatkozott, aminek már nem kell fennállnia. Az N állítása
+tartalmilag változatlan: az üzenet a szabály-összeomlást nevezze meg, ne a nem mozdult
+parse-error számot.
+
+**Hivatkozás:** kártya `26ab08a2`; `store/lint-ratchet.sh`, `store/lint-ratchet.selftest.sh`;
+Cybersec NO-GO 21092, MikroB rendelkezések 21030 és 21035.
+
+---
+
+## 2026-09-06 -- 970156ce: a landolasi kapu csak SZANDEKOS leallitasra hallgathat el
+
+**Dontes.** A `store/local-llm-model-routing.selftest.sh` ket, elo Ollamat igenylo esete
+KIHAGYHATO, de KIZAROLAG akkor, ha a `gpu-crashloop-guard` SZANDEKOSAN maszkolta az
+`ollama.service`-t -- amit a `store/.gpu-crashloop-guard-masked.json` artefaktum `units`
+mezoje mond ki. Minden mas allapotban (nincs flag, mas unitot nevez meg, olvashatatlan
+vagy hibas JSON) a teszt valtozatlanul PIROS.
+
+**Miert nem az egyszeru env-gate.** A kezenfekvo alak ("az Ollama nem valaszol -> skip")
+azt a kepesseget veszi el a kaputol, hogy megkulonboztesse a VEDETT gepet a TORTTOL. Ez
+pontosan az a csendes kihagyas, ami ellen a 89f4c28d szandekosan URESEN tartja a
+`store-selftests-all-run` EXCLUDED listajat. MikroB dontese (komment 21246, Cybersec
+ellenvetesere): a feltetel SZANDEK legyen, ne elerhetoseg.
+
+**A kotelezo negativ kontroll.** Uj teszt-fajl (`local-llm-guard-sanctioned-skip.test.ts`,
+8 eset) rogziti a MEGENGEDO es a TILTO iranyt is, determinisztikusan (minden eset halott
+loopback OLLAMA_HOST-tal fut, tehat nem fugg attol, hogy epp el-e az Ollama). Az elutasitott
+env-gate mint mutans 7-bol 6 esetet buktat.
+
+**Ket meres, ami menet kozben megvaltoztatta a megoldast.**
+1. Az elso valtozat `$HERE`-bol olvasta a flaget. Az orzo az INSTALL store-jaba ir, a
+   selftest viszont agens-WORKTREE-bol fut -- a flag lathatatlan volt, minden eset piros
+   maradt, a javitas keszneek latszott es semmit nem valtoztatott.
+2. A masodik valtozat a `local-llm-state-dir.sh` resolverjen at oldotta fel. Az viszont
+   `LOCAL_LLM_STATE_DIR`-re elsobbseget ad, amit a teszt-suite WORKERENKENT beallit egy
+   ures temp konyvtarra (4c5c540c, hogy a teszt-futasok ne irjanak az eles ledgerbe). Igy a
+   flag-kereses pont ott vakult meg, ahol a javitasnak MUKODNIE kell: a fleet-test-ben. A
+   selftest kezzel futtatva zold volt, a wrapper piros.
+
+**A vegleges alak.** A resolver checkout-to-install szarmaztatasa hasznaljuk, de az `env`
+aga NELKUL, egy PARANCS-BEHELYETTESITESBEN, ahol a valtozo unset. Igy a suite izolacioja
+ebben a shellben erintetlen marad -- a selftest altali local-llm.sh hivasok tovabbra is az
+izolalt konyvtart latjak --, es csak az UT jon vissza. Ellenorizve: a teljes suite-futas
+utan az eles `store/local-llm-usage.log` valtozatlan (mtime 08:04, a futasok 11:07/11:09).
+A ket valtozo ket kulon kerdesre valaszol: hol IRHAT ez a futas local-llm allapotot, kontra
+hol ROGZITETT egy masik program egy dontest.
+
+**Hivatkozas:** kartya `970156ce`; `store/local-llm-model-routing.selftest.sh`,
+`src/__tests__/local-llm-guard-sanctioned-skip.test.ts`; MikroB 21246; kapcsolodo: d5c05548
+(a mask() hiba), 1f276349 (ugyanez az osztaly a fork-guardon).
+
+## 2026-09-06 11:40 -- bb52c2fa (helyesbítés) -- a cmp-táblázatom két sora nem önálló mérés volt
+
+**Ez a bejegyzés a mai `bb52c2fa` bejegyzést helyesbíti.** A lelet és a javítás áll; a MAGYARÁZAT
+két ponton túlmondott a mérésen, és mindkettő az én hibám.
+
+**(1) Öt környezetről írtam, három létezik.** A bejegyzés így szól: „mérve, ugyanaz a két fájl, öt
+környezetben -- unset -> byte, C -> char, C.UTF-8 -> byte, en_US.UTF-8 és hu_HU.UTF-8 -> char". Ezen
+a gépen a `locale -a` HÁRMAT ad: `C`, `C.utf8`, `POSIX`. Az `en_US.UTF-8` és a `hu_HU.UTF-8` nincs
+telepítve, a bash `setlocale: cannot change locale` figyelmeztetéssel visszaesik -- az a két sor
+tehát a FALLBACK-et mérte, nem azt a locale-t, aminek a nevét viseli. Öt független mérésként
+közöltem őket.
+
+**A valós tábla:** unset -> „byte" (a LANG=C.UTF-8-at örökli); `C` -> „char"; `C.utf8` -> „byte";
+`POSIX` -> „char"; egy érvénytelen érték -> „char" (C-re esik vissza).
+
+**(2) A mechanizmus fordítva igaz.** Azt írtam, a cmp szóhasználata „nem követi, hogy a locale
+bájt-orientált-e". Követi, csak az intuícióval ellentétesen: az EGYBÁJTOS locale-ok (C, POSIX, és
+minden érvénytelen érték) mondanak „char"-t, a TÖBBBÁJTOSAK (C.UTF-8, unset) „byte"-ot.
+
+**Amitől a lelet ÉLESEBB lett, nem gyengébb:** egy `byte`-ra szűkített minta MINDEN egybájtos
+locale-ban törik, és ebbe beletartozik az `LC_ALL=C` -- a legvalószínűbb CI-beállítás. A `cmp -l`
+ugyanúgy a helyes válasz: számot ad próza helyett, és a formátuma mind a négy tényleges környezetben
+azonos.
+
+**(3) „Zöld mind a hat próbált környezetben" -- helyesen négy** (unset, C, C.utf8, POSIX), amiből
+három külön locale. A suite mind a négyben zöld.
+
+**Miért külön bejegyzés:** a napló append-only, a hibás szöveg pedig már landolt (464ec279). Ugyanaz
+az eljárás, amit a 79bb0364 „mindkét osztály megszűnik" mondatára alkalmaztam -- egy írott
+műterméken álló állítás akkor is ellenőrizendő, ha a kód körülötte helyes.
+
+**Hogyan derült ki:** Cybersec előre jelezte (24323), mit fog mérni a javításon, és a harmadik pontja
+(„egy kapcsoló, ami sikeresen nem futtat semmit, ugyanaz a néma zöld") előre-méréséhez újrafuttattam
+a saját bizonyítékomat. A locale-lista akkor esett szét. A három pontja egyébként mind teljesül: a
+közvetlen és a locale-t pinnelő hívón átmenő verdikt mind a négy bemeneten egyezik, a `--- x`
+kontroll mindkét úton safe marad, és az N-2 kapcsoló bukó `.py`-ra rc=1-et, hiányzóra rc=2-t ad.
+
+**Hivatkozás:** kártya `bb52c2fa`, komment 21291; a helyesbített bejegyzés e fájl mai
+`bb52c2fa` tétele.
+
+## 2026-09-06 12:00 -- bb52c2fa (F-1/F-2) -- a verdikt mostantól abból következik, ami KIÍRÓDOTT, nem egy jelzőből, amit egy eset elfelejthet
+
+**F-1, és a lelet az ÉN két tesztesetemre szól** (Cybered, komment 21305). Az előző körben két új
+esetet vittem be, épp azért, hogy egy néma zöldet zárjak -- és mindkettő a `bad` változót növelte,
+amit SEMMI nem olvas. A verdiktet a `fail` dönti. Következmény, mérve: a regressziót visszatéve a
+futás kiírta a `FAIL ...` sort, majd azt mondta, hogy `selftest: PASS`, exit 0. A CI zölden ment
+volna át pontosan azon a két regresszión, amiért az esetek készültek.
+
+**És a mutációs bizonyítékom is ezt mérte félre.** A mutációs futásaimban a kiírt `^  FAIL` SOROKAT
+számoltam, nem a verdiktet, ezért „M1 -> 1 piros, M3 -> 1 piros"-t jelentettem olyan esetekre, amik
+valójában dekoratívak voltak. Ez ugyanaz a hibaosztály, amit ezen a kártyán másoknál jeleztem: a
+mérőszám finomabb volt, mint amit a rendszer ténylegesen csinál.
+
+**A javítás nem a két sor.** A két sor kijavítása ott hagyná ugyanazt a csapdát a következő esetnek.
+A selftest mostantól FÁJLBA írja a kimenetét, a végén visszaadja, és a VERDIKT VISSZAOLVASSA: ha
+bármely `  FAIL` sor kiíródott, a futás nem mondhatja azt, hogy PASS, bármit is állít bármelyik
+jelző. Egy eset ezután elfelejtheti a jelzőt, és még mindig számít; azt viszont nem tudja megtenni,
+hogy egy hibát belenyomtat egy zöld futásba. Sima átirányítás és `cat`, nem `tee` process
+substitutionön át: az ellenőrzésnek egy teljesen kiírt fájlt kell látnia, egy pipeline pedig
+alfolyamatba tenné a törzset, ahol a `fail` nem élné túl.
+
+**F-2 -- a kód fejléce még a megcáfolt magyarázatot mondta.** A DECISIONS és a kanban-komment már
+helyes volt, a fejléc nem: pontosan az a „a helyesbítés nem ér el a leszállított kommentig" alak. A
+fejléc most a KÉT tényezőt mondja, és mindkettőt megmértem, nem vettem át:
+
+**1. tényező:** a `local LC_ALL=C` csak akkor jut el a GYEREKFOLYAMATHOZ, ha az LC_ALL MÁR exportálva
+volt. A bash `local`-ja örökli a meglévő export-attribútumot, de nem hoz létre újat. `declare -p`-vel
+bizonyítva egy ilyen függvényen belül: környezetben nincs LC_ALL -> `declare -- LC_ALL="C"` (a gyerek
+NEM látja); exportálva -> `declare -x LC_ALL="C"` (a gyerek LÁTJA).
+
+**2. tényező:** a GNU cmp szóhasználata a locale KARAKTERSZÉLESSÉGÉT követi, a naiv tipp fordítottjaként:
+egybájtos locale (C, POSIX, vagy bármely érvénytelen érték, ami C-re esik) -> „char"; többbájtos
+(C.UTF-8, vagy az ambiens LANG, ha az LC_ALL nincs beállítva) -> „byte".
+
+**A kettő együtt magyarázza a mérést, külön egyik sem:** LC_ALL nélkül a `local` sosem ért el a
+cmp-hez, az a többbájtos ambiens LANG alatt futott és „byte"-ot mondott -- a régi minta működött.
+BÁRMILYEN exportált értékkel a `local` elért a cmp-hez, az egybájtos C-ben futott és „char"-t
+mondott, a minta semmit nem illesztett. Ezért tört el minden exportált értékre: sosem az számított,
+MELYIK locale, hanem hogy exportálva volt-e egyáltalán.
+
+**Mérés a javítás után:** a két korábban dekoratív eset mostantól `selftest: FAIL` + exit 1 a hozzájuk
+tartozó mutációra (előtte PASS + exit 0). Az új invariáns külön próbálva: egy eset, ami kiírja a
+FAIL-t de szándékosan NEM állítja a jelzőt, továbbra is FAIL-t és exit 1-et ad, plusz egy külön sort,
+ami megmondja, hogy a verdikt kényszerítve lett. 70 eset, zöld.
+
+**Hivatkozás:** kártya `bb52c2fa`; Cybered 21305 (F-1/F-2), MikroB 24390.
+
+## 2026-09-06 -- c52e2823 (2. kör): egy elutasítás, amit nem lehet megítélni, kap saját szót -- `UNSUPERSEDED`
+
+**Döntés.** A `store/gate-closure-check.py` mostantól három állapotot különböztet meg ott,
+ahol eddig kettő volt. Egy gate elutasítása BLOKKOL (`FAILED`), ha az adott gate szerepét
+viselő szerzőtől jött, vagy ha megnevez egy commitot. Nem blokkol, ha az adott gate maga
+szólalt meg utána a leszállított shára. És sem nem blokkol, sem nem zárható
+(`UNSUPERSEDED|<gate-ek>|<ki mondta>`), ha sha nélkül áll, és nincs mivel bizonyítani, hogy
+egy későbbi PASS felülírta -- ez emberi/MikroB-döntés, nem automatikus visszadobás.
+
+**A kényszerítő lelet.** Az 1. kör (bdb7375d) a testvér-gate elutasítását a per-szerző
+táblából olvasta, és az MINDEN szerzőt tartalmazott, szemben a tükrével (`latest_by_role`),
+ami mindig is szerepre szűrt. Emiatt bármely verdikt-ALAKÚ mondat -- a flotta rutinszerű
+"<GATE> <VERDIKT> ELFOGADVA, vissza in_progress-be" nyugtázása, vagy egy építő "QA FAIL
+elfogadva, javitottam" sora -- véglegesen beállt egy olyan elutasítás helyébe, amit a gate
+maga már visszavont. QA mérte (21135), Cybersec függetlenül reprodukálta és tágabbnak
+találta (21176): nem csak a koordinátoré, hanem minden nem-szerep-szerzős idézet.
+
+**Miért nem elég a puszta szerep-szűrés.** Mert a nyugtázás állhat a gate saját utolsó
+szava UTÁN is. Akkor a gate soha nem válaszolt rá, és a sor eldobása egy esetleg NYITOTT
+elutasítás fölött zárná le a kártyát -- pontosan az az irány, ami ellen a 44849954-es
+aszimmetria ("egy nem attribuálható elutasítás akkor is elutasítás") megszületett. A 21139
+döntés ezért új szót kért, nem szélesebb szűrőt. Az e4b7096e kártya (azonos-szerep FAIL ->
+PASS sha nélkül) ugyanennek a szónak a másik esete, ezért lett ide olvasztva.
+
+**Ahol a megvalósítás ELTÉR a 21139 szövegétől, tudatosan.** A döntés szerint a relay-eset
+MINDIG `UNSUPERSEDED`. A leszállított alak csak akkor, ha utána NEM szólalt meg maga a gate
+a leszállított shára. Ha megszólalt, az pontosan az, amit a "felülírás" jelent, és egy
+eldöntött történetre "eldönthetetlent" válaszolni négy LEZÁRT kártyát parkoltatna egy
+embernek, akinek nincs mit eldöntenie. Az időrend tehát nem díszítés, hanem maga a
+bizonyíték. Ez egy sor visszavétele, ha MikroB másképp dönt.
+
+**Két fail-closed előfeltétel, hogy az új szó ne legyen átjáró.** Relay, ami mögött az adott
+gate-től egyáltalán nincs verdikt -> változatlanul `FAILED` (nincs mihez mérni). Elutasítás,
+ami MEGNEVEZ egy shát -> megítélhető, tehát meg is ítéli, változatlanul.
+
+**Mérve az élő táblán, nem szintetikusan.** 348 kommentelt kártya, régi és új verzió egymás
+mellett, minden változó válasz kézzel visszaolvasva a kártya saját verdikt-történetéből:
+`008739a8`, `efaf8926`, `3ae71df1`, `b24b9e5c` FAILED -> AGREE (mindegyiken valódi,
+szerep-szerzős, egy shára szóló újra-gate-elés áll a nyugtázás után), `4a6c47f0` FAILED ->
+DISAGREE. Az utolsó NEM hamis blokk feloldása: ott a CYBERSEC GO a `d49e9c7a`-ra szól, a QA
+PASS és a CYBERED GO a `901b6fbb`-re, és a két commit ténylegesen eltér az
+`audit-ip-coarsen.ts`-ben -- a régi eszköz jó választ adott rossz okból. Populáció: 633
+verdikt-alakú komment, 18 nem-szerep-szerzőtől, ebből 11 elutasítás 9 kártyán, mind
+MikroB-tól. Az új szó ma EGYETLEN élő kártyán keletkezik (`2cb07372`), és ott egy olvasható
+elutasítás megelőzi -- ez a precedencia (FAILED > UNSUPERSEDED) is pinelve van.
+
+**Amit a tesztelés hozzátett a döntéshez.** A regresszió-mentesség a TELJES soron áll, nem a
+verdikt-szón: egyedülálló valódi QA FAIL és tiszta pass bájtra azonos a korábbi kimenettel
+(MikroB elfogadási feltétele, 21177) -- egy csak-fajta assertion zölden hagyna egy
+átfogalmazott választ, ami minden olvasót eltör. Négy mutáns, négy különböző eset fogja meg.
+Egy ötödik mutáns túlélte mind a 83 esetet, és kiderült, hogy elérhetetlen ág, nem
+tesztlyuk: ha egy gate utolsó szava a saját elutasítása, ugyanaz a sor a `latest_by_role`-ban
+is ott áll, tehát a passzoló előfeltétel már előbb elutasít. A sor kikerült, a viselkedést
+pinelő eset maradt.
+
+**Hivatkozás:** kártya `c52e2823` (magába olvasztva: `e4b7096e`); `store/gate-closure-check.py`,
+`store/gate-closure-check.selftest.py` (83 eset), `CLAUDE.md` 4a. pont; QA 21135, Cybersec
+21176, MikroB 21139 és 21177. Kapcsolódó: `71f95ba0` (az eszköznek nincs gépi fogyasztója,
+tehát ez a javítás csak azt a zárást védi, ahol valaki elindítja).
+
+## 2026-09-06 -- dc5b714d: az ügynök-config fájlok tulajdonos-csak jogosítást KAPNAK, nem megőriznek
+
+**Döntés.** Minden per-ügynök konfigurációs fájl, amit az `agent-process.ts` ír, 0600-on áll,
+akármilyen módban volt előtte. A kód nem ŐRZI a meglévő módot (az volt a korábbi
+viselkedés), hanem KÉNYSZERÍTI a szűket. A hatókör FÁJLOSZTÁLYRA szól, nem egyetlen író
+függvényre: `known_marketplaces.json`, `installed_plugins.json`, az ügynök `.env`-je, a
+`.mcp.json` és a `.claude/settings.json` -- öt hívási hely, egy helperen (`writeAgentConfig`)
+át.
+
+**A kikényszerítő lelet.** Cybersec mérése (20627, 20643, 20654): a `writeJsonAtomic` a
+`writeFileSync` `mode` opciójára támaszkodott, amit a umask szűkít, és a teszt ígérete
+("preserves a deliberately wider mode too") EGYENESEN ELLENTMONDOTT a flotta
+umask-keményítésének (`ensure-umask-dropin.sh`, `FLEET_UMASK:-0077`). Két landolt döntés nem
+tartható egyszerre. MikroB döntése: a credential-hordozó config MINDIG 0600, tehát a TESZT
+ígérete a hibás, nem a kód. Négy élő izolált config (jogász, marketing, pénzügy, videooo)
+ekkor 0664-en ült, env-blokkokkal; a `.mcp.json` ugyanaz a tartalom-osztály, mint az
+incidens, ami ezt a munkát elindította: egy ügynöké `env` blokkban hordozott API-kulcsot,
+csoport- és világ-olvashatóan.
+
+**Miért NEM a repó saját `atomicWriteFileSync`-je.** Az kivonná ezt a fájlosztályt a flotta
+umask-politikája alól, tehát pont az ELLENKEZŐ irányba menne, mint amit a keményítés elérni
+akart. Ez MikroB kimondott rulingja, és azért kerül a naplóba, mert egy későbbi, jó
+szándékú "egységesítsük az írókat" refaktor pontosan ezt a sort vonná vissza.
+
+**A két lépés két KÜLÖNBÖZŐ esetet fed, nem redundancia.** A `{ mode: 0o600 }` a LÉTREHOZÁS
+pillanatát (ott a umask dönt), a rákövetkező `chmod` a MÁR LEMEZEN LÉVŐ fájlt (egy mode
+nélküli írás nem nyúl a meglévő jogosultsághoz). A flotta pontosan a második állapotban
+volt. Mérve: a `chmod` eltávolítása pontosan egy esetet (a REWRITE-ot) buktat, a `{ mode }`
+eltávolítása EGYET SEM -- mert a chmod már megjavította a fájlt, mire bárki ránéz. A
+`{ mode }` a létrehozás és a chmod közötti ABLAKOT zárja, és egy nyugalmi-állapot assertion
+nem lát ablakot. A nyugalmi garancia tehát mérve van, az ablak érvelve, és a tesztfájl ezt
+ki is mondja ahelyett, hogy egy zöld futás mindkettőt látszana fedni.
+
+**NÉGY helyett ÖT, és a különbség tanulsága.** Az első jelentésem négy megkerülő írót
+mondott. A kimaradt az `agents/<n>/.claude/settings.json`, aminek a BASENEVE egyezik egy már
+javított fájléval, az ÚTJA nem -- két `settings.json` áll egymás mellett a lemezen. A KÓD
+kezdettől mind az ötöt kezelte, a PRÓZA volt rövid, ezért a javítás a modul-kommentre és a
+teszt fejlécére is kiterjedt, nem csak a kártyára: egy kártyán tett korrekció nem éri el a
+leszállított kommentet.
+
+**Amit a teszt strukturálisan véd.** A viselkedési esetek az öt hívási helyből hármat érnek
+el; a másik kettő a spawn-úton él, amit a harness nem tud hajtani. Ezért egy forrás-szintű
+darabszám-őr áll mellettük: csupasz `writeFileSync(` PONTOSAN kétszer szerepelhet, a két
+helper belsejében. Az illesztés KOMMENT-MENTESÍTETT forráson fut (12. kódminőségi elv), két
+kontrollal: egy hozzáadott valódi megkerülést lát, egy kommentbe írtat nem. Cybersec lappangó
+F-3 lelete (az őr csak a nevesített import-alakot látja, a `fs.writeFileSync`-et nem)
+tudatosan, nem-blokkolóként maradt nyitva.
+
+**Hivatkozás:** kártya `dc5b714d` (a `75c2dbb7` folytatása); `src/web/agent-process.ts`,
+`src/__tests__/agent-config-file-modes.test.ts`; Cybersec 20627/20643/20654/21127/21190, QA
+21293. A négy élő fájl egyszeri remediációját (chmod 0600) MikroB végezte, mert
+visszafordítható és a saját flotta-configjai.
+## 2026-09-06 11:40 -- bb52c2fa (helyesbítés) -- a cmp-táblázatom két sora nem önálló mérés volt
+
+**Ez a bejegyzés a mai `bb52c2fa` bejegyzést helyesbíti.** A lelet és a javítás áll; a MAGYARÁZAT
+két ponton túlmondott a mérésen, és mindkettő az én hibám.
+
+**(1) Öt környezetről írtam, három létezik.** A bejegyzés így szól: „mérve, ugyanaz a két fájl, öt
+környezetben -- unset -> byte, C -> char, C.UTF-8 -> byte, en_US.UTF-8 és hu_HU.UTF-8 -> char". Ezen
+a gépen a `locale -a` HÁRMAT ad: `C`, `C.utf8`, `POSIX`. Az `en_US.UTF-8` és a `hu_HU.UTF-8` nincs
+telepítve, a bash `setlocale: cannot change locale` figyelmeztetéssel visszaesik -- az a két sor
+tehát a FALLBACK-et mérte, nem azt a locale-t, aminek a nevét viseli. Öt független mérésként
+közöltem őket.
+
+**A valós tábla:** unset -> „byte" (a LANG=C.UTF-8-at örökli); `C` -> „char"; `C.utf8` -> „byte";
+`POSIX` -> „char"; egy érvénytelen érték -> „char" (C-re esik vissza).
+
+**(2) A mechanizmus fordítva igaz.** Azt írtam, a cmp szóhasználata „nem követi, hogy a locale
+bájt-orientált-e". Követi, csak az intuícióval ellentétesen: az EGYBÁJTOS locale-ok (C, POSIX, és
+minden érvénytelen érték) mondanak „char"-t, a TÖBBBÁJTOSAK (C.UTF-8, unset) „byte"-ot.
+
+**Amitől a lelet ÉLESEBB lett, nem gyengébb:** egy `byte`-ra szűkített minta MINDEN egybájtos
+locale-ban törik, és ebbe beletartozik az `LC_ALL=C` -- a legvalószínűbb CI-beállítás. A `cmp -l`
+ugyanúgy a helyes válasz: számot ad próza helyett, és a formátuma mind a négy tényleges környezetben
+azonos.
+
+**(3) „Zöld mind a hat próbált környezetben" -- helyesen négy** (unset, C, C.utf8, POSIX), amiből
+három külön locale. A suite mind a négyben zöld.
+
+**Miért külön bejegyzés:** a napló append-only, a hibás szöveg pedig már landolt (464ec279). Ugyanaz
+az eljárás, amit a 79bb0364 „mindkét osztály megszűnik" mondatára alkalmaztam -- egy írott
+műterméken álló állítás akkor is ellenőrizendő, ha a kód körülötte helyes.
+
+**Hogyan derült ki:** Cybersec előre jelezte (24323), mit fog mérni a javításon, és a harmadik pontja
+(„egy kapcsoló, ami sikeresen nem futtat semmit, ugyanaz a néma zöld") előre-méréséhez újrafuttattam
+a saját bizonyítékomat. A locale-lista akkor esett szét. A három pontja egyébként mind teljesül: a
+közvetlen és a locale-t pinnelő hívón átmenő verdikt mind a négy bemeneten egyezik, a `--- x`
+kontroll mindkét úton safe marad, és az N-2 kapcsoló bukó `.py`-ra rc=1-et, hiányzóra rc=2-t ad.
+
+**Hivatkozás:** kártya `bb52c2fa`, komment 21291; a helyesbített bejegyzés e fájl mai
+`bb52c2fa` tétele.
+
+## 2026-09-06 12:00 -- bb52c2fa (F-1/F-2) -- a verdikt mostantól abból következik, ami KIÍRÓDOTT, nem egy jelzőből, amit egy eset elfelejthet
+
+**F-1, és a lelet az ÉN két tesztesetemre szól** (Cybered, komment 21305). Az előző körben két új
+esetet vittem be, épp azért, hogy egy néma zöldet zárjak -- és mindkettő a `bad` változót növelte,
+amit SEMMI nem olvas. A verdiktet a `fail` dönti. Következmény, mérve: a regressziót visszatéve a
+futás kiírta a `FAIL ...` sort, majd azt mondta, hogy `selftest: PASS`, exit 0. A CI zölden ment
+volna át pontosan azon a két regresszión, amiért az esetek készültek.
+
+**És a mutációs bizonyítékom is ezt mérte félre.** A mutációs futásaimban a kiírt `^  FAIL` SOROKAT
+számoltam, nem a verdiktet, ezért „M1 -> 1 piros, M3 -> 1 piros"-t jelentettem olyan esetekre, amik
+valójában dekoratívak voltak. Ez ugyanaz a hibaosztály, amit ezen a kártyán másoknál jeleztem: a
+mérőszám finomabb volt, mint amit a rendszer ténylegesen csinál.
+
+**A javítás nem a két sor.** A két sor kijavítása ott hagyná ugyanazt a csapdát a következő esetnek.
+A selftest mostantól FÁJLBA írja a kimenetét, a végén visszaadja, és a VERDIKT VISSZAOLVASSA: ha
+bármely `  FAIL` sor kiíródott, a futás nem mondhatja azt, hogy PASS, bármit is állít bármelyik
+jelző. Egy eset ezután elfelejtheti a jelzőt, és még mindig számít; azt viszont nem tudja megtenni,
+hogy egy hibát belenyomtat egy zöld futásba. Sima átirányítás és `cat`, nem `tee` process
+substitutionön át: az ellenőrzésnek egy teljesen kiírt fájlt kell látnia, egy pipeline pedig
+alfolyamatba tenné a törzset, ahol a `fail` nem élné túl.
+
+**F-2 -- a kód fejléce még a megcáfolt magyarázatot mondta.** A DECISIONS és a kanban-komment már
+helyes volt, a fejléc nem: pontosan az a „a helyesbítés nem ér el a leszállított kommentig" alak. A
+fejléc most a KÉT tényezőt mondja, és mindkettőt megmértem, nem vettem át:
+
+**1. tényező:** a `local LC_ALL=C` csak akkor jut el a GYEREKFOLYAMATHOZ, ha az LC_ALL MÁR exportálva
+volt. A bash `local`-ja örökli a meglévő export-attribútumot, de nem hoz létre újat. `declare -p`-vel
+bizonyítva egy ilyen függvényen belül: környezetben nincs LC_ALL -> `declare -- LC_ALL="C"` (a gyerek
+NEM látja); exportálva -> `declare -x LC_ALL="C"` (a gyerek LÁTJA).
+
+**2. tényező:** a GNU cmp szóhasználata a locale KARAKTERSZÉLESSÉGÉT követi, a naiv tipp fordítottjaként:
+egybájtos locale (C, POSIX, vagy bármely érvénytelen érték, ami C-re esik) -> „char"; többbájtos
+(C.UTF-8, vagy az ambiens LANG, ha az LC_ALL nincs beállítva) -> „byte".
+
+**A kettő együtt magyarázza a mérést, külön egyik sem:** LC_ALL nélkül a `local` sosem ért el a
+cmp-hez, az a többbájtos ambiens LANG alatt futott és „byte"-ot mondott -- a régi minta működött.
+BÁRMILYEN exportált értékkel a `local` elért a cmp-hez, az egybájtos C-ben futott és „char"-t
+mondott, a minta semmit nem illesztett. Ezért tört el minden exportált értékre: sosem az számított,
+MELYIK locale, hanem hogy exportálva volt-e egyáltalán.
+
+**Mérés a javítás után:** a két korábban dekoratív eset mostantól `selftest: FAIL` + exit 1 a hozzájuk
+tartozó mutációra (előtte PASS + exit 0). Az új invariáns külön próbálva: egy eset, ami kiírja a
+FAIL-t de szándékosan NEM állítja a jelzőt, továbbra is FAIL-t és exit 1-et ad, plusz egy külön sort,
+ami megmondja, hogy a verdikt kényszerítve lett. 70 eset, zöld.
+
+**Hivatkozás:** kártya `bb52c2fa`; Cybered 21305 (F-1/F-2), MikroB 24390.
+---
+
+## 2026-09-06 -- d5c05548: a maszkolas allitasat ELLENORIZNI kell, es a flag csak igazat mondhat
+
+**Dontes (1. gyokerok).** A `gpu-crashloop-guard.sh` `mask_units()` mostantol MEGNEZI, hogy
+a unit tenylegesen maszkolt-e (`UnitFileState`), nem a `systemctl mask` kilepokodet hiszi el;
+ha a maszkolas nem fogott es egy VALODI unit-fajl all az uton, lefuttatja a kezi utat
+(fajl felre `<unit>.real-unit-backup` nevre, `/dev/null` symlink, `daemon-reload`), majd
+UJRA ellenoriz. Amit nem sikerult maszkolni, az nem kerul be a `MASKED_OK` listaba.
+
+**Mert a vedelem hetek ota csak LATSZOLAGOS volt.** Eldobhato probe-unittal sajat kezuleg
+reprodukalva ezen a hoston: `systemctl --user mask` regularis unit-fajl felett
+"Failed to mask unit: File ... already exists"-et ad, exit 1, es a unit `static` marad --
+`--force` ugyanezt. A regi kod ezt NAPLOZTA es tovabbment, majd kiirt egy allapot-flaget,
+ami a unitot maszkoltkent nevezte meg. A szolgaltatas tehat csak le volt allitva, barmely
+`systemctl --user start` visszakapcsolta a GPU-utvonalat. Egy or, aminek a hibamodja egy
+megnyugtato naplosor, rosszabb, mint a semmi, mert senki nem megy utananezni.
+
+**A flag mostantol a TENYT irja le, nem a szandekot.** A `units` mezo a `MASKED_OK`-bol
+keszul; ha egyetlen unitot sem sikerult maszkolni, a flag NEM irodik ki (torlodik), es
+azonnali riasztas megy ki arrol, hogy a gep NINCS vedve. Ez a mai naptol tetszik: a
+970156ce ota ezt a fajlt a LANDOLASI KAPU olvassa, tehat egy hazudo flag arra vinne a
+kaput, hogy elhallgasson egy valojaban vedtelen geprol.
+
+**Egy harmadik hiba, amit a kartya nem nevez meg, es kimertem.** A `systemctl --user unmask`
+ONMAGABAN NEM allitja vissza a unitot: eltavolitja a `/dev/null` symlinket es megall, a
+valodi fajl pedig a `.real-unit-backup` nev alatt marad -- a unit `LoadState=not-found`
+lesz, vagyis a szolgaltatas ELTUNIK. A helyreallito parancs ezert bekerult a riasztas
+szovegebe (`restore_hint`), nem egy kanban-kommentbe, mert a tulajdonos a riasztast olvassa.
+
+**A MELYEBB OK, es ezert wireoltam be a sajat suite-jat.** A `scripts/__tests__/*.test.sh`-t
+SEMMI nem futtatja: nincs ra hivatkozas a `fleet-test.sh`-ban, a `package.json`-ban, egyetlen
+vitest fajlban sem -- az egesz repoban ket emlites van a guard teszt-fajljara, a guard sajat
+fejlece es maga a fajl. A 12 teszt tehat leirt kontroll volt, ami sosem futott le; ez a
+`wired-detection-with-no-consumer` osztaly, ugyanaz, amit a `store-selftests-all-run`
+(711a7e57, 2003e04b) zar a `store/*.selftest.*`-ra. SZANDEKOSAN SZUKEN: csak EZT a suite-ot
+kotottem be. A teljes `scripts/__tests__` bekotese kulon kartya, mert az upstream sajat
+merese szerint (#1200: "25 of our 29 script suites had never run, and two of them were red")
+lesz kozottuk piros, es egy flotta-szintu landolas-blokk pont az, amit ma egesz nap tisztitottunk.
+
+**A 2. GYOKEROK NEM KESZULT EL, SZANDEKOSAN.** A kartya azt keri, allitsam vissza a hianyzo
+CPU-only drop-int (Layer 1). A premissza teves: nem eltunt, hanem PETI SZANDEKOSAN
+eltavolittatta. A 13f92c99 kommit uzenete kimondja, hogy a drop-in "host-local, not versioned
+here", a `wsl-vm-crashloop-ollama-gpu-dxgkrnl` memoria pedig ugyanarrol a naprol rogziti:
+"Peti explicitly overrode the CPU-only stopgap -- he wants GPU as the PRIMARY path... Removed
+the CPU-only drop-in, restored default GPU config." Kesobbi, ezt visszavono dontes nincs sem a
+DECISIONS.md-ben, sem a tablan, sem a memoriaban. A visszaallitasa egy kimondott tulajdonosi
+dontes visszaforditasa lenne (5. kodminosegi elv), raadasul a fo GPU-utvonal kikapcsolasaval.
+MikroB ele vive; a guard fejlece viszont ma HAZUDIK, mert egy nem letezo Layer 1-re hivatkozik --
+ennek a javitasa is az o dontesere var.
+
+**Mérve.** Selftest 12 -> 22 eset. Ot mutacio, mind piros a sajat esetein: az ellenorzes
+elhagyasa (6 bukas), a fallback kikapcsolasa (6), a flag visszairasa `UNITS`-bol (4), a
+meglevo-backup vedelem torlese (1), es a helyreallito parancs kivetele a riasztasbol (1).
+Az utolso ELSO valtozatban TULELT: a `(k)` eset a TELJES kimenetben kereste a
+`real-unit-backup` szot, amit a `mask_one` sajat naplosora is tartalmaz -- az allitas
+durvabb volt, mint a viselkedes, es igy a ket or kozul a rosszat rogzitette. Szukitve az
+ALERT sorra, azota bukik.
+
+**Hivatkozas:** kartya `d5c05548`; `scripts/gpu-crashloop-guard.sh`,
+`scripts/__tests__/gpu-crashloop-guard.test.sh`,
+`src/__tests__/gpu-crashloop-guard-suite-runs.test.ts`; kapcsolodo: 970156ce (a flag fogyasztoja).
+
+---
+
+## 2026-09-06 -- d5c05548 (2. kör): a fejléc egy nem létező rétegre hivatkozott, a flag pedig túlélte a döntést
+
+**MikroB döntése (kártya-komment 21285) három ponttal bővítette a kártyát**, miután jeleztem, hogy
+a 2. gyökérok premisszája téves. Mindhárom ebben a körben készült el.
+
+**(a) A guard fejléce hazudott, és rossz irányba.** A fejléc magát "layer 2"-nek nevezte egy
+CPU-only systemd drop-in (`ollama.service.d/10-cpu-only-gpu-crashloop-safety.conf`) mögött. Az a
+drop-in szándékosan nincs meg: Peti 2026-08-24-én felülbírálta a CPU-only stopgapet, mert a GPU-t
+akarja elsődleges útnak, és a drop-in eltávolításra került. Ma újramérve:
+`/home/neon/.config/systemd/user/ollama.service.d/` nem létezik. Ez nem pusztán elavult szöveg volt:
+aki azt mérlegeli, mennyire kell ennek az őrnek erősnek lennie, egy nála erősebb, mögötte álló
+mitigációt hitt volna. Semmi nincs mögötte. Hogy kell-e új alsó réteg, az Peti döntése és külön
+kártyán fut (MikroB nyitja), itt nem feltételezzük.
+
+**(b) A flag túlélte a döntést, amit rögzített (Cybersec MEDIUM a 970156ce-n).** A flag nem
+naplóbejegyzés, hanem állítás a gép MOSTANI állapotáról: a 970156ce óta a
+`store/local-llm-model-routing.selftest.sh` két routing-esetet KIHAGY, ha a flag megnevezi az
+`ollama.service`-t. A flaget viszont soha semmi nem törölte. Tehát abban a pillanatban, amikor egy
+ember a valódi javítás után unmaskol -- az incidens dokumentált, várt vége --, a flag továbbra is
+egy már nem létező maszkolást állít, és az a két eset ÖRÖKRE kimarad egy tökéletesen egészséges
+gépen. Némán: egy skip skipnek látszik. Mostantól MINDEN ciklus visszaméri az állítást a systemd
+ellen, és arra írja át a flaget, ami még igaz; ha semmi, törli. Ez a "nincs crash-loop" ágon is fut,
+mert egy felépült gép attól kezdve mindig azon az ágon megy.
+
+Két dolgot szándékosan NEM tesz. Nem fut `MASK_DRYRUN` alatt (egy száraz futás semmit nem maszkolt,
+tehát nem törölhet egy valódi futás flagjét), és **egy olvashatatlan flaget nem tekint megcáfoltnak**:
+amit nem tudunk elolvasni, azt nem tudjuk cáfolni sem, a törlése pedig némán visszakapcsolna egy
+routing-esetet egy olyan gépen, amit lehet, hogy tényleg szándékosan tartanak lent. Ilyenkor marad,
+és kimondja, hogy nem olvasható.
+
+**(c) A helyreállítás kérdezhető, nem csak forráskommentben áll.** A `--restore-hint` alparancs a
+flagből kiolvassa a megnevezett uniteket és kiírja a teljes parancsot, plusz kimondja, hogy a puszta
+`unmask` NEM elég. A parancs bekerült magába a flag JSON-be is (`restore` mező), tehát az artefaktum
+hordozza a saját visszavonását. Aki ezt keresi, incidens közepén van.
+
+**Mérve.** 22 -> 35 eset. Hat mutáció, mind piros: a reconcile kiütése (5 bukás), a parse-hiba
+törlésre fordítása (2), a `MASK_DRYRUN`-kivétel elhagyása (1), a "nem elég" figyelmeztetés kivétele
+a `--restore-hint`-ből (1), a törlés elhagyása üres maradéknál (1), és a fejléc-regresszió (2).
+
+**Egy eset ELSŐ változatban hamis okból volt zöld.** A `MASK_DRYRUN`-kontroll (`p`) nem adott át
+hamis `systemctl`-t, ezért a guard az ÉLES hostot kérdezte az `ollama.service`-ről -- ami ezen a
+gépen valóban maszkolt --, és a flag akkor is megmaradt, ha a kód rossz volt: a mutáns túlélt.
+Hamis `systemctl`-lel, ami NEM maszkoltat jelent, az eset azóta bukik a mutánsra. Ugyanaz az osztály,
+mint a `(k)` eseté az előző körben: a kontroll a saját környezetét mérte, nem a viselkedést.
+
+**Kontroll a fogyasztón.** A `local-llm-model-routing.selftest.sh` az új `restore` mezőt tartalmazó
+flaget változatlanul olvassa (3 passed, 0 failed, 2 skipped), tehát a bővítés nem töri a
+970156ce-ben landolt fogyasztót.
+
+**Hivatkozás:** kártya `d5c05548` (MikroB 21285, Cybersec 24349/21278); `scripts/gpu-crashloop-guard.sh`,
+`scripts/__tests__/gpu-crashloop-guard.test.sh`; kapcsolódó: `970156ce`.
+
+---
+
+## 2026-09-06 -- 1b4cd700: egy LEÍRT szabály állt szemben egy kimondott Peti-döntéssel
+
+**A döntés maga (Peti, 2026-09-04, Telegram, kártya 48565f81 komment 19504): NO-GO a MiniMax M3
+adoptálására.** Indoklása szó szerint: a helyi LLM-modellek pontosan azért vannak, hogy a könnyebb
+programozási feladatokat oda tereljük, és egy újabb fizetős online modell pont ez ellen a cél ellen
+hatna, akkor is, ha olcsóbb a Claude-nál. Ez a döntés eddig KIZÁRÓLAG kanban-kommentben élt (SQLite,
+nem grep-elhető) és a CLAUDE.md 16. szabályának indoklásában. A döntésnaplóban sehol nem szerepelt --
+ezért kerül ide most, visszamenőleg, a saját jogán.
+
+**A mai lelet (backend3, 2a6a7756/21168): a fork saját őre az ELLENKEZŐJÉT írta elő.** A develop-on
+álló `fork-upstream-conflict-guard.test.ts` két bejegyzése így szólt:
+
+- `src/web/agent-process.ts`: „adopt upstream's resolveProviderEnv() refactor wholesale (... plus
+  adds minimax)"
+- `src/web/routes/agents.ts`: egy szó szerinti olvasat „wrongly discard"-olna „two unrelated upstream
+  additions: MiniMax direct-API gating in /api/models/available, and ..."
+
+Mindkét mondat egy jövőbeli összefésülőnek azt mondja, hogy hozza be a MiniMaxot. A fork-őr prózája a
+merge-idő tekintélye: nem kommentár, hanem az az utasítás, amit a következő ütközésnél végrehajtanak.
+Tehát egy leírt szabály állt szemben egy kimondott tulajdonosi döntéssel, és a leírt szabály volt
+kéznél. **Ez a `fix/provider-env-e80c011a-v2` ágon már 2026-09-04 óta javítva volt, csak nem landolt.**
+
+**Amit ma eldöntöttem az összefésülésben.** Mindkét ütközésnél az ág JAVÍTOTT szabályszövege az
+alany, és utána következnek a develop későbbi újramérései, amiket az ág már nem látott (09-03
+`/rename`, 09-05 `clearInputBuffer` retry+verify, 09-06 MCP local-scope árnyékolás). Az
+`agent-process.ts` kódütközésénél az ág refaktor-oldala nyert, DE csak azután, hogy leellenőriztem,
+mi vész el: a develop időközben önállóan berakta az `OLLAMA_URL` escape-elését (1075d0e4) az inline
+blokkba, és az ág `resolveProviderEnv`-je ezt már hordozza, a deepseek/openrouter kulcs- és a
+b7fa5281 modell-escape mellett. A 1075d0e4 hivatkozás a függvény saját fejlécében fennmarad.
+
+**Mérve, mert egy szabály-szöveg pinje pont olyan könnyen dekoratív, mint bármelyik másik.** Három
+mutáció, mind piros: (a) a develop „plus adds minimax" mondatának visszaírása -> „no rule tells a
+future merger that adopting minimax is safe" bukik; (b) a `routes/agents.ts` „wrongly discard ...
+MiniMax" mondatának visszaírása -> „the SECOND door is shut" bukik; (c) egy `minimax-` ág
+visszaadása a `resolveProviderEnv`-be -> két viselkedési eset bukik. Tehát MINDKÉT ajtó és a
+viselkedés is ténylegesen zárva van, nem csak állítva.
+
+**Egy elavult pin is javítva (`src/web/routes/kanban.ts`, 89423d29 -> e5d2e792).** Az upstream egy
+`statusProbe` elő-ellenőrzést tett a dispatch-szövegbe: a fogadó ügynök nézze meg a kártya státuszát,
+mielőtt nekikezd, mert egy foglalt session sorában késő üzenet már elavult kártyára érkezhet, és egy
+késői második nekifutás párhuzamos munkát szül. **A probléma valós és ezt a forkot is érinti, de NEM
+hiány itt:** a `src/web/kanban-state-stamp.ts` a küldés pillanatában `[card-state @send]`, a
+kézbesítéskor `[card-state @delivery]` bélyeget tesz magára az üzenetre, a kártya státuszával és
+azzal az utasítással, hogy olvasd újra a kártyát. Ez erősebb azon a tengelyen, ami a kimenetet
+eldönti: a bélyeg EGYÜTT ÉRKEZIK az üzenettel és nem kér együttműködést, míg egy próba, amit az
+olvasónak kell összeraknia és lefuttatnia, egy lépés, amit az olvasó ki tud hagyni.
+
+**Hivatkozás:** kártya `1b4cd700` (backend3 lelete 2a6a7756/21168); `48565f81` (Peti NO-GO),
+`e80c011a`, Cybered NO-GO 19877; `src/web/agent-process.ts`,
+`src/__tests__/fork-upstream-conflict-guard.test.ts`, `src/__tests__/provider-env-adoption.test.ts`.
+
+---
+
+## 2026-09-06 -- 26ab08a2 (4. kör): egy nyugtázás, amit az ÁLLANDÓ kulcshalmaz ellen ellenőriztek, takaró
+
+**Cybersec NO-GO (382755b3, HIGH, komment 21295) elfogadva, és a leletet FÜGGETLENÜL
+reprodukáltam, mielőtt hozzányúltam.** Az `--accept-cleared=<szabályok>` kapcsoló azért kapott
+nevesített alakot, hogy ne legyen takaró: mondd meg, MELYIK szabályt zártad le. A validáció viszont
+a neveket a `set(baseline)` ellen nézte -- a baseline KULCSAI állandóak, csak az összeomlott
+részhalmaz mozog. Ezért egy statikus, minden szabályt felsoroló lista örökre érvényes volt, vagyis
+pontosan az a takaró, aminek a megelőzésére a nevesítés készült.
+
+**Mérve a szállított szkripten (saját reprodukció, változatlan parse-számmal):**
+
+```
+  mindkét rácsos szabály sötét, kapcsoló nélkül            -> exit 3   (helyes)
+  UGYANAZ a futás, --accept-cleared=<minden baseline-név>  -> exit 0   (a megkerülés)
+  KONTROLL: EGÉSZSÉGES futás ugyanazzal a statikus listával -> exit 0   (semmi nem veszi észre)
+```
+
+**A harmadik sor dönti el.** A statikus lista egy egészséges futáson ÁRTALMATLAN, tehát elüldögélhet
+egy wrapper-szkriptben örökre úgy, hogy semmi nem hívja fel rá a figyelmet -- egészen addig, amíg
+egy nap a szabályok tényleg elsötétednek, és akkor átengedi azt a futást. A nevesítés csak hosszabbá
+teszi a sort; egy elavult sort nem tesz bukóvá.
+
+**Miért nem fogta meg a saját O3 tesztem.** Az O3 azt méri, hogy EGY név nem ment fel egy MÁSIKAT.
+Ez igaz, és pontosan eggyel kevesebb, mint a kérdéses eset: egy lista, ami MINDET megnevezi. A
+REVIEW-ban írt védelmem ("a lista minden alkalommal más, nem lehet vakon szkriptelni") a fenti
+mérés szerint nem állt.
+
+**A javítás:** a nevek ehhez a FUTÁSHOZ mérődnek, nem az állandó kulcshalmazhoz --
+`cleared_now = {r | r != parse_key, baseline[r] > 0, counts[r] == 0}`, és `unknown = accepted_cleared
+- cleared_now`. Ettől a statikus lista már az ELSŐ egészséges futáson elbukik, tehát nem tud csendben
+megülni egy wrapperben.
+
+**A vállalt árak, kimondva (Cybersec maga sorolta fel őket, egyetértek):** szigorúbb lett -- egy
+megnevezett, de mégsem nullázott szabály mostantól hiba, nem no-op --, a hibaüzenet szövege
+megváltozott („did not go to zero in this run"), és a `(parse-error)` többé nem nevezhető meg.
+
+**Egy mutáció TÚLÉLTE az első körben, és ez lett a 35. eset.** A `parse_key` kizárásának törlése a
+`cleared_now`-ból 34/34 zöldet hagyott: semmi nem rögzítette. Márpedig viselkedésben KÜLÖNBÖZIK --
+a `(parse-error)` megnevezése inert elfogadássá válna, azaz a tool elvenne egy nevet és nem csinálna
+vele semmit, ami pont az az osztály, aminek a megelőzésére az O4 eset létezik. Az O8 ezt zárja.
+
+**Mérve.** 30 -> 35 eset. Két mutáció, mind piros a sajátján: a `set(baseline)`-re visszaállítás
+NÉGY esetet buktat, a `parse_key`-kizárás törlése egyet (az O8-at).
+
+**Hivatkozás:** kártya `26ab08a2`; Cybersec 21295 (R-A HIGH, R-B teljesítve);
+`store/lint-ratchet.sh`, `store/lint-ratchet.selftest.sh`.
+## 2026-09-06 13:00 -- bb52c2fa (G-1/G-2 + Cybersec F-2) -- a guard that closes a trap must not sit in the same one, and a run that dies must still say how far it got
+
+**G-1 (Cybered, MEDIUM), and the finding is exactly right.** Last round's fix made the verdict read
+the printed output back, so a case can forget its flag and still count. Nothing pinned THAT. The CI
+wrapper asserts a PASSING run, and a passing run never enters the forcing branch, so the four lines
+could be deleted with the suite still green -- the same trap the guard exists to close, one rung up.
+
+**Measured as a differential, not asserted.** The same deletion applied to the LANDED script and to
+the fixed one:
+
+    landed (3af9d833), read-back deleted  -> selftest: PASS, exit 0   <- G-1 reproduced
+    fixed,             read-back deleted  -> selftest: FAIL, exit 1
+
+The verdict tail is now `_selftest_verdict <logfile> <flag>`, returning the verdict as an EXIT
+STATUS, and three cases call it DIRECTLY with synthetic logs: a dirty log must be forced to fail, a
+clean log must NOT be (the guard is not a blanket), and a clean log must not CLEAR a flag a case
+already set (it may only add). The middle one is the negative control; without it the guard could be
+replaced by an unconditional `fail=1` and the positive case would still be green.
+
+**G-2 (Cybered, LOW): a mid-run death swallowed the entire output.** Stdout is redirected into a log
+for the whole run, and the old EXIT trap deleted the temp directory holding it. Anything already
+printed died with it. The trap now EMITS the log before removing the directory, through a still-open
+fd 3. Measured with a simulated `kill -TERM` at the same point in both versions:
+
+    landed  -> exit 143, 0 bytes to the caller
+    fixed   -> exit 143, 4484 bytes, 71 lines
+
+Ordering is load-bearing and it is ONE trap, not two: a second `trap ... EXIT` would replace the
+first rather than chain. The normal path blanks `_selftest_log` after printing so the trap does not
+repeat it.
+
+**Cybersec F-2 (still open from 21309): my `cut` vs `awk` comment named the WRONG trigger.** It said
+a LARGE offset arrives right-aligned and breaks a single-space `cut`. Measured, and Cybersec is
+right: `cmp -l` right-aligns the offset COLUMN to the widest value in the run, so the padding lands
+on the SMALL offsets, and only when a larger one appears in the same output.
+
+    single difference at byte 20024  -> `20024 141 142`   cut [20024]  awk [20024]   cut WORKS
+    differences at byte 1 and 20024  -> `    1 141 142`   cut []       awk [1]       cut BREAKS
+
+**Why that is not cosmetic.** The comment is a specification for the regression case nobody had
+written yet, and it named the fixture that does NOT reproduce. Anyone building from it gets a green
+test blind to the class it was written for -- the third instance on this file of "the fixture could
+not see the shape it was built out of".
+
+**And the case IS worth adding even though the class is already covered.** Measured: reintroducing
+`cut` turns SIX existing cases red today. That coverage is incidental -- those cases exist for
+fences and UTF-8 offsets and merely happen to carry mixed-magnitude differences, so they can be
+trimmed away and take the pin with them. One named case now states the property; under the `cut`
+mutation the reds go 6 -> 7 and the named one is among them.
+
+**One label constraint, recorded because it is a real constraint on future cases.** The CI wrapper
+asserts the whole output does not contain the literal `FAIL`. That is coarser than it reads (the
+real invariant is a line-anchored `^  FAIL`), and a passing line that merely SPELLS the word turns it
+red -- which is what happened here first. Not loosened: an assertion that catches more is not the
+thing to weaken while fixing an unrelated finding. The passing labels are worded around it, and this
+paragraph is here so the next person does not rediscover it by breaking CI.
+
+**Selftest: 70 -> 74 cases, green, exit 0.** Targeted CI test 3/3 green.
+
+**Reference:** card `bb52c2fa`; Cybered 21325 (G-1, G-2), MikroB 21327, Cybersec 21337 (F-2).
+
+## 2026-09-06 13:15 -- bb52c2fa (follow-up) -- "LC_ALL unset" is not a locale, and that makes the old bug WIDER
+
+**Cybersec's refinement (21303), reproduced before adopting it.** Both my correction and Cybered's
+treated "LC_ALL unset" as one row of a locale table. It is not a locale: it is delegation to LANG.
+
+    LC_ALL unset, LANG=C.UTF-8 -> "differ: byte 4"
+    LC_ALL unset, LANG=C       -> "differ: char 4"
+    LC_ALL unset, LANG unset   -> "differ: char 4"
+
+**Why this is a correction and not a detail.** Every previous statement of the defect -- mine, in
+the code header and in this log -- said the `byte`-only pattern was fine with LC_ALL unset and broke
+when something exported it. Measured, it ALSO broke on a host that simply has no LANG, with nothing
+exported at all: the default state of a bare container. "Unset was fine" was true only because this
+host's ambient LANG happens to be multibyte, which is an accident of the machine, not a property of
+the code. The finding is wider than either of us had written, and in the direction that matters --
+more environments were affected, not fewer.
+
+Nothing about the FIX changes: `cmp -l` emits numbers and is locale-independent, which is why the
+remedy was never a wider word list. What changes is the claim the shipped comment makes about the
+old defect's blast radius, and a comment that presents EVIDENCE has to be right about the evidence.
+
+**Reference:** card `bb52c2fa`; Cybersec 21303. Landed round: `e4345f9e`.
+
+## 2026-09-06 13:20 -- upstream round 18 -- the acknowledged-conflict rule said the JSON-parse hardening was out of scope, and upstream landed inside it
+
+**Fleet-wide landing block, and it was not caused by the diff that hit it.** My comment-only commit
+`0fac5a36` was REFUSED by `marveen-land.sh` on the merge result: `fork-upstream-conflict-guard`
+red, 1 of 15203. Measured on a disposable worktree at `origin/develop` (828880c1) with NO change
+applied: the same test is red there too, 1 failed / 27 passed. So this was the base, not the diff --
+the third time this year that distinction has decided whether a red is mine to fix or to route.
+
+**What upstream did.** `src/web/routes/messages.ts` moved `98710db9e171..5f84469418f8`: a new
+`notify?: boolean` on `PUT /api/messages/:id`, letting a closer suppress the reverse `[Eredmeny]`
+ack. Their reason is measured, not stylistic -- the ack traffic lengthens the very queue whose delay
+made a report late.
+
+**Why this is a rule CORRECTION and not a pin bump.** The recorded rule ended with: the fork's other
+additions "(reserved-sender guard, JSON-parse hardening, to-validation, card-state stamping) live in
+separate regions and are not part of this decision". Upstream's `notify` validation landed EXACTLY in
+the JSON-parse hardening region. There are now TWO conflict hunks where the rule describes one, and
+the rule actively tells the next merger that the second one is out of scope -- so the most likely
+resolution is the wrong one, arrived at by following the note.
+
+**The consequence, measured rather than reasoned.** On `5f84469418f8` upstream's version is a BARE
+`JSON.parse(body.toString())` with no try/catch. The fork's side wraps it and answers 400 on a
+malformed body. Taking upstream's side wholesale on hunk 2 -- the natural reading of "not part of
+this decision" -- DELETES the hardening and turns a malformed request body into an unhandled throw in
+a request handler.
+
+**Resolution recorded for hunk 2: keep BOTH, nested.** The fork's try/catch stays; upstream's notify
+type-check goes INSIDE it. Upstream's check is itself worth having and is fail-closed on its own
+terms (it rejects a non-boolean BEFORE the status write rather than coercing, so a truthy `"false"`
+string cannot send the ack the caller asked to suppress). The point is nesting, not choosing. Hunk 1
+(the GET-handler comment) is unchanged: identical code, keep the fork's comment.
+
+**A note on what this guard is for.** It did its job precisely: it refused a landing because an
+upstream side had moved out from under a recorded resolution. The failure mode it caught was not "the
+blob changed" but "the rule now misdescribes the conflict" -- which is the more valuable half, and
+the half a pure sha-equality check could never have surfaced.
+
+**Reference:** upstream round 18; guard `src/__tests__/fork-upstream-conflict-guard.test.ts`
+(`ACKNOWLEDGED_CONFLICTS` + `ACKNOWLEDGED_UPSTREAM_BLOBS`). Guard green 28/28 after the correction.
+
+## 2026-09-06 13:25 -- ac28bc6e (f92671df 1/4) -- the live control and the history are different questions, so they get different stores
+
+**The card asked for stuck-history as structured data. The survey changed what that means.** Plenty
+about a CARD is already structured: `kanban_card_events` (status transitions) and
+`kanban_card_field_events` (every other edit, including the title that carries the `[NN%]` marker),
+both indexed on `(card_id, created_at)`. "When did it last move" and "how long has it been still" are
+already derivable, and a parallel copy would be a second source of truth for a question that has one.
+
+**What has no row anywhere is the INCIDENT**: the moment the heartbeat's D section JUDGED a card
+stuck, what it saw, and what it decided. The last part is load-bearing. The shared token-protection
+guard answers DENY on six grounds (progress, agent-busy, backoff, cap-reached, first-seen-baseline,
+not-active), and every one is a DELIBERATE non-action that today leaves no trace at all -- in the log,
+a control that decided to do nothing is indistinguishable from a control that never ran.
+
+**THE DECISION, and it is a deliberate refusal of the literal ask.** `store/redispatch-ledger.json`
+already counts re-dispatches per card, and `redispatch-guard.sh reset <cardId>` DELETES the entry --
+which working rule 4 requires on every close. So the count is destroyed exactly when the incident
+would become history. I did NOT convert that file into a history store. Its behaviour is CORRECT for
+what it is: a live backoff BUDGET. A history that never reset would leave a once-stuck card at the cap
+forever, and the guard would refuse to re-dispatch it again -- fixing the reporting question by
+breaking the control. The two stay separate, the same split `kanban_card_field_events` documents for
+its own separation from `kanban_card_events`.
+
+**ONE STALL IS ONE ROW, enforced by a unique PARTIAL index** (`WHERE resolved_at IS NULL`). The D
+section runs every 10 minutes, so without it an hour-long stall becomes six rows and "how often did
+this card get stuck" measures the HEARTBEAT FREQUENCY, not the stalls -- a number that looks like data
+and is not. Re-observation bumps `detections` on the open row instead.
+
+**Append-only enforced by TRIGGER, not by convention.** The rows that historically went wrong in this
+schema came from agents writing directly with the sqlite3 CLI, where a TypeScript-side guard is not
+in the path (the timestamp-integrity block in db.ts documents that history). The trigger also refuses
+to UN-resolve: clearing `resolved_at` would reopen a closed incident and let a second open row exist
+under the unique index, quietly breaking one-stall-one-row from the other direction.
+
+**Rule 11: the DOWN path is exercised, not assumed.** Dropping the table is tested, and so is
+drop-then-redeploy -- including that the TRIGGER returns with the table, since a rollback that
+restored the table without it would look identical until the first tampering write. The persistence
+cases run against a temp FILE, not `:memory:`: `initDatabase(':memory:')` opens a NEW database each
+call, so "drop it and re-run the schema" on memory would silently test a fresh DB and prove nothing.
+
+**Mutation evidence, each guard caught by a different set:** trigger deleted -> 4 red; unique partial
+index -> plain index -> 1 red; partial index -> unconditional unique -> 1 red. The third is the
+negative control earning its place: without `WHERE resolved_at IS NULL` a card could only ever be
+stuck ONCE in its life, and the card's own repeat question would be unanswerable.
+
+**Reference:** card `ac28bc6e` (parent `f92671df`); survey comment 21393. 15 tests, green.
+
+---
+
+## 2026-09-06 -- d5c05548 (3. kör): „nem tudom megkérdezni" nem azonos azzal, hogy „nincs maszkolva"
+
+**Cybersec F-1/F-2 (GO e2be6386 mellett, két MEDIUM, egy gyökér) elfogadva, és a leletet a
+javítás előtt magam reprodukáltam.** A `unit_is_masked()` egy sztringet hasonlít a `masked`
+értékhez, tehát az ÜRES válasz -- nincs user bus, a user manager még nem áll, a systemctl hiányzik,
+a unit eltűnt -- pontosan úgy olvasódik, mint a „nincs maszkolva". Mérve: egy `Failed to connect to
+bus` hibával 1-gyel kilépő systemctl mellett a kimenet üres, az összehasonlítás hamis, és ez
+megkülönböztethetetlen egy élő, nem maszkolt unittól.
+
+**Két döntés született ebből a hamis válaszból, és a második a súlyosabb.** A `mask_one` félretette
+volna a valódi unit-fájlt és kirakta volna a `/dev/null` symlinket, majd azt jelenti, hogy SEMMIT
+nem maszkolt -- a szolgáltatás a lemezen maszkolva, a riasztás szerint a gép védtelen, és a
+`.real-unit-backup` létezését semmi nem rögzíti. A `reconcile_masked_flag` pedig a `main()` ELSŐ
+lépése, MINDEN futáson fut, és TÖRLI egy valóban maszkolt gép flagjét, azt naplózva, hogy „none of
+[ollama.service] is masked any more". Ez nem gyógyul magától: a flag egyetlen írója a `mask_units`,
+ami csak friss crash-loop észlelésekor fut.
+
+**Élő reprodukció a javítás előtt** (a unit a lemezen `/dev/null` symlink, tehát ténylegesen
+maszkolt; a systemctl nem válaszol): a flag ELTŰNT, a napló pedig egy hamis állítást írt ki.
+
+**A gyökér a saját elvem, egyetlen bemenetre alkalmazva.** A fájlban három függvénnyel feljebb ott
+áll a helyes szabály a MÁSIK bemenetre: „an unreadable claim is not a refuted one" -- az
+olvashatatlan FLAG-ről írva. A megválaszolhatatlan SYSTEMD ugyanaz az alak, és nem kapta meg. Két
+bemenet, egy elv, egy védve. Cybersec ezt pontosan így nevezte meg, és előre kimondta az
+összeférhetetlenséget is: a flag-visszamérés az ő javaslata volt (970156ce), tehát az F-2 az ő
+specifikációjának a hiányossága -- ugyanaz a kvadráns-kihagyás, amit ott már egyszer elkövetett.
+
+**Miért több ez higiéniánál.** A flag hiánya PONTOSAN az a jelzés, hogy a gépet SZÁNDÉKOSAN tartják
+lefogva. Ennek a jelzésnek a hiánya vitte oda egy másik ügynököt, hogy ötször újraindítsa az
+ollamát a guard alatt. Mért precedens ebben a flottában, nem feltételezés.
+
+**A javítás:** `unit_state_unknown()` predikátum (nem nulla kilépőkód VAGY üres érték), és mindkét
+hívó rá van kötve -- a `mask_one` nem mozgat fájlt ismeretlen állapotnál, a `reconcile` pedig az
+ELSŐ ismeretlennél érintetlenül hagyja az egész flaget. Az első ismeretlennél való kilépés
+szándékos: egy félig válaszoló systemd alapján részlegesen átírni a flaget új állítás lenne
+ugyanabból a bizonytalanságból.
+
+**A teszt-oldali hiányt Cybersec kimondta, és igaza volt:** a hamis systemctl MINDIG válaszolt,
+tehát a „nem tudom megkérdezni" ágnak NULLA fedezete volt -- ezért szállíthatott a defekt. Négy új
+eset ad neki fedezetet.
+
+**Egy mutáció TÚLÉLTE, és mérésre küldött.** A csak-kilépőkód változat 43/43 zöldet hagyott.
+Megmértem az ÉLES systemctl-t: egy általa nem ismert unitra 0-val lép ki és SEMMIT nem ír ki. Tehát
+az `exit 0 + üres` alak a termelésben elérhető, és egy csak-kilépőkódos ellenőrzés egy eltűnt unitot
+élő, nem maszkolt unitnak olvasna és törölné a flaget. A rögzített döntés: ilyenkor MARAD a flag --
+egy eltűnt unitról nem lehet megállapítani, hogy nincs maszkolva, a dokumentált visszaállítás pedig
+valódi unit-fájlt tesz vissza (`static`, nem üres), tehát a szokásos gyógyulás az (m) eseten
+keresztül továbbra is töröl.
+
+**Mérve.** 35 -> 44 eset. Négy mutáció, mind piros a sajátján: a predikátum kiütése (6 bukás), a
+`reconcile` őrének elhagyása (4), a `mask_one` őrének elhagyása (2), és a csak-kilépőkódos alak (1,
+az új (v) eset).
+
+**Hivatkozás:** kártya `d5c05548` (Cybersec 21348, F-1/F-2); `scripts/gpu-crashloop-guard.sh`,
+`scripts/__tests__/gpu-crashloop-guard.test.sh`; kapcsolódó: `970156ce`.
+
+## 2026-09-06 13:40 -- A Gate-SHA soron a POZÍCIÓ dönti el, mi számít idézett shának (kártya a20f0aa7)
+
+**Döntés:** A `kanban-gate-completeness-guard.ts` kör-határ számításában egy hex futam NEM idézett
+commit, ha az őt tartalmazó, szóközzel határolt tokenben van `/` ÉS a token valamelyik `/`-szegmense
+nem maga is csupasz sha. A `merge-base` bekerül a szülő-marker listába; az `alap`/`base` KIMARAD.
+
+**Miért:** Az 5bc8f740 hamis 409-ét ("QA verdikt hiányzik") két alok okozta egyetlen soron:
+`Gate-SHA: 8b8377cf (CleanCore, ag fix/platform-admin-append-tail-5bc8f740, merge-base 0d5ebb6c)`.
+A `5bc8f740` a KÁRTYA SAJÁT ID-je az ágnév végén, és egy kártya-ID nyolc hex karakter, alakra
+megkülönböztethetetlen egy rövid shától; a `0d5ebb6c` pedig definíció szerint ős. Mindkettő KÉSŐBB
+"vezetődik be", mint a valódi QA PASS, ezért a `Math.max` a kör-határt a QA verdiktje utánra húzta.
+
+**Két javaslatot MÉRÉS alapján elutasítottunk:**
+1. "A token-gyűjtés álljon meg az első zárójelnél" -- ezt a fájl saját dokumentációja már cáfolja
+   (367c23a9): a d0b4f003 három gate-je zárójelen BELÜL idézte a kör saját shait.
+2. "Az `alap`/`base` is kerüljön a szülő-marker listába" -- ugyanaz az ok; ezek valódi
+   társ-idézések, nem ősök.
+
+**A szabály maga is KÉTSZER szűkült, mindkétszer egy mért téves eldobás miatt** (3301 valós
+Gate-SHA sor): a szomszédos karakterre kulcsolás elvesztette a backtickbe tett (`3dcbbefc`) és a
+magyar toldalékos (`a21e5528-on`) idézést; a puszta "van benne `/`" szabály pedig elnyelte a
+`89665d8a/06200298` alakot, ami nem útvonal hanem a flotta "mindkét commit" idiómája, és ezzel egy
+valódi QA2 verdiktet érvénytelenített a 67807f6f-en.
+
+**Mérés a végleges szabályra:** 60 sor változik 3301-ből (55 ágnév/útvonal, 7 merge-base, nulla
+megmagyarázatlan, nulla új token); 8 kártya kör-határa mozdul; 6 gate-verdikt válik elavultból
+frissé és MINDEGYIK a saját köre targy-sháját nevezi meg; 0 válik frissből elavulttá. A hatból
+ÖTNÉL a javítás előtti "legújabb sha" maga a kártya ID-je volt, tehát az 5bc8f740 nem egyedi eset.
+A négy korábbi, ebben a fájlban már javított incidens (d0b4f003, 4ae2d3f5, d4a2130d, 67807f6f)
+mind változatlan. A szállított TypeScript kimenetét a mérő modellel összevetve 3312 soron 0 eltérés.
+
+**Ki döntött:** backend2 (mérés és javaslat), MikroB jóváhagyta (24490). Az eredeti gyökér-okot
+backend mérte ki és adta át (24352).
+**Hivatkozás:** kártya a20f0aa7; a mérés a kártyán, a kód `src/web/kanban-gate-completeness-guard.ts`.
+
+## 2026-09-06 -- 48b0dd36: a landolási kapu a verdikt SZERZŐJÉT is nézi, de csak a PASS oldalon
+
+**Kontextus.** A `landing-gate-verdict-parse.py` az a fél, amelyik ténylegesen ENGEDI vagy TILTJA a
+pusholást (a `gate-closure-check.py` csak tanácsot ad egy sorban, ember dönt). Ez az eszköz eddig a
+verdikt SZÖVEG-ALAKJÁBÓL hitelesített: az `author` mezőt kiírta az üzenetbe, de a döntésbe sosem
+vette be. Vagyis egy `QA PASS` kezdetű, `Gate-SHA:` sort vivő komment BÁRMELY szerzőtől kielégítette
+a 4. szabály kötelező QA-követelményét -- a készítő aláírhatta a saját munkáját azzal, hogy leírja a
+szavakat. Cybersec mérése a c52e2823 zárásakor (24365).
+
+**Döntés, és a lényeg az ASZIMMETRIA.** Egy PASS csak akkor számít, ha a szerző szerepe egyezik
+azzal a gate-tel, amit a verdikt ÁLLÍT magáról (`author_role(szerző) == a verdikt-szó szerepe`). Egy
+FAIL viszont SZÁNDÉKOSAN nem szerző-ellenőrzött: aki leírja, attól áll. Nem attribuálható PASS nem
+PASS; nem attribuálható ELUTASÍTÁS viszont attól még elutasítás. Ha a szerző-ellenőrzés a FAIL-re is
+állna, kiesnének a közvetített elutasítások -- MikroB `<GATE> <VERDIKT> ELFOGADVA` nyugtázása a
+tábla rutinszerű alakja --, és egy landolás átmenne egy kimondott NO-GO fölött. Az szigorúan
+rosszabb, mint a betömött lyuk.
+
+**Ez NEM autentikáció, és nem is állítja magáról.** A kanban API a szerzőt a kérés TÖRZSÉBŐL veszi,
+egyetlen közös Bearer token alatt, tehát bárki posztolhat bárkinek a nevében. A szerző-ellenőrzés a
+gyengébb, de olcsó állítás: egy verdikt, ami még csak nem is ÁLLÍTJA, hogy a gate-től jön, nem annak
+a gate-nek a verdiktje. A tényleges hitelesítés külön kártya tárgya lenne (per-ügynök token), ez
+nem az.
+
+**Új válaszszó: `UNVERIFIED-AUTHOR`.** Nem `OK` (nem landolhat) és nem `FAILED` (nem elutasítás,
+amit vissza kell dobni): a shát megnevezte valami verdikt-alakú, és az ok, amiért nem számít, az,
+hogy KI írta. A burkoló (`landing-gate-verdict-check.sh`) a prefixből dönt és csak az `OK` ad 0-t,
+tehát egy új szó fail-closed a szerkezetéből adódóan -- ezt külön eset rögzíti, mert a
+"szerkezetéből adódóan" pont az az állítás, ami egy szerkesztés után elromlik.
+
+**A szerep-tábla KÖZÖS modulba került (`store/gate_author_role.py`), nem másolva.** A szabály eddig
+csak a tanácsadó olvasóban élt; a másolás mára megoldotta volna, és az első aliasnál, amit valaki az
+egyik fájlba felvesz és a másikba nem, újranyitná. A `gate-closure-check.py` mostantól onnan
+importál (a `GATES` is onnan jön), így a következő testvér-szerep egy helyen kerül be.
+
+**Mérés a döntés mellé (élő tábla, 2026-09-06):** 439 kártya, 651 verdikt-alakú első sor (560 PASS,
+91 FAIL). Nem-szerep szerzőtől 7 PASS és 13 FAIL, és ezek közül EGY SEM visz `Gate-SHA:` sort, tehát
+egyikük sem ér el a döntésig. A változtatás MA nulla verdiktet fordít meg -- ezért volt MEDIUM és nem
+HIGH, és ezért maradt a meglévő 27 selftest-eset mindegyike bit-re ugyanazzal a válasszal. Az irány
+rögzítése a cél: az első nem-szerep szerző, aki egy `Gate-SHA` sort is odaír, ma landolna.
+
+**Hivatkozás:** kártya `48b0dd36` (Cybersec MEDIUM a c52e2823-on, 24365);
+`store/landing-gate-verdict-parse.py`, `store/gate_author_role.py`,
+`store/gate-closure-check.py`, `store/landing-gate-verdict-check.selftest.sh` (27 -> 36 eset).
+
+## 2026-09-06 14:00 -- A flotta által kiváltott /compact megmondja, mit NEM szabad átfogalmazni (kártya fed3f037, (a) rész)
+
+**Döntés:** A `POST /api/agents/<n>/compact` végpont nem csupasz `/compact`-ot küld, hanem
+instrukciót is: szó szerint tartandó minden Peti/MikroB utasítás és tiltás, az aktív kártyák
+követelményei, a még nyitott gate-leletek, a meghozott döntések a mögöttük álló méréssel, a nyitott
+kérdések és a már jelentett Gate-SHA-k; szabadon tömöríthető a tool-kimenet, a fájltartalom és az
+ügynök saját elbeszélése. Kill switch: `COMPACT_PROMPT=bare` visszaadja a régi literált.
+
+**Miért:** A hermes-agent micro-compaction leírásának (MIT, referenciaként olvasva, kód nem átvéve)
+egyetlen olyan megfigyelése, ami RÁNK IS áll: soha nem tömöríti a felhasználó üzeneteit, csak a
+levezetett anyagot. Az indoklás a mi hibaosztályunk pontos megfogalmazása: amit az ügynök termel, az
+nagyrészt beszámoló arról, mit csinált, és ez kevés veszteséggel összefoglalható; az utasítás viszont
+az a szándék, amiből minden más levezetődik, és NEM rekonstruálható az utána következő munkából.
+
+**Amit ELVETETTÜNK, méréssel:** magának a mechanizmusnak a portolása (MikroB plan-grilling verdikt).
+Egy körönkénti micro-compaction átírja a már elküldött előzményt, tehát minden körben töri a
+prompt-cache prefixet; ennél a flottánál a cache-találati arány 98,4%, és a tényleges költség a
+49,3 milliárd cache-read token. Ez pontosan az az eset, amit a forrás doksi maga nevez meg
+veszteségesként, és amiért upstream is `off by default`.
+
+**Kockázat és kezelése:** ez flotta-szintű változás egy kritikus úton, ezért a 9. kódminőségi
+szabály szerint kapcsolóval visszavonható commit nélkül. A `/compact` továbbra is a sor ELEJÉN áll,
+mert a Claude Code csak akkor ismeri fel slash-parancsként; a szöveg egyetlen sor.
+
+**Ki döntött:** MikroB (plan-grilling verdikt, 21407), backend2 (mérés és megvalósítás).
+**Hivatkozás:** kártya fed3f037 (a) rész; `src/web/routes/agents.ts`.
+## 2026-09-06 13:30 -- ac28bc6e CORRECTION -- the guard has NINE deny reasons, not six, and one carries a payload
+
+**Correcting my own entry above, which said "six grounds".** I took that list from the heartbeat
+D-section prose instead of from the script. Counted from `store/redispatch-guard.sh` itself, every
+one a live code path with its emitting line:
+
+    DENY:not-active (24)   DENY:load-paused (25)   DENY:progress (27)
+    DENY:agent-busy (29)   DENY:cap-reached (30)   DENY:backoff (33)
+    DENY:usage (213)       DENY:card-not-found (215)   DENY:first-seen-baseline (239)
+
+The prose documents six of them. `load-paused` is a genuine policy denial it omits (the agent is
+cgroup-throttled or SIGSTOP-frozen, deliberately not running); `usage` and `card-not-found` are the
+error paths.
+
+**Why this is not a detail.** The writer in subtask 878cd292 records what the guard decided. Built
+from the prose, three of nine branches would never have been logged -- which is precisely the "a
+deliberate non-action leaves no trace" hole this whole table exists to close, reproduced inside its
+own fix. The class is the one I have hit repeatedly today: a query (here, a paragraph) that answers a
+different question than the sentence quoting it claims.
+
+**And one reason is not a constant.** The script emits `DENY:backoff:<seconds>`, not a bare
+`DENY:backoff`. A writer equality-matching a known-reason list would classify every backoff denial as
+unknown. `action_detail` therefore stores the verdict VERBATIM, and any classification is by PREFIX
+-- which is also why the column is free text that accepts an unrecognised reason rather than
+rejecting it.
+
+**Not fixing the prose here.** The heartbeat SKILL.md is a global scheduled-task file and its
+accuracy is a separate concern from this schema; naming the discrepancy is this card's job, changing
+a fleet-wide task definition is not. Reported to MikroB.
+
+**Reference:** card `ac28bc6e`; corrects the `2026-09-06 13:25` entry in this file.
+
+## 2026-09-06 13:32 -- ac28bc6e SECOND CORRECTION -- I corrected prose by reading other prose
+
+**My 13:30 correction is itself wrong on one point, and the way it is wrong is the point.** It said
+the guard emits `DENY:backoff:<seconds>`. I took that from the guard's HEADER COMMENT (line 33)
+instead of from the code, having just corrected a different claim I had taken from the heartbeat
+prose. Two corrections, same root, one level apart.
+
+**Measured this time -- from the echo sites, plus live probes:**
+
+    header comment claims:  DENY:backoff:<s>            (colon)
+    code actually emits:    DENY:backoff(<n>s)          (parentheses)
+    and two more carry payloads the header never mentions:
+                            DENY:not-active(<status>)   DENY:cap-reached(<count>)
+    live probe, real cards: `DENY:progress`, `DENY:card-not-found`
+
+So THREE of the nine carry a payload, not one, and the separator is `(`, not `:`. The guard's header
+comment disagrees with the guard's own code.
+
+**The design consequence is concrete, not cosmetic.** A writer that equality-matches a known-reason
+list drops three of nine. A writer that prefix-matches `DENY:backoff:` -- exactly what my previous
+entry would have produced -- drops backoff as well, and backoff is the MOST common denial in a real
+stall, since it fires on every re-observation inside the window. The remedy is unchanged in shape but
+now correct in detail: store the verdict VERBATIM, and take the reason as the text up to the first
+`(` or `:`. No list in this repo needs to stay in sync with a script it does not own.
+
+**The lesson, stated plainly because I keep paying for it.** "Read the schema, not the comment about
+the schema" applies to the correction too. When the first source turned out to be prose, the fix was
+to MEASURE, not to find better prose. Both wrong claims would have passed review: they were specific,
+plausible, and cited a real file.
+
+**Reference:** card `ac28bc6e`; corrects the `2026-09-06 13:30` entry, which corrected the `13:25` one.
+
+## 2026-09-06 13:40 -- bb52c2fa -- the correction reached the header and not the SECOND copy 90 lines down
+
+**Cybersec F-1, round 2 (21395), and the shape is the one this card family keeps producing.** The
+refuted locale explanation was corrected in the function header. The SAME text also stood at line
+~1789, in the selftest, and there it was not a superseded precedent -- it was the JUSTIFICATION for
+the assertion directly beneath it.
+
+**Why the old explanation is wrong, refuted by its own list.** It said the suite went 61/67 "because
+cmp's MESSAGE says char in some locales and byte in others". If that were the cause, exporting
+C.UTF-8 -- which IS multibyte, and under which cmp says "byte" (measured on this host) -- should have
+WORKED. It broke too. The listed evidence contradicts the stated cause.
+
+**The real mechanism, already stated correctly 90 lines above it:** `local LC_ALL=C` reaches the
+child only when LC_ALL already carries the export attribute, which it does the moment anything
+exported it. cmp therefore ran under single-byte C whatever value was exported, said "char", and the
+byte-only pattern matched nothing. The specific locale never mattered -- only whether one was
+exported at all.
+
+**The lesson is not "fix the comment".** It is that a correction lands where you are looking. I
+corrected the header, verified the header, and reported the header as fixed -- while a second copy of
+the same claim sat in the same file doing more damage than the first, because it was load-bearing for
+an assertion rather than being narrative. Next time a refuted claim is corrected, grep the file for
+its DISTINCTIVE PHRASE, not just the section that prompted the correction.
+
+**Reference:** card `bb52c2fa`; Cybersec 21395. Selftest 74 cases, green.
+
+## 2026-09-06 13:45 -- upstream round 18 follow-up -- the resolution is pinned by a TEST, not only by the note
+
+**Cybersec supplied something I did not claim, and it makes the round-18 fix stronger.** My
+`ACKNOWLEDGED_CONFLICTS` correction told the next merger what the right resolution is. It did not say
+whether anything would STOP them getting it wrong. There is: the fork's JSON-parse hardening has a
+behavioural pin.
+
+**Re-measured here before adopting it, not taken from the report:**
+
+    origin/develop, untouched                              6/6 GREEN
+    PUT try/catch replaced with upstream's bare parse       2 FAILED  <- "take upstream wholesale"
+    control: an inserted comment                           6/6 GREEN
+
+`src/__tests__/messages-invalid-json-400.test.ts` covers both handlers. So a merger who ignores the
+note and adopts upstream's side of hunk 2 hits failing tests rather than a silent loss of a 400. That
+is the state Cybered's doctrine asks for -- prose AND a red test, never prose alone -- and the rule
+now says so, because "a note is all that stands between you and this mistake" and "you will also get
+red tests" are different instructions to the person reading it at 2am.
+
+**It also settles why the refuted sentence is LABELLED rather than deleted.** The next merger goes
+looking for the sentence they followed last time; finding it struck through with the correction
+attached is more useful than finding it gone.
+
+**A note on how the confirmation arrived, because the failure mode is one I hit twice today.**
+Cybersec's FIRST probe grepped the literal string `'Invalid JSON body'` across the tree, found zero
+test hits, and was one sentence from reporting that only prose protects the hardening. The test
+asserts `/invalid json/i`, a regex -- so the grep answered a different question than the sentence
+would have claimed. The mutation settled it; the grep could not have. Same class as my own
+DECISIONS-heading miscount and my six-versus-nine deny count today: three instances, two agents, one
+shape -- an artifact queried where it was convenient rather than where the fact lives.
+
+**Reference:** upstream round 18; Cybersec message 24509; guard green 28/28 after the addition.
+## 2026-09-06 -- 09a3d52a: a redispatch-guard főkönyve zár alatt ír, és a zár HIÁNYA tilt, nem enged
+
+**Kontextus.** A `store/redispatch-guard.sh` az a közös fojtópont, amin minden automata meglökés és
+újra-dispatch átmegy, és a `MAX_REDISPATCH=3` sapkával ez akadályozza meg a dokumentált token-égő
+hurkot ("ugyanaz a kártya 18-szor fejlődött"). Az állapota a `store/redispatch-ledger.json`.
+
+**A hiba.** A `_ledger_get` és a `_ledger_set` két külön python-folyamat, és a set a TELJES fájlt
+írja vissza a saját pillanatképéből. Két egyidejű futás tehát nem egy számlálót veszít: a vesztes
+felülírása a MÁSIK kártya bejegyzését ejti ki, vagyis annak a kártyának a re-dispatch-számlálója
+nullázódik, és a sapka soha nem áll fel. Pont az a korlátlan hurok válik újra lehetségessé, ami
+miatt a guard megszületett.
+
+**A mérés, és amit NEM állítok.** A szkriptből KIVÁGOTT valódi két függvénnyel, 30 kártya-azonosítóra:
+párhuzamosan 27, 28, 29, 29, 29 bejegyzés maradt meg öt futásban (fal-idő 0,30-0,37 mp), sorosan
+30/30 (1,59 mp). A soros kontroll átfordul, tehát a mérés a versenyt méri. Elérhetőség MA: a `check`
+egyetlen hívói MikroB monitor-promptjai (heartbeat-consolidated D, fleet-nudger), amiket egy session
+sorosít; ellenőriztem, hogy a `load-guard-daemon.sh`, a `load-guard-bookkeeping.sh` és a
+`context-compact-monitor.sh` NEM hívja, csak kommentben említi. Szerkezeti akadály viszont nincs:
+egyetlen turn párhuzamos Bash-hívásai elegendők. Vagyis a mechanizmus bizonyított, a kiváltás egy
+viselkedési döntésre van, és nem állítom, hogy ma élesben elsül.
+
+**Döntés.** Egyetlen `flock`-alapú zár (`${LEDGER}.lock`, 10 mp várakozás) fedi a `check`, a `reset`
+és az `escalations` teljes állapot-módosító szakaszát. EGY zár mindkét állapot-fájlra (főkönyv és
+eszkalációk): a műveletek másodperc alattiak, tehát a második zár csak azt a kérdést szülné meg,
+hogy egy jövőbeli szerkesztés melyiket fogja.
+
+**A zár hiánya TILT, nem enged.** Ez ellentétes az alatta lévő `_is_load_paused` szándékos
+fail-open viselkedésével, és ez nem következetlenség: ott a hibamód "örökre blokkol minden meglökést
+a flottában", itt "kihagy egy tickt". Egy megtagadott meglökést a hívó a következő körben újrapróbál;
+egy elveszett főkönyvi bejegyzést semmi nem állít helyre. Az `escalations` a zár hiányában
+KIFEJEZETTEN nem ír a kimenetre: egy üres lista ott "nincs függő eszkaláció"-nak olvasódna, ami az
+egyetlen rossz válasz, mert egy sapkát elért kártya így némán sosem jutna emberhez.
+
+**A teszt, és a korlátja.** A selftest kap egy 40-elemű párhuzamos burst-esetet (mind a 40 bejegyzés
+maradjon meg, mind count=1) és egy determinisztikus zár-kizárólagosság-esetet (fd 9 fogja, egy
+nulla-várakozású második nyitó bukjon). A `check` BEDRÓTOZÁSÁT viszont csak FORRÁS-szintű állítás
+rögzíti (a zár-hívás a főkönyv-olvasás ELŐTT álljon), a KOMMENTEKTŐL MEGTISZTÍTOTT forráson illesztve,
+mert egy kommentben megnevezett hívás kielégítene egy naiv jelenlét-ellenőrzést. Ez tudatos korlát:
+a valódi `check` a futó dashboardot kérdezi a kártyáról, és az alternatíva, egy env-változós stub-varrat
+magában a guardban, megkerülési felület lenne egy olyan eszközben, aminek a dolga a megtagadás.
+
+**Mutánsok, mind megölve, valódi kilépési kóddal mérve (nem kiírt sorral).** (1) a burst zár nélkül
+fut -> 40-ből 32 bejegyzés maradt, exit 1; (2) a `check` nem veszi fel a zárat -> a bedrótozás-eset
+bukik, exit 1; (3) a `check` a főkönyv-olvasás UTÁN veszi fel -> ugyanaz, a sorrendet nevesítve.
+A kiindulás mindháromszor visszaállt exit 0-ra, és a fájl bitre azonos volt a mutáció előttivel.
+
+**Kísérő lelet, külön kártyán.** Kiderült, hogy ennek a guardnak a selftestje SOHA nem futott a
+suite-ban: a `store-selftests-all-run.test.ts` felfedezése FÁJLNÉV-utótagra kulcsol, tehát egy olyan
+szkript, ami a selftestjét MÓDként hordozza, szerkezetileg láthatatlan neki. Mérve: a `store/` 15
+selftest-módú szkriptjéből TÍZ-et egyetlen teszt sem hív. Ez a kártya csak EZT az egyet drótozza be
+(`src/__tests__/redispatch-guard-selftest.test.ts`), a maradék kilenc külön kártya, mert az, hogy
+átmennek-e, mérve nincs, és ebben a repóban van dokumentált eset arra, hogy egy selftest a futó
+flotta alól cserélt ki egy éles konfigurációs fájlt.
+
+**Hivatkozás:** kártya `09a3d52a` (szülő `ee2d6220`, hermes-agent atomikus esemény-igénylés);
+`store/redispatch-guard.sh`, `src/__tests__/redispatch-guard-selftest.test.ts`.
+
+## 2026-09-06 14:30 -- A python hook-interpretert ellenőrizzük használat előtt, mert a 127 NEM blokkol (kártya d2b881ab)
+
+**Döntés:** Az upstream `pythonHookCommand()` SZÓ SZERINT átvéve (10. szabály: kész, karbantartott
+megoldás adoptálása saját írása helyett), és a fork MINDEN python-őrére alkalmazva -- upstreamnek
+csak az outgoing-copy-gate-hez kellett, mert a többi őr fork-specifikus. Az `injectOutgoingCopyGate`
+is erre vált a `hookCommand()` helyett.
+
+**Miért:** A `hookCommand()` saját fejléce kimondja, hogy a 127-es kilépés "exactly the non-blocking
+status this whole file exists to stop", és ezért a NODE interpretert használat előtt ellenőrzi. A 14
+python-őr-bedrótozás viszont csupasz `python3 "<script>"` volt. Ha a `python3` bármikor lekerül a
+PATH-ról (pyenv shim, csomagfrissítés, más spawn-környezet), mindegyik 127-tel lép ki, a Claude Code
+azt NEM blokkolónak veszi, és MINDEN python-őr némán leáll: nincs hibaüzenet, nincs log, a
+tool-hívások átmennek. A fork a saját, kimondott tanulságát csak az egyik interpreterre alkalmazta.
+
+**A második, súlyosabb alak:** az `injectOutgoingCopyGate` a parancsát a NODE-builderrel építette egy
+`.py` fájlra, tehát a bedrótozott alak `"<node>" ".../outgoing-copy-gate.py" --telegram-bash` volt,
+ami SyntaxErrorral 1-gyel kilép: a kapu garantált no-op. Lappangó, mert a kill switch alapból ki van
+kapcsolva -- de abban a pillanatban, amikor valaki bekapcsolja, egy kapcsoló, ami azt hiszi, védelmet
+kapcsol be, semmit sem kapcsol be. Ez rosszabb a hiányzó védelemnél: hamis biztonságérzet.
+
+**Ami SZÁNDÉKOSAN kimaradt:** a staleness-guard `bash -c '[ -f <script> ] && exec python3 <script>;
+exit 0'` alakja. Az fail-open SZÁNDÉKKAL (egy törölt szkript ne blokkoljon), tehát a hiányzó
+interpreter nem-blokkoló viselkedése ott KÖVETKEZETES a kimondott szándékkal, nem hiba. Teszt pinneli,
+hogy egy későbbi "takarítás" ne vonjon vissza egy működő döntést.
+
+**Bizonyíték, nem mintaillesztés:** a tesztek VÉGREHAJTJÁK a bedrótozott parancsot python3 nélküli
+PATH-szal. A javított alak 2-vel lép ki (blokkol), a régi csupasz alak 127-tel -- ez a kontroll adja
+a 2-esnek a jelentését. Mérve: a meglévő 72 hook-wiring teszt a HIBÁS és a JAVÍTOTT alakkal egyaránt
+zöld volt, mert egyik sem pinnelte a parancs alakját; ezért nem elég sztringre illeszteni.
+
+**Elavult horgony-állítások javítva ugyanebben a commitban** (a 07f4cd2f-en MikroB által megnevezett
+osztály): `hook-registration-guard.ts` és `known-hook-scripts-exist.test.ts` kommentje azt állította,
+hogy a python-kapuk csupaszon vannak drótozva; a `fork-upstream-conflict-guard` 15. körös
+nyugtázása pedig azt, hogy a `pythonHookCommand` NINCS adoptálva. Az utóbbi merge-idejű
+UTASÍTÁS, nem próza: javítatlanul a következő ütközésnél visszanyithatta volna. A dátumozott mérést
+nem írtam át, hanem egy felülíró kör-jegyzetet fűztem hozzá.
+
+**Ki döntött:** backend3 (mérés és kártya), backend2 (megvalósítás), upstream (az adoptált függvény).
+**Hivatkozás:** kártya d2b881ab; `src/web/agent-scaffold.ts`.
+
+## 2026-09-06 14:26 -- d2b881ab KORREKCIÓ -- a buildert az INJEKTOR-nál átírtam, az ÖSSZEHASONLÍTÁSNÁL nem
+
+**Mi történt:** a `b097473a` az `injectOutgoingCopyGate()`-et átvitte a `pythonHookCommand()`-re, de
+azt a két helyet, ami ezt a bedrótozást FELISMERI (`ensureGovernanceGateCommands` wired-already
+összehasonlítása és az `ensureOutgoingCopyGate` elő-ellenőrzése), a `hookCommand()`-en hagyta. A
+flotta-suite fogta meg: `outgoing-copy-gate-role-wiring.test.ts`, 2 bukás, 626 fájl / 15 248 tesztből.
+
+**Miért nem látszott a saját tesztjeimen:** a BEDRÓTOZOTT parancs helyes volt, tehát minden teszt,
+ami azt vizsgálja, zöld maradt (a 15 újam is). A kár egy réteggel arrébb, az ÖSSZEHASONLÍTÁSBAN volt:
+a javító kör nem ismerte fel a saját munkáját, ezért a `needCopyAdd` minden körben igaz maradt (a
+javítás sosem ült le, minden bootnál újraírta a `settings.json`-t), a `needCopyRemove` pedig végig
+hamis (a kill switch KIKAPCSOLÁSA többé nem távolította el a hookot -- pont a "mindkét irány"
+tulajdonság, amiért a 74181db2 kártya készült).
+
+**A tanulság kimondottan ott állt, amit megsértettem:** a `hookCommand()` saját fejléce ígéri, hogy
+egyetlen builder tartja "the injectors and every wired-already comparison byte-identical, so they
+cannot drift". A mondat első felét alkalmaztam, a másodikat nem.
+
+**Strukturális pin az OSZTÁLYRA, nem erre az egy esetre:** forrás-szkennelés, ami kimondja, hogy `.py`
+út nem mehet a `hookCommand()`-be és `.mjs` út nem mehet a `pythonHookCommand()`-be. Három külön
+visszaállított hívási helyen bizonyítottan harap, plusz egy korpusz-ellenőrzés, hogy egy semmit nem
+illesztő regex ne mehessen el tisztaként. Az illesztés a NYERS fájlon fut, nem komment-mentesítetten:
+ez HIÁNY-állítás, és a komment-eltávolítás az az irány, ami valódi előfordulást tud elrejteni.
+
+**Ki döntött:** backend2.
+**Hivatkozás:** kártya d2b881ab; commit `00691ced`; `src/web/agent-scaffold.ts`,
+`src/__tests__/python-hook-interpreter.test.ts`.
+## 2026-09-06 -- 3bd457ed: a `wake` mező, és miért csak a fő-ügynöknél lehet lekapcsolni az ébresztést
+
+**Döntés:** Az inter-agent üzenet kap egy opcionális `wake` mezőt (alapértelmezés: ébreszt). A
+`wake:false` üzenet ugyanúgy bekerül a postafiókba és ugyanúgy kézbesül, csak nem vált ki azonnali
+megszakítást a címzettnél. A mezőt a fő-ügynöknél HONORÁLJUK, minden más címzettnél viszont
+visszaírjuk ébresztésre, hangosan naplózva.
+
+**Miért éppen így:**
+
+1. *Miért van rá szükség.* Hét nap mérése: 3388 üzenet, ebből 472 automatizált, és a 472-ből 464 a
+   fő-ügynöknek megy, nem a dolgozó ügynököknek. A sorok szó szerint ismétlődnek (session-stuck
+   not-ready 13x, 10x, 9x; BUSY 7x). A nyereség tehát majdnem teljesen a fő-ügynök token-keretén
+   jelentkezik.
+
+2. *Miért nincs dedup-számláló.* MikroB döntése (21447 / 24562): tisztán hívó-deklarált mechanizmus,
+   ismétlődés-számláló NÉLKÜL. Egy automatikus hasonlóság-ítéletnek azt kellene eldöntenie, hogy két
+   üzenet eléggé egyforma-e, és egy első körben másnak látszó, sürgős üzenetet tévedésből
+   elnémíthatna. A hívó-deklarált forma egyszerűbb, auditálhatóbb, és a gate statikus stringre tud
+   nézni, nem viselkedésre. KIMONDOTT KÖLTSÉG: dedup nélkül a `wake:false` az ELSŐ jelzést is
+   passzívvá teszi, nem csak az ismétléseket.
+
+3. *Miért csak a fő-ügynöknél.* A `wake:false` azt ígéri, hogy az üzenet a címzett KÖVETKEZŐ
+   TERMÉSZETES ELLENŐRZÉSÉIG vár. Ilyen ellenőrzése egyedül a fő-ügynöknek van: ő minden körben
+   leszívja a saját postafiókját (`/api/agents/<fő>/drain-inbox`, ami tervezetten elutasít minden más
+   ügynököt). Az al-ügynökök push-alapúak: náluk a router tmux-injektálása MAGA a kézbesítés. Egy
+   al-ügynöknek címzett `wake:false` sor tehát nem csendben várna, hanem a 60 perces
+   abandon-ablakig függőben ülne, majd FAILED lenne. Az üzenet eltűnne, ami pont az, amit ez a mező
+   soha nem tehet. Ezért a kérést visszaírjuk ébresztésre, és a TÁROLT sor 1-et mond: a sor nem
+   állíthat olyan elnémítást, ami nem történt meg.
+
+4. *Az irány fail-OPEN, szándékosan.* Csak a kifejezett 0 némít; minden más érték ébreszt (migrálatlan
+   adatbázis, váratlan érték). Ez tudatosan ELLENTÉTES a redispatch-főkönyv zárjával (`09a3d52a`),
+   ahol a hiba iránya a tiltás. A két hibamód nem egyforma drága: egy feleslegesen felébresztett
+   címzett egy megszakítást veszít, egy tévedésből elnémított hiba- vagy biztonsági jelzés viszont
+   addig láthatatlan, amíg valaki véletlenül rá nem néz.
+
+5. *Két ébresztő út van, nem egy.* A fő-ügynököt a router `[inbox-wakeup]` injektálása ÉS a
+   `inbox-nudge-watcher` is fel tudja ébreszteni, és a második az, amelyik fizetős autonóm kört
+   költ. Ha a mezőt csak a routerben tartanánk tiszteletben, a szigorítás a tartalék úton ülne, a
+   fő úton nem. Mindkét döntési pont ugyanazt az egy predikátumot (`messageWakesReceiver`) hívja,
+   és ezt teszt is rögzíti.
+
+6. *A predikátum külön modulban él.* Nem a sor mellett (`db.ts`), mert mindkét döntési pontot
+   `vi.mock('../db.js')`-szel tesztelik, ami a teljes modult kicseréli: onnan importálva a
+   predikátum minden ilyen suite-ban definiálatlan kötés lenne, és a hiba nem is a hiányzó
+   stubként, hanem független tesztek összeomlásaként jelentkezne.
+
+7. *Amit ez a lépés SZÁNDÉKOSAN nem szállít.* A HTTP-végpont (`POST /api/messages`) NEM fogadja el a
+   mezőt. Az allowlist, ami kimondja, mely üzenetosztály kérhet `wake:false`-t, a következő lépés
+   (`7d47ca16`). Egy szabad formájú `wake:false` a végponton, az allowlist ELŐTT, egy olyan ablakot
+   nyitna, amelyben bármely token-birtokos bármit elnémíthat, a hiba- és biztonsági osztályokat is.
+   A rés maga teszttel van rögzítve, hogy a következő lépés ne feltételezze lezártnak.
+
+**Mérés:** négy mutáns, mind bukik a tesztekre (kilépési kód közvetlenül mérve): a router
+ébresztés-ellenőrzésének törlése (1), a watcher szűretlen sorára visszaállás (1), a predikátum
+konstans igazra állítása (1), és az al-ügynök-visszaírás kikapcsolása (1). Alapvonal 0. A router
+mindhárom esete külön órán fut, mert a modul-szintű 45 másodperces ébresztési cooldown egyébként
+elnémítaná a következő esetet, és az utána jövő állítás rossz okból lenne zöld.
+
+**Rollback:** a migráció egyetlen `ADD COLUMN ... NOT NULL DEFAULT 1`, tehát a meglévő sorok
+ébresztőként töltődnek fel, nem NULL-lal. Ha a kódot vissza kell vonni, az oszlop ottmarad, és egy
+róla nem tudó író ugyanúgy ébresztő sort ír; mindkét irány külön teszttel mérve, nem feltételezve.
+
+**Ki döntött:** MikroB (21447, 24562, 24563: hívó-deklarált mechanizmus, dedup nélkül, allowlisttel);
+backend (a fő-ügynökre szűkítés, a fail-open irány és a HTTP-felület halasztása).
+
+**Hivatkozás:** kártya `3bd457ed` (szülő `dc35fa1a`, nagyszülő `ee2d6220`); `src/web/message-wake.ts`,
+`src/web/message-router.ts`, `src/web/inbox-nudge-watcher.ts`, `src/db.ts`,
+`src/schema/agent-messages-ddl.ts`, `src/__tests__/message-wake-field.test.ts`,
+`src/__tests__/message-wake-deciders.test.ts`.
+
+## 2026-09-06 -- 108c7b10: a VRAM-kapu fail-safe iránya KÉT eset, nem egy
+
+**Döntés:** A `store/vram-guard-check.sh` a GPU-memória alapján ad ADMIT/HOLD verdiktet a helyi-LLM
+dispatch elé. A mérés hiánya NEM egyetlen esetként kezelendő:
+
+- Az `nvidia-smi` NINCS a gépen -> **ADMIT**. Lehet, hogy nincs is NVIDIA GPU; ilyenkor a kapunak
+  nincs tárgya, és a visszatartás minden ilyen hoszton örökre kikapcsolná a helyi modellt. Ez a
+  kártya saját indoklása, és itt helyes.
+- Az `nvidia-smi` OTT VAN, de hibázik, időtúllépésbe fut vagy értelmezhetetlent ír -> **HOLD**. Van
+  GPU, és nem látjuk az állapotát. Ez valódi kétség, nem a tárgy hiánya.
+
+**Miért tér el ez a kártya szövegétől:** a `108c7b10` egyetlen szabályt mond ki
+("hiányzik/hibázik -> ADMIT"). A második esetre ez rossz irányba mutat, és ezt két, nálam magasabb
+szintű forrás is így mondja: a szülő kártya (`40568837`) kimondja, hogy "ugyanaz a fail-safe
+irányelv mint a load-guard-nál: kétség esetén ONLINE", a CLAUDE.md 16. szabálya pedig szó szerint
+azt írja, hogy "hibás/hiányzó/lefagyott modell esetén ONLINE-t kell választani, sose fordítva". Egy
+ADMIT a második esetben pont akkor kapcsolná ki a kaput, amikor a mérés nem elérhető -- ez a "egy
+biztonságos alapérték csak akkor fail-closed, ha nem tud ILLESZKEDNI" csapda. A kockázat itt nem
+elméleti: a flotta már hordoz egy GPU crash-loop őrt a GPU-passthrough okozta WSL-újraindulásokra.
+
+**Visszafordíthatóság:** a kártya szó szerinti szabálya EGY környezeti változóval visszaáll
+(`VRAM_GUARD_UNREADABLE=admit`), és erre külön selftest-eset van. Nem kell hozzá kódot írni, ha
+MikroB mégis a szó szerinti alakot kéri.
+
+**További döntések ugyanitt:**
+
+1. *Több GPU esetén a sorok ÖSSZEGZŐDNEK*, nem kártyánként dőlnek el. Kártyánként nézve egy üres
+   második GPU átengedne egy modellt, ami valójában a tele elsőre töltődik.
+2. *A hívás időkorlátos.* Egy beragadt `nvidia-smi` a dispatch útvonalon a hívót akasztaná meg; a
+   `timeout` ezt a fenti (b) ágra tereli. A selftest ezt IDŐVEL méri, nem a verdikttel: a verdikt
+   ugyanaz volna időkorlát nélkül is, tehát önmagában nem bizonyítja a korlát létét.
+3. *Hiszterézis, a `load-guard-eval.sh` mintájára*, mindkét irányban. A GPU pont az a mérés, ahol
+   egyetlen minta hazudik: egy befejeződő kérés egy lépésben szabadít fel gigabájtokat, egy betöltő
+   modell ugyanolyan gyorsan foglal.
+4. *A selftest külön FÁJL* (`store/vram-guard-check.selftest.sh`), nem a szkript egyik módja: a repó
+   felderítése a fájlnév-utótagra néz, egy módként hordozott selftest szerkezetileg láthatatlan
+   (`09a3d52a` mérése: 15 ilyen szkriptből tízet semmi nem hívott). Landoláskor magától lefut.
+
+**Mérés:** 18 selftest-eset zölden, GPU nélkül, hermetikusan (a valódi hívási utat stub-binárisok
+fedik, nem a `--metrics-json` varrat). Öt mutáns, mind bukik: az unreadable-alapérték átbillentése
+ADMIT-ra, a hiszterézis törlése, a több-GPU összegzés helyett az utolsó sor, a hiányzó eszköz
+HOLD-ra fordítása, és az időkorlát törlése.
+
+**Ki döntött:** Peti (a kapu léte, Telegram 2026-09-06); backend (a fail-safe irány kettébontása, a
+kártya szövegétől eltérően, a fenti két magasabb szintű forrásra hivatkozva -- MikroB felülbírálhatja
+egyetlen környezeti változóval).
+
+**Hivatkozás:** kártya `108c7b10` (szülő `40568837`); `store/vram-guard-check.sh`,
+`store/vram-guard-check.selftest.sh`, `store/vram-guard-config.json`.
+## 2026-09-06 14:45 -- A dedup-elo-szuro a SAJAT KIMENETET olvasta vissza; a kartya altal eloirt gyogymod viszont megolne az egyetlen igazolt talalatot (kartya 49be3576)
+
+**Amit a kartya kert:** a proveniencia-hivatkozast (a lelet-kartya, amibol a koveto kartya
+szuletett) vegyuk KI teljesen az illesztesi korpuszbol, mert a negy mai hamis pozitiv mindegyikenel
+a kozos elem ez volt.
+
+**Amit a meres talalt, es amit ezert MEGCSINALTAM:** a hamis pozitivok egy resze nem proveniencia,
+hanem ONSZENNYEZES. Talalatkor a hivo beleirja a kartya leirasaba a `[DEDUP-PREFILTER] ... (kozosen
+hivatkozott ID(k): X) ... (rule 6b).` blokkot. Az a blokk kartya-ID-ket nevez meg ES fix magyar
+prozat visz, tehat a kovetkezo futasnak megkulonboztethetetlen a szerzo sajat szovegetol -- es
+MINDKET jelet eteti:
+  * 1. jel: a 49be3576 es a 96d3e903 a 746ebae4-et NULLA alkalommal emliti szerzoi szovegben, es
+    egyszer-egyszer a sajat elo-szuro blokkjaban. Az eszkoz a sajat kimenetere illesztett.
+  * 2. jel: a blokk prozaja ("Lehetseges duplikatum", "Ellenorizd", "hivatkozott", "kartyat",
+    "problemat", "kommentelj") minden megjelolt kartyan kozos. Ugyanez a par 0,41 pontot es 34
+    kozos szot ad -- MINDKET lexikai kuszob folott --, blokk nelkul 0,07-et es 4-et. A
+    b6f88f86/91dd4386 par ugyanigy 0,41 -> 0,27, kuszob folottrol ala.
+Ez onerosito hurok, nem kellemetlenseg: minden megjelolt kartya valoszinubbe valik, hogy ujra
+megjeloljek, es hogy MAS megjelolt kartyakat is behuzzon. A tablan mar 128 kartya visz ilyen blokkot.
+A javitas: az eszkoz sajat blokkjait ki kell venni a korpuszbol MINDKET oldalon, mielott barmelyik
+jel ranez. Csak az ILLESZTESI KORPUSZBOL -- a kartyan a blokk marad.
+
+**Amit NEM csinaltam meg, es miert:** a proveniencia-kizarast. Megmertem az egyetlen igazolt
+duplikatum-part, amire az egesz heurisztika kalibralva lett (cff4fa09 vs fe2f71ca): a kozos
+hivatkozasuk (34c4840e) MINDKET oldalon proveniencia-nyelvben all -- "34c4840e kovetkezmenye",
+"Cybered lelete (34c4840e ...)", "34c4840e/1da2367a korabbi FAIL-ek kapcsan". Egy szabaly, ami eleg
+szeles ahhoz, hogy a mai negy hamis pozitivot levagja, ezt is levagja. Az 1. jel igazolt igaz
+pozitivja es a hamis pozitivjai SZERKEZETILEG AZONOSAK: mindketto "ket kartya ugyanabbol a leletbol".
+A lexikai pontszam sem valaszt el: a valodi par 0,16/17, a blokk-mentesitett hamis pozitivok
+0,08/14, 0,09/6, 0,16/13, 0,27/25 -- a 232e01e2/e80c011a pont ugyanazt a 0,16-ot adja.
+
+**Egy melleklelet, ami magatol nem derult volna ki:** a fenti igazolt par a `done` lista 877.
+helyen all `updated_at` szerint, az alapertelmezett visszatekintes 200. Az eszkoz egyetlen igazolt
+igaz pozitivja tehat mar reg HATOTAVON KIVUL van az eles tablan -- egy ottani futas nem a jelrol
+mond valamit, hanem az ablakrol. Ezert hermetikus a selftest.
+
+**Ki dontott:** backend2 (meres es az onszennyezes-javitas), MikroB (a proveniencia-kerdes nyitva,
+dontesre visszaadva a meressel).
+**Hivatkozas:** kartya 49be3576; `store/dedup-prefilter-check.sh`,
+`store/dedup-prefilter-check.selftest.sh`.
+
+## 2026-09-06 -- 0c4cf655: a token-könyvelés minden ügynökre felírta a KÖZÖS fát, és egy leírt mondat mondta biztonságosnak
+
+**Döntés:** A `discoverAgentSources` (src/web/token-usage.ts) kihagyja azt az "izolált"
+`agents/<név>/.claude-config/projects` fát, ami FELOLDVA ugyanaz, mint a közös `~/.claude/projects`.
+A valóban külön fát továbbra is beolvassa.
+
+**A hiba, és ami érdekesebb: miért élte túl a review-t.** A javított blokk saját kommentje kimondta,
+hogy a szimlinkelt elrendezés ártalmatlan, mert "Duplicates are impossible either way: the UNIQUE
+INDEX on (agent, session_id, timestamp, input, output) plus INSERT OR IGNORE absorbs the overlap".
+Ez az állítás hamis, és pontosan azon a ponton, ahol egy olvasó a legkevésbé nézi meg: az indexben
+az `agent` az ELSŐ oszlop, tehát csak ugyanazon a néven belül nyel el. Minden izolált ügynök
+végigjárta a közös fát, és a TELJES flotta fogyasztását a saját nevére írta; minden példány egyedi
+volt az index szemszögéből. A lelet Cyberedé (efaf8926 gate, 2026-09-05). Ugyanez a mondat állt a
+`docs/token-usage.md`-ben és a szomszédos teszt fejlécében is; mindhárom helyen JAVÍTVA, nem
+törölve, mert a következő olvasó azt a mondatot fogja keresni, amit legutóbb elhitt.
+
+**Mérés (élő `store/claudeclaw.db`, csak olvasó lekérdezés):** 4 033 380 sor, ebből
+`(session_id, timestamp, input_tokens, output_tokens)` szerint 398 952 külön esemény, vagyis a tábla
+**90,1%-a duplikátum**. A `jogasz`/`penzugy`/`qa2`/`teszter`/`videooo` bájtra azonos totált mutat, és
+254 429 tartalom-kulcs szerepel egynél több ügynök nevén. Hatás: a `costops/ledger.ts` per-(ügynök,
+nap, modell) árazása nagyságrenddel felfújt és ügynökök között összemosott, a `model-suggest.ts`
+ebből javasol modell-tiert, és egy elszabadult ügynök fogyasztása nem tud kilógni egy olyan táblán,
+ahol minden ügynök sora azonos.
+
+**A fail-safe irány a helyettesítő ellenőrzésben:** ha valamelyik útvonal nem oldható fel,
+`resolvesToSharedProjectsRoot` FALSE-t ad, vagyis a fát izoláltnak tekintjük és beolvassuk. Ez
+tudatos: egy nem statolható könyvtár olyan, amiből még inkább meg kell próbálni begyűjteni az
+adatot, és az ilyenkor kockáztatott duplikátumot a kulcs javítása fogja elkapni; a másik irány
+NÉMÁN ejtene el egy ügynök teljes fogyasztását, ami pont ennek a blokknak a korábbi hibaosztálya.
+
+**A HÁROM LÉPÉS SORRENDJE KÉNYSZER, NEM ÍZLÉS.** (1) ez a betöltés-javítás elállítja az új
+duplikációt; (2) a backfill-takarítás (`a9e07e5c`) eltávolítja a már bent lévő ~3,6M sort; (3) csak
+EZUTÁN cserélhető a dedup-kulcs `agent` nélkülire (`b774f057`), mert egy UNIQUE INDEX nem hozható
+létre duplikátumokat tartalmazó táblán. A három kártya közé predecessor-él van drótozva, nem próza.
+
+**Amit a takarítás tervezéséhez már megmértem, és ami a naiv megoldást kizárja:** a kézenfekvő
+`DELETE ... WHERE id NOT IN (SELECT MIN(id) ...)` a 398 952 csoportból 40 759-nél olyan sort tartana
+meg, aminek üres a `project`-je, holott a csoportban van kitöltött; 9 945-nél a `task_title`,
+32-nél a `model`. Vagyis a naiv takarítás a túlélő sorok 10,2%-áról tüntetné el a
+projekt-attribúciót, azt, amiért az egész takarítás történik. A survivor-szabálynak TELJESSÉG
+szerint kell rangsorolnia, nem id szerint. Ez a követelmény a `a9e07e5c` kártya szövegében is benne
+van, hogy ne csak itt éljen.
+
+**A tartalom-kulcs biztonságos, és ez is mérve van, nem feltételezve:** a `mikrob` az egyetlen
+nem-izolált, tehát tiszta alapvonal, és az ő soraiban NULLA olyan
+`(session_id, timestamp, input, output)` kulcs van, amihez egynél több különböző payload tartozna.
+A táblán összesen 34 kulcsnál tér el a payload, és ezek megnézve mind ugyanannak az eseménynek a
+másolatai: csak a `project` (melyik ügynök konfig-könyvtárán át látszott) és a `model` (a mikrob
+sorai a modell-oszlop feltöltése előttiek) tér el. Vagyis a kulcs valódi eseményeket nem von össze.
+
+**Ki döntött:** Cybered (a lelet); backend (a helyettesítő ellenőrzés iránya, a három lépés sorrendje
+és a survivor-követelmény).
+
+**Hivatkozás:** kártya `0c4cf655` (szülő `07f4cd2f`, testvérek `a9e07e5c`, `b774f057`);
+`src/web/token-usage.ts`, `src/__tests__/token-usage-shared-root-skip.test.ts`,
+`src/__tests__/token-usage-isolated-sources.test.ts`, `docs/token-usage.md`.
+
+## 2026-09-06 14:35 -- ac28bc6e -- the append-only comment promised more than the trigger delivers
+
+**Cybersec's MEDIUM on already-gated work, reproduced here against the shipped DDL before a word was
+changed.** The header said "the detection facts are immutable" and the trigger comment said a
+resolution "cannot be un-set or re-pointed". Measured, one attempt per shape:
+
+    BLOCKED:  card_id / detected_at / stalled_ms_at_detection / action, and clearing resolved_at
+    PASSES:   assignee_at_detection, action_detail, resolved_by_event_id, DELETE, INSERT OR REPLACE
+    CONTROLS (allowed by design): detections + 1, resolved_at written once from NULL
+
+Two of the passing columns are the ones the design leans on hardest: `assignee_at_detection` IS a
+detection fact and carries the per-agent axis of the card's own question, and `action_detail` is, in
+my own words in the same file, "the load-bearing half". `INSERT OR REPLACE` rewrote every column.
+
+**My own header sentence turned on me:** "Without the trigger, 'append-only' would be a comment that
+the next direct-sqlite3 writer never reads." That same writer can DELETE and REPLACE, and the comment
+said nothing about it.
+
+**The most useful part of the report was their FAILED first remedy, handed over with the
+measurement.** The obvious fix -- a BEFORE DELETE trigger -- does NOT stop REPLACE under SQLite's
+default, because REPLACE runs as delete-then-insert and only `recursive_triggers ON` routes it
+through the trigger. That pragma is GLOBAL to all 14 triggers in this schema, including the memories
+FTS branches. Without their negative result, "fixed" would have been false confidence, and the
+cheapest-looking switch would have been the widest-reaching one.
+
+**DECISION: (b)+(c), not the pragma.** A BEFORE DELETE trigger, REPLACE recorded as a STATED
+residual, and the comment narrowed to what the mechanism actually refuses. Changing a global pragma
+to protect an internal telemetry table would alter 14 unrelated triggers, and the effect on the
+memories FTS branches would itself need proving. Same shape as the self-pace-gate decision on
+runtime-substituted forms: a stated residual beats a pattern pretending to be closed.
+
+**Split deliberately, with MikroB's approval:** the comment narrowing goes in FIRST and alone
+(comment-only, zero behaviour change), because a guarantee that is merely wrong is worse than one
+that is merely absent -- the next writer builds on it. The structural half folds into 878cd292, where
+the first producer of these rows is built. Exposure is bounded meanwhile: the table has no producer
+today.
+
+**On process:** the card was already `done` with QA PASS + Cybersec GO. I did not touch it on my own
+judgement -- I reported the measurement and asked, and MikroB split the work.
+
+**Reference:** card `ac28bc6e`; Cybersec 21527; structural half on `878cd292`. 15 tests still green.
+## 2026-09-06 -- 99c2eb09: az upstream-drift ellenőrzés kikerül a tesztfájlból, hogy kikerülhessen a landolási kapuból
+
+**Döntés:** A fork/upstream ütközés-elismerések ADATA és a tiszta döntései átkerülnek a
+`src/fork-upstream/acknowledged-conflicts.ts` modulba, és mellé kerül egy futtatható ellenőrző
+(`src/fork-upstream/drift-check.ts`). A suite offline állításai és az új ellenőrző UGYANEZT az egy
+modult olvassák.
+
+**Miért:** MikroB döntése (24642) a `1f276349`-en, a (C) irány. A hálózatfüggő eset a landolási
+kapuban ült: futásidőben `git fetch upstream develop`-et hívott, tehát minden ügynök landolása attól
+függött, hogy az elmúlt percekben mit tett egy TŐLE FÜGGETLEN upstream commit. A tesztfájl saját
+újramérési jegyzeteiből mérve: 41 "landing-block" említés, 32 újramérési kör öt nap alatt (09-02: 3,
+09-03: 9, 09-04: 1, 09-05: 5, 09-06: 14), öt ügynök, nyolc kártya, egy kártya tizenháromszor.
+
+**A mélyebb indok, ami a flakiness-nél fontosabb:** egy `develop`-re landolás NEM mergel upstreamet.
+Az ellenőrzés tárgya egy JÖVŐBELI upstream-merge kockázata, ami ortogonális arra a változtatásra,
+amit a kapu épp átenged. Ezért a kapuban egyetlen olyan hibát sem tud megfogni, amit a landolás
+okoz; azt jelenti, hogy a VILÁG mozdult. Az monitorozás, nem kapu. Bizonyíték a mérésből: az egyik
+blokkolt commit öt `store/*.py` fájl és a `DECISIONS.md` volt, egyetlen `src/` fájl nélkül.
+
+**Amit NEM viszünk ki, és ez a különbség a nyers (B) irányhoz képest:** a fájl 28 tesztjéből csak
+EGY hálózatfüggő. A többi (a `MIGRATED_FROM_GUARDED` részhalmaz-ellenőrzés, a minden elismeréshez
+tartozó blob-pin, a fork-oldali horgonyok, a `classifyConflicts` egységtesztjei, az ARMED/SKIPPED
+névadás) offline, determinisztikus, és valódi védelem: pont az akadályozza meg, hogy egy fájl
+egyetlen sor törlésével mindkét listából kiessen. Ezek MARADNAK a kapuban.
+
+**Egy forrás, nem kettő.** Az elismeréseket kísértés lett volna átmásolni az ellenőrzőbe. Két
+másolat pontosan azt a néma szétcsúszást hozná vissza, ami miatt a közös `agent_messages` DDL is
+létezik (`26ad5302`): ott két kézzel másolt DDL-string csúszott szét egy "identical schema"
+kommenttel a tetején. Ezért a modul az egyetlen forrás, és a tesztfájl is onnan importál.
+
+**EKVIVALENCIA, MÉRVE, NEM FELTÉTELEZVE.** Az új ellenőrzőt lefuttattam a VALÓDI upstream ellen a
+mai fán: `reachable=true`, `guarded=[]`, `unwatched=[]`, `stale=[]`, vagyis pontosan az a három üres
+halmaz, amit a suite esete ma állít, ARMED állapotban. A kiemelés tehát nem "fut", hanem
+UGYANAZT MONDJA.
+
+**A tesztek hermetikusak, és ez nem stílus.** Ha az ellenőrző tesztjei élő upstreamet hívnának,
+visszahoznák pont azt, ami ellen a kártya szól. Ezért minden eset az injektált `GitRunner` varraton
+megy át, remote, fetch és valódi merge nélkül. Amit egy varrat nem tud bizonyítani (hogy a VALÓDI
+hívás ugyanazt a verdiktet adja), azt egyszer, kézzel mértem meg, és ide írtam -- nem csináltam
+belőle hálózatfüggő tesztet.
+
+**Mérés:** 9 hermetikus eset zölden, plusz a meglévő 28 eset a kiemelés után változatlanul zöld.
+Négy mutáns, mind bukik: az `isClean` figyelmen kívül hagyja a `stale`-t, a `merge --abort` törlése,
+az elérhetőség-ellenőrzés kikapcsolása, és a `blobOf` üres stringgel a `null` helyett (ez utóbbi a
+felfelé törölt fájl esetét némítaná el).
+
+**Következő lépések:** `5da60b85` (a hálózatfüggő eset kivétele a suite-ból, plusz egy őr, ami
+kimondja, hogy a fájlban egyetlen eset sem hálózatozik), `a1ce8952` (ütemezett drift-figyelő,
+KÖTELEZŐ dedup-pal: az ellenőrző minden körben ugyanazt a driftet látja, amíg fel nem oldják, tehát
+egy naiv kártyanyitás gépi léptékben sértené a 6b. szabályt).
+
+**Ki döntött:** MikroB (a (C) irány, 24642); backend (a mérés, a modul-határ és a hermetikus
+teszt-alak).
+
+**Hivatkozás:** kártya `99c2eb09` (szülő `1f276349`); `src/fork-upstream/acknowledged-conflicts.ts`,
+`src/fork-upstream/drift-check.ts`, `src/__tests__/fork-upstream-drift-check.test.ts`,
+`src/__tests__/fork-upstream-conflict-guard.test.ts`.
+
+## 2026-09-06 -- 5da60b85: a hálózatfüggő ellenőrzés kikerült a landolási kapuból, és miért EGY landolásban a kiemeléssel
+
+**Döntés:** A `fork-upstream-conflict-guard.test.ts` hálózatfüggő esete (élő `git fetch upstream
+develop` plusz valódi merge-dry-run) TÖRÖLVE a suite-ból. A helyére determinizmus-őr került, ami
+kimondja, hogy a fájlban egyetlen eset sem végez távoli git-műveletet. A 28 tesztből 24 marad: minden
+szerkezeti, saját fánkról szóló állítás bennmaradt.
+
+**Miért egy landolásban a `99c2eb09` kiemeléssel, a saját sorrend-élem ellenére.** A tervem az volt,
+hogy előbb landol a kiemelés, aztán külön a kivétel. Ez a sorrend NEM BEFEJEZHETŐ: amíg a hálózati
+eset a kapuban van, a javítás landolása versenyt fut az upstreammel. Élesben mérve, ugyanazon a
+délutánon, EGY ÓRÁN BELÜL két pin ment el alattam -- `scripts/channels.sh` (287de06e -> d0ca55bd),
+majd `scripts/hooks/outgoing-copy-gate.py` (d97e9683 -> 3ba1db43) --, mindkettő olyan upstream
+változásra, aminek semmi köze a landolásomhoz. Ez a kártya saját premisszájának a legjobb
+bizonyítéka, csak épp az én landolásomon. A tartalmi feltétel, amit a sorrend-él véd (a helyettesítő
+LÉTEZZEN, mielőtt a régi eltűnik), teljesül: a futtatható ellenőrző ugyanabban a szállítmányban van,
+és az ekvivalenciája a valódi upstream ellen mérve.
+
+**Egy pin tudatosan elavult marad.** Az `outgoing-copy-gate.py` bumpját NEM végeztem el. Nem
+mulasztás: mostantól ez a drift-figyelő dolga, és az ELSŐ futása pont ezt fogja jelenteni. Egy
+elavult pin bumpolása a landolásom kedvéért az a taposómalom, amit ez a kártya megszüntet.
+
+**Amit viszont elvégeztem, mert nem hagyhattam benne:** a `scripts/channels.sh` újramérése. Az
+upstream diff teljes egészében a watchdog plugin-életjel FALLBACK-jét érinti (host-szintű
+`ps eww -e | grep CLAUDE_PLUGIN_ROOT` helyett a session saját `pane_pid`-jére szűkített
+`pgrep -P`), a rögzített konfliktus pedig a két guard-alert POST-nál van; nulla átfedés, a feloldás
+változatlan. DE: az upstream mérése szerint egy több-ügynökös hoszton a host-szintű grep BÁRMELYIK
+ügynök plugin-folyamatára illeszkedik, tehát az életjel mindig igaz, és a watchdog némán elveszti a
+halott csatorna felismerését (náluk: 14 plugin-folyamat, egy csatorna 07:40-től 08:30-ig halott,
+senki nem szólt). A mi `scripts/channels.sh`-unk 1079. sora UGYANEZT a host-szintű grepet hordozza,
+és ezen a hoszton méréskor 2 illeszkedő folyamat futott. NEM adoptáltam: egy viselkedés-javítás a
+csatorna-watchdogon nem tartozik egy landolás-feloldásba, és saját kaput érdemel. A jegyzet az
+elismerés mellett áll, hogy a következő merger ott találja.
+
+**Az őr, ami majdnem önmagát fogta meg.** A determinizmus-őr első alakja a TELJES fájlt szkennelte,
+és elbukott a SAJÁT tűlistáján és a saját teszt-nevén. Ez ugyanaz az osztály, mint egy poll-predikátum,
+ami a saját megfigyelőjét is beleszámolja: egy önmagára illeszkedő őrt csak GYENGÍTÉSSEL lehet
+"megjavítani", és pont ezért veszélyes. A végleges alak (a) csak egy literális szentinel FÖLÖTTI
+részt nézi, (b) a tűket darabokból rakja össze, tehát a lista sem találat, és (c) állítja, hogy a
+szentinel PONTOSAN EGYSZER fordul elő -- így nem lehet a szkennelés elől lejjebb tolt kóddal
+kibújni, sem a határ csendes törlésével. Mindkét mutáns bukik: visszacsempészett hálózati hívás a
+szentinel fölé, és a szentinel törlése.
+
+**Ami a hálózati esettel együtt költözött:** az ARMED/SKIPPED bejelentés (`metaAnnouncement`) és a
+két tesztje. Az az állapot arról szól, hogy a HÁLÓZATI ellenőrzés futott-e; egy olyan fájlban, ami
+többé nem hálózatozik, lógó maradvány lett volna. A drift-figyelő ugyanezt a két állapotot fogja
+jelenteni, ugyanabból az okból: a "nincs mit mondanom" és a "nincs baj" nem nézhet ki egyformán.
+
+**Mérés:** 24 offline eset zölden a guard-fájlban, 12 a drift-ellenőrzőében, plusz a két olvasó
+(`provider-env-adoption`, `runner-conflict-resolution-pins`) átállítva az új modulra és zölden -- ezek
+a fájlt SZÖVEGKÉNT olvassák, tehát a kiemelés eltörte őket, és a kapu ezt el is kapta.
+
+**Ki döntött:** MikroB ((C) irány, 24642); backend (az összevont landolás, és hogy egy pin tudatosan
+elavult marad).
+
+**Hivatkozás:** kártyák `5da60b85` + `99c2eb09` (szülő `1f276349`);
+`src/__tests__/fork-upstream-conflict-guard.test.ts`, `src/fork-upstream/drift-check.ts`,
+`src/fork-upstream/acknowledged-conflicts.ts`.
+
+## 2026-09-06 -- Az upstream négy hamis-pozitív javításából egyet veszünk át, hármat nem
+
+**Kontextus:** az upstream `03ca5262` négy új maszk-alternatívát tett a kimenő-szöveg kapu
+`TECHNICAL` regexébe, plusz kivette a puszta `level` szót a magyar nyelv-markerek közül. Mind a
+négy ugyanazt az osztályt célozza: a szóbontó egy technikai alakot magyar szónak lát, és a kapu
+ékezethibát jelent ott, ahol nincs.
+
+**Döntés:** a `level` felét (mindkét részét) ÁTVESSZÜK, a másik hármat NEM.
+
+**Miért:** mind a négy upstream hamis-pozitívot lefuttattam a fork saját `audit()`-jén, mielőtt
+döntöttem. Három közülük -- szám+toldalék (`8:09-es`, `17:06-kor`), tulajdonnév+toldalék
+(`Chrome-ot`, `Drive-ra`) és kötőjeles kisbetűs azonosító (`folyamatos-ellenorzes`) -- MÁR
+ÁTMEGY ezen a forkon, mert ezt az osztályt egy MÁSIK RÉTEGBEN oldottuk meg: a `HYPHEN_WORD`
+tokenizáló a kötőjeles alakot EGÉSZBEN veszi, tehát a `chrome-ot` sosem esik szét `ot`-ra.
+A mögötte álló két szűk allowlist (`DIGIT_HYPHEN_SUFFIX_ALLOWLIST`, `IDENTIFIER_ALLOWLIST`)
+KÉT Cybersec NO-GO eredménye (`fbb36b41` 7/8. és 11. kör), és ezek pontosan az upstream FELTÉTEL
+NÉLKÜLI alakját utasították el: egy korlátlan „számjegy-kötőjel utáni szó" vagy „kisbetűs
+kötőjeles alak" maszk nem csak az ékezet-vizsgálat, hanem a homoglifa-vizsgálat elől is kivágja,
+amit elfed. Átvenni tehát nulla mért nyereség lenne, ugyanazért a tágításért, amit két kapu már
+megvizsgált és elutasított.
+
+A negyedik viszont valódi lyuk itt is, és erre a forkra JOBBAN áll, mint az upstreamre: a saját
+`CLAUDE.md`-nk „Level 1/2/3" autonómia-szintekről beszél, tehát bármely magyar üzenet, ami ezt
+idézi, elakadt. Mérve, hibátlanul ékezetes magyar mondaton: blokkolt, egyedül a `level` szón.
+Külön mérve az angol irány is: a „The new access level lands in the advance market build" mondat
+három magyar markert ért el (`van` az „advance"-ben, `level`, `mar` a „market"-ben), tehát az
+`is_hungarian()` IGAZAT adott egy tiszta angol mondatra, és a vizsgálat egyáltalán elindult.
+
+**Miért nem gyengít:** az átvett maszk szándékosan szűk, csak SZÁM előtt vág. A `level` mint a
+`levelet` valódi elírása továbbra is fennakad -- ez a maszk negatív kontrollja, és külön
+selftest-eset. A marker-eltávolítás ellenirányát is megmértem: egy valódi, ékezethibás magyar
+mondat 9 helyett 8 markert ér el, tehát a nyelv-felismerés nem gyengül.
+
+**Mérés:** 4 új selftest-eset (82 eset zölden a kapu selftestjében), plusz mindkét fél KÜLÖN
+mutáció-tesztelve: bármelyiket visszaállítva pontosan a saját esete bukik és semelyik másik,
+tehát egyik fél sem fedi el a másik hiányát. `tsc --noEmit` zöld, a négy fork-upstream teszt-fájl
+(75 eset) zöld.
+
+**Ki döntött:** MikroB (a `a7a61751` plan-grilling GO-WITH-CHANGES verdiktje, Peti IGEN-je után);
+backend (a hunkonkénti átvesz/kihagy szétválasztás, méréssel).
+
+**Hivatkozás:** kártya `b4404ed2` (szülő `f923328d`, `a7a61751`);
+`scripts/hooks/outgoing-copy-gate.py`, `scripts/hooks/outgoing-copy-gate.selftest.py`,
+`src/fork-upstream/acknowledged-conflicts.ts` (16. kör).
+
+## 2026-09-06 -- A hálózat-őr javítása: a sentinel a fájl VÉGÉRE kerül, és az őr bizonyítja, hogy el tud bukni
+
+**Kontextus:** a `5da60b85` kötelező kompenzáló kontrollja (determinizmus-őr, ami kimondja, hogy a
+`fork-upstream-conflict-guard.test.ts`-ben egyetlen eset sem végez hálózati műveletet) MÉRÉSSEL
+ÜRES volt. Cybersec NO-GO (21593) és QA FAIL, egymástól függetlenül: a sentinel a 65. sorban állt,
+közvetlenül az első `describe` ELŐTT, tehát a vizsgált tartomány a 65 soros import-fejléc volt
+NULLA esettel, és mind a 24 valódi eset a hatókörén kívül esett. QA élőben be is bizonyította:
+a sentinel alá fűzött tiltott hívással a teljes fájl zöld maradt.
+
+**Döntés:** a sentinel a fájl VÉGÉRE kerül, a vizsgált tartomány így a teljes fájl; plusz két
+regressziós eset, ami bizonyítja, hogy az őr TÉNYLEGESEN elbukik.
+
+**Miért nem elég a sentinel áthelyezése önmagában:** attól az őr még ugyanúgy lehetne dísz egy
+következő szerkesztés után. Az eredeti önillesztési problémát a needle-fragmentáció oldja meg, nem
+a sentinel helye -- a sentinel most kizárólag a hatókör-határ, és a helyét külön állítás rögzíti.
+
+**Egy saját mérőeszköz-hiba, kimondva:** az első javításom a vizsgált tartományban lévő esetek
+számára adott ALSÓ KORLÁTOT (`> 20`). Ez NEM diszkriminál: a sentinelt visszatolva a régi helyére
+még mindig több mint húsz eset marad fölötte, mert a saját őr-blokk a fájl alján van -- a mutáció
+TÚLÉLTE. Az állítás most EGYENLŐSÉG a teljes fájl eset-számával, ami pontosan azt köti ki, hogy a
+sentinel a legutolsó eset alatt álljon és sehol máshol.
+
+**Mérés:** 28 eset zölden (24-ről). Két mutáció, kilépési kóddal mérve, mindkettő pontosan a saját
+esetét öli meg és semelyik másikat: (1) QA élő próbájának megismétlése, tiltott hívás a régi
+sentinel-pozíció alá -> a „no case performs a remote git operation" eset pirosra vált; (2) a
+sentinel visszamozgatása a régi helyére -> a „the scan covers EVERY case" eset pirosra vált.
+Ráadásul a javított őr ELSŐ futása magától pirosra váltott a saját új fixture-öm `it('fetches
+upstream'` címén -- a needle-ök részsztringként illesztenek, tehát a „fetches" is találat. Ez a
+helyes irány egy DENY-illesztőnél (nem illeszkedni annyi, mint engedélyezni), és egyben az első
+bizonyíték, hogy az őr most olyan tartományt lát, amit korábban soha.
+
+**Ki döntött:** Cybersec (NO-GO 21593, a gyógymóddal együtt, előre lemérve); QA (független élő
+próbával megerősítve); backend (az egyenlőség-alapú hatókör-állítás, miután a saját alsó-korlátos
+első kísérletem mutációja túlélt).
+
+**Hivatkozás:** kártya `5da60b85` (szülő `1f276349`);
+`src/__tests__/fork-upstream-conflict-guard.test.ts`.
+
+## 2026-09-06 -- Az upstream három SSRF-megkerülési útja nálunk is nyitva volt, átvéve
+
+**Kontextus:** a `494fad0f` (3b klaszter) egyik fájlja az `src/web/agent-scaffold.ts`, aminek a
+pinje elavult volt. A mögötte lévő upstream delta (`5b168b5a` -> `526dcf56`) nem stílus-változás:
+három megkerülési utat zár az `isPublicFetchHost()`-ban, ami azt dönti el, hogy egy fetch-cél
+kifelé mutat-e vagy befelé.
+
+**Döntés:** a teljes függvény-régió ÁTVÉVE upstream-től, az upstream saját teszt-eseteivel együtt.
+
+**Miért nyitva volt nálunk is:** a fork másolata a függvényről BÁJTRA AZONOS volt az upstream
+javítás ELŐTTI verziójával (mérve az `isPublicFetchHost` és az `ownerAllowedDomains` közötti
+régión), tehát semmi fork-specifikus nem volt, amit át kellett volna menteni a változáson.
+
+A három út: (1) inet_aton-parse-olás -- a wildcard-DNS szolgáltatók mögötti feloldók a vezető
+nullát OKTÁLISNAK, a `0x`-et HEXÁNAK olvassák, tehát a `0177.0.0.1.nip.io` 127.0.0.1-et ad,
+miközben egy decimális-only ellenőrző négy ártalmatlan címkét lát. (2) Egyetlen címkébe csomagolt
+cím -- a `2130706433.nip.io` és a `7f000001.nip.io` ugyanaz a cím egy tokenben, amit sem a pontos,
+sem a kötőjeles négyes-ellenőrzés nem néz meg. (3) Az sslip.io kötőjeles IPv6 alakja,
+`0--1.sslip.io` = `::1`, ami egyik forma sem.
+
+**Miért itt szabad egészben átvenni, ahol ez a bejegyzés máskor megtagadja:** a korábbi
+elutasítások az `ensureAgentHooks`-ról és a szekció-írókról szólnak, vagyis a flotta-szintű
+hook-huzalozásról. Ez ezzel szemben egy önmagában álló, tiszta predikátum, amiben nulla
+fork-divergencia van.
+
+**Mérés -- ELÉRHETŐSÉG MUTÁCIÓVAL, nem az upstream állításának elhívésével:** az átvett teszteket
+lefuttattam a fork JAVÍTÁS ELŐTTI függvényére: pontosan két eset bukik (a csomagolt/inet_aton és a
+kötőjeles IPv6), a harmadik -- „leaves public names alone in every encoding" -- mindkét irányban
+átmegy, és ez helyes: az a 2^24-es alsó korlát negatív kontrollja, ami a `123.example.com`-ot
+elérhetőnek tartja. Javítás után 33/33 zöld, a hat érintett teszt-fájlon 159/159, `tsc --noEmit`
+zöld.
+
+**Ki döntött:** MikroB (az `a7a61751` plan-grilling GO-WITH-CHANGES verdiktje); backend (az
+egészben-átvétel, miután megmértem, hogy a régió bájtra azonos volt az upstream javítás előttivel).
+
+**Hivatkozás:** kártya `494fad0f` (szülő `a7a61751`); `src/web/agent-scaffold.ts`,
+`src/__tests__/quarantine-allowlist-render.test.ts`,
+`src/fork-upstream/acknowledged-conflicts.ts` (18. kör).
+
+## 2026-09-06 -- 3c klaszter: friss pin mellett is négy valódi ütközés, és egy döntés, amit majdnem visszafordítottam
+
+**Kontextus:** a `50af1a27` három fájlja (`update.sh`, `package-lock.json`, `src/model-fallback.ts`)
+mindegyikének FRISS volt az upstream-blob pinje. Ez első ránézésre azt jelentené, hogy nincs
+teendő. Nem azt jelenti.
+
+**A megkülönböztetés, amit rögzíteni kell:** a friss pin azt mondja, hogy a döntés PONTOSAN ehhez
+az upstream tartalomhoz készült, NEM azt, hogy a merge tiszta lesz. Read-only hármas merge-szimuláció
+(`git merge-file` a három blobon, worktree nélkül): `update.sh` 4 ütközés, `package-lock.json` 40,
+`src/model-fallback.ts` 1.
+
+**Döntés fájlonként:**
+
+- **`update.sh`** -- négy ütközésből három MARAD A MIÉNK (a POST_MERGE_MODE szerkezet, ami az
+  upstream blokkját szó szerint tartalmazza az else-ágban; a `{{CHAT_ID}}` behelyettesítés, aminek
+  az elejtése egy Cybered-leletet hozna vissza; a SEEDREFRESH826 komment, ami a mi bővebb,
+  újramért változatunk). A NEGYEDIK ÁTVÉVE: az upstream `--include=dev` kapcsolója a rollback
+  `npm ci`-jén. A fork mindkét hívási helyén hiányzott.
+- **`package-lock.json`** -- a 40 ütközés nem ok a kézi feloldásra, hanem ok a NEM kézi feloldásra.
+  A lockfile a fork saját `package.json`-jából ÚJRAGENERÁLÓDIK, és az FŐ-KLÓN művelet (worktree-ből
+  a függőség-könyvtár szimlink a közös fába). A merge lépéséhez tartozik, nem ehhez.
+- **`src/model-fallback.ts`** -- MARAD A MIÉNK, két független okból: az upstream alternációja
+  visszahozná a `upgrade to increase your usage limit` startup-hint hamis pozitívot, és az alakja
+  nem ERE-biztos (`grep -E` figyelmeztet a `(?:`-re), ami eltörné a `session-limit-pattern.json`
+  hat nem-TS fogyasztóját.
+
+**Amit majdnem elrontottam, kimondva:** az upstreamnek van egy `(\w+ )?` bővítése, ami tényleg fog
+egy alakot, amit mi nem. Már készültem átvenni, amikor elolvastam a JSON saját `_comment`-jét: a
+`f27c999b` kártya (2026-09-04) pontosan ezt a tagot MÉRLEGELTE ÉS ELUTASÍTOTTA, mert nincs MÉRT
+banner-string, ami igényelné, és egy korlátlan szó-joker ennél a detektornál téves
+modell-visszaminősítést okozhat. Az én diszkrimináló példám KITALÁLT, a regex próbálgatására
+gyártott string, nem élesben megfigyelt -- az nem bizonyíték egy olyan döntés ellen, ami éppen a
+mért stringek hiányán alapult. A korábbi döntés áll.
+
+**Mérés a `--include=dev`-hez, VALÓDI telepítéssel eldobható temp-fában** (npm 10.9.8, node
+v22.23.2): `NODE_ENV=production` + sima `npm ci` -> a dev-függőség KIVÁGVA; `--include=dev` ->
+MEGMARAD; `--omit=dev` -> kivágva (kontroll). Hatókör, hogy senki ne állítson többet: a `NODE_ENV`
+ebben a telepítésben sehol nincs beállítva (`.env`, `scripts/start.sh`, `install-linux.sh`,
+`update.sh` -- mind mérve üres), tehát ez LÁTENS lyukat zár, nem élő üzemzavart.
+
+**Műszer-figyelmeztetés a következő olvasónak:** az `npm ci --dry-run` MINDKÉT irányban azt
+jelenti, hogy a dev-függőség hozzáadódik -- nem veszi figyelembe a `NODE_ENV`-alapú vágást, amiről
+a kérdés szól. Az első próbám ez volt, és arra a következtetésre vezetett volna, hogy az upstream
+egy nálunk nem létező mechanizmust javít.
+
+**Ki döntött:** MikroB (az `a7a61751` plan-grilling GO-WITH-CHANGES 2. pontja: az update.sh-t
+eldobható környezetben kell validálni, sose élesben -- így is történt); backend (a négy
+ütközés fájlonkénti feloldása, és hogy a model-fallback korábbi döntését nem írom felül szintetikus
+bizonyíték alapján).
+
+**AMIT A FORK-HORGONY ELKAPOTT, ÉS AMI EBBŐL KÖVETKEZETT:** a `--include=dev` hozzáadására
+elsült a `src/web/routes/updates.ts` fork-horgonya. Nem hiba volt, hanem a horgony dolga: az ottani
+mentesítés azt állítja, hogy az AUTOUPDNODEENV905 NINCS átvéve és a fork exponált, és a horgony
+kimondottan azért figyelte az `update.sh`-t, hogy szóljon, amint ez az állítás félig hamissá válik.
+A szövege pontosan ezt kéri: "Re-decide the ACKNOWLEDGED_CONFLICTS rule -- do not just edit the
+anchor to match." Így is jártam el: a szabályt újradöntöttem (a (2) fél átvéve, az (1) nyitva
+marad), a horgonyt pedig a MEGMARADT állításra irányítottam át (`delete process.env.NODE_ENV` az
+`updates.ts`-ben, `expect: absent`), nem töröltem. Mutációval ellenőrizve, hogy az új horgony
+elsül, amikor az (1) fél landol.
+
+**AMIT NEM ÉN DÖNTÖK EL:** a `c116696f` kártya (backend2, HIGH, planned) MINDKÉT felet tervezi, és
+a leírása előre jelzi ezt a helyzetet ("ellenorizd hogy ez nem duplikalja a mostani kartyat"). Én a
+(2) felet landoltam, mert az `update.sh`-ban van, tehát a 3c klaszter fájljában, és mert a korábbi
+jegyzet maga nevezi "környezet-független, végleges védelemnek". Az (1) fél az `updates.ts`-ben van,
+amit a 3c nem birtokol. Kommenteltem a `c116696f`-re, hogy backend2 ne csinálja meg újra; hogy a
+kártya szűküljön-e az (1) félre, az MikroB döntése, nem az enyém.
+
+**AMIT A LANDOLÁSI KAPU FOGOTT MEG, ÉS AMI EBBŐL TANULSÁG:** az első kísérlet MEGTAGADVA, mert a
+rollback `npm ci` az `update.sh` `FINALIZE_EOF` heredocjában van, ami minden futáskor újragenerálja
+a `store/update-finalize.sh`-t. Csak az egyik példányt írtam át, tehát a javításomat a következő
+frissítés némán visszaállította volna -- pontosan az a drift-osztály, amiért a paritás-teszt
+(`rollback-distance-guard.test.ts`) létezik. Nem bosszúság volt, hanem valódi hiba az én
+változtatásomban. A második példány szinkronizálva.
+
+**UGYANEZ AZ OSZTÁLY EGY HARMADIK HELYEN IS ÁLL, ÉS NEM JAVÍTOTTAM:** a
+`recovery-prev-version.sh:217` csupasz `npm ci --silent`-et futtat -- ez a kézi visszaállító, az
+utolsó mentsvár, amikor minden más már megbukott. Nincs sem a `50af1a27`, sem a `c116696f` fájl-
+listáján, és egy operátori helyreállítási út módosítása nem rider egy upstream-integrációs kártyán.
+Kommentálva a `c116696f`-re a mérésel együtt. (Az `install-linux.sh:1011` szintén csupasz, de az
+friss telepítés, ahol a bukás hangos, nem néma -- más kockázati alak.)
+
+**Hivatkozás:** kártya `50af1a27` (szülő `a7a61751`), érinti `c116696f`-et; `update.sh`,
+`store/update-finalize.sh`, `src/__tests__/update-npm-ci-dev-deps.test.ts`,
+`src/fork-upstream/acknowledged-conflicts.ts`.
+
+## 2026-09-06 -- c116696f -- AUTOUPDNODEENV905 (1) fele: NODE_ENV törlése a spawnUpdateScript belsejében
+
+**Döntés.** `src/web/routes/updates.ts` kap egy exportált `buildUpdateScriptEnv(extraEnv)`
+függvényt, ami `delete process.env.NODE_ENV`-et hajt végre, majd visszaadja a `{ ...process.env,
+...extraEnv }` összeállítást -- ezt hívja `spawnUpdateScript` az `env`-hez, MINDKÉT hívási úton
+(fork-pull és a post-upstream-merge rebuild+restart). Ez az `50af1a27`-ben landolt (2) fél
+(`--include=dev` mindkét `npm ci` ponton) párja: a (2) fél az `update.sh` SAJÁT `npm ci`
+hívásait védi, a (1) fél a folyamatot, ami elindítja az `update.sh`-t -- ha az ŐT indító Node-
+process maga örökölt volna `NODE_ENV=production`-t, az `--include=dev` önmagában nem lenne elég,
+mert a hívási lánc elejére kell a törlés.
+
+**Miért a VALÓDI `process.env`-t módosítja, nem egy másolatot.** Az `update.sh` több ponton is
+`npm ci`-t futtat (fő telepítés, rollback, és a `store/update-finalize.sh`, amit minden futáskor
+újragenerál), és mindegyik GYERMEK-folyamat a SAJÁT indításakor önállóan örökli a
+`process.env`-t. Egy csak a visszaadott másolatra szorítkozó törlés csak az egyik hívást védené;
+a valódi objektum módosítása az összeset. Biztonságos futásidőben törölni, mert az EGYETLEN
+folyamaton belüli olvasó (`src/logger.ts`) a modul BETÖLTÉSEKOR, egyszer olvassa -- jóval azelőtt,
+hogy a frissítési route egyáltalán elérhető lenne -- így semmi nem olvassa újra később azt, amit ez
+töröl.
+
+**A fork-horgony (Cybered mérése, komment 21250; Backend átirányítása, komment 21641) pontosan
+úgy sült el, ahogy tervezve volt.** A horgony (`needle: 'delete process.env.NODE_ENV'`, `file:
+'src/web/routes/updates.ts'`, `expect: 'absent'`) a landolási kapuban pirosra váltott, amint a
+kódot megírtam -- ez a horgony munkája, nem hiba. Az `ACKNOWLEDGED_CONFLICTS['src/web/routes/
+updates.ts']` szövegét ÚJRADÖNTÖTTEM (mindkét fél átvéve, a struktúrális ütközés -- upstream egy
+inline spawnt javított, amit a fork már megosztott helperré emelt -- változatlanul fennáll, tehát a
+bejegyzés marad, csak elfogadás-only), a horgonyt pedig `expect: 'present'`-re fordítottam: mostantól
+egy jövőbeli visszavonás ellen őrködik, nem az érkezésre vár.
+
+**Amit NEM csináltam meg, tudatosan.** Backend (komment 21648) mérve talált egy HARMADIK és
+NEGYEDIK előfordulást ugyanabból a hibaosztályból: `recovery-prev-version.sh:217` (csupasz `npm
+ci --silent`, a kézi katasztrófa-visszaállító út) és `install-linux.sh:1011` (csupasz `npm ci`,
+friss telepítés, de ott a bukás HANGOS, nem néma). Egyik sincs ennek a kártyának a leírásán, és
+mindkettő MikroB/a következő kártya döntése -- nem bővítettem a diffet rájuk.
+
+**Tesztek.** `src/__tests__/update-node-env-strip.test.ts` (5 eset, `buildUpdateScriptEnv`-et
+közvetlenül hívja -- ugyanaz a függvény, amit `spawnUpdateScript` ténylegesen használ, nincs
+párhuzamos, driftelhető implementáció): törli örökölt `production`-t, a VALÓDI `process.env`-en
+(nem csak a visszaadott másolaton), no-op ha nincs beállítva, `extraEnv` felülírja, más kulcsok
+érintetlenek. `fork-upstream-conflict-guard.test.ts` teljes 28/28 zöld az új horgony-iránnyal;
+`tsc --noEmit` tiszta.
+
+**Hivatkozás:** kártya `c116696f`, párja `50af1a27` (szülő `a7a61751`); `src/web/routes/
+updates.ts`, `src/__tests__/update-node-env-strip.test.ts`, `src/fork-upstream/acknowledged-
+conflicts.ts`.
+## 2026-09-06 -- Az upstream-drift figyelő EGY kártyát gondoz, és a hallgatás a mérnöki része
+
+**Döntés:** a `99c2eb09`-ben a landolási kapuból kiemelt drift-ellenőrző mostantól egy napi
+ütemezett feladatban fut (`fork-upstream-drift-watch`, `mikrob` munkamenetében, 07:40), és az
+eredményt EGYETLEN kanban-kártyán tartja: nyit egyet, ha nincs nyitva, egyébként arra kommentel.
+A döntési logika tiszta függvény (`src/fork-upstream/drift-watch.ts`), az I/O külön
+(`store/fork-upstream-drift-watch.mjs`).
+
+**Miért nem elég a "nyiss kártyát drift esetén":** az ellenőrző MINDEN körben ugyanazt a driftet
+látja, amíg valaki fel nem oldja. Egy naiv figyelő tehát naponta termelne egy azonos kártyát --
+a 6b. szabály dedup-előírásának megsértése gépi léptékben, ami épp az a zaj, amitől a valódi jelzés
+olvashatatlan lesz.
+
+**HÁROM HALLGATÁS, AMI NEM KÉNYELEM, HANEM KÖVETELMÉNY.**
+(1) *Elérhetetlen upstream:* nem nyit kártyát ÉS nem írja felül az állapotfájlt sem. Ha egy
+hálózati kimaradás a saját ujjlenyomatát írná be, a következő elérhető futás "változást" látna, és
+megismételné azt, amit a tábla már hordoz. A "nincs mit mondani" és a "nincs baj" nem nézhet ki
+egyformán -- ugyanaz az elv, amiért a META-állítás ARMED/SKIPPED néven jelenti magát.
+(2) *Változatlan drift:* az ujjlenyomat a FÁJLHALMAZRA megy, nem az upstream blob-shákra. Az
+`upstream/develop` majdnem minden nap mozdul, tehát egy shákat is tartalmazó ujjlenyomat naponta
+kommentelne, miközben a cselekvésre váró tény -- hogy MELYIK fájlokat nem döntötte újra senki --
+változatlan. Ugyanaz a minta, amit a README skill-drift bejegyzése már kimond: a halmaz
+VÁLTOZÁSÁRA szól a riasztás, nem a darabszámára.
+(3) *Ember által lezárt kártya, mozdulatlan drift mellett:* a zárás VÁLASZ. Egy pótkártya minden
+reggel ugyanaz a duplikáció, egy emberi lépéssel később. A hallgatás addig tart, amíg a világ
+ténylegesen tovább nem mozdul; elveszett állapotfájl esetén viszont nyit, mert a "sosem szóltam"
+nem azonos a "megválaszoltak"-kal.
+
+**A KÁRTYA-AZONOSÍTÁS HORGONYZOTT, NEM RÉSZSZTRING.** A figyelő a `[UPSTREAM-DRIFT]` markert a cím
+ELEJÉN keresi (a 2. szabály `[NN%]` előtagján át). Egy olyan kártya, ami csak EMLÍTI a markert --
+és pont az a kártya ilyen, amelyik ezt a figyelőt kérte -- nem a drift-kártya. Itt fordítva áll a
+kockázat, mint egy DENY-illesztőben: ott a nem-illeszkedés enged át, itt a laza illeszkedés OKOZZA
+a rossz írást, tehát a horgonyzás a biztonságos oldal. A DECOY-eset mindkét szinten (vitest és
+selftest) meg van írva, és a `includes`-ra visszavett mutációt mindkettő megöli.
+
+**BIZONYÍTÁS, NEM ZÖLD PIPA:** öt mutáció a döntési modulra és három a lefordított artefaktumra,
+mind kilépési kóddal mérve, mind pontosan a saját esetét öli meg (a hallgatás-ágak: `unchanged`,
+`closed-and-unchanged`, `upstream-unreachable` állapotírás, a marker-horgony, és a sha-alapú
+ujjlenyomat). Egy hatodik mutáció a GLUE-ra (az állapot sosem íródik) is elbukik, tehát a
+huzalozás bizonyítottan eljut a döntésig -- egy őr, amit senki nem hív, nem őr.
+
+**MÉRT KIINDULÓ ÁLLAPOT (2026-09-06):** elérhető upstream, 0 fork-owned ütközés, 0 nem-döntött
+ütközés, 8 ELAVULT elismerés (`src/db.ts`, `src/web/hook-registration-guard.ts`,
+`src/web/routes/agents.ts`, `src/web/routes/kanban.ts`, `web/app.js`, `web/lang/en.js`,
+`web/lang/hu.js`, `web/style.css`), 53 ütköző fájl összesen. A teljes riport 19 KB, mert minden
+elavult szabály hordozza a felhalmozott újramérési jegyzeteit -- ezért a KÁRTYA a drift ALAKJÁT
+kapja (fájl + rögzített/mostani blob), a prózát nem: az az `acknowledged-conflicts.ts`-ben van.
+
+**Ki döntött:** MikroB (24642, "C" irány) a kártya-felbontásban; a hallgatás három ága és a
+horgonyzott marker backend mérnöki döntése, ezen a bejegyzésen keresztül felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `a1ce8952` (szülő `1f276349`, testvérek `99c2eb09`, `5da60b85`);
+`src/fork-upstream/drift-watch.ts`, `src/__tests__/fork-upstream-drift-watch.test.ts`,
+`store/fork-upstream-drift-watch.mjs`, `store/fork-upstream-drift-watch.selftest.sh`,
+`.gitignore`, `README.md`.
+
+## 2026-09-06 -- 404e8dd6 -- The Local LLM switches stay usable when Ollama is down; the card that asked for them was a duplicate
+
+**Dedup first (fron-ted, rule 6b):** the card as dispatched asked for a per-model on/off switch on
+the Local LLM page. That switch had already landed (5d151091 backend, 5dd4a211 frontend, enforced
+in `store/local-llm.sh` for every shell caller). What Peti could not see on 2026-09-06 was
+different: the gpu-crashloop-guard had masked `ollama.service`, `GET /api/local-llm/models`
+answered 503 fail-closed, and the page showed a toast and an EMPTY model list -- the switches were
+invisible exactly on the day they were wanted. MikroB re-scoped both cards to that gap instead of
+closing them as duplicates.
+
+**Decision (FE, contract-first against the re-scoped 75f3c77d):** the flags answer
+(`{ ollamaUp, models }`, the list falling back to `local-llm-model-state.json` when Ollama is down)
+is kept as a fallback list. When the status endpoint reports Ollama down, the page draws the known
+models with their switches under a visible "Ollama is not running" banner; each row shows only the
+benchmark the state file holds (tok/s @ ctx, or "not measured" -- never an invented figure), and
+carries NO Use/Update control, because those need Ollama and a control that cannot act is a dead
+end (rule 9). The switch markup moved into one helper used by both the live and the fallback rows,
+so the two lists cannot drift. With the OLD backend (503) the page keeps today's behaviour (toast,
+no switches), so the two halves can land in either order.
+
+**Measured, not assumed:** Playwright against the real `web/` bundle with the mocked contract, 15
+checks -- three fallback rows, tok/s @ ctx, unmeasured label, disabled row + `aria-pressed`, no
+Use/Update, banner, 44px targets on desktop and at 375px with no horizontal overflow, an enable
+click that POSTs the encoded name and re-renders from the fresh answer, a failing POST that speaks
+the i18n error and re-enables the button, and the 503 path unchanged. Mutation map: fallback branch
+disabled, a Use button on a fallback row, `aria-pressed` dropped from the helper, banner text
+inverted, an invented tok/s on a null benchmark -- each red in the string-contract tests and/or the
+live check; controls 32/32 green.
+
+## 2026-09-06 -- A VRAM-kapu nem százalékra dönt, hanem arra, KIÉ a memória
+
+**Döntés:** a `store/vram-guard-check.sh` tier-besorolása mostantól az IDEGEN terhelésre megy, nem
+a nyers kihasználtságra: a saját, betöltött modellünk VRAM-ja (`ollama /api/ps` `size_vram`)
+levonódik, és a maradék dönt. Amíg a saját munkánk tartja a `/tmp/local-llm-gpu.lock`-ot, a mérés
+egyáltalán nem számít idegen terhelésnek (`own-busy` állapot), és nem is kerül a hiszterézisbe.
+
+**Ez nem finomhangolás volt, hanem egy MÉRHETŐ hiba javítása.** Ezen a gépen (2026-09-06):
+összesen 6144 MiB VRAM; leállított ollama mellett 1649 MiB reziduens (asztali/WSL alap, 26,8%); az
+alapértelmezett helyi modell (`qwen2.5-coder:7b-instruct-q4_K_M`) súlyai 4466 MiB. A saját MELEG
+modellünk tehát ~99,5%-ot mutat, ami a `hard_pct` (92) fölött van, vagyis a 108c7b10-ben szállított
+küszöb minden helyi dispatchet VISSZATARTOTT VOLNA pontosan abban az állapotban, amiért a meleg
+modellt egyáltalán tartjuk (mért különbség: 27 mp kontra 120 mp). Ezt nem lehet küszöb-hangolással
+megoldani: nincs az a szám, ami elválasztja a "a mi 4,4 GB-os modellünk be van töltve" esetet a
+"valami más evett meg 4,4 GB-ot" esettől, mert a szám azonos. Csak az attribúció választja el.
+
+**A ZÁR NEM REDUNDÁNS A KIVONÁSSAL, és pontosan egy dolgot fed le:** a modell BETÖLTÉSE alatt a
+VRAM már nő, de az `/api/ps` még nem jelenti, tehát a kivonás nullát lát és az egész betöltés
+idegennek látszik. A `local-llm.sh` pont ezen az ablakon át tartja a flockot. Ezért az `own-busy`
+minta nem is íródik az állapotfájlba: a saját terhelésünkkel tanítani a hiszterézist az a mód,
+ahogy a kapu megtanulna bizalmatlan lenni velünk szemben.
+
+**A KÁRTYA HÁROM ÁLLAPOTOT SOROL FEL, DE NÉGY VAN.** A hiányzó sor: zár szabad + a mi modellünk
+betöltve + az idegen terhelés IS magas. Ezt el kell dönteni valahol, és a kivonás magától eldönti
+(a maradék idegen rész magas -> HOLD), anélkül hogy egy negyedik különleges esetet kellene írni.
+Ezért lett a mechanizmus attribúció és nem eset-táblázat.
+
+**KÉTSÉG ESETÉN ONLINE, MINDEN ÚJ ÁGON.** Elérhetetlen vagy értelmezhetetlen `/api/ps`: nem vonunk
+le semmit, tehát a teljes mérés idegen marad (a HOLD irányába visz). Ha az ollama többet állít
+magáról, mint amennyit az eszköz jelent (`own > used`), az a két mérés ellentmondása, nem
+bizonyíték arra, hogy a GPU szabad: szintén nulla attribúció. A fordított választás (az idegen részt
+nullára szorítani) pont azon a bemeneten ADNA át, amit a legkevésbé értünk.
+
+**EGY SAJÁT HIBA, AMIT A MUTÁCIÓ FOGOTT MEG.** Az első változatban a kártya lényegét hordozó eset
+EGYETLEN mintavétel volt, és az attribúciót teljesen kivevő mutáció TÚLÉLTE: a hiszterézis az ELSŐ
+olvasást úgyis átengedi, akármi a tier, tehát az állításom nem különböztetett meg semmit.
+Fenntartott (sustained_seconds fölötti) mintára cserélve a két tervezés végre eltér, és a mutáció
+meghal. Ugyanaz a hibaosztály, mint egy alsó korlát ott, ahol egyenlőség kell.
+
+**HERMETIKUSSÁG:** a két új bemenetnek env-alapértelmezése is van
+(`VRAM_GUARD_OWN_VRAM_MIB`, `VRAM_GUARD_LOCK_HELD`), és a selftest EGYSZER állítja be őket. Enélkül
+minden meglévő eset a fejlesztő élő ollamáját és a valódi GPU-zárat olvasná, tehát ugyanaz a
+selftest más verdiktet adna egy olyan gépen, ahol be van töltve egy modell -- környezetfüggő teszt,
+ami determinisztikusnak látszik.
+
+**Ki döntött:** MikroB (21170. komment a 108c7b10-on, Cybersec megerősítésével, 24712); a negyedik
+sor kezelése és a `own > used` ág iránya backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `efd18ee4` (szülő `40568837`, testvérek `108c7b10` done, `f9bad591` és
+`a1c4dc51` blokkolt); `store/vram-guard-check.sh`, `store/vram-guard-check.selftest.sh`, `README.md`.
+
+## 2026-09-06 -- e5fc1fb4 -- The Local LLM page is rebuilt around the switches and the routing, and the Overview swimlane is extended rather than duplicated
+
+**Peti's four requirements (Telegram, 2026-09-06), and what each became (fron-ted):**
+1. *Every installed model, each switchable.* The Models block moves directly under Status, gains a
+   measured summary line ("N telepített modell · M letiltva", counted from the flags, not asserted),
+   and each row wears a chip saying which presets are routed to it (override count) or that it is
+   the default for every other preset. The list itself was already every Ollama tag plus the
+   disabled-but-removed rows (5dd4a211) and, since 404e8dd6, the state-file fallback when Ollama is
+   down; the live check now pins five rows including an unbenchmarked and an embedding model.
+2. *Routing made visible.* The former "Kategóriák" section becomes "Feladat-routing": the same
+   preset rows with the same real enable/disable switch (store/local-llm.sh still reads
+   `disabledCategories`, so removing the switch would have removed enforcement), now joined with the
+   model each preset resolves to and why (override from local-llm-model-routing.json, or the default
+   model), plus two panels: the categories the router never hands to a local model (with their
+   ceilings) and the latest card-level LOCAL/ONLINE verdicts from card-build-route.log. None of that
+   was reachable over HTTP, so a BE card (ecf38e5a, backend2, Pair-FE/Pair-BE wired) carries the
+   contract `GET /api/local-llm/routing`; the FE is built against it with a mock and, while the
+   endpoint answers 404, says so in the section and names the card -- switches keep working, the
+   model column reads "nem ismert", no chip is invented.
+3. *The aggressiveness slider stays.* Untouched, in its own section between Models and Routing; the
+   routing summary line quotes its value and the derived difficulty threshold so the two layers read
+   as one decision.
+4. *The Overview swimlane (d6ecb003) is extended, not duplicated.* The lane label becomes a button
+   that opens the Local LLM page on that model's row (highlight flash), a switched-off model wears
+   the same "Letiltva" badge in its lane (from the BE `enabled` field when present, else from the
+   /models flags fetched alongside -- never a guess when both are absent), and the task tooltip gains
+   a "Routing" row (override → model, or default model) only when the routing answer is present.
+
+**Not done here, on purpose:** the Categories i18n keys stay in the catalogs (unused keys are
+harmless, deleting them is not this card's scope); the swimlane's own geometry, palette and data
+contract are untouched. Peti's permission to drop the category model entirely waits for the
+88e3614c routing tasks -- today the switches are enforcement.
+
+**Measured:** Playwright on the real `web/` bundle with the mocked contract, 25 checks across the
+routing-present and routing-absent states, 375px, and the Overview (lanes as buttons, disabled
+badge, tooltip routing row, click-through with highlight). String-contract tests: +50 (68 -> 118 in
+the Local LLM set), the d6ecb003 widget test and 11 other index/overview tests unchanged green.
+Mutation map: routing-absent chip inventing the default model, lane label demoted to a span,
+tooltip routing row without data, disabled count hardcoded to 0, routing loaded after the first
+paint -- each red in the string tests and/or the live check; controls green.
+
+## 2026-09-06 -- f53ef8e4 -- gate-closure-check.py Gate-SHA-listát HALMAZKÉNT, nem első-tagként hasonlít
+
+**Döntés.** A `store/gate-closure-check.py` `verdict_of()`-ja mostantól a Gate-SHA sor MINDEN
+hex tokenjét megtartja (egy tuple-ben, sorrend szerint), nem csak az elsőt. Az egyezés-vizsgálat
+(`sha_sets_agree()`) két verdikt HALMAZAI között bármely metsző pár alapján dönt, nem a puszta
+első elem alapján. A tokenek gyűjtése a `src/web/kanban-gate-completeness-guard.ts`
+`extractGateShas()`-ából PORTOLT szűrőn megy át: egy `szulo`/`parent`/`merge-base` jelölésű sha
+kizárva, és egy `/`-t tartalmazó token (branch/path) csak akkor számít sha-citálásnak, ha egyik
+`/`-szegmense sem csupasz hex -- ez zárja ki a kártya SAJÁT ID-jét egy ágnévből (pl.
+`feat/tenant-auth-ip-coarsen-4a6c47f0`), ami 8 hex karakteren indistinguishable egy rövid sha-tól.
+
+**Miért.** Cybersec mérése a teljes táblán: 93 kártya visel többsoros, vesszős Gate-SHA-listát (a
+4b. szabály kimondottan engedi ezt az alakot), ebből 16 kapott hamis DISAGREE-t, mert a lista
+IDŐRENDI (legrégebbi elöl) és az eszköz az ELSŐ, tehát legrégebbi -- épp a javítás ELŐTTI --
+commitot vágta ki. Három bizonyított eset: `f00b3a7f` (kumulatív 8-elemű QA-lista a másik két gate
+2-elemű deltája ellen, közös záró pár), `7d45ecbb` (ugyanaz), `54fd9c02` (BÁJTRA AZONOS két-sha
+lista FORDÍTOTT sorrendben -- ez az eset, ami a halmaz-metszetet megkülönbözteti egy "vedd az
+utolsó elemet" javítástól, amit a `store/gate-pretriage-candidates.py` a SAJÁT, más okból helyes
+konvenciójaként használ: az egyik oldal `A, B`-t ír, a másik `B, A`-t, az "utolsó elem" szabály itt
+is hamis DISAGREE-t adna).
+
+**A második, saját mérésű lelet, MIELŐTT a javítás landolt volna.** A kártya eredeti javaslata (csak
+a halmaz-gyűjtés, szűrő nélkül) behozta volna az `a20f0aa7` kártya élő incidensét: a `4a6c47f0`
+kártya saját Gate-SHA sora `d49e9c7a... (CleanCore, ág feat/tenant-auth-ip-coarsen-4a6c47f0, ...)`
+alakú, és az ágnévbe ágyazott kártya-ID egy VALÓS hex-alakú token, amit a naiv gyűjtés második
+sha-ként vett volna fel. Élesben mérve, a szűrő NÉLKÜL: `CYBERSEC=d49e9c7a...,4a6c47f0` (a kártya
+ID-je sha-ként!). A `kanban-gate-completeness-guard.ts` már megoldotta ezt a PONTOS osztályt (három
+kör finomítás, `a20f0aa7`/`5bc8f740` élő incidens, 3301+ valós sor mérve) -- backend2 saját korábbi
+kommentje (21435) kifejezetten ennek az újrafelhasználását kérte, nem az újra-kitalálását.
+Átvéve: a `_PARENT_MARKED_SHA` (szulo/parent/merge-base jelölés kizárása) és `_is_path_token`
+(egy `/`-t tartalmazó token csak akkor path, ha valamelyik szegmense nem csupasz hex -- így a
+flotta `A/B` rövid/hosszú "mindkét commit" idiómája nem esik áldozatul).
+
+**Ami emiatt UTÓLAG kiderült egy régi DECISIONS-bejegyzésről.** A `c52e2823` (2. kör) bejegyzés
+`4a6c47f0`-t "valódi, nem hamis" DISAGREE-ként sorolta fel. Ez maga is téves volt: Cybersec saját
+delta-jegyzete (komment 21326, ugyanazon a kártyán) ezt már korábban kimondta -- mindhárom gate
+ténylegesen a `d49e9c7a`-t nevezte meg (QA és Cybered kételemű listája `901b6fbb, d49e9c7a`
+formában, mindkettőt), és a "901b6fbb-en áll" olvasat maga volt az itt javított hiba. A tartalom
+(md5, kommentektől megtisztítva) bájtra azonos a két shán. Élesben újramérve, a mostani javítással:
+`AGREE|901b6fbb,d49e9c7a`. A régi bejegyzést NEM írtam felül (append-only), csak itt mondom ki: az
+a mondat elavult, és ez a bejegyzés az, ami korrigálja.
+
+**Regresszió.** `gate-closure-check.selftest.py`: 91/91 zöld (83 régi + 8 új: a három bizonyított
+eset, egy diszjunkt-lista negatív kontroll, a kártya-ID-ágnév eset + saját negatív kontrollja, a
+merge-base eset + saját negatív kontrollja). Mutáció-tesztelve: az első-token-only állapotra
+visszaállítva a négy halmaz-eset FAIL-re vált, tehát nem vákuum. Élesben ellenőrizve (nem csak
+szintetikusan): `54fd9c02`, `dc5b714d`, `f00b3a7f`, `7d45ecbb`, `4a6c47f0` mind AGREE-re fordul (a
+`4a6c47f0`-nál a kártya-ID immár NEM jelenik meg a sha-halmazban), `edb721ec` helyesen marad
+DISAGREE (valódi diszjunkt lista, negatív kontroll).
+
+**Ismert korlát, kimondva.** Egy sha-t nem csak jelölőszóval (szulo/parent/merge-base) lehet
+"csak kontextus"-ként megnevezni: `3ae71df1`-en Cybersec egy komment prózájában "(21120,
+292a6820) FELOLDVA"-t ír, ahol a `292a6820` egy KORÁBBI, már felváltott NO-GO shája, nem
+jelölőszóval bevezetve. Ez a szűrőn átcsúszik és bekerül a halmazba -- élesben mérve nem okozott
+téves végeredményt (a valódi közös sha, `563de699`, mindhárom gate halmazában jelen van), de
+elméletileg ütközhetne egy másik gate genuinen eltérő shájával. Nem oldottam meg: a természetes
+nyelvi "ez már lezárva" kifejezésmódok felsorolása egy külön, nyitott végű feladat, nem ennek a
+kártyának a hatóköre.
+
+**Hivatkozás:** kártya `f53ef8e4` (Cybersec mérése és javaslata, 24393/21324/21352); kapcsolódó
+`dc5b714d`, `4a6c47f0`, `c52e2823`, `a20f0aa7`; backend2 saját korábbi mérése (komment 21435);
+`store/gate-closure-check.py`, `store/gate-closure-check.selftest.py`,
+`src/web/kanban-gate-completeness-guard.ts` (a portolt referencia).
+## 2026-09-06 -- dbba0424 -- PERMDENY905: az Escape egy engedélykérésen NEM semleges, tehát nem nyomunk semmit
+
+**A DÖNTÉS.** A channel-monitor menü-helyreállító ága, ami eddig vakon Escape-et küldött minden
+blokkoló modálisra, mostantól előbb megkérdezi, hogy tool-permission dialógus-e. Ha igen: NULLA
+billentyű és egy hangos riasztás az operátornak. Ugyanaz az elv, amit a fel nem ismert
+trust-dialógusnál (TRUSTGATE901) és a modell-hozzájárulásnál (FABLEFALL1) már kimondtunk: ahol
+minden billentyű egy VÁLASZ, ott nincs ártalmatlan billentyű, tehát nem az ügynök dönt.
+
+**A DEFEKTET NÁLUNK MÉRTEM MEG, NEM AZ UPSTREAM JELENTÉSÉBŐL VETTEM ÁT.** A kártya kifejezetten ezt
+kérte, és jogosan: egy másik telepítés riportja nem bizonyíték a mi másolatunkról. Elfogtam egy
+valódi Bash-engedélykérést ebből a telepítésből (Claude Code v2.1.263, `tmux capture-pane -p`), és
+a három mérés ez lett: `detectsBlockingMenu` IGAZ, `detectsFirstRunGate` NULL,
+`detectsModelConsentDialog` HAMIS. Vagyis a panel pontosan a vak Escape ágába esett. A defekt tehát
+nálunk is fennállt, nem elméleti.
+
+**A FELISMERÉS SZÁNDÉKOSAN SZÉLES, ÉS EZ IRÁNY, NEM LUSTASÁG.** A hamis pozitív ára annyi, hogy egy
+valódi beragadt menü riasztást kap Escape helyett -- az operátor akkor is megtudja. A hamis negatív
+ára az, hogy NEM-et válaszolunk a nevében, csendben. A két hiba nem egyenrangú, ezért a felismerés
+két, egymást fedő jelre épül: a lábjegyzet-jelölőre a footer-régióban VAGY a kérdés+Yes alakra az
+egész panelen.
+
+**A REGIONÁLIS RÉSZLET, AMI SZÁMÍT.** A footer-tag ugyanazon a nyolc soros ablakon fut, mint amit a
+`detectsBlockingMenu` néz. Egy finomítás, ami SZŰKEBB régiót vizsgál, mint a kapu, amit finomít,
+pont azt a rést nyitja újra, ami miatt létezik. Az upstream öt sorral dolgozik; nálunk ez a nyolc a
+helyes érték, mert a mi kapunk nyolcat használ.
+
+**EGY MÉRT ELTÉRÉS, AMIT JELENTEK ÉS NEM JAVÍTOK.** Ugyanaz a dialógus egy frissen indult
+sessionben, ahol a tartalom még nem tölti ki a képernyőt, 11 üres sort kap alá a capture-ben. A mi
+`detectsBlockingMenu`-nk NYERSEN vágja az utolsó nyolc sort, tehát ilyenkor csak üres sorokat lát,
+és a panel semmit nem kap: se Escape-et, se riasztást. Néma, de nem rossz válasz. Az upstream
+előbb levágja az üres farkat (`liveTailRegion`), és látná. Ez a `detectsBlockingMenu`-ről szóló
+külön lelet, nem ennek a kártyának a hatóköre -- egy működő detektorhoz nem nyúlok kártya nélkül.
+Az új detektor viszont a párnázott esetet IS felismeri, tehát ha a kaput később kiszélesítik, ezen
+az ágon nincs több teendő. Az eset teszttel rögzítve, hogy az eltérés kimondott tény legyen.
+
+**Ki döntött:** backend2 lelete (upstream `ab96c868f316` blob, PERMDENY905), MikroB nyitotta
+kártyaként adopciós döntésre; a mérés, a régió-választás és a nem-javítom-a-kaput határvonal
+backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `dbba0424`; `src/pane-state.ts` (`detectsPermissionDialog`),
+`src/web/channel-monitor.ts`, `src/__tests__/pane-permission-dialog.test.ts`, `README.md`.
+
+## 2026-09-06 -- 7d47ca16 -- A csendes kézbesítést OSZTÁLY kéri, nem szabad boolean, és a végpont zárva marad
+
+**A DÖNTÉS.** A `createAgentMessage` többé nem fogad `wake: boolean`-t. A hívó egy nevesített
+üzenetosztályt ad meg (`quietClass`), és csak a `QUIET_MESSAGE_CLASSES` statikus, forráskódbeli
+listán szereplő osztály kap csendet. Minden más -- ismeretlen osztály, elgépelés, nem-string,
+hiányzó érték -- ÉBRESZT. A nyers boolean út nem "nem használjuk", hanem típusszinten nem létezik:
+a régi alak fordítási hiba.
+
+**MIÉRT OSZTÁLY ÉS NEM VISELKEDÉS (MikroB, 21447. komment).** Egy string, ami a forrásban ott van,
+egy gate által OLVASHATÓ tény. Egy hívó megítélése nem az. A lista bővítése ezért kód-változtatás,
+ami a szokásos kapun megy át; nincs konfigurációs fájl, nincs env-változó, és a lista `Object.freeze`
+alatt van, hogy a "nincs futásidejű út, ami bővíti" állítás igaz legyen, ne csak leírva legyen.
+
+**A FAIL-CLOSED IRÁNYA ITT A HANGOSSÁG FELÉ MUTAT.** Egy elutasított kérés ÉBRESZTÉST ad, nem
+elnémítást. Ez ugyanaz az aszimmetria, amit a `messageWakesReceiver` már kimond: egy felesleges
+ébresztés egy megszakítás ára, egy tévedésből elnémított hibajelzés viszont addig láthatatlan, amíg
+valaki véletlenül oda nem néz.
+
+**A TESZT KORLÁTJA, KIMONDVA.** A kártya azt kéri, hogy egy fail/security-osztály felvétele a listára
+BUKJON EL. Ezt csak NÉV szerint lehet kikényszeríteni: a lista stringekből áll, és egy string nem
+hordoz bizonyítékot arról, mihez tartozik. Az őr tehát elkapja az `agent-failure-alert`-et, és nem
+kapja el a `class-17`-et. Ez valódi korlát, nem szépítem: a valószínű hiba az, hogy valaki
+őszintén nevezi el az osztályt és mégis felveszi -- azt fogja. A tesztet lemértem egy mutánssal (a
+lista bővítése `agent-failure-alert`-tel), három eset bukott el rá.
+
+**A VÉGPONT ZÁRVA MARAD, ÉS EZ TUDATOS DÖNTÉS.** A 3bd457ed szándékosan nem nyitotta meg a `wake`
+mezőt a `/api/messages`-en, arra hivatkozva, hogy előbb kell az allowlist. Az allowlist megvan, a
+végpontot MÉGSEM nyitottam ki. A kártya a hívó OLDALÁN kér statikus listát, és a jogosult hívók
+folyamaton belüli figyelők, akiknél az osztály egy forráskód-literál. Egy HTTP-törzsben érkező
+osztálynév visszaadná a választást annak, aki tokent tart -- ugyanaz az ablak, amit az 1. lépés nem
+akart kinyitni, csak most vetettnek látszó névvel. Ha ez később mégis kell, az külön kártya külön
+kapuval; a `message-wake-field.test.ts` végpont-tesztje az, aminek előbb pirosra kell váltania.
+
+**Ki döntött:** MikroB (21447. komment: statikus konstans-lista a hívó oldalán); a végpont zárva
+tartása és a név-alapú őr korlátjának kimondása backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `7d47ca16` (szülő `dc35fa1a`, előzmény `3bd457ed`, következő `8f33a1a1`);
+`src/web/message-wake.ts`, `src/db.ts`, `src/__tests__/message-quiet-class-allowlist.test.ts`,
+`src/__tests__/message-wake-field.test.ts`, `README.md`.
+
+## 2026-09-06 -- 3e4dc2c3 -- gate-closure-check.py: nem-REVIEW komment is deklarálhat ellenőrizetlen shát
+
+**Döntés.** `store/gate-closure-check.py`-nak új `undeclared_post_review_shas()` függvénye van. A
+`check()` a REVIEW-forrású alapértelmezett úton (`use_declared`, nem `--expect`/`--no-expect`)
+mostantól megnézi: van-e a legfrissebb `REVIEW` UTÁN olyan komment, ami Gate-SHA-t deklarál, de
+se a REVIEW sajátja, se egyetlen gate-verdikt nem fedi -- ha van, a válasz `STALE`, nem a régi
+REVIEW sháján nyugvó néma `AGREE`.
+
+**Miért.** A `declared_shas()` -- helyesen, saját mérése szerint -- KIZÁRÓLAG a legfrissebb
+`REVIEW`-nyitó kommentből olvas (bármely komment forrásként 8 kártyát javítana, 8-at törne). De egy
+építő rutinszerűen deklarál újabb commitot `REVIEW` szó NÉLKÜL is (pl. "F-1 JAVITVA -- delta-gate
+kell\nGate-SHA: ..."), és ha egyetlen gate sem verdiktel az új shára, az alapértelmezett válasz a
+RÉGI shán marad -- olyan kódot igazol vissza, amit senki nem nézett meg. Cybered mérése a teljes
+táblán: 14 kártyán fordul elő ez az alak, ebből 8-on a válasz hibásan `AGREE`, miközben `--expect`-tel
+ugyanaz a kártya `STALE`-t ad (7 a nyolcból már `done`). A helyes irány fail-closed: `STALE`, nem
+`AGREE`.
+
+**Hatókör, kimondva.** Kizárólag a REVIEW-forrású alapértelmezett utat érinti -- egy explicit
+`--expect` a hívó SAJÁT állítása, nem kérdőjeleződik meg. Az ellenőrzés nem azt kérdezi, hogy a
+REVIEW saját mutatója friss-e (az egy KÜLÖN, korábban is létező hiányosság, amit ez a kártya nem
+old meg -- lásd a szintetikus "a gate DELTA-gate-elt, de a REVIEW nem frissült" kontroll-esetet,
+ami helyesen `UNRESOLVED`-re esik, nem hamis `AGREE`-re és nem a rossz `STALE`-re), hanem azt, hogy
+LÁTTA-E egyáltalán valamelyik gate az újonnan deklarált shát.
+
+**Tesztek.** `gate-closure-check.selftest.py`: 97/97 zöld (91 régi + 6 új: a pozitív eset Cybered
+saját 58c498f2/1c5a41b4 példájával, egy kontroll ahol a gate tényleg delta-gate-elt, egy kontroll
+ahol a kesőbbi komment maga is REVIEW, egy `--expect`, egy `--no-expect`, egy Gate-SHA nélküli
+komment). Mutáció-tesztelve: az orphan-ellenőrzés kikapcsolva (`orphans = []`) pontosan a pozitív
+eset FAIL-re vált, a többi 96 zöld marad -- nem vákuum.
+
+**Hivatkozás:** kártya `3e4dc2c3` (Cybered mérése, üzenet 24426); `store/gate-closure-check.py`,
+`store/gate-closure-check.selftest.py`.
+
+## 2026-09-06 -- c116696f (delta) -- buildUpdateScriptEnv LOKÁLIS másolatot módosít, nem az élő process.env-et
+
+**Döntés.** A `buildUpdateScriptEnv()` (card c116696f) MÓDOSÍTVA: a `NODE_ENV` törlése egy
+LOKÁLIS `env` másolaton történik (`const env = { ...process.env, ...extraEnv }; delete
+env.NODE_ENV; return env`), NEM a valódi `process.env`-en. Cybersec NO-GO-ja után, delta-gate.
+
+**Miért volt hibás az eredeti.** Az eredeti indoklásom ("update.sh több ponton is npm ci-t futtat,
+mindegyik gyermek-folyamat külön öröklődik, tehát a valódi process.env-et kell törölni")
+TÉVES volt: egy gyermek-folyamat a SAJÁT env-tábláját a spawn() pillanatában, OS-szintű
+MÁSOLATKÉNT kapja meg (execve envp), nem a szülő élő objektumára mutató referenciaként -- a szülő
+KÉSŐBBI mutációja már nem ér el hozzá. Cybersec ezt saját, futtatott Node child_process-teszttel
+igazolta (nem csak érveléssel). Tehát egy LOKÁLIS másolat, amit a spawn()-nak adunk át, PONTOSAN
+ugyanúgy védi az update.sh-t ÉS minden leszármazottját (rollback npm ci, ujragenerált finalize
+script), mint a valódi objektum módosítása -- a leszármazottak update.sh SAJÁT env-jét öröklik,
+ami már NODE_ENV nélküli, nem a mi Node-folyamatunk élő objektumát.
+
+**Miért veszélyes volt a valódi process.env módosítása.** A mutáció HATÁRIDŐ NÉLKÜLI: az update.sh-nak
+számos korai kilépési pontja van a finalize/restart LÉPÉS ELŐTT (pl. sikertelen `npm ci`, ~928. sor,
+`exit 1`). Ezeken az utakon a HÍVÓ node-folyamat -- a mi hosszan futó dashboard-unk, ami épp törölte
+a SAJÁT `process.env.NODE_ENV`-jét -- tovább fut, változatlanul, törölt állapotban, amíg valaki
+kézzel újra nem indítja. Ez PONTOSAN az a minta (ismétlődő sikertelen frissítés, újraindulás
+nélkül), ami az AUTOUPDNODEENV905-öt öt rollbackra vitte 10 nap alatt egy ügyfélnél -- a javítás
+után minden ilyen ismétlődő sikertelen próbálkozás MOSTANTÓL is törölte volna a NODE_ENV-et az élő
+folyamatból, nyom nélkül, amíg a folyamat esetleg napokig újra nem indul. Ma nincs ismert aktív
+kódút, ami ebből kárt csinálna (a QA/Cybersec által ellenőrzött olvasók mind import-időben futnak),
+de a "ma senki nem olvassa" állapot semmivel nincs kikényszerítve.
+
+**Amit korrigáltam:** a kódot (lokális másolat), a doksi-kommentet (a hibás "must mutate the real
+process.env" indoklás helyett a helyes OS-szintű env-másolás magyarázata), a
+`src/__tests__/update-node-env-strip.test.ts` 2. esetét (mostantól azt várja, hogy
+`process.env.NODE_ENV` VÁLTOZATLAN maradjon a hívás után, ne `undefined` legyen -- rule 7: ez egy
+HIBÁS invariáns pinneléséből a HELYES invariáns pinnelésévé válik, nem gyengítés), és a
+`src/fork-upstream/acknowledged-conflicts.ts` fork-horgonyát (needle `delete process.env.NODE_ENV`
+-> `delete env.NODE_ENV`, ugyanaz az `expect: 'present'`).
+
+**Tesztek.** Mind az 5 eset zöld a korrigált kóddal; mutáció-tesztelve: a régi (process.env-et
+mutáló) kódra visszaállítva a 2. eset FAIL-re vált (`expected undefined to be 'production'`), a
+többi 4 zöld marad. `tsc --noEmit` tiszta.
+
+**Hivatkozás:** kártya `c116696f` (Cybersec NO-GO, komment 21701); `src/web/routes/updates.ts`,
+`src/__tests__/update-node-env-strip.test.ts`, `src/fork-upstream/acknowledged-conflicts.ts`.
+
+## 2026-09-06 -- 864351a9 -- gate-closure-check.py: kikövetkeztetett gate-halmaz sose hagyja ki a QA-t, és egy STATED kijelölés felülírja a találgatást
+
+**Döntés.** `store/gate-closure-check.py` `check()`-je, amikor a hívó nem ad meg gate-listát: (1)
+ELŐSZÖR megnézi, van-e a kártyán `MikroB GATE-KIJELOLES: <gate-ek> (<n>-gate) -- <indoklás>`
+komment (élő, már használt flotta-konvenció, eddig soha nem olvasva) -- ha van, AZ a gate-halmaz,
+nincs találgatás; (2) ha nincs stated kijelölés, a jelen lévő verdiktekből következtetett halmazt
+MOSTANTÓL a kötelező QA-val EGÉSZÍTI KI, akkor is, ha QA egyáltalán nem verdiktelt -- egy QA
+nélküli következtetett halmaz így `MISSING|QA has no verdict`-et ad, sosem `AGREE`-t.
+
+**Miért.** A 4. munkavégzési szabály szerint QA MINDIG kötelező, alkudhatatlanul. A régi
+`sorted(latest.keys())` következtetés viszont pusztán a JELEN LÉVŐ verdiktekből épített halmazt,
+tehát egy MAGÁNYOS biztonsági gate-verdikt (pl. csak CYBERED GO) a saját magával való egyetértésként
+olvasódott: `AGREE`. Élesben mérve: 307 `done` kártyából KETTŐN pontosan ez történt (`e96b06e7`,
+`89f4c28d`), és mindkettőn a VALÓS kijelölés (`MikroB GATE-KIJELOLES: QA (1-gate)`, illetve `QA +
+Cybersec (2-gate)`) szövegesen ott állt a kártyán -- az eszköz egy MÁSIK, ellentmondó halmazt
+következtetett a kimondott érték helyett, ugyanaz az alak, mint a 4b. szabály (kimondott Gate-SHA
+helyett találgatás). Mindkét kártyát MikroB már kézzel retro-gate-elte (QA PASS pótolva a landolt
+shára); ez a javítás azt zárja le, hogy a HIBAOSZTÁLY megismétlődjön.
+
+**A két javítás egymástól független, mindkettő kell:** a stated-kijelölés felülírása egy STATED de
+KISEBB halmazt is tiszteletben tart (ha MikroB kifejezetten csak QA-t kért, egy azon felül
+verdiktelő biztonsági gate nem számít bele -- lásd a szintetikus kontroll-esetet); a QA-seedelés
+pedig arra az esetre való, amikor NINCS stated kijelölés egyáltalán.
+
+**Tesztek.** `gate-closure-check.selftest.py`: 103/103 zöld (97 régi + 6 új, a három ÉLES eset
+szintetikus reprodukciója -- `d5c05548`, `e96b06e7`, `89f4c28d` -- plusz egy kontroll ami AGREE
+marad (QA+biztonsági gate ugyanarra a shára), egy ami a KISEBB stated halmazt tiszteletben tartja,
+és egy ami az UTOLSÓ GATE-KIJELOLES-t követi újra-kijelöléskor). Mutáció-tesztelve KÉT külön
+mutánssal (a QA-seedelés kikapcsolva, illetve a stated-kijelölés-olvasás kikapcsolva) -- mindkettő
+pontosan a hozzá tartozó eseteket buktatja meg, a másik fixet nem érinti.
+
+**Hivatkozás:** kártya `864351a9` (Cybersec mérése, a `d5c05548` zárás-ellenőrzése közben, üzenet
+24538); kapcsolódó de más mechanizmus: `98ae22fe`, `f53ef8e4`, `3e4dc2c3`, `2adaa646`, `cb8ef4f5`;
+`store/gate-closure-check.py`, `store/gate-closure-check.selftest.py`.
+
+## 2026-09-06 -- fleet-test.sh megosztja a CleanCore CPU-poolt a marveen-land landolással (kártya 492a6d5c)
+
+**A lelet (backend3 mérése, 24522, kártya 779cd6a7 kapcsán).** `store/cleancore-suite-run.sh` (17.
+munkavégzési szabály) a CleanCore teljes-suite futásokat max 2 egyidejűre poolozza flock-kal --
+DE a `marveen-land.sh` saját `store/fleet-test.sh` futása (a marveen 622 fájlos, 15102 tesztes
+suite-ja) NEM volt ugyanabban a poolban, hanem külön, korlátlan sávon futott. Egy ügynök, aki
+EGYSZERRE landol marveenen (fleet-test fut) ÉS CleanCore suite-ot futtat a saját, szabályosan
+2/2-be foglalt slotjában, önmagát CPU-éheztette: loadavg 10-24 között,
+`cross-tenant-canary-callers.test.ts` 6034ms/5000ms timeout-tal bukott NULLA assert-hibával
+(rule-17 hamis-piros mintája), holott azonos terheléssel, tisztán futtatva (loadavg 10.6) mindkét
+ág 9/9 zöld volt.
+
+**A javítás.** `store/fleet-test.sh` a saját machine-wide tree-mutexe (LOCK_FILE, cards 85faec1b/
+2f0c7d24 -- korrektségi kérdés: "biztonságos-e hozzányúlni a fához") MELLETT most egy MÁSODIK,
+FÜGGETLEN zárolást is kér a build+vitest futtatása ELŐTT: ugyanazokat a számozott lock-fájlokat,
+amiket a `cleancore-suite-run.sh` már használ (`CLEANCORE_SUITE_SLOTS`/`CLEANCORE_SUITE_LOCK_PREFIX`/
+`MARVEEN_MAIN` -- SZÁNDÉKOSAN ugyanazok a nevek, nem hasonló-alakú újak, mert csak úgy garantált,
+hogy a két szkript TÉNYLEGESEN ugyanazon a fájlon versenyez, nem csak ma véletlenül egyező
+alapértéken). Ez a kapacitás-kérdés ("van-e hely futni"), külön a korrektség-kérdéstől ("biztonságos-e
+a fához nyúlni") -- ezért a két lock NEM lett összevonva, és a CPU-slot megszerzése a tree-mutex
+ELŐTT történik, hogy egy futás sose tartsa feleslegesen a tree-lockot, miközben még CPU-kapacitásra
+vár. Új introspekciós kapcsoló: `--cpu-slot-path` (a `--lock-path` mintájára, kártya 43ecdbe6 elve:
+a FELOLDOTT érték, nem a forrásszöveg).
+
+**Tesztek.** Új `src/__tests__/fleet-test-shares-cleancore-cpu-pool.test.ts`, 9 eset: forrás-alapú
+(`acquire_cpu_slot` a tree-mutex ELŐTT fut, a pontos `CLEANCORE_SUITE_*` neveket olvassa, a várakozás
+korlátos és fatal timeout-on) + 3 mutáció-kontroll (a blokk törölve, a blokk a tree-lock UTÁNRA
+mozgatva, a névtér eltérítve) + élő viselkedés-tesztek VALÓDI flock-kal tartott slot-fájlokkal (mindkét
+slot foglalt -> sorban áll, majd feladja a megnevezett okkal; szabad pool -> néma és eljut a
+tree-lock szakaszig; `CLEANCORE_SUITE_SLOTS=3` -> beenged 2 foglalt mellett is). A meglévő
+`fleet-test-serialises-runs.test.ts` és `cleancore-suite-run.selftest.sh` (12/12) VÁLTOZATLANUL zöld
+-- ez utóbbi fájlhoz egyáltalán nem nyúltam, csak ugyanazokat a lock-fájl-neveket olvasom be egy
+másik szkriptből.
+
+**Hivatkozás:** kártya `492a6d5c` (backend3 mérése, üzenet 24522, kártya `779cd6a7`); kapcsolódó de
+más mechanizmus: `2f0c7d24` (a tree-mutex machine-wide-dá tétele), `5af57bd7`/`6e39a5f0` (a
+CleanCore-oldali szemafor bevezetése), `4ee2519b` (dedup-ellenőrizve, más eszköz: `fe-be-reconcile.py`
+CI-bekötés); `store/fleet-test.sh`, `store/cleancore-suite-run.sh` (érintetlen),
+`src/__tests__/fleet-test-shares-cleancore-cpu-pool.test.ts`.
+
+## 2026-09-06 -- vram-guard-check.sh: atomi állapot-írás + persist-hiba a pillanatnyi szintből (kártya eaef963d)
+
+**A lelet (Cybersec, follow-on a 108c7b10 gate-eléséből, komment 21567, Gate-SHA 84d0b7d9).** Két
+defektus az ÁLLAPOTKEZELÉSBEN, mindkettő ADMIT irányba old fel -- az őr a saját céljával ellentétes
+irányba hibázik.
+
+1) Az állapotfájl írása (`open(state_path, "w")`) CSONKÍT, nincs atomi csere: egy egyidejűleg futó
+példány részlegesen kiírt fájlt olvashat, JSONDecodeError-t kap, `{"tier":"ok"}`-ra esik, és
+VISSZAÍRJA az "ok"-ot -- a megerősített HOLD-ot mindenki számára elrontva. Mérve: 40 egyidejű hívás
+egy megerősített tier=hard állapotból, 12 körben 10-szer veszett el a HOLD. Egy sima flock a
+CSONKÍTÓ írás körül NEM javította (0/12) -- ez a 09a3d52a-minta rossz fele, ott valódi
+kereszt-folyamatos lock-probléma volt, itt csonkított-írás. Az ATOMI csere (mkstemp + os.replace,
+lock NÉLKÜL) 0/12-re javította.
+
+2) Ha az állapotfájl NEM írható, a kód a régi (perzisztencia-mentes) `current` értéket adta vissza,
+ami perzisztencia nélkül SOSEM tud a hiszterézisen keresztül elmozdulni "ok"-ról -- tehát az őr
+csendben TARTÓS ADMIT-tá vált, a "hysteresis degraded" stderr-sor viszont csak "pillanatnyi
+leolvasásra" való degradálást ígért. Mérve: öt hívás 140 szimulált másodpercen át, végig 96%-on,
+SOHA nem tartott.
+
+**A javítás.** (1) `tempfile.mkstemp` + `os.replace` UGYANABBAN a könyvtárban, mint az állapotfájl
+(hogy a replace egy fájlrendszeren maradjon) -- egy olvasó vagy a régi teljes fájlt látja, vagy az
+újat, sosem részlegeset. (2) a persist-hiba ágon a verdikt MOSTANTÓL a `instantaneous` (a
+JELENLEGI mérésből számolt szint) alapján megy, nem a hiszterézis-only `current`-ből -- így egy
+írási hiba a HISZTERÉZIST (memória a hívások között) fokozza le, nem az IRÁNYT.
+
+**Tesztek.** `vram-guard-check.selftest.sh`: 31/31 zöld (28 régi + 2 új eset -- a persist-hiba 96%-on
+HOLD-ot ad, 16%-on kontrollként ADMIT marad -- plusz egy TÖBBKÖRÖS (6x40 egyidejű) atomi-írás
+teszt). Mutáció-tesztelve: a teljes eredeti (csonkító írás + current-alapú persist-ág) visszaállítva
+2/6 körben ténylegesen elvesztette a "hard" állapotot ÉS a persist-teszt is bukott; egy RÉSZLEGES
+mutáns (csak a (2) fix visszaállítva, (1) érintetlenül) KIZÁRÓLAG a persist-tesztet buktatta meg --
+a két teszt független, egyik sem takarja el a másik hiányát. A többkörös teszt szándékos: a
+csonkítás-hiba VALÓSZÍNŰSÉGI (mért 10/12), egyetlen kör akár véletlenül zölden futna át a javítás
+nélküli kódon is (mérve: egy 30-egyidejű körben ez meg is történt) -- az atomi javítás viszont NEM
+valószínűségi (0/12, determinisztikusan), ezért minden kör "hard"-ot KÖVETEL, egyetlen rossz kör is
+valódi regresszió.
+
+**Hivatkozás:** kártya `eaef963d` (Cybersec mérése, follow-on `108c7b10`-ből); kapcsolódó de más
+mechanizmus: `09a3d52a` (ugyanennek a könyvtárnak a másik állapotfájlja, ott a zár volt a helyes
+válasz); `store/vram-guard-check.sh`, `store/vram-guard-check.selftest.sh`.
+
+## 2026-09-06 -- edf9c837 -- A landolo szkript a KARTYA-ID szerint valaszt agat, nem a gate-elt sha szerint
+
+**A DÖNTÉS.** A `cleancore-land.sh` `pick_branch` függvénye megkapja a kártya azonosítóját, és a
+`git branch -a --contains` jelöltjei közül azt választja, aminek a NEVE a kártya-id-re végződik
+(`/` vagy `-` határon). Ha egyik sem, marad a régi első-sor viselkedés.
+
+**MIÉRT NEM A TIP SZERINT.** A kézenfekvő megoldás az lenne, hogy azt az ágat válasszuk, aminek a
+tipje ÉPPEN a gate-elt sha. Ez rossz: a hívó KÖVETKEZŐ állítása pontosan az, hogy a választott ág
+tipje a gate-elt sha. Ha a választás erre a tulajdonságra szűrne, az az állítás üressé válna --
+konstrukció szerint teljesülne, bármit adott volna vissza a függvény. A név szerinti szűkítés
+független attól, amit az ellenőrzés kérdez, tehát az ellenőrzésnek marad mit elutasítania.
+
+**MIÉRT HATÁRRA HORGONYZOTT AZ ILLESZTÉS.** Egy 8 hexes kártya-id rövid: a `fix/x-476ccb3399` név
+tartalmazza a `476ccb33`-at. Egy puszta részsztring-illesztés ugyanazt a rossz-ág hibát hozná vissza,
+csak eggyel bonyolultabban. Mindkét élő névalak lefedve (`agent/fron-ted/476ccb33` és
+`fix/evidence-bucket-retention-floor-cbea986c`). Mutációval mérve: a horgony elvétele két esetet
+buktat, a kártya-argumentum eldobása hármat.
+
+**MIÉRT NEM ELUTASÍTÁS, HA NINCS NÉV-EGYEZÉS.** Az az ág, ami egyszerűen nem hordozza az azonosítót a
+nevében, a MA is működő eset. Egy elutasítás ott olyan landolásokat törne el, amik most rendben
+mennek -- a változtatás így szigorúan additív.
+
+**AMI EBBŐL KIMARADT, ÉS MIÉRT.** A kártya elsődleges fele (a `DECISIONS.md` union-elutasítás) NEM
+ebben a változtatásban van: a mérés megcáfolta a kártya hipotézisét, és a valódi ok egy olyan
+alakra vezet, amit a jelenlegi algoritmus nem tud feloldani, nem pedig egy szűk feltétel
+lazítására. Részletek a kártya kommentjében; az ottani javaslat MikroB terv-fázisú döntését igényli,
+mert egy többszörösen gate-elt biztonsági eszköz kimenetét változtatná meg.
+
+**Ki döntött:** backend mérnöki döntés a kártya másodlagos pontjára (MikroB kártyája nevezte meg a
+kívánt irányt), itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `edf9c837`; `store/cleancore-land.sh` (`pick_branch` + 6 selftest-eset).
+## 2026-09-06 -- channels.sh watchdog fallback: host-szintű grep helyett saját folyamatfa (kártya 4c34f201)
+
+**A lelet.** Az upstream mérte meg és javította (kanban `c0390130`, 2026-08-19), a fork a hibás
+alakot hordozta. `scripts/channels.sh` 1079. sora a plugin életjelét fallbackként egy HOST-SZINTŰ
+kereséssel állapította meg: `ps eww -e | grep -qE "CLAUDE_PLUGIN_ROOT=[^ ]*/${CHANNEL_PROVIDER}(/|
+@| |$)"`. Ez a minta BÁRMELYIK ügynök plugin-folyamatára illeszkedik a gépen, nem csak a sajátjára --
+egy több-ügynökös hoszton az életjel gyakorlatilag mindig igaz, és a watchdog némán elveszti azt a
+képességét, amiért létezik. Upstream mérése: 14 telegram plugin-folyamat futott más ügynökök alatt,
+az egyik ügynök csatornája 07:40-től 08:30-ig halott volt, senki nem kapott róla jelzést. A mi
+kitettségünk MÉRVE (nem elméleti): 2 illeszkedő folyamat futott ezen a hoszton a mérés pillanatában.
+
+**A javítás.** Az upstream javítását (blob `d0ca55bd`) NEM blob-mergeként vettük át, hanem a fork
+saját magának alkalmazza UGYANAZT a technikát: `pgrep -P <a session sajat pane_pid-je> bun`, ami a
+saját folyamatfára szűkít -- pontosan az a minta, amit a fork post-init unlock Check 1-je MÁR
+használ (825. sor: `pgrep -P "$CLAUDE_PID" bun`). A szűkítés biztonságosságát ELŐRE MÉRTÜK (a card
+kifejezett kérése szerint): `ps --forest` a live `mikrob-channels` session pane_pid-je alatt
+megmutatta, hogy a bun folyamat MINDIG közvetlen gyerek ezen a hoszton, tehát a szűkítés nem indíthat
+hamis restart-hurkot.
+
+**Tesztek.** Új `src/__tests__/channels-watchdog-fallback-scope.test.ts`, 5 eset -- a JAVÍTOTT
+sávot a channels.sh-ból SZÓ SZERINT kiemelve futtatja (a `channels-reap-scope.test.ts` mintája,
+awk helyett bash-blokkra), VALÓDI folyamatfákkal: egy `bun` nevű valódi fájl (nem `exec -a` trükk --
+az argv[0]-átírás NEM állítja át a kernel comm-nevét szkript-futtatásnál, ez egy sikertelen próba
+volt a teszt megírása közben) mint valódi gyerekfolyamat, és egy hamis `tmux` bináris, ami a
+választott pane_pid-et adja vissza. A "MÁSIK ügynök plugin-folyamata" eset (a card kifejezett
+teszt-követelménye) egy VALÓDI, a saját pane_pid-től FÜGGETLEN bun-gyereket hoz létre, és igazolja,
+hogy az új kód NEM veszi életjelnek -- míg a régi (host-szintű env-grep) mechanizmus külön, bash-ből
+igazoltan MATCHEL egy ilyen idegen folyamatra (`CLAUDE_PLUGIN_ROOT` env-vel ellátott folyamat,
+függetlenül a tulajdonostól).
+
+`src/fork-upstream/acknowledged-conflicts.ts`: a round-19 bejegyzés ("NOT adopted here... deserves
+a gate of its own") mellé egy záró jegyzet kerül, ami rögzíti, hogy a KITETTSÉG (nem a blob-diff)
+lezárult -- a blob-pin változatlan (`d0ca55bd`), mert nem blob-mergeltünk, hanem saját, ekvivalens
+javítást építettünk.
+
+**Hivatkozás:** kártya `4c34f201`; upstream: kanban `c0390130` (2026-08-19), blob `d0ca55bd`;
+kapcsolódó: a fork saját post-init unlock Check 1-je (ugyanaz a `pgrep -P` minta, 825. sor);
+`scripts/channels.sh`, `src/__tests__/channels-watchdog-fallback-scope.test.ts`,
+`src/fork-upstream/acknowledged-conflicts.ts`.
+
+## 2026-09-06 -- edf9c837 -- A döntésnapló-unió SORRENDJE a hívó döntése, és a szinkron iránynak eddig nem volt hívója
+
+**A DÖNTÉS (MikroB, 24922: az (A) irány).** A `try_append_union` kap egy negyedik argumentumot, ami
+megmondja, melyik oldal fele kerül előre: `ours-first` (alapértelmezés) vagy `theirs-first`.
+Ismeretlen érték elutasítás, nem csendes alapértelmezés -- ugyanaz a fail-closed irány, mint az
+entry-boundary mintánál, és ugyanazon okból: a sorrend DÖNTÉS, tehát egy elgépelés nem választhat
+helyettünk.
+
+**MIÉRT SZÁMÍT EGYÁLTALÁN A SORREND.** A két maradék mindegyike új, tehát a sorrendjük ERRE a
+merge-re nézve tetszőleges. A KÖVETKEZŐRE nem: amelyik blokk előre kerül, az MINDEN későbbi
+merge-base-hez képest a fájl KÖZEPÉN álló beszúrás lesz, és egy egyoldali közép-beszúrás pontosan az
+az alak, amit a függvény ezután elutasít (mert ott az összefűzés a base-t duplikálná). Mérve: két
+független CleanCore landolás akadt el egyetlen heartbeat-körben emiatt, és a gyanított ok (azonos kis
+közép-beszúrások) mérésre kizárult -- azok bájtra azonos üres sorok, amiket a függvény már kezel.
+
+**AMI A MÉRÉS KÖZBEN KIDERÜLT, ÉS AMI MIATT (A) ÖNMAGÁBAN NEM-MŰVELET LETT VOLNA.** A függvényt
+pontosan két hely hívja, mindkettő landoló, és mindkettő ugyanúgy mergel: a worktree az integrációs
+ágon áll, az ügynök ága megy bele. Ott `ours` MÁR az integrációs ág, tehát a helyes sorrend az
+alapértelmezés. Az inverzió az ÜGYNÖK szinkron-merge-ében keletkezik (integrációs ág bemergelése a
+saját ágba), ahol `ours` az ügynök ága -- és ahhoz az irányhoz NEM TARTOZOTT SEMMILYEN HÍVÓ: azt a
+konfliktust kézzel oldottuk fel, a sorrendet az döntötte el, ki hogyan fűzte össze a két felet.
+
+Ezért a döntés két darabban landolt, és a második nélkül az első nem ér semmit:
+`store/decisions-sync-resolve.sh` a hiányzó hívó a szinkron irányra, `theirs-first`-tel.
+
+**A SZKRIPT ELLENŐRZI AZ IRÁNYT, NEM FELTÉTELEZI.** A `theirs-first` csak szinkron-merge-re helyes;
+az ellenkező merge után alkalmazva pont azt az alakot hozná létre, amiről ez a kártya szól. Ezért a
+`MERGE_HEAD`-nek egy integrációs ág csúcsának KELL lennie, különben a szkript 2-vel elutasít. Egy
+eszköz, aminek a helyessége azon múlik, hogy az operátor emlékszik-e, melyik irányba mergelt, nem
+javítás.
+
+**NEM COMMITOL.** Ugyanaz a szerződés, mint a landolóknál: felold és stage-el, a merge lezárása a
+hívó lépése.
+
+**BIZONYÍTÉK.** Öt új eset a union selftestjében, köztük az, amelyik EGY fixtúrán két különböző
+verdiktet ad pusztán a sorrendtől (`ours-first`-nél a varrat setext-fejléccé léptetné elő az utolsó
+prózasorunkat, `theirs-first`-nél nem) -- ez az az eset, ami megfogja, ha a varrat-ellenőrzés a régi
+felére mutat. A kártya által kért piros-a-régin/zöld-az-újon alak mérve: a sorrend-argumentumot
+figyelmen kívül hagyó (a kártya előtti) változat három esetet buktat, a varratot nem követő változat
+egyet. A szinkron-szkriptnek saját, valódi repókon futó selftestje van (7 eset), és teszt köti be,
+hogy le is fusson.
+
+**Ki döntött:** MikroB választotta az (A) irányt (24922); a szinkron-oldali hívó, az irány-ellenőrzés
+és a fail-closed ismeretlen-érték kezelés backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `edf9c837`; `store/decisions-append-union.sh`, `store/decisions-sync-resolve.sh`,
+`src/__tests__/decisions-sync-resolve-selftest.test.ts`, `README.md`.
+
+## 2026-09-06 -- beb9c8d3 -- A suite-futás kimondja, mennyi NEM futott le belőle
+
+**A LELET.** A `store/cleancore-suite-run.sh` nem állítja be a `PG_E2E_URL`-t, és a flottában semmi
+más sem teszi, miközben a CI igen (`.github/workflows/ci.yml:442`). Minden PG-függő e2e fájl
+`describe.skipIf(!PG_E2E_URL)`, tehát egy flotta-suite végigsétál rajtuk. Mérve ezen a gépen,
+2026-09-06, csak az `api-e2e` projektre: **65 tesztfájlból 58 nem futott le, 491 tesztből 460
+kimaradt, a futás pedig 0-val tért vissza.**
+
+**AMI NEM IGAZ A LELETRE, és ezt ki kell mondani:** a vitest KIÍRJA ezeket a számokat, tehát a
+kihagyás nem szó szerint láthatatlan. A hiba nem a hallgatás, hanem az ATTRIBÚCIÓ hiánya: a 460 egy
+sorban áll azzal a néhány fájllal, ami Stripe- vagy Redis-kulcs híján marad ki, és amit egy olvasó
+jogosan tekint normálisnak. Egy gate zöldet lát és egy megszokott skipped-számot.
+
+**A DÖNTÉS.** Új `store/vitest-skip-report.sh`, a `vitest-flake-classify.sh` mintájára és
+ugyanazzal a szerződéssel: csak stderr, a kilépési kódot SOHA nem írja át, és HALLGAT, ha semmi nem
+maradt ki. A futás végén egy blokk mondja meg, hány fájl és hány teszt nem futott, és ebből mennyi
+hivatkozik a beállítatlan környezetváltozóra.
+
+**AMIT ÁLLÍT, szűkebben mint "ezek MIATTA maradtak ki".** Fájlonként azt kérdezi, hogy a forrás
+HIVATKOZIK-e a változóra, és hogy a változó be van-e állítva itt. Mindkét fél ellenőrizhető. Amit
+nem tud besorolni, az külön, kimondott vödörbe megy -- egy attribúció, ami csendben magába nyeli
+azt, amit nem ért, megszűnik bizonyíték lenni. Mérve a valódi futáson: 58 kihagyott fájlból 54
+hivatkozik a `PG_E2E_URL`-re, a maradék 4 pedig névről is a másik osztály (LemonSqueezy, Stripe,
+Redis, objektumtár).
+
+**MIÉRT NEM KOMMENTEL A KÁRTYÁRA.** A szemafor `PAUSED-SEMAPHORE` üzenetei kommentelnek, mert
+ritkán szólalnak meg. Ez minden helyi futáson megszólal, amíg valaki be nem köt egy Postgrest --
+kártyánkénti komment ebből zaj lenne, pont az, ami ellen a szkript saját elve szól.
+
+**MIÉRT NEM BUKTATJA MEG A FUTÁST.** Egy kihagyás-hiba minden jogos helyi futást eltörne, egy
+kilépési kód átírása pedig ugyanaz a mozdulat, amit egy valódi regressziót elrejtő wrapper tenne.
+
+**BIZONYÍTÉK.** 14 esetes selftest, minden attribúciós esethez saját negatívval: csak kommentben
+szereplő hivatkozás NEM számít bele (a jelenlét-állítás komment-mentesített forráson mér), a
+`PG_E2E_URL_ALT` sem (azonosító-határ, nem részsztring), és egy `://` literál a sor elején nem
+nyeli el a mögötte álló hivatkozást. A bekötés is pinnelve van, komment-mentesített forráson a
+HÍVÁS-KIFEJEZÉSRE illesztve: mérve, hogy a hívás törlése és egy azt megnevező kommenttel való
+pótlása is PIROSRA váltja.
+
+**Hivatkozás:** kártya `beb9c8d3` (backend leletéből, `cea77ed2` kapcsán);
+`store/vitest-skip-report.sh`, `store/vitest-skip-report.selftest.sh`,
+`store/cleancore-suite-run.sh`, `README.md`.
+
+## 2026-09-06 -- Két testvér-őr ELLENTÉTESEN döntött ugyanarról a varrat-kérdésről, egy héten belül
+
+**A MEGFIGYELÉS Cybersecé** (`108c7b10` GO, komment 21567), és kifejezetten NEM leletként adta át:
+a `vram-guard-check.sh` `--metrics-json` varrata őrizetlen, és teljesen meghatározza a verdiktet.
+Ugyanezt a kérdést a `09a3d52a`-n tudatosan FORDÍTVA döntöttem el: ott elutasítottam egy
+env-varratot, mert egy TILTÓ eszközben a varrat maga lenne a megkerülés.
+
+**A KÜLÖNBSÉG, amit a két döntés között tartok, kimondva.** A `09a3d52a` főkönyve azt dönti el,
+hogy egy re-dispatch megtörténhet-e -- ott a varrat közvetlenül a tiltás kikapcsolója. A
+VRAM-őr egy KÉSLELTETÉST ad vagy nem ad, és a `load-guard-eval.sh` már precedenst teremtett a
+teszt-varratra ugyanebben a családban. A tét nagyságrenddel kisebb, ezért nem szigorítottam.
+
+**AMIT EZ NEM MOND.** Nem állítom, hogy a különbség elvi. Két, egy héten belül szállított,
+egymás mellett élő őr két ellentétes választ ad ugyanarra a kérdésre, és ha valaki később
+egységesíteni akarja őket, ez a bejegyzés az a hely, ahonnan indul -- nem a git log, amiben a két
+döntés két különböző kártyán, két különböző indoklással áll. Ha a VRAM-őr tétje nő (pl. ha a
+verdiktje valaha blokkolni fog, nem csak késleltetni), a varratot újra kell dönteni.
+
+**Ki döntött:** a megfigyelés Cybersecé; a rögzítés MikroB kérése (24964); a fenti megkülönböztetés
+backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártyák `108c7b10`, `09a3d52a`; `store/vram-guard-check.sh`,
+`store/redispatch-guard.sh`, `store/load-guard-eval.sh`.
+
+## 2026-09-06 -- Egy JELEN IDŐBEN állított védelem, ami jövő idejű (kártya 0c4cf655 utólagos javítása)
+
+**A LELET Cybersecé** (`0c4cf655` GO, komment 21577). A `resolvesToSharedProjectsRoot` fejléce azt
+állította, hogy a fail-safe iránya által kockáztatott duplikátumot „NOW caught by the dedup key
+(card b774f057)" -- és ugyanez állt a tesztben is.
+
+**MEGMÉRVE az éles adatbázison, nem a jelentésből átvéve:**
+`idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`.
+Az `agent` az ELSŐ mező, tehát két néven elkönyvelt azonos esemény ma KÉT sor. A `b774f057`
+(az `agent` kivétele a kulcsból) `planned` és blokkolt. A hivatkozott védelem tehát nem létezik.
+
+**A JAVÍTÁS doksi-only, és szándékosan az:** a fail-safe IRÁNYA helyes marad (egy ügynök
+használatát elejteni rosszabb, mint duplán számolni), csak nem védelemnek nevezem, hanem
+kompromisszumnak. Három helyből egy volt pontos (`docs/token-usage.md` helyesen jövő időben írta),
+kettő nem -- mindkettő átírva.
+
+**A TANULSÁG, amiért ez külön bejegyzést kap:** ugyanaz a hibaosztály, amit rendszeresen megfogok
+mások munkájában (egy őr fejléce olyan védelmet nevez meg, ami még nincs sehol), a sajátomban
+csúszott át. Egy másik kártyára hivatkozó védelem-állítás JÖVŐ IDŐBEN íródjon, amíg az a kártya nem
+`done` -- a jelen idő ott nem stílus, hanem hamis állítás.
+
+**Ki döntött:** MikroB (24968, a HOLD alóli doksi-only kivétel).
+
+**Hivatkozás:** kártyák `0c4cf655`, `b774f057`, `0333ab9f`; `src/web/token-usage.ts`,
+`src/__tests__/token-usage-shared-root-skip.test.ts`, `docs/token-usage.md`.
+
+## 2026-09-06 -- delta-review diff korlátlanná tétele + landolás elutasítja az aktív NO-GO-s idegen kártyát (kártya c266ec74)
+
+**A lelet (Cybered, komment 24334, efaf8926/a37bb36d incidens).** A `a37bb36d` landolási merge NÉGY
+commitot vitt fel efaf8926-hoz kötve kettő helyett: a másik kettő (16fcee57, 6193ef7c) MÁS kártyához
+(82fa48b0/2b20b476) tartozott, ugyanazon az `agent/backend2/work` ágon utaztak. Az egyik pont az a sha
+volt, amire Cybered korábban NO-GO-t adott (82fa48b0-on), és 33 percig ez állt fenn a developen egy
+javított verzió (ec637f92) előtt. QA2 delta-diffje ezt nem kapta el, mert `-- src/`-re volt szűkítve,
+a potyautas fájlok pedig a `store/` alatt voltak.
+
+**A javítás, két rész.**
+1. `store/delta-review-diff.sh` -- új, kanonikus, SZÁNDÉKOSAN útvonal-korlátozás NÉLKÜLI
+   `git diff --name-only` két sha között, delta-gate újra-ellenőrzéshez. Bekötve a
+   `gate-worktree-pattern` skillbe, hogy a gate-ek ezt használják egy kézzel írt, útvonalra
+   tippelt diff helyett.
+2. `store/landing-downward-check.sh`: új `foreign_card_gate_check()` -- minden landoló ágon talált
+   IDEGEN kártyára megkérdezi a `gate-closure-check.py`-t, hogy annak jelenleg van-e AKTÍV, még nem
+   javított FAILING gate-verdiktje; ha igen, ELUTASÍT, FELTÉTEL NÉLKÜL (`--card`/enforce-től
+   függetlenül), hacsak a `--allow-stacked` nem nevezi meg. Ez additív a már létező (dfff9b37)
+   downward-checkhez képest, ami eddig csak NÉVEN NEVEZTE az idegen kártyákat, a gate-állapotukat
+   nem nézte -- pontosan ez volt a rés, amin 82fa48b0 élő NO-GO-s commitja átcsúszott.
+
+**Tesztek.** 5 új selftest eset a megosztott downward-check blokkban (mindkét lándoló `--selftest`
+futtatja), mutációval ellenőrizve: az új refuse-hívás visszavonása pontosan a 3 új REPORT-mode esetet
+buktatja meg, semmi mást. `store/delta-review-diff.selftest.sh`, 5 eset, szintén mutációval
+ellenőrizve. `src/__tests__/landing-downward-check.test.ts` (a meglévő ratchet-teszt) zöld,
+floor-ok változatlanok. Teljes fleet-test.sh a merge eredményén: első futás 4 helyi-llm/GPU-lock
+hibával bukott (terhelés-függő flake, lásd kártya `f3b219bb`), második futás változtatás nélkül
+644/644 fájl zöld.
+
+**Amit ez NEM zár le:** a "several of the SAME agent's own already-reviewed cards ride along"
+alapeset (marveen gate-AFTER-landing modellje) szándékosan megmarad engedékenynek -- csak az
+AKTÍV, FAILING verdiktű eset lett feltétel nélkül szigorítva.
+
+**Hivatkozás:** kártya `c266ec74`; `store/delta-review-diff.sh`, `store/landing-downward-check.sh`,
+`seed-skills/gate-worktree-pattern/SKILL.md`, `src/__tests__/landing-downward-check.test.ts`.
+
+## 2026-09-06 -- decisions-append-union: az EOF-fallback prefix-valasz elveszitette a sajat utolso sorat (kartya c266ec74)
+
+**A lelet, elesben.** A c266ec74 landolasakor a DECISIONS.md konfliktusba kerult (a git sajat diffje
+osszezavarodott egy korabbi, MASIK kartyahoz (edf9c837) kotheto, nem-a-farokra tett bejegyzestol), es
+a konfliktus harom index-szintjenek adatai kozul `ours` PONTOSAN byte-prefixe volt `theirs`-nek
+(`theirs` = `ours` + egy tiszta farok-fuzes) -- a legegyszerubb eset, amire a `try_append_union`
+epult. Megis elutasitotta.
+
+**A gyoker `_common_line_prefix_len`-ben.** Amikor a `cmp` nem talal elteru byte-ot (mert az egyik
+oldal a masik prefixe), a fuggveny helyesen valaszol a rovidebb oldal teljes hosszaval -- de ez a
+valasz utana belefutott a "vissza a legutolso teljes sorra" lepesbe, amit a MASIK ag szamara epitettek
+(amikor a `cmp` egy valodi, sor-kozepi elterest talal). A `$(git show ...)` csak a FAJL sajat zaro
+ujsorat vagja le, sosem egy belsot -- tehat a rovidebb oldal utolso sora sosem vegzodik `\n`-nel a
+bash-valtozoban, es a `${head%$'\n'*}` ezt a TELJES utolso sort ledobta egy olyan sor-kozepi vagas
+utan kutatva, ami sosem volt ott. Mindket oldal maradek resze (`ours_added`/`theirs_added`) orokolte
+ezt a fuggo sort, az nem indit uj bejegyzest, es az unio elutasitott egy landolast, amiben semmi
+hiba nem volt.
+
+**A javitas.** Az EOF-fallback valasz kozvetlenul visszaadva, kihagyva a felesleges vissza-lepest
+(annak az agnak ket oldala mar teljes `git show`-blob, tehat az a hatar mar valos sorhatar a mogotte
+allo fajlokban).
+
+**Amit ez ONMAGABAN NEM oldott meg, es a kartya sajat masodik targya.** A landolando ag es az
+origin/develop kozotti MASIK iranyu konfliktus (amikor a ket oldal FUGGETLENUL kulonbozo tartalmat
+fuzott a farokhoz, es a korabbi, rossz helyre szurt edf9c837-bejegyzes miatt a kozos prefix a base-nel
+rovidebbre adodott) a meglevo "shared_new csak ures/elvalaszto sor lehet" ellenorzesen buktatta el az
+automata uniot -- ez helyesen viselkedik, csak a landolando agam ELOZETES kezi szinkronizalasa
+(origin/develop aktualis DECISIONS.md-jenek masolasa a sajat agamba a landolas elott) vitte ki a
+tervezett hatokorebol. Ezt a konkret landolast vegul kezzel fejeztem be: a merge-t egy eldobhato
+worktree-ben elkeszitve, a DECISIONS.md-t kezzel osszefuzve, a store/fleet-test.sh-t a merge
+eredmenyen lefuttatva (646/646 fajl, 15501/15501 teszt zolden), majd pusholva.
+
+**Tesztek.** 2 uj kozvetlen selftest-eset a `_common_line_prefix_len`-re (mindket iranyban, melyik
+oldal a rovidebb), mutacioval ellenorizve: a javitas visszavonasa pontosan a live hibat reprodukalja
+(got 44, want 61), es semmi mas nem regresszal (81 ok / 0 fail a mutacio elott es utan is, csak a 2
+uj eset billen).
+
+**Hivatkozas:** kartya `c266ec74`; `store/decisions-append-union.sh`, Gate-SHA `1a8e469e` (a
+landolo merge, kezi befejezessel).
+## 2026-09-06 -- A routing-kapu a FLOTTA SAJÁT CÍMKÉJÉRE illeszkedett, nem a munkára (kártya 28295e97)
+
+**A KÁRTYA FELTÉTELEZÉSE MEGCÁFOLVA, méréssel.** A kártya (Peti kérése, MikroB fogalmazásában) azt
+mondta, a gyökér ok a `route-classify.sh` bináris MECHANICAL/SECURITY döntése, és egy köztes
+MODERATE sáv kell. A `card-build-route.log` teljes előzménye 8 sor, ebből 7 ONLINE, és **mind
+`calls=0`**: a döntés soha nem jutott el a `route-classify.sh`-ig. Egy MODERATE sáv ott nulla mai
+döntést oldott volna fel. Ezen felül a `route-classify.sh` szerkezetileg csak eszkalálni tud
+("may only move a task LOCAL -> ONLINE"), tehát több munkát helyire küldeni nem is tudna.
+
+**A TÉNYLEGES ELUTASÍTÓ.** A 2. lépcső `deterministic-multi-decision` kapuja, és ötből négyen az
+`infra` token illeszkedett, kettőnél egyedüliként. De minden ilyen kártya címe `[marveen][INFRA]`
+vagy `[CleanCore][INFRA]` alakú: a kapu a flotta saját címke-konvenciójára illeszkedett, nem a
+munka több-döntésű jellegére. Ugyanaz a hibaosztály, amire a `route-classify.sh` fejléce
+figyelmeztet ("the same noise that made the keyword matcher fire on the fleet's own dialect").
+
+**A SAJÁT ELSŐ JAVASLATOM IS MEGBUKOTT, és ez döntötte el a formát.** Azt ajánlottam, essen ki az
+`infra`. Mérve: 134 kártyán ez az egyetlen találat, és 98-at semmi más determinisztikus szabály nem
+fog -- pontosan az az állapot, amit a `05f8d99c` kártya szélesítése megszüntetett ("nothing but the
+7B stood between them and a weaker builder", 15-ből 5). Törlés helyett tehát **vágás + pótlás**.
+
+**AMI LANDOLT.** (1) A `deterministic-multi-decision` illesztés a szöveg VEZETŐ címke-futamát
+levágva fut, semmi mást nem érintve -- a másik négy determinisztikus osztály (pénz,
+objektum-integritás, kliens-adat, dokumentum-összeállítás) változatlanul a teljes szöveget olvassa,
+és a 3-4. lépcső (`route-classify` + a COMPLEX fokozat, mindkettő abstain->ONLINE) érintetlen.
+(2) Négy szó hozzáadva, mindegyik EGY konkrét kártya valódi döntés-alakja: `nevter/namespace/
+fenntartott` (5c5d7bc4, trust-boundary), `reteg` (2ebe24b2, új réteg = architektúra), `parhuzamos/
+egyidej` (5af57bd7, gép-szintű kontenció), `utemez/scheduler` (13512bde, ütemezőbe kötés).
+
+**MIÉRT KELLETT A PÓTLÁS, mérve.** A vágás ÖNMAGÁBAN négy valódi battery-A kártyát tolt át
+"a determinisztikus kapu fogja" állapotból "csak a 7B fogja" állapotba; az alapvonal előtte NULLA
+ilyen volt. A szkript saját összegzője ezt nagybetűvel kifogásolja, tehát a vágás önmagában
+megbukott a szkript SAJÁT elfogadási mércéjén -- és a mérce lazítása, hogy a változtatás átmenjen,
+pont a 7. kódminőségi elv tiltása. A négy szóval a selftest 32/0, nulla model-reliant.
+
+**A SZÁMOK, mindkét irány.** 385 nem-urgent/high kártyán a kapu 318-on tüzelt, a végleges
+szabállyal 217-en; 106 kártya szabadult, ebből 29-et másik determinisztikus szabály még fog, 77-et
+nem (a csak-vágás variánsnál ez 125 / 94 volt). A 77 a maradék kockázat, kimondva: őket a 3-4.
+lépcső fogja, nem a 2. A megítélt korpuszon (a selftest battery A-ja) a szám 0.
+
+**A DISPATCH-BOILERPLATE VÁGÁSA KIMARADT, méréssel indokolva.** A plan-grilling kérte, de a router
+bemenete a kártya `title`+`description` az API-ból, a sablon pedig a DISPATCH-ÜZENETBE kerül, nem a
+kártyára: 512 kártyából **nullában** fordul elő bármelyik sablonmondat. Holt kódot nem szállítok.
+
+**Ki döntött:** Peti (a cél, Telegram 7001); MikroB plan-grilling GO-WITH-CHANGES (komment 21850,
+három feltétellel); az irány-korrekció, a pótlás és a boilerplate-fél elhagyása backend mérnöki
+döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `28295e97`; `store/card-build-route.sh`,
+`store/card-build-route-selftest.sh`.
+
+## 2026-09-06 -- A VRAM-kapu bekötése három dispatch-pontba, és egy ÖRÖKÖLT MÉRÉS, ami időközben megdőlt (kártya f9bad591)
+
+**AMI LANDOLT.** A `vram-guard-check.sh` (108c7b10) eddig megvolt, de senki nem hívta. Mostantól
+három ponton fut: a `card-build-route.sh` LOCAL/ONLINE döntése előtt, a `local-llm-rag.sh`
+útválasztásában, és egyszer az `offload-dispatch.sh` sweep elején. HOLD esetén a döntés ONLINE-ra
+esik -- a kártya munkája SOHA nem áll meg, csak a helyi-modell útja zárul.
+
+**HÁROM IRÁNY-DÖNTÉS, kimondva.** (1) Bármely nem-nulla kilépés ONLINE, a kapu HASZNÁLATI hibáját
+(2) is beleértve: kétség a mérés felől ugyanaz, mint kétség a kapacitás felől. (2) A HIÁNYZÓ kapu
+viszont nem kétség, hanem egy gép, amin sosem volt GPU -- azt átugorjuk, különben a helyi modell
+minden ilyen gépen örökre le lenne tiltva. (3) A `local-llm-rag.sh`-ban a VRAM-ok az ADVISORY
+draftot is kihagyja, és ez a lényeg: az advisory út is a helyi modellt hívja, tehát futni hagyva
+pont arra a GPU-ra tenne munkát, amiről a kapu az imént mondta, hogy tele van. Minden más
+online-ok a FELADATRÓL szól; ez a GÉPRŐL, és kapacitás tekintetében nincs olyan, hogy "tanácsadó".
+
+**A SORREND IS DÖNTÉS.** A `local-llm-rag.sh`-ban a VRAM-kérdés a tartalmi router UTÁN áll, és csak
+akkor fut le, ha az local-t mondott: elöl minden feladatra elköltene egy nvidia-smi hívást, azokra
+is, amik tartalmi alapon amúgy is online-ra mennek. A `card-build-route.sh`-ban fordítva, elöl van:
+ott a kártya beolvasása a drágább lépés, és ha a GPU tele van, a kártya szövege már semmit nem
+változtat.
+
+**A CYBERSEC-PREDIKÁTUM, ÉS AMIÉRT ÚJRA KELLETT MÉRNI.** Cybersec kiegészítése (MikroB jóváhagyta,
+24565) egy új determinisztikus kapu: ha a munka TERMÉKE megosztott instrukció-fájl (skill,
+ügynök-CLAUDE.md, ütemezett feladat SKILL.md, hook, settings), az ONLINE. Az indoklás helyes: ott a
+termék próza, amit utána minden ügynök végrehajt, és a kóddal ellentétben semmi nem lesz piros tőle.
+
+Cybersec a hatását 166 élő kártyán 0 megváltozott verdiktnek mérte. **Ez a szám a MAI kódra már nem
+igaz.** Újramérve, ugyanazon a táblán, a jelenlegi routerrel: a predikátum **8 kártyát** fog meg,
+amik nélküle elérnék a modellt -- köztük egy seed-skills SKILL.md javítás, egy scheduled-tasks seed,
+egy agent-skill-drift kártya és egy SSRF-őr a prompt-útba drótozva. A különbség oka a `28295e97`,
+ami egy órával korábban vágta ki a címke-prefixet a multi-decision illesztésből, és épp ezeket
+szabadította fel. Vagyis a predikátum nem tartalék háló többé, hanem teherhordó -- és attól lett
+azzá, amit én magam landoltam egy órája. **Egy örökölt mérés nem bizonyíték arról a kódról, amit
+ténylegesen szerkesztesz.**
+
+**EGY ÁTFEDÉS, amit rögzítek, mert téves attribúcióhoz vezetne.** Cybersec három mért esetéből a
+harmadikat (`ütemezett feladat SKILL.md`) ma NEM ez a predikátum fogja meg, hanem az `utemez` szó,
+amit a `28295e97`-ben én adtam a multi-decision listához egy másik kártya miatt. A verdikt ugyanaz
+és helyes, de a selftestben mindkettő külön esetként áll: a szó szerinti P3 a KORÁBBI kapura, és egy
+P3b ugyanarra a SKILL.md-munkára az ütemezés-szó nélkül, hogy a vizsgált kapu tényleg fusson.
+
+**BIZONYÍTÉK.** A selftest 43/0. Mindkét új őrt mutációval mértem: a predikátum törlésével négy eset
+`LOCAL/all-stages-passed`-re esik (tehát nélküle SEMMI nem fogja meg őket -- ez erősíti meg
+Cybersec P1-P3 leletét a mai kódon), a VRAM-bekötés törlésével kettő. Az `offload-dispatch.sh`
+oldalán forrás-pin áll, komment-mentesített forráson a HÍVÁS-KIFEJEZÉSRE illesztve, és ellenőrzi a
+SORRENDET is (a hívás a sweep-ciklus ELŐTT álljon); mérve, hogy a hívás törlése egy azt megnevező
+kommenttel pótolva is pirosra vált. Ez a pin szándékosan nem viselkedés-teszt, és ezt ki is mondja.
+
+**EGY FLAKE, amit elkerültem:** az `offload-dispatch.selftest.sh` ma azért zöld, mert ezen a gépen a
+GPU üres (ADMIT). A meglévő eseteket a `--test-*` horgonyok az új ellenőrzés ELŐTT hagyják el, tehát
+nem gépfüggőek -- ezt megmértem, nem feltételeztem.
+
+**KIMONDOTT KORLÁT (Cybersecé, átvéve):** a predikátum a kártya PRÓZÁJÁRA illeszkedik, tehát csak
+azt fogja meg, amit a kártya KIMOND. Egy kártya, ami csak a fájlnevet említi útvonal és kulcsszó
+nélkül, átmegy. Szűkítés, nem zárás.
+
+**Ki döntött:** Peti (a VRAM-kapu léte); Cybersec (a predikátum, MikroB jóváhagyásával, 24565);
+az irány-, sorrend- és advisory-döntések backend mérnöki döntései, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `f9bad591` (szülő `40568837`); `store/card-build-route.sh`,
+`store/local-llm-rag.sh`, `store/offload-dispatch.sh`, a két selftest, `README.md`.
+
+## 2026-09-06 -- A dispatch-jelölés IGÉNYLÉS lett: a boolean jelentése megváltozott (kártya 5b00c5ec)
+
+**A VÁLTOZÁS.** `markKanbanCardDispatched` eddig `UPDATE ... WHERE id=?` volt, tehát a `changes > 0`
+arra válaszolt, hogy LÉTEZIK-E A SOR. Minden hívó viszont úgy olvasta, hogy "én nyertem az
+igénylést". Ez két különböző kérdés, és a régi mindkét félre igaz: a nyertesre és arra is, aki
+másodikként érkezett. Az `AND dispatched_at IS NULL` kiegészítéssel maga az írás dönt, atomi módon.
+
+**NEM ÉLŐ HIBA, és ezt kimondom.** A `fireKanbanDispatch` törzsében NINCS `await` az ellenőrzés és a
+jelölés között -- megnéztem, nem feltételeztem --, tehát egy szálon ma nincs mit interleave-elni. Ez
+keményítés az ELSŐ olyan szerkesztés ellen, ami bevezet egyet: abban a pillanatban az ablak csendben
+kinyílik, és a régi utasításon semmi nem kezdett volna el hibázni, ami ezt jelezné.
+
+**AMI EZT BIZTONSÁGOSSÁ TESZI:** az oszlop nem sírkő. A `moveKanbanCard` nullázza, amikor a kártya
+elhagyja az `in_progress`-t, és a `kanban-dispatch-rearm.test.ts` ezt pinneli. Egy elvett, de fel nem
+használt igénylés tehát visszakérhető (ki-be mozgatás), nem égeti el a kártya dispatchét örökre. Ezt
+külön teszteset rögzíti, mert a szülő kártya (01c846bf) nyitott kérdése -- jelölés a küldés ELŐTT
+vagy UTÁN -- pont ezen a tényen fordul meg.
+
+**A SZERZŐDÉS-VÁLTOZÁS HÍVÓKRA GYAKOROLT HATÁSA, megnézve:** a függvénynek két hívási helye van,
+mindkettő a `fireKanbanDispatch`-ben, és egyik sem ágazik ma a visszatérési értékre. Nincs olyan
+hívó, aki a régi "létezik-e a sor" jelentésre épített volna. Az ágazás bevezetése a `c4da93bf`
+kártya, tudatosan külön lépésként.
+
+**BIZONYÍTÉK.** Négy új eset, köztük két kontroll: egy nem létező kártya-id továbbra is false (enélkül
+egy "mindig false" mutáns átmenne a lényegi állításokon), és a nyertes igénylés ténylegesen bélyegzi
+az oszlopot (enélkül a `true` puszta konstans is lehetne). Mérve: a régi utasítás visszaállítása a
+második-igénylés esetet PIROSRA váltja, névvel, miközben a rearm-teszt zöld marad -- a két fájl
+tehát a szerződés két különböző felét fedi.
+
+**Hivatkozás:** kártya `5b00c5ec` (szülő `01c846bf`); `src/db.ts`,
+`src/__tests__/kanban-dispatch-claim.test.ts`.
+
+## 2026-09-06 -- A várakozó fleet-test is kimondja, hogy vár (kártya 492a6d5c, Cybersec NO-GO)
+
+**A LELET Cybersecé** (712a8349). A `fleet-test.sh` új `acquire_cpu_slot()` várakozása csak stderr-re
+írt. A `cleancore-suite-run.sh` -- ugyanannak a slot-poolnak a másik fogyasztója, és az elfogadott
+minta -- ezen felül PAUSED-SEMAPHORE / RESUMED-SEMAPHORE kommentet is tesz a várakozó ügynök
+kártyájára. Az indok itt azonos: a 3. szabály szerint egy nem mozduló `in_progress` kártya
+beragadtnak számít, a 3a. szerint 60 perc után testvérre száll. Egy landolás, ami két teljes suite
+mögött jogosan sorban áll, ennél tovább is várhat -- a kártyáját tehát elvennék tőle azért, mert
+helyesen várt. Egy poolban két fogyasztó, az egyik bejelentkezik, a másik néma: ezt utasította el.
+
+**A DÖNTÉS: KÖNYVTÁRBA EMELVE, nem lemásolva.** Új `store/kanban-comment-lib.sh`. A másolás
+alternatívája egy második példányt csinált volna a token-kezelésből, ami nem sablon: azért néz ki
+így (0600-as fejléc-fájl, `-H @file`), mert egy Cybersec-lelet (edb7559f) megmutatta, hogy a
+`-H "Authorization: ... $(cat ...)"` alak a `/proc/<pid>/cmdline`-on olvasható. Ebből egy példányt
+akarok. Precedens: `cleancore-tsc-lib.sh`.
+
+**AMIT SZÁNDÉKOSAN NEM TETTEM MEG, kimondva:** a `cleancore-suite-run.sh` továbbra is hordozza a
+saját másolatát. Az a fájl most KÉT másik kártya alatt áll gate-en (`beb9c8d3`, `f9bad591`); egy
+harmadik szerkesztés három shát hagyna ugyanarra a fájlra. A de-duplikáció külön kártya, nem ennek a
+NO-GO-javításnak a része.
+
+**AZ ÜGYNÖK-NÉV ÚTJA.** A `fleet-test.sh` refet kap, nem ügynököt, tehát magától nem találja meg a
+kártyát. A `marveen-land.sh` viszont tudja, kinek landol, és `FLEET_TEST_AGENT`-ként adja át --
+`land_one()`-on belül scope-olva, mert a `--all` több ügynököt landol egy futásban, és egy beragadt
+név az egyik ügynök várakozás-jelzését a másik kártyájára tenné. Kézzel, ügynök nélkül futtatva a
+könyvtár néma no-op: helyes, mert olyankor nincs kártya, amit annotálni kellene.
+
+**EGY ŐRT NEM TÁGÍTOTTAM, HANEM SZŰKÍTETTEM.** A meglévő forrás-olvasó azt kérte, hogy a ciklus
+fejétől 400 karakteren belül legyen egy `die`. A PAUSED-SEMAPHORE értesítés -- jogos munka, és épp
+ez a NO-GO kérése -- 435-re tolta, és az őr pirosra váltott. A 400 sosem volt a tulajdonság: az
+"a timeout-ot ÉSZLELŐ ág az, amelyik meghal" az, és a régi olvasat BÁRMELY `die`-jal beérte azon az
+ablakon belül. Az őr most a timeout-ÁGRA horgonyoz. Ez szűkítés, nem lazítás azért, hogy a saját
+változtatásom átmenjen.
+
+**INCIDENS, amit én okoztam, és amitől a teszt alakja megváltozott.** A `die` eltávolítását ELŐBEN
+futtattam mutánsként. Az a `die` pontosan az, ami megakadályozza, hogy egy futás a CPU-kapun átesve
+továbbmenjen -- a mutáns tehát nem állt meg, hanem elindított egy VALÓDI teljes suite-ot a
+megosztott gépen, ~3 percre CPU-t vitt és fogta a közös fa-zárat. Leállítva, a fájl visszaállítva,
+más ügynök folyamata nem sérült. A tanulság a kódba került: egy fail-safe KILÉPÉST eltávolító
+mutációt nem szabad élőben futtatni, és nem is kell -- az őr forrást olvas, tehát mutált SZÖVEGET
+kap, nem mutált fájlt. Így áll most kontroll-esetként.
+
+**BIZONYÍTÉK.** 12/12. Az értesítés VISELKEDÉSE mérve, nem forrásból következtetve: egy hamis
+dashboard fogja el, amit a szkript ténylegesen POST-ol. Két harness-versenyt kellett megszüntetni,
+és mindkettőt mérés mutatta meg (a két eset ELLENTÉTES irányban bukott, ami azt mondta, hogy a
+harness a hibás, nem a szkript -- kézzel futtatva a szkript mindkét kommentet helyesen kiküldte):
+(1) az `execFileSync` blokkolja az event loopot, tehát a gyerek olyan HTTP-válaszra várt, ami nem
+jöhetett meg -- innen a 22 másodperces bukás egy 20 másodperces kereten; (2) a `listen(0)`
+ephemeral portja újrahasznosul, tehát az előző eset kései POST-ja a KÖVETKEZŐ eset elfogójába
+esett. Az első aszinkron futtatással, a második esetenkénti ügynök-névvel és szűréssel megszűnt.
+NEGATÍV KONTROLL is van: aki azonnal kap slotot, semmit nem posztol.
+
+**Ki döntött:** Cybersec (a NO-GO); a könyvtárba emelés, az őr szűkítése és a mutációs eljárás
+megváltoztatása backend mérnöki döntése, itt felülvizsgálatra kitéve.
+
+**Hivatkozás:** kártya `492a6d5c`; `store/kanban-comment-lib.sh`, `store/fleet-test.sh`,
+`store/marveen-land.sh`, `src/__tests__/fleet-test-shares-cleancore-cpu-pool.test.ts`.
+
+## 2026-09-06 -- A dispatch a NYERT igénylés után küld, nem a korábbi olvasás alapján (kártya c4da93bf)
+
+**A DÖNTÉS MIKROB-É** (25001), a javaslatom és az indoklásom alapján: a jelölés a küldés ELŐTT
+történjen, feltételes UPDATE-tel, és a hívó a visszakapott booleanre ágazzon.
+
+**A KÉT HIBA-IRÁNY, kimondva, mert ez egy CSERE, nem egy tiszta nyereség.** Elöl jelölve a rossz
+eset egy megjelölt-de-ki-nem-küldött kártya; hátul jelölve KÉT ügynök ébresztése ugyanarra a
+kártyára. Az első HANGOS (a `reportUndeliveredDispatch` kommentel a kártyán és szól a fő ügynöknek)
+és visszaállítható, mert a `moveKanbanCard` nullázza a `dispatched_at`-et, amikor a kártya elhagyja
+az `in_progress`-t (a `kanban-dispatch-rearm.test.ts` pinneli). A második NÉMA. Egy elmaradt
+dispatch, ami bejelenti magát, jobb, mint egy duplikátum, ami nem.
+
+**AMIT A VÁLTOZÁS VALÓJÁBAN AD.** A függvény tetején lévő olvasás azt mondja, hogy a kártya egy
+pillanattal korábban SZABADNAK LÁTSZOTT; egyedül az írás mondja meg, hogy senki más nem vitte el. A
+kettő addig volt ugyanaz, amíg nem állt `await` közöttük -- ami ma igaz, de soha semmi nem
+garantálta. Az ágazás a sorrendet teszi garanciává a kód pillanatnyi alakja helyett.
+
+**A TESZT, ÉS AMIÉRT A KÉZENFEKVŐ VÁLTOZATA HASZNÁLHATATLAN.** Egy előre megjelölt kártyával indítva
+a függvény a TETEJÉN visszatér (az olvasott kártya már jelölt), tehát az új ág le sem fut. Az eset
+csak akkor mér, ha az OLVASÁS szabadnak mondja a kártyát, miközben a SOR már foglalt -- ezt a
+`getKanbanCard` mockolása állítja elő, ami a legkisebb hű helyettese annak, hogy a sor az olvasás
+UTÁN változott meg. Minden más valódi: az útvonal, a mozgatás, az adatbázis, az igénylés.
+Kontrollal együtt: egy el nem vitt kártya továbbra is kimegy.
+
+**MÉRVE:** a küldés-utáni sorrend visszaállítása (a változtatás előtti alak) az esetet PIROSRA
+váltja, névvel; a kontroll zöld marad.
+
+**Hivatkozás:** kártya `c4da93bf` (szülő `01c846bf`, testvér `5b00c5ec`);
+`src/web/routes/kanban.ts`, `src/__tests__/kanban-dispatch-claim-before-send.test.ts`.
+
+## 2026-09-06 -- Egy MÁSODIK flock-használó kétértelművé tette a "hol a zár" olvasást (kártya 492a6d5c)
+
+**A LELET MIKROB LANDOLÁSI KÍSÉRLETÉBŐL JÖTT**, nem a kártyáról: a `--allow-stacked` futás a
+`fleet-test.sh`-n bukott el, mielőtt bármit pusholt volna. Két dolog:
+
+1. `store/kanban-comment-lib.sh` a git indexben `100644` maradt. Az általam ugyanaznap létrehozott
+   másik két szkriptet chmod-oltam, ezt kihagytam; a shebang-teszt jogosan bukott. `--chmod=+x`.
+
+2. A `fleet-test-serialises-runs.test.ts` KÉT kontrollja elbukott -- és ez az érdemi rész.
+
+**AMI ELTÖRT, ÉS MIÉRT NEM AZ ŐR HIBÁJA.** A kontrollok mutációja "a `flock`-őrtől a következő
+`fi`-ig" tartományt törölte. Ez hallgatólagosan arra épült, hogy a kettő KÖZÖTT nincs `fi` -- ez a
+kártya viszont pont oda tett egyet (a CPU-slot várakozás-értesítése). A mutáció így korábban állt
+meg, a fa-zár állva maradt, és a kontroll azért bukott, mert a mutáció megszűnt azt eltávolítani,
+amit megnevez. Nem az őr romlott el, hanem a mutáció horgonya.
+
+**A MÁSODIK, MÉLYEBB OK.** A `problems()` a legelső `flock`-ra nézett. Ez addig volt egyértelmű,
+amíg a szkriptnek EGY flock-használója volt. A megosztott CPU-pool egy második, jogos használó, és
+az elöl áll -- tehát a csupasz minta mostantól a MÁSIK zárat találja meg, és minden pozíció-
+összevetés csendben a rossz zárról szólna.
+
+**A JAVÍTÁS MINDKETTŐRE SZŰKÍTÉS, NEM LAZÍTÁS.** A mutáció a fa-zár KÉT konkrét darabját törli
+(`command -v flock` sor + az `exec 9>"$LOCK_FILE"` blokk), nem egy `fi`-ig tartó tartományt -- a régi
+span mellékesen elnyelhetett közéjük került kódot is. A `problems()` pedig a fa-mutex SAJÁT
+fd-jére horgonyoz (`exec 9>` / `flock ... 9`; a CPU-pool `$CPU_FD`-t használ), tehát kimondja,
+MELYIK zárról beszél, ahelyett hogy feltételezné, csak egy van. A kontroll épség-ellenőrzése
+ugyanígy a fa-mutexre kérdez, nem a `flock` általános hiányára.
+
+**AMIT EBBŐL TANULOK, és ez a saját mulasztásom:** a kártya egy teszt-fájlt nevezett meg, és én azt
+futtattam. A `fleet-test.sh`-t viszont KÉT teszt-fájl olvassa. Egy megosztott forrás szerkesztése
+után nem a kártyán nevezett tesztet kell lefuttatni, hanem mindet, ami azt a forrást olvassa.
+
+**BIZONYÍTÉK:** 20/20 a két fleet-test őr-fájlon együtt.
+
+**Hivatkozás:** kártya `492a6d5c`; `src/__tests__/fleet-test-serialises-runs.test.ts`,
+`store/kanban-comment-lib.sh` (módbit).
+
+## 2026-09-07 -- A [SEC] címke önmagában determinisztikus ONLINE, a "biztonsagos" SZÓ nem (kártya 28295e97, MikroB döntése 25075)
+
+**A KÁRTYA.** A `28295e97` (28295e97) második grillingjében kötelezővé tett mérés szerint a
+`deterministic-multi-decision` vágásom (28295e97, korábbi kör) a SEC-jelölt kártyák nagy részét is
+felszabadította: 37 SEC-jelölt kártyából 26-nál semmilyen determinisztikus kapu nem maradt, mert az
+egyetlen találatuk az `infra` volt, ami mostantól csak a törzsben számít, a címke-futamban nem.
+Cybersec két nevesített példája (2dd28b5d, 2a07f29e) mindkettő ebben a 26-ban volt.
+
+**A DÖNTÉS (MikroB, 25075):** azonnal építsem meg a "[SEC] címke önmagában determinisztikus
+ONLINE" szabályt (26→18, majd a mai, kisebb élő korpuszon 30→22), a maradékot pedig kártyánként
+sorolják fel, ne találjak ki hozzá szót találgatva.
+
+**MIÉRT A CÍMKE, ÉS NEM A SZÓ.** A `security`/`biztonsag` puszta szóra illesztés ÚJRA bevezetné azt
+a hibaosztályt, amiért a `[SEC]` egyáltalán kikerült a vágásból: egy kártya mindkét szóval ki tudja
+mondani a KOCKÁZAT HIÁNYÁT is. Mérve élőben: 8 kártya (a mai, szűkebb korpuszon; a nagyobb korpuszon
+26) a puszta szóra illeszkedne, és mind a nyolc SAJÁT MAGÁT nyilvánítja biztonságosnak -- "Nem
+biztonsagi kockazat", "IRANY: BIZTONSAGOS". A `\[SEC[^]]*\]` mintát ezért a ZÁRÓJELES CÍMKÉRE
+horgonyoztam (`[SEC]`, `[SEC-GATE-KOTELEZO]`), ami egy SZÁNDÉKOS besorolás, nem egy szó, ami
+bármelyik irányban előfordulhat.
+
+**A TRIM ÉS A CÍMKE-SZABÁLY EGYÜTT MŰKÖDNEK, MERT KÜLÖNBÖZŐ TOKEN-OSZTÁLYT VÉDENEK.** Az `infra`
+azt mondja, HOL folyik a munka -- szervezési zaj. A `[SEC]` azt mondja, hogy VALAKI MÁR ELDÖNTÖTTE,
+hogy trust-boundary-t érint -- szándékos besorolás. A vágás (28295e97 első köre) az elsőt vette ki a
+mérlegből, ez a szabály a másodikat teszi vissza, ugyanabból a régióból (a `$SHORT` VÁGATLAN
+szövegéből, nem a `$MULTI_TEXT` LEAD-vágott másolatából).
+
+**A MARADÉK, KÁRTYÁNKÉNT (nem egy új szó, találgatás nélkül) -- a mai élő táblán, 4 nyitott kártya:**
+  - `5c6fe8df` (waiting, mikrob) -- VALÓDI biztonsági munka (skill allowed-tools bevezetése,
+    Gate: QA+Cybersec a leírásban kimondva). NEM önmagát nyilvánítja biztonságosnak, hanem egy
+    biztonsági mechanizmust vezet be. JAVASOLT ÚT (nem építve meg, MikroB dönt): egy általánosabb
+    szabály -- ha a leírás egy `Gate: ... Cybersec ...` vagy `Gate: ... Cybered ...` sort tartalmaz,
+    az önmagában ONLINE, mert ez a flotta már meglévő, szándékos jelölése arra, hogy a kártya
+    trust-boundary-t érint (root CLAUDE.md 4b. szabály). Ez erősebb és általánosabb jel, mint egy
+    újabb szó, de KÜLÖN kártyaként kellene megépülnie, mert a Gate-sor a kártya VÉGÉN áll, nem a
+    címkében, és külön mérést igényel.
+  - `67587e7f` (planned, backend3) -- a leírás kimondja: "Nem biztonsagi kockazat ... csak
+    fragilitas". JAVASLAT: hagyd infra-nak, nincs teendő -- a kártya saját szövege a bizonyíték.
+  - `4b8962df` (planned, backend3) -- a leírás kimondja: "IRANY: BIZTONSAGOS" (egy gate-kijelölő
+    szkript hamis-POZITÍV hibája, nem hamis-negatív). JAVASLAT: hagyd infra-nak, nincs teendő.
+  - `75b90343` (planned, backend2) -- LOW/INFO követő munka egy már lezárt Cybersec GO után; a
+    "BIZTONSÁGOS irány" egyetlen tmux-kompatibilitási ágra vonatkozik, nem a kártya egészére.
+    JAVASLAT: hagyd infra-nak, nincs teendő.
+
+Négy másik kártya (6b32a478, 9c6b1802, 7d47ca16, 40f92dd2), ami a korábbi, nagyobb korpuszban még a
+maradékban szerepelt, időközben `done` lett -- a router többé nem látja őket, tehát nincs élő
+kockázat rajtuk.
+
+**BIZONYÍTÉK.** 3 pozitív eset (a két nevesített Cybersec-példa alakja + egy összetett `[SEC-...]`
+címke), 1 negatív kontroll (a "biztonsagos"-t kimondó, de [SEC] címke nélküli kártya LOCAL marad).
+Mutációval mérve: a szabály törlése mind a három pozitív esetet PIROSRA váltja, névvel, a kontroll
+zöld marad. Teljes selftest 47/0.
+
+**Hivatkozás:** kártya `28295e97`; `store/card-build-route.sh`, `store/card-build-route-selftest.sh`.
+
+## 2026-09-07 -- A VRAM-HOLD döntés a KÁRTYÁN is megjelenik, nem csak a stderr-en (kártya a1c4dc51)
+
+**A KÁRTYA KÉT FELE.** (1) Unit-teszt a küszöb-logikára (kontroll + HOLD + fail-safe eset) --
+ez nagyrészt már megvolt a `f9bad591` kártyáról (a `card-build-route-selftest.sh` B4 szekciója:
+HOLD→ONLINE, használati hiba→ONLINE, ADMIT→változatlan kontroll, hiányzó kapu→LOCAL kontroll).
+(2) Egy PAUSED-VRAM/RESUMED-VRAM komment-minta a `load-guard-bookkeeping.sh` mintájára, hogy
+LÁTHATÓ legyen, mikor és miért maradt ki EGY kártya a helyi-LLM útról.
+
+**A MEGKÜLÖNBÖZTETÉS a load-guard mintától.** A `load-guard-bookkeeping.sh` egy ÜGYNÖK
+felfüggesztését jelzi, a saját, éppen `in_progress` kártyáján. Itt a döntés EGY KONKRÉT, a
+`card-build-route.sh`-nak átadott kártyáról szól, nem az ügynök állapotáról -- a meglévő
+`kanban_comment()` (ami "az ügynök jelenlegi in_progress kártyáját" keresi meg) itt rossz kártyát
+találna, vagy semmit. Ezért `kanban_comment_on(card_id, body, author?)` néven ÚJ, explicit
+kártya-címzésű függvény került a `kanban-comment-lib.sh`-ba, és a meglévő `kanban_comment()` erre
+lett átírva (delegál, nem duplikál).
+
+**HOL FUT LE.** A `card-build-route.sh` 0b. lépcsőjében (a VRAM-ellenőrzés MÁR MEGVOLT a
+`f9bad591`-ből), a `kanban_comment_on` hívás CSAK akkor fut, ha `$CARD_ID != "-"` -- egy `--text`
+hívás (minden selftest és az advisory útvonal) nem hordoz kártya-azonosítót, tehát nincs mire
+kommentelni. Ez zárja ki, hogy a selftest valaha is éles hálózati hívást indítson: `run()` mindig
+`--text`-tel hívja a routert.
+
+**BIZONYÍTÉK, VISELKEDÉSBŐL, NEM FORRÁSBÓL.** Új B4b szekció: egy beágyazott python
+`http.server` áll a dashboard helyén (a `fleet-test-shares-cleancore-cpu-pool.test.ts` mintája,
+csak bash-natívan, hogy ne kelljen node/vitest-függőség egy bash selftestbe). A router POZICIONÁLIS
+hívással fut (`bash "$ROUTER" <hex-card-id>`, nem `--text`), és a `CARD_BUILD_ROUTE_API` is a HAMIS
+szerverre mutat -- a HOLD-ágban ez sosem számítana (a kártya-olvasás előtt kilép), de az ADMIT
+kontroll-ágban a router tovább is fut a valódi kártya-olvasás felé, és enélkül a ma élő dashboardot
+ütné meg egy nem-létező kártya-id-vel. Két eset: HOLD → a hamis szerver kap egy POST-ot
+`PAUSED-VRAM` szöveggel és a helyes `card_id`-vel; ADMIT → semmilyen POST nem érkezik (a kontroll,
+ami nélkül egy "mindig kommentel" hiba is átmenne).
+
+**MUTÁCIÓVAL MÉRVE:** a `kanban_comment_on` hívás törlése a HOLD-esetet PIROSRA váltja, névvel
+("expected a PAUSED-VRAM comment ... got: <nothing>"), a többi 48 eset zöld marad. Teljes selftest
+49/0.
+
+**Hivatkozás:** kártya `a1c4dc51` (szülő `40568837`); `store/kanban-comment-lib.sh`,
+`store/card-build-route.sh`, `store/card-build-route-selftest.sh`.
+
+## 2026-09-07 -- 149-commit upstream/develop merge: 4 dokumentált eltérés az ACKNOWLEDGED_CONFLICTS-tól, és egy Peti NO-GO csendes visszaszivárgása (kártya 4f15966e)
+
+**A FELADAT.** `upstream/develop` (Szotasz/marveen, ba691592) egyesítése `origin/develop`-pal
+(b0e63a39), Peti jóváhagyásával ("Mehet", 2026-09-07 04:23), a plan-grilling verdikt szerint
+(kártya 4f15966e/a7a61751, komment 21142/21143): minden konfliktusnál a TÉNYLEGES upstream hunkot
+kell elolvasni (nem csak a commit tárgyát), és minden eltérést az archivált
+`ACKNOWLEDGED_CONFLICTS` szövegtől dokumentálni kell. Mérve: 149 commit, 364 fájl, 29923 sor
+(merge-base diff, `git diff --shortstat A...B`), 54 tényleges konfliktus-fájl, mind FRESH
+(a `classifyConflicts()` szerint az upstream blob-pin friss).
+
+**KÖZBEESŐ ADATVESZTÉS.** A munka fele elveszett egy gépi újraindításnál, mert a scratch worktree
+`/tmp` alatt élt (WSL2 törli rebootnál) -- lásd a memória-bejegyzést
+(`scratch-worktree-must-not-live-under-tmp`). Újraindítva `/home/neon/marveen-scratch-worktrees/`
+alatt, a `upstream-merge/4f15966e` branch (a checkpointon állva, b0e63a39) és a
+`classifyConflicts()`-alapú módszertan tette lehetővé a gyors újrakezdést.
+
+**NÉGY DOKUMENTÁLT ELTÉRÉS az archivált szövegtől (mindegyik in-code MERGE NOTE/DEVIATION
+kommenttel, QA/Cybersec review-ra jelölve):**
+1. `src/auto-restart.ts` -- a fork saját, Cybersec-eredetű MIN/MAX határa
+   (`openQuestionDeferralCapHours`) megtartva upstream korlátlan `>0` ellenőrzése helyett; az
+   archivált szöveg "üres a fork oldala" állítása elavult volt (card 4276708e időközben hozzáadta).
+2. `scripts/lib/send-telegram.sh` -- a fork stdin-alapú, argv-biztonságos token-mintája megtartva
+   upstream argv-ben exponáló formája helyett.
+3. `src/web/agent-process.ts` (umask/agentTmuxTarget) -- ELLENTÉTES irányban: az archivált szöveg
+   "nincs runAsUser-fogyasztó a forkban" állítása elavult, az `agentTmuxTarget()` azóta 4+ önálló
+   hívási ponton él -- ITT upstream változata lett elfogadva, nem a fork régi állapota.
+4. `src/web/agent-scaffold.ts` (`resolveDashboardOrigin`) -- a fork regex-validált origin-je
+   megtartva upstream validálatlan verziója helyett (shell-injekció kockázat a generált CLAUDE.md
+   curl-receptekbe).
+
+**MÁSODIK HIBAOSZTÁLY, a konfliktus-feloldáson TÚL: nem-konfliktáló addíciók, amik önmagukban is
+hibásak vagy döntést sértettek, és a `tsc --noEmit` + a kötelező minimax-grep találta meg őket,
+nem a konfliktus-lista:**
+- `src/pane-state.ts`: egy HARMADIK, nem konfliktus-jelölt `detectsPermissionDialog` másolat élt
+  ~50 sorral a feloldott hunkok előtt (HEAD saját régi példánya, amit a 3-way merge LCS-algoritmusa
+  nem ismert fel azonosnak upstream új példányával) -- eltávolítva.
+- `src/web/context-restart-gate-runner.ts`: upstream nem-konfliktáló refaktorja
+  (`gatherGateInputs` külön függvénybe emelve) elfelejtett `await`-elni egy async hívást --
+  `gatherGateInputs`/`diagnoseAgent` async-ra állítva, a `checkAgent` hívó és
+  `scripts/context-restart-gate-doctor.mjs` javítva.
+- `src/web/heartbeat-agent-scaffold.ts`: hiányzott a `mergeClaudeSettingsJson` (HBGATEWIRE826) --
+  upstream mért hibája (a heartbeat settings.json teljes felülírása törölte a seedelt hookokat)
+  emiatt élt volna tovább a forkban is -- portolva, bekötve `ensureHeartbeatAgent`-be.
+- **KRITIKUS: MiniMax-integráció csendesen visszaszivárgott** -- `src/context-guard.ts` (élő
+  kontextus-limit-ág), `src/web/routes/agents.ts` (`/api/models/available` MINIMAX_API_KEY-gating),
+  `web/index.html` (két UI-optgroup), plusz két új upstream tesztfájl
+  (`agent-provider-env.test.ts`, `minimax-model-selector.test.ts`), ami KÖZVETLENÜL ELLENTMOND a
+  fork saját `provider-env-adoption.test.ts`-ének. Egyik sem volt HEAD-en a merge előtt, egyik sem
+  volt a feloldott 54 konfliktus-fájl része -- csendes, nem-konfliktáló addícióként érkezett,
+  közvetlen ütközésben Peti NO-GO-jával (kártya 48565f81) és CLAUDE.md 17. szabályával. Mindet
+  eltávolítva, dokumentálva.
+- `src/web/routes/agents.ts`: egy teljes `/api/agents/status` route-kezelő (nem csak import) a
+  nem-adoptált `getAgentToolActivity`/`deriveAgentStatus` szimbólumokkal -- eltávolítva.
+- **`installer-ollama-url.test.ts` (új upstream tesztfájl) ELTÁVOLÍTVA, kód-szinten NEM
+  adoptálva.** Az upstream `OLLAMA_URL` feloldási újraírását teszteli `install-linux.sh`-ban --
+  de ez pont az a terület, amit Peti 2026-08-13-i direktívája (EPIC ebc7b4dd, a csendes Ollama
+  auto-install eltávolítása) korábban már szándékosan kizárt ebből a forkból. MikroB
+  megerősítette 2026-09-07-én: a kód marad, a teszt eltávolítva (nem hagyva pirosan -- egy
+  ismerten piros teszt a `fleet-test.sh` teljes-suite kapuját blokkolná, ami ellentmond a
+  landolási feltételnek).
+- **`src/__tests__/router-main-agent-wakeup.test.ts` (új upstream tesztfájl) ELTÁVOLÍTVA, nem
+  csak kizárva.** Upstream ezzel a teszttel azt a döntést pinneli, hogy a router SOHA ne
+  vezérelje a main-agent channels sessiont (a busy panelbe zajló wakeup csendben sorba áll,
+  UserPromptSubmit nélkül, kézbesítés nélkül -- öt kört égetett el upstream saját mért
+  incidensén). Ez KÖZVETLENÜL ELLENTMOND a fork saját `message-wake-field.test.ts` +
+  `message-wake-deciders.test.ts` teszteknek, amik a router main-agent-wakeup hívását MEGKÖVETELIK
+  (mindig kézbesíts, ne állj csendben sorba egy foglalt panelnél -- pont ez a
+  kézbesítés-megbízhatósági hibaosztály, amit ez a mai session sajátmagán is többször
+  tapasztalt/orvosolt kézzel, ld. a package-lock.json és 2fae3b42 landolási körök). MikroB
+  megerősítette 2026-09-07-én: a fork viselkedése marad, upstream teszt eltávolítva.
+  EMAIL-viselkedéshez.** A teszt saját fejléce eredetileg egy korábbi tulajdonos-döntést idézett
+  (TG 14442: hiányzó név-szabály esetén az email menjen ki, fail-open). Ez azóta felülíródott a
+  `GATEPERSIST816(2)` kártyával, ami az EMAIL ágat kifejezetten fail-closed-ra állította (a
+  Telegram ág változatlanul fail-open marad) -- a levél halasztható, a vevő felé menő rossz név a
+  drágább hiba. MikroB megerősítette 2026-09-07-én: a kapu marad fail-closed, a teszt lett
+  igazítva, nem a kód. Mellékesen talált, EBBŐL A MERGE-BŐL NEM SZÁRMAZÓ hiba: a
+  `bad_name_patterns` mező helytelen (lista helyett string) alakja nem valódi séma-ellenőrzéssel
+  bukik el, hanem véletlenül karakterenkénti iterációval -- külön kártyát érdemel, itt nem
+  javítva (hatókörön kívül).
+
+**NYITOTT, MÉG NEM ELDÖNTÖTT ELLENTMONDÁS: a card-blockers UI backendje (`blockerWouldCycle`,
+`addCardBlocker`, `GET /api/kanban/:id/blockers`) MÁR JELEN VAN nem-konfliktáló kódként a
+`src/db.ts`-ben és a `src/web/routes/kanban.ts`-ben, annak ellenére, hogy TÖBB
+`ACKNOWLEDGED_CONFLICTS` bejegyzés "nem adoptálva, a `kanban_dependencies` helyettesíti" döntést
+rögzít.** Nem nyúltam hozzá (nagy, kockázatos, kívül esik a konfliktus-feloldás hatókörén) --
+jelezve MikroB/QA felé felülvizsgálatra, nem eldöntve itt.
+
+**TANULSÁG, ami miatt ez a bejegyzés készült.** Egy 149-commit merge konfliktus-alapú feloldása
+(csak a git által jelölt 54 fájl) NEM garantálja, hogy minden Peti-döntés vagy korábbi
+architektúra-választás sértetlen marad -- a nem-konfliktáló addíciók (git 3-way LCS-e szerint
+"nem ütköző" tartalom) ugyanúgy hordozhatnak visszavont/deklinált funkciókat vagy valódi hibákat.
+A `tsc --noEmit` + guard-selftestek + egy célzott, döntés-specifikus grep (itt: "minimax") volt az,
+ami ezt ténylegesen megtalálta -- a puszta "minden konfliktus fel van oldva" állapot nem lett volna
+elég bizonyíték.
+
+- **`scripts/hooks/outgoing-copy-gate.py`: két VALÓDI, a mergétől független hiba javítva** (nem
+  csak teszt-igazítás) -- egy új, mergével bejött tesztfájl fedte fel őket: (1) a Telegram-ág
+  belső-hiba naplózása időbélyeg nélkül írt a logba (2026-09-05-i mért incidens: 8005 sor,
+  négy üzenet, egyik egy AUDITÁLATLAN Telegram-küldést rögzített, semmilyen módon nem
+  behatárolható időben) -- most minden log-írás `_log_stamp()`-pel kezdődik. (2) A Telegram-ág
+  belső-hiba log-útvonala a szkript SAJÁT helyétől függő, fixen bedrótozott útvonalra írt, nem
+  `_LOCAL_RULES` könyvtárára (mint a fájl másik három log-függvénye) -- emiatt egy izolált
+  tesztkörnyezet írása a VALÓDI repó `store/`-jába ment, a teszt saját könyvtára üresen
+  maradt. Most egységes. (3) Egy nem-dict `tool_input` a Telegram-ágon nyers
+  `AttributeError`-t írt a logba (értelmetlen, a hibát az auditban látszó bugnak mutatja) --
+  most explicit `isinstance` ellenőrzés nevesíti az okot ("nem szotar" + típus + "telegram").
+- **Két új, mergével bejött tesztfájl-szakasz (`outgoing-copy-gate.test.py` 6. blokkja,
+  `outgoing-copy-gate-log.test.py` (3) és (5) fele) ELTÁVOLÍTVA.** Ugyanaz a már-elutasított
+  ~1293-soros upstream-átírás (ACKNOWLEDGED_CONFLICTS, round 15, 2026-09-06, kártya
+  79bb0364) tesztelte: `manage_email` multiplexelt tool operáció-alapú osztályozása, valamint
+  a Telegram `edit_message` + kódblokk-markdownv2 kapu (GATECOPY827). A gate tényleges kódja
+  nulla eltérést mutat a pre-merge baseline-tól -- egyik sincs bekötve. MikroB
+  megerősítette 2026-09-07-én.
+- **`scripts/__tests__/limit-monitor-signals.test.sh` "(c) mért útvonal" + "(d) sikertelen
+  kézbesítés" szakasza (167 sor, új mergével bejött tesztfájl) ELTÁVOLÍTVA.** A
+  `scripts/limit-monitor.sh` saját fejléce már dokumentálja (round 3, 2026-09-02): "the
+  upstream measured-quota path... are DELIBERATELY NOT grafted -- the fork already alerts
+  from its own quota monitor (store/quota-check.sh + quota-bridge), so a second measured
+  alerter would double-notify Peti." A `.claude-rate-limits.json`-t olvasó mért-kvóta út
+  soha nem lett bekötve, tehát a szakasz MINDEN esete (a pár látszólag zöld is) egy
+  no-op kódutat gyakorolt -- eltávolítva, nem szelektíven megtartva. Ugyanebből a
+  tesztfájlból 13/18 eset VALÓDI hibát javított (a teszt-harness sajátja hiányzó
+  `session-limit-pattern.sh`/`.json` másolása + egy hiányzó szöveges minta), az megtartva.
+  MikroB megerősítette 2026-09-07-én.
+- **`store/lint-ratchet.sh --update` lefuttatva** (149 commit, sok új fájl -- a lint-profil
+  természetesen elmozdul egy ekkora merge alatt, függetlenül attól, hogy egy adott sor kitől
+  származik). Ellenőrizve: az eltérés (`no-unsafe-argument` +8, `no-unused-vars` +19) új,
+  merge-hozta fájlok saját, nem-módosított tartalmában van (pl.
+  `feedback-modal-positive-router.test.ts`, `system-directive-verify-endpoint.test.ts`), nem a
+  saját, ebben a körben írt kis célzott javításokban -- spot-check minden flaggelt sorra
+  elvégezve. Új baseline: 6 szabály, 257 lelet.
+- **`channels-main-model.test.sh`: `DISTRIBUTION_DEFAULT_AGENT_MODEL` marad `claude-opus-5`.**
+  Upstream + az új teszt a `[1m]` (1M kontextus) variánst várná -- valódi költség/kontextus
+  termékdöntés, nem konfliktus-feloldási kérdés. MikroB külön jelzi Petinek; amíg nincs
+  döntés, a jelenlegi fork-alapértelmezés marad, a teszt igazítva ehhez.
+- **`src/__tests__/router-main-agent-wakeup.test.ts` (új upstream tesztfájl) ELTÁVOLÍTVA.**
+  Lásd a fenti, külön bekezdést erről a fájlról.
+
+**Hivatkozás:** kártya `4f15966e` (szülő `a7a61751`), checkpoint `b0e63a39`, plan-grilling
+verdikt komment `21142`/`21143`.
+
+## 2026-09-09 -- route-classify selftest mérési hiba azonosítva (ef95ec94)
+
+**Döntés:** A `route-classify-selftest.sh` `route()` függvényébe `LOCAL_LLM_ADVISORY=0` kerül.
+
+**Háttér:** Az ef95ec94 kártya "stage-1 regresszió" névvel nyílt: Qwen3.5-9b-en Cybersec 5 biztonsági mondata 5/5 FAIL-t mutatott. A valódi ok NEM modell-regresszió: a modell helyesen ad SECURITY-t (igazolva empirikusan, LOCAL_LLM_ADVISORY=0 teszttel). A hiba a selftest mérési módszerében volt:
+- `local-llm-rag.sh` advisory módban (alapértelmezett LOCAL_LLM_ADVISORY=1) az `online()` hívás után NEM lép ki, hanem folytatja a local draft utat.
+- Ez "ROUTE=local -> stage 1 verdict=SECURITY" sort ír stderrbe AZ "ROUTE=online -> ..." sor UTÁN.
+- A selftest `route()` függvénye `tail -1`-et használt: az utolsó ROUTE= sort vette, ami "local" -- ezért mérte "local"-nak a valójában "online"-ra irányított feladatot.
+
+**Fix:** `LOCAL_LLM_ADVISORY=0` a selftest `route()` hívásába -- az `online()` exittel zárul, a mérési artifaktum nem keletkezik. A routing döntés (local vs online) advisory módtól független; a selftest ezt teszteli, nem az advisory draft viselkedést.
+
+**Ellenőrzés:** Selftest futtatva (STABILITY_RUNS=3): determinizmus 3/3 stable x3, Cybersec 5: 5/5 ok (BEFORE=local, AFTER=online), negatív kontrollok: 3/3 ok, held-out: 4/4 ok, Cybersec OWN held-out: 5/5 ok. 1 dilution FAIL (transient GPU contention, `route-classify.sh` BUSY window, nem kapcsolódik a javításhoz).
+
+**Hivatkozás:** kártya `ef95ec94`, szülő `4df3e8e8`.

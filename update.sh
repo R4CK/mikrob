@@ -562,6 +562,7 @@ run_unit_maintenance
 # explicit --regen-claudemd flag, because that file is the operator's text).
 SEED_REFRESH_UPDATED=0
 SEED_REFRESH_KEPT=0
+SEED_REFRESH_ADDED=0
 
 # Render a template stream the same way the seeder does. Keep in sync with the
 # sed blocks in the seeding loops below and in install-linux.sh.
@@ -597,6 +598,10 @@ SCHED_CHAT_ID="${SCHED_CHAT_ID:-0}"
 # that form (ledger-live-drain does) hash-mismatches every rendered historical
 # version and is permanently classified "touched", so it never refreshes.
 render_seed_template() {
+  # {{PROJECT_ROOT}} is the node seeder's alias for {{INSTALL_DIR}}
+  # (substituteTemplatePlaceholders) -- without it here, any shipped task using
+  # that form (ledger-live-drain does) hash-mismatches every rendered historical
+  # version and is permanently classified "touched", so it never refreshes.
   sed -e "s/{{MAIN_AGENT_ID}}/${MAIN_AGENT_ID:-}/g" \
       -e "s/{{BOT_NAME}}/${BOT_NAME:-}/g" \
       -e "s/{{OWNER_NAME}}/${OWNER_NAME:-}/g" \
@@ -774,7 +779,27 @@ refresh_untouched_seeds() {
       [ -f "$f" ] || continue
       base="$(basename "$f")"
       installed="$target_root/$name/$base"
-      [ -f "$installed" ] || continue           # never add files to an existing dir
+      # A FILE THAT NEVER EXISTED CANNOT HAVE BEEN OPERATOR-EDITED (card 383829fc). The untouched-
+      # check below exists to protect a file the operator MIGHT have modified; a brand-new seed file
+      # added to an already-seeded directory (this fork shipping a new script into an existing
+      # skill, e.g. fleet-helper/scripts/) has no installed counterpart at all, so there is nothing
+      # to protect and nothing it could silently overwrite. Measured before this fix: such a file
+      # NEVER reached an already-installed tree -- only a fresh install ever saw it, permanently.
+      # A FILE THAT NEVER EXISTED CANNOT HAVE BEEN OPERATOR-EDITED (card 383829fc). The untouched-
+      # check below exists to protect a file the operator MIGHT have modified; a brand-new seed file
+      # added to an already-seeded directory (this fork shipping a new script into an existing
+      # skill, e.g. fleet-helper/scripts/) has no installed counterpart at all, so there is nothing
+      # to protect and nothing it could silently overwrite. Measured before this fix: such a file
+      # NEVER reached an already-installed tree -- only a fresh install ever saw it, permanently.
+      if [ ! -f "$installed" ]; then
+        if [ "$mode" = "template" ]; then
+          render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
+        else
+          cp "$f" "$installed"
+        fi
+        SEED_REFRESH_ADDED=$((SEED_REFRESH_ADDED + 1))
+        continue
+      fi
       rel="$src_rel/$name/$base"
       # Already identical to what we would write -> not an update. Without this
       # the run is not idempotent: it would rewrite the same bytes and report a
@@ -811,6 +836,7 @@ run_seed_refresh() {
   SEED_REFRESH_UPDATED="${SEED_REFRESH_UPDATED:-0}"
   SEED_REFRESH_KEPT="${SEED_REFRESH_KEPT:-0}"
   SEED_REFRESH_MERGED="${SEED_REFRESH_MERGED:-0}"
+  SEED_REFRESH_ADDED="${SEED_REFRESH_ADDED:-0}"
   # .env values feed the template rendering; without MAIN_AGENT_ID a rendered
   # comparison would be meaningless, so templated tasks are skipped then.
   if [ -f "$INSTALL_DIR/.env" ]; then
@@ -836,8 +862,8 @@ run_seed_refresh() {
     # something we shipped, so a locally-edited task is kept, not overwritten.
     refresh_untouched_seeds "scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
   fi
-  if [ "$SEED_REFRESH_UPDATED" -gt 0 ] || [ "$SEED_REFRESH_MERGED" -gt 0 ]; then
-    echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat), ${SEED_REFRESH_MERGED} (osszefesulve helyi szerkesztessel); megtartva: ${SEED_REFRESH_KEPT} (konfliktus vagy nem osszefesulheto)"
+  if [ "$SEED_REFRESH_UPDATED" -gt 0 ] || [ "$SEED_REFRESH_MERGED" -gt 0 ] || [ "$SEED_REFRESH_ADDED" -gt 0 ]; then
+    echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat), ${SEED_REFRESH_MERGED} (osszefesulve helyi szerkesztessel), ${SEED_REFRESH_ADDED} (uj fajl potolva); megtartva: ${SEED_REFRESH_KEPT} (konfliktus vagy nem osszefesulheto)"
   fi
   return 0
 }
@@ -916,7 +942,13 @@ fi
 if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock)?\.json$"; then
   echo -e "  Fuggosegek frissitese (lock-strict)..."
   RESULT_PHASE="npm-ci"
-  if ! retry 3 3 npm ci --silent; then
+  # --include=dev adopted from upstream (AUTOUPDNODEENV905, card 50af1a27). Under
+  # NODE_ENV=production a plain `npm ci` PRUNES the compiler, so the TypeScript build
+  # below dies with nothing to point at. No-op on this host today -- NODE_ENV is set
+  # nowhere in .env, start.sh, install-linux.sh or this script (measured 2026-09-06) --
+  # so this is closing a latent hole, not a live outage. The audit below keeps its own
+  # --omit=dev, so the security scope is unchanged.
+  if ! retry 3 3 npm ci --silent --include=dev; then
     echo -e "  HIBA: npm ci sikertelen. Valoszinuleg a package-lock.json nincs szinkronban."
     echo -e "  Reszletekert futtasd: npm ci"
     exit 1
@@ -964,6 +996,11 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     ROLLED_BACK=0
     if [ -n "$OLD_VERSION_FULL" ] && rollback_guard_check "$INSTALL_DIR" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$OLD_VERSION_FULL" "update-build-failure"; then
       git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
+      # Restore the dependency tree of the OLD version before rebuilding it: the
+      # failed `npm ci` above may have pruned dev deps (NODE_ENV=production),
+      # and without the compiler this rollback build would also fail silently,
+      # leaving git=OLD + node_modules=pruned (AUTOUPDNODEENV905 finding A).
+      npm ci --silent --include=dev 2>/dev/null || true
       npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
       rm -rf "$INSTALL_DIR/dist"
       npm run build --silent 2>/dev/null || true
@@ -1447,7 +1484,12 @@ if [ -n "$OLD_FULL" ]; then
   fi
   if rollback_guard_check "$INSTALL_DIR" "$(git rev-parse HEAD 2>/dev/null || echo unknown)" "$OLD_FULL" "update-health-check"; then
     git reset --hard "$OLD_FULL" >/dev/null 2>&1 || true
-    npm ci --silent 2>/dev/null || true
+    # --include=dev: same reason as the main npm ci above, and it matters MORE here.
+    # Without it the rollback re-creates the very pruned tree it is trying to escape,
+    # and it does so silently (`|| true`), so the recovery path would report success on
+    # a build that never ran. The fork's rollback_guard_check wrapper around this block
+    # stays as it is -- upstream has no equivalent.
+    npm ci --silent --include=dev 2>/dev/null || true
     npm rebuild better-sqlite3 --build-from-source --silent 2>/dev/null || true
     npm run build --silent 2>/dev/null || true
     [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"

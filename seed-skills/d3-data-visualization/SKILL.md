@@ -1,6 +1,8 @@
 ---
 name: d3-data-visualization
 description: Build interactive, accessible data visualizations with D3.js -- bar/line/area/pie/scatter, time series, maps/choropleth, network graphs, with tooltips, zoom/pan/brush, and responsive layouts. Use for dashboards, KPI tiles, analytics, reports, and any chart where the data tells the story. Triggers: "chart", "graph", "data viz", "D3", "dashboard chart", "KPI", "time series", "choropleth", "network graph", "diagram", "vizualizáció", "grafikon".
+version: "1.0.0"
+related_skills: [scroll-driven-3d-motion, ui-visual-design-styles]
 ---
 
 # D3.js Data Visualization

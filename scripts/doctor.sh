@@ -192,6 +192,24 @@ for f in scripts/hooks/ledger-capture.py scripts/hooks/ledger-outbound.py script
   if [ -f "$f" ]; then ok "$f"; else fail "$f missing"; fi
 done
 
+# --- Hook double-run audit ---
+# A script registered in BOTH settings scopes a session loads runs twice when the
+# two spellings differ (measured 2026-09-05: identical string -> 1 firing,
+# different spelling of the same script -> 2). That is how the provenance gate
+# printed two identical blocks for one prompt, at the cost of a doubled process
+# spawn and a doubled context injection on every flagged prompt.
+echo -e "\n${BOLD}Hook double-run${RESET}"
+if [ -f "scripts/hook-scope-audit.py" ]; then
+  AUDIT_OUT=$(python3 scripts/hook-scope-audit.py 2>&1)
+  if [ $? -eq 0 ]; then
+    ok "$(echo "$AUDIT_OUT" | tail -1)"
+  else
+    while IFS= read -r line; do [ -n "$line" ] && fail "$line"; done <<< "$AUDIT_OUT"
+  fi
+else
+  warn "scripts/hook-scope-audit.py missing"
+fi
+
 # --- Dashboard API ---
 echo -e "\n${BOLD}Dashboard${RESET}"
 if [ -f "store/.dashboard-token" ]; then
@@ -212,8 +230,10 @@ fi
 
 # --- Database ---
 echo -e "\n${BOLD}Database${RESET}"
-if [ -f "store/claudeclaw.db" ]; then
-  MEM=$(sqlite3 store/claudeclaw.db "SELECT COUNT(*) FROM memories;" 2>/dev/null || echo "?")
+# $INSTALL_DIR-anchored explicitly (card 5dcde7d3 hardening), not relying on the earlier `cd` --
+# this line's target must never depend on script order above it.
+if [ -f "$INSTALL_DIR/store/claudeclaw.db" ]; then
+  MEM=$(sqlite3 "$INSTALL_DIR/store/claudeclaw.db" "SELECT COUNT(*) FROM memories;" 2>/dev/null || echo "?")
   ok "claudeclaw.db: alive ($MEM memories)"
 else
   fail "store/claudeclaw.db missing"

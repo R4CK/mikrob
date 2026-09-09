@@ -2,11 +2,12 @@ import Database from 'better-sqlite3'
 import { isForceActor } from './kanban-force-actors.js'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync, statSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, MAIN_AGENT_ID } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { AGENT_MESSAGES_DDL, AGENT_MESSAGES_ALTER_COLUMNS } from './schema/agent-messages-ddl.js'
+import { isQuietMessageClass } from './web/message-wake.js'
 import {
   MARKER_SOURCE,
   NODE_CARD,
@@ -651,6 +652,175 @@ export function initDatabase(dbPathOverride?: string): void {
     `)
   }
 
+  // --- Stuck incidents: the DETECTION as a row, not as prose (card f92671df / ac28bc6e) ---
+  //
+  // WHAT WAS ACTUALLY MISSING, because it is not what the card first looks like. The fleet already
+  // has plenty of structured data ABOUT A CARD: kanban_card_events carries every status transition
+  // and kanban_card_field_events carries every other edit, including the title that holds the
+  // [NN%] progress marker -- so "when did it last really move" and "for how long has it been
+  // still" are already derivable, and duplicating them here would be a second source of truth for
+  // a question that already has one.
+  //
+  // What has no row anywhere is the INCIDENT: the moment the heartbeat's D section JUDGED a card
+  // stuck, what it saw, and what it decided to do. That last part is the load-bearing half. The
+  // shared token-protection guard (store/redispatch-guard.sh) answers DENY on NINE different
+  // grounds, and every one is a DELIBERATE non-action that today leaves no trace at all. A control
+  // that decides to do nothing is, in the log, indistinguishable from a control that never ran.
+  //
+  // NINE, not the six the heartbeat's D-section prose lists. Counted from the script itself
+  // (`grep -oE 'DENY:[a-z-]+'`), because the prose and the code disagree: the documented set is
+  // progress / agent-busy / backoff / cap-reached / first-seen-baseline / not-active, and the
+  // script ALSO emits load-paused (the agent is cgroup-throttled or SIGSTOP-frozen -- a real
+  // policy denial), card-not-found and usage. Building the writer from the prose would have left
+  // three branches permanently unlogged, which is the very "a deliberate non-action leaves no
+  // trace" hole this table exists to close, reproduced inside its own fix.
+  //
+  // AND THREE OF THEM CARRY A PAYLOAD, in PARENTHESES. Measured from the echo sites and confirmed
+  // with live probes, NOT read from a comment -- because the guard's own header comment is wrong
+  // about its own code here, and my first correction of this paragraph copied that comment instead
+  // of measuring. The header says `DENY:backoff:<s>` (colon); the code emits:
+  //
+  //     DENY:not-active(<status>)     DENY:cap-reached(<count>)     DENY:backoff(<n>s)
+  //
+  // and the other six are bare. So a writer that equality-matches a known-reason list drops three
+  // of nine, and one that prefix-matches on `DENY:backoff:` drops backoff too, because the
+  // separator is `(` and not `:`. `action_detail` therefore stores the verdict VERBATIM, and any
+  // classification takes the reason as the text up to the first `(` or `:` -- never an equality
+  // test against a list this file would then have to keep in sync with a script it does not own.
+  //
+  // WHY THIS IS NOT store/redispatch-ledger.json, and why that file is deliberately untouched.
+  // The ledger already counts re-dispatches per card, and `redispatch-guard.sh reset <cardId>`
+  // DELETES the entry -- working rule 4 requires running it on every close. So the count is
+  // destroyed exactly when the incident would become history. That is the RIGHT behaviour for what
+  // the ledger is: a live backoff BUDGET. If it never reset, a card that stuck once would sit at
+  // the cap forever and the guard would refuse to re-dispatch it again. A live control and a
+  // history answer different questions, so they do not share a store -- the same reasoning
+  // kanban_card_field_events records for its own split from kanban_card_events.
+  //
+  // PARTLY trigger-enforced, and the boundary is stated because an earlier version of this comment
+  // claimed more than the mechanism delivered (Cybersec, 2026-09-06, measured against this DDL and
+  // reproduced here before the wording was changed; that measurement is also copied into card
+  // 878cd292's own description, not left to live only in a kanban comment -- MikroB, comment 21530).
+  // Two triggers now cover this table: the BEFORE UPDATE one below refuses FOUR columns -- card_id,
+  // detected_at, stalled_ms_at_detection, action -- plus clearing or re-pointing an already-set
+  // resolved_at; a second BEFORE DELETE one (added in this same card, see below) refuses deleting a
+  // row outright.
+  //
+  // WHAT IS STILL NOT REFUSED, measured, one attempt per shape against the shipped statements:
+  //     UPDATE assignee_at_detection      PASSES   <- a DETECTION fact, and the per-agent axis
+  //     UPDATE action_detail              PASSES   <- the DENY reason, i.e. the load-bearing half
+  //     UPDATE resolved_by_event_id       PASSES   <- while resolved_at itself is protected
+  //     UPDATE resolved_by_event_table    PASSES   <- same residual, added with this column (d05d72b3)
+  //     INSERT OR REPLACE on the same id  PASSES   <- every column rewritten (see the note below)
+  // (Controls, deliberately allowed: `detections + 1`, and resolved_at written once from NULL.)
+  // DELETE FROM stuck_incidents is NO LONGER on this list -- closed by the BEFORE DELETE trigger
+  // added below, in this same card.
+  //
+  // REPLACE is the reason a BEFORE UPDATE trigger cannot carry the word "append-only" on its own:
+  // SQLite executes it as delete-then-insert, so the UPDATE trigger is never consulted. A BEFORE
+  // DELETE trigger does NOT see that implicit delete either under SQLite's default -- only with
+  // `recursive_triggers ON`, which this database never sets and which is GLOBAL to all 14 triggers
+  // in this schema (Cybersec measured their own first remedy failing exactly there; see the residual
+  // note below the new trigger for why this card does not flip that switch).
+  //
+  // UPDATE ON. This card (878cd292) is the structural half MikroB folded in here (comment 21530):
+  // the table's FIRST producers, recordStuckIncident and recordSiblingHandover, land in this same
+  // change, so "the table has no producer yet" -- true when this paragraph was first written -- is
+  // no longer true, and the DELETE gap closes in the same commit rather than staying a promise for
+  // whoever writes the first row.
+  //
+  // INSERT OR REPLACE remains a STATED residual, not closed here, and that is a deliberate boundary
+  // rather than an oversight: the only way to make a BEFORE DELETE trigger see a REPLACE's implicit
+  // delete is `PRAGMA recursive_triggers = ON`, which is GLOBAL to this one database connection and
+  // therefore to all 14 triggers in this schema -- Cybersec measured their own first attempt at this
+  // fix failing exactly there, and turning it on to close one column's residual risk is its own
+  // blast-radius question this card does not take on. `INSERT OR REPLACE INTO stuck_incidents` has
+  // no producer in this codebase today (grepped), so the residual is unexercised, not unguarded in
+  // practice -- but it is not the same claim as "closed", and the difference is the whole point of
+  // writing it down instead of letting the guarantee read stronger than it is. The trigger itself is
+  // defined further below, after the table and its indexes, alongside the existing UPDATE one.
+  //
+  // The original point still stands for what IS covered: without these triggers even that much would
+  // be a comment the next direct-sqlite3 writer never reads -- which is precisely how the
+  // timestamp-integrity rows below went wrong.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS stuck_incidents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id TEXT NOT NULL,
+      assignee_at_detection TEXT,
+      detected_at INTEGER NOT NULL,
+      stalled_ms_at_detection INTEGER NOT NULL,
+      -- 'redispatch' | 'sibling_handover' | 'none_denied' | 'none_other'
+      action TEXT NOT NULL,
+      -- for 'none_denied': the guard's verdict verbatim (e.g. 'DENY:agent-busy'), so a non-action
+      -- says WHY. Free text on purpose: the guard may grow reasons, and an unknown reason must be
+      -- recordable rather than rejected.
+      action_detail TEXT,
+      -- how many times the D section re-observed THIS SAME unresolved stall. One stall is one row:
+      -- see the dedup note below.
+      detections INTEGER NOT NULL DEFAULT 1,
+      resolved_at INTEGER,
+      resolved_by_event_id INTEGER,
+      -- 'kanban_card_events' | 'kanban_card_field_events' (card d05d72b3). Both tables have their
+      -- OWN independent autoincrement id space, so resolved_by_event_id alone cannot say which one
+      -- to look in -- id 5 can exist, unrelated, in both. Without this column "the resolution is
+      -- traceable" (the property this table exists to deliver) would be false for exactly the rows
+      -- it is supposed to hold.
+      resolved_by_event_table TEXT
+    )
+  `)
+  // Migration for a database that already had this table from before resolved_by_event_table
+  // existed (ac28bc6e / 878cd292 landed the table and its first producers across several commits
+  // before this column was added) -- CREATE TABLE IF NOT EXISTS above is a no-op on such a database.
+  try { db.exec(`ALTER TABLE stuck_incidents ADD COLUMN resolved_by_event_table TEXT`) } catch { /* already exists */ }
+  // The card asks its questions along TWO axes -- per card and per agent -- so both get an index.
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_stuck_incidents_card ON stuck_incidents(card_id, detected_at)`,
+  )
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_stuck_incidents_agent ON stuck_incidents(assignee_at_detection, detected_at)`,
+  )
+  // ONE STALL IS ONE ROW. The D section runs every 10 minutes, so a stall that lasts an hour would
+  // otherwise produce six rows, and "how often did this card get stuck" would be measuring the
+  // HEARTBEAT FREQUENCY rather than the stalls -- a number that looks like data and is not. The
+  // writer bumps `detections` on the open row instead; this partial index is what lets it find one
+  // cheaply, and it also states the invariant: at most ONE unresolved incident per card.
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_stuck_incidents_open ON stuck_incidents(card_id) WHERE resolved_at IS NULL`,
+  )
+  // Refuses UPDATEs to the four columns named in the WHEN below, and refuses clearing or moving an
+  // already-set resolved_at. Both resolution directions matter: an UPDATE that cleared resolved_at
+  // would reopen a closed incident and let a second one be inserted under the unique index above.
+  //
+  // NOT a complete append-only guarantee -- see the measured list on the table above. In
+  // particular this fires on UPDATE only, so DELETE and INSERT OR REPLACE go straight past it.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_stuck_incidents_append_only
+    BEFORE UPDATE ON stuck_incidents
+    WHEN OLD.card_id <> NEW.card_id
+      OR OLD.detected_at <> NEW.detected_at
+      OR OLD.stalled_ms_at_detection <> NEW.stalled_ms_at_detection
+      OR OLD.action <> NEW.action
+      OR (OLD.resolved_at IS NOT NULL AND (NEW.resolved_at IS NULL OR NEW.resolved_at <> OLD.resolved_at))
+    BEGIN
+      SELECT RAISE(ABORT, 'stuck_incidents is append-only: detection facts are immutable and a resolution is written once, from NULL');
+    END;
+  `)
+  // Closes the DELETE half of the gap the comment above the table names (card 878cd292, folded in
+  // by MikroB alongside this card's first producers -- comment 21530). REPLACE remains a stated,
+  // deliberately unclosed residual; see the comment above the table for why.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_stuck_incidents_no_delete
+    BEFORE DELETE ON stuck_incidents
+    BEGIN
+      SELECT RAISE(ABORT, 'stuck_incidents is append-only: rows are never deleted (see the INSERT OR REPLACE residual note above the table)');
+    END;
+  `)
+  // (Rollback path, code-quality rule 11: `DROP TABLE stuck_incidents` removes both triggers with
+  // it -- covered by the existing schema rollback tests, which assert the neighbouring tables
+  // survive and that re-running the initialiser restores the table WITH its triggers, not just its
+  // columns.)
+
   // --- Timestamp integrity (card a06314ea) ---------------------------------
   // Every timestamp in this schema is a UNIX EPOCH INTEGER, and every reader assumes it: the
   // stuck-card monitor and the re-dispatch guard both do epoch arithmetic. A row written with a
@@ -809,6 +979,22 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_card_labels_label ON kanban_card_labels(label_id)`)
 
+  // Blocker links: "this card is blocked by that card". A join table rather
+  // than a single blocked_by column because a card genuinely waits on more
+  // than one thing, and every schema change here costs a rebuild + a dashboard
+  // restart the operator has to approve -- so the wider shape is paid for once.
+  // Rows are deleted with either endpoint card (see deleteKanbanCard), so a
+  // removed card cannot leave a dangling block on the board.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_card_blockers (
+      card_id TEXT NOT NULL,
+      blocker_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (card_id, blocker_id)
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_card_blockers_blocker ON kanban_card_blockers(blocker_id)`)
+
   // --- Agent Messages ---
   // DDL lives in src/schema/agent-messages-ddl.ts, shared with the channel-coordinator's own
   // defensive CREATE TABLE (src/channel-coordinator/ingest.ts) -- see that module's comment for
@@ -948,6 +1134,11 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_retries_first_attempt ON pending_task_retries(first_attempt)`)
+  // Stage-2 escalation stamp (direct-to-owner channel alert), added
+  // alongside the two-stage escalation redesign. Mirrors alert_sent_at
+  // exactly (claim-before-send guard, cleared on delivery failure), just for
+  // the later, bigger threshold.
+  try { db.exec('ALTER TABLE pending_task_retries ADD COLUMN owner_alert_sent_at INTEGER') } catch { /* already exists */ }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS background_tasks (
@@ -989,18 +1180,17 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE token_usage ADD COLUMN thinking_tokens INTEGER NOT NULL DEFAULT 0') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE token_usage ADD COLUMN model TEXT') } catch { /* already exists */ }
 
-  // Deduplicate existing rows before creating unique index
-  try {
-    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`)
-  } catch {
-    db.exec(`
-      DELETE FROM token_usage WHERE id NOT IN (
-        SELECT MIN(id) FROM token_usage
-        GROUP BY agent, session_id, timestamp, input_tokens, output_tokens
-      )
-    `)
-    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(agent, session_id, timestamp, input_tokens, output_tokens)`)
-  }
+  // Drop old agent-led index and replace with agent-free key (card b774f057).
+  // session_id is single-agent by definition; two different agents with the same
+  // session_id + timestamp + tokens is a duplication bug, not a legitimate row.
+  db.exec(`DROP INDEX IF EXISTS idx_token_usage_dedup`)
+  db.exec(`
+    DELETE FROM token_usage WHERE id NOT IN (
+      SELECT MIN(id) FROM token_usage
+      GROUP BY session_id, timestamp, input_tokens, output_tokens
+    )
+  `)
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(session_id, timestamp, input_tokens, output_tokens)`)
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS token_usage_cursors (
@@ -1017,6 +1207,7 @@ export function initDatabase(dbPathOverride?: string): void {
       title TEXT NOT NULL,
       description TEXT,
       category TEXT NOT NULL DEFAULT 'Egyéb',
+      scope TEXT NOT NULL DEFAULT 'munka',
       status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','reviewed','kanban','rejected')),
       source TEXT NOT NULL DEFAULT 'marveen',
       kanban_id TEXT,
@@ -1029,6 +1220,8 @@ export function initDatabase(dbPathOverride?: string): void {
   // impact/effort scoring -- added after initial release; safe ALTER on existing DBs
   try { db.exec('ALTER TABLE idea_box ADD COLUMN impact INTEGER') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE idea_box ADD COLUMN effort INTEGER') } catch { /* already exists */ }
+  // Migration: existing idea boxes predate the work/personal boundary.
+  try { db.exec("ALTER TABLE idea_box ADD COLUMN scope TEXT NOT NULL DEFAULT 'munka'") } catch { /* column already exists */ }
 
   // --- Idea Comments ---
   db.exec(`
@@ -1041,6 +1234,21 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_idea_comments_idea ON idea_comments(idea_id)`)
+
+  // --- Idea Attachments ---
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS idea_attachments (
+      id TEXT PRIMARY KEY,
+      idea_id TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      stored_path TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      extracted_text TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_idea_attachments_idea ON idea_attachments(idea_id)`)
 
   // --- Idea Status Log ---
   db.exec(`
@@ -1238,6 +1446,14 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_agent ON approvals(agent_id, requested_at)`)
+  // EMAILKAPU901 PR2: content-hash anchor + one-shot consumption. content_hash
+  // pins an approval to the EXACT letter (sha256 over to+cc+subject+body,
+  // computed by scripts/hooks/email-approval-gate.py); consumed_at is flipped
+  // atomically by the gate on the first allowed send, so an approval can never
+  // authorize two sends.
+  try { db.exec('ALTER TABLE approvals ADD COLUMN content_hash TEXT') } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_at INTEGER') } catch { /* already exists */ }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_hash ON approvals(content_hash)`)
 
   // --- Dashboard browser login (OPTIONAL; the bearer token stays primary) ---
   // Zero rows here = exactly the token-only behavior. A row is created only when
@@ -1323,6 +1539,60 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_trace ON otel_spans(trace_id, start_ms)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_otel_spans_agent ON otel_spans(agent_id, start_ms)`)
 
+  // One-shot migration (card 00c9fa38, testver a router zaras-egysegesitesrol -- card 99254564):
+  // before card dbc0b4bf (this repo's own commit 85fcacb, 2026-09-04 19:19:24 +0200 -- fix(otel):
+  // close the message span at DELIVERY) NOTHING ever closed a router span, success or failure. So
+  // `status = 'running'` today means three different things at once: (1) genuinely still in
+  // flight, (2) pre-dbc0b4bf junk that will NEVER be closed retroactively, (3) a POST-dbc0b4bf
+  // failure that predates card 99254564's own fix (the router closed success but not its own
+  // failures until that card). Meaning (2) makes `running` alone useless as a stuck-span
+  // detector, which is exactly what the sibling card wants it to be able to answer cheaply.
+  //
+  // Splits (2) out with its own status: any row that was ALREADY 'running' with a start_ms before
+  // the dbc0b4bf cutoff is relabelled 'legacy_unknown' -- not (1), not really (3) either, just
+  // "we do not and cannot know what happened to this one". Everything created at or after the
+  // cutoff keeps meaning exactly what its status says.
+  //
+  // Idempotent and safe on a fresh DB (whose CREATE TABLE above already carries the new value, so
+  // sqlite_master.sql already matches and this block never fires): rebuilt on the same idiom as
+  // the memories/kanban_cards CHECK-widening migrations elsewhere in this file, because SQLite has
+  // no ALTER TABLE ... DROP/MODIFY CONSTRAINT.
+  try {
+    const current = db.prepare("SELECT sql FROM sqlite_master WHERE name='otel_spans'").get() as { sql: string } | undefined
+    const hasLegacyStatus = !!current?.sql?.match(/'legacy_unknown'/)
+    if (current?.sql && !hasLegacyStatus) {
+      const DBC0B4BF_DELIVERY_CLOSE_CUTOFF_MS = 1788542364000
+      db.exec(`
+        CREATE TABLE otel_spans_new (
+          trace_id        TEXT NOT NULL,
+          span_id         TEXT NOT NULL,
+          parent_span_id  TEXT,
+          agent_id        TEXT NOT NULL,
+          operation       TEXT NOT NULL,
+          start_ms        INTEGER NOT NULL,
+          end_ms          INTEGER,
+          status          TEXT NOT NULL DEFAULT 'ok' CHECK(status IN ('ok','error','timeout','running','legacy_unknown')),
+          attributes      TEXT,
+          PRIMARY KEY (trace_id, span_id)
+        );
+        INSERT INTO otel_spans_new SELECT trace_id, span_id, parent_span_id, agent_id, operation, start_ms, end_ms,
+          CASE
+            WHEN status = 'running' AND start_ms < ${DBC0B4BF_DELIVERY_CLOSE_CUTOFF_MS} THEN 'legacy_unknown'
+            ELSE status
+          END,
+          attributes
+        FROM otel_spans;
+        DROP TABLE otel_spans;
+        ALTER TABLE otel_spans_new RENAME TO otel_spans;
+        CREATE INDEX IF NOT EXISTS idx_otel_spans_trace ON otel_spans(trace_id, start_ms);
+        CREATE INDEX IF NOT EXISTS idx_otel_spans_agent ON otel_spans(agent_id, start_ms);
+      `)
+      logger.info('otel_spans: relabelled pre-dbc0b4bf running rows to legacy_unknown (card 00c9fa38)')
+    }
+  } catch (err) {
+    logger.warn({ err }, 'otel_spans: legacy_unknown migration failed, continuing with the existing schema')
+  }
+
   // One-shot migration from the old JSON file (which had a read-modify-write
   // race). Import rows if they exist, then rename the file so we don't keep
   // re-importing. Wrapped in a transaction so a crash mid-import is safe.
@@ -1355,6 +1625,402 @@ function migrateTaskRunsFromJson(): void {
     tx(arr)
     try { renameSync(legacyPath, `${legacyPath}.migrated`) } catch { /* fine */ }
   } catch { /* corrupt file, skip */ }
+}
+
+/** One row of the stuck-incident log. See the schema comment for what the table is FOR: the
+ *  DETECTION and the DECISION, which nothing else records -- not the card history, which
+ *  kanban_card_events and kanban_card_field_events already carry. */
+export interface StuckIncidentInput {
+  readonly cardId: string
+  readonly assignee: string | null
+  /** The guard's verdict, VERBATIM (e.g. `ALLOW`, `DENY:agent-busy`, `DENY:backoff(1200s)`). */
+  readonly verdict: string
+  readonly detectedAt: number
+  readonly stalledMs: number
+}
+
+/** What `recordStuckIncident` did, so a caller (and a test) can tell the three cases apart without
+ *  re-querying. `skipped` means the verdict was not a decision ABOUT a stuck card at all. */
+export type StuckIncidentResult =
+  | { readonly kind: 'opened'; readonly id: number }
+  | { readonly kind: 'redetected'; readonly id: number; readonly detections: number }
+  | { readonly kind: 'skipped'; readonly reason: string }
+
+/**
+ * Classify a guard verdict into a stored `action`, or refuse to store it at all.
+ *
+ * THE REASON IS THE TEXT UP TO THE FIRST `(` OR `:`, never an equality test against a list. Three of
+ * the nine verdicts carry a payload in PARENTHESES -- `DENY:not-active(<status>)`,
+ * `DENY:cap-reached(<count>)`, `DENY:backoff(<n>s)` -- measured from the script's own echo sites,
+ * because the script's HEADER COMMENT disagrees with its code and says `DENY:backoff:<s>`. A list
+ * kept in sync by hand with a script this repo does not own is a second source of truth waiting to
+ * drift; a prefix read cannot drift.
+ *
+ * THREE KINDS, not two. `usage` and `card-not-found` are CALLING ERRORS, not verdicts about a card
+ * (the distinction is MikroB's, from the corrected heartbeat D-section). Storing them would fold our
+ * own bad calls into "how often did the system decide not to intervene" -- the table corrupting the
+ * very number it exists to produce. They are skipped, and the caller is told why. `ledger-busy` is
+ * the third kind: not a decision, not a caller mistake, but "could not evaluate" -- recorded as
+ * `none_other` so it stays visible without inflating the denial count.
+ *
+ * THE VERDICT SET IS NOT FROZEN, and this function has already been wrong about its size once. It
+ * was written against NINE reasons measured from the script's echo sites; `ledger-busy` (card
+ * 09a3d52a) landed in the same afternoon and made it TEN. That is why the fallback STORES an
+ * unrecognised reason rather than dropping it, and why nothing here is an equality test against a
+ * frozen list: the script is owned by another card and moves on its own schedule.
+ */
+export function classifyStuckVerdict(
+  verdict: string,
+): { readonly action: string; readonly detail: string | null } | { readonly skip: string } {
+  const v = verdict.trim()
+  if (v === 'ALLOW') return { action: 'redispatch', detail: null }
+  if (!v.startsWith('DENY:')) return { skip: `unrecognised verdict: ${v.slice(0, 24)}` }
+  const rest = v.slice('DENY:'.length)
+  const reason = rest.split(/[(:]/, 1)[0] ?? ''
+  if (reason === 'usage' || reason === 'card-not-found') {
+    return { skip: `calling error, not a decision about a card: ${reason}` }
+  }
+  // `ledger-busy` is a THIRD kind, and it arrived while this file was being written: the guard grew
+  // it in card 09a3d52a (the ledger is now taken under a lock, and a missing lock REFUSES). It is
+  // neither a decision nor a calling error -- the guard was asked and COULD NOT EVALUATE, because
+  // another process held the lock.
+  //
+  // It is recorded, but as `none_other`, not `none_denied`. Folding it into `none_denied` would
+  // inflate "how often did the system decide not to intervene" with occasions where nothing was
+  // decided at all -- the same corruption that keeps usage/card-not-found out entirely, one step
+  // milder. Dropping it instead would hide a real operational signal: repeated ledger-busy means
+  // lock contention, and that is exactly the kind of thing this table should be able to show.
+  if (reason === 'ledger-busy') return { action: 'none_other', detail: v }
+  // Everything else IS a decision about a stuck card, including load-paused -- a real policy denial
+  // the old six-item prose omitted. An unknown reason is still stored: the guard may grow reasons,
+  // and a new one must be recordable rather than silently dropped. That is not hypothetical -- see
+  // the paragraph above, which is a reason that appeared DURING this card.
+  return { action: 'none_denied', detail: v }
+}
+
+/**
+ * Record one stuck-card detection. ONE STALL IS ONE ROW: if an unresolved incident already exists
+ * for the card, this bumps its `detections` instead of inserting. The D section runs every 10
+ * minutes, so without that an hour-long stall would become six rows and the repeat count would be
+ * measuring the HEARTBEAT FREQUENCY rather than the stalls.
+ *
+ * Never throws. Logging is not the control: a fault here must not change what the guard decided or
+ * what it returns, so the caller can ignore the result entirely. The one thing it must not do is
+ * pretend -- a failure returns `skipped` with the reason rather than a fake id.
+ */
+export function recordStuckIncident(input: StuckIncidentInput): StuckIncidentResult {
+  const cls = classifyStuckVerdict(input.verdict)
+  if ('skip' in cls) return { kind: 'skipped', reason: cls.skip }
+  try {
+    const db = getDb()
+    const open = db
+      .prepare(
+        `SELECT id, detections FROM stuck_incidents WHERE card_id = ? AND resolved_at IS NULL`,
+      )
+      .get(input.cardId) as { id: number; detections: number } | undefined
+    if (open) {
+      db.prepare(`UPDATE stuck_incidents SET detections = detections + 1 WHERE id = ?`).run(open.id)
+      return { kind: 'redetected', id: open.id, detections: open.detections + 1 }
+    }
+    const r = db
+      .prepare(
+        `INSERT INTO stuck_incidents
+           (card_id, assignee_at_detection, detected_at, stalled_ms_at_detection, action, action_detail)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.cardId,
+        input.assignee,
+        Math.floor(input.detectedAt),
+        Math.floor(input.stalledMs),
+        cls.action,
+        cls.detail,
+      )
+    return { kind: 'opened', id: Number(r.lastInsertRowid) }
+  } catch (e) {
+    return { kind: 'skipped', reason: `write failed: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
+/**
+ * Record a sibling handover (rule 3a): MikroB's heartbeat D section reassigning a stuck card to the
+ * assignee's sibling agent instead of re-dispatching to the same one. Called from
+ * `redispatch-guard.sh sibling-handover`, in the same step the D section already does the PUT
+ * assignee + agent start + dispatch, directly in place of the plain `reset` call it used to make.
+ *
+ * WHY THIS IS NOT `recordStuckIncident` WITH A NEW VERDICT STRING. That function bumps
+ * `detections` on whatever incident is already open for the card -- correct for a re-observation of
+ * the SAME stall, wrong here: `action` is one of the four columns the append-only trigger refuses to
+ * rewrite (`OLD.action <> NEW.action` raises ABORT), so if an open incident already exists (e.g.
+ * `none_denied` from the guard's own prior DENY calls), its action could never become
+ * `sibling_handover` -- the handover would be invisible in the table, silently absorbed as a bumped
+ * counter on a row still labelled as a plain denial. A handover is a DIFFERENT decision about the
+ * SAME stall, not a re-observation of the old one, so it needs its own row.
+ *
+ * RESOLVE THEN REOPEN, atomically. The open incident (if any) is closed with `resolved_at` set to
+ * the handover's own timestamp -- allowed once from NULL, per the append-only trigger -- and a new
+ * row is inserted with `action = 'sibling_handover'`. Order matters under the partial unique index
+ * (`idx_stuck_incidents_open`, one open row per card): resolving first is what lets the insert
+ * succeed at all. Both statements run in one `db.transaction()` so a crash between them cannot leave
+ * the card with zero open incidents recorded and the handover row missing, or two open rows.
+ *
+ * `resolved_by_event_id` is left NULL on purpose: that column is for the OTHER resolution path (card
+ * d05d72b3, detecting resolution from existing event tables after the fact). A direct action the
+ * caller already knows happened is a different kind of resolution than one inferred later, and the
+ * NULL is what lets a reader later tell the two apart.
+ *
+ * Never throws, same posture as `recordStuckIncident`: a logging fault here must not stop the actual
+ * handover (the PUT assignee + agent start + dispatch the caller already did before this call).
+ */
+export function recordSiblingHandover(input: {
+  readonly cardId: string
+  readonly oldAgent: string
+  readonly newAgent: string
+  readonly detectedAt: number
+  readonly stalledMs: number
+}): StuckIncidentResult {
+  try {
+    const database = getDb()
+    const detectedAt = Math.floor(input.detectedAt)
+    const id = database.transaction(() => {
+      const open = database
+        .prepare(`SELECT id FROM stuck_incidents WHERE card_id = ? AND resolved_at IS NULL`)
+        .get(input.cardId) as { id: number } | undefined
+      if (open) {
+        database.prepare(`UPDATE stuck_incidents SET resolved_at = ? WHERE id = ?`).run(detectedAt, open.id)
+      }
+      const r = database
+        .prepare(
+          `INSERT INTO stuck_incidents
+             (card_id, assignee_at_detection, detected_at, stalled_ms_at_detection, action, action_detail)
+           VALUES (?, ?, ?, ?, 'sibling_handover', ?)`,
+        )
+        .run(
+          input.cardId,
+          input.oldAgent,
+          detectedAt,
+          Math.floor(input.stalledMs),
+          `${input.oldAgent} -> ${input.newAgent}`,
+        )
+      return Number(r.lastInsertRowid)
+    })()
+    return { kind: 'opened', id }
+  } catch (e) {
+    return { kind: 'skipped', reason: `write failed: ${e instanceof Error ? e.message : String(e)}` }
+  }
+}
+
+/** Which table a `resolved_by_event_id` points into -- see the column comment on the table. */
+export type StuckIncidentEventTable = 'kanban_card_events' | 'kanban_card_field_events'
+
+/**
+ * Card d05d72b3: resolve an open stuck_incidents row from data the app ALREADY writes on every
+ * relevant change, instead of a new explicit "resolve" call a caller would have to remember to
+ * make -- the same "structural, not disciplinary" reasoning (code-quality rule 6) as the detection
+ * side (878cd292). Called as a side effect of inserting the ONE qualifying event, immediately after
+ * it lands, so "the first such event after detection" is simply "the one being written right now";
+ * nothing needs to reconstruct order afterwards.
+ *
+ * QUALIFYING EVENTS, exactly as the card specifies, not broadened: a `kanban_card_events` row whose
+ * `to_status` is `waiting` or `done`, or a `kanban_card_field_events` row whose `field` is `title` or
+ * `assignee`. Callers pass the row they just inserted; this function does not itself decide whether
+ * a change qualifies -- see the call sites in updateKanbanCard/moveKanbanCard/recordKanbanFieldChanges
+ * for that filter, so the "which changes count" decision lives in ONE place per event kind, not
+ * duplicated between a caller-side filter and a callee-side one that could drift apart.
+ *
+ * NEVER THROWS, same posture as recordStuckIncident/recordSiblingHandover -- a resolution fault
+ * must not break an ordinary card write (an unrelated PUT/move failing because THIS side-effect hit
+ * an error would be a much worse outcome than the incident staying open). Unlike the detection
+ * side, though, the SAFE default here costs nothing to lean on: a missed resolution just leaves an
+ * incident open one event longer, which the NEXT qualifying event (or the guard's own
+ * DENY:progress reset) recovers from -- there is no equivalent to "a stuck card silently going
+ * unhandled" on this side of the table.
+ *
+ * RACE-SAFE AND IDEMPOTENT VIA THE WHERE CLAUSE ALONE: `resolved_at IS NULL AND detected_at < ?` in
+ * the SAME UPDATE means a second qualifying event for the same card (e.g. status AND title changed
+ * in one PUT, so this runs twice) is simply a no-op the second time -- the first call already
+ * cleared `resolved_at`, so the WHERE matches nothing. `detected_at < ?`, strictly less-than, is the
+ * negative control the card asks for: an event that happened BEFORE detection must not resolve it
+ * (this would only ever be reached in practice through a caller passing a stale timestamp, since a
+ * NEWLY inserted event is by construction later than any earlier detection -- kept as a real WHERE
+ * clause rather than trusted-by-construction, because a future caller might not hold that
+ * invariant).
+ */
+export function maybeResolveStuckIncident(
+  cardId: string,
+  eventTable: StuckIncidentEventTable,
+  eventId: number,
+  atSec: number,
+): void {
+  try {
+    db.prepare(
+      `UPDATE stuck_incidents
+         SET resolved_at = ?, resolved_by_event_id = ?, resolved_by_event_table = ?
+       WHERE card_id = ? AND resolved_at IS NULL AND detected_at < ?`,
+    ).run(atSec, eventId, eventTable, cardId, atSec)
+  } catch {
+    /* best effort -- see the fail-closed note above; never let this throw into a card write */
+  }
+}
+
+/** One resolving event, described from its OWN table -- see recordSiblingHandover's comment for why
+ *  a bare `resolved_by_event_id` cannot say which table to read. `description` is a short, human
+ *  line built from that event's own columns (never re-derived or guessed); `null` if the row the id
+ *  pointed to no longer exists (an event table is not append-only-guaranteed the way stuck_incidents
+ *  itself is), so a dangling reference reads as "describable, but the target is gone" rather than
+ *  throwing or silently pretending the incident was never resolved. */
+export interface StuckIncidentResolution {
+  readonly table: StuckIncidentEventTable
+  readonly eventId: number
+  readonly description: string | null
+}
+
+export interface StuckIncidentRecord {
+  readonly id: number
+  readonly cardId: string
+  readonly assignee: string | null
+  readonly detectedAt: number
+  readonly action: string
+  readonly actionDetail: string | null
+  readonly detections: number
+  readonly resolvedAt: number | null
+  /** Seconds stuck: `resolvedAt - detectedAt` once resolved, or `now - detectedAt` while still open
+   *  (card a2c452ff's own constraint: computed here from the two timestamps stuck_incidents already
+   *  stores, never a third, duplicated duration column). */
+  readonly durationSeconds: number
+  readonly ongoing: boolean
+  readonly resolution: StuckIncidentResolution | null
+}
+
+export interface StuckIncidentQuery {
+  readonly cardId?: string
+  readonly agent?: string
+  /** Injectable for tests; defaults to the real clock. Only affects `durationSeconds` on incidents
+   *  still open (`ongoing: true`) -- a resolved incident's duration never depends on "now". */
+  readonly nowSec?: number
+}
+
+export interface StuckIncidentAnswers {
+  /** Matching rows for the given filter (both, either, or neither of cardId/agent), newest first. */
+  readonly incidents: readonly StuckIncidentRecord[]
+  /** How many separate incidents THIS CARD has had, ever -- independent of any agent filter also
+   *  passed in, so answering "how often did this card get stuck" does not silently narrow to "...
+   *  while assigned to the one agent you happened to also filter on". Null when no cardId was given. */
+  readonly repeatCountForCard: number | null
+  /** Same idea, for the agent axis: how many separate incidents this agent has had across ALL its
+   *  cards, independent of any cardId filter. Null when no agent was given. */
+  readonly repeatCountForAgent: number | null
+}
+
+interface StuckIncidentRow {
+  readonly id: number
+  readonly card_id: string
+  readonly assignee_at_detection: string | null
+  readonly detected_at: number
+  readonly action: string
+  readonly action_detail: string | null
+  readonly detections: number
+  readonly resolved_at: number | null
+  readonly resolved_by_event_id: number | null
+  readonly resolved_by_event_table: string | null
+}
+
+function describeResolutionEvent(
+  table: StuckIncidentEventTable,
+  eventId: number,
+): StuckIncidentResolution {
+  if (table === 'kanban_card_events') {
+    const row = db
+      .prepare(`SELECT from_status, to_status FROM kanban_card_events WHERE id = ?`)
+      .get(eventId) as { from_status: string | null; to_status: string } | undefined
+    return {
+      table,
+      eventId,
+      description: row ? `status: ${row.from_status ?? '(none)'} -> ${row.to_status}` : null,
+    }
+  }
+  const row = db
+    .prepare(`SELECT field, old_value, new_value FROM kanban_card_field_events WHERE id = ?`)
+    .get(eventId) as { field: string; old_value: string | null; new_value: string | null } | undefined
+  return {
+    table,
+    eventId,
+    description: row ? `${row.field}: ${row.old_value ?? '(none)'} -> ${row.new_value ?? '(none)'}` : null,
+  }
+}
+
+function describeStuckIncident(r: StuckIncidentRow, nowSec: number): StuckIncidentRecord {
+  const ongoing = r.resolved_at == null
+  const durationSeconds = (ongoing ? nowSec : r.resolved_at!) - r.detected_at
+  let resolution: StuckIncidentResolution | null = null
+  if (r.resolved_by_event_id != null && r.resolved_by_event_table != null) {
+    resolution = describeResolutionEvent(
+      r.resolved_by_event_table as StuckIncidentEventTable,
+      r.resolved_by_event_id,
+    )
+  }
+  return {
+    id: r.id,
+    cardId: r.card_id,
+    assignee: r.assignee_at_detection,
+    detectedAt: r.detected_at,
+    action: r.action,
+    actionDetail: r.action_detail,
+    detections: r.detections,
+    resolvedAt: r.resolved_at,
+    durationSeconds,
+    ongoing,
+    resolution,
+  }
+}
+
+/**
+ * Card a2c452ff (4/4, parent f92671df): the card's four questions -- when did it get stuck, how
+ * long, what resolved it, how often has this exact card/agent repeated -- answered from ONE call
+ * against data 878cd292 and d05d72b3 already write, never a new write path of its own.
+ */
+export function getStuckIncidentAnswers(query: StuckIncidentQuery): StuckIncidentAnswers {
+  const nowSec = query.nowSec ?? Math.floor(Date.now() / 1000)
+  const conditions: string[] = []
+  const params: unknown[] = []
+  if (query.cardId) {
+    conditions.push('card_id = ?')
+    params.push(query.cardId)
+  }
+  if (query.agent) {
+    conditions.push('assignee_at_detection = ?')
+    params.push(query.agent)
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+  const rows = db
+    .prepare(
+      `SELECT id, card_id, assignee_at_detection, detected_at, action, action_detail, detections,
+              resolved_at, resolved_by_event_id, resolved_by_event_table
+         FROM stuck_incidents ${where}
+        ORDER BY detected_at DESC`,
+    )
+    .all(...params) as StuckIncidentRow[]
+
+  const repeatCountForCard = query.cardId
+    ? (
+        db.prepare(`SELECT COUNT(*) c FROM stuck_incidents WHERE card_id = ?`).get(query.cardId) as {
+          c: number
+        }
+      ).c
+    : null
+  const repeatCountForAgent = query.agent
+    ? (
+        db
+          .prepare(`SELECT COUNT(*) c FROM stuck_incidents WHERE assignee_at_detection = ?`)
+          .get(query.agent) as { c: number }
+      ).c
+    : null
+
+  return {
+    incidents: rows.map((r) => describeStuckIncident(r, nowSec)),
+    repeatCountForCard,
+    repeatCountForAgent,
+  }
 }
 
 export function getDb(): Database.Database {
@@ -2190,11 +2856,25 @@ export interface KanbanCard {
   sort_order: number
   created_at: number
   updated_at: number
+  // Unix seconds of the card's last STATUS CHANGE (from kanban_card_events),
+  // falling back to created_at when it has never moved. Use this for ageing and
+  // stuck detection; updated_at is reset by comments and edits.
+  last_status_at?: number
   archived_at: number | null
   // Set the first time the card is moved to in_progress and the assigned agent
   // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
   // guard so re-dragging a card does not re-prompt the agent.
   dispatched_at: number | null
+}
+
+// A card as referenced FROM another card (blocker links). Deliberately narrow:
+// the detail panel needs a name and a state to render a link, never the whole row.
+export interface KanbanCardRef {
+  id: string
+  seq?: number
+  title: string
+  status: KanbanCard['status']
+  archived_at: number | null
 }
 
 export interface KanbanComment {
@@ -2223,8 +2903,18 @@ export function listKanbanCards(): KanbanCard[] {
   db.prepare(
     "UPDATE kanban_cards SET archived_at = ? WHERE status = 'done' AND archived_at IS NULL AND updated_at < ?"
   ).run(Math.floor(Date.now() / 1000), archiveCutoff)
+  // last_status_at: when the card LAST CHANGED COLUMN, not when its row was
+  // last touched. These are not the same thing, and the difference is a real
+  // blind spot: addKanbanComment() sets updated_at, so a card that has not
+  // moved in weeks looks fresh the moment anyone comments on it. The main agent
+  // comments more than anyone, so ageing measured on updated_at is mostly
+  // measuring the watcher, not the work. Falls back to created_at for cards
+  // that have never moved (no event rows), which is the honest age for those.
   return db
-    .prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE archived_at IS NULL ORDER BY sort_order ASC')
+    .prepare(`SELECT c.rowid AS seq, c.*,
+                     COALESCE((SELECT MAX(e.created_at) FROM kanban_card_events e
+                               WHERE e.card_id = c.id), c.created_at) AS last_status_at
+              FROM kanban_cards c WHERE c.archived_at IS NULL ORDER BY c.sort_order ASC`)
     .all() as KanbanCard[]
 }
 
@@ -2232,10 +2922,22 @@ export function getKanbanCard(id: string): KanbanCard | undefined {
   return db.prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE id = ?').get(id) as KanbanCard | undefined
 }
 
-
 /** How far up a parent chain one stamp will walk. The fleet's own decomposition rule is four levels
  *  (Phase -> Task -> subtask -> step); 16 is slack, not a target, and the limit exists so a malformed
  *  chain cannot spin. */
+//
+// WHAT IS DELIBERATELY NOT HERE, AND HOW FAR THAT HOLDS. Archive, unarchive and delete do NOT
+// bubble up: those tidy a thread rather than advance it, and a parent that looks "active" because
+// a subcard was filed away is the same false signal in a new costume. Left out on purpose, not
+// forgotten -- but only for the three dedicated functions (archiveKanbanCard, unarchiveKanbanCard,
+// deleteKanbanCard), which is what the test asserts.
+//
+// It does NOT hold at the HTTP boundary. PUT /api/kanban/:id hands the raw JSON body to
+// updateKanbanCard() with no field whitelist (routes/kanban.ts), so an `archived_at` arriving that
+// way travels the bubbling path like any other field -- and this is live, not theoretical:
+// web/app.js sends whole `{...card}` objects on the assignee and parent edits, so editing an
+// already-archived card stamps its parent today. The fix belongs to the endpoint rather than here
+// (card 531c6500, field whitelist on the write routes); when it lands, this comment goes.
 const ANCESTOR_DEPTH_LIMIT = 16
 
 /**
@@ -2310,6 +3012,7 @@ export function createKanbanCard(card: {
   // Card 6cd61430: a new card can already state its pair and its parent.
   noteRelations(cardEdges({ id: card.id, description: card.description, parent_id: card.parent_id }))
 }
+
 
 /**
  * The last signal a card carries in its comments:
@@ -2454,9 +3157,15 @@ export function updateKanbanCard(
      WHERE id=?`
   ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
   if (changed && statusChanges) {
-    db.prepare(
+    const r = db.prepare(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(id, card.status, f.status, opts?.actor ?? null, now, forcedFlag)
+    // Card d05d72b3: waiting/done is the qualifying transition -- see maybeResolveStuckIncident's
+    // own comment for why the filter lives here, at the ONE place that knows a status event was
+    // just written, rather than duplicated inside that function.
+    if (f.status === 'waiting' || f.status === 'done') {
+      maybeResolveStuckIncident(id, 'kanban_card_events', Number(r.lastInsertRowid), now)
+    }
   }
   if (changed) {
     touchAncestorChain(f.parent_id, now, id)
@@ -2522,7 +3231,13 @@ function recordKanbanFieldChanges(
     const a = (before as unknown as Record<string, unknown>)[field]
     const b = (after as unknown as Record<string, unknown>)[field]
     if (a === b) continue
-    stmt.run(id, field, clipAuditValue(a), clipAuditValue(b), actor ?? null, nowMs)
+    const r = stmt.run(id, field, clipAuditValue(a), clipAuditValue(b), actor ?? null, nowMs)
+    // Card d05d72b3: title ([NN%] progress) or assignee changing is the OTHER qualifying signal --
+    // see maybeResolveStuckIncident's own comment. `archived_at`/`predecessor_removed`, written via
+    // the sibling recordKanbanFieldEvent below, are NOT in this loop and are deliberately excluded.
+    if (field === 'title' || field === 'assignee') {
+      maybeResolveStuckIncident(id, 'kanban_card_field_events', Number(r.lastInsertRowid), nowMs)
+    }
   }
 }
 
@@ -2572,7 +3287,12 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   if (forcedOverride && !force) return false
   // Read the previous status first so we only record an audit event on a real
   // status transition (not a pure sort_order reorder within the same column).
-  const prev = (db.prepare('SELECT status FROM kanban_cards WHERE id=?').get(id) as { status: string } | undefined)?.status
+  // parent_id comes along in the same read: the ancestor chain has to be stamped too, and this
+  // path (drag / status change) is the most common subcard event there is -- an subcard moved to
+  // done. Leaving it out would make the false alarm rarer instead of gone.
+  const row = db.prepare('SELECT status, parent_id FROM kanban_cards WHERE id=?').get(id) as
+    { status: string; parent_id: string | null } | undefined
+  const prev = row?.status
   // Card a8aa9ae5. Gated on a REAL transition, not on the target status alone: this function is
   // also the reorder path, so an unchanged status must stay writable. Otherwise a card already in
   // in_progress with an open predecessor could never be dragged within its own column.
@@ -2591,24 +3311,57 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
       ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
       : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
   ).run(status, sortOrder, now, id).changes > 0
+  if (changed) touchAncestorChain(row?.parent_id, now, id)
   if (changed && prev !== undefined && prev !== status) {
     // `forced` records only whether THIS transition actually needed the reviewed-card-reopen
     // override -- an ordinary move that happens to carry `force:true` (e.g. an exempt agent's
     // client always sends it) is not itself a guard override and must not read as one; a caller
     // that wants the newDevStop route-layer bypass in the audit trail records that separately.
-    db.prepare(
+    const r = db.prepare(
       'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(id, prev, status, actor ?? null, now, forcedOverride || depBlocked ? 1 : 0)
+    // Card d05d72b3: the drag/move path is the other live writer of a status transition -- see
+    // updateKanbanCard's sibling hook and maybeResolveStuckIncident's own comment.
+    if (status === 'waiting' || status === 'done') {
+      maybeResolveStuckIncident(id, 'kanban_card_events', Number(r.lastInsertRowid), now)
+    }
   }
   if (changed) touchAncestorsOf(id, now)
   return changed
 }
 
-// Stamp the once-only kanban -> agent dispatch guard. Returns false if the
-// card id does not exist.
+/**
+ * CLAIM the once-only kanban -> agent dispatch guard. Returns true only if THIS call took it.
+ *
+ * WHAT CHANGED AND WHY (card 5b00c5ec, parent 01c846bf). The statement used to be
+ * `WHERE id=?`, so `changes > 0` answered "does this row exist?" -- and every caller read that
+ * answer as "did I win the claim?". Those are different questions, and the old one is true for
+ * both winner and loser. Adding `AND dispatched_at IS NULL` makes the write itself the arbiter:
+ * SQLite applies it atomically, so exactly one of two concurrent callers can see changes > 0.
+ *
+ * NOT A LIVE BUG TODAY, and the card says so too -- worth repeating here rather than letting a
+ * future reader assume an incident. `fireKanbanDispatch` reads the card and marks it with no
+ * `await` in between (checked, not assumed), so on one event loop there is nothing to interleave.
+ * This is hardening against the first edit that introduces one: at that moment the window opens
+ * silently, and nothing about the old statement would have started failing to announce it.
+ *
+ * THE COLUMN IS NOT A TOMBSTONE, which is what makes a real claim safe here: `moveKanbanCard`
+ * clears `dispatched_at` when a card leaves in_progress, and `kanban-dispatch-rearm.test.ts` pins
+ * that. So a claim that is taken and then not used is recoverable by moving the card out and back,
+ * rather than burning the card's dispatch forever.
+ *
+ * Returns false for a missing card id, unchanged -- and now ALSO false for a card that some other
+ * caller has already claimed. Callers that only wanted "did the row exist" would read that as a
+ * failure; there are none (the two call sites are in fireKanbanDispatch), and card c4da93bf is
+ * where the caller starts branching on this value deliberately.
+ */
 export function markKanbanCardDispatched(id: string): boolean {
   const now = Math.floor(Date.now() / 1000)
-  return db.prepare('UPDATE kanban_cards SET dispatched_at=? WHERE id=?').run(now, id).changes > 0
+  return (
+    db
+      .prepare('UPDATE kanban_cards SET dispatched_at=? WHERE id=? AND dispatched_at IS NULL')
+      .run(now, id).changes > 0
+  )
 }
 
 export type ArchiveKanbanCardResult =
@@ -2744,6 +3497,10 @@ export function deleteKanbanCard(id: string, actor?: string): boolean {
     db.prepare('DELETE FROM kanban_comments WHERE card_id = ?').run(cardId)
     db.prepare('DELETE FROM kanban_line_comments WHERE card_id = ?').run(cardId)
     db.prepare('DELETE FROM kanban_card_labels WHERE card_id = ?').run(cardId)
+    // Both directions: the card's own blockers AND the links where it blocks
+    // someone else. Dropping only the first would leave another card marked
+    // "blocked by" a card that no longer exists -- a block nobody can clear.
+    db.prepare('DELETE FROM kanban_card_blockers WHERE card_id = ? OR blocker_id = ?').run(cardId, cardId)
     db.prepare('UPDATE kanban_cards SET parent_id = NULL WHERE parent_id = ?').run(cardId)
     // AUDIT the unblock BEFORE cutting the edges (card d3f8d2c3, Cybered): a `force` bypass of the
     // dependency guard writes an audited row (kanban_card_events.forced); deleting the predecessor
@@ -3520,6 +4277,90 @@ export function getLabelsForAllCards(): Map<string, Label[]> {
   return map
 }
 
+// === Card blockers ===
+// "Card A is blocked by card B": one row per (card_id = A, blocker_id = B).
+
+// A blocker link is only useful while it can eventually clear. A cycle (A waits
+// on B, B waits on A) can never clear, so it is refused at insert time rather
+// than rendered as a permanent deadlock. Walks the existing links from the
+// proposed blocker: if the card being blocked is already reachable from it, the
+// new link would close a loop. Iterative with a seen-set, so a pre-existing
+// cycle in the data cannot hang the walk.
+export function blockerWouldCycle(cardId: string, blockerId: string): boolean {
+  if (cardId === blockerId) return true
+  const stmt = db.prepare('SELECT blocker_id FROM kanban_card_blockers WHERE card_id = ?')
+  const seen = new Set<string>([blockerId])
+  const stack = [blockerId]
+  while (stack.length > 0) {
+    const current = stack.pop() as string
+    for (const row of stmt.all(current) as Array<{ blocker_id: string }>) {
+      if (row.blocker_id === cardId) return true
+      if (seen.has(row.blocker_id)) continue
+      seen.add(row.blocker_id)
+      stack.push(row.blocker_id)
+    }
+  }
+  return false
+}
+
+export function addCardBlocker(cardId: string, blockerId: string): void {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(
+    'INSERT OR IGNORE INTO kanban_card_blockers (card_id, blocker_id, created_at) VALUES (?, ?, ?)'
+  ).run(cardId, blockerId, now)
+}
+
+export function removeCardBlocker(cardId: string, blockerId: string): boolean {
+  return db.prepare(
+    'DELETE FROM kanban_card_blockers WHERE card_id = ? AND blocker_id = ?'
+  ).run(cardId, blockerId).changes > 0
+}
+
+// The cards THIS card waits on. Archived blockers are kept in the result: a
+// blocker that was archived without being finished still blocks, and hiding it
+// would silently clear the block.
+export function getBlockersForCard(cardId: string): KanbanCardRef[] {
+  return db.prepare(`
+    SELECT c.id, c.rowid AS seq, c.title, c.status, c.archived_at
+    FROM kanban_card_blockers b
+    JOIN kanban_cards c ON c.id = b.blocker_id
+    WHERE b.card_id = ?
+    ORDER BY b.created_at ASC
+  `).all(cardId) as KanbanCardRef[]
+}
+
+// The reverse view: the cards waiting on THIS one. Shown on the detail panel so
+// the operator can see the cost of leaving a card open before closing the modal.
+export function getBlockedByCard(cardId: string): KanbanCardRef[] {
+  return db.prepare(`
+    SELECT c.id, c.rowid AS seq, c.title, c.status, c.archived_at
+    FROM kanban_card_blockers b
+    JOIN kanban_cards c ON c.id = b.card_id
+    WHERE b.blocker_id = ?
+    ORDER BY b.created_at ASC
+  `).all(cardId) as KanbanCardRef[]
+}
+
+// Bulk variant for the board list view -- one JOIN query instead of an N+1
+// per-card lookup, the same shape as getLabelsForAllCards.
+export function getBlockersForAllCards(): Map<string, KanbanCardRef[]> {
+  const rows = db.prepare(`
+    SELECT b.card_id AS card_id, c.id AS id, c.rowid AS seq, c.title AS title,
+           c.status AS status, c.archived_at AS archived_at
+    FROM kanban_card_blockers b
+    JOIN kanban_cards c ON c.id = b.blocker_id
+    ORDER BY b.created_at ASC
+  `).all() as Array<KanbanCardRef & { card_id: string }>
+  const map = new Map<string, KanbanCardRef[]>()
+  for (const row of rows) {
+    const { card_id, ...ref } = row
+    const list = map.get(card_id)
+    if (list) list.push(ref)
+    else map.set(card_id, [ref])
+  }
+  return map
+}
+
 // --- Heartbeat helpers ---
 
 export interface HeartbeatKanbanSummary {
@@ -3652,6 +4493,13 @@ export interface AgentMessage {
   trace_id: string | null
   span_id: string | null
   parent_span_id: string | null
+  // Card 3bd457ed: 1 = this message asks to interrupt the receiver now, 0 = it
+  // waits for the receiver's next natural check. Typed as a number, not a
+  // boolean, on purpose: these rows come straight out of SQLite via SELECT *,
+  // so the runtime value IS 0/1, and a `boolean` annotation here would make
+  // `msg.wake === false` a comparison that is never true. Read it through
+  // messageWakesReceiver(), not by truthiness.
+  wake: number
 }
 
 export function createAgentMessage(
@@ -3660,11 +4508,44 @@ export function createAgentMessage(
   content: string,
   originNote?: string | null,
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
+  opts?: { quietClass?: string },
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
+  // A wake:false message waits for the receiver's NEXT NATURAL CHECK -- so the
+  // receiver has to have one. Only the main agent does: it drains its own inbox
+  // every turn (/api/agents/<main>/drain-inbox, which refuses any other agent by
+  // design). Sub-agents are push-only; the router's tmux inject IS their
+  // delivery. A wake:false row addressed to a sub-agent would therefore not
+  // "wait quietly", it would sit pending until MESSAGE_ABANDON_WINDOW_MS marked
+  // it FAILED -- the message would disappear, which is precisely what this field
+  // is not allowed to do.
+  //
+  // So the request is honoured for the main agent and coerced back to a wake for
+  // everyone else, and the coercion is recorded rather than performed silently:
+  // the row that gets stored says 1, so the queue never reports a suppression
+  // that did not happen. Federated addresses ('peer/agent') land here too, and
+  // for the same reason -- there is no local pull for them either.
+  // Card 7d47ca16: a caller does not get to hand in a raw boolean. It names a
+  // MESSAGE CLASS, and only a class on QUIET_MESSAGE_CLASSES buys silence -- so
+  // the gate reads a string it can find in the source instead of trusting the
+  // caller's judgement. An unlisted class is not an error the caller has to
+  // handle; it simply wakes, and the refusal is logged so a typo shows up as a
+  // line rather than as a message that quietly stopped being quiet.
+  let wake = 1
+  if (opts?.quietClass !== undefined) {
+    if (isQuietMessageClass(opts.quietClass)) {
+      wake = 0
+    } else {
+      logger.warn({ to, from, quietClass: opts.quietClass }, 'createAgentMessage: quiet delivery refused -- the class is not on QUIET_MESSAGE_CLASSES; delivering as a normal wake')
+    }
+  }
+  if (wake === 0 && to !== MAIN_AGENT_ID) {
+    logger.warn({ to, from }, 'createAgentMessage: a quiet delivery is only honoured for the main agent (no pull path elsewhere); delivering as a normal wake')
+    wake = 1
+  }
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, wake) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, wake)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
@@ -3673,6 +4554,7 @@ export function createAgentMessage(
     trace_id: traceCtx?.trace_id ?? null,
     span_id: traceCtx?.span_id ?? null,
     parent_span_id: traceCtx?.parent_span_id ?? null,
+    wake,
   }
 }
 
@@ -3705,6 +4587,15 @@ export function markMessageDelivered(id: number): boolean {
 // question: it re-reads the kanban board for the cards the message was stamped with and reports
 // which ones MOVED while it waited. One is "the world changed", the other is "the sender has since
 // said more". Verified as non-overlapping before adopting; keeping both is the point.
+//
+// Higher id == strictly newer (monotonic autoincrement). 'failed' is excluded: a message that never
+// reached the receiver cannot be "the current truth". idx_agent_messages_thread(from_agent,
+// to_agent, created_at) seeks the query to the (from,to) partition on its two equality columns;
+// `id > ?` and `status != 'failed'` are NOT index bounds -- they filter every row of that partition
+// (EXPLAIN QUERY PLAN confirms: only the two equalities use the index). Cheap today (a from->to
+// partition is a few hundred rows), but it is a per-partition scan, not an id-bounded range. If a
+// partition ever reaches tens of thousands, bound created_at too (the caller knows the delivered
+// message's created_at) or add an (from_agent, to_agent, id) index.
 export function countNewerMessagesFromSameSender(fromAgent: string, toAgent: string, msgId: number): number {
   const row = db.prepare(
     "SELECT COUNT(*) AS n FROM agent_messages WHERE from_agent = ? AND to_agent = ? AND id > ? AND status != 'failed'"
@@ -3829,6 +4720,20 @@ export interface ModelUsage {
   readonly agents: number
 }
 
+/** One line of the per-model requests-per-bucket series (card eea1ba52). Same field names
+ *  (`key`/`counts`) as the FE's own client-side llmMonBucketize() output, on purpose: the
+ *  renderer that already draws the workload-by-category chart can draw this one too, unchanged. */
+export interface ModelSeriesLine {
+  readonly key: string
+  readonly counts: readonly number[]
+}
+
+export interface TaskSeries {
+  readonly bucketMs: number
+  readonly starts: readonly number[]
+  readonly models: readonly ModelSeriesLine[]
+}
+
 export interface TaskSummary {
   readonly fromMs: number
   readonly toMs: number
@@ -3841,9 +4746,56 @@ export interface TaskSummary {
   /** Named seam, not decoration: which lanes can draw real blocks. A caller that assumes every
    *  model has task blocks would silently render an empty timeline and look like a bug. */
   readonly blockCoverage: { readonly lanes: string[]; readonly note: string }
+  /** Present only when the caller asked for `?buckets=N` (card eea1ba52) -- the per-model
+   *  requests-per-minute curves the FE's "LLM monitor" page names as its one known gap
+   *  ("NOT here, said out loud" in app-llm-monitor.js's own header). Omitted, not null, when
+   *  not requested: every existing caller of GET /api/task-summary keeps its old response
+   *  shape untouched. */
+  readonly series?: TaskSeries
 }
 
-export function getTaskSummary(fromMs: number, toMs: number): TaskSummary {
+// Same TOP-N-plus-"(other)" shape as the FE's LLM_MON_TOP_SERIES (app-llm-monitor.js): the
+// legend and the top of the curve should lead with what matters, whichever side computes it.
+const TASK_SUMMARY_TOP_MODELS = 4
+const TASK_SUMMARY_OTHER_MODEL_KEY = '(other)'
+
+/** Per-model requests-per-bucket series (card eea1ba52), computed the same way the FE already
+ *  buckets task-category events client-side: a token_usage row lands in the bucket of its
+ *  timestamp, top models (already known from the caller's own `models` list, sorted by request
+ *  count) keep their own line, everything else folds into "(other)". */
+function buildTaskSeries(fromMs: number, toMs: number, buckets: number, topModels: readonly string[]): TaskSeries {
+  const count = Math.max(1, Math.min(500, Math.floor(buckets)))
+  const span = Math.max(1, toMs - fromMs)
+  const bucketMs = span / count
+  const fromS = Math.floor(fromMs / 1000)
+  const toS = Math.ceil(toMs / 1000)
+
+  const rows = db.prepare(
+    `SELECT COALESCE(model,'(unreported)') AS model, timestamp
+       FROM token_usage
+      WHERE timestamp >= ? AND timestamp < ?`,
+  ).all(fromS, toS) as { model: string; timestamp: number }[]
+
+  const top = new Set(topModels.slice(0, TASK_SUMMARY_TOP_MODELS))
+  const keys = [...topModels.slice(0, TASK_SUMMARY_TOP_MODELS), TASK_SUMMARY_OTHER_MODEL_KEY]
+  const lines = new Map<string, number[]>(keys.map((k) => [k, new Array(count).fill(0)]))
+  let otherUsed = false
+  for (const r of rows) {
+    const tsMs = r.timestamp * 1000
+    const rel = (tsMs - fromMs) / span
+    const i = Math.min(count - 1, Math.max(0, Math.floor(rel * count)))
+    const key = top.has(r.model) ? r.model : TASK_SUMMARY_OTHER_MODEL_KEY
+    if (key === TASK_SUMMARY_OTHER_MODEL_KEY) otherUsed = true
+    lines.get(key)![i] += 1
+  }
+  if (!otherUsed) lines.delete(TASK_SUMMARY_OTHER_MODEL_KEY)
+
+  const starts = Array.from({ length: count }, (_, i) => fromMs + i * bucketMs)
+  const models = [...lines.entries()].map(([key, counts]) => ({ key, counts }))
+  return { bucketMs, starts, models }
+}
+
+export function getTaskSummary(fromMs: number, toMs: number, buckets?: number): TaskSummary {
   const fromS = Math.floor(fromMs / 1000)
   const toS = Math.ceil(toMs / 1000)
 
@@ -3896,6 +4848,9 @@ export function getTaskSummary(fromMs: number, toMs: number): TaskSummary {
       lanes: ['local'],
       note: 'Only local-LLM tasks record start and end, so only the "local" lane can draw timeline blocks. Online-model work is counted and its tokens summed, but no per-task duration is stored anywhere in this database (otel_spans measures inter-agent send->deliver latency, not task work).',
     },
+    ...(buckets && buckets > 0
+      ? { series: buildTaskSeries(fromMs, toMs, buckets, models.map((m) => m.model)) }
+      : {}),
   }
 }
 
@@ -4040,6 +4995,12 @@ export interface DispatchedPendingStats {
  * a busy agent permanently ineligible for a soft restart -- on 2026-08-12 the
  * gate reported 11 blocking messages for the main agent and several were its
  * own acknowledgements.
+ *
+ * Self-addressed rows are excluded for the same reason, one level in: an alert
+ * the agent writes to itself is not delegated work and can never come back and
+ * clear. Counting them deadlocked the gate against its own persistent-block
+ * alert -- blocked, alert, pending count 1, still blocked, and the alert re-sent
+ * every alert interval. Measured live on 2026-08-11.
  */
 export const COMPLETION_REPORT_PREFIX = '[Eredmény]'
 
@@ -4052,16 +5013,19 @@ export function getDispatchedPendingStats(
   // Bound parameter, not interpolation: the prefix contains no LIKE wildcards
   // today, but a future edit adding one would silently widen the exclusion.
   const ackPattern = `${COMPLETION_REPORT_PREFIX}%`
+  // Kept as one fragment so the live and stale halves can never drift apart.
+  const OUTSTANDING_WORK =
+    `from_agent = ? AND to_agent != from_agent
+       AND status IN ('pending','delivered')
+       AND content NOT LIKE ?`
   const liveRow = db.prepare(
     `SELECT COUNT(*) AS cnt FROM agent_messages
-       WHERE from_agent = ? AND status IN ('pending','delivered')
-         AND content NOT LIKE ?
+       WHERE ${OUTSTANDING_WORK}
          AND CAST(created_at AS INTEGER) > ?`,
   ).get(fromAgent, ackPattern, cutoffEpoch) as { cnt: number }
   const staleRow = db.prepare(
     `SELECT COUNT(*) AS cnt FROM agent_messages
-       WHERE from_agent = ? AND status IN ('pending','delivered')
-         AND content NOT LIKE ?
+       WHERE ${OUTSTANDING_WORK}
          AND CAST(created_at AS INTEGER) <= ?`,
   ).get(fromAgent, ackPattern, cutoffEpoch) as { cnt: number }
   return {
@@ -4074,6 +5038,33 @@ export function getDispatchedPendingStats(
  * True when the agent's last inbound channel message has no later outbound
  * (unanswered question). Used by the context-restart gate.
  */
+/**
+ * The message id of the newest inbound that has no outbound after it, or null
+ * when nothing is open. Same rule as hasOpenInboundQuestion, but it hands back
+ * WHICH message, so a caller can ask whether the agent has already been shown
+ * it (see openQuestionBlocks in the restart-gate runner).
+ *
+ * Returns '' for an open question whose row carries no message id: the caller
+ * cannot match that against a marker, and the safe reading of "unknown" is
+ * that the agent has not seen it.
+ */
+export function openInboundQuestionMessageId(agentId: string): string | null {
+  const row = db.prepare(
+    `SELECT id, created_at, message_id FROM conversation_log
+       WHERE agent_id = ? AND direction = 'in'
+       ORDER BY created_at DESC, id DESC LIMIT 1`,
+  ).get(agentId) as { id: number; created_at: number; message_id: string | null } | undefined
+  if (!row) return null
+  const laterOut = db.prepare(
+    `SELECT 1 FROM conversation_log
+       WHERE agent_id = ? AND direction = 'out'
+         AND (created_at > ? OR (created_at = ? AND id > ?))
+       LIMIT 1`,
+  ).get(agentId, row.created_at, row.created_at, row.id)
+  if (laterOut) return null
+  return row.message_id == null ? '' : String(row.message_id)
+}
+
 export function hasOpenInboundQuestion(agentId: string): boolean {
   const row = db.prepare(
     `SELECT id, created_at FROM conversation_log
@@ -4225,6 +5216,7 @@ export interface PendingTaskRetryRow {
   attempt_count: number
   last_reason: string | null
   alert_sent_at: number | null
+  owner_alert_sent_at: number | null
 }
 
 /**
@@ -4317,6 +5309,19 @@ export function markPendingTaskRetryAlert(taskName: string, agentName: string, t
   return db
     .prepare('UPDATE pending_task_retries SET alert_sent_at = ? WHERE task_name = ? AND agent_name = ? AND alert_sent_at IS NULL')
     .run(ts, taskName, agentName).changes > 0
+}
+
+/** Stage-2 (direct-to-owner) mirror of markPendingTaskRetryAlert / clearPendingTaskRetryAlert. */
+export function markPendingTaskRetryOwnerAlert(taskName: string, agentName: string, ts: number): boolean {
+  return db
+    .prepare('UPDATE pending_task_retries SET owner_alert_sent_at = ? WHERE task_name = ? AND agent_name = ? AND owner_alert_sent_at IS NULL')
+    .run(ts, taskName, agentName).changes > 0
+}
+
+export function clearPendingTaskRetryOwnerAlert(taskName: string, agentName: string): boolean {
+  return db
+    .prepare('UPDATE pending_task_retries SET owner_alert_sent_at = NULL WHERE task_name = ? AND agent_name = ?')
+    .run(taskName, agentName).changes > 0
 }
 
 // --- Vector Search (Ollama + nomic-embed-text) ---
@@ -4464,6 +5469,7 @@ export interface IdeaBoxRow {
   title: string
   description: string | null
   category: string
+  scope: 'munka' | 'szemelyes'
   status: 'new' | 'reviewed' | 'kanban' | 'rejected'
   source: string
   kanban_id: string | null
@@ -4473,11 +5479,12 @@ export interface IdeaBoxRow {
   updated_at: number
 }
 
-export function listIdeas(opts?: { status?: string; category?: string }): IdeaBoxRow[] {
+export function listIdeas(opts?: { status?: string; category?: string; scope?: IdeaBoxRow['scope'] }): IdeaBoxRow[] {
   let q = 'SELECT * FROM idea_box WHERE 1=1'
   const params: string[] = []
   if (opts?.status) { q += ' AND status = ?'; params.push(opts.status) }
   if (opts?.category) { q += ' AND category = ?'; params.push(opts.category) }
+  if (opts?.scope) { q += ' AND scope = ?'; params.push(opts.scope) }
   q += ' ORDER BY created_at DESC'
   return db.prepare(q).all(...params) as IdeaBoxRow[]
 }
@@ -4485,18 +5492,19 @@ export function listIdeas(opts?: { status?: string; category?: string }): IdeaBo
 export function createIdea(idea: Omit<IdeaBoxRow, 'created_at' | 'updated_at'>): void {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(
-    `INSERT INTO idea_box (id, title, description, category, status, source, kanban_id, impact, effort, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(idea.id, idea.title, idea.description ?? null, idea.category, idea.status, idea.source, idea.kanban_id ?? null, idea.impact ?? null, idea.effort ?? null, now, now)
+    `INSERT INTO idea_box (id, title, description, category, scope, status, source, kanban_id, impact, effort, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(idea.id, idea.title, idea.description ?? null, idea.category, idea.scope, idea.status, idea.source, idea.kanban_id ?? null, idea.impact ?? null, idea.effort ?? null, now, now)
 }
 
-export function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' | 'description' | 'category' | 'status' | 'kanban_id' | 'impact' | 'effort'>>): boolean {
+export function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' | 'description' | 'category' | 'scope' | 'status' | 'kanban_id' | 'impact' | 'effort'>>): boolean {
   const now = Math.floor(Date.now() / 1000)
   const sets: string[] = ['updated_at = ?']
   const params: unknown[] = [now]
   if (patch.title !== undefined) { sets.push('title = ?'); params.push(patch.title) }
   if (patch.description !== undefined) { sets.push('description = ?'); params.push(patch.description) }
   if (patch.category !== undefined) { sets.push('category = ?'); params.push(patch.category) }
+  if (patch.scope !== undefined) { sets.push('scope = ?'); params.push(patch.scope) }
   if (patch.status !== undefined) { sets.push('status = ?'); params.push(patch.status) }
   if (patch.kanban_id !== undefined) { sets.push('kanban_id = ?'); params.push(patch.kanban_id) }
   if (patch.impact !== undefined) { sets.push('impact = ?'); params.push(patch.impact) }
@@ -4506,7 +5514,11 @@ export function updateIdea(id: string, patch: Partial<Pick<IdeaBoxRow, 'title' |
 }
 
 export function deleteIdea(id: string): boolean {
-  return db.prepare('DELETE FROM idea_box WHERE id = ?').run(id).changes > 0
+  const remove = db.transaction(() => {
+    db.prepare('DELETE FROM idea_attachments WHERE idea_id = ?').run(id)
+    return db.prepare('DELETE FROM idea_box WHERE id = ?').run(id).changes > 0
+  })
+  return remove()
 }
 
 export function listIdeaCategories(): string[] {
@@ -4534,6 +5546,38 @@ export function addIdeaComment(ideaId: string, author: string, content: string):
   ).run(ideaId, author, content, now)
   db.prepare('UPDATE idea_box SET updated_at = ? WHERE id = ?').run(now, ideaId)
   return { id: Number(info.lastInsertRowid), idea_id: ideaId, author, content, created_at: now }
+}
+
+// --- Idea Attachments ---
+
+export interface IdeaAttachmentRow {
+  id: string
+  idea_id: string
+  filename: string
+  stored_path: string
+  mime: string
+  size: number
+  extracted_text: string | null
+  created_at: number
+}
+
+export function listIdeaAttachments(ideaId: string): IdeaAttachmentRow[] {
+  return db.prepare('SELECT * FROM idea_attachments WHERE idea_id = ? ORDER BY created_at ASC').all(ideaId) as IdeaAttachmentRow[]
+}
+
+export function getIdeaAttachment(id: string): IdeaAttachmentRow | undefined {
+  return db.prepare('SELECT * FROM idea_attachments WHERE id = ?').get(id) as IdeaAttachmentRow | undefined
+}
+
+export function addIdeaAttachment(row: IdeaAttachmentRow): void {
+  db.prepare(
+    `INSERT INTO idea_attachments (id, idea_id, filename, stored_path, mime, size, extracted_text, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(row.id, row.idea_id, row.filename, row.stored_path, row.mime, row.size, row.extracted_text ?? null, row.created_at)
+}
+
+export function deleteIdeaAttachment(id: string): boolean {
+  return db.prepare('DELETE FROM idea_attachments WHERE id = ?').run(id).changes > 0
 }
 
 // --- Idea Status Log ---
@@ -4616,6 +5660,100 @@ export interface WorkflowCandidate {
 export function getRecentToolCalls(sinceSecs: number): ToolCallLogRow[] {
   const cutoff = Math.floor(Date.now() / 1000) - sinceSecs
   return db.prepare('SELECT * FROM tool_call_log WHERE created_at >= ? ORDER BY created_at ASC').all(cutoff) as ToolCallLogRow[]
+}
+
+// Per-agent tool-call telemetry for the status view, in ONE query.
+//
+// `total` distinguishes the two answers the view must never conflate: an agent
+// missing from this map has NO telemetry (the hook is not registered for it),
+// which is not the same as an agent that made zero calls since it started.
+// `sinceWork` counts only the calls after the given per-agent start time.
+export function getAgentToolActivity(
+  windowSecs: number,
+  workStartByAgent: Record<string, number | null> = {},
+): Record<string, { total: number; sinceWork: number; lastAt: number }> {
+  const cutoff = Math.floor(Date.now() / 1000) - windowSecs
+  const rows = db.prepare(
+    `SELECT agent_id, COUNT(*) AS total, MAX(created_at) AS last_at
+     FROM tool_call_log
+     WHERE created_at >= ? AND agent_id IS NOT NULL
+     GROUP BY agent_id`
+  ).all(cutoff) as { agent_id: string; total: number; last_at: number }[]
+
+  const out: Record<string, { total: number; sinceWork: number; lastAt: number }> = {}
+  const sinceStmt = db.prepare(
+    'SELECT COUNT(*) AS n FROM tool_call_log WHERE agent_id = ? AND created_at >= ?'
+  )
+  for (const r of rows) {
+    const start = workStartByAgent[r.agent_id]
+    const sinceWork = start == null
+      ? r.total
+      : (sinceStmt.get(r.agent_id, Math.max(start, cutoff)) as { n: number }).n
+    out[r.agent_id] = { total: r.total, sinceWork, lastAt: r.last_at }
+  }
+  return out
+}
+
+// Last inbound (task handed TO the agent) and last outbound (the agent itself
+// reporting) per agent. delivered_at is the honest inbound stamp: a row exists
+// from the moment it is queued, but it only reached the agent once delivered.
+export function getAgentMessageActivity(): Record<string, {
+  lastInboundAt: number | null
+  lastOutboundAt: number | null
+  lastInboundSubject: string | null
+}> {
+  const out: Record<string, { lastInboundAt: number | null; lastOutboundAt: number | null; lastInboundSubject: string | null }> = {}
+  const ensure = (a: string) => (out[a] ??= { lastInboundAt: null, lastOutboundAt: null, lastInboundSubject: null })
+
+  const inbound = db.prepare(
+    `SELECT to_agent AS agent, MAX(delivered_at) AS at
+     FROM agent_messages WHERE delivered_at IS NOT NULL GROUP BY to_agent`
+  ).all() as { agent: string; at: number }[]
+  for (const r of inbound) ensure(r.agent).lastInboundAt = r.at
+
+  const outbound = db.prepare(
+    `SELECT from_agent AS agent, MAX(created_at) AS at
+     FROM agent_messages GROUP BY from_agent`
+  ).all() as { agent: string; at: number }[]
+  for (const r of outbound) ensure(r.agent).lastOutboundAt = r.at
+
+  const subjectStmt = db.prepare(
+    `SELECT content FROM agent_messages
+     WHERE to_agent = ? AND delivered_at IS NOT NULL
+     ORDER BY delivered_at DESC LIMIT 1`
+  )
+  for (const agent of Object.keys(out)) {
+    if (out[agent].lastInboundAt === null) continue
+    const row = subjectStmt.get(agent) as { content: string } | undefined
+    if (row) out[agent].lastInboundSubject = row.content.split('\n')[0].slice(0, 120)
+  }
+  return out
+}
+
+// The card each agent currently has in_progress, with the moment it entered
+// that status. enteredStatusAt comes from kanban_card_events and is null for
+// cards whose transition predates the event log covering this path -- null, not
+// a guess: updated_at moves on every edit and would silently misreport age.
+export function getAgentCurrentCards(): Record<string, { id: string; title: string; enteredStatusAt: number | null }> {
+  const cards = db.prepare(
+    `SELECT id, title, assignee FROM kanban_cards
+     WHERE status = 'in_progress' AND archived_at IS NULL AND assignee IS NOT NULL
+     ORDER BY updated_at DESC`
+  ).all() as { id: string; title: string; assignee: string }[]
+
+  const enteredStmt = db.prepare(
+    `SELECT MAX(created_at) AS at FROM kanban_card_events
+     WHERE card_id = ? AND to_status = 'in_progress'`
+  )
+  const out: Record<string, { id: string; title: string; enteredStatusAt: number | null }> = {}
+  for (const c of cards) {
+    // One row per agent: the most recently touched card wins, matching the
+    // one-in_progress-card-at-a-time rule the fleet already works under.
+    if (out[c.assignee]) continue
+    const at = (enteredStmt.get(c.id) as { at: number | null } | undefined)?.at ?? null
+    out[c.assignee] = { id: c.id, title: c.title, enteredStatusAt: at }
+  }
+  return out
 }
 
 export function analyzeWorkflowCandidates(sinceSecs = 3600, minToolCalls = 5, gapSecs = 300): WorkflowCandidate[] {
@@ -5035,6 +6173,8 @@ export interface Approval {
   requested_at: number
   resolved_at: number | null
   resolved_by: string | null
+  content_hash: string | null
+  consumed_at: number | null
 }
 
 export function createApproval(params: {
@@ -5044,11 +6184,12 @@ export function createApproval(params: {
   action_description: string
   action_payload?: string | null
   timeout_at?: number | null
+  content_hash?: string | null
 }): Approval {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(`
-    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at, content_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     params.id,
     params.agent_id,
@@ -5057,6 +6198,7 @@ export function createApproval(params: {
     params.action_payload ?? null,
     params.timeout_at ?? null,
     now,
+    params.content_hash ?? null,
   )
   return {
     id: params.id,
@@ -5070,6 +6212,8 @@ export function createApproval(params: {
     requested_at: now,
     resolved_at: null,
     resolved_by: null,
+    content_hash: params.content_hash ?? null,
+    consumed_at: null,
   }
 }
 
@@ -5243,4 +6387,3 @@ export function listOtelTraces(limit = 50): OtelTraceSummary[] {
     LIMIT ?
   `).all(limit) as OtelTraceSummary[]
 }
-

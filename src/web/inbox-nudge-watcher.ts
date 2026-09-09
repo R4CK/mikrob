@@ -47,9 +47,10 @@
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { getPendingMessages } from '../db.js'
+import { messageWakesReceiver } from './message-wake.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { isSessionReadyForPrompt, sendPromptToSession, sessionExistsOnHost } from './agent-process.js'
+import { isSessionReadyForPrompt, sendPromptToSession, sessionExistsOnHost, clearFeedbackModalAndRecheck } from './agent-process.js'
 import { sendAlert } from './channel-monitor.js'
 
 export const INBOX_NUDGE_INITIAL_DELAY_MS = 55_000 // free slot (taken: 5/10/20/25/30/35/40/45/50/90s)
@@ -192,8 +193,16 @@ async function tick(): Promise<void> {
   // and take the dashboard down.
   try {
     const now = Date.now()
+    // Card 3bd457ed: this watcher is the SECOND way a message wakes the main
+    // agent (the router's inbox-wakeup is the first), and it is the one that
+    // spends a paid autonomous turn. Honouring wake:false only in the router
+    // would leave the more expensive path wide open -- the hardening would sit
+    // in the fallback and not in the primary. A wake:false message is still
+    // pending, still drained on the next turn, and still counted in the log
+    // line below; it just never buys a turn of its own.
     const pending = getPendingMessages(MAIN_AGENT_ID)
-    const oldest = pending[0]
+    const waking = pending.filter(messageWakesReceiver)
+    const oldest = waking[0]
     const pre = decideNudgePreflight(
       { now, oldestId: oldest ? oldest.id : null, oldestAgeMs: oldest ? now - oldest.created_at * 1000 : 0 },
       state,
@@ -225,7 +234,12 @@ async function tick(): Promise<void> {
     }
     if (state.absenceLogged) state = { ...state, absenceLogged: false }
 
-    if (!(await isSessionReadyForPrompt(MAIN_CHANNELS_SESSION, null))) {
+    if (!(await isSessionReadyForPrompt(MAIN_CHANNELS_SESSION, null))
+      // A self-drafted feedback modal reads as not-ready and would otherwise
+      // park the nudge forever: the pre-flight dismissal lives in the send
+      // path, which this branch never reaches. Same three-line shape as the
+      // other injectors -- see clearFeedbackModalAndRecheck.
+      && !(await clearFeedbackModalAndRecheck(MAIN_CHANNELS_SESSION, null))) {
       // Busy is the NORMAL skip path (silent); surface a long busy-wait spell
       // at a slow rate so it is distinguishable from a dead watcher.
       if (now - state.lastBusyLogAt > BUSY_WAIT_LOG_INTERVAL_MS) {

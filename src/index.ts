@@ -9,14 +9,15 @@ import {
   writeSync,
 } from 'node:fs'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
 import { resolveOwnerChatId } from './owner-chat.js'
-import { initDatabase, backfillEmbeddings } from './db.js'
+import { initDatabase, backfillEmbeddings, getDb } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
-import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
+import { initHeartbeat, stopHeartbeat, ensureHeartbeatWorkerHidden } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
 import { startAgentProcess } from './web/agent-process.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
@@ -422,6 +423,7 @@ const shutdown = (): void => {
     const hardKill = setTimeout(() => {
       logger.warn({ timeoutMs: SHUTDOWN_HARD_KILL_MS }, 'Graceful shutdown timeout, hard exit')
       releaseLock()
+      try { getDb().close() } catch { /* db may not be open yet */ }
       process.exit(exitCode || 1)
     }, SHUTDOWN_HARD_KILL_MS)
 
@@ -431,12 +433,14 @@ const shutdown = (): void => {
       webServer.close(() => {
         clearTimeout(hardKill)
         releaseLock()
+        try { getDb().close() } catch { /* db may not be open yet */ }
         process.exit(exitCode)
       })
     } else {
       // Early shutdown, before startWebServer ran. Nothing to drain.
       clearTimeout(hardKill)
       releaseLock()
+      try { getDb().close() } catch { /* db may not be open yet */ }
       process.exit(exitCode)
     }
   } catch (err) {
@@ -557,6 +561,10 @@ async function main(): Promise<void> {
       logger.warn({ error: heartbeatStart.error }, 'Heartbeat agent failed to start (legacy native heartbeat is NOT a fallback any more)')
     }
   } else {
+    // Even with the feature off, keep the isolation sandbox out of the agent
+    // list: agents/heartbeat-worker is a cwd, not an agent, and without the
+    // sentinel the dashboard offers it as a startable agent (2026-08-25).
+    ensureHeartbeatWorkerHidden()
     logger.info('Heartbeat agent boot-start skipped (set HEARTBEAT_AGENT_ENABLED=1 on the respawn host to enable)')
   }
 
@@ -582,18 +590,29 @@ async function main(): Promise<void> {
   logger.info('Telegram kommunikacio: Claude Code Channels kezeli')
 }
 
-main().catch((err) => {
-  if (err instanceof DeferToPeerError) {
-    logger.info({ peerPid: err.peerPid }, 'Peer dashboard already claimed the pidfile, exiting quietly')
-    process.exit(0)
-  }
-  // Route through shutdown() so any partial init (heartbeat, digest
-  // timers, decay interval) is drained before exit. shutdown() is
-  // idempotent and no-ops if a signal handler already ran; in that case
-  // we must NOT overwrite the exit code the handler already chose --
-  // otherwise a clean SIGTERM plus a concurrent unrelated async rejection
-  // would report crash when the operator expected 0.
-  logger.error({ err }, 'Vegzetes hiba')
-  if (!shuttingDown) exitCode = 1
-  shutdown()
-})
+// Card d91550bc: without this guard, main()'s side effects (a real initDatabase(),
+// a real WEB_PORT bind, killing any peer bound to it, starting the heartbeat/watcher
+// timers) fired unconditionally the moment ANYTHING imported this module -- not just
+// when it was run directly. Nothing imports index.ts today (checked by grep before
+// this fix), so it was a live but dormant risk, not the trigger of any incident yet.
+// process.argv[1] is only ever this file's own path when node/tsx was invoked ON it
+// directly; a test's or another module's `import('./index.js')` leaves argv[1]
+// pointing at ITS OWN entry point (the test runner, tsx repl, etc.), so the guard is
+// false and main() never runs.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    if (err instanceof DeferToPeerError) {
+      logger.info({ peerPid: err.peerPid }, 'Peer dashboard already claimed the pidfile, exiting quietly')
+      process.exit(0)
+    }
+    // Route through shutdown() so any partial init (heartbeat, digest
+    // timers, decay interval) is drained before exit. shutdown() is
+    // idempotent and no-ops if a signal handler already ran; in that case
+    // we must NOT overwrite the exit code the handler already chose --
+    // otherwise a clean SIGTERM plus a concurrent unrelated async rejection
+    // would report crash when the operator expected 0.
+    logger.error({ err }, 'Vegzetes hiba')
+    if (!shuttingDown) exitCode = 1
+    shutdown()
+  })
+}

@@ -1,6 +1,7 @@
 ---
 name: cinematic3dexperience
 description: Transforms an ordinary website into a cinematic, story-driven 3D journey using interactive scenes, camera movements, scroll-driven storytelling, parallax layers, lighting effects, particle systems, depth transitions, and immersive section reveals — always explaining how each scene guides the visitor while keeping the site clear and usable. Use this skill whenever the user mentions a cinematic website, 3D journey, immersive experience, interactive scenes, camera movement, scroll storytelling, parallax, particle effects, lighting, depth transitions, section reveals, "wow factor", awwwards-style motion, or wants to turn a static/boring page into a narrative experience. Triggers on "cinematic", "3D journey", "immerzív oldal", "látványos átmenetek", "scroll sztori", "kamera mozgás", "parallax", "particle", "make it cinematic", "tedd filmszerűvé".
+version: "1.0.0"
 ---
 
 # Cinematic 3D Experience

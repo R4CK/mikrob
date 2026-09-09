@@ -1,6 +1,8 @@
 ---
 name: 3dwebsiteoperatingsystem
 description: A complete operating system for designing and building premium, agency-quality 3D animated websites — information architecture, visual identity, 3D interaction system, animation language, responsive layouts, accessibility strategy, and an implementation roadmap, with the purpose behind every animation explained. Use this skill whenever the user mentions a 3D website, immersive/interactive site, WebGL/Three.js/R3F experience, scroll-driven storytelling, hero animation, awwwards-style/agency-quality site, product showcase, landing page with "wow factor", motion design system, or asks to design/architect/plan a premium animated web experience. Also triggers on "3D weboldal", "látványos oldal", "immerzív", "scroll animáció", "legyen prémium/agency szintű".
+version: "1.0.0"
+related_skills: [frontend-design-research, gsap-motion-specialist, scroll-driven-3d-motion, threejs-specialist, ui-ux-design-system]
 ---
 
 # 3D Website Operating System

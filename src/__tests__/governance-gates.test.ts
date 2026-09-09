@@ -103,7 +103,7 @@ describe('self-pace-gate: prose ending in the at(1) word (card 12f80902)', () =>
     for (const cmd of [
       'echo "claude -p go" | ' + AT + ' now + 5 minutes',
       AT + ' -f /tmp/job.sh',
-      AT + ' < job.txt',
+      AT + ' < job.txt now + 5 minutes',
       AT + ' 14:30',
       AT + ' 1430',
       AT + ' tomorrow',
@@ -112,6 +112,17 @@ describe('self-pace-gate: prose ending in the at(1) word (card 12f80902)', () =>
     ]) {
       expect(selfPaceDecision('Bash', { command: heredoc(cmd) }).deny, cmd).toBe(true)
     }
+  })
+
+  // MOVED SIDES, deliberately, by this block's OWN argument (card 79bb0364). `at < job.txt` used
+  // to sit in the list above under the heading "every shape that can actually submit a job" -- and
+  // it cannot: at(1) requires a timespec, so a bare redirect exits with a usage error exactly as
+  // the bare binary two tests up does. The row was mislabelled from the start, and keeping it cost
+  // a real false-positive class, because the same text is how every language writes a comparison
+  // against a variable named `at`. The working redirect form (`at < job.txt now + 5 minutes`) took
+  // its place in the DENY list, so the coverage this file holds went up, not down.
+  it('ALLOWS a bare redirect with no timespec -- same argument as the bare binary', () => {
+    expect(selfPaceDecision('Bash', { command: heredoc(AT + ' < job.txt') }).deny).toBe(false)
   })
 
   it('STILL DENIES a bare batch -- it needs no timespec, so end-of-segment IS an invocation', () => {
@@ -379,6 +390,49 @@ describe('self-pace-gate gateDecision', () => {
   it('denies writing the schedule store via the native Write/Edit tool (F5)', () => {
     expect(selfPaceDecision('Write', { file_path: '/home/agent/.claude/scheduled_tasks.json', content: '{}' }).deny).toBe(true)
     expect(selfPaceDecision('Edit', { file_path: '~/.claude/scheduled_tasks.json' }).deny).toBe(true)
+  })
+  // Directory-format scheduled-tasks store (card 1cd9fa94): the new store layout
+  // uses ~/.claude/scheduled-tasks/<name>/task-config.json; SCHEDULE_STORE_RX must
+  // cover both the legacy single-file form and any file under a named task subdir.
+  it('denies WRITE to directory-format task-config.json (F5-dir)', () => {
+    expect(selfPaceDecision('Write', {
+      file_path: '/home/neon/.claude/scheduled-tasks/local-llm-worker-poke/task-config.json',
+      content: '{}',
+    }).deny).toBe(true)
+    expect(selfPaceDecision('Edit', {
+      file_path: '~/.claude/scheduled-tasks/agent-skill-drift-sync-heartbeat/task-config.json',
+    }).deny).toBe(true)
+  })
+  it('denies WRITE to any file under a named task subdir -- fail-closed for unknown paths (F5-dir-fc)', () => {
+    expect(selfPaceDecision('Write', {
+      file_path: '/home/neon/.claude/scheduled-tasks/my-task/SKILL.md',
+      content: '# skill',
+    }).deny).toBe(true)
+    expect(selfPaceDecision('NotebookEdit', {
+      notebook_path: '/home/neon/.claude/scheduled-tasks/my-task/notebook.ipynb',
+    }).deny).toBe(true)
+  })
+  it('denies a Bash WRITE to the directory-format store (redirect)', () => {
+    expect(selfPaceDecision('Bash', {
+      command: 'echo "{}" > ~/.claude/scheduled-tasks/local-llm-worker-poke/task-config.json',
+    }).deny).toBe(true)
+    expect(selfPaceDecision('Bash', {
+      command: 'tee ~/.claude/scheduled-tasks/my-task/task-config.json <<EOF\n{}\nEOF',
+    }).deny).toBe(true)
+  })
+  it('ALLOWS read-only inspection of the directory-format store (F4-dir)', () => {
+    expect(selfPaceDecision('Bash', {
+      command: 'cat ~/.claude/scheduled-tasks/local-llm-worker-poke/task-config.json',
+    }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', {
+      command: 'grep schedule ~/.claude/scheduled-tasks/my-task/task-config.json',
+    }).deny).toBe(false)
+  })
+  it('ALLOWS unrelated paths that happen to contain "scheduled" (no false-positive)', () => {
+    expect(selfPaceDecision('Write', {
+      file_path: '/home/agent/project/scheduled-reports/q1/report.json',
+      content: '{}',
+    }).deny).toBe(false)
   })
   it('denies a shell-driven /loop', () => {
     expect(selfPaceDecision('Bash', { command: 'claude /loop "keep polling"' }).deny).toBe(true)

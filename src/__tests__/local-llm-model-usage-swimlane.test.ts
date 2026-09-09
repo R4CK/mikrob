@@ -303,3 +303,61 @@ describe('buildModelUsageSwimlane -- the real ledger shape', () => {
     expect(kpi.avgLatencyMs).toBe(86_212) // wall time, not eval time
   })
 })
+
+// Card ecf38e5a: the swimlane's `models[]` rows carry the SAME per-model kill switch
+// GET /api/local-llm/models already exposes, so the Overview page can badge a disabled model from a
+// BE fact instead of a second lookup.
+describe('buildModelUsageSwimlane -- enabled/disabledAt (card ecf38e5a)', () => {
+  it('a model with no entry in the disabled map reports enabled:true, disabledAt:null', () => {
+    const { models } = build([line({ model: MODEL_A })])
+    expect(models[0]).toMatchObject({ model: MODEL_A, enabled: true, disabledAt: null })
+  })
+
+  it('a model present in the disabled map reports enabled:false with its recorded timestamp', () => {
+    const disabled = new Map([[MODEL_A, 1_700_000_000_000]])
+    const { models } = buildModelUsageSwimlane(
+      parseUsageRows([line({ model: MODEL_A })]),
+      NOW_MS,
+      6,
+      FULL_TAIL,
+      null,
+      disabled,
+    )
+    expect(models[0]).toMatchObject({ model: MODEL_A, enabled: false, disabledAt: 1_700_000_000_000 })
+  })
+
+  it('disabled-map lookup is CANONICAL: a tagless disabled entry still matches a tagged ledger model', () => {
+    // The disabled-model module always stores canonical (tagged) keys; a caller of this function
+    // that passes a bare name (mirroring how the /models GET route already reads the file) must
+    // still match, the same guarantee canonicalModelName gives isModelDisabled elsewhere.
+    const disabled = new Map([['qwen2.5-coder:latest', 5_000]])
+    const { models } = buildModelUsageSwimlane(
+      parseUsageRows([line({ model: 'qwen2.5-coder' })]),
+      NOW_MS,
+      6,
+      FULL_TAIL,
+      null,
+      disabled,
+    )
+    expect(models[0]).toMatchObject({ enabled: false, disabledAt: 5_000 })
+  })
+
+  it('an idle roster-only lane (no traffic) still reports its disabled state, not a default', () => {
+    const disabled = new Map([[MODEL_B, 9_999]])
+    const { models } = buildModelUsageSwimlane(
+      parseUsageRows([line({ model: MODEL_A })]),
+      NOW_MS,
+      6,
+      FULL_TAIL,
+      [MODEL_B],
+      disabled,
+    )
+    const idleLane = models.find((m) => m.model === MODEL_B)!
+    expect(idleLane).toMatchObject({ installed: true, enabled: false, disabledAt: 9_999 })
+  })
+
+  it('CONTROL: omitting the disabled map entirely (old call sites) defaults every lane to enabled', () => {
+    const { models } = build([line({ model: MODEL_A })])
+    expect(models.every((m) => m.enabled === true && m.disabledAt === null)).toBe(true)
+  })
+})

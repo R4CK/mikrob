@@ -64,13 +64,37 @@ function code(text: string): string {
 }
 
 /** The problems found, so the same reading can be aimed at a deliberately broken copy. */
+/**
+ * The script WITHOUT its machine-wide lock machinery -- the mutation both controls below rest on.
+ *
+ * IT USED TO BE A SPAN: `text.replace(/\ncommand -v flock[\s\S]*?\nfi\n/, '\n')`, i.e. "from the
+ * flock guard to the next `fi`". That silently depended on there being NO `fi` between the guard and
+ * the tree lock, and card 492a6d5c put one there (the CPU-slot queueing notice). The mutation then
+ * stopped early, left the tree lock standing, and both controls failed -- not because the guard got
+ * worse, but because the mutation stopped removing what it names.
+ *
+ * Anchored on the two pieces it actually means now. That is a NARROWING: the old span could swallow
+ * unrelated code that happened to sit before the next `fi`, and could stop short as it just did.
+ */
+function withoutLockMachinery(txt: string): string {
+  return txt
+    .replace(/\ncommand -v flock[^\n]*\n/, '\n')
+    .replace(/\nexec 9>"\$LOCK_FILE"[\s\S]*?\nfi\n/, '\n')
+}
+
 function problems(source: string): string[] {
   const text = code(source)
   const found: string[] = []
   const at = (needle: string | RegExp) =>
     typeof needle === 'string' ? text.indexOf(needle) : (text.match(needle)?.index ?? -1)
 
-  const lock = at(/flock\b/)
+  // THE TREE MUTEX, told apart from the OTHER flock user this script gained (card 492a6d5c's shared
+  // CPU-capacity pool). A bare /flock\b/ used to be unambiguous and is not any more: the CPU pool's
+  // acquire runs FIRST, so the bare pattern now finds that one and every position comparison below
+  // silently becomes a statement about the wrong lock. Anchored instead on the tree mutex's own file
+  // descriptor -- `exec 9>` opens it, `flock ... 9` takes it, and the CPU pool uses $CPU_FD. This is
+  // a narrowing: it names which lock the checks are about instead of assuming there is only one.
+  const lock = at(/exec 9>|flock[^\n]*\b9\b/)
   const checkout = at('checkout --detach')
   const vitest = at('npx vitest')
 
@@ -114,10 +138,19 @@ describe('fleet-test.sh serialises suite runs machine-wide (cards 85faec1b, 2f0c
 
   it('CONTROL: the same reading REJECTS the script as it was before this card', () => {
     // Without this, "no problems" and "these checks cannot detect anything" are the same result.
-    const preFix = text.replace(/\ncommand -v flock[\s\S]*?\nfi\n/, '\n')
+    const preFix = withoutLockMachinery(text)
     // Checked on the CODE, not the raw file: since card 43ecdbe6 a comment may legitimately mention
     // flock while none of the machinery is left, and that is not a failed mutation.
-    expect(code(preFix), 'the mutation did not apply -- the block was not found').not.toMatch(/flock/)
+    //
+    // The sanity check names the TREE MUTEX, not flock in general (card 492a6d5c). "No flock at all
+    // remains" was the right test while this script had exactly one flock user; the shared CPU pool
+    // is a second, legitimate one, so that phrasing would now fail on a mutation that applied
+    // perfectly. The question it is really asking -- did the tree-lock machinery actually go away --
+    // is unchanged.
+    expect(
+      code(preFix),
+      'the mutation did not apply -- the tree-mutex block was not found',
+    ).not.toMatch(/exec 9>|flock[^\n]*\b9\b/)
     expect(problems(preFix)).toContain('no lock at all')
   })
 
@@ -133,7 +166,7 @@ describe('fleet-test.sh serialises suite runs machine-wide (cards 85faec1b, 2f0c
   it('CONTROL: a lock taken too late is caught, not just a missing one', () => {
     // Ordering is the half a "does it mention flock" check would miss: a lock acquired after the
     // checkout contains every string this file looks for and leaves the bug intact.
-    const late = text.replace(/\ncommand -v flock[\s\S]*?\nfi\n/, '\n').replace('npx vitest run', 'flock -n 9\nnpx vitest run')
+    const late = withoutLockMachinery(text).replace('npx vitest run', 'flock -n 9\nnpx vitest run')
     expect(problems(late)).toContain('the lock is taken AFTER the checkout')
   })
 

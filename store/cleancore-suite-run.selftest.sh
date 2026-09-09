@@ -156,6 +156,66 @@ else
   bad "an unusable lock dir was not reported" "rc=$rc out=$out"
 fi
 
+# --- 11. a single run must not be able to claim every core (card 34587175) ---------------------
+# The slot semaphore bounds concurrent RUNS, but vitest defaults --maxWorkers to nproc, so one run
+# alone already saturates the box (measured: 12 vitest processes on 12 cores, load average 16-20).
+# This drives the script all the way to the vitest invocation with a FAKE vitest binary that just
+# records its argv, since the earlier cases stop at the worktree-resolution step on purpose.
+RUN_WT="$TMP/fake-run"
+mkdir -p "$RUN_WT/node_modules/.bin" "$RUN_WT/store"
+FAKE_RUN="$RUN_WT/store/$(basename "$RUN")"
+cp "$RUN" "$FAKE_RUN"
+cat > "$RUN_WT/store/agent-worktree.sh" <<EOF
+#!/usr/bin/env bash
+echo "$RUN_WT"
+EOF
+chmod +x "$RUN_WT/store/agent-worktree.sh"
+# The real script best-effort-sources these two helpers; empty no-op stand-ins keep the run quiet.
+: > "$RUN_WT/store/vitest-flake-classify.sh"; chmod +x "$RUN_WT/store/vitest-flake-classify.sh"
+: > "$RUN_WT/store/vitest-skip-report.sh"; chmod +x "$RUN_WT/store/vitest-skip-report.sh"
+ARGV_CAPTURE="$TMP/vitest-argv.txt"
+cat > "$RUN_WT/node_modules/.bin/vitest" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$ARGV_CAPTURE"
+exit 0
+EOF
+chmod +x "$RUN_WT/node_modules/.bin/vitest"
+
+env_fake_wt=(
+  "CLEANCORE_SUITE_LOCK_PREFIX=$PREFIX-fakewt"
+  "CLEANCORE_SUITE_API=http://127.0.0.1:9"
+  "CLEANCORE_SUITE_POLL_S=1"
+)
+
+: > "$ARGV_CAPTURE"
+out="$(env "${env_fake_wt[@]}" CLEANCORE_SUITE_SLOTS=2 bash "$FAKE_RUN" some-agent 2>&1)"; rc=$?
+expect_default=$(( $(nproc 2>/dev/null || echo 1) / 2 )); [ "$expect_default" -lt 1 ] && expect_default=1
+if [[ $rc -eq 0 ]] && grep -qx -- "--maxWorkers=$expect_default" "$ARGV_CAPTURE"; then
+  ok "no caller override -> vitest gets --maxWorkers=$expect_default (nproc/SLOTS, floor 1)"
+else
+  bad "default --maxWorkers not passed as expected ($expect_default)" "rc=$rc out=$out argv=$(cat "$ARGV_CAPTURE" 2>/dev/null)"
+fi
+
+: > "$ARGV_CAPTURE"
+out="$(env "${env_fake_wt[@]}" CLEANCORE_SUITE_MAX_WORKERS=7 CLEANCORE_SUITE_SLOTS=2 \
+       bash "$FAKE_RUN" some-agent 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -qx -- "--maxWorkers=7" "$ARGV_CAPTURE"; then
+  ok "CLEANCORE_SUITE_MAX_WORKERS overrides the computed default"
+else
+  bad "CLEANCORE_SUITE_MAX_WORKERS override was not honoured" "rc=$rc out=$out argv=$(cat "$ARGV_CAPTURE" 2>/dev/null)"
+fi
+
+# --- 12. a caller-supplied --maxWorkers is never clobbered by the default ------------------------
+: > "$ARGV_CAPTURE"
+out="$(env "${env_fake_wt[@]}" CLEANCORE_SUITE_SLOTS=2 \
+       bash "$FAKE_RUN" some-agent -- --maxWorkers=3 2>&1)"; rc=$?
+occurrences="$(grep -c -- '--maxWorkers' "$ARGV_CAPTURE" 2>/dev/null || echo 0)"
+if [[ $rc -eq 0 ]] && [ "$occurrences" = "1" ] && grep -qx -- "--maxWorkers=3" "$ARGV_CAPTURE"; then
+  ok "a caller-supplied --maxWorkers passes through untouched, exactly once"
+else
+  bad "caller override was duplicated or dropped" "rc=$rc occurrences=$occurrences argv=$(cat "$ARGV_CAPTURE" 2>/dev/null)"
+fi
+
 echo
 echo "cleancore-suite-run.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

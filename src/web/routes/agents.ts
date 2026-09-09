@@ -587,6 +587,16 @@ function listAgentSummaries(): Promise<AgentSummary[]> {
 // turn absorbs, mirroring the router's MAX_MESSAGES_PER_TICK.
 const INBOX_DRAIN_CAP = 10
 
+// Pane -> coarse activity label, used by /api/agents/activity.
+function paneActivityLabel(running: boolean, pane: string | null): string {
+  if (!running) return 'stopped'
+  if (pane === null) return 'unknown'
+  const s = detectPaneState(pane)
+  if (s === 'busy' || s === 'typing') return 'working'
+  if (s === 'idle') return 'idle'
+  return s // 'unknown' | 'error'
+}
+
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -705,14 +715,6 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // fleet, not just sub-agents. Restored after #226 dropped this route while the
   // frontend kept calling /api/agents/activity (which then 404'd the panel).
   if (path === '/api/agents/activity' && method === 'GET') {
-    const label = (running: boolean, pane: string | null): string => {
-      if (!running) return 'stopped'
-      if (pane === null) return 'unknown'
-      const s = detectPaneState(pane)
-      if (s === 'busy' || s === 'typing') return 'working'
-      if (s === 'idle') return 'idle'
-      return s // 'unknown' | 'error'
-    }
     const tailOf = (pane: string | null): string[] =>
       pane === null
         ? []
@@ -740,7 +742,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         name: MAIN_AGENT_ID,
         isMain: true,
         running,
-        state: label(running, mainPane),
+        state: paneActivityLabel(running, mainPane),
         mode: modeOf(running, mainPane),
         tail: tailOf(mainPane),
       })
@@ -755,7 +757,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       const runState = agentRunStateCached(name, host != null)
       const running = runState === 'running'
       const pane = running ? capturePaneCached(name, host) : null
-      const state = runState === 'unreachable' ? 'unreachable' : label(running, pane)
+      const state = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane)
       entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), tail: tailOf(pane) })
     }
 
@@ -1813,7 +1815,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (authUrl) {
         json(res, { ok: true, authUrl })
       } else {
-        json(res, { ok: false, error: 'Auth URL nem jelent meg 12 masodpercen belul. Probald ujra, vagy nezd a tmux session-t.' })
+        json(res, { ok: false, error: 'Auth URL nem jelent meg 12 másodpercen belül. Próbáld újra, vagy nézd a tmux session-t.' })
       }
     } catch (err) {
       logger.error({ err, name }, 'Auth init failed')
@@ -1839,6 +1841,40 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // on. This mirrors /api/agents/:name/auth/init just above, which sends a literal '/login' the
   // same way, through the SAME in-process sendPromptToSession + pane lock every other delivery
   // path in this codebase already goes through.
+// WHAT A COMPACTION MUST NOT PARAPHRASE (card fed3f037, part a).
+//
+// This route used to send a BARE `/compact`, which leaves the choice of what survives entirely to
+// the summariser. The hermes-agent micro-compaction design (docs/micro-compaction.md, MIT, read as
+// reference -- no code adopted) makes one observation that applies to us verbatim even though its
+// MECHANISM does not: it never summarises the USER's messages, only the derived material. Its
+// reasoning is our own failure mode stated precisely -- what an agent produces is largely an
+// account of what it did, and that survives summarising with little loss, while an instruction is
+// the intent everything else derives from and cannot be reconstructed from the work that followed.
+// Paraphrasing "use the existing helper, do not add a new one" is exactly how an agent confidently
+// does the forbidden thing six turns later.
+//
+// The MECHANISM was rejected on measurement (MikroB plan-grilling verdict, card fed3f037): a
+// per-turn micro-compaction rewrites already-sent history and breaks the prompt-cache prefix every
+// turn, and this fleet's cache hit rate is 98.4% with 49.3B cache-read tokens as the actual cost
+// driver -- precisely the case the source doc names as the losing one. Only the content insight is
+// adopted here, and it costs nothing: the same single `/compact`, with instructions.
+//
+// KILL SWITCH, because this is a fleet-wide change on a critical path (code-quality rule 9: a risky
+// change stays revertible without a commit). COMPACT_PROMPT=bare restores the old literal.
+// Newlines are safe -- sendPromptToSession normalises them to spaces before it types the pane --
+// but this is deliberately kept to ONE line so what reaches the pane is what is written here.
+const COMPACT_INSTRUCTIONS =
+  'Keep these VERBATIM, do not paraphrase: every instruction, constraint and prohibition from Peti or MikroB; ' +
+  'the active card IDs with their requirements and acceptance criteria; any gate finding (NO-GO/FAIL) not yet resolved; ' +
+  'decisions already made and the measurement behind each; open questions still awaiting an answer; ' +
+  'and any Gate-SHA or commit sha already reported. ' +
+  'Summarise freely: tool output, file contents, search results, and your own narration of what you did. ' +
+  'Where a fact was measured, keep the number, not the adjective.'
+
+function compactPrompt(): string {
+  return process.env.COMPACT_PROMPT === 'bare' ? '/compact' : `/compact ${COMPACT_INSTRUCTIONS}`
+}
+
   const compactMatch = path.match(/^\/api\/agents\/([^/]+)\/compact$/)
   if (compactMatch && method === 'POST') {
     const name = decodeURIComponent(compactMatch[1])
@@ -1847,7 +1883,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const session = agentSessionName(name)
     const host = readAgentRemoteHost(name)
     try {
-      await sendPromptToSession(session, '/compact', host)
+      await sendPromptToSession(session, compactPrompt(), host)
       json(res, { ok: true })
     } catch (err) {
       logger.error({ err, name }, 'Compact trigger failed')

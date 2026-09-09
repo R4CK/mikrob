@@ -20,13 +20,13 @@ Segít megérteni:
 
 ### Adatgyűjtés (`src/web/token-usage.ts`)
 
-1. **Agent discovery**: A `~/.claude/projects/` könyvtárból azonosítja az ágenseket a könyvtárnevek alapján (`-agents-NAME` minta a sub-ágensekhez, `-MAIN_AGENT_ID` a fő ágenshez).
+1. **Agent discovery**: A `~/.claude/projects/` könyvtárból azonosítja az ágenseket a könyvtárnevek alapján (`-agents-NAME` minta a sub-ágensekhez, `-MAIN_AGENT_ID` a fő ágenshez). Ezen felül minden ágens saját, izolált `agents/<név>/.claude-config/projects` fáját is beolvassa -- KIVÉVE, ha az a fa feloldva ugyanaz, mint a közös gyökér (tipikusan szimlink). Az a kivétel nem optimalizáció: enélkül minden izolált ágens a TELJES flotta fogyasztását a saját nevére könyvelte, és a tábla 90%-a duplikátum lett (kártya 0c4cf655).
 
 2. **JSONL parsing**: Rekurzívan bejárja a projekt könyvtárakat (beleértve a `subagents/` almappákat), és feldolgozza a `.jsonl` fájlokat. Csak az `assistant` típusú üzeneteket veszi figyelembe, amelyeknek van `usage` mezőjük.
 
 3. **Cursor tracking**: Fájlonként eltárolja az utolsó feldolgozott sort és fájlméretet (`token_usage_cursors` tábla). Változatlan fájlokat kihagyja, módosultakat az utolsó pozíciótól folytatja.
 
-4. **Deduplication**: `UNIQUE INDEX` az `(agent, session_id, timestamp, input_tokens, output_tokens)` kombináción + `INSERT OR IGNORE`. Ugyanaz a rekord kétszer nem kerül be.
+4. **Deduplication**: `UNIQUE INDEX` az `(agent, session_id, timestamp, input_tokens, output_tokens)` kombináción. FONTOS, és ez a mondat korábban tévesen állt itt: mivel az `agent` az index ELSŐ mezője, ez az ugyanazon ÁGENSNÉVEN belüli ismétlést zárja ki, két KÜLÖNBÖZŐ ágensnév alá könyvelt azonos eseményt nem. A kulcsból az `agent` kivétele külön kártya (b774f057), és csak a meglévő duplikátumok takarítása után lehetséges, mert egy unique index nem hozható létre duplikátumos táblán.
 
 ### API végpontok (`src/web/routes/token-usage.ts`)
 
@@ -106,5 +106,5 @@ Minden felhasználó-eredetű adat (agent név, tool név, preview) `escapeHtml(
 ## Korlátok
 
 - A JSONL fájlok az adott gépen élnek; ha a Claude Code máshol fut, azok a transcriptek nem látszanak.
-- A cursor tracking fájlméret-alapú: ha egy fájl rövidebb lesz (truncate), a cursor nullázódik és újraindul a feldolgozás -- a dedup megakadályozza a duplikálást.
+- A cursor tracking fájlméret-alapú: ha egy fájl rövidebb lesz (truncate), a cursor nullázódik és újraindul a feldolgozás -- ugyanannak az ágensnek az újraolvasását a dedup-kulcs elnyeli (a korlátjához lásd a 4. pontot).
 - A kanban korreláció heurisztikus: a feladat időablaka alapján rendel, nem egzakt session-feladat összerendelés.

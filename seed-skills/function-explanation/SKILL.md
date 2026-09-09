@@ -1,6 +1,8 @@
 ---
 name: function-explanation
 description: Explain a single function/method at the deepest level — its exact contract (inputs, outputs, preconditions, postconditions), every side effect, all edge cases and failure modes, complexity, and its place in the call graph. Use when asked what a function does, whether it's correct, or before relying on/modifying it. Triggers on "explain this function", "what does this do", "is this correct", "mit csinál ez a függvény", "magyarázd el".
+version: "1.0.0"
+related_skills: [code-comprehension, defensive-security-analysis, refactoring-support]
 ---
 # Function Explanation (deep, contract-level)
 

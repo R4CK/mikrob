@@ -206,10 +206,20 @@ if [[ -f tsconfig.json ]]; then
       fi
     fi
   fi
-  # A repo whose tsconfig excludes tests cannot surface a stale fixture via `tsc --noEmit`.
-  grep -qE '"\*\*/\*\.test\.ts"' tsconfig.json 2>/dev/null \
-    && add "info" "tsc-excludes-tests" \
-       "root tsconfig excludes **/*.test.ts -- tsc --noEmit CANNOT see test-file type errors"
+  # A repo whose ROOT tsconfig excludes tests cannot surface a stale fixture via `tsc --noEmit` --
+  # UNLESS a SEPARATE project in its typecheck chain covers test files anyway (card b143a439,
+  # Cybered's finding). CleanCore's chain (card 2c0b2002) runs packages/control-plane/tsconfig.test.json,
+  # packages/modules/workforce/tsconfig.test.json and the root tsconfig.tests.json specifically
+  # BECAUSE the root tsconfig.json excludes tests -- so this note fired on EVERY CleanCore card
+  # regardless of whether the changed file was already covered by one of those, and a gate (Cybered)
+  # had already taken the note as fact once, unverified, and written it into a verdict. If any such
+  # project config exists anywhere in the tree, the note has nothing true left to say.
+  if ! find . -name 'tsconfig.test.json' -not -path '*/node_modules/*' 2>/dev/null | grep -q . \
+     && [[ ! -f tsconfig.tests.json ]]; then
+    grep -qE '"\*\*/\*\.test\.ts"' tsconfig.json 2>/dev/null \
+      && add "info" "tsc-excludes-tests" \
+         "root tsconfig excludes **/*.test.ts -- tsc --noEmit CANNOT see test-file type errors"
+  fi
 fi
 
 # --- report -------------------------------------------------------------------------------------

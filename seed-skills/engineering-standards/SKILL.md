@@ -1,6 +1,8 @@
 ---
 name: engineering-standards
 description: The fleet's synthesized engineering standard — 10 categories covering architecture, security, infra, QA, data, resilience, secrets, observability, and code hygiene. The non-negotiable baseline for every dev agent on any production code. Use when designing, building, reviewing, or auditing any system.
+version: "1.0.0"
+related_skills: [injected-port-adapters, legal-compliance-review, project-workflow, qa-test-strategy, tenant-pure-domain]
 ---
 # Engineering Standards (a flotta mérnöki alapszabálya)
 

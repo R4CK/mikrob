@@ -1,6 +1,7 @@
 ---
 name: marketing-psychology
 description: 70+ viselkedéstudományi és pszichológiai modell marketingre alkalmazva. Diagnózis (mi hiányzik), alkalmazás (3-5 elvvel konkrét fix), referencia (modell magyarázat). Triggerek: "miért nem vesznek", "pszichológia", "meggyőzés", "behavioral", "kognitív torzítás", "marketing psychology".
+version: "1.0.0"
 ---
 # Marketing Psychology (Viselkedéstudomány a marketingben)
 

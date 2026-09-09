@@ -1,6 +1,8 @@
 ---
 name: skill-security-auditor
 description: Vet a SKILL.md (and its helper scripts/deps) BEFORE it enters ~/.claude/skills/. Use when importing an external skill, synthesizing one from an untrusted source, or reviewing an auto-generated skill. Scans for prompt-injection, command-injection, credential-harvesting, typosquatted deps, and filesystem-boundary escapes; emits PASS / WARN / FAIL + remediation. Trigger on "import this skill", "vet this skill", "is this skill safe", "skill biztonsagi ellenorzes", or as the pre-install gate in skill-management.
+version: "1.0.0"
+related_skills: [skill-factory, skill-management, white-hat-security-testing]
 ---
 
 # Skill Security Auditor

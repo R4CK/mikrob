@@ -34,6 +34,11 @@ describe('agent_messages DDL parity (card 26ad5302)', () => {
         'id', 'from_agent', 'to_agent', 'content', 'status', 'result',
         'created_at', 'delivered_at', 'completed_at',
         'origin_note', 'trace_id', 'span_id', 'parent_span_id',
+        // Card 3bd457ed: wake. Listed here on purpose -- this assertion is a
+        // change-detector, and the coordinator winning the boot race must
+        // create the column too, or a message it inserts would be missing the
+        // field the router reads.
+        'wake',
       ].sort(),
     )
     const indexes = handle

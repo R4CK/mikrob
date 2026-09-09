@@ -481,6 +481,21 @@ nav { display: flex; gap: 4px; }
 .team-node:hover { border-color: var(--accent); transform: translateY(-1px); }
 .team-node.main { background: var(--accent-soft); border-color: var(--accent); }
 .team-node.leader { border-color: var(--accent); }
+/* Live "working" state, same signal and green as the Activity page's left
+   border. Declared after .main/.leader so an active main or leader shows the
+   working colour rather than its role accent. */
+.team-node.team-node-active {
+  border-color: #22c55e;
+  box-shadow: 0 0 0 1px #22c55e;
+}
+.team-node.team-node-active:hover { border-color: #22c55e; }
+/* Run-state line: the pulsing dot the agent cards use, next to Fut / Leállva. */
+.team-node-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
 /* Drag-and-drop reporting edit (Team page). */
 .team-node.team-draggable { cursor: grab; }
 .team-node.team-dragging { opacity: 0.45; cursor: grabbing; }
@@ -529,6 +544,12 @@ nav { display: flex; gap: 4px; }
   font-size: 13px;
   text-align: center;
   padding: 24px;
+}
+.team-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 16px;
+  text-align: center;
 }
 
 .theme-toggle {
@@ -1249,6 +1270,34 @@ main {
 .ovw-llmdist-lane-label--removed {
   color: var(--danger);
   text-decoration: line-through;
+}
+/* Card e5fc1fb4: the lane label is a link to the model's row on the Local LLM page, and a
+   switched-off model wears the same "Letiltva" badge it wears there */
+.ovw-llmdist-lane-link {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+.ovw-llmdist-lane-link:hover { text-decoration: underline; }
+.ovw-llmdist-lane-link:focus-visible { outline: 2px solid var(--accent, #6366f1); outline-offset: 2px; }
+.ovw-llmdist-lane-label--disabled { color: var(--text-muted); }
+.ovw-llmdist-lane-badge {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--text-muted) 14%, var(--bg-card));
+}
+@media (pointer: coarse) {
+  .ovw-llmdist-lane-link { min-height: 44px; }
 }
 .ovw-llmdist-block {
   position: absolute;
@@ -2241,7 +2290,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   align-items: center;
 }
 
-/* Agents page: grid / org-chart view toggle */
+/* Agents page: cards / activity / org-chart view toggle */
 .view-toggle {
   display: flex;
   gap: 4px;
@@ -2252,12 +2301,55 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+/* Thin vertical rule separating clusters of header buttons. */
+.header-divider {
+  align-self: stretch;
+  width: 1px;
+  min-height: 20px;
+  margin: 0 4px;
+  background: var(--border);
+  flex-shrink: 0;
+}
 
 /* === Agent Grid === */
 .agents-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 16px;
+}
+
+/* === Agents grid: "Aktivitás" card mode ===
+   Swaps everything below the avatar/name/description block for the live pane
+   status that used to live on its own Activity page. The header stays, so the
+   card never stops saying which agent it is. */
+.agent-card-activity { display: none; }
+.agents-grid[data-card-mode="activity"] .agent-card-footer,
+.agents-grid[data-card-mode="activity"] .agent-card-actions,
+.agents-grid[data-card-mode="activity"] .agent-reauth-banner,
+.agents-grid[data-card-mode="activity"] .agent-tmux-cmds { display: none; }
+.agents-grid[data-card-mode="activity"] .agent-card-activity { display: block; margin-top: 14px; }
+/* Cards that carry no live state: the add button and federated (remote-system)
+   agents, which the activity endpoint does not know about. */
+.agents-grid[data-card-mode="activity"] .add-card,
+.agents-grid[data-card-mode="activity"] .federated-agent-card { display: none; }
+.agent-act-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.agent-act-head-right { display: flex; align-items: center; gap: 8px; }
+/* State colour, mirroring the Activity page's left border. Only in activity
+   mode -- in profile mode these classes are present but must not paint. */
+.agents-grid[data-card-mode="activity"] .agent-card { border-left-width: 4px; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-working { border-left-color: #22c55e; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-idle    { border-left-color: #9ca3af; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-error   { border-left-color: #ef4444; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-unknown { border-left-color: #eab308; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-stopped { border-left-color: #6b7280; opacity: 0.7; }
+/* A stopped agent has no session to open, so its card is not clickable -- same
+   rule the Activity page used. */
+.agents-grid[data-card-mode="activity"] .agent-card { cursor: default; }
+.agents-grid[data-card-mode="activity"] .agent-card.agent-card-act-clickable { cursor: pointer; }
+.agents-grid[data-card-mode="activity"] .agent-card:not(.agent-card-act-clickable):hover {
+  background: var(--bg-card);
+  border-color: var(--border);
+  box-shadow: none;
 }
 
 /* === Agent Card === */
@@ -2424,6 +2516,20 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   cursor: help;
   align-self: flex-start;
 }
+
+/* Context-window-used badge (Agents grid card). Tiers mirror context-guard's
+   own default actPct/hardPct (90%/97%) -- see contextPctBadgeHtml in app.js. */
+.agent-ctx-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.agent-ctx-badge.ok { background: var(--success-soft); color: var(--success); }
+.agent-ctx-badge.warning { background: rgba(212,165,44,0.12); color: var(--warning, #d4a52c); }
+.agent-ctx-badge.danger { background: var(--danger-soft); color: var(--danger); }
 
 /* === Per-agent tmux attach copy buttons (running agents only) === */
 .agent-tmux-cmds {
@@ -7986,6 +8092,33 @@ button.graph-rel-jump:focus-visible { outline: 2px solid var(--accent); outline-
   0%, 100% { background: rgba(34,197,94,0.12); box-shadow: 0 0 0 0 rgba(34,197,94,0); }
   50%      { background: rgba(34,197,94,0.32); box-shadow: 0 0 8px 1px rgba(34,197,94,0.40); }
 }
+
+/* Thinking orb: a tiny animated sphere inside the "working" activity badge, so a
+   live agent reads as *thinking* at a glance (inspired by the "thinking orb"
+   pattern in AI chat UIs). Pure CSS, no JS lifecycle: the badge markup is
+   re-rendered every few seconds via innerHTML, and a CSS-only orb survives that
+   for free. Colors stay in the same green family as .act-working. */
+.activity-badge.act-working { display: inline-flex; align-items: center; gap: 6px; }
+.act-orb {
+  position: relative; width: 13px; height: 13px; border-radius: 50%;
+  overflow: hidden; flex-shrink: 0;
+  background: #15803d;
+  box-shadow: 0 0 6px rgba(34,197,94,0.55);
+}
+.act-orb::before {
+  content: ''; position: absolute; inset: -30%; border-radius: 50%;
+  background: conic-gradient(from 0deg, #166534, #22c55e, #86efac, #16a34a, #166534);
+  animation: orb-swirl 2.8s linear infinite;
+}
+.act-orb::after {
+  /* fixed specular highlight over the swirling core sells the "sphere" */
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle at 32% 28%, rgba(255,255,255,0.85), rgba(255,255,255,0) 46%);
+}
+@keyframes orb-swirl { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .act-orb::before { animation: none; }
+}
 .activity-tail {
   margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
   line-height: 1.45; color: var(--text-muted); white-space: pre-wrap; word-break: break-word;
@@ -8839,6 +8972,89 @@ body {
   background: var(--bg-input);
 }
 .llm-category-row.disabled { opacity: 0.6; }
+/* Card e5fc1fb4: the routed model on each preset row, and the routing section's summary + panels */
+.llm-category-routing { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 11px; }
+.llm-category-route {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: var(--bg-card);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.llm-category-route em { font-style: normal; color: var(--text-muted); }
+.llm-category-route--override { border-color: var(--accent, #6366f1); }
+.llm-category-route--unknown { color: var(--text-muted); border-style: dashed; }
+.llm-category-route-off { color: var(--warning, #e2a000); font-weight: 600; }
+.llm-routing-summary { font-size: 13px; color: var(--text); margin: 0 0 10px; }
+.llm-routing-note { display: inline-block; padding: 8px 12px; border-radius: var(--radius-sm); border: 1px dashed var(--border); color: var(--text-muted); }
+.llm-routing-note--error { border-color: var(--danger); color: var(--danger); }
+.llm-routing-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+.llm-subsection-title { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
+.llm-routing-list { display: flex; flex-direction: column; gap: 6px; }
+.llm-routing-row, .llm-decision-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  font-size: 12px;
+}
+.llm-routing-cat { font-weight: 600; }
+.llm-routing-ceiling { color: var(--text-muted); }
+.llm-verdict {
+  display: inline-block;
+  min-width: 56px;
+  text-align: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.llm-verdict--local { color: var(--success); background: color-mix(in srgb, var(--success) 12%, var(--bg-card)); }
+.llm-verdict--online { color: var(--accent, #6366f1); background: color-mix(in srgb, var(--accent, #6366f1) 12%, var(--bg-card)); }
+.llm-decisions-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.llm-decisions-window { color: var(--text-muted); margin-left: auto; }
+.llm-decision-reason { color: var(--text); }
+.llm-decision-meta { color: var(--text-muted); margin-left: auto; }
+@media (max-width: 720px) {
+  .llm-routing-cols { grid-template-columns: 1fr; }
+  .llm-decision-meta { margin-left: 0; width: 100%; }
+}
+.llm-models-summary { font-size: 12px; color: var(--text-muted); margin: -4px 0 10px; }
+.llm-model-route {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--accent, #6366f1);
+  color: var(--accent, #6366f1);
+  font-size: 11px;
+  font-weight: 600;
+}
+.llm-model-route--default { border-color: var(--success); color: var(--success); }
+.llm-model-row--highlight { animation: llm-row-flash 1.2s ease-in-out 2; }
+@keyframes llm-row-flash {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50% { box-shadow: 0 0 0 3px var(--accent, #6366f1); }
+}
 .llm-category-info {
   display: flex;
   align-items: flex-start;
@@ -9045,6 +9261,19 @@ body {
   .llm-model-row .llm-model-actions { width: 100%; }
   .llm-model-toggle { flex: 1 1 auto; }
 }
+/* Card 404e8dd6: Ollama-down fallback list -- the banner names the state, the rows keep the
+   switch (44px, same tokens) and drop the controls that need Ollama */
+.llm-models-banner {
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--warning, #e2a000);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--warning, #e2a000) 12%, var(--bg-card));
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.llm-model-row-offline { border-style: dashed; }
 .llm-bench-hint {
   font-size: 11px;
   color: var(--warning, #e2a000);
@@ -9975,7 +10204,10 @@ body {
 
 /* A card held back by an unfinished dependency (card 37c5605a, Cybered F-1). Muted rather than
    hidden: it is still real work, it just cannot start yet -- and the lock icon plus the tooltip
-   name what it is waiting for, so nobody has to try moving it to find out. */
+   name what it is waiting for, so nobody has to try moving it to find out.
+   NOT unioned with upstream's .blocker-*/second .kanban-card-blocked block here (card-blockers UI,
+   58ebcdc9): superseded by the fork's own kanban_dependencies/dependencyBlockers() mechanism --
+   see the matching db.ts and routes/kanban.ts merge notes. */
 .kanban-card-blocked { opacity: 0.62; border-left: 3px solid var(--warning, #c08a2e); }
 .kanban-card-blocked .kanban-card-title { color: var(--text-muted); }
 .kanban-card-blocked-icon { margin-right: 4px; }

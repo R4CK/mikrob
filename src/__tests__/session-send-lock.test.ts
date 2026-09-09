@@ -113,6 +113,34 @@ describe('withSessionSendLock -- per-session delivery serialization', () => {
     expect(after.ran).toBe(true)
     expect(DEFAULT_DELIVER_WAIT_BUDGET_MS).toBeGreaterThan(1000) // real default is generous
   })
+
+  // Card 28eb8340: a tmux session kill (restart's stopAgentProcessUnlocked, now
+  // ALSO a 'deliver'-mode caller of this same lock) raced a delivery's chunked
+  // send for the SAME session -- two independent locks (withLifecycleLock by
+  // agent name, withSessionSendLock by session name) guarded one resource, and
+  // neither knew about the other. This proves the actual composition property
+  // the fix depends on: a kill-like operation queued on the SAME key as an
+  // in-flight send-like operation waits for it, rather than interleaving mid-chunk.
+  it("a 'kill'-shaped deliver caller never runs mid-chunk against a concurrent 'send'-shaped deliver caller on the same session (card 28eb8340)", async () => {
+    const log: string[] = []
+    const send = withSessionSendLock('sess', null, 'deliver', async () => {
+      for (let i = 0; i < 3; i++) {
+        log.push(`chunk${i}`)
+        await delay(5)
+      }
+      log.push('Enter')
+    })
+    await delay(2) // let the send acquire the lane first, mirroring a send already in flight
+    const kill = withSessionSendLock('sess', null, 'deliver', async () => {
+      log.push('kill-session')
+    })
+    await Promise.all([send, kill])
+    // The kill must not appear between chunks -- it either fully precedes the
+    // send (lane was free) or fully follows it (waited out the whole send,
+    // including the submitting Enter). Never in the middle.
+    const joined = log.join(',')
+    expect(['chunk0,chunk1,chunk2,Enter,kill-session', 'kill-session,chunk0,chunk1,chunk2,Enter']).toContain(joined)
+  })
 })
 
 // Source contract: the byte-emitting span of sendPromptToSession must be run
@@ -131,5 +159,19 @@ describe('sendPromptToSession delivery-lock wiring', () => {
   it('the stuck-input clear+re-inject recovery uses recover-mode (fail-closed)', () => {
     expect(CHANNEL_MONITOR).toMatch(/withSessionSendLock\(session, null, 'recover'/)
     expect(CHANNEL_MONITOR).toMatch(/lockMode: 'held'/)
+  })
+
+  // Card 28eb8340: stopAgentProcessUnlocked's kill-session must run INSIDE
+  // withSessionSendLock, not before/around it -- a call site that merely
+  // imports the lock but calls kill-session outside its callback would still
+  // race a concurrent send exactly as before the fix.
+  it("stopAgentProcessUnlocked's kill-session runs inside withSessionSendLock, 'deliver' mode", () => {
+    const fn = AGENT_PROCESS.slice(AGENT_PROCESS.indexOf('async function stopAgentProcessUnlocked'))
+    const body = fn.slice(0, fn.indexOf('\nexport function getAgentProcessInfo'))
+    expect(body).toMatch(/await withSessionSendLock\(session, host, 'deliver', async \(\) => \{/)
+    const lockCallIdx = body.indexOf("await withSessionSendLock(session, host, 'deliver'")
+    const killIdx = body.indexOf('kill-session')
+    expect(lockCallIdx).toBeGreaterThan(-1)
+    expect(killIdx).toBeGreaterThan(lockCallIdx) // kill-session is INSIDE the lock's callback, not before it
   })
 })

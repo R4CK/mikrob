@@ -22,6 +22,7 @@ exits non-zero to force a human look, and prints the lines so the look is cheap.
 
 Usage:
   skill-merge-check.py <result-file> <authoritative-source-file>
+  skill-merge-check.py --lint <skills-dir>
   skill-merge-check.py --selftest
 """
 from __future__ import annotations
@@ -88,25 +89,42 @@ def check(result_text: str, source_text: str) -> list[tuple[str, tuple, tuple]]:
 FM_KEY_RX = re.compile(r'^([A-Za-z_][\w-]*):')
 
 
+def frontmatter_scan(text: str) -> tuple[str, Counter]:
+    """The ONE scanner over a leading `---` block: (status, top-level keys).
+
+    status is 'none' (no leading `---`), 'unterminated' (opens and never closes) or 'closed'.
+    An EMPTY key counter is deliberately NOT the signal for "unterminated": `---` immediately
+    followed by `---` is closed and empty, a different defect with a different fix, and the two
+    were indistinguishable while the only return value was the counter. `frontmatter_keys` keeps
+    the old two-valued contract for `frontmatter_issues`, so there is still one scanner, not two.
+
+    Keys are collected only up to the terminator. Scanning to EOF instead would read body prose as
+    keys -- measured: doing that reported bogus duplicate keys on two seed-skills files whose only
+    real defect is the missing terminator.
+    """
+    lines = text.split('\n')
+    if not lines or lines[0].strip() != '---':
+        return 'none', Counter()
+    keys: Counter = Counter()
+    for line in lines[1:]:
+        if line.strip() == '---':
+            return 'closed', keys
+        m = FM_KEY_RX.match(line)
+        if m:
+            keys[m.group(1)] += 1
+    return 'unterminated', Counter()
+
+
 def frontmatter_keys(text: str) -> Counter | None:
     """Top-level keys of the leading `---` block, or None if the file has no frontmatter.
 
     Returns an EMPTY counter for a block that opens and never closes: that file has no readable
-    frontmatter at all, which `frontmatter_issues` reports separately. Scanning to EOF instead
-    would read body prose as keys -- measured: doing that reported bogus duplicate keys on two
-    seed-skills files whose only real defect is the missing terminator.
+    frontmatter at all, which `frontmatter_issues` reports separately.
     """
-    lines = text.split('\n')
-    if not lines or lines[0].strip() != '---':
+    status, keys = frontmatter_scan(text)
+    if status == 'none':
         return None
-    keys: Counter = Counter()
-    for line in lines[1:]:
-        if line.strip() == '---':
-            return keys
-        m = FM_KEY_RX.match(line)
-        if m:
-            keys[m.group(1)] += 1
-    return Counter()  # opened, never closed
+    return keys
 
 
 def frontmatter_issues(result_text: str, source_text: str) -> list[str]:
@@ -134,6 +152,59 @@ def frontmatter_issues(result_text: str, source_text: str) -> list[str]:
             issues.append('`%s:` appears %d times in the frontmatter -- YAML keeps only one, and '
                           'which one is parser-dependent' % (key, n))
     return issues
+
+
+# The Level-0 fields. A skill whose frontmatter cannot be read still EXISTS on disk, so nothing
+# fails loudly -- it is simply never offered, or offered without the description that decides when
+# it applies. That silence is why this needs a gate rather than a reader noticing.
+FM_REQUIRED = ('name', 'description')
+
+
+def lint_frontmatter(text: str) -> list[str]:
+    """Defects in a skill file's OWN frontmatter, independent of any merge.
+
+    THE CASE `frontmatter_issues` DELIBERATELY DOES NOT COVER. That function reports only what a
+    merge MADE unreadable, and says so: "a pre-existing malformed frontmatter is a lint's job, not
+    this tool's". This is that lint. The deferral was not hypothetical -- `frontmatter_scan`'s own
+    docstring records measuring two seed-skills files with a missing terminator while the merge
+    work was going on (card 23d09a68), and nothing reported them afterwards, because the only
+    detector for the shape was keyed on the merge having introduced it.
+
+    MEASURED BEFORE WIRING (card 858b9e90, over all 95 seed-skills/*/SKILL.md): 93 clean, 2
+    unterminated (elitedigitalagency, threejsinteractionblueprint), 0 without frontmatter. The two
+    are fixed in the same commit, so this starts green -- and a lint that has never once gone red
+    on real input is not yet known to work, which is what the selftest cases below are for.
+
+    The EFFECT is parser-dependent, and both directions were measured on those two files rather
+    than assumed. `src/web/routes/skills.ts` requires the closing marker (its regex runs to a
+    literal `\n---`) and returned NO frontmatter at all, so the dashboard showed both skills with
+    an empty description. `scripts/skill-index.sh` greps line-anchored `^name:`/`^description:`
+    and read them correctly. So "the frontmatter is unreadable" is true of the strict readers and
+    false of the lenient ones -- the file is wrong either way, but the blast radius depends on who
+    is reading, and a report that claims more than that is overclaiming.
+    """
+    status, keys = frontmatter_scan(text)
+    if status == 'none':
+        return ['no frontmatter block: the file does not open with `---`']
+    if status == 'unterminated':
+        return ['frontmatter opens with `---` and never closes, so a strict reader sees none of it']
+    issues = [f'`{k}:` is missing from the frontmatter' for k in FM_REQUIRED if not keys.get(k)]
+    issues += [f'`{k}:` appears {n} times -- YAML keeps only one, and which one is parser-dependent'
+               for k, n in sorted(keys.items()) if n > 1]
+    return issues
+
+
+def lint_skills_dir(root: Path) -> list[tuple[Path, str]]:
+    """Every `<root>/*/SKILL.md` with a frontmatter defect, as (path, issue) pairs.
+
+    Sorted, so the output is stable enough to diff between runs.
+    """
+    found = []
+    for skill_md in sorted(root.glob('*/SKILL.md')):
+        text = skill_md.read_text(encoding='utf-8', errors='replace')
+        for issue in lint_frontmatter(text):
+            found.append((skill_md, issue))
+    return found
 
 
 def _selftest() -> int:
@@ -184,15 +255,62 @@ def _selftest() -> int:
     if any('appears' in i for i in
            frontmatter_issues('---\nname: s\n\n# T\nInput: a\nInput: b\n', fm_src)):
         failures.append('body prose was read as duplicate frontmatter keys')
+    # --- lint_frontmatter (card 858b9e90): the PRE-EXISTING defect the above deliberately skips.
+    # THE FOUNDING CASE, in the shape both seed-skills files actually had: `---`, name,
+    # description, then straight into the body with no terminator anywhere in the file.
+    unterminated = '---\nname: s\ndescription: d\n\n# Title\n\nbody\n'
+    if not any('never closes' in i for i in lint_frontmatter(unterminated)):
+        failures.append('the founding case (unterminated frontmatter) was not flagged by the lint')
+    # CLOSED-BUT-EMPTY is a DIFFERENT defect and must not be reported as the unterminated one.
+    # While the scanner returned only a counter these two were indistinguishable, which is the
+    # whole reason frontmatter_scan reports a status: the fix for one is a terminator, the fix for
+    # the other is the missing keys.
+    empty_issues = lint_frontmatter('---\n---\n\n# Title\n')
+    if any('never closes' in i for i in empty_issues):
+        failures.append('a closed-but-empty frontmatter was misreported as unterminated')
+    if not any('`name:` is missing' in i for i in empty_issues):
+        failures.append('a closed-but-empty frontmatter did not report the missing keys')
+    if not any('`description:` is missing' in i
+               for i in lint_frontmatter('---\nname: s\n---\nbody\n')):
+        failures.append('a missing description: was not flagged')
+    # A duplicate needs NO merge to be a defect here -- that is the difference from the function
+    # above, which reports a duplicate only when the merge introduced it.
+    if not any('appears 2 times' in i
+               for i in lint_frontmatter('---\nname: s\ndescription: a\ndescription: b\n---\nx\n')):
+        failures.append('a pre-existing duplicate key was not flagged by the lint')
+    if not any('does not open' in i for i in lint_frontmatter('# Title\n\nbody\n')):
+        failures.append('a file with no frontmatter at all was not flagged')
+    # CONTROL: the shape every other seed-skill already has must stay silent, or the gate is noise.
+    if lint_frontmatter('---\nname: s\ndescription: d\n---\n\n# Title\n\nbody\n'):
+        failures.append('a well-formed frontmatter was flagged')
     for f in failures:
         print('SELFTEST FAIL: %s' % f)
-    print('selftest: %s (%d case(s))' % ('FAIL' if failures else 'PASS', 8))
+    print('selftest: %s (%d case(s))' % ('FAIL' if failures else 'PASS', 15))
     return 1 if failures else 0
 
 
 def main(argv: list[str]) -> int:
     if '--selftest' in argv:
         return _selftest()
+    if argv and argv[0] == '--lint':
+        if len(argv) != 2:
+            sys.stderr.write(__doc__.split('Usage:')[1])
+            return 2
+        root = Path(argv[1])
+        if not root.is_dir():
+            print('%s is not a directory' % root)
+            return 2
+        found = lint_skills_dir(root)
+        for path, issue in found:
+            print('FRONTMATTER in %s: %s' % (path, issue))
+        if found:
+            print('\n%d frontmatter defect(s) in %s. A skill whose Level-0 fields cannot be read '
+                  'is not offered, and nothing else reports it.' % (len(found), root))
+            return 1
+        n = len(list(root.glob('*/SKILL.md')))
+        print('OK: %d SKILL.md frontmatter block(s) in %s are closed and carry %s'
+              % (n, root, ' and '.join('`%s:`' % k for k in FM_REQUIRED)))
+        return 0
     if len(argv) != 2:
         sys.stderr.write(__doc__.split('Usage:')[1])
         return 2

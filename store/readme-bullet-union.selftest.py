@@ -245,19 +245,46 @@ def end_to_end():
     return problems
 
 
+def not_a_merge_driver():
+    """The .sh wrapper must REFUSE a merge-driver-style invocation (Cybersec, card 3ae71df1).
+
+    Measured before the guard: mode 775 and exit 0 with three path arguments, which is exactly the
+    `merge.<name>.driver` convention (%O %A %B). Nothing wires it that way today, but one config
+    line would, and a driver that exits 0 tells git the merge succeeded -- so git keeps ours and
+    silently discards theirs. A comment cannot stop that; an exit code can, and an untested
+    behaviour change is one the next reader reverts.
+    """
+    import subprocess, tempfile, os
+    d = tempfile.mkdtemp()
+    paths = []
+    for name, body in (("base", "a\n"), ("ours", "a\nb\n"), ("theirs", "a\nc\n")):
+        fp = os.path.join(d, name)
+        with open(fp, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        paths.append(fp)
+    wrapper = os.path.join(HERE, "readme-bullet-union.sh")
+    rc = subprocess.run(["bash", wrapper, *paths], capture_output=True, text=True).returncode
+    ok = rc != 0
+    print("  %s the .sh wrapper refuses a merge-driver-style invocation (rc=%d)"
+          % ("ok  " if ok else "FAIL", rc))
+    return 0 if ok else 1
+
+
 if __name__ == "__main__":
     print("readme-bullet-union selftest")
     fails = run(load())
     print("  --- end to end ---")
     e2e = end_to_end()
+    print("  --- wrapper ---")
+    drv = not_a_merge_driver()
     print("  --- mutations ---")
     probs = mutations()
     # THE SUMMARY CARRIES THE COUNT, in the shape src/__tests__/store-selftests-all-run.test.ts
     # already recognises. A bare "selftest: PASS" is what that guard exists to reject: it cannot
     # tell a suite that ran everything from one that ran nothing, which is the exact failure it
     # was written for. Reusing an existing shape rather than adding one keeps that guard tight.
-    total = len(CASES) + 2 + len(MUTATIONS)
-    failed = len(fails) + e2e + probs
+    total = len(CASES) + 2 + 1 + len(MUTATIONS)
+    failed = len(fails) + e2e + probs + drv
     if failed:
         print("selftest: %d passed, %d failed" % (total - failed, failed))
         sys.exit(1)

@@ -1,6 +1,8 @@
 ---
 name: defensive-security-analysis
 description: Analyze code defensively for security weaknesses from the DEFENDER's seat — trust boundaries, input validation, authz/authn, injection sinks, secrets handling, fail-closed behavior, and safe output/serialization — and propose concrete hardening. Use when reviewing or writing code that touches untrusted input, auth, money, PII, multi-tenant scope, files, or crypto. Triggers on "security review", "is this safe", "harden this", "defensive analysis", "biztonsági elemzés", "sebezhető-e".
+version: "1.0.0"
+related_skills: [code-comprehension, function-explanation, redteam, white-hat-security-testing]
 ---
 # Defensive Security Analysis
 

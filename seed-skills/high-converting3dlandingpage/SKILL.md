@@ -1,6 +1,7 @@
 ---
 name: high-converting3dlandingpage
 description: Designs stunning, conversion-focused 3D landing pages that grab attention and drive action — immersive hero scenes, animated product demos, storytelling, feature showcases, testimonials, pricing, FAQs, and high-converting CTAs, with clear guidance on where 3D reinforces understanding and trust. Use this skill whenever the user mentions a 3D landing page, conversion landing page, hero scene, animated product demo, sales page, marketing page, "make it convert", CTA optimization, immersive/interactive landing, WebGL/Three.js/R3F landing, awwwards-style conversion site, product launch page, or wants a page that turns visitors into customers. Triggers on "3D landing page", "landing that converts", "conversion oldal", "értékesítő oldal", "hero jelenet", "termékbemutató animáció", "CTA", "make it convert", "sales page", "immerzív landing".
+version: "1.0.0"
 ---
 
 # High-Converting 3D Landing Page

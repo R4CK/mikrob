@@ -1,6 +1,7 @@
 ---
 name: campaign-analytics
 description: Kampányanalitika beállítás, audit és értelmezés -- UTM struktúra, konverzió-tracking, csatorna-attribúció, North Star metrika, riport. Triggerek: "analytics audit", "UTM", "tracking", "mi a konverziós arányom", "kampány mérés", "attribúció", "melyik csatorna teljesít".
+version: "1.0.0"
 ---
 # Campaign Analytics
 

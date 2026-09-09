@@ -29,6 +29,7 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'taskstate-replay.py',
   'voice-reply-directive.py',
   'staleness-guard.py',
+  'provenance-gate.py',
   'email-send-gate.mjs',
   'self-pace-gate.mjs',
   'telegram_progress.py',
@@ -64,6 +65,12 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   // rule would have nothing left to apply to. It applies AT MERGE TIME, when the scripts arrive with
   // it; see the invariant test, which executes this paragraph rather than restating it.
   'skill-usage-capture.py',
+  // Card 58ebcdc9 (upstream-drift re-measure, blob bcd6ad71 -> 9b3bae69): upstream added
+  // 'tool-log-capture.py' to this same union. Unlike clear-capture.py/clear-replay.py above, this
+  // one is SAFE to list now under the exact test this file's own comment states: measured in this
+  // checkout, scripts/hooks/tool-log-capture.py EXISTS, so fileExists is true and the pruner will
+  // never treat a registered entry for it as stale.
+  'tool-log-capture.py',
 
   // Card 38c5e758: the nine Bash-matcher gates this app also writes. They were absent for a long
   // time and the earlier comment here called that harmless, on the reasoning that an unlisted
@@ -73,8 +80,13 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   //   node <missing>.mjs   -> exit 1  -- NOT a blocking status, so the gate silently does nothing
   //   python3 <missing>.py -> exit 2  -- which is exactly the status PreToolUse treats as BLOCK
   //
-  // The seven python gates are wired as a bare `python3 "<abs path>"` (unlike the staleness hook,
-  // which uses a `[ -f ... ] && exec` fail-open wrapper). So if one of those script files is not
+  // The seven python gates are wired through pythonHookCommand() -- `command -v python3 || exit 2;
+  // python3 "<abs path>"` (card d2b881ab; they were a BARE `python3 "<abs path>"` until then, and
+  // the interpreter went unchecked). The staleness hook is the deliberate exception, on a
+  // `[ -f ... ] && exec` fail-open wrapper. The reasoning below is UNCHANGED by that fix and was
+  // re-checked against it: the trailing `python3 "<script>"` is the same, so a missing SCRIPT still
+  // exits 2. The interpreter probe only adds the case where python3 itself is gone, which now also
+  // exits 2 instead of 127. So if one of those script files is not
   // where the entry says -- an install moved, a path renamed, settings written by a different
   // checkout -- that agent's EVERY Bash call is blocked, not degraded. And while the name is
   // absent from this list, pruneStaleHookEntries reads the entry as foreign and refuses to touch
@@ -93,6 +105,10 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'blast-radius-guard.py',
   'symlinked-node-modules-guard.py',
   'pentest-tool-install-guard.py',
+  // The /clear continuity pair: SessionEnd capture + SessionStart replay (upstream, unioned in
+  // with this merge -- scripts/hooks/clear-capture.py and clear-replay.py arrive as part of it).
+  'clear-capture.py',
+  'clear-replay.py',
 ]
 
 // Path fragment that marks a checkout as an agent worktree. Kept

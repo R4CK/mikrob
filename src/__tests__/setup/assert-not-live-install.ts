@@ -13,9 +13,25 @@
 // on purpose -- a silent skip would hide that someone is one `npm test` away from
 // mutating production state (loaded via vitest `setupFiles`, so it gates every
 // worker; per-file guards cannot be forgotten this way).
-import { existsSync } from 'node:fs'
+//
+// SELF-HEAL A MARKER NEWER THAN THIS RUN (card 5dcde7d3, MikroB decision). A stray marker left
+// over from a PRIOR run is already self-healed elsewhere (fleet-test.sh, card f96717cf). This
+// closes a DIFFERENT case: three independent, exhaustive instrumentation passes (per-call-site
+// logging, a Node Module._load wrap of better-sqlite3's constructor, and an LD_PRELOAD libc
+// interception of the entire open/rename/link family) each verified themselves against real,
+// known-legitimate opens and each caught ZERO real opens of the live store/claudeclaw.db across
+// several reliable reproductions of this exact refusal -- evidence the check cannot currently
+// tell "a genuine pre-existing live install" from "something this run's OWN suite left behind
+// mid-run through a path none of the three instruments could see". A marker whose mtime is AFTER
+// this `vitest run` invocation started (per globalSetup's record-run-start.ts sentinel, written
+// once in the main process before any worker starts) cannot be a pre-existing live install --
+// deleted and the check retried once. A marker at or before the start, or with no sentinel to
+// compare against (this file run outside the normal globalSetup wiring), keeps the original
+// fail-closed behaviour untouched: refuse, loudly, exactly as before.
+import { existsSync, statSync, unlinkSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { sentinelPathFor } from './record-run-start.js'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
@@ -25,7 +41,44 @@ const LIVE_MARKERS = [
   join('store', '.claude-oauth-token'),
 ]
 
-const found = LIVE_MARKERS.filter((m) => existsSync(join(repoRoot, m)))
+// `root` is a parameter (not the module-level `repoRoot` constant) so a test can drive this
+// against a throwaway directory instead of needing to fake this file's own on-disk location.
+export function runStartedAtMs(root: string): number | null {
+  try {
+    const raw = readFileSync(sentinelPathFor(root), 'utf-8').trim()
+    const n = Number(raw)
+    return Number.isFinite(n) ? n : null
+  } catch {
+    return null
+  }
+}
+
+export function selfHealFreshMarkers(markers: string[], root: string): string[] {
+  const runStart = runStartedAtMs(root)
+  if (runStart === null) return markers // no sentinel: cannot judge freshness, change nothing
+  const stillLive: string[] = []
+  for (const m of markers) {
+    const full = join(root, m)
+    let mtimeMs: number
+    try {
+      mtimeMs = statSync(full).mtimeMs
+    } catch {
+      continue // vanished between the existsSync check and here; not live either way
+    }
+    if (mtimeMs > runStart) {
+      try {
+        unlinkSync(full)
+        continue // healed: this marker no longer counts as "found"
+      } catch {
+        // could not remove it -- fall through and treat it as still live, fail-closed
+      }
+    }
+    stillLive.push(m)
+  }
+  return stillLive
+}
+
+const found = selfHealFreshMarkers(LIVE_MARKERS.filter((m) => existsSync(join(repoRoot, m))), repoRoot)
 if (found.length > 0) {
   // The remedy must NOT suggest /tmp (card 9070461f). It used to, and that sent every agent who hit
   // this message into the other trap: from a /tmp worktree the hook-registration guard correctly

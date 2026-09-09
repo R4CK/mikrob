@@ -1,6 +1,7 @@
 ---
 name: humanize-writing
 description: AI-generált szöveget emberi hangzásúvá alakít — AI-kliséket felismer és eltávolít, ritmust variál, specifikusságot injektál, brand-voice-t alkalmaz. Triggerek: "emberibbé teszi", "humanize", "robotosan hangzik", "AI-szag", "természetesebbé", "írj úgy mint egy ember".
+version: "1.0.0"
 ---
 # Humanize Writing (AI-tartalom emberiesítése)
 

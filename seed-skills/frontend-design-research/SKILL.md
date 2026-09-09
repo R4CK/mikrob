@@ -1,6 +1,8 @@
 ---
 name: frontend-design-research
 description: Research current web design on awwwards.com and dribbble.com and translate it into a modern, production-grade frontend implementation. Use before building any UI where look-and-feel matters (Fron Ted's core skill). Triggers on frontend/UI/design tasks, landing pages, redesigns.
+version: "1.0.0"
+related_skills: [impeccable]
 ---
 # Frontend Design Research (awwwards + dribbble)
 

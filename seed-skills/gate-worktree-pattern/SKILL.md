@@ -1,6 +1,7 @@
 ---
 name: gate-worktree-pattern
 description: Create a disposable, SHA-pinned worktree for a gate or a bug repro without corrupting the shared clone. Use whenever you need to run tests, a dev server or a repro at a specific commit -- QA/Cybersec/Cybered gates, delta-reviews, "does this land?" checks. Covers the node_modules trap that took the fleet down for 38 minutes.
+version: "1.0.0"
 ---
 
 # Gate worktree pattern
@@ -65,6 +66,19 @@ first then killed every process whose cwd was inside it and deleted the tree, ta
 running vitest with it SILENTLY: no error to the victim, just a suite that stops and a checkout that
 is gone. The agent name is now PART OF THE PATH (`cc-gate-<card>-<agent>-<sha>`) and is REQUIRED --
 `--agent <you>` or `CC_GATE_AGENT` -- so this cannot be forgotten the way a prose reminder can.
+
+## Delta-review diff
+
+When re-verifying a fix after a NO-GO/FAIL, get the FULL changed-file list between the
+previously-judged sha and the fix -- never a hand-typed, path-scoped `git diff -- src/` or similar.
+Card c266ec74 (Cybered's finding off the a37bb36d landing): exactly that scoping missed two
+stowaway commits that landed entirely under `store/`, one of them a live, un-fixed NO-GO at the time.
+
+```bash
+bash store/delta-review-diff.sh <old-sha> <new-sha> "$WT"
+```
+
+No pathspec, ever -- a narrowed delta-diff looks complete and is not.
 
 ## Pitfalls
 

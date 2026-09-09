@@ -1,6 +1,7 @@
 ---
 name: incident-response
 description: Handle a suspected or confirmed security incident on our OWN systems — detect/classify, triage severity, determine escalation path, collect forensic evidence (preserve before you touch), contain → eradicate → recover, then a blameless post-mortem with concrete follow-ups. Use when something looks compromised: leaked credential, anomalous access, suspicious logs, malware indicator, data exposure, or an active attack in progress. Triggers: "incident response", "we got breached", "suspicious activity", "leaked key", "compromised", "IR plan", "forensics", "contain the breach", "post-mortem".
+version: "1.0.0"
 ---
 
 # Incident Response

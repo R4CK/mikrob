@@ -43,6 +43,21 @@
 #
 # `cmp` finds the first differing BYTE in one C-speed pass -- bash cannot compare 447 KB strings
 # byte by byte without the O(n^2) behaviour card d56786a7 measured.
+# ONE grammar for "this line carries nothing that could be merged wrongly" -- a blank line or a
+# horizontal rule (Cybered C-1, card bb52c2fa). It existed TWICE as an inline `case` list, and the
+# duplication is the defect: this file has now been bitten three times by two halves that were meant
+# to implement one rule and drifted (the setext/fence indent, the setext/fence trailing whitespace,
+# and this one on the LINE ENDING axis). Both copies matched the separators EXACTLY, so on a CRLF
+# file `---\r` was not a rule, and byte-identical content RESOLVED on LF while it was REFUSED on
+# CRLF. Fail-closed, so nothing merged wrongly -- but a refusal a user cannot reproduce on their own
+# copy is its own cost, and the fix belongs in one place rather than two.
+_is_blank_or_rule() {
+  case "${1%$'\r'}" in
+  ''|'---'|'***'|'___') return 0 ;;
+  esac
+  return 1
+}
+
 _common_line_prefix_len() {
   # BYTE SEMANTICS, FORCED. `cmp` reports a BYTE offset; bash's ${#var} and ${var:i:n} count
   # CHARACTERS unless the locale is C. On the real DECISIONS.md -- Hungarian prose, UTF-8 -- those
@@ -52,15 +67,84 @@ _common_line_prefix_len() {
   #
   # It passed every selftest because every fixture was ASCII, where the two counts coincide. That is
   # the whole reason this shipped: the tests could not see the difference they were built out of.
+  #
+  # WHY THE OLD PARSER BROKE, and it takes TWO facts together -- neither explains it alone (Cybered
+  # C-2 and Cybersec F-2, card bb52c2fa; the first two explanations written here, both mine, were
+  # wrong and are corrected in DECISIONS.md rather than quietly deleted).
+  #
+  # FACT 1 -- `local LC_ALL=C` reaches the CHILD only if LC_ALL was ALREADY EXPORTED. bash's `local`
+  # inherits the existing export attribute; it does not create one. Proved with `declare -p` inside
+  # such a function:
+  #     LC_ALL unset in the environment -> declare -- LC_ALL="C"   (child does NOT see it)
+  #     LC_ALL exported                 -> declare -x LC_ALL="C"   (child DOES see it)
+  #
+  # FACT 2 -- GNU cmp's wording follows the locale's CHARACTER WIDTH, inverted from the naive guess:
+  #     single-byte locale (C, POSIX, or any invalid value falling back to C) -> "differ: char N"
+  #     multibyte locale   (C.UTF-8, or a multibyte ambient LANG -- see below) -> "differ: byte N"
+  #
+  # "LC_ALL UNSET" IS NOT A LOCALE, it is delegation to LANG -- and that makes the old bug WIDER
+  # than the line above admits (Cybersec, card bb52c2fa; reproduced here before adopting it):
+  #
+  #     LC_ALL unset, LANG=C.UTF-8 -> "byte"
+  #     LC_ALL unset, LANG=C       -> "char"
+  #     LC_ALL unset, LANG unset   -> "char"
+  #
+  # So the `byte`-only pattern did not merely break "when something exported LC_ALL". It also broke
+  # on a machine that simply has no LANG -- a bare container's default state -- with nothing
+  # exported at all. Any statement of the form "unset was fine" is true only where the ambient LANG
+  # happens to be multibyte, which is an accident of the host, not a property of the code.
+  #
+  # Together: with LC_ALL unset AND a multibyte ambient LANG the local never reached cmp, cmp said
+  # "byte", and the `byte`-only pattern worked. With LC_ALL exported to ANYTHING the
+  # local DID reach cmp, cmp ran in single-byte C and said "char", the pattern matched nothing, `n`
+  # came back empty, and the fallback below answered with the SHORTER side's whole length as the
+  # common prefix. That is why every exported value broke it -- the specific locale never mattered,
+  # only whether one was exported. Selftest: green with LC_ALL unset, 61/67 with any export. Any CI
+  # or agent environment that exports LC_ALL got a FALSE RED on correct code -- the rule-17 class.
+  #
+  # THE FIX IS NOT A WIDER WORD LIST, because that is the same enumeration mistake one rung up: a
+  # translated locale prints a different sentence entirely. `cmp -l` emits NUMBERS -- one line per
+  # differing byte, `<1-based byte offset> <octal a> <octal b>` -- and its FORMAT is identical in
+  # every environment tried (unset, C, C.utf8, POSIX; only those three locales exist on this host,
+  # which is why the earlier five-row table in this comment was wrong: two of its rows were the
+  # invalid-locale fallback wearing another name). Verified multibyte: two files differing after
+  # `áéí` (6 bytes) report offset 7 under both C and C.utf8, i.e. a byte offset, not a character one.
   local LC_ALL=C
   local a="$1" b="$2" n cut head
-  n="$(cmp <(printf '%s' "$a") <(printf '%s' "$b") 2>/dev/null | sed -n 's/.*byte \([0-9][0-9]*\).*/\1/p')"
+  # `awk '{print $1}'`, NOT `cut -d' ' -f1`: cmp -l RIGHT-ALIGNS the offset column to the WIDEST
+  # value in that run, so the padding lands on the SMALL offsets, and only when a larger one appears
+  # in the SAME output. A single difference at byte 20024 prints `20024 101 102` with no padding at
+  # all and a single-space cut handles it; add a second difference at byte 1 and the first line
+  # becomes `    1 101 102`, where the cut returns the empty field before the number.
+  #
+  # THIS DIRECTION WAS BACKWARDS HERE UNTIL 2026-09-06 (Cybersec F-2 on card bb52c2fa) and the
+  # correction is not cosmetic: the old text named a large single offset as the trigger, so anyone
+  # writing a regression case from this comment would have built exactly the fixture that does NOT
+  # reproduce -- green, and blind to the class it was written for. Measured both ways: single large
+  # offset -> cut [20024], awk [20024]; mixed 1 and 20024 -> cut [], awk [1]. A regression fixture
+  # for this must be MIXED-magnitude; a large-only one cannot tell awk and cut apart.
+  #
+  # The original mistake was still the one the header describes: a 4-byte fixture has a one-digit
+  # offset and no padding, so it could not see the shape it was built out of.
+  n="$(cmp -l <(printf '%s' "$a") <(printf '%s' "$b") 2>/dev/null | head -n1 | awk '{print $1}')"
   if [ -z "$n" ]; then
     # cmp is silent on identical input and prints "EOF on <file>" when one side is a prefix of the
     # other. Identical means git would not have conflicted this file at all: refuse rather than
-    # answer for a state that should not exist. Otherwise the shorter string is the whole prefix.
+    # answer for a state that should not exist. Otherwise the shorter string is the whole prefix --
+    # and it is ALREADY a real line boundary (card c266ec74, live incident). `a` and `b` both come
+    # from `$(git show ...)`, which strips only the FILE's own trailing newline, never an internal
+    # one -- so the shorter side's own content, in full, ends exactly where its real last line
+    # ended on disk. Falling through to the "back up to the last complete line" step below (built
+    # for the OTHER branch, where `cmp` found a genuine mid-line difference and `head` may end
+    # mid-line) treats that trailing-newline stripping as if it were a real mid-line cut, and
+    # `${head%$'\n'*}` then discards the shorter side's entire FINAL LINE looking for one that was
+    # never missing. Measured live: a clean landing merge where `ours` turned out to be an exact
+    # byte-prefix of `theirs` lost its own last line this way, that line failed the "must start a
+    # new entry" check on BOTH remainders, and a textbook append-only union refused.
     [ "${#a}" -eq "${#b}" ] && return 1
     if [ "${#a}" -lt "${#b}" ]; then n=$(( ${#a} + 1 )); else n=$(( ${#b} + 1 )); fi
+    printf '%s' "$(( n - 1 ))"
+    return
   fi
   cut=$(( n - 1 ))                       # cmp reports 1-based; the bytes BEFORE it are common
   head="${a:0:$cut}"
@@ -69,6 +153,131 @@ _common_line_prefix_len() {
   case "$head" in
   *$'\n'*) head="${head%$'\n'*}"; printf '%s' "$(( ${#head} + 1 ))" ;;
   *) printf '0' ;;
+  esac
+}
+
+# Does this text end INSIDE an open fenced code block?
+#
+# STATE, NOT A SPELLING (Cybered R-1). The first version counted `grep -c '^```'` and asked for an
+# even number. Measured on the same fixture shape that correctly refuses an unclosed ```: an
+# unclosed `~~~` and a ```-fence indented by two spaces both UNIONED, and both produce exactly the
+# J-2 harm -- theirs' entry swallowed into the block. That is one spelling of a general property,
+# and adding `~~~` beside it would be the third rung of the same ladder this card already climbed
+# twice; the answer there was to change the question, and it is the answer here too.
+#
+# So this tracks the CommonMark rule instead: a fence opens on three or more ` or ~ indented at most
+# three spaces (four is an indented code block, never a fence), and closes on the SAME character, at
+# least as long, with nothing but whitespace after it. An info string (```bash) is allowed on the
+# opener and forbidden on the closer, which is why the closer is matched strictly -- being lenient
+# there would close a block the parser leaves open, and that is the fail-OPEN direction.
+#
+# $1 = the text. 0 = ends inside an open fence (refuse), 1 = balanced.
+_ends_inside_code_fence() {
+  local LC_ALL=C line body ch run rest open_ch='' open_len=0
+  while IFS= read -r line; do
+    body="$line"
+    case "$body" in
+    '    '*) continue ;;
+    '   '*) body="${body#   }" ;;
+    '  '*)  body="${body#  }" ;;
+    ' '*)   body="${body# }" ;;
+    esac
+    case "$body" in
+    '`'*) ch='`' ;;
+    '~'*) ch='~' ;;
+    *) continue ;;
+    esac
+    run=0
+    while [ "${body:$run:1}" = "$ch" ]; do run=$((run + 1)); done
+    [ "$run" -ge 3 ] || continue
+    if [ -z "$open_ch" ]; then
+      open_ch="$ch"; open_len="$run"
+      continue
+    fi
+    [ "$ch" = "$open_ch" ] && [ "$run" -ge "$open_len" ] || continue
+    rest="${body:$run}"
+    case "$rest" in
+    *[![:space:]]*) continue ;;      # text after the fence -> not a closer
+    esac
+    open_ch=''; open_len=0
+  done <<<"$1"
+  [ -n "$open_ch" ]
+}
+
+# Would splicing these two lines together form a SETEXT HEADING that neither side wrote?
+#
+# EXTRACTED SO IT CAN BE TESTED ON ITS OWN CONTRACT (Cybersec, comment 20760). Inline, the `=`
+# half could only be exercised through a full merge fixture -- and MEASURED, such a fixture is
+# VACUOUS: `===` is not on the shared-new exception list, so `_starts_new_entry` refuses it before
+# the seam is ever consulted. Removing this whole check leaves a `===` fixture refused and a `---`
+# fixture resolving, which is exactly how an adjacent guard masks the one under test.
+#
+# WHY THE `=` HALF STAYS even though nothing reaches it today: `===` becomes reachable the moment
+# anyone adds it to the shared-new exception list, and Cybered measured that such an addition
+# directly manufactures a J-1 instance. "Not wired" is a timing fact, not a safety property -- the
+# same standard applied to the merge-driver finding on this card. Keeping it costs one character
+# class; dropping it means a future one-line widening silently arms the seam.
+#
+# $1 = last non-blank line BEFORE the junction, $2 = first line AFTER it.
+# 0 = would form a heading (refuse), 1 = safe.
+_seam_makes_setext_heading() {
+  # A rule under NOTHING is just a rule: markdown needs a paragraph line above it to promote.
+  # The `\r` strip is the CRLF half of the same axis the trailing trim below closes: in a CRLF file
+  # a BLANK line arrives as a lone `\r`, which is a non-empty string and would read as a paragraph.
+  # PIN THE LOCALE HERE TOO (Cybersec N-1, comment 21236). `_ends_inside_code_fence` does; this half
+  # did not, so the `[[:space:]]` class introduced in the previous round was evaluated under the
+  # AMBIENT locale. Measured: `---` followed by U+2028 or U+3000 REFUSES under C.UTF-8 and is safe
+  # under LC_ALL=C. The production path happens to be shielded -- `try_append_union` sets
+  # `local LC_ALL=C` and bash scopes that dynamically over this call -- so the merge answer was never
+  # environment-dependent; the exposure is a DIRECT caller, which is what the selftest is. Pinned
+  # anyway: a predicate that carries its own locale cannot be broken by a future caller that forgets.
+  local LC_ALL=C
+  local prev="${1%$'\r'}"
+  [ -n "$prev" ] || return 1
+  # THE SAME 0-3 SPACE INDENT THE FENCE SIDE ALREADY HANDLES (Cybersec, comment 21040). CommonMark
+  # lets a setext underline be indented up to three spaces, exactly like a fence opener -- and this
+  # predicate anchored at column 0 while `_ends_inside_code_fence`, fixed in the same round, did
+  # not. One class, two halves, and only one of them learned it: measured on the landed copy,
+  # `---` refused and `  ---` passed. Four or more spaces is safe either way (too deep for a setext
+  # underline, and an indented code block cannot interrupt a paragraph).
+  local u="$2"
+  case "$u" in
+  '    '*) return 1 ;;
+  '   '*) u="${u#   }" ;;
+  '  '*)  u="${u#  }" ;;
+  ' '*)   u="${u# }" ;;
+  esac
+  # Trailing WHITESPACE is allowed after the underline; only OTHER text disqualifies it.
+  #
+  # ONE CHARACTER CLASS, NOT AN ENUMERATION OF THE TWO SPELLINGS SOMEONE THOUGHT OF (Cybered, comment
+  # 21147 -- the same collision class this card exists for, one axis further along). The previous
+  # form trimmed space and tab only, so in a CRLF file the underline arrives as `---\r`, the `\r`
+  # survives, and `*[!-]*` carries it to SAFE. Measured on the landed copy: `---`, `  ---` and
+  # `---\t` all REFUSE correctly, while `---\r`, `===\r` and `   ===\r` all read as safe. The FENCE
+  # half was already CR-tolerant, because its check uses `[![:space:]]` -- so once again one half of
+  # the pair had learned the rule and the other had not, and this time the untaught half fails OPEN:
+  # `safe` means the union runs and the inserted text turns its neighbour into a heading nobody
+  # asked for. `[[:space:]]` puts both halves on one grammar rather than closing this one case.
+  while :; do
+    case "$u" in
+    *[[:space:]]) u="${u%?}" ;;
+    *) break ;;
+    esac
+  done
+  # ANY RUN OF `-` OR `=`, NOT A HANDFUL OF SPELLINGS. The first version listed
+  # `---|===|--------*|========*`, which matches exactly three or at least eight -- so a FOUR to
+  # SEVEN character run fell through, and in CommonMark a setext underline is any sequence of `-`
+  # (or `=`) with nothing else on the line, of any length. Found by this file's own direct seam
+  # cases the moment they were written, which is precisely what Cybersec asked them for: the
+  # end-to-end fixture only ever exercised the exact `---` spelling.
+  case "$u" in
+  '') return 1 ;;
+  *[!-]*) : ;;
+  *) return 0 ;;
+  esac
+  case "$u" in
+  *[!=]*) return 1 ;;
+  *) return 0 ;;
   esac
 }
 
@@ -109,6 +318,34 @@ try_append_union() {
   # costs the refusal of an undated append -- it is kept as the stricter of two equivalent choices,
   # not because anything measured requires it.
   local header_glob="${3:-## [0-9][0-9][0-9][0-9]-*}"
+  # CONCATENATION ORDER (card edf9c837), an ARGUMENT for the same reason the header pattern is one:
+  # a caller in this repo decides it, never ambient state.
+  #
+  # WHY IT HAS TO BE DECIDABLE AT ALL. The two remainders are both new, so their order looks
+  # arbitrary -- and it is, for THIS merge. It is not arbitrary for the NEXT one. Whichever block
+  # goes first becomes, relative to every later merge-base, an insertion in the MIDDLE of the file;
+  # and a mid-file insertion on one side is exactly the shape this function then refuses, because
+  # concatenating there would duplicate the base. Measured on card edf9c837: two independent
+  # CleanCore landings blocked in one heartbeat, both for that reason, and neither for the
+  # identical-blank-line case that was suspected.
+  #
+  # So the rule is: the content that is ALREADY on the integration branch goes FIRST, and the new
+  # entry lands at the tail where the next merge-base will find it. The function cannot know which
+  # side that is -- three blobs carry no branch identity -- so the caller says.
+  #
+  #   ours-first   (default) the caller merged the CONTRIBUTING branch into the integration branch.
+  #                Both landers do this (worktree at origin/develop or origin/main), so their
+  #                behaviour is unchanged by this argument existing.
+  #   theirs-first the caller merged the INTEGRATION branch into a working branch -- the sync
+  #                direction, where `ours` is the branch and `theirs` is main/develop.
+  #
+  # FAIL-CLOSED on an unknown value, exactly like the header pattern: a typo must not silently pick
+  # an order, because the whole point of the argument is that the order is a decision.
+  local order="${4:-ours-first}"
+  case "$order" in
+  ours-first|theirs-first) ;;
+  *) return 1 ;;
+  esac
   local conflicted
   conflicted="$(git -C "$wt" diff --name-only --diff-filter=U)"
   # Must be the ONLY conflicted file -- a conflict alongside anything else is a different, wider
@@ -185,10 +422,8 @@ try_append_union() {
   local shared_new
   shared_new="$(sed -n 's/^> //p' <<<"$base_vs_prefix")"
   while IFS= read -r line; do
-    case "$line" in
-    ''|'---'|'***'|'___') continue ;;
-    *) return 1 ;;
-    esac
+    _is_blank_or_rule "$line" && continue
+    return 1
   done <<<"$shared_new"
 
   # OFFSET, not pattern-strip. `${ours#"$prefix"}` is O(n^2) in bash and froze every landing that
@@ -204,6 +439,44 @@ try_append_union() {
   # prefix, git would not have conflicted this file in the first place -- reaching here with an
   # empty added-half means some assumption above is wrong, so refuse rather than guess.
   [ -n "$ours_added" ] && [ -n "$theirs_added" ] || return 1
+
+  # F-3 (card 5910f2f3, Cybered comment 20501): THE UNION IS BLIND TO A HEADER DUPLICATED ACROSS
+  # BOTH REMAINDERS. Every check in this function is a MISSING-content check -- header-count
+  # arithmetic, the membership check below, and "each remainder must start a new entry" all ask
+  # "is anything gone", never "is anything doubled". If the SAME entry landed in both
+  # `ours_added` and `theirs_added` -- e.g. cherry-picked to both branches independently, so it
+  # sits at a DIFFERENT OFFSET on each side rather than in the shared prefix -- none of them
+  # notice: the header count stays consistent (both copies get counted, neither is missing),
+  # membership still holds (both copies ARE present, just twice), and each remainder still
+  # legitimately starts a new entry. The union then lands the entry twice. NOT a regression of
+  # this card's own fix -- reproduced identically against the pre-fix, base-anchored version --
+  # so it is checked here rather than left implicit in checks that were never built to catch it.
+  #
+  # WHITESPACE-NORMALIZED, not byte-exact (card bc0af927, remainder of the same defect this card's
+  # own investigation left open). Two branches writing the SAME decision can produce a header line
+  # that differs only in a doubled internal space or a trailing space -- the entry is unmistakably
+  # the same one, but the comparison above never sees it, because it compares the two remainders
+  # byte-for-byte. MEASURED on the landed function before this change: a header differing only in a
+  # doubled internal space, or only in trailing whitespace, both RESOLVED as two distinct entries;
+  # a header identical apart from that (this check's control) already REFUSED, and a genuinely
+  # different second decision still REFUSES here, because normalizing whitespace does not make two
+  # different words equal.
+  #
+  # `[[:space:]]+/ /g` collapses ANY run of whitespace to one space -- not just the literal
+  # double-space and trailing-space cases named on the card, because enumerating spellings is the
+  # exact mistake this file has paid for three times already on the setext/fence and blank-or-rule
+  # checks above (a tab run or a `\r` at line end are whitespace too, and under LC_ALL=C -- set at
+  # the top of this function and inherited by every command below -- `[:space:]` includes CR). The
+  # trailing `s/ $//` then drops the one space the collapse leaves behind when the run was at the
+  # end of the line, so "```A  B```" and "```A B ```" and "```A B\r```" all normalize to "```A B```".
+  # This ONLY touches the header line used for the duplicate check, never the body or the union's
+  # own output -- the direction is strictly REFUSAL, narrowing what auto-resolves, never widening
+  # what the union is willing to glue together.
+  local dup
+  dup="$(comm -12 \
+    <(grep '^## ' <<<"$ours_added" | sed -E 's/[[:space:]]+/ /g; s/ $//' | sort -u) \
+    <(grep '^## ' <<<"$theirs_added" | sed -E 's/[[:space:]]+/ /g; s/ $//' | sort -u))"
+  [ -z "$dup" ] || return 1
 
   # EACH REMAINDER MUST BEGIN A NEW ENTRY (Cybersec NO-GO, comment 20499).
   #
@@ -278,11 +551,11 @@ try_append_union() {
   _starts_new_entry() {
     local rest="$1" line
     while IFS= read -r line; do
-      case "$line" in
+      case "${line%$'\r'}" in
       $header_glob) return 0 ;;
-      ''|'---'|'***'|'___') continue ;;
-      *) return 1 ;;
       esac
+      _is_blank_or_rule "$line" && continue
+      return 1
     done <<<"$rest"
     return 1                      # no header at all -- not a new entry
   }
@@ -308,12 +581,72 @@ try_append_union() {
   # (base had none, each tail began with one), which is newline-loss-proof by construction. Moving
   # the boundary into the prefix is what made the join explicit, so it is made explicit HERE rather
   # than relying on either side to carry it. Found by this file's own selftest.
-  local joined="$ours_added"
+  #
+  # WHICH REMAINDER IS FIRST is the `order` argument's only effect, and it is applied HERE rather
+  # than by swapping the two variables earlier: every check above is symmetric in the two halves
+  # (each remainder must start a new entry, the header arithmetic, the membership check), so
+  # swapping them earlier would change nothing except which name the reader has to track. The
+  # junction checks below are NOT symmetric -- they look at the seam -- so they read the same two
+  # locals this join builds.
+  local first_added second_added
+  if [ "$order" = "theirs-first" ]; then
+    first_added="$theirs_added"; second_added="$ours_added"
+  else
+    first_added="$ours_added"; second_added="$theirs_added"
+  fi
+  local joined="$first_added"
   case "$joined" in
   *$'\n') ;;
   *) joined="${joined}"$'\n' ;;
   esac
-  local union="${prefix}${joined}${theirs_added}"
+  local union="${prefix}${joined}${second_added}"
+
+  # THE JUNCTION IS THE ONLY PLACE THIS FUNCTION CREATES BYTES (Cybered J-1/J-2, comments 20593 and
+  # 20597). Every check above examines a HALF -- the prefix, ours' remainder, theirs' remainder --
+  # and each half can be individually blameless while the SEAM between them forms markdown structure
+  # that neither parent contained. Both findings are that shape, both were reproduced before this
+  # was written, and neither loses a byte: they change what the file MEANS, which is the property
+  # the whole function exists to preserve.
+  #
+  # J-1, SETEXT HEADING. A `---` line directly under a non-blank text line is an H2 in markdown, not
+  # a horizontal rule. So when ours' remainder ends on prose and theirs' begins with a rule, the
+  # join silently promotes ours' last line to a heading. Measured live on the default path; Cybered
+  # measured it on about a fifth of the CleanCore pairs. The separator case this function
+  # deliberately allows is NOT this: there the rule sits in the SHARED PREFIX, with a blank line
+  # around it, and no text line is adopted by it.
+  #
+  # J-2, OPEN CODE FENCE. If everything up to the junction leaves a fence open, theirs' entire
+  # entry lands INSIDE it -- its `## ` header stops being a header and stops being greppable, while
+  # every line-based check above still passes because the lines are all present. Parity is counted
+  # over prefix+ours precisely because a fence opened in the shared prefix is closed by each side
+  # separately; what matters is the state at the point theirs is spliced in.
+  local before_junction="${prefix}${joined}" last_before first_after
+  # THE ACTUAL LAST LINE, not the last NON-EMPTY one (Cybered R-3). A setext underline must
+  # IMMEDIATELY follow paragraph content: a blank line ends the paragraph, so a `---` after one is
+  # an ordinary horizontal rule. Filtering blanks out would look past that blank line, find the
+  # prose above it, and refuse a legitimate merge.
+  #
+  # NOT REACHABLE THROUGH THE MERGE PATH TODAY, AND SAYING SO IS THE POINT. Measured: a file ending
+  # "prozasor\n\n" on disk arrives here as "prozasor" -- `$(git show ...)` strips trailing newlines,
+  # so `before_junction` cannot end on a blank line no matter what either side wrote. The end-to-end
+  # behaviour is therefore UNCHANGED by this line, and an end-to-end fixture for it would be vacuous
+  # (the same trap as the seam predicate's `=` half, and the reason that half is pinned directly).
+  #
+  # KEPT ANYWAY, for the reason the `=` half is kept: the predicate should be right on its own
+  # contract, and this becomes reachable the moment anyone reads `ours` without command substitution
+  # -- which is a live possibility precisely because this file has already been bitten twice by that
+  # stripping. The predicate half is pinned by the direct seam cases below (a rule with nothing above
+  # it is safe); this line is what would feed it a genuinely empty `last_before`.
+  #
+  # Parameter expansion, not `$(... | tail -n1)`: the first attempt at this used the latter and
+  # measured as a NO-OP, because the substitution had already eaten the blank line before `tail` ran.
+  case "$before_junction" in
+  *$'\n'$'\n') last_before='' ;;
+  *) last_before="$(printf '%s' "$before_junction" | tail -n1)" ;;
+  esac
+  first_after="$(printf '%s' "$second_added" | head -n1)"
+  _seam_makes_setext_heading "$last_before" "$first_after" && return 1
+  _ends_inside_code_fence "$before_junction" && return 1
 
   # HEADER-COUNT CHECK (backend's own verification idea, card cbb66abf) as the actual arithmetic,
   # not the shorthand "both sides' counts added together": base's own headers are counted in BOTH
@@ -366,10 +699,74 @@ try_append_union() {
 # inherits the CALLER's positional params -- without this check, sourcing this file from inside
 # `cleancore-land.sh --selftest` would see `--selftest` here too and run (and exit on) THIS file's
 # selftest instead of continuing the caller's own script.
+# NOT A MERGE DRIVER, AND THE REFUSAL IS LOUD (Cybersec, card 3ae71df1). Measured: this file is mode
+# 775 and, invoked with three path arguments, returned 0 -- which is exactly `git merge.<name>.driver`
+# calling convention (%O %A %B). Nothing wires it that way today, but nothing structural prevents it
+# either: one `merge.*.driver` config line plus a .gitattributes entry would be enough, and the
+# failure mode is SILENT DATA LOSS -- a driver that exits 0 tells git the merge succeeded, so git
+# keeps %A (ours) and discards theirs, with no conflict and no message.
+#
+# A comment cannot prevent that; an exit code can. Direct execution with anything other than
+# --selftest now fails loudly. Sourcing is unaffected (BASH_SOURCE differs from $0), which is how
+# every real caller uses this file, and the --selftest path below is untouched.
+if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" != "--selftest" ]; then
+  echo "$(basename "${BASH_SOURCE[0]}"): this file is a SOURCED helper, not an executable." >&2
+  echo "  It takes no positional arguments. If you reached this from a git merge driver" >&2
+  echo "  configuration, REMOVE IT: exiting 0 there would make git keep ours and silently" >&2
+  echo "  discard theirs." >&2
+  echo "  There is NO supported merge-driver configuration for this file -- do not wire one." >&2
+  echo "  (--selftest runs its tests. Note the guard cannot see a driver that SOURCES this file:" >&2
+  echo "   sourcing inherits the caller's positional parameters, so a caller invoked with three" >&2
+  echo "   arguments would be indistinguishable from a driver call. Cybered R-2.)" >&2
+  exit 2
+fi
+
 if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
   fail=0
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
+
+  # THE VERDICT IS DERIVED FROM WHAT WAS PRINTED, NOT ONLY FROM A FLAG A CASE REMEMBERED TO SET
+  # (Cybered F-1, card bb52c2fa -- and the two cases it caught were MINE, added in the previous
+  # round to close a silent green). Both of them incremented `bad`, a variable nothing reads, so
+  # with the regression reintroduced the run printed `FAIL ...` and then said `selftest: PASS`,
+  # exit 0. Worse, my mutation evidence for those two cases counted PRINTED FAIL LINES rather than
+  # the verdict, so it reported them as catching the regression while CI would have gone green.
+  #
+  # Fixing the two sites is not enough -- that leaves the same trap set for the next case someone
+  # adds. So stdout is captured and the verdict READS IT BACK: if any `  FAIL` line was emitted, the
+  # run cannot report PASS, whatever any flag says. A case can now forget the flag and still be
+  # counted; it cannot print a failure into a green run.
+  #
+  # Plain redirect + `cat`, not `tee` through a process substitution: the check has to see a fully
+  # flushed file, and a pipeline would put the body in a subshell where `fail` could not survive.
+  # G-1 (Cybered, same card): the guard below closed a trap and then sat in exactly the same one a
+  # level up -- nothing pinned it, so the four lines could be deleted with the suite still green
+  # (the CI test only asserts a PASSING run, and a passing run never enters the branch). The verdict
+  # tail is a FUNCTION now, and two cases call it directly with synthetic logs, so deleting the
+  # read-back makes those cases fail. `_selftest_verdict <logfile> <flag>` echoes the verdict's flag
+  # value: 1 if the log carries a `  FAIL` line or the flag was already 1, else 0.
+  # Returns the verdict as an EXIT STATUS (0 = PASS, 1 = FAIL) rather than on stdout, so a caller
+  # can write `_selftest_verdict "$log" "$fail" || fail=1` and the forced-verdict note lands on the
+  # caller's stdout with everything else, instead of needing a stream dance to separate them.
+  _selftest_verdict() {
+    if grep -q '^  FAIL' "$1"; then
+      [ "$2" -eq 0 ] && echo "  (verdict forced to FAIL: a case printed a failure without setting the flag)"
+      return 1
+    fi
+    return "$2"
+  }
+
+  _selftest_log="$TMP/selftest.out"
+  # G-2 (Cybered, same card): stdout is redirected into the log for the whole run, so a mid-run
+  # death (a `set -e` abort, a SIGTERM, an unexpected exit in a case) left the caller with ZERO
+  # bytes -- every line already printed died with the temp directory the old EXIT trap removed. The
+  # trap now EMITS the log before deleting it, so a killed run still says how far it got. Ordering
+  # is the whole point: `cat` first, `rm -rf` second, in ONE trap, because two traps would replace
+  # each other. The normal path restores stdout and cats the log itself, then blanks _selftest_log
+  # so the trap does not print it twice.
+  trap '[ -n "$_selftest_log" ] && [ -s "$_selftest_log" ] && cat "$_selftest_log" >&3 2>/dev/null; rm -rf "$TMP"' EXIT
+  exec 3>&1 >"$_selftest_log"
 
   # $1 = case label; sets up $REPO with an initial DECISIONS.md ($2, the base content) committed
   # on a "main" branch, then a "left" branch and a "right" branch each getting one commit ($3/$4,
@@ -414,6 +811,13 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
     else
       echo "  FAIL $1 -> expected try_append_union to resolve (return 0), it returned 1"; fail=1
     fi
+  }
+  # Like t_resolved but without an expected-content argument: these fence fixtures differ only in
+  # the block they carry, and pinning the whole file for each would assert the fixture, not the rule.
+  t_resolved_any() { # $1 = label
+    if try_append_union "$REPO" "DECISIONS.md"; then echo "  ok   $1"
+    else echo "  FAIL $1 -> expected try_append_union to resolve (return 0), it returned 1"; fail=1; fi
+    git -C "$REPO" merge --abort 2>/dev/null || true
   }
   t_refused() { # $1 = label
     if try_append_union "$REPO" "DECISIONS.md"; then
@@ -467,6 +871,32 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
     git -C "$REPO" merge --abort 2>/dev/null || true
   }
 
+  # The same two helpers with an explicit ORDER as the fourth argument (card edf9c837). Separate
+  # helpers again, for the reason the glob pair gives: every existing case must keep calling
+  # try_append_union with two arguments, so the DEFAULT order stays the thing they cover.
+  t_resolved_order() { # $1 = label, $2 = order, $3 = expected final content
+    if try_append_union "$REPO" "DECISIONS.md" "" "$2"; then
+      local got want
+      got="$(cat "$REPO/DECISIONS.md")"
+      want="$(printf '%s' "$3")"
+      if [ "$got" = "$want" ]; then echo "  ok   $1"
+      else echo "  FAIL $1 -> content mismatch"; printf 'got:\n%s\nwant:\n%s\n' "$got" "$want"; fail=1; fi
+    else
+      echo "  FAIL $1 -> expected try_append_union to resolve (return 0), it returned 1"; fail=1
+    fi
+    git -C "$REPO" merge --abort 2>/dev/null || true
+  }
+  t_refused_order() { # $1 = label, $2 = order
+    if try_append_union "$REPO" "DECISIONS.md" "" "$2"; then
+      echo "  FAIL $1 -> expected try_append_union to refuse (return 1), it resolved"; fail=1
+    elif ! git -C "$REPO" diff --name-only --diff-filter=U | grep -qx "DECISIONS.md"; then
+      echo "  FAIL $1 -> refused but DECISIONS.md no longer shows as unmerged"; fail=1
+    else
+      echo "  ok   $1"
+    fi
+    git -C "$REPO" merge --abort 2>/dev/null || true
+  }
+
   echo "decisions-append-union selftest"
 
   # THE COMMON CASE: both sides append one new entry each, at the same position -- a real conflict,
@@ -484,6 +914,98 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
     "## 2026-01-01 -- entry A
 ## 2026-01-02 -- entry B (left)
 ## 2026-01-03 -- entry C (right)
+"
+
+  # ORDER (card edf9c837). The same fixture, resolved the other way round. Red on the code before
+  # the order argument existed -- that version ignored a fourth argument entirely and always emitted
+  # left-then-right -- and green after, which is the shape MikroB asked these cases to have.
+  #
+  # WHY THE ORDER IS WORTH AN ARGUMENT AT ALL: whichever block goes first becomes, relative to every
+  # LATER merge-base, an insertion in the middle of the file, and a mid-file insertion on one side is
+  # precisely what this function then refuses. So the side already on the integration branch has to
+  # go first, and only the caller knows which that is.
+  setup_conflict order-theirs-first \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry B (left)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-03 -- entry C (right)
+"
+  t_resolved_order "theirs-first puts the INCOMING side's entry ahead of ours" "theirs-first" \
+    "## 2026-01-01 -- entry A
+## 2026-01-03 -- entry C (right)
+## 2026-01-02 -- entry B (left)
+"
+
+  # The default, stated explicitly. Without this case the argument could silently flip the default
+  # and every other case in this file would still pass -- they pass two arguments, so they cover
+  # "whatever the default is", not "the default is ours-first".
+  setup_conflict order-ours-first \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry B (left)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-03 -- entry C (right)
+"
+  t_resolved_order "ours-first spelled out gives exactly the default answer" "ours-first" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry B (left)
+## 2026-01-03 -- entry C (right)
+"
+
+  # FAIL-CLOSED on an unknown order, for the reason the header pattern is: the argument exists
+  # because the order is a DECISION, so a typo must not quietly pick one.
+  setup_conflict order-unknown \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry B (left)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-03 -- entry C (right)
+"
+  t_refused_order "an unknown order value is refused, not silently defaulted" "newest-first"
+
+  # THE SEAM MOVES WITH THE ORDER, and this is the case that proves the junction checks were not
+  # left pointing at the old one. Ours ends on PROSE and theirs begins with a `---` rule, so:
+  #   ours-first    the junction promotes that prose line to a setext H2 -> J-1, refused
+  #   theirs-first  the junction is header-after-header -> nothing is promoted, resolved
+  # One fixture, two verdicts, decided only by the order. A version that still read `theirs_added`
+  # for the seam would refuse both.
+  setup_conflict order-seam-follows \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry B (left)
+some prose
+" \
+    "## 2026-01-01 -- entry A
+---
+## 2026-01-03 -- entry C (right)
+"
+  t_refused_order "ours-first: the seam would promote our last prose line to a heading" "ours-first"
+
+  setup_conflict order-seam-follows-other-way \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry B (left)
+some prose
+" \
+    "## 2026-01-01 -- entry A
+---
+## 2026-01-03 -- entry C (right)
+"
+  t_resolved_order "theirs-first: the same fixture is safe, because the seam moved with it" "theirs-first" \
+    "## 2026-01-01 -- entry A
+---
+## 2026-01-03 -- entry C (right)
+## 2026-01-02 -- entry B (left)
+some prose
 "
 
   # MULTI-ENTRY APPEND on both sides -- the real recurring shape had each side land more than one
@@ -508,6 +1030,74 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
 ## 2026-01-03 -- entry C1 (right)
 ## 2026-01-03 -- entry C2 (right)
 ## 2026-01-03 -- entry C3 (right)
+"
+
+  # F-3 (card 5910f2f3, Cybered comment 20501): THE SAME ENTRY ADDED ON BOTH SIDES, AT A
+  # DIFFERENT OFFSET -- e.g. cherry-picked to both branches independently -- so it does NOT sit
+  # in the common prefix (left has an extra entry X between A and the shared one, breaking the
+  # literal prefix match one line early) but DOES appear, identically, in both remainders. None of
+  # the three existing checks catch this: the header-count arithmetic is satisfied (both copies
+  # are counted, nothing is missing on either side of the equation), the membership check is
+  # blind to it (comm runs against sort -u'd header sets on BOTH sides of the comparison, so the
+  # doubled header collapses to one entry identically on both, and nothing looks missing), and
+  # each remainder still legitimately starts a new entry. Left uninjected (no comm -12 check),
+  # this landed "entry D (shared)" TWICE.
+  setup_conflict duplicate-entry-different-offset \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry X (left-only)
+## 2026-01-05 -- entry D (shared)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (shared)
+"
+  t_refused "the same entry added on both sides at a different offset is refused, not silently doubled"
+
+  # card bc0af927: THE SAME GAP, ONE AXIS FURTHER -- the two copies of the shared header are not
+  # byte-identical, only whitespace-identical. Reproduced against the byte-exact comm -12 check
+  # (i.e. this file's state right before this card's fix): both variants below RESOLVED, landing
+  # "entry D (shared)" twice with a slightly different header on each copy.
+  setup_conflict duplicate-entry-whitespace-double-space \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry X (left-only)
+## 2026-01-05 --  entry D (shared)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (shared)
+"
+  t_refused "the shared header differs only by a doubled internal space -- still refused, not doubled"
+
+  setup_conflict duplicate-entry-whitespace-trailing-space \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry X (left-only)
+## 2026-01-05 -- entry D (shared) 
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (shared)
+"
+  t_refused "the shared header differs only by trailing whitespace -- still refused, not doubled"
+
+  # CONTROL for the two cases above: a header that is a GENUINELY DIFFERENT entry, differing by an
+  # actual word rather than whitespace, must still resolve normally -- whitespace-normalizing the
+  # comparison must not start refusing two real, distinct entries.
+  setup_conflict whitespace-normalize-does-not-refuse-real-differences \
+    "## 2026-01-01 -- entry A
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (left version)
+" \
+    "## 2026-01-01 -- entry A
+## 2026-01-06 -- entry E (right)
+"
+  t_resolved "two genuinely different headers (not a whitespace variant of each other) still resolve" \
+    "## 2026-01-01 -- entry A
+## 2026-01-05 -- entry D (left version)
+## 2026-01-06 -- entry E (right)
 "
 
   # A REAL EDIT ON ONE SIDE (a correction to the existing entry, not just an append at the tail):
@@ -756,8 +1346,15 @@ X törzs
   # their next measurement, comment 20572). Shared new blank and separator lines are the ONE thing
   # allowed through the structural check, so the width of that hole is worth pinning: anything that
   # merely LOOKS like a rule -- a trailing space, `- - -`, `* * *`, four dashes -- is shared new
-  # substantive content and is refused. Measured: only the exact `---` and `***` forms union.
-  # A widening here would be a widening of the only exception in the whole check.
+  # substantive content and is refused.
+  #
+  # THE ALLOWED SET IS FOUR MEMBERS, NOT TWO (Cybersec, comment 20632). An earlier version of this
+  # comment said "only the exact `---` and `***` forms union" while the case arm three lines up
+  # allows `''|'---'|'***'|'___'` -- a blank line and three rule spellings. The comment was written
+  # from the two forms the fixture happened to exercise, not from the code, which is exactly the
+  # habit that produces a doc-accuracy finding. Every member now has its own case below; every
+  # near-miss has its own too, because widening them as a block turns one case red and reads as
+  # coverage of all four.
   setup_conflict separator-near-miss \
     "## 2026-09-01 -- entry A
 body of A
@@ -777,6 +1374,477 @@ body of A
 ## 2026-09-06 -- entry C (right)
 "
   t_refused "a separator with a trailing space is not on the exception list -- refused"
+
+  # ONE CASE PER NEAR-MISS FORM, not one case for all four (Cybered F-T). The first version of this
+  # widened all four spellings at once: that turns a single case red and READS as coverage, while
+  # per-form only one of the four was actually pinned. Mutation granularity has to match the claim.
+  setup_conflict near-miss-spaced-dashes \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+- - -
+
+## 2026-09-05 -- entry B (left)
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+- - -
+
+## 2026-09-06 -- entry C (right)
+"
+  t_refused "near miss (spaced dashes) is not on the exception list -- refused"
+
+  setup_conflict near-miss-spaced-stars \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+* * *
+
+## 2026-09-05 -- entry B (left)
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+* * *
+
+## 2026-09-06 -- entry C (right)
+"
+  t_refused "near miss (spaced stars) is not on the exception list -- refused"
+
+  setup_conflict near-miss-four-dashes \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+----
+
+## 2026-09-05 -- entry B (left)
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+----
+
+## 2026-09-06 -- entry C (right)
+"
+  t_refused "near miss (four dashes) is not on the exception list -- refused"
+
+  # ...AND ONE CASE PER ALLOWED MEMBER, enumerated from the case arm rather than from whichever
+  # spelling a fixture happened to use -- the habit that let the comment above claim two members
+  # when the code allows four. The blank-line member is covered by `identical-midfile-insert` and
+  # `---` by `separator-led-append`; these are the two that had no case at all.
+  setup_conflict allowed-stars-separator \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+***
+
+## 2026-09-05 -- entry B (left)
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+***
+
+## 2026-09-06 -- entry C (right)
+"
+  t_resolved "the shared stars separator is on the exception list -- unions" \
+    "## 2026-09-01 -- entry A
+body of A
+
+***
+
+## 2026-09-05 -- entry B (left)
+## 2026-09-06 -- entry C (right)
+"
+
+  setup_conflict allowed-underscores-separator \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+___
+
+## 2026-09-05 -- entry B (left)
+" \
+    "## 2026-09-01 -- entry A
+body of A
+
+___
+
+## 2026-09-06 -- entry C (right)
+"
+  t_resolved "the shared underscores separator is on the exception list -- unions" \
+    "## 2026-09-01 -- entry A
+body of A
+
+___
+
+## 2026-09-05 -- entry B (left)
+## 2026-09-06 -- entry C (right)
+"
+
+  # J-1: THE SEAM MANUFACTURES A SETEXT HEADING (Cybered, comment 20593). A `---` directly under a
+  # non-blank text line is an H2, not a rule. Ours ends on prose, theirs opens with a rule, and the
+  # join promotes ours' last line to a heading that neither parent had. Reproduced on the default
+  # path before the fix; not a byte is lost, which is why every line-based check stays green.
+  setup_conflict junction-setext-heading \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+utolsó prózasor
+" \
+    "## 2026-09-01 -- entry A
+body of A
+---
+
+## 2026-09-06 -- entry C (right)
+"
+  t_refused "J-1: the junction must not manufacture a setext heading"
+
+  # ...AND THE PREDICATE ON ITS OWN CONTRACT (Cybersec, comment 20760). The end-to-end fixture above
+  # covers the `-` half and is genuine -- MEASURED: with the seam check removed it RESOLVES. The `=`
+  # half cannot be covered that way: `===` is not on the shared-new exception list, so
+  # `_starts_new_entry` refuses it first, and a `===` merge fixture stays green with the seam check
+  # deleted. Green for the wrong reason is not coverage, so the `=` half is pinned here, directly.
+  _seam_case() { # $1 label, $2 last-before, $3 first-after, $4 expected: refuse|safe
+    n=$((n+1))
+    local got=safe
+    _seam_makes_setext_heading "$2" "$3" && got=refuse
+    if [ "$got" = "$4" ]; then echo "  ok   seam: $1"
+    else echo "  FAIL seam: $1 -> $got, expected $4"; fail=1; fi
+  }
+  _seam_case "prose then ---  forms a heading"        "utolso prozasor" "---"   refuse
+  _seam_case "prose then ===  forms a heading"        "utolso prozasor" "==="   refuse
+  # THE RUN LENGTHS THAT THE FIRST PATTERN MISSED. It matched exactly three or at least eight;
+  # CommonMark accepts any length, so four through seven silently formed a heading.
+  _seam_case "prose then ---- (four dashes)"          "utolso prozasor" "----"  refuse
+  _seam_case "prose then ----- (five dashes)"         "utolso prozasor" "-----" refuse
+  _seam_case "prose then ==== (four equals)"          "utolso prozasor" "====="  refuse
+  _seam_case "prose then a single -"                  "utolso prozasor" "-"     refuse
+  _seam_case "prose then a single ="                  "utolso prozasor" "="     refuse
+  _seam_case "prose then a very long dash run"        "utolso prozasor" "------------" refuse
+  # THE OTHER DIRECTION, so "always refuse" cannot pass the four above.
+  _seam_case "prose then an ordinary line is safe"    "utolso prozasor" "jobb torzs" safe
+  _seam_case "prose then a *** rule is safe"          "utolso prozasor" "***"   safe
+  # MIXED characters are not a setext underline, and refusing them would be a widening with no
+  # markdown behind it -- the direction this file refuses to take without a measurement.
+  _seam_case "prose then -=- (mixed) is safe"         "utolso prozasor" "-=-"   safe
+  _seam_case "prose then '--- x' (trailing text) safe" "utolso prozasor" "--- x" safe
+  # A rule with NOTHING above it is a rule, not a heading -- this is the `[ -n "$1" ]` half, and
+  # without it the function would refuse a legitimate separator-led append.
+  _seam_case "--- with nothing above it is safe"      ""                "---"   safe
+  _seam_case "=== with nothing above it is safe"      ""                "==="   safe
+
+  # THE 0-3 SPACE INDENT, WHICH THE FENCE SIDE ALREADY HANDLED AND THIS ONE DID NOT (Cybersec
+  # 21040). CommonMark indents a setext underline up to three spaces exactly as it does a fence
+  # opener; measured on the landed copy, `---` refused and `  ---` passed -- one class, two halves,
+  # and only the half I happened to fix in that round had learned it.
+  _seam_case "1-space indented --- is still a heading"  "prozasor" " ---"    refuse
+  _seam_case "2-space indented --- is still a heading"  "prozasor" "  ---"   refuse
+  _seam_case "3-space indented === is still a heading"  "prozasor" "   ==="  refuse
+  # FOUR is past the limit -- and an indented code block cannot interrupt a paragraph either, so
+  # it is safe by both readings. This is the control that stops "strip all leading space".
+  _seam_case "4-space indented --- is NOT a heading"    "prozasor" "    ---" safe
+  # CRLF (Cybered, comment 21147): the trailing trim is a whitespace CLASS now, so a `\r` before
+  # the line end no longer carries the underline to safe. The second case is the control that
+  # keeps the trim from swallowing real text: `--- x` is not an underline with or without a CR.
+  _seam_case "CRLF --- is still a heading"              "prozasor" "$(printf '%s\r' ---)"   refuse
+  _seam_case "CRLF === is still a heading"              "prozasor" "$(printf '%s\r' ===)"   refuse
+  _seam_case "CRLF trailing text is NOT a heading"      "prozasor" "$(printf '%s\r' '--- x')" safe
+  # And the CRLF BLANK previous line: a lone `\r` is markdown-blank, so a rule under it is a
+  # thematic break, not a heading promotion.
+  _seam_case "CRLF blank line above --- is NOT a heading" "$(printf '\r')" "---" safe
+  # AND THE SAME VERDICT UNDER AN EXPORTED FOREIGN LOCALE (Cybersec N-1, comment 21236). The
+  # predicate now pins `local LC_ALL=C` like its fence sibling; without that pin the `[[:space:]]`
+  # class is evaluated under the AMBIENT locale, and `---` followed by U+2028 or U+3000 flips from
+  # safe to REFUSE. The production path never saw it (try_append_union sets the locale and bash
+  # scopes that dynamically over the call), so ONLY a direct call can catch it -- which is exactly
+  # what this file does, and what left the pin unmeasured until this case existed.
+  seam_locale_ok=1
+  for probe_locale in C.UTF-8 en_US.UTF-8; do
+    for probe_u in "$(printf '%s\u2028' ---)" "$(printf '%s\u3000' ---)"; do
+      if LC_ALL="$probe_locale" bash -c '
+        source "$1" --selftest-noop 2>/dev/null || true
+        _seam_makes_setext_heading "prozasor" "$2"' _ "${BASH_SOURCE[0]}" "$probe_u" 2>/dev/null; then
+        seam_locale_ok=0
+      fi
+    done
+  done
+  n=$((n+1))
+  if [ "$seam_locale_ok" = 1 ]; then
+    echo "  ok   seam: a non-ASCII trailing space is safe under an EXPORTED locale too (pinned LC_ALL)"
+  else
+    echo "  FAIL seam: the verdict CHANGES with the ambient locale -- the predicate does not pin it"
+    fail=1
+  fi
+  # Trailing spaces or tabs are permitted after the underline; other text is not.
+  _seam_case "--- with trailing spaces is a heading"    "prozasor" "---  "   refuse
+  _seam_case "--- with trailing text is NOT a heading"  "prozasor" "--- x"   safe
+
+  # J-2: THE SEAM SWALLOWS THE OTHER SIDE INTO A CODE FENCE (Cybered, comment 20597). Everything up
+  # to the junction leaves a fence open, so theirs' whole entry lands inside it: its `## ` header
+  # stops being a header and stops being greppable, while every line is still present.
+  setup_conflict junction-open-code-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+\`\`\`bash
+echo hello
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "J-2: an unclosed code fence at the junction is refused"
+
+  # ONE CASE PER FENCE SPELLING (Cybered R-1). The parity check used to be `grep -c '^```'`, which
+  # is ONE spelling of a general property: measured on this same shape, an unclosed `~~~` and a
+  # ```-fence indented two spaces both UNIONED and produced exactly the J-2 harm. Adding `~~~`
+  # beside the backtick would have been the third rung of the ladder this card already climbed
+  # twice, so the check became a fence-state scan instead -- and each spelling gets its own case,
+  # because widening them as a block turns one case red and reads as coverage of all of them.
+  setup_conflict junction-unclosed-tilde-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+~~~bash
+echo hello
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "J-2: an unclosed ~~~ fence is refused too"
+
+  setup_conflict junction-unclosed-indented-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+  \`\`\`bash
+echo hello
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "J-2: an unclosed fence indented 2 spaces is refused"
+
+  # PER-WIDTH, like the setext side already is (Cybersec F-3, comment 21120). The 2-space fixture
+  # above pins ONE width, and a mutation map over the 61 cases showed what that costs: deleting the
+  # 1-space branch of the fence indent strip left the suite GREEN, and so did deleting the 3-space
+  # branch -- both silently, because the only indented-fence fixture used two spaces. The 3-space
+  # mutant's harm is reachable end-to-end on the same fixture shape: theirs' whole entry lands
+  # inside an open fence. The setext half was pinned at 1/2/3/4 from the start; this brings the
+  # fence half to the same grain. Do NOT fold these into the 2-space case -- three separate
+  # fixtures are what makes each branch individually load-bearing.
+  setup_conflict junction-unclosed-1sp-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+ \`\`\`bash
+echo hello
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "J-2: an unclosed fence indented 1 space is refused"
+
+  setup_conflict junction-unclosed-3sp-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+   \`\`\`bash
+echo hello
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "J-2: an unclosed fence indented 3 spaces is refused"
+
+  # ...AND THE CONTROLS. Each closer form must still union, or "refuse on any fence character"
+  # would pass every case above while breaking ordinary content.
+  setup_conflict junction-closed-tilde-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+~~~bash
+echo hello
+~~~
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_resolved_any "a CLOSED ~~~ fence still unions"
+
+  setup_conflict junction-fence-closed-by-longer \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+\`\`\`bash
+echo hello
+\`\`\`\`\`
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_resolved_any "a fence closed by a LONGER run still unions"
+
+  setup_conflict junction-tilde-not-closed-by-backtick \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+~~~bash
+echo hello
+\`\`\`
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "a ~~~ fence is NOT closed by \`\`\` -- refused"
+
+  setup_conflict junction-four-space-indent-not-a-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+    \`\`\`bash
+echo hello
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_resolved_any "four spaces is an indented block, not a fence -- unions"
+
+  # THE TWO STRICTNESS RULES ON THE CLOSER, each pinned on its own. Both were unpinned in the first
+  # version: mutating "closer must be at least as long" and "closer must have nothing after it" left
+  # the whole selftest green, so the code was right and the tests were not watching. CommonMark says
+  # a closing fence is at least as long as the opener and carries no info string; being lenient on
+  # either would close a block the parser leaves OPEN, which is the fail-open direction.
+  setup_conflict junction-closer-too-short \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+\`\`\`\`\`bash
+echo hello
+\`\`\`
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "a SHORTER closing run does not close the fence -- refused"
+
+  setup_conflict junction-closer-with-text \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+\`\`\`bash
+echo hello
+\`\`\` trailing
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_refused "a closing fence with trailing text does not close it -- refused"
+
+
+
+  # ...AND THE CONTROL THAT KEEPS J-2 HONEST: a fence that ours CLOSES is ordinary content and must
+  # still union. Without this, "refuse whenever a backtick appears" would pass the case above.
+  setup_conflict junction-closed-code-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+\`\`\`bash
+echo hello
+\`\`\`
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
+  t_resolved "a CLOSED code fence still unions -- the J-2 rule is about parity, not backticks" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+\`\`\`bash
+echo hello
+\`\`\`
+## 2026-09-06 -- entry C (right)
+jobb törzs
+"
 
   # THE PRICE OF THE DATED FORM, PINNED RATHER THAN DESCRIBED. A genuine append whose header is
   # undated is refused and falls to the caller's manual path. Measured before accepting it: every
@@ -896,6 +1964,19 @@ tail B
   # NEW entry, not an edit, and must still union. Measured on the real file: 18 of 199 entries are
   # preceded by `---`, so the literal "remainder must start with ## " rule the NO-GO proposed would
   # refuse a legitimate shape -- including this card's own DECISIONS entry.
+  # THE SAME CONTENT WITH CRLF LINE ENDINGS (Cybered C-1, card bb52c2fa). The separator skip-list
+  # matched `---` EXACTLY, so on a CRLF file the rule line is `---\r`, is not recognised, and
+  # byte-identical content RESOLVED on LF while it was REFUSED on CRLF. Fail-closed, so nothing ever
+  # merged wrongly -- but a refusal a user cannot reproduce on their own checkout is its own cost,
+  # and this is the THIRD time this file has been bitten by two halves of one rule drifting (indent,
+  # trailing whitespace, and now the line ending). The skip-list lives in `_is_blank_or_rule` now,
+  # once, and both call sites go through it.
+  setup_conflict separator-led-append-crlf \
+    "$(printf '## entry A\r\nbody of A\r\n')" \
+    "$(printf '## entry A\r\nbody of A\r\n\r\n---\r\n\r\n## 2026-01-02 -- bal oldali bejegyzes\r\n')" \
+    "$(printf '## entry A\r\nbody of A\r\n\r\n---\r\n\r\n## 2026-01-03 -- jobb oldali bejegyzes\r\n')"
+  t_resolved_any "a CRLF file gets the SAME verdict as the byte-identical LF one"
+
   setup_conflict separator-led-append \
     "## entry A
 body of A
@@ -929,6 +2010,19 @@ body of A
 ## 2026-01-02 -- bal oldali bejegyzes
 ## 2026-01-03 -- jobb oldali bejegyzes
 "
+
+  # NOT A MERGE DRIVER, PINNED (Cybersec, card 3ae71df1). The guard near the top of this file is a
+  # behaviour change -- direct execution used to exit 0 -- and an untested behaviour change is one
+  # the next reader reverts. Three path arguments is the `merge.<name>.driver` convention (%O %A %B);
+  # a driver that exits 0 tells git the merge succeeded, so git keeps ours and silently drops theirs.
+  n=$((n+1))
+  if bash "${BASH_SOURCE[0]}" /dev/null /dev/null /dev/null >/dev/null 2>&1; then
+    echo "  FAIL invoked with three path args (merge-driver convention) it exited 0 -- git would"
+    echo "       take ours and DISCARD theirs with no conflict and no message"
+    fail=1
+  else
+    echo "  ok   invoked like a merge driver it refuses with a non-zero code"
+  fi
 
   # UTF-8: THE INVARIANT, ASSERTED ON THE HELPER DIRECTLY (card b7e57877).
   #
@@ -965,6 +2059,40 @@ body of A
   else
     echo "  FAIL UTF-8: prefix length $utf8_n, expected $utf8_expect bytes -- a byte offset from cmp"
     echo "       is being used as a bash CHARACTER index (card b7e57877)"
+    fail=1
+  fi
+
+  # THE SAME ANSWER UNDER AN EXPORTED LC_ALL (Cybered C-2, card bb52c2fa). The case above was green
+  # only while LC_ALL happened to be UNSET in the runner's environment: exporting ANY value -- C,
+  # C.UTF-8, or a name this host does not even have -- turned the whole suite 61/67. Any CI or agent
+  # environment that exports LC_ALL got a FALSE RED on correct code.
+  #
+  # THE CAUSE IS NOT "cmp says char in some locales and byte in others" (Cybersec F-1 round 2, and
+  # this comment carried that refuted explanation as its justification after the header 90 lines up
+  # had already been corrected -- a correction that reaches one copy and not the other). That
+  # explanation is refuted by its own list: C.UTF-8 IS multibyte and cmp says "byte" under it, so
+  # exporting C.UTF-8 should have worked. It broke too.
+  #
+  # The real mechanism is the one stated at the top of _common_line_prefix_len: `local LC_ALL=C`
+  # only reaches the child when LC_ALL already carries the export attribute, which it does as soon
+  # as ANYTHING exported it. So cmp ran under single-byte C no matter WHICH value was exported, said
+  # "char", and the byte-only pattern matched nothing. The specific locale never mattered -- only
+  # whether one was exported at all.
+  #
+  # Asserting the VALUE under a foreign locale is what pins it. Asserting only that the suite passes
+  # would not: the suite runs in ONE environment, which is exactly how this hid.
+  local_indep_ok=1
+  for probe_locale in C C.UTF-8 en_US.UTF-8; do
+    probe_n="$(LC_ALL="$probe_locale" bash -c '
+      source "$1" --selftest-noop 2>/dev/null || true
+      _common_line_prefix_len "$2" "$3"' _ "${BASH_SOURCE[0]}" "$utf8_a" "$utf8_b" 2>/dev/null)"
+    [ "$probe_n" = "$utf8_n" ] || local_indep_ok=0
+  done
+  n=$((n+1))
+  if [ "$local_indep_ok" = 1 ]; then
+    echo "  ok   the byte offset is the same under an EXPORTED LC_ALL (C / C.UTF-8 / en_US.UTF-8)"
+  else
+    echo "  FAIL the byte offset CHANGES with the ambient locale -- cmp's wording is being parsed"
     fail=1
   fi
 
@@ -1035,6 +2163,183 @@ some body text on the following line
     echo "  ok   ...and it took ${perf_elapsed}s, well inside the 60s budget"
   fi
 
-  echo "selftest: $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
-  exit $fail
+  # --- Cybersec F-2 (card bb52c2fa): the cut-vs-awk pin, made INTENTIONAL ---------------------
+  # A `cut -d' ' -f1` reintroduction is ALREADY caught -- measured: it turns SIX existing cases red.
+  # But that coverage is incidental: those cases exist for fences and UTF-8 offsets, and they happen
+  # to carry mixed-magnitude differences. Coverage nobody knows about is coverage that gets trimmed
+  # away with the case it rode in on, so this names it. It is also the shape a reader of the fixed
+  # comment must build: MIXED magnitudes. A single large offset prints with NO padding and `cut`
+  # handles it fine -- a large-only fixture cannot tell awk and cut apart, which is exactly the
+  # green-and-blind regression test the old, backwards comment would have produced.
+  echo "-- Cybersec F-2: the offset parse must survive a MIXED-magnitude cmp -l column"
+  mixed_a="a$(printf 'x%.0s' $(seq 1 300))a"
+  mixed_b="b$(printf 'x%.0s' $(seq 1 300))b"
+  mixed_n="$(_common_line_prefix_len "$mixed_a" "$mixed_b")"
+  # They differ at byte 1, so there is NO common line prefix at all -> 0. With `cut`, cmp -l's first
+  # line is `    1 141 142` (right-aligned to the width of the later offset 302), the field before
+  # the number is empty, `n` comes back empty, and the fallback answers with a whole side's length.
+  n=$((n+1))
+  if [ "$mixed_n" = "0" ]; then
+    echo "  ok   a first-byte difference alongside a 3-digit one still parses as offset 1 (-> 0)"
+  else
+    echo "  FAIL mixed-magnitude cmp -l column misparsed: got $mixed_n, expected 0 -- the padded"
+    echo "       SMALL offset was swallowed (this is what cut -d' ' -f1 does)"
+    fail=1
+  fi
+
+  # --- card c266ec74: ONE SIDE ENTIRELY A PREFIX OF THE OTHER lost its own last line --------------
+  # Live incident: a marveen landing's DECISIONS.md conflicted (git's own diff got confused by an
+  # unrelated mid-file insertion elsewhere in the real 875KB file), and in the index's three stages
+  # `ours` turned out to be an EXACT byte-for-byte prefix of `theirs` (theirs = ours + a clean tail
+  # append) -- the textbook case this whole function exists to handle. It still refused.
+  #
+  # ROOT CAUSE: `cmp` finds no differing byte (one side is a prefix of the other), so `n` comes back
+  # empty and the EOF-fallback answers "the shorter side's own full length" -- correct so far. But
+  # that answer then fell through into the SAME "back up to the last complete line" step built for
+  # the OTHER branch (a real mid-line difference), and `$(...)`'s trailing-newline stripping means
+  # `head` (== the shorter side, `a`, in full) never ends in `\n` -- so `${head%$'\n'*}` matched the
+  # LAST newline anywhere in `head` and discarded everything after it: the shorter side's own final
+  # line, which was a complete line in the real file, just captured without its terminator. Both
+  # `ours_added`/`theirs_added` in try_append_union then inherited that dangling line, it does not
+  # start a new entry header, and the union refused a landing that had nothing wrong with it.
+  a_prefix="## 2026-01-01 -- base entry
+first body line
+second body line."
+  b_superset="${a_prefix}
+
+## 2026-01-02 -- appended entry
+new body line"
+  prefix_of_superset_n="$(_common_line_prefix_len "$a_prefix" "$b_superset")"
+  if [ "$prefix_of_superset_n" = "${#a_prefix}" ]; then
+    echo "  ok   one side entirely a prefix of the other keeps that side's OWN final line"
+  else
+    echo "  FAIL one side entirely a prefix of the other: got $prefix_of_superset_n, want ${#a_prefix}" \
+      "(the shorter side's own last line was dropped)"
+    fail=1
+  fi
+  # And the same shape the OTHER way round (b shorter, a the superset) -- the EOF fallback branches
+  # on which side is shorter, so both directions need their own case.
+  prefix_of_superset_n2="$(_common_line_prefix_len "$b_superset" "$a_prefix")"
+  if [ "$prefix_of_superset_n2" = "${#a_prefix}" ]; then
+    echo "  ok   ...and the same holds with the shorter side passed second"
+  else
+    echo "  FAIL ...with the shorter side passed second: got $prefix_of_superset_n2, want ${#a_prefix}"
+    fail=1
+  fi
+  # NOT also pinned end-to-end through try_append_union/setup_conflict: a small fixture where one
+  # side is a pure prefix of the other is, correctly, a CLEAN git merge (no conflict at all, verified
+  # by hand) -- git only produced a real conflict on the live 875KB file because of an UNRELATED
+  # mid-file insertion confusing its diff elsewhere, which is not practical to reproduce minimally.
+  # The direct calls above pin the actual defect; try_append_union's existing end-to-end cases in
+  # this file already cover that it is reached correctly once a real conflict exists.
+
+  # --- card 5910f2f3 F-2: fault-injection coverage for _common_line_prefix_len itself -----------
+  # (Cybered comment 22227 F-2, harness worked out and handed over in msg 25346.) The original ask
+  # was to isolate each of the THREE named checks (starts_new_entry / header-count / membership)
+  # under a corrupted prefix length. Cybered's own line-level tracer proved that is no longer
+  # possible from this angle: b7e57877 landed TWO EARLIER guards since this card was opened --
+  # "THE GUARANTEE" (nothing the merge-base held may be missing from the prefix) and "THE
+  # STRUCTURAL BOUNDARY" (content shared beyond the base must be blank/separator only) -- and BOTH
+  # catch every fault magnitude tried here BEFORE any of the three originally-named checks are ever
+  # reached, independent of which one is disabled. That is not a gap: it is what belt-and-suspenders
+  # means, and Cybered measured it directly (line-annotated tracer, guard-hit logged per case).
+  #
+  # So this proves the WHOLE CHAIN refuses under a corrupted prefix length -- if a future reordering
+  # or removal of one guard ever let a corrupted offset through, at least one of these three cases
+  # would catch it, without needing a test-only hook to disable guards inside production code (the
+  # header_glob/order env-var lesson this file already learned once: an escape hatch built only for
+  # a test is an escape hatch).
+  #
+  # Fixture and fault magnitudes are Cybered's own, reproduced exactly and re-verified against this
+  # worktree's real, unmutated _common_line_prefix_len before being pinned as constants: on this
+  # fixture the real function returns 76.
+  _f2_base=$'## 2026-01-01 -- Old entry\nBody of the old entry, unchanged by both sides.\n'
+  _f2_ours=$'## 2026-01-01 -- Old entry\nBody of the old entry, unchanged by both sides.\n\n## 2026-02-01 -- Ours entry\nOurs body line one.\nOurs body line two.\n'
+  _f2_theirs=$'## 2026-01-01 -- Old entry\nBody of the old entry, unchanged by both sides.\n\n## 2026-03-01 -- Theirs entry\nTheirs body line one.\n'
+
+  # $1 = label, $2 = the constant value to make _common_line_prefix_len return instead of computing
+  # it. Saves and restores the REAL function around the call -- every other case in this file, before
+  # and after, must keep running against the genuine implementation.
+  t_refused_with_corrupted_prefix_len() {
+    local label="$1" fault="$2" _orig_fn
+    _orig_fn="$(declare -f _common_line_prefix_len)"
+    eval "_common_line_prefix_len() { printf '%s' '$fault'; }"
+    if try_append_union "$REPO" "DECISIONS.md"; then
+      echo "  FAIL $label -> expected try_append_union to refuse (return 1), it resolved"; fail=1
+    elif ! git -C "$REPO" diff --name-only --diff-filter=U | grep -qx "DECISIONS.md"; then
+      echo "  FAIL $label -> refused but DECISIONS.md no longer shows as unmerged"; fail=1
+    elif ! grep -q '^<<<<<<< ' "$REPO/DECISIONS.md" 2>/dev/null; then
+      echo "  FAIL $label -> refused but the conflict markers are gone from the working file"; fail=1
+    else
+      echo "  ok   $label"
+    fi
+    eval "$_orig_fn"
+    git -C "$REPO" merge --abort 2>/dev/null || true
+  }
+
+  setup_conflict f2-prefix-len-fault "$_f2_base" "$_f2_ours" "$_f2_theirs"
+  t_refused_with_corrupted_prefix_len \
+    'F-2: a too-LONG corrupted prefix length is refused (86 -- 10 bytes into ours own new header line)' 86
+  setup_conflict f2-prefix-len-fault "$_f2_base" "$_f2_ours" "$_f2_theirs"
+  t_refused_with_corrupted_prefix_len \
+    'F-2: a too-SHORT corrupted prefix length is refused (61 -- 15 bytes back inside base own body line)' 61
+  setup_conflict f2-prefix-len-fault "$_f2_base" "$_f2_ours" "$_f2_theirs"
+  t_refused_with_corrupted_prefix_len \
+    'F-2: an off-by-one-header corrupted prefix length is refused (104 -- bakes ours whole new header into "prefix")' 104
+  # CONTROL: the same fixture, same helper, but with the REAL correct value (76) -- proves the
+  # override mechanism itself does not just always refuse regardless of what it returns.
+  setup_conflict f2-prefix-len-fault "$_f2_base" "$_f2_ours" "$_f2_theirs"
+  if try_append_union "$REPO" "DECISIONS.md"; then
+    echo "  ok   CONTROL: the fault-injection harness itself, given the REAL correct prefix length, resolves normally"
+  else
+    echo "  FAIL CONTROL: the fault-injection harness refused even with the correct (76) prefix length -- the harness itself is broken, not the function"
+    fail=1
+  fi
+  git -C "$REPO" merge --abort 2>/dev/null || true
+
+  # --- G-1: the read-back guard pins ITSELF (Cybered, card bb52c2fa) --------------------------
+  # These call _selftest_verdict DIRECTLY with synthetic logs, so deleting the read-back (or
+  # weakening its pattern) turns THESE cases red. Without them the guard was unpinned: the CI test
+  # asserts a PASSING run, and a passing run never enters the forcing branch, so the four lines
+  # could be removed with nothing going red -- the exact trap the guard exists to close, one level
+  # up. The negative control matters as much as the positive one: a clean log must NOT be forced.
+  echo "-- G-1: the output read-back guard, pinned directly"
+  printf '  ok   something passed\n  FAIL a case printed a failure and forgot the flag\n' \
+    >"$TMP/verdict-dirty.log"
+  printf '  ok   something passed\n  ok   something else passed\n' >"$TMP/verdict-clean.log"
+
+  if _selftest_verdict "$TMP/verdict-dirty.log" 0 >/dev/null; then
+    echo "  FAIL a log carrying a '  FAIL' line was reported as PASS -- the read-back guard is gone"
+    fail=1
+  else
+    # NOTE the wording: the CI wrapper (decisions-append-union-selftest.test.ts) asserts the whole
+    # output does not contain the literal "F-A-I-L", so a PASSING line must not spell it. That
+    # assertion is coarser than it reads, and this is not the place to loosen it -- the label works
+    # around it instead.
+    echo "  ok   a printed failure forces a failing verdict even when the flag says 0"
+  fi
+
+  if _selftest_verdict "$TMP/verdict-clean.log" 0 >/dev/null; then
+    echo "  ok   a clean log is NOT forced to fail (the guard is not a blanket)"
+  else
+    echo "  FAIL a clean log was forced to FAIL -- the read-back guard fires on passing runs"
+    fail=1
+  fi
+
+  # The flag still counts on its own: a case that sets it but prints nothing must stay FAIL.
+  if _selftest_verdict "$TMP/verdict-clean.log" 1 >/dev/null; then
+    echo "  FAIL an already-failed flag was cleared by a clean log -- the guard must only ADD"
+    fail=1
+  else
+    echo "  ok   the guard only ADDS failure; it never clears a flag a case set"
+  fi
+
+  # Restore stdout, show everything the run printed, then let the OUTPUT have the last word.
+  # fd 3 stays OPEN: the EXIT trap writes through it when a run dies before reaching this line.
+  exec 1>&3
+  cat "$_selftest_log"
+  _selftest_verdict "$_selftest_log" "$fail" || fail=1
+  _selftest_log=''   # printed above; stop the EXIT trap from repeating it
+  echo "selftest: $([ "$fail" -eq 0 ] && echo PASS || echo FAIL)"
+  exit "$fail"
 fi

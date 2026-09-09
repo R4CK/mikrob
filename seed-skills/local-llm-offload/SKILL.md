@@ -1,6 +1,8 @@
 ---
 name: local-llm-offload
 description: Offload a cheap, well-scoped sub-task -- fuzzy through MEDIUM-stakes -- to the LOCAL GPU-hosted LLM (Ollama on the WSL GTX 1660 Ti) instead of burning online Anthropic tokens. Use for short summaries, classification/triage, rewrite/reformat, dedup, i18n draft strings, AND medium-complexity code (functions, tests, small multi-step logic) -- verification is the agent's job either way, so draft-then-review scales past trivial snippets. NOT for deterministic transforms (escaping/regex/arithmetic -> use code), security-gate judgements, or unreviewed shipping output. After 3 failed attempts on the same task, stop retrying locally and hand it to an online agent. USE IT YOURSELF, UNPROMPTED, WHILE WORKING -- not only when a dispatcher hands you a draft: whenever your own card needs a new test file, an i18n draft, a small helper, or CRUD boilerplate, try the local model FIRST and review the result, instead of writing it online. Triggers: "reformat", "classify/triage", "dedupe these", "quick summary", "rewrite this", "save tokens", "lokalis modell", "offload".
+version: "1.0.0"
+related_skills: [fleet-helper]
 ---
 
 # Local LLM offload

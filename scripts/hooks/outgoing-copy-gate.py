@@ -317,8 +317,17 @@ HU_MARKERS = [
     "hogy", "nem", "vagy", "amit", "ami", "mert", "ezt", "ez a", "van", "lesz",
     "kell", "tehat", "tehát", "koszonom", "köszönöm", "szia", "sziasztok",
     "kerlek", "kérlek", "csatolva", "udvozlettel", "üdvözlettel", "levelet",
-    "level", "kuldom", "küldöm", "jelezz", "irj", "írj", "mar", "már", "csak",
+    "kuldom", "küldöm", "jelezz", "irj", "írj", "mar", "már", "csak",
 ]
+# A puszta "level" ATVEVE upstream-tol (kartya b4404ed2, upstream 03ca5262).
+# Magyar markerkent gyenge -- a gyakori alak a "levelet", az bent marad --, viszont
+# az ANGOL "level" minden elofordulasa magyar-pontot adott egy angol szovegnek.
+# MERVE ezen a forkon: "The new access level lands in the advance market build."
+# harom markert ert el (van a szoban "advance", level, mar a szoban "market"),
+# tehat is_hungarian() igazat adott EGY TISZTA ANGOL mondatra, es a kapu a
+# "level -> level" javaslattal blokkolt. A marker nelkul ketto marad, atmegy.
+# Az ellenirany merve: egy valodi, ekezethibas magyar mondat 9 helyett 8 markert
+# er el, tehat a nyelv-felismeres nem gyengul.
 
 # Accentless spellings of frequent Hungarian words -> the correct form. Every
 # entry is a word that CANNOT be spelled without its accent, so a hit inside
@@ -571,6 +580,17 @@ def load_bad_name():
 BROKEN_REASON = None
 
 
+def _log_stamp():
+    """ISO 8601 local time with a numeric offset, as a log-line prefix (card 4f15966e,
+    backend, 2026-09-07: found via a new merge-borne test). Before this, every write to
+    outgoing-copy-gate.log carried bare text -- 8005 lines across four distinct messages,
+    one of them recording an UNAUDITED Telegram send, with no way to tell which day, let
+    alone which message. A gate log whose entries cannot be placed in time cannot be used
+    to check anything. time.strftime, not datetime, because the module already imports
+    `time` and nothing else here needs a second date/time API."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z ")
+
+
 def _log_broken_pattern(exc):
     """The rules file is present and parses, but a PATTERN in it does not compile.
 
@@ -582,7 +602,7 @@ def _log_broken_pattern(exc):
     try:
         log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
         with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(f"outgoing-copy-gate: HIBAS NEV-MINTA a szabalyfajlban ({_LOCAL_RULES}): "
+            fh.write(_log_stamp() + f"outgoing-copy-gate: HIBAS NEV-MINTA a szabalyfajlban ({_LOCAL_RULES}): "
                      f"{exc} -- a nev-ellenorzes NEM fut, amig a minta javitva nincs. "
                      "A fajl letezik es olvashato; egy minta nem forditható.\n")
     except OSError:
@@ -594,7 +614,7 @@ def _log_missing_rules():
     try:
         log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
         with open(log_path, "a", encoding="utf-8") as fh:
-            fh.write(f"outgoing-copy-gate: NEV-SZABALY FAJL HIANYZIK/URES ({_LOCAL_RULES}) -- "
+            fh.write(_log_stamp() + f"outgoing-copy-gate: NEV-SZABALY FAJL HIANYZIK/URES ({_LOCAL_RULES}) -- "
                      "a nev-ellenorzes NEM fut; potold a store/outgoing-copy-gate-rules.json-t.\n")
     except OSError:
         pass
@@ -654,7 +674,7 @@ def _log_empty_rules(now=None, interval=_EMPTY_WARN_INTERVAL_S):
         pass  # no stamp yet (or unreadable) -- treat as due
     try:
         with open(os.path.join(store_dir, "outgoing-copy-gate.log"), "a", encoding="utf-8") as fh:
-            fh.write(f"outgoing-copy-gate: NEV-SZABALY SZANDEKOSAN URES ({_LOCAL_RULES}, "
+            fh.write(_log_stamp() + f"outgoing-copy-gate: NEV-SZABALY SZANDEKOSAN URES ({_LOCAL_RULES}, "
                      "bad_name_patterns: 0) -- a fajl ep, de a nev-ellenorzesnek NINCS mire "
                      "illeszkednie; a tobbi ellenorzes (ekezet, em dash, homoglifa) fut. "
                      "Posztura-kiiras: scripts/hooks/outgoing-copy-gate.py --status\n")
@@ -792,6 +812,27 @@ def _hit_context(prose: str, pos: int, length: int) -> str:
 # osztaly, mint a 2026-08-11-i `level` fajlnev-talalat. A javitas nem a szotarbol
 # vesz ki (az elrontana a valodi talalatokat is), hanem a technikai regiokat
 # vagja ki a vizsgalt szovegbol. A gondolatjel- es nev-ellenorzes NEM ezen fut.
+#
+# UPSTREAM-KOR (kartya b4404ed2, 2026-09-06, upstream 03ca5262 d97e9683..3ba1db43).
+# Upstream NEGY uj alternativat tett ide ugyanennek az osztalynak negy alesetere.
+# EGYET vettunk at (a `level\s+\d+` alakot), HARMAT NEM, es a kulonbseg MERT, nem
+# velemeny -- mind a negy upstream hamis-pozitivot lefuttattuk ezen a forkon:
+#   - szam + magyar toldalek ("8:09-es", "2-es", "17:06-kor")     -> mar ATMEGY
+#   - tulajdonnev + toldalek ("Chrome-ot", "Drive-ra")            -> mar ATMEGY
+#   - kotojeles kisbetus azonosito ("folyamatos-ellenorzes")      -> mar ATMEGY
+#   - "level 1" hibatlanul ekezetes magyar mondatban              -> BLOKKOLT
+# A harom atmeno esetet ez a fork EGY MASIK RETEGBEN oldotta meg: a HYPHEN_WORD
+# tokenizalo a kotojeles alakot EGESZKENT veszi (tehat "chrome-ot" sosem esik
+# "ot"-ra), plusz a DIGIT_HYPHEN_SUFFIX_ALLOWLIST es az IDENTIFIER_ALLOWLIST.
+# Az a ket allowlist KET Cybersec NO-GO eredmenye (fbb36b41 round 7/8 es round 11),
+# amelyek pontosan az upstream itteni FELTETEL NELKULI alakjat utasitottak el:
+# egy korlatlan "szamjegy-kotojel utani szo" vagy "kisbetus kotojeles alak" maszk
+# az ekezet- ES a homoglifa-vizsgalat elol is kivagja, amit elfed. Atvenni oket
+# tehat nulla nyereseg lenne, ugyanazert a tagitasert, amit ket kapu mar elutasitott.
+# A negyedik eset viszont VALODI lyuk itt is: a sajat CLAUDE.md-nk beszel
+# "Level 1/2/3" autonomia-szintrol, tehat barmely magyar uzenet, ami idezi, elakadt.
+# Az atvett maszk SZANDEKOSAN szuk: csak SZAM elott vag. A "Kaptam egy level toled"
+# alak (valodi "levelet" helyett) tovabbra is fennakad -- ez a maszk negativ kontrollja.
 TECHNICAL = re.compile(
     r"""https?://\S+                # URL
       | [\w.+-]+@[\w-]+\.[\w.]+     # email
@@ -799,6 +840,7 @@ TECHNICAL = re.compile(
       | \b\w+(?:_\w+)+\b            # snake_case azonosito
       | \b\w+\.[A-Za-z]{2,10}\b     # fajlnev / domain (video.mp4, marveen.io)
       | \b[\w-]*/[\w/-]+            # utvonal / slug
+      | \blevel\s+\d+\b            # angol "level 1" (autonomia-szint, log-szint)
     """,
     re.X,
 )
@@ -1111,6 +1153,15 @@ def telegram_gate(tool_input: dict) -> None:
     channel -- a gate crash that silences it costs more than a slipped accent.
     A FOUND problem still blocks (exit 2): that is the gate's whole point."""
     try:
+        # A non-dict tool_input (card 4f15966e, backend, 2026-09-07: found via a new
+        # merge-borne test) used to reach collect_telegram_body()'s .get() calls and crash
+        # with a bare AttributeError ("'int' object has no attribute 'get'") -- which reads
+        # like a bug INSIDE the audit, not what it actually is: a malformed payload. Named
+        # explicitly here so the log says the real cause.
+        if not isinstance(tool_input, dict):
+            raise TypeError(
+                f"tool_input nem szotar (dict), hanem {type(tool_input).__name__}"
+            )
         text = collect_telegram_body(tool_input)
         if not text.strip():
             sys.exit(0)  # files-only reply or empty text: nothing to audit
@@ -1118,11 +1169,17 @@ def telegram_gate(tool_input: dict) -> None:
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open path
-        warn = f"outgoing-copy-gate: TELEGRAM-ag belso hiba, FAIL-OPEN atengedes: {exc!r}\n"
+        warn = _log_stamp() + f"outgoing-copy-gate: TELEGRAM-ag belso hiba, FAIL-OPEN atengedes: {exc}\n"
         sys.stderr.write(warn)
         try:
-            log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__)))), "store", "outgoing-copy-gate.log")
+            # SAME directory as every other write in this file (_log_broken_pattern/
+            # _log_missing_rules/_log_empty_rules all use os.path.dirname(_LOCAL_RULES)) --
+            # NOT a path hardcoded off the script's own location (card 4f15966e, backend,
+            # 2026-09-07: found via a new merge-borne test). The old hardcoded form ignored
+            # OUTGOING_COPY_GATE_RULES entirely, so a test running against an isolated
+            # rules file still wrote into the real repo's store/, and the isolated test's
+            # own read of ITS log directory saw nothing.
+            log_path = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
             with open(log_path, "a", encoding="utf-8") as fh:
                 fh.write(warn)
         except OSError:

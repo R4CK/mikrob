@@ -6,10 +6,18 @@
 // old directory still exists and still parses, so the agent reads as idle. Upstream lost three days
 // of fleet consumption from the monitor a model-assignment decision was about to be based on.
 //
-// MEASURED ON THIS INSTALL BEFORE ADOPTING, and it does not currently bite here: provisioning
-// symlinks agents/<name>/.claude-config/projects back to ~/.claude/projects, so both roots are the
-// same physical tree. What the change buys is independence from that provisioning detail. Saying it
-// any more strongly would be claiming a data loss that is not happening.
+// THE PARAGRAPH HERE WAS WRONG, and it is corrected rather than deleted because it is half the
+// reason the defect below survived review (card 0c4cf655, from Cybered's finding on the efaf8926
+// gate). It said the symlinked layout -- provisioning points
+// agents/<name>/.claude-config/projects back at ~/.claude/projects, so both roots are one physical
+// tree -- was benign, and that the change only bought independence from a provisioning detail.
+//
+// It was not benign. Reading one tree once per agent booked the WHOLE fleet's consumption under
+// every isolated agent's own name, and the unique index could not absorb it because `agent` is its
+// first column. Measured before the fix: 4,033,380 rows against 398,952 distinct events, 90.1%
+// duplicates. discoverAgentSources now skips an isolated root that RESOLVES to the shared one;
+// token-usage-shared-root-skip.test.ts pins that, and the cases below still pin the capability
+// this block was added for -- a genuinely isolated tree must still be read.
 //
 // listAgentNames is mocked because the real one returns the live fleet, and a real agent's
 // CONFIGURED dir wins over the probe root -- the override would never be reached.

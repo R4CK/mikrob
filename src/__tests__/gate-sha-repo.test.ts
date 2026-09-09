@@ -170,6 +170,22 @@ describe('gate-sha-repo.sh (card edd4c3bf)', () => {
     expect(out.split('|')[2]).toBe(title)
   })
 
+  it('a title carrying its OWN "|" does not truncate under a naive cut -f3 (card 67587e7f, Cybered)', () => {
+    // 5 of 2875 board titles carry a "|" today (none carry a newline). The output line is itself
+    // "|"-delimited (card-id|<id>|<title>), so a naive positional split on the SAME delimiter --
+    // `cut -d'|' -f3`, or this test's own out.split('|')[2] -- reads only up to the title's own
+    // embedded pipe and silently truncates everything after it. Not a security issue (the machine
+    // signal downstream is the exit code, never the field count) -- just fragility this card closes.
+    const title = 'Ket resz | osszekotve egy csovonallal, a masodik felet nem szabad elveszteni'
+    const { out, code } = run(['aabbccdd'], boardStub({ aabbccdd: title }))
+    expect(code, out).toBe(4)
+    // The delimiter inside the title must be gone from the printed line, or split('|')[2] below
+    // would only see up to it -- proving the fix, not just asserting the end state.
+    expect(out.split('|').length).toBe(3)
+    expect(out.split('|')[2]).toContain('osszekotve')
+    expect(out.split('|')[2]).toContain('elveszteni') // the tail past the embedded "|" survived
+  })
+
   it('--check on a card id says CARD-ID and exits 4, instead of comparing it to a repo', () => {
     // The exit-4 branch of --check had no test at all; the stub makes it free to pin. A caller that
     // treated this as an ordinary mismatch would report "the REVIEW names the wrong repo" about a
