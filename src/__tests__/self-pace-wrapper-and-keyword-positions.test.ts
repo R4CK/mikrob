@@ -144,6 +144,27 @@ describe('ANTI-VACUITY (card ec20dd23)', () => {
     expect(bash(`${CT} -`)).toBe(true)
     expect(bash(`${CT} -l`)).toBe(false)
   })
+
+  it('bare scheduler binary with no flags is denied (interactive editor = write)', () => {
+    // `crontab` with no arguments opens the user's crontab in $EDITOR -- a write, not a read.
+    // SCHEDULER_RX's crontab branch is bare (no shape guard), so it must match here even without
+    // a flag. This pins the extraction path: executableStrings returns "crontab" (the composed
+    // first word) from `eval "cron""tab" " -r"`, so gateDecision("crontab") must deny for the
+    // bypass to be caught.
+    expect(bash(CT)).toBe(true)
+    expect(bash(SR)).toBe(true)
+  })
+
+  it('eval with adjacent-quoted pieces composing the binary name plus a second argument', () => {
+    // bash: eval "cron""tab" " -r"
+    // arg-1 = "crontab" (adjacent pieces joined by shell), arg-2 = " -r"
+    // bash eval concatenates with a space and runs "crontab -r".
+    // executableStrings returns the FIRST WORD of eval's argument ("crontab"), and
+    // gateDecision("crontab") denies, so the bypass is caught without needing to see "-r".
+    const Q = String.fromCharCode(34)
+    expect(bash(`eval ${Q}cron${Q}${Q}tab${Q} ${Q} -r${Q}`)).toBe(true)
+    expect(bash(`eval ${Q}${SR.split('-')[0]}${Q}${Q}-${SR.split('-')[1]}${Q}`)).toBe(true)
+  })
 })
 
 describe('round 2: the three shapes both gates found still open (card ec20dd23)', () => {
