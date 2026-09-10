@@ -12200,3 +12200,48 @@ olvasatot vezetné be, aminek a kizárására az egész fájl készült. Nincs b
 méréssel); MikroB nyitotta a kártyát a leletre.
 
 **Hivatkozás:** kártya `0ebeff55`; `src/__tests__/store-selftests-all-run.test.ts`, `store/*.selftest.{sh,py}`.
+
+## 2026-09-10 -- f3b219bb -- A local-LLM GPU-lock izolációja munkásonként, nem emlékezetből fájlonként
+
+**A probléma:** a `store/local-llm.sh` a `GPU_LOCK="${LOCAL_LLM_GPU_LOCK_PATH:-/tmp/local-llm-gpu.lock}"`
+sorral oldja fel a zárat. Egy teszt, ami a VALÓDI szkriptet futtatja anélkül, hogy felülírná ezt a
+változót, ugyanazért a flotta-szintű zárért verseng, mint minden más ügynök éles `local-llm.sh`
+hívása. Terhelés alatt a szkript feladja (`gpu lock busy -- could not acquire within 30s`, exit 6),
+és a landolás a gép terhelésén bukik meg, nem a diffen. Mérve is volt: a `c266ec74` landolásánál
+"első futás 4 helyi-llm/GPU-lock hibával bukott ... második futás változtatás nélkül 644/644 zöld".
+
+**Miért nem volt elég az első kör.** A `da76583c` commit (ugyanezen kártya első köre) azt a KÉT
+fájlt javította, ami akkor éppen flakelt, egyenként. Pontosan ezt az utat utasította el írásban
+ennek a fájlnak (`src/__tests__/setup/isolate-local-llm-state.ts`) a STATE_DIR fele, a `4c5c540c`
+kártyán: "patching each one fixes today and not tomorrow, because the thirteenth test to spawn that
+script reintroduces it silently". Nem is tartott: **develop-on mérve, a javítás előtt NÉGY olyan
+suite maradt, ami ténylegesen futtatja a `local-llm.sh`-t és még mindig az éles zárat vette**
+(`advisory-envelope`, `build-freshness`, `local-llm-host-guard`, `local-llm-state-dir`).
+
+**A javítás:** a `LOCAL_LLM_GPU_LOCK_PATH` ugyanabban a globális setup-fájlban áll be, munkásonként
+egyszer, a state-dir mellé -- ugyanaz a mechanizmus, ugyanazzal az indoklással. A `vitest.config.ts`
+már eleve minden munkásra betölti ezt a fájlt, tehát nem kellett új bekötés.
+
+**A kivétel érintetlen:** az a teszt, ami ténylegesen a megosztott zár folyamatközi viselkedéséről
+szól (`local-llm-sh-active-task-registration.test.ts`, kártya `8a6de2ee`), a GYEREK saját env-jében
+adja át a maga eldobható zár-útvonalát, ami veri az innen örökölt értéket -- ugyanaz a kiskapu, amit
+a state-dir fele már dokumentál.
+
+**Strukturális, nem próza:** új `src/__tests__/local-llm-gpu-lock-isolation.test.ts` (3 eset) rögzíti,
+hogy a változó be van állítva és nem az éles útvonalra mutat; hogy a `local-llm.sh` alapértelmezése
+TOVÁBBRA IS az éles zár (különben az izoláció semmit nem őrizne és a teszt vacuous lenne); és hogy
+egyetlen teszt-fájl sem állítja VISSZA hozzárendeléssel az éles útvonalat (a prózai említés szabad,
+a hozzárendelés nem).
+
+**Mutációval ellenőrizve, és ez fogott egy sajátsaját hibát is:** a setup-sor eltávolítása mellett a
+teszt ELŐSZÖR zöld maradt -- mert a `fleet-test.sh --ref` a durable teszt-worktree-ben egy COMMITOLT
+refből fut, tehát a commitolatlan mutációmat sosem látta. Közvetlenül a saját worktree ellen futtatva
+pirosra ment, visszaállítás után újra zöldre. A tanulság a mutáció-ellenőrzésre általában: a `--ref`
+és "az én munkafám" nem ugyanaz.
+
+**Teljes suite:** 720 fájl / 16651 teszt zöld, 101 skip, lint-ratchet tartja a baseline-t (256). A
+globális beállítás egyetlen tesztet sem tört el, a GPU-zárról szóló sajátokat sem.
+
+**Ki döntött:** backend2 (mérés, tervezés, implementáció).
+
+**Hivatkozás:** kártya `f3b219bb`; korábbi kör `da76583c`; a mintát adó `4c5c540c`; a kivételt adó `8a6de2ee`.

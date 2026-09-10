@@ -33,4 +33,28 @@ import { join } from 'node:path'
 // Per-worker, and NOT cleaned up on exit: these directories are tiny, and a leftover one is a
 // readable record of what a failing run wrote. The OS reclaims /tmp; a rmSync in an exit handler
 // would race the very subprocesses whose output we would want to look at.
-process.env.LOCAL_LLM_STATE_DIR = mkdtempSync(join(tmpdir(), 'marveen-test-llm-state-'))
+const workerTmp = mkdtempSync(join(tmpdir(), 'marveen-test-llm-state-'))
+
+process.env.LOCAL_LLM_STATE_DIR = workerTmp
+
+// THE SAME ARGUMENT, ONE AXIS OVER: the GPU LOCK (card f3b219bb).
+//
+// store/local-llm.sh resolves `GPU_LOCK="${LOCAL_LLM_GPU_LOCK_PATH:-/tmp/local-llm-gpu.lock}"`, so
+// a suite that execs the real script without overriding it takes the LIVE, fleet-wide lock that
+// every other agent's genuine local-llm.sh call is competing for. Under real fleet contention the
+// script gives up with `gpu lock busy -- could not acquire within 30s` and exits 6, which fails the
+// landing over load, not over any code change.
+//
+// Commit da76583c (this card's first round) fixed the TWO files that had flaked at the time, one by
+// one. That is the
+// approach the STATE_DIR half of this very file already rejected in writing -- "patching each one
+// fixes today and not tomorrow, because the thirteenth test to spawn that script reintroduces it
+// silently". It duly did not hold: measured on develop before this change, four suites that
+// actually exec local-llm.sh still took the real lock (advisory-envelope, build-freshness,
+// local-llm-host-guard, local-llm-state-dir). Setting it here, once per worker, is the same fix the
+// state directory already got, for the same reason.
+//
+// A test that is genuinely ABOUT the shared lock still overrides it in the CHILD's own env, which
+// beats what is inherited from here -- that is how local-llm-sh-active-task-registration.test.ts
+// (card 8a6de2ee) keeps testing real cross-process contention on a throwaway path of its own.
+process.env.LOCAL_LLM_GPU_LOCK_PATH = join(workerTmp, 'gpu.lock')
