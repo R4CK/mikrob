@@ -666,3 +666,119 @@ describe('round 7: an UNQUOTED payload is executable text too (card ec20dd23)', 
     expect(Date.now() - t0).toBeLessThan(2000)
   })
 })
+
+
+// ROUND 8 (Cybersec delta-gate NO-GO on 97220cfe, card ec20dd23). Round 7 closed the reported
+// bare-word shapes but left two of the same exec class open, and the first was NAMED in the
+// original finding's own table -- which is the more useful lesson here: "the reported cases now
+// pass" is not the same claim as "the finding's table is satisfied", and round 7 asserted the
+// first while believing the second.
+//
+// #1 printf is NOT echo. Its first remaining word is the FORMAT; later arguments are substituted
+//    into it, reusing the format until they run out. Round 7 pushed only the whole tail, so the
+//    conversion (%s) sat in command position and the real binary sat in argument position -- where
+//    the anchored check correctly ignores it. Round 7's own commit message said printf "carries a
+//    payload exactly as echo does"; that sentence was the bug.
+//
+// #2 `source <(...)` and `. <(...)` run the FIFO's contents in the CURRENT shell. The proc-sub
+//    branch only knew shell NAMES as a command position. This one predates round 7 (the quoted
+//    spelling was open too), and the proof it was an oversight rather than a decision is that
+//    HERESTRING_RX already carries the same two builtins on the `<<<` path.
+describe('round 8: printf format semantics and source/. execution (card ec20dd23)', () => {
+  const SQ = String.fromCharCode(39)
+  const DQ = String.fromCharCode(34)
+  const BSL = String.fromCharCode(92)
+  const FMT_NL = `${SQ}%s${BSL}n${SQ}`
+  const FMT_SP = `${SQ}%s ${SQ}`
+  const ONCAL = '--on-' + 'calendar hourly'
+
+  it('GROUND TRUTH: printf reuses its format, so the ARGUMENTS alone become the emitted line', () => {
+    // The whole premise of #1. If printf did not re-apply the format per argument, the arguments
+    // would not stand alone as a command and denying them would be an invented over-block.
+    const out = execFileSync('bash', ['-c', `printf ${FMT_NL} MARKER8 -`], { encoding: 'utf-8' })
+    expect(out).toBe('MARKER8\n-\n')
+  })
+
+  it('GROUND TRUTH: source and . really execute a process substitution in the current shell', () => {
+    // Same rule as round 7's ground truth: prove the shell runs it before asserting the gate must
+    // stop it. A harmless payload, never a scheduler.
+    const viaSource = execFileSync('bash', ['-c', 'source <(echo echo SRC8)'], { encoding: 'utf-8' })
+    expect(viaSource.trim()).toBe('SRC8')
+    const viaDot = execFileSync('bash', ['-c', '. <(echo echo DOT8)'], { encoding: 'utf-8' })
+    expect(viaDot.trim()).toBe('DOT8')
+  })
+
+  // --- #1 printf format string ---
+
+  it('a payload behind a printf FORMAT is denied', () => {
+    expect(bash(`printf ${FMT_NL} ${CT} - | sh`)).toBe(true)
+    expect(bash(`printf ${FMT_SP} ${SR} ${ONCAL} /evil | sh`)).toBe(true)
+    expect(bash(`printf ${DQ}%s${DQ} ${CT} -r | bash`)).toBe(true)
+  })
+
+  it('the format-only spellings stay denied -- the fix is ADDITIVE, not a replacement', () => {
+    // printf emits its format too, so dropping the first word UNCONDITIONALLY would have turned
+    // these existing DENYs into ALLOWs. Both readings are pushed; this pins that the old one
+    // survived the new one.
+    expect(bash(`printf ${CT} | sh`)).toBe(true)
+    expect(bash(`printf -- ${CT} | sh`)).toBe(true)
+  })
+
+  it('CONTROL: an ordinary printf format with an ordinary argument is not denied', () => {
+    expect(bash(`printf ${FMT_NL} hello | sh`)).toBe(false)
+    expect(bash('printf hi | sh')).toBe(false)
+  })
+
+  // --- #2 source / . ---
+
+  it('source and . with a process substitution are denied, quoted or not', () => {
+    expect(bash(`source <(echo ${CT} -r)`)).toBe(true)
+    expect(bash(`source <(echo ${DQ}${CT} -r${DQ})`)).toBe(true)
+    expect(bash(`. <(echo ${CT} -r)`)).toBe(true)
+    expect(bash(`. <(echo ${DQ}${CT} -r${DQ})`)).toBe(true)
+  })
+
+  it('the other scheduler binary travels the same path', () => {
+    expect(bash(`. <(echo ${SR} ${ONCAL} x)`)).toBe(true)
+  })
+
+  it('a payload piped into source /dev/stdin is denied', () => {
+    expect(bash(`echo ${CT} -r | source /dev/stdin`)).toBe(true)
+    expect(bash(`echo ${CT} -r | . /dev/stdin`)).toBe(true)
+  })
+
+  it('the two fixes compose: a printf format inside a source proc-sub', () => {
+    expect(bash(`source <(printf ${FMT_NL} ${CT} -r)`)).toBe(true)
+  })
+
+  it('the payload is still found past a wrapper and a separator', () => {
+    expect(bash(`sudo source <(echo ${CT} -r)`)).toBe(true)
+    expect(bash(`true ; source <(echo ${CT} -r)`)).toBe(true)
+  })
+
+  // THE LOAD-BEARING HALF. `.` is an extremely common character; teaching the proc-sub branch to
+  // treat it as a command position is the kind of widening that turns a gate into an obstacle if it
+  // is not pinned. None of these trip, because extraction widened while the DENY still requires the
+  // extracted string to match the anchored checks on its own.
+  it('CONTROL: ordinary source and . usage is not denied', () => {
+    expect(bash('source <(echo hello world)')).toBe(false)
+    expect(bash('. <(echo build done)')).toBe(false)
+    expect(bash('source ~/.bashrc')).toBe(false)
+  })
+
+  it('CONTROL: everyday commands containing a dot or a proc-sub are untouched', () => {
+    expect(bash('diff <(sort a.txt) <(sort b.txt)')).toBe(false)
+    expect(bash('cd .. && bash <(echo echo hi)')).toBe(false)
+    expect(bash('git diff HEAD~1 . | head')).toBe(false)
+    expect(bash(`echo ${DQ}all done. now check${DQ} | cat`)).toBe(false)
+  })
+
+  it('both new paths grow LINEARLY, not quadratically', () => {
+    const t0 = Date.now()
+    bash(`source <(echo ${'a'.repeat(400000)})`)
+    expect(Date.now() - t0).toBeLessThan(2000)
+    const t1 = Date.now()
+    bash(`printf ${SQ}%s${SQ} ${'a'.repeat(400000)} | sh`)
+    expect(Date.now() - t1).toBeLessThan(2000)
+  })
+})
