@@ -1207,6 +1207,53 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // second one is added. If that happens, adopt upstream's case with it.
   'src/__tests__/governance-gates.test.ts':
     "tail ADD/ADD -- UNION both sides' appended describes. Do NOT adopt upstream's `telegram copy gate wiring` block: it imports agentGetsTelegramCopyGate/injectTelegramCopyGate/TELEGRAM_COPY_GATE_MATCHER, none of which exist here, and it asserts an MCP-tool matcher plus unconditional sub-agent coverage, while the fork (card 74181db2) binds the same gate to `Bash` behind a default-OFF kill switch. The fork's equivalent coverage is in outgoing-copy-gate-role-wiring.test.ts, checked case by case. Revisit if the fork ever wires this script under a SECOND matcher: upstream's 'keeps the SAME script wired under a different matcher' case is a property injectOutgoingCopyGate does not have, and it stops being harmless at that moment.",
+  // NEW CONFLICT 2026-09-09 (measured, backend, card 9812ee33). Upstream added a "gmail-v2" catalog
+  // entry (a parallel test fork of ArtyMcLabin/Gmail-MCP-Server vendored at a pinned commit).
+  // The fork's array ends before this entry -- this is purely an upstream addition.
+  // Resolution: keep fork side (omit gmail-v2 -- not vendored/needed in this fork).
+  'mcp-catalog.json':
+    'keep fork side -- upstream adds a gmail-v2 parallel-test catalog entry not present or needed in this fork',
+  // NEW CONFLICT 2026-09-09 (measured, backend, card 9812ee33). Upstream adds a minimax-m3 1M-window
+  // test case (contextLimitForModel). Fork side is empty here -- no minimax-m3 test because minimax-m3
+  // is excluded (Peti NO-GO, card 48565f81). Resolution: keep fork side (omit upstream's test case).
+  'src/__tests__/context-guard.test.ts':
+    "keep fork side -- upstream's minimax-m3 1M-window test case is for the MiniMax integration (Peti NO-GO, card 48565f81), not adopted in this fork",
+  // NEW CONFLICT 2026-09-09 (measured, backend, card 9812ee33). Fork adds two test cases for the
+  // correlateWithKanban attribution fix (parent-untied / parent-tied, card 9005b6a0). Upstream side
+  // at this point is empty. Resolution: keep fork side wholesale.
+  'src/__tests__/token-usage.test.ts':
+    'keep fork side wholesale -- fork adds parent-untied/parent-tied attribution test cases (card 9005b6a0); upstream side of this conflict region is empty',
+  // NEW CONFLICT 2026-09-09 (measured, backend, card 9812ee33). Upstream adds
+  // `if (m.startsWith('minimax-')) return 1_000_000` for MiniMax context window. Fork side has a
+  // comment explaining this is NOT adopted (Peti NO-GO, card 48565f81, paired with
+  // agent-process.ts resolveProviderEnv override also not adopted). Resolution: keep fork side.
+  'src/context-guard.ts':
+    "keep fork side -- upstream's minimax-m3 1M-window branch requires the matching resolveProviderEnv override in agent-process.ts, both excluded (Peti NO-GO, card 48565f81)",
+  // NEW CONFLICT 2026-09-09 (measured, backend, card 9812ee33). Upstream adds writeGateConfig()
+  // to context-restart-gate-store.ts -- the backend half of the context-guard settings UI
+  // (card 740551e6, raised as adoption decision but not yet adopted). Resolution: keep fork side for
+  // now (ADOPTION decision deferred to card 740551e6 -- the UI half in web/app.js's entry).
+  'src/web/context-restart-gate-store.ts':
+    'keep fork side -- upstream writeGateConfig() is the backend half of the context-guard settings UI (card 740551e6, raised as adoption decision not yet taken, same treatment as web/app.js entry for that feature)',
+  // NEW CONFLICT 2026-09-09 (measured, backend, card 9812ee33). Two independent hunks:
+  // (1) Fork adds max_chars progressive retrieval (card 0c5423fc), upstream adds offset support.
+  // (2) Further down, both sides touch the response formatting area.
+  // Resolution: keep BOTH -- fork max_chars AND upstream offset (additive concerns, different params).
+  // The second hunk needs the same union treatment.
+  'src/web/routes/memories.ts':
+    'union of both sides -- fork max_chars progressive retrieval (card 0c5423fc) AND upstream offset pagination support; neither conflicts with the other in function or parameter namespace. Apply the same union at any further hunks in this file.',
+  // NEW CONFLICT 2026-09-09 (measured, backend, card 9812ee33). Upstream trimmed the tools: list
+  // to only WebFetch, removing the Firecrawl and Context7 tools the fork explicitly added (the
+  // quarantine-reader sub-agent's tools: line includes mcp__firecrawl__* and mcp__context7__* for
+  // the fleet's fetch infrastructure). Resolution: keep fork version wholesale.
+  'templates/sub-agents/quarantine-reader.md':
+    "keep fork version wholesale -- upstream narrowed tools: to WebFetch-only, but the fork's quarantine-reader is the fleet's isolated fetch sub-agent and must keep Firecrawl + Context7 tools it was built with",
+  // NEW CONFLICT 2026-09-09 (measured, backend, card 9812ee33). Upstream adds MiniMax optgroup(s)
+  // in the model selector HTML (agentModelMinimaxGroup in wizard, minimaxModelGroup in edit panel).
+  // Fork side has no MiniMax optgroups -- excluded (Peti NO-GO, card 48565f81).
+  // Resolution: keep fork side (omit upstream's MiniMax optgroups).
+  'web/index.html':
+    "keep fork side -- upstream's MiniMax optgroup additions pair with the excluded MiniMax direct-API integration (Peti NO-GO, card 48565f81); taking them would add a visible but non-functional UI element",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -1234,12 +1281,13 @@ export const ACKNOWLEDGED_CONFLICTS = {
 //
 // Typed as Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>: a rule without a recorded blob, or
 // a blob without a rule, is a COMPILE error rather than a silent gap between two lists.
+
 export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>> = {
   'src/web/routes/agent-terminal.ts': 'cf57ba1065272a7bde9723865d5709faaf05ed21',
   // Card 4f15966e: pinned at the upstream blob whose detectsPermissionDialog this resolution
   // compares against. If upstream edits this file again, the rule above is re-read before the merge
   // rather than assumed to still describe what is there.
-  'src/pane-state.ts': '2300b8ec27017cf7588d65e1cb9260279154314d',
+  'src/pane-state.ts': 'b59475899e2fa352e9cfb4dbda2c847205bccd3d',
   'src/__tests__/governance-gates.test.ts': 'cbebd61b28a48a8ced6935329aa9d7c36e2f13fe',
   'src/kanban-dispatch.ts': '7fffc38f78b99573fb88fd797ac67b3593ffb872',
   'src/__tests__/kanban-dispatch-rearm.test.ts': 'd9a186a0af48c44c14299c284dbe0caf45d8feaa',
@@ -1248,13 +1296,13 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/model-fallback.ts': '93ea8f17a6c9608003f047c1c9b5f8defe0f1da8',
   'src/__tests__/model-fallback.test.ts': '09bc3bf772d195be0980f4bec929eed4ecfadc67',
   'src/web/update-checker.ts': 'b4dffa346e8f60bec6466b6c9b0ca9b48202971b',
-  'src/__tests__/update-checker-branch.test.ts': '8084721190d9c37f1ef4935c11ee9164994ab276',
+  'src/__tests__/update-checker-branch.test.ts': '517c85905023c900f85dc33d6027ee427d339279',
   'src/web/context-restart-gate-runner.ts': '83b90ef1572908bb8b325f435aea8aa6534bacb9',
-  'src/web.ts': 'e44e79072705417ccd8d1770cef8def14f3b9780',
+  'src/web.ts': '03bd955d395bc9df84a83a2e9262fa6fac123b77',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
-  'src/web/agent-scaffold.ts': '526dcf56aaf3d388a2a7c741fb79a0b185761cb8',
-  'src/db.ts': '94e032f9380e8dd5aff325204e90cb11a5248777',
-  'src/web/routes/agents.ts': 'c68b0a3e48e7228bbb51f270bf75433459835a2c',
+  'src/web/agent-scaffold.ts': '69213257de12549417e9eb625ef168d76bbb6d81',
+  'src/db.ts': '13a467614857e02891b63e37fbb65e4c7b7dc71a',
+  'src/web/routes/agents.ts': '4af3b8721f4e5cfaea7413950894837e57bff8af',
   // ROUND 17 BLOB BUMPS, 2026-09-06 (card 26ab08a2's landing-block; upstream tip 14028011). Seven
   // pins went stale at once -- the fifth drift in one day. Three of them carry their reasoning in
   // the RULE above, because the increment lands on or beside the hunk the rule decides:
@@ -1289,10 +1337,10 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   //     sentinel path while upstream's merged policy makes the same state loud; that argument is
   //     unchanged and still belongs on a gated card, not here.
   'src/web/routes/updates.ts': '7755cd0e260fe60fc274d1475afd31f9e4503419',
-  'src/web/routes/kanban.ts': 'bbe255c115eedb5f00ebcb3c6c2c6fa6c06e6d62',
+  'src/web/routes/kanban.ts': '2424a3c4842fe99d27d52d8719b622250f809a2a',
   'scripts/hooks/egress-gate.mjs': '229076d5812e7d50a188ca07b43a87fb6239b233',
   'src/__tests__/egress-gate.test.ts': 'c24ca54ffc49de70d602790fa1d6b80e3aea4156',
-  'src/web/context-guard-runner.ts': 'd93f219877ad86abcf29454126dea4fb1aa125bc',
+  'src/web/context-guard-runner.ts': '55de54e0f360995dfc05ed5c7720a76953b1cb61',
   // BLOB BUMP 2026-09-04 (card 368b77f7, the URGENT landing block) for web/app.js, package.json and
   // vitest.config.ts. Upstream moved 5c9a9252 -> 1df099be, and all three pins went stale for ONE
   // commit: BRIDGEHU813 (#1170), "the pairing errors speak the install's language". The recorded
@@ -1325,24 +1373,24 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   // was NOT dropped with it: it is asserted directly in the adopted unit test, and that assertion
   // was measured to fail when the call site is reverted. Revisit if the fleet gate grows a
   // playwright stage.
-  'web/app.js': 'b7ba2cf590f86ff24c540c8328bed5aee09aaec8',
-  'web/style.css': 'fb4ae675c95691ef6f19dca41d07a8c77898f964',
+  'web/app.js': 'b960001e70c434151c2170aa9b286fc0a6971c13',
+  'web/style.css': '4e5fa4600e3ec074307e6953db6ff9727ad3fbf7',
   'src/web/agent-taskstate.ts': '625d03282bb75b554ce23822f67cc4e51b0706c1',
   'src/__tests__/agent-taskstate.test.ts': '82dc411aa813d66c0800e7f8007dfdcd2a42e43f',
   // 2026-09-02 (fron-ted, landing 5dd4a211): upstream moved 346fa637 -- body-only change in
   // correlateWithKanban() (skips parent cards via NOT EXISTS + comment), import hunk untouched,
   // the four-imports rule above still holds; additive, no collision with the fork's edits.
-  'src/web/message-router.ts': 'ac55c39b847d2ebbea43ab83cd449a1b774f73ca',
+  'src/web/message-router.ts': 'f962c8be8716f124809c6de8f53cbfbdc2dac484',
   'scripts/start.sh': '5ddd9df0c82471ff51efd542c72693033e462988',
   'src/web/token-usage.ts': '82ebcf785cd0d988b2f8146b6049ad078fe521c0',
   'src/__tests__/schedule-runner-autostart.test.ts': '678cbb42e4447b206598bfbb9bc271602a3f896b',
-  '.gitignore': '1e5adbb2332be0dbf5a710c1899e49305ccb318b',
-  'package.json': 'c25069108ff414fb2b875a2b15ff857e14e59d4a',
-  'package-lock.json': 'eaaff86a11a8f04c60b13e1a0aa71ed4e2d8c242',
+  '.gitignore': '041fe117843df4d0987b91e1482f634ece38907b',
+  'package.json': 'c932fc322865173cacba5f0b99da4ad2fb0f3131',
+  'package-lock.json': 'f891372ec7e62f9c8c4117a91b927a86b89e1b4a',
   'src/web/heartbeat-agent-scaffold.ts': 'ad28ed576466d9a591209c501ced06998ec1a505',
-  'src/web/schedule-runner.ts': '32d63e6bd7e2b19387de4c0a2be3acc8f4609432',
-  'vitest.config.ts': '004ad75c757bf6e3035510b06a0b6589d45a216f',
-  'src/web/agent-process.ts': 'd58868a3828712611e631081cf3f92dbd3ab87ea',
+  'src/web/schedule-runner.ts': '3bb55c7c3390554a26cb1e2217b1ca89bbf70c85',
+  'vitest.config.ts': '6444aa74e7d415a3727b99c90233ac1492d7f194',
+  'src/web/agent-process.ts': '6cced18cecdc29815f6052b6c6671809f70aa2ce',
   'src/web/auto-restart-runner.ts': '044dde0ad94f5a57ff8e611656f288b25fecdaff',
   'src/web/model-fallback-runner.ts': '681fcaefd6588fc2f6f3db880238b8288d1dcd15',
   'src/web/routes/skills.ts': '34c1e440bd5009e79546d686ec9fbc481ba0af7e',
@@ -1355,7 +1403,7 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'scripts/lib/send-telegram.sh': '293aecf24507b6d56bda99e5a4ff937e1491ab97',
   'scripts/disk-space-guard.sh': 'd3f693c01d607952a8165cc4d8106024008f22e4',
   'scripts/unit-fail-notify.sh': 'ada00f95a7b3665feac1305bb5287698b81839de',
-  'scripts/limit-monitor.sh': '8a34f09368608f221ee4d32f6cb5cfd5070ec45b',
+  'scripts/limit-monitor.sh': '31a0c0dcb3ef3e1b534a9c787fc653904ea6a357',
   'scripts/lib/content-hash.sh': 'a2fc1103d635bd7602229447cb299f4540cd3d22',
   'src/__tests__/content-hash.test.ts': '57cbbd6ffa36d800c3c9b9e8649acba17b960949',
   'scripts/host-restart-watchdog.sh': '07948350e336ec02d58d952df016ab6b07d7d052',
@@ -1391,7 +1439,7 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   // matching processes when I measured. NOT adopted here: a behavioural fix to the channel watchdog
   // does not belong inside a landing-unblock, and it deserves a gate of its own. This note is the
   // evidence for that card, in the same shape as the token-usage entry above.
-  'scripts/channels.sh': 'd0ca55bdd5c342e15d4407fe982d2af7dc5b8a5f',
+  'scripts/channels.sh': '7ecf7064d7b6ac29f6906eb9b878df85d886e2bc',
   // THE EXPOSURE THE ROUND 19 NOTE ABOVE FLAGGED IS NOW CLOSED (2026-09-06, backend2, card
   // 4c34f201). That note said the fork's line 1079 still carried the host-wide
   // `ps eww -e | grep CLAUDE_PLUGIN_ROOT` and deserved a gate of its own rather than being adopted
@@ -1412,26 +1460,35 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   // the finalize health-check rollback) plus a NEW npm ci in the build-failure rollback that
   // previously ran none. ZERO hits on either recorded hunk -- render_seed_template's two sed -e
   // lines and the AHEAD-vs-BEHIND detect block are untouched. Resolution unchanged, blob bumped.
-  'update.sh': '1110d32da5ae78099cb0923d09b8208e0482263c',
+  'update.sh': '9b7c57205a47d0a5de132f729f207777a304d158',
   'scripts/install-prod-tree-guard-hook.sh': '9647c9658a5e6352ae0bae57842590a1c2d6e30c',
-  'install-linux.sh': '21f10d99336757c0a1416b6e20297b1d3cda42cd',
+  'install-linux.sh': 'fb05a0f72820c97c4fdd8dfb59073ee9cbf90feb',
   'src/__tests__/installer-ollama-nonfatal.test.ts': '7467d0dc6674099a5af6b65d4388d18ff1f99f78',
   // Card ab4c85f2, 2026-09-03 (adopting GUARDHITELES903 into a fork that had neither half).
   'src/web/system-directive.ts': '7b69015ec8f1942349f9f912bfda228fb01ee771',
   'src/__tests__/system-directive.test.ts': '08409868f5f889240baceba1c4a240ac17d2c138',
   'src/__tests__/system-directive-auth-section.test.ts': '80d65e4651601d320447bf188d53548a5ef5f8ba',
-  'src/web/channel-monitor.ts': '8195748c3c82d33e22022c3678d120804b061188',
-  'src/web/routes/messages.ts': '5f84469418f88d920453d099a6f076447b68b0bf',
+  'src/web/channel-monitor.ts': 'e3ec92b6ea7be1a21d62e785e07c3389d2e356ae',
+  'src/web/routes/messages.ts': 'b0160f69bc54ebceed4389111277c2c7df495eaf',
   // Card 368b77f7, 2026-09-04.
   'src/__tests__/bridge-pairing-i18n.test.ts': '5da8970e4ff27f4d9b1fef46b179ed26e9063ea0',
   'src/config.ts': '02c6ff722fe731e1ea6c1e4180b82f379ce8e622',
-  'web/lang/en.js': '6dddbb9c1cdc8ff26d98f031ef1b8ff8ff4426cc',
-  'web/lang/hu.js': '749a1b744f61cbc0ca1ed97f4df9197c68bae698',
+  'web/lang/en.js': '2515b8f5fe9d9041a0e03251b7f345d42648907f',
+  'web/lang/hu.js': '99c96d5c92f03bfde048c8f7a28ac350dc3c7226',
   // Card 272361eb, 2026-09-04 (B-wave 3/6).
   'src/web/claude-plans.ts': '548f996dbe82ae1062e94ced4acb5a670bfd2bf9',
   'src/__tests__/channel-monitor-resume-recovery.test.ts': 'e7850cae42ac213af8bcb18dfc9d8c72acae9370',
   // Card 39b32ac6, 2026-09-04 (B-wave 2/6): both sides appended a SEEDREFRESH826 block at the tail.
   'src/__tests__/seed-refresh-untouched-only.test.ts': 'db592152fd319865336fe07aa0ee184d1790a192',
+  // NEW 2026-09-09 (card 9812ee33 upstream re-pin):
+  'mcp-catalog.json': 'd110e062c9df063487d2591a99a926d68db69f3c',
+  'src/__tests__/context-guard.test.ts': 'eb72d23420fda9f45deb49af3a0394c238c693d7',
+  'src/__tests__/token-usage.test.ts': '387783047a9631c41b9cb4ad9c202a39ae73e8e3',
+  'src/context-guard.ts': '52208a6e6bc1084d1070f02de2ce13ffc075735c',
+  'src/web/context-restart-gate-store.ts': 'f00ecccbc027deb26ec68be562168e870600f48c',
+  'src/web/routes/memories.ts': 'b4f97117dd221ceb153943c41cf6ef9409d00996',
+  'templates/sub-agents/quarantine-reader.md': '55e629c3c98227e62a98cd8d5f883672fc8e18b7',
+  'web/index.html': '014925c8cb09992ff59a4b57931f95aad3a0330f',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
