@@ -108,7 +108,7 @@ const GIT_TIMEOUT_MS = 8000
  * over all 304 done cards, excluding both authors blocks exactly one more card (f91fcd7e, a true
  * catch) and costs zero false blocks.
  */
-const GENERATED_COMMENT_AUTHORS: ReadonlySet<string> = new Set(['local-llm', 'gate-pretriage'])
+export const GENERATED_COMMENT_AUTHORS: ReadonlySet<string> = new Set(['local-llm', 'gate-pretriage'])
 
 export interface LandedVerdict {
   readonly blocked: boolean
