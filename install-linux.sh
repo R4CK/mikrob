@@ -1601,33 +1601,43 @@ else
   fi
 fi
 
-# TAILSCALE-STEP-BEGIN (kartya 0985ac83 -- sentinel a src/__tests__ standalone tesztjenek, ne torold)
-# --- Tailscale (opcionalis, kartya 0985ac83) ---
+# TAILSCALE-STEP-BEGIN (kartya 12dc8a5c -- sentinel a src/__tests__ standalone tesztjenek, ne torold)
+# --- Tailscale (automatikus, kartya 12dc8a5c) ---
 #
-# Csak a binarist telepiti, opt-in (alapertelmezett: nem), ugyanaz a minta mint a Whisper-nel
-# fentebb. A telepito SZANDEKOSAN nem hivja meg a `tailscale up`-ot: az interaktiv bongeszos
-# bejelentkezest egy nem-interaktiv shell-lepes nem tudja lekezelni (a `sudo tailscale up` a
-# jelszo-cache lejartakor egy hattere-inditott folyamatban lathatatlanul akadna el), es a
-# bejelentkezes+halozati-expozicio (tailscale serve) kulon, gondosan kapuzott uton fut majd a
-# Foderacio-oldalrol (kartya b68ddae8 -- Cybered altal explicit megkovetelt step-up auth +
-# URL-szures + auditnaplo ott, amit egy telepito-szkript nem tudna reprodukalni).
+# Korabban opt-in (0985ac83), most automatikus Peti explicit jovahagyasaval (2026-09-10, Telegram).
+# Ha TAILSCALE_AUTH_KEY van setelve: a telepites utan non-interaktiv `tailscale up --auth-key`
+# fut, kemeny timeout/kill-vedelemmel (ugyanaz a minta, mint a2d8eab1-ben a tailscale-login.ts-nel:
+# UP_BUDGET_MS=30s + 35s-os SIGKILL backstop, ha a CLI nem tartja be a sajat --timeout-jat).
+# Ha a kulcs nincs setelve: a bejelentkezest a Foderacio-oldalon (dashboard) egy gombbal lehet
+# befejezni -- a bongeszos flow tovabbra is ott fut, kapuzott uton (kartya b68ddae8).
 echo ""
-echo -e "  Tailscale telepites (tavoli Foderacio-hozzaferes, opcionalis)..."
+echo -e "  Tailscale telepites (tavoli Foderacio-hozzaferes)..."
 if command -v tailscale &>/dev/null; then
   ok "tailscale mar telepitve"
 else
-  read -rp "$(_t prompt_tailscale)" DO_TAILSCALE
-  DO_TAILSCALE=${DO_TAILSCALE:-n}
-  if [ "$DO_TAILSCALE" = "i" ]; then
-    curl -fsSL https://tailscale.com/install.sh | sh 2>/dev/null &&
-      ok "tailscale telepitve" ||
-      warn "tailscale telepites sikertelen (kezzel: curl -fsSL https://tailscale.com/install.sh | sh)"
-  else
-    echo -e "  ${DIM}Kihagyva. Kesobb: curl -fsSL https://tailscale.com/install.sh | sh${NC}"
-  fi
+  curl -fsSL https://tailscale.com/install.sh | sh 2>/dev/null &&
+    ok "tailscale telepitve" ||
+    warn "tailscale telepites sikertelen (kezzel: curl -fsSL https://tailscale.com/install.sh | sh)"
 fi
 if command -v tailscale &>/dev/null && ! tailscale status &>/dev/null; then
-  echo -e "  ${DIM}Tailscale telepitve, de meg nincs bejelentkezve -- a Foderacio-oldalon (dashboard) egy gombbal befejezheted.${NC}"
+  if [ -n "${TAILSCALE_AUTH_KEY:-}" ]; then
+    echo -e "  Tailscale bejelentkezes auth-key-vel (max 30s)..."
+    sudo tailscale up --auth-key="$TAILSCALE_AUTH_KEY" --timeout=30 2>/dev/null &
+    _TS_UP_PID=$!
+    ( sleep 65 && kill -9 "$_TS_UP_PID" 2>/dev/null ) &
+    _TS_KILL_PID=$!
+    wait "$_TS_UP_PID"
+    _TS_RC=$?
+    kill "$_TS_KILL_PID" 2>/dev/null
+    wait "$_TS_KILL_PID" 2>/dev/null
+    if [ "$_TS_RC" -eq 0 ]; then
+      ok "tailscale bejelentkezve"
+    else
+      warn "tailscale up sikertelen (timeout vagy hiba) -- a Foderacio-oldalon (dashboard) egy gombbal befejezheted"
+    fi
+  else
+    echo -e "  ${DIM}Tailscale telepitve, de meg nincs bejelentkezve -- a Foderacio-oldalon (dashboard) egy gombbal befejezheted.${NC}"
+  fi
 fi
 # TAILSCALE-STEP-END
 
