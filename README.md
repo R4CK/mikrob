@@ -39,6 +39,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 ### Flotta-orchesztráció (kanban, dispatch, gate-ek)
 
 - **Kártya-függőségek (predecessor/successor)**: irányított sorrend-él két kanban-kártya között, a `parent_id` tartalmazás-hierarchiától függetlenül. Egy nem teljesült előfeltétel visszatartja a kártyát az előrelépéstől; a bypass jogosultsághoz kötött és auditált.
+- **Helyi-LLM draft elbírálás kikényszerítése**: egy kártya, amire a helyi modell draftot posztolt, nem adható át a gate-nek, amíg valaki kimondottan el nem bírálta (elfogadva / részben / elutasítva). Mindhárom kimenet elfogadható; a draft nem magát bírálja el, és a jelzésnek a legfrissebb draftnál újabbnak kell lennie.
 - **Self-pace governance hard-gate**: hook, ami megakadályozza, hogy egy ügynök beütemezze a saját jövőbeli körét (cron, `tmux send-keys`, ütemezés-API, `/loop`). Az ügynök bemenet-vezérelt marad.
 - **Kockázat-alapú review-gate rendszer**: minden kész kártyát legalább két független ügynök ellenőriz, QA mindig, plusz kockázat szerint Cybersec és/vagy Cybered. A készítő sosem ellenőrzi a sajátját, és csak PASS/GO után zárul a kártya.
 - **Teljes értékű audit protokoll**: kötelező, sorrendezett audit-lefedettség (leltár, RBAC pozitív/negatív, superadmin-folyamatok, API + DB, teljesítmény, STRIDE/OWASP, WCAG, i18n, reziliencia). Ami nincs tesztelve, az töröttnek számít.

@@ -34,6 +34,7 @@ import { readHardStop, isNewDevStartBlocked } from '../../costops/weekly-hard-st
 import { landedGuardVerdict } from '../kanban-landed-guard.js'
 import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.js'
 import { planGrillingGuardVerdict } from '../kanban-plan-grilling-guard.js'
+import { draftReviewGuardVerdict } from '../kanban-draft-review-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
 
 // Card project-name drift (Peti 2026-08-08): `project` was free-text with no case-folding, so
@@ -790,6 +791,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       if (v.blocked) { json(res, { code: 'plan_grilling_required', error: v.message }, 409); return true }
     }
     {
+      const v = draftReviewGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
+      if (v.blocked) { json(res, { code: 'draft_review_required', error: v.message }, 409); return true }
+    }
+    {
       const v = dependencyBlockBody(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, v.body!, 409); return true }
     }
@@ -849,6 +854,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     {
       const v = planGrillingGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { code: 'plan_grilling_required', error: v.message }, 409); return true }
+    }
+    {
+      const v = draftReviewGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
+      if (v.blocked) { json(res, { code: 'draft_review_required', error: v.message }, 409); return true }
     }
     {
       const v = dependencyBlockBody(id, status, force === true, typeof actor === 'string' ? actor : undefined)
