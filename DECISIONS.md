@@ -11997,3 +11997,58 @@ kontra `created_at` szűrő szétválasztása, méréssel).
 
 **Hivatkozás:** kártya `0c473a5e` (szülő `4df3e8e8`); `store/route-check-audit.sh`,
 `store/route-check-audit.selftest.sh`, `seed-scheduled-tasks/heartbeat-consolidated/SKILL.md`.
+
+## 2026-09-10 -- 1338e68b -- A helyi-LLM draft átadása strukturálisan kikényszerítve, nem prózában
+
+**Előzmény:** a `4df3e8e8` load-balancer fázis codebase-auditor elemzésének négy leletéből ez volt az
+egyetlen fedetlen: az átadás/review strukturálisan nincs kikényszerítve. Peti eredeti kérése (Telegram,
+2026-09-09) kifejezetten ezt a tengelyt nevezte meg ("főként a feladat-felbontás és átadás miatt"), tehát
+nem mellékes találat volt.
+
+**Mérés, nem feltételezés.** A javítás előtt a saját táblánkon: **11 kártya jutott `done`-ig úgy, hogy
+`local-llm` draft volt rajta, és ebből KILENCEN egyetlen későbbi, más szerzőtől származó komment sem
+tartalmazta a "draft" szót.** További kettő ma is `waiting`-ben ül ugyanígy. A 16. szabály és a
+`local-llm-offload` skill is kimondta prózában, hogy a draftot egy online ügynök felülvizsgálja
+("DRAFT-ONLY: MikroB + a gate újra-ellenőrzi") -- csak épp semmi nem ellenőrizte, hogy meg is történt.
+Ez pontosan az a hibaosztály, amit a kódminőségi 6. szabály "a leírt szabály fegyelemre épül, ami
+elfelejthető" alatt ír le.
+
+**Megoldás:** új `src/web/kanban-draft-review-guard.ts`, a meglévő guard-család (plan-grilling,
+gate-completeness, landed) alakját követve: olvasd a kártyát egy követelményért, keresd a kommentekben a
+kielégítő bizonyítékot, utasítsd vissza az átmenetet ha hiányzik. A kártya nem léphet `waiting`-be, amíg
+egy `Draft-Review: ELFOGADVA|RESZBEN|ELUTASITVA` sor (sor elején, a `Gate-SHA:` horgonyzási mintája
+szerint) nem került rá. Mindkét ajtón bekötve (PUT + POST /move) -- egy ajtó őrzése egyiket sem őrzi.
+Gépi olvasásra `409 draft_review_required`.
+
+**Három tervezési döntés, amit érdemes kimondani:**
+
+1. **`waiting`, nem `done`.** A `waiting` MAGA az átadás, amit a kártya megnevez: az építő kijelenti, hogy
+   kész, és gate-et kér. Ott elkapva egy komment az ára; `done`-nál elkapva a gate-ek már elköltötték a
+   körüket olyan munkára, aminek a draft-eredete sosem lett elbírálva -- ráadásul `done`-ra MikroB lép, aki
+   ott amúgy is force-actor.
+2. **Az elutasítás is teljes értékű átadás.** A lezárandó hiba a MEG NEM NÉZETT draft (csendben eldobva =
+   elpazarolt GPU, vagy csendben beszállítva = ellenőrizetlen tartalom). Aki elolvassa, rossznak ítéli és
+   maga írja meg, az helyesen zárta le az átadást. Ha "elfogadva" lenne a feltétel, az a rossz draftok
+   gumibélyegzésére ösztönözne -- pont az ellenkezőjére, mint amiért a guard van.
+3. **A frissesség a LEGÚJABB drafthoz mérve.** Egy review csak azokról a draftokról bizonyíték, amik már
+   léteztek, amikor megírták. Így egy kártya, ami review UTÁN kap két új draftot, újra blokkol -- helyesen,
+   azt a kettőt senki nem látta. A legrégebbihez horgonyozva egy korai review örökre lefedne minden
+   későbbit, és ez per-draft id-vezetés nélkül is helyes.
+
+**A self-review lyuk eleve zárva.** A szerző-ellenőrzés a `kanban-landed-guard.ts` saját
+`GENERATED_COMMENT_AUTHORS` halmazát használja újra (`local-llm`, `gate-pretriage`), nem egy második
+másolatot -- a plan-grilling guard első változata pont ezen bukott el (Cybersec HIGH, `8e42a4c3`: a
+tartalmat nézte, a szerzőt nem, így az ellenőrzött fél kielégíthette a saját ellenőrzését).
+
+**Hogy ne legyen board-fagyasztó:** a hibaüzenet megmondja a pontos sort, amit írni kell (12. szabály);
+ugyanez a sor bekerült a `store/offload-dispatch.sh` draft-boilerplate-jébe (tehát ott áll abban a
+kommentben, amit az ügynök amúgy is elolvas) és a `local-llm-offload` skillbe (seed + élő). Belső hibán
+fail-open, force + engedélyezett actor a kilépő.
+
+**Tesztek:** 23 új eset (`src/__tests__/kanban-draft-review-guard.test.ts`), köztük a self-review lyuk, a
+frissesség mindkét iránya, a horgony ("ne felejtsd el a Draft-Review: sort" NEM elégíti ki), és a
+fail-open ágak. Teljes suite: 719 fájl / 16627 teszt zöld, lint-ratchet tartja a baseline-t.
+
+**Ki döntött:** backend2 (mérés, tervezés, implementáció); a lelet a codebase-auditor ügynöké.
+
+**Hivatkozás:** kártya `1338e68b`, szülő fázis `4df3e8e8`.
