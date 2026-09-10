@@ -548,3 +548,121 @@ describe('round 5: ANSI-C decoding on the stdin-shell branch (Cybersec NO-GO on 
     expect(Date.now() - t0).toBeLessThan(2000)
   })
 })
+
+
+// ROUND 7 (Cybersec delta-gate NO-GO on d838c8c1, card ec20dd23). The stdin-shell path extracted
+// only QUOTED literals, so the identical payload walked past it by DROPPING the quotes. The old
+// suite could not catch this because it only ever pinned the quoted spelling -- a textbook
+// half-pinned invariant: every assertion passed, on the one half that already worked.
+//
+// So every shape below is pinned as a PAIR, quoted and unquoted, asserted in the same `it`. The
+// pairing is the actual regression guard: a future change that re-narrows extraction back to
+// quoted-only leaves the first half of each pair green and fails the second, which is exactly the
+// signal that was missing. Splitting them into separate tests would let the same blind spot return.
+describe('round 7: an UNQUOTED payload is executable text too (card ec20dd23)', () => {
+  const SQ = String.fromCharCode(39)
+  const DQ = String.fromCharCode(34)
+  const q = (payload: string): string => `${SQ}${payload}${SQ}`
+  const ONACT = '--on-' + 'active=1s'
+
+  it('GROUND TRUTH: real bash runs an unquoted echo payload piped to a shell', () => {
+    // Before asserting the gate should deny it, prove the shell actually executes it -- this file's
+    // standing rule. If bash did NOT run it, denying would be an invented over-block, not a fix.
+    const out = execFileSync('bash', ['-c', 'echo echo GROUNDTRUTH7 | sh'], { encoding: 'utf-8' })
+    expect(out.trim()).toBe('GROUNDTRUTH7')
+  })
+
+  it('echo PAYLOAD | sh is denied whether or not the payload is quoted', () => {
+    expect(bash(`echo ${q(`${CT} -r`)} | sh`)).toBe(true)
+    expect(bash(`echo ${CT} -r | sh`)).toBe(true)
+  })
+
+  it('echo PAYLOAD | bash is denied whether or not the payload is quoted', () => {
+    expect(bash(`echo ${q(`${CT} -r`)} | bash`)).toBe(true)
+    expect(bash(`echo ${CT} -r | bash`)).toBe(true)
+  })
+
+  it('process substitution is denied whether or not the payload is quoted', () => {
+    expect(bash(`bash <(echo ${q(`${CT} -r`)})`)).toBe(true)
+    expect(bash(`bash <(echo ${CT} -r)`)).toBe(true)
+  })
+
+  it('printf carries a payload exactly as echo does, quoted or not', () => {
+    expect(bash(`printf ${q(`${CT} -r`)} | sh`)).toBe(true)
+    expect(bash(`printf ${CT} -r | sh`)).toBe(true)
+  })
+
+  it('the scheduler binary that is not an English word is covered by the same path', () => {
+    expect(bash(`echo ${q(`${SR} ${ONACT} x`)} | sh`)).toBe(true)
+    expect(bash(`echo ${SR} ${ONACT} x | sh`)).toBe(true)
+  })
+
+  // The option run has to be dropped, not carried: the anchored check needs the binary at a COMMAND
+  // position, and a retained `-n` pushes it out of one. Measured on the fix's first cut -- keeping
+  // echo's flags turned `echo -n <binary> ... | sh` into a live bypass OF THE FIX ITSELF, which is
+  // why these are pinned rather than left to follow from the case above.
+  it('an echo option word does not shield the payload behind it', () => {
+    expect(bash(`echo -n ${CT} -r | sh`)).toBe(true)
+    expect(bash(`echo -e ${CT} -r | sh`)).toBe(true)
+    expect(bash(`echo -ne ${CT} -r | bash`)).toBe(true)
+    expect(bash(`echo -E ${CT} -r | bash`)).toBe(true)
+  })
+
+  it('a QUOTED option word is dropped too, because bash tests the value not the quoting', () => {
+    expect(bash(`echo ${q('-n')} ${CT} -r | sh`)).toBe(true)
+  })
+
+  it('a binary spelled with adjacent quoted pieces survives the per-word unquoting', () => {
+    // The tail is split into words and unquoted PER WORD; a whole-tail unquote returns '' and
+    // extracts nothing at all. This pins that the word-level path is the one actually in use.
+    expect(bash(`echo cron${q('tab')} -r | sh`)).toBe(true)
+    expect(bash(`echo ${DQ}cron${DQ}tab -r | sh`)).toBe(true)
+  })
+
+  it('the payload is still found past a separator and a wrapper', () => {
+    expect(bash(`true ; echo ${CT} -r | sh`)).toBe(true)
+    expect(bash(`if true; then echo ${CT} -r | sh; fi`)).toBe(true)
+    expect(bash(`echo ${CT} -r | sudo sh`)).toBe(true)
+    expect(bash(`command echo ${CT} -r | sh`)).toBe(true)
+    expect(bash(`echo ${CT} -r|sh`)).toBe(true)
+  })
+
+  // THE LOAD-BEARING HALF. This round denies MORE, so its failure mode is a governance gate that
+  // becomes an obstacle. None of these trip, and the reason is structural rather than lucky:
+  // extraction widened, but the DENY still requires the extracted string to match the SAME anchored
+  // checks on its own -- so an ordinary message, or a binary in argument position, stays ignored.
+  it('CONTROL: ordinary text piped to a shell is not denied', () => {
+    expect(bash('echo hello world | sh')).toBe(false)
+    expect(bash('echo done | sh')).toBe(false)
+    expect(bash('echo "all tests passed" | bash')).toBe(false)
+    expect(bash('bash <(echo echo hi)')).toBe(false)
+  })
+
+  it('CONTROL: the read-only invocation stays allowed through this path too', () => {
+    expect(bash(`echo ${CT} -l | sh`)).toBe(false)
+  })
+
+  it('CONTROL: the binary in ARGUMENT position is ignored here as everywhere else', () => {
+    expect(bash(`echo skip ${CT} | sh`)).toBe(false)
+  })
+
+  it('CONTROL: an unrecognised dash-word is NOT treated as an option', () => {
+    // bash prints `-x` verbatim, so stripping it would invent an over-block. The payload after it
+    // therefore sits in argument position, and must stay allowed.
+    expect(bash(`echo -x ${CT} | sh`)).toBe(false)
+  })
+
+  it('CONTROL: nothing in the pipeline runs the text, so nothing is extracted', () => {
+    expect(bash(`echo ${CT} -r | grep x`)).toBe(false)
+    expect(bash(`echo ${CT} -r`)).toBe(false)
+  })
+
+  it('the new word scan grows LINEARLY, not quadratically', () => {
+    // Same budget the sibling quadratic suites enforce. The word pattern's alternatives are disjoint
+    // on their first character, so no position has two ways to match -- but that is the claim, and
+    // this is the measurement.
+    const t0 = Date.now()
+    bash(`echo ${'a'.repeat(400000)} | sh`)
+    expect(Date.now() - t0).toBeLessThan(2000)
+  })
+})
