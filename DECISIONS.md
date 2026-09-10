@@ -11941,3 +11941,59 @@ verdikt komment `21142`/`21143`.
 **Ellenőrzés:** Selftest futtatva (STABILITY_RUNS=3): determinizmus 3/3 stable x3, Cybersec 5: 5/5 ok (BEFORE=local, AFTER=online), negatív kontrollok: 3/3 ok, held-out: 4/4 ok, Cybersec OWN held-out: 5/5 ok. 1 dilution FAIL (transient GPU contention, `route-classify.sh` BUSY window, nem kapcsolódik a javításhoz).
 
 **Hivatkozás:** kártya `ef95ec94`, szülő `4df3e8e8`.
+
+## 2026-09-10 -- A route-check audit DISPATCH-ESEMÉNYRE szűr, nem a kártya `created_at`-jére (kártya 0c473a5e)
+
+**Kontextus:** a CLAUDE.md 16. szabálya szerint egy egyszerű kártya első draftját a helyi modell
+írja, és a heartbeat C szekció 4b lépése dönti el ezt a `card-build-route.sh`-val. Az audit-lelet
+szerint a szabály papíron létezik, a gyakorlatban alig fut. Mérve a munka előtt, a tábla saját
+`kanban_card_events` átmenet-naplójából: **44 dispatch ment `in_progress`-be, és 3-hoz készült
+route-verdikt -- 6% lefedettség.** A lépés nem hibás, egyszerűen kimarad, mert egy skill-fájlban álló
+mondat, amire senki nem kérdez rá.
+
+**Döntés:** a `store/route-check-audit.sh` a DISPATCH-ESEMÉNY idejére szűr (`kanban_card_events`,
+`to_status='in_progress'`), NEM a kártya `created_at`-jére, ahogy a plan-grilling verdikt szövege
+mondta.
+
+**Miért tér el a plan-grillingtől:** a verdikt valós veszélyt nevezett meg -- egy naiv ellenőrzés
+azonnal kivilágítaná mind az ~1659 élő, nagyrészt rekonstruált kártyát, amiknek sosem volt route-
+verdiktjük, és a napon belül használhatatlan zajt termelne. Mindkét szűrő megvéd ettől. A
+`created_at` viszont EGY VALÓS ESETET IS örökre kihagy: egy RÉGI kártyát, amit HOLNAP dispatchelnek.
+Az a dispatch már az élő mechanizmus alatt történik, pontosan az, amit az auditnak el kell kapnia, és
+egy `created_at` szűrő csendben átengedné. A dispatch-eseményre szűrés ugyanazt a védelmet adja
+(régi kártya nem világít ki, mert nincs cutoff utáni dispatch-eseménye), vak folt nélkül. A cutoff az
+első futáskor magától áll be és utána nem mozdul, tehát az első futás per definitionem nulla leletet
+ad -- ez a helyes indulás, nem hiba.
+
+**SOFT, és az is marad:** riport, nem kapu. Nem blokkol dispatchet, nem mozgat kártyát, és leletnél
+is 0-val tér vissza (a hívó nem ágazhat a kilépési kódjára). A 9. kódminőségi elv szerint egy új,
+bizonyítatlan mechanizmus nem léphet a működő útvonal helyére -- egy audit, ami meg tudja állítani a
+flotta dispatch-útját, rosszabb hiba lenne annál, amit mér.
+
+**Hibaútvonal (a plan-grilling külön követelménye):** a 4b lépés hívása `timeout 60 ... || <log
+route-check-failed>` alakra változott. A router maga minden BELSŐ hibaút végén ONLINE-t logol, de ha
+MAGA a hívás hal meg (timeout, hiányzó fájl), nem ír semmit -- és egy nem létező sor kívülről
+megkülönböztethetetlen attól, hogy a lépést kihagyták. A `route-check-failed` jelölő ezt a két
+állapotot választja szét.
+
+**Mérés:** 11 selftest-eset zölden (`store/route-check-audit.selftest.sh`), mutáció-tesztelve: a
+végtelenre tágított ablak, az elhagyott cutoff, az invertált ablak-összehasonlítás és a
+"minden dispatch fedettnek számít" mutáns mind bukik, egyenként megnevezett esetekkel. A mutáció-
+tesztelés egy VÁKUUM-ESETET is talált a saját suite-omban (a `'-'` kártya-ID szűrésére írt eset a
+szűrés nélkül is zölden állt, mert a kártya-ID egyezés amúgy is dönt) -- az eset ki lett cserélve egy
+valódira, ami a timestamp-öröklődést méri: egy hibás log-sor a `getline` miatt megörökölhetné az
+előző sor időbélyegét és hamisan lefedne egy dispatchet. Ez a csere a suite-ot 10-ről 11 esetre
+vitte, és az új eset bizonyítottan bukik a `ts=""` reset eltávolítására.
+
+**Bekötés:** a selftest `store/route-check-audit.selftest.sh` néven (PONTTAL) landolt, mert a
+`store-selftests-all-run.test.ts` discovery-je erre a suffixre keres. **Külön lelet, ami NEM ehhez a
+kártyához tartozik:** a repóban 8 KÖTŐJELES `*-selftest.sh` van, és közülük négyre (`card-build-route`,
+`cleancore-branch-drift-monitor`, `external-repos-sync`, `fleet-nudger`) SEMMI nem hivatkozik -- soha
+nem futnak. Ugyanaz a "megírt, zöldnek látszó, sosem futó kontroll" osztály, amiért a discovery
+készült, egy elnevezési konvencióval odébb. Külön kártyát érdemel, itt szándékosan nincs javítva.
+
+**Ki döntött:** MikroB (plan-grilling GO-WITH-CHANGES, 2026-09-09); backend (a dispatch-esemény
+kontra `created_at` szűrő szétválasztása, méréssel).
+
+**Hivatkozás:** kártya `0c473a5e` (szülő `4df3e8e8`); `store/route-check-audit.sh`,
+`store/route-check-audit.selftest.sh`, `seed-scheduled-tasks/heartbeat-consolidated/SKILL.md`.
