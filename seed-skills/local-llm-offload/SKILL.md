@@ -78,6 +78,33 @@ not argue with it, write it yourself.
 The result is a DRAFT. Read it, run the typecheck and the tests, and own the correctness. Three
 failed local attempts on the same unit means stop and write it online.
 
+## Closing out a draft: the `Draft-Review:` line (card 1338e68b)
+
+When a draft was posted on your CARD by the dispatcher (a `local-llm` comment, not a draft you
+fetched yourself mid-work), the board now REQUIRES you to say what you did with it before the card
+can go to `waiting`. Put one line, at the START of a line, in any comment on the card:
+
+```
+Draft-Review: ELFOGADVA      # I read it and integrated it
+Draft-Review: RESZBEN        # I used part of it
+Draft-Review: ELUTASITVA     # I read it, it was wrong, I wrote it myself
+```
+
+(`ACCEPTED` / `PARTIAL` / `REJECTED` work too.)
+
+All three pass. The guard is not asking you to LIKE the draft -- it is asking that the draft not go
+through unexamined. Rejecting a bad draft is a correct outcome and a completed handoff; the failure
+this closes is the draft nobody ever looked at. Measured before the guard existed: of 11 closed
+cards carrying a local-LLM draft, NINE had no later comment that even mentioned it.
+
+Two rules the guard enforces, so they cannot be satisfied by accident:
+- the line must come from you, not from `local-llm` -- a draft cannot review itself;
+- it must be NEWER than the newest draft on the card, so a card that gets fresh drafts after your
+  review needs a fresh review.
+
+If a `waiting` move comes back `409 draft_review_required`, this is the line it wants. MikroB can
+step over it with `force: true` when skipping is deliberate.
+
 ## Procedure
 The shared client is `{{INSTALL_DIR}}/store/local-llm.sh`. It reads the
 **active model** from `{{INSTALL_DIR}}/store/local-llm-model` at call time, so the model is

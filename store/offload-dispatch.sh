@@ -272,7 +272,7 @@ graph_args_for() {
 
 post_draft_comment() {
   local leaf_id="$1" leaf_title="$2" content="$3"
-  local body="[LOCAL-LLM DRAFT | dispatch-offload] Mechanikus reszek helyi (7B) draftja. DRAFT-ONLY: MikroB + a gate ujra-ellenorzi, semmi nem megy elesbe vakon. Az ugynok reviewlje es integralja, ne irja ujra Claude-dal.
+  local body="[LOCAL-LLM DRAFT | dispatch-offload] Mechanikus reszek helyi (7B) draftja. DRAFT-ONLY: MikroB + a gate ujra-ellenorzi, semmi nem megy elesbe vakon. Az ugynok reviewlje es integralja, ne irja ujra Claude-dal. AMIKOR VEGEZTEL VELE, tegyel a kartyara egy sort (sor elejen): 'Draft-Review: ELFOGADVA' / 'RESZBEN' / 'ELUTASITVA' -- e nelkul a kartya nem mehet waiting-be (card 1338e68b). Mindharom elfogadhato; a lenyeg, hogy a draft ne menjen at elbiralatlanul.
 
 #### $leaf_title
 $content
