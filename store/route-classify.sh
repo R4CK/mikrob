@@ -20,7 +20,7 @@
 # score the card originally reported was therefore one draw from a coin-flipping process, and the
 # acceptance script was flaky in BOTH directions -- the intermittently-green direction being the
 # dangerous one, because green looks like proof. A one-word classification has no reason to sample:
-# the call below pins temperature 0 and a fixed seed, and store/route-classify-selftest.sh now
+# the call below pins temperature 0 and a fixed seed, and store/route-classify.selftest.sh now
 # measures the stability itself instead of assuming it.
 #
 # MEASURED, deterministically, 2026-09-09 (Qwen3.5-9b-Sushi-Coder-RL-GGUF:Q4_K_M on this host,
@@ -33,7 +33,7 @@
 # selftest measurement artifact: advisory mode produced ROUTE=local AFTER ROUTE=online in stderr,
 # and tail -1 picked the wrong line. Fix in selftest: LOCAL_LLM_ADVISORY=0 in route() (ef95ec94).
 # Model drift is logged to route-classify.log when active model differs from validated model
-# (see route-classify-validated-model, written by route-classify-selftest.sh on completion).
+# (see route-classify-validated-model, written by route-classify.selftest.sh on completion).
 #
 # Usage: route-classify.sh "<task description>"
 #   prints SECURITY | MECHANICAL | UNKNOWN   (exit 0 always -- the caller decides, see above)
@@ -60,7 +60,7 @@ log_verdict() { # $1 = verdict, $2 = path (prefilter|windowed|empty), $3 = model
 
 # MODEL DRIFT LOG (card 1ce29322): if the active model differs from the last validated model, log a
 # one-time warning. Logged only (not to stdout -- stdout must be exactly SECURITY/MECHANICAL/UNKNOWN).
-# Run route-classify-selftest.sh to re-validate and clear the warning.
+# Run route-classify.selftest.sh to re-validate and clear the warning.
 {
   _validated="$(cat "$HERE/route-classify-validated-model" 2>/dev/null || true)"
   _current="$(cat "$HERE/local-llm-model" 2>/dev/null || true)"

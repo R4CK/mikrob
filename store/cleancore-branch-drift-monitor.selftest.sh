@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# cleancore-branch-drift-monitor-selftest.sh -- controls for cleancore-branch-drift-monitor.sh
+# cleancore-branch-drift-monitor.selftest.sh -- controls for cleancore-branch-drift-monitor.sh
 # (card cf3c25ea). Fully sandboxed: own repo, own state file, own fake dashboard for the alert
 # path. The real CleanCore checkout and the real dashboard are never touched.
 set -uo pipefail

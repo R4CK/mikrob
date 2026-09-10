@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# card-build-route-selftest.sh -- does the router hold the dangerous direction? (card 79f62fd7)
+# card-build-route.selftest.sh -- does the router hold the dangerous direction? (card 79f62fd7)
 #
 # THE TWO ERROR DIRECTIONS ARE NOT SYMMETRIC, and this file is built around that.
 #   ONLINE on a card that was actually easy  -> we lose a little speed. Acceptable, measured below.
@@ -18,8 +18,8 @@
 # is not always. A card that only stays online because the 7B happened to say COMPLEX is one bad
 # sampling draw away from being routed local.
 #
-#   card-build-route-selftest.sh              # fast, model stubbed permissive (the real measurement)
-#   card-build-route-selftest.sh --with-model # end-to-end against the live local model (slow)
+#   card-build-route.selftest.sh              # fast, model stubbed permissive (the real measurement)
+#   card-build-route.selftest.sh --with-model # end-to-end against the live local model (slow)
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

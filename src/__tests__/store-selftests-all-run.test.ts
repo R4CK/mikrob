@@ -49,6 +49,13 @@ const STORE = join(REPO_ROOT, 'store')
  * stops covering something, so every entry has to earn its line and has to still exist.
  */
 const EXCLUDED: Readonly<Record<string, string>> = {
+  'route-classify':
+    'Needs a live local model: with none answering it prints "SKIP: no local model answering" and ' +
+    'runs ZERO cases by design (its own documented first-run behaviour). Wiring it here would ' +
+    'either hard-fail on every machine without Ollama warm, or -- worse -- teach OK_SHAPES to ' +
+    'accept a SKIP as a pass, which is exactly the "green but never ran" reading this whole file ' +
+    'exists to prevent. It is not unwired: store/route-classify.sh and store/local-llm-rag.sh both ' +
+    'reference it, and it runs by hand against a live model. Card 0ebeff55.',
   // Empty, and that is the point of card 89f4c28d.
   //
   // local-llm-model-routing used to live here: it swapped `store/local-llm-model-routing.json` --
@@ -133,6 +140,14 @@ const OK_SHAPES: readonly RegExp[] = [
   // before accepting the final PASS (same non-vacuous-loop guarantee the other shapes get from their
   // captured number).
   /^\s*ok\s+\S[\s\S]*\nselftest: PASS$/m,
+  // card-build-route style: a per-case table then `passed: N   failed: 0`. Surfaced by card
+  // 0ebeff55 -- this script had never run here, so its shape had never been seen. The captured
+  // number keeps the non-vacuous guarantee: `passed: 0` does not match.
+  /passed: ([1-9]\d*)\s+failed: 0/,
+  // cleancore-main-suite-guard style: `ok  <case>` lines then a bare `controls: PASS`. Same
+  // shape as the selftest: PASS entry above, different final word, and the same requirement of at
+  // least one `ok` line before it.
+  /^\s*ok\s+\S[\s\S]*\ncontrols: PASS$/m,
 ]
 
 describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b)', () => {
@@ -192,5 +207,43 @@ describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b
         `Either it ran no cases, or it reports in a shape this file does not know yet ` +
         `(add it to OK_SHAPES rather than loosening one). Tail:\n${out.slice(-400)}`,
     ).toBe(true)
+  })
+})
+
+// Card 0ebeff55. The discovery above keys on the `.selftest.` SUFFIX, and that is exactly how far
+// it reaches: a script named `<x>-selftest.sh` with a HYPHEN matches the glob nowhere and is run by
+// nothing, forever. Measured on this repo 2026-09-10: 28 dot-form scripts were discovered while
+// SEVEN hyphen-form ones sat beside them, FOUR of them referenced by nothing at all --
+// card-build-route, cleancore-branch-drift-monitor, external-repos-sync and fleet-nudger. Written,
+// committed, green-looking controls that had never executed once.
+//
+// That is the same "written, never run" class this file was built for (711a7e57), one naming
+// convention over -- and the irony is sharp: card-build-route-selftest.sh is the selftest of the
+// very router whose skipped invocations card 0c473a5e had just finished measuring.
+//
+// All seven were renamed to the dot form, so the fix is a rename plus THIS: a rename alone would
+// be a one-time cleanup that the next hyphen-named file silently undoes. The guard is what makes
+// the naming a rule instead of a habit -- the same reason the exclusion list above must justify
+// itself rather than being trusted.
+describe('store selftests use ONE naming convention (card 0ebeff55)', () => {
+  const hyphenForm = readdirSync(STORE).filter((f) => f.endsWith('-selftest.sh') || f.endsWith('-selftest.py'))
+
+  it('no store/*-selftest.{sh,py} exists -- the discovery glob would never see it', () => {
+    expect(
+      hyphenForm,
+      'these are invisible to the discovery above and would never run. Rename them to ' +
+        '<name>.selftest.<ext> (a DOT), and update any references.',
+    ).toEqual([])
+  })
+
+  it('the discovery actually found the renamed scripts (the rename was not a no-op)', () => {
+    // Negative control for the case above: an empty store/ directory would also satisfy "no
+    // hyphen-form files", so assert the dot-form population is real and includes the ones that
+    // were orphaned.
+    const names = ALL.map((s) => s.name)
+    expect(names.length).toBeGreaterThan(20)
+    for (const orphan of ['card-build-route', 'external-repos-sync', 'fleet-nudger']) {
+      expect(names, `${orphan} was orphaned before this card and must now be discovered`).toContain(orphan)
+    }
   })
 })

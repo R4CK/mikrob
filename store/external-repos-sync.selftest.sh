@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# external-repos-sync-selftest.sh -- controls for the pull() fix in external-repos-sync.sh
+# external-repos-sync.selftest.sh -- controls for the pull() fix in external-repos-sync.sh
 # (card 9b9422d1). Fully sandboxed: a throwaway $HOME per case, so the script's own
 # $HOME/.claude/external + $HOME/.claude/skills derivation needs no override. Never touches the
 # real ~/.claude/external.

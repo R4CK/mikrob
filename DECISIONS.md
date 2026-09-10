@@ -12158,3 +12158,45 @@ adta, a megoldás formáját nem kötötte ki.
 
 **Hivatkozás:** kártya `cd7376ed`; `store/quota-bridge.py`, `store/quota-bridge.selftest.py`,
 `src/web/schedule-runner.ts`, `src/__tests__/schedule-catchup.test.ts`.
+
+## 2026-09-10 -- Egy elnevezési konvenció a store-selftestekre, mert a kettő közül az egyiket semmi nem futtatta (kártya 0ebeff55)
+
+**Kontextus:** a `store-selftests-all-run.test.ts` (kártya 711a7e57) azért készült, hogy egy megírt,
+zöldnek látszó, de SOSE futó kontroll ne maradhasson észrevétlen. A felfedezés a `.selftest.`
+SUFFIXRE kulcsol -- és pontosan addig ér: egy `<x>-selftest.sh` alakú fájl KÖTŐJELLEL a globnak
+láthatatlan, és soha semmi nem futtatja.
+
+**Mérve 2026-09-10:** 28 pont-alakú szkriptet futtatott a felfedezés, miközben mellettük HÉT
+kötőjeles `.sh` és KETTŐ kötőjeles `.py` állt. Ezekből **ÖT-re semmi nem hivatkozott**:
+`card-build-route`, `cleancore-branch-drift-monitor`, `external-repos-sync`, `fleet-nudger`,
+`gate-scan`. Megírt, commitolt, zöldnek látszó kontrollok, amik egyszer sem futottak le. Ugyanaz a
+hibaosztály, amiért a felfedezés készült, egy elnevezési konvencióval odébb -- és az irónia éles:
+a `card-build-route` selftestje éppen ANNAK a routernek a selftestje, aminek a kihagyott hívásait a
+0c473a5e kártya aznap mérte meg.
+
+**Döntés:** mind a kilenc átnevezve a pont-alakra, a hivatkozások frissítve, ÉS egy guard, ami
+bukik, ha bármikor újra megjelenik egy kötőjeles alak. **A puszta átnevezés egyszeri takarítás
+lett volna, amit a következő kötőjeles fájl csendben visszacsinál** -- a guard teszi a konvenciót
+szabállyá a szokás helyett, ugyanazon az elven, amiért a kizárási listának indokolnia kell magát.
+
+**AMI A BEKÖTÉSSEL AZONNAL KIDERÜLT, és önmagában igazolja a kártyát:** a most először lefutó
+szkriptek közül HÁROM elbukott a suite-ban -- nem azért, mert hibásak, hanem mert a kimeneti
+alakjukat a felfedezés nem ismerte. A `card-build-route` 49 esetet futtat zölden (`passed: 49
+failed: 0`), a `cleancore-main-suite-guard` `ok`-sorokat és `controls: PASS`-t ír. Mindkét alak
+felvéve az elfogadott összefoglalók közé, a nem-vákuum garancia megtartásával (a `passed: 0` nem
+illeszkedik, és a `controls: PASS` legalább egy `ok`-sort követel maga előtt).
+
+**A harmadik, `route-classify`, KIZÁRÁSRA került, és ez a fontosabb döntés:** élő helyi modell
+nélkül `SKIP`-et ír és NULLA esetet futtat -- a saját dokumentált first-run viselkedése. Bekötve
+vagy minden Ollama-mentes gépen hard-fail lenne, vagy -- ami rosszabb -- meg kellett volna tanítani
+az elfogadott alakoknak, hogy egy SKIP az pass. Az utóbbi pontosan azt a "zöld, de sose futott"
+olvasatot vezetné be, aminek a kizárására az egész fájl készült. Nincs bekötetlenül hagyva: a
+`route-classify.sh` és a `local-llm-rag.sh` is hivatkozik rá, és élő modellel kézzel fut.
+
+**Mérés:** a felfedező teszt 48-ról 60 zöld esetre nőtt; a módosított hivatkozású két tesztfájl
+(llm-catalog-contract, local-llm-bench-state) 23 zöld.
+
+**Ki döntött:** backend (a lelet a 0c473a5e során, majd az egységesítés + guard + a SKIP kizárása,
+méréssel); MikroB nyitotta a kártyát a leletre.
+
+**Hivatkozás:** kártya `0ebeff55`; `src/__tests__/store-selftests-all-run.test.ts`, `store/*.selftest.{sh,py}`.
