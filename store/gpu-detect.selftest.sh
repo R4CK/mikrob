@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gpu-detect-selftest.sh -- controls for gpu-detect.sh (card fb66b856 / e21f8432).
+# gpu-detect.selftest.sh -- controls for gpu-detect.sh (card fb66b856 / e21f8432).
 #
 # WHY IT EXISTS. The detector's job is to be right on machines nobody here has: an AMD box, a Mac, a
 # host with no GPU at all. None of those can be tested by running it here -- on this host it will
@@ -12,7 +12,7 @@
 # chain or invent a number. Deleting a binary would not test that at all, so the fakes below RUN and
 # misbehave rather than being absent.
 #
-# Usage: store/gpu-detect-selftest.sh   (exit 0 = PASS, 1 = FAIL)
+# Usage: store/gpu-detect.selftest.sh   (exit 0 = PASS, 1 = FAIL)
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

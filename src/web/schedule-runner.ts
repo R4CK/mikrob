@@ -1226,11 +1226,55 @@ function sendSchedulerAlertMessage(token: string, chatId: string, text: string):
 // that produced any such entry -- in normal operation that is never, so the
 // channel stays quiet. This is the reporting half of the catch-up policy: a
 // missed occurrence either runs or gets named, never both and never neither.
+//
+// RATE LIMIT (card cd7376ed, Peti's report). "In normal operation that is never"
+// is true and was the wrong thing to rely on. During a quota outage the agent
+// sessions stop consuming ticks, so EVERY tick finds missed occurrences and the
+// summary went out every few minutes for hours. The information in the second
+// and subsequent copies is zero -- the gap is the same outage.
+//
+// The cooldown deliberately does NOT drop what it suppresses: the next summary
+// that does go out names how many it stood for. Silently swallowing them would
+// trade a noise bug for an evidence bug, and an operator who has learned the
+// channel omits things stops trusting the ones it does send.
+export const CATCH_UP_SUMMARY_COOLDOWN_MS = 30 * 60_000
+let lastCatchUpSummaryAtMs = 0
+let suppressedCatchUpSummaries = 0
+
+/**
+ * Should a catch-up summary go out now? Exported so the policy is unit-tested rather than only
+ * observed through a channel send, the same way decideCatchUp() above is.
+ *
+ * `lastSentAtMs === 0` means none has been sent, which is the FIRST summary of an outage and always
+ * goes out -- the cooldown delays repeats, never the initial report. That distinction is the whole
+ * design: the operator still learns about the gap immediately.
+ */
+export function catchUpSummaryDue(lastSentAtMs: number, nowMs: number): boolean {
+  if (!lastSentAtMs) return true
+  return nowMs - lastSentAtMs >= CATCH_UP_SUMMARY_COOLDOWN_MS
+}
+
+/** Test seam: the cooldown is module state, so a suite must be able to clear it. */
+export function resetCatchUpSummaryRateLimit(): void {
+  lastCatchUpSummaryAtMs = 0
+  suppressedCatchUpSummaries = 0
+}
+
 function sendCatchUpSummary(
   caughtUp: Array<{ task: string; ageMs: number }>,
   stale: Array<{ task: string; ageMs: number }>,
   gapMs: number,
+  nowMs: number = Date.now(),
 ): void {
+  // First summary of an outage always goes out immediately; only the repeats wait.
+  if (!catchUpSummaryDue(lastCatchUpSummaryAtMs, nowMs)) {
+    suppressedCatchUpSummaries += 1
+    logger.info(
+      { suppressed: suppressedCatchUpSummaries, cooldownMs: CATCH_UP_SUMMARY_COOLDOWN_MS },
+      'catch-up summary suppressed by cooldown (still counted, reported on the next one)',
+    )
+    return
+  }
   const token = resolveSchedulerAlertToken()
   if (!token) {
     logger.warn({ provider: CHANNEL_PROVIDER }, 'catch-up summary suppressed: no channel bot token (config error)')
@@ -1253,6 +1297,15 @@ function sendCatchUpSummary(
     lines.push(`Nem pótolva, mert elavult: ${stale.map(e => `${e.task} (${mins(e.ageMs)})`).join(', ')}`)
     lines.push('Ezek a dashboard /Ütemezések oldalán kézzel indíthatók.')
   }
+  if (suppressedCatchUpSummaries > 0) {
+    // Say what the quiet stood for, so the cooldown reads as rate limiting rather than data loss.
+    lines.push(
+      `(Az előző jelzés óta további ${suppressedCatchUpSummaries} kimaradás-jelzés volt, ` +
+        'összevonva -- ugyanaz a kiesés.)',
+    )
+  }
+  lastCatchUpSummaryAtMs = nowMs
+  suppressedCatchUpSummaries = 0
   const text = lines.join('\n')
   ;(async () => {
     try {

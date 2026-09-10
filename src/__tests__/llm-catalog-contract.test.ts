@@ -1,6 +1,6 @@
 // The local-LLM catalogue contract, enforced in CI (card ad6cf75a, EPIC ebc7b4dd).
 //
-// WHY THIS FILE EXISTS AT ALL. store/gpu-detect-selftest.sh and store/llm-catalog-selftest.py carry
+// WHY THIS FILE EXISTS AT ALL. store/gpu-detect.selftest.sh and store/llm-catalog.selftest.py carry
 // 41 controls between them -- and until now NOTHING RAN THEM. A selftest that only executes when
 // someone remembers to type its name is documentation, not a gate: the defects it pins can return
 // in a commit that never invokes it. So this file drags both into the suite that already runs on
@@ -73,13 +73,13 @@ function validate(doc: unknown): { code: number; out: string } {
 
 describe('local-LLM catalogue: the selftests actually run in CI', () => {
   it('gpu-detect selftest passes', () => {
-    const { code, out } = run('bash', [join(ROOT, 'store', 'gpu-detect-selftest.sh')])
+    const { code, out } = run('bash', [join(ROOT, 'store', 'gpu-detect.selftest.sh')])
     expect(out).toContain('selftest: PASS')
     expect(code).toBe(0)
   })
 
   it('llm-catalog selftest passes (offline, fixture-driven)', () => {
-    const { code, out } = run('python3', [join(ROOT, 'store', 'llm-catalog-selftest.py')])
+    const { code, out } = run('python3', [join(ROOT, 'store', 'llm-catalog.selftest.py')])
     expect(out).toContain('selftest: PASS')
     expect(code).toBe(0)
   })

@@ -6,7 +6,9 @@ import {
   LATE_CATCHUP_THRESHOLD_MS,
   SCHEDULE_COLD_START_CATCHUP_MS,
   SCHEDULE_MAX_CATCHUP_MS,
+  CATCH_UP_SUMMARY_COOLDOWN_MS,
   catchUpMaxAgeMs,
+  catchUpSummaryDue,
   computeCatchUpStart,
   decideCatchUp,
 } from '../web/schedule-runner.js'
@@ -177,5 +179,70 @@ describe('the runner wires the policy in', () => {
 
   it('stays silent on a tick that caught nothing up', () => {
     expect(SRC).toMatch(/if \(caughtUpThisTick\.length \|\| staleThisTick\.length\) \{/)
+  })
+})
+
+// Card cd7376ed (Peti's report). "In steady state this never fires" was true and was the wrong
+// thing to rely on: during a quota outage the agent sessions stop consuming ticks, so EVERY tick
+// finds missed occurrences and the summary went out every few minutes for hours. The second copy
+// and the three-hundredth carry the same information as the first -- one outage, one gap.
+//
+// The two directions are not symmetric, and both are pinned below:
+//   too little suppression -> the noise bug Peti reported;
+//   too much              -> the operator never hears about a gap at all, which is the failure the
+//                            whole catch-up policy exists to prevent. Hence: the FIRST summary is
+//                            never delayed, and what the cooldown swallows is counted and named.
+describe('catch-up summary rate limit (card cd7376ed)', () => {
+  const NOW = 1_800_000_000_000
+
+  it('the first summary of an outage is never delayed', () => {
+    expect(catchUpSummaryDue(0, NOW)).toBe(true)
+  })
+
+  // ...and the `!lastSentAtMs` guard is what makes that true INDEPENDENTLY of the clock. With a
+  // real epoch `nowMs`, `nowMs - 0` dwarfs any cooldown, so the case above passes with or without
+  // the guard -- mutation testing showed exactly that, and a case that passes either way proves
+  // nothing. Only a small `nowMs` separates them: without the guard, `500 - 0 >= cooldown` is
+  // false and the very first summary of a run would be silently held back.
+  it('the first summary is due even when the clock is smaller than the cooldown', () => {
+    expect(catchUpSummaryDue(0, 500)).toBe(true)
+  })
+
+  it('a repeat inside the cooldown is suppressed', () => {
+    expect(catchUpSummaryDue(NOW - 60_000, NOW)).toBe(false)
+  })
+
+  it('exactly at the cooldown boundary it sends -- the limit is where it is claimed', () => {
+    expect(catchUpSummaryDue(NOW - CATCH_UP_SUMMARY_COOLDOWN_MS, NOW)).toBe(true)
+  })
+
+  it('one millisecond before the boundary it does not', () => {
+    expect(catchUpSummaryDue(NOW - CATCH_UP_SUMMARY_COOLDOWN_MS + 1, NOW)).toBe(false)
+  })
+
+  it('the cooldown is long enough to matter against a per-minute tick', () => {
+    // A scheduler tick is ~1/min. Anything under a few minutes would not have stopped what Peti
+    // saw, so this pins the ORDER OF MAGNITUDE rather than the exact number -- the value can be
+    // tuned without touching the test, but not down to a no-op.
+    expect(CATCH_UP_SUMMARY_COOLDOWN_MS).toBeGreaterThanOrEqual(10 * 60_000)
+  })
+
+  it('suppressed summaries are COUNTED, not dropped', () => {
+    // The evidence half: silently swallowing repeats would trade a noise bug for an evidence bug.
+    expect(SRC).toMatch(/suppressedCatchUpSummaries \+= 1/)
+  })
+
+  it('and the next summary that goes out says how many it stood for', () => {
+    const idx = SRC.indexOf('if (suppressedCatchUpSummaries > 0)')
+    expect(idx).toBeGreaterThan(0)
+    expect(SRC.slice(idx, idx + 320)).toMatch(/lines\.push/)
+  })
+
+  it('the counter resets only when a summary actually goes out', () => {
+    // Reset must sit on the SEND path, not the suppress path -- otherwise the count is always 0
+    // and the line above reports nothing.
+    const resetIdx = SRC.indexOf('suppressedCatchUpSummaries = 0\n  const text')
+    expect(SRC).toMatch(/lastCatchUpSummaryAtMs = nowMs\n  suppressedCatchUpSummaries = 0/)
+    expect(resetIdx === -1 || resetIdx > 0).toBe(true)
   })
 })

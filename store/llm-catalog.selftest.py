@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""llm-catalog-selftest.py -- controls for llm-catalog.py (card 6f8f71fa).
+"""llm-catalog.selftest.py -- controls for llm-catalog.py (card 6f8f71fa).
 
 OFFLINE and deterministic: every HTTP response is a fixture written here at run time, so the suite
 never depends on what HuggingFace happens to serve today. A generator that can only be checked
@@ -14,7 +14,7 @@ cannot return:
 Plus the invariants the design promises: never-invented throughput, digest per part, fallback rather
 than an empty list.
 
-Usage: store/llm-catalog-selftest.py   (exit 0 = PASS, 1 = FAIL)
+Usage: store/llm-catalog.selftest.py   (exit 0 = PASS, 1 = FAIL)
 """
 import importlib.util
 import json

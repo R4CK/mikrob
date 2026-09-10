@@ -71,6 +71,64 @@ POLL_HEALTHY_SEC = 45      # how often to check MikroB health when things are fi
 GETUPDATES_TIMEOUT = 25    # long-poll seconds during outage
 CONFIRM_CHECKS = 2         # consecutive banner sightings before declaring outage
 
+# --- Recovery-probe suppression while a reset deadline is known (card cd7376ed) ---------------
+#
+# WHAT PETI SAW: during one quota outage the Ghost handover message and the "MikroB is back"
+# message alternated every few minutes. That is not two bugs, it is one loop. The recovery test is
+# `banner AND heartbeat-stale`; the heartbeat counts as fresh for 12 minutes (HEARTBEAT_STALE_SEC),
+# so a single scheduled task touching the file makes mikrob_down() briefly false. The loop then
+# announces recovery, resets notified_outage, immediately re-detects the outage, and announces the
+# handover again. Every flap costs Peti two messages, and no useful information is in either one.
+#
+# WHAT THIS CHANGES: when the deadline is already KNOWN (quota-check.sh writes it), there is nothing
+# to learn from probing before it. So during an outage the recovery probe is skipped until we are
+# within RECOVERY_PROBE_WINDOW_SEC of the deadline. The Ghost keeps answering messages the whole
+# time -- only the probe, and therefore only the flapping, is suppressed.
+#
+# THE FAIL-SAFE DIRECTION IS "PROBE", and every uncertain case resolves that way: no countdown file,
+# unreadable JSON, no deadline field, a deadline already past, or one implausibly far out all fall
+# back to probing every pass, which is exactly today's behaviour. The failure this must never
+# produce is a Ghost that stays latched after MikroB is back -- a few redundant probes cost nothing,
+# a stuck Ghost costs the real orchestrator. That is why the sanity cap below is an upper bound on
+# TRUST, not on probing.
+RECOVERY_PROBE_WINDOW_SEC = 180     # start probing 3 minutes before the known deadline
+# A quota window is 5h05m, so a deadline more than 6h out is not a deadline we wrote for this
+# outage -- it is stale or corrupt state, and trusting it would suppress probing for hours.
+COUNTDOWN_MAX_TRUSTED_SEC = 6 * 3600
+COUNTDOWN_FILE = f"{STORE}/quota-reset-countdown.json"
+
+
+def recovery_probe_due(now=None):
+    """True when the recovery probe should run this pass. Fail-safe: True on any doubt.
+
+    MUST NOT RAISE. This runs inside outage_loop's only exit path: an exception here does not
+    degrade to "probe anyway", it kills the loop that is currently holding Peti's Telegram channel,
+    and the Ghost dies mid-outage with the getUpdates slot claimed. The broad except is deliberate
+    for that reason -- the file is written by another process and read while a quota outage is
+    already in progress, which is the worst moment to discover an unhandled shape.
+    """
+    now = time.time() if now is None else now
+    try:
+        try:
+            with open(COUNTDOWN_FILE) as f:
+                deadline = json.load(f).get("deadline")
+        except (OSError, ValueError):
+            return True                  # no file / unreadable -> today's behaviour
+        # bool is a subclass of int and would sail through the isinstance check below; it is
+        # nonsense as a deadline, and rejecting it here keeps the arithmetic honest rather than
+        # letting True quietly mean "epoch 1".
+        if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
+            return True                  # no usable deadline -> today's behaviour
+        remaining = deadline - now
+        if remaining <= RECOVERY_PROBE_WINDOW_SEC:
+            return True                  # deadline reached, passed, or within the window
+        if remaining > COUNTDOWN_MAX_TRUSTED_SEC:
+            return True                  # implausible -> do not trust it into silence
+        return False
+    except Exception as exc:             # noqa: BLE001 -- see the docstring; probing is the safe side
+        log(f"recovery_probe_due failed ({type(exc).__name__}: {exc}) -> probing")
+        return True
+
 
 def log(msg):
     sys.stderr.write(f"[quota-bridge {time.strftime('%H:%M:%S')}] {msg}\n"); sys.stderr.flush()
@@ -279,9 +337,17 @@ def outage_loop(token, state):
              "amit Ghost módban csináltam.")
         state["notified_outage"] = True
         save_state(state)
+    probe_suppressed = False
     while True:
-        # recovery check: MikroB alive again (banner gone or heartbeat fresh) -> hand back
-        if not mikrob_down():
+        # recovery check: MikroB alive again (banner gone or heartbeat fresh) -> hand back.
+        # Skipped entirely while a known reset deadline is still far off (card cd7376ed): the probe
+        # can only flap there, and each flap sends Peti a handover and a recovery message. Message
+        # serving below is untouched -- the Ghost stays fully useful, it just stops announcing.
+        if not recovery_probe_due():
+            if not probe_suppressed:
+                log("known reset deadline still far off -> suppressing recovery probe (no flapping)")
+                probe_suppressed = True
+        elif not mikrob_down():
             log("MikroB recovered -> relinquishing channel")
             send(token, PETI_CHAT_ID,
                  "✅ A valódi MikroB visszatért (kvóta feloldva), MikroB Ghost visszavonul. "

@@ -27,7 +27,7 @@ trap cleanup EXIT
 if bash -n "$SCRIPT" 2>/dev/null; then ok "local-llm-bench.sh parses (bash -n)"; else bad "parses" ""; fi
 
 # --- 1. no flock on PATH -> refuses loudly, does not run unlocked (same control as
-# cleancore-main-suite-guard-selftest.sh's SEC-1 check) --------------------------------------------
+# cleancore-main-suite-guard.selftest.sh's SEC-1 check) --------------------------------------------
 mkdir -p "$SB/binmask"
 for b in bash cat curl seq awk mktemp python3 sleep printf rm dirname basename tr; do
   p="$(command -v "$b" 2>/dev/null)" && ln -sf "$p" "$SB/binmask/$b"

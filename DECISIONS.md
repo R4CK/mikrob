@@ -12104,3 +12104,99 @@ fail-open ágak. Teljes suite: 719 fájl / 16627 teszt zöld, lint-ratchet tartj
 **Ki döntött:** backend2 (mérés, tervezés, implementáció); a lelet a codebase-auditor ügynöké.
 
 **Hivatkozás:** kártya `1338e68b`, szülő fázis `4df3e8e8`.
+
+## 2026-09-10 -- Kvóta-kiesés alatt a zaj két külön forrásból jött, mindkettő rate-limitet kapott (kártya cd7376ed)
+
+**Kontextus:** Peti panasza (2026-09-10, képpel): amíg kvóta-leállás volt, percenként érkezett
+üzenet -- a MikroB Ghost be- és kijelentkezése, plusz az ütemező "Kimaradt ütemezés / Pótlás
+elindítva" jelzése. Két különböző komponens, ugyanaz a hibaosztály: mindkettő ESEMÉNYRE jelez, és
+kvóta-kiesés alatt az esemény minden ciklusban újratermelődik.
+
+**Az első forrás oka (store/quota-bridge.py):** a visszatérés-teszt `banner ÉS heartbeat-elavult`.
+A heartbeat 12 percig számít frissnek, tehát EGY lefutó ütemezett feladat elég ahhoz, hogy a
+`mikrob_down()` pillanatra hamis legyen. A ciklus ilyenkor bejelenti a visszatérést, nullázza a
+`notified_outage` jelzőt, azonnal újra észleli a kiesést, és újra bejelenti az átvételt. Flapping,
+váltásonként két üzenettel, nulla új információval.
+
+**Az első döntés:** ha a reset időpontja MÁR ISMERT (a `quota-check.sh` írja a countdown-fájlba),
+a visszatérés-próbát nincs mit tanulnia előtte, ezért a próba kimarad, amíg a deadline 3 percnél
+messzebb van. A Ghost közben teljes értékűen válaszol -- csak a próba, és így a flapping áll le.
+
+**A fail-safe irány "PRÓBÁLJ", és minden bizonytalan eset oda dől:** nincs fájl, olvashatatlan
+JSON, hiányzó vagy nem-szám deadline, múltbeli deadline, vagy 6 óránál távolabbi (egy kvóta-ablak
+5h05m, tehát az már nem ehhez a kieséshez tartozik) -- mind a mai viselkedést adja vissza. Amit ez
+sosem termelhet: bent ragadt Ghost azután, hogy MikroB visszatért, mert az a valódi orchestrátort
+váltja le egy 7B modellre Peti szemében. A függvény ezért NEM DOBHAT sem: a `recovery_probe_due()`
+az `outage_loop` egyetlen kilépési útján fut, egy kivétel ott nem "mégis próbálok"-ra degradál,
+hanem megöli a Telegram-csatornát tartó ciklust.
+
+**A második forrás oka (src/web/schedule-runner.ts):** a `sendCatchUpSummary` saját kommentje azt
+mondta, "in normal operation that is never, so the channel stays quiet". Ez igaz volt, és rossz
+dologra támaszkodott: kvóta-kiesés alatt az ügynök-sessionök nem fogyasztják a tickeket, tehát
+MINDEN tick talál kimaradt előfordulást, és órákon át küldi ugyanazt.
+
+**A második döntés:** 30 perces cooldown, de az elnyomott jelzések SZÁMLÁLVA vannak, és a következő
+kimenő összefoglaló megmondja, hány ismétlés helyett áll. A csendes eldobás zaj-hibát cserélne
+bizonyíték-hibára, és egy operátor, aki megtanulta, hogy a csatorna elhallgat dolgokat, a kimenő
+jelzésekben sem bízik többé. Az ELSŐ összefoglaló sosem késik -- a cooldown az ismétlést fogja.
+
+**Mérés:** quota-bridge 11 selftest-eset, schedule-runner 34 (25-ről). Mindkettő mutáció-tesztelve;
+minden lényegi mutáns bukik (cooldown kikapcsolva, határ-összehasonlítás megfordítva, számláló
+kikapcsolva, cooldown 1 ms-ra zsugorítva, széles kivétel-ág leszűkítve).
+
+**Három VÁKUUM-ESETET a saját tesztjeimben a mutáció-tesztelés talált meg, nem az átolvasás.** (1) A
+`'-'` kártya-azonosító szűrésére írt eset a szűrés nélkül is zölden állt. (2) A commit-azonosító
+elleni védelem esete TELJES 40 karakteres azonosítót idézett, amit a szó-határ amúgy is kizár. (3)
+A `!lastSentAtMs` guard esete valós epoch-idővel a guard nélkül is átment, mert `nowMs - 0` amúgy is
+túllépi a cooldownt -- csak egy cooldownnál kisebb óraértékkel válik szét a kettő. Mindhármat
+valódi esetre cseréltem, és mindhárom bizonyítottan bukik a védelme nélkül. A tanulság nem az, hogy
+"írj több tesztet": egy zöld eset, ami a védelem nélkül is zöld, NEM bizonyíték, és ezt csak
+mutáció-teszteléssel lehet észrevenni.
+
+**Ki döntött:** backend (mindkét rate-limit alakja és a fail-safe irány, méréssel). Peti a panaszt
+adta, a megoldás formáját nem kötötte ki.
+
+**Hivatkozás:** kártya `cd7376ed`; `store/quota-bridge.py`, `store/quota-bridge.selftest.py`,
+`src/web/schedule-runner.ts`, `src/__tests__/schedule-catchup.test.ts`.
+
+## 2026-09-10 -- Egy elnevezési konvenció a store-selftestekre, mert a kettő közül az egyiket semmi nem futtatta (kártya 0ebeff55)
+
+**Kontextus:** a `store-selftests-all-run.test.ts` (kártya 711a7e57) azért készült, hogy egy megírt,
+zöldnek látszó, de SOSE futó kontroll ne maradhasson észrevétlen. A felfedezés a `.selftest.`
+SUFFIXRE kulcsol -- és pontosan addig ér: egy `<x>-selftest.sh` alakú fájl KÖTŐJELLEL a globnak
+láthatatlan, és soha semmi nem futtatja.
+
+**Mérve 2026-09-10:** 28 pont-alakú szkriptet futtatott a felfedezés, miközben mellettük HÉT
+kötőjeles `.sh` és KETTŐ kötőjeles `.py` állt. Ezekből **ÖT-re semmi nem hivatkozott**:
+`card-build-route`, `cleancore-branch-drift-monitor`, `external-repos-sync`, `fleet-nudger`,
+`gate-scan`. Megírt, commitolt, zöldnek látszó kontrollok, amik egyszer sem futottak le. Ugyanaz a
+hibaosztály, amiért a felfedezés készült, egy elnevezési konvencióval odébb -- és az irónia éles:
+a `card-build-route` selftestje éppen ANNAK a routernek a selftestje, aminek a kihagyott hívásait a
+0c473a5e kártya aznap mérte meg.
+
+**Döntés:** mind a kilenc átnevezve a pont-alakra, a hivatkozások frissítve, ÉS egy guard, ami
+bukik, ha bármikor újra megjelenik egy kötőjeles alak. **A puszta átnevezés egyszeri takarítás
+lett volna, amit a következő kötőjeles fájl csendben visszacsinál** -- a guard teszi a konvenciót
+szabállyá a szokás helyett, ugyanazon az elven, amiért a kizárási listának indokolnia kell magát.
+
+**AMI A BEKÖTÉSSEL AZONNAL KIDERÜLT, és önmagában igazolja a kártyát:** a most először lefutó
+szkriptek közül HÁROM elbukott a suite-ban -- nem azért, mert hibásak, hanem mert a kimeneti
+alakjukat a felfedezés nem ismerte. A `card-build-route` 49 esetet futtat zölden (`passed: 49
+failed: 0`), a `cleancore-main-suite-guard` `ok`-sorokat és `controls: PASS`-t ír. Mindkét alak
+felvéve az elfogadott összefoglalók közé, a nem-vákuum garancia megtartásával (a `passed: 0` nem
+illeszkedik, és a `controls: PASS` legalább egy `ok`-sort követel maga előtt).
+
+**A harmadik, `route-classify`, KIZÁRÁSRA került, és ez a fontosabb döntés:** élő helyi modell
+nélkül `SKIP`-et ír és NULLA esetet futtat -- a saját dokumentált first-run viselkedése. Bekötve
+vagy minden Ollama-mentes gépen hard-fail lenne, vagy -- ami rosszabb -- meg kellett volna tanítani
+az elfogadott alakoknak, hogy egy SKIP az pass. Az utóbbi pontosan azt a "zöld, de sose futott"
+olvasatot vezetné be, aminek a kizárására az egész fájl készült. Nincs bekötetlenül hagyva: a
+`route-classify.sh` és a `local-llm-rag.sh` is hivatkozik rá, és élő modellel kézzel fut.
+
+**Mérés:** a felfedező teszt 48-ról 60 zöld esetre nőtt; a módosított hivatkozású két tesztfájl
+(llm-catalog-contract, local-llm-bench-state) 23 zöld.
+
+**Ki döntött:** backend (a lelet a 0c473a5e során, majd az egységesítés + guard + a SKIP kizárása,
+méréssel); MikroB nyitotta a kártyát a leletre.
+
+**Hivatkozás:** kártya `0ebeff55`; `src/__tests__/store-selftests-all-run.test.ts`, `store/*.selftest.{sh,py}`.

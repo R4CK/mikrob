@@ -426,7 +426,7 @@ NODE
   # It exists because five rounds of keyword fixes could not close the class: Cybersec produced five
   # real RBAC questions ("Restrict the payroll export to the finance team", "Give admins the ability
   # to impersonate a user") that name no security noun and no list caught. The classifier's own
-  # numbers live in store/route-classify-selftest.sh and are measured at temperature 0 -- the
+  # numbers live in store/route-classify.selftest.sh and are measured at temperature 0 -- the
   # pre-2026-08-14 figures were single draws from a sampling model and were discarded.
   #
   # The guard tests -f, not -x (Cybersec F4): the call below is `bash <script>`, which needs a

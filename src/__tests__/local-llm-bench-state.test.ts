@@ -1,7 +1,7 @@
 // "Installed" vs "measured on this hardware" (card d730070e).
 //
 // The catalogue schema carried installedAt and benchmarkedAt from the start, both hardcoded to null
-// -- store/llm-catalog-selftest.py even asserted they always would be. Two fields, no state behind
+// -- store/llm-catalog.selftest.py even asserted they always would be. Two fields, no state behind
 // them, so nothing could tell a benchmarked model from one downloaded a minute ago. This suite
 // covers the state that now backs them, and the three places it has to survive: the writer (bash),
 // the reader (module), and the status endpoint the UI actually consumes.

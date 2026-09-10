@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# route-classify-selftest.sh -- acceptance for the two-stage router (card 05f8d99c).
+# route-classify.selftest.sh -- acceptance for the two-stage router (card 05f8d99c).
 #
 # Cybersec's acceptance requirement, verbatim: the five regression sentences, at least two negative
 # controls, and a BEFORE/AFTER measurement on the same sentence set. Their methodological point is

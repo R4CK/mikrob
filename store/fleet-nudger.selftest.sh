@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fleet-nudger-selftest.sh -- controls for fleet-nudger.sh's GATE predicate (card 14acfadd).
+# fleet-nudger.selftest.sh -- controls for fleet-nudger.sh's GATE predicate (card 14acfadd).
 #
 # WHY THIS EXISTS. The nudger decides who gets woken, and its old gate predicate was
 # `any waiting card exists` -- permanently true on this board (70 waiting cards, 49 of them
@@ -14,7 +14,7 @@
 # agents with no tmux session or a busy pane -- real behaviour, but live state that would make these
 # controls flap depending on who happens to be working.
 #
-# Usage: store/fleet-nudger-selftest.sh          (exit 0 = PASS, 1 = FAIL)
+# Usage: store/fleet-nudger.selftest.sh          (exit 0 = PASS, 1 = FAIL)
 # No secrets, no writes outside a temp dir, and it never touches the live dashboard.
 set -uo pipefail
 
