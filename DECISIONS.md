@@ -11997,3 +11997,56 @@ kontra `created_at` szűrő szétválasztása, méréssel).
 
 **Hivatkozás:** kártya `0c473a5e` (szülő `4df3e8e8`); `store/route-check-audit.sh`,
 `store/route-check-audit.selftest.sh`, `seed-scheduled-tasks/heartbeat-consolidated/SKILL.md`.
+
+## 2026-09-10 -- A needs_manual_review lista 991 helyett 218: a git-bizonyíték ellenőrzés egy repót nézett (kártya 4916687a)
+
+**Kontextus:** a `strict-recheck-20260909` a SUMMARY.md saját szövege szerint "against `git log --all
+--format=...` (full history, all branches)" dolgozott -- EGYES számban. Az a git log azé a repóé volt,
+amelyikben a script futott (marveen). A CleanCore klón sose lett megnyitva, ezért minden CleanCore-
+kártya `own_id_in_git=False`-t kapott, függetlenül attól, hogy a munkája kész és landolt-e. Erre a
+listára támaszkodott a három triázs-köteg (036a0913 / 7da45e54 / 73ba1567) mint "mi az, ami mögött
+tényleg nincs semmi".
+
+**Mérés (backend, 2026-09-10):** a 991 kártyából **736 explicit hivatkozott** ("card <id>" alakú
+idézés egy commit-üzenetben), 37 csak puszta említés, és **218 valóban idézetlen**. A korábban
+`own_id_in_git=False`-nak jelölt kártyák közül **522** hivatkozott -- 99%-uk kizárólag a CleanCore-
+ban. A marveen oldalon az eszköz gyakorlatilag hibátlan volt (3 eset), tehát ez egy hiányzó repó,
+nem rossz illesztő. A valós "nincs semmi mögötte" halmaz tehát 218, nem 991.
+
+**Döntés:** `store/nmr-git-evidence.py` MINDKÉT repót olvassa, és a kimenete HÁROM ADDITÍV
+kategória (`cited_strict` / `cited_loose` / `uncited`), nem egy szűrt igen-nem.
+
+**Miért additív, és nem szűrés:** a flotta már megfizette a szűrés árát. A testvér-kötegek laza
+substring-illesztéssel és 100 karakteren csonkolt CÍMMEL dolgoztak a teljes leírás helyett, és a QA
+53%-os hibaarányt mért a lezárt kártyákon. Egy hamis pozitívokra hangolt szűrő a valódi leleteket is
+megöli; a besorolás viszont csökkenti az emberi átnézendő halmazt anélkül, hogy döntene helyette.
+
+**A megfordított hibairány, amit külön ki kell zárni:** egy kanban-azonosító 8 hex karakter, és egy
+rövidített commit-azonosító is az. Egy puszta hex-keresés tehát "hivatkozottnak" jelenti azt a
+kártyát, aminek a jegye csak egy commit-azonosítóban fordult elő -- ez a flottát már megégette
+("kanban ids are read as commit shas"). A `cited_loose` ág ezért kihagyja azt az azonosítót, ami
+egyben valamelyik commit rövidített azonosítója. A konzervatív irány: elrejthet egy valódi
+hivatkozást, de nem tud kitalálni egyet, és a kitalált hivatkozás a drágább hiba.
+
+**Fail-closed:** ha a CleanCore történet nem olvasható, a script MEGTAGADJA a riportot (exit 3) --
+egy meg nem nyitott repóból számolt magabiztos "nincs bizonyíték" pontosan az a hiba, amit ez a
+kártya javít.
+
+**Amit a szám NEM jelent:** "hivatkozott" nem egyenlő azzal, hogy "kész". Azt jelenti, hogy létezik
+munka, ami megnevezi a kártyát -- pont az a kérdés, amit a strict-recheck rosszul válaszolt meg. A
+készség kártyánkénti kérdés marad. Ismert vak folt, amit a script sem old meg: ha a munka MÁS kártya
+azonosítója alatt landolt, ez az eszköz sem találja meg (f923328d munkája a gyerek `b4404ed2` alatt,
+41aef3f0-é `ccc2c742` alatt van commitolva -- mindkettő `uncited` marad, helyesen).
+
+**Mérés a helyességre:** 6 selftest-eset zölden, mutáció-tesztelve. A CleanCore-dump eltávolítása 5
+esetet buktat, a megtagadás eltávolítása 1-et, a laza/szigoru osszevonas 1-et. A mutáció-tesztelés
+egy VÁKUUM-ESETET is talált a saját suite-omban: a commit-azonosító elleni védelem esete TELJES
+40 karakteres azonosítót idézett, amit a szó-határ amúgy is kizár, tehát a védelem kikapcsolva is
+zölden állt. Az eset most RÖVIDÍTETT azonosítót idéz (az az alak, amit valóban írnak a commit-
+üzenetekbe), és bizonyítottan bukik a védelem nélkül.
+
+**Ki döntött:** MikroB (a kártya megnyitása a backend leletére); backend (az additív besorolás, a
+rövidített-azonosító kizárás és a fail-closed megtagadás, méréssel).
+
+**Hivatkozás:** kártya `4916687a`; `store/nmr-git-evidence.py`, `store/nmr-git-evidence.selftest.py`,
+`store/nmr-git-evidence-20260910.jsonl` (a 991 soros riport).
