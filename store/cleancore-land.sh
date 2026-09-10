@@ -46,6 +46,10 @@ MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
 TSC_TIMEOUT="${TSC_TIMEOUT:-900}"
 CACHE_DIR="${CLEANCORE_LAND_CACHE:-$HOME/.cache/cleancore-land}"
 say() { echo "  $*"; }
+# Prettier's `--check` prints one `[warn] <path>` line per unclean file and then a `[warn] Code style
+# issues found...` SUMMARY line, which is not a path. Named and selftested rather than inlined,
+# because reading that summary as a path is how a refusal ends up naming a file nobody can find.
+fmt_bad_files() { sed -n 's/^\[warn\] //p' | grep -v '^Code style issues found' || true; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 
 # Measurement helpers (link_node_modules / norm_errors / typecheck_errors / test_failures) live in
@@ -254,6 +258,20 @@ if [ "${1:-}" = "--selftest" ]; then
   # cannot end up testing different things about the same code.
   downward_selftest_cases
   # Conflict-marker check (card 4b4c89eb) -- same sharing reason.
+  # fmt_bad_files (card 3bfb133e): prettier's own output shape, including the summary line that is
+  # NOT a path -- the one piece of this check that can silently misreport.
+  t "names the unclean file" \
+    "$(printf '[warn] DECISIONS.md\n[warn] Code style issues found in the above file. Run Prettier with --write to fix.\n' | fmt_bad_files)" \
+    "DECISIONS.md"
+  t "the summary line is never reported as a path" \
+    "$(printf '[warn] Code style issues found in the above file. Run Prettier with --write to fix.\n' | fmt_bad_files | wc -l)" \
+    "0"
+  t "clean output yields nothing" \
+    "$(printf 'Checking formatting...\nAll matched files use Prettier code style!\n' | fmt_bad_files | wc -l)" \
+    "0"
+  t "reports every unclean file, not just the first" \
+    "$(printf '[warn] a.md\n[warn] b.ts\n[warn] Code style issues found in the above files. Run Prettier with --write to fix.\n' | fmt_bad_files | wc -l)" \
+    "2"
   conflict_marker_selftest_cases
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
@@ -516,6 +534,49 @@ if [ -n "$CONFLICT_MARKERS" ]; then
   exit 4
 fi
 say "no merge-conflict markers in the merge result"
+
+# POST-MERGE FORMAT CHECK (card 3bfb133e). The formatting pre-commit hook does cover .md, but it runs
+# on a COMMIT -- and a landing's merge commit is not one. So nothing looked at the merge RESULT,
+# which is the only artefact CI ever sees.
+#
+# Measured twice on 2026-09-10, and the second time is the reason this is not cosmetic. First, two
+# append-only branches merged and left blank lines around DECISIONS.md headings that NEITHER SIDE
+# had, turning Static gates red on main. Then every branch's own pre-commit hook applied the same
+# mid-file repair -- which broke try_append_union's purely-append precondition, so the next
+# concurrent landing hit a hard conflict instead of an automatic union. One unchecked merge result
+# became a conflict for someone else.
+#
+# ONLY the files the merge changes, and DELIBERATELY no baseline exemption -- unlike the typecheck
+# above, which tolerates errors inherited from main. That tolerance is right there because a red
+# main is a normal, survivable state for tsc. Formatting is not like that: CI's format:check is
+# repo-wide, so a single unclean file anywhere already means Static gates is red for everyone.
+# There is no healthy-main-with-inherited-format-errors state worth protecting, and the repair is
+# one command.
+FMT_FILES="$(git -C "$WT" diff --name-only "$BASE..HEAD" \
+  | grep -E '\.(ts|tsx|js|jsx|cjs|mjs|json|md|yml|yaml|css|scss|html)$' || true)"
+if [ -z "$FMT_FILES" ]; then
+  say "format: no formattable file changed by the merge"
+else
+  # Only when the typecheck above did not already do it -- calling twice is harmless but prints a
+  # second "linked N node_modules" line, and a duplicated line in a landing log reads like a retry.
+  FMT_BIN="$WT/node_modules/.bin/prettier"
+  [ -x "$FMT_BIN" ] || link_node_modules "$WT"
+  if [ ! -x "$FMT_BIN" ]; then
+    # Said out loud on purpose. A silent skip is the exact failure this check exists to end.
+    say "format: SKIPPED -- no prettier in the merge worktree; the merge result was NOT format-checked"
+  else
+    FMT_BAD="$(printf '%s\n' "$FMT_FILES" | (cd "$WT" && xargs -r "$FMT_BIN" --check 2>&1) | fmt_bad_files)"
+    if [ -n "$FMT_BAD" ]; then
+      echo "REFUSED: the MERGE RESULT is not Prettier-clean. CI's format:check is repo-wide, so this"
+      echo "         would turn Static gates red for everyone. Nothing pushed."
+      printf '%s\n' "$FMT_BAD" | sed 's/^/    /'
+      echo "         Fix on the BRANCH (prettier --write those files), commit, re-gate, re-land."
+      rm -f "${MERGE_ERR:-}" 2>/dev/null
+      exit 4
+    fi
+    say "format: the merge result is Prettier-clean ($(printf '%s\n' "$FMT_FILES" | wc -l) file(s) checked)"
+  fi
+fi
 
 if [ "$DRY" = "--dry-run" ]; then say "DRY-RUN: not pushing"; rm -f "${MERGE_ERR:-}" 2>/dev/null; exit 0; fi
 
