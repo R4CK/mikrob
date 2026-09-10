@@ -2112,6 +2112,61 @@ const WRAPPER_POSITION_BARE_SHELL_RX = new RegExp(
 // exactly as unquoteWord leaves it literal.
 const QUOTED_LITERAL_RX = /\$'|'([^']*)'|"((?:\\.|[^"\\])*)"/g
 
+// ROUND 7 (Cybersec, card ec20dd23, delta-gate NO-GO): the block below extracted only QUOTED
+// literals, so the very same payload walked past it by simply DROPPING the quotes. Measured, same
+// payload, same shapes: `echo <sched> -r | sh` ALLOW vs `echo '<sched> -r' | sh` DENY -- and the
+// same split on `| bash` and on `bash <(echo ...)`. `echo`/`printf` write their ARGUMENTS to
+// stdout whether or not those arguments are quoted, so the argument tail is executable text by
+// exactly the reasoning the quoted-literal path already accepts. The quoting was never the thing
+// that made it dangerous; it was only the thing the scan happened to be able to see.
+//
+// The option run is stripped rather than kept because SCHEDULER_RX anchors at a COMMAND position:
+// measured, `<sched> -r` denies but `-n <sched> -r` ALLOWS. Capturing echo's own flags verbatim
+// would therefore have left `echo -n <sched> -r | sh` open as a fresh bypass OF THIS VERY FIX.
+// bash drops those flags before writing, so the scan has to as well. Stripping happens AFTER
+// unquoteWord, so a quoted flag (`echo '-n' <sched> -r`) is stripped too -- bash's echo builtin
+// tests the argument's VALUE, not its quoting.
+//
+// Terminators are the characters that end echo's argument list in the shapes this block guards
+// (`|` for the pipe, `)` for the process substitution, plus the ordinary separators). A quote
+// containing one of them truncates the tail; deliberately not worked around, because the
+// quoted-literal path above already covers quoted content -- this path exists for the BARE word.
+//
+// The round-4 invariant is untouched: this only widens what gets EXTRACTED, never what counts as
+// dangerous once extracted. The DENY still requires the extracted string to match a recognised
+// pattern on its own, which is why `echo hello world | sh` stays allowed.
+//
+// DoS: one anchor plus ONE greedy pass over a disjoint negated class -- no nested quantifier, no
+// lazy filler, nothing for the engine to retry per position. Same shape rounds 1-3 and 6
+// converged on for this file, not a new construct. ECHO_OPTION_RUN's alternatives each consume at
+// least one character (a space run, or a literal `-`), so its outer `*` cannot spin on empty.
+const ECHO_TAIL_RX = new RegExp(
+  String.raw`${WRAPPER_POSITION}(?:sudo\s+|env\s+|command\s+|exec\s+)*(?:echo|printf)\b([^|;&()<>\n` + '`' + String.raw`]*)`,
+  'g',
+)
+// The tail is split into WORDS and unquoted PER WORD, then rejoined with single spaces -- which is
+// what echo actually writes. unquoteWord is a single-WORD unquoter (its bare branch is a run of
+// non-space, non-quote, non-operator characters, and it BREAKS at the first character that branch
+// rejects), so handing it the whole space-separated tail returns the EMPTY STRING and silently
+// extracts nothing. Measured during this fix, not reasoned about afterwards: the first cut did
+// exactly that, and every one of the reported bypasses stayed ALLOW while the code looked patched.
+//
+// Splitting per word is also what makes the mixed forms fall out for free -- a binary name spelled
+// with an adjacent quoted piece, or with an ANSI-C-quoted piece, reaches unquoteWord as ONE word,
+// which is the input shape it was built for (adjacent-piece joining, escape decoding) rather than
+// a second copy of that grammar living here.
+//
+// The word pattern's three alternatives are disjoint on their first character, so no position has
+// two ways to match and there is nothing to retry -- the same non-backtracking shape as the
+// quoted-literal scanner above.
+const ECHO_ARG_WORD_RX = /(?:[^\s'"]|'[^']*'|"(?:\\.|[^"\\])*")+/g
+// bash's echo accepts ONLY -n/-e/-E and their combinations; printf also takes `--`. Deliberately
+// NOT "any dash-word": bash prints an unrecognised flag such as -x verbatim, so stripping that
+// would invent an over-block, while stripping the real ones is REQUIRED -- measured, a bare
+// scheduler word denies but the same word behind an echo flag allows, so a kept flag would be a
+// live bypass of this very fix.
+const ECHO_OPTION_WORD_RX = /^(?:-[neE]+|--)$/
+
 /** One level of "what would a shell run that is not this text itself": the argument of a `-c` shell
  *  or of `eval`, and -- only when something in the pipeline runs a program from stdin -- the quoted
  *  literals that would be fed to it. Every result is a proper substring of the input, so the caller
@@ -2144,6 +2199,14 @@ export function executableStrings(command) {
       }
       const lit = q[1] ?? q[2]
       if (lit && lit !== text) out.push(lit)
+    }
+    ECHO_TAIL_RX.lastIndex = 0
+    let e
+    while ((e = ECHO_TAIL_RX.exec(text)) !== null) {
+      const words = (e[1].match(ECHO_ARG_WORD_RX) ?? []).map(unquoteWord)
+      while (words.length > 0 && ECHO_OPTION_WORD_RX.test(words[0])) words.shift()
+      const tail = words.join(' ')
+      if (tail && tail !== text) out.push(tail)
     }
   }
   return out
