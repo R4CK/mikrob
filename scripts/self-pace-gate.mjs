@@ -2025,7 +2025,15 @@ const HERESTRING_RX = new RegExp(
 //
 // Extra weight on this one: the sibling card 442f3289 removed the quote from its position grammar
 // citing precisely this handling, so leaving the hole open would have cost two cards' protection.
-const PROC_SUB_SHELL = String.raw`${WRAPPER_POSITION}(?:sudo\s+|env\s+)*${SHELL_NAME}${HERESTRING_FILLER}<\(`
+// ROUND 8 (Cybersec delta-gate, card ec20dd23): `source <(...)` and `. <(...)` run the FIFO's
+// contents in the CURRENT shell, so the proc-sub branch has to recognise those two builtins as a
+// command position exactly as it recognises a shell name. That this was an oversight rather than a
+// decision is settled by HERESTRING_RX one screen up: it ALREADY carries the same two builtins on
+// the `<<<` path. Same builtins, same exec class, one branch simply missed them -- the asymmetry
+// between the two lines was the evidence, and this file's standing lesson is that duplicated
+// grammar knowledge drifts apart in exactly this way. Unlike the herestring form there is no
+// `/dev/stdin` here: the process substitution IS the argument.
+const PROC_SUB_SHELL = String.raw`${WRAPPER_POSITION}(?:sudo\s+|env\s+)*(?:${SHELL_NAME}|(?:source|\.)\s+)${HERESTRING_FILLER}<\(`
 // The xargs branch used to run `[^|]*?${PATH_PREFIX}` -- an unbounded lazy filler immediately
 // followed by PATH_PREFIX's own independently-backtracking optional group. On a long run with no
 // `/` (so PATH_PREFIX's group can never close), PATH_PREFIX fails at EVERY one of the ~n positions
@@ -2063,7 +2071,8 @@ const PROC_SUB_SHELL = String.raw`${WRAPPER_POSITION}(?:sudo\s+|env\s+)*${SHELL_
 // (n=1000000 -> see stdin-shell-rx-xargs-quadratic.test.ts).
 const XARGS_FILLER = String.raw`(?:\\\||[^|])*?`
 const STDIN_SHELL_RX = new RegExp(
-  String.raw`\|\s*(?:sudo\s+|env\s+)*${PATH_PREFIX}${SHELL_ALTERNATION}\b(?!\s*-[a-zA-Z]*c\b)` +
+  String.raw`\|\s*(?:sudo\s+|env\s+)*(?:${PATH_PREFIX}${SHELL_ALTERNATION}\b(?!\s*-[a-zA-Z]*c\b)` +
+    String.raw`|(?:source|\.)\s+\/dev\/stdin)` +
     String.raw`|\bxargs\b${XARGS_FILLER}${SHELL_ALTERNATION}\b` +
     `|${PROC_SUB_SHELL}`,
 )
@@ -2141,7 +2150,7 @@ const QUOTED_LITERAL_RX = /\$'|'([^']*)'|"((?:\\.|[^"\\])*)"/g
 // converged on for this file, not a new construct. ECHO_OPTION_RUN's alternatives each consume at
 // least one character (a space run, or a literal `-`), so its outer `*` cannot spin on empty.
 const ECHO_TAIL_RX = new RegExp(
-  String.raw`${WRAPPER_POSITION}(?:sudo\s+|env\s+|command\s+|exec\s+)*(?:echo|printf)\b([^|;&()<>\n` + '`' + String.raw`]*)`,
+  String.raw`${WRAPPER_POSITION}(?:sudo\s+|env\s+|command\s+|exec\s+)*(echo|printf)\b([^|;&()<>\n` + '`' + String.raw`]*)`,
   'g',
 )
 // The tail is split into WORDS and unquoted PER WORD, then rejoined with single spaces -- which is
@@ -2203,10 +2212,26 @@ export function executableStrings(command) {
     ECHO_TAIL_RX.lastIndex = 0
     let e
     while ((e = ECHO_TAIL_RX.exec(text)) !== null) {
-      const words = (e[1].match(ECHO_ARG_WORD_RX) ?? []).map(unquoteWord)
+      const words = (e[2].match(ECHO_ARG_WORD_RX) ?? []).map(unquoteWord)
       while (words.length > 0 && ECHO_OPTION_WORD_RX.test(words[0])) words.shift()
       const tail = words.join(' ')
       if (tail && tail !== text) out.push(tail)
+      // ROUND 8 (Cybersec delta-gate): printf is NOT echo. Its first remaining word is the FORMAT
+      // and every later argument is substituted INTO it, reusing the format until the arguments run
+      // out -- so the arguments ALONE are a line printf can emit, with the format's own text (a
+      // conversion like %s, a newline) never appearing between them. Round 7 pushed only the whole
+      // tail, which leaves the conversion sitting in command position and the real binary in
+      // argument position, where the anchored check correctly ignores it.
+      //
+      // ADDITIVE, not a replacement: the format itself is emitted too, so `printf <binary>` (format
+      // only, no arguments) must stay denied -- dropping the first word unconditionally would have
+      // turned that existing DENY into an ALLOW. Both readings are pushed and each is judged on its
+      // own. Not applied to echo, where every argument is written verbatim: there, dropping the
+      // first word would invent an over-block for text the shell never runs as a command.
+      if (e[1] === 'printf' && words.length > 1) {
+        const substituted = words.slice(1).join(' ')
+        if (substituted && substituted !== text) out.push(substituted)
+      }
     }
   }
   return out
