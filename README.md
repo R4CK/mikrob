@@ -109,6 +109,8 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 
 ### Kvóta, terhelés és kontextus-menedzsment
 
+- **Kvóta-kiesés csendje**: kvóta-leálláskor a rendszer nem ismételgeti percenként ugyanazt. A vészmódú Ghost nem próbálgatja a visszatérést, amíg a reset ismert időpontja messze van, az ütemező kimaradás-jelzése pedig időkorláttal megy ki, és az összevont jelzés megmondja, hány ismétlés helyett áll. Ha a reset ideje nem ismert vagy hibás, minden visszaáll a folyamatos ellenőrzésre.
+
 - **Kvóta-menedzsment, két rendszerben**: az 5 órás session-limit figyelése auto-resume-mal a valós reset-időre, plusz egy heti-százalék rendszer egyetlen forrásból, ami küszöbönként előbb az új kártya-dispatchet állítja le, majd olcsóbb modellre vagy lokális draftra tereli a munkát.
 - **CostOps + heti-limit gauge**: havi költség-főkönyv saját dashboard-oldallal, plusz egy heti Claude-limit százalék-mutató, amit egy izolált credential-tárból futó szonda olvas ki automatikusan.
 - **Heti-% modell-lépcső, per-ügynök**: ahogy a heti keret fogy, minden szerep-ügynök egy lépcsővel lejjebb lép a modell-létrán a SAJÁT bázisáról, tehát a munka nem áll le, csak olcsóbban fut. A létra egyetlen forrásból jön.
