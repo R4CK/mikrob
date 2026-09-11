@@ -337,7 +337,15 @@ for a in ${ARGS[@]+"${ARGS[@]}"}; do
 done
 WORKER_ARGS=()
 if [ "$caller_set_max_workers" -eq 0 ]; then
-  # --minWorkers IS NOT OPTIONAL HERE, and leaving it out is not a style choice: vitest 2.1.9
+  # --minWorkers IS NOT OPTIONAL HERE, and the reason is the VITEST MAJOR, not this repo's config.
+  # Measured (Cybered, card 7bb39672): CleanCore runs vitest 3.2.6, where cleancore-suite-run.sh's
+  # bare --maxWorkers has been fine for months; marveen pins 2.1.9, where minThreads keeps its
+  # core-count default and then exceeds maxThreads. The pattern was copied between the two repos
+  # with nothing tying it to a version. WHEN THE VITEST MAJOR BUMP LANDS (2 -> 4, its own card),
+  # RE-MEASURE THIS LINE rather than carrying it over: stating both bounds is correct on both
+  # majors today, but the defaults that make it necessary are exactly what a major changes.
+  #
+  # The concrete failure, so nobody re-derives it: vitest 2.1.9
   # rejects a bare --maxWorkers in this repo with
   #   RangeError: options.minThreads and options.maxThreads must not conflict
   # and exits 1 having run NOTHING ("Test Files no tests"). Measured directly, outside this script:

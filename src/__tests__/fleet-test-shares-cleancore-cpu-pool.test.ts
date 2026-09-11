@@ -19,7 +19,7 @@
 // never holds the tree lock uselessly while still queueing for CPU capacity.
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { readFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -400,4 +400,75 @@ describe('fleet-test.sh behaviourally contends with cleancore-suite-run.sh\'s ow
     expect(stderr).not.toMatch(/no shared CPU slot after/)
     expect(stderr).toMatch(/another suite run holds the fleet lock/)
   }, 10000)
+})
+
+
+// Card 7bb39672, Cybered's delta request -- and the gap that let the outage land.
+//
+// Everything above is a SOURCE contract: it proves the cap is composed and reaches the invocation
+// lines. It cannot prove vitest ACCEPTS it, and that is precisely what went wrong: a bare
+// --maxWorkers is valid on vitest 3.x (where cleancore-suite-run.sh's copy of this pattern has run
+// for months) and is REJECTED on the 2.1.9 this repo pins, because minThreads keeps its core-count
+// default and then exceeds maxThreads. The flag was passed, the runner refused it, every fleet-test
+// run exited 1 having collected nothing, and the contract suite stayed green throughout. Cybered's
+// own harness could not see it either -- it proved argument passing with a stub npx, and a stub
+// accepts everything.
+//
+// So this case LAUNCHES THE REAL vitest with the flags the script actually composes, in a throwaway
+// project with one trivial test. Deliberately NOT through fleet-test.sh: that would reset and
+// rebuild a whole tree, take a shared CPU slot this very suite may already hold, and recurse. The
+// conflict lives in vitest's own pool defaults, not in this repo's config -- measured: it
+// reproduces in a bare temp project -- so a temp project is enough to catch it, and is seconds.
+//
+// The flags are READ OUT OF THE SCRIPT, never hardcoded here. A copy would pass while the script
+// drifted, which is the same class of blindness this case exists to close.
+describe('the composed worker cap is a flag vitest ACCEPTS, not merely one we pass (card 7bb39672)', () => {
+  const flagsFromScript = (): string[] => {
+    const line = readFileSync(SCRIPT, 'utf-8')
+      .split('\n')
+      .find((l) => /WORKER_ARGS=\(/.test(l) && !/WORKER_ARGS=\(\)/.test(l))
+    if (!line) throw new Error('no WORKER_ARGS assignment found in fleet-test.sh')
+    const inner = line.slice(line.indexOf('(') + 1, line.lastIndexOf(')'))
+    // $MAX_WORKERS is a shell expansion; any positive integer exercises the same pool check.
+    return inner
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((tok) => tok.replace(/^"|"$/g, ''))
+      .map((tok) => (tok.includes('$') ? '2' : tok))
+  }
+
+  const runVitestWith = (flags: string[]): { status: number; out: string } => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-pool-probe-'))
+    try {
+      writeFileSync(join(dir, 'a.test.ts'), "import { it, expect } from 'vitest'\nit('t', () => expect(1).toBe(1))\n")
+      const bin = join(ROOT, 'node_modules', '.bin', 'vitest')
+      try {
+        const out = execFileSync(bin, ['run', '--root', dir, ...flags], {
+          encoding: 'utf-8',
+          stdio: 'pipe',
+          timeout: 120_000,
+        })
+        return { status: 0, out }
+      } catch (e) {
+        const err = e as { status?: number; stdout?: string; stderr?: string }
+        return { status: err.status ?? 1, out: `${err.stdout ?? ''}${err.stderr ?? ''}` }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it("vitest starts its pool with the script's own flags", () => {
+    const r = runVitestWith(flagsFromScript())
+    expect(r.out).not.toMatch(/must not conflict/)
+    expect(r.status).toBe(0)
+  })
+
+  it('NEGATIVE CONTROL: a lone --maxWorkers is what the pool rejects, so this case can fail', () => {
+    // Without this, the case above would pass just as happily against a vitest that accepts
+    // anything -- and "the runner accepts everything" is exactly the assumption that hid the
+    // outage. This pins that the probe can tell the two apart on THIS vitest.
+    const r = runVitestWith(['--maxWorkers', '2'])
+    expect(r.out).toMatch(/must not conflict/)
+  })
 })
