@@ -19,7 +19,7 @@ import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, 
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
-import { startUpdateChecker } from './web/update-checker.js'
+import { startUpdateChecker, UPDATE_CHECK_INTERVAL_MS } from './web/update-checker.js'
 import { refreshUserTurnIndex } from './web/user-turn-index.js'
 import { startScheduleRunner } from './web/schedule-runner.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
@@ -504,7 +504,12 @@ export function startWebServer(port = 3420): http.Server {
   }
 
   const updateCheckerInterval = webOnly ? undefined : startUpdateChecker()
-  if (!webOnly) logger.info('Update checker started (15min poll)')
+  if (!webOnly) {
+    // Derived, never restated (card 06bed89a): this line said '15min poll' for months after the
+    // interval became 6 hours, so the one place an operator looks when updates seem stale was
+    // the one place actively lying about the cadence.
+    logger.info(`Update checker started (${UPDATE_CHECK_INTERVAL_MS / 3_600_000}h poll)`)
+  }
 
   // Card ba0d218f: build the user-turn index in the BACKGROUND at boot. It is incremental, so only
   // the very first pass is expensive (measured: ~10s over 1.5 GB of transcripts, once); doing it here
