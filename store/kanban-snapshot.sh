@@ -16,6 +16,15 @@
 # heartbeat's documented buktato: sqlite3/jq are not guaranteed installed on
 # every fleet host).
 set -euo pipefail
+# Both outputs below are private (card 90e4cbdf, Cybersec sibling-check under e804262d). Same shape
+# as db-backup.sh: umask FIRST, so anything created here starts at 600, whatever the caller's umask.
+#
+# WHY IT LOOKED FINE AND WAS NOT: a `>` redirect keeps the mode of an ALREADY EXISTING file, so both
+# files read 600 today purely because they were first created by a hand-run with umask 077. Delete
+# either one and let the 15-minute OS cron recreate it -- cron runs with umask 022 and the new file
+# is silently 644. Latent, not exploited, and invisible to any check that only looks at what is
+# currently on disk.
+umask 077
 
 STORE=/home/neon/marveen/store
 INSTALL_DIR="$(cd "$STORE/.." && pwd)"
@@ -27,6 +36,10 @@ OUT="$INSTALL_DIR/KANBAN-SNAPSHOT.md"
 printf 'Authorization: Bearer %s\n' "$TOKEN" \
   | curl -H @- -s "http://localhost:$PORT/api/kanban" \
   > "$STORE/.kanban-snapshot-cards.json.tmp"
+# Belt and suspenders, the same argument db-backup.sh makes: umask governs CREATION only, so a
+# future caller that writes this path differently (or a pre-existing file with a looser mode) would
+# slip past it. This is the FULL /api/kanban dump -- every card title, description and comment.
+chmod 600 "$STORE/.kanban-snapshot-cards.json.tmp"
 
 python3 - "$STORE/.kanban-snapshot-cards.json.tmp" "$OUT" "$STORE/.dashboard-token" "$PORT" <<'PYEOF'
 import json, sys, time, urllib.request
@@ -127,5 +140,9 @@ with open(out_path, "w") as f:
 
 print(f"wrote {out_path} ({len(active)} active, {len(archived)} archived cards)")
 PYEOF
+
+# The python above opens $OUT with a plain open(..., "w"), which preserves an existing file's mode --
+# so this is not redundant with the umask either. It carries the board's contents and fresh comments.
+chmod 600 "$OUT"
 
 rm -f "$STORE/.kanban-snapshot-cards.json.tmp"
