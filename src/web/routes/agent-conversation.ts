@@ -2,11 +2,10 @@ import { existsSync, readdirSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { json } from '../http-helpers.js'
-import { agentDir } from '../agent-config.js'
+import { agentConfigRoot } from '../agent-config.js'
 import { resolveAgentConfigDir } from '../claude-plans.js'
 import { projectsDirFor } from '../active-model.js'
 import { isMainChannelsAgent } from '../main-agent.js'
-import { PROJECT_ROOT } from '../../config.js'
 import type { RouteContext } from './types.js'
 
 // Read-only, human-readable conversation view for an agent. The dashboard
@@ -43,13 +42,9 @@ const DEFAULT_LIMIT = 400
 // environment variable that is absent in production.
 const MAX_FILES_STATTED = Number(process.env.SESSION_STAT_SWEEP_CAP) || 5000
 
-function workingDirFor(name: string): string {
-  return isMainChannelsAgent(name) ? PROJECT_ROOT : agentDir(name)
-}
-
 function sessionsDirFor(name: string): string {
   const configDir = isMainChannelsAgent(name) ? undefined : (resolveAgentConfigDir(name).configDir ?? undefined)
-  return projectsDirFor(workingDirFor(name), configDir)
+  return projectsDirFor(agentConfigRoot(name), configDir)
 }
 
 /** Every session transcript for `name`, newest first. */
