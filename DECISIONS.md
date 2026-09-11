@@ -12374,3 +12374,68 @@ valódi hiány volt a tesztben:
 - a lemaradás-őr ellenőrzése csak SZÖVEGET nézett, ezért `if False:`-szel is zöld maradt. Mellé
   került egy VISELKEDÉSI eset, ami valódi repón futtatja a szkriptet, plusz egy pozitív kontroll
   (naprakész fán nem szabad lemaradást jelentenie).
+
+---
+
+## 2026-09-11 -- 0cb92d11 -- Watched-repos: a 28 "eldöntetlen" repóból 21-nek már volt döntése
+
+**Kiváltó ok.** Peti kérése (Telegram, 2026-09-11 06:19): a beépített repók frissességét
+ellenőrizni kell, és ami nincs beépítve, azt vagy beépíteni és alkalmazni, vagy elengedni és
+kivenni a listából. A `store/watched-repos.json` 38 bejegyzéséből 28 volt `enabled=false`.
+
+**A lelet: az `enabled=false` három különböző dolgot jelentett egyszerre**, és ez a nyilvántartás
+hibája volt, nem a repóké. A 28-ból 21-nek már volt döntése:
+
+- **13 ADOPTÁLT, csak más mechanizmus figyeli.** `code-review-graph` és `graphify` PyPI-verzió-
+  pinelt (pipx), tehát nem git-sha-alapú watch; további 11 vendorolt-külső a `~/.claude/external`
+  alatt, amit az `external-repos-daily-sync` tart frissen. Mérve 2026-09-11: mind a 11 klón
+  `FETCH_HEAD`-je a mai napra datált, a sync él. (A dispatch 2 kivételt nevezett meg; valójában 13
+  van ebben az osztályban.)
+- **6 korábban eldöntött**, amit a `note` mezője ki is mond: `mcp-compressor` (HOLD, Rust OSV
+  advisoryk), `andrej-karpathy-skills` (a négy kódminőségi alapelv beolvasztva a CLAUDE.md-be),
+  `gstack` és `claude-mem` (SKIP, duplikáció, kártya `7a6c376f`), `gauntlet-loop` ×2 (NO-OP).
+- **2 eldöntött a DECISIONS.md-ben, de a JSON-ban nem átvezetve:** `headroom` (kártya `241dbf87`
+  nemet mondott, a rést a `store/dash.py` zárta be) és `hermes-agent-self-evolution`
+  (referenciaként olvasva, kód nem átvéve).
+
+**Nyilvántartás-hiba, javítva.** A `DECISIONS.md` a `hermes-agent-self-evolution`-t korábban
+MIT-ként rögzítette. Ellenőrizve 2026-09-11: a repóban **nincs LICENSE fájl** (a GitHub
+`/license` endpoint 404, a gyökérben nincs LICENSE/COPYING). Kód nem lett átvéve, tehát kitettség
+nincs, de a dokumentált licenc téves volt, és **kód-átvétel innen tiltott marad**.
+
+**A hét valódi döntés** (licenc-első szűrés, élő GitHub-adat 2026-09-11):
+
+| repó | licenc | csillag | utolsó push | verdikt |
+|---|---|---|---|---|
+| `ai-boost/awesome-harness-engineering` | CC0-1.0 | 4131 | 2026-09-10 | **ADOPT** |
+| `NirDiamant/Agent_Memory_Techniques` | Apache-2.0 | 1046 | 2026-09-04 | **ADAPT** |
+| `gepa-ai/gepa` | MIT | 6514 | 2026-09-11 | DROP (pilot nélkül nem ADOPT) |
+| `wshobson/agents` | MIT | 39560 | 2026-09-07 | DROP (telítettség) |
+| `VoltAgent/awesome-claude-code-subagents` | MIT | 24998 | 2026-09-07 | DROP (telítettség) |
+| `selfimproving-agent/Awesome-Self-Improving-Agents` | MIT | 470 | 2026-09-04 | DROP (nem akcionálható) |
+| `rohitg00/awesome-claude-code-toolkit` | Apache-2.0 | 2608 | 2026-05-12 | DROP (4 hónap állás + duplikáció) |
+
+**Az elvi vonal, ami a DROP-okat egységesíti.** A watch-lista arra való, amit ténylegesen
+INTEGRÁLUNK (pinelt verzió, használt skill), nem olvasnivalóra. A 10. munkavégzési szabály a
+GitHub-keresést amúgy is előírja **a szükség pillanatában** -- az célzottabb és mindig frissebb,
+mint egy álló napi sync. Ezt a telítettség teszi kézzelfoghatóvá, mérve 2026-09-11: saját készlet
+18 agent + 152 globális skill; a már vendorolt és naponta szinkronizált referencia 846 `SKILL.md`
++ 436 agent-markdown csak a `claude-skills-alirezarezvani`-ban, plusz 97 + 121 a
+`claude-code-ultimate-guide`-ban. Egy ötödik agent-forrás állandó figyelése nem zár rést.
+
+**Miért mégis ADOPT az egyik.** Az `awesome-harness-engineering` az egyetlen jelölt, ami olyan
+témát fed le, amit a már szinkronizált 11 repó nem: harness-engineering (evals, megbízhatóság,
+permission-modellek, MCP-minták, memória). CC0, aktív, 904 KB.
+
+**`type=code`, szándékosan, nem `text`.** A repó 7 markdown és egy kép mellett tartalmaz egy
+futtatható `verify_urls.py`-t (244 sor, aiohttp-alapú README-link-ellenőrző). Sosem futtatjuk, de
+a `git-repo-watcher` osztályozásában a `code` azt jelenti, hogy a frissítés supply-chain reviewra
+van jelölve és nem alkalmazódik automatikusan. Fail-closed, mert a `text` szabad fast-forwardot
+engedne egy olyan repóra, amiben van végrehajtható fájl.
+
+**Amit a JSON-on változtattunk.** 38 -> 31 bejegyzés (8 kivéve, 1 hozzáadva), és minden megmaradt
+`enabled=false` bejegyzés kapott egy `enabled_reason` mezőt, hogy a státusz többé ne legyen
+olvasható "eldöntetlen"-ként. A mező additív; a fogyasztók (`git-repo-watcher.sh`,
+`src/web/routes/integrated-repos.ts`, `src/web/dashboard-settings.ts`) nevesített mezőket
+olvasnak. Ellenőrizve: a `GET /api/integrated-repos` 31 bejegyzést ad vissza, az új látszik, a
+kivettek eltűntek; `fleet-test.sh` a két érintett teszt-fájlra 14/14 zöld.
