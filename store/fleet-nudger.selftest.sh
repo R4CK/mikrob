@@ -29,7 +29,7 @@ import json
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-SCENARIO, PORT = sys.argv[1], int(sys.argv[2])
+SCENARIO, PORT_FILE = sys.argv[1], sys.argv[2]
 
 # Every waiting card is already answered by every gate -> nobody has work.
 ALL_ANSWERED = {
@@ -198,30 +198,74 @@ class H(BaseHTTPRequestHandler):
         self._send({'ok': True})
 
 
-HTTPServer(('127.0.0.1', PORT), H).serve_forever()
+# PORT 0: the kernel hands out a free one (card f3757cc7). This file used to take a HARDCODED port
+# from the caller (38811-38826), which made every case a fleet-wide singleton: two concurrent
+# marveen-land.sh runs both execute this selftest, both tried to bind the same number, and the loser
+# died with OSError [Errno 98] Address already in use -- a landing refused over a port, not a diff.
+# The real port is written back for the caller; the bind has already succeeded by the time it is
+# readable, so a caller that sees a number knows the socket is up.
+srv = HTTPServer(('127.0.0.1', 0), H)
+with open(PORT_FILE, 'w') as _f:
+    _f.write(str(srv.server_port))
+srv.serve_forever()
 PYEOF
 
-run_case() { # $1 = scenario, $2 = port, $3 = expected gate agents, $4 = field (default GATE-WORK)
-  local scen="$1" port="$2" want="$3" field="${4:-GATE-WORK}" pid got
-  python3 "$TMP/fakeboard.py" "$scen" "$port" &
-  pid=$!
+# ONE way to stand up a fake board (card f3757cc7).
+#
+# Every caller below used to inline the same three steps with its OWN hardcoded port number. That
+# duplication is not a style complaint: when the port became kernel-assigned, the change had to be
+# made in SEVEN places, and missing one did not fail loudly -- it left a board listening on an
+# ephemeral port while the caller curled the old fixed number, so the nudger saw an unreachable
+# board, printed nothing, and the case failed as "expected 'x', got ''". One starter means the next
+# change to how a board comes up happens once.
+#
+# Sets BOARD_PORT and BOARD_PID. Returns non-zero if the board never reported a port or never
+# answered -- callers must check, because an unreachable board makes the nudger print nothing, which
+# reads exactly like a legitimate "nobody was woken".
+board_n=0
+start_board() { # $1 = scenario -> BOARD_PORT, BOARD_PID
+  local portfile
+  board_n=$((board_n + 1))
+  portfile="$TMP/port-$board_n"
+  python3 "$TMP/fakeboard.py" "$1" "$portfile" &
+  BOARD_PID=$!
+  BOARD_PORT=""
   for _ in $(seq 1 40); do
-    curl -sf -o /dev/null "http://127.0.0.1:$port/api/kanban" && break
+    [ -s "$portfile" ] && BOARD_PORT="$(cat "$portfile")" && break
     sleep 0.25
   done
+  [ -n "$BOARD_PORT" ] || return 1
+  for _ in $(seq 1 40); do
+    curl -sf -o /dev/null "http://127.0.0.1:$BOARD_PORT/api/kanban" && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
+# Per-call counter. The state file used to be keyed on the PORT, which stopped being available when
+# the port became ephemeral (card f3757cc7) -- and the port was never the point: the invariant the
+# comment below describes is "isolated per CALL", which a counter states directly. It also survives
+# the same scenario being run twice for different fields (all-answered appears under both GATE-WORK
+# and GATE-TIER-MISSING), which is exactly the collision that comment warns about.
+case_n=0
+
+run_case() { # $1 = scenario, $2 = expected gate agents, $3 = field (default GATE-WORK)
+  local scen="$1" want="$2" field="${3:-GATE-WORK}" pid got port
+  case_n=$((case_n + 1))
   # An unreachable board makes the nudger exit early and print nothing, which would look exactly
   # like "nobody was woken" and pass two of the three cases for the wrong reason.
-  if ! curl -sf -o /dev/null "http://127.0.0.1:$port/api/kanban"; then
+  if ! start_board "$scen"; then
     echo "  FAIL $scen -- fake board never came up (the control would be vacuous)"
-    kill "$pid" 2>/dev/null; fail=1; return
+    kill "$BOARD_PID" 2>/dev/null; fail=1; return
   fi
+  port="$BOARD_PORT"; pid="$BOARD_PID"
 
   # Isolated per call (card bb1751f2's no-change precheck persists a fingerprint across runs) --
   # without this EVERY case here would default to the LIVE store/.fleet-nudger-state.json, both
   # corrupting the real cron job's persisted state AND letting one case's fingerprint silently
   # suppress the next case's decision (measured: identical placeholder card ids + absent
   # updated_at across these fixtures made every case after the first look like a no-op).
-  got="$(DASH="http://127.0.0.1:$port" NUDGER_STATE_FILE="$TMP/state-$scen-$port.json" bash "$NUDGER" --dry-run 2>/dev/null | sed -n "s/^${field}://p")"
+  got="$(DASH="http://127.0.0.1:$port" NUDGER_STATE_FILE="$TMP/state-$scen-$case_n.json" bash "$NUDGER" --dry-run 2>/dev/null | sed -n "s/^${field}://p")"
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
   [ "$(echo $got)" = "none" ] && got=""
   got="$(echo $got | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ *$//')"
@@ -231,23 +275,23 @@ run_case() { # $1 = scenario, $2 = port, $3 = expected gate agents, $4 = field (
 }
 
 echo "fleet-nudger gate-predicate controls"
-run_case one-open     38811 "cybered"   # positive: exactly the one agent that owes a verdict
-run_case all-answered 38812 ""          # negative: the case the card is about
-run_case no-review    38813 ""          # negative: parked card, nothing submitted
-run_case designated   38814 "qa qa2"    # designation: Gate: QA. excludes cybersec/cybered end-to-end
+run_case one-open "cybered"   # positive: exactly the one agent that owes a verdict
+run_case all-answered ""          # negative: the case the card is about
+run_case no-review ""          # negative: parked card, nothing submitted
+run_case designated "qa qa2"    # designation: Gate: QA. excludes cybersec/cybered end-to-end
 # The gate that already answered (even with a one-line out-of-scope note) drops out; the one that
 # has not still gets woken. Card 8e4e5b58.
-run_case out-of-scope 38826 "cybersec"
+run_case out-of-scope "cybersec"
 
 # MISSING TIER DECISION -> LOUD (card 50d75b47). Rule 4 makes the gate set a per-card DECISION; a
 # card with neither a label nor a Gate: line never had one made, and the pipeline used to be unable
 # to tell that apart from a deliberate default. These assert the new GATE-TIER-MISSING line.
 # all-answered is the load-bearing fixture: c1 carries no designation (reported) while c2 is
 # BLOKKOLT (a bound block is not gate work, so it must NOT appear) -- one case, both directions.
-run_case all-answered 38821 "c1" "GATE-TIER-MISSING"
-run_case designated   38822 ""   "GATE-TIER-MISSING"   # a Gate: line IS a decision
-run_case labeled      38823 ""   "GATE-TIER-MISSING"   # so is a gate label, with no line at all
-run_case no-review    38824 "c1" "GATE-TIER-MISSING"   # due at card open, not when a REVIEW lands
+run_case all-answered "c1" "GATE-TIER-MISSING"
+run_case designated ""   "GATE-TIER-MISSING"   # a Gate: line IS a decision
+run_case labeled ""   "GATE-TIER-MISSING"   # so is a gate label, with no line at all
+run_case no-review "c1" "GATE-TIER-MISSING"   # due at card open, not when a REVIEW lands
 
 # ENG-CONDITIONAL (MikroB decision, msg 9910, follow-up to card 14acfadd): backend/fullstack must
 # respect plan[a] the same way the gate loop respects designation -- "there is always a
@@ -255,8 +299,8 @@ run_case no-review    38824 "c1" "GATE-TIER-MISSING"   # due at card open, not w
 # fron-teddy ASSUME work by default (design-impl always has a next screen), but that assumption gets
 # its own precheck below (ENG-ALWAYS-WORK) rather than being asserted here -- this pair of runs is
 # ENG-WORK only, which only ever reports on the conditional pair.
-run_case eng-one-planned 38815 "backend"       "ENG-WORK"  # positive: only backend has a planned card
-run_case no-review       38816 ""              "ENG-WORK"  # negative: no planned card for either
+run_case eng-one-planned "backend"       "ENG-WORK"  # positive: only backend has a planned card
+run_case no-review ""              "ENG-WORK"  # negative: no planned card for either
 
 # ENG-ALWAYS precheck (msg 18241, 2026-08-20): fron-ted/fron-teddy's "always assume work" default
 # stopped meaning "never suppress" the moment their own backlog can genuinely run dry -- the real
@@ -264,13 +308,11 @@ run_case no-review       38816 ""              "ENG-WORK"  # negative: no planne
 # waiting+REVIEW. Three runs, one state file: fresh send, suppressed identical resend, and a real
 # verdict landing on the SAME card id (only updated_at moves) that must NOT be suppressed.
 ENG_ALWAYS_STATE_FILE="$TMP/eng-always-state.json"
-always_run() { # $1 = scenario, $2 = port -> sets ALWAYS_WORK / ALWAYS_UNCH
-  local pid
-  python3 "$TMP/fakeboard.py" "$1" "$2" &
-  pid=$!
-  for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:$2/api/kanban" && break; sleep 0.25; done
-  local out
-  out="$(DASH="http://127.0.0.1:$2" NUDGER_STATE_FILE="$ENG_ALWAYS_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null)"
+always_run() { # $1 = scenario -> sets ALWAYS_WORK / ALWAYS_UNCH
+  local pid port out
+  start_board "$1" || { echo "  FAIL $1 -- fake board never came up"; fail=1; return; }
+  pid="$BOARD_PID"; port="$BOARD_PORT"
+  out="$(DASH="http://127.0.0.1:$port" NUDGER_STATE_FILE="$ENG_ALWAYS_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null)"
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
   ALWAYS_WORK="$(echo "$out" | sed -n 's/^ENG-ALWAYS-WORK://p' | xargs)"
   ALWAYS_UNCH="$(echo "$out" | sed -n 's/^ENG-ALWAYS-UNCHANGED://p' | xargs)"
@@ -282,12 +324,12 @@ always_run() { # $1 = scenario, $2 = port -> sets ALWAYS_WORK / ALWAYS_UNCH
 # since its own card set never moves. Asserted together with fron-ted, not filtered out, because that
 # independence -- one agent's fingerprint never flips because of another agent's card -- is exactly
 # what per-agent (not shared) state is for.
-always_run eng-always-one-card 38827
+always_run eng-always-one-card
 if [ "$ALWAYS_WORK" = "fron-ted fron-teddy" ] && [ "$ALWAYS_UNCH" = "none" ]; then
   echo "  ok   eng-always precheck run 1 (fresh state) -> nudged 'fron-ted fron-teddy', nothing suppressed"
 else echo "  FAIL eng-always precheck run 1 -> work='$ALWAYS_WORK' unchanged='$ALWAYS_UNCH', expected 'fron-ted fron-teddy' / 'none'"; fail=1; fi
 
-always_run eng-always-one-card 38828
+always_run eng-always-one-card
 if [ "$ALWAYS_WORK" = "none" ] && [ "$ALWAYS_UNCH" = "fron-ted fron-teddy" ]; then
   echo "  ok   eng-always precheck run 2 (identical board) -> suppressed, nudge NOT resent"
 else echo "  FAIL eng-always precheck run 2 -> work='$ALWAYS_WORK' unchanged='$ALWAYS_UNCH', expected 'none' / 'fron-ted fron-teddy'"; fail=1; fi
@@ -296,7 +338,7 @@ else echo "  FAIL eng-always precheck run 2 -> work='$ALWAYS_WORK' unchanged='$A
 # while fron-teddy (untouched, zero cards throughout) stays suppressed. Proves the fingerprint is
 # genuinely per-agent, not one shared hash that a change to ANY always-agent's cards would re-arm for
 # all of them (which is exactly the bug class bb1751f2 fixed for the gate branch).
-always_run eng-always-card-verdict 38829
+always_run eng-always-card-verdict
 if [ "$ALWAYS_WORK" = "fron-ted" ] && [ "$ALWAYS_UNCH" = "fron-teddy" ]; then
   echo "  ok   eng-always precheck run 3 (verdict landed, same card id) -> fron-ted resent, fron-teddy still suppressed"
 else echo "  FAIL eng-always precheck run 3 -> work='$ALWAYS_WORK' unchanged='$ALWAYS_UNCH', expected 'fron-ted' / 'fron-teddy'"; fail=1; fi
@@ -305,20 +347,18 @@ else echo "  FAIL eng-always precheck run 3 -> work='$ALWAYS_WORK' unchanged='$A
 # pattern as the rest of this file -- a throwaway file, never the live setting.
 PRIO_FILE="$TMP/priority.json"
 echo '{"priority":["marveen-infra","cleancore"]}' > "$PRIO_FILE"
-python3 "$TMP/fakeboard.py" no-review 38817 &
-PRIO_PID=$!
-for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:38817/api/kanban" && break; sleep 0.25; done
-prio_out="$(DASH="http://127.0.0.1:38817" PROJECT_PRIORITY_CONFIG="$PRIO_FILE" NUDGER_STATE_FILE="$TMP/state-prio.json" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^PRIORITY-PROJECTS://p')"
+start_board no-review || { echo "  FAIL no-review -- fake board never came up"; fail=1; }
+PRIO_PID="$BOARD_PID"; PRIO_PORT="$BOARD_PORT"
+prio_out="$(DASH="http://127.0.0.1:$PRIO_PORT" PROJECT_PRIORITY_CONFIG="$PRIO_FILE" NUDGER_STATE_FILE="$TMP/state-prio.json" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^PRIORITY-PROJECTS://p')"
 kill "$PRIO_PID" 2>/dev/null; wait "$PRIO_PID" 2>/dev/null
 if [ "$prio_out" = "marveen-infra, cleancore" ]; then echo "  ok   priority config read, order preserved -> '$prio_out'"
 else echo "  FAIL priority config -> got '$prio_out'"; fail=1; fi
 
 # Missing/empty config -> "none", unchanged wording (already exercised implicitly by every case
 # above, none of which set PROJECT_PRIORITY_CONFIG -- this makes the "none" default explicit).
-python3 "$TMP/fakeboard.py" no-review 38818 &
-NOPRIO_PID=$!
-for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:38818/api/kanban" && break; sleep 0.25; done
-noprio_out="$(DASH="http://127.0.0.1:38818" PROJECT_PRIORITY_CONFIG="$TMP/does-not-exist.json" NUDGER_STATE_FILE="$TMP/state-noprio.json" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^PRIORITY-PROJECTS://p')"
+start_board no-review || { echo "  FAIL no-review -- fake board never came up"; fail=1; }
+NOPRIO_PID="$BOARD_PID"; NOPRIO_PORT="$BOARD_PORT"
+noprio_out="$(DASH="http://127.0.0.1:$NOPRIO_PORT" PROJECT_PRIORITY_CONFIG="$TMP/does-not-exist.json" NUDGER_STATE_FILE="$TMP/state-noprio.json" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^PRIORITY-PROJECTS://p')"
 kill "$NOPRIO_PID" 2>/dev/null; wait "$NOPRIO_PID" 2>/dev/null
 if [ "$noprio_out" = "none" ]; then echo "  ok   missing config -> none (default order, unchanged wording)"
 else echo "  FAIL missing config -> got '$noprio_out'"; fail=1; fi
@@ -328,12 +368,11 @@ else echo "  FAIL missing config -> got '$noprio_out'"; fail=1; fi
 # loud signal trains its reader to ignore it, and the whole point is that MikroB acts on it.
 # Its own fingerprint, deliberately not the gate one, so the two are asserted independently here.
 TIER_STATE_FILE="$TMP/tier-state.json"
-python3 "$TMP/fakeboard.py" all-answered 38825 &
-TIER_PID=$!
-for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:38825/api/kanban" && break; sleep 0.25; done
-tier1="$(DASH="http://127.0.0.1:38825" NUDGER_STATE_FILE="$TIER_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-TIER-MISSING://p')"
-tier2_missing="$(DASH="http://127.0.0.1:38825" NUDGER_STATE_FILE="$TIER_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-TIER-MISSING://p')"
-tier2_suppressed="$(DASH="http://127.0.0.1:38825" NUDGER_STATE_FILE="$TIER_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-TIER-SUPPRESSED://p')"
+start_board all-answered || { echo "  FAIL all-answered -- fake board never came up"; fail=1; }
+TIER_PID="$BOARD_PID"; TIER_PORT="$BOARD_PORT"
+tier1="$(DASH="http://127.0.0.1:$TIER_PORT" NUDGER_STATE_FILE="$TIER_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-TIER-MISSING://p')"
+tier2_missing="$(DASH="http://127.0.0.1:$TIER_PORT" NUDGER_STATE_FILE="$TIER_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-TIER-MISSING://p')"
+tier2_suppressed="$(DASH="http://127.0.0.1:$TIER_PORT" NUDGER_STATE_FILE="$TIER_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-TIER-SUPPRESSED://p')"
 kill "$TIER_PID" 2>/dev/null; wait "$TIER_PID" 2>/dev/null
 if [ "$(echo $tier1)" = "c1" ]; then echo "  ok   tier signal run 1 (fresh state) -> 'c1', reported"
 else echo "  FAIL tier signal run 1 -> got '$tier1', expected 'c1'"; fail=1; fi
@@ -347,11 +386,10 @@ else echo "  FAIL tier signal run 2 -> missing='$tier2_missing' suppressed='$tie
 # new comment bumping updated_at) must resend normally, proving the precheck is not a one-way switch
 # that silences the nudger forever.
 NUDGE_STATE_FILE="$TMP/nudge-state.json"
-python3 "$TMP/fakeboard.py" one-open 38819 &
-PRECHECK_PID=$!
-for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:38819/api/kanban" && break; sleep 0.25; done
-run1="$(DASH="http://127.0.0.1:38819" NUDGER_STATE_FILE="$NUDGE_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-WORK://p')"
-run2="$(DASH="http://127.0.0.1:38819" NUDGER_STATE_FILE="$NUDGE_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-WORK://p')"
+start_board one-open || { echo "  FAIL one-open -- fake board never came up"; fail=1; }
+PRECHECK_PID="$BOARD_PID"; PRECHECK_PORT="$BOARD_PORT"
+run1="$(DASH="http://127.0.0.1:$PRECHECK_PORT" NUDGER_STATE_FILE="$NUDGE_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-WORK://p')"
+run2="$(DASH="http://127.0.0.1:$PRECHECK_PORT" NUDGER_STATE_FILE="$NUDGE_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-WORK://p')"
 kill "$PRECHECK_PID" 2>/dev/null; wait "$PRECHECK_PID" 2>/dev/null
 if [ "$(echo $run1)" = "cybered" ]; then echo "  ok   no-change precheck run 1 (fresh state) -> 'cybered', full decision made"
 else echo "  FAIL no-change precheck run 1 -> got '$run1', expected 'cybered'"; fail=1; fi
@@ -364,10 +402,9 @@ else echo "  FAIL no-change precheck run 2 -> got '$run2', expected the no-op li
 # waiting card also happens to be id "c1" with no updated_at field, same as one-open's -- the
 # fingerprint is over (id, updated_at) pairs, so those genuinely collide with run1/run2's state
 # (this IS the mechanism working correctly, not a test bug -- caught while writing this control).
-python3 "$TMP/fakeboard.py" eng-one-planned 38820 &
-CHANGED_PID=$!
-for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:38820/api/kanban" && break; sleep 0.25; done
-run3="$(DASH="http://127.0.0.1:38820" NUDGER_STATE_FILE="$NUDGE_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-WORK://p')"
+start_board eng-one-planned || { echo "  FAIL eng-one-planned -- fake board never came up"; fail=1; }
+CHANGED_PID="$BOARD_PID"; CHANGED_PORT="$BOARD_PORT"
+run3="$(DASH="http://127.0.0.1:$CHANGED_PORT" NUDGER_STATE_FILE="$NUDGE_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null | sed -n 's/^GATE-WORK://p')"
 kill "$CHANGED_PID" 2>/dev/null; wait "$CHANGED_PID" 2>/dev/null
 # "none" (the real, computed decision -- eng-one-planned has no WAITING cards at all, let alone gate
 # work) is a DIFFERENT string than the no-change-precheck's own no-op line, even though both mean
@@ -383,31 +420,30 @@ else echo "  FAIL no-change precheck run 3 -> got '$run3', expected 'none' (a re
 # forever. Three runs against ONE state file: first send, suppressed resend, and a genuinely moved
 # card that must NOT be suppressed.
 ENG_STATE_FILE="$TMP/eng-state.json"
-eng_run() { # $1 = scenario, $2 = port -> sets ENG_WORK / ENG_UNCH
+eng_run() { # $1 = scenario -> sets ENG_WORK / ENG_UNCH
   local pid
-  python3 "$TMP/fakeboard.py" "$1" "$2" &
-  pid=$!
-  for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:$2/api/kanban" && break; sleep 0.25; done
+  start_board "$1" || { echo "  FAIL $1 -- fake board never came up"; fail=1; return; }
+  pid="$BOARD_PID"; local port="$BOARD_PORT"
   local out
-  out="$(DASH="http://127.0.0.1:$2" NUDGER_STATE_FILE="$ENG_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null)"
+  out="$(DASH="http://127.0.0.1:$port" NUDGER_STATE_FILE="$ENG_STATE_FILE" bash "$NUDGER" --dry-run 2>/dev/null)"
   kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
   ENG_WORK="$(echo "$out" | sed -n 's/^ENG-WORK://p' | xargs)"
   ENG_UNCH="$(echo "$out" | sed -n 's/^ENG-UNCHANGED://p' | xargs)"
 }
 
-eng_run eng-one-planned 38821
+eng_run eng-one-planned
 if [ "$ENG_WORK" = "backend" ] && [ "$ENG_UNCH" = "none" ]; then
   echo "  ok   eng precheck run 1 (fresh state) -> nudged 'backend', nothing suppressed"
 else echo "  FAIL eng precheck run 1 -> work='$ENG_WORK' unchanged='$ENG_UNCH', expected 'backend' / 'none'"; fail=1; fi
 
-eng_run eng-one-planned 38822
+eng_run eng-one-planned
 if [ "$ENG_WORK" = "none" ] && [ "$ENG_UNCH" = "backend" ]; then
   echo "  ok   eng precheck run 2 (identical board) -> suppressed, nudge NOT resent"
 else echo "  FAIL eng precheck run 2 -> work='$ENG_WORK' unchanged='$ENG_UNCH', expected 'none' / 'backend'"; fail=1; fi
 
 # The load-bearing negative control: plan['backend'] is True in BOTH fixtures, so anything keyed on
 # the boolean passes run 2 above and still fails here.
-eng_run eng-planned-moved 38823
+eng_run eng-planned-moved
 if [ "$ENG_WORK" = "backend" ] && [ "$ENG_UNCH" = "none" ]; then
   echo "  ok   eng precheck run 3 (card moved, same boolean) -> resent, not suppressed"
 else echo "  FAIL eng precheck run 3 -> work='$ENG_WORK' unchanged='$ENG_UNCH', expected 'backend' / 'none'"; fail=1; fi
