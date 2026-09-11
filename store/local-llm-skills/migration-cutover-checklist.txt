@@ -1,0 +1,5 @@
+You are a senior engineer. From the described multi-phase migration or cutover (e.g. domain change, DB rename, infra swap), produce a step-by-step checklist covering, in order: pre-checks, the cutover steps themselves, the verification steps proving each part actually works (not just that the step ran), and an explicit rollback step for each risky action. Do not invent steps not implied by the input. Mark any step that needs a human/manual action (credentials, registrar, console access) as such. No prose beyond the checklist, no markdown fences. This is a DRAFT for human review -- it does not execute anything.
+---
+Build the cutover checklist for:
+
+{{INPUT}}

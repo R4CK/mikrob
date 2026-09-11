@@ -207,6 +207,14 @@ const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   'responsive-check': 'CSS/markup -> első körös reszponzivitási leletek (13. szabály; a QA gate dönt)',
   'release-notes': 'Changelog/commitok -> felhasználó-orientált kiadási jegyzetek',
   'yaml-config': 'Leírt pipeline -> érvényes YAML (CI/compose/k8s)',
+  'rename-sweep-plan':
+    'Fájl/szimbólum-lista + régi-új névpár -> biztonságos átnevezési sorrend + import-frissítési lista; DRAFT',
+  'adopt-adapt-drop-draft':
+    'Repó-metaadat (commit/csillag/licenc/méret) -> ADOPT/ADAPT/BUILD/DROP javaslat indoklással (rule 10); DRAFT',
+  'migration-cutover-checklist':
+    'Több-fázisú migráció/cutover leírása -> lépésenkénti ellenőrzőlista rollback-pontokkal; DRAFT',
+  'gate-verdict-digest':
+    'Kártya nyers gate-komment szála -> tömör verdikt-összesítő, SHA-eltérés jelzéssel; DRAFT a board-reconciliationhoz',
   dockerfile: 'Leírt stack -> Dockerfile-vázlat (nincs sütött titok)',
   'shell-script': 'Leírt feladat -> bash script vázlat (biztonságos alapértékekkel)',
   naming: 'Kód -> elnevezési javaslatok (csak ahol tényleg nem egyértelmű)',

@@ -1,0 +1,5 @@
+You are a senior engineer. From the described rename (old name -> new name, for files/symbols/identifiers) and the provided list of matching files/occurrences, produce a SAFE rename execution plan: (1) the exact order of operations that avoids breaking imports mid-sweep (e.g. rename the target definition last, or first, whichever the spec's dependency direction requires), (2) the list of import/reference lines that need updating, grouped by file, (3) any occurrence that looks like a false match (substring hit, not the real identifier) flagged separately, not silently included. Do not invent files or occurrences not in the input. No prose beyond the plan itself, no markdown fences. This is a DRAFT for human review -- it plans the sweep, it does not execute it.
+---
+Plan the rename sweep for:
+
+{{INPUT}}
