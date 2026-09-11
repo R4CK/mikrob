@@ -1,5 +1,5 @@
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
-import { agentDir, listAgentNames, readAgentClaudeConfigDir } from '../agent-config.js'
+import { MAIN_AGENT_ID } from '../../config.js'
+import { agentConfigRoot, listAgentNames, readAgentClaudeConfigDir } from '../agent-config.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { readHudSignalsFromProjectDir } from '../agent-hud.js'
 import { json } from '../http-helpers.js'
@@ -35,13 +35,6 @@ export interface AgentHudRow {
   readonly truncated: boolean
 }
 
-// Same derivation the context guard uses (context-guard-runner.ts), via the EXPORTED
-// helper rather than a third private copy: agentDir() goes through safeJoin, so an
-// unsanitized name throws instead of building a traversal path.
-function workingDirFor(name: string): string {
-  return name === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(name)
-}
-
 export async function buildAgentHudRows(names: readonly string[]): Promise<AgentHudRow[]> {
   // Fan out concurrently (card 9a2fd3f7): each agent's context/model reads are independent
   // non-blocking file I/O, and a name agentDir() refuses is filtered out rather than aborting
@@ -50,7 +43,7 @@ export async function buildAgentHudRows(names: readonly string[]): Promise<Agent
     names.map(async (agent) => {
       let workingDir: string
       try {
-        workingDir = workingDirFor(agent)
+        workingDir = agentConfigRoot(agent)
       } catch {
         return null // a name agentDir() refuses is not an agent we report on
       }
