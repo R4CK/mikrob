@@ -20,7 +20,7 @@ import {
 } from '../fork-upstream/drift-watch.js'
 
 function result(over: Partial<DriftResult> = {}): DriftResult {
-  return { reachable: true, guarded: [], unwatched: [], stale: [], hunks: {}, ...over }
+  return { reachable: true, guarded: [], unwatched: [], stale: [], hunks: {}, upstreamBlobs: {}, ...over }
 }
 
 const STALE_TWO = result({

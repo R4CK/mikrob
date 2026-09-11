@@ -51,6 +51,13 @@ export interface DriftResult {
   readonly stale: readonly StaleAcknowledgement[]
   /** Conflict markers captured while the merge was still in the worktree, per file. */
   readonly hunks: Readonly<Record<string, string>>
+  /** Upstream's blob for each conflicting file, or absent when upstream genuinely does not have it
+   *  (a delete/modify conflict). Card 9c665470: the report used to pass a hardcoded `null` here, so
+   *  EVERY ready-to-paste entry claimed '(absent upstream ...)' -- and a pin pasted from that can
+   *  never equal a real blob, which makes the new acknowledgement permanently stale on arrival. The
+   *  value has to travel with the result, because the throwaway worktree it is read from is gone by
+   *  the time the report is formatted. */
+  readonly upstreamBlobs: Readonly<Record<string, string>>
 }
 
 export function isClean(r: DriftResult): boolean {
@@ -74,7 +81,7 @@ function upstreamIsReachable(repoRoot: string, git: GitRunner): boolean {
  * worktree under a fresh temp dir, aborted and removed in finally.
  */
 export function runDriftCheck(repoRoot: string, git: GitRunner = realGit): DriftResult {
-  const empty = { guarded: [], unwatched: [], stale: [], hunks: {} }
+  const empty = { guarded: [], unwatched: [], stale: [], hunks: {}, upstreamBlobs: {} }
   if (!upstreamIsReachable(repoRoot, git)) return { reachable: false, ...empty }
 
   const worktree = mkdtempSync(join(tmpdir(), 'fork-upstream-drift-'))
@@ -118,7 +125,13 @@ export function runDriftCheck(repoRoot: string, git: GitRunner = realGit): Drift
     }
 
     const verdict = classifyConflicts(conflicted, blobOf)
-    return { reachable: true, guarded: verdict.guarded, unwatched: verdict.unwatched, stale: verdict.stale, hunks }
+    // Read BEFORE the finally-block removes the worktree these are resolved from.
+    const upstreamBlobs: Record<string, string> = {}
+    for (const f of conflicted) {
+      const b = blobOf(f)
+      if (b !== null) upstreamBlobs[f] = b
+    }
+    return { reachable: true, guarded: verdict.guarded, unwatched: verdict.unwatched, stale: verdict.stale, hunks, upstreamBlobs }
   } finally {
     try {
       git(['worktree', 'remove', '--force', worktree], repoRoot)
@@ -154,7 +167,7 @@ export function formatDriftReport(r: DriftResult): string {
   }
   if (r.unwatched.length) {
     const guidance = r.unwatched
-      .map((f) => `\n--- ${f} ---\n${readyToPasteEntry(f, null)}${r.hunks[f] ? `\n\n  both sides' conflicting hunk(s):\n${r.hunks[f]}` : ''}`)
+      .map((f) => `\n--- ${f} ---\n${readyToPasteEntry(f, r.upstreamBlobs[f] ?? null)}${r.hunks[f] ? `\n\n  both sides' conflicting hunk(s):\n${r.hunks[f]}` : ''}`)
       .join('\n')
     parts.push(
       `\nNOBODY HAS DECIDED HOW TO RESOLVE: ${r.unwatched.join(', ')}. Decide the rule NOW, while ` +
