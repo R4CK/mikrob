@@ -50,11 +50,15 @@ FOOTER='Log-alapú rekonstrukció a 2026-09-08-i kanban-DB-kiürülés után'
 
 DO_COMMENT=0
 ONLY_CARD=""
+ONLY_ASSIGNEE=""
 while [ $# -gt 0 ]; do
   case "$1" in
   --comment) DO_COMMENT=1 ;;
   --card) ONLY_CARD="${2:?--card needs an id}"; shift ;;
-  *) echo "usage: $0 [--comment] [--card <id>]" >&2; exit 2 ;;
+  # Narrow to one agent's cards. Exists so the FIRST --comment run can be limited to the author's
+  # own board before anything is written to five other agents' cards (MikroB's call, msg 945).
+  --assignee) ONLY_ASSIGNEE="${2:?--assignee needs a name}"; shift ;;
+  *) echo "usage: $0 [--comment] [--card <id>] [--assignee <name>]" >&2; exit 2 ;;
   esac
   shift
 done
@@ -79,9 +83,9 @@ cards_json="$(curl -sf -H @"$hdr" "$DASH/api/kanban?limit=600")" || {
   echo "reconstruction-sweep: could not read the board at $DASH" >&2; exit 3; }
 
 # Select open, reconstruction-footered cards. Emits "<id>\t<assignee>\t<title>".
-mapfile -t ROWS < <(printf '%s' "$cards_json" | FOOTER="$FOOTER" ONLY="$ONLY_CARD" python3 -c '
+mapfile -t ROWS < <(printf '%s' "$cards_json" | FOOTER="$FOOTER" ONLY="$ONLY_CARD" ONLY_WHO="$ONLY_ASSIGNEE" python3 -c '
 import json, os, sys
-footer, only = os.environ["FOOTER"], os.environ["ONLY"]
+footer, only, only_who = os.environ["FOOTER"], os.environ["ONLY"], os.environ["ONLY_WHO"]
 d = json.load(sys.stdin)
 cards = d if isinstance(d, list) else d.get("cards", d.get("data", []))
 for c in cards:
@@ -90,6 +94,8 @@ for c in cards:
     if footer not in (c.get("description") or ""):
         continue
     if only and c.get("id") != only:
+        continue
+    if only_who and (c.get("assignee") or "") != only_who:
         continue
     print("\t".join([c.get("id") or "", c.get("assignee") or "-", (c.get("title") or "")[:70]]))
 ')
@@ -107,13 +113,13 @@ for row in "${ROWS[@]}"; do
     printf 'NAMED-BY-LANDED  %s  %-10s %s\n' "$id" "$who" "$title"
     printf '        -> %s %s\n' "$repo" "$sha"
     if [ "$DO_COMMENT" -eq 1 ]; then
-      body="SWEEP (kártya 9caff605): ehhez a kártyához MÁR VAN LANDOLT COMMIT, tehát a munkája feltehetően kész -- a 2026-09-08-i rekonstrukció hozta vissza nyitottként.
+      body="SWEEP (kártya 9caff605): ezt a kártyát MEGNEVEZI egy már landolt commit -- érdemes ellenőrizni, hogy a munkája nem készült-e el már, mielőtt bárki nekikezd. A kártya a 2026-09-08-i rekonstrukcióból jött vissza nyitottként.
 
   ${repo}: ${sha}
 
 Ellenőrizve: a commit üzenete tartalmazza a kártya ID-jét, ÉS a commit ancestor-a az adott repó fő ágának (nem csak létezik egy ágon). Mindkét repóban kerestem, mert egy korábbi audit épp azért minősített két kártyát tévesen \"nincs commit\"-nak, mert csak az egyikben nézett.
 
-EZ NEM ZÁRÁS ÉS NEM VERDIKT. A sweep szándékosan nem zár kártyát: a commit megléte nem bizonyítja, hogy a kártya MINDEN fele le van fedve (mérve: az 1da6fec3 címe két külön állítást tett, és külön kellett ellenőrizni mindkettőt). A zárás MikroB/QA lépése, független ellenőrzéssel."
+EZ NEM ZÁRÁS, NEM VERDIKT, ÉS NEM IS BIZONYÍTÉK A KÉSZÜLTSÉGRE. Amit igazol, az szűk: egy landolt commit MEGEMLÍTI ezt az ID-t. Egy commit megnevezhet olyan kártyát is, amihez csak kapcsolódik (mérve: 4db7bc17 "Card 5b6dd606"-ot ír egy MÁSIK kártyáról szóló commitban; 935c9f9e "card 8b5559cf class"-t ír). És a commit megléte nem bizonyítja, hogy a kártya MINDEN fele le van fedve (mérve: az 1da6fec3 címe két külön állítást tett, és külön kellett ellenőrizni mindkettőt). A zárás MikroB/QA lépése, független ellenőrzéssel."
       python3 -c 'import json,sys; print(json.dumps({"author":"backend2","content":sys.argv[1]}))' "$body" \
         | curl -sf -X POST "$DASH/api/kanban/$id/comments" -H 'Content-Type: application/json' -H @"$hdr" -d @- >/dev/null \
         && echo "        -> commented" || echo "        -> COMMENT FAILED" >&2
