@@ -180,3 +180,47 @@ describe('metaAnnouncement (card d359535c: the skip state must be loud, not just
     expect(metaAnnouncement(true).name).not.toBe(metaAnnouncement(false).name)
   })
 })
+
+
+// Card 9c665470. The ready-to-paste PIN the report hands an unwatched file used to be a hardcoded
+// `null`, so every brand-new conflict was told to record
+// '(absent upstream -- delete/modify conflict, no blob to pin)' -- including files upstream plainly
+// has. That string can never equal a real blob, so an entry pasted from it is stale the moment it
+// lands and stays stale through every later round: the re-decision it demands cannot be satisfied
+// by any bump. Measured on this card, on src/web/session-send-lock.ts and its test, both of which
+// upstream carries.
+describe('the report pins an unwatched file to its REAL upstream blob (card 9c665470)', () => {
+  const BLOB = 'd877b32e5a35b9da9800e6d2bbb089376e040726'
+
+  it('offers the upstream blob, not the absent-upstream placeholder, when upstream has the file', () => {
+    // A path deliberately NOT in ACKNOWLEDGED_CONFLICTS: the file this defect was measured on
+    // (src/web/session-send-lock.ts) became acknowledged in the very same change, so using it here
+    // would classify as acknowledged-and-current and report CLEAN -- the test would pass while
+    // exercising nothing. That happened on the first run of this case.
+    const { git } = fakeGit({
+      conflicts: ['src/web/zz-unwatched-probe.ts'],
+      blobs: { 'src/web/zz-unwatched-probe.ts': BLOB },
+    })
+    const report = formatDriftReport(runDriftCheck('/repo', git))
+    expect(report).toContain(BLOB)
+    expect(report).not.toContain('absent upstream')
+  })
+
+  it('still says absent-upstream for a file upstream genuinely does not have', () => {
+    // The negative control, and the reason the fix is a lookup rather than "always print a blob":
+    // a delete/modify conflict has no blob to pin, and saying so is correct there.
+    const { git } = fakeGit({ conflicts: ['src/web/fork-only.ts'], blobs: {} })
+    const report = formatDriftReport(runDriftCheck('/repo', git))
+    expect(report).toContain('absent upstream')
+  })
+
+  it('carries the blob on the result, because the worktree it is read from is already gone', () => {
+    // Resolving it lazily at format time cannot work: runDriftCheck removes the throwaway worktree
+    // in its finally block, so the value has to be captured while that worktree still exists.
+    const { git } = fakeGit({
+      conflicts: ['src/web/zz-unwatched-probe.ts'],
+      blobs: { 'src/web/zz-unwatched-probe.ts': BLOB },
+    })
+    expect(runDriftCheck('/repo', git).upstreamBlobs['src/web/zz-unwatched-probe.ts']).toBe(BLOB)
+  })
+})
