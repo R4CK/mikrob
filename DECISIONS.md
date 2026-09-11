@@ -12200,3 +12200,48 @@ olvasatot vezetné be, aminek a kizárására az egész fájl készült. Nincs b
 méréssel); MikroB nyitotta a kártyát a leletre.
 
 **Hivatkozás:** kártya `0ebeff55`; `src/__tests__/store-selftests-all-run.test.ts`, `store/*.selftest.{sh,py}`.
+
+## 2026-09-11 -- A shutdown-zárás NEGYEDIK kilépési útja, és mennyit ér valójában (kártya a1c85a24)
+
+**Kontextus.** A `4306e862` kártya kijavította, hogy a `shutdown()` zárja a SQLite-adatbázist kilépés
+előtt, és a commit-üzenete (`d9712a75`) azt mondja: „All three exit paths in shutdown() now close the
+SQLite database before exiting". A QA a PASS-nál jelezte, hogy a DoD-ban maradt egy meg nem írt
+teszt-pont; ez a kártya az a follow-up.
+
+**Lelet: négy kilépési út van, nem három.** A három megnevezett (hard-kill időzítő, a graceful
+`webServer.close()` visszahívása, és a korai leállítás) mellett ott a `shutdown()` külső `catch`
+ága -- „Shutdown threw, exiting anyway" --, ami `releaseLock()` után egyenesen `process.exit(1)`-et
+hív. Az nem zárta az adatbázist. Ez pont az az út, ami akkor sül el, amikor a leállítás **már amúgy
+is hibázik**.
+
+**Mennyit ér a zárás -- megmérve, nem feltételezve.** Ez a bekezdés azért van itt, hogy se lekicsinyelni,
+se felnagyítani ne lehessen. 500 sor WAL-módban:
+
+- Zárás UTÁN: a `-wal` (2 080 632 bájt) eltűnik, a fő `.db` 4 096 → 16 384 bájtra nő, minden sor
+  olvasható egy friss kapcsolatból.
+- Zárás NÉLKÜL (abrupt `process.exit(0)`): a fő fájl 4 096 bájt marad, a `-wal` ottmarad 2 MB-on --
+  **de a következő megnyitás visszajátssza, és mind az 500 sor olvasható.**
+
+Vagyis a kimaradt zárás **nem adatvesztés**. Amit hagy: egy elavult fő `.db` fájl és egy növekvő
+`-wal`. Ez annak számít, ami közvetlenül a `.db` fájlt olvassa vagy másolja. A repó saját mentései
+biztonságban vannak, ezt is ellenőriztem: a `store/db-backup.sh` és a `scripts/pre-modify-backup.sh`
+a `sqlite3 .backup` online API-t használja, a `scripts/backup.sh` pedig `PRAGMA wal_checkpoint(TRUNCATE)`-et
+futtat előtte. Ezért a lelet súlyossága ALACSONY, és így is van jelentve.
+
+**Döntés.** A négyszer ismételt `try { getDb().close() } catch {}` egyetlen, exportált
+`closeDbForShutdown()` függvénnyé vonva a `db.ts`-ben, és mind a NÉGY út ezt hívja. Két oka van,
+hogy kiemelés lett és nem egy negyedik másolat: (1) a `db.ts`-ből a függvény importálható egy
+tesztben, az `index.ts` viszont nem -- az a belépési pont, az importálása elindítaná a teljes bootot;
+(2) épp az ismételgetés miatt tudott az egyik példány lemaradni a többitől.
+
+**Teszt (a DoD nyitott pontja).** `src/__tests__/shutdown-db-close.test.ts`, két rétegben:
+VISELKEDÉSI -- valódi `initDatabase()` egy eldobható úton, 500 sor, majd a HELPER hívása, és a mért
+előtte/utána állapot ellenőrzése (a `-wal` nagyobb mint a fő fájl ELŐTTE -- e nélkül a „a fő fájl
+megnőtt" állítás checkpoint nélkül is átmenne); plusz egy eset, ami kimondja, hogy zárás nélkül sem
+vész el sor. STRUKTURÁLIS -- az `index.ts` `shutdown()` törzsében minden `process.exit(` előtt ott
+kell lennie a helper hívásának, kommentektől megtisztított forráson illesztve (egy kikommentezett
+hívás ne kezeskedhessen egy valódiért, a 06d36307 / 2f0c7d24 megkerülési osztály).
+
+**Mutációval ellenőrizve.** Öt mutáns, mindegyik pirosra fordítja a suite-ot. Az ötödik az első
+körben TÚLÉLTE: a viselkedési tesztek eredetileg a `better-sqlite3` `close()`-át hívták közvetlenül,
+nem a helpert, tehát a helper kibelezése észrevétlen maradt volna. Átírva a valódi helperre.

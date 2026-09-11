@@ -15,7 +15,7 @@ import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
 import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
 import { resolveOwnerChatId } from './owner-chat.js'
-import { initDatabase, backfillEmbeddings, getDb } from './db.js'
+import { initDatabase, backfillEmbeddings, closeDbForShutdown } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
 import { initHeartbeat, stopHeartbeat, ensureHeartbeatWorkerHidden } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
@@ -423,7 +423,7 @@ const shutdown = (): void => {
     const hardKill = setTimeout(() => {
       logger.warn({ timeoutMs: SHUTDOWN_HARD_KILL_MS }, 'Graceful shutdown timeout, hard exit')
       releaseLock()
-      try { getDb().close() } catch { /* db may not be open yet */ }
+      closeDbForShutdown()
       process.exit(exitCode || 1)
     }, SHUTDOWN_HARD_KILL_MS)
 
@@ -433,19 +433,23 @@ const shutdown = (): void => {
       webServer.close(() => {
         clearTimeout(hardKill)
         releaseLock()
-        try { getDb().close() } catch { /* db may not be open yet */ }
+        closeDbForShutdown()
         process.exit(exitCode)
       })
     } else {
       // Early shutdown, before startWebServer ran. Nothing to drain.
       clearTimeout(hardKill)
       releaseLock()
-      try { getDb().close() } catch { /* db may not be open yet */ }
+      closeDbForShutdown()
       process.exit(exitCode)
     }
   } catch (err) {
     logger.error({ err }, 'Shutdown threw, exiting anyway')
     releaseLock()
+    // The FOURTH exit path. 4306e862 fixed three and its message said "all three"; this one was
+    // missed, and it is the one that fires when shutdown is ALREADY going wrong. Consequence is
+    // a stale main .db plus a left-behind -wal, not lost writes (see closeDbForShutdown).
+    closeDbForShutdown()
     process.exit(1)
   }
 }
