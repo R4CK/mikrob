@@ -12289,3 +12289,45 @@ hívás ne kezeskedhessen egy valódiért, a 06d36307 / 2f0c7d24 megkerülési o
 **Mutációval ellenőrizve.** Öt mutáns, mindegyik pirosra fordítja a suite-ot. Az ötödik az első
 körben TÚLÉLTE: a viselkedési tesztek eredetileg a `better-sqlite3` `close()`-át hívták közvetlenül,
 nem a helpert, tehát a helper kibelezése észrevétlen maradt volna. Átírva a valódi helperre.
+
+## 2026-09-11 -- A landolás akkor szól, amikor landolt, nem amikor a gráf felépült (kártya dba14f8e)
+
+**Kontextus.** A `cleancore-land.sh` a `LANDED ... -> origin/main` sorát UTOLSÓKÉNT írta ki, két
+gráf-frissítés mögött. A push viszont jóval előbb megtörténik, tehát a szkript hallgatása semmit nem
+mondott arról, sikerült-e.
+
+**Mérve, ezért kártya és nem ízlés kérdése.** A CleanCore-on a graphify-építés ÜRES gépen 23+ perc,
+terhelés alatt ~56 perc. Egy landolást végigmértem: indult 06:22, **pusholt 06:24, és 07:00-kor tért
+vissza** -- harminchat perc néma várakozás egy már sikeres push után. A régi komment a kódban „~13s
+on marveen"-t állított: az a marveen-szám, és nem vihető át.
+
+**A hallgatás valódi hibát okozott, nem türelmetlenséget.** A szkriptre váró ügynök arra jutott, hogy
+a landolás nem ment le, és indított egy MÁSODIK teljes landolást egy már landolt shára -- annak a
+typecheckje aztán kilövődött abban a torlódásban, amit a fölösleges futás maga is táplált.
+
+**Döntés (MikroB, (a) opció).** A `LANDED` sor a push után AZONNAL kiíródik, a graphify pedig
+leválasztva fut tovább. A gráf újraépíthető index, a rövid elavulási ablak elfogadható ár.
+
+**Ami nem látszik a döntésből, és a javítás lényege: a háttérbe tétel ÖNMAGÁBAN nem oldja meg.**
+A flotta a zajos parancsokat a `noisy-run.sh`-n át futtatja, ami a parancs KILÉPÉSÉIG semmit nem
+mutat -- a korábban kiírt sor tehát egy olyan pufferben landolna, amit még senki nem olvas. Ráadásul
+egy háttérgyerek, ami ÖRÖKLI a stdoutot, nyitva tartja a csővezetéket, így a hívó ugyanúgy vár.
+Megmérve, ugyanazzal a szerkezettel: átirányítás NÉLKÜL a hívó pontosan a gyerek élettartamáig
+blokkolt (12 s egy 12 másodperces gyereknél), átirányítással 0 s. Ezért a gyerek kimenete FÁJLBA megy
+(`$GRAPH_LOG`), és a szkript kiírja az útvonalat, hogy az eredmény elérhető maradjon.
+
+**A `blast-radius` szándékosan előtérben marad**, a `LANDED` sor UTÁN: 0 másodperc, ha a gráf már
+naprakész, tehát a hívónak nem kerül semmibe, a kimenete pedig helyben hasznos. Az aszimmetriát
+teszt rögzíti, nehogy valaki később „rendet rakjon" rajta.
+
+**Teszt.** `src/__tests__/cleancore-land-announces-before-indexing.test.ts`, kommentektől megtisztított
+forráson. Hat mutáns, mind piros. Az egyik az ELSŐ körben TÚLÉLTE: az „átirányítva van-e" állítás
+`/(>|&>)\s*\S/` volt, ami a `2>&1`-re is illeszkedik -- pedig az sehová nem irányítja a stdoutot --,
+így a fájl-átirányítást eldobó mutáns zölden maradt. Szigorítva olyan `>`-re, ami nem fd-duplikálás.
+Olvasással nem vettem volna észre.
+
+**Mellékes lelet, NEM ebben a kártyában javítva.** A `blast-radius-check.py --refresh <fő klón>` a
+klón HEAD-jére kulcsol, a CleanCore fő klónja viszont csak fetch-alap: a HEAD-je nem mozdul
+landoláskor. Mérve: a gráf `9598e8e9`-nél állt, miközben az `origin/main` 9 committal előrébb járt --
+és a szkript „already current"-et jelentett. Marveenen ez nem áll fenn, mert ott a landoló
+fast-forwardolja az élő telepítést. Jelentve, döntésre vár.

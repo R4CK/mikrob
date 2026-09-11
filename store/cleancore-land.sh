@@ -601,17 +601,41 @@ if git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main; then
     cp "$MERGE_ERR" "$CACHE_DIR/base-$(git -C "$MAIN" rev-parse origin/main)-web$WANT_WEB.txt" 2>/dev/null
   fi
   rm -f "${MERGE_ERR:-}" 2>/dev/null
+  # THE LANDING IS DONE -- SAY SO BEFORE ANY INDEX MAINTENANCE (card dba14f8e).
+  #
+  # This line used to come LAST, after both graph refreshes. Measured on CleanCore: the graphify
+  # build takes 23+ minutes on an IDLE machine and 56 minutes under load -- the "~13s on marveen"
+  # the old comment here claimed is the marveen number, and it does not transfer. For all that
+  # time the script said nothing, although the push had already succeeded.
+  #
+  # That silence caused a real error, not just impatience: an agent waiting on this script assumed
+  # the landing had not happened and started a SECOND full landing against an already-landed sha,
+  # whose typecheck was then killed by the contention the extra run helped create. And printing
+  # earlier alone does not fix it -- the fleet runs noisy commands through noisy-run.sh, which
+  # shows nothing until the command EXITS. So the script must also RETURN promptly, which is what
+  # the detached graphify below is for.
+  echo "LANDED $CARD: $GSHORT -> origin/main (merge $MERGE)"
+
   # Keep the blast-radius graph in step with the main clone. A stale graph makes
   # the PreToolUse guard go silent (by design -- it must not report confident wrong
   # numbers), so without this the check would rot back into the prose rule it
   # replaced. Never fatal: a refresh problem must not fail a landing that passed.
+  # Kept in the FOREGROUND: measured at 0s when the graph is already current, so it costs the
+  # caller nothing, and its output is worth seeing inline.
   "$(dirname "$0")/blast-radius-check.py" --refresh "$MAIN" 2>&1 | sed 's/^/  /' || true
-  # The graphify code-graph feeds the local model's RAG context at dispatch
-  # (card 44477615). It rotted the same way the blast-radius graph did -- built once
-  # on adoption day, then 24 days stale -- so it follows HEAD here too. Incremental
-  # (~13s on marveen) and non-fatal: a graph refresh must not fail a landing.
-  "$(dirname "$0")/graphify.sh" build "$MAIN" 2>&1 | tail -1 | sed 's/^/  graphify: /' || true
-  echo "LANDED $CARD: $GSHORT -> origin/main (merge $MERGE)"
+
+  # The graphify code-graph feeds the local model's RAG context at dispatch (card 44477615), and
+  # it rots the same way the blast-radius graph did if nothing follows HEAD. It still runs -- it
+  # just no longer holds the landing open.
+  #
+  # DETACHED, AND THE REDIRECT IS THE LOAD-BEARING PART. Backgrounding alone would not free the
+  # caller: a child that inherits stdout keeps the pipe open, so `noisy-run.sh` (and any other
+  # reader) goes on waiting for EOF long after this script exits. Its output therefore goes to a
+  # file, and the path is printed so the result is still reachable.
+  GRAPH_LOG="${TMPDIR:-/tmp}/cleancore-land-graphify-$CARD-$$.log"
+  nohup "$(dirname "$0")/graphify.sh" build "$MAIN" >"$GRAPH_LOG" 2>&1 &
+  disown 2>/dev/null || true
+  say "graphify: rebuilding the code graph in the background -> $GRAPH_LOG"
   exit 0
 fi
 echo "PUSH reported success but $GSHORT is NOT an ancestor of origin/main -- verify by hand"
