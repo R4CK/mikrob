@@ -36,7 +36,7 @@
 // there is no filename signal to discover from) and its own comment for the measurement behind it.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readdirSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..')
@@ -191,6 +191,48 @@ describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b
       expect(names, `${name} is excluded but no longer exists -- drop the entry`).toContain(name)
       expect(EXCLUDED[name]!.length, `${name}'s exclusion needs a real reason`).toBeGreaterThan(20)
     }
+  })
+
+  // PORT OWNERSHIP ACROSS SELFTESTS (card 0ebeff55's own consequence, found 2026-09-11).
+  //
+  // Wiring the never-run selftests into this file made two of them RUN TOGETHER for the first
+  // time -- and they both bind 127.0.0.1:38820. fleet-nudger owns 38811-38829 and uses 38820 as
+  // one of its cases; cleancore-branch-drift-monitor had it hardcoded. The symptom is not a
+  // clean failure but a flaky one: `OSError: [Errno 98] Address already in use`, whichever runs
+  // while the other's server is still letting go of the socket.
+  //
+  // The discovery in this file is what makes a port a SHARED resource, so the rule belongs here:
+  // a selftest may reuse a port within itself, but two different ones may not name the same port.
+  it('no two selftests bind the same TCP port', () => {
+    const portsBy = new Map<string, Set<string>>()
+    for (const s of ALL) {
+      const src = readFileSync(join(STORE, s.file), 'utf-8')
+      // Strip comments so a port mentioned in prose does not manufacture a collision.
+      const code = src
+        .split('\n')
+        .map((l) => l.replace(/#.*$/, ''))
+        .join('\n')
+      for (const m of code.matchAll(/\b(3[0-9]{4}|[45][0-9]{4})\b/g)) {
+        if (!portsBy.has(m[1]!)) portsBy.set(m[1]!, new Set())
+        portsBy.get(m[1]!)!.add(s.name)
+      }
+    }
+    const shared = [...portsBy.entries()]
+      .filter(([, owners]) => owners.size > 1)
+      .map(([port, owners]) => `${port}: ${[...owners].sort().join(' + ')}`)
+    expect(
+      shared,
+      'These selftests bind the same port. Running them in one suite makes whichever goes second ' +
+        'fail intermittently with EADDRINUSE. Give each selftest its own range.',
+    ).toEqual([])
+  })
+
+  // Without this, the check above passes trivially on a corpus where nothing binds anything.
+  it('the port scan sees real ports -- otherwise the check above is vacuous', () => {
+    const withPorts = ALL.filter((s) =>
+      /\b(3[0-9]{4}|[45][0-9]{4})\b/.test(readFileSync(join(STORE, s.file), 'utf-8')),
+    )
+    expect(withPorts.length).toBeGreaterThanOrEqual(2)
   })
 
   it.each(RUNNABLE.map((s) => [s.name, s] as const))('%s passes', (_label, script) => {

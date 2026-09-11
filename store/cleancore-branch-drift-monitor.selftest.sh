@@ -59,7 +59,13 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(('127.0.0.1', PORT), H).serve_forever()
 PYEOF
 
-PORT=38820
+# PORT OWNERSHIP. fleet-nudger.selftest.sh owns 38811-38829 and binds 38820 as one of its cases.
+# Both selftests were unreferenced until card 0ebeff55 wired them into store-selftests-all-run,
+# at which point they ran in the same suite for the first time and this port became a shared
+# resource -- the symptom was an intermittent `OSError: [Errno 98] Address already in use`, not a
+# clean failure. 38841 is outside that neighbour's range; the guard in store-selftests-all-run
+# fails if any two selftests ever name the same port again.
+PORT=38841
 LOG="$SB/alerts.log"
 python3 "$SB/fakeboard.py" "$PORT" "$LOG" &
 FAKEPID=$!
