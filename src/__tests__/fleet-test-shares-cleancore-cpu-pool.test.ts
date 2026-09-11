@@ -83,6 +83,20 @@ function problems(source: string): string[] {
     if (invocations.length === 0) found.push('no npx vitest invocation found at all')
     else if (!invocations.every((l) => /WORKER_ARGS/.test(l)))
       found.push('a vitest invocation does not carry the computed worker cap')
+    // AND the cap must be a flag vitest ACCEPTS, not merely one we pass. vitest 2.1.9 rejects a
+    // bare --maxWorkers in this repo -- "options.minThreads and options.maxThreads must not
+    // conflict" -- and exits 1 having run nothing. The first version of this cap shipped without
+    // --minWorkers and broke every fleet-test run, i.e. every landing for every agent, while this
+    // very contract stayed green: it asserted the flag was PASSED, never that the runner took it.
+    // That gap is the reason for this line.
+    // Anchored to the ASSIGNMENT line, not to the file. Two earlier versions of this check were
+    // vacuous for the same reason and both were found by mutation, not by reading: the flag name
+    // also appears in the echo that reports the cap and in the comment above it, so a file-wide
+    // regex stays green after the flag is deleted from the array that actually reaches vitest.
+    const assign = t.split('\n').filter((l) => /WORKER_ARGS=\(/.test(l) && !/WORKER_ARGS=\(\)/.test(l))
+    if (assign.length === 0) found.push('no WORKER_ARGS assignment carrying the cap')
+    else if (!assign.every((l) => /--minWorkers/.test(l) && /--maxWorkers/.test(l)))
+      found.push('the cap is assigned without BOTH --minWorkers and --maxWorkers (vitest 2.x rejects a lone --maxWorkers as conflicting)')
     // A caller who passed their own --maxWorkers has already made the CPU-budget decision; silently
     // overriding it would make this a policy rather than a default, unlike the CleanCore side.
     if (!/caller_set_max_workers/.test(t))

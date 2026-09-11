@@ -337,8 +337,16 @@ for a in ${ARGS[@]+"${ARGS[@]}"}; do
 done
 WORKER_ARGS=()
 if [ "$caller_set_max_workers" -eq 0 ]; then
-  WORKER_ARGS=(--maxWorkers "$MAX_WORKERS")
-  echo "fleet-test.sh: --maxWorkers $MAX_WORKERS (${CORES} cores / ${CPU_SLOTS} shared slots)"
+  # --minWorkers IS NOT OPTIONAL HERE, and leaving it out is not a style choice: vitest 2.1.9
+  # rejects a bare --maxWorkers in this repo with
+  #   RangeError: options.minThreads and options.maxThreads must not conflict
+  # and exits 1 having run NOTHING ("Test Files no tests"). Measured directly, outside this script:
+  # `vitest run --maxWorkers 6 <file>` fails, `vitest run --minWorkers 1 --maxWorkers 6 <file>` runs.
+  # The first version of this cap shipped without it and broke every fleet-test run -- i.e. every
+  # landing, for every agent -- because the contract test asserted the flag was PASSED, never that
+  # vitest ACCEPTED it. A flag the runner refuses is not a cap, it is an outage.
+  WORKER_ARGS=(--minWorkers 1 --maxWorkers "$MAX_WORKERS")
+  echo "fleet-test.sh: --minWorkers 1 --maxWorkers $MAX_WORKERS (${CORES} cores / ${CPU_SLOTS} shared slots)"
 else
   echo "fleet-test.sh: --maxWorkers left to the caller"
 fi
