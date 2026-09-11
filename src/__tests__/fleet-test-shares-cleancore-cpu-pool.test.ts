@@ -59,6 +59,35 @@ function problems(source: string): string[] {
   // variable name that happens to default to the same value today is how the two pools quietly
   // drift apart the next time either script's default changes.
   if (!/CLEANCORE_SUITE_SLOTS/.test(t)) found.push('does not read CLEANCORE_SUITE_SLOTS')
+
+  // THE OTHER HALF OF THE CONTROL (card 7bb39672). Taking a slot bounds how many suites run at
+  // once; it says nothing about how much CPU each one takes. vitest defaults maxWorkers to the core
+  // count, so a run that takes a slot and then spawns nproc workers puts nproc*SLOTS workers on
+  // nproc cores -- measured here as 12 + 6 on a 12-core box, load ~22, and three false-red landings
+  // in one day on a test that shells out and never gets scheduled. cleancore-suite-run.sh has capped
+  // this since it was written; this script took the slot and not the cap.
+  const cap = at(/DEFAULT_MAX_WORKERS=/)
+  if (cap < 0) found.push('no per-run worker cap -- the slot bounds RUNS, nothing bounds WORKERS')
+  else {
+    // Derived from the SAME slot count the pool is sized by. A hardcoded number (or a second,
+    // same-shaped variable) is how the cap and the pool drift apart the next time either moves.
+    if (!/DEFAULT_MAX_WORKERS=\$\(\(CORES \/ CPU_SLOTS\)\)/.test(t))
+      found.push('the worker cap is not derived from CORES / CPU_SLOTS')
+    // A cap computed and never passed to vitest is decoration -- and checking for it ANYWHERE near
+    // the call site does not say that, because the computation block itself contains the flag. That
+    // was measured, not reasoned about: the first version of this check windowed 600 chars around
+    // `npx vitest` and survived a mutant that deleted the cap from BOTH invocations, because the
+    // window still caught the declaration. The property is "every vitest invocation carries it", so
+    // the assertion has to read the invocation LINES.
+    const invocations = t.split('\n').filter((l) => /npx vitest run/.test(l))
+    if (invocations.length === 0) found.push('no npx vitest invocation found at all')
+    else if (!invocations.every((l) => /WORKER_ARGS/.test(l)))
+      found.push('a vitest invocation does not carry the computed worker cap')
+    // A caller who passed their own --maxWorkers has already made the CPU-budget decision; silently
+    // overriding it would make this a policy rather than a default, unlike the CleanCore side.
+    if (!/caller_set_max_workers/.test(t))
+      found.push('a caller-supplied --maxWorkers is not honoured')
+  }
   if (!/CLEANCORE_SUITE_LOCK_PREFIX/.test(t)) found.push('does not read CLEANCORE_SUITE_LOCK_PREFIX')
   // The prefix must resolve to the SAME anchor cleancore-suite-run.sh defaults to, or the two never
   // actually share a file even when neither env var is overridden.
