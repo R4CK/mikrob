@@ -12439,3 +12439,42 @@ olvasható "eldöntetlen"-ként. A mező additív; a fogyasztók (`git-repo-watc
 `src/web/routes/integrated-repos.ts`, `src/web/dashboard-settings.ts`) nevesített mezőket
 olvasnak. Ellenőrizve: a `GET /api/integrated-repos` 31 bejegyzést ad vissza, az új látszik, a
 kivettek eltűntek; `fleet-test.sh` a két érintett teszt-fájlra 14/14 zöld.
+
+---
+
+## 2026-09-11 -- 0b3a3084 -- A helyi-LLM draft ÉRKEZÉSE értesítse a kártya felelősét
+
+**Döntés.** Amikor az `offload-dispatch.sh` felposztol egy draftot egy leaf-kártyára, azonnal küldjön
+inter-agent jelzést a kártya felelősének. Ugyanez fut a másik posztoló ágon is (a „a helyi modell
+kimerült" értesítésen), egyetlen közös helperből -- egy szerződés, két hívási hely.
+
+**Miért.** A draft ASZINKRON érkezik, a dispatch UTÁN. Kétszer ugyanaznap, ugyanazon az ügynökön
+(f3757cc7 és 90e4cbdf): a kártya dispatchkor nulla kommenttel állt, a draft később jött, és senki nem
+nézett vissza. Mindkétszer a draft-review guard (1338e68b) fogta meg -- a munka VÉGÉN, amikor a draft
+már csak elbírálandó adminisztratív tétel. Az „olvasd el a kommenteket, amikor felveszed a kártyát"
+szabály ezt szerkezetileg nem tudja lefedni: felvételkor még nincs mit elolvasni.
+
+**Kinek megy.** Három eset, és a két kivétel is MikroB-nál köt ki, mert ő az egyetlen ügynök, aki soha
+nem parkolja magát:
+- a felelősnek, ha fut;
+- MikroB-nak, ha a felelős PARKOLVA van -- a `POST /api/messages` elfogadja a parkolt címzettnek szóló
+  üzenetet is (a címzett létezését ellenőrzi, nem az élő session-t), a sor függőben marad, és a router
+  az ablak lejártakor eldobja. Vagyis a parkolt felelősnek küldött nudge nem hiba sehol, hanem csendes
+  veszteség -- pont az, amit ez a kártya megszüntet;
+- MikroB-nak, ha a leafnek NINCS felelőse (6a. szabály) -- az értesítés így nem vész el, és a
+  szabálysértés is látszik.
+
+**Elvetett alternatíva (MikroB, msg 610).** Hogy a dispatch VÁRJA MEG a draftot. Lassítaná a
+self-advance-ot: az ügynök állna, amíg a single-slot GPU sorban áll.
+
+**Nincs külön spam-számláló.** Az attempts-fájl már megadja: draft csak sikerre posztol, a siker
+`status=done`-t ír, amit a ciklus előszűrője minden későbbi sweepen kihagy -- véglegesen, mert csak az
+`exhausted` bejegyzések járnak le. A kimerülés-értesítés a 3. kísérletnél tüzel, az `status=exhausted`-et
+ír, tehát leafenként legfeljebb 24 óránként ismétlődhet. Mindkettő már eseményenként egyszeri; egy
+második számláló csak egy második elrontható dolog lenne.
+
+**Küldő-azonosság.** `from="mikrob"`, a flotta meglévő konvenciója szerint (`fleet-nudger.sh` ugyanezt
+teszi), és ugyanazzal a lemondó címkével, hogy a címzett ne olvassa úgy, mintha az orchestrátor
+elolvasta volna a kártyáját. A `POST /api/messages` regisztrált flotta-ügynököt követel küldőként, és a
+`local-llm` nem az -- az komment-szerzői identitás, nem ügynök-könyvtár. A 3307b428 kártya tilalma a
+KOMMENT szerzőségéről szól, amire a gate-sweepek kulcsolnak; üzenetet nem sweepel senki szerző szerint.

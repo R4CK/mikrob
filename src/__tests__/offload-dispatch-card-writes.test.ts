@@ -19,6 +19,10 @@ import { fileURLToPath } from 'node:url'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SCRIPTS = ['store/offload-dispatch.sh', 'store/offload-batch-run.sh'] as const
 
+/** The two endpoint shapes this path is allowed to write to. Anything else is a finding. */
+const COMMENT_POST = /\/api\/kanban\/\$[A-Za-z_][A-Za-z0-9_]*\/comments/
+const MESSAGE_POST = /\/api\/messages\b/
+
 /** Executable lines only -- a URL inside a comment is documentation, not a call. */
 function code(rel: string): string {
   return readFileSync(join(ROOT, rel), 'utf-8')
@@ -52,17 +56,43 @@ describe('the offload path writes COMMENTS and nothing else (card 8b925388)', ()
     }
   })
 
-  it('every mutating call in the whole path is a comment POST -- never a card-record write', () => {
+  it('every mutating call is a comment POST or the inter-agent nudge -- never a card-record write', () => {
     // Card 1bf37a35 added a second call site (a one-time "local offload exhausted" notice) next to
     // the original draft comment, and both now target the LEAF card actually being drafted -- which
     // can differ from the top-level $CARD once real kanban children are involved -- rather than
     // always literally $CARD. The count is no longer pinned at exactly one; the invariant that
     // actually matters (every mutating call is a comment POST, never a PUT/move/title write) still is.
+    //
+    // Card 0b3a3084 added a THIRD shape: a POST to /api/messages that tells the leaf owner a draft
+    // just landed. That is not a board write -- it touches no card record at all -- so the property
+    // this file owns is intact, but the OLD encoding of it ("every POST must be a comments POST") was
+    // narrower than the property and would have rejected it. The allow-list is therefore two NAMED
+    // endpoints, not "anything": a POST to any third endpoint still fails here, and the message POST
+    // gets its own check below that it carries no card fields, so widening cannot become a hole.
     const mutating = SCRIPTS.flatMap(curlCalls).filter((c) => /-X\s+(POST|PUT|PATCH|DELETE)/.test(c))
     expect(mutating.length).toBeGreaterThan(0)
     for (const call of mutating) {
       expect(call).toMatch(/-X\s+POST/)
-      expect(call).toMatch(/\/api\/kanban\/\$[A-Za-z_][A-Za-z0-9_]*\/comments/)
+      expect(
+        COMMENT_POST.test(call) || MESSAGE_POST.test(call),
+        `unexpected mutating endpoint: ${call}`,
+      ).toBe(true)
+    }
+  })
+
+  it('both allowed shapes are actually present -- otherwise the allow-list above is half-dead', () => {
+    const mutating = SCRIPTS.flatMap(curlCalls).filter((c) => /-X\s+POST/.test(c))
+    expect(mutating.filter((c) => COMMENT_POST.test(c)).length).toBeGreaterThan(0)
+    expect(mutating.filter((c) => MESSAGE_POST.test(c)).length).toBeGreaterThan(0)
+  })
+
+  it('the nudge POST carries no card fields -- it notifies, it does not edit', () => {
+    const nudges = SCRIPTS.flatMap(curlCalls).filter((c) => MESSAGE_POST.test(c))
+    expect(nudges.length).toBeGreaterThan(0)
+    for (const call of nudges) {
+      expect(call, 'a nudge must not name a card endpoint').not.toMatch(/\/api\/kanban/)
+      expect(call, 'a nudge must not send a status').not.toMatch(/"status"\s*:/)
+      expect(call, 'a nudge must not send an assignee field').not.toMatch(/"assignee"\s*:/)
     }
   })
 

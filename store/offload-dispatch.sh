@@ -200,6 +200,11 @@ for l in leaves:
         "title": l.get("title") or "",
         "description": l.get("description") or "",
         "assignee": l.get("assignee") or "mikrob",
+        # What the BOARD itself carries, undefaulted. The line above defaults to "mikrob" so the local-model
+        # call always has an --agent; that default would otherwise make a leaf with NO assignee
+        # indistinguishable from one actually assigned to mikrob, and the draft nudge (card 0b3a3084)
+        # has to say which of the two it is.
+        "assignee_raw": (l.get("assignee") or "").strip(),
         "tags": tags_for(l),
         "project": l.get("project") or "",
         "parent_context": ancestor_context(str(l["id"])),
@@ -208,11 +213,101 @@ print(json.dumps(out))
 ' 2>/dev/null
 }
 
+# --- DRAFT NUDGE (card 0b3a3084) ----------------------------------------------------------------
+# The draft arrives ASYNCHRONOUSLY, after the agent was already dispatched. Measured twice on one day
+# on one agent (f3757cc7, 90e4cbdf): the agent read the card at dispatch time with zero comments, the
+# draft landed later, and nothing looked back -- both times the draft-review guard (1338e68b) caught it
+# at the END of the work, when a draft is only an administrative item to adjudicate. Telling the owner
+# the moment the comment lands is what makes the offload save tokens DURING the work, which is its
+# whole point.
+#
+# ONE function, both posting sites on purpose: this is one contract with two call sites, and updating
+# one of a pair is exactly the class of miss this card was opened for.
+#
+# NOT SPAM-GUARDED HERE, because the attempts file already does it (pitfall 4): a draft posts only on
+# success, and success writes status=done, which the loop's precheck skips on every later sweep --
+# permanently, since only `exhausted` entries expire. The exhausted notice fires only on the attempt
+# that reaches 3, and that writes status=exhausted, so it can recur at most once per EXHAUSTED_TTL
+# (24h) per leaf. Both are already once-per-event; a second counter would only be a second thing to
+# get wrong.
+#
+# from="mikrob" is the fleet's convention for an automated nudge (fleet-nudger.sh does the same), and
+# it carries the same disclaiming tag, because the recipient must not read it as the orchestrator
+# having looked at their card. The DRAFT COMMENT itself stays author="local-llm" -- card 3307b428 is
+# about comment authorship, which the gate sweeps key on; a message is not swept by author.
+NUDGE_FROM="mikrob"
+NUDGE_TAG="[local-llm offload, automatikus jelzes -- nem MikroB olvasta el a kartyadat]"
+
+# True when the fleet agent currently holds a session. A message to a PARKED agent is ACCEPTED by the
+# API (it validates the recipient, not its liveness) and sits pending -- the router delivers it only to
+# a live session and abandons it after the window. So a nudge to a parked agent is not an error, it is
+# a silent loss, which is the failure this card exists to prevent (pitfall 3). Unknown/unreachable ->
+# false, so the fallback below is the safe direction.
+agent_is_running() {
+  local agent="$1"
+  [[ -n "${agent// }" ]] || return 1
+  curl -s -H @"$hdr_file" "$DASH/api/agents" 2>/dev/null | AGENT="$agent" python3 -c '
+import json, os, sys
+want = os.environ["AGENT"]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+agents = data if isinstance(data, list) else data.get("agents", [])
+for a in agents:
+    if str(a.get("name", "")) == want:
+        sys.exit(0 if a.get("running") else 1)
+sys.exit(1)
+' 2>/dev/null
+}
+
+# The routing DECISION, separated from the sending so it can be tested without a board or a session:
+# prints "<recipient>\t<prefix note>". Three cases, and the two fallbacks both land on mikrob, who is
+# the one agent that never parks itself.
+nudge_recipient() {
+  # $1 = the assignee the board carries (may be empty)   $2 = 1 when that agent holds a session
+  local assignee="$1" running="$2"
+  if [[ -z "${assignee// }" ]]; then
+    printf 'mikrob\tA kartyanak NINCS felelose (6a. szabaly), ezert ez neked szol. '
+  elif [[ "$running" == "1" ]]; then
+    printf '%s\t' "$assignee"
+  else
+    printf 'mikrob\tA kartya felelose (%s) most PARKOLVA van, neki kuldve elveszne. ' "$assignee"
+  fi
+}
+
+nudge_leaf_owner() {
+  # $1 = leaf id   $2 = the assignee the board carries (may be empty)   $3 = draft|exhausted
+  local leaf_id="$1" assignee="$2" kind="$3" text="" running=0 to="" note=""
+
+  case "$kind" in
+    draft)
+      text="Draft erkezett a #$leaf_id kartyara (helyi 7B, offload). Nezd meg, MIELOTT magad megirod -- a draft akkor sporol tokent, ha munka kozben hasznalod, nem ha a vegen biralod el. Amikor vegeztel vele, tegyel a kartyara egy sort (sor elejen): Draft-Review: ELFOGADVA / RESZBEN / ELUTASITVA (card 1338e68b)." ;;
+    exhausted)
+      text="A helyi modell KIMERULT a #$leaf_id kartyan (3 sikertelen tranziens kiserlet), draft NEM fog erkezni. A kartya nincs blokkolva: vidd tovabb a szokasos online uton." ;;
+    *) return 0 ;;
+  esac
+
+  agent_is_running "$assignee" && running=1
+  IFS=$'\t' read -r to note < <(nudge_recipient "$assignee" "$running")
+
+  curl -s -X POST "$DASH/api/messages" -H "Content-Type: application/json" -H @"$hdr_file" \
+    -d "$(python3 -c 'import json,sys; print(json.dumps({"from":sys.argv[1],"to":sys.argv[2],"content":sys.argv[3]+chr(10)+chr(10)+sys.argv[4]+sys.argv[5]}))' \
+      "$NUDGE_FROM" "$to" "$NUDGE_TAG" "$note" "$text")" >/dev/null 2>&1 || true
+  return 0
+}
+
 # --- test hooks (no network/token/lock needed) ---------------------------------------------------
 # --test-resolve: feed a kanban-list JSON fixture on stdin, CARD via env; prints the resolved leaves.
 # --test-attempts-op OP LEAF [--file PATH]: exercises the attempts state machine against a scratch file.
 if [[ "${1:-}" == "--test-resolve" ]]; then
   resolve_leaves
+  exit 0
+fi
+# --test-nudge-recipient ASSIGNEE RUNNING: the draft-nudge routing decision (card 0b3a3084), pure.
+if [[ "${1:-}" == "--test-nudge-recipient" ]]; then
+  nudge_recipient "${2-}" "${3-}"
+  echo
   exit 0
 fi
 if [[ "${1:-}" == "--test-attempts-op" ]]; then
@@ -291,7 +386,7 @@ post_exhausted_notice() {
 try_leaf() {
   # Caller already ran attempts_op check + skipped done/exhausted leaves before invoking this (the
   # loop's precheck below) -- no need to repeat that read here.
-  local leaf_id="$1" leaf_title="$2" leaf_desc="$3" leaf_assignee="$4" leaf_tags="$5" leaf_project="$6" parent_ctx="$7"
+  local leaf_id="$1" leaf_title="$2" leaf_desc="$3" leaf_assignee="$4" leaf_tags="$5" leaf_project="$6" parent_ctx="$7" leaf_assignee_raw="${8:-}"
   local task="$leaf_title
 
 $leaf_desc"
@@ -308,6 +403,7 @@ $leaf_desc"
   if [[ $rc -eq 0 && -n "${out// }" ]]; then
     attempts_op success "$leaf_id" >/dev/null
     post_draft_comment "$leaf_id" "$leaf_title" "$out"
+    nudge_leaf_owner "$leaf_id" "$leaf_assignee_raw" draft || true
     echo "offload-dispatch: leaf $leaf_id -> posted local draft"
     return 0
   elif [[ $rc -eq 9 ]]; then
@@ -320,6 +416,7 @@ $leaf_desc"
     echo "offload-dispatch: leaf $leaf_id -> local attempt failed (rc=$rc), attempt ${n:-?}/3" >&2
     if [[ "${n:-0}" -ge 3 ]]; then
       post_exhausted_notice "$leaf_id"
+      nudge_leaf_owner "$leaf_id" "$leaf_assignee_raw" exhausted || true
     fi
     return 1
   fi
@@ -347,7 +444,7 @@ attempted=0
 drafted=0
 # Fields travel base64-encoded end to end (title/description routinely contain newlines/tabs, which
 # would otherwise corrupt `read -r` field splitting) and are only decoded at the point of use.
-while IFS=$'\t' read -r b64id b64title b64desc b64assignee b64tags b64project b64ctx; do
+while IFS=$'\t' read -r b64id b64title b64desc b64assignee b64tags b64project b64ctx b64assignee_raw; do
   [[ -z "$b64id" ]] && continue
   lid="$(printf '%s' "$b64id" | base64 -d)"
   (( attempted >= OFFLOAD_MAX_SUBTASKS )) && { echo "offload-dispatch: leaf call budget ($OFFLOAD_MAX_SUBTASKS) reached, stopping" >&2; break; }
@@ -360,14 +457,15 @@ while IFS=$'\t' read -r b64id b64title b64desc b64assignee b64tags b64project b6
   ltags="$(printf '%s' "$b64tags" | base64 -d)"
   lproject="$(printf '%s' "$b64project" | base64 -d)"
   lctx="$(printf '%s' "$b64ctx" | base64 -d)"
+  lassignee_raw="$(printf '%s' "$b64assignee_raw" | base64 -d)"
   attempted=$(( attempted + 1 ))
-  if try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx"; then
+  if try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx" "$lassignee_raw"; then
     drafted=$(( drafted + 1 ))
   fi
 done < <(printf '%s' "$LEAVES_JSON" | python3 -c '
 import json, sys, base64
 for l in json.load(sys.stdin):
-    fields = [l["id"], l["title"], l["description"], l["assignee"], l["tags"], l["project"], l["parent_context"]]
+    fields = [l["id"], l["title"], l["description"], l["assignee"], l["tags"], l["project"], l["parent_context"], l["assignee_raw"]]
     print("\t".join(base64.b64encode(str(x).encode()).decode() for x in fields))
 ')
 
