@@ -12331,3 +12331,46 @@ klón HEAD-jére kulcsol, a CleanCore fő klónja viszont csak fetch-alap: a HEA
 landoláskor. Mérve: a gráf `9598e8e9`-nél állt, miközben az `origin/main` 9 committal előrébb járt --
 és a szkript „already current"-et jelentett. Marveenen ez nem áll fenn, mert ott a landoló
 fast-forwardolja az élő telepítést. Jelentve, döntésre vár.
+
+## 2026-09-11 -- A gráf-frissítés mondja meg, ha nem tud frissíteni (kártya d2f4b273)
+
+**A lelet.** A `blast-radius-check.py --refresh <repo>` a klón HEAD-jére kulcsolt. Ez igaz
+feltevés egy checkoutban, amiben valaki dolgozik, és HAMIS egy fetch-only klónon -- a CleanCore fő
+klónja pedig szándékosan az (senki nem commitol oda, a HEAD-je landoláskor nem mozdul). Mérve: a
+gráf `9598e8e9`-nél állt, az `origin/main` 9 committal előrébb, és a szkript „already current"-et
+jelentett. Az a hívás, amit épp a gráf elrothadása ellen tettek a landolóba, ott csendes no-op volt.
+
+**Az első terv el lett vetve, mérés alapján.** A kézenfekvő javítás -- a staleness az upstream
+refre kulcsoljon HEAD helyett -- két okból nem működött volna:
+
+1. A CleanCore klónon NINCS beállított upstream: a `main` ágon `@{u}` „fatal: no upstream
+   configured" hibára fut. A javítás tehát pont ott esett volna vissza HEAD-re, ahol számít.
+2. És ez a döntő: a gráf-építő a MUNKAFÁBÓL olvas. A `code_review_graph` a változott fájlokat
+   `git diff --name-status -z <base> --` alakkal szedi össze -- második revízió nélkül --, a
+   rögzített shát pedig a `rev-parse HEAD`-ből veszi. Ugyanazon a klónon mérve: `git diff
+   --name-only <graf> --` **0 fájlt** lát, `git diff --name-only <graf> origin/main` **25-öt**.
+
+Ha csak a célt állítjuk át, a staleness helyesen „9 behind"-ot mond, a refresh lefut, nullát
+indexel, és az elavult shát rögzíti „graph refreshed" üzenettel. A csendes hamis zöldből HANGOS
+hamis zöld lenne. Egy hazug sikerjelentést nehezebb észrevenni, mint egy hazug „already current"-et.
+
+**Döntés.** Ez a kártya azt szállítja, hogy az eszköz NE HAZUDJON: a `refresh_only()` feloldja a
+célt (upstream → `origin/<ág>` → HEAD), és ha a munkafa elmarad tőle, kimondja hány committal,
+megnevezi a célt, nem futtat refresht, és nem-nulla kóddal lép ki (továbbra sem fatálisan). A gráf
+tényleges naprakészen tartása -- eldobható worktree a cél shán -- külön kártya (42194681), mert
+architektúra-döntés.
+
+**Amit a javítás közben derült ki, és itt is javítva.** A `marveen-land.sh` a két gráf-frissítést a
+`sync_live_install` ELŐTT futtatta, vagyis mielőtt az élő telepítés a landolt állapotra ugrott
+volna. Marveenen tehát a gráf MINDIG egy landolással le volt maradva -- csendben, mert a frissítés
+sikert jelentett, csak a rossz commitról. A három lépés sorrendje megfordítva. E nélkül ez a kártya
+rontott volna a marveenen: az új őr ott most már kihagyta volna a frissítést.
+
+**Mutációval ellenőrizve.** Hat mutáns, mind piros. KETTŐ az első körben túlélte, és mindkettő
+valódi hiány volt a tesztben:
+- az „előnyben részesíti az upstreamet" eset VÁKUUM volt, mert a fixture-ben az upstream ugyanaz
+  volt, mint az `origin/<ág>` -- a két kódút ugyanazt adta. Átírva olyan fixture-re, ahol
+  eltérnek;
+- a lemaradás-őr ellenőrzése csak SZÖVEGET nézett, ezért `if False:`-szel is zöld maradt. Mellé
+  került egy VISELKEDÉSI eset, ami valódi repón futtatja a szkriptet, plusz egy pozitív kontroll
+  (naprakész fán nem szabad lemaradást jelentenie).

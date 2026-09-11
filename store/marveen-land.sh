@@ -418,15 +418,21 @@ land_one() {
     # so the agent's own next agent-worktree-marveen.sh top-up (or a plain `git pull --ff-only` inside
     # their persistent worktree) fast-forwards it there automatically. No reset attempted against a
     # branch that IS the agent's own currently-checked-out worktree.
-    # Same reason as in cleancore-land.sh: the blast-radius graph must follow HEAD,
+    # SYNC FIRST, THEN INDEX (card d2f4b273). Both graph tools read the WORKING TREE -- graphify
+    # and code_review_graph discover changed files with `git diff --name-status -z <base> --`, no
+    # second revision -- so refreshing before the live install has been fast-forwarded indexes the
+    # PRE-landing tree and records the pre-landing sha. The graph was therefore always one landing
+    # behind here, quietly: the refresh reported success, just about the wrong commit. The three
+    # lines below used to run in the opposite order.
+    sync_live_install
+    # Same reason as in cleancore-land.sh: the blast-radius graph must follow the landed state,
     # or the guard silently stops enforcing. Non-fatal by construction.
     "$(dirname "$0")/blast-radius-check.py" --refresh "$MAIN" 2>&1 | sed 's/^/  /' || true
     # The graphify code-graph feeds the local model's RAG context at dispatch
     # (card 44477615). It rotted the same way the blast-radius graph did -- built once
-    # on adoption day, then 24 days stale -- so it follows HEAD here too. Incremental
-    # (~13s on marveen) and non-fatal: a graph refresh must not fail a landing.
+    # on adoption day, then 24 days stale -- so it follows the landed state here too.
+    # Incremental (~13s on marveen) and non-fatal: a graph refresh must not fail a landing.
     "$(dirname "$0")/graphify.sh" build "$MAIN" 2>&1 | tail -1 | sed 's/^/  graphify: /' || true
-    sync_live_install
     # Card 77075367 made this gap VISIBLE at land time, after a gated security fix (f0389e81) sat
     # inactive for ~1h. Card f1b3f2f0 CLOSES it instead: a src/-touching land now rebuilds dist/
     # here. The restart half of 77075367's decision is unchanged -- still ./update.sh, still
