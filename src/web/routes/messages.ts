@@ -14,10 +14,12 @@ import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
 import { isReservedSenderId } from '../system-directive-id.js'
-import { OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { appendCardStateStamp } from '../kanban-state-stamp.js'
+import { stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
@@ -265,16 +267,44 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // human-facing `#<seq>` form before persistence, so the dashboard and
     // every downstream consumer sees the canonical reference even when a
     // sub-agent forgets the CLAUDE.md rule (#75 Cuzcoo dispatch).
-    const normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
-    // Card ffaa4ff1: stamp what the board says RIGHT NOW for any card this message names, so a
-    // recipient reading it an hour later can see at a glance that the state has moved. A hint, not
-    // a lock -- the runbook rule (re-read the card before working) ships with it, not instead of it.
+    // MERGE UNION (B-wave, card 42938a74): BOTH code-side stamps run, in the order they
+    // each need. stampHeartbeatHeader fixes the digest header clock (HBORACSUSZAS908 --
+    // an agent-typed hour drifts forward as its session fills, measured 0,0,0,0,0,+1h,+3h);
+    // appendCardStateStamp adds what the board says NOW for any card the message names
+    // (card ffaa4ff1). Different inputs, different outputs, no overlap.
+    const normalizedContent = normalizeKanbanRefs(stampHeartbeatHeader(content.trim()), getKanbanSeqByIdPrefix)
     const stampedContent = appendCardStateStamp(normalizedContent, getKanbanCardStateByIdPrefix)
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, stampedContent, trimmedOriginNote)
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
+    // A LOCAL recipient that is not running never receives this: the router
+    // retries for a while and then abandons it, and the failure notice goes to
+    // the MAIN agent, not to the sender. The caller therefore sees a plain 200
+    // and believes it delegated. Federated addresses already get an actionable
+    // error at creation time (see above) -- give the local path the same
+    // courtesy, as a non-breaking warning field rather than a status change, so
+    // existing callers keep working.
+    // The MAIN agent is exempt (MSGWARN908): its session is
+    // `${MAIN_AGENT_ID}-channels`, so isAgentRunning() -- which probes
+    // `agent-<name>` -- always says stopped, and the router never abandons a
+    // main-agent message anyway (pull model: the main agent drains its own
+    // inbox each turn). The warning below was therefore always false for it,
+    // and on 2026-09-08 the false "not running" state reached the owner as a
+    // system-down report. The worst reaction it invites -- starting a second
+    // main instance -- is exactly what the pull model must never see.
+    if (!storedTo.includes('/')
+        && sanitizeAgentIdent(storedTo) !== sanitizeAgentIdent(MAIN_AGENT_ID)
+        && !isAgentRunning(sanitizeAgentIdent(storedTo))) {
+      logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- likely to be abandoned')
+      json(res, {
+        ...msg,
+        targetRunning: false,
+        warning: `'${msg.to_agent}' nem fut -- indítsd el (POST /api/agents/${msg.to_agent}/start), várd meg amíg feláll, és küldd újra. Egy leállított ügynöknek küldött üzenet nem várakozik, hanem elveszik.`,
+      })
+      return true
+    }
     json(res, msg)
     return true
   }

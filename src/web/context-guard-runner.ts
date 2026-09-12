@@ -14,10 +14,12 @@ import {
   isSessionReadyForPrompt,
 } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
+import { notifyChannel } from '../notify.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
+import { recordRescueFailure, clearRescueFailures } from './rescue-failure-tracker.js'
 import { createAgentMessage } from '../db.js'
 import { sweepAgentDirTripwire } from './agent-dir-tripwire.js'
 import {
@@ -176,6 +178,18 @@ export function resumePrompt(
     base + source +
     `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
     `és FOLYTASD a megkezdett munkát magadtól. Ne kezdd elölről ami a handoff szerint már kész. ` +
+    // ORSICTX912: msg 23670 was delivered SEVEN SECONDS after the guard kill
+    // started, into the dying session -- the queue marked it delivered, the
+    // fresh session had no reason to look, and completed_at is unused (0/37
+    // measured), so the loss is invisible from the queue. The re-read must
+    // ride in the resume prompt (the fresh session's only context), and the
+    // ack-to-sender is the OBSERVABLE trace: without it, verifying this very
+    // instruction would run into the same blindness it exists to fix.
+    `RESTART-ABLAK: az előző session utolsó ~15 percében kézbesített inter-agent üzenet elveszhetett. ` +
+    `Olvasd vissza a saját sorodat erre az ablakra (GET /api/messages?agent=${name}, created_at szerint szűrve), ` +
+    `és minden ott talált, még el nem intézett kérést kezelj újként. KÖTELEZŐ MEGFIGYELHETŐ NYOM: minden ` +
+    `visszaolvasott tételről küldj rövid nyugtát a feladónak ("[RESTART-ABLAK] <id> felvéve a friss sessionben"), ` +
+    `akkor is, ha nincs belőle teendő -- e nélkül a visszaolvasás a sorból láthatatlan. ` +
     // RESPAWNZAJ822/PRODFAAG822: a fresh session acting on a resume goal is
     // exactly the actor that branch-switched and committed on the live prod
     // tree (2026-08-22 10:10, PR #1036 duplicate). The constraint must ride in
@@ -263,7 +277,14 @@ async function performRestart(name: string): Promise<void> {
     // re-launch it non-fresh (--continue), which would defeat the whole point
     // of a context-guard restart -- dropping the saturated context.
     markAgentRestartPending(name)
-    await restartAgentProcess(name, { fresh: true })
+    // The result was discarded here until 2026-09-01. startAgentProcess has an
+    // early "Agent is already running" return, and a supervisor that started
+    // the agent inside our stop window (restart-lock.ts) trips it -- so the
+    // rescue reported success while the pane still held the saturated session
+    // it was supposed to drop. Measured twice on levente, 2026-08-31 19:10 and
+    // 19:41; the second restart WAS the first one's unnoticed failure.
+    const res = await restartAgentProcess(name, { fresh: true })
+    if (!res.ok) throw new Error(res.error ?? 'agent restart failed')
   }
 }
 
@@ -424,7 +445,64 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         } catch (err) {
           logger.warn({ err, name }, 'context-guard: pre-restart pane snapshot failed')
         }
-        await performRestart(name)
+        try {
+          await performRestart(name)
+          // The streak is over: only a rescue that actually ran clears it.
+          clearRescueFailures(name)
+        } catch (err) {
+          // guardStates was advanced to the post-restart phase BEFORE this
+          // switch, so a failed rescue would otherwise be filed as a completed
+          // one: the guard would wait for a session it never started, inject a
+          // resume prompt into the old saturated pane, and then sit out its
+          // cooldown. Roll the state back so the next sweep re-measures and
+          // retries, and never claim the restart on the message queue.
+          guardStates.set(name, INITIAL_GUARD_STATE)
+          const { count, alert: shouldAlert } = recordRescueFailure(name, nowMs)
+          logger.error({ err, name, reason: decision.reason, consecutiveFailures: count }, 'context-guard: rescue restart FAILED -- state rolled back for retry')
+          // Honest and silent is still silent. A saturated pane cannot be
+          // prompted (dispatch refuses it), so an agent whose rescue keeps
+          // failing is unreachable, and the only thing that knows is this log
+          // line. Escalate on the third consecutive failure, then hourly.
+          if (shouldAlert) {
+            try {
+              // The alert sink must never be the patient's own inbox. For the
+              // MAIN agent a queue message would be addressed to the very agent
+              // whose rescue keeps failing -- main-agent delivery is pull-based,
+              // and a saturated main does not pull, so the alert would sit
+              // "pending" exactly when it matters (measured 2026-09-08: main
+              // saturated twice that day). Route the main-agent case to the
+              // operator notification channel instead.
+              if (name === MAIN_AGENT_ID) {
+                await notifyChannel(
+                  `[CONTEXT-GUARD] ${count}. EGYMAST KOVETO bukott mentes a FO-AGENSNEL (${name}). ` +
+                  `Ok: ${decision.reason}` + (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
+                  `. Utolso hiba: ${err instanceof Error ? err.message : String(err)}. ` +
+                  'A guard kb. 10 percenkent ujraprobalja; ez a riasztas orankent ismetlodik, amig tart.',
+                )
+              } else {
+              const msg = createAgentMessage(
+                name,
+                MAIN_AGENT_ID,
+                `[CONTEXT-GUARD] ${count}. EGYMAST KOVETO bukott mentes a(z) "${name}" agensnel. ` +
+                `Ok: ${decision.reason}` + (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
+                `. Utolso hiba: ${err instanceof Error ? err.message : String(err)}. ` +
+                'A szaturalt pane-t NEM lehet prompttal elerni (a dispatch visszautasitja), tehat ' +
+                'ez az agens addig elerhetetlen, amig a restart nem sikerul. A guard kb. 10 percenkent ' +
+                'ujraprobalja magatol, es ez a riasztas orankent ismetlodik, amig tart. Amit nezz meg: ' +
+                `fut-e a tmux session (agent-${name}), mit mutat a store/context-guard-last-pane-${name}.txt, ` +
+                "es a dashboard.log 'rescue restart FAILED' / 'lost the start race' sorai.",
+                'context-guard rescue failure alert',
+              )
+              if (!msg?.id) throw new Error('createAgentMessage returned no id')
+              }
+            } catch (alertErr) {
+              // The alert is the last channel out of a silent failure; losing it
+              // without a trace would restore exactly the silence it exists for.
+              logger.error({ err: alertErr, name, consecutiveFailures: count }, 'context-guard: FAILED TO RAISE the rescue-failure alert')
+            }
+          }
+          break
+        }
         try {
           createAgentMessage(
             name,
@@ -478,19 +556,38 @@ export async function getContextGuardStatus(): Promise<Array<{
   pct: number | null
   enabled: boolean
   saturationRestart: boolean
+  cooldownUntilMs?: number
 }>> {
   const names = [MAIN_AGENT_ID, ...listAgentNames()]
+  // MERGE UNION (B-wave, card 42938a74): upstream's cooldownUntilMs field and its `state` hoist are
+  // adopted, but the listing stays ASYNC -- measurePct returns a Promise in this fork, so upstream's
+  // synchronous map would have put a Promise object in every `pct`.
   return Promise.all(names.map(async (name) => {
+    const state = guardStates.get(name)
     const cfg = readContextGuardConfig(name)
     const remote = name !== MAIN_AGENT_ID && !!readAgentRemoteHost(name)
     return {
       agent: name,
-      phase: guardStates.get(name)?.phase ?? 'idle',
+      phase: state?.phase ?? 'idle',
       pct: cfg.enabled && !remote ? await measurePct(name, cfg.limitTokens) : null,
       enabled: cfg.enabled,
       saturationRestart: cfg.saturationRestart,
+      ...cooldownStatusExtra(state),
     }
   }))
+}
+
+/** CGBADGE908: in cooldown the UI shows the REMAINING TIME, because that is
+ * what the word promises -- the badge used to append the context pct instead,
+ * and "cooldown 19%" read as a cooldown position. The field is sent ONLY in
+ * the cooldown phase so no consumer mistakes a stale timestamp for a live
+ * timer. Exported so the test pins both branches. */
+export function cooldownStatusExtra(
+  state: { phase: string; cooldownUntilMs: number } | undefined,
+): { cooldownUntilMs?: number } {
+  return state?.phase === 'cooldown' && state.cooldownUntilMs > 0
+    ? { cooldownUntilMs: state.cooldownUntilMs }
+    : {}
 }
 
 /**

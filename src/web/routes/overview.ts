@@ -11,6 +11,7 @@ import { isAgentRunning } from '../agent-process.js'
 import { json, jsonMaybeGzip } from '../http-helpers.js'
 import { getUpdateStatus, type AggregateUpdateStatus } from '../update-checker.js'
 import { refreshUserTurnIndex, turnsOnDay } from '../user-turn-index.js'
+import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC } from '../quota.js'
 import type { RouteContext } from './types.js'
 
 // The per-day user-turn tallies now come from src/web/user-turn-index.ts (card ba0d218f): the inline
@@ -150,6 +151,15 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
         avatarUrl: `/api/agents/${encodeURIComponent(a)}/avatar`,
       })
     }
+    // Same file and the same staleness threshold the quota monitor uses, so the
+    // strip and the alert can never disagree about what the fleet has left.
+    const maxAgeSec = Number(process.env.QUOTA_MAX_AGE_SEC) || DEFAULT_MAX_AGE_SEC
+    const quota = readQuotaSnapshot(
+      join(PROJECT_ROOT, 'store', '.claude-rate-limits.json'),
+      Math.floor(Date.now() / 1000),
+      maxAgeSec,
+    )
+
     jsonMaybeGzip(req, res, {
       agents: { total, running },
       tasksToday,
@@ -162,6 +172,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       // (Szotasz/marveen). Written by the daily store/upstream-update-check.sh; the
       // overview shows a FRISSÍTÉS-BANNER when behind > 0. Null when never checked.
       upstreamUpdate: readUpstreamUpdate(),
+      quota,
     })
     return true
   }

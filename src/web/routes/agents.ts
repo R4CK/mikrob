@@ -4,9 +4,13 @@ import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
 import { execFileAsync } from '../exec-async.js'
 import { logger } from '../../logger.js'
+import { beginRestart, endRestart } from '../restart-lock.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, getKanbanCardStateByIdPrefix, countNewerMessagesFromSameSender } from '../../db.js'
+import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, getKanbanCardStateByIdPrefix, countNewerMessagesFromSameSender,
+  getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards } from '../../db.js'
+import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
+import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
 import { formatDeliveryStalenessNote } from '../kanban-state-stamp.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
@@ -107,6 +111,7 @@ import {
   agentSessionName,
   sendPromptToSession,
   capturePane,
+  delay,
 } from '../agent-process.js'
 import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
@@ -116,7 +121,7 @@ import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
-import { readContextGuardConfig, writeContextGuardConfig } from '../context-guard-store.js'
+import { readContextGuardConfig, writeContextGuardConfig, seedContextGuardForNewAgent } from '../context-guard-store.js'
 import { getContextGuardStatus } from '../context-guard-runner.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
 import type { ContextGuardConfig } from '../../context-guard.js'
@@ -467,6 +472,47 @@ interface AgentDetail extends AgentSummary {
   hasApiKey: boolean
 }
 
+// Where a READER finds the transcript of a given agent.
+//
+// GH #816: the main agent's row resolved this the same way as a sub-agent's,
+// through agentDir(name) -> <root>/agents/<main>. The main agent does not run
+// there; it runs in PROJECT_ROOT, under the channels session, so the reader was
+// pointed at a different working directory than the one being written.
+//
+// Measured on the live install, 2026-09-09, same moment, same process:
+//   agents/<main>  -> projects/-Users-marvin-ClaudeClaw-agents-marveen  (exists) -> null
+//   PROJECT_ROOT   -> projects/-Users-marvin-ClaudeClaw                 (exists) -> claude-opus-5
+// The old directory is not missing, which is why this never surfaced as an
+// error: it is a real directory holding another session's history, and it
+// simply has no current model to report.
+//
+// The consequence is the trust problem in the report: activeModel stayed null,
+// the row fell back to the configured value with modelSource "default", and a
+// fallback shown as a plain value reads as a statement. The reporter's owner
+// took it for a silent downgrade of their assistant.
+//
+// The config root matters too. With main-agent isolation the session writes
+// under <root>/.channels-config; on this install that path is a symlink to
+// ~/.claude/projects, but an install without the symlink would read an empty
+// shared root and go back to reporting null. Probing for the directory (rather
+// than re-deriving the launcher's isolation decision) is the same approach
+// resolveAgentConfigDirForRead uses, and for the same reason: duplicating the
+// launcher's logic is how the two paths drift.
+export function resolveTranscriptLocation(name: string): { workingDir: string; configDir: string | undefined } {
+  if (!isMainChannelsAgent(name)) {
+    return { workingDir: agentDir(name), configDir: resolveAgentConfigDir(name).configDir ?? undefined }
+  }
+  const isolated = join(PROJECT_ROOT, '.channels-config')
+  return {
+    workingDir: PROJECT_ROOT,
+    configDir: existsSync(join(isolated, 'projects')) ? isolated : undefined,
+  }
+}
+
+// MERGE NOTE (B-wave, card 42938a74): upstream made getAgentSummary SYNCHRONOUS. This fork
+// keeps it async -- active-model.ts returns Promises here (readActiveModelFromProjectDir /
+// readContextTokensFromProjectDir), and card 9a2fd3f7 reads them CONCURRENTLY. The
+// resolveTranscriptLocation fix above is adopted; the signature is not.
 async function getAgentSummary(name: string): Promise<AgentSummary> {
   const dir = agentDir(name)
   const configRoot = agentConfigRoot(name)
@@ -489,22 +535,38 @@ async function getAgentSummary(name: string): Promise<AgentSummary> {
   // never blocks on a sleeping laptop's ssh timeout. `running` is derived from
   // it; `unreachable` reads as not-running but is surfaced distinctly so the UI
   // does not show a still-alive remote agent as "stopped".
+  //
+  // MSGWARN908: the MAIN agent lives in `${MAIN_AGENT_ID}-channels` (launchd /
+  // channels.sh), not `agent-<name>` -- agentRunState() on its id always said
+  // 'stopped', so this roster reported a running Marveen as down, and on
+  // 2026-09-08 that false state was relayed to the owner as a system-down
+  // report. Probe the channels session instead (same source the activity
+  // endpoint already uses).
+  const isMain = isMainChannelsAgent(name)
   const remote = readAgentRemoteConfig(name)
-  const runState = agentRunStateCached(name, remote.host != null)
+  const mainSessionName = isMain ? MAIN_CHANNELS_SESSION : agentSessionName(name)
+  const runState: AgentRunState = isMain
+    ? (capturePane(MAIN_CHANNELS_SESSION) !== null ? 'running' : 'stopped')
+    : agentRunStateCached(name, remote.host != null)
   const running = runState === 'running'
-  const session = running ? agentSessionName(name) : undefined
-  const runningSince = running ? getAgentRunningSince(name) : null
+  const session = running ? mainSessionName : undefined
+  const runningSince = running ? getAgentRunningSince(name, mainSessionName) : null
 
   // Reauth badge: only meaningful for a running session (a stopped agent has
   // no pane to inspect). One capture-pane per running agent on the list poll,
   // cached (local and remote) for the same burst reason as agentRunStateCached.
   const reauth = running ? detectReauthNeeded(capturePaneCached(name, remote.host ?? null)) : { needsReauth: false }
-  const configDir = resolveAgentConfigDir(name).configDir ?? undefined
+  // MERGE UNION (B-wave, card 42938a74): upstream's resolveTranscriptLocation decides WHERE to
+  // read (the MAIN agent runs in PROJECT_ROOT, not agents/<name> -- measured, GH #816 and
+  // GATECTX910: its row showed contextTokens null with a live transcript sitting right there).
+  // The fork's concurrent pair (card 9a2fd3f7) decides HOW MANY round trips. Different axes,
+  // both kept; the fork's `dir` + configured-config-dir pair is what the fix replaces.
+  const transcript = resolveTranscriptLocation(name)
   // Independent reads (different offsets into the same or different files) -- run concurrently
   // rather than sequentially awaiting each (card 9a2fd3f7).
   const [activeModel, contextTokens] = await Promise.all([
-    running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, configDir) : Promise.resolve(null),
-    running ? readContextTokensFromProjectDir(dir, configDir) : Promise.resolve(null),
+    running ? readActiveModelFromProjectDir(transcript.workingDir, runningSince ?? undefined, transcript.configDir) : Promise.resolve(null),
+    running ? readContextTokensFromProjectDir(transcript.workingDir, transcript.configDir) : Promise.resolve(null),
   ])
 
   return {
@@ -587,7 +649,9 @@ function listAgentSummaries(): Promise<AgentSummary[]> {
 // turn absorbs, mirroring the router's MAX_MESSAGES_PER_TICK.
 const INBOX_DRAIN_CAP = 10
 
-// Pane -> coarse activity label, used by /api/agents/activity.
+// Pane -> coarse activity label. Shared by /api/agents/activity and
+// /api/agents/status so the two surfaces can never drift into disagreeing
+// about whether the same agent is working.
 function paneActivityLabel(running: boolean, pane: string | null): string {
   if (!running) return 'stopped'
   if (pane === null) return 'unknown'
@@ -765,6 +829,71 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     return true
   }
 
+  // Per-agent status: what each agent is on, since when, and how long since it
+  // last did anything. Sits BESIDE /api/agents/activity (which stays unchanged);
+  // that one answers "is it working", this one answers "on what, and since when".
+  //
+  // All I/O is here; the derivation is the pure deriveAgentStatus so the rules
+  // stay unit-testable. Deliberately no completion percentage -- see agent-status.ts.
+  if (path === '/api/agents/status' && method === 'GET') {
+    const nowSec = Math.floor(Date.now() / 1000)
+    const cards = getAgentCurrentCards()
+    const messages = getAgentMessageActivity()
+    // Count tool calls from the moment the current work started, so the number
+    // answers "how much has it done on THIS", not "how busy was it today".
+    const workStart: Record<string, number | null> = {}
+    for (const [agent, card] of Object.entries(cards)) workStart[agent] = card.enteredStatusAt
+    for (const [agent, m] of Object.entries(messages)) {
+      if (workStart[agent] == null) workStart[agent] = m.lastInboundAt
+    }
+    const tools = getAgentToolActivity(AGENT_STATUS_THRESHOLDS.TOOL_DATA_WINDOW_SEC, workStart)
+
+    const signalsFor = (name: string, isMain: boolean, running: boolean, pane: string | null, runState: string): AgentStatusSignals => {
+      const paneLabel = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane)
+      const tool = tools[name]
+      const msg = messages[name]
+      return {
+        agent: name,
+        isMain,
+        running,
+        paneState: paneLabel as AgentStatusSignals['paneState'],
+        // Passed through uninterpreted -- no state is derived from it. See the
+        // permissionMode note in agent-status.ts for why.
+        permissionMode: running && pane !== null ? detectPermissionMode(pane) : null,
+        toolDataAvailable: tool !== undefined,
+        toolCallsSinceStart: tool?.sinceWork ?? 0,
+        lastToolCallAt: tool?.lastAt ?? null,
+        lastInboundAt: msg?.lastInboundAt ?? null,
+        lastOutboundAt: msg?.lastOutboundAt ?? null,
+        lastInboundSubject: msg?.lastInboundSubject ?? null,
+        currentCard: cards[name] ?? null,
+        nowSec,
+      }
+    }
+
+    const rows: AgentStatusRow[] = []
+    {
+      const mainPane = capturePane(MAIN_CHANNELS_SESSION)
+      const running = mainPane !== null
+      rows.push(deriveAgentStatus(signalsFor(MAIN_AGENT_ID, true, running, mainPane, running ? 'running' : 'stopped')))
+    }
+    for (const name of withoutMainAgent(listAgentNames())) {
+      const host = readAgentRemoteHost(name)
+      const runState = agentRunStateCached(name, host != null)
+      const running = runState === 'running'
+      let pane: string | null = null
+      if (running) {
+        pane = host
+          ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
+          : capturePane(agentSessionName(name))
+      }
+      rows.push(deriveAgentStatus(signalsFor(name, false, running, pane, runState)))
+    }
+
+    jsonMaybeGzip(req, res, rows)
+    return true
+  }
+
   if (path === '/api/agents/model-suggest' && method === 'POST') {
     // Collect runtime signals once, then classify per agent.
     // I/O is centralised here; the classifier (model-suggest.ts) stays pure.
@@ -837,7 +966,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       const personaMd = existsSync(personaPath) ? readFileSync(personaPath, 'utf-8') : ''
       const personaText = [claudeMd, personaMd].filter(Boolean).join('\n')
       const currentModel = readAgentModel(name)
-      const contextTokens = (await readContextTokensFromProjectDir(dir)) ?? 0
+      // GATECTX910 (adopted): read the transcript where the session actually writes it. The bare
+      // `dir` read had two blind spots -- an isolated config root (CLAUDE_CONFIG_DIR) read as a
+      // false 0, and the MAIN agent, which runs in PROJECT_ROOT, always read as 0. The `await`
+      // stays: this fork's reader returns a Promise (see the getAgentSummary note above).
+      const transcript = resolveTranscriptLocation(name)
+      const contextTokens = (await readContextTokensFromProjectDir(transcript.workingDir, transcript.configDir)) ?? 0
 
       const kanban = kanbanMap.get(name)
       const signals: AgentSignals = {
@@ -889,6 +1023,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     writeAgentModel(name, model)
     writeAgentSecurityProfile(name, profileId)
     writeAgentSettingsFromProfile(name, loadProfileTemplate(profileId))
+    // A new agent comes up with the context guard ARMED (fleet policy, 2026-09-08).
+    // Written as an explicit store row rather than by moving
+    // DEFAULT_CONTEXT_GUARD: the default is also what hidden technical workers
+    // and never-configured existing agents fall back to, and both are
+    // deliberately proactive-tier-off. Placed here, before personality
+    // generation, so the LLM step -- the one that can fail and fall back to a
+    // template -- cannot leave an agent unguarded.
+    seedContextGuardForNewAgent(name)
     if (rawName && rawName !== name) writeAgentDisplayName(name, rawName)
 
     logger.info({ name, description }, 'Generating agent CLAUDE.md and SOUL.md...')
@@ -1155,19 +1297,29 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         writeAgentChannelProvider(name, provider)
         setAgentEnabledPlugins(name, provider)
         gcWasRunning = isAgentRunning(name)
-        if (gcWasRunning) {
-          const stopRes = await stopAgentProcess(name)
-          if (stopRes.ok) {
-            // was `execSync('sleep 2')`: a whole process spawned just to wait, blocking
-            // the event loop for two seconds. A timer does the same thing for free.
-            await new Promise((r) => setTimeout(r, 2000))
-            // 'Agent is already running' here means the 60s reconcile sweep
-            // raced us in the stop..start gap and started the agent with the
-            // NEW config (written above, before the stop) -- the end state is
-            // exactly what a restart promises, only the starter differs
-            // (PR1014KONFIG821).
-            const gcStartRes = await startAgentProcess(name)
-            gcRestarted = gcStartRes.ok || gcStartRes.error === 'Agent is already running'
+        // This is a stop -> (2s) -> start unit, so it holds the shared restart
+        // slot like every other one: a context-guard rescue landing in the 2s
+        // gap would start with ITS options (fresh:true) while this path
+        // reported restarted:true. When a managed restart is already in
+        // flight, skip loudly -- the config was written BEFORE the stop, so
+        // the in-flight restart's own start picks it up (PR1014KONFIG821).
+        if (gcWasRunning && !beginRestart(name)) {
+          logger.info({ name }, 'Channel-config restart skipped -- a managed restart is already in flight; it will start with the new config')
+        } else if (gcWasRunning) {
+          try {
+            const stopRes = await stopAgentProcess(name)
+            if (stopRes.ok) {
+              await delay(2000)
+              // 'Agent is already running' here means the 60s reconcile sweep
+              // raced us in the stop..start gap and started the agent with the
+              // NEW config (written above, before the stop) -- the end state is
+              // exactly what a restart promises, only the starter differs
+              // (PR1014KONFIG821).
+              const gcStartRes = await startAgentProcess(name)
+              gcRestarted = gcStartRes.ok || gcStartRes.error === 'Agent is already running'
+            }
+          } finally {
+            endRestart(name)
           }
         }
       }
@@ -1260,17 +1412,25 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       setAgentEnabledPlugins(name, provider)
       if (provider === 'telegram') sendWelcomeMessage(name, botToken.trim()).catch(() => {})
       wasRunning = isAgentRunning(name)
-      if (wasRunning) {
-        const stopRes = await stopAgentProcess(name)
-        if (stopRes.ok) {
-          // was `execSync('sleep 2')`: a process spawned purely to wait, freezing the
-          // event loop for two seconds (card 89d0bfde).
-          await new Promise((r) => setTimeout(r, 2000))
-          const startRes = await startAgentProcess(name)
-          // Same reconcile-race as the GC branch above: an 'already running'
-          // start after our own stop means the agent IS up with the new
-          // provider config (PR1014KONFIG821).
-          restarted = startRes.ok || startRes.error === 'Agent is already running'
+      // Same restart-slot discipline as the GC branch above: this too is a
+      // stop -> (2s) -> start unit; skip loudly when a managed restart is in
+      // flight (the pre-stop config write means that restart's start already
+      // yields the new provider config).
+      if (wasRunning && !beginRestart(name)) {
+        logger.info({ name }, 'Channel-config restart skipped -- a managed restart is already in flight; it will start with the new config')
+      } else if (wasRunning) {
+        try {
+          const stopRes = await stopAgentProcess(name)
+          if (stopRes.ok) {
+            await delay(2000)
+            const startRes = await startAgentProcess(name)
+            // Same reconcile-race as the GC branch above: an 'already running'
+            // start after our own stop means the agent IS up with the new
+            // provider config (PR1014KONFIG821).
+            restarted = startRes.ok || startRes.error === 'Agent is already running'
+          }
+        } finally {
+          endRestart(name)
         }
       }
     }
@@ -2120,6 +2280,11 @@ function compactPrompt(): string {
       // the single-agent or whole-fleet importer.
       if (peekBundleKind(bundle) === 'fleet') {
         const result = importAllAgentsBundle(bundle, { overwrite })
+        // An imported agent is a NEW agent on this machine: the bundle carries
+        // the agent directory, never store/context-guard.json. Same rule as
+        // creation (fleet policy, 2026-09-08) and idempotent, so re-importing over an
+        // agent an operator has already configured leaves that row alone.
+        for (const a of result.imported) seedContextGuardForNewAgent(a.name)
         logger.info(
           { imported: result.imported.map((a) => a.name), skipped: result.skipped, secrets: result.includesSecrets },
           'Fleet imported from bundle',
@@ -2139,6 +2304,7 @@ function compactPrompt(): string {
       }
 
       const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite })
+      seedContextGuardForNewAgent(result.name)
       logger.info({ name: result.name, overwritten: result.overwritten, secrets: result.manifest.includesSecrets }, 'Agent imported from bundle')
       json(res, {
         ok: true,

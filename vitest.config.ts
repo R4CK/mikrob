@@ -24,6 +24,14 @@ export default defineConfig({
       'tests/browser/**',
       'agents/**',
       'store/adopted/**/evals/fixtures/**',
+      // vendor/** (card 42938a74, B-wave): adopted from upstream, and the reason it was DECLINED
+      // in the A-wave expired in the very merge that carries this line. That decision (card
+      // 4b9688f6, comment 1877) read "the fork has no vendor/ directory (measured), so it is
+      // inert here" and named this as the point to revisit if the fork ever vendored a tree.
+      // The upstream merge vendors one: vendor/gmail-mcp-fork, with EIGHT *.test.ts files under
+      // src/. Running a vendor's suite is a separate workflow with the vendor's own install,
+      // never this one -- without this line fleet-test.sh would collect all eight.
+      'vendor/**',
     ],
     // Runs ONCE, in the main process, before any worker starts -- unlike setupFiles below, which
     // vitest's default per-file isolation re-runs for every test file. assert-not-live-install.ts

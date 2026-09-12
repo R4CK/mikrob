@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { appendCardStateStampForDispatch } from '../kanban-state-stamp.js'
 import { join } from 'node:path'
 import {
-  listKanbanCards, createKanbanCard, updateKanbanCard,
+  listKanbanCards, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, getKanbanCardFieldEvents, listKanbanProjects,
   getKanbanLineComments, addKanbanLineComment,
@@ -118,6 +118,19 @@ import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
+
+// #1023: keys a PUT /api/kanban/:id body may carry WITHOUT being a writable
+// column -- the read-only card fields and the GET-embedded arrays the dashboard
+// sends back when it PUTs a whole `{...card}` object (web/app.js assignee/parent
+// edits). Accepted and ignored; anything neither here nor in
+// KANBAN_WRITABLE_FIELDS is a caller mistake and gets a 400.
+const KANBAN_READONLY_FIELDS = new Set<string>([
+  'id', 'seq', 'created_at', 'updated_at', 'last_status_at', 'labels', 'blockers',
+  // dispatched_at is a real column set by the dispatch path (markKanbanCardDispatched),
+  // never by a PUT, but getKanbanCard's SELECT * returns it so the dashboard's
+  // whole-card send carries it back. Accept-and-ignore, do not 400.
+  'dispatched_at',
+])
 
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
 // exact curl commands to (1) post a short, human-readable result summary as a
@@ -784,6 +797,27 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const body = await readBody(req)
     const { actor, force, reason, ...data } = JSON.parse(body.toString()) as Record<string, unknown>
+    // #1023 (adopted from upstream, B-wave card 42938a74): reject an unknown field LOUDLY instead
+    // of dropping it silently. updateKanbanCard writes only KANBAN_WRITABLE_FIELDS, so anything
+    // outside the accepted set was discarded while the write still reported success and bumped
+    // updated_at -- twice a real closing note was lost that way. Adopted together with the db.ts
+    // half (the writable-field set and the no-op guard) that arrived in the same merge: taking one
+    // without the other left the route silently lossy while the card claimed the fix was in.
+    //
+    // KANBAN_READONLY_FIELDS are the columns and GET-embedded arrays the dashboard round-trips --
+    // web/app.js sends the whole `{...card}` on an assignee or parent edit -- so they are
+    // accepted-and-ignored rather than rejected, or every UI edit would 400. `force` is already
+    // out of `data` above, and so is `reason` (card 4bbb5167's mass-status audit field,
+    // merged in while this branch was in flight) -- neither ever reaches this check.
+    const unknownFields = Object.keys(data).filter(
+      (k) => !(KANBAN_WRITABLE_FIELDS as readonly string[]).includes(k) && !KANBAN_READONLY_FIELDS.has(k),
+    )
+    if (unknownFields.length > 0) {
+      json(res, {
+        error: `Unknown field(s): ${unknownFields.join(', ')}. Accepted: ${KANBAN_WRITABLE_FIELDS.join(', ')}`,
+      }, 400)
+      return true
+    }
     if (newDevStopWouldBlock(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
       return true

@@ -226,7 +226,14 @@ const KNOWN_SYNC_TICK_FILES = ['agent-process.ts'] as const
     const execFileCalls = (src.match(/\bexecFile\(/g) ?? []).length
     if (execFileCalls === 0) return
     expect(src).toMatch(/new Promise/)
-    expect(src).toMatch(/await /)
+    // Either the file awaits the promise itself, or it RETURNS it and its caller awaits. The
+    // second form is what heartbeat-metrics-inject.ts does (B-wave, card 42938a74): it wraps
+    // execFile in `return new Promise(...)` and schedule-runner.ts does
+    // `await collectHeartbeatMetricsBlock()`. That is exactly as non-blocking as an internal
+    // await -- the tick still cannot continue while the child runs -- but a bare /await / check
+    // reads it as a violation. Widened to the two shapes rather than dropped: an execFile that
+    // is NEITHER awaited NOR returned is still the bug this case exists to catch.
+    expect(src).toMatch(/await |return new Promise/)
   })
 
   it('no NEW route file starts calling a synchronous child', () => {
