@@ -119,6 +119,51 @@ describe('one contract, both call sites', () => {
   })
 })
 
+describe('the leaf fields survive an EMPTY field (the bug that shipped, card 0b3a3084)', () => {
+  // The leaf tuple is base64-encoded field-per-column and read back with `read -r`. A TAB
+  // delimiter is IFS-WHITESPACE, so bash collapses consecutive tabs and an EMPTY field vanishes,
+  // shifting every later field one to the left. `parent_context` is empty for any leaf with no
+  // parent -- most cards -- so the field after it, `assignee_raw`, was lost: the nudge announced
+  // "the card has NO assignee" for #370 (assigned to backend) and #327 (assigned to backend2),
+  // and both went to mikrob instead. The same shift handed the local model the assignee name as
+  // its --context. The 7-field form hid it because the empty field was last.
+
+  it('bash really does collapse a TAB delimiter -- the premise, not folklore', () => {
+    const tab = execFileSync(
+      'bash',
+      ['-c', `printf 'A\tB\t\tD\n' | { IFS=$'\t' read -r a b c d; echo "[$c][$d]"; }`],
+      { encoding: 'utf-8' }
+    ).trim()
+    const pipe = execFileSync(
+      'bash',
+      ['-c', `printf 'A|B||D\n' | { IFS='|' read -r a b c d; echo "[$c][$d]"; }`],
+      { encoding: 'utf-8' }
+    ).trim()
+    expect(tab, 'a tab delimiter drops the empty field and shifts D left').toBe('[D][]')
+    expect(pipe, 'the chosen delimiter keeps the empty field in place').toBe('[][D]')
+  })
+
+  it('the writer and the reader agree on a delimiter that is not IFS whitespace', () => {
+    // Anchored to the executable lines, comment-stripped: the explanation above names both
+    // delimiters, so a file-wide search would stay green after the code went back to a tab.
+    const code = SRC.split('\n').filter((l) => !/^\s*#/.test(l))
+    const writer = code.filter((l) => /\.join\(base64\.b64encode/.test(l))
+    const reader = code.filter((l) => /^\s*while IFS=.*read -r b64id/.test(l))
+    expect(writer.length, 'writer line not found').toBe(1)
+    expect(reader.length, 'reader line not found').toBe(1)
+    expect(writer[0], 'writer must not join on a tab').not.toMatch(/"\\t"\.join/)
+    expect(reader[0], 'reader must not split on a tab').not.toMatch(/IFS=\$'\\t'/)
+    // The delimiter sits BEFORE `.join(` in python: `"|".join(base64...)`.
+    const delim = /"(.)"\.join\(base64/.exec(writer[0])?.[1]
+    expect(delim, 'could not read the writer delimiter').toBeDefined()
+    expect(reader[0], `reader must use the same delimiter as the writer (${delim})`).toContain(
+      `IFS='${delim}'`
+    )
+    // Base64 is A-Za-z0-9+/= -- the delimiter must not collide with it, or a field splits itself.
+    expect(delim!, 'delimiter collides with the base64 alphabet').not.toMatch(/[A-Za-z0-9+/=]/)
+  })
+})
+
 describe('the nudge is labelled as automation, not as the orchestrator reading your card', () => {
   it('carries the disclaiming tag, the way fleet-nudger.sh does', () => {
     // from must be a registered fleet agent (POST /api/messages rejects an unknown sender), and
