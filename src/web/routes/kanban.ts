@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { appendCardStateStampForDispatch } from '../kanban-state-stamp.js'
 import { join } from 'node:path'
 import {
-  listKanbanCards, createKanbanCard, updateKanbanCard,
+  listKanbanCards, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, getKanbanCardFieldEvents, listKanbanProjects,
   getKanbanLineComments, addKanbanLineComment,
@@ -105,6 +105,19 @@ import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
+
+// #1023: keys a PUT /api/kanban/:id body may carry WITHOUT being a writable
+// column -- the read-only card fields and the GET-embedded arrays the dashboard
+// sends back when it PUTs a whole `{...card}` object (web/app.js assignee/parent
+// edits). Accepted and ignored; anything neither here nor in
+// KANBAN_WRITABLE_FIELDS is a caller mistake and gets a 400.
+const KANBAN_READONLY_FIELDS = new Set<string>([
+  'id', 'seq', 'created_at', 'updated_at', 'last_status_at', 'labels', 'blockers',
+  // dispatched_at is a real column set by the dispatch path (markKanbanCardDispatched),
+  // never by a PUT, but getKanbanCard's SELECT * returns it so the dashboard's
+  // whole-card send carries it back. Accept-and-ignore, do not 400.
+  'dispatched_at',
+])
 
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
 // exact curl commands to (1) post a short, human-readable result summary as a

@@ -40,6 +40,17 @@
 // launch Claude Code with --dangerously-skip-permissions, which BYPASSES the
 // settings.json allow/deny list. A PreToolUse hook runs regardless of
 // permission mode, so it is the only reliable mode-independent gate.
+// Why a hook and not a permissions deny-list: the hook is version- and
+// mode-independent, and it can analyze command CONTENT (the Bash send-shape
+// heuristics below), which a name/prefix deny rule cannot express.
+// CORRECTION (SKIPDENY910, measured 2026-09-10): this comment used to claim
+// that --dangerously-skip-permissions BYPASSES the settings.json deny list.
+// That is false on every CLI version we measured (2.1.63, 2.1.110, 2.1.267;
+// marker-file ground truth, deny arm vs no-deny control, -p AND interactive
+// TUI): the deny list IS enforced under the flag, and a tool-name deny is
+// enforced by removing the tool from the session entirely. The hook remains
+// the primary gate anyway -- future CLI behavior is not a contract, and the
+// deny list stays a second, independent layer, not the load-bearing one.
 //
 // This file is wired into every sub-agent's .claude/settings.json by
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
@@ -61,6 +72,7 @@ import {
   CURL_LEADING_RX,
   GIT_LEADING_RX,
 } from './self-pace-gate.mjs'
+import { homedir } from 'node:os'
 
 // Bash command patterns that send mail. SUBGATEPOZ822 (2026-08-22): these are
 // no longer the primary trigger -- they matched CONTENT anywhere in the
@@ -379,13 +391,14 @@ const MANAGE_EMAIL_SEND_OPS = new Set(['send', 'reply', 'replyall', 'forward'])
 // Pure decision: does this tool call send (or attempt to send) email?
 // Returns { deny, kind? }. `kind` selects the deny wording at the hook
 // entrypoint: 'draft-required' is the manage_email case (drafting is fine,
-// only the actual send is refused), everything else is the sub-agent
-// governance block.
+// only the actual send is refused), 'send_email' is the direct MCP send tool
+// (the only path the thread-reply capability below can narrow), everything
+// else is the sub-agent governance block.
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
   // Any MCP send_email tool, name-agnostic (gmail or a differently-named
   // server in a customer install -> the matcher + this both key on send_email).
-  if (/send_email/i.test(name)) return { deny: true }
+  if (/send_email/i.test(name)) return { deny: true, kind: 'send_email' }
   // @aaronsb/google-workspace-mcp multiplexes read, draft and send behind one
   // manage_email tool, so the tool NAME cannot decide this one -- the operation
   // plus the draft flag can. This is what replaces the server's own
@@ -489,7 +502,8 @@ if (isInvokedDirectly(import.meta.url)) {
   const { deny: shouldDeny, kind } = gateDecision(payload?.tool_name, payload?.tool_input)
   if (shouldDeny) {
     const { botName, ownerName } = readBrandEnv()
-    deny(kind === 'draft-required' ? buildDraftOnlyMsg(ownerName) : buildGateMsg(botName, ownerName))
+    if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
+    deny(buildGateMsg(botName, ownerName))
   }
   allow()
 }

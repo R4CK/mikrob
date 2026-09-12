@@ -58,6 +58,14 @@
 //       $USAGE_PROBE_PANE, so pointing that at an agent session would put it back
 //       in this class.
 //   store/weekly-usage-probe.sh           writes NOTHING; its only match is a comment.
+// Since then, brought under the lane one by one (each with a fail-closed
+// acquire -- see pane-writers-under-send-lock.test.ts for the per-writer
+// contract): channel-mcp-reconnect, channel-plugin-unlock, reauth-healer,
+// agent-worker's /clear, the pre-emit modal dismissals (#895), the identity
+// /rename (IDENTLANE910, #1272), and the two not-ready-path janitors --
+// clearStaleParkedInput and clearFeedbackModalAndRecheck (PANEWRITERS910).
+// Still uncovered: routes/agent-terminal.ts (operator-driven keystrokes) and
+// the cross-process channel-plugin delivery above.
 
 const delay = (ms: number): Promise<void> => new Promise(res => setTimeout(res, ms))
 

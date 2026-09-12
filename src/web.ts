@@ -28,6 +28,7 @@ import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startUtilizationSampler } from './web/local-llm-utilization-history.js'
 import { gpuInfo, isGpuLockHeld } from './web/routes/local-llm.js'
 import { getDb } from './db.js'
+import { startChannelIntakeMonitor } from './web/channel-intake-monitor.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
 import { startScaffoldSectionSweeper } from './web/scaffold-section-sweeper.js'
@@ -58,6 +59,8 @@ import { tryHandleTaskEvents } from './web/routes/task-events.js'
 import { sweepOrphanTaskStates } from './web/agent-taskstate.js'
 import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandleStuckIncidents } from './web/routes/stuck-incidents.js'
+import { tryHandlePrLedger } from './web/routes/pr-ledger.js'
+import { tryHandleHomoglyphs } from './web/routes/homoglyphs.js'
 import { tryHandleMemories } from './web/routes/memories.js'
 import { tryHandleMigrate } from './web/routes/migrate.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
@@ -208,6 +211,8 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleFederation(routeCtx)) return
       if (await tryHandleDailyLog(routeCtx)) return
       if (await tryHandleStuckIncidents(routeCtx)) return
+      if (await tryHandlePrLedger(routeCtx)) return
+      if (await tryHandleHomoglyphs(routeCtx)) return
       if (await tryHandleMemories(routeCtx)) return
       if (await tryHandleMigrate(routeCtx)) return
       if (await tryHandleKanban(routeCtx)) return
@@ -458,6 +463,11 @@ export function startWebServer(port = 3420): http.Server {
         readActiveTasks: () => isGpuLockHeld().then((held) => (held ? 1 : 0)),
       })
   if (!webOnly) logger.info('Local-LLM utilization sampler started (3s poll, 10min window)')
+  // The pane-grep above only sees a channel that SAYS it failed. This one asks
+  // Telegram whether anyone is still fetching the agent's updates, which is the
+  // only signal a silently deaf poller leaves behind.
+  const channelIntakeInterval = webOnly ? undefined : startChannelIntakeMonitor(PROJECT_ROOT)
+  if (!webOnly) logger.info('Channel intake monitor started (5min poll, 100s offset)')
 
   // CostOps: reflect the local config's fixed costs into the ledger once at boot + every
   // 10 minutes. Deliberately NOT done inside the GET /api/costs/summary handler -- a read
@@ -723,6 +733,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     if (workerLivenessInterval) clearInterval(workerLivenessInterval)
     clearInterval(channelHealthInterval)
     if (utilizationSamplerInterval) clearInterval(utilizationSamplerInterval)
+    if (channelIntakeInterval) clearInterval(channelIntakeInterval)
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
     clearInterval(stuckToolCallInterval)

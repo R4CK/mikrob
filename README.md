@@ -17,6 +17,8 @@ Ez a [Marveen](https://github.com/Szotasz/marveen) (Szota Szabolcs) saját fork-
 
 Ez a repo a **háttérszolgáltatásokat** adja; a Telegram-kommunikációt a Claude Code Channels kezeli.
 
+Marveen is a self-hostable **agent harness** for Claude Code: it runs a team of AI agents, each with its own chat channel (Telegram or Slack), persistent memory, scheduled tasks, and MCP tools, lets them delegate work to one another, and gives you a web dashboard to watch and steer them.
+
 ## Funkciók
 
 - **AI ügynökcsapat**: több szerep-ügynök (backend, frontend, QA, biztonság, üzleti), külön memóriával és személyiséggel; MikroB koordinál

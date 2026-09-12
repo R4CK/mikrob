@@ -30,6 +30,7 @@ import { STORE_DIR, BOT_NAME, OWNER_NAME, OWNER_NAME_PLACEHOLDER, OWNER_DRIVE_FO
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { logger } from '../../logger.js'
 import { agentDir, readAgentDisplayName, readAgentModel } from '../agent-config.js'
+import { getEffectiveSettingValue } from '../../settings-store.js'
 import { getFederationConfig } from './config.js'
 import { listAgentLocalSkills } from './local-catalog.js'
 
@@ -165,6 +166,25 @@ export function ownerScrubNeedle(name: string, placeholder: string = OWNER_NAME_
   return v.toLowerCase() === placeholder.trim().toLowerCase() ? '' : v
 }
 
+/** FEDDRIVE829: the drive-folder needle must be the EFFECTIVE value, not the
+ *  .env-time constant. Once OWNER_DRIVE_FOLDER is a registry key (#1061), the
+ *  operator can set it on the dashboard (config-overrides.json) with the .env
+ *  never touched -- the module constant then stays '', empty needles are
+ *  skipped, and the REAL folder id sails through this guard to federated
+ *  peers: a fail-open opened by the very feature that makes the value easy to
+ *  set. Resolution: settings-store effective value (override > .env >
+ *  default); on a tree where the key is not yet registered (pre-#1061 --
+ *  getEffectiveSettingValue THROWS on unknown keys) or on any store failure,
+ *  fall back to the env constant. The fallback direction is the OLD behaviour,
+ *  never a skipped check. */
+export function effectiveOwnerDriveFolder(): string {
+  try {
+    return String(getEffectiveSettingValue('OWNER_DRIVE_FOLDER') ?? '')
+  } catch {
+    return OWNER_DRIVE_FOLDER
+  }
+}
+
 /** Deterministic outbound-content check. Returns the LABEL of the first
  *  private constant found in the text (case-insensitive substring -- covers
  *  Hungarian inflected forms, suffixes append), or null when clean. Empty
@@ -173,7 +193,7 @@ export function containsPrivateData(text: string): string | null {
   const lower = text.toLowerCase()
   const checks: Array<[string, string]> = [
     ['owner name', ownerScrubNeedle(OWNER_NAME)],
-    ['drive folder', OWNER_DRIVE_FOLDER],
+    ['drive folder', effectiveOwnerDriveFolder()],
     ['chat id', ALLOWED_CHAT_ID],
     ['token path', 'store/.dashboard-token'],
     ['dashboard token', readDashboardTokenBestEffort()],

@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { buildMainSessionRespawnCmd } from '../web/channel-monitor.js'
+// MERGE NOTE (B-wave, card 42938a74): buildMainSessionRespawnCmd now takes the main-agent config
+// decision (upstream's main-config-decision.ts, adopted with this merge). Built through the
+// shipped test helper rather than a hand-made literal -- main-config-guard-wiring.test.ts asserts
+// that every caller in this directory does exactly that.
+import { mainConfigDecisionForTest } from '../web/main-config-decision.js'
 
 // INVERTED ON PURPOSE (card 691f5475 / 0ea08957, after incident f8db701c).
 //
@@ -74,6 +79,7 @@ describe('no launcher puts RESEND_API_KEY into a session environment', () => {
       pluginId: 'telegram',
       model: 'claude-opus-5',
       continueSession: false,
+      config: mainConfigDecisionForTest(),
     })
     expect(putsKeyInEnv(cmd)).toBe(false)
     expect(cmd).not.toContain('.resend-api-key')
