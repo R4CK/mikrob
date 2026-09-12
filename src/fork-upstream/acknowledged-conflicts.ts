@@ -221,7 +221,7 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // sites already merged in clean, this was only ever the import line colliding).
   'src/web/context-restart-gate-runner.ts':
     "three import lines: { listAgentNames, agentDir } from './agent-config.js' (fork's agentDir stays, still used), { resolveAgentConfigDirForRead } from './claude-plans.js' (upstream, replaces the now-dead readAgentClaudeConfigDir -- fixed a stale-transcript bug), { agentSessionName, capturePane, sendPromptToSession } from './agent-process.js' (upstream's sendPromptToSession, used at the wake-delivery call site) -- drop readAgentClaudeConfigDir entirely, zero remaining call sites Re-read 2026-09-03 (card 3bd18e70, blob 268fc2e6): upstream replaced sendPromptToSession with sendSystemDirective from './system-directive.js' at the wake-delivery call site (GUARDHITELES903); that import line and the call site sit outside the conflict hunk and auto-merge, so the only conflicting hunk is still the agent-config/claude-plans import pair -- resolve as above, drop readAgentClaudeConfigDir." +
-    " ROUND 17, 2026-09-06 (card 26ab08a2's landing-block, 268fc2e6 -> 83b90ef1, +42/-2). THIS ONE IS DIFFERENT FROM THE USUAL BUMP, AND SAYING SO IS THE POINT: the increment lands ON the import block this rule decides, not outside it. Upstream #1202 (LEDGERACK905) swaps hasOpenInboundQuestion for openInboundQuestionMessageId in that very import list, and adds two things below it -- drainSurfacedMessageId(), which reads store/.ledger-drain-<agent>, and a PURE openQuestionBlocks(openMessageId, surfacedMessageId) holding the gate only until the drain has actually SHOWN the agent the message. The fork side measured, not assumed: this file imports hasOpenInboundQuestion (line 18) and calls it once (line 410), and the fork's own agentDir import that this rule protects is untouched by the change. NOT ADOPTED this round, and the reason is mechanical rather than a judgement: it is HALF of a two-file change whose other half is the new db.ts export, and db.ts here has zero occurrences of openInboundQuestionMessageId (measured). Adopt-together-or-neither, on a card with a gate. The import-pair resolution above is unchanged; what changes is that a future merger will now see a THIRD line moving in the same hunk.",
+    " ROUND 17, 2026-09-06 (card 26ab08a2's landing-block, 268fc2e6 -> 83b90ef1, +42/-2). THIS ONE IS DIFFERENT FROM THE USUAL BUMP, AND SAYING SO IS THE POINT: the increment lands ON the import block this rule decides, not outside it. Upstream #1202 (LEDGERACK905) swaps hasOpenInboundQuestion for openInboundQuestionMessageId in that very import list, and adds two things below it -- drainSurfacedMessageId(), which reads store/.ledger-drain-<agent>, and a PURE openQuestionBlocks(openMessageId, surfacedMessageId) holding the gate only until the drain has actually SHOWN the agent the message. The fork side measured, not assumed: this file imports hasOpenInboundQuestion (line 18) and calls it once (line 410), and the fork's own agentDir import that this rule protects is untouched by the change. NOT ADOPTED this round, and the reason is mechanical rather than a judgement: it is HALF of a two-file change whose other half is the new db.ts export, and db.ts here has zero occurrences of openInboundQuestionMessageId (measured). Adopt-together-or-neither, on a card with a gate. The import-pair resolution above is unchanged; what changes is that a future merger will now see a THIRD line moving in the same hunk. *** THE STATED GROUND IS NO LONGER TRUE, MEASURED 2026-09-12 (card 66ad1f95). This round refused the change because \'db.ts here has zero occurrences of openInboundQuestionMessageId\'. db.ts now DECLARES it (export function openInboundQuestionMessageId), context-restart-gate-runner.ts imports AND calls it, and drainSurfacedMessageId / openQuestionBlocks are present too -- so upstream #1202 IS adopted here, whole. Nothing announced that: it arrived while the git history no longer showed it as a difference (see the agent-scaffold entry for why). The CODE is not in question; this sentence was. Do not re-refuse it on the strength of the paragraph above -- reverting an adopted, working two-file change would be a fresh decision on its own card. An ACKNOWLEDGED_FORK_ANCHORS entry now watches the symbol, so a silent reversal in either direction fires on the next landing.",
   // The SAME one-line import class as the entry above, one file over (measured 2026-08-22 on
   // upstream/develop 317937dc). Both sides appended a binding to the SAME import from
   // './web/agent-scaffold.js': the fork's `ensureNpmProtectGuard`, upstream's
@@ -771,6 +771,14 @@ export const ACKNOWLEDGED_CONFLICTS = {
   //     instead of a bare `null` host. This comment used to call both "no-ops for every agent as
   //     configured today ... not a live architecture switch that needs a decision now". The OUTPUT
   //     is a no-op; the DEPENDENCIES are a feature, and that distinction is the whole point.
+  //     *** SUPERSEDED 2026-09-07 by card 4f15966e, recorded here 2026-09-12 (card 66ad1f95).
+  //     agent-process.ts NOW carries the umask prefix (`const umaskPrefix = agentTmuxTarget(name)
+  //     .runAsUser ? 'umask 002 && ' : ''`). That was a DELIBERATE, announced deviation: the
+  //     dependency this paragraph said was missing -- agentTmuxTarget -- has since been built, and
+  //     the call site says so in full, flagged for QA/Cybersec review. Unlike the
+  //     context-restart-gate-runner entry above, nothing about this one was silent; what was
+  //     missing is that the refusal was never struck from HERE, which is where a future merger
+  //     reads. An ACKNOWLEDGED_FORK_ANCHORS entry now watches the prefix.
   //     Measured: it needs readAgentRunAsUser(), a 5th runAsUser parameter plus a sudo branch in
   //     buildTmuxInvocation (ssh-tmux.ts), sessionRunAsUserMap() with a TTL cache,
   //     runAsUserForTmuxArgs(), resolveTarget(), a HOST-LEVEL SUDOERS RULE (upstream says so in its
@@ -1607,6 +1615,77 @@ export interface ForkAnchor {
 }
 
 export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, ForkAnchor>> = {
+  // --- card 66ad1f95: anchors for the NOT-ADOPTED decisions ----------------------------------
+  //
+  // WHY THESE EXIST AT ALL. When an integration merges upstream's HISTORY (rather than cherry-picking),
+  // the merge-base moves to the upstream tip, and from then on everything upstream added earlier and
+  // this fork deliberately DID NOT take stops being visible to a git-based drift check -- not because
+  // the two agree, but because the history now books it as merged. So a refusal recorded in prose can
+  // reverse silently, and nothing fires.
+  //
+  // MEASURED, NOT FEARED (2026-09-12, on the four NOT-ADOPTED decisions that name a checkable symbol):
+  //   openInboundQuestionMessageId  refused  -> PRESENT today, and nothing announced it. Silent.
+  //   umask 002 / agentTmuxTarget   refused  -> PRESENT today, deliberately (card 4f15966e) and said
+  //                                             so at the call site -- reversed, but announced.
+  //   hookScriptAlreadyEffectiveInOtherScope  refused -> PRESENT today, arrived in the B-wave
+  //                                             auto-merge (card ec7bdad8 corrected that record).
+  //   injectTelegramCopyGate        refused  -> still ABSENT. The decision holds.
+  // Three of four reversed; one of those with nobody noticing. The mechanism to catch it already
+  // existed and ran on every landing -- it simply had no entry for any of them.
+  //
+  // A CAUTION FOR WHOEVER ADDS THE NEXT ONE: a raw count is not a measurement. TELEGRAM_COPY_GATE_MATCHER
+  // reads as three occurrences tree-wide and looks adopted; all three are inside a TEST that declares
+  // its OWN const of that name and states in its header that the export is not adopted. The anchor
+  // below therefore names injectTelegramCopyGate and points at the production file, not at the symbol
+  // that a test is free to re-declare.
+  'src/web/context-restart-gate-runner.ts': {
+    needle: 'openInboundQuestionMessageId',
+    file: 'src/web/context-restart-gate-runner.ts',
+    expect: 'present',
+    because:
+      "Upstream #1202 (LEDGERACK905) was refused as HALF of a two-file change, on the measured " +
+      "ground that db.ts had zero occurrences of this symbol. It is adopted NOW -- db.ts declares " +
+      "it, this file imports and calls it, drainSurfacedMessageId and openQuestionBlocks came with " +
+      "it -- and NOTHING ANNOUNCED THAT. This anchor is the tripwire the silent arrival got past: " +
+      "if the symbol ever disappears again, that is a revert of a working two-file change and needs " +
+      "a decision, not a merge resolution.",
+  },
+  'src/web/agent-scaffold.ts': {
+    needle: 'hookScriptAlreadyEffectiveInOtherScope',
+    file: 'src/web/agent-scaffold.ts',
+    expect: 'present',
+    because:
+      "ROUND 17 refused upstream #1201 because it changes which hooks get written for every fleet " +
+      "agent. The B-wave merge (card 42938a74) auto-merged it in around the conflicts being " +
+      "resolved, and its own upstream test came with it, so the suite stayed green and the written " +
+      "refusal stood unchallenged for days (corrected on card ec7bdad8). The code is adopted and " +
+      "covered; if it vanishes, someone is 'restoring' the fork behaviour on the strength of a " +
+      "sentence -- which is exactly what that entry now forbids.",
+  },
+  'vitest.config.ts': {
+    needle: 'umask 002',
+    file: 'src/web/agent-process.ts',
+    expect: 'present',
+    because:
+      "The cmd-assembly refusal (MikroB, cards bd450735 / e80c011a) rested on agentTmuxTarget having " +
+      "no runAsUser consumer here. Card 4f15966e built that dependency and adopted upstream's form " +
+      "DELIBERATELY, saying so at the call site -- announced, unlike the entry above. The prefix is " +
+      "load-bearing on a per-user agent: without it the agent writes 0600 files the router can no " +
+      "longer stamp, which is how korall lost its onboarding flag on every restart. If it is removed, " +
+      "that is a live regression, not a cleanup of an old deviation.",
+  },
+  'src/__tests__/seed-refresh-untouched-only.test.ts': {
+    needle: 'injectTelegramCopyGate',
+    file: 'src/web/agent-scaffold.ts',
+    expect: 'absent',
+    because:
+      "This is the one refusal of the four that still HOLDS, and it is anchored so it keeps holding: " +
+      "the fork ships the same capability under its own names (card 74181db2) with a Bash matcher and " +
+      "a kill switch that defaults OFF. Taking upstream's alongside it double-wires the same script. " +
+      "Pointed at the PRODUCTION file on purpose -- TELEGRAM_COPY_GATE_MATCHER appears three times in " +
+      "a test that declares its own const of that name, so anchoring on the matcher would have read " +
+      "as adopted while nothing of the sort had happened.",
+  },
   // Round 16 (card a6b5fea3). The updates.ts rule's central factual claim is about a file the
   // conflict does not touch: that upstream's script-side half of AUTOUPDNODEENV905 is still
   // ABSENT here, which is what makes 'not adopted' a live exposure rather than a shrug. If a
