@@ -12651,3 +12651,56 @@ tulajdonos valaha jóváhagyta őket. A 2026-06-25-i alakot (az ügynök által 
 teljesen kizárja.
 **Ki döntött:** Peti (2026-09-10, a jogosultság elve); MikroB (külön kártya + gate); backend3 (átvétel).
 **Hivatkozás:** kártya e3f0e4ed, `scripts/email-send-gate.mjs`, `src/__tests__/email-thread-reply-gate.test.ts`.
+
+## 2026-09-12 -- e65c480a -- A closure readout must ask whether the approved work is on the main branch
+
+**Context.** `gate-closure-check.py` answers a family of questions about whether the designated
+gates' verdicts are CONSISTENT: with each other (DISAGREE), with the sha the card declares (STALE),
+with the author who wrote them (UNVERIFIED-AUTHOR), and whether the difference can be judged at all
+(UNRESOLVED). Not one branch asked whether the sha ever reached the main branch.
+
+Founding case, measured 2026-09-12 on card 667e809b: the card closed on a perfectly consistent QA
+PASS whose commit `be6964eb` was not an ancestor of `origin/main` -- main still stood on `9e426ef6`.
+The fix existed only on a branch, and main stayed RED on the very defect the card had just closed.
+That is not inference: a full suite that finished after the closure reported exactly that one
+failure on `9e426ef6`. Both directions still reproduce on the real history today -- `be6964eb` is
+not an ancestor of `9e426ef6` and is an ancestor of `origin/main`.
+
+**Decision.** A new answer, `UNLANDED|<sha>|<why>`, gating the three AGREE returns.
+
+- **`merge-base --is-ancestor`, never sha equality.** Both landers merge `--no-ff`, so a correctly
+  landed commit is an ANCESTOR of the branch tip and never equal to it -- a version bump usually
+  sits on top besides. Equality would call every correctly landed card unlanded. The selftest's
+  fixture is built with a real `--no-ff` merge so this cannot be rewritten as equality unnoticed.
+- **ANY candidate sha landing is enough.** Rule 4b permits a multi-commit `Gate-SHA:`, and the work
+  commit versus the landing that carried it is this board's most common benign mismatch (38 cards,
+  23 of them provably harmless). If any named commit is on the branch, the work shipped.
+- **NOT AN ANCESTOR IS NOT AN ANSWER -- three questions, not one.** This is the part that decided
+  whether the check was shippable at all. Measured over the whole board first: of 123 cards this
+  file calls AGREE, 5 had a gated commit off the branch, and TWO of the five had actually shipped.
+  `ba82df9d` arrived as an equivalent patch under a different sha; `58e6fe06` had every line it
+  added present on `origin/main`, with the file moved on since, so byte-identity could not see it
+  either. Answering on ancestry alone would have been wrong two times in five -- and this file's own
+  header records that a 6.8% false rate was enough to reject sha equality as the test for STALE.
+  So ancestry is followed by patch identity (`git cherry <ref> <sha> <sha>^`, the three-argument
+  form so it stays O(1) instead of patch-id-ing a whole branch) and then by content: byte-identity
+  of the delivered files, and failing that, whether every substantive line the commit ADDS is
+  present in the branch's copy of the same file. Each is one-directional -- they can only turn a
+  suspected UNLANDED back into AGREE -- and the last demands ALL the added lines, in the file the
+  commit put them in, with a minimum count, so a punctuation-only commit cannot buy a pass
+  vacuously. After all three, the same five reduce to two genuinely-unlanded cards in `waiting`
+  (correct: they have not landed yet) and one whose only file is churn (fail-closed).
+- **Fail-closed when unanswerable**, and the `why` says which flavour: no clone holds the commit,
+  the ref does not resolve, git failed. Same rule UNRESOLVED already applies one door over --
+  "I could not check" is not "I checked and it is fine".
+- **One word for both flavours, not two.** Whether the commit is provably off the branch or merely
+  uncheckable, the reader's next action is identical: go look before closing. The `why` carries the
+  distinction, and a selftest case asserts the two texts stay distinguishable.
+- **`--no-landed`** disables it, mirroring the existing `--no-expect`. The selftest's pre-existing
+  cases pass it, because their shas are synthetic hex that resolves in no clone and would all
+  answer UNLANDED (correctly, and uselessly). The landing check has its own block against a real
+  git repository instead, in both directions plus the `--no-landed` control.
+
+**Rejected alternative.** Treating "neither clone exists on this machine" as not-applicable rather
+than fail-closed. It would have let the pre-existing selftest cases run unchanged, and it is exactly
+the carve-out that turns a guard off: point the env at a nonexistent path and the check evaporates.

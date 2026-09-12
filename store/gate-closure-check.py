@@ -92,10 +92,24 @@ precedence a stated `Gate-SHA:` already has over a guessed one); and when there 
 stated designation, the inferred set is now seeded with QA even if no QA verdict exists, so a
 QA-less inferred set answers MISSING rather than a self-agreeing AGREE.
 
+WHY AGREEING VERDICTS ARE NOT ENOUGH: THE WORK MUST BE ON THE MAIN BRANCH (card e65c480a, founding
+case measured 2026-09-12 on card 667e809b). Every question above is about the CONSISTENCY of the
+verdicts -- with each other, and with the sha the card declares. None of them asks whether that sha
+ever shipped. 667e809b was closed on a perfectly consistent QA PASS whose commit (be6964eb) was not
+an ancestor of origin/main: the fix lived only on a branch, and main stayed red on the very defect
+the card had just closed -- measured, not inferred, by a full suite that finished after the closure
+and reported that exact one failure. This is RELATED TO BUT NOT THE SAME AS the STALE check: STALE
+catches a verdict aimed at an OLDER sha than the card now delivers; here the verdict named exactly
+the right sha, and that sha simply never reached main. The test is `merge-base --is-ancestor`, never
+sha equality: both landers merge --no-ff, so a correctly landed commit is an ANCESTOR of the branch
+tip and never equal to it.
+
 Input:  the card's comments JSON on stdin (the /api/kanban/<id>/comments shape).
         Optional argv[1]: comma-separated designated gates, e.g. "qa,cybersec".
         Optional --expect <sha>: the commit this card delivers NOW. Omitted -> taken from the
         card's latest REVIEW `Gate-SHA:` line; `--no-expect` disables the check entirely.
+        Optional --no-landed: skip the "is it on the main branch" check (card e65c480a). For a
+        caller that has no clones, or is deliberately asking only about verdict consistency.
         Optional argv[1] gates omitted -> inferred from the verdicts present, and the output says
         so, because an UNSTATED designation is exactly how a missing third gate goes unnoticed.
 Output: exactly one line.
@@ -122,6 +136,12 @@ Output: exactly one line.
                                      the shas differ and the difference could NOT be judged (a clone
                                      is missing, a commit was pruned, git failed). Deliberately not
                                      AGREE: "cannot check" is not "checked and fine".
+        UNLANDED|<sha>|<why>         the gates agree on a commit that is NOT an ancestor of the
+                                     clone's main branch, so the approved work exists only on a
+                                     branch -- or the question could not be answered at all (no
+                                     clone holds the commit, the ref does not resolve, git failed),
+                                     which is fail-closed for the same reason UNRESOLVED is. The
+                                     `why` says which of the two. `--no-landed` disables the check.
         UNREADABLE|<why>
 Exit:   0 always. The caller decides -- this is a readout, not a gate on the gate.
 """
@@ -554,10 +574,16 @@ def _fmt_shas(shas):
     return ",".join(shas) if shas else "-"
 
 
+# (name, clone path, the ref that IS the shipped product). A gate-approved commit that is not an
+# ancestor of this ref exists only on a branch (card e65c480a).
 _CLONES = (
-    ("marveen", os.environ.get("MARVEEN_MAIN", "/home/neon/marveen")),
-    ("cleancore", os.environ.get("CLEANCORE_MAIN", "/mnt/h/LM_Studio_Workdir/CleanCore")),
+    ("marveen", os.environ.get("MARVEEN_MAIN", "/home/neon/marveen"), "origin/develop"),
+    ("cleancore", os.environ.get("CLEANCORE_MAIN", "/mnt/h/LM_Studio_Workdir/CleanCore"), "origin/main"),
 )
+# One knob, for replaying a past state (the selftest points this at the sha main stood on when the
+# founding case closed) or for a clone whose default branch is named differently. Empty = per-clone
+# default above.
+_MAIN_REF_OVERRIDE = os.environ.get("GATE_CLOSURE_MAIN_REF", "").strip()
 # A closure readout must never become the thing that hangs a closure. git on the CleanCore clone
 # lives on /mnt/h (drvfs) and is measurably slow; a wedged call answers UNRESOLVED, not AGREE.
 _GIT_TIMEOUT = float(os.environ.get("GATE_CLOSURE_GIT_TIMEOUT", "30"))
@@ -582,9 +608,15 @@ def _clone_holding(*shas):
     have saved. Kept inline rather than shelling out to that script because this needs the clone
     PATH for two more git calls anyway, and because it must not depend on the board being up.
     """
-    for _name, path in _CLONES:
+    found = _clone_and_ref_holding(*shas)
+    return found[0] if found else None
+
+
+def _clone_and_ref_holding(*shas):
+    """(clone path, main ref) for the clone holding ALL of these commits, or None."""
+    for _name, path, ref in _CLONES:
         if all(_git(path, "cat-file", "-e", s + "^{commit}")[0] for s in shas):
-            return path
+            return path, (_MAIN_REF_OVERRIDE or ref)
     return None
 
 
@@ -606,6 +638,174 @@ def _bump_parent_hint(clone, sha):
     or hand-made bump could have a different parent, so this is offered, never asserted."""
     ok, out = _git(clone, "log", "-1", "--format=%H", sha + "^")
     return out.strip() if ok and out.strip() else None
+
+
+def landed_verdict(candidates):
+    """Is ANY of these commits on the shipped branch? None when yes, a `(sha, ref, why)` when not.
+
+    CARD e65c480a, FOUNDING CASE MEASURED 2026-09-12 on card 667e809b. Everything this file asked
+    until now is about whether the VERDICTS are consistent -- with each other, and with the sha the
+    card declares. Not one branch asks whether that sha ever reached the main branch. 667e809b was
+    closed on a perfectly consistent QA PASS whose commit (be6964eb) was not an ancestor of
+    origin/main; the fix existed only on a branch, and main stayed red on the very defect the card
+    had closed. Reconstructed here from the real history, both ways: be6964eb is NOT an ancestor of
+    9e426ef6 (where main stood at closing time) and IS an ancestor of origin/main today.
+
+    ANCESTOR, NEVER EQUALITY. Both landers merge --no-ff, so the gated commit becomes an ANCESTOR of
+    the main branch, never equal to its tip -- and a version bump usually sits on top of the merge
+    besides. Comparing tips would call every correctly landed card unlanded.
+
+    ANY candidate, not all. A card's delivery can legitimately be named by more than one sha (rule
+    4b allows a multi-commit `Gate-SHA:`, and the gates' sha and the REVIEW's sha are often the work
+    commit versus the landing that carried it -- 38 such cards on this board, 23 of them benign).
+    If any one of them is on the branch, the work shipped, so the question is answered.
+
+    FAIL-CLOSED when it cannot be answered: no clone holds the commit, the ref does not resolve, or
+    git failed. "I could not check" is not "I checked and it is fine" -- the same rule UNRESOLVED
+    already applies one door over. The caller is told WHICH of the two it got.
+    """
+    seen = [c for c in dict.fromkeys(candidates) if c]
+    if not seen:
+        return None
+    why = []
+    for sha in seen:
+        found = _clone_and_ref_holding(sha)
+        if not found:
+            why.append("%s is in no known clone, so it cannot be checked" % sha)
+            continue
+        clone, ref = found
+        if not _git(clone, "rev-parse", "--verify", "--quiet", ref + "^{commit}")[0]:
+            why.append("%s: %s does not resolve in %s, so it cannot be checked" % (sha, ref, clone))
+            continue
+        if _git(clone, "merge-base", "--is-ancestor", sha, ref)[0]:
+            return None
+        # NOT AN ANCESTOR IS NOT YET AN ANSWER, and this is the whole difficulty of the card.
+        # Measured over the whole board before shipping: of 123 cards this file calls AGREE, 5 have
+        # a gated commit off the branch -- and ONE of them (ba82df9d) had shipped: every line it
+        # added to apps/superadmin/src/api/types.ts is on origin/main, under a different sha,
+        # with the file having moved on since. Answering UNLANDED on ancestry alone accuses that
+        # card falsely, and a fifth of an alarm being wrong is how the whole alarm gets ignored --
+        # the same measurement that decided sha equality was the wrong test for STALE (see header).
+        #
+        # So two more questions before accusing, cheapest first:
+        #   1. PATCH IDENTITY. `git cherry <ref> <sha> <sha>^` asks about this ONE commit (the
+        #      three-argument form keeps it O(1) instead of patch-id-ing the whole branch) and
+        #      answers `-` when an equivalent patch is already upstream -- exactly the cherry-pick /
+        #      rebase / re-commit shape. Measured on all five: `-` for ba82df9d's commit, `+` for
+        #      the other three, and empty for the control that was a plain ancestor.
+        #   2. CONTENT. Kept after it, because a squash or a reword changes the patch-id while the
+        #      delivered bytes still arrive.
+        ok, cherry = _git(clone, "rev-parse", "--verify", "--quiet", sha + "^")
+        if ok and cherry.strip():
+            ok, out = _git(clone, "cherry", ref, sha, sha + "^")
+            if ok and any(l.startswith("-") for l in out.splitlines()):
+                return None
+        kind, detail = _content_on_branch(clone, ref, sha)
+        if kind == "same":
+            return None
+        why.append("%s is not an ancestor of %s and %s" % (sha, ref, detail))
+    return seen[0], "; ".join(why)
+
+
+def _content_on_branch(clone, ref, sha):
+    """Do the files `sha` delivers hold the same content on `ref`? ("same"|"differs"|"unresolved").
+
+    The same comparison content_verdict() makes between two shas, with the branch ref standing in
+    for the second one, and the same per-landing churn subtracted (package.json / DECISIONS.md /
+    README.md move on every landing and on other agents' landings, so they can never be identical
+    and would make every answer "differs").
+
+    `log -1 --name-only --first-parent`, not `show`: `git show --name-only` prints nothing at all
+    for a merge commit, and a Gate-SHA naming a landing merge is one of the two shapes this board
+    uses -- an empty file list would then read as "nothing differs", a vacuous pass on exactly the
+    cards this exists for.
+    """
+    ok, out = _git(clone, "log", "-1", "--name-only", "--format=", "--first-parent", sha)
+    if not ok:
+        return "unresolved", "its file list could not be read"
+    files = [f for f in out.split("\n") if f.strip()]
+    if not files:
+        return "unresolved", "it delivers no files, so nothing can be compared"
+    comparable = [f for f in files if os.path.basename(f) not in _SHARED_CHURN]
+    if not comparable:
+        # Card 74aa46a5's shape, one door over: subtracting churn can empty the comparison, and
+        # "nothing differs" would then mean "nothing was compared".
+        return ("unresolved",
+                "every file it delivers is per-landing churn (%s), so ignoring it leaves nothing "
+                "to compare" % ", ".join(sorted(set(files))))
+    ok, out = _git(clone, "diff", "--name-only", sha, ref, "--", *comparable)
+    if not ok:
+        return "unresolved", "the content comparison against %s failed" % ref
+    changed = [f for f in out.split("\n") if f.strip()]
+    if not changed:
+        return "same", "but every file it delivers is byte-identical on %s" % ref
+    # BYTE-IDENTITY IS SUFFICIENT EVIDENCE OF LANDING, NOT NECESSARY. Measured on card 58e6fe06:
+    # every line its commit added to PublicHeader.containing-block.test.ts is on origin/main, but
+    # the file is not byte-identical because main moved on past it -- and its patch-id differs too,
+    # because the same commit also touched DECISIONS.md. Stopping at byte-identity accuses that card
+    # falsely. The weaker, still one-directional question: is every line this commit ADDED present
+    # in the branch's copy of the same file? If so the change arrived, whatever else happened after.
+    landed_by_lines, why_lines = _added_lines_present(clone, ref, sha, comparable)
+    if landed_by_lines:
+        return "same", why_lines
+    return "differs", "%s still differ%s there%s" % (
+        ", ".join(sorted(changed)[:5]), "" if len(changed) > 1 else "s",
+        ("; " + why_lines) if why_lines else "")
+
+
+# A one-character or punctuation-only added line ("})", "]") occurs everywhere, so finding it proves
+# nothing. Only lines with real content are asked about, and there must be enough of them for the
+# answer to mean something -- "all zero of the added lines are present" is the vacuous pass this
+# whole file exists to refuse.
+_MIN_LANDED_LINES = 3
+
+
+def _added_lines_present(clone, ref, sha, files):
+    """(True, why) when every substantive line `sha` ADDS to `files` is in `ref`'s copy of that file.
+
+    Deliberately one-directional: it can only ever turn a suspected UNLANDED back into AGREE, and it
+    demands ALL of them, in the same file the commit put them in. A subset would let an unrelated
+    coincidence read as a landing.
+    """
+    total = 0
+    for f in files:
+        ok, patch = _git(clone, "show", "--format=", "--first-parent", sha, "--", f)
+        if not ok:
+            return False, "the added lines of %s could not be read" % f
+        added = [l[1:].strip() for l in patch.split("\n")
+                 if l.startswith("+") and not l.startswith("+++")]
+        added = [l for l in added if len(l) >= 8]
+        if not added:
+            continue
+        ok, blob = _git(clone, "show", "%s:%s" % (ref, f))
+        if not ok:
+            return False, "%s does not exist on %s" % (f, ref)
+        missing = [l for l in added if l not in blob]
+        if missing:
+            return False, "%d of the %d line(s) it adds to %s are absent on %s" % (
+                len(missing), len(added), f, ref)
+        total += len(added)
+    if total < _MIN_LANDED_LINES:
+        return False, ("too few substantive added lines (%d) to conclude anything from their "
+                       "presence" % total)
+    return True, ("but all %d substantive line(s) it adds are present on %s, so the work arrived "
+                  "under a different sha" % (total, ref))
+
+
+def _unlanded_line(verdict):
+    """UNLANDED|<sha>|<why>. One word for both halves on purpose: whether the commit is provably
+    off the branch or merely uncheckable, the reader's next action is the same -- go look before
+    closing -- and the `why` says which one it is."""
+    sha, why = verdict
+    return "UNLANDED|%s|the gates agree, but the delivery is not on the main branch (%s)" % (sha, why)
+
+
+def _landed_or(enabled, candidates, agree_line):
+    """AGREE only survives if the delivery is actually on the main branch (card e65c480a)."""
+    if not enabled:
+        return agree_line
+    verdict = landed_verdict(candidates)
+    return agree_line if verdict is None else _unlanded_line(verdict)
 
 
 def content_verdict(judged, declared):
@@ -675,7 +875,7 @@ def content_verdict(judged, declared):
             % ("/".join(judged), "/".join(declared)))
 
 
-def check(comments, designated=None, expect=None, use_declared=True):
+def check(comments, designated=None, expect=None, use_declared=True, check_landed=True):
     latest, undecidable = _gate_state(comments)
     unverified = unattributed_gates(comments)
     inferred = designated is None
@@ -773,7 +973,8 @@ def check(comments, designated=None, expect=None, use_declared=True):
         # unstated gate designation is said out loud.
         why = ("no --expect given" if source == "--no-expect"
                else "no REVIEW comment declares a Gate-SHA, so the delivered commit is unchecked")
-        return "AGREE|%s|%s%s (%s)" % (_fmt_shas(shas[0]), detail, suffix, why)
+        return _landed_or(check_landed, shas[0],
+                          "AGREE|%s|%s%s (%s)" % (_fmt_shas(shas[0]), detail, suffix, why))
 
     if sha_sets_agree(shas[0], declared):
         # CARD cb8ef4f5: the EQUAL-sha branch never asked content_verdict's question at all, because
@@ -792,7 +993,8 @@ def check(comments, designated=None, expect=None, use_declared=True):
                    "the real landing merge (card 0711c19b eliminated this shape at the source, so a " \
                    "NEW REVIEW should not produce it going forward)" % (
                        _fmt_shas(shas[0]), agreed, hint_s)
-        return "AGREE|%s|%s%s" % (_fmt_shas(shas[0]), detail, suffix)
+        return _landed_or(check_landed, list(shas[0]) + list(declared),
+                          "AGREE|%s|%s%s" % (_fmt_shas(shas[0]), detail, suffix))
 
     # The sha differs from the declared one. On this board that is usually benign -- a work commit
     # versus the landing that carried it -- so the difference is judged by CONTENT before it is
@@ -800,8 +1002,9 @@ def check(comments, designated=None, expect=None, use_declared=True):
     kind, why = content_verdict(shas[0], declared)
     joined = ",".join(declared)
     if kind == "same":
-        return "AGREE|%s|%s%s (differs from %s per %s, but %s)" % (
-            _fmt_shas(shas[0]), detail, suffix, joined, source, why)
+        return _landed_or(check_landed, list(shas[0]) + list(declared),
+                          "AGREE|%s|%s%s (differs from %s per %s, but %s)" % (
+                              _fmt_shas(shas[0]), detail, suffix, joined, source, why))
     if kind == "differs":
         # Deliberately NOT "the gates are stale". Measured on card edd4c3bf, the opposite happens
         # too: the deliverable moved on in an INFO-ONLY comment that says "nem uj REVIEW", the gates
@@ -833,6 +1036,10 @@ def main():
     argv = sys.argv[1:]
     expect = None
     use_declared = True
+    check_landed = True
+    if "--no-landed" in argv:
+        check_landed = False
+        argv = [a for a in argv if a != "--no-landed"]
     if "--no-expect" in argv:
         use_declared = False
         argv = [a for a in argv if a != "--no-expect"]
@@ -858,7 +1065,7 @@ def main():
         if unknown:
             print("UNREADABLE|not a gate name: %s" % ", ".join(unknown))
             return
-    print(check(comments, designated, expect, use_declared))
+    print(check(comments, designated, expect, use_declared, check_landed))
 
 
 if __name__ == "__main__":

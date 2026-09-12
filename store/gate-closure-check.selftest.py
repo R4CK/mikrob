@@ -26,9 +26,15 @@ failures = []
 n = 0
 
 
-def run(comments, gates=None, expect=None, extra=(), env=None):
+def run(comments, gates=None, expect=None, extra=(), env=None, landed=False):
+    # `--no-landed` BY DEFAULT (card e65c480a). Every case above this line asks about VERDICT
+    # CONSISTENCY, and their shas are synthetic hex that resolves in no clone -- with the landing
+    # check on, all of them would answer UNLANDED (fail-closed, correctly) and stop testing what
+    # they were written to test. The landing check has its OWN block at the end, against real git
+    # repositories, in both directions. `landed=True` opts a case back in.
     args = [sys.executable, CHECK] + ([gates] if gates else []) \
-        + (["--expect", expect] if expect else []) + list(extra)
+        + (["--expect", expect] if expect else []) \
+        + ([] if landed else ["--no-landed"]) + list(extra)
     e = dict(os.environ)
     # Point the clone lookup at nothing by default, so a case that does not build a repo cannot
     # accidentally read the real marveen/CleanCore checkouts and change answer with the machine.
@@ -45,10 +51,11 @@ def c(author, content):
     return {"author": author, "content": content}
 
 
-def case(label, comments, expect_kind, gates=None, expect_sha=None, extra=(), env=None):
+def case(label, comments, expect_kind, gates=None, expect_sha=None, extra=(), env=None,
+         landed=False):
     global n
     n += 1
-    got = run(comments, gates, expect_sha, extra, env)
+    got = run(comments, gates, expect_sha, extra, env, landed)
     kind = got.split("|", 1)[0]
     ok = kind == expect_kind
     print("%s %-9s <- %-9s %s" % ("OK  " if ok else "FAIL", expect_kind, kind, label))
@@ -730,6 +737,177 @@ for label, comments, gates_, expect_, want in [
                                   "UNCHANGED, byte for byte: " + label))
     if not ok:
         failures.append((label, want, got))
+
+# --- IS THE APPROVED WORK ACTUALLY ON THE MAIN BRANCH? (card e65c480a) ---------------------------
+# Founding case, measured on card 667e809b: a perfectly consistent QA PASS closed a card whose
+# commit was not an ancestor of origin/main, so the fix existed only on a branch and main stayed red
+# on the very defect the card closed. Every case below runs against a REAL git repository built
+# here, because the whole question is one only git can answer -- a simulated ancestor check would
+# test the simulation. The repo is shaped like a real landing: a --no-ff merge, so the delivered
+# commit is an ANCESTOR of the branch tip and never equal to it.
+_landed_repo = tempfile.mkdtemp(prefix="gcc-landed-")
+
+
+def _g(*args):
+    subprocess.run(("git", "-C", _landed_repo) + args, check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _rev(ref):
+    return subprocess.run(("git", "-C", _landed_repo, "rev-parse", ref),
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+try:
+    _g("init", "-q", "-b", "main", ".")
+    _g("config", "user.email", "s@s")
+    _g("config", "user.name", "s")
+    open(os.path.join(_landed_repo, "a.txt"), "w").write("base\n")
+    _g("add", "-A"); _g("commit", "-qm", "base")
+    _g("checkout", "-q", "-b", "shipped")
+    open(os.path.join(_landed_repo, "a.txt"), "w").write("shipped work\n")
+    _g("commit", "-qam", "the work a gate approved")
+    SHIPPED = _rev("HEAD")
+    _g("checkout", "-q", "main")
+    _g("merge", "--no-ff", "-q", "-m", "merge: shipped", "shipped")
+    TIP = _rev("HEAD")
+    _g("checkout", "-q", "-b", "stranded", SHIPPED)
+    open(os.path.join(_landed_repo, "b.txt"), "w").write("never merged\n")
+    _g("add", "-A"); _g("commit", "-qm", "the work nobody landed")
+    STRANDED = _rev("HEAD")
+    _g("checkout", "-q", "main")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+    _repo_ok = True
+except Exception as exc:  # noqa: BLE001
+    _repo_ok = False
+    print("FAIL      could not build the landing fixture repo: %s" % exc)
+    failures.append(("landing fixture repo", "built", str(exc)))
+
+if _repo_ok:
+    ENV = {"MARVEEN_MAIN": _landed_repo}
+    L = "QA PASS\nGate-SHA: %s"
+    R = "REVIEW: kesz.\nGate-SHA: %s"
+
+    # THE ANCESTOR RULE ITSELF. SHIPPED is not the tip -- the merge commit is -- so an equality test
+    # would call every correctly landed card unlanded. This case fails if anyone rewrites the check
+    # as `rev-parse <ref> == <sha>`.
+    case("a gated commit reachable from origin/develop through a --no-ff merge is LANDED",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "AGREE",
+         gates="qa", env=ENV, landed=True)
+    assert SHIPPED != TIP, "the fixture must not make the delivered commit the branch tip"
+
+    # THE FOUNDING CASE'S SHAPE: gates agree, verdict names exactly the right sha, and that sha is
+    # on a branch nobody merged.
+    case("THE FOUNDING CASE (667e809b's shape): consistent verdicts on a commit that never reached "
+         "origin/develop answer UNLANDED, not AGREE",
+         [c("backend2", R % STRANDED), c("qa", L % STRANDED)], "UNLANDED",
+         gates="qa", env=ENV, landed=True)
+
+    # ...and the same card with the check off is the OLD behaviour, so the difference is provably
+    # this check and not something else that changed underneath.
+    case("CONTROL: the same unlanded card answers AGREE with --no-landed (the pre-card behaviour)",
+         [c("backend2", R % STRANDED), c("qa", L % STRANDED)], "AGREE",
+         gates="qa", env=ENV, landed=False)
+
+    # ANY candidate landing is enough. Rule 4b allows a multi-commit Gate-SHA, and the work commit
+    # versus the landing that carried it is the board's most common benign mismatch.
+    case("a multi-sha Gate-SHA counts as landed when ANY of its commits is on the branch",
+         [c("backend2", R % ("%s, %s" % (STRANDED, SHIPPED))),
+          c("qa", "QA PASS\nGate-SHA: %s, %s" % (STRANDED, SHIPPED))], "AGREE",
+         gates="qa", env=ENV, landed=True)
+
+    # FAIL-CLOSED, both flavours. "I could not check" must never read as "checked and fine".
+    case("a sha that resolves in NO clone is fail-closed, not a silent AGREE",
+         [c("backend2", R % "aaaa1111"), c("qa", L % "aaaa1111")], "UNLANDED",
+         gates="qa", env=ENV, landed=True)
+    case("a clone whose main ref does not resolve is fail-closed too",
+         [c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "UNLANDED",
+         gates="qa", env={"MARVEEN_MAIN": _landed_repo,
+                          "GATE_CLOSURE_MAIN_REF": "origin/no-such-branch"}, landed=True)
+
+    # The two fail-closed flavours must be DISTINGUISHABLE in the output, or the reader cannot tell
+    # "this never landed" from "I could not look".
+    n += 1
+    _why_absent = run([c("backend2", R % "aaaa1111"), c("qa", L % "aaaa1111")], "qa",
+                      env=ENV, landed=True)
+    _why_branch = run([c("backend2", R % STRANDED), c("qa", L % STRANDED)], "qa",
+                      env=ENV, landed=True)
+    _ok = ("is in no known clone" in _why_absent
+           and "is not an ancestor of origin/develop" in _why_branch)
+    print("%s %-9s <- %-9s %s" % ("OK  " if _ok else "FAIL", "distinct", "distinct" if _ok else "same",
+                                  "UNLANDED says WHICH: unreachable commit vs. off-branch commit"))
+    if not _ok:
+        failures.append(("UNLANDED why-text", "two distinct reasons",
+                         "%s / %s" % (_why_absent, _why_branch)))
+
+    # A FAILED verdict must still read FAILED: the landing check only ever narrows AGREE, it must
+    # not mask a refusal behind a landing complaint.
+    case("a FAIL is still FAILED on an unlanded commit -- the landing check only narrows AGREE",
+         [c("backend2", R % STRANDED), c("qa", "QA FAIL\nGate-SHA: " + STRANDED)], "FAILED",
+         gates="qa", env=ENV, landed=True)
+
+
+    # --- THE WORK CAN ARRIVE UNDER A DIFFERENT SHA, and calling that UNLANDED is a false alarm ---
+    # Measured on the live board before shipping this check: of 123 cards it calls AGREE, 5 had a
+    # gated commit off the branch -- and TWO of those had shipped. ba82df9d arrived as an equivalent
+    # patch (`git cherry` answers `-`); 58e6fe06 had every line it added present on origin/main with
+    # the file moved on since, so neither ancestry nor patch-id nor byte-identity could see it.
+    # Ancestry alone would have accused both, and an alarm wrong two times in five is one everybody
+    # learns to skip. These cases pin the two escapes; STRANDED above is the control that they do
+    # not swallow a genuine miss.
+    _g("checkout", "-q", "main")
+    _g("cherry-pick", "-x", "--allow-empty", STRANDED)
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+    case("a commit cherry-picked onto the branch under a NEW sha is landed, not UNLANDED "
+         "(an equivalent patch is upstream)",
+         [c("backend2", R % STRANDED), c("qa", L % STRANDED)], "AGREE",
+         gates="qa", env=ENV, landed=True)
+
+    # The same work re-committed, with the file moved on afterwards: ancestry, patch-id and
+    # byte-identity all fail, and only the added lines can still see that it arrived.
+    _g("checkout", "-q", "-b", "reworded", "main")
+    with open(os.path.join(_landed_repo, "c.txt"), "w") as fh:
+        fh.write("alpha unique line one\nbeta unique line two\ngamma unique line three\n")
+    _g("add", "-A"); _g("commit", "-qm", "the work, on a branch")
+    REWORDED = _rev("HEAD")
+    _g("checkout", "-q", "main")
+    with open(os.path.join(_landed_repo, "c.txt"), "w") as fh:
+        fh.write("alpha unique line one\nbeta unique line two\ngamma unique line three\n"
+                 "delta added later by someone else\n")
+    _g("add", "-A"); _g("commit", "-qm", "the same work plus a later edit")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+    case("work whose added lines are ALL on the branch is landed, even though the file moved on "
+         "since and neither ancestry nor patch-id can see it",
+         [c("backend2", R % REWORDED), c("qa", L % REWORDED)], "AGREE",
+         gates="qa", env=ENV, landed=True)
+
+    # The direction that must NOT be swallowed: partly-present added lines are still a miss.
+    # Without this, "all added lines present" could be satisfied by a subset.
+    _g("checkout", "-q", "-b", "partial", "main")
+    with open(os.path.join(_landed_repo, "c.txt"), "a") as fh:
+        fh.write("epsilon line that never landed\nzeta line that never landed\n"
+                 "eta line that never landed\n")
+    _g("commit", "-qam", "three more lines nobody merged")
+    PARTIAL = _rev("HEAD")
+    _g("checkout", "-q", "main")
+    case("CONTROL: a commit whose added lines are only PARTLY on the branch is still UNLANDED",
+         [c("backend2", R % PARTIAL), c("qa", L % PARTIAL)], "UNLANDED",
+         gates="qa", env=ENV, landed=True)
+
+    # Vacuity guard on the escape itself: a commit adding only punctuation must not buy a landing
+    # verdict by "all zero substantive added lines are present".
+    _g("checkout", "-q", "-b", "trivial", "main")
+    with open(os.path.join(_landed_repo, "d.txt"), "w") as fh:
+        fh.write("}\n)\n]\n")
+    _g("add", "-A"); _g("commit", "-qm", "punctuation only")
+    TRIVIAL = _rev("HEAD")
+    _g("checkout", "-q", "main")
+    case("CONTROL: too few substantive added lines cannot buy a landing verdict vacuously",
+         [c("backend2", R % TRIVIAL), c("qa", L % TRIVIAL)], "UNLANDED",
+         gates="qa", env=ENV, landed=True)
+
+    shutil.rmtree(_landed_repo, ignore_errors=True)
+
 
 print()
 print("selftest: %d case(s), %s" % (n, "PASS" if not failures else "FAIL"))
