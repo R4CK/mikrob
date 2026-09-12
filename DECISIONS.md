@@ -12704,3 +12704,24 @@ not an ancestor of `9e426ef6` and is an ancestor of `origin/main`.
 **Rejected alternative.** Treating "neither clone exists on this machine" as not-applicable rather
 than fail-closed. It would have let the pre-existing selftest cases run unchanged, and it is exactly
 the carve-out that turns a guard off: point the env at a nonexistent path and the check evaporates.
+
+## 2026-09-12 19:05 -- A thread-reply kapu három szűkítése, MIELŐTT bárki megkapja a jogot
+
+**Döntés:** Cybersec `e3f0e4ed`-leletei alapján (kártya bf2bf691): (1) a capability neve
+`email:thread-reply` -> **`email-thread-reply`**, hogy átmenjen a roster-sanitizálón és a társak
+LÁSSÁK, ki birtokolja az egyetlen kimenő-levél jogot; (2) az `extractParticipants` mostantól
+entitásonként a CÍM-MEZŐT olvassa, nem a fejléc teljes értékét; (3) a timeout-margó statikus teszttel
+rögzítve.
+**Miért most:** mindhárom ingyenes volt, mert MA senki nem birtokolja a capabilityt -- mérve, egyetlen
+`agent-config.json` sem hordozta. Az átnevezés egy élő grant esetén annak csendes elvesztése lenne.
+**A (2) súlya:** a régi kinyerés BÁRMELY cím-alakú tokent kiszedett a `From/To/Cc/Reply-To` fejléc
+ÉRTÉKÉBŐL, tehát egy megszerkesztett MEGJELENÍTETT NÉV idegen címet vitt a résztvevő-halmazba
+(`From: "ceo@ourcompany.com via Mailer" <tamado@evil.test>` mindkettőt hozzáadta) -- vagyis a
+tagsági halmazt a küldő bővíthette. A megjelenített név bejövő levélen támadó által vezérelt szöveg.
+**A (3) miért teszt és nem komment:** a teljes fail-closed garancia azon áll, hogy a határidő a
+SCRIPTEN BELÜL jár le (tiltás), nem a hookon (nem-blokkoló hiba = fail-OPEN). Ezt eddig semmi nem
+kényszerítette ki; egy harmadik kérés vagy egy megemelt érték csendben átbillentette volna.
+**Amit NEM tettünk:** a `CAPABILITY_TAG_RE` tágítása. Az "eldob, sose normalizál" szabály tudatos
+prompt-injection védelem, és a capability-tagek minden társ promptjába bekerülnek.
+**Ki döntött:** Cybersec (lelet), MikroB (kártya, HIGH, határidő-jellegű), backend3 (kivitelezés).
+**Hivatkozás:** kártya bf2bf691; felülírja a 43dada5b kártyát.

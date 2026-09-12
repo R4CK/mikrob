@@ -748,7 +748,14 @@ export function agentGetsEmailGate(name: string): boolean {
 //
 // The MAIN agent is excluded by construction -- it is the approval authority the
 // gate routes everything else TO, and it was never gated in the first place.
-export const EMAIL_THREAD_REPLY_CAPABILITY = 'email:thread-reply'
+// HYPHEN, NOT COLON (card bf2bf691, Cybersec's finding on e3f0e4ed). The value must satisfy
+// CAPABILITY_TAG_RE (/^[a-z0-9][a-z0-9-]{0,31}$/) or sanitizeCapabilityTag DROPS it from the fleet
+// roster written into every peer's CLAUDE.md. The grant path never sanitises, so a colon still
+// WORKED -- it just meant no peer could see that an agent holds the one capability that permits
+// outbound email. Renamed while the cost was zero: measured 2026-09-12, no agent-config.json in the
+// fleet carried the old value, so nothing was silently de-granted. Widening the regex was the wrong
+// fix -- its drop-never-normalise rule is a deliberate prompt-injection defence.
+export const EMAIL_THREAD_REPLY_CAPABILITY = 'email-thread-reply'
 export const EMAIL_THREAD_REPLY_FLAG = '--allow-thread-reply'
 
 /** True when this agent may reply INTO AN EXISTING THREAD (never open a new one). */
