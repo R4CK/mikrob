@@ -35,6 +35,7 @@
 #    cherry-pick recipe when it fires.
 #
 # Usage:  cleancore-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck]
+#                                                [--skip-bundle]
 #                                                [--allow-ungated]
 #                                                [--allow-stacked <cardId>[,<cardId>...]]
 #         cleancore-land.sh --selftest
@@ -73,6 +74,11 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # find_conflict_markers (card 4b4c89eb): shared with marveen-land.sh, same reason as above.
 # shellcheck source=./conflict-marker-check.sh
 . "$(dirname "$0")/conflict-marker-check.sh"
+# bundle_relevant / bundle_failures (card 0a907846): does the merge result still produce a browser
+# bundle? NOT shared with marveen-land.sh -- marveen ships no browser app, so there is nothing there
+# for it to check, and a copy that never runs is a copy that silently rots.
+# shellcheck source=./cleancore-bundle-check.sh
+. "$(dirname "$0")/cleancore-bundle-check.sh"
 
 # --- WHO ran this landing (card 7fe98031) -------------------------------------------------------
 #
@@ -278,13 +284,14 @@ if [ "${1:-}" = "--selftest" ]; then
 fi
 
 CARD="${1:-}"; SHA="${2:-}"; shift 2 2>/dev/null
-[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: cleancore-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck] [--allow-ungated] [--allow-stacked <cardId>[,<cardId>...]]" >&2; exit 2; }
+[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: cleancore-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck] [--skip-bundle] [--allow-ungated] [--allow-stacked <cardId>[,<cardId>...]]" >&2; exit 2; }
 DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0; ALLOW_STACKED=""; ALLOW_UNGATED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY="--dry-run" ;;
     --allow-main-loss) ALLOW_MAIN_LOSS=1 ;;
     --skip-typecheck) SKIP_TSC=1 ;;
+    --skip-bundle) SKIP_BUNDLE=1 ;;
     # Says the ungated landing OUT LOUD instead of leaving it implied, which is the whole
     # difference from the 08dcc153 incident. Never overrides a FAILING verdict.
     --allow-ungated) ALLOW_UNGATED=1 ;;
@@ -522,6 +529,42 @@ else
     rm -f "$MERGE_ERR"; exit 4
   fi
   say "typecheck: no new error vs main ($(wc -l < "$MERGE_ERR") inherited)"
+fi
+
+# BROWSER BUNDLE, as a delta against main (card 0a907846). See store/cleancore-bundle-check.sh for
+# the ten hours of undeployable main this exists to prevent, and for why the real bundler runs
+# instead of a static import rule.
+if [ "${SKIP_BUNDLE:-0}" -eq 1 ]; then
+  say "bundle: SKIPPED (--skip-bundle) -- the merge result was NOT bundled"
+elif ! bundle_relevant "$MAIN" "$MB" "$SHA"; then
+  say "bundle: not applicable (the branch touches no apps/web, apps/superadmin or packages/ file)"
+else
+  link_node_modules "$WT"
+  MERGE_BUNDLE="$(bundle_failures "$WT")"
+  if [ -z "$MERGE_BUNDLE" ]; then
+    say "bundle: the merge result builds ($CC_BUNDLE_FILTERS)"
+  else
+    # Only now is the baseline worth its ~70 s: main is presumed buildable, and the question is
+    # whether THIS merge is what broke it.
+    BASE_BWT="/home/neon/cc-land-bundle-base-$BASE-$$"
+    rm -rf "$BASE_BWT"
+    git -C "$MAIN" worktree add --detach -q "$BASE_BWT" origin/main || die 3 "could not create the bundle baseline worktree"
+    link_node_modules "$BASE_BWT"
+    BASE_BUNDLE="$(bundle_failures "$BASE_BWT")"
+    git -C "$MAIN" worktree remove --force "$BASE_BWT" >/dev/null 2>&1
+    if [ -n "$BASE_BUNDLE" ]; then
+      # Inherited: main is already unbuildable, so refusing this branch would punish the wrong card.
+      # Printed rather than swallowed -- this is exactly the state that went unnoticed for ten hours.
+      say "bundle: main $BASE ALREADY FAILS TO BUILD -- inherited, not caused by this branch:"
+      printf '%s\n' "$BASE_BUNDLE" | sed 's/^/      /'
+      say "bundle: landing continues; the main breakage needs its own card"
+    else
+      echo "REFUSED: main builds, but the merge result does NOT produce a browser bundle:"
+      printf '%s\n' "$MERGE_BUNDLE" | sed 's/^/    /'
+      echo "    (a green suite and a clean tsc cannot see this -- tests run under node, where node:crypto resolves)"
+      exit 4
+    fi
+  fi
 fi
 
 # Merge-conflict marker check (card 4b4c89eb) -- see store/conflict-marker-check.sh for the
