@@ -16,9 +16,13 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/cleancore-bundle-check.sh"
 CC="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+# A COUNT, not a bare "PASS" (card 711a7e57/0ebeff55's harness enforces this, and it caught the
+# first version of this file). A selftest that prints PASS having run zero cases is indistinguishable
+# from one that works -- the same vacuity this guard's own build half is designed against.
 fail=0
-ok()   { echo "  ok: $1"; }
-bad()  { echo "  FAIL: $1"; fail=1; }
+passed=0
+ok()   { echo "  ok: $1"; passed=$((passed + 1)); }
+bad()  { echo "  FAIL: $1"; fail=$((fail + 1)); }
 
 # --- bundle_relevant, on a throwaway repo so the cases cannot drift with the real history ---------
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ccbundle-XXXXXX")"
@@ -63,4 +67,5 @@ else
   echo "  (build half skipped -- CC_BUNDLE_SELFTEST_REAL=1 to run it against 46356720 / e80945dc, ~3 min)"
 fi
 
-[ "$fail" = 0 ] && echo "selftest: PASS" || { echo "selftest: FAIL"; exit 1; }
+echo "selftest: $passed passed, $fail failed"
+[ "$fail" = 0 ] || exit 1
