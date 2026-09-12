@@ -558,12 +558,41 @@ export function threadMembershipDecision(recipients, participants) {
 // A display name may legitimately contain a comma ("Doe, John" <j@x.com>), so quotes and angle
 // brackets are tracked rather than assumed away -- a naive split would tear that entry in half and
 // then fail to parse either piece.
+//
+// THE BACKSLASH IS LOAD-BEARING (Cybersec H-1 on card bf2bf691). RFC 5322 lets a quoted-string
+// contain a quoted-pair -- a backslash followed by any character, INCLUDING a quote. The first
+// version of this splitter toggled on every `"`, so an escaped quote LEFT the quoted string early,
+// and the top-level comma that followed cut one legitimate mailbox into two entries. Measured on
+// the landed code:
+//
+//     From: "Doe\" <victim@target.test>, evil" <attacker@evil.test>
+//       ->  ["victim@target.test", "attacker@evil.test"]
+//
+// RFC-wise that header is ONE mailbox whose display name happens to contain a quote, an angle
+// bracket and a comma; the address is attacker@evil.test alone. A standards-following MTA passes it
+// through unchanged, so victim@target.test entered the participant set -- and the participant set is
+// the entire authorisation -- straight from the display name, which is the exact channel the
+// previous fix claimed to close.
+//
+// Why this vector is worth its own handling even though a Cc can also add a participant: a Cc puts
+// the address IN the message, so it is delivered and the owner can see it. A display name adds it
+// with zero delivery and no visible trace. Closing the hidden channel was the point.
 function splitHeaderEntries(value) {
   const out = []
   let cur = ''
   let inQuote = false
   let inAngle = false
-  for (const ch of String(value ?? '')) {
+  const str = String(value ?? '')
+  for (let i = 0; i < str.length; i += 1) {
+    const ch = str[i]
+    // A quoted-pair only exists INSIDE a quoted-string; outside one a backslash is an ordinary
+    // character. Consume both bytes so the escaped character can never be read as structure.
+    if (inQuote && ch === '\\') {
+      cur += ch
+      i += 1
+      if (i < str.length) cur += str[i]
+      continue
+    }
     if (ch === '"') { inQuote = !inQuote; cur += ch; continue }
     if (!inQuote && ch === '<') { inAngle = true; cur += ch; continue }
     if (!inQuote && ch === '>') { inAngle = false; cur += ch; continue }
