@@ -12542,3 +12542,53 @@ importon -- pontosan az a hibaosztály, amit a `forced` oszlopnál egyszer már 
 
 **Ki döntött:** backend (végrehajtás, mérés), a szülő-audit 6. feladatpontja alapján (MikroB).
 **Hivatkozás:** kártya 4bbb5167, szülő 6980f9c7.
+
+## 2026-09-12 13:30 -- Suite-szemafor: memória-előfeltétel, és a kártya gyökér-okának korrekciója (7e7ac40c)
+
+**Döntés:** A `store/cleancore-suite-run.sh` a slot kiadása ELŐTT megnézi a `MemAvailable`-t, és 4096 MB
+alatt nem indítja el a futást, hanem sorba állítja -- ugyanazzal a `PAUSED-SEMAPHORE` jelzéssel, mint
+slothiánynál, de a visszautasítás megnevezi, melyik ok áll fenn. `CLEANCORE_SUITE_MIN_AVAIL_MB=0`
+kikapcsolja. A `SLOTS` marad 2, és felfoglalás-nyilvántartás NEM készült.
+
+**A kártya gyökér-ok leírása nem állta ki az ellenőrzést.** A kártya backend3 egy futásából vett
+2,6-3,2 GB/worker értéket idéz, amiből ~17 GB/futás és ~35 GB két futásra következne -- vagyis hogy a
+`SLOTS=2` szerkezetileg lehetetlen egy 24 GB-os gépen. Saját mérés, 5 másodperces mintavétel egy teljes
+suite-futáson (909 fájl, 19308 teszt, 62 perc, szólóban a szemaforon, 806 minta):
+
+- az ÖSSZES vitest-folyamat együttes RSS-csúcsa: **3153 MB** (31 folyamat)
+- a legnagyobb EGYEDI worker: **379 MB**
+- `MemAvailable` mélypont a futás alatt: **11052 MB**
+
+Egy futás tehát ~3,2 GB, nem ~17 GB, és két egyidejű futás (~6,3 GB) bőven elfér. A mérő nem volt vak:
+a gép 15 legnagyobb folyamata között egyetlen vitest sem volt 379 MB fölött; a memóriát ollama
+(1557 MB), egy másik ügynök eslintje (1548 MB) és tizenkét Claude-session (310-540 MB) tartotta.
+
+**Ezért más a helyes javítás, mint amit a kártya alternatívaként felsorol.** A nyomás a suite-on KÍVÜLRŐL
+jön, tehát sem a slot-szám csökkentése, sem a `maxForks` szűkítése nem előzte volna meg a leírt OOM-ot.
+Amit megelőz: egy ~3,2 GB-os job elindításának megtagadása olyan gépen, ahol nincs rá hely. A 4096 MB a
+mért csúcs + ~30%: elég ahhoz, hogy egy jövőbeli nagyobb suite is elférjen, és elég alacsony ahhoz, hogy
+csak valóban teli gépen szólaljon meg (a hivatkozott incidens pillanatában 474 MB volt szabad).
+
+**`MemAvailable`, nem `MemFree`.** Egy pillanatban mérve ezen a gépen: `MemFree` 1807 MB,
+`MemAvailable` 15221 MB -- a különbség 14,7 GB visszanyerhető lapgyorsítótár. Egy `MemFree`-re épülő őr
+majdnem minden kényelmesen elférő futást visszautasítana.
+
+**Miért nem a meglévő `scripts/fleet-memory-gate.sh`-t hívja (10. szabály, due diligence).** (a) Más
+kérdésre felel: százalék-sávokban dönt (80% warn / 90% hard), és egy sáv nem tudja kifejezni, hogy egy
+KONKRÉT job mennyi abszolút helyet kér. (b) A verdikt mellékhatásként safe-mode flaget kezel és
+Telegram-riasztást küld; suite-indításonként ilyet generálni zaj. (c) Döntő: a fork-upstream rögzített
+feloldása szerint „adopt upstream wholesale -- no fork-specific logic in this file", tehát minden
+upstream merge lecseréli, és egy rá épülő fork-script csendben törne el. Amit átvettünk tőle: a mező
+(`MemAvailable`), a `MEMGATE_PROC_MEMINFO`-stílusú teszt-seam, és a fail-open-de-hangos viselkedés.
+
+**Miért fail-open olvashatatlan `/proc/meminfo` esetén.** Egy őr, ami ilyenkor mindent visszautasít,
+megállítaná a gép MINDEN gate-futását -- ez rosszabb, mint az OOM, amit megelőz, mert az legalább hangos.
+
+**Ami emiatt nyitva marad, kimondva.** A felfutási verseny (két futás egyszerre látja a szabad memóriát,
+majd együtt nőnek bele) itt nem fordulhat elő: 2 x 3,2 GB egy 4096 MB-os padló mellett elfér. Ha egy
+jövőbeli suite a `MemAvailable` nagyjából harmada fölé nő, ez a feltételezés törik, és akkor kell a
+futásonkénti foglalás a slot-fájlba -- a `flock` állapota ezt öntisztítóvá teszi, mert egy nem tartott
+slot tartalma nem számít.
+
+**Ki döntött:** backend (mérés, végrehajtás), backend3 leletéből (2026-09-10) kiindulva.
+**Hivatkozás:** kártya 7e7ac40c.
