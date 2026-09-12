@@ -15,8 +15,9 @@ import { CONTENT_SECURITY_POLICY } from './web/csp.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureCdChainGuard, ensureOutgoingCopyGate, outgoingCopyGateEnabled, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureCdChainGuard, ensureOutgoingCopyGate, outgoingCopyGateEnabled, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
+import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
 import { startUpdateChecker, UPDATE_CHECK_INTERVAL_MS } from './web/update-checker.js'
@@ -631,6 +632,8 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       const stalePatched: string[] = []
       const provPatched: string[] = []
       const egressPatched: string[] = []
+      const bashEgressPatched: string[] = []
+      const bashEgressUncovered: string[] = []
       const govPatched: string[] = []
       const npmGuardPatched: string[] = []
       const blastGuardPatched: string[] = []
@@ -660,6 +663,13 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         if (ensureAgentStalenessHook(agentName)) stalePatched.push(agentName)
         if (ensureAgentProvenanceHook(agentName)) provPatched.push(agentName)
         if (ensureEgressGate(agentName)) egressPatched.push(agentName)
+        // The Bash egress deny needs the main agent's OWN config dir: its nominal settings path is
+        // the shared ~/.claude, which is also the operator's own interactive shell, and the owner
+        // stays out of the rule while the fleet stays in it. Null -> no separate scope exists on
+        // this install, so nothing is written and it is REPORTED rather than decided quietly.
+        const bashDenyDir = agentName === MAIN_AGENT_ID ? mainAgentConfigDirIfSeparate() : null
+        if (agentName === MAIN_AGENT_ID && !bashDenyDir) bashEgressUncovered.push(agentName)
+        else if (ensureBashEgressDeny(agentName, bashDenyDir)) bashEgressPatched.push(agentName)
         if (ensureNpmProtectGuard(agentName)) npmGuardPatched.push(agentName)
         if (ensureBlastRadiusGuard(agentName)) blastGuardPatched.push(agentName)
         if (ensurePentestToolInstallGuard(agentName)) pentestGuardPatched.push(agentName)
@@ -698,6 +708,9 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       if (stalePatched.length) logger.info({ patched: stalePatched }, 'staleness-guard UserPromptSubmit hook backfilled into agent settings.json')
       if (provPatched.length) logger.info({ patched: provPatched }, 'provenance-gate UserPromptSubmit hook backfilled into agent settings.json')
       if (egressPatched.length) logger.info({ patched: egressPatched }, 'egress-gate WebFetch hook backfilled into agent settings.json')
+      if (bashEgressPatched.length) logger.info({ patched: bashEgressPatched }, 'Bash egress deny rules backfilled into agent settings.json (permissions.deny)')
+      if (bashEgressUncovered.length) logger.warn({ agents: bashEgressUncovered },
+        'Bash egress deny NOT applied to the main agent: it runs on the shared user config root, which is also the operator\'s own shell. Give it a config dir of its own (MAIN_AGENT_ISOLATED_CONFIG / MAIN_AGENT_CONFIG_DIR) to cover it without covering the operator.')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
     } catch (err) {
       logger.warn({ err }, 'Agent hook backfill skipped')
