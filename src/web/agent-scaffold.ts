@@ -11,6 +11,7 @@ import { logger } from '../logger.js'
 import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities } from './agent-config.js'
 import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
+import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 // Const-only module (no imports of its own) -- the scaffold section must name the SAME
 // reserved id the request-path guard enforces, or the recipe sends agents to verify a
 // field nobody rejects. Card 5c5d7bc4.
@@ -190,7 +191,10 @@ export function agentSettingsPath(name: string): string {
 // When the /tmp directory disappears on the next reboot the referenced script
 // is gone, python3/node exits non-zero, and Claude Code blocks every prompt --
 // the 2026-07-14 silent fleet-freeze incident.
-const _TMP_PREFIXES = ['/tmp/', '/var/tmp/', '/private/tmp/', '/dev/shm/']
+//
+// The list itself lives in tmp-root-prefixes.ts: it is copied once more outside
+// TypeScript (scripts/boot-hook-prune.py) and a second in-language copy would be
+// the third. See that module for what this fork did and did NOT take from upstream.
 
 // Shared hook-entry type used by ensureAgentHooks and upgradeLegacyHookCommands.
 type HookEntry = { matcher?: string; hooks?: Array<{ command?: string; timeout?: number; [k: string]: unknown }> }

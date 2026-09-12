@@ -12592,3 +12592,32 @@ slot tartalma nem számít.
 
 **Ki döntött:** backend (mérés, végrehajtás), backend3 leletéből (2026-09-10) kiindulva.
 **Hivatkozás:** kártya 7e7ac40c.
+
+## 2026-09-12 16:30 -- Egy rögzített "NEM VESSZÜK ÁT" döntés megfordult, és ezt kimondjuk
+
+**Döntés:** Az `ACKNOWLEDGED_CONFLICTS` `src/web/agent-scaffold.ts` szabályának ROUND 17 bejegyzése
+javítva: a `hookScriptAlreadyEffectiveInOtherScope()` **be van építve és aktív** (három hívási hely az
+`ensureAgentHooks`-ban), tehát a korábbi "NOT ADOPTED" mondat többé nem írja le a fát. A kód marad, a
+REKORD változik. A bejegyzés kifejezetten megtiltja a "takarítás" reflexet (a függvény törlését egy
+elavult mondat alapján); visszavonás csak külön kártyán, új döntésként.
+**Miért:** A B-hullám merge (42938a74, `b92a5b66`) során a változás a feloldott konfliktusok KÖRÜL
+auto-mergelt, az upstream saját tesztje is vele jött (`hook-cross-scope-dedupe.test.ts`), ezért a suite
+zöld volt és semmi nem jelzett. Merge-időben viszont az ember a LEÍRT SZABÁLYRA támaszkodik, nem a
+tesztre -- egy fával ellentmondó szabály a veszélyes fél.
+**Ki döntött:** MikroB (plan-grilling GO-WITH-CHANGES, majd az (a)+(b) engedélyezése); a leletet
+backend3 mérte a saját merge-e ellen.
+**Hivatkozás:** kártya ec7bdad8; a strukturális ok (merge után a drift-check vakká válik a tudatosan
+át nem vett elemekre) külön kártyán: 66ad1f95.
+
+## 2026-09-12 16:30 -- TMP_ROOT_PREFIXES átvéve, de upstream MÁSODIK fogyasztója NEM
+
+**Döntés:** Az átmeneti-tároló prefix-lista átkerült a `src/web/tmp-root-prefixes.ts` modulba
+(upstream átvétel). Upstream ugyanezzel a modullal a saját suite-kapuját is megtanítja MEGTAGADNI a
+futást egy `/tmp`-gyökerű checkoutból -- **ezt a forkra NEM vettük át**, mert az minden ügynökre ható
+viselkedésváltozás (a scratchpad tmp-gyökerű), nem egy lista kiemelése.
+**Miért:** A modul dokumentált indoka ("két őr osztozik a listán") a forkban még nem igaz; ezt a modul
+kommentje kimondja, hogy ne ígérjen olyat, amit a kód nem tart be. Ami viszont a forkban IGAZ és
+upstreamnél nincs: egy harmadik másolat a `scripts/boot-hook-prune.py`-ban, amit import nem érhet el --
+ezt teszt köti a listához.
+**Ki döntött:** MikroB (az (a) engedélyezése); a hatókör-szűkítés backend3 javaslata, mérés alapján.
+**Hivatkozás:** kártya ec7bdad8, `src/__tests__/tmp-root-prefixes.test.ts`.
