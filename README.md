@@ -166,7 +166,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **anthropics/skills per-skill licenc szerinti átvétel**: a hivatalos Anthropic skill-repóban nincs root licenc, minden skill a sajátját hozza, ezért az átvétel skillenként dől el, és az átvettek pinelt hivatkozással vannak vendorolva.
 - **mcp-compressor csak-könyvtár adopció**: a tömörítő N-API modult közvetlenül hívjuk, a sebezhető szerver-út sosem fordul le; pinelt verzió, telepítő-script nélkül, a repón kívül, plusz egy watcher, ami upstream-frissítéskor re-gate-et vált ki.
 - **Beépített repók oldal frissesség-jelzéssel**: dashboard-oldal, ami minden adoptált fejlesztést (repó, vendorolt skill, MCP, eszköz) listáz telepítés-állapottal, és repónként kimondott frissesség-státuszt mutat (naprakész / N frissítés / nem mérhető) az utolsó ellenőrzés dátumával.
-- **context7 MCP-szerver**: élő, verzió-pontos könyvtár-dokumentáció remote HTTP MCP-ként bekötve, hogy a válaszok a jelenlegi API-t tükrözzék, ne a modell tanuló-adatát.
+- **context7 MCP-szerver**: élő, verzió-pontos könyvtár-dokumentáció remote HTTP MCP-ként bekötve, hogy a válaszok a jelenlegi API-t tükrözzék, ne a modell tanuló-adatát. Csak a karantén-olvasó ügynök hívhatja, a döntés az ügynök típusán múlik és nem a hívás paraméterein, a megadott engedély pedig naplóba kerül -- így egy távoli szerver bármikor változó eszköz-sémája nem tud új kimenő csatornát nyitni.
 
 ### Csatorna-integráció (Telegram) és titokkezelés
 
