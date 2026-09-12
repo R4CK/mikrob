@@ -694,7 +694,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // authorizes those autonomously (so test/deploy runs are never blocked); the
   // actual incident vector -- an agent answering its OWN posed question -- is
   // covered by the self-pace block + the #0 CLAUDE.md doctrine.
-  if (agentGetsEmailGate(name)) injectEmailSendGate(existing)
+  if (agentGetsEmailGate(name)) injectEmailSendGate(existing, hasThreadReplyCapability(name, readAgentCapabilities(name)))
   // Card 74181db2: opt-in, so the common path is the `else` -- and the else must
   // REMOVE, not merely skip, or an agent scaffolded while the switch was on would keep
   // enforcing after it was turned off.
@@ -738,6 +738,24 @@ export function agentGetsEmailGate(name: string): boolean {
 // payload, because the hook never ran). The `.*` wrappers are what make the gate
 // reach MCP tools at all. Exported so the startup migration can recognize a
 // stale matcher on an already-scaffolded agent.
+// --- thread-scoped reply capability (BONIMAIL910, card e3f0e4ed) -------------
+//
+// The grant rides on the hook COMMAND, not on a settings field: the scaffold
+// appends the flag when the agent's capability list carries the capability, and
+// settings.json is regenerated on every spawn. Two consequences, both deliberate:
+// revoking the capability removes the flag at the next spawn, and a hand-edited
+// settings.json can neither grant the capability nor keep it after revocation.
+//
+// The MAIN agent is excluded by construction -- it is the approval authority the
+// gate routes everything else TO, and it was never gated in the first place.
+export const EMAIL_THREAD_REPLY_CAPABILITY = 'email:thread-reply'
+export const EMAIL_THREAD_REPLY_FLAG = '--allow-thread-reply'
+
+/** True when this agent may reply INTO AN EXISTING THREAD (never open a new one). */
+export function hasThreadReplyCapability(name: string, capabilities: string[]): boolean {
+  return name !== MAIN_AGENT_ID && capabilities.includes(EMAIL_THREAD_REPLY_CAPABILITY)
+}
+
 export const EMAIL_GATE_MATCHER = 'Bash|.*send_email.*|.*manage_email.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
@@ -777,14 +795,16 @@ export function emailGateCommandStale(preToolUse: unknown, expected: string): bo
 // 2026-09-10 -- but the hook stays primary: future CLI behavior is not a
 // contract.) Name-agnostic so a customer install
 // gates its own sub-agents (the caller's MAIN_AGENT_ID guard exempts the owner).
-export function injectEmailSendGate(existing: Record<string, unknown>): void {
+export function injectEmailSendGate(existing: Record<string, unknown>, threadReply = false): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
   const base = hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'))
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(base)) return
-  const command = base
+  // The thread-reply capability rides on the hook COMMAND, so the grant lives in
+  // the same regenerated-on-every-spawn settings.json as the gate itself.
+  const command = threadReply ? `${base} ${EMAIL_THREAD_REPLY_FLAG}` : base
   const entry = {
     matcher: EMAIL_GATE_MATCHER,
     hooks: [{ type: 'command', command, timeout: 10 }],
@@ -1935,13 +1955,12 @@ export function ensureGovernanceGateCommands(name: string): boolean {
   // wired at all, or it IS wired but under a pre-2026-08-10 matcher that cannot
   // match a qualified MCP tool name. The second one is why the wiring check
   // alone is not enough -- it would report the gate healthy forever.
-  // MERGE NOTE (B-wave, card 42938a74): upstream's thread-scoped reply capability is NOT adopted
-  // here -- it fetches a Gmail thread's participants at hook time, i.e. a NETWORK READ on the send
-  // path, which the acknowledged-conflicts entry for outgoing-copy-gate.py already recorded as
-  // deserving its own card and gate rather than arriving as a conflict resolution. Its plumbing
-  // arrived through auto-merge and is removed with it: leaving the flag EXPECTED here while nothing
-  // writes it would make this repair pass rewrite the hook command on every sweep, for ever.
-  const emailCmdExpected = emailCmd
+  // The repair pass must expect EXACTLY what the generation path writes, flag included. The B-wave
+  // (card 42938a74) removed the flag from BOTH sides together for precisely this reason: an
+  // expectation nothing writes makes this pass rewrite the hook command on every sweep, for ever.
+  // Card e3f0e4ed puts both back together.
+  const threadReply = hasThreadReplyCapability(name, readAgentCapabilities(name))
+  const emailCmdExpected = threadReply ? `${emailCmd} ${EMAIL_THREAD_REPLY_FLAG}` : emailCmd
   const needEmail = agentGetsEmailGate(name)
     && (!hookCommandWired(ptuJson, emailCmdExpected)
       || emailGateMatcherStale(ptu)
@@ -1964,7 +1983,7 @@ export function ensureGovernanceGateCommands(name: string): boolean {
   if (!needEmail && !needPace && !needCopyAdd && !needCopyRemove) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
-  if (needEmail) injectEmailSendGate(settings)
+  if (needEmail) injectEmailSendGate(settings, threadReply)
   if (needPace) injectSelfPaceGate(settings)
   if (needCopyAdd) injectOutgoingCopyGate(settings)
   if (needCopyRemove) removeOutgoingCopyGate(settings)
