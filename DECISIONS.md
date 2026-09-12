@@ -12621,3 +12621,33 @@ upstreamnél nincs: egy harmadik másolat a `scripts/boot-hook-prune.py`-ban, am
 ezt teszt köti a listához.
 **Ki döntött:** MikroB (az (a) engedélyezése); a hatókör-szűkítés backend3 javaslata, mérés alapján.
 **Hivatkozás:** kártya ec7bdad8, `src/__tests__/tmp-root-prefixes.test.ts`.
+
+## 2026-09-12 17:10 -- BONIMAIL910: thread-scoped email reply átvéve, EGYBEN
+
+**Döntés:** A szál-tagsági kimenő email-kapu (BONIMAIL910) átvéve upstreamből, saját kártyán, saját
+gate-tel. Egy megnevezett ügynök kaphat olyan jogot, hogy **meglévő Gmail-szálba** válaszoljon, és
+**csak olyan címre, ami a szál fejléceiben már szerepel**. Minden más ügynök marad a feltétel nélküli
+tiltásnál. A jogot a hook PARANCSA hordozza (`--allow-thread-reply`), amit a scaffold minden
+spawn-nál újragenerál -- így a visszavonás a következő spawn-nál hatályos, és kézi settings-szerkesztés
+sem adni, sem megtartani nem tudja.
+**Miért egyben:** a B-hullám (42938a74) mindkét felét EGYÜTT távolította el. Fél megoldásnál a javító
+sweep MINDEN körben újraírta volna a hook-parancsot, örökre -- az elvárás és az író fél nem válhat szét.
+**A hálózati olvasás kérdése (ezért volt külön gate):** a kapu hook-időben lekéri a szál résztvevőit.
+Ezt sorrenddel oldjuk meg, nem a lekérés elhagyásával: mindkét kérés `AbortSignal.timeout(3500)`-öt
+visz, a hook regisztrált `timeout: 10`-e mellett -- így a határidő a SCRIPTEN BELÜL üt be, ahol tiltás
+lesz belőle. Ha a hook maga futna ki az időből, az nem-blokkoló hiba lenne, azaz **fail-OPEN** a
+küldési úton. Minden ág fail-closed: hiányzó threadId, értelmezhetetlen címzett, üres résztvevő-lista,
+credential-/fetch-/HTTP-hiba, timeout -> tiltás.
+**Mért mellékhatás, szándékosan NEM javítva:** a capability neve kettőspontos (`email:thread-reply`),
+a `CAPABILITY_TAG_RE` viszont `/^[a-z0-9][a-z0-9-]{0,31}$/` -- MINDKÉT fában --, tehát a
+`sanitizeCapabilityTag` eldobja. Ez a sanitizáló csak a FLOTTA-ROSTER renderelésén ül, nem a
+grant-úton, ezért a kapu működik; egyetlen dolog vész el: a társak nem látják a CLAUDE.md-jükben, hogy
+egy ügynök birtokolja ezt a jogot. A regex tágítása NEM a kézenfekvő javítás -- az ottani
+"eldob, sose normalizál" szabály tudatos prompt-injection védelem.
+**Mit NEM bizonyít a kapu:** a szál-tagság a fejlécekből jön, amiket a levelek írói írtak. Egy bejövő
+levél hozhat támadó által választott Cc-t vagy Reply-To-t, és az a cím onnantól résztvevőnek számít.
+A kontroll tehát a már beérkezett címekre korlátozza a kimenő levelet -- nem bizonyítja, hogy a
+tulajdonos valaha jóváhagyta őket. A 2026-06-25-i alakot (az ügynök által KITALÁLT cím) viszont
+teljesen kizárja.
+**Ki döntött:** Peti (2026-09-10, a jogosultság elve); MikroB (külön kártya + gate); backend3 (átvétel).
+**Hivatkozás:** kártya e3f0e4ed, `scripts/email-send-gate.mjs`, `src/__tests__/email-thread-reply-gate.test.ts`.

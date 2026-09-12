@@ -29,7 +29,13 @@ const WEB = readFileSync(join(SRC, 'web.ts'), 'utf-8')
 
 /** The generation block: from the governance-gate calls to the settings write that ends it. */
 function generationBlock(src: string): string {
-  const start = src.indexOf('if (agentGetsEmailGate(name)) injectEmailSendGate(existing)')
+  // Anchored on the CALL, not on its argument list (card e3f0e4ed): the thread-reply capability
+  // gave injectEmailSendGate a second argument, and an anchor that spelled out `(existing)` went
+  // to -1 -- which `slice(-1)` would have turned into a one-character block that quietly matches
+  // nothing, i.e. a guard that stops guarding instead of failing. The expect below is what caught
+  // it; keeping the anchor argument-free keeps the block findable across future signature changes
+  // without widening what it matches.
+  const start = src.indexOf('if (agentGetsEmailGate(name)) injectEmailSendGate(')
   expect(start, 'could not locate the hook-generation block in agent-scaffold.ts').toBeGreaterThan(-1)
   const end = src.indexOf('atomicWriteFileSync(settingsPath', start)
   expect(end).toBeGreaterThan(start)
