@@ -876,6 +876,17 @@ export function initDatabase(dbPathOverride?: string): void {
     // column already exists
   }
 
+  // Migration (card 4bbb5167, parent audit 6980f9c7 point 6): the WHY of a status change had
+  // nowhere to live. The audit's finding was not only that 1796 of 1880 transitions carry no
+  // actor -- it is that a mass state change had no attribution AT ALL, and reversing it depended
+  // on an input file happening to preserve the previous status. `forced` above records that a
+  // guard was overridden; `reason` records why the transition was made in the first place.
+  try {
+    db.exec('ALTER TABLE kanban_card_events ADD COLUMN reason TEXT')
+  } catch {
+    // column already exists
+  }
+
   // listKanbanCards()'s auto-archive sweep (below) treats a card's updated_at
   // as "when did this card last change", and archives a done card once that
   // timestamp is older than KANBAN_ARCHIVE_DONE_DAYS. Both production status
@@ -3149,6 +3160,62 @@ export function dependencyBlockers(id: string, nextStatus: string): KanbanCard[]
 }
 
 /**
+ * How wide a window counts as "at once", and how many status writes inside it make a burst
+ * (card 4bbb5167). Both are env-tunable because the right number is a property of the fleet's
+ * traffic, not of this code, and the fleet grows.
+ *
+ * THE NUMBER IS MEASURED, not chosen for roundness. Over the 1880 status events on the board,
+ * the densest 60-second window per day was: 1, 289, 111, 15, 2. The two three-digit days are the
+ * mass triage this card's parent audit (6980f9c7) is about. The 15 is a real, deliberate bulk
+ * sweep (the 2026-09-08 ghost-card reconstruction) -- it belongs on the bulk side of the line and
+ * it already named an actor. Every other moment of ordinary fleet work sits at 1-2. So 10 leaves
+ * five times the headroom over normal traffic while still catching both mass episodes and the one
+ * legitimate sweep.
+ */
+export const BULK_ATTRIBUTION_WINDOW_SECONDS = Number(process.env.KANBAN_BULK_WINDOW_SECONDS) > 0
+  ? Number(process.env.KANBAN_BULK_WINDOW_SECONDS)
+  : 60
+export const BULK_ATTRIBUTION_THRESHOLD = Number(process.env.KANBAN_BULK_THRESHOLD) > 0
+  ? Number(process.env.KANBAN_BULK_THRESHOLD)
+  : 10
+
+/** The message a refused bulk write gets. Exported so the route and the test name the same text. */
+export const BULK_ATTRIBUTION_MESSAGE =
+  'Tömeges állapotváltoztatás: az utolsó ' + BULK_ATTRIBUTION_WINDOW_SECONDS + ' másodpercben már ' +
+  BULK_ATTRIBUTION_THRESHOLD + ' vagy több kártya státusza változott, ezért ez az írás csak ' +
+  'attribúcióval mehet át. Küldd el mindkét mezőt: "actor" (ki csinálja) és "reason" (miért), ' +
+  'például {"status":"done","actor":"mikrob","reason":"triázs-köteg 2/3, QA PASS visszaigazolva"}. ' +
+  'Egy-egy kártya mozgatását ez nem érinti.'
+
+/**
+ * Does THIS status write need an actor and a reason, because it is part of a burst? (card 4bbb5167)
+ *
+ * WHY A BURST AND NOT AN ENDPOINT. The card asks for mandatory attribution "on the bulk paths",
+ * and the measurement says there are none: the board has exactly one status door per verb
+ * (POST /api/kanban/:id/move and PUT /api/kanban/:id), no endpoint anywhere takes a list of card
+ * ids, and no committed script loops over them. A mass close is N ordinary writes, so the only
+ * thing that distinguishes it from ordinary work is its SHAPE, and that is what this measures.
+ *
+ * Deliberately NOT bypassable by `force`: `force` says "I know a guard is in the way", which is a
+ * different claim from "here is who I am and why". The way past this one is to answer it.
+ *
+ * A refused write inserts no row, so the window drains on its own -- a caller can never lock the
+ * board out of status changes by tripping this.
+ */
+export function bulkAttributionRequired(
+  nowSec: number,
+  actor?: string | null,
+  reason?: string | null
+): boolean {
+  if (actor?.trim() && reason?.trim()) return false
+  const since = nowSec - BULK_ATTRIBUTION_WINDOW_SECONDS
+  const row = db
+    .prepare('SELECT COUNT(*) AS n FROM kanban_card_events WHERE created_at >= ?')
+    .get(since) as { n: number } | undefined
+  return (row?.n ?? 0) >= BULK_ATTRIBUTION_THRESHOLD
+}
+
+/**
  * Update a card's fields. A status change made THROUGH THIS PATH is audited like a move
  * ({@link moveKanbanCard}) instead of silently rewriting the column: an unaudited status write is
  * how a waiting+REVIEW card kept reappearing as in_progress with nothing in kanban_card_events to
@@ -3160,7 +3227,7 @@ export function dependencyBlockers(id: string, nextStatus: string): KanbanCard[]
 export function updateKanbanCard(
   id: string,
   fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
-  opts?: { actor?: string; force?: boolean }
+  opts?: { actor?: string; force?: boolean; reason?: string }
 ): boolean {
   const card = getKanbanCard(id)
   if (!card) return false
@@ -3173,6 +3240,10 @@ export function updateKanbanCard(
   // (newDevStop, before 31cc1cd4) was abused. `force` without an actor is now just a refusal.
   const depBlocked = statusChanges && dependencyBlockers(id, fields.status as string).length > 0
   if (depBlocked && !isForceActor(opts?.force === true, opts?.actor)) return false
+  // Card 4bbb5167: a status write that is part of a burst has to say who and why. Checked here
+  // rather than in the routes for the reason dependencyBlockers gives above -- there are three
+  // doors into a status change and a route-level guard sees two of them.
+  if (statusChanges && bulkAttributionRequired(Math.floor(Date.now() / 1000), opts?.actor, opts?.reason)) return false
   // `forced` records only whether THIS transition actually needed the reviewed-card-reopen
   // override -- an ordinary in_progress move that happens to carry `force:true` (e.g. an exempt
   // agent's client always sends it) is not itself a guard override and must not read as one; see
@@ -3186,8 +3257,8 @@ export function updateKanbanCard(
   ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
   if (changed && statusChanges) {
     const r = db.prepare(
-      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(id, card.status, f.status, opts?.actor ?? null, now, forcedFlag)
+      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced, reason) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(id, card.status, f.status, opts?.actor ?? null, now, forcedFlag, opts?.reason?.trim() || null)
     // Card d05d72b3: waiting/done is the qualifying transition -- see maybeResolveStuckIncident's
     // own comment for why the filter lives here, at the ONE place that knows a status event was
     // just written, rather than duplicated inside that function.
@@ -3306,7 +3377,7 @@ export function getChildCards(parentId: string): KanbanCard[] {
   return db.prepare('SELECT * FROM kanban_cards WHERE parent_id = ? AND archived_at IS NULL ORDER BY sort_order ASC').all(parentId) as KanbanCard[]
 }
 
-export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrder: number, actor?: string, force?: boolean): boolean {
+export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrder: number, actor?: string, force?: boolean, reason?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   // Card c4f2de32: a card waiting on an unanswered REVIEW is finished work, not stalled work --
   // pulling it back to in_progress is what made other agents rebuild it. A gate FAIL leaves a
@@ -3328,6 +3399,9 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   // Card a8aa9ae5 / Cybersec F-1: the bypass is force AND an allowlisted actor, like every sibling
   // guard on this state machine. A bare force:true from an unnamed caller does not open it.
   if (depBlocked && !isForceActor(force === true, actor)) return false
+  // Card 4bbb5167: same predicate as updateKanbanCard's, gated on a REAL transition so a
+  // sort_order reorder inside one column never trips it.
+  if (prev !== undefined && prev !== status && bulkAttributionRequired(now, actor, reason)) return false
   // dispatched_at guards ONE in_progress spell (one activation -> one wake-up message), it is not a
   // permanent tombstone. Nothing used to clear it, so a card pulled to in_progress and put BACK
   // (planned/waiting) burned its dispatch forever: the board showed it alive while the next pull
@@ -3346,8 +3420,8 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
     // client always sends it) is not itself a guard override and must not read as one; a caller
     // that wants the newDevStop route-layer bypass in the audit trail records that separately.
     const r = db.prepare(
-      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(id, prev, status, actor ?? null, now, forcedOverride || depBlocked ? 1 : 0)
+      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced, reason) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(id, prev, status, actor ?? null, now, forcedOverride || depBlocked ? 1 : 0, reason?.trim() || null)
     // Card d05d72b3: the drag/move path is the other live writer of a status transition -- see
     // updateKanbanCard's sibling hook and maybeResolveStuckIncident's own comment.
     if (status === 'waiting' || status === 'done') {
@@ -4144,6 +4218,9 @@ export interface KanbanCardEvent {
   /** 1 when the transition only happened because the caller passed `force` past the
    *  reviewed-card guard (card c4f2de32). 0 for every ordinary move. */
   forced: number
+  /** Why this transition was made. Optional for a single move; REQUIRED once the write is part of
+   *  a burst -- see {@link bulkAttributionRequired} (card 4bbb5167). */
+  reason: string | null
 }
 
 export function getKanbanCardEvents(cardId: string): KanbanCardEvent[] {
@@ -4203,7 +4280,10 @@ export function markScheduledTaskKanbanWaiting(taskName: string): string | null 
     "SELECT MAX(sort_order) as m FROM kanban_cards WHERE status = 'waiting' AND archived_at IS NULL"
   ).get() as { m: number | null }
   const sortOrder = (maxResult.m ?? 0) + 100
-  moveKanbanCard(card.id, 'waiting', sortOrder, 'scheduler')
+  // Card 4bbb5167: the only in-repo automated status writer. It moves one card, but a burst is a
+  // board-wide condition -- a mass triage running at the same second would otherwise silence this
+  // watchdog exactly when the board is busiest. It has a real answer, so it gives one.
+  moveKanbanCard(card.id, 'waiting', sortOrder, 'scheduler', false, 'ütemezett feladat fire-timeout watchdog')
   return card.id
 }
 

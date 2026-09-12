@@ -1168,10 +1168,10 @@ export function importFleet(
         const existing = db
           .prepare(`SELECT ${STATUS_EVENT_COLUMNS.join(', ')} FROM kanban_card_events`)
           .all() as TransferRow[]
-        const stmt = db.prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced) VALUES (?, ?, ?, ?, ?, ?)')
+        const stmt = db.prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced, reason) VALUES (?, ?, ?, ?, ?, ?, ?)')
         for (const ev of newTransferRows(rows as TransferRow[], existing, STATUS_EVENT_COLUMNS)) {
           const e = ev as any
-          stmt.run(e.card_id, e.from_status ?? null, e.to_status, e.actor ?? null, e.created_at, e.forced)
+          stmt.run(e.card_id, e.from_status ?? null, e.to_status, e.actor ?? null, e.created_at, e.forced, e.reason ?? null)
         }
       }
 
