@@ -231,20 +231,79 @@ done
 # re-diagnoses on three separate cards, each ending in a hand-written REVIEW paragraph saying the
 # same thing. `tee` keeps the live output exactly as before; PIPESTATUS keeps the real exit code.
 run_log="$(mktemp)"
-trap 'rm -f "$_hdr_file" "$run_log"' EXIT
-./node_modules/.bin/vitest run "${vitest_args[@]}" 2>&1 | tee "$run_log"
-status="${PIPESTATUS[0]}"
+e2e_log="$(mktemp)"
+trap 'rm -f "$_hdr_file" "$run_log" "$e2e_log"' EXIT
 
-# Adds an explanation on stderr when the run is the known flake; NEVER changes the exit code. A
-# wrapper that turned exit 1 into exit 0 here would be indistinguishable from one hiding a real
-# regression, which is the opposite of what this is for.
-bash "$HERE/vitest-flake-classify.sh" "$status" "$run_log" || true
+# One vitest invocation, reported and classified. Returns vitest's real exit code.
+run_vitest() {
+  local log="$1"; shift
+  ./node_modules/.bin/vitest run "$@" 2>&1 | tee "$log"
+  local st="${PIPESTATUS[0]}"
+  # Adds an explanation on stderr when the run is the known flake; NEVER changes the exit code. A
+  # wrapper that turned exit 1 into exit 0 here would be indistinguishable from one hiding a real
+  # regression, which is the opposite of what this is for.
+  bash "$HERE/vitest-flake-classify.sh" "$st" "$log" || true
+  # AND SAYS WHAT DID NOT RUN AT ALL (card beb9c8d3). This script sets no PG_E2E_URL and nothing
+  # else in the fleet does, while CI does -- so every PG-gated e2e file skips here. Measured on the
+  # api-e2e project alone: 58 of 65 files and 460 of 491 tests skipped, exit 0. vitest prints those
+  # counts but attributes them to nothing, so a green run reads like evidence about files that never
+  # executed. Same contract as the classifier: stderr only, never touches the exit code, silent when
+  # nothing was skipped. Run PER INVOCATION -- it reads the LAST summary in the log, so one report
+  # over two concatenated runs would silently describe only the second.
+  bash "$HERE/vitest-skip-report.sh" "$log" "$WT" || true
+  return "$st"
+}
 
-# AND SAYS WHAT DID NOT RUN AT ALL (card beb9c8d3). This script sets no PG_E2E_URL and nothing else
-# in the fleet does, while CI does -- so every PG-gated e2e file skips here. Measured on the api-e2e
-# project alone: 58 of 65 files and 460 of 491 tests skipped, exit 0. vitest prints those counts but
-# attributes them to nothing, so a green run reads like evidence about files that never executed.
-# Same contract as the classifier above: stderr only, never touches the exit code, silent when
-# nothing was skipped. The worktree is passed so the attribution reads real sources.
-bash "$HERE/vitest-skip-report.sh" "$run_log" "$WT" || true
+# THE api-e2e PROJECT GETS ITS OWN PROCESS (card cae9fb67). In one combined invocation it VANISHES
+# from the report: zero of its 66 files appear, the totals count only the other projects, and the
+# run ends with one "[vitest-worker]: Timeout calling onTaskUpdate". Measured, and each of these is
+# a separate run, not a retelling of one:
+#   api-e2e alone ....................... 66 files reported, exit 0
+#   api-e2e + superadmin-tsx (83) ....... 66 files reported, 0 timeouts
+#   api-e2e + @mopsion/web (276) ........ 66 files reported, 0 timeouts
+#   api-e2e + packages (748) ............ 0 files reported, 1 timeout   <- reproduces
+#   all four projects (975) ............. 0 files reported, 1 timeout   <- twice, incl. an idle box
+# So it is not machine load (a fresh-boot run at load 1.10 lost it too), not the worker cap
+# (--maxWorkers=12 loses it exactly the same), and not merely having a second project. What the
+# failing runs share is the `packages` project: 682 files and ~15.9k tests of task updates through
+# the main process, while api-e2e's SINGLE fork (singleFork, because these tests share one database)
+# waits for its turn. The 60s birpc bound is hardcoded in vitest 3.2.6 and cannot be configured away.
+#
+# A SEPARATE PROCESS IS A WORKAROUND, NOT A DIAGNOSIS -- the exact mechanism inside vitest is not
+# pinned here. It is the right shape anyway: this project is already isolated by design, and a run
+# that silently drops 66 files is worse than one that takes 90 seconds longer.
+#
+# `!api-e2e` rather than a hand-listed project set, so adding a project does not silently start
+# skipping it. Only when the CALLER did not pick projects: a caller naming its own --project has
+# already said what it wants to run.
+caller_set_project=0
+for a in ${vitest_args[@]+"${vitest_args[@]}"}; do
+  case "$a" in
+    --project|--project=*) caller_set_project=1 ;;
+  esac
+done
+
+if [ "$caller_set_project" -eq 1 ]; then
+  run_vitest "$run_log" "${vitest_args[@]}"
+  exit $?
+fi
+
+run_vitest "$run_log" "${vitest_args[@]}" --project '!api-e2e'
+status=$?
+
+echo "cleancore-suite-run: the api-e2e project runs in its own process (card cae9fb67)" >&2
+run_vitest "$e2e_log" "${vitest_args[@]}" --project api-e2e
+e2e_status=$?
+
+# A second run that matched NOTHING is the failure mode of hardcoding a project name: if `api-e2e`
+# is ever renamed, the negation above stops excluding it and this run silently finds no files --
+# which would look like success while the split quietly stopped happening. Say it out loud.
+if grep -q "No test files found" "$e2e_log"; then
+  echo "cleancore-suite-run: WARNING -- the api-e2e run matched NO files. The project name this" >&2
+  echo "  script splits on ('api-e2e') no longer matches vitest.config.ts, so the split is inert" >&2
+  echo "  and those tests are back in the main run (where they get lost). Fix the name here." >&2
+  [ "$status" -eq 0 ] && status=1
+fi
+
+[ "$status" -eq 0 ] && status="$e2e_status"
 exit "$status"
