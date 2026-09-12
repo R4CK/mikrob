@@ -96,6 +96,14 @@ const RUNNERS: ReadonlyArray<readonly [string, string]> = [
  */
 const MODE_SELFTESTS: ReadonlyArray<{ file: string; args: readonly string[] }> = [
   { file: 'agent-skill-drift-sync.sh', args: ['selftest'] },
+  // Added by card 5acd21ea, and the reason is the same class this file exists for: BOTH of these
+  // carried a working `--selftest` that NOTHING invoked. cleancore-pregate.sh had 5 cases and
+  // cleancore-tsc-lib.sh its own, written, committed, green-looking, never executed in a suite --
+  // found while fixing a pre-gate bug that made the tool report PRE-GATE CLEAN on a red branch.
+  // An unrun control is exactly how that bug survived: the gate tool's own regression cases could
+  // not have caught it, because they never ran.
+  { file: 'cleancore-pregate.sh', args: ['--selftest'] },
+  { file: 'cleancore-tsc-lib.sh', args: ['--selftest'] },
   { file: 'context-compact-monitor.sh', args: ['--selftest'] },
   { file: 'gate-dispatch-check.sh', args: ['selftest'] },
   { file: 'git-object-integrity-monitor.sh', args: ['--selftest'] },

@@ -124,7 +124,29 @@ test_failures() {
     echo "HARNESS-FAULT in vitest: $(printf '%s' "$out" | tail -3 | tr '\n' ' ' | cut -c1-200)"
     return
   fi
-  printf '%s\n' "$out" | grep -E '^ FAIL ' | sed -E 's/^ FAIL +\|[^|]*\| +//' | sort -u
+  printf '%s\n' "$out" | parse_test_failures
+}
+
+# The PARSING half, split out so BOTH outcomes are testable without running a suite (card 5acd21ea).
+# Reads vitest output on stdin, prints one failing test name per line, and ALWAYS EXITS 0.
+#
+# THE BUG THIS CLOSES, measured before it was fixed. Under `set -uo pipefail` a grep that matches
+# NOTHING exits 1, pipefail raises that to the whole pipeline, and the pipeline was the last command
+# in test_failures -- so THE FUNCTION RETURNED 1 PRECISELY WHEN THE SUITE WAS GREEN. Its caller then
+# read that as failure:
+#
+#     test_failures "$wt" > "$testf.$$.tmp" && mv -f "$testf.$$.tmp" "$testf"
+#
+# the `&&` never fired, the result file was never created, and a 0-byte .tmp was left behind. A
+# MISSING base file then met an EXISTING head file in `comm -13`, which exits nonzero and prints
+# nothing -- read by the caller as "adds nothing". Net effect: GREEN BASE + RED BRANCH announced
+# PRE-GATE CLEAN, the exact inverse of what the tool is for, on every card it ran on.
+#
+# `|| true` is correct rather than sloppy here: a genuine harness failure is ALREADY handled above,
+# by the missing-summary-line check that emits HARNESS-FAULT. Past that point the only thing a
+# nonzero status can mean is "grep found no failures", which is the good news, not an error.
+parse_test_failures() {
+  grep -E '^ FAIL ' | sed -E 's/^ FAIL +\|[^|]*\| +//' | sort -u || true
 }
 
 # Selftest for link_node_modules (card 87e5ad4d). Runs ONLY on direct execution
