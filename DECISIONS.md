@@ -12745,3 +12745,28 @@ kerül be. A javítás értéke pontosan a REJTETT csatorna bezárása volt.
 **Ki döntött:** Cybersec (NO-GO, mindkét lelet), backend3 (javítás). A leletet Cybersec emelte az
 `e3f0e4ed`-n, de a javítást backend3 írta, ezért gate-elhette.
 **Hivatkozás:** kártya bf2bf691, Cybersec komment 2749.
+
+## 2026-09-12 21:50 -- Egy merge után a git-alapú drift-check vak a tudatosan át nem vett elemekre
+
+**Döntés:** A rögzített „NOT ADOPTED" döntések mostantól **tripwire-t** kapnak: az EMLÉKEZTETŐ PRÓZA
+mellé egy `ACKNOWLEDGED_FORK_ANCHORS` bejegyzés, amit a `fork-upstream-conflict-guard.test.ts` minden
+landoláson a VALÓDI fa ellen kiértékel. Négy anchor bekerült; a maradék tíz szabály **névvel
+felsorolt hátralék**, ami CSAK csökkenhet -- egy ÚJ refuzálás nem szállítható tripwire nélkül.
+**Miért:** amikor egy integráció az upstream TÖRTÉNETÉT húzza be (merge, nem cherry-pick), a közös ős
+előre ugrik, és minden, amit a fork tudatosan NEM vett át, láthatatlanná válik a git-alapú
+összehasonlításnak -- nem mert megegyeznek, hanem mert a történet már mergeltként könyveli. Egy prózában
+rögzített elutasítás így némán megfordulhat egy későbbi auto-merge-ben.
+**MÉRVE, nem feltételezve** (a négy refuzálásra, ami megnevezhető szimbólumot mond): HÁROM már
+megfordult. `openInboundQuestionMessageId` -- jelen van, és **semmi nem jelezte** (a szabály indoka,
+hogy „db.ts-ben nulla előfordulás", ma mérhetően hamis). `umask 002` -- jelen van, de **bejelentve**
+(kártya 4f15966e, a hívás helyén leírva). `hookScriptAlreadyEffectiveInOtherScope` -- jelen van, a
+B-hullám auto-merge-ével (a rekordot az ec7bdad8 javította). `injectTelegramCopyGate` -- **továbbra is
+hiányzik, a döntés tartja magát.**
+**Amit NEM tettünk:** egyik megfordult elemet sem vontuk vissza. A kód működik és tesztelt; ami eltört,
+az a LEÍRÁS. A visszavonás külön döntés, saját kártyán.
+**Egy módszertani figyelmeztetés, beleírva a kódba:** a nyers előfordulás-szám nem mérés. A
+`TELEGRAM_COPY_GATE_MATCHER` három találata mind egy TESZT saját konstansa, aminek a fejléce épp azt
+mondja, hogy az export nincs átvéve -- egy arra célzott anchor „megfordulást" jelentett volna, ami meg
+sem történt. Az anchorok ezért PRODUKCIÓS fájlra mutatnak, és ezt teszt is kikényszeríti.
+**Ki döntött:** backend3 (lelet + kivitelezés), MikroB (kártya, HIGH). Gate: Cybersec.
+**Hivatkozás:** kártya 66ad1f95; a hátralék back-fillje külön kártyán.

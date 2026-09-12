@@ -397,6 +397,105 @@ describe('fork-side anchors: a rule that rests on OUR tree goes stale when OUR t
   })
 })
 
+// ---------------------------------------------------------------------------
+// Card 66ad1f95: a recorded REFUSAL must come with a tripwire.
+// ---------------------------------------------------------------------------
+//
+// THE FAILURE THIS CLOSES. When an upstream integration merges HISTORY rather than cherry-picking,
+// the merge-base moves to the upstream tip, and everything upstream added earlier that this fork
+// deliberately did NOT take stops being visible to a git-based drift check -- not because the two
+// agree, but because the history now books it as merged. A refusal written in prose can then reverse
+// in a later auto-merge with nothing firing.
+//
+// Measured on the four NOT-ADOPTED decisions that name a checkable symbol (2026-09-12): THREE had
+// already reversed, one of them with nobody noticing. The mechanism that would have caught it --
+// ACKNOWLEDGED_FORK_ANCHORS, evaluated against the real tree by the test above on every landing --
+// existed and was hardened, and simply had no entry for any of them. Coverage, not machinery.
+//
+// NO QUOTE OR NEGATION FILTER, on purpose (CLAUDE.md rule 12 names this trap explicitly): some of
+// these rules QUOTE the phrase while describing a refusal that has since been lifted. Filtering
+// those out is how a real refusal slips through a guard built to be convenient. Every rule that
+// mentions it needs an anchor, full stop -- and today every one of them has one, so the strict form
+// costs nothing and needs no exception list.
+describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () => {
+  const mentionsRefusal = (text: string): boolean => /NOT ADOPTED/i.test(text)
+
+  const refusing = Object.entries(ACKNOWLEDGED_CONFLICTS as Readonly<Record<string, string>>).filter(
+    ([, text]) => mentionsRefusal(String(text)),
+  )
+
+  it('the measure is not vacuous -- refusals really are recorded in these rules', () => {
+    // If this hits zero the scan stopped finding the phrase (a rewording), and the assertion below
+    // would pass over an empty set while claiming every refusal is covered.
+    expect(refusing.length).toBeGreaterThanOrEqual(10)
+  })
+
+  // A RATCHET, not a clean sheet, and the difference is stated rather than hidden. MEASURED from the
+  // module itself: 16 rules record a refusal, 6 are anchored, 10 are not. Anchoring the rest means
+  // measuring each symbol one at a time, and this card's own work showed why that cannot be done in
+  // bulk -- a raw occurrence count called the Telegram copy gate "adopted" when all three hits were
+  // a test's own const. So the unanchored rules are listed BY NAME: the list may SHRINK, never grow.
+  // A new refusal must arrive with its tripwire; this backlog is real work with a card of its own,
+  // not an exemption.
+  //
+  // The list is transcribed from a run, not from a hand scan -- my first attempt guessed it from a
+  // regex over the source and got three names wrong, which the honesty case below caught. That is
+  // the case earning its place on its first day.
+  const UNANCHORED_BACKLOG: readonly string[] = [
+    'src/web.ts',
+    'src/web/routes/kanban.ts',
+    'web/app.js',
+    'package.json',
+    'src/web/schedule-runner.ts',
+    'src/web/agent-process.ts',
+    'scripts/notify.sh',
+    'scripts/github-pr-monitor.sh',
+    'src/web/channel-monitor.ts',
+    'src/__tests__/context-guard.test.ts',
+  ]
+
+  it('no refusal ships WITHOUT a tripwire -- the unanchored set may shrink, never grow', () => {
+    const unwatched = refusing
+      .map(([file]) => file)
+      .filter((file) => !(file in ACKNOWLEDGED_FORK_ANCHORS))
+    const added = unwatched.filter((f) => !UNANCHORED_BACKLOG.includes(f))
+    expect(
+      added,
+      'this rule records a NOT-ADOPTED decision with nothing watching it. After an upstream history ' +
+        'merge the merge-base moves to the upstream tip, so git can no longer show that element as a ' +
+        'difference -- the refusal can reverse in a later auto-merge and stay green. Add an ' +
+        'ACKNOWLEDGED_FORK_ANCHORS entry naming a symbol checkable in the TREE (absent while the ' +
+        'refusal holds, present once it is lifted). Measured when this was written: of the four ' +
+        'refusals that named a checkable symbol, THREE had already reversed, one with nobody noticing.',
+    ).toEqual([])
+  })
+
+  it('the backlog is honest -- every name in it really is an unanchored refusal', () => {
+    // Without this the list is a place to park anything. A name that gets an anchor, or whose rule
+    // stops recording a refusal, must leave the list in the same commit.
+    const unwatched = new Set(
+      refusing.map(([file]) => file).filter((file) => !(file in ACKNOWLEDGED_FORK_ANCHORS)),
+    )
+    const stale = UNANCHORED_BACKLOG.filter((f) => !unwatched.has(f))
+    expect(stale, 'these are anchored (or no longer refuse) -- delete them from the backlog').toEqual([])
+  })
+
+  it('an anchor points at a PRODUCTION file, not at a test that may declare its own copy', () => {
+    // Measured while writing these: TELEGRAM_COPY_GATE_MATCHER reads as three occurrences tree-wide
+    // and looks adopted -- all three inside a test that declares its own const of that name and says
+    // in its header that the export is NOT adopted. An anchor aimed there would have reported a
+    // reversal that never happened, which is the same "a name in prose and code cannot be asserted
+    // by name" failure the fleet keeps meeting.
+    for (const [key, anchor] of Object.entries(ACKNOWLEDGED_FORK_ANCHORS)) {
+      expect(
+        anchor?.file.includes('__tests__'),
+        `${key}: the anchor reads ${anchor?.file}, a test file -- a test can declare its own copy ` +
+          'of any symbol, so presence there proves nothing about adoption',
+      ).toBe(false)
+    }
+  })
+})
+
 // The scan lives at the BOTTOM of this file, not the top, and that placement is the whole control.
 // Cybersec and QA both measured the first version independently (card 5da60b85, comments 21593 and
 // the QA FAIL beside it): the sentinel sat on line 65, immediately above the first `describe`, so
