@@ -174,8 +174,16 @@ chmod +x "$RUN_WT/store/agent-worktree.sh"
 : > "$RUN_WT/store/vitest-flake-classify.sh"; chmod +x "$RUN_WT/store/vitest-flake-classify.sh"
 : > "$RUN_WT/store/vitest-skip-report.sh"; chmod +x "$RUN_WT/store/vitest-skip-report.sh"
 ARGV_CAPTURE="$TMP/vitest-argv.txt"
+# Per-invocation capture, ADDED for the api-e2e split (card cae9fb67): the script now calls vitest
+# TWICE when the caller picked no projects. $ARGV_CAPTURE keeps its old meaning -- the LAST
+# invocation -- so every assertion written before the split still measures exactly what it did.
+ARGV_DIR="$TMP/vitest-argv-runs"; mkdir -p "$ARGV_DIR"
+ARGV_COUNT="$TMP/vitest-argv-count.txt"
 cat > "$RUN_WT/node_modules/.bin/vitest" <<EOF
 #!/usr/bin/env bash
+n=\$(( \$(cat "$ARGV_COUNT" 2>/dev/null || echo 0) + 1 ))
+printf '%s' "\$n" > "$ARGV_COUNT"
+printf '%s\n' "\$@" > "$ARGV_DIR/run-\$n.txt"
 printf '%s\n' "\$@" > "$ARGV_CAPTURE"
 exit 0
 EOF
@@ -217,5 +225,41 @@ else
 fi
 
 echo
+
+# --- the api-e2e project runs in its OWN vitest process (card cae9fb67) -----------------------
+# In one combined invocation its 66 files VANISH from the report and the run ends with a single
+# "[vitest-worker]: Timeout calling onTaskUpdate" -- measured on api-e2e+packages (748 files) and
+# on the full four-project run, twice, including on an idle box. Splitting it out is the fix, and
+# these cases pin that the split actually happens and stays off the caller's own project choice.
+reset_argv() { : > "$ARGV_CAPTURE"; rm -f "$ARGV_DIR"/run-*.txt; : > "$ARGV_COUNT"; }
+
+reset_argv
+out="$(env "${env_fake_wt[@]}" CLEANCORE_SUITE_SLOTS=2 bash "$RUN_WT/store/cleancore-suite-run.sh" fakewt 2>&1)"; rc=$?
+runs="$(cat "$ARGV_COUNT" 2>/dev/null || echo 0)"
+if [[ $rc -eq 0 && "$runs" == "2" ]] \
+   && grep -qx -- '!api-e2e' "$ARGV_DIR/run-1.txt" && grep -qx -- '--project' "$ARGV_DIR/run-1.txt" \
+   && grep -qx -- 'api-e2e' "$ARGV_DIR/run-2.txt" && grep -qx -- '--project' "$ARGV_DIR/run-2.txt"; then
+  ok "no caller --project -> TWO runs: everything but api-e2e, then api-e2e alone"
+else
+  bad "the api-e2e split did not happen" "rc=$rc runs=$runs run1=$(cat "$ARGV_DIR/run-1.txt" 2>/dev/null | tr '\n' ' ') run2=$(cat "$ARGV_DIR/run-2.txt" 2>/dev/null | tr '\n' ' ')"
+fi
+
+# The negation, not a hand-listed project set: adding a project to vitest.config.ts must not
+# silently start skipping it.
+if grep -qx -- '!api-e2e' "$ARGV_DIR/run-1.txt" 2>/dev/null; then
+  ok "the main run EXCLUDES by negation, so a new project is included without editing this script"
+else
+  bad "the main run does not use the !api-e2e negation" "run1=$(cat "$ARGV_DIR/run-1.txt" 2>/dev/null | tr '\n' ' ')"
+fi
+
+reset_argv
+out="$(env "${env_fake_wt[@]}" CLEANCORE_SUITE_SLOTS=2 bash "$RUN_WT/store/cleancore-suite-run.sh" fakewt -- --project packages 2>&1)"; rc=$?
+runs="$(cat "$ARGV_COUNT" 2>/dev/null || echo 0)"
+if [[ $rc -eq 0 && "$runs" == "1" ]] && ! grep -qx -- '!api-e2e' "$ARGV_CAPTURE"; then
+  ok "a caller that named its own --project gets ONE run, unsplit and untouched"
+else
+  bad "a caller-supplied --project was overridden by the split" "rc=$rc runs=$runs argv=$(cat "$ARGV_CAPTURE" 2>/dev/null | tr '\n' ' ')"
+fi
+
 echo "cleancore-suite-run.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

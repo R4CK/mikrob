@@ -12478,3 +12478,67 @@ teszi), és ugyanazzal a lemondó címkével, hogy a címzett ne olvassa úgy, m
 elolvasta volna a kártyáját. A `POST /api/messages` regisztrált flotta-ügynököt követel küldőként, és a
 `local-llm` nem az -- az komment-szerzői identitás, nem ügynök-könyvtár. A 3307b428 kártya tilalma a
 KOMMENT szerzőségéről szól, amire a gate-sweepek kulcsolnak; üzenetet nem sweepel senki szerző szerint.
+
+---
+
+## 2026-09-12 -- 9cbc471e -- A store/ naplók tulajdonos-only jogosultsága, és ami kimarad belőle
+
+**Döntés.** A `store/*.log` (és a forgatott `*.log-*.gz`) fájlok tulajdonos-only jogosultságot
+kapnak. Három ponton: `scripts/start.sh` `umask 077`-tel indul, így a szolgáltatások naplói már
+létrehozáskor szűkek; `store/rotate-logs.sh` explicit `chmod 600`-at tesz a forgatott archívumra és
+a helyben csonkolt élő fájlra is (a `cp -p` különben a 664-et is átörökíti); és
+`store/log-permissions.sh --check|--fix` megnevezi, illetve megszorítja azt, ami mégis kilóg.
+
+**Miért sweep is, nem csak umask.** Húsz szkript ír `store/` naplót, a két legérzékenyebbet pedig
+nem is szkript hozza létre: a `kanban-snapshot-cron.log` és a `db-backup-cron.log` a crontab-sor
+`>>` átirányításából születik, **cron saját héjában, a szkript indulása előtt**.
+
+**A mérés, ami ezt eldöntötte.** Mindkét szkript már tartalmaz `umask 077`-et (kártyák 90e4cbdf,
+e804262d), és a fájlok, amiket ők maguk hoznak létre, tényleg 600-asok -- a két cron-napló viszont
+továbbra is 664. Vagyis a kártya eredeti L1-javaslata („tedd a `umask 077`-et a `kanban-snapshot.sh`
+első sorába") már meg is történt, és **nem oldja meg** a leírt problémát: egy umask nem ér el egy
+fájlt, amit a héj már megnyitott helyette.
+
+**Ami emiatt nyitva marad.** A két cron-napló minden újralétrehozáskor visszaáll 664-re. A javítás
+`umask 077;` a crontab-sorban, ami gazdagép-állapot, nem repó-állapot -- a `--check` kimenete ezt
+külön kimondja, hogy ne tűnjön megoldottnak.
+
+**Amit a sweep szándékosan nem csinál.** Nem nyúl a `store/` nem-napló fájljaihoz. Egy eszköz, ami
+mindent megszorít, amit lát, olyan eszköz, amit senki nem mer lefuttatni.
+
+## 2026-09-12 11:50 -- Tömeges státuszírás: attribúció a forma alapján, nem végpont alapján (4bbb5167)
+
+**Döntés:** A kanban státusz-eseményei kapnak egy `reason` oszlopot, és egy burst-alapú őr lép be
+mindkét státuszíró útra (`moveKanbanCard`, `updateKanbanCard`): ha az utolsó 60 másodpercben már
+legalább 10 státusz-esemény született, a további státuszírás csak nem-üres `actor` ÉS `reason`
+mezővel megy át. Egy-egy kártya mozgatása érintetlen. A `force` nem kerüli meg.
+
+**Miért nem úgy, ahogy a kártya kérte.** A kártya azt kéri, hogy „a bulk-utakon" (batch-close,
+batch-státuszváltás) legyen kötelező az attribúció. Kódolás előtt megmértem: **nincsenek bulk-utak.**
+A táblán igénybe vehető státusz-ajtó pontosan kettő (`POST /api/kanban/:id/move` és
+`PUT /api/kanban/:id`), egyetlen végpont sem vesz át kártya-ID-listát, és egyetlen landolt szkript
+sem iterál rajtuk. Egy tömeges zárás tehát N darab hétköznapi írás -- amitől megkülönböztethető, az
+kizárólag az ALAKJA.
+
+**A küszöb mérésből jön.** A tábla 1880 státusz-eseményén a legsűrűbb 60 másodperces ablak naponta:
+1, 289, 111, 15, 2. A két háromjegyű nap a szülő-audit (6980f9c7) tárgyát képező tömeges triázs; a
+15 egy szándékos, legitim sweep (a szellemkártya-rekonstrukció), ami már vitt felelőst; minden más
+hétköznapi flotta-pillanat 1-2. A 10-es küszöb tehát ötszörös ráhagyással áll a normál forgalom
+fölött, és mindhárom tömeges epizódot elkapja. Mindkét szám env-hangolható
+(`KANBAN_BULK_WINDOW_SECONDS`, `KANBAN_BULK_THRESHOLD`).
+
+**Miért nem kötelező mindenhol.** Az `actor` opcionalitása nem hanyagság: a flotta 15 ügynökének
+CLAUDE.md-jében dokumentált státuszíró hívás nem küld felelőst, és a tábla 1880 eseményéből 1796 ezen
+az úton jött. Egy mindenhol kötelező mező ezt egy csapásra eltörné -- ez a 5. kódminőségi alapelv
+(működő funkciót nem vonunk vissza kérdés nélkül) hatálya alá esik.
+
+**Miért nem kerüli meg a `force`.** A `force` azt állítja, hogy „tudom, hogy egy őr útban van".
+Az „én vagyok az, és ezért" másik állítás. Ennek az őrnek nincs bypassa, mert a megválaszolása maga
+a kért cselekvés.
+
+**Mellékhatás, amit ugyanitt kellett rendezni.** A `reason` bekerült a flotta-transzfer
+státusz-esemény kulcsába is: enélkül két, csak indokban eltérő esemény dedupolódott volna az
+importon -- pontosan az a hibaosztály, amit a `forced` oszlopnál egyszer már megtaláltunk.
+
+**Ki döntött:** backend (végrehajtás, mérés), a szülő-audit 6. feladatpontja alapján (MikroB).
+**Hivatkozás:** kártya 4bbb5167, szülő 6980f9c7.

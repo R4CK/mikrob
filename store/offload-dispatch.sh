@@ -444,7 +444,18 @@ attempted=0
 drafted=0
 # Fields travel base64-encoded end to end (title/description routinely contain newlines/tabs, which
 # would otherwise corrupt `read -r` field splitting) and are only decoded at the point of use.
-while IFS=$'\t' read -r b64id b64title b64desc b64assignee b64tags b64project b64ctx b64assignee_raw; do
+# DELIMITER: '|', not TAB. A tab is IFS-WHITESPACE, so bash COLLAPSES consecutive tabs and an
+# EMPTY field silently disappears -- every later field shifts one to the left. Measured:
+#   printf 'A\tB\t\tD\n' | { IFS=$'\t' read -r a b c d; }  -> a=A b=B c=D d=(empty)
+#   printf 'A|B||D\n'      | { IFS='|'  read -r a b c d; }  -> a=A b=B c=(empty) d=D
+# This bit in production (cards 0b3a3084 -> this fix): `parent_context` is empty for any leaf with
+# no parent -- most cards -- so the field after it, `assignee_raw`, was lost and the draft nudge
+# announced "the card has NO assignee" for cards that plainly had one (measured on #370/cae9fb67
+# assigned to backend, and #327/8b5559cf assigned to backend2; both nudges went to mikrob instead).
+# The same shift also handed the local model the ASSIGNEE NAME as its --context. The old 7-field
+# form hid it because the empty field was LAST, so nothing came after it to lose.
+# '|' is outside the base64 alphabet (A-Za-z0-9+/=) and is not IFS whitespace, so empty fields survive.
+while IFS='|' read -r b64id b64title b64desc b64assignee b64tags b64project b64ctx b64assignee_raw; do
   [[ -z "$b64id" ]] && continue
   lid="$(printf '%s' "$b64id" | base64 -d)"
   (( attempted >= OFFLOAD_MAX_SUBTASKS )) && { echo "offload-dispatch: leaf call budget ($OFFLOAD_MAX_SUBTASKS) reached, stopping" >&2; break; }
@@ -466,7 +477,7 @@ done < <(printf '%s' "$LEAVES_JSON" | python3 -c '
 import json, sys, base64
 for l in json.load(sys.stdin):
     fields = [l["id"], l["title"], l["description"], l["assignee"], l["tags"], l["project"], l["parent_context"], l["assignee_raw"]]
-    print("\t".join(base64.b64encode(str(x).encode()).decode() for x in fields))
+    print("|".join(base64.b64encode(str(x).encode()).decode() for x in fields))
 ')
 
 if [[ $drafted -eq 0 ]]; then

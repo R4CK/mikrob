@@ -338,6 +338,18 @@ describe('L-3: a transfer must not merge two events that share a second (card 39
     // one already present, only the other is new
     expect(newTransferRows([ordinary, forced], [ordinary], STATUS_EVENT_COLUMNS)).toEqual([forced])
   })
+
+  it('REASON (card 4bbb5167): the same key-width gap, one column later', () => {
+    // `reason` arrived for exactly the case the audit (6980f9c7) is about: a mass status change
+    // with no attribution. Two closes of the same card at the same second for DIFFERENT reasons is
+    // precisely the shape a re-triage produces, so leaving it out of the key would have deduped
+    // away the evidence the column was added to preserve.
+    const a = { card_id: 'c1', from_status: 'waiting', to_status: 'done', actor: 'mikrob', created_at: 5, forced: 0, reason: 'triázs-köteg 1/3' }
+    const b = { card_id: 'c1', from_status: 'waiting', to_status: 'done', actor: 'mikrob', created_at: 5, forced: 0, reason: 'kézi felülvizsgálat után' }
+    expect(newTransferRows([a, b], [], STATUS_EVENT_COLUMNS)).toHaveLength(2)
+    expect(newTransferRows([a, b], [a, b], STATUS_EVENT_COLUMNS)).toEqual([])
+    expect(newTransferRows([a, b], [a], STATUS_EVENT_COLUMNS)).toEqual([b])
+  })
 })
 
 describe('the status trail import writes forced, not just the wide dedup key (card 11213a5b)', () => {
@@ -349,8 +361,12 @@ describe('the status trail import writes forced, not just the wide dedup key (ca
     'utf-8',
   )
 
-  it('the import INSERT carries the forced column', () => {
-    expect(SRC).toMatch(/INSERT INTO kanban_card_events \(card_id, from_status, to_status, actor, created_at, forced\)/)
+  it('the import INSERT carries the forced column -- and the reason column beside it (card 4bbb5167)', () => {
+    expect(SRC).toMatch(/INSERT INTO kanban_card_events \(card_id, from_status, to_status, actor, created_at, forced, reason\)/)
+  })
+
+  it('an older payload row with no reason key normalises to NULL, not undefined (card 4bbb5167)', () => {
+    expect(SRC).toMatch(/e\.reason \?\? null/)
   })
 
   it('an older payload row with no forced key normalises to 0, not undefined -- matches the target column\'s NOT NULL DEFAULT 0', () => {

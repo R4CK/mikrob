@@ -79,7 +79,7 @@ describe('one contract, both call sites', () => {
   function postingCallSites(): { line: string; index: number }[] {
     return CODE_LINES.map((line, index) => ({ line, index })).filter(
       ({ line }) =>
-        /\b(post_draft_comment|post_exhausted_notice)\s+"/.test(line) && !/\)\s*\{\s*$/.test(line),
+        /\b(post_draft_comment|post_exhausted_notice)\s+"/.test(line) && !/\)\s*\{\s*$/.test(line)
     )
   }
 
@@ -101,7 +101,9 @@ describe('one contract, both call sites', () => {
 
   it('the nudge cannot fail the dispatch -- the script is best-effort by contract', () => {
     for (const line of CODE_LINES.filter((l) => /nudge_leaf_owner\s+"/.test(l))) {
-      expect(line, `nudge call must not be able to abort: ${line.trim()}`).toMatch(/\|\|\s*true\s*$/)
+      expect(line, `nudge call must not be able to abort: ${line.trim()}`).toMatch(
+        /\|\|\s*true\s*$/
+      )
     }
     // And nothing turned on errexit underneath it since.
     expect(SRC).toMatch(/^set -uo pipefail$/m)
@@ -113,9 +115,58 @@ describe('one contract, both call sites', () => {
     // called it. Port 1 refuses immediately, so this costs nothing.
     const out = execFileSync('bash', [SCRIPT, 'deadbeef'], {
       encoding: 'utf-8',
-      env: { ...process.env, DASHBOARD_URL: 'http://127.0.0.1:1', OFFLOAD_VRAM_GUARD: '/nonexistent' },
+      env: {
+        ...process.env,
+        DASHBOARD_URL: 'http://127.0.0.1:1',
+        OFFLOAD_VRAM_GUARD: '/nonexistent',
+      },
     })
     expect(out).toContain('skip')
+  })
+})
+
+describe('the leaf fields survive an EMPTY field (the bug that shipped, card 0b3a3084)', () => {
+  // The leaf tuple is base64-encoded field-per-column and read back with `read -r`. A TAB
+  // delimiter is IFS-WHITESPACE, so bash collapses consecutive tabs and an EMPTY field vanishes,
+  // shifting every later field one to the left. `parent_context` is empty for any leaf with no
+  // parent -- most cards -- so the field after it, `assignee_raw`, was lost: the nudge announced
+  // "the card has NO assignee" for #370 (assigned to backend) and #327 (assigned to backend2),
+  // and both went to mikrob instead. The same shift handed the local model the assignee name as
+  // its --context. The 7-field form hid it because the empty field was last.
+
+  it('bash really does collapse a TAB delimiter -- the premise, not folklore', () => {
+    const tab = execFileSync(
+      'bash',
+      ['-c', `printf 'A\tB\t\tD\n' | { IFS=$'\t' read -r a b c d; echo "[$c][$d]"; }`],
+      { encoding: 'utf-8' }
+    ).trim()
+    const pipe = execFileSync(
+      'bash',
+      ['-c', `printf 'A|B||D\n' | { IFS='|' read -r a b c d; echo "[$c][$d]"; }`],
+      { encoding: 'utf-8' }
+    ).trim()
+    expect(tab, 'a tab delimiter drops the empty field and shifts D left').toBe('[D][]')
+    expect(pipe, 'the chosen delimiter keeps the empty field in place').toBe('[][D]')
+  })
+
+  it('the writer and the reader agree on a delimiter that is not IFS whitespace', () => {
+    // Anchored to the executable lines, comment-stripped: the explanation above names both
+    // delimiters, so a file-wide search would stay green after the code went back to a tab.
+    const code = SRC.split('\n').filter((l) => !/^\s*#/.test(l))
+    const writer = code.filter((l) => /\.join\(base64\.b64encode/.test(l))
+    const reader = code.filter((l) => /^\s*while IFS=.*read -r b64id/.test(l))
+    expect(writer.length, 'writer line not found').toBe(1)
+    expect(reader.length, 'reader line not found').toBe(1)
+    expect(writer[0], 'writer must not join on a tab').not.toMatch(/"\\t"\.join/)
+    expect(reader[0], 'reader must not split on a tab').not.toMatch(/IFS=\$'\\t'/)
+    // The delimiter sits BEFORE `.join(` in python: `"|".join(base64...)`.
+    const delim = /"(.)"\.join\(base64/.exec(writer[0])?.[1]
+    expect(delim, 'could not read the writer delimiter').toBeDefined()
+    expect(reader[0], `reader must use the same delimiter as the writer (${delim})`).toContain(
+      `IFS='${delim}'`
+    )
+    // Base64 is A-Za-z0-9+/= -- the delimiter must not collide with it, or a field splits itself.
+    expect(delim!, 'delimiter collides with the base64 alphabet').not.toMatch(/[A-Za-z0-9+/=]/)
   })
 })
 
