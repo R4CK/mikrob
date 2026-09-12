@@ -56,6 +56,45 @@ if [ "${1:-}" = "--selftest" ]; then
   t "a FAIL line reduces to its test name" \
     "$(printf ' FAIL  |packages| apps/api/src/x.test.ts > suite > case\n' | sed -E 's/^ FAIL +\|[^|]*\| +//')" \
     "apps/api/src/x.test.ts > suite > case"
+
+  # --- card 5acd21ea: the green/red asymmetry that made this tool lie -------------------------
+  # The founding bug survived because only the RED case was ever exercised. Both directions are
+  # pinned here, and the GREEN one is the case that was missing.
+  GREEN_OUT=' Test Files  920 passed (920)
+      Tests  19568 passed (19568)'
+  RED_OUT=' FAIL  |packages| apps/api/src/x.test.ts > suite > case
+ Test Files  1 failed | 919 passed (920)
+      Tests  1 failed | 19567 passed (19568)'
+
+  # GREEN SUITE: no failures found is SUCCESS, not an error. Before the fix this returned 1 under
+  # pipefail, and the caller's `&&` silently skipped writing the result file.
+  printf '%s\n' "$GREEN_OUT" | parse_test_failures >/dev/null
+  t "a GREEN suite makes parse_test_failures exit 0" "$?" "0"
+  t "a GREEN suite yields no test names" \
+    "$(printf '%s\n' "$GREEN_OUT" | parse_test_failures | wc -l)" "0"
+
+  # RED SUITE, the control: if this stopped reporting, the case above would pass on a parser that
+  # simply never finds anything.
+  printf '%s\n' "$RED_OUT" | parse_test_failures >/dev/null
+  t "a RED suite also exits 0 (status is not the verdict)" "$?" "0"
+  t "a RED suite yields its failing test name" \
+    "$(printf '%s\n' "$RED_OUT" | parse_test_failures)" \
+    "apps/api/src/x.test.ts > suite > case"
+
+  # THE SECOND HOLE: an ABSENT base is not an empty base. `added` cannot tell the difference -- it
+  # prints nothing either way -- which is why the fix is an existence check at the CALL SITE, and
+  # why this case asserts the difference is real rather than asserting `added` behaves.
+  printf 'apps/api/src/x.test.ts > suite > case\n' > "$tmp/head-red"
+  t "comm against a MISSING base prints nothing -- indistinguishable from clean" \
+    "$(added "$tmp/nonexistent-base" "$tmp/head-red" 2>/dev/null | wc -l)" "0"
+  t "...while against an EMPTY base the same head reports the breakage" \
+    "$(: > "$tmp/empty-base"; added "$tmp/empty-base" "$tmp/head-red" | wc -l)" "1"
+  # So the guard must key on existence. This is the assertion that fails if someone removes it.
+  # Anchored on the EMITTING line, not on the phrase: the first version of this case counted its own
+  # assertion too and reported 2. The needle below is spelled so that this very line cannot match it.
+  t "the pregate source requires both test measurements to exist" \
+    "$(grep -cE 'TEST MEASUREMENT MISSING: [$]f' "$0")" "1"
+
   rm -rf "$tmp"
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
@@ -134,7 +173,12 @@ measure() { # $1 = full sha, $2 = label
     say "$label $short: $errs typecheck error(s)"
   fi
   if [ "$RUN_TESTS" -eq 1 ] && [ ! -f "$testf" ]; then
-    test_failures "$wt" > "$testf.$$.tmp" && mv -f "$testf.$$.tmp" "$testf"
+    # NOT gated on the exit code (card 5acd21ea). test_failures used to return 1 on a GREEN suite --
+    # pipefail carrying a no-match grep -- so the `&&` never fired, the result file was never
+    # created, and the run went on to compare a file that did not exist. The status of a measurement
+    # is not the verdict of the measurement; what must hold is that the FILE EXISTS.
+    test_failures "$wt" > "$testf.$$.tmp"
+    mv -f "$testf.$$.tmp" "$testf"
     say "$label: $(wc -l < "$testf") failing test(s)"
   fi
   git -C "$MAIN" worktree remove --force "$wt" >/dev/null 2>&1
@@ -185,6 +229,13 @@ fi
 if [ "$RUN_TESTS" -eq 1 ]; then
   BASE_T="$CACHE_DIR/tests-$MB.txt"
   HEAD_T="$CACHE_DIR/tests-$(git -C "$MAIN" rev-parse "$SHA").txt"
+  # An ABSENT measurement is not an empty one -- the same rule the typecheck block above already
+  # enforces, missing here until card 5acd21ea. `comm -13` on a file that does not exist exits
+  # nonzero and prints NOTHING, and nothing is exactly what "breaks no test" looks like. Measured:
+  # comm -13 <missing base> <head holding one FAIL> -> exit 1, empty stdout, reported as clean.
+  for f in "$BASE_T" "$HEAD_T"; do
+    [ -f "$f" ] || { echo "TEST MEASUREMENT MISSING: $f -- the suite result was never recorded, so nothing was compared. This is NOT a pass"; exit 4; }
+  done
   if grep -q '^HARNESS-FAULT' "$BASE_T" "$HEAD_T" 2>/dev/null; then
     echo "HARNESS FAULT in the test run -- NOT a green suite:"
     grep -h '^HARNESS-FAULT' "$BASE_T" "$HEAD_T" | sed 's/^/    /'
