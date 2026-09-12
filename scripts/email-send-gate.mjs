@@ -513,10 +513,6 @@ export function readBrandEnv(readFile = (p) => readFileSync(p, 'utf-8')) {
 // ever vouched for them. That is a real narrowing of the 2026-06-25 shape (an
 // address invented by the agent itself can never pass), not an authorisation.
 
-// One address token. Deliberately simple: it must match what appears both in
-// the tool input and in Gmail's From/To/Cc header values.
-const ADDR_TOKEN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi
-
 // Parse one recipient entry ("addr" or "Name <addr>") to a bare lowercase
 // address. Returns '' when the entry is not a single clean address -- the
 // caller treats that as deny (an unparseable recipient must never slip past
@@ -558,15 +554,53 @@ export function threadMembershipDecision(recipients, participants) {
   return { allow: true }
 }
 
+// Split a header value into its individual recipient entries, on TOP-LEVEL commas only.
+// A display name may legitimately contain a comma ("Doe, John" <j@x.com>), so quotes and angle
+// brackets are tracked rather than assumed away -- a naive split would tear that entry in half and
+// then fail to parse either piece.
+function splitHeaderEntries(value) {
+  const out = []
+  let cur = ''
+  let inQuote = false
+  let inAngle = false
+  for (const ch of String(value ?? '')) {
+    if (ch === '"') { inQuote = !inQuote; cur += ch; continue }
+    if (!inQuote && ch === '<') { inAngle = true; cur += ch; continue }
+    if (!inQuote && ch === '>') { inAngle = false; cur += ch; continue }
+    if (ch === ',' && !inQuote && !inAngle) { out.push(cur); cur = ''; continue }
+    cur += ch
+  }
+  out.push(cur)
+  return out.map((e) => e.trim()).filter(Boolean)
+}
+
 // Collect every address that appears in the thread's From/To/Cc/Reply-To
 // headers. Pure over the Gmail API thread payload (format=metadata).
+//
+// ONE ADDRESS PER ENTRY, FROM THE ADDRESS FIELD -- NOT every address-shaped token in the header
+// (card bf2bf691, Cybersec's finding on e3f0e4ed). The previous version scanned the whole header
+// VALUE for anything matching an address, so a crafted DISPLAY NAME injected a stranger into the
+// participant set and thereby authorised sending to it:
+//
+//     From: "ceo@ourcompany.com via Mailer" <attacker@evil.com>
+//
+// added BOTH addresses. The display name is attacker-controlled text on inbound mail, so that made
+// the membership set something a sender could extend. Each entry now goes through extractAddress,
+// which takes the <angle> part when present -- the same parser the request side already uses, so
+// both ends agree on what an address is.
+//
+// An entry that does not parse is DROPPED rather than guessed at. That shrinks the participant set,
+// which can only cause more denials: the fail-closed direction.
 export function extractParticipants(threadData) {
   const out = new Set()
   for (const msg of threadData?.messages ?? []) {
     for (const h of msg?.payload?.headers ?? []) {
       const n = String(h?.name ?? '').toLowerCase()
       if (n === 'from' || n === 'to' || n === 'cc' || n === 'reply-to') {
-        for (const m of String(h?.value ?? '').matchAll(ADDR_TOKEN)) out.add(m[0].toLowerCase())
+        for (const entry of splitHeaderEntries(h?.value)) {
+          const addr = extractAddress(entry)
+          if (addr) out.add(addr)
+        }
       }
     }
   }

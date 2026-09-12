@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   gateDecision,
@@ -340,17 +341,94 @@ describe('gate script entrypoint (spawned, no network)', () => {
 // thing is lost: peers cannot see in their CLAUDE.md roster that an agent holds this capability --
 // arguably the one capability where that visibility matters most. Pinned as a KNOWN consequence so
 // that widening the regex is a decision someone makes on purpose, not a silent drift.
-describe('the capability tag vs the roster sanitiser (measured, card e3f0e4ed)', () => {
-  it('the grant path does NOT sanitise, so the capability really is usable', () => {
+
+// ---------------------------------------------------------------------------
+// Card bf2bf691 -- Cybersec's three follow-ups from the e3f0e4ed gate.
+// ---------------------------------------------------------------------------
+
+describe('the capability tag survives the roster sanitiser (card bf2bf691)', () => {
+  // This REPLACES the earlier pair that pinned the colon form as a known consequence. The name was
+  // changed rather than the regex widened, so the assertion flips: it must now round-trip.
+  it('round-trips through sanitizeCapabilityTag, so peers SEE who holds it', () => {
+    expect(sanitizeCapabilityTag(EMAIL_THREAD_REPLY_CAPABILITY)).toBe(EMAIL_THREAD_REPLY_CAPABILITY)
+  })
+
+  it('carries no colon -- the character that made it invisible', () => {
+    expect(EMAIL_THREAD_REPLY_CAPABILITY).not.toContain(':')
+  })
+
+  it('the grant path still works with the new value', () => {
     expect(hasThreadReplyCapability('some-agent', [EMAIL_THREAD_REPLY_CAPABILITY])).toBe(true)
+    expect(hasThreadReplyCapability('some-agent', ['email:thread-reply'])).toBe(false)
+  })
+})
+
+describe('extractParticipants ignores the DISPLAY NAME (card bf2bf691)', () => {
+  const thread = (headerValue: string) => ({
+    messages: [{ payload: { headers: [{ name: 'From', value: headerValue }] } }],
   })
 
-  it('the ROSTER sanitiser drops it -- peers do not see the grant', () => {
-    expect(sanitizeCapabilityTag(EMAIL_THREAD_REPLY_CAPABILITY)).toBeNull()
+  it('a crafted display name cannot inject a stranger into the participant set', () => {
+    // Cybersec's exact case: the old scan added BOTH addresses, so replying to the spoofed one
+    // passed the membership check.
+    const p = extractParticipants(thread('"ceo@ourcompany.com via Mailer" <attacker@evil.test>'))
+    expect(p).toEqual(['attacker@evil.test'])
+    expect(p).not.toContain('ceo@ourcompany.com')
   })
 
-  // Control: the sanitiser is not simply rejecting everything.
-  it('a colon-free tag still passes the same sanitiser', () => {
-    expect(sanitizeCapabilityTag('email-thread-reply')).toBe('email-thread-reply')
+  // CONTROL: the narrowing must not stop collecting the addresses that are really there, or the
+  // participant set empties and every reply is denied -- safe, but the feature would be dead.
+  it('still collects every REAL address, including a comma inside a quoted display name', () => {
+    const p = extractParticipants(thread('"Doe, John" <j@x.test>, plain@y.test, <z@z.test>'))
+    expect(p.sort()).toEqual(['j@x.test', 'plain@y.test', 'z@z.test'])
+  })
+
+  it('drops an entry it cannot parse rather than guessing (fail-closed)', () => {
+    expect(extractParticipants(thread('not-an-address, ok@y.test'))).toEqual(['ok@y.test'])
+  })
+})
+
+describe('the timeout margin is pinned, not assumed (card bf2bf691)', () => {
+  // THE PROPERTY THIS PROTECTS. The whole fail-closed guarantee rests on WHERE the deadline lands:
+  // inside the script it becomes a DENY, but if the HOOK itself times out first, Claude Code treats
+  // that as a non-blocking error -- fail-OPEN on the send path. Today two sequential 3.5s requests
+  // sit under a 10s hook budget. Nothing enforced that, so a third request or a raised per-request
+  // timeout would cross the line silently. Read statically from both sources rather than executed,
+  // because the failure is a CONFIGURATION relationship, not a runtime behaviour.
+  const GATE = readFileSync(join(ROOT, 'scripts', 'email-send-gate.mjs'), 'utf-8')
+  const SCAFFOLD = readFileSync(join(ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')
+
+  const hookTimeoutS = (): number => {
+    const fn = SCAFFOLD.slice(SCAFFOLD.indexOf('export function injectEmailSendGate('))
+    const m = fn.slice(0, fn.indexOf('\n}')).match(/timeout:\s*(\d+)/)
+    expect(m, 'the email gate hook registration no longer states a timeout').toBeTruthy()
+    return Number(m![1])
+  }
+
+  const perRequestMs = (): number[] =>
+    [...GATE.matchAll(/AbortSignal\.timeout\((\d+)\)/g)].map((m) => Number(m[1]))
+
+  it('the measure is not vacuous -- both numbers are actually found', () => {
+    expect(hookTimeoutS()).toBeGreaterThan(0)
+    expect(perRequestMs().length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('every network request in the gate carries a timeout -- none is unbounded', () => {
+    // A fetch without a signal would wait forever and hand the deadline back to the hook, which is
+    // the fail-open direction. Count them against the fetches rather than trusting the sum.
+    const fetches = [...GATE.matchAll(/\bfetchImpl\(/g)].length
+    expect(perRequestMs().length).toBe(fetches)
+  })
+
+  it('the SUM of the per-request timeouts stays under the hook budget, with margin', () => {
+    const budgetMs = hookTimeoutS() * 1000
+    const total = perRequestMs().reduce((a, b) => a + b, 0)
+    // Strictly less, and not merely by a rounding: the script still has to read two files, parse
+    // JSON and write its decision after the last response.
+    expect(
+      total,
+      `per-request timeouts total ${total}ms against a ${budgetMs}ms hook budget -- ` +
+        'if the hook times out first the failure is NON-blocking, i.e. the send is ALLOWED',
+    ).toBeLessThanOrEqual(budgetMs - 2000)
   })
 })
