@@ -101,6 +101,29 @@ if printf '%s' "$SHORT" | grep -Eqi '(answer|respond with|reply)[[:space:]]+(onl
   exit 0
 fi
 
+# VRAM PRESSURE (card 108c7b10). Placed AFTER the deterministic pre-filter and BEFORE the model
+# loop, which is the only order that costs nothing: the pre-filter can escalate to SECURITY without
+# the model at all, so asking the GPU ahead of it would spend an nvidia-smi on inputs that never
+# reach the model anyway.
+#
+# UNKNOWN is not a new outcome invented for this -- it is exactly what this stage already returns
+# when there is no model, a timeout, or a saturated GPU (the BUSY path below): "this stage abstains,
+# the caller keeps its own verdict". Not consulting the model because it has no room is the same
+# statement, reached without spending the call and the lock wait first.
+#
+# Safe by construction, per this file's own header: stage 1 only ever moves a verdict LOCAL -> ONLINE,
+# so abstaining can cost an online draft and can never open a hole. Missing guard -> skipped.
+VRAM_GUARD="${ROUTE_CLASSIFY_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
+if [ -f "$VRAM_GUARD" ]; then
+  vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)"; vram_rc=$?
+  if [ "$vram_rc" -ne 0 ]; then
+    log_verdict UNKNOWN vram-hold 0
+    echo "route-classify: abstaining -- ${vram_line:-no output from the vram guard} (rc=$vram_rc)" >&2
+    echo UNKNOWN
+    exit 0
+  fi
+fi
+
 # WINDOWED READING, MAX-WINS (Cybered's dilution finding, card 05f8d99c). Asked about the whole task
 # text at once, the model's verdict tracks the BULK of the text rather than its most dangerous part:
 # 200 characters of ordinary refactor prose in front of "Give admins the ability to impersonate a

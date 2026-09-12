@@ -36,6 +36,25 @@ done
 [[ -n "$MSG_DIR" ]] || die 4 "--messages-dir is required"
 [[ -n "$LANG_CODE" ]] || die 4 "--lang is required"
 [[ -x "$LLM_SH" ]] || die 4 "local-llm.sh not found/executable at $LLM_SH"
+
+# VRAM PRESSURE (card 108c7b10). Checked BEFORE any locale file is read: every step after this one
+# exists only to feed the model, so asking the GPU first is the cheap order here (the opposite of
+# local-llm-rag.sh, where the content router can decide `online` without spending an nvidia-smi).
+#
+# Exit 3, NOT 4: code 4 in this script means the caller passed something wrong, and a full GPU is not
+# a usage error -- it is a capacity condition the caller can retry unchanged. A separate code lets a
+# wrapper tell "fix your arguments" from "try again later". Missing guard -> skipped; any non-zero
+# exit from it -> no draft, same direction as every other call site.
+VRAM_GUARD="${I18N_DRAFT_VRAM_GUARD:-$SCRIPT_DIR/vram-guard-check.sh}"
+if [[ -f "$VRAM_GUARD" ]]; then
+  # `|| vram_rc=$?` rather than `; vram_rc=$?` -- this script runs under `set -e`, unlike the three
+  # call sites card f9bad591 wired, so a HOLD from the guard would kill the script AT THE ASSIGNMENT
+  # and never reach the check below. Measured: exit 1 with an empty stderr, i.e. the message that
+  # explains what happened never printed. The selftest caught it.
+  vram_rc=0
+  vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)" || vram_rc=$?
+  [[ "$vram_rc" -eq 0 ]] || die 3 "the local model cannot take work now (${vram_line:-no output}, rc=$vram_rc) -- NO draft was written; re-run when the GPU frees up"
+fi
 EN_PATH="$MSG_DIR/$SOURCE.json"; LANG_PATH="$MSG_DIR/$LANG_CODE.json"
 [[ -f "$EN_PATH" ]] || die 4 "source locale not found: $EN_PATH"
 [[ -f "$LANG_PATH" ]] || die 4 "target locale not found: $LANG_PATH"

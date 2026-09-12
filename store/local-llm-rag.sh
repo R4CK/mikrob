@@ -400,7 +400,15 @@ NODE
   if [[ "$ROUTE" == "local" ]]; then
     VRAM_GUARD="${LOCAL_LLM_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
     if [[ -f "$VRAM_GUARD" ]]; then
-      vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)"; vram_rc=$?
+      # `|| vram_rc=$?`, NOT `; vram_rc=$?` -- this script runs under `set -e` (unlike the other two
+      # call sites card f9bad591 wired, which use `set -uo pipefail`). With the plain form, a HOLD
+      # killed the script AT THE ASSIGNMENT: the lines below that set ROUTE=online with a vram-hold
+      # reason were never reached, so the documented behaviour never happened. MEASURED on the live
+      # main clone before this fix: exit 1, NO output at all. The safe direction was preserved by
+      # accident (a dead script drafts nothing), but the reason was never logged and a caller that
+      # reads a non-zero exit as a fault saw a healthy machine as a broken one. Card 108c7b10.
+      vram_rc=0
+      vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)" || vram_rc=$?
       if [[ "$vram_rc" -ne 0 ]]; then
         ROUTE=online
         REASON="vram-hold (${vram_line:-no output}, rc=$vram_rc)"
