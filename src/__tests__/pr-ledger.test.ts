@@ -8,6 +8,13 @@ import type { RouteContext } from '../web/routes/types.js'
 // run makes are the ones under test, not a re-implementation.
 // @ts-expect-error plain .mjs module without type declarations
 import { mapPr, prNumbersFromMessages, decideLive, isoDay, isGhNotFound, UPSERT_FULL_SQL, UPSERT_PRESERVE_LIVE_SQL } from '../../scripts/pr-ledger-lib.mjs'
+// B-wave (card 42938a74): pr-ledger-lib.mjs is plain JS with no .d.ts -- the repo's established
+// shape for scripts/ (27 test files import .mjs siblings, none has a declaration file). The two
+// SQL constants are therefore error-typed, and every `.prepare(<const>)` below reads as an unsafe
+// argument: seven findings from one missing type, in an arriving upstream test. Named here once
+// instead of casting at each call site, so the fact lives in one place.
+const upsertFullSql: string = UPSERT_FULL_SQL as string
+const upsertPreserveLiveSql: string = UPSERT_PRESERVE_LIVE_SQL as string
 
 const ROOT = join(__dirname, '..', '..')
 
@@ -164,28 +171,28 @@ describe('degraded-mode upsert semantics', () => {
   beforeEach(() => { initDatabase(':memory:') })
 
   it('preserve: an existing NOT-live develop row stays not-live, the facts still update', () => {
-    getDb().prepare(UPSERT_FULL_SQL).run({ ...base, number: 1, is_live: 0, live_since: null, measured_at: 1 })
-    getDb().prepare(UPSERT_PRESERVE_LIVE_SQL).run({ ...base, number: 1, title: 'frissult', measured_at: 2 })
+    getDb().prepare(upsertFullSql).run({ ...base, number: 1, is_live: 0, live_since: null, measured_at: 1 })
+    getDb().prepare(upsertPreserveLiveSql).run({ ...base, number: 1, title: 'frissult', measured_at: 2 })
     const r = getDb().prepare('SELECT is_live, live_since, title, measured_at FROM pr_ledger WHERE number = 1').get() as any
     expect(r).toMatchObject({ is_live: 0, live_since: null, title: 'frissult', measured_at: 2 })
   })
 
   it('preserve: an existing LIVE row keeps is_live=1 and its live_since', () => {
-    getDb().prepare(UPSERT_FULL_SQL).run({ ...base, number: 2, is_live: 1, live_since: '2026-08-20', measured_at: 1 })
-    getDb().prepare(UPSERT_PRESERVE_LIVE_SQL).run({ ...base, number: 2, measured_at: 2 })
+    getDb().prepare(upsertFullSql).run({ ...base, number: 2, is_live: 1, live_since: '2026-08-20', measured_at: 1 })
+    getDb().prepare(upsertPreserveLiveSql).run({ ...base, number: 2, measured_at: 2 })
     const r = getDb().prepare('SELECT is_live, live_since FROM pr_ledger WHERE number = 2').get() as any
     expect(r).toEqual({ is_live: 1, live_since: '2026-08-20' })
   })
 
   it('preserve: a brand-new row enters conservatively as not-live', () => {
-    getDb().prepare(UPSERT_PRESERVE_LIVE_SQL).run({ ...base, number: 3, measured_at: 2 })
+    getDb().prepare(upsertPreserveLiveSql).run({ ...base, number: 3, measured_at: 2 })
     const r = getDb().prepare('SELECT is_live, live_since FROM pr_ledger WHERE number = 3').get() as any
     expect(r).toEqual({ is_live: 0, live_since: null })
   })
 
   it('full: overwrites is_live in both directions (releases are retroactive)', () => {
-    getDb().prepare(UPSERT_FULL_SQL).run({ ...base, number: 4, is_live: 0, live_since: null, measured_at: 1 })
-    getDb().prepare(UPSERT_FULL_SQL).run({ ...base, number: 4, is_live: 1, live_since: null, measured_at: 2 })
+    getDb().prepare(upsertFullSql).run({ ...base, number: 4, is_live: 0, live_since: null, measured_at: 1 })
+    getDb().prepare(upsertFullSql).run({ ...base, number: 4, is_live: 1, live_since: null, measured_at: 2 })
     expect((getDb().prepare('SELECT is_live FROM pr_ledger WHERE number = 4').get() as any).is_live).toBe(1)
   })
 

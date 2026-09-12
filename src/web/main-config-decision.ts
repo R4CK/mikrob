@@ -26,7 +26,7 @@
 // THE RESIDUAL GAP, STATED RATHER THAN PAPERED OVER: one resolve could in
 // principle be reused across several respawns, which would emit one trace for
 // many launches. Nothing does that today; every call site resolves inline.
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { logger } from '../logger.js'

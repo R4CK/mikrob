@@ -8,7 +8,6 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
-import { listKanbanCards } from '../db.js'
 import {
   agentHasChannel,
   agentSessionName,
@@ -23,9 +22,7 @@ import {
   startAgentProcess,
   stopAgentProcess,
   scheduleIdentitySetup,
-  ensureMainAgentIsolatedConfigDir,
   ensureSharedClaudeOnboarded,
-  hasFleetOauthToken,
   FLEET_OAUTH_TOKEN_PATH,
   answerFirstRunGates,
   shSingleQuote,
