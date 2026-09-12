@@ -39,6 +39,12 @@ for f in "${LOGS[@]}"; do
     cp -p "$f" "$dest" && : > "$f"
     gzip -f "$dest"
   fi
+  # Card 9cbc471e: `cp -p` PRESERVES the source mode, so a 664 live log rotates into a 664 archive
+  # -- the archive holds the same content and the same risk, and it outlives the file it came from
+  # by RETAIN_DAYS. Force owner-only on both sides; the live file is re-truncated in place above,
+  # which keeps its original mode, so it needs saying too.
+  chmod 600 "$f" 2>/dev/null || true
+  chmod 600 "${dest}.gz" 2>/dev/null || true
 done
 
 # prune rotated archives older than RETAIN_DAYS

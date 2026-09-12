@@ -108,6 +108,8 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **Helyi-LLM modell-elosztás swimlane**: modellenkénti idővonal a helyi LLM hívásairól, feladattípus szerint színezve, KPI-blokkal. Két külön vezérlő: egy csúszka szabja meg, mennyi adat töltődik be (30 perctől 4 óráig), a vízszintes gördítő pedig mindig egy 10 perces ablakot mutat belőle, a jelentől visszafelé. Minden telepített modell kap sávot akkor is, ha az adott ablakban nem futott, és külön jelöli azt a modellt, amelyik már nincs telepítve. Upstream nem ismeri.
 - **Teszt-izolált helyi-LLM állapot**: a tesztfuttatás a helyi-LLM scriptek állapotkönyvtárát eldobható könyvtárba tereli, így a suite nem tud az ÉLES használati naplóba írni. Enélkül a worktree-ből futó teszt az állapot-feloldó szabálya miatt a fő telepítés naplóját írta, és a hamis sorok a dashboard grafikonján külön modellként jelentek meg.
 
+- **Log-jogosultság ellenőrzés és szigorítás**: a `store/` naplófájljait (a forgatott archívumokat is) tulajdonos-only jogosultságra szorítja, és külön meg tudja mondani, melyik fájl lóg ki -- a naplók abból élnek, hogy egyszer csak titkot kezdenek tartalmazni. A szolgáltatásokat indító szkript már eleve szűken hozza létre őket; amit a cron saját héja nyit meg, arra a jelentés külön figyelmeztet.
+
 ### Kvóta, terhelés és kontextus-menedzsment
 
 - **Kvóta-kiesés csendje**: kvóta-leálláskor a rendszer nem ismételgeti percenként ugyanazt. A vészmódú Ghost nem próbálgatja a visszatérést, amíg a reset ismert időpontja messze van, az ütemező kimaradás-jelzése pedig időkorláttal megy ki, és az összevont jelzés megmondja, hány ismétlés helyett áll. Ha a reset ideje nem ismert vagy hibás, minden visszaáll a folyamatos ellenőrzésre.

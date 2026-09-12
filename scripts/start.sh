@@ -1,6 +1,14 @@
 #!/bin/bash
 # Start main agent services
 
+# Card 9cbc471e: the services' own logs (store/dashboard.log, channels.log and their .error pairs)
+# are created by the redirects further down, so their mode comes from THIS process's umask, not
+# from anything inside the service. 077 here covers all of them at creation, which is cheaper and
+# harder to forget than a umask per writer. It does NOT reach the two cron-redirect logs -- cron's
+# shell creates those before any of this runs. See store/log-permissions.sh for that gap and the
+# sweep that names it.
+umask 077
+
 # Dashboard port: env WEB_PORT, else the install .env, else the 3420 default.
 WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')}"
 WEB_PORT="${WEB_PORT:-3420}"
