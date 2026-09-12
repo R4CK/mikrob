@@ -7,6 +7,7 @@ import {
   getKanbanComments, addKanbanComment, getKanbanCardEvents, getKanbanCardFieldEvents, listKanbanProjects,
   getKanbanLineComments, addKanbanLineComment,
   getKanbanCard, getChildCards, getDb,
+  bulkAttributionRequired, BULK_ATTRIBUTION_MESSAGE,
   createAgentMessage, markKanbanCardDispatched,
   getKanbanSeqByIdPrefix, getKanbanCardStateByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
@@ -96,6 +97,18 @@ function newDevStopWouldBlock(id: string, nextStatus: unknown, force: boolean, a
   const flag = readHardStop()
   if (!flag.newDevStopActive) return false
   return isNewDevStartBlocked(getKanbanCard(id)?.status, nextStatus, force, flag, actor)
+}
+
+/**
+ * Is `next` a REAL status change for this card? (card 4bbb5167)
+ *
+ * A reorder inside one column, an edit that carries no status, and a write to a card that does not
+ * exist are all not state changes -- and a missing card must still answer 404, not a bulk refusal.
+ */
+function statusWouldChange(id: string, next: unknown): boolean {
+  if (typeof next !== 'string' || !next.trim()) return false
+  const card = getKanbanCard(id)
+  return card !== undefined && card.status !== next
 }
 const NEW_DEV_STOP_MESSAGE =
   'Heti "új fejlesztés leáll" küszöb átlépve: egy planned kártya nem mehet in_progress-be VAGY egyenesen waiting-be sem (új fejlesztés indítása) a heti resetig. In-flight és gate-munka továbbra is mehet (waiting -> in_progress); tudatos felülíráshoz MikroB force: true-val nyithatja meg.'
@@ -770,7 +783,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanCardMatch && method === 'PUT') {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const body = await readBody(req)
-    const { actor, force, ...data } = JSON.parse(body.toString()) as Record<string, unknown>
+    const { actor, force, reason, ...data } = JSON.parse(body.toString()) as Record<string, unknown>
     if (newDevStopWouldBlock(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
       return true
@@ -798,7 +811,17 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = dependencyBlockBody(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, v.body!, 409); return true }
     }
-    if (updateKanbanCard(id, normalizeProjectName(data), { actor: typeof actor === 'string' ? actor : undefined, force: force === true })) {
+    // Card 4bbb5167. The writer refuses this case on its own -- the check is repeated here only to
+    // give it its OWN body: falling through to the writer's `false` would answer a bulk refusal
+    // with the reviewed-card message, which names the wrong problem and the wrong fix.
+    if (statusWouldChange(id, data.status) &&
+        bulkAttributionRequired(Math.floor(Date.now() / 1000),
+          typeof actor === 'string' ? actor : undefined,
+          typeof reason === 'string' ? reason : undefined)) {
+      json(res, { code: 'bulk_attribution_required', error: BULK_ATTRIBUTION_MESSAGE }, 409)
+      return true
+    }
+    if (updateKanbanCard(id, normalizeProjectName(data), { actor: typeof actor === 'string' ? actor : undefined, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
       json(res, { ok: true }); return true
     }
     // Card c4f2de32: distinguish "no such card" from "refused to re-open reviewed work", so the
@@ -838,7 +861,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanMoveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
-    const { status, sort_order, actor, force } = JSON.parse(body.toString())
+    const { status, sort_order, actor, force, reason } = JSON.parse(body.toString())
     if (newDevStopWouldBlock(id, status, force === true, typeof actor === 'string' ? actor : undefined)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
       return true
@@ -863,7 +886,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = dependencyBlockBody(id, status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, v.body!, 409); return true }
     }
-    if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true)) {
+    // Card 4bbb5167 -- see the sibling block in the PUT handler for why the check is repeated here.
+    if (statusWouldChange(id, status) &&
+        bulkAttributionRequired(Math.floor(Date.now() / 1000),
+          typeof actor === 'string' ? actor : undefined,
+          typeof reason === 'string' ? reason : undefined)) {
+      json(res, { code: 'bulk_attribution_required', error: BULK_ATTRIBUTION_MESSAGE }, 409)
+      return true
+    }
+    if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true, typeof reason === 'string' ? reason : undefined)) {
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
       // Fire-and-forget: fireKanbanDispatch's own try/catch means this never rejects, and
