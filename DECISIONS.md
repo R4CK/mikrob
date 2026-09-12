@@ -12478,3 +12478,30 @@ teszi), és ugyanazzal a lemondó címkével, hogy a címzett ne olvassa úgy, m
 elolvasta volna a kártyáját. A `POST /api/messages` regisztrált flotta-ügynököt követel küldőként, és a
 `local-llm` nem az -- az komment-szerzői identitás, nem ügynök-könyvtár. A 3307b428 kártya tilalma a
 KOMMENT szerzőségéről szól, amire a gate-sweepek kulcsolnak; üzenetet nem sweepel senki szerző szerint.
+
+---
+
+## 2026-09-12 -- 9cbc471e -- A store/ naplók tulajdonos-only jogosultsága, és ami kimarad belőle
+
+**Döntés.** A `store/*.log` (és a forgatott `*.log-*.gz`) fájlok tulajdonos-only jogosultságot
+kapnak. Három ponton: `scripts/start.sh` `umask 077`-tel indul, így a szolgáltatások naplói már
+létrehozáskor szűkek; `store/rotate-logs.sh` explicit `chmod 600`-at tesz a forgatott archívumra és
+a helyben csonkolt élő fájlra is (a `cp -p` különben a 664-et is átörökíti); és
+`store/log-permissions.sh --check|--fix` megnevezi, illetve megszorítja azt, ami mégis kilóg.
+
+**Miért sweep is, nem csak umask.** Húsz szkript ír `store/` naplót, a két legérzékenyebbet pedig
+nem is szkript hozza létre: a `kanban-snapshot-cron.log` és a `db-backup-cron.log` a crontab-sor
+`>>` átirányításából születik, **cron saját héjában, a szkript indulása előtt**.
+
+**A mérés, ami ezt eldöntötte.** Mindkét szkript már tartalmaz `umask 077`-et (kártyák 90e4cbdf,
+e804262d), és a fájlok, amiket ők maguk hoznak létre, tényleg 600-asok -- a két cron-napló viszont
+továbbra is 664. Vagyis a kártya eredeti L1-javaslata („tedd a `umask 077`-et a `kanban-snapshot.sh`
+első sorába") már meg is történt, és **nem oldja meg** a leírt problémát: egy umask nem ér el egy
+fájlt, amit a héj már megnyitott helyette.
+
+**Ami emiatt nyitva marad.** A két cron-napló minden újralétrehozáskor visszaáll 664-re. A javítás
+`umask 077;` a crontab-sorban, ami gazdagép-állapot, nem repó-állapot -- a `--check` kimenete ezt
+külön kimondja, hogy ne tűnjön megoldottnak.
+
+**Amit a sweep szándékosan nem csinál.** Nem nyúl a `store/` nem-napló fájljaihoz. Egy eszköz, ami
+mindent megszorít, amit lát, olyan eszköz, amit senki nem mer lefuttatni.
