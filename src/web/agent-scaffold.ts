@@ -666,6 +666,11 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // allow), so this is a fail-closed layer; the self-pace-gate hook below covers
   // the Bash escape routes a name-deny cannot reach. (2026-06-26 autonom-kor fix.)
   if (agentGetsGovernanceGates(name)) denyList.push(...SELF_PACE_TOOL_DENY)
+
+  // Egress deny: EVERY profile, not just the gated ones. This function replaces permissions
+  // wholesale on each spawn, so without it a respawn would silently drop what ensureBashEgressDeny()
+  // merged in.
+  denyList.push(...BASH_EGRESS_DENY)
   existing.permissions = {
     allow: profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx)),
     deny: denyList,
@@ -882,6 +887,117 @@ export function removeOutgoingCopyGate(existing: Record<string, unknown>): boole
 // Claude Code runtime self-scheduling tool names denied for sub-agents (fail-
 // closed, enforced even under --dangerously-skip-permissions). The Bash escape
 // routes are covered by the self-pace-gate hook, which a name-deny cannot reach.
+// Bash egress deny -- the shell half of the outbound-traffic gate, NARROWED (card f6db6978).
+//
+// WHY IT EXISTS: egress-gate.mjs is wired as a PreToolUse hook with matcher "WebFetch" only, so
+// nothing compared a SHELL command against the allowlist. The realistic threat is not a malicious
+// agent: it is a page an agent fetched telling it to run a fetch command -- which is the very
+// reason the quarantine reader exists.
+//
+// WHY THERE IS NO curl RULE HERE, and this is the part that must not be quietly "fixed" later by
+// adding one back. Upstream ships `Bash(curl *https://*)`. Measured on the REAL engine (Claude Code
+// 2.1.263, these rules, under --dangerously-skip-permissions), both spellings fail, in opposite
+// directions:
+//
+//   Bash(curl *https://*)   curl -s ... https://<host>/                  DENIED
+//                           curl ... http://127.0.0.1:PORT with a DOUBLE-quoted {...https://...}
+//                                                                                  DENIED   <-- ours
+//                           curl ... http://127.0.0.1:PORT with a SINGLE-quoted {...https://...}
+//                                                                                  DENIED   <-- ours
+//                           curl ... http://127.0.0.1:PORT, same payload WITHOUT https://
+//                                                                                  RAN exit=7
+// (The two payload rows are spelled out in words rather than shown literally: this file is scanned
+//  by generated-curl-payload-quoting.test.ts for `-d "` anywhere, and a comment DESCRIBING the
+//  hazardous form would trip the guard that forbids GENERATING it. Same class as the prose-vs-code
+//  problem that guard exists for, just pointing the other way.)
+//   Bash(curl https://*)    curl -s ... https://<host>/                  RAN exit=7  <-- not denied
+//                           curl https://<host>/   (no flags)            DENIED
+//
+// The rule matches the COMMAND STRING, not the destination. With a leading `*` it refuses this
+// fleet's own writes -- every internal path is a curl to http://localhost:<port>/api/... whose
+// payload routinely carries a link (memories, kanban comments, inter-agent messages, the daily
+// log), and quoting does not help, which contradicts the note upstream's own test carries. Anchored
+// instead, a single flag walks past it, and real commands always have one. There is no third form:
+// the language has no negation and `*` compiles to an anchored full match, so the target URL cannot
+// be told apart from payload text.
+//
+// So the curl half is NOT a deny rule at all -- it needs a PreToolUse hook that parses the command
+// and looks at the destination, which is the shape this fork already uses for its other gates and
+// which continues on card 854182c7. Until that lands, a shell `curl` is NOT gated here, and
+// docs/security-hardening.md says so rather than implying coverage we do not have.
+//
+// WHAT IS HERE: the verbs with no internal use in this install at all -- wget, nc, ncat, telnet --
+// denied whole. Measured: the wget rule fires (DENIED), and nothing in the fleet's own paths uses
+// any of them, so this half is protection without a false positive. A deny rule is checked BEFORE
+// the --dangerously-skip-permissions bypass (measured), so it binds on permissive profiles too.
+// Sanctioned tooling that speaks HTTPS on its own account (git, gh, npm) is deliberately untouched.
+export const BASH_EGRESS_DENY = [
+  'Bash(wget *)',
+  'Bash(*/wget *)',
+  'Bash(nc *)',
+  'Bash(*/nc *)',
+  'Bash(ncat *)',
+  'Bash(*/ncat *)',
+  'Bash(telnet *)',
+  'Bash(*/telnet *)',
+]
+
+// Idempotently merge the egress deny rules into a settings object's permissions.deny. Pure (no
+// I/O) so both the rule set and the merge behaviour are unit-testable; ensureBashEgressDeny() below
+// is the filesystem wrapper. Existing entries are preserved and their order kept: an operator's own
+// deny rule must never be dropped by a migration. Returns true if anything changed.
+export function mergeBashEgressDeny(settings: Record<string, unknown>): boolean {
+  const perms = (settings.permissions && typeof settings.permissions === 'object' && !Array.isArray(settings.permissions))
+    ? settings.permissions as Record<string, unknown>
+    : {}
+  const deny = Array.isArray(perms.deny) ? [...(perms.deny as unknown[])] : []
+  const missing = BASH_EGRESS_DENY.filter((rule) => !deny.includes(rule))
+  if (missing.length === 0) return false
+  perms.deny = [...deny, ...missing]
+  settings.permissions = perms
+  return true
+}
+
+// WHICH FILE the egress deny is written to -- the part that is not obvious, so it is a pure
+// function with its own tests.
+//
+// A sub-agent is simple: its own settings.json.
+//
+// The MAIN agent is not, and getting it wrong inverts the whole guard. Its settings path is the
+// shared ~/.claude/settings.json, and that file is ALSO the owner's own interactive sessions:
+// writing there would restrict the owner, and not writing there leaves un-gated the one agent that
+// reads untrusted web content on the owner's behalf. The way out is the main agent's OWN config dir
+// (an explicit one, or the provisioned isolated dir): the agent reads ITS settings.json as the user
+// scope and the owner's shell does not, and the separation survives restarts because the
+// provisioner keeps keys the shared file never mentions -- `permissions` is exactly such a key.
+//
+// Returns null when the main agent runs on the shared root: there is no scope that covers it
+// without covering the owner, so this writes NOTHING and the caller reports it. A silent fallback
+// either way would be a decision this code is not entitled to make.
+export function bashEgressDenyTargetPath(name: string, mainAgentConfigDir: string | null): string | null {
+  if (name !== MAIN_AGENT_ID) return agentSettingsPath(name)
+  return mainAgentConfigDir ? join(mainAgentConfigDir, 'settings.json') : null
+}
+
+// Idempotent migration for the EXISTING fleet: writeAgentSettingsFromProfile only rewrites a
+// sub-agent's settings on spawn, and the main agent's settings are not written by it at all.
+//
+// NOTE the scope loads at session start: a user-scope settings.json is read when the session boots
+// and is NOT re-read while it runs. So a freshly written rule binds an agent from its next restart,
+// not immediately.
+export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | null = null): boolean {
+  const settingsPath = bashEgressDenyTargetPath(name, mainAgentConfigDir)
+  if (!settingsPath) return false
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown> } catch { return false }
+  }
+  if (!mergeBashEgressDeny(settings)) return false
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 const SELF_PACE_TOOL_DENY = ['ScheduleWakeup', 'CronCreate', 'CronDelete', 'CronList', 'RemoteTrigger']
 
 // Which agents are subject to the self-pace gate: every agent EXCEPT the main

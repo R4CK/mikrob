@@ -38,42 +38,51 @@ The realistic threat is not a malicious agent: it is a fetched page telling an
 agent to run a `curl`, which is why the quarantine-reader exists in the first
 place.
 
-## STATUS: NOT LIVE IN THIS FORK -- card f6db6978
+## STATUS: the wget/nc/ncat/telnet half ships; the curl half does NOT (cards f6db6978, 854182c7)
 
-Everything below describes the UPSTREAM design. None of it ships here yet:
-`BASH_EGRESS_DENY`, `mergeBashEgressDeny`, `bashEgressDenyTargetPath` and
-`ensureBashEgressDeny` do not exist in `src/`, and `templates/settings.json.template`
-carries no `permissions.deny` block. The B-wave upstream integration (card 42938a74)
-deliberately left the control out so it could get its own card, its own gate, and --
-before anything is switched on -- a measurement on the REAL Claude Code binary rather
-than on the arriving test's modelled matcher.
+What this fork actually enforces is NARROWER than the upstream design described below, and the
+narrowing is measured rather than cautious. `BASH_EGRESS_DENY` here is:
 
-That measurement has since been done (card f6db6978), and it is the reason this section
-stays a design note instead of becoming a description:
+    Bash(wget *)   Bash(*/wget *)   Bash(nc *)   Bash(*/nc *)
+    Bash(ncat *)   Bash(*/ncat *)   Bash(telnet *)   Bash(*/telnet *)
 
-| probe (Claude Code 2.1.263, these deny rules, `--dangerously-skip-permissions`) | result |
-| --- | --- |
-| `echo ...` | allowed -- the harness works |
-| `curl ... https://127.0.0.1:1/` | DENIED -- rules load, and `deny` really does beat the bypass |
-| `curl ... http://127.0.0.1:9 -d "{...https://...}"` (double quotes) | DENIED |
-| `curl ... http://127.0.0.1:9 -d '{...https://...}'` (single quotes) | DENIED |
-| `curl ... http://127.0.0.1:9 -d '{...no https...}'` | allowed |
+**A shell `curl` is NOT gated.** Do not read the section below as saying otherwise.
 
-The last two rows are the finding. `Bash(curl *https://*)` matches the COMMAND STRING,
-not the destination, so a call to **localhost** is denied purely because the word
-`https://` appears somewhere in its payload -- and quoting does not change that, which
-contradicts the note carried by upstream's own test. Every internal write path in this
-fleet is a `curl` to `http://localhost:<port>/api/...` whose payload routinely contains a
-link (memories, kanban comments, inter-agent messages, the daily log), so adopting the
-rule as written would refuse them.
+WHY THE curl RULE IS ABSENT. Measured on the real engine (Claude Code 2.1.263, these rules, under
+`--dangerously-skip-permissions` -- so the bypass is not what saves anything). A probe either
+reported `DENIED` or its command's actual exit code, because a model saying "done" does not prove
+the command ran:
 
-The rule language cannot express the fix: there is no negation, and `*` compiles to an
-anchored full match, so the target URL cannot be told apart from payload text. Upstream's
-own comment says the remaining gaps need "a Bash PreToolUse hook that parses the command"
--- which is the shape this fork already uses for its other gates, and where card f6db6978
-continues.
+| rule set | command | result |
+| --- | --- | --- |
+| upstream's | `echo ...` | RAN exit=0 |
+| upstream's | `curl -s ... https://127.0.0.1:1/` | DENIED |
+| upstream's | `curl ... http://127.0.0.1:9 -d "{...https://...}"` | DENIED |
+| upstream's | `curl ... http://127.0.0.1:9 -d '{...https://...}'` | DENIED |
+| upstream's | `curl ... http://127.0.0.1:9 -d '{...no https...}'` | RAN exit=7 |
+| upstream's | `wget -q -O /dev/null http://127.0.0.1:9/` | DENIED |
+| anchored `Bash(curl https://*)` | `curl -s ... https://127.0.0.1:1/` | RAN exit=7 |
+| anchored `Bash(curl https://*)` | `curl https://127.0.0.1:1/` (no flags) | DENIED |
+| anchored `Bash(curl https://*)` | the fleet's own localhost write | RAN exit=7 |
+
+The rule matches the COMMAND STRING, not the destination. With a leading `*` it refuses this
+fleet's own writes -- every internal path is a `curl` to `http://localhost:<port>/api/...` whose
+payload routinely carries a link (memories, kanban comments, inter-agent messages, the daily log)
+-- and quoting does not help, which contradicts the note upstream's own test carries. Anchored
+instead, a single flag walks past it, and real commands always have one. There is no third form:
+the language has no negation and `*` compiles to an anchored full match, so the target URL cannot
+be told apart from payload text.
+
+The curl case therefore needs a PreToolUse hook that parses the command and looks at the
+destination -- the shape this fork already uses for its other gates. That is card 854182c7.
+
+WHAT THE SHIPPED HALF IS WORTH, stated honestly: `wget`, `nc`, `ncat` and `telnet` have no internal
+use in this install at all, so denying them whole is protection with no false positive -- the wget
+denial is measured above. It does not close the shell-fetch hole, because `curl` is the tool an
+agent actually reaches for; it removes the other verbs from the menu while the real fix is built.
 
 ## What the upstream design does
+
 
 `BASH_EGRESS_DENY` in `src/web/agent-scaffold.ts` is the single source of truth
 for a small `permissions.deny` list that lands in **every** agent's

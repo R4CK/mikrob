@@ -3,6 +3,18 @@
     "telegram@claude-plugins-official": true
   },
   "effortLevel": "high",
+  "permissions": {
+    "deny": [
+      "Bash(wget *)",
+      "Bash(*/wget *)",
+      "Bash(nc *)",
+      "Bash(*/nc *)",
+      "Bash(ncat *)",
+      "Bash(*/ncat *)",
+      "Bash(telnet *)",
+      "Bash(*/telnet *)"
+    ]
+  },
   "hooks": {
     "PreCompact": [
       {
