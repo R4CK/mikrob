@@ -12725,3 +12725,23 @@ kényszerítette ki; egy harmadik kérés vagy egy megemelt érték csendben át
 prompt-injection védelem, és a capability-tagek minden társ promptjába bekerülnek.
 **Ki döntött:** Cybersec (lelet), MikroB (kártya, HIGH, határidő-jellegű), backend3 (kivitelezés).
 **Hivatkozás:** kártya bf2bf691; felülírja a 43dada5b kártyát.
+
+## 2026-09-12 20:40 -- A thread-reply kapu display-name csatornája MÉG NYITVA volt (Cybersec NO-GO)
+
+**Döntés:** A `bf2bf691` első javítása NEM zárta be azt, amit a saját kommentje kizártnak állított.
+Cybersec NO-GO-ja után: (H-1) a `splitHeaderEntries` mostantól kezeli az RFC 5322 quoted-pair
+escape-et (`\"`), tehát egy escape-elt idézőjel nem léphet ki a megjelenített névből; (M-1) a
+timeout-őr mostantól a csupasz `fetch(` hívást is látja, sőt kimondja, hogy **minden hálózati hívásnak
+az injektált seamen kell mennie** -- egy közvetlen `fetch(` önmagában bukás.
+**Miért volt komoly:** a bemenet RFC szerint SZABÁLYOS (`From: "Doe\" <victim@target.test>, evil"
+<attacker@evil.test>`), tehát egy szabálykövető MTA változatlanul továbbadja. A `victim@target.test`
+a MEGJELENÍTETT NÉVBŐL került a résztvevő-halmazba -- és a halmaz maga a teljes engedélyezés.
+**Miért nem elég a „Cc-vel úgyis be lehet vinni" ellenérv:** a Cc-vel a cím BELEKERÜL a levélbe, tehát
+a címzett megkapja és a tulajdonos látja; a megjelenített névvel nulla kézbesítéssel és láthatatlanul
+kerül be. A javítás értéke pontosan a REJTETT csatorna bezárása volt.
+**Az M-1 tanulsága:** az őr a `fetchImpl(` alakhoz volt kötve, a `fetch` viszont hatókörben van
+(`opts.fetchImpl ?? fetch`). Cybersec mérte: egy korlátlan harmadik hívás egy be nem járt ágon
+**41/41 ZÖLD**-et hagyott. Most ugyanaz a mutáció pirosra vált.
+**Ki döntött:** Cybersec (NO-GO, mindkét lelet), backend3 (javítás). A leletet Cybersec emelte az
+`e3f0e4ed`-n, de a javítást backend3 írta, ezért gate-elhette.
+**Hivatkozás:** kártya bf2bf691, Cybersec komment 2749.

@@ -376,6 +376,21 @@ describe('extractParticipants ignores the DISPLAY NAME (card bf2bf691)', () => {
     expect(p).not.toContain('ceo@ourcompany.com')
   })
 
+  // CYBERSEC H-1 (card bf2bf691, NO-GO on the first fix). RFC 5322 lets a quoted-string contain a
+  // quoted-pair -- a backslash followed by ANY character, including a quote. The first splitter
+  // toggled on every `"`, so the escaped quote ended the quoted string early and the comma after it
+  // cut ONE legitimate mailbox into two entries. Measured on the landed code, this exact header
+  // yielded ["victim@target.test", "attacker@evil.test"].
+  //
+  // The header is valid: a standards-following MTA passes it through unchanged. And this vector is
+  // the reason the fix existed at all -- a Cc puts the address IN the message, delivered and visible
+  // to the owner, while a display name adds a participant with zero delivery and no visible trace.
+  it('an ESCAPED QUOTE cannot break out of the display name (Cybersec H-1)', () => {
+    const p = extractParticipants(thread('"Doe\\" <victim@target.test>, evil" <attacker@evil.test>'))
+    expect(p).toEqual(['attacker@evil.test'])
+    expect(p).not.toContain('victim@target.test')
+  })
+
   // CONTROL: the narrowing must not stop collecting the addresses that are really there, or the
   // participant set empties and every reply is denied -- safe, but the feature would be dead.
   it('still collects every REAL address, including a comma inside a quoted display name', () => {
@@ -408,6 +423,49 @@ describe('the timeout margin is pinned, not assumed (card bf2bf691)', () => {
   const perRequestMs = (): number[] =>
     [...GATE.matchAll(/AbortSignal\.timeout\((\d+)\)/g)].map((m) => Number(m[1]))
 
+  /** Source with comments removed and RegExp-literal declarations set aside.
+   *
+   *  Both exclusions were forced by measurement, not caution. Comments: a sentence naming a call is
+   *  not a call. RegExp declarations: this gate's OWN detector for network verbs in sub-agent code
+   *  is `const CODE_NETWORK_CALL = /\bfetch\s*\(|.../`, and a scan for `fetch(` matches inside it --
+   *  my first version of the check below went red on that, which is the same "a name in prose, a log
+   *  line AND code cannot be asserted by name" trap one level up.
+   *
+   *  The set-aside is PINNED rather than open-ended (see the control below): exactly one line may be
+   *  ignored, and it must be that declaration. A second RegExp line appearing here turns the control
+   *  red instead of quietly widening what the guard cannot see. */
+  const scannable = (): { code: string; ignored: string[] } => {
+    const noComments = GATE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    const ignored: string[] = []
+    const code = noComments
+      .split('\n')
+      .filter((line) => {
+        if (/^\s*const\s+\w+\s*=\s*\//.test(line)) {
+          ignored.push(line.trim())
+          return false
+        }
+        return true
+      })
+      .join('\n')
+    return { code, ignored }
+  }
+
+  /** Every NETWORK CALL SITE, not just the injected-seam spelling (Cybersec M-1, card bf2bf691).
+   *
+   *  The first version counted `fetchImpl(` only. `fetch` is also in scope here -- the seam is
+   *  `opts.fetchImpl ?? fetch` -- so a bare `fetch(...)` call was invisible to the guard. Cybersec
+   *  measured it: an unbounded third call placed on a branch the tests do not walk left all 41 cases
+   *  GREEN, with the guard's own two counters still reading 2 and 2. `fetchImpl` itself is not
+   *  matched by the bare pattern (the `fetch` there is followed by `Impl`, not by a paren), and the
+   *  seam ASSIGNMENT is not a call, so neither inflates the count. */
+  const networkCallSites = (): number => {
+    const { code } = scannable()
+    return (
+      [...code.matchAll(/\bfetchImpl\s*\(/g)].length +
+      [...code.matchAll(/(?<![\w$.])fetch\s*\(/g)].length
+    )
+  }
+
   it('the measure is not vacuous -- both numbers are actually found', () => {
     expect(hookTimeoutS()).toBeGreaterThan(0)
     expect(perRequestMs().length).toBeGreaterThanOrEqual(2)
@@ -415,9 +473,39 @@ describe('the timeout margin is pinned, not assumed (card bf2bf691)', () => {
 
   it('every network request in the gate carries a timeout -- none is unbounded', () => {
     // A fetch without a signal would wait forever and hand the deadline back to the hook, which is
-    // the fail-open direction. Count them against the fetches rather than trusting the sum.
-    const fetches = [...GATE.matchAll(/\bfetchImpl\(/g)].length
-    expect(perRequestMs().length).toBe(fetches)
+    // the fail-open direction. Counted against the CALL SITES rather than trusting the sum.
+    expect(perRequestMs().length).toBe(networkCallSites())
+  })
+
+  it('no network call bypasses the injected seam -- a bare fetch( is refused outright', () => {
+    // The strong form of the case above, and the one that closes Cybersec M-1 rather than merely
+    // counting past it: all I/O here goes through opts.fetchImpl, which is what makes this gate
+    // testable without a network at all. A direct `fetch(` is therefore a defect in itself, whether
+    // or not somebody remembered to give it a signal -- and it fails HERE instead of at the next
+    // unbounded request on a branch no test walks.
+    const { code } = scannable()
+    const bare = [...code.matchAll(/(?<![\w$.])fetch\s*\(/g)].length
+    expect(bare, 'a direct fetch( call bypasses the injected seam the tests rely on').toBe(0)
+  })
+
+  it('only ONE set-aside line can hide a fetch( -- and it is the network-verb DETECTOR', () => {
+    // Without this the exclusion above is a hole that grows silently: a future `const X = /.../`
+    // could take its own `fetch(` out of sight with it.
+    //
+    // NOT "exactly one line is set aside" -- measured, this file declares 15 RegExp constants and
+    // setting the other 14 aside costs nothing, because none of them contains a fetch(-shaped token.
+    // The property that matters is narrower: of everything the scan stops looking at, only the
+    // detector may contain the very pattern the scan is searching for. My first version asserted the
+    // wider thing and went red on a file that was perfectly fine -- a guard has to pin the real
+    // invariant, not the most convenient one.
+    const { ignored } = scannable()
+    // Matched on the bare TOKEN rather than on a call shape, deliberately. Inside a regex literal
+    // the gap is the literal text `\s*`, not whitespace, so a call-shaped pattern misses it -- my
+    // first attempt did exactly that and reported zero. Being generous here can only make the
+    // assertion below STRICTER (more lines flagged), which is the safe direction for an exclusion.
+    const hidingAFetch = ignored.filter((l) => /fetch/.test(l))
+    expect(hidingAFetch).toHaveLength(1)
+    expect(hidingAFetch[0]).toContain('CODE_NETWORK_CALL')
   })
 
   it('the SUM of the per-request timeouts stays under the hook budget, with margin', () => {
