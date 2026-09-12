@@ -130,26 +130,55 @@ describe('restart-lock -- the stop window is not an invitation to start', () => 
 })
 
 describe('restart-lock wiring (pinned at the source)', () => {
-  it('restartAgentProcess holds the slot across BOTH stop and start, and releases in a finally', () => {
-    const body = fnBody(src('agent-process.ts'), 'restartAgentProcess')
-    expect(body).toContain('beginRestart(name)')
-    expect(body).toContain('stopAgentProcess(name)')
-    expect(body).toContain('startAgentProcess(name, opts)')
-    // The release must be unconditional: a leaked slot silently disables every
-    // liveness-driven auto-start for that agent for the life of the process.
-    expect(body).toMatch(/finally\s*\{\s*endRestart\(name\)/)
-    // ...and the stop must sit INSIDE the claim, not before it.
-    expect(body.indexOf('beginRestart(name)')).toBeLessThan(body.indexOf('stopAgentProcess(name)'))
+  // FORK ADAPTATION (B-wave, card 42938a74; MikroB's decision, msg 1082 and 1125).
+  //
+  // Upstream pins restartAgentProcess to ITS mechanism: beginRestart/endRestart around the
+  // stop+start pair. This fork does not adopt that HERE, and the reason is its own incident.
+  // Card 28eb8340: two independent locks already guarded one resource (withLifecycleLock keyed by
+  // AGENT NAME, withSessionSendLock keyed by SESSION NAME, neither aware of the other), and a
+  // restart tore a pane down mid-delivery. The fix was to UNIFY them, not to add a third. This
+  // fork's restartAgentProcess is the withLifecycleLock wrapper: the lock is keyed by agent name
+  // and covers start, stop and restart alike, so the stop+start pair is already one critical
+  // section and a concurrent start QUEUES behind it rather than interleaving.
+  //
+  // Where upstream's restart-lock IS adopted is the scope withLifecycleLock structurally cannot
+  // reach -- the channel-monitor watchdog's inline stop -> delay(8000) -> start unit, where the
+  // lock is taken per call and does not span the gap, plus the reconcile stand-down that answers
+  // it. Those cases are pinned unchanged in this file's other describes.
+  //
+  // So these two cases assert the PROPERTY (one critical section across stop+start; a lost race
+  // never reported as success) on this fork's mechanism, instead of upstream's spelling of it.
+  it('restartAgentProcess holds ONE critical section across stop and start (withLifecycleLock)', () => {
+    const source = src('agent-process.ts')
+    // fnBody anchors on `function <name>(` -- the trailing `(` is what keeps this on the wrapper
+    // and off `restartAgentProcessUnlocked`, whose name merely STARTS with the same characters.
+    const wrapper = fnBody(source, 'restartAgentProcess')
+    expect(wrapper).toMatch(/withLifecycleLock\(name, 'restart'/)
+    expect(wrapper).toContain('restartAgentProcessUnlocked(name, opts)')
+    // The lock covers start and stop too, so the pair cannot be interleaved by another caller.
+    expect(source).toMatch(/withLifecycleLock\(name, 'start'/)
+    expect(source).toMatch(/withLifecycleLock\(name, 'stop'/)
+    // Inside the section, both halves go through the *Unlocked variants -- a nested re-entry into
+    // the same agent-keyed lock would deadlock against the section that already holds it.
+    const inner = fnBody(source, 'restartAgentProcessUnlocked')
+    expect(inner).toContain('await stopAgentProcessUnlocked(name)')
+    expect(inner).toContain('await startAgentProcessUnlocked(name, opts)')
+    // Anchored on the AWAITED CALL, not on the bare name: `startAgentProcessUnlocked` is a
+    // substring of this very function's own name (re-startAgentProcessUnlocked), so a bare
+    // indexOf finds the signature at offset 11 and reports the order backwards.
+    expect(inner.indexOf('await stopAgentProcessUnlocked'))
+      .toBeLessThan(inner.indexOf('await startAgentProcessUnlocked'))
   })
 
   it('restartAgentProcess never reports a lost start race as success', () => {
-    const body = fnBody(src('agent-process.ts'), 'restartAgentProcess')
-    // The early "Agent is already running" return is the shape a lost race
-    // takes; it must be logged loudly and returned as-is (ok:false), never
-    // swallowed into a { ok: true }.
-    expect(body).toMatch(/already running/i)
-    expect(body).toContain('logger.error(')
-    expect(body).not.toMatch(/return\s*\{\s*ok:\s*true/)
+    const inner = fnBody(src('agent-process.ts'), 'restartAgentProcessUnlocked')
+    // The start's own result is RETURNED, not rewritten: whatever the start says -- including an
+    // early "Agent is already running" -- is what the caller gets. The property upstream buys with
+    // a loud log and an explicit !ok, this shape gets by never manufacturing a verdict of its own.
+    expect(inner).toMatch(/return await startAgentProcessUnlocked\(name, opts\)/)
+    expect(inner).not.toMatch(/return\s*\{\s*ok:\s*true/)
+    // A failed STOP still short-circuits with ok:false rather than starting anyway.
+    expect(inner).toMatch(/if \(!stopResult\.ok\) return \{ ok: false/)
   })
 
   for (const [file, fn] of [
@@ -238,12 +267,31 @@ describe('channel-config stop->start pairs hold the restart slot (routes/agents.
     .map((l, i) => (l.includes('await stopAgentProcess(name)') && l.includes('stopRes') ? i : -1))
     .filter(i => i >= 0)
 
-  it('finds both config-branch stop calls', () => {
-    expect(anchors.length, 'expected exactly the two channel-config stop calls').toBe(2)
+  // FORK ADAPTATION (B-wave, card 42938a74). The anchor matches EVERY `await stopAgentProcess(name)`
+  // that keeps a `stopRes`, and that breadth is deliberate -- a third copy-pasted stop->START pair
+  // must not be able to appear unguarded. This fork has a third occurrence that is NOT such a pair:
+  // the agent DELETE path stops the session and then removes the directory, with no start after it.
+  // Claiming a restart slot there would be meaningless (there is no restart to protect, and the
+  // agent ceases to exist), so the pairs are separated by what FOLLOWS the stop rather than by a
+  // hard count -- which keeps the original property and still fails on a real unguarded pair.
+  const isRestartPair = (idx: number): boolean =>
+    routesLines.slice(idx, idx + 30).join('\n').includes('startAgentProcess(name')
+
+  it('finds every stop anchor, and classifies each as a restart pair or a teardown', () => {
+    expect(anchors.length, 'the channel-config stop calls disappeared').toBeGreaterThanOrEqual(2)
+    expect(anchors.filter(isRestartPair).length, 'expected exactly the two channel-config restart pairs').toBe(2)
+    // The teardown must stay a teardown: if a start ever appears after it, it becomes a pair and
+    // the case above catches it.
+    for (const idx of anchors.filter(i => !isRestartPair(i))) {
+      expect(
+        routesLines.slice(idx, idx + 30).join('\n'),
+        `stop at line ${idx + 1} is neither a guarded restart pair nor a teardown`,
+      ).toMatch(/rmSync\(|cleanupTeamReferences\(/)
+    }
   })
 
   it('each claims the slot before its stop and releases it in a finally', () => {
-    for (const idx of anchors) {
+    for (const idx of anchors.filter(isRestartPair)) {
       const before = routesLines.slice(Math.max(0, idx - 16), idx).join('\n')
       expect(before, `stop at line ${idx + 1} is not gated on beginRestart`)
         .toContain('!beginRestart(name)')

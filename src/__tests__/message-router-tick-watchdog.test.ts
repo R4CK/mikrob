@@ -79,6 +79,12 @@ vi.mock('../web/voice-directive.js', () => ({
 vi.mock('../web/agent-config.js', () => ({
   readAgentRemoteHost: () => null,
   readAgentVoiceConfig: () => ({ responseMode: 'text' }),
+  // B-wave (card 42938a74): the router now asks whether the recipient is served through the
+  // worksource queue instead of the keyboard. A vi.mock factory REPLACES the module, so a new
+  // dependency of the code under test has to be declared here or every tick dies on
+  // "No <name> export is defined on the mock" -- which surfaced as the watchdog never latching,
+  // not as a missing-export error.
+  readAgentWorksourceChannel: () => null,
 }))
 
 vi.mock('../web/agent-process.js', () => ({

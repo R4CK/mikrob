@@ -71,7 +71,14 @@ describe('closeDbForShutdown() checkpoints the WAL into the main file (card a1c8
 
     closeDbForShutdown()
 
-    expect(size(dbPath)).toBeGreaterThan(mainBefore)
+    // B-wave (card 42938a74): this used to assert the main file GREW. It no longer does, and the
+    // reason is not a lost checkpoint -- measured on the merge result, mainBefore == mainAfter ==
+    // 577536 while the row assertion below still passes, i.e. the pages the WAL carried fitted in
+    // space the file already had (the merge adds several tables, so the schema allocates more up
+    // front). Byte growth was always a PROXY for "the rows moved"; the two assertions that follow
+    // ARE that fact -- no -wal left, and 500 rows readable from the main file through a fresh
+    // read-only connection. The proxy is kept only as a never-shrinks sanity check.
+    expect(size(dbPath)).toBeGreaterThanOrEqual(mainBefore)
     expect(existsSync(`${dbPath}-wal`)).toBe(false)
 
     const reopened = new Database(dbPath, { readonly: true })

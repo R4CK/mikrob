@@ -122,6 +122,180 @@ LINES
 # session's identical treatment of outgoing-copy-gate.py's own already-declined rewrite
 # (ACKNOWLEDGED_CONFLICTS round 15). MikroB confirmed 2026-09-07.
 
+# MERGE NOTE (B-wave, card 42938a74): sections (c) and (d) are restored from upstream. The
+# three-way merge dropped them WITHOUT a conflict marker while keeping section (e), which
+# uses the `now`/`reset` variables (c) defines -- so the script died on `now: unbound variable`
+# and 167 lines of coverage for the measured-quota path went missing silently. That path IS
+# adopted in scripts/limit-monitor.sh by this same merge, so this is its own test coming back.
+
+echo "(c) the measured path: rate_limits from the status line"
+now=$(date +%s); reset=$((now + 3600))
+
+C="$(deliver_case quota_hit ok)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$C/store/.claude-rate-limits.json"
+run_case "$C"
+if grep -q "quota:five_hour" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "94% of the 5-hour window alerts"
+else
+  fail "94% of the 5-hour window did not alert"
+fi
+# Same window twice must not alert twice; the dedupe key carries resets_at, so
+# the NEXT window (new reset time) is free to alert again.
+: > "$C/store/limit-monitor.log"
+run_case "$C"
+if grep -q "quota signal unchanged" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "the same window is not re-alerted"
+else
+  fail "the same window alerted twice"
+fi
+# Creeping up inside the SAME window must stay quiet: keying on the raw
+# percentage would mean a fresh alert for every point between 90 and 100.
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":97,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$C/store/.claude-rate-limits.json"
+: > "$C/store/limit-monitor.log"
+run_case "$C"
+if alerted "$C"; then
+  fail "94% -> 97% in the same window alerted twice"
+else
+  pass "94% -> 97% in the same window stays at one alert"
+fi
+# Running out completely is a new level, and must be said out loud.
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":100,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$C/store/.claude-rate-limits.json"
+: > "$C/store/limit-monitor.log"
+run_case "$C"
+if alerted "$C"; then
+  pass "100% alerts even though 90% already did"
+else
+  fail "100% was swallowed by the 90% alert"
+fi
+# A new window (new resets_at) starts clean.
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$((reset + 18000))" \
+  > "$C/store/.claude-rate-limits.json"
+: > "$C/store/limit-monitor.log"
+run_case "$C"
+if alerted "$C"; then
+  pass "the next window alerts again"
+else
+  fail "the next window stayed silent"
+fi
+
+C="$(new_case quota_weekly)"
+printf '{"written_at":%d,"rate_limits":{"seven_day":{"used_percentage":91,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$C/store/.claude-rate-limits.json"
+run_case "$C"
+if grep -q "quota:seven_day" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "91% of the weekly window alerts"
+else
+  fail "91% of the weekly window did not alert"
+fi
+
+C="$(new_case quota_low)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":40,"resets_at":%d},"seven_day":{"used_percentage":12,"resets_at":%d}}}\n' "$now" "$reset" "$reset" \
+  > "$C/store/.claude-rate-limits.json"
+run_case "$C"
+if alerted "$C"; then fail "alerted below the threshold"; else pass "40% / 12% stays quiet"; fi
+
+# A window can roll over while the reading stays put: the numbers only move
+# when a new API response brings them, so after the reset the same block sits
+# there with resets_at in the past. Measured at the 22:00 rollover, 2026-08-18.
+C="$(new_case quota_rolled_over)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}\n' "$now" "$((now - 60))" \
+  > "$C/store/.claude-rate-limits.json"
+run_case "$C"
+if alerted "$C"; then
+  fail "alerted about a window that has already reset"
+elif grep -q "already past their reset" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "a window past its reset is skipped, and says so"
+else
+  fail "the rolled-over window was skipped without a trace"
+fi
+# ...but a live window next to a rolled-over one must still get through.
+C="$(new_case quota_mixed)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d},"seven_day":{"used_percentage":92,"resets_at":%d}}}\n' \
+  "$now" "$((now - 60))" "$reset" > "$C/store/.claude-rate-limits.json"
+run_case "$C"
+if grep -q "quota:seven_day" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "the live weekly window still alerts beside a rolled-over one"
+else
+  fail "a rolled-over window silenced the live one next to it"
+fi
+
+# MIOHEREDOC902: a missing quota-check.py must be LOUD, never a silent skip --
+# an empty quota reading and a healthy one look identical from the outside.
+C="$(new_case quota_missing_py)"
+rm -f "$C/scripts/lib/quota-check.py"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":95,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$C/store/.claude-rate-limits.json"
+run_case "$C"
+if grep -q "quota-check.py hianyzik" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "missing quota-check.py is logged loudly (fail-open, not silent)"
+else
+  fail "missing quota-check.py skipped SILENTLY"
+fi
+if alerted "$C"; then
+  fail "missing quota-check.py must not raise a quota alert"
+else
+  pass "no phantom quota alert without the checker"
+fi
+
+C="$(new_case quota_stale)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}\n' "$((now - 90000))" "$((now - 80000))" \
+  > "$C/store/.claude-rate-limits.json"
+run_case "$C"
+if alerted "$C"; then
+  fail "alerted on a day-old reading"
+elif grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "a stale reading is skipped, and says so"
+else
+  fail "a stale reading was skipped without a trace"
+fi
+
+echo "(d) a FAILED delivery must not suppress the retry"
+# This is the case the whole honest-send contract exists for. The Bot API can
+# answer HTTP 200 with {"ok":false} -- bad chat_id, blocked bot, mangled .env --
+# and the old code could not tell that from a delivered alert: it stamped the
+# dedupe key BEFORE sending and logged "ALERT sent" unconditionally. The result
+# was the worst possible one: the alert nobody received, silenced forever by its
+# own suppression stamp, on the one signal that cannot be reported any other way.
+CF="$(deliver_case quota_fail fail)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$CF/store/.claude-rate-limits.json"
+run_case "$CF"
+if grep -q "ALERT send FAILED" "$CF/store/limit-monitor.log" 2>/dev/null; then
+  pass "an ok:false response is reported as a failure, not as a send"
+else
+  fail "an ok:false response was logged as a successful send"
+fi
+if [ -s "$CF/store/.limit-monitor-quota-state" ]; then
+  fail "the dedupe stamp was written despite the delivery failing"
+else
+  pass "no dedupe stamp after a failed delivery"
+fi
+# ...and therefore the next tick must try again rather than call it old news.
+: > "$CF/store/limit-monitor.log"
+run_case "$CF"
+if grep -q "quota signal unchanged" "$CF/store/limit-monitor.log" 2>/dev/null; then
+  fail "the next tick suppressed an alert that was never delivered"
+else
+  pass "the next tick retries an undelivered alert"
+fi
+
+# The mirror case, so the pair above cannot pass for the wrong reason: with a
+# delivering stub the stamp MUST appear. Without this, a bug that never stamps
+# at all would look like a perfect result.
+CO="$(deliver_case quota_ok_stamp ok)"
+printf '{"written_at":%d,"rate_limits":{"five_hour":{"used_percentage":94,"resets_at":%d}}}\n' "$now" "$reset" \
+  > "$CO/store/.claude-rate-limits.json"
+run_case "$CO"
+if [ -s "$CO/store/.limit-monitor-quota-state" ]; then
+  pass "a delivered alert does write the dedupe stamp"
+else
+  fail "a delivered alert left no dedupe stamp -- alerts would repeat forever"
+fi
+
+
 echo "(e) QUOTAFELSOHATAR910: the staleness window must have a CEILING, not just a floor"
 # The floor already behaved: any too-small or negative value made a fresh
 # reading look stale, which is loud and harmless. The missing side was the

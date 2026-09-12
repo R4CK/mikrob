@@ -139,22 +139,36 @@ describe('card dc5b714d: no write in agent-process.ts bypasses the owner-only he
       .filter((l) => !/^\s*(\/\/|\*)/.test(l))
       .join('\n')
 
-  it('bare writeFileSync appears ONLY inside the two helpers', () => {
-    // Two call sites: writeJsonAtomic's staging write, and writeAgentConfig's write. Anything else
-    // is a config file being written at whatever mode the umask happens to give it -- the defect
-    // this card exists for, which was found FOUR times in one file after being reported as one.
+  it('no writeFileSync is left to the umask', () => {
+    // Two helper call sites (writeJsonAtomic's staging write, writeAgentConfig's write) plus the
+    // parked-input rescue file, which is TEXT and so cannot go through either JSON helper -- it
+    // passes RESCUE_FILE_MODE (0o600) explicitly instead.
+    //
+    // WIDENED, NOT WEAKENED (B-wave, card 42938a74). The old form was `toBe(2)` on the raw count,
+    // which an upstream merge tripped for two different reasons at once: one genuine bypass (a
+    // .mcp.json written at the default mode -- fixed, it now goes through writeJsonAtomic) and one
+    // correct-but-uncounted write (the rescue file). A bare number could not tell those apart. The
+    // property this card actually cares about is stated directly below: a write that names no mode
+    // is the defect, wherever it is.
     const hits = code().match(/(?<![.\w])writeFileSync\s*\(/g) ?? []
     expect(
       hits.length,
       'a write in agent-process.ts is not going through writeJsonAtomic/writeAgentConfig',
-    ).toBe(2)
+    ).toBe(3)
+    const modeless = code()
+      .split('\n')
+      .filter((l) => /(?<![.\w])writeFileSync\s*\(/.test(l) && !/\bmode\b/.test(l))
+    expect(
+      modeless,
+      'a writeFileSync in agent-process.ts names no mode, so the umask decides it',
+    ).toEqual([])
   })
 
   it('CONTROL: the scan can see a bypass -- it is not matching nothing', () => {
     // Without this, `toBe(2)` could hold because the pattern stopped matching at all.
     const withBypass = code() + '\nwriteFileSync(somePath, data)\n'
     const hits = withBypass.match(/(?<![.\w])writeFileSync\s*\(/g) ?? []
-    expect(hits.length).toBe(3)
+    expect(hits.length).toBe(4)   // 3 real sites + the synthetic bypass (B-wave, card 42938a74)
   })
 
   it('CONTROL: the comment stripper is what makes the count honest', () => {
@@ -167,6 +181,6 @@ describe('card dc5b714d: no write in agent-process.ts bypasses the owner-only he
         .filter((l) => !/^\s*(\/\/|\*)/.test(l))
         .join('\n')
         .match(/(?<![.\w])writeFileSync\s*\(/g) ?? []
-    expect(hits.length).toBe(2)
+    expect(hits.length).toBe(3)   // the commented one must NOT be counted (B-wave, card 42938a74)
   })
 })

@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { EventEmitter } from 'node:events'
+import { mkdirSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 import { initDatabase } from '../db.js'
-import { MAIN_AGENT_ID } from '../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -42,9 +44,25 @@ async function post(body: unknown): Promise<{ statusCode: number; json: Record<s
   return { statusCode: res.statusCode, json: JSON.parse(res.body) }
 }
 
+// FORK ADAPTATION (B-wave, card 42938a74). The second case needs a sub-agent that is REGISTERED
+// but not running. This fork rejects an unknown local recipient with 400 before it ever reaches
+// the running-probe (routes/messages.ts, card 523a1426 -- a forged to_agent opens its own router
+// bucket and starves the real agents' buckets; that check survived a Cybered NO-GO and is not
+// something to loosen for a test). `agents/` is per-install and gitignored, so no sub-agent is
+// known inside a worktree checkout: the case registers one for its own lifetime instead. The
+// intent is unchanged -- and it is now the STRONGER statement, because the warning is proven on a
+// recipient the route actually accepted rather than on one it would have rejected anyway.
+const STOPPED_SUB_AGENT = 'msgwarn-stopped-probe'
+const STOPPED_SUB_AGENT_DIR = join(PROJECT_ROOT, 'agents', STOPPED_SUB_AGENT)
+
 beforeAll(() => {
   process.env.NODE_ENV = 'test'
   initDatabase(':memory:')
+  mkdirSync(STOPPED_SUB_AGENT_DIR, { recursive: true })
+})
+
+afterAll(() => {
+  rmSync(STOPPED_SUB_AGENT_DIR, { recursive: true, force: true })
 })
 
 describe('POST /api/messages to the main agent (MSGWARN908)', () => {
@@ -59,7 +77,7 @@ describe('POST /api/messages to the main agent (MSGWARN908)', () => {
   it('still warns for a genuinely stopped sub-agent (the gate is not loosened)', async () => {
     // No tmux in the test env, so any sub-agent id reads as stopped -- the
     // exemption must be main-only, not a blanket removal of the warning.
-    const r = await post({ from: MAIN_AGENT_ID, to: 'no-such-agent-session', content: 'ping' })
+    const r = await post({ from: MAIN_AGENT_ID, to: STOPPED_SUB_AGENT, content: 'ping' })
     expect(r.statusCode).toBe(200)
     expect(r.json.targetRunning).toBe(false)
     expect(String(r.json.warning)).toContain('nem fut')

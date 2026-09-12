@@ -1936,7 +1936,11 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
           // string entirely, so there is nothing to quote and nothing to escape.
           env: { WORKSOURCE_AGENT_ID: name, WORKSOURCE_DIR: worksourceRootFor(name) },
         }
-        writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2))
+        // MERGE FIX (B-wave, card 42938a74): upstream writes this with the DEFAULT mode, i.e.
+        // whatever the umask gives -- typically world-readable. An agent's .mcp.json carries
+        // server definitions and their env, so it is exactly the class card dc5b714d's guard
+        // exists for. Routed through this file's own owner-only atomic writer instead.
+        writeJsonAtomic(mcpJsonPath, mcpConfig)
         // The dev-channels flag takes a TAGGED LIST (`server:<name>` for a manually
         // configured MCP server, `plugin:<name>@<marketplace>` for a plugin one).
         // Measured by the reviewer on the PR head: without the value the CLI exits

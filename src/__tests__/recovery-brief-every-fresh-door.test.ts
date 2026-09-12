@@ -129,9 +129,17 @@ describe('scheduleRecoveryBrief', () => {
 describe('the brief is scheduled where fresh sessions are created', () => {
   const AGENT_PROCESS = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
 
-  it('startAgentProcess schedules it, so every fresh caller inherits it', () => {
-    const start = AGENT_PROCESS.indexOf('export async function startAgentProcess(')
+  // FORK ADAPTATION (B-wave, card 42938a74): the door in this fork is startAgentProcessUnlocked.
+  // `startAgentProcess` is the withLifecycleLock wrapper (card 74ba7c78) and is not `async`, so
+  // upstream's `export async function startAgentProcess(` anchor finds nothing here -- and an
+  // indexOf that returns -1 would slice the WHOLE file, quietly turning this into a file-wide
+  // search that passes on a call anywhere. Anchored on the function every fresh caller actually
+  // reaches (the wrapper delegates to it and does nothing else), so the property is unchanged.
+  it('startAgentProcessUnlocked schedules it, so every fresh caller inherits it', () => {
+    const start = AGENT_PROCESS.indexOf('async function startAgentProcessUnlocked(')
     expect(start).toBeGreaterThan(0)
+    // The wrapper must keep delegating, or "every fresh caller" stops being true.
+    expect(AGENT_PROCESS).toMatch(/export function startAgentProcess\([\s\S]{0,200}restartAgentProcessUnlocked|export function startAgentProcess\([\s\S]{0,200}startAgentProcessUnlocked/)
     const body = AGENT_PROCESS.slice(start)
     const call = body.indexOf('scheduleRecoveryBrief(')
     expect(call, 'startAgentProcess no longer schedules the recovery brief').toBeGreaterThan(0)
