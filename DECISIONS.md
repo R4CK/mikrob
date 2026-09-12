@@ -12745,3 +12745,47 @@ kerül be. A javítás értéke pontosan a REJTETT csatorna bezárása volt.
 **Ki döntött:** Cybersec (NO-GO, mindkét lelet), backend3 (javítás). A leletet Cybersec emelte az
 `e3f0e4ed`-n, de a javítást backend3 írta, ezért gate-elhette.
 **Hivatkozás:** kártya bf2bf691, Cybersec komment 2749.
+
+## 2026-09-12 -- fc156856 -- The context7 grant is audited, its denial names a remedy that works, and the "pinned dist" argument is retired
+
+**Context.** Cybersec's finding on the f0389e81 gate, three items in one file.
+
+**MEDIUM (CWE-778), the unaudited grant.** `main()` wrote an `ALLOWED_QUARANTINE` line only for the
+WebFetch/Firecrawl quarantine tier. context7 is the OTHER grant a main agent cannot obtain, and it
+left no trace at all -- neither an incident review nor `store/fetch-budget.py` could see it had been
+used, though this file's own header prescribes an audited grant. Measured before the fix: a WebFetch
+grant moved the log 210 -> 211, a context7 grant 211 -> 211. Fixed, and the line carries the TOOL
+NAME where a url would go, because a context7 call has none and `url=""` reads as a missing value
+rather than an absent one.
+
+**Why the test drives the hook as a subprocess.** `egressDecision()` was already right -- it returns
+the `quarantine-context7` tier. The defect was in what `main()` does with that tier, which no
+importable function exposes, so a decision-level test would have passed straight through the whole
+thing. That is exactly what happened: the card records "nincs teszt a logolasra, ezert zold a suite
+most is". The new file posts JSON on stdin and reads the log off disk, under
+`EGRESS_GATE_SELFTEST=1` so its lines are excluded from the operator's counts by construction.
+
+**LOW #1, the denial that pointed at the wrong file.** A context7 denial fell through to the generic
+`BLOCK_MESSAGE`, which says the URL is not on the allowlist (there is no URL), tells the operator to
+edit `store/egress-allowlist.json` (the decision is agentType-based -- editing it changes nothing),
+and quotes the `FETCH {"url":...}` protocol (context7 takes a library question). Now it has its own
+message, the same way the firecrawl-param case got one in card 4de3b4d4: naming the wrong remedy is
+its own kind of misleading. The message still NAMES the allowlist file -- to say that editing it
+will not help. Silence there would leave the reader to try it anyway.
+
+**LOW #2, an argument that did not bind what runs.** The header justified adding no param allowlist
+by measuring the pinned `@upstash/context7-mcp` dist (4.0.3): free-text-only tools, no
+url/action/exec field. What actually runs is declared in `.mcp.json` as
+`{"type":"http","url":"https://mcp.context7.com/mcp"}` -- a REMOTE server that serves its own schema
+at connect time -- and that file is GITIGNORED, so no commit and no test in this repo can hold it to
+a version. The measurement describes a dist we do not run.
+
+The conclusion survives; the reasoning did not. The tier is decided purely by `agentType` and never
+by the tool's parameters, so a schema that grows a new field tomorrow is still denied to a main agent
+and still confined to quarantine-reader. The comment now says that, and two test cases pin it: an
+UNKNOWN `mcp__context7__*` tool -- carrying a url and an `executeJavascript` action, the shape the
+old argument said could not exist -- is still denied to a main agent and still allowed to the reader
+on the namespace alone.
+
+**Both fixes mutation-checked**: deleting the audit line reproduces the founding measurement exactly
+(`expected +0 to be 1`), and reverting to the generic denial turns two cases red.
