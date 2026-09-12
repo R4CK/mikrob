@@ -3229,7 +3229,13 @@ export function getKanbanCard(id: string): KanbanCard | undefined {
 // way travels the bubbling path like any other field -- and this is live, not theoretical:
 // web/app.js sends whole `{...card}` objects on the assignee and parent edits, so editing an
 // already-archived card stamps its parent today. The fix belongs to the endpoint rather than here
-// (card 531c6500, field whitelist on the write routes); when it lands, this comment goes.
+// at the endpoint rather than here. TWO CORRECTIONS (B-wave, card 42938a74), because this comment
+// pointed at something that does not exist and implied a fix that does not cover this case:
+//   (1) card 531c6500 is NOT on the board -- not in the API, not in kanban_cards. The follow-up it
+//       deferred to was never opened, so "when it lands" was waiting on nothing.
+//   (2) A field whitelist DID land with this merge (KANBAN_WRITABLE_FIELDS + the PUT route's 400 on
+//       an unknown field), and it does NOT close this case: `archived_at` is ON the writable list,
+//       so a PUT carrying it is accepted and still bubbles. The hazard below stands as written.
 const ANCESTOR_DEPTH_LIMIT = 16
 
 /**
