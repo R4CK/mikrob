@@ -29,7 +29,9 @@ export interface UpstreamUpdateState {
  * FRISSÍTÉS-BANNER (card 3c09ba6b / FÁZIS3). Rule 10 (GitHub-first, don't reinvent):
  * this REUSES the existing {@link getUpdateStatus} cache -- update-checker.ts already
  * computes the per-repo `behind` for BOTH the upstream Marveen and our fork (commit
- * 6af2e7c) and refreshUpdateStatus already runs every 15 min via startUpdateChecker.
+ * 6af2e7c) and refreshUpdateStatus is already refreshed periodically by startUpdateChecker
+ * (see UPDATE_CHECK_INTERVAL_MS there for the cadence -- deliberately not restated here, the
+ * number in this sentence was wrong for months after it changed, card 06bed89a).
  * The ONLY thing that was missing was surfacing the upstream repo's `behind` on the
  * overview; this reads the `marveen` repo out of the aggregate. Fail-safe: null on any
  * error, absent repo, error status, or never-checked -> the banner simply does not render

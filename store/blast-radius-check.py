@@ -470,6 +470,32 @@ def selftest() -> int:
 
 
 # --------------------------------------------------------------------------
+def refresh_target(root: Path) -> tuple[str, str]:
+    """The ref whose code the graph is SUPPOSED to cover, plus a human label for it.
+
+    HEAD is the right answer in a checkout somebody works in. It is the wrong answer in a
+    FETCH-ONLY clone, and this repo has one on purpose: CleanCore's main clone is a fetch/landing
+    base that nobody commits to, so its HEAD never moves when a landing pushes (see CLAUDE.md's
+    worktree-discipline section). Measured on card d2f4b273: the graph sat at 9598e8e9 while
+    origin/main was 9 commits ahead, and `--refresh` printed "already current".
+
+    Resolution order, and each step is a fallback for a real configuration rather than a guess:
+    the branch's own upstream if one is set; else `origin/<branch>`, because a fetch-only clone
+    typically has the remote-tracking ref without ever setting an upstream (exactly CleanCore's
+    state -- `@{u}` there fails with "no upstream configured for branch 'main'"); else HEAD, which
+    is both the old behaviour and the only honest answer on a repo with no remote at all.
+    """
+    up = _git(str(root), "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if up and _git(str(root), "rev-parse", "--verify", "--quiet", up) is not None:
+        return up, up
+    branch = _git(str(root), "rev-parse", "--abbrev-ref", "HEAD")
+    if branch and branch != "HEAD":
+        ref = f"refs/remotes/origin/{branch}"
+        if _git(str(root), "rev-parse", "--verify", "--quiet", ref) is not None:
+            return ref, f"origin/{branch}"
+    return "HEAD", "HEAD"
+
+
 def refresh_only(repo: str) -> int:
     """Bring one repo's graph up to its current HEAD. Called from the land scripts.
 
@@ -486,12 +512,36 @@ def refresh_only(repo: str) -> int:
     if not db.exists():
         print(f"blast-radius: no graph for {root}, refresh skipped")
         return 1
+
+    # CAN THIS CLONE EVEN REPRESENT THE TARGET? (card d2f4b273.) Everything below reasons about
+    # HEAD, which is correct only while HEAD *is* the target. On a fetch-only clone it is not, and
+    # the gap is not something a different --base can close: the graph builder discovers changed
+    # files with `git diff --name-status -z <base> --` (code_review_graph/incremental.py) -- no
+    # second revision, so it diffs the base against the WORKING TREE, and records the new sha from
+    # `rev-parse HEAD`. Measured on the CleanCore clone: `git diff --name-only <graph> --` saw 0
+    # files where `... <graph> origin/main` saw 25. Pointing the staleness check at the upstream
+    # without moving the working tree would therefore have produced a LOUDER falsehood -- "graph
+    # refreshed, was 9 commit(s) behind" over zero indexed files and an unchanged recorded sha.
+    # So: say what is true, refuse to claim a refresh, and let the caller carry on.
+    target_ref, target_label = refresh_target(root)
+    target_sha = _git(str(root), "rev-parse", target_ref) or ""
+    head_sha = _git(str(root), "rev-parse", "HEAD") or ""
+    if target_sha and head_sha and target_sha != head_sha:
+        cnt = _git(str(root), "rev-list", "--count", f"{head_sha}..{target_sha}")
+        n = cnt if (cnt or "").isdigit() else "?"
+        print(
+            f"blast-radius: the working tree is {n} commit(s) behind {target_label} -- "
+            f"this clone cannot index them (the graph builder reads the working tree), "
+            f"refresh skipped"
+        )
+        return 1
+
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     st = staleness(root, graph_meta(conn))
     conn.close()
     behind = st.get("behind")
     if behind == 0:
-        print(f"blast-radius: graph already current @ {st['graph_sha'][:8]}")
+        print(f"blast-radius: graph already current @ {st['graph_sha'][:8]} ({target_label})")
         return 0
     if behind is None:
         print("blast-radius: graph freshness unknown, refresh skipped")

@@ -394,8 +394,20 @@ export async function refreshUpdateStatus(): Promise<AggregateUpdateStatus> {
 // Polls the GitHub branch this checkout follows for new commits and compares to the
 // local HEAD. Lets the dashboard show a "new version available" badge
 // without anyone having to SSH in and run update.sh.
+/**
+ * How often {@link startUpdateChecker} re-polls (Peti 2026-08-21: 6 hours, was 15 minutes).
+ *
+ * EXPORTED SO NOTHING RESTATES IT (card 06bed89a). Two other places had written the cadence out by
+ * hand and both still said "15 min" months after it changed: a comment in
+ * web/routes/overview.ts, and -- worse -- the startup log line in web.ts, which told every operator
+ * "Update checker started (15min poll)" while it polled every six hours. A comment misleads whoever
+ * reads the code; a log line misleads whoever is debugging staleness at 3am, which is exactly the
+ * person who cannot afford a false premise. Neither restates it now; both read this.
+ */
+export const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60_000
+
 export function startUpdateChecker(): NodeJS.Timeout {
-  // First check shortly after startup; then every 6 hours (Peti 2026-08-21, was 15 minutes).
+  // First check shortly after startup, then on the interval above.
   setTimeout(() => { refreshUpdateStatus().catch(() => {}) }, 10_000)
-  return setInterval(() => { refreshUpdateStatus().catch(() => {}) }, 6 * 60 * 60_000)
+  return setInterval(() => { refreshUpdateStatus().catch(() => {}) }, UPDATE_CHECK_INTERVAL_MS)
 }

@@ -5880,6 +5880,37 @@ export function getSkillUsageRows(opts: {
   ).all(...params) as SkillUsageRow[]
 }
 
+/**
+ * What the skill_usage signal can and cannot see (card a10ecfe3).
+ *
+ * THIS IS NOT A DISCLAIMER, IT IS THE LOAD-BEARING FACT. skill_usage is written by ONE hook
+ * (scripts/hooks/skill-usage-capture.py), which fires on exactly two events: the `Skill` tool being
+ * invoked, and a Read of a literal `~/.claude/skills/<name>/SKILL.md` path. The fleet's DOMINANT way
+ * of using a skill is neither: a skill named in an agent's own CLAUDE.md, or pulled in by its
+ * trigger description, is already in the model's context and is followed without any tool event at
+ * all. Nothing observes that, and no PostToolUse hook can -- there is no tool call to hook.
+ *
+ * MEASURED, 2026-09-11, on this fleet's own install: 152 skills on disk, 12 with any row at all.
+ * Every one of the ten skills backend2's own CLAUDE.md designates as its CORE set
+ * (engineering-standards, karpathycoder, project-workflow, senior-engineer-modes, ...) has ZERO
+ * rows, while demonstrably governing every card that agent shipped that week. 25 of the 30 rows
+ * belong to mikrob, the one agent that routinely calls the `Skill` tool explicitly.
+ *
+ * THE INFERENCE THIS EXISTS TO BLOCK: "skill X has no rows, therefore nobody uses it, therefore
+ * antiquate it." On this data that conclusion would fire on 140 of 152 skills, including the most
+ * load-bearing ones in the fleet, and the suggestion it produces is destructive. An absent row means
+ * "not observed by the two paths above", never "not used". Consumers get this next to the numbers
+ * rather than in a comment they will not read, which is why the stats endpoint returns it inline.
+ */
+export const SKILL_USAGE_COVERAGE = {
+  observes: ['tool_call (the Skill tool was invoked)', 'skill_read (a SKILL.md file was Read)'],
+  blindTo:
+    'a skill already in the agent context -- named in its CLAUDE.md or matched by its trigger ' +
+    'description -- is followed with no tool event, so it is never recorded',
+  zeroRowsMeansUnused: false,
+  doNotUseFor: 'deciding that a skill is unused, antiquated, or safe to delete',
+} as const
+
 export function getSkillUsageStats(sinceSecs?: number): SkillUsageStatRow[] {
   const cutoff = sinceSecs ? Math.floor(Date.now() / 1000) - sinceSecs : 0
   return db.prepare(`

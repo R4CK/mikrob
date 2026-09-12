@@ -310,12 +310,61 @@ fi
 # the exit code either -- read what's ACTUALLY unhandled). So: run once, capture the log, and if
 # the ONLY thing wrong is this exact known flake (no "N failed" anywhere in the summary), say so
 # explicitly instead of leaving a bare exit 1 for the next reader to re-diagnose from scratch.
+# WORKER CAP -- the OTHER half of the CPU control (card 7bb39672). The slot semaphore above bounds
+# how many full suites run AT ONCE; it says nothing about how much CPU each one takes. vitest
+# defaults maxWorkers to the core count, so one full run already claims every core, and two runs
+# under SLOTS=2 contend for the same cores twice over -- nproc*SLOTS workers on nproc cores.
+#
+# cleancore-suite-run.sh has capped this since it was written (nproc/SLOTS, its own comment spells
+# out the same reasoning). THIS script took the slot but never the cap, so a marveen suite spawned
+# the full core count beside a politely-capped CleanCore run: measured on this 12-core box, 12 + 6
+# workers, load average ~22, and send-honesty-round2.test.ts false-redded three landings in one day
+# by shelling out and never getting scheduled. The failure looks exactly like a test regression,
+# which is what makes it expensive: it sends correct work back to in_progress.
+#
+# Same semantics as the CleanCore side, deliberately, so the two cannot drift: a caller-supplied
+# --maxWorkers always wins (the caller has already made the CPU-budget decision), and
+# MARVEEN_FLEET_MAX_WORKERS overrides the default outright.
+CORES="$(nproc 2>/dev/null || echo 1)"
+DEFAULT_MAX_WORKERS=$((CORES / CPU_SLOTS))
+[ "$DEFAULT_MAX_WORKERS" -lt 1 ] && DEFAULT_MAX_WORKERS=1
+MAX_WORKERS="${MARVEEN_FLEET_MAX_WORKERS:-$DEFAULT_MAX_WORKERS}"
+caller_set_max_workers=0
+for a in ${ARGS[@]+"${ARGS[@]}"}; do
+  case "$a" in
+    --maxWorkers|--maxWorkers=*) caller_set_max_workers=1 ;;
+  esac
+done
+WORKER_ARGS=()
+if [ "$caller_set_max_workers" -eq 0 ]; then
+  # --minWorkers IS NOT OPTIONAL HERE, and the reason is the VITEST MAJOR, not this repo's config.
+  # Measured (Cybered, card 7bb39672): CleanCore runs vitest 3.2.6, where cleancore-suite-run.sh's
+  # bare --maxWorkers has been fine for months; marveen pins 2.1.9, where minThreads keeps its
+  # core-count default and then exceeds maxThreads. The pattern was copied between the two repos
+  # with nothing tying it to a version. WHEN THE VITEST MAJOR BUMP LANDS (2 -> 4, its own card),
+  # RE-MEASURE THIS LINE rather than carrying it over: stating both bounds is correct on both
+  # majors today, but the defaults that make it necessary are exactly what a major changes.
+  #
+  # The concrete failure, so nobody re-derives it: vitest 2.1.9
+  # rejects a bare --maxWorkers in this repo with
+  #   RangeError: options.minThreads and options.maxThreads must not conflict
+  # and exits 1 having run NOTHING ("Test Files no tests"). Measured directly, outside this script:
+  # `vitest run --maxWorkers 6 <file>` fails, `vitest run --minWorkers 1 --maxWorkers 6 <file>` runs.
+  # The first version of this cap shipped without it and broke every fleet-test run -- i.e. every
+  # landing, for every agent -- because the contract test asserted the flag was PASSED, never that
+  # vitest ACCEPTED it. A flag the runner refuses is not a cap, it is an outage.
+  WORKER_ARGS=(--minWorkers 1 --maxWorkers "$MAX_WORKERS")
+  echo "fleet-test.sh: --minWorkers 1 --maxWorkers $MAX_WORKERS (${CORES} cores / ${CPU_SLOTS} shared slots)"
+else
+  echo "fleet-test.sh: --maxWorkers left to the caller"
+fi
+
 run_log="$(mktemp)"
 trap 'rm -f "$run_log"' EXIT
 if [ ${#ARGS[@]} -gt 0 ]; then
-  npx vitest run "${ARGS[@]}" 2>&1 | tee "$run_log"
+  npx vitest run ${WORKER_ARGS[@]+"${WORKER_ARGS[@]}"} "${ARGS[@]}" 2>&1 | tee "$run_log"
 else
-  npx vitest run 2>&1 | tee "$run_log"
+  npx vitest run ${WORKER_ARGS[@]+"${WORKER_ARGS[@]}"} 2>&1 | tee "$run_log"
 fi
 status="${PIPESTATUS[0]}"
 

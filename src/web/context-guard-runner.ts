@@ -4,7 +4,7 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS, markAgentRestartPending } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
-import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, listAllAgentNames, agentConfigRoot, readAgentModel, readAgentRemoteHost } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import {
   agentRunState,
@@ -92,12 +92,8 @@ function sessionFor(name: string): string {
   return name === MAIN_AGENT_ID ? MAIN_CHANNELS_SESSION : agentSessionName(name)
 }
 
-function workingDirFor(name: string): string {
-  return name === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(name)
-}
-
 function handoffPathFor(name: string): string {
-  return join(workingDirFor(name), 'HANDOFF.md')
+  return join(agentConfigRoot(name), 'HANDOFF.md')
 }
 
 function handoffMtime(name: string): number | null {
@@ -207,7 +203,7 @@ function configDirFor(name: string): string | undefined {
 
 /** Raw observed context size (tokens) for the idle-flush tier's absolute threshold. */
 async function measureContextTokens(name: string): Promise<number | null> {
-  const tokens = await readContextTokensFromProjectDir(workingDirFor(name), configDirFor(name))
+  const tokens = await readContextTokensFromProjectDir(agentConfigRoot(name), configDirFor(name))
   return tokens !== null && tokens > 0 ? tokens : null
 }
 
@@ -218,13 +214,13 @@ async function measureContextTokens(name: string): Promise<number | null> {
  * a wrong clock must not be able to trigger a flush.
  */
 function measureIdleMs(name: string, nowMs: number): number | null {
-  const mtime = readTranscriptMtimeFromProjectDir(workingDirFor(name), configDirFor(name))
+  const mtime = readTranscriptMtimeFromProjectDir(agentConfigRoot(name), configDirFor(name))
   if (mtime === null) return null
   return Math.max(0, nowMs - mtime)
 }
 
 async function measurePct(name: string, cfgLimit: number | null): Promise<number | null> {
-  const workingDir = workingDirFor(name)
+  const workingDir = agentConfigRoot(name)
   const configDir = configDirFor(name)
   const tokens = await readContextTokensFromProjectDir(workingDir, configDir)
   if (tokens === null || tokens <= 0) return null

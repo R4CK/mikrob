@@ -227,3 +227,9 @@ graphify-out/
 # ff-only pull the same way graphify-out/ would (see above). It survives a DB-only data loss simply
 # by being a plain file on disk, same mechanism that saved DECISIONS.md on 2026-09-08.
 KANBAN-SNAPSHOT.md
+
+# Upload staging area written into the install directory: per-install state,
+# not source. Adopted from upstream in the A-wave of the 131-commit integration
+# (card 4b9688f6); the conflict at this point was purely additive on both sides,
+# so the fork's own block above is kept unchanged and this is appended after it.
+.uploads/

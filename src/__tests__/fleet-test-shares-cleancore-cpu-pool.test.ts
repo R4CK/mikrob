@@ -19,7 +19,7 @@
 // never holds the tree lock uselessly while still queueing for CPU capacity.
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { readFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -59,6 +59,49 @@ function problems(source: string): string[] {
   // variable name that happens to default to the same value today is how the two pools quietly
   // drift apart the next time either script's default changes.
   if (!/CLEANCORE_SUITE_SLOTS/.test(t)) found.push('does not read CLEANCORE_SUITE_SLOTS')
+
+  // THE OTHER HALF OF THE CONTROL (card 7bb39672). Taking a slot bounds how many suites run at
+  // once; it says nothing about how much CPU each one takes. vitest defaults maxWorkers to the core
+  // count, so a run that takes a slot and then spawns nproc workers puts nproc*SLOTS workers on
+  // nproc cores -- measured here as 12 + 6 on a 12-core box, load ~22, and three false-red landings
+  // in one day on a test that shells out and never gets scheduled. cleancore-suite-run.sh has capped
+  // this since it was written; this script took the slot and not the cap.
+  const cap = at(/DEFAULT_MAX_WORKERS=/)
+  if (cap < 0) found.push('no per-run worker cap -- the slot bounds RUNS, nothing bounds WORKERS')
+  else {
+    // Derived from the SAME slot count the pool is sized by. A hardcoded number (or a second,
+    // same-shaped variable) is how the cap and the pool drift apart the next time either moves.
+    if (!/DEFAULT_MAX_WORKERS=\$\(\(CORES \/ CPU_SLOTS\)\)/.test(t))
+      found.push('the worker cap is not derived from CORES / CPU_SLOTS')
+    // A cap computed and never passed to vitest is decoration -- and checking for it ANYWHERE near
+    // the call site does not say that, because the computation block itself contains the flag. That
+    // was measured, not reasoned about: the first version of this check windowed 600 chars around
+    // `npx vitest` and survived a mutant that deleted the cap from BOTH invocations, because the
+    // window still caught the declaration. The property is "every vitest invocation carries it", so
+    // the assertion has to read the invocation LINES.
+    const invocations = t.split('\n').filter((l) => /npx vitest run/.test(l))
+    if (invocations.length === 0) found.push('no npx vitest invocation found at all')
+    else if (!invocations.every((l) => /WORKER_ARGS/.test(l)))
+      found.push('a vitest invocation does not carry the computed worker cap')
+    // AND the cap must be a flag vitest ACCEPTS, not merely one we pass. vitest 2.1.9 rejects a
+    // bare --maxWorkers in this repo -- "options.minThreads and options.maxThreads must not
+    // conflict" -- and exits 1 having run nothing. The first version of this cap shipped without
+    // --minWorkers and broke every fleet-test run, i.e. every landing for every agent, while this
+    // very contract stayed green: it asserted the flag was PASSED, never that the runner took it.
+    // That gap is the reason for this line.
+    // Anchored to the ASSIGNMENT line, not to the file. Two earlier versions of this check were
+    // vacuous for the same reason and both were found by mutation, not by reading: the flag name
+    // also appears in the echo that reports the cap and in the comment above it, so a file-wide
+    // regex stays green after the flag is deleted from the array that actually reaches vitest.
+    const assign = t.split('\n').filter((l) => /WORKER_ARGS=\(/.test(l) && !/WORKER_ARGS=\(\)/.test(l))
+    if (assign.length === 0) found.push('no WORKER_ARGS assignment carrying the cap')
+    else if (!assign.every((l) => /--minWorkers/.test(l) && /--maxWorkers/.test(l)))
+      found.push('the cap is assigned without BOTH --minWorkers and --maxWorkers (vitest 2.x rejects a lone --maxWorkers as conflicting)')
+    // A caller who passed their own --maxWorkers has already made the CPU-budget decision; silently
+    // overriding it would make this a policy rather than a default, unlike the CleanCore side.
+    if (!/caller_set_max_workers/.test(t))
+      found.push('a caller-supplied --maxWorkers is not honoured')
+  }
   if (!/CLEANCORE_SUITE_LOCK_PREFIX/.test(t)) found.push('does not read CLEANCORE_SUITE_LOCK_PREFIX')
   // The prefix must resolve to the SAME anchor cleancore-suite-run.sh defaults to, or the two never
   // actually share a file even when neither env var is overridden.
@@ -357,4 +400,75 @@ describe('fleet-test.sh behaviourally contends with cleancore-suite-run.sh\'s ow
     expect(stderr).not.toMatch(/no shared CPU slot after/)
     expect(stderr).toMatch(/another suite run holds the fleet lock/)
   }, 10000)
+})
+
+
+// Card 7bb39672, Cybered's delta request -- and the gap that let the outage land.
+//
+// Everything above is a SOURCE contract: it proves the cap is composed and reaches the invocation
+// lines. It cannot prove vitest ACCEPTS it, and that is precisely what went wrong: a bare
+// --maxWorkers is valid on vitest 3.x (where cleancore-suite-run.sh's copy of this pattern has run
+// for months) and is REJECTED on the 2.1.9 this repo pins, because minThreads keeps its core-count
+// default and then exceeds maxThreads. The flag was passed, the runner refused it, every fleet-test
+// run exited 1 having collected nothing, and the contract suite stayed green throughout. Cybered's
+// own harness could not see it either -- it proved argument passing with a stub npx, and a stub
+// accepts everything.
+//
+// So this case LAUNCHES THE REAL vitest with the flags the script actually composes, in a throwaway
+// project with one trivial test. Deliberately NOT through fleet-test.sh: that would reset and
+// rebuild a whole tree, take a shared CPU slot this very suite may already hold, and recurse. The
+// conflict lives in vitest's own pool defaults, not in this repo's config -- measured: it
+// reproduces in a bare temp project -- so a temp project is enough to catch it, and is seconds.
+//
+// The flags are READ OUT OF THE SCRIPT, never hardcoded here. A copy would pass while the script
+// drifted, which is the same class of blindness this case exists to close.
+describe('the composed worker cap is a flag vitest ACCEPTS, not merely one we pass (card 7bb39672)', () => {
+  const flagsFromScript = (): string[] => {
+    const line = readFileSync(SCRIPT, 'utf-8')
+      .split('\n')
+      .find((l) => /WORKER_ARGS=\(/.test(l) && !/WORKER_ARGS=\(\)/.test(l))
+    if (!line) throw new Error('no WORKER_ARGS assignment found in fleet-test.sh')
+    const inner = line.slice(line.indexOf('(') + 1, line.lastIndexOf(')'))
+    // $MAX_WORKERS is a shell expansion; any positive integer exercises the same pool check.
+    return inner
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((tok) => tok.replace(/^"|"$/g, ''))
+      .map((tok) => (tok.includes('$') ? '2' : tok))
+  }
+
+  const runVitestWith = (flags: string[]): { status: number; out: string } => {
+    const dir = mkdtempSync(join(tmpdir(), 'fleet-pool-probe-'))
+    try {
+      writeFileSync(join(dir, 'a.test.ts'), "import { it, expect } from 'vitest'\nit('t', () => expect(1).toBe(1))\n")
+      const bin = join(ROOT, 'node_modules', '.bin', 'vitest')
+      try {
+        const out = execFileSync(bin, ['run', '--root', dir, ...flags], {
+          encoding: 'utf-8',
+          stdio: 'pipe',
+          timeout: 120_000,
+        })
+        return { status: 0, out }
+      } catch (e) {
+        const err = e as { status?: number; stdout?: string; stderr?: string }
+        return { status: err.status ?? 1, out: `${err.stdout ?? ''}${err.stderr ?? ''}` }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it("vitest starts its pool with the script's own flags", () => {
+    const r = runVitestWith(flagsFromScript())
+    expect(r.out).not.toMatch(/must not conflict/)
+    expect(r.status).toBe(0)
+  })
+
+  it('NEGATIVE CONTROL: a lone --maxWorkers is what the pool rejects, so this case can fail', () => {
+    // Without this, the case above would pass just as happily against a vitest that accepts
+    // anything -- and "the runner accepts everything" is exactly the assumption that hid the
+    // outage. This pins that the probe can tell the two apart on THIS vitest.
+    const r = runVitestWith(['--maxWorkers', '2'])
+    expect(r.out).toMatch(/must not conflict/)
+  })
 })

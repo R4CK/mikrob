@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
 import { makeLazyBinResolver } from '../platform.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
-import { listAgentNames, agentDir } from './agent-config.js'
+import { listAgentNames, agentConfigRoot } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { agentSessionName, capturePane } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
@@ -156,10 +156,6 @@ export function openQuestionBlocks(
 
 function sessionFor(name: string): string {
   return name === MAIN_AGENT_ID ? MAIN_CHANNELS_SESSION : agentSessionName(name)
-}
-
-function workingDirFor(name: string): string {
-  return name === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(name)
 }
 
 /**
@@ -629,7 +625,7 @@ async function deliverPendingWake(name: string, session: string, nowMs: number):
 export async function gatherGateInputs(name: string, nowMs: number): Promise<GateSnapshot> {
   const cfg = readGateConfig(name)
   const session = sessionFor(name)
-  const workingDir = workingDirFor(name)
+  const workingDir = agentConfigRoot(name)
 
   // Gather inputs (all deterministic, no AI inference).
   const paneRaw = capturePaneOrNull(session)

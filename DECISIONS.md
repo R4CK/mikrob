@@ -12331,3 +12331,150 @@ klón HEAD-jére kulcsol, a CleanCore fő klónja viszont csak fetch-alap: a HEA
 landoláskor. Mérve: a gráf `9598e8e9`-nél állt, miközben az `origin/main` 9 committal előrébb járt --
 és a szkript „already current"-et jelentett. Marveenen ez nem áll fenn, mert ott a landoló
 fast-forwardolja az élő telepítést. Jelentve, döntésre vár.
+
+## 2026-09-11 -- A gráf-frissítés mondja meg, ha nem tud frissíteni (kártya d2f4b273)
+
+**A lelet.** A `blast-radius-check.py --refresh <repo>` a klón HEAD-jére kulcsolt. Ez igaz
+feltevés egy checkoutban, amiben valaki dolgozik, és HAMIS egy fetch-only klónon -- a CleanCore fő
+klónja pedig szándékosan az (senki nem commitol oda, a HEAD-je landoláskor nem mozdul). Mérve: a
+gráf `9598e8e9`-nél állt, az `origin/main` 9 committal előrébb, és a szkript „already current"-et
+jelentett. Az a hívás, amit épp a gráf elrothadása ellen tettek a landolóba, ott csendes no-op volt.
+
+**Az első terv el lett vetve, mérés alapján.** A kézenfekvő javítás -- a staleness az upstream
+refre kulcsoljon HEAD helyett -- két okból nem működött volna:
+
+1. A CleanCore klónon NINCS beállított upstream: a `main` ágon `@{u}` „fatal: no upstream
+   configured" hibára fut. A javítás tehát pont ott esett volna vissza HEAD-re, ahol számít.
+2. És ez a döntő: a gráf-építő a MUNKAFÁBÓL olvas. A `code_review_graph` a változott fájlokat
+   `git diff --name-status -z <base> --` alakkal szedi össze -- második revízió nélkül --, a
+   rögzített shát pedig a `rev-parse HEAD`-ből veszi. Ugyanazon a klónon mérve: `git diff
+   --name-only <graf> --` **0 fájlt** lát, `git diff --name-only <graf> origin/main` **25-öt**.
+
+Ha csak a célt állítjuk át, a staleness helyesen „9 behind"-ot mond, a refresh lefut, nullát
+indexel, és az elavult shát rögzíti „graph refreshed" üzenettel. A csendes hamis zöldből HANGOS
+hamis zöld lenne. Egy hazug sikerjelentést nehezebb észrevenni, mint egy hazug „already current"-et.
+
+**Döntés.** Ez a kártya azt szállítja, hogy az eszköz NE HAZUDJON: a `refresh_only()` feloldja a
+célt (upstream → `origin/<ág>` → HEAD), és ha a munkafa elmarad tőle, kimondja hány committal,
+megnevezi a célt, nem futtat refresht, és nem-nulla kóddal lép ki (továbbra sem fatálisan). A gráf
+tényleges naprakészen tartása -- eldobható worktree a cél shán -- külön kártya (42194681), mert
+architektúra-döntés.
+
+**Amit a javítás közben derült ki, és itt is javítva.** A `marveen-land.sh` a két gráf-frissítést a
+`sync_live_install` ELŐTT futtatta, vagyis mielőtt az élő telepítés a landolt állapotra ugrott
+volna. Marveenen tehát a gráf MINDIG egy landolással le volt maradva -- csendben, mert a frissítés
+sikert jelentett, csak a rossz commitról. A három lépés sorrendje megfordítva. E nélkül ez a kártya
+rontott volna a marveenen: az új őr ott most már kihagyta volna a frissítést.
+
+**Mutációval ellenőrizve.** Hat mutáns, mind piros. KETTŐ az első körben túlélte, és mindkettő
+valódi hiány volt a tesztben:
+- az „előnyben részesíti az upstreamet" eset VÁKUUM volt, mert a fixture-ben az upstream ugyanaz
+  volt, mint az `origin/<ág>` -- a két kódút ugyanazt adta. Átírva olyan fixture-re, ahol
+  eltérnek;
+- a lemaradás-őr ellenőrzése csak SZÖVEGET nézett, ezért `if False:`-szel is zöld maradt. Mellé
+  került egy VISELKEDÉSI eset, ami valódi repón futtatja a szkriptet, plusz egy pozitív kontroll
+  (naprakész fán nem szabad lemaradást jelentenie).
+
+---
+
+## 2026-09-11 -- 0cb92d11 -- Watched-repos: a 28 "eldöntetlen" repóból 21-nek már volt döntése
+
+**Kiváltó ok.** Peti kérése (Telegram, 2026-09-11 06:19): a beépített repók frissességét
+ellenőrizni kell, és ami nincs beépítve, azt vagy beépíteni és alkalmazni, vagy elengedni és
+kivenni a listából. A `store/watched-repos.json` 38 bejegyzéséből 28 volt `enabled=false`.
+
+**A lelet: az `enabled=false` három különböző dolgot jelentett egyszerre**, és ez a nyilvántartás
+hibája volt, nem a repóké. A 28-ból 21-nek már volt döntése:
+
+- **13 ADOPTÁLT, csak más mechanizmus figyeli.** `code-review-graph` és `graphify` PyPI-verzió-
+  pinelt (pipx), tehát nem git-sha-alapú watch; további 11 vendorolt-külső a `~/.claude/external`
+  alatt, amit az `external-repos-daily-sync` tart frissen. Mérve 2026-09-11: mind a 11 klón
+  `FETCH_HEAD`-je a mai napra datált, a sync él. (A dispatch 2 kivételt nevezett meg; valójában 13
+  van ebben az osztályban.)
+- **6 korábban eldöntött**, amit a `note` mezője ki is mond: `mcp-compressor` (HOLD, Rust OSV
+  advisoryk), `andrej-karpathy-skills` (a négy kódminőségi alapelv beolvasztva a CLAUDE.md-be),
+  `gstack` és `claude-mem` (SKIP, duplikáció, kártya `7a6c376f`), `gauntlet-loop` ×2 (NO-OP).
+- **2 eldöntött a DECISIONS.md-ben, de a JSON-ban nem átvezetve:** `headroom` (kártya `241dbf87`
+  nemet mondott, a rést a `store/dash.py` zárta be) és `hermes-agent-self-evolution`
+  (referenciaként olvasva, kód nem átvéve).
+
+**Nyilvántartás-hiba, javítva.** A `DECISIONS.md` a `hermes-agent-self-evolution`-t korábban
+MIT-ként rögzítette. Ellenőrizve 2026-09-11: a repóban **nincs LICENSE fájl** (a GitHub
+`/license` endpoint 404, a gyökérben nincs LICENSE/COPYING). Kód nem lett átvéve, tehát kitettség
+nincs, de a dokumentált licenc téves volt, és **kód-átvétel innen tiltott marad**.
+
+**A hét valódi döntés** (licenc-első szűrés, élő GitHub-adat 2026-09-11):
+
+| repó | licenc | csillag | utolsó push | verdikt |
+|---|---|---|---|---|
+| `ai-boost/awesome-harness-engineering` | CC0-1.0 | 4131 | 2026-09-10 | **ADOPT** |
+| `NirDiamant/Agent_Memory_Techniques` | Apache-2.0 | 1046 | 2026-09-04 | **ADAPT** |
+| `gepa-ai/gepa` | MIT | 6514 | 2026-09-11 | DROP (pilot nélkül nem ADOPT) |
+| `wshobson/agents` | MIT | 39560 | 2026-09-07 | DROP (telítettség) |
+| `VoltAgent/awesome-claude-code-subagents` | MIT | 24998 | 2026-09-07 | DROP (telítettség) |
+| `selfimproving-agent/Awesome-Self-Improving-Agents` | MIT | 470 | 2026-09-04 | DROP (nem akcionálható) |
+| `rohitg00/awesome-claude-code-toolkit` | Apache-2.0 | 2608 | 2026-05-12 | DROP (4 hónap állás + duplikáció) |
+
+**Az elvi vonal, ami a DROP-okat egységesíti.** A watch-lista arra való, amit ténylegesen
+INTEGRÁLUNK (pinelt verzió, használt skill), nem olvasnivalóra. A 10. munkavégzési szabály a
+GitHub-keresést amúgy is előírja **a szükség pillanatában** -- az célzottabb és mindig frissebb,
+mint egy álló napi sync. Ezt a telítettség teszi kézzelfoghatóvá, mérve 2026-09-11: saját készlet
+18 agent + 152 globális skill; a már vendorolt és naponta szinkronizált referencia 846 `SKILL.md`
++ 436 agent-markdown csak a `claude-skills-alirezarezvani`-ban, plusz 97 + 121 a
+`claude-code-ultimate-guide`-ban. Egy ötödik agent-forrás állandó figyelése nem zár rést.
+
+**Miért mégis ADOPT az egyik.** Az `awesome-harness-engineering` az egyetlen jelölt, ami olyan
+témát fed le, amit a már szinkronizált 11 repó nem: harness-engineering (evals, megbízhatóság,
+permission-modellek, MCP-minták, memória). CC0, aktív, 904 KB.
+
+**`type=code`, szándékosan, nem `text`.** A repó 7 markdown és egy kép mellett tartalmaz egy
+futtatható `verify_urls.py`-t (244 sor, aiohttp-alapú README-link-ellenőrző). Sosem futtatjuk, de
+a `git-repo-watcher` osztályozásában a `code` azt jelenti, hogy a frissítés supply-chain reviewra
+van jelölve és nem alkalmazódik automatikusan. Fail-closed, mert a `text` szabad fast-forwardot
+engedne egy olyan repóra, amiben van végrehajtható fájl.
+
+**Amit a JSON-on változtattunk.** 38 -> 31 bejegyzés (8 kivéve, 1 hozzáadva), és minden megmaradt
+`enabled=false` bejegyzés kapott egy `enabled_reason` mezőt, hogy a státusz többé ne legyen
+olvasható "eldöntetlen"-ként. A mező additív; a fogyasztók (`git-repo-watcher.sh`,
+`src/web/routes/integrated-repos.ts`, `src/web/dashboard-settings.ts`) nevesített mezőket
+olvasnak. Ellenőrizve: a `GET /api/integrated-repos` 31 bejegyzést ad vissza, az új látszik, a
+kivettek eltűntek; `fleet-test.sh` a két érintett teszt-fájlra 14/14 zöld.
+
+---
+
+## 2026-09-11 -- 0b3a3084 -- A helyi-LLM draft ÉRKEZÉSE értesítse a kártya felelősét
+
+**Döntés.** Amikor az `offload-dispatch.sh` felposztol egy draftot egy leaf-kártyára, azonnal küldjön
+inter-agent jelzést a kártya felelősének. Ugyanez fut a másik posztoló ágon is (a „a helyi modell
+kimerült" értesítésen), egyetlen közös helperből -- egy szerződés, két hívási hely.
+
+**Miért.** A draft ASZINKRON érkezik, a dispatch UTÁN. Kétszer ugyanaznap, ugyanazon az ügynökön
+(f3757cc7 és 90e4cbdf): a kártya dispatchkor nulla kommenttel állt, a draft később jött, és senki nem
+nézett vissza. Mindkétszer a draft-review guard (1338e68b) fogta meg -- a munka VÉGÉN, amikor a draft
+már csak elbírálandó adminisztratív tétel. Az „olvasd el a kommenteket, amikor felveszed a kártyát"
+szabály ezt szerkezetileg nem tudja lefedni: felvételkor még nincs mit elolvasni.
+
+**Kinek megy.** Három eset, és a két kivétel is MikroB-nál köt ki, mert ő az egyetlen ügynök, aki soha
+nem parkolja magát:
+- a felelősnek, ha fut;
+- MikroB-nak, ha a felelős PARKOLVA van -- a `POST /api/messages` elfogadja a parkolt címzettnek szóló
+  üzenetet is (a címzett létezését ellenőrzi, nem az élő session-t), a sor függőben marad, és a router
+  az ablak lejártakor eldobja. Vagyis a parkolt felelősnek küldött nudge nem hiba sehol, hanem csendes
+  veszteség -- pont az, amit ez a kártya megszüntet;
+- MikroB-nak, ha a leafnek NINCS felelőse (6a. szabály) -- az értesítés így nem vész el, és a
+  szabálysértés is látszik.
+
+**Elvetett alternatíva (MikroB, msg 610).** Hogy a dispatch VÁRJA MEG a draftot. Lassítaná a
+self-advance-ot: az ügynök állna, amíg a single-slot GPU sorban áll.
+
+**Nincs külön spam-számláló.** Az attempts-fájl már megadja: draft csak sikerre posztol, a siker
+`status=done`-t ír, amit a ciklus előszűrője minden későbbi sweepen kihagy -- véglegesen, mert csak az
+`exhausted` bejegyzések járnak le. A kimerülés-értesítés a 3. kísérletnél tüzel, az `status=exhausted`-et
+ír, tehát leafenként legfeljebb 24 óránként ismétlődhet. Mindkettő már eseményenként egyszeri; egy
+második számláló csak egy második elrontható dolog lenne.
+
+**Küldő-azonosság.** `from="mikrob"`, a flotta meglévő konvenciója szerint (`fleet-nudger.sh` ugyanezt
+teszi), és ugyanazzal a lemondó címkével, hogy a címzett ne olvassa úgy, mintha az orchestrátor
+elolvasta volna a kártyáját. A `POST /api/messages` regisztrált flotta-ügynököt követel küldőként, és a
+`local-llm` nem az -- az komment-szerzői identitás, nem ügynök-könyvtár. A 3307b428 kártya tilalma a
+KOMMENT szerzőségéről szól, amire a gate-sweepek kulcsolnak; üzenetet nem sweepel senki szerző szerint.
