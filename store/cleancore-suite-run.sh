@@ -48,6 +48,9 @@
 #   CLEANCORE_SUITE_SLOTS        default 2
 #   CLEANCORE_SUITE_MAX_WORKERS  overrides the vitest --maxWorkers default (nproc / SLOTS, floor 1).
 #                                Ignored if the caller already passed --maxWorkers after `--`.
+#   CLEANCORE_SUITE_MIN_AVAIL_MB default 4096 -- MemAvailable a run needs before it may START.
+#                                0 disables the memory precondition entirely.
+#   CLEANCORE_SUITE_MEMINFO      /proc/meminfo override, for the selftest only.
 #
 # Exit: the suite's own exit code | 2 usage or an unusable lock directory | 3 no slot within the cap
 set -uo pipefail
@@ -57,6 +60,50 @@ SLOTS="${CLEANCORE_SUITE_SLOTS:-2}"
 WAIT_MAX_S="${CLEANCORE_SUITE_WAIT_MAX_S:-7200}"   # 2h: two 60-90min runs can legitimately be ahead
 POLL_S="${CLEANCORE_SUITE_POLL_S:-20}"
 KEEPALIVE_S="${CLEANCORE_SUITE_KEEPALIVE_S:-300}"  # < the 10-minute stuck threshold, with margin
+
+# THE SLOT CAP DOES NOT BOUND MEMORY EITHER (card 7e7ac40c, backend3's OOM finding 2026-09-10). A
+# full suite was killed BEFORE IT STARTED with 474 MB available of 24032 MB, and an OOM kill looks
+# exactly like the false red this whole script exists to prevent.
+#
+# WHAT I MEASURED, because the card's own root-cause numbers did not survive checking. Card text
+# said ~2.6-3.2 GB PER WORKER, so ~17 GB per run and ~35 GB for two -- which would mean SLOTS=2 is
+# structurally impossible on a 24 GB box. Sampled at 5s over one full suite run (909 files, 19308
+# tests, 62 min, solo on the semaphore, 806 samples):
+#     peak RSS of ALL vitest processes together ... 3153 MB (31 processes)
+#     peak RSS of the largest single worker ....... 379 MB
+#     lowest MemAvailable during the run .......... 11052 MB
+# So a run costs ~3.2 GB, not ~17 GB, and two concurrent runs (~6.3 GB) fit with room to spare.
+# The 15 largest processes on the box during that run contained NO vitest process above 379 MB;
+# the memory was held by ollama (1557 MB), another agent's eslint (1548 MB) and twelve Claude
+# sessions at 310-540 MB each.
+#
+# THAT CHANGES WHICH FIX IS RIGHT. The pressure comes from OUTSIDE the suite, so capping slots or
+# workers -- the card's other two candidate fixes -- would not have prevented that OOM. What
+# prevents it is refusing to START a ~3.2 GB job into a box that has no room for it, which is what
+# this does. 4096 MB is the measured peak plus ~30%: enough that a future, larger suite still fits,
+# low enough that it only fires when the box is genuinely full (it would have blocked at 474 MB).
+#
+# MemAvailable, NOT MemFree. Measured on this box in one instant: MemFree 1807 MB, MemAvailable
+# 15221 MB -- the difference is 14.7 GB of reclaimable page cache. A MemFree guard would refuse
+# nearly every run that fits comfortably.
+#
+# NOT WIRED TO scripts/fleet-memory-gate.sh, which already exists and reads the same field. It
+# answers a different question (may an AGENT START, in percentage bands: 80% warn / 90% hard), and
+# a band cannot express "this particular job needs N GB" -- on 24 GB the 80% band still leaves
+# 4.8 GB, fine for this run and hopeless for a larger one. It also manages a safe-mode flag and
+# sends Telegram alerts as a side effect of answering, which is wrong per suite start. Decisive:
+# fork-upstream records it as "adopt upstream wholesale -- no fork-specific logic in this file", so
+# every upstream merge replaces it, and a fork script parsing its output would break silently.
+MEMINFO="${CLEANCORE_SUITE_MEMINFO:-/proc/meminfo}"
+MIN_AVAIL_MB="${CLEANCORE_SUITE_MIN_AVAIL_MB:-4096}"
+
+# MemAvailable in MB, or a non-zero return when this box cannot answer.
+mem_available_mb() {
+  local kb
+  kb="$(awk '/^MemAvailable:/ { print $2; exit }' "$MEMINFO" 2>/dev/null)" || return 1
+  case "$kb" in ''|*[!0-9]*) return 1 ;; esac
+  echo $((kb / 1024))
+}
 # THE ANCHOR IS THE WHOLE MECHANISM (card 5af57bd7, Cybered NO-GO). This defaulted to
 # `$HERE/.cleancore-suite-slot` -- the script's OWN directory -- and every agent runs its own
 # marveen worktree copy, each with a real `store/` (measured: distinct inodes). So the cap was 2 PER
@@ -162,27 +209,74 @@ acquire() { # sets FD and SLOT on success
   return 1
 }
 
+# WHY THE MEMORY CHECK COMES BEFORE acquire() AND NOT AFTER. A run that is waiting for memory must
+# not be holding a slot while it waits -- that would block a peer who DOES have room, turning a
+# memory shortage into a slot shortage. So: decide on memory first, take the slot only when the run
+# can actually proceed.
+#
+# NO RESERVATION BOOKKEEPING, deliberately, and this follows from the measurement rather than from
+# taste. The race it would protect against is two runs both seeing free memory and then both ramping
+# into it. At ~3.2 GB per run that is ~6.3 GB against a floor of 4096 MB free -- it fits, so the
+# machinery would be complexity guarding a case that cannot occur here. If a future suite ever grows
+# past roughly a third of MemAvailable, this is the assumption that breaks, and the fix is to record
+# each run's footprint in its own slot file (the flock state already makes such a record
+# self-cleaning: an unheld slot's content is simply not counted).
+#
+# FAIL OPEN, LOUDLY, when the box cannot answer. A guard that refuses every run on an unreadable
+# /proc/meminfo would stop every gate on the machine -- strictly worse than the OOM it prevents,
+# which is at least noisy. This matches what fleet-memory-gate.sh does with the same field.
+WAIT_REASON=""; WAIT_DETAIL=""; MEM_WARNED=0
+try_start() {
+  local avail
+  if [ "$MIN_AVAIL_MB" -gt 0 ]; then
+    if avail="$(mem_available_mb)"; then
+      if [ "$avail" -lt "$MIN_AVAIL_MB" ]; then
+        WAIT_REASON="memory"
+        WAIT_DETAIL="${avail}MB available, ${MIN_AVAIL_MB}MB needed"
+        return 1
+      fi
+    elif [ "$MEM_WARNED" -eq 0 ]; then
+      MEM_WARNED=1
+      echo "cleancore-suite-run: cannot read MemAvailable from '$MEMINFO' -- starting WITHOUT the memory precondition (card 7e7ac40c). An OOM kill here would look like a test failure." >&2
+    fi
+  fi
+  acquire && return 0
+  WAIT_REASON="slot"; WAIT_DETAIL="all ${SLOTS} slots in use"
+  return 1
+}
+
 started="$(date +%s)"; waited=0; announced=0; last_note="$started"
-while ! acquire; do
+while ! try_start; do
   now="$(date +%s)"; waited=$((now - started))
   if [ "$waited" -ge "$WAIT_MAX_S" ]; then
-    echo "cleancore-suite-run: no slot after $((waited / 60)) min (${SLOTS} in use). Another run is stuck, or raise CLEANCORE_SUITE_SLOTS." >&2
+    # THE GIVE-UP MESSAGE NAMES THE ACTUAL REASON. It used to say "no slot ... raise
+    # CLEANCORE_SUITE_SLOTS" unconditionally, which is the wrong diagnosis and the wrong remedy for
+    # a run that was queueing on memory -- raising the slot cap would make that case worse.
+    if [ "$WAIT_REASON" = "memory" ]; then
+      echo "cleancore-suite-run: not enough memory after $((waited / 60)) min ($WAIT_DETAIL). Something else on this box is holding it -- this is NOT a test result. Lower CLEANCORE_SUITE_MIN_AVAIL_MB only if you know the run fits." >&2
+    else
+      echo "cleancore-suite-run: no slot after $((waited / 60)) min (${SLOTS} in use). Another run is stuck, or raise CLEANCORE_SUITE_SLOTS." >&2
+    fi
     [ "$announced" -eq 1 ] && _comment "INFO-ONLY RESUMED-SEMAPHORE (GIVING UP)
 
-Nem kaptam suite-slotot ${WAIT_MAX_S} masodperc alatt (${SLOTS} egyideju futas a felso korlat). Nem futtattam le a suite-ot -- ez NEM teszt-eredmeny."
+Nem indult el a suite ${WAIT_MAX_S} masodperc alatt. Ok: ${WAIT_REASON} (${WAIT_DETAIL}). Nem futtattam le a suite-ot -- ez NEM teszt-eredmeny."
     exit 3
   fi
   if [ "$announced" -eq 0 ]; then
     announced=1
-    echo "cleancore-suite-run: all ${SLOTS} slots busy -- queueing (cap ${WAIT_MAX_S}s)" >&2
+    if [ "$WAIT_REASON" = "memory" ]; then
+      echo "cleancore-suite-run: not enough free memory -- queueing ($WAIT_DETAIL, cap ${WAIT_MAX_S}s)" >&2
+    else
+      echo "cleancore-suite-run: all ${SLOTS} slots busy -- queueing (cap ${WAIT_MAX_S}s)" >&2
+    fi
     _comment "INFO-ONLY PAUSED-SEMAPHORE
 
-A teljes CleanCore suite SORBAN ALL, nem ragadt be: mind a ${SLOTS} egyideju futas-slot foglalt (kartya 5af57bd7). Amint felszabadul egy, indul, es RESUMED-SEMAPHORE kommentet kap.
+A teljes CleanCore suite SORBAN ALL, nem ragadt be. Ok: ${WAIT_REASON} (${WAIT_DETAIL}) -- vagy mind a ${SLOTS} egyideju futas-slot foglalt (kartya 5af57bd7), vagy nincs eleg szabad memoria az inditashoz (kartya 7e7ac40c). Amint megszunik, indul, es RESUMED-SEMAPHORE kommentet kap.
 
 Ez a komment azert van itt, hogy az updated_at mozogjon: a 3. szabaly szerint egy 10 perce nem mozdulo in_progress kartya beragadtnak szamit, a 3a. szerint 60 perc utan testverre szall. Egy nema varakozas pont azt valtana ki, amit a szemafor elkerulni hivatott."
   elif [ $((now - last_note)) -ge "$KEEPALIVE_S" ]; then
     last_note="$now"
-    _comment "INFO-ONLY PAUSED-SEMAPHORE (meg mindig sorban, $((waited / 60)) perce)"
+    _comment "INFO-ONLY PAUSED-SEMAPHORE (meg mindig sorban, $((waited / 60)) perce -- ok: ${WAIT_REASON}, ${WAIT_DETAIL})"
   fi
   sleep "$POLL_S"
 done

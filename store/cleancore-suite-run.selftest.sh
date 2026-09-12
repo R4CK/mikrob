@@ -261,5 +261,105 @@ else
   bad "a caller-supplied --project was overridden by the split" "rc=$rc runs=$runs argv=$(cat "$ARGV_CAPTURE" 2>/dev/null | tr '\n' ' ')"
 fi
 
+# --- 13. THE MEMORY PRECONDITION (card 7e7ac40c) ------------------------------------------------
+# backend3's finding: a full suite was OOM-killed BEFORE STARTING with 474 MB available of 24032 MB.
+# The slot cap never looked at memory. Measured on one full run (806 samples at 5s): a suite peaks
+# at 3153 MB of vitest RSS, so the precondition is an absolute floor, not a reservation scheme.
+#
+# /proc/meminfo is injected, so these cases assert the DECISION rather than the box's mood -- a test
+# that waits for the real machine to be full would never run, and one that passes because the box
+# happens to be empty proves nothing.
+fake_meminfo() { # $1 = MemAvailable in kB
+  local f="$TMP/meminfo-$1"
+  printf 'MemTotal:       24609416 kB
+MemFree:         1850872 kB
+MemAvailable:   %s kB
+' "$1" > "$f"
+  echo "$f"
+}
+
+# A free slot AND enough memory -> acquired (proved by the no-worktree exit-3 message).
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       CLEANCORE_SUITE_MEMINFO="$(fake_meminfo 9000000)" CLEANCORE_SUITE_MIN_AVAIL_MB=4096 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 3 ]] && grep -q "no CleanCore worktree" <<<"$out"; then
+  ok "enough memory -> the slot is taken and the run proceeds"
+else
+  bad "a run with 8789MB available was not allowed to start" "rc=$rc out=$out"
+fi
+
+# Below the floor -> queued out, and the message must say MEMORY, not slots. Naming the wrong
+# reason here is not cosmetic: it points the reader at CLEANCORE_SUITE_SLOTS, and raising the slot
+# cap makes a memory shortage worse.
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=2 \
+       CLEANCORE_SUITE_MEMINFO="$(fake_meminfo 500000)" CLEANCORE_SUITE_MIN_AVAIL_MB=4096 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 3 ]] && grep -q "not enough memory" <<<"$out" && ! grep -q "no slot after" <<<"$out"; then
+  ok "below the floor -> refuses to start, and names MEMORY as the reason"
+else
+  bad "a memory shortage was not reported as one" "rc=$rc out=$out"
+fi
+
+# THE CONTROL that stops the case above from passing for the wrong reason: the same 488MB box with
+# the precondition switched off must sail through. Without this, a script that refused everything
+# would satisfy the test above.
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       CLEANCORE_SUITE_MEMINFO="$(fake_meminfo 500000)" CLEANCORE_SUITE_MIN_AVAIL_MB=0 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 3 ]] && grep -q "no CleanCore worktree" <<<"$out"; then
+  ok "CONTROL: MIN_AVAIL_MB=0 disables the precondition on the very box that tripped it"
+else
+  bad "the memory precondition could not be switched off" "rc=$rc out=$out"
+fi
+
+# A WAITING RUN MUST NOT HOLD A SLOT. If it did, a memory shortage would become a slot shortage for
+# every peer -- including one that has room. Both slots must still be free while a run queues on
+# memory, which a plain flock -n can prove.
+# ON ITS OWN PREFIX. Cases 3-5 above leave live flock holders on $PREFIX for the whole run (they
+# sleep until cleanup), so probing the shared prefix here would measure THOSE and report a slot this
+# case never touched -- measured: 1 of 2 free, with the waiter holding nothing.
+MEMPREFIX="$TMP/memslot"
+( env "CLEANCORE_SUITE_LOCK_PREFIX=$MEMPREFIX" "CLEANCORE_SUITE_API=http://127.0.0.1:9" \
+    CLEANCORE_SUITE_POLL_S=1 CLEANCORE_SUITE_WAIT_MAX_S=8 CLEANCORE_SUITE_SLOTS=2 \
+    CLEANCORE_SUITE_MEMINFO="$(fake_meminfo 500000)" CLEANCORE_SUITE_MIN_AVAIL_MB=4096 \
+    bash "$RUN" no-such-agent-xyz >/dev/null 2>&1 ) &
+mem_waiter=$!
+HOLDERS+=("$mem_waiter")
+sleep 2
+free_slots=0
+for i in 1 2; do
+  ( exec 8>>"${MEMPREFIX}-${i}.lock"; flock -n 8 ) 2>/dev/null && free_slots=$((free_slots+1))
+done
+kill -9 "$mem_waiter" 2>/dev/null
+if [[ $free_slots -eq 2 ]]; then
+  ok "a run queueing on MEMORY holds no slot -- peers with room are not blocked"
+else
+  bad "a memory-blocked run was sitting on a slot" "free_slots=$free_slots of 2"
+fi
+
+# UNREADABLE MEMORY MUST FAIL OPEN, AND SAY SO. A guard that refused every run on a box whose
+# /proc/meminfo it cannot parse would stop every gate on that machine -- worse than the OOM it
+# prevents, which is at least loud. Silence would be the real defect, so the warning is asserted.
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       CLEANCORE_SUITE_MEMINFO="$TMP/no-such-meminfo" CLEANCORE_SUITE_MIN_AVAIL_MB=4096 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 3 ]] && grep -q "cannot read MemAvailable" <<<"$out" && grep -q "no CleanCore worktree" <<<"$out"; then
+  ok "unreadable meminfo -> runs anyway, and warns that it did"
+else
+  bad "an unreadable meminfo was silent, or blocked the run" "rc=$rc out=$out"
+fi
+
+# MemFree IS NOT THE FIELD. Measured on the real box in one instant: MemFree 1807 MB, MemAvailable
+# 15221 MB -- 14.7 GB of reclaimable page cache between them. A guard reading MemFree would refuse
+# nearly every run that fits comfortably, so this fixture pins which line is read.
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       CLEANCORE_SUITE_MEMINFO="$(fake_meminfo 9000000)" CLEANCORE_SUITE_MIN_AVAIL_MB=4096 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 3 ]] && grep -q "no CleanCore worktree" <<<"$out"; then
+  ok "reads MemAvailable, not MemFree (the fixture's MemFree is far below the floor)"
+else
+  bad "the guard appears to be reading MemFree" "rc=$rc out=$out"
+fi
+
 echo "cleancore-suite-run.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
