@@ -105,9 +105,13 @@ describe('ensureMainAgentIsolatedConfigDir', () => {
     expect(after.model).toBe('agent-only-model')
   })
 
-  // The Bash egress deny (BASH_EGRESS_DENY) is written into THIS file rather
-  // than the shared root, so the operator's own shell stays out of it while the
-  // main agent stays in. That only holds if a permissions block survives the
+  // NAMED FOR A CONTROL THAT IS NOT LIVE HERE (B-wave, card 42938a74): BASH_EGRESS_DENY does not
+  // exist in this fork -- the upstream egress-deny was deliberately excluded and continues on card
+  // f6db6978, where a measurement on the real binary showed the rule as written also refuses the
+  // fleet's own localhost calls. The PROPERTY this case asserts is not tied to it and still matters:
+  // an agent-scoped permissions block must be written into THIS file rather than the shared root,
+  // so the operator's own shell stays out of it while the main agent stays in. That only holds if
+  // a permissions block survives the
   // rewrite this function performs on every start -- and it survives only
   // because the shared file never mentions `permissions`. Asserted on the real
   // provisioner, not inferred from the merge code, so the guarantee the egress
