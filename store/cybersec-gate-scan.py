@@ -44,11 +44,13 @@ def is_review(c):
         return False
     content = c.get('content') or ''
     first = content.split('\n', 1)[0]
-    if first.strip().upper().startswith('REVIEW'):
-        return True
-    if author == 'mikrob':
-        return False
-    return 'REVIEW:' in content[:60].upper()
+    # Line-anchored only (Cybered finding, 2026-09-12, card 8b5559cf): the old fallback
+    # ('REVIEW:' anywhere in content[:60]) matched 'Draft-Review:' as a substring, and the
+    # offload-dispatch.sh convention (card 1338e68b) now puts that line on drafted cards routinely
+    # -- every one of them read as a false gate-REVIEW. A verdict word must open the comment (rule
+    # 4c), so there is no legitimate case this drops: the strict startswith('REVIEW') above already
+    # covers it.
+    return first.strip().upper().startswith('REVIEW')
 
 
 def is_cybersec_verdict(c):
