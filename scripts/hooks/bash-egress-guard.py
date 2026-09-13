@@ -108,7 +108,13 @@ LOG_PATH = REPO_ROOT / "store" / "bash-egress.log"
 
 # A word whose value this guard cannot know: $VAR, ${...}, $(...), `...`, and anything an analysis
 # error made unreadable. Its presence in a TARGET position is what fail-closed keys on.
-UNRESOLVED = "\x00?\x00"
+#
+# THE PLACEHOLDER MUST NOT CONTAIN A URL DELIMITER. It used to be "\x00?\x00", and the moment the
+# authority split started honouring `?` (the RFC 3986 fix below), that `?` cut the placeholder in
+# half: `curl "$(build-url)"` stopped being recognised as unresolvable and went from BLOCK to
+# allow. The two existing substitution cases in the selftest caught it; a fix that closes one hole
+# while opening another is the failure mode this guard's own history is made of.
+UNRESOLVED = "\x00SUBST\x00"
 
 # ---------------------------------------------------------------------------------------------
 # Step 0: heredoc bodies. FIRST, before anything looks for a command (verdict 5b).
@@ -470,29 +476,60 @@ _CURL_VALUE_FLAGS = {
     "-e", "--referer", "-u", "--user", "-K", "--config", "--url-query", "-w", "--write-out",
     "--max-time", "-m", "--connect-timeout", "--retry", "--retry-delay", "--retry-max-time",
     "--cert", "--key", "--cacert", "--capath", "--proxy-user", "--oauth2-bearer",
-    "--unix-socket", "--abstract-unix-socket", "--resolve", "--interface", "--dns-servers",
+    "--unix-socket", "--abstract-unix-socket", "--interface",
     "--output-dir", "--create-file-mode", "--expect100-timeout", "--limit-rate", "--range", "-r",
 }
 _CURL_TARGET_FLAGS = {"--url", "--proxy", "-x", "--socks5", "--socks5-hostname", "--socks4"}
-# `-K/--config` and `--resolve`/`--proxy*` are special: they can introduce a target this guard
-# cannot see (a config file holding URLs) or redirect it entirely (a proxy). The config case is
-# handled as UNRESOLVED below; the proxy case is treated as a target in its own right, because a
-# proxy IS the host the connection actually goes to.
-_CURL_OPAQUE_FLAGS = {"-K", "--config"}
+# THE ONE AXIS ALL THREE GATE FINDINGS SHARE (Cybersec, comment 2959 + msg 1724; QA, same round):
+# "the connection's actual destination differs from what the URL text says". Everything in this set
+# moves the destination somewhere the URL cannot show, so the URL stops being evidence and the
+# command is UNRESOLVED -- fail-closed, the same answer as a target hidden in a variable.
+#
+#   -K/--config       reads URLs from a file this guard cannot see
+#   --resolve         pins host:port to an arbitrary IP: `--resolve api.github.com:443:203.0.113.99`
+#                     keeps an allowlisted hostname in the URL while the TCP connection goes to
+#                     203.0.113.99. It used to sit in the "carries data" table, which consumed it
+#                     quietly -- worse than not knowing the flag, because it looked handled.
+#   --connect-to      the same redirection in a different spelling
+#   --dns-servers,    move name resolution itself, so the hostname no longer decides the peer.
+#   --doh-url         NOT measured in the corpus (neither is --connect-to); they are here because
+#                     they are the same axis, and a control that names two doors of four while the
+#                     documentation claims the room is sealed is the failure this card exists for.
+#
+# `--proxy`/`-x`/`--socks*` belong to the same axis but get a STRONGER answer: they are treated as
+# targets in their own right and judged against the allowlist, because a proxy IS the host the
+# connection goes to and it is named right there on the line.
+_CURL_OPAQUE_FLAGS = {"-K", "--config", "--resolve", "--connect-to", "--dns-servers", "--doh-url"}
 
 _WGET_VALUE_FLAGS = {
     "-O", "--output-document", "-o", "--output-file", "-P", "--directory-prefix",
     "--header", "--post-data", "--post-file", "--body-data", "--body-file", "--user",
     "--password", "--user-agent", "-U", "--referer", "--load-cookies", "--save-cookies",
     "-T", "--timeout", "-t", "--tries", "--limit-rate", "--ca-certificate", "--certificate",
-    "--private-key", "-e", "--execute",
+    "--private-key",
 }
 _WGET_TARGET_FLAGS = {"--input-file", "-i"}
-_WGET_OPAQUE_FLAGS = {"--input-file", "-i"}
+# Same axis as _CURL_OPAQUE_FLAGS. `--input-file` supplies URLs the guard cannot see; `-e/--execute`
+# injects a wgetrc directive, and `-e http_proxy=http://evil:8080` sends the whole transfer through
+# a host the URL never mentions. QA flagged this one as untried rather than broken; it is the same
+# defect as --resolve in wget's spelling, so it is closed in the same round instead of waiting for
+# someone to prove it separately.
+_WGET_OPAQUE_FLAGS = {"--input-file", "-i", "-e", "--execute"}
 
 _URL_RX = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
+# RFC 3986: the authority ends at the FIRST of `/`, `?` or `#`. Splitting on `/` alone was a
+# blocking Cybersec finding (card 854182c7, comment 2959) and it inverted the verdict, not merely
+# widened it: in `http://evil.example.org#@api.github.com/` the authority is `evil.example.org`
+# and everything after `#` is a fragment curl never even sends -- but the `/`-only split handed
+# `evil.example.org#@api.github.com` to the userinfo rsplit, which read the FRAGMENT as the host
+# and called it allowlisted. The `#@localhost/` spelling was worse: classified LOCAL, so in
+# log-only mode it left no trace at all. Reproduced on all six spellings before fixing.
+_AUTHORITY_END_RX = re.compile(r"[/?#]")
 # A bare operand curl would treat as a host: `curl localhost:3420/api/x`, `curl example.com`.
-_BARE_HOST_RX = re.compile(r"^(?:\[[0-9A-Fa-f:]+\]|[A-Za-z0-9_.\-]+)(?::\d+)?(?:/|$)")
+# Applied to the AUTHORITY, not to the whole word, for the same reason: anchoring the tail to
+# `(?:/|$)` meant `evil.example.org?@localhost` matched nothing and was skipped as "not a target
+# shape" -- a second way through the same gap, and a silent one.
+_BARE_HOST_RX = re.compile(r"^(?:\[[0-9A-Fa-f:]+\]|[A-Za-z0-9_.\-]+)(?::\d+)?$")
 
 LOCAL = "local"
 EXTERNAL = "external"
@@ -517,15 +554,15 @@ def _target_host(target):
     t = target.strip()
     if not t:
         return None, True
-    first_seg = t.split("/", 1)[0]
     if _URL_RX.match(t):
         rest = t.split("://", 1)[1]
-    elif UNRESOLVED in first_seg or _BARE_HOST_RX.match(t):
-        rest = t
     else:
-        return None, True  # not a target shape
-    hostpart = rest.split("/", 1)[0]
-    if "@" in hostpart:  # user:pass@host
+        authority = _AUTHORITY_END_RX.split(t, maxsplit=1)[0]
+        if not (UNRESOLVED in authority or _BARE_HOST_RX.match(authority)):
+            return None, True  # not a target shape
+        rest = t
+    hostpart = _AUTHORITY_END_RX.split(rest, maxsplit=1)[0]
+    if "@" in hostpart:  # user:pass@host -- and ONLY within the authority, never across a ?/#
         hostpart = hostpart.rsplit("@", 1)[1]
     if UNRESOLVED in hostpart:
         return None, False

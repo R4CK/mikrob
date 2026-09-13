@@ -189,6 +189,22 @@ describe('end-to-end through the real hook', () => {
     expect(verdict('curl -s https://api.github.com/repos/x/y').code).toBe(0)
   })
 
+  it('takes the host from the AUTHORITY, not from a query or fragment (comment 2959)', () => {
+    // Cybersec blocking finding. RFC 3986 ends the authority at the first of `/`, `?` or `#`;
+    // splitting on `/` alone let the userinfo rsplit reach into the fragment and take an
+    // allowlisted name from there, while curl connected to the host in front of it. The
+    // `#@localhost/` spelling was the worst of the set: classified LOCAL, so log-only mode would
+    // not even have recorded it.
+    expect(verdict('curl http://not-on-the-list.example#@api.github.com/').code).toBe(2)
+    expect(verdict('curl http://not-on-the-list.example?@api.github.com/').code).toBe(2)
+    expect(verdict('curl http://not-on-the-list.example#@localhost/').code).toBe(2)
+    expect(verdict('curl not-on-the-list.example?@localhost').code).toBe(2)
+    // ...and real userinfo inside the authority still resolves to the host after it, so the fix
+    // is a narrowing rather than a blanket refusal of `@`.
+    expect(verdict('curl -s http://user:pass@localhost:3420/x').code).toBe(0)
+    expect(verdict("curl -s 'http://localhost:3420/api/x?q=a#frag'").code).toBe(0)
+  })
+
   it('is interpreter-agnostic: the same target through python, node and /dev/tcp', () => {
     expect(verdict(`python3 -c "import urllib.request; urllib.request.urlopen('https://not-on-the-list.example')"`).code).toBe(2)
     expect(verdict(`node -e "fetch('https://not-on-the-list.example')"`).code).toBe(2)
