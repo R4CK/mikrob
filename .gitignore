@@ -66,6 +66,11 @@ Ingatlan/token*
 # plan-grilling on card 854182c7 required it to live in a versioned file rather than in the
 # hook's code, so a host grant is reviewable and revertible like any other change.
 !store/bash-egress-allowlist.json
+# Sanctioned vendored-skill deltas (card 3c73a420) -- a security DECISION record, not runtime
+# state: each entry says "this difference from the claimed upstream commit is known and accepted".
+# Unversioned it would be worse than absent, because a fresh checkout starts with no baseline and
+# the next --record blesses whatever is on disk at that moment, a tamper included.
+!store/vendored-skill-sanctioned.json
 !store/stitch-tools/fetch-pngs.mjs
 !store/stitch-tools/package.json
 # Gate-sweep scanners are operational scripts (named, not a blanket *.py rule,
