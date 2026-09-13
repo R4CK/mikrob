@@ -5,7 +5,9 @@
 // .kanban-snapshot-cards.json.tmp (the FULL /api/kanban dump). Both read 600 on disk, which is why
 // nothing noticed: a `>` redirect PRESERVES the mode of a file that already exists, and these had
 // first been created by a hand-run under the fleet's 0077 umask. Delete either and let the
-// 15-minute OS cron recreate it -- cron runs umask 022 and the new file is silently 644.
+// 15-minute OS cron recreate it -- the new file is silently group-readable. (Card 76c3a1fb
+// corrected the number: measured on this box the umask is 002, not 022, so the recreated file is
+// 664 -- group-WRITABLE -- not 644. Only the number was wrong; the argument holds.)
 //
 // MEASURED END-TO-END, not argued (2026-09-11, against the live dashboard, clean slate, umask 022):
 //   unfixed script -> KANBAN-SNAPSHOT.md at 644   (run in a 0700 sandbox, nothing exposed)

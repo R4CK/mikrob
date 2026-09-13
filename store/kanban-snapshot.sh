@@ -21,12 +21,28 @@ set -euo pipefail
 #
 # WHY IT LOOKED FINE AND WAS NOT: a `>` redirect keeps the mode of an ALREADY EXISTING file, so both
 # files read 600 today purely because they were first created by a hand-run with umask 077. Delete
-# either one and let the 15-minute OS cron recreate it -- cron runs with umask 022 and the new file
-# is silently 644. Latent, not exploited, and invisible to any check that only looks at what is
-# currently on disk.
+# either one and let the 15-minute OS cron recreate it -- the new file is silently group-readable.
+# (Card 76c3a1fb corrected the number this line used to give: measured on this box the umask is 002,
+# not 022, so a recreated file is 664 -- group-WRITABLE -- rather than 644. The argument is
+# unchanged; only the number was wrong.) Latent, not exploited, and invisible to any check that only
+# looks at what is currently on disk.
 umask 077
 
 STORE=/home/neon/marveen/store
+# THE SCHEDULER'S REDIRECT LOG IS NOT COVERED BY THE umask ABOVE (card 76c3a1fb, Cybersec's finding
+# under 90e4cbdf). The scheduled entry is `... kanban-snapshot.sh >> kanban-snapshot-cron.log 2>&1`, so that file is created by
+# the SHELL THE SCHEDULER SPAWNS, before this script -- and its umask -- exists at all. A umask here
+# is structurally unable to reach it, which is why the sibling fix on this script's OWN outputs left
+# it open. Measured on the live box: both such logs stood at 664, i.e. group-WRITABLE. Reproduced
+# locally in exactly the scheduled shape -- outer shell at umask 002 opening the redirect, inner
+# shell setting umask 077 afterwards -- which yields 664 without this line and 600 with it. 664 also
+# fixes the umask at 002, not the 022 the sibling comments used to assert (that would give 644);
+# 002 is what pam_umask produces here, since USERGROUPS_ENAB is on and the user's group matches.
+# So tighten the inode BY NAME on every run. This hardcodes the redirect target: if the scheduled
+# line changes, this must change with it, and cron-log-modes.test.ts derives the expected name from
+# the script's own filename so the two cannot drift apart silently.
+# `|| true` because a hand-run has no redirect and so no such file, and `set -e` is on.
+chmod 600 "$STORE/kanban-snapshot-cron.log" 2>/dev/null || true
 INSTALL_DIR="$(cd "$STORE/.." && pwd)"
 PORT="$(sed -n 's/^WEB_PORT=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
 PORT="${PORT:-3420}"
