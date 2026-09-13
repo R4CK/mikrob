@@ -24,9 +24,8 @@ vi.mock('../db.js', () => ({
 }))
 vi.mock('../logger.js', () => ({ logger: { warn: () => {}, info: () => {} } }))
 
-const { draftReviewGuardVerdict, newestDraftAt, hasDraftReview, DRAFT_REVIEW_RX } = await import(
-  '../web/kanban-draft-review-guard.js'
-)
+const { draftReviewGuardVerdict, newestDraftAt, hasDraftReview, DRAFT_REVIEW_RX } =
+  await import('../web/kanban-draft-review-guard.js')
 
 // The real shape store/offload-dispatch.sh posts (measured from the live board).
 const DRAFT_BODY =
@@ -48,14 +47,29 @@ beforeEach(() => {
 
 describe('DRAFT_REVIEW_RX -- the marker is line-anchored, like Gate-SHA', () => {
   it('accepts every verdict in both languages, and both accent spellings', () => {
-    for (const v of ['ELFOGADVA', 'ELUTASITVA', 'ELUTASÍTVA', 'RESZBEN', 'RÉSZBEN', 'ACCEPTED', 'REJECTED', 'PARTIAL']) {
+    for (const v of [
+      'ELFOGADVA',
+      'ELUTASITVA',
+      'ELUTASÍTVA',
+      'RESZBEN',
+      'RÉSZBEN',
+      // Card 504ec76f: the draft was CORRECT but NOT NEEDED -- the outcome the first three had no
+      // honest home for, and the one that would otherwise be miscounted as a model quality failure.
+      'FELESLEGES',
+      'ACCEPTED',
+      'REJECTED',
+      'PARTIAL',
+      'REDUNDANT',
+    ]) {
       expect(DRAFT_REVIEW_RX.test(`Draft-Review: ${v}`), v).toBe(true)
     }
   })
 
   it('THE POINT OF THE ANCHOR: quoting the rule mid-sentence does NOT satisfy it', () => {
     // A comment must be able to TALK about the marker without thereby satisfying the guard.
-    expect(DRAFT_REVIEW_RX.test('Ne felejtsd el a Draft-Review: ELFOGADVA sort kitenni!')).toBe(false)
+    expect(DRAFT_REVIEW_RX.test('Ne felejtsd el a Draft-Review: ELFOGADVA sort kitenni!')).toBe(
+      false
+    )
   })
 
   it('leading whitespace is fine (a quoted/indented comment block still counts)', () => {
@@ -69,6 +83,10 @@ describe('DRAFT_REVIEW_RX -- the marker is line-anchored, like Gate-SHA', () => 
 
   it('MUTATION-PROOF: a longer word starting with a verdict does not count (identifier boundary)', () => {
     expect(DRAFT_REVIEW_RX.test('Draft-Review: ACCEPTEDISH')).toBe(false)
+    // The same boundary on the value added by card 504ec76f: widening the vocabulary must not
+    // widen what COUNTS as a verdict.
+    expect(DRAFT_REVIEW_RX.test('Draft-Review: FELESLEGESEN')).toBe(false)
+    expect(DRAFT_REVIEW_RX.test('Draft-Review: REDUNDANTLY')).toBe(false)
   })
 })
 
@@ -121,9 +139,11 @@ describe('draftReviewGuardVerdict', () => {
     expect(draftReviewGuardVerdict('c1', 'waiting', false, 'backend2').blocked).toBe(false)
   })
 
-  it('a REJECTION is a completed handoff too -- all three verdicts pass', () => {
+  it('a REJECTION is a completed handoff too -- all four verdicts pass', () => {
     // Demanding "accepted" would push agents to rubber-stamp bad drafts, inverting the point.
-    for (const v of ['ELFOGADVA', 'RESZBEN', 'ELUTASITVA']) {
+    // FELESLEGES (card 504ec76f) is a completed handoff for the same reason: the agent read the
+    // draft and said what happened to it. What it did NOT do is call a correct draft wrong.
+    for (const v of ['ELFOGADVA', 'RESZBEN', 'ELUTASITVA', 'FELESLEGES']) {
       comments = [draft(10), review(20, 'backend2', v)]
       expect(draftReviewGuardVerdict('c1', 'waiting', false, 'backend2').blocked, v).toBe(false)
     }

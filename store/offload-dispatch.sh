@@ -282,7 +282,7 @@ nudge_leaf_owner() {
 
   case "$kind" in
     draft)
-      text="Draft erkezett a #$leaf_id kartyara (helyi 7B, offload). Nezd meg, MIELOTT magad megirod -- a draft akkor sporol tokent, ha munka kozben hasznalod, nem ha a vegen biralod el. Amikor vegeztel vele, tegyel a kartyara egy sort (sor elejen): Draft-Review: ELFOGADVA / RESZBEN / ELUTASITVA (card 1338e68b)." ;;
+      text="Draft erkezett a #$leaf_id kartyara (helyi 7B, offload). Nezd meg, MIELOTT magad megirod -- a draft akkor sporol tokent, ha munka kozben hasznalod, nem ha a vegen biralod el. Amikor vegeztel vele, tegyel a kartyara egy sort (sor elejen): Draft-Review: ELFOGADVA / RESZBEN / ELUTASITVA / FELESLEGES (card 1338e68b; a FELESLEGES azt jelenti, hogy a draft JO volt, csak nem volt ra szukseg -- card 504ec76f)." ;;
     exhausted)
       text="A helyi modell KIMERULT a #$leaf_id kartyan (3 sikertelen tranziens kiserlet), draft NEM fog erkezni. A kartya nincs blokkolva: vidd tovabb a szokasos online uton." ;;
     *) return 0 ;;
@@ -367,7 +367,7 @@ graph_args_for() {
 
 post_draft_comment() {
   local leaf_id="$1" leaf_title="$2" content="$3"
-  local body="[LOCAL-LLM DRAFT | dispatch-offload] Mechanikus reszek helyi (7B) draftja. DRAFT-ONLY: MikroB + a gate ujra-ellenorzi, semmi nem megy elesbe vakon. Az ugynok reviewlje es integralja, ne irja ujra Claude-dal. AMIKOR VEGEZTEL VELE, tegyel a kartyara egy sort (sor elejen): 'Draft-Review: ELFOGADVA' / 'RESZBEN' / 'ELUTASITVA' -- e nelkul a kartya nem mehet waiting-be (card 1338e68b). Mindharom elfogadhato; a lenyeg, hogy a draft ne menjen at elbiralatlanul.
+  local body="[LOCAL-LLM DRAFT | dispatch-offload] Mechanikus reszek helyi (7B) draftja. DRAFT-ONLY: MikroB + a gate ujra-ellenorzi, semmi nem megy elesbe vakon. Az ugynok reviewlje es integralja, ne irja ujra Claude-dal. AMIKOR VEGEZTEL VELE, tegyel a kartyara egy sort (sor elejen): 'Draft-Review: ELFOGADVA' / 'RESZBEN' / 'ELUTASITVA' / 'FELESLEGES' -- e nelkul a kartya nem mehet waiting-be (card 1338e68b). Mind a negy elfogadhato; a lenyeg, hogy a draft ne menjen at elbiralatlanul. A FELESLEGES arra valo, amikor a draft JO volt, de nem vettel at belole semmit (tipikusan mert a javitas mar kesz volt, mire megerkezett) -- ezt ELUTASITVA-nak konyvelni azt allitana, hogy a helyi modell rosszul dolgozott (card 504ec76f).
 
 #### $leaf_title
 $content

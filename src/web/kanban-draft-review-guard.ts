@@ -45,9 +45,22 @@ import { GENERATED_COMMENT_AUTHORS, type LandedVerdict } from './kanban-landed-g
  * the fact the way the gate-verdict scanner had to be (card 171422d2, 62 measured synonyms). Both
  * languages are accepted because this fleet writes both, and both accent spellings because its
  * Hungarian is routinely ASCII-degraded.
+ *
+ * THE FOURTH VALUE, and why widening a deliberately-closed vocabulary was the right call anyway
+ * (card 504ec76f, found by using this guard). Three verdicts left one real outcome with no honest
+ * home: the draft was CORRECT but NOT NEEDED. Live case f3757cc7 -- the local model diagnosed the
+ * problem accurately, but the agent had reported the finding itself and the fix was already written
+ * by the time the draft arrived. Nothing was taken from it, and not because anything was wrong with
+ * it. Forced into ELUTASITVA ("it was wrong"), that reads as a quality failure of the local model.
+ *
+ * This is a MEASUREMENT problem, not a wording preference. The whole purpose of this marker is to
+ * tell us whether the offload is worth its cost, and a fleet that produces many correct-but-late
+ * drafts -- the expected shape on any card where the agent found the defect itself -- would report
+ * as a model that writes bad code. That is precisely the statistic a future decision about local
+ * offload would be made from.
  */
 export const DRAFT_REVIEW_RX =
-  /^[ \t]*Draft-Review[ \t]*:[ \t]*(ELFOGADVA|ELUTAS[IÍ]TVA|R[EÉ]SZBEN|ACCEPTED|REJECTED|PARTIAL)\b/im
+  /^[ \t]*Draft-Review[ \t]*:[ \t]*(ELFOGADVA|ELUTAS[IÍ]TVA|R[EÉ]SZBEN|FELESLEGES|ACCEPTED|REJECTED|PARTIAL|REDUNDANT)\b/im
 
 /** A draft comment is one posted by the offload writer itself (`store/offload-dispatch.sh`,
  *  DRAFT_AUTHOR="local-llm"). */
@@ -92,7 +105,7 @@ export function hasDraftReview(comments: readonly Comment[], newestDraft: number
     (c) =>
       !GENERATED_COMMENT_AUTHORS.has((c.author ?? '').toLowerCase()) &&
       (c.created_at ?? 0) >= newestDraft &&
-      DRAFT_REVIEW_RX.test(c.content ?? ''),
+      DRAFT_REVIEW_RX.test(c.content ?? '')
   )
 }
 
@@ -104,7 +117,7 @@ export function draftReviewGuardVerdict(
   cardId: string,
   nextStatus: unknown,
   force: boolean,
-  actor?: string,
+  actor?: string
 ): LandedVerdict {
   if (nextStatus !== 'waiting') return { blocked: false }
   if (isForceActor(force, actor)) return { blocked: false }
@@ -139,8 +152,10 @@ export function draftReviewGuardVerdict(
     message:
       `Ez a kártya nem adható át gate-re: helyi LLM draft (\`local-llm\` komment) van rajta, amit még ` +
       `senki nem bírált el kimondottan. Írj egy kommentet, aminek egy SORA így kezdődik: ` +
-      `"Draft-Review: ELFOGADVA" (beépítetted), "Draft-Review: RESZBEN" (egy részét használtad) vagy ` +
-      `"Draft-Review: ELUTASITVA" (elolvastad, nem volt jó, magad írtad meg). Mindhárom elfogadható -- ` +
+      `"Draft-Review: ELFOGADVA" (beépítetted), "Draft-Review: RESZBEN" (egy részét használtad), ` +
+      `"Draft-Review: ELUTASITVA" (elolvastad, nem volt jó, magad írtad meg) vagy ` +
+      `"Draft-Review: FELESLEGES" (rendben volt, de nem volt rá szükség -- például mert a javítás már ` +
+      `készen állt, mire megérkezett). Mind a négy elfogadható -- ` +
       `a lényeg, hogy a draft ne menjen át elbírálatlanul. A jelzésnek a legfrissebb draftnál ÚJABBNAK ` +
       `kell lennie, és nem írhatja a \`local-llm\` maga. Ha tudatosan lépsz át rajta, MikroB force: true ` +
       `értékkel megteheti.`,
