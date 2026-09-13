@@ -36,6 +36,8 @@ function switchPage(pageId) {
   if (pageId !== 'kanban') stopKanbanRefresh()
   // Overview's live utilization spectrum runs its own poll + rAF scroll loop; stop both on leave.
   if (pageId !== 'overview') stopOvwSpectrum()
+  // Local-LLM feladat-elosztás swimlane: same start/stop-on-leave pattern (card fix, 2026-09-11).
+  if (pageId !== 'overview') stopOvwLlmDist()
   if (pageId === 'overview') loadOverview()
   if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
   if (pageId === 'tasks') loadSchedules()

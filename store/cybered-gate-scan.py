@@ -41,8 +41,12 @@ def is_gate_review(cm):
     # e33af7c4 (weekly model-ladder) from this sweep entirely. So he is admitted through the STRICT
     # opener only: the first line must literally start with REVIEW, never the loose in-first-60-chars
     # fallback (which his "-> waiting+REVIEW -> QA" dispatch lines would trip).
-    if author == 'mikrob': return first_line.startswith('REVIEW')
-    return first_line.startswith('REVIEW') or 'REVIEW:' in content[:60].upper()
+    # Line-anchored only for everyone, not just mikrob (Cybered finding, 2026-09-12, card 8b5559cf):
+    # the loose fallback ('REVIEW:' anywhere in content[:60]) matched 'Draft-Review:' as a substring,
+    # and the offload-dispatch.sh convention (card 1338e68b) now puts that line on drafted cards
+    # routinely -- every one of them read as a false gate-REVIEW. No legitimate case is dropped: a
+    # verdict word must open the comment (rule 4c), which the strict check already covers.
+    return first_line.startswith('REVIEW')
 
 BLOCKED_MARKERS = ('BLOKKOLVA', 'KOTOTT FELTETEL', 'kotott-blokk', 'kötött-blokk',
                    'PETI DONTES', 'HOLD', 'ne churn-old', 'gate consolidated',

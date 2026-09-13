@@ -23,7 +23,9 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_CORE     = readFileSync(join(__dirname, '../../web/app.js'),          'utf-8')
 const APP_OVERVIEW = readFileSync(join(__dirname, '../../web/app-overview.js'), 'utf-8')
-const APP  = APP_CORE + '\n' + APP_OVERVIEW
+// switchPage (incl. stopOvwLlmDist call site) lives in app-page-switch.js.
+const APP_PAGE_SWITCH = readFileSync(join(__dirname, '../../web/app-page-switch.js'), 'utf-8')
+const APP  = APP_CORE + '\n' + APP_OVERVIEW + '\n' + APP_PAGE_SWITCH
 const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS  = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 const HU   = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
@@ -89,9 +91,21 @@ describe('local-llm-distribution-widget: loadLlmDistWidget function', () => {
     expect(occurrences).toBeGreaterThanOrEqual(2)
   })
 
-  it('is called from loadOverview', () => {
+  it('is called from loadOverview via startOvwLlmDist (own poll timer, card fix 2026-09-11)', () => {
     const loadBody = fnBody(APP, 'async function loadOverview(')
-    expect(loadBody).toContain('loadLlmDistWidget()')
+    expect(loadBody).toContain('startOvwLlmDist()')
+    const startBody = fnBody(APP, 'function startOvwLlmDist()')
+    expect(startBody).toContain('loadLlmDistWidget()')
+  })
+
+  it('stopOvwLlmDist tears down the poll timer', () => {
+    const body = fnBody(APP, 'function stopOvwLlmDist()')
+    expect(body).toContain('clearInterval(_ovwLlmDistPollTimer)')
+  })
+
+  it('is stopped on page-leave in switchPage, same pattern as stopOvwSpectrum', () => {
+    const idx = APP.indexOf("if (pageId !== 'overview') stopOvwLlmDist()")
+    expect(idx).toBeGreaterThan(-1)
   })
 })
 

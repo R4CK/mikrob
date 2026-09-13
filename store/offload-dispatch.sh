@@ -469,6 +469,31 @@ while IFS='|' read -r b64id b64title b64desc b64assignee b64tags b64project b64c
   lproject="$(printf '%s' "$b64project" | base64 -d)"
   lctx="$(printf '%s' "$b64ctx" | base64 -d)"
   lassignee_raw="$(printf '%s' "$b64assignee_raw" | base64 -d)"
+  # RECONSTRUCTION-BOILERPLATE FILTER (backend2 finding, 8b5559cf, 2026-09-12): a 2026-09-08 kanban
+  # DB-kiuerueles utani rekonstrukcio ~34+ kartyan olyan leirast hagyott, ami csak a cim ismetlese +
+  # egy [REKONSTRUKCIO-JAVITAS]/[DEDUP-PREFILTER] boilerplate blokk, ONALLO TORZSSZOVEG NELKUL. Ez a
+  # helyi 7B-t felrevitte: a "rekonstrukcio"/"javitas" szo sokszorosa miatt a szoveg rendbetetelet
+  # oldotta meg, nem a kartya tenyleges (a cimben elo) feladatat. Ha a leirasbol a boilerplate
+  # kivetele utan nem marad erdemi torzsszoveg, a promptba CSAK a cim megy.
+  ldesc="$(LTITLE="$ltitle" LDESC="$ldesc" python3 -c '
+import os, re
+title = os.environ.get("LTITLE", "")
+desc = os.environ.get("LDESC", "")
+body = desc
+lines = body.splitlines()
+# [NN%] progress markers drift between title and a stale copy left in the description by the
+# 2026-09-08 reconstruction -- normalise both sides away before comparing the rest of the line.
+norm = lambda s: re.sub(r"\[\d+%\]", "", s).strip().lower()
+if lines and norm(lines[0]) == norm(title):
+    body = "\n".join(lines[1:])
+body = re.sub(r"\[REKONSTRUKCIO[^\]]*\].*?(?:\n\n|\Z)", "", body, flags=re.IGNORECASE | re.DOTALL)
+body = re.sub(r"\[DEDUP-PREFILTER\].*?(?:\n\n|\Z)", "", body, flags=re.IGNORECASE | re.DOTALL)
+body = re.sub(r"^--\s*Log-alap[uú] rekonstrukci[oó].*$", "", body, flags=re.IGNORECASE | re.MULTILINE)
+if len(body.strip()) < 30:
+    print("")
+else:
+    print(desc)
+')"
   attempted=$(( attempted + 1 ))
   if try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx" "$lassignee_raw"; then
     drafted=$(( drafted + 1 ))

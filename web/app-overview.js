@@ -27,7 +27,7 @@ async function loadOverview() {
     void loadModelTierConfig()
     void loadLocalLlmInfo()
     void loadCostEstimatesWidget()
-    void loadLlmDistWidget()
+    startOvwLlmDist()
     startOvwSpectrum()
     const banner = document.getElementById('updateBanner')
     if (banner) {
@@ -646,6 +646,12 @@ let ovwLlmDistTooltipEl = null
 // "why this model" row; null when the endpoint is absent or failed -- the row is then omitted, never
 // guessed.
 let ovwLlmDistRouting = null
+// Peti 2026-09-11 (Telegram screenshot): the swimlane only fetched on page-enter and on manual
+// range-slider change -- unlike the spectrum panel above it, it had no poll of its own, so the
+// view silently froze at whatever time the operator last opened the Overview page. Same
+// start/stop-on-page-leave pattern as startOvwSpectrum/stopOvwSpectrum.
+const OVW_LLMDIST_POLL_MS = 15000
+let _ovwLlmDistPollTimer = null
 
 /** Card e5fc1fb4: a lane label click opens the Local LLM page on that model's row. */
 function ovwLlmDistOpenModel(name) {
@@ -965,6 +971,19 @@ function initLlmDistRange() {
     void loadLlmDistWidget()
   })
   el.dataset.wired = '1'
+}
+
+function stopOvwLlmDist() {
+  if (_ovwLlmDistPollTimer) { clearInterval(_ovwLlmDistPollTimer); _ovwLlmDistPollTimer = null }
+}
+
+function startOvwLlmDist() {
+  stopOvwLlmDist()
+  void loadLlmDistWidget()
+  _ovwLlmDistPollTimer = setInterval(() => {
+    if (document.getElementById('overviewPage').hidden) { stopOvwLlmDist(); return }
+    void loadLlmDistWidget()
+  }, OVW_LLMDIST_POLL_MS)
 }
 
 async function loadLlmDistWidget() {
