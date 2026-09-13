@@ -12935,3 +12935,46 @@ javítás után ez már nem termel küszöb feletti találatot, ezért nem nyúl
 **Ki döntött:** backend2 (mérés és javítás), a lelet backend3-é (aeda9f15 self-advance közben).
 **Hivatkozás:** kártya dfd0e8b2; `store/dedup-prefilter-check.sh`,
 `store/dedup-prefilter-check.selftest.sh`.
+
+
+## 2026-09-13 -- A vendorolt skillek provenance-jegyzetét eddig semmi nem ellenőrizte
+
+**Döntés:** a `store/vendored-skill-integrity.py` kerül be az ellenőrzés helyére, szentesített
+alapvonallal; a vendorolt skillek `type=code` besorolása VÁLTOZATLAN marad, átminősítés `type=text`-re
+nem történik.
+
+**Miért:** minden vendorolt könyvtár `VENDORED.md`-je kimondja, hogy „do not edit here", és megnevez egy
+upstream commitot. Ezt az állítást soha senki nem vetette össze a tényleges tartalommal: a
+`VENDORED.md`-re hivatkozó egyetlen fájl a `vendor-skill.sh` volt, vagyis a KIÍRÓ. Nem volt olvasó.
+A regiszter supply-chain kontrollja így egyirányú volt: az upstream ajtót őrizte, a lokálisat nem.
+
+**Amit a mérés adott:** 31 vendorolt könyvtár, 13 egyezik, 18 eltér, 0 ellenőrizhetetlen. Mind a 18
+eltérés egyenként átnézve és ártalmatlan (dokumentált kizárások, generált bytecode, szándékos
+flotta-adaptációk). Idegen kéz nyoma NINCS. A tényleges hiányosság nem egy megtörtént manipuláció,
+hanem hogy egy megtörtént manipuláció megkülönböztethetetlen lett volna a 18 szentesítettől.
+
+**Két hibát az építés közben fogtunk el, mindkettő tesztben rögzítve:**
+1. A `git status --porcelain` első két oszlopa adat, nem igazítás; egy `.strip()` felette a LEGELSŐ
+   törölt fájlt láthatatlanná tette (10 helyett 9), és a path-ból is levágott egy karaktert. Az
+   önteszt ezért a path-okra állít, nem a darabszámra: egy darabszám-állítást kielégít egy olyan
+   szűrő is, ami a megcsonkított sort újra beengedi -- pontosan ez történt az első javításnál.
+2. Az alapvonal eleinte ÚTVONAL szerint szentesített, tehát a PROXYT rögzítette („ez a fájl eltér"),
+   nem az EREDMÉNYT („mire tér el"). Következmény: egy egyszer már szentesített `SKILL.md`-be
+   utólag beszúrt sor zölden ment át az ÉLES flottán. A kulcs azóta tartalom-hasht hordoz. Ez a
+   guard saját alapító esete volt, és csak azért derült ki, mert lefuttattuk rá.
+
+**Miért NEM lesz `type=text` átminősítés:** a `vendor-skill.sh` fejléce maga mondja ki, hogy a skill
+ügynököket VEZÉRLŐ utasítás, tehát supply-chain felület akkor is, ha „csak szöveg". Megmérve: 22
+vendorolt skillből 16 nulla futtatható fájlt szállít, vagyis egy „szállít-e kódot" teszt 16 skillt
+engedne szabad fast-forwardra -- ezzel egy upstream szerző review nélkül írhatná át, mit csinálnak a
+flotta ügynökei. A `type=text` kizárólag a soha be nem töltött cherry-pick index-repókra helyes.
+
+**Nyitva hagyva, MikroB/Peti döntése:** a globális `caveman` és `unlazy` skill teljes git munkafa
+(`.git` jelen, a caveman `origin/main`-t követi). Ebből következően egy `git restore .` visszaállítja
+Peti 10 kizárt fájlját (köztük 6 `SKILL.md`-t), egy `git pull` pedig review nélkül alkalmazza az
+upstreamet egy flotta-szintű skillre. Ma egyetlen automatizmus sem futtat ott git-et (megmérve), ezért
+ez hiányzó kontroll, nem folyamatban lévő incidens -- de a `.git` eltávolítása külön kártyát ér.
+
+**Ki döntött:** Cybersec (mérés, eszköz, verdikt-javaslat).
+**Hivatkozás:** kártya 3c73a420; `store/vendored-skill-integrity.py`,
+`store/vendored-skill-sanctioned.json`.

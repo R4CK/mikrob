@@ -62,6 +62,11 @@ Ingatlan/token*
 # so it existed only in this one worktree (found while resuming the load-brake phase 19f3bbb5,
 # card ced63f7f).
 !store/load-guard-config.json
+# Sanctioned vendored-skill deltas (card 3c73a420) -- a security DECISION record, not runtime
+# state: each entry says "this difference from the claimed upstream commit is known and accepted".
+# Unversioned it would be worse than absent, because a fresh checkout starts with no baseline and
+# the next --record blesses whatever is on disk at that moment, a tamper included.
+!store/vendored-skill-sanctioned.json
 !store/stitch-tools/fetch-pngs.mjs
 !store/stitch-tools/package.json
 # Gate-sweep scanners are operational scripts (named, not a blanket *.py rule,
