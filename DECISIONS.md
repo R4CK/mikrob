@@ -12849,3 +12849,38 @@ stripping it from the dispatcher's owner notice turns the notice case red. One m
 did NOT fail: removing it from the notice's slash-list while leaving it in that line's parenthetical
 gloss. That is correct -- the assertion is that an agent reading the notice learns the value exists,
 and the gloss says so.
+
+## 2026-09-13 -- 8d5f2ec4 -- The card reference keeps the hex, because the seq is useless to the agent reading it
+
+**The card's diagnosis was wrong, and the measurement says where.** It read: "the offload nudge
+writes `kanban_comments.id` with a card label". The nudge is innocent. `store/offload-dispatch.sh`
+interpolates `$leaf_id`, and that variable holds the hex card id at that point -- the same value the
+draft comment is POSTed with, and the same value the dispatcher's own log line prints
+(`leaf 504ec76f -> posted local draft`). The number is not a comment id either; it only looked like
+one because a real `kanban_comments.id` happened to sit in the same range.
+
+**Where it actually happens.** `POST /api/messages` runs `normalizeKanbanRefs`, which rewrites
+`#<hex8>` to `#<seq>` before persisting. Proven by probe rather than by reading: posting a message
+containing `#48b2ab7c` stored `#1840`, and `48b2ab7c` is rowid 1840 in `kanban_cards`.
+
+**Why it is a defect at all, given the rewrite is deliberate.** It has two audiences. Peti reads the
+dashboard and wants `#1840`; the CLAUDE.md rule "hivatkozz #seq-vel, ne UUID-vel" is sound and stays.
+An AGENT has no use for the seq: `/api/kanban/<hex>` is the only address the API takes, and a bare
+`#1840` is indistinguishable from a comment id. Measured cost on 2026-09-13: two agents went looking
+for the wrong thing -- backend2 for `#1751` (a three-day-old CYBERSEC GO on a closed card) and MikroB
+for `#1716`.
+
+**Decision: `#<seq> (<hex8>)`, in the shared normaliser, not a patch to the offload nudge.** The harm
+belongs to every inter-agent message, not to one sender -- fixing only the nudge would leave the
+class open and repeat the reactive pattern this fleet keeps paying for. The output shape is the one
+this file already documented as the explicit-disambiguation pattern, so it round-trips: `#1840` is
+digits-only and `(48b2ab7c)` has no `#`, and an idempotency test pins that, because content flows
+through this on more than one path.
+
+**Blast radius, measured before editing** (rule 10): 3 importers, 3 callers. All four neighbouring
+suites green afterwards (67 tests). Mutation-checked: reverting to the bare seq turns 4 cases red,
+including the founding case pinned verbatim from the nudge's own string.
+
+**Not yet live.** The landing rebuilds `dist/` but does not restart services, so the running
+dashboard keeps the old behaviour until `./update.sh`. Said out loud because a synced repo file is
+not an installed host file.
