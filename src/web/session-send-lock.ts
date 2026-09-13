@@ -18,17 +18,38 @@
 // clear+re-inject. The dashboard singleton (O_EXCL pidfile, index.ts) is what
 // makes an in-process mutex sufficient FOR THOSE; no file lock is needed there.
 //
-// STILL UNGUARDED (in-process writers that hit the pane with a direct tmux
-// send-keys and do NOT go through the lock -- tracked as PANEWRITERS805):
-// channel-mcp-reconnect.ts, channel-plugin-unlock.ts, reauth-healer.ts,
-// agent-worker.ts's /clear, routes/agent-terminal.ts, and sendPromptToSession's
-// OWN three modal dismissals (dismissSurveyModal / dismissResumeSummary /
-// dismissModelConsent), which run BEFORE the lock is taken. Also NOT covered:
+// STILL UNGUARDED -- RE-MEASURED 2026-09-13 (card 1d421873), because this list had gone stale in
+// the dangerous direction: it named writers as unguarded that have since been brought under the
+// lane, and a reader trusting it would re-fix work already done or mis-scope a security review.
+// What the tree actually says today, with the line evidence:
+//   COVERED NOW (was listed here, no longer true):
+//     channel-mcp-reconnect.ts  -- lane taken at attemptChannelMcpReconnect, released after the
+//                                  last dismissMcpMenu; every send-keys in that span is inside it.
+//     channel-plugin-unlock.ts  -- lane taken in runUnlockProbe before sendUnlockKeystrokes.
+//     agent-worker.ts's /clear  -- clearWorkerContext runs INSIDE withSessionSendLock.
+//     reauth-healer.ts          -- acquires fail-closed and logs the skip instead of writing.
+//     scheduleIdentitySetup     -- the identity /rename, IDENTLANE910 (see below).
+//   STILL UNGUARDED, deliberately or otherwise:
+//     routes/agent-terminal.ts  -- operator keystrokes from the dashboard terminal. A human at a
+//                                  keyboard is not a competing automated writer; out of scope.
+//     agent-worker.ts's selfHealWorkerOnce Escape -- NOT verified either way by this pass. Said
+//                                  out loud rather than assumed: an unchecked writer listed as
+//                                  covered is exactly the failure this block just had.
+// Also NOT covered:
 // the channel plugin's own in-band delivery -- a separate bun poller process
 // that injects channel text through the plugin runtime and never calls
 // sendPromptToSession, so no in-process lock can reach it (a cross-process file
 // lock would be a separate change). A reader must not assume the pane is fully
 // serialized: it is serialized for the two acquirers above, no more.
+//
+// IDENTLANE910 (card 1d421873). scheduleIdentitySetup's `/rename` was the writer a security review
+// named explicitly: it typed into the pane with a bare runTmux(send-keys) on a fire-and-forget
+// timer, and upstream measured it splicing into the MIDDLE of a chunk-pasted prompt. It is under
+// the lane now -- but the fix arrived as upstream db4e4723 + ad76037f and landed here in merge
+// b92a5b66 on 2026-09-12, with nothing in this fork's suite asserting it. A fix that arrives in a
+// merge can leave in one, so identity-rename-under-send-lane.test.ts now pins the behaviour:
+// nothing is written while the lane is held, the rename waits its turn rather than skipping, and a
+// positive control proves a broken acquire cannot pass as "safely deferred".
 //
 // CRON-SHELL WRITERS (card 7560bb6a). A whole class no in-process lock can ever
 // reach, because they are separate processes started by cron. This is not
