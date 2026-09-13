@@ -156,6 +156,10 @@ const OK_SHAPES: readonly RegExp[] = [
   // shape as the selftest: PASS entry above, different final word, and the same requirement of at
   // least one `ok` line before it.
   /^\s*ok\s+\S[\s\S]*\ncontrols: PASS$/m,
+  // vendored-skill-integrity style: `selftest: N checks, 0 failed`. Same family as the
+  // `N passed, 0 failed` entry above, different noun. The captured number keeps the
+  // non-vacuous guarantee: `0 checks` does not match.
+  /selftest: ([1-9]\d*) checks, 0 failed/,
 ]
 
 describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b)', () => {
