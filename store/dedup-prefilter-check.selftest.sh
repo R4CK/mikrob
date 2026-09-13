@@ -44,9 +44,9 @@ seed() {  # $1 = python snippet adding rows
 import sqlite3, sys
 db, BLOCK = sys.argv[1], sys.argv[2]
 c = sqlite3.connect(db)
-c.execute("CREATE TABLE kanban_cards (id TEXT PRIMARY KEY, title TEXT, description TEXT, status TEXT, updated_at INTEGER)")
-def add(i, t, d, s='done', u=1000):
-    c.execute("INSERT INTO kanban_cards VALUES (?,?,?,?,?)", (i, t, d, s, u))
+c.execute("CREATE TABLE kanban_cards (id TEXT PRIMARY KEY, title TEXT, description TEXT, status TEXT, updated_at INTEGER, archived_at INTEGER)")
+def add(i, t, d, s='done', u=1000, archived=None):
+    c.execute("INSERT INTO kanban_cards VALUES (?,?,?,?,?,?)", (i, t, d, s, u, archived))
 $1
 c.commit()
 PY
@@ -173,6 +173,30 @@ add('bbbb0002','beta','Szinten a cafe1234 nyoman keszult, mas szavakkal.')
 got="$(run aaaa0001 | match_id)"
 [ "$got" = "bbbb0002" ] && ok "a quoted footer is not stripped -- the citation on its line survives" \
                         || bad "a quoted footer is not stripped -- the citation on its line survives" "got $got"
+
+echo "== 12. An ARCHIVED done card is not a candidate (card 041b6a47)"
+# An archived card keeps its old status, so a status-only filter still selects it. The output of
+# this tool is "do not dispatch, X already solved it" -- naming a card that has been archived off
+# the board is advice nobody can act on. Measured on the live board: 16 of the 200 cards in the
+# default window were archived.
+seed "
+add('aaaa0001','presign alairt checksum lejarat bucket objektum tartalom csere ellenorzes','egyezo szoveg a duplikatum-vizsgalathoz, sok kozos szoval','planned',2000)
+add('bbbb0002','presign alairt checksum lejarat bucket objektum tartalom csere hatarido','egyezo szoveg a duplikatum-vizsgalathoz, sok kozos szoval','done',1000,1700)
+"
+got="$(run aaaa0001 | match_id)"
+[ "$got" = "NONE" ] && ok "an archived done card is not offered as the duplicate" \
+                    || bad "an archived done card is not offered as the duplicate" "got $got"
+
+echo "== 13. CONTROL for case 12: the SAME card, NOT archived, IS offered"
+# Without this, dropping every done card would satisfy case 12 perfectly. Only `archived` differs
+# between the two seeds, so the pair isolates that one column.
+seed "
+add('aaaa0001','presign alairt checksum lejarat bucket objektum tartalom csere ellenorzes','egyezo szoveg a duplikatum-vizsgalathoz, sok kozos szoval','planned',2000)
+add('bbbb0002','presign alairt checksum lejarat bucket objektum tartalom csere hatarido','egyezo szoveg a duplikatum-vizsgalathoz, sok kozos szoval','done',1000)
+"
+got="$(run aaaa0001 | match_id)"
+[ "$got" = "bbbb0002" ] && ok "the same card without archived_at is still found (the filter is narrow)" \
+                        || bad "the same card without archived_at is still found" "got $got"
 
 echo
 # The COUNT is required, not decorative: store-selftests-all-run.test.ts refuses a summary that

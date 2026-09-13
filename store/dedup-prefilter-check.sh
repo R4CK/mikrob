@@ -186,9 +186,17 @@ if len(target_words) < 3:
     print(json.dumps({"cardId": card_id, "match": None, "reason": "too-few-significant-words"}))
     sys.exit(0)
 
+# `archived_at IS NULL` IS NOT OPTIONAL HERE (card 041b6a47). An archived card keeps its old
+# `status`, so a status-only filter still selects it -- and this tool's whole output is "do not
+# dispatch, X already solved it". Naming a card that has been archived out of the board is advice
+# nobody can act on. The dashboard's /api/kanban applies this filter; a raw read does not get it for
+# free, which is the same class that made a board-wide measurement on card dfd0e8b2 wrong by 8x.
+# Measured on the live board when this was written: 16 of the 200 cards in the default window were
+# archived (220 archived `done` in total), and 0 of the 47 live flags pointed at one -- a latent
+# hole, not an active harm, and the fix is one clause.
 done_rows = conn.execute(
     "SELECT id, title, description FROM kanban_cards "
-    "WHERE status = 'done' ORDER BY updated_at DESC LIMIT ?",
+    "WHERE status = 'done' AND archived_at IS NULL ORDER BY updated_at DESC LIMIT ?",
     (lookback,),
 ).fetchall()
 
