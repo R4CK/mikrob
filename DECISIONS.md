@@ -12935,3 +12935,29 @@ javítás után ez már nem termel küszöb feletti találatot, ezért nem nyúl
 **Ki döntött:** backend2 (mérés és javítás), a lelet backend3-é (aeda9f15 self-advance közben).
 **Hivatkozás:** kártya dfd0e8b2; `store/dedup-prefilter-check.sh`,
 `store/dedup-prefilter-check.selftest.sh`.
+
+## 2026-09-13 10:30 -- Bash egress-kapu PreToolUse hookként, log-only bevezetéssel
+
+**Döntés:** A Bash-oldali egress-tiltás PreToolUse hook lett (`scripts/hooks/bash-egress-guard.py`),
+ami a parancs TÉNYLEGES hálózati célját nézi, interpretertől függetlenül (curl/wget/nc/telnet/socat,
+hálózati API-t megnevező interpreter-egysorosok, `/dev/tcp`). A külső hostok listája verziókövetett
+fájlban él (`store/bash-egress-allowlist.json`), nem kódban. A hook LOG-ONLY módban szállít; az
+`enforce` külön env-var döntés, és van kill-switch (`BASH_EGRESS_GUARD=off`).
+**Miért:** A `settings.permissions.deny` `Bash(curl *https://*)` alakja mérhetően nem használható
+(f6db6978): a mintaillesztés a teljes parancssoron megy, tehát a cél nem különböztethető meg a
+payloadban utazó linktől, és a flotta minden belső írási útja curl-lel megy localhostra, linkes
+JSON-nel. Egy csak-curl hook viszont négy másik ajtót (python/node/perl/`/dev/tcp`) nyitva hagyna,
+miközben a doksi "egress gated"-et állítana -- ez Cybered lelete volt ugyanazon a kapun.
+**Ki döntött:** MikroB (plan-grilling verdikt: GO-WITH-CHANGES, 6 kötelező pont + 2 kiegészítés a
+korpusz-mérés alapján), backend3 (mérés és implementáció).
+**Hivatkozás:** kártya 854182c7 (komment 2920 verdikt, 2928 korpusz-mérés, 2929 kiegészítés);
+`docs/bash-egress-guard.md`.
+
+## 2026-09-13 10:30 -- Az egress-kapu allowlistája KÜLÖN fájl a WebFetch-kapuétól
+
+**Döntés:** A Bash-kapu nem a meglévő `store/egress-allowlist.json`-t használja, hanem sajátot.
+**Miért:** A WebFetch-listán egy host felvétele azt jelenti, hogy a modell karanténon KÍVÜL olvashat
+onnan tartalmat. Ha a két lista egy lenne, egy curl-höz adott engedély csendben megnyitná a karantén
+nélküli tartalomcsatornát is -- két különböző döntés, két lista.
+**Ki döntött:** backend3 (implementációs döntés, a plan-grilling 2. pontja alatt).
+**Hivatkozás:** kártya 854182c7.

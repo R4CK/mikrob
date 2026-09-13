@@ -711,6 +711,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectSymlinkedNodeModulesGuard(existing)
   injectBlastRadiusGuard(existing)
   injectCdChainGuard(existing)
+  injectBashEgressGuard(existing)
   injectNoisyCommandGuard(existing)
   injectPentestToolInstallGuard(existing)
   // Card f7b33416: this one was backfill-only until now, so a freshly spawned agent ran without the
@@ -1610,6 +1611,53 @@ export function ensureNoisyCommandGuard(name: string): boolean {
   if (ptuJson.includes('noisy-command-guard.py') && hookCommandWired(ptuJson, command)) return false
   if (isUnsafeHookCommand(command)) return false
   injectNoisyCommandGuard(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Card 854182c7: the Bash-side egress control. The settings.permissions.deny form it replaces was
+// measured unusable (card f6db6978): a `Bash(curl *https://*)` rule matches the WHOLE command
+// string, so it cannot tell a curl's TARGET from a link riding along in the payload -- and every
+// internal write path of this fleet is a localhost curl carrying JSON that routinely contains one.
+//
+// Wired on BOTH paths for the reason recorded on injectCdChainGuard: an inject* alone reaches only
+// agents whose settings.json is regenerated, and a guard that arms an arbitrary subset of the
+// fleet is not a control. The hook itself ships in LOG-ONLY mode (see its module docstring), so
+// arming it fleet-wide changes no behaviour until an operator sets BASH_EGRESS_GUARD=enforce --
+// which is the point: the log is the evidence that enforcement is safe to switch on.
+export function injectBashEgressGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-guard.py'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('bash-egress-guard.py')),
+    entry,
+  ]
+}
+
+export function ensureBashEgressGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-guard.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('bash-egress-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectBashEgressGuard(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true

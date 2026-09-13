@@ -54,6 +54,8 @@ const EXEMPT: Record<string, string> = {
   // itself invoked as a test suite, never wired as a PreToolUse/PostToolUse hook.
   'blast-radius-guard.selftest.py':
     'selftest for blast-radius-guard.py, which is registered; the selftest itself is not a hook',
+  'bash-egress-guard.selftest.py':
+    'selftest for bash-egress-guard.py, which is registered; the selftest itself is not a hook',
   'cd-chain-guard.selftest.py':
     'selftest for cd-chain-guard.py, which is registered; the selftest itself is not a hook',
   'git-protect-guard.selftest.py':

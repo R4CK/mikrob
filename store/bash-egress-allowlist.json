@@ -1,0 +1,26 @@
+{
+  "_readme": [
+    "External hosts the Bash egress guard (scripts/hooks/bash-egress-guard.py) treats as legitimate.",
+    "Localhost is ALWAYS allowed and is not listed here -- it is a built-in rule, not a grant.",
+    "A host matches itself and its subdomains: 'example.com' also allows 'api.example.com'.",
+    "Re-read on every hook invocation: adding a host takes effect immediately, no restart, no deploy.",
+    "A missing or malformed file means NO grants (localhost only). Losing this file can never widen",
+    "what is permitted -- it only removes grants, which is the safe direction to fail in.",
+    "Seeded from the 854182c7 corpus measurement (2,928,984 Bash commands): every host below was",
+    "observed in real fleet traffic with an identifiable purpose. Hosts that appeared in the corpus",
+    "but whose purpose was not identifiable were deliberately NOT seeded -- the log will show them",
+    "if they are still in use, and an operator can grant them on evidence rather than on my guess."
+  ],
+  "hosts": [
+    "api.github.com",
+    "github.com",
+    "raw.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "codeload.github.com",
+    "api.telegram.org",
+    "api.resend.com",
+    "registry.npmjs.org",
+    "mopsion.com",
+    "cleancore.72-62-35-139.nip.io"
+  ]
+}
