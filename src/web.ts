@@ -15,7 +15,7 @@ import { CONTENT_SECURITY_POLICY } from './web/csp.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureCdChainGuard, ensureOutgoingCopyGate, outgoingCopyGateEnabled, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureCdChainGuard, ensureBashEgressGuard, ensureOutgoingCopyGate, outgoingCopyGateEnabled, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -640,6 +640,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       const pentestGuardPatched: string[] = []
       const symlinkNmGuardPatched: string[] = []
       const cdChainGuardPatched: string[] = []
+      const bashEgressGuardPatched: string[] = []
       const outgoingCopyGatePatched: string[] = []
       const noisyGuardPatched: string[] = []
       const gitGuardPatched: string[] = []
@@ -675,6 +676,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         if (ensurePentestToolInstallGuard(agentName)) pentestGuardPatched.push(agentName)
         if (ensureSymlinkedNodeModulesGuard(agentName)) symlinkNmGuardPatched.push(agentName)
         if (ensureCdChainGuard(agentName)) cdChainGuardPatched.push(agentName)
+        if (ensureBashEgressGuard(agentName)) bashEgressGuardPatched.push(agentName)
         if (ensureOutgoingCopyGate(agentName)) outgoingCopyGatePatched.push(agentName)
         if (ensureNoisyCommandGuard(agentName)) noisyGuardPatched.push(agentName)
         if (ensureGitProtectGuard(agentName)) gitGuardPatched.push(agentName)
@@ -697,6 +699,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       if (pentestGuardPatched.length) logger.info({ patched: pentestGuardPatched }, 'pentest-tool-install guard backfilled into agent settings.json')
       if (symlinkNmGuardPatched.length) logger.info({ patched: symlinkNmGuardPatched }, 'symlinked-node-modules guard backfilled into agent settings.json')
       if (cdChainGuardPatched.length) logger.info({ patched: cdChainGuardPatched }, 'cd-chain guard backfilled into agent settings.json')
+      if (bashEgressGuardPatched.length) logger.info({ patched: bashEgressGuardPatched }, 'bash-egress guard backfilled into agent settings.json (log-only until BASH_EGRESS_GUARD=enforce)')
       // Card 74181db2: this one logs a CHANGE, not an arming -- the same call removes the
       // entry when the operator switches the gate back off, and a silent removal would be
       // indistinguishable from never having been wired.

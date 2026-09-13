@@ -82,6 +82,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **npm-only csomagkezelő-őr**: `preinstall`-ban futó guard, ami megtagadja az idegen csomagkezelőt (pnpm/yarn), mert az csendben lecserélheti egy élő szolgáltatás függőségi fáját és eltörheti a natív SQLite-bindinget.
 - **Stray-pnpm riasztás a szolgáltatás-indulásban**: a szolgáltatások indulás előtti ellenőrzése észreveszi egy MÁR megtörtént pnpm-install nyomait, újraépíti a natív bindinget, és riaszt, nem csendben javít.
 - **Blast-radius kapu**: sok modul által importált hub-fájl első szerkesztését blokkolja munkamenetenként egyszer, és kiírja a mért hívói kört, hogy a hatás a szerkesztés ELŐTT látszódjon.
+- **Bash egress-kapu**: PreToolUse hook, ami a Bash-parancs tényleges hálózati CÉLJÁT nézi, nem a parancs szövegét és nem csak a curl alakját: curl/wget/nc/telnet/socat, hálózati API-t megnevező interpreter-egysorosok és `/dev/tcp` egyaránt. A localhost engedett, a külső cél verziókövetett allowlist-fájlból, a feloldhatatlan cél tiltott. Alapból log-only módban fut, kill-switchcsel és parancsonkénti kivétellel.
 - **`cd <könyvtár> && grep|sed|cat ...` permission-wedge kapu**: blokkolja azt a parancsalakot, aminél a permission-engine nem tudja feloldani a könyvtárat és jóváhagyást kér, mert egy flotta-ügynök paneljében nincs, aki válaszoljon, és a panel órákra beragad.
 - **Rate-limit kulcs-normalizálás**: az IP-alapú rate-limit kulcs a parse-olt IPv6-csoportokból bontja ki az IPv4-mapped címeket, szigorú range-check-kel, így az IPv6-reprezentáció váltogatásával nem lehet megkerülni a limitet.
 - **Shebang-futtathatóság guard**: repo-szintű teszt, ami elbukik, ha egy shebanggel kezdődő követett fájl nem futtatható index-móddal van commitolva. Egy nem futtatható operatív script némán bukik (a hívó `|| true`-ja elnyeli az exit 126-ot), és a WSL-es fájlrendszer helyben eltakarja a hibát.
@@ -208,6 +209,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 | Költöztetés (másik gépre) | [docs/MIGRATION.md](docs/MIGRATION.md) |
 | Beszélgetés-folytonosság | [docs/conversation-continuity.md](docs/conversation-continuity.md) |
 | Channel reply-guard | [docs/channel-reply-guard.md](docs/channel-reply-guard.md) |
+| Bash egress-kapu | [docs/bash-egress-guard.md](docs/bash-egress-guard.md) |
 | Telegram haladásjelző | [docs/telegram-progress-indicator.md](docs/telegram-progress-indicator.md) |
 | Új asszisztens onboarding | [docs/onboarding-uj-asszisztens.md](docs/onboarding-uj-asszisztens.md) |
 | Konfiguráció-referencia | [docs/config-reference.md](docs/config-reference.md) |

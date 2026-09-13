@@ -12,6 +12,7 @@ import {
   injectBlastRadiusGuard,
   injectPentestToolInstallGuard,
   injectCdChainGuard,
+  injectBashEgressGuard,
   injectNoisyCommandGuard,
   ensureCdChainGuard,
 } from '../web/agent-scaffold.js'
@@ -64,6 +65,7 @@ const INJECTORS: Array<[string, (s: Record<string, unknown>) => void]> = [
   ['blast-radius-guard', injectBlastRadiusGuard],
   ['pentest-tool-install-guard', injectPentestToolInstallGuard],
   ['cd-chain-guard', injectCdChainGuard],
+  ['bash-egress-guard', injectBashEgressGuard],
   ['noisy-command-guard', injectNoisyCommandGuard],
   ['outgoing-copy-gate', injectOutgoingCopyGate],
 ]

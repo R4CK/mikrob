@@ -85,6 +85,7 @@ describe('every hook guard is registered by code, on both paths (card 2a07f29e)'
     expect(INJECTORS.length).toBeGreaterThanOrEqual(7)
     expect(INJECTORS.map((i) => i.script)).toContain('noisy-command-guard.py')
     expect(INJECTORS.map((i) => i.script)).toContain('cd-chain-guard.py')
+    expect(INJECTORS.map((i) => i.script)).toContain('bash-egress-guard.py')
   })
 
   // THE FLOOR WAS NOT ENOUGH (card f7b33416, Cybersec+QA on 2a07f29e). `>= 7` passes just as

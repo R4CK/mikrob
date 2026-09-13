@@ -101,6 +101,7 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'git-protect-guard.py',
   'npm-protect-guard.py',
   'cd-chain-guard.py',
+  'bash-egress-guard.py',
   'noisy-command-guard.py',
   'blast-radius-guard.py',
   'symlinked-node-modules-guard.py',
