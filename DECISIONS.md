@@ -12884,3 +12884,54 @@ including the founding case pinned verbatim from the nudge's own string.
 **Not yet live.** The landing rebuilds `dist/` but does not restart services, so the running
 dashboard keeps the old behaviour until `./update.sh`. Said out loud because a synced repo file is
 not an installed host file.
+
+## 2026-09-13 -- dfd0e8b2: a helyreállítás lábjegyzete lett a dedup-előszűrő második szennyezője
+
+**A lelet.** A 2026-09-08-i kanban-DB-kiürülés utáni helyreállítás egy provenienciai lábjegyzetet
+írt a tábla 1850 kártyájából **1655**-re (`-- Log-alapú rekonstrukció a <dátum>-i
+kanban-DB-kiürülés után (<megbízhatóság> megbízhatóság, forrás: <források>).`). Ezt egyetlen kártya
+szerzője sem írta, mégis mindkét jelet táplálja, pontosan úgy, ahogy a 49be3576 bejegyzésben leírt
+saját `[DEDUP-PREFILTER]` blokk:
+
+* **2. jel (lexikai):** aeda9f15 (dep_diff_draft timeout-teszt) kontra 9d13747b
+  (deploy-freshness-check.sh, teljesen más téma) = 0,36 pont / 9 közös szó, és **mind a kilenc**
+  lábjegyzet-szókincs. Lábjegyzet nélkül 0,06 / 1.
+* **1. jel (hivatkozás, a magas bizalmú, ami megelőzi a lexikait):** a `forrás:` mező
+  session-transcript FÁJLNEVET is tartalmazhat, pl.
+  `fron-ted:da51ffc1-cc9c-466a-ad25-98f6425d331f.jsonl`. A `da51ffc1` nyolc hex karakter
+  szóhatáron, tehát az eszköz idézett kártyának olvasta. **57** nyitott kártya oszt így
+  ál-hivatkozást legalább egy másikkal, és a leggyakoribb (`cb4f0c78`, 23 kártya) nem is létező
+  kártya. Ezt a kártya szövege nem említette; külön mérés.
+
+**Döntés: a lábjegyzet kikerül az ILLESZTÉSI KORPUSZBÓL, mindkét oldalon, mielőtt bármelyik jel
+ránéz** -- ugyanaz a kezelés, amit a 49be3576 az eszköz saját blokkjára hozott. A kártyákon a
+lábjegyzet karakterre változatlanul marad.
+
+**Amit ez NEM old meg, és szándékosan nem:** a 49be3576-ban nyitva hagyott proveniencia-kérdést.
+Ott az volt a mérés, hogy az egyetlen igazolt igaz pozitív (cff4fa09 / fe2f71ca) közös hivatkozása
+maga is proveniencia-nyelvben áll, tehát egy elég széles kizárás azt is levágná. Az itteni szűrés
+szűkebb: egy GÉP által írt, rögzített alakú lábjegyzetre illeszkedik, nem a "X lelete" típusú
+szerzői provenienciára. A két kérdést ne mossa össze a következő olvasó -- a régi nyitva van.
+
+**Horgonyzás, és miért nem sor-szintű szűrő.** Maga a kártya IDÉZI a lábjegyzetet, miközben a
+kiszűrését kéri; egy laza, "rekonstrukció"-ra illeszkedő sor-szűrő pont a feladat-mondatot törölné,
+és vele a sorában álló hivatkozást. A minta ezért a teljes szerzői alakot követeli meg: `--` a sor
+elején ÉS a `kanban-DB-kiürülés után` kifejezés ugyanazon a soron. Mérve minden előforduláson:
+**1656 sorból 1655** illeszkedik, és az egyetlen kimaradó pontosan ez az idézet. A selftest 11.
+esete ezt a kimaradást rögzíti.
+
+**Tábla-szintű hatás, a szállítás előtt mérve** (140 nyitott kártya, előtte/utána): **72** elveszti
+a találatát, és mind a 72 kizárólag lábjegyzet-szókincsre illeszkedett; **47** megtartja, valódi
+tartalomra; 21 marad találat nélkül. Nulla igazolt duplikátum veszett el -- azt a hetet, aminek a
+közös szavai közt tartalmi szó is akadt, egyenként átnéztem, egyik sem duplikátum. Egy találat
+viszont ELŐKERÜLT: 9cc72f2c eddig az ál-hivatkozásra volt kötve 5b194fcd-hez, most e65c480a-ra
+illeszkedik valódi szavakkal (`landed`, `landolt`, `sweep`, `done`, `fail`, `review`).
+
+**Jelezve, nem javítva (3. kódminőségi alapelv):** a `STOPWORDS` lista ékezet nélkül van írva
+(`utan`, `mar`, `mielott`, `ezert`, `tehat`, `ket`, `elott`, ...), a tokenizáló viszont megtartja az
+ékezeteket, tehát ezek a magyar töltelékszavak ékezetes szövegen SOHA nem szűrődnek ki. A mostani
+javítás után ez már nem termel küszöb feletti találatot, ezért nem nyúltam hozzá; külön kártyát ér.
+
+**Ki döntött:** backend2 (mérés és javítás), a lelet backend3-é (aeda9f15 self-advance közben).
+**Hivatkozás:** kártya dfd0e8b2; `store/dedup-prefilter-check.sh`,
+`store/dedup-prefilter-check.selftest.sh`.

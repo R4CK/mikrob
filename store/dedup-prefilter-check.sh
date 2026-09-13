@@ -47,6 +47,31 @@
 # The fix is to strip the tool's own blocks from the corpus on BOTH sides before either signal
 # looks at the text. It is removed from the MATCHING CORPUS only -- the card keeps the block.
 #
+# THE SAME HOLE, A SECOND WRITER (card dfd0e8b2, backend3's finding on aeda9f15). The 2026-09-08
+# kanban-DB recovery appended a provenance footer -- "-- Log-alapu rekonstrukcio a <date>-i
+# kanban-DB-kiurules utan (<reliability> megbizhatosag, forras: <sources>)." -- to 1655 of the
+# board's 1850 cards. No card author wrote it, and it feeds BOTH signals exactly like the block:
+#   * signal 2: its words ARE the overlap. Measured on the pair that opened this card, aeda9f15
+#     (dep_diff_draft timeout test) vs 9d13747b (deploy-freshness-check.sh, unrelated): score 0.36
+#     with 9 shared words, of which NINE are footer vocabulary and zero are about either subject.
+#     Stripping the footer: 0.06 with 1. Board-wide over the 140 open cards, 72 lose a match and
+#     every one of those 72 was matched on footer vocabulary alone; the 47 that keep a match keep
+#     it on real content, so this narrows the signal rather than switching it off.
+#   * signal 1: the footer's `forras:` field can name a session transcript FILE, e.g.
+#     `fron-ted:da51ffc1-cc9c-466a-ad25-98f6425d331f.jsonl`. `da51ffc1` is 8 hex on word
+#     boundaries, so the id-reference signal -- the high-confidence one that pre-empts the lexical
+#     one -- read a UUID fragment as a cited card. Measured: 57 open cards share such a
+#     footer-only pseudo-reference with at least one other card, and `cb4f0c78` (23 cards) is not
+#     a card at all. One live consequence: 9cc72f2c was pinned to 5b194fcd on pseudo-ref
+#     `da51ffc1`, which HID a plausible real lexical match (e65c480a, shared words `landed`,
+#     `landolt`, `sweep`, `done`, `fail`, `review`).
+# ANCHORING, and why it is not a line-level match on "rekonstrukcio": this very card's description
+# QUOTES the footer while asking for it to be stripped. A loose per-line filter deletes the task
+# sentence itself. The pattern therefore requires the whole authored shape -- `--` at line start,
+# then the full `kanban-DB-kiurules utan` phrase on the same line. Measured against every
+# occurrence on the board: 1655 of 1656 lines matched, and the single miss is exactly dfd0e8b2's
+# quotation. Case 10 of the selftest pins that miss.
+#
 # Read-only query against store/claudeclaw.db directly, because GET /api/kanban truncates
 # 'done' cards (memory: kanban-api-truncates-done-not-open) -- the API is fine for open cards
 # but NOT for scanning history.
@@ -125,11 +150,26 @@ PREFILTER_BLOCK_RE = re.compile(r"\[DEDUP-PREFILTER\].*?\(rule 6b\)\.", re.S | r
 PREFILTER_LINE_RE = re.compile(r"^.*\[DEDUP-PREFILTER\].*$", re.M | re.I)
 
 
-def strip_own_output(text):
-    """Remove blocks this tool wrote, so it cannot match on its own annotations."""
+# The 2026-09-08 DB-recovery provenance footer. Anchored to the full authored shape (leading `--`
+# at line start AND the `kanban-DB-kiurules utan` phrase) so that prose merely QUOTING the footer
+# -- card dfd0e8b2's own description does exactly that -- keeps being compared. Accents are
+# optional in the class because the recovery wrote the accented form but a hand-typed retelling
+# may not.
+RECONSTRUCTION_FOOTER_RE = re.compile(
+    r"^[ \t]*--[ \t]*Log-alap\w*\s+rekonstrukci\w*\s+a\s+"
+    r"[^\n]*?kanban-DB-ki[üu]r[üu]l[ée]s\s+ut[áa]n\b[^\n]*$",
+    re.M | re.I,
+)
+
+
+def strip_non_authored(text):
+    """Remove text no card author wrote -- this tool's own annotation blocks and the DB-recovery
+    footer -- so neither signal can match on machine-written boilerplate. Applied to the MATCHING
+    CORPUS only; the cards keep every character."""
     if not text:
         return text
-    return PREFILTER_LINE_RE.sub(" ", PREFILTER_BLOCK_RE.sub(" ", text))
+    text = PREFILTER_LINE_RE.sub(" ", PREFILTER_BLOCK_RE.sub(" ", text))
+    return RECONSTRUCTION_FOOTER_RE.sub(" ", text)
 
 
 def referenced_ids(text, own_id):
@@ -138,8 +178,8 @@ def referenced_ids(text, own_id):
     return {t for t in ID_RE.findall(text.lower()) if t != own_id}
 
 
-target_title = strip_own_output(row["title"] or "")
-target_desc = strip_own_output(row["description"] or "")
+target_title = strip_non_authored(row["title"] or "")
+target_desc = strip_non_authored(row["description"] or "")
 target_words = tokenize(target_title) | tokenize(target_desc)
 target_refs = referenced_ids(target_title, card_id) | referenced_ids(target_desc, card_id)
 if len(target_words) < 3:
@@ -157,8 +197,8 @@ lex_match = None
 for d in done_rows:
     if d["id"] == card_id:
         continue
-    done_title = strip_own_output(d["title"] or "")
-    done_desc = strip_own_output(d["description"] or "")
+    done_title = strip_non_authored(d["title"] or "")
+    done_desc = strip_non_authored(d["description"] or "")
     done_words = tokenize(done_title) | tokenize(done_desc)
     done_refs = referenced_ids(done_title, d["id"]) | referenced_ids(done_desc, d["id"])
 

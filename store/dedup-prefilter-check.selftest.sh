@@ -109,6 +109,71 @@ got="$(run aaaa0001 | match_id)"
 [ "$got" = "bbbb0002" ] && ok "a tail-less block costs one line, not the rest of the card" \
                         || bad "a tail-less block costs one line, not the rest of the card" "got $got"
 
+# ---------------------------------------------------------------------------------------------
+# Cases 7-11 (card dfd0e8b2): the 2026-09-08 DB-recovery provenance footer is the SECOND writer of
+# text no card author wrote. It sits on 1655 of the board's 1850 cards, so anything it contributes
+# is shared by almost every pair. FOOTER is the real shape, copied from the live board.
+FOOTER='-- Log-alapú rekonstrukció a 2026-09-08-i kanban-DB-kiürülés után (high megbízhatóság, forrás: backend3).'
+# The variant whose `forrás:` names a session transcript file. `da51ffc1` is 8 hex on word
+# boundaries -- indistinguishable from a card id to the reference signal.
+FOOTER_JSONL='-- Log-alapú rekonstrukció a 2026-09-08-i kanban-DB-kiürülés után (medium megbízhatóság, forrás: fron-ted:da51ffc1-cc9c-466a-ad25-98f6425d331f.jsonl, qa/qa2/teszter session transcript).'
+
+echo "== 7. FOUNDING CASE: two unrelated cards sharing ONLY the recovery footer must not match"
+# Live measurement this pins: aeda9f15 (dep_diff_draft timeout test) matched 9d13747b
+# (deploy-freshness-check.sh) at score 0.36 / 9 shared words -- all nine footer vocabulary.
+seed "
+add('aaaa0001','alfa','xxxa xxxb xxxc xxxd.\n\n'+'$FOOTER','planned',2000)
+add('bbbb0002','beta','yyya yyyb yyyc yyyd.\n\n'+'$FOOTER')
+"
+got="$(run aaaa0001 | match_id)"
+[ "$got" = "NONE" ] && ok "recovery-footer vocabulary alone does not reach the lexical threshold" \
+                    || bad "recovery-footer vocabulary alone does not reach the lexical threshold" "got $got"
+
+echo "== 8. CONTROL for case 7: real shared CONTENT still matches even with the footer present"
+# Without this the fix could be "strip the footer" or "stop scoring lexically" and both look green.
+seed "
+add('aaaa0001','alfa','presign alairt checksum feltoltes lejarat bucket objektum tartalom csere ellenorzes.\n\n'+'$FOOTER','planned',2000)
+add('bbbb0002','beta','presign alairt checksum feltoltes lejarat bucket objektum tartalom csere hatarido.\n\n'+'$FOOTER')
+"
+got="$(run aaaa0001 | match_id)"; why="$(run aaaa0001 | match_reason)"
+[ "$got" = "bbbb0002" ] && [ "$why" = "lexical-overlap" ] \
+  && ok "shared real vocabulary still matches (the signal is narrowed, not switched off)" \
+  || bad "shared real vocabulary still matches" "got $got / $why"
+
+echo "== 9. SIGNAL 1: a UUID fragment in the footer's forrás: field is not a cited card"
+# 57 open cards shared such a pseudo-reference; cb4f0c78 (23 cards) is not a card at all. This is
+# the HIGH-confidence signal, and it pre-empts the lexical one, so a false hit here is the worst kind.
+seed "
+add('aaaa0001','alfa','xxxa xxxb xxxc xxxd.\n\n'+'$FOOTER_JSONL','planned',2000)
+add('bbbb0002','beta','yyya yyyb yyyc yyyd.\n\n'+'$FOOTER_JSONL')
+"
+got="$(run aaaa0001 | match_id)"
+[ "$got" = "NONE" ] && ok "a transcript-filename UUID fragment is not read as a shared card ref" \
+                    || bad "a transcript-filename UUID fragment is not read as a shared card ref" "got $got"
+
+echo "== 10. CONTROL for case 9: an author-written ref on a footered card MUST still match"
+seed "
+add('aaaa0001','alfa','Ez a cafe1234 lelete alapjan keszult, sajat szoveg.\n\n'+'$FOOTER_JSONL','planned',2000)
+add('bbbb0002','beta','Szinten a cafe1234 nyoman keszult, mas szavakkal.\n\n'+'$FOOTER_JSONL')
+"
+got="$(run aaaa0001 | match_id)"; why="$(run aaaa0001 | match_reason)"
+[ "$got" = "bbbb0002" ] && [ "$why" = "shared-reference" ] \
+  && ok "the footer strip does not blind the reference signal to real citations" \
+  || bad "the footer strip does not blind the reference signal to real citations" "got $got / $why"
+
+echo "== 11. Prose that QUOTES the footer is author text and must stay comparable"
+# Card dfd0e8b2's own description quotes the footer while asking for it to be stripped. A
+# line-level filter on "rekonstrukció" deletes that sentence -- and with it the citation sharing
+# its line. Measured over every occurrence on the board: 1655 of 1656 lines are the real footer;
+# this quotation is the one that must survive.
+seed "
+add('aaaa0001','alfa','Feladat: a rekonstrukcios boilerplate (\"Log-alapú rekonstrukció a ... kanban-DB-kiürülés után\", \"forrás: ...\") kiszurese, lasd cafe1234 lelete.','planned',2000)
+add('bbbb0002','beta','Szinten a cafe1234 nyoman keszult, mas szavakkal.')
+"
+got="$(run aaaa0001 | match_id)"
+[ "$got" = "bbbb0002" ] && ok "a quoted footer is not stripped -- the citation on its line survives" \
+                        || bad "a quoted footer is not stripped -- the citation on its line survives" "got $got"
+
 echo
 # The COUNT is required, not decorative: store-selftests-all-run.test.ts refuses a summary that
 # does not state a non-zero number, precisely so "ran every case and they passed" cannot look the
