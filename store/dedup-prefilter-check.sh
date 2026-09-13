@@ -70,7 +70,7 @@
 # sentence itself. The pattern therefore requires the whole authored shape -- `--` at line start,
 # then the full `kanban-DB-kiurules utan` phrase on the same line. Measured against every
 # occurrence on the board: 1655 of 1656 lines matched, and the single miss is exactly dfd0e8b2's
-# quotation. Case 10 of the selftest pins that miss.
+# quotation. Case 11 of the selftest pins that miss.
 #
 # Read-only query against store/claudeclaw.db directly, because GET /api/kanban truncates
 # 'done' cards (memory: kanban-api-truncates-done-not-open) -- the API is fine for open cards
