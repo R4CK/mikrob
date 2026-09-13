@@ -282,16 +282,37 @@ run 1788000750
 # "qa"/"cybersec"/"cybered" as real authors again, reopening exactly what card be81d16c closed,
 # only quietly this time. The presence check below is on the STDERR TEXT, not on the file's
 # existence, per this card's own acceptance criterion.
-REAL_EXCLUDED="$HERE/load-guard-excluded.sh"
-MOVED_EXCLUDED="$TMP/load-guard-excluded.sh.moved-aside"
-mv "$REAL_EXCLUDED" "$MOVED_EXCLUDED"
-trap 'mv -f "$MOVED_EXCLUDED" "$REAL_EXCLUDED" 2>/dev/null; rm -rf "$TMP"' EXIT
+#
+# RUN FROM A SANDBOX COPY, NEVER BY MOVING THE REAL FILE (card 9b224eec, backend2's measurement).
+# This case used to `mv` store/load-guard-excluded.sh aside and put it back one case later. Between
+# those two moments the file was simply NOT IN THE TREE -- and the tree is shared with every other
+# vitest worker. store-shell-scripts-syntax-sweep.test.ts lists store/*.sh at COLLECT time and
+# `bash -n`s them at TEST time, so a run that straddled the gap died with exit 127 on a file that
+# exists. Measured by backend2: 13009 of 957347 existence polls saw it absent (~1.4%), and the same
+# branch that had landed 776/776 green failed 775/776 on exactly this file. Intermittent, so the
+# obvious reading was "flaky unrelated test".
+#
+# The sandbox proves the SAME thing without that cost: the script resolves everything it sources
+# from its own SCRIPT_DIR, so a copy in a temp dir with no load-guard-excluded.sh beside it IS the
+# missing-file condition. Verified while writing this -- exit 0 and the expected stderr line, with
+# the real tree untouched. Case 13 below still runs against the real tree, which is the point of it.
+SANDBOX="$TMP/sandbox/store"
+mkdir -p "$SANDBOX"
+cp "$RUN" "$SANDBOX/"
+# Siblings the script reads from SCRIPT_DIR and that the flags below do NOT override. Copied so the
+# sandbox differs from the real tree in exactly ONE way: the excluded-list file is absent.
+[ -f "$HERE/load-guard-config.json" ] && cp "$HERE/load-guard-config.json" "$SANDBOX/"
+SANDBOX_RUN="$SANDBOX/load-guard-bookkeeping.sh"
 
 : > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"; printf '%s' '{}' > "$TMP/episodes.json"
 state '{}'
 STDERR_FILE="$TMP/stderr-missing.txt"
+# THE SANDBOX MUST REALLY LACK IT, or this case passes on a condition it never created.
+if [ -e "$SANDBOX/load-guard-excluded.sh" ]; then
+  bad "the sandbox still has load-guard-excluded.sh -- this case would prove nothing" "$SANDBOX"
+fi
 DASH="http://127.0.0.1:9" DASHBOARD_TOKEN_FILE="$TMP/token" \
-  bash "$RUN" --cgroup-state "$TMP/cgroup.json" --sigstop-state "$TMP/sigstop.json" \
+  bash "$SANDBOX_RUN" --cgroup-state "$TMP/cgroup.json" --sigstop-state "$TMP/sigstop.json" \
     --paused "$TMP/paused.json" --events "$TMP/events.json" --episodes "$TMP/episodes.json" \
     --alert-stamp "$TMP/alert.json" --alert-dryrun --now 1788400000 \
     >/dev/null 2>"$STDERR_FILE"
@@ -307,8 +328,9 @@ else
   bad "no warning on stderr for a missing load-guard-excluded.sh" "$(cat "$STDERR_FILE")"
 fi
 
-# --- 13. CONTROL: with the file back in place, the normal path is unchanged (no new noise) --------
-mv -f "$MOVED_EXCLUDED" "$REAL_EXCLUDED"
+# --- 13. CONTROL: on the REAL tree the normal path is unchanged (no new noise) --------------------
+# Nothing to put back any more -- case 12 never took anything away. This runs the real $RUN, which
+# is what makes it a control for case 12 rather than a second sandbox run.
 : > "$CAPTURE"; printf '%s' '{}' > "$TMP/paused.json"; printf '%s' '{}' > "$TMP/events.json"; printf '%s' '{}' > "$TMP/episodes.json"
 state '{}'
 STDERR_FILE="$TMP/stderr-present.txt"
