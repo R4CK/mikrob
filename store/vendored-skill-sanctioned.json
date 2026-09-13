@@ -1,0 +1,70 @@
+{
+  "note": "Sanctioned vendored-skill deltas. Each entry is a DECISION: the delta is known and accepted. Re-record deliberately.",
+  "sanctioned": {
+    "~/.claude/skills/api-and-interface-design": [],
+    "~/.claude/skills/browser-testing-with-devtools": [],
+    "~/.claude/skills/caveman": [
+      "missing:skills/caveman-discover/SKILL.md",
+      "missing:skills/caveman-evidence-review/SKILL.md",
+      "missing:skills/caveman-learn/CLAUDE.md",
+      "missing:skills/caveman-learn/README.md",
+      "missing:skills/caveman-learn/SKILL.md",
+      "missing:skills/caveman-learn/package.json",
+      "missing:skills/caveman-learn/tests/skill-file.test.mjs",
+      "missing:skills/caveman-manage/SKILL.md",
+      "missing:skills/caveman-optimize/SKILL.md",
+      "missing:skills/caveman-setup/SKILL.md"
+    ],
+    "~/.claude/skills/ci-cd-and-automation": [],
+    "~/.claude/skills/constraint-driven-development": [
+      "changed:SKILL.md@06479d4305f286d23cfb99f5dc85695896785269664e1f6a8d800e3b71e70c10"
+    ],
+    "~/.claude/skills/context-engineering": [
+      "changed:SKILL.md@8b736cb9e55b82b265ab6ff78349c0e826e8a6df550deddf665b7fb3ff858b63"
+    ],
+    "~/.claude/skills/crafter-intent-layer": [],
+    "~/.claude/skills/deprecation-and-migration": [],
+    "~/.claude/skills/design-taste-frontend": [],
+    "~/.claude/skills/documentation-and-adrs": [
+      "changed:SKILL.md@87ae44a0c7bb3eefc2131a9d11caabcc14e4d8dcb27d66a3a675551ee2ce1671"
+    ],
+    "~/.claude/skills/doubt-driven-development": [
+      "changed:SKILL.md@2fe3beb2e8e3eaaa45efe214a1b381ae341dfea2f21fd5fa3d4f27d41e98be47",
+      "extra:references/orchestration-patterns.md@61e543d86f19f86b83074f8c1c769455c7085a2c72dd47b1da21a8c63785be4a"
+    ],
+    "~/.claude/skills/idea-refine": [
+      "changed:SKILL.md@35ea101a1c5c37fbf714a077371bc76604685c99ae9aa1324b23f9a3f7969ba8"
+    ],
+    "~/.claude/skills/imagegen-frontend-mobile": [],
+    "~/.claude/skills/imagegen-frontend-web": [],
+    "~/.claude/skills/industrial-brutalist-ui": [],
+    "~/.claude/skills/interview-me": [],
+    "~/.claude/skills/mattpocock-productivity": [],
+    "~/.claude/skills/minimalist-ui": [],
+    "~/.claude/skills/unlazy": [],
+    "~/marveen/agents/backend/.claude/skills/mcp-builder": [],
+    "~/marveen/agents/backend/.claude/skills/observability-and-instrumentation": [
+      "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
+      "extra:references/observability-checklist.md@28659e0a4b9625a434285fa9ede632802afa909f768d0f8d839dca227e53d8fe"
+    ],
+    "~/marveen/agents/backend2/.claude/skills/mcp-builder": [],
+    "~/marveen/agents/backend2/.claude/skills/observability-and-instrumentation": [
+      "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
+      "extra:references/observability-checklist.md@28659e0a4b9625a434285fa9ede632802afa909f768d0f8d839dca227e53d8fe"
+    ],
+    "~/marveen/agents/backend3/.claude/skills/observability-and-instrumentation": [
+      "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
+      "extra:references/observability-checklist.md@28659e0a4b9625a434285fa9ede632802afa909f768d0f8d839dca227e53d8fe"
+    ],
+    "~/marveen/agents/fron-ted/.claude/skills/webapp-testing": [],
+    "~/marveen/agents/fron-teddy/.claude/skills/webapp-testing": [],
+    "~/marveen/agents/fullstack/.claude/skills/mcp-builder": [],
+    "~/marveen/agents/fullstack/.claude/skills/observability-and-instrumentation": [
+      "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
+      "extra:references/observability-checklist.md@28659e0a4b9625a434285fa9ede632802afa909f768d0f8d839dca227e53d8fe"
+    ],
+    "~/marveen/agents/qa/.claude/skills/webapp-testing": [],
+    "~/marveen/agents/qa2/.claude/skills/webapp-testing": [],
+    "~/marveen/agents/teszter/.claude/skills/webapp-testing": []
+  }
+}
