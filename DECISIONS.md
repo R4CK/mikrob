@@ -12813,3 +12813,39 @@ mondja, hogy az export nincs átvéve -- egy arra célzott anchor „megfordulá
 sem történt. Az anchorok ezért PRODUKCIÓS fájlra mutatnak, és ezt teszt is kikényszeríti.
 **Ki döntött:** backend3 (lelet + kivitelezés), MikroB (kártya, HIGH). Gate: Cybersec.
 **Hivatkozás:** kártya 66ad1f95; a hátralék back-fillje külön kártyán.
+
+## 2026-09-13 -- 504ec76f -- A fourth Draft-Review value, because three made a timing outcome look like a quality failure
+
+**Context.** The draft-review guard accepted three verdicts: ELFOGADVA (integrated), RESZBEN (used
+part), ELUTASITVA (read it, it was wrong, wrote it myself). A fourth real outcome had no honest home:
+the draft was CORRECT but NOT NEEDED. Live case f3757cc7 -- the local model diagnosed the problem
+accurately, but the agent had reported the finding itself and the fix was already written when the
+draft landed. Nothing was taken from it, and not because anything was wrong with it.
+
+**Decision: option (a), a fourth value `FELESLEGES` / `REDUNDANT`, not option (b), widening the
+ELUTASITVA gloss.** This is a MEASUREMENT problem, not a wording preference. The marker exists to
+tell us whether the offload earns its cost, and correct-but-late is the EXPECTED shape on any card an
+agent opened from its own finding. Filed under ELUTASITVA, a fleet doing exactly what it should would
+report as a local model that writes bad code -- and that number is what a future decision about the
+offload would be made from. (b) is the smaller change and keeps the bias.
+
+**All five surfaces moved together**, which the card named as the risk: the regex, the 409 message,
+the guard's test, the skill agents read (seed AND the installed global copy), and the dispatcher's
+two strings -- the draft-comment boilerplate and the owner notice. The seed/global pair differ only
+in template placeholders and frontmatter, verified before and after; that is the expected
+seed-vs-installed difference, not drift.
+
+**A sync test now holds them together** (`draft-review-vocabulary-sync.test.ts`). The card warned
+"mind a négyet együtt kell mozgatni, különben a guard és a dokumentáció elcsúszik", and nothing
+enforced it. The drift is quiet in both directions: a value in the regex but not the docs is a value
+nobody is told about, and a value in the docs but not the regex sends an agent following instructions
+into a 409. The verdict list is DERIVED FROM THE REGEX -- a second hand-written list is the very
+thing the test exists to prevent -- with a non-vacuity case that fails if the extraction ever parses
+nothing.
+
+**Mutation-checked.** Dropping FELESLEGES from the regex turns the vocabulary test red in both
+directions; removing it from the seed skill alone turns the sync test red by naming the file;
+stripping it from the dispatcher's owner notice turns the notice case red. One mutation deliberately
+did NOT fail: removing it from the notice's slash-list while leaving it in that line's parenthetical
+gloss. That is correct -- the assertion is that an agent reading the notice learns the value exists,
+and the gloss says so.

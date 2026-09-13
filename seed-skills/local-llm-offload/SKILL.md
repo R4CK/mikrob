@@ -87,12 +87,20 @@ can go to `waiting`. Put one line, at the START of a line, in any comment on the
 ```
 Draft-Review: ELFOGADVA      # I read it and integrated it
 Draft-Review: RESZBEN        # I used part of it
-Draft-Review: ELUTASITVA     # I read it, it was wrong, I wrote it myself
+Draft-Review: ELUTASITVA     # I read it, it was WRONG, I wrote it myself
+Draft-Review: FELESLEGES     # it was RIGHT, but I needed none of it
 ```
 
-(`ACCEPTED` / `PARTIAL` / `REJECTED` work too.)
+(`ACCEPTED` / `PARTIAL` / `REJECTED` / `REDUNDANT` work too.)
 
-All three pass. The guard is not asking you to LIKE the draft -- it is asking that the draft not go
+WHICH ONE IS FELESLEGES, and why it is not a softer REJECTED. Use it when the draft was correct and
+you took nothing from it anyway -- most often because you found the defect yourself and the fix was
+already written by the time the draft landed. That is a TIMING outcome, not a quality one, and it is
+the expected shape on any card an agent opened from its own finding. Filed under ELUTASITVA it reads
+as "the local model wrote something wrong", and that number is what a future decision about whether
+the offload is worth its cost will be made from. Say what actually happened.
+
+All four pass. The guard is not asking you to LIKE the draft -- it is asking that the draft not go
 through unexamined. Rejecting a bad draft is a correct outcome and a completed handoff; the failure
 this closes is the draft nobody ever looked at. Measured before the guard existed: of 11 closed
 cards carrying a local-LLM draft, NINE had no later comment that even mentioned it.
