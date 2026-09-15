@@ -13003,3 +13003,24 @@ ez hiányzó kontroll, nem folyamatban lévő incidens -- de a `.git` eltávolí
 **Ki döntött:** Cybersec (mérés, eszköz, verdikt-javaslat).
 **Hivatkozás:** kártya 3c73a420; `store/vendored-skill-integrity.py`,
 `store/vendored-skill-sanctioned.json`.
+
+## 2026-09-15 09:14 -- marveen-land.sh: a fleet-test.sh a MERGE eredményéből fusson, ne az élő telepítésből
+
+**Döntés:** `marveen-land.sh` `TEST_CMD`-je eddig mindig `$MAIN/store/fleet-test.sh`-t hívta (az élő,
+telepített példányt), függetlenül attól, hogy a landolandó ág maga módosította-e a `fleet-test.sh`
+saját bash-logikáját. Mostantól alapból az adott ügynök SAJÁT merge-worktree-jének
+(`$wt/store/fleet-test.sh`) példányát hívja -- az `--ref` argumentum és `fleet-test.sh` belső, kőbe
+vésett `ROOT="/home/neon/marveen"` változatlan marad (a szkript így is a megosztott git-tárolót és a
+saját, tartós `TEST_TREE`-jét használja a tényleges checkout+build+vitest futtatásához), csak az a
+PÉLDÁNY változik, amelyiket a landoló szkript ténylegesen elindít. `MARVEEN_LAND_TEST` env-override
+változatlanul felülír mindent (a selftest stubja).
+
+**Miért:** Két kártya ugyanazt a hibát írta le két oldalról (88a0a5e1, 03cff5c1, mindkettő
+backend3/Cybersec lelete): (a) egy `fleet-test.sh`-t javító landolás sosem futtatta a saját javítását,
+csak a régi, élő példányt; (b) ha épp az ÉLŐ példány a hibás, az blokkolja a SAJÁT javításának
+landolását -- csirke-tojás patthelyzet. MÉRVE (mutáció mindkét irányban, dobozolt teszt-repóval): a
+régi kóddal egy ágban módosított `fleet-test.sh` figyelmen kívül maradt, a landolás a régi, élő
+tartalmat futtatta; az új kóddal ugyanaz az ág a saját, módosított tartalmát futtatta.
+
+**Ki döntött:** backend3 (mérés + implementáció), a kártyák eredeti lelete Cybersec-é/backend3-é.
+**Hivatkozás:** kártyák 88a0a5e1, 03cff5c1; `store/marveen-land.sh`.
