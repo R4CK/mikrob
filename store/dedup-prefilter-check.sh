@@ -128,6 +128,10 @@ STOPWORDS = {
     "annak", "amit", "amely", "amelyik", "ahol", "amikor", "miutan", "mielott",
     "ezert", "tehat", "csak", "meg", "mar", "ide", "oda", "igy", "ugy", "ket",
     "het", "egy", "minden", "barmi", "utan", "elott", "kell", "lehet", "volt",
+    # accented forms of the above: tokenize() keeps Unicode letters (À-ſ), so an
+    # unaccented-only entry never matches the accented spelling of the same word
+    "kártya", "miután", "mielőtt", "ezért", "már", "így", "úgy", "két",
+    "hét", "bármi", "után", "előtt", "tehát",
 }
 
 

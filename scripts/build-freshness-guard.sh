@@ -30,7 +30,7 @@ INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_DIR="${BUILD_GUARD_REPO_DIR:-$INSTALL_DIR}"
 STATE_DIR="${BUILD_GUARD_STATE_DIR:-$INSTALL_DIR/store}"
 ALERT_STAMP="$STATE_DIR/.build-freshness-guard-alerted"
-TG_ENV="$HOME/.claude/channels/telegram/.env"
+TG_ENV="$INSTALL_DIR/.claude/channels/telegram/.env"
 LOG_TAG="build-freshness-guard"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" || true; }
