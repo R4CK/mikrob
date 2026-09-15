@@ -27,18 +27,48 @@
 # and the merge does not, the landing is refused.
 #
 # SCOPE, so the cost lands where the risk is: the bundles run only when the merge touches apps/web,
-# apps/superadmin or packages/. An api-only or infra-only branch cannot break a browser bundle, and
-# the check says out loud when it skipped, because a silently narrowed check reads like coverage.
-# Measured cost when it does run: superadmin ~7 s, web ~66 s.
+# apps/superadmin, packages/, or a ROOT-level file the bundler's dependency resolution reads
+# directly (card 5136cf80, F-2: Cybersec's 0a907846-gate finding -- a root package.json/pnpm-
+# lock.yaml/pnpm-workspace.yaml/.npmrc/tsconfig* swap, e.g. onto a node-only dependency, can break
+# the bundle exactly like a source change, and the original regex (apps/web/|apps/superadmin/|
+# packages/ only) never saw it: the risk and the skip-condition silently diverged). An api-only or
+# infra-only branch cannot break a browser bundle, and the check says out loud when it skipped,
+# because a silently narrowed check reads like coverage. Measured cost when it does run:
+# superadmin ~7 s, web ~66 s.
 
 # Which pnpm filters the Dockerfile actually builds -- kept in this order deliberately: superadmin is
 # the cheap one, so a break there is reported ~60 s sooner.
 CC_BUNDLE_FILTERS="${CC_BUNDLE_FILTERS:-@cleancore/superadmin @cleancore/web}"
 
+# card 5136cf80, F-3 (Cybersec): CC_BUNDLE_FILTERS="${CC_BUNDLE_FILTERS:-default}" above only
+# substitutes on UNSET or the LITERAL empty string -- a caller-supplied value that is merely BLANK
+# (e.g. a single space) survives it untouched, then `for f in $CC_BUNDLE_FILTERS` word-splits it to
+# ZERO filters. bundle_failures() would loop zero times, return "", and its caller (cleancore-
+# land.sh) reads an empty result as "every filter built" when NOTHING was actually built -- the
+# exact false-green class card 0a907846 opened this whole file to close. Called by the caller right
+# before it actually runs the build loop (not at source time, which would fire even when
+# --skip-bundle or bundle_relevant() means the loop never runs at all).
+bundle_filters_or_die() {
+  # shellcheck disable=SC2086
+  set -- $CC_BUNDLE_FILTERS
+  if [ "$#" -eq 0 ]; then
+    echo "cleancore-bundle-check: CC_BUNDLE_FILTERS resolved to zero filters -- refusing rather than silently skipping every build (raw value: '$CC_BUNDLE_FILTERS')" >&2
+    exit 1
+  fi
+}
+
+# card 5136cf80, F-4 (Cybersec): --skip-bundle left no durable trace of which landings used it --
+# the same telemetry gap --skip-typecheck has (card 4bbb5167, NOT fixed there; this closes it only
+# for --skip-bundle, the flag this card was opened for). One line per use, append-only.
+# log_bundle_skip <ledger-path> <cardId> <sha>
+log_bundle_skip() {
+  printf '%s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$2" "$3" >> "$1"
+}
+
 # bundle_relevant <main-clone> <merge-base> <sha> -> 0 when the bundles should run
 bundle_relevant() {
   git -C "$1" diff --name-only "$2..$3" 2>/dev/null \
-    | grep -qE '^(apps/web/|apps/superadmin/|packages/)'
+    | grep -qE '^(apps/web/|apps/superadmin/|packages/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.npmrc$|tsconfig[A-Za-z0-9._-]*\.json$|vite\.config\.[cm]?[jt]s$)'
 }
 
 # bundle_failures <worktree> -> prints one line per filter that failed to build; empty means all built.

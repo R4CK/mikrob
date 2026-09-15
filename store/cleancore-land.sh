@@ -279,6 +279,35 @@ if [ "${1:-}" = "--selftest" ]; then
     "$(printf '[warn] a.md\n[warn] b.ts\n[warn] Code style issues found in the above files. Run Prettier with --write to fix.\n' | fmt_bad_files | wc -l)" \
     "2"
   conflict_marker_selftest_cases
+  # Bundle-check fixes (card 5136cf80, Cybersec's 0a907846-gate findings F-1/F-2/F-3/F-4).
+  # F-1: the same comm -13 delta idiom as the typecheck cases above, applied to bundle_failures()
+  # output -- proves a DIFFERENT failing filter on the merge is NOT waved through as "inherited"
+  # just because main fails on SOME filter.
+  t "a bundle failure on a filter main does NOT also fail on is reported as new" \
+    "$(comm -13 <(printf '@cleancore/superadmin :: boom\n' | sort) <(printf '@cleancore/superadmin :: boom\n@cleancore/web :: kaboom\n' | sort))" \
+    "@cleancore/web :: kaboom"
+  t "a bundle failure on the SAME filter as main is inherited, not new" \
+    "$(comm -13 <(printf '@cleancore/web :: kaboom\n' | sort) <(printf '@cleancore/web :: kaboom\n' | sort) | wc -l)" \
+    "0"
+  t "main building clean means every merge failure is new" \
+    "$(comm -13 <(printf '%s\n' "" | sort) <(printf '@cleancore/web :: kaboom\n' | sort) | wc -l)" \
+    "1"
+  # F-2: bundle_relevant now also fires on root dependency/config files, not just source dirs.
+  t "a root package.json change IS bundle-relevant" \
+    "$(printf 'package.json\n' | grep -qE '^(apps/web/|apps/superadmin/|packages/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.npmrc$|tsconfig[A-Za-z0-9._-]*\.json$|vite\.config\.[cm]?[jt]s$)' && echo yes || echo no)" \
+    "yes"
+  t "a root pnpm-lock.yaml change IS bundle-relevant" \
+    "$(printf 'pnpm-lock.yaml\n' | grep -qE '^(apps/web/|apps/superadmin/|packages/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.npmrc$|tsconfig[A-Za-z0-9._-]*\.json$|vite\.config\.[cm]?[jt]s$)' && echo yes || echo no)" \
+    "yes"
+  t "a root tsconfig.json change IS bundle-relevant" \
+    "$(printf 'tsconfig.json\n' | grep -qE '^(apps/web/|apps/superadmin/|packages/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.npmrc$|tsconfig[A-Za-z0-9._-]*\.json$|vite\.config\.[cm]?[jt]s$)' && echo yes || echo no)" \
+    "yes"
+  t "a NESTED tsconfig.json (e.g. apps/api/tsconfig.json) is still NOT bundle-relevant on its own" \
+    "$(printf 'apps/api/tsconfig.json\n' | grep -qE '^(apps/web/|apps/superadmin/|packages/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.npmrc$|tsconfig[A-Za-z0-9._-]*\.json$|vite\.config\.[cm]?[jt]s$)' && echo yes || echo no)" \
+    "no"
+  t "an unrelated root file (e.g. README.md) is still NOT bundle-relevant" \
+    "$(printf 'README.md\n' | grep -qE '^(apps/web/|apps/superadmin/|packages/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.npmrc$|tsconfig[A-Za-z0-9._-]*\.json$|vite\.config\.[cm]?[jt]s$)' && echo yes || echo no)" \
+    "no"
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -534,11 +563,14 @@ fi
 # BROWSER BUNDLE, as a delta against main (card 0a907846). See store/cleancore-bundle-check.sh for
 # the ten hours of undeployable main this exists to prevent, and for why the real bundler runs
 # instead of a static import rule.
+BUNDLE_SKIP_LEDGER="${BUNDLE_SKIP_LEDGER:-$(dirname "$0")/.cleancore-bundle-skip-ledger.log}"
 if [ "${SKIP_BUNDLE:-0}" -eq 1 ]; then
   say "bundle: SKIPPED (--skip-bundle) -- the merge result was NOT bundled"
+  log_bundle_skip "$BUNDLE_SKIP_LEDGER" "$CARD" "$SHA"
 elif ! bundle_relevant "$MAIN" "$MB" "$SHA"; then
-  say "bundle: not applicable (the branch touches no apps/web, apps/superadmin or packages/ file)"
+  say "bundle: not applicable (the branch touches no apps/web, apps/superadmin, packages/, or shared root dependency/config file)"
 else
+  bundle_filters_or_die
   link_node_modules "$WT"
   MERGE_BUNDLE="$(bundle_failures "$WT")"
   if [ -z "$MERGE_BUNDLE" ]; then
@@ -552,15 +584,27 @@ else
     link_node_modules "$BASE_BWT"
     BASE_BUNDLE="$(bundle_failures "$BASE_BWT")"
     git -C "$MAIN" worktree remove --force "$BASE_BWT" >/dev/null 2>&1
-    if [ -n "$BASE_BUNDLE" ]; then
-      # Inherited: main is already unbuildable, so refusing this branch would punish the wrong card.
-      # Printed rather than swallowed -- this is exactly the state that went unnoticed for ten hours.
-      say "bundle: main $BASE ALREADY FAILS TO BUILD -- inherited, not caused by this branch:"
-      printf '%s\n' "$BASE_BUNDLE" | sed 's/^/      /'
+    # card 5136cf80, F-1 (Cybersec, 0a907846 gate): this used to be a BINARY check -- "does main fail
+    # AT ALL" -- so a merge that breaks a DIFFERENT, unrelated filter than whatever was already
+    # broken on main was waved through as "inherited", when it was really a new, independent
+    # breakage this branch introduced. Compare the actual FAILING-FILTER SETS instead, the same
+    # `comm -13` delta idiom the typecheck check above uses (both sides sorted first, comm requires
+    # it).
+    NEW_BUNDLE="$(comm -13 <(printf '%s\n' "$BASE_BUNDLE" | sort) <(printf '%s\n' "$MERGE_BUNDLE" | sort))"
+    if [ -z "$NEW_BUNDLE" ]; then
+      # Inherited: every filter this merge fails on ALSO fails on main, so refusing this branch
+      # would punish the wrong card. Printed rather than swallowed -- this is exactly the state that
+      # went unnoticed for ten hours.
+      say "bundle: main $BASE already fails to build the SAME filter(s) -- inherited, not caused by this branch:"
+      printf '%s\n' "$MERGE_BUNDLE" | sed 's/^/      /'
       say "bundle: landing continues; the main breakage needs its own card"
     else
-      echo "REFUSED: main builds, but the merge result does NOT produce a browser bundle:"
-      printf '%s\n' "$MERGE_BUNDLE" | sed 's/^/    /'
+      echo "REFUSED: the merge result introduces a bundle failure main does not have:"
+      printf '%s\n' "$NEW_BUNDLE" | sed 's/^/    /'
+      if [ -n "$BASE_BUNDLE" ]; then
+        echo "    (main ALSO has the following pre-existing, unrelated failure(s) -- for context, not blocking this refusal):"
+        printf '%s\n' "$BASE_BUNDLE" | sed 's/^/    /'
+      fi
       echo "    (a green suite and a clean tsc cannot see this -- tests run under node, where node:crypto resolves)"
       exit 4
     fi

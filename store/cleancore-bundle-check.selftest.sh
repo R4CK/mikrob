@@ -59,6 +59,42 @@ bundle_relevant "$tmp/r" "$B" "$(cat "$tmp/apionly")" && bad "api+infra-only ran
 bundle_relevant "$tmp/r" "$B" "$(cat "$tmp/web")"     && ok "a range touching apps/web is relevant"    || bad "apps/web range must be relevant"
 bundle_relevant "$tmp/r" "$B" "$(cat "$tmp/pkg")"     && ok "a range touching packages/ is relevant"   || bad "packages/ range must be relevant -- this is the founding case's own path"
 
+# --- bundle_relevant, F-2 (card 5136cf80): root dependency/config files, on the same throwaway repo -
+(
+  set -e
+  cd "$tmp/r"
+  git checkout -q "$B" -b lockonly
+  echo y >> pnpm-lock.yaml 2>/dev/null || echo lock > pnpm-lock.yaml
+  git add -A; git commit -qm "touches root lockfile"
+  git rev-parse HEAD > "$tmp/lockfile"
+  git checkout -q "$B" -b nestedtsconfig
+  echo y > apps/api/tsconfig.json
+  git add -A; git commit -qm "touches a NESTED tsconfig, not root"
+  git rev-parse HEAD > "$tmp/nestedts"
+) >/dev/null 2>&1 || { echo "selftest: FAIL -- could not extend the throwaway repo for F-2"; exit 1; }
+bundle_relevant "$tmp/r" "$B" "$(cat "$tmp/lockfile")" && ok "a root pnpm-lock.yaml change is relevant (F-2)" || bad "root pnpm-lock.yaml must be relevant -- F-2's own motivating case"
+bundle_relevant "$tmp/r" "$B" "$(cat "$tmp/nestedts")" && bad "a NESTED tsconfig.json must NOT trip the root-only tsconfig pattern" || ok "a nested tsconfig.json (apps/api/) is correctly skipped"
+
+# --- bundle_filters_or_die, F-3 (card 5136cf80) --------------------------------------------------
+( CC_BUNDLE_FILTERS="@cleancore/web"; bundle_filters_or_die ) \
+  && ok "a normal, non-empty CC_BUNDLE_FILTERS does not die" || bad "a normal filter list must not die"
+( CC_BUNDLE_FILTERS=" "; bundle_filters_or_die ) >/dev/null 2>&1 \
+  && bad "a whitespace-only CC_BUNDLE_FILTERS must die (F-3's own motivating gap)" \
+  || ok "a whitespace-only CC_BUNDLE_FILTERS is refused, not silently treated as zero filters built"
+
+# --- log_bundle_skip, F-4 (card 5136cf80) ---------------------------------------------------------
+ledger="$tmp/skip-ledger.log"
+log_bundle_skip "$ledger" "cardABC1" "shaDEF2"
+if [ -f "$ledger" ] && grep -q "cardABC1 shaDEF2" "$ledger"; then
+  ok "log_bundle_skip appends a durable card+sha record (F-4)"
+else
+  bad "log_bundle_skip did not record card+sha -- --skip-bundle would again leave no trace"
+fi
+log_bundle_skip "$ledger" "cardXYZ9" "shaUVW8"
+[ "$(wc -l < "$ledger")" = 2 ] \
+  && ok "a second skip APPENDS rather than overwriting the ledger" \
+  || bad "log_bundle_skip must append, not truncate -- lost the first record"
+
 # --- bundle_failures, against the two real shas (opt-in: it runs two real bundlers) ---------------
 if [ "${CC_BUNDLE_SELFTEST_REAL:-0}" = 1 ]; then
   wt="/home/neon/cc-bundle-selftest-$$"
