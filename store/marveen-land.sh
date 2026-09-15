@@ -38,10 +38,12 @@
 #
 # Env overrides (tests only):
 #   MARVEEN_MAIN     default /home/neon/marveen -- also where `origin` is fetched/pushed
-#   MARVEEN_LAND_TEST   default "$MAIN/store/fleet-test.sh --ref" -- verification command, the merge
-#                       sha is appended as the final argument. fleet-test.sh hardcodes the real repo
-#                       as ROOT, so an automated test of THIS script against a throwaway repo must
-#                       override this to a stub.
+#   MARVEEN_LAND_TEST   default "$wt/store/fleet-test.sh --ref" (that AGENT's own merge worktree,
+#                       resolved per-landing so a change to fleet-test.sh's own logic verifies
+#                       itself -- cards 88a0a5e1 / 03cff5c1) -- verification command, the merge sha
+#                       is appended as the final argument. fleet-test.sh hardcodes the real repo as
+#                       ROOT regardless of which copy runs, so an automated test of THIS script
+#                       against a throwaway repo must still override this to a stub.
 #   MARVEEN_LAND_BUILD  default "npm run build" -- the rebuild run in the live install after a
 #                       src/-touching land (card f1b3f2f0). MARVEEN_LAND_REBUILD=off disables the
 #                       step entirely and says so in the output.
@@ -183,7 +185,15 @@ fi
 [ -d "$MAIN/.git" ] || die 3 "$MAIN is not a git repository"
 DEFAULT_BRANCH="$(g symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
 [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="develop"
-TEST_CMD="${MARVEEN_LAND_TEST:-$MAIN/store/fleet-test.sh --ref}"
+# OVERRIDE-ONLY SENTINEL (cards 88a0a5e1 / 03cff5c1). This used to hardcode $MAIN/store/fleet-test.sh
+# here -- always the LIVE copy, regardless of what the landing itself changes. Two consequences,
+# named separately by the two cards but one defect: (a) a landing that fixes a BUG in fleet-test.sh's
+# own bash logic never gets verified against its own fix, only the stale live copy; (b) if the live
+# copy is the one that's BROKEN, it blocks landing its own repair -- a chicken-and-egg deadlock
+# (Cybersec, card 03cff5c1). The real default is now computed per-agent inside land_one, from that
+# agent's own merge worktree ($wt), so the copy that runs is always the MERGE RESULT's own
+# fleet-test.sh. MARVEEN_LAND_TEST still overrides globally (the selftest's stub), read once here.
+TEST_CMD="${MARVEEN_LAND_TEST:-}"
 # fleet-test.sh posts PAUSED-SEMAPHORE / RESUMED-SEMAPHORE to the landing agent's card while it
 # queues for a shared CPU slot (card 492a6d5c). It cannot find that card on its own -- it takes a
 # ref, not an agent -- so the caller that DOES know which agent it is landing for passes the name.
@@ -374,8 +384,14 @@ land_one() {
     fi
   fi
 
-  # shellcheck disable=SC2086 -- TEST_CMD is an intentional word-split command prefix (script + flags)
-  if ! (cd "$wt" && eval "$TEST_CMD $merge_sha"); then
+  # Cards 88a0a5e1 / 03cff5c1: default to THIS agent's own merge worktree's fleet-test.sh, not
+  # $MAIN's live copy -- see the TEST_CMD sentinel comment above for why. fleet-test.sh's own
+  # internal ROOT stays $MAIN regardless of which on-disk copy of the script text is executed (it
+  # still needs the shared git remote and its durable TEST_TREE there); only the ORCHESTRATION
+  # LOGIC that runs is the merge result's, which is the point.
+  local test_cmd="${TEST_CMD:-$wt/store/fleet-test.sh --ref}"
+  # shellcheck disable=SC2086 -- test_cmd is an intentional word-split command prefix (script + flags)
+  if ! (cd "$wt" && eval "$test_cmd $merge_sha"); then
     echo "$agent: REFUSED -- fleet-test failed on the merge result. Nothing pushed; $branch is untouched."
     return 4
   fi
