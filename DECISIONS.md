@@ -13024,3 +13024,25 @@ tartalmat futtatta; az új kóddal ugyanaz az ág a saját, módosított tartalm
 
 **Ki döntött:** backend3 (mérés + implementáció), a kártyák eredeti lelete Cybersec-é/backend3-é.
 **Hivatkozás:** kártyák 88a0a5e1, 03cff5c1; `store/marveen-land.sh`.
+
+## 2026-09-15 09:41 -- marveen-land.sh: a fenti javítás SZŰKÍTVE -- Cybersec NO-GO, "a róka őrzi a tyúkólt"
+
+**Döntés:** a 09:14-es javítás EGY UJABB, súlyosabb bizalmi rést nyitott: minden landolásnál (nem
+csak a fleet-test.sh-t érintőknél) a landoló branch SAJÁT, még soha nem gate-elt fleet-test.sh
+példánya lett a bíró, holott marveen-land.sh az EGYETLEN automatizált kapu landolás előtt (a repo
+saját terve szerint QA/Cybersec csak UTÁNA fut) -- egy rosszindulatú/hibás fleet-test.sh a saját
+landolását sandboxolás nélkül tudta volna zöldre ítélni. Cybersec NO-GO (kártya 88a0a5e1 komment
+3431). A javítás szűkítve: `git -C "$wt" diff --name-only "$base_sha..$branch" -- store/fleet-test.sh`
+dönti el, érinti-e a branch a fájlt. Ha NEM: marad a régi, biztonságos alapértelmezés -- a MÁR
+ÁTTEKINTETT `$MAIN` élő példány ítél, EGYSZER. Ha IGEN: MINDKÉT példánynak zöldet kell adnia -- a
+`$MAIN` (bizalmi, tanú a többi változásra) ÉS a branch saját `$wt` példánya (tanú a fleet-test.sh
+saját javítására) is lefut, sorban, bármelyik piros refusál.
+
+**Miért:** a 4 mutációs eset méréssel igazolva (nem-érintett+zöld -> landol, csak MAIN fut; nem-érintett+piros
+-> refusál; érintett+mindkettő zöld -> landol, mindkettő fut; érintett+MAIN piros -> refusál, a
+branch saját példánya EL SE indul, tehát a bizalmi biró nem kerülhető meg; érintett+branch piros ->
+refusál, a branch saját javítása is bizonyítva helytelen). A dupla-futás ára csak a ritka,
+fleet-test.sh-t érintő landolásra esik.
+
+**Ki döntött:** backend3 (implementáció), Cybersec (NO-GO lelet + javasolt irány).
+**Hivatkozás:** kártyák 88a0a5e1, 03cff5c1, komment 3431; `store/marveen-land.sh`.
