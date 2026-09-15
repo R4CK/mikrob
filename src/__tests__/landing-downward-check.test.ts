@@ -63,13 +63,13 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
   it('both counts include the shared block', () => {
     const cc = caseCount(selftest('cleancore-land.sh').out)
     const mv = caseCount(selftest('marveen-land.sh').out)
-    // 27 since card 3bfb133e added four fmt_bad_files cases to cleancore-land.sh's own block (it
-    // was 23 after edf9c837's seven pick_branch cases). This constant tracks ONE lander's own
-    // block, so it moves whenever that block does -- the assertion it feeds is about the SHARED
-    // block being identical in both, and lowering it to make an edit fit would delete exactly that
-    // guarantee.
-    expect(cc).toBeGreaterThan(27) // 27 = cleancore-land.sh's own cases
+    // 35 since card 5136cf80 added nine bundle-guard cases (F-1/F-2) to cleancore-land.sh's own
+    // block (it was 27 after 3bfb133e's four fmt_bad_files cases, 23 before that after edf9c837's
+    // seven pick_branch cases). This constant tracks ONE lander's own block, so it moves whenever
+    // that block does -- the assertion it feeds is about the SHARED block being identical in both,
+    // and lowering it to make an edit fit would delete exactly that guarantee.
+    expect(cc).toBeGreaterThan(35) // 35 = cleancore-land.sh's own cases
     expect(mv).toBeGreaterThan(3) //  3 = marveen-land.sh's own cases
-    expect(cc - 27).toBe(mv - 3) // the same shared block, in both
+    expect(cc - 35).toBe(mv - 3) // the same shared block, in both
   })
 })
