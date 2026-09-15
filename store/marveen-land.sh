@@ -384,18 +384,57 @@ land_one() {
     fi
   fi
 
-  # Cards 88a0a5e1 / 03cff5c1: default to THIS agent's own merge worktree's fleet-test.sh, not
-  # $MAIN's live copy -- see the TEST_CMD sentinel comment above for why. fleet-test.sh's own
-  # internal ROOT stays $MAIN regardless of which on-disk copy of the script text is executed (it
-  # still needs the shared git remote and its durable TEST_TREE there); only the ORCHESTRATION
-  # LOGIC that runs is the merge result's, which is the point.
-  local test_cmd="${TEST_CMD:-$wt/store/fleet-test.sh --ref}"
-  # shellcheck disable=SC2086 -- test_cmd is an intentional word-split command prefix (script + flags)
-  if ! (cd "$wt" && eval "$test_cmd $merge_sha"); then
-    echo "$agent: REFUSED -- fleet-test failed on the merge result. Nothing pushed; $branch is untouched."
-    return 4
+  # Cards 88a0a5e1 / 03cff5c1, NARROWED by Cybersec NO-GO (same cards, comment 3431) after the
+  # first version of this fix over-widened it. The first version defaulted EVERY landing's judge
+  # to $wt/store/fleet-test.sh -- the LANDING BRANCH'S OWN, never-yet-gated copy -- not just the
+  # ones that actually touch fleet-test.sh. Since marveen-land.sh is the ONLY automated technical
+  # gate a branch crosses BEFORE human/QA/Cybersec review (this repo's own design: "Marveen gates
+  # AFTER landing"), and `eval "$test_cmd $merge_sha"` runs with the landing shell's own rights, no
+  # sandbox -- that made every branch, gated or not, its own judge. A branch could ship a
+  # fleet-test.sh that always exits 0, skips security-relevant suites, or runs arbitrary code in
+  # the landing process, and nothing here would catch it.
+  #
+  # THE NARROW CASE THE ORIGINAL BUG WAS ABOUT is real and stays fixed: a branch that ACTUALLY
+  # modifies store/fleet-test.sh's own orchestration logic must be verified by running that
+  # modification, not a stale reviewed copy that cannot see it. So the choice of judge now turns on
+  # whether THIS branch touches that one file, decided against $base_sha, the same anchor point the
+  # seam-check above already uses.
+  local touched_fleet_test
+  touched_fleet_test="$(g diff --name-only "$base_sha..$branch" -- store/fleet-test.sh)"
+  if [ -n "$TEST_CMD" ]; then
+    # Env override wins outright (selftest stub) -- exactly the old, single-judge behaviour.
+    # shellcheck disable=SC2086 -- TEST_CMD is an intentional word-split command prefix
+    if ! (cd "$wt" && eval "$TEST_CMD $merge_sha"); then
+      echo "$agent: REFUSED -- fleet-test failed on the merge result. Nothing pushed; $branch is untouched."
+      return 4
+    fi
+    say "$agent: fleet-test green on the merge result"
+  elif [ -z "$touched_fleet_test" ]; then
+    # THE SAFE DEFAULT, UNCHANGED FROM BEFORE THIS CARD PAIR: the branch has no reason to be its
+    # own judge, so the judge stays the ALREADY-REVIEWED live copy at $MAIN.
+    if ! (cd "$wt" && eval "$MAIN/store/fleet-test.sh --ref $merge_sha"); then
+      echo "$agent: REFUSED -- fleet-test failed on the merge result (judged by \$MAIN's already-reviewed copy). Nothing pushed; $branch is untouched."
+      return 4
+    fi
+    say "$agent: fleet-test green on the merge result (judged by \$MAIN's already-reviewed copy -- $branch does not touch store/fleet-test.sh)"
+  else
+    # THE NARROW CASE: this branch DOES touch fleet-test.sh. BOTH copies must agree -- the
+    # TRUSTED $MAIN copy proves the rest of the branch does not regress under a judge the branch
+    # cannot have tampered with; the branch's OWN $wt copy proves its fleet-test.sh change actually
+    # works. Twice the cost, paid only on the rare landing that touches this one file, in exchange
+    # for closing the "the fox guards the henhouse" hole Cybersec measured (comment 3431).
+    say "$agent: $branch touches store/fleet-test.sh -- requiring BOTH the trusted \$MAIN copy AND the branch's own copy to pass (Cybersec NO-GO, cards 88a0a5e1/03cff5c1)"
+    if ! (cd "$wt" && eval "$MAIN/store/fleet-test.sh --ref $merge_sha"); then
+      echo "$agent: REFUSED -- fleet-test (the trusted \$MAIN copy) failed on the merge result. Nothing pushed; $branch is untouched."
+      return 4
+    fi
+    say "$agent: fleet-test (the trusted \$MAIN copy) green"
+    if ! (cd "$wt" && eval "$wt/store/fleet-test.sh --ref $merge_sha"); then
+      echo "$agent: REFUSED -- fleet-test (the branch's OWN fleet-test.sh) failed on the merge result. Nothing pushed; $branch is untouched."
+      return 4
+    fi
+    say "$agent: fleet-test (the branch's own copy) also green -- its own fleet-test.sh change verifies itself"
   fi
-  say "$agent: fleet-test green on the merge result"
 
   # Merge-conflict marker check (card 4b4c89eb) -- see store/conflict-marker-check.sh for the
   # incident this closes and why only the two unambiguous markers are checked.
