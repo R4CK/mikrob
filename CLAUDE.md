@@ -194,11 +194,11 @@ KÖTELEZŐ minden nem-triviális feladatnál. Részletek: `project-workflow` ski
 
 ### CleanCore munkakönyvtár a dispatchben (kártya 973ed6eb, a 2513e84d worktree-epic zárása)
 
-A CleanCore-t **minden fejlesztő ügynök a SAJÁT git-worktree-jében** szerkeszti, nem a megosztott klónban. A megosztott klón (`/mnt/h/LM_Studio_Workdir/CleanCore`) mostantól CSAK fetch/landolás-alap: oda senki nem commitol. Ez a `shared-file-commit-entanglement` hibaosztály szerkezeti megszüntetése (saját index + saját `core.hooksPath`), nem a fegyelemre bízása.
+A CleanCore-t **minden fejlesztő ügynök a SAJÁT git-worktree-jében** szerkeszti, nem a megosztott klónban. A megosztott klón (`/mnt/h/LM_Studio_Workdir/mopsion`) mostantól CSAK fetch/landolás-alap: oda senki nem commitol. Ez a `shared-file-commit-entanglement` hibaosztály szerkezeti megszüntetése (saját index + saját `core.hooksPath`), nem a fegyelemre bízása.
 
 - **Az útvonalat SOHA ne írd be fixen** -- se dispatch-üzenetbe, se skillbe, se kártyaszövegbe. Az egyetlen forrás: `store/agent-worktree.sh <ügynök> --path` (idempotens létrehozás: `store/agent-worktree.sh <ügynök>`). A globális skillek már ezt hívják.
 - **Dispatchnél** a kártya ne mondja meg, MELYIK könyvtár -- csak azt, melyik repó. A könyvtárat az ügynök oldja fel magának a saját nevével.
-- **Aki csak ELLENŐRIZ** (gate: landolt-e egy sha, mit tartalmaz egy commit), az a fő klónt olvassa `${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}` néven, és **ott nem commitol**. Gate SOHA ne futtasson tesztet más ügynök worktree-jében: ott élő, félkész munka van -- a felülvizsgált SHA-ra nyitott eldobható worktree a helyes hely.
+- **Aki csak ELLENŐRIZ** (gate: landolt-e egy sha, mit tartalmaz egy commit), az a fő klónt olvassa `${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}` néven, és **ott nem commitol**. Gate SOHA ne futtasson tesztet más ügynök worktree-jében: ott élő, félkész munka van -- a felülvizsgált SHA-ra nyitott eldobható worktree a helyes hely.
 - **Függőség-telepítő (`pnpm install`, `npm ci`, `pnpm add`) SOHA nem futhat worktree-ből**: a `node_modules` ott SYMLINK a fő klónba, tehát egy itteni install minden ügynök közös fáját írja át munka közben. Telepíteni a fő klónban kell, utána `store/agent-worktree.sh <ügynök>` pótolja az új linkeket.
 - **Ügynök váltása a saját worktree-jére a SAJÁT lépése** (MikroB döntése, 420ef7b4): ne más ügynök állítsa át helyette, mert az elviheti a folyamatban lévő munkáját.
 

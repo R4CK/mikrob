@@ -53,7 +53,7 @@ import os
 # install that moved the clone is not silently reported as "no evidence" -- the failure this file
 # exists to end.
 MARVEEN = Path(os.environ.get("NMR_MARVEEN_REPO", "/home/neon/marveen"))
-CLEANCORE = Path(os.environ.get("CLEANCORE_MAIN", "/mnt/h/LM_Studio_Workdir/CleanCore"))
+CLEANCORE = Path(os.environ.get("CLEANCORE_MAIN", "/mnt/h/LM_Studio_Workdir/mopsion"))
 BATCH_DIR = Path(os.environ.get("NMR_BATCH_DIR", str(MARVEEN / "store" / "review-batches")))
 BATCHES = [
     ("036a0913", "nmr-backend2.jsonl"),

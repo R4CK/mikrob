@@ -51,7 +51,7 @@
 # Exit: 0 ok | 2 bad usage | 3 setup failed
 set -euo pipefail
 
-MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 GATE_ROOT="${CC_GATE_ROOT:-$HOME}"
 AGENT="${CC_GATE_AGENT:-}"
 FORCE=0

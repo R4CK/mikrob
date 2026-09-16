@@ -229,7 +229,7 @@ from `agent/backend/work` to a detached `709aa3db`, and it was not backend's own
 throwaway, process-scoped worktree off the shared clone instead — same shape as
 `store/cleancore-pregate.sh` — and remove it when done:
 ```bash
-CC_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+CC_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 WT="$HOME/cybered-gate-<sha>-$$"
 git -C "$CC_MAIN" worktree add --detach "$WT" <sha>
 ln -s "$CC_MAIN/node_modules" "$WT/node_modules"   # + per-package links if the suite needs them

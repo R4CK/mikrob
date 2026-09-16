@@ -22,7 +22,7 @@ BASE = 'http://localhost:3420'
 # A FŐ klón, szándékosan (kártya 973ed6eb): ez a kérdés az, hogy egy sha LANDOLT-e az
 # origin/main-en -- landolás-ellenőrzés, nem munka. Ügynök-worktree-t itt ne használj, és ide
 # ne is commitolj.
-CLEANCORE = os.environ.get('CLEANCORE_MAIN', '/mnt/h/LM_Studio_Workdir/CleanCore')
+CLEANCORE = os.environ.get('CLEANCORE_MAIN', '/mnt/h/LM_Studio_Workdir/mopsion')
 
 def api(path, method='GET', body=None):
     data = json.dumps(body).encode() if body else None

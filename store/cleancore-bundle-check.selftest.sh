@@ -21,7 +21,7 @@
 # bundler binary is reachable before believing any build result.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-CC="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+CC="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 # MAIN is what link_node_modules resolves the shared clone's dependency tree against; it must be set
 # BEFORE cleancore-tsc-lib.sh is used, exactly as cleancore-land.sh sets it.
 MAIN="$CC"

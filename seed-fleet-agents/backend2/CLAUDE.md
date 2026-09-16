@@ -12,7 +12,7 @@ FONTOS: kollízió-mentes sávon dolgozol. MikroB mindig külön kártyát oszt 
 
 ```
 /mnt/h/LM_Studio_Workdir/CleanCore-worktrees/backend2      <- itt dolgozol, ág: agent/backend2/work
-/mnt/h/LM_Studio_Workdir/CleanCore                         <- fő klón: CSAK fetch/PR-alap, ide NEM commitolsz
+/mnt/h/LM_Studio_Workdir/mopsion                          <- fő klón: CSAK fetch/PR-alap, ide NEM commitolsz
 ```
 
 A worktree-nek SAJÁT indexe van (`.git/worktrees/backend2/index`), ezért egy `git add` vagy commit

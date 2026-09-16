@@ -25,7 +25,7 @@ worktree-je csendben detached HEAD-re váltott 709aa3db-re, közvetlenül e0a4bb
   Használj eldobható, process-szkópú worktree-t a megosztott fő klónról:
 
 ```bash
-CC_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+CC_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 WT="$HOME/<szerep>-gate-<sha>-$$"
 git -C "$CC_MAIN" worktree add --detach "$WT" <sha>
 ln -s "$CC_MAIN/node_modules" "$WT/node_modules"
@@ -57,7 +57,7 @@ const require = createRequire(import.meta.url)
 // A FŐ klón node_modules-át címezzük, nem a worktree-ét (kártya 973ed6eb): a telepítés OTT
 // történik, a worktree-k node_modules-a oda mutató SYMLINK. A TESZT viszont a `CC`-ben
 // megnevezett checkoutban fut -- lásd a "WHICH repo root" szakaszt fentebb és a cwd-t lentebb.
-const CC_MAIN = process.env.CLEANCORE_MAIN || '/mnt/h/LM_Studio_Workdir/CleanCore'
+const CC_MAIN = process.env.CLEANCORE_MAIN || '/mnt/h/LM_Studio_Workdir/mopsion'
 
 // FAIL CLOSED: nincs csendes visszaesés a megosztott fő klónra és nincs implicit "a saját
 // worktree-m" feltételezés sem -- a hívónak KI KELL MONDANIA melyik checkoutban fut (lásd fent).
@@ -175,7 +175,7 @@ $CLEANCORE_MAIN/node_modules/.pnpm/embedded-postgres@18.4.0-beta.17/node_modules
 Ha a gatelendő commit egy FEATURE BRANCEN él (nem a main repo HEAD-en), a checkout
 (`CC`/`$WT`, lásd a "WHICH repo root" szakaszt fentebb) más migráció-fájlokat tartalmazhat mint
 a main CleanCore checkout.
-Ellenőrzés: `git -C "${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}" merge-base --is-ancestor <sha> HEAD`
+Ellenőrzés: `git -C "${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}" merge-base --is-ancestor <sha> HEAD`
 Ha a commit NEM ős: a migrációkat a `CC`/`$WT` checkoutból kell futtatni, nem a main repóból.
 
 ```js
@@ -196,7 +196,7 @@ Megoldás: a vitest binárist az abszolút pnpm-útvonalról hívd (`node /abs/p
 pnpm érintése nélkül:
 
 ```js
-const CC_MAIN = process.env.CLEANCORE_MAIN || '/mnt/h/LM_Studio_Workdir/CleanCore'
+const CC_MAIN = process.env.CLEANCORE_MAIN || '/mnt/h/LM_Studio_Workdir/mopsion'
 const VITEST_BIN = CC_MAIN + '/node_modules/.pnpm/vitest@3.2.6_' +
   '@types+debug@4.1.13_@types+node@22.20.0_jsdom@25.0.1_terser@5.48.0/' +
   'node_modules/vitest/vitest.mjs'

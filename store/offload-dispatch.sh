@@ -354,7 +354,7 @@ graph_repo_for() {
   local project="$1"
   case "$project" in
     MikroB)    (cd "$(git -C "$HERE" rev-parse --git-common-dir 2>/dev/null || echo .)/.." 2>/dev/null && pwd) ;;
-    CleanCore) echo "${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}" ;;
+    CleanCore) echo "${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}" ;;
   esac
 }
 graph_args_for() {

@@ -20,7 +20,7 @@
 # Exit: 0 ok | 2 bad usage | 3 setup failed
 set -euo pipefail
 
-MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 ROOT="${CLEANCORE_WORKTREES:-/mnt/h/LM_Studio_Workdir/CleanCore-worktrees}"
 
 die() { echo "agent-worktree.sh: $2" >&2; exit "$1"; }

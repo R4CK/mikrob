@@ -20,7 +20,7 @@
 # look, not proof of a defect.
 set -uo pipefail
 
-MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 WT="${1:-}"; shift || true
 [ -n "$WT" ] && [ -d "$WT" ] || { echo "usage: cleancore-seam-sweep.sh <worktree> <ref> <ref> [...]" >&2; exit 2; }
 [ "$#" -ge 2 ] || { echo "need at least two refs -- a seam has two sides" >&2; exit 2; }

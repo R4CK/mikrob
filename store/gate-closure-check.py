@@ -578,7 +578,7 @@ def _fmt_shas(shas):
 # ancestor of this ref exists only on a branch (card e65c480a).
 _CLONES = (
     ("marveen", os.environ.get("MARVEEN_MAIN", "/home/neon/marveen"), "origin/develop"),
-    ("cleancore", os.environ.get("CLEANCORE_MAIN", "/mnt/h/LM_Studio_Workdir/CleanCore"), "origin/main"),
+    ("cleancore", os.environ.get("CLEANCORE_MAIN", "/mnt/h/LM_Studio_Workdir/mopsion"), "origin/main"),
 )
 # One knob, for replaying a past state (the selftest points this at the sha main stood on when the
 # founding case closed) or for a clone whose default branch is named differently. Empty = per-clone
