@@ -1,16 +1,23 @@
 // Card d2f4b273. `blast-radius-check.py --refresh <repo>` reported "already current" on a clone
 // whose working tree was NINE commits behind the branch it tracks.
 //
-// WHY THE OBVIOUS FIX WAS WRONG, and why this test pins a REPORT rather than a refresh. The first
-// plan was to key the staleness check on the upstream ref instead of HEAD. Measured, that would
-// have made things worse: the graph builder discovers changed files with
+// WHY THE OBVIOUS FIX WAS WRONG, and why this file ORIGINALLY pinned a REPORT rather than a
+// refresh. The first plan was to key the staleness check on the upstream ref instead of HEAD.
+// Measured, that would have made things worse: the graph builder discovers changed files with
 // `git diff --name-status -z <base> --` -- NO second revision -- so it diffs the base against the
 // WORKING TREE, and records the new sha from `rev-parse HEAD`. On the CleanCore clone
 // `git diff --name-only <graph> --` saw 0 files where `... <graph> origin/main` saw 25. Pointing
 // the check at the upstream without moving the tree would have printed "graph refreshed, was 9
 // commit(s) behind" over zero indexed files and an unchanged recorded sha: a LOUDER falsehood.
-// Making the graph actually current needs a checkout of the target, which is its own card
-// (42194681). This card's job is that the tool stops lying.
+// This card's job was that the tool stops lying -- refuse rather than claim a refresh it did not
+// do -- and deliberately left "making the graph actually current" to its own card (42194681).
+//
+// SUPERSEDED BY CARD 42194681. That card gave `refresh_only()` a separate, path-stable index
+// worktree it checks out to the target commit on every call, so it no longer needs to refuse: it
+// can actually perform (or, the first time, kick off a background rebuild toward) the refresh
+// this file used to insist it must not attempt. The tests below were rewritten to pin THAT
+// behaviour -- the target-resolution tests later in this file (refresh_target itself, and the
+// marveen-land.sh ordering check) are untouched, since 42194681 did not change either.
 
 import { describe, it, expect } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -118,7 +125,7 @@ describe('refresh_target: what the graph is supposed to cover (card d2f4b273)', 
   })
 })
 
-describe('the refresh REPORTS a working tree that cannot cover the target (card d2f4b273)', () => {
+describe('the refresh CATCHES UP a working tree that cannot cover the target (card 42194681)', () => {
   const SRC = readFileSync(CHECK, 'utf-8')
   /** Comment-stripped: a rule described in prose must not vouch for code that does not do it. */
   const CODE = SRC.split('\n')
@@ -142,22 +149,21 @@ describe('the refresh REPORTS a working tree that cannot cover the target (card 
     ).toBeLessThan(conn)
   })
 
-  it('refuses to claim a refresh it cannot perform, and exits non-zero', () => {
+  it('brings a SEPARATE, path-stable worktree to the target instead of refusing (card 42194681)', () => {
     const body = CODE.slice(CODE.indexOf('def refresh_only'))
-    const gate = body.indexOf('refresh_target(root)')
-    const afterGate = body.slice(gate, body.indexOf('sqlite3.connect'))
-    expect(afterGate).toMatch(/behind/)
-    expect(afterGate).toMatch(/return 1/)
-    // And it must NOT reach the refresh: the whole point is that indexing here would record a
-    // successful-looking update of the wrong tree.
-    expect(afterGate).not.toMatch(/refresh\(root/)
+    // `root` (a fetch-only clone) is never asked to represent the target itself any more -- a
+    // dedicated index worktree is, checked out fresh on every call.
+    expect(body).toContain('_sync_index_worktree(root, idx, target_sha)')
+    // Two callers (two concurrent landings, or a landing racing a still-running background
+    // rebuild) must not step on the same index-worktree checkout or the same graph write.
+    expect(body).toContain('fcntl.flock')
   })
 })
 
 // THE SAME PROPERTY, RUN RATHER THAN READ. The structural checks above all survive `if False:` --
 // the text stays exactly where it was while the branch never fires. That is the vacuity this file
 // keeps finding elsewhere, so the gate gets measured on a real repository too.
-describe('--refresh on a tree behind its target: measured, not read (card d2f4b273)', () => {
+describe('--refresh on a tree behind its target: measured, not read (card 42194681)', () => {
   const refresh = (repo: string): { code: number; out: string } => {
     const r = spawnSync('python3', [CHECK, '--refresh', repo], { encoding: 'utf-8' })
     return { code: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` }
@@ -202,21 +208,31 @@ describe('--refresh on a tree behind its target: measured, not read (card d2f4b2
     }
   }
 
-  it('says how far behind it is, names the target, and exits non-zero', () => {
+  it('brings the clone current instead of refusing, and exits zero (card 42194681)', () => {
     run(3, (res) => {
-      expect(res.out).toMatch(/3 commit\(s\) behind origin\/main/)
-      expect(res.out).toMatch(/refresh skipped/)
-      expect(res.code).not.toBe(0)
-      // The two falsehoods this card exists to remove.
-      expect(res.out).not.toMatch(/already current/)
+      // No index worktree exists yet for this fresh test clone, so this first call cannot
+      // incrementally match the graph -- it kicks off a rebuild instead of refusing (own
+      // failure mode, own selftest in blast-radius-check.py; this file only pins that a stale
+      // clone no longer produces a refusal).
+      expect(res.out).toMatch(/rebuild/)
+      expect(res.code).toBe(0)
+      // The one falsehood this file still guards against: claiming an incremental refresh
+      // happened when what actually happened was scheduling a rebuild.
       expect(res.out).not.toMatch(/graph refreshed/)
     })
   })
 
-  // POSITIVE CONTROL: without this, a gate that fired unconditionally would pass the test above.
-  it('does not claim a lag when the tree IS at the target', () => {
+  // POSITIVE CONTROL, RESHAPED (card 42194681): a first-ever call needs its own index-worktree
+  // build regardless of how stale the clone is -- there is no pre-existing incremental state for
+  // "behind" to describe yet. So the interesting invariant is no longer "0 behind reads
+  // differently from 3 behind" (it does not, on a first call by construction) but "a fresh clone
+  // that IS at the target still goes through the same one-time build, not a false claim of
+  // 'already current' it never verified". Without this, a version of the fix that always printed
+  // "already current" unconditionally would still pass the test above.
+  it('does not claim already-current on a first call even when the tree IS at the target', () => {
     run(0, (res) => {
-      expect(res.out).not.toMatch(/behind/)
+      expect(res.out).toMatch(/rebuild/)
+      expect(res.out).not.toMatch(/already current/)
     })
   })
 })
