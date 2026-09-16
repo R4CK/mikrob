@@ -665,6 +665,13 @@ if git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main; then
   # replaced. Never fatal: a refresh problem must not fail a landing that passed.
   # Kept in the FOREGROUND: measured at 0s when the graph is already current, so it costs the
   # caller nothing, and its output is worth seeing inline.
+  #
+  # No worktree argument (card 42194681): $WT looked reusable (plan-grilling's original
+  # GO-WITH-CHANGES call), but code_review_graph's own `_assert_graph_matches_root` refuses an
+  # incremental update whose --repo path differs from the one the graph was built at -- and $WT's
+  # path (/home/neon/cc-land-$CARD-$$) is different on every single landing, so that call would
+  # have failed every time, in production exactly as it did in testing. blast-radius-check.py now
+  # manages its own persistent, path-stable index worktree internally; it needs only $MAIN.
   "$(dirname "$0")/blast-radius-check.py" --refresh "$MAIN" 2>&1 | sed 's/^/  /' || true
 
   # The graphify code-graph feeds the local model's RAG context at dispatch (card 44477615), and
