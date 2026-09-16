@@ -30,7 +30,7 @@
 set -uo pipefail
 
 ROOT="/home/neon/marveen"
-REPO="${CC_REPO:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+REPO="${CC_REPO:-/mnt/h/LM_Studio_Workdir/mopsion}"
 AUDIT="$ROOT/store/branch-upstream-audit.sh"
 STATE="${CC_DRIFT_STATE:-$ROOT/store/cleancore-branch-drift-state.json}"
 # Overridable from the start (card 9cfed589's own lesson, discovered the hard way earlier tonight

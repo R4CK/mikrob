@@ -23,7 +23,7 @@ MikroB vagy a QA ügynök teheti, és csak NEM saját munkát.
    # megosztott klón CSAK fetch/landolás-alap. Gate-ként a felülvizsgált SHA-ra nyitott
    # eldobható worktree-ben futtass; ha csak olvasol/typecheckelsz, a fő klón is jó. SOHA ne
    # futtass más ügynök worktree-jében (ott élő, félkész munka van), és oda ne is commitolj.
-   CC_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+   CC_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
    git -C "$CC_MAIN" worktree add $HOME/qa-<sha> <sha>    # eldobható, a végén: worktree remove
    cd $HOME/qa-<sha>
    npx vitest run --reporter=verbose apps/<scope>

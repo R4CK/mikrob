@@ -53,7 +53,7 @@ interface RepoTarget {
 }
 
 const CLEANCORE: RepoTarget = {
-  root: process.env['CLEANCORE_MAIN'] ?? '/mnt/h/LM_Studio_Workdir/CleanCore',
+  root: process.env['CLEANCORE_MAIN'] ?? '/mnt/h/LM_Studio_Workdir/mopsion',
   mainRef: 'origin/main',
 }
 // marveen integrates on DEVELOP and has no origin/main at all (Cybersec, card 84091afd). The first

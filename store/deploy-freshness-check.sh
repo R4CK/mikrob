@@ -21,7 +21,7 @@
 # NO SECRETS: read-only git + ssh (key auth) + docker inspect. Nothing written.
 set -uo pipefail
 
-REPO="${CLEANCORE_REPO:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+REPO="${CLEANCORE_REPO:-/mnt/h/LM_Studio_Workdir/mopsion}"
 BRANCH="${CLEANCORE_BRANCH:-main}"
 SSH_KEY="${CLEANCORE_SSH_KEY:-/home/neon/.ssh/cleancore_deploy}"
 VPS="${CLEANCORE_VPS:-root@72.62.35.139}"

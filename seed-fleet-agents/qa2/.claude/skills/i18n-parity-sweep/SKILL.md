@@ -21,7 +21,7 @@ workflow ÚJ tartalmat ír (nem egy már felülvizsgált SHA-t ellenőriz), az e
 eldobható worktree-t HEAD-en, és a végén eldobjuk:
 
 ```bash
-QA2_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+QA2_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 export QA2_WT="$(mktemp -d)"   # export: a lenti python is olvassa os.environ-ből
 git -C "$QA2_MAIN" worktree add "$QA2_WT" HEAD
 # ... dolgozz a $QA2_WT alatt (lásd lent) ...
@@ -47,7 +47,7 @@ CC = subprocess.run(['{{INSTALL_DIR}}/store/agent-worktree.sh', '<a te agent-nev
 ```
 
 Ha csak ELLENŐRZŐL és nem írsz (pl. gate-ként nézed, mi landolt), a fő klón a helyes hivatkozás
-`${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}` -- de ott ne commitolj, és NE dolgozz más
+`${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}` -- de ott ne commitolj, és NE dolgozz más
 ügynök worktree-jében.
 
 ## Procedure

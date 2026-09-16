@@ -35,7 +35,7 @@ import re
 import subprocess
 import urllib.request
 
-REPO = "/mnt/h/LM_Studio_Workdir/CleanCore"
+REPO = "/mnt/h/LM_Studio_Workdir/mopsion"
 API = "http://127.0.0.1:3420/api/kanban"
 TOKEN_PATH = "/home/neon/marveen/store/.dashboard-token"
 SHA_RX = re.compile(r"\b([0-9a-f]{7,40})\b")

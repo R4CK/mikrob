@@ -27,7 +27,7 @@ CC = subprocess.run(['/home/neon/marveen/store/agent-worktree.sh', '<a te agent-
 ```
 
 Ha csak ELLENŐRZŐL és nem írsz (pl. gate-ként nézed, mi landolt), a fő klón a helyes hivatkozás
-`${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}` -- de ott ne commitolj, és NE dolgozz más
+`${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}` -- de ott ne commitolj, és NE dolgozz más
 ügynök worktree-jében.
 
 ## Procedure
@@ -153,7 +153,7 @@ könyvtárat. Ha QA-t ténylegesen fordítás-írásra osztják be (nem csak a l
 eldobható worktree-t a HEAD-en -- nem egy felülvizsgált SHA-n, mert itt ÚJ tartalmat írunk, nem egy
 meglévő commitot ellenőrzünk:
 ```bash
-CC="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+CC="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 export QA_WT="$(mktemp -d)"   # export: a lenti python is olvassa os.environ-ből
 git -C "$CC" worktree add "$QA_WT" HEAD
 # ... dolgozz a $QA_WT alatt (lásd lent) ...

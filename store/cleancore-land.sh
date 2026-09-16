@@ -43,7 +43,7 @@
 # Exit: 0 landed (or dry-run clean) | 2 bad usage | 3 refused a precondition | 4 merge/push failed
 set -uo pipefail
 
-MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 TSC_TIMEOUT="${TSC_TIMEOUT:-900}"
 CACHE_DIR="${CLEANCORE_LAND_CACHE:-$HOME/.cache/cleancore-land}"
 say() { echo "  $*"; }
@@ -198,7 +198,7 @@ if [ "${1:-}" = "--selftest" ]; then
     "0"
   # Landed-by derivation (card 7fe98031). The fixture is the real `git worktree list` shape.
   WL="$(printf '%s\n' \
-    "/mnt/h/LM_Studio_Workdir/CleanCore                    2695a037 (detached HEAD)" \
+    "/mnt/h/LM_Studio_Workdir/mopsion                    2695a037 (detached HEAD)" \
     "/home/neon/cc-appdburl                                a0e76a65 [fix/app-database-url-required-2f2a99b6]" \
     "/mnt/h/LM_Studio_Workdir/CleanCore-worktrees/backend2 0dca79af [feat/platform-company-stepup-e0ef6202]" \
     "/mnt/h/LM_Studio_Workdir/CleanCore-worktrees/landing-batch5 41e380ea [landing/batch7b]")"

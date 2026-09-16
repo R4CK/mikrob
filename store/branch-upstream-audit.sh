@@ -25,7 +25,7 @@ set -uo pipefail
 
 # Overridable ONLY so the selftest can prove the "wrong repo" class without pointing a writing tool
 # at the shared checkout. Plain runs are unaffected.
-DEFAULT_REPO="${BRANCH_AUDIT_DEFAULT_REPO:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+DEFAULT_REPO="${BRANCH_AUDIT_DEFAULT_REPO:-/mnt/h/LM_Studio_Workdir/mopsion}"
 
 # ARGUMENT PARSING (Cybered NO-GO on 7021f00, finding 1 -- this was the blocker).
 # The previous three lines were order-dependent: `--fix <repo>` set REPO back to the DEFAULT and then

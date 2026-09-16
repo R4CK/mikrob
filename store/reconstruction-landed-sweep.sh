@@ -44,7 +44,7 @@
 set -uo pipefail
 
 MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
-CLEANCORE="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+CLEANCORE="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 DASH="${DASHBOARD_URL:-http://localhost:3420}"
 FOOTER='Log-alapú rekonstrukció a 2026-09-08-i kanban-DB-kiürülés után'
 

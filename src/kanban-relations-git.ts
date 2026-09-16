@@ -32,7 +32,7 @@ export function defaultRepos(): { name: string; path: string }[] {
     { name: 'marveen', path: PROJECT_ROOT },
     {
       name: 'cleancore',
-      path: process.env.CLEANCORE_MAIN || '/mnt/h/LM_Studio_Workdir/CleanCore',
+      path: process.env.CLEANCORE_MAIN || '/mnt/h/LM_Studio_Workdir/mopsion',
     },
   ]
 }

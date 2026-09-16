@@ -23,7 +23,7 @@
 #       -> prints the next FREE migration number, counting pending branches as taken
 #   migration-number-check.sh selftest    -> offline self-test, no repo access, no side effects
 #
-# Defaults: repo = /mnt/h/LM_Studio_Workdir/CleanCore, base = origin/main.
+# Defaults: repo = /mnt/h/LM_Studio_Workdir/mopsion, base = origin/main.
 #
 # TWO REFINEMENTS THAT MATTER, both learned from the live case:
 #   1. The same file on two branches is ONE claim, not a collision -- the subcontractor slice is
@@ -34,7 +34,7 @@
 # Read-only: git plumbing only, no fetch, no checkout, no writes.
 set -euo pipefail
 
-REPO_DEFAULT="/mnt/h/LM_Studio_Workdir/CleanCore"
+REPO_DEFAULT="/mnt/h/LM_Studio_Workdir/mopsion"
 MIG_DIR="packages/control-plane/migrations"
 
 # Print "<number> <path> <blob-oid> <ref>" for every migration on <ref> that is NOT on base.

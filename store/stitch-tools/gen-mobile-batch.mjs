@@ -6,7 +6,7 @@ import path from 'node:path'
 import { stitch } from '@google/stitch-sdk'
 
 const PROJ = '3862263673254942781'
-const DL_BASE = '/mnt/h/LM_Studio_Workdir/CleanCore/docs/design-previews/stitch-gen'
+const DL_BASE = '/mnt/h/LM_Studio_Workdir/mopsion/docs/design-previews/stitch-gen'
 
 if (!process.env.STITCH_API_KEY) { console.error('NO_KEY'); process.exit(2) }
 

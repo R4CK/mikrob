@@ -39,7 +39,7 @@
 set -uo pipefail
 
 MARVEEN_REPO="${MARVEEN_MAIN:-/home/neon/marveen}"
-CLEANCORE_REPO="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+CLEANCORE_REPO="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 DASH="${DASHBOARD_URL:-http://127.0.0.1:3420}"
 TOKEN_FILE="${DASHBOARD_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-token}"
 

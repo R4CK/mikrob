@@ -28,7 +28,7 @@
 # Exit: 0 nothing added | 1 the branch adds errors or failures | 2 bad usage | 3 refused | 4 harness
 set -uo pipefail
 
-MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 CACHE_DIR="${CLEANCORE_PREGATE_CACHE:-$HOME/.cache/cleancore-pregate}"
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }

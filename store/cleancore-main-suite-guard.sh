@@ -50,7 +50,7 @@
 # wired while being unwatched.
 set -uo pipefail
 
-REPO="${CC_REPO:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+REPO="${CC_REPO:-/mnt/h/LM_Studio_Workdir/mopsion}"
 TREE="${CC_MAIN_GUARD_TREE:-/home/neon/cc-mainguard}"
 STATE="${CC_MAIN_GUARD_STATE:-/home/neon/marveen/store/cleancore-main-suite-state.json}"
 # Overridable for the same reason REPO/TREE/STATE are (a selftest must never touch the live

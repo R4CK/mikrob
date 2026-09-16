@@ -28,7 +28,7 @@ CC = subprocess.run(['{{INSTALL_DIR}}/store/agent-worktree.sh', '<a te agent-nev
 ```
 
 Ha csak ELLENŐRZŐL és nem írsz (pl. gate-ként nézed, mi landolt), a fő klón a helyes hivatkozás
-`${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}` -- de ott ne commitolj, és NE dolgozz más
+`${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}` -- de ott ne commitolj, és NE dolgozz más
 ügynök worktree-jében.
 
 ## Procedure

@@ -37,7 +37,7 @@
 #         unlanded-branch-sweep.sh --selftest
 set -uo pipefail
 
-CC="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/CleanCore}"
+CC="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 MV="${MARVEEN_MAIN:-/home/neon/marveen}"
 API="${DASHBOARD_URL:-http://localhost:3420}"
 REPO=both

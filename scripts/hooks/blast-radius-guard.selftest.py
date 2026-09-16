@@ -17,7 +17,7 @@ from pathlib import Path
 
 HOOK = Path(__file__).resolve().parent / "blast-radius-guard.py"
 ROOT = Path(__file__).resolve().parent.parent.parent
-CC = Path("/mnt/h/LM_Studio_Workdir/CleanCore")
+CC = Path("/mnt/h/LM_Studio_Workdir/mopsion")
 
 # Importer counts below are NOT asserted exactly anywhere in this file: CleanCore is under
 # active, live development, so any fixed count measured today is stale by construction the

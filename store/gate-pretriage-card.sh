@@ -19,7 +19,7 @@ TOKEN_FILE="$HERE/.dashboard-token"
 PRETRIAGE="$HERE/gate-pretriage.sh"
 # The marker is greppable AND states plainly this is not a verdict; idempotency keys on "MARKER @ <sha>".
 MARKER="GATE PRE-TRIAGE (mechanikus, verdict:null)"
-CLEANCORE_REPO="/mnt/h/LM_Studio_Workdir/CleanCore"
+CLEANCORE_REPO="/mnt/h/LM_Studio_Workdir/mopsion"
 MIKROB_REPO="/home/neon/marveen"
 
 CARD=""; REPO=""; SHA=""; DRYRUN=0; TITLE=""; DESC=""; PEER_SHA=""
