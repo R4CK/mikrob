@@ -2529,18 +2529,24 @@ function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
   return rows.map(({ rank: _rank, ...rest }) => rest)
 }
 
-export function searchMemories(query: string, chatId: string, limit = 3, allowRelaxed = true): Memory[] {
+export function searchMemories(query: string, chatId: string, limit = 3, allowRelaxed = true, category?: string): Memory[] {
   try {
     const { rows } = ftsWithOrFallback(query, (terms) =>
-      db
-        .prepare(
-          `SELECT m.*, f.rank AS rank FROM memories m
-           JOIN memories_fts f ON m.id = f.rowid
-           WHERE f.content MATCH ? AND m.chat_id = ?
-           ORDER BY rank
-           LIMIT ?`
-        )
-        .all(terms, chatId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+      (category
+        ? db.prepare(
+            `SELECT m.*, f.rank AS rank FROM memories m
+             JOIN memories_fts f ON m.id = f.rowid
+             WHERE f.content MATCH ? AND m.chat_id = ? AND m.category = ?
+             ORDER BY rank
+             LIMIT ?`
+          ).all(terms, chatId, category, limit * RECENCY_OVERSAMPLE)
+        : db.prepare(
+            `SELECT m.*, f.rank AS rank FROM memories m
+             JOIN memories_fts f ON m.id = f.rowid
+             WHERE f.content MATCH ? AND m.chat_id = ?
+             ORDER BY rank
+             LIMIT ?`
+          ).all(terms, chatId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
       , allowRelaxed)
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
@@ -2725,23 +2731,41 @@ export function excludeToolLogShapeSql(): { sql: string; params: string[] } {
 // argument. So: the fork's tool-log shape filter (card 3bcc1242) AND upstream's relaxed-pass
 // fallback, together. ftsWithOrFallback does the buildFtsMatchExpression()/empty-terms early-out
 // itself, so the explicit guard the fork had here is preserved, not dropped.
+// MEMKERESVAK917: `category` is a filter on the QUERY, not on the answer.
+// It used to be applied by the route AFTER this function had already cut the
+// result to `limit`, so a filtered search silently truncated: measured on the
+// owner store, q=billingo&category=warm returned 9 rows at limit=50 and 39 at
+// limit=200, while 38 warm rows contain the word. The caller was told
+// `relaxed=false` -- "matched as asked" -- on an answer missing three quarters
+// of its matches. Pushing it down makes the limit mean rows the caller asked
+// for, and it is also less work: the oversample now fills with candidates that
+// can survive the filter instead of being thrown away after ranking.
 export function searchAgentMemories(
   agentId: string,
   query: string,
   limit: number = 10,
   trace?: { relaxed: boolean },
   allowRelaxed = true,
+  category?: string,
 ): Memory[] {
   const shapeFilter = excludeToolLogShapeSql()
   try {
     const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
-      db.prepare(
-        `SELECT m.*, f.rank AS rank FROM memories m
-         JOIN memories_fts f ON m.id = f.rowid
-         WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
-           AND (${shapeFilter.sql})
-         ORDER BY rank LIMIT ?`
-      ).all(terms, agentId, ...shapeFilter.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
+      (category
+        ? db.prepare(
+            `SELECT m.*, f.rank AS rank FROM memories m
+             JOIN memories_fts f ON m.id = f.rowid
+             WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
+               AND m.category = ? AND (${shapeFilter.sql})
+             ORDER BY rank LIMIT ?`
+          ).all(terms, agentId, category, ...shapeFilter.params, limit * RECENCY_OVERSAMPLE)
+        : db.prepare(
+            `SELECT m.*, f.rank AS rank FROM memories m
+             JOIN memories_fts f ON m.id = f.rowid
+             WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
+               AND (${shapeFilter.sql})
+             ORDER BY rank LIMIT ?`
+          ).all(terms, agentId, ...shapeFilter.params, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
     , allowRelaxed)
     if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
@@ -2750,10 +2774,15 @@ export function searchAgentMemories(
     // excludeToolLogShapeSql). Without the alias here this catch raised `no such column:
     // m.content` -- so the designated safety net for an FTS failure threw a SECOND, unrelated
     // error instead of degrading, turning a recoverable outage into a hard 500 (card ad209cdf).
-    return db.prepare(
-      `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)
-       AND (${shapeFilter.sql}) ORDER BY accessed_at DESC LIMIT ?`
-    ).all(agentId, `%${query}%`, `%${query}%`, ...shapeFilter.params, limit) as Memory[]
+    return (category
+      ? db.prepare(
+          `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? OR keywords LIKE ?)
+           AND (${shapeFilter.sql}) ORDER BY accessed_at DESC LIMIT ?`
+        ).all(agentId, category, `%${query}%`, `%${query}%`, ...shapeFilter.params, limit)
+      : db.prepare(
+          `SELECT * FROM memories m WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?)
+           AND (${shapeFilter.sql}) ORDER BY accessed_at DESC LIMIT ?`
+        ).all(agentId, `%${query}%`, `%${query}%`, ...shapeFilter.params, limit)) as Memory[]
   }
 }
 
@@ -5875,10 +5904,16 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
-function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10): Memory[] {
-  const rows = db.prepare(
-    "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
-  ).all(agentId) as Memory[]
+function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10, category?: string): Memory[] {
+  // Same push-down as searchAgentMemories: this branch scores EVERY embedded
+  // row in JS, so filtering in SQL is both correct and strictly less work.
+  const rows = (category
+    ? db.prepare(
+        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ?"
+      ).all(agentId, category)
+    : db.prepare(
+        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
+      ).all(agentId)) as Memory[]
 
   const scored = rows.map(m => {
     try {
@@ -5914,6 +5949,7 @@ export async function hybridSearch(
   query: string,
   limit: number = 10,
   trace?: HybridSearchTrace,
+  category?: string,
 ): Promise<Memory[]> {
   const k = 60 // RRF constant
 
@@ -5922,11 +5958,11 @@ export async function hybridSearch(
   // Relaxed on purpose, and unchanged by the strict default introduced for the
   // endpoint: the hybrid answer fuses two rankings and already reports which
   // branch produced it, so a loose lexical hit here is labelled, not silent.
-  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace, true)
+  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace, true, category)
 
   // Vector results
   const queryEmbedding = await generateEmbedding(query)
-  const vecResults = queryEmbedding ? vectorSearch(agentId, queryEmbedding, limit * 2) : []
+  const vecResults = queryEmbedding ? vectorSearch(agentId, queryEmbedding, limit * 2, category) : []
 
   if (trace) {
     trace.ftsHits = ftsResults.length
