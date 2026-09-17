@@ -148,6 +148,11 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // Non-interactive callers (heartbeat, orchestrator) should omit max_chars or pass a large value.
     const maxCharsRaw = url.searchParams.get('max_chars')
     const maxChars = maxCharsRaw !== null ? Math.max(50, parseInt(maxCharsRaw, 10) || 300) : null
+    // strict=1 is the opt-in for "answer only on a real match". The default
+    // stays forgiving, because that is what makes a naturally phrased question
+    // find its memory; what the default owes the caller is the LABEL below,
+    // not silence.
+    const strictOnly = url.searchParams.get('strict') === '1'
     // #947: offset is honoured on the LISTING branches only. A negative or
     // non-numeric value is clamped to 0 (no page skip) rather than erroring --
     // the failure this fixes was a SILENT one, and a hard 400 on a stray value
@@ -169,14 +174,18 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // same as one with lexical support. The trace rides the response so the
     // caller can tell them apart.
     const hybridTrace: HybridSearchTrace = { ftsHits: 0, vectorHits: 0, ftsRelaxed: false, vectorOnly: false }
+    const searchTrace: { relaxed: boolean } = { relaxed: false }
     if (q && mode === 'hybrid') {
       results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, hybridTrace)
     } else if (q && agentId) {
-      results = searchAgentMemories(agentId, q, limit)
+      results = searchAgentMemories(agentId, q, limit, searchTrace, !strictOnly)
       if (results.length === 0) {
         // Same content-shape exclusion as searchAgentMemories itself (card 3bcc1242 part 1) --
         // this is its own fallback for the identical agent-scoped search, not a different
         // feature, so it must not reopen the gap the primary query just closed.
+        // Substring fallback. It is NOT a second relaxation: LIKE %q% still
+        // requires the query to appear literally, so a query that matches
+        // nothing still returns nothing.
         const db2 = getDb()
         const shapeFilter = excludeToolLogShapeSql()
         // `FROM memories m` -- the alias is REQUIRED, not stylistic (card ad209cdf).
@@ -194,7 +203,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         ).all(agentId, `%${q}%`, `%${q}%`, ...shapeFilter.params, limit) as Memory[]
       }
     } else if (q) {
-      results = searchMemories(q, ALLOWED_CHAT_ID, limit)
+      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly)
       if (results.length === 0) {
         const db2 = getDb()
         results = db2.prepare('SELECT * FROM memories WHERE content LIKE ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, limit) as Memory[]
@@ -243,6 +252,13 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         `fts=${hybridTrace.ftsHits}; vector=${hybridTrace.vectorHits};` +
           ` relaxed=${hybridTrace.ftsRelaxed}; vector-only=${hybridTrace.vectorOnly}`,
       )
+    } else if (q) {
+      // The label the endpoint owed its callers. `relaxed=true` means no row
+      // matched the query as asked and these are the rescued near-misses, so a
+      // caller answering "do we have anything on this" can tell the two apart
+      // without asking twice. `strict=true` says the caller demanded a real
+      // match, and an empty body then means exactly what it looks like.
+      res.setHeader('X-Memory-Search', `strict=${strictOnly}; relaxed=${searchTrace.relaxed}; hits=${results.length}`)
     }
     jsonMaybeGzip(req, res, formatted)
     return true
