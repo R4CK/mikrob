@@ -31,12 +31,16 @@ Exit codes:
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import io
 import json
 import os
 import re
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 REGISTRY = Path.home() / ".code-review-graph" / "registry.json"
@@ -133,6 +137,35 @@ def graph_db_for(root: Path) -> Path:
     except Exception:
         pass
     return root / ".code-review-graph" / "graph.db"
+
+
+def measure_root_for(db: Path, root: Path) -> Path:
+    """The base `measure()` must join with a repo-relative path to match graph node/edge rows.
+
+    BUG FOUND LIVE 2026-09-17 (MikroB, while chasing why marveen-land refused both an unrelated
+    commit and cbef97ca on the SAME pre-existing selftest failure): every real graph built through
+    this codebase's own build/refresh path (_sync_index_worktree) scans a PATH-STABLE worktree at
+    `db.parent / "index-worktree"`, pinned to a specific landed sha -- not the live, moving `root`.
+    So every node/edge row is qualified under `.../index-worktree/<rel>`, never under `root/<rel>`.
+    `measure()` itself just does `root / rel`; every real caller (this CLI's main(), and
+    scripts/hooks/blast-radius-guard.py) was calling it with the live `root`, which can NEVER match
+    a real row -- confirmed live against mopsion's own graph: `apps/api/src/pg-client.ts` (a
+    measured 192-importer hub) read back as `in_graph: false, importers: 0` through the live root,
+    and correctly as 192 through `db.parent / "index-worktree"`. The guard's OWN unit-level
+    `measure()` selftest never caught this because its synthetic fixture graphs qualify rows under
+    the plain `root` it hands them -- self-consistent with the bug, never exercising a graph built
+    the real way. Net effect: the guard and the CLI have been silently reporting EVERY real hub
+    file as a non-hub (rc=0, no warning) since index-worktree-based building started, for every repo
+    that uses it -- confirmed the same on marveen's own in-repo-default graph, not just mopsion's
+    registry one, so this is not registry-specific.
+
+    Falls back to `root` when no index-worktree exists yet (a plain scan-in-place graph, or a
+    prior build predating this convention) -- if it's genuinely absent, `root` is still the best
+    available guess and stays exactly the same (buggy-for-index-worktree-graphs but unchanged)
+    behaviour as before this fix, never a NEW failure mode.
+    """
+    idx = db.parent / "index-worktree"
+    return idx if idx.is_dir() else root
 
 
 # --------------------------------------------------------------------------
@@ -270,18 +303,57 @@ def staleness(root: Path, meta: dict) -> dict:
     }
 
 
-def refresh(root: Path, base: str) -> tuple[bool, str]:
-    """Incremental graph update from `base` to HEAD. ~7s for a handful of commits."""
+def refresh(root: Path, base: str, data_dir: Path, index_root: Path | None = None) -> tuple[bool, str]:
+    """Incremental graph update from `base` to HEAD. ~7s for a handful of commits.
+
+    `index_root` is the working tree the scan actually reads (git diff against `base`, then
+    re-parse changed files) -- see refresh_only() for why this must differ from `root` on a
+    fetch-only clone. `data_dir` is passed through EXPLICITLY (card 42194681): without it, a
+    scan anchored at `index_root` would write into ITS OWN in-repo `.code-review-graph/`
+    default instead of the shared one, and the shared graph would never actually update -- the
+    same silent-no-op failure this card exists to close, just moved one step later.
+    """
+    idx = index_root or root
     exe = CRG_PYTHON if os.path.exists(CRG_PYTHON) else sys.executable
     try:
         out = subprocess.run(
             (exe, "-m", "code_review_graph", "update",
-             "--repo", str(root), "--base", base, "-q"),
+             "--repo", str(idx), "--base", base, "--data-dir", str(data_dir), "-q"),
             capture_output=True, text=True, timeout=600,
         )
     except Exception as exc:
         return False, str(exc)
     return out.returncode == 0, (out.stderr or out.stdout).strip()[-400:]
+
+
+def rebuild_in_background(lock_path: Path, idx: Path, data_dir: Path) -> str:
+    """Kick off a full (re)build anchored at `idx`, detached, and return its log path immediately.
+
+    Needed the FIRST time the index worktree is created (see refresh_only()): a graph's File-node
+    paths are permanently anchored to whatever --repo built it, so the index worktree needs one
+    full build of its own before any incremental --repo=idx update can match. Measured on
+    CleanCore's existing full build (graphify.sh, same tool): 23+ minutes idle, 56 minutes under
+    load -- far too slow to hold a landing open for, mirroring the nohup+disown+logfile pattern
+    cleancore-land.sh already uses one call below this one for the very same reason.
+
+    Wrapped in `flock <lock_path>` rather than acquired in this process: the caller's own flock
+    (refresh_only()) covers only the brief decide-and-launch step and is released right after this
+    returns, but a SECOND landing must not run an incremental update against `idx` while this
+    build is still writing it (worktree checkout + sqlite write from two processes at once). The
+    child re-acquires the SAME lock file, independently, and holds it for the build's full
+    duration; a concurrent refresh_only() then finds the lock busy and skips cleanly (its existing
+    120s-wait-then-skip path), rather than racing the build.
+    """
+    exe = CRG_PYTHON if os.path.exists(CRG_PYTHON) else sys.executable
+    log_path = Path(os.environ.get("TMPDIR", "/tmp")) / f"blast-radius-rebuild-{os.getpid()}.log"
+    with open(log_path, "w") as log:
+        subprocess.Popen(
+            ("flock", str(lock_path), exe, "-m", "code_review_graph", "build",
+             "--repo", str(idx), "--data-dir", str(data_dir), "-q"),
+            stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    return str(log_path)
 
 
 def threshold() -> int:
@@ -463,9 +535,132 @@ def selftest() -> int:
         check("staleness: the malformed value never reaches a git argv",
               "--not-a-sha" not in logged)
 
+    # --refresh end-to-end against a REAL fetch-only clone (card 42194681). Everything above is
+    # unit-level; this is the one place that actually shells out to code_review_graph, because the
+    # defect this fix closes (`_assert_graph_matches_root` rejecting a borrowed worktree path) only
+    # shows up when the real tool is asked to reconcile a real graph -- a mocked call would have
+    # let the original ($WT-reuse) design pass this test while still being broken in production,
+    # exactly the way it was broken until this was run for real.
+    n_before = len(failures)
+    crg_present = os.path.exists(CRG_PYTHON)
+    if not crg_present:
+        print("selftest: --refresh end-to-end SKIPPED -- code_review_graph not installed here")
+    else:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            origin = root / "origin.git"
+            main = root / "main"
+            data_dir = root / "graphdata"
+            _sp.run(("git", "init", "-q", "--bare", str(origin)), check=True)
+            _sp.run(("git", "clone", "-q", str(origin), str(main)), check=True,
+                    capture_output=True)  # suppress git's harmless "empty repository" warning
+            _sp.run(("git", "-C", str(main), "config", "user.email", "a@b.c"), check=True)
+            _sp.run(("git", "-C", str(main), "config", "user.name", "t"), check=True)
+            (main / "src").mkdir()
+            (main / "src" / "a.ts").write_text("export const a = 1\n", encoding="utf-8")
+            _sp.run(("git", "-C", str(main), "add", "src/a.ts"), check=True)
+            _sp.run(("git", "-C", str(main), "commit", "-qm", "init"), check=True)
+            _sp.run(("git", "-C", str(main), "push", "-q", "origin", "HEAD:main"), check=True)
+            _sp.run(("git", "-C", str(main), "branch", "-M", "main"), check=True)
+            _sp.run(("git", "-C", str(main), "branch", "--set-upstream-to=origin/main", "main"),
+                    check=True, capture_output=True)
+            build_exe = CRG_PYTHON if os.path.exists(CRG_PYTHON) else sys.executable
+            _sp.run((build_exe, "-m", "code_review_graph", "build",
+                     "--repo", str(main), "--data-dir", str(data_dir), "-q"),
+                     capture_output=True, text=True, timeout=120)
+
+            # Land #1 through a THROWAWAY worktree, mirroring cleancore-land.sh's $WT -- `main`'s
+            # own HEAD must stay put (that is the whole fetch-only-clone premise this fix answers).
+            main_head_before = _git(str(main), "rev-parse", "HEAD")
+            _sp.run(("git", "-C", str(main), "worktree", "add", "--detach", str(root / "wt"),
+                     "main"), check=True, capture_output=True)
+            _sp.run(("git", "-C", str(root / "wt"), "config", "user.email", "a@b.c"), check=True)
+            _sp.run(("git", "-C", str(root / "wt"), "config", "user.name", "t"), check=True)
+            (root / "wt" / "src" / "b.ts").write_text("export const b = 2\n", encoding="utf-8")
+            _sp.run(("git", "-C", str(root / "wt"), "add", "src/b.ts"), check=True)
+            _sp.run(("git", "-C", str(root / "wt"), "commit", "-qm", "add b"), check=True)
+            _sp.run(("git", "-C", str(root / "wt"), "push", "-q", "origin", "HEAD:main"),
+                    check=True)
+            _sp.run(("git", "-C", str(main), "fetch", "origin", "--quiet"), check=True)
+            landed_sha = _git(str(main), "rev-parse", "origin/main")
+            check("refresh e2e: the fetch-only clone's own HEAD really does not move",
+                  _git(str(main), "rev-parse", "HEAD") == main_head_before)
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc1 = refresh_only(str(main))
+            out1 = buf.getvalue()
+            check("refresh e2e: first call (no index worktree yet) returns success", rc1 == 0)
+            check("refresh e2e: first call reports the one-time rebuild, not an incremental",
+                  "rebuild" in out1 and "refreshed" not in out1)
+
+            idx = data_dir / "index-worktree"
+            db = data_dir / "graph.db"
+            deadline = time.monotonic() + 30.0
+            rebuilt_sha = ""
+            while time.monotonic() < deadline:
+                try:
+                    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+                    rebuilt_sha = dict(conn.execute("SELECT key, value FROM metadata")).get(
+                        "git_head_sha", "")
+                    conn.close()
+                except Exception:
+                    pass
+                if rebuilt_sha == landed_sha:
+                    break
+                time.sleep(0.3)
+            check("refresh e2e: the background rebuild actually lands (within 30s), "
+                  "anchored at the landed sha", rebuilt_sha == landed_sha)
+            check("refresh e2e: the rebuild ran at the index worktree, not at the borrowed $WT "
+                  "(the very mismatch this fix exists to avoid)",
+                  _git(str(idx), "rev-parse", "HEAD") == landed_sha)
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc2 = refresh_only(str(main))
+            check("refresh e2e: second call, nothing new, reports already current",
+                  rc2 == 0 and "already current" in buf.getvalue())
+
+            # Land #2, a REAL incremental update this time -- and the file count must match what
+            # actually landed (2 files), not just "some update happened".
+            _sp.run(("git", "-C", str(main), "worktree", "add", "--detach", str(root / "wt2"),
+                     "origin/main"), check=True, capture_output=True)
+            _sp.run(("git", "-C", str(root / "wt2"), "config", "user.email", "a@b.c"), check=True)
+            _sp.run(("git", "-C", str(root / "wt2"), "config", "user.name", "t"), check=True)
+            (root / "wt2" / "src" / "c.ts").write_text("export const c = 3\n", encoding="utf-8")
+            (root / "wt2" / "src" / "d.ts").write_text("export const d = 4\n", encoding="utf-8")
+            _sp.run(("git", "-C", str(root / "wt2"), "add", "src/c.ts", "src/d.ts"), check=True)
+            _sp.run(("git", "-C", str(root / "wt2"), "commit", "-qm", "add c, d"), check=True)
+            _sp.run(("git", "-C", str(root / "wt2"), "push", "-q", "origin", "HEAD:main"),
+                    check=True)
+            _sp.run(("git", "-C", str(main), "fetch", "origin", "--quiet"), check=True)
+            landed_sha2 = _git(str(main), "rev-parse", "origin/main")
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc3 = refresh_only(str(main))
+            check("refresh e2e: third call performs a real incremental refresh",
+                  rc3 == 0 and "refreshed" in buf.getvalue())
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            sha_after = dict(conn.execute("SELECT key, value FROM metadata")).get(
+                "git_head_sha", "")
+            new_files = {
+                Path(r[0]).name for r in
+                conn.execute("SELECT file_path FROM nodes WHERE file_path LIKE '%c.ts' "
+                             "OR file_path LIKE '%d.ts'")
+            }
+            conn.close()
+            check("refresh e2e: the recorded sha now matches the second landing",
+                  sha_after == landed_sha2)
+            check("refresh e2e: exactly the files that landed got indexed, no more no less",
+                  new_files == {"c.ts", "d.ts"})
+        if len(failures) == n_before:
+            print("selftest: --refresh end-to-end: all passed")
+
     for f in failures:
         print(f"FAIL: {f}")
-    print(f"selftest: {26 - len(failures)}/26 passed")
+    total = 26 + (0 if not crg_present else 9)
+    print(f"selftest: {total - len(failures)}/{total} passed")
     return 1 if failures else 0
 
 
@@ -496,6 +691,35 @@ def refresh_target(root: Path) -> tuple[str, str]:
     return "HEAD", "HEAD"
 
 
+def _sync_index_worktree(root: Path, idx: Path, target_sha: str) -> tuple[bool, bool, str]:
+    """Create (once) or fast-forward the persistent index worktree to `target_sha`.
+
+    A plain detached checkout, never a branch: nothing but refresh_only() (under its own lock,
+    see below) ever reads, writes, or relies on what commit this directory happens to be at
+    between calls, so moving it here carries none of the risk that moving `root` itself would.
+
+    Returns (ok, created, message). `created` is True only the first time this call actually
+    creates the worktree (as opposed to fast-forwarding an existing one) -- refresh_only() uses
+    it to decide full rebuild vs. incremental update, see there for why the two are not
+    interchangeable.
+    """
+    created = not (idx / ".git").exists()
+    if created:
+        idx.parent.mkdir(parents=True, exist_ok=True)
+        out = subprocess.run(
+            ("git", "-C", str(root), "worktree", "add", "--detach", str(idx), target_sha),
+            capture_output=True, text=True, timeout=120,
+        )
+    else:
+        out = subprocess.run(
+            ("git", "-C", str(idx), "checkout", "-q", "--detach", target_sha),
+            capture_output=True, text=True, timeout=120,
+        )
+    if out.returncode != 0:
+        return False, created, (out.stderr or out.stdout).strip()[-400:]
+    return True, created, ""
+
+
 def refresh_only(repo: str) -> int:
     """Bring one repo's graph up to its current HEAD. Called from the land scripts.
 
@@ -503,6 +727,29 @@ def refresh_only(repo: str) -> int:
     guard goes SILENT past its staleness limit, so it would rot back into prose
     without anyone noticing. Landing is the right moment -- it is when HEAD moves.
     Never fatal to the caller: a graph refresh must not be able to refuse a land.
+
+    CAN THIS CLONE EVEN REPRESENT THE TARGET? (card d2f4b273.) `root`'s own working tree is
+    correct to scan only while its HEAD *is* the target -- true in a checkout somebody works in,
+    false on a fetch-only clone, where the gap is not something a different --base can close: the
+    graph builder discovers changed files with `git diff --name-status -z <base> --`
+    (code_review_graph/incremental.py) -- no second revision, so it diffs the base against the
+    WORKING TREE, and records the new sha from `rev-parse HEAD`. Measured on the CleanCore clone:
+    `git diff --name-only <graph> --` saw 0 files where `... <graph> origin/main` saw 25.
+
+    Card 42194681's first attempt fixed this by pointing --repo at the land script's own
+    throwaway merge-worktree instead of `root`. Rejected by code_review_graph's own
+    `_assert_graph_matches_root`, which refuses `update --repo <path>` whenever the graph's
+    stored file paths are not under that exact path -- and a merge-worktree's path
+    (/home/neon/cc-land-<card>-<pid>) is different on every landing, so that call fails every
+    time, reproduced directly rather than assumed. This function instead owns a SEPARATE,
+    PATH-STABLE worktree living under the graph's own data_dir (`_sync_index_worktree` above),
+    checked out fresh to the target commit on every call -- so --repo is a FIXED path across
+    every future refresh. The graph's EXISTING File-node paths are still anchored to `root`
+    (wherever it was built), so the very first call after this fix ships requires one full
+    rebuild at the index worktree's path before any incremental update can match it -- see
+    rebuild_in_background() for why that rebuild runs detached rather than in this call.
+    flock-protected: two concurrent landings must not race the same index worktree checkout, and
+    a landing must not run an incremental update while a background rebuild is still writing it.
     """
     root = main_clone_root(repo)
     if root is None:
@@ -513,45 +760,68 @@ def refresh_only(repo: str) -> int:
         print(f"blast-radius: no graph for {root}, refresh skipped")
         return 1
 
-    # CAN THIS CLONE EVEN REPRESENT THE TARGET? (card d2f4b273.) Everything below reasons about
-    # HEAD, which is correct only while HEAD *is* the target. On a fetch-only clone it is not, and
-    # the gap is not something a different --base can close: the graph builder discovers changed
-    # files with `git diff --name-status -z <base> --` (code_review_graph/incremental.py) -- no
-    # second revision, so it diffs the base against the WORKING TREE, and records the new sha from
-    # `rev-parse HEAD`. Measured on the CleanCore clone: `git diff --name-only <graph> --` saw 0
-    # files where `... <graph> origin/main` saw 25. Pointing the staleness check at the upstream
-    # without moving the working tree would therefore have produced a LOUDER falsehood -- "graph
-    # refreshed, was 9 commit(s) behind" over zero indexed files and an unchanged recorded sha.
-    # So: say what is true, refuse to claim a refresh, and let the caller carry on.
     target_ref, target_label = refresh_target(root)
     target_sha = _git(str(root), "rev-parse", target_ref) or ""
-    head_sha = _git(str(root), "rev-parse", "HEAD") or ""
-    if target_sha and head_sha and target_sha != head_sha:
-        cnt = _git(str(root), "rev-list", "--count", f"{head_sha}..{target_sha}")
-        n = cnt if (cnt or "").isdigit() else "?"
-        print(
-            f"blast-radius: the working tree is {n} commit(s) behind {target_label} -- "
-            f"this clone cannot index them (the graph builder reads the working tree), "
-            f"refresh skipped"
-        )
+    if not target_sha:
+        print(f"blast-radius: could not resolve {target_label}, refresh skipped")
         return 1
 
-    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    st = staleness(root, graph_meta(conn))
-    conn.close()
-    behind = st.get("behind")
-    if behind == 0:
-        print(f"blast-radius: graph already current @ {st['graph_sha'][:8]} ({target_label})")
+    idx = db.parent / "index-worktree"
+    lock_path = db.parent / "index-worktree.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fh = open(lock_path, "w")
+    deadline = time.monotonic() + 120.0
+    while True:
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                lock_fh.close()
+                print(
+                    "blast-radius: another refresh (or a background rebuild) is already "
+                    "running, refresh skipped"
+                )
+                return 1
+            time.sleep(0.5)
+    try:
+        ok, created, msg = _sync_index_worktree(root, idx, target_sha)
+        if not ok:
+            print(f"blast-radius: could not sync the index worktree to {target_label}: {msg}")
+            return 1
+
+        if created:
+            # The lock is released in `finally` right after this returns -- the background job
+            # re-acquires the SAME lock file itself (see rebuild_in_background()) and holds it
+            # for its own full duration, so a concurrent call still serializes correctly.
+            log_path = rebuild_in_background(lock_path, idx, db.parent)
+            print(
+                f"blast-radius: index worktree created fresh -- the existing graph was built at "
+                f"a different path, so a full rebuild is required before incremental updates can "
+                f"match it. Kicked off in the background (can take tens of minutes on a large "
+                f"repo) -> {log_path}"
+            )
+            return 0
+
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        st = staleness(idx, graph_meta(conn))
+        conn.close()
+        behind = st.get("behind")
+        if behind == 0:
+            print(f"blast-radius: graph already current @ {st['graph_sha'][:8]} ({target_label})")
+            return 0
+        if behind is None:
+            print("blast-radius: graph freshness unknown, refresh skipped")
+            return 1
+        ok, msg = refresh(root, st["graph_sha"], db.parent, index_root=idx)
+        if not ok:
+            print(f"blast-radius: refresh failed ({behind} commit(s) behind): {msg}")
+            return 1
+        print(f"blast-radius: graph refreshed, was {behind} commit(s) behind")
         return 0
-    if behind is None:
-        print("blast-radius: graph freshness unknown, refresh skipped")
-        return 1
-    ok, msg = refresh(root, st["graph_sha"])
-    if not ok:
-        print(f"blast-radius: refresh failed ({behind} commit(s) behind): {msg}")
-        return 1
-    print(f"blast-radius: graph refreshed, was {behind} commit(s) behind")
-    return 0
+    finally:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        lock_fh.close()
 
 
 def main(argv: list[str]) -> int:
@@ -613,7 +883,7 @@ def main(argv: list[str]) -> int:
         st = staleness(root, meta)
 
     thr = threshold()
-    results = [measure(conn, root, r) for r in rels]
+    results = [measure(conn, measure_root_for(db, root), r) for r in rels]
     conn.close()
 
     if as_json:

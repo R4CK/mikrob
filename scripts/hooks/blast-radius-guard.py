@@ -148,7 +148,7 @@ def main() -> None:
         if behind is None or behind > _max_behind():
             conn.close()
             sys.exit(0)
-        res = lib.measure(conn, root, rel)
+        res = lib.measure(conn, lib.measure_root_for(db, root), rel)
         conn.close()
 
         thr = lib.threshold()
