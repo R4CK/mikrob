@@ -139,6 +139,35 @@ def graph_db_for(root: Path) -> Path:
     return root / ".code-review-graph" / "graph.db"
 
 
+def measure_root_for(db: Path, root: Path) -> Path:
+    """The base `measure()` must join with a repo-relative path to match graph node/edge rows.
+
+    BUG FOUND LIVE 2026-09-17 (MikroB, while chasing why marveen-land refused both an unrelated
+    commit and cbef97ca on the SAME pre-existing selftest failure): every real graph built through
+    this codebase's own build/refresh path (_sync_index_worktree) scans a PATH-STABLE worktree at
+    `db.parent / "index-worktree"`, pinned to a specific landed sha -- not the live, moving `root`.
+    So every node/edge row is qualified under `.../index-worktree/<rel>`, never under `root/<rel>`.
+    `measure()` itself just does `root / rel`; every real caller (this CLI's main(), and
+    scripts/hooks/blast-radius-guard.py) was calling it with the live `root`, which can NEVER match
+    a real row -- confirmed live against mopsion's own graph: `apps/api/src/pg-client.ts` (a
+    measured 192-importer hub) read back as `in_graph: false, importers: 0` through the live root,
+    and correctly as 192 through `db.parent / "index-worktree"`. The guard's OWN unit-level
+    `measure()` selftest never caught this because its synthetic fixture graphs qualify rows under
+    the plain `root` it hands them -- self-consistent with the bug, never exercising a graph built
+    the real way. Net effect: the guard and the CLI have been silently reporting EVERY real hub
+    file as a non-hub (rc=0, no warning) since index-worktree-based building started, for every repo
+    that uses it -- confirmed the same on marveen's own in-repo-default graph, not just mopsion's
+    registry one, so this is not registry-specific.
+
+    Falls back to `root` when no index-worktree exists yet (a plain scan-in-place graph, or a
+    prior build predating this convention) -- if it's genuinely absent, `root` is still the best
+    available guess and stays exactly the same (buggy-for-index-worktree-graphs but unchanged)
+    behaviour as before this fix, never a NEW failure mode.
+    """
+    idx = db.parent / "index-worktree"
+    return idx if idx.is_dir() else root
+
+
 # --------------------------------------------------------------------------
 # barrel re-exports (the graph's blind spot)
 # --------------------------------------------------------------------------
@@ -854,7 +883,7 @@ def main(argv: list[str]) -> int:
         st = staleness(root, meta)
 
     thr = threshold()
-    results = [measure(conn, root, r) for r in rels]
+    results = [measure(conn, measure_root_for(db, root), r) for r in rels]
     conn.close()
 
     if as_json:
