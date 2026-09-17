@@ -54,12 +54,23 @@ revive_pane() {
     "env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=$PROBE_CONFIG_DIR claude" Enter 2>/dev/null
   sleep 12
   # Trust-folder prompt, if shown (first launch in this cwd for the isolated config).
+  #
+  # BUG FIXED 2026-09-17 (live-diagnosed by MikroB after Peti reported repeated relogin
+  # requests within the same hour): this is an arrow-selected menu with "No, exit"
+  # PRE-HIGHLIGHTED, not a numbered list -- sending '1' does nothing, and the unconditional
+  # bare Enter that followed then confirmed "No, exit", which quits claude back to a plain
+  # bash prompt. The poll loop below never sees the ready-banner (it's sitting at bash, not
+  # claude), times out at 90s, and reports a false "refresh token likely expired" --
+  # escalating to Peti for a manual browser login that was never actually needed. Confirmed
+  # live: capture-pane showed the trust menu in scrollback with a bash prompt (and a failed
+  # literal "/login" typed into bash) below it. weekly-usage-relogin.sh's ensure_pane already
+  # has the correct sequence (Down selects "Yes, I trust this folder", not a digit) -- mirrored
+  # here instead of reinventing it.
   local cap; cap="$(tmux capture-pane -t "$PANE" -p 2>/dev/null || true)"
   if printf '%s' "$cap" | grep -qiE 'trust this folder'; then
-    tmux send-keys -t "$PANE" '1' 2>/dev/null; sleep 1
+    tmux send-keys -t "$PANE" Down 2>/dev/null; sleep 1
     tmux send-keys -t "$PANE" Enter 2>/dev/null; sleep 8
   fi
-  tmux send-keys -t "$PANE" Enter 2>/dev/null; sleep 4
   # Logged in via refresh token when the welcome/prompt is up and no /login screen shows.
   #
   # POLL instead of a single check (card e1d71490). Measured 2026-08-16/17: both relogin
