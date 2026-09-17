@@ -13056,3 +13056,23 @@ még nem elérhető a worktree-ben (mert a `link_node_modules` még nem futott),
 meghívja (idempotens), és ha ezután sem elérhető, warning-ot emit, majd a format:check kezeli.
 
 **Ki döntött:** backend3 (implementáció). **Kártya:** 9c1dce69.
+
+## 2026-09-17 -- A DECISIONS.md auto-union prettier-lépése GUARDOLVA (9c1dce69 korrekció)
+
+**Döntés:** Az aznap korábban landolt (810c5fc8) `prettier --write` lépés önmagában hibás volt. A
+SEAM CHECK közvetlenül utána fut, és `grep -qF`-fel állítja, hogy minden hozzáadott, nem-üres sor
+jelen van a merge eredményében. Mérve: a prettier nem csak üres sorokat szúr be, tartalmi sort is
+átír (`* pont` → `- pont`), amire a `grep -qF` már nem talál rá. A formátum-REFUSED helyébe tehát egy
+seam-REFUSED lépett volna ("the merge dropped N line(s) the BRANCH added") -- ugyanaz a megállás,
+rosszabb üzenettel, és pont az, amit a kártya megszüntetni hivatott.
+
+A prettier eredménye ezért CSAK akkor kerül elfogadásra, ha kizárólag whitespace-t változtatott. A
+összevetés üres sorok nélkül, behúzás-mentesen történik (`_fmt_skeleton`), mert pontosan ez az, amit
+a seam check tolerál: részsztringre illeszt, tehát egy sor ÚJRA-BEHÚZÁSA láthatatlan neki, egy sor
+ÁTÍRÁSA viszont nem. Ha a prettier tartalmat írna át, a nyers union marad, és a format:check
+jelenti be őszintén, a szerzőt a saját branch-ének megformázására utasítva.
+
+**Mérés:** blank-line seam-hiba → elfogadva, az eredmény prettier-tiszta, 0 seam-veszteség;
+`*`-bullet átírás → visszaállítva (guard nélkül 2 sor veszett volna el, negatív kontrollal igazolva).
+
+**Ki döntött:** backend3 (implementáció és mérés). **Kártya:** 9c1dce69.

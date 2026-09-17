@@ -80,6 +80,12 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # shellcheck source=./cleancore-bundle-check.sh
 . "$(dirname "$0")/cleancore-bundle-check.sh"
 
+# Reduce markdown on stdin to the shape the SEAM CHECK can still see: blank lines dropped, leading
+# indentation stripped. Two texts with the same skeleton differ only in whitespace, and the seam
+# check -- which matches each added line as a SUBSTRING of the result -- cannot tell them apart.
+# Used to decide whether prettier's rewrite of an auto-unioned DECISIONS.md is safe to keep.
+_fmt_skeleton() { sed -e 's/^[[:space:]]*//' -e '/^$/d'; }
+
 # --- WHO ran this landing (card 7fe98031) -------------------------------------------------------
 #
 # THE PROBLEM THIS SOLVES. Every merge this script makes is authored as `backend <backend@marveen
@@ -457,17 +463,40 @@ if ! merge_err="$(git -C "$WT" -c user.email=backend@marveen.local -c user.name=
     # Run prettier on the auto-unioned DECISIONS.md before committing (card 9c1dce69).
     # The POST-MERGE FORMAT CHECK below runs prettier --check on merge-changed files and
     # would REFUSE if the file isn't format-clean. The auto-union assembles by string
-    # concatenation, which is correct but not prettier-formatted.
+    # concatenation, which is correct but not prettier-formatted: the seam between the two
+    # appended regions loses the blank line around a heading that both sides had.
+    #
+    # WHY THE RESULT IS GUARDED AND NOT TAKEN ON TRUST. The SEAM CHECK below asserts, with
+    # `grep -qF`, that every non-blank line either side ADDED is still present in the merge
+    # result -- and it runs AFTER this point, on what prettier leaves behind. Prettier does
+    # not only insert blank lines: measured here, it also rewrites content, e.g. a `* item`
+    # bullet becomes `- item`. That line is then genuinely absent and the landing is REFUSED
+    # by the seam check instead of the format check -- a worse message for the same stop, and
+    # the exact outcome this card exists to prevent. So prettier's output is accepted ONLY if
+    # it changed whitespace alone. Comparing with blank lines dropped and indentation stripped
+    # is the right predicate because it mirrors what the seam check actually tolerates: it
+    # matches substrings, so re-indenting a line is invisible to it, while rewriting one is not.
     _FMT_BIN_UNION="$WT/node_modules/.bin/prettier"
     if [ ! -x "$_FMT_BIN_UNION" ]; then
       link_node_modules "$WT" >/dev/null
     fi
-    if [ -x "$_FMT_BIN_UNION" ]; then
-      "$_FMT_BIN_UNION" --write "$WT/DECISIONS.md" >/dev/null 2>&1 \
-        && git -C "$WT" add DECISIONS.md \
-        && say "DECISIONS.md: formatted with prettier before commit"
-    else
+    if [ ! -x "$_FMT_BIN_UNION" ]; then
       say "DECISIONS.md: prettier not available at union time -- format:check will verify"
+    else
+      _UNION_RAW="$WT/.decisions-preformat.$$"
+      cp "$WT/DECISIONS.md" "$_UNION_RAW"
+      if ! "$_FMT_BIN_UNION" --write "$WT/DECISIONS.md" >/dev/null 2>&1; then
+        cp "$_UNION_RAW" "$WT/DECISIONS.md"
+        say "DECISIONS.md: prettier failed to run -- union left as-is, format:check will verify"
+      elif [ "$(_fmt_skeleton <"$_UNION_RAW")" = "$(_fmt_skeleton <"$WT/DECISIONS.md")" ]; then
+        say "DECISIONS.md: prettier reformatted whitespace only -- taking it"
+      else
+        cp "$_UNION_RAW" "$WT/DECISIONS.md"
+        say "DECISIONS.md: prettier would REWRITE content, not just whitespace -- reverted to the"
+        say "              raw union so the seam check stays meaningful; format:check will report it"
+      fi
+      rm -f "$_UNION_RAW"
+      git -C "$WT" add DECISIONS.md
     fi
     git -C "$WT" -c user.email=backend@marveen.local -c user.name=backend commit --no-edit -q \
       || die 4 "auto-unioned DECISIONS.md but the merge commit itself failed"
