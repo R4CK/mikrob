@@ -2797,7 +2797,29 @@ Napi napló (append-only):
 printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X POST ${dashboardOrigin}/api/daily-log -H "Content-Type: application/json" -d '{"agent_id":"AGENT_NAME","content":"## HH:MM -- Tema\nMi tortent, mi lett az eredmeny"}'
 
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
-printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- "${dashboardOrigin}/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
+printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -D /tmp/mem-fejlec-AGENT_NAME.txt "${dashboardOrigin}/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
+grep -i '^x-memory-search' /tmp/mem-fejlec-AGENT_NAME.txt
+
+A -D NEM dísz, és a fejlécet KÖTELEZŐ elolvasni. A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint egy valódi találat -- a különbség KIZÁRÓLAG az X-Memory-Search fejlécben utazik.
+relaxed=true  -> semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett közelítés, NEM bizonyíték.
+relaxed=false -> a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez MINDEN, és azt sem, hogy van találat (hits=0 is lehet mellette).
+Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a &strict=1-et: ott az üres válasz pontosan azt jelenti, aminek látszik.
+ÉS A MÁSIK CSAPDA, amiről a címke HALLGAT: a &category= (tier) szűrő a LIMIT UTÁN fut, tehát csendben csonkol. Mérve: q=billingo&category=warm limit=50 -> 9 sor, limit=200 -> 39 sor, miközben a címke mindkettőre relaxed=false. Ha tier-re szűrsz, EMELD a limitet, vagy hagyd el a szűrőt.
+
+### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
+
+A hot tier árát MINDEN session-indulás újra kifizeti, ezért a lezárt sorokat át kell sorolni.
+Az átsorolás memory_maintenance = level 3, AUTONÓM: a SAJÁT emlékeiden magadtól megteheted.
+
+1. Kell az ID -- a listázó ÉS a kereső ág is visszaadja:
+curl -s -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/memories?agent=AGENT_NAME&category=hot&limit=40"
+
+2. Átsorolás (a category-only PATCH elég, a tartalmat NEM kell újraküldeni):
+curl -s -X PATCH ${dashboardOrigin}/api/memories/<ID> -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"category":"cold","updated_by":"AGENT_NAME"}'
+
+Az updated_by az, AKI ÍRT (írás-nyom). Az agent_id mezőt NE küldd: az a sort ÁTADJA másik ágensnek, nem a tier-t állítja.
+
+TÖRLÉS NINCS, ÉS SZÁNDÉKOSAN NE IS LEGYEN. A DELETE /api/memories/:id létezik, de a törlés data_delete = level 1, locked, tehát a gazda döntése. Az átsorolás elég: a költség a hot-halmaz BETÖLTÉSÉBŐL jön, nem a sorok létezéséből.
 
 ## Ütemezett feladatok
 
