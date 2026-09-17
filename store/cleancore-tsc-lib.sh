@@ -56,11 +56,19 @@ link_node_modules() {
     for entry in "$d"/* "$d"/.[!.]*; do
       [ -e "$entry" ] || [ -L "$entry" ] || continue
       base="$(basename "$entry")"
-      if [ "$base" != "@cleancore" ] || [ ! -d "$entry" ]; then
-        ln -s "$entry" "$wt/$rel/$base"
-        continue
-      fi
-      mkdir -p "$wt/$rel/@cleancore"
+      case "$base" in
+        '@'*)
+          if [ ! -d "$entry" ]; then
+            ln -s "$entry" "$wt/$rel/$base"
+            continue
+          fi
+          ;;
+        *)
+          ln -s "$entry" "$wt/$rel/$base"
+          continue
+          ;;
+      esac
+      mkdir -p "$wt/$rel/$base"
       for pkg in "$entry"/*; do
         [ -e "$pkg" ] || continue
         pkgname="$(basename "$pkg")"
@@ -69,12 +77,12 @@ link_node_modules() {
           "$MAIN"/packages/*|"$MAIN"/apps/*)
             wtrel="${real#$MAIN/}"
             if [ -e "$wt/$wtrel" ]; then
-              ln -s "$wt/$wtrel" "$wt/$rel/@cleancore/$pkgname"
+              ln -s "$wt/$wtrel" "$wt/$rel/$base/$pkgname"
             else
-              ln -s "$pkg" "$wt/$rel/@cleancore/$pkgname"
+              ln -s "$pkg" "$wt/$rel/$base/$pkgname"
             fi
             ;;
-          *) ln -s "$pkg" "$wt/$rel/@cleancore/$pkgname" ;;
+          *) ln -s "$pkg" "$wt/$rel/$base/$pkgname" ;;
         esac
       done
     done
@@ -161,33 +169,45 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
   trap 'rm -rf "$tmp"' EXIT
   FAKE_MAIN="$tmp/main"; FAKE_WT="$tmp/wt"
 
-  # A workspace package (@cleancore/core) the worktree HAS its own copy of, reached through a nested
-  # pnpm symlink inside a package's node_modules -- the exact shape that misread stale content on
-  # card 87e5ad4d.
-  mkdir -p "$FAKE_MAIN/packages/core/src" "$FAKE_MAIN/packages/control-plane/node_modules/@cleancore" \
+  # Fixture 1 (@mopsion): a workspace package the worktree HAS its own copy of, reached through a
+  # nested pnpm symlink inside a package's node_modules -- the exact shape that misread stale content
+  # on card 87e5ad4d (originally @cleancore, now @mopsion after the F3 repo rename).
+  mkdir -p "$FAKE_MAIN/packages/core/src" "$FAKE_MAIN/packages/control-plane/node_modules/@mopsion" \
            "$FAKE_MAIN/node_modules/typescript" \
            "$FAKE_WT/packages/core/src" "$FAKE_WT/packages/control-plane"
   echo OLD > "$FAKE_MAIN/packages/core/src/index.ts"
   echo NEW > "$FAKE_WT/packages/core/src/index.ts"
-  ln -s ../../../core "$FAKE_MAIN/packages/control-plane/node_modules/@cleancore/core"
+  ln -s ../../../core "$FAKE_MAIN/packages/control-plane/node_modules/@mopsion/core"
 
-  # A second workspace package (@cleancore/evidence) the worktree does NOT touch -- must still
+  # A second workspace package (@mopsion/evidence) the worktree does NOT touch -- must still
   # resolve, unchanged, to $MAIN.
   mkdir -p "$FAKE_MAIN/packages/evidence/src"
   echo UNCHANGED > "$FAKE_MAIN/packages/evidence/src/index.ts"
-  ln -s ../../../evidence "$FAKE_MAIN/packages/control-plane/node_modules/@cleancore/evidence"
+  ln -s ../../../evidence "$FAKE_MAIN/packages/control-plane/node_modules/@mopsion/evidence"
+
+  # Fixture 2 (@acme): a DIFFERENT scope name, proving the detection is truly generic -- not just
+  # a new hardcoded string but the '@'-prefix pattern in action.
+  mkdir -p "$FAKE_MAIN/packages/acme-widget/src" \
+           "$FAKE_MAIN/packages/control-plane/node_modules/@acme" \
+           "$FAKE_WT/packages/acme-widget/src"
+  echo MAIN_ACME > "$FAKE_MAIN/packages/acme-widget/src/index.ts"
+  echo WT_ACME > "$FAKE_WT/packages/acme-widget/src/index.ts"
+  ln -s ../../../acme-widget "$FAKE_MAIN/packages/control-plane/node_modules/@acme/widget"
 
   saved_main="$MAIN"; MAIN="$FAKE_MAIN"
   out="$(link_node_modules "$FAKE_WT")"
   MAIN="$saved_main"
 
   t "reports the linked directory count" "$out" "  linked 2 node_modules into $(basename "$FAKE_WT")"
-  t "a workspace package the worktree touched reads the WORKTREE copy, not MAIN's stale one" \
-    "$(cat "$FAKE_WT/packages/control-plane/node_modules/@cleancore/core/src/index.ts" 2>/dev/null)" \
+  t "@mopsion: a workspace package the worktree touched reads the WORKTREE copy, not MAIN's stale one" \
+    "$(cat "$FAKE_WT/packages/control-plane/node_modules/@mopsion/core/src/index.ts" 2>/dev/null)" \
     "NEW"
-  t "a workspace package the worktree did NOT touch still falls back to MAIN" \
-    "$(cat "$FAKE_WT/packages/control-plane/node_modules/@cleancore/evidence/src/index.ts" 2>/dev/null)" \
+  t "@mopsion: a workspace package the worktree did NOT touch still falls back to MAIN" \
+    "$(cat "$FAKE_WT/packages/control-plane/node_modules/@mopsion/evidence/src/index.ts" 2>/dev/null)" \
     "UNCHANGED"
+  t "@acme (generic scope): a workspace package the worktree touched reads the WORKTREE copy" \
+    "$(cat "$FAKE_WT/packages/control-plane/node_modules/@acme/widget/src/index.ts" 2>/dev/null)" \
+    "WT_ACME"
   t "an ordinary (non-workspace) dependency is still a plain passthrough symlink" \
     "$(readlink -f "$FAKE_WT/node_modules/typescript")" \
     "$(readlink -f "$FAKE_MAIN/node_modules/typescript")"
