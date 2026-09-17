@@ -454,6 +454,21 @@ if ! merge_err="$(git -C "$WT" -c user.email=backend@marveen.local -c user.name=
   # touches an existing line) falls through to the unchanged refusal below.
   if [ "$conflicted" = "DECISIONS.md" ] && try_append_union "$WT" "DECISIONS.md"; then
     say "DECISIONS.md: both sides purely appended -- auto-unioned, header count verified"
+    # Run prettier on the auto-unioned DECISIONS.md before committing (card 9c1dce69).
+    # The POST-MERGE FORMAT CHECK below runs prettier --check on merge-changed files and
+    # would REFUSE if the file isn't format-clean. The auto-union assembles by string
+    # concatenation, which is correct but not prettier-formatted.
+    _FMT_BIN_UNION="$WT/node_modules/.bin/prettier"
+    if [ ! -x "$_FMT_BIN_UNION" ]; then
+      link_node_modules "$WT" >/dev/null
+    fi
+    if [ -x "$_FMT_BIN_UNION" ]; then
+      "$_FMT_BIN_UNION" --write "$WT/DECISIONS.md" >/dev/null 2>&1 \
+        && git -C "$WT" add DECISIONS.md \
+        && say "DECISIONS.md: formatted with prettier before commit"
+    else
+      say "DECISIONS.md: prettier not available at union time -- format:check will verify"
+    fi
     git -C "$WT" -c user.email=backend@marveen.local -c user.name=backend commit --no-edit -q \
       || die 4 "auto-unioned DECISIONS.md but the merge commit itself failed"
   elif [ -n "$conflicted" ]; then
