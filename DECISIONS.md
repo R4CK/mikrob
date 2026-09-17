@@ -13076,3 +13076,33 @@ jelenti be őszintén, a szerzőt a saját branch-ének megformázására utasí
 `*`-bullet átírás → visszaállítva (guard nélkül 2 sor veszett volna el, negatív kontrollal igazolva).
 
 **Ki döntött:** backend3 (implementáció és mérés). **Kártya:** 9c1dce69.
+
+## 2026-09-17 -- try_append_union: a setext-veszélyes varrás javítása visszautasítás helyett
+
+**Döntés:** Ha a DECISIONS.md auto-union varrása setext-címsort formálna (ours prózasorral végződik,
+theirs `---`-mal kezdődik), a `try_append_union` mostantól beszúr EGY üres sort a varrásnál, és
+újrafuttatja a TELJES ellenőrző-láncot a módosított unionon. Ez pontosan az a feloldás, amit egy
+ember kézzel írna. Plan-grilling verdikt: GO-WITH-CHANGES (MikroB, komment 3726).
+
+**Miért biztonságos, a fájl saját logikájából levezetve:** a header-count és a membership `^## `-ra
+illeszt, amire üres sor sosem illik, tehát mindkét számlálás változatlan; a `_ends_inside_code_fence`
+csak hármas backtick/tilde futásra vált állapotot, üres sorra nem; a `_seam_makes_setext_heading`
+pedig nincs megkerülve, hanem ÚJRA lefut, és a saját első sora (`[ -n "$prev" ] || return 1`) szerint
+ad safe-et -- ez CommonMark, nem kiskapu.
+
+**Négy kikötés, amit a plan-grilling írt elő és a kód tartalmaz:** (1) a teljes lánc újrafut, nem csak
+a setext-predikátum; (2) PONTOSAN egy beszúrási kísérlet, nincs ciklus -- ha bármi még bukik, a
+függvény a szokásos manuális útra esik vissza; (3) saját selftest pozitív és negatív irányban;
+(4) a beszúrás a `joined` ÉPÍTÉSÉNÉL történik, konstrukció szerint a két félrész között, nem a már
+összeragasztott unionon végzett string-kereséssel -- az off-by-one kockázatot hozna.
+
+**Mérés:** a selftest két MEGLÉVŐ fixture-je (order-seam-follows, J-1) refuse-ról resolve-ra fordult;
+ezeket nem töröltem, hanem PONTOS várt tartalomra állítottam át, így a lefedettség erősebb lett -- egy
+rossz helyre szúrt üres sor is 0-t adna vissza, de a tartalom-állításon elbukna. Új negatív eset:
+setext-varrás + lezáratlan code fence -> a beszúrás megtörténik, a fence-ellenőrzés mégis visszautasít.
+Mutációval igazolva, hogy ez az eset pont a lánc-megkerülő hibát fogja (a mutációnál egyedül ez bukott).
+
+**Interakció a 9c1dce69-cel:** a megjavított uniont a prettier csak whitespace-ben módosítja, tehát az
+ugyanaznap landolt whitespace-only guard elfogadja -- a két változtatás komponál.
+
+**Ki döntött:** MikroB (plan-grilling verdikt), backend3 (implementáció és mérés). **Kártya:** e6dffb8d.
