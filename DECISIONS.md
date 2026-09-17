@@ -13046,3 +13046,13 @@ fleet-test.sh-t érintő landolásra esik.
 
 **Ki döntött:** backend3 (implementáció), Cybersec (NO-GO lelet + javasolt irány).
 **Hivatkozás:** kártyák 88a0a5e1, 03cff5c1, komment 3431; `store/marveen-land.sh`.
+
+## 2026-09-17 -- cleancore-land.sh DECISIONS.md auto-union + prettier-write fix
+
+**Döntés:** Az auto-union ág (`try_append_union` → `git commit --no-edit`) a POST-MERGE FORMAT CHECK
+előtt commitolt, így a prettier által nem formázott DECISIONS.md mindig REFUSED landolást okozott.
+A fix a merge commit ELŐTT futtatja a `prettier --write`-ot és re-stage-eli a fájlt. Ha a prettier
+még nem elérhető a worktree-ben (mert a `link_node_modules` még nem futott), a fix ott helyben
+meghívja (idempotens), és ha ezután sem elérhető, warning-ot emit, majd a format:check kezeli.
+
+**Ki döntött:** backend3 (implementáció). **Kártya:** 9c1dce69.
