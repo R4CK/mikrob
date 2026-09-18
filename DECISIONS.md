@@ -12813,3 +12813,23 @@ mondja, hogy az export nincs átvéve -- egy arra célzott anchor „megfordulá
 sem történt. Az anchorok ezért PRODUKCIÓS fájlra mutatnak, és ezt teszt is kikényszeríti.
 **Ki döntött:** backend3 (lelet + kivitelezés), MikroB (kártya, HIGH). Gate: Cybersec.
 **Hivatkozás:** kártya 66ad1f95; a hátralék back-fillje külön kártyán.
+
+## 2026-09-18 -- feb005e0: headroom mért pilóta -- a self-reported szám nem tartotta magát, offline-kapcsoló hiányos
+
+**Döntés:** a bfc55674 README-alapú ADAPT verdiktjét éles méréssel teszteltem (backend, kártya feb005e0). Eredmény: HOLD -- ne menjen élő ügynök-wrap/MCP-bekötésre a jelen kiadásban (headroom-ai 0.37.0).
+
+**Miért NEM a wrap/proxy módot teszteltem.** A `headroom wrap claude` a README szerint nem sima stdin/stdout-wrap: helyi proxyt indít ÉS automatikusan telepíti a Serena szemantikus code-nav eszközt is -- ez a kártya feltételezettnél nagyobb dep-felület és architektúra-döntés (plan-grilling-kötelezett, 1b. szabály), mielőtt bármit mérünk. Ehelyett a library-módot (`from headroom import compress`) mértem -- ez a legkisebb blast-radius-ú belépési pont, és ugyanazt a compress-motort futtatja, amit az MCP `headroom_compress` és a proxy is hívna.
+
+**Mérési módszer:** 900 valós üzenet MAI (2026-09-18) 3 tényleges backend-session transzkriptből (natív Anthropic-formátumban, tool_use/tool_result blokkok megtartva -- egy első, szöveggé lapított kivonat hamis 0%-ot adott, mert pont azt a JSON/tool-output struktúrát törölte, amit a SmartCrusher céloz). Mért bemenet: **483 749 token** (headroom saját Claude-tokenizere, `claude-sonnet-4-5-20250929`).
+
+**Mért szám:** `compress()` 16 879 tokent takarított meg -> **3,49% tömörítés** (`compression_ratio=0.0349`), messze a README önbevallott 21-57%-os tartománya alatt.
+
+**Gyökérok, kóddal igazolva:** a `chopratejas/kompress-v2-base` (headroom flagship szemantikus tömörítő modellje) ebben a kiadásban **nem tölthető be** -- sem ONNX, sem PyTorch artefakt nincs a HF-repóban ("No loadable ONNX artifact... tried (...)"). Ez csomagolási hiba upstream-ben, nem hálózat/offline kérdés: hálózati hozzáféréssel (a hiányzó fastembed segédmodell egyszeri, szándékos letöltésével) is ugyanaz a 3,49% jött ki.
+
+**Egress-lelet (Cybersec-relevancia, a kártya pont ezt kérte igazolni):** a dokumentált `HEADROOM_OFFLINE=1` "egy kapcsoló mindent kikapcsol" ígéret **NEM ér el** a sima library-módú `compress()` hívásig -- kóddal igazolva: `apply_offline_env()` (ami a `HF_HUB_OFFLINE`-t állítaná) importáláskor NEM fut le, csak feltehetően a CLI belépési pontokból. Eredmény: minden EGYES `compress()` hívás megpróbál egy hitelesítetlen HTTP-hívást a huggingface.co-ra (a hiányzó modell miatt, sikertelenül, de a kísérlet lezajlik) -- ez FUT AKKOR IS, ha a hívó explicit beállítja a `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1` env-változókat saját kézzel. A "compression runs on your machine, nothing is sent" állítás a library-integrációra GYAKORLATBAN nem teljes lefedésű ígéret. Emellett létezik egy külön, alapból BEKAPCSOLT telemetria-beacon (`HEADROOM_BEACON=off`-fal kikapcsolható, csak metaadatot küld a README szerint) -- ez env-változó-szinten ellenőrizve OFF állapotban tartható, de a fenti HF-hívás ettől független csatorna. A `rollout` alrendszer ("feature-rollout policy") ELLENŐRIZVE: kódolvasással -- kizárólag helyi env-változókból dönt, NEM távoli kill-switch.
+
+**Kereszthivatkozás:** a 2026-09-08-i DB-kiürülés utáni rekonstrukcióban létezett egy korábbi kártya (241dbf87, SKIP-javaslat) ugyanerre a repóra, azzal az indokkal, hogy "az értéke egy olyan pozícióból jönne (minden LLM-hívás előtt), amit egy kényelmi funkcióért nem adunk oda" -- a bfc55674 friss due diligence-e ezt nem hivatkozta. A mostani mérés pont ezt az aggodalmat igazolja empirikusan: még a legkönnyebb integrációs mód is kontrollálatlan, hívásonkénti kimenő kísérletet tesz.
+
+**Verdikt:** a jelen kiadásban (0.37.0) a mért haszon (3,49%) nem indokolja az új trust-boundary-t + dep-felületet a mi valós beszélgetési adatunkon, plusz a flagship motor ebben a verzióban ténylegesen törött, plusz az offline-kapcsoló nem teljes körű library-módban. NE menjen élő ügynök-wrap/MCP-bekötésre. Újramérés akkor indokolt, ha upstream javítja a kompress-v2-base csomagot, vagy explicit host-szintű (firewall) tiltás védi a huggingface.co-t ahelyett, hogy az alkalmazás saját kapcsolójában bíznánk.
+
+**Ki döntött:** backend (mérés, kódolvasás), MikroB/Peti dönt a rollout-tervről (feb005e0 leírásának 3. lépése) ezen mérés alapján. **Kártya:** feb005e0.
