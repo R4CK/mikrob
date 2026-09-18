@@ -11,7 +11,7 @@ import {
   type AgentMessage,
 } from '../../db.js'
 import { logger } from '../../logger.js'
-import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
+import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
 import { isReservedSenderId } from '../system-directive-id.js'
@@ -161,6 +161,25 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'from is reserved for the in-process channel coordinator' }, 403)
       return true
     }
+    // Voice channel (HANGCSATORNA918): the VOICE_CHANNEL_AGENT_ID also earns
+    // channel-inbound framing, but unlike the coordinator it is a legitimate
+    // POST writer -- the relay runs out-of-process. So the guard is the AUTH
+    // LANE, not a blanket 403: accept it only from an enrolled DEVICE KEY.
+    //
+    // WHY THE LANE AND NOT THE NAME: channel-inbound tells the receiving agent
+    // "this is the owner, a reply is expected". The dashboard token is readable
+    // by every sub-agent, so a name-only rule would let any of them forge an
+    // owner message. A device key is a per-device secret the sub-agents do not
+    // have, so requiring it is what makes the id trustworthy at DELIVERY time,
+    // where the auth context is long gone and only from_agent survives.
+    if (sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID && ctx.auth?.kind !== 'device') {
+      logger.warn(
+        { from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none' },
+        'Rejected /api/messages POST as voice channel without a device key',
+      )
+      json(res, { error: `from '${VOICE_CHANNEL_AGENT_ID}' requires an enrolled device key, not the shared dashboard token` }, 403)
+      return true
+    }
     // Reserved-sender guard for the in-process-only sender ids
     // (src/web/system-directive-id.ts). Directive rows carry
     // from_agent="system-directive", and every agent's CLAUDE.md tells it to
@@ -221,8 +240,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // manager pushed 4182 messages, then every call 403'd for nine days while
     // its fail-soft caller logged nothing.
     const isOwnerSender = sanitizeAgentIdent(from) === sanitizeAgentIdent(OWNER_NAME)
+    // The voice channel is the OWNER speaking, not a fleet agent: it has no
+    // agents/<id>/ directory, so isKnownAgent alone would 403 it. It is already
+    // device-key gated above, which is a STRONGER check than this one.
+    const isVoiceChannelSender = sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID
     const isSystemSender = SYSTEM_SENDERS.has(sanitizeAgentIdent(from))
-    if (!isOwnerSender && !isSystemSender && !isKnownAgent(sanitizeAgentIdent(from))) {
+    if (!isOwnerSender && !isSystemSender && !isVoiceChannelSender && !isKnownAgent(sanitizeAgentIdent(from))) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST from unregistered agent')
       json(res, { error: `unknown agent '${from.trim()}' -- from must be a registered fleet agent id` }, 403)
       return true

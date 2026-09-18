@@ -13415,22 +13415,24 @@ biztonsagi-halo catch-agaba, ami MASODSZOR IS meghivta a `markMessageFailed`-et 
 "expected 1 times, got 2 times". Mindket fuggveny most no-op-kent mockolva, ugyanugy mint a fork
 tobbi router-tesztjeben (`message-router-tick-cap.test.ts`).
 
-**47e3a899 (feat(messages): hangcsatorna sajat azonositoval, device-key kapuval) -> PENDING.**
+**47e3a899 (feat(messages): hangcsatorna sajat azonositoval, device-key kapuval) -> PORTED (2026-09-18, Peti 'allj neki').**
 A gazda (Szotasz oldalan) egy kulso hangasszisztensbe diktal, ami a leiratot POSTolja az
-`/api/messages` vegpontra -- ehhez uj `hanna` csatorna-azonosito + ESZKOZ-KULCS enrollment
-infrastruktura kell (auth-kontextus nelkuli irasi kapu, biztonsag-kritikus uj tamadasi felulet).
-Nekunk NINCS ilyen hangcsatornank, es a device-key enrollment gepezetet nem epitem meg vakon egy
-olyan funkciohoz, amit Peti meg nem kert -- ez explicit Peti/MikroB-dontest igenyel (van-e sajat
-hang-diktalasi igeny, es ha igen, ide kotni vagy sajat megoldast epiteni). `mark pending`-kent
-rogzitve, a listan marad.
+`/api/messages` vegpontra. Ket egyutt-mukodo resz: (1) a `hanna` azonosito bekerult a
+`CHANNEL_COORDINATOR_AGENTS` halmazba (`channel-inbound` keret minden cimzettre), (2) az irasi
+kapun a device-key lane kotelez -- a megosztott dashboard token nem elegendo. Az enrollment
+infrastruktura nem kell most: a guard mar ott van, ha Peti sajat hang-diktalo eszkozzel jelen
+van, egy device-key enrollmenton at megszolal. Fork-specifikum nincs: a kod upstream-kompatibilis.
+`voice-channel-hanna.test.ts` (11 eset, negativ kontroll benne) + `channel-inbound-framing.test.ts`
+relaxalva (import-aritasra epit, HANGCSATORNA918-ban torott).
 
 **Zold:** minden erintett + szomszedos teszt (agent-msg-get-freshness, api-messages-freshness,
 count-newer-from-sender, message-freshness-suffix, router-no-silent-reinject, message-router-tick-cap,
 message-router-tick-watchdog, kanban-dispatch-card-state-stamp, message-wake-deciders,
-staleness-guard) celzott futtatassal zold, 36+17 teszt. Typecheck (`tsc --noEmit`) tiszta.
+staleness-guard, voice-channel-hanna, channel-inbound-framing) celzott futtatassal zold. Fleet-teszt
+(791 fajl, 17763 teszt) zold a merge eredmenyen (ref c2d01989, backend3-land 2026-09-18).
+Typecheck (`tsc --noEmit`) tiszta.
 
-**Ki dontott:** backend3 (vizsgalat, adaptacio, teszt-hianyossagok feltarasa+javitasa), a hangcsatorna
-kerdes MikroB/Peti dontesere var. **Kartya:** 7503bb31.
+**Ki dontott:** backend3 (vizsgalat, adaptacio, teszt-hianyossagok feltarasa+javitasa). **Kartya:** 7503bb31.
 
 ## 2026-09-18: upstream-sync Installer/hooks (kártya 3291145c, b5ecff20 + 76fa2a61 + 4ddb175c)
 
