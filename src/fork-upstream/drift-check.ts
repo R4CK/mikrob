@@ -19,6 +19,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  ACKNOWLEDGED_UPSTREAM_BLOBS,
   classifyConflicts,
   extractConflictHunks,
   readyToPasteEntry,
@@ -58,10 +59,37 @@ export interface DriftResult {
    *  value has to travel with the result, because the throwaway worktree it is read from is gone by
    *  the time the report is formatted. */
   readonly upstreamBlobs: Readonly<Record<string, string>>
+  /** Files whose recorded ACKNOWLEDGED_UPSTREAM_BLOBS pin does not resolve to a real blob object at
+   *  all (card aaff8b3a) -- a typo, a truncated paste, or a sha copied from the wrong object. Checked
+   *  for EVERY recorded pin, not only ones in this run's conflict set, the same reasoning
+   *  ACKNOWLEDGED_FORK_ANCHORS already applies below: a corrupted pin sits there silently until the
+   *  file conflicts again, which can be months, and by then nobody remembers why it was recorded. */
+  readonly corruptedPins: readonly string[]
 }
 
 export function isClean(r: DriftResult): boolean {
-  return r.guarded.length === 0 && r.unwatched.length === 0 && r.stale.length === 0
+  return (
+    r.guarded.length === 0 &&
+    r.unwatched.length === 0 &&
+    r.stale.length === 0 &&
+    r.corruptedPins.length === 0
+  )
+}
+
+/** `git cat-file -e <sha>^{blob}` for every recorded pin, regardless of whether its file conflicts
+ *  in this run. A pin that does not resolve to a real blob is corrupted -- and the classifier above
+ *  cannot see this on its own, because it only ever compares the RECORDED value against `blobOf`,
+ *  never asks whether the recorded value itself is real. */
+function findCorruptedPins(repoRoot: string, git: GitRunner): string[] {
+  const corrupted: string[] = []
+  for (const [file, blob] of Object.entries(ACKNOWLEDGED_UPSTREAM_BLOBS)) {
+    try {
+      git(['cat-file', '-e', `${blob}^{blob}`], repoRoot)
+    } catch {
+      corrupted.push(file)
+    }
+  }
+  return corrupted
 }
 
 function upstreamIsReachable(repoRoot: string, git: GitRunner): boolean {
@@ -81,12 +109,15 @@ function upstreamIsReachable(repoRoot: string, git: GitRunner): boolean {
  * worktree under a fresh temp dir, aborted and removed in finally.
  */
 export function runDriftCheck(repoRoot: string, git: GitRunner = realGit): DriftResult {
-  const empty = { guarded: [], unwatched: [], stale: [], hunks: {}, upstreamBlobs: {} }
+  const empty = { guarded: [], unwatched: [], stale: [], hunks: {}, upstreamBlobs: {}, corruptedPins: [] }
   if (!upstreamIsReachable(repoRoot, git)) return { reachable: false, ...empty }
 
   const worktree = mkdtempSync(join(tmpdir(), 'fork-upstream-drift-'))
   try {
     git(['fetch', '--quiet', UPSTREAM_REMOTE, UPSTREAM_BRANCH], repoRoot)
+    // Runs against EVERY recorded pin, not only ones this run's conflict set touches -- see
+    // findCorruptedPins' own doc comment for why that matters.
+    const corruptedPins = findCorruptedPins(repoRoot, git)
     git(['worktree', 'add', '--quiet', '--detach', worktree, 'HEAD'], repoRoot)
 
     let conflicted: string[] = []
@@ -131,7 +162,15 @@ export function runDriftCheck(repoRoot: string, git: GitRunner = realGit): Drift
       const b = blobOf(f)
       if (b !== null) upstreamBlobs[f] = b
     }
-    return { reachable: true, guarded: verdict.guarded, unwatched: verdict.unwatched, stale: verdict.stale, hunks, upstreamBlobs }
+    return {
+      reachable: true,
+      guarded: verdict.guarded,
+      unwatched: verdict.unwatched,
+      stale: verdict.stale,
+      hunks,
+      upstreamBlobs,
+      corruptedPins,
+    }
   } finally {
     try {
       git(['worktree', 'remove', '--force', worktree], repoRoot)
@@ -177,15 +216,29 @@ export function formatDriftReport(r: DriftResult): string {
     )
   }
   if (r.stale.length) {
+    // FULL sha, not a 12-char prefix (card aaff8b3a): a corrupted pin can differ from the real
+    // blob only past the 12th character, and a truncated display then reads as "unchanged" while
+    // hiding the exact diff -- measured live on update.sh's own pin display, where the mismatch
+    // sat at position 21 and the first 12 characters matched.
     parts.push(
       '\nTHE ACKNOWLEDGEMENT NO LONGER DESCRIBES WHAT IS THERE: ' +
         r.stale
           .map(
             (s) =>
-              `${s.file} (recorded ${s.recorded.slice(0, 12)}, now ${s.actual.slice(0, 12)}) -- the ` +
+              `${s.file} (recorded ${s.recorded}, now ${s.actual}) -- the ` +
               `rule written last time was: "${s.rule}"`
           )
           .join('; ')
+    )
+  }
+  if (r.corruptedPins.length) {
+    parts.push(
+      '\nA RECORDED PIN DOES NOT RESOLVE TO A REAL BLOB: ' +
+        r.corruptedPins.join(', ') +
+        ' -- ACKNOWLEDGED_UPSTREAM_BLOBS records a sha for each of these that `git cat-file -e` ' +
+        'cannot find as a blob object at all (typo, truncated paste, or a sha copied from the ' +
+        'wrong object). Fix the recorded value directly; this is not something a re-decision can ' +
+        'resolve, because the acknowledgement never had a real pin to begin with.'
     )
   }
   return parts.join('\n')

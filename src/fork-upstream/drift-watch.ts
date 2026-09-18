@@ -67,6 +67,7 @@ export function driftFingerprint(r: DriftResult): string {
     `guarded=${[...r.guarded].sort().join(',')}`,
     `unwatched=${[...r.unwatched].sort().join(',')}`,
     `stale=${r.stale.map((s) => s.file).sort().join(',')}`,
+    `corruptedPins=${[...r.corruptedPins].sort().join(',')}`,
   ]
   return createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 16)
 }
@@ -85,7 +86,8 @@ const MAX_BODY_CHARS = 4000
 export function summarizeDrift(r: DriftResult): string {
   const lines: string[] = [
     `Az upstream oldal elmozdult ahhoz képest, amit róla eldöntöttünk. Fork-owned ütközés: ${r.guarded.length}, ` +
-      `senki által nem döntött ütközés: ${r.unwatched.length}, elavult elismerés: ${r.stale.length}.`,
+      `senki által nem döntött ütközés: ${r.unwatched.length}, elavult elismerés: ${r.stale.length}, ` +
+      `romlott (nem-létező blobra mutató) rögzített pin: ${r.corruptedPins.length}.`,
   ]
   if (r.guarded.length) {
     lines.push(
@@ -105,11 +107,22 @@ export function summarizeDrift(r: DriftResult): string {
   if (r.stale.length) {
     lines.push('', 'AZ ELISMERÉS MÁR NEM AZT ÍRJA LE, AMI OTT VAN (rögzített -> mostani upstream blob):')
     for (const s of r.stale) {
-      lines.push(`  ${s.file}  ${s.recorded.slice(0, 12)} -> ${s.actual.slice(0, 12)}`)
+      // TELJES sha, nem 12-karakteres levágás (kártya aaff8b3a) -- egy romlott pin eltérése a 12.
+      // karakter UTÁN is állhat, es a levágás akkor ugy nezne ki, mintha semmi nem valtozott volna.
+      lines.push(`  ${s.file}  ${s.recorded} -> ${s.actual}`)
     }
     lines.push(
       'Mindegyiknél a KORÁBBI szabályt kell elolvasni az ACKNOWLEDGED_CONFLICTS-ben, és újra dönteni ' +
         'a mostani upstream tartalom ellen. Egy puszta blob-szám bumpolás nem újra-döntés.'
+    )
+  }
+  if (r.corruptedPins.length) {
+    lines.push(
+      '',
+      'ROMLOTT PIN, NEM LÉTEZŐ BLOBRA MUTAT: ' + r.corruptedPins.join(', ') + '.',
+      'Az ACKNOWLEDGED_UPSTREAM_BLOBS-ban rögzített sha ezeknél `git cat-file -e`-vel nem található meg ' +
+        'objektumként (elgépelés, levágott beillesztés, vagy rossz objektumból másolt sha). Ez nem ' +
+        'újra-döntés kérdése -- a rögzített értéket kell közvetlenül javítani.'
     )
   }
   lines.push(
@@ -128,7 +141,7 @@ const CLEAN_NOTE =
   '(gépi zárás nem helyettesít egy gate-et); ha nincs más hátralék rajta, MikroB zárhatja.'
 
 export function driftCardTitle(r: DriftResult): string {
-  const n = r.guarded.length + r.unwatched.length + r.stale.length
+  const n = r.guarded.length + r.unwatched.length + r.stale.length + r.corruptedPins.length
   return `${DRIFT_CARD_MARKER}[marveen][INFRA][SEC] upstream-drift: ${n} fájl újra-döntést vár`
 }
 
