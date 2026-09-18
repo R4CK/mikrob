@@ -257,6 +257,16 @@
 
     <!-- === Overview Page (default) === -->
     <div class="page" id="overviewPage">
+      <!-- Subscription quota strip (card c6d8d599, upstream e30161ac): 5-hour/weekly quota bars
+           above the stat cards, populated by renderQuotaStrip() from /api/overview's `quota` block. -->
+      <div class="quota-strip" id="quotaStrip" hidden>
+        <div class="quota-strip-head">
+          <span class="quota-strip-title" data-i18n="overview.quota.strip_title">Előfizetési keret</span>
+          <span class="quota-strip-age" id="quotaStripAge"></span>
+        </div>
+        <div class="quota-bars" id="quotaBars"></div>
+        <div class="quota-strip-note" id="quotaStripNote" hidden></div>
+      </div>
       <!-- Upstream-update banner (card 3c09ba6b / FÁZIS3): shown when our fork is behind the
            upstream base (Szotasz/marveen). Populated by loadOverview() from /api/overview. -->
       <div class="update-banner" id="updateBanner" role="status" aria-live="polite" hidden>
