@@ -603,6 +603,55 @@ main {
 .subtitle { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
 
 /* === Overview page === */
+/* Subscription quota strip (card c6d8d599, upstream e30161ac): a glance, not a card, above the
+   stat cards. Colour follows the status line -- >=80% danger, >=60% accent -- so the terminal
+   and the dashboard cannot disagree about the same number. */
+.quota-strip {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  padding: 10px 14px;
+  margin-bottom: 14px;
+}
+.quota-strip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.quota-strip-title { font-size: 12px; font-weight: 500; color: var(--text-muted); }
+.quota-strip-age { font-size: 11px; color: var(--text-muted); }
+.quota-bars { display: flex; flex-direction: column; gap: 6px; }
+.quota-bar {
+  display: grid;
+  grid-template-columns: 56px 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+.quota-bar-label { font-size: 12px; color: var(--text-muted); }
+.quota-bar-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-input);
+  overflow: hidden;
+}
+.quota-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--success);
+  transition: width var(--transition);
+}
+.quota-bar-fill.warn { background: var(--accent); }
+.quota-bar-fill.danger { background: var(--danger); }
+/* Stale or rolled over: the numbers stay visible but must not read as current. */
+.quota-bar.muted .quota-bar-fill { background: var(--text-muted); }
+.quota-bar.muted .quota-bar-value { color: var(--text-muted); }
+.quota-bar-value { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; }
+.quota-bar-reset { color: var(--text-muted); }
+.quota-strip-note { margin-top: 8px; font-size: 11px; color: var(--text-muted); }
+.quota-strip-note.warn { color: var(--danger); }
+
 /* Upstream-update banner (card 3c09ba6b / FÁZIS3) -- shown atop the overview when the fork
    is behind the upstream base. Info-toned, responsive + touch-friendly (rule 13). */
 .update-banner {
