@@ -11,11 +11,17 @@ let comments: Array<{ author: string; content: string; created_at: number }> = [
 // real card ids to check a word-adjacent hex run against. Empty by default -- most tests never
 // mention a card ID at all, and an empty board means no candidate can ever look like a real card.
 let otherCardIds: string[] = []
+// MikroB delta on card 4b72ef85 (LOW): listKanbanCards() must fail in isolation from
+// getKanbanCard/getKanbanComments, not stand aside the whole guard.
+let listKanbanCardsShouldThrow = false
 
 vi.mock('../db.js', () => ({
   getKanbanCard: () => card,
   getKanbanComments: () => comments,
-  listKanbanCards: () => otherCardIds.map((id) => ({ id })),
+  listKanbanCards: () => {
+    if (listKanbanCardsShouldThrow) throw new Error('listKanbanCards: simulated failure')
+    return otherCardIds.map((id) => ({ id }))
+  },
 }))
 export let infoLogs: Array<Record<string, unknown>> = []
 vi.mock('../logger.js', () => ({
@@ -31,6 +37,7 @@ beforeEach(() => {
   comments = []
   infoLogs = []
   otherCardIds = []
+  listKanbanCardsShouldThrow = false
 })
 
 describe('extractGateLine', () => {
@@ -531,26 +538,39 @@ describe('gateCompletenessGuardVerdict', () => {
       expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(true)
     })
 
-    it('ADVERSARIAL (Cybersec NO-GO, comment 4594): a REAL Gate-SHA next to a card-word is NOT deleted when it is not a known card id', () => {
+    it('ADVERSARIAL (Cybersec NO-GO 4594 + QA2 FAIL 4661 delta, non-discriminating-test finding): a REAL Gate-SHA next to a card-word is NOT deleted when it is not a known card id', () => {
       // The exact unsafe case Cybersec measured: word-adjacency alone used to blank "34ff8cae" here,
       // erasing a genuine commit citation. 34ff8cae is NOT in otherCardIds (only 4b9688f6 is), so it
-      // must survive and correctly start a new round -- making QA's earlier PASS stale.
+      // must survive and correctly start a new round -- making the t=250 cybersec verdict stale.
+      //
+      // THE cybersec(t=250) COMMENT IS THE DISCRIMINATING SIGNAL (QA2/Cybersec delta finding on this
+      // card): without ANY cybersec-authored comment on the fixture, hasFreshVerdict('cybersec', ...)
+      // is unconditionally false regardless of sinceTs, so blocked=true on BOTH the fix and a
+      // word-adjacency-only regression -- just for two different reasons, which a mutation test
+      // cannot tell apart. Timing it strictly BETWEEN the two Gate-SHA introductions (t=100, t=300)
+      // makes the verdict fresh-or-stale entirely DEPEND on whether 34ff8cae survived extraction:
+      // fix -> sinceTs=300 -> t=250 is stale -> blocked=true (correct reason); a regression that
+      // deletes 34ff8cae -> sinceTs stays 100 -> t=250 reads fresh -> blocked=false (catches it).
       otherCardIds = ['4b9688f6']
       card.description = 'Gate: QA + Cybersec'
       comments = [
         { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
         { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c', created_at: 250 },
         { author: 'backend', content: 'REVIEW: javitva\nGate-SHA: 34ff8cae kártyán', created_at: 300 },
       ]
       expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(true)
     })
 
-    it('ADVERSARIAL (Cybersec NO-GO, comment 4594): the greedy word stem hitting an unrelated word ("cardinal") does not delete an adjacent real Gate-SHA either', () => {
+    it('ADVERSARIAL (Cybersec NO-GO 4594 + QA2 FAIL 4661 delta, non-discriminating-test finding): the greedy word stem hitting an unrelated word ("cardinal") does not delete an adjacent real Gate-SHA either', () => {
+      // Same discriminating-timing shape as the case above -- see its comment for why the
+      // cybersec(t=250) comment, not just the final blocked value, is what makes this test real.
       otherCardIds = ['4b9688f6']
       card.description = 'Gate: QA + Cybersec'
       comments = [
         { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
         { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c', created_at: 250 },
         {
           author: 'backend',
           content: 'REVIEW: javitva\nGate-SHA: deadbeef1234 cardinal directions',
@@ -558,7 +578,24 @@ describe('gateCompletenessGuardVerdict', () => {
         },
       ]
       // 'cardinal' matches the word stem, but deadbeef1234 is not a known card id, so it must
-      // still count as the round's real subject -- the earlier PASS reads as stale.
+      // still count as the round's real subject -- the t=250 cybersec verdict reads as stale.
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(true)
+    })
+
+    it('LOW (MikroB delta): a listKanbanCards() failure does not stand aside the WHOLE guard, only disables the id-lookup blanking', () => {
+      // A failure here is not the same kind of failure as "cannot read this card" -- it says nothing
+      // about whether THIS close is verified, so it must not fall through to allowUnverified/stand
+      // aside (which would let ANY close through). It must fail toward blanking NOTHING, which is the
+      // safe direction: without a known-card-id list, the bare "4b9688f6 kartyan" mention below counts
+      // as a real Gate-SHA (the pre-fix behaviour), so the round boundary moves forward and QA's
+      // earlier PASS reads as stale -- MORE strict, never less.
+      listKanbanCardsShouldThrow = true
+      card.description = 'Gate: QA'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        { author: 'backend', content: 'REVIEW: meg egy\nGate-SHA: 4b9688f6 kartyan', created_at: 300 },
+      ]
       expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(true)
     })
   })

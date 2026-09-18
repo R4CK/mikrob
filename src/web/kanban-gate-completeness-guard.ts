@@ -354,13 +354,27 @@ export function gateCompletenessGuardVerdict(cardId: string, nextStatus: unknown
 
   let card: ReturnType<typeof getKanbanCard>
   let comments: Comment[]
-  let knownOtherCardIds: ReadonlySet<string>
   try {
     card = getKanbanCard(cardId)
     comments = getKanbanComments(cardId)
-    // For the id-lookup gate on CARD_MENTION_SHA_RX: a word-adjacent hex run only blanks when it is
-    // some OTHER real card's id, never this card's own (a card cannot "bare-mention" itself into
-    // dropping its own Gate-SHA, and excluding it here removes any need for the regex to know).
+  } catch (err) {
+    // Same rule as the landing guard: a guard that throws must not become a guard that freezes the
+    // board. The failure is in the checker, not the claim, so stand aside.
+    logger.warn({ err, cardId }, 'gate-completeness-guard could not read the card; allowing the close')
+    return { blocked: false }
+  }
+
+  // For the id-lookup gate on CARD_MENTION_SHA_RX: a word-adjacent hex run only blanks when it is
+  // some OTHER real card's id, never this card's own (a card cannot "bare-mention" itself into
+  // dropping its own Gate-SHA, and excluding it here removes any need for the regex to know).
+  //
+  // SEPARATE try/catch from the read above (MikroB delta, card 4b72ef85): a listKanbanCards()
+  // failure is not a reason to stand aside the WHOLE completeness check -- unlike a failure to read
+  // THIS card, it says nothing about whether this close is verified. Falling back to an empty set
+  // blanks nothing, which is the SAFE direction (more tokens count as cited shas, never fewer, so
+  // the round boundary can only move LATER or stay the same), and the rest of the guard still runs.
+  let knownOtherCardIds: ReadonlySet<string>
+  try {
     const own = cardId.toLowerCase()
     knownOtherCardIds = new Set(
       listKanbanCards()
@@ -368,10 +382,11 @@ export function gateCompletenessGuardVerdict(cardId: string, nextStatus: unknown
         .filter((id) => id !== '' && id !== own),
     )
   } catch (err) {
-    // Same rule as the landing guard: a guard that throws must not become a guard that freezes the
-    // board. The failure is in the checker, not the claim, so stand aside.
-    logger.warn({ err, cardId }, 'gate-completeness-guard could not read the card; allowing the close')
-    return { blocked: false }
+    logger.warn(
+      { err, cardId },
+      'gate-completeness-guard could not list cards for the id-lookup gate; blanking nothing',
+    )
+    knownOtherCardIds = new Set()
   }
 
   const gateLine = extractGateLine(card?.description ?? null)
