@@ -33,7 +33,22 @@ import json, os, re, subprocess, sys, time, urllib.request, urllib.parse, urllib
 HOME = os.path.expanduser("~")
 MARVEEN = "/home/neon/marveen"
 STORE = f"{MARVEEN}/store"
-TG_DIR = f"{HOME}/.claude/channels/telegram"
+def _telegram_state_dir():
+    """The telegram channel state dir. On the fleet the channels session runs with
+    CLAUDE_CONFIG_DIR isolated, so the real dir is under the marveen checkout, not
+    under ~/.claude -- honour TELEGRAM_STATE_DIR first, then the first existing
+    candidate, and fall back to the legacy ~/.claude path (2026-09-18: the legacy
+    path did not exist and the service crash-looped 72 times on FileNotFoundError)."""
+    env = os.environ.get("TELEGRAM_STATE_DIR")
+    if env:
+        return env
+    for cand in (f"{MARVEEN}/.claude/channels/telegram", f"{HOME}/.claude/channels/telegram"):
+        if os.path.isfile(f"{cand}/.env"):
+            return cand
+    return f"{HOME}/.claude/channels/telegram"
+
+
+TG_DIR = _telegram_state_dir()
 TG_ENV = f"{TG_DIR}/.env"
 ACCESS_JSON = f"{TG_DIR}/access.json"
 BOT_PID_FILE = f"{TG_DIR}/bot.pid"
