@@ -350,11 +350,15 @@ LEAF_COUNT="$(printf '%s' "$LEAVES_JSON" | python3 -c 'import json,sys; print(le
 echo "offload-dispatch: $CARD -> $LEAF_COUNT open leaf(s) resolved" >&2
 
 # CODE-GRAPH CONTEXT (card 44477615) -- unchanged mechanism, now resolved per-leaf task text.
+# Card 1b02ed3a (rebrand step 1, QA2 census, comment 4795): 'mopsion' names the SAME repo as
+# 'CleanCore' -- without this branch, a card carrying the new project name fell through with no
+# `*)` default, returned empty, and graph_args_for's `[[ -n "$repo" ... ]] || return 0` silently
+# skipped code-graph context for it -- not a wrong answer, a quietly-degraded local-llm draft.
 graph_repo_for() {
   local project="$1"
   case "$project" in
-    MikroB)    (cd "$(git -C "$HERE" rev-parse --git-common-dir 2>/dev/null || echo .)/.." 2>/dev/null && pwd) ;;
-    CleanCore) echo "${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}" ;;
+    MikroB)              (cd "$(git -C "$HERE" rev-parse --git-common-dir 2>/dev/null || echo .)/.." 2>/dev/null && pwd) ;;
+    CleanCore|mopsion)    echo "${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}" ;;
   esac
 }
 graph_args_for() {

@@ -13275,3 +13275,58 @@ mutacioval igazolva). Typecheck (`npx tsc --noEmit`) tiszta.
 **Ki dontott:** Peti (a rebrand maga), backend3 (plan-grilling + a scope-korrekcio + implementacio).
 **Kartya:** 1b02ed3a. **Szulo:** 32dbac1e. **Successor:** 647ea02a (fajlnev-atnevezes, csak EUTAN
 indulhat).
+
+## 2026-09-18 -- delta-gate javitas: QA2-cenzus, 3 tovabbi CleanCore/mopsion nev-szuro hiba
+
+**Elozmeny:** QA2 FAIL az elso landolt shara (cb49d0f3, komment 4795) -- MikroB kifejezett kerese
+alapjan (nem kezzel valogatott lista, hanem `grep -rniE 'cleancore' --include='*.sh' --include='*.py'
+--include='*.ts' store/ scripts/`) egy TELJES cenzust futtattam a ket konyvtaron. 66 fajl talalt
+"cleancore" mintat; mindegyiket at kellett nezni, nem csak a mar ismert gate-sha-repo.sh-t.
+
+**A cenzus EREDMENYE -- harom FUNKCIONALIS talalat (mind javitva ebben a kororben):**
+
+1. **`store/gate-sha-repo.sh` `normalise_repo()`** (mar korabban azonositva, QA2 sajat elo shaval
+   reprodukalta: `bash store/gate-sha-repo.sh 209472fb --check mopsion` -> `MISMATCH`). Javitas: a
+   `*cleancore*` case-agba `*mopsion*` felvetele. Ujra-ellenorizve: ugyanaz a hivas most `AGREE|cleancore`-t
+   ad.
+
+2. **`store/cleancore-landed-check.py`** -- `--project` argumentum default-ja hardcode-olt `"cleancore"`
+   string, EGZAKT egyenloseggel osszehasonlitva a kartya `project` mezojevel. Egy `project: "mopsion"`
+   kartya CSENDBEN kiesett volna a "ma zarult DONE kartyak" jelentesbol -- nem hiba, csak egyre kevesebb
+   szamolt kartya, amit senki nem venne eszre, amig valaki nem hianyol egy landolt munkat. Javitas:
+   `_project_matches()` fuggveny + `_PROJECT_ALIASES = {"cleancore": "mopsion", "mopsion": "cleancore"}`,
+   uj `--selftest` mod (5 eset, a fajlnak korabban nem volt sajat tesztje). Mutacioval igazolva: az
+   alias-tablat kiurítve PONTOSAN a ket alias-esetteszt bukik, a tobbi 3 valtozatlan.
+
+3. **`store/offload-dispatch.sh` `graph_repo_for()`** -- `case "$project" in MikroB) ...; CleanCore) ...;
+   esac` -- NINCS `*)` alapertelmezes, egy `mopsion` bemenet AT ESIK a case-en, ures stringet ad vissza.
+   A hivo (`graph_args_for`) `[[ -n "$repo" ... ]] || return 0` mintaval CSENDBEN kihagyja a kod-graf
+   kontextust a helyi-LLM draft-hoz -- nem hibas valasz, hanem egy csendben leromlott funkcio.
+   Javitas: `CleanCore|mopsion)` egy agban. Teszt: `offload-dispatch.selftest.sh`-ba egy UJ, VISELKEDESI
+   (nem forras-pin) ellenorzes -- a `graph_repo_for` fuggvenyt kozvetlenul a ELO szkriptbol `source`-olja
+   (`sed -n '/^graph_repo_for() {/,/^}/p'`), nem duplikalja a logikat, es bizonyitja hogy `mopsion` es
+   `CleanCore` UGYANAZT a repot adja vissza. Mutacioval igazolva: a `mopsion` ag eltavolitasaval
+   PONTOSAN ez az uj teszt bukik, a tobbi 14 valtozatlan.
+
+**A cenzus TOBBI fajlja (63 db) -- NEM erintett, okok szerint csoportositva (a teljes lista a REVIEW-ban):**
+proza/kommentek; teszt-fixture-ok, ahol "cleancore"/"CleanCore" csak tetszoleges pelda-szoveg;
+`@cleancore/*` npm-scope hivatkozasok (ez a CleanCore REPO SAJAT csomag-nevezese, kulon, jovobeli
+kezdemenyezes, nem ez a marveen-infra kartya); letezo fajlrendszer-utvonalak (pl. a
+`CleanCore-worktrees/backend2` konyvtarnev a H: meghajton, szinten fajlrendszer-szintu, nem ez a
+kartya); rogzitett belso cimkek, amiket sosem hasonlitanak hivo altal adott nevhez (pl.
+`gate-closure-check.py`'s `_CLONES` -- tartalom szerinti keresesi, nem nev szerinti). `fleet-nudger.sh`
+kulon eset: a `project-dispatch-priority.json` prioritas-listajat SZO SZERINT tovabbitja szoveges
+uzenetkent, nincs benne nev-osszehasonlitas -- a valodi kockazat ott a promt/dokumentacio szinten van
+(a terv 5. lepese), nem egy javithato kodsor ebben a fajlban.
+
+**cc-gate-worktree.sh / .selftest.sh -- MEGERdSITVE UJRA:** env-var-alapu repo-valasztas
+(`CLEANCORE_MAIN`), NINCS string-nev-szuro -- nincs mit valtoztatni rajta. (A korabbi REVIEW ezt
+hallgatassal hagyta, QA2 sajat, kulon leletkent nevezte meg -- most explicit kimondva.)
+
+**Zold:** `gate-sha-repo.sh --selftest` 12/12 (+2), `cleancore-landed-check.py --selftest` 5/5 (uj),
+`offload-dispatch.selftest.sh` 15/15 (+1), `store-selftests-all-run.test.ts` 70/70 (a teljes
+store/*.selftest.{sh,py} sweep, celzottan futtatva).
+
+**Ki dontott:** QA2 (a cenzus-koveteles + a gate-sha-repo.sh lelet), MikroB (a delta-gate + a cenzus-mod
+kifejezett elorasa), backend3 (a cenzus vegrehajtasa forkkal, mindharom javitas + mutacios teszt).
+**Kartya:** 1b02ed3a.

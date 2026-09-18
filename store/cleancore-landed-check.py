@@ -41,6 +41,18 @@ TOKEN_PATH = "/home/neon/marveen/store/.dashboard-token"
 SHA_RX = re.compile(r"\b([0-9a-f]{7,40})\b")
 BLOCKED_PREFIX = "[BLOKKOLT-landolasra]"
 
+# Card 1b02ed3a (rebrand step 1, QA2 census, comment 4795): 'cleancore' and 'mopsion' name the SAME
+# project -- the product's own name is changing (kanban.ts's CANONICAL_PROJECTS), this script's
+# hardcoded --project default is not. Without this, a card re-titled/re-projected to 'mopsion'
+# during the rebrand would silently drop out of the "closed today" report -- not an error, just a
+# quietly shrinking count nobody would notice until a sweep found "missing" landed work.
+_PROJECT_ALIASES = {"cleancore": "mopsion", "mopsion": "cleancore"}
+
+
+def _project_matches(card_project: str, wanted: str) -> bool:
+    """True iff `card_project` (already lowercased) is `wanted` or its rebrand alias."""
+    return card_project == wanted or card_project == _PROJECT_ALIASES.get(wanted, wanted)
+
 
 def token():
     with open(TOKEN_PATH) as fh:
@@ -119,12 +131,35 @@ def classify(card_id):
     return "NEM-LANDOLT", "A" if on_local else "B"
 
 
+def _selftest():
+    fails = 0
+    checks = [
+        ("same value", _project_matches("cleancore", "cleancore"), True),
+        ("alias, cleancore->mopsion", _project_matches("mopsion", "cleancore"), True),
+        ("alias, mopsion->cleancore", _project_matches("cleancore", "mopsion"), True),
+        ("unrelated project", _project_matches("mikrob", "cleancore"), False),
+        ("unrelated wanted, no alias applies", _project_matches("cleancore", "mikrob"), False),
+    ]
+    for label, got, want in checks:
+        if got == want:
+            print(f"  ok   {label}")
+        else:
+            print(f"  FAIL {label}: expected {want}, got {got}")
+            fails += 1
+    print(f"cleancore-landed-check selftest: {len(checks) - fails}/{len(checks)} passed")
+    return fails == 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", default=str(datetime.date.today()))
     ap.add_argument("--project", default="cleancore")
     ap.add_argument("--mark", action="store_true", help="write to the board (default: report only)")
+    ap.add_argument("--selftest", action="store_true", help="run the offline unit checks and exit")
     args = ap.parse_args()
+
+    if args.selftest:
+        raise SystemExit(0 if _selftest() else 1)
 
     git("fetch", "origin", "main", "--quiet")
     day = datetime.date.fromisoformat(args.date)
@@ -133,7 +168,7 @@ def main():
     todays = [
         c
         for c in cards
-        if (c.get("project") or "").lower() == args.project
+        if _project_matches((c.get("project") or "").lower(), args.project)
         and datetime.datetime.fromtimestamp(c["updated_at"]).date() == day
     ]
     print(f"{len(todays)} DONE '{args.project}' card(s) closed on {day}; origin/main = {git('rev-parse','--short','origin/main').stdout.strip()}")
