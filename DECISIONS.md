@@ -13383,3 +13383,15 @@ figyelmeztetest, valtoztatas nelkul (nem egy-soros javitas, es a kartya nem kove
 **Ki dontott:** Cybersec (a kritikus lelet + a cenzus hataskor-hianyossag kimondasa), MikroB (a
 delta-gate + az utomunka), backend3 (javitas + kiterjesztett cenzus + mutacios teszt).
 **Kartya:** 1b02ed3a.
+
+## 2026-09-18: upstream-sync Installer/hooks (kártya 3291145c, b5ecff20 + 76fa2a61 + 4ddb175c)
+
+**Portolt:** mindhárom upstream commit, cherry-pick sorrendben: b5ecff20, 76fa2a61, 4ddb175c.
+
+**b5ecff20 (DISCORDLATHATO913):** macOS Discord telepítő, Linux-paritás. README-konflikt: a fork-specifikus intro és features-lista megmarad, az upstream generikus bevezető eldobva. A fork README "Csatorna" fejlécébe `(Telegram, Slack vagy Discord)` kiegészítés bekerült.
+
+**76fa2a61 (ISSUE1305HOOKSCOPE):** Fleet hookok project-scope-ba költözve, user-global `settings.json` nem írható felül. Konfliktnál: fork Stop-hook (`mikrob-alive.heartbeat`) és upstream Stop-hook (`telegram_progress_clear.py`) mindkettő megmarad. Test EXEMPT-listába két új bejegyzés (`telegram_fallback_send.py`, `telegram-image-resize.sh`) hozzáadva a fork meglévői mellé.
+
+**4ddb175c (SLACKMGDATOM913):** Slack managed-settings atomikus írás. Automatikusan mergelt, konflikt nélkül.
+
+**Ki döntött:** backend2 (upstream-sync, draft részben elfogadva -- döntési logika helyes, a konkrét konfliktfeloldások saját).
