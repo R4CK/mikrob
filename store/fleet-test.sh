@@ -368,7 +368,24 @@ else
 fi
 status="${PIPESTATUS[0]}"
 
+# INCOMPLETE RUN (card 85823628): a run killed outright (OOM/SIGKILL, SIGTERM, or anything else
+# that ends the process before vitest prints its own verdict) leaves a log with NO "Test Files ...
+# passed/failed" line anywhere -- not the birpc line below, nothing. Checked FIRST: the birpc flake
+# always HAS a summary (every test already passed by the time the worker-RPC timeout fires), so a
+# log with no summary at all is never that flake, whatever the exit code says. A "0 failed" grep
+# against a log like this finds nothing because there was nothing to find, not because it passed.
 if [ "$status" -ne 0 ] \
+  && ! grep -qE '(Test Files|Tests)[[:space:]]+[0-9]+ (passed|failed)' "$run_log"
+then
+  {
+    echo
+    echo "fleet-test.sh: INCOMPLETE RUN, no summary found (exit $status)."
+    echo "  The log has no 'Test Files ... passed/failed' or 'Tests ... passed/failed' line"
+    echo "  anywhere -- the run was killed before vitest printed its own verdict. DO NOT read"
+    echo "  this as a pass, and it is not the known birpc flake either (that flake always"
+    echo "  completes its summary first). Re-run under lighter concurrent load."
+  } >&2
+elif [ "$status" -ne 0 ] \
   && grep -q 'Timeout calling "onTaskUpdate"' "$run_log" \
   && ! grep -qE '(Test Files|Tests)[[:space:]]+[0-9]+ failed' "$run_log"
 then

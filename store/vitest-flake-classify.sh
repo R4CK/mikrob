@@ -2,9 +2,11 @@
 # Classify a finished vitest run's log: real failure, or the known worker-RPC flake? (card c6153a69)
 #
 # Usage:  vitest-flake-classify.sh <exit-status> <log-file>
-# Prints an explanation to STDERR when the run is the known flake; silent otherwise.
+# Prints an explanation to STDERR when the run is the known flake, or when it never reached a
+# verdict at all; silent otherwise.
 # Exit:   0 = the run is the KNOWN BENIGN FLAKE (tests all passed)
 #         1 = anything else (clean pass, or a genuine failure) -- the caller keeps its own status
+#         3 = INCOMPLETE RUN: no summary line found anywhere in the log (killed before verdict)
 #
 # WHY THIS EXISTS. A full CleanCore suite that hits this exits 1 with ZERO failed tests, and the only
 # clue is one "Unhandled Error" paragraph a thousand lines up. Card c6153a69 was opened because that
@@ -12,6 +14,16 @@
 # holding the card re-diagnosed it from scratch and wrote a paragraph about it in a REVIEW. That is
 # the cost: not the flake, the RE-DIAGNOSIS. `fleet-test.sh` already solved this for the marveen
 # suite (card 54699bbb); the CleanCore side had nothing, so this is that answer, extracted.
+#
+# SECOND SIGNATURE, added by card 85823628: a run killed outright (OOM SIGKILL/137, SIGTERM/143, or
+# anything else that ends the process before vitest prints its own verdict) leaves a log with NO
+# "Test Files ... passed/failed" line anywhere -- not the birpc line, nothing. Measured directly: a
+# CleanCore run died at 88 KB of log instead of the ~1.3 MB a finished run produces, with no summary,
+# and `grep -c "^ FAIL"` against that log reports zero -- indistinguishable from a clean pass to
+# anyone checking failure count alone. The fix generalizes past 137: the DECISION is the SUMMARY'S
+# PRESENCE, not the exit code or a failure count, because the summary is the only direct evidence
+# vitest ever reached its own verdict. The exit code stays useful for the human-facing explanation
+# (which signal, if any), never for the decision itself.
 #
 # THE MECHANISM, verified in the INSTALLED CleanCore vitest 3.2.6 rather than taken on trust:
 #   dist/chunks/index.B521nVV-.js:3    const DEFAULT_TIMEOUT = 6e4;      <- 60s
@@ -40,6 +52,22 @@ fi
 
 # A clean run is not a flake, whatever the log says.
 [ "$STATUS" -ne 0 ] 2>/dev/null || exit 1
+
+# INCOMPLETE RUN: no summary line anywhere, checked BEFORE the birpc-specific signature below. The
+# birpc flake always HAS a summary -- every test already passed by the time the worker-RPC timeout
+# fires -- so a log with no summary at all is never that flake, it is this, whatever the exit code.
+if ! grep -qE '(Test Files|Tests)[[:space:]]+[0-9]+ (passed|failed)' "$LOG"; then
+  cat >&2 <<EXPLAIN
+
+cleancore suite: INCOMPLETE RUN, no summary found (exit $STATUS).
+  The log has no "Test Files ... passed/failed" or "Tests ... passed/failed" line anywhere -- the
+  run was killed (OOM/SIGKILL, SIGTERM, or similar) before vitest printed its own verdict. Grepping
+  this log for a failure count finds nothing because there was nothing to find, not because the
+  suite passed. This is NOT the known birpc flake below either -- that flake always completes its
+  summary first. DO NOT read this as a pass. Re-run under lighter concurrent load.
+EXPLAIN
+  exit 3
+fi
 
 # The signature: the worker-RPC timeout AND no failed test anywhere in the summary. Both halves are
 # required -- a run that hits the flake AND has real failures is a REAL FAILURE, and calling it
