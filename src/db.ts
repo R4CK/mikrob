@@ -3461,18 +3461,32 @@ export const BULK_ATTRIBUTION_MESSAGE =
  *
  * A refused write inserts no row, so the window drains on its own -- a caller can never lock the
  * board out of status changes by tripping this.
+ *
+ * Card 1bd7debf / Cybersec F-1: a refusal used to leave no trace anywhere -- an audit asking "how
+ * many unattributed bursts did the guard actually stop" had no way to answer. Logged here, once,
+ * so every caller (both status doors) gets it for free instead of three separate call sites having
+ * to remember to log the same thing.
  */
 export function bulkAttributionRequired(
   nowSec: number,
   actor?: string | null,
-  reason?: string | null
+  reason?: string | null,
+  cardId?: string
 ): boolean {
   if (actor?.trim() && reason?.trim()) return false
   const since = nowSec - BULK_ATTRIBUTION_WINDOW_SECONDS
   const row = db
     .prepare('SELECT COUNT(*) AS n FROM kanban_card_events WHERE created_at >= ?')
     .get(since) as { n: number } | undefined
-  return (row?.n ?? 0) >= BULK_ATTRIBUTION_THRESHOLD
+  const recentEvents = row?.n ?? 0
+  const fires = recentEvents >= BULK_ATTRIBUTION_THRESHOLD
+  if (fires) {
+    logger.warn(
+      { cardId, actor: actor ?? null, reason: reason ?? null, recentEvents, windowSeconds: BULK_ATTRIBUTION_WINDOW_SECONDS },
+      'bulk-attribution guard refused an unattributed status write (card 1bd7debf)'
+    )
+  }
+  return fires
 }
 
 /**
@@ -3519,7 +3533,7 @@ export function updateKanbanCard(
   // Card 4bbb5167: a status write that is part of a burst has to say who and why. Checked here
   // rather than in the routes for the reason dependencyBlockers gives above -- there are three
   // doors into a status change and a route-level guard sees two of them.
-  if (statusChanges && bulkAttributionRequired(Math.floor(Date.now() / 1000), opts?.actor, opts?.reason)) return false
+  if (statusChanges && bulkAttributionRequired(Math.floor(Date.now() / 1000), opts?.actor, opts?.reason, id)) return false
   // `forced` records only whether THIS transition actually needed the reviewed-card-reopen
   // override -- an ordinary in_progress move that happens to carry `force:true` (e.g. an exempt
   // agent's client always sends it) is not itself a guard override and must not read as one; see
@@ -3685,7 +3699,7 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   if (depBlocked && !isForceActor(force === true, actor)) return false
   // Card 4bbb5167: same predicate as updateKanbanCard's, gated on a REAL transition so a
   // sort_order reorder inside one column never trips it.
-  if (prev !== undefined && prev !== status && bulkAttributionRequired(now, actor, reason)) return false
+  if (prev !== undefined && prev !== status && bulkAttributionRequired(now, actor, reason, id)) return false
   // dispatched_at guards ONE in_progress spell (one activation -> one wake-up message), it is not a
   // permanent tombstone. Nothing used to clear it, so a card pulled to in_progress and put BACK
   // (planned/waiting) burned its dispatch forever: the board showed it alive while the next pull

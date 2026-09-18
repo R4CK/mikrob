@@ -13,7 +13,7 @@
 // THE THRESHOLD IS MEASURED, NOT CHOSEN. Densest 60-second window per day over the real 1880
 // events: 1, 289, 111, 15, 2. The three-digit days are the triage this audit is about; the 15 is a
 // deliberate bulk sweep that already named an actor; ordinary fleet work sits at 1-2.
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Readable } from 'node:stream'
 import {
   initDatabase,
@@ -29,6 +29,7 @@ import {
 } from '../db.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { logger } from '../logger.js'
 
 const N = BULK_ATTRIBUTION_THRESHOLD
 
@@ -152,6 +153,41 @@ describe('the predicate itself (card 4bbb5167)', () => {
     getDb().prepare('UPDATE kanban_card_events SET created_at = ?').run(now - 3600)
     expect(bulkAttributionRequired(now)).toBe(false)
     expect(moveKanbanCard('r', 'done', 0), 'the board accepts ordinary work again').toBe(true)
+  })
+})
+
+// Card 1bd7debf / Cybersec F-1: a refusal used to leave no trace anywhere -- an audit asking "how
+// many unattributed bursts did the guard actually stop" had no way to answer. These pin that the
+// refusal is now observable, and that an ordinary allowed write stays silent (no log-spam on the
+// 95% documented path).
+describe('a refusal leaves a trace (card 1bd7debf / Cybersec F-1)', () => {
+  it('logs a warning naming the card when it refuses', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    burstTo(N)
+    const id = card('logged')
+    expect(moveKanbanCard(id, 'done', 0)).toBe(false)
+    expect(warn).toHaveBeenCalledTimes(1)
+    const [fields, msg] = warn.mock.calls[0]!
+    expect(msg).toContain('1bd7debf')
+    expect((fields as { cardId?: string }).cardId).toBe(id)
+    warn.mockRestore()
+  })
+
+  it('does not log anything for an ordinary allowed write', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    expect(moveKanbanCard(card('quiet'), 'done', 0)).toBe(true)
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('logs on the PUT door too, not only the move door', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    burstTo(N)
+    const id = card('logged-put')
+    expect(updateKanbanCard(id, { status: 'done' })).toBe(false)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect((warn.mock.calls[0]![0] as { cardId?: string }).cardId).toBe(id)
+    warn.mockRestore()
   })
 })
 

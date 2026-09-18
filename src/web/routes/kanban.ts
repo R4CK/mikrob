@@ -851,7 +851,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (statusWouldChange(id, data.status) &&
         bulkAttributionRequired(Math.floor(Date.now() / 1000),
           typeof actor === 'string' ? actor : undefined,
-          typeof reason === 'string' ? reason : undefined)) {
+          typeof reason === 'string' ? reason : undefined,
+          id)) {
       json(res, { code: 'bulk_attribution_required', error: BULK_ATTRIBUTION_MESSAGE }, 409)
       return true
     }
@@ -924,7 +925,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (statusWouldChange(id, status) &&
         bulkAttributionRequired(Math.floor(Date.now() / 1000),
           typeof actor === 'string' ? actor : undefined,
-          typeof reason === 'string' ? reason : undefined)) {
+          typeof reason === 'string' ? reason : undefined,
+          id)) {
       json(res, { code: 'bulk_attribution_required', error: BULK_ATTRIBUTION_MESSAGE }, 409)
       return true
     }
