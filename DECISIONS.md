@@ -12833,3 +12833,52 @@ sem történt. Az anchorok ezért PRODUKCIÓS fájlra mutatnak, és ezt teszt is
 **Verdikt:** a jelen kiadásban (0.37.0) a mért haszon (3,49%) nem indokolja az új trust-boundary-t + dep-felületet a mi valós beszélgetési adatunkon, plusz a flagship motor ebben a verzióban ténylegesen törött, plusz az offline-kapcsoló nem teljes körű library-módban. NE menjen élő ügynök-wrap/MCP-bekötésre. Újramérés akkor indokolt, ha upstream javítja a kompress-v2-base csomagot, vagy explicit host-szintű (firewall) tiltás védi a huggingface.co-t ahelyett, hogy az alkalmazás saját kapcsolójában bíznánk.
 
 **Ki döntött:** backend (mérés, kódolvasás), MikroB/Peti dönt a rollout-tervről (feb005e0 leírásának 3. lépése) ezen mérés alapján. **Kártya:** feb005e0.
+
+## 2026-09-18 -- 3c075d74: helyi-LLM-eloszor dispatch-politika megfordítva alapertelmezesse
+
+Peti kozvetlen kerese (Telegram 8835, MikroB dispatch): "elobb a local-llmre delegald a feladatokat,
+utana az online llm ellenorzi. Ha elbukik a feladaton, akkor az online llm vegezze el." A 16.
+munkavegzesi szabaly (kartya 79f62fd7) szigoritasa: a helyi-elobb mostantol nem a konnyu kartyak
+kivetele, hanem MINDEN uj kartya alapertelmezese.
+
+**Mert allapot a valtoztatas elott (MikroB merese, 2026-09-18 12:40):** a helyi modell egeszseges
+(Qwen3.5-9b Q4, CUDA0, 4812 MiB, ADMIT), de `card-build-route.log` aznap 7 dontest rogzitett, MIND
+ONLINE, `calls=0` -- a determinisztikus eloszurok (4x deterministic-multi-decision, 1x
+priority-urgent, 1x priority-high, 1x deterministic-shared-instruction-target) a modellt meg sem
+kerdeztek. A dispatch-offload draftok (11:18-11:21) az online ugynok KESZ munkaja UTAN erkeztek.
+
+**Valtoztatasok (backend, card-build-route.sh + card-build-route.selftest.sh +
+heartbeat-consolidated/SKILL.md + CLAUDE.md 16. szabaly + uj
+store/card-build-route-24h-measure.sh):**
+
+1. A `priority: urgent|high` gate TORLVE a card-build-route.sh-bol -- a surgosseg nem nehezseg, egy
+   urgens kartya ugyanugy vegigmegy a tartalmi kapukon es a modell EASY/COMPLEX kerdesen.
+   **Regresszio-ellenorzes (selftest battery A, modell stubbed EASY-re):** a torles pontosan EGY
+   real kartyat (a6c3a466, "customer portal v4 evidence package") fosztott meg a vedelemtol -- azt
+   korabban KIZAROLAG a priority tartotta online-on, tartalmi gate nem fedte. Potlas: uj
+   `deterministic-auth-tenant-scope` gate (auth/RBAC/multi-tenant/PII/GDPR/systemd + az
+   "ugyfel-tulajdon ujraellenorzes" kifejezes-mintaja), ami a 3c075d74 altal nevesitett kategoriakat
+   (auth, penz, PII, multi-tenant, migracio, systemd, deploy) fedi le ott, ahol korabban semmi nem
+   fedte. Selftest utana: 52/52 zold (elotte a torles utan 48/49, 1 real kartya-regresszio, amit a
+   pótlás zart).
+2. `heartbeat-consolidated/SKILL.md` C szekcio 4b lepese: a `card-build-route.sh` verdiktje MAR NEM
+   azt donti el, keszul-e draft, hanem hogy a draft utani online felulvizsgalat mennyire alapos
+   legyen. A `card-build-route.log` utolso soranak `path` mezoje dont KAPACITAS-OK (nincs mit
+   draftolni: vram-hold, model-busy, kill-switch, no-token, card-unreadable, card-unparseable,
+   empty-text, too-long, bad-card-id, no-argument, route-check-failed) es TARTALMI-OK (minden mas,
+   LOCAL is) kozott. Tartalmi oknal `offload-dispatch.sh` MOST SZINKRON fut, a delegalo uzenet ELOTT
+   -- nem az A szekcio hattersweepjekent, ami csak a mar folyamatban levo kartyak KESOBB megjeleno
+   mechanikus alfeladatait fedi le mostantol (backstop, nem elsodleges ut).
+3. Bukas-ut: MAR LETEZO gepezetre epul, nincs uj mechanizmus. `offload-dispatch.sh` sajat 3-probas
+   attempts-tracking-ja (`offload-attempts.json`) es a `kanban-draft-review-guard.ts` (kartya
+   1338e68b, `Draft-Review: ELFOGADVA/RESZBEN/ELUTASITVA`) egyutt mar lefedi: 3 sikertelen tranziens
+   kiserlet vagy explicit ELUTASITVA -> az online ugynok nullarol epiti, es ez a kartya sajat
+   kommentszalaban lathato, kulon `local-failed` naplobejegyzes nelkul.
+4. Meres: `store/card-build-route-24h-measure.sh` (+ `.selftest.sh`, 17/17 zold) szamolja egy
+   idoablakban a kapacitas-vs-tartalmi dontesek aranyat, es a tartalmi dontesu kartyak kozul hany
+   kapott tenylegesen draftot, hany dolgozott vele tovabb (ELFOGADVA/RESZBEN), hany utasitotta el
+   (ELUTASITVA), hany meg fuggoben. Elso valodi 24 orás szam a bevezetes utan kulon kovetkezik --
+   ez a bejegyzes az eszkozt es a nulla-alapvonalat rogziti, nem a 24 orás eredmenyt.
+
+**Ki dontott:** Peti (kozvetlen keres), MikroB (dispatch, kartya 3c075d74, HIGH). **Vegrehajtas:**
+backend. **Gate:** QA + Cybersec (a klasszifikacio biztonsagi kartyakat is erint).
