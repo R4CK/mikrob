@@ -298,15 +298,16 @@
     "branch": "main",
     "local": "/home/neon/marveen/store/adopted/mcp-compressor",
     "type": "code",
-    "enabled": false,
-    "last_sha": "",
+    "enabled": true,
+    "last_sha": "74674d5f",
     "kind": "mcp",
-    "adoption": "hold-pending-upstream",
+    "adoption": "installed",
     "license": "Apache-2.0",
-    "reviewed_at": "2026-07-31",
-    "note": "HOLD (Peti opcio A, 2026-07-31): NO-GO a wiringre amig 8 Rust OSV advisory all (anyhow/pyo3/quinn-proto/tar) + nincs futtathato MCP-szerver binaris. Vendorolva/auditalva, install inert. Upstream crate-fix utan: uj OSV + Cybersec re-gate. repomix elesben.",
-    "description": "MCP tool-leírás tömörítő (70-97% token-megtakarítás). Cybersec-feltételekkel, repón kívül wire-olva.",
-    "enabled_reason": "HOLD -- bekotes NO-GO amig a Rust OSV advisoryk allnak. Eldontve, nem eldontetlen."
+    "reviewed_at": "2026-09-18",
+    "note": "F3 fix (card 2f533044): a regiszter itt korabban meg 'hold-pending-upstream'/enabled=false allt, holott az Opcio-C LIBRARY-ONLY adapter (store/mcp-compress.sh) mar elo es hasznalatban van -- a regiszter hazudott. TENYLEGES ALLAPOT: a csomag a repon KIVUL van telepitve (~/.npm-tools, npm -g --prefix, --ignore-scripts), CSAK a compressToolListing fuggvenyt hivja (serve/CLI/OAuth/exec-bridge soha), a store/mcp-compress.sh a kizarolagos hivo, fail-closed verzio-pin-nel a RUN uton (nem csak doctor-ban). Verziotortenet: 2026-07-31 HOLD (Peti opcio A) 8 Rust OSV advisory (anyhow/pyo3/quinn-proto/tar) miatt -> f7c87ea4-en Cybersec megerositette hogy egyik advisory sincs a szallitott binarisban, GO negy feltetellel -> 2f533044 (2026-09-18) vegrehajtotta a bumpot 0.31.7 -> 0.32.0-ra, mind a negy feltetel teljesitve (verzio egyertelmuen 0.32.0, PINNED_VERSION ugyanabban a commitban, ez a regiszter-javitas, doctor+reachability a tenylegesen telepitett fara). A 'type: code' watcher tovabbra is figyeli az upstream repot (a lenti local checkout-on at) uj OSV/advisory miatt, annak ellenere hogy az adapter magat a repot nem hasznalja futaskor.",
+    "description": "MCP tool-leírás tömörítő (70-97% token-megtakarítás). Cybersec-feltételekkel, repón kívül wire-olva, store/mcp-compress.sh a kizarolagos hivo.",
+    "enabled_reason": "INSTALLED es hasznalatban (Opcio-C library-only adapter, card 2f533044) -- a watcher tovabbra is fut upstream-advisory figyelesre.",
+    "pinned_version": "0.32.0"
   },
   {
     "name": "repomix",

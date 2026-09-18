@@ -19,9 +19,15 @@
 #   clearOAuthCredentials / listOAuthCredentials / rememberOAuthBackend  -- credential handling
 #   installJustBashCommands* / createJustBashCommands  -- the just-bash sandbox surface
 #
-# UPDATE-SAFE: the package lives OUTSIDE the repo (~/.npm-tools, pinned 0.31.7, --ignore-scripts).
+# UPDATE-SAFE: the package lives OUTSIDE the repo (~/.npm-tools, pinned 0.32.0, --ignore-scripts).
 # This script is the only tracked artefact, so update.sh's ff-only pull is unaffected. No secrets --
 # this path needs none.
+#
+# PIN HISTORY: 0.31.7 -> 0.32.0 (card 2f533044, Cybersec GO on f7c87ea4 with 4 conditions). The 8 OSV
+# advisories that caused the original HOLD (anyhow/pyo3/quinn-proto/tar) are absent from the shipped
+# binary in both versions; the delta across the four intervening releases is one non-called file
+# (rust_core.d.ts) with identical reachability (zero Node-level egress/exec/child-process on this
+# LIBRARY-ONLY path).
 #
 # USAGE:
 #   cat tools.json | store/mcp-compress.sh [--level low|medium|high]   # default: high
@@ -32,7 +38,7 @@
 # looks like a 100% saving and is actually a broken tool surface.
 set -euo pipefail
 
-PINNED_VERSION="0.31.7"
+PINNED_VERSION="0.32.0"
 PKG="${MCP_COMPRESSOR_PKG:-$HOME/.npm-tools/lib/node_modules/@atlassian/mcp-compressor}"
 LEVEL="high"
 
