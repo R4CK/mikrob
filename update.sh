@@ -287,6 +287,30 @@ if ! git ls-remote --exit-code --heads origin "$CURRENT_BRANCH" >/dev/null 2>&1;
   exit 2
 fi
 
+# --- Mandatory pre-update checkpoint (card ae071239, Peti request 2026-09-13) ------------------
+# Peti's literal ask: a checkpoint of the LOCAL version must exist BEFORE the update proceeds,
+# guaranteed by ORDER, not just an after-the-fact log line. Until now update.sh only wrote a
+# rollback point (FROM/TO) AFTER `git pull` already succeeded (further below) -- the change had
+# already happened by then, so a crash mid-pull (network cut, disk full) left no recorded point
+# to roll back to at all. recovery-prev-version.sh already has a non-destructive `checkpoint`
+# action (just appends a row to store/.update-history); this is its first call from update.sh's
+# own normal run, placed before Guard 2's dirty-check/stash and before the pull, so it always
+# runs before any change this script makes.
+#
+# Fail-closed by construction, not by an added check: this script and recovery-prev-version.sh
+# both run under `set -e`, so a failed checkpoint write (disk full, permissions) returns
+# non-zero and aborts THIS script right here, before git pull/build/restart ever run.
+#
+# Skipped under POST_MERGE_MODE: there the caller (dashboard's /api/updates/apply) already
+# fetched+merged upstream BEFORE invoking this script and already recorded its own rollback
+# point (recordUpdateHistory() in src/web/routes/updates.ts, note "upstream-merge") -- HEAD has
+# already moved by the time this script starts, so a checkpoint here would record the WRONG
+# (post-merge) commit as the "pre-update" point.
+if [ "$POST_MERGE_MODE" != "1" ]; then
+  RESULT_PHASE="checkpoint"
+  "$INSTALL_DIR/recovery-prev-version.sh" checkpoint "pre-update auto"
+fi
+
 # Guard 2: refuse to run with a dirty tracked working tree.
 # Untracked files (CLAUDE.md.backup-*, SOUL.md mid-edit, agent-generated
 # scratchpads) are allowed -- the --untracked-files=no flag excludes
