@@ -18,9 +18,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockGetPendingMessages = vi.fn()
-const mockMarkDelivered = vi.fn(() => true)
-const mockMarkFailed = vi.fn(() => true)
-const mockSendPrompt = vi.fn(async () => 'sent' as const)
+const mockMarkDelivered = vi.fn<(id: number) => boolean>()
+const mockMarkFailed = vi.fn<(id: number) => boolean>()
+const mockSendPrompt = vi.fn<(...args: unknown[]) => Promise<'sent'>>()
 
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
@@ -37,8 +37,8 @@ vi.mock('../db.js', () => ({
     if (toAgent) return [] // per-agent query of the reconnect pre-pass
     return mockGetPendingMessages()
   },
-  markMessageDelivered: (...a: unknown[]) => mockMarkDelivered(...a),
-  markMessageFailed: (...a: unknown[]) => mockMarkFailed(...a),
+  markMessageDelivered: (id: number) => mockMarkDelivered(id),
+  markMessageFailed: (id: number) => mockMarkFailed(id),
   markMessageDone: () => true,
   markPendingFederatedFailed: () => true,
   setMessageResult: () => true,
