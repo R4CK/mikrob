@@ -129,6 +129,28 @@ PYEOF
 )"
 check "offload-dispatch.sh calls the VRAM guard, ahead of the sweep loop" "$vram_pin" "OK"
 
+# --- graph_repo_for resolves 'mopsion' the same as 'CleanCore' (card 1b02ed3a) -----------------
+# A real behaviour check, not a source-pin: graph_repo_for is pure (no side effects beyond a `cd`
+# in a subshell), so it is sourced directly out of the live script rather than duplicated here --
+# duplicated logic is exactly how this class of miss (a case arm added in one place, not the other)
+# happens in the first place.
+graph_repo_pin="$(
+  source <(sed -n '/^graph_repo_for() {/,/^}/p' "$DISPATCH")
+  cc="$(graph_repo_for CleanCore)"
+  mo="$(graph_repo_for mopsion)"
+  mk="$(graph_repo_for MikroB)"
+  if [[ -z "$cc" || -z "$mo" ]]; then
+    echo "EMPTY"
+  elif [[ "$cc" != "$mo" ]]; then
+    echo "MISMATCH"
+  elif [[ -z "$mk" ]]; then
+    echo "MIKROB-BROKEN"
+  else
+    echo "OK"
+  fi
+)"
+check "graph_repo_for('mopsion') resolves to the SAME repo as graph_repo_for('CleanCore')" "$graph_repo_pin" "OK"
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

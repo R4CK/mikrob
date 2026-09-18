@@ -49,10 +49,18 @@ die() { echo "gate-sha-repo: $2" >&2; exit "$1"; }
 # real corpus -- the `repo:` blocks in existing REVIEWs carry all three
 # (git@github.com:R4CK/mikrob.git, marveen, git@github.com:R4CK/CleanCore.git), so a comparison that
 # only understood one of them would report false mismatches on honest reviews.
+#
+# Card 1b02ed3a (rebrand step 1, QA2 census finding, comment 4795): 'mopsion' is the SAME physical
+# repo as 'cleancore' -- the product's own name is changing (kanban.ts's CANONICAL_PROJECTS), the
+# on-disk clone (CLEANCORE_REPO, already /mnt/h/LM_Studio_Workdir/mopsion) is not. Without this, a
+# REVIEW written after the rebrand that honestly says `Gate-repo: mopsion` would --check MISMATCH
+# against a lookup that always answers 'cleancore' (find_repo below never emits any other spelling
+# for that clone) -- a false positive on an honest review, the exact inverse of the false-negative
+# class this script's own header names as its motivating incident.
 normalise_repo() {
   local raw; raw="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   case "$raw" in
-    *cleancore*) echo cleancore ;;
+    *cleancore*|*mopsion*) echo cleancore ;;
     *mikrob*|*marveen*) echo marveen ;;
     *) echo "$raw" ;;
   esac
@@ -176,6 +184,10 @@ selftest() {
   t "owner/repo form"       marveen   "$(normalise_repo 'R4CK/mikrob')"
   t "owner/repo, cleancore" cleancore "$(normalise_repo 'R4CK/CleanCore')"
   t "case insensitive"      cleancore "$(normalise_repo 'CLEANCORE')"
+  # Card 1b02ed3a (rebrand): 'mopsion' resolves to the SAME physical repo as 'cleancore' -- the
+  # product's name changed, the clone (CLEANCORE_REPO) did not.
+  t "mopsion, bare"         cleancore "$(normalise_repo 'mopsion')"
+  t "mopsion, case insensitive" cleancore "$(normalise_repo 'MOPSION')"
   t "unknown passes through" 'whatever' "$(normalise_repo 'whatever')"
   # A sha that cannot exist must report unlanded rather than defaulting to a repo -- the whole point
   # is to stop guessing, and a confident wrong answer is worse than "not here".
