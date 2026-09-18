@@ -774,6 +774,27 @@ $TMUX kill-session -t "$SESSION" 2>/dev/null
 # not, so `pkill -f` against the env var never matches. We grep `ps eww -e`
 # instead, which surfaces each process environment on macOS BSD ps.
 MAIN_CHAN_DIR="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER"
+
+# fd2b2c4a (2026-09-18): identifies which of a candidate PID list is actually
+# the provider poller process (bun/node running its own server.ts, per the
+# comment above), not merely a process that inherited a matching env var.
+# `ps eww` mixes argv and environment in one COMMAND column with no reliable
+# delimiter between them, so this reads argv from /proc/<pid>/cmdline instead
+# (NUL-separated, unambiguous) rather than field-splitting that line. Linux
+# only -- the callers already guard with `2>/dev/null` for the macOS path,
+# where /proc does not exist and this helper harmlessly returns nothing.
+_reap_poller_pids() {
+  for _p in "$@"; do
+    # -r first, not a redirection failure: a race (the pid already exited) must stay silent, and
+    # bash prints a redirection-open error to the CALLER's stderr before `2>/dev/null` on the same
+    # command line would take effect (redirections apply in the order written, left to right).
+    [ -r "/proc/$_p/cmdline" ] || continue
+    if [ "$(tr '\0' '\n' < "/proc/$_p/cmdline" 2>/dev/null | sed -n 2p)" = "server.ts" ]; then
+      echo "$_p"
+    fi
+  done
+}
+
 case "$CHANNEL_PROVIDER" in
   slack)    STATE_ENV_VAR="SLACK_STATE_DIR" ;;
   whatsapp) STATE_ENV_VAR="WHATSAPP_STATE_DIR" ;;
@@ -782,6 +803,21 @@ case "$CHANNEL_PROVIDER" in
   *)        STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
 esac
 ORPHAN_PIDS="$(/bin/ps eww -e 2>/dev/null | awk -v needle="${STATE_ENV_VAR}=${MAIN_CHAN_DIR}" '$0 ~ needle { print $1 }')"
+# fd2b2c4a (2026-09-18): the env needle above is not enough on its own. The
+# tmux server is a SHARED fleet-wide daemon -- one process, all agents' panes
+# forked from it -- and it (plus the main claude process and every MCP child
+# any agent happens to be running) inherits this script's exported
+# *_STATE_DIR, because `export ... && exec claude` puts it in claude's own
+# environment, not just the poller's. Measured live on 2026-09-18: the needle
+# alone matched 142 processes -- the tmux server, 11 claude processes, and
+# every fleet agent's shell/MCP tooling -- for ONE real orphan poller. Killing
+# that set is how the two service restarts that morning (09:04:08 and
+# 09:10:04 in store/channels-respawn.log) each took the whole fleet down.
+# _reap_poller_pids narrows the candidate set to what this reap actually
+# targets: the provider poller process itself (`bun server.ts` / `node
+# server.ts`), identified by its own argv, not by what environment it
+# happens to have inherited.
+ORPHAN_PIDS="$(_reap_poller_pids $ORPHAN_PIDS)"
 if [ -n "$ORPHAN_PIDS" ]; then
   # shellcheck disable=SC2086
   /bin/kill -TERM $ORPHAN_PIDS 2>/dev/null || true
@@ -809,6 +845,11 @@ fi
 # is named `subdir` (not `sub`) because `sub` is a reserved awk function name and
 # BSD/macOS awk syntax-errors on it.
 ORPHAN_PIDS2="$(/bin/ps eww -e 2>/dev/null | awk -v needle="CLAUDE_PLUGIN_ROOT=" -v prov="/${CHANNEL_PROVIDER}" -v subdir="${INSTALL_DIR}/agents/" '$0 ~ needle && $0 ~ prov && index($0, subdir) == 0 { print $1 }')"
+# fd2b2c4a: same poller-only narrowing as pass one. Measured live this pass
+# does not currently catch the tmux server or claude (CLAUDE_PLUGIN_ROOT is
+# not broadly exported the way *_STATE_DIR is), but the filter costs nothing
+# and closes the same theoretical hole for any future build that changes that.
+ORPHAN_PIDS2="$(_reap_poller_pids $ORPHAN_PIDS2)"
 if [ -n "$ORPHAN_PIDS2" ]; then
   # shellcheck disable=SC2086
   /bin/kill -TERM $ORPHAN_PIDS2 2>/dev/null || true
