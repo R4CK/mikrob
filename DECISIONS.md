@@ -13383,3 +13383,51 @@ figyelmeztetest, valtoztatas nelkul (nem egy-soros javitas, es a kartya nem kove
 **Ki dontott:** Cybersec (a kritikus lelet + a cenzus hataskor-hianyossag kimondasa), MikroB (a
 delta-gate + az utomunka), backend3 (javitas + kiterjesztett cenzus + mutacios teszt).
 **Kartya:** 1b02ed3a.
+
+## 2026-09-18 -- Upstream sync: uzenetek/inter-agent routing, 3 portolva + 1 fuggoben
+
+A helyi (7B) offload-draft ezen a kartyan TELJESEN HALLUCINALT tartalmat adott (Java fajlokat,
+`PostfiParser.java`/`InterAgentRouter.java`, egy 100%-ban TypeScript projektben) -- egyetlen `git show`
+sem futott le mogotte. Elutasitva, a vizsgalatot ujrakezdve a valodi upstream commitokon.
+
+**b8c3966e (feat(messages): freshness jelzes a JSON mailbox-olvasasokon) -> PORT (f01850e3).**
+GET /api/messages es GET /api/messages/:id most mar visszaadja a `freshness` mezot soronkent
+(kor percben, hany ujabb uzenet erkezett azota ugyanattol a kuldotol, a router sajat szoveges
+megjegyzese) -- ugyanaz a jel, amit a router a tmux-injektalt kezbesitesre mar rastampel, csak
+a korabban NEM ellátott korai API/pull-olvasas utjan is. Tiszta cherry-pick: a fork sajat
+`formatFreshnessSuffix`/`countNewerMessagesFromSameSender` fuggvenyei mar leteztek, pontosan
+egyezo alairassal -- ezekre epul az uj kod, semmit nem kellett ujraalkotni.
+
+**767771a1 (fix(inter-agent): a kuldo eldobja a router figyelmeztetesét) -> PORT (ee2ff51a).**
+`scripts/agent-msg.sh` eddig csak az `id` mezot olvasta a valaszbol -- ha a cimzett agent nem fut,
+a router 200-at ad WARNING-gal, de a szkript "OK id=..."-t irt, mintha kezbesitve lenne. Most a
+figyelmeztetes stderr-re megy (plusz egy "(warning)" jelzo stdout-ra), az exit kod 0 marad (a sor
+tenyleg elfogadva lett). Adaptalva a fork sajat `-H @"$hdr_file"` token-fajl-alapu auth-mintajara
+(b267df80, Cybersec-javitas) -- azt a sort a port nem erintette.
+
+**785ffb96 (test(message-router): inject/delivered-mark parositas) -> PORT, ADAPTALVA (70749167).**
+Uj teszt-fajl, semmilyen production-kod valtozas. KET fork-specifikus fuggveny hianyzott a teszt
+`db.js` mock-jabol, amit az upstream verzio nem ismer: `getKanbanCardStateByIdPrefix` (dispatch-
+felulbiralas ellenorzes) es `closeOtelSpanIfOpen` (tracing). A masodik hianya VALODI, MERT LEFUTTATOTT
+tesztbukast okozott: mivel a `closeOtelSpanIfOpen`-t a router a MAR FOLYAMATBAN LEVO catch-agban
+hivja (a send-keys-hiba kezelese kozben), a hianyzo mock miatti dobas kiszokott a router KULSO,
+biztonsagi-halo catch-agaba, ami MASODSZOR IS meghivta a `markMessageFailed`-et ugyanarra a sorra --
+"expected 1 times, got 2 times". Mindket fuggveny most no-op-kent mockolva, ugyanugy mint a fork
+tobbi router-tesztjeben (`message-router-tick-cap.test.ts`).
+
+**47e3a899 (feat(messages): hangcsatorna sajat azonositoval, device-key kapuval) -> PENDING.**
+A gazda (Szotasz oldalan) egy kulso hangasszisztensbe diktal, ami a leiratot POSTolja az
+`/api/messages` vegpontra -- ehhez uj `hanna` csatorna-azonosito + ESZKOZ-KULCS enrollment
+infrastruktura kell (auth-kontextus nelkuli irasi kapu, biztonsag-kritikus uj tamadasi felulet).
+Nekunk NINCS ilyen hangcsatornank, es a device-key enrollment gepezetet nem epitem meg vakon egy
+olyan funkciohoz, amit Peti meg nem kert -- ez explicit Peti/MikroB-dontest igenyel (van-e sajat
+hang-diktalasi igeny, es ha igen, ide kotni vagy sajat megoldast epiteni). `mark pending`-kent
+rogzitve, a listan marad.
+
+**Zold:** minden erintett + szomszedos teszt (agent-msg-get-freshness, api-messages-freshness,
+count-newer-from-sender, message-freshness-suffix, router-no-silent-reinject, message-router-tick-cap,
+message-router-tick-watchdog, kanban-dispatch-card-state-stamp, message-wake-deciders,
+staleness-guard) celzott futtatassal zold, 36+17 teszt. Typecheck (`tsc --noEmit`) tiszta.
+
+**Ki dontott:** backend3 (vizsgalat, adaptacio, teszt-hianyossagok feltarasa+javitasa), a hangcsatorna
+kerdes MikroB/Peti dontesere var. **Kartya:** 7503bb31.
