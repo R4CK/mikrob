@@ -65,7 +65,7 @@
     "last_sha": "4df4b03b",
     "kind": "skill",
     "adoption": "vendored",
-    "license": "MIT (skills/ + MIT packages; BSL-1.1 dirs vendored but never executed)",
+    "license": "split: MIT + BSL-1.1 (a vendorolt másolat a teljes repo -- lásd license_note)",
     "reviewed_at": "2026-09-18",
     "vendored_to": "/home/neon/.claude/skills/caveman",
     "vendored_subdir": "",
@@ -73,8 +73,8 @@
     "description": "Token-tömörítő kimeneti stílus (kizárólag belső/gépi kimenetre). Vendorolt skill.",
     "last_checked_upstream_sha": "4df4b03b",
     "last_checked_at": "2026-09-15",
-    "license_note": "SPLIT LICENSE (ellenorizve LICENSING.md-bol, SHA 542442ba, 2026-09-18): A TELJES repo root vendorolva van (VENDORED.md: \"the vendor is the whole repo root, not a scoped subdir\"), tehat a BSL-1.1 konyvtarak (engine/, cacheengine/, proxy/, rewriter/, browse/, mcp/, shrink/, shared/platform/, mem/ Go core) FIZIKAILAG JELEN VANNAK a vendorolt masolatban a lemezen. A skills/ es MIT packages/ konyvtarak EXPLICIT MIT az LICENSING.md per-directory tablajakent. A flotta KIZAROLAG a SKILL.md szoveget olvassa statikusan -- nincs caveman binaris telepitve sehol (VENDORED.md Telemetry szekció, ellenorizve 2026-08-19): a CLI soha nem fut, tehat a BSL-1.1 engine-korlatok NEM aktivalodnak (a BSL-1.1 Source Available restrikciok a futtatásra, terjesztesre, OEM/managed service-re vonatkoznak; statikus szovegfajlok olvasasa nem aktivalja ezeket). Az Additional Use Grant a belso, first-party, self-hosted hasznalat engedélyezi (nem kereskedelmi tovabbterjesztes). Source-available hataly: a BSL-1.1 reszeket terjeszteni, OEM/managed service-be becsomagolni, harmadik felnek hosted szolgaltatasban atadni TILOS licensz nelkul. Konkluzio: a flotta tényleges hasznalata (SKILL.md statikus olvasasa, CLI sosem fut) SZABAD; a BSL-1.1 engine-restrikciok nem aktivalodnak.",
-    "license_reviewed_sha": "542442ba"
+    "license_note": "SPLIT LICENSE (ellenőrizve LICENSING.md-ből, SHA 27d5a398, 2026-09-18, a tartott/pinnelt commit): A vendorolt másolat a TELJES repo (vendored_subdir üres -- a registry maga mondja), tehát a BSL-1.1 könyvtárak (engine/, cacheengine/, proxy/, rewriter/, browse/, mcp/, shrink/, mem/ Go core, shared/platform/) FIZIKAILAG JELEN VANNAK a lemezen (összesen ~1490 fájl, ~30 MB), valamint az `ui/`, amit a LICENSING.md \"Private/not published\" kategóriába sorol (sem MIT, sem BSL -- nem publikálható termékdöntés nélkül). MIT könyvtárak (a LICENSING.md per-directory táblája alapján): skills/, packages/agent/, packages/create-caveman-agent/, packages/cli/, packages/sdk/typescript/, packages/sdk/python/, packages/kit/, packages/graders/, packages/mastra/, packages/subagent-tax/, packages/shared/contracts/, shared/provider-catalog/, mem/js/, mem/py/, extension/ (MIT shell, a bundled engine.wasm BSL-1.1), evals/. Használatban NINCSENEK a BSL-1.1 könyvtárak: nem fut belőlük folyamat, nincs hook/MCP bekötés, és a másolat nincs trackelve egyetlen saját repóban sem (git ls-files | grep caveman -> üres). A BSL-1.1 Additional Use Grant a belső, first-party, self-hosted használatot engedi, tehát a jelenlegi állapot (alvó, nem terjesztett) szabad. TILOS: bármely BSL-könyvtár továbbterjesztése, OEM/managed service-be csomagolása, harmadik félnek hosted szolgáltatásként átadása, és az `ui/` publikálása.",
+    "license_reviewed_sha": "27d5a398"
   },
   {
     "name": "graphify",
