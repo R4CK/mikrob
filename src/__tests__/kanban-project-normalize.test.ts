@@ -13,6 +13,15 @@ describe('normalizeProjectName', () => {
     expect(normalizeProjectName({ project: 'CleanCore' })).toEqual({ project: 'CleanCore' })
   })
 
+  // Card 1b02ed3a (CleanCore -> mopsion rebrand, staging step 1): 'mopsion' is a NEW canonical
+  // bucket, not a variant folded into 'CleanCore' -- positive case here, negative control (CleanCore
+  // still canonicalizes unchanged) is the pre-existing test right above this one.
+  it('canonicalizes mopsion case variants onto its OWN bucket, not onto CleanCore', () => {
+    expect(normalizeProjectName({ project: 'mopsion' })).toEqual({ project: 'mopsion' })
+    expect(normalizeProjectName({ project: 'Mopsion' })).toEqual({ project: 'mopsion' })
+    expect(normalizeProjectName({ project: 'MOPSION' })).toEqual({ project: 'mopsion' })
+  })
+
   it('folds known MikroB-umbrella variants onto the canonical name', () => {
     for (const variant of ['mikrob', 'mikrob-infra', 'fleet-infra', 'marveen', 'infra', 'Infra', 'MikroB-ops', 'marveen-infra']) {
       expect(normalizeProjectName({ project: variant })).toEqual({ project: 'MikroB' })

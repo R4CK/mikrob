@@ -47,6 +47,12 @@ import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard
 const CANONICAL_PROJECTS: Record<string, string> = Object.fromEntries(
   [
     ['CleanCore', ['cleancore']],
+    // Card 1b02ed3a (CleanCore -> mopsion rebrand, staging step 1): 'mopsion' is its OWN canonical
+    // bucket, kept SEPARATE from 'CleanCore' rather than folded into it -- the rebrand's later steps
+    // move NEW/re-titled cards onto 'mopsion' while historical 'CleanCore' cards stay as they are
+    // (card 32dbac1e's own scope: .md/.bak/.jsonl and done work is not rewritten). Folding 'mopsion'
+    // into 'CleanCore' here would silently undo that distinction on every future card write.
+    ['mopsion', ['mopsion']],
     ['MikroB', ['mikrob-infra', 'mikrob', 'fleet-infra', 'marveen', 'infra', 'mikrob-ops', 'marveen-infra']],
   ].flatMap(([canonical, variants]) => (variants as string[]).map((v) => [v, canonical as string])),
 )

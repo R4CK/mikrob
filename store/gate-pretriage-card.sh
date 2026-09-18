@@ -121,7 +121,11 @@ out = [
 # bracket-tags (MikroB, INFRA, SEC, CleanCore, priority words, ...) and short/numeric tokens are
 # dropped on purpose -- they say nothing about WHAT changed and would make every title "match".
 STOPWORDS = {
-    "mikrob", "cleancore", "infra", "sec", "bug", "feat", "feature", "deploy", "peti",
+    # "mopsion" (card 1b02ed3a, rebrand step 1): the product repo's OWN path is
+    # /mnt/h/LM_Studio_Workdir/mopsion, so it would appear in almost every CleanCore/mopsion-repo
+    # changed-file path regardless of what the card actually touched -- without this, a
+    # [mopsion]-tagged card's bracket-tag word alone would spuriously "match" nearly any diff.
+    "mikrob", "cleancore", "mopsion", "infra", "sec", "bug", "feat", "feature", "deploy", "peti",
     "high", "medium", "low", "urgent", "normal", "card", "the", "and", "for", "with",
 }
 title = os.environ.get("TITLE", "")
@@ -246,8 +250,11 @@ print(next((c.get("description") or "" for c in rows if c.get("id") == os.enviro
 candidates="$(printf '%s' "$comments" | python3 "$HERE/gate-pretriage-candidates.py" "$CARD" "$MARKER" 2>/dev/null || true)"
 
 # Resolve project -> primary repo, then find the FIRST candidate that is a real commit in either repo.
+# Card 1b02ed3a (rebrand step 1): 'mopsion' routes to the SAME physical repo as 'CleanCore' -- the
+# product's own canonical project name is changing (kanban.ts's CANONICAL_PROJECTS), the on-disk repo
+# is not. Both branches must keep working through the transition (32dbac1e's own gate condition).
 case "$project" in
-  CleanCore) primary="$CLEANCORE_REPO"; secondary="$MIKROB_REPO" ;;
+  CleanCore|mopsion) primary="$CLEANCORE_REPO"; secondary="$MIKROB_REPO" ;;
   *) primary="$MIKROB_REPO"; secondary="$CLEANCORE_REPO" ;;
 esac
 # A CANDIDATE THAT NAMES SOMEONE ELSE'S CARD IS NOT THIS CARD'S NEW COMMIT (card 928251b5).
