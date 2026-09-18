@@ -12,6 +12,19 @@
 # (ERR_IPC_CHANNEL_CLOSED). That is a false red waiting to happen, and a false red on a gate sends
 # correct work back to in_progress.
 #
+# A SECOND, MORE DANGEROUS SHAPE FROM THE SAME ROOT (card 149f2200, Cybersec). The birpc timeout
+# above fails LOUD -- exit 1, zero test failures, easy to recognise as an anomaly. Under the same
+# CPU starvation, an individual I/O-bound test (one that walks the whole repo tree, say) can instead
+# blow vitest's own PER-TEST default of 5000ms and show up as a REAL-LOOKING "1 failed" -- not an
+# exit-code anomaly, an actual assertion-shaped failure a gate can plausibly send back to in_progress
+# as a regression. Measured (card 617d6234, already fixed there):
+# apps/api/src/e2e-project-membership.test.ts's tree-scan case took 10281ms cold / 1368ms warm on
+# the SAME tree, past the 5000ms default; the fix was an explicit `testTimeout` on that one case
+# (30000ms), not a change to this script. If a gate sees a lone I/O-bound test (tree-scan,
+# large-file-read) fail on wall-clock alone with everything else green: rerun it warm/isolated
+# before treating it as a regression -- if it is genuinely I/O-bound and slow under load, ITS OWN
+# test needs the explicit testTimeout, which is the fix, not a change here.
+#
 # WHY A SEMAPHORE AND NOT A MUTEX. marveen's fleet-test.sh takes a single flock because its runs
 # share ONE tree -- there the lock is about CORRECTNESS. Here every agent has its own worktree and
 # the runs are independently correct; what they contend for is CPU. So this counts to N (2) rather
