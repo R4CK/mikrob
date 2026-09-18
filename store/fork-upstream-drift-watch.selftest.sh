@@ -84,20 +84,20 @@ export MARVEEN_DRIFT_STATE_FILE="$TMP/state.json"
 
 # ---- canned drift results --------------------------------------------------------------------
 cat > "$TMP/unreachable.json" <<'JEOF'
-{"reachable": false, "guarded": [], "unwatched": [], "stale": [], "hunks": {}}
+{"reachable": false, "guarded": [], "unwatched": [], "stale": [], "hunks": {}, "corruptedPins": []}
 JEOF
 cat > "$TMP/drift-a.json" <<'JEOF'
 {"reachable": true, "guarded": [], "unwatched": [],
  "stale": [{"file": "web/app.js", "recorded": "aaaaaaaaaaaa", "actual": "bbbbbbbbbbbb", "rule": "union of both tails"}],
- "hunks": {}}
+ "hunks": {}, "corruptedPins": []}
 JEOF
 cat > "$TMP/drift-b.json" <<'JEOF'
 {"reachable": true, "guarded": [], "unwatched": ["src/db.ts"],
  "stale": [{"file": "web/app.js", "recorded": "aaaaaaaaaaaa", "actual": "cccccccccccc", "rule": "union of both tails"}],
- "hunks": {}}
+ "hunks": {}, "corruptedPins": []}
 JEOF
 cat > "$TMP/clean.json" <<'JEOF'
-{"reachable": true, "guarded": [], "unwatched": [], "stale": [], "hunks": {}}
+{"reachable": true, "guarded": [], "unwatched": [], "stale": [], "hunks": {}, "corruptedPins": []}
 JEOF
 
 # grep -c exits 1 on zero matches, so a `|| echo 0` fallback would PRINT TWICE on the very case

@@ -76,7 +76,7 @@ function readState() {
 
 function writeState(action, drift) {
   if (action.fingerprint === null) return
-  const files = [...drift.guarded, ...drift.unwatched, ...drift.stale.map((s) => s.file)].sort()
+  const files = [...drift.guarded, ...drift.unwatched, ...drift.stale.map((s) => s.file), ...drift.corruptedPins].sort()
   // `files` is for the human reading this file, never for the decision -- the fingerprint is.
   writeFileSync(
     STATE_FILE,

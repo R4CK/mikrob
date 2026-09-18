@@ -32,12 +32,16 @@ interface FakeOpts {
   blobs?: Record<string, string>
   /** Text written into the worktree for a conflicted file, so hunk capture has something to read. */
   contents?: Record<string, string>
+  /** Recorded pins (from ACKNOWLEDGED_UPSTREAM_BLOBS) that `git cat-file -e` should report as
+   *  MISSING -- everything else answers as present. Default: every pin resolves fine. */
+  missingPinBlobs?: string[]
 }
 
 /** Records every git invocation so the cleanup path can be asserted, not assumed. */
 function fakeGit(opts: FakeOpts): { git: GitRunner; calls: string[][] } {
   const calls: string[][] = []
   const conflicts = opts.conflicts ?? []
+  const missing = new Set(opts.missingPinBlobs ?? [])
   const git: GitRunner = (args, cwd) => {
     calls.push([...args])
     const [verb] = args
@@ -63,6 +67,11 @@ function fakeGit(opts: FakeOpts): { git: GitRunner; calls: string[][] } {
       const blob = opts.blobs?.[file]
       if (blob === undefined) throw new Error('no such path upstream')
       return blob + '\n'
+    }
+    if (verb === 'cat-file') {
+      const sha = String(args[2]).replace(/\^\{blob\}$/, '')
+      if (missing.has(sha)) throw new Error('object not found')
+      return ''
     }
     return ''
   }
@@ -222,5 +231,42 @@ describe('the report pins an unwatched file to its REAL upstream blob (card 9c66
       blobs: { 'src/web/zz-unwatched-probe.ts': BLOB },
     })
     expect(runDriftCheck('/repo', git).upstreamBlobs['src/web/zz-unwatched-probe.ts']).toBe(BLOB)
+  })
+})
+
+// Card aaff8b3a (Cybersec's finding on 9c665470): drift-check.ts displayed a 12-char sha prefix on
+// a stale acknowledgement, and had no check at all for a recorded pin that does not resolve to any
+// real blob. The truncation hid a genuine diff that only appeared past character 12; the missing
+// existence check meant a corrupted pin sat silent until its file happened to conflict again.
+describe('recorded pins are checked for existence, and stale shas display in full (card aaff8b3a)', () => {
+  it('a pin whose blob does not exist at all is reported, WITHOUT the file needing to conflict this run', () => {
+    const { git } = fakeGit({ conflicts: [], missingPinBlobs: [ACK_BLOB] })
+    const r = runDriftCheck('/repo', git)
+    expect(r.corruptedPins).toEqual([ACK_FILE])
+    expect(isClean(r)).toBe(false)
+    const report = formatDriftReport(r)
+    expect(report).toContain('A RECORDED PIN DOES NOT RESOLVE TO A REAL BLOB')
+    expect(report).toContain(ACK_FILE)
+  })
+
+  it('CONTROL: every recorded pin resolving fine reports no corrupted pins', () => {
+    const { git } = fakeGit({ conflicts: [] })
+    const r = runDriftCheck('/repo', git)
+    expect(r.corruptedPins).toEqual([])
+    expect(isClean(r)).toBe(true)
+  })
+
+  it('a stale acknowledgement displays the FULL sha, not a 12-character prefix that can hide the diff', () => {
+    // The measured incident this guards: a recorded and an actual blob that agree on their first
+    // 12 characters and differ only after -- the old `slice(0, 12)` display would have rendered
+    // both identically, reading as "unchanged" while the acknowledgement was genuinely stale.
+    const actual = ACK_BLOB.slice(0, 12) + 'f'.repeat(28)
+    const { git } = fakeGit({ conflicts: [ACK_FILE], blobs: { [ACK_FILE]: actual } })
+    const report = formatDriftReport(runDriftCheck('/repo', git))
+    // Under the old slice(0, 12) truncation these two would print as the SAME string (they share
+    // their first 12 characters by construction), so both full 40-char values appearing verbatim
+    // is exactly what the old code could not have produced.
+    expect(report).toContain(ACK_BLOB)
+    expect(report).toContain(actual)
   })
 })
