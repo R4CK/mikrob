@@ -48,6 +48,13 @@ CASES = [
     ("NOISY_RUN_ALLOW_RAW=1 npm install", ALLOW, "explicit escape hatch"),
     ("bash /home/neon/marveen/scripts/noisy-run.sh npm install", ALLOW,
      "already routed through the filter, do not re-block"),
+    # rtk (card f5fc0227 pilot) sits in the same wrapper position as sudo/time -- QA measured
+    # (comment 4259) that `rtk npm test` ran a full unbounded vitest suite past this guard, with
+    # no warning, because the old _CMD only recognized sudo/time as prefixes.
+    ("rtk npm test", BLOCK, "rtk-wrapped raw test must still be caught (card f5fc0227, QA 4259)"),
+    ("rtk cargo test", BLOCK, "rtk-wrapped cargo test"),
+    ("rtk pytest tests/", BLOCK, "rtk-wrapped pytest"),
+    ("rtk npm ls", ALLOW, "rtk-wrapped, but the underlying command is not noisy"),
 ]
 
 
