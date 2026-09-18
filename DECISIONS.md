@@ -13431,3 +13431,31 @@ staleness-guard) celzott futtatassal zold, 36+17 teszt. Typecheck (`tsc --noEmit
 
 **Ki dontott:** backend3 (vizsgalat, adaptacio, teszt-hianyossagok feltarasa+javitasa), a hangcsatorna
 kerdes MikroB/Peti dontesere var. **Kartya:** 7503bb31.
+
+## 2026-09-18: upstream-sync Installer/hooks (kártya 3291145c, b5ecff20 + 76fa2a61 + 4ddb175c)
+
+**Portolt:** mindhárom upstream commit, cherry-pick sorrendben: b5ecff20, 76fa2a61, 4ddb175c.
+
+**b5ecff20 (DISCORDLATHATO913):** macOS Discord telepítő, Linux-paritás. README-konflikt: a fork-specifikus intro és features-lista megmarad, az upstream generikus bevezető eldobva. A fork README "Csatorna" fejlécébe `(Telegram, Slack vagy Discord)` kiegészítés bekerült.
+
+**76fa2a61 (ISSUE1305HOOKSCOPE):** Fleet hookok project-scope-ba költözve, user-global `settings.json` nem írható felül. Konfliktnál: fork Stop-hook (`mikrob-alive.heartbeat`) és upstream Stop-hook (`telegram_progress_clear.py`) mindkettő megmarad. Test EXEMPT-listába két új bejegyzés (`telegram_fallback_send.py`, `telegram-image-resize.sh`) hozzáadva a fork meglévői mellé.
+
+**4ddb175c (SLACKMGDATOM913):** Slack managed-settings atomikus írás. Automatikusan mergelt, konflikt nélkül.
+
+**Ki döntött:** backend2 (upstream-sync, draft részben elfogadva -- döntési logika helyes, a konkrét konfliktfeloldások saját).
+
+## 2026-09-18: upstream-sync MEMKERESVAK917 + DREAMHOTKOR916 (kártya da158ef9, 7 commit)
+
+**Portolt:** 7 upstream commit, cherry-pick sorrendben:
+6aeadd24, e9dba111, c9cc4f2f, 7a9fe90d (web.ts/agent-process.ts), 2f1fcbc4 (tier-truncation), 3c363812 (három felület), 900b4286 (DREAMHOTKOR916).
+
+**MEMKERESVAK917 lényege:** a memória-keresés `LIMIT` alkalmazása a tier-szűrés ELŐTT történt (csendben csonkítva); a relaxált keresés jelzése (`X-Memory-Search` fejléc) 3 helyen elveszett: recipe curl, fleet.py, dashboard JS.
+
+**Konflikt-feloldási alaptétel:** a fork `excludeToolLogShapeSql()` / `shapeFilter` szűrője MINDEN SQL-ágba bekerül (upstream category-ternary MINDKÉT ágába), a `FROM memories m` alias a catch-blokk fallback SELECT-jében megmarad.
+
+**web/app.js konfliktnál:** a fork modularizált (`app-memories.js`, `app-agents.js` stb.) -- a 1174 soros monolitikus upstream blokkot HEAD stubokkal helyettesítve, az upstream új `renderMemSearchLabel` függvénye a `web/app-memories.js`-be került (az fork-specifikus `loadMemories` mellé).
+
+**web/style.css konfliktnál:** fork `.kanban-card-blocked` (saját dependency-blokkoló mechanizmus) megtartva; upstream `.blocker-*` UI eldobva (upstream más rendszer, nálunk `kanban_dependencies/dependencyBlockers()`); `.mem-search-label` upstream CSS hozzáadva.
+
+**Ki döntött:** backend2 (upstream-sync, minden konfliktnál saját döntés, megőrizve a fork-specifikus logikát).
+**Kártyák:** da158ef9.

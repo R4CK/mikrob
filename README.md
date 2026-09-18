@@ -17,7 +17,7 @@ Ez a [Marveen](https://github.com/Szotasz/marveen) (Szota Szabolcs) saját fork-
 
 Ez a repo a **háttérszolgáltatásokat** adja; a Telegram-kommunikációt a Claude Code Channels kezeli.
 
-Marveen is a self-hostable **agent harness** for Claude Code: it runs a team of AI agents, each with its own chat channel (Telegram or Slack), persistent memory, scheduled tasks, and MCP tools, lets them delegate work to one another, and gives you a web dashboard to watch and steer them.
+Marveen is a self-hostable **agent harness** for Claude Code: it runs a team of AI agents, each with its own chat channel (Telegram, Slack or Discord), persistent memory, scheduled tasks, and MCP tools, lets them delegate work to one another, and gives you a web dashboard to watch and steer them.
 
 ## Funkciók
 
@@ -199,7 +199,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 | Ügynök-flotta + inter-agent | [docs/agent-fleet.md](docs/agent-fleet.md) |
 | Föderáció (több példány összekötése, dashboard-menüvel) | [docs/federation.md](docs/federation.md) |
 | Skill-factory (öntanulás) | [docs/skill-factory.md](docs/skill-factory.md) |
-| Channels (Telegram / Slack) | [docs/channels.md](docs/channels.md) |
+| Channels (Telegram / Slack / Discord) | [docs/channels.md](docs/channels.md) |
 | Printing-press CLI-k | [docs/printing-press-cli.md](docs/printing-press-cli.md) |
 | Skool CLI | [docs/skool-cli.md](docs/skool-cli.md) |
 | connectors.hu | [docs/connectors-hu.md](docs/connectors-hu.md) |
@@ -311,9 +311,17 @@ A `MAIN_AGENT_ID` (a `BOT_NAME` ASCII slug-ja) és `SERVICE_ID` (a `BRAND_NAME` 
 
 http://localhost:3420 — memória, kanban, ügynökök, ütemezés, Vault, terminál.
 
-### Csatorna
+### Csatorna (Telegram, Slack vagy Discord)
 
 Ez a fork öt csatorna-providert támogat: **Telegram** (alapértelmezett), **Slack**, **Discord**, **Google Chat**, **Microsoft Teams**. A telepítő Telegram/Slack/Discord közül kér választást; a `CHANNEL_PROVIDER` env-kulcs manuálisan is átállítható a többire. Csatornaváltáshoz futtasd újra a `./install-linux.sh`-t, vagy szerkeszd a `.env`-et és indítsd újra a szolgáltatást (`./scripts/stop.sh && ./scripts/start.sh`).
+
+#### Discord (alternatív)
+
+```env
+CHANNEL_PROVIDER=discord
+```
+
+Discord bot létrehozása: discord.com/developers/applications. A futtatóhoz `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID` és `OPERATOR_DISCORD_USER_ID` szükséges; részletek: [docs/channels.md](docs/channels.md).
 
 → **Részletek + provider-specifikus lépések:** [docs/channels.md](docs/channels.md)
 

@@ -178,12 +178,27 @@ export function resolveTemplatePlaceholders(content: string): string {
 }
 
 // Return the settings.json path for an agent.
-// The main agent's settings live at ~/.claude/settings.json (not inside agents/).
-// Exported so the startup self-heal (hook-registration-guard) can prune stale
-// entries from the same files this module writes.
+// The main agent's path still names ~/.claude/settings.json, but since
+// ISSUE1305HOOKSCOPE that file is READ-ONLY territory for this module: the
+// startup self-heal (hook-registration-guard) may still prune stale entries
+// out of it, while every WRITE path below refuses the main agent -- its hooks
+// are repo-shipped in the tracked <PROJECT_ROOT>/.claude/settings.json
+// (project scope, portable $CLAUDE_PROJECT_DIR form). Writing fleet hooks
+// into the user-global file is what made them fire in the owner's own,
+// unrelated Claude Code sessions (#1305: blocked WebFetch there, plus a
+// prompt-injection surface and foreign content reaching fleet memory).
 export function agentSettingsPath(name: string): string {
   if (name === MAIN_AGENT_ID) return join(homedir(), '.claude', 'settings.json')
   return join(agentDir(name), '.claude', 'settings.json')
+}
+
+// The single gate for the #1305 class: no scaffold write may target the
+// user-global settings. Main-agent hooks ship in the repo's project settings;
+// sub-agents keep their per-agent project files (agents/<n>/.claude/).
+function refuseMainAgentHookWrite(name: string, fn: string): boolean {
+  if (name !== MAIN_AGENT_ID) return false
+  logger.debug({ fn }, 'hook write skipped for main agent: hooks are repo-shipped project settings (#1305)')
+  return true
 }
 
 // Volatile tmpfs prefixes: a hook command referencing these directories is
@@ -378,6 +393,7 @@ export function ensureAgentHooks(
   // writing into the operator's real home.
   scopes?: { user: string; project: string },
 ): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureAgentHooks')) return false
   const settingsPath = agentSettingsPath(name)
   const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
   if (!existsSync(tplPath)) return false
@@ -551,6 +567,7 @@ export function injectAgentStalenessHook(existing: Record<string, unknown>): voi
 }
 
 export function ensureAgentStalenessHook(name: string): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureAgentStalenessHook')) return false
   // agentSettingsPath() maps MAIN_AGENT_ID to ~/.claude/settings.json; using
   // agentDir() directly here would create a spurious agents/<main> dir and make
   // the main agent show up as a phantom "down" agent on the dashboard.
@@ -615,6 +632,7 @@ export function injectAgentProvenanceHook(existing: Record<string, unknown>): vo
 }
 
 export function ensureAgentProvenanceHook(name: string): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureAgentProvenanceHook')) return false
   const settingsPath = agentSettingsPath(name)
   let settings: Record<string, unknown> = {}
   if (existsSync(settingsPath)) {
@@ -1420,6 +1438,11 @@ export function ensureTaskstateReplayMatcher(name: string): boolean {
 // the hook is applied to both existing and newly-created agents without a full
 // respawn. Returns true if the file was updated, false if already wired.
 export function ensureEgressGate(name: string): boolean {
+  // #1305: the main agent's egress gate is repo-shipped in the tracked project
+  // settings (portable, fail-CLOSED `command -v node` form). Writing the
+  // machine-pinned node path into ~/.claude/settings.json is exactly what
+  // blocked WebFetch in the owner's own unrelated sessions.
+  if (refuseMainAgentHookWrite(name, 'ensureEgressGate')) return false
   const settingsPath = agentSettingsPath(name)
   let settings: Record<string, unknown> = {}
   if (existsSync(settingsPath)) {
@@ -2713,6 +2736,89 @@ export function ensureSystemDirectiveAuthSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// MEMKERESVAK917: the BACK-FILL half of #1380. That PR fixed the two GENERATING
+// surfaces (generateClaudeMd + templates/CLAUDE.md.template), which only run when
+// an agent is CREATED -- so on the day it merged it reached zero of the agents
+// already on disk. Measured on the owner host right after the merge: nine agent
+// CLAUDE.md files still carried the search recipe with no way to see the label.
+//
+// Hence a marker block on the same five-rule idempotency contract as the
+// sections above, applied to the main agent at dashboard start and to every
+// sub-agent on respawn.
+//
+// The "already documents it" skip is what keeps this from duplicating the text
+// for agents generated AFTER #1380: their scaffold-written section already
+// carries the label inline, and a second copy at the end of the file would be
+// pure context cost. The skip is deliberately one-directional -- once the marker
+// block is in a file it is refreshed in place forever, so a wording fix still
+// reaches the back-filled agents.
+const MEMORY_SEARCH_LABEL_BEGIN = '<!-- BEGIN GENERATED: memory-search-label (auto-generated, do not edit by hand) -->'
+const MEMORY_SEARCH_LABEL_END = '<!-- END GENERATED: memory-search-label -->'
+const MEMORY_SEARCH_LABEL_BLOCK_RE = new RegExp(
+  `${MEMORY_SEARCH_LABEL_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MEMORY_SEARCH_LABEL_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+// Unlike the scaffold copy -- which is an LLM PROMPT carrying the literal string
+// AGENT_NAME for the model to substitute -- this body is written deterministically,
+// so the header dump file is genuinely per-agent and two agents searching at the
+// same time cannot read each other's label out of one shared /tmp path.
+export function buildMemorySearchLabelBody(name: string): string {
+  return [
+    '## Memória-keresés: a FEJLÉCET is olvasd el (KÖTELEZŐ)',
+    '',
+    'A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a',
+    'maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint',
+    'egy valódi találat -- a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik. Ezért a',
+    'keresés receptje `-D`-vel megy, és a `grep` NEM opcionális:',
+    '',
+    '```bash',
+    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -D /tmp/mem-fejlec-${name}.txt \\`,
+    `  "${dashboardOrigin}/api/memories?agent=${name}&q=KULCSSZO"`,
+    `grep -i '^x-memory-search' /tmp/mem-fejlec-${name}.txt`,
+    '```',
+    '',
+    '- `relaxed=true` -- semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett',
+    '  közelítés, NEM bizonyíték. Egy sosem létezett minta így ötven sorral válaszol.',
+    '- `relaxed=false` -- a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez',
+    '  MINDEN, és azt sem, hogy van találat: a `relaxed=false; hits=0` létező válasz.',
+    '',
+    'Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a',
+    '`&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik.',
+  ].join('\n')
+}
+
+// Same five-rule idempotency contract as ensureFleetRosterSection /
+// ensureAutonomySection / ensureSkillsPathTrapSection / ensureSystemDirectiveAuthSection,
+// plus the one extra rule above: do not append where the file already documents
+// the label inline.
+export function ensureMemorySearchLabelSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const hasBlock = MEMORY_SEARCH_LABEL_BLOCK_RE.test(existing)
+  // Already carries the label from the generating surface (#1380) and has no
+  // block of ours: nothing to back-fill, and a second copy would only cost
+  // context on every session start.
+  if (!hasBlock && /x-memory-search/i.test(existing)) return
+
+  const block = `${MEMORY_SEARCH_LABEL_BEGIN}\n${buildMemorySearchLabelBody(name)}\n${MEMORY_SEARCH_LABEL_END}`
+  const updated = hasBlock
+    ? existing.replace(MEMORY_SEARCH_LABEL_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
 export async function generateClaudeMd(name: string, description: string, model: string): Promise<string> {
   // Distribution-safe default-drive line: only emit a concrete folder when this
   // install has one configured (OWNER_DRIVE_FOLDER). A fresh install with no
@@ -2774,7 +2880,28 @@ Napi napló (append-only):
 printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X POST ${dashboardOrigin}/api/daily-log -H "Content-Type: application/json" -d '{"agent_id":"AGENT_NAME","content":"## HH:MM -- Tema\nMi tortent, mi lett az eredmeny"}'
 
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
-printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- "${dashboardOrigin}/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
+printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -D /tmp/mem-fejlec-AGENT_NAME.txt "${dashboardOrigin}/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
+grep -i '^x-memory-search' /tmp/mem-fejlec-AGENT_NAME.txt
+
+A -D NEM dísz, és a fejlécet KÖTELEZŐ elolvasni. A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint egy valódi találat -- a különbség KIZÁRÓLAG az X-Memory-Search fejlécben utazik.
+relaxed=true  -> semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett közelítés, NEM bizonyíték.
+relaxed=false -> a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez MINDEN, és azt sem, hogy van találat (hits=0 is lehet mellette).
+Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a &strict=1-et: ott az üres válasz pontosan azt jelenti, aminek látszik.
+
+### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
+
+A hot tier árát MINDEN session-indulás újra kifizeti, ezért a lezárt sorokat át kell sorolni.
+Az átsorolás memory_maintenance = level 3, AUTONÓM: a SAJÁT emlékeiden magadtól megteheted.
+
+1. Kell az ID -- a listázó ÉS a kereső ág is visszaadja:
+printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- "${dashboardOrigin}/api/memories?agent=AGENT_NAME&category=hot&limit=40"
+
+2. Átsorolás (a category-only PATCH elég, a tartalmat NEM kell újraküldeni):
+printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X PATCH ${dashboardOrigin}/api/memories/<ID> -H "Content-Type: application/json" -d '{"category":"cold","updated_by":"AGENT_NAME"}'
+
+Az updated_by az, AKI ÍRT (írás-nyom). Az agent_id mezőt NE küldd: az a sort ÁTADJA másik ágensnek, nem a tier-t állítja.
+
+TÖRLÉS NINCS, ÉS SZÁNDÉKOSAN NE IS LEGYEN. A DELETE /api/memories/:id létezik, de a törlés data_delete = level 1, locked, tehát a gazda döntése. Az átsorolás elég: a költség a hot-halmaz BETÖLTÉSÉBŐL jön, nem a sorok létezéséből.
 
 ## Ütemezett feladatok
 

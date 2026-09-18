@@ -86,6 +86,8 @@ const EXEMPT: Record<string, string> = {
     'pre-existing (predates this merge), genuinely unwired on every known registration surface -- needs its own follow-up card, not activated here',
   'shared-memory-inject.py':
     'pre-existing (predates this merge), genuinely unwired on every known registration surface -- needs its own follow-up card, not activated here',
+  'telegram_fallback_send.py':
+    'agent-invoked CLI (manual Bot API fallback sender, see scripts/lib/send-telegram.sh), not a settings hook; since #1305 the progress installer no longer copies or names it',
 }
 
 function registrationCorpus(): string {

@@ -206,10 +206,30 @@ async function loadMemories() {
   try {
     const res = await fetch(`/api/memories?${params}`)
     const memories = await res.json()
+    renderMemSearchLabel(q ? res.headers.get('X-Memory-Search') : null)
     renderMemories(memories)
   } catch (err) {
     console.error('Memória betöltés hiba:', err)
   }
+}
+
+function renderMemSearchLabel(header) {
+  const el = document.getElementById('memSearchLabel')
+  if (!el) return
+  if (!header || !/relaxed=true/.test(header)) {
+    el.hidden = true
+    el.textContent = ''
+    return
+  }
+  el.hidden = false
+  el.textContent = ''
+  const strong = document.createElement('strong')
+  strong.textContent = t('memories.relaxed.title')
+  const body = document.createElement('div')
+  body.textContent = t('memories.relaxed.body')
+  const raw = document.createElement('code')
+  raw.textContent = header
+  el.append(strong, body, raw)
 }
 
 function renderMemories(memories) {
