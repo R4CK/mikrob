@@ -13330,3 +13330,56 @@ store/*.selftest.{sh,py} sweep, celzottan futtatva).
 **Ki dontott:** QA2 (a cenzus-koveteles + a gate-sha-repo.sh lelet), MikroB (a delta-gate + a cenzus-mod
 kifejezett elorasa), backend3 (a cenzus vegrehajtasa forkkal, mindharom javitas + mutacios teszt).
 **Kartya:** 1b02ed3a.
+
+## 2026-09-18 -- delta-gate javitas #3: Cybersec NO-GO, src/web/kanban-landed-guard.ts FAIL-OPEN
+
+**Elozmeny:** Cybersec NO-GO a masodik delta-gate shara (e844c120, komment 4864) -- a cenzus
+hataskorem (store/ + scripts/) NEM fedte a `src/web/`-et, ahol a legsulyosabb lelet allt: a
+`kanban-landed-guard.ts` `PROJECT_REPOS` terkepe (a done-zarast landolas-ellenorzo, MAR ELES,
+production guard, ket statusz-ajtoba bedrotozva) nem ismerte a 'mopsion' kulcsot. A hivo kod
+(`target === undefined -> allowUnverified(..., 'no-repo-mapping')`) ilyenkor FAIL-OPEN: a zarast
+ELLENORZES NELKUL engedi at -- pontosan az ellenkezoje annak, amit ez a guard (kartya 9cc72f2c)
+hivatott megakadalyozni. Elo hatas: a kartya-nyitas pillanataban 35 kartya hordozott
+project='mopsion'-t, ebbol 7 mar 'done' allapotban.
+
+**MikroB utomunkaja (nem ez a kartya, kulon lepes):** a 7 mar-done mopsion-kartya visszaellenorzese
+(gate-closure-check.py) mindet valodi, landolt munkanak talalta -- a hianyzo vedelmi retegtol
+FUGGETLENUL, mert a zarasokat idokozben a reconciler vegezte MAR landolt allapoton. A javitas ettol
+meg szukseges: a vedelem hianyzott, nem a szerencse mentette meg.
+
+**Javitas:** `PROJECT_REPOS`-ba `mopsion: CLEANCORE` (ugyanaz a fizikai repo-cel, mint 'cleancore'-nal).
+Mutacios teszt: `kanban-landed-guard.test.ts`-be 2 uj eset -- (a) 'mopsion' kartya VERIFIKALT close-t
+kap (nem logolt unverified-kent, mint a mar letezo 'cleancore' pozitiv eset), (b) 'mopsion' kartya
+BLOKKOLVA van, ha a commit nem landolt origin/main-re -- ez a masodik a valodi mutacio-fogo: a
+kulcs eltavolitasaval mindket uj teszt piros lesz (a masodik `blocked: true -> false`-ra valtana at
+fail-open miatt), a masik 40/42 valtozatlan.
+
+**Cenzus hataskor-bovites (Cybersec kifejezett kerese):** ujra lefuttattam `src/`-en (nem csak
+store/+scripts/-en). 32 nem-teszt talalat 8 fajlban (kanban-relations.ts, kanban-relations-git.ts,
+message-queue-depth-note.ts, kanban-landed-guard.ts, agent-scaffold.ts,
+kanban-gate-completeness-guard.ts, routes/project-priority.ts, routes/kanban.ts) -- MINDEGYIKET
+egyenkent, a korulotte levo kod elolvasasaval ellenoriztem (nem csak a talalt sort):
+  - `kanban-landed-guard.ts` PROJECT_REPOS: FUNKCIONALIS volt, MOST javitva (fent).
+  - `routes/kanban.ts` CANONICAL_PROJECTS: FUNKCIONALIS volt, MAR javitva az elozo kororben (1b02ed3a).
+  - `kanban-relations-git.ts` `name: 'cleancore'`: EGY EREDMENY-CIMKE (melyik repoban talalta a shat),
+    SOSEM hasonlitva hivo-adott project-stringhez -- ugyanaz a "lookup, not declaration" mintazat mint
+    a store/gate-closure-check.py `_CLONES`-a. NEM funkcionalis.
+  - a tobbi 6 fajl: proza/kommentek (tortenei incidens-leirasok, pelda-Gate-SHA-sorok, egy korabbi
+    hamis attribucio helyesbitese a project-priority.ts fejlecben) -- egyik sem hasonlit hivo-adott
+    ertekhez.
+
+**Instance-fix (nem blokkolo, Cybersec sajat javaslata, egy sorban megoldva):**
+`store/offload-dispatch.sh` `graph_repo_for()` case-agaba egy explicit `*) echo "" ;;` -- a
+viselkedes nem valtozott (egyezetlen bemenet mar korabban is ures stringet adott vissza), csak
+kimondva, hogy ez SZANDEKOS fail-safe alapertelmezes, nem hianyzo eset. A `_PROJECT_ALIASES`
+allowlist-jellegu megjegyzeset (cleancore-landed-check.py) elfogadtam mint jovobeli karbantartasi
+figyelmeztetest, valtoztatas nelkul (nem egy-soros javitas, es a kartya nem koveteli).
+
+**Zold:** `kanban-landed-guard.test.ts` 42/42 (+2 uj, mutacioval igazolva), `kanban-project-normalize.test.ts`
+10/10, `gate-pretriage-card.test.ts` 41/41, `gate-sha-repo.sh --selftest` 12/12,
+`cleancore-landed-check.py --selftest` 5/5, `offload-dispatch.selftest.sh` 15/15. Typecheck
+(`npx tsc --noEmit`) tiszta.
+
+**Ki dontott:** Cybersec (a kritikus lelet + a cenzus hataskor-hianyossag kimondasa), MikroB (a
+delta-gate + az utomunka), backend3 (javitas + kiterjesztett cenzus + mutacios teszt).
+**Kartya:** 1b02ed3a.

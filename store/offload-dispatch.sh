@@ -359,6 +359,12 @@ graph_repo_for() {
   case "$project" in
     MikroB)              (cd "$(git -C "$HERE" rev-parse --git-common-dir 2>/dev/null || echo .)/.." 2>/dev/null && pwd) ;;
     CleanCore|mopsion)    echo "${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}" ;;
+    # Explicit fail-safe default (Cybersec, card 1b02ed3a comment 4864): an unrecognised project
+    # already fell through to this same empty output before this arm existed -- stated here rather
+    # than left implicit, so a reader (or a future case arm added above it) cannot mistake the
+    # silence for an oversight. graph_args_for's own `[[ -n "$repo" ... ]] || return 0` treats empty
+    # as "skip code-graph context", never as a path to touch -- soft degradation, not a security gap.
+    *) echo "" ;;
   esac
 }
 graph_args_for() {
