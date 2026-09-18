@@ -2499,6 +2499,7 @@ export function reRankByRecency<T extends RecencyRankable>(
 // Strip the FTS rank column the oversampled queries select for re-ranking, so
 // the public return shape stays exactly Memory.
 function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   return rows.map(({ rank: _rank, ...rest }) => rest)
 }
 

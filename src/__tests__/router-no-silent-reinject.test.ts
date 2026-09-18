@@ -18,9 +18,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const mockGetPendingMessages = vi.fn()
-const mockMarkDelivered = vi.fn((..._a: unknown[]) => true)
-const mockMarkFailed = vi.fn((..._a: unknown[]) => true)
-const mockSendPrompt = vi.fn(async (..._a: unknown[]) => 'sent' as const)
+const mockMarkDelivered = vi.fn(() => true)
+const mockMarkFailed = vi.fn(() => true)
+const mockSendPrompt = vi.fn(async () => 'sent' as const)
 
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
@@ -39,20 +39,20 @@ vi.mock('../db.js', () => ({
   },
   markMessageDelivered: (...a: unknown[]) => mockMarkDelivered(...a),
   markMessageFailed: (...a: unknown[]) => mockMarkFailed(...a),
-  markMessageDone: (..._a: unknown[]) => true,
-  markPendingFederatedFailed: (..._a: unknown[]) => true,
-  setMessageResult: (..._a: unknown[]) => true,
-  createAgentMessage: (..._a: unknown[]) => ({ id: 999 }),
-  countNewerMessagesFromSameSender: (..._a: unknown[]) => 0,
+  markMessageDone: () => true,
+  markPendingFederatedFailed: () => true,
+  setMessageResult: () => true,
+  createAgentMessage: () => ({ id: 999 }),
+  countNewerMessagesFromSameSender: () => 0,
   // Fork-specific (not in the upstream commit this file was ported from,
   // UJRAJATSZAS915/785ffb96): our runMessageRouterTick also checks whether a
   // dispatch was superseded by a newer kanban-card state before injecting.
   // Mocked to "no card state found" so that check is a no-op here -- this
   // file is only about the inject/delivered-mark pairing, not supersession.
   getKanbanCardStateByIdPrefix: () => null,
-  stampMessageTrace: (..._a: unknown[]) => false,
-  upsertOtelSpan: (..._a: unknown[]) => undefined,
-  closeOtelSpan: (..._a: unknown[]) => false,
+  stampMessageTrace: () => false,
+  upsertOtelSpan: () => undefined,
+  closeOtelSpan: () => false,
   // Fork-specific: closeRouterSpanOnFailure calls this on BOTH failure paths
   // (abandon + give-up-after-retries). Left unmocked, the call throws "is not
   // a function" from inside the catch block that is already handling the
@@ -60,7 +60,7 @@ vi.mock('../db.js', () => ({
   // catch, which calls markMessageFailed a SECOND time for the same row. Not
   // hit by pendingRows() here (trace_id/span_id are null), but closeRouterSpanOnFailure
   // is actually called with a freshly-built traceCtx, not the row's own fields.
-  closeOtelSpanIfOpen: (..._a: unknown[]) => false,
+  closeOtelSpanIfOpen: () => false,
 }))
 
 vi.mock('../web/voice-directive.js', () => ({
@@ -81,8 +81,8 @@ vi.mock('../web/agent-process.js', () => ({
   isSessionReadyForPrompt: vi.fn(async () => true),
   clearStaleParkedInput: vi.fn(async () => false),
   sendPromptToSession: (...a: unknown[]) => mockSendPrompt(...a),
-  sessionExistsOnHost: (..._a: unknown[]) => true,
-  capturePane: (..._a: unknown[]) => '',
+  sessionExistsOnHost: () => true,
+  capturePane: () => '',
 }))
 
 vi.mock('../web/voice-modality.js', () => ({

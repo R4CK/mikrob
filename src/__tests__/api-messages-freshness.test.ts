@@ -16,6 +16,7 @@ import { describe, it, expect, beforeAll } from 'vitest'
 // assert the API repeats the router's own string (formatFreshnessSuffix),
 // never a second, drifting wording.
 
+import type { RouteContext } from '../web/routes/types.js'
 import { initDatabase, createAgentMessage, getDb } from '../db.js'
 import { formatFreshnessSuffix } from '../web/agent-message-wrap.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
@@ -36,7 +37,7 @@ async function get(pathAndQuery: string): Promise<{ status: number; json: any }>
   const handled = await tryHandleMessages({
     // `accept-encoding` absent so jsonMaybeGzip answers in plain JSON.
     req: { headers: {} } as any, res, path: url.pathname, method: 'GET', url,
-  } as any)
+  } as unknown as RouteContext)
   return { status: handled ? status : -1, json: body ? JSON.parse(body) : null }
 }
 
