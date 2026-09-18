@@ -39,7 +39,13 @@ import sys
 ALLOW_ENV = "NOISY_RUN_ALLOW_RAW"
 
 _ENV_PREFIX = r"(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)*"
-_CMD = r"(?:^|[\n;&|(])\s*" + _ENV_PREFIX + r"(?:sudo\s+)?(?:time\s+)?"
+# `rtk` (card f5fc0227 pilot) sits in the SAME wrapper position as sudo/time: `rtk npm test` is still
+# npm test underneath, just proxied through rtk's own output filter -- and rtk's filter is a SEPARATE
+# concern from the noisy-run.sh + CPU semaphore this guard exists to route through (rule 17). Measured
+# by QA (comment 4259, gate on f5fc0227): `rtk npm test` ran a full unbounded vitest suite on the
+# shared repo, past this guard, with no warning -- the old `_CMD` only recognized sudo/time as
+# wrapper prefixes, so the npm/test pattern below never got a chance to match past the leading `rtk `.
+_CMD = r"(?:^|[\n;&|(])\s*" + _ENV_PREFIX + r"(?:sudo\s+)?(?:time\s+)?(?:rtk\s+)?"
 
 _MUTATING_NPM = r"(?:ci|install|i|add|update|up|upgrade|dedupe|rebuild)"
 NOISY_PATTERNS = [
