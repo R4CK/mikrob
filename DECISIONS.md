@@ -13106,3 +13106,35 @@ Mutációval igazolva, hogy ez az eset pont a lánc-megkerülő hibát fogja (a 
 ugyanaznap landolt whitespace-only guard elfogadja -- a két változtatás komponál.
 
 **Ki döntött:** MikroB (plan-grilling verdikt), backend3 (implementáció és mérés). **Kártya:** e6dffb8d.
+
+## 2026-09-18 -- A fo ugynok feedback-survey vedelme MAR BENT VOLT; a hianyzo resz a teszt volt
+
+**Meres (kartya 29609ec6, 5,9 napos leiras ujramerve):** a kartya harom pontot jelolt meg javitandokent,
+es MINDHAROM mar javitva van a forkban:
+
+1. `scripts/channels.sh`: az `MCP_BATCH_ENV` (580. sor) viszi a `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1`-et,
+   es a fo ugynok MINDKET inditasi parancsa (922., 996. sor) ele van fuzve.
+2. `src/web/agent-process.ts:2175` (`feedbackSurveyEnv`) -- a sub-ugynok-ut, szerzodes-teszttel rogzitve.
+3. A stdout-szerzodes: a `channels.sh:644` a szerzodes-sort **fd 3-on** olvassa
+   (`3>&1 2>>log 1>&2`), tehat a modul stdoutja ES stderrje is a hiba-logba megy -- egy eltevedt
+   pino-sor fd 1-en nem tudja megmergezni a `_cfg_raw`-t. Melle egy szuro is all
+   (`grep -m1 -E '^(explicit|isolated)\t/'`), ami nem is fugg az fd-szerzodestol, plusz egy HANGOS
+   figyelmeztetes pontosan arra az alakra, ami csendben kikapcsolna az izolaciot.
+
+**Ami VALOBAN hianyzott:** a teszt. A `channel-stability-contract.test.ts` P1#5 blokkja "every agent
+spawn path"-t mond, de csak az `agent-process.ts`-t allitotta -- a FO ugynok utja, vagyis az, amelyiket
+23 oran at fagyva merteek, nem volt rogzitve. A javitas bent volt, de barmikor eltavolithato eszrevetlenul.
+
+**Dontes:** a hianyzo allitas bekerult, es szandekosan NEM "a fajl tartalmazza a valtozot" alakban.
+A `channels.sh` hordoz egy kulonallo `export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1`-et is az incidens
+sajat magyarazata mellett, DE az nem eri el az ugynokot -- a fajl maga mondja ki, hogy a tmux-szerver
+megelozi a szkriptet es nem orokli a kornyezetet. Egy jelenlet-ellenorzes tehat zolden maradna a
+hatasos fel torlese utan is. Az uj teszt ezert a VARRAST rogziti: a valtozo a prefix-stringben van, es
+a prefix oda van fuzve a claude-hivas ele; a kommentek elobb leszurve, mert a fajl sajat prozaja
+megnevezi a valtozot.
+
+**Mutacioval igazolva, mindket iranyban:** (a) a valtozot kivettem az `MCP_BATCH_ENV`-bol -- a fajlban
+MARADT egy elofordulas (a csupasz export), a teszt megis BUKOTT; (b) a prefixet kivettem a ket inditasi
+parancsbol -- bukott. Visszaallitva 23/23 zold.
+
+**Ki dontott:** backend3 (ujrameres es a teszt). **Kartya:** 29609ec6.

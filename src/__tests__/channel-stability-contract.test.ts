@@ -18,7 +18,10 @@ function section(content: string, name: string): string {
   const body: string[] = []
   for (const line of content.split('\n')) {
     const m = line.match(/^\[([A-Za-z]+)\]\s*$/)
-    if (m) { inSection = m[1] === name; continue }
+    if (m) {
+      inSection = m[1] === name
+      continue
+    }
     if (inSection) body.push(line)
   }
   return body.join('\n')
@@ -26,9 +29,17 @@ function section(content: string, name: string): string {
 
 // Strip comments so a contract assertion checks actual code, not the prose that
 // explains it (e.g. a comment saying "NEVER systemctl restart").
-const stripBashComments = (s: string) => s.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n')
+const stripBashComments = (s: string) =>
+  s
+    .split('\n')
+    .filter((l) => !/^\s*#/.test(l))
+    .join('\n')
 const stripTsComments = (s: string) =>
-  s.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+  s
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((l) => l.replace(/\/\/.*$/, ''))
+    .join('\n')
 
 describe('P1#1 — channels.sh puts the OAuth token into the tmux SERVER global env', () => {
   const sh = read('scripts/channels.sh')
@@ -105,9 +116,40 @@ describe('P1#5 — CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 on every agent spawn pa
     // agentTmuxTarget's runAsUser support) now precedes it in source. `promptSuggestionEnv` is
     // unique to this one cmd line (the OTHER `const cmd = ...` in this file is the SSH remote-launch
     // path via buildRemoteLaunchCommand, which does not build this string at all).
-    const cmdLine = src.split('\n').find((l) => l.includes('const cmd = `') && l.includes('promptSuggestionEnv'))
+    const cmdLine = src
+      .split('\n')
+      .find((l) => l.includes('const cmd = `') && l.includes('promptSuggestionEnv'))
     expect(cmdLine).toBeDefined()
     expect(cmdLine).toMatch(/feedbackSurveyEnv/)
+  })
+
+  // THE MAIN AGENT WAS THE UNPINNED HALF (card 29609ec6). This describe block says "every agent
+  // spawn path", but until now it only asserted the SUB-agent one -- and the main agent is the
+  // session that was measured frozen on this dialog for 23 hours. The fix is present in
+  // channels.sh; nothing stopped it being removed again.
+  //
+  // WHY NOT A BARE "the file contains the var". channels.sh ALSO carries a standalone
+  // `export CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1` near its own explanation of the incident, and
+  // that export does NOT reach the agent: the file says so itself -- the tmux SERVER predates the
+  // script and does not inherit its environment, which is why the value has to ride the launch
+  // command. A presence check over the whole file therefore stays green with the effective half
+  // deleted. So the assertions below pin the SEAM: the var is inside the prefix string, and that
+  // prefix is prepended to the claude invocation. Comments are stripped first, because this file's
+  // own prose names the variable and would satisfy a naive match on its own.
+  it('the MAIN agent launch command disables the feedback survey too, not just the sub-agents', () => {
+    const sh = stripBashComments(read('scripts/channels.sh'))
+    const prefix = sh.split('\n').find((l) => l.startsWith('MCP_BATCH_ENV='))
+    expect(prefix, 'the launch-prefix assignment is gone or renamed').toBeDefined()
+    expect(prefix, 'the survey var must ride the launch prefix, not a bare export').toMatch(
+      /CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1/
+    )
+    const launches = sh
+      .split('\n')
+      .filter((l) => l.includes('$CLAUDE --dangerously-skip-permissions'))
+    expect(launches.length, 'no main-agent launch command found').toBeGreaterThan(0)
+    for (const l of launches) {
+      expect(l, 'a launch command does not carry the env prefix').toContain('${MCP_BATCH_ENV}')
+    }
   })
 })
 
