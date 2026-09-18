@@ -6,6 +6,7 @@ import { Readable } from 'node:stream'
 import { classifyAgentMessage } from '../web/agent-message-wrap.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
+import type { RouteContext } from '../web/routes/types.js'
 
 // HANGCSATORNA918 (owner request, 2026-09-18). The owner dictates into an
 // external voice assistant which relays the transcript to /api/messages. Before
@@ -56,7 +57,7 @@ describe('/api/messages write guard for the voice channel', () => {
     const handled = await tryHandleMessages({
       req, res, path: '/api/messages', method: 'POST',
       url: new URL('http://x/api/messages'), auth,
-    } as any)
+    } as unknown as RouteContext)
     expect(handled).toBe(true)
     return { status, body: body ? JSON.parse(body) : null }
   }
