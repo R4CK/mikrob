@@ -67,19 +67,17 @@ function fakeFormatRelative(ts: number): string { return `rel(${Date.now() - ts}
 
 let formatDurationShort: (sec: number) => string
 let quotaLevelClass: (pct: number) => string
-let renderQuotaStrip: (q: unknown) => void
 
 beforeAll(() => {
-  const body = `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n${extract('renderQuotaStrip')}\n` +
-    'return { formatDurationShort, quotaLevelClass, renderQuotaStrip }'
+  const body = `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n` +
+    'return { formatDurationShort, quotaLevelClass }'
   const factory = new Function('document', 't', 'escapeHtml', 'formatRelative', body) as (
     document: unknown, t: unknown, escapeHtml: unknown, formatRelative: unknown,
-  ) => { formatDurationShort: typeof formatDurationShort; quotaLevelClass: typeof quotaLevelClass; renderQuotaStrip: typeof renderQuotaStrip }
+  ) => { formatDurationShort: typeof formatDurationShort; quotaLevelClass: typeof quotaLevelClass }
   const dom = makeDom(['quotaStrip', 'quotaBars', 'quotaStripNote', 'quotaStripAge'])
   const out = factory(dom.document, fakeT, fakeEscapeHtml, fakeFormatRelative)
   formatDurationShort = out.formatDurationShort
   quotaLevelClass = out.quotaLevelClass
-  renderQuotaStrip = out.renderQuotaStrip
 })
 
 describe('quotaLevelClass matches the status line thresholds (>=80 danger, >=60 warn)', () => {
