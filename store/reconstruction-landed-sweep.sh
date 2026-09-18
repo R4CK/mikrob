@@ -74,10 +74,35 @@ printf 'Authorization: Bearer %s\n' "$(cat "$MAIN/store/.dashboard-token")" > "$
 # 5f2499713903 says "re-parented the 2 orphaned cards themselves (de7f4b15, 6c118f45) to top-level" --
 # that commit did not do de7f4b15's work, it only touched its parent_id as a side note. The same
 # commit's SUBJECT line, "(card 037277a0)", is the real attribution. The difference is the keyword
-# `card`/`kártya` immediately preceding the id (a handful of non-alnum chars for "(card " or "Card ")
-# -- a bare id dropped into a list carries no such prefix. This is a narrowing, not a new guarantee:
-# a commit can still misattribute by writing "card <id>" about related-but-not-identical work (see the
-# header's 4db7bc17/935c9f9e examples) -- that class stays a candidate, not a verdict, same as before.
+# `card`/`cards`/`kártya` immediately preceding the id (a handful of non-alnum chars for "(card " or
+# "Card ") -- a bare id dropped into a list carries no such prefix. This is a narrowing, not a new
+# guarantee: a commit can still misattribute by writing "card <id>" about related-but-not-identical
+# work (see the header's 4db7bc17/935c9f9e examples) -- that class stays a candidate, not a verdict,
+# same as before.
+#
+# PLURAL ATTRIBUTION (QA, card 6f887d39, gate on 02c77848). The keyword must accept the optional
+# plural "cards" too: `(card X, Y)` is a real, 24-occurrence-strong convention for a commit shipping
+# two cards at once (e.g. 17bb1e79: "(cards 0c4cf655, 108c7b10)", body names the 0c4cf655 finding by
+# id). The prior pattern's `s` fell into the `[^0-9a-zA-Z]{0,4}` gap, which explicitly refuses to skip
+# an alphanumeric character -- so "cards" never matched "card" plus a separator, and all 24 real
+# attributions (both cards, on every one of them) were silently dropped as false negatives. Measured:
+# the old pattern misses 17bb1e79 entirely; the new one finds it and nothing regresses (de7f4b15's
+# false positive stays empty under the fix, confirmed by re-running both regexes against the same
+# history rather than assumed).
+#
+# REVERT PRECEDENCE + NAME-VS-BEHAVIOR (Cybered, card 6f887d39, comment 4226). `git log` without
+# --reverse returns newest-first, and this loop returns the FIRST match -- so a `git revert` commit,
+# which quotes the reverted commit's subject verbatim (including its "(card <id>)" text), matched the
+# keyword pattern and was returned INSTEAD of the actual shipping commit, because the revert is newer.
+# That handed a reader exactly the commit that REMOVED the work as "evidence" the card was done. It
+# also contradicted this function's own name and comment ("the FIRST commit attributing the card"),
+# which promise the OLDEST match, not the newest. --reverse makes the search actually walk oldest-first,
+# so the loop's early-exit returns the true first attribution -- the shipping commit, which predates
+# any revert of it -- fixing the precedence and the name-vs-behavior gap with the same one flag.
+#
+# INVARIANT (Cybered, same comment): $card interpolates unquoted into an extended regex. Safe today
+# because kanban card ids are server-generated [0-9a-f] strings with no regex metacharacters -- if
+# that ever changes (a prefix, a non-hex id scheme), this line silently changes meaning.
 first_landed() {
   local repo="$1" branch="$2" card="$3" sha
   git -C "$repo" rev-parse --verify -q "$branch" >/dev/null 2>&1 || return 0
@@ -86,8 +111,8 @@ first_landed() {
     if git -C "$repo" merge-base --is-ancestor "$sha" "$branch" 2>/dev/null; then
       echo "$sha"; return 0
     fi
-  done < <(git -C "$repo" log --oneline --extended-regexp --regexp-ignore-case \
-    --grep="(card|kártya|kartya)[^0-9a-zA-Z]{0,4}$card" "$branch" 2>/dev/null)
+  done < <(git -C "$repo" log --oneline --reverse --extended-regexp --regexp-ignore-case \
+    --grep="(cards?|kártya|kartya)[^0-9a-zA-Z]{0,4}$card" "$branch" 2>/dev/null)
 }
 
 cards_json="$(curl -sf -H @"$hdr" "$DASH/api/kanban?limit=600")" || {
