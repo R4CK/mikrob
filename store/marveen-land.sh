@@ -315,7 +315,12 @@ land_one() {
     local lost=0 f line body
     while IFS= read -r f; do
       [ -n "$f" ] || continue
-      [ -f "$wt/$f" ] || { echo "$agent: SEAM FAIL: $f is missing from the merge result"; lost=$((lost+1)); continue; }
+      if [ ! -f "$wt/$f" ]; then
+        # Absent from BOTH tips = both sides deleted it, the merge is right to drop it (card b79078b5).
+        # Absent from only one tip: the other side's content is gone, that is a real seam loss.
+        if ! g cat-file -e "$branch:$f" 2>/dev/null && ! g cat-file -e "$base_sha:$f" 2>/dev/null; then continue; fi
+        echo "$agent: SEAM FAIL: $f is missing from the merge result"; lost=$((lost+1)); continue
+      fi
       while IFS= read -r line; do
         case "$line" in (''|'+++'*) continue ;; esac
         body="${line#+}"

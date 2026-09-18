@@ -525,7 +525,14 @@ seam_side() {
   local label="$1" tip="$2" f line body lost=0
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    [ -f "$WT/$f" ] || { echo "  SEAM FAIL ($label): $f is missing from the merge result" >&2; lost=$((lost+1)); continue; }
+    if [ ! -f "$WT/$f" ]; then
+      # A side whose own tip no longer carries the file deleted it itself: there is nothing of its own
+      # to preserve, and both sides deleting the same file is a correct merge, not a loss. Measured
+      # on card 8afdcf6d: main 619fb856 and branch 53073f65 both removed qr-svg-renderer.ts, the
+      # merge rightly dropped it, and this line refused the landing in BOTH directions (card b79078b5).
+      git -C "$MAIN" cat-file -e "$tip:$f" 2>/dev/null || continue
+      echo "  SEAM FAIL ($label): $f is missing from the merge result" >&2; lost=$((lost+1)); continue
+    fi
     while IFS= read -r line; do
       case "$line" in (''|'+++'*) continue ;; esac
       body="${line#+}"
