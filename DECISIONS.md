@@ -13138,3 +13138,54 @@ MARADT egy elofordulas (a csupasz export), a teszt megis BUKOTT; (b) a prefixet 
 parancsbol -- bukott. Visszaallitva 23/23 zold.
 
 **Ki dontott:** backend3 (ujrameres es a teszt). **Kartya:** 29609ec6.
+
+## 2026-09-18 -- CleanCore -> mopsion rebrand, 1. lepes: szurok + kanban.ts kanonizacio
+
+**Elozmeny:** Peti dontese (Telegram 8799): a termek neve mopsion, a "CleanCore" a regi belso
+kodnev. Fazis: 32dbac1e, plan-grilling GO-WITH-CHANGES (backend3, komment 4247) -- a kartya sajat
+scope-becslese ket iranyban is hibas volt (117 fajl tulbecsulve, 177 kartyacim tobb-mint-2x
+alulbecsulve: valodi 390/361, ebbol 8 elo), es egy VALODI feluletsurgit (kanban.ts CANONICAL_PROJECTS)
+a kartya egyaltalan nem latott.
+
+**Ez a kartya (1b02ed3a) az ELSO vegrehajtando lepes, minden mas erre epul:**
+
+1. **`src/web/routes/kanban.ts` CANONICAL_PROJECTS:** felvettem a `'mopsion': ['mopsion']` bejegyzest,
+   SAJAT, KULON kanonikus vodorbe -- NEM a 'CleanCore' bedror-ba olvasztva. Miert kulon: a rebrand
+   kesobbi lepesei UJ/atcimzett kartyakat 'mopsion'-ra allitanak, mig a torteneti 'CleanCore' kartyak
+   (32dbac1e sajat scope-ja: .md/.bak/.jsonl, kesz munka) valtozatlanul maradnak -- egy kozos vodorbe
+   olvasztas csendben eltorolne ezt a megkulonboztetest minden jovobeli kartya-irason.
+   Teszt: `kanban-project-normalize.test.ts` -- pozitiv (mopsion/Mopsion/MOPSION mind 'mopsion'-ra
+   kanonizalodik), negativ kontroll (a MAR MEGLEVO 'CleanCore folds' teszt valtozatlanul zold).
+
+2. **`store/gate-pretriage-card.sh`:** ket helyen erintett, mindketto a kartya sajat "project" mezot
+   olvassa (nem a cim bracket-taget kozvetlenul):
+   - STOPWORDS halmaz: 'mopsion' felvetele. INDOK, ELES: a CLEANCORE_REPO valtozo maga is
+     `/mnt/h/LM_Studio_Workdir/mopsion`-ra mutat (a fizikai repo-mappa MINDIG mopsion volt, a
+     "CleanCore" csak a kartya-cimekben/prozaban hasznalt belso kodnev) -- tehat egy [mopsion]-cimkes
+     kartya cim-szava SZO SZERINT egyezne a valtozott fajlok legtobb utvonalaval, akkortan is, ha a
+     tenyleges valtozas semmi kozos nincs vele. Mutacioval igazolva: a stopword kivetelevel PONTOSAN 1
+     teszt bukik ("mopsion" alone does not count as a match...), a masik 40/41 valtozatlan.
+   - A `case "$project"` repo-valaszto: `mopsion` hozzaadva a `CleanCore` aghoz (ugyanaz a fizikai repo
+     valasztodik mindket project-nevre). Ez a resz NEM kulon egyseg-tesztelt (elo dashboard-API-t
+     hasznal, a letezo tesztharness csak a --repo/--dry-run offline magot fedi) -- ugyanaz a korlat,
+     mint a mar letezo 'CleanCore' agra vonatkozik, nem uj hianyossag.
+
+3. **Scope-bovites, KOVETKEZO lepesre (647ea02a), NEM ez a kartya vegzi:** `cc-gate-worktree.sh` +
+   `.selftest.sh` a rename-korbe -- a `*cleancore*` grep-minta kihagyta oket (nem tartalmazzak a
+   "cleancore" alszot).
+
+4. **Kartya-sajat feltevesek, ELLENORIZVE es KORRIGALVA:** a kartya "repo-sync backstop, gate-pretriage,
+   fleet-nudger" harmasat nevezte meg, mint erintett szurot. Merve: `fleet-nudger.sh`-ban NINCS
+   funkcionalis CleanCore-egyezes (csak egy proza-komment), `gate-pretriage.sh`-ban (a fo szkript, NEM
+   a `-card.sh` valtozat) sincs project-alapu utvonalvalasztas (a talalt "project" szavak
+   tsconfig-kontextusban vannak, nem kanban-projektre vonatkoznak), es "repo-sync backstop" nem egy
+   kulon szkript, hanem a `repo-sync-deploy` utemezett feladat prozaja, amit MikroB heartbeat-je
+   kovet -- ez a CLAUDE.md-t frissito 5. lepesben (876fbf8e) erintett, nem itt. Az EGYETLEN valodi
+   funkcionalis-egyezes fajl a `gate-pretriage-card.sh` volt.
+
+**Zold:** `kanban-project-normalize.test.ts` (10, +1 uj), `gate-pretriage-card.test.ts` (41, +1 uj,
+mutacioval igazolva). Typecheck (`npx tsc --noEmit`) tiszta.
+
+**Ki dontott:** Peti (a rebrand maga), backend3 (plan-grilling + a scope-korrekcio + implementacio).
+**Kartya:** 1b02ed3a. **Szulo:** 32dbac1e. **Successor:** 647ea02a (fajlnev-atnevezes, csak EUTAN
+indulhat).

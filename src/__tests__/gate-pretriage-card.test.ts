@@ -120,6 +120,21 @@ describe('the title-vs-changed-files self-check (card ce159d2b)', () => {
     expect(body).toContain('FIGYELEM -- ONELLENORZES')
   })
 
+  // Card 1b02ed3a (rebrand step 1): "mopsion" must ALSO be a stopword, and for a sharper reason than
+  // the generic bracket-tags above -- the product repo's own filesystem path is
+  // /mnt/h/LM_Studio_Workdir/mopsion, so "mopsion" genuinely appears in real changed-file paths. A
+  // [mopsion]-tagged card would otherwise "match" almost any diff on the word alone, exactly the
+  // false-quiet the self-check exists to prevent. The changed file here DOES contain "mopsion" (to
+  // prove that path collision is real) but NOT "migration"/"work" -- so this only stays quiet if
+  // "mopsion" is filtered as noise, not counted as a real content word.
+  it('"mopsion" alone does not count as a match, even though it collides with the repo\'s own path', () => {
+    const body = commitAndBody(
+      { 'apps/mopsion-web/unrelated.ts': 'export const y = 2\n' },
+      '[mopsion][BE] mopsion migration work',
+    )
+    expect(body).toContain('FIGYELEM -- ONELLENORZES')
+  })
+
   it('too few meaningful words in the title -- the check does not fire on noise alone', () => {
     const body = commitAndBody(
       { 'src/anything.ts': 'export const z = 3\n' },
