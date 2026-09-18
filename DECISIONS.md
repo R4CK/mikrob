@@ -13149,3 +13149,72 @@ Verdikt: GO-WITH-CHANGES (MikroB, a backend3 grilling-elemzése alapján, kommen
 Döntések: (1) a normalizátor 'mopsion'-felvétele pozitív+negatív teszttel az ELSŐ lépés, minden átnevezés csak utána; (2) a régi scriptneveken szimlink marad, amíg nincs explicit bizonyíték minden élő session újraindulásáról; (3) systemd swap csak akkor, ha a régi unit nem fut és a szemafor egyik slotja sem foglalt, a kettő soha nem fut egyszerre; (4) a kártyacím bulk-rename csak done/planned kártyákra, dry-run + visszaállítási lista előbb, a 8 élő kártya a saját lezárásáig marad; (5) memória-horgony slugok külön, nem blokkoló utómunka.
 
 Kártyák: 1b02ed3a -> 647ea02a -> 42749892 -> 876fbf8e (predecessor-élek), 0c4c8f8c (címek, MikroB, az 1. lépés után), 5f300326 (LOW). **Ki döntött:** MikroB. **Kártya:** 32dbac1e.
+
+## 2026-09-18 -- feb005e0: headroom mért pilóta -- a self-reported szám nem tartotta magát, offline-kapcsoló hiányos
+
+**Döntés:** a bfc55674 README-alapú ADAPT verdiktjét éles méréssel teszteltem (backend, kártya feb005e0). Eredmény: HOLD -- ne menjen élő ügynök-wrap/MCP-bekötésre a jelen kiadásban (headroom-ai 0.37.0).
+
+**Miért NEM a wrap/proxy módot teszteltem.** A `headroom wrap claude` a README szerint nem sima stdin/stdout-wrap: helyi proxyt indít ÉS automatikusan telepíti a Serena szemantikus code-nav eszközt is -- ez a kártya feltételezettnél nagyobb dep-felület és architektúra-döntés (plan-grilling-kötelezett, 1b. szabály), mielőtt bármit mérünk. Ehelyett a library-módot (`from headroom import compress`) mértem -- ez a legkisebb blast-radius-ú belépési pont, és ugyanazt a compress-motort futtatja, amit az MCP `headroom_compress` és a proxy is hívna.
+
+**Mérési módszer:** 900 valós üzenet MAI (2026-09-18) 3 tényleges backend-session transzkriptből (natív Anthropic-formátumban, tool_use/tool_result blokkok megtartva -- egy első, szöveggé lapított kivonat hamis 0%-ot adott, mert pont azt a JSON/tool-output struktúrát törölte, amit a SmartCrusher céloz). Mért bemenet: **483 749 token** (headroom saját Claude-tokenizere, `claude-sonnet-4-5-20250929`).
+
+**Mért szám:** `compress()` 16 879 tokent takarított meg -> **3,49% tömörítés** (`compression_ratio=0.0349`), messze a README önbevallott 21-57%-os tartománya alatt.
+
+**Gyökérok, kóddal igazolva:** a `chopratejas/kompress-v2-base` (headroom flagship szemantikus tömörítő modellje) ebben a kiadásban **nem tölthető be** -- sem ONNX, sem PyTorch artefakt nincs a HF-repóban ("No loadable ONNX artifact... tried (...)"). Ez csomagolási hiba upstream-ben, nem hálózat/offline kérdés: hálózati hozzáféréssel (a hiányzó fastembed segédmodell egyszeri, szándékos letöltésével) is ugyanaz a 3,49% jött ki.
+
+**Egress-lelet (Cybersec-relevancia, a kártya pont ezt kérte igazolni):** a dokumentált `HEADROOM_OFFLINE=1` "egy kapcsoló mindent kikapcsol" ígéret **NEM ér el** a sima library-módú `compress()` hívásig -- kóddal igazolva: `apply_offline_env()` (ami a `HF_HUB_OFFLINE`-t állítaná) importáláskor NEM fut le, csak feltehetően a CLI belépési pontokból. Eredmény: minden EGYES `compress()` hívás megpróbál egy hitelesítetlen HTTP-hívást a huggingface.co-ra (a hiányzó modell miatt, sikertelenül, de a kísérlet lezajlik) -- ez FUT AKKOR IS, ha a hívó explicit beállítja a `HF_HUB_OFFLINE=1`/`TRANSFORMERS_OFFLINE=1` env-változókat saját kézzel. A "compression runs on your machine, nothing is sent" állítás a library-integrációra GYAKORLATBAN nem teljes lefedésű ígéret. Emellett létezik egy külön, alapból BEKAPCSOLT telemetria-beacon (`HEADROOM_BEACON=off`-fal kikapcsolható, csak metaadatot küld a README szerint) -- ez env-változó-szinten ellenőrizve OFF állapotban tartható, de a fenti HF-hívás ettől független csatorna. A `rollout` alrendszer ("feature-rollout policy") ELLENŐRIZVE: kódolvasással -- kizárólag helyi env-változókból dönt, NEM távoli kill-switch.
+
+**Kereszthivatkozás:** a 2026-09-08-i DB-kiürülés utáni rekonstrukcióban létezett egy korábbi kártya (241dbf87, SKIP-javaslat) ugyanerre a repóra, azzal az indokkal, hogy "az értéke egy olyan pozícióból jönne (minden LLM-hívás előtt), amit egy kényelmi funkcióért nem adunk oda" -- a bfc55674 friss due diligence-e ezt nem hivatkozta. A mostani mérés pont ezt az aggodalmat igazolja empirikusan: még a legkönnyebb integrációs mód is kontrollálatlan, hívásonkénti kimenő kísérletet tesz.
+
+**Verdikt:** a jelen kiadásban (0.37.0) a mért haszon (3,49%) nem indokolja az új trust-boundary-t + dep-felületet a mi valós beszélgetési adatunkon, plusz a flagship motor ebben a verzióban ténylegesen törött, plusz az offline-kapcsoló nem teljes körű library-módban. NE menjen élő ügynök-wrap/MCP-bekötésre. Újramérés akkor indokolt, ha upstream javítja a kompress-v2-base csomagot, vagy explicit host-szintű (firewall) tiltás védi a huggingface.co-t ahelyett, hogy az alkalmazás saját kapcsolójában bíznánk.
+
+**Ki döntött:** backend (mérés, kódolvasás), MikroB/Peti dönt a rollout-tervről (feb005e0 leírásának 3. lépése) ezen mérés alapján. **Kártya:** feb005e0.
+
+## 2026-09-18 -- 3c075d74: helyi-LLM-eloszor dispatch-politika megfordítva alapertelmezesse
+
+Peti kozvetlen kerese (Telegram 8835, MikroB dispatch): "elobb a local-llmre delegald a feladatokat,
+utana az online llm ellenorzi. Ha elbukik a feladaton, akkor az online llm vegezze el." A 16.
+munkavegzesi szabaly (kartya 79f62fd7) szigoritasa: a helyi-elobb mostantol nem a konnyu kartyak
+kivetele, hanem MINDEN uj kartya alapertelmezese.
+
+**Mert allapot a valtoztatas elott (MikroB merese, 2026-09-18 12:40):** a helyi modell egeszseges
+(Qwen3.5-9b Q4, CUDA0, 4812 MiB, ADMIT), de `card-build-route.log` aznap 7 dontest rogzitett, MIND
+ONLINE, `calls=0` -- a determinisztikus eloszurok (4x deterministic-multi-decision, 1x
+priority-urgent, 1x priority-high, 1x deterministic-shared-instruction-target) a modellt meg sem
+kerdeztek. A dispatch-offload draftok (11:18-11:21) az online ugynok KESZ munkaja UTAN erkeztek.
+
+**Valtoztatasok (backend, card-build-route.sh + card-build-route.selftest.sh +
+heartbeat-consolidated/SKILL.md + CLAUDE.md 16. szabaly + uj
+store/card-build-route-24h-measure.sh):**
+
+1. A `priority: urgent|high` gate TORLVE a card-build-route.sh-bol -- a surgosseg nem nehezseg, egy
+   urgens kartya ugyanugy vegigmegy a tartalmi kapukon es a modell EASY/COMPLEX kerdesen.
+   **Regresszio-ellenorzes (selftest battery A, modell stubbed EASY-re):** a torles pontosan EGY
+   real kartyat (a6c3a466, "customer portal v4 evidence package") fosztott meg a vedelemtol -- azt
+   korabban KIZAROLAG a priority tartotta online-on, tartalmi gate nem fedte. Potlas: uj
+   `deterministic-auth-tenant-scope` gate (auth/RBAC/multi-tenant/PII/GDPR/systemd + az
+   "ugyfel-tulajdon ujraellenorzes" kifejezes-mintaja), ami a 3c075d74 altal nevesitett kategoriakat
+   (auth, penz, PII, multi-tenant, migracio, systemd, deploy) fedi le ott, ahol korabban semmi nem
+   fedte. Selftest utana: 52/52 zold (elotte a torles utan 48/49, 1 real kartya-regresszio, amit a
+   pótlás zart).
+2. `heartbeat-consolidated/SKILL.md` C szekcio 4b lepese: a `card-build-route.sh` verdiktje MAR NEM
+   azt donti el, keszul-e draft, hanem hogy a draft utani online felulvizsgalat mennyire alapos
+   legyen. A `card-build-route.log` utolso soranak `path` mezoje dont KAPACITAS-OK (nincs mit
+   draftolni: vram-hold, model-busy, kill-switch, no-token, card-unreadable, card-unparseable,
+   empty-text, too-long, bad-card-id, no-argument, route-check-failed) es TARTALMI-OK (minden mas,
+   LOCAL is) kozott. Tartalmi oknal `offload-dispatch.sh` MOST SZINKRON fut, a delegalo uzenet ELOTT
+   -- nem az A szekcio hattersweepjekent, ami csak a mar folyamatban levo kartyak KESOBB megjeleno
+   mechanikus alfeladatait fedi le mostantol (backstop, nem elsodleges ut).
+3. Bukas-ut: MAR LETEZO gepezetre epul, nincs uj mechanizmus. `offload-dispatch.sh` sajat 3-probas
+   attempts-tracking-ja (`offload-attempts.json`) es a `kanban-draft-review-guard.ts` (kartya
+   1338e68b, `Draft-Review: ELFOGADVA/RESZBEN/ELUTASITVA`) egyutt mar lefedi: 3 sikertelen tranziens
+   kiserlet vagy explicit ELUTASITVA -> az online ugynok nullarol epiti, es ez a kartya sajat
+   kommentszalaban lathato, kulon `local-failed` naplobejegyzes nelkul.
+4. Meres: `store/card-build-route-24h-measure.sh` (+ `.selftest.sh`, 17/17 zold) szamolja egy
+   idoablakban a kapacitas-vs-tartalmi dontesek aranyat, es a tartalmi dontesu kartyak kozul hany
+   kapott tenylegesen draftot, hany dolgozott vele tovabb (ELFOGADVA/RESZBEN), hany utasitotta el
+   (ELUTASITVA), hany meg fuggoben. Elso valodi 24 orás szam a bevezetes utan kulon kovetkezik --
+   ez a bejegyzes az eszkozt es a nulla-alapvonalat rogziti, nem a 24 orás eredmenyt.
+
+**Ki dontott:** Peti (kozvetlen keres), MikroB (dispatch, kartya 3c075d74, HIGH). **Vegrehajtas:**
+backend. **Gate:** QA + Cybersec (a klasszifikacio biztonsagi kartyakat is erint).

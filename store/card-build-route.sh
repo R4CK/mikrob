@@ -154,12 +154,18 @@ fi
 # Everything here can only ESCALATE, so it is safe to keep crude: a false positive costs one online
 # build, which is what we do today anyway.
 
-# Priority first. urgent/high is a statement about CONSEQUENCE, and a draft that has to be thrown
-# away is most expensive exactly there. Cheap, deterministic, and it needs no model.
-case "$PRIORITY" in
-  urgent|high) online priority-"$PRIORITY" ;;
-esac
-
+# PRIORITY NO LONGER GATES ALONE (Peti szabaly 2026-09-18, kartya 3c075d74, Telegram 8835: "elobb a
+# local-llmre delegald a feladatokat"). Urgency is a statement about CONSEQUENCE, not about DIFFICULTY
+# -- a genuinely simple rename does not become hard because it is urgent. The measured cost of the old
+# gate: card-build-route.log on 2026-09-18 showed 7 verdicts that day, ALL ONLINE, calls=0 -- 2 of
+# them (priority-urgent, priority-high) never even reached the deterministic content gates below, let
+# alone the model. Removing this gate does not remove protection: every REAL card that this file's own
+# selftest battery A previously held online ONLY via priority now needs (and, per the selftest change
+# alongside this one, HAS) an actual content-shaped gate below -- the fail-safe direction is unchanged,
+# doubt still resolves ONLINE, but the DOUBT has to come from the card's own text, not its priority
+# label. A card that is urgent AND complex is still caught by the gates below or by the model saying
+# COMPLEX; a card that is urgent AND genuinely simple now gets to prove that, instead of being assumed
+# complex by its priority alone.
 SHORT="$(printf '%s' "$TEXT" | tr '\n' ' ' | head -c 1200)"
 
 # STEERING IS ITSELF A SIGNAL, and here the stakes are inverted relative to route-classify.sh's
@@ -260,6 +266,24 @@ fi
 if printf '%s' "$SHORT" | grep -Eqi \
   'validac|validál|validat|josagi|jósági|plausib|kliens[ -]?altal|client-supplied|confirm|megerosit|megerősít|spoof|forge|hamisit|hamisít'; then
   online deterministic-client-supplied-value
+fi
+
+# Auth/authorization, multi-tenant scope, PII and systemd -- the named categories (card 3c075d74,
+# Peti's own list: auth, penz, PII, multi-tenant, migracio, systemd, deploy) not already covered by a
+# dedicated gate above (money = deterministic-money; migracio/deploy already live inside
+# deterministic-multi-decision).
+#
+# MEASURED the same day the priority-urgent/high gate above was removed: dropping "urgent/high always
+# ONLINE" uncovered exactly one real battery-A card (a6c3a466, "customer portal v4 evidence package")
+# that had never had a content-based reason -- it was held online by priority alone. Its actual risk is
+# an OWNERSHIP RE-VERIFICATION before a customer can see/download someone else's evidence package: a
+# multi-tenant scoping/authorization decision wearing a reporting-feature label. The ownership+
+# re-verification CO-OCCURRENCE below matches that shape directly; the bare word "tulajdon" is not
+# used alone because it also appears inside the common word "tulajdonsag" (property/attribute) and
+# would overmatch.
+if printf '%s' "$SHORT" | grep -Eqi \
+  'jogosults|hozzaferes|hozzáférés|\brbac\b|authorizat|authentikac|access[- ]control|multi-tenant|multitenant|tenant[- ]?isolat|tenant[- ]?scope|szemelyes adat|személyes adat|\bpii\b|\bgdpr\b|systemd|unit file|tulajdon.{0,20}ellenor|ellenor.{0,20}tulajdon'; then
+  online deterministic-auth-tenant-scope
 fi
 
 # Assembling a document out of other sources: a judgement task wearing a docs label.
