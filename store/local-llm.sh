@@ -128,6 +128,28 @@ die() { echo "local-llm: $2" >&2; exit "$1"; }
 
 ollama_up() { curl -fsS -m 5 "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; }
 
+# card 10c3fbeb: an "ollama down" banner alone can't tell a caller (or a human) whether Ollama
+# crashed, or gpu-crashloop-guard.sh deliberately stopped+masked it after a real GPU crash-loop.
+# Those are different situations -- one needs `systemctl --user start ollama`, the other needs the
+# guard's own restore command -- so when the guard's state flag says it is currently holding the
+# service down, say so alongside the down banner instead of leaving the caller to guess.
+GPU_GUARD_MASKED_FLAG="${STATE_DIR}/.gpu-crashloop-guard-masked.json"
+gpu_guard_mask_note() {
+  [[ -f "$GPU_GUARD_MASKED_FLAG" ]] || return 0
+  python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        d = json.load(fh)
+    units = d.get("units", "?")
+    reason = d.get("reason", "?")
+    restore = d.get("restore", "")
+    print(f" [gpu-crashloop-guard has MASKED {units!r} ({reason}) -- restore: {restore}]", end="")
+except Exception:
+    pass
+' "$GPU_GUARD_MASKED_FLAG" 2>/dev/null
+}
+
 # --- OLLAMA_HOST is a switch, so it gets checked (card 0d2be5e5, Cybersec on the 8417fa5e gate) --
 # The variable was overridable with no validation at all. That mattered little while this path
 # carried code fragments, but the specialist routing changed what flows through it: --task
@@ -339,13 +361,13 @@ if [[ "$MODE" == "health" ]]; then
     echo "active model: $MODEL  (present locally: $have)"
     exit 0
   else
-    echo "ollama: DOWN ($OLLAMA_HOST) [$LOCAL_LLM_PLATFORM] -- $(ollama_start_hint)"
+    echo "ollama: DOWN ($OLLAMA_HOST) [$LOCAL_LLM_PLATFORM] -- $(ollama_start_hint)$(gpu_guard_mask_note)"
     exit 2
   fi
 fi
 
 if [[ "$MODE" == "list" ]]; then
-  ollama_up || die 2 "ollama down at $OLLAMA_HOST"
+  ollama_up || die 2 "ollama down at $OLLAMA_HOST$(gpu_guard_mask_note)"
   curl -fsS -m 10 "$OLLAMA_HOST/api/tags" | python3 -c "import json,sys; [print(m['name'], f\"({round(m.get('size',0)/1e9,1)}GB)\") for m in json.load(sys.stdin).get('models',[])]"
   exit 0
 fi
@@ -416,7 +438,7 @@ except Exception:
   PROMPT="${USER_TPL//\{\{INPUT\}\}/${ESCAPED_INPUT//&/\\&}}"
 fi
 
-ollama_up || die 2 "ollama down at $OLLAMA_HOST [$LOCAL_LLM_PLATFORM] -- $(ollama_start_hint)"
+ollama_up || die 2 "ollama down at $OLLAMA_HOST [$LOCAL_LLM_PLATFORM] -- $(ollama_start_hint)$(gpu_guard_mask_note)"
 
 # Build request JSON safely via python (handles all escaping)
 #
