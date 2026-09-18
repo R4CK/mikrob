@@ -15,5 +15,12 @@
 # so a loud no-op is the safe shape. Cleanup of the old ~/.claude/hooks copies
 # and stale user-global entries belongs to the global-prune round, not here.
 
+# Migrate old hook if still present from a previous install.
+OLD_HOOK="$HOME/.claude/hooks/telegram-image-resize.sh"
+if [ -f "$OLD_HOOK" ]; then
+  echo "⊙ Migrate old hook: removing deprecated $OLD_HOOK"
+  rm -f "$OLD_HOOK"
+fi
+
 echo "⊙ install-channel-image-hook.sh: deprecated no-op (#1305) -- the hook is repo-shipped in .claude/settings.json (project scope)"
 exit 0

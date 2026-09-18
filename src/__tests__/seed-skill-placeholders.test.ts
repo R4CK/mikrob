@@ -34,9 +34,10 @@ function walk(dir: string): string[] {
   if (!existsSync(dir)) return []
   const out: string[] = []
   for (const entry of readdirSync(dir)) {
+    if (entry === '__pycache__') continue
     const p = join(dir, entry)
     if (statSync(p).isDirectory()) out.push(...walk(p))
-    else out.push(p)
+    else if (!entry.endsWith('.pyc')) out.push(p)
   }
   return out
 }

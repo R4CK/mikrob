@@ -315,6 +315,14 @@ http://localhost:3420 — memória, kanban, ügynökök, ütemezés, Vault, term
 
 Ez a fork öt csatorna-providert támogat: **Telegram** (alapértelmezett), **Slack**, **Discord**, **Google Chat**, **Microsoft Teams**. A telepítő Telegram/Slack/Discord közül kér választást; a `CHANNEL_PROVIDER` env-kulcs manuálisan is átállítható a többire. Csatornaváltáshoz futtasd újra a `./install-linux.sh`-t, vagy szerkeszd a `.env`-et és indítsd újra a szolgáltatást (`./scripts/stop.sh && ./scripts/start.sh`).
 
+#### Discord (alternatív)
+
+```env
+CHANNEL_PROVIDER=discord
+```
+
+Discord bot létrehozása: discord.com/developers/applications. A futtatóhoz `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID` és `OPERATOR_DISCORD_USER_ID` szükséges; részletek: [docs/channels.md](docs/channels.md).
+
 → **Részletek + provider-specifikus lépések:** [docs/channels.md](docs/channels.md)
 
 ### Ágensek

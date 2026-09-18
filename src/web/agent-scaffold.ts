@@ -2772,7 +2772,7 @@ export function buildMemorySearchLabelBody(name: string): string {
     'keresés receptje `-D`-vel megy, és a `grep` NEM opcionális:',
     '',
     '```bash',
-    `curl -s -D /tmp/mem-fejlec-${name}.txt -H "Authorization: Bearer $(cat ${tokenPath})" \\`,
+    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -D /tmp/mem-fejlec-${name}.txt \\`,
     `  "${dashboardOrigin}/api/memories?agent=${name}&q=KULCSSZO"`,
     `grep -i '^x-memory-search' /tmp/mem-fejlec-${name}.txt`,
     '```',
@@ -2894,10 +2894,10 @@ A hot tier árát MINDEN session-indulás újra kifizeti, ezért a lezárt sorok
 Az átsorolás memory_maintenance = level 3, AUTONÓM: a SAJÁT emlékeiden magadtól megteheted.
 
 1. Kell az ID -- a listázó ÉS a kereső ág is visszaadja:
-curl -s -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/memories?agent=AGENT_NAME&category=hot&limit=40"
+printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- "${dashboardOrigin}/api/memories?agent=AGENT_NAME&category=hot&limit=40"
 
 2. Átsorolás (a category-only PATCH elég, a tartalmat NEM kell újraküldeni):
-curl -s -X PATCH ${dashboardOrigin}/api/memories/<ID> -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"category":"cold","updated_by":"AGENT_NAME"}'
+printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X PATCH ${dashboardOrigin}/api/memories/<ID> -H "Content-Type: application/json" -d '{"category":"cold","updated_by":"AGENT_NAME"}'
 
 Az updated_by az, AKI ÍRT (írás-nyom). Az agent_id mezőt NE küldd: az a sort ÁTADJA másik ágensnek, nem a tier-t állítja.
 
