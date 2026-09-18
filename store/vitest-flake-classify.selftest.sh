@@ -56,6 +56,22 @@ bash "$RUN" 0 "$l" >/dev/null 2>&1; rc=$?
 [[ $rc -eq 1 ]] && ok "exit 0 is never reclassified, even when the log mentions the timeout" \
                 || bad "a clean run was called a flake (rc=$rc)"
 
+# --- 4b. INCOMPLETE RUN: killed before any summary line, whatever the exit code (card 85823628) ---
+l="$(log 'stdout continues' 'more worker output, then nothing' 'the run just stops here')"
+out="$(bash "$RUN" 137 "$l" 2>&1)"; rc=$?
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'INCOMPLETE RUN'; then
+  ok "a log with no summary at all is flagged incomplete, not silently exit-1"
+else
+  bad "no-summary log was not flagged incomplete (rc=$rc)" "$out"
+fi
+
+# --- 4c. the incomplete-run check must not shadow the birpc flake, which always has a summary ----
+l="$(log "$FLAKE_LINE" ' Test Files  878 passed | 2 skipped (880)' '      Tests  18647 passed | 7 skipped (18654)')"
+out="$(bash "$RUN" 1 "$l" 2>&1)"; rc=$?
+[[ $rc -eq 0 ]] && echo "$out" | grep -q 'KNOWN BENIGN FLAKE' \
+  && ok "a completed flake run is still classified as the flake, not as incomplete" \
+  || bad "flake-with-summary wrongly treated as incomplete or unclassified (rc=$rc)" "$out"
+
 # --- 5. usage and a missing log --------------------------------------------------------------
 bash "$RUN" >/dev/null 2>&1; rc=$?
 [[ $rc -eq 2 ]] && ok "no arguments -> exit 2 (usage)" || bad "no-args exit $rc, want 2"
