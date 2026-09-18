@@ -283,6 +283,28 @@ describe('an unverified close is recorded apart from a verified one (card b428f3
     expect(infoLogs[0]).toMatchObject({ reason: 'no-repo-mapping', project: 'some-other-product' })
   })
 
+  // Card 1b02ed3a (rebrand step 1), Cybersec NO-GO on comment 4864: PROJECT_REPOS had no 'mopsion'
+  // entry, so a mopsion-project card fell through to the SAME no-repo-mapping path as the unmapped-
+  // project test right above -- fail-OPEN (allowed, unchecked), live on production close paths, with
+  // 35 real cards already carrying project='mopsion' at the time of the finding.
+  it("mopsion is a MAPPED project (same repo as cleancore) -- verified, not logged as unmapped", async () => {
+    card.project = 'mopsion'
+    comments = [{ content: `REVIEW -- ${SHA_A}` }]
+    onMain = new Set([SHA_A])
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
+    expect(infoLogs).toHaveLength(0) // verified (matches the cleancore case above), not "logged as unverified"
+  })
+
+  // MUTATION-SENSITIVE (Cybersec's own ask): removing the 'mopsion' entry from PROJECT_REPOS makes
+  // this test pass EVERYTHING through as fail-open (blocked would flip to false) -- proves the guard
+  // is actually doing verification for mopsion, not just silently allowing it through either way.
+  it('mopsion BLOCKS an unlanded commit exactly like cleancore does -- not a silent allow-all', async () => {
+    card.project = 'mopsion'
+    comments = [{ content: `REVIEW -- ${SHA_A}` }]
+    onMain = new Set() // SHA_A exists but never reached origin/main
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(true)
+  })
+
   it('logs NOTHING when it actually verified the landing -- the line must mean something', async () => {
     comments = [{ content: `REVIEW -- ${SHA_A}` }]
     onMain = new Set([SHA_A])

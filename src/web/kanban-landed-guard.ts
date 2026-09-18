@@ -66,6 +66,13 @@ const MARVEEN: RepoTarget = { root: PROJECT_ROOT, mainRef: 'origin/develop' }
 
 const PROJECT_REPOS: Readonly<Record<string, RepoTarget>> = {
   cleancore: CLEANCORE,
+  // Card 1b02ed3a (rebrand step 1, Cybersec NO-GO, comment 4864): 'mopsion' is the SAME physical
+  // repo as 'cleancore' -- without this entry, a mopsion-project card fell through to
+  // allowUnverified('no-repo-mapping') at every done-transition guard call site (routes/kanban.ts,
+  // both status doors), which is FAIL-OPEN: it lets the close through UNCHECKED, the opposite of
+  // this guard's whole purpose. Live-measured before the fix: a 'cleancore' card was correctly
+  // blocked/allowed on real ancestry, a 'mopsion' card was allowed through with zero verification.
+  mopsion: CLEANCORE,
   marveen: MARVEEN,
   'mikrob-infra': MARVEEN,
   'fleet-infra': MARVEEN,
