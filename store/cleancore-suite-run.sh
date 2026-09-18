@@ -48,11 +48,20 @@
 #   CLEANCORE_SUITE_SLOTS        default 2
 #   CLEANCORE_SUITE_MAX_WORKERS  overrides the vitest --maxWorkers default (nproc / SLOTS, floor 1).
 #                                Ignored if the caller already passed --maxWorkers after `--`.
-#   CLEANCORE_SUITE_MIN_AVAIL_MB default 4096 -- MemAvailable a run needs before it may START.
-#                                0 disables the memory precondition entirely.
+#   CLEANCORE_SUITE_MIN_AVAIL_MB default 4096 -- MemAvailable a run needs before it may START, and
+#                                (card e498502e) the floor it must stay above WHILE RUNNING. 0
+#                                disables the memory check entirely, start and mid-run alike.
+#   CLEANCORE_SUITE_MID_RUN_POLL_S default 45 -- how often (seconds) memory is re-checked while
+#                                vitest is running, not just before it starts. Ignored if
+#                                CLEANCORE_SUITE_MIN_AVAIL_MB=0.
+#   CLEANCORE_SUITE_MID_RUN_TERM_GRACE_S default 10 -- seconds a mid-run stop waits after SIGTERM
+#                                before escalating to SIGKILL. For the selftest; production suites
+#                                should not need to change this.
 #   CLEANCORE_SUITE_MEMINFO      /proc/meminfo override, for the selftest only.
 #
-# Exit: the suite's own exit code | 2 usage or an unusable lock directory | 3 no slot within the cap
+# Exit: the suite's own exit code | 2 usage or an unusable lock directory | 3 no slot within the
+#       cap | 4 memory pressure arrived WHILE running and the suite was stopped in a controlled way
+#       (card e498502e) -- this is NOT a test result, pass or fail
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -96,6 +105,13 @@ KEEPALIVE_S="${CLEANCORE_SUITE_KEEPALIVE_S:-300}"  # < the 10-minute stuck thres
 # every upstream merge replaces it, and a fork script parsing its output would break silently.
 MEMINFO="${CLEANCORE_SUITE_MEMINFO:-/proc/meminfo}"
 MIN_AVAIL_MB="${CLEANCORE_SUITE_MIN_AVAIL_MB:-4096}"
+MID_RUN_POLL_S="${CLEANCORE_SUITE_MID_RUN_POLL_S:-45}"
+MID_RUN_TERM_GRACE_S="${CLEANCORE_SUITE_MID_RUN_TERM_GRACE_S:-10}"
+# A sentinel run_vitest() returns instead of vitest's own exit code, when the mid-run memory watch
+# (below) had to stop the suite itself. 99 is outside vitest's own range (0 pass, 1 fail, 130/143
+# on a signal) so it cannot be mistaken for a real result.
+MID_RUN_OOM_STATUS=99
+MID_RUN_OOM_DETAIL=""
 
 # MemAvailable in MB, or a non-zero return when this box cannot answer.
 mem_available_mb() {
@@ -328,11 +344,81 @@ run_log="$(mktemp)"
 e2e_log="$(mktemp)"
 trap 'rm -f "$_hdr_file" "$run_log" "$e2e_log"' EXIT
 
-# One vitest invocation, reported and classified. Returns vitest's real exit code.
+# THE START-TIME PRECONDITION (try_start, above) ONLY LOOKS ONCE (card e498502e, backend's finding
+# 2026-09-12). A full suite runs ~60-90 minutes; 249c6c6f started with ~13 GB free and was OOM-killed
+# BY THE KERNEL partway through, with no summary and no record that this run's result is void. That
+# is the exact false-red-by-a-different-name failure this whole script exists to prevent (see the
+# file header) -- just arriving after the gate instead of before it.
+#
+# THE FIX WATCHES, IT DOES NOT PREVENT. Nothing here makes the suite use less memory; it makes an
+# unavoidable shortage into a NAMED, CONTROLLED stop instead of a silent kernel kill: vitest runs in
+# its own session (setsid) so the whole process TREE can be reached by one signal, a poller checks
+# MemAvailable every MID_RUN_POLL_S while it runs, and on a breach it SIGTERMs the group, waits a
+# few seconds for vitest to unwind, then SIGKILLs if it has not. The caller gets MID_RUN_OOM_STATUS
+# back, never a fabricated pass or fail -- run_vitest's caller must treat that sentinel as "no result",
+# not as one more exit code to interpret.
+#
+# WHY setsid AND NOT A PLAIN BACKGROUND JOB. This script itself is not run under a job-control shell
+# (set -uo pipefail, no `set -m`), so `vitest run & vpid=$!` would NOT make vpid a process-group
+# leader -- its child workers inherit THIS SCRIPT's process group, and `kill -TERM -- -$vpid` would
+# either miss them or reach unrelated siblings. setsid makes vitest the leader of a fresh session and
+# process group, so `-$vpid` is exactly the run's own tree, nothing else.
+mem_watch_and_wait() { # $1 = vpid; sets MID_RUN_OOM_DETAIL; returns MID_RUN_OOM_STATUS or vitest's own exit
+  local vpid="$1"
+  MID_RUN_OOM_DETAIL=""
+  if [ "$MIN_AVAIL_MB" -gt 0 ] && [ "$MID_RUN_POLL_S" -gt 0 ]; then
+    # `kill -0` is TRUE for a zombie, not only a running process -- a plain "sleep, then kill -0"
+    # poll would see vitest's own exit as "still alive" forever, because nothing ever reaps it
+    # (bash only reaps a background job on an explicit `wait`, and this loop's own `wait` is the one
+    # after the loop, which this bug would never reach). Fixed by racing the poll timer against
+    # vpid itself with `wait -n`: whichever of the two it reaps is the one whose `kill -0` then
+    # correctly reports gone, because reaping is what turns a zombie into "no such process".
+    local avail sleep_pid
+    while kill -0 "$vpid" 2>/dev/null; do
+      sleep "$MID_RUN_POLL_S" &
+      sleep_pid=$!
+      wait -n "$vpid" "$sleep_pid" 2>/dev/null
+      if ! kill -0 "$vpid" 2>/dev/null; then
+        kill "$sleep_pid" 2>/dev/null; wait "$sleep_pid" 2>/dev/null
+        break
+      fi
+      if avail="$(mem_available_mb)"; then
+        if [ "$avail" -lt "$MIN_AVAIL_MB" ]; then
+          MID_RUN_OOM_DETAIL="${avail}MB available, ${MIN_AVAIL_MB}MB needed, mid-run"
+          echo "cleancore-suite-run: MID-RUN MEMORY PRESSURE ($MID_RUN_OOM_DETAIL) -- stopping the suite in a controlled way instead of letting the kernel OOM-kill it silently (card e498502e)" >&2
+          kill -TERM -- "-$vpid" 2>/dev/null || kill -TERM "$vpid" 2>/dev/null
+          local waited_term=0
+          while kill -0 "$vpid" 2>/dev/null && [ "$waited_term" -lt "$MID_RUN_TERM_GRACE_S" ]; do sleep 1; waited_term=$((waited_term + 1)); done
+          kill -0 "$vpid" 2>/dev/null && { kill -KILL -- "-$vpid" 2>/dev/null || kill -KILL "$vpid" 2>/dev/null; }
+          wait "$vpid" 2>/dev/null
+          return "$MID_RUN_OOM_STATUS"
+        fi
+      elif [ "$MEM_WARNED" -eq 0 ]; then
+        MEM_WARNED=1
+        echo "cleancore-suite-run: cannot read MemAvailable from '$MEMINFO' -- running WITHOUT the mid-run memory watch (card e498502e). An OOM kill here would look like a test failure." >&2
+      fi
+    done
+  fi
+  wait "$vpid" 2>/dev/null
+}
+
+# One vitest invocation, reported and classified. Returns vitest's real exit code, OR
+# MID_RUN_OOM_STATUS when the mid-run memory watch had to stop it (no valid result either way).
 run_vitest() {
   local log="$1"; shift
-  ./node_modules/.bin/vitest run "$@" 2>&1 | tee "$log"
-  local st="${PIPESTATUS[0]}"
+  setsid ./node_modules/.bin/vitest run "$@" >"$log" 2>&1 &
+  local vpid=$!
+  tail -n +1 -f "$log" --pid="$vpid" 2>/dev/null &
+  local tail_pid=$!
+  mem_watch_and_wait "$vpid"
+  local st=$?
+  wait "$tail_pid" 2>/dev/null
+  if [ "$st" -eq "$MID_RUN_OOM_STATUS" ]; then
+    _comment "INFO-ONLY SUITE-STOPPED-MEMORY
+
+A teljes suite futas KOZBEN esett a rendelkezesre allo memoria a kuszob ala (${MID_RUN_OOM_DETAIL}) -- kontrolláltan leallitottam, mielott a kernel csendben OOM-kill-elte volna. EZ NEM TESZT-EREDMENY: se nem pass, se nem fail, a futas nem adott ervenyes valaszt (kartya e498502e)."
+    return "$st"
+  fi
   # Adds an explanation on stderr when the run is the known flake; NEVER changes the exit code. A
   # wrapper that turned exit 1 into exit 0 here would be indistinguishable from one hiding a real
   # regression, which is the opposite of what this is for.
@@ -379,15 +465,25 @@ done
 
 if [ "$caller_set_project" -eq 1 ]; then
   run_vitest "$run_log" "${vitest_args[@]}"
-  exit $?
+  status=$?
+  [ "$status" -eq "$MID_RUN_OOM_STATUS" ] && exit 4
+  exit "$status"
 fi
 
 run_vitest "$run_log" "${vitest_args[@]}" --project '!api-e2e'
 status=$?
+# A mid-run OOM stop on the FIRST leg means there is no valid result to report at all -- running the
+# api-e2e leg afterwards would only race the same memory shortage a second time. Say so and stop.
+if [ "$status" -eq "$MID_RUN_OOM_STATUS" ]; then
+  exit 4
+fi
 
 echo "cleancore-suite-run: the api-e2e project runs in its own process (card cae9fb67)" >&2
 run_vitest "$e2e_log" "${vitest_args[@]}" --project api-e2e
 e2e_status=$?
+if [ "$e2e_status" -eq "$MID_RUN_OOM_STATUS" ]; then
+  exit 4
+fi
 
 # A second run that matched NOTHING is the failure mode of hardcoding a project name: if `api-e2e`
 # is ever renamed, the negation above stops excluding it and this run silently finds no files --

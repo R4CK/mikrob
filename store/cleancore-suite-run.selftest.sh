@@ -361,5 +361,128 @@ else
   bad "the guard appears to be reading MemFree" "rc=$rc out=$out"
 fi
 
+# --- 14. MID-RUN MEMORY WATCH stops a running suite in a controlled way (card e498502e) ---------
+# The start-time precondition (case 13) only looks ONCE; a suite that starts healthy and later runs
+# out of memory used to be silently OOM-killed by the kernel, with no summary and no signal that the
+# result is void (backend's 249c6c6f finding). These drive a FAKE vitest that just sleeps, so the
+# mid-run check is proven without ever running the real ~60-90 minute suite.
+MIDRUN_WT="$TMP/fake-midrun"
+mkdir -p "$MIDRUN_WT/node_modules/.bin" "$MIDRUN_WT/store"
+cp "$RUN" "$MIDRUN_WT/store/$(basename "$RUN")"
+cat > "$MIDRUN_WT/store/agent-worktree.sh" <<EOF
+#!/usr/bin/env bash
+echo "$MIDRUN_WT"
+EOF
+chmod +x "$MIDRUN_WT/store/agent-worktree.sh"
+: > "$MIDRUN_WT/store/vitest-flake-classify.sh"; chmod +x "$MIDRUN_WT/store/vitest-flake-classify.sh"
+: > "$MIDRUN_WT/store/vitest-skip-report.sh"; chmod +x "$MIDRUN_WT/store/vitest-skip-report.sh"
+
+env_midrun=(
+  "CLEANCORE_SUITE_LOCK_PREFIX=$PREFIX-midrun"
+  "CLEANCORE_SUITE_API=http://127.0.0.1:9"
+  "CLEANCORE_SUITE_POLL_S=1"
+  "CLEANCORE_SUITE_SLOTS=2"
+  "CLEANCORE_SUITE_MID_RUN_POLL_S=1"
+)
+
+MIDRUN_MEMINFO="$TMP/meminfo-midrun"
+write_mem() { printf 'MemTotal:       24609416 kB\nMemFree:         1850872 kB\nMemAvailable:   %s kB\n' "$1" > "$MIDRUN_MEMINFO"; }
+write_mem 9000000  # plenty, so the START-time check passes and the run actually begins
+
+# A fake vitest that behaves like a real one under SIGTERM: its child dies, it exits. Not `exec`,
+# so the running PROCESS's own argv still names this fixture's path -- that is what the aliveness
+# probes below key on, instead of a bare "sleep" pattern that would also match unrelated holders
+# from earlier cases in this same file (several `sleep 300`s are still alive at this point).
+cat > "$MIDRUN_WT/node_modules/.bin/vitest" <<'EOF'
+#!/usr/bin/env bash
+sleep 30 &
+wait
+EOF
+chmod +x "$MIDRUN_WT/node_modules/.bin/vitest"
+
+( env "${env_midrun[@]}" CLEANCORE_SUITE_MEMINFO="$MIDRUN_MEMINFO" CLEANCORE_SUITE_MIN_AVAIL_MB=4096 \
+      bash "$MIDRUN_WT/store/$(basename "$RUN")" fakewt -- --project packages \
+      >"$TMP/midrun-out.txt" 2>&1 ) &
+midrun_pid=$!
+sleep 1.5   # let the start-time check pass and the fake vitest actually start
+write_mem 500000   # drop below the floor WHILE it is "running"
+wait "$midrun_pid"; midrun_rc=$?
+out="$(cat "$TMP/midrun-out.txt" 2>/dev/null)"
+if [[ $midrun_rc -eq 4 ]] && grep -q "MID-RUN MEMORY PRESSURE" <<<"$out"; then
+  ok "a memory drop WHILE running stops the suite with exit 4, named as memory (not a test result)"
+else
+  bad "mid-run memory drop was not caught" "rc=$midrun_rc out=$out"
+fi
+
+# The vitest process itself must actually be gone -- "detected but not stopped" would be worse than
+# useless: it would claim a controlled stop while the same kernel OOM-kill still lurks underneath.
+sleep 0.3
+if ! pgrep -f -- "$MIDRUN_WT/node_modules/.bin/vitest" >/dev/null 2>&1; then
+  ok "the fake vitest (and its child) is actually terminated, not left running"
+else
+  bad "the fake vitest process was still alive after the mid-run stop" "$(pgrep -af -- "$MIDRUN_WT/node_modules/.bin/vitest" 2>/dev/null)"
+fi
+
+# The slot the stopped run held must be released -- a leaked slot after a controlled stop would be
+# exactly as bad as the SIGKILL-leak case 5 already proves the kernel handles for us.
+sleep 0.3
+free_slots=0
+for i in 1 2; do
+  ( exec 8>>"${PREFIX}-midrun-${i}.lock"; flock -n 8 ) 2>/dev/null && free_slots=$((free_slots + 1))
+done
+[[ $free_slots -ge 1 ]] \
+  && ok "the slot held by the stopped mid-run is released, not leaked" \
+  || bad "no slot was free after the mid-run stop" "free_slots=$free_slots"
+
+# CONTROL: a process that ignores SIGTERM is escalated to SIGKILL, not left running forever. A short
+# grace period keeps this fast instead of waiting out the 10s production default.
+cat > "$MIDRUN_WT/node_modules/.bin/vitest" <<'EOF'
+#!/usr/bin/env bash
+trap '' TERM
+while true; do sleep 1; done
+EOF
+chmod +x "$MIDRUN_WT/node_modules/.bin/vitest"
+write_mem 9000000
+( env "${env_midrun[@]}" CLEANCORE_SUITE_MEMINFO="$MIDRUN_MEMINFO" CLEANCORE_SUITE_MIN_AVAIL_MB=4096 \
+      CLEANCORE_SUITE_MID_RUN_TERM_GRACE_S=2 \
+      bash "$MIDRUN_WT/store/$(basename "$RUN")" fakewt -- --project packages \
+      >"$TMP/midrun-kill-out.txt" 2>&1 ) &
+midrun_kill_pid=$!
+sleep 1.5
+write_mem 500000
+wait "$midrun_kill_pid"; midrun_kill_rc=$?
+if [[ $midrun_kill_rc -eq 4 ]]; then
+  ok "a run that ignores SIGTERM is escalated to SIGKILL after the grace period, not left running"
+else
+  bad "a SIGTERM-ignoring run was not escalated to SIGKILL" "rc=$midrun_kill_rc out=$(cat "$TMP/midrun-kill-out.txt" 2>/dev/null)"
+fi
+sleep 0.3
+if ! pgrep -f -- "$MIDRUN_WT/node_modules/.bin/vitest" >/dev/null 2>&1; then
+  ok "after escalation the SIGTERM-ignoring process is actually gone"
+else
+  bad "the SIGTERM-ignoring fake vitest survived SIGKILL" "$(pgrep -af -- "$MIDRUN_WT/node_modules/.bin/vitest" 2>/dev/null)"
+fi
+
+# NEGATIVE CONTROL: CLEANCORE_SUITE_MIN_AVAIL_MB=0 disables the mid-run watch exactly like it
+# disables the start-time one (case 13) -- a memory drop mid-run must NOT stop a run that opted out.
+cat > "$MIDRUN_WT/node_modules/.bin/vitest" <<'EOF'
+#!/usr/bin/env bash
+exec sleep 2
+EOF
+chmod +x "$MIDRUN_WT/node_modules/.bin/vitest"
+write_mem 9000000
+( env "${env_midrun[@]}" CLEANCORE_SUITE_MEMINFO="$MIDRUN_MEMINFO" CLEANCORE_SUITE_MIN_AVAIL_MB=0 \
+      bash "$MIDRUN_WT/store/$(basename "$RUN")" fakewt -- --project packages \
+      >"$TMP/midrun-off-out.txt" 2>&1 ) &
+midrun_off_pid=$!
+sleep 1
+write_mem 500000
+wait "$midrun_off_pid"; midrun_off_rc=$?
+if [[ $midrun_off_rc -eq 0 ]]; then
+  ok "CONTROL: CLEANCORE_SUITE_MIN_AVAIL_MB=0 disables the mid-run watch too"
+else
+  bad "the mid-run watch fired even though the memory precondition was disabled" "rc=$midrun_off_rc out=$(cat "$TMP/midrun-off-out.txt" 2>/dev/null)"
+fi
+
 echo "cleancore-suite-run.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
