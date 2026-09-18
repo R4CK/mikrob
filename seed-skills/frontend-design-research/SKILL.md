@@ -10,20 +10,22 @@ related_skills: [impeccable]
 Bármilyen frontend/UI feladat ELŐTT, ahol a megjelenés számít: landing, dashboard, marketing oldal, komponens-redesign. A cél: ne a fejből emlékezett (elavult) mintát építsd, hanem a most nyerő megoldás modern adaptációját.
 
 ## Eljárás
-1. **Brief tisztázás:** projekt vibe, célközönség, brand korlátok, meglévő stack és design tokenek.
+1. **Brief tisztázás:** projekt vibe, célközönség, brand korlátok, meglévő stack és design tokenek. **Landing/portfólió/redesign/érdemi új feature UI-nál** (NEM dashboard/adattábla/triviális tweak) itt fuss le a `design-taste-frontend` skill "Design Read" lépését (Section 0) és állítsd be a három dialt (DESIGN_VARIANCE/MOTION_INTENSITY/VISUAL_DENSITY, Section 1) — ez adja a 4-6. lépés döntéseinek keretét, nem külön, utólagos ellenőrzés.
 2. **Kutatás (kötelező):**
    - awwwards.com — Sites of the Day, Honorable Mentions, design-trends oldal (a technikai/kreatív etalon).
    - dribbble.com — keress a témára (`website 2025`, komponens-típus, iparág); Behance a mélyebb case study-khoz.
    - WebSearch/WebFetch: `site:awwwards.com <téma>`, `site:dribbble.com <téma>`.
    - Gyűjts 2-4 konkrét referenciát, linkkel.
+   - **Ha a fenti források nem adnak elég konkrét referenciát az adott brief-hez** (egyedi ipari kontextus, brand-specifikus irány): generálj saját referencia-képet az `imagegen-frontend-web` (webes szekciók) vagy `imagegen-frontend-mobile` (natív-stílusú mobil képernyők) skillel. Ez pótlás, nem helyettesíti az élő kutatást — csak akkor nyúlj hozzá, ha az élő referenciák tényleg hiányosak.
 3. **Minta-kinyerés (nem pixel-másolás):** layout rendszer, motion, típus-skála, szín, térköz, kiemelt technika. Add meg mit viszel át mindegyikből.
 4. **2025-ös trend-checklist (alkalmazd, ahol illik):**
    - Bento-grid / aszimmetrikus kártyarács (de tudd, hogy az "anti-bento" már jön).
    - Célzott mikro-interakciók (feedback, figyelemvezetés) — +~22% engagement, de ne vidd túlzásba.
    - Ízléses 3D hero (a featured oldalak ~28%-án), de teljesítmény-budget alatt (<2s).
    - AI-integrált és nosztalgikus esztétikák az élvonalban.
-5. **Implementáció:** a projekt meglévő stackjével és tokenjeivel, legújabb életképes technikákkal. Loading/empty/error/edge state, responsive, accessible (billentyű + képernyőolvasó).
-6. **Forrás-átláthatóság:** az eredményben listázd az awwwards/dribbble linkeket + 1 sor mit vettél át.
+5. **Stílus-nyelv választás:** a `ui-visual-design-styles` a glassmorphism/flat tengelyt adja. Ha a Design Read (1. lépés) más nyelvet kíván — nyers/adat-központú (`industrial-brutalist-ui`) vagy prémium-minimál/editorial (`minimalist-ui`) —, azt válaszd a glass/flat helyett; ne alapértelmezz glass/flat-re csak azért, mert az a legismertebb kettő.
+6. **Implementáció:** a projekt meglévő stackjével és tokenjeivel, legújabb életképes technikákkal. Loading/empty/error/edge state, responsive, accessible (billentyű + képernyőolvasó).
+7. **Forrás-átláthatóság + pre-flight:** az eredményben listázd az awwwards/dribbble linkeket + 1 sor mit vettél át. **Landing/portfólió/redesign/érdemi új feature UI-nál** REVIEW előtt fuss le a `design-taste-frontend` Final Pre-Flight Check-jét (Section 14) az `impeccable` szkennelés MELLETT (nem helyette — a kettő más hibaosztályt fog: `impeccable` mintafelismerő-alapú, ez dial+brief-alapú).
 
 ## Buktatók
 - Ne másolj 1:1 — jogi és brand kockázat, és sosem illik tökéletesen. Adaptálj.
@@ -39,6 +41,7 @@ Bármilyen frontend/UI feladat ELŐTT, ahol a megjelenés számít: landing, das
 - Az eredmény tartalmaz 2-4 valós referencialinket awwwards/dribbble-ről.
 - A UI minden state-et kezel és accessible.
 - A megoldás a projekt stackjén fut, nem egy idegen frameworkön.
+- Landing/portfólió/redesign/érdemi új feature UI-nál: a `design-taste-frontend` Final Pre-Flight Check lefutott és a REVIEW megnevezi.
 
 ## Források
 - https://www.awwwards.com/ , https://www.awwwards.com/sites/design-trends
