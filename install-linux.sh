@@ -1756,6 +1756,7 @@ DASH_UNIT="${SERVICE_ID}-dashboard"
 CHAN_UNIT="${SERVICE_ID}-channels"
 MORN_UNIT="${SERVICE_ID}-morning"
 WD_UNIT="${SERVICE_ID}-dashboard-watchdog"
+KEEPALIVE_UNIT="${SERVICE_ID}-channel-keepalive-probe"
 
 # Detect the host timezone so the scheduled-task runner (which reads
 # cron expressions in Node's local TZ) fires at the operator's wall
@@ -1873,6 +1874,19 @@ ${TZ_LINE}
 EOF
 
 # ${MORN_UNIT}.timer
+# WRITTEN BUT NOT ENABLED (see the enable list further down, card 40d2d2f9,
+# ported from upstream fb05a0f7..066bb24b). The morning briefing already ships
+# via the seeded scheduled-tasks/reggeli-napindito task at 07:30 -- confirmed
+# on this fork's own live install (`/api/schedules`: schedule "30 7 * * *",
+# agent mikrob), three minutes after this timer's 07:27. Two runs of the same
+# work is one too many, and upstream measured the timer path as the weaker of
+# the two: a headless `claude -p` invocation whose config dir carries no
+# channel allowlist, so its reply tool rejects the owner's chat_id -- the run
+# still marks the day delivered on the way out, masking the failure. The
+# scheduled task runs inside the live channel session, which has the
+# allowlist. The unit files stay on disk so an operator who wants the timer
+# path can `systemctl --user enable --now ${MORN_UNIT}.timer`.
+#
 # NO Requires=/Wants= on the service here: a [Unit] dependency on the
 # triggered service makes EVERY activation of the timer unit (each systemd
 # user-manager start, not just the 07:27 elapse) queue an immediate start of
@@ -1887,6 +1901,66 @@ Description=${BOT_NAME} Reggeli Napindito Timer
 [Timer]
 OnCalendar=*-*-* 07:27:00
 Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# ${KEEPALIVE_UNIT}.service/.timer -- token-free IDLE-path keepalive producer
+# (card 40d2d2f9, ported from upstream fb05a0f7..066bb24b).
+#
+# WHY THIS MUST BE INSTALLED (upstream measurement, night of 2026-09-12/13: 13
+# service restarts, one every ~50 minutes, all night -- the same failure class
+# applies on this fork). store/.channel-keepalive has two intended producers:
+# organic inbound (channel-monitor advances the mtime on every ingested
+# message -- covers BUSY periods) and this probe (covers QUIET periods). The
+# repo already shipped scripts/channel-keepalive-probe.sh plus placeholder
+# units under scripts/systemd/, but nothing installed them, so on a real host
+# the ONLY producer was inbound traffic. Every night, as soon as the owner
+# stopped writing, the file aged past the dashboard's 45-minute liveness
+# ceiling and channel-monitor "recovered" a perfectly healthy session
+# (respawn-pane, no --continue), which killed the telegram plugin with it,
+# which tripped channels.sh's own dead-plugin watchdog 181s later, which
+# exited 1 for a second, whole-unit restart. A silent channel is normal at
+# 3am; the watchdog read it as a wedge because nothing was left to prove
+# otherwise.
+#
+# The probe does NOT fake liveness: it touches the keepalive only after
+# proving from the process tree that the channels tmux session, its claude
+# pid, and a telegram poller descending from that pid are all alive. A
+# genuinely dead pipe still ages out and still gets recovered.
+#
+# After=${CHAN_UNIT}.service (fork addition over upstream, matching the
+# already-shipped scripts/systemd/channel-keepalive-probe.service placeholder):
+# a probe run before channels has ever started has nothing to verify.
+cat >"$SYSTEMD_DIR/${KEEPALIVE_UNIT}.service" <<EOF
+[Unit]
+Description=${BOT_NAME} token-free idle-path channel keepalive probe
+After=${CHAN_UNIT}.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/scripts/channel-keepalive-probe.sh
+Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+${TZ_LINE}
+StandardOutput=append:$INSTALL_DIR/store/channel-keepalive-probe.log
+StandardError=append:$INSTALL_DIR/store/channel-keepalive-probe.log
+EOF
+
+# Same "no Requires=/Wants= on the triggered service" rule as the morning timer
+# above: the [Timer] section already binds to ${KEEPALIVE_UNIT}.service by
+# name. 3 minutes is far inside every consumer's staleness threshold (the
+# dashboard's 45-minute ceiling, channel-watchdog's 15).
+cat >"$SYSTEMD_DIR/${KEEPALIVE_UNIT}.timer" <<EOF
+[Unit]
+Description=${BOT_NAME} channel keepalive probe every 3 minutes
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=3min
+AccuracySec=20s
 
 [Install]
 WantedBy=timers.target
@@ -2010,14 +2084,18 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
   # CONDITION is exempt from errexit and from the ERR trap, so the installer
   # reports it instead of dying on it. Fork addition: ${WD_UNIT}.timer is in the
   # enable list too (upstream doesn't have this fork-only watchdog timer).
-  if systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${MORN_UNIT}.timer" "${WD_UNIT}.timer" "${SERVICE_ID}-host-watchdog.service" 2>/dev/null; then
+  # ${MORN_UNIT}.timer is deliberately NOT in this list -- the seeded
+  # reggeli-napindito scheduled task already delivers the morning briefing at
+  # 07:30 from inside the live channel session. See the timer's comment above.
+  if systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${KEEPALIVE_UNIT}.timer" "${WD_UNIT}.timer" "${SERVICE_ID}-host-watchdog.service" 2>/dev/null; then
     ok "systemd unitok generalva es engedelyezve"
   else
     warn "A unit-fajlok elkeszultek, de az engedelyezesuk nem sikerult -- ujrainditas utan a szolgaltatasok nem indulnak el maguktol."
     # ALL FIVE units the enable above covers, not just the two services. A
-    # command that silently drops a timer or the watchdog would leave them
-    # disabled while the operator sees no error and believes the fix worked --
-    # an incomplete instruction ends the same way as a false claim.
+    # command that silently drops the keepalive probe, a timer or the watchdog
+    # would leave them disabled while the operator sees no error and believes
+    # the fix worked -- an incomplete instruction ends the same way as a false
+    # claim.
     # The label gets its own line. With "Javitas most:" in front of the command,
     # the backslashes join all three printed lines into ONE command whose first
     # token is `Javitas`, so a pasted block fails with "Javitas: command not
@@ -2028,10 +2106,15 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
     echo -e "  ${DIM}Javitas most:${NC}"
     echo -e "  ${DIM}systemctl --user enable \\${NC}"
     echo -e "  ${DIM}    ${DASH_UNIT} ${CHAN_UNIT} \\${NC}"
-    echo -e "  ${DIM}    ${MORN_UNIT}.timer ${WD_UNIT}.timer ${SERVICE_ID}-host-watchdog.service${NC}"
+    echo -e "  ${DIM}    ${KEEPALIVE_UNIT}.timer ${WD_UNIT}.timer ${SERVICE_ID}-host-watchdog.service${NC}"
   fi
   systemctl --user start "${DASH_UNIT}" "${CHAN_UNIT}" 2>/dev/null || true
   systemctl --user start "${WD_UNIT}.timer" 2>/dev/null || true
+  # `enable` alone only arranges activation at the NEXT boot; on an already-running
+  # install (the common case for this port, card 40d2d2f9) that could mean days
+  # before the probe ever fires. Started explicitly, same as the watchdog timer
+  # above, so the liveness gap closes on THIS run, not the next reboot.
+  systemctl --user start "${KEEPALIVE_UNIT}.timer" 2>/dev/null || true
   # Independent resilience guards (channel-watchdog / stuck-modal / disk-space):
   # render + enable the 3 systemd --user timers that survive a dead dashboard.
   # Idempotent + self-guarded; never hard-fail the install over it.
