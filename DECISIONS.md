@@ -13218,3 +13218,9 @@ store/card-build-route-24h-measure.sh):**
 
 **Ki dontott:** Peti (kozvetlen keres), MikroB (dispatch, kartya 3c075d74, HIGH). **Vegrehajtas:**
 backend. **Gate:** QA + Cybersec (a klasszifikacio biztonsagi kartyakat is erint).
+
+## 2026-09-18 -- Plan-grilling da47b612: Cybersecurity-Skills Tier-1 import per-ügynök seed-helyre
+
+Verdikt: GO-WITH-CHANGES (MikroB, az e6b0d08c átvizsgálás -- cybersec 4402/4419, QA 4425, Cybered 4423/2884 -- alapján). Tier-1 14 skill (az mcp-scan alapú auditing-mcp-servers-for-tool-poisoning kimarad: a saját Prerequisites szekciója curl|sh-t és pinneletlen `uvx mcp-scan@latest`-et futtat), pinnelt upstream 54a79883, célhely seed-fleet-agents/cybersec + cybered és az élő agents/ másolat, NEM a globális ~/.claude/skills.
+
+A legvalószínűbb hiba, amit a grilling talált: a store/vendor-skill.sh kizárólag a globális könyvtárba tud írni (nincs --dest opció), tehát a szkripttel végzett vendorolás a 14 skillt minden ügynök kontextusába fan-outolná. Ezért a vendorolás előtt kötelező egy --dest/--agent opció selftesttel, amely a globális könyvtár érintetlenségét bizonyítja. További kötelező feltételek: szkript által írt VENDORED.md + UPSTREAM-LICENSE (a vendored-skill-integrity.py csak így látja), integrity-run mutációs próbával, watched-repos.json bejegyzés type=code, az ML-ág kapcsolóinak tiltása a Usage restriction sorban, fájlonkénti "mit futtat / mit ír / mit tölt le" lista a soronkénti olvasásból, kontextus-delta mérés friss cybersec-sessionben. **Ki döntött:** MikroB. **Kártya:** da47b612.
