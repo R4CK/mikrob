@@ -305,6 +305,41 @@ case_is LOCAL "control: 'tulajdonsag' (attribute) does not trigger the ownership
   "Add a new tulajdonsag (attribute) field to the config, with a default value and a unit test." low
 
 echo
+echo "=== B5c. CYBERED NO-GO FIXES (card 3c075d74, comment 4593) ==="
+# (c) plain English "authenticate"/"authentication" matched neither authorizat nor authentikac
+# (the Hungarian transliteration), and only reached ONLINE by luck via route-classify or the model.
+reason_is deterministic-auth-tenant-scope "authenticat: plain-English 'authentication' gates (Cybered comment 4593, finding c)" \
+  "Fix the authentication bypass in the superadmin login flow." normal
+reason_is deterministic-auth-tenant-scope "permission: plain-English authz word gates" \
+  "Add a permission check before allowing this export action." low
+
+# (a) Hungarian says "tenant" as "berlo"/"bérlő" (lessee), not as a literal "tenant" token, so the
+# multi-tenant/tenant-scope patterns above missed a real, unhedged isolation bug report. Bare "berlo"
+# is too broad on its own (also a literal building tenant), hence the co-occurrence with a
+# separation/isolation verb -- measured live, both orders.
+reason_is deterministic-auth-tenant-scope "berlo+elkulonit co-occurrence, forward order (Cybered's exact measured sentence)" \
+  "A berlok adatainak elkulonitese serul a lista lekerdezesnel." normal
+reason_is deterministic-auth-tenant-scope "berlo+szetvalaszt co-occurrence, reverse order" \
+  "Az adatok szetvalasztasa a berlok kozott serult a lekerdezesnel." normal
+# NOTE: the ASCII spelling 'berlo' is deliberately NOT used for this control -- it is already a bare
+# isolation-category token in src/local-llm-router.ts's classifyCategory() bag (independent of this
+# gate), so it would route ONLINE via deterministic-ts-category regardless, and would not test the
+# co-occurrence requirement at all. The accented form 'bérlő' has no such bare entry, so it isolates
+# exactly what is under test here.
+case_is LOCAL "control: bare 'bérlő' alone, no separation word within range, does not trigger the co-occurrence gate" \
+  "Update the bérlő contact phone number field on the profile screen." low
+
+# (b) THE MOST IMPORTANT FINDING: the content gates and route-classify.sh only read $SHORT, the
+# first 1200 characters. The SAME risky sentence that gates correctly at the front of a card slipped
+# through every gate once pushed past character 1200 by ordinary filler text -- measured live:
+# deterministic-auth-tenant-scope up front, route-classify-abstained (nothing fired) after padding.
+# This is why the fix widened every content gate to the full (already 4000-char-capped) text instead
+# of adding a category-specific patch: the bug was positional, not lexical.
+LONG_PAD="$(python3 -c "print('Ez csak semleges toltelek mondat a kartya elejen, nincs benne semmi kockazatos szo. ' * 20)")"
+reason_is deterministic-auth-tenant-scope "positional: the same risky sentence after ~1600 chars of filler still gates" \
+  "${LONG_PAD}Fix the authentication bypass in the superadmin login flow." normal
+
+echo
 echo "=== B4. VRAM PRESSURE CLOSES THE LOCAL PATH, AND ONLY THAT (card f9bad591) ==="
 # The guard answers a CAPACITY question, so it must close the local path without ever holding up the
 # card. ONLINE is exactly that: the online agent builds it, which is today's behaviour anyway.

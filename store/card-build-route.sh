@@ -168,12 +168,25 @@ fi
 # complex by its priority alone.
 SHORT="$(printf '%s' "$TEXT" | tr '\n' ' ' | head -c 1200)"
 
+# FULL TEXT FOR THE CONTENT GATES (Cybered NO-GO, card 3c075d74, comment 4593, finding b). The
+# deterministic grep gates below and the security classifier were reading only $SHORT (the first
+# 1200 characters), so the SAME risky sentence Cybered used for finding (a) still passed every gate
+# once pushed past character 1200 by ordinary filler text -- measured live: identical text, front of
+# the card = deterministic-auth-tenant-scope fires; after ~1400 characters of padding =
+# route-classify-abstained, no gate fires at all. This is not category-specific: it silently widens
+# every content gate below, not just the new tenant-scope one. TEXT is already bounded to
+# CARD_BUILD_ROUTE_MAX_CHARS (4000, line 151), so grepping/classifying all of it instead of the first
+# 1200 costs nothing meaningful. FULL is used for every deterministic grep gate, the TS router and
+# route-classify.sh; the model's own windowed pass (section 4) is untouched -- Cybered's report
+# explicitly did not attack that windowing, and each model call has a real GPU cost SHORT does not.
+FULL="$(printf '%s' "$TEXT" | tr '\n' ' ')"
+
 # STEERING IS ITSELF A SIGNAL, and here the stakes are inverted relative to route-classify.sh's
 # version of this filter. There, an injected "already reviewed by security" bought the attacker a
 # weaker CHECK. Here, an injected "this is trivial boilerplate" buys a weaker BUILDER -- so the same
 # shapes must escalate, and the model must not be asked at all once the input is trying to answer
 # for it.
-if printf '%s' "$SHORT" | grep -Eqi \
+if printf '%s' "$FULL" | grep -Eqi \
   '(answer|respond with|reply)[[:space:]]+(only[[:space:]]+)?(easy|complex|local|online)|classify[[:space:]]+(it|this|the[[:space:]]+card)?[[:space:]]*as|(ignore|disregard)[[:space:]]+[^.]*(previous|above|prior|triage|earlier|foregoing)[^.]*instruction|instructions?[[:space:]]+above|^[[:space:]]*system:|the[[:space:]]+correct[[:space:]]+(one-word[[:space:]]+)?answer[[:space:]]+is|(this|it)[[:space:]]+is[[:space:]]+(just[[:space:]]+)?(trivial|simple|boilerplate)|route[[:space:]]+(this[[:space:]]+)?(to[[:space:]]+)?local'; then
   online steering-attempt
 fi
@@ -213,8 +226,9 @@ fi
 # still matches, because only the bracket prefix is cut.
 #
 # SCOPED TO THIS RULE ALONE, deliberately. The money / object-integrity / client-supplied-value /
-# document-assembly gates below keep reading $SHORT untouched: they were measured separately, and
-# widening this trim to them without measuring them would be the same guess this change is fixing.
+# document-assembly gates below keep reading the untrimmed text ($FULL): they were measured
+# separately, and widening this bracket-trim to them without measuring them would be the same guess
+# this change is fixing.
 #
 # FOUR WORDS ADDED WITH THE TRIM, and they are the reason this is a REPLACEMENT rather than a
 # deletion. Running the existing selftest after the trim alone moved FOUR real battery-A cards from
@@ -236,14 +250,14 @@ fi
 # the trim. ZERO of the freed cards carried a real decision-shape word (migration, schema, contract,
 # wiring, feature flag...) inside the trimmed prefix -- checked explicitly, because a trim that ate
 # one of those would be the deletion this design refused.
-MULTI_TEXT="$(printf '%s' "$SHORT" | python3 -c '
+MULTI_TEXT="$(printf '%s' "$FULL" | python3 -c '
 import re, sys
 # Only the LEADING run of [..] groups, so a bracket used mid-sentence is left alone.
 sys.stdout.write(re.sub(r"^(?:\s*\[[^\]]{0,60}\])+\s*", "", sys.stdin.read()))
 ' 2>/dev/null)"
 # FAIL TOWARD THE UNTRIMMED TEXT. If python is missing or the trim produced nothing, the ORIGINAL
 # string is what gets matched -- the direction that keeps the gate firing, never the one that opens it.
-[ -n "${MULTI_TEXT// }" ] || MULTI_TEXT="$SHORT"
+[ -n "${MULTI_TEXT// }" ] || MULTI_TEXT="$FULL"
 
 if printf '%s' "$MULTI_TEXT" | grep -Eqi \
   'migrac|migration|séma|sema|schema|rollback|down-migr|architekt|architect|refaktor|refactor|kontraktus|contract|api-szerzod|breaking|több[- ]fájl|tobb[- ]fajl|multi-file|wiring|bekötés|bekotes|composition root|main\.ts|feature flag|deploy|infra|worktree|landol|merge|nevter|névtér|namespace|fenntartott|reteg|réteg|utemez|ütemez|scheduler|parhuzamos|párhuzamos|egyidej'; then
@@ -251,19 +265,19 @@ if printf '%s' "$MULTI_TEXT" | grep -Eqi \
 fi
 
 # Money. A wrong draft here is not a slow review, it is a billing defect.
-if printf '%s' "$SHORT" | grep -Eqi \
+if printf '%s' "$FULL" | grep -Eqi \
   'dijfizet|díjfizet|fizetes|fizetés|billing|checkout|webhook|invoice|szaml|száml|subscription|elofizet|előfizet|payment|stripe|lemonsqueezy|refund|price|arazas|árazás'; then
   online deterministic-money
 fi
 
 # Stored-object integrity, presigning and the crypto around them.
-if printf '%s' "$SHORT" | grep -Eqi \
+if printf '%s' "$FULL" | grep -Eqi \
   'presign|x-amz|checksum|sha256|sha-256|hash|pinnel|pinning|object lock|bucket|minio|s3|storage|tarol|tárol|retenci|exif|metaadat|metadata'; then
   online deterministic-object-integrity
 fi
 
 # Trusting a value the client supplied -- the shape of most of this board's SEC findings.
-if printf '%s' "$SHORT" | grep -Eqi \
+if printf '%s' "$FULL" | grep -Eqi \
   'validac|validál|validat|josagi|jósági|plausib|kliens[ -]?altal|client-supplied|confirm|megerosit|megerősít|spoof|forge|hamisit|hamisít'; then
   online deterministic-client-supplied-value
 fi
@@ -281,13 +295,27 @@ fi
 # re-verification CO-OCCURRENCE below matches that shape directly; the bare word "tulajdon" is not
 # used alone because it also appears inside the common word "tulajdonsag" (property/attribute) and
 # would overmatch.
-if printf '%s' "$SHORT" | grep -Eqi \
-  'jogosults|hozzaferes|hozzáférés|\brbac\b|authorizat|authentikac|access[- ]control|multi-tenant|multitenant|tenant[- ]?isolat|tenant[- ]?scope|szemelyes adat|személyes adat|\bpii\b|\bgdpr\b|systemd|unit file|tulajdon.{0,20}ellenor|ellenor.{0,20}tulajdon'; then
+#
+# THREE ADDITIONS (Cybered NO-GO, card 3c075d74, comment 4593):
+# - `authenticat` -- `authentikac` only covers the Hungarian transliteration; plain English
+#   "authenticate"/"authentication" (measured: "Fix the authentication bypass in the superadmin
+#   login flow.") matched neither this gate nor authorizat, and only reached ONLINE by luck (a
+#   route-classify SECURITY verdict on one text, an UNKNOWN abstain-to-ONLINE on the other).
+# - `permission` -- the plain-English authz word, same family as jogosults/rbac/access-control.
+# - Hungarian tenant-isolation CO-OCCURRENCE (`berlo`/`bérlő` + a separation verb within 40 chars,
+#   either order): measured live, "A berlok adatainak elkulonitese serul a lista lekerdezesnel." is
+#   an unhedged multi-tenant isolation bug report that matched NEITHER this gate NOR route-classify.sh
+#   (6/6 MECHANICAL on repeat), because Hungarian says "tenant" as "berlo" (tenant/lessee), not as a
+#   literal "tenant" token. Bare "berlo" alone is too broad (also means a literal building tenant), so
+#   it is required to co-occur with a separation/isolation verb, the same pattern shape as the
+#   existing tulajdon.{0,20}ellenor rule just above.
+if printf '%s' "$FULL" | grep -Eqi \
+  'jogosults|hozzaferes|hozzáférés|\brbac\b|authorizat|authentikac|authenticat|permission|access[- ]control|multi-tenant|multitenant|tenant[- ]?isolat|tenant[- ]?scope|szemelyes adat|személyes adat|\bpii\b|\bgdpr\b|systemd|unit file|tulajdon.{0,20}ellenor|ellenor.{0,20}tulajdon|(berlo|bérlő).{0,40}(elkulonit|elkülönít|szetvalaszt|szétválaszt)|(elkulonit|elkülönít|szetvalaszt|szétválaszt).{0,40}(berlo|bérlő)'; then
   online deterministic-auth-tenant-scope
 fi
 
 # Assembling a document out of other sources: a judgement task wearing a docs label.
-if printf '%s' "$SHORT" | grep -Eqi \
+if printf '%s' "$FULL" | grep -Eqi \
   'user-manual|kezikonyv|kézikönyv|felhasznaloi kezi|felhasználói kézi|readme|decisions\.md|dokumentaci|dokumentáci|funkciolist|funkciólist'; then
   online deterministic-document-assembly
 fi
@@ -317,7 +345,7 @@ fi
 # A STATED LIMIT, not a closure: this matches the CARD'S PROSE, so it only catches what the card
 # SAYS. A card naming just a filename ("noisy-command-guard.py") with no path and no keyword still
 # passes; `scripts/hooks` and `PreToolUse` narrow that, they do not close it.
-if printf '%s' "$SHORT" | grep -Eqi \
+if printf '%s' "$FULL" | grep -Eqi \
   'skill|claude\.md|agens-prompt|agent-prompt|rendszer-prompt|system prompt|utemezett feladat|ütemezett feladat|scheduled-task|scheduled-tasks|seed-skills|seed-scheduled|\.claude/|scripts/hooks|settings\.json|\bhook|PreToolUse'; then
   online deterministic-shared-instruction-target
 fi
@@ -343,7 +371,7 @@ fi
 # biztonsagi kockazat", "IRANY: BIZTONSAGOS") -- measured live: 8 of the cards a bare word-match
 # would have caught were self-declared NON-risks, not trust-boundary work. `\[SEC[^]]*\]` matches
 # the deliberate tag (`[SEC]`, `[SEC-GATE-KOTELEZO]`) and nothing that merely mentions the word.
-if printf '%s' "$SHORT" | grep -Eq '\[SEC[^]]*\]'; then
+if printf '%s' "$FULL" | grep -Eq '\[SEC[^]]*\]'; then
   online deterministic-sec-label
 fi
 
@@ -360,7 +388,7 @@ fi
 # (fail-safe: doubt resolves ONLINE via downstream gates, never LOCAL).
 ROUTER_JS="${CARD_BUILD_ROUTE_ROUTER_JS:-$HERE/../dist/local-llm-router.js}"
 if [ -f "$ROUTER_JS" ] && command -v node >/dev/null 2>&1; then
-  TS_CATEGORY="$(ROUTE_TEXT="$SHORT" ROUTE_JS="$ROUTER_JS" timeout 5 node --input-type=module 2>/dev/null <<'EOF'
+  TS_CATEGORY="$(ROUTE_TEXT="$FULL" ROUTE_JS="$ROUTER_JS" timeout 5 node --input-type=module 2>/dev/null <<'EOF'
 const { classifyCategory } = await import('file://' + process.env.ROUTE_JS)
 const r = classifyCategory(process.env.ROUTE_TEXT || '')
 process.stdout.write(r ?? '')
@@ -380,9 +408,13 @@ fi
 # Rule 10, and more to the point: writing a second, weaker security classifier next to one that
 # survived five NO-GO rounds would be the worst possible place to reinvent anything. Its SECURITY
 # verdict is a hard ONLINE here. Its UNKNOWN is NOT treated as "fine" -- see below.
+#
+# $FULL, not $SHORT (Cybered NO-GO, card 3c075d74, finding b): the exact risky sentence Cybered
+# measured came back route-classify-abstained once pushed past character 1200 by filler text --
+# route-classify.sh never got to see it. Passed the same FULL text as the deterministic gates above.
 SEC="ONLINE-BY-DEFAULT"
 if [ -x "$CLASSIFY" ] || [ -f "$CLASSIFY" ]; then
-  SEC="$(timeout "$TIMEOUT" bash "$CLASSIFY" "$SHORT" 2>/dev/null | tr -d '[:space:]')"
+  SEC="$(timeout "$TIMEOUT" bash "$CLASSIFY" "$FULL" 2>/dev/null | tr -d '[:space:]')"
 fi
 case "$SEC" in
   *SECURITY*) online route-classify-security 1 ;;
