@@ -31,7 +31,7 @@ function fakeCtx(pathAndQuery: string, method = 'GET') {
       return res
     },
     setHeader(k: string, v: string) { out.headers[k.toLowerCase()] = String(v) },
-    end(chunk?: any) { if (chunk) { try { out.body = JSON.parse(chunk.toString()) } catch { out.body = chunk.toString() } } },
+    end(chunk?: any) { if (chunk) { try { out.body = JSON.parse(String(chunk)) } catch { out.body = String(chunk) } } },
   }
   const req: any = Readable.from([])
   req.headers = {}
