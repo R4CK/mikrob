@@ -198,6 +198,29 @@ function isPathToken(tok: string): boolean {
     .some((seg) => !HEX_ONLY_SEGMENT_RX.test(seg))
 }
 
+// A BARE KANBAN CARD-ID MENTION IS NOT A SHA CITATION (card 4b72ef85, real incident: a QA verdict
+// citing three tokens where one, "4b9688f6", was a plain "lasd Cybered leletet a 4b9688f6
+// kartyan" reference to ANOTHER card, not a commit). A card ID is 8 hex chars -- the same SHAPE as
+// a short sha (CLAUDE.md 4b already names this ambiguity for path-tokens; this is the bare-mention
+// case the path check cannot reach, because nothing here is slash-joined).
+//
+// Same blanking discipline as PARENT_MARKED_SHA_RX: only the OCCURRENCE next to the card-word is
+// dropped, not the value -- the same id cited bare elsewhere on the card, as a genuine Gate-SHA,
+// must still count. Keyed on the WORD STEM ("kartya"/"kártya"/"card"), not an enumerated suffix
+// list, because Hungarian inflects the word ("kartyan", "kártyán", "kártyája", "kártyáról", ...)
+// and enumerating every form would silently miss the next one -- the same lesson PARENT_MARKED_SHA_RX's
+// accent-boundary fix already paid for. The immediate `[\s:]+`/`\s+` adjacency requirement (word and
+// token touching, nothing else between) bounds the blast radius the way it does for the parent
+// marker: "kartya-ID (8 hex karakter, pl. 4b9688f6)" -- this file's OWN doc comment style -- does
+// NOT match, because "pl." sits between the word and the token.
+const CARD_MENTION_WORD_RX_SRC = String.raw`(?:k[aá]rty\w*|card\w*)`
+const CARD_MENTION_SHA_RX = new RegExp(
+  String.raw`\b${CARD_MENTION_WORD_RX_SRC}[\s:]+[0-9a-f]{6,40}\b` +
+    '|' +
+    String.raw`\b[0-9a-f]{6,40}\b\s+${CARD_MENTION_WORD_RX_SRC}\b`,
+  'gi'
+)
+
 /** Every short-sha token declared on a Gate-SHA line in `content` (lowercased, deduped), EXCEPT the
  *  ones introduced as a parent/ancestor reference (see {@link PARENT_MARKED_SHA_RX}). A card can
  *  legitimately cite more than one commit on one line, in any separator shape ("Gate-SHA: e46f9968,
@@ -207,10 +230,13 @@ function extractGateShas(content: string): ReadonlySet<string> {
   const out = new Set<string>()
   let m: RegExpExecArray | null
   while ((m = GATE_SHA_LINE_RX.exec(content)) !== null) {
-    // Blank the parent-marked runs rather than filtering the extracted VALUES: the same sha may
-    // legitimately appear bare on another line (or another comment) as the round's real subject,
-    // and dropping it by value would silently discard that citation too.
-    const line = (m[1] ?? '').replace(PARENT_MARKED_SHA_RX, (run) => ' '.repeat(run.length))
+    // Blank the parent-marked and card-mention runs rather than filtering the extracted VALUES:
+    // the same sha (or card ID) may legitimately appear bare on another line (or another comment)
+    // as the round's real subject, and dropping it by value would silently discard that citation
+    // too (see CARD_MENTION_SHA_RX above for the card-mention case).
+    const line = (m[1] ?? '')
+      .replace(PARENT_MARKED_SHA_RX, (run) => ' '.repeat(run.length))
+      .replace(CARD_MENTION_SHA_RX, (run) => ' '.repeat(run.length))
     // Token by token, so a hex run can be judged by the company it keeps (see isPathToken).
     for (const tok of line.split(/\s+/)) {
       if (isPathToken(tok)) continue
