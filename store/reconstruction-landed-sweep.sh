@@ -66,8 +66,18 @@ done
 hdr="$(mktemp)"; trap 'rm -f "$hdr"' EXIT
 printf 'Authorization: Bearer %s\n' "$(cat "$MAIN/store/.dashboard-token")" > "$hdr"
 
-# `first_landed <repo> <branch> <cardId>` -> "<sha>" of the first commit naming the card that is also
-# an ancestor of <branch>, or empty. Existence alone is not the question (see point 2 above).
+# `first_landed <repo> <branch> <cardId>` -> "<sha>" of the first commit ATTRIBUTING the card that is
+# also an ancestor of <branch>, or empty. Existence alone is not the question (see point 2 above).
+#
+# ATTRIBUTED vs MENTIONED (card 6f887d39). A bare `--grep="$card"` matches the id ANYWHERE in the
+# message, including a comma-separated list that just mentions it in passing. Measured false positive:
+# 5f2499713903 says "re-parented the 2 orphaned cards themselves (de7f4b15, 6c118f45) to top-level" --
+# that commit did not do de7f4b15's work, it only touched its parent_id as a side note. The same
+# commit's SUBJECT line, "(card 037277a0)", is the real attribution. The difference is the keyword
+# `card`/`kártya` immediately preceding the id (a handful of non-alnum chars for "(card " or "Card ")
+# -- a bare id dropped into a list carries no such prefix. This is a narrowing, not a new guarantee:
+# a commit can still misattribute by writing "card <id>" about related-but-not-identical work (see the
+# header's 4db7bc17/935c9f9e examples) -- that class stays a candidate, not a verdict, same as before.
 first_landed() {
   local repo="$1" branch="$2" card="$3" sha
   git -C "$repo" rev-parse --verify -q "$branch" >/dev/null 2>&1 || return 0
@@ -76,7 +86,8 @@ first_landed() {
     if git -C "$repo" merge-base --is-ancestor "$sha" "$branch" 2>/dev/null; then
       echo "$sha"; return 0
     fi
-  done < <(git -C "$repo" log --oneline --grep="$card" "$branch" 2>/dev/null)
+  done < <(git -C "$repo" log --oneline --extended-regexp --regexp-ignore-case \
+    --grep="(card|kártya|kartya)[^0-9a-zA-Z]{0,4}$card" "$branch" 2>/dev/null)
 }
 
 cards_json="$(curl -sf -H @"$hdr" "$DASH/api/kanban?limit=600")" || {
