@@ -647,6 +647,47 @@ try_append_union() {
     joined="${joined}"$'\n'
   fi
 
+  # RE-SUPPLY THE SEPARATOR THE SHARED PREFIX SPENT ONLY ONCE (card 33093fbe). House style puts a
+  # blank line before every `## ` header. When BOTH sides append one behind an IDENTICAL blank line
+  # -- exactly the shape `_common_line_prefix_len` is built to absorb -- that shared blank lands
+  # once in `prefix`, correctly separating base from first_added. It cannot also separate
+  # first_added from second_added: a line consumed into the prefix appears there exactly once.
+  # Measured on the real landing this reproduces (d19c8ff3, commits 420d0e83 + 2a9d0bf0): Prettier's
+  # diff on the bad merge result was exactly one added blank line and zero changed content lines.
+  #
+  # BOTH FACTS ARE NEEDED, NOT JUST ONE, and each has its own live counter-example in this selftest.
+  #  - Prefix-ends-blank ALONE is not enough: `separator-led-append` below also ends its prefix on a
+  #    blank line (after a shared `---`), but there first_added is a bare header with no body, so
+  #    the union's own accepted shape is two headers glued with nothing between -- adding a blank
+  #    line there would be a NEW divergence from a case this file already pins as correct.
+  #  - "first_added's last line is prose" ALONE is not enough either: `junction-closed-code-fence`
+  #    below ends first_added on a closing ``` fence line, prefix does NOT end blank there (the
+  #    divergence starts right after ordinary body prose, no shared blank in the picture at all),
+  #    and the union already glues the fence directly to the next header with no blank -- correctly,
+  #    since nothing was "spent" on that seam to begin with.
+  #  So this fires only where BOTH hold: the prefix itself ends on a blank line (the shared-blank
+  #  mechanism actually happened), AND what is glued onto that already-blank-fed junction is real
+  #  body text rather than another header (nothing to duplicate a separator for).
+  local joined_body="${joined%$'\n'}" joined_last_line second_first_line
+  case "$joined_body" in
+  *$'\n'*) joined_last_line="${joined_body##*$'\n'}" ;;
+  *) joined_last_line="$joined_body" ;;
+  esac
+  second_first_line="${second_added%%$'\n'*}"
+
+  case "$prefix" in
+  *$'\n'$'\n')
+    case "${joined_last_line%$'\r'}" in
+    $header_glob) : ;; # first_added's own last line is a header -- already the accepted shape
+    *)
+      _is_blank_or_rule "$joined_last_line" || case "${second_first_line%$'\r'}" in
+      $header_glob) joined="${joined}"$'\n' ;;
+      esac
+      ;;
+    esac
+    ;;
+  esac
+
   local union="${prefix}${joined}${second_added}"
 
   # THE JUNCTION IS THE ONLY PLACE THIS FUNCTION CREATES BYTES (Cybered J-1/J-2, comments 20593 and
@@ -1250,6 +1291,45 @@ body of A
 ## 2026-01-02 -- entry B
 ## 2026-01-04 -- entry L (left)
 ## 2026-01-05 -- entry R (right)
+"
+
+  # CARD 33093fbe. Same mechanism as `identical-midfile-insert` above, but the shared blank line
+  # sits at the very TAIL of the shared content instead of mid-file, which changes what it is left
+  # to separate. Measured on the real landing (d19c8ff3, commits 420d0e83 + 2a9d0bf0): the common
+  # prefix's LAST line was empty -- both sides had appended the house style's blank line before
+  # their own new header, identically -- so that one blank line correctly separates base from the
+  # FIRST remainder. Nothing is left over to separate the first remainder from the SECOND one,
+  # because a line that already landed in the shared prefix cannot also appear in either remainder.
+  # The union used to glue the second header directly onto the first entry's last body line
+  # (Prettier then refused the merge result, `cleancore-land.sh`'s own post-merge format check).
+  # Reproduced from scratch in a 5-line minimal repo before this fixture was written, using the
+  # function directly: a fresh `## ... -- theirs` header landed right under `ours body.`, no blank
+  # line, in the one house style that always puts one there.
+  setup_conflict trailing-blank-separator-consumed-by-prefix \
+    "## 2026-01-01 -- entry A
+body of A.
+" \
+    "## 2026-01-01 -- entry A
+body of A.
+
+## 2026-01-02 -- entry B (left)
+body of B.
+" \
+    "## 2026-01-01 -- entry A
+body of A.
+
+## 2026-01-03 -- entry C (right)
+body of C.
+"
+  t_resolved "the blank line BOTH sides added is not spent twice -- entry C still gets its own separator" \
+    "## 2026-01-01 -- entry A
+body of A.
+
+## 2026-01-02 -- entry B (left)
+body of B.
+
+## 2026-01-03 -- entry C (right)
+body of C.
 "
 
   # ...AND THE SAFETY PROPERTY THAT MAKES THE WIDENING SAFE. If the two sides diverge EARLY with
