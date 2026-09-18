@@ -13395,3 +13395,19 @@ delta-gate + az utomunka), backend3 (javitas + kiterjesztett cenzus + mutacios t
 **4ddb175c (SLACKMGDATOM913):** Slack managed-settings atomikus írás. Automatikusan mergelt, konflikt nélkül.
 
 **Ki döntött:** backend2 (upstream-sync, draft részben elfogadva -- döntési logika helyes, a konkrét konfliktfeloldások saját).
+
+## 2026-09-18: upstream-sync MEMKERESVAK917 + DREAMHOTKOR916 (kártya da158ef9, 7 commit)
+
+**Portolt:** 7 upstream commit, cherry-pick sorrendben:
+6aeadd24, e9dba111, c9cc4f2f, 7a9fe90d (web.ts/agent-process.ts), 2f1fcbc4 (tier-truncation), 3c363812 (három felület), 900b4286 (DREAMHOTKOR916).
+
+**MEMKERESVAK917 lényege:** a memória-keresés `LIMIT` alkalmazása a tier-szűrés ELŐTT történt (csendben csonkítva); a relaxált keresés jelzése (`X-Memory-Search` fejléc) 3 helyen elveszett: recipe curl, fleet.py, dashboard JS.
+
+**Konflikt-feloldási alaptétel:** a fork `excludeToolLogShapeSql()` / `shapeFilter` szűrője MINDEN SQL-ágba bekerül (upstream category-ternary MINDKÉT ágába), a `FROM memories m` alias a catch-blokk fallback SELECT-jében megmarad.
+
+**web/app.js konfliktnál:** a fork modularizált (`app-memories.js`, `app-agents.js` stb.) -- a 1174 soros monolitikus upstream blokkot HEAD stubokkal helyettesítve, az upstream új `renderMemSearchLabel` függvénye a `web/app-memories.js`-be került (az fork-specifikus `loadMemories` mellé).
+
+**web/style.css konfliktnál:** fork `.kanban-card-blocked` (saját dependency-blokkoló mechanizmus) megtartva; upstream `.blocker-*` UI eldobva (upstream más rendszer, nálunk `kanban_dependencies/dependencyBlockers()`); `.mem-search-label` upstream CSS hozzáadva.
+
+**Ki döntött:** backend2 (upstream-sync, minden konfliktnál saját döntés, megőrizve a fork-specifikus logikát).
+**Kártyák:** da158ef9.
