@@ -13138,3 +13138,6 @@ MARADT egy elofordulas (a csupasz export), a teszt megis BUKOTT; (b) a prefixet 
 parancsbol -- bukott. Visszaallitva 23/23 zold.
 
 **Ki dontott:** backend3 (ujrameres es a teszt). **Kartya:** 29609ec6.
+## 2026-09-18 -- Plan-grilling 42f58017: travel_segment derivált, óraegyenleghez új cél-óra adat
+
+Verdikt: GO-WITH-CHANGES (MikroB, kártya 42f58017, Fázis bb67f544 Crewmeister-bővítés). A travel_segment NEM új tábla: tiszta reducer (`deriveTravelSegments`) a derivált session mellett, mert az attendance_events WORM és a session is derivált, egy perzisztált szegmens második igazságforrás lenne a 24 órás visszadátumozott attesztálás mellett. Szabály: (tenant, user) szerint, egymást követő lezárt sessionök, siteA != siteB, 0 < rés <= 4 óra (exportált konstans); azonos site közti rés szünet. Az óraegyenleg a meglévő adatból NEM számolható: a rendszer sehol nem tárol szerződéses órát, ezért dolgozónkénti `contractWeeklyMinutes` (nullable, "cél ismeretlen" állapot, soha nem 0) kerül be migrációval. Utazás alapból nem ledolgozott idő, külön mező. Contract-first: az első commit a típusokat exportálja a riportépítő BE/FE (80e3df95/9cba66b3) számára. Nyitó egyenleg/carry-over és tenant-időzóna külön kártyára halasztva.
