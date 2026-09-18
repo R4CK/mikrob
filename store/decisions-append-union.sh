@@ -220,6 +220,20 @@ _ends_inside_code_fence() {
 #
 # $1 = last non-blank line BEFORE the junction, $2 = first line AFTER it.
 # 0 = would form a heading (refuse), 1 = safe.
+# The line the junction sits UNDER, which is what `_seam_makes_setext_heading` judges against.
+#
+# ONE DEFINITION, because it is now read from two places (the seam auto-fix below and the check
+# itself) and this file's whole premise is that a copied trap gets fixed in one copy. The subtlety
+# it carries: a junction preceded by a BLANK line must yield an EMPTY answer, and that cannot be
+# spelled `$(... | tail -n1)` -- command substitution eats the blank line before `tail` ever runs,
+# which is exactly how the first attempt at this measured as a no-op.
+_last_line_before_junction() {
+  case "$1" in
+  *$'\n'$'\n') ;;
+  *) printf '%s' "$1" | tail -n1 ;;
+  esac
+}
+
 _seam_makes_setext_heading() {
   # A rule under NOTHING is just a rule: markdown needs a paragraph line above it to promote.
   # The `\r` strip is the CRLF half of the same axis the trailing trim below closes: in a CRLF file
@@ -599,6 +613,40 @@ try_append_union() {
   *$'\n') ;;
   *) joined="${joined}"$'\n' ;;
   esac
+
+  # THE SETEXT SEAM IS REPAIRED HERE, ONCE, BY ONE BLANK LINE -- AND THEN RE-JUDGED FROM SCRATCH
+  # (card e6dffb8d). Ours ending on prose and theirs opening with `---` promotes that prose line to
+  # an H2 the moment they are glued together. Refusing was correct but needlessly expensive: the
+  # resolution a human writes by hand is a blank line at the seam, and nothing else.
+  #
+  # WHY THIS IS SAFE, derived from this file's OWN checks rather than assumed, so a later reader
+  # does not have to re-derive it:
+  #   * header-count and membership both key on `^## `. A blank line can never match that pattern,
+  #     so both counts are byte-identical before and after the insertion.
+  #   * `_ends_inside_code_fence` flips state only on a triple-backtick or triple-tilde run. A blank
+  #     line opens and closes nothing, so fence parity is likewise untouched.
+  #   * `_seam_makes_setext_heading` is not being BYPASSED -- it is re-run, and it answers "safe"
+  #     because its own first line is `[ -n "$prev" ] || return 1`. That is CommonMark, not a
+  #     loophole: a setext underline only promotes a NON-BLANK paragraph line above it.
+  #
+  # THE INSERTION IS DONE HERE, at the join, and deliberately NOT by searching the assembled union
+  # for the seam afterwards. `joined` is by construction everything before the junction and
+  # `second_added` everything after it, so appending one newline here lands the blank line at the
+  # seam BY CONSTRUCTION. A post-hoc string splice would have to re-find that offset, and an
+  # off-by-one there would silently insert a blank line somewhere in the middle of an entry.
+  #
+  # EXACTLY ONE ATTEMPT, AND NO LOOP. If the re-run chain below still objects -- to the seam or to
+  # anything else -- the function returns 1 onto the caller's ordinary manual-resolution path,
+  # unchanged. Nothing here retries, widens, or tries a different repair; this must not become a
+  # fourth round of "let us loosen it slightly". Note also that the insertion can only ever convert
+  # a REFUSAL into an acceptance or the same refusal: a union that already passed the seam check
+  # never reaches this branch, so no currently-accepted merge can change shape because of it.
+  if _seam_makes_setext_heading \
+       "$(_last_line_before_junction "${prefix}${joined}")" \
+       "$(printf '%s' "$second_added" | head -n1)"; then
+    joined="${joined}"$'\n'
+  fi
+
   local union="${prefix}${joined}${second_added}"
 
   # THE JUNCTION IS THE ONLY PLACE THIS FUNCTION CREATES BYTES (Cybered J-1/J-2, comments 20593 and
@@ -640,10 +688,7 @@ try_append_union() {
   #
   # Parameter expansion, not `$(... | tail -n1)`: the first attempt at this used the latter and
   # measured as a NO-OP, because the substitution had already eaten the blank line before `tail` ran.
-  case "$before_junction" in
-  *$'\n'$'\n') last_before='' ;;
-  *) last_before="$(printf '%s' "$before_junction" | tail -n1)" ;;
-  esac
+  last_before="$(_last_line_before_junction "$before_junction")"
   first_after="$(printf '%s' "$second_added" | head -n1)"
   _seam_makes_setext_heading "$last_before" "$first_after" && return 1
   _ends_inside_code_fence "$before_junction" && return 1
@@ -972,10 +1017,16 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
 
   # THE SEAM MOVES WITH THE ORDER, and this is the case that proves the junction checks were not
   # left pointing at the old one. Ours ends on PROSE and theirs begins with a `---` rule, so:
-  #   ours-first    the junction promotes that prose line to a setext H2 -> J-1, refused
-  #   theirs-first  the junction is header-after-header -> nothing is promoted, resolved
-  # One fixture, two verdicts, decided only by the order. A version that still read `theirs_added`
-  # for the seam would refuse both.
+  #   ours-first    the junction WOULD promote that prose line to a setext H2 -> the seam auto-fix
+  #                 (card e6dffb8d) inserts one blank line and the re-run chain accepts it
+  #   theirs-first  the junction is header-after-header -> nothing is promoted, resolved untouched
+  # One fixture, two ways to be safe, decided only by the order. A version that still read
+  # `theirs_added` for the seam would mis-handle both.
+  #
+  # THIS CASE USED TO ASSERT A REFUSAL, and the change of verdict is the point of card e6dffb8d: it
+  # is pinned here by EXACT CONTENT rather than by a bare "resolved", so the blank line has to land
+  # at the seam and nowhere else. A repair that inserted it in the wrong place would still return 0
+  # and would still pass a content-free assertion.
   setup_conflict order-seam-follows \
     "## 2026-01-01 -- entry A
 " \
@@ -987,7 +1038,15 @@ some prose
 ---
 ## 2026-01-03 -- entry C (right)
 "
-  t_refused_order "ours-first: the seam would promote our last prose line to a heading" "ours-first"
+  t_resolved_order "ours-first: the setext seam is repaired with one blank line, not refused" \
+    "ours-first" \
+    "## 2026-01-01 -- entry A
+## 2026-01-02 -- entry B (left)
+some prose
+
+---
+## 2026-01-03 -- entry C (right)
+"
 
   setup_conflict order-seam-follows-other-way \
     "## 2026-01-01 -- entry A
@@ -1502,6 +1561,12 @@ ___
   # non-blank text line is an H2, not a rule. Ours ends on prose, theirs opens with a rule, and the
   # join promotes ours' last line to a heading that neither parent had. Reproduced on the default
   # path before the fix; not a byte is lost, which is why every line-based check stays green.
+  #
+  # THE VERDICT MOVED FROM REFUSE TO RESOLVE (card e6dffb8d) and the DETECTION is what still matters:
+  # the seam is still recognised as dangerous, it is now REPAIRED instead of handed back. The
+  # expected content below is what makes that a real assertion -- one blank line, at the seam. If
+  # the seam check were deleted outright the repair would never fire, the raw junction would be
+  # written, and this case would fail on content rather than pass by accident.
   setup_conflict junction-setext-heading \
     "## 2026-09-01 -- entry A
 body of A
@@ -1517,7 +1582,45 @@ body of A
 
 ## 2026-09-06 -- entry C (right)
 "
-  t_refused "J-1: the junction must not manufacture a setext heading"
+  t_resolved "J-1: the junction's setext heading is repaired by one blank line" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+utolsó prózasor
+
+---
+
+## 2026-09-06 -- entry C (right)
+"
+
+  # THE NEGATIVE DIRECTION OF THE SAME AUTO-FIX (card e6dffb8d): the repair must not become an
+  # EXIT. Here the seam would form a setext heading AND ours ends inside an unclosed code fence, so
+  # the blank line goes in, the seam objection clears -- and the fence check, which runs after it on
+  # the MODIFIED junction, still refuses.
+  #
+  # WHAT THIS CASE DISCRIMINATES, stated honestly because the file's own history is full of cases
+  # that did not. It cannot tell "repaired, then refused by the fence" apart from "refused at the
+  # seam, no repair attempted": both return 1. That is fine, because the positive cases above
+  # already prove the repair fires. What this case DOES catch is the specific bug the plan-grilling
+  # named: an implementation that, having inserted the blank line, jumps straight to writing the
+  # file instead of re-running the rest of the chain. Such an implementation RESOLVES this fixture.
+  # Mutation-checked in exactly that direction before it was committed.
+  setup_conflict junction-setext-then-open-fence \
+    "## 2026-09-01 -- entry A
+body of A
+" \
+    "## 2026-09-01 -- entry A
+body of A
+## 2026-09-05 -- entry B (left)
+~~~
+prose inside an unclosed fence
+" \
+    "## 2026-09-01 -- entry A
+body of A
+---
+## 2026-09-06 -- entry C (right)
+"
+  t_refused "the seam repair does not exempt the union from the remaining checks (open fence)"
 
   # ...AND THE PREDICATE ON ITS OWN CONTRACT (Cybersec, comment 20760). The end-to-end fixture above
   # covers the `-` half and is genuine -- MEASURED: with the seam check removed it RESOLVES. The `=`
