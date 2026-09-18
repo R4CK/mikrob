@@ -23,7 +23,7 @@
 // clause-scoping: only the text BEFORE the first `.`/`(`/`!`/`?` is the actual designation clause.
 // Ported here verbatim rather than re-derived, so this guard inherits that hardening instead of
 // re-introducing the bug it fixed.
-import { getKanbanCard, getKanbanComments } from '../db.js'
+import { getKanbanCard, getKanbanComments, listKanbanCards } from '../db.js'
 import { isForceActor } from '../kanban-force-actors.js'
 import { logger } from '../logger.js'
 import type { LandedVerdict } from './kanban-landed-guard.js'
@@ -204,28 +204,53 @@ function isPathToken(tok: string): boolean {
 // a short sha (CLAUDE.md 4b already names this ambiguity for path-tokens; this is the bare-mention
 // case the path check cannot reach, because nothing here is slash-joined).
 //
+// GATED ON AN ID-LOOKUP, NOT ON WORD-ADJACENCY ALONE (Cybersec NO-GO on this card, HIGH). The first
+// shipped version blanked ANY hex run word-adjacent to "kartya"/"card", which UNSAFELY deleted real
+// Gate-SHAs too: "34ff8cae kártyán" -> [] erased a genuine commit citation, and the greedy `\w*` word
+// stem also fired on ordinary words that merely start the same way ("cardinal directions",
+// "cardholder data", "kártyázik" -- a different verb, not an inflection of "kártya"). A round-boundary
+// mechanism that can delete a real Gate-SHA is worse than the incident it was built to fix: it does not
+// just miss a stale verdict, it can make a STALE one read as fresh. So word-adjacency is still used to
+// find CANDIDATE tokens (the two ordinary words above always will match it, and that is fine now), but
+// a candidate is only actually blanked when the hex value equals some OTHER real kanban card's id
+// (`knownOtherCardIds`, sourced from listKanbanCards(), excluding this card's own id) -- a value that
+// STRUCTURALLY cannot be the current round's own commit. Real Gate-SHAs are never card ids, so this
+// closes the deletion path without needing the word-matching regex to be lexically perfect.
+//
+// THE ACCENTED CHARACTER CLASS (QA2 FAIL on this card): JavaScript's `\w` is ASCII-only, so the WORD-
+// BEFORE-HEX direction ("kártyán 4b9688f6") used to stop matching at the accented vowel ("kárty|án"),
+// and the required `[\s:]+` separator then failed on the leftover accented suffix -- so the exact
+// spelling CLAUDE.md's own mandatory-diacritics rule requires ("kártyán", not "kartyan") was the ONE
+// direction that did not gate. The HEX-BEFORE-WORD direction happened to work by accident (the ASCII
+// word-boundary landed right after the un-accented stem, before the suffix even needed matching).
+// `[\wáéíóöőúüű]*` continues the stem through the accented ragozott suffixes ("kártyán", "kártyája",
+// "kártyájában", "kártyáé", ...) in EITHER direction, closing that asymmetry -- at the cost of also
+// now fully matching "kártyázik" in both directions, which is exactly why the blanking decision no
+// longer rests on this regex alone (see the id-lookup paragraph above).
+//
 // Same blanking discipline as PARENT_MARKED_SHA_RX: only the OCCURRENCE next to the card-word is
 // dropped, not the value -- the same id cited bare elsewhere on the card, as a genuine Gate-SHA,
-// must still count. Keyed on the WORD STEM ("kartya"/"kártya"/"card"), not an enumerated suffix
-// list, because Hungarian inflects the word ("kartyan", "kártyán", "kártyája", "kártyáról", ...)
-// and enumerating every form would silently miss the next one -- the same lesson PARENT_MARKED_SHA_RX's
-// accent-boundary fix already paid for. The immediate `[\s:]+`/`\s+` adjacency requirement (word and
-// token touching, nothing else between) bounds the blast radius the way it does for the parent
-// marker: "kartya-ID (8 hex karakter, pl. 4b9688f6)" -- this file's OWN doc comment style -- does
-// NOT match, because "pl." sits between the word and the token.
-const CARD_MENTION_WORD_RX_SRC = String.raw`(?:k[aá]rty\w*|card\w*)`
+// must still count. The immediate `[\s:]+`/`\s+` adjacency requirement (word and token touching,
+// nothing else between) bounds the candidate set the way it does for the parent marker: "kartya-ID
+// (8 hex karakter, pl. 4b9688f6)" -- this file's OWN doc comment style -- does NOT match, because
+// "pl." sits between the word and the token.
+const CARD_MENTION_WORD_RX_SRC = String.raw`(?:k[aá]rty[\wáéíóöőúüű]*|card\w*)`
 const CARD_MENTION_SHA_RX = new RegExp(
-  String.raw`\b${CARD_MENTION_WORD_RX_SRC}[\s:]+[0-9a-f]{6,40}\b` +
+  String.raw`\b${CARD_MENTION_WORD_RX_SRC}[\s:]+([0-9a-f]{6,40})\b` +
     '|' +
-    String.raw`\b[0-9a-f]{6,40}\b\s+${CARD_MENTION_WORD_RX_SRC}\b`,
+    String.raw`\b([0-9a-f]{6,40})\b\s+${CARD_MENTION_WORD_RX_SRC}\b`,
   'gi'
 )
 
 /** Every short-sha token declared on a Gate-SHA line in `content` (lowercased, deduped), EXCEPT the
  *  ones introduced as a parent/ancestor reference (see {@link PARENT_MARKED_SHA_RX}). A card can
  *  legitimately cite more than one commit on one line, in any separator shape ("Gate-SHA: e46f9968,
- *  9e9a79bc", "Gate-SHA: e46f9968 + 9e9a79bc (...)", "Gate-SHA: e46f9968 (landolt 9e9a79bc)"). */
-function extractGateShas(content: string): ReadonlySet<string> {
+ *  9e9a79bc", "Gate-SHA: e46f9968 + 9e9a79bc (...)", "Gate-SHA: e46f9968 (landolt 9e9a79bc)").
+ *
+ *  `knownOtherCardIds` gates the card-mention blanking (see CARD_MENTION_SHA_RX above): a word-
+ *  adjacent hex run is only dropped when its value is actually another card's id, never by
+ *  word-adjacency alone. */
+function extractGateShas(content: string, knownOtherCardIds: ReadonlySet<string>): ReadonlySet<string> {
   GATE_SHA_LINE_RX.lastIndex = 0
   const out = new Set<string>()
   let m: RegExpExecArray | null
@@ -236,7 +261,10 @@ function extractGateShas(content: string): ReadonlySet<string> {
     // too (see CARD_MENTION_SHA_RX above for the card-mention case).
     const line = (m[1] ?? '')
       .replace(PARENT_MARKED_SHA_RX, (run) => ' '.repeat(run.length))
-      .replace(CARD_MENTION_SHA_RX, (run) => ' '.repeat(run.length))
+      .replace(CARD_MENTION_SHA_RX, (run: string, g1?: string, g2?: string) => {
+        const hex = (g1 ?? g2 ?? '').toLowerCase()
+        return knownOtherCardIds.has(hex) ? ' '.repeat(run.length) : run
+      })
     // Token by token, so a hex run can be judged by the company it keeps (see isPathToken).
     for (const tok of line.split(/\s+/)) {
       if (isPathToken(tok)) continue
@@ -283,13 +311,13 @@ function extractGateShas(content: string): ReadonlySet<string> {
 // prefix-containment, NOT by fixed truncation (which would collapse genuinely different commits
 // that happen to share the first N chars -- the CONTROL test in the test suite covers exactly that
 // failure mode).
-function currentRoundStartTs(comments: readonly Comment[]): number | null {
+function currentRoundStartTs(comments: readonly Comment[], knownOtherCardIds: ReadonlySet<string>): number | null {
   // Pairs of (canonical sha, earliest introduction timestamp). "Canonical" prefers the longer
   // (more specific) form; earlier timestamp wins.
   const entries: Array<{ sha: string; ts: number }> = []
 
   for (const c of comments) {
-    for (const s of extractGateShas(c.content ?? '')) {
+    for (const s of extractGateShas(c.content ?? '', knownOtherCardIds)) {
       const idx = entries.findIndex((e) => s.startsWith(e.sha) || e.sha.startsWith(s))
       if (idx === -1) {
         entries.push({ sha: s, ts: c.created_at })
@@ -326,9 +354,19 @@ export function gateCompletenessGuardVerdict(cardId: string, nextStatus: unknown
 
   let card: ReturnType<typeof getKanbanCard>
   let comments: Comment[]
+  let knownOtherCardIds: ReadonlySet<string>
   try {
     card = getKanbanCard(cardId)
     comments = getKanbanComments(cardId)
+    // For the id-lookup gate on CARD_MENTION_SHA_RX: a word-adjacent hex run only blanks when it is
+    // some OTHER real card's id, never this card's own (a card cannot "bare-mention" itself into
+    // dropping its own Gate-SHA, and excluding it here removes any need for the regex to know).
+    const own = cardId.toLowerCase()
+    knownOtherCardIds = new Set(
+      listKanbanCards()
+        .map((c) => (c.id ?? '').toLowerCase())
+        .filter((id) => id !== '' && id !== own),
+    )
   } catch (err) {
     // Same rule as the landing guard: a guard that throws must not become a guard that freezes the
     // board. The failure is in the checker, not the claim, so stand aside.
@@ -344,7 +382,7 @@ export function gateCompletenessGuardVerdict(cardId: string, nextStatus: unknown
 
   // SHA-anchored round boundary first (closes the Cybersec NO-GO bypass); only when NOT ONE comment
   // on the card ever cited a Gate-SHA does this fall back to the word/author-based heuristic.
-  const sinceTs = currentRoundStartTs(comments) ?? latestReviewAt(comments)
+  const sinceTs = currentRoundStartTs(comments, knownOtherCardIds) ?? latestReviewAt(comments)
   // QA/QA2 are ONE requirement, not two (widenQa above is about not falsely EXCLUDING qa2 from
   // acting, not about requiring both). A Gate line naming only "QA" must not demand a qa2 verdict
   // that nothing ever asked for -- either one satisfies the QA-family requirement.

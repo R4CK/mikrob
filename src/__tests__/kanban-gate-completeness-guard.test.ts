@@ -7,10 +7,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const card = { id: 'c1', description: null as string | null }
 let comments: Array<{ author: string; content: string; created_at: number }> = []
+// Card 4b72ef85 (Cybersec NO-GO): the id-lookup gate on CARD_MENTION_SHA_RX needs a set of OTHER
+// real card ids to check a word-adjacent hex run against. Empty by default -- most tests never
+// mention a card ID at all, and an empty board means no candidate can ever look like a real card.
+let otherCardIds: string[] = []
 
 vi.mock('../db.js', () => ({
   getKanbanCard: () => card,
   getKanbanComments: () => comments,
+  listKanbanCards: () => otherCardIds.map((id) => ({ id })),
 }))
 export let infoLogs: Array<Record<string, unknown>> = []
 vi.mock('../logger.js', () => ({
@@ -25,6 +30,7 @@ beforeEach(() => {
   card.description = null
   comments = []
   infoLogs = []
+  otherCardIds = []
 })
 
 describe('extractGateLine', () => {
@@ -464,6 +470,12 @@ describe('gateCompletenessGuardVerdict', () => {
   })
 
   describe('a bare kanban card-ID mention is not a Gate-SHA citation (card 4b72ef85)', () => {
+    beforeEach(() => {
+      // 4b9688f6 is a REAL other card on the board in every test in this block -- the id-lookup
+      // gate (Cybersec NO-GO) needs that to be true for the blanking to fire at all.
+      otherCardIds = ['4b9688f6']
+    })
+
     it('the measured shape: "lasd Cybered leletet a <id> kartyan" -> unblocked', () => {
       card.description = 'Gate: QA + Cybersec'
       comments = [
@@ -483,7 +495,11 @@ describe('gateCompletenessGuardVerdict', () => {
     })
 
     it('the word-BEFORE English shape ("card <id>") and accented Hungarian ("kártyán") are both recognised', () => {
-      for (const shape of ['card 4b9688f6', 'a 4b9688f6 kártyán']) {
+      // QA2 FAIL on this card: 'kártyán 4b9688f6' (accented word BEFORE the hex) used to NOT gate,
+      // because JS's ASCII-only \w stopped the word match before the accented suffix, and the
+      // required separator then failed on the leftover accented letters. 'a 4b9688f6 kártyán' (hex
+      // first) worked by accident even before the fix -- both directions must hold now.
+      for (const shape of ['card 4b9688f6', 'a 4b9688f6 kártyán', 'kártyán 4b9688f6', 'kártyája 4b9688f6']) {
         card.description = 'Gate: QA + Cybersec'
         comments = [
           { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
@@ -512,6 +528,37 @@ describe('gateCompletenessGuardVerdict', () => {
         { author: 'backend', content: 'REVIEW: ujra\nGate-SHA: 4b9688f6', created_at: 300 },
         { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 4b9688f6', created_at: 400 },
       ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(true)
+    })
+
+    it('ADVERSARIAL (Cybersec NO-GO, comment 4594): a REAL Gate-SHA next to a card-word is NOT deleted when it is not a known card id', () => {
+      // The exact unsafe case Cybersec measured: word-adjacency alone used to blank "34ff8cae" here,
+      // erasing a genuine commit citation. 34ff8cae is NOT in otherCardIds (only 4b9688f6 is), so it
+      // must survive and correctly start a new round -- making QA's earlier PASS stale.
+      otherCardIds = ['4b9688f6']
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        { author: 'backend', content: 'REVIEW: javitva\nGate-SHA: 34ff8cae kártyán', created_at: 300 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(true)
+    })
+
+    it('ADVERSARIAL (Cybersec NO-GO, comment 4594): the greedy word stem hitting an unrelated word ("cardinal") does not delete an adjacent real Gate-SHA either', () => {
+      otherCardIds = ['4b9688f6']
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        {
+          author: 'backend',
+          content: 'REVIEW: javitva\nGate-SHA: deadbeef1234 cardinal directions',
+          created_at: 300,
+        },
+      ]
+      // 'cardinal' matches the word stem, but deadbeef1234 is not a known card id, so it must
+      // still count as the round's real subject -- the earlier PASS reads as stale.
       expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(true)
     })
   })
