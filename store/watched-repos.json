@@ -65,7 +65,7 @@
     "last_sha": "4df4b03b",
     "kind": "skill",
     "adoption": "vendored",
-    "license": "MIT (skills/ subdir only; repo is split-licensed)",
+    "license": "MIT (skills/ + MIT packages; BSL-1.1 dirs vendored but never executed)",
     "reviewed_at": "2026-09-18",
     "vendored_to": "/home/neon/.claude/skills/caveman",
     "vendored_subdir": "",
@@ -73,7 +73,7 @@
     "description": "Token-tömörítő kimeneti stílus (kizárólag belső/gépi kimenetre). Vendorolt skill.",
     "last_checked_upstream_sha": "4df4b03b",
     "last_checked_at": "2026-09-15",
-    "license_note": "SPLIT LICENSE (ellenorizve LICENSING.md-bol, SHA 542442ba, 2026-09-18): A vendorolt resz (skills/ konyvtar -> ~/.claude/skills/caveman) EXPLICIT MIT az LICENSING.md per-directory tablajakent. A repo BSL-1.1 (source-available) kodot is tartalmaz az engine-linked konyvtarakban: engine/, cacheengine/, proxy/, rewriter/, browse/, mcp/, shrink/, shared/platform/, mem/ Go core. Ezeket NEM vendoroltuk; a flotta KIZAROLAG a skills/ konyvtarbol hasznalt reszt erintette. A BSL-1.1 Additional Use Grant a belso, first-party, self-hosted hasznalat engedelyezi (nem kereskedelmi tovabbterjesztes). Source-available hataly: a BSL-1.1 reszeket terjeszteni, OEM/managed service-be becsomagolni, harmadik felnek hosted szolgaltatasban atadni TILOS licensz nelkul. Konkluzio: a flotta aktual hasznalata (skills/ vendored read-only) szabad, az engine-linked reszek nem erintettek, kitettseg nincs.",
+    "license_note": "SPLIT LICENSE (ellenorizve LICENSING.md-bol, SHA 542442ba, 2026-09-18): A TELJES repo root vendorolva van (VENDORED.md: \"the vendor is the whole repo root, not a scoped subdir\"), tehat a BSL-1.1 konyvtarak (engine/, cacheengine/, proxy/, rewriter/, browse/, mcp/, shrink/, shared/platform/, mem/ Go core) FIZIKAILAG JELEN VANNAK a vendorolt masolatban a lemezen. A skills/ es MIT packages/ konyvtarak EXPLICIT MIT az LICENSING.md per-directory tablajakent. A flotta KIZAROLAG a SKILL.md szoveget olvassa statikusan -- nincs caveman binaris telepitve sehol (VENDORED.md Telemetry szekció, ellenorizve 2026-08-19): a CLI soha nem fut, tehat a BSL-1.1 engine-korlatok NEM aktivalodnak (a BSL-1.1 Source Available restrikciok a futtatásra, terjesztesre, OEM/managed service-re vonatkoznak; statikus szovegfajlok olvasasa nem aktivalja ezeket). Az Additional Use Grant a belso, first-party, self-hosted hasznalat engedélyezi (nem kereskedelmi tovabbterjesztes). Source-available hataly: a BSL-1.1 reszeket terjeszteni, OEM/managed service-be becsomagolni, harmadik felnek hosted szolgaltatasban atadni TILOS licensz nelkul. Konkluzio: a flotta tényleges hasznalata (SKILL.md statikus olvasasa, CLI sosem fut) SZABAD; a BSL-1.1 engine-restrikciok nem aktivalodnak.",
     "license_reviewed_sha": "542442ba"
   },
   {
