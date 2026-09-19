@@ -186,10 +186,9 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // only filesystem/SSH access to the box can. Zero entries = the voice
     // channel is off, same "zero rows = feature off" convention device_keys
     // already uses.
-    if (
-      sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID &&
-      (ctx.auth?.kind !== 'device' || !isAllowedVoiceChannelDevice(ctx.auth.deviceId))
-    ) {
+    const voiceAuth = ctx.auth
+    const isAllowedVoiceDevice = voiceAuth?.kind === 'device' && isAllowedVoiceChannelDevice(voiceAuth.deviceId)
+    if (sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID && !isAllowedVoiceDevice) {
       logger.warn(
         { from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none' },
         'Rejected /api/messages POST as voice channel: not an allowlisted device key',

@@ -145,18 +145,18 @@ describe('/api/messages write guard for the voice channel', () => {
 
 describe('the guard pieces stay paired in the source', () => {
   it('the route guards the voice id on the AUTH LANE, not with a blanket 403', () => {
-    expect(MESSAGES_ROUTE_SRC).toMatch(
-      /sanitizeAgentIdent\(from\)\s*===\s*VOICE_CHANNEL_AGENT_ID\s*&&\s*\(\s*ctx\.auth\?\.kind\s*!==\s*'device'/,
-    )
+    expect(MESSAGES_ROUTE_SRC).toMatch(/sanitizeAgentIdent\(from\)\s*===\s*VOICE_CHANNEL_AGENT_ID\s*&&\s*!isAllowedVoiceDevice/)
   })
 
   it('the lane check is ANDed with the allowlist check, not standing alone', () => {
     // Pins the actual defect Cybersec found: kind==='device' alone must never
-    // be sufficient. isAllowedVoiceChannelDevice has to appear in the SAME
-    // guard condition, joined by ||  inside the negated group (i.e. reachable
-    // only when BOTH kind==='device' AND the id is NOT allowlisted fail to
-    // reject) -- a regression here would silently drop the second half again.
-    expect(MESSAGES_ROUTE_SRC).toMatch(/ctx\.auth\?\.kind\s*!==\s*'device'\s*\|\|\s*!isAllowedVoiceChannelDevice\(/)
+    // be sufficient. isAllowedVoiceDevice (what the guard above negates) has
+    // to be defined as BOTH kind==='device' AND isAllowedVoiceChannelDevice(id)
+    // -- a regression here (e.g. dropping the isAllowedVoiceChannelDevice half)
+    // would silently reopen the Cybersec exploit.
+    expect(MESSAGES_ROUTE_SRC).toMatch(
+      /voiceAuth\?\.kind\s*===\s*'device'\s*&&\s*isAllowedVoiceChannelDevice\(voiceAuth\.deviceId\)/,
+    )
   })
 
   it('the allowlist check imports from the dedicated module, not an inline literal', () => {
