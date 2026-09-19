@@ -155,7 +155,7 @@ describe('the guard pieces stay paired in the source', () => {
     // -- a regression here (e.g. dropping the isAllowedVoiceChannelDevice half)
     // would silently reopen the Cybersec exploit.
     expect(MESSAGES_ROUTE_SRC).toMatch(
-      /voiceAuth\?\.kind\s*===\s*'device'\s*&&\s*isAllowedVoiceChannelDevice\(voiceAuth\.deviceId\)/,
+      /voiceAuth\?\.kind\s*===\s*'device'\s*&&[\s\S]*?isAllowedVoiceChannelDevice\(voiceAuth\.deviceId\)/,
     )
   })
 

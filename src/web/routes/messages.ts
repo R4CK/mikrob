@@ -186,8 +186,14 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // only filesystem/SSH access to the box can. Zero entries = the voice
     // channel is off, same "zero rows = feature off" convention device_keys
     // already uses.
+    // RouteContext['auth'] is not a discriminated union (deviceId stays
+    // `number | undefined` regardless of `kind`), so kind==='device' alone
+    // does not narrow it -- check deviceId's own type explicitly.
     const voiceAuth = ctx.auth
-    const isAllowedVoiceDevice = voiceAuth?.kind === 'device' && isAllowedVoiceChannelDevice(voiceAuth.deviceId)
+    const isAllowedVoiceDevice =
+      voiceAuth?.kind === 'device' &&
+      typeof voiceAuth.deviceId === 'number' &&
+      isAllowedVoiceChannelDevice(voiceAuth.deviceId)
     if (sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID && !isAllowedVoiceDevice) {
       logger.warn(
         { from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none' },
