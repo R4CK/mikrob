@@ -388,6 +388,35 @@ got="$(run "Write unit tests for parseDurationMs including empty and NaN." low /
 if [ "$got" = ONLINE ]; then PASS=$((PASS+1)); echo "OK   ONLINE <- ONLINE  no local model installed at all"
 else FAIL=$((FAIL+1)); FAILED+=("no-model"); echo "FAIL ONLINE <- $got  no local model"; fi
 
+echo
+echo "=== E. DISPATCHER ATTRIBUTION (card 3906d77b -- self-advance vs mikrob-dispatch) ==="
+# The whole point of the field: two callers of the SAME classifier must be tellable apart in the log
+# without either caller doing anything special beyond setting one env var.
+dispatcher_is() { # $1 expected-dispatcher-suffix, $2 label, [$3 = CARD_BUILD_ROUTE_DISPATCHER value or unset]
+  local log="$TMP/dispatcher.log"; : > "$log"
+  if [ -n "${3+x}" ]; then
+    CARD_BUILD_ROUTE_LOG="$log" CARD_BUILD_ROUTE_DISPATCHER="$3" \
+      CARD_BUILD_ROUTE_LLM="$TMP/llm-easy.sh" CARD_BUILD_ROUTE_CLASSIFY="$TMP/classify-mech.sh" \
+      CARD_BUILD_ROUTE_VRAM_GUARD="$TMP/vram-admit.sh" \
+      bash "$ROUTER" --text "Write unit tests for parseDurationMs including empty and NaN." --priority low >/dev/null 2>&1
+  else
+    CARD_BUILD_ROUTE_LOG="$log" \
+      CARD_BUILD_ROUTE_LLM="$TMP/llm-easy.sh" CARD_BUILD_ROUTE_CLASSIFY="$TMP/classify-mech.sh" \
+      CARD_BUILD_ROUTE_VRAM_GUARD="$TMP/vram-admit.sh" \
+      bash "$ROUTER" --text "Write unit tests for parseDurationMs including empty and NaN." --priority low >/dev/null 2>&1
+  fi
+  local got; got="$(awk -F'\t' 'END{print $7}' "$log" 2>/dev/null)"
+  if [ "$got" = "dispatcher=$1" ]; then
+    PASS=$((PASS+1)); printf 'OK   dispatcher=%-15s %s\n' "$1" "$2"
+  else
+    FAIL=$((FAIL+1)); FAILED+=("$2 (wanted dispatcher=$1, got ${got:-none})")
+    printf 'FAIL wanted dispatcher=%s got %s  %s\n' "$1" "${got:-none}" "$2"
+  fi
+}
+dispatcher_is "self-advance" "self-advance-pickup.sh sets CARD_BUILD_ROUTE_DISPATCHER=self-advance" self-advance
+dispatcher_is "mikrob-dispatch" "heartbeat 4b sets CARD_BUILD_ROUTE_DISPATCHER=mikrob-dispatch" mikrob-dispatch
+dispatcher_is "-" "no dispatcher set -- every pre-3906d77b log line, unaffected"
+
 if [ "$WITH_MODEL" -eq 1 ]; then
   echo
   echo "=== D. END-TO-END against the LIVE local model (slow) ==="

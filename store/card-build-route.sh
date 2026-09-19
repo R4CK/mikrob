@@ -46,11 +46,21 @@ TOKEN_FILE="${CARD_BUILD_ROUTE_TOKEN_FILE:-$HERE/.dashboard-token}"
 #
 # The card TEXT is deliberately not logged, only its length -- a control's audit trail must not
 # quietly become a second copy of the board.
+#
+# DISPATCHER (card 3906d77b): WHO called this classifier -- "mikrob-dispatch" (the heartbeat's own
+# C section 4b step) or "self-advance" (a role-agent picking up its own next card via
+# self-advance-pickup.sh). Optional, an env var so neither caller has to pass a new flag through a
+# chain of scripts; a caller that does not set it logs "-", identical to every line written before
+# this field existed. This is the measurement this card asked for: without it,
+# card-build-route-24h-measure.sh can count verdicts but not tell which dispatch PATH produced them,
+# which was the actual gap MikroB measured (card-build-route.log's last self-advance-attributable line
+# was 2026-09-18 08:41 -- the router ran on the mikrob-dispatch path only, unmeasurably so, since
+# nothing distinguished the two).
 LOG="${CARD_BUILD_ROUTE_LOG:-$HERE/card-build-route.log}"
 CARD_ID="-"
 log_verdict() { # $1 = verdict, $2 = path, $3 = model calls
-  printf '%s\t%s\t%s\t%s\tcalls=%s\tchars=%s\n' \
-    "$(date '+%Y-%m-%d %H:%M:%S')" "$CARD_ID" "$1" "$2" "$3" "${#TEXT}" >> "$LOG" 2>/dev/null || true
+  printf '%s\t%s\t%s\t%s\tcalls=%s\tchars=%s\tdispatcher=%s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$CARD_ID" "$1" "$2" "$3" "${#TEXT}" "${CARD_BUILD_ROUTE_DISPATCHER:--}" >> "$LOG" 2>/dev/null || true
 }
 online() { log_verdict ONLINE "$1" "${2:-0}"; echo ONLINE; exit 0; }
 
