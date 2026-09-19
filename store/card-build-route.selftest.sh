@@ -41,7 +41,14 @@ printf '#!/usr/bin/env bash\necho UNKNOWN\n' > "$TMP/classify-unknown.sh"
 printf '#!/usr/bin/env bash\necho "ADMIT ok 1024/24576 MiB (4%%)"\nexit 0\n' > "$TMP/vram-admit.sh"
 printf '#!/usr/bin/env bash\necho "HOLD hard 23000/24576 MiB (94%%)"\nexit 1\n' > "$TMP/vram-hold.sh"
 printf '#!/usr/bin/env bash\necho "vram-guard-check.sh: unknown arg" >&2\nexit 2\n' > "$TMP/vram-usage.sh"
+# Installed-gate stubs (card 3906d77b follow-up, Peti Telegram 8928): every case in this file except
+# the dedicated "not installed" one below assumes a local model IS installed, same as before this
+# gate existed -- exported so every `bash "$ROUTER"` call below inherits it without threading a new
+# env var through every helper.
+printf '#!/usr/bin/env bash\necho installed\nexit 0\n' > "$TMP/installed-yes.sh"
+printf '#!/usr/bin/env bash\necho "not-installed: no ollama binary"\nexit 1\n' > "$TMP/installed-no.sh"
 chmod +x "$TMP"/*.sh
+export CARD_BUILD_ROUTE_INSTALLED="$TMP/installed-yes.sh"
 
 PASS=0; FAIL=0; MODEL_RELIANT=0
 declare -a FAILED=()
@@ -387,6 +394,15 @@ else FAIL=$((FAIL+1)); FAILED+=("classify-abstain"); echo "FAIL ONLINE <- $got  
 got="$(run "Write unit tests for parseDurationMs including empty and NaN." low /nonexistent/llm.sh)"
 if [ "$got" = ONLINE ]; then PASS=$((PASS+1)); echo "OK   ONLINE <- ONLINE  no local model installed at all"
 else FAIL=$((FAIL+1)); FAILED+=("no-model"); echo "FAIL ONLINE <- $got  no local model"; fi
+
+# card 3906d77b follow-up (Peti Telegram 8928): a host with NO local LLM installed at all should
+# never even reach the model/classify machinery above -- the installed-gate (0a) stops it first,
+# with its own distinct reason so it is not conflated with "installed but unreachable" (no-model,
+# above). CALLED DIRECTLY, not via $(...) -- reason_is updates PASS/FAIL in THIS shell, and a
+# subshell would silently drop that bookkeeping.
+CARD_BUILD_ROUTE_INSTALLED="$TMP/installed-no.sh" reason_is not-installed \
+  "not-installed gate fires before the model is ever asked" \
+  "Write unit tests for parseDurationMs including empty and NaN." low
 
 echo
 echo "=== E. DISPATCHER ATTRIBUTION (card 3906d77b -- self-advance vs orchestrator-dispatch) ==="

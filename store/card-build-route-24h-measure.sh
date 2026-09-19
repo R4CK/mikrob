@@ -41,7 +41,7 @@ done
 # local-first" or "fell through" -- there was nothing to attempt. Kept as a named list (not a
 # heuristic) so a new capacity-reason added to card-build-route.sh has to be added here too, on
 # purpose, rather than silently miscounted as a content decision.
-CAPACITY_REGEX='^(vram-hold|model-busy|kill-switch|no-token|card-unreadable|card-unparseable|empty-text|too-long|bad-card-id|no-argument|route-check-failed)$'
+CAPACITY_REGEX='^(vram-hold|model-busy|kill-switch|no-token|card-unreadable|card-unparseable|empty-text|too-long|bad-card-id|no-argument|route-check-failed|not-installed)$'
 
 [ -f "$LOG" ] || { [ "$JSON" = 1 ] && printf '{"hours":%s,"dispatches":0,"capacity_skipped":0,"content_considered":0,"drafted":0,"continued_with_draft":0,"rejected_draft":0,"exhausted_no_draft":0,"pending_review":0,"dispatcher_self_advance":0,"dispatcher_orchestrator_dispatch":0,"dispatcher_unattributed":0}\n' "$HOURS" || printf 'card-build-route-24h-measure: no log at %s -- nothing to measure yet\n' "$LOG"; exit 0; }
 

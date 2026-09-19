@@ -13522,3 +13522,39 @@ uzenet MikroB-nak (3361).
 **Ki dontott:** Peti (kozvetlen Telegram 8748/8835 kerese), MikroB (plan-grilling GO-WITH-CHANGES,
 kartya 3906d77b). **Vegrehajtas:** backend2.
 **Kartyak:** 3906d77b (megepitve), f5b0e82e (elavultnak jelentve, MikroB dontesere var).
+
+## 2026-09-19 09:04 -- 3906d77b follow-up: dispatcher-ertek atnevezes + telepitettseg-kapu
+
+**1. Atnevezes: `mikrob-dispatch` -> `orchestrator-dispatch`.** Az elso landolasi kiserlet
+elbukott: `src/__tests__/seed-scheduled-tasks-durability.test.ts` tiltja a szo szerinti "mikrob"
+elofordulast barmely `seed-scheduled-tasks/` prompt torzsszovegeben (egy fork fo-ugynoke nem
+felteltenul "mikrob" nevu), es a `CARD_BUILD_ROUTE_DISPATCHER=mikrob-dispatch` ertek ezt elbuktatta
+a `seed-scheduled-tasks/heartbeat-consolidated/SKILL.md`-ben. Az ertek agnosztikusra atnevezve
+(`orchestrator-dispatch`) mind a hat erintett helyen: `card-build-route.sh`, `card-build-route-24h-
+measure.sh` (valtozonev is: `dispatcher_orchestrator_dispatch`), mindket selftest, a seed-prompt,
+es ez a fajl (a korabbi, 4. pontban leirt tortenelmi bejegyzes szandekosan VALTOZATLAN maradt --
+azt irja le, mit kertem eredetileg MikroB-tol, nem a jelenlegi allapotot). **FONTOS NYITOTT
+KOVETKEZMENY:** MikroB mar sajat kezzel beirta az ELO (nem seed) `~/.claude/scheduled-tasks/
+heartbeat-consolidated/SKILL.md`-be a REGI `mikrob-dispatch` erteket (uzenet 3376) -- ezt az egy
+sort ugyanerre az attnevezesre kell frissiteni, kulonben a mert szamlalok (`dispatcher_self_advance`
+vs `dispatcher_orchestrator_dispatch`) nem egyeznek a valos naplo-tartalommal. Jelezve MikroB-nak.
+
+**2. Uj feature: telepitettseg-kapu (Peti Telegram 8928, 2026-09-19 08:52, szo szerint: "A
+local-llm first ugy valosuljon meg, hogy ha nincs telepitve local-llm akkor ez az ag el se
+induljon!").** Uj megosztott helper, `store/local-llm-installed.sh`: halozat nelkuli, olcso
+ellenorzes -- `ollama` binaris PATH-on VAGY `~/.local/bin`-ben, ES `store/local-llm-model` fajl
+nem ures (a tenylegesen konfiguralt kodmodell). Mindket feltetel kell; hianyuk `not-installed:
+<ok>` + exit 1. Ez KULONBOZIK az Ollama health-check-tol (fut-e) -- kulon allapot, a b9a657e6
+helyreallitasi ut felel erte. Bekotve HAROM belepesi pontba, mindegyik a sajat legelso (vagy
+majdnem legelso) lepesekent: `self-advance-pickup.sh` (uj 0. lepes, a FLAG elott), `card-build-
+route.sh` (uj 0a lepes, a kill-switch UTAN de a VRAM-teher ELOTT -- `online not-installed`
+verdiktkent naplozva, es a `not-installed` bekerult a `card-build-route-24h-measure.sh`
+CAPACITY_REGEX-ebe, tehat kapacitas-okknt szamit, nem tartalmi dontes), `offload-dispatch.sh`
+(a CARD-argumentum ellenorzese utan, a per-kartya lock ELOTT -- exit 0, "SKIPPED" uzenettel).
+Selftest-lefedettseg: `local-llm-installed.selftest.sh` (uj, 5/5), `self-advance-pickup.selftest.sh`
+uj G szekcio (4 uj eset), `card-build-route.selftest.sh` uj eset (a meglevo 61 melle), `offload-
+dispatch.selftest.sh` uj forras-pin + viselkedes-teszt (2 uj eset). CLAUDE.md 16. szabaly +
+README fork-szekcio egy-egy mondattal bovitve.
+
+**Ki dontott:** Peti (Telegram 8928, kozvetlenul MikroB-on at, uzenet 3376). **Vegrehajtas:** backend2.
+**Kartya:** 3906d77b (ugyanaz a kartya, follow-up kommentkent kerve).

@@ -13,6 +13,12 @@
 # "Local-first" therefore lived on exactly one of the fleet's two dispatch paths.
 #
 # What this does, IN ORDER, and every step fails toward "pick the card up anyway":
+#   0. INSTALLED GATE (Peti Telegram 8928, 2026-09-19): "ha nincs telepitve local-llm akkor ez az ag
+#      el se induljon" -- local-llm-installed.sh, a network-free ollama-binary + configured-model
+#      check. NOT installed -> the whole branch (steps 1-4) is skipped, one log line, straight to
+#      step 5, exactly like LOCAL_FIRST_DRAFT=off. This is a DIFFERENT state from "installed but not
+#      running" (step 2's health check) -- a host that never ran first-run-llm.sh should never pay a
+#      classify pipeline's timeout budget discovering that on its own.
 #   1. LOCAL_FIRST_DRAFT flag (env var, or store/local-first-draft.json {"enabled":false}). Default ON;
 #      the flag's ABSENCE means ON. OFF skips straight to step 5 -- the pre-3906d77b self-advance
 #      behaviour: PUT in_progress, no draft attempt, exactly like the flag never existed.
@@ -46,6 +52,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LLM="${SELF_ADVANCE_PICKUP_LLM:-$HERE/local-llm.sh}"
 ROUTE="${SELF_ADVANCE_PICKUP_ROUTE:-$HERE/card-build-route.sh}"
 OFFLOAD="${SELF_ADVANCE_PICKUP_OFFLOAD:-$HERE/offload-dispatch.sh}"
+INSTALLED="${SELF_ADVANCE_PICKUP_INSTALLED:-$HERE/local-llm-installed.sh}"
 API="${SELF_ADVANCE_PICKUP_API:-http://localhost:3420}"
 TOKEN_FILE="${SELF_ADVANCE_PICKUP_TOKEN_FILE:-$HERE/.dashboard-token}"
 FLAG_FILE="${SELF_ADVANCE_PICKUP_FLAG_FILE:-$HERE/local-first-draft.json}"
@@ -75,6 +82,14 @@ log_skip() { # $1 = reason
     "$(date '+%Y-%m-%d %H:%M:%S')" "$CARD_ID" "$1" >> "$LOG" 2>/dev/null || true
 }
 
+# --- 0. INSTALLED GATE, BEFORE ANYTHING ELSE (Peti Telegram 8928, 2026-09-19): "ha nincs telepitve
+# local-llm akkor ez az ag el se induljon". A cheap, network-free precheck -- see
+# local-llm-installed.sh's own header for why this is not the same question as "is it running".
+# Checked once, up front: everything below (the flag, the health check, the classifier) is moot on
+# a host that never had a local model installed at all.
+LOCAL_LLM_INSTALLED=0
+bash "$INSTALLED" >/dev/null 2>&1 && LOCAL_LLM_INSTALLED=1
+
 # --- 1. FLAG --------------------------------------------------------------------------------------
 # Env var wins over the file; either says the literal string "off" to disable. Anything else --
 # including the flag file simply not existing -- means ON. Absence = ON (plan-grilling point 2).
@@ -90,7 +105,10 @@ except Exception:
 ' "$FLAG_FILE" 2>/dev/null)"
 fi
 
-if [ "$LOCAL_FIRST_DRAFT" = "off" ]; then
+if [ "$LOCAL_LLM_INSTALLED" -eq 0 ]; then
+  echo "local-llm: not installed, branch skipped" >&2
+  log_skip not-installed
+elif [ "$LOCAL_FIRST_DRAFT" = "off" ]; then
   echo "self-advance-pickup: $CARD_ID -> LOCAL_FIRST_DRAFT=off, skipping local draft" >&2
   log_skip flag-off
 else
