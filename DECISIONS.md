@@ -13434,6 +13434,18 @@ Typecheck (`tsc --noEmit`) tiszta.
 
 **Ki dontott:** backend3 (vizsgalat, adaptacio, teszt-hianyossagok feltarasa+javitasa). **Kartya:** 7503bb31.
 
+## 2026-09-19: HANGCSATORNA918 auth-lane fix -- device-key allowlist (kartya 7503bb31, Cybersec NO-GO delta)
+
+**Cybersec lelete (HIGH, elo probeval bizonyitva a sajat dashboardon):** a `ctx.auth?.kind === 'device'` gate onmagaban NEM zarta ki a megosztott dashboard-token birtokosait -- a `POST /api/auth/device-keys` a `DEVICE_KEY_ADMIN_KINDS = ['token','session']` halmazt fogadja el admin-authkent, tehat barmelyik token-birtoklo egyetlen hivassal mintel maganak egy uj device-key-t, es azzal atmegy a 'hanna' guard-on. A guard sajat kommentje ("a device key is a per-device secret the sub-agents do not have") HAMIS volt: a sub-agent-ek MEG TUDNAK szerezni egyet.
+
+**Fix:** uj modul `src/web/voice-channel-device-allowlist.ts` -- a `from='hanna'` guard MOST ket felteltelt kovetel: `ctx.auth?.kind === 'device'` ES a bemutatott kulcs `deviceId`-je szerepel egy allowlist-en, amit KIZAROLAG env-valtozo (`VOICE_CHANNEL_DEVICE_IDS`) vagy egy sima fajl (`store/.voice-channel-device-ids`) ad, SEMMILYEN HTTP-vegponton at NEM irhato -- pontosan a `store/.dashboard-token` fajl mintajara (dashboard-auth.ts). Egy device-key mintelese/enrollolasa HTTP-n keresztul soha nem tud id-t hozzaadni ehhez az allowlisthez -- csak fajlrendszer/SSH-hozzaferessel a gephez, ami mar NEM a megosztott token hatokore.
+
+**Kovetkezmeny a telepitesre:** amig Peti/MikroB nem ir be egyetlen deviceId-t sem a fajlba/env-be, a hangcsatorna teljesen INAKTIV (ugyanaz a "zero rows = feature off" konvencio, mint a device_keys tablan). A tenyleges eszkoz-enrollolas (Peti telefonja / a hang-relay) es az allowlist-be irasa ezen a kartyan KIVUL esik -- ez a kartya csak a guard-mechanizmust epitette, a konkret uzembe-helyezes kulon operatori lepes.
+
+**Tesztek:** src/__tests__/voice-channel-device-allowlist.test.ts (5 uj teszt: fail-closed alapertelmezes, tobb id, szemet-bejegyzesek figyelmen kivul hagyasa, test-seam visszaallitas). voice-channel-hanna.test.ts bovitve (11->15 teszt): a Cybersec-fele exploit-forgatokonyv explicit lefedve (nem-allowlistelt device-key elutasitasa), pozitiv ut allowlistelt id-vel, kulonbozo-id-re nem enged at.
+
+**Ki dontott:** backend3 (Cybersec NO-GO-ra valaszul, delta-fix). **Kartya:** 7503bb31.
+
 ## 2026-09-18: upstream-sync Installer/hooks (kártya 3291145c, b5ecff20 + 76fa2a61 + 4ddb175c)
 
 **Portolt:** mindhárom upstream commit, cherry-pick sorrendben: b5ecff20, 76fa2a61, 4ddb175c.
