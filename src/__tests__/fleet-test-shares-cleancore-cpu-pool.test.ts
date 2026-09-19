@@ -472,3 +472,30 @@ describe('the composed worker cap is a flag vitest ACCEPTS, not merely one we pa
     expect(r.out).toMatch(/must not conflict/)
   })
 })
+
+// Card f1ababa4, Cybered's finding on 7bb39672's own gate (comments 2250/2252), not blocking so it
+// got its own card. The case above launches a REAL vitest with `--root <temp>`, deliberately NOT
+// through this repo's config, so it never loads vitest.config.ts. That is correct today because
+// vitest.config.ts declares no pool/thread setting at all (two independent measurements, backend3
+// and Cybered, both zero hits) -- so the probe's own vitest defaults are what it exercises, and
+// those still match what a real fleet-test.sh run gets. The day this repo's config DOES declare
+// one, the probe keeps silently testing a config nobody runs with. This is the tripwire: if it
+// ever fires, the probe above needs to load the real config instead of --root <temp>, not just get
+// a comment update.
+describe('the pool-probe premise: vitest.config.ts declares no pool/thread setting (card f1ababa4)', () => {
+  const CONFIG = join(ROOT, 'vitest.config.ts')
+  const POOL_CONFIG_KEYS =
+    /\bpool\s*:|\bpoolOptions\b|\bminThreads\b|\bmaxThreads\b|\bminForks\b|\bmaxForks\b|\bsingleThread\b/
+
+  it('the repo vitest.config.ts has no pool/thread key the --root <temp> probe above would silently miss', () => {
+    const src = readFileSync(CONFIG, 'utf-8')
+    expect(src).not.toMatch(POOL_CONFIG_KEYS)
+  })
+
+  it('CONTROL: the same reading catches a pool key if one is ever added', () => {
+    const src = readFileSync(CONFIG, 'utf-8')
+    const withPool = src.replace('test: {', "test: {\n    pool: 'threads',")
+    expect(withPool, 'the mutation did not apply').not.toBe(src)
+    expect(withPool).toMatch(POOL_CONFIG_KEYS)
+  })
+})
