@@ -73,7 +73,13 @@ describe('every tracked shebang file is executable (card 2bfbf805, ported from C
   })
 
   it('no shebang file is tracked as non-executable', () => {
-    const broken = SHEBANG.filter((f) => f.mode !== '100755').map((f) => `${f.path} (${f.mode})`)
+    // A SYMLINK (mode 120000, card 647ea02a rebrand compat aliases -- e.g. cleancore-land.sh ->
+    // mopsion-land.sh) is exempt: the kernel follows it straight to its target for execution, so the
+    // symlink's OWN mode bit is irrelevant to whether `./<file>` works. The target itself is a
+    // separately-tracked shebang file and is still checked here in its own right.
+    const broken = SHEBANG.filter((f) => f.mode !== '100755' && f.mode !== '120000').map(
+      (f) => `${f.path} (${f.mode})`,
+    )
     expect(
       broken,
       'These files declare a shebang but are tracked non-executable, so `./<file>` (or a direct, ' +

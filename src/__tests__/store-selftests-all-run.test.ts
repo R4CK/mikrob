@@ -36,7 +36,7 @@
 // there is no filename signal to discover from) and its own comment for the measurement behind it.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, readlinkSync } from 'node:fs'
 import { join } from 'node:path'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..')
@@ -102,8 +102,8 @@ const MODE_SELFTESTS: ReadonlyArray<{ file: string; args: readonly string[] }> =
   // found while fixing a pre-gate bug that made the tool report PRE-GATE CLEAN on a red branch.
   // An unrun control is exactly how that bug survived: the gate tool's own regression cases could
   // not have caught it, because they never ran.
-  { file: 'cleancore-pregate.sh', args: ['--selftest'] },
-  { file: 'cleancore-tsc-lib.sh', args: ['--selftest'] },
+  { file: 'mopsion-pregate.sh', args: ['--selftest'] },
+  { file: 'mopsion-tsc-lib.sh', args: ['--selftest'] },
   { file: 'context-compact-monitor.sh', args: ['--selftest'] },
   { file: 'gate-dispatch-check.sh', args: ['selftest'] },
   { file: 'git-object-integrity-monitor.sh', args: ['--selftest'] },
@@ -113,11 +113,29 @@ const MODE_SELFTESTS: ReadonlyArray<{ file: string; args: readonly string[] }> =
   { file: 'sync-agent-templates.sh', args: ['selftest'] },
 ]
 
+/** True iff `file` is a same-directory SYMLINK ALIAS of another file already in `files` -- e.g. the
+ *  card 647ea02a rebrand's compat symlinks (cleancore-land.sh -> mopsion-land.sh). Such a file is not
+ *  an independently-authored script: running it is byte-for-byte the same test as its target, so
+ *  counting it as a SEPARATE discovered entry double-runs one script under two names (measured, card
+ *  647ea02a: two names binding the identical hardcoded port collided as if two different selftests
+ *  shared it). Only a direct, single-hop, same-directory link is recognized -- anything else (an
+ *  absolute target, a target outside STORE) is treated as a real, independent file so this cannot
+ *  silently swallow a script this narrow check was not designed for. */
+function isAliasOfSibling(file: string, files: readonly string[]): boolean {
+  let target: string
+  try {
+    target = readlinkSync(join(STORE, file))
+  } catch {
+    return false // not a symlink
+  }
+  return !target.includes('/') && target !== file && files.includes(target)
+}
+
 function discover(): Array<{ name: string; file: string; runner: string; args: readonly string[] }> {
   const files = readdirSync(STORE)
   const bySuffix = RUNNERS.flatMap(([suffix, runner]) =>
     files
-      .filter((f) => f.endsWith(suffix))
+      .filter((f) => f.endsWith(suffix) && !isAliasOfSibling(f, files))
       .map((f) => ({ name: f.slice(0, -suffix.length), file: f, runner, args: [] as readonly string[] })),
   )
   const byMode = MODE_SELFTESTS.map((s) => ({
