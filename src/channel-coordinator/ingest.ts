@@ -32,9 +32,18 @@ export const COORDINATOR_AGENT_ID = 'telegram-coordinator'
 // Unlike COORDINATOR_AGENT_ID this id IS a legitimate /api/messages writer (the
 // relay is out-of-process), so the route cannot blanket-403 it. The guard is
 // the AUTH LANE instead: a 'hanna' POST is accepted only from an enrolled
-// DEVICE KEY, never from the shared dashboard token that every sub-agent can
-// read. See routes/messages.ts -- without that pairing, adding this id to
-// CHANNEL_COORDINATOR_AGENTS would let any token holder forge an owner message.
+// DEVICE KEY that is ALSO on an out-of-band allowlist (voice-channel-device-
+// allowlist.ts) -- never from the shared dashboard token that every sub-agent
+// can read. See routes/messages.ts -- without that pairing, adding this id to
+// CHANNEL_COORDINATOR_AGENTS would let any token holder forge an owner
+// message.
+//
+// THE ALLOWLIST EXISTS BECAUSE "device key" alone was not enough (Cybersec
+// NO-GO, card 7503bb31): POST /api/auth/device-keys accepts the shared
+// dashboard token as admin auth, so any token holder could self-mint a device
+// key and pass the lane check. The allowlist closes that: it is read only
+// from an env var or a plain file with NO HTTP write route, so minting or
+// enrolling a device key can never add an id to it.
 export const VOICE_CHANNEL_AGENT_ID = 'hanna'
 
 let db: Database.Database | null = null
