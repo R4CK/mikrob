@@ -12,6 +12,7 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
+import { isAllowedVoiceChannelDevice } from '../voice-channel-device-allowlist.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
 import { isReservedSenderId } from '../system-directive-id.js'
@@ -164,20 +165,36 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // Voice channel (HANGCSATORNA918): the VOICE_CHANNEL_AGENT_ID also earns
     // channel-inbound framing, but unlike the coordinator it is a legitimate
     // POST writer -- the relay runs out-of-process. So the guard is the AUTH
-    // LANE, not a blanket 403: accept it only from an enrolled DEVICE KEY.
+    // LANE, not a blanket 403: accept it only from an enrolled DEVICE KEY
+    // that is ALSO on the out-of-band allowlist (see below).
     //
     // WHY THE LANE AND NOT THE NAME: channel-inbound tells the receiving agent
     // "this is the owner, a reply is expected". The dashboard token is readable
     // by every sub-agent, so a name-only rule would let any of them forge an
-    // owner message. A device key is a per-device secret the sub-agents do not
-    // have, so requiring it is what makes the id trustworthy at DELIVERY time,
-    // where the auth context is long gone and only from_agent survives.
-    if (sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID && ctx.auth?.kind !== 'device') {
+    // owner message.
+    //
+    // WHY kind==='device' ALONE IS NOT ENOUGH (Cybersec NO-GO, card 7503bb31):
+    // POST /api/auth/device-keys accepts the SHARED dashboard token as admin
+    // auth (kind:'token' is in DEVICE_KEY_ADMIN_KINDS), so any token holder
+    // mints a fresh device key for themselves with one call -- the device lane
+    // was not, in fact, a secret the sub-agents lack. The fix adds a SECOND
+    // check: the presented device key's id must be on
+    // voice-channel-device-allowlist.ts's allowlist, which is read ONLY from
+    // an env var / a plain file on disk with NO corresponding HTTP write route
+    // anywhere in this codebase (mirrors store/.dashboard-token itself).
+    // Minting or enrolling a device key over HTTP can never add an id there --
+    // only filesystem/SSH access to the box can. Zero entries = the voice
+    // channel is off, same "zero rows = feature off" convention device_keys
+    // already uses.
+    if (
+      sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID &&
+      (ctx.auth?.kind !== 'device' || !isAllowedVoiceChannelDevice(ctx.auth.deviceId))
+    ) {
       logger.warn(
         { from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none' },
-        'Rejected /api/messages POST as voice channel without a device key',
+        'Rejected /api/messages POST as voice channel: not an allowlisted device key',
       )
-      json(res, { error: `from '${VOICE_CHANNEL_AGENT_ID}' requires an enrolled device key, not the shared dashboard token` }, 403)
+      json(res, { error: `from '${VOICE_CHANNEL_AGENT_ID}' requires an allowlisted, enrolled device key` }, 403)
       return true
     }
     // Reserved-sender guard for the in-process-only sender ids

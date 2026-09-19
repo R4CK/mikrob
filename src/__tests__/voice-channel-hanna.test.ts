@@ -7,6 +7,7 @@ import { classifyAgentMessage } from '../web/agent-message-wrap.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
 import type { RouteContext } from '../web/routes/types.js'
+import { _withVoiceChannelAllowlistForTest } from '../web/voice-channel-device-allowlist.js'
 
 // HANGCSATORNA918 (owner request, 2026-09-18). The owner dictates into an
 // external voice assistant which relays the transcript to /api/messages. Before
@@ -14,12 +15,19 @@ import type { RouteContext } from '../web/routes/types.js'
 // the main agent talking to itself and no receiving agent could tell it apart
 // from internal fleet traffic.
 //
-// The fix has TWO halves and they only work together:
+// The fix has THREE parts and they only work together:
 //   1. delivery side: 'hanna' is in CHANNEL_COORDINATOR_AGENTS -> channel-inbound
 //      framing, so EVERY agent sees the provenance, not just the main agent;
-//   2. write side: a 'hanna' POST is accepted only from an enrolled DEVICE KEY.
-// Half 1 alone would be a forgery hole: channel-inbound means "the owner, reply
-// expected", and the dashboard token is readable by every sub-agent.
+//   2. write side (auth LANE): a 'hanna' POST is accepted only from a device key.
+//   3. write side (auth ALLOWLIST, added after Cybersec NO-GO on card 7503bb31):
+//      the device key's id must ALSO be on an out-of-band allowlist. Without
+//      this, part 2 alone is not per-device: POST /api/auth/device-keys mints
+//      a device key for anyone holding the shared dashboard token, so "kind
+//      === device" was reachable by exactly the population it meant to exclude.
+// Part 1 alone would be a forgery hole (channel-inbound means "the owner,
+// reply expected", and the dashboard token is readable by every sub-agent);
+// parts 2+3 together are what makes "device" actually mean one specific,
+// operator-designated device.
 
 const here = dirname(fileURLToPath(import.meta.url))
 const MESSAGES_ROUTE_SRC = readFileSync(join(here, '../web/routes/messages.ts'), 'utf-8')
@@ -85,30 +93,76 @@ describe('/api/messages write guard for the voice channel', () => {
     }
   })
 
-  it('PASSES both guards on the device lane (it has no agents/<id>/ dir either)', async () => {
-    // Two guards could refuse this: the device-key lane check, and the
-    // known-agent check (the voice id has no agents/<id>/ directory, so it
-    // needs an explicit exemption). Passing BOTH means the handler runs on to
-    // the insert -- which throws here because this harness has no DB. That
-    // throw is the PROOF of passage, so we assert on it rather than skipping:
-    // a guard rejection would have returned a 403 instead of ever reaching db.
-    await expect(
-      postAs(VOICE_CHANNEL_AGENT_ID, { kind: 'device', device: 'a-device', deviceId: 5 }),
-    ).rejects.toThrow(/prepare/)
+  it('REJECTS a device key that is NOT on the allowlist (the Cybersec NO-GO exploit, card 7503bb31)', async () => {
+    // This is exactly the attack Cybersec proved live: mint/hold ANY device
+    // key (e.g. one self-minted via the token-authenticated device-keys
+    // endpoint) and present it. With no allowlist entries configured (the
+    // default -- fail-closed, "zero entries = feature off"), it must still
+    // 403, even though kind==='device' alone would have passed the OLD guard.
+    const { status, body } = await postAs(VOICE_CHANNEL_AGENT_ID, {
+      kind: 'device', device: 'self-minted', deviceId: 999,
+    })
+    expect(status).toBe(403)
+    expect(String(body?.error)).toMatch(/allowlisted/i)
+  })
+
+  it('PASSES all guards on an ALLOWLISTED device key (it has no agents/<id>/ dir either)', async () => {
+    // Three guards could refuse this: the device-key lane check, the
+    // allowlist check, and the known-agent check (the voice id has no
+    // agents/<id>/ directory, so it needs an explicit exemption). Passing ALL
+    // means the handler runs on to the insert -- which throws here because
+    // this harness has no DB. That throw is the PROOF of passage, so we
+    // assert on it rather than skipping: a guard rejection would have
+    // returned a 403 instead of ever reaching db.
+    await _withVoiceChannelAllowlistForTest([5], () =>
+      expect(
+        postAs(VOICE_CHANNEL_AGENT_ID, { kind: 'device', device: 'the-real-relay', deviceId: 5 }),
+      ).rejects.toThrow(/prepare/),
+    )
+  })
+
+  it('an allowlist for a DIFFERENT device id still rejects this one', async () => {
+    // Proves the check compares the actual presented id, not just "is the
+    // allowlist non-empty".
+    await _withVoiceChannelAllowlistForTest([5], async () => {
+      const { status } = await postAs(VOICE_CHANNEL_AGENT_ID, {
+        kind: 'device', device: 'some-other-device', deviceId: 6,
+      })
+      expect(status).toBe(403)
+    })
   })
 
   it('NEGATIVE CONTROL: an unknown non-voice id is refused by the known-agent guard', async () => {
     // Without this the test above proves nothing: it would pass even if the
     // handler let EVERY sender through to the insert.
-    const { status, body } = await postAs('zack-the-stranger', { kind: 'device', device: 'a-device', deviceId: 5 })
-    expect(status).toBe(403)
-    expect(String(body?.error)).toMatch(/unknown agent/i)
+    await _withVoiceChannelAllowlistForTest([5], async () => {
+      const { status, body } = await postAs('zack-the-stranger', { kind: 'device', device: 'a-device', deviceId: 5 })
+      expect(status).toBe(403)
+      expect(String(body?.error)).toMatch(/unknown agent/i)
+    })
   })
 })
 
-describe('the two halves stay paired in the source', () => {
+describe('the guard pieces stay paired in the source', () => {
   it('the route guards the voice id on the AUTH LANE, not with a blanket 403', () => {
-    expect(MESSAGES_ROUTE_SRC).toMatch(/sanitizeAgentIdent\(from\)\s*===\s*VOICE_CHANNEL_AGENT_ID\s*&&\s*ctx\.auth\?\.kind\s*!==\s*'device'/)
+    expect(MESSAGES_ROUTE_SRC).toMatch(
+      /sanitizeAgentIdent\(from\)\s*===\s*VOICE_CHANNEL_AGENT_ID\s*&&\s*\(\s*ctx\.auth\?\.kind\s*!==\s*'device'/,
+    )
+  })
+
+  it('the lane check is ANDed with the allowlist check, not standing alone', () => {
+    // Pins the actual defect Cybersec found: kind==='device' alone must never
+    // be sufficient. isAllowedVoiceChannelDevice has to appear in the SAME
+    // guard condition, joined by ||  inside the negated group (i.e. reachable
+    // only when BOTH kind==='device' AND the id is NOT allowlisted fail to
+    // reject) -- a regression here would silently drop the second half again.
+    expect(MESSAGES_ROUTE_SRC).toMatch(/ctx\.auth\?\.kind\s*!==\s*'device'\s*\|\|\s*!isAllowedVoiceChannelDevice\(/)
+  })
+
+  it('the allowlist check imports from the dedicated module, not an inline literal', () => {
+    expect(MESSAGES_ROUTE_SRC).toMatch(
+      /import \{ isAllowedVoiceChannelDevice \} from '\.\.\/voice-channel-device-allowlist\.js'/,
+    )
   })
 
   it('the id comes from the shared constant, never a literal in the route', () => {
