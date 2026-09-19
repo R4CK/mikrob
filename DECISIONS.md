@@ -13383,3 +13383,50 @@ figyelmeztetest, valtoztatas nelkul (nem egy-soros javitas, es a kartya nem kove
 **Ki dontott:** Cybersec (a kritikus lelet + a cenzus hataskor-hianyossag kimondasa), MikroB (a
 delta-gate + az utomunka), backend3 (javitas + kiterjesztett cenzus + mutacios teszt).
 **Kartya:** 1b02ed3a.
+
+## 2026-09-19 -- f268629c (26c07c33 gyerek A) -- GPU-driver detekcio: host-live vs WSL-package-mount kulonbseg, es a NVIDIA-elerheto-verzio-lekerdezes szandekosan nyitva hagyva
+
+Peti kerese (Telegram 8736, 2026-09-18) es surgos elorevetel (Telegram 8924, 2026-09-19) utan a
+26c07c33 EPIC (A) resze: store/gpu-driver-check.sh + store/gpu-driver-check.selftest.sh landolva.
+
+**Mit mer a script, es MIERT ket kulon szam van.** A host nvidia-smi.exe (interop) es a WSL-en beluli
+nvidia-smi UGYANAZT a szamot adjak vissza -- mindketto a HOST driver-t olvassa paravirtualizacion at,
+elo. A WSL VM-be TENYLEGESEN mountolt driver-CSOMAG verziója viszont MASHOL van, es csak `wsl --shutdown`
+utan frissul: ezt a szamot SEHOL nem lehet lekerdezni verzio-flag-gel vagy fajl-tartalommal, KIZAROLAG
+egy symlink SAJAT NEVEBEN allo szam-suffixbol (`/usr/lib/wsl/lib/libnvidia-gpucomp.so.615.71.08 ->
+libnvidia-gpucomp.so`). Elo mérés ezen a gepen (2026-09-19): installedHost=616.92, installedWsl=615.71.08
+-- pontosan az elteres-minta, amit a kartya elore leirt ("VM-csomag 08-25-i" pelda). A script ezt a ket
+erteket kulon rogziti (store/gpu-driver-state.json: installedHost, installedWsl), es EGYIKET SEM tekinti
+kanonikusnak -- az elteres maga a jelzes ("wsl --shutdown kell").
+
+**Az "elerheto" (NVIDIA hivatalos legujabb) verzio lekerdezese SZANDEKOSAN NINCS beepitve ebbe a
+scriptbe, es a daily heartbeat prompt sincs meg megirva/aktivalva.** Ket forrast probaltam, mindkettovel
+elakadtam a kartya sajat korlatai miatt:
+1. `winget upgrade --id Nvidia.GeForceDriver` -- a winget katalogus NEM tartalmaz nyers GeForce
+   driver csomagot ezen az ID-n (sem `search nvidia` alatt talalhato meg ilyen csomag); csak
+   korulotte epult harmadik-fel eszkozok vannak (pl. TinyNvidiaUpdateChecker), maga a driver nem
+   winget-menedzselt NVIDIA-nal. Ellenorizve elo winget hivassal, nem feltetelezesbol.
+2. NVIDIA hivatalos AjaxDriverService JSON API (`gfwsl.geforce.com/.../AjaxDriverService.php?
+   func=DriverManualLookup`) -- az URL megvan (GitHub-first: TinyNvidiaUpdateChecker forraskodjabol,
+   quarantine-reader fetch), de a tenyleges lekerdezo parameterek (psid/pfid/osID -- GPU-modellenkent
+   maskepp) egy masik forrasfajlban vannak, amit ket kulon quarantine-reader fetch-kiserlet sem talalt
+   meg (404 mindket probalt uton/branch-en). Talalgatott parameterekkel epiteni egy olyan lekerdezest,
+   amit nem tudok ellenorizni -- az pont az a fabrikalt-szam hiba, amit a gpu-detect.sh sajat fejleckommentje
+   is kifejezetten tilt ("WHAT IT NEVER DOES: invent a number").
+
+**A blokk maganak a kartyanak sajat korlatja, nem hianyossag a probalkozasban.** A `store/egress-
+allowlist.json` quarantine_domains listaja NEM tartalmazza a nvidia.com-ot (csak min.io, docs.aws,
+huggingface, crewmeister) -- a quarantine-reader ezert nem tudna meg egy MEGTALALT NVIDIA URL-t sem
+lefetch-elni HTML-kent (a JSON API-t meg pontosan igy). Ez egy egress-trust-boundary dontes, amit
+backend-kent NEM sajat hataskorben boviteni -- MikroB/Peti dontese, kulon lepes.
+
+**Mit szallitottam most:** a detekcio-oldal (installedHost/installedWsl, --compare, allapot-fajl,
+--set-available/--mark-alerted seam a kesobbi kulso ertek befogadasara) -- ez teljesen tesztelt, elo
+gepen es fake-ekkel is (21/21 selftest OK). A napi ütemezett feladat ("gpu-driver-check", 07:45,
+heartbeat) letrehozasat NEM en vegzem: sub-agenskent a governance hard-gate ("Self-pace TILTOTT")
+kifejezetten tiltja a scheduled-tasks/ iras + /api/schedules POST hivast backend-nek -- ez MikroB
+lepese, a pontos prompt-szoveget a kartya kommentjeben adtam at.
+
+**Ki dontott:** backend (a script/selftest + a hatarok kimondasa), MikroB tovabbi lepese a schedule
+letrehozasa + az allowlist-bovites eldontese.
+**Kartya:** f268629c (26c07c33 EPIC gyereke).
