@@ -13485,8 +13485,8 @@ csak a fele dispatch-utvonalon elt.
    irodik (`dispatcher=<ertek>`, hianyaban `dispatcher=-`, visszamenoleg kompatibilis minden regi
    sorral es olvasoval). Selftest: 3 uj eset a meglevo 58 melle (61/61 zold).
 3. `store/card-build-route-24h-measure.sh` -- a dispatcher-mezo szetbontva `dispatcher_self_advance`/
-   `dispatcher_mikrob_dispatch`/`dispatcher_unattributed` szamlalokra (JSON + human kimenet), plusz
-   egy explicit figyelmezetes, ha egy ablakban minden tartalmi dontes mikrob-dispatch-bol jott es
+   `dispatcher_orchestrator_dispatch`/`dispatcher_unattributed` szamlalokra (JSON + human kimenet), plusz
+   egy explicit figyelmezetes, ha egy ablakban minden tartalmi dontes orchestrator-dispatch-bol jott es
    egy sem self-advance-bol (pontosan a mert res). Selftest: 21/21 zold (4 uj eset).
 4. `heartbeat-consolidated/SKILL.md` C szekcio 4b lepese -- `CARD_BUILD_ROUTE_DISPATCHER=mikrob-
    dispatch` hozzaadva a mar meglevo card-build-route.sh hivashoz, hogy a ket dispatch-ut ugyanabban

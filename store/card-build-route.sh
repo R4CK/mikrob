@@ -47,14 +47,14 @@ TOKEN_FILE="${CARD_BUILD_ROUTE_TOKEN_FILE:-$HERE/.dashboard-token}"
 # The card TEXT is deliberately not logged, only its length -- a control's audit trail must not
 # quietly become a second copy of the board.
 #
-# DISPATCHER (card 3906d77b): WHO called this classifier -- "mikrob-dispatch" (the heartbeat's own
+# DISPATCHER (card 3906d77b): WHO called this classifier -- "orchestrator-dispatch" (the heartbeat's own
 # C section 4b step) or "self-advance" (a role-agent picking up its own next card via
 # self-advance-pickup.sh). Optional, an env var so neither caller has to pass a new flag through a
 # chain of scripts; a caller that does not set it logs "-", identical to every line written before
 # this field existed. This is the measurement this card asked for: without it,
 # card-build-route-24h-measure.sh can count verdicts but not tell which dispatch PATH produced them,
 # which was the actual gap MikroB measured (card-build-route.log's last self-advance-attributable line
-# was 2026-09-18 08:41 -- the router ran on the mikrob-dispatch path only, unmeasurably so, since
+# was 2026-09-18 08:41 -- the router ran on the orchestrator-dispatch path only, unmeasurably so, since
 # nothing distinguished the two).
 LOG="${CARD_BUILD_ROUTE_LOG:-$HERE/card-build-route.log}"
 CARD_ID="-"

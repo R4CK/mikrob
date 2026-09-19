@@ -389,7 +389,7 @@ if [ "$got" = ONLINE ]; then PASS=$((PASS+1)); echo "OK   ONLINE <- ONLINE  no l
 else FAIL=$((FAIL+1)); FAILED+=("no-model"); echo "FAIL ONLINE <- $got  no local model"; fi
 
 echo
-echo "=== E. DISPATCHER ATTRIBUTION (card 3906d77b -- self-advance vs mikrob-dispatch) ==="
+echo "=== E. DISPATCHER ATTRIBUTION (card 3906d77b -- self-advance vs orchestrator-dispatch) ==="
 # The whole point of the field: two callers of the SAME classifier must be tellable apart in the log
 # without either caller doing anything special beyond setting one env var.
 dispatcher_is() { # $1 expected-dispatcher-suffix, $2 label, [$3 = CARD_BUILD_ROUTE_DISPATCHER value or unset]
@@ -414,7 +414,7 @@ dispatcher_is() { # $1 expected-dispatcher-suffix, $2 label, [$3 = CARD_BUILD_RO
   fi
 }
 dispatcher_is "self-advance" "self-advance-pickup.sh sets CARD_BUILD_ROUTE_DISPATCHER=self-advance" self-advance
-dispatcher_is "mikrob-dispatch" "heartbeat 4b sets CARD_BUILD_ROUTE_DISPATCHER=mikrob-dispatch" mikrob-dispatch
+dispatcher_is "orchestrator-dispatch" "heartbeat 4b sets CARD_BUILD_ROUTE_DISPATCHER=orchestrator-dispatch" orchestrator-dispatch
 dispatcher_is "-" "no dispatcher set -- every pre-3906d77b log line, unaffected"
 
 if [ "$WITH_MODEL" -eq 1 ]; then

@@ -24,7 +24,7 @@
 #      own internal timeout budget discovering the same thing, one leaf at a time.
 #   3. card-build-route.sh <cardId>, with CARD_BUILD_ROUTE_DISPATCHER=self-advance exported so the log
 #      (and card-build-route-24h-measure.sh's dispatcher breakdown) can tell this call apart from the
-#      heartbeat's own mikrob-dispatch calls -- the actual measurement gap this card was opened to close.
+#      heartbeat's own orchestrator-dispatch calls -- the actual measurement gap this card was opened to close.
 #   4. LOCAL verdict -> offload-dispatch.sh <cardId> <agent>. That script already resolves the card's
 #      open leaves, posts the "LOCAL-LLM DRAFT" comment itself, and nudges the owner -- nothing here
 #      duplicates that. A non-LOCAL verdict (or offload-dispatch finding nothing local-eligible) simply
