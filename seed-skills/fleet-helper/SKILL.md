@@ -16,6 +16,11 @@ No secrets or personal data are baked in: the dashboard token is read from
 `mail_rules.json` (see `scripts/mail_rules.example.json`).
 
 ## When to use
+- Picking up your own next self-advance card (root CLAUDE.md rule 11a): call
+  `store/self-advance-pickup.sh <agent> <cardId>` instead of hand-curling a
+  `PUT in_progress` -- it health-checks Ollama, runs the local-first draft
+  router with `dispatcher=self-advance` attribution, and always performs the
+  actual pickup regardless of how the draft step went (card 3906d77b).
 - Saving/searching memory, posting daily-log, sending inter-agent messages.
 - Reading kanban (due today / stuck / by status) without writing SQL by hand.
 - Escaping text for a Telegram MarkdownV2 message.

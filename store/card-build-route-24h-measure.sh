@@ -43,7 +43,7 @@ done
 # purpose, rather than silently miscounted as a content decision.
 CAPACITY_REGEX='^(vram-hold|model-busy|kill-switch|no-token|card-unreadable|card-unparseable|empty-text|too-long|bad-card-id|no-argument|route-check-failed)$'
 
-[ -f "$LOG" ] || { [ "$JSON" = 1 ] && printf '{"hours":%s,"dispatches":0,"capacity_skipped":0,"content_considered":0,"drafted":0,"continued_with_draft":0,"rejected_draft":0,"exhausted_no_draft":0,"pending_review":0}\n' "$HOURS" || printf 'card-build-route-24h-measure: no log at %s -- nothing to measure yet\n' "$LOG"; exit 0; }
+[ -f "$LOG" ] || { [ "$JSON" = 1 ] && printf '{"hours":%s,"dispatches":0,"capacity_skipped":0,"content_considered":0,"drafted":0,"continued_with_draft":0,"rejected_draft":0,"exhausted_no_draft":0,"pending_review":0,"dispatcher_self_advance":0,"dispatcher_orchestrator_dispatch":0,"dispatcher_unattributed":0}\n' "$HOURS" || printf 'card-build-route-24h-measure: no log at %s -- nothing to measure yet\n' "$LOG"; exit 0; }
 
 now="$(date +%s)"
 cutoff=$(( now - HOURS * 3600 ))
@@ -56,18 +56,26 @@ LATEST="$(TZ=$(date +%Z) awk -F'\t' -v cutoff="$cutoff" '
     cmd | getline ts
     close(cmd)
     if (ts != "" && ts >= cutoff) {
-      row[$2] = $3 "\t" $4 "\t" ts
+      row[$2] = $3 "\t" $4 "\t" ts "\t" $7
     }
   }
   END { for (c in row) print c "\t" row[c] }
 ' "$LOG" 2>/dev/null)"
 
+# DISPATCHER BREAKDOWN (card 3906d77b): which PATH produced a content decision -- the heartbeat's own
+# C section 4b step (dispatcher=orchestrator-dispatch) or a role-agent's self-advance-pickup.sh
+# (dispatcher=self-advance). A pre-3906d77b log line, or any caller that never set
+# CARD_BUILD_ROUTE_DISPATCHER, carries no 7th field at all; that counts as "unattributed", not as
+# either path -- guessing would misreport exactly the gap this field exists to close.
 dispatches=0
 capacity_skipped=0
 content_considered=0
 declare -a CONTENT_CARDS=()
+dispatcher_self_advance=0
+dispatcher_orchestrator_dispatch=0
+dispatcher_unattributed=0
 
-while IFS=$'\t' read -r card verdict path ts; do
+while IFS=$'\t' read -r card verdict path ts dispatcher_field; do
   [ -n "$card" ] || continue
   dispatches=$((dispatches + 1))
   if printf '%s' "$path" | grep -Eq "$CAPACITY_REGEX"; then
@@ -75,6 +83,11 @@ while IFS=$'\t' read -r card verdict path ts; do
   else
     content_considered=$((content_considered + 1))
     CONTENT_CARDS+=("$card")
+    case "$dispatcher_field" in
+      dispatcher=self-advance)    dispatcher_self_advance=$((dispatcher_self_advance + 1)) ;;
+      dispatcher=orchestrator-dispatch) dispatcher_orchestrator_dispatch=$((dispatcher_orchestrator_dispatch + 1)) ;;
+      *)                          dispatcher_unattributed=$((dispatcher_unattributed + 1)) ;;
+    esac
   fi
 done <<EOF
 $LATEST
@@ -141,8 +154,9 @@ exhausted_no_draft=$(( content_considered - drafted ))
 [ "$exhausted_no_draft" -ge 0 ] || exhausted_no_draft=0
 
 if [ "$JSON" = 1 ]; then
-  printf '{"hours":%s,"dispatches":%s,"capacity_skipped":%s,"content_considered":%s,"drafted":%s,"continued_with_draft":%s,"rejected_draft":%s,"exhausted_no_draft":%s,"pending_review":%s}\n' \
-    "$HOURS" "$dispatches" "$capacity_skipped" "$content_considered" "$drafted" "$continued_with_draft" "$rejected_draft" "$exhausted_no_draft" "$pending_review"
+  printf '{"hours":%s,"dispatches":%s,"capacity_skipped":%s,"content_considered":%s,"drafted":%s,"continued_with_draft":%s,"rejected_draft":%s,"exhausted_no_draft":%s,"pending_review":%s,"dispatcher_self_advance":%s,"dispatcher_orchestrator_dispatch":%s,"dispatcher_unattributed":%s}\n' \
+    "$HOURS" "$dispatches" "$capacity_skipped" "$content_considered" "$drafted" "$continued_with_draft" "$rejected_draft" "$exhausted_no_draft" "$pending_review" \
+    "$dispatcher_self_advance" "$dispatcher_orchestrator_dispatch" "$dispatcher_unattributed"
 else
   printf 'card-build-route-24h-measure: last %sh -- %s dispatch(es) routed\n' "$HOURS" "$dispatches"
   printf '  %s kapacitas-okbol draft-kiserlet nelkul (GPU/router nem volt elerheto, nem a kartya tartalma miatt)\n' "$capacity_skipped"
@@ -151,6 +165,11 @@ else
   printf '    %s elutasitotta a draftot es nullarol irta meg (Draft-Review: ELUTASITVA)\n' "$rejected_draft"
   printf '    %s meg nincs elbiralva (draft all, review meg nem erkezett)\n' "$pending_review"
   printf '    %s tartalmi dontesu kartya NEM kapott draftot (kimerult a helyi modell, vagy a leaf-resolve ures volt)\n' "$exhausted_no_draft"
+  printf '  dispatcher (kartya 3906d77b): %s orchestrator-dispatch, %s self-advance, %s unattributed (regi sor vagy nem-allitott env)\n' \
+    "$dispatcher_orchestrator_dispatch" "$dispatcher_self_advance" "$dispatcher_unattributed"
+  if [ "$content_considered" -gt 0 ] && [ "$dispatcher_self_advance" -eq 0 ] && [ "$dispatcher_orchestrator_dispatch" -gt 0 ]; then
+    printf '  !! minden tartalmi dontes orchestrator-dispatch-bol jott, EGY sem self-advance-bol -- ez pontosan az a res, amiert a 3906d77b nyilt (09-18 08:41 utan a self-advance uton felvett kartyak nem hivtak a routert). Ellenorizd, hogy a role-agentek self-advance-pickup.sh-t hivjak-e PUT in_progress helyett.\n'
+  fi
   if [ "$content_considered" -gt 0 ] && [ "$drafted" -eq 0 ]; then
     printf '  !! %s tartalmi dontesu kartya volt, es EGYETLEN draft sem erkezett -- ez pont az a hiba, amiert a 3c075d74 nyilt (2026-09-18 alapvonal: 7/7 dontes ONLINE, calls=0). Ellenorizd, hogy a C szekcio 4b lepese ELOTT fut-e a delegalo uzenetnek, es hogy a helyi modell egeszseges-e.\n' "$content_considered"
   fi

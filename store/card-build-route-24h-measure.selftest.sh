@@ -137,6 +137,27 @@ assert_field "$out" capacity_skipped 0 "D: the LATER (content) verdict wins over
 assert_field "$out" content_considered 1 "D: latest verdict was content"
 
 echo
+echo "=== E2. DISPATCHER BREAKDOWN (card 3906d77b) -- self-advance vs orchestrator-dispatch vs unattributed ==="
+cardG=ffff0000000000000000000000000000000007  # dispatcher=self-advance
+cardH=ffff0000000000000000000000000000000008  # dispatcher=orchestrator-dispatch
+cardI=ffff0000000000000000000000000000000009  # no dispatcher field at all (legacy line)
+for c in "$cardG" "$cardH" "$cardI"; do
+  cat > "$TMP/comments/$c.json" <<'JSON'
+[]
+JSON
+done
+out="$(run --json <<EOF
+$(now_fmt "$now_epoch")	$cardG	LOCAL	all-stages-passed	calls=1	chars=40	dispatcher=self-advance
+$(now_fmt "$now_epoch")	$cardH	LOCAL	all-stages-passed	calls=1	chars=40	dispatcher=orchestrator-dispatch
+$(now_fmt "$now_epoch")	$cardI	ONLINE	deterministic-money	calls=0	chars=40
+EOF
+)"
+assert_field "$out" content_considered 3 "E2: three content-considered cards"
+assert_field "$out" dispatcher_self_advance 1 "E2: exactly one attributed to self-advance"
+assert_field "$out" dispatcher_orchestrator_dispatch 1 "E2: exactly one attributed to orchestrator-dispatch"
+assert_field "$out" dispatcher_unattributed 1 "E2: the legacy line (no dispatcher field) counts as unattributed, not guessed"
+
+echo
 echo "=== E. ENTRIES OUTSIDE THE WINDOW ARE EXCLUDED ==="
 cardF=eeee0000000000000000000000000000000006
 out="$(run --hours 24 --json <<EOF

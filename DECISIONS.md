@@ -13473,3 +13473,52 @@ Typecheck (`tsc --noEmit`) tiszta.
 
 **Ki döntött:** backend2 (upstream-sync, minden konfliktnál saját döntés, megőrizve a fork-specifikus logikát).
 **Kártyák:** da158ef9.
+
+## 2026-09-18 -- 3906d77b: helyi-elsodleges draft kiterjesztve a self-advance utvonalra
+
+**Kontextus:** a 3c075d74 (lasd fent) a card-build-route.sh alapertelmezeset local-firstre fordi-
+totta, de csak a MikroB-dispatch utvonalon (heartbeat-consolidated C szekcio 4b lepese) volt bedro-
+tozva. MERVE (MikroB, 2026-09-18 08:24): card-build-route.log utolso bejegyzese 08:41 volt, azota
+minden self-advance-szel (11a szabaly) felvett kartya a routert meg sem hivta -- a helyi-elsodleges
+csak a fele dispatch-utvonalon elt.
+
+**Valtoztatasok (backend2, card 3906d77b, GO-WITH-CHANGES plan-grilling verdikt MikroB-tol):**
+
+1. `store/self-advance-pickup.sh <agent> <cardId>` -- uj, egyetlen belepesi pont, amit a role-agent
+   sajat self-advance kartyafelvetelekor hiv, kezi `PUT in_progress` helyett. Sorrend: (1) LOCAL_FIRST_
+   DRAFT flag (env vagy `store/local-first-draft.json {"enabled":false}`, hianya = ON), (2) Ollama-
+   egeszseg-ellenorzes ELSOKENT (`local-llm.sh --health`, nem ujra-feltalalva), le -> egy naplosor,
+   sose blokkol, (3) `card-build-route.sh` `CARD_BUILD_ROUTE_DISPATCHER=self-advance` attribuciovai,
+   (4) LOCAL verdiktnel `offload-dispatch.sh` (mar letezo script, maga posztolja a draft-kommentet),
+   (5) a tenyleges `in_progress` allapotvaltas MINDEN agon, felteve hogy van dashboard-token.
+   Selftest: `store/self-advance-pickup.selftest.sh`, 22/22 zold, fake dashboarddal (soha nem a
+   eles boardra hiv).
+2. `store/card-build-route.sh` -- uj `CARD_BUILD_ROUTE_DISPATCHER` env var, a log 7. mezojekent
+   irodik (`dispatcher=<ertek>`, hianyaban `dispatcher=-`, visszamenoleg kompatibilis minden regi
+   sorral es olvasoval). Selftest: 3 uj eset a meglevo 58 melle (61/61 zold).
+3. `store/card-build-route-24h-measure.sh` -- a dispatcher-mezo szetbontva `dispatcher_self_advance`/
+   `dispatcher_orchestrator_dispatch`/`dispatcher_unattributed` szamlalokra (JSON + human kimenet), plusz
+   egy explicit figyelmezetes, ha egy ablakban minden tartalmi dontes orchestrator-dispatch-bol jott es
+   egy sem self-advance-bol (pontosan a mert res). Selftest: 21/21 zold (4 uj eset).
+4. `heartbeat-consolidated/SKILL.md` C szekcio 4b lepese -- `CARD_BUILD_ROUTE_DISPATCHER=mikrob-
+   dispatch` hozzaadva a mar meglevo card-build-route.sh hivashoz, hogy a ket dispatch-ut ugyanabban
+   a naploban, megkulonboztethetoen jelenjen meg. **EZT A VALTOZTATAST MikroB-nak kell alkalmaznia**:
+   a `scheduled-tasks/<nev>/` ala iras egy governance hard-gate ala esik (self-pace elleni vedelem),
+   ami sub-agenteket (igy backend2-t is) blokkol onnan iras/olvasas elott -- a szukseges egysoros
+   diff at van adva MikroB-nak inter-agent uzenetben.
+5. Root `CLAUDE.md` 11a szabaly (mernoki ag) -- a "PUT in_progress -> epiti" resz kiegeszitve a
+   self-advance-pickup.sh hivatkozassal + a LOCAL_FIRST_DRAFT flag emlitesevel.
+6. `project-workflow` skill -- uj 2c pont, ugyanez a leiras roviden.
+7. `fleet-helper` skill -- rovid pointer a "When to use" listaban.
+8. README fork-szekcio -- egy uj bullet a Flotta-orchesztracio kategoriaban.
+
+**Elutasitott elozmeny (f5b0e82e, "Helyi LLM (a)"):** a par-kartya masik fele elavult premisszaval
+nyilt -- a `priority: urgent` ONLINE-on-tartasat kerte volna vissza, de a 3c075d74 (ugyanaznap,
+5 orraval korabban) mar TELJESEN torolte a priority-gate-et (urgent ES high egyarant), Peti sajat,
+kesobbi, dokumentalt dontese szerint (CLAUDE.md 16. szabaly SZIGORITAS resze). Megepitese regresszio
+lett volna. Reszletek + MikroB-nak visszaadott dontes: kartya f5b0e82e kommentjei (5374, 5375),
+uzenet MikroB-nak (3361).
+
+**Ki dontott:** Peti (kozvetlen Telegram 8748/8835 kerese), MikroB (plan-grilling GO-WITH-CHANGES,
+kartya 3906d77b). **Vegrehajtas:** backend2.
+**Kartyak:** 3906d77b (megepitve), f5b0e82e (elavultnak jelentve, MikroB dontesere var).
