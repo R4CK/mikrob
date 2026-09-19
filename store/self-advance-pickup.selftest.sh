@@ -50,6 +50,10 @@ printf '#!/usr/bin/env bash\necho "${CARD_BUILD_ROUTE_DISPATCHER:-unset}" > "%s/
 printf '#!/usr/bin/env bash\necho "${CARD_BUILD_ROUTE_DISPATCHER:-unset}" > "%s/route-saw-dispatcher"\necho ONLINE\n' "$TMP" > "$TMP/route-online.sh"
 # offload-dispatch.sh stub: just proves it was (or was not) invoked.
 printf '#!/usr/bin/env bash\ntouch "%s/offload-was-called"\n' "$TMP" > "$TMP/offload-stub.sh"
+# local-llm-installed.sh stub: default installed=yes (the pre-existing sections all assume a local
+# model is present, same as before this gate existed); a dedicated not-installed stub for section G.
+printf '#!/usr/bin/env bash\necho installed\nexit 0\n' > "$TMP/installed-yes.sh"
+printf '#!/usr/bin/env bash\necho "not-installed: no ollama binary"\nexit 1\n' > "$TMP/installed-no.sh"
 chmod +x "$TMP"/*.sh
 
 CARD="abcdef0123456789"
@@ -59,6 +63,7 @@ run() { # env overrides via caller, then the two positional args
   SELF_ADVANCE_PICKUP_LLM="${STUB_LLM:-$TMP/llm-up.sh}" \
   SELF_ADVANCE_PICKUP_ROUTE="${STUB_ROUTE:-$TMP/route-online.sh}" \
   SELF_ADVANCE_PICKUP_OFFLOAD="${STUB_OFFLOAD:-$TMP/offload-stub.sh}" \
+  SELF_ADVANCE_PICKUP_INSTALLED="${STUB_INSTALLED:-$TMP/installed-yes.sh}" \
   SELF_ADVANCE_PICKUP_API="http://127.0.0.1:$port" \
   SELF_ADVANCE_PICKUP_TOKEN_FILE="${STUB_TOKEN:-$TMP/fake-token}" \
   SELF_ADVANCE_PICKUP_FLAG_FILE="${STUB_FLAG:-$TMP/nonexistent-flag.json}" \
@@ -169,6 +174,20 @@ rm -f "$TMP/reqs/last-move-body.json"
 STUB_TOKEN="$TMP/empty-token" STUB_ROUTE="$TMP/route-online.sh" run >/dev/null 2>&1; rc=$?
 assert_exit "$rc" 1 "empty token file"
 assert_not_moved "empty token file"
+
+echo
+echo "=== G. NOT INSTALLED -- whole branch skipped, still picks up (Peti Telegram 8928) ==="
+STUB_INSTALLED="$TMP/installed-no.sh" STUB_ROUTE="$TMP/route-local.sh" run >/dev/null 2>&1; rc=$?
+assert_exit "$rc" 0 "not installed -> still picks up"
+assert_moved "not installed"
+assert_offload_called no "not installed never even asks the router"
+tail_reason="$(awk -F'\t' 'END{print $4}' "$TMP/route.log" 2>/dev/null)"
+if [ "$tail_reason" = "not-installed" ]; then
+  PASS=$((PASS+1)); printf 'OK   log reason=not-installed                 not-installed logs its own reason, distinct from ollama-down/flag-off\n'
+else
+  FAIL=$((FAIL+1)); FAILED+=("not-installed log reason (wanted not-installed, got ${tail_reason:-none})")
+  printf 'FAIL log reason=%s wanted not-installed       not-installed\n' "${tail_reason:-none}"
+fi
 
 echo
 echo "-------------------------------------------------------------"

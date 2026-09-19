@@ -322,6 +322,17 @@ fi
 CARD="${1:-}"
 [[ -z "$CARD" ]] && { echo "usage: offload-dispatch.sh <cardId> [assignee]" >&2; exit 2; }
 
+# INSTALLED GATE (Peti Telegram 8928, 2026-09-19): "ha nincs telepitve local-llm akkor ez az ag el se
+# induljon". Same network-free precheck as card-build-route.sh's 0a and self-advance-pickup.sh's
+# step 0 -- a host with no local runtime at all should never take the per-card lock below, resolve
+# leaves, or touch offload-attempts.json for a call that can only end in "nothing drafted". Exits 0,
+# same as every other best-effort skip in this script (VRAM-busy included).
+INSTALLED="${OFFLOAD_INSTALLED:-$HERE/local-llm-installed.sh}"
+if ! bash "$INSTALLED" >/dev/null 2>&1; then
+  echo "offload-dispatch: SKIPPED -- local-llm: not installed, branch skipped. Nothing was drafted; the card is untouched and goes online as usual." >&2
+  exit 0
+fi
+
 # PER-CARD IN-FLIGHT LOCK (2026-08-07). Prevents a duplicate concurrent run for the SAME $CARD argument
 # (e.g. two sweep ticks firing on the same card id). Does NOT dedup across different ids that resolve
 # to overlapping leaves (a parent id vs one of its leaf ids called directly) -- that race is handled by

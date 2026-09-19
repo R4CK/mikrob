@@ -151,6 +151,40 @@ graph_repo_pin="$(
 )"
 check "graph_repo_for('mopsion') resolves to the SAME repo as graph_repo_for('CleanCore')" "$graph_repo_pin" "OK"
 
+# --- the INSTALLED gate is WIRED, ahead of the per-card lock (card 3906d77b follow-up, Peti
+# Telegram 8928) ---------------------------------------------------------------------------------
+# Same source-pin discipline as the VRAM gate above: proves the call is still there and still
+# ahead of the lock, not that the branch behaves correctly (that is B below).
+installed_pin="$(python3 - "$DISPATCH" <<'PYEOF'
+import re, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+code = re.sub(r"(?m)^\s*#.*$", "", src)
+call = re.search(r'bash\s+"\$INSTALLED"', code)
+lock = re.search(r'flock\s+-n\s+8', code)
+print("MISSING" if not call else ("AFTER-LOCK" if lock and call.start() > lock.start() else "OK"))
+PYEOF
+)"
+check "offload-dispatch.sh calls the installed-gate, ahead of the per-card lock" "$installed_pin" "OK"
+
+# --- B. NOT INSTALLED -> exit 0, nothing drafted, never even takes the per-card lock ------------
+# A genuine behaviour test (not a source pin): with OFFLOAD_INSTALLED pointing at a stub that says
+# "not installed", the real script is invoked with an ordinary card id. If the gate really runs
+# BEFORE the lock/curl calls, this returns immediately with no network and no lock file activity --
+# if it did not, the call would hang or error looking for a real dashboard token/API.
+NOT_INSTALLED_STUB="$TMPDIR/installed-no.sh"
+printf '#!/usr/bin/env bash\necho "not-installed: no ollama binary"\nexit 1\n' > "$NOT_INSTALLED_STUB"
+chmod +x "$NOT_INSTALLED_STUB"
+not_installed_err="$(OFFLOAD_INSTALLED="$NOT_INSTALLED_STUB" \
+  timeout 10 bash "$DISPATCH" "selftest-not-installed-$$" 2>&1 1>/dev/null)"; not_installed_rc=$?
+check "not-installed -> exit 0 (never blocks dispatch)" "$not_installed_rc" "0"
+if [[ "$not_installed_err" == *"local-llm: not installed, branch skipped"* ]]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1))
+  echo "FAIL: not-installed -> stderr names the reason"
+  echo "  got: $not_installed_err"
+fi
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

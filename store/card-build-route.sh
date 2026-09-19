@@ -36,6 +36,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LLM="${CARD_BUILD_ROUTE_LLM:-$HERE/local-llm.sh}"
 CLASSIFY="${CARD_BUILD_ROUTE_CLASSIFY:-$HERE/route-classify.sh}"
+INSTALLED="${CARD_BUILD_ROUTE_INSTALLED:-$HERE/local-llm-installed.sh}"
 TIMEOUT="${CARD_BUILD_ROUTE_TIMEOUT:-45}"
 API="${CARD_BUILD_ROUTE_API:-http://localhost:3420}"
 TOKEN_FILE="${CARD_BUILD_ROUTE_TOKEN_FILE:-$HERE/.dashboard-token}"
@@ -90,6 +91,16 @@ esac
 # one -- the opposite of that gate, where a typo would have armed 14 agents.
 if [ "${CARD_BUILD_ROUTE:-on}" = "off" ]; then
   online kill-switch
+fi
+
+# --- 0a. INSTALLED GATE (Peti Telegram 8928, 2026-09-19): "ha nincs telepitve local-llm akkor ez
+# az ag el se induljon" -- local-llm-installed.sh is a network-free ollama-binary + configured-model
+# check, cheaper than the VRAM guard below and cheaper still than reading the card and asking the
+# model. A host that never installed a local runtime at all should never pay any of that. Distinct
+# from "installed but not answering" (route-classify/the model call below already fail safe to
+# ONLINE for that) -- this is the "not even attempted" state.
+if ! bash "$INSTALLED" >/dev/null 2>&1; then
+  online not-installed
 fi
 
 # --- 0b. VRAM PRESSURE, BEFORE ANYTHING ELSE (card f9bad591) -----------------------------------
