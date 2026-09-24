@@ -185,6 +185,26 @@ else
   echo "  got: $not_installed_err"
 fi
 
+# --- C. ONLINE verdict with an advisory envelope -> the draft is kept, not thrown away ---------------
+# local-llm-rag.sh exits 9 on an ONLINE verdict but still prints a JSON envelope with the 7B draft.
+# try_leaf used to discard that stdout on rc=9 (9 of 11 dispatches drafted nothing, 2026-09-24).
+adv_env='{"advisory":true,"trust":"unverified-local-draft","route":"online","reason":"deterministic-multi-decision","spec":"S","draft":"function f() { return 1 }"}'
+adv_out="$(printf '%s' "$adv_env" | bash "$DISPATCH" --test-advisory-draft)"
+if [[ "$adv_out" == *"function f() { return 1 }"* && "$adv_out" == *"ONLINE-VERDIKT (deterministic-multi-decision)"* && "$adv_out" == *"TELJES, FUGGETLEN ONLINE FELULVIZSGALAT"* ]]; then
+  PASS=$((PASS+1))
+else
+  FAIL=$((FAIL+1)); echo "FAIL: advisory envelope -> draft body with the full-review header"; echo "  got: $adv_out"
+fi
+check "empty advisory draft -> nothing (old no-draft path)" \
+  "$(printf '%s' '{"advisory":true,"draft":"   "}' | bash "$DISPATCH" --test-advisory-draft)" ""
+check "non-advisory JSON -> nothing" \
+  "$(printf '%s' '{"advisory":false,"draft":"x"}' | bash "$DISPATCH" --test-advisory-draft)" ""
+check "plain text stdout (not an envelope) -> nothing" \
+  "$(printf '%s' 'advisory draft here' | bash "$DISPATCH" --test-advisory-draft)" ""
+check "empty stdout -> nothing" "$(printf '' | bash "$DISPATCH" --test-advisory-draft)" ""
+wired="$(grep -c 'adv_draft="$(printf '"'"'%s'"'"' "$out" | advisory_draft)"' "$DISPATCH")"
+check "try_leaf's rc=9 branch uses advisory_draft on the RAG stdout" "$wired" "1"
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
