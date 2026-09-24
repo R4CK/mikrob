@@ -194,6 +194,14 @@ KÖTELEZŐ minden nem-triviális feladatnál. Részletek: `project-workflow` ski
 
 17. **TELJES CleanCore suite-futás KIZÁRÓLAG a szemafor-szkripten át -- MINDEN ügynökre, gate-ekre IS (MikroB döntése, 2026-09-04, kártya 5af57bd7/6e39a5f0).** **ÉLESBEN VAN (2026-09-05, `store/cleancore-suite-run.sh` landolva 78d182a6-ban).** Egy teljes CleanCore suite csak `${MARVEEN_MAIN:-/home/neon/marveen}/store/cleancore-suite-run.sh <ügynök> [-- <vitest args>]`-en keresztül indítható, nem közvetlen `vitest run` hívással -- az ABSZOLÚT út a fő klónra kötelező, mert a szkript a saját checkout-jából számított relatív útja a legtöbb worktree-ből nem oldódik fel (a szkript csak a fő klónban létezik ÉS ez SZÁNDÉKOS: a lock-horgony is a fő klónra köt, tehát a szemafor flotta-szinten közös, nem checkout-onkénti -- egy worktree-be szinkronizálás 19 független példányt csinálna belőle, épp a cél ellen). Ez ÉPÍTŐ ügynökre (backend/backend2/backend3) ÉS a gate-agensekre (**qa, cybersec, cybered**) egyformán vonatkozik -- egy gate-verifikáció ugyanúgy teljes suite-ot futtat, és a hamis piros pont ott a legdrágább, mert helyes munkát küld vissza in_progress-be. Célzott, egy-két fájlos futás érintetlen -- a korlát a TELJES suite-ra vonatkozik, mert a mért probléma a CPU-kontenció, nem a tesztelés maga. **Miért:** négy dokumentált eset egyetlen napon, ahol párhuzamos teljes suite-futásoknál a vitest worker->fő-folyamat RPC (birpc, 60 mp-es fix timeout, nem konfigurálható) egy CPU-éheztetett fő folyamattól nem kap időben választ, és a futás 1-es kóddal áll le NULLA teszt-bukással -- hamis piros, ami egy gate-en helyes munkát küld vissza in_progress-be. A szkript max 2 egyidejű futásra korlátoz flock-kal, a többi VÁR (nem elutasít), és PAUSED-SEMAPHORE/RESUMED-SEMAPHORE kommentet ír a váró kártyára, hogy a 3. szabály beragadás-figyelője ne vegye beragadtnak. Szabad slotnál a szkript néma. **Felülvizsgálat egy hét múlva:** ha a megkerülés folytatódik, PreToolUse hook jön (a `noisy-command-guard` mintájára, kártya külön nyílik) -- a hook eseteinek a VALÓDI parancs-korpuszból kell jönniük, nem a fenyegetés-modellből, tehát csak a mintagyűjtés után épül. Két megkerülés-adatpont már megvan a szabály bevezetése után is (2026-09-04): az első egy építő ág, a MÁSODIK egy GATE-futás (002120b1 kártya, QA munkakönyvtára) -- pontosan az a populáció kerülte meg, amit a mechanizmus a legjobban véd. Ez önmagában nem vált ki azonnali hookot, de a felülvizsgálati óra ketyeg és a minta rosszabbodik, nem javul.
 
+18. **Subagent CSAK Sonnet 5 modellen és medium effort-tal futhat (Peti szabály 2026-09-24, Telegram).** Ha bármelyik ügynök (MikroB is) subagentet indít az Agent tool-lal, a subagent modellje `sonnet` (Claude Sonnet 5), a reasoning effort `medium` -- nem Opus, nem Fable, nem high/max effort. Ez strukturálisan a `~/.claude/agents/*.md` frontmatterében van rögzítve (`model: sonnet`, `effort: medium`, minden ügynök-definíción); az Agent-hívásban a `model` paramétert NE írd felül erősebbre. Kivétel nincs; ha egy feladat tényleg erősebb modellt kíván, azt a szerep-ügynök maga végezze, ne subagent. MIÉRT: a subagent-fan-out a legnagyobb rejtett tokenfogyasztó, és a legtöbb subagent-feladat (keresés, kutatás, mechanikus szerkesztés) nem igényli a legerősebb modellt.
+
+19. **Tisztázó kérdés, ha a feladat lényege vagy célja nem tiszta -- az `interview-me` skillel (Peti szabály 2026-09-24, Telegram).** Mielőtt egy ügynök nekiáll egy kártyának/kérésnek, aminek a CÉLJA (mit akar elérni Peti / a kártyanyitó) vagy a LÉNYEGE (mi a kész állapot) nem egyértelmű, NE tippeljen és ne válasszon némán egy értelmezést (1. kódminőségi elv): futtassa az `interview-me` skillt, és a strukturált tisztázó kérdéseket tegye fel a kérőnek (Peti -> Telegram; kártyanyitó ügynök -> inter-agent üzenet, MikroB -> kanban-komment). A válaszig a kártya `waiting`-re megy `BLOKKOLT-tisztázás` jelöléssel, a kérdéseket a kártyán is rögzítve. Triviális, egyértelmű feladatnál kihagyandó -- a szabály a "több értelmezés, más-más munka" esetekre szól.
+
+20. **Skill-használat MINDEN területen -- minden ügynök a saját szerepéhez tartozó skilleket ténylegesen HASZNÁLJA, nem csak birtokolja (Peti szabály 2026-09-24, Telegram).** A `~/.claude/skills/` katalógus minden ügynöknek elérhető; a szabály: egy feladat felvételekor az ügynök megnézi, van-e a feladat típusához illő skill (a skill `description` triggerei alapján), és ha van, azt betölti és követi -- nem fejből, nem saját improvizált eljárással. Ez a 10. szabály (GitHub-first) belső párja: a saját, már desztillált tudást is előbb kell használni, mint újra kitalálni. A REVIEW-kommentben egy sor nevezze meg a használt skill(eke)t (`Skills: <név>, <név>` vagy `Skills: nincs illő`), hogy a gate és MikroB lássa; a hiányzó vagy rossz skill-választás finding, nem FAIL. MikroB feladata: a teljes skill-katalógus szerepenkénti átnézése és a hozzárendelés rögzítése az ügynök-definíciókban (kártya nyílik rá).
+
+21. **10 percenként ügynök-ellenőrzés a beragadás és a felesleges tokenfogyás ellen (Peti szabály 2026-09-24, Telegram).** MikroB 10 percenként MINDEN futó ügynököt ellenőriz: mozdul-e a kártyája (`[NN%]`/`updated_at`, 3. szabály), tényleg dolgozik-e (agent-busy) vagy idle-de-fut (7. szabály: parkolni), ül-e permission-prompton (15. szabály), nőtt-e a kontextusa a 75%-os küszöb fölé (kontextus-tömörítés szabály). Beragadt ügynök: blokk megnézése + re-dispatch/átruházás (3., 3a. szabály); idle ügynök: parkolás. Ezt a `heartbeat-consolidated` D szekciója hajtja végre 10 percenként -- ez a szabály a kötelezettséget rögzíti, nem új mechanizmust ír elő; ha a D szekció bármiért kimarad (MikroB-restart, ütemező-hiba), a következő MikroB-ébredéskor pótolni kell.
+
 ### CleanCore munkakönyvtár a dispatchben (kártya 973ed6eb, a 2513e84d worktree-epic zárása)
 
 A CleanCore-t **minden fejlesztő ügynök a SAJÁT git-worktree-jében** szerkeszti, nem a megosztott klónban. A megosztott klón (`/mnt/h/LM_Studio_Workdir/mopsion`) mostantól CSAK fetch/landolás-alap: oda senki nem commitol. Ez a `shared-file-commit-entanglement` hibaosztály szerkezeti megszüntetése (saját index + saját `core.hooksPath`), nem a fegyelemre bízása.
@@ -657,3 +665,26 @@ megírása) közben elvégezhető.
 (A `[telegram-wake]` és `[Inbox]` nudge-ok, valamint a `<scheduled-task>` blokkok NEM tartoznak
 ide -- azoknak saját kerete van.)
 <!-- END GENERATED: system-directive-auth -->
+
+<!-- BEGIN GENERATED: memory-search-label (auto-generated, do not edit by hand) -->
+## Memória-keresés: a FEJLÉCET is olvasd el (KÖTELEZŐ)
+
+A keresés alapból ENGEDÉKENY: ha egyetlen valódi szavad sem talál, eldobja őket, és a
+maradék töltelékszavakra hozott sorokat adja vissza. A body ilyenkor UGYANÚGY néz ki, mint
+egy valódi találat -- a különbség KIZÁRÓLAG az `X-Memory-Search` fejlécben utazik. Ezért a
+keresés receptje `-D`-vel megy, és a `grep` NEM opcionális:
+
+```bash
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" | curl -s -H @- -D /tmp/mem-fejlec-mikrob.txt \
+  "http://localhost:3420/api/memories?agent=mikrob&q=KULCSSZO"
+grep -i '^x-memory-search' /tmp/mem-fejlec-mikrob.txt
+```
+
+- `relaxed=true` -- semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett
+  közelítés, NEM bizonyíték. Egy sosem létezett minta így ötven sorral válaszol.
+- `relaxed=false` -- a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez
+  MINDEN, és azt sem, hogy van találat: a `relaxed=false; hits=0` létező válasz.
+
+Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a
+`&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik.
+<!-- END GENERATED: memory-search-label -->
