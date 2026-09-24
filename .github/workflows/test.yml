@@ -47,3 +47,7 @@ jobs:
       # regression guard that only runs manually rots exactly like a one-shot
       # seed. Runs natively here (ubuntu = the Linux branch it asserts).
       - run: bash scripts/__tests__/stop-start-system-unit.test.sh
+      # Card b9a657e6: same reasoning as above -- ollama-boot-restore.sh guards a
+      # boot-after-reboot path nobody exercises by hand day to day, so its own
+      # selftest has to run somewhere other than a human remembering to.
+      - run: bash scripts/__tests__/ollama-boot-restore.test.sh

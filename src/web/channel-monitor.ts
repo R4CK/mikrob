@@ -2299,6 +2299,12 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       }
     }
 
+    // Card b9a657e6: give Ollama a chance to come back up BEFORE the desired-state reconciliation
+    // below restarts sub-agents -- synchronous and textually first on purpose, not `void`-fired
+    // alongside reconcileDesiredAgents(), so a just-restarted agent's first local-first call has a
+    // real chance of finding Ollama already up instead of racing it.
+    runOllamaBootRestore()
+
     // Desired-state reconciliation: bring back agents the operator wants
     // running but whose tmux session vanished entirely (shared tmux server
     // killed by a channels-unit restart, or a machine reboot). The per-target
@@ -2358,6 +2364,26 @@ function memGateAllowsStart(agentName: string): boolean {
     }
     logger.debug({ err, agent: agentName }, 'Memory gate check errored -- failing open (allow)')
     return true
+  }
+}
+
+// Card b9a657e6: after a machine reboot, nothing restarted Ollama on its own -- every sub-agent's
+// local-first attempt fell back to ONLINE until a human started it by hand (2026-09-19, down
+// 22:25-08:22). Called synchronously and BEFORE reconcileDesiredAgents() below (not `void`-fired in
+// parallel with it) so the ordering the card asks for ("az ügynökök ELŐTT") is real, not just
+// textual: by the time a just-restarted sub-agent makes its first local-first call, Ollama has
+// already had this sweep's chance to come back up. The script itself decides whether anything needs
+// doing (already up / masked / boot not stable / dxgkrnl fault this boot all short-circuit to a
+// no-op) -- this wrapper only has to not let a script failure break the sweep, same FAIL-OPEN shape
+// as memGateAllowsStart above. The bounded timeout covers the script's own worst case (up to ~20s of
+// /api/tags polling plus a 30s generate probe on an actual restart); every other outcome returns in
+// well under a second.
+const OLLAMA_RESTORE_SCRIPT = join(PROJECT_ROOT, 'scripts', 'ollama-boot-restore.sh')
+function runOllamaBootRestore(): void {
+  try {
+    execFileSync('/bin/bash', [OLLAMA_RESTORE_SCRIPT], { timeout: 55000, stdio: 'ignore' })
+  } catch (err: unknown) {
+    logger.debug({ err }, 'ollama-boot-restore.sh errored or timed out -- next sweep will retry')
   }
 }
 
