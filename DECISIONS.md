@@ -13430,3 +13430,55 @@ lepese, a pontos prompt-szoveget a kartya kommentjeben adtam at.
 **Ki dontott:** backend (a script/selftest + a hatarok kimondasa), MikroB tovabbi lepese a schedule
 letrehozasa + az allowlist-bovites eldontese.
 **Kartya:** f268629c (26c07c33 EPIC gyereke).
+
+## 2026-09-24 -- 907b1a76 (e5c46e87 FAZIS gyereke) -- Upstream szinkron: memoria-rendszer, 4 commit portolva
+
+Szulo fazis: e5c46e87 (Szotasz/marveen upstream szinkron v1.38+v1.39, Peti: legsurgosebb 2026-09-24).
+Ez a klaszter a memoria-rendszert erinto 4 upstream commit, mind PORTOLVA (nem skip/pending).
+
+**d74035c2 (MEMHOTZAR916, docs).** A hot->cold atsorolas utja (a PATCH /api/memories/:id
+category-only alakja mar mukodott, csak nem volt leirva) bekerult a `src/web/agent-scaffold.ts`
+sablonba, a "Keresés" szekcio utan. Adaptalva a fork sajat curl/token mintajara (STDIN-en atadott
+Authorization header, `printf ... | curl -H @-`, nem az upstream inline `-H "Authorization: Bearer
+$(cat ...)"` alakja) es a fork CATEGORY_KEY/level-konvenciojara (memory_maintenance = level 3,
+AUTONOM). Nincs backtick a beszurt szovegben (a sablon backtick-es template literal).
+
+**ab7c6d5f (MEMIRASNYOM915, write-trace).** `updated_at`/`updated_by` oszlop + `memories_touch`
+trigger (kulon trigger, NEM a meglevo `memories_au` FTS-sync trigger bovitese -- az minden UPDATE-en
+tuzel, ide degradalna az updated_at-ot "utolso decay-ido"-va). `updateMemory()` uj, opcionalis utolso
+parameterrel (`updatedBy`) bovult -- pozicionalis, ezert a meglevo hivok (3 db, src/__tests__ alatt)
+nem tortek. A fork `updateMemory()`-ja mar korabban is elteret upstreamtol (sajat
+cache-invalidalasi logikaval, `memoryCacheInvalidate`/`clearMemoryCache`) -- ez a logika UNIO-ban
+megmaradt, a write-trace SET-ek hozzaadva melle, nem felulirva.
+
+**c9a778ad (EMBSTALE916, stale embedding).** `updateMemory()` NULL-ra allitja az `embedding` oszlopot,
+ha a content VAGY a keywords valtozott (mindketto resze annak, amit a beagyazas tenylegesen kodol) --
+visszaadva a sort a `backfillEmbeddings()`-nek (WHERE embedding IS NULL, idempotens). NEM szinkron
+ujra-embeddel: az egy Ollama-hivast tenne a DB-iras utjaba. A `before` SELECT-et az ab7c6d5f mar
+bevezette (agent_id, category); ez a commit content+keywords-szel bovitette, UNIO-ban a fork sajat
+mezoivel.
+
+**ca3c87b8 (MEMLINKAUDIT915, memory-link-audit.py).** `scripts/memory-link-audit.py`: uj
+MEMORY-SZEKCIO (konszolidalt slug mint `## <slug>` fejlec egy topic-collectorban -- talalat, nem
+hiba) es SZEKCIO-PREFIX? (csak tipus-prefix nelkul egyezo cel -- ember dontsön, `feedback_x` !=
+`reference_x`) vodrok. A fork sajat, pre-fix valtozata BYTE-AZONOS volt az upstream commit szulojevel
+(`git diff` ures, csak a futtathato-bit ternt el) -- ezert az upstream post-fix fajl VERBATIM masolat,
+nem kezi ujraepites. A CI-bekötő sor (`.github/workflows/test.yml`, `python3 scripts/__tests__/
+egress-drift-scan.test.py` mellé) NEM lett portolva: a fork sajat CI-ja (`npm test` = vitest run,
+plusz EGY nevesitett `.sh` teszt) ma EGYETLEN `scripts/__tests__/*.test.py` fajlt sem futtat -- ez
+mar-is-letezo, ettol a kartyatol fuggetlen res, kulon kartyat erdemel, nem ennek a portnak a
+hatoköre.
+
+**Tesztek (a worktree fan, e5c46e87 gyerekeg, marveen-land elotti allapot).** Uj: `memory-write-
+trace.test.ts` 7/7, `memory-embedding-staleness.test.ts` 6/6, `scripts/__tests__/memory-link-
+audit.test.py` 8/8 (negativ kontroll: a pre-fix scriptre futtatva 7/8 bukik, pontosan az upstream
+commit sajat allitasaval egyezoen). Erintett meglevo fajlok ujra lefuttatva: `memory-performance.
+test.ts` 13/13, `memory-listing-staleness.test.ts` 6/6, `autonomy-section.test.ts` 8/8,
+`agent-scaffold-dashboard-origin.test.ts` 31/31, `agent-scaffold-mcp-seeding.test.ts` 5/5. `tsc
+--noEmit` tiszta. Osszesen: 76/76 zold vitest + 8/8 zold python, egyik meglevo teszt sem torott.
+
+**Nem erintett/nem portolt.** A CI workflow-bovites (fent indokolva). `store/upstream-ported.json`
+(gitignored, per-install allapot) mind a negy shat `ported`-re allitva, indokkal.
+
+**Ki dontott:** backend (dispatch: MikroB msg_id 3556 -> 3563, a card df1b2d5b utan self-advance +
+MikroB explicit elorevetele, e5c46e87 fazis in_progress gyereke, 1d szabaly).

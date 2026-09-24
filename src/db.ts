@@ -493,6 +493,50 @@ export function initDatabase(dbPathOverride?: string): void {
     // column already exists
   }
 
+  // MEMIRASNYOM915 (ported from upstream ab7c6d5f): write-trace columns. Every
+  // agent patches memories with read-modify-write (read, append, write the
+  // WHOLE text back), so a lost concurrent write is invisible after the fact --
+  // the checker only sees that its OWN text is present. These columns make the
+  // LOSS visible, they do not remove the race. NULL updated_at = never
+  // content-updated since this migration; NULL updated_by = the writer did not
+  // attribute itself.
+  try {
+    db.exec('ALTER TABLE memories ADD COLUMN updated_at INTEGER')
+  } catch {
+    // column already exists
+  }
+  try {
+    db.exec('ALTER TABLE memories ADD COLUMN updated_by TEXT')
+  } catch {
+    // column already exists
+  }
+  // Stamp updated_at on CONTENT-shaped updates only. Maintenance writes
+  // (salience decay, accessed_at bumps, embedding backfills) must NOT stamp, or
+  // updated_at would degrade into "last decay time". A separate trigger rather
+  // than extending memories_au: that one is the FTS-sync contract and fires on
+  // every update by design.
+  // Recursion safety under PRAGMA recursive_triggers=ON: the inner UPDATE
+  // changes updated_at, so the re-fired trigger fails the
+  // `new.updated_at IS old.updated_at` guard and stops. A writer that sets
+  // updated_at itself (updateMemory does) also fails the guard and keeps its
+  // own values. updated_by is cleared when the write did not (re)attribute
+  // itself, so a raw sqlite3 write never inherits the previous author -- NULL
+  // reads as "unattributed", never as false attribution.
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS memories_touch AFTER UPDATE ON memories
+    WHEN (new.content IS NOT old.content
+          OR new.keywords IS NOT old.keywords
+          OR new.category IS NOT old.category
+          OR new.agent_id IS NOT old.agent_id)
+     AND new.updated_at IS old.updated_at
+    BEGIN
+      UPDATE memories SET
+        updated_at = unixepoch(),
+        updated_by = CASE WHEN new.updated_by IS old.updated_by THEN NULL ELSE new.updated_by END
+      WHERE id = new.id;
+    END
+  `)
+
   // Daily logs table
   db.exec(`
     CREATE TABLE IF NOT EXISTS daily_logs (
@@ -2863,16 +2907,37 @@ export function auditMemoryRecall(agentId: string, sampleSize: number = 50): Mem
   }
 }
 
-export function updateMemory(id: number, content: string, category?: string, agentId?: string, keywords?: string): boolean {
+export function updateMemory(id: number, content: string, category?: string, agentId?: string, keywords?: string, updatedBy?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   // Read the row's CURRENT owner and category before writing. The agentId
   // parameter is optional and means "reassign to this agent", so it is absent
   // on the ordinary edit -- it cannot be used to decide whose cache went
-  // stale. Only the row itself knows that.
-  const before = db.prepare('SELECT agent_id, category FROM memories WHERE id = ?').get(id) as
-    { agent_id: string | null; category: string | null } | undefined
-  const sets: string[] = ['content = ?', 'accessed_at = ?']
-  const params: unknown[] = [content, now]
+  // stale. Only the row itself knows that. content/keywords come along for the
+  // embedding-staleness check below, for the same reason: the parameters alone
+  // cannot say whether the embedded text changed.
+  const before = db.prepare('SELECT agent_id, category, content, keywords FROM memories WHERE id = ?').get(id) as
+    { agent_id: string | null; category: string | null; content: string | null; keywords: string | null } | undefined
+  // MEMIRASNYOM915 (ported from ab7c6d5f): attributed write-trace. updated_at is
+  // set explicitly here (which keeps the memories_touch trigger from firing);
+  // updated_by is the caller's self-reported identity, or explicit NULL -- never
+  // the previous author left in place.
+  const sets: string[] = ['content = ?', 'accessed_at = ?', 'updated_at = ?', 'updated_by = ?']
+  const params: unknown[] = [content, now, now, updatedBy ?? null]
+  // EMBSTALE916 (ported from c9a778ad): the stored embedding was generated from
+  // the OLD text, so an edit silently leaves the vector describing text that is
+  // no longer there -- nothing in the schema records that mismatch, and neither
+  // search path errors (FTS/LIKE read content live; hybridSearch keeps fusing
+  // the stale vector's ranking in). Dropping it to NULL hands the row back to
+  // backfillEmbeddings, which processes exactly WHERE embedding IS NULL and is
+  // therefore idempotent and resumable -- deliberately NOT regenerating inline,
+  // since that would put a synchronous Ollama call in the path of a DB write.
+  // The trigger is the embedded TEXT changing (content AND keywords, since both
+  // saveAgentMemory and backfillEmbeddings embed `content + ' ' + keywords`);
+  // compared against the stored values, not parameter presence, because content
+  // is required and the PUT route resends the unchanged body on a category-only
+  // edit.
+  const keywordsChanged = keywords !== undefined && (before?.keywords ?? null) !== keywords
+  if (before && (before.content !== content || keywordsChanged)) sets.push('embedding = NULL')
   if (category) { sets.push('category = ?'); params.push(category) }
   if (agentId) { sets.push('agent_id = ?'); params.push(agentId) }
   if (keywords !== undefined) { sets.push('keywords = ?'); params.push(keywords) }

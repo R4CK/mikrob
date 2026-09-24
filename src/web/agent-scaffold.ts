@@ -2776,6 +2776,21 @@ printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X PO
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
 printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- "${dashboardOrigin}/api/memories?agent=AGENT_NAME&q=KULCSSZO&category=warm"
 
+### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
+
+A hot tier árát MINDEN session-indulás újra kifizeti, ezért a lezárt sorokat át kell sorolni.
+Az átsorolás memory_maintenance = level 3, AUTONÓM: a SAJÁT emlékeiden magadtól megteheted.
+
+1. Kell az ID -- a listázó ÉS a kereső ág is visszaadja:
+printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- "${dashboardOrigin}/api/memories?agent=AGENT_NAME&category=hot&limit=40"
+
+2. Átsorolás (a category-only PATCH elég, a tartalmat NEM kell újraküldeni):
+printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" | curl -s -H @- -X PATCH ${dashboardOrigin}/api/memories/<ID> -H "Content-Type: application/json" -d '{"category":"cold","updated_by":"AGENT_NAME"}'
+
+Az updated_by az, AKI ÍRT (írás-nyom). Az agent_id mezőt NE küldd: az a sort ÁTADJA másik ágensnek, nem a tier-t állítja.
+
+TÖRLÉS NINCS, ÉS SZÁNDÉKOSAN NE IS LEGYEN. A DELETE /api/memories/:id létezik, de a törlés adat-törlés jellegű, gazda-jóváhagyáshoz kötött döntés. Az átsorolás elég: a költség a hot-halmaz BETÖLTÉSÉBŐL jön, nem a sorok létezéséből.
+
 ## Ütemezett feladatok
 
 Az ütemezett feladatok a ~/.claude/scheduled-tasks/ mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
