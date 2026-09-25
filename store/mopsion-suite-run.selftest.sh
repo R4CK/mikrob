@@ -484,5 +484,79 @@ else
   bad "the mid-run watch fired even though the memory precondition was disabled" "rc=$midrun_off_rc out=$(cat "$TMP/midrun-off-out.txt" 2>/dev/null)"
 fi
 
+# --- 15. THE REVERSE DIRECTION, WITH THE REAL fleet-test.sh (card 3e1502ec) ---------------------
+# Cases 1-14 above prove this script's OWN slot logic against synthetic `flock` holders. Those
+# holders use the identical file-naming scheme fleet-test.sh's acquire_cpu_slot() uses
+# (${PREFIX}-N.lock), so symmetry follows from flock being a kernel primitive -- but nothing before
+# this case actually DROVE the real fleet-test.sh script and watched this script queue behind it.
+# That gap is what card 3e1502ec's "known-positive" ask names: a fleet-test run should make
+# cleancore-suite-run.sh see the CPU pool as short one slot, not just be assumed to by construction.
+#
+# fleet-test.sh's ROOT and LOCK_FILE are hardcoded to the real /home/neon/marveen (not derived from
+# MARVEEN_MAIN), so this holds the REAL tree lock first -- that stops the real script right after it
+# acquires its CPU slot, before it ever touches a worktree, checkout or build.
+#
+# THE REAL LOCK MAY LEGITIMATELY BE BUSY (another agent's genuine landing/suite in flight): this
+# acquires it NON-BLOCKING and SKIPS the case rather than queueing behind a run that can take
+# 60-90 minutes -- a selftest that can hang on live fleet traffic is worse than one that skips.
+REAL_TREE_LOCK="/home/neon/marveen-test.lock"
+REV_ANCHOR="$TMP/reverse-anchor"
+mkdir -p "$REV_ANCHOR/store"
+tree_lock_pid=""
+fleet_test_pid=""
+cleanup_case15() {
+  [[ -n "$fleet_test_pid" ]] && kill -9 "$fleet_test_pid" 2>/dev/null
+  [[ -n "$tree_lock_pid" ]] && kill -9 "$tree_lock_pid" 2>/dev/null
+}
+
+exec 8>"$REAL_TREE_LOCK"
+if ! flock -n 8; then
+  echo "  [SKIP] case 15 -- the real fleet-test tree lock is held by another run right now; not queueing behind it"
+  exec 8>&-
+else
+  ( exec 8>"$REAL_TREE_LOCK"; flock 8; sleep 25 ) &
+  tree_lock_pid=$!
+  exec 8>&-
+  sleep 0.3
+
+  MARVEEN_MAIN="$REV_ANCHOR" CLEANCORE_SUITE_SLOTS=2 CLEANCORE_SUITE_POLL_S=1 \
+    FLEET_TEST_LOCK_WAIT=20 \
+    bash "$HERE/fleet-test.sh" --ref HEAD >"$TMP/case15-fleet-test.out" 2>&1 &
+  fleet_test_pid=$!
+  sleep 2   # let the real script acquire its CPU slot and start waiting on the real tree lock
+
+  # CONTROL FIRST: with only ONE of the two slots taken (by the real fleet-test.sh), the OTHER slot
+  # must still be free -- so the queue-out below is caused by the second, synthetic holder, not by
+  # some unrelated bug that always reports "no slot" against this anchor.
+  out="$(env "${env_common[@]}" MARVEEN_MAIN="$REV_ANCHOR" CLEANCORE_SUITE_LOCK_PREFIX="${REV_ANCHOR}/store/.cleancore-suite-slot" \
+         CLEANCORE_SUITE_SLOTS=2 CLEANCORE_SUITE_WAIT_MAX_S=5 \
+         bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+  if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree'; then
+    ok "CONTROL: with only the real fleet-test.sh holding one slot, cleancore-suite-run.sh gets the other"
+  else
+    bad "CONTROL failed -- cleancore-suite-run.sh could not get the free slot for an unrelated reason" \
+      "rc=$rc out=$out fleet-test-out=$(cat "$TMP/case15-fleet-test.out" 2>/dev/null)"
+  fi
+
+  # Now take the OTHER slot synthetically too, so BOTH are held and the run must queue out.
+  ( exec 9>"${REV_ANCHOR}/store/.cleancore-suite-slot-2.lock"; flock 9; sleep 15 ) &
+  HOLDERS+=("$!")
+  sleep 0.3
+
+  out="$(env "${env_common[@]}" MARVEEN_MAIN="$REV_ANCHOR" CLEANCORE_SUITE_LOCK_PREFIX="${REV_ANCHOR}/store/.cleancore-suite-slot" \
+         CLEANCORE_SUITE_SLOTS=2 CLEANCORE_SUITE_WAIT_MAX_S=3 \
+         bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+  if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no slot after'; then
+    ok "cleancore-suite-run.sh queues out when a REAL fleet-test.sh run holds the other shared slot"
+  else
+    bad "cleancore-suite-run.sh did not see the real fleet-test.sh's CPU-slot hold" \
+      "rc=$rc out=$out fleet-test-out=$(cat "$TMP/case15-fleet-test.out" 2>/dev/null)"
+  fi
+
+  cleanup_case15
+  wait "$fleet_test_pid" 2>/dev/null
+  wait "$tree_lock_pid" 2>/dev/null
+fi
+
 echo "mopsion-suite-run.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
