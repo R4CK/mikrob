@@ -13991,3 +13991,31 @@ modositani a skill idozitesi szamait.
 
 **Ki dontott:** MikroB (plan-grilling verdikt, komment 6007), backend2 (implementacio + a
 `--context`/routeTask biztonsagi res feltarasa es javitasa + a negy-kartya hatokor-szukites).
+
+## 2026-09-25 -- e50b311f -- Draft-Review kapu: a local-llm kimerules-jelzese mar nem koveteli
+biralatot (A opcio, deklarativ jelolo)
+
+**A ket lehetoseg kozul (A) a kapu ismerje fel a kimerules-jelzest, VAGY (B) otodik
+`Draft-Review: NEM ERKEZETT` ertek -- az A-t valasztottam.** Indoklas (2. kodminosegi elv,
+egyszeruseg elobb): a kimerules-jelzes NEM egy draft, aminek elbiralasra van szuksege -- nincs mit
+elbiralni. A B opcio uj enum-erteket es kulon statisztika-oszlopot igenyelt volna (f5b0e82e napi
+osszesito) egy olyan esemenyhez, ami STRUKTURALISAN nem tartozik a "draft-e volt jo" kerdes ala.
+Az A opcio egyszeruen kiveszi a kimerules-jelzest a "van draft, ami varakozik" halmazbol -- a
+statisztika-keveredes (MikroB FELESLEGES-t, backend2 ELUTASITVA-t irt ugyanarra az esetre) magatol
+megszunik, mert a kerdes fel sem merul tobbe.
+
+**Megvalositas:** `src/web/kanban-draft-review-guard.ts` `newestDraftAt()`-ja mostantol egy
+DEKLARATIV, sor-eleji jelolot (`EXHAUSTION_NOTICE_RX`, `/^INFO-ONLY \[local-llm offload\]:/`) nez,
+ami `store/offload-dispatch.sh` `post_exhausted_notice()` sajat, szandekosan megfogalmazott
+prefixere van horgonyozva -- kulonbozik a valodi draft prefixetol (`[LOCAL-LLM DRAFT |
+dispatch-offload]`), a ketto nem utkozhet. NEM szoveg-heurisztika (a kartya sajat kovetelmenye).
+
+**Teszt:** ismert-pozitiv (kimerules-jelzes ALONE -> nincs kapu-kovetelmeny) + negativ kontrol
+(kesobbi VALODI draft a kimerules utan meg mindig biralatot igenyel, a kimerules idobelyege nem
+"fedi" a kesobbi draftot) + mutacio-bizonyitek (a jelolo prazatalik-mentesitese CSAK a sor elejen
+szamit, egy idezett/emlitett prefix a draft szovegen belul nem elegendo). `newestDraftAt` +
+`draftReviewGuardVerdict` describe-blokkok bovitve, 23/23 zold (elotte 15/15).
+
+**Gate:** QA.
+
+**Ki dontott:** backend (self-advance, rule 6b -- 2 napnal regebbi kartya, backend2 sajat lelete).
