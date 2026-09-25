@@ -14103,6 +14103,50 @@ szamit, egy idezett/emlitett prefix a draft szovegen belul nem elegendo). `newes
 **Gate:** QA.
 
 **Ki dontott:** backend (self-advance, rule 6b -- 2 napnal regebbi kartya, backend2 sajat lelete).
+
+## 2026-09-25 -- c375238d -- Self-audit 2026-09-18 harom LOW higienia-lelete: 2 javitva, 1
+szandekosan valtozatlanul hagyva
+
+**1. `store/local-llm-rag.sh` dashboard-token env-var helyett stdin (javitva).** A python
+memoria-lekero heredoc-ja a tokent `TOKEN=` kornyezeti valtozoban kapta -- gyengebb expoziciot,
+mint az argv (`/proc/<pid>/environ` csak tulajdonos-olvashato, 0400), de nem a bevalt stdin-mintat,
+amit a flotta ~25 masik hivoja mar hasznal (curl `-H @-`). A heredoc alakja (`python3 - <<'PY'`)
+MAGA fogyasztja a stdin-t a szkript FORRASAHOZ, ezert a tokent nem lehetett volna ugyanoda tenni --
+a python-kod ehelyett egy VALODI (0600, EXIT-kor torolt) temp-fajlba kerult, ugyanaz a minta mint a
+flotta mar meglevo `_hdr_file`-ja (`offload-dispatch.sh`/`mopsion-suite-run.sh`), a token pedig
+kulon `printf '%s' "$TOKEN" | python3 "$fajl"` csovezetesen erkezik, a python `sys.stdin.read()`-del
+olvassa. Vegponttol-vegpontig igazolva: valodi dashboard-hivas (`--show-context`) sikeresen
+lekerte a memoriakat, a temp-fajl a futas vegen bizonyitottan eltunt (grep nem talalta sehol a
+`/tmp`-ben). Nincs dedikalt automatizalt teszt hozzaadva -- egy bash-szkript belso token-tovabbitasi
+mechanizmusa, aranytalan lenne uj teszt-infrastrukturat epiteni egy LOW higienia-javitashoz, amikor
+a manualis vegpont-igazolas mar bizonyitja a viselkedest.
+
+**2. `loot/` felvetve a `.gitignore`-ba (javitva).** A redteam-skill scratch-konyvtara (talalati
+jegyzetek, `artifacts/screenshots`, token-hasznalati adat -- egy XSS-lelet `notes.json`-ban)
+UNTRACKED es nem gitignore-olt volt a repo gyokereben -- egy szeles `git add -A`/`git add .`
+becsippanthatta volna. Felvettem `/loot/`-kent a "Local one-off artifacts" szekcioba, `git
+check-ignore -v` igazolta hogy mukodik.
+
+**3. `GET /subagent-state.json` auth nelkul marad -- SZANDEKOS, NEM javitva.** A kartya explicit
+dontest kert: kell-e mogé auth, vagy elfogadhato a puszta nev-lista. Megvizsgaltam a hivo oldalt
+(`web/app-auth-bootstrap.js`): a `refreshSubagents()` SZANDEKOSAN a `/api/*` kapun KIVUL hivja ezt
+az utvonalat, MERT a dashboard OLDALBETOLTESKOR, MEG A TOKEN-BOOTSTRAP ELOTT hivja meg elsokent
+(`app-auth-bootstrap.js` `app-last-update.js` ELOTT toltodik be, a fajl sajat kommentje szerint) --
+egy auth-kotelezo valtoztatas vagy az elso hivast torne el (401, meg nincs token), vagy a teljes
+auth-bootstrap sorrendet kene atszervezni, ami NAGYSAGRENDDEL nagyobb valtoztatas egy LOW,
+csak-nev-kiszivargast jelento leletnel. Az expozicio maga (egy zart, mar amugy is ismert
+ugynok-nev-lista, pl. `["mikrob"]`, se idobelyeg, se feladat-reszlet, se titok) alatta marad annak a
+kuszobnek, ami indokolna a nagyobb atszervezest. Dontes: ELFOGADVA valtozatlanul, dokumentalva itt.
+
+**Design-megjegyzes a kartya sajat feljegyzeseben** (auth.kind==='none' globalis kapu-felteteI,
+device-key/mv_session suti egyenerteku a dashboard tokennel a 3 kivetelen kivul) -- ez a kartya
+sajat szavaival "nem e kartya scope-ja", nem erintve.
+
+**Gate:** QA + Cybersec (token-kezeles + expozicio, a kartya sajat kijelolese).
+
+**Ki dontott:** backend (self-advance, rule 6b -- 2 napnal regebbi kartya, a kartya sajat 2026-09-18-i
+self-audit lelete).
+
 ## 2026-09-25 -- 42749892 (32dbac1e rebrand gyereke, 3. lépés) -- systemd unit/timer átnevezés: mikrob-cleancore-suite-guard -> mikrob-mopsion-suite-guard
 
 **Mit csináltunk.** `scripts/install-cleancore-suite-guard-timer.sh` át lett nevezve

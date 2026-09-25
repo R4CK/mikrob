@@ -516,13 +516,20 @@ fi
 TOKEN="$(cat "$TOKEN_FILE")"
 
 # --- retrieve relevant memories + assemble context (multi-term recall) ---
-# The dashboard q= search narrows as terms are added, so a long task string
-# under-recalls. We tokenize the query into salient terms and union the results
-# (per-term + whole-query), dedup by id, rank by salience, take top K.
-CONTEXT_BLOCK="$(DASH="$DASH" TOKEN="$TOKEN" QUERY="$QUERY" AGENT="$AGENT" K="$K" \
-  SHARED="$SHARED" INLINE="$CONTEXT" python3 - <<'PY'
+# TOKEN reaches the python retriever over STDIN, not an env var (card c375238d, self-audit
+# 2026-09-18 finding 1): /proc/<pid>/environ is owner-readable-only (0400), a narrower exposure
+# than argv's world-readable cmdline, but still wider than the stdin pattern the rest of this
+# fleet's ~25 token-bearing callers already use (curl's `-H @-`). A heredoc can't carry the token
+# too -- `python3 - <<'PY'` already occupies stdin with the SCRIPT SOURCE, and by the time the
+# script body runs, stdin is at EOF -- so the script goes to a real (0600, removed on EXIT) temp
+# file instead, freeing stdin for the token, same shape as this fleet's `_hdr_file` pattern
+# (offload-dispatch.sh / mopsion-suite-run.sh) for curl headers.
+RAG_PY_FILE="$(mktemp)"
+chmod 600 "$RAG_PY_FILE"
+trap 'rm -f "$RAG_PY_FILE"' EXIT
+cat >"$RAG_PY_FILE" <<'PY'
 import json, os, re, sys, urllib.parse, urllib.request
-DASH=os.environ['DASH']; TOKEN=os.environ['TOKEN']
+DASH=os.environ['DASH']; TOKEN=sys.stdin.read().strip()
 QUERY=os.environ['QUERY']; AGENT=os.environ['AGENT']
 K=int(os.environ.get('K','5')); SHARED=os.environ.get('SHARED','1')=='1'
 INLINE=os.environ.get('INLINE','').strip()
@@ -583,7 +590,10 @@ if INLINE:
     out.append(INLINE)
 print("\n".join(out))
 PY
-)"
+CONTEXT_BLOCK="$(printf '%s' "$TOKEN" | DASH="$DASH" QUERY="$QUERY" AGENT="$AGENT" K="$K" \
+  SHARED="$SHARED" INLINE="$CONTEXT" python3 "$RAG_PY_FILE")"
+rm -f "$RAG_PY_FILE"
+trap - EXIT
 
 # --- build the enriched prompt ---
 if [[ -n "$CONTEXT_BLOCK" ]]; then
