@@ -14986,3 +14986,76 @@ tiszta.
 
 **Ki döntött:** MikroB (kivizsgálás, root cause, kártya nyitása), backend3 (a javítás, a meglévő
 izolációs minta felismerése és kiterjesztése ahelyett, hogy fájlonként patchelt volna). Gate: QA.
+
+## 2026-09-25 -- f5536a70 (b5b7eb6b gyerek, 4/10, dashboard/src core -- memory/db/web belepesi pontok): 6/6 fajl dontve
+
+**A feladat:** a fork/upstream ujra-dontes teruleti bontasaban (MikroB dontese, msg 4123) a
+dashboard/src core modul 6 fajlja -- 2 fajl SENKI ALTAL NEM DONTOTT (uj dontes kellett), 4 fajl
+ELAVULT ELISMERES (a korabbi szabalyt ujra kellett dontenie a MOSTANI upstream tartalom ellen).
+
+**src/db.ts** (elavult elismeres, pin 13a46761 -> d66cf7ed): a konfliktus-pont (moveKanbanCard()
+komment-utkozes) 7. korban is erintetlen maradt. A recorded-vs-now blob kozotti 1200+ soros
+kulonbseg tulnyomo tobbsege mar korabban adoptalva volt a forkba a koztes korokben -- mintavetellel
+ellenorizve (searchMemories, updateMemory, getTokenPruneLag, stb. mind mar jelen vannak a fork
+sajat src/db.ts-eben). Nincs uj adopcios tetel a mar nyitott 6c6d471a-n tul. Dontes valtozatlan,
+pin frissitve.
+
+**src/web.ts** (elavult elismeres, pin 03bd955d -> b69c9dcb): az agent-scaffold import-sor unio-
+szabalya 7 uj nevvel bovult. Harom (ensureBashEgressDeny, ensureMemorySearchLabelSection,
+mainAgentConfigDirIfSeparate) mar jelen van a fork sajat fajljaban -- nem uj munka. Nyolc tetel
+(ensureProjectRootInClaudeMd/HOSTMOVE923, ensureBashEgressParser/EGRESSPARSER923,
+ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, tryHandleClaudePlans,
+tryHandleCustomProviders, startKanbanArchiveRunner, plusz egy dashboard-URL TTY-gating
+hitelesitoadat-hardening) valodi ADOPCIOS dontes, uj fajlokat/route-okat igenyel -- ezeket EGY uj
+kovetkezo-kartyan (965b0b2b) gyujtottem ossze, mert a korabbi "raised on card 6c6d471a" hivatkozas
+soha nem kapott tenyleges kanban-kartyat (ellenoriztem: nem letezik), es nem akartam ugyanazt a
+rest megismetelni.
+
+**src/__tests__/hook-registration-completeness.test.ts** (elavult elismeres, pin 78bead60 ->
+5c5f73f2): ez volt a legnagyobb valtozas. Upstream (TGSABLONHOOK921, 2026-09-21) a teljes
+mechanizmust ujrastrukturalta: a regi egykorpuszos "valahol regisztralva van-e" lint helyett
+SEEDING_SURFACES (minden jovobeli agens megkapja) vs CHECKOUT_SURFACES (csak a fo agens sajat
+.claude/settings.json-ja) szetvalasztas, plusz egy CHECKOUT_ONLY indoklas-lista es egy uj
+unseededCheckoutHooks() fuggveny. Ez egy MERT, valodi biztonsagi rest zar be: egy hook, ami csak
+a checkout sajat settings.json-jaban volt bedrotozva, regen zoldre allitotta a regi lintet, mikozben
+minden UJONNAN seedelt agens hook nelkul indult -- upstream sajat pelda: telegram-reply-directive.py
+ket kulon incidensben hianyzott (2026-09-11/12, majd egy 2026-09-14 image-csere utan). Ellenoriztem:
+EZ A FORK MEG A REGI, egykorpuszos alakot hasznalja -- ugyanaz a res itt is nyitva, meretlen. Az
+adoptalashoz a fork SAJAT CHECKOUT_ONLY listajat kell felepiteni (nem azonos upstreameval), ami
+valodi adopcios dontes -- uj kovetkezo-kartyan (e344e366, HIGH, mert biztonsag-relevans).
+
+**src/__tests__/notify-delivery-honesty.test.ts** (elavult elismeres, pin fbeb2e33 -> f84e69aa):
+a mar korabban (round 15) "nem adoptalhato onmagaban" jelzett CHATID0-orzo mellett upstream most
+egy uj resolver-fajlt is hoz (scripts/lib/owner-chat.sh) -- ugyanaz a funkcio, egy kartyan kell
+portolni a notify.sh orzojaval egyutt. Ellenoriztem: sem a CHATID0, sem a "notify.sh guard" kulcsszo
+alatt nem letezett meg follow-up kartya -- nyitottam egyet (3026a591, NORMAL).
+
+**src/memory.ts** (uj dontes): upstream torolte a buildMemoryContext() fuggvenyt (indoklas:
+sosem volt hivoja, nem olvasta az agent hot/warm/cold tier-eket, a regi chat_id-sema alapjan
+szurt). Fuggetlenul ellenoriztem: EBBEN a forkban is nulla production hivoja van (grep szerint
+csak a sajat deklaracioja es a sajat dedikalt tesztje, src/__tests__/memory-context-truncation.test.ts,
+hivatkozik ra). A kódminőségi elv 3 szerint (mar-letezo, a valtoztatasomtol fuggetlen holt kodot
+csak keresre torolni, nem onkent) EBBEN a korben NEM toroltem a fuggvenyt -- a dontes csak a
+KOVETKEZO valodi merge-re vonatkozo szabalyt rogziti: upstream torlesenek adoptalasa + a dedikalt
+teszt egyuttes visszavonasa, egy commitban, hogy ne maradjon meg meg arvabb allapotban a fuggveny.
+
+**src/channel-coordinator/ingest.ts** (uj dontes): tiszta komment-utkozes, kod-eltrees nulla.
+A fork sajat kommentje reszletesebb -- megnevezi a Cybersec NO-GO-t (kartya 7503bb31), ami az
+allowlist letezeset kikenyszeritette (POST /api/auth/device-keys elfogadja a megosztott dashboard
+tokent admin hitelesitesnek, tehat az out-of-band allowlist nelkul barki onmaganak minthetne
+device key-t). Upstream kommentje ugyanazt az invariansat mondja ki, a "miert" nelkul. Dontes:
+a fork teljesebb kommentjet tartjuk, kolstseg nelkul.
+
+**Uj kovetkezo-kartyak nyitva ebben a korben:**
+- e344e366 (HIGH): TGSABLONHOOK921 hook-seeding/checkout-surface split adoptalasa
+- 3026a591 (NORMAL): notify.sh CHATID0 guard + owner-chat.sh resolver egyutt
+- 965b0b2b (NORMAL): src/web.ts 8 uj kepesseg-adopcios dontese
+
+**Ellenorzes:** `tsc --noEmit` tiszta mindket edites-korben. fork-upstream-conflict-guard.test.ts +
+fork-upstream-drift-check.test.ts 57/57 zold (minden edites utan ujraellenorizve, a
+"minden rogzitett elutasitast horgony figyel" teszt is atment uj szoveg nelkuli uj horgony
+igeny nelkul).
+
+**Ki dontott:** backend (a 6 fajl felulvizsgalata + ACKNOWLEDGED_CONFLICTS/ACKNOWLEDGED_UPSTREAM_BLOBS
+frissitese + 3 kovetkezo-kartya nyitasa). Gate: QA + Cybersec (biztonsag-relevans terulet, MikroB
+eredeti kartya-kijelolese szerint).
