@@ -14576,3 +14576,59 @@ kell-e flotta-szintű `agent-worktree.sh <agent>` sweep minden élő worktree-re
 **Ki döntött:** Cybersec (a kártya eredeti leletje), backend3 (a mélyebb gyökér-ok felfedezése és
 mindkét javítás). Gate: QA + Cybersec (a kártya kéri; Cybersec nem a sajátját ellenőrzi, ha ehhez a
 kártyához kerülne, Cybered vegye át).
+
+## 2026-09-25 -- b5b7eb6b: a kártya sokkal nagyobbra nőtt + a "romlott pin" tényleg a detektor hamis pozitívja volt (backend3)
+
+**Állapot-eltérés, amit tisztázni kellett a munka megkezdése előtt.** A kártya SAJÁT leírása 8 elavult
+elismerést nevez meg. A watcher öt kommentje (a kártya nyitása óta) ezt folyamatosan növekvőnek mutatja:
+8 -> 13 -> 17 -> 22 -> 31 elavult elismerés, 0 -> 3 -> 11 -> 25 "senki által nem döntött" ütközés, és a
+legutóbbi (5954, 2026-09-19) már 1 "romlott (nem-létező blobra mutató) rögzített pin"-t is jelez. A
+MOST lefuttatott `--report` 34 "senki által nem döntött" fájlt mutatott -- MÉG TOVÁBB nőtt a
+legutóbbi kommentben rögzített 25-höz képest. Ez a méret (34 + 31+ ujra-döntés) egyetlen kártyán, egyetlen
+menetben tisztességesen nem vihető végig -- jeleztem MikroB-nek a pontos, friss számokkal, és kértem
+iránymutatást (szétbontás vs. szakaszolt sajátkezű feldolgozás). Amíg ez eldől, a kártya `in_progress`
+marad, de a tartalmi újra-döntéseket NEM kezdtem el.
+
+**A "romlott pin" viszont NEM újra-döntés kérdés volt -- ez egy önálló, mechanikus hiba, amit
+azonnal javítottam.** A `findCorruptedPins` (`drift-check.ts`) MINDEN `ACKNOWLEDGED_UPSTREAM_BLOBS`
+bejegyzésen lefuttatja a `git cat-file -e <blob>^{blob}`-et, kivétel nélkül. Az EGYETLEN élő eset, amit
+"romlottnak" jelentett -- `src/__tests__/telegram-urlencode-guard.test.ts` -- valójában a kódbázis SAJÁT,
+dokumentált szentinel-értékét hordozza: `'(absent upstream -- delete/modify conflict, no blob to pin)'`,
+ami egy delete/modify ütközésnél SZÁNDÉKOSAN nem valódi blob (a TypeScript tipus minden
+ACKNOWLEDGED_CONFLICTS kulcshoz KÖTELEZŐ string-erteket ír elő, tehát ez az egyetlen tipus-biztos mód
+"nincs blob"-ot mondani). A detektor ezt sosem ismerte fel, és `git cat-file`-t hívott rá, ami
+termeszetesen "fatal: Not a valid object name" hibával bukik -- ÁLLANDÓ hamis pozitívot generálva minden
+körben, azóta hogy ez a bejegyzés bekerült.
+
+**Miért nem vette ezt észre a meglévő teszt-csomag.** A `fork-upstream-drift-check.test.ts` a
+"corrupted pin" eseteket KIZÁRÓLAG `fakeGit` szintetikus fixture-jeivel gyakorolta (`missingPinBlobs`
+lista), sosem a VALÓS `ACKNOWLEDGED_UPSTREAM_BLOBS` térkép ellen -- pontosan a rule 12 szabálya szerinti
+"őrt a saját alapító esetére futtatni, mielőtt nulla lelet" hiányzott.
+
+**Javítás:** `ABSENT_UPSTREAM_BLOB` egyetlen, exportált konstans (`acknowledged-conflicts.ts`) -- a
+korábban KÉT helyen (a bejegyzés maga + `readyToPasteEntry` fallback szövege) külön-külön hardcode-olt
+szó szerinti string helyett. A `findCorruptedPins` ezt az egy konstanst kivételezi, MIELŐTT
+`git cat-file`-t hívna rá.
+
+**Új tesztek** (`fork-upstream-drift-check.test.ts`, a VALÓS `ACKNOWLEDGED_UPSTREAM_BLOBS`-ot importálva,
+nem csak fixture-t): (1) pin a premisszát -- a szentinel-érték ma is legalább egy élő bejegyzésen áll;
+(2) a szentinel-értékű bejegyzés SOSEM kerül `git cat-file`-nek átadásra (a `calls` tömbön ellenőrizve,
+mert a fake `cat-file`-ja mindent "megtaláltnak" jelent, ami nincs explicit felsorolva -- a puszta
+verdikt-ellenőrzés NEM különböztetné meg a javítás előtti/utáni állapotot, csak a hívás-nyoma); (3)
+KONTROLL -- egy VALÓDI romlott pin egy másik valós fájlon továbbra is jelentve van (a kivétel szűken a
+szentinel-értékre szól, nem "hagyj ki bármi szokatlant").
+
+**Mutációs bizonyíték:** a kivétel-ágat eltávolítva PONTOSAN az egy "sosem hívott cat-file-t" teszteset
+bukik (20 más zöld marad) -- a verdikt-alapú teszt (ahogy vártam) nem buktatta volna, mert a fake nem
+modellezi hűen a valódi git "nem érvényes objektumnév" hibáját. Visszaállítva mind a 21 zöld.
+
+**Élesben igazolva:** `npm run build` + `node store/fork-upstream-drift-watch.mjs --report` a fix ELŐTT
+kiadta a "fatal: Not a valid object name" hibát és a "A RECORDED PIN DOES NOT RESOLVE TO A REAL BLOB"
+szakaszt a `telegram-urlencode-guard.test.ts`-re; a fix UTÁN egyik sem jelenik meg többé.
+
+**Zöld:** `fork-upstream-drift-check.test.ts` 21/21, `fork-upstream-conflict-guard.test.ts` 36/36 (nem
+regresszió-ellenőrzés, ugyanazt az `acknowledged-conflicts.ts`-t importálja), `tsc --noEmit` tiszta.
+
+**Ki döntött:** backend3 (a detektor-hiba felfedezése és javítása). A 34+31 fájlos tartalmi
+újra-döntés MikroB iránymutatására vár -- lásd a kártyán/inter-agent üzenetben a pontos, aznapi
+számokat.
