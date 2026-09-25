@@ -58,3 +58,35 @@ process.env.LOCAL_LLM_STATE_DIR = workerTmp
 // beats what is inherited from here -- that is how local-llm-sh-active-task-registration.test.ts
 // (card 8a6de2ee) keeps testing real cross-process contention on a throwaway path of its own.
 process.env.LOCAL_LLM_GPU_LOCK_PATH = join(workerTmp, 'gpu.lock')
+
+// A THIRD AXIS, the SAME argument again: VRAM (card 6b1020ff).
+//
+// card-build-route.sh, gate-pretriage.sh, i18n-draft.sh, local-llm.sh (both directly and via its
+// `generate` mode's own choke-point, card 234306ca), local-llm-rag.sh, offload-dispatch.sh and
+// route-classify.sh each resolve their own `*_VRAM_GUARD="${OVERRIDE:-$HERE/vram-guard-check.sh}"`
+// and, when the file exists, run it and read the REAL host's nvidia-smi. A suite that execs one of
+// these scripts without overriding it is therefore graded on the SHARED HOST'S CURRENT GPU STATE,
+// not on the behaviour it is testing. Measured failing live (2026-09-25): with the Windows side of
+// this WSL host holding ~5.4/6.1 GiB of VRAM -- foreign to the fleet, indefinite duration, nothing
+// this repo controls -- three unrelated suites (route-classify-gpu-busy-early-exit,
+// local-llm-sh-generate-timeout-safety-net, local-llm-sh-gpu-abstain) failed on three different
+// assertions, none of them about VRAM. The gpu-abstain CONTROL case is the sharpest instance: it
+// asserts exit code 5 (a genuine call failure) specifically to prove exit 6 is EXCLUSIVE to flock
+// contention, and the VRAM choke-point's exit 6 (a deliberate reuse of the same code, see
+// local-llm.sh) defeats that proof outright under a busy host GPU.
+//
+// Same fix as the two axes above, once per worker rather than patched into each of the (currently
+// six, and growing) call sites: point every override at a path that cannot exist. Each script's own
+// `[ -f "$VRAM_GUARD" ]` / `[[ -f "$VRAM_GUARD" ]]` check then skips the block entirely -- the
+// documented behaviour for "no guard installed" (case (a) in vram-guard-check.sh's own header), not
+// a new code path invented for tests.
+//
+// A test that is genuinely ABOUT VRAM pressure still overrides the relevant variable in the CHILD's
+// own env (see local-llm-vram-choke-point.test.ts), which beats what is inherited from here.
+const noSuchVramGuard = join(workerTmp, 'no-such-vram-guard')
+process.env.LOCAL_LLM_VRAM_GUARD = noSuchVramGuard
+process.env.ROUTE_CLASSIFY_VRAM_GUARD = noSuchVramGuard
+process.env.CARD_BUILD_ROUTE_VRAM_GUARD = noSuchVramGuard
+process.env.PRETRIAGE_VRAM_GUARD = noSuchVramGuard
+process.env.I18N_DRAFT_VRAM_GUARD = noSuchVramGuard
+process.env.OFFLOAD_VRAM_GUARD = noSuchVramGuard

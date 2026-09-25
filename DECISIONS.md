@@ -14870,3 +14870,119 @@ skipped).
 **Ki döntött:** backend (a port + a chokepoint-minta megvalósítása), Cybersec GO-ja alapján (F1/F2
 LOW, nem blokkoló, follow-up), qa2 FAIL-je alapján (a jelen bejegyzés hiánya -- a kód maga nem
 változott ebben a körben). Gate: QA (qa2) + Cybersec (trust-boundary, authorized_keys fájlírás).
+
+## 2026-09-25 -- 09d54e88 QA FAIL + korrekció: a konfliktus-marker-alapú módszertan hamis biztonságérzetet adott (backend3)
+
+**A hiba.** qa2 QA FAIL-t adott (komment 6736, Gate-SHA 37abcb87) a fenti bejegyzésre. A gyökér-ok
+módszertani: a 3-utas merge-szimulációból csak a `<<<<<<<`/`=======`/`>>>>>>>` KONFLIKTUS-JELZŐK közötti
+szöveget olvastam, ami CSAK azt mutatja, hol ÜTKÖZIK a fork és az upstream szövege -- egy TISZTA
+upstream-ADDÍCIÓ, ami a fork meglévő soraival sehol nem ütközik, NÉMÁN, jelző nélkül mergelődik be, és
+így láthatatlan maradt egy csak-konfliktus-jelzőre néző olvasás számára. Ugyanaz a hibaosztály, amit az
+`outgoing-copy-gate.py` saját 16-köre már megtanított volna, ha alkalmazom rá is: egy "stale" (már
+pinnelt) fájl újra-döntéséhez a TELJES `git diff <régi-pin>..<új-upstream-blob>` kell, nem a
+merge-szimuláció konfliktus-határai.
+
+**4 konkrét hiba, mind javítva:**
+1. **`scripts/watchdog.sh`** -- a döntés maga (ADOPT `agent=` param + HTTP_CODE-ellenőrzés) helyes
+   volt, DE a "plain ADOPT" megfogalmazás ténylegesen ELTÁVOLÍTOTTA VOLNA a fork `-H @"$HDR_FILE"`
+   0600-temp-file biztonsági mintáját (az EGYETLEN `$HDR_FILE`-felhasználási pont) upstream nyers
+   `-H "Authorization: Bearer $TOKEN"` argv-beágyazott tokenje javára -- pontosan a b267df80-mintájú
+   `/proc/<pid>/cmdline` token-szivárgás, amit ez a kártyasorozat MÁSHOL helyesen elutasított.
+   JAVÍTVA: UNION -- upstream `agent=` param + HTTP_CODE ellenőrzés ÁTVÉVE, `-H @"$HDR_FILE"` MEGTARTVA.
+   Mellékes hiba: a magyar hiba-magyarázó kommentet ("agent, nem to...") tévesen a fork sajátjának
+   mondtam -- élő `grep` a fork fájlján NULLA találatot ad, a komment UPSTREAM-é, upstream saját
+   javításának magyarázataként érkezett. Javítva, helyesen attribuálva.
+2. **`scripts/install-prod-tree-guard-hook.sh`** -- a bejegyzés "mindkét hunk már döntött pont, plain
+   blob bump"-ot állított. A TELJES diff (nem csak a konfliktus-jelzők) egy HARMADIK, korábban nem
+   tárgyalt upstream-változtatást is tartalmazott: folyamatban lévő git-művelet (rebase/cherry-pick/
+   merge/bisect) detektálása, ami megakadályozza, hogy a guard egy ilyen műveletet félbeszakítson egy
+   feles checkout-visszaállítással -- upstream saját, dokumentált incidenssel indokolja (msg 3042-3045,
+   négy rebase-próbálkozás, mindig "index contains uncommitted changes" egy bizonyíthatóan tiszta
+   indexről). JAVÍTVA: a két már-döntött pont (hdr_file, JSON-encoding) változatlan, PLUSZ ADOPT a
+   rebase-detektálásra (tiszta addíció, nem érinti a két döntött pontot, valódi, reprodukált
+   megbízhatósági hiba javítása).
+3. **`scripts/channels.sh`** -- a TELJES diff (régi pin -> új upstream) két további, korábban nem
+   tárgyalt, nem-ütköző upstream-változtatást tartalmazott: (a) `respawn_log` MCP-log-tail
+   diagnosztikai bővítés (addíció, ADOPT), (b) a `FAIL_COUNT` számlálás javítása `wc -l` (a teljes
+   channels-failures.log MINDEN sorát számolta, beleértve a nem rapid-exit WARN-sorokat is) helyett
+   `grep -c "rapid-exit after"`-re (valódi hiba, card c5296a52, ADOPT).
+4. **`scripts/email-send-gate.mjs`** -- a `wrapperDepthHit()` ADOPT döntés helyes maradt, DE a bejegyzés
+   nem mondta ki, hogy UGYANEBBEN a diff-tartományban egy JELENTŐS, biztonság-releváns upstream
+   funkció is érkezett, amit se nem adoptáltam, se nem jeleztem: egy recipient-ledger ellenőrző
+   rendszer (`unverifiedRecipients()`, új `./recipient-ledger.mjs` függőség) ÉS egy Gmail-connector-
+   specifikus kapu (`gmail__(reply|reply_all|send_message|forward)`, GMAILCONNECTOR914) -- upstream
+   saját szavai szerint "e nélkül egy sub-agent kapu NÉLKÜL küldhetett a connectoron át". Ellenőrizve:
+   EGYIK sem létezik a forkban ma. Nem lezárva, jelezve -- a fork SAJÁT connectors-rendszere (`src/web/
+   routes/connectors.ts`) katalógus-alapú és Gmail-t is támogat, tehát a rés ELVILEG élő lehet, ha
+   bármelyik ügynökhöz Gmail-connector van kötve. Az `outgoing-copy-gate.py` (Round 17, eszkalálva)
+   `commandHeads`/`WRAPPERS` átírásával PÁRBAN érkezett (közös `send-invocation-cases.json`), ezért
+   együtt kell egyszer megítélni, nem darabosan. `ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs']`
+   hozzáadva (`from './recipient-ledger.mjs'`, `expect: absent`), mutáció-tesztelve: a stringet
+   hozzáadva a fájlhoz a `fork-upstream-conflict-guard.test.ts` PONTOSAN elkapja, eltávolítva zöld.
+
+**Ami NEM változott:** egyik érintett fájl pinje sem mozdult (mind pontosan a jelenlegi upstream
+csúcsra mutat) -- csak a DÖNTÉS-SZÖVEG lett teljesebb/pontosabb, nem a döntés maga (a watchdog.sh
+UNION kivételével, ahol a tényleges javasolt kód-alak is módosult a biztonsági regresszió miatt).
+
+**Zöld:** `fork-upstream-drift-check.test.ts` 21/21, `fork-upstream-conflict-guard.test.ts` 36/36 (az
+új anchor mutáció-tesztelve), `tsc --noEmit` tiszta.
+
+**Tanulság, ami minden további gyerek-kártyára (2/10, 4/10-10/10) vonatkozik:** egy STALE (már
+pinnelt) fájl újra-döntésénél a `git diff <régi-pin> <új-upstream-blob>` a kötelező első lépés, a
+merge-szimuláció konfliktus-jelzői csak KIEGÉSZÍTIK, nem helyettesítik. Egy "nobody-decided" (soha nem
+pinnelt) fájlnál ez a kockázat kisebb, de nem nulla, ha a fájl NAGY és a konfliktus csak egy részét
+érinti.
+
+**Ki döntött:** qa2 (a hiba felfedezése), backend3 (a korrekció). Delta-gate következik (QA + Cybersec)
+az új Gate-SHA-n.
+
+## 2026-09-25 -- 6b1020ff: GPU/VRAM-érzékeny tesztek izolálása (a b5b7eb6b-landolást blokkoló hiba)
+
+**A tünet.** A 09d54e88 delta-fix landolása HÁROMSZOR egymás után bukott a `fleet-test.sh`-n, mindháromszor
+más-más, de GPU/VRAM-témába klaszterezett teszteken. MikroB kivizsgálta: a Windows host (WSL alatt fut ez
+a gép) ~5,3-5,4/6,1 GiB VRAM-ot foglal MOST, ami a flottától FÜGGETLEN, ismeretlen ideig tartó terhelés
+(nincs ollama-folyamat WSL-ben). A gyökér-ok: több teszt a VALÓDI `nvidia-smi`-t olvassa egy meglévő,
+külön erre szánt teszt-seamen (`*_VRAM_GUARD` env-override) keresztül, amit nem állítottak be.
+
+**A pontos mechanizmus, fájlonként ellenőrizve, valódi (nem szimulált) HOLD-állapotra kényszerítve
+(`vram-guard-state.json` ideiglenes felülírása `{"tier":"hard",...}`-ra, majd visszaállítva -- a
+gitignore-olt runtime-fájl, nem trackelt tartalom):**
+- `route-classify.sh` a modell-hurok ELŐTT, a HÍVÓ (teszt) fake-LLM szkriptjétől FÜGGETLENÜL hívja a
+  `vram-guard-check.sh`-t (`ROUTE_CLASSIFY_VRAM_GUARD` override), és HOLD esetén UNKNOWN-ra rövidre zár,
+  mielőtt a teszt saját fake válasza egyáltalán megszólalna.
+- `local-llm.sh` `generate` módja a SAJÁT VRAM-torokponttal (kártya 234306ca, ez a session korábbi
+  munkája) ugyanígy, a flock-logika ELŐTT fut le (`LOCAL_LLM_VRAM_GUARD`).
+- A torokpont SZÁNDÉKOSAN ujrahasznosítja a 6-os kilépőkódot (flock-timeout konvenció) -- ez azt
+  jelenti, hogy egy teszt, ami kifejezetten "6 = flock-ütközés, kizárólag" állítást bizonyít
+  (`local-llm-sh-gpu-abstain.test.ts` CONTROL esete), VALÓS host-VRAM-terhelés alatt HAMISAN bukhat
+  (vagy akár hamisan ZÖLD is lehetne, ha a véletlen a helyes kódot adná ki a rossz okból).
+
+**A javítás helye -- NEM fájlonként, hanem EGYSZER, globálisan.** A `src/__tests__/setup/
+isolate-local-llm-state.ts` MÁR pontosan ezt a mintát követi KÉT MÁS tengelyen (STATE_DIR, GPU_LOCK_PATH),
+és a fájl SAJÁT kommentje kifejezetten leírja, miért NEM fájlonkénti patch a helyes válasz: "commit
+da76583c két fájlt javított egyesével -- ez NEM tartott, mérve: négy suite MÉG MINDIG a valódi lock-ot
+vette." Pontosan ugyanez a minta ismétlődött volna a VRAM tengelyen is, ha fájlonként patchelek (amit
+ELŐSZÖR meg is tettem 3 fájlon, majd VISSZAVONTAM, amikor rájöttem, hogy ez a MEGLÉVŐ mechanizmus
+kiterjesztése, nem új). A hat dispatcher (`card-build-route.sh`, `gate-pretriage.sh`, `i18n-draft.sh`,
+`local-llm.sh`, `local-llm-rag.sh`, `offload-dispatch.sh`) + `route-classify.sh` mind saját env-override
+nevet használ ugyanarra a mintára (`*_VRAM_GUARD="${OVERRIDE:-$HERE/vram-guard-check.sh}"`) -- mind a
+hetet egyetlen, worker-enkénti setup-ban egy közös, LÉTEZŐ ÚTVONALRA NEM MUTATÓ elérési útra állítottam,
+ami a szkriptek SAJÁT `[ -f "$VRAM_GUARD" ]` ellenőrzésén át a "nincs telepítve guard" (dokumentált,
+meglévő) ágra fut, nem egy tesztekre kitalált új kódútra.
+
+**Kivétel, dokumentálva:** a `local-llm-vram-choke-point.test.ts` (a torokpontot MAGÁT tesztelő, ebben a
+sessionben korábban írt fájl) a SAJÁT gyerek-env-jében állítja be `LOCAL_LLM_VRAM_GUARD`-ot egy valódi
+fake guardra -- ez felülírja az öröklött, globális értéket (a spread-sorrend miatt), tehát nem ütközik.
+
+**Mutációs bizonyíték, VALÓDI kényszerített HOLD-állapottal (nem várakozás a live host véletlenszerű
+ingadozására, ami korábban egy próbálkozást inkonkluzívvá tett):** a globális felülírás kikapcsolásával
+9/13 teszt bukik PONTOSAN a MikroB által jelentett tünetekkel megegyező alakban (route-classify
+"UNKNOWN" helyett "MECHANICAL"-t várva, a gpu-abstain CONTROL 6-ot ad 5 helyett). Visszaállítva 17/17
+zöld (4 érintett fájl együtt futtatva).
+
+**Zöld:** a 4 közvetlenül érintett teszt-fájl (17 teszt) + a `local-llm-vram-choke-point.test.ts` saját
+négy esete, mind zöld a MÉG MINDIG magas (kb. 83-86%) valódi host-VRAM-terhelés mellett. `tsc --noEmit`
+tiszta.
+
+**Ki döntött:** MikroB (kivizsgálás, root cause, kártya nyitása), backend3 (a javítás, a meglévő
+izolációs minta felismerése és kiterjesztése ahelyett, hogy fájlonként patchelt volna). Gate: QA.
