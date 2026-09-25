@@ -40,6 +40,12 @@ const EXPECTED: Record<string, string[]> = {
   PreToolUse: [
     'outgoing-copy-gate.py', 'email-approval-gate.py',
     'channel-image-resize.sh', 'egress-gate.mjs',
+    // Card c00d5429 (2026-09-25): the main agent's own session ran with none of the ten
+    // security guards every sub-agent's settings.json already carried (a live
+    // `cd /etc && grep -c zzz hostname` ran unblocked here, rc=2 direct from the guard).
+    'secret-write-guard.py', 'big-file-guard.py', 'git-protect-guard.py', 'npm-protect-guard.py',
+    'symlinked-node-modules-guard.py', 'blast-radius-guard.py', 'cd-chain-guard.py',
+    'bash-egress-guard.py', 'noisy-command-guard.py', 'pentest-tool-install-guard.py',
   ],
   Stop: ['telegram-reply-guard.py', 'telegram_progress_clear.py'],
   SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py'],

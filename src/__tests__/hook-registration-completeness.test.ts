@@ -80,10 +80,6 @@ const EXEMPT: Record<string, string> = {
     'pre-existing (predates this merge), genuinely unwired on every known registration surface -- needs its own follow-up card, not activated here',
   'activity-memory-capture.selftest.py':
     'selftest for activity_memory_capture.py (note the underscore/hyphen naming mismatch between the hook and this selftest); the hook itself is unwired, see its own EXEMPT entry',
-  'big-file-guard.py':
-    'pre-existing (predates this merge), genuinely unwired on every known registration surface -- needs its own follow-up card, not activated here',
-  'secret-write-guard.py':
-    'pre-existing (predates this merge), genuinely unwired on every known registration surface -- needs its own follow-up card, not activated here',
   'shared-memory-inject.py':
     'pre-existing (predates this merge), genuinely unwired on every known registration surface -- needs its own follow-up card, not activated here',
   'telegram_fallback_send.py':
