@@ -48,7 +48,7 @@ describe('runAgent legacy SDK-fallback path: CLAUDE_CONFIG_DIR isolation (card 6
   it('a caller passing NO env still gets an isolated, plugin-free CLAUDE_CONFIG_DIR (not the real default)', async () => {
     await runAgent('hello')
     expect(capturedOptions.env).toBeDefined()
-    const dir = capturedOptions.env.CLAUDE_CONFIG_DIR
+    const dir: string = capturedOptions.env.CLAUDE_CONFIG_DIR
     expect(dir).toBeTruthy()
     expect(ISOLATED_DIR_CANDIDATES).toContain(dir)
     const settings = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf-8'))
