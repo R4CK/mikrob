@@ -81,6 +81,42 @@ if [ "${1:-}" = "--selftest" ]; then
     "$(printf '%s\n' "$RED_OUT" | parse_test_failures)" \
     "apps/api/src/x.test.ts > suite > case"
 
+  # --- card 1c545383: typecheck_errors had the SAME latent asymmetry, just not live today --------
+  # Its last statement used to be a bare `if`; bash gives a false if-with-no-matching-branch exit
+  # status 0 (verified), so the function currently always returns 0 -- but only as a side effect of
+  # that exact shape, not a decision. The pins below are what would have caught it if that were not
+  # true, and stay red if the ONE thing standing between here and test_failures' original bug (a
+  # trailing statement whose own exit status is real) ever gets added.
+  # A fake tsc under a fake worktree, so this needs no real TypeScript project.
+  tsc_tmp="$(mktemp -d)"
+  mkdir -p "$tsc_tmp/node_modules/.bin" "$tsc_tmp/apps/web"
+  cat > "$tsc_tmp/node_modules/.bin/tsc" <<'FAKETSC'
+#!/usr/bin/env bash
+if [ "${TSC_FAKE_MODE:-green}" = "red" ]; then
+  echo "src/a.ts(1,1): error TS1234: fake error"
+  exit 2
+fi
+exit 0
+FAKETSC
+  chmod +x "$tsc_tmp/node_modules/.bin/tsc"
+  saved_projects="$TSC_PROJECTS"; TSC_PROJECTS="tsconfig.json"
+
+  TSC_FAKE_MODE=green typecheck_errors "$tsc_tmp" 0 >/dev/null
+  t "a GREEN typecheck (want_web=0, the default) makes typecheck_errors exit 0" "$?" "0"
+  TSC_FAKE_MODE=red typecheck_errors "$tsc_tmp" 0 >/dev/null
+  t "a RED typecheck (want_web=0) also exits 0 (status is not the verdict)" "$?" "0"
+  t "...and still reports the error line" \
+    "$(TSC_FAKE_MODE=red typecheck_errors "$tsc_tmp" 0)" \
+    "src/a.ts: error TS1234: fake error"
+  # The apps/web branch is the other way the old bare `if` could be the last statement executed.
+  TSC_FAKE_MODE=green typecheck_errors "$tsc_tmp" 1 >/dev/null
+  t "a GREEN typecheck WITH want_web=1 also exits 0" "$?" "0"
+  TSC_FAKE_MODE=red typecheck_errors "$tsc_tmp" 1 >/dev/null
+  t "a RED typecheck WITH want_web=1 also exits 0" "$?" "0"
+
+  TSC_PROJECTS="$saved_projects"
+  rm -rf "$tsc_tmp"
+
   # THE SECOND HOLE: an ABSENT base is not an empty base. `added` cannot tell the difference -- it
   # prints nothing either way -- which is why the fix is an existence check at the CALL SITE, and
   # why this case asserts the difference is real rather than asserting `added` behaves.
@@ -159,7 +195,10 @@ measure() { # $1 = full sha, $2 = label
   # every card forked from it), so two runs can measure the same sha at once; without the rename a
   # reader could pick up a half-written file and compare against it.
   if [ ! -f "$errf" ]; then
-    typecheck_errors "$wt" "$WANT_WEB" > "$errf.$$.tmp" && mv -f "$errf.$$.tmp" "$errf"
+    # NOT gated on the exit code (card 1c545383, same class as test_failures' 5acd21ea fix below):
+    # what must hold is that the FILE EXISTS, not what typecheck_errors happened to return.
+    typecheck_errors "$wt" "$WANT_WEB" > "$errf.$$.tmp"
+    mv -f "$errf.$$.tmp" "$errf"
   fi
   # Count FAULT lines separately (QA's first MINOR): they used to be tallied as typecheck errors, so a
   # faulted run printed "base: 4 typecheck error(s)" when the file held 4 HARNESS-FAULT lines and no
