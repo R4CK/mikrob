@@ -14388,3 +14388,41 @@ kézi `git checkout -- store/watched-repos.json`-nak kell eltüntetnie az élő 
 **Ki döntött:** backend (self-advance, rule 6b -- 2 napnál régebbi kártya). QA-lelet (msg_id:4030,
 2026-09-25) mutatott rá, hogy ehhez a döntéshez hiányzott ez a bejegyzés a Gate-SHA `2e674b4c`-n --
 ez a bekezdés pótolja utólag, a kód a gated shán változatlan.
+
+## 2026-09-25 -- 876fbf8e (32dbac1e rebrand fázis, 5. lépés) -- CLAUDE.md + README + project-dispatch-priority.json forrás/doksi frissítés, szimlink-kivezetés feltétele
+
+**Predecessor (2. és 3. lépés) kész, ez a lépés a doksit igazítja a valósághoz.** A kártya saját
+elővigyázatossága ("a CLAUDE.md a legnagyobb blast-radiusú fájl, csak a tényleges átnevezés után
+írható át") már teljesült: a fájlnév-rename (1b02ed3a/647ea02a) és a systemd-egység átnevezés
+(42749892) mindkettő landolt, szimlink-kompattal.
+
+**CLAUDE.md frissítve:** a 17. szabály (teljes suite-futás szemafor) mostantól `mopsion-suite-run.sh`-t
+nevez meg elsődlegesen (a `cleancore-suite-run.sh` landolási történet dátuma megmaradt, mert az
+tényleges múltbeli esemény). A "CleanCore munkakönyvtár a dispatchben" szakasz átnevezve "mopsion
+munkakönyvtár"-ra, és kiegészült a szimlink-kivezetés FELTÉTELÉNEK explicit ellenőrző parancsával
+(lásd a fájlban): `/api/agents` lekérdezése, minden FUTÓ ügynök `runningSince` értékét a rename
+landolási időbélyegéhez (1789803898, commit 85602627) hasonlítva -- STALE lista, ha valamelyik session
+a rename ELŐTT indult (annak kontextusában/HANDOFF.md-jében még a régi név élhet). Mérve 2026-09-25-én:
+CLEAR, minden futó session a rename után indult -- de a szimlinkek TÉNYLEGES kivezetése MikroB külön
+döntése marad, ez a lépés csak a feltétel-ellenőrzést dokumentálja, nem hajtja végre a törlést.
+`CLEANCORE_MAIN` env-változó NEM lett átnevezve (a kód ma is ezt olvassa) -- a doksi ezt a valósághoz
+igazodva mondja ki, nem aspirációként. Öt további prózai "CleanCore" említés (Telegram-tag példa,
+README-minta hivatkozás, feature-lista lépték-példa, az óránkénti repo-szinkron szakasz fejléce és
+törzse) frissítve "mopsion"-ra -- ezek jelenkori, nem történeti állítások voltak.
+
+**README.md (marveen repo) frissítve:** a "Suite-szemafor" fork-fejlesztés bullet "CleanCore
+tesztfutásokat" -> "mopsion tesztfutásokat". Nem nyitottam új bullet-et a rebrandre magára: az
+"Egyedi fork-fejlesztések" szakasz a marveen-fork upstream-hez képesti ELTÉRÉSEit sorolja fel, egy
+belső projekt-átnevezés nem az.
+
+**project-dispatch-priority.json:** a runtime fájl üres (`{"priority": [], ...}`) és nincs
+tracked forrás/példa-verziója a repóban -- nincs mit átírni benne. A CLAUDE.md mechanizmus-leírása
+(11. szabály, self-advance) nem nevez meg konkrét "cleancore" string-et, generikusan a kártyák
+`project` mezőjére hivatkozik, ami MÁR "mopsion" értéket hordoz az élő kártyákon (ellenőrizve).
+
+**Zöld:** a CLAUDE.md/README.md szöveg-only szerkesztés, nincs futtatható kód-változás ebben a
+lépésben -- a szimlink-ellenőrző parancsot élesben lefuttattam (lásd fent, CLEAR eredmény), nem csak
+leírtam.
+
+**Ki döntött:** Peti (2026-09-18, Telegram 8799, az eredeti rebrand-utasítás) + MikroB (32dbac1e
+fázis-bontás) + backend3 (a doksi-frissítés maga, kártya 876fbf8e).
