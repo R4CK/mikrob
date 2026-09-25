@@ -15071,6 +15071,21 @@ megépítése; a live gyökér-CLAUDE.md 12->24 órás javítása (MikroB hatás
 
 **Ki döntött:** backend3 (fájlonkénti döntés, mutációs anchor-ellenőrzés). Gate: QA.
 
+**UTÓLAGOS ÖNJAVÍTÁS, még landolás előtt, a `marveen-land.sh` első futásán elkapva:** a
+`templates/CLAUDE.md.template` döntés-szövege eredetileg szó szerint idézte upstream elutasított
+mintáját (`` `-H "Authorization: Bearer $(cat ...)"` `` bakhtick-fenced argv-alak), és ez a
+`token-in-argv-guard.test.ts` FALSE POSITIVE-ját váltotta ki: a scanner a "curl" szót keresi
+darabolási pontnak, és mivel a mondatban a biztonságos `-H @"$hdr_file"` említés a "curl" szó
+ELŐTT állt, a darabolás azt egy ELDOBOTT chunkba tette, míg a `Authorization: Bearer $(...)` alak
+a MEGTARTOTT, curl-t tartalmazó chunkba került -- a két rész emiatt sosem találkozott ugyanabban
+a kiértékelt darabban, a mentő `-H @` jelenlét nem számított. Javítva: a döntés-szöveg átírva úgy,
+hogy NE tartalmazzon szó szerinti, `Bearer` után közvetlenül `$(`/`${`/`$betű`/backtick-kezdetű
+interpolációt idéző kódrészletet (a tényleges jelentés megtartva, csak a szó szerinti idézet
+elkerülve) -- ugyanaz az idióma, amit ez a fájl máshol (pl. a 09d54e88 watchdog.sh bejegyzés)
+már helyesen alkalmaz ("leaked the token via curl argv" prózaként, nem szó szerinti kód-idézetként).
+`token-in-argv-guard.test.ts` (7418 teszt) + a két fork-upstream guard (57 teszt) újra zöld a
+javítás után, `tsc --noEmit` tiszta.
+
 ## 2026-09-25 -- f5536a70 (b5b7eb6b gyerek, 4/10, dashboard/src core -- memory/db/web belepesi pontok): 6/6 fajl dontve
 
 **A feladat:** a fork/upstream ujra-dontes teruleti bontasaban (MikroB dontese, msg 4123) a
