@@ -15172,3 +15172,39 @@ idezojeles heredoc-kal, masodik PUT-nal mar helyes tartalommal.
 **Ki dontott:** backend, Cybersec NO-GO leletei alapjan (F1, F2), plusz sajat kezdemenyezesu korrekcio
 a 3669d930 memories.ts hibajara. Uj kovetkezmeny-kartyak: 16e60d3c (db.ts), b5e1d7df (memories.ts
 route-oldal). Gate: QA + Cybersec, delta-gate az uj Gate-SHA-ra.
+
+## 2026-09-25 -- 123983f3 (b5b7eb6b gyerek, 8/10, dashboard/src tesztek 1/2): 8/8 fajl dontve
+
+Fajlonkent (elo 3-utas merge-szimulacio: git merge-file --diff3, base=merge-base(origin/develop,
+upstream/develop)=d4f1b1d4, ott ahol volt kozos elozmeny; kozvetlen ours/theirs diff, ahol nem):
+
+1. src/__tests__/provider-env-adoption.test.ts (regi upstream nev: agent-provider-env.test.ts,
+   a fork atnevezte). GENUINE GAP: upstream LATENSKULCSARGV920 (secret-ref indirekcio,
+   resolveProviderEnv sosem kapja meg a titok ERTEKET, csak egy $(cat ...) hivatkozast -- ugyanaz
+   a hibaosztaly, mint a mai egesz napos token-in-argv tema) es egy custom-provider vault-kulcs
+   hard-fail regressziojorzo hianyzik a forkbol. Kovetkezmeny-kartya: 248d3013 (HIGH).
+2. src/__tests__/agent-tool-deny.test.ts. KEEP fork sajat tesztje (card 21597530), MELLETTE
+   genuine gap: upstream ORSIKTXRATA914 sanitizeToolDenyList + TOOL_DENY_MAX_PER_AGENT + respawn-
+   persistence, egyik sincs a forkban. Kovetkezmeny-kartya: b0d84dc3 (NORMAL).
+3. src/__tests__/api-messages-freshness.test.ts. KEEP fork (RouteContext typed cast erosebb, mint
+   upstream `as any`-je), NOT ADOPTABLE, nincs funkcionalis kulonbseg.
+4. src/__tests__/email-send-gate.test.ts. UNDECIDED, deliberately: a fork threadMembershipDecision()
+   (szal-tagsag) es az upstream uj recipient-ledger.mjs (elozetesen jovahagyott cimzett-lista) KET
+   KULONBOZO biztonsagi mechanizmus ugyanarra a problemara. Cybersec-bevonas javasolt.
+   Kovetkezmeny-kartya: afd64623 (HIGH).
+5. src/__tests__/fleet-helper-search-carries-the-label.test.ts. ADOPTALVA EBBEN A KORBEN:
+   PYTHONDONTWRITEBYTECODE='1' hozzaadva a python3 execFileSync env-jehez (a seed-skills/ __pycache__
+   szennyezes flake-jenek javitasa). Trivialis, nincs kovetkezmeny-kartya.
+6-7. src/__tests__/heartbeat-db-size.test.ts + heartbeat-summary-truncation-safe.test.ts. KEEP fork
+   mindketton (nevesitett konstans-kiemeles, kozmetikai, a lag_hours/oldest_age_days ertekekre
+   egyik teszt sem allit semmit). NOT ADOPTABLE.
+8. src/__tests__/memories-search-has-a-floor.test.ts. KEEP fork (String(chunk) vs chunk.toString(),
+   funkcionalisan azonos). NOT ADOPTABLE.
+
+Ellenorzes: tsc --noEmit tiszta; fork-upstream-conflict-guard.test.ts + fork-upstream-drift-check.test.ts
++ fleet-helper-search-carries-the-label.test.ts 64/64 zold.
+
+**Ki dontott:** backend, a fork-upstream-drift-watch.mjs --report alapjan, elo 3-utas merge-
+szimulacioval verifikalva minden fajlon (nem csak a dontes-szoveg olvasasaval -- lasd az f5536a70
+delta-gate F2 tanulsaga ugyanebben a napi korben). 3 uj kovetkezmeny-kartya: 248d3013, b0d84dc3,
+afd64623. Gate: QA + Cybersec (a ket biztonsag-relevans genuine gap miatt).
