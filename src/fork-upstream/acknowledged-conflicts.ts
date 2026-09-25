@@ -42,6 +42,18 @@
 // the stricter `unwatched` check instead, which asserts on the WHOLE conflict set rather than a
 // hand-picked few. MIGRATED_FROM_GUARDED below keeps that honest -- an empty list would otherwise
 // make the guarded assertion pass by having nothing to check.
+// The ACKNOWLEDGED_UPSTREAM_BLOBS value for a delete/modify conflict: upstream has genuinely deleted
+// the file, so there is no real blob to pin at all. The map type requires a string for every
+// ACKNOWLEDGED_CONFLICTS key, so this sentinel is the only type-safe way to say "not applicable" --
+// but it must be a SHARED constant, not a literal repeated at each site that needs to recognise it
+// (card b5b7eb6b follow-up, backend3, 2026-09-25): drift-check.ts's corrupted-pin detector
+// (findCorruptedPins) ran `git cat-file -e` against EVERY recorded value with no exemption for this
+// one, so the one legitimate use of it (src/__tests__/telegram-urlencode-guard.test.ts, below) was
+// reported as a corrupted pin every round -- a false positive from the exact class of bug this
+// session already found once today in agent-worktree.sh (a hardcoded literal two places needed to
+// agree on, silently drifting apart).
+export const ABSENT_UPSTREAM_BLOB = '(absent upstream -- delete/modify conflict, no blob to pin)'
+
 export const GUARDED_FILES = [] as const
 
 // Every file that was ever in GUARDED_FILES. Each must still be ACKNOWLEDGED, with a written rule:
@@ -1525,7 +1537,7 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   // readyToPasteEntry's blobLine fallback below): if upstream's side of the pair ever changes
   // (e.g. a file with this path reappears upstream), the guard trips again and this needs a fresh
   // decision rather than silently comparing against a phantom blob.
-  'src/__tests__/telegram-urlencode-guard.test.ts': '(absent upstream -- delete/modify conflict, no blob to pin)',
+  'src/__tests__/telegram-urlencode-guard.test.ts': ABSENT_UPSTREAM_BLOB,
   'scripts/fleet-memory-gate.sh': 'ce2e49d6460c56cc49c7637dc0073d0172d5520f',
   'scripts/github-pr-monitor.sh': 'aca5a51b633457795328412d522db3d02778e8d7',
   'scripts/set-bot-menu.sh': 'b45aca69c59f9b69748592df70d0a9ea77189206',
@@ -2093,7 +2105,7 @@ export function extractConflictHunks(content: string, maxChars = 2000): string {
  *  the decision would be read against). The resolution text stays a TODO on purpose -- which side to
  *  keep is human judgement, never derived. */
 export function readyToPasteEntry(file: string, upstreamBlob: string | null): string {
-  const blobLine = upstreamBlob ?? '(absent upstream -- delete/modify conflict, no blob to pin)'
+  const blobLine = upstreamBlob ?? ABSENT_UPSTREAM_BLOB
   return (
     `  '${file}':\n` +
     `    'TODO -- decide what to keep from each side',\n` +

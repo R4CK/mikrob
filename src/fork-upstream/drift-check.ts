@@ -19,6 +19,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  ABSENT_UPSTREAM_BLOB,
   ACKNOWLEDGED_UPSTREAM_BLOBS,
   classifyConflicts,
   extractConflictHunks,
@@ -83,6 +84,12 @@ export function isClean(r: DriftResult): boolean {
 function findCorruptedPins(repoRoot: string, git: GitRunner): string[] {
   const corrupted: string[] = []
   for (const [file, blob] of Object.entries(ACKNOWLEDGED_UPSTREAM_BLOBS)) {
+    // Card b5b7eb6b: ABSENT_UPSTREAM_BLOB is not a corrupted sha, it is the documented sentinel for
+    // a delete/modify conflict, where there genuinely is no upstream blob to pin. Without this
+    // exemption, the one legitimate use of it was reported as corrupted every round -- a false
+    // positive this detector's own tests never caught, because they exercise fixture data, not the
+    // real ACKNOWLEDGED_UPSTREAM_BLOBS map.
+    if (blob === ABSENT_UPSTREAM_BLOB) continue
     try {
       git(['cat-file', '-e', `${blob}^{blob}`], repoRoot)
     } catch {

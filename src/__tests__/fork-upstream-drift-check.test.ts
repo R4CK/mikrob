@@ -19,7 +19,10 @@ import {
   type GitRunner,
   metaAnnouncement,
 } from '../fork-upstream/drift-check.js'
-import { ACKNOWLEDGED_UPSTREAM_BLOBS } from '../fork-upstream/acknowledged-conflicts.js'
+import {
+  ABSENT_UPSTREAM_BLOB,
+  ACKNOWLEDGED_UPSTREAM_BLOBS,
+} from '../fork-upstream/acknowledged-conflicts.js'
 
 const ACK_FILE = Object.keys(ACKNOWLEDGED_UPSTREAM_BLOBS)[0]!
 const ACK_BLOB = (ACKNOWLEDGED_UPSTREAM_BLOBS as Readonly<Record<string, string>>)[ACK_FILE]!
@@ -268,5 +271,44 @@ describe('recorded pins are checked for existence, and stale shas display in ful
     // is exactly what the old code could not have produced.
     expect(report).toContain(ACK_BLOB)
     expect(report).toContain(actual)
+  })
+})
+
+// Card b5b7eb6b: findCorruptedPins ran `git cat-file -e` against EVERY recorded value with no
+// exemption for ABSENT_UPSTREAM_BLOB, the documented sentinel a delete/modify conflict's entry must
+// use (there is no real blob to pin). Its one live use,
+// src/__tests__/telegram-urlencode-guard.test.ts, was reported as corrupted every round -- a false
+// positive the existing corrupted-pin tests above never caught because they drive the check against
+// FIXTURE data (fakeGit's own conflicts/blobs), never the real ACKNOWLEDGED_UPSTREAM_BLOBS map.
+describe('the sentinel for a delete/modify conflict is not treated as a corrupted pin (card b5b7eb6b)', () => {
+  it('ABSENT_UPSTREAM_BLOB is a real, live entry in ACKNOWLEDGED_UPSTREAM_BLOBS today', () => {
+    // If this ever stops being true (the sentinel file gets a real resolution, or nothing uses the
+    // sentinel any more), the case below is checking against nothing -- so pin the premise itself.
+    const sentinelFiles = Object.entries(
+      ACKNOWLEDGED_UPSTREAM_BLOBS as Readonly<Record<string, string>>
+    ).filter(([, blob]) => blob === ABSENT_UPSTREAM_BLOB)
+    expect(sentinelFiles.length).toBeGreaterThan(0)
+  })
+
+  it('a sentinel-valued entry is never even passed to `git cat-file`, and is not corrupted', () => {
+    // This fake's `cat-file` answers "found" for ANYTHING not explicitly listed as missing --
+    // exactly like the pre-fix production bug, `git cat-file -e` on a non-hash string would NOT
+    // naturally fail here, so this case can only distinguish the fix by checking the sentinel was
+    // never queried at all, not by checking the verdict.
+    const { git, calls } = fakeGit({ conflicts: [] })
+    const r = runDriftCheck('/repo', git)
+    expect(r.corruptedPins).not.toContain('src/__tests__/telegram-urlencode-guard.test.ts')
+    const queriedSentinel = calls.some(
+      (c) => c[0] === 'cat-file' && String(c[2]).includes(ABSENT_UPSTREAM_BLOB)
+    )
+    expect(queriedSentinel).toBe(false)
+  })
+
+  it('CONTROL: a REAL corrupted pin among the real acknowledgements is still caught', () => {
+    // Proves the exemption is scoped to the exact sentinel value, not "skip anything unusual" --
+    // a genuinely bad recorded pin on some OTHER real file must still be reported.
+    const { git } = fakeGit({ conflicts: [], missingPinBlobs: [ACK_BLOB] })
+    const r = runDriftCheck('/repo', git)
+    expect(r.corruptedPins).toContain(ACK_FILE)
   })
 })
