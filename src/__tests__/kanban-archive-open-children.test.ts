@@ -100,3 +100,38 @@ describe('POST /api/kanban/<id>/archive with children (card 037277a0)', () => {
     expect(idea?.kanban_id).toBe('parent-6')
   })
 })
+
+// Card db3ff9bd, Cybersec+Cybered finding: archived_at was on KANBAN_WRITABLE_FIELDS, so a plain
+// PUT /api/kanban/:id carrying it bubbled straight through updateKanbanCard's UPDATE -- bypassing
+// this file's whole guard above (open children) plus archiveKanbanCard's dedicated audit row,
+// silently, one card at a time. Fixed by pinning archived_at to the card's own value inside
+// updateKanbanCard and moving the field to KANBAN_READONLY_FIELDS (accept-and-ignore) at the route.
+describe('PUT /api/kanban/<id> cannot bubble archived_at around the archive guard (card db3ff9bd)', () => {
+  beforeEach(() => { initDatabase(':memory:') })
+
+  it('a bare archived_at in the PUT body does not archive the card', async () => {
+    createKanbanCard({ id: 'put-1', title: 'not archived' })
+    const { ctx, out } = fakeCtx('/api/kanban/put-1', 'PUT', { archived_at: Math.floor(Date.now() / 1000) })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(200) // accepted-and-ignored (KANBAN_READONLY_FIELDS), not a 400
+    expect(getKanbanCard('put-1')?.archived_at).toBeFalsy()
+  })
+
+  it('cannot use the generic PUT to archive a card with an open child, sidestepping the archive endpoint\'s own guard', async () => {
+    createKanbanCard({ id: 'put-parent', title: 'has open kid', status: 'done' })
+    createKanbanCard({ id: 'put-child', title: 'open one', status: 'planned', parent_id: 'put-parent' })
+    const { ctx, out } = fakeCtx('/api/kanban/put-parent', 'PUT', { archived_at: Math.floor(Date.now() / 1000) })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(getKanbanCard('put-parent')?.archived_at).toBeFalsy()
+  })
+
+  it('a whole-card round-trip PUT (archived_at echoed back unchanged) still edits normally, no 400 regression', async () => {
+    createKanbanCard({ id: 'put-2', title: 'old title' })
+    const card = getKanbanCard('put-2')!
+    const { ctx, out } = fakeCtx('/api/kanban/put-2', 'PUT', { ...card, title: 'new title' })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(getKanbanCard('put-2')?.title).toBe('new title')
+  })
+})

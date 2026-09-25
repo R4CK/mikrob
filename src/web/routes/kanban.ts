@@ -136,6 +136,14 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
   // never by a PUT, but getKanbanCard's SELECT * returns it so the dashboard's
   // whole-card send carries it back. Accept-and-ignore, do not 400.
   'dispatched_at',
+  // archived_at moved here from KANBAN_WRITABLE_FIELDS (card db3ff9bd, Cybersec+Cybered finding):
+  // getKanbanCard's SELECT * returns it, so the dashboard's whole-card round-trip still carries it
+  // back and must not 400 -- but updateKanbanCard itself now pins archived_at to the card's own
+  // value regardless of what a PUT body sends, so accepting the key here is bookkeeping only, not
+  // the security boundary. Archiving/unarchiving goes exclusively through POST
+  // /api/kanban/:id/archive and /unarchive, which carry the open-children guard and their own
+  // dedicated audit row.
+  'archived_at',
 ])
 
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
