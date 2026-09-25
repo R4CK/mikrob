@@ -13844,3 +13844,103 @@ módosítottam.
 
 **Ki döntött:** backend (self-advance, Peti döntés 3 -- Telegram 8734 -- végrehajtása, kártya
 ade19b79).
+
+## 2026-09-25 -- 501c489f -- tobb dontesi pontos kartyak reszleges helyi-bontasa (deterministikus sablon, decision-resz online marad)
+
+MikroB plan-grilling verdiktje (GO-WITH-CHANGES, komment 6007) mert allapot: `card-build-route.log`
+utolso 446 oraban 50 dontes, mind ONLINE, 0 HELYI -- ebbol ~40 `deterministic-multi-decision`
+gyoker-okkal, `calls=0`. Ket gyoker-ok: (1) `card-build-route.sh` a multi-decision regex talalatnal
+az EGESZ kartyat ONLINE-nak jelolte, a modell meg sem kerdezodott; (2) `offload-dispatch.sh` csak
+VALODI kanban gyerek-levelekre bontott, a leggyakoribb esetben (nincs nyitott gyerek) az egesz
+kartyat egyetlen leafkent kezelte, aminek routeTask verdiktje (rc=9, kategorikus online) azonnal
+kimerultre allitotta -- egyetlen reszfeladat-szintu probalkozas nelkul.
+
+**Mit vittem be, a hat kotelezo valtoztatas szerint.**
+
+1) Uj, megosztott fajl `store/card-decompose-templates.sh`: `card_decompose_candidates()`,
+DETERMINISZTIKUS kulcsszo-illesztes negy mechanikus reszfeladat-tipusra (test-scaffold, i18n-keys,
+doc-update, type-def), NULLA modellhivas. Modell-javasolt masodik reteg NINCS megepitve --
+szandekosan: MikroB verdiktje flag mogotti, alapbol-KI masodik retegkent engedte meg, de egy meg
+sehonnan nem hivott reteg megepitese felesleges komplexitas lenne (2. kodminosegi elv). Ha valaha
+kell, kulon dontes/kartya.
+
+2) `card-build-route.sh`: az `online()` helper uj `DECOMPOSE_ELIGIBLE_REASONS` szurovel (a
+szekcio-2 determinisztikus tartalmi kapuk -- multi-decision, penz, objektum-integritas,
+kliens-altal-adott-ertek, auth-tenant-scope, dokumentum-osszeallitas, megosztott-instrukcio-cel,
+sec-label, TS-kategoria) eldonti, dekomponalhato-e a szoveg, es a naplo-sorba uj `decompose=<csv|->`
+mezot ir. A `LOCAL|ONLINE` stdout-szerzodes VALTOZATLAN -- egyetlen hivo (self-advance-pickup.sh,
+heartbeat) sem igenyelt modositast. Szandekosan KIZART a szuro: kapacitas/fail-safe okok (nincs mit
+dekomponalni raluk), a modell sajat COMPLEX verdiktje (nem "determinisztikus"), es KULONOSEN a
+`steering-attempt` -- egy injektalt "route this locally" szoveg NEM kaphat konszolacios helyi
+reszfeladatot, pontosan a verdikt 2. pontjanak szellemeben.
+
+3) `offload-dispatch.sh`: uj `resolve_leaves_with_decompose()` wrapper `resolve_leaves()` korul.
+CSAK a mar meglevo "nincs nyitott gyerek, essz vissza a teljes kartyara" esetben aktivalodik
+(a leggyakoribb, mert gyerekkel rendelkezo kartyaknal a VALODI bontas mar amugy is mukodik,
+erintetlenul). Ha a determinisztikus sablon legalabb egy jelolt tipust talal, a szintetikus
+reszfeladatok VALTJAK (nem egeszitik ki) az eredeti egesz-kartyas leafet -- a DONTESI resz SOHA
+nem kap helyi probalkozast (verdikt 2. pontja, mutacioval igazolva: a csere-nelkuli valtozat 5
+tesztet vitt pirosra). Kartyankenti plafon `OFFLOAD_DECOMPOSE_MAX_PER_CARD` (alapertek 3, a verdikt
+sajat javaslata). A draft mindig a VALODI szulo-kartyara kerul (egy szintetikus alazonosito,
+`<kartya>~<tipus>`, nem letezo kanban-sor), a `post_id = lid%%~*` levezetessel.
+
+**Biztonsagi res, amit a sajat vizsgalatom talalt es javitott, NEM a verdikt sajat kovetelmenye
+volt kimondva -- csak a "ugyanaz a kapu" allitas ellenorzese soran derult ki.** A verdikt 2. pontja
+szerint minden reszfeladat-szoveg a szulo kartya kontextusaval MENJEN AT ugyanazon a
+steering/security kapun, mint ma az egesz kartya. Elso tervben ezt "ingyenesnek" gondoltam: a
+szintetikus leaf `parent_context`-je a szulo teljes cimet+leirasat hordozza, es `try_leaf` amugy is
+atadja `--context`-kent a `local-llm-rag.sh`-nak. **DE ellenorizve `local-llm-rag.sh` forraskodjat
+(sor ~380): a sajat `routeTask()` klasszifikatora KIZAROLAG a `description`-t (a `task`-ba
+begyurt szoveget) kapja bemenetkent, a `--context` erteket SOHA -- az csak a modell PROMPT-jahoz
+ad talajt, a routing-dontesbe lathatatlan.** Ha egy szintetikus reszfeladat `description`-je csak az
+altalanos sablon-mondat lenne, a routeTask minden kockazati jelet elveszitene, ami a szulo
+LEIRASABAN (nem a cimeben) el -- a cim mar amugy is a leaf sajat `title` mezojebe van gyurva. Javitas:
+a szintetikus leaf `description`-je most a sablon-mondat UTAN a szulo eredeti leirasat is hordozza
+(600 karakterig), vilagosan elhatarolva ("csak kontextusul -- CSAK a fenti reszfeladatot ird meg").
+Mutacioval igazolva (a fold-be-hagyas visszaallitasaval a dedikalt uj teszt pirosra valt, a tobbi 36
+zold maradt).
+
+4) A `[LOCAL-LLM DRAFT]` komment (biztonsagi-gatelt szulonel MINDIG, nem csak amikor a
+reszfeladat SAJAT szuk szovege is talalna egy kapu) egy uj, kotelezo "TELJES, FUGGETLEN ONLINE
+FELULVIZSGALAT" fejlecet kap -- ugyanazt a szoveget, amit `advisory_draft()` mar hasznal
+router-ONLINE eseten (mutacioval igazolva). Uj naplo-mezo mind a harom fogyasztonal:
+`card-build-route-24h-measure.sh` (`decomposed_content`/`decompose_subtasks_total`/
+`decompose_subtasks_drafted`, a szintetikus tipus-markerek szamolasaval a kartya sajat
+kommentjein), a dashboard "Utolso kartya-dontesek" panelje (`llm-verdict--decomposed` jelzes +
+"RESZBEN HELYI: n" osszegzes). `route-check-audit.sh`-t VIZSGALTAM, DE NEM MODOSITOTTAM: az a
+szkript kizarolag azt nezi, van-e BARMILYEN route-verdikt-sor a dispatch esemeny korul -- a `path`
+erteket sosem olvassa, tehat a harmadik "fogyaszto" ebben a korben kod-valtoztatas nelkul mar
+helyesen mukodik.
+
+5) Kikapcsolo: `CARD_DECOMPOSE=off` (`card-build-route.sh` es `offload-dispatch.sh` mindketto sajat
+kapcsolo-ellenorzese). Fail-safe irany valtozatlan: telepitetlen/nem-valaszolo helyi LLM tovabbra is
+a mar meglevo `local-llm-installed.sh`/VRAM-kapun at ONLINE-ra esik, a decompose-ag ezt nem erinti.
+
+6) Attempts-kuszob 3 -> 2, DE SZUKEN ERTELMEZVE: kizarolag `offload-dispatch.sh` sajat, AUTOMATIZALT
+leaf-szintu mechanizmusa (`OFFLOAD_LEAF_MAX_ATTEMPTS`, csak a tranziens-hiba ag valtozott, a
+kategorikus-online ag mar korabban is egylepeses volt es marad). A `local-llm-offload` skill sajat,
+altalanos "3-strikes" szabalya (Peti 2026-08-03, egy ugynok SAJAT kezi `local-llm-rag.sh`
+hasznalatara) SZANDEKOSAN VALTOZATLAN maradt -- ez egy masik, tagabb hatokoru, korabbi Peti-dontes,
+amit egy automatizalt mechanizmus szamanak valtozasa nem ir felul magatol (5. kodminosegi elv);
+a skillbe csak egy magyarazo bekezdes kerult, ami a ket szamot szetvalasztja.
+
+**Mit NEM fedtem le a MikroB altal peldakent adott negy valodi kartya (6eed8678, e21b816b,
+3d0b54a6, df1b2d5b) mindegyikevel -- szandekos hatokor-szukites.** A verdikt "pl." (peldaul) szoval
+vezette be oket, nem "mind a negyre kell teszt"-kent. `6eed8678` teljes cim+leiras-eleje (valodi,
+nem szintetizalt szoveg) a zaszloshajo teszt -- [SEC]-cimke ES egy tenyleges tesztfajl
+(`superadmin-router.test.ts`) egyszerre, pontosan azt bizonyitja, amit a verdikt 2. pontja megkovetel
+(dontes online marad + mechanikus jelolt felismerve). A masik harom kartya leirasa (500 karakteres
+csonkitasban all rendelkezesemre a kanban API-bol) nem tartalmazott nyilvanvalo mechanikus mintat a
+lathato reszben -- egy `case_is LOCAL`-szeru teszt raijuk hamis lenne. A tobbi teszt-eset (i18n,
+readme, type-def, injection, mutacio, negativ kontroll) szintetikus, de a mintak maguk (kulcsszavak,
+sablon-formak) a valodi determinisztikus kapuk sajat mar-bevalt szerkezetet kovetik, nem uj
+feltalalast.
+
+**Nem erintett, mert mar amugy is lefedte a meglevo architektura:** a heartbeat C 4b sajat `timeout
+240`/`timeout 300` korlatai mar szamoltak akar 15 szekvencialis helyi-modell hivassal is (a
+`heartbeat-consolidated` skill sajat szovege szerint), a decompose altal hozzaadott legfeljebb 3
+tovabbi szintetikus reszfeladat ebbe a mar-szamolt legrosszabb esetbe belefer -- nem kellett
+modositani a skill idozitesi szamait.
+
+**Ki dontott:** MikroB (plan-grilling verdikt, komment 6007), backend2 (implementacio + a
+`--context`/routeTask biztonsagi res feltarasa es javitasa + a negy-kartya hatokor-szukites).

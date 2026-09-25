@@ -37,7 +37,10 @@ cat > "$TMPDIR/fixture.json" <<'EOF'
   {"id":"leaf3","title":"lepes 3: B alatt","description":"B alatti valos lepes.","status":"planned","assignee":"backend","project":"MikroB","parent_id":"midB","sort_order":1,"archived_at":null,"labels":[]},
   {"id":"leafDone","title":"lepes done","description":"mar kesz","status":"done","assignee":"backend","project":"MikroB","parent_id":"parentA","sort_order":4,"archived_at":null,"labels":[]},
   {"id":"leafArchived","title":"lepes archived","description":"archivalt","status":"planned","assignee":"backend","project":"MikroB","parent_id":"parentA","sort_order":5,"archived_at":1700000000,"labels":[]},
-  {"id":"loneCard","title":"[FE] Onallo kartya gyerek nelkul","description":"Nincs bontva.","status":"planned","assignee":"fron-ted","project":"MikroB","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]}
+  {"id":"loneCard","title":"[FE] Onallo kartya gyerek nelkul","description":"Nincs bontva.","status":"planned","assignee":"fron-ted","project":"MikroB","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]},
+  {"id":"decompCard","title":"[marveen][INFRA][SEC] Architektura donteshez teszt es i18n is kell","description":"A kontraktus (architektura) modosul. Kell hozza unit test es a hu/de i18n string forditasok is.","status":"planned","assignee":"backend2","project":"MikroB","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]},
+  {"id":"singleRealChild","title":"[BE] Egy valos gyerekkel rendelkezo Feladat","description":"Ez a szulokartya, van egy valodi nyitott gyereke.","status":"planned","assignee":"backend","project":"MikroB","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]},
+  {"id":"onlyChildOfSingle","title":"lepes 1: unit test irasa","description":"Ird meg a tesztet.","status":"planned","assignee":"backend","project":"MikroB","parent_id":"singleRealChild","sort_order":1,"archived_at":null,"labels":[]}
 ]
 EOF
 
@@ -64,6 +67,54 @@ check "a done card resolves to an empty leaf set (never re-drafted)" "$done_out"
 missing_out="$(CARD=doesnotexist bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture.json")"
 check "an unknown card id resolves to an empty leaf set" "$missing_out" "[]"
 
+# --- decompose wrapper (card 501c489f, MikroB verdikt komment 6007) -------------------------------
+decompose_ids() { CARD="$1" bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c 'import json,sys; print(",".join(sorted(l["id"] for l in json.load(sys.stdin))))'; }
+decompose_field() { CARD="$1" bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c "import json,sys; print(json.load(sys.stdin)[0].get('$2',''))"; }
+
+decomp_ids="$(decompose_ids decompCard)"
+check "decompCard (no real children, mechanical text) -> synthetic leaves REPLACE the whole-card fallback" \
+  "$decomp_ids" "decompCard~i18n-keys,decompCard~test-scaffold"
+
+decomp_synth_flag="$(decompose_field decompCard synthetic)"
+check "synthetic leaf carries synthetic=true" "$decomp_synth_flag" "True"
+
+decomp_no_wholecard="$(CARD=decompCard bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c 'import json,sys; print("decompCard" in [l["id"] for l in json.load(sys.stdin)])')"
+check "REQUIREMENT 2: the decision part (the whole-card leaf itself) is NEVER among the leaves -- it never goes local" \
+  "$decomp_no_wholecard" "False"
+
+# SAFETY (requirement 2): the synthetic leaf's OWN "description" (what try_leaf folds into `task`,
+# the ONLY thing local-llm-rag.sh's routeTask classifier ever sees -- --context is prompt grounding,
+# invisible to routing) must carry the PARENT card's real description text, not just the generic
+# template sentence. Without this, routeTask would classify on template boilerplate and never see
+# risk signal that lives in the parent's description rather than its title.
+decomp_desc_carries_parent="$(CARD=decompCard bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(all("i18n string forditasok" in l["description"] for l in d))')"
+check "SAFETY: every synthetic leaf description carries the PARENT description text (routeTask sees the real risk signal)" \
+  "$decomp_desc_carries_parent" "True"
+
+# CONTROL: no mechanical shape in the text -> the wrapper is a no-op, byte-identical to resolve_leaves alone.
+lone_via_wrapper="$(decompose_ids loneCard)"
+check "CONTROL: loneCard (no mechanical shape) -> unchanged fallback, same as --test-resolve" "$lone_via_wrapper" "loneCard"
+
+# CONTROL: a card with a REAL single open child must NOT be decomposed -- only the "no children at
+# all" fallback shape qualifies, even though onlyChildOfSingle's own text ("unit test irasa") would
+# obviously match the test-scaffold template if it were mistakenly run through it.
+single_ids="$(decompose_ids singleRealChild)"
+check "CONTROL: a real single open child is resolved as-is, never synthetically decomposed" "$single_ids" "onlyChildOfSingle"
+
+# KILL-SWITCH / MUTATION (ELLENORZES, verdikt komment 6007: "a bontas kikapcsolasaval a teszt pirosra valt"):
+off_ids="$(CARD=decompCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=3 CARD_DECOMPOSE=off bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c 'import json,sys; print(",".join(sorted(l["id"] for l in json.load(sys.stdin))))')"
+check "MUTATION: CARD_DECOMPOSE=off -> the exact fixture that decomposed above now falls back to the whole card" "$off_ids" "decompCard"
+
+# GPU-BUDGET CAP (requirement 3, "javaslat: max 3"): a fixture whose text matches all four template
+# types, capped by OFFLOAD_DECOMPOSE_MAX_PER_CARD.
+cat > "$TMPDIR/fixture-allfour.json" <<'EOF'
+[{"id":"allFourCard","title":"[BE] Teszt, i18n, readme es interface egyszerre","description":"Kell unit test, i18n forditas, readme frissites es egy TypeScript interface type definition is.","status":"planned","assignee":"backend2","project":"MikroB","parent_id":null,"sort_order":1,"archived_at":null,"labels":[]}]
+EOF
+all4_count="$(CARD=allFourCard bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+check "GPU-BUDGET CAP: 4 template types match, OFFLOAD_DECOMPOSE_MAX_PER_CARD default(3) caps it" "$all4_count" "3"
+cap5_count="$(CARD=allFourCard OFFLOAD_DECOMPOSE_MAX_PER_CARD=1 bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture-allfour.json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+check "GPU-BUDGET CAP is CONFIGURABLE: OFFLOAD_DECOMPOSE_MAX_PER_CARD=1 caps to 1, not a hardcoded 3" "$cap5_count" "1"
+
 # --- attempts_op state machine -------------------------------------------------------------------
 AF="$TMPDIR/attempts.json"
 op() { bash "$DISPATCH" --test-attempts-op "$1" "$2" --file "$AF"; }
@@ -74,16 +125,22 @@ at() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.load(sys.stdin
 r="$(op check leafX)"
 check "a never-seen leaf checks as pending/0" "$(st "$r")|$(at "$r")" "pending|0"
 
-op transient-fail leafX >/dev/null
+# THRESHOLD 3 -> 2 (card 501c489f, MikroB verdikt komment 6007, requirement 6): the 2nd consecutive
+# transient failure now flips to exhausted, not the 3rd.
 op transient-fail leafX >/dev/null
 r="$(op transient-fail leafX)"
-check "3rd consecutive transient failure flips status to exhausted" "$(st "$r")|$(at "$r")" "exhausted|3"
+check "2nd consecutive transient failure flips status to exhausted" "$(st "$r")|$(at "$r")" "exhausted|2"
 
 r="$(op check leafX)"
 check "a fresh exhausted entry stays exhausted on re-check (no premature TTL reset)" "$(st "$r")" "exhausted"
 
 r="$(op categorical-online leafY)"
-check "router-said-online jumps straight to exhausted in ONE call, not 3" "$(st "$r")|$(at "$r")" "exhausted|3"
+check "router-said-online jumps straight to exhausted in ONE call, not 2" "$(st "$r")|$(at "$r")" "exhausted|2"
+
+# The threshold itself is CONFIGURABLE (OFFLOAD_LEAF_MAX_ATTEMPTS), not a hardcoded literal -- a
+# non-default value must actually change the behaviour, or the env var is decorative.
+r="$(OFFLOAD_LEAF_MAX_ATTEMPTS=4 bash "$DISPATCH" --test-attempts-op transient-fail leafConfigurable --file "$TMPDIR/attempts-cfg.json")"
+check "OFFLOAD_LEAF_MAX_ATTEMPTS=4: 1st transient failure stays pending (below the raised ceiling)" "$(st "$r")|$(at "$r")" "pending|1"
 
 op transient-fail leafZ >/dev/null
 r="$(op success leafZ)"
@@ -204,6 +261,30 @@ check "plain text stdout (not an envelope) -> nothing" \
 check "empty stdout -> nothing" "$(printf '' | bash "$DISPATCH" --test-advisory-draft)" ""
 wired="$(grep -c 'adv_draft="$(printf '"'"'%s'"'"' "$out" | advisory_draft)"' "$DISPATCH")"
 check "try_leaf's rc=9 branch uses advisory_draft on the RAG stdout" "$wired" "1"
+
+# --- D. DRAFT COMMENT BODY: mandatory-full-review wording for synthetic (decomposed) drafts
+# (requirement 2, verdikt komment 6007) --------------------------------------------------------
+synth_body="$(bash "$DISPATCH" --test-draft-comment-body "Parent title" "draft body" true)"
+if [[ "$synth_body" == *"KOTELEZO A TELJES, FUGGETLEN ONLINE FELULVIZSGALAT"* ]]; then
+  PASS=$((PASS+1)); echo "OK   synthetic=true draft carries the mandatory-full-review wording"
+else
+  FAIL=$((FAIL+1)); echo "FAIL synthetic=true draft missing the mandatory-full-review wording"; echo "  got: $synth_body"
+fi
+
+# NEGATIVE CONTROL: a REAL (non-synthetic) leaf's draft must NOT carry the stronger wording -- an
+# always-on header would not be a signal, and this is what proves the flag actually gates something.
+real_body_explicit="$(bash "$DISPATCH" --test-draft-comment-body "Parent title" "draft body" false)"
+real_body_default="$(bash "$DISPATCH" --test-draft-comment-body "Parent title" "draft body")"
+if [[ "$real_body_explicit" != *"KOTELEZO A TELJES, FUGGETLEN ONLINE FELULVIZSGALAT"* && "$real_body_default" != *"KOTELEZO A TELJES, FUGGETLEN ONLINE FELULVIZSGALAT"* ]]; then
+  PASS=$((PASS+1)); echo "OK   CONTROL: a real (non-synthetic) leaf's draft does not carry the stronger wording"
+else
+  FAIL=$((FAIL+1)); echo "FAIL CONTROL: a real leaf's draft unexpectedly carries the synthetic-only wording"
+fi
+
+# post_draft_comment forwards $4 (synthetic) to draft_comment_body -- a source pin, not a behaviour
+# test (the behaviour is pinned above): proves the wiring cannot silently drop the 4th argument.
+forward_pin="$(grep -c 'body="\$(draft_comment_body "\$leaf_title" "\$content" "\$synthetic")"' "$DISPATCH")"
+check "post_draft_comment forwards its synthetic argument to draft_comment_body" "$forward_pin" "1"
 
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"

@@ -163,6 +163,23 @@ describe('(2) the preset table: switch + routed model + why', () => {
     expect(d).toContain('llm-verdict--online')
     expect(d).toContain('llm-verdict--local')
   })
+
+  // Card 501c489f (MikroB verdikt komment 6007, requirement 4): a decomposed (partially-local) row
+  // is shown separately from a bare ONLINE, both in the per-card row and the summary count.
+  it('decompose rows are shown separately from a bare ONLINE verdict (card 501c489f)', () => {
+    const d = slice(JS, 'function llmRoutingDecisionsHtml()', '// Presets (formerly "Categories"')
+    expect(d).toContain('llm-verdict--decomposed')
+    expect(d).toContain("r.decompose.length > 0")
+    expect(d).toContain("t('localLlm.routing.summary_decomposed'")
+    expect(d).toContain("t('localLlm.routing.verdict_decomposed')")
+    expect(d).toContain("t('localLlm.routing.decision_decompose'")
+    for (const lang of [HU, EN]) {
+      expect(lang).toContain("'localLlm.routing.verdict_decomposed':")
+      expect(lang).toContain("'localLlm.routing.summary_decomposed':")
+      expect(lang).toContain("'localLlm.routing.decision_decompose':")
+    }
+    expect(CSS).toContain('.llm-verdict--decomposed')
+  })
 })
 
 describe('(1) model rows: chips, summary and the highlight hook', () => {
