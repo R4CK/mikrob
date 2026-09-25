@@ -14708,3 +14708,68 @@ worktree-mintát).
 **Ki döntött:** backend3 (mind a 7 lezárt fájl olvasása+döntése valódi merge-szimulációval), Cybersec
 bevonása kérve az `outgoing-copy-gate.py`-ra (nem lezárva). Gate ezen a kártyán: QA + Cybersec (SEC
 címke).
+
+## 2026-09-25 -- 09d54e88 QA FAIL + korrekció: a konfliktus-marker-alapú módszertan hamis biztonságérzetet adott (backend3)
+
+**A hiba.** qa2 QA FAIL-t adott (komment 6736, Gate-SHA 37abcb87) a fenti bejegyzésre. A gyökér-ok
+módszertani: a 3-utas merge-szimulációból csak a `<<<<<<<`/`=======`/`>>>>>>>` KONFLIKTUS-JELZŐK közötti
+szöveget olvastam, ami CSAK azt mutatja, hol ÜTKÖZIK a fork és az upstream szövege -- egy TISZTA
+upstream-ADDÍCIÓ, ami a fork meglévő soraival sehol nem ütközik, NÉMÁN, jelző nélkül mergelődik be, és
+így láthatatlan maradt egy csak-konfliktus-jelzőre néző olvasás számára. Ugyanaz a hibaosztály, amit az
+`outgoing-copy-gate.py` saját 16-köre már megtanított volna, ha alkalmazom rá is: egy "stale" (már
+pinnelt) fájl újra-döntéséhez a TELJES `git diff <régi-pin>..<új-upstream-blob>` kell, nem a
+merge-szimuláció konfliktus-határai.
+
+**4 konkrét hiba, mind javítva:**
+1. **`scripts/watchdog.sh`** -- a döntés maga (ADOPT `agent=` param + HTTP_CODE-ellenőrzés) helyes
+   volt, DE a "plain ADOPT" megfogalmazás ténylegesen ELTÁVOLÍTOTTA VOLNA a fork `-H @"$HDR_FILE"`
+   0600-temp-file biztonsági mintáját (az EGYETLEN `$HDR_FILE`-felhasználási pont) upstream nyers
+   `-H "Authorization: Bearer $TOKEN"` argv-beágyazott tokenje javára -- pontosan a b267df80-mintájú
+   `/proc/<pid>/cmdline` token-szivárgás, amit ez a kártyasorozat MÁSHOL helyesen elutasított.
+   JAVÍTVA: UNION -- upstream `agent=` param + HTTP_CODE ellenőrzés ÁTVÉVE, `-H @"$HDR_FILE"` MEGTARTVA.
+   Mellékes hiba: a magyar hiba-magyarázó kommentet ("agent, nem to...") tévesen a fork sajátjának
+   mondtam -- élő `grep` a fork fájlján NULLA találatot ad, a komment UPSTREAM-é, upstream saját
+   javításának magyarázataként érkezett. Javítva, helyesen attribuálva.
+2. **`scripts/install-prod-tree-guard-hook.sh`** -- a bejegyzés "mindkét hunk már döntött pont, plain
+   blob bump"-ot állított. A TELJES diff (nem csak a konfliktus-jelzők) egy HARMADIK, korábban nem
+   tárgyalt upstream-változtatást is tartalmazott: folyamatban lévő git-művelet (rebase/cherry-pick/
+   merge/bisect) detektálása, ami megakadályozza, hogy a guard egy ilyen műveletet félbeszakítson egy
+   feles checkout-visszaállítással -- upstream saját, dokumentált incidenssel indokolja (msg 3042-3045,
+   négy rebase-próbálkozás, mindig "index contains uncommitted changes" egy bizonyíthatóan tiszta
+   indexről). JAVÍTVA: a két már-döntött pont (hdr_file, JSON-encoding) változatlan, PLUSZ ADOPT a
+   rebase-detektálásra (tiszta addíció, nem érinti a két döntött pontot, valódi, reprodukált
+   megbízhatósági hiba javítása).
+3. **`scripts/channels.sh`** -- a TELJES diff (régi pin -> új upstream) két további, korábban nem
+   tárgyalt, nem-ütköző upstream-változtatást tartalmazott: (a) `respawn_log` MCP-log-tail
+   diagnosztikai bővítés (addíció, ADOPT), (b) a `FAIL_COUNT` számlálás javítása `wc -l` (a teljes
+   channels-failures.log MINDEN sorát számolta, beleértve a nem rapid-exit WARN-sorokat is) helyett
+   `grep -c "rapid-exit after"`-re (valódi hiba, card c5296a52, ADOPT).
+4. **`scripts/email-send-gate.mjs`** -- a `wrapperDepthHit()` ADOPT döntés helyes maradt, DE a bejegyzés
+   nem mondta ki, hogy UGYANEBBEN a diff-tartományban egy JELENTŐS, biztonság-releváns upstream
+   funkció is érkezett, amit se nem adoptáltam, se nem jeleztem: egy recipient-ledger ellenőrző
+   rendszer (`unverifiedRecipients()`, új `./recipient-ledger.mjs` függőség) ÉS egy Gmail-connector-
+   specifikus kapu (`gmail__(reply|reply_all|send_message|forward)`, GMAILCONNECTOR914) -- upstream
+   saját szavai szerint "e nélkül egy sub-agent kapu NÉLKÜL küldhetett a connectoron át". Ellenőrizve:
+   EGYIK sem létezik a forkban ma. Nem lezárva, jelezve -- a fork SAJÁT connectors-rendszere (`src/web/
+   routes/connectors.ts`) katalógus-alapú és Gmail-t is támogat, tehát a rés ELVILEG élő lehet, ha
+   bármelyik ügynökhöz Gmail-connector van kötve. Az `outgoing-copy-gate.py` (Round 17, eszkalálva)
+   `commandHeads`/`WRAPPERS` átírásával PÁRBAN érkezett (közös `send-invocation-cases.json`), ezért
+   együtt kell egyszer megítélni, nem darabosan. `ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs']`
+   hozzáadva (`from './recipient-ledger.mjs'`, `expect: absent`), mutáció-tesztelve: a stringet
+   hozzáadva a fájlhoz a `fork-upstream-conflict-guard.test.ts` PONTOSAN elkapja, eltávolítva zöld.
+
+**Ami NEM változott:** egyik érintett fájl pinje sem mozdult (mind pontosan a jelenlegi upstream
+csúcsra mutat) -- csak a DÖNTÉS-SZÖVEG lett teljesebb/pontosabb, nem a döntés maga (a watchdog.sh
+UNION kivételével, ahol a tényleges javasolt kód-alak is módosult a biztonsági regresszió miatt).
+
+**Zöld:** `fork-upstream-drift-check.test.ts` 21/21, `fork-upstream-conflict-guard.test.ts` 36/36 (az
+új anchor mutáció-tesztelve), `tsc --noEmit` tiszta.
+
+**Tanulság, ami minden további gyerek-kártyára (2/10, 4/10-10/10) vonatkozik:** egy STALE (már
+pinnelt) fájl újra-döntésénél a `git diff <régi-pin> <új-upstream-blob>` a kötelező első lépés, a
+merge-szimuláció konfliktus-jelzői csak KIEGÉSZÍTIK, nem helyettesítik. Egy "nobody-decided" (soha nem
+pinnelt) fájlnál ez a kockázat kisebb, de nem nulla, ha a fájl NAGY és a konfliktus csak egy részét
+érinti.
+
+**Ki döntött:** qa2 (a hiba felfedezése), backend3 (a korrekció). Delta-gate következik (QA + Cybersec)
+az új Gate-SHA-n.
