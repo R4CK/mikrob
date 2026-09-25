@@ -36,16 +36,14 @@ describe('schedule-runner auto-starts a stopped agent for its scheduled task', (
     // Locate the (host-aware) missing-session guard and assert it now launches the agent.
     const guardIdx = SRC.indexOf('if (!sessionExistsOnHost(')
     expect(guardIdx).toBeGreaterThan(0)
-    // Window covering the missing-session block (comment + code, before the
-    // real busy-check). Must launch the agent and return the 'starting' state.
-    //
-    // Widened from 1800 to 3000 (card e9d3cd12): the block itself grew by a try/catch that maps a
-    // REJECTING auto-start onto the same 'missing' verdict as a failing one, AND upstream's
-    // main-agent guard (schedule-runner-main-agent-missing.test.ts) sits ahead of this code in the
-    // same block. 3000 is the wider of the two fixture windows and covers both additions. The
-    // assertions below are unchanged -- the window only has to still contain the block it was
-    // written for.
-    const missingBlock = SRC.slice(guardIdx, guardIdx + 3000)
+    // ANCHOR-based (card fa9e1c39), not a fixed character window. The old `guardIdx + 3000` window
+    // had already been widened once (from 1800) as the block grew its own comments/try-catch, and
+    // each widening was blind to how much headroom was left -- the next growth silently pushes
+    // `catch (err)` out of the window and the test fails on something unrelated to the real change.
+    // The real, stable boundary is the busy-check that follows this block in the source.
+    const nextCheckIdx = SRC.indexOf('if (!task.forceSend', guardIdx)
+    expect(nextCheckIdx).toBeGreaterThan(guardIdx)
+    const missingBlock = SRC.slice(guardIdx, nextCheckIdx)
     expect(missingBlock).toMatch(/startAgentProcess\(agentName\)/)
     expect(missingBlock).toMatch(/return 'starting'/)
     // And the new branch is inside the same block, not bolted on somewhere else.
@@ -73,8 +71,9 @@ describe('schedule-runner auto-starts a stopped agent for its scheduled task', (
 
   it('documents WHY (daily batch agent), not just what', () => {
     const guardIdx = SRC.indexOf('if (!sessionExistsOnHost(')
-    // Widened from 900 for the same reason as above.
-    const rationale = SRC.slice(guardIdx, guardIdx + 1900)
+    // Same anchor-based boundary as above, for the same reason (card fa9e1c39).
+    const nextCheckIdx = SRC.indexOf('if (!task.forceSend', guardIdx)
+    const rationale = SRC.slice(guardIdx, nextCheckIdx)
     expect(rationale).toMatch(/auto-start|batch agent|digest/i)
     expect(rationale).toMatch(/skipIfBusy/i)
   })
