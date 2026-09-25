@@ -9,6 +9,8 @@ A tool sajat biztonsagi logikaja garantalja, hogy soha nem irja felul csendben e
 
 A script MASODIK ellenorzest is fut: klon-csaladon (backend<->backend2<->backend3, qa<->qa2, fron-ted<->fron-teddy) belul HIANYZO skilleket is keres, nem csak elavult tartalmat (kartya a6abb230, Peti panasz 2026-09-18 -- a gyoker-ok az volt, hogy a seed-fleet-agents/<klon> forrasok maguk is elavultak/hianyosak voltak). Ez is --apply alatt additivan potolja a hianyt (sosem ir felul meglevo konyvtart), ugyanazzal a futo-agent-fail-closed vedelemmel mint a stale-szinkron.
 
+**F1 STOPGAP AKTIV (kartya 85521c7e, Cybersec lelet a6abb230-on, 2026-09-25-tol):** a hianyzo-skill masolas FORRASA egy testver ELO, gitignore-olt .claude/skills/ konyvtara volt, NEM a kovetett seed -- egy git-ben nem szereplo skill (pl. curl|sh-t kero install-utasitas, vagy a skill-mappabol KIFELE mutato symlink) igy --apply alatt at tudott terjedni a teljes klon-csaladra, megkerulve a CLAUDE.md skill-karanten szabalyat. Merve elesben: pontosan ez tortent egy futason. A script ezert JELENLEG a hianyzo-skill agat MINDIG dry-run-kent futtatja (`MISSING_SYNC_APPLY_ENABLED=0`), --apply mellett is -- csak riportal, nem masol. Ez a `heartbeat`-et NEM erinti (tovabbra is fusd --apply-jal, a stale-szinkron resze valtozatlan), csak a hianyzo-skill resz nem masol semmit, amig egy kovetkezo commit at nem allitja a forrast seed-fleet-agents-re es be nem vezeti a symlink-kizarast.
+
 ## A DONTEST A SCRIPT HOZZA, NE SZAMOLGASS
 
 A kimenet UTOLSO sora egy verdikt. **Kizarolag ezt nezd, ne a darabszamokat:**

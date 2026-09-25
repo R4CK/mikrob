@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import {
   buildIntegratedRepos,
   readRegistry,
+  readState,
   redactRemote,
   repoKind,
   statusForRepo,
@@ -187,15 +188,19 @@ describe('statusForRepo -- the note field (card e52b0131, Fron Ted contract 184d
   })
 })
 
+// A nonexistent state path throughout, so these tests never merge in the REAL, live
+// store/watched-repos-state.json via readRegistry's default second argument.
+const noState = () => join(tmp, `no-state-${Math.random().toString(36).slice(2)}.json`)
+
 describe('readRegistry + buildIntegratedRepos', () => {
   it('returns [] for a missing or malformed registry rather than throwing', () => {
-    expect(readRegistry(join(tmp, 'nope.json'))).toEqual([])
+    expect(readRegistry(join(tmp, 'nope.json'), noState())).toEqual([])
     const bad = join(tmp, 'bad.json')
     writeFileSync(bad, '{not json')
-    expect(readRegistry(bad)).toEqual([])
+    expect(readRegistry(bad, noState())).toEqual([])
     const notArray = join(tmp, 'obj.json')
     writeFileSync(notArray, '{"a":1}')
-    expect(readRegistry(notArray)).toEqual([])
+    expect(readRegistry(notArray, noState())).toEqual([])
   })
 
   it('aggregates totals and counts behind / review-required entries', () => {
@@ -215,5 +220,56 @@ describe('readRegistry + buildIntegratedRepos', () => {
     expect(out.checkedAt).toBeGreaterThan(0)
     expect(out.repos.find((r) => r.name === 'notcloned')?.cloned).toBe(false)
     expect(out.repos.find((r) => r.name === 'uptodate')?.behind).toBe(0)
+  })
+})
+
+describe('readRegistry -- merges the write-back state file (card 197947ae)', () => {
+  const reg = () => {
+    const p = join(tmp, `reg-${Math.random().toString(36).slice(2)}.json`)
+    writeFileSync(
+      p,
+      JSON.stringify([
+        { name: 'daily-synced', repo: 'https://x/y.git', branch: 'main', local: clone, type: 'text', enabled: true, last_sha: firstSha, last_checked_at: '2020-01-01' },
+        { name: 'never-synced', repo: 'https://x/z.git', branch: 'main', local: clone, type: 'text', enabled: true, last_sha: firstSha, last_checked_at: '2020-01-01' },
+      ]),
+    )
+    return p
+  }
+
+  it('readState returns {} for a missing or malformed state file rather than throwing', () => {
+    expect(readState(join(tmp, 'nope-state.json'))).toEqual({})
+    const bad = join(tmp, 'bad-state.json')
+    writeFileSync(bad, '{not json')
+    expect(readState(bad)).toEqual({})
+    const arr = join(tmp, 'arr-state.json')
+    writeFileSync(arr, '[]')
+    expect(readState(arr)).toEqual({})
+  })
+
+  it('a state entry for a repo name OVERRIDES that entry\'s last_sha/last_checked_at, leaving other repos alone', () => {
+    const state = join(tmp, 'state.json')
+    writeFileSync(state, JSON.stringify({ 'daily-synced': { last_sha: upstreamHead, last_checked_at: '2026-09-25' } }))
+
+    const entries = readRegistry(reg(), state)
+    const synced = entries.find((e) => e.name === 'daily-synced')
+    const never = entries.find((e) => e.name === 'never-synced')
+    expect(synced?.last_sha).toBe(upstreamHead)
+    expect(synced?.last_checked_at).toBe('2026-09-25')
+    // Untouched by the state file -- keeps the registry's own (possibly stale) value.
+    expect(never?.last_sha).toBe(firstSha)
+    expect(never?.last_checked_at).toBe('2020-01-01')
+  })
+
+  it('a missing state file leaves every registry entry exactly as read', () => {
+    const entries = readRegistry(reg(), noState())
+    expect(entries.find((e) => e.name === 'daily-synced')?.last_sha).toBe(firstSha)
+  })
+
+  it('feeds through to behind-detection: a stale registry last_sha would show behind, the merged state sha does not', () => {
+    const state = join(tmp, 'state2.json')
+    writeFileSync(state, JSON.stringify({ 'daily-synced': { last_sha: upstreamHead, last_checked_at: '2026-09-25' } }))
+    const entries = readRegistry(reg(), state)
+    const synced = entries.find((e) => e.name === 'daily-synced')!
+    expect(statusForRepo(synced).behind).toBe(0)
   })
 })

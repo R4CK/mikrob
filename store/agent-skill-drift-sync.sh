@@ -106,6 +106,17 @@ HIST_CAP=25   # same cap update.sh's seed_copy_is_untouched uses -- a skill unfi
 # Overridable for the same reason the paths above are: a selftest must never touch the live state.
 STATE="${AGENT_SKILL_DRIFT_STATE:-$ROOT/store/agent-skill-drift-state.json}"
 
+# F1 STOPGAP (card 85521c7e, Cybersec GO on a6abb230): scan_missing_skills() below copies from a
+# sibling's LIVE .claude/skills/<name> directory, not from the tracked seed-fleet-agents source --
+# a skill absent from git (e.g. adopted by hand, curl|sh install instructions, a stray symlink
+# pointing outside the skill directory) reaches --apply and gets propagated to every other family
+# member, bypassing the CLAUDE.md skill-quarantine invariant entirely. Measured live: exactly this
+# happened, two siblings picked up an unreviewed skill plus an out-of-directory symlink in one
+# --apply run. Forced OFF here -- scan_missing_skills() now ALWAYS reports, never copies -- until a
+# follow-up commit switches the source to seed-fleet-agents and refuses any skill directory that
+# contains a symlink resolving outside itself. Do not flip this back without that fix landing too.
+MISSING_SYNC_APPLY_ENABLED=0
+
 APPLY=0
 TELEGRAM=0
 ONLY_AGENTS=()
@@ -334,7 +345,7 @@ scan_missing_skills() {
 
         MISSING=$((MISSING+1))
 
-        if [ "$APPLY" -eq 1 ]; then
+        if [ "$APPLY" -eq 1 ] && [ "$MISSING_SYNC_APPLY_ENABLED" -eq 1 ]; then
           agent_state="$(_agent_running_state "$m")"
           if [ "$agent_state" = "running" ]; then
             MISSING_SKIPPED_RUNNING=$((MISSING_SKIPPED_RUNNING+1))
@@ -495,7 +506,7 @@ run_scan() {
       printf '%b' "$MISSING_LIST" | sed 's/^/  MISSING   /'
     fi
     echo "---"
-    echo "SUMMARY: current=${CUR} stale=${STALE}$([ "$APPLY" -eq 1 ] && echo '(synced)' || echo '(would-sync, dry-run)') diverged=${DIVERGED}(flagged-only) skipped=${SKIPPED}(no-canonical) missing=${MISSING}$([ "$APPLY" -eq 1 ] && echo '(synced-where-possible)' || echo '(would-sync, dry-run)')"
+    echo "SUMMARY: current=${CUR} stale=${STALE}$([ "$APPLY" -eq 1 ] && echo '(synced)' || echo '(would-sync, dry-run)') diverged=${DIVERGED}(flagged-only) skipped=${SKIPPED}(no-canonical) missing=${MISSING}$([ "$APPLY" -eq 1 ] && [ "$MISSING_SYNC_APPLY_ENABLED" -eq 1 ] && echo '(synced-where-possible)' || echo '(would-sync, dry-run -- F1 stopgap, card 85521c7e)')"
   fi
 
   emit_alert_verdict
@@ -965,16 +976,23 @@ agent-someone-else")"
     && echo "  ok   dry-run created nothing" \
     || { echo "  FAIL dry-run wrote a skill directory"; fail=1; }
 
-  # --apply: a sibling's skill is copied wholesale into every member missing it, byte-for-byte.
-  fam_run --apply >/dev/null
-  if [ "$(cat "$tmp/family-root/agents/backend2/.claude/skills/skillA/SKILL.md" 2>/dev/null)" = "SKILL A CONTENT" ] \
-     && [ "$(cat "$tmp/family-root/agents/backend/.claude/skills/skillB/SKILL.md" 2>/dev/null)" = "SKILL B CONTENT" ] \
-     && [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillA/SKILL.md" 2>/dev/null)" = "SKILL A CONTENT" ] \
-     && [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillB/SKILL.md" 2>/dev/null)" = "SKILL B CONTENT" ]; then
-    echo "  ok   --apply filled every member's gap from a sibling, content byte-identical"
+  # F1 STOPGAP (card 85521c7e): --apply used to copy a sibling's skill wholesale. It now copies
+  # from a sibling's LIVE, gitignored directory -- not the tracked seed -- which lets an unreviewed
+  # skill (or a symlink escaping the skill directory) propagate through the clone family. Forced
+  # OFF until a follow-up commit sources from seed-fleet-agents and refuses escaping symlinks: even
+  # --apply must still write NOTHING and keep reporting would-sync, exactly like the dry run above.
+  outApply="$(fam_run --apply --telegram)"
+  if [ ! -e "$tmp/family-root/agents/backend2/.claude/skills/skillA" ] \
+     && [ ! -e "$tmp/family-root/agents/backend/.claude/skills/skillB" ] \
+     && [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillA" ] \
+     && [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillB" ]; then
+    echo "  ok   F1 stopgap: --apply still writes nothing (missing-sync copy forced off, card 85521c7e)"
   else
-    echo "  FAIL --apply did not fill the clone-family gaps correctly"; fail=1
+    echo "  FAIL --apply wrote a skill directory despite the F1 stopgap -- SAFETY VIOLATION"; fail=1
   fi
+  echo "$outApply" | grep -q 'skillA' && echo "$outApply" | grep -qi 'would-sync\|dry-run' \
+    && echo "  ok   --apply still REPORTS the gaps (missing count/list unaffected by the stopgap)" \
+    || { echo "  FAIL --apply's report lost the missing-skill list:"; echo "$outApply"; fail=1; }
 
   # The two independently-authored skillC copies must survive UNTOUCHED -- this is the guarantee
   # that makes the whole feature additive-only: existing content is never a sync target.
@@ -985,38 +1003,23 @@ agent-someone-else")"
     echo "  FAIL an existing skill directory was overwritten -- SAFETY VIOLATION"; fail=1
   fi
 
-  # --agent filter narrows which member is SYNCED, but the union must still be computed from ALL
-  # siblings -- otherwise a --agent backend3 run could never see what backend/backend2 have.
+  # --agent filter narrows which member is REPORTED, but the union must still be computed from ALL
+  # siblings -- otherwise a --agent backend3 run could never see what backend/backend2 have. (Write
+  # verification dropped here -- see the F1 stopgap above: nothing is ever written right now.)
   rm -rf "$tmp/family-root/agents/backend3/.claude/skills/skillA" "$tmp/family-root/agents/backend3/.claude/skills/skillB"
   outF2="$(fam_run --apply --agent backend3 --telegram)"
-  if [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillA/SKILL.md" 2>/dev/null)" = "SKILL A CONTENT" ]; then
-    echo "  ok   --agent backend3 still fills its gap from a sibling (union not narrowed by the filter)"
-  else
-    echo "  FAIL --agent filter starved the union -- backend3 was not synced"; fail=1
-  fi
-
-  # Running-agent guard applies to missing-sync exactly like it applies to stale-sync: a member
-  # confirmed RUNNING must be skipped, and the report must say so and carry it as a reason.
-  rm -rf "$tmp/family-root/agents/backend3/.claude/skills/skillA"
-  outF3="$(AGENT_SKILL_DRIFT_ROOT="$tmp/family-root" AGENT_SKILL_DRIFT_TEST_SESSIONS="agent-backend3" \
-           bash "${BASH_SOURCE[0]}" --apply --agent backend3)"
+  echo "$outF2" | grep -q 'backend3/skillA' \
+    && echo "  ok   --agent backend3 still reports its gap from a sibling (union not narrowed by the filter)" \
+    || { echo "  FAIL --agent filter starved the union -- backend3's gap was not reported:"; echo "$outF2"; fail=1; }
   [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillA" ] \
-    && echo "  ok   a RUNNING member's missing-skill sync is skipped, file stays absent" \
-    || { echo "  FAIL a running member's tree was written to"; fail=1; }
-  echo "$outF3" | grep -q 'missing-skipped-running=1' \
-    && echo "  ok   the verdict line carries missing-skipped-running=1" \
-    || { echo "  FAIL missing-skipped-running missing from the verdict:"; echo "$outF3"; fail=1; }
-  echo "$outF3" | grep -q 'reasons=.*missing-running-agent-skipped' \
-    && echo "  ok   missing-running-agent-skipped is its own reason" \
-    || { echo "  FAIL missing-running-agent-skipped is not among the reasons:"; echo "$outF3"; fail=1; }
+    && echo "  ok   ...and still writes nothing (F1 stopgap holds under --agent too)" \
+    || { echo "  FAIL --agent backend3 --apply wrote despite the F1 stopgap"; fail=1; }
 
-  # CONTROL: the same fixture, parked -- must still sync. Without this, a guard that refuses every
-  # write would pass the RUNNING assertions above for the wrong reason.
-  outF4="$(AGENT_SKILL_DRIFT_ROOT="$tmp/family-root" AGENT_SKILL_DRIFT_TEST_SESSIONS="agent-someone-else" \
-           bash "${BASH_SOURCE[0]}" --apply --agent backend3)"
-  [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillA/SKILL.md" 2>/dev/null)" = "SKILL A CONTENT" ] \
-    && echo "  ok   CONTROL: a PARKED member is still synced -- the guard is not a blanket refusal" \
-    || { echo "  FAIL a parked member was not synced:"; echo "$outF4"; fail=1; }
+  # Running-agent guard's OWN unit is covered by the stale-sync PARTs above (same _agent_running_state
+  # helper). The missing-sync running-skip codepath itself is UNREACHABLE while MISSING_SYNC_APPLY_ENABLED=0
+  # (card 85521c7e F1) -- it is dead code on purpose until F2 re-enables the copy, so asserting its
+  # behavior here would test nothing real. Re-add missing-skipped-running/undetermined coverage in the
+  # F2 commit that flips MISSING_SYNC_APPLY_ENABLED back on.
 
   # An agent outside every known family (e.g. one of the demo fixtures above) contributes nothing
   # and is never flagged -- the feature must stay silent where no family is declared.

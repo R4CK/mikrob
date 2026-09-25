@@ -14,40 +14,48 @@ EXT="${EXTERNAL_REPOS_DIR:-$HOME/.claude/external}"
 # which inherits this from the environment -- no separate override needed for that call).
 SKILLS="${SKILL_INDEX_GLOBAL_DIR:-$HOME/.claude/skills}"
 WATCHED_JSON="${WATCHED_REPOS_JSON:-/home/neon/marveen/store/watched-repos.json}"
+# Card 197947ae: WATCHED_JSON is the tracked, hand-maintained registry -- write_back() used to
+# mutate it directly on every daily run, leaving the SHARED main clone's working tree dirty with a
+# routine last_sha/last_checked_at bump (never committed, blocking marveen-land.sh's fast-forward
+# and the next update.sh pull --ff-only). The post-pull sha/date now goes into this separate,
+# gitignored state file instead (store/* is ignored by default, no !unignore added for it) --
+# routine sync churn stops touching tracked content; a licence-relevant registry edit still only
+# happens by hand, through the existing reviewed git-repo-watcher.sh close-out step.
+WATCHED_STATE_JSON="${WATCHED_REPOS_STATE_JSON:-/home/neon/marveen/store/watched-repos-state.json}"
 CHANGED=0
 
-# Card 307abedd: writes the ACTUAL new HEAD + today's date into WATCHED_JSON's entry for repo $1,
-# leaving every other field (including every other repo's entry) untouched. Matches by the JSON
-# "name" field, which is exactly the loop variable below for the 11 daily-synced repos -- no path
-# translation needed, and it is robust to `local` being a symlink or differently formatted.
-# Silently no-ops if WATCHED_JSON has no entry for $1 (e.g. a repo not yet registered there) --
-# this script's job is to sync clones, not to own the registry's shape.
+# Writes the ACTUAL new HEAD + today's date for repo $1 into WATCHED_STATE_JSON, keyed by name,
+# leaving every other repo's state entry untouched. Only writes when $1 has a registry entry in
+# WATCHED_JSON (read-only check) -- this script's job is to sync clones, not to own the registry's
+# shape, and a name with no registry entry should not grow a phantom state row either.
 write_back() {
   local name="$1" sha="$2"
-  python3 - "$WATCHED_JSON" "$name" "$sha" <<'PY'
+  python3 - "$WATCHED_JSON" "$WATCHED_STATE_JSON" "$name" "$sha" <<'PY'
 import json
 import sys
 from datetime import date
 
-path, name, sha = sys.argv[1], sys.argv[2], sys.argv[3]
+registry_path, state_path, name, sha = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 try:
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
+    with open(registry_path, encoding="utf-8") as f:
+        registry = json.load(f)
 except FileNotFoundError:
     sys.exit(0)
 
-changed = False
-for entry in data:
-    if entry.get("name") == name:
-        entry["last_sha"] = sha
-        entry["last_checked_at"] = date.today().isoformat()
-        changed = True
-        break
+if not any(entry.get("name") == name for entry in registry):
+    sys.exit(0)
 
-if changed:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+try:
+    with open(state_path, encoding="utf-8") as f:
+        state = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    state = {}
+
+state[name] = {"last_sha": sha, "last_checked_at": date.today().isoformat()}
+
+with open(state_path, "w", encoding="utf-8") as f:
+    json.dump(state, f, indent=2, ensure_ascii=False)
+    f.write("\n")
 PY
 }
 

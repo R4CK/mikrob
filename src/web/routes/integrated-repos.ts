@@ -40,6 +40,12 @@ import type { RouteContext } from './types.js'
 // ---------------------------------------------------------------------------
 
 const WATCHED_REPOS = join(STORE_DIR, 'watched-repos.json')
+// Card 197947ae: store/external-repos-sync.sh's write_back() no longer mutates the tracked
+// registry above (that left the shared main clone dirty every daily run) -- the post-pull
+// last_sha/last_checked_at now land in this separate, gitignored state file, keyed by repo name.
+// readRegistry() merges it back in below so behind-detection still sees the CURRENT vendored sha
+// for the daily-synced repos, not a frozen one.
+const WATCHED_REPOS_STATE = join(STORE_DIR, 'watched-repos-state.json')
 const GIT_TIMEOUT_MS = 5_000
 const GIT_MAX_BUFFER = 1 << 20 // 1 MiB -- a rev-list count/log line set is tiny
 const MAX_COMMITS = 20 // cap the preview list; the count is exact regardless
@@ -68,10 +74,11 @@ export interface IntegratedRepoConfig {
    *  the UI shows -- distinct from vendoredDate, which is the upstream COMMIT date. */
   reviewed_at?: string
   /** Date this entry's last_sha was last verified against the actual repo (YYYY-MM-DD).
-   *  Written automatically by store/external-repos-sync.sh's pull() (card 307abedd) for the
-   *  11 daily-synced repos; hand-written by store/git-repo-watcher.sh's own closing step for
-   *  the rest. Distinct from reviewed_at (the one-time adoption date) and vendoredDate (the
-   *  vendored COMMIT's own date) -- this is "when did anyone last look", not "what's running". */
+   *  For the 11 daily-synced repos, the CURRENT value lives in watched-repos-state.json and is
+   *  merged in by readRegistry() (card 197947ae) -- this field itself only carries whatever was
+   *  last hand-written by store/git-repo-watcher.sh's own closing step. Distinct from reviewed_at
+   *  (the one-time adoption date) and vendoredDate (the vendored COMMIT's own date) -- this is
+   *  "when did anyone last look", not "what's running". */
   last_checked_at?: string
   note?: string
 }
@@ -163,12 +170,41 @@ function git(local: string, args: string[]): string {
   }).trim()
 }
 
-export function readRegistry(path = WATCHED_REPOS): IntegratedRepoConfig[] {
+/** One repo's auto-synced write-back state, as store/external-repos-sync.sh now writes it. */
+interface WatchedRepoState {
+  last_sha?: string
+  last_checked_at?: string
+}
+
+/** Reads the gitignored write-back state file, keyed by repo name. Missing/unreadable -> {}. */
+export function readState(path = WATCHED_REPOS_STATE): Record<string, WatchedRepoState> {
+  if (!existsSync(path)) return {}
+  try {
+    const raw: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    return raw as Record<string, WatchedRepoState>
+  } catch (err) {
+    logger.warn(`[integrated-repos] unreadable state ${path}: ${String(err)}`)
+    return {}
+  }
+}
+
+export function readRegistry(
+  path = WATCHED_REPOS,
+  statePath = WATCHED_REPOS_STATE,
+): IntegratedRepoConfig[] {
   if (!existsSync(path)) return []
   try {
     const raw: unknown = JSON.parse(readFileSync(path, 'utf8'))
     if (!Array.isArray(raw)) return []
-    return raw.filter((r): r is IntegratedRepoConfig => !!r && typeof r === 'object')
+    const state = readState(statePath)
+    return raw
+      .filter((r): r is IntegratedRepoConfig => !!r && typeof r === 'object')
+      .map((r) => {
+        const s = state[r.name]
+        if (!s) return r
+        return { ...r, last_sha: s.last_sha || r.last_sha, last_checked_at: s.last_checked_at || r.last_checked_at }
+      })
   } catch (err) {
     logger.warn(`[integrated-repos] unreadable registry ${path}: ${String(err)}`)
     return []
