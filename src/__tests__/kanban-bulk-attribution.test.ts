@@ -173,6 +173,19 @@ describe('a refusal leaves a trace (card 1bd7debf / Cybersec F-1)', () => {
     warn.mockRestore()
   })
 
+  it('truncates a long reason before logging it (card 1ef7bd9c, Cybersec LOW on 1bd7debf)', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    burstTo(N)
+    const id = card('long-reason')
+    const longReason = 'x'.repeat(500)
+    expect(moveKanbanCard(id, 'done', 0, undefined, undefined, longReason)).toBe(false)
+    expect(warn).toHaveBeenCalledTimes(1)
+    const fields = warn.mock.calls[0]![0] as { reason?: string | null }
+    expect(fields.reason).toBe(longReason.slice(0, 200))
+    expect(fields.reason!.length).toBe(200)
+    warn.mockRestore()
+  })
+
   it('does not log anything for an ordinary allowed write', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
     expect(moveKanbanCard(card('quiet'), 'done', 0)).toBe(true)

@@ -331,6 +331,7 @@ window._i18n.en = {
   'kanban.modal.delete_btn':     'Delete',
   'kanban.modal.breakdown_btn':  'Auto-breakdown',
   'kanban.toast.move_error':     'Error moving card',
+  'kanban.toast.bulk_attribution_reason_prompt': 'The board is busy right now -- give a short reason for this move to make it go through:',
   'kanban.toast.save_error':     'Error saving',
   'kanban.toast.comment_error':  'Error saving comment',
   'kanban.toast.archive_error':  'Error archiving card',
