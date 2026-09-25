@@ -13822,3 +13822,39 @@ első verzióból + 3 új).
 
 **Ki döntött:** MikroB (plan-grilling verdikt + kötelező kiegészítések, kártya-komment 6011,
 üzenet 3736/3748) + backend3 (BE build, mindkét verzió, a másodikat MikroB döntése szerint).
+
+## 2026-09-25 -- 42749892 (32dbac1e rebrand gyereke, 3. lépés) -- systemd unit/timer átnevezés: mikrob-cleancore-suite-guard -> mikrob-mopsion-suite-guard
+
+**Mit csináltunk.** `scripts/install-cleancore-suite-guard-timer.sh` át lett nevezve
+`install-mopsion-suite-guard-timer.sh`-re (a régi név szimlink-kompat, a `mopsion-suite-run.sh`/
+`mopsion-land.sh` mintáját követve), a renderelt egység neve `${MAIN_AGENT_ID}-mopsion-suite-guard`
+lett a korábbi `${MAIN_AGENT_ID}-cleancore-suite-guard` helyett. `scripts/startup.sh` az új nevet
+hívja. A log-fájl neve SZÁNDÉKOSAN maradt `cleancore-main-suite-guard.log` (a guard szkript saját
+kommentje is ezt a nevet használja, és ez egy folytonos történeti napló -- a 32dbac1e kártya 6.
+pontja szerint a történeti fájlokat nem kell átnevezni).
+
+**Élő csere, előfeltétel-ellenőrzéssel.** A swap pillanatában `systemctl --user is-active
+mikrob-cleancore-suite-guard.service` -> `inactive`, és a `store/.cleancore-main-suite-guard.lock`
+szabad volt (flock -n sikerült) -- a kártya saját előfeltétele teljesült. Sorrend: (1) új egység
+renderelve + `enable --now` az új néven (a kanonikus checkoutra mutat, az installer a
+`--git-common-dir` alapján automatikusan a worktree-ből a fő klónra váltott), (2) a régi timer
+`stop` + `disable`. A két egység SOHA nem futott egyszerre (mindig előbb állt le az egyik, mielőtt a
+másik elindult).
+
+**Rollback tesztelve (11. kódminőségi elv), nem csak leírva.** Élőben visszaállítottam a régi
+egységre (`stop`+`disable` az újon, `enable --now` a régin), megerősítettem hogy a régi aktív lett
+és az új inaktív, majd újra előre váltottam a végállapotra. A rollback parancsa bármikor:
+```
+systemctl --user stop mikrob-mopsion-suite-guard.timer
+systemctl --user disable mikrob-mopsion-suite-guard.timer
+systemctl --user enable --now mikrob-cleancore-suite-guard.timer
+systemctl --user daemon-reload
+```
+A régi egységfájlok (`~/.config/systemd/user/mikrob-cleancore-suite-guard.{service,timer}`)
+szándékosan a helyükön maradtak (nem törölve), hogy a rollback egy egyszerű `enable --now` maradjon.
+
+**Zöld:** `bash -n` mindkét módosított szkripten tiszta. Nincs önálló selftest erre az installerre
+(nem volt korábban sem) -- a szkript szerkezete változatlan, csak a nevek/útvonalak cseréltek.
+
+**Ki döntött:** MikroB (32dbac1e fázis, Peti szabály 2026-09-18/Telegram 8799) + backend3 (build,
+élő swap, rollback-teszt).
