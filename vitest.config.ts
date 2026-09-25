@@ -57,10 +57,21 @@ export default defineConfig({
     //    out of the live checkout, but the state resolver deliberately points a
     //    WORKTREE back at the main install -- so without this the suite appended
     //    test rows to the production ledger (card 4c5c540c).
+    //  - default-ssh-dir-seam (card 2564e877, ENROLL813 port, 2026-09-25): point
+    //    MARVEEN_SSH_DIR at a scratch directory so no test can write the operator's
+    //    REAL ~/.ssh/authorized_keys. Not covered by the live-install gate above:
+    //    that one inspects the CHECKOUT, and ~/.ssh is HOME-scoped -- a clean
+    //    worktree run leaked keys upstream (ENROLL813, 2026-09-15) and the same
+    //    shape existed on this fork (bridge-enroll.test.ts JANKBRIDGE803 positive
+    //    control). Declined during c2aeefa5's vitest.config.ts re-decision on
+    //    purpose, to land together with the afterEach fix and the fail-closed
+    //    guards below -- a seam alone is reach, not sufficiency (see the setup
+    //    file's own header).
     setupFiles: [
       './src/__tests__/setup/assert-not-live-install.ts',
       './src/__tests__/setup/assert-supported-node.ts',
       './src/__tests__/setup/isolate-local-llm-state.ts',
+      './src/__tests__/setup/default-ssh-dir-seam.ts',
     ],
   },
 })
