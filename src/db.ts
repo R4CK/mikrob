@@ -3572,9 +3572,17 @@ export function bulkAttributionRequired(
 // duplicating the list -- a field that is not here is silently dropped by the
 // spread below, which is the #1023 data-loss bug when the caller believed it
 // was writing one (e.g. `description_append`).
+//
+// `archived_at` is DELIBERATELY NOT HERE (card db3ff9bd, Cybersec+Cybered finding). It used to be
+// on this list, which let a generic PUT /api/kanban/:id body carrying `archived_at` (the whole-card
+// round-trip shape web/app.js sends on an assignee/parent edit) bubble the field straight through
+// this function's UPDATE -- completely bypassing archiveKanbanCard's open-children guard and its
+// own dedicated audit row (recordKanbanFieldEvent), and doing so silently, one card at a time, with
+// no trace beyond a generic field-change row. archiveKanbanCard/unarchiveKanbanCard are the ONLY
+// writers now; see the archived_at pin below.
 export const KANBAN_WRITABLE_FIELDS = [
   'title', 'description', 'status', 'assignee', 'priority', 'project',
-  'parent_id', 'due_date', 'sort_order', 'archived_at',
+  'parent_id', 'due_date', 'sort_order',
 ] as const
 
 export function updateKanbanCard(
@@ -3603,7 +3611,10 @@ export function updateKanbanCard(
   // the sibling fix in moveKanbanCard (kanban-review-guard.test.ts pins the same contract there).
   const forcedFlag = blocked || depBlocked ? 1 : 0
   const now = Math.floor(Date.now() / 1000)
-  const f = { ...card, ...fields, updated_at: now }
+  // archived_at pinned to the CARD's own value, after the fields spread, so a caller's attempt to
+  // change it (accidental round-trip or deliberate) can never take effect through this function --
+  // see the KANBAN_WRITABLE_FIELDS comment above for why (card db3ff9bd).
+  const f = { ...card, ...fields, archived_at: card.archived_at, updated_at: now }
   // #1023: bump updated_at ONLY when a writable column actually changes. The
   // UPDATE below always matches the row, so a no-op PUT (an unknown field, or a
   // known field echoed back unchanged) used to stamp updated_at=now and report
