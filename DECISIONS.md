@@ -13737,3 +13737,60 @@ nem kert funkcio, plusz uj titok-kockazat), es a `claude` CLI sajat mechanizmusa
 nekunk kellene epiteni/karbantartani a masik fajlra.
 
 **Ki dontott:** backend (self-advance, 6b. szabaly szerinti 2-napos regi kartya elsobbsege).
+
+## 2026-09-25 -- ade19b79 -- 4 nullhasználatú addyosmani skill bekötése + browser-testing Playwrightra adaptálva
+
+**Kontextus.** Peti döntése (Telegram 8734, 2026-09-18 08:00) a 3f1bb23d repó-felülvizsgálat
+tételére: a `store/adopted/addyosmani__agent-skills/` alól 4 skill (`api-and-interface-design`,
+`ci-cd-and-automation`, `deprecation-and-migration`, `browser-testing-with-devtools`) már
+telepítve volt `~/.claude/skills/`-be, de EGYETLEN ügynök "Core skilljeid" listájában sem
+szerepelt -- technikailag elérhető, de gyakorlatilag nulla használat (senki nem tudta, hogy
+nekik szól).
+
+**Bekötés.**
+- `api-and-interface-design`, `ci-cd-and-automation`, `deprecation-and-migration` ->
+  backend/backend2/backend3 Core skilljeid listájába.
+- `ci-cd-and-automation` -> qa/qa2 Core skilljeid listájába is (a CI/CD minőségi kapuk a
+  gate-szerep közvetlen érdeke).
+- `browser-testing-with-devtools` -> qa/qa2/teszter Core skilljeid listájába.
+
+**backend3/qa2/teszter hiányzó "Core skilljeid" szekció (mellékes lelet).** Ez a három klón
+sosem kapott "Core skilljeid" szekciót (csak backend/backend2/qa-nál létezett) -- a klón-drift
+tünete, amit az `a6abb230` kártya ("Klón-ügynökök skill-paritása") a teljes körére fog megoldani.
+Itt SZÁNDÉKOSAN NEM töltöttem fel a teljes hiányzó baseline-t (az `a6abb230` dolga, scope-mismatch
+lett volna ezalatt a kártya alatt) -- csak egy minimális "Core skilljeid" szekciót hoztam létre
+mindháromnak, KIZÁRÓLAG az ide tartozó 1-3 skillel, jegyzettel hivatkozva az `a6abb230`-ra.
+
+**`browser-testing-with-devtools`: adaptálva, nem eldobva.** A skill eredetileg
+chrome-devtools-mcp tool-nevekre volt írva (upstream: addyosmani/agent-skills), a flottánknak
+viszont Playwright MCP-je van (`mcp__playwright__*`). Mérve: a 318 soros SKILL.md-ből kb. 45-50
+sor volt ténylegesen eszköz-specifikus (Setup/Installation szekció, Available Tools tábla,
+Profile Isolation biztonsági szakasz) -- a fennmaradó ~85% (workflow-lépések, teszt-terv formátum,
+console-elemzési minták, akadálymentességi ellenőrzés, red flags, verification checklist)
+teljesen eszköz-agnosztikus módszertan volt. Az adaptáció ára alacsony, az érték magas -> ADAPT,
+nem DROP. Minden `mcp__playwright__*` eszköznév a valós, ebben a session-ben elérhető tool-listából
+jön (nem kitalált). Két képesség-rés dokumentálva (nincs dedikált Performance Trace / Element
+Styles tool Playwright MCP-ben -- `browser_evaluate` + a Navigation/Performance Timing API a
+helyettesítő út, a SKILL.md-ben kimondva, nem elhallgatva).
+
+**Vendored-fork jegyzés.** A `~/.claude/skills/browser-testing-with-devtools/VENDORED.md` már
+korábban (2026-09-04, adoptáláskor) tartalmazott egy "CAVEAT... needs a follow-up adaptation pass"
+jegyzetet -- ez a kártya pontosan ezt a jegyzetet zárja le. A VENDORED.md-t kiegészítettem egy
+FORK NOTE-tal: a jövőbeli re-vendor (`store/vendor-skill.sh` upstream-frissítés után) NEM írhatja
+felül vakon a SKILL.md-t, mert elveszne ez az adaptáció -- a re-vendorolónak diffelnie kell az
+upstream változást az itt módosított tartalom ellen, és rá kell alkalmaznia az adaptációt.
+
+**NEM git-tracked lépés (fontos eltérés a kártya saját landolási-blokkjától).** A kártya fejléce
+"landolás marveen-land.sh, Gate-SHA a landolt merge sha"-t ír, ami a `3f1bb23d` szülő-kártya
+általános repó-leírásából öröklődött. A TÉNYLEGES célpontok azonban egyik sem git-tracked: az
+`agents/<szerep>/CLAUDE.md` fájlok a `.gitignore` szerint teljesen ki vannak zárva a marveen
+repóból (élő, per-ügynök runtime-config, nem landolt tartalom), és a `~/.claude/skills/` sem git
+repó (nincs is benne `.git`). Ez a kártya tehát NEM termel git commitot/Gate-SHA-t -- a gate
+(QA, + Cybersec ahol indokolt) a LIVE fájlok tartalmát nézi át, nem egy diffet egy landolt shán.
+Ezt a DECISIONS.md bejegyzést és a card REVIEW-kommentjét kell forrásként használni, mit és hol
+módosítottam.
+
+**Gate:** QA (a kártya saját kijelölése).
+
+**Ki döntött:** backend (self-advance, Peti döntés 3 -- Telegram 8734 -- végrehajtása, kártya
+ade19b79).
