@@ -105,6 +105,16 @@ No pathspec, ever -- a narrowed delta-diff looks complete and is not.
   clone's code and quietly validate the wrong commit. The script points `@cleancore/*` at the
   worktree; for a bundler, an alias in `vitest.config.ts` does the same job.
 
+- **A targeted gate run that touches `apps/api/src/main.ts` must also run `main-wiring.test.ts` +
+  `wiring-manifest.test.ts` (Cybered self-correction, 2026-09-24, card 344f8744).** Card 915a71d9
+  passed all three gates on 7a272506 with deliberately narrowed, targeted runs -- and `git diff --stat`
+  showed `main.ts | 60 +++` to every gate. The diff added a new `X ?? createInMemory...()` fallback
+  site, which is exactly what `main-wiring.test.ts` pins (MAIN_TS_FALLBACK_CAPABLE_DEPS must equal the
+  set of such sites) -- three guard tests went red on origin/main and a follow-up card had to fix it.
+  A narrowed run is fine, but the wiring-guard pair is two files and seconds: if the gated diff
+  touches main.ts, add them to the targeted set in the gate worktree. Say in the verdict that you ran
+  them (rule 4d: name the tree the number came from).
+
 ## Verification
 
 After creating a gate worktree, before trusting any result:
