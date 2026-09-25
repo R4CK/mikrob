@@ -130,6 +130,7 @@ reports/
 # Test artifacts
 test-results/
 .playwright-mcp/
+tmp.*
 
 # macOS
 .DS_Store
@@ -265,6 +266,12 @@ KANBAN-SNAPSHOT.md
 # No trailing slash on purpose: a trailing slash does not match a symlink, so
 # `.fakehome/` would stop ignoring it the day the scratch HOME is created as one.
 .fakehome
+
+# Supabase CLI scratch state (cli-latest, linked-project.json). Written on every
+# CLI run, never source. NO TRAILING SLASH, same rule and reason as .fakehome
+# above: a trailing slash misses a symlinked .temp, so the CLI's next run would
+# commit it again.
+supabase/.temp
 
 # card 08eb6402: mopsion-suite-evidence.jsonl (a full suite run's own append-only evidence log) and
 # .mopsion-suite-logs/ (persisted copies of the run's logs) are runtime data, already covered by
