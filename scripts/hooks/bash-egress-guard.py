@@ -407,6 +407,14 @@ _INLINE_FLAGS_BY_FAMILY = {
 }
 INTERPRETERS = set(_INLINE_FLAGS_BY_FAMILY)
 
+# Card 284b44c4 (Cybered, 854182c7 2nd round): `perl -MLWP::Simple -e 'getprint($ARGV[0])'` passed
+# because marker-scanning only ever looked at the `-e` body. `-MLWP::Simple`/`-mLWP::Simple` load the
+# module in a SEPARATE word (the name is glued directly to the flag, no space), which never entered
+# the text that `_has_net_marker` inspects -- the module name naming the network capability sat right
+# next to the network call and was never read. Perl-specific: no other family's inline-eval flag has
+# this shape.
+_MODULE_FLAG_PREFIXES_BY_FAMILY = {"perl": ("-M", "-m")}
+
 # Network APIs, by language. A URL LITERAL IS DELIBERATELY NOT ON THIS LIST: a URL inside an
 # interpreter one-liner is as likely to be a payload as a target, and treating it as intent would
 # re-import the exact payload-vs-target confusion this guard exists to end.
@@ -698,6 +706,14 @@ def _interpreter_script(words, start, name):
     return None
 
 
+def _module_flag_text(seg, name):
+    """Text of any `-M`/`-m` (etc, per family) module-load flags in the segment, space-joined."""
+    prefixes = _MODULE_FLAG_PREFIXES_BY_FAMILY.get(name)
+    if not prefixes:
+        return ""
+    return " ".join(w.text for w in seg if not w.redirect and w.text.startswith(prefixes))
+
+
 def _script_targets(script_text):
     """Hosts named inside an interpreter one-liner that already showed network intent."""
     out = []
@@ -859,7 +875,14 @@ def analyse_segment(seg, allowed, findings, depth=0):
         # in the corpus show no network API at all. If fail-closed keyed on "interpreter" rather
         # than on demonstrated network intent, this line is where half a million legitimate
         # commands would die. No marker -> not in scope -> not examined for a target.
-        if not (_has_net_marker(script.text) or _DEV_NET_RX.search(script.text)):
+        #
+        # Card 284b44c4: the marker text also carries any -M/-m module-load flag (perl), because the
+        # network capability's name can live there instead of in the -e body.
+        marker_text = script.text
+        module_flags = _module_flag_text(seg, name)
+        if module_flags:
+            marker_text = f"{module_flags} {marker_text}"
+        if not (_has_net_marker(marker_text) or _DEV_NET_RX.search(marker_text)):
             return
         found = _script_targets(script.text)
         if not found:
