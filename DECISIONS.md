@@ -13737,3 +13737,53 @@ nem kert funkcio, plusz uj titok-kockazat), es a `claude` CLI sajat mechanizmusa
 nekunk kellene epiteni/karbantartani a masik fajlra.
 
 **Ki dontott:** backend (self-advance, 6b. szabaly szerinti 2-napos regi kartya elsobbsege).
+
+## 2026-09-25 -- c00d5429 -- fo ugynok PreToolUse biztonsagi orei: melyik tiz kerult be, melyik ketto szandekosan nem
+
+MikroB merese (2026-09-25 08:50, a 21597530 plan-grillingje kozben): a fo ugynok
+(mikrob-channels) sessionje a tracked projekt-gyokerbeli `.claude/settings.json`-bol olvassa a
+hookjait (#1305/`adf2c30a` ota), aminek `PreToolUse` blokkja a mert idopontban EGYETLEN
+biztonsagi ort sem tartalmazott a sub-agensek altal mar hordozott tizbol. Elo proba: egy
+`cd /etc && grep -c zzz hostname` a fo ugynok sajat sessionjeben LEFUTOTT (rc=1, nincs blokk),
+miutan ugyanez a bemenet kozvetlenul a `cd-chain-guard.py`-nak futtatva rc=2-vel blokkolt -- az
+or mukodik, csak nem volt bedrotozva ebbe a sessionbe.
+
+**Mit vittem be.** A tracked `.claude/settings.json` `PreToolUse` blokkjaba bekerult tiz or, a
+sub-agens sablon (elo `agents/backend/.claude/settings.json`) matchereivel/parancsaival
+egyezoen, a keretezett repo-utat `$CLAUDE_PROJECT_DIR`-re cserelve (a fajl sajat mar-meglevo
+konvencioja): `secret-write-guard`, `big-file-guard`, `git-protect-guard`, `npm-protect-guard`,
+`symlinked-node-modules-guard`, `blast-radius-guard`, `cd-chain-guard`, `bash-egress-guard`,
+`noisy-command-guard`, `pentest-tool-install-guard`.
+
+**Mit NEM vittem be, es miert -- ez a tenyleges scope-dontes, ezert kell ide.**
+`email-send-gate.mjs` es `self-pace-gate.mjs` mindketten jelen vannak a sub-agens sablonon, de
+NEM szerepeltek MikroB sajat mert listajan (a tiz fentebbi). Ket kulon ok:
+- A fo ugynok mar rendelkezik sajat, SZELESEBB kimeno-akcio-kapuval ugyanarra a temara
+  (`outgoing-copy-gate.py` + `email-approval-gate.py`), amik tobb matchert fednek (Bash,
+  `.*send_email.*`, `.*manage_email.*`, a Telegram-valasz MCP-hivasok is), mint az
+  `email-send-gate.mjs` onmagaban.
+- A `self-pace-gate.mjs` egy sessiont a SAJAT `ScheduleWakeup`/`Cron*` eszkozeihez kepest
+  pacelne -- de a fo ugynok maga BIRTOKOLJA az utemezot (a `folyamatos-munka-orchestrator`, a
+  `heartbeat-consolidated` es tarsaik mind az o sessiojaban futnak). Ez mas kockazati kerdes,
+  amit sem MikroB merese, sem a kartya nem vetett fel; ha valaha kell, kulon, sajat
+  meggondolast igenyel.
+
+**A kartya sajat 4. pontja explicit kizarta**, hogy ez a kartya a `~/.claude/settings.json`
+flotta-hookjait eltavolitsa -- az Peti sajat, fuggetlen sessionjeit erinti, kulon Peti-dontes
+kell hozza, nem resze ennek a munkanak.
+
+**Miert ide, es miert csak most.** QA (komment 6079, gate-sha `bedac5df`) FAIL-t adott a kesz,
+funkcionalisan zold kartyara KIZAROLAG ezert a hianyzo bejegyzesert -- pontosan a `78f85eb1`
+kartyaval mar haromszor (`fed9409f`, `ced9ce80`, `398f351b`) demonstralt mintat ismetelve: a
+gyoker CLAUDE.md dontesnaplo-szabalya minden erdemi dontest (itt: melyik ket or maradt ki es
+miert) itt kovetel, a kanban-komment (SQLite, nem grep-elheto) onmagaban nem eleg. Ez a bejegyzes
+a mar korabban megirt REVIEW-komment (id 6071) tartalmat viszi at ide, kod-/teszt-valtoztatas
+nelkul -- a delta-gate ezt a bejegyzest nezi.
+
+**Nyitott, MikroB sajat lepese:** a kartya 3. pontja (elo `cd /etc && grep` proba a fo ugynok UJ
+sessionjeben, landolas UTAN, mert a hook-lista session-inditaskor tolt be) nem vegezheto el a
+backend2 sajat sessiojabol -- MikroB dontesevel (komment 6073) ez MikroB sajat kovetkezo
+session-ujrainditasakor teljesul.
+
+**Ki dontott:** MikroB (mereskent es kartya-nyitaskent), backend2 (a scope-hatar meghuzasa +
+implementacio), QA (a hianyzo dokumentacio kikenyszeritese, delta-gate).
