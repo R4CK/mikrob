@@ -14790,3 +14790,83 @@ valid JSON.
 **Ki döntött:** backend (mind a 8 fájl első köre + a delta-gate rework), Cybersec NO-GO-ja alapján
 (F1 HIGH, F2 LOW), QA FAIL-je alapján (a jelen bejegyzés hiánya). Gate: QA + Cybersec (SEC címke),
 delta-gate ugyanarra a kódra fut újra a rework után.
+
+## 2026-09-25 -- 2564e877 (HIGH, ENROLL813 port): egy fail-closed chokepoint-minta bevezetése authorized_keys-írókhoz
+
+**A probléma.** A c2aeefa5 (b5b7eb6b gyerek 2/10) `vitest.config.ts`-döntése közben derült ki (nem a
+kártya scope-ja, külön eszkalálva msg 4146-ban), hogy a fork saját `src/__tests__/bridge-enroll.test.ts`
+fájlja ugyanazt a hibaosztályt hordozza, amit upstream az ENROLL813 incidensben talált és javított
+(2026-09-15, 62 valódi `marveen-remote` kulcs szivárgott a flottán át egy teljes suite-futás alatt,
+végig zölden). A ok: a "Positive control on the same route" (JANKBRIDGE803) teszt valódi tailnet-
+hosttal hívja a `POST /api/security/bridge-enroll`-t, MIELŐTT a fájl `MARVEEN_SSH_DIR`-t állítana, és
+az `afterEach` minden teszt után FELTÉTEL NÉLKÜL törölte a változót -- a route belső `resolveSshDir()`-e
+ilyenkor `join(homedir(), '.ssh')`-re esett vissza, azaz a VALÓDI operátori authorized_keys-t írta
+volna, ha a keyscan lépés sikerül. Ezen a gépen nem történt szivárgás (MikroB megerősítette: nincs
+valódi `authorized_keys`, nincs `marveen-remote:` bejegyzés sehol).
+
+**A döntés: az upstream fix TELJES portolása, nem csak a seam.** Upstream saját kommentje (és a c2aeefa5
+eszkalációja is) kifejezetten kimondja, hogy a `default-ssh-dir-seam.ts` setupFiles-bevonása ÖNMAGÁBAN
+NEM elég -- kell hozzá (1) a teszt-fájl `afterEach`-e, ami VISSZAÁLLÍTJA az előző értéket törlés helyett,
+és (2) fail-closed őrök az írók oldalán. Ezért egy ÚJ modul, `src/ssh-dir.ts`, lett az EGYETLEN hely, ami
+megválaszolja "melyik .ssh könyvtárba ír ez a folyamat" kérdést (`resolveSshDir`/`realSshDir`/
+`sshDirOverride`, `SshDirGuardError`/`isSshDirGuardError`) -- ez váltott fel KÉT byte-azonos duplikált
+resolvert (`bridge-enroll.ts`, `bridge-service-ports.ts`) és egy CLI-t (`scripts/remote-access-enroll.ts`),
+ami a seamet EGYÁLTALÁN nem ismerte (`grep -c MARVEEN_SSH_DIR` = 0 rajta).
+
+**A chokepoint-minta (`assertSafeSshDir`, `src/remote-enroll-fs.ts`).** A tényleges védelem nem a
+resolverben van, hanem egy KÖZÖS csomópontban, amit mindhárom exportált író (enroll / service-port
+rewrite / remove) a saját I/O-ja ELŐTT hív, függetlenül attól, HOGYAN jutott hozzá a `sshDir` paraméterhez
+(route, CLI, teszt). A guard szűken kapuzott KÉT tengelyen: csak teszt-futásban (`isTestRun()`,
+`src/test-run-marker.ts`, MÁR MEGLÉVŐ fork-modul, nem duplikálva) ÉS csak akkor, ha a cél VALÓBAN a
+valódi `~/.ssh` (útvonal-AZONOSSÁG `realpathSync`-cel, nem string-egyenlőség -- egy szimlinken vagy
+nem-normalizált úton át elért valódi könyvtárat is elkap). Emiatt a guardnak NULLA éles viselkedése van,
+amit el lehetne rontani: egy éles telepítésen `isTestRun()` mindig hamis, tehát a guard soha nem fut le.
+
+**Mutációs bizonyíték (saját + Cybersec + qa2, mind függetlenül, mind egyezik):**
+- `assertSafeSshDir()` törzse feltétel nélküli `return`-re rövidzárolva (disposable worktree-ben):
+  PONTOSAN 6/12 `enroll-seam-fail-closed.test.ts` eset bukott pirosra (mindhárom író chokepoint-tesztje
+  + 2 produkciós-ág teszt + a típus-megkülönböztető teszt), a másik 6 zöld maradt -- visszaállítva,
+  `git diff --stat` tiszta.
+- Cybersec saját mérése ugyanerre a mutációra: 6 failed (megegyezik).
+- Cybersec további mutációi: `resolveSshDir` teszt-futás-dobásának kikapcsolása -> 2 failed; a
+  "production early-return" (`if (!isTestRun()) return`) törlése (a guard élesben is tüzelne) -> 2
+  failed -- ez pinneli az "élesben inert" állítást, nem csak dokumentálja.
+- Az eredeti hiba alakja (seam nélkül, beforeEach-seam nélkül, törlő afterEach-csel) a guardokkal
+  BEKAPCSOLVA -> bridge-enroll 2 failed (a guardok önmagukban is pirosra viszik a regressziót, nem
+  néma írással zárul); ugyanez a guardokkal KIKAPCSOLVA -> 13/13 zöld, de ezen a gépen a scratch-HOME-ba
+  SEM írt semmit, mert a pozitív kontroll keyscanje innen nem éri el a valódi hostot -- a szivárgás ITT
+  fizikailag nem történt meg, de a hibaosztály zárva van, nem csak "nem sült el ezen a gépen".
+
+**Cybersec talált két LOW leletet, GO mellett (nem blokkoló, follow-up):**
+- F1 (mérés-integritási, nem biztonsági): a `default-ssh-dir-seam.ts` könyvtárneve csak a
+  `VITEST_POOL_ID`-ből képződik (`/tmp/marveen-ssh-seam/w<slot>`), ami EGY futáson belül egyedi, de
+  FUTÁSOK KÖZÖTT nem (a pool-ID minden futásban 1-től indul) -- két egyidejű vitest-folyamat ugyanazt a
+  `w1` könyvtárat használhatja, és az egyik futás új tesztfájlja törölheti a másik futó tesztjének
+  seam-könyvtárát. Cybersec ÉLŐBEN demonstrálta ezt a saját gate-takarításával (a `/tmp/marveen-ssh-seam`
+  törlése ütközött egy párhuzamos fleet-test-tel) -- ez adta az F1-mechanizmus egy MANUÁLIS kiváltását,
+  amiről MikroB a flottát figyelmeztette (msg 4171). A valódi `~/.ssh`-t a guardok továbbra is védik,
+  tehát ez NEM biztonsági rés, csak hamis-piros forrás gate-futásokban. Javítás (nem ezen a kártyán):
+  a könyvtárnévbe a futás saját azonosítóját (pl. a vitest fő-folyamat PID-je) is bele kell venni.
+- F2 (pin-hiány): a `security.ts`-en az `isSshDirGuardError` -> 500+`enroll813` ág NINCS HTTP-szinten
+  pinelve (a `bridge-service-ports.ts`-en igen, a `resolveSshDir`-mutáció ott pirosra viszi). A
+  válaszban a guard-elutasítás jelenleg is helyesen a generikus `enroll_failed` kódra esne vissza --
+  nem szivárgás, csak a kártya saját állítása (a guard megkülönböztethető kódot kap) nincs a
+  bridge-enroll route-on tesztelve. Follow-up.
+
+**QA FAIL oka (qa2, komment 6769) és ennek a bejegyzésnek a szerepe:** a kód, a mutációk és a
+route-oldali hibakezelés mind függetlenül ellenőrizve HELYESNEK bizonyultak -- az EGYETLEN blokkoló
+hiányosság ez a DECISIONS.md bejegyzés volt (ugyanaz a szabály, amit a flotta ma már kétszer alkalmazott:
+197947ae, dac2e52b). A pre-triage "exported-symbol-untested" (SshDirGuardError, describeTestRunSignal)
+jelzése mindkét gate-tag szerint hamis pozitív: mindkét szimbólum VISELKEDÉS-szinten fedve van
+(`isSshDirGuardError()`, illetve a hibaüzenet-regex `/VITEST=|NODE_ENV=test/`), csak nem névszerint
+importálva a teszt-fájlba.
+
+**Ellenőrzés:** `tsc --noEmit` tiszta. Célzott suite (bridge-enroll, bridge-service-ports,
+enroll-seam-fail-closed, fork-upstream-conflict-guard, fork-upstream-drift-check, bridge-pairing-i18n):
+115/115 zöld, ugyanígy mérve saját magam, Cybersec és qa2 által is, mind a pontos f5faa36b Gate-SHA-n.
+Landoláskor a TELJES fleet-test.sh a merge eredményén: 814/814 test file, 18720/18821 teszt zöld (101
+skipped).
+
+**Ki döntött:** backend (a port + a chokepoint-minta megvalósítása), Cybersec GO-ja alapján (F1/F2
+LOW, nem blokkoló, follow-up), qa2 FAIL-je alapján (a jelen bejegyzés hiánya -- a kód maga nem
+változott ebben a körben). Gate: QA (qa2) + Cybersec (trust-boundary, authorized_keys fájlírás).
