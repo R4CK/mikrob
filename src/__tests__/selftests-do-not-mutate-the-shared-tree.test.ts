@@ -26,16 +26,25 @@ const FILES = readdirSync(STORE).filter((f) => f.endsWith('.selftest.sh'))
  *  the founding case read `REAL_EXCLUDED="$HERE/..."` on one line and `mv "$REAL_EXCLUDED" ...` on
  *  another. It could not see the bug it was written for. Running it against the pre-fix file is what
  *  exposed that, and the regression case below keeps it honest.
+ *
+ *  Card ff7e1b0a: the anchor-variable name set was HERE/SCRIPT_DIR/ROOT only, but a live census of
+ *  the actual `store/*.selftest.sh` corpus found two more self-directory names in use (`G`,
+ *  `SCRIPT`) that this scan could not see. Checked both files by hand: neither currently feeds a
+ *  destructive command with them, so there was no live bug -- but a future selftest using either
+ *  name would have been invisible here, same shape as the founding case. Widened rather than left
+ *  as a note, per the fix-the-detector-not-just-the-instance precedent.
  */
 function treeMutations(src: string): string[] {
   const body = src.replace(/^\s*#.*$/gm, '')
   const treeVars = new Set(
-    [...body.matchAll(/^\s*([A-Z_][A-Z0-9_]*)="\$(?:HERE|SCRIPT_DIR|ROOT)\//gm)].map((m) => m[1]!),
+    [...body.matchAll(/^\s*([A-Z_][A-Z0-9_]*)="\$(?:HERE|SCRIPT_DIR|ROOT|SCRIPT|G)\//gm)].map(
+      (m) => m[1]!,
+    ),
   )
   const hits: string[] = []
   for (const m of body.matchAll(/^\s*(mv|rm|ln|truncate|chmod)\b([^\n]*)$/gm)) {
     const args = m[2]!
-    const direct = /\$(HERE|SCRIPT_DIR|ROOT)\b/.test(args)
+    const direct = /\$(HERE|SCRIPT_DIR|ROOT|SCRIPT|G)\b/.test(args)
     const viaVar = [...treeVars].some((v) => new RegExp(`\\$\\{?${v}\\}?\\b`).test(args))
     if (direct || viaVar) hits.push(m[0]!.trim())
   }
@@ -68,5 +77,18 @@ describe('no selftest mutates the shared checkout', () => {
     // The exact shape that caused the flake. Without this the scan can silently go blind again.
     const founding = 'REAL_EXCLUDED="$HERE/load-guard-excluded.sh"\nmv "$REAL_EXCLUDED" "$MOVED"'
     expect(treeMutations(founding)).toHaveLength(1)
+  })
+
+  // Card ff7e1b0a: `$SCRIPT` and `$G` are self-directory names actually in use in the corpus
+  // (mopsion-main-suite-guard.selftest.sh, dedup-prefilter-check.selftest.sh) but were missing from
+  // the anchor set above until this card. Neither file trips it today, so this is a regression case
+  // for the widened detector, not a repro of a live bug.
+  it('REGRESSION: a $SCRIPT/$G-named anchor is caught too', () => {
+    const viaScript = 'TARGET="$SCRIPT/fixture.sh"\nrm "$TARGET"'
+    expect(treeMutations(viaScript)).toHaveLength(1)
+    const viaG = 'TARGET="$G/fixture.sh"\nmv "$TARGET" "$TARGET.bak"'
+    expect(treeMutations(viaG)).toHaveLength(1)
+    expect(treeMutations('mv "$SCRIPT" "$SCRIPT.bak"')).toHaveLength(1)
+    expect(treeMutations('chmod +x "$G/vitest"')).toHaveLength(1)
   })
 })
