@@ -431,28 +431,22 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
   })
 
   // A RATCHET, not a clean sheet, and the difference is stated rather than hidden. MEASURED from the
-  // module itself: 16 rules record a refusal, 6 are anchored, 10 are not. Anchoring the rest means
-  // measuring each symbol one at a time, and this card's own work showed why that cannot be done in
-  // bulk -- a raw occurrence count called the Telegram copy gate "adopted" when all three hits were
-  // a test's own const. So the unanchored rules are listed BY NAME: the list may SHRINK, never grow.
-  // A new refusal must arrive with its tripwire; this backlog is real work with a card of its own,
-  // not an exemption.
-  //
-  // The list is transcribed from a run, not from a hand scan -- my first attempt guessed it from a
-  // regex over the source and got three names wrong, which the honesty case below caught. That is
-  // the case earning its place on its first day.
-  const UNANCHORED_BACKLOG: readonly string[] = [
-    'src/web.ts',
-    'src/web/routes/kanban.ts',
-    'web/app.js',
-    'package.json',
-    'src/web/schedule-runner.ts',
-    'src/web/agent-process.ts',
-    'scripts/notify.sh',
-    'scripts/github-pr-monitor.sh',
-    'src/web/channel-monitor.ts',
-    'src/__tests__/context-guard.test.ts',
-  ]
+  // module itself: 16 rules record a refusal, 6 were anchored on 2026-09-12 (card 66ad1f95). Of the
+  // other 10, 9 were backfilled 2026-09-25 (card 2f1cbaf1), one symbol at a time, per file -- a raw
+  // occurrence count is not a measurement, as 66ad1f95 already showed (the Telegram copy gate read
+  // as "adopted" when all three hits were a test's own const). FOUR of the nine had already reversed
+  // by the time they were checked (src/web/routes/kanban.ts + web/app.js's blockers UI, schedule-
+  // runner.ts's TASK_FIRE_TIMEOUT_MS, notify.sh's CHATID0 guard, github-pr-monitor.sh's
+  // AUTH_ALERT_COOLDOWN) and a fifth (channel-monitor.ts, three items) was found and corrected the
+  // same day under card ea86a362 -- see each file's own ACKNOWLEDGED_CONFLICTS entry for the
+  // CORRECTION paragraph and evidence. The tenth, src/__tests__/context-guard.test.ts, CANNOT be
+  // anchored: its refusal is about a TEST file's own content, and 'an anchor points at a production
+  // file' is enforced below as an absolute rule (a test can declare its own copy of anything). It
+  // stays in this list permanently -- the underlying decision (MiniMax NO-GO, card 48565f81) is
+  // watched for real by the 'src/web/agent-process.ts' anchor instead. This is why the list is a
+  // named backlog and not a bare count: a name that can never leave needs to be readable as that,
+  // not indistinguishable from one nobody got around to yet.
+  const UNANCHORED_BACKLOG: readonly string[] = ['src/__tests__/context-guard.test.ts']
 
   it('no refusal ships WITHOUT a tripwire -- the unanchored set may shrink, never grow', () => {
     const unwatched = refusing
