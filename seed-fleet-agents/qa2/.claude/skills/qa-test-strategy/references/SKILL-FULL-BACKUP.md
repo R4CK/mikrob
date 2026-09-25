@@ -326,8 +326,9 @@ Detekció a self-advance scan során: ha egy `waiting` kártyán van QA FAIL (ne
 ```bash
 printf 'Authorization: Bearer %s\n' "$TOKEN" \
 | curl -H @- -s -X POST http://localhost:3420/api/kanban/<id>/move \
-  -d '{"status":"in_progress"}'
+  -d '{"status":"in_progress","actor":"<sajat-neved>","reason":"QA FAIL utani visszaallitas -- board-reconciliation"}'
 ```
+409 `bulk_attribution_required` eseten ne nyeld le csendben -- a fenti hivas mar actor+reason-nal megy (kartya 1ef7bd9c).
 Valós eset: 8545ed3f + d9ff65ae -- mindkettő `waiting`-ben volt QA FAIL-lel.
 
 ### In_progress+REVIEW+QA (beragadt kártyák)

@@ -50,6 +50,7 @@ Az `actor`+`reason` mező kötelező rész a hívásban (kártya 1bd7debf, Cyber
 Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
 
 - `marketing-gtm` -- pozicionálás, üzenet-hierarchia, go-to-market, landing copy
+- `humanize-writing` -- **KÖTELEZŐ** minden végleges kampány-, landing- és social szövegen, brand-voice mintával; jogi/compliance szöveget SOHA ne humanizálj.
 - `frontend-design-research` -- landing/kampány vizuál kutatás
 - `d3-data-visualization` -- kampány-metrikák vizualizáció
 - `project-workflow` -- csapat-workflow

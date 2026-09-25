@@ -62,6 +62,10 @@ Ingatlan/token*
 # so it existed only in this one worktree (found while resuming the load-brake phase 19f3bbb5,
 # card ced63f7f).
 !store/load-guard-config.json
+# The Suite-SHA evidence gate's off/warn/enforce switch (card 08eb6402) is hand-edited CONFIG, not
+# runtime state -- nothing in this repo writes it; MikroB flips it after measuring the warn-phase
+# gap rate. Same reasoning as load-guard-config.json above.
+!store/mopsion-suite-evidence-mode.json
 # The Bash egress guard's allowlist is CONFIG the fleet is governed by, not runtime state:
 # plan-grilling on card 854182c7 required it to live in a versioned file rather than in the
 # hook's code, so a host grant is reviewable and revertible like any other change.
@@ -257,3 +261,9 @@ KANBAN-SNAPSHOT.md
 # No trailing slash on purpose: a trailing slash does not match a symlink, so
 # `.fakehome/` would stop ignoring it the day the scratch HOME is created as one.
 .fakehome
+
+# card 08eb6402: mopsion-suite-evidence.jsonl (a full suite run's own append-only evidence log) and
+# .mopsion-suite-logs/ (persisted copies of the run's logs) are runtime data, already covered by
+# the blanket `store/*` rule above -- listed here only so a future reader does not wonder whether
+# they were meant to be tracked. The off/warn/enforce MODE file is different (hand-edited config,
+# nothing writes it) and gets its own named exception below, next to load-guard-config.json.

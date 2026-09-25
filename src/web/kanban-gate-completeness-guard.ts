@@ -242,14 +242,30 @@ const CARD_MENTION_SHA_RX = new RegExp(
   'gi'
 )
 
+// "SAJÁT REVIEW-JA/KOMMENTJE" -- A BARE CARD-ID IN A POSSESSIVE REFERENCE TO ANOTHER CARD'S OWN
+// REVIEW/COMMENT IS NOT A SHA CITATION (card 211686ab, real incident 6980f9c7). Cybersec's own
+// Gate-SHA line read "ugyanaz a konvenció mint a 4bf530eb saját REVIEW-ja" -- 4bf530eb is a card
+// ID, not a commit, and it carries NONE of the three existing exclusion triggers: no "kártya"/
+// "card" marker word (CARD_MENTION_SHA_RX), no slash (isPathToken), no parent-marker word
+// (PARENT_MARKED_SHA_RX). The guard extracted it as the round's newest sha and moved the boundary
+// to that comment's own timestamp, making an EARLIER, genuinely-still-current QA PASS read as
+// stale; MikroB had to force:true past it.
+//
+// SAME GATING DISCIPLINE AS CARD_MENTION_SHA_RX (card 4b72ef85): word-adjacency alone cannot
+// decide "this hex run is a card mention, not a real Gate-SHA" -- "Gate-SHA: e46f9968 (saját
+// kommentem szerint)" is a genuine restated sha whose surrounding text happens to say "saját
+// komment" without the hex being a card-ID reference at all. So, like the card-mention case, this
+// candidate is only actually blanked when its value equals some OTHER real kanban card's id.
+const OWN_REVIEW_MENTION_SHA_RX = /\b([0-9a-f]{6,40})\b\s+saj[aá]t\s+(?:review|komment)[\wáéíóöőúüű-]*\b/gi
+
 /** Every short-sha token declared on a Gate-SHA line in `content` (lowercased, deduped), EXCEPT the
  *  ones introduced as a parent/ancestor reference (see {@link PARENT_MARKED_SHA_RX}). A card can
  *  legitimately cite more than one commit on one line, in any separator shape ("Gate-SHA: e46f9968,
  *  9e9a79bc", "Gate-SHA: e46f9968 + 9e9a79bc (...)", "Gate-SHA: e46f9968 (landolt 9e9a79bc)").
  *
- *  `knownOtherCardIds` gates the card-mention blanking (see CARD_MENTION_SHA_RX above): a word-
- *  adjacent hex run is only dropped when its value is actually another card's id, never by
- *  word-adjacency alone. */
+ *  `knownOtherCardIds` gates both the card-mention blanking (see CARD_MENTION_SHA_RX above) and the
+ *  own-review-mention blanking (see OWN_REVIEW_MENTION_SHA_RX above): a word-adjacent hex run is
+ *  only dropped when its value is actually another card's id, never by word-adjacency alone. */
 function extractGateShas(content: string, knownOtherCardIds: ReadonlySet<string>): ReadonlySet<string> {
   GATE_SHA_LINE_RX.lastIndex = 0
   const out = new Set<string>()
@@ -263,6 +279,10 @@ function extractGateShas(content: string, knownOtherCardIds: ReadonlySet<string>
       .replace(PARENT_MARKED_SHA_RX, (run) => ' '.repeat(run.length))
       .replace(CARD_MENTION_SHA_RX, (run: string, g1?: string, g2?: string) => {
         const hex = (g1 ?? g2 ?? '').toLowerCase()
+        return knownOtherCardIds.has(hex) ? ' '.repeat(run.length) : run
+      })
+      .replace(OWN_REVIEW_MENTION_SHA_RX, (run: string, g1: string) => {
+        const hex = g1.toLowerCase()
         return knownOtherCardIds.has(hex) ? ' '.repeat(run.length) : run
       })
     // Token by token, so a hex run can be judged by the company it keeps (see isPathToken).

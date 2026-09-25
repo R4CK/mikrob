@@ -111,6 +111,11 @@ const MODE_SELFTESTS: ReadonlyArray<{ file: string; args: readonly string[] }> =
   { file: 'migration-number-check.sh', args: ['selftest'] },
   { file: 'store-watch-exclusions.sh', args: ['selftest'] },
   { file: 'sync-agent-templates.sh', args: ['selftest'] },
+  // Added by card 576b072e while fixing the ARCHIVED/ORPHAN misclassification bug: this script's
+  // own --selftest is exactly the kind of check the bug fix needed (both directions of "card missing
+  // from the bulk list" told apart), so it would be the same class of unrun control this file exists
+  // to close if left out of this list.
+  { file: 'unlanded-branch-sweep.sh', args: ['--selftest'] },
 ]
 
 /** True iff `file` is a same-directory SYMLINK ALIAS of another file already in `files` -- e.g. the
