@@ -263,7 +263,8 @@ resolve_leaves_with_decompose() { # stdin = kanban list JSON (same contract as r
 import json, sys, base64
 l = json.load(sys.stdin)[0]
 fields = [l["id"], l["title"], l["description"], l["assignee"], l["assignee_raw"], l["tags"], l["project"]]
-print("|".join(base64.b64encode(str(x).encode()).decode() for x in fields))
+encoded = [base64.b64encode(str(x).encode()).decode() for x in fields]
+print("|".join(encoded))
 ' 2>/dev/null)"
   [[ -n "${fields// }" ]] || { printf '%s' "$raw"; return; }
   IFS='|' read -r b64id b64title b64desc b64assignee b64assignee_raw b64tags b64project <<< "$fields"
