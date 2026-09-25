@@ -6605,6 +6605,81 @@ export function pruneTokenUsage(): number {
   return info.changes
 }
 
+// Ported from upstream (HBDBKUSZOB823, e45e4d87, card a04769a6). The decay-sweep
+// cadence: index.ts sweeps once at boot AND on this interval, so a restart only
+// ever SHORTENS the gap between two sweeps.
+export const DECAY_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
+
+/**
+ * HBDBKUSZOB823: whether the daily token_usage prune is still running.
+ *
+ * WHAT THE LAG MEASURES. Rows below `now - retention` are deleted, so the
+ * oldest surviving row's overshoot past that cutoff IS the time since the
+ * last successful sweep. No separate last-run bookkeeping, and a sweep that
+ * ran but deleted nothing cannot fake it.
+ *
+ * WHY TWO SWEEP CYCLES AND NOT A ROUND NUMBER (upstream measurement,
+ * 2026-09-13): 50 rows sat past the cutoff, the oldest overshooting by 16.4
+ * minutes -- rows that merely aged past it since the last sweep. A naive
+ * "oldest row older than retention" test is true almost always. The
+ * tolerance is derived from DECAY_SWEEP_INTERVAL_MS so it cannot drift from
+ * the real cadence.
+ */
+export const TOKEN_PRUNE_OLDEST_SQL = 'SELECT MIN(timestamp) AS oldest FROM token_usage'
+
+export const TOKEN_PRUNE_TOLERANCE_CYCLES = 2
+
+export interface TokenPruneLag {
+  state: 'ok' | 'stale' | 'empty'
+  retention_days: number
+  tolerance_hours: number
+  /** Hours the oldest row overshoots the cutoff = time since the last sweep. */
+  lag_hours: number | null
+  oldest_age_days: number | null
+}
+
+/**
+ * The verdict itself, as a PURE function: exported so the controls run
+ * against the SHIPPED decision and not a re-typed equivalent.
+ */
+export function classifyTokenPruneLag(
+  oldestTimestamp: number | null,
+  retentionDays: number,
+  nowSeconds: number,
+  toleranceHours: number,
+): TokenPruneLag {
+  if (oldestTimestamp == null) {
+    return {
+      state: 'empty',
+      retention_days: retentionDays,
+      tolerance_hours: toleranceHours,
+      lag_hours: null,
+      oldest_age_days: null,
+    }
+  }
+  const ageSeconds = nowSeconds - oldestTimestamp
+  const lagHours = (ageSeconds - retentionDays * 86400) / 3600
+  return {
+    // A negative lag (nothing has aged past the cutoff yet) is healthy, not a
+    // finding -- it only means the sweep ran recently.
+    state: lagHours > toleranceHours ? 'stale' : 'ok',
+    retention_days: retentionDays,
+    tolerance_hours: toleranceHours,
+    lag_hours: Math.round(lagHours * 100) / 100,
+    oldest_age_days: Math.round((ageSeconds / 86400) * 100) / 100,
+  }
+}
+
+export function getTokenPruneLag(): TokenPruneLag {
+  const row = db.prepare(TOKEN_PRUNE_OLDEST_SQL).get() as { oldest: number | null } | undefined
+  return classifyTokenPruneLag(
+    row?.oldest ?? null,
+    Number(getEffectiveSettingValue('TOKEN_USAGE_RETENTION_DAYS')),
+    Math.floor(Date.now() / 1000),
+    (TOKEN_PRUNE_TOLERANCE_CYCLES * DECAY_SWEEP_INTERVAL_MS) / 3_600_000,
+  )
+}
+
 // --- Vault SSH Keys (shared key pool) ---
 // Each key is independent of any server -- one key may be assigned to many
 // servers. The private key blob lives in the AES-256-GCM vault (vault.ts);

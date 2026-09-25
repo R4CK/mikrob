@@ -13487,3 +13487,40 @@ kezzel-sosem-futtatott regressziov-or elkorhad). `channel-monitor.ts`-t erinto 9
 
 **Ki dontott:** backend (BE build, dispatched by MikroB, plan-grilling GO-WITH-CHANGES a szulo
 26c07c33-n).
+
+## 2026-09-25 -- a04769a6 -- token_prune_lag health-jelzo portolasa upstreambol a heartbeat-summarybe
+
+Kartya 3602c2ae (upstream-drift 22 fajl) altal feltart, kis meretu adopcios javaslat, mar
+elore dokumentalva `src/fork-upstream/acknowledged-conflicts.ts`-ben (backend3, 2026-09-15
+re-meres, blob 2424a3c4..83ab8067): tisztan additiv, +7/-1 a kanban.ts oldalon, zero talalat a
+dispatch-text/resolveKanbanDispatch/reportUndeliveredDispatch/self-advance-suppression pontokon.
+
+**Mit portoltam** upstream commit e45e4d87-bol (HBDBKUSZOB823, 2026-09-13): `db.ts`-be
+`DECAY_SWEEP_INTERVAL_MS`, `TOKEN_PRUNE_OLDEST_SQL`, `TOKEN_PRUNE_TOLERANCE_CYCLES`, a
+`TokenPruneLag` interfesz, a tiszta `classifyTokenPruneLag()` dontesfuggveny es a DB-t olvaso
+`getTokenPruneLag()` wrapper -- pontosan a `pruneTokenUsage()` utan, ugyanoda ahol upstream is
+tette. `kanban.ts`: `buildHeartbeatSummaryResponse()` uj `tokenPrune: TokenPruneLag` parametert
+kapott, a `token_prune` mezo a `counts` UTAN es a listak ELOTT kerul a valaszba (upstream sajat
+indoklasa: egy csonkolt olvasas a jelet tartsa meg, a kartya-listakat veszitse -- ugyanaz az elv,
+mint a `db_size_mb`-nel mar meglevo `counts`-elsokent mintanak). A route handler
+`getTokenPruneLag()`-et adja at.
+
+**Mit NEM portoltam, es miert.** A kartya sajat hataroja: "Ha van hozza fogyaszto a
+dashboardon... ha nincs, elég a backend metrika, felhasznalatlanul is dokumentalt allapotban
+maradhat." Nincs jelenleg fogyaszto -- ezert a `heartbeat-metrics.sh`/`heartbeat-metrics-inject.ts`
+render-oldal (upstream ugyanezen commitjaban) es a hozzajuk tartozo tesztek KIMARADTAK: azok egy
+kulon fogyaszto-bekotes, nem resze ennek a kartyanak, es a 3. kodminosegi elv (sebeszi
+valtoztatas) szerint nem huzom bele a kort felkeretlenul. Ugyanigy kimaradt az upstream commit
+MASODIK, teljesen fuggetlen resze (a natix utemezo holt-ag EBRESZTO-KAPUja, `initHeartbeat`
+2026-06-02 ota nem inditott) -- az egy masik hibaosztaly, nem resze ennek a portolasnak, kulon
+kartyat erdemelne, ha valaki felveszi.
+
+**Tesztek.** Portoltam upstream `src/__tests__/token-prune-lag.test.ts`-et (11 teszt: a nyers SQL
+legregebbi-sor viselkedese ures/nem-ures tablan, `classifyTokenPruneLag` negativ kontroll a valos
+16,4 perces alakra, mutacio-kontroll nulla turessel, pozitiv kontroll, hatareset-szigorusag, ures
+tabla kulon allapota, retention-fuggetlenseg). A 4 meglevo hivo-tesztfajlt (`heartbeat-db-size`,
+`heartbeat-summary-truncation-safe`) frissitettem az uj otodik parameterre egy megosztott
+fixture-konstanssal (nem upstream inline-ismetlesevel -- egyszerubb, ugyanazt bizonyitja).
+28/28 zold a celzott futasban, `tsc --noEmit` tiszta.
+
+**Ki dontott:** backend (self-advance, 6b. szabaly szerinti 2-napos regi kartya elsobbsege).
