@@ -20,6 +20,14 @@ export default defineConfig({
   test: {
     exclude: [
       ...configDefaults.exclude,
+      // dist/** (card c2aeefa5, upstream re-decision, 2026-09-25): `tsc` compiles every
+      // src/__tests__/*.test.ts into dist/__tests__/*.test.js, and vitest was collecting
+      // those compiled copies too -- measured on THIS fork: dist/__tests__ already holds 785
+      // compiled .test.js files from a prior build, so a bare `vitest run` here doubles the
+      // suite and can read a stale compiled copy's failures as fresh ones. Upstream measured
+      // the same defect on their side (888/10723 tests instead of 444/5633, 67 files RED with
+      // zero real failures among them) and excluded it; adopted verbatim, same reasoning.
+      'dist/**',
       'tests/smoke/**',
       'tests/browser/**',
       'agents/**',
