@@ -745,15 +745,29 @@ fi
 # the warn-phase gap rate, never automatic in this script.
 SELF_DIR="$(dirname "$0")"
 EVIDENCE_MODE_FILE="${MOPSION_SUITE_EVIDENCE_MODE_FILE:-$SELF_DIR/mopsion-suite-evidence-mode.json}"
+# CARD 08eb6402, CYBERSEC F2: a MISSING file defaults to warn, silently -- MikroB's own explicit
+# decision (msg 3736 point 3), unchanged. A file that EXISTS but is unreadable/unparseable, or
+# names a mode this script does not recognise (a typo like "Enforce"), is a DIFFERENT case: that
+# used to fall back to warn just as silently, which is fail-OPEN in exactly the phase (enforce)
+# meant to be strict. It now resolves to enforce (fail-closed) with a loud stderr line, never
+# silent -- stderr is deliberately NOT redirected here, so the line reaches the caller's own log.
 EVIDENCE_MODE="$(python3 -c "
 import json, sys
+mode_file = sys.argv[1]
 try:
-    with open(sys.argv[1]) as f:
+    with open(mode_file) as f:
         m = json.load(f).get('mode', 'warn')
-except Exception:
+except FileNotFoundError:
     m = 'warn'
-print(m if m in ('off', 'warn', 'enforce') else 'warn')
-" "$EVIDENCE_MODE_FILE" 2>/dev/null || echo warn)"
+except Exception as exc:
+    print('mopsion-land: could not read mode from %s (%s) -- treating as enforce (fail-closed)' % (mode_file, exc), file=sys.stderr)
+    m = 'enforce'
+if m not in ('off', 'warn', 'enforce'):
+    print('mopsion-land: unknown mode %r in %s -- treating as enforce (fail-closed)' % (m, mode_file), file=sys.stderr)
+    m = 'enforce'
+print(m)
+" "$EVIDENCE_MODE_FILE")"
+[ -z "$EVIDENCE_MODE" ] && EVIDENCE_MODE="warn"
 
 if [ "$EVIDENCE_MODE" != "off" ]; then
   MERGE_TREE_FOR_EVIDENCE="$(git -C "$WT" rev-parse HEAD^{tree})"

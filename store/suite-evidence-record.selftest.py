@@ -40,6 +40,14 @@ FLAKE_LOG = write_log(
     "      Tests  20 passed (20)\n",
 )
 INCOMPLETE_LOG = write_log("incomplete.log", "some partial output, then silence\n")
+# CARD 08eb6402, CYBERSEC F1(a): a file that fails to even LOAD (an import error after a rename)
+# can print "Tests N passed (N)" -- zero test-level failures -- while "Test Files" still counts the
+# file itself as failed and vitest exits non-zero. This is the exact repro from the finding.
+IMPORT_ERROR_LOG = write_log(
+    "import-error.log",
+    "\nError: Cannot find module './bar' imported from src/foo.test.ts\n"
+    " Test Files  1 failed | 4 passed (5)\n      Tests  18 passed (18)\n",
+)
 
 
 def record(label, expect_prefix, **kwargs):
@@ -82,6 +90,12 @@ record("a real failure is STILL a valid (non-anomalous) record",
        "READY", sha="sha-fail", tree="tree-fail", agent="backend3",
        main_log=FAIL_LOG, main_status=1)
 lookup("...and lookup reports it as FAILED, not PRESENT", "tree-fail", "FAILED")
+
+record("an import-error file (zero test-level failures, exit 1) is still a valid record",
+       "READY", sha="sha-import-error", tree="tree-import-error", agent="backend3",
+       main_log=IMPORT_ERROR_LOG, main_status=1)
+lookup("...and lookup reports FAILED, not PRESENT, from Test Files alone (F1(a))",
+       "tree-import-error", "FAILED")
 
 record("the birpc flake (0 real failures, worker-RPC timeout) records ANOMALY, not READY-as-pass",
        "ANOMALY", sha="sha-flake", tree="tree-flake", agent="backend3",

@@ -64,12 +64,21 @@ FLAKE_CLASSIFY = HERE / "vitest-flake-classify.sh"
 _SUMMARY = re.compile(
     r"Tests\s+(?:(\d+)\s+failed\s*\|\s*)?(\d+)\s+passed(?:\s*\|\s*(\d+)\s+skipped)?\s*\(\d+\)"
 )
+_FILES_SUMMARY = re.compile(
+    r"Test Files\s+(?:(\d+)\s+failed\s*\|\s*)?(\d+)\s+passed(?:\s*\|\s*(\d+)\s+skipped)?\s*\(\d+\)"
+)
 
 
-def parse_counts(log_path: str) -> tuple[int, int, int] | None:
-    """(passed, failed, skipped) from the LAST summary line in the log, or None if no summary
-    exists at all -- matching vitest-flake-classify.sh's own "no summary = incomplete" stance,
-    not zero-filling a run that never reached a verdict."""
+def parse_counts(log_path: str) -> tuple[int, int, int, int] | None:
+    """(passed, failed, skipped, files_failed) from the LAST summary lines in the log, or None if
+    no "Tests" summary exists at all -- matching vitest-flake-classify.sh's own "no summary =
+    incomplete" stance, not zero-filling a run that never reached a verdict.
+
+    `files_failed` comes from the SEPARATE "Test Files N failed" line (card 08eb6402, Cybersec
+    F1(a)): a file that fails to even LOAD (an import error after a rename, say) can print
+    "Test Files 1 failed | 1 passed" together with "Tests 12 passed (12)" -- zero test-level
+    failures, non-zero files failed. Reading only the "Tests" line missed exactly that regression
+    class and let a red run record itself as evidence of green."""
     try:
         text = Path(log_path).read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -81,7 +90,11 @@ def parse_counts(log_path: str) -> tuple[int, int, int] | None:
     failed = int(m.group(1)) if m.group(1) else 0
     passed = int(m.group(2))
     skipped = int(m.group(3)) if m.group(3) else 0
-    return passed, failed, skipped
+    files_failed = 0
+    file_matches = list(_FILES_SUMMARY.finditer(text))
+    if file_matches:
+        files_failed = int(file_matches[-1].group(1)) if file_matches[-1].group(1) else 0
+    return passed, failed, skipped, files_failed
 
 
 def classify_leg(status: str, log_path: str) -> str:
@@ -119,9 +132,14 @@ def cmd_record(args) -> int:
         legs.append(("e2e", args.e2e_log, args.e2e_status))
 
     anomaly_reasons = []
-    total_pass = total_fail = total_skip = 0
+    total_pass = total_fail = total_skip = total_files_failed = 0
     any_counts = False
     persisted_logs = {}
+    # CARD 08eb6402, CYBERSEC F1(a): an "ok"-classified leg (not the known birpc flake, not
+    # incomplete) whose PROCESS still exited non-zero is evidence of red even when the "Tests" line
+    # alone shows fail=0 -- the exit code is the ONE signal that does not depend on which summary
+    # line vitest happened to print. Recorded so lookup can never call this PRESENT.
+    exit_dirty_legs = []
 
     for name, log_path, status in legs:
         if log_path is None:
@@ -129,16 +147,23 @@ def cmd_record(args) -> int:
         kind = classify_leg(str(status), log_path)
         if kind != "ok":
             anomaly_reasons.append("%s leg: %s (vitest-flake-classify)" % (name, kind))
+        else:
+            try:
+                if int(status) != 0:
+                    exit_dirty_legs.append(name)
+            except (TypeError, ValueError):
+                pass
         counts = parse_counts(log_path)
         if counts is None:
             if kind == "ok":
                 anomaly_reasons.append("%s leg: no summary line found, and not the known flake" % name)
         else:
             any_counts = True
-            p, f, s = counts
+            p, f, s, ff = counts
             total_pass += p
             total_fail += f
             total_skip += s
+            total_files_failed += ff
         persisted_logs[name] = persist_log(log_path, args.tree, name, log_dir)
 
     record = {
@@ -148,6 +173,8 @@ def cmd_record(args) -> int:
         "pass": total_pass,
         "fail": total_fail,
         "skip": total_skip,
+        "files_failed": total_files_failed,
+        "exit_dirty_legs": exit_dirty_legs,
         "anomaly": bool(anomaly_reasons),
         "anomaly_reasons": anomaly_reasons,
         "logs": persisted_logs,
@@ -198,7 +225,15 @@ def cmd_lookup(args) -> int:
     if latest.get("anomaly"):
         print("ANOMALY|%s|%s" % (latest.get("sha", "-"), "; ".join(latest.get("anomaly_reasons") or [])))
         return 0
-    if int(latest.get("fail", 0)) > 0:
+    # CARD 08eb6402, CYBERSEC F1(a): PRESENT requires a genuinely clean run, not just fail == 0 from
+    # the "Tests" line -- a non-zero "Test Files" count or a non-zero exit status on an "ok"-
+    # classified leg (recorded, not re-derived, so an older record without these keys defaults to
+    # "clean" rather than retroactively failing) is still evidence of red.
+    if (
+        int(latest.get("fail", 0)) > 0
+        or int(latest.get("files_failed", 0) or 0) > 0
+        or bool(latest.get("exit_dirty_legs"))
+    ):
         print("FAILED|%s|pass=%s fail=%s skip=%s" % (
             latest.get("sha", "-"), latest.get("pass", 0), latest.get("fail", 0), latest.get("skip", 0)))
         return 0

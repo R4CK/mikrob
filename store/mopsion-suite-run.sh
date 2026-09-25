@@ -361,9 +361,16 @@ DEFAULT_MAX_WORKERS=$((CORES / SLOTS))
 MAX_WORKERS="${CLEANCORE_SUITE_MAX_WORKERS:-$DEFAULT_MAX_WORKERS}"
 vitest_args=("$@")
 caller_set_max_workers=0
-for a in "${vitest_args[@]}"; do
+# CARD 08eb6402, CYBERSEC F1(b): evidence may ONLY be recorded for a run that covers the whole
+# suite. --maxWorkers is the one flag this script itself may add and does not narrow what runs, so
+# it is the one exception; ANY other caller-supplied argument (--shard=.., a bare file/dir path,
+# -t/--testNamePattern, ...) means a partial run, and the evidence-record call below must be skipped
+# -- a filtered run that happens to pass still proves nothing about the files it never touched.
+caller_extra_args=0
+for a in ${vitest_args[@]+"${vitest_args[@]}"}; do
   case "$a" in
     --maxWorkers|--maxWorkers=*) caller_set_max_workers=1 ;;
+    *) caller_extra_args=1 ;;
   esac
 done
 [ "$caller_set_max_workers" -eq 0 ] && vitest_args=("--maxWorkers=$MAX_WORKERS" "${vitest_args[@]}")
@@ -536,9 +543,19 @@ fi
 # the sha without changing what was tested; two commits with the same tree hash are byte-identical
 # in every tracked file, so no per-file diff heuristic is needed on the reading side either).
 # Never touches $status: a broken recorder must not turn a real suite result into a script failure.
+#
+# TWO MORE GUARDS BEFORE RECORDING (Cybersec F1(b)/F1(c), card 08eb6402 delta-gate). A partial run
+# (caller_extra_args) or a dirty worktree both mean the tree hash below would not describe what
+# actually ran/what will actually land -- recording anyway is exactly how a filtered or uncommitted
+# run got mistaken for full, green coverage of a tree nobody tested. `git status --porcelain` with
+# no `-uno`: an untracked file is still part of what a future `git add` could land unmeasured.
 EVIDENCE_SHA="$(git -C "$WT" rev-parse HEAD 2>/dev/null)"
 EVIDENCE_TREE="$(git -C "$WT" rev-parse HEAD^{tree} 2>/dev/null)"
-if [ -n "$EVIDENCE_SHA" ] && [ -n "$EVIDENCE_TREE" ]; then
+if [ "$caller_extra_args" -eq 1 ]; then
+  echo "mopsion-suite-run: partial run (vitest arguments beyond --maxWorkers), no evidence recorded" >&2
+elif [ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]; then
+  echo "mopsion-suite-run: dirty worktree ($WT), no evidence recorded" >&2
+elif [ -n "$EVIDENCE_SHA" ] && [ -n "$EVIDENCE_TREE" ]; then
   python3 "$HERE/suite-evidence-record.py" record \
     --sha "$EVIDENCE_SHA" --tree "$EVIDENCE_TREE" --agent "$AGENT" \
     --main-log "$run_log" --main-status "$status" \

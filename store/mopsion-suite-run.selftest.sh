@@ -261,6 +261,74 @@ else
   bad "a caller-supplied --project was overridden by the split" "rc=$rc runs=$runs argv=$(cat "$ARGV_CAPTURE" 2>/dev/null | tr '\n' ' ')"
 fi
 
+echo
+
+# --- evidence is recorded ONLY for a full, clean run (card 08eb6402, Cybersec F1(b)/(c)) --------
+# Its OWN worktree, a REAL git repo this time (not just a directory) -- the guards below read
+# `git status --porcelain` and `rev-parse HEAD^{tree}`, which need an actual repo to answer.
+EVWT="$TMP/fake-evidence-wt"
+mkdir -p "$EVWT/node_modules/.bin" "$EVWT/store"
+cp "$RUN" "$EVWT/store/$(basename "$RUN")"
+cat > "$EVWT/store/agent-worktree.sh" <<EOF
+#!/usr/bin/env bash
+echo "$EVWT"
+EOF
+chmod +x "$EVWT/store/agent-worktree.sh"
+: > "$EVWT/store/vitest-flake-classify.sh"; chmod +x "$EVWT/store/vitest-flake-classify.sh"
+: > "$EVWT/store/vitest-skip-report.sh"; chmod +x "$EVWT/store/vitest-skip-report.sh"
+# A minimal FAKE recorder: only cares whether it was CALLED, not what it computes -- the real
+# script's own logic is suite-evidence-record.selftest.py's job, not this file's.
+EV_MARKER="$TMP/evidence-called.txt"
+cat > "$EVWT/store/suite-evidence-record.py" <<EOF
+#!/usr/bin/env python3
+import sys
+with open("$EV_MARKER", "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+print("READY|fake|fake|pass=0 fail=0 skip=0")
+EOF
+cat > "$EVWT/node_modules/.bin/vitest" <<'FAKEVITEST'
+#!/usr/bin/env bash
+echo " Test Files  1 passed (1)"
+echo "      Tests  1 passed (1)"
+exit 0
+FAKEVITEST
+chmod +x "$EVWT/node_modules/.bin/vitest"
+git -C "$EVWT" init -q
+git -C "$EVWT" -c user.email=a@b -c user.name=t add -A
+git -C "$EVWT" -c user.email=a@b -c user.name=t commit -q -m one
+
+env_ev=(
+  "CLEANCORE_SUITE_LOCK_PREFIX=$PREFIX-ev"
+  "CLEANCORE_SUITE_API=http://127.0.0.1:9"
+  "CLEANCORE_SUITE_POLL_S=1"
+)
+
+: > "$EV_MARKER"
+out="$(env "${env_ev[@]}" CLEANCORE_SUITE_SLOTS=2 bash "$EVWT/store/$(basename "$RUN")" evagent 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && [ -s "$EV_MARKER" ] && grep -q '^record ' "$EV_MARKER"; then
+  ok "CONTROL: a full, clean run DOES record evidence"
+else
+  bad "a full clean run should have recorded evidence" "rc=$rc marker=$(cat "$EV_MARKER" 2>/dev/null) out=$out"
+fi
+
+: > "$EV_MARKER"
+out="$(env "${env_ev[@]}" CLEANCORE_SUITE_SLOTS=2 bash "$EVWT/store/$(basename "$RUN")" evagent -- apps/api/src/ 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && [ ! -s "$EV_MARKER" ] && echo "$out" | grep -q "no evidence recorded"; then
+  ok "a partial run (extra vitest args) does NOT record evidence (Cybersec F1(b))"
+else
+  bad "a partial run should not have recorded evidence" "rc=$rc marker=$(cat "$EV_MARKER" 2>/dev/null) out=$out"
+fi
+
+: > "$EV_MARKER"
+touch "$EVWT/untracked-file.txt"
+out="$(env "${env_ev[@]}" CLEANCORE_SUITE_SLOTS=2 bash "$EVWT/store/$(basename "$RUN")" evagent 2>&1)"; rc=$?
+rm -f "$EVWT/untracked-file.txt"
+if [[ $rc -eq 0 ]] && [ ! -s "$EV_MARKER" ] && echo "$out" | grep -q "no evidence recorded"; then
+  ok "a dirty worktree (untracked file) does NOT record evidence (Cybersec F1(c))"
+else
+  bad "a dirty worktree should not have recorded evidence" "rc=$rc marker=$(cat "$EV_MARKER" 2>/dev/null) out=$out"
+fi
+
 # --- 13. THE MEMORY PRECONDITION (card 7e7ac40c) ------------------------------------------------
 # backend3's finding: a full suite was OOM-killed BEFORE STARTING with 474 MB available of 24032 MB.
 # The slot cap never looked at memory. Measured on one full run (806 samples at 5s): a suite peaks
