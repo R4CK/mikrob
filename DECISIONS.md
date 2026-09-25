@@ -15367,3 +15367,52 @@ kivalto szo szerinti minta), masodik menetben mar 57/57. Teljes fleet-test a Gat
 **Ki dontott:** backend (a 6 fajl felulvizsgalata + ACKNOWLEDGED_CONFLICTS/ACKNOWLEDGED_UPSTREAM_BLOBS
 frissitese + 3 kovetkezo-kartya nyitasa). Gate: QA + Cybersec (biztonsag-relevans terulet, MikroB
 eredeti kartya-kijelolese szerint).
+
+## 2026-09-25 -- f5536a70 delta-gate: Cybersec NO-GO javitva (F1 HIGH + F2 MEDIUM), 3669d930 sajat hiba korrekcioja
+
+**Dontes:** Cybersec NO-GO-t adott f5536a70-re (Gate-SHA c6221166, komment 6862) ket lelettel; mindkettot
+javitottuk, delta-gate jon uj Gate-SHA-val.
+
+**F1 HIGH (src/web.ts, TEVES adoptalasi javaslat -- CREDENTIAL-EXPOSURE REGRESSZIO):** a korabbi
+ACKNOWLEDGED_CONFLICTS bejegyzes az upstream isTTY-gated bootstrap-URL kiirast "valodi hitelesito-adat-
+szivargas javitas"-nak cimezte, adoptalando-nak jelolve (kartya 965b0b2b elso helyen). VALOJABAN a fork
+mar EROSEBB: src/web/bootstrap-notice.ts (8ca85761, kartya 62631948) a bearer tokent SEMMILYEN streamre
+nem irja ki, csak az utvonalat + egy `cat` utasitast. Upstream TTY-n (tmux-pane is TTY, a fork sajat
+context-guard pane-snapshotjai rogzitik) meg mindig kiirna a teljes token-tartalmazo URL-t. Javitva:
+KEEP fork wholesale, NOT ADOPTABLE, uj ACKNOWLEDGED_FORK_ANCHORS tripwire ('src/web/routes/agents.ts'
+kulcs, file: src/web.ts, needle absent). A 965b0b2b kartya leirasabol torolve a TTY-gating tetel.
+
+**F2 MEDIUM (src/db.ts, HAMIS "moveKanbanCard erintetlen" allitas):** a korabbi bejegyzes csak a
+RECORDED konfliktus-pontot (moveKanbanCard) nezte, es abbol vont le "nincs uj gap" kovetkeztetest --
+tevesen, mert egy blob-pin bump csak azt meri, mozdult-e UPSTREAM, nem azt, hogy egy VALODI merge hol
+utkozne (ami mindket oldal mozgasatol fugg). Elo 3-utas merge-szimulacio (git merge-file --diff3,
+base=d4f1b1d4, ours=c6221166, theirs=a kartya sajat pinje) 11 valodi konfliktus-hunkot adott,
+egyik sem moveKanbanCard-nal. Fajlonkenti dontes:
+- (2)-(4) searchAgentMemories: KEEP fork (a shapeFilter tool-log-zaj-szures a fork sajat, egyedi
+  hozzajarulasa; a category/allowRelaxed parametereket a fork FUGGETLENUL mar felvette, tehat "ours"
+  mar maga az unio -- take-upstream itt CSENDBEN eldobna a shapeFilter-t).
+- (1) EMBED_URL/EMBED_MODEL/EMBED_DIMS config, (5) updateMemory() updatedBy parameter, (6)
+  sweepArchivedKanbanCards(), (8) parentWouldCycle(), (9) addKanbanComment() automated visszateres,
+  (10) vectorSearch() NaN-skip dimenzio-elteresnel -- mind VALODI, NEM adoptalt res. Uj kovetkezmeny-
+  kartya: 16e60d3c (db.ts-oldal), keresztre hivatkozva 5aaf7209-cel (6 es 8 pont a route-oldali
+  parjuk). Uj ACKNOWLEDGED_FORK_ANCHORS tripwire ('src/db.ts' kulcs, needle
+  'export function parentWouldCycle', expect absent).
+- (7), (11): kommentelteres, nincs funkcionalis dontes.
+
+**ONELLENORZESI KORREKCIO (3669d930, memories.ts):** a db.ts updateMemory() signature-jat vizsgalva
+kiderult, hogy a 3669d930 kartya sajat korabbi allitasa -- miszerint routes/memories.ts-ben 4 upstream-
+kepesseg (X-Memory-Search, GET /api/memories/:id, updated_by, MEMORY_IMPORT_CATEGORIZE_MODEL) mar
+MIND jelen van -- HAROM esetben teves volt (a korabbi ellenorzes az upstream diff UJ sorait nezte, es
+tevesen a fork mar-meglevo kodjanak olvasta). Ujra-grep-elve: CSAK X-Memory-Search igaz. Javitva az
+ACKNOWLEDGED_CONFLICTS memories.ts bejegyzeseben (CORRECTION bekezdes), uj kovetkezmeny-kartya
+b5e1d7df nyitva (a 2. pont -- updated_by wiring -- egyutt portolando a db.ts-oldali 16e60d3c-vel).
+
+**Ellenorzes:** `tsc --noEmit` tiszta. `fork-upstream-conflict-guard.test.ts` +
+`fork-upstream-drift-check.test.ts` 57/57 zold (uj anchorok hozzaadva, guard nem panaszkodik). A
+`?token=` literal a kartya-leirasban egy korabbi curl-hivasnal shell-interpolacios hibat okozott
+(backtick + `${VAR}` dupla-idezojeles heredocban vegrehajtodott) -- felismerve es javitva egyszeres-
+idezojeles heredoc-kal, masodik PUT-nal mar helyes tartalommal.
+
+**Ki dontott:** backend, Cybersec NO-GO leletei alapjan (F1, F2), plusz sajat kezdemenyezesu korrekcio
+a 3669d930 memories.ts hibajara. Uj kovetkezmeny-kartyak: 16e60d3c (db.ts), b5e1d7df (memories.ts
+route-oldal). Gate: QA + Cybersec, delta-gate az uj Gate-SHA-ra.
