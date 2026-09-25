@@ -23,6 +23,7 @@ import {
   countNewHotMemories,
   countPlannedKanbanCards,
   getDbFileSizeMb,
+  getTokenPruneLag, type TokenPruneLag,
   queryKanbanRelations, cardsTouchingFile, filesTouchedByCard,
   RELATION_FILTER_COLUMNS, type RelationFilterColumn, type RelationQuery,
 } from '../../db.js'
@@ -489,6 +490,7 @@ export function buildHeartbeatSummaryResponse(
   newHotMemories1h: number,
   plannedCount: number,
   dbSizeMb: number | null,
+  tokenPrune: TokenPruneLag,
 ) {
   const trunc = (t: string) =>
     t.length > HEARTBEAT_SUMMARY_TITLE_MAX ? t.slice(0, HEARTBEAT_SUMMARY_TITLE_MAX) + '…' : t
@@ -520,6 +522,10 @@ export function buildHeartbeatSummaryResponse(
       // for a growth signal a false zero looks like calm, not like failure.
       db_size_mb: dbSizeMb,
     },
+    // HBDBKUSZOB823: placed immediately after `counts` and BEFORE the lists,
+    // for the same reason counts comes first -- a truncated read must keep the
+    // health signal and lose only the annotating card lists.
+    token_prune: tokenPrune,
     urgent: summary.urgent.map(slim),
     waiting: waitingRecent.map(slim),
     waiting_shown: Math.min(summary.waiting.length, HEARTBEAT_SUMMARY_WAITING_CAP),
@@ -580,7 +586,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // few -- while counts.* always carries the FULL totals. The list is for
   // naming items; the numbers ONLY ever come from counts.
   if (path === '/api/kanban/heartbeat-summary' && method === 'GET') {
-    json(res, buildHeartbeatSummaryResponse(getHeartbeatKanbanSummary(), countNewHotMemories(MAIN_AGENT_ID), countPlannedKanbanCards(), getDbFileSizeMb()))
+    json(res, buildHeartbeatSummaryResponse(getHeartbeatKanbanSummary(), countNewHotMemories(MAIN_AGENT_ID), countPlannedKanbanCards(), getDbFileSizeMb(), getTokenPruneLag()))
     return true
   }
 

@@ -13605,3 +13605,97 @@ lepese, a pontos prompt-szoveget a kartya kommentjeben adtam at.
 **Ki dontott:** backend (a script/selftest + a hatarok kimondasa), MikroB tovabbi lepese a schedule
 letrehozasa + az allowlist-bovites eldontese.
 **Kartya:** f268629c (26c07c33 EPIC gyereke).
+
+## 2026-09-24 -- b9a657e6 (26c07c33 EPIC gyereke B) -- Ollama automatikus visszakapcsolasa stabil boot utan
+
+Incidens (2026-09-19): a WSL 22:25-07:21 kozott allt, 07:26-tol a boot-reconciler
+(`channel-monitor.ts`'s `reconcileDesiredAgents()`) visszainditotta a 7 kivant ugynokot, de az Ollama-t
+nem -- 08:22-ig (kezi inditasig) minden helyi-LLM hivas ONLINE-ra esett vissza.
+
+**Egyesitve bbd0c4dd-vel, nem melle epitve.** bbd0c4dd ("Ollama automatikus visszainditasa gep-
+ujrainduls utan") ugyanezt a hook-pontot, health-sort es pid/port-dedup-ot kerte, es MEG SOSEM epult
+meg (meg `planned` volt, amikor ez a kartya elindult) -- tehat nincs mit "egyesiteni", ez a kartya
+MAGA az az egy mechanizmus, bbd0c4dd hatoköre teljes egeszeben resz-halmaza ennek. Kommentben
+jelezve bbd0c4dd-n, hogy MikroB dontse el: archivalja SUPERSEDED-kent vagy zarja le hivatkozassal
+erre a kartyara.
+
+**Uj: `scripts/ollama-boot-restore.sh`.** Negy or, sorrendben, barmelyik elutasitasa csendes no-op
+(exit 0, nem hiba): (1) pid/port-ellenorzes (`ss -ltn` a 11434-es porton, `pgrep` fallback) -- sosem
+indit dupla peldanyt; (2) `gpu-crashloop-guard.sh` maszkolt-allapot fajlja
+(`.gpu-crashloop-guard-masked.json`, ugyanaz az utvonal-konvencio mint `local-llm.sh`
+`gpu_guard_mask_note()`-jaban) -- tiszteletben tartja a szandekos leallitast, SOHA nem old fel
+maszkot automatikusan (az human/MikroB-dontes marad), és EGYSZER (nem minden 60s ciklusban) riaszt
+Telegramon egy UJ maszk-esemenyre (`detected_at` mezo szerint kulonboztetve meg); (3) boot-stabilitas
+(`/proc/uptime` >= 300s alapertelmezetten); (4) dxgkrnl-jel a JELENLEGI bootban (`journalctl -k -b 0`,
+ugyanaz a regex mint `gpu-crashloop-guard.sh` `boot_has_dxg_oops()`-e -- konzisztencia, nem uj
+detekcios ut). Minden tiszta -> `setsid nohup ollama serve` (nincs systemd unit ezen a gepen a
+`ollama_start_hint()` felteves ellenere) + probe (`/api/tags` majd egy legjobb-erofeszitesu 1-tokenes
+`/api/generate`) + naplo.
+
+**Visszakapcsolas (a kartya 4. pontjanak masodik fele): nincs kulon "dispatch ujrainditas".** A
+helyi-elso router (`route-classify.sh`/`card-build-route.sh`) MAR minden hivasnal ujra-ellenorzi az
+Ollama elettani allapotat -- a script csak egy naplosorral teszi lathatova ezt a tenyt sikeres
+helyreallitas utan, nem ir at semmit a route-classify oldalon.
+
+**Bekötve `channel-monitor.ts`-be:** `runOllamaBootRestore()`, SZINKRON hivva, SZOVEGSZERUEN a
+`reconcileDesiredAgents()` (a 60s-es sweep, ugyanaz a "boot-reconciler") ELOTT -- nem `void`-dal
+parhuzamosan inditva, hogy a sorrend valos legyen, ne csak szoveges. Hataridovel korlatozva (55s,
+lefedve a szkript sajat legrosszabb esetet), try/catch-csel korbevéve, ugyanaz a FAIL-OPEN minta mint
+`memGateAllowsStart()`-e mellette -- egy szkript-hiba SOHA nem torheti el a sweep-et.
+
+**NEM bekotve:** a heartbeat-consolidated SKILL.md-be irt kulon Ollama health-sor (a kartya 3. pontja)
+-- a "Self-pace TILTOTT" governance hard-gate sub-agentkent kifejezetten tiltja a scheduled-tasks/
+irast, ugyanaz a korlat mint f268629c-n. Nem is szukseges: a `channel-monitor.ts`-be kotott automatikus
+sweep MAR folyamatos lefedettseget ad (a live Node-szolgaltatas sajat 60s-es ciklusa, ami NEM fugg
+MikroB sajat session-enek ebrenletetol), a heartbeat-consolidated bejegyzes csak dashboard-lathatosagi
+kiegeszito lenne. MikroB dontese, ha meg kivanja.
+
+**Tesztek.** Uj `scripts/__tests__/ollama-boot-restore.test.sh` -- 12/12 zold, mind a negy or +
+mask-egyszeri-riasztas + dryrun + sikertelen-ujrainditas-jelentes eset lefedve, teljesen hermetikus
+(minden kulso syscall/journalctl/HTTP OLLAMA_RESTORE_* teszt-seammel helyettesitve, a "dead host"
+esetben is alacsony uptime-mal korlatozva, hogy CI-ban journalctl/valodi ollama nelkul is
+determinisztikus maradjon). Mutacio-kontroll: a maszkolt-allapot or kikapcsolasa pontosan a negy
+maszk-fuggo tesztet viszi pirosra, a tobbi 8 valtozatlanul zold marad. Bekötve a CI-ba
+(`.github/workflows/test.yml`, `stop-start-system-unit.test.sh` melle, ugyanaz az indoklas: egy
+kezzel-sosem-futtatott regressziov-or elkorhad). `channel-monitor.ts`-t erinto 9 letezo teszt-fajl
+(200 teszt) mind zold maradt a bekotes utan; `tsc --noEmit` tiszta.
+
+**Ki dontott:** backend (BE build, dispatched by MikroB, plan-grilling GO-WITH-CHANGES a szulo
+26c07c33-n).
+
+## 2026-09-25 -- a04769a6 -- token_prune_lag health-jelzo portolasa upstreambol a heartbeat-summarybe
+
+Kartya 3602c2ae (upstream-drift 22 fajl) altal feltart, kis meretu adopcios javaslat, mar
+elore dokumentalva `src/fork-upstream/acknowledged-conflicts.ts`-ben (backend3, 2026-09-15
+re-meres, blob 2424a3c4..83ab8067): tisztan additiv, +7/-1 a kanban.ts oldalon, zero talalat a
+dispatch-text/resolveKanbanDispatch/reportUndeliveredDispatch/self-advance-suppression pontokon.
+
+**Mit portoltam** upstream commit e45e4d87-bol (HBDBKUSZOB823, 2026-09-13): `db.ts`-be
+`DECAY_SWEEP_INTERVAL_MS`, `TOKEN_PRUNE_OLDEST_SQL`, `TOKEN_PRUNE_TOLERANCE_CYCLES`, a
+`TokenPruneLag` interfesz, a tiszta `classifyTokenPruneLag()` dontesfuggveny es a DB-t olvaso
+`getTokenPruneLag()` wrapper -- pontosan a `pruneTokenUsage()` utan, ugyanoda ahol upstream is
+tette. `kanban.ts`: `buildHeartbeatSummaryResponse()` uj `tokenPrune: TokenPruneLag` parametert
+kapott, a `token_prune` mezo a `counts` UTAN es a listak ELOTT kerul a valaszba (upstream sajat
+indoklasa: egy csonkolt olvasas a jelet tartsa meg, a kartya-listakat veszitse -- ugyanaz az elv,
+mint a `db_size_mb`-nel mar meglevo `counts`-elsokent mintanak). A route handler
+`getTokenPruneLag()`-et adja at.
+
+**Mit NEM portoltam, es miert.** A kartya sajat hataroja: "Ha van hozza fogyaszto a
+dashboardon... ha nincs, elég a backend metrika, felhasznalatlanul is dokumentalt allapotban
+maradhat." Nincs jelenleg fogyaszto -- ezert a `heartbeat-metrics.sh`/`heartbeat-metrics-inject.ts`
+render-oldal (upstream ugyanezen commitjaban) es a hozzajuk tartozo tesztek KIMARADTAK: azok egy
+kulon fogyaszto-bekotes, nem resze ennek a kartyanak, es a 3. kodminosegi elv (sebeszi
+valtoztatas) szerint nem huzom bele a kort felkeretlenul. Ugyanigy kimaradt az upstream commit
+MASODIK, teljesen fuggetlen resze (a natix utemezo holt-ag EBRESZTO-KAPUja, `initHeartbeat`
+2026-06-02 ota nem inditott) -- az egy masik hibaosztaly, nem resze ennek a portolasnak, kulon
+kartyat erdemelne, ha valaki felveszi.
+
+**Tesztek.** Portoltam upstream `src/__tests__/token-prune-lag.test.ts`-et (11 teszt: a nyers SQL
+legregebbi-sor viselkedese ures/nem-ures tablan, `classifyTokenPruneLag` negativ kontroll a valos
+16,4 perces alakra, mutacio-kontroll nulla turessel, pozitiv kontroll, hatareset-szigorusag, ures
+tabla kulon allapota, retention-fuggetlenseg). A 4 meglevo hivo-tesztfajlt (`heartbeat-db-size`,
+`heartbeat-summary-truncation-safe`) frissitettem az uj otodik parameterre egy megosztott
+fixture-konstanssal (nem upstream inline-ismetlesevel -- egyszerubb, ugyanazt bizonyitja).
+28/28 zold a celzott futasban, `tsc --noEmit` tiszta.
+
+**Ki dontott:** backend (self-advance, 6b. szabaly szerinti 2-napos regi kartya elsobbsege).
