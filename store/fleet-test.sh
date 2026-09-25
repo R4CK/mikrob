@@ -259,6 +259,15 @@ done
 echo "fleet-test.sh: $TEST_TREE @ $(git -C "$TEST_TREE" rev-parse --short HEAD)" >&2
 cd "$TEST_TREE" || die 3 "cannot cd to $TEST_TREE"
 
+# Native-binding health check (card 5b06720f). A foreign package manager (pnpm/yarn) run in the
+# shared checkout can silently move node_modules aside and drop better-sqlite3's compiled binding
+# -- measured incident: this failed ALL 786 files with a "Could not locate the bindings file" error
+# repeated once per file, instead of one speaking failure up front.
+if ! NATIVE_CHECK_ERR="$(node -e "require('better-sqlite3')" 2>&1)"; then
+  echo "$NATIVE_CHECK_ERR" >&2
+  die 3 "better-sqlite3 native binding missing/broken in $ROOT/node_modules -- run 'npm ci' in the repo root, not pnpm/yarn (see card 5b06720f)"
+fi
+
 # BUILD, because syncing the SOURCE says nothing about the ARTIFACT (card c32577e4).
 #
 # Nine suites load dist/ rather than src/ (process-lock, local-llm-rag-routes-by-default,
