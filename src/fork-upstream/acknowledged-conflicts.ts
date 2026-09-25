@@ -524,6 +524,77 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // not hand-merged in this round. Raised together with the marveen.ts entry above on card fd8ae23f.
   'src/web/routes/overview.ts':
     'UNDECIDED, deliberately -- see card fd8ae23f. Fork keeps its current getUpdateStatus/refreshUserTurnIndex/readQuotaSnapshot import set unchanged; the adoption decision is whether/how to add readFableSnapshot + DEFAULT_FABLE_MAX_AGE_SEC once quota-snapshot.ts grows the matching export, not a wholesale import-line swap (the fork keeps getUpdateStatus and refreshUserTurnIndex regardless, upstream not having them in this one hunk is a diff-context artifact, not upstream dropping those capabilities).',
+  // NEW CONFLICT 2026-09-25 (backend, card 123983f3, dashboard/src tesztek 1/2 of 8). Real shared
+  // history (merge-base d4f1b1d4 has the file), but ours-side is EMPTY: the fork renamed this file
+  // to src/__tests__/provider-env-adoption.test.ts (grep-confirmed present, covers card e80c011a's
+  // resolveProviderEnv() adoption). Upstream's version on top of the same base adds two things the
+  // renamed fork file does NOT cover: (1) LATENSKULCSARGV920 -- resolveProviderEnv's secret callback
+  // now returns a `$(cat '/tmp/ref-...')` shell reference instead of the raw secret value, so the
+  // value itself never reaches process argv/ps (grep-confirmed: no launchSecretRef/LATENSKULCSARGV920
+  // in src/web/agent-process.ts); (2) a regression guard asserting a custom-provider's missing vault
+  // key THROWS at launch instead of silently falling back to an unauthenticated call. Both are
+  // security-relevant (credential-argv-exposure prevention, same class as today's whole f5536a70
+  // theme, plus silent-fallback-to-unauth). Genuine gap, not hand-merged this round: card 248d3013
+  // (HIGH).
+  'src/__tests__/provider-env-adoption.test.ts':
+    "GENUINE GAP, pending -- see card 248d3013 (HIGH). Keep the fork's existing provider-env-adoption.test.ts (card e80c011a coverage) as-is; upstream's renamed-away agent-provider-env.test.ts adds LATENSKULCSARGV920 secret-ref-indirection tests and a custom-provider vault-key-missing-throws regression guard that the fork's src/web/agent-process.ts does not implement yet. Port launchSecretRef + the vault-key hard-fail, then add equivalent tests here.",
+  // NEW CONFLICT 2026-09-25 (backend, card 123983f3, dashboard/src tesztek 1/2 of 8). No shared
+  // base -- both sides added a same-named test file independently after diverging. Fork's version
+  // (card 21597530) pins that readAgentToolDeny's result is PUSHED onto writeAgentSettingsFromProfile's
+  // deny array (union, not replace). Upstream's version (ORSIKTXRATA914) pins a DIFFERENT angle of the
+  // same underlying mechanism: the deny list surviving a SECOND write (respawn), plus two exports
+  // (sanitizeToolDenyList, TOOL_DENY_MAX_PER_AGENT) that grep-confirmed do not exist in the fork's
+  // src/web/agent-config.ts. Keep the fork's existing test (still a valid, narrower pin); the
+  // sanitize/cap mechanism is a genuine gap, not hand-merged this round: card b0d84dc3 (NORMAL).
+  'src/__tests__/agent-tool-deny.test.ts':
+    "KEEP fork's existing test (card 21597530, union-not-replace pin) -- still valid, not superseded. GENUINE GAP alongside it, pending -- see card b0d84dc3: upstream's ORSIKTXRATA914 adds sanitizeToolDenyList + TOOL_DENY_MAX_PER_AGENT (a cap/sanitization layer) and a respawn-persistence assertion, neither present in src/web/agent-config.ts. Decide whether the cap is needed, then port + extend this test.",
+  // NEW CONFLICT 2026-09-25 (backend, card 123983f3, dashboard/src tesztek 1/2 of 8). No shared base
+  // (independently-added same-named file). Trivial: the only diff is the fork's helper carrying a
+  // `RouteContext` typed cast (`as unknown as RouteContext`) where upstream's has widened to `as any`.
+  // Adopting upstream here would be a strictly weaker type-safety regression for no behavioural gain.
+  'src/__tests__/api-messages-freshness.test.ts':
+    "KEEP fork -- the `as unknown as RouteContext` cast is strictly stronger typing than upstream's `as any`. NOT ADOPTABLE, no functional difference, adopting would only loosen typing.",
+  // NEW CONFLICT 2026-09-25 (backend, card 123983f3, dashboard/src tesztek 1/2 of 8). Real shared
+  // history. Two DIFFERENT recipient-safety mechanisms for the same underlying problem (an email
+  // send reaching an unauthorized/wrong recipient): the fork's scripts/email-send-gate.mjs uses
+  // threadMembershipDecision() (a recipient must already be a participant in an existing thread);
+  // upstream introduces scripts/recipient-ledger.mjs (isValidSource/normalizeAddress/splitAddresses/
+  // loadLedger/isVerifiedIn -- an explicit, pre-approved recipient ledger) plus
+  // buildUnverifiedRecipientMsg replacing the fork's buildGateMsg. Grep-confirmed:
+  // scripts/recipient-ledger.mjs does not exist in the fork. This is not a same-round hand-merge
+  // call -- it needs a real security judgement (do the two mechanisms compose, or does one supersede
+  // the other) and Cybersec input given the trust-boundary (real outbound email, real recipient
+  // data). UNDECIDED, deliberately -- see card afd64623 (HIGH).
+  'src/__tests__/email-send-gate.test.ts':
+    'UNDECIDED, deliberately -- see card afd64623 (HIGH, Cybersec input recommended). Fork keeps threadMembershipDecision() (thread-participant check) unchanged for now; the adoption decision is whether to layer upstream\'s recipient-ledger.mjs (explicit verified-recipient allowlist) on top, whether it would supersede thread-membership, or the reverse -- not a same-round pick.',
+  // NEW CONFLICT 2026-09-25 (backend, card 123983f3, dashboard/src tesztek 1/2 of 8). No shared base
+  // (independently-added same-named file). Upstream adds PYTHONDONTWRITEBYTECODE=1 to the python3
+  // execFileSync env, fixing a real flake: fleet.py lives under the shipped seed-skills/ tree, and
+  // without this an import writes __pycache__/*.pyc into that tree, which template-identity-hygiene.
+  // test.ts (walking the same tree as utf-8) then misreports as a hardcoded absolute home path --
+  // order-dependent, so it reads as a flake rather than a real bug. Trivial, mechanical, no
+  // architecture/security judgement involved: ADOPTED directly in this round (same commit as this
+  // decision), not deferred to a follow-up card.
+  'src/__tests__/fleet-helper-search-carries-the-label.test.ts':
+    "ADOPTED: added PYTHONDONTWRITEBYTECODE: '1' to the python3 execFileSync env (upstream fix for the seed-skills/ __pycache__ pollution flake). Trivial, applied directly, no follow-up card.",
+  // NEW CONFLICT 2026-09-25 (backend, card 123983f3, dashboard/src tesztek 1/2 of 8). Real shared
+  // history. Both hunks are cosmetic: the fork extracts the fixture object into a named const
+  // (`tokenPrune`/`TOKEN_PRUNE` in the sibling heartbeat-summary-truncation-safe.test.ts entry below)
+  // with different arbitrary literal values (lag_hours/oldest_age_days) than upstream's inline
+  // object literal -- grep-confirmed neither file asserts on those specific values, they are only
+  // passed through as a valid TokenPruneHealth-shaped fixture. No functional difference either way.
+  'src/__tests__/heartbeat-db-size.test.ts':
+    "KEEP fork -- named const extraction (`tokenPrune`) is cosmetic style only. NOT ADOPTABLE, the differing lag_hours/oldest_age_days literals are unasserted fixture data, not a functional difference.",
+  // Same pattern as src/__tests__/heartbeat-db-size.test.ts above (card 123983f3): fork's `TOKEN_PRUNE`
+  // named const vs upstream's inline literal, unasserted fixture values, six occurrences in this file.
+  'src/__tests__/heartbeat-summary-truncation-safe.test.ts':
+    "KEEP fork -- named const extraction (`TOKEN_PRUNE`) is cosmetic style only. NOT ADOPTABLE, same reasoning as src/__tests__/heartbeat-db-size.test.ts.",
+  // NEW CONFLICT 2026-09-25 (backend, card 123983f3, dashboard/src tesztek 1/2 of 8). No shared base
+  // (independently-added same-named file). Only diff: `JSON.parse(String(chunk))` (fork) vs
+  // `JSON.parse(chunk.toString())` (upstream) inside a mock response `end()`. Functionally identical
+  // for the Buffer/string chunk shapes this mock ever receives (guarded by `if (chunk)` first).
+  'src/__tests__/memories-search-has-a-floor.test.ts':
+    "KEEP fork -- `String(chunk)` vs `chunk.toString()` are functionally identical here (chunk truthiness already checked). NOT ADOPTABLE, no functional difference, adopting would only be churn.",
   // Card 2e634e5c, fourth file. A genuine two-way merge, not a wholesale pick either direction:
   // the fork owns Firecrawl namespace default-deny + FIRECRAWL_SCRAPE_ALLOWED_KEYS param-allowlist
   // (card 91c4a369); upstream owns the tier-based egressDecision({blocked,tier}) shape, agentType
@@ -1708,6 +1779,16 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/routes/agents.ts': '6460da896a9957294b5ef89e39c56a1261459570',
   'src/web/routes/marveen.ts': '56e36a5fc5dfa53ca0cf33e19cc264a3918169a5',
   'src/web/routes/overview.ts': '4354050c853e16c1f8ca72d30e59bc2a3ea027b8',
+  // Pinned against upstream's src/__tests__/agent-provider-env.test.ts (the fork's own file at
+  // this same relative path was renamed to provider-env-adoption.test.ts, card 123983f3).
+  'src/__tests__/provider-env-adoption.test.ts': 'f5392371591343fbfa160bb88f65ebcca2fd1fcf',
+  'src/__tests__/agent-tool-deny.test.ts': '2fc2bb6efe27090fd3de195af9b066018f46c87c',
+  'src/__tests__/api-messages-freshness.test.ts': '1a7c16690c0c6f90e7b189226afe9e16a4d4353b',
+  'src/__tests__/email-send-gate.test.ts': 'd3612d2f723cbd382f7bcd81de222ebc1342e08a',
+  'src/__tests__/fleet-helper-search-carries-the-label.test.ts': '27e2e678e110f3ad2c79fc3d98075508f03fa848',
+  'src/__tests__/heartbeat-db-size.test.ts': 'db39d97058e6f7d6a9998a021c79606d99acd588',
+  'src/__tests__/heartbeat-summary-truncation-safe.test.ts': '421a006551756ddd01d73223299e8760f3de077c',
+  'src/__tests__/memories-search-has-a-floor.test.ts': 'a8c0fca43ac21a0e2e62fc738ffad9b9b5dc1c9a',
   // ROUND 17 BLOB BUMPS, 2026-09-06 (card 26ab08a2's landing-block; upstream tip 14028011). Seven
   // pins went stale at once -- the fifth drift in one day. Three of them carry their reasoning in
   // the RULE above, because the increment lands on or beside the hunk the rule decides:
