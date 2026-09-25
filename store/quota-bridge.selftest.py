@@ -177,6 +177,67 @@ def main() -> int:
         # (mutation-verified). The guard stays for honest arithmetic; this suite does not claim to
         # prove it, because a case that passes either way proves nothing.
 
+    # --- _telegram_state_dir: TELEGRAM_STATE_DIR is trusted only under the marveen checkout
+    # (card 01dea2f0, Cybersec: this dir also gates access.json, the pairing allowlist) ------
+    with tempfile.TemporaryDirectory() as fake_marveen_parent:
+        fake_marveen = Path(fake_marveen_parent) / "marveen"
+        fake_marveen.mkdir()
+        old_marveen, old_env = m.MARVEEN, os.environ.get("TELEGRAM_STATE_DIR")
+        m.MARVEEN = str(fake_marveen)
+        try:
+            inside = fake_marveen / "some" / "nested" / "dir"
+            inside.mkdir(parents=True)
+            os.environ["TELEGRAM_STATE_DIR"] = str(inside)
+            if m._telegram_state_dir() == str(inside):
+                ok("a real subdirectory of the marveen checkout is trusted as-is")
+            else:
+                bad("a subdirectory of marveen should be trusted", m._telegram_state_dir())
+
+            os.environ["TELEGRAM_STATE_DIR"] = str(fake_marveen)
+            if m._telegram_state_dir() == str(fake_marveen):
+                ok("the marveen checkout root itself is trusted (exact-match edge)")
+            else:
+                bad("the marveen root itself should be trusted", m._telegram_state_dir())
+
+            outside = Path(fake_marveen_parent) / "elsewhere"
+            outside.mkdir()
+            os.environ["TELEGRAM_STATE_DIR"] = str(outside)
+            got = m._telegram_state_dir()
+            if got != str(outside):
+                ok("a directory outside the marveen checkout is ignored, not trusted")
+            else:
+                bad("a directory outside marveen must not be trusted", got)
+
+            # THE PREFIX-STRING TRAP: "marveen-evil" starts with "marveen" as a bare string,
+            # but is a SIBLING directory, not a subdirectory -- a naive .startswith(MARVEEN)
+            # would wrongly trust it. This is why the check requires the os.sep boundary.
+            sibling = Path(fake_marveen_parent) / (fake_marveen.name + "-evil")
+            sibling.mkdir()
+            os.environ["TELEGRAM_STATE_DIR"] = str(sibling)
+            got = m._telegram_state_dir()
+            if got != str(sibling):
+                ok("a sibling dir sharing the checkout name as a string prefix is rejected")
+            else:
+                bad("a same-prefix sibling directory must not be trusted", got)
+
+            # A symlink escaping the checkout must be caught by realpath, not the raw string.
+            escape_target = Path(fake_marveen_parent) / "outside-target"
+            escape_target.mkdir()
+            escape_link = fake_marveen / "escape-link"
+            escape_link.symlink_to(escape_target, target_is_directory=True)
+            os.environ["TELEGRAM_STATE_DIR"] = str(escape_link)
+            got = m._telegram_state_dir()
+            if got != str(escape_link):
+                ok("a symlink resolving outside the checkout is rejected, not trusted by its raw path")
+            else:
+                bad("a symlink escaping the checkout must not be trusted", got)
+        finally:
+            m.MARVEEN = old_marveen
+            if old_env is None:
+                os.environ.pop("TELEGRAM_STATE_DIR", None)
+            else:
+                os.environ["TELEGRAM_STATE_DIR"] = old_env
+
     print(f"\nselftest: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1
 
