@@ -31,6 +31,11 @@ const { draftReviewGuardVerdict, newestDraftAt, hasDraftReview, DRAFT_REVIEW_RX 
 const DRAFT_BODY =
   '[LOCAL-LLM DRAFT | dispatch-offload] Mechanikus reszek helyi (7B) draftja. DRAFT-ONLY: MikroB + a gate ujra-ellenorzi.'
 const draft = (at: number) => ({ author: 'local-llm', content: DRAFT_BODY, created_at: at })
+// The real shape store/offload-dispatch.sh's post_exhausted_notice() posts -- same author as a
+// draft, but there is no draft here to adjudicate (card e50b311f).
+const EXHAUSTION_BODY =
+  'INFO-ONLY [local-llm offload]: a helyi 7B 3 sikertelen (tranziens) kiserlet utan kimerult ezen a kartyan (pl. Ollama nem volt elerheto). A kartya emiatt NEM blokkolt -- a felelos agens a normal (online) uton viszi tovabb.'
+const exhaustion = (at: number) => ({ author: 'local-llm', content: EXHAUSTION_BODY, created_at: at })
 const review = (at: number, author = 'backend2', verdict = 'ELFOGADVA') => ({
   author,
   content: `Atneztem a draftot.\nDraft-Review: ${verdict}\nA tesztek zoldek.`,
@@ -98,6 +103,31 @@ describe('newestDraftAt', () => {
   it('picks the NEWEST draft, not the first one seen', () => {
     expect(newestDraftAt([draft(50), review(60), draft(70)])).toBe(70)
   })
+
+  // Card e50b311f (backend2's finding msg 2626): the exhaustion notice shares DRAFT_AUTHOR with a
+  // real draft, but there is nothing to adjudicate -- it must not count as one.
+  it('KNOWN-POSITIVE / NEGATIVE CONTROL: an exhaustion notice ALONE is null -- nothing to adjudicate', () => {
+    expect(newestDraftAt([exhaustion(10)])).toBe(null)
+  })
+
+  it('a REAL draft is still picked up when an exhaustion notice from an EARLIER attempt sits beside it', () => {
+    expect(newestDraftAt([exhaustion(10), draft(20)])).toBe(20)
+  })
+
+  it('an exhaustion notice NEWER than a real draft does not hide or replace the real draft\'s timestamp', () => {
+    expect(newestDraftAt([draft(10), exhaustion(20)])).toBe(10)
+  })
+
+  it('MUTATION-PROOF: the exhaustion marker must be at the START of the comment, not merely mentioned', () => {
+    const quoting = {
+      author: 'local-llm',
+      content: `Elozmeny: lasd a korabbi "INFO-ONLY [local-llm offload]:" jelzest.\n${DRAFT_BODY}`,
+      created_at: 10,
+    }
+    // A comment that MENTIONS the exhaustion prefix without being one (e.g. inside a real draft's
+    // own text) must still count as a draft -- the anchor is load-bearing, same as DRAFT_REVIEW_RX.
+    expect(newestDraftAt([quoting])).toBe(10)
+  })
 })
 
 describe('hasDraftReview -- author and freshness are both load-bearing', () => {
@@ -157,6 +187,20 @@ describe('draftReviewGuardVerdict', () => {
   it('stays out of the way on a card with no local-llm draft at all', () => {
     comments = [{ author: 'backend2', content: 'REVIEW: kesz.', created_at: 10 }]
     expect(draftReviewGuardVerdict('c1', 'waiting', false, 'backend2').blocked).toBe(false)
+  })
+
+  // Card e50b311f: an exhaustion notice used to be indistinguishable from a real draft (same
+  // author), forcing a "Draft-Review:" verdict on content that never existed -- measured live,
+  // MikroB and backend2 wrote different bogus verdicts (FELESLEGES / ELUTASITVA) for the identical
+  // case, both false statements about what happened.
+  it("THE POINT OF THE CARD: an exhaustion notice does NOT require a Draft-Review verdict", () => {
+    comments = [exhaustion(10)]
+    expect(draftReviewGuardVerdict('c1', 'waiting', false, 'backend2').blocked).toBe(false)
+  })
+
+  it('KNOWN-POSITIVE: a REAL draft posted AFTER an earlier exhaustion notice still requires review', () => {
+    comments = [exhaustion(10), draft(20)]
+    expect(draftReviewGuardVerdict('c1', 'waiting', false, 'backend2').blocked).toBe(true)
   })
 
   it('only guards the transition INTO waiting -- every other target is untouched', () => {
