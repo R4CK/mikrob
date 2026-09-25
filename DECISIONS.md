@@ -14182,3 +14182,49 @@ szándékosan a helyükön maradtak (nem törölve), hogy a rollback egy egyszer
 
 **Ki döntött:** MikroB (32dbac1e fázis, Peti szabály 2026-09-18/Telegram 8799) + backend3 (build,
 élő swap, rollback-teszt).
+
+## 2026-09-25 14:25 -- Klón-ügynökök skill-paritása: seed-normalizálás + drift-sync hiány-detektálás (kártya a6abb230)
+
+**Döntés:** Peti panasza (Telegram 8788, 2026-09-18) szerint a klónozott ügynökök eltérő skilleket
+használtak. MikroB diagnózisa a gyökér-okot a `seed-fleet-agents/<klón>` forrásokban találta: ezek
+maguk is elavultak/hiányosak voltak (backend seed 12/19, backend2 13/19, backend3 0/19 a család
+uniójához képest; fron-ted 14/20, fron-teddy 14/20; qa 11/17, qa2 12/17) -- egy ÚJ klón emiatt
+tartósan alulprovisionálva indulna, még ha a MÁR FUTÓ ügynökök élő könyvtára (gitignored,
+`agents/<name>/.claude/skills`) MikroB korábbi additív javításával most szinkronban is van. Két rész:
+
+1. **Seed-normalizálás (tartós fix):** a `seed-fleet-agents/backend`, `backend2` (létrehozva:
+   `backend3`, korábban egyáltalán nem létezett), `fron-ted`, `fron-teddy`, `qa`, `qa2` alá additívan
+   (soha felül nem írva, csak hozzáadva) bekerültek a család élő könyvtáraiból hiányzó skill-könyvtárak,
+   tartalommal együtt. Végállapot: backend/backend2/backend3 mind 19, fron-teddy 20 (pontosan az élő
+   unió), fron-ted 21 (20 + egy régi "impeccable" skill, ami MÁR NEM létezik egyik élő fron-ted/
+   fron-teddy könyvtárban sem -- szándékosan NEM törölve, a kártya csak hiányt kért pótolni, egy
+   esetlegesen elavult/deprecated bejegyzés törlése külön döntés lenne, kódminőségi 3. elv, sebészi
+   változtatás), qa/qa2 mind 17.
+2. **`store/agent-skill-drift-sync.sh` bővítése (a háló, hogy ez újra ne fordulhasson elő csendben):**
+   új `scan_missing_skills` átnézés, klón-családonként (backend<->backend2<->backend3, qa<->qa2,
+   fron-ted<->fron-teddy, explicit lista, ugyanaz mint a root CLAUDE.md-é) az ÉLŐ `agents/<name>/
+   .claude/skills` könyvtárak unióját számolja, és minden tagnál hiányzó skillt jelent; `--apply`
+   alatt additívan (soha felül nem írva meglévő könyvtárat) pótolja egy testvér másolatából, ugyanazzal
+   a fail-closed futó-ügynök-védelemmel mint a meglévő stale-szinkron (`_agent_running_state`). Új
+   verdikt-mezők: `missing=N`, `missing-skipped-running=N`, `missing-skipped-undetermined=N`, új
+   `reasons=` értékek: `missing-synced`, `missing-running-agent-skipped`,
+   `missing-undetermined-agent-skipped`. A `agent-skill-drift-sync-heartbeat` SKILL.md frissítve ezek
+   jelentésével (a kártya explicit kérte: "a heartbeat ekkor a hiányt is jelentené, nem csak a
+   divergenciát").
+
+**Miért:** a live-only fix (amit MikroB már megcsinált) egy fresh klónnál vagy re-seednél
+REGRESSZÁLNA -- a seed az egyetlen tartós forrás, mert az élő könyvtár gitignored. A drift-sync
+bővítés a jövőbeli, ugyanilyen csendes szétcsúszás elleni háló.
+
+**Zöld:** `bash -n` tiszta. A meglévő 35 selftest-eset (a `demo-skill` fixtúrákon) változatlanul zöld.
+Új selftest-blokk (PART 6) a `scan_missing_skills`-re: dry-run semmit nem ír, `--apply` byte-azonosan
+tölti a testvér-hiányokat, egy MÁR LÉTEZŐ (más tartalmú) skill-könyvtár érintetlen marad
+(additív-only garancia), az `--agent` szűrő nem szűkíti az uniót (csak a cél-tagot), a futó-ügynök
+guard ugyanúgy blokkolja a hiány-szinkront mint a stale-szinkront (kontroll: parkolt ügynök szinkronizál),
+egy nem-deklarált családba tartozó ügynök `missing=0`-t jelent. Megjegyzés: a teszt eredetileg
+`backend`/`backend2`/`backend3` fixtúra-neveket használt AGENT_SKILL_DRIFT_TEST_SESSIONS nélkül, és a
+VALÓDI flotta saját tmux-session-neveivel ütközött (ezek a nevek éppen a saját futó ügynökeim) --
+javítva: a sync-tesztek `AGENT_SKILL_DRIFT_TEST_SESSIONS=""`-t kényszerítenek determinisztikus
+parkolt-állapotra, a futó-ügynök-specifikus teszt külön, explicit session-névvel fut.
+
+**Ki döntött:** backend (self-advance, rule 6b -- 2 napnál régebbi kártya, MikroB diagnózisa alapján).

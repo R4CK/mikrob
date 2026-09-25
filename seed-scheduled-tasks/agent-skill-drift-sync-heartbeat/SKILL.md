@@ -7,6 +7,8 @@ Futtasd le: bash {{INSTALL_DIR}}/store/agent-skill-drift-sync.sh --apply --teleg
 
 A tool sajat biztonsagi logikaja garantalja, hogy soha nem irja felul csendben egy szandekosan elteroen (diverged) modositott elo skill-masolatot -- kizarolag a bizonyithatoan csak-elavult (stale, byte-azonos egy korabban kiadott verzioval) masolatokat szinkronizalja --apply alatt. Ezert biztonsagos itt kozvetlenul --apply-jal futtatni, nincs szukseg elozetes dry-run jovahagyasra.
 
+A script MASODIK ellenorzest is fut: klon-csaladon (backend<->backend2<->backend3, qa<->qa2, fron-ted<->fron-teddy) belul HIANYZO skilleket is keres, nem csak elavult tartalmat (kartya a6abb230, Peti panasz 2026-09-18 -- a gyoker-ok az volt, hogy a seed-fleet-agents/<klon> forrasok maguk is elavultak/hianyosak voltak). Ez is --apply alatt additivan potolja a hianyt (sosem ir felul meglevo konyvtart), ugyanazzal a futo-agent-fail-closed vedelemmel mint a stale-szinkron.
+
 ## A DONTEST A SCRIPT HOZZA, NE SZAMOLGASS
 
 A kimenet UTOLSO sora egy verdikt. **Kizarolag ezt nezd, ne a darabszamokat:**
@@ -26,5 +28,7 @@ A `reasons=` mezo mondja meg, mirol szol az uzenet. Ird meg roviden, ne masold b
 - `no-baseline` -- ez az elso futas az allapot-fajl ota. Egyszeri, EGY sorban emlitsd meg, ne reszletezd.
 - `baseline-unreadable` -- az allapot-fajl serult. A script szandekosan riaszt ilyenkor ahelyett hogy csendben "nincs alapvonal"-ra esne vissza: jelezd, mert ez azt jelenti, hogy egy valtozast eppen NEM tudtunk osszehasonlitani.
 - `no-agents-dir` -- a script SEMMIT nem vizsgalt meg. Ez a legkomolyabb eset: nem "tiszta", hanem "nem futott le rendesen". Jelezd hibakent.
+- `missing-synced` -- egy klon-csaladon beluli hianyzo skillt potolt egy testver masolatabol: a `missing set:` blokk sorolja fel az agent/skill parokat, azt is megmondja szinkronizalt-e vagy futo-agent miatt kimaradt. Soroljad fel roviden, ugyanugy mint a stale-synced esetet.
+- `missing-running-agent-skipped` / `missing-undetermined-agent-skipped` -- ugyanaz a fail-closed logika mint a `running-agent-skipped`/`undetermined-agent-skipped` eseten, csak a hiany-potlasra: a cel-agent fut (vagy nem allapithato meg), ezert a masolas kimaradt, a kovetkezo futas ujraprobalja. Emeld ki, ne intezkedj felette.
 
 Ne fuss le a fo {{MAIN_AGENT_ID}} session helyett kulon dispatch-csal, ez sajat onallo futtatas, nincs kanban-kartya-kotes, nem kell hozza inter-agent uzenet.

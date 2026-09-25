@@ -43,14 +43,31 @@
 #   agent-skill-drift-sync.sh --telegram       # compact summary only, for Telegram/heartbeat reporting
 #   agent-skill-drift-sync.sh selftest         # fixture-based checks against a throwaway git repo
 #
+# SECOND CHECK, same file (card a6abb230, Peti complaint 2026-09-18): clone-family MISSING skills.
+# The pass above answers "is this agent's copy of a CENTRALLY TRACKED skill stale/diverged" -- it says
+# nothing about an agent-specific skill (never in seed-skills/, e.g. backend's
+# shared-checkout-safe-commit) that one sibling in a clone family (backend<->backend2<->backend3,
+# qa<->qa2, fron-ted<->fron-teddy) has and another does not. MEASURED root cause of the complaint: the
+# seed-fleet-agents/<clone> sources a NEW clone is provisioned from had drifted stale themselves
+# (backend3's seed had 0 of 19 family skills) -- this second pass is the runtime backstop for the
+# family ever going out of sync again, the seed fix itself is a one-time normalization (not this
+# script's job). For each family, the union of skill directory names across its PRESENT live members
+# is the target; any present member missing one is reported, and under --apply the missing directory
+# is copied WHOLESALE from whichever sibling has it (first found, family list order) -- never
+# overwriting an existing directory, so this can only ever ADD a skill, never touch one already there.
+# Same running-agent fail-closed guard as the stale pass (_agent_running_state) applies: a live agent
+# may be reading its own skills dir at that instant, so a missing-skill sync into a RUNNING or
+# UNDETERMINED agent is skipped and retried next run, exactly like a stale sync is.
+#
 # EVERY RUN ENDS WITH A VERDICT LINE, and callers should key on it rather than on the counts
 # (card 222fdc5e):
 #   ALERT:no  (diverged set unchanged since <when>, N entries; stale=0, no concurrent-write skips)
 #   ALERT:yes reasons=<comma-list> diverged=N stale=N skipped-concurrent=N skipped-running=N
-#             skipped-undetermined=N
+#             skipped-undetermined=N missing=N
 # reasons: stale-synced | concurrent-write-skipped | running-agent-skipped |
 #          undetermined-agent-skipped | diverged-set-changed | no-baseline | baseline-unreadable |
-#          no-agents-dir
+#          no-agents-dir | missing-synced | missing-running-agent-skipped |
+#          missing-undetermined-agent-skipped
 #
 # `skipped-running` is the count of stale copies left alone because their agent was CONFIRMED
 # running (card e667c8bd). `skipped-undetermined` (card 75b90343 part 2) is a DIFFERENT count: tmux
@@ -253,9 +270,104 @@ _agent_running_state() {
   fi
 }
 
+# --- clone-family MISSING-skill detection (card a6abb230) -------------------------------------
+# Known sibling groups. Not derived from anything live (no naming convention reliably implies
+# "same family" -- qa2 does, cybersec2 would not), so this is a short, explicit list, same spirit as
+# the root CLAUDE.md's own hardcoded "ma: backend<->backend2, qa<->qa2, fron-ted<->fron-teddy" note.
+# An agent not listed here returns nothing and is simply never part of a missing-skill comparison.
+_family_members() {
+  case "$1" in
+    backend|backend2|backend3) echo "backend backend2 backend3" ;;
+    qa|qa2)                    echo "qa qa2" ;;
+    fron-ted|fron-teddy)       echo "fron-ted fron-teddy" ;;
+    *) echo "" ;;
+  esac
+}
+
+scan_missing_skills() {
+  MISSING=0; MISSING_SYNCED=0; MISSING_SKIPPED_RUNNING=0; MISSING_SKIPPED_UNDETERMINED=0
+  MISSING_LIST=""
+  [ -d "$AGENTS_DIR" ] || return 0
+
+  local seen_families=","
+  for adir in "$AGENTS_DIR"/*/; do
+    [ -d "$adir" ] || continue
+    local agent members
+    agent="$(basename "${adir%/}")"
+    members="$(_family_members "$agent")"
+    [ -n "$members" ] || continue
+    # Process each family exactly once, keyed by its member list (identical for every member).
+    case "$seen_families" in *",${members},"*) continue ;; esac
+    seen_families="${seen_families}${members},"
+
+    # Union of skill dirnames across whichever members actually exist on this box. Deliberately NOT
+    # filtered by --agent/--skill here: those narrow which member gets REPORTED/synced below, not
+    # which siblings are allowed to contribute to the comparison -- an --agent backend3 run must
+    # still see what backend/backend2 have, or it would never find anything missing.
+    local union="" m sdir s
+    for m in $members; do
+      sdir="$AGENTS_DIR/$m/.claude/skills"
+      [ -d "$sdir" ] || continue
+      for s in "$sdir"/*/; do
+        [ -d "$s" ] || continue
+        s="$(basename "${s%/}")"
+        _wanted_skill "$s" || continue
+        case ",$union," in *",$s,"*) ;; *) union="${union}${union:+,}$s" ;; esac
+      done
+    done
+    [ -n "$union" ] || continue
+
+    local skill target_dir src_dir agent_state union_arr
+    IFS=',' read -r -a union_arr <<<"$union"
+    for m in $members; do
+      _wanted_agent "$m" || continue
+      [ -d "$AGENTS_DIR/$m/.claude" ] || continue   # agent not provisioned on this box at all
+      for skill in "${union_arr[@]}"; do
+        target_dir="$AGENTS_DIR/$m/.claude/skills/$skill"
+        [ -e "$target_dir" ] && continue
+        # Find a sibling (family order) that actually has it, to copy from.
+        src_dir=""
+        for s in $members; do
+          [ -d "$AGENTS_DIR/$s/.claude/skills/$skill" ] && { src_dir="$AGENTS_DIR/$s/.claude/skills/$skill"; break; }
+        done
+        [ -n "$src_dir" ] || continue
+
+        MISSING=$((MISSING+1))
+
+        if [ "$APPLY" -eq 1 ]; then
+          agent_state="$(_agent_running_state "$m")"
+          if [ "$agent_state" = "running" ]; then
+            MISSING_SKIPPED_RUNNING=$((MISSING_SKIPPED_RUNNING+1))
+            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- SKIPPED, ${m} is RUNNING\n"
+            continue
+          elif [ "$agent_state" = "undetermined" ]; then
+            MISSING_SKIPPED_UNDETERMINED=$((MISSING_SKIPPED_UNDETERMINED+1))
+            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- SKIPPED, could not determine whether ${m} is running\n"
+            continue
+          fi
+          # Re-check right before writing: additive-only, so the worst a race can do is a
+          # harmless second copy landing on an already-created directory -- refuse that instead.
+          if [ -e "$target_dir" ]; then
+            continue
+          fi
+          if cp -r "$src_dir" "$target_dir" 2>/dev/null; then
+            MISSING_SYNCED=$((MISSING_SYNCED+1))
+            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- copied from a sibling -> synced\n"
+          else
+            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- copy from sibling FAILED (left untouched)\n"
+          fi
+        else
+          MISSING_LIST="${MISSING_LIST}${m}/${skill} -- present in a sibling, absent here (would-sync, dry-run)\n"
+        fi
+      done
+    done
+  done
+}
+
 run_scan() {
   CUR=0; STALE=0; DIVERGED=0; SKIPPED=0; SKIPPED_CONCURRENT=0; SKIPPED_RUNNING=0; SKIPPED_UNDETERMINED=0
   STALE_LIST=""; DIVERGED_LIST=""
+  MISSING=0; MISSING_SYNCED=0; MISSING_SKIPPED_RUNNING=0; MISSING_SKIPPED_UNDETERMINED=0; MISSING_LIST=""
   _load_running_sessions
 
   # An ALERT line on this path too. Returning early without a verdict would leave the heartbeat --
@@ -361,8 +473,10 @@ run_scan() {
     fi
   done
 
+  scan_missing_skills
+
   if [ "$TELEGRAM" -eq 1 ]; then
-    echo "Agent skill drift: current=${CUR} stale=${STALE} diverged=${DIVERGED} skipped(no-canonical)=${SKIPPED}"
+    echo "Agent skill drift: current=${CUR} stale=${STALE} diverged=${DIVERGED} skipped(no-canonical)=${SKIPPED} missing=${MISSING}"
     if [ "$STALE" -gt 0 ]; then
       echo "Stale (untouched, $([ "$APPLY" -eq 1 ] && echo synced || echo would-sync)):"
       printf '%b' "$STALE_LIST" | sed 's/^/  /'
@@ -371,9 +485,17 @@ run_scan() {
       echo "Diverged (flagged, NOT touched -- needs manual review):"
       printf '%b' "$DIVERGED_LIST" | sed 's/^/  /'
     fi
+    if [ "$MISSING" -gt 0 ]; then
+      echo "Missing (clone-family sibling has it, this member does not):"
+      printf '%b' "$MISSING_LIST" | sed 's/^/  /'
+    fi
   else
+    if [ "$MISSING" -gt 0 ]; then
+      echo "== clone-family missing skills =="
+      printf '%b' "$MISSING_LIST" | sed 's/^/  MISSING   /'
+    fi
     echo "---"
-    echo "SUMMARY: current=${CUR} stale=${STALE}$([ "$APPLY" -eq 1 ] && echo '(synced)' || echo '(would-sync, dry-run)') diverged=${DIVERGED}(flagged-only) skipped=${SKIPPED}(no-canonical)"
+    echo "SUMMARY: current=${CUR} stale=${STALE}$([ "$APPLY" -eq 1 ] && echo '(synced)' || echo '(would-sync, dry-run)') diverged=${DIVERGED}(flagged-only) skipped=${SKIPPED}(no-canonical) missing=${MISSING}$([ "$APPLY" -eq 1 ] && echo '(synced-where-possible)' || echo '(would-sync, dry-run)')"
   fi
 
   emit_alert_verdict
@@ -427,6 +549,12 @@ emit_alert_verdict() {
   # but they are different findings and must not collapse into one label.
   [ "$SKIPPED_RUNNING" -gt 0 ] && reasons="${reasons}running-agent-skipped,"
   [ "$SKIPPED_UNDETERMINED" -gt 0 ] && reasons="${reasons}undetermined-agent-skipped,"
+  # Same convention as stale-synced above (including the pre-existing imprecision: this fires on a
+  # dry run too, not only when --apply actually wrote something) -- a clone-family gap is exactly as
+  # newsworthy as a stale copy, and giving it its own reason keeps it distinguishable in the verdict.
+  [ "$MISSING" -gt 0 ] && reasons="${reasons}missing-synced,"
+  [ "$MISSING_SKIPPED_RUNNING" -gt 0 ] && reasons="${reasons}missing-running-agent-skipped,"
+  [ "$MISSING_SKIPPED_UNDETERMINED" -gt 0 ] && reasons="${reasons}missing-undetermined-agent-skipped,"
 
   if [ ! -f "$STATE" ]; then
     reasons="${reasons}no-baseline,"
@@ -446,11 +574,12 @@ emit_alert_verdict() {
   fi
 
   if [ -n "$reasons" ]; then
-    echo "ALERT:yes reasons=${reasons%,} diverged=${DIVERGED} stale=${STALE} skipped-concurrent=${SKIPPED_CONCURRENT} skipped-running=${SKIPPED_RUNNING} skipped-undetermined=${SKIPPED_UNDETERMINED}"
+    echo "ALERT:yes reasons=${reasons%,} diverged=${DIVERGED} stale=${STALE} skipped-concurrent=${SKIPPED_CONCURRENT} skipped-running=${SKIPPED_RUNNING} skipped-undetermined=${SKIPPED_UNDETERMINED} missing=${MISSING} missing-skipped-running=${MISSING_SKIPPED_RUNNING} missing-skipped-undetermined=${MISSING_SKIPPED_UNDETERMINED}"
     [ -n "$prev_list" ] && [ "$prev_list" != "$diverged_now" ] && echo "  diverged set was: ${prev_list:-(empty)}"
     [ -n "$reasons" ] && echo "  diverged set now: ${diverged_now:-(empty)}"
+    [ "$MISSING" -gt 0 ] && { echo "  missing set:"; printf '%b' "$MISSING_LIST" | sed '/^$/d;s/^/    /'; }
   else
-    echo "ALERT:no (diverged set unchanged since $(date -d "@$prev_changed" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$prev_changed"), ${DIVERGED} entr$([ "$DIVERGED" -eq 1 ] && echo y || echo ies); stale=0, no concurrent-write skips)"
+    echo "ALERT:no (diverged set unchanged since $(date -d "@$prev_changed" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$prev_changed"), ${DIVERGED} entr$([ "$DIVERGED" -eq 1 ] && echo y || echo ies); stale=0, missing=0, no concurrent-write skips)"
   fi
 
   # Only a real run moves the baseline -- see the comment above.
@@ -801,6 +930,101 @@ agent-someone-else")"
   echo "$out11" | grep -q 'ALERT:yes reasons=no-agents-dir' \
     && echo "  ok   a missing agents dir alerts instead of returning quietly" \
     || { echo "  FAIL scanning nothing passed as routine:"; echo "$out11"; fail=1; }
+
+  # --- PART 6: clone-family MISSING-skill detection (card a6abb230) -----------------------------
+  # Own isolated root: _family_members only recognizes the real fleet names (backend/backend2/
+  # backend3, qa/qa2, fron-ted/fron-teddy), so these fixtures cannot collide with the demo-skill
+  # cases above, but a separate root keeps the two concerns visibly apart anyway.
+  mkdir -p "$tmp/family-root/agents/backend/.claude/skills/skillA"
+  mkdir -p "$tmp/family-root/agents/backend2/.claude/skills/skillB"
+  mkdir -p "$tmp/family-root/agents/backend3/.claude/skills"
+  printf 'SKILL A CONTENT\n' > "$tmp/family-root/agents/backend/.claude/skills/skillA/SKILL.md"
+  printf 'SKILL B CONTENT\n' > "$tmp/family-root/agents/backend2/.claude/skills/skillB/SKILL.md"
+  # backend2 ALREADY has its own skillC (independently authored, different content from backend's) --
+  # this must NEVER be touched: existence alone, even with different content, means "not missing".
+  mkdir -p "$tmp/family-root/agents/backend/.claude/skills/skillC"
+  mkdir -p "$tmp/family-root/agents/backend2/.claude/skills/skillC"
+  printf 'BACKEND OWN skillC\n' > "$tmp/family-root/agents/backend/.claude/skills/skillC/SKILL.md"
+  printf 'BACKEND2 OWN skillC (independently authored)\n' > "$tmp/family-root/agents/backend2/.claude/skills/skillC/SKILL.md"
+
+  # Forces the running-agent guard to see nothing running (deterministic parked state), so these
+  # tests exercise the sync itself, not the guard -- the guard gets its own dedicated case below.
+  # Without this, "backend"/"backend2"/"backend3" are also this FLEET's own real tmux session names,
+  # and a run on a live box would find them genuinely running and skip every sync (measured: it did).
+  fam_run() { AGENT_SKILL_DRIFT_ROOT="$tmp/family-root" AGENT_SKILL_DRIFT_TEST_SESSIONS="" \
+              bash "${BASH_SOURCE[0]}" "$@"; }
+
+  # Dry run: report only, nothing written.
+  outF1="$(fam_run --telegram)"
+  echo "$outF1" | grep -q 'missing=' && ! echo "$outF1" | grep -qE 'missing=0[^0-9]' \
+    && echo "  ok   dry-run reports a nonzero missing count" \
+    || { echo "  FAIL dry-run did not report missing skills:"; echo "$outF1"; fail=1; }
+  [ ! -e "$tmp/family-root/agents/backend2/.claude/skills/skillA" ] \
+    && [ ! -e "$tmp/family-root/agents/backend/.claude/skills/skillB" ] \
+    && [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillA" ] \
+    && echo "  ok   dry-run created nothing" \
+    || { echo "  FAIL dry-run wrote a skill directory"; fail=1; }
+
+  # --apply: a sibling's skill is copied wholesale into every member missing it, byte-for-byte.
+  fam_run --apply >/dev/null
+  if [ "$(cat "$tmp/family-root/agents/backend2/.claude/skills/skillA/SKILL.md" 2>/dev/null)" = "SKILL A CONTENT" ] \
+     && [ "$(cat "$tmp/family-root/agents/backend/.claude/skills/skillB/SKILL.md" 2>/dev/null)" = "SKILL B CONTENT" ] \
+     && [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillA/SKILL.md" 2>/dev/null)" = "SKILL A CONTENT" ] \
+     && [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillB/SKILL.md" 2>/dev/null)" = "SKILL B CONTENT" ]; then
+    echo "  ok   --apply filled every member's gap from a sibling, content byte-identical"
+  else
+    echo "  FAIL --apply did not fill the clone-family gaps correctly"; fail=1
+  fi
+
+  # The two independently-authored skillC copies must survive UNTOUCHED -- this is the guarantee
+  # that makes the whole feature additive-only: existing content is never a sync target.
+  if [ "$(cat "$tmp/family-root/agents/backend/.claude/skills/skillC/SKILL.md")" = "BACKEND OWN skillC" ] \
+     && [ "$(cat "$tmp/family-root/agents/backend2/.claude/skills/skillC/SKILL.md")" = "BACKEND2 OWN skillC (independently authored)" ]; then
+    echo "  ok   pre-existing skillC on both siblings stayed byte-untouched (additive-only, never overwrites)"
+  else
+    echo "  FAIL an existing skill directory was overwritten -- SAFETY VIOLATION"; fail=1
+  fi
+
+  # --agent filter narrows which member is SYNCED, but the union must still be computed from ALL
+  # siblings -- otherwise a --agent backend3 run could never see what backend/backend2 have.
+  rm -rf "$tmp/family-root/agents/backend3/.claude/skills/skillA" "$tmp/family-root/agents/backend3/.claude/skills/skillB"
+  outF2="$(fam_run --apply --agent backend3 --telegram)"
+  if [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillA/SKILL.md" 2>/dev/null)" = "SKILL A CONTENT" ]; then
+    echo "  ok   --agent backend3 still fills its gap from a sibling (union not narrowed by the filter)"
+  else
+    echo "  FAIL --agent filter starved the union -- backend3 was not synced"; fail=1
+  fi
+
+  # Running-agent guard applies to missing-sync exactly like it applies to stale-sync: a member
+  # confirmed RUNNING must be skipped, and the report must say so and carry it as a reason.
+  rm -rf "$tmp/family-root/agents/backend3/.claude/skills/skillA"
+  outF3="$(AGENT_SKILL_DRIFT_ROOT="$tmp/family-root" AGENT_SKILL_DRIFT_TEST_SESSIONS="agent-backend3" \
+           bash "${BASH_SOURCE[0]}" --apply --agent backend3)"
+  [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillA" ] \
+    && echo "  ok   a RUNNING member's missing-skill sync is skipped, file stays absent" \
+    || { echo "  FAIL a running member's tree was written to"; fail=1; }
+  echo "$outF3" | grep -q 'missing-skipped-running=1' \
+    && echo "  ok   the verdict line carries missing-skipped-running=1" \
+    || { echo "  FAIL missing-skipped-running missing from the verdict:"; echo "$outF3"; fail=1; }
+  echo "$outF3" | grep -q 'reasons=.*missing-running-agent-skipped' \
+    && echo "  ok   missing-running-agent-skipped is its own reason" \
+    || { echo "  FAIL missing-running-agent-skipped is not among the reasons:"; echo "$outF3"; fail=1; }
+
+  # CONTROL: the same fixture, parked -- must still sync. Without this, a guard that refuses every
+  # write would pass the RUNNING assertions above for the wrong reason.
+  outF4="$(AGENT_SKILL_DRIFT_ROOT="$tmp/family-root" AGENT_SKILL_DRIFT_TEST_SESSIONS="agent-someone-else" \
+           bash "${BASH_SOURCE[0]}" --apply --agent backend3)"
+  [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillA/SKILL.md" 2>/dev/null)" = "SKILL A CONTENT" ] \
+    && echo "  ok   CONTROL: a PARKED member is still synced -- the guard is not a blanket refusal" \
+    || { echo "  FAIL a parked member was not synced:"; echo "$outF4"; fail=1; }
+
+  # An agent outside every known family (e.g. one of the demo fixtures above) contributes nothing
+  # and is never flagged -- the feature must stay silent where no family is declared.
+  outF5="$(AGENT_SKILL_DRIFT_ROOT="$tmp/root" AGENT_SKILL_DRIFT_STATE="$tmp/no-family-state.json" \
+           bash "${BASH_SOURCE[0]}" --telegram --agent agentA)"
+  echo "$outF5" | grep -qE 'missing=0([^0-9]|$)' \
+    && echo "  ok   an agent outside every declared family reports missing=0" \
+    || { echo "  FAIL an undeclared-family agent was scanned for missing skills:"; echo "$outF5"; fail=1; }
 
   # Non-vacuity on the fixtures themselves: every alert case above ran against the throwaway root
   # and the throwaway state path, so none of them can have touched the live install's state file.
