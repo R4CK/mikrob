@@ -15059,3 +15059,67 @@ igeny nelkul).
 **Ki dontott:** backend (a 6 fajl felulvizsgalata + ACKNOWLEDGED_CONFLICTS/ACKNOWLEDGED_UPSTREAM_BLOBS
 frissitese + 3 kovetkezo-kartya nyitasa). Gate: QA + Cybersec (biztonsag-relevans terulet, MikroB
 eredeti kartya-kijelolese szerint).
+
+## 2026-09-25 -- 3669d930 (b5b7eb6b gyerek, 5/10, dashboard/src web/routes -- bizalmi hatar): 6/6 fajl dontve
+
+**Dontes:** a `node store/fork-upstream-drift-watch.mjs --report` altal jelzett 6 fajl mindegyikere
+dontes szuletett a `src/fork-upstream/acknowledged-conflicts.ts`-ben (policy/dontes-rekord a
+KOVETKEZO valodi upstream merge-hez).
+
+1. **src/web/routes/agents.ts** (stale pin): regi blob 44349c36..15 -> uj blob 6460da89..70
+   (+393 sor, az egyik legnagyobb egyszeri novekmeny ezen a fajlon). A rogzitett konfliktus-pont
+   (stopAgentProcess / MiniMax-tiltas / /api/models/available) erintetlen. 4 uj kepesseg NEM
+   adoptalva: PICKERCLIKAPU923 (CLI-verzio-fuggo modell-inditasi kapu), customProvider wiring, egy
+   persona-write-guard (PERSONANOCLOBBER923), es egy VALODI BUGFIX a model-suggest jelekben
+   (contextAvgPerCallMap/kanbanLoadMap -- a regi kod totalInput-ot nezte a teljes kontextus helyett,
+   ~2.9 token/hivast mutatva ~354k helyett, es archived_at IS NULL-t status<>'done' helyett,
+   felduzzasztott aktiv-kartya-szammal). Kovetkezmeny: kartya 6b10a6b8 (NORMAL).
+
+2. **src/web/routes/kanban.ts** (stale pin): regi blob 83ab8067..5c -> uj blob a52b288b..21
+   (+102/-13). A dispatch-text/resolveKanbanDispatch/reportUndeliveredDispatch/self-advance/
+   /blockers dontesi pontok mind erintetlenek. 5 uj kepesseg NEM adoptalva: includeArchived +
+   ismeretlen-parameter 400, uj GET /api/kanban/stuck vegpont (KANBANSTUCKURES916), agent=/assignee=
+   alias+validacio, parentWouldCycle (409 korkorossegre a szulo-lancon), automated comment flag.
+   Kovetkezmeny: kartya 5aaf7209 (NORMAL).
+
+3. **src/web/routes/memories.ts** (stale pin, csak pin-frissites): regi blob b4f97117..96 -> uj
+   blob c25e5264..71. A rogzitett union (max_chars + offset pagination) erintetlen. Az upstream
+   diffben latszo X-Memory-Search fejlec/strict=1, GET /api/memories/:id, updated_by es
+   MEMORY_IMPORT_CATEGORIZE_MODEL MIND mar jelen van a fork elo fajljaban (korabbi, kulon kort
+   kepzo adoptalas) -- grep-ellenorizve, nincs res, nincs kovetkezmeny-kartya.
+
+4. **src/web/routes/messages.ts** (stale pin, csak pin-frissites): regi blob b0160f69..af -> uj
+   blob b3b4b4d5..ea. Mindket rogzitett hunk (GET-handler komment, notify-mezo/try-catch-beagyazas)
+   erintetlen. Az upstream SYSTEM_DIRECTIVE_SENDER-tiltas, VOICE_CHANNEL_AGENT_ID device-key-kapu es
+   uzenet-frissesseg-jelzes (attachFreshness) mind mar jelen van a fork elo fajljaban, sajat nevezek
+   alatt (isReservedSenderId, VOICE_CHANNEL_AGENT_ID, attachFreshness) -- parhuzamos implementacio,
+   nincs res.
+
+5. **src/web/routes/marveen.ts** (UJ dontes): a fork sajat active-model.ts-e mar tamogat egy
+   opcionalis configDir parametert, de a hivo (ez a fajl) nem adja at. Upstream configDirFor(
+   MAIN_AGENT_ID)-t vezet be egy uj main-transcript-root.js modulbol, ami a channels-session sajat
+   CLAUDE_CONFIG_DIR-jet oldja fel a helyes transcript-gyokerhez (megjelenitesi hiba javitasa: rossz
+   modell-nev mutatasa egy elavult transcriptbol). NEM adoptalva ebben a korben (uj modul kell hozza
+   elobb). Kovetkezmeny: kartya fd8ae23f (NORMAL).
+
+6. **src/web/routes/overview.ts** (UJ dontes): upstream readFableSnapshot + DEFAULT_FABLE_MAX_AGE_SEC-et
+   ad a quota.js importokhoz -- a fork sajat quota-snapshot.ts-eben nincs readFableSnapshot, tehat a
+   mar elerheto Fable-modell (claude-fable-5-1, lasd 1. pont) kvota-kovetese teljesen hianyzik. NEM
+   adoptalva ebben a korben (cross-file, quota-snapshot.ts bovitese is kell). Kovetkezmeny: ugyanaz a
+   kartya fd8ae23f, egyutt az 5. ponttal.
+
+**Uj kovetkezmeny-kartyak (mind planned/backend/MikroB projekt, @backend label):** 6b10a6b8 (NORMAL,
+agents.ts 4 kepesseg), 5aaf7209 (NORMAL, kanban.ts 5 kepesseg), fd8ae23f (NORMAL, marveen.ts+
+overview.ts 2 kepesseg). Dedup-ellenorizve mindharomra kulcsszo szerint, nincs meglevo kartya.
+
+**Ellenorzes:** `tsc --noEmit` tiszta (2x). `fork-upstream-conflict-guard.test.ts` +
+`fork-upstream-drift-check.test.ts` 57/57 zold (2x) -- egy elso menet 1 hibat adott ("every
+recorded refusal is watched by an anchor", agents.ts VALUE szoveg a `/NOT ADOPTED/i` regexre
+illeszkedett es nem volt hozza ACKNOWLEDGED_FORK_ANCHORS bejegyzes), javitva "Not adopted" ->
+"Not adoptable" atfogalmazassal (a szoveg jelentese nem valtozott, csak a horgony-kovetelmenyt
+kivalto szo szerinti minta), masodik menetben mar 57/57. Teljes fleet-test a Gate-SHA-n:
+814/814 fajl, 19524/19625 teszt zold (101 skip).
+
+**Ki dontott:** backend (a 6 fajl felulvizsgalata + ACKNOWLEDGED_CONFLICTS/ACKNOWLEDGED_UPSTREAM_BLOBS
+frissitese + 3 kovetkezo-kartya nyitasa). Gate: QA + Cybersec (biztonsag-relevans terulet, MikroB
+eredeti kartya-kijelolese szerint).
