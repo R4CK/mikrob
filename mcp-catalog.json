@@ -23,13 +23,13 @@
     "category": "productivity",
     "icon": "📧",
     "command": "npx",
-    "args": ["-y", "@artymclabin/gmail-mcp"],
+    "args": ["-y", "gmail-mcp-server"],
     "env": {},
     "authType": "oauth",
     "authNote": "Google Cloud OAuth kliens kell hozzá (client ID + secret). UGYANAZ az OAuth-app használható a Naptár összekötőhöz is.",
     "infoUrl": "https://github.com/ArtyMcLabin/Gmail-MCP-Server",
-    "verifiedAt": "2026-09-18",
-    "verifiedNote": "Azonossag ellenorizve (nem csak letezes): npm view @artymclabin/gmail-mcp -> repository.url = github.com/ArtyMcLabin/Gmail-MCP-Server, egyezik az infoUrl-lel; maintainer artymclabin; v1.2.3, 2026-07-10; nincs postinstall. KORABBAN a bejegyzes a gmail-mcp-server csomagra mutatott, ami MAS: nincs repository.url, nincs homepage, maintainer uhbarp-ayis, utolso frissites 2025-09-29, es van benne postinstall (node install.js). A regi verifiedNote csak a LETEZEST igazolta, az AZONOSSAGOT nem."
+    "verifiedAt": "2026-08-27",
+    "verifiedNote": "npm-csomag ellenőrizve: gmail-mcp-server v1.0.30 létezik."
   },
   {
     "id": "google-calendar",
@@ -161,13 +161,13 @@
     "category": "ai",
     "icon": "🔊",
     "command": "uvx",
-    "args": ["elevenlabs-mcp"],
+    "args": ["elevenlabs-mcp==0.12.2"],
     "env": {"ELEVENLABS_API_KEY": ""},
     "authType": "apikey",
     "authNote": "API kulcs: https://elevenlabs.io - Settings -> API Keys. ELOFELTETEL: ez a szerver Python-alapu, a futtatasahoz `uv` kell (https://docs.astral.sh/uv/). A Marveen telepitoje NEM telepiti fel; ha hianyzik, a connector inditasa \"uvx: command not found\" hibaval all meg.",
     "infoUrl": "https://github.com/elevenlabs/elevenlabs-mcp",
-    "verifiedAt": "2026-09-19",
-    "verifiedNote": "JAVITVA: a korabbi `npx -y elevenlabs-mcp` NEM LETEZO csomagra mutatott. npm view elevenlabs-mcp -> E404, \"Unpublished on 2026-03-08\" (pozitiv kontroll: a tobbi katalogus-csomagra ugyanez a hivas ad adatot). Tehat minden ElevenLabs-telepites elbukott, es egy scope nelkuli, visszavont nev allt egy `npx -y` mogott. A HIVATALOS terjesztes PyPI, nem npm: elevenlabs-mcp 0.12.2 (pip3 index versions, pozitiv es negativ kontrollal). AZONOSSAG a wheel METADATA-jabol, helyben kiolvasva (letoltes --only-binary, tehat kodfuttatas nelkul): Author-email mind @elevenlabs.io (Jacek Duszenko, Paul Asjes, Louis Jordan, Luke Harries), license \"Copyright (c) 2025 Eleven Labs Inc.\", entry point elevenlabs-mcp = elevenlabs_mcp.server:main. Egyezik az infoUrl szerinti elevenlabs/elevenlabs-mcp repoval. Telepiteskor futo script NINCS: a wheel telepitese nem futtat kodot, ellentetben egy npm postinstall-lal. Npm-oldalon nincs hivatalos alternativa: @elevenlabs/mcp, @elevenlabs/elevenlabs-mcp, @elevenlabs/mcp-server, elevenlabs-mcp-server mind E404, es az @elevenlabs scope letezik ugyan (cli, client, react, types), de MCP-szervert nem tartalmaz."
+    "verifiedAt": "2026-09-25",
+    "verifiedNote": "JAVITVA: a korabbi `npx -y elevenlabs-mcp` NEM LETEZO csomagra mutatott. npm view elevenlabs-mcp -> E404, \"Unpublished on 2026-03-08\" (pozitiv kontroll: a tobbi katalogus-csomagra ugyanez a hivas ad adatot). Tehat minden ElevenLabs-telepites elbukott, es egy scope nelkuli, visszavont nev allt egy `npx -y` mogott. A HIVATALOS terjesztes PyPI, nem npm: elevenlabs-mcp 0.12.2 (pip3 index versions, pozitiv es negativ kontrollal). AZONOSSAG a wheel METADATA-jabol, helyben kiolvasva (letoltes --only-binary, tehat kodfuttatas nelkul): Author-email mind @elevenlabs.io (Jacek Duszenko, Paul Asjes, Louis Jordan, Luke Harries), license \"Copyright (c) 2025 Eleven Labs Inc.\", entry point elevenlabs-mcp = elevenlabs_mcp.server:main. Egyezik az infoUrl szerinti elevenlabs/elevenlabs-mcp repoval. Telepiteskor futo script NINCS: a wheel telepitese nem futtat kodot, ellentetben egy npm postinstall-lal. Npm-oldalon nincs hivatalos alternativa: @elevenlabs/mcp, @elevenlabs/elevenlabs-mcp, @elevenlabs/mcp-server, elevenlabs-mcp-server mind E404, es az @elevenlabs scope letezik ugyan (cli, client, react, types), de MCP-szervert nem tartalmaz. UTOKOR 2026-09-25 (Cybersec F2, kartya c2aeefa5): verzio-pin hozzaadva (elevenlabs-mcp==0.12.2) -- pin nelkul `uvx elevenlabs-mcp` a maintainer barmely jovobeli kiadasat futtatna az ELEVENLABS_API_KEY-jel egy esetleges fiok-atvetel utan is; a verifiedNote csak a 0.12.2-t igazolta, a telepites viszont a mindenkori legujabbat huzta volna."
   },
   {
     "id": "fireflies",
