@@ -13944,3 +13944,87 @@ modositani a skill idozitesi szamait.
 
 **Ki dontott:** MikroB (plan-grilling verdikt, komment 6007), backend2 (implementacio + a
 `--context`/routeTask biztonsagi res feltarasa es javitasa + a negy-kartya hatokor-szukites).
+
+## 2026-09-25 -- 08eb6402 -- Two-phase Suite-SHA evidence gate for mopsion landings (prepare -> suite -> record, machine-written, tree-hash matched, off/warn/enforce)
+
+**Döntés.** `mopsion-land.sh` a push előtt megkérdezi, van-e a merge-eredmény TREE HASH-ére
+(`git rev-parse HEAD^{tree}`, nem a sha-ra) egy MÁR MEGLÉVŐ, gépileg írt teljes-suite bizonyíték.
+Egyezés esetén mehet a push; hiány/eltérés esetén az `off`/`warn`/`enforce` kapcsoló dönt
+(`store/mopsion-suite-evidence-mode.json`, alapértelmezés `warn`, `enforce`-ra váltás MikroB saját,
+későbbi döntése a mért `warn`-fázis alapján -- ez a script sosem kapcsol át magától). A bizonyíték
+KÜLÖN, kártyánként hívható lépésben keletkezik (`store/mopsion-preland.sh`), NEM a landolás
+pillanatában, és a teljes suite-ot maga a landoló SOSEM futtatja újra.
+
+**Ez a MÁSODIK, MikroB által korrigált verzió.** Az első próbálkozásom (2026-09-24 este, ugyanezen a
+kártyán) egy kézzel írt `Suite-SHA: <sha> <eredmény>` verdikt-sort és fájl-tartalom-diffet
+(gate-closure-check.py `_content_on_branch`) használt volna -- MikroB PÁRHUZAMOSAN futó,
+saját plan-grillingje (kártya-komment 6011 + üzenet 3736, mért landolási ütem-adatokkal alátámasztva)
+ezt ELUTASÍTOTTA, MIELŐTT landolt volna: (1) a bizonyíték legyen GÉPI, ne kézi komment (a gate-
+promptokhoz nyúlás elkerülése); (2) az egyezés a merge-commit FA-HASH-én dőljön el, ne fájl-szintű
+tartalom-diffen; (3) a bizonyíték a MERGE-EREDMÉNYRE szóljon (kétfázisú: prepare -> suite ->
+fast-forward), ne a pre-merge gate-elt shára; (4) a kapcsoló legyen off/warn/enforce, alapból warn,
+legalább 48 órán át mérve, nem puszta be/ki. Az első verzió commitja (bbea7ff1) SOHA nem landolt --
+a landolás FUTÁS KÖZBEN lett leállítva (PID szerint, nem pkill -f, a saját throwaway
+worktree cwd-je alapján azonosítva), amint az ütközés kiderült; origin/main érintetlen maradt. A
+tanulság a plan-grilling versenyhelyzetről: [[concurrent-plan-grilling-can-race-a-dispatched-builder]].
+
+**Miért (777f69b1 incidens, 2026-09-12, kártya ac24bf98, mérve 6eed8678-ban).**
+`mopsion-land.sh` forrásban nulla vitest/suite-run hívást tartalmazott (csak tsc-delta + seam +
+format), tehát egy célzott tesztekre adott QA PASS-t sosem különböztetett meg egy teljes-suite
+PASS-tól. 777f69b1 55/56-ot landolt egy fájlon, amin origin/main közvetlenül előtte 56/56 volt zöld.
+
+**A KÉTFÁZISÚ tervezés, ahogy megépült:**
+- `mopsion-land.sh --prepare-only`: megépíti a merge-commitot, lefuttatja a MEGLÉVŐ tsc-delta/
+  seam/format ellenőrzéseket (nem ír le semmit újra), és -- push helyett -- egy kártya-nevű
+  branch-referenciára (`refs/heads/land-prepare/<card>`, csak lokális) rögzíti, majd kiírja
+  `PREPARED|<sha>|<tree>`. A worktree törlődik a szokásos módon; a branch tartja életben a
+  commitot.
+- `store/mopsion-suite-run.sh` a futás VÉGÉN gépi rekordot ír (`store/suite-evidence-record.py`
+  hívásával): sha, fa-hash, pass/fail/skip számok, a két log (main + api-e2e, card cae9fb67)
+  tartós másolata, futtató ügynök -- egy append-only JSONL-be (`store/mopsion-suite-evidence.jsonl`,
+  gitignore-olt runtime adat). Új `--worktree <path>` kapcsoló engedi egy TETSZŐLEGES (nem
+  agent-tulajdonú) sha-ra pinelt worktree-n futtatni, mert a prepare-elt merge-commit sosem
+  semelyik ügynök saját branch-tippje.
+- `store/mopsion-preland.sh` az EGYETLEN hívható belépési pont: `<card> <sha>` egy kártyára,
+  `--pending` az összes olyan `waiting` kártyára, ahol a kijelölt gate-ek AGREE-t adnak (a MEGLÉVŐ
+  `gate-closure-check.py`-t hívja erre, nem duplikál logikát). Per-kártya `flock`-lock (két hívó ne
+  fusson párhuzamosan ugyanarra), és IDEMPOTENS a fa-hash szerint: ha `suite-evidence-record.py
+  lookup` már PRESENT-et ad arra a fára, nem fut le újra a suite. Kimenet kártyánként egy sor:
+  `READY|RUNNING|ANOMALY|FAILED` + sha + fa-hash.
+- A BIRPC HAMIS-PIROS (60 mp-es worker-RPC timeout, 0 valódi bukással, kártya c6153a69) a MÁR
+  LÉTEZŐ `vitest-flake-classify.sh`-t hívja meg mindkét suite-ágra (main + e2e) külön-külön; ha
+  BÁRMELYIK ág flake vagy befejezetlen (nincs summary sor), a TELJES rekord `anomaly: true` --
+  se nem zöld, se nem piros, újra kell futtatni.
+- A LANDOLÁS-IDEJŰ ellenőrzés (`mopsion-land.sh`, push előtt): kiolvassa a módot
+  (`mopsion-suite-evidence-mode.json`, hiány/hibás érték esetén `warn`), majd
+  `suite-evidence-record.py lookup --tree <a sajat merge-eredmenye>`. `enforce`+PRESENT -> megy;
+  `enforce`+bármi más -> REFUSED (exit 3), sosem `--allow-stale-suite`-hoz hasonló felülírással,
+  mert MikroB kifejezetten NEM kért ilyen kapcsolót ehhez a döntéshez (a kapcsoló maga az
+  off/warn/enforce mód); `warn`+bármi -> mindig megy, de a rést egy sorral naplózza
+  (`mopsion-suite-evidence-mode.log`: időbélyeg, kártya, fa-hash, eredmény) -- ez a nyers adat, amiből
+  MikroB az `enforce`-ra váltás előtt megméri a rés-gyakoriságot; `off` -> a teljes ellenőrzés ki van
+  kapcsolva, nulla hívás.
+
+**Ütemezés tudatosan NINCS ebben a kártyában.** A `mopsion-preland.sh --pending` bedrótozását (a
+`gate-reconciler` AGREE-ágába) MikroB végzi a saját orchestrációs kódjában (üzenet 3748) -- ez a
+kártya csak az egyetlen, hívható belépési pontot adja át, scheduled-taskot vagy heartbeat-prompt-
+módosítást szándékosan nem hoz létre.
+
+**Újrahasznosítás, nem új heurisztika.** A gate-designation és AGREE-eldöntés a MEGLÉVŐ
+`gate-closure-check.py`-t hívja (nem duplikál gate-logikát); a birpc-osztályozás a MEGLÉVŐ
+`vitest-flake-classify.sh`-t; a merge/tsc/seam/format validáció a MEGLÉVŐ `mopsion-land.sh` saját,
+85 esetben tesztelt logikáját (`--prepare-only` csak egy új kilépési pont ugyanabban a folyamban).
+
+**Zöld:** `suite-evidence-record.selftest.py` 14/14, `mopsion-preland.selftest.sh` 6/6 (valódi git-
+worktree + valódi futtatott fixture-vitest-en, nem szimulált), `mopsion-suite-evidence-gate.
+selftest.sh` 7/7 (a VALÓDI `mopsion-land.sh`-t futtatja végig off/warn/enforce mind a négy
+állapotára, scratch repo-n, `--skip-typecheck --skip-bundle --allow-ungated`-del a nem-releváns
+elő-feltételek kikapcsolva -- ugyanaz az arányos fixture-választás, mint amit
+`landing-gate-verdict-check.selftest.sh` saját `land_case`-je már meghozott a szomszédos
+ellenőrzésre). Regresszió-ellenőrzés: `mopsion-land.sh --selftest` 85/85, `mopsion-suite-run.
+selftest.sh` 30/30, mindkettő változatlan a módosítás előtti állapothoz képest.
+`store-selftests-all-run.test.ts` auto-discovery: 76/76 (75 alap - 2 törölt fájl a visszavont
+első verzióból + 3 új).
+
+**Ki döntött:** MikroB (plan-grilling verdikt + kötelező kiegészítések, kártya-komment 6011,
+üzenet 3736/3748) + backend3 (BE build, mindkét verzió, a másodikat MikroB döntése szerint).
