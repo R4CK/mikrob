@@ -68,7 +68,12 @@ read_host_version() {
   local out
   out="$("$HOST_SMI" --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)" || return 0
   out="$(printf '%s' "$out" | tr -d '\r' | sed 's/^ *//;s/ *$//')"
-  [ -n "$out" ] && printf '%s' "$out"
+  # Reject anything that is not dotted-numeric (card e3846ccc, Cybersec LOW off the f268629c gate):
+  # installedHost feeds --compare and the daily alert prompt verbatim, and this is also what pins
+  # the `head -1` above -- a multi-line smi output fails this regex (newline is not a digit or dot)
+  # instead of the whole blob silently landing in state.
+  [[ "$out" =~ ^[0-9]+(\.[0-9]+)*$ ]] || return 0
+  printf '%s' "$out"
 }
 
 # The WSL package version lives ONLY in a symlink's own filename (see header). glob, take the
@@ -76,10 +81,14 @@ read_host_version() {
 # extract everything after "libnvidia-gpucomp.so.".
 read_wsl_version() {
   [ -d "$WSL_LIB_DIR" ] || return 0
-  local link
+  local link ver
   link="$(ls -t "$WSL_LIB_DIR"/libnvidia-gpucomp.so.* 2>/dev/null | head -1)" || return 0
   [ -n "$link" ] || return 0
-  basename "$link" | sed 's/^libnvidia-gpucomp\.so\.//'
+  ver="$(basename "$link" | sed 's/^libnvidia-gpucomp\.so\.//')"
+  # Same format guard as read_host_version -- the symlink name is external input (whatever WSL
+  # mounted), and a malformed suffix must not enter state.installedWsl unvalidated.
+  [[ "$ver" =~ ^[0-9]+(\.[0-9]+)*$ ]] || return 0
+  printf '%s' "$ver"
 }
 
 now_iso() {
