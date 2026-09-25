@@ -15239,6 +15239,73 @@ ACKNOWLEDGED_FORK_ANCHORS frissitese). Gate: QA + Cybersec (biztonsag-relevans t
 eredeti kartya-kijelolese szerint). QA (qa2) elso kore FAIL-t adott a hianyzo bejegyzes miatt
 (kartya-komment 6893) -- ez a bejegyzes potolja azt, Cybersec mar GO-t adott (komment 6884).
 
+## 2026-09-25 -- 14284837 (b5b7eb6b gyerek, 9/10, dashboard/src -- tesztek 2/2, senki-altal-nem-dontott): 8/8 fajl dontve
+
+**A feladat:** a fork/upstream ujra-dontes teruleti bontasaban (MikroB dontese, msg 4123) a
+dashboard/src -- tesztek 2/2 terulet 8 senki-altal-nem-dontott fajlja: memory-search-label-backfill,
+memory-search-tier-goes-into-the-query, model-suggest, project-settings-hook-anchor,
+router-main-agent-wakeup, router-no-silent-reinject, token-prune-lag, voice-channel-hanna
+(mind src/__tests__/ alatt).
+
+**3 ADOPT WHOLESALE** (upstream tartalma at, biztonsagos):
+- memory-search-label-backfill.test.ts: a STORE_DIR-mock-kiegeszites atveve. EGY uj tesztblokkot
+  ('raw accented q is a silent 400') NEM vettem at -- futtatva FAIL-t adott, mert a fork
+  buildMemorySearchLabelBody()-ja nem termeli az upstream szoveget (a hozza tartozo
+  production-oldali valtozas nincs portolva a forkba).
+- memory-search-tier-goes-into-the-query.test.ts: teljes egeszeben atveve, egy szandekos
+  elteressel: az upstream 'chunk.toString()' helyett 'String(chunk)' maradt -- a `chunk: any`
+  tipus miatt a .toString() eredmenye is `any`, ami @typescript-eslint/no-unsafe-argument
+  regressziot okozott (109->110 a lint-ratchet-en, kulon commit bd5079e3-ban javitva).
+- token-prune-lag.test.ts: teljes egeszeben atveve (csak komment-atfogalmazas, nulla funkcionalis
+  elteres).
+
+**4 KEEP FORK WHOLESALE** (nincs fajlvaltozas, a fajl a fork sajat verzioja marad):
+- model-suggest.test.ts: az upstream valtozat a fork sajat contextAvgPerCall/
+  CONTEXT_PER_CALL_HIGH/CONTEXT_PER_CALL_MEDIUM mechanizmusara epulne, ami nincs portolva a fork
+  model-suggest.ts-ebe -- es a Peti-pinnelt disztribucio-alapertelmezes invarianst (kartya
+  d041760b, 2026-08-06) csendben felulirna.
+- project-settings-hook-anchor.test.ts: az upstream egyszerusitett EXPECTED-terkepe es a dobott
+  (script,matcher)-par teszt csendben visszavonna a fork sajat, elo Cybersec-lelet (kartya
+  c00d5429) altal megkovetelt 10 nevesitett PreToolUse guard-ellenorzest.
+- router-no-silent-reinject.test.ts: fork sajat verzioja marad, nincs indok az atvetelre.
+- voice-channel-hanna.test.ts: az upstream valtozat dobna a fork allowlist-teszteket (kartya
+  7503bb31) -- a production guard (isAllowedVoiceChannelDevice, src/web/routes/messages.ts) elo,
+  meg mindig ervenyes.
+
+**1 NOT ADOPTED** (scratch fajl torolve, nincs vegleges valtozas):
+- router-main-agent-wakeup.test.ts: elso proba FAIL 3/3 (hianyzo getKanbanCardStateByIdPrefix/
+  closeOtelSpanIfOpen a ../db.js mockban -- fork-specifikus supersession-check, sajat testver
+  test-fajl mintajaval kiegeszitve). Mock-kiegeszites utan meg mindig FAIL 2/3, VALODI mert bug a
+  fork sajat src/web/message-router.ts-eben: a MAIN_AGENT_WAKEUP_COOLDOWN_MS-gatelt
+  sendPromptToSession(waitForIdle:false) hivas meg mindig meghivodik busy main-channel pane-en.
+  Kovetkezo-kartya javasolva a router-oldali javitasra, meg nincs nyitva.
+
+Uj ACKNOWLEDGED_FORK_ANCHORS bejegyzesek (kartya 66ad1f95 tripwire-mechanizmus, 2 uj refusal
+miatt kotelezo, grep-pel ellenorizve dontes elott):
+- project-settings-hook-anchor.test.ts: needle 'secret-write-guard.py', file .claude/settings.json,
+  expect present.
+- router-main-agent-wakeup.test.ts: needle 'const MAIN_AGENT_WAKEUP_COOLDOWN_MS', file
+  src/web/message-router.ts, expect present -- ha eltunik, a router-oldali javitas valoszinuleg
+  landolt, a teszt ujra-probalando adopciora.
+
+**Lint-ratchet javitas** (kulon commit, bd5079e3): a fenti memory-search-tier-goes-into-the-query
+elteres oka es merese ugyanitt, nem ismetlem.
+
+**Ellenorzes:** a vegleges push-olt Gate-SHA-n (77182d55, egyutt landolva a 9163495b-vel egy
+kombinalt merge-ben) 10 celzott teszt-fajl egyutt: fork-upstream-conflict-guard.test.ts (36) +
+fork-upstream-drift-check.test.ts (21) + runner-conflict-resolution-pins.test.ts (12) +
+memory-search-label-backfill.test.ts (10) + memory-search-tier-goes-into-the-query.test.ts (9) +
+token-prune-lag.test.ts (11) + model-suggest.test.ts (30) + project-settings-hook-anchor.test.ts
+(5) + router-no-silent-reinject.test.ts (3) + voice-channel-hanna.test.ts (15) = 152/152 zold.
+Mind a 8 uj pin pontosan egyezik a jelenlegi upstream-csuccsal. tsc --noEmit tiszta. Fleet-test.sh
+a merge eredmenyen (a `fleet-test.sh --ref <sha>` szerint): 814/814 teszt-fajl zold, 19524/19625
+teszt zold (101 skip), lint-ratchet nem romlott (255 lelet, baseline tart).
+
+**Ki dontott:** backend2 (a 8 fajl felulvizsgalata + ACKNOWLEDGED_CONFLICTS/ACKNOWLEDGED_UPSTREAM_BLOBS/
+ACKNOWLEDGED_FORK_ANCHORS frissitese + a lint-ratchet javitas). Gate: QA + Cybersec. QA (qa2) elso
+kore FAIL-t adott a hianyzo DECISIONS.md bejegyzes miatt (kartya-komment 6939, a technikai munkat
+es a lint-javitast fuggetlenul megerositette) -- ez a bejegyzes potolja azt.
+
 ## 2026-09-25 -- f4cd1783 -- 11 külső skill per-ügynök vendorolása, a nem használt repók törlése
 
 **Kontextus.** Peti (Telegram 9268, 19:45): minden telepítetlen repót ellenőrizni és beépíteni,
