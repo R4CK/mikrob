@@ -342,7 +342,29 @@ else
   fi
 fi
 
-echo "mopsion-suite-run: slot ${SLOT}/${SLOTS}, running in $WT" >&2
+# Card b846acf3 (Cybersec, measured on the b846acf3 finding itself): a suite-count without saying
+# WHICH tree it measured is not evidence (rule 4d). The worktree's SOURCE is pinned by `cd "$WT"`
+# below, but its node_modules links external (non-workspace) packages from $CLEANCORE_MAIN (see
+# agent-worktree.sh), which moves independently -- any other agent can advance it mid-run. These two
+# lines make that provenance explicit instead of silent; a mismatch is often harmless (most external
+# deps do not change package.json exports mid-day) but must be VISIBLE, not just true. This does not
+# block: a [SKEW] line is a fact for the reader of the log, not a verdict this script is qualified to
+# make on its own.
+CLEANCORE_MAIN_DIR="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
+# `git rev-parse HEAD` on an unborn branch (no commits yet) prints the literal string "HEAD" to
+# STDOUT before failing -- `$(cmd || echo unknown)` would capture BOTH ("HEAD" then "unknown" on the
+# next line) into one multi-line variable, since the fallback still shares the command substitution
+# with the command it is meant to replace. The fallback must be OUTSIDE the substitution.
+WT_SHA="$(git -C "$WT" rev-parse HEAD 2>/dev/null)" || WT_SHA="unknown"
+[ -n "$WT_SHA" ] || WT_SHA="unknown"
+MAIN_SHA="$(git -C "$CLEANCORE_MAIN_DIR" rev-parse HEAD 2>/dev/null)" || MAIN_SHA="unknown"
+[ -n "$MAIN_SHA" ] || MAIN_SHA="unknown"
+echo "mopsion-suite-run: slot ${SLOT}/${SLOTS}, running in $WT @ $WT_SHA" >&2
+if [ "$WT_SHA" != "unknown" ] && [ "$MAIN_SHA" != "unknown" ] && [ "$WT_SHA" != "$MAIN_SHA" ]; then
+  echo "mopsion-suite-run: node_modules -> $CLEANCORE_MAIN_DIR @ $MAIN_SHA   [SKEW]" >&2
+else
+  echo "mopsion-suite-run: node_modules -> $CLEANCORE_MAIN_DIR @ $MAIN_SHA" >&2
+fi
 cd "$WT" || exit 3
 
 # THE SLOT CAP ALONE DOES NOT BOUND CPU (card 34587175, measured during a load-guard CRITICAL

@@ -14517,3 +14517,62 @@ Cybered saját sorrend-javaslata szerint külön lépés, nem ennek a kártyána
 
 **Ki döntött:** Cybered (854182c7, a lelet), backend3 (a javítás), gate: Cybersec + Cybered (a kártya
 kéri, biztonsági kontroll javítása).
+
+## 2026-09-25 -- b846acf3: suite-run tree-provenance + egy sokkal komolyabb élő regresszió a worktree-izoláción (backend3)
+
+**A kártya kérése:** a `mopsion-suite-run.sh` (akkor még `cleancore-suite-run.sh`) írja ki a fejlécében,
+melyik commiton áll a mért worktree ÉS melyiken a fő klón, amire a node_modules mutat -- `[SKEW]`
+jelzéssel, ha eltér (rule 4d, "egy szám a mérő fa megnevezése nélkül nem bizonyíték").
+
+**A kártya SAJÁT gyökér-nyomozása vezetett egy sokkal súlyosabb, ÉLŐ hibához.** A kártya azt írja le,
+hogy a worktree node_modules-a "a MOZGÓ fő klónra mutat" -- ez a per-package izolációs mechanizmust
+(kártya 80d3a2af, `agent-worktree.sh`) kellene hogy KIZÁRJA, mert az pontosan a workspace-csomagokat
+(`@<scope>/<pkg>`) a WORKTREE saját forrására linkeli, nem a fő klónra. Megnéztem, miért nem: az
+`agent-worktree.sh` MINDEN scope-ellenőrzése hardcode-olt `@cleancore` literál volt, de a mopsion
+package-rename óta (`packages/*/package.json` mind `"@mopsion/<name>"`-t deklarál, ellenőrizve MIND a
+33 workspace-csomagon) ez a literál SOSEM egyezik -- az `if [ "$entry" = "@cleancore" ]` ág halott kód
+lett, minden workspace-import csendben visszaesett a "külső csomag" ágra, ami a TELJES `@mopsion`
+könyvtárat a fő klónba linkelte. Élőben mérve (backend3 worktree): `readlink -f
+apps/api/node_modules/@mopsion/control-plane` a fő klónba mutatott, NEM a worktree saját
+`packages/control-plane`-jébe -- MINDEN worktree-n, amióta a package-rename landolt, csendben. Ez
+PONTOSAN a kártya által leírt hibaosztály, egy réteggel lejjebb: megmagyarázza, MIÉRT volt lehetséges
+egyáltalán a kártya saját méréseiben látott skew.
+
+**Javítás 1 (a gyökér):** `SCOPE="@mopsion"` egyetlen deklarációja `agent-worktree.sh` tetején, minden
+korábbi hardcode-olt `@cleancore` erre cserélve (`pkg_dir_for`, `link_node_modules_for`). Élő
+migrációs rés is volt: a `$tree_nm` (node_modules gyökér) szintjén már volt régi-szimlink-migráció, de
+a `$tree_nm/$SCOPE` (bejegyzés) szinten NEM -- egy korábbi hibás futásból maradt egész-könyvtár-szimlink
+itt CSENDBEN "már ott van"-ként olvasódott (`mkdir -p` egy szimlinken át néma no-op, a `[ -e ... ]`
+követi a szimlinket), és a fix ELSŐ futtatása UTÁN sem javult semmi -- ezt is találtam és javítottam
+(ugyanaz a migrációs minta, eggyel lejjebb).
+
+**Javítás 2 (a kártya literális kérése):** `mopsion-suite-run.sh` a slot-sor UTÁN kiírja a worktree
+HEAD-jét és a `$CLEANCORE_MAIN` HEAD-jét, `[SKEW]`-vel jelölve az eltérést. NEM blokkol -- egy
+provenienciasor, nem verdikt.
+
+**Mutációs bizonyíték, MINDKÉT javításra:**
+- `agent-worktree.sh`: a `SCOPE`-deklarációt érintetlenül hagyva, csak az `if [ "$entry" = "$SCOPE" ]`
+  összehasonlítást visszaírva `"@cleancore"`-ra (pontosan az eredeti hiba alakja) a frissített
+  `agent-worktree.selftest.sh` 4 esete bukik (15-ből), visszaállítva mind a 15 zöld.
+- `mopsion-suite-run.sh`: a két provenienciasort kivéve a 3 új teszteset bukik (36-ból), visszaállítva
+  mind a 36 zöld.
+
+**A meglévő `agent-worktree.selftest.sh` MAGA IS a "tükrözött fixture" hibaosztály esete volt** (lásd
+[[mutate-only-the-shipped-file-to-catch-a-mirrored-selftest]]): a fixture saját `@cleancore` literálja
+LÉPÉSBEN tartott a kód hardcode-olt literáljával, így a rename-nel EGYÜTT avult el -- a teszt zöld
+maradt, mert még mindig azt bizonyította, hogy "`@cleancore` működik", csak épp semmi a valós repóban
+nem használta már azt a scope-ot. Javítás: a fixture a SCOPE értékét a szkriptből OLVASSA
+(`sed -nE 's/^SCOPE="(.*)"$/\1/p' "$RUN"`), nem saját másolatot tart -- így egy jövőbeli rename csak
+egyetlen helyen (`agent-worktree.sh`) igényel módosítást, a teszt automatikusan követi.
+
+**Zöld:** `agent-worktree.selftest.sh` 15/15, `mopsion-suite-run.selftest.sh` 36/36, `tsc --noEmit`
+tiszta.
+
+**Terjedelem, amit NEM tettem meg:** a fix csak a saját (backend3) worktree-mön lett élesben
+lefuttatva és igazolva (`readlink -f` előtte/utána). A hiba MINDEN worktree-t érint, de más ügynökök
+worktree-jének proaktív újrafuttatása kívül esik ezen a kártyán -- jeleztem MikroB-nek, döntse el,
+kell-e flotta-szintű `agent-worktree.sh <agent>` sweep minden élő worktree-re.
+
+**Ki döntött:** Cybersec (a kártya eredeti leletje), backend3 (a mélyebb gyökér-ok felfedezése és
+mindkét javítás). Gate: QA + Cybersec (a kártya kéri; Cybersec nem a sajátját ellenőrzi, ha ehhez a
+kártyához kerülne, Cybered vegye át).

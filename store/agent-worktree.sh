@@ -22,6 +22,10 @@ set -euo pipefail
 
 MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 ROOT="${CLEANCORE_WORKTREES:-/mnt/h/LM_Studio_Workdir/CleanCore-worktrees}"
+# The workspace npm scope every packages/*/package.json declares under. A VARIABLE, not a literal
+# repeated at each use site -- see the card b846acf3 comment on link_node_modules_for below for why
+# that repetition already broke once, silently, across an entire rename.
+SCOPE="@mopsion"
 
 die() { echo "agent-worktree.sh: $2" >&2; exit "$1"; }
 
@@ -101,12 +105,12 @@ check_workspace_links() {
   [ "$found" -eq "$fixed" ]
 }
 
-# The directory of the workspace package whose package.json declares @cleancore/<name>, relative to
+# The directory of the workspace package whose package.json declares $SCOPE/<name>, relative to
 # $MAIN. Empty when nothing matches.
 pkg_dir_for() {
   local name="$1" f
   while IFS= read -r f; do
-    if grep -q "\"name\"[[:space:]]*:[[:space:]]*\"@cleancore/$name\"" "$MAIN/$f" 2>/dev/null; then
+    if grep -q "\"name\"[[:space:]]*:[[:space:]]*\"$SCOPE/$name\"" "$MAIN/$f" 2>/dev/null; then
       dirname "$f"; return 0
     fi
   done < <(cd "$MAIN" && ls apps/*/package.json packages/*/package.json packages/modules/*/package.json 2>/dev/null)
@@ -139,19 +143,34 @@ else
 fi
 
 # node_modules: pnpm resolves per package, so the ROOT symlink alone is not enough. Without the
-# per-package links vitest dies on '@vitejs/plugin-react' and tsc cannot see any @cleancore/* import,
+# per-package links vitest dies on '@vitejs/plugin-react' and tsc cannot see any @mopsion/* import,
 # which reads like a broken recipe rather than a missing link. Measured: 30 package dirs + the root.
 #
 # WORKSPACE ENTRIES ARE SPECIAL (card 80d3a2af). Symlinking a WHOLE node_modules directory into $MAIN
-# looked equivalent to linking every entry inside it, but it is not: pnpm writes @cleancore/<pkg> as a
+# looked equivalent to linking every entry inside it, but it is not: pnpm writes @mopsion/<pkg> as a
 # RELATIVE symlink (../../../../packages/<pkg>), and a relative symlink resolves from where the link
 # FILE lives on disk, not from how it was reached. Since the whole directory lived in $MAIN, every
-# @cleancore/* import resolved to $MAIN/packages/<pkg> no matter which worktree ran the test --
+# @mopsion/* import resolved to $MAIN/packages/<pkg> no matter which worktree ran the test --
 # measured live on apps/api/src/pg-proof-photo-worm-marker.test.ts: a deliberate syntax error planted
 # in the worktree's OWN packages/evidence source changed nothing, because that file never loaded. So
 # each node_modules directory is now a REAL directory in the worktree, and its entries are linked one
-# at a time: an @cleancore/<pkg> entry points at the WORKTREE'S OWN packages/<pkg> (the whole reason to
+# at a time: an @mopsion/<pkg> entry points at the WORKTREE'S OWN packages/<pkg> (the whole reason to
 # have a worktree), everything else still points at $MAIN (shared, no duplication, no reinstall).
+#
+# THE SCOPE NAME IS THE ONE THING THIS FUNCTION MUST NOT HARDCODE AGAIN (card b846acf3 follow-up,
+# backend3, 2026-09-25). It already was hardcoded once, as `@cleancore`, and the CleanCore -> mopsion
+# package rename (every packages/*/package.json now declares "@mopsion/<name>") silently turned the
+# `[ "$entry" = "@cleancore" ]` branch below into dead code: `ls -A "$main_nm"` lists `@mopsion`, that
+# equality never matched, and every workspace import fell through to the plain external-package branch
+# -- symlinking the WHOLE @mopsion directory into $MAIN, exactly the whole-directory hazard this
+# function exists to prevent. Measured live 2026-09-25 in the backend3 worktree: `readlink -f
+# apps/api/node_modules/@mopsion/control-plane` resolved into $MAIN, not the worktree's own
+# packages/control-plane -- for every worktree, since whenever the package rename landed, silently.
+# This is the exact mechanism b846acf3 was raised for (a worktree's dependency graph tracking the
+# MOVING main clone instead of the pinned worktree source, causing the missing-`./superadmin-rbac`-
+# specifier false red b846acf3 measured), just one layer further down: it explains WHY that skew was
+# possible at all, not just that it happened. SCOPE is declared once, above, so the next rename cannot
+# silently repeat this.
 link_node_modules_for() {
   local rel="$1" main_nm tree_nm entry
   main_nm="$MAIN${rel:+/$rel}/node_modules"
@@ -159,28 +178,35 @@ link_node_modules_for() {
   [ -d "$main_nm" ] || return 0
 
   # A previous run (or a pre-fix version) of this script may have left the OLD whole-directory
-  # symlink in place -- migrate it rather than leaving @cleancore/* silently pointed at $MAIN forever.
+  # symlink in place -- migrate it rather than leaving $SCOPE/* silently pointed at $MAIN forever.
   [ -L "$tree_nm" ] && rm -f "$tree_nm"
   mkdir -p "$tree_nm"
 
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue
-    if [ "$entry" = "@cleancore" ]; then
-      mkdir -p "$tree_nm/@cleancore"
+    if [ "$entry" = "$SCOPE" ]; then
+      # The SCOPE bug above (fixed in this same change) left exactly this artifact behind for as
+      # long as it ran: $tree_nm/$SCOPE itself as a whole-directory symlink into $main_nm, created by
+      # the else branch below before the fix. `mkdir -p` on a path through an existing symlink-to-dir
+      # is a silent no-op, and `[ -e ... ]` below FOLLOWS it -- so without this, every entry would
+      # read as "already there" against $MAIN and never get its own worktree-local link, even after
+      # the SCOPE fix. Same migration the top-level check above already does, one level down.
+      [ -L "$tree_nm/$SCOPE" ] && rm -f "$tree_nm/$SCOPE"
+      mkdir -p "$tree_nm/$SCOPE"
       local pkg pkgdir rel_target
       while IFS= read -r pkg; do
         [ -n "$pkg" ] || continue
-        [ -e "$tree_nm/@cleancore/$pkg" ] && continue
+        [ -e "$tree_nm/$SCOPE/$pkg" ] && continue
         pkgdir="$(pkg_dir_for "$pkg")"
         if [ -z "$pkgdir" ]; then
           # Not a workspace package we can find under $MAIN (renamed/removed) -- fall back to $MAIN
           # rather than leaving the import unresolvable.
-          ln -sfn "$main_nm/@cleancore/$pkg" "$tree_nm/@cleancore/$pkg"
+          ln -sfn "$main_nm/$SCOPE/$pkg" "$tree_nm/$SCOPE/$pkg"
           continue
         fi
-        rel_target="$(python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$TREE/$pkgdir" "$tree_nm/@cleancore")"
-        ln -sfn "$rel_target" "$tree_nm/@cleancore/$pkg"
-      done < <(ls "$main_nm/@cleancore" 2>/dev/null)
+        rel_target="$(python3 -c "import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))" "$TREE/$pkgdir" "$tree_nm/$SCOPE")"
+        ln -sfn "$rel_target" "$tree_nm/$SCOPE/$pkg"
+      done < <(ls "$main_nm/$SCOPE" 2>/dev/null)
     else
       [ -e "$tree_nm/$entry" ] && continue
       ln -sfn "$main_nm/$entry" "$tree_nm/$entry"
@@ -193,7 +219,7 @@ while IFS= read -r d; do
   d="${d%/}"
   link_node_modules_for "$d"
 done < <(cd "$MAIN" && ls -d apps/*/ packages/*/ packages/modules/*/ 2>/dev/null)
-echo "node_modules: per-entry links refreshed (workspace @cleancore/* -> own worktree copy, external -> shared main clone)"
+echo "node_modules: per-entry links refreshed (workspace $SCOPE/* -> own worktree copy, external -> shared main clone)"
 
 # Before those links are trusted, make sure the thing they point AT is sound: a dangling
 # /tmp-pointing link in the main clone is inherited by every worktree that links from it.
