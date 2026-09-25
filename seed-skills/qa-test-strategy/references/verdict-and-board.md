@@ -104,8 +104,9 @@ Ha QA FAIL komment kiírás után a `move` API hívás elmaradt, a kártya `wait
 ```bash
 printf 'Authorization: Bearer %s\n' "$TOKEN" \
 | curl -H @- -s -X POST http://localhost:3420/api/kanban/<id>/move \
-  -d '{"status":"in_progress"}'
+  -d '{"status":"in_progress","actor":"<sajat-neved>","reason":"QA FAIL utani visszaallitas -- board-reconciliation"}'
 ```
+409 `bulk_attribution_required` eseten ne nyeld le csendben -- a fenti hivas mar actor+reason-nal megy (kartya 1ef7bd9c).
 Kivétel: MikroB explicit bound-block komment (`WAITING (bound to CAL-5...`) esetén NE mozdítsd.
 Valós eset: 8545ed3f + d9ff65ae stuck-in-waiting.
 

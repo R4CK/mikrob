@@ -66,17 +66,38 @@ export const DRAFT_REVIEW_RX =
  *  DRAFT_AUTHOR="local-llm"). */
 const DRAFT_AUTHOR = 'local-llm'
 
+/**
+ * The EXHAUSTION notice is authored by the same DRAFT_AUTHOR but carries no draft at all (card
+ * e50b311f, backend2's finding msg 2626): after `OFFLOAD_LEAF_MAX_ATTEMPTS` transient local-model
+ * failures, `store/offload-dispatch.sh`'s `post_exhausted_notice()` posts an INFO-ONLY comment
+ * saying the local 7B gave up and the responsible agent is taking the normal (online) path -- there
+ * is nothing here for a human to adjudicate. Before this, `newestDraftAt` below could not tell it
+ * apart from a real draft (same author), so the gate demanded a "Draft-Review:" verdict for
+ * content that was never written. None of the four values fit: ELUTASITVA's "it was wrong" is
+ * false, and the others are worse -- measured live, MikroB and backend2 wrote FELESLEGES and
+ * ELUTASITVA for the identical exhaustion case, which already mixes a genuine rejection with a
+ * draft that never existed in the acceptance-rate statistics that marker exists to produce.
+ *
+ * DECLARATIVE MARKER, NOT A TEXT HEURISTIC (the card's own instruction, matching this file's
+ * existing DRAFT_REVIEW_RX precedent): anchored on `post_exhausted_notice()`'s own literal,
+ * deliberately-worded prefix, distinct from `draft_comment_body()`'s real-draft prefix
+ * (`[LOCAL-LLM DRAFT | dispatch-offload]`) -- the two shapes cannot collide.
+ */
+const EXHAUSTION_NOTICE_RX = /^INFO-ONLY \[local-llm offload\]:/
+
 interface Comment {
   readonly author: string
   readonly content: string
   readonly created_at: number
 }
 
-/** The newest local-LLM draft's timestamp, or null when the card carries no draft at all. */
+/** The newest REAL local-LLM draft's timestamp, or null when the card carries no draft to
+ *  adjudicate -- an exhaustion notice (same author, no draft) does not count. */
 export function newestDraftAt(comments: readonly Comment[]): number | null {
   let newest: number | null = null
   for (const c of comments) {
     if ((c.author ?? '').toLowerCase() !== DRAFT_AUTHOR) continue
+    if (EXHAUSTION_NOTICE_RX.test(c.content ?? '')) continue
     const at = c.created_at ?? 0
     if (newest === null || at > newest) newest = at
   }

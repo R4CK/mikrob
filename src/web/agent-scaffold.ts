@@ -8,7 +8,7 @@ import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
-import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities } from './agent-config.js'
+import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
 import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
@@ -693,6 +693,11 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // wholesale on each spawn, so without it a respawn would silently drop what ensureBashEgressDeny()
   // merged in.
   denyList.push(...BASH_EGRESS_DENY)
+  // Card 21597530: per-agent, opt-in tool-name deny (agent-config.json "toolDeny"). Pushed onto the
+  // SAME array as the security-purpose entries above, never replacing it -- a missing/malformed
+  // toolDeny is [] (today's behaviour), and an unknown tool name is just an inert deny entry the
+  // permission engine never matches against anything.
+  denyList.push(...readAgentToolDeny(name))
   existing.permissions = {
     allow: profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx)),
     deny: denyList,

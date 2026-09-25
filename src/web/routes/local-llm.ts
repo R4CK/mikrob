@@ -679,6 +679,15 @@ export interface RouteDecisionRow {
   reason: string
   modelCalls: number
   chars: number
+  /**
+   * Card 501c489f (MikroB verdikt komment 6007, requirement 4): the mechanical-subtask-type
+   * candidates card-decompose-templates.sh identified in this ONLINE-verdict card's text, if any.
+   * Empty for every LOCAL verdict, every pre-card-501c489f log line (no 8th field at all), and every
+   * ONLINE verdict whose reason was not decompose-eligible (capacity/doubt/steering) -- "the card had
+   * at least one mechanical fragment identified alongside its online-only decision", never a claim
+   * that a local draft was actually produced (see card-build-route-24h-measure.sh for that count).
+   */
+  decompose: string[]
 }
 
 /**
@@ -721,6 +730,9 @@ export function readRecentDecisions(
     ).getTime()
     const callsMatch = /^calls=(\d+)$/.exec(p[4] ?? '')
     const charsMatch = /^chars=(\d+)$/.exec(p[5] ?? '')
+    const decomposeMatch = /^decompose=(.*)$/.exec(p[7] ?? '')
+    const decomposeRaw = decomposeMatch ? decomposeMatch[1] : ''
+    const decompose = decomposeRaw && decomposeRaw !== '-' ? decomposeRaw.split(',').filter((t) => t.length > 0) : []
     rows.push({
       ts,
       cardId: p[1] ?? '',
@@ -728,6 +740,7 @@ export function readRecentDecisions(
       reason: p[3] ?? '',
       modelCalls: callsMatch ? Number(callsMatch[1]) : 0,
       chars: charsMatch ? Number(charsMatch[1]) : 0,
+      decompose,
     })
   }
   return { rows, available: true }

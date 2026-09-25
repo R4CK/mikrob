@@ -1,0 +1,4 @@
+{
+  "mode": "warn",
+  "note": "card 08eb6402 (MikroB plan-grilling verdict 6011/3748). warn logs gaps to mopsion-suite-evidence-mode.log without blocking a landing; enforce refuses a landing whose merge tree has no matching full-suite evidence. Switching to enforce is MikroB's own decision after measuring the warn-phase gap rate -- not automated anywhere in this repo."
+}

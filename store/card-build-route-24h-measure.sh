@@ -43,7 +43,7 @@ done
 # purpose, rather than silently miscounted as a content decision.
 CAPACITY_REGEX='^(vram-hold|model-busy|kill-switch|no-token|card-unreadable|card-unparseable|empty-text|too-long|bad-card-id|no-argument|route-check-failed|not-installed)$'
 
-[ -f "$LOG" ] || { [ "$JSON" = 1 ] && printf '{"hours":%s,"dispatches":0,"capacity_skipped":0,"content_considered":0,"drafted":0,"continued_with_draft":0,"rejected_draft":0,"exhausted_no_draft":0,"pending_review":0,"dispatcher_self_advance":0,"dispatcher_orchestrator_dispatch":0,"dispatcher_unattributed":0}\n' "$HOURS" || printf 'card-build-route-24h-measure: no log at %s -- nothing to measure yet\n' "$LOG"; exit 0; }
+[ -f "$LOG" ] || { [ "$JSON" = 1 ] && printf '{"hours":%s,"dispatches":0,"capacity_skipped":0,"content_considered":0,"drafted":0,"continued_with_draft":0,"rejected_draft":0,"exhausted_no_draft":0,"pending_review":0,"dispatcher_self_advance":0,"dispatcher_orchestrator_dispatch":0,"dispatcher_unattributed":0,"decomposed_content":0,"decompose_subtasks_total":0,"decompose_subtasks_drafted":0}\n' "$HOURS" || printf 'card-build-route-24h-measure: no log at %s -- nothing to measure yet\n' "$LOG"; exit 0; }
 
 now="$(date +%s)"
 cutoff=$(( now - HOURS * 3600 ))
@@ -56,7 +56,10 @@ LATEST="$(TZ=$(date +%Z) awk -F'\t' -v cutoff="$cutoff" '
     cmd | getline ts
     close(cmd)
     if (ts != "" && ts >= cutoff) {
-      row[$2] = $3 "\t" $4 "\t" ts "\t" $7
+      # $8 (decompose=<csv|->) did not exist before card 501c489f; a pre-existing log line has NF==7
+      # and $8 reads empty, which the "-" default below already treats as "not decomposed".
+      decomp = (NF >= 8) ? $8 : "decompose=-"
+      row[$2] = $3 "\t" $4 "\t" ts "\t" $7 "\t" decomp
     }
   }
   END { for (c in row) print c "\t" row[c] }
@@ -71,11 +74,13 @@ dispatches=0
 capacity_skipped=0
 content_considered=0
 declare -a CONTENT_CARDS=()
+declare -A DECOMPOSE_CANDIDATES=()   # card -> comma-separated candidate types (card 501c489f)
 dispatcher_self_advance=0
 dispatcher_orchestrator_dispatch=0
 dispatcher_unattributed=0
+decomposed_content=0
 
-while IFS=$'\t' read -r card verdict path ts dispatcher_field; do
+while IFS=$'\t' read -r card verdict path ts dispatcher_field decompose_field; do
   [ -n "$card" ] || continue
   dispatches=$((dispatches + 1))
   if printf '%s' "$path" | grep -Eq "$CAPACITY_REGEX"; then
@@ -88,6 +93,13 @@ while IFS=$'\t' read -r card verdict path ts dispatcher_field; do
       dispatcher=orchestrator-dispatch) dispatcher_orchestrator_dispatch=$((dispatcher_orchestrator_dispatch + 1)) ;;
       *)                          dispatcher_unattributed=$((dispatcher_unattributed + 1)) ;;
     esac
+    # DECOMPOSE (card 501c489f): "decompose=<csv>" when card-build-route.sh's deterministic
+    # templates found at least one mechanical-fragment candidate in this ONLINE-verdict card.
+    cand="${decompose_field#decompose=}"
+    if [ -n "$cand" ] && [ "$cand" != "-" ] && [ "$cand" != "$decompose_field" ]; then
+      decomposed_content=$((decomposed_content + 1))
+      DECOMPOSE_CANDIDATES["$card"]="$cand"
+    fi
   fi
 done <<EOF
 $LATEST
@@ -101,6 +113,9 @@ drafted=0
 continued_with_draft=0
 rejected_draft=0
 pending_review=0
+decompose_subtasks_total=0    # card 501c489f: sum of candidate counts across every decomposed card
+decompose_subtasks_drafted=0  # sum of DISTINCT subtask-type drafts actually posted
+declare -a DECOMPOSE_REPORT_LINES=()
 
 TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null || true)"
 for card in "${CONTENT_CARDS[@]:-}"; do
@@ -108,6 +123,39 @@ for card in "${CONTENT_CARDS[@]:-}"; do
   comments="$(printf 'Authorization: Bearer %s\n' "$TOKEN" \
     | timeout 10 curl -H @- -s "$API/api/kanban/$card/comments" 2>/dev/null)"
   [ -n "$comments" ] || continue
+  # DECOMPOSE n/m (card 501c489f, requirement 4: "RESZBEN HELYI: n/m reszfeladat"). Each synthetic
+  # subtask's draft lands on the REAL parent card (offload-dispatch.sh posts there, never to a
+  # synthetic id), self-labelled "<type> (mechanikus reszfeladat, card 501c489f)" in its own ####
+  # header -- count DISTINCT candidate types whose marker text appears in a local-llm draft comment.
+  cand_csv="${DECOMPOSE_CANDIDATES[$card]:-}"
+  if [ -n "$cand_csv" ]; then
+    n_drafted="$(printf '%s' "$comments" | CAND_CSV="$cand_csv" python3 -c '
+import json, os, sys
+try:
+    comments = json.load(sys.stdin)
+except Exception:
+    print(0); raise SystemExit
+if not isinstance(comments, list):
+    comments = comments.get("comments", []) if isinstance(comments, dict) else []
+cands = [c for c in os.environ["CAND_CSV"].split(",") if c]
+drafted_types = set()
+for c in comments:
+    if (c.get("author") or "").lower() != "local-llm":
+        continue
+    body = c.get("content") or ""
+    if "LOCAL-LLM DRAFT" not in body:
+        continue
+    for t in cands:
+        if f"{t} (mechanikus reszfeladat" in body:
+            drafted_types.add(t)
+print(len(drafted_types))
+' 2>/dev/null)"
+    [ -n "${n_drafted// }" ] || n_drafted=0
+    m_total="$(printf '%s' "$cand_csv" | awk -F',' '{print NF}')"
+    decompose_subtasks_total=$((decompose_subtasks_total + m_total))
+    decompose_subtasks_drafted=$((decompose_subtasks_drafted + n_drafted))
+    DECOMPOSE_REPORT_LINES+=("    RESZBEN HELYI: kartya $card -- $n_drafted/$m_total reszfeladat ($cand_csv)")
+  fi
   outcome="$(printf '%s' "$comments" | python3 -c '
 import json, sys, re
 try:
@@ -154,9 +202,10 @@ exhausted_no_draft=$(( content_considered - drafted ))
 [ "$exhausted_no_draft" -ge 0 ] || exhausted_no_draft=0
 
 if [ "$JSON" = 1 ]; then
-  printf '{"hours":%s,"dispatches":%s,"capacity_skipped":%s,"content_considered":%s,"drafted":%s,"continued_with_draft":%s,"rejected_draft":%s,"exhausted_no_draft":%s,"pending_review":%s,"dispatcher_self_advance":%s,"dispatcher_orchestrator_dispatch":%s,"dispatcher_unattributed":%s}\n' \
+  printf '{"hours":%s,"dispatches":%s,"capacity_skipped":%s,"content_considered":%s,"drafted":%s,"continued_with_draft":%s,"rejected_draft":%s,"exhausted_no_draft":%s,"pending_review":%s,"dispatcher_self_advance":%s,"dispatcher_orchestrator_dispatch":%s,"dispatcher_unattributed":%s,"decomposed_content":%s,"decompose_subtasks_total":%s,"decompose_subtasks_drafted":%s}\n' \
     "$HOURS" "$dispatches" "$capacity_skipped" "$content_considered" "$drafted" "$continued_with_draft" "$rejected_draft" "$exhausted_no_draft" "$pending_review" \
-    "$dispatcher_self_advance" "$dispatcher_orchestrator_dispatch" "$dispatcher_unattributed"
+    "$dispatcher_self_advance" "$dispatcher_orchestrator_dispatch" "$dispatcher_unattributed" \
+    "$decomposed_content" "$decompose_subtasks_total" "$decompose_subtasks_drafted"
 else
   printf 'card-build-route-24h-measure: last %sh -- %s dispatch(es) routed\n' "$HOURS" "$dispatches"
   printf '  %s kapacitas-okbol draft-kiserlet nelkul (GPU/router nem volt elerheto, nem a kartya tartalma miatt)\n' "$capacity_skipped"
@@ -167,6 +216,14 @@ else
   printf '    %s tartalmi dontesu kartya NEM kapott draftot (kimerult a helyi modell, vagy a leaf-resolve ures volt)\n' "$exhausted_no_draft"
   printf '  dispatcher (kartya 3906d77b): %s orchestrator-dispatch, %s self-advance, %s unattributed (regi sor vagy nem-allitott env)\n' \
     "$dispatcher_orchestrator_dispatch" "$dispatcher_self_advance" "$dispatcher_unattributed"
+  # DECOMPOSE (card 501c489f, requirement 4): "did the reversed default do anything BEYOND a bare
+  # LOCAL/ONLINE split" -- how many otherwise-fully-ONLINE cards had at least one mechanical
+  # fragment identified, and how many of those fragments actually got a local draft.
+  printf '  RESZBEN HELYI (kartya 501c489f): %s tartalmi-dontesu kartyanak volt legalabb egy mechanikus reszfeladat-jelolt, osszesen %s/%s reszfeladat kapott tenylegesen draftot\n' \
+    "$decomposed_content" "$decompose_subtasks_drafted" "$decompose_subtasks_total"
+  for line in "${DECOMPOSE_REPORT_LINES[@]:-}"; do
+    [ -n "$line" ] && printf '%s\n' "$line"
+  done
   if [ "$content_considered" -gt 0 ] && [ "$dispatcher_self_advance" -eq 0 ] && [ "$dispatcher_orchestrator_dispatch" -gt 0 ]; then
     printf '  !! minden tartalmi dontes orchestrator-dispatch-bol jott, EGY sem self-advance-bol -- ez pontosan az a res, amiert a 3906d77b nyilt (09-18 08:41 utan a self-advance uton felvett kartyak nem hivtak a routert). Ellenorizd, hogy a role-agentek self-advance-pickup.sh-t hivjak-e PUT in_progress helyett.\n'
   fi

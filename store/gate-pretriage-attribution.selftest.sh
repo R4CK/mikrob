@@ -63,5 +63,22 @@ t 'extra whitespace between the word and the id still matches' skip "$SPACED" 54
 
 t 'an unresolvable sha is kept, never skipped -- the caller decides what exists' keep deadbeefdeadbeef 54d4a4a3
 
+# THE 47ffe964 INCIDENT, reproduced in shape: title claims 28e5a9a7 via the fleet's own
+# Conventional-Commits-scope-as-card-id convention (`fix(<id>): ...`), body names two UNRELATED
+# cards as prior-bug context. The old body-wide scan saw only the foreign body mentions and wrongly
+# excluded this commit from its own card.
+TITLESCOPE="$(mk 'fix(28e5a9a7): gate-pretriage-card.sh misattributes commits with body-only card refs
+
+Fixes a false "ignored commit(s) belonging to another card" caused by earlier bugs in
+card dd30f6fc and card 249c6c6f, referenced here only as prior-art context.')"
+t 'a title-scope claim on THIS card wins over unrelated cards named in the body' keep "$TITLESCOPE" 28e5a9a7
+t '...and is correctly foreign for a card only mentioned in the body as context' skip "$TITLESCOPE" dd30f6fc
+t '...same for the other body-mentioned card' skip "$TITLESCOPE" 249c6c6f
+
+TITLESCOPE_OTHER="$(mk 'feat(550befbf): something
+
+follow-up to card 54d4a4a3')"
+t 'a title-scope claim on ANOTHER card overrides even if the body also names this card' skip "$TITLESCOPE_OTHER" 54d4a4a3
+
 echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
 exit $fail

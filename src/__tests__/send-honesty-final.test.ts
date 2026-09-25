@@ -25,7 +25,7 @@ function stubBin(): string {
   const bin = join(stage, 'bin')
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(bin, 'curl'),
-    '#!/bin/bash\necho "$@" >> "${CURL_ARGV_LOG:-/dev/null}"\nif [ "${CURL_STUB_EXIT:-0}" -ne 0 ]; then exit "${CURL_STUB_EXIT}"; fi\nprintf \'%s\' "${CURL_STUB_HTTP:-200}"\n')
+    '#!/bin/bash\necho "$@" >> "${CURL_ARGV_LOG:-/dev/null}"\ncat > "${CURL_STDIN_LOG:-/dev/null}"\nif [ "${CURL_STUB_EXIT:-0}" -ne 0 ]; then exit "${CURL_STUB_EXIT}"; fi\nprintf \'%s\' "${CURL_STUB_HTTP:-200}"\n')
   writeFileSync(join(bin, 'tmux'), '#!/bin/bash\necho "$@" >> "${TMUX_ARGV_LOG:-/dev/null}"\nexit 0\n')
   for (const b of ['curl', 'tmux']) chmodSync(join(bin, b), 0o755)
   return bin
@@ -126,6 +126,54 @@ describe('generated prod-tree post-checkout hook: honest alert delivery', () => 
     const dead = runHook(hook, repo, { CURL_STUB_EXIT: '6' })
     expect(dead.status).toBe(0)
     expect(dead.stderr).toContain('NEM ert celba')
+  })
+
+  // Card 970166ce (upstream 9647c9658a5e..9abea4ee17d6): git check-ref-format
+  // accepts a double quote in a branch name (only space/colon/backslash/'['
+  // are rejected -- so the quote-only vector below is what a BRANCH can carry;
+  // the quote+colon combination needs the repository PATH, which has no such
+  // restriction), so the alert body must be JSON-encoded, not hand-glued.
+  it('a branch name carrying a double quote still produces valid, unhijacked JSON', () => {
+    const { hook, repo } = setupRepoWithHook()
+    const bin = stubBin()
+    const quotedBranch = 'fea"ture-probe'
+    execFileSync('git', ['-C', repo, 'checkout', '-q', '-B', quotedBranch], {
+      env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, MARVEEN_PROD_CHECKOUT_OK: '1' },
+    })
+    const stdinLog = join(stage, 'curl-stdin.log')
+    const r = spawnSync('/bin/bash', [hook, 'a'.repeat(40), 'b'.repeat(40), '1'], {
+      cwd: repo,
+      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: stage, CURL_STDIN_LOG: stdinLog, CURL_STUB_HTTP: '200' },
+      encoding: 'utf-8',
+      timeout: 20000,
+    })
+    expect(r.status).toBe(0)
+    expect(r.stderr).not.toContain('NEM ert celba')
+    const body = readFileSync(stdinLog, 'utf-8')
+    const parsed = JSON.parse(body) // throws if the branch name broke the JSON out of shape
+    expect(parsed.to).toBe('marveen')
+    expect(parsed.content).toContain(quotedBranch) // the raw quote survives, properly escaped
+  })
+
+  it('KNOWN-POSITIVE for the pin: the pre-fix hand-glued body breaks on the same branch name', () => {
+    const quotedBranch = 'fea"ture-probe'
+    const preFixBody = `{"from":"marveen","to":"marveen","content":"...agat valtott a(z) ${quotedBranch} agra..."}`
+    expect(() => JSON.parse(preFixBody)).toThrow()
+  })
+
+  // The second, sharper vector: a repository PATH holding a quote AND a colon
+  // (directory names have none of git's ref-name restrictions) can close
+  // "content" early and open a SECOND "to" key that a parser takes over the
+  // first -- attacker-written text delivered to an attacker-named agent.
+  it('KNOWN-POSITIVE for the pin: a quote+colon repo path hijacks the "to" field pre-fix', () => {
+    const evilPath = '/tmp/x","to":"attacker","x":"'
+    const preFixBody = `{"from":"marveen","to":"marveen","content":"[PROD-FA ORSEG] Fa: ${evilPath} -- agat valtott..."}`
+    // Still SYNTACTICALLY VALID JSON (a repeated key is legal, last one wins) --
+    // this is the sharper half of the finding: not a parse failure, a silent
+    // hijack. The fix's json.dumps makes this specific path physically unable
+    // to be represented as anything but a single content-string byte.
+    const parsed = JSON.parse(preFixBody)
+    expect(parsed.to).toBe('attacker') // the injected second "to" key wins
   })
 })
 

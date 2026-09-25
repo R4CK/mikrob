@@ -319,11 +319,14 @@ if [ "${1:-}" = "--selftest" ]; then
 fi
 
 CARD="${1:-}"; SHA="${2:-}"; shift 2 2>/dev/null
-[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: mopsion-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck] [--skip-bundle] [--allow-ungated] [--allow-stacked <cardId>[,<cardId>...]]" >&2; exit 2; }
-DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0; ALLOW_STACKED=""; ALLOW_UNGATED=0
+[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: mopsion-land.sh <cardId> <gated-sha> [--dry-run] [--prepare-only] [--allow-main-loss] [--skip-typecheck] [--skip-bundle] [--allow-ungated] [--allow-stacked <cardId>[,<cardId>...]]" >&2; exit 2; }
+DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0; ALLOW_STACKED=""; ALLOW_UNGATED=0; PREPARE_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY="--dry-run" ;;
+    # card 08eb6402: build + fast-check the merge, keep it alive on a card-named branch ref, print
+    # PREPARED|<sha>|<tree>, never push, never run the full suite. See the call site's own comment.
+    --prepare-only) PREPARE_ONLY=1 ;;
     --allow-main-loss) ALLOW_MAIN_LOSS=1 ;;
     --skip-typecheck) SKIP_TSC=1 ;;
     --skip-bundle) SKIP_BUNDLE=1 ;;
@@ -714,6 +717,79 @@ else
     fi
     say "format: the merge result is Prettier-clean ($(printf '%s\n' "$FMT_FILES" | wc -l) file(s) checked)"
   fi
+fi
+
+# PREPARE-ONLY (card 08eb6402, MikroB plan-grilling verdict 6011): stop here, having built and
+# fast-checked (seam/tsc/format) the merge commit, WITHOUT running the full suite and WITHOUT
+# pushing. store/mopsion-preland.sh calls this to get a validated merge commit it can then
+# suite-test on its own schedule (background, after gate verdicts, well before an actual landing
+# attempt) -- the two-phase design point 1 asks for, so a 70-minute suite never sits inside the
+# landing window itself. The commit is kept alive via a card-named branch ref (worktree removal on
+# EXIT would otherwise leave it unreachable and eligible for GC); the branch is a local ref only,
+# never pushed.
+if [ "$PREPARE_ONLY" -eq 1 ]; then
+  PREP_SHA="$(git -C "$WT" rev-parse HEAD)"
+  PREP_TREE="$(git -C "$WT" rev-parse HEAD^{tree})"
+  git -C "$MAIN" update-ref "refs/heads/land-prepare/$CARD" "$PREP_SHA"
+  echo "PREPARED|$PREP_SHA|$PREP_TREE"
+  rm -f "${MERGE_ERR:-}" 2>/dev/null
+  exit 0
+fi
+
+# SUITE-SHA EVIDENCE, off/warn/enforce (card 08eb6402, MikroB plan-grilling verdict 6011/3748).
+# Reads whether store/mopsion-preland.sh already suite-tested a tree IDENTICAL to this merge
+# result -- never runs the suite here, never diffs file contents, just a tree-hash lookup, so this
+# costs one subprocess call, not 70 minutes. Mode file (store/mopsion-suite-evidence-mode.json,
+# {"mode": "off"|"warn"|"enforce"}) defaults to "warn" when absent or unreadable -- MikroB's own
+# explicit default (msg 3736 point 3), and the switch to "enforce" is HIS decision after measuring
+# the warn-phase gap rate, never automatic in this script.
+SELF_DIR="$(dirname "$0")"
+EVIDENCE_MODE_FILE="${MOPSION_SUITE_EVIDENCE_MODE_FILE:-$SELF_DIR/mopsion-suite-evidence-mode.json}"
+# CARD 08eb6402, CYBERSEC F2: a MISSING file defaults to warn, silently -- MikroB's own explicit
+# decision (msg 3736 point 3), unchanged. A file that EXISTS but is unreadable/unparseable, or
+# names a mode this script does not recognise (a typo like "Enforce"), is a DIFFERENT case: that
+# used to fall back to warn just as silently, which is fail-OPEN in exactly the phase (enforce)
+# meant to be strict. It now resolves to enforce (fail-closed) with a loud stderr line, never
+# silent -- stderr is deliberately NOT redirected here, so the line reaches the caller's own log.
+EVIDENCE_MODE="$(python3 -c "
+import json, sys
+mode_file = sys.argv[1]
+try:
+    with open(mode_file) as f:
+        m = json.load(f).get('mode', 'warn')
+except FileNotFoundError:
+    m = 'warn'
+except Exception as exc:
+    print('mopsion-land: could not read mode from %s (%s) -- treating as enforce (fail-closed)' % (mode_file, exc), file=sys.stderr)
+    m = 'enforce'
+if m not in ('off', 'warn', 'enforce'):
+    print('mopsion-land: unknown mode %r in %s -- treating as enforce (fail-closed)' % (m, mode_file), file=sys.stderr)
+    m = 'enforce'
+print(m)
+" "$EVIDENCE_MODE_FILE")"
+[ -z "$EVIDENCE_MODE" ] && EVIDENCE_MODE="warn"
+
+if [ "$EVIDENCE_MODE" != "off" ]; then
+  MERGE_TREE_FOR_EVIDENCE="$(git -C "$WT" rev-parse HEAD^{tree})"
+  EVIDENCE_RESULT="$(python3 "$SELF_DIR/suite-evidence-record.py" lookup --tree "$MERGE_TREE_FOR_EVIDENCE" 2>/dev/null)"
+  case "$EVIDENCE_RESULT" in
+    PRESENT\|*) say "suite-evidence: PRESENT for this exact merge tree -- $(printf '%s' "$EVIDENCE_RESULT" | cut -d'|' -f3)" ;;
+    *)
+      WARN_LOG="${MOPSION_SUITE_EVIDENCE_WARN_LOG:-$SELF_DIR/mopsion-suite-evidence-mode.log}"
+      GAP_LINE="$(date -u +%FT%TZ)|$CARD|$MERGE_TREE_FOR_EVIDENCE|${EVIDENCE_RESULT:-MISSING}"
+      if [ "$EVIDENCE_MODE" = "enforce" ]; then
+        echo "REFUSED: no full-suite evidence covers this merge's tree ($EVIDENCE_RESULT). Run" >&2
+        echo "         store/mopsion-preland.sh $CARD $SHA first (or --pending), then re-land." >&2
+        printf '%s\n' "$GAP_LINE" >> "$WARN_LOG" 2>/dev/null || true
+        rm -f "${MERGE_ERR:-}" 2>/dev/null
+        exit 3
+      fi
+      # warn mode: never blocks, but the gap is logged so MikroB can measure it before enforcing.
+      say "suite-evidence: WARN -- no evidence covers this merge's tree ($EVIDENCE_RESULT); would" \
+          "REFUSE in enforce mode. Proceeding because mode=warn."
+      printf '%s\n' "$GAP_LINE" >> "$WARN_LOG" 2>/dev/null || true
+      ;;
+  esac
 fi
 
 if [ "$DRY" = "--dry-run" ]; then say "DRY-RUN: not pushing"; rm -f "${MERGE_ERR:-}" 2>/dev/null; exit 0; fi

@@ -760,36 +760,63 @@ def _content_on_branch(clone, ref, sha):
 _MIN_LANDED_LINES = 3
 
 
-def _added_lines_present(clone, ref, sha, files):
-    """(True, why) when every substantive line `sha` ADDS to `files` is in `ref`'s copy of that file.
+def _line_set(text):
+    """Trimmed, non-blank lines of `text` as a set -- exact membership, not a substring test."""
+    return {l.strip() for l in text.split("\n") if l.strip()}
 
-    Deliberately one-directional: it can only ever turn a suspected UNLANDED back into AGREE, and it
-    demands ALL of them, in the same file the commit put them in. A subset would let an unrelated
-    coincidence read as a landing.
+
+def _added_lines_present(clone, ref, sha, files):
+    """(True, why) when every substantive line `sha` ADDS to `files` is in `ref`'s copy of that
+    file, AND every substantive line it DELETES is absent there (card e21b816b, Cybersec F-1).
+
+    THE DELETION-BLIND SPOT THIS CLOSES. The added-lines side alone can only ever turn a suspected
+    UNLANDED back into AGREE, which is right for a commit whose substance is an ADDITION -- but a
+    commit whose substance is a REMOVAL (stripping a bypass, dropping a deny-block) can carry only
+    incidental added lines (a doc comment, a changelog note). Checking presence of those and never
+    checking absence of what it deleted let such a commit read as landed while the thing it removed
+    was still sitting on the main branch untouched. Measured same-day sibling: 42938a74, -14 lines
+    in settings.json.template (a deny-block removed) plus doc additions -- the doc side alone would
+    have satisfied the old check.
+
+    Both directions share the same discipline: exact (trimmed) line-set membership rather than a
+    substring test over the whole file (a short line could otherwise match INSIDE an unrelated
+    longer one), and a combined minimum count before either direction means anything -- "zero
+    substantive lines checked" is the vacuous pass this file exists to refuse.
     """
     total = 0
     for f in files:
         ok, patch = _git(clone, "show", "--format=", "--first-parent", sha, "--", f)
         if not ok:
-            return False, "the added lines of %s could not be read" % f
+            return False, "the added/deleted lines of %s could not be read" % f
         added = [l[1:].strip() for l in patch.split("\n")
                  if l.startswith("+") and not l.startswith("+++")]
         added = [l for l in added if len(l) >= 8]
-        if not added:
+        deleted = [l[1:].strip() for l in patch.split("\n")
+                   if l.startswith("-") and not l.startswith("---")]
+        deleted = [l for l in deleted if len(l) >= 8]
+        if not added and not deleted:
             continue
         ok, blob = _git(clone, "show", "%s:%s" % (ref, f))
         if not ok:
             return False, "%s does not exist on %s" % (f, ref)
-        missing = [l for l in added if l not in blob]
-        if missing:
-            return False, "%d of the %d line(s) it adds to %s are absent on %s" % (
-                len(missing), len(added), f, ref)
-        total += len(added)
+        blob_lines = _line_set(blob)
+        if added:
+            missing = [l for l in added if l not in blob_lines]
+            if missing:
+                return False, "%d of the %d line(s) it adds to %s are absent on %s" % (
+                    len(missing), len(added), f, ref)
+        if deleted:
+            still_there = [l for l in deleted if l in blob_lines]
+            if still_there:
+                return False, "%d of the %d substantive line(s) it deletes from %s are STILL " \
+                    "present on %s" % (len(still_there), len(deleted), f, ref)
+        total += len(added) + len(deleted)
     if total < _MIN_LANDED_LINES:
-        return False, ("too few substantive added lines (%d) to conclude anything from their "
-                       "presence" % total)
-    return True, ("but all %d substantive line(s) it adds are present on %s, so the work arrived "
-                  "under a different sha" % (total, ref))
+        return False, ("too few substantive added/deleted lines (%d) to conclude anything from "
+                       "their presence/absence" % total)
+    return True, ("but every substantive line it adds is present, and every substantive line it "
+                  "deletes is absent, on %s (%d line(s) checked) -- so the work arrived under a "
+                  "different sha" % (ref, total))
 
 
 def _unlanded_line(verdict):
@@ -801,11 +828,23 @@ def _unlanded_line(verdict):
 
 
 def _landed_or(enabled, candidates, agree_line):
-    """AGREE only survives if the delivery is actually on the main branch (card e65c480a)."""
+    """AGREE only survives if the delivery is actually on the main branch (card e65c480a).
+
+    Card e21b816b, Cybersec F-2: with the check skipped (`--no-landed`) an AGREE used to come out
+    byte-identical to one that actually verified the branch, and a non-default `GATE_CLOSURE_MAIN_REF`
+    (global, so it silently affects every clone's lookup, not just the one it was set for) left no
+    trace either -- a reader could not tell "verified on the branch" from "the question was never
+    asked" or "asked against some other ref than the usual one". Both now say so in the AGREE line
+    itself, not in a side channel the caller has to know to check.
+    """
     if not enabled:
-        return agree_line
+        return agree_line + " [landed-check skipped: --no-landed]"
     verdict = landed_verdict(candidates)
-    return agree_line if verdict is None else _unlanded_line(verdict)
+    if verdict is not None:
+        return _unlanded_line(verdict)
+    if _MAIN_REF_OVERRIDE:
+        return agree_line + " [main-ref=%s]" % _MAIN_REF_OVERRIDE
+    return agree_line
 
 
 def content_verdict(judged, declared):

@@ -88,7 +88,24 @@ export function initDatabase(dbPathOverride?: string): void {
       }
     }
   }
-  db = new Database(dbPath)
+  try {
+    db = new Database(dbPath)
+  } catch (err) {
+    // Native binding missing/broken (card 5b06720f): a foreign package manager (pnpm/yarn) run in
+    // the shared checkout can silently move better-sqlite3's compiled binding aside, and the raw
+    // error here is a generic "Could not locate the bindings file" with no hint at the real cause
+    // -- the process then crash-loops on boot with no actionable message. Speak the fix instead.
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/bindings file|Cannot find module.*better_sqlite3|invalid ELF header/i.test(msg)) {
+      throw new Error(
+        `better-sqlite3 native binding missing or broken (${msg}). This usually means node_modules ` +
+          `was written by a non-npm package manager (pnpm/yarn) or is stale -- run 'npm ci' in the ` +
+          `repo root and retry.`,
+        { cause: err },
+      )
+    }
+    throw err
+  }
   openedDbPath = isMemory ? null : dbPath
   db.pragma('journal_mode = WAL')
   // Performance pragmas: safe with WAL, applied after journal_mode is set.
@@ -3544,8 +3561,17 @@ export function bulkAttributionRequired(
   const recentEvents = row?.n ?? 0
   const fires = recentEvents >= BULK_ATTRIBUTION_THRESHOLD
   if (fires) {
+    // reason is caller-supplied free text and can be present even when the guard fires (e.g. actor
+    // missing, reason not) -- unbounded, it would let an unauthenticated caller inflate a log line
+    // arbitrarily (card 1ef7bd9c, Cybersec LOW on 1bd7debf).
     logger.warn(
-      { cardId, actor: actor ?? null, reason: reason ?? null, recentEvents, windowSeconds: BULK_ATTRIBUTION_WINDOW_SECONDS },
+      {
+        cardId,
+        actor: actor ?? null,
+        reason: reason ? reason.slice(0, 200) : null,
+        recentEvents,
+        windowSeconds: BULK_ATTRIBUTION_WINDOW_SECONDS,
+      },
       'bulk-attribution guard refused an unattributed status write (card 1bd7debf)'
     )
   }

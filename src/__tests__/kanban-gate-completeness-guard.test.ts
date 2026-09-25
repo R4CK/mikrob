@@ -600,6 +600,80 @@ describe('gateCompletenessGuardVerdict', () => {
     })
   })
 
+  describe('a bare kanban card-ID cited via "saját REVIEW-ja/kommentje" is not a Gate-SHA citation (card 211686ab, real incident 6980f9c7)', () => {
+    beforeEach(() => {
+      // 4bf530eb is a REAL other card on the board in every test in this block -- the id-lookup
+      // gate needs that to be true for the blanking to fire at all.
+      otherCardIds = ['4bf530eb']
+    })
+
+    it('THE MEASURED SHAPE: "ugyanaz a konvenció mint a <id> saját REVIEW-ja" -> unblocked', () => {
+      // Cybersec's own Gate-SHA line on 6980f9c7 carried neither a "kártya"/"card" marker word nor
+      // a slash nor a parent-marker word next to 4bf530eb -- none of the three PRE-EXISTING
+      // exclusions reached it, so the guard extracted it as the round's newest sha and moved the
+      // boundary to t=300, reading QA's real t=200 PASS as stale.
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        {
+          author: 'cybersec',
+          content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c, ugyanaz a konvenció mint a 4bf530eb saját REVIEW-ja',
+          created_at: 300,
+        },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('"saját kommentje" is recognised too, not just "saját REVIEW-ja"', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        {
+          author: 'cybersec',
+          content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c, lásd a 4bf530eb saját kommentje szerint',
+          created_at: 300,
+        },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('CONTROL: the exclusion is per OCCURRENCE -- the same id cited bare elsewhere still counts as a real Gate-SHA', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        {
+          author: 'backend',
+          content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c, mint a 4bf530eb saját REVIEW-ja',
+          created_at: 100,
+        },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        { author: 'backend', content: 'REVIEW: ujra\nGate-SHA: 4bf530eb', created_at: 300 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 4bf530eb', created_at: 400 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(true)
+    })
+
+    it('ADVERSARIAL: a REAL Gate-SHA next to "saját komment(em)" is NOT deleted when it is not a known card id', () => {
+      // "saját kommentem szerint" is a genuine idiom someone could use to restate their OWN earlier
+      // citation of a REAL sha. 34ff8cae is not in otherCardIds (only 4bf530eb is), so it must
+      // survive and correctly start a new round -- making the t=250 cybersec verdict stale.
+      otherCardIds = ['4bf530eb']
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c', created_at: 250 },
+        {
+          author: 'backend',
+          content: 'REVIEW: javitva\nGate-SHA: 34ff8cae saját kommentem szerint',
+          created_at: 300,
+        },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(true)
+    })
+  })
+
   // Real incident on d0b4f003 (card 367c23a9): three gate agents cited the SAME round's Gate-SHA
   // in three different shapes on one line. QA's PASS read as stale ("QA verdikt hianyzik") because
   // Cybersec's "+"-joined citation silently lost its second sha to the old comma-anchored

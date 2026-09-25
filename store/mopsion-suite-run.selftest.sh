@@ -261,6 +261,74 @@ else
   bad "a caller-supplied --project was overridden by the split" "rc=$rc runs=$runs argv=$(cat "$ARGV_CAPTURE" 2>/dev/null | tr '\n' ' ')"
 fi
 
+echo
+
+# --- evidence is recorded ONLY for a full, clean run (card 08eb6402, Cybersec F1(b)/(c)) --------
+# Its OWN worktree, a REAL git repo this time (not just a directory) -- the guards below read
+# `git status --porcelain` and `rev-parse HEAD^{tree}`, which need an actual repo to answer.
+EVWT="$TMP/fake-evidence-wt"
+mkdir -p "$EVWT/node_modules/.bin" "$EVWT/store"
+cp "$RUN" "$EVWT/store/$(basename "$RUN")"
+cat > "$EVWT/store/agent-worktree.sh" <<EOF
+#!/usr/bin/env bash
+echo "$EVWT"
+EOF
+chmod +x "$EVWT/store/agent-worktree.sh"
+: > "$EVWT/store/vitest-flake-classify.sh"; chmod +x "$EVWT/store/vitest-flake-classify.sh"
+: > "$EVWT/store/vitest-skip-report.sh"; chmod +x "$EVWT/store/vitest-skip-report.sh"
+# A minimal FAKE recorder: only cares whether it was CALLED, not what it computes -- the real
+# script's own logic is suite-evidence-record.selftest.py's job, not this file's.
+EV_MARKER="$TMP/evidence-called.txt"
+cat > "$EVWT/store/suite-evidence-record.py" <<EOF
+#!/usr/bin/env python3
+import sys
+with open("$EV_MARKER", "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\n")
+print("READY|fake|fake|pass=0 fail=0 skip=0")
+EOF
+cat > "$EVWT/node_modules/.bin/vitest" <<'FAKEVITEST'
+#!/usr/bin/env bash
+echo " Test Files  1 passed (1)"
+echo "      Tests  1 passed (1)"
+exit 0
+FAKEVITEST
+chmod +x "$EVWT/node_modules/.bin/vitest"
+git -C "$EVWT" init -q
+git -C "$EVWT" -c user.email=a@b -c user.name=t add -A
+git -C "$EVWT" -c user.email=a@b -c user.name=t commit -q -m one
+
+env_ev=(
+  "CLEANCORE_SUITE_LOCK_PREFIX=$PREFIX-ev"
+  "CLEANCORE_SUITE_API=http://127.0.0.1:9"
+  "CLEANCORE_SUITE_POLL_S=1"
+)
+
+: > "$EV_MARKER"
+out="$(env "${env_ev[@]}" CLEANCORE_SUITE_SLOTS=2 bash "$EVWT/store/$(basename "$RUN")" evagent 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && [ -s "$EV_MARKER" ] && grep -q '^record ' "$EV_MARKER"; then
+  ok "CONTROL: a full, clean run DOES record evidence"
+else
+  bad "a full clean run should have recorded evidence" "rc=$rc marker=$(cat "$EV_MARKER" 2>/dev/null) out=$out"
+fi
+
+: > "$EV_MARKER"
+out="$(env "${env_ev[@]}" CLEANCORE_SUITE_SLOTS=2 bash "$EVWT/store/$(basename "$RUN")" evagent -- apps/api/src/ 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && [ ! -s "$EV_MARKER" ] && echo "$out" | grep -q "no evidence recorded"; then
+  ok "a partial run (extra vitest args) does NOT record evidence (Cybersec F1(b))"
+else
+  bad "a partial run should not have recorded evidence" "rc=$rc marker=$(cat "$EV_MARKER" 2>/dev/null) out=$out"
+fi
+
+: > "$EV_MARKER"
+touch "$EVWT/untracked-file.txt"
+out="$(env "${env_ev[@]}" CLEANCORE_SUITE_SLOTS=2 bash "$EVWT/store/$(basename "$RUN")" evagent 2>&1)"; rc=$?
+rm -f "$EVWT/untracked-file.txt"
+if [[ $rc -eq 0 ]] && [ ! -s "$EV_MARKER" ] && echo "$out" | grep -q "no evidence recorded"; then
+  ok "a dirty worktree (untracked file) does NOT record evidence (Cybersec F1(c))"
+else
+  bad "a dirty worktree should not have recorded evidence" "rc=$rc marker=$(cat "$EV_MARKER" 2>/dev/null) out=$out"
+fi
+
 # --- 13. THE MEMORY PRECONDITION (card 7e7ac40c) ------------------------------------------------
 # backend3's finding: a full suite was OOM-killed BEFORE STARTING with 474 MB available of 24032 MB.
 # The slot cap never looked at memory. Measured on one full run (806 samples at 5s): a suite peaks
@@ -482,6 +550,80 @@ if [[ $midrun_off_rc -eq 0 ]]; then
   ok "CONTROL: CLEANCORE_SUITE_MIN_AVAIL_MB=0 disables the mid-run watch too"
 else
   bad "the mid-run watch fired even though the memory precondition was disabled" "rc=$midrun_off_rc out=$(cat "$TMP/midrun-off-out.txt" 2>/dev/null)"
+fi
+
+# --- 15. THE REVERSE DIRECTION, WITH THE REAL fleet-test.sh (card 3e1502ec) ---------------------
+# Cases 1-14 above prove this script's OWN slot logic against synthetic `flock` holders. Those
+# holders use the identical file-naming scheme fleet-test.sh's acquire_cpu_slot() uses
+# (${PREFIX}-N.lock), so symmetry follows from flock being a kernel primitive -- but nothing before
+# this case actually DROVE the real fleet-test.sh script and watched this script queue behind it.
+# That gap is what card 3e1502ec's "known-positive" ask names: a fleet-test run should make
+# cleancore-suite-run.sh see the CPU pool as short one slot, not just be assumed to by construction.
+#
+# fleet-test.sh's ROOT and LOCK_FILE are hardcoded to the real /home/neon/marveen (not derived from
+# MARVEEN_MAIN), so this holds the REAL tree lock first -- that stops the real script right after it
+# acquires its CPU slot, before it ever touches a worktree, checkout or build.
+#
+# THE REAL LOCK MAY LEGITIMATELY BE BUSY (another agent's genuine landing/suite in flight): this
+# acquires it NON-BLOCKING and SKIPS the case rather than queueing behind a run that can take
+# 60-90 minutes -- a selftest that can hang on live fleet traffic is worse than one that skips.
+REAL_TREE_LOCK="/home/neon/marveen-test.lock"
+REV_ANCHOR="$TMP/reverse-anchor"
+mkdir -p "$REV_ANCHOR/store"
+tree_lock_pid=""
+fleet_test_pid=""
+cleanup_case15() {
+  [[ -n "$fleet_test_pid" ]] && kill -9 "$fleet_test_pid" 2>/dev/null
+  [[ -n "$tree_lock_pid" ]] && kill -9 "$tree_lock_pid" 2>/dev/null
+}
+
+exec 8>"$REAL_TREE_LOCK"
+if ! flock -n 8; then
+  echo "  [SKIP] case 15 -- the real fleet-test tree lock is held by another run right now; not queueing behind it"
+  exec 8>&-
+else
+  ( exec 8>"$REAL_TREE_LOCK"; flock 8; sleep 25 ) &
+  tree_lock_pid=$!
+  exec 8>&-
+  sleep 0.3
+
+  MARVEEN_MAIN="$REV_ANCHOR" CLEANCORE_SUITE_SLOTS=2 CLEANCORE_SUITE_POLL_S=1 \
+    FLEET_TEST_LOCK_WAIT=20 \
+    bash "$HERE/fleet-test.sh" --ref HEAD >"$TMP/case15-fleet-test.out" 2>&1 &
+  fleet_test_pid=$!
+  sleep 2   # let the real script acquire its CPU slot and start waiting on the real tree lock
+
+  # CONTROL FIRST: with only ONE of the two slots taken (by the real fleet-test.sh), the OTHER slot
+  # must still be free -- so the queue-out below is caused by the second, synthetic holder, not by
+  # some unrelated bug that always reports "no slot" against this anchor.
+  out="$(env "${env_common[@]}" MARVEEN_MAIN="$REV_ANCHOR" CLEANCORE_SUITE_LOCK_PREFIX="${REV_ANCHOR}/store/.cleancore-suite-slot" \
+         CLEANCORE_SUITE_SLOTS=2 CLEANCORE_SUITE_WAIT_MAX_S=5 \
+         bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+  if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree'; then
+    ok "CONTROL: with only the real fleet-test.sh holding one slot, cleancore-suite-run.sh gets the other"
+  else
+    bad "CONTROL failed -- cleancore-suite-run.sh could not get the free slot for an unrelated reason" \
+      "rc=$rc out=$out fleet-test-out=$(cat "$TMP/case15-fleet-test.out" 2>/dev/null)"
+  fi
+
+  # Now take the OTHER slot synthetically too, so BOTH are held and the run must queue out.
+  ( exec 9>"${REV_ANCHOR}/store/.cleancore-suite-slot-2.lock"; flock 9; sleep 15 ) &
+  HOLDERS+=("$!")
+  sleep 0.3
+
+  out="$(env "${env_common[@]}" MARVEEN_MAIN="$REV_ANCHOR" CLEANCORE_SUITE_LOCK_PREFIX="${REV_ANCHOR}/store/.cleancore-suite-slot" \
+         CLEANCORE_SUITE_SLOTS=2 CLEANCORE_SUITE_WAIT_MAX_S=3 \
+         bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+  if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no slot after'; then
+    ok "cleancore-suite-run.sh queues out when a REAL fleet-test.sh run holds the other shared slot"
+  else
+    bad "cleancore-suite-run.sh did not see the real fleet-test.sh's CPU-slot hold" \
+      "rc=$rc out=$out fleet-test-out=$(cat "$TMP/case15-fleet-test.out" 2>/dev/null)"
+  fi
+
+  cleanup_case15
+  wait "$fleet_test_pid" 2>/dev/null
+  wait "$tree_lock_pid" 2>/dev/null
 fi
 
 echo "mopsion-suite-run.selftest: $pass passed, $fail failed"

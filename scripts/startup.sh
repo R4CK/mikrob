@@ -73,16 +73,16 @@ else
   log "guard-timers installer not found ($GUARD_INSTALLER)"
 fi
 
-# 4b. CleanCore main-suite guard (hourly detector for "did origin/main go red").
+# 4b. mopsion main-suite guard (hourly detector for "did origin/main go red").
 # Its scheduler half was the unversioned one: measured 2026-08-24, the guard had no cron entry, no
 # unit and no dashboard schedule left, so it had simply stopped running and nothing said so
 # (card 0dadd1e9). Rendering + enabling it from here is what makes that self-heal.
-CC_GUARD_INSTALLER="$(dirname "$0")/install-cleancore-suite-guard-timer.sh"
+CC_GUARD_INSTALLER="$(dirname "$0")/install-mopsion-suite-guard-timer.sh"
 if [ -x "$CC_GUARD_INSTALLER" ]; then
   bash "$CC_GUARD_INSTALLER" >>"$LOG" 2>&1 \
-    && log "cleancore suite-guard timer ensured" || log "cleancore suite-guard timer ensure FAILED"
+    && log "mopsion suite-guard timer ensured" || log "mopsion suite-guard timer ensure FAILED"
 else
-  log "cleancore suite-guard installer not found ($CC_GUARD_INSTALLER)"
+  log "mopsion suite-guard installer not found ($CC_GUARD_INSTALLER)"
 fi
 
 # 5. Windows-side WSL watchdog (outer net for a TOTAL WSL wedge). WSL-only +

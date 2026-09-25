@@ -41,8 +41,8 @@ run() { # $1 = repo, $2 = state file, $3 = fake dash url, extra args...
 cat > "$SB/fakeboard.py" <<'PYEOF'
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
-PORT = int(sys.argv[1])
-LOG = sys.argv[2]
+LOG = sys.argv[1]
+PORT_FILE = sys.argv[2]
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -56,19 +56,26 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b'{"ok":true}')
 
-HTTPServer(('127.0.0.1', PORT), H).serve_forever()
+# PORT 0: the kernel hands out a free one (card ba64892d, same fix as fleet-nudger.selftest.sh's
+# card f3757cc7). This file used to take a HARDCODED port (38841) from the caller, which made it a
+# fleet-wide singleton: two concurrent marveen-land.sh runs both execute this selftest, both tried
+# to bind the same number, and the loser died with OSError [Errno 98] Address already in use -- a
+# landing refused over a port, not a diff. The real port is written back for the caller; the bind
+# has already succeeded by the time it is readable, so a caller that sees a number knows the socket
+# is up.
+srv = HTTPServer(('127.0.0.1', 0), H)
+with open(PORT_FILE, 'w') as f:
+    f.write(str(srv.server_port))
+srv.serve_forever()
 PYEOF
 
-# PORT OWNERSHIP. fleet-nudger.selftest.sh owns 38811-38829 and binds 38820 as one of its cases.
-# Both selftests were unreferenced until card 0ebeff55 wired them into store-selftests-all-run,
-# at which point they ran in the same suite for the first time and this port became a shared
-# resource -- the symptom was an intermittent `OSError: [Errno 98] Address already in use`, not a
-# clean failure. 38841 is outside that neighbour's range; the guard in store-selftests-all-run
-# fails if any two selftests ever name the same port again.
-PORT=38841
 LOG="$SB/alerts.log"
-python3 "$SB/fakeboard.py" "$PORT" "$LOG" &
+PORTFILE="$SB/fakeboard.port"
+python3 "$SB/fakeboard.py" "$LOG" "$PORTFILE" &
 FAKEPID=$!
+PORT=""
+for _ in $(seq 1 40); do [ -s "$PORTFILE" ] && PORT="$(cat "$PORTFILE")" && break; sleep 0.1; done
+if [ -z "$PORT" ]; then echo "FAIL fakeboard never reported a port"; exit 1; fi
 for _ in $(seq 1 40); do curl -sf -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null && break; sleep 0.1; done
 DASH="http://127.0.0.1:$PORT"
 
