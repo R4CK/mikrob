@@ -14708,3 +14708,85 @@ worktree-mintát).
 **Ki döntött:** backend3 (mind a 7 lezárt fájl olvasása+döntése valódi merge-szimulációval), Cybersec
 bevonása kérve az `outgoing-copy-gate.py`-ra (nem lezárva). Gate ezen a kártyán: QA + Cybersec (SEC
 címke).
+
+## 2026-09-25 -- c2aeefa5 (b5b7eb6b gyerek, 2/10, install/update szkriptek + gyökér-config): 8/8 fájl döntve, delta-gate után 1 javítás
+
+**A kártya.** MikroB szerinti terület-bontás (msg 4128, a b5b7eb6b Feladat 10 gyereke közül a 2.):
+install/update szkriptek + gyökér-config, 8 elavult elismerés (a korábbi szabályt a MOSTANI upstream
+tartalom ellen kell újra-dönteni, nem csak pin-bump).
+
+**Fájlonkénti döntés (8 fájl, upstream f3ce19ed..0db7ac66 ellen mérve):**
+1. `.gitignore` -- ADOPT két új upstream-only additív sor (`tmp.*`, `supabase/.temp`), a korábban már
+   átvett `.fakehome` sor érintetlen. Tisztán additív, nincs ütközés.
+2. `package.json` -- ADOPT a `build` script bővítését (`tsc && node scripts/write-built-commit.cjs`),
+   ELTÉRVE a fájl saját, kimondott alap-szabályától ("scripts stay fork-canonical, do not take
+   upstream's"). Indoklás: a bővítés a fork SAJÁT, már meglévő `dist/.built-commit` önjavító
+   mechanizmusát zárja be (amit `update.sh`/`install-linux.sh` már használ), nem egy új
+   upstream-viselkedést importál -- a kivétel tehát nem a szabály felrúgása, hanem egy olyan eset,
+   amit a szabály nem tudott előre megnevezni (a script maga a fork saját hiányát pótolja).
+   `scripts/write-built-commit.cjs` portolva upstreamből verbatim, egy komment-korrekcióval (a fork
+   saját sorszámaira igazítva). Sanity: futtatva, `dist/.built-commit` helyesen íródik, dist/
+   hiányában fail-soft (exit 0, nincs írás).
+3. `package-lock.json` -- álló döntés változatlan (npm ci regenerálja mindig), trivális
+   verzió-diff.
+4. `vitest.config.ts` -- ADOPT `dist/**` az exclude listába: MÉRVE ezen a forkon, hogy
+   `dist/__tests__` 785 kompilált `.test.js` fájlt tartalmazott egy korábbi buildből, vagyis a fork
+   UGYANAZT a duplakollekciós hibát hordozta, amit upstream mért (888/10723 vs. 444/5633, 67 fájl
+   pirosan, valódi hiba nélkül). ELUTASÍTVA ugyanekkor a `default-ssh-dir-seam.ts` setupFiles-bevonása
+   -- ennek vizsgálata közben derült ki a JANKBRIDGE803 élő biztonsági lelet (lásd alul), a teljes
+   javítás a HIGH kártya 2564e877 alatt készült el, nem itt.
+5. `update.sh` -- a két korábban döntött pont (POST_MERGE_MODE szerkezet, `{{CHAT_ID}}` helyettesítés)
+   érintetlen a mostani diffben, grep-pel megerősítve. Öt új upstream tétel (NODEPINMAC921,
+   SHALLOWGUARD921, UPDATE_AUTO_REBASE, inbox-observer/keepalive systemd-karbantartás,
+   ZAKARFELUGY921) mind HALASZTVA, nevesített follow-upként a rule textben.
+6. `install-linux.sh` -- a két korábban döntött pont (Ollama-eltávolítás, Telegram-párosítási
+   liveness) érintetlen. Három új tétel (INBOX_OBSERVER_UNIT, CLIRUNSVERZIO923 probe-csere,
+   TELEGRAM_ENV sorok) halasztva. Az INBOX_OBSERVER_UNIT halasztást `ACKNOWLEDGED_FORK_ANCHORS`
+   tripwire is védi (a guard-teszt saját "every NOT ADOPTED mention needs an anchor" szabálya miatt
+   is szükséges volt).
+7. `mcp-catalog.json` -- ELSŐ KÖR (delta-gate ELŐTT): upstream saját 5-elemes
+   supply-chain-azonosság-ellenőrző menetét vettem át közvetlenül (nem elhalasztva): gmail csomag
+   `gmail-mcp-server` -> `@artymclabin/gmail-mcp` (a régi csomagnak nincs repository.url-je, más
+   maintainer, postinstall script van benne), elevenlabs `npx elevenlabs-mcp` (törölt/nem létező npm
+   csomag) -> `uvx elevenlabs-mcp` (a valódi PyPI-disztribúció). MÁSODIK KÖR, Cybersec NO-GO után
+   (lásd alul): a gmail csere VISSZAVONVA, az elevenlabs pontnál verzió-pin hozzáadva.
+8. `.claude/settings.json` -- MARAD UNDECIDED, a 21597530/c00d5429 kontextus szerint (a fájl
+   teljes felülvizsgálata külön follow-up). Az új upstream Slack/Discord hook-csomag elutasítva (ez a
+   fork Telegram-only), négy további nem-Slack tétel (PostToolUseFailure stage,
+   memory-lookup-nudge.py, memory-frontmatter-gate.py, szélesített gmail/draft_email matcherek) nincs
+   eléggé megvizsgálva -- nevesítve a meglévő teljes-audit follow-uphoz.
+
+**Élő biztonsági lelet, nem a kártya scope-ja (eszkalálva msg 4146, MikroB visszaigazolta msg 4148,
+HIGH kártya 2564e877 nyílt rá, azóta landolva):** a `vitest.config.ts` `default-ssh-dir-seam.ts`
+pontjának vizsgálata közben derült ki, hogy a fork saját `bridge-enroll.test.ts` fájlja ugyanazt a
+hibaosztályt hordozza, amit upstream az ENROLL813 incidensben talált (2026-09-15, 62 valódi kulcs
+szivárgott): a JANKBRIDGE803 pozitív kontroll teszt a saját `afterEach`-e miatt a VALÓDI operátori
+`~/.ssh`-ra esett volna vissza. Ezen a gépen nem történt szivárgás (MikroB megerősítette). A teljes
+javítás (seam + afterEach restore + fail-closed guardok) külön kártyán ment, nem itt.
+
+**Delta-gate rework (Cybersec NO-GO + QA FAIL, ugyanarra a b550fb01 Gate-SHA-ra, 2026-09-25):**
+- Cybersec F1 HIGH: a `mcp-catalog.json` gmail-csere két KÜLDŐ eszközt (send_draft, reply_all) hoz be,
+  amit egyik email-jóváhagyási kapu matchere sem lát (outgoing-copy-gate.py, email-approval-gate.py,
+  email-send-gate.mjs), miközben a régi csomag egyetlen küldő eszközét (gmail_send_email) a meglévő
+  matcher elkapta. MikroB döntése (msg 4162): a gmail-cserét VISSZAVONNI ebből a kártyából (a régi
+  bejegyzés marad), külön kártya nyílik rá, amiben a csere csak a matcherek + a
+  `email-send-gate.mjs` `gateDecision`-jének kiterjesztésével EGYÜTT jöhet be. Végrehajtva: a `gmail`
+  bejegyzés visszaállítva a c2aeefa5 előtti tartalmára verbatim (command/args/infoUrl/verifiedAt/
+  verifiedNote). Új `ACKNOWLEDGED_FORK_ANCHORS['mcp-catalog.json']` tripwire (needle
+  `@artymclabin/gmail-mcp`, expect absent) őrzi, hogy a csomag-azonosság csendben ne térhessen vissza
+  a kapu-bővítés nélkül -- MUTÁCIÓVAL igazolva: a stringet visszaszúrva a guard-teszt valódian
+  elbukik ("expected absent... found=true"), visszaállítás után 57/57 zöld.
+- Cybersec F2 LOW: a katalógus-csomagok verzió-pin nélkül futnak (a maintainer bármely jövőbeli
+  kiadása, akár fiók-átvétel után is, lefutna). Az `elevenlabs` pont (ami MARAD adoptálva) pin-t
+  kapott: `uvx elevenlabs-mcp` -> `uvx elevenlabs-mcp==0.12.2`, a verifiedNote kiegészítve. A gmail
+  ponthoz tartozó verzió-pin kérdés a visszavonással a külön kártyára költözött.
+- QA FAIL: hiányzó DECISIONS.md bejegyzés a kártya saját architekturális döntéseihez (ugyanaz a
+  szabály, amit a testvér-kártya 09d54e88 már alkalmazott ezen a fázison) -- EZ a bejegyzés a pótlás.
+
+**Ellenőrzés:** `tsc --noEmit` tiszta. `fork-upstream-conflict-guard.test.ts` +
+`fork-upstream-drift-check.test.ts` 57/57 zöld a delta-gate javítások után is. `mcp-catalog.json`
+valid JSON.
+
+**Ki döntött:** backend (mind a 8 fájl első köre + a delta-gate rework), Cybersec NO-GO-ja alapján
+(F1 HIGH, F2 LOW), QA FAIL-je alapján (a jelen bejegyzés hiánya). Gate: QA + Cybersec (SEC címke),
+delta-gate ugyanarra a kódra fut újra a rework után.
