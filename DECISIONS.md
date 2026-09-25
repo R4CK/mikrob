@@ -13699,3 +13699,41 @@ fixture-konstanssal (nem upstream inline-ismetlesevel -- egyszerubb, ugyanazt bi
 28/28 zold a celzott futasban, `tsc --noEmit` tiszta.
 
 **Ki dontott:** backend (self-advance, 6b. szabaly szerinti 2-napos regi kartya elsobbsege).
+
+## 2026-09-25 -- 4cb516da -- mikrob-usage-probe 2026-09-16 05:19-es relogin-igenye: hamis-pozitiv detekcio, mar javitva
+
+Vizsgalat kartya (Peti eszrevetele, 2026-09-16 05:50): a 09-16 05:19-es ejszaka-utani reboot soran
+a `weekly-usage-panel-read.sh` `revive_pane()` FAIL-t adott ("refresh token likely expired"),
+holott az elozo esti allapot meg ervenyesnek mutatta a tokent. Ket hipotezis a kartyan: (1) a
+refresh token tenylegesen lejart, (2) a revive-detekcio hamis-pozitiv volt.
+
+**Nem rekonstrualhato kozvetlenul.** A `.credentials.json`-nak (a probe izolalt config-konyvtaraban,
+`/home/neon/.claude-usage-probe`) nincs backupja -- csak a `.claude.json`-t menti a `claude` CLI
+sajat mechanizmusa automatikusan, a `.credentials.json`-t nem. A 09-16 05:19-es allapot ezert mar
+nem vizsgalhato kozvetlenul, 9 nappal kesobb.
+
+**Kozvetett bizonyitek (2).** `weekly-usage-panel-read.sh` sajat commit-tortenete: MASNAP
+(2026-09-17, `c6cd9299`, "fix(usage-panel): trust-prompt revive sent wrong keypress, quitting
+claude to bash") MikroB elo-diagnosztizalt es javitott EGY, pontosan ugyanebbe az osztalyba tartozo
+hamis-pozitivot -- a bizalmi-mappa promptnal a "No, exit" volt elore kijelolve, es a revive
+felteteles nelkuli Enter-je ezt erositette meg, kilepve claude-bol bash-ra; a poll-hurok sosem latta
+a kesz-bannert, 90 mp utan hamis "refresh token likely expired" -et jelentett. A kartya sajat
+kommentje (MikroB, 2026-09-17 08:12, id 5333) megerositi: MASNAP, UGYANAZON izolalt token-vonalon, a
+reboot-utani elso revive CSENDBEN, Peti-login nelkul sikerult -- ha a token tenylegesen lejart
+volna 09-16-an, egy nappal idosebb tokennel 09-17-en meg kevesbe kellett volna mukodnie, nem jobban.
+
+**Nincs visszaeses a javitas ota.** `c6cd9299` `develop`-on landolt (jelen worktree HEAD-je
+leszarmazottja). At tudtam nezni a napi naplot es az inter-agent uzeneteket 2026-09-18 -- 2026-09-25
+kozott: nulla "usage-probe"/"relogin" emlites. A `.credentials.json` mtime-ja ma (2026-09-25 06:16)
+friss csendes refresh-t mutat, a mai reggeli teljes-gep-ujrainditas utan -- meg egy sikeres,
+nema revive-ciklus a javitas ota.
+
+**Kovetkezetetes:** a 09-16 05:19-es eset legvaloszinubb magyarazata (2), ugyanaz a
+revive-detekcios hamis-pozitiv osztaly, amit `c6cd9299` mar javitott -- kulon uj javitas ehhez a
+kartyahoz nem szukseges. Nem epitettem be automatikus `.credentials.json` backupot (a kartya
+sajat "erdemes lenne jovore" megjegyzese csak felvetette, nem kerte): egy elo OAuth-hitelesito
+adat tobbszori, idozitett masolasa uj titok-terjesztesi feluletet nyitna (2. kodminosegi elv --
+nem kert funkcio, plusz uj titok-kockazat), es a `claude` CLI sajat mechanizmusatol elteroen ezt
+nekunk kellene epiteni/karbantartani a masik fajlra.
+
+**Ki dontott:** backend (self-advance, 6b. szabaly szerinti 2-napos regi kartya elsobbsege).
