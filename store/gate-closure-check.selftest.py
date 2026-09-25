@@ -728,7 +728,9 @@ for label, comments, gates_, expect_, want in [
     ("a lone real QA FAIL", [c("qa", "QA FAIL\nGate-SHA: " + SHA_A), c("cybersec", S % SHA_A)],
      "qa,cybersec", None, "FAILED|QA=FAIL"),
     ("a clean pass", [c("qa", V % SHA_A), c("cybersec", S % SHA_A)], "qa,cybersec", SHA_A,
-     "AGREE|%s|QA=%s; CYBERSEC=%s" % (SHA_A, SHA_A, SHA_A)),
+     # Card e21b816b, F-2: run() defaults to --no-landed, so this AGREE now says so instead of
+     # reading byte-identical to a check that actually verified the branch.
+     "AGREE|%s|QA=%s; CYBERSEC=%s [landed-check skipped: --no-landed]" % (SHA_A, SHA_A, SHA_A)),
 ]:
     n += 1
     got = run(comments, gates_, expect_)
@@ -905,6 +907,100 @@ if _repo_ok:
     case("CONTROL: too few substantive added lines cannot buy a landing verdict vacuously",
          [c("backend2", R % TRIVIAL), c("qa", L % TRIVIAL)], "UNLANDED",
          gates="qa", env=ENV, landed=True)
+
+    # --- F-1: THE DELETION-BLIND SPOT (card e21b816b, Cybersec). The escape above only ever asked
+    # --- about ADDED lines -- right for a commit whose substance is an addition, but a commit whose
+    # --- substance is a REMOVAL (dropping a bypass/deny-block) could satisfy it on incidental added
+    # --- lines alone while the thing it deleted stayed on the branch untouched. Same-day sibling that
+    # --- measured this live: 42938a74, -14 lines in settings.json.template (a deny-block removed)
+    # --- plus doc additions -- the doc side alone would have satisfied the OLD check. --------------
+    _g("checkout", "-q", "-b", "f1-baseline", "main")
+    with open(os.path.join(_landed_repo, "f.txt"), "w") as fh:
+        fh.write("keeper alpha line\nBYPASS_INSECURE_DEFAULT_HERE\nkeeper beta line\n"
+                  "keeper gamma line\nkeeper delta line\n")
+    _g("add", "-A"); _g("commit", "-qm", "f1 baseline with the bypass present")
+    _g("checkout", "-q", "main")
+    _g("merge", "--no-ff", "-q", "-m", "merge: f1 baseline", "f1-baseline")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    # A commit that REMOVES the bypass line and adds three doc lines -- this exact commit never
+    # reaches main.
+    _g("checkout", "-q", "-b", "f1-removed-stranded", "main")
+    with open(os.path.join(_landed_repo, "f.txt"), "w") as fh:
+        fh.write("keeper alpha line\nkeeper beta line\nkeeper gamma line\nkeeper delta line\n"
+                  "removal documented line one\nremoval documented line two\n"
+                  "removal documented line three\n")
+    _g("commit", "-qam", "remove the bypass (this exact commit never lands)")
+    F1_REMOVED = _rev("HEAD")
+
+    # Main moves on WITHOUT the removal -- the bypass line is still there -- but an UNRELATED commit
+    # happens to append the same three doc lines, which is all the OLD (added-lines-only) check ever
+    # looked at.
+    _g("checkout", "-q", "main")
+    with open(os.path.join(_landed_repo, "f.txt"), "a") as fh:
+        fh.write("removal documented line one\nremoval documented line two\n"
+                  "removal documented line three\n")
+    _g("add", "-A"); _g("commit", "-qm", "an unrelated commit that happens to add the same doc lines")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    case("F-1 THE HAZARD: a removal commit is NOT landed just because its added lines coincidentally "
+         "appear elsewhere -- the bypass line it deletes is still on the branch",
+         [c("backend2", R % F1_REMOVED), c("qa", L % F1_REMOVED)], "UNLANDED",
+         gates="qa", env=ENV, landed=True)
+
+    # CONTROL, the mirror of REWORDED/AFTER_DOCS above but for a deletion: a GENUINELY landed removal
+    # (the bypass line is truly gone from the branch's copy) must still read AGREE, even though the
+    # file moved on since and neither ancestry, patch-id nor byte-identity can see it. Without this,
+    # F-1's fix could trade an under-detection bug for an over-detection one.
+    _g("checkout", "-q", "-b", "f1-g-baseline", "main")
+    with open(os.path.join(_landed_repo, "g.txt"), "w") as fh:
+        fh.write("alpha keep\nBYPASS_TOKEN_G_HERE\nbeta keep\ngamma keep\ndelta keep\n")
+    _g("add", "-A"); _g("commit", "-qm", "g baseline with the bypass present")
+    _g("checkout", "-q", "main")
+    _g("merge", "--no-ff", "-q", "-m", "merge: g baseline", "f1-g-baseline")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    _g("checkout", "-q", "-b", "f1-g-removed", "main")
+    with open(os.path.join(_landed_repo, "g.txt"), "w") as fh:
+        fh.write("alpha keep\nbeta keep\ngamma keep\ndelta keep\n"
+                  "removal note for g documented line one\nremoval note for g documented line two\n"
+                  "removal note for g documented line three\n")
+    _g("commit", "-qam", "remove the g bypass, on a branch")
+    F1_G_REMOVED = _rev("HEAD")
+
+    _g("checkout", "-q", "main")
+    with open(os.path.join(_landed_repo, "g.txt"), "w") as fh:
+        fh.write("alpha keep\nbeta keep\ngamma keep\ndelta keep\n"
+                  "removal note for g documented line one\nremoval note for g documented line two\n"
+                  "removal note for g documented line three\nepsilon added later by someone else\n")
+    _g("add", "-A"); _g("commit", "-qm", "the same g removal plus a later edit")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    case("F-1 CONTROL: a genuinely landed removal is still AGREE -- the fix must not turn into a "
+         "false UNLANDED for a real deletion that arrived under a different sha",
+         [c("backend2", R % F1_G_REMOVED), c("qa", L % F1_G_REMOVED)], "AGREE",
+         gates="qa", env=ENV, landed=True)
+
+    # --- F-2: A SKIPPED OR OVERRIDDEN LANDED-CHECK MUST SAY SO IN THE AGREE LINE (card e21b816b,
+    # --- Cybersec). Otherwise a reader cannot tell "verified on the branch" from "the question was
+    # --- never asked" (--no-landed) or "asked against some other ref than the usual one"
+    # --- (GATE_CLOSURE_MAIN_REF, which is global and silently affects every clone's lookup). --------
+    n += 1
+    _f2_skipped = run([c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "qa", env=ENV, landed=False)
+    _f2_ok = _f2_skipped.startswith("AGREE") and "[landed-check skipped: --no-landed]" in _f2_skipped
+    print("%s %-9s <- %-9s %s" % ("OK  " if _f2_ok else "FAIL", "marked", "marked" if _f2_ok else "bare",
+                                  "F-2: --no-landed marks the AGREE line, not a silent byte-identical pass"))
+    if not _f2_ok:
+        failures.append(("F-2 --no-landed marker", "AGREE line carries the skip marker", _f2_skipped))
+
+    n += 1
+    _f2_override = run([c("backend2", R % SHIPPED), c("qa", L % SHIPPED)], "qa",
+                       env={"MARVEEN_MAIN": _landed_repo, "GATE_CLOSURE_MAIN_REF": "main"}, landed=True)
+    _f2_ok2 = _f2_override.startswith("AGREE") and "[main-ref=main]" in _f2_override
+    print("%s %-9s <- %-9s %s" % ("OK  " if _f2_ok2 else "FAIL", "marked", "marked" if _f2_ok2 else "bare",
+                                  "F-2: a non-default GATE_CLOSURE_MAIN_REF marks the AGREE line too"))
+    if not _f2_ok2:
+        failures.append(("F-2 main-ref marker", "AGREE line carries the override marker", _f2_override))
 
     shutil.rmtree(_landed_repo, ignore_errors=True)
 
