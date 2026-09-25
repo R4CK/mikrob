@@ -271,7 +271,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "Re-measured 2026-09-03 (backend2, card 934dc104 landing-block, 6ed7224c0882..a515f9c8750b): upstream added a desktop-lock route (its own import line, one route-chain call, one 60s TTL sweeper). None of it touches the agent-scaffold import line this rule is about; all three hunks are additive and auto-merge. Resolution unchanged; blob bumped." +
     " Re-measured 2026-09-05 (mikrob, landing-block): upstream a515f9c8750b..1906c636641e adds a top-level import (isMalformedBodyError from a new web/malformed-body.js, which the fork does not have) and hardens the request-handler's catch block to answer 400 with route/method/bytes in the log instead of a bare 500 for a malformed JSON body -- a real, reasonable fix (measured against two live incidents in upstream's own log), but a new file + a new response shape is its own decision, not a rider on unblocking every other fork's landing. Does not touch the agent-scaffold import line or either BEGIN/END section-writer block this entry decides. Not adopted this round; candidate for a future round. Blob bumped." +
     " Re-measured 2026-09-06 (backend3, card 79bb0364 landing-block, round 15). Upstream added ensureTelegramCopyGate to the same agent-scaffold import line this rule is about, plus one call in the hook-backfill loop and its log line (GATECOPY828). NOT adopted, and this one needs a WARNING rather than a plain skip: it is the SAME capability the fork already wires in that loop as ensureOutgoingCopyGate (card 74181db2, line 620), so a future merge that takes upstream's name IN ADDITION would wire outgoing-copy-gate.py twice into every sub-agent, under two different matchers. One or the other, never both. Everything else this rule decides (the import-line union, watchEgressAllowlistForReaderRender, listAllAgentNames, ensureAgentProvenanceHook, ensureSystemDirectiveAuthSection) is untouched. Resolution unchanged; blob bumped." +
-    " Re-measured 2026-09-25 (backend, card f5536a70, round 16, fork/upstream re-decision). Upstream added SEVEN more names to the same agent-scaffold import line (ensureProjectRootInClaudeMd, ensureBashEgressDeny, ensureBashEgressParser, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection), plus new top-level imports (mainAgentConfigDirIfSeparate from a new web/agent-process.js, tryHandleClaudePlans/tryHandleCustomProviders route handlers, startKanbanArchiveRunner) and a dashboard-URL isTTY-gating hardening (the bootstrap URL with the bearer token no longer prints to a redirected, non-interactive stderr stream -- a real credential-exposure fix, measured against launchd's own error-log capture on upstream's side). Checked against the fork's CURRENT src/web.ts (not the stale recorded blob): ensureBashEgressDeny, ensureMemorySearchLabelSection and mainAgentConfigDirIfSeparate are ALREADY present here (adopted through an intermediate round not individually logged in this entry) -- the import-line union rule already covers them, nothing to redo. Genuinely absent: ensureProjectRootInClaudeMd (HOSTMOVE923, CLAUDE.md re-anchoring for a worktree instance), ensureBashEgressParser (EGRESSPARSER923), ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, tryHandleClaudePlans, tryHandleCustomProviders, startKanbanArchiveRunner (web/kanban-archive-runner.ts does not exist here), and the dashboard-URL TTY-gating hardening -- eight items, each a real ADOPTION decision (new files, new routes, or a security hardening), not a passive comment/import-line resolution. Raised together on follow-up card 965b0b2b (the two prior 'raised on card 6c6d471a' items never got an actual kanban card, per this round's own check -- not repeating that gap here). Resolution at the agent-scaffold import-line conflict point unchanged (union all names, including the newly-adopted seven, at the next real merge); blob bumped.",
+    " Re-measured 2026-09-25 (backend, card f5536a70, round 16, fork/upstream re-decision). Upstream added SEVEN more names to the same agent-scaffold import line (ensureProjectRootInClaudeMd, ensureBashEgressDeny, ensureBashEgressParser, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection), plus new top-level imports (mainAgentConfigDirIfSeparate from a new web/agent-process.js, tryHandleClaudePlans/tryHandleCustomProviders route handlers, startKanbanArchiveRunner) and a dashboard-URL isTTY-gating hardening (the bootstrap URL with the bearer token no longer prints to a redirected, non-interactive stderr stream -- a real credential-exposure fix, measured against launchd's own error-log capture on upstream's side). Checked against the fork's CURRENT src/web.ts (not the stale recorded blob): ensureBashEgressDeny, ensureMemorySearchLabelSection and mainAgentConfigDirIfSeparate are ALREADY present here (adopted through an intermediate round not individually logged in this entry) -- the import-line union rule already covers them, nothing to redo. Genuinely absent: ensureProjectRootInClaudeMd (HOSTMOVE923, CLAUDE.md re-anchoring for a worktree instance), ensureBashEgressParser (EGRESSPARSER923), ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, tryHandleClaudePlans, tryHandleCustomProviders, startKanbanArchiveRunner (web/kanban-archive-runner.ts does not exist here), and the dashboard-URL TTY-gating hardening -- eight items, each a real ADOPTION decision (new files, new routes, or a security hardening), not a passive comment/import-line resolution. Raised together on follow-up card 965b0b2b (the two prior 'raised on card 6c6d471a' items never got an actual kanban card, per this round's own check -- not repeating that gap here). Resolution at the agent-scaffold import-line conflict point unchanged (union all names, including the newly-adopted seven, at the next real merge); blob bumped." +
+    " CORRECTION 2026-09-25 (Cybersec, card f5536a70 NO-GO F1 HIGH, komment 6862, verified directly against the fork's src/web.ts and src/web/bootstrap-notice.ts before writing this paragraph). THE TTY-GATING ITEM ABOVE IS WRONG -- calling it 'a real credential-exposure fix' worth adopting is a REGRESSION, not a hardening. The fork does NOT still have the vulnerable bootstrapUrl-with-token pattern upstream's isTTY-gate is protecting: card 62631948 (commit 8ca85761, src/web/bootstrap-notice.ts) already replaced it wholesale. renderBootstrapNotice(port, tokenPath) prints ONLY the dashboard URL (no token) and an instruction to `cat` the 0600 token file -- on EVERY stream, TTY or not, per its own header comment ('the token is not printed at all ... stderr is captured by the service manager'). Upstream's isTTY-gate is WEAKER: on a non-interactive stream it prints the safe path-only message, but on `process.stderr.isTTY === true` it still writes the full `http://127.0.0.1:<port>/?token=${DASHBOARD_TOKEN}` URL verbatim (confirmed against the recorded diff hunk, blob b69c9dcb region). In this fleet a TTY is typically a tmux pane, which scrollback and this fork's own context-guard pane-snapshot mechanism (store/context-guard-last-pane-<agent>.txt) persist -- so upstream's 'fix' would put a root-equivalent bearer token into exactly the kind of long-lived, multi-reader capture the fork's own version was built to avoid. RESOLUTION FOR THIS ITEM, CORRECTED: KEEP the fork's renderBootstrapNotice() wholesale; the TTY-gating hunk is NOT ADOPTABLE, full stop, not merely deferred to a follow-up round. It is removed from card 965b0b2b's item list (see that card's own updated description). The other seven ensureXxx/tryHandleXxx/startKanbanArchiveRunner items this entry raised remain genuine, undecided ADOPTION questions -- this correction touches only the TTY-gating item. See ACKNOWLEDGED_FORK_ANCHORS['src/web.ts'] for the tripwire watching this refusal.",
   // The call-site half of the same upstream change, and the same INDEPENDENT-ADDITIVE class as
   // src/db.ts below rather than a disagreement (measured 2026-08-22). Two hunks, both caused by the
   // two sides adding a DIFFERENT CLAUDE.md section-writer at the same insertion point, each with
@@ -341,7 +342,17 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "Re-measured 2026-09-03 (backend2, card 934dc104 landing-block, 61dc38447a22..6a71eab9ab67): upstream added countNewerMessagesFromSameSender() after markMessageDelivered() -- the DB half of its freshness/supersession signal (see the src/web/message-router.ts entry, which keeps that feature alongside the fork's staleness note). Additive, nowhere near moveKanbanCard(). Resolution unchanged; blob bumped." +
     "Re-measured 2026-09-04 (backend, card 5bee4b22 landing-block, 6a71eab9ab67..cf4c1052f7ef): upstream made saveMemory() fire-and-forget an embedding after the INSERT (mirroring saveAgentMemory), so rows written through that path -- the nightly daily-log digest among them -- stop being left unvectorised. 13 lines added inside saveMemory(), one turned into `const info =`. moveKanbanCard() does not appear in the diff at all. Resolution unchanged; blob bumped." +
     " Re-measured 2026-09-06 (backend3, card 58ebcdc9 landing-block, c554b375..94e032f9): four new regions, none touching moveKanbanCard(). (1) kanban_card_blockers + blockerWouldCycle/addCardBlocker/removeCardBlocker/getBlockersForCard/getBlockedByCard/getBlockersForAllCards -- a generic card-blocking link with cycle detection. NOT a gap: the fork already has this, as kanban_dependencies (from_card_id/to_card_id, cycle-checked via the reachability walk feeding dependencyBlockers()), matching src/web/routes/kanban.ts's own entry below. (2) idea_box gains a `scope` column ('munka'/'szemelyes') and a new idea_attachments table -- genuinely new, the fork has neither, and the backend route carrying POST /api/ideas/upload + /api/ideas/:id/attachments is NOT in this round's 8-file set, so adopting only this half would be incomplete. (3) `last_status_at` (KanbanCard, derived from kanban_card_events, falling back to created_at) answers a REAL gap: the fork's own redispatch-guard.sh DENY:progress check reads `updated_at`, which a comment bumps without the card actually moving. (4) getAgentToolActivity/getAgentMessageActivity/getAgentCurrentCards, paired with a new GET /api/agents/status (src/web/routes/agents.ts, its own entry below) and a new src/web/agent-status.ts module -- neither exists here; a different axis from the fork's own agent-hud (context/model percentage, not tool-activity/current-card). (2)-(4) are ADOPTION decisions, not passive conflict resolutions -- raised on card 6c6d471a for triage, the same treatment MiniMax (48565f81) and the context-guard settings UI (740551e6) got. Resolution at moveKanbanCard() unchanged; blob bumped." +
-    " Re-measured 2026-09-25 (backend, card f5536a70, 94e032f9..d66cf7ed, fork/upstream re-decision round). Diffed the FULL span since the recorded pin (13a46761, a much older snapshot) against upstream's current tip: 1200+ lines, but moveKanbanCard() and the conflict point this rule decides are UNTOUCHED (zero hits on a direct search). Spot-checked whether the large exported surface that diff shows (searchMemories/searchAgentMemories/updateMemory, sweepArchivedKanbanCards, getStuckKanbanCards, setTaskRunDelivery/reconcileOpenTaskRuns/getTaskRunStatus, classifyTokenPruneLag/getTokenPruneLag, vectorSearch, addKanbanComment automated flag, etc.) represents a real fork gap or just the historical distance since the stale pin: it does not -- every one of the spot-checked names already exists in this fork's own src/db.ts, arrived through the many intermediate re-measurement rounds above, not through this round. No new ADOPTION-class item found beyond what card 6c6d471a already covers. Resolution unchanged; blob bumped.",
+    " Re-measured 2026-09-25 (backend, card f5536a70, 94e032f9..d66cf7ed, fork/upstream re-decision round). Diffed the FULL span since the recorded pin (13a46761, a much older snapshot) against upstream's current tip: 1200+ lines, but moveKanbanCard() and the conflict point this rule decides are UNTOUCHED (zero hits on a direct search). Spot-checked whether the large exported surface that diff shows (searchMemories/searchAgentMemories/updateMemory, sweepArchivedKanbanCards, getStuckKanbanCards, setTaskRunDelivery/reconcileOpenTaskRuns/getTaskRunStatus, classifyTokenPruneLag/getTokenPruneLag, vectorSearch, addKanbanComment automated flag, etc.) represents a real fork gap or just the historical distance since the stale pin: it does not -- every one of the spot-checked names already exists in this fork's own src/db.ts, arrived through the many intermediate re-measurement rounds above, not through this round. No new ADOPTION-class item found beyond what card 6c6d471a already covers. Resolution unchanged; blob bumped." +
+    " CORRECTION 2026-09-25 (Cybersec, card f5536a70 NO-GO F2 MEDIUM, komment 6862). THE PARAGRAPH ABOVE IS WRONG on its central claim -- 'moveKanbanCard() untouched, zero-divergence, resolution unchanged' answers the WRONG QUESTION. A blob-pin bump measures whether UPSTREAM moved since the last check; it does not measure what a REAL merge would conflict on, because that depends on BOTH sides, and this fork's OWN src/db.ts had also moved substantially in the same window. A live 3-way merge (git merge-file --diff3, base=d4f1b1d4 (the actual prior merge-base), ours=c6221166's src/db.ts, theirs=this pin's blob) gives 11 real conflict hunks, NONE at moveKanbanCard(), and the 'every spot-checked name already exists here' sentence is true for the NAMES but not for what it implied -- several of those names exist on BOTH sides with DIFFERENT bodies, which a name-presence grep cannot distinguish from a true duplicate. Decided per-hunk, matching Cybersec's own numbering where it maps 1:1: " +
+    "(1) import line -- upstream adds EMBED_URL/EMBED_MODEL/EMBED_DIMS to the config.js import (a configurable embedding backend); the fork hard-codes `const EMBED_MODEL = 'nomic-embed-text'` and OLLAMA_URL directly inside generateEmbedding() instead. NOT ADOPTED this round -- a real but separable refactor (config-driven embedding backend), not a passive merge pick. " +
+    "(2)-(4) searchAgentMemories (signature + FTS branch + LIKE-fallback branch) -- Cybersec's read is confirmed exactly: the fork's shapeFilter (excludeToolLogShapeSql, card 3bcc1242) is the ONLY real divergence; the category/allowRelaxed/trace parameters and the MEMKERESVAK917 category-pushdown upstream added are ALREADY present on the fork's own side too (independently arrived, identical comment text), so 'ours' is already the union, not one side of a pick. KEEP fork wholesale for all three hunks -- taking upstream verbatim here would SILENTLY DROP the shapeFilter, exactly the regression Cybersec named (a `take-upstream` resolution loses the tool-log-noise exclusion this fork depends on: 77-98% of a heavy tool-using agent's raw corpus is tool-log shape, per that function's own measured comment). " +
+    "(5) updateMemory() signature -- upstream adds a 6th `updatedBy?: string` parameter (write-trace attribution, MEMIRASNYOM915). GENUINE GAP, not merely absent from db.ts: src/web/routes/memories.ts's PUT/PATCH handler destructures `updated_by` from the request body in its OWN upstream diff (see that file's card 3669d930 entry) but the fork's route does not even read it, and db.ts's updateMemory has no parameter to accept it if it did -- a two-file, coordinated gap, corrected on card 3669d930's own memories.ts entry (that entry's 'no gap' conclusion for updated_by was ITSELF wrong and is corrected there, not here, per the one-fact-one-place rule). NOT ADOPTED in db.ts this round; tracked as an item on the db.ts follow-up card below. " +
+    "(6) sweepArchivedKanbanCards() -- upstream extracts the archive sweep out of listKanbanCards() into its own scheduled function (src/web/kanban-archive-runner.ts, a file the fork does not have), paired with an `includeArchived` read-path parameter. Matches the src/web/routes/kanban.ts includeArchived item already raised on card 5aaf7209 -- this IS that item's db-side half, not a separate decision. NOT ADOPTED in db.ts this round; cross-referenced on card 5aaf7209. " +
+    "(7)-(8) touchAncestorChain comment + parentWouldCycle() -- the comment diff (7) is cosmetic (both explain the same cycle/depth guard, upstream's is more detailed) and needs no decision. (8) is NOT cosmetic: upstream ships a full parentWouldCycle(cardId, parentId) function (mirrors the fork's own blockerWouldCycle for the parent_id edge instead of the blocker edge) that the fork LACKS entirely -- this is the exact db-side primitive the src/web/routes/kanban.ts parentWouldCycle item on card 5aaf7209 needs to call; that card cannot be completed without this function landing first, though the two remain PARALLEL work (per this card's own predecessor-wiring rule, 1c) since neither is in_progress yet. NOT ADOPTED in db.ts this round; cross-referenced on card 5aaf7209 AND the db.ts follow-up card below. " +
+    "(9) addKanbanComment() -- the fork's noteRelations(commentEdges(cardId, content)) (Gate-SHA relation tracking, card 6cd61430) is fork-only and KEPT wholesale (not upstream's concern, no overlap). Real gap: the returned object omits `automated` even though the INSERT already writes it (the parameter exists on the function, only the return value drops it) -- upstream's return DOES include it. This is the db-side half of the automated-comment-flag item on card 5aaf7209. ADOPT the one-field addition (`automated` in the return object) alongside noteRelations; tracked on the db.ts follow-up card below, not hand-merged here. " +
+    "(10) vectorSearch() -- upstream guards the cosine-similarity loop with a flatMap that SKIPS a row whose embedding dimension does not match the query's, instead of silently producing NaN scores that compare false against everything and vanish from results without an error -- Cybersec named this explicitly as the SAME DEFECT CLASS as Cybered's a04769a6 finding (a NaN threshold comparison always lands on the healthy/invisible branch). Real, low-risk, high-value bugfix. NOT ADOPTED this round (still a code change, not a passive pick); flagged HIGHEST PRIORITY on the db.ts follow-up card below given the direct precedent. " +
+    "(11) token-prune-lag comments (DECAY_SWEEP_INTERVAL_MS / classifyTokenPruneLag / getTokenPruneLag) -- code is BYTE-IDENTICAL on both sides; only the doc-comments differ, upstream's being more detailed (explains why a raw db-size threshold was rejected, with the 481.7 MB / 65% measurement). Cosmetic only, no functional decision needed; the richer upstream comment MAY be adopted at the next real merge as a documentation improvement, at no risk, but is not itself an ADOPTION decision this rule needs to track. " +
+    "SUMMARY: of Cybersec's flagged hunks, (2)-(4) confirmed correctly resolved as KEEP-fork already (no action needed); (1),(5),(6),(8),(9),(10) are genuine, real ADOPTION gaps needing follow-up work, raised together on a new db.ts follow-up card (see kanban entry cross-references for (6) and (8), which are the SAME decisions as items already on card 5aaf7209 -- not duplicated as separate items). (7) and (11) are cosmetic, no decision needed. The 'moveKanbanCard() untouched' framing above is retired as the wrong lens for this file; it correctly describes ONE historical conflict point but was never a complete inventory, and this correction is what makes it one.",
   // NEW DECISION 2026-09-25 (card f5536a70, fork/upstream re-decision round). Upstream DELETED
   // buildMemoryContext() (a [Memoria kontextus] block built from 3 FTS hits + 5 recent rows,
   // keyed on the OLD chat_id scheme) with a comment explaining why: it never had a caller from the
@@ -1410,7 +1421,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // The second hunk needs the same union treatment.
   'src/web/routes/memories.ts':
     'union of both sides -- fork max_chars progressive retrieval (card 0c5423fc) AND upstream offset pagination support; neither conflicts with the other in function or parameter namespace. Apply the same union at any further hunks in this file.' +
-    ' Re-measured 2026-09-25 (backend, card 3669d930 landing-block, b4f97117dd22..c25e526408). Zero hits on max_chars or the offset-pagination union -- both grep-confirmed still present and unchanged in the fork\'s live file. Upstream moved elsewhere: the X-Memory-Search header / strict=1 opt-in behaviour that root CLAUDE.md already documents as fleet policy, a GET /api/memories/:id single-row read, an updated_by write-trace field, and an env-configurable MEMORY_IMPORT_CATEGORIZE_MODEL migration-categoriser override -- ALL four already grep-confirmed present in the fork\'s live file (adopted in an earlier, separately-tracked round; this stale pin was simply behind). No gap, no follow-up needed. Resolution unchanged; blob bumped only.',
+    ' Re-measured 2026-09-25 (backend, card 3669d930 landing-block, b4f97117dd22..c25e526408). Zero hits on max_chars or the offset-pagination union -- both grep-confirmed still present and unchanged in the fork\'s live file. Upstream moved elsewhere: the X-Memory-Search header / strict=1 opt-in behaviour that root CLAUDE.md already documents as fleet policy, a GET /api/memories/:id single-row read, an updated_by write-trace field, and an env-configurable MEMORY_IMPORT_CATEGORIZE_MODEL migration-categoriser override -- ALL four already grep-confirmed present in the fork\'s live file (adopted in an earlier, separately-tracked round; this stale pin was simply behind). No gap, no follow-up needed. Resolution unchanged; blob bumped only.' +
+    " CORRECTION 2026-09-25 (backend, same round, self-caught while resolving the f5536a70 Cybersec NO-GO on db.ts's updateMemory signature). THE 'ALL FOUR ALREADY PRESENT' SENTENCE ABOVE IS WRONG for three of the four -- re-grepped properly this time (the earlier check read the upstream diff's NEW lines and mistook them for fork content already merged, the same failure class the drift-watch tool exists to prevent). Only X-Memory-Search (strict=/relaxed=/hits= on the search branches, listing=/truncated= on the plain-listing branch) is genuinely present, confirmed at res.setHeader call sites. GENUINELY ABSENT, all three: (1) GET /api/memories/:id -- memUpdateMatch is wired for PUT/PATCH/DELETE only, zero GET branch. (2) updated_by write-trace -- the PUT/PATCH handler destructures `updated_by` from the body but never passes it to updateMemory(), which has no 6th parameter to receive it either (see src/db.ts's own entry, item 5 of its correction, the same gap from the other side). (3) MEMORY_IMPORT_CATEGORIZE_MODEL -- the migration-import code still runs the OLD `?? installed[0]` fallback upstream replaced after measuring it score 4/12 on a hand-labelled set on an underpowered host; no env override, no gemma4-only auto-detect. Raised together on follow-up card b5e1d7df (item 2 coordinated with the db.ts-side updateMemory gap on card 16e60d3c). Resolution on the recorded max_chars/offset union is unchanged; the 'no gap' close-out is retracted.",
   // NEW CONFLICT 2026-09-09 (measured, backend, card 9812ee33). Upstream trimmed the tools: list
   // to only WebFetch, removing the Firecrawl and Context7 tools the fork explicitly added (the
   // quarantine-reader sub-agent's tools: line includes mcp__firecrawl__* and mcp__context7__* for
@@ -1551,6 +1563,103 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // of the identical TMUXWINDOWATTR920 change with no functional side to weigh.
   'src/web/stuck-tool-call-watcher.ts':
     "KEEP the fork's tmuxBin() lazy resolver over upstream's eager resolveFromPath('tmux') -- same interim-vs-tmuxInvocationFor reasoning as agent-worker.ts's entry above, pending the agent-process.ts cutover. ADOPT (additive, no fork behaviour lost): upstream's tmuxStderr()-based logging in sampleMainClaudeCpuPercent's catch branch (piped stderr logged instead of silently swallowed, same TMUXWINDOWATTR920 pattern as agent-worker.ts) -- purely diagnostic, does not change the function's return value or the CPU-based wedge detection it feeds.",
+
+  // Card 14284837 (2026-09-25, backend2), fork/upstream re-decision, area "dashboard/src --
+  // tesztek 2/2" (parent b5b7eb6b). The 8 entries below were previously undecided.
+
+  // Both additions are pure test-content (a defensive config mock the fork's own
+  // agent-scaffold.ts->settings-store dynamic import already needs, per that file's own
+  // MCPOROKLES923 comment; and a new assertion), neither removes or contradicts anything
+  // fork-specific. Verified: taking the STORE_DIR mock addition leaves the other 10 tests in
+  // this file green. The SECOND addition (a new test asserting buildMemorySearchLabelBody's
+  // output warns about a raw-accented-byte silent-400) was NOT taken: it asserts on production
+  // body text (`toContain('400')`/`toContain('--data-urlencode')`) that agent-scaffold.ts's
+  // actual buildMemorySearchLabelBody does not produce -- measured red when tried. That half is
+  // a production-code addition, not a test-only decision; flagging for a follow-up card rather
+  // than porting it under this card's own scope.
+  'src/__tests__/memory-search-label-backfill.test.ts':
+    "ADOPT upstream's STORE_DIR mock addition to the '../config.js' vi.mock (needed: agent-scaffold.ts's settings-store dynamic import reads STORE_DIR at call time, verified by grep). Do NOT adopt upstream's new 'warns that a raw accented q is a silent 400' test -- measured RED against the fork's actual buildMemorySearchLabelBody (does not emit '400'/'--data-urlencode' text); that assertion depends on a production-side body-text change not made here. Follow-up card recommended for the production side if this fix is wanted.",
+
+  // Cosmetic-only: String(chunk) vs chunk.toString() are behaviourally identical for the
+  // Buffer/string chunks this test harness's fake `end()` ever receives. No fork content lost.
+  'src/__tests__/memory-search-tier-goes-into-the-query.test.ts':
+    "ADOPT upstream wholesale -- the only diff is String(chunk) -> chunk.toString(), a no-op stylistic change in test-harness code, verified green.",
+
+  // NOT a test-only decision. Upstream's MODELSUGGESTCACHE917 fix (renames the
+  // tokenAvgInputPerCall signal to contextAvgPerCall, adds CONTEXT_PER_CALL_HIGH/MEDIUM
+  // constants and a whole new web/model-suggest-signals.ts module) is a real, well-documented
+  // measured bug (uncached SUM(input_tokens) read as ~3 tokens/call against a true ~354K,
+  // silently advising downgrades) -- but NONE of that production surface exists in this fork
+  // yet: grep confirms src/web/model-suggest.ts still reads tokenAvgInputPerCall only, and
+  // src/web/model-suggest-signals.ts / src/__tests__/model-suggest-signals.test.ts do not exist
+  // here at all. Adopting the test wholesale would not compile (missing CONTEXT_PER_CALL_HIGH/
+  // MEDIUM exports, undefined contextAvgPerCall field). Separately, upstream's replacement of
+  // the "distribution default" test drops the fork's own locked invariant (card d041760b, Peti
+  // 2026-08-06): DISTRIBUTION_DEFAULT_AGENT_MODEL must equal DEFAULT_MODEL_CHAIN[0]
+  // ('claude-opus-5' on this fork, not upstream's 'claude-opus-5[1m]') so a quota-revert climbs
+  // back to the SAME model it demoted from -- that assertion must never be silently replaced by
+  // a bare literal expectation, regardless of this file's other content. KEEP fork wholesale;
+  // porting MODELSUGGESTCACHE917's production side is real, valuable work but out of scope for
+  // a test-file decision under this card -- follow-up card recommended.
+  'src/__tests__/model-suggest.test.ts':
+    "KEEP the fork's tokenAvgInputPerCall-based test file WHOLESALE. Upstream's MODELSUGGESTCACHE917 rename (contextAvgPerCall + CONTEXT_PER_CALL_HIGH/MEDIUM + new web/model-suggest-signals.ts module) is a real measured bug fix but has NO production-side counterpart in this fork yet (grep-verified) -- adopting the test would not compile. Also: upstream's version silently drops the fork's own DISTRIBUTION_DEFAULT_AGENT_MODEL===DEFAULT_MODEL_CHAIN[0] invariant (card d041760b, Peti 2026-08-06, 'claude-opus-5' not upstream's 'claude-opus-5[1m]') for a bare literal assertion -- must never be taken. Follow-up card recommended for porting MODELSUGGESTCACHE917's production side; only then does this test's adoption become a real option.",
+
+  // This test PINS the fork's actual, live .claude/settings.json content (19 PreToolUse
+  // entries confirmed via direct JSON read at decision time) -- and .claude/settings.json's OWN
+  // ACKNOWLEDGED_CONFLICTS entry (card c2aeefa5, 2026-09-25) already decided NONE of upstream's
+  // Slack/Discord multi-channel hook additions (slack_progress*.py, marveen-commands.py,
+  // memory-lookup-nudge.py, memory-frontmatter-gate.py, the PostToolUseFailure stage) are
+  // adopted on THIS fork (Telegram-only per root CLAUDE.md). Upstream's version of this test
+  // would therefore misdescribe the fork's actual settings.json. Upstream's diff also DROPS the
+  // entire "PreToolUse: exact (script, matcher) pairs" test (HookPair/preToolUsePairs/
+  // EXPECTED_PRETOOLUSE_PAIRS) -- fork-specific hardening from Cybersec's F1 finding (card
+  // c00d5429) that closes a real measured hole (a narrowed matcher or a matcher pointed at a
+  // nonexistent tool name both left the old "script set only" test green). Losing that test
+  // would silently reopen exactly the blind spot it was written to close.
+  'src/__tests__/project-settings-hook-anchor.test.ts':
+    "KEEP the fork's test file WHOLESALE -- it accurately pins the fork's live .claude/settings.json (verified: 19 PreToolUse entries match today, consistent with that file's own c2aeefa5 decision that upstream's multi-channel additions are NOT adopted here). Do NOT adopt upstream's version: it would misdescribe the actual settings.json AND drop the Cybersec F1 (script,matcher)-pair test (card c00d5429) that closes a real measured blind spot (a narrowed matcher or a matcher on a nonexistent tool name both left the old test green).",
+
+  // New file, no fork-side predecessor. Describes a real, well-documented incident (inter-agent
+  // messages to the main agent stayed pending because the router fired sendPromptToSession with
+  // waitForIdle:false at a BUSY main channels pane -- queued mid-turn, never triggers
+  // UserPromptSubmit, never drained, cooldown re-arms, burns turns with nothing delivered).
+  // Tried adopting verbatim: failed on a missing fork-specific db.js mock
+  // (getKanbanCardStateByIdPrefix -- this fork's runMessageRouterTick checks dispatch
+  // supersession before injecting, upstream's commit this test was ported from does not have
+  // that check). Added the missing mock (matching the sibling router-no-silent-reinject.test.ts
+  // file's own established pattern) and re-ran: the REAL substance surfaces there -- 2 of 3
+  // tests fail because the fork's actual src/web/message-router.ts still contains the bug
+  // (sendPromptToSession fires into the busy pane). This is genuine, unported PRODUCTION work on
+  // core message-routing infra, not a test-only decision, and not something to rush in the
+  // remaining runway of this card. NOT ADOPTED (file not created in this fork yet).
+  'src/__tests__/router-main-agent-wakeup.test.ts':
+    "NOT ADOPTED YET. Describes a real, measured router bug (main-agent wakeup loop drives a busy main channels pane via sendPromptToSession waitForIdle:false, never delivers, burns turns) that this fork's src/web/message-router.ts still has -- confirmed by actually running the ported test (with the fork's required getKanbanCardStateByIdPrefix mock added): 2 of 3 tests fail against the fork's real code. Porting the fix is genuine production work on core routing infra, out of scope for a rushed test-file decision -- follow-up card recommended to port the fix and then adopt this test.",
+
+  // Same shape as router-main-agent-wakeup.test.ts's reasoning: this file's diff replaces the
+  // fork's required db.js mock entries (getKanbanCardStateByIdPrefix for the supersession check,
+  // closeOtelSpanIfOpen for the dual-failure-path OTel close) with a shorter set plus a new
+  // getMessageStatus mock -- but src/db.ts has no getMessageStatus export at all (grep-verified),
+  // so upstream's version assumes an unported production capability (the router re-reading a
+  // row's status immediately before send). Adopting wholesale would silently drop the mocks this
+  // fork's own runMessageRouterTick still needs.
+  'src/__tests__/router-no-silent-reinject.test.ts':
+    "KEEP the fork's test file WHOLESALE -- upstream's version drops the fork-required getKanbanCardStateByIdPrefix/closeOtelSpanIfOpen db.js mocks (this fork's runMessageRouterTick still calls both) in favour of a getMessageStatus mock for a production function that does not exist here (grep-verified). The vi.fn() typed-generic-vs-untyped stylistic difference is not worth taking piecemeal.",
+
+  // Pure comment reformatting (line-wrap only) -- diffed byte-for-byte against the substance,
+  // zero functional change, verified green after taking upstream's wrapping wholesale.
+  'src/__tests__/token-prune-lag.test.ts':
+    "ADOPT upstream wholesale -- the diff is comment re-wrapping only (HBDBKUSZOB823 explanation reflowed to different line lengths), no functional change, verified green.",
+
+  // Upstream's diff REVERTS the fork's Cybersec-NO-GO-driven fix (card 7503bb31): it drops the
+  // "REJECTS a device key that is NOT on the allowlist" / "PASSES all guards on an ALLOWLISTED
+  // device key" / "an allowlist for a DIFFERENT device id still rejects this one" tests, and its
+  // final source-pin regex (`ctx.auth?.kind !== 'device'`) matches a guard shape that no longer
+  // checks isAllowedVoiceChannelDevice at all. Verified the fork's PRODUCTION code (routes/
+  // messages.ts line ~193-197) still enforces the allowlist via isAllowedVoiceChannelDevice --
+  // adopting upstream's test would silently drop coverage for a live, already-fixed security
+  // control and would not even describe the fork's actual guard expression.
+  'src/__tests__/voice-channel-hanna.test.ts':
+    "KEEP the fork's test file WHOLESALE -- upstream's version reverts the Cybersec-NO-GO-driven per-device allowlist fix (card 7503bb31: isAllowedVoiceChannelDevice), which the fork's production routes/messages.ts still enforces (grep-verified). Adopting upstream would drop real security-control coverage and would not match the fork's actual guard shape.",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -1826,6 +1935,16 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/agent-worker.ts': '5671caef73c3f2671e5e6631f25a18f6816c924b',
   'src/web/command-task.ts': '541cb2411303f4ace7f52d2a94fd08a3ebc52230',
   'src/web/stuck-tool-call-watcher.ts': '80f56ab7a9fa84b1f431db27a7eb240aa873e53c',
+  // Card 14284837 (backend2, 2026-09-25), fork/upstream re-decision, area "dashboard/src --
+  // tesztek 2/2" -- see the matching ACKNOWLEDGED_CONFLICTS entries above for the reasoning.
+  'src/__tests__/memory-search-label-backfill.test.ts': 'a24a1fdaff37b8b5a43ab0d1a71acb8feb932c20',
+  'src/__tests__/memory-search-tier-goes-into-the-query.test.ts': 'a72bb28deed866a7c9224f90583fc423990762ea',
+  'src/__tests__/model-suggest.test.ts': 'b0014b2840c6239182369492038e1ec6dda2fbb9',
+  'src/__tests__/project-settings-hook-anchor.test.ts': '79a8cf566a40c1bfce28083f2a0b68b28a36c6e6',
+  'src/__tests__/router-main-agent-wakeup.test.ts': '712ace38d04fddc564e4b8a416549af297be5ca9',
+  'src/__tests__/router-no-silent-reinject.test.ts': 'cc8b2834a0462164d0ee3fbcb0df995fe659406a',
+  'src/__tests__/token-prune-lag.test.ts': '2291117eb61bbc973d7796b45d0c1c481740e911',
+  'src/__tests__/voice-channel-hanna.test.ts': '5e9adcfaae491e754f87801f053eb0120af69042',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
@@ -1945,6 +2064,38 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "listRejectedAgentDirNames() has no upstream equivalent, so its disappearance can only mean " +
       "the filtering itself was silently dropped -- that is a security regression, not a merge to " +
       "wave through.",
+  },
+  // Card 14284837 (backend2, 2026-09-25): project-settings-hook-anchor.test.ts's entry above
+  // refuses upstream's simplified EXPECTED map -- keeping the fork's test means it keeps pinning
+  // the live .claude/settings.json, which still needs its 10 named security-guard PreToolUse
+  // entries (card c00d5429). Anchored on the PRODUCTION settings.json itself, not the test file,
+  // per the "anchor a production file, not a test that may declare its own copy" rule.
+  'src/__tests__/project-settings-hook-anchor.test.ts': {
+    needle: 'secret-write-guard.py',
+    file: '.claude/settings.json',
+    expect: 'present',
+    because:
+      "the fork's live .claude/settings.json carries 10 named PreToolUse security-guard " +
+      "entries (card c00d5429) that project-settings-hook-anchor.test.ts's EXPECTED map and " +
+      "(script,matcher)-pair test both pin. If secret-write-guard.py disappears from the actual " +
+      "settings.json, the refusal to adopt upstream's simplified EXPECTED map (and the dropped " +
+      "pair-test) needs re-deciding, not silent carry-forward.",
+  },
+  // Card 14284837 (backend2, 2026-09-25): router-main-agent-wakeup.test.ts's entry above records
+  // NOT ADOPTED because the fork's message-router.ts still has the bug the test would catch.
+  // MAIN_AGENT_WAKEUP_COOLDOWN_MS is the router's own cooldown constant driving the buggy
+  // sendPromptToSession(waitForIdle:false) call into a busy main channels pane -- its removal
+  // (the fix this test describes moves wakeups to the inbox-nudge-watcher instead) is the
+  // checkable signal that the bug is fixed and this test can be adopted.
+  'src/__tests__/router-main-agent-wakeup.test.ts': {
+    needle: 'const MAIN_AGENT_WAKEUP_COOLDOWN_MS',
+    file: 'src/web/message-router.ts',
+    expect: 'present',
+    because:
+      "router-main-agent-wakeup.test.ts (not adopted) was measured RED against the fork's real " +
+      "message-router.ts: it still drives a busy main channels pane via sendPromptToSession " +
+      "waitForIdle:false on this cooldown. If MAIN_AGENT_WAKEUP_COOLDOWN_MS disappears, the " +
+      "router-side fix likely landed and this test should be re-tried for adoption.",
   },
   // --- card 66ad1f95: anchors for the NOT-ADOPTED decisions ----------------------------------
   //
@@ -2112,6 +2263,18 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "token-usage.ts keeps upstream's parent-skip filter ONLY because db.ts stamps a parent with " +
       'its child updated_at. Drop the stamping and the filter starts discarding real attribution.',
   },
+  'src/db.ts': {
+    needle: 'export function parentWouldCycle',
+    file: 'src/db.ts',
+    expect: 'absent',
+    because:
+      "Cybersec F2 MEDIUM (card f5536a70 NO-GO, komment 6862): the 'moveKanbanCard untouched' framing " +
+      "hid a real live-merge conflict set (11 hunks). This is the highest-value one to anchor -- " +
+      "upstream's parentWouldCycle(cardId, parentId) (mirrors the fork's own blockerWouldCycle for the " +
+      "parent_id edge) is what src/web/routes/kanban.ts's own parentWouldCycle item (card 5aaf7209) " +
+      "needs to call; if this symbol appears without that route wiring landing alongside it, the " +
+      "adoption decision was made piecemeal and needs re-checking, not silently assumed done.",
+  },
   // "the fork's file still has the inline functions verbatim (recorded resolution unchanged, still a
   // strict superset via the sentinel fix), so this round is acknowledge-only". A def line cannot be
   // satisfied by prose the way a bare identifier can.
@@ -2148,6 +2311,27 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "matchers -- refused 2026-09-06. Same shape as the seed-refresh-untouched-only.test.ts anchor " +
       "above (injectTelegramCopyGate in agent-scaffold.ts): two names for one capability, and " +
       "adopting the second one is a duplicate wire, not an addition.",
+  },
+  // The 'src/web.ts' key above already carries its own anchor (ensureTelegramCopyGate), and the type
+  // is one ForkAnchor per key -- so this SECOND, unrelated src/web.ts refusal (Cybersec, card
+  // f5536a70 NO-GO F1, komment 6862) is carried under 'src/web/routes/agents.ts' instead, the same
+  // cross-file-anchor pattern already used by 'vitest.config.ts' (file: src/web/agent-process.ts)
+  // and 'src/web/token-usage.ts' (file: src/db.ts) below: the map KEY only has to be a valid
+  // ACKNOWLEDGED_CONFLICTS entry without an anchor of its own, the ForkAnchor.file is what is
+  // actually checked.
+  'src/web/routes/agents.ts': {
+    needle: '?token=${DASHBOARD_TOKEN}',
+    file: 'src/web.ts',
+    expect: 'absent',
+    because:
+      "Upstream's isTTY-gated bootstrap-URL print (b69c9dcb region) still writes the FULL " +
+      "`http://127.0.0.1:<port>/?token=${DASHBOARD_TOKEN}` URL to stderr whenever stderr is a TTY " +
+      "(a tmux pane in this fleet, persisted by scrollback and this fork's own context-guard pane-" +
+      "snapshot mechanism) -- weaker than the fork's own renderBootstrapNotice() (card 62631948, " +
+      "src/web/bootstrap-notice.ts), which never prints the token on ANY stream. Refused 2026-09-25 " +
+      "(Cybersec NO-GO F1 HIGH, card f5536a70, komment 6862): adopting upstream's TTY-gate here " +
+      "would be a credential-exposure REGRESSION, not a hardening. If this literal ever reappears in " +
+      "src/web.ts, that is exactly the regression -- re-decide on a fresh card, do not silently keep it.",
   },
   'package.json': {
     needle: '4.1.10',
