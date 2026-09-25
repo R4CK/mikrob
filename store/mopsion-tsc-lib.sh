@@ -114,6 +114,16 @@ typecheck_errors() {
       echo "HARNESS-FAULT in apps/web: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"
     fi
   fi
+  # Card 1c545383, same class as test_failures' 5acd21ea fix, but ACCIDENTALLY safe today rather
+  # than broken: bash gives a false `if` with no matching branch exit status 0 (verified), so the
+  # function currently always returns 0 regardless of want_web or of tsc's own result. That is not
+  # a property anyone decided on -- it is a side effect of the function's last statement happening
+  # to be exactly this shape. The first added trailing statement whose OWN exit status can be
+  # non-zero (a stray `[ -f ... ]`, an `rm` without `-f`, anything) would silently reintroduce
+  # test_failures' original bug in a caller gating a rename on `&&` (mopsion-pregate.sh's
+  # `typecheck_errors ... > tmp && mv -f tmp final`, since fixed here to not depend on this either).
+  # Explicit return: the exit status is a decision, not a byproduct of which statement runs last.
+  return 0
 }
 
 # Prints the FULL NAME of every failing test, one per line, sorted.
