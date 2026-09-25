@@ -369,6 +369,10 @@ function llmRoutingDecisionsHtml() {
   const rows = _llmRouting.recentDecisions.slice(0, 50)
   if (!rows.length) return `<div class="llm-empty">${t('localLlm.routing.decisions_empty')}</div>`
   const localCount = rows.filter(r => String(r.verdict).toUpperCase() === 'LOCAL').length
+  // DECOMPOSE (card 501c489f, requirement 4): an ONLINE-verdict row that ALSO carries at least one
+  // mechanical-fragment candidate -- shown separately from a bare ONLINE, so "the reversed default
+  // did something beyond a bare LOCAL/ONLINE split" is visible without reading the raw log.
+  const decomposedRows = rows.filter(r => String(r.verdict).toUpperCase() !== 'LOCAL' && Array.isArray(r.decompose) && r.decompose.length > 0)
   const onlineCount = rows.length - localCount
   const tsList = rows.map(r => r.ts).filter(ts => typeof ts === 'number')
   let windowNote = ''
@@ -379,17 +383,25 @@ function llmRoutingDecisionsHtml() {
   const summaryHtml = `<div class="llm-decisions-summary">
     <span class="llm-verdict llm-verdict--local">${t('localLlm.routing.verdict_local')}: ${localCount}</span>
     <span class="llm-verdict llm-verdict--online">${t('localLlm.routing.verdict_online')}: ${onlineCount}</span>
+    ${decomposedRows.length ? `<span class="llm-verdict llm-verdict--decomposed">${t('localLlm.routing.summary_decomposed', { n: decomposedRows.length })}</span>` : ''}
     ${windowNote ? `<span class="llm-decisions-window">${escapeHtml(windowNote)}</span>` : ''}
   </div>`
   return summaryHtml + rows.map((r) => {
     const online = String(r.verdict).toUpperCase() !== 'LOCAL'
+    const decompose = Array.isArray(r.decompose) ? r.decompose.filter(t2 => typeof t2 === 'string' && t2) : []
     const when = typeof r.ts === 'number' ? llmFmtTime(Math.round(r.ts / 1000)) : ''
     const rawReason = String(r.reason || '')
+    const verdictBadge = decompose.length
+      ? `<span class="llm-verdict llm-verdict--decomposed">${t('localLlm.routing.verdict_decomposed')}</span>`
+      : `<span class="llm-verdict ${online ? 'llm-verdict--online' : 'llm-verdict--local'}">${t(online ? 'localLlm.routing.verdict_online' : 'localLlm.routing.verdict_local')}</span>`
+    const decomposeMeta = decompose.length
+      ? ` · ${escapeHtml(t('localLlm.routing.decision_decompose', { n: decompose.length, types: decompose.join(', ') }))}`
+      : ''
     return `<div class="llm-decision-row">
-      <span class="llm-verdict ${online ? 'llm-verdict--online' : 'llm-verdict--local'}">${t(online ? 'localLlm.routing.verdict_online' : 'localLlm.routing.verdict_local')}</span>
+      ${verdictBadge}
       <span class="llm-decision-card"><code>${escapeHtml(String(r.cardId || '?'))}</code></span>
       <span class="llm-decision-reason" title="${escapeHtml(rawReason)}">${escapeHtml(llmRouteReasonLabel(rawReason))}</span>
-      <span class="llm-decision-meta">${escapeHtml(when)}${typeof r.modelCalls === 'number' ? ' · ' + t('localLlm.routing.decision_calls', { n: r.modelCalls }) : ''}</span>
+      <span class="llm-decision-meta">${escapeHtml(when)}${typeof r.modelCalls === 'number' ? ' · ' + t('localLlm.routing.decision_calls', { n: r.modelCalls }) : ''}${decomposeMeta}</span>
     </div>`
   }).join('')
 }

@@ -158,6 +158,33 @@ assert_field "$out" dispatcher_orchestrator_dispatch 1 "E2: exactly one attribut
 assert_field "$out" dispatcher_unattributed 1 "E2: the legacy line (no dispatcher field) counts as unattributed, not guessed"
 
 echo
+echo "=== F. DECOMPOSE (card 501c489f, requirement 4: RESZBEN HELYI n/m) ==="
+cardJ=51c489f000000000000000000000000000000a  # decomposed: 2 candidates, 1 actually drafted
+cardK=51c489f000000000000000000000000000000b  # ONLINE, no decompose field at all (pre-card-501c489f log line)
+cat > "$TMP/comments/$cardJ.json" <<JSON
+[{"author":"local-llm","content":"[LOCAL-LLM DRAFT | dispatch-offload] ... #### Parent title — test-scaffold (mechanikus reszfeladat, card 501c489f)\nsome draft text","created_at":$now_epoch}]
+JSON
+cat > "$TMP/comments/$cardK.json" <<'JSON'
+[]
+JSON
+out="$(run --json <<EOF
+$(now_fmt "$now_epoch")	$cardJ	ONLINE	deterministic-multi-decision	calls=0	chars=80	dispatcher=self-advance	decompose=test-scaffold,i18n-keys
+$(now_fmt "$now_epoch")	$cardK	ONLINE	deterministic-money	calls=0	chars=40	dispatcher=self-advance
+EOF
+)"
+assert_field "$out" decomposed_content 1 "F: exactly one card had a decompose candidate list"
+assert_field "$out" decompose_subtasks_total 2 "F: 2 total candidates (test-scaffold, i18n-keys)"
+assert_field "$out" decompose_subtasks_drafted 1 "F: only test-scaffold's marker was found in a draft comment -> 1 drafted"
+
+# CONTROL: a legacy log line with NO 8th field at all (predates card 501c489f) must not crash the
+# awk field-count guard and must not be miscounted as decomposed.
+out_legacy="$(run --json <<EOF
+$(now_fmt "$now_epoch")	aaaa111100000000000000000000000000000a	ONLINE	deterministic-multi-decision	calls=0	chars=40	dispatcher=self-advance
+EOF
+)"
+assert_field "$out_legacy" decomposed_content 0 "CONTROL: a pre-card-501c489f log line (no decompose field) is not miscounted"
+
+echo
 echo "=== E. ENTRIES OUTSIDE THE WINDOW ARE EXCLUDED ==="
 cardF=eeee0000000000000000000000000000000006
 out="$(run --hours 24 --json <<EOF

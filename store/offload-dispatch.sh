@@ -18,21 +18,24 @@
 # --context so a terse leaf ("frontend gomb hozzaadasa") is not judged in isolation from the Feladat/
 # Fazis that gives it meaning -- a leaf's own text is frequently too thin on its own (grilling finding).
 #
-# 3-STRIKES PER LEAF (store/offload-attempts.json, flock-protected against offload-batch-run.sh and a
+# 2-STRIKES PER LEAF (store/offload-attempts.json, flock-protected against offload-batch-run.sh and a
 # live dispatch-time call landing on the same leaf concurrently -- the OLD per-$CARD lock below does
-# NOT cover this, because a batch call and a direct leaf call take DIFFERENT lock files):
+# NOT cover this, because a batch call and a direct leaf call take DIFFERENT lock files). THRESHOLD
+# LOWERED FROM 3 TO 2 (card 501c489f, MikroB verdikt komment 6007, requirement 6) -- only the
+# TRANSIENT branch's threshold changed; the categorical-online branch was already a single-call jump
+# to exhausted and stays that way, just landing on the new ceiling (OFFLOAD_LEAF_MAX_ATTEMPTS):
 #   - success                          -> status=done, attempts reset to 0.
 #   - router says ONLINE (rc=9)        -> NOT a retry-able failure, it is a categorical decision (auth/
-#                                          security/multi-file/etc). Attempts jump straight to 3
-#                                          ("exhausted"), no wasted retries on a verdict that will not
-#                                          change.
+#                                          security/multi-file/etc). Attempts jump straight to
+#                                          OFFLOAD_LEAF_MAX_ATTEMPTS ("exhausted"), no wasted retries on
+#                                          a verdict that will not change.
 #   - transient failure (any non-zero, non-9 exit from local-llm-rag.sh -- Ollama down/timeout/API/
-#     verify-fail, its own exit codes 2/4/6/7) -> attempts += 1; at 3, status=
-#                                          exhausted and a ONE-TIME INFO-ONLY comment is posted on the
-#                                          leaf so a human/agent sees why no draft showed up. The card
-#                                          is NEVER blocked by this -- draft-only was always advisory;
-#                                          normal dispatch/self-advance carries the leaf online exactly
-#                                          as it would if this script did not exist.
+#     verify-fail, its own exit codes 2/4/6/7) -> attempts += 1; at OFFLOAD_LEAF_MAX_ATTEMPTS (default
+#                                          2), status=exhausted and a ONE-TIME INFO-ONLY comment is
+#                                          posted on the leaf so a human/agent sees why no draft showed
+#                                          up. The card is NEVER blocked by this -- draft-only was
+#                                          always advisory; normal dispatch/self-advance carries the
+#                                          leaf online exactly as it would if this script did not exist.
 #   - exhausted entries expire after 24h (EXHAUSTED_TTL_SECONDS) so a transient Ollama outage does not
 #     permanently lock a leaf out of ever trying locally again once the outage clears.
 #
@@ -61,10 +64,24 @@ RESOLVE="$HERE/graphify-resolve.py"
 # filter runs before the cut, not after, so a large Feladat does not starve its 16th+ leaf forever).
 OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-15}"
 
+# DECOMPOSE (card 501c489f, MikroB verdikt komment 6007). Per-card ceiling on SYNTHETIC (not real
+# kanban-child) subtasks the deterministic templates in card-decompose-templates.sh may generate for
+# a single card in one invocation -- the verdict's own suggested number ("javaslat: max 3"). This is
+# separate from OFFLOAD_MAX_SUBTASKS above (the whole-run GPU-call budget across every leaf); the two
+# only interact in that a card can never contribute more synthetic leaves than this ceiling, whatever
+# the run-wide budget allows elsewhere.
+OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-3}"
+# shellcheck source=./card-decompose-templates.sh
+. "$HERE/card-decompose-templates.sh"
+
 ATTEMPTS_FILE="$HERE/offload-attempts.json"
 ATTEMPTS_LOCK="$HERE/.offload-attempts.lock"
 EXHAUSTED_TTL_SECONDS="${EXHAUSTED_TTL_SECONDS:-86400}"
-export ATTEMPTS_FILE EXHAUSTED_TTL_SECONDS
+# Card 501c489f, MikroB verdikt komment 6007, requirement 6: 3 -> 2. Only the TRANSIENT-failure
+# threshold moves; categorical-online (router says ONLINE) was already a single-call jump straight
+# to exhausted and stays that way, just landing on this same new ceiling.
+OFFLOAD_LEAF_MAX_ATTEMPTS="${OFFLOAD_LEAF_MAX_ATTEMPTS:-2}"
+export ATTEMPTS_FILE EXHAUSTED_TTL_SECONDS OFFLOAD_LEAF_MAX_ATTEMPTS
 
 # --- attempts-file helper: every call is flock-serialized on its OWN lock file (not the per-$CARD one
 # set up further down), because a batch-run call and a live dispatch-time call for an overlapping leaf
@@ -75,6 +92,7 @@ attempts_op() {
 import json, os, sys, time
 path = os.environ["ATTEMPTS_FILE"]
 ttl = int(os.environ.get("EXHAUSTED_TTL_SECONDS", "86400"))
+max_attempts = int(os.environ.get("OFFLOAD_LEAF_MAX_ATTEMPTS", "2"))
 op, leaf = sys.argv[1], sys.argv[2]
 try:
     with open(path) as f:
@@ -92,11 +110,11 @@ elif op == "success":
     entry = {"attempts": 0, "status": "done", "updated_at": now}
     data[leaf] = entry
 elif op == "categorical-online":
-    entry = {"attempts": 3, "status": "exhausted", "updated_at": now, "reason": "router-online"}
+    entry = {"attempts": max_attempts, "status": "exhausted", "updated_at": now, "reason": "router-online"}
     data[leaf] = entry
 elif op == "transient-fail":
     n = int(entry.get("attempts", 0)) + 1
-    entry = {"attempts": n, "status": ("exhausted" if n >= 3 else "pending"), "updated_at": now}
+    entry = {"attempts": n, "status": ("exhausted" if n >= max_attempts else "pending"), "updated_at": now}
     data[leaf] = entry
 else:
     sys.exit(2)
@@ -208,9 +226,108 @@ for l in leaves:
         "tags": tags_for(l),
         "project": l.get("project") or "",
         "parent_context": ancestor_context(str(l["id"])),
+        "synthetic": False,
     })
 print(json.dumps(out))
 ' 2>/dev/null
+}
+
+# --- DECOMPOSE WRAPPER (card 501c489f) -----------------------------------------------------------
+# resolve_leaves() above is UNCHANGED: it still resolves real kanban-child leaves exactly as before
+# (root cause 2's own words: "csak VALODI kanban gyerek-levelekre bont"). This wraps it: ONLY when
+# resolve_leaves() fell back to the single-leaf "$CARD has no open children, return itself" shape --
+# the common case (measured 2026-08-27: 0/369) that root cause 2 names -- does this look for
+# DETERMINISTIC mechanical fragments (card-decompose-templates.sh) in that one leaf's own text and,
+# if it finds any, REPLACE the single whole-card leaf with N synthetic ones.
+#
+# THE DECISION PART NEVER GOES LOCAL (requirement 2 of the verdict, verbatim: "A dontesi reszt
+# semmilyen ag nem viheti helyire"): when synthetic leaves are produced, the original whole-card leaf
+# is DROPPED, not kept alongside them -- the whole point is that the decision-shaped remainder stays
+# exactly where it already was (ONLINE, via card-build-route.sh's own verdict, untouched by this
+# file), and only the mechanical fragments get a local attempt at all. Zero candidates -> the single
+# leaf is returned completely unmodified, so a card with no mechanical shape in its text behaves
+# BYTE-IDENTICALLY to before this card (minimal blast radius, rule 3).
+#
+# A REAL single-open-child card (a Feladat with exactly one open leaf) must NOT be decomposed --
+# only checked when that one leaf's id IS the target itself, the same startswith-prefix identity
+# resolve_leaves()'s own python already uses to find $CARD.
+resolve_leaves_with_decompose() { # stdin = kanban list JSON (same contract as resolve_leaves)
+  local raw; raw="$(resolve_leaves)"
+  [[ -n "${raw// }" && "$raw" != "[]" ]] || { printf '%s' "$raw"; return; }
+  [[ "${CARD_DECOMPOSE:-on}" != "off" ]] || { printf '%s' "$raw"; return; }
+
+  local count; count="$(printf '%s' "$raw" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0)"
+  [[ "$count" == "1" ]] || { printf '%s' "$raw"; return; }
+
+  local fields; fields="$(printf '%s' "$raw" | python3 -c '
+import json, sys, base64
+l = json.load(sys.stdin)[0]
+fields = [l["id"], l["title"], l["description"], l["assignee"], l["assignee_raw"], l["tags"], l["project"]]
+print("|".join(base64.b64encode(str(x).encode()).decode() for x in fields))
+' 2>/dev/null)"
+  [[ -n "${fields// }" ]] || { printf '%s' "$raw"; return; }
+  IFS='|' read -r b64id b64title b64desc b64assignee b64assignee_raw b64tags b64project <<< "$fields"
+  local lid ltitle ldesc lassignee lassignee_raw ltags lproject
+  lid="$(printf '%s' "$b64id" | base64 -d)"
+  ltitle="$(printf '%s' "$b64title" | base64 -d)"
+  ldesc="$(printf '%s' "$b64desc" | base64 -d)"
+  lassignee="$(printf '%s' "$b64assignee" | base64 -d)"
+  lassignee_raw="$(printf '%s' "$b64assignee_raw" | base64 -d)"
+  ltags="$(printf '%s' "$b64tags" | base64 -d)"
+  lproject="$(printf '%s' "$b64project" | base64 -d)"
+
+  # Only the fallback shape qualifies: the one leaf resolve_leaves() returned IS $CARD's own target
+  # (same prefix-match rule the python above uses -- "startswith", because a card id argument may be
+  # a short/typed prefix of the full stored id).
+  case "$lid" in
+    "$CARD"*) : ;;
+    *) printf '%s' "$raw"; return ;;
+  esac
+
+  local candidates
+  candidates="$(card_decompose_candidates "$ltitle
+$ldesc
+$ltags" 2>/dev/null | head -n "$OFFLOAD_DECOMPOSE_MAX_PER_CARD")"
+  [[ -n "${candidates// }" ]] || { printf '%s' "$raw"; return; }
+
+  REAL_ID="$lid" TITLE="$ltitle" DESC="$ldesc" TAGS="$ltags" ASSIGNEE="$lassignee" \
+  ASSIGNEE_RAW="$lassignee_raw" PROJECT="$lproject" \
+    python3 -c '
+import json, os, sys
+cands = []
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line:
+        continue
+    t, task = line.split("\t", 1)
+    cands.append((t, task))
+real_id = os.environ["REAL_ID"]
+title = os.environ["TITLE"]
+desc = os.environ["DESC"]
+out = []
+for t, task in cands:
+    # SAFETY (card 501c489f, requirement 2): local-llm-rag.sh own routeTask classifier reads ONLY
+    # this "description" field (folded into task by try_leaf, title+description), NEVER the
+    # separate --context value -- --context is prompt grounding only, invisible to routing. A
+    # synthetic leaf whose description was JUST the generic template sentence would let routeTask
+    # classify on template boilerplate instead of the parent real text, silently defeating "the
+    # same steering/security gate the whole card gets" for any risk signal that lives in the
+    # parent DESCRIPTION rather than its title (the title is already folded in via title below).
+    # So the parent own description rides along here too, clearly delimited so the model still
+    # knows to draft ONLY the named fragment, not the whole card.
+    out.append({
+        "id": f"{real_id}~{t}",
+        "title": f"{title} — {t} (mechanikus reszfeladat, card 501c489f)",
+        "description": f"{task}\n\n--- eredeti kartya (csak kontextusul -- CSAK a fenti reszfeladatot ird meg, ne a teljes kartyat):\n{desc[:600]}",
+        "assignee": os.environ["ASSIGNEE"],
+        "assignee_raw": os.environ["ASSIGNEE_RAW"],
+        "tags": os.environ["TAGS"],
+        "project": os.environ["PROJECT"],
+        "parent_context": f"{title}\n{desc[:400]}",
+        "synthetic": True,
+    })
+print(json.dumps(out))
+' <<< "$candidates"
 }
 
 # --- DRAFT NUDGE (card 0b3a3084) ----------------------------------------------------------------
@@ -284,7 +401,7 @@ nudge_leaf_owner() {
     draft)
       text="Draft erkezett a #$leaf_id kartyara (helyi 7B, offload). Nezd meg, MIELOTT magad megirod -- a draft akkor sporol tokent, ha munka kozben hasznalod, nem ha a vegen biralod el. Amikor vegeztel vele, tegyel a kartyara egy sort (sor elejen): Draft-Review: ELFOGADVA / RESZBEN / ELUTASITVA / FELESLEGES (card 1338e68b; a FELESLEGES azt jelenti, hogy a draft JO volt, csak nem volt ra szukseg -- card 504ec76f)." ;;
     exhausted)
-      text="A helyi modell KIMERULT a #$leaf_id kartyan (3 sikertelen tranziens kiserlet), draft NEM fog erkezni. A kartya nincs blokkolva: vidd tovabb a szokasos online uton." ;;
+      text="A helyi modell KIMERULT a #$leaf_id kartyan ($OFFLOAD_LEAF_MAX_ATTEMPTS sikertelen tranziens kiserlet), draft NEM fog erkezni. A kartya nincs blokkolva: vidd tovabb a szokasos online uton." ;;
     *) return 0 ;;
   esac
 
@@ -314,6 +431,29 @@ if isinstance(env, dict) and env.get("advisory") is True and str(env.get("draft"
 ' 2>/dev/null
 }
 
+# draft_comment_body: pure (no network), so --test-draft-comment-body can exercise the exact text a
+# real run posts. $3 = synthetic ("true"/"false", optional): a decomposed mechanical-fragment draft
+# (card 501c489f) carries the SAME mandatory-full-review wording advisory_draft() above already uses
+# for a router-ONLINE advisory draft (requirement 2 of the verdikt: "a kotelezo TELJES online
+# felulvizsgalat jelolese megmarad"). Unconditional for every synthetic leaf, not just the ones whose
+# OWN narrow text would separately trigger a security gate -- a synthetic leaf only exists because
+# its PARENT already matched a deterministic ONLINE gate (the decompose-eligible set), so the
+# parent's own decision-worthiness is exactly why the reviewer must not skim this one.
+draft_comment_body() { # $1 = leaf_title, $2 = content, $3 = synthetic ("true"/"false", optional)
+  local leaf_title="$1" content="$2" synthetic="${3:-false}"
+  local review_header=""
+  if [[ "$synthetic" == "true" ]]; then
+    review_header="MECHANIKUS RESZFELADAT (card 501c489f) egy olyan kartyabol, aminek a DONTESI resze online marad -- KOTELEZO A TELJES, FUGGETLEN ONLINE FELULVIZSGALAT, ne csak a draft belsejet nezd, hanem azt is, mi HIANYZIK belole a kartya teljes specifikaciojahoz kepest.
+
+"
+  fi
+  printf '%s[LOCAL-LLM DRAFT | dispatch-offload] Mechanikus reszek helyi (7B) draftja. DRAFT-ONLY: MikroB + a gate ujra-ellenorzi, semmi nem megy elesbe vakon. Az ugynok reviewlje es integralja, ne irja ujra Claude-dal. AMIKOR VEGEZTEL VELE, tegyel a kartyara egy sort (sor elejen): '"'"'Draft-Review: ELFOGADVA'"'"' / '"'"'RESZBEN'"'"' / '"'"'ELUTASITVA'"'"' / '"'"'FELESLEGES'"'"' -- e nelkul a kartya nem mehet waiting-be (card 1338e68b). Mind a negy elfogadhato; a lenyeg, hogy a draft ne menjen at elbiralatlanul. A FELESLEGES arra valo, amikor a draft JO volt, de nem vettel at belole semmit (tipikusan mert a javitas mar kesz volt, mire megerkezett) -- ezt ELUTASITVA-nak konyvelni azt allitana, hogy a helyi modell rosszul dolgozott (card 504ec76f).
+
+#### %s
+%s
+' "$review_header" "$leaf_title" "$content"
+}
+
 # --- test hooks (no network/token/lock needed) ---------------------------------------------------
 # --test-resolve: feed a kanban-list JSON fixture on stdin, CARD via env; prints the resolved leaves.
 # --test-attempts-op OP LEAF [--file PATH]: exercises the attempts state machine against a scratch file.
@@ -321,8 +461,21 @@ if [[ "${1:-}" == "--test-advisory-draft" ]]; then
   advisory_draft
   exit 0
 fi
+# --test-draft-comment-body TITLE CONTENT [SYNTHETIC]: the exact comment body a real draft posts,
+# no network (card 501c489f).
+if [[ "${1:-}" == "--test-draft-comment-body" ]]; then
+  draft_comment_body "${2-}" "${3-}" "${4-false}"
+  exit 0
+fi
 if [[ "${1:-}" == "--test-resolve" ]]; then
   resolve_leaves
+  exit 0
+fi
+# --test-resolve-decompose: same contract as --test-resolve, but through the decompose wrapper (card
+# 501c489f) -- the real run calls resolve_leaves_with_decompose, not resolve_leaves directly, so this
+# is the hook that can never drift from what actually ships.
+if [[ "${1:-}" == "--test-resolve-decompose" ]]; then
+  resolve_leaves_with_decompose
   exit 0
 fi
 # --test-nudge-recipient ASSIGNEE RUNNING: the draft-nudge routing decision (card 0b3a3084), pure.
@@ -371,7 +524,7 @@ hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
 trap 'rm -f "$hdr_file"' EXIT
 printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
 
-LEAVES_JSON="$(curl -s -H @"$hdr_file" "$DASH/api/kanban" | resolve_leaves)"
+LEAVES_JSON="$(curl -s -H @"$hdr_file" "$DASH/api/kanban" | resolve_leaves_with_decompose)"
 
 if [[ -z "${LEAVES_JSON// }" || "$LEAVES_JSON" == "[]" ]]; then
   echo "offload-dispatch: card $CARD not found/not open/empty -> skip"
@@ -408,19 +561,16 @@ graph_args_for() {
 }
 
 post_draft_comment() {
-  local leaf_id="$1" leaf_title="$2" content="$3"
-  local body="[LOCAL-LLM DRAFT | dispatch-offload] Mechanikus reszek helyi (7B) draftja. DRAFT-ONLY: MikroB + a gate ujra-ellenorzi, semmi nem megy elesbe vakon. Az ugynok reviewlje es integralja, ne irja ujra Claude-dal. AMIKOR VEGEZTEL VELE, tegyel a kartyara egy sort (sor elejen): 'Draft-Review: ELFOGADVA' / 'RESZBEN' / 'ELUTASITVA' / 'FELESLEGES' -- e nelkul a kartya nem mehet waiting-be (card 1338e68b). Mind a negy elfogadhato; a lenyeg, hogy a draft ne menjen at elbiralatlanul. A FELESLEGES arra valo, amikor a draft JO volt, de nem vettel at belole semmit (tipikusan mert a javitas mar kesz volt, mire megerkezett) -- ezt ELUTASITVA-nak konyvelni azt allitana, hogy a helyi modell rosszul dolgozott (card 504ec76f).
-
-#### $leaf_title
-$content
-"
+  # $4 = synthetic ("true"/"false", optional), forwarded to draft_comment_body.
+  local leaf_id="$1" leaf_title="$2" content="$3" synthetic="${4:-false}"
+  local body; body="$(draft_comment_body "$leaf_title" "$content" "$synthetic")"
   curl -s -X POST "$DASH/api/kanban/$leaf_id/comments" -H "Content-Type: application/json" -H @"$hdr_file" \
     -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$body")" >/dev/null 2>&1
 }
 
 post_exhausted_notice() {
   local leaf_id="$1"
-  local body="INFO-ONLY [local-llm offload]: a helyi 7B 3 sikertelen (tranziens) kiserlet utan kimerult ezen a kartyan (pl. Ollama nem volt elerheto). A kartya emiatt NEM blokkolt -- a felelos agens a normal (online) uton viszi tovabb. 24 ora mulva a rendszer automatikusan ujra probalkozik helyben."
+  local body="INFO-ONLY [local-llm offload]: a helyi 7B $OFFLOAD_LEAF_MAX_ATTEMPTS sikertelen (tranziens) kiserlet utan kimerult ezen a kartyan (pl. Ollama nem volt elerheto). A kartya emiatt NEM blokkolt -- a felelos agens a normal (online) uton viszi tovabb. 24 ora mulva a rendszer automatikusan ujra probalkozik helyben."
   curl -s -X POST "$DASH/api/kanban/$leaf_id/comments" -H "Content-Type: application/json" -H @"$hdr_file" \
     -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$body")" >/dev/null 2>&1
 }
@@ -428,7 +578,13 @@ post_exhausted_notice() {
 try_leaf() {
   # Caller already ran attempts_op check + skipped done/exhausted leaves before invoking this (the
   # loop's precheck below) -- no need to repeat that read here.
-  local leaf_id="$1" leaf_title="$2" leaf_desc="$3" leaf_assignee="$4" leaf_tags="$5" leaf_project="$6" parent_ctx="$7" leaf_assignee_raw="${8:-}"
+  #
+  # TWO IDS, DELIBERATELY SEPARATE (card 501c489f). leaf_id is the ATTEMPTS-TRACKING key -- for a
+  # synthetic (decomposed) leaf this is "$realCardId~$type", so each mechanical fragment retries
+  # independently. post_id is where a comment/nudge actually LANDS on the board -- a synthetic id is
+  # not a real kanban row, so it is ALWAYS the real card id, same for every fragment of that card.
+  # For a real leaf the two are identical (post_id == leaf_id), so this is a no-op there.
+  local leaf_id="$1" leaf_title="$2" leaf_desc="$3" leaf_assignee="$4" leaf_tags="$5" leaf_project="$6" parent_ctx="$7" leaf_assignee_raw="${8:-}" post_id="${9:-$1}" synthetic="${10:-false}"
   local task="$leaf_title
 
 $leaf_desc"
@@ -444,8 +600,8 @@ $leaf_desc"
 
   if [[ $rc -eq 0 && -n "${out// }" ]]; then
     attempts_op success "$leaf_id" >/dev/null
-    post_draft_comment "$leaf_id" "$leaf_title" "$out"
-    nudge_leaf_owner "$leaf_id" "$leaf_assignee_raw" draft || true
+    post_draft_comment "$post_id" "$leaf_title" "$out" "$synthetic"
+    nudge_leaf_owner "$post_id" "$leaf_assignee_raw" draft || true
     echo "offload-dispatch: leaf $leaf_id -> posted local draft"
     return 0
   elif [[ $rc -eq 9 ]]; then
@@ -459,8 +615,8 @@ $leaf_desc"
     adv_draft="$(printf '%s' "$out" | advisory_draft)"
     if [[ -n "${adv_draft// }" ]]; then
       attempts_op success "$leaf_id" >/dev/null
-      post_draft_comment "$leaf_id" "$leaf_title" "$adv_draft"
-      nudge_leaf_owner "$leaf_id" "$leaf_assignee_raw" draft || true
+      post_draft_comment "$post_id" "$leaf_title" "$adv_draft" "$synthetic"
+      nudge_leaf_owner "$post_id" "$leaf_assignee_raw" draft || true
       echo "offload-dispatch: leaf $leaf_id -> posted local draft (advisory, route stays online)"
       return 0
     fi
@@ -470,10 +626,10 @@ $leaf_desc"
   else
     entry="$(attempts_op transient-fail "$leaf_id")"
     local n; n="$(printf '%s' "$entry" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("attempts",0))' 2>/dev/null)"
-    echo "offload-dispatch: leaf $leaf_id -> local attempt failed (rc=$rc), attempt ${n:-?}/3" >&2
-    if [[ "${n:-0}" -ge 3 ]]; then
-      post_exhausted_notice "$leaf_id"
-      nudge_leaf_owner "$leaf_id" "$leaf_assignee_raw" exhausted || true
+    echo "offload-dispatch: leaf $leaf_id -> local attempt failed (rc=$rc), attempt ${n:-?}/$OFFLOAD_LEAF_MAX_ATTEMPTS" >&2
+    if [[ "${n:-0}" -ge "$OFFLOAD_LEAF_MAX_ATTEMPTS" ]]; then
+      post_exhausted_notice "$post_id"
+      nudge_leaf_owner "$post_id" "$leaf_assignee_raw" exhausted || true
     fi
     return 1
   fi
@@ -512,7 +668,7 @@ drafted=0
 # The same shift also handed the local model the ASSIGNEE NAME as its --context. The old 7-field
 # form hid it because the empty field was LAST, so nothing came after it to lose.
 # '|' is outside the base64 alphabet (A-Za-z0-9+/=) and is not IFS whitespace, so empty fields survive.
-while IFS='|' read -r b64id b64title b64desc b64assignee b64tags b64project b64ctx b64assignee_raw; do
+while IFS='|' read -r b64id b64title b64desc b64assignee b64tags b64project b64ctx b64assignee_raw b64synthetic; do
   [[ -z "$b64id" ]] && continue
   lid="$(printf '%s' "$b64id" | base64 -d)"
   (( attempted >= OFFLOAD_MAX_SUBTASKS )) && { echo "offload-dispatch: leaf call budget ($OFFLOAD_MAX_SUBTASKS) reached, stopping" >&2; break; }
@@ -526,6 +682,11 @@ while IFS='|' read -r b64id b64title b64desc b64assignee b64tags b64project b64c
   lproject="$(printf '%s' "$b64project" | base64 -d)"
   lctx="$(printf '%s' "$b64ctx" | base64 -d)"
   lassignee_raw="$(printf '%s' "$b64assignee_raw" | base64 -d)"
+  lsynthetic="$(printf '%s' "$b64synthetic" | base64 -d)"
+  # POST TARGET (card 501c489f): a synthetic leaf id ("$realCardId~$type") is not a real kanban row
+  # -- comments/nudges always go to the real card, named by stripping everything from the FIRST `~`
+  # onward (a no-op for a real leaf id, which never contains one).
+  lpost_id="${lid%%~*}"
   # RECONSTRUCTION-BOILERPLATE FILTER (backend2 finding, 8b5559cf, 2026-09-12): a 2026-09-08 kanban
   # DB-kiuerueles utani rekonstrukcio ~34+ kartyan olyan leirast hagyott, ami csak a cim ismetlese +
   # egy [REKONSTRUKCIO-JAVITAS]/[DEDUP-PREFILTER] boilerplate blokk, ONALLO TORZSSZOVEG NELKUL. Ez a
@@ -552,13 +713,13 @@ else:
     print(desc)
 ')"
   attempted=$(( attempted + 1 ))
-  if try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx" "$lassignee_raw"; then
+  if try_leaf "$lid" "$ltitle" "$ldesc" "$lassignee" "$ltags" "$lproject" "$lctx" "$lassignee_raw" "$lpost_id" "$lsynthetic"; then
     drafted=$(( drafted + 1 ))
   fi
 done < <(printf '%s' "$LEAVES_JSON" | python3 -c '
 import json, sys, base64
 for l in json.load(sys.stdin):
-    fields = [l["id"], l["title"], l["description"], l["assignee"], l["tags"], l["project"], l["parent_context"], l["assignee_raw"]]
+    fields = [l["id"], l["title"], l["description"], l["assignee"], l["tags"], l["project"], l["parent_context"], l["assignee_raw"], str(bool(l.get("synthetic", False))).lower()]
     print("|".join(base64.b64encode(str(x).encode()).decode() for x in fields))
 ')
 

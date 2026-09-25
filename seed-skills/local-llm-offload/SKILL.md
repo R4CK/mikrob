@@ -33,6 +33,14 @@ STOP retrying it locally -- hand that one task to an online agent instead. Do
 not burn a 4th+ local attempt on a task the model has already shown it can't do;
 the point is to save tokens, not to spend agent time re-prompting a stuck model.
 
+This 3-strikes number is YOUR OWN manual `local-llm-rag.sh` usage. The SEPARATE, AUTOMATED
+per-leaf mechanism `offload-dispatch.sh` runs at dispatch time (card 501c489f, MikroB verdikt
+komment 6007, requirement 6) uses a LOWER threshold, 2 (`OFFLOAD_LEAF_MAX_ATTEMPTS`, lowered from
+3) -- only a transient failure (Ollama down/timeout) counts toward it; a router-ONLINE verdict was
+already a single-call jump to exhausted before and still is. The two numbers are intentionally
+different mechanisms, not a typo: do not "fix" one to match the other without re-reading both
+cards.
+
 **Do NOT** use the LLM for DETERMINISTIC transforms (MarkdownV2/JSON escaping,
 regex, arithmetic, sorting): a small model gets these subtly wrong (validated:
 the 3B mis-escaped MarkdownV2). Use code for those (e.g. the `fleet-helper`
@@ -74,6 +82,14 @@ Good mid-work candidates (all route LOCAL today at aggressiveness 100 -- measure
 Still ONLINE, and the router enforces it: authz, tenant isolation, architecture, multi-file wiring,
 security decisions. Those come back `route: online` with the category named -- if you see that, do
 not argue with it, write it yourself.
+
+A card that is itself ONLINE-only (a real architecture/security decision) can still carry a
+mechanical FRAGMENT alongside that decision -- a test scaffold, i18n strings, a README entry, a
+type definition (card 501c489f). `offload-dispatch.sh` looks for these deterministically and, when
+it finds one, drafts JUST the fragment locally while the decision itself never goes local. If you
+see a `[LOCAL-LLM DRAFT]` comment headed "(mechanikus reszfeladat, card 501c489f)" on a card whose
+decision you are building online, that draft covers ONLY the named fragment -- review it as such,
+not as a draft of the whole card.
 
 The result is a DRAFT. Read it, run the typecheck and the tests, and own the correctness. Three
 failed local attempts on the same unit means stop and write it online.
