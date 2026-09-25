@@ -63,8 +63,9 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" \
 # Move
 printf 'Authorization: Bearer %s\n' "$TOKEN" \
 | curl -H @- -s -X POST http://localhost:3420/api/kanban/<id>/move \
-  -d '{"status":"waiting"}'
+  -d '{"status":"waiting","actor":"<sajat-neved>","reason":"QA PASS -- gate-re var"}'
 ```
+Egy 60 mp-es tomeges-statuszvaltas-burst alatt actor+reason nelkul 409 `bulk_attribution_required` jon -- ne nyeld le csendben, a fenti hivas mar mindket mezot kuldi (kartya 1ef7bd9c).
 
 ### Stale-PASS csapda (valós tanulság)
 Ha Cybersec NO-GO-t adott és az ügynök új commitot készített a fix után, a korábbi QA PASS már egy más artifactra vonatkozik. Kötelező lépések:

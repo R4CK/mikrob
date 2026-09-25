@@ -13738,6 +13738,259 @@ nekunk kellene epiteni/karbantartani a masik fajlra.
 
 **Ki dontott:** backend (self-advance, 6b. szabaly szerinti 2-napos regi kartya elsobbsege).
 
+## 2026-09-25 -- c00d5429 -- fo ugynok PreToolUse biztonsagi orei: melyik tiz kerult be, melyik ketto szandekosan nem
+
+MikroB merese (2026-09-25 08:50, a 21597530 plan-grillingje kozben): a fo ugynok
+(mikrob-channels) sessionje a tracked projekt-gyokerbeli `.claude/settings.json`-bol olvassa a
+hookjait (#1305/`adf2c30a` ota), aminek `PreToolUse` blokkja a mert idopontban EGYETLEN
+biztonsagi ort sem tartalmazott a sub-agensek altal mar hordozott tizbol. Elo proba: egy
+`cd /etc && grep -c zzz hostname` a fo ugynok sajat sessionjeben LEFUTOTT (rc=1, nincs blokk),
+miutan ugyanez a bemenet kozvetlenul a `cd-chain-guard.py`-nak futtatva rc=2-vel blokkolt -- az
+or mukodik, csak nem volt bedrotozva ebbe a sessionbe.
+
+**Mit vittem be.** A tracked `.claude/settings.json` `PreToolUse` blokkjaba bekerult tiz or, a
+sub-agens sablon (elo `agents/backend/.claude/settings.json`) matchereivel/parancsaival
+egyezoen, a keretezett repo-utat `$CLAUDE_PROJECT_DIR`-re cserelve (a fajl sajat mar-meglevo
+konvencioja): `secret-write-guard`, `big-file-guard`, `git-protect-guard`, `npm-protect-guard`,
+`symlinked-node-modules-guard`, `blast-radius-guard`, `cd-chain-guard`, `bash-egress-guard`,
+`noisy-command-guard`, `pentest-tool-install-guard`.
+
+**Mit NEM vittem be, es miert -- ez a tenyleges scope-dontes, ezert kell ide.**
+`email-send-gate.mjs` es `self-pace-gate.mjs` mindketten jelen vannak a sub-agens sablonon, de
+NEM szerepeltek MikroB sajat mert listajan (a tiz fentebbi). Ket kulon ok:
+- A fo ugynok mar rendelkezik sajat, SZELESEBB kimeno-akcio-kapuval ugyanarra a temara
+  (`outgoing-copy-gate.py` + `email-approval-gate.py`), amik tobb matchert fednek (Bash,
+  `.*send_email.*`, `.*manage_email.*`, a Telegram-valasz MCP-hivasok is), mint az
+  `email-send-gate.mjs` onmagaban.
+- A `self-pace-gate.mjs` egy sessiont a SAJAT `ScheduleWakeup`/`Cron*` eszkozeihez kepest
+  pacelne -- de a fo ugynok maga BIRTOKOLJA az utemezot (a `folyamatos-munka-orchestrator`, a
+  `heartbeat-consolidated` es tarsaik mind az o sessiojaban futnak). Ez mas kockazati kerdes,
+  amit sem MikroB merese, sem a kartya nem vetett fel; ha valaha kell, kulon, sajat
+  meggondolast igenyel.
+
+**A kartya sajat 4. pontja explicit kizarta**, hogy ez a kartya a `~/.claude/settings.json`
+flotta-hookjait eltavolitsa -- az Peti sajat, fuggetlen sessionjeit erinti, kulon Peti-dontes
+kell hozza, nem resze ennek a munkanak.
+
+**Miert ide, es miert csak most.** QA (komment 6079, gate-sha `bedac5df`) FAIL-t adott a kesz,
+funkcionalisan zold kartyara KIZAROLAG ezert a hianyzo bejegyzesert -- pontosan a `78f85eb1`
+kartyaval mar haromszor (`fed9409f`, `ced9ce80`, `398f351b`) demonstralt mintat ismetelve: a
+gyoker CLAUDE.md dontesnaplo-szabalya minden erdemi dontest (itt: melyik ket or maradt ki es
+miert) itt kovetel, a kanban-komment (SQLite, nem grep-elheto) onmagaban nem eleg. Ez a bejegyzes
+a mar korabban megirt REVIEW-komment (id 6071) tartalmat viszi at ide, kod-/teszt-valtoztatas
+nelkul -- a delta-gate ezt a bejegyzest nezi.
+
+**Nyitott, MikroB sajat lepese:** a kartya 3. pontja (elo `cd /etc && grep` proba a fo ugynok UJ
+sessionjeben, landolas UTAN, mert a hook-lista session-inditaskor tolt be) nem vegezheto el a
+backend2 sajat sessiojabol -- MikroB dontesevel (komment 6073) ez MikroB sajat kovetkezo
+session-ujrainditasakor teljesul.
+
+**Ki dontott:** MikroB (mereskent es kartya-nyitaskent), backend2 (a scope-hatar meghuzasa +
+implementacio), QA (a hianyzo dokumentacio kikenyszeritese, delta-gate).
+
+## 2026-09-25 -- ade19b79 -- 4 nullhasználatú addyosmani skill bekötése + browser-testing Playwrightra adaptálva
+
+**Kontextus.** Peti döntése (Telegram 8734, 2026-09-18 08:00) a 3f1bb23d repó-felülvizsgálat
+tételére: a `store/adopted/addyosmani__agent-skills/` alól 4 skill (`api-and-interface-design`,
+`ci-cd-and-automation`, `deprecation-and-migration`, `browser-testing-with-devtools`) már
+telepítve volt `~/.claude/skills/`-be, de EGYETLEN ügynök "Core skilljeid" listájában sem
+szerepelt -- technikailag elérhető, de gyakorlatilag nulla használat (senki nem tudta, hogy
+nekik szól).
+
+**Bekötés.**
+- `api-and-interface-design`, `ci-cd-and-automation`, `deprecation-and-migration` ->
+  backend/backend2/backend3 Core skilljeid listájába.
+- `ci-cd-and-automation` -> qa/qa2 Core skilljeid listájába is (a CI/CD minőségi kapuk a
+  gate-szerep közvetlen érdeke).
+- `browser-testing-with-devtools` -> qa/qa2/teszter Core skilljeid listájába.
+
+**backend3/qa2/teszter hiányzó "Core skilljeid" szekció (mellékes lelet).** Ez a három klón
+sosem kapott "Core skilljeid" szekciót (csak backend/backend2/qa-nál létezett) -- a klón-drift
+tünete, amit az `a6abb230` kártya ("Klón-ügynökök skill-paritása") a teljes körére fog megoldani.
+Itt SZÁNDÉKOSAN NEM töltöttem fel a teljes hiányzó baseline-t (az `a6abb230` dolga, scope-mismatch
+lett volna ezalatt a kártya alatt) -- csak egy minimális "Core skilljeid" szekciót hoztam létre
+mindháromnak, KIZÁRÓLAG az ide tartozó 1-3 skillel, jegyzettel hivatkozva az `a6abb230`-ra.
+
+**`browser-testing-with-devtools`: adaptálva, nem eldobva.** A skill eredetileg
+chrome-devtools-mcp tool-nevekre volt írva (upstream: addyosmani/agent-skills), a flottánknak
+viszont Playwright MCP-je van (`mcp__playwright__*`). Mérve: a 318 soros SKILL.md-ből kb. 45-50
+sor volt ténylegesen eszköz-specifikus (Setup/Installation szekció, Available Tools tábla,
+Profile Isolation biztonsági szakasz) -- a fennmaradó ~85% (workflow-lépések, teszt-terv formátum,
+console-elemzési minták, akadálymentességi ellenőrzés, red flags, verification checklist)
+teljesen eszköz-agnosztikus módszertan volt. Az adaptáció ára alacsony, az érték magas -> ADAPT,
+nem DROP. Minden `mcp__playwright__*` eszköznév a valós, ebben a session-ben elérhető tool-listából
+jön (nem kitalált). Két képesség-rés dokumentálva (nincs dedikált Performance Trace / Element
+Styles tool Playwright MCP-ben -- `browser_evaluate` + a Navigation/Performance Timing API a
+helyettesítő út, a SKILL.md-ben kimondva, nem elhallgatva).
+
+**Vendored-fork jegyzés.** A `~/.claude/skills/browser-testing-with-devtools/VENDORED.md` már
+korábban (2026-09-04, adoptáláskor) tartalmazott egy "CAVEAT... needs a follow-up adaptation pass"
+jegyzetet -- ez a kártya pontosan ezt a jegyzetet zárja le. A VENDORED.md-t kiegészítettem egy
+FORK NOTE-tal: a jövőbeli re-vendor (`store/vendor-skill.sh` upstream-frissítés után) NEM írhatja
+felül vakon a SKILL.md-t, mert elveszne ez az adaptáció -- a re-vendorolónak diffelnie kell az
+upstream változást az itt módosított tartalom ellen, és rá kell alkalmaznia az adaptációt.
+
+**NEM git-tracked lépés (fontos eltérés a kártya saját landolási-blokkjától).** A kártya fejléce
+"landolás marveen-land.sh, Gate-SHA a landolt merge sha"-t ír, ami a `3f1bb23d` szülő-kártya
+általános repó-leírásából öröklődött. A TÉNYLEGES célpontok azonban egyik sem git-tracked: az
+`agents/<szerep>/CLAUDE.md` fájlok a `.gitignore` szerint teljesen ki vannak zárva a marveen
+repóból (élő, per-ügynök runtime-config, nem landolt tartalom), és a `~/.claude/skills/` sem git
+repó (nincs is benne `.git`). Ez a kártya tehát NEM termel git commitot/Gate-SHA-t -- a gate
+(QA, + Cybersec ahol indokolt) a LIVE fájlok tartalmát nézi át, nem egy diffet egy landolt shán.
+Ezt a DECISIONS.md bejegyzést és a card REVIEW-kommentjét kell forrásként használni, mit és hol
+módosítottam.
+
+**Gate:** QA (a kártya saját kijelölése).
+
+**Ki döntött:** backend (self-advance, Peti döntés 3 -- Telegram 8734 -- végrehajtása, kártya
+ade19b79).
+
+## 2026-09-25 -- 3e1502ec -- Kozos CPU-szemafor (cleancore-suite-run.sh / fleet-test.sh): a
+megosztott pool MÁR SZIMMETRIKUS volt, a hiányzó bizonyíték egy visszairányú selftest volt
+
+**A kártya premisszája.** backend saját lelete (msg 2606, 2026-09-18 08:22): a CleanCore-szemafor
+(`cleancore-suite-run.sh`) NEM számolja be a marveen-oldali `fleet-test.sh` futásait, miközben
+`fleet-test.sh` a CleanCore-futásokat beszámítja -- emiatt HÁROM teljes suite futott egyszerre
+(backend CleanCore, fron-teddy CleanCore, marveen fleet-test a `marveen-land --all` sweepből), és
+a harness memória-őr leállított egy tiszta futást.
+
+**Amit a kód VIZSGÁLATA mutatott, a kódolás előtt.** `git log -p -S acquire_cpu_slot -- store/fleet-test.sh`
+szerint a megosztott CPU-pool (`CLEANCORE_SUITE_SLOTS`/`CLEANCORE_SUITE_LOCK_PREFIX`, ugyanaz a
+`${MARVEEN_MAIN:-/home/neon/marveen}/store/.cleancore-suite-slot-N.lock` fájlkészlet mindkét
+oldalon) commit `87762566` óta létezik `fleet-test.sh`-ban (card 492a6d5c, landolt develop-ra
+**2026-09-06 19:50**-kor -- TIZENKÉT nappal a 2026-09-18-i incidens ELŐTT). Mivel mindkét szkript
+UGYANAZOKAT a számozott lockfájlokat `flock`-olja (ugyanaz a prefix-alapértelmezés, ugyanaz a
+slot-számolás), a visszairány (cleancore-suite-run.sh látja-e fleet-test.sh foglalását) a kernel
+`flock` szemantikájából STRUKTURÁLISAN következik, nem külön kódolt logika -- egy fájlon vett zár
+mindkét irányban kizár, függetlenül attól, melyik szkript vette fel elsőként.
+
+**Amit a meglévő tesztek lefedtek, és amit NEM.** `fleet-test-shares-cleancore-cpu-pool.test.ts`
+(vitest) és `mopsion-suite-run.selftest.sh` (bash) mindkettő tesztelte a saját oldalát SZINTETIKUS
+`flock` fogókkal (azonos névsémával, mint amit a másik szkript ténylegesen használna) -- de egyik
+sem futtatta ténylegesen a MÁSIK VALÓDI szkriptet, hogy megnézze, valóban lát-e a foglalásából.
+Ez pontosan az a rés, amit a kártya "Selftest mindkét irányra (ismert-pozitív: egy fleet-test futás
+mellett a CleanCore 2. slot foglaltnak látszik)" mondata kért.
+
+**Mit csináltam.** Új case (15) a `store/mopsion-suite-run.selftest.sh`-ban: a VALÓDI
+`store/fleet-test.sh`-t indítom háttérben (egy előre lefoglalt valódi fa-lockkal blokkolva,
+mielőtt worktree-checkoutig/buildig jutna), és ellenőrzöm, hogy a `mopsion-suite-run.sh` (a
+`cleancore-suite-run.sh` jelenlegi neve) EZT A FOGLALÁST látva a másik szabad slotot kapja meg
+(CONTROL), majd -- egy második, szintetikus fogóval mindkét slotot elfoglalva -- ténylegesen
+kiesik ("no slot after"). Mindkét eset ZÖLDEN fut a jelenlegi kódon, MÓDOSÍTÁS NÉLKÜL egyik
+szkriptben sem: 32/32 a teljes selftest-fájlon (előtte 30/30).
+
+**Mi maradt megválaszolatlan.** A 2026-09-18-i "három suite egyszerre" incidens KONKRÉT
+mechanizmusa nem reprodukálható a jelenlegi kódból, mivel az akkor is szimmetrikusan élt (a fix
+12 nappal korábbi). Lehetséges magyarázatok, amiket NEM vizsgáltam tovább (kívül esik ezen a
+kártyán, MikroB döntése kell hozzá): (a) az egyik futás megkerülte a wrapper szkriptet (17.
+munkavégzési szabály megsértése, közvetlen vitest-hívás), (b) az adott pillanatban a
+`marveen-land --all` sweep egy olyan checkout-ból futott, ami még nem szinkronizálta a fixet.
+Nem próbáltam találgatni -- ha a jövőben újra előfordul, a most hozzáadott case 15 legalább
+kizárja a "a megosztás elvileg nem működik" magyarázatot mérve, nem csak kikövetkeztetve.
+
+**Gate:** QA (a kártya saját kijelölése).
+
+**Ki döntött:** backend (self-advance, rule 6b -- 2 napnál régebbi kártya).
+
+## 2026-09-25 -- 501c489f -- tobb dontesi pontos kartyak reszleges helyi-bontasa (deterministikus sablon, decision-resz online marad)
+
+MikroB plan-grilling verdiktje (GO-WITH-CHANGES, komment 6007) mert allapot: `card-build-route.log`
+utolso 446 oraban 50 dontes, mind ONLINE, 0 HELYI -- ebbol ~40 `deterministic-multi-decision`
+gyoker-okkal, `calls=0`. Ket gyoker-ok: (1) `card-build-route.sh` a multi-decision regex talalatnal
+az EGESZ kartyat ONLINE-nak jelolte, a modell meg sem kerdezodott; (2) `offload-dispatch.sh` csak
+VALODI kanban gyerek-levelekre bontott, a leggyakoribb esetben (nincs nyitott gyerek) az egesz
+kartyat egyetlen leafkent kezelte, aminek routeTask verdiktje (rc=9, kategorikus online) azonnal
+kimerultre allitotta -- egyetlen reszfeladat-szintu probalkozas nelkul.
+
+**Mit vittem be, a hat kotelezo valtoztatas szerint.**
+
+1) Uj, megosztott fajl `store/card-decompose-templates.sh`: `card_decompose_candidates()`,
+DETERMINISZTIKUS kulcsszo-illesztes negy mechanikus reszfeladat-tipusra (test-scaffold, i18n-keys,
+doc-update, type-def), NULLA modellhivas. Modell-javasolt masodik reteg NINCS megepitve --
+szandekosan: MikroB verdiktje flag mogotti, alapbol-KI masodik retegkent engedte meg, de egy meg
+sehonnan nem hivott reteg megepitese felesleges komplexitas lenne (2. kodminosegi elv). Ha valaha
+kell, kulon dontes/kartya.
+
+2) `card-build-route.sh`: az `online()` helper uj `DECOMPOSE_ELIGIBLE_REASONS` szurovel (a
+szekcio-2 determinisztikus tartalmi kapuk -- multi-decision, penz, objektum-integritas,
+kliens-altal-adott-ertek, auth-tenant-scope, dokumentum-osszeallitas, megosztott-instrukcio-cel,
+sec-label, TS-kategoria) eldonti, dekomponalhato-e a szoveg, es a naplo-sorba uj `decompose=<csv|->`
+mezot ir. A `LOCAL|ONLINE` stdout-szerzodes VALTOZATLAN -- egyetlen hivo (self-advance-pickup.sh,
+heartbeat) sem igenyelt modositast. Szandekosan KIZART a szuro: kapacitas/fail-safe okok (nincs mit
+dekomponalni raluk), a modell sajat COMPLEX verdiktje (nem "determinisztikus"), es KULONOSEN a
+`steering-attempt` -- egy injektalt "route this locally" szoveg NEM kaphat konszolacios helyi
+reszfeladatot, pontosan a verdikt 2. pontjanak szellemeben.
+
+3) `offload-dispatch.sh`: uj `resolve_leaves_with_decompose()` wrapper `resolve_leaves()` korul.
+CSAK a mar meglevo "nincs nyitott gyerek, essz vissza a teljes kartyara" esetben aktivalodik
+(a leggyakoribb, mert gyerekkel rendelkezo kartyaknal a VALODI bontas mar amugy is mukodik,
+erintetlenul). Ha a determinisztikus sablon legalabb egy jelolt tipust talal, a szintetikus
+reszfeladatok VALTJAK (nem egeszitik ki) az eredeti egesz-kartyas leafet -- a DONTESI resz SOHA
+nem kap helyi probalkozast (verdikt 2. pontja, mutacioval igazolva: a csere-nelkuli valtozat 5
+tesztet vitt pirosra). Kartyankenti plafon `OFFLOAD_DECOMPOSE_MAX_PER_CARD` (alapertek 3, a verdikt
+sajat javaslata). A draft mindig a VALODI szulo-kartyara kerul (egy szintetikus alazonosito,
+`<kartya>~<tipus>`, nem letezo kanban-sor), a `post_id = lid%%~*` levezetessel.
+
+**Biztonsagi res, amit a sajat vizsgalatom talalt es javitott, NEM a verdikt sajat kovetelmenye
+volt kimondva -- csak a "ugyanaz a kapu" allitas ellenorzese soran derult ki.** A verdikt 2. pontja
+szerint minden reszfeladat-szoveg a szulo kartya kontextusaval MENJEN AT ugyanazon a
+steering/security kapun, mint ma az egesz kartya. Elso tervben ezt "ingyenesnek" gondoltam: a
+szintetikus leaf `parent_context`-je a szulo teljes cimet+leirasat hordozza, es `try_leaf` amugy is
+atadja `--context`-kent a `local-llm-rag.sh`-nak. **DE ellenorizve `local-llm-rag.sh` forraskodjat
+(sor ~380): a sajat `routeTask()` klasszifikatora KIZAROLAG a `description`-t (a `task`-ba
+begyurt szoveget) kapja bemenetkent, a `--context` erteket SOHA -- az csak a modell PROMPT-jahoz
+ad talajt, a routing-dontesbe lathatatlan.** Ha egy szintetikus reszfeladat `description`-je csak az
+altalanos sablon-mondat lenne, a routeTask minden kockazati jelet elveszitene, ami a szulo
+LEIRASABAN (nem a cimeben) el -- a cim mar amugy is a leaf sajat `title` mezojebe van gyurva. Javitas:
+a szintetikus leaf `description`-je most a sablon-mondat UTAN a szulo eredeti leirasat is hordozza
+(600 karakterig), vilagosan elhatarolva ("csak kontextusul -- CSAK a fenti reszfeladatot ird meg").
+Mutacioval igazolva (a fold-be-hagyas visszaallitasaval a dedikalt uj teszt pirosra valt, a tobbi 36
+zold maradt).
+
+4) A `[LOCAL-LLM DRAFT]` komment (biztonsagi-gatelt szulonel MINDIG, nem csak amikor a
+reszfeladat SAJAT szuk szovege is talalna egy kapu) egy uj, kotelezo "TELJES, FUGGETLEN ONLINE
+FELULVIZSGALAT" fejlecet kap -- ugyanazt a szoveget, amit `advisory_draft()` mar hasznal
+router-ONLINE eseten (mutacioval igazolva). Uj naplo-mezo mind a harom fogyasztonal:
+`card-build-route-24h-measure.sh` (`decomposed_content`/`decompose_subtasks_total`/
+`decompose_subtasks_drafted`, a szintetikus tipus-markerek szamolasaval a kartya sajat
+kommentjein), a dashboard "Utolso kartya-dontesek" panelje (`llm-verdict--decomposed` jelzes +
+"RESZBEN HELYI: n" osszegzes). `route-check-audit.sh`-t VIZSGALTAM, DE NEM MODOSITOTTAM: az a
+szkript kizarolag azt nezi, van-e BARMILYEN route-verdikt-sor a dispatch esemeny korul -- a `path`
+erteket sosem olvassa, tehat a harmadik "fogyaszto" ebben a korben kod-valtoztatas nelkul mar
+helyesen mukodik.
+
+5) Kikapcsolo: `CARD_DECOMPOSE=off` (`card-build-route.sh` es `offload-dispatch.sh` mindketto sajat
+kapcsolo-ellenorzese). Fail-safe irany valtozatlan: telepitetlen/nem-valaszolo helyi LLM tovabbra is
+a mar meglevo `local-llm-installed.sh`/VRAM-kapun at ONLINE-ra esik, a decompose-ag ezt nem erinti.
+
+6) Attempts-kuszob 3 -> 2, DE SZUKEN ERTELMEZVE: kizarolag `offload-dispatch.sh` sajat, AUTOMATIZALT
+leaf-szintu mechanizmusa (`OFFLOAD_LEAF_MAX_ATTEMPTS`, csak a tranziens-hiba ag valtozott, a
+kategorikus-online ag mar korabban is egylepeses volt es marad). A `local-llm-offload` skill sajat,
+altalanos "3-strikes" szabalya (Peti 2026-08-03, egy ugynok SAJAT kezi `local-llm-rag.sh`
+hasznalatara) SZANDEKOSAN VALTOZATLAN maradt -- ez egy masik, tagabb hatokoru, korabbi Peti-dontes,
+amit egy automatizalt mechanizmus szamanak valtozasa nem ir felul magatol (5. kodminosegi elv);
+a skillbe csak egy magyarazo bekezdes kerult, ami a ket szamot szetvalasztja.
+
+**Mit NEM fedtem le a MikroB altal peldakent adott negy valodi kartya (6eed8678, e21b816b,
+3d0b54a6, df1b2d5b) mindegyikevel -- szandekos hatokor-szukites.** A verdikt "pl." (peldaul) szoval
+vezette be oket, nem "mind a negyre kell teszt"-kent. `6eed8678` teljes cim+leiras-eleje (valodi,
+nem szintetizalt szoveg) a zaszloshajo teszt -- [SEC]-cimke ES egy tenyleges tesztfajl
+(`superadmin-router.test.ts`) egyszerre, pontosan azt bizonyitja, amit a verdikt 2. pontja megkovetel
+(dontes online marad + mechanikus jelolt felismerve). A masik harom kartya leirasa (500 karakteres
+csonkitasban all rendelkezesemre a kanban API-bol) nem tartalmazott nyilvanvalo mechanikus mintat a
+lathato reszben -- egy `case_is LOCAL`-szeru teszt raijuk hamis lenne. A tobbi teszt-eset (i18n,
+readme, type-def, injection, mutacio, negativ kontroll) szintetikus, de a mintak maguk (kulcsszavak,
+sablon-formak) a valodi determinisztikus kapuk sajat mar-bevalt szerkezetet kovetik, nem uj
+feltalalast.
+
+**Nem erintett, mert mar amugy is lefedte a meglevo architektura:** a heartbeat C 4b sajat `timeout
+240`/`timeout 300` korlatai mar szamoltak akar 15 szekvencialis helyi-modell hivassal is (a
+`heartbeat-consolidated` skill sajat szovege szerint), a decompose altal hozzaadott legfeljebb 3
+tovabbi szintetikus reszfeladat ebbe a mar-szamolt legrosszabb esetbe belefer -- nem kellett
+modositani a skill idozitesi szamait.
+
+**Ki dontott:** MikroB (plan-grilling verdikt, komment 6007), backend2 (implementacio + a
+`--context`/routeTask biztonsagi res feltarasa es javitasa + a negy-kartya hatokor-szukites).
 
 ## 2026-09-25 -- 08eb6402 -- Two-phase Suite-SHA evidence gate for mopsion landings (prepare -> suite -> record, machine-written, tree-hash matched, off/warn/enforce)
 
@@ -13822,7 +14075,6 @@ első verzióból + 3 új).
 
 **Ki döntött:** MikroB (plan-grilling verdikt + kötelező kiegészítések, kártya-komment 6011,
 üzenet 3736/3748) + backend3 (BE build, mindkét verzió, a másodikat MikroB döntése szerint).
-
 ## 2026-09-25 -- 42749892 (32dbac1e rebrand gyereke, 3. lépés) -- systemd unit/timer átnevezés: mikrob-cleancore-suite-guard -> mikrob-mopsion-suite-guard
 
 **Mit csináltunk.** `scripts/install-cleancore-suite-guard-timer.sh` át lett nevezve

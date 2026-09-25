@@ -40,6 +40,12 @@ const EXPECTED: Record<string, string[]> = {
   PreToolUse: [
     'outgoing-copy-gate.py', 'email-approval-gate.py',
     'channel-image-resize.sh', 'egress-gate.mjs',
+    // Card c00d5429 (2026-09-25): the main agent's own session ran with none of the ten
+    // security guards every sub-agent's settings.json already carried (a live
+    // `cd /etc && grep -c zzz hostname` ran unblocked here, rc=2 direct from the guard).
+    'secret-write-guard.py', 'big-file-guard.py', 'git-protect-guard.py', 'npm-protect-guard.py',
+    'symlinked-node-modules-guard.py', 'blast-radius-guard.py', 'cd-chain-guard.py',
+    'bash-egress-guard.py', 'noisy-command-guard.py', 'pentest-tool-install-guard.py',
   ],
   Stop: ['telegram-reply-guard.py', 'telegram_progress_clear.py'],
   SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py'],
@@ -58,12 +64,66 @@ function scriptNames(event: string): Set<string> {
   )
 }
 
+// Card c00d5429, Cybersec F1 MEDIUM (komment 6081/6100): the checks above only pin that a
+// guard SCRIPT is present, not what MATCHER it is wired to -- Cybersec's own mutations proved
+// both a narrowed matcher (secret-write-guard.py: Write|Edit|MultiEdit -> Write, leaving
+// Edit/MultiEdit unguarded) and a matcher pointed at a tool name that never fires
+// (cd-chain-guard.py: Bash -> a nonexistent tool) leave the existing "script set" test 8/8
+// GREEN. Pin the (script, matcher) PAIR for every PreToolUse entry instead.
+interface HookPair { script: string; matcher: string }
+
+function preToolUsePairs(): HookPair[] {
+  return (hooks.PreToolUse ?? []).flatMap((e) => {
+    const matcher = e.matcher ?? ''
+    return (e.hooks ?? [])
+      .map((h) => h.command ?? '')
+      .map((c) => c.match(/scripts\/hooks\/([^/\s'"]+?\.(?:py|sh|mjs))/)?.[1] ?? '')
+      .filter(Boolean)
+      .map((script) => ({ script, matcher }))
+  })
+}
+
+function pairKey(p: HookPair): string {
+  return `${p.script}::${p.matcher}`
+}
+
+// One entry per (script, matcher) pair actually wired in the tracked file today. A script that
+// legitimately fires on several matchers (outgoing-copy-gate.py, email-approval-gate.py) gets
+// one row per matcher -- collapsing to a script-only set is exactly the blind spot this pins.
+const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
+  { script: 'outgoing-copy-gate.py', matcher: 'Bash' },
+  { script: 'outgoing-copy-gate.py', matcher: '.*send_email.*' },
+  { script: 'outgoing-copy-gate.py', matcher: '.*manage_email.*' },
+  { script: 'outgoing-copy-gate.py', matcher: 'mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message' },
+  { script: 'email-approval-gate.py', matcher: 'Bash' },
+  { script: 'email-approval-gate.py', matcher: '.*send_email.*' },
+  { script: 'email-approval-gate.py', matcher: '.*manage_email.*' },
+  { script: 'channel-image-resize.sh', matcher: 'Read' },
+  { script: 'egress-gate.mjs', matcher: 'WebFetch' },
+  { script: 'secret-write-guard.py', matcher: 'Write|Edit|MultiEdit' },
+  { script: 'big-file-guard.py', matcher: 'Write' },
+  { script: 'git-protect-guard.py', matcher: 'Bash' },
+  { script: 'npm-protect-guard.py', matcher: 'Bash' },
+  { script: 'symlinked-node-modules-guard.py', matcher: 'Bash' },
+  { script: 'blast-radius-guard.py', matcher: 'Edit|Write|MultiEdit' },
+  { script: 'cd-chain-guard.py', matcher: 'Bash' },
+  { script: 'bash-egress-guard.py', matcher: 'Bash' },
+  { script: 'noisy-command-guard.py', matcher: 'Bash' },
+  { script: 'pentest-tool-install-guard.py', matcher: 'Bash' },
+]
+
 describe('tracked .claude/settings.json hook anchor (#1305)', () => {
   it('registers exactly the expected script set per event', () => {
     expect(Object.keys(hooks).sort()).toEqual(Object.keys(EXPECTED).sort())
     for (const [event, expected] of Object.entries(EXPECTED)) {
       expect([...scriptNames(event)].sort(), `event ${event}`).toEqual([...new Set(expected)].sort())
     }
+  })
+
+  it('PreToolUse: exact (script, matcher) pairs -- a guard cannot silently lose or narrow its trigger (Cybersec F1, card c00d5429)', () => {
+    const actual = preToolUsePairs().map(pairKey).sort()
+    const expected = EXPECTED_PRETOOLUSE_PAIRS.map(pairKey).sort()
+    expect(actual).toEqual(expected)
   })
 
   it('every referenced script exists in scripts/hooks/', () => {

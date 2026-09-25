@@ -59,11 +59,43 @@ TOKEN_FILE="${CARD_BUILD_ROUTE_TOKEN_FILE:-$HERE/.dashboard-token}"
 # nothing distinguished the two).
 LOG="${CARD_BUILD_ROUTE_LOG:-$HERE/card-build-route.log}"
 CARD_ID="-"
-log_verdict() { # $1 = verdict, $2 = path, $3 = model calls
-  printf '%s\t%s\t%s\t%s\tcalls=%s\tchars=%s\tdispatcher=%s\n' \
-    "$(date '+%Y-%m-%d %H:%M:%S')" "$CARD_ID" "$1" "$2" "$3" "${#TEXT}" "${CARD_BUILD_ROUTE_DISPATCHER:--}" >> "$LOG" 2>/dev/null || true
+log_verdict() { # $1 = verdict, $2 = path, $3 = model calls, $4 = decompose candidate types (csv) or unset
+  printf '%s\t%s\t%s\t%s\tcalls=%s\tchars=%s\tdispatcher=%s\tdecompose=%s\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$CARD_ID" "$1" "$2" "$3" "${#TEXT}" "${CARD_BUILD_ROUTE_DISPATCHER:--}" "${4:--}" >> "$LOG" 2>/dev/null || true
 }
-online() { log_verdict ONLINE "$1" "${2:-0}"; echo ONLINE; exit 0; }
+
+# --- DECOMPOSE (card 501c489f) -----------------------------------------------------------------
+# WHICH ONLINE REASONS ARE DECOMPOSE-ELIGIBLE, and the exclusions are deliberate. Eligible: the
+# section-2 DETERMINISTIC content gates below (the card's own wording: "a multi-decision ES a tobbi
+# determinisztikus ONLINE-kapu"). Excluded on purpose: capacity/fail-safe reasons (vram-hold,
+# model-busy, kill-switch, not-installed, no-token, card-unreadable, card-unparseable, empty-text,
+# too-long, bad-card-id, no-argument) have nothing decomposable to say about WHY, and the model's
+# own COMPLEX verdict (model-complex) is not "deterministic" by the card's own definition. STEERING
+# (steering-attempt) is the sharpest exclusion: decomposing an injected-steering card would still
+# hand a weaker builder a fragment of attacker-controlled text -- exactly what requirement 2 of the
+# verdict says must stay fully online, undecomposed. route-classify-security/abstained are also
+# excluded: that is the hardened semantic classifier's own verdict of genuine doubt, not a rule
+# reading a fixed pattern, and doubt does not get a consolation local fragment.
+DECOMPOSE_ELIGIBLE_REASONS='^deterministic-(multi-decision|money|object-integrity|client-supplied-value|auth-tenant-scope|document-assembly|shared-instruction-target|sec-label|ts-category)$'
+
+# shellcheck source=./card-decompose-templates.sh
+. "$HERE/card-decompose-templates.sh"
+
+online() { # $1 = reason, $2 = model calls (optional)
+  local decomp="-"
+  # DETERMINISTIC ONLY (requirement 1 of the verdict): no model call here, ever -- just the same
+  # grep-based classifier offload-dispatch.sh will independently re-run when it actually attempts a
+  # subtask, so the two scripts can never disagree about what counts as decomposable.
+  if [ "${CARD_DECOMPOSE:-on}" != "off" ] && [ "$CARD_ID" != "-" ] \
+     && printf '%s' "$1" | grep -Eq "$DECOMPOSE_ELIGIBLE_REASONS"; then
+    local cand
+    cand="$(card_decompose_candidates "$FULL" 2>/dev/null | cut -f1 | paste -sd, - 2>/dev/null)"
+    [ -n "${cand:-}" ] && decomp="$cand"
+  fi
+  log_verdict ONLINE "$1" "${2:-0}" "$decomp"
+  echo ONLINE
+  exit 0
+}
 
 TEXT=""
 PRIORITY=""

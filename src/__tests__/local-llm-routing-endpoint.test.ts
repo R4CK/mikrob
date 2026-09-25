@@ -116,7 +116,31 @@ describe('readRecentDecisions', () => {
     expect(rows[1]).toMatchObject({ cardId: 'cbea986c', verdict: 'ONLINE', reason: 'priority-high', modelCalls: 0, chars: 2765 })
     // NEVER carries card text -- the log format has nowhere to put it, and this reader adds no field
     // beyond what the log stores.
-    for (const r of rows) expect(Object.keys(r).sort()).toEqual(['cardId', 'chars', 'modelCalls', 'reason', 'ts', 'verdict'])
+    for (const r of rows) expect(Object.keys(r).sort()).toEqual(['cardId', 'chars', 'decompose', 'modelCalls', 'reason', 'ts', 'verdict'])
+    // Neither line carries an 8th field (pre-card-501c489f shape) -- decompose is [], not undefined.
+    expect(rows[0]!.decompose).toEqual([])
+    expect(rows[1]!.decompose).toEqual([])
+  })
+
+  it('card 501c489f: parses the decompose= field into a string array', () => {
+    writeFileSync(
+      LOG_FILE,
+      '2026-09-25 09:00:00\tabc12345\tONLINE\tdeterministic-multi-decision\tcalls=0\tchars=80\tdispatcher=self-advance\tdecompose=test-scaffold,i18n-keys\n',
+    )
+    expect(readRecentDecisions(LOG_FILE).rows[0]!.decompose).toEqual(['test-scaffold', 'i18n-keys'])
+  })
+
+  it('card 501c489f: decompose=- (no candidates found) reads as an empty array, not ["-"]', () => {
+    writeFileSync(
+      LOG_FILE,
+      '2026-09-25 09:00:00\tabc12345\tONLINE\tdeterministic-money\tcalls=0\tchars=80\tdispatcher=self-advance\tdecompose=-\n',
+    )
+    expect(readRecentDecisions(LOG_FILE).rows[0]!.decompose).toEqual([])
+  })
+
+  it('card 501c489f: a LOCAL verdict line (no decompose field, only 6 tab fields) still parses -- decompose defaults to []', () => {
+    writeFileSync(LOG_FILE, '2026-09-06 20:26:06\teb70cb13\tLOCAL\tall-stages-passed\tcalls=1\tchars=669\n')
+    expect(readRecentDecisions(LOG_FILE).rows[0]!.decompose).toEqual([])
   })
 
   it('a malformed line is skipped, not fatal to the whole read', () => {

@@ -972,6 +972,34 @@ async function kanbanMoveErrorMessage(res) {
   return t('kanban.toast.move_error')
 }
 
+/**
+ * POST /move, retrying once with a human-supplied reason if the burst guard refuses the write
+ * (409 `bulk_attribution_required`, card 1ef7bd9c). The guard requires BOTH actor and reason once
+ * 10+ status events land in 60s; this call already sends `actor` (kanbanMoveActor()), but had no
+ * `reason` field at all -- so during a busy window a legitimate human drag failed with nothing the
+ * user could do about it. This asks for a short reason and resubmits the SAME move once; declining
+ * the prompt leaves the move refused (the card stays where it was, loadKanban() re-renders it).
+ */
+async function postKanbanMove(cardId, body) {
+  const doFetch = (b) => fetch(`/api/kanban/${encodeURIComponent(cardId)}/move`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(b),
+  })
+  let r = await doFetch(body)
+  if (r.status === 409) {
+    let code
+    try { code = (await r.clone().json()).code } catch { code = undefined }
+    if (code === 'bulk_attribution_required') {
+      const reason = window.prompt(t('kanban.toast.bulk_attribution_reason_prompt'))
+      if (reason && reason.trim()) {
+        r = await doFetch({ ...body, reason: reason.trim() })
+      }
+    }
+  }
+  return r
+}
+
 function wireKanbanColumnDnD(col) {
   col.addEventListener('dragover', (e) => {
     e.preventDefault()
@@ -1005,11 +1033,7 @@ function wireKanbanColumnDnD(col) {
     let sortOrder = idx
 
     try {
-      const r = await fetch(`/api/kanban/${encodeURIComponent(cardId)}/move`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus, sort_order: sortOrder, actor: kanbanMoveActor() }),
-      })
+      const r = await postKanbanMove(cardId, { status: newStatus, sort_order: sortOrder, actor: kanbanMoveActor() })
       // This call used to ignore the response entirely: a refused move re-rendered the old board
       // with no message at all, so a blocked drag looked like a UI glitch.
       if (!r.ok) { showToast(await kanbanMoveErrorMessage(r)); loadKanban(); return }
@@ -1174,11 +1198,7 @@ async function kanbanTouchEnd(e) {
   // that is a reorder within the column, which is just as valid a move.
   if (!newStatus) return
   try {
-    const r = await fetch(`/api/kanban/${encodeURIComponent(cardId)}/move`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: newStatus, sort_order: sortOrder, actor: kanbanMoveActor() }),
-    })
+    const r = await postKanbanMove(cardId, { status: newStatus, sort_order: sortOrder, actor: kanbanMoveActor() })
     if (!r.ok) { showToast(await kanbanMoveErrorMessage(r)); loadKanban(); return }
     loadKanban()
   } catch {
@@ -1474,11 +1494,7 @@ async function showCardDetail(card) {
       const newVal = sel.value
       if (newVal === current) { restore(current); return }
       try {
-        const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/move`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: newVal, sort_order: 0, actor: kanbanMoveActor() }),
-        })
+        const r = await postKanbanMove(card.id, { status: newVal, sort_order: 0, actor: kanbanMoveActor() })
         if (!r.ok) { restore(current); showToast(await kanbanMoveErrorMessage(r)); return }
         card.status = newVal
         restore(newVal)

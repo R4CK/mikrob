@@ -9142,6 +9142,11 @@ body {
 }
 .llm-verdict--local { color: var(--success); background: color-mix(in srgb, var(--success) 12%, var(--bg-card)); }
 .llm-verdict--online { color: var(--accent, #6366f1); background: color-mix(in srgb, var(--accent, #6366f1) 12%, var(--bg-card)); }
+/* card 501c489f: a distinct amber, same theme-pair pattern as .repo-card-badge-warn, so a
+   partially-local (decomposed) verdict is visually distinct from a plain LOCAL or ONLINE badge. */
+.llm-verdict--decomposed { background: color-mix(in srgb, #fbbf24 12%, var(--bg-card)); }
+:root[data-theme="dark"] .llm-verdict--decomposed { color: #fbbf24; }
+:root[data-theme="light"] .llm-verdict--decomposed { color: #b45309; }
 .llm-decisions-summary {
   display: flex;
   flex-wrap: wrap;
