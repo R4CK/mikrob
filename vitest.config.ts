@@ -20,6 +20,14 @@ export default defineConfig({
   test: {
     exclude: [
       ...configDefaults.exclude,
+      // dist/** (card c2aeefa5, upstream re-decision, 2026-09-25): `tsc` compiles every
+      // src/__tests__/*.test.ts into dist/__tests__/*.test.js, and vitest was collecting
+      // those compiled copies too -- measured on THIS fork: dist/__tests__ already holds 785
+      // compiled .test.js files from a prior build, so a bare `vitest run` here doubles the
+      // suite and can read a stale compiled copy's failures as fresh ones. Upstream measured
+      // the same defect on their side (888/10723 tests instead of 444/5633, 67 files RED with
+      // zero real failures among them) and excluded it; adopted verbatim, same reasoning.
+      'dist/**',
       'tests/smoke/**',
       'tests/browser/**',
       'agents/**',
@@ -49,10 +57,21 @@ export default defineConfig({
     //    out of the live checkout, but the state resolver deliberately points a
     //    WORKTREE back at the main install -- so without this the suite appended
     //    test rows to the production ledger (card 4c5c540c).
+    //  - default-ssh-dir-seam (card 2564e877, ENROLL813 port, 2026-09-25): point
+    //    MARVEEN_SSH_DIR at a scratch directory so no test can write the operator's
+    //    REAL ~/.ssh/authorized_keys. Not covered by the live-install gate above:
+    //    that one inspects the CHECKOUT, and ~/.ssh is HOME-scoped -- a clean
+    //    worktree run leaked keys upstream (ENROLL813, 2026-09-15) and the same
+    //    shape existed on this fork (bridge-enroll.test.ts JANKBRIDGE803 positive
+    //    control). Declined during c2aeefa5's vitest.config.ts re-decision on
+    //    purpose, to land together with the afterEach fix and the fail-closed
+    //    guards below -- a seam alone is reach, not sufficiency (see the setup
+    //    file's own header).
     setupFiles: [
       './src/__tests__/setup/assert-not-live-install.ts',
       './src/__tests__/setup/assert-supported-node.ts',
       './src/__tests__/setup/isolate-local-llm-state.ts',
+      './src/__tests__/setup/default-ssh-dir-seam.ts',
     ],
   },
 })

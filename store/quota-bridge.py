@@ -38,10 +38,19 @@ def _telegram_state_dir():
     CLAUDE_CONFIG_DIR isolated, so the real dir is under the marveen checkout, not
     under ~/.claude -- honour TELEGRAM_STATE_DIR first, then the first existing
     candidate, and fall back to the legacy ~/.claude path (2026-09-18: the legacy
-    path did not exist and the service crash-looped 72 times on FileNotFoundError)."""
+    path did not exist and the service crash-looped 72 times on FileNotFoundError).
+
+    TELEGRAM_STATE_DIR is trusted ONLY if it resolves under the marveen checkout
+    (card 01dea2f0, Cybersec: this dir also gates access.json, the pairing
+    allowlist -- whoever sets the service env could otherwise redirect that read
+    to an attacker-controlled directory). Outside the checkout, the env value is
+    ignored and the normal candidate search runs instead."""
     env = os.environ.get("TELEGRAM_STATE_DIR")
     if env:
-        return env
+        resolved = os.path.realpath(env)
+        marveen_real = os.path.realpath(MARVEEN)
+        if resolved == marveen_real or resolved.startswith(marveen_real + os.sep):
+            return env
     for cand in (f"{MARVEEN}/.claude/channels/telegram", f"{HOME}/.claude/channels/telegram"):
         if os.path.isfile(f"{cand}/.env"):
             return cand

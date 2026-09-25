@@ -96,6 +96,29 @@ STATE6="$TMP/nested/deeper/state.json"
 GPU_DRIVER_CHECK_HOST_SMI="$SMI_GOOD" GPU_DRIVER_CHECK_WSL_LIB_DIR="$LIBDIR1" GPU_DRIVER_CHECK_STATE="$STATE6" bash "$BIN" >/dev/null
 check "write_state creates missing parent dirs" "1" "$([ -f "$STATE6" ] && echo 1 || echo 0)"
 
+# --- 7. FORMAT VALIDATION (card e3846ccc, Cybersec LOW): a version string that is not
+#     dotted-numeric must not enter state, from EITHER source. Placed AFTER every other section
+#     that still relies on $SMI_GOOD (sections 1, 4, 6) -- mkfake_smi always (re)writes the SAME
+#     file path, so an earlier call here would silently overwrite the fixture those sections read. ---
+STATE7A="$TMP/state7a.json"
+SMI_GARBAGE="$(mkfake_smi 'unknown (VBIOS mismatch)')"
+out="$(GPU_DRIVER_CHECK_HOST_SMI="$SMI_GARBAGE" GPU_DRIVER_CHECK_WSL_LIB_DIR="$TMP/absent-lib" GPU_DRIVER_CHECK_STATE="$STATE7A" bash "$BIN")"
+check "non-numeric host smi output -> installedHost null, not the raw string" "null" "$(echo "$out" | field installedHost)"
+
+LIBDIR7B="$TMP/wsl-lib-7b"; mkdir -p "$LIBDIR7B"
+mklib "$LIBDIR7B" "beta-corrupt" "2026-09-19"
+STATE7B="$TMP/state7b.json"
+out="$(GPU_DRIVER_CHECK_HOST_SMI="$TMP/absent.exe" GPU_DRIVER_CHECK_WSL_LIB_DIR="$LIBDIR7B" GPU_DRIVER_CHECK_STATE="$STATE7B" bash "$BIN")"
+check "non-numeric wsl symlink suffix -> installedWsl null, not the raw string" "null" "$(echo "$out" | field installedWsl)"
+
+# --- 8. PIN THE 'head -1' TRUNCATION (card e3846ccc, Cybersec LOW): removing it was measured to
+#     leave all existing cases green while a two-line fake smi output got into the state file.
+#     A two-line output must resolve to ONLY the first line -- not null, not the whole blob. ------
+STATE8="$TMP/state8.json"
+SMI_TWOLINE="$(mkfake_smi $'616.92\r\n999.99')"
+out="$(GPU_DRIVER_CHECK_HOST_SMI="$SMI_TWOLINE" GPU_DRIVER_CHECK_WSL_LIB_DIR="$TMP/absent-lib" GPU_DRIVER_CHECK_STATE="$STATE8" bash "$BIN")"
+check "two-line smi output -> only the first line is kept (head -1 pin)" "616.92" "$(echo "$out" | field installedHost)"
+
 echo
 if [ "$fail" -eq 0 ]; then
   # "selftest: PASS" (no count of its own) matches the OK_SHAPES entry shared by

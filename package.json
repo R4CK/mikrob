@@ -1,11 +1,11 @@
 {
   "name": "marveen",
-  "version": "1.36.0+mikrob.339",
+  "version": "1.36.0+mikrob.349",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "preinstall": "node scripts/assert-npm-package-manager.mjs",
-    "build": "tsc",
+    "build": "tsc && node scripts/write-built-commit.cjs",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "setup": "tsx scripts/setup.ts",
