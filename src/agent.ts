@@ -1,6 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { homedir, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
 import { PROJECT_ROOT } from './config.js'
 
@@ -121,6 +122,34 @@ function resolveClaudeCodeBin(): string | undefined {
   return cachedClaudeCodeBin
 }
 
+// Card 6dc50a41 (fd2b2c4a chain): the legacy SDK path only set `options.env`
+// when the CALLER passed one, so a caller with no isolation need (schedules
+// question-expansion, agent-scaffold's inline generators, the federation
+// capability runner, ...) spawned `query()` with NO env override at all --
+// the child inherited the full parent process.env, which resolves
+// CLAUDE_CONFIG_DIR to the default ~/.claude with every globally enabled
+// plugin, including telegram@claude-plugins-official. That child then opened
+// its OWN Telegram getUpdates connection on the SAME bot token (409
+// Conflict, killed the main channels session, orphan `bun server.ts`
+// poller -- see fd2b2c4a). The default is now the SAFE one: every call
+// through this path gets an isolated, plugin-free CLAUDE_CONFIG_DIR unless
+// the caller supplies its own (heartbeat.ts/memory.ts already do, for their
+// own cwd/lock reasons, and that override still wins -- see runAgent below).
+function ensureIsolatedSdkConfigDir(): string {
+  const candidates = [join(homedir(), '.claude', 'tmp', 'marveen-sdk-fallback-config'), join(tmpdir(), 'marveen-sdk-fallback-config')]
+  for (const dir of candidates) {
+    try {
+      mkdirSync(dir, { recursive: true })
+      const settingsPath = join(dir, 'settings.json')
+      if (!existsSync(settingsPath)) {
+        writeFileSync(settingsPath, JSON.stringify({ enabledPlugins: {} }, null, 2))
+      }
+      return dir
+    } catch { /* try next */ }
+  }
+  return tmpdir()
+}
+
 // Backend selector (jun.15 subscription migration). 'worker' (default) routes
 // to a persistent INTERACTIVE Claude Code session in tmux (subscription login);
 // 'sdk' keeps the legacy Agent SDK `query` path (API billing) as an emergency
@@ -192,7 +221,9 @@ export async function runAgent(
         ...(claudeCodeBin ? { pathToClaudeCodeExecutable: claudeCodeBin } : {}),
         ...(allowTools ? {} : { disallowedTools: DEFAULT_DISALLOWED_TOOLS }),
         ...(sessionId ? { resume: sessionId } : {}),
-        ...(env ? { env: { ...process.env, ...env } } : {}),
+        // Fail-closed default: isolated/plugin-free unless the caller opts
+        // into its own CLAUDE_CONFIG_DIR (spread last, so it still wins).
+        env: { ...process.env, CLAUDE_CONFIG_DIR: ensureIsolatedSdkConfigDir(), ...(env ?? {}) },
       },
     })
 
