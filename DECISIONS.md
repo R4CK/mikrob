@@ -13845,6 +13845,53 @@ módosítottam.
 **Ki döntött:** backend (self-advance, Peti döntés 3 -- Telegram 8734 -- végrehajtása, kártya
 ade19b79).
 
+## 2026-09-25 -- 3e1502ec -- Kozos CPU-szemafor (cleancore-suite-run.sh / fleet-test.sh): a
+megosztott pool MÁR SZIMMETRIKUS volt, a hiányzó bizonyíték egy visszairányú selftest volt
+
+**A kártya premisszája.** backend saját lelete (msg 2606, 2026-09-18 08:22): a CleanCore-szemafor
+(`cleancore-suite-run.sh`) NEM számolja be a marveen-oldali `fleet-test.sh` futásait, miközben
+`fleet-test.sh` a CleanCore-futásokat beszámítja -- emiatt HÁROM teljes suite futott egyszerre
+(backend CleanCore, fron-teddy CleanCore, marveen fleet-test a `marveen-land --all` sweepből), és
+a harness memória-őr leállított egy tiszta futást.
+
+**Amit a kód VIZSGÁLATA mutatott, a kódolás előtt.** `git log -p -S acquire_cpu_slot -- store/fleet-test.sh`
+szerint a megosztott CPU-pool (`CLEANCORE_SUITE_SLOTS`/`CLEANCORE_SUITE_LOCK_PREFIX`, ugyanaz a
+`${MARVEEN_MAIN:-/home/neon/marveen}/store/.cleancore-suite-slot-N.lock` fájlkészlet mindkét
+oldalon) commit `87762566` óta létezik `fleet-test.sh`-ban (card 492a6d5c, landolt develop-ra
+**2026-09-06 19:50**-kor -- TIZENKÉT nappal a 2026-09-18-i incidens ELŐTT). Mivel mindkét szkript
+UGYANAZOKAT a számozott lockfájlokat `flock`-olja (ugyanaz a prefix-alapértelmezés, ugyanaz a
+slot-számolás), a visszairány (cleancore-suite-run.sh látja-e fleet-test.sh foglalását) a kernel
+`flock` szemantikájából STRUKTURÁLISAN következik, nem külön kódolt logika -- egy fájlon vett zár
+mindkét irányban kizár, függetlenül attól, melyik szkript vette fel elsőként.
+
+**Amit a meglévő tesztek lefedtek, és amit NEM.** `fleet-test-shares-cleancore-cpu-pool.test.ts`
+(vitest) és `mopsion-suite-run.selftest.sh` (bash) mindkettő tesztelte a saját oldalát SZINTETIKUS
+`flock` fogókkal (azonos névsémával, mint amit a másik szkript ténylegesen használna) -- de egyik
+sem futtatta ténylegesen a MÁSIK VALÓDI szkriptet, hogy megnézze, valóban lát-e a foglalásából.
+Ez pontosan az a rés, amit a kártya "Selftest mindkét irányra (ismert-pozitív: egy fleet-test futás
+mellett a CleanCore 2. slot foglaltnak látszik)" mondata kért.
+
+**Mit csináltam.** Új case (15) a `store/mopsion-suite-run.selftest.sh`-ban: a VALÓDI
+`store/fleet-test.sh`-t indítom háttérben (egy előre lefoglalt valódi fa-lockkal blokkolva,
+mielőtt worktree-checkoutig/buildig jutna), és ellenőrzöm, hogy a `mopsion-suite-run.sh` (a
+`cleancore-suite-run.sh` jelenlegi neve) EZT A FOGLALÁST látva a másik szabad slotot kapja meg
+(CONTROL), majd -- egy második, szintetikus fogóval mindkét slotot elfoglalva -- ténylegesen
+kiesik ("no slot after"). Mindkét eset ZÖLDEN fut a jelenlegi kódon, MÓDOSÍTÁS NÉLKÜL egyik
+szkriptben sem: 32/32 a teljes selftest-fájlon (előtte 30/30).
+
+**Mi maradt megválaszolatlan.** A 2026-09-18-i "három suite egyszerre" incidens KONKRÉT
+mechanizmusa nem reprodukálható a jelenlegi kódból, mivel az akkor is szimmetrikusan élt (a fix
+12 nappal korábbi). Lehetséges magyarázatok, amiket NEM vizsgáltam tovább (kívül esik ezen a
+kártyán, MikroB döntése kell hozzá): (a) az egyik futás megkerülte a wrapper szkriptet (17.
+munkavégzési szabály megsértése, közvetlen vitest-hívás), (b) az adott pillanatban a
+`marveen-land --all` sweep egy olyan checkout-ból futott, ami még nem szinkronizálta a fixet.
+Nem próbáltam találgatni -- ha a jövőben újra előfordul, a most hozzáadott case 15 legalább
+kizárja a "a megosztás elvileg nem működik" magyarázatot mérve, nem csak kikövetkeztetve.
+
+**Gate:** QA (a kártya saját kijelölése).
+
+**Ki döntött:** backend (self-advance, rule 6b -- 2 napnál régebbi kártya).
+
 ## 2026-09-25 -- 501c489f -- tobb dontesi pontos kartyak reszleges helyi-bontasa (deterministikus sablon, decision-resz online marad)
 
 MikroB plan-grilling verdiktje (GO-WITH-CHANGES, komment 6007) mert allapot: `card-build-route.log`
