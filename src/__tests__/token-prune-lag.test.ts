@@ -10,19 +10,17 @@ import {
   classifyTokenPruneLag,
 } from '../db.js'
 
-// Ported from upstream (HBDBKUSZOB823, e45e4d87, card a04769a6). The heartbeat
-// carried a `dbSize > 100 MB` warning; measured 2026-09-13 the DB is 481.7 MB
-// and ~65 % of it is the token ledger, which the daily sweep holds at exactly
-// the retention. The size is bounded BY DESIGN, so that alarm can never go
-// quiet -- and the failure it claimed to watch (the prune silently stopping)
-// is invisible to it, because "the DB is big" is already permanently true.
-// This replaces it with a signal that CAN be quiet.
+// HBDBKUSZOB823. The heartbeat carried a `dbSize > 100 MB` warning; measured
+// 2026-09-13 the DB is 481.7 MB and ~65 % of it is the token ledger, which the
+// daily sweep holds at exactly the retention. The size is bounded BY DESIGN,
+// so that alarm can never go quiet -- and the failure it claimed to watch (the
+// prune silently stopping) is invisible to it, because "the DB is big" is
+// already permanently true. This replaces it with a signal that CAN be quiet.
 //
-// The number that shaped these fixtures, measured on the live DB the same
-// day: 50 rows sat past the 90-day cutoff, the oldest overshooting by 16.4
-// MINUTES. That is not a prune failure, it is rows aging since the last
-// sweep -- so the naive "oldest row older than retention" test would be true
-// almost always.
+// The number that shaped these fixtures, measured on the live DB the same day:
+// 50 rows sat past the 90-day cutoff, the oldest overshooting by 16.4 MINUTES.
+// That is not a prune failure, it is rows aging since the last sweep -- so the
+// naive "oldest row older than retention" test would be true almost always.
 
 const RETENTION = 90
 const TOLERANCE_H = (TOKEN_PRUNE_TOLERANCE_CYCLES * DECAY_SWEEP_INTERVAL_MS) / 3_600_000
