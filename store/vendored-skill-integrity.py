@@ -57,9 +57,17 @@ DEFAULT_BASELINE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def skill_roots(home):
-    """Global skills dir plus every agent-local one. An agent-local copy is NOT a mirror:
-    it shadows the global skill for that agent, and two of the registry's own type=code
-    entries live ONLY in agent-local dirs, with nothing at the global path they name."""
+    """Global skills dir, every agent-local one, and every tracked per-clone SEED. An
+    agent-local copy is NOT a mirror: it shadows the global skill for that agent, and two of
+    the registry's own type=code entries live ONLY in agent-local dirs, with nothing at the
+    global path they name.
+
+    seed-fleet-agents/<clone>/.claude/skills (card 85521c7e F2 low finding) is the source a
+    NEW clone is provisioned from and the source agent-skill-drift-sync.sh's missing-skill
+    copy reads -- a vendored skill living only there (e.g. taste-skill, backfilled into it by
+    card a6abb230's seed normalization) had no VENDORED.md reader at all until this scope was
+    added: a grep found the writer (vendor-skill.sh) but this checker only ever looked at the
+    live, gitignored copies, never the tracked seed."""
     roots = []
     g = os.path.join(home, ".claude", "skills")
     if os.path.isdir(g):
@@ -68,6 +76,12 @@ def skill_roots(home):
     if os.path.isdir(agents):
         for a in sorted(os.listdir(agents)):
             p = os.path.join(agents, a, ".claude", "skills")
+            if os.path.isdir(p):
+                roots.append(p)
+    seed_fleet = os.path.join(home, "marveen", "seed-fleet-agents")
+    if os.path.isdir(seed_fleet):
+        for a in sorted(os.listdir(seed_fleet)):
+            p = os.path.join(seed_fleet, a, ".claude", "skills")
             if os.path.isdir(p):
                 roots.append(p)
     return roots
@@ -433,12 +447,24 @@ def selftest():
         os.symlink("/etc/hostname", os.path.join(link, "SKILL.md"))
         res = inspect(link, parse_vendored_md(os.path.join(link, "VENDORED.md")))
         check("a symlink swap is reported as changed", ["SKILL.md"], res["changed"])
+
+        # 9. SCOPE (card 85521c7e F2 low finding): skill_roots() must also scan the tracked
+        #    seed-fleet-agents/<clone>/.claude/skills copies, not just the live, gitignored
+        #    ones -- a vendored skill living only in the seed had no reader before this.
+        fake_home = os.path.join(tmp, "fake-home")
+        os.makedirs(os.path.join(fake_home, "marveen", "seed-fleet-agents", "fron-ted", ".claude", "skills"))
+        os.makedirs(os.path.join(fake_home, "marveen", "agents", "fron-ted", ".claude", "skills"))
+        roots = skill_roots(fake_home)
+        check("skill_roots scans BOTH the live and the seed-fleet-agents copy for the same agent",
+              True,
+              os.path.join(fake_home, "marveen", "agents", "fron-ted", ".claude", "skills") in roots
+              and os.path.join(fake_home, "marveen", "seed-fleet-agents", "fron-ted", ".claude", "skills") in roots)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     for f in fails:
         print("FAIL: %s" % f)
-    print("selftest: %d checks, %d failed" % (9, len(fails)))
+    print("selftest: %d checks, %d failed" % (10, len(fails)))
     return 1 if fails else 0
 
 

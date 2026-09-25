@@ -65,6 +65,24 @@
     ],
     "~/marveen/agents/qa/.claude/skills/webapp-testing": [],
     "~/marveen/agents/qa2/.claude/skills/webapp-testing": [],
-    "~/marveen/agents/teszter/.claude/skills/webapp-testing": []
+    "~/marveen/agents/teszter/.claude/skills/webapp-testing": [],
+    "~/marveen/seed-fleet-agents/backend/.claude/skills/observability-and-instrumentation": [
+      "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
+      "extra:references/observability-checklist.md@28659e0a4b9625a434285fa9ede632802afa909f768d0f8d839dca227e53d8fe"
+    ],
+    "~/marveen/seed-fleet-agents/backend2/.claude/skills/observability-and-instrumentation": [
+      "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
+      "extra:references/observability-checklist.md@28659e0a4b9625a434285fa9ede632802afa909f768d0f8d839dca227e53d8fe"
+    ],
+    "~/marveen/seed-fleet-agents/backend3/.claude/skills/observability-and-instrumentation": [
+      "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
+      "extra:references/observability-checklist.md@28659e0a4b9625a434285fa9ede632802afa909f768d0f8d839dca227e53d8fe"
+    ],
+    "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/taste-skill": [
+      "changed:SKILL.md@8f4c4cef233ad348a4bad25be41e28c0d2ddf72744cb6f9c8140c09dd67a8c66"
+    ],
+    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/taste-skill": [
+      "changed:SKILL.md@f3695e82cc692e5bca86e9ec29080b62f39e038409054d5e27b985685212406b"
+    ]
   }
 }

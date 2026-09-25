@@ -99,6 +99,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${AGENT_SKILL_DRIFT_ROOT:-$(cd "$HERE/.." && pwd)}"
 AGENTS_DIR="${AGENT_SKILL_DRIFT_AGENTS_DIR:-$ROOT/agents}"
 SEEDS_DIR="${AGENT_SKILL_DRIFT_SEEDS_DIR:-$ROOT/seed-skills}"
+# Card 85521c7e F2: the per-CLONE tracked seed (distinct from SEEDS_DIR above, which is the single
+# canonical seed-skills/<name> copy) -- the missing-skill copy source below, never a sibling's live
+# directory.
+SEED_FLEET_DIR="${AGENT_SKILL_DRIFT_SEED_FLEET_DIR:-$ROOT/seed-fleet-agents}"
 HIST_CAP=25   # same cap update.sh's seed_copy_is_untouched uses -- a skill unfixed for 25+
               # revisions is not worth the extra git calls (update.sh:605-606).
 
@@ -106,16 +110,19 @@ HIST_CAP=25   # same cap update.sh's seed_copy_is_untouched uses -- a skill unfi
 # Overridable for the same reason the paths above are: a selftest must never touch the live state.
 STATE="${AGENT_SKILL_DRIFT_STATE:-$ROOT/store/agent-skill-drift-state.json}"
 
-# F1 STOPGAP (card 85521c7e, Cybersec GO on a6abb230): scan_missing_skills() below copies from a
-# sibling's LIVE .claude/skills/<name> directory, not from the tracked seed-fleet-agents source --
-# a skill absent from git (e.g. adopted by hand, curl|sh install instructions, a stray symlink
-# pointing outside the skill directory) reaches --apply and gets propagated to every other family
-# member, bypassing the CLAUDE.md skill-quarantine invariant entirely. Measured live: exactly this
-# happened, two siblings picked up an unreviewed skill plus an out-of-directory symlink in one
-# --apply run. Forced OFF here -- scan_missing_skills() now ALWAYS reports, never copies -- until a
-# follow-up commit switches the source to seed-fleet-agents and refuses any skill directory that
-# contains a symlink resolving outside itself. Do not flip this back without that fix landing too.
-MISSING_SYNC_APPLY_ENABLED=0
+# F1 STOPGAP + F2 FIX (card 85521c7e, Cybersec GO on a6abb230). scan_missing_skills() used to copy
+# from a sibling's LIVE .claude/skills/<name> directory, not from the tracked seed-fleet-agents
+# source -- a skill absent from git (e.g. adopted by hand, curl|sh install instructions, a stray
+# symlink pointing outside the skill directory) reached --apply and got propagated to every other
+# family member, bypassing the CLAUDE.md skill-quarantine invariant entirely. Measured live:
+# exactly this happened, two siblings picked up an unreviewed skill plus an out-of-directory
+# symlink in one --apply run. F1 forced this flag to 0 (report-only, no matter --apply) as an
+# immediate stopgap. F2 (this flag back to 1) closes the actual gap: the copy source is now
+# _seed_fleet_src() (seed-fleet-agents only, never a live sibling directory -- an untracked
+# live-only skill is reported, never copied) and every copy is refused if its source directory
+# contains a symlink resolving outside itself (_dir_has_escaping_symlink). Re-disable this flag
+# again if either of those two functions is ever weakened without a matching safety review.
+MISSING_SYNC_APPLY_ENABLED=1
 
 APPLY=0
 TELEGRAM=0
@@ -295,6 +302,39 @@ _family_members() {
   esac
 }
 
+# Card 85521c7e F2: resolves a missing skill's copy source to a family member's TRACKED
+# seed-fleet-agents copy, in family order -- never a sibling's live .claude/skills directory. A
+# skill that exists only in a live copy (never seeded/reviewed) has no seed-fleet-agents entry
+# anywhere in the family and this returns failure, which the caller turns into a report-only line.
+_seed_fleet_src() {
+  local members="$1" skill="$2" s
+  for s in $members; do
+    if [ -d "$SEED_FLEET_DIR/$s/.claude/skills/$skill" ]; then
+      printf '%s' "$SEED_FLEET_DIR/$s/.claude/skills/$skill"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Card 85521c7e F2: refuses a copy source containing ANY symlink that resolves outside its own
+# root -- defense in depth even against the tracked seed (a symlink escaping the skill directory,
+# committed by mistake or malice, is still a hazard once `cp -r` recreates it on every family
+# member's disk). Deliberately walks with `find -type l` (never `-L`, which would descend THROUGH
+# an escaping link instead of finding it) and resolves each link with `readlink -f`.
+_dir_has_escaping_symlink() {
+  local root="$1" real_root link target
+  real_root="$(cd "$root" 2>/dev/null && pwd -P)" || return 0  # can't even resolve the root: refuse
+  while IFS= read -r -d '' link; do
+    target="$(readlink -f -- "$link" 2>/dev/null)" || return 0  # unresolvable link -> treat as escaping
+    case "$target" in
+      "$real_root"/*|"$real_root") ;;
+      *) return 0 ;;  # escapes the root
+    esac
+  done < <(find "$root" -type l -print0 2>/dev/null)
+  return 1
+}
+
 scan_missing_skills() {
   MISSING=0; MISSING_SYNCED=0; MISSING_SKIPPED_RUNNING=0; MISSING_SKIPPED_UNDETERMINED=0
   MISSING_LIST=""
@@ -336,12 +376,15 @@ scan_missing_skills() {
       for skill in "${union_arr[@]}"; do
         target_dir="$AGENTS_DIR/$m/.claude/skills/$skill"
         [ -e "$target_dir" ] && continue
-        # Find a sibling (family order) that actually has it, to copy from.
-        src_dir=""
-        for s in $members; do
-          [ -d "$AGENTS_DIR/$s/.claude/skills/$skill" ] && { src_dir="$AGENTS_DIR/$s/.claude/skills/$skill"; break; }
-        done
-        [ -n "$src_dir" ] || continue
+
+        # Card 85521c7e F2: the copy source is the TRACKED seed-fleet-agents copy, never a
+        # sibling's live directory. A skill present in a live sibling but absent from every family
+        # member's seed-fleet-agents was never reviewed/committed -- report it, never copy it.
+        if ! src_dir="$(_seed_fleet_src "$members" "$skill")"; then
+          MISSING=$((MISSING+1))
+          MISSING_LIST="${MISSING_LIST}${m}/${skill} -- present in a sibling's LIVE copy only, absent from seed-fleet-agents -- reported, never auto-synced (add it to seed-fleet-agents after review)\n"
+          continue
+        fi
 
         MISSING=$((MISSING+1))
 
@@ -361,14 +404,18 @@ scan_missing_skills() {
           if [ -e "$target_dir" ]; then
             continue
           fi
+          if _dir_has_escaping_symlink "$src_dir"; then
+            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- seed-fleet-agents copy contains a symlink escaping its own directory, REFUSED (needs manual review)\n"
+            continue
+          fi
           if cp -r "$src_dir" "$target_dir" 2>/dev/null; then
             MISSING_SYNCED=$((MISSING_SYNCED+1))
-            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- copied from a sibling -> synced\n"
+            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- copied from seed-fleet-agents -> synced\n"
           else
-            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- copy from sibling FAILED (left untouched)\n"
+            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- copy from seed-fleet-agents FAILED (left untouched)\n"
           fi
         else
-          MISSING_LIST="${MISSING_LIST}${m}/${skill} -- present in a sibling, absent here (would-sync, dry-run)\n"
+          MISSING_LIST="${MISSING_LIST}${m}/${skill} -- present in seed-fleet-agents, absent here (would-sync, dry-run)\n"
         fi
       done
     done
@@ -506,7 +553,7 @@ run_scan() {
       printf '%b' "$MISSING_LIST" | sed 's/^/  MISSING   /'
     fi
     echo "---"
-    echo "SUMMARY: current=${CUR} stale=${STALE}$([ "$APPLY" -eq 1 ] && echo '(synced)' || echo '(would-sync, dry-run)') diverged=${DIVERGED}(flagged-only) skipped=${SKIPPED}(no-canonical) missing=${MISSING}$([ "$APPLY" -eq 1 ] && [ "$MISSING_SYNC_APPLY_ENABLED" -eq 1 ] && echo '(synced-where-possible)' || echo '(would-sync, dry-run -- F1 stopgap, card 85521c7e)')"
+    echo "SUMMARY: current=${CUR} stale=${STALE}$([ "$APPLY" -eq 1 ] && echo '(synced)' || echo '(would-sync, dry-run)') diverged=${DIVERGED}(flagged-only) skipped=${SKIPPED}(no-canonical) missing=${MISSING}$([ "$APPLY" -eq 1 ] && [ "$MISSING_SYNC_APPLY_ENABLED" -eq 1 ] && echo '(synced-where-possible)' || echo '(would-sync, dry-run)')"
   fi
 
   emit_alert_verdict
@@ -942,21 +989,48 @@ agent-someone-else")"
     && echo "  ok   a missing agents dir alerts instead of returning quietly" \
     || { echo "  FAIL scanning nothing passed as routine:"; echo "$out11"; fail=1; }
 
-  # --- PART 6: clone-family MISSING-skill detection (card a6abb230) -----------------------------
+  # --- PART 6: clone-family MISSING-skill detection (card a6abb230; F2 source/symlink fix on
+  # card 85521c7e) --------------------------------------------------------------------------------
   # Own isolated root: _family_members only recognizes the real fleet names (backend/backend2/
   # backend3, qa/qa2, fron-ted/fron-teddy), so these fixtures cannot collide with the demo-skill
   # cases above, but a separate root keeps the two concerns visibly apart anyway.
+  #
+  # F2 changed the copy SOURCE from a sibling's live directory to the tracked seed-fleet-agents
+  # copy, so fixtures now need BOTH trees: a live tree (what determines "missing" -- the union of
+  # skill names present on any family member) and a seed-fleet-agents tree (what a copy is actually
+  # allowed to read from).
   mkdir -p "$tmp/family-root/agents/backend/.claude/skills/skillA"
   mkdir -p "$tmp/family-root/agents/backend2/.claude/skills/skillB"
   mkdir -p "$tmp/family-root/agents/backend3/.claude/skills"
   printf 'SKILL A CONTENT\n' > "$tmp/family-root/agents/backend/.claude/skills/skillA/SKILL.md"
   printf 'SKILL B CONTENT\n' > "$tmp/family-root/agents/backend2/.claude/skills/skillB/SKILL.md"
+  # The tracked seed mirrors backend/skillA and backend2/skillB -- this is what a copy actually reads.
+  mkdir -p "$tmp/family-root/seed-fleet-agents/backend/.claude/skills/skillA"
+  mkdir -p "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillB"
+  printf 'SKILL A CONTENT\n' > "$tmp/family-root/seed-fleet-agents/backend/.claude/skills/skillA/SKILL.md"
+  printf 'SKILL B CONTENT\n' > "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillB/SKILL.md"
   # backend2 ALREADY has its own skillC (independently authored, different content from backend's) --
   # this must NEVER be touched: existence alone, even with different content, means "not missing".
   mkdir -p "$tmp/family-root/agents/backend/.claude/skills/skillC"
   mkdir -p "$tmp/family-root/agents/backend2/.claude/skills/skillC"
+  mkdir -p "$tmp/family-root/agents/backend3/.claude/skills/skillC"
   printf 'BACKEND OWN skillC\n' > "$tmp/family-root/agents/backend/.claude/skills/skillC/SKILL.md"
   printf 'BACKEND2 OWN skillC (independently authored)\n' > "$tmp/family-root/agents/backend2/.claude/skills/skillC/SKILL.md"
+  printf 'BACKEND3 OWN skillC (independently authored)\n' > "$tmp/family-root/agents/backend3/.claude/skills/skillC/SKILL.md"
+  # skillD: LIVE on backend2 only, and deliberately has NO seed-fleet-agents entry anywhere in the
+  # family -- an unreviewed/hand-adopted skill. This is exactly what card 85521c7e's live incident
+  # was: it must be reported, and NEVER copied, no matter --apply.
+  mkdir -p "$tmp/family-root/agents/backend2/.claude/skills/skillD"
+  printf 'UNREVIEWED, NOT IN ANY SEED\n' > "$tmp/family-root/agents/backend2/.claude/skills/skillD/SKILL.md"
+  # skillE: LIVE on backend2, and its seed-fleet-agents copy (also on backend2) contains a symlink
+  # that resolves OUTSIDE the skill directory -- a hazard even from the "trusted" tracked source
+  # (committed by mistake or malice). Must be refused, even though the skill IS in the seed.
+  mkdir -p "$tmp/family-root/agents/backend2/.claude/skills/skillE"
+  printf 'SKILL E\n' > "$tmp/family-root/agents/backend2/.claude/skills/skillE/SKILL.md"
+  mkdir -p "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillE"
+  printf 'SKILL E\n' > "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillE/SKILL.md"
+  printf 'outside secret\n' > "$tmp/outside-secret.txt"
+  ln -s "$tmp/outside-secret.txt" "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillE/escape-link"
 
   # Forces the running-agent guard to see nothing running (deterministic parked state), so these
   # tests exercise the sync itself, not the guard -- the guard gets its own dedicated case below.
@@ -976,50 +1050,95 @@ agent-someone-else")"
     && echo "  ok   dry-run created nothing" \
     || { echo "  FAIL dry-run wrote a skill directory"; fail=1; }
 
-  # F1 STOPGAP (card 85521c7e): --apply used to copy a sibling's skill wholesale. It now copies
-  # from a sibling's LIVE, gitignored directory -- not the tracked seed -- which lets an unreviewed
-  # skill (or a symlink escaping the skill directory) propagate through the clone family. Forced
-  # OFF until a follow-up commit sources from seed-fleet-agents and refuses escaping symlinks: even
-  # --apply must still write NOTHING and keep reporting would-sync, exactly like the dry run above.
-  outApply="$(fam_run --apply --telegram)"
-  if [ ! -e "$tmp/family-root/agents/backend2/.claude/skills/skillA" ] \
-     && [ ! -e "$tmp/family-root/agents/backend/.claude/skills/skillB" ] \
-     && [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillA" ] \
-     && [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillB" ]; then
-    echo "  ok   F1 stopgap: --apply still writes nothing (missing-sync copy forced off, card 85521c7e)"
+  # --apply: a sibling's skill is copied from seed-fleet-agents (never the live directory),
+  # byte-for-byte, into every member missing it.
+  fam_run --apply >/dev/null
+  if [ "$(cat "$tmp/family-root/agents/backend2/.claude/skills/skillA/SKILL.md" 2>/dev/null)" = "SKILL A CONTENT" ] \
+     && [ "$(cat "$tmp/family-root/agents/backend/.claude/skills/skillB/SKILL.md" 2>/dev/null)" = "SKILL B CONTENT" ] \
+     && [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillA/SKILL.md" 2>/dev/null)" = "SKILL A CONTENT" ] \
+     && [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillB/SKILL.md" 2>/dev/null)" = "SKILL B CONTENT" ]; then
+    echo "  ok   --apply filled every member's gap from seed-fleet-agents, content byte-identical"
   else
-    echo "  FAIL --apply wrote a skill directory despite the F1 stopgap -- SAFETY VIOLATION"; fail=1
+    echo "  FAIL --apply did not fill the clone-family gaps correctly"; fail=1
   fi
-  echo "$outApply" | grep -q 'skillA' && echo "$outApply" | grep -qi 'would-sync\|dry-run' \
-    && echo "  ok   --apply still REPORTS the gaps (missing count/list unaffected by the stopgap)" \
-    || { echo "  FAIL --apply's report lost the missing-skill list:"; echo "$outApply"; fail=1; }
 
-  # The two independently-authored skillC copies must survive UNTOUCHED -- this is the guarantee
+  # The three independently-authored skillC copies must survive UNTOUCHED -- this is the guarantee
   # that makes the whole feature additive-only: existing content is never a sync target.
   if [ "$(cat "$tmp/family-root/agents/backend/.claude/skills/skillC/SKILL.md")" = "BACKEND OWN skillC" ] \
-     && [ "$(cat "$tmp/family-root/agents/backend2/.claude/skills/skillC/SKILL.md")" = "BACKEND2 OWN skillC (independently authored)" ]; then
-    echo "  ok   pre-existing skillC on both siblings stayed byte-untouched (additive-only, never overwrites)"
+     && [ "$(cat "$tmp/family-root/agents/backend2/.claude/skills/skillC/SKILL.md")" = "BACKEND2 OWN skillC (independently authored)" ] \
+     && [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillC/SKILL.md")" = "BACKEND3 OWN skillC (independently authored)" ]; then
+    echo "  ok   pre-existing skillC on all three siblings stayed byte-untouched (additive-only, never overwrites)"
   else
     echo "  FAIL an existing skill directory was overwritten -- SAFETY VIOLATION"; fail=1
   fi
 
-  # --agent filter narrows which member is REPORTED, but the union must still be computed from ALL
-  # siblings -- otherwise a --agent backend3 run could never see what backend/backend2 have. (Write
-  # verification dropped here -- see the F1 stopgap above: nothing is ever written right now.)
+  # SECURITY (card 85521c7e F2, the actual fix): skillD exists live on backend2 but has NO
+  # seed-fleet-agents entry anywhere in the family -- --apply must NOT copy it to backend/backend3,
+  # only report it, distinctly worded so a human knows it needs review, not "just sync it".
+  outApplyD="$(fam_run --apply --telegram)"
+  if [ ! -e "$tmp/family-root/agents/backend/.claude/skills/skillD" ] \
+     && [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillD" ]; then
+    echo "  ok   SECURITY: a live-only, unreviewed skill (skillD) is NEVER copied, even under --apply"
+  else
+    echo "  FAIL skillD (live-only, no seed-fleet-agents entry) was copied -- QUARANTINE BYPASS"; fail=1
+  fi
+  echo "$outApplyD" | grep -q 'skillD' && echo "$outApplyD" | grep -qi 'never auto-synced' \
+    && echo "  ok   skillD is reported with the never-auto-synced wording (needs human review)" \
+    || { echo "  FAIL skillD's report is missing or miscategorized:"; echo "$outApplyD"; fail=1; }
+
+  # SECURITY (card 85521c7e F2): skillE IS in seed-fleet-agents, but that seed copy contains a
+  # symlink resolving outside its own directory -- --apply must refuse it too, not just a live-only
+  # skill. Defense in depth: even a "tracked" source is not blindly trusted if it looks like this.
+  outApplyE="$(fam_run --apply --telegram)"
+  if [ ! -e "$tmp/family-root/agents/backend/.claude/skills/skillE" ] \
+     && [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillE" ]; then
+    echo "  ok   SECURITY: a seed-fleet-agents copy with an escaping symlink (skillE) is REFUSED"
+  else
+    echo "  FAIL skillE (escaping symlink in the seed copy) was copied -- SYMLINK ESCAPE"; fail=1
+  fi
+  echo "$outApplyE" | grep -q 'skillE' && echo "$outApplyE" | grep -qi 'escaping.*REFUSED\|REFUSED'\
+    && echo "  ok   skillE is reported as REFUSED (escaping symlink), not silently dropped" \
+    || { echo "  FAIL skillE's refusal is not reported:"; echo "$outApplyE"; fail=1; }
+
+  # --agent filter narrows which member is SYNCED, but the union must still be computed from ALL
+  # siblings -- otherwise a --agent backend3 run could never see what backend/backend2 have.
   rm -rf "$tmp/family-root/agents/backend3/.claude/skills/skillA" "$tmp/family-root/agents/backend3/.claude/skills/skillB"
   outF2="$(fam_run --apply --agent backend3 --telegram)"
-  echo "$outF2" | grep -q 'backend3/skillA' \
-    && echo "  ok   --agent backend3 still reports its gap from a sibling (union not narrowed by the filter)" \
-    || { echo "  FAIL --agent filter starved the union -- backend3's gap was not reported:"; echo "$outF2"; fail=1; }
-  [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillA" ] \
-    && echo "  ok   ...and still writes nothing (F1 stopgap holds under --agent too)" \
-    || { echo "  FAIL --agent backend3 --apply wrote despite the F1 stopgap"; fail=1; }
+  if [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillA/SKILL.md" 2>/dev/null)" = "SKILL A CONTENT" ]; then
+    echo "  ok   --agent backend3 still fills its gap from seed-fleet-agents (union not narrowed by the filter)"
+  else
+    echo "  FAIL --agent filter starved the union -- backend3 was not synced"; fail=1
+  fi
 
-  # Running-agent guard's OWN unit is covered by the stale-sync PARTs above (same _agent_running_state
-  # helper). The missing-sync running-skip codepath itself is UNREACHABLE while MISSING_SYNC_APPLY_ENABLED=0
-  # (card 85521c7e F1) -- it is dead code on purpose until F2 re-enables the copy, so asserting its
-  # behavior here would test nothing real. Re-add missing-skipped-running/undetermined coverage in the
-  # F2 commit that flips MISSING_SYNC_APPLY_ENABLED back on.
+  # Running-agent guard applies to missing-sync exactly like it applies to stale-sync: a member
+  # confirmed RUNNING must be skipped, and the report must say so and carry it as a reason. backend3
+  # is still missing BOTH skillA and skillE at this point (skillE never got created -- it was
+  # correctly REFUSED above for the symlink reason, not synced), so a RUNNING backend3 skips 2, not 1.
+  rm -rf "$tmp/family-root/agents/backend3/.claude/skills/skillA"
+  outF3="$(AGENT_SKILL_DRIFT_ROOT="$tmp/family-root" AGENT_SKILL_DRIFT_TEST_SESSIONS="agent-backend3" \
+           bash "${BASH_SOURCE[0]}" --apply --agent backend3)"
+  [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillA" ] \
+    && [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillE" ] \
+    && echo "  ok   a RUNNING member's missing-skill sync is skipped, files stay absent" \
+    || { echo "  FAIL a running member's tree was written to"; fail=1; }
+  echo "$outF3" | grep -q 'missing-skipped-running=2' \
+    && echo "  ok   the verdict line carries missing-skipped-running=2 (skillA AND skillE)" \
+    || { echo "  FAIL missing-skipped-running=2 missing from the verdict:"; echo "$outF3"; fail=1; }
+  echo "$outF3" | grep -q 'reasons=.*missing-running-agent-skipped' \
+    && echo "  ok   missing-running-agent-skipped is its own reason" \
+    || { echo "  FAIL missing-running-agent-skipped is not among the reasons:"; echo "$outF3"; fail=1; }
+
+  # CONTROL: the same fixture, parked -- must still sync. Without this, a guard that refuses every
+  # write would pass the RUNNING assertions above for the wrong reason. skillE must STILL be absent
+  # here -- parking the agent lifts the running-guard, not the independent symlink refusal.
+  outF4="$(AGENT_SKILL_DRIFT_ROOT="$tmp/family-root" AGENT_SKILL_DRIFT_TEST_SESSIONS="agent-someone-else" \
+           bash "${BASH_SOURCE[0]}" --apply --agent backend3)"
+  [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillA/SKILL.md" 2>/dev/null)" = "SKILL A CONTENT" ] \
+    && echo "  ok   CONTROL: a PARKED member is still synced -- the guard is not a blanket refusal" \
+    || { echo "  FAIL a parked member was not synced:"; echo "$outF4"; fail=1; }
+  [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillE" ] \
+    && echo "  ok   ...but skillE (escaping symlink) is STILL refused once parked -- separate guard" \
+    || { echo "  FAIL skillE was copied once backend3 was parked -- symlink guard bypassed"; fail=1; }
 
   # An agent outside every known family (e.g. one of the demo fixtures above) contributes nothing
   # and is never flagged -- the feature must stay silent where no family is declared.

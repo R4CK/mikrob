@@ -116,6 +116,11 @@ const MODE_SELFTESTS: ReadonlyArray<{ file: string; args: readonly string[] }> =
   // from the bulk list" told apart), so it would be the same class of unrun control this file exists
   // to close if left out of this list.
   { file: 'unlanded-branch-sweep.sh', args: ['--selftest'] },
+  // Found unwired while touching this file for card 85521c7e F2 (skill_roots() scope expansion):
+  // its OWN OK_SHAPES entry ("vendored-skill-integrity style") already existed above, anticipating
+  // exactly this registration, but nothing ever added the file -- the identical "written, committed,
+  // green-looking, never run" class this whole discovery mechanism exists to close, one script over.
+  { file: 'vendored-skill-integrity.py', args: ['--selftest'] },
 ]
 
 /** True iff `file` is a same-directory SYMLINK ALIAS of another file already in `files` -- e.g. the
@@ -144,9 +149,12 @@ function discover(): Array<{ name: string; file: string; runner: string; args: r
       .map((f) => ({ name: f.slice(0, -suffix.length), file: f, runner, args: [] as readonly string[] })),
   )
   const byMode = MODE_SELFTESTS.map((s) => ({
-    name: s.file.replace(/\.sh$/, '') + ' ' + s.args.join(' '),
+    // Every prior entry was a .sh, so this always resolved to 'bash' -- silently wrong for the
+    // first .py entry (vendored-skill-integrity.py, card 85521c7e F2), which would otherwise run
+    // as `bash vendored-skill-integrity.py --selftest` and fail on the first Python import line.
+    name: s.file.replace(/\.(sh|py)$/, '') + ' ' + s.args.join(' '),
     file: s.file,
-    runner: 'bash',
+    runner: s.file.endsWith('.py') ? 'python3' : 'bash',
     args: s.args,
   }))
   return [...bySuffix, ...byMode].sort((a, b) => a.file.localeCompare(b.file))

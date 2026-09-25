@@ -14296,3 +14296,95 @@ bovitese a seed-fleet-agents-re) egyutt landol F2-vel.
 **Ki döntött:** backend, MikroB explicit utasitasara (inter-agent uzenet, Cybersec lelet
 relay-elve), rule 4a (gate-verdiktre azonnal reagalni) szellemeben -- egy elo, mukodo
 karanten-megkerules azonnali lezarast igenyel, nem varhat a teljes F2 megepitesere.
+
+## 2026-09-25 15:45 -- Skill drift-sync hianyzo-skill masolas: F2 tenyleges javitas + taste-skill VENDORED.md/licenc + scanner-hatokor (kartya 85521c7e)
+
+F2 a fenti F1 stopgap utan, ugyanazon a kartyan: a `store/agent-skill-drift-sync.sh` hianyzo-skill
+masolasa mostantol `_seed_fleet_src()`-en at KIZAROLAG a kovetett `seed-fleet-agents/<klon>`
+masolatot olvassa forraskent (soha tobbe egy testver ELO konyvtarat) -- egy csak-elo-testverben
+letezo, seedbe nem kerult skill riport, sose masolat. Uj `_dir_has_escaping_symlink()` a masolas
+elott megtagadja a forrast, ha az a sajat gyokerebol KIFELE mutato symlinket tartalmaz -- ez akkor
+is vedelem, ha a forras a "megbizhato" kovetett seed (egy tevesen vagy rosszindulatuan commitolt
+symlink ellen). `MISSING_SYNC_APPLY_ENABLED` visszaallitva 1-re: a hianyzo-skill ag ismet tenylegesen
+masol `--apply` alatt, a ket uj vedelemmel. PART 6 selftest bovitve: skillD (csak-elo, nincs seedben
+-> sose masolodik), skillE (a seedben van, de escape-symlinkkel -> REFUSED), plusz a mar meglevo
+futo-agent-skip esetek visszaallitva (most mar 2 skip is van egy futason, skillA+skillE).
+
+A kartya masodik, alacsony-kockazatu resze (F2 LOW a kartya sajat szovegeben, nevutkozes az F1/F2
+elnevezesekkel -- lasd lent): a `taste-skill` (Leonxlnx/taste-skill, MIT) VENDORED.md+UPSTREAM-LICENSE
+nelkul terjedt a `seed-fleet-agents/{fron-ted,fron-teddy}` masolatokban. Potolva mindket helyen
+(provenance a live SKILL.md frontmatterebol: adopted-sha ccbc1563, adopted-date 2026-08-24, MIT
+Leonxlnx 2026, watch clone `/home/neon/marveen/store/adopted/Leonxlnx__taste-skill`).
+`store/vendored-skill-integrity.py`'s `skill_roots()` mostantol a `seed-fleet-agents/<klon>`
+konyvtarakat is szkenneli (korabban csak a globalis + elo agent-local masolatokat), uj selftest-
+esettel (10. eset, a checkolt szam frissitve 9->10-re).
+
+**Sanctioned-baseline kezi frissitese, NEM `--record`:** a hatokor-bovites 8 uj/ujra-lathato leletet
+hozott, de csak 5-tot ERTETTEM ES tudtam felelossegteljesen jovahagyni -- a `seed-fleet-agents/
+{backend,backend2,backend3}/observability-and-instrumentation` harom peldanya BYTE-AZONOS egy MAR
+sanctioned elo bejegyzessel (osszehasonlitva a hash-t), a ket taste-skill bejegyzes pedig a sajat,
+ellenorzott flotta-adaptacios frontmatter-delta (adopted-from/fleet-scope/fleet-card mezok). Ezt az
+5 kulcsot kezzel adtam a `store/vendored-skill-sanctioned.json`-hoz (nem `--record`-dal, ami MINDEN
+aktualis leletet vakon sanctionalta volna). A masik 3 lelet SZANDEKOSAN erintetlen maradt, mert nem
+az en valtozasom okozta oket es nem ertem oket eleg jol a jovahagyashoz:
+  - `~/.claude/skills/browser-testing-with-devtools` changed:SKILL.md -- teljesen fuggetlen, mar
+    korabban is jelen levo globalis skill-drift, semmi koze a hianyzo-skill/taste-skill munkahoz.
+  - `~/marveen/agents/fron-ted/.claude/skills/webapp-testing` UNVERIFIABLE -- MAR A VALTOZASOM ELOTT
+    is igy allt: a VENDORED.md "watch clone" sora escape-elt alahuzasjeleket tartalmaz
+    (`anthropics\_\_skills`), a `parse_vendored_md()` viszont NEM markdown-dekodolja a cellat, tehat
+    a szo szerinti backslash-es utvonal soha nem letezik a lemezen -- ez egy PRE-EXISTING hiba a
+    scanner es/vagy a `vendor-skill.sh` altal irt VENDORED.md-k kozott, nem a hatokor-bovites
+    okozta (ugyanez a kulcs UNVERIFIABLE volt a sajat, elo agents/ gyokerénel is, a seed-fleet-agents
+    scope hozzaadasa elott). A SAJAT uj taste-skill VENDORED.md-mben NEM ismeteltem meg ezt a hibat
+    (nem escape-eltem az alahuzasjeleket a "watch clone" sorban), ezert az verifikalhato lett.
+  - `~/marveen/seed-fleet-agents/fron-ted/.claude/skills/webapp-testing` -- ugyanaz a hiba, csak
+    most a hatokor-bovites miatt UJRA lathato egy masik gyokeren (a fajlt a6abb230 masolta at
+    valtoztatas nelkul). Nem az en munkam okozta, csak lathatova tette.
+Ezt a ket webapp-testing UNVERIFIABLE lelet + a browser-testing-with-devtools drift kulon,
+dedikalt kartyat igenyel -- jeleztem MikroB-nak, nem nyitottam magam uj kartyat (rule 6b dedup-
+ellenorzes elott hagyom MikroB-ra, hatha mar van ra nyitott kartya).
+
+**Ki döntött:** backend, ugyanazon a self-advance korre mint az F1 (MikroB explicit utasitasara).
+
+## 2026-09-25 -- 197947ae -- git-repo-watcher write-back leválasztása a követett registrytől (gitignored state-fájl)
+
+**A probléma.** Cybersec melléklete a c5614d99 gate-jéből (komment 4143): a `store/external-repos-sync.sh`
+`write_back()` függvénye eddig KÖZVETLENÜL a követett `store/watched-repos.json`-t (a repóban
+verziókövetett registry) mutálta minden futáskor -- `last_sha`/`last_checked_at` jegyzeteket írt bele.
+Ez három kárt okozott: (1) a fő klón munkafája folyamatosan dirty maradt, a `marveen-land.sh` nem tudott
+fast-forwardolni, és a következő `update.sh` `pull --ff-only` lépése megbukhatott (update-safety
+szabály); (2) ütközött a worktree-fegyelemmel (dc185b52): a watcher a MEGOSZTOTT fát írta; (3) a
+registry maga bizonytalan forrássá vált (nem lehetett tudni, egy adott sha-n mit tartalmaz, mert egy
+NEM commitolt írás bármikor felülírhatta).
+
+**A döntés.** A write-back célja leválasztva a követett registrytől: a `WATCHED_STATE_JSON`
+(`store/watched-repos-state.json`, `{name: {last_sha, last_checked_at}}` alakban, name-kulcsolva) egy
+ÚJ, gitignore-olt runtime-állapot fájl -- ugyanaz a minta, mint a már meglévő `quota-monitor-state.json`/
+`weekly-usage.json`/`agent-skill-drift-state.json` (CONFIG a követett `store/*`-ban `!store/<nev>`
+kivétellel, STATE gitignore-olva marad). A követett `store/watched-repos.json` mostantól CSAK OLVASVA
+van (a `write_back()` kizárólag azt ellenőrzi, hogy a `name` létezik-e benne, mielőtt a state-fájlba ír)
+-- a registry innentől STABIL, sha-ra rögzíthető forrás. Az olvasó oldalon (`src/web/routes/integrated-repos.ts`)
+egy új `readState()` + a meglévő `readRegistry()` bővítése (`{...r, last_sha: s.last_sha || r.last_sha, ...}`)
+futásidőben egyesíti a két fájlt a hívó felé -- a dashboard/API válasza nem veszít adatot, csak a
+FORRÁSA változik.
+
+**Miért nem a `!store/watched-repos.json` kivétel bővítése (pl. a jegyzet-mezők gate-elt licenc-változásként
+kezelve).** A c5614d99 (más kártya) ugyanezt a fájlt szerkeszti tartalmi (licenc/vendor) céllal -- ha a
+routinszerű upstream-sync jegyzetek is ugyanabba a fájlba írnának, a két cél örökre ütközne ugyanazon a
+soron, és minden rutin sync futás egy tartalmi review-t igénylő diffet termelne. A gitignore-olt
+state-fájl strukturálisan zárja ki ezt: a rutin írás fizikailag máshova megy.
+
+**Zöld:** `src/__tests__/external-repos-sync-writeback.test.ts` (átírva: a követett registry
+`toEqual(before)`-t assertál minden esetben, az új state-fájl kapja az írásokat, elutasított/kihagyott
+esetekben a state-fájlban sincs bejegyzés), `src/__tests__/integrated-repos.test.ts` (4 új teszt a
+`readRegistry()` state-merge viselkedésére). `npx tsc --noEmit -p .` tiszta.
+
+**Elmaradt manuális lépés (nem magam végeztem el, MikroB-nak jelezve, komment 4020).** A landolás
+pillanatában az ÉLŐ telepítésen (`/home/neon/marveen`) a `store/watched-repos.json` már dirty volt egy
+korábbi, ehhez a kártyához NEM kapcsolódó, session-kezdet óta jelen lévő diff miatt -- ez a fix nem
+törli automatikusan (a kódváltozás csak a JÖVŐBELI futásokat állítja át), a meglévő dirty diffet egy
+kézi `git checkout -- store/watched-repos.json`-nak kell eltüntetnie az élő telepítésen.
+
+**Ki döntött:** backend (self-advance, rule 6b -- 2 napnál régebbi kártya). QA-lelet (msg_id:4030,
+2026-09-25) mutatott rá, hogy ehhez a döntéshez hiányzott ez a bejegyzés a Gate-SHA `2e674b4c`-n --
+ez a bekezdés pótolja utólag, a kód a gated shán változatlan.
