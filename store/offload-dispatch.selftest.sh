@@ -67,6 +67,47 @@ check "a done card resolves to an empty leaf set (never re-drafted)" "$done_out"
 missing_out="$(CARD=doesnotexist bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture.json")"
 check "an unknown card id resolves to an empty leaf set" "$missing_out" "[]"
 
+# --- STALE-IN-PROGRESS SKIP (card eeebd2b5) --------------------------------------------------------
+# dispatched_at is a real epoch-seconds timestamp, so the fixture must be generated at test-run time
+# rather than hardcoded (mirrors the attempts_op TTL test's pattern of stamping a live timestamp
+# further below). freshCard is in_progress, dispatched 100s ago (well under the 600s default) --
+# still drafted. staleCard is in_progress, dispatched 700s ago -- excluded. undatedCard is
+# in_progress with no dispatched_at at all (never claimed by fireKanbanDispatch) -- included, since
+# "unknown" must fail toward drafting, not toward silently starving a leaf forever. stalePlannedCard
+# carries the SAME 700s-old dispatched_at as staleCard, but status=planned -- the rule is scoped to
+# in_progress only, so this one is unaffected and still drafted.
+python3 -c "
+import json, time
+now = int(time.time())
+cards = [
+    {'id':'freshCard','title':'friss in_progress','description':'meg csak most kezdte','status':'in_progress','assignee':'backend','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[],'dispatched_at':now-100},
+    {'id':'staleCard','title':'regota fut mar','description':'az online agens mar regen dolgozik rajta','status':'in_progress','assignee':'backend','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[],'dispatched_at':now-700},
+    {'id':'undatedCard','title':'sosem lett dispatchelve jelezve','description':'nincs dispatched_at','status':'in_progress','assignee':'backend','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[],'dispatched_at':None},
+    {'id':'stalePlannedCard','title':'regi datum de meg planned','description':'a szabaly csak in_progress-re vonatkozik','status':'planned','assignee':'backend','project':'MikroB','parent_id':None,'sort_order':1,'archived_at':None,'labels':[],'dispatched_at':now-700},
+]
+json.dump(cards, open('$TMPDIR/fixture-stale.json', 'w'))
+"
+fresh_out="$(CARD=freshCard bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
+check "an in_progress leaf dispatched 100s ago (below the 600s default) is still drafted" "$fresh_out" "freshCard"
+
+stale_out="$(CARD=staleCard bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale.json")"
+check "THE POINT OF THE CARD: an in_progress leaf dispatched 700s ago (past the 600s default) is excluded, not drafted" "$stale_out" "[]"
+
+undated_out="$(CARD=undatedCard bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
+check "an in_progress leaf with no dispatched_at at all fails toward drafting, not toward starving" "$undated_out" "undatedCard"
+
+stale_planned_out="$(CARD=stalePlannedCard bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
+check "CONTROL: the same 700s-old dispatched_at on a PLANNED (not in_progress) leaf does not skip it" "$stale_planned_out" "stalePlannedCard"
+
+configurable_out="$(CARD=freshCard OFFLOAD_STALE_IN_PROGRESS_SECONDS=50 bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale.json")"
+check "OFFLOAD_STALE_IN_PROGRESS_SECONDS is CONFIGURABLE: lowering it to 50s excludes the same 100s-old leaf that passed above" "$configurable_out" "[]"
+
+# MUTATION-STYLE CONTROL: without the fix, staleCard would resolve exactly like freshCard (both
+# in_progress with no children) -- proving the skip is the thing doing the work, not something else
+# in the fixture shape.
+mutation_off="$(CARD=staleCard OFFLOAD_STALE_IN_PROGRESS_SECONDS=99999999 bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
+check "MUTATION: an absurdly high threshold un-skips staleCard, proving the exclusion is threshold-driven" "$mutation_off" "staleCard"
+
 # --- decompose wrapper (card 501c489f, MikroB verdikt komment 6007) -------------------------------
 decompose_ids() { CARD="$1" bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c 'import json,sys; print(",".join(sorted(l["id"] for l in json.load(sys.stdin))))'; }
 decompose_field() { CARD="$1" bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c "import json,sys; print(json.load(sys.stdin)[0].get('$2',''))"; }

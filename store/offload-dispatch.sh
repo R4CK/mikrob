@@ -41,6 +41,12 @@
 #
 # DRAFT-ONLY: every local output stays draft-only; MikroB + the gate re-check it before anything ships.
 #
+# STALE-IN-PROGRESS SKIP (card eeebd2b5). resolve_leaves() also drops any leaf that is in_progress
+# AND has been actively dispatched to its online agent for OFFLOAD_STALE_IN_PROGRESS_SECONDS
+# already (default 600s/10min, rule 3's own stuck-card threshold) -- measured twice (041b6a47 msg
+# 1808; card #1804) that a draft landing this late arrives after the real fix is already in place
+# or nearly so, costing a Draft-Review adjudication for zero token savings.
+#
 # Exit 0 always (best-effort, non-blocking dispatch step). No secrets in argv; the dashboard token is
 # read at call time from store/.dashboard-token.
 #
@@ -81,7 +87,14 @@ EXHAUSTED_TTL_SECONDS="${EXHAUSTED_TTL_SECONDS:-86400}"
 # threshold moves; categorical-online (router says ONLINE) was already a single-call jump straight
 # to exhausted and stays that way, just landing on this same new ceiling.
 OFFLOAD_LEAF_MAX_ATTEMPTS="${OFFLOAD_LEAF_MAX_ATTEMPTS:-2}"
-export ATTEMPTS_FILE EXHAUSTED_TTL_SECONDS OFFLOAD_LEAF_MAX_ATTEMPTS
+
+# STALE-IN-PROGRESS SKIP (card eeebd2b5). Measured twice (041b6a47 msg 1808; card #1804) that a
+# draft landing on an in_progress leaf the online agent has ALREADY been carrying for a while
+# arrives after the real fix is already in place or nearly so -- the draft saves no tokens, it
+# only costs a Draft-Review adjudication. Default 600s (10 min) matches rule 3's own stuck-card
+# threshold, per the card's own suggestion. See resolve_leaves()'s is_stale_in_progress() below.
+OFFLOAD_STALE_IN_PROGRESS_SECONDS="${OFFLOAD_STALE_IN_PROGRESS_SECONDS:-600}"
+export ATTEMPTS_FILE EXHAUSTED_TTL_SECONDS OFFLOAD_LEAF_MAX_ATTEMPTS OFFLOAD_STALE_IN_PROGRESS_SECONDS
 
 # --- attempts-file helper: every call is flock-serialized on its OWN lock file (not the per-$CARD one
 # set up further down), because a batch-run call and a live dispatch-time call for an overlapping leaf
@@ -135,10 +148,11 @@ PY
 # file on stdin) -- a test can never drift from what actually runs (mirrors offload-batch-run.sh's
 # --test-select pattern). ---------------------------------------------------------------------------
 resolve_leaves() {
-  CARD="$CARD" python3 -c '
-import json, os, re, sys
+  CARD="$CARD" STALE_SECONDS="$OFFLOAD_STALE_IN_PROGRESS_SECONDS" python3 -c '
+import json, os, re, sys, time
 
 CARD = os.environ["CARD"]
+STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "600"))
 try:
     data = json.load(sys.stdin)
 except Exception:
@@ -153,6 +167,22 @@ target_id = str(target["id"])
 
 def is_open(c):
     return c.get("status") in ("planned", "in_progress") and not c.get("archived_at")
+
+# card eeebd2b5: an in_progress leaf an online agent has already been actively carrying for
+# STALE_SECONDS is excluded from the returned leaf set (no draft attempt for it at all).
+# dispatched_at is the once-only in_progress-spell timestamp db.ts already maintains
+# (markKanbanCardDispatched on dispatch, cleared on any move OUT of in_progress) -- exactly
+# "how long has THIS spell of online work been running", not just "when was it last touched".
+def is_stale_in_progress(c):
+    if c.get("status") != "in_progress":
+        return False
+    dispatched_at = c.get("dispatched_at")
+    if not dispatched_at:
+        return False
+    try:
+        return (time.time() - float(dispatched_at)) >= STALE_SECONDS
+    except (TypeError, ValueError):
+        return False
 
 if not is_open(target):
     print(json.dumps([])); sys.exit(0)
@@ -174,7 +204,9 @@ def collect_leaves(node_id, seen):
     kids = sorted([c for c in children_by_parent.get(node_id, []) if is_open(c)], key=sort_key)
     if not kids:
         node = by_id.get(node_id)
-        return [node] if node else []
+        if node is None or is_stale_in_progress(node):
+            return []
+        return [node]
     out = []
     for k in kids:
         out.extend(collect_leaves(str(k["id"]), seen))
