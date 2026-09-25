@@ -569,7 +569,7 @@ Formázás:
 - Emoji + félkövér szöveget használj szekciócímeknek
 
 Utasítások:
-1. Email: search_emails az elmúlt 12 órából, szűrd ki a spam/promo emaileket
+1. Email: search_emails az elmúlt 24 órából, szűrd ki a spam/promo emaileket
 2. Naptár: list-events a mai napra
 3. AI hírek: WebSearch a tegnapi dátummal
 4. **A NYERS SZÖVEGET A HELYI MODELL ÍRJA MEG ELŐSZÖR** (kártya 8417fa5e). A `store/local-llm-model-routing.json` a `morning-brief` sablont a Qwen3.8-ra irányítja, a prompt megvan, a modell telepítve van -- eddig viszont semmi nem hívta meg, tehát a helyi specialista bekötés nélkül állt. Az 1-3. pontban összegyűjtött nyers adatot add át neki, és az ő draftjából indulj:

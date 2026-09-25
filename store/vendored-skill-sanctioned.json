@@ -85,7 +85,8 @@
       "changed:SKILL.md@f3695e82cc692e5bca86e9ec29080b62f39e038409054d5e27b985685212406b"
     ],
     "~/marveen/agents/cybersec/.claude/skills/env-secrets-manager": [
-      "missing:scripts/env_auditor.py"
+      "missing:scripts/env_auditor.py",
+      "changed:references/validation-detection-rotation.md@987d10efb44c09a631a8017ec14092fa57992fafbb60acb6d6d8ded359283b2a"
     ]
   }
 }

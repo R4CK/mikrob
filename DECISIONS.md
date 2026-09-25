@@ -15356,8 +15356,7 @@ A `sp-diagnosing-superpowers` volt az egyetlen skill, amely még symlinkként a 
 mutatott: a törlés ELŐTT valódi másolattá alakítva. A saját `gauntlet-loop` skill marad (saját
 desztilláció, nem a törölt repóból vendorolva). Megmaradt 17 figyelt repó, mindegyik használatban.
 
-**graphify.** A pipx venv ép volt, csak a `~/.local/bin/graphify` és `graphify-mcp` symlinkek
-hiányoztak; visszaállítva. A land-szkriptek detached futtatják, ezért a hiány csendben maradt.
+**graphify (KORRIGÁLVA, 2026-09-25 20:45).** Az eredeti bejegyzés hibás volt: a `~/.local/bin/graphify` és `graphify-mcp` symlinkeket visszaállítottam, azt hivén, hogy törött telepítés. Valójában a hiányuk SZÁNDÉKOS kontroll: a `store/graphify.sh` wrapper a pipx venv binárisát közvetlenül hívja, és exit 6-tal megtagadja a futást, ha a nyers CLI a PATH-on van, mert az a wrapper-kaput (URL-fetch = egress) megkerülhetővé tenné. A symlinkek kb. 35 percig álltak vissza (20:10-20:45), a landolási log jelezte, azonnal törölve. Tanulság: egy "hiányzó" bináris előtt meg kell nézni, van-e rá wrapper, ami szándékosan tartja távol.
 
 **NEM git-tracked lépések.** Az `agents/` a `.gitignore` szerint ki van zárva, a `~/.claude/`
 nem git repó: a vendorolt példányok és a törlések nem termelnek diffet. Git-tracked csak a
