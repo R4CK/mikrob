@@ -438,6 +438,7 @@ export const ACKNOWLEDGED_CONFLICTS = {
     " Card 7debd869 (2026-09-05): the /clear-before-switch block named throughout this entry NO LONGER EXISTS in this file -- Peti had CLAUDE.md's /clear-between-cards rule deleted and its code removed with it. A future merger must keep only the fork's self-advance dispatch-echo suppression and the waiting-text hunk; there is no /clear call left to preserve." +
     " Re-measured 2026-09-06 (backend2, card 1b4cd700 landing-block, 89423d29b8af..e5d2e792c36f): upstream added a pre-flight to the dispatch instruction text -- a `statusProbe` curl the receiving agent is told to run before starting, because the dispatch message can sit in a busy session's queue while the card moves on, and a late second attempt produces parallel work on one target (their example: a SECOND test file for one controller). The problem is real and this fork has it too. It is NOT A GAP HERE, and the reason is a mechanism upstream does not have: src/web/kanban-state-stamp.ts stamps `[card-state @send]` at send time AND `[card-state @delivery]` at delivery, each carrying the card's status/updated_at and the instruction to re-read the card before working -- measured live in this session, on this very card. That is strictly stronger than upstream's probe on the axis that decides the outcome: the stamp arrives WITH the message and needs no cooperation, whereas a probe the reader must compose and run is a step the reader can skip, and the likeliest reaction to an unclear pre-flight is exactly to skip it (upstream's own comment says as much about its isinstance branch). Adopting it would be a second mechanism for a hole the fork already closed. Nothing else in the diff: the waiting-text hunk, resolveKanbanDispatch and the self-advance suppression are untouched. Resolution unchanged; blob bumped." +
     " Re-measured 2026-09-06 (backend3, card 58ebcdc9 landing-block, e5d2e792..bbe255c1): upstream added /api/kanban/<id>/blockers (GET/POST/DELETE), a generic card-blocking link with cycle detection (blockerWouldCycle). NOT a gap: the fork already has this exact capability as /api/kanban/<id>/dependencies (kanban_dependencies, its own cycle check via dependencyBlockers()/the reachability walk in src/db.ts) -- see that file's own entry for the matching db.ts-side conclusion. Zero hits on resolveKanbanDispatch, reportUndeliveredDispatch, the waiting-text hunk or the self-advance suppression. Resolution unchanged; blob bumped." +
+    " CORRECTION 2026-09-25 (card 2f1cbaf1, backend3, ACKNOWLEDGED_FORK_ANCHORS backlog): the /blockers route IS present -- GET/POST/DELETE at lines ~689-724, blockerWouldCycle (db.ts:4795), getBlockersForCard/getBlockedByCard, all verified directly. Landed by commit 7e9a7362 (gaborusa2010-ai, PR #1115) on 2026-09-06 14:43 -- the SAME DAY as this round's own measurement, which likely ran before that commit landed rather than missing an older one (a narrower version of the same class as the schedule-runner.ts/notify.sh/github-pr-monitor.sh corrections from this audit). PRACTICAL IMPACT CHECKED: web/app-kanban.js calls ONLY /dependencies (3 call sites, grep-verified) -- /blockers is live, tested-by-nobody-in-the-UI backend surface, not a second mechanism actively fighting the fork's own one. Not urgent, but it is dead-or-parallel code sitting in production that nobody decided to keep; worth a small follow-up card to either wire it in or remove it, not a silent status quo. Resolution retracted as 'not a gap' (it IS present, whether or not it is used); the fork's own /dependencies remains the one thing actually driving the UI." +
     " Re-measured 2026-09-15 (backend3, card 3602c2ae, 2424a3c4842f..83ab8067d408): purely additive, +7/-1 -- getTokenPruneLag/TokenPruneLag imported from db.ts and threaded through buildHeartbeatSummaryResponse as a new `token_prune` field on the heartbeat-summary response, alongside the existing db_size_mb health signal. Zero hits on the dispatch-text hunk, resolveKanbanDispatch, reportUndeliveredDispatch or the self-advance suppression -- every point this rule decides is untouched. A genuinely small, low-risk NEW health metric (not a behaviour change to anything existing), but still a backend port (needs db.ts's getTokenPruneLag too) and a frontend consumer decision -- not folded in here; flagged for a small follow-up card rather than hand-merged inside a drift re-decision. Resolution unchanged; blob bumped.",
   // Card 2e634e5c, fourth file. A genuine two-way merge, not a wholesale pick either direction:
   // the fork owns Firecrawl namespace default-deny + FIRECRAWL_SCRAPE_ALLOWED_KEYS param-allowlist
@@ -525,6 +526,7 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "conflict resolution: NOT folded in here, raised on card 740551e6 for triage, the same " +
     "treatment MiniMax got last round (card 48565f81)." +
     " Re-measured 2026-09-06 (backend3, card 58ebcdc9 landing-block, 102cd901..b7ba2cf5): two new regions. (1) A blockers UI (kanban-card-blocked badge, renderCardBlockersSection, i18n kanban.blocker.* keys) for the same card-blocking-link feature src/db.ts and src/web/routes/kanban.ts's entries decide is superseded by the fork's own kanban_dependencies -- NOT a gap, not adopted, matching those entries. Its aging-badge hunk (agingBasis = card.last_status_at ?? card.updated_at) is paired with db.ts's last_status_at field and IS a real improvement candidate (updated_at gets bumped by comments, last_status_at would not) -- flagged there, not resolved here since the frontend half alone does nothing without the backend field. (2) A large idea-box scope (munka/szemelyes) + attachments UI (upload button, per-idea attachment list, scope filter/move) -- genuinely new, pairs with db.ts's idea_box.scope/idea_attachments entry; the backend route for /api/ideas/upload and /api/ideas/:id/attachments is not in this round's 8-file set, so this frontend half cannot be adopted alone either. Both (1)'s aging half and (2) are ADOPTION decisions, raised on card 6c6d471a alongside the db.ts entry. No hits on the Activity-page deletion, context-guard settings UI, MiniMax, thinking-orb or static-badge conflict points this rule already decided -- all untouched. Resolution unchanged; blob bumped." +
+    " CORRECTION 2026-09-25 (card 2f1cbaf1, backend3, ACKNOWLEDGED_FORK_ANCHORS backlog): PARTIALLY reversed on item (1) above, verified directly, and worth stating precisely rather than as a flat yes/no. renderCardBlockersSection as a JS function is genuinely ABSENT from app.js and app-kanban.js (zero hits) -- that half of the refusal holds. But the i18n-tagged HTML markup DID land: web/index.html has a kanban.modal.blockers_title / kanban.blocker.add_placeholder / kanban.modal.blocking_title block (a modal section), and nothing in any JS file calls the backend's live /api/kanban/:id/blockers route (grep-verified, zero call sites) to populate or wire it. Net effect today: dead markup, static HTML referencing live i18n keys with no code path that ever fills it in or responds to it -- not a working feature, but not simply absent either. Matches the src/web/routes/kanban.ts correction from this same audit (the backend route is live and unused); together they describe one feature whose backend + static frontend scaffolding both landed piecemeal via unrelated upstream syncs while the actual JS wiring never did. Item (2), the idea-box scope/attachments UI, is untouched by this correction." +
     " Re-audited 2026-09-15 (backend3, card 3602c2ae, b960001e70c4..f375962cebdd): +85/-1, no overlap with any previously-decided conflict point. Two genuinely new regions, and they are NOT the same kind of gap. (1) A quota strip on the overview page (renderQuotaStrip, formatDurationShort, quotaLevelClass, consuming a new d.quota field from /api/overview): measured this fork's OWN src/web/routes/overview.ts already imports readQuotaSnapshot and already returns a `quota` field on GET /api/overview (present before this round, unrelated card) -- so unlike the usual case, the backend half is ALREADY THERE; this is a close-to-zero-risk adoption candidate PENDING one check not done here (that readQuotaSnapshot's return shape actually matches what this JS expects: fiveHour/sevenDay/status/ageSec/resetsAt/expired). (2) A full 'Claude Plans' settings tab (renderClaudePlansPanel + the claude-plans module tab wiring, PR2b/PR2c) reading/writing a plan-list and calling GET /api/claude-plans/state + POST /api/claude-plans/rotate: this fork DOES already have src/web/claude-plans.ts (card 272361eb) but NOT those two routes (checked: zero hits in src/web/routes/*.ts) -- a real two-piece adoption (route + UI), same character as the MiniMax/context-guard-UI/idea-box precedents this entry already defers. Also unrelated to either: `handoff: false` dropped from the auto-restart save payload (the field is not read; harmless either way) and one new known-module label ('claude-plans') for settingsModuleLabel. Neither region ported here -- (1) is flagged as a near-zero-risk follow-up, (2) as a real adoption decision, both on the same follow-up card as the paired en.js/hu.js key additions below. Resolution at every previously-decided point unchanged; blob bumped.",
   // Two independent additive hunks with no behavioral overlap. Fork adds: HEARTBEAT.md ignore,
   // Ingatlan/ runtime data exclusions, and per-extension keep-tracked exceptions for operational
@@ -724,7 +726,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
   'src/web/schedule-runner.ts':
     'two independent non-overlapping changes: keep the fork async runPreCheck signature (955f014e) and the fork try/catch around startAgentProcess (e9d3cd12); adopt upstream quotaWorkClass() and the cleanly-merging sawTurn/lost watchdog' +
     "Re-measured 2026-09-03 (backend2, card 6500e1d3 landing-block, 9736ea673775..a7c10a08f1fa): upstream added a desktop-lock gate (decideDesktopGate/readDesktopLock/recordDesktopSkip), owner-escalation for pending retries (markPendingTaskRetryOwnerAlert + OWNER_ESCALATION_EXTRA_MS, classifyTelegramSendError generalised to classifySendError), and channel-provider imports. All of it is elsewhere in the file; the fork's async runPreCheck signature and its try/catch around startAgentProcess -- the two things this rule decides -- are untouched. Resolution unchanged; blob bumped." +
-    " Re-measured 2026-09-06 (backend3, card 79bb0364 round-2 landing-block, upstream round 16). Two upstream changes. (1) readAgentClaudeConfigDir replaced by resolveAgentConfigDirForRead from claude-plans.js -- the SAME swap this file's sibling rule (context-restart-gate-runner.ts) already records as adopted, so the direction is settled if this one is taken. (2) TASK_FIRE_TIMEOUT_MS raised from 5 to 45 minutes, with a measured reason: five minutes measures 'the session is busy', not 'the task is wedged', and those coincide only when nobody talks to the agent -- the owner got four or five false 'possible hang' alerts in one morning. That is an alerting-threshold change on a watchdog, i.e. exactly the kind of number that deserves its own decision rather than a rider. NOT adopted; the window-size fixture rule this entry is about is untouched by either. Resolution unchanged; blob bumped. ROUND 2026-09-11 (backend3, card 9c665470, 3bb55c7c3390..e5393ace227f, +4/-2): a four-line change with zero hits on runPreCheck or startAgentProcess -- neither of the two independent points this rule decides is touched. Resolution unchanged; blob bumped.",
+    " Re-measured 2026-09-06 (backend3, card 79bb0364 round-2 landing-block, upstream round 16). Two upstream changes. (1) readAgentClaudeConfigDir replaced by resolveAgentConfigDirForRead from claude-plans.js -- the SAME swap this file's sibling rule (context-restart-gate-runner.ts) already records as adopted, so the direction is settled if this one is taken. (2) TASK_FIRE_TIMEOUT_MS raised from 5 to 45 minutes, with a measured reason: five minutes measures 'the session is busy', not 'the task is wedged', and those coincide only when nobody talks to the agent -- the owner got four or five false 'possible hang' alerts in one morning. That is an alerting-threshold change on a watchdog, i.e. exactly the kind of number that deserves its own decision rather than a rider. NOT adopted; the window-size fixture rule this entry is about is untouched by either. Resolution unchanged; blob bumped. ROUND 2026-09-11 (backend3, card 9c665470, 3bb55c7c3390..e5393ace227f, +4/-2): a four-line change with zero hits on runPreCheck or startAgentProcess -- neither of the two independent points this rule decides is touched. Resolution unchanged; blob bumped." +
+    " CORRECTION 2026-09-25 (card 2f1cbaf1, backend3, ACKNOWLEDGED_FORK_ANCHORS backlog): the 2026-09-06 'NOT adopted' verdict on TASK_FIRE_TIMEOUT_MS is stale. The file's current value is `export const TASK_FIRE_TIMEOUT_MS = 2_700_000` (45 minutes, verified directly), landed by commit 3496bff1 (Vlbbtabs, PR #1175) on 2026-09-05 18:26 -- ONE DAY BEFORE this round's own 2026-09-06 refusal note was written. The refusal missed a same-day-prior upstream commit rather than being silently reversed by a later auto-merge; either way the code has carried the 45-minute value since before the refusal was recorded. This is an alerting-threshold change (fewer false 'possible hang' owner alerts), not a trust-boundary regression. Resolution retracted for this item; it is adopted, not open. The runPreCheck/startAgentProcess decisions this entry is actually about are unaffected.",
   // Fork added agents/** to the exclude list (with explanatory comment: live-install agent SDK
   // tests would otherwise drown the real suite). Upstream added assert-supported-node.ts to
   // setupFiles and updated the comment above setupFiles to list both gates. Both changes are
@@ -951,7 +954,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // upstream never had it) around the new honest-send contract.
   'scripts/notify.sh':
     "adopt upstream wholesale -- the new scripts/lib/send-telegram.sh shared honesty-check subsumes the fork's b43d6dfd --data-urlencode fix, and upstream's file keeps the fork's TMUX-guarded sender-attribution block unchanged" +
-    " Re-measured 2026-09-06 (backend3, card 79bb0364 round-2 landing-block, upstream round 16). Upstream shipped the CHATID0 guard: `[ -z \"$CHAT_ID\" ] || [ \"$CHAT_ID\" = \"0\" ]`, plus the file becoming executable. This is the exact fix the round-15 note on src/__tests__/notify-delivery-honesty.test.ts predicted would be needed -- that entry already says the four CHATID0 test cases and this guard must be adopted TOGETHER, on their own card, because the tests go red on arrival without the guard. Both halves are now visible upstream, which strengthens that card rather than changing this rule. NOT adopted here (a landing-unblock is not where a fallback-channel behaviour change lands); blob bumped.",
+    " Re-measured 2026-09-06 (backend3, card 79bb0364 round-2 landing-block, upstream round 16). Upstream shipped the CHATID0 guard: `[ -z \"$CHAT_ID\" ] || [ \"$CHAT_ID\" = \"0\" ]`, plus the file becoming executable. This is the exact fix the round-15 note on src/__tests__/notify-delivery-honesty.test.ts predicted would be needed -- that entry already says the four CHATID0 test cases and this guard must be adopted TOGETHER, on their own card, because the tests go red on arrival without the guard. Both halves are now visible upstream, which strengthens that card rather than changing this rule. NOT adopted here (a landing-unblock is not where a fallback-channel behaviour change lands); blob bumped." +
+    " CORRECTION 2026-09-25 (card 2f1cbaf1, backend3, ACKNOWLEDGED_FORK_ANCHORS backlog): the CHATID0 guard IS present -- `[ -z \"$CHAT_ID\" ] || [ \"$CHAT_ID\" = \"0\" ]` (verified directly in the current file). Landed by commit 3e807fe4 (Prezsi, PR #1193) on 2026-09-05 21:39, the day BEFORE this round's 2026-09-06 refusal note. Same pattern as the schedule-runner.ts and github-pr-monitor.sh corrections from this same audit: a same-day-prior upstream commit the 09-06 measurement pass missed, not a later silent reversal. This closes the exact gap the round-15 note on notify-delivery-honesty.test.ts predicted -- the four CHATID0 test cases that entry describes should now be checked against this file for real, not assumed pending. Resolution retracted for the CHATID0 guard; it is adopted, not open.",
   'scripts/lib/send-telegram.sh': 'adopt upstream wholesale (round 2 adds telegram_api_call, the method-agnostic sibling send_telegram_message now calls)',
   'scripts/disk-space-guard.sh': 'adopt upstream wholesale -- honest-send-via-lib replaces an unchecked inline curl, no fork-specific logic in this file',
   'scripts/unit-fail-notify.sh': 'adopt upstream wholesale -- honest-send-via-lib replaces an unchecked inline curl (best-effort exit-0 contract unchanged), no fork-specific logic in this file',
@@ -961,7 +965,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
   'scripts/host-restart-watchdog.sh': "keep the fork's prior-shutdown cause classifier wholesale (classify_shutdown_from_log/prev_boot_log/HOST_RESTART_WATCHDOG_LIB test hook, card RELIA-A, upstream never had it), graft upstream's HOSTWD_PROC_STAT test hook + honest-send-via-lib + stamp-btime-baseline-only-on-confirmed-delivery",
   'scripts/fleet-memory-gate.sh': 'adopt upstream wholesale -- honest-send-via-lib + cooldown-stamp-only-on-success, no fork-specific logic in this file',
   'scripts/github-pr-monitor.sh': 'adopt upstream wholesale -- honest-send-via-lib + snapshot-not-persisted-on-failed-alert + an unrelated REPO-parsing regex fix (ERE has no lazy quantifier), no fork-specific logic in this file' +
-    " Re-measured 2026-09-06 (backend3, card 79bb0364 round-2 landing-block, upstream round 16). Upstream closed a silent-zero in the PR list query: a FAILED `gh pr list` and a genuinely empty list both reduced to an empty PRS, after which the script said 'nothing to watch' and exited 0 -- expired auth or no network left the monitor looking healthy while it watched nothing. It now keeps the exit status, alerts the owner at most once per six hours, and exits 1. Same class as this fork's own repeated finding that an absent measurement must not be reported as a zero measurement, so the direction is one this fork already agrees with. NOT adopted this round (it adds a Telegram alert path and a stamp file, which is its own decision); blob bumped.",
+    " Re-measured 2026-09-06 (backend3, card 79bb0364 round-2 landing-block, upstream round 16). Upstream closed a silent-zero in the PR list query: a FAILED `gh pr list` and a genuinely empty list both reduced to an empty PRS, after which the script said 'nothing to watch' and exited 0 -- expired auth or no network left the monitor looking healthy while it watched nothing. It now keeps the exit status, alerts the owner at most once per six hours, and exits 1. Same class as this fork's own repeated finding that an absent measurement must not be reported as a zero measurement, so the direction is one this fork already agrees with. NOT adopted this round (it adds a Telegram alert path and a stamp file, which is its own decision); blob bumped." +
+    " CORRECTION 2026-09-25 (card 2f1cbaf1, backend3, ACKNOWLEDGED_FORK_ANCHORS backlog): `AUTH_ALERT_COOLDOWN=21600` (6h) and the `exit 1` on the silent-zero path ARE present, verified directly in the current file. Landed by commit 99b3b149 (Vlbbtabs, PR #1185) on 2026-09-05 18:26, the day BEFORE this round's 2026-09-06 refusal note -- the same same-day-prior-commit pattern as the schedule-runner.ts and notify.sh corrections from this same audit (all three landed 2026-09-05, all three refused 2026-09-06, likely one measurement pass that did not re-check for commits from the previous day). Resolution retracted; it is adopted, not open.",
   'scripts/set-bot-menu.sh': 'adopt upstream wholesale -- honest telegram_api_call() replaces a silent fire-and-forget curl for setMyCommands, no fork-specific logic in this file',
   'scripts/stuck-modal-guard.sh': 'adopt upstream wholesale -- honest-send-via-lib + backoff-stamp-only-on-success, no fork-specific logic in this file',
   'src/__tests__/notify-delivery-honesty.test.ts': 'adopt upstream wholesale -- trivial test-scaffolding update to stage the new scripts/lib/send-telegram.sh alongside notify.sh' +
@@ -1832,6 +1837,146 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
     because:
       'the rule is acknowledge-only on the ground that the fork keeps its inline send-detection ' +
       'functions; if they are extracted or removed, the "strict superset" claim needs re-deciding.',
+  },
+  // --- card 2f1cbaf1: backfilling the remaining 6 of the original 10 unanchored refusals ---------
+  //
+  // MEASURED 2026-09-25, same method as the four above: read the rule, find the concrete symbol it
+  // rejects, grep the PRODUCTION tree on an identifier boundary. Of the original ten, FOUR were
+  // reversed (kanban.ts/db.ts's blockers route, schedule-runner.ts's TASK_FIRE_TIMEOUT_MS,
+  // notify.sh's CHATID0 guard, github-pr-monitor.sh's AUTH_ALERT_COOLDOWN) and channel-monitor.ts's
+  // three items were already found and corrected under card ea86a362 earlier the same day -- see
+  // the CORRECTION paragraphs on each entry rather than an anchor here, since a reversed refusal is
+  // "now adopted", and a refusal that is already known-reversed does not need a tripwire, it needs
+  // its own entry read as saying so. The three schedule-runner.ts/notify.sh/github-pr-monitor.sh
+  // reversals share an exact pattern: an upstream commit landed 2026-09-05, and the refusal that
+  // missed it was written the very next day, 2026-09-06 -- one measurement round that did not
+  // re-check for same-day-prior commits, not four unrelated accidents.
+  //
+  // The remaining four HOLD, and are anchored below.
+  'src/web.ts': {
+    needle: 'ensureTelegramCopyGate',
+    file: 'src/web.ts',
+    expect: 'absent',
+    because:
+      "Upstream's ensureTelegramCopyGate (GATECOPY828) would double-wire outgoing-copy-gate.py " +
+      "alongside the fork's own ensureOutgoingCopyGate (card 74181db2) under two different " +
+      "matchers -- refused 2026-09-06. Same shape as the seed-refresh-untouched-only.test.ts anchor " +
+      "above (injectTelegramCopyGate in agent-scaffold.ts): two names for one capability, and " +
+      "adopting the second one is a duplicate wire, not an addition.",
+  },
+  'package.json': {
+    needle: '4.1.10',
+    file: 'package.json',
+    expect: 'absent',
+    because:
+      "Upstream bumped the vitest devDependency ^2.1.0 -> ^4.1.10; refused 2026-09-06 as its own " +
+      "card with its own baseline run across a 15k-test suite, travelling together with " +
+      "vitest.config.ts's testTimeout line (vitest 4 enforces the 5s default that vitest 2 did " +
+      "not). If this version ever appears, the pairing decision needs to be made for real, not " +
+      "inherited as a side effect of an unrelated dependency bump.",
+  },
+  'src/web/agent-process.ts': {
+    needle: 'isMinimax',
+    file: 'src/web/agent-process.ts',
+    expect: 'absent',
+    because:
+      "Peti NO-GO on the MiniMax direct-API branch in resolveProviderEnv (card 48565f81, CLAUDE.md " +
+      "rule 17). This is the security-relevant half of this file's own entry; the umask/" +
+      "agentTmuxTarget half is separately anchored under 'vitest.config.ts' above (that one is a " +
+      "deliberate, announced adoption -- opposite direction, do not confuse the two). Pinned at " +
+      "source level per that entry's own words, because after the resolveProviderEnv refactor the " +
+      "declined branch is two small hunks (an isMinimax discriminator line, an if(isMinimax) " +
+      "block) that read as purely additive -- exactly the shape a reflexive union would restore.",
+  },
+  // NOT ANCHORED, deliberately, and left in UNANCHORED_BACKLOG (fork-upstream-conflict-guard.test.ts)
+  // rather than pointed anywhere: this refusal is ABOUT a test file's own content (whether upstream's
+  // minimax-m3 test case was adopted), and 'an anchor points at a PRODUCTION file, not at a test'
+  // is enforced absolutely by this module's own test suite -- a test can declare its own copy of
+  // anything, so a needle aimed at src/__tests__/context-guard.test.ts itself would prove nothing.
+  // The decision this entry restates is the SAME one the 'src/web/agent-process.ts' anchor above
+  // already watches (isMinimax, absent) -- if MiniMax is ever adopted for real, that anchor fires
+  // first, on the production side, which is where the fact that matters actually lives.
+  // The five below are the REVERSED half of the same backfill (see the CORRECTION paragraphs on
+  // each file's own ACKNOWLEDGED_CONFLICTS entry for the evidence): each was refused, and each is
+  // in fact already adopted. Anchored `present`, same as context-restart-gate-runner.ts and
+  // agent-scaffold.ts above -- the point of these five is not "prove it landed" (the correction
+  // paragraph already does that with a commit sha), it is to catch a FUTURE accidental reversion
+  // back toward the refused state, which nothing else in this file would notice.
+  'src/web/routes/kanban.ts': {
+    needle: 'blockerWouldCycle',
+    file: 'src/db.ts',
+    expect: 'present',
+    because:
+      "The /api/kanban/:id/blockers route (kanban.ts) and its cycle guard blockerWouldCycle " +
+      "(db.ts) landed via commit 7e9a7362, the same day this entry's 2026-09-06 measurement round " +
+      "said the feature was 'not a gap'. It is present and functional, just unused by the " +
+      "dashboard (web/app-kanban.js calls only the fork's own /dependencies route, verified). If " +
+      "blockerWouldCycle disappears while the route stays, the cycle guard silently stops -- a " +
+      "correctness regression on a route that is live even though the UI does not exercise it.",
+  },
+  'src/web/schedule-runner.ts': {
+    needle: 'TASK_FIRE_TIMEOUT_MS = 2_700_000',
+    file: 'src/web/schedule-runner.ts',
+    expect: 'present',
+    because:
+      "Raising the stuck-task alert threshold from 5 to 45 minutes was refused 2026-09-06 as its " +
+      "own alerting-threshold decision; commit 3496bff1 had already landed it the day before, " +
+      "measured and corrected under card 2f1cbaf1. If this reverts to a 5-minute (or otherwise " +
+      "much shorter) value, the owner is back to the false 'possible hang' alerts the 45-minute " +
+      "value was measured to fix.",
+  },
+  'scripts/notify.sh': {
+    needle: '$CHAT_ID" = "0"',
+    file: 'scripts/notify.sh',
+    expect: 'present',
+    because:
+      "The CHATID0 guard (refuse a chat_id of \"0\", the installer placeholder) was refused " +
+      "2026-09-06 as its own fallback-channel-behaviour decision; commit 3e807fe4 had already " +
+      "landed it the day before, measured and corrected under card 2f1cbaf1. Without this guard a " +
+      "placeholder install's fallback alert path posts to chat_id=0 instead of failing loudly.",
+  },
+  'scripts/github-pr-monitor.sh': {
+    needle: 'AUTH_ALERT_COOLDOWN=21600',
+    file: 'scripts/github-pr-monitor.sh',
+    expect: 'present',
+    because:
+      "Keeping gh's exit status (instead of reading a failed `gh pr list` the same as a genuinely " +
+      "empty one) and alerting the owner at most once per 6h was refused 2026-09-06 as its own " +
+      "decision; commit 99b3b149 had already landed it the day before, measured and corrected " +
+      "under card 2f1cbaf1. Reverting this brings back the silent-zero: expired auth or no network " +
+      "reads as 'nothing to watch' and the monitor exits 0 while watching nothing.",
+  },
+  'src/web/channel-monitor.ts': {
+    needle: 'shouldAlertStuckSubAgent',
+    file: 'src/web/channel-monitor.ts',
+    expect: 'present',
+    because:
+      "Card ea86a362 (2026-09-25, the same day as this backfill) found three items this file's own " +
+      "entry recorded as not-adopted/undecided -- markAgentRestartPending/isWithinRestartGrace " +
+      "(DANICTXHUROK906), detectsPermissionDialog (PERMDENY905), and this symbol " +
+      "(shouldAlertStuckSubAgent, STUCKINPUT827) -- all three present and correctly wired, verified " +
+      "directly. Anchored on the STUCKINPUT827 item specifically because it was the one the entry " +
+      "stated most flatly ('neither of which this fork has'); if it disappears, re-read the entry's " +
+      "2026-09-25 correction paragraph before assuming a revert is safe.",
+  },
+  'web/app.js': {
+    // The PARTIALLY-reversed one. renderCardBlockersSection as a function is genuinely absent
+    // (zero hits in app.js and app-kanban.js) -- that half of the 2026-09-06 refusal holds and is
+    // what this anchor watches. The i18n-tagged HTML markup for the same feature DID land in
+    // web/index.html (kanban.modal.blockers_title etc.), and nothing calls the backend's live
+    // /api/kanban/:id/blockers route to populate it -- dead markup, not a working UI. See this
+    // file's own CORRECTION paragraph for the full picture; anchored on the function's absence
+    // because that is the checkable fact that decides whether a user can ever reach this feature,
+    // which the markup alone does not.
+    needle: 'renderCardBlockersSection',
+    file: 'web/app.js',
+    expect: 'absent',
+    because:
+      "Upstream's card-blockers UI is superseded by the fork's own kanban_dependencies UI (see " +
+      "src/web/routes/kanban.ts's entry) -- refused 2026-09-06. If this function appears, someone " +
+      "has wired the dead HTML markup up for real, which is an adoption decision (does the fleet " +
+      "want two parallel card-blocking UIs, or should the dependencies one absorb this one's " +
+      "markup?), not something that should happen as a side effect of an unrelated merge.",
   },
 }
 
