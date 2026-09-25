@@ -14632,3 +14632,79 @@ regresszió-ellenőrzés, ugyanazt az `acknowledged-conflicts.ts`-t importálja)
 **Ki döntött:** backend3 (a detektor-hiba felfedezése és javítása). A 34+31 fájlos tartalmi
 újra-döntés MikroB iránymutatására vár -- lásd a kártyán/inter-agent üzenetben a pontos, aznapi
 számokat.
+
+## 2026-09-25 -- b5b7eb6b bontás + gyerek 09d54e88 (1/10, hooks/guardok): 7/8 fájl lezárva, 1 eszkalálva (backend3)
+
+**A bontás.** MikroB döntése (msg 4123, a fenti aznapi jelentésre): a 34+31 fájlos tartalmi
+újra-döntés Fázis/Feladat szerkezetre bomlik -- b5b7eb6b Feladat-szülő lett, 10 gyerek-kártya
+TERÜLET szerint (max ~8 fájl/kártya), predecessor-él nélkül (a területi csoportok párhuzamosak),
+gate kártyánként QA + (SEC-eseken) Cybersec. backend3 az 1/10 (hooks/guardok), 3/10
+(docs/templates/skillek/CI) és 7/10 (guard/gate/router/schedule/token) felelőse; a többi 7
+backend/backend2 között MikroB terhelés szerinti elosztásában.
+
+**Módszertan, ami a jelen kártyán bevált (a maradék 9 gyerek-kártyához is ajánlott):** a riport saját
+csonkolt hunk-előnézete (`extractConflictHunks`, `maxChars=2000` alapértelmezés) TÖBB fájlnál levágta
+a valódi konfliktust a `<<<<<<<`/`=======`/`>>>>>>>` határ előtt. A megbízható forrás egy VALÓDI,
+eldobható 3-utas merge-szimuláció (`git worktree add --detach`, `git merge --no-commit --no-ff
+<upstream-sha>`), amiben a konfliktusjelzők TELJES, csonkítatlan hosszban olvashatók.
+
+**Fájlonkénti döntés (09d54e88, 8 fájl, mind valódi merge-szimulációval ellenőrizve):**
+1. `scripts/install-channel-image-hook.sh` (nobody-decided) -- KEEP a fork egyszeri migrációs blokkja
+   (régi `telegram-image-resize.sh` törlése); upstream oldala üres. Tiszta addíció.
+2. `scripts/install-telegram-progress-hook.sh` + `scripts/__tests__/install-telegram-progress-hook.test.sh`
+   (nobody-decided, párban) -- ADOPT upstream provider-gate + `retire_provider()` mechanizmusa teljes
+   egészében. Ellenőrizve: a fork MÁR EGYÉBKÉNT tobb-providerkepes (`CHANNEL_PROVIDER` mindenütt
+   használt `src/`-ben), csak EZ az egy installer maradt le -- nem új architektúra, csak egy már
+   meglévő fork-képesség bekötése egy lemaradt szkriptbe. A retire-progress-watchdog.sh (amit
+   `retire_provider()` hív) ütközés nélkül, magától mergelt be. A teszt-oldal PÁRBAN adoptálva
+   (upstream szuperhalmaz: mindkét platform + az új provider-gate esetek, semmi fork-specifikus
+   assertion nem esik ki).
+3. `scripts/watchdog.sh` (nobody-decided) -- ADOPT upstream (`agent=` paraméter + HTTP_CODE-ellenőrzés).
+   A fork SAJÁT, a konfliktus mellett álló magyar kommentje már leírja a hibát, amit ez javít
+   ("agent, nem to... 2026-08-18 óta HANGOS 400-at kap"), a fork HEAD-oldala mégis a hibás `to=`
+   paramétert hordozta -- a komment és a kód szétcsúszott.
+4. `scripts/channels.sh` (elavult elismerés, ÚJ konfliktus-hely a MEGLÉVŐ bejegyzés 4 pontjától
+   eltérően) -- UNION: a fork per-iterációs `_watchdog_claude_pid` újra-lekérdezése (a MEGLÉVŐ
+   upstream-változat "kiéhezik egy unset után", a fork saját kommentje szerint) MEGTARTVA, PLUSZ
+   upstream `_bot_hijacked` őrfeltétele HOZZÁADVA (valódi, máshol már ütközésmentesen bemergelt
+   változó, nem lógó hivatkozás).
+5. `scripts/email-send-gate.mjs` (elavult elismerés, ÚJ konfliktus-hely) -- ADOPT upstream
+   `wrapperDepthHit()` finomítása (`kind: 'wrapper-depth'`), a fork saját heredoc-kompozíciós
+   biztonsági javítása (`isSendInvocation` + `heredocFeedsSend`, card 72f5f13b/c7401c5f, csak
+   forráskód-kommentben rögzítve, NEM az acknowledged-conflicts.ts-ben) érintetlen marad, mert
+   `isSendInvocation(cmd)` továbbra is ELSŐKÉNT fut.
+6. `scripts/install-prod-tree-guard-hook.sh` (elavult elismerés) -- a két konfliktus-hunk PONTOSAN a
+   meglévő bejegyzés két döntött pontja (hdr_file Authorization-minta + JSON-encoding komment-eltérés,
+   funkcionálisan azonos szöveg). Mechanikus pin-bump, döntés változatlan.
+7. **`scripts/hooks/outgoing-copy-gate.py` (elavult elismerés) -- ESZKALÁLVA, NEM zárva.** 8
+   konfliktus-hunk (a legnagyobb 275 sor); az első kettő (GATENEVSTRIP921, egy ÚJ upstream
+   biztonsági javítás a név-ellenőrzés nyers-szöveg-futása ellen) pontosan olyan alakú
+   feltétel-nélküli szuffix-maszkolást vezetne be, amilyet EBBEN a fájlban KÉT KORÁBBI Cybersec
+   NO-GO (fbb36b41 kör 7/8 és 11) már egyszer elutasított -- nem tudom önmagában eldönteni, hogy az
+   új `_TECH_COMMON`/`_TECH_SUFFIXED` szétválasztás elkerüli-e ugyanazt a rést vagy csendben
+   visszahozza, a teljes vezérlésfolyam-nyomozás nélkül. A fájl saját 16-körös előzménye (rounds
+   12-15) UGYANEZT a mintát követi minden posture-jellegű upstream változásnál: "acknowledge-only,
+   NOT adopted, dedikált kártya + Cybersec-gate kell" -- a saját döntésem tehát nem kilóg, hanem
+   illeszkedik a fájl saját, többszörösen bevált precedenséhez. A pin SZÁNDÉKOSAN NEM bumpolva --
+   a fájlnak TOVÁBBRA IS figyelmeztetésre kell mutatnia, amíg egy dedikált menet tényleg lezárja. A
+   maradék 6 hunk NEM lett egyenként átnézve (az első kettő már megalapozza az eszkalációt, a
+   többi átnézése egy backend-egyszemélyes olvasás mellett nem változtatna ezen a következtetésen).
+
+**Élesben igazolva:** `node store/fork-upstream-drift-watch.mjs --report` előtte/utána -- a 4
+nobody-decided fájl eltűnt a listáról, a 3 (channels.sh/email-send-gate.mjs/install-prod-tree-guard-
+hook.sh) eltűnt az elavult listáról, `outgoing-copy-gate.py` VÁLTOZATLANUL ott maradt (szándékosan).
+0 romlott pin.
+
+**Zöld:** `fork-upstream-drift-check.test.ts` 21/21, `fork-upstream-conflict-guard.test.ts` 36/36,
+`tsc --noEmit` tiszta.
+
+**Fontos, amit NEM tettem meg:** a tényleges upstream-merge (a döntött fájlok kódjának ténylegesen
+upstream-mel egyesítése a fork tree-jében) NEM ennek a kártyának a feladata -- ez a kártya a
+DÖNTÉS-REKORDOT (ACKNOWLEDGED_CONFLICTS + ACKNOWLEDGED_UPSTREAM_BLOBS) szinkronizálja azzal, aminek a
+KÖVETKEZŐ tényleges upstream-merge-nél történnie kell, nem magát a merge-et hajtja végre most (azt egy
+külön, dedikált upstream-sync esemény végzi, lásd a MAR LÉTEZŐ `marveen-wt-upstream-sync`-szerű
+worktree-mintát).
+
+**Ki döntött:** backend3 (mind a 7 lezárt fájl olvasása+döntése valódi merge-szimulációval), Cybersec
+bevonása kérve az `outgoing-copy-gate.py`-ra (nem lezárva). Gate ezen a kártyán: QA + Cybersec (SEC
+címke).
