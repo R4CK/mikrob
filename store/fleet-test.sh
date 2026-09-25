@@ -58,6 +58,18 @@ CPU_KEEPALIVE_S="${CLEANCORE_SUITE_KEEPALIVE_S:-300}"
 
 die() { echo "fleet-test.sh: $2" >&2; exit "$1"; }
 
+# INCOMPLETE RUN detection (card 85823628, extracted into a function for card d54d5de6 so it has a
+# dedicated automated test -- see store/fleet-test-incomplete-run.selftest.sh, which sources this
+# exact function body verbatim out of this file rather than re-implementing the logic). True (rc 0)
+# when a run was killed before vitest printed its own verdict: no "Test Files ... passed/failed" or
+# "Tests ... passed/failed" line anywhere in the log, regardless of what the exit status says. A
+# nonzero status alone is not enough -- see the birpc-flake branch right after the call site, which
+# is nonzero WITH a summary and is deliberately NOT incomplete.
+is_incomplete_run() { # $1=exit status $2=log file path
+  local status="$1" log="$2"
+  [ "$status" -ne 0 ] && ! grep -qE '(Test Files|Tests)[[:space:]]+[0-9]+ (passed|failed)' "$log"
+}
+
 case "$TEST_TREE" in
   /tmp/*|/var/folders/*|/private/var/folders/*)
     die 2 "FLEET_TEST_TREE points under a temp dir ($TEST_TREE). That is exactly the case this script exists to avoid: 7 suites would silently SKIP there." ;;
@@ -389,8 +401,7 @@ status="${PIPESTATUS[0]}"
 # always HAS a summary (every test already passed by the time the worker-RPC timeout fires), so a
 # log with no summary at all is never that flake, whatever the exit code says. A "0 failed" grep
 # against a log like this finds nothing because there was nothing to find, not because it passed.
-if [ "$status" -ne 0 ] \
-  && ! grep -qE '(Test Files|Tests)[[:space:]]+[0-9]+ (passed|failed)' "$run_log"
+if is_incomplete_run "$status" "$run_log"
 then
   {
     echo
