@@ -626,5 +626,69 @@ else
   wait "$tree_lock_pid" 2>/dev/null
 fi
 
+# --- 16. tree provenance: worktree HEAD and node_modules'/main-clone HEAD are both named, and a
+# mismatch is marked [SKEW] (card b846acf3) ------------------------------------------------------
+# A suite-count without saying which tree it measured is not evidence (rule 4d). This proves the
+# two new stderr lines exist, name the real shas, and that [SKEW] appears exactly when they differ
+# -- using two REAL git repos (a fake worktree, a fake main clone) so the shas are not fabricated
+# strings, they are `git rev-parse HEAD` on trees this case controls.
+PROV_WT="$TMP/prov-wt"
+PROV_MAIN="$TMP/prov-main"
+mkdir -p "$PROV_WT/store" "$PROV_MAIN"
+git -C "$PROV_WT" init -q && git -C "$PROV_WT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m wt
+git -C "$PROV_MAIN" init -q
+FAKE_RUN_PROV="$PROV_WT/store/$(basename "$RUN")"
+cp "$RUN" "$FAKE_RUN_PROV"
+mkdir -p "$PROV_WT/node_modules/.bin"
+cat > "$PROV_WT/store/agent-worktree.sh" <<EOF
+#!/usr/bin/env bash
+echo "$PROV_WT"
+EOF
+chmod +x "$PROV_WT/store/agent-worktree.sh"
+: > "$PROV_WT/store/vitest-flake-classify.sh"; chmod +x "$PROV_WT/store/vitest-flake-classify.sh"
+: > "$PROV_WT/store/vitest-skip-report.sh"; chmod +x "$PROV_WT/store/vitest-skip-report.sh"
+cat > "$PROV_WT/node_modules/.bin/vitest" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$PROV_WT/node_modules/.bin/vitest"
+
+WT_SHA_EXPECT="$(git -C "$PROV_WT" rev-parse HEAD)"
+
+# 16a. main clone has NO commits yet (empty repo) -- $MAIN_SHA is "unknown", so this must not be
+# reported as [SKEW]: an absent/unreadable main clone is a different fact than a diverged one, and
+# claiming a mismatch against nothing would be a false SKEW.
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_LOCK_PREFIX="$PREFIX-provA" CLEANCORE_SUITE_SLOTS=2 \
+       CLEANCORE_MAIN="$PROV_MAIN" bash "$FAKE_RUN_PROV" some-agent 2>&1)"
+if echo "$out" | grep -qF "running in $PROV_WT @ $WT_SHA_EXPECT" \
+   && echo "$out" | grep -q "node_modules -> $PROV_MAIN @ unknown" \
+   && ! echo "$out" | grep -q '\[SKEW\]'; then
+  ok "provenance lines name both trees; an unreadable main clone is not reported as SKEW"
+else
+  bad "provenance lines missing or wrongly flagged with an unreadable main clone" "$out"
+fi
+
+# 16b. main clone now has a DIFFERENT commit -- this must be flagged [SKEW].
+git -C "$PROV_MAIN" -c user.email=t@t -c user.name=t commit -q --allow-empty -m main
+MAIN_SHA_DIFF="$(git -C "$PROV_MAIN" rev-parse HEAD)"
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_LOCK_PREFIX="$PREFIX-provB" CLEANCORE_SUITE_SLOTS=2 \
+       CLEANCORE_MAIN="$PROV_MAIN" bash "$FAKE_RUN_PROV" some-agent 2>&1)"
+if echo "$out" | grep -qF "node_modules -> $PROV_MAIN @ $MAIN_SHA_DIFF   [SKEW]"; then
+  ok "a main clone HEAD that differs from the worktree HEAD is marked [SKEW]"
+else
+  bad "a real HEAD divergence was not flagged [SKEW]" "$out"
+fi
+
+# 16c. main clone fast-forwarded to the SAME commit as the worktree -- no [SKEW].
+git -C "$PROV_MAIN" fetch -q "$PROV_WT" "$WT_SHA_EXPECT"
+git -C "$PROV_MAIN" reset -q --hard FETCH_HEAD
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_LOCK_PREFIX="$PREFIX-provC" CLEANCORE_SUITE_SLOTS=2 \
+       CLEANCORE_MAIN="$PROV_MAIN" bash "$FAKE_RUN_PROV" some-agent 2>&1)"
+if echo "$out" | grep -qF "node_modules -> $PROV_MAIN @ $WT_SHA_EXPECT" && ! echo "$out" | grep -q '\[SKEW\]'; then
+  ok "a main clone HEAD matching the worktree HEAD is not flagged"
+else
+  bad "a matching HEAD was wrongly flagged, or the line is missing" "$out"
+fi
+
 echo "mopsion-suite-run.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

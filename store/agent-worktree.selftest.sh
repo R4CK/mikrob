@@ -13,10 +13,22 @@
 #
 # HERMETIC: CLEANCORE_MAIN and CLEANCORE_WORKTREES both point at throwaway dirs under a mktemp -d --
 # no real CleanCore clone or worktree is touched.
+#
+# THE SCOPE NAME IS READ FROM THE SCRIPT, NOT HARDCODED HERE (card b846acf3 follow-up, backend3,
+# 2026-09-25). This fixture used to hardcode its own "@cleancore" literal, in lockstep with the exact
+# literal the script itself hardcoded -- so when the real npm scope was renamed to "@mopsion" and the
+# script's copy of the literal went stale, THIS FIXTURE'S copy went stale in the same direction at the
+# same time, and the test kept passing throughout: it was still testing "does @cleancore work", which
+# it did, on a scope nothing in the real repo used any more. A test that mirrors the value it is
+# supposed to be checking cannot catch that value drifting. Reading SCOPE out of the script means this
+# fixture always exercises whatever scope agent-worktree.sh actually uses today, not what it used when
+# this file was written.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUN="$HERE/agent-worktree.sh"
+SCOPE="$(sed -nE 's/^SCOPE="(.*)"$/\1/p' "$RUN" | head -1)"
+[ -n "$SCOPE" ] || { echo "agent-worktree.selftest: could not read SCOPE= from $RUN" >&2; exit 1; }
 pass=0; fail=0
 ok()  { printf '  [ok ] %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  [FAIL] %s\n     %s\n' "$1" "${2:-}"; fail=$((fail+1)); }
@@ -36,17 +48,17 @@ git -C "$MAIN" -c user.email=t@t -c user.name=t checkout -q -b main 2>/dev/null 
 cat > "$MAIN/package.json" <<'EOF'
 {"name":"cleancore","private":true}
 EOF
-cat > "$MAIN/packages/foo/package.json" <<'EOF'
-{"name":"@cleancore/foo"}
+cat > "$MAIN/packages/foo/package.json" <<EOF
+{"name":"$SCOPE/foo"}
 EOF
 echo "module.exports = 'from-main'" > "$MAIN/packages/foo/index.js"
-cat > "$MAIN/apps/api/package.json" <<'EOF'
-{"name":"@cleancore/api"}
+cat > "$MAIN/apps/api/package.json" <<EOF
+{"name":"$SCOPE/api"}
 EOF
 
 # apps/api/node_modules: one workspace entry (relative symlink, exactly pnpm's shape) + one external.
-mkdir -p "$MAIN/apps/api/node_modules/@cleancore"
-ln -s ../../../../packages/foo "$MAIN/apps/api/node_modules/@cleancore/foo"
+mkdir -p "$MAIN/apps/api/node_modules/$SCOPE"
+ln -s ../../../../packages/foo "$MAIN/apps/api/node_modules/$SCOPE/foo"
 mkdir -p "$MAIN/apps/api/node_modules/some-external-dep"
 echo "external-marker" > "$MAIN/apps/api/node_modules/some-external-dep/marker.txt"
 
@@ -76,12 +88,12 @@ TREE="$WORKTREES/testagent"
 [ -L "$TREE/apps/api/node_modules" ] && bad "apps/api/node_modules is still a whole-directory symlink into \$MAIN" \
   || ok "apps/api/node_modules is a real directory (not a whole-dir symlink)"
 
-# --- 3. a workspace (@cleancore/*) entry resolves into the WORKTREE'S OWN packages/, not \$MAIN's ----
-link_target="$(readlink -f "$TREE/apps/api/node_modules/@cleancore/foo" 2>/dev/null)"
+# --- 3. a workspace ($SCOPE/*) entry resolves into the WORKTREE'S OWN packages/, not \$MAIN's --------
+link_target="$(readlink -f "$TREE/apps/api/node_modules/$SCOPE/foo" 2>/dev/null)"
 own_pkg="$(readlink -f "$TREE/packages/foo" 2>/dev/null)"
 main_pkg="$(readlink -f "$MAIN/packages/foo" 2>/dev/null)"
 if [ "$link_target" = "$own_pkg" ] && [ "$link_target" != "$main_pkg" ]; then
-  ok "apps/api/node_modules/@cleancore/foo resolves to the worktree's OWN packages/foo"
+  ok "apps/api/node_modules/$SCOPE/foo resolves to the worktree's OWN packages/foo"
 else
   bad "the workspace entry does not resolve to the worktree's own copy" \
     "link=$link_target own=$own_pkg main=$main_pkg"
@@ -90,10 +102,10 @@ fi
 # --- 4. CONTENT PROOF: editing the worktree's OWN packages/foo is visible through node_modules -------
 # This is the case that was silently invisible before the fix (pg-proof-photo-worm-marker.test.ts).
 echo "module.exports = 'from-worktree'" > "$TREE/packages/foo/index.js"
-seen="$(cat "$TREE/apps/api/node_modules/@cleancore/foo/index.js" 2>/dev/null)"
+seen="$(cat "$TREE/apps/api/node_modules/$SCOPE/foo/index.js" 2>/dev/null)"
 [ "$seen" = "module.exports = 'from-worktree'" ] \
   && ok "editing the worktree's own package is visible through its node_modules import path" \
-  || bad "node_modules/@cleancore/foo still shows \$MAIN's content, not the worktree's edit" "$seen"
+  || bad "node_modules/$SCOPE/foo still shows \$MAIN's content, not the worktree's edit" "$seen"
 
 # --- 5. an EXTERNAL entry still points at \$MAIN -- no duplication, no reinstall ----------------------
 ext_target="$(readlink -f "$TREE/apps/api/node_modules/some-external-dep" 2>/dev/null)"
@@ -120,9 +132,9 @@ if [ -L "$WORKTREES/legacy-agent/apps/api/node_modules" ]; then
   bad "a pre-existing legacy worktree was NOT migrated off the whole-dir symlink"
 else
   ok "a pre-existing legacy whole-dir symlink is migrated to the per-entry layout on the next run"
-  legacy_link="$(readlink -f "$WORKTREES/legacy-agent/apps/api/node_modules/@cleancore/foo" 2>/dev/null)"
+  legacy_link="$(readlink -f "$WORKTREES/legacy-agent/apps/api/node_modules/$SCOPE/foo" 2>/dev/null)"
   legacy_own="$(readlink -f "$WORKTREES/legacy-agent/packages/foo" 2>/dev/null)"
-  [ "$legacy_link" = "$legacy_own" ] && ok "the migrated legacy worktree now resolves @cleancore/foo to its own copy" \
+  [ "$legacy_link" = "$legacy_own" ] && ok "the migrated legacy worktree now resolves $SCOPE/foo to its own copy" \
     || bad "the migrated legacy worktree still resolves elsewhere" "$legacy_link vs $legacy_own"
 fi
 
@@ -135,20 +147,20 @@ out="$(run testagent 2>&1)"; rc=$?
   && ok "a dependency added to \$MAIN after creation is picked up on top-up" \
   || bad "the newly-added dependency was not linked on top-up"
 # ...and the earlier fix (own-copy resolution, external-dep sharing) is still intact after the re-run.
-still_seen="$(cat "$TREE/apps/api/node_modules/@cleancore/foo/index.js" 2>/dev/null)"
+still_seen="$(cat "$TREE/apps/api/node_modules/$SCOPE/foo/index.js" 2>/dev/null)"
 [ "$still_seen" = "module.exports = 'from-worktree'" ] \
   && ok "the worktree's own package content is still visible after an idempotent re-run" \
   || bad "the idempotent re-run reverted the worktree back to \$MAIN's content" "$still_seen"
 
 # --- 9. a workspace entry with NO matching package under \$MAIN falls back instead of crashing --------
-mkdir -p "$MAIN/apps/api/node_modules/@cleancore"
-ln -sfn ../../../../packages/gone "$MAIN/apps/api/node_modules/@cleancore/gone"
+mkdir -p "$MAIN/apps/api/node_modules/$SCOPE"
+ln -sfn ../../../../packages/gone "$MAIN/apps/api/node_modules/$SCOPE/gone"
 out="$(run testagent 2>&1)"; rc=$?
 [[ $rc -eq 0 ]] && ok "an unresolvable workspace entry does not crash the run" || bad "run crashed on an unresolvable workspace entry (rc=$rc)" "$out"
 # -L, not -e: the fallback link is created, but its target ($MAIN's own dangling packages/gone
 # symlink) does not exist either -- that is the pre-existing state in $MAIN, not this script's job to
 # fix. What matters here is that the entry is not silently dropped.
-[ -L "$TREE/apps/api/node_modules/@cleancore/gone" ] \
+[ -L "$TREE/apps/api/node_modules/$SCOPE/gone" ] \
   && ok "the unresolvable entry falls back to a link (not silently dropped)" \
   || bad "the unresolvable entry vanished instead of falling back"
 
