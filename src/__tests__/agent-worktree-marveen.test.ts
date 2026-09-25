@@ -409,14 +409,20 @@ describe('marveen-land.sh (card dc185b52)', () => {
   /** A verification stub that succeeds, and on its FIRST run pushes a competing commit to origin --
    *  the peer agent landing inside our merge+test window. Counts its own invocations so a test can
    *  assert how many full attempts the script actually made. */
-  function writeRacingStub(opts: { racesOnRun: number }): { path: string; runs: () => number } {
+  function writeRacingStub(
+    opts: { racesOnRun: number },
+  ): { path: string; runs: () => number; shas: () => string[] } {
     const counter = join(dir, 'stub-runs')
+    const shasLog = join(dir, 'stub-shas')
     const rival = join(dir, 'rival')
     const p = join(dir, 'stub-race.sh')
     writeFileSync(
       p,
       `#!/usr/bin/env bash\n` +
         `n=$(( $(cat ${counter} 2>/dev/null || echo 0) + 1 )); echo "$n" > ${counter}\n` +
+        // $1 is the merge sha marveen-land.sh is asking this run to verify (card 5b06720f/921a5ece
+        // Cybersec F1: nothing previously recorded WHICH sha each attempt actually tested).
+        `echo "$1" >> ${shasLog}\n` +
         `if [ "$n" = "${opts.racesOnRun}" ]; then\n` +
         `  rm -rf ${rival}\n` +
         `  git clone -q --branch develop ${upstream} ${rival}\n` +
@@ -432,6 +438,10 @@ describe('marveen-land.sh (card dc185b52)', () => {
     return {
       path: p,
       runs: () => Number(execFileSync('cat', [counter], { encoding: 'utf-8' }).trim()),
+      shas: () =>
+        existsSync(shasLog)
+          ? readFileSync(shasLog, 'utf-8').split('\n').filter((l) => l.trim())
+          : [],
     }
   }
 
@@ -458,6 +468,29 @@ describe('marveen-land.sh (card dc185b52)', () => {
     const landed = git(main, 'ls-tree', '-r', '--name-only', 'origin/develop')
     expect(landed).toContain('backend-new.txt')
     expect(landed, "the peer's commit was overwritten rather than merged").toContain('rival.txt')
+  }, LAND_TIMEOUT_MS)
+
+  // Cybersec F1 MEDIUM (card 921a5ece, komment 6032): the card's own acceptance point -- "the log
+  // shows the SECOND fleet-test run on the NEW merge sha" -- was never actually pinned. A mutation
+  // that reruns the test but hands it the STALE (first, losing) merge sha stayed 4/4 green, because
+  // every prior test here only checked run COUNT and final file PRESENCE, never WHICH sha each run
+  // was asked to verify. This test reads that sha back out of the stub and off the reported
+  // Gate-SHA line (the GATE_SHA_LINE regex further below in this file, matched here identically).
+  it('the retry tests the NEW merge sha, not the stale/losing one (card 921a5ece Cybersec F1)', async () => {
+    await commitInWorktree('backend', { 'backend-new.txt': 'x\n' })
+    const stub = writeRacingStub({ racesOnRun: 1 })
+    const r = await runLand(['backend'], stub.path)
+    expect(r.status).toBe(0)
+
+    const shas = stub.shas()
+    expect(shas, 'expected one sha logged per attempt').toHaveLength(2)
+    expect(shas[1], 'the retry verified the SAME sha as the losing first attempt').not.toBe(shas[0])
+
+    // No package.json bump is seeded in this fixture, so the reported Gate-SHA is the merge sha
+    // itself, not a child of it -- see the "no bump, no warning" test below for that distinction.
+    const m = /^\s*Gate-SHA:\s*([0-9a-f]{40})$/m.exec(r.out)
+    expect(m, `no Gate-SHA line in:\n${r.out}`).not.toBeNull()
+    expect(m![1], 'the pushed/reported sha does not match what the retry actually tested').toBe(shas[1])
   }, LAND_TIMEOUT_MS)
 
   it('CONTROL: a push refused for a NON-race reason is reported, and not retried', async () => {
