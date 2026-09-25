@@ -14709,6 +14709,168 @@ worktree-mintát).
 bevonása kérve az `outgoing-copy-gate.py`-ra (nem lezárva). Gate ezen a kártyán: QA + Cybersec (SEC
 címke).
 
+## 2026-09-25 -- c2aeefa5 (b5b7eb6b gyerek, 2/10, install/update szkriptek + gyökér-config): 8/8 fájl döntve, delta-gate után 1 javítás
+
+**A kártya.** MikroB szerinti terület-bontás (msg 4128, a b5b7eb6b Feladat 10 gyereke közül a 2.):
+install/update szkriptek + gyökér-config, 8 elavult elismerés (a korábbi szabályt a MOSTANI upstream
+tartalom ellen kell újra-dönteni, nem csak pin-bump).
+
+**Fájlonkénti döntés (8 fájl, upstream f3ce19ed..0db7ac66 ellen mérve):**
+1. `.gitignore` -- ADOPT két új upstream-only additív sor (`tmp.*`, `supabase/.temp`), a korábban már
+   átvett `.fakehome` sor érintetlen. Tisztán additív, nincs ütközés.
+2. `package.json` -- ADOPT a `build` script bővítését (`tsc && node scripts/write-built-commit.cjs`),
+   ELTÉRVE a fájl saját, kimondott alap-szabályától ("scripts stay fork-canonical, do not take
+   upstream's"). Indoklás: a bővítés a fork SAJÁT, már meglévő `dist/.built-commit` önjavító
+   mechanizmusát zárja be (amit `update.sh`/`install-linux.sh` már használ), nem egy új
+   upstream-viselkedést importál -- a kivétel tehát nem a szabály felrúgása, hanem egy olyan eset,
+   amit a szabály nem tudott előre megnevezni (a script maga a fork saját hiányát pótolja).
+   `scripts/write-built-commit.cjs` portolva upstreamből verbatim, egy komment-korrekcióval (a fork
+   saját sorszámaira igazítva). Sanity: futtatva, `dist/.built-commit` helyesen íródik, dist/
+   hiányában fail-soft (exit 0, nincs írás).
+3. `package-lock.json` -- álló döntés változatlan (npm ci regenerálja mindig), trivális
+   verzió-diff.
+4. `vitest.config.ts` -- ADOPT `dist/**` az exclude listába: MÉRVE ezen a forkon, hogy
+   `dist/__tests__` 785 kompilált `.test.js` fájlt tartalmazott egy korábbi buildből, vagyis a fork
+   UGYANAZT a duplakollekciós hibát hordozta, amit upstream mért (888/10723 vs. 444/5633, 67 fájl
+   pirosan, valódi hiba nélkül). ELUTASÍTVA ugyanekkor a `default-ssh-dir-seam.ts` setupFiles-bevonása
+   -- ennek vizsgálata közben derült ki a JANKBRIDGE803 élő biztonsági lelet (lásd alul), a teljes
+   javítás a HIGH kártya 2564e877 alatt készült el, nem itt.
+5. `update.sh` -- a két korábban döntött pont (POST_MERGE_MODE szerkezet, `{{CHAT_ID}}` helyettesítés)
+   érintetlen a mostani diffben, grep-pel megerősítve. Öt új upstream tétel (NODEPINMAC921,
+   SHALLOWGUARD921, UPDATE_AUTO_REBASE, inbox-observer/keepalive systemd-karbantartás,
+   ZAKARFELUGY921) mind HALASZTVA, nevesített follow-upként a rule textben.
+6. `install-linux.sh` -- a két korábban döntött pont (Ollama-eltávolítás, Telegram-párosítási
+   liveness) érintetlen. Három új tétel (INBOX_OBSERVER_UNIT, CLIRUNSVERZIO923 probe-csere,
+   TELEGRAM_ENV sorok) halasztva. Az INBOX_OBSERVER_UNIT halasztást `ACKNOWLEDGED_FORK_ANCHORS`
+   tripwire is védi (a guard-teszt saját "every NOT ADOPTED mention needs an anchor" szabálya miatt
+   is szükséges volt).
+7. `mcp-catalog.json` -- ELSŐ KÖR (delta-gate ELŐTT): upstream saját 5-elemes
+   supply-chain-azonosság-ellenőrző menetét vettem át közvetlenül (nem elhalasztva): gmail csomag
+   `gmail-mcp-server` -> `@artymclabin/gmail-mcp` (a régi csomagnak nincs repository.url-je, más
+   maintainer, postinstall script van benne), elevenlabs `npx elevenlabs-mcp` (törölt/nem létező npm
+   csomag) -> `uvx elevenlabs-mcp` (a valódi PyPI-disztribúció). MÁSODIK KÖR, Cybersec NO-GO után
+   (lásd alul): a gmail csere VISSZAVONVA, az elevenlabs pontnál verzió-pin hozzáadva.
+8. `.claude/settings.json` -- MARAD UNDECIDED, a 21597530/c00d5429 kontextus szerint (a fájl
+   teljes felülvizsgálata külön follow-up). Az új upstream Slack/Discord hook-csomag elutasítva (ez a
+   fork Telegram-only), négy további nem-Slack tétel (PostToolUseFailure stage,
+   memory-lookup-nudge.py, memory-frontmatter-gate.py, szélesített gmail/draft_email matcherek) nincs
+   eléggé megvizsgálva -- nevesítve a meglévő teljes-audit follow-uphoz.
+
+**Élő biztonsági lelet, nem a kártya scope-ja (eszkalálva msg 4146, MikroB visszaigazolta msg 4148,
+HIGH kártya 2564e877 nyílt rá, azóta landolva):** a `vitest.config.ts` `default-ssh-dir-seam.ts`
+pontjának vizsgálata közben derült ki, hogy a fork saját `bridge-enroll.test.ts` fájlja ugyanazt a
+hibaosztályt hordozza, amit upstream az ENROLL813 incidensben talált (2026-09-15, 62 valódi kulcs
+szivárgott): a JANKBRIDGE803 pozitív kontroll teszt a saját `afterEach`-e miatt a VALÓDI operátori
+`~/.ssh`-ra esett volna vissza. Ezen a gépen nem történt szivárgás (MikroB megerősítette). A teljes
+javítás (seam + afterEach restore + fail-closed guardok) külön kártyán ment, nem itt.
+
+**Delta-gate rework (Cybersec NO-GO + QA FAIL, ugyanarra a b550fb01 Gate-SHA-ra, 2026-09-25):**
+- Cybersec F1 HIGH: a `mcp-catalog.json` gmail-csere két KÜLDŐ eszközt (send_draft, reply_all) hoz be,
+  amit egyik email-jóváhagyási kapu matchere sem lát (outgoing-copy-gate.py, email-approval-gate.py,
+  email-send-gate.mjs), miközben a régi csomag egyetlen küldő eszközét (gmail_send_email) a meglévő
+  matcher elkapta. MikroB döntése (msg 4162): a gmail-cserét VISSZAVONNI ebből a kártyából (a régi
+  bejegyzés marad), külön kártya nyílik rá, amiben a csere csak a matcherek + a
+  `email-send-gate.mjs` `gateDecision`-jének kiterjesztésével EGYÜTT jöhet be. Végrehajtva: a `gmail`
+  bejegyzés visszaállítva a c2aeefa5 előtti tartalmára verbatim (command/args/infoUrl/verifiedAt/
+  verifiedNote). Új `ACKNOWLEDGED_FORK_ANCHORS['mcp-catalog.json']` tripwire (needle
+  `@artymclabin/gmail-mcp`, expect absent) őrzi, hogy a csomag-azonosság csendben ne térhessen vissza
+  a kapu-bővítés nélkül -- MUTÁCIÓVAL igazolva: a stringet visszaszúrva a guard-teszt valódian
+  elbukik ("expected absent... found=true"), visszaállítás után 57/57 zöld.
+- Cybersec F2 LOW: a katalógus-csomagok verzió-pin nélkül futnak (a maintainer bármely jövőbeli
+  kiadása, akár fiók-átvétel után is, lefutna). Az `elevenlabs` pont (ami MARAD adoptálva) pin-t
+  kapott: `uvx elevenlabs-mcp` -> `uvx elevenlabs-mcp==0.12.2`, a verifiedNote kiegészítve. A gmail
+  ponthoz tartozó verzió-pin kérdés a visszavonással a külön kártyára költözött.
+- QA FAIL: hiányzó DECISIONS.md bejegyzés a kártya saját architekturális döntéseihez (ugyanaz a
+  szabály, amit a testvér-kártya 09d54e88 már alkalmazott ezen a fázison) -- EZ a bejegyzés a pótlás.
+
+**Ellenőrzés:** `tsc --noEmit` tiszta. `fork-upstream-conflict-guard.test.ts` +
+`fork-upstream-drift-check.test.ts` 57/57 zöld a delta-gate javítások után is. `mcp-catalog.json`
+valid JSON.
+
+**Ki döntött:** backend (mind a 8 fájl első köre + a delta-gate rework), Cybersec NO-GO-ja alapján
+(F1 HIGH, F2 LOW), QA FAIL-je alapján (a jelen bejegyzés hiánya). Gate: QA + Cybersec (SEC címke),
+delta-gate ugyanarra a kódra fut újra a rework után.
+
+## 2026-09-25 -- 2564e877 (HIGH, ENROLL813 port): egy fail-closed chokepoint-minta bevezetése authorized_keys-írókhoz
+
+**A probléma.** A c2aeefa5 (b5b7eb6b gyerek 2/10) `vitest.config.ts`-döntése közben derült ki (nem a
+kártya scope-ja, külön eszkalálva msg 4146-ban), hogy a fork saját `src/__tests__/bridge-enroll.test.ts`
+fájlja ugyanazt a hibaosztályt hordozza, amit upstream az ENROLL813 incidensben talált és javított
+(2026-09-15, 62 valódi `marveen-remote` kulcs szivárgott a flottán át egy teljes suite-futás alatt,
+végig zölden). A ok: a "Positive control on the same route" (JANKBRIDGE803) teszt valódi tailnet-
+hosttal hívja a `POST /api/security/bridge-enroll`-t, MIELŐTT a fájl `MARVEEN_SSH_DIR`-t állítana, és
+az `afterEach` minden teszt után FELTÉTEL NÉLKÜL törölte a változót -- a route belső `resolveSshDir()`-e
+ilyenkor `join(homedir(), '.ssh')`-re esett vissza, azaz a VALÓDI operátori authorized_keys-t írta
+volna, ha a keyscan lépés sikerül. Ezen a gépen nem történt szivárgás (MikroB megerősítette: nincs
+valódi `authorized_keys`, nincs `marveen-remote:` bejegyzés sehol).
+
+**A döntés: az upstream fix TELJES portolása, nem csak a seam.** Upstream saját kommentje (és a c2aeefa5
+eszkalációja is) kifejezetten kimondja, hogy a `default-ssh-dir-seam.ts` setupFiles-bevonása ÖNMAGÁBAN
+NEM elég -- kell hozzá (1) a teszt-fájl `afterEach`-e, ami VISSZAÁLLÍTJA az előző értéket törlés helyett,
+és (2) fail-closed őrök az írók oldalán. Ezért egy ÚJ modul, `src/ssh-dir.ts`, lett az EGYETLEN hely, ami
+megválaszolja "melyik .ssh könyvtárba ír ez a folyamat" kérdést (`resolveSshDir`/`realSshDir`/
+`sshDirOverride`, `SshDirGuardError`/`isSshDirGuardError`) -- ez váltott fel KÉT byte-azonos duplikált
+resolvert (`bridge-enroll.ts`, `bridge-service-ports.ts`) és egy CLI-t (`scripts/remote-access-enroll.ts`),
+ami a seamet EGYÁLTALÁN nem ismerte (`grep -c MARVEEN_SSH_DIR` = 0 rajta).
+
+**A chokepoint-minta (`assertSafeSshDir`, `src/remote-enroll-fs.ts`).** A tényleges védelem nem a
+resolverben van, hanem egy KÖZÖS csomópontban, amit mindhárom exportált író (enroll / service-port
+rewrite / remove) a saját I/O-ja ELŐTT hív, függetlenül attól, HOGYAN jutott hozzá a `sshDir` paraméterhez
+(route, CLI, teszt). A guard szűken kapuzott KÉT tengelyen: csak teszt-futásban (`isTestRun()`,
+`src/test-run-marker.ts`, MÁR MEGLÉVŐ fork-modul, nem duplikálva) ÉS csak akkor, ha a cél VALÓBAN a
+valódi `~/.ssh` (útvonal-AZONOSSÁG `realpathSync`-cel, nem string-egyenlőség -- egy szimlinken vagy
+nem-normalizált úton át elért valódi könyvtárat is elkap). Emiatt a guardnak NULLA éles viselkedése van,
+amit el lehetne rontani: egy éles telepítésen `isTestRun()` mindig hamis, tehát a guard soha nem fut le.
+
+**Mutációs bizonyíték (saját + Cybersec + qa2, mind függetlenül, mind egyezik):**
+- `assertSafeSshDir()` törzse feltétel nélküli `return`-re rövidzárolva (disposable worktree-ben):
+  PONTOSAN 6/12 `enroll-seam-fail-closed.test.ts` eset bukott pirosra (mindhárom író chokepoint-tesztje
+  + 2 produkciós-ág teszt + a típus-megkülönböztető teszt), a másik 6 zöld maradt -- visszaállítva,
+  `git diff --stat` tiszta.
+- Cybersec saját mérése ugyanerre a mutációra: 6 failed (megegyezik).
+- Cybersec további mutációi: `resolveSshDir` teszt-futás-dobásának kikapcsolása -> 2 failed; a
+  "production early-return" (`if (!isTestRun()) return`) törlése (a guard élesben is tüzelne) -> 2
+  failed -- ez pinneli az "élesben inert" állítást, nem csak dokumentálja.
+- Az eredeti hiba alakja (seam nélkül, beforeEach-seam nélkül, törlő afterEach-csel) a guardokkal
+  BEKAPCSOLVA -> bridge-enroll 2 failed (a guardok önmagukban is pirosra viszik a regressziót, nem
+  néma írással zárul); ugyanez a guardokkal KIKAPCSOLVA -> 13/13 zöld, de ezen a gépen a scratch-HOME-ba
+  SEM írt semmit, mert a pozitív kontroll keyscanje innen nem éri el a valódi hostot -- a szivárgás ITT
+  fizikailag nem történt meg, de a hibaosztály zárva van, nem csak "nem sült el ezen a gépen".
+
+**Cybersec talált két LOW leletet, GO mellett (nem blokkoló, follow-up):**
+- F1 (mérés-integritási, nem biztonsági): a `default-ssh-dir-seam.ts` könyvtárneve csak a
+  `VITEST_POOL_ID`-ből képződik (`/tmp/marveen-ssh-seam/w<slot>`), ami EGY futáson belül egyedi, de
+  FUTÁSOK KÖZÖTT nem (a pool-ID minden futásban 1-től indul) -- két egyidejű vitest-folyamat ugyanazt a
+  `w1` könyvtárat használhatja, és az egyik futás új tesztfájlja törölheti a másik futó tesztjének
+  seam-könyvtárát. Cybersec ÉLŐBEN demonstrálta ezt a saját gate-takarításával (a `/tmp/marveen-ssh-seam`
+  törlése ütközött egy párhuzamos fleet-test-tel) -- ez adta az F1-mechanizmus egy MANUÁLIS kiváltását,
+  amiről MikroB a flottát figyelmeztette (msg 4171). A valódi `~/.ssh`-t a guardok továbbra is védik,
+  tehát ez NEM biztonsági rés, csak hamis-piros forrás gate-futásokban. Javítás (nem ezen a kártyán):
+  a könyvtárnévbe a futás saját azonosítóját (pl. a vitest fő-folyamat PID-je) is bele kell venni.
+- F2 (pin-hiány): a `security.ts`-en az `isSshDirGuardError` -> 500+`enroll813` ág NINCS HTTP-szinten
+  pinelve (a `bridge-service-ports.ts`-en igen, a `resolveSshDir`-mutáció ott pirosra viszi). A
+  válaszban a guard-elutasítás jelenleg is helyesen a generikus `enroll_failed` kódra esne vissza --
+  nem szivárgás, csak a kártya saját állítása (a guard megkülönböztethető kódot kap) nincs a
+  bridge-enroll route-on tesztelve. Follow-up.
+
+**QA FAIL oka (qa2, komment 6769) és ennek a bejegyzésnek a szerepe:** a kód, a mutációk és a
+route-oldali hibakezelés mind függetlenül ellenőrizve HELYESNEK bizonyultak -- az EGYETLEN blokkoló
+hiányosság ez a DECISIONS.md bejegyzés volt (ugyanaz a szabály, amit a flotta ma már kétszer alkalmazott:
+197947ae, dac2e52b). A pre-triage "exported-symbol-untested" (SshDirGuardError, describeTestRunSignal)
+jelzése mindkét gate-tag szerint hamis pozitív: mindkét szimbólum VISELKEDÉS-szinten fedve van
+(`isSshDirGuardError()`, illetve a hibaüzenet-regex `/VITEST=|NODE_ENV=test/`), csak nem névszerint
+importálva a teszt-fájlba.
+
+**Ellenőrzés:** `tsc --noEmit` tiszta. Célzott suite (bridge-enroll, bridge-service-ports,
+enroll-seam-fail-closed, fork-upstream-conflict-guard, fork-upstream-drift-check, bridge-pairing-i18n):
+115/115 zöld, ugyanígy mérve saját magam, Cybersec és qa2 által is, mind a pontos f5faa36b Gate-SHA-n.
+Landoláskor a TELJES fleet-test.sh a merge eredményén: 814/814 test file, 18720/18821 teszt zöld (101
+skipped).
+
+**Ki döntött:** backend (a port + a chokepoint-minta megvalósítása), Cybersec GO-ja alapján (F1/F2
+LOW, nem blokkoló, follow-up), qa2 FAIL-je alapján (a jelen bejegyzés hiánya -- a kód maga nem
+változott ebben a körben). Gate: QA (qa2) + Cybersec (trust-boundary, authorized_keys fájlírás).
+
 ## 2026-09-25 -- 09d54e88 QA FAIL + korrekció: a konfliktus-marker-alapú módszertan hamis biztonságérzetet adott (backend3)
 
 **A hiba.** qa2 QA FAIL-t adott (komment 6736, Gate-SHA 37abcb87) a fenti bejegyzésre. A gyökér-ok
@@ -14908,3 +15070,141 @@ TOKENVAK915 (harmadik agent-discovery forrás) kódjavítása; a `/api/kanban/st
 megépítése; a live gyökér-CLAUDE.md 12->24 órás javítása (MikroB hatásköre).
 
 **Ki döntött:** backend3 (fájlonkénti döntés, mutációs anchor-ellenőrzés). Gate: QA.
+
+## 2026-09-25 -- f5536a70 (b5b7eb6b gyerek, 4/10, dashboard/src core -- memory/db/web belepesi pontok): 6/6 fajl dontve
+
+**A feladat:** a fork/upstream ujra-dontes teruleti bontasaban (MikroB dontese, msg 4123) a
+dashboard/src core modul 6 fajlja -- 2 fajl SENKI ALTAL NEM DONTOTT (uj dontes kellett), 4 fajl
+ELAVULT ELISMERES (a korabbi szabalyt ujra kellett dontenie a MOSTANI upstream tartalom ellen).
+
+**src/db.ts** (elavult elismeres, pin 13a46761 -> d66cf7ed): a konfliktus-pont (moveKanbanCard()
+komment-utkozes) 7. korban is erintetlen maradt. A recorded-vs-now blob kozotti 1200+ soros
+kulonbseg tulnyomo tobbsege mar korabban adoptalva volt a forkba a koztes korokben -- mintavetellel
+ellenorizve (searchMemories, updateMemory, getTokenPruneLag, stb. mind mar jelen vannak a fork
+sajat src/db.ts-eben). Nincs uj adopcios tetel a mar nyitott 6c6d471a-n tul. Dontes valtozatlan,
+pin frissitve.
+
+**src/web.ts** (elavult elismeres, pin 03bd955d -> b69c9dcb): az agent-scaffold import-sor unio-
+szabalya 7 uj nevvel bovult. Harom (ensureBashEgressDeny, ensureMemorySearchLabelSection,
+mainAgentConfigDirIfSeparate) mar jelen van a fork sajat fajljaban -- nem uj munka. Nyolc tetel
+(ensureProjectRootInClaudeMd/HOSTMOVE923, ensureBashEgressParser/EGRESSPARSER923,
+ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, tryHandleClaudePlans,
+tryHandleCustomProviders, startKanbanArchiveRunner, plusz egy dashboard-URL TTY-gating
+hitelesitoadat-hardening) valodi ADOPCIOS dontes, uj fajlokat/route-okat igenyel -- ezeket EGY uj
+kovetkezo-kartyan (965b0b2b) gyujtottem ossze, mert a korabbi "raised on card 6c6d471a" hivatkozas
+soha nem kapott tenyleges kanban-kartyat (ellenoriztem: nem letezik), es nem akartam ugyanazt a
+rest megismetelni.
+
+**src/__tests__/hook-registration-completeness.test.ts** (elavult elismeres, pin 78bead60 ->
+5c5f73f2): ez volt a legnagyobb valtozas. Upstream (TGSABLONHOOK921, 2026-09-21) a teljes
+mechanizmust ujrastrukturalta: a regi egykorpuszos "valahol regisztralva van-e" lint helyett
+SEEDING_SURFACES (minden jovobeli agens megkapja) vs CHECKOUT_SURFACES (csak a fo agens sajat
+.claude/settings.json-ja) szetvalasztas, plusz egy CHECKOUT_ONLY indoklas-lista es egy uj
+unseededCheckoutHooks() fuggveny. Ez egy MERT, valodi biztonsagi rest zar be: egy hook, ami csak
+a checkout sajat settings.json-jaban volt bedrotozva, regen zoldre allitotta a regi lintet, mikozben
+minden UJONNAN seedelt agens hook nelkul indult -- upstream sajat pelda: telegram-reply-directive.py
+ket kulon incidensben hianyzott (2026-09-11/12, majd egy 2026-09-14 image-csere utan). Ellenoriztem:
+EZ A FORK MEG A REGI, egykorpuszos alakot hasznalja -- ugyanaz a res itt is nyitva, meretlen. Az
+adoptalashoz a fork SAJAT CHECKOUT_ONLY listajat kell felepiteni (nem azonos upstreameval), ami
+valodi adopcios dontes -- uj kovetkezo-kartyan (e344e366, HIGH, mert biztonsag-relevans).
+
+**src/__tests__/notify-delivery-honesty.test.ts** (elavult elismeres, pin fbeb2e33 -> f84e69aa):
+a mar korabban (round 15) "nem adoptalhato onmagaban" jelzett CHATID0-orzo mellett upstream most
+egy uj resolver-fajlt is hoz (scripts/lib/owner-chat.sh) -- ugyanaz a funkcio, egy kartyan kell
+portolni a notify.sh orzojaval egyutt. Ellenoriztem: sem a CHATID0, sem a "notify.sh guard" kulcsszo
+alatt nem letezett meg follow-up kartya -- nyitottam egyet (3026a591, NORMAL).
+
+**src/memory.ts** (uj dontes): upstream torolte a buildMemoryContext() fuggvenyt (indoklas:
+sosem volt hivoja, nem olvasta az agent hot/warm/cold tier-eket, a regi chat_id-sema alapjan
+szurt). Fuggetlenul ellenoriztem: EBBEN a forkban is nulla production hivoja van (grep szerint
+csak a sajat deklaracioja es a sajat dedikalt tesztje, src/__tests__/memory-context-truncation.test.ts,
+hivatkozik ra). A kódminőségi elv 3 szerint (mar-letezo, a valtoztatasomtol fuggetlen holt kodot
+csak keresre torolni, nem onkent) EBBEN a korben NEM toroltem a fuggvenyt -- a dontes csak a
+KOVETKEZO valodi merge-re vonatkozo szabalyt rogziti: upstream torlesenek adoptalasa + a dedikalt
+teszt egyuttes visszavonasa, egy commitban, hogy ne maradjon meg meg arvabb allapotban a fuggveny.
+
+**src/channel-coordinator/ingest.ts** (uj dontes): tiszta komment-utkozes, kod-eltrees nulla.
+A fork sajat kommentje reszletesebb -- megnevezi a Cybersec NO-GO-t (kartya 7503bb31), ami az
+allowlist letezeset kikenyszeritette (POST /api/auth/device-keys elfogadja a megosztott dashboard
+tokent admin hitelesitesnek, tehat az out-of-band allowlist nelkul barki onmaganak minthetne
+device key-t). Upstream kommentje ugyanazt az invariansat mondja ki, a "miert" nelkul. Dontes:
+a fork teljesebb kommentjet tartjuk, kolstseg nelkul.
+
+**Uj kovetkezo-kartyak nyitva ebben a korben:**
+- e344e366 (HIGH): TGSABLONHOOK921 hook-seeding/checkout-surface split adoptalasa
+- 3026a591 (NORMAL): notify.sh CHATID0 guard + owner-chat.sh resolver egyutt
+- 965b0b2b (NORMAL): src/web.ts 8 uj kepesseg-adopcios dontese
+
+**Ellenorzes:** `tsc --noEmit` tiszta mindket edites-korben. fork-upstream-conflict-guard.test.ts +
+fork-upstream-drift-check.test.ts 57/57 zold (minden edites utan ujraellenorizve, a
+"minden rogzitett elutasitast horgony figyel" teszt is atment uj szoveg nelkuli uj horgony
+igeny nelkul).
+
+**Ki dontott:** backend (a 6 fajl felulvizsgalata + ACKNOWLEDGED_CONFLICTS/ACKNOWLEDGED_UPSTREAM_BLOBS
+frissitese + 3 kovetkezo-kartya nyitasa). Gate: QA + Cybersec (biztonsag-relevans terulet, MikroB
+eredeti kartya-kijelolese szerint).
+
+## 2026-09-25 -- f4cd1783 -- 11 külső skill per-ügynök vendorolása, a nem használt repók törlése
+
+**Kontextus.** Peti (Telegram 9268, 19:45): minden telepítetlen repót ellenőrizni és beépíteni,
+a skilleket ügynökhöz rendelni. Majd (Telegram 9276, 20:04): a be nem épített és a semmire nem
+jó repókat törölni. A `3f1bb23d` repó-felülvizsgálat alá tartozik.
+
+**Leltár.** A 12 klónozott, be nem kötött repóból 4 awesome-lista (nincs benne skill), 1 SDK,
+1 tutorial (CC-BY-SA), a superpowers mind a 15 skillje már megvolt `sp-*` néven, a mcp-builder
+és a webapp-testing már ügynökhöz volt rendelve. Új, hasznos jelölt 15 skill volt, két
+repóból: alirezarezvani/claude-skills (MIT) és anthropics/skills.
+
+**Cybersec audit (skill-security-auditor, a kártya komment-szálában).** 11 tétel GO, ebből 7
+korlátozással. A docx/pptx/xlsx/pdf NO-GO jogi jóváhagyásig: a LICENSE.txt proprietary, a
+meglévő anthropics-skills VENDORED.md "README-MIT" sora erre a négyre hamis. Követő kártya:
+`5d01f2ea` (jogász).
+
+**Döntés: per-ügynök vendorolás, nem globális.** A 11 skill 26 példányban, VALÓDI MÁSOLATKÉNT
+(nem symlink) a `claude-skills-alirezarezvani` klón rögzített `19392f7a` commitjáról, az ügynök
+saját `agents/<ügynök>/.claude/skills/` mappájába került. Indok: egy globális skill minden ügynök
+promptjában megjelenik (szállítói lánc-felület), a symlink pedig az `external/sync.sh` napi
+ff-pullja miatt auditálatlan jövőbeli tartalmat töltene be. Minden példányban VENDORED.md:
+forrás, commit, watch clone, hozzárendelt ügynök, kihagyott részek, és a Cybersec korlátozása
+szó szerint.
+- cybersec: env-secrets-manager (a `scripts/` KIHAGYVA: az env_auditor.py a talált titok értékét
+  kiírja, az 500f0e3c hibaosztály), dependency-auditor (nem egyedüli bizonyíték, mellé npm audit
+  vagy osv-scanner), secrets-vault-manager, soc2-audit-prep, iso27001-audit-prep
+- backend, backend2, backend3: secrets-vault-manager, stripe-integration-expert (CSAK
+  referencia: a mintakód kliens priceId-t allowlist nélkül fogad, és a webhook-idempotencia nem
+  atomi), feature-flags-architect, chaos-engineering (csak tervezés)
+- cybered: chaos-engineering (éles hibainjektálás csak Peti előzetes jóváhagyásával; Peti
+  2026-09-25 20:05 a skill hozzárendelését jóváhagyta, a korlátozást nem oldotta fel)
+- jogasz: gdpr-audit-prep, soc2-audit-prep, iso27001-audit-prep, ai-act-readiness (a Workflow
+  blokkok nem vendorolt scriptekre hivatkoznak, ezeket nem töltjük le)
+- fron-ted, fron-teddy, qa, qa2: a11y-audit
+A penzugy NEM kapta meg a stripe skillt (kódszintű anyag, Cybersec javaslata).
+
+**Integritás.** `store/vendored-skill-integrity.py`: mind a 26 példány tiszta. Az egyetlen delta
+(env-secrets-manager `missing:scripts/env_auditor.py`) tudatos, és a
+`store/vendored-skill-sanctioned.json`-ban EGYEDILEG szankcionálva, nem `--update`-tel.
+
+**Törlés (Peti 9276).** A `~/.claude/external/` alól 10 klón (awesome-claude-skills,
+claude-agent-sdk, superpowers, Skill_Seekers, claude-code-best-practice,
+awesome-claude-code-jqueryscript, awesome-agent-skills, claude-code-ultimate-guide,
+awesome-claude-code, awesome-harness-engineering), a `store/watched-repos.json`-ból 13 bejegyzés
+(a fentiek, plusz a korábban tudatosan kihagyott gstack, claude-mem, gauntlet-loop-duolahypercho
+és gauntlet-loop-robonuggets). Az `external/sync.sh` pull-listája a megmaradt háromra szűkült.
+A `sp-diagnosing-superpowers` volt az egyetlen skill, amely még symlinkként a superpowers-klónra
+mutatott: a törlés ELŐTT valódi másolattá alakítva. A saját `gauntlet-loop` skill marad (saját
+desztilláció, nem a törölt repóból vendorolva). Megmaradt 17 figyelt repó, mindegyik használatban.
+
+**graphify.** A pipx venv ép volt, csak a `~/.local/bin/graphify` és `graphify-mcp` symlinkek
+hiányoztak; visszaállítva. A land-szkriptek detached futtatják, ezért a hiány csendben maradt.
+
+**NEM git-tracked lépések.** Az `agents/` a `.gitignore` szerint ki van zárva, a `~/.claude/`
+nem git repó: a vendorolt példányok és a törlések nem termelnek diffet. Git-tracked csak a
+`store/watched-repos.json`, a `store/vendored-skill-sanctioned.json` és ez a bejegyzés.
+
+**loki-mode.** Peti 9276-ban jóváhagyta (BSL 1.1, belső eszközként megengedett). Külön kártya:
+`21d5a84c`, Cybersec auditra vár.
+
+**Gate:** Cybersec (az audit maga) + QA.
+
+**Ki döntött:** Peti (a kérés és a törlés), MikroB (a per-ügynök hozzárendelés és a
+korlátozások beépítése a Cybersec auditja alapján).

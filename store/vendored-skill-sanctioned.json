@@ -83,6 +83,9 @@
     ],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/taste-skill": [
       "changed:SKILL.md@f3695e82cc692e5bca86e9ec29080b62f39e038409054d5e27b985685212406b"
+    ],
+    "~/marveen/agents/cybersec/.claude/skills/env-secrets-manager": [
+      "missing:scripts/env_auditor.py"
     ]
   }
 }
