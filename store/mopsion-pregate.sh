@@ -250,8 +250,16 @@ if [ "$RUN_TESTS" -eq 1 ]; then
   else
     say "tests: breaks nothing"
   fi
+  # INH_T is an INTERSECTION (comm -12), not the base's own failure count. A branch that FIXES
+  # every failing test its base had produces INH_T=0 too -- the same 0 as a genuinely green base --
+  # so reading INH_T=0 as "the base is green" states something false whenever the base was red and
+  # this branch happens to fix all of it (card 7204cda9, base measured msg 1675/a1891e6b: 1 failure).
+  # BASE_T_COUNT is the base's OWN, independent failure count, so the three real states are told apart.
+  BASE_T_COUNT="$(wc -l < "$BASE_T")"
   if [ "$INH_T" -gt 0 ]; then
     say "tests: $INH_T failure(s) INHERITED from the base -- red before this branch existed"
+  elif [ "$BASE_T_COUNT" -gt 0 ]; then
+    say "tests: the base was red ($BASE_T_COUNT failure(s)), this branch FIXES all of it"
   else
     say "tests: nothing inherited either -- the base is green"
   fi
