@@ -1546,6 +1546,103 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // of the identical TMUXWINDOWATTR920 change with no functional side to weigh.
   'src/web/stuck-tool-call-watcher.ts':
     "KEEP the fork's tmuxBin() lazy resolver over upstream's eager resolveFromPath('tmux') -- same interim-vs-tmuxInvocationFor reasoning as agent-worker.ts's entry above, pending the agent-process.ts cutover. ADOPT (additive, no fork behaviour lost): upstream's tmuxStderr()-based logging in sampleMainClaudeCpuPercent's catch branch (piped stderr logged instead of silently swallowed, same TMUXWINDOWATTR920 pattern as agent-worker.ts) -- purely diagnostic, does not change the function's return value or the CPU-based wedge detection it feeds.",
+
+  // Card 14284837 (2026-09-25, backend2), fork/upstream re-decision, area "dashboard/src --
+  // tesztek 2/2" (parent b5b7eb6b). The 8 entries below were previously undecided.
+
+  // Both additions are pure test-content (a defensive config mock the fork's own
+  // agent-scaffold.ts->settings-store dynamic import already needs, per that file's own
+  // MCPOROKLES923 comment; and a new assertion), neither removes or contradicts anything
+  // fork-specific. Verified: taking the STORE_DIR mock addition leaves the other 10 tests in
+  // this file green. The SECOND addition (a new test asserting buildMemorySearchLabelBody's
+  // output warns about a raw-accented-byte silent-400) was NOT taken: it asserts on production
+  // body text (`toContain('400')`/`toContain('--data-urlencode')`) that agent-scaffold.ts's
+  // actual buildMemorySearchLabelBody does not produce -- measured red when tried. That half is
+  // a production-code addition, not a test-only decision; flagging for a follow-up card rather
+  // than porting it under this card's own scope.
+  'src/__tests__/memory-search-label-backfill.test.ts':
+    "ADOPT upstream's STORE_DIR mock addition to the '../config.js' vi.mock (needed: agent-scaffold.ts's settings-store dynamic import reads STORE_DIR at call time, verified by grep). Do NOT adopt upstream's new 'warns that a raw accented q is a silent 400' test -- measured RED against the fork's actual buildMemorySearchLabelBody (does not emit '400'/'--data-urlencode' text); that assertion depends on a production-side body-text change not made here. Follow-up card recommended for the production side if this fix is wanted.",
+
+  // Cosmetic-only: String(chunk) vs chunk.toString() are behaviourally identical for the
+  // Buffer/string chunks this test harness's fake `end()` ever receives. No fork content lost.
+  'src/__tests__/memory-search-tier-goes-into-the-query.test.ts':
+    "ADOPT upstream wholesale -- the only diff is String(chunk) -> chunk.toString(), a no-op stylistic change in test-harness code, verified green.",
+
+  // NOT a test-only decision. Upstream's MODELSUGGESTCACHE917 fix (renames the
+  // tokenAvgInputPerCall signal to contextAvgPerCall, adds CONTEXT_PER_CALL_HIGH/MEDIUM
+  // constants and a whole new web/model-suggest-signals.ts module) is a real, well-documented
+  // measured bug (uncached SUM(input_tokens) read as ~3 tokens/call against a true ~354K,
+  // silently advising downgrades) -- but NONE of that production surface exists in this fork
+  // yet: grep confirms src/web/model-suggest.ts still reads tokenAvgInputPerCall only, and
+  // src/web/model-suggest-signals.ts / src/__tests__/model-suggest-signals.test.ts do not exist
+  // here at all. Adopting the test wholesale would not compile (missing CONTEXT_PER_CALL_HIGH/
+  // MEDIUM exports, undefined contextAvgPerCall field). Separately, upstream's replacement of
+  // the "distribution default" test drops the fork's own locked invariant (card d041760b, Peti
+  // 2026-08-06): DISTRIBUTION_DEFAULT_AGENT_MODEL must equal DEFAULT_MODEL_CHAIN[0]
+  // ('claude-opus-5' on this fork, not upstream's 'claude-opus-5[1m]') so a quota-revert climbs
+  // back to the SAME model it demoted from -- that assertion must never be silently replaced by
+  // a bare literal expectation, regardless of this file's other content. KEEP fork wholesale;
+  // porting MODELSUGGESTCACHE917's production side is real, valuable work but out of scope for
+  // a test-file decision under this card -- follow-up card recommended.
+  'src/__tests__/model-suggest.test.ts':
+    "KEEP the fork's tokenAvgInputPerCall-based test file WHOLESALE. Upstream's MODELSUGGESTCACHE917 rename (contextAvgPerCall + CONTEXT_PER_CALL_HIGH/MEDIUM + new web/model-suggest-signals.ts module) is a real measured bug fix but has NO production-side counterpart in this fork yet (grep-verified) -- adopting the test would not compile. Also: upstream's version silently drops the fork's own DISTRIBUTION_DEFAULT_AGENT_MODEL===DEFAULT_MODEL_CHAIN[0] invariant (card d041760b, Peti 2026-08-06, 'claude-opus-5' not upstream's 'claude-opus-5[1m]') for a bare literal assertion -- must never be taken. Follow-up card recommended for porting MODELSUGGESTCACHE917's production side; only then does this test's adoption become a real option.",
+
+  // This test PINS the fork's actual, live .claude/settings.json content (19 PreToolUse
+  // entries confirmed via direct JSON read at decision time) -- and .claude/settings.json's OWN
+  // ACKNOWLEDGED_CONFLICTS entry (card c2aeefa5, 2026-09-25) already decided NONE of upstream's
+  // Slack/Discord multi-channel hook additions (slack_progress*.py, marveen-commands.py,
+  // memory-lookup-nudge.py, memory-frontmatter-gate.py, the PostToolUseFailure stage) are
+  // adopted on THIS fork (Telegram-only per root CLAUDE.md). Upstream's version of this test
+  // would therefore misdescribe the fork's actual settings.json. Upstream's diff also DROPS the
+  // entire "PreToolUse: exact (script, matcher) pairs" test (HookPair/preToolUsePairs/
+  // EXPECTED_PRETOOLUSE_PAIRS) -- fork-specific hardening from Cybersec's F1 finding (card
+  // c00d5429) that closes a real measured hole (a narrowed matcher or a matcher pointed at a
+  // nonexistent tool name both left the old "script set only" test green). Losing that test
+  // would silently reopen exactly the blind spot it was written to close.
+  'src/__tests__/project-settings-hook-anchor.test.ts':
+    "KEEP the fork's test file WHOLESALE -- it accurately pins the fork's live .claude/settings.json (verified: 19 PreToolUse entries match today, consistent with that file's own c2aeefa5 decision that upstream's multi-channel additions are NOT adopted here). Do NOT adopt upstream's version: it would misdescribe the actual settings.json AND drop the Cybersec F1 (script,matcher)-pair test (card c00d5429) that closes a real measured blind spot (a narrowed matcher or a matcher on a nonexistent tool name both left the old test green).",
+
+  // New file, no fork-side predecessor. Describes a real, well-documented incident (inter-agent
+  // messages to the main agent stayed pending because the router fired sendPromptToSession with
+  // waitForIdle:false at a BUSY main channels pane -- queued mid-turn, never triggers
+  // UserPromptSubmit, never drained, cooldown re-arms, burns turns with nothing delivered).
+  // Tried adopting verbatim: failed on a missing fork-specific db.js mock
+  // (getKanbanCardStateByIdPrefix -- this fork's runMessageRouterTick checks dispatch
+  // supersession before injecting, upstream's commit this test was ported from does not have
+  // that check). Added the missing mock (matching the sibling router-no-silent-reinject.test.ts
+  // file's own established pattern) and re-ran: the REAL substance surfaces there -- 2 of 3
+  // tests fail because the fork's actual src/web/message-router.ts still contains the bug
+  // (sendPromptToSession fires into the busy pane). This is genuine, unported PRODUCTION work on
+  // core message-routing infra, not a test-only decision, and not something to rush in the
+  // remaining runway of this card. NOT ADOPTED (file not created in this fork yet).
+  'src/__tests__/router-main-agent-wakeup.test.ts':
+    "NOT ADOPTED YET. Describes a real, measured router bug (main-agent wakeup loop drives a busy main channels pane via sendPromptToSession waitForIdle:false, never delivers, burns turns) that this fork's src/web/message-router.ts still has -- confirmed by actually running the ported test (with the fork's required getKanbanCardStateByIdPrefix mock added): 2 of 3 tests fail against the fork's real code. Porting the fix is genuine production work on core routing infra, out of scope for a rushed test-file decision -- follow-up card recommended to port the fix and then adopt this test.",
+
+  // Same shape as router-main-agent-wakeup.test.ts's reasoning: this file's diff replaces the
+  // fork's required db.js mock entries (getKanbanCardStateByIdPrefix for the supersession check,
+  // closeOtelSpanIfOpen for the dual-failure-path OTel close) with a shorter set plus a new
+  // getMessageStatus mock -- but src/db.ts has no getMessageStatus export at all (grep-verified),
+  // so upstream's version assumes an unported production capability (the router re-reading a
+  // row's status immediately before send). Adopting wholesale would silently drop the mocks this
+  // fork's own runMessageRouterTick still needs.
+  'src/__tests__/router-no-silent-reinject.test.ts':
+    "KEEP the fork's test file WHOLESALE -- upstream's version drops the fork-required getKanbanCardStateByIdPrefix/closeOtelSpanIfOpen db.js mocks (this fork's runMessageRouterTick still calls both) in favour of a getMessageStatus mock for a production function that does not exist here (grep-verified). The vi.fn() typed-generic-vs-untyped stylistic difference is not worth taking piecemeal.",
+
+  // Pure comment reformatting (line-wrap only) -- diffed byte-for-byte against the substance,
+  // zero functional change, verified green after taking upstream's wrapping wholesale.
+  'src/__tests__/token-prune-lag.test.ts':
+    "ADOPT upstream wholesale -- the diff is comment re-wrapping only (HBDBKUSZOB823 explanation reflowed to different line lengths), no functional change, verified green.",
+
+  // Upstream's diff REVERTS the fork's Cybersec-NO-GO-driven fix (card 7503bb31): it drops the
+  // "REJECTS a device key that is NOT on the allowlist" / "PASSES all guards on an ALLOWLISTED
+  // device key" / "an allowlist for a DIFFERENT device id still rejects this one" tests, and its
+  // final source-pin regex (`ctx.auth?.kind !== 'device'`) matches a guard shape that no longer
+  // checks isAllowedVoiceChannelDevice at all. Verified the fork's PRODUCTION code (routes/
+  // messages.ts line ~193-197) still enforces the allowlist via isAllowedVoiceChannelDevice --
+  // adopting upstream's test would silently drop coverage for a live, already-fixed security
+  // control and would not even describe the fork's actual guard expression.
+  'src/__tests__/voice-channel-hanna.test.ts':
+    "KEEP the fork's test file WHOLESALE -- upstream's version reverts the Cybersec-NO-GO-driven per-device allowlist fix (card 7503bb31: isAllowedVoiceChannelDevice), which the fork's production routes/messages.ts still enforces (grep-verified). Adopting upstream would drop real security-control coverage and would not match the fork's actual guard shape.",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -1821,6 +1918,16 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/agent-worker.ts': '5671caef73c3f2671e5e6631f25a18f6816c924b',
   'src/web/command-task.ts': '541cb2411303f4ace7f52d2a94fd08a3ebc52230',
   'src/web/stuck-tool-call-watcher.ts': '80f56ab7a9fa84b1f431db27a7eb240aa873e53c',
+  // Card 14284837 (backend2, 2026-09-25), fork/upstream re-decision, area "dashboard/src --
+  // tesztek 2/2" -- see the matching ACKNOWLEDGED_CONFLICTS entries above for the reasoning.
+  'src/__tests__/memory-search-label-backfill.test.ts': 'a24a1fdaff37b8b5a43ab0d1a71acb8feb932c20',
+  'src/__tests__/memory-search-tier-goes-into-the-query.test.ts': 'a72bb28deed866a7c9224f90583fc423990762ea',
+  'src/__tests__/model-suggest.test.ts': 'b0014b2840c6239182369492038e1ec6dda2fbb9',
+  'src/__tests__/project-settings-hook-anchor.test.ts': '79a8cf566a40c1bfce28083f2a0b68b28a36c6e6',
+  'src/__tests__/router-main-agent-wakeup.test.ts': '712ace38d04fddc564e4b8a416549af297be5ca9',
+  'src/__tests__/router-no-silent-reinject.test.ts': 'cc8b2834a0462164d0ee3fbcb0df995fe659406a',
+  'src/__tests__/token-prune-lag.test.ts': '2291117eb61bbc973d7796b45d0c1c481740e911',
+  'src/__tests__/voice-channel-hanna.test.ts': '5e9adcfaae491e754f87801f053eb0120af69042',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
@@ -1940,6 +2047,38 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "listRejectedAgentDirNames() has no upstream equivalent, so its disappearance can only mean " +
       "the filtering itself was silently dropped -- that is a security regression, not a merge to " +
       "wave through.",
+  },
+  // Card 14284837 (backend2, 2026-09-25): project-settings-hook-anchor.test.ts's entry above
+  // refuses upstream's simplified EXPECTED map -- keeping the fork's test means it keeps pinning
+  // the live .claude/settings.json, which still needs its 10 named security-guard PreToolUse
+  // entries (card c00d5429). Anchored on the PRODUCTION settings.json itself, not the test file,
+  // per the "anchor a production file, not a test that may declare its own copy" rule.
+  'src/__tests__/project-settings-hook-anchor.test.ts': {
+    needle: 'secret-write-guard.py',
+    file: '.claude/settings.json',
+    expect: 'present',
+    because:
+      "the fork's live .claude/settings.json carries 10 named PreToolUse security-guard " +
+      "entries (card c00d5429) that project-settings-hook-anchor.test.ts's EXPECTED map and " +
+      "(script,matcher)-pair test both pin. If secret-write-guard.py disappears from the actual " +
+      "settings.json, the refusal to adopt upstream's simplified EXPECTED map (and the dropped " +
+      "pair-test) needs re-deciding, not silent carry-forward.",
+  },
+  // Card 14284837 (backend2, 2026-09-25): router-main-agent-wakeup.test.ts's entry above records
+  // NOT ADOPTED because the fork's message-router.ts still has the bug the test would catch.
+  // MAIN_AGENT_WAKEUP_COOLDOWN_MS is the router's own cooldown constant driving the buggy
+  // sendPromptToSession(waitForIdle:false) call into a busy main channels pane -- its removal
+  // (the fix this test describes moves wakeups to the inbox-nudge-watcher instead) is the
+  // checkable signal that the bug is fixed and this test can be adopted.
+  'src/__tests__/router-main-agent-wakeup.test.ts': {
+    needle: 'const MAIN_AGENT_WAKEUP_COOLDOWN_MS',
+    file: 'src/web/message-router.ts',
+    expect: 'present',
+    because:
+      "router-main-agent-wakeup.test.ts (not adopted) was measured RED against the fork's real " +
+      "message-router.ts: it still drives a busy main channels pane via sendPromptToSession " +
+      "waitForIdle:false on this cooldown. If MAIN_AGENT_WAKEUP_COOLDOWN_MS disappears, the " +
+      "router-side fix likely landed and this test should be re-tried for adoption.",
   },
   // --- card 66ad1f95: anchors for the NOT-ADOPTED decisions ----------------------------------
   //

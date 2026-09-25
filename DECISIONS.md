@@ -15159,6 +15159,86 @@ igeny nelkul).
 frissitese + 3 kovetkezo-kartya nyitasa). Gate: QA + Cybersec (biztonsag-relevans terulet, MikroB
 eredeti kartya-kijelolese szerint).
 
+## 2026-09-25 -- 9163495b (b5b7eb6b gyerek, 6/10, dashboard/src -- agent-eletciklus: config/worker/scaffold/model): 8/8 fajl dontve
+
+**A feladat:** a fork/upstream ujra-dontes teruleti bontasaban (MikroB dontese, msg 4123) a
+dashboard/src agent-eletciklus modul 8 fajlja -- 5 fajl SENKI ALTAL NEM DONTOTT (uj dontes kellett),
+3 fajl ELAVULT ELISMERES (a korabbi szabalyt ujra kellett dontenie a MOSTANI upstream tartalom
+ellen).
+
+**src/web/active-model.ts** (uj dontes): KEEP a fork mert-async+bounded-tail+coalescing
+readActiveModelFromProjectDir/readContextTokensFromProjectDir (kartyak d3dc35bf, 9a2fd3f7) --
+upstream jelenlegi valtozata VISSZAALLITOTTA szinkronra (regresszio, GET /api/agents korabban
+3.8-7.4s stallt okozott). ADOPT additiv: encodeClaudeProjectDir (uj src/claude-project-dir.ts,
+pontossagi javitas) + readLastConversationTsFromProjectDir/readTranscriptMtimeAcrossConfigDirs
+(kartya GATEMTIME922).
+
+**src/web/agent-config.ts** (uj dontes): KEEP a fork fail-closed listAllAgentNames()+
+listRejectedAgentDirNames() (kartya 53c59307, Cybered lelet) -- upstream unfiltered valtozata
+regresszio. ADOPT additiv: sanitizeToolDenyList()/TOOL_DENY_* + uj
+readAgentCustomProvider/writeAgentCustomProvider. Biztonsag-kritikus, tenyleges kod-merge
+elhalasztva az F5 supervised cutoverre (kartya 5c134edf) -- ez a dontes rogzitese, nem maga a
+merge.
+
+**src/web/agent-worker.ts** (uj dontes): KEEP a fork tmuxBin() lazy resolver -- interim allapot
+az agent-process.ts F5 cutoverig. ADOPT additiv: tmuxStderr()-alapu logolas (TMUXWINDOWATTR920).
+
+**src/web/command-task.ts** (uj dontes): KEEP a fork async execFileAsync WHOLESALE -- ket mert
+incidens vedi (2026-08-07 dashboard self-deadlock szinkron spawnSync-kal; kartya 423b8274/Cybersec
+8304#2 process-group-kill). Upstream spawnSync mindket regressziot ujranyitna. ADOPT additiv:
+resolveCommandPlaceholders().
+
+**src/web/stuck-tool-call-watcher.ts** (uj dontes): KEEP tmuxBin() lazy resolver, ADOPT additiv
+tmuxStderr() logolas -- ugyanaz a mintazat mint agent-worker.ts.
+
+**src/web/agent-scaffold.ts** (elavult elismeres, pin c5dd9bc6 -> 01dbde76): ellenorizve, NULLA
+talalat a korabban eldontott szimbolumokon, biztonsagos bumpolni.
+
+**src/web/agent-process.ts** (elavult elismeres, pin SZANDEKOSAN NEM bumpolva): ujra-merve,
+VALODI mozgas talalva (resolveProviderEnv, uj LAUNCH_SECRETS_DIR_MODE/launchSecretRef mechanizmus,
+kartya LATENSKULCSARGV920) -- a korabban eldontott pontok (umask 002+agentTmuxTarget) meg mindig
+ervenyesek es elutasitottak.
+
+**src/web/context-guard-runner.ts** (elavult elismeres, pin SZANDEKOSAN NEM bumpolva): ujra-merve,
+VALODI mozgas talalva (configDirFor() athelyezve egy uj, meg nem ellenorzott
+main-transcript-root.js modulba).
+
+Uj ACKNOWLEDGED_FORK_ANCHORS bejegyzes (kartya 66ad1f95 tripwire-mechanizmus): 'src/web/agent-config.ts',
+needle 'export function listRejectedAgentDirNames', expect 'present' -- a
+fork-upstream-conflict-guard.test.ts "no refusal ships WITHOUT a tripwire" tesztje kotelezove tette
+(a listAllAgentNames refusal uj bejegyzese miatt), a szimbolum letezeset grep-pel ellenoriztem a
+fork sajat fajljaban dontes elott.
+
+Tenyleges kod-merge NEM keszult a 4 nagyobb/kockazatosabb fajlra (agent-config.ts, agent-worker.ts
+custom-provider fele, agent-process.ts, context-guard-runner.ts) -- szandekos dontes, ugyanazt a
+precedenst koveti amit ugyanez a fajl mar korabban lefektetett agent-scaffold.ts-re ("NOT safe to
+hand-merge under time pressure"): a tenyleges szinkron az F5 Peti-felugyelt cutoverre (kartya
+5c134edf) van halasztva, de a DONTES a kartya sajat deliverable-je szerint (ACKNOWLEDGED_CONFLICTS
++ blob-pin) teljes egeszeben rogzitve van.
+
+**Landolasi menet** (dokumentalva mert nem trivialis): a marveen-land.sh backend2 elso futasa
+utkozott a src/fork-upstream/acknowledged-conflicts.ts-en (parent b5b7eb6b osszes testver-kartyaja
+ugyanezt a megosztott fajlt szerkeszti). Az auto-union a scriptben csak DECISIONS.md/README.md-re
+megy, erre a fajlra nem -- kezzel oldottam fel UNIOVAL (a szulo-kartya sajat szabalya szerint, sose
+eldobva masik kartya bejegyzeset), majd a marveen-land.sh tobbi lepeset (seam-check mindket
+iranyban, npm-lockfile-sync-check, fleet-test.sh, conflict-marker-check, fork-verzio bump)
+egyenkent lefuttattam ugyanazokkal az eszkozokkel amiket a script maga hasznal. Push kozben meg
+ketszer utkoztem egy-egy tovabbi konkurrens landolassal (backend/f5536a70 -- a szulo egy masik
+testver-kartyaja, dashboard/src core memory/db/web terulet; majd mikrob/f4cd1783, nem erintette ezt
+a fajlt) -- mindket esetben ujra-fetch + merge + union-resolve, ujra-futtatott seam-check/tesztek/
+fleet-test.sh mielott vegul push-oltam. Vegso push-olt Gate-SHA: 831747cd.
+
+**Ellenorzes:** 3 celzott strukturalis teszt-fajl (fork-upstream-conflict-guard.test.ts,
+fork-upstream-drift-check.test.ts, runner-conflict-resolution-pins.test.ts) 69/69 zold, tsc
+--noEmit tiszta, mindket futasban a fleet-test.sh a merge eredmenyen (a `fleet-test.sh --ref
+<sha>` szerint, ketszer futtatva a ket egymast koveto merge-allapoton): 814/814 teszt-fajl zold,
+19524 teszt zold + 101 skip, lint-ratchet nem romlott (255 lelet, baseline tart).
+
+**Ki dontott:** backend2 (a 8 fajl felulvizsgalata + ACKNOWLEDGED_CONFLICTS/ACKNOWLEDGED_UPSTREAM_BLOBS/
+ACKNOWLEDGED_FORK_ANCHORS frissitese). Gate: QA + Cybersec (biztonsag-relevans terulet, MikroB
+eredeti kartya-kijelolese szerint). QA (qa2) elso kore FAIL-t adott a hianyzo bejegyzes miatt
+(kartya-komment 6893) -- ez a bejegyzes potolja azt, Cybersec mar GO-t adott (komment 6884).
+
 ## 2026-09-25 -- f4cd1783 -- 11 külső skill per-ügynök vendorolása, a nem használt repók törlése
 
 **Kontextus.** Peti (Telegram 9268, 19:45): minden telepítetlen repót ellenőrizni és beépíteni,
