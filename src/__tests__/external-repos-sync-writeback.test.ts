@@ -4,11 +4,18 @@
 // notes already in the file, all written by hand). The script now writes both fields itself, for
 // every repo it actually pulls, right after computing the real post-pull HEAD.
 //
-// Every test runs against a THROWAWAY bare-origin + clone pair under a real temp dir and a
-// throwaway watched-repos.json copy, never the live ~/.claude/external checkouts or the live
-// store/watched-repos.json -- the script accepts EXTERNAL_REPOS_DIR / WATCHED_REPOS_JSON
-// overrides for exactly this reason (mirrors the MARVEEN_MAIN/MARVEEN_WORKTREES override pattern
-// already used by store/agent-worktree-marveen.sh's own tests).
+// Card 197947ae: writing those fields directly into the TRACKED watched-repos.json left the
+// shared main clone's working tree dirty on every daily run (a routine 2-line diff nobody ever
+// committed, blocking marveen-land.sh's fast-forward). The write now goes to a separate,
+// gitignored state file (WATCHED_REPOS_STATE_JSON) instead -- the registry itself must come out
+// of every run byte-for-byte unchanged, and the sha/date land in the state file, keyed by name.
+//
+// Every test runs against a THROWAWAY bare-origin + clone pair under a real temp dir and
+// throwaway watched-repos.json / state-json copies, never the live ~/.claude/external checkouts
+// or the live store/watched-repos*.json -- the script accepts EXTERNAL_REPOS_DIR /
+// WATCHED_REPOS_JSON / WATCHED_REPOS_STATE_JSON overrides for exactly this reason (mirrors the
+// MARVEEN_MAIN/MARVEEN_WORKTREES override pattern already used by
+// store/agent-worktree-marveen.sh's own tests).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -31,6 +38,7 @@ function gitOk(repo: string, ...args: string[]): void {
 let dir: string
 let extDir: string
 let jsonPath: string
+let statePath: string
 let skillsDir: string
 
 beforeEach(() => {
@@ -38,6 +46,7 @@ beforeEach(() => {
   extDir = join(dir, 'external')
   mkdirSync(extDir, { recursive: true })
   jsonPath = join(dir, 'watched-repos.json')
+  statePath = join(dir, 'watched-repos-state.json')
   // Sandboxes step 2 (sp-* symlink relinking) and step 3 (skill-index.sh, which already respects
   // this same env var) so a test run never touches the real ~/.claude/skills or its live index.
   skillsDir = join(dir, 'skills')
@@ -53,6 +62,14 @@ function writeJson(entries: Array<Record<string, unknown>>): void {
 }
 function readJson(): Array<Record<string, unknown>> {
   return JSON.parse(readFileSync(jsonPath, 'utf-8')) as Array<Record<string, unknown>>
+}
+// The state file may legitimately not exist yet (nothing written back this run).
+function readState(): Record<string, { last_sha?: string; last_checked_at?: string }> {
+  try {
+    return JSON.parse(readFileSync(statePath, 'utf-8')) as Record<string, { last_sha?: string; last_checked_at?: string }>
+  } catch {
+    return {}
+  }
 }
 
 // Sets up upstream.git (bare) + a clone at $EXT/<name>, tracking it, with one initial commit.
@@ -84,28 +101,33 @@ async function runSync(): Promise<string> {
       ...process.env,
       EXTERNAL_REPOS_DIR: extDir,
       WATCHED_REPOS_JSON: jsonPath,
+      WATCHED_REPOS_STATE_JSON: statePath,
       SKILL_INDEX_GLOBAL_DIR: skillsDir,
     },
   })
   return stdout + stderr
 }
 
-describe('external-repos-sync.sh write-back (card 307abedd)', () => {
-  it('a REPO WITH NO CHANGE still refreshes last_checked_at; last_sha stays the same value', async () => {
+describe('external-repos-sync.sh write-back (card 307abedd, moved off the tracked registry by card 197947ae)', () => {
+  it('a REPO WITH NO CHANGE still refreshes last_checked_at in the STATE file; the tracked registry is untouched', async () => {
     const { clone } = setupRepo('awesome-claude-skills')
     const sha = git(clone, 'rev-parse', 'HEAD')
-    writeJson([{ name: 'awesome-claude-skills', last_sha: sha, last_checked_at: '2020-01-01' }])
+    const before = [{ name: 'awesome-claude-skills', last_sha: sha, last_checked_at: '2020-01-01' }]
+    writeJson(before)
 
     const out = await runSync()
     expect(out).toContain('current: awesome-claude-skills')
 
-    const [entry] = readJson()
-    expect(entry.last_sha).toBe(sha)
-    expect(entry.last_checked_at).not.toBe('2020-01-01')
-    expect(entry.last_checked_at).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    // The point of card 197947ae: the tracked file is byte-for-byte the same as before the run.
+    expect(readJson()).toEqual(before)
+
+    const state = readState()
+    expect(state['awesome-claude-skills']?.last_sha).toBe(sha)
+    expect(state['awesome-claude-skills']?.last_checked_at).not.toBe('2020-01-01')
+    expect(state['awesome-claude-skills']?.last_checked_at).toMatch(/^\d{4}-\d{2}-\d{2}$/)
   })
 
-  it('a FAST-FORWARD update writes the NEW HEAD sha and refreshes last_checked_at', async () => {
+  it('a FAST-FORWARD update writes the NEW HEAD sha to the STATE file, and leaves the tracked registry\'s stale value alone', async () => {
     const { upstream, clone } = setupRepo('claude-agent-sdk')
     const oldSha = git(clone, 'rev-parse', 'HEAD')
     // Advance upstream past the clone (a normal, honest new commit).
@@ -125,8 +147,12 @@ describe('external-repos-sync.sh write-back (card 307abedd)', () => {
     expect(out).toContain('updated: claude-agent-sdk')
 
     const [entry] = readJson()
-    expect(entry.last_sha).toBe(newSha)
-    expect(entry.last_checked_at).not.toBe('2020-01-01')
+    expect(entry.last_sha).toBe(oldSha) // tracked registry frozen, this is the point of the card
+    expect(entry.last_checked_at).toBe('2020-01-01')
+
+    const state = readState()
+    expect(state['claude-agent-sdk']?.last_sha).toBe(newSha)
+    expect(state['claude-agent-sdk']?.last_checked_at).not.toBe('2020-01-01')
   })
 
   it('a NON-FF upstream rewrite (honest history rewrite, no local edit) resets and writes the ACTUAL new HEAD, not the intended target', async () => {
@@ -150,11 +176,11 @@ describe('external-repos-sync.sh write-back (card 307abedd)', () => {
     const out = await runSync()
     expect(out).toContain('updated (non-ff, reset to')
 
-    const [entry] = readJson()
     // Written from a REAL rev-parse of the post-reset clone, not the string the log line names.
-    expect(entry.last_sha).toBe(rewrittenSha)
+    const state = readState()
+    expect(state['superpowers']?.last_sha).toBe(rewrittenSha)
     expect(git(clone, 'rev-parse', 'HEAD')).toBe(rewrittenSha)
-    expect(entry.last_checked_at).not.toBe('2020-01-01')
+    expect(state['superpowers']?.last_checked_at).not.toBe('2020-01-01')
   })
 
   it('a genuinely DIVERGED repo (local commit made to the "vendored" clone) refuses to reset and does NOT write back', async () => {
@@ -184,6 +210,7 @@ describe('external-repos-sync.sh write-back (card 307abedd)', () => {
     expect(entry.last_sha).toBe(localSha0)
     expect(entry.last_checked_at).toBe('2020-01-01')
     expect(git(clone, 'rev-parse', 'HEAD')).toBe(localSha)
+    expect(readState()['Skill_Seekers']).toBeUndefined()
   })
 
   it('a repo with no upstream tracking branch refuses and does NOT write back', async () => {
@@ -197,31 +224,32 @@ describe('external-repos-sync.sh write-back (card 307abedd)', () => {
 
     const [entry] = readJson()
     expect(entry.last_checked_at).toBe('2020-01-01')
+    expect(readState()['loki-mode']).toBeUndefined()
   })
 
-  it('leaves every OTHER field and every OTHER repo entry untouched (surgical write)', async () => {
+  it('leaves the tracked registry fully untouched and writes every repo into its own STATE entry (surgical write)', async () => {
     const { clone } = setupRepo('anthropics-skills')
     const sha = git(clone, 'rev-parse', 'HEAD')
-    writeJson([
+    const before = [
       { name: 'anthropics-skills', last_sha: sha, last_checked_at: '2020-01-01', note: 'do not touch me', enabled: true },
       { name: 'unrelated-repo', last_sha: 'deadbeef', last_checked_at: '2020-01-01' },
-    ])
+    ]
+    writeJson(before)
 
     await runSync()
 
-    const [a, b] = readJson()
-    expect(a.note).toBe('do not touch me')
-    expect(a.enabled).toBe(true)
-    expect(b.last_sha).toBe('deadbeef')
-    expect(b.last_checked_at).toBe('2020-01-01')
+    expect(readJson()).toEqual(before)
+    expect(readState()['anthropics-skills']?.last_sha).toBe(sha)
+    expect(readState()['unrelated-repo']).toBeUndefined() // never pulled, never touched
   })
 
-  it('a repo absent from watched-repos.json is silently skipped (no crash, no entry added)', async () => {
+  it('a repo absent from watched-repos.json is silently skipped (no crash, no state entry added)', async () => {
     setupRepo('claude-code-best-practice')
     writeJson([{ name: 'some-other-repo', last_sha: 'x', last_checked_at: '2020-01-01' }])
 
     const out = await runSync()
     expect(out).toContain('current: claude-code-best-practice')
     expect(readJson()).toHaveLength(1)
+    expect(readState()['claude-code-best-practice']).toBeUndefined()
   })
 })

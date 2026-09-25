@@ -49,6 +49,10 @@ Ingatlan/token*
 # a security-relevant correction (repomix pin 1.17.0 -> 1.18.0, card 435e5083) therefore existed only
 # on this disk: unversioned, unbacked-up, and a fresh checkout would have restored the stale pin.
 # Contains no secrets -- verified; the token/secret word matches in it are prose. Card 8338cf69.
+# "nothing writes it" above held until store/external-repos-sync.sh's write_back() (card 307abedd)
+# started mutating it on every daily sync, leaving the shared main clone dirty (card 197947ae). Its
+# post-pull last_sha/last_checked_at now go to store/watched-repos-state.json instead, which stays
+# under the blanket store/* rule (no !unignore) -- runtime state, same as quota-monitor-state.json.
 !store/watched-repos.json
 # Canonical, hand-maintained CONFIG (the shared session-limit phrase list, card 115c21e7), not
 # runtime state -- 6 scripts read it, nothing writes it. Same reasoning as watched-repos.json above:
