@@ -14824,3 +14824,87 @@ tiszta.
 
 **Ki döntött:** MikroB (kivizsgálás, root cause, kártya nyitása), backend3 (a javítás, a meglévő
 izolációs minta felismerése és kiterjesztése ahelyett, hogy fájlonként patchelt volna). Gate: QA.
+
+## 2026-09-25 -- b5b7eb6b gyerek 61817eb9 (3/10, docs/templates/skillek/CI)
+
+A `b5b7eb6b` Feladat-szülő 3/10 gyerekkártyája: 5 fájl, ahol korábban SENKI nem döntött
+(`ACKNOWLEDGED_CONFLICTS`-ban nem szerepeltek), plusz `README.md`, ahol a meglévő pin már
+pontosan a jelenlegi upstream-csúcsra mutatott (nem kellett új munka). A 09d54e88 QA FAIL-ből
+levont módszertan alkalmazva a kezdettől fogva: SOHA-nem-pin-elt fájlnál a valódi 3-way merge
+konfliktus-markerei a döntésre váró jel (a két-pontos diff a fork-HEAD ellenében a teljes
+történeti eltérést is hordozza, aminek nagy része harmless, nem-döntendő tartalom -- ellenőrizve
+a `templates/CLAUDE.md.template` és a `README.md` esetén konfliktus-marker-szám vs. nyers
+diff-sorszám kereszt-ellenőrzéssel).
+
+**Fájlonkénti döntés:**
+1. `.github/workflows/test.yml` -- KEEP a fork sora (`bash scripts/__tests__/ollama-boot-
+   restore.test.sh`). Upstream 9 új CI-lépést ad hozzá (egress-drift-scan, dash-audit-scan,
+   mio-orszem-precheck, memory-link-audit, keepalive-probe-install, morning-stamp-gate,
+   morning-timer-park, userbot-arming-gate, supabase-q-token-hiding), és mind a 9 olyan
+   szkriptre hivatkozik, ami SEHOL nem létezik ebben a forkban (ellenőrizve: `find
+   scripts/__tests__` minden névre, nulla találat). Upstream egészben-vétele azonnal
+   eltörné a CI-t. Mindegyik feature-adoptálási kérdés, nem CI-drótozási döntés.
+2. `docs/telegram-progress-indicator.md` -- ADOPT upstream teljes egészében (mindkét hunk:
+   a provider-gate magyarázat + a `retire-progress-watchdog.sh` parancs a nyers launchctl/
+   systemctl helyett) -- párosítva a `scripts/install-telegram-progress-hook.sh` már
+   korábban (09d54e88 1/10) ADOPT-olt döntésével: a kód oldal már átvette a provider-gate +
+   `retire_provider()` mechanizmust, a doksinak ezt kell tükröznie.
+3. `docs/token-usage.md` -- SEM oldal szó szerint, mert mindkettő elavult a TÉNYLEGES kódhoz
+   képest (`src/db.ts:1427`, `src/web/token-usage.ts:332-339` közvetlenül ellenőrizve): az
+   `agent` mező már kikerült a unique index kulcsából (kártya b774f057, landolva), az INSERT
+   már `ON CONFLICT...DO UPDATE`-tel tölti a `model`/`thinking_tokens` mezőt NULL esetén --
+   pontosan amit upstream hunkja leír, csak upstream szövege még `agent`-et is a kulcs
+   részének mondja. A fork saját szövege még elavultabb ("still planned and blocked").
+   Egyik hunk sem vehető át változtatás nélkül -- a doksi-pontosítás e kártya hatókörén
+   kívül esik, jelezve, nem itt megírva. Külön flag: a `src/web/token-usage.ts` saját
+   34-40. sorbeli kommentje ugyanezt az elavultságot hordozza (forráskód-komment javítás,
+   szintén jelezve). Adoptálásra érdemes, EZEN a kártyán kívüli follow-up: TOKENVAK915 --
+   upstream harmadik agent-discovery forrása (a fő ágens saját izolált config-gyökere)
+   hiányzik innen, ami miatt annak token-sorai csendben eltűnhetnek a dashboardról.
+4. `seed-scheduled-tasks/kanban-audit/SKILL.md` -- KEEP a fork inline-python kliens-oldali
+   számolása mindkét hunkra (archiválási-jelölt szám, stuck/waiting detekció). Upstream
+   egy dedikált `/api/kanban/stuck?planned_days=N&active_days=N` szerver-végpontot hívna --
+   ellenőrizve, ilyen route SEHOL nem létezik (`src/web/routes/kanban.ts`), a doksi
+   átvétele egy 404-et curl-özne. Valódi, jó ötlet (szerver-oldali, újrafelhasználható,
+   önjelentő számok) -- külön kártyát érdemel (új végpont + skill-átírás), itt nem döntve.
+5. `templates/CLAUDE.md.template` -- KEEP a fork `-H @"$hdr_file"` piped-header curl
+   mintája a négy memória/kanban parancs-példában -- upstream cserélje nyers
+   `-H "Authorization: Bearer $(cat ...)"` argv-alakra ugyanaz a token-in-argv sebezhetőségi
+   osztály, amit a fork máshol (watchdog.sh, install-prod-tree-guard-hook.sh, b267df80)
+   elutasított. Ez egy TEMPLATE, ami minden friss telepítés saját CLAUDE.md-jébe renderelődik
+   -- upstream alakjának átvétele minden új ügynököt a bizonytalan mintára tanítana.
+   **KÖZBEN, ugyanebben a körben, upstream ÚJRA lépett** (MAILWINDOW24, commit 61b98a38,
+   `d1b08abd1a896ab4533b13da24762f747c13454d`): egy teljesen független hunk (a reggeli
+   napindító "Utasítások" blokkja, nem a curl-idióma). ADOPTOLVA szó szerint: (1) az email
+   keresési ablak 12 óráról 24 órára nő, mert a szeedelt ütemezett feladat 07:30-kor fut,
+   egy 12 órás ablak 19:30-kor nyílna az előző este, és a teljes előző munkanap levelezése
+   csendben kimaradna az EMAIL szekcióból; (2) egy új mondat kimondja, hogy a feladó/tárgy
+   HARMADIK FÉLTŐL jövő adat, idézendő, nem követendő -- prompt-injekció elleni védelem,
+   szigorúan additív. Nulla átfedés a curl-idióma döntéssel (más sortartomány, a commit
+   saját egy-hunkos diffje igazolja). **KÜLÖN, JELZETT LELET, ITT NEM JAVÍTVA** (e doksi-
+   template-kártya hatókörén kívül): a fork TÉNYLEGES ÉLŐ gyökér-CLAUDE.md-je (nem ez a
+   repo-beli template, hanem a telepített fájl, amiből MikroB ténylegesen dolgozik) MÉG
+   MINDIG "elmúlt 12 órából"-t mond a saját Reggeli napindító szekciójában -- ugyanaz a
+   hiba, amit upstream most javított a template-ben, javítatlan abban a fájlban, amiből
+   MikroB naponta ténylegesen dolgozik. MikroB-nek jelezve, nem itt szerkesztve (a live
+   gyökér-CLAUDE.md nem ennek a kártyának a git-diffje).
+6. `README.md` -- a meglévő pin (`27eccf3fd2869e59360e3a7e3230546ecd61b4c3`) ellenőrizve
+   pontosan a jelenlegi upstream-csúcsra mutat, nincs új munka.
+
+**Anchor:** `ACKNOWLEDGED_FORK_ANCHORS['.github/workflows/test.yml']` (needle:
+`egress-drift-scan.test.py`, expect: `absent`) -- mutáció-tesztelve: a needle-t ideiglenesen
+beszúrva a valódi `.github/workflows/test.yml`-be, a `fork-upstream-conflict-guard.test.ts`
+1/36 esete PONTOSAN erre az anchorra bukott (a többi 35 zöld maradt), majd visszaállítva
+`git checkout --`-vel, üres diff igazolva.
+
+**Zöld:** `fork-upstream-drift-check.test.ts` 21/21, `fork-upstream-conflict-guard.test.ts`
+36/36 (az új anchorral együtt), `tsc --noEmit` tiszta. Élő `fork-upstream-drift-watch.mjs
+--report` újrafuttatva `npm run build` után: mind az 5 újonnan eldöntött fájl LEKERÜLT a
+"NOBODY HAS DECIDED" listáról, a README.md sem jelenik meg (a pin változatlanul él).
+
+**Mi NEM történt itt:** a tényleges upstream-kód-merge (ez csak a JÖVŐBELI merge döntését
+rögzíti, nem hajtja végre most); a `docs/token-usage.md` doksi-pontosítás megírása;
+TOKENVAK915 (harmadik agent-discovery forrás) kódjavítása; a `/api/kanban/stuck` végpont
+megépítése; a live gyökér-CLAUDE.md 12->24 órás javítása (MikroB hatásköre).
+
+**Ki döntött:** backend3 (fájlonkénti döntés, mutációs anchor-ellenőrzés). Gate: QA.
