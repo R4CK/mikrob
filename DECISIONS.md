@@ -14773,3 +14773,54 @@ pinnelt) fájlnál ez a kockázat kisebb, de nem nulla, ha a fájl NAGY és a ko
 
 **Ki döntött:** qa2 (a hiba felfedezése), backend3 (a korrekció). Delta-gate következik (QA + Cybersec)
 az új Gate-SHA-n.
+
+## 2026-09-25 -- 6b1020ff: GPU/VRAM-érzékeny tesztek izolálása (a b5b7eb6b-landolást blokkoló hiba)
+
+**A tünet.** A 09d54e88 delta-fix landolása HÁROMSZOR egymás után bukott a `fleet-test.sh`-n, mindháromszor
+más-más, de GPU/VRAM-témába klaszterezett teszteken. MikroB kivizsgálta: a Windows host (WSL alatt fut ez
+a gép) ~5,3-5,4/6,1 GiB VRAM-ot foglal MOST, ami a flottától FÜGGETLEN, ismeretlen ideig tartó terhelés
+(nincs ollama-folyamat WSL-ben). A gyökér-ok: több teszt a VALÓDI `nvidia-smi`-t olvassa egy meglévő,
+külön erre szánt teszt-seamen (`*_VRAM_GUARD` env-override) keresztül, amit nem állítottak be.
+
+**A pontos mechanizmus, fájlonként ellenőrizve, valódi (nem szimulált) HOLD-állapotra kényszerítve
+(`vram-guard-state.json` ideiglenes felülírása `{"tier":"hard",...}`-ra, majd visszaállítva -- a
+gitignore-olt runtime-fájl, nem trackelt tartalom):**
+- `route-classify.sh` a modell-hurok ELŐTT, a HÍVÓ (teszt) fake-LLM szkriptjétől FÜGGETLENÜL hívja a
+  `vram-guard-check.sh`-t (`ROUTE_CLASSIFY_VRAM_GUARD` override), és HOLD esetén UNKNOWN-ra rövidre zár,
+  mielőtt a teszt saját fake válasza egyáltalán megszólalna.
+- `local-llm.sh` `generate` módja a SAJÁT VRAM-torokponttal (kártya 234306ca, ez a session korábbi
+  munkája) ugyanígy, a flock-logika ELŐTT fut le (`LOCAL_LLM_VRAM_GUARD`).
+- A torokpont SZÁNDÉKOSAN ujrahasznosítja a 6-os kilépőkódot (flock-timeout konvenció) -- ez azt
+  jelenti, hogy egy teszt, ami kifejezetten "6 = flock-ütközés, kizárólag" állítást bizonyít
+  (`local-llm-sh-gpu-abstain.test.ts` CONTROL esete), VALÓS host-VRAM-terhelés alatt HAMISAN bukhat
+  (vagy akár hamisan ZÖLD is lehetne, ha a véletlen a helyes kódot adná ki a rossz okból).
+
+**A javítás helye -- NEM fájlonként, hanem EGYSZER, globálisan.** A `src/__tests__/setup/
+isolate-local-llm-state.ts` MÁR pontosan ezt a mintát követi KÉT MÁS tengelyen (STATE_DIR, GPU_LOCK_PATH),
+és a fájl SAJÁT kommentje kifejezetten leírja, miért NEM fájlonkénti patch a helyes válasz: "commit
+da76583c két fájlt javított egyesével -- ez NEM tartott, mérve: négy suite MÉG MINDIG a valódi lock-ot
+vette." Pontosan ugyanez a minta ismétlődött volna a VRAM tengelyen is, ha fájlonként patchelek (amit
+ELŐSZÖR meg is tettem 3 fájlon, majd VISSZAVONTAM, amikor rájöttem, hogy ez a MEGLÉVŐ mechanizmus
+kiterjesztése, nem új). A hat dispatcher (`card-build-route.sh`, `gate-pretriage.sh`, `i18n-draft.sh`,
+`local-llm.sh`, `local-llm-rag.sh`, `offload-dispatch.sh`) + `route-classify.sh` mind saját env-override
+nevet használ ugyanarra a mintára (`*_VRAM_GUARD="${OVERRIDE:-$HERE/vram-guard-check.sh}"`) -- mind a
+hetet egyetlen, worker-enkénti setup-ban egy közös, LÉTEZŐ ÚTVONALRA NEM MUTATÓ elérési útra állítottam,
+ami a szkriptek SAJÁT `[ -f "$VRAM_GUARD" ]` ellenőrzésén át a "nincs telepítve guard" (dokumentált,
+meglévő) ágra fut, nem egy tesztekre kitalált új kódútra.
+
+**Kivétel, dokumentálva:** a `local-llm-vram-choke-point.test.ts` (a torokpontot MAGÁT tesztelő, ebben a
+sessionben korábban írt fájl) a SAJÁT gyerek-env-jében állítja be `LOCAL_LLM_VRAM_GUARD`-ot egy valódi
+fake guardra -- ez felülírja az öröklött, globális értéket (a spread-sorrend miatt), tehát nem ütközik.
+
+**Mutációs bizonyíték, VALÓDI kényszerített HOLD-állapottal (nem várakozás a live host véletlenszerű
+ingadozására, ami korábban egy próbálkozást inkonkluzívvá tett):** a globális felülírás kikapcsolásával
+9/13 teszt bukik PONTOSAN a MikroB által jelentett tünetekkel megegyező alakban (route-classify
+"UNKNOWN" helyett "MECHANICAL"-t várva, a gpu-abstain CONTROL 6-ot ad 5 helyett). Visszaállítva 17/17
+zöld (4 érintett fájl együtt futtatva).
+
+**Zöld:** a 4 közvetlenül érintett teszt-fájl (17 teszt) + a `local-llm-vram-choke-point.test.ts` saját
+négy esete, mind zöld a MÉG MINDIG magas (kb. 83-86%) valódi host-VRAM-terhelés mellett. `tsc --noEmit`
+tiszta.
+
+**Ki döntött:** MikroB (kivizsgálás, root cause, kártya nyitása), backend3 (a javítás, a meglévő
+izolációs minta felismerése és kiterjesztése ahelyett, hogy fájlonként patchelt volna). Gate: QA.
