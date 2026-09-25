@@ -152,7 +152,7 @@ MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
 LOCK_PREFIX="${CLEANCORE_SUITE_LOCK_PREFIX:-$MAIN/store/.cleancore-suite-slot}"
 API="${CLEANCORE_SUITE_API:-http://localhost:3420}"
 
-usage() { echo "usage: mopsion-suite-run.sh <agent> [-- <vitest args>]" >&2; exit 2; }
+usage() { echo "usage: mopsion-suite-run.sh [--worktree <path>] <agent> [-- <vitest args>]" >&2; exit 2; }
 
 # A LOCK DIRECTORY WE CANNOT WRITE MUST SAY SO. Without this, acquire() simply fails to create each
 # slot file, returns "no slot", and the run queues for the full two hours before giving up -- an
@@ -163,6 +163,18 @@ LOCK_DIR="$(dirname "$LOCK_PREFIX")"
 if [ ! -d "$LOCK_DIR" ] || [ ! -w "$LOCK_DIR" ]; then
   echo "mopsion-suite-run: lock directory '$LOCK_DIR' is missing or not writable -- refusing to run rather than silently queueing. Set MARVEEN_MAIN, or CLEANCORE_SUITE_LOCK_PREFIX." >&2
   exit 2
+fi
+# --worktree <path> (card 08eb6402): a caller that already checked out a SPECIFIC commit (not an
+# agent's own branch tip) points this here instead of resolving via agent-worktree.sh -- the
+# two-phase prepare/suite/land design needs to suite-test an exact prepared merge commit, which is
+# never any agent's own worktree HEAD. <agent> is still required, purely as the label the evidence
+# record and the best-effort kanban comment attribute the run to.
+WORKTREE_OVERRIDE=""
+if [ "${1:-}" = "--worktree" ]; then
+  shift
+  WORKTREE_OVERRIDE="${1:-}"
+  [ -n "$WORKTREE_OVERRIDE" ] || usage
+  shift
 fi
 AGENT="${1:-}"; [ -n "$AGENT" ] || usage
 shift || true
@@ -316,10 +328,18 @@ if [ "$announced" -eq 1 ]; then
 Kaptam suite-slotot $(( ( $(date +%s) - started ) / 60 )) perc varakozas utan (slot ${SLOT}/${SLOTS}), a teljes suite most indul."
 fi
 
-WT="$(bash "$HERE/agent-worktree.sh" "$AGENT" --path 2>/dev/null)"
-if [ -z "$WT" ] || [ ! -d "$WT" ]; then
-  echo "mopsion-suite-run: no CleanCore worktree for '$AGENT' (agent-worktree.sh --path gave nothing)" >&2
-  exit 3
+if [ -n "$WORKTREE_OVERRIDE" ]; then
+  WT="$WORKTREE_OVERRIDE"
+  if [ ! -d "$WT" ]; then
+    echo "mopsion-suite-run: --worktree '$WT' does not exist" >&2
+    exit 3
+  fi
+else
+  WT="$(bash "$HERE/agent-worktree.sh" "$AGENT" --path 2>/dev/null)"
+  if [ -z "$WT" ] || [ ! -d "$WT" ]; then
+    echo "mopsion-suite-run: no CleanCore worktree for '$AGENT' (agent-worktree.sh --path gave nothing)" >&2
+    exit 3
+  fi
 fi
 
 echo "mopsion-suite-run: slot ${SLOT}/${SLOTS}, running in $WT" >&2
@@ -509,4 +529,20 @@ if grep -q "No test files found" "$e2e_log"; then
 fi
 
 [ "$status" -eq 0 ] && status="$e2e_status"
+
+# MACHINE-WRITTEN EVIDENCE (card 08eb6402, MikroB plan-grilling verdict 6011/3736): this is a FULL
+# suite run (both projects), so it is exactly the shape a landing's Suite-SHA-equivalent check needs
+# -- record it, keyed by the merge/branch tip's OWN tree hash, not the sha (a rebase/reword changes
+# the sha without changing what was tested; two commits with the same tree hash are byte-identical
+# in every tracked file, so no per-file diff heuristic is needed on the reading side either).
+# Never touches $status: a broken recorder must not turn a real suite result into a script failure.
+EVIDENCE_SHA="$(git -C "$WT" rev-parse HEAD 2>/dev/null)"
+EVIDENCE_TREE="$(git -C "$WT" rev-parse HEAD^{tree} 2>/dev/null)"
+if [ -n "$EVIDENCE_SHA" ] && [ -n "$EVIDENCE_TREE" ]; then
+  python3 "$HERE/suite-evidence-record.py" record \
+    --sha "$EVIDENCE_SHA" --tree "$EVIDENCE_TREE" --agent "$AGENT" \
+    --main-log "$run_log" --main-status "$status" \
+    --e2e-log "$e2e_log" --e2e-status "$e2e_status" >&2 || true
+fi
+
 exit "$status"

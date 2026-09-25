@@ -34,22 +34,9 @@
 #    for the measurement behind that, and store/landing-cherry-pick-vs-branch-merge.md for the
 #    cherry-pick recipe when it fires.
 #
-#  * SUITE-SHA EVIDENCE ON THE MERGE RESULT (card 08eb6402). Every check above runs on the merge
-#    result too, but none of them is a full test suite -- 777f69b1 (2026-09-12) landed 55/56 on a
-#    file origin/main held 56/56 on, a green-baseline/red-branch case this script's own tsc-delta/
-#    seam/format checks cannot see, because they are not the suite. Running the ~70-minute full
-#    suite inline here was rejected (MikroB, comment 5934): it would serialise every landing
-#    against the 2-slot semaphore (rule 17). So a gate that already ran the full suite on the sha
-#    it reviewed records `Suite-SHA: <sha> <result>` on its verdict (rule 4b's sibling), and this
-#    script asks store/suite-sha-check.py whether that evidence is still content-equivalent to the
-#    MERGE RESULT about to be pushed -- a git diff, not a suite run. See
-#    store/landing-suite-sha-check.sh for the full rationale and store/suite-sha-check.py for the
-#    comparison itself.
-#
 # Usage:  mopsion-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck]
 #                                                [--skip-bundle]
 #                                                [--allow-ungated]
-#                                                [--allow-stale-suite]
 #                                                [--allow-stacked <cardId>[,<cardId>...]]
 #         mopsion-land.sh --selftest
 # Env:    LANDING_DOWNWARD_CHECK=off  disables the downward range check entirely.
@@ -84,8 +71,6 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # opposite ends of the landing, and that asymmetry is documented in the helper's own header.
 # shellcheck source=./landing-gate-verdict-check.sh
 . "$(dirname "$0")/landing-gate-verdict-check.sh"
-# shellcheck source=./landing-suite-sha-check.sh
-. "$(dirname "$0")/landing-suite-sha-check.sh"
 # find_conflict_markers (card 4b4c89eb): shared with marveen-land.sh, same reason as above.
 # shellcheck source=./conflict-marker-check.sh
 . "$(dirname "$0")/conflict-marker-check.sh"
@@ -334,21 +319,20 @@ if [ "${1:-}" = "--selftest" ]; then
 fi
 
 CARD="${1:-}"; SHA="${2:-}"; shift 2 2>/dev/null
-[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: mopsion-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck] [--skip-bundle] [--allow-ungated] [--allow-stale-suite] [--allow-stacked <cardId>[,<cardId>...]]" >&2; exit 2; }
-DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0; ALLOW_STACKED=""; ALLOW_UNGATED=0; ALLOW_STALE_SUITE=0
+[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: mopsion-land.sh <cardId> <gated-sha> [--dry-run] [--prepare-only] [--allow-main-loss] [--skip-typecheck] [--skip-bundle] [--allow-ungated] [--allow-stacked <cardId>[,<cardId>...]]" >&2; exit 2; }
+DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0; ALLOW_STACKED=""; ALLOW_UNGATED=0; PREPARE_ONLY=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY="--dry-run" ;;
+    # card 08eb6402: build + fast-check the merge, keep it alive on a card-named branch ref, print
+    # PREPARED|<sha>|<tree>, never push, never run the full suite. See the call site's own comment.
+    --prepare-only) PREPARE_ONLY=1 ;;
     --allow-main-loss) ALLOW_MAIN_LOSS=1 ;;
     --skip-typecheck) SKIP_TSC=1 ;;
     --skip-bundle) SKIP_BUNDLE=1 ;;
     # Says the ungated landing OUT LOUD instead of leaving it implied, which is the whole
     # difference from the 08dcc153 incident. Never overrides a FAILING verdict.
     --allow-ungated) ALLOW_UNGATED=1 ;;
-    # Same shape, one door over (card 08eb6402): tolerates MISSING/UNRESOLVED Suite-SHA evidence,
-    # never a STALE one -- see store/landing-suite-sha-check.sh for why STALE is the confirmed-drift
-    # case and stays unconditional.
-    --allow-stale-suite) ALLOW_STALE_SUITE=1 ;;
     # Deliberately NOT a --force: the operator has to NAME the foreign cards they are taking on
     # purpose (card dfff9b37, trap 4). A blanket override would be reached for reflexively and the
     # guard would stop meaning anything.
@@ -735,24 +719,63 @@ else
   fi
 fi
 
-# SUITE-SHA EVIDENCE CHECK (card 08eb6402), against the ACTUAL MERGE RESULT -- this is why it runs
-# here and not alongside the gate-verdict check at the top: the merge result does not exist until
-# now. Runs even on a --dry-run, so a dry landing reports what would happen instead of only
-# checking the cheaper preconditions.
-MERGE_HEAD="$(git -C "$WT" rev-parse HEAD)"
-suite_sha_check "$CARD" "$MERGE_HEAD" refuse
-suite_rc=$?
-if [ "$suite_rc" -eq 2 ]; then
-  echo "  suite-sha-check: STALE evidence is never overridden -- --allow-stale-suite does not apply here" >&2
+# PREPARE-ONLY (card 08eb6402, MikroB plan-grilling verdict 6011): stop here, having built and
+# fast-checked (seam/tsc/format) the merge commit, WITHOUT running the full suite and WITHOUT
+# pushing. store/mopsion-preland.sh calls this to get a validated merge commit it can then
+# suite-test on its own schedule (background, after gate verdicts, well before an actual landing
+# attempt) -- the two-phase design point 1 asks for, so a 70-minute suite never sits inside the
+# landing window itself. The commit is kept alive via a card-named branch ref (worktree removal on
+# EXIT would otherwise leave it unreachable and eligible for GC); the branch is a local ref only,
+# never pushed.
+if [ "$PREPARE_ONLY" -eq 1 ]; then
+  PREP_SHA="$(git -C "$WT" rev-parse HEAD)"
+  PREP_TREE="$(git -C "$WT" rev-parse HEAD^{tree})"
+  git -C "$MAIN" update-ref "refs/heads/land-prepare/$CARD" "$PREP_SHA"
+  echo "PREPARED|$PREP_SHA|$PREP_TREE"
   rm -f "${MERGE_ERR:-}" 2>/dev/null
-  exit 3
-elif [ "$suite_rc" -ne 0 ]; then
-  if [ "$ALLOW_STALE_SUITE" -eq 1 ]; then
-    echo "  suite-sha-check: no usable evidence, TOLERATED by --allow-stale-suite -- this landing is deliberately ungated on the full suite"
-  else
-    rm -f "${MERGE_ERR:-}" 2>/dev/null
-    exit 3
-  fi
+  exit 0
+fi
+
+# SUITE-SHA EVIDENCE, off/warn/enforce (card 08eb6402, MikroB plan-grilling verdict 6011/3748).
+# Reads whether store/mopsion-preland.sh already suite-tested a tree IDENTICAL to this merge
+# result -- never runs the suite here, never diffs file contents, just a tree-hash lookup, so this
+# costs one subprocess call, not 70 minutes. Mode file (store/mopsion-suite-evidence-mode.json,
+# {"mode": "off"|"warn"|"enforce"}) defaults to "warn" when absent or unreadable -- MikroB's own
+# explicit default (msg 3736 point 3), and the switch to "enforce" is HIS decision after measuring
+# the warn-phase gap rate, never automatic in this script.
+SELF_DIR="$(dirname "$0")"
+EVIDENCE_MODE_FILE="${MOPSION_SUITE_EVIDENCE_MODE_FILE:-$SELF_DIR/mopsion-suite-evidence-mode.json}"
+EVIDENCE_MODE="$(python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        m = json.load(f).get('mode', 'warn')
+except Exception:
+    m = 'warn'
+print(m if m in ('off', 'warn', 'enforce') else 'warn')
+" "$EVIDENCE_MODE_FILE" 2>/dev/null || echo warn)"
+
+if [ "$EVIDENCE_MODE" != "off" ]; then
+  MERGE_TREE_FOR_EVIDENCE="$(git -C "$WT" rev-parse HEAD^{tree})"
+  EVIDENCE_RESULT="$(python3 "$SELF_DIR/suite-evidence-record.py" lookup --tree "$MERGE_TREE_FOR_EVIDENCE" 2>/dev/null)"
+  case "$EVIDENCE_RESULT" in
+    PRESENT\|*) say "suite-evidence: PRESENT for this exact merge tree -- $(printf '%s' "$EVIDENCE_RESULT" | cut -d'|' -f3)" ;;
+    *)
+      WARN_LOG="${MOPSION_SUITE_EVIDENCE_WARN_LOG:-$SELF_DIR/mopsion-suite-evidence-mode.log}"
+      GAP_LINE="$(date -u +%FT%TZ)|$CARD|$MERGE_TREE_FOR_EVIDENCE|${EVIDENCE_RESULT:-MISSING}"
+      if [ "$EVIDENCE_MODE" = "enforce" ]; then
+        echo "REFUSED: no full-suite evidence covers this merge's tree ($EVIDENCE_RESULT). Run" >&2
+        echo "         store/mopsion-preland.sh $CARD $SHA first (or --pending), then re-land." >&2
+        printf '%s\n' "$GAP_LINE" >> "$WARN_LOG" 2>/dev/null || true
+        rm -f "${MERGE_ERR:-}" 2>/dev/null
+        exit 3
+      fi
+      # warn mode: never blocks, but the gap is logged so MikroB can measure it before enforcing.
+      say "suite-evidence: WARN -- no evidence covers this merge's tree ($EVIDENCE_RESULT); would" \
+          "REFUSE in enforce mode. Proceeding because mode=warn."
+      printf '%s\n' "$GAP_LINE" >> "$WARN_LOG" 2>/dev/null || true
+      ;;
+  esac
 fi
 
 if [ "$DRY" = "--dry-run" ]; then say "DRY-RUN: not pushing"; rm -f "${MERGE_ERR:-}" 2>/dev/null; exit 0; fi
