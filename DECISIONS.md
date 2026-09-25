@@ -13737,3 +13737,55 @@ nem kert funkcio, plusz uj titok-kockazat), es a `claude` CLI sajat mechanizmusa
 nekunk kellene epiteni/karbantartani a masik fajlra.
 
 **Ki dontott:** backend (self-advance, 6b. szabaly szerinti 2-napos regi kartya elsobbsege).
+
+## 2026-09-25 -- 08eb6402 -- mopsion-land.sh megköveteli a Suite-SHA bizonyítékot landolás előtt
+
+**Döntés.** `mopsion-land.sh` a push előtt megkérdezi, van-e a kártyán `Suite-SHA: <sha> <eredmény>`
+sort hordozó verdikt-komment, aminek tartalma (nem sha-egyenlősége) még mindig egyezik a MERGE
+EREDMÉNNYEL, amit pusholni készül. Hiányzó bizonyíték (MISSING) vagy fel nem oldható eset
+(UNRESOLVED) `--allow-stale-suite`-tel tolerálható; egy VALÓBAN eltérő tartalom (STALE -- a fa
+bizonyíthatóan túllépett azon, amit a suite tesztelt) semmilyen kapcsolóval nem hagyható jóvá,
+ugyanaz a viszony, mint a `--allow-ungated` és egy BUKOTT gate-verdikt között.
+
+**Miért (777f69b1 incidens, 2026-09-12, kártya ac24bf98).** `mopsion-land.sh` forrásban nulla
+vitest/suite-run hívást tartalmaz (csak tsc-delta + seam + format), tehát egy célzott tesztekre adott
+QA PASS-t sosem különböztetett meg egy teljes-suite PASS-tól. 777f69b1 55/56-ot landolt egy fájlon,
+amin origin/main közvetlenül előtte 56/56 volt zöld -- tankönyvi zöld-bázis/piros-ág eset, amit
+semmilyen meglévő ellenőrzés nem kapott el (backend2 mérése, kártya 6eed8678).
+
+**A teljes suite-ot a script SOSEM futtatja újra (MikroB kikötése, ~70 perc, 2-slot szemafor, 17.
+szabály)** -- a megoldás bizonyíték-alapú, nem futtatás-alapú: egy gate, ami a saját review-ja alatt
+lefuttatta a teljes suite-ot a review-zott (MERGE ELŐTTI) shán, ezt egy `Suite-SHA:` sorral rögzíti.
+A landoló ezt a bizonyítékot a TÉNYLEGES merge-eredményhez veti össze tartalom szerint (git diff, nem
+suite-futás) -- ha a merge tiszta volt (semmi a suite által lefedett fájlok közül nem mozdult azóta),
+a bizonyíték érvényes marad. Ez a válasz arra, hogyan ér el a bizonyíték a merge-sháig anélkül, hogy
+minden landolás 70 percet várna.
+
+**Suite-szkript manipuláció (MikroB kikötése 2) ingyen lefedve**: mivel az összevetés TELJES
+tartalom-diff (nem zárja ki a teszt-/szkript-fájlokat), egy ág, ami a `mopsion-suite-run.sh`-t, a
+vitest configot, vagy egy tesztet gyengít a bizonyítékolt sha és a merge-eredmény között, valódi
+(nem-zaj) eltérésként jelenik meg és REFUSED lesz -- nem kell a marveen-land.sh-hoz hasonló, drágább
+kettős-futtatásos önvédelem.
+
+**Újrahasznosítás, nem új heurisztika.** `store/suite-sha-check.py` a `gate-closure-check.py` MÁR
+LÉTEZŐ, 557 kártyán bizonyított tartalom-egyezés gépezetét (`_content_on_branch`, a
+`_SHARED_CHURN`-tolerancia, a kétrepós `_clone_and_ref_holding` felbontó) hívja meg, nem egy
+második, önállóan sodródó szabályrendszert épít. `store/landing-suite-sha-check.sh` a
+`landing-gate-verdict-check.sh` melletti, azonos alakú shell-wrapper (`refuse`/`report` mód,
+`0`/`1`/`2` return-kód ugyanazzal a jelentéssel: PRESENT/hiányzó-vagy-felold-hatatlan/megerősített-eltérés).
+
+**Hátra-kompatibilitás.** A kényszerítés csak az ÚJ landolásokra vonatkozik a bevezetéstől kezdve;
+egy már `done` kártyát nem próbál visszamenőleg újra-ellenőrizni.
+
+**A legvalószínűbb bukási mód, kimondva (plan-grilling, kártya 08eb6402 komment 6013).** A gate-ek
+(QA/Cybersec/Cybered) MA MÉG nem írnak `Suite-SHA:` sort -- ez az ő verdikt-konvenciójuk/promptjuk
+frissítése, nem ez a script, és amíg meg nem történik, MINDEN landolás MISSING-re fut és REFUSED lesz
+(fail-closed, ahogy kérve volt). Élő ellenőrzés egy valódi kártyán (6eed8678) és a mopsion
+origin/main jelenlegi fején ezt meg is erősítette: MISSING. MikroB-nek jelezve külön (üzenet 3735) a
+landolás előtti éles bekapcsolás előtt.
+
+**Zöld:** `suite-sha-check.selftest.py` 10/10, `landing-suite-sha-check.selftest.sh` 9/9, valódi
+git-tartalom-fixture-ökön (nem szimulált diff). `bash -n mopsion-land.sh` tiszta.
+
+**Ki döntött:** backend3 (BE build, MikroB döntése + kötelező kiegészítései alapján, plan-grilling
+kötelező előtte, rule 1b).

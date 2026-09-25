@@ -34,9 +34,22 @@
 #    for the measurement behind that, and store/landing-cherry-pick-vs-branch-merge.md for the
 #    cherry-pick recipe when it fires.
 #
+#  * SUITE-SHA EVIDENCE ON THE MERGE RESULT (card 08eb6402). Every check above runs on the merge
+#    result too, but none of them is a full test suite -- 777f69b1 (2026-09-12) landed 55/56 on a
+#    file origin/main held 56/56 on, a green-baseline/red-branch case this script's own tsc-delta/
+#    seam/format checks cannot see, because they are not the suite. Running the ~70-minute full
+#    suite inline here was rejected (MikroB, comment 5934): it would serialise every landing
+#    against the 2-slot semaphore (rule 17). So a gate that already ran the full suite on the sha
+#    it reviewed records `Suite-SHA: <sha> <result>` on its verdict (rule 4b's sibling), and this
+#    script asks store/suite-sha-check.py whether that evidence is still content-equivalent to the
+#    MERGE RESULT about to be pushed -- a git diff, not a suite run. See
+#    store/landing-suite-sha-check.sh for the full rationale and store/suite-sha-check.py for the
+#    comparison itself.
+#
 # Usage:  mopsion-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck]
 #                                                [--skip-bundle]
 #                                                [--allow-ungated]
+#                                                [--allow-stale-suite]
 #                                                [--allow-stacked <cardId>[,<cardId>...]]
 #         mopsion-land.sh --selftest
 # Env:    LANDING_DOWNWARD_CHECK=off  disables the downward range check entirely.
@@ -71,6 +84,8 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # opposite ends of the landing, and that asymmetry is documented in the helper's own header.
 # shellcheck source=./landing-gate-verdict-check.sh
 . "$(dirname "$0")/landing-gate-verdict-check.sh"
+# shellcheck source=./landing-suite-sha-check.sh
+. "$(dirname "$0")/landing-suite-sha-check.sh"
 # find_conflict_markers (card 4b4c89eb): shared with marveen-land.sh, same reason as above.
 # shellcheck source=./conflict-marker-check.sh
 . "$(dirname "$0")/conflict-marker-check.sh"
@@ -319,8 +334,8 @@ if [ "${1:-}" = "--selftest" ]; then
 fi
 
 CARD="${1:-}"; SHA="${2:-}"; shift 2 2>/dev/null
-[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: mopsion-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck] [--skip-bundle] [--allow-ungated] [--allow-stacked <cardId>[,<cardId>...]]" >&2; exit 2; }
-DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0; ALLOW_STACKED=""; ALLOW_UNGATED=0
+[ -n "$CARD" ] && [ -n "$SHA" ] || { echo "usage: mopsion-land.sh <cardId> <gated-sha> [--dry-run] [--allow-main-loss] [--skip-typecheck] [--skip-bundle] [--allow-ungated] [--allow-stale-suite] [--allow-stacked <cardId>[,<cardId>...]]" >&2; exit 2; }
+DRY=""; ALLOW_MAIN_LOSS=0; SKIP_TSC=0; ALLOW_STACKED=""; ALLOW_UNGATED=0; ALLOW_STALE_SUITE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY="--dry-run" ;;
@@ -330,6 +345,10 @@ while [ $# -gt 0 ]; do
     # Says the ungated landing OUT LOUD instead of leaving it implied, which is the whole
     # difference from the 08dcc153 incident. Never overrides a FAILING verdict.
     --allow-ungated) ALLOW_UNGATED=1 ;;
+    # Same shape, one door over (card 08eb6402): tolerates MISSING/UNRESOLVED Suite-SHA evidence,
+    # never a STALE one -- see store/landing-suite-sha-check.sh for why STALE is the confirmed-drift
+    # case and stays unconditional.
+    --allow-stale-suite) ALLOW_STALE_SUITE=1 ;;
     # Deliberately NOT a --force: the operator has to NAME the foreign cards they are taking on
     # purpose (card dfff9b37, trap 4). A blanket override would be reached for reflexively and the
     # guard would stop meaning anything.
@@ -713,6 +732,26 @@ else
       exit 4
     fi
     say "format: the merge result is Prettier-clean ($(printf '%s\n' "$FMT_FILES" | wc -l) file(s) checked)"
+  fi
+fi
+
+# SUITE-SHA EVIDENCE CHECK (card 08eb6402), against the ACTUAL MERGE RESULT -- this is why it runs
+# here and not alongside the gate-verdict check at the top: the merge result does not exist until
+# now. Runs even on a --dry-run, so a dry landing reports what would happen instead of only
+# checking the cheaper preconditions.
+MERGE_HEAD="$(git -C "$WT" rev-parse HEAD)"
+suite_sha_check "$CARD" "$MERGE_HEAD" refuse
+suite_rc=$?
+if [ "$suite_rc" -eq 2 ]; then
+  echo "  suite-sha-check: STALE evidence is never overridden -- --allow-stale-suite does not apply here" >&2
+  rm -f "${MERGE_ERR:-}" 2>/dev/null
+  exit 3
+elif [ "$suite_rc" -ne 0 ]; then
+  if [ "$ALLOW_STALE_SUITE" -eq 1 ]; then
+    echo "  suite-sha-check: no usable evidence, TOLERATED by --allow-stale-suite -- this landing is deliberately ungated on the full suite"
+  else
+    rm -f "${MERGE_ERR:-}" 2>/dev/null
+    exit 3
   fi
 fi
 
