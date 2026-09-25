@@ -61,6 +61,11 @@ beforeEach(() => {
   writeFileSync(join(main, 'f.txt'), 'hello\n')
   mkdirSync(join(main, 'node_modules'))
   writeFileSync(join(main, 'node_modules', 'marker.txt'), 'x\n')
+  // Card 24d1543f: marveen-land.sh's develop-landing lock defaults under $MAIN/store/, mirroring
+  // where cleancore-suite-run.sh anchors its own semaphore. The real repo always has store/; this
+  // throwaway clone would not without this, and the lock's own loud missing-directory refusal
+  // would then fail every land_one call in this entire file.
+  mkdirSync(join(main, 'store'), { recursive: true })
   gitOk(main, 'add', 'f.txt', 'shared.txt')
   gitOk(main, 'commit', '-q', '-m', 'init')
   gitOk(main, 'push', '-q', '-u', 'origin', 'develop')
@@ -567,6 +572,65 @@ describe('marveen-land.sh (card dc185b52)', () => {
       const r = await runLand(['backend'], writeStub(0))
       expect(r.status).toBe(0)
       expect(r.out).toContain('no merge-conflict markers in the merge result')
+    }, LAND_TIMEOUT_MS)
+  })
+
+  // Card 24d1543f: only one land_one body (merge through push) may run at a time, machine-wide --
+  // two SEPARATE marveen-land.sh invocations, not just two branches inside one --all sweep, which is
+  // the incident's actual shape (two --all sweeps plus 3 per-agent landings running together).
+  // Nested here to reuse commitInWorktree's closure.
+  describe('one landing at a time, machine-wide (card 24d1543f)', () => {
+    function writeSlowStub(seconds: number): string {
+      const p = join(dir, `stub-slow-${seconds}.sh`)
+      writeFileSync(p, `#!/usr/bin/env bash\nsleep ${seconds}\nexit 0\n`)
+      chmodSync(p, 0o755)
+      return p
+    }
+
+    it('THE LOCK: a second, separate marveen-land.sh call queues behind a slow one instead of racing it', async () => {
+      await commitInWorktree('backend', { 'backend-new.txt': 'x\n' })
+      await commitInWorktree('fullstack', { 'fullstack-new.txt': 'y\n' })
+
+      const lockEnv = {
+        MARVEEN_LAND_DEVELOP_LOCK_FILE: join(dir, 'land-develop.lock'),
+        MARVEEN_LAND_DEVELOP_LOCK_POLL_S: '1',
+      }
+      // 3s is generous headroom over the 1s poll interval and this suite's own I/O jitter --
+      // the point is only that 'backend' is still inside its verify step when 'fullstack' starts.
+      const slow = runLand(['backend'], writeSlowStub(3), lockEnv)
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      const fast = runLand(['fullstack'], writeStub(0), lockEnv)
+
+      const [slowResult, fastResult] = await Promise.all([slow, fast])
+      expect(slowResult.status, slowResult.out).toBe(0)
+      expect(fastResult.status, fastResult.out).toBe(0)
+      expect(slowResult.out).toContain('LANDED')
+      expect(fastResult.out).toContain('LANDED')
+      // The one that started first never had to wait for anyone.
+      expect(slowResult.out).not.toContain('another landing holds the develop lock')
+      // The one that started second queued -- the whole point of the card -- and it landed WITHOUT
+      // a push-race retry, because it only started its own merge after the lock (and a fresh fetch)
+      // was its own: the race the retry mechanism exists to recover from never happened at all.
+      expect(fastResult.out).toContain('another landing holds the develop lock')
+      expect(fastResult.out).not.toContain('lost the push race')
+      expect(fastResult.out).not.toContain('PUSH FAILED')
+
+      gitOk(main, 'fetch', '-q', 'origin', 'develop')
+      const files = git(main, 'ls-tree', '-r', '--name-only', 'origin/develop')
+      expect(files.split('\n')).toContain('backend-new.txt')
+      expect(files.split('\n')).toContain('fullstack-new.txt')
+    }, LAND_TIMEOUT_MS)
+
+    it('MUTATION-PROOF: with the lock directory missing, land_one refuses loudly instead of queueing forever', async () => {
+      // Same LOUD-refusal shape as cleancore-suite-run.sh's own LOCK_DIR check: a lock file that
+      // can never be created must not look identical to "someone else is landing".
+      await commitInWorktree('backend', { 'backend-new.txt': 'x\n' })
+      const r = await runLand(['backend'], writeStub(0), {
+        MARVEEN_LAND_DEVELOP_LOCK_FILE: join(dir, 'no-such-dir', 'nested', 'land-develop.lock'),
+      })
+      expect(r.status).toBe(3)
+      expect(r.out).toContain('landing lock directory')
+      expect(r.out).not.toContain('LANDED')
     }, LAND_TIMEOUT_MS)
   })
 })
