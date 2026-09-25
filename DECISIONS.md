@@ -14228,3 +14228,31 @@ javítva: a sync-tesztek `AGENT_SKILL_DRIFT_TEST_SESSIONS=""`-t kényszerítenek
 parkolt-állapotra, a futó-ügynök-specifikus teszt külön, explicit session-névvel fut.
 
 **Ki döntött:** backend (self-advance, rule 6b -- 2 napnál régebbi kártya, MikroB diagnózisa alapján).
+
+## 2026-09-25 15:16 -- Skill drift-sync hianyzo-skill masolas: F1 stopgap, karanten-megkerules bezarasa (kartya 85521c7e)
+
+Cybersec GO-hoz mellekelt lelet az a6abb230-on: a `store/agent-skill-drift-sync.sh` hianyzo-skill
+aga (a6abb230-ban epult) egy testver ELO, gitignore-olt `.claude/skills/<nev>` konyveraboltat
+masolta forraskent, nem a kovetett `seed-fleet-agents/<klon>/.claude/skills/<nev>` seedet. Merve
+elesben: egy skill, ami sem gitben, sem seedben nem szerepelt (curl|sh-t kero install-utasitassal es
+a mappabol KIFELE mutato symlinkkel), egy `--apply` heartbeat-futas alatt KET testver-agensbe is
+atmasolodott -- ez teljesen megkerulte a CLAUDE.md skill-karanten szabalyat (uj skill csak reviewelt
+forrasbol, sose vak elo-masolatbol).
+
+**F1 (AZONNAL, ez a commit):** a hianyzo-skill masolo ag (`MISSING_SYNC_APPLY_ENABLED` flag) MOST
+mindig dry-run-kent fut, `--apply` mellett is -- csak riportal, semmit nem masol. A stale-szinkron
+(a script eredeti, elso ellenorzese) valtozatlan, tovabbra is `--apply`-val fut a 6 orankenti
+heartbeaten. A PART 6 selftest ennek megfeleloen frissult: az --apply-teszt most azt bizonyitja hogy
+NEM ir semmit, es a futo-agent-skip kodag (jelenleg elerhetetlen, amig a flag 0) teszteje egyelore
+torolve egy magyarazo kommenttel -- visszakerul F2-vel egyutt.
+
+**F2 (kovetkezo commit, ugyanezen a kartyan):** a forras `seed-fleet-agents/<klon>` legyen (a
+kovetett, reviewelt masolat), a csak-elo-testverben letezo skillrol RIPORT keszuljon (nem masolat),
+es a masolo logika soha ne kovessen ki symlinket a skill-mappabol.
+
+F2 LOW resze (taste-skill VENDORED.md/licenc hianya + a `vendored-skill-integrity.py` hatokor-
+bovitese a seed-fleet-agents-re) egyutt landol F2-vel.
+
+**Ki döntött:** backend, MikroB explicit utasitasara (inter-agent uzenet, Cybersec lelet
+relay-elve), rule 4a (gate-verdiktre azonnal reagalni) szellemeben -- egy elo, mukodo
+karanten-megkerules azonnali lezarast igenyel, nem varhat a teljes F2 megepitesere.
