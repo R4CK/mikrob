@@ -23,10 +23,15 @@ vi.mock('../platform.js', async (importOriginal) => {
       // test file's dynamic imports, so a flag read here would freeze at whatever value it had
       // during the FIRST test to import the module -- exactly the bug this comment exists to
       // prevent a future edit from reintroducing.
-      const real = actual.makeLazyBinResolver('claude')
+      // The resolvable branch returns an inert binary, never the real `claude`. The spawn below
+      // runs through the SHARED tmux server, whose environment carries the main agent's
+      // TELEGRAM_STATE_DIR, from a checkout whose project settings enable the telegram plugin.
+      // A real `claude -p` there started its own poller, which SIGTERMs the main agent's poller
+      // through bot.pid: every fleet-test run knocked MikroB off Telegram (53 restarts on
+      // 2026-09-25). This test only needs the resolver to succeed, not a real CLI.
       return () => {
         if (claudeResolveState.shouldThrow) throw new Error('claude: command not found (PATH gap simulated for this test)')
-        return real()
+        return '/bin/true'
       }
     },
   }
