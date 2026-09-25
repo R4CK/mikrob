@@ -14870,3 +14870,68 @@ skipped).
 **Ki döntött:** backend (a port + a chokepoint-minta megvalósítása), Cybersec GO-ja alapján (F1/F2
 LOW, nem blokkoló, follow-up), qa2 FAIL-je alapján (a jelen bejegyzés hiánya -- a kód maga nem
 változott ebben a körben). Gate: QA (qa2) + Cybersec (trust-boundary, authorized_keys fájlírás).
+
+## 2026-09-25 -- f4cd1783 -- 11 külső skill per-ügynök vendorolása, a nem használt repók törlése
+
+**Kontextus.** Peti (Telegram 9268, 19:45): minden telepítetlen repót ellenőrizni és beépíteni,
+a skilleket ügynökhöz rendelni. Majd (Telegram 9276, 20:04): a be nem épített és a semmire nem
+jó repókat törölni. A `3f1bb23d` repó-felülvizsgálat alá tartozik.
+
+**Leltár.** A 12 klónozott, be nem kötött repóból 4 awesome-lista (nincs benne skill), 1 SDK,
+1 tutorial (CC-BY-SA), a superpowers mind a 15 skillje már megvolt `sp-*` néven, a mcp-builder
+és a webapp-testing már ügynökhöz volt rendelve. Új, hasznos jelölt 15 skill volt, két
+repóból: alirezarezvani/claude-skills (MIT) és anthropics/skills.
+
+**Cybersec audit (skill-security-auditor, a kártya komment-szálában).** 11 tétel GO, ebből 7
+korlátozással. A docx/pptx/xlsx/pdf NO-GO jogi jóváhagyásig: a LICENSE.txt proprietary, a
+meglévő anthropics-skills VENDORED.md "README-MIT" sora erre a négyre hamis. Követő kártya:
+`5d01f2ea` (jogász).
+
+**Döntés: per-ügynök vendorolás, nem globális.** A 11 skill 26 példányban, VALÓDI MÁSOLATKÉNT
+(nem symlink) a `claude-skills-alirezarezvani` klón rögzített `19392f7a` commitjáról, az ügynök
+saját `agents/<ügynök>/.claude/skills/` mappájába került. Indok: egy globális skill minden ügynök
+promptjában megjelenik (szállítói lánc-felület), a symlink pedig az `external/sync.sh` napi
+ff-pullja miatt auditálatlan jövőbeli tartalmat töltene be. Minden példányban VENDORED.md:
+forrás, commit, watch clone, hozzárendelt ügynök, kihagyott részek, és a Cybersec korlátozása
+szó szerint.
+- cybersec: env-secrets-manager (a `scripts/` KIHAGYVA: az env_auditor.py a talált titok értékét
+  kiírja, az 500f0e3c hibaosztály), dependency-auditor (nem egyedüli bizonyíték, mellé npm audit
+  vagy osv-scanner), secrets-vault-manager, soc2-audit-prep, iso27001-audit-prep
+- backend, backend2, backend3: secrets-vault-manager, stripe-integration-expert (CSAK
+  referencia: a mintakód kliens priceId-t allowlist nélkül fogad, és a webhook-idempotencia nem
+  atomi), feature-flags-architect, chaos-engineering (csak tervezés)
+- cybered: chaos-engineering (éles hibainjektálás csak Peti előzetes jóváhagyásával; Peti
+  2026-09-25 20:05 a skill hozzárendelését jóváhagyta, a korlátozást nem oldotta fel)
+- jogasz: gdpr-audit-prep, soc2-audit-prep, iso27001-audit-prep, ai-act-readiness (a Workflow
+  blokkok nem vendorolt scriptekre hivatkoznak, ezeket nem töltjük le)
+- fron-ted, fron-teddy, qa, qa2: a11y-audit
+A penzugy NEM kapta meg a stripe skillt (kódszintű anyag, Cybersec javaslata).
+
+**Integritás.** `store/vendored-skill-integrity.py`: mind a 26 példány tiszta. Az egyetlen delta
+(env-secrets-manager `missing:scripts/env_auditor.py`) tudatos, és a
+`store/vendored-skill-sanctioned.json`-ban EGYEDILEG szankcionálva, nem `--update`-tel.
+
+**Törlés (Peti 9276).** A `~/.claude/external/` alól 10 klón (awesome-claude-skills,
+claude-agent-sdk, superpowers, Skill_Seekers, claude-code-best-practice,
+awesome-claude-code-jqueryscript, awesome-agent-skills, claude-code-ultimate-guide,
+awesome-claude-code, awesome-harness-engineering), a `store/watched-repos.json`-ból 13 bejegyzés
+(a fentiek, plusz a korábban tudatosan kihagyott gstack, claude-mem, gauntlet-loop-duolahypercho
+és gauntlet-loop-robonuggets). Az `external/sync.sh` pull-listája a megmaradt háromra szűkült.
+A `sp-diagnosing-superpowers` volt az egyetlen skill, amely még symlinkként a superpowers-klónra
+mutatott: a törlés ELŐTT valódi másolattá alakítva. A saját `gauntlet-loop` skill marad (saját
+desztilláció, nem a törölt repóból vendorolva). Megmaradt 17 figyelt repó, mindegyik használatban.
+
+**graphify.** A pipx venv ép volt, csak a `~/.local/bin/graphify` és `graphify-mcp` symlinkek
+hiányoztak; visszaállítva. A land-szkriptek detached futtatják, ezért a hiány csendben maradt.
+
+**NEM git-tracked lépések.** Az `agents/` a `.gitignore` szerint ki van zárva, a `~/.claude/`
+nem git repó: a vendorolt példányok és a törlések nem termelnek diffet. Git-tracked csak a
+`store/watched-repos.json`, a `store/vendored-skill-sanctioned.json` és ez a bejegyzés.
+
+**loki-mode.** Peti 9276-ban jóváhagyta (BSL 1.1, belső eszközként megengedett). Külön kártya:
+`21d5a84c`, Cybersec auditra vár.
+
+**Gate:** Cybersec (az audit maga) + QA.
+
+**Ki döntött:** Peti (a kérés és a törlés), MikroB (a per-ügynök hozzárendelés és a
+korlátozások beépítése a Cybersec auditja alapján).
