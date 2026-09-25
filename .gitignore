@@ -164,6 +164,12 @@ DREAM.md
 REBUILD_PROMPT_V3.1.md
 .lang
 
+# Red-team skill scratch output (findings notes, artifacts/screenshots, token usage) -- card
+# c375238d, self-audit 2026-09-18 finding 2: this directory sat UNTRACKED and un-ignored at the
+# repo root, containing an XSS finding's notes.json. A broad `git add -A`/`git add .` could have
+# staged it. Never committed; the fleet's actual finding-tracking is the kanban board.
+/loot/
+
 # Main agent's runtime voice config (responseMode/voiceModel). Sub-agents store
 # theirs under agents/ (already ignored); the main agent's lives at the repo root
 # and is per-install runtime state, never source.
