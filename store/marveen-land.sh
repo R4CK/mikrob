@@ -50,6 +50,16 @@
 #   MARVEEN_LAND_MAX_ATTEMPTS  default 3 -- how many full merge+verify+push attempts before giving
 #                       up on a repeatedly-raced push (card 65657bad).
 #   LANDING_DOWNWARD_CHECK=off  disables the downward range check entirely (card dfff9b37).
+#   MARVEEN_LAND_DEVELOP_LOCK_FILE  default $MAIN/store/.marveen-land-develop.lock -- machine-wide
+#                       flock serialising the merge+fleet-test+push window across ALL marveen-land.sh
+#                       invocations, not just within one --all sweep (card 24d1543f). Override is for
+#                       tests only: the real repo's store/ always exists, a throwaway test clone does
+#                       not by default.
+#   MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S  default 7200 -- give up queueing for the lock after this
+#                       long and refuse (nothing pushed), rather than wait forever.
+#   MARVEEN_LAND_DEVELOP_LOCK_POLL_S      default 10 -- how often to retry acquiring the lock.
+#   MARVEEN_LAND_DEVELOP_LOCK_KEEPALIVE_S default 300 -- how often to refresh the PAUSED-SEMAPHORE
+#                       comment on the waiting card so a long queue is not mistaken for a stuck card.
 #
 # Exit: 0 landed (or dry-run clean, or nothing to land) | 2 bad usage | 3 refused a precondition
 #       | 4 merge/verify/push failed
@@ -204,14 +214,94 @@ export FLEET_TEST_AGENT=""
 BUILD_CMD="${MARVEEN_LAND_BUILD:-npm run build}"
 MAX_ATTEMPTS="${MARVEEN_LAND_MAX_ATTEMPTS:-3}"
 
+# ONE LANDING AT A TIME, MACHINE-WIDE (card 24d1543f). Measured 2026-09-18 14:30-15:40: two
+# `--all` sweeps plus 3 per-agent landings plus 2 CleanCore suites plus gate vitests all in flight
+# together -- backend3 lost the push race 3 times in a row, and the harness memory-guard killed 3
+# of backend2's background jobs (loadavg 15-20). fleet-test.sh's own internal lock (card 2f0c7d24)
+# already serialises the VITEST PORTION machine-wide, but the surrounding merge/seam-check/lockfile
+# work in land_one is not covered by it, and neither is the push itself -- two landings can still
+# both build a merge, both pass fleet-test (each in its own turn), and then race each other's push,
+# which is recoverable (card 65657bad's retry) but not free: each lost race is a full re-merge +
+# re-fleet-test. This lock removes the race at the source: only one land_one body (merge through
+# push) runs at a time, everyone else queues. `--all`'s own sweep loop is already sequential
+# in-process (see the usage comment above); this lock is what also serialises it against a SEPARATE
+# marveen-land.sh invocation (another `--all` sweep, or a direct per-agent call) running at the same
+# time -- exactly the incident shape. Same PAUSED/RESUMED-SEMAPHORE courtesy as the CleanCore CPU
+# pool (card 492a6d5c), via the same shared library, so a long queue does not look like a stuck card
+# (rule 3/3a).
+LAND_LOCK_FILE="${MARVEEN_LAND_DEVELOP_LOCK_FILE:-$MAIN/store/.marveen-land-develop.lock}"
+LAND_LOCK_WAIT_MAX_S="${MARVEEN_LAND_DEVELOP_LOCK_WAIT_MAX_S:-7200}"
+LAND_LOCK_POLL_S="${MARVEEN_LAND_DEVELOP_LOCK_POLL_S:-10}"
+LAND_LOCK_KEEPALIVE_S="${MARVEEN_LAND_DEVELOP_LOCK_KEEPALIVE_S:-300}"
+# A LOCK DIRECTORY WE CANNOT WRITE MUST SAY SO (same reasoning as cleancore-suite-run.sh's own
+# LOCK_DIR check). Without this, acquire_land_lock's `: >>"$LAND_LOCK_FILE"` would fail every single
+# poll and land_one would queue silently forever, indistinguishable from a real lock-holder, until
+# the wait-max timeout finally reports a misleading "another landing holds the develop lock".
+LAND_LOCK_DIR="$(dirname "$LAND_LOCK_FILE")"
+[ -d "$LAND_LOCK_DIR" ] || die 3 "landing lock directory '$LAND_LOCK_DIR' does not exist -- refusing to run rather than silently queueing forever. Set MARVEEN_LAND_DEVELOP_LOCK_FILE."
+KANBAN_COMMENT_AGENT=""
+export KANBAN_COMMENT_AGENT
+# shellcheck source=./kanban-comment-lib.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/kanban-comment-lib.sh"
+
+# Sets LAND_LOCK_FD (global, deliberately not `local` -- same shape as fleet-test.sh's own
+# acquire_cpu_slot/CPU_FD) on success.
+acquire_land_lock() {
+  : >>"$LAND_LOCK_FILE" 2>/dev/null || return 1
+  exec {LAND_LOCK_FD}>>"$LAND_LOCK_FILE" || return 1
+  if flock -n "$LAND_LOCK_FD"; then return 0; fi
+  exec {LAND_LOCK_FD}>&-
+  return 1
+}
+
 land_one() {
   local agent="$1" dry="$2"
   # Scoped to this landing: --all lands several agents in one run, and a stale name here would post
   # one agent's queueing notice onto another agent's card.
   export FLEET_TEST_AGENT="$agent"
+  KANBAN_COMMENT_AGENT="$agent"
   local branch="agent/${agent}/work"
 
   g show-ref --verify --quiet "refs/heads/$branch" || { say "$agent: no branch $branch -- nothing to land"; return 0; }
+
+  LAND_LOCK_FD=""
+  local land_lock_started land_lock_announced=0 land_lock_last_note land_lock_waited
+  land_lock_started="$(date +%s)"; land_lock_last_note="$land_lock_started"
+  while ! acquire_land_lock; do
+    land_lock_waited=$(( $(date +%s) - land_lock_started ))
+    if [ "$land_lock_waited" -ge "$LAND_LOCK_WAIT_MAX_S" ]; then
+      [ "$land_lock_announced" -eq 1 ] && kanban_comment "INFO-ONLY RESUMED-SEMAPHORE (GIVING UP)
+
+Nem kaptam landolasi zart ${LAND_LOCK_WAIT_MAX_S} masodperc alatt (kartya 24d1543f: egyszerre legfeljebb 1 landolas celozhatja origin/${DEFAULT_BRANCH}-ot). A landolas NEM futott le -- nincs pusholva, $branch erintetlen."
+      echo "$agent: REFUSED -- could not acquire the landing lock after $((land_lock_waited / 60)) min (another landing is stuck holding it -- find it with 'fuser -v $LAND_LOCK_FILE'). Nothing pushed; $branch is untouched." >&2
+      return 4
+    fi
+    if [ "$land_lock_announced" -eq 0 ]; then
+      land_lock_announced=1
+      echo "$agent: another landing holds the develop lock -- queueing (cap ${LAND_LOCK_WAIT_MAX_S}s)" >&2
+      kanban_comment "INFO-ONLY PAUSED-SEMAPHORE
+
+Egy masik landolas foglalja az origin/${DEFAULT_BRANCH}-ot celzo landolasi zart (kartya 24d1543f: egyszerre legfeljebb 1 landolas fut a merge+fleet-test+push ablakban, a tobbi var). Amint felszabadul, ez a landolas folytatodik, es RESUMED-SEMAPHORE kommentet kap.
+
+Ez a komment azert van itt, hogy az updated_at mozogjon: a 3. szabaly szerint egy nem mozdulo in_progress kartya beragadtnak szamit, a 3a. szerint 60 perc utan testverre szall."
+    elif [ $(( $(date +%s) - land_lock_last_note )) -ge "$LAND_LOCK_KEEPALIVE_S" ]; then
+      land_lock_last_note="$(date +%s)"
+      kanban_comment "INFO-ONLY PAUSED-SEMAPHORE (meg mindig sorban a landolasi zaron, $((land_lock_waited / 60)) perce)"
+    fi
+    sleep "$LAND_LOCK_POLL_S"
+  done
+  if [ "$land_lock_announced" -eq 1 ]; then
+    kanban_comment "INFO-ONLY RESUMED-SEMAPHORE
+
+Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc varakozas utan, a landolas folytatodik."
+  fi
+
+  # From here on every return path (including `die`'s exit -- closing on process exit is automatic,
+  # but redefining `cleanup` below to ALSO remove the worktree needs a trap already in place) must
+  # release the lock, so the trap is set right after acquiring it rather than threaded through every
+  # early return by hand.
+  cleanup() { [ -n "${LAND_LOCK_FD:-}" ] && exec {LAND_LOCK_FD}>&- 2>/dev/null; return 0; }
+  trap cleanup RETURN
 
   g fetch -q origin "$DEFAULT_BRANCH" || die 3 "could not fetch origin/$DEFAULT_BRANCH"
   local base_sha; base_sha="$(g rev-parse "origin/$DEFAULT_BRANCH")"
@@ -227,9 +317,14 @@ land_one() {
   # `${wt:-}` and the explicit success, both deliberate (card 65657bad, caught by its own test): the
   # RETURN trap set here also fires when land_with_retry returns, where `wt` is a dead local -- under
   # `set -u` that aborted the whole script mid-landing. Nothing to remove is not a failure, either;
-  # a non-zero last command in a RETURN trap would poison the return code it is riding on.
-  cleanup() { [ -n "${wt:-}" ] && g worktree remove --force "$wt" >/dev/null 2>&1; return 0; }
-  trap cleanup RETURN
+  # a non-zero last command in a RETURN trap would poison the return code it is riding on. Redefines
+  # `cleanup` (the trap already fires whatever `cleanup` resolves to AT TRAP TIME, so re-registering
+  # is not needed) to also remove the worktree, on top of the lock release set above.
+  cleanup() {
+    [ -n "${wt:-}" ] && g worktree remove --force "$wt" >/dev/null 2>&1
+    [ -n "${LAND_LOCK_FD:-}" ] && exec {LAND_LOCK_FD}>&- 2>/dev/null
+    return 0
+  }
 
   # What ELSE rides along (card dfff9b37). Runs BEFORE the merge, so a refusal costs nothing and a
   # report is on screen at the one moment somebody is watching this landing. Merges dropped -- see
