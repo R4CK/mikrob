@@ -3561,8 +3561,17 @@ export function bulkAttributionRequired(
   const recentEvents = row?.n ?? 0
   const fires = recentEvents >= BULK_ATTRIBUTION_THRESHOLD
   if (fires) {
+    // reason is caller-supplied free text and can be present even when the guard fires (e.g. actor
+    // missing, reason not) -- unbounded, it would let an unauthenticated caller inflate a log line
+    // arbitrarily (card 1ef7bd9c, Cybersec LOW on 1bd7debf).
     logger.warn(
-      { cardId, actor: actor ?? null, reason: reason ?? null, recentEvents, windowSeconds: BULK_ATTRIBUTION_WINDOW_SECONDS },
+      {
+        cardId,
+        actor: actor ?? null,
+        reason: reason ? reason.slice(0, 200) : null,
+        recentEvents,
+        windowSeconds: BULK_ATTRIBUTION_WINDOW_SECONDS,
+      },
       'bulk-attribution guard refused an unattributed status write (card 1bd7debf)'
     )
   }

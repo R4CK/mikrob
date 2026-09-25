@@ -331,6 +331,7 @@ window._i18n.hu = {
   'kanban.modal.delete_btn':     'Törlés',
   'kanban.modal.breakdown_btn':  'Auto-bontás',
   'kanban.toast.move_error':     'Hiba az áthelyezés során',
+  'kanban.toast.bulk_attribution_reason_prompt': 'A tábla most forgalmas -- adj meg egy rövid indokot, hogy a mozgatás átmenjen:',
   'kanban.toast.save_error':     'Hiba a mentésnél',
   'kanban.toast.comment_error':  'Hiba a megjegyzés mentése során',
   'kanban.toast.archive_error':  'Hiba az archiválás során',
