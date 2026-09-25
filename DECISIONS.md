@@ -14479,3 +14479,41 @@ jövőbeli hardening-jegyzet MikroB-nek, mint ennek a kártyának a scope-ja.
 
 **Ki döntött:** backend3 (a rés felfedezése és a mérés), a detektor-szélesítés MikroB felügyelete alatt
 áll (a kártya normál gate-jén megy át).
+
+## 2026-09-25 -- 284b44c4: bash-egress-guard F-1, perl -M/-m operandus nem markerezett (backend3)
+
+**A kártya kérése:** Cybered lelete (854182c7, 2. kör): `perl -MLWP::Simple -e 'getprint(URL)'`
+átmegy a `bash-egress-guard.py`-on, mert a marker-keresés csak az `-e` törzsét nézi, a `-M`/`-m`
+modul-betöltő flaget nem -- a hálózati képességet néven nevező szó (`LWP::Simple`) pont a nem-vizsgált
+szóban ül. `use LWP::Simple` a törzsben BLOKKOL, a `-M`/`-m` operandus-alak nyitva maradt.
+
+**Gyökér-ok, kód szinten:** `_interpreter_script()` (`scripts/hooks/bash-egress-guard.py`) a perl
+családhoz `{"-e", "-E"}`-t tart INLINE_FLAGS-ként, és csak az ezek utáni szó szövegét adja vissza
+`script.text`-ként. A `-M`/`-m` szavak (pl. `-MLWP::Simple`, egyetlen shell-szó, a modulnév a flaghez
+tapadva) a `startswith("-")` ágon simán átmennek, sosem kerülnek be a marker-scan szövegébe.
+
+**Javítás:** `_MODULE_FLAG_PREFIXES_BY_FAMILY = {"perl": ("-M", "-m")}` + `_module_flag_text(seg,
+name)` (új függvény) összegyűjti a szegmensben szereplő `-M*`/`-m*` szavakat, és a marker-ellenőrzés
+(`_has_net_marker`/`_DEV_NET_RX`) ELÉ fűzi őket a `-e` törzs elé -- CSAK a marker-detekcióhoz, a
+cél-kinyerés (`_script_targets`) változatlanul a tényleges `-e` törzsön fut, mert a szó szerinti hívás
+és a hozzá tartozó URL ott áll, nem a modul-flagben. Nyelv-specifikus: egyetlen másik család inline-
+eval flagje sem ilyen alakú (a modulnév sosem tapad a flaghez máshol).
+
+**Mutációs bizonyíték:** a marker_text-összefűzés visszavonásával PONTOSAN a két új teszteset (a
+`-MLWP::Simple`/`-mLWP::Simple` PoC) bukik, az összes többi (115) zölden marad -- a régi hiba
+reprodukálva, majd a javítással eltűnve. Visszaállítva: 117/117 zöld.
+
+**Új tesztesetek** (`bash-egress-guard.selftest.py`): a PoC pontos alakja (BLOCK), a kisbetűs `-m`
+változat (BLOCK, ugyanaz a mechanizmus), és egy kontroll (`perl -MStrict -Mwarnings -e 'print 1'`,
+ALLOW) -- a modul-flag szöveg önmagában nem gyárthat markert, ha nincs benne hálózati kulcsszó.
+
+**Zöld:** `bash-egress-guard.selftest.py` 117/117 + 8 property-assertion, `bash-egress-guard-
+wiring.test.ts` 22/22 (ez futtatja a selftestet is), `tsc --noEmit` tiszta.
+
+**Mi maradt ki, szándékosan:** a kártya explicit szétválasztja ezt a marker-fixet az "enforce-ra
+kapcsolás előtt kötelező" listától (az 5400-as feloldhatatlan-host kosár + az 1740-es üzemeltetői-
+döntésű külső cél átnézése) -- ez a kártya csak a detekciós hibát zárja, a log-only -> enforce váltás
+Cybered saját sorrend-javaslata szerint külön lépés, nem ennek a kártyának a scope-ja.
+
+**Ki döntött:** Cybered (854182c7, a lelet), backend3 (a javítás), gate: Cybersec + Cybered (a kártya
+kéri, biztonsági kontroll javítása).
