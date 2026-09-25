@@ -88,6 +88,15 @@ mkdir -p "$dest"
 # Replace the vendored payload but KEEP our own VENDORED.md/UPSTREAM-LICENSE (rewritten below).
 find "$dest" -mindepth 1 -maxdepth 1 ! -name 'VENDORED.md' ! -name 'UPSTREAM-LICENSE' -exec rm -rf {} + 2>/dev/null
 cp -R "$src/." "$dest/" 2>/dev/null || { echo "vendor-skill: copy failed" >&2; exit 4; }
+# Card 728179d1 (Cybersec, card 3c73a420): a root-vendored skill (no --subdir) has src == $clone,
+# so `cp -R "$src/."` copies $clone/.git along with the payload -- the vendored copy becomes a full
+# git working tree tracking upstream, which a bare `git pull`/`git restore`/`git checkout .` can
+# then act on with no review, no card, no signal (measured live on ~/.claude/skills/caveman and
+# ~/.claude/skills/unlazy). A --subdir vendor never hits this (its src is a subdirectory that does
+# not contain .git), but the removal below is unconditional rather than gated on SUBDIR being unset
+# -- a vendored skill directory must never be a git working tree, in either mode, so there is no
+# case where keeping .git would be correct.
+rm -rf "$dest/.git"
 [[ -n "$LICENSE_FILE" ]] && cp "$LICENSE_FILE" "$dest/UPSTREAM-LICENSE"
 
 # The two ${VAR:+...}${VAR:-...} halves cannot share one variable: when LICENSE_FILE is SET the
