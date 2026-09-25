@@ -338,6 +338,28 @@ else:
 }
 
 if [[ "$MODE" == "generate" ]]; then
+  # VRAM choke-point (card 234306ca, plan-grilling GO-WITH-CHANGES, MikroB decision comment 6511).
+  # Defense-in-depth ALONGSIDE each dispatcher's own direct vram-guard-check.sh call (card f9bad591's
+  # option A, kept as-is this round) -- this is what protects a FUTURE dispatcher that forgets its
+  # own pre-check, since every caller of `generate` passes through here regardless. Reuses the
+  # EXISTING exit-6 "gpu busy" convention (see the flock-timeout `die 6` below) rather than inventing
+  # a new signal: to a caller, "not enough VRAM right now" and "the lock is contended right now" are
+  # both "the GPU is not available for this call right now", and none of the 6 dispatchers check a
+  # SPECIFIC exit code from their own vram-guard-check.sh call (measured: all six test `-ne 0`), so
+  # reusing 6 costs nothing and teaches nothing new.
+  VRAM_GUARD="${LOCAL_LLM_VRAM_GUARD:-$HERE/vram-guard-check.sh}"
+  if [[ -f "$VRAM_GUARD" ]]; then
+    vram_rc=0
+    vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)" || vram_rc=$?
+    if [[ "$vram_rc" -ne 0 ]]; then
+      # The guard's OWN descriptive line, VERBATIM (MikroB's explicit requirement, comment 6511): the
+      # text must not be lost just because this check now also runs inside local-llm.sh. A dispatcher
+      # that already has its own direct call (option A) still gets the same line from that call; a
+      # future one that does not gets it here instead, on stderr, same as every other die() message.
+      echo "local-llm: ${vram_line:-no output from the vram guard} (rc=$vram_rc) -- this call belongs online" >&2
+      exit 6
+    fi
+  fi
   case "$(model_switch_state "$MODEL")" in
     DISABLED)
       echo "local-llm: model '$MODEL' is DISABLED from the dashboard (Lokális LLM -> a modell sorának kapcsolója) -- this call belongs online. Enable it there, or pass --model with an enabled model." >&2

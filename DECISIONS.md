@@ -14228,3 +14228,43 @@ javítva: a sync-tesztek `AGENT_SKILL_DRIFT_TEST_SESSIONS=""`-t kényszerítenek
 parkolt-állapotra, a futó-ügynök-specifikus teszt külön, explicit session-névvel fut.
 
 **Ki döntött:** backend (self-advance, rule 6b -- 2 napnál régebbi kártya, MikroB diagnózisa alapján).
+
+## 2026-09-25 -- 234306ca -- VRAM-kapu torökpont local-llm.sh-ban (opció B), opció A megtartva
+
+**A döntés.** A VRAM-kapu (vram-guard-check.sh) mostantól KÉTSZER védi a helyi-LLM dispatchot:
+(A) a 6 dispatcher saját, közvetlen hívása (változatlan, card f9bad591), és (B, ÚJ) egy törökpont
+`local-llm.sh`-nak a `generate` módjában, ami MINDEN hívón áthalad, tehát egy JÖVŐBELI dispatchert
+is automatikusan véd, ha az elfelejti a saját elő-ellenőrzését. Plan-grilling verdikt (kártya
+234306ca kommentje): GO-WITH-CHANGES -- a kártya saját javaslata (új törökpont-jelzés) helyett a
+MEGLÉVŐ `local-llm.sh` exit-kód-konvenció (exit 6 = "gpu busy") újrahasznosítva, mert mind a 6
+dispatcher generikus (`!= 0` = HOLD) szerződést használ, egyik sem konkrét kódra csekkol.
+
+**A guard sora nem vész el.** MikroB döntése (kártya-komment 6511): HOLD esetén a törökpont a
+vram-guard-check.sh leíró sorát VÁLTOZATLANUL stderr-re írja, exit 6 mellett -- egy dispatcher, ami
+már maga is hívta a guardot, ugyanazt a sort kapja onnan is; egy jövőbeli, ami nem, a törökponttól
+kapja meg ugyanígy.
+
+**A koltseg PONTOSITVA, nem "dupla".** MikroB eredeti elfogadása "dupla nvidia-smi hívás" költséget
+feltételezett. MÉRVE (a szkript saját ablakoló-logikájával, nem becsülve): ez az 5 dispatcher
+közül 5-re (i18n-draft, route-classify, gate-pretriage, offload-dispatch, local-llm-rag.sh) igaz --
+mindegyik EGYSZER hívja a `local-llm.sh generate`-et dispatchenként, tehát 1->2 nvidia-smi hívás.
+`card-build-route.sh` viszont MÁS: az `ask()` ciklusa ABLAKONKÉNT (WINDOW=300, STRIDE=150) hívja a
+generate-et, a saját elő-ellenőrzése pedig csak EGYSZER fut a ciklus előtt. Kiszámolva: 500 karakteres
+kártyaszöveg = 3 ablak, 1500 = 9, 3000 = 19, 5000 = 33 -- tehát a törökpont ott NEM duplázza, hanem
++N EXTRA nvidia-smi hívást ad dispatchenként (N = ablakszám, amíg egy COMPLEX besorolás korábban le
+nem állítja a ciklust). Nvidia-smi tényleges futási idejét ezen a gépen nem lehetett mérni (nincs
+GPU-s host itt); a szkript saját SMI_TIMEOUT default-ja (5mp) csak felső korlát, nem mért érték.
+
+**Opció A marad, nem távolítjuk el.** A dupla/N-szeres védelem költsége elfogadott ebben a
+kártyában; az eltávolítás (csak a törökpontra hagyatkozás) KÜLÖN follow-up kártya lesz, egy hét
+tiszta mérés után (a fenti pontosított számokkal induló mérési alapvonallal), ennek a bejegyzésnek
+a frissítésével együtt.
+
+**Zöld:** `src/__tests__/local-llm-vram-choke-point.test.ts` (4 új eset, mutáció-ellenőrizve: a
+törökpont-kód eltávolítása pontosan a 2 védelmi esetet buktatja meg, a másik 2 -- ADMIT-áthaladás,
+hiányzó-guard fail-open -- változatlan marad). `local-llm-model-disabled.test.ts` (12) és
+`local-llm-busy-status-log.test.ts` (2) érintetlen. `vram-guard-wiring.selftest.sh` (a 6 dispatcher
+19 esetes regressziós alapvonala) változatlanul 19/19 zöld -- opció A nem módosult.
+
+**Ki döntött:** MikroB (plan-grilling GO-WITH-CHANGES elfogadása + a két nyitott kérdés eldöntése,
+kártya-komment 6511) + backend3 (build, mérés, tesztek).
