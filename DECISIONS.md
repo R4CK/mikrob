@@ -14426,3 +14426,56 @@ leírtam.
 
 **Ki döntött:** Peti (2026-09-18, Telegram 8799, az eredeti rebrand-utasítás) + MikroB (32dbac1e
 fázis-bontás) + backend3 (a doksi-frissítés maga, kártya 876fbf8e).
+
+## 2026-09-25 -- ff7e1b0a: a shared-tree-mutation sweep MÁR MEGVAN, a detektorán találtam egy rést (backend3)
+
+**A kártya kérése:** "sweep: minden store/*.selftest.sh, ami mozgat/töröl követett fájlt a megosztott
+fán párhuzamos futás közben" -- a 9b224eec hibaosztály (mv/rm a shared tree-ben, ~1,4%-os hamis-piros
+ablak) szélesebb ellenőrzése.
+
+**Talált állapot:** MikroB `d6553d4c` commitja (9b224eec javítása, landolva 2026-09-13 08:41, TEHÁT
+ff7e1b0a saját nyitási időbélyege -- 11:07 ugyanaznap -- ELŐTT) már megépítette pontosan ezt: egy
+állandó, minden futáskor a TELJES `store/*.selftest.sh` állományt újra-beolvasó regressziós tesztet
+(`src/__tests__/selftests-do-not-mutate-the-shared-tree.test.ts`). Lefuttattam MA a mai teljes
+fájlkészletre (nem csak a 2026-09-13-i pillanatképre): 54/54 zöld.
+
+**A rés, amit erre rákeresve találtam:** a detektor `treeVars` mintája csak a `HERE`/`SCRIPT_DIR`/
+`ROOT` nevű saját-könyvtár-változókat ismeri fel. Rákerestem, MELYIK nevek élnek ténylegesen a
+korpuszban (`grep -hoE '^\s*[A-Z_]+="\$\(cd "\$\(dirname' store/*.selftest.sh`): `G`, `HERE`, `ROOT`,
+`SCRIPT`, `SCRIPT_DIR` -- tehát `G` és `SCRIPT` KIMARADT a felismert névkészletből, ugyanaz a
+hiba-alak, mint a kártya alapító esete (a scanner nem látja a nevet, amit nem ismer).
+
+**Két fájl használja ezeket:** `mopsion-main-suite-guard.selftest.sh` (és a rá mutató
+`cleancore-main-suite-guard.selftest.sh` szimlink) `$G`-t, `dedup-prefilter-check.selftest.sh`
+`$SCRIPT`-et. Kézzel átnéztem MINDKETTŐT, hogy tényleges élő hibáról van-e szó:
+- `dedup-prefilter-check.selftest.sh`: a `$SCRIPT`-et kizárólag `sed`-del OLVASSA (bemenetként egy
+  másolat előállításához), destruktív parancs (`mv|rm|ln|truncate|chmod`) a fájlban EGYÁLTALÁN
+  NINCS -- nincs mit rejtenie a résnek.
+- `mopsion-main-suite-guard.selftest.sh`: két `chmod +x` van benne (`$TREE/node_modules/.bin/vitest`,
+  `$REPO2/node_modules/.bin/vitest`), de a `$TREE`/`$REPO2` NEM a `$G`-ből származik -- mindkettő a
+  `$SB` (`mktemp -d "$HOME/fullstack-guard-ctl-XXXXXX"`) alá épített, önálló sandbox-útvonal
+  (`TREE="$SB/tree"`, `REPO2="$SB/clone"`). A `$G` maga csak a guard-szkript ÚTJAKÉNT szerepel
+  (`bash "$G" --force`), sosem célként egy destruktív parancsban.
+
+**Következtetés:** a névfelismerési rés VALÓDI, de MA nem kihasznált -- egyik fájl sem sérti a
+szabályt a hiányzó nevek miatt. Ez pontosan a "labelled check that never ran is worse than no check"
+tanulság tükörképe: egy jövőbeli `$SCRIPT`/`$G`-konvenciót használó selftest destruktív parancsa
+LÁTHATATLAN maradt volna, amíg valaki nem méri a hibát élesben (mint 9b224eec esetében).
+
+**A javítás (a sweep RÉSZEként, nem külön kártyaként, mert szó szerint a detektor szélesítéséről van
+szó):** a `treeVars` és a direkt-egyezés minta kiegészítve `SCRIPT`-tel és `G`-vel
+(`selftests-do-not-mutate-the-shared-tree.test.ts`). Új regressziós teszt (`REGRESSION: a $SCRIPT/$G-
+named anchor is caught too`) MUTÁCIÓVAL bizonyítva: a szűk (régi) regexre visszaállítva PONTOSAN ez
+az egy új teszt bukik (54 más zöld marad), a szélesített regexre visszaállítva mind az 55 zöld --
+tehát a szélesítés valóban fog valamit, amit a régi nem.
+
+**Zöld:** `selftests-do-not-mutate-the-shared-tree.test.ts` 55/55, `tsc --noEmit` tiszta.
+
+**Mi maradt ki:** a felismerés egy-hopos (a `treeVars` csak KÖZVETLEN `"$HERE/...`-szerű
+hozzárendelést lát, láncolt (`A="$HERE/x"; B="$A/y"`) alakot nem) -- ma nincs ilyen lánc egyik
+fájlban sem (ellenőrizve), de ha a jövőben lenne, ismét vak pont. Nem bővítettem tovább ennél a
+kártyánál, mert nincs élő eset, amire hivatkozva mutáció-tesztelhető lenne a bővítés -- ez inkább egy
+jövőbeli hardening-jegyzet MikroB-nek, mint ennek a kártyának a scope-ja.
+
+**Ki döntött:** backend3 (a rés felfedezése és a mérés), a detektor-szélesítés MikroB felügyelete alatt
+áll (a kártya normál gate-jén megy át).
