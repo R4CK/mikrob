@@ -83,13 +83,15 @@ describe('one contract, both call sites', () => {
     )
   }
 
-  it('finds both posting sites at all', () => {
+  it('finds every posting site at all', () => {
     // The card was opened because one of a pair got updated and the other did not. A matcher that
-    // silently finds zero sites would let exactly that ship.
+    // silently finds zero sites would let exactly that ship. Three sites since card 3cb36c6e: the
+    // plain local draft, the advisory draft posted on an ONLINE router verdict, and the exhausted
+    // notice. A new site must be added here deliberately, so it also gets the nudge check below.
     const sites = postingCallSites()
-    expect(sites.length).toBe(2)
-    expect(sites.some(({ line }) => line.includes('post_draft_comment'))).toBe(true)
-    expect(sites.some(({ line }) => line.includes('post_exhausted_notice'))).toBe(true)
+    expect(sites.length).toBe(3)
+    expect(sites.filter(({ line }) => line.includes('post_draft_comment')).length).toBe(2)
+    expect(sites.filter(({ line }) => line.includes('post_exhausted_notice')).length).toBe(1)
   })
 
   it('every posting site nudges the owner right after posting', () => {

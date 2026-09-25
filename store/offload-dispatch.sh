@@ -297,9 +297,30 @@ nudge_leaf_owner() {
   return 0
 }
 
+# advisory_draft: stdin = local-llm-rag.sh stdout from an exit-9 run. Prints the draft comment body
+# (ONLINE-review header + draft) when stdout is an advisory envelope with a non-empty draft, else
+# nothing. Pure, so --test-advisory-draft exercises the exact code try_leaf uses.
+advisory_draft() {
+  python3 -c '
+import json, sys
+try:
+    env = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+if isinstance(env, dict) and env.get("advisory") is True and str(env.get("draft", "")).strip():
+    print("ONLINE-VERDIKT (" + str(env.get("reason", "")) + "): KOTELEZO A TELJES, FUGGETLEN ONLINE FELULVIZSGALAT. Olvasd ELOSZOR a kartya specifikaciojat, es azt kerdezd, mi HIANYZIK ebbol a draftbol, ne csak azt, hogy ami benne van, helyes-e. Ha az atnezes dragabb, mint megirni, dobd el (Draft-Review: ELUTASITVA) -- ez helyes kimenet.")
+    print()
+    print(env["draft"])
+' 2>/dev/null
+}
+
 # --- test hooks (no network/token/lock needed) ---------------------------------------------------
 # --test-resolve: feed a kanban-list JSON fixture on stdin, CARD via env; prints the resolved leaves.
 # --test-attempts-op OP LEAF [--file PATH]: exercises the attempts state machine against a scratch file.
+if [[ "${1:-}" == "--test-advisory-draft" ]]; then
+  advisory_draft
+  exit 0
+fi
 if [[ "${1:-}" == "--test-resolve" ]]; then
   resolve_leaves
   exit 0
@@ -428,6 +449,21 @@ $leaf_desc"
     echo "offload-dispatch: leaf $leaf_id -> posted local draft"
     return 0
   elif [[ $rc -eq 9 ]]; then
+    # An ONLINE verdict still carries a local draft: local-llm-rag.sh's advisory path (card ee43a6ac)
+    # prints a JSON envelope on stdout and exits 9. This branch used to drop that stdout, so the 7B
+    # ran for up to 120s per leaf and its draft was thrown away -- measured 2026-09-24: 9 of 11
+    # dispatched cards got no draft, all as "router-online". Rule 16 (card 3c075d74): ONLINE decides
+    # how thorough the online review is, not whether a draft exists. So post the envelope's draft,
+    # marked as needing the full independent review, and keep the no-draft path for an empty stdout.
+    local adv_draft
+    adv_draft="$(printf '%s' "$out" | advisory_draft)"
+    if [[ -n "${adv_draft// }" ]]; then
+      attempts_op success "$leaf_id" >/dev/null
+      post_draft_comment "$leaf_id" "$leaf_title" "$adv_draft"
+      nudge_leaf_owner "$leaf_id" "$leaf_assignee_raw" draft || true
+      echo "offload-dispatch: leaf $leaf_id -> posted local draft (advisory, route stays online)"
+      return 0
+    fi
     attempts_op categorical-online "$leaf_id" >/dev/null
     echo "offload-dispatch: leaf $leaf_id -> categorical online (router decision), no retry" >&2
     return 1
