@@ -778,6 +778,20 @@ export function readAgentCapabilities(name: string): string[] {
   return parsePersonaCapabilities(name)
 }
 
+// Card 21597530 (readAgentToolDeny, upstream c5dd9bc6): per-agent, opt-in tool-name deny list.
+// Missing/malformed "toolDeny" is [] -- today's behaviour, unchanged -- not an error. The caller
+// (writeAgentSettingsFromProfile) PUSHES this onto the deny array it is already building, so this
+// is additive by construction: it can only add deny entries, never remove the security-purpose ones
+// (SELF_PACE_TOOL_DENY, BASH_EGRESS_DENY, profile.filesystem.deny) already queued ahead of it.
+export function readAgentToolDeny(name: string): string[] {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    if (Array.isArray(config.toolDeny)) return config.toolDeny.filter((t: unknown) => typeof t === 'string')
+  } catch { /* fall through */ }
+  return []
+}
+
 export function writeAgentCapabilities(name: string, capabilities: string[]): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
