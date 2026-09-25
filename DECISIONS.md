@@ -15287,3 +15287,87 @@ kivalto szo szerinti minta), masodik menetben mar 57/57. Teljes fleet-test a Gat
 **Ki dontott:** backend (a 6 fajl felulvizsgalata + ACKNOWLEDGED_CONFLICTS/ACKNOWLEDGED_UPSTREAM_BLOBS
 frissitese + 3 kovetkezo-kartya nyitasa). Gate: QA + Cybersec (biztonsag-relevans terulet, MikroB
 eredeti kartya-kijelolese szerint).
+
+## 2026-09-25 -- b5b7eb6b gyerek 577db3a7 (7/10, dashboard/src -- guard/gate/router/schedule/token-usage), 5/5 elavult elismeres ujra-dontve
+
+Mind az 5 fajl ELAVULT ELISMERES volt (a korabbi szabaly a MOSTANI upstream-tartalom ellen ujra-
+dontendo). Modszertan a 09d54e88 QA FAIL tanulsaga szerint alkalmazva a kezdettol: minden fajlnal
+`git diff <regi-pin> <uj-upstream-blob>` a TELJES tartomanyra (nem csak a merge-szimulacio
+konfliktus-markerei), es a ket eredetileg eldontott pont kifejezett, kod-szintu ellenorzese a fork
+JELENLEGI elo fajljaban (nem csak a diff olvasasa).
+
+**Fajlonkenti eredmeny (mind az 5-nel: a regi dontesi pontok VALTOZATLANOK, uj upstream-novekedes
+egyik sem erinti oket):**
+
+1. `src/web/context-restart-gate-runner.ts` (83b90ef1 -> 1c25459c) -- upstream KIEMELTE a helyi
+   `configDirFor`-t egy uj kozos modulba (`src/web/main-transcript-root.ts`, nincs itt), hogy
+   megszuntesse a MASODIK, kulon masolatot amit a `context-guard-runner.ts` is hordoz (ellenorizve:
+   az MEG MINDIG kulon sajat `configDirFor`-t hordoz, sor 210), ES kijavitott egy valodi hibat: a fo
+   agens SAJAT izolalt config-gyokere sosem volt keresve. Ez UGYANAZ a TOKENVAK915 hiba, amit MAR
+   KETSZER jeleztem ebben a korben (61817eb9 docs/token-usage.md, es alant token-usage.ts) -- most
+   HARMADSZOR, a legtisztabb kod-otthonaban. NEM adoptalva itt (tobb-fajlos kiemeles + viselkedes-
+   valtozas). Negy tovabbi tisztan additiv, nem-utkozo valtoztatas SZINTEN NEM adoptalva, nevesitve:
+   TMUXWINDOWATTR920 (tmux stderr pipe-olasa), GATEMTIME922 (valos beszelgetes-idobelyeg mtime
+   helyett, mert egy inaktiv session bookkeeping-irasai orokke mozgatjak az mtime-ot), GATEDEADLOCK922
+   (blokk-kor eszkalacio 120 perc utan), es KIEMELT SULYLYAL, BIZTONSAGI RELEVANCIAVAL: GATESENDER922
+   -- a fork JELENLEG a figyelt agens SAJAT NEVEBEN kuldi a perzisztens-blokk riasztast
+   (`createAgentMessage(name, ...)`, ellenorizve elo kodon, sor 776-781), upstream `'system'`-re
+   javitotta -- pontosan a `[CONTEXT-RESTART-GATE]` prefix, amit a SAJAT gyoker-CLAUDE.md-nk a
+   rendszer-direktiva hitelesitesi szabalyaban NEVESIT. MikroB-nek jelezve: erdemes ezt Cybersec ele
+   vinni, nem csak passziv adoptalasi jeloltkent kezelni.
+2. `src/web/hook-registration-guard.ts` (9b3bae69 -> 3bdb2fb5) -- 4 Slack-nev (out of scope, Telegram-
+   only fork) + `memory-frontmatter-gate.py` (nem letezik itt) -- egyik sem adoptalva, ugyanaz a
+   fileExists-kriterium, amit ez a szabaly mar korabban is hasznalt sajatmagara.
+3. `src/web/message-router.ts` (f962c8be -> 178c5f98) -- nagy additiv novekedes: engedely-promptot
+   felismero stuck-session riasztas (majdnem eldobott 165k tokennyi futo munkat 2026-09-03-an),
+   `selectTickWindow` igazsagos per-cimzett ablak-valasztas, `getMessageStatus` elozetesseg-
+   ujraellenorzes kuldes elott, tobb-boritekos batch-injektalas. Egyik sem erinti a ket eldontott
+   pontot (getKanbanCardStateByIdPrefix+formatDeliveryStalenessNote / countNewerMessagesFromSameSender
+   +freshness, mindketto valtozatlan elo kodon ellenorizve). UJ ACKNOWLEDGED_FORK_ANCHORS bejegyzes
+   (`selectTickWindow`, expect absent) -- mutacio-tesztelve.
+4. `src/web/schedule-runner.ts` (e5393ace -> 058bb70d) -- a ket eldontott pont (`runPreCheck` async
+   marad fork-oldalon / upstream meg mindig sync; `startAgentProcess` try/catch) valtozatlan (upstream
+   uj blobjaban a `runPreCheck` deklaracio meg mindig `async` nelkuli, `startAgentProcess` nulla
+   talalat a diffben). Nagy additiv novekedes: heartbeat-metrika-injektalas, referencia-alapu nagy-
+   prompt kezeles tulmeretes ütemezett feladatokhoz, egyszeri-riasztas dedup egy felreirt cimzettre,
+   es kezbesites-integritas-ellenorzes (pane + friss promptok). `mainConfigRoots` HARMADIK fuggetlen
+   elofordulasa (a TOKENVAK915-tel egyezo mintaban) -- ez mar 3 lelet ugyanarra a kovetkezo kartyara.
+5. `src/web/token-usage.ts` (82ebcf78 -> 7b097efb) -- a ket eldontott pont (mind a negy import egyutt;
+   correlateWithKanban parent-skip szuro) valtozatlan (`estimateCostUsd`/`stripDateSuffix` meg mindig
+   hasznalva, sor 490). A meg mindig nyitott idx_token_usage_dedup agent-elso-oszlop hiba SZINTEN
+   erintetlen (kulon kartya marad). UPSTREAM ITT SZALLITOTTA A TOKENVAK915 TENYLEGES KOD-OLDALI
+   JAVITASAT (`discoverAgentSources` `mainConfigRoots()`-t hasznalva megkeresi a fo agens SAJAT
+   izolalt config-gyokereit is, realpath-dedup-olva a mar megtalalt forrasokkal) -- HARMADIK
+   fuggetlen eloforduls (61817eb9 doksi-oldal + context-restart-gate-runner.ts fent + itt). Ket
+   kisebb, fuggetlen valtoztatas: a fork sajat `encodeProjectPath()`-je most mar duplikalja azt, amit
+   upstream egy uj kozos `src/claude-project-dir.ts`-be emelt ki (nem letrehozva itt, biztonsagos
+   jovobeli tisztitas); `getModelSourceBreakdown()` uj diagnosztikai export +
+   `toolInputPreview()` ures-elonezet-fallback (mindketto tisztan additiv, nincs fork-megfeleloje).
+
+**Onjavitas landolas elott (`token-in-argv-guard.test.ts` + a masik fork-upstream guard MEGINT
+lefutott, most a `message-router.ts` uj "NOT adopted" bejegyzese horgony nelkul bukott, ugyanaz a
+hibaosztaly mint a 61817eb9-en):** a "minden rogzitett elutasitashoz horgony kell" szabaly (kartya
+66ad1f95/2f1cbaf1) a `file in ACKNOWLEDGED_FORK_ANCHORS` KULCS-JELENLETET nezi, nem a horgony
+TARTALMANAK relevanciajat -- a masik negy fajlnak MAR VOLT sajat horgonya (barmilyen korabbi
+okbol), ezert azok nem buktak, DE `message-router.ts`-nek meg sosem volt. Uj horgony hozzaadva
+(`selectTickWindow`, expect absent), mutacio-tesztelve: a needle-t ideiglenesen beszurva a valodi
+fajlba, 1/36 eset PONTOSAN erre bukott, a tobbi 35 zold maradt, majd `git checkout --`-vel
+visszaallitva.
+
+**FLOTTA-SZINTU, FUGGETLEN BLOKKOLO EZEN A KORON, MIKROB-NEK JELEZVE, NEM ITT JAVITVA:** a
+`token-in-argv-guard.test.ts` a `cybersec/HANDOFF.md` 36. soraban hamis pozitivot talalt --
+`?token=${DASHBOARD_TOKEN}` egy PELDA anchor-stringkent szerepel prozaban (egy masik kartya
+javasolt needle-jekent), nem tenyleges kodkent. Ez minden agens fleet-test.sh-jat blokkolja (a
+teszt a live install `agents/` konyvtarat scanneli, nem az en git-branchemet) -- nem az en
+hataskorom cybersec sajat elo fajljat szerkeszteni.
+
+**Zold:** `fork-upstream-drift-check.test.ts` 21/21, `fork-upstream-conflict-guard.test.ts` 36/36
+(az uj horgonnyal), `tsc --noEmit` tiszta. Elo `fork-upstream-drift-watch.mjs --report`
+ujrafuttatva `npm run build` utan: mind az 5 fajl LEKERULT a riportbol.
+
+**Mi NEM tortent itt:** a tenyleges upstream-kod-merge; a TOKENVAK915 kodjavitas atvetele (harom
+fuggetlen helyszinen flagelve, sajat kartyat erdemel); a GATESENDER922 biztonsagi javitas atvetele
+(Cybersec ele ajanlva); a cybersec/HANDOFF.md hamis-pozitiv soranak atirasa.
+
+**Ki dontott:** backend3 (fajlonkenti dontes, mutacios anchor-ellenorzes). Gate: QA + Cybersec
+(biztonsag-relevans terulet, MikroB eredeti kartya-kijelolese szerint).
