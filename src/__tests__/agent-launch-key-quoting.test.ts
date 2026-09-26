@@ -117,6 +117,31 @@ describe('agent launch command: vault keys are shell-escaped (card 1075d0e4)', (
     expect(SRC).not.toMatch(/ANTHROPIC_(?:AUTH_TOKEN|API_KEY)=\$\{shSingleQuote\(/)
   })
 
+  // QA2 finding 7185 on card 248d3013's own Gate-SHA: every test above proves resolveProviderEnv
+  // and launchSecretRef are individually solid, but none of them go through the REAL call site in
+  // startAgentProcessUnlocked. QA2 demonstrated by mutation that reverting that one call site back
+  // to `resolveProviderEnv(model, getSecret)` -- the pre-248d3013 shape, handing the raw secret
+  // straight through -- leaves tsc clean (both sides are structurally `(id: string) => string |
+  // null`, no nominal type distinguishes them) AND leaves all 52 existing tests in this cluster
+  // green, because every one of them calls resolveProviderEnv/launchSecretRef directly and never
+  // through this call site. This pins the call site itself, not just the functions it calls.
+  it('the resolveProviderEnv call site wraps getSecret in a launchSecretRef closure, never a bare passthrough (card 248d3013, QA2 finding 7185)', () => {
+    expect(SRC, 'resolveProviderEnv must be called with an inline closure as the 2nd argument').toMatch(
+      /resolveProviderEnv\(model,\s*\(id\)\s*=>\s*\{/,
+    )
+    expect(
+      SRC,
+      'a bare identifier (getSecret, secretShellRef, or any other name) as the 2nd argument is the ' +
+        'exact regression: tsc cannot tell a raw-secret function and a launchSecretRef-wrapping ' +
+        'closure apart, so this must never be allowed to collapse back to a passthrough',
+    ).not.toMatch(/resolveProviderEnv\(model,\s*[A-Za-z_$][\w$]*\s*\)/)
+    const callSite = SRC.slice(SRC.indexOf('resolveProviderEnv(model,'))
+    const closureBody = callSite.slice(0, callSite.indexOf('})') + 2)
+    expect(closureBody, "the call site's own closure body must call launchSecretRef, not just exist").toMatch(
+      /launchSecretRef\(/,
+    )
+  })
+
   // The escaper itself, against the payload from the finding. If this ever stops holding, the
   // source-shape test above would still pass while the protection was gone.
   it('shSingleQuote neutralises the reported payload and preserves the value', () => {
