@@ -10355,13 +10355,16 @@ body {
 }
 .mem-search-label code { font-size: 11px; opacity: .85; }
 
-/* Dispatch-priority chips (multi-project, 2026-09-26): the remove button keeps a 44px touch
-   target (rule 13) without growing the chip visually. */
-.kanban-priority-chip { cursor: default; gap: 2px; }
+/* Dispatch-priority chips (multi-project, 2026-09-26). The remove button is a real 44x44 box
+   (rule 13) inside the chip's own flow -- no negative margins. An earlier version grew the hit
+   area with negative margins, and on a wrapped 3+ chip row the targets of neighbouring rows
+   overlapped (QA, card e0f004c8), so a tap on a row boundary could remove the wrong project. */
+.kanban-priority-chip { cursor: default; gap: 2px; min-height: 44px; padding-right: 0; }
 .kanban-priority-chip-remove {
   min-width: 44px;
   min-height: 44px;
-  margin: -14px -12px -14px -4px;
+  margin: 0;
+  padding: 0;
   border: 0;
   background: transparent;
   color: inherit;

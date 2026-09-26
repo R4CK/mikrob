@@ -81,6 +81,17 @@ describe('project dispatch-priority dropdown', () => {
     expect(body).toContain("t('kanban.filter.priority_save_failed')")
   })
 
+  it('the chip remove button is a real 44px box with no negative margins (QA e0f004c8)', () => {
+    // Negative margins let the hit areas of wrapped chip rows overlap, so a tap on a row boundary
+    // could remove the wrong project. The target must be 44x44 inside the chip's own flow.
+    const m = CSS.match(/\.kanban-priority-chip-remove\s*{([^}]*)}/)
+    expect(m, 'the .kanban-priority-chip-remove rule was not found').not.toBeNull()
+    const rule = m![1]
+    expect(rule).toMatch(/min-width:\s*44px/)
+    expect(rule).toMatch(/min-height:\s*44px/)
+    expect(rule).not.toMatch(/margin[^;]*-\d/)
+  })
+
   it('all kanban.filter.priority_* i18n keys exist in both HU and EN', () => {
     const keys = [
       'kanban.filter.priority_label',
