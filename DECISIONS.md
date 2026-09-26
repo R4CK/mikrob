@@ -15208,3 +15208,47 @@ Ellenorzes: tsc --noEmit tiszta; fork-upstream-conflict-guard.test.ts + fork-ups
 szimulacioval verifikalva minden fajlon (nem csak a dontes-szoveg olvasasaval -- lasd az f5536a70
 delta-gate F2 tanulsaga ugyanebben a napi korben). 3 uj kovetkezmeny-kartya: 248d3013, b0d84dc3,
 afd64623. Gate: QA + Cybersec (a ket biztonsag-relevans genuine gap miatt).
+
+## 2026-09-26 -- d87adb90 (b5b7eb6b gyerek, 10/10, dashboard/web frontend): 5/5 fajl dontve
+
+Fajlonkent (elo 3-utas merge-szimulacio: git merge-file --diff3, base=merge-base(origin/develop,
+upstream/develop)=d4f1b1d4):
+
+1. web/app.js. +746/-54, hét régió. (a) X-Memory-Search mentés-jelzés (renderMemSearchLabel):
+   BYTE-IDENTICAL, mar megvan (korabbi kor). (b) PICKERCLIKAPU923 CLI-launch-gate +
+   custom-provider model-picker + uj "Provider-ok" settings-tab: a 6b10a6b8 backend-dontes
+   FRONTEND fele, genuinely absent, kommentelve 6b10a6b8-on (nem uj kartya, 6b szabaly). (c)
+   renderQuotaStrip Fable/Opus kvota-sor: a fd8ae23f backend-dontes FRONTEND fele, kommentelve
+   fd8ae23f-en. (d) renderCliUpdateOffer (CLIFRISSAJANLAS923): genuinely UJ, nincs meglevo
+   kartya -- uj kovetkezmeny-kartya nyitva. (e) Claude Plans panel novekedese (OAuth-token-mode,
+   live usage-check): az 1c810029 kartya novekedese, kommentelve ott. (f) BRANCH_HEAL_COMMAND
+   git-switch javitas: onallo, izolalt bugfix, ADOPTALVA EBBEN A KORBEN (web/app-updates.js). (g)
+   tobbi korabbi dontesi pont erintetlen.
+2. web/style.css. +184/-0, ket valodi konfliktus 3-utas szimulacioval. (a) .claude-plan-row*
+   pozicionalisan utkozik a fork .cxhu-banner-javal -- pending, az (1e) ponttal parosodik. (b)
+   .mem-search-label pozicionalisan utkozik, DE NO-OP: a fork mar byte-azonos szabalyt hordoz
+   (MEMKERESVAK917). .quota-strip mar megvan (c6d8d599). MELLEKLELET: a fork sajat
+   style.css-eben a .quota-strip blokk KETSZER szerepel (egyszer a c6d8d599 attribucioval, egyszer
+   attribucio nelkul egy @media utan) -- jelezve, NEM javitva (sebeszi-valtoztatas elv, kulon
+   trivialis takaritas kartya erdemes lenne, ha ez a fajl legkozelebb erintve lesz).
+3. web/index.html. +34/-4, egy valodi konfliktus (updatesCli div pozicionalis utkozes a fork
+   "Beepitett repok" oldalaval -- pending, a (1d) ponttal parosodik). Modell-lista update +
+   custom-provider markup tisztan automerge-el, 6b10a6b8 frontend fele. quota-strip/mem-search-label
+   mar megvan.
+4-5. web/lang/en.js + hu.js. +81/-30 kulcs mindketton, 0 kollizio. Ket kategoria: (a) upstream
+   sajat em-dash -> vessz/pont angol-szoveg-tisztitasa ~25 nem-kapcsolodo kulcson, kozmetikai,
+   NEM atveheto (nulla funkcionalis kulonbseg, csak diff-zaj). (b) uj kulcsok a fenti hianyokhoz
+   parosodva (overview.quota.fable, agents.model.fable51/opus55_1m/cliUnsupported/cliUnmeasured,
+   updates.cli.*, settings.claude_plans.token_mode/status.*/probe_*, memories.relaxed.title/body
+   -- ez utolso mar megvan a forkban, csak nevbeli egybeeses). Union tartva, kulcsok hasznalaton
+   kivul, amig a parositott feature meg nem landol.
+
+Ellenorzes: tsc --noEmit tiszta; fork-upstream-conflict-guard.test.ts + fork-upstream-drift-check.test.ts
++ lang-parity.test.ts 61/61 zold.
+
+**Ki dontott:** backend, a fork-upstream-drift-watch.mjs --report alapjan, elo 3-utas merge-
+szimulacioval verifikalva minden fajlon. Dedup-ellenorzes elvegezve (6b szabaly): a talalt frontend
+hianyok tobbsege MAR NYITOTT kartyara parosodik (6b10a6b8, fd8ae23f, 1c810029), csak kommentelve,
+nem duplikalva. 1 uj kovetkezmeny-kartya (CLI-update-offer, meglevo kartyaval nem duplikalt, checked).
+1 kis, izolalt bugfix (BRANCH_HEAL_COMMAND) kozvetlenul adoptalva. Gate: QA (megjelenites-pontossag,
+Cybersec nem kotelezo -- nincs uj trust-boundary, MikroB dontse el a kockazat szerint).
