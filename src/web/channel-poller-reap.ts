@@ -63,8 +63,11 @@ export function parsePollerPidsFromPs(
   return out
 }
 
-// Is this argv the provider poller itself (`bun server.ts`, `node /path/server.ts`, or the
-// `bun run --cwd <plugin> start` wrapper that spawns it)? Exported for testability.
+// Is this argv the provider poller itself (`bun server.ts`, `node /path/server.ts`, `bun --smol
+// server.ts`)? Any argv element may carry the server.ts, not only argv[1], so a plugin version
+// bump that adds a flag or an absolute path does not silently switch the reaper off (Cybersec,
+// card 8c94283b). The `bun run --cwd <plugin> start` wrapper is deliberately NOT matched: killing
+// the server.ts child is enough, and the wrapper exits with it. Exported for testability.
 //
 // The env needle alone is NOT a poller identifier: channels.sh exports *_STATE_DIR before
 // `exec claude`, so the main claude process, every MCP server and shell it spawns, and -- when
@@ -77,8 +80,7 @@ export function isPollerArgv(argv: string[]): boolean {
   const base = (a: string | undefined) => (a ?? '').split('/').pop() ?? ''
   const exe = base(argv[0])
   if (exe !== 'bun' && exe !== 'node') return false
-  if (base(argv[1]) === 'server.ts') return true
-  return argv[1] === 'run' && argv.includes('--cwd') && argv[argv.length - 1] === 'start'
+  return argv.slice(1).some((a) => base(a) === 'server.ts')
 }
 
 function readArgv(pid: number): string[] | null {
