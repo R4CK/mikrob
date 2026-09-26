@@ -301,5 +301,29 @@
     "reviewed_at": "2026-09-04",
     "description": "Anti-slop frontend design-quality skill pack (Fron Ted). 5 of ~13 skills adopted via store/vendor-skill.sh.",
     "note": "ADOPTED 2026-09-04 (Peti's GitHub-trend-scan request, this task done by MikroB). MIT license (verified directly from the LICENSE file, not just GitHub's API guess), author Leonxlnx. 5 of the ~13 skills in this repo adopted, each vendored separately (5 different dest dirs, no single vendored_to/vendored_subdir field applies -- see each skill's own VENDORED.md): design-taste-frontend (subdir skills/taste-skill, the v2/current main anti-slop skill with the DESIGN_VARIANCE/MOTION_INTENSITY/VISUAL_DENSITY dials), industrial-brutalist-ui (subdir skills/brutalist-skill), minimalist-ui (subdir skills/minimalist-skill), imagegen-frontend-web (subdir skills/imagegen-frontend-web), imagegen-frontend-mobile (subdir skills/imagegen-frontend-mobile). Deliberately SKIPPED as redundant/out-of-scope: taste-skill-v1 (explicitly superseded by v2 per the repo's own CHANGELOG.md), gpt-tasteskill and soft-skill (competing reformulations of the same anti-slop territory with conflicting specifics -- risk of contradictory directives if all three 'the one true anti-slop skill' variants are loaded together), brandkit, redesign-skill, output-skill (generic non-design-specific truncation-avoidance, unrelated to Fron Ted's remit), stitch-skill (DESIGN.md generator for Google Stitch -- we already have stitch-cloud-upload using the official SDK, a future complementary add worth a look but not this round), image-to-code-skill (written specifically for Codex, not Claude Code). None of the skipped ones are a gap we lack coverage for; flagged in DECISIONS.md 2026-09-04 for Peti's awareness rather than silently dropped. | 2026-09-16: upstream ccbc1563..e79ca9ec = README.md sponsor-logo/wording only (3 commit, 2 file, +17/-15, uj assets/sponsors/fluxion-ai.png), nincs skill-tartalom vagy kod valtozas. NO-OP, nincs kartya, Petinek nem jelzendo (tiszta sponsor-lista frissites). | 2026-09-25 review (MikroB, Sonnet subagent, read-only diff): NO-OP: 4 commit, csak README szponzor-lista es egy banner PNG; skill-fajl nem valtozott."
+  },
+  {
+    "name": "mukul975-cybersecurity-skills-tier1",
+    "repo": "https://github.com/mukul975/Anthropic-Cybersecurity-Skills",
+    "branch": "main",
+    "local": "/home/neon/marveen/store/adopted/mukul975__Anthropic-Cybersecurity-Skills",
+    "type": "code",
+    "enabled": true,
+    "last_sha": "54a79883",
+    "kind": "skill",
+    "adoption": "vendored",
+    "license": "Apache-2.0",
+    "reviewed_at": "2026-09-26",
+    "vendored_to": [
+      "seed-fleet-agents/cybersec/.claude/skills",
+      "seed-fleet-agents/cybered/.claude/skills",
+      "/home/neon/marveen/agents/cybersec/.claude/skills",
+      "/home/neon/marveen/agents/cybered/.claude/skills"
+    ],
+    "vendored_subdir": "skills/<name> for each of: testing-api-for-broken-object-level-authorization, testing-api-for-mass-assignment-vulnerability, exploiting-broken-function-level-authorization, testing-oauth2-implementation-flaws, testing-for-json-web-token-vulnerabilities, testing-for-host-header-injection, testing-cors-misconfiguration, performing-security-headers-audit, performing-ssrf-vulnerability-exploitation, performing-api-rate-limiting-bypass, detecting-indirect-prompt-injection, analyzing-supply-chain-malware-artifacts, detecting-typosquatting-packages-in-npm-pypi, implementing-dmarc-dkim-spf-email-security",
+    "note": "VENDORED 2026-09-26 (card da47b612, Tier-1 = 14 skills, per-agent only: NOT in ~/.claude/skills, NOT in seed-skills/) via store/vendor-skill.sh --ref 54a798831d2266a3ca61ce68a7acb80b81160d57 --dest <per-agent dir>. Each dir carries VENDORED.md (repo+sha+subdir+usage restriction) and UPSTREAM-LICENSE (per-skill Apache-2.0). auditing-mcp-servers-for-tool-poisoning deliberately EXCLUDED (curl|sh prerequisites, uvx @latest, proxy mode). detecting-indirect-prompt-injection: --use-model/--use-llmguard forbidden. Upstream drift is flagged here, never auto-applied; re-vendor only after a new content review.",
+    "description": "Cybersec/Cybered Tier-1 biztonsági skillek (API authz, OAuth/JWT, CORS/host-header, SSRF, rate-limit, prompt-injection-detektálás, supply-chain, e-mail auth). Per-ügynök vendorolt.",
+    "last_checked_upstream_sha": "54a79883",
+    "last_checked_at": "2026-09-26"
   }
 ]
