@@ -129,6 +129,15 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   { path: 'src/__tests__/channel-inbound-framing.test.ts', reason: 'channel framing test: synthetic wrapper frames with sample ids are the subject under test' },
   { path: 'scripts/__tests__/conversation-ledger.test.sh', reason: 'ledger test: synthetic wrapper frames with sample ids' },
   { path: 'src/__tests__/agent-terminal-mask-keys.test.ts', reason: 'terminal masking test: a hand-written sk-ant- shaped fixture IS the input under test -- the assertion is that no fragment of it reaches the audit line, so a different shape would stop measuring the thing' },
+  // Card da47b612: a VENDORED upstream skill (mukul975/Anthropic-Cybersecurity-Skills @ 54a79883),
+  // copied verbatim per agent. Its BOLA example carries two JWT-shaped PLACEHOLDERS: decoded they are a
+  // bare {"alg":"RS256","typ":"JWT"} header followed by "..." -- documentation, not a credential. The
+  // file cannot be edited to neutralise them (vendored-skill-integrity.py would report the edit as an
+  // unsanctioned delta), and the per-literal FIXTURE_EXCEPTIONS are test-path only. Compensating
+  // control for blinding the whole file here: the integrity check hashes it against the pinned
+  // upstream commit, so any local edit -- including a real secret added later -- shows up there.
+  { path: 'seed-fleet-agents/cybersec/.claude/skills/testing-api-for-broken-object-level-authorization/SKILL.md', reason: 'vendored upstream skill (card da47b612): JWT-shaped doc placeholders (bare header + "..."), content pinned by vendored-skill-integrity.py' },
+  { path: 'seed-fleet-agents/cybered/.claude/skills/testing-api-for-broken-object-level-authorization/SKILL.md', reason: 'vendored upstream skill (card da47b612): JWT-shaped doc placeholders (bare header + "..."), content pinned by vendored-skill-integrity.py' },
   // MIOCLISKILL831 -- a `marveen skill` szkennerenek fixture-jei. A fajl
   // TARGYA egy kulcs-alaku string: a mio-scan `api-key-shaped` szabalyanak
   // kell valamin tuznie, es az aranyfajl ugyanazt a szoveget tartalmazza,

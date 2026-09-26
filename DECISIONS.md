@@ -15518,3 +15518,34 @@ Ellenorzes: tsc --noEmit tiszta; fork-upstream-conflict-guard.test.ts + fork-ups
 szimulacioval verifikalva minden fajlon (nem csak a dontes-szoveg olvasasaval -- lasd az f5536a70
 delta-gate F2 tanulsaga ugyanebben a napi korben). 3 uj kovetkezmeny-kartya: 248d3013, b0d84dc3,
 afd64623. Gate: QA + Cybersec (a ket biztonsag-relevans genuine gap miatt).
+
+## 2026-09-26 -- da47b612 (7d8c0df7 gyerek): Cybersecurity-Skills Tier-1 import, per-ügynök vendorolás
+
+**Döntés:** a mukul975/Anthropic-Cybersecurity-Skills (Apache-2.0) repóból 14 skill vendorolva a
+54a798831d2266a3ca61ce68a7acb80b81160d57 commiton, KIZÁRÓLAG a cybersec és a cybered ügynökhöz:
+seed-fleet-agents/{cybersec,cybered}/.claude/skills (verziókövetett) és az élő agents/{cybersec,cybered}/.claude/skills.
+NEM ~/.claude/skills és NEM seed-skills/, mert az ott lévő skillek minden ügynök kontextusába bekerülnek.
+
+**Az előfeltétel:** a store/vendor-skill.sh kapott egy --dest kapcsolót (eddig csak a globális könyvtárba
+tudott írni). Üres --dest esetén elutasít, nem esik vissza a globálisra. vendor-skill-dest.test.ts, mutációval igazolva.
+
+**Kimaradt:** auditing-mcp-servers-for-tool-poisoning (a Prerequisites curl|sh telepítést, uvx @latest-et és
+proxy-módot ír elő). A 3 MCP-szerverünk kézi átnézése külön kártya, ha kell.
+
+**Használati korlátozások (a VENDORED.md-kben):** csak engedélyezett, saját célpont; detecting-indirect-prompt-injection
+csak heurisztikus ágon (--use-model/--use-llmguard tiltva, a szkript érintetlen); testing-cors-misconfiguration
+SKIP_TLS_VERIFY nem állítható be; implementing-dmarc-dkim-spf-email-security DoH-fallbackje (dns.google) jelölve;
+a jwt-skill prózájában szereplő jwt_tool/hashcat/john külön due diligence-t igényel.
+
+**Ellenőrzés:** vendored-skill-integrity.py: mind a 28 új könyvtár OK az 54a79883-on; mutációs próba (egy vendorolt
+.py egy karaktere) -> UNSANCTIONED DELTA, visszaállítva OK. watched-repos.json: type=code, last_sha=54a79883
+(a watcher jelez, soha nem frissít automatikusan).
+
+**Secret-gate kivétel:** a testing-api-for-broken-object-level-authorization SKILL.md két JWT-alakú
+helyőrzőt tartalmaz (dekódolva csupasz {"alg":"RS256","typ":"JWT"} fejléc + "..."), a secret-gate megfogta.
+A vendorolt fájl nem szerkeszthető, a soronkénti FIXTURE_EXCEPTIONS csak tesztútvonalra jó, ezért a két
+per-ügynök útvonal az ALLOWLISTED_PATHS-ba került. Kompenzáló kontroll: a vendored-skill-integrity.py a fájlt
+a pinnelt upstream commithoz hasonlítja, így egy későbbi helyi módosítás (valódi titok is) ott jelez.
+
+**Ki döntött:** MikroB plan-grilling verdikt (GO-WITH-CHANGES, 9 változtatás, kártya-komment 4460); tartalom-audit
+Cybersec (4402/4419/4467) + Cybered (4423/2884). Végrehajtó: cybersec. Gate: QA + Cybered.
