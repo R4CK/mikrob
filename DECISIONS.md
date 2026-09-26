@@ -15723,3 +15723,33 @@ Zold: tsc --noEmit tiszta, token-in-argv-guard.test.ts 7943/7943 (a develop fast
 Mi NEM tortent itt: a masik ket, szintaktikailag hasonlo szabaly (`curl -G` credential, path-embedded
 bot token) NEM kapott hasonlo kivetelt -- nincs mert incidens rajuk, es a kartya csak a ket erintett
 alakra (bearer-argv, url-query) korlatozodott indoklas nelkuli scope-bovites helyett.
+
+## 2026-09-26 -- d87adb90 delta (backend): BRANCH_HEAL_COMMAND regressziov teszt (QA F1 MEDIUM javitva)
+
+QA (komment 7115, Gate-SHA d2fc4d1d) F1 MEDIUM-ot adott a korabbi REVIEW-ra: a BRANCH_HEAL_COMMAND
+git-switch fix (web/app-updates.js) helyes, de nulla regressziov teszt fedte -- egy jovobeli
+"egyszerusites" csendben visszahozhatta volna a `git checkout main` alakot, ami exit 128-cal bukik
+2+ remote-os repon (ez maga a javitott hiba). QA fuggetlenul lejatszotta bash-ben mindharom esetet
+(helyi main letezik / nincs helyi main de egy remote / ket remote-os ambiguitas) es a fail-closed
+precedenciat is, de ez csak a QA sajat kezi ellenorzese volt, nem pinnelt teszt.
+
+Uj fajl: src/__tests__/branch-heal-command.test.ts. (1) Pin-teszt: a BRANCH_HEAL_COMMAND erteket
+DEKLARACIO-HORGONYZOTT regexszel (`^const BRANCH_HEAL_COMMAND = '...'`, nem bare-nev reszsztring --
+kodminosegi elv 12) huzza ki a forrasbol es pontosan egyezteti a vart sztringgel, plusz kulon assert
+hogy a `checkout main` alak nem tert vissza. (2) Harom viselkedes-teszt, valodi git-repokban,
+VALODI kihuzott parancsot futtatva (nem ujra-gepelt masolatot): (a) helyi `main` mar letezik ->
+switch kozvetlenul sikeres, update.sh (stub, marker-fajlt hoz letre) lefut; (b) ket bare remote
+(origin+upstream) mindegyike sajat `main`-t hordoz -> a sima `git switch main` bizonyitottan
+ambiguitassal bukik ebben a futtatasi kornyezetben (kulon assert, mielott a fo assertek jonnenek),
+a `git switch -c main --track origin/main` fallback explicit celzassal felold, update.sh lefut;
+(c) origin remote letezik, de sosem volt `main` branchje -> mindket switch bukik, update.sh NEM fut
+(fail-closed), az aktiv branch valtozatlan marad. Az `installer-noninteractive-apt.test.ts` mintajat
+kovetve: a shell-fragment a SAJAT forrasabol van kihuzva, nem kezzel ujra beirva -- egy megtort
+verzio itt is elesne, nem csak egy "a nev letezik" ellenorzesen.
+
+Ellenorzes: tsc --noEmit tiszta; branch-heal-command.test.ts (5/5) + updates-module.test.ts (21) +
+update-checker-branch.test.ts (13) + upstream-update-overview.test.ts (6) +
+updates-upstream-merge.test.ts (21) = 66/66 zold, a helyi worktree-n futtatva (nem a merge
+eredmenyen -- az a landolasnal jon).
+
+Gate: QA + Cybersec (a korabbi kijeloles atviteleve, a talalatra valaszolo delta-javitas).
