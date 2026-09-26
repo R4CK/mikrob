@@ -9,7 +9,10 @@
 #   * The upstream CLONE lives in store/adopted/<repo> -- store/ is gitignored, so the Marveen repo
 #     never gains a tracked file from an adoption and update.sh's ff-only pull can never conflict
 #     (the epic's explicit guarantee: "minden vendorolva a repon KIVUL").
-#   * The vendored COPY lives in ~/.claude/skills/<name>/ -- outside the repo entirely.
+#   * The vendored COPY lives in ~/.claude/skills/<name>/ -- outside the repo entirely. With
+#     --dest <dir> it goes to <dir>/<name>/ instead (card da47b612): a skill meant for ONE agent
+#     (e.g. seed-fleet-agents/cybersec/.claude/skills) must not land in the global dir, because every
+#     skill there is offered to EVERY agent's session context.
 #   * This script FETCHES and copies at an EXPLICIT commit. It never auto-follows upstream: pulling a
 #     new upstream commit is a deliberate re-run, which is the "detect+flag, nem vak update" rule.
 #   * A skill is INSTRUCTIONS THAT STEER AGENTS. That is a supply-chain surface even though it is
@@ -17,16 +20,18 @@
 #
 # Usage:
 #   vendor-skill.sh --repo <url> --name <vendored-name> [--subdir <path/in/repo>] [--ref <branch|sha>]
-#                   [--note "restriction or usage note"]
+#                   [--note "restriction or usage note"] [--dest <skills-dir>]
+#
+# Destination precedence: --dest, then $CLAUDE_SKILLS_DIR, then ~/.claude/skills (the default is
+# unchanged, so every existing caller keeps vendoring to the global dir).
 #
 # Exit: 0 ok | 2 bad usage | 3 clone/fetch failed | 4 subdir missing
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ADOPTED_DIR="$HERE/adopted"
-SKILLS_DIR="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
 
-REPO=""; NAME=""; SUBDIR=""; REF=""; NOTE=""
+REPO=""; NAME=""; SUBDIR=""; REF=""; NOTE=""; DEST_DIR=""; DEST_SET=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo)   REPO="$2"; shift 2 ;;
@@ -34,10 +39,18 @@ while [[ $# -gt 0 ]]; do
     --subdir) SUBDIR="$2"; shift 2 ;;
     --ref)    REF="$2"; shift 2 ;;
     --note)   NOTE="$2"; shift 2 ;;
+    --dest)   DEST_DIR="${2:-}"; DEST_SET=1; shift; [[ $# -gt 0 ]] && shift ;;
     *) echo "vendor-skill: unknown arg '$1'" >&2; exit 2 ;;
   esac
 done
-[[ -n "$REPO" && -n "$NAME" ]] || { echo "usage: vendor-skill.sh --repo <url> --name <name> [--subdir p] [--ref r] [--note n]" >&2; exit 2; }
+[[ -n "$REPO" && -n "$NAME" ]] || { echo "usage: vendor-skill.sh --repo <url> --name <name> [--subdir p] [--ref r] [--note n] [--dest d]" >&2; exit 2; }
+# An explicit but EMPTY --dest must not fall through to the global default: the caller asked for a
+# specific place, and silently vendoring into ~/.claude/skills is exactly the outcome --dest exists
+# to prevent.
+if [[ "$DEST_SET" == 1 && -z "$DEST_DIR" ]]; then
+  echo "vendor-skill: --dest needs a directory" >&2; exit 2
+fi
+SKILLS_DIR="${DEST_DIR:-${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}}"
 
 # Clone dir key = OWNER__REPO, never just the basename: two adopted repos can share a name
 # (mattpocock/skills and crafter-station/skills both basename to "skills"), and a bare-basename key
@@ -129,7 +142,7 @@ ${NOTE:+> **Usage restriction:** $NOTE}
 ## Re-vendor
 
 \`\`\`
-store/vendor-skill.sh --repo $REPO --name $NAME${SUBDIR:+ --subdir $SUBDIR}${REF:+ --ref $REF}${NOTE:+ --note \"$NOTE\"}
+store/vendor-skill.sh --repo $REPO --name $NAME${SUBDIR:+ --subdir $SUBDIR}${REF:+ --ref $REF}${NOTE:+ --note \"$NOTE\"}${DEST_DIR:+ --dest $DEST_DIR}
 \`\`\`
 
 Upstream changes are DETECTED + FLAGGED by store/git-repo-watcher.sh; they are never auto-applied

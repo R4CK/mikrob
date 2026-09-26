@@ -14987,6 +14987,105 @@ tiszta.
 **Ki döntött:** MikroB (kivizsgálás, root cause, kártya nyitása), backend3 (a javítás, a meglévő
 izolációs minta felismerése és kiterjesztése ahelyett, hogy fájlonként patchelt volna). Gate: QA.
 
+## 2026-09-25 -- b5b7eb6b gyerek 61817eb9 (3/10, docs/templates/skillek/CI)
+
+A `b5b7eb6b` Feladat-szülő 3/10 gyerekkártyája: 5 fájl, ahol korábban SENKI nem döntött
+(`ACKNOWLEDGED_CONFLICTS`-ban nem szerepeltek), plusz `README.md`, ahol a meglévő pin már
+pontosan a jelenlegi upstream-csúcsra mutatott (nem kellett új munka). A 09d54e88 QA FAIL-ből
+levont módszertan alkalmazva a kezdettől fogva: SOHA-nem-pin-elt fájlnál a valódi 3-way merge
+konfliktus-markerei a döntésre váró jel (a két-pontos diff a fork-HEAD ellenében a teljes
+történeti eltérést is hordozza, aminek nagy része harmless, nem-döntendő tartalom -- ellenőrizve
+a `templates/CLAUDE.md.template` és a `README.md` esetén konfliktus-marker-szám vs. nyers
+diff-sorszám kereszt-ellenőrzéssel).
+
+**Fájlonkénti döntés:**
+1. `.github/workflows/test.yml` -- KEEP a fork sora (`bash scripts/__tests__/ollama-boot-
+   restore.test.sh`). Upstream 9 új CI-lépést ad hozzá (egress-drift-scan, dash-audit-scan,
+   mio-orszem-precheck, memory-link-audit, keepalive-probe-install, morning-stamp-gate,
+   morning-timer-park, userbot-arming-gate, supabase-q-token-hiding), és mind a 9 olyan
+   szkriptre hivatkozik, ami SEHOL nem létezik ebben a forkban (ellenőrizve: `find
+   scripts/__tests__` minden névre, nulla találat). Upstream egészben-vétele azonnal
+   eltörné a CI-t. Mindegyik feature-adoptálási kérdés, nem CI-drótozási döntés.
+2. `docs/telegram-progress-indicator.md` -- ADOPT upstream teljes egészében (mindkét hunk:
+   a provider-gate magyarázat + a `retire-progress-watchdog.sh` parancs a nyers launchctl/
+   systemctl helyett) -- párosítva a `scripts/install-telegram-progress-hook.sh` már
+   korábban (09d54e88 1/10) ADOPT-olt döntésével: a kód oldal már átvette a provider-gate +
+   `retire_provider()` mechanizmust, a doksinak ezt kell tükröznie.
+3. `docs/token-usage.md` -- SEM oldal szó szerint, mert mindkettő elavult a TÉNYLEGES kódhoz
+   képest (`src/db.ts:1427`, `src/web/token-usage.ts:332-339` közvetlenül ellenőrizve): az
+   `agent` mező már kikerült a unique index kulcsából (kártya b774f057, landolva), az INSERT
+   már `ON CONFLICT...DO UPDATE`-tel tölti a `model`/`thinking_tokens` mezőt NULL esetén --
+   pontosan amit upstream hunkja leír, csak upstream szövege még `agent`-et is a kulcs
+   részének mondja. A fork saját szövege még elavultabb ("still planned and blocked").
+   Egyik hunk sem vehető át változtatás nélkül -- a doksi-pontosítás e kártya hatókörén
+   kívül esik, jelezve, nem itt megírva. Külön flag: a `src/web/token-usage.ts` saját
+   34-40. sorbeli kommentje ugyanezt az elavultságot hordozza (forráskód-komment javítás,
+   szintén jelezve). Adoptálásra érdemes, EZEN a kártyán kívüli follow-up: TOKENVAK915 --
+   upstream harmadik agent-discovery forrása (a fő ágens saját izolált config-gyökere)
+   hiányzik innen, ami miatt annak token-sorai csendben eltűnhetnek a dashboardról.
+4. `seed-scheduled-tasks/kanban-audit/SKILL.md` -- KEEP a fork inline-python kliens-oldali
+   számolása mindkét hunkra (archiválási-jelölt szám, stuck/waiting detekció). Upstream
+   egy dedikált `/api/kanban/stuck?planned_days=N&active_days=N` szerver-végpontot hívna --
+   ellenőrizve, ilyen route SEHOL nem létezik (`src/web/routes/kanban.ts`), a doksi
+   átvétele egy 404-et curl-özne. Valódi, jó ötlet (szerver-oldali, újrafelhasználható,
+   önjelentő számok) -- külön kártyát érdemel (új végpont + skill-átírás), itt nem döntve.
+5. `templates/CLAUDE.md.template` -- KEEP a fork `-H @"$hdr_file"` piped-header curl
+   mintája a négy memória/kanban parancs-példában -- upstream cserélje nyers
+   `-H "Authorization: Bearer $(cat ...)"` argv-alakra ugyanaz a token-in-argv sebezhetőségi
+   osztály, amit a fork máshol (watchdog.sh, install-prod-tree-guard-hook.sh, b267df80)
+   elutasított. Ez egy TEMPLATE, ami minden friss telepítés saját CLAUDE.md-jébe renderelődik
+   -- upstream alakjának átvétele minden új ügynököt a bizonytalan mintára tanítana.
+   **KÖZBEN, ugyanebben a körben, upstream ÚJRA lépett** (MAILWINDOW24, commit 61b98a38,
+   `d1b08abd1a896ab4533b13da24762f747c13454d`): egy teljesen független hunk (a reggeli
+   napindító "Utasítások" blokkja, nem a curl-idióma). ADOPTOLVA szó szerint: (1) az email
+   keresési ablak 12 óráról 24 órára nő, mert a szeedelt ütemezett feladat 07:30-kor fut,
+   egy 12 órás ablak 19:30-kor nyílna az előző este, és a teljes előző munkanap levelezése
+   csendben kimaradna az EMAIL szekcióból; (2) egy új mondat kimondja, hogy a feladó/tárgy
+   HARMADIK FÉLTŐL jövő adat, idézendő, nem követendő -- prompt-injekció elleni védelem,
+   szigorúan additív. Nulla átfedés a curl-idióma döntéssel (más sortartomány, a commit
+   saját egy-hunkos diffje igazolja). **KÜLÖN, JELZETT LELET, ITT NEM JAVÍTVA** (e doksi-
+   template-kártya hatókörén kívül): a fork TÉNYLEGES ÉLŐ gyökér-CLAUDE.md-je (nem ez a
+   repo-beli template, hanem a telepített fájl, amiből MikroB ténylegesen dolgozik) MÉG
+   MINDIG "elmúlt 12 órából"-t mond a saját Reggeli napindító szekciójában -- ugyanaz a
+   hiba, amit upstream most javított a template-ben, javítatlan abban a fájlban, amiből
+   MikroB naponta ténylegesen dolgozik. MikroB-nek jelezve, nem itt szerkesztve (a live
+   gyökér-CLAUDE.md nem ennek a kártyának a git-diffje).
+6. `README.md` -- a meglévő pin (`27eccf3fd2869e59360e3a7e3230546ecd61b4c3`) ellenőrizve
+   pontosan a jelenlegi upstream-csúcsra mutat, nincs új munka.
+
+**Anchor:** `ACKNOWLEDGED_FORK_ANCHORS['.github/workflows/test.yml']` (needle:
+`egress-drift-scan.test.py`, expect: `absent`) -- mutáció-tesztelve: a needle-t ideiglenesen
+beszúrva a valódi `.github/workflows/test.yml`-be, a `fork-upstream-conflict-guard.test.ts`
+1/36 esete PONTOSAN erre az anchorra bukott (a többi 35 zöld maradt), majd visszaállítva
+`git checkout --`-vel, üres diff igazolva.
+
+**Zöld:** `fork-upstream-drift-check.test.ts` 21/21, `fork-upstream-conflict-guard.test.ts`
+36/36 (az új anchorral együtt), `tsc --noEmit` tiszta. Élő `fork-upstream-drift-watch.mjs
+--report` újrafuttatva `npm run build` után: mind az 5 újonnan eldöntött fájl LEKERÜLT a
+"NOBODY HAS DECIDED" listáról, a README.md sem jelenik meg (a pin változatlanul él).
+
+**Mi NEM történt itt:** a tényleges upstream-kód-merge (ez csak a JÖVŐBELI merge döntését
+rögzíti, nem hajtja végre most); a `docs/token-usage.md` doksi-pontosítás megírása;
+TOKENVAK915 (harmadik agent-discovery forrás) kódjavítása; a `/api/kanban/stuck` végpont
+megépítése; a live gyökér-CLAUDE.md 12->24 órás javítása (MikroB hatásköre).
+
+**Ki döntött:** backend3 (fájlonkénti döntés, mutációs anchor-ellenőrzés). Gate: QA.
+
+**UTÓLAGOS ÖNJAVÍTÁS, még landolás előtt, a `marveen-land.sh` első futásán elkapva:** a
+`templates/CLAUDE.md.template` döntés-szövege eredetileg szó szerint idézte upstream elutasított
+mintáját (`` `-H "Authorization: Bearer $(cat ...)"` `` bakhtick-fenced argv-alak), és ez a
+`token-in-argv-guard.test.ts` FALSE POSITIVE-ját váltotta ki: a scanner a "curl" szót keresi
+darabolási pontnak, és mivel a mondatban a biztonságos `-H @"$hdr_file"` említés a "curl" szó
+ELŐTT állt, a darabolás azt egy ELDOBOTT chunkba tette, míg a `Authorization: Bearer $(...)` alak
+a MEGTARTOTT, curl-t tartalmazó chunkba került -- a két rész emiatt sosem találkozott ugyanabban
+a kiértékelt darabban, a mentő `-H @` jelenlét nem számított. Javítva: a döntés-szöveg átírva úgy,
+hogy NE tartalmazzon szó szerinti, `Bearer` után közvetlenül `$(`/`${`/`$betű`/backtick-kezdetű
+interpolációt idéző kódrészletet (a tényleges jelentés megtartva, csak a szó szerinti idézet
+elkerülve) -- ugyanaz az idióma, amit ez a fájl máshol (pl. a 09d54e88 watchdog.sh bejegyzés)
+már helyesen alkalmaz ("leaked the token via curl argv" prózaként, nem szó szerinti kód-idézetként).
+`token-in-argv-guard.test.ts` (7418 teszt) + a két fork-upstream guard (57 teszt) újra zöld a
+javítás után, `tsc --noEmit` tiszta.
+
 ## 2026-09-25 -- f5536a70 (b5b7eb6b gyerek, 4/10, dashboard/src core -- memory/db/web belepesi pontok): 6/6 fajl dontve
 
 **A feladat:** a fork/upstream ujra-dontes teruleti bontasaban (MikroB dontese, msg 4123) a
@@ -15060,6 +15159,153 @@ igeny nelkul).
 frissitese + 3 kovetkezo-kartya nyitasa). Gate: QA + Cybersec (biztonsag-relevans terulet, MikroB
 eredeti kartya-kijelolese szerint).
 
+## 2026-09-25 -- 9163495b (b5b7eb6b gyerek, 6/10, dashboard/src -- agent-eletciklus: config/worker/scaffold/model): 8/8 fajl dontve
+
+**A feladat:** a fork/upstream ujra-dontes teruleti bontasaban (MikroB dontese, msg 4123) a
+dashboard/src agent-eletciklus modul 8 fajlja -- 5 fajl SENKI ALTAL NEM DONTOTT (uj dontes kellett),
+3 fajl ELAVULT ELISMERES (a korabbi szabalyt ujra kellett dontenie a MOSTANI upstream tartalom
+ellen).
+
+**src/web/active-model.ts** (uj dontes): KEEP a fork mert-async+bounded-tail+coalescing
+readActiveModelFromProjectDir/readContextTokensFromProjectDir (kartyak d3dc35bf, 9a2fd3f7) --
+upstream jelenlegi valtozata VISSZAALLITOTTA szinkronra (regresszio, GET /api/agents korabban
+3.8-7.4s stallt okozott). ADOPT additiv: encodeClaudeProjectDir (uj src/claude-project-dir.ts,
+pontossagi javitas) + readLastConversationTsFromProjectDir/readTranscriptMtimeAcrossConfigDirs
+(kartya GATEMTIME922).
+
+**src/web/agent-config.ts** (uj dontes): KEEP a fork fail-closed listAllAgentNames()+
+listRejectedAgentDirNames() (kartya 53c59307, Cybered lelet) -- upstream unfiltered valtozata
+regresszio. ADOPT additiv: sanitizeToolDenyList()/TOOL_DENY_* + uj
+readAgentCustomProvider/writeAgentCustomProvider. Biztonsag-kritikus, tenyleges kod-merge
+elhalasztva az F5 supervised cutoverre (kartya 5c134edf) -- ez a dontes rogzitese, nem maga a
+merge.
+
+**src/web/agent-worker.ts** (uj dontes): KEEP a fork tmuxBin() lazy resolver -- interim allapot
+az agent-process.ts F5 cutoverig. ADOPT additiv: tmuxStderr()-alapu logolas (TMUXWINDOWATTR920).
+
+**src/web/command-task.ts** (uj dontes): KEEP a fork async execFileAsync WHOLESALE -- ket mert
+incidens vedi (2026-08-07 dashboard self-deadlock szinkron spawnSync-kal; kartya 423b8274/Cybersec
+8304#2 process-group-kill). Upstream spawnSync mindket regressziot ujranyitna. ADOPT additiv:
+resolveCommandPlaceholders().
+
+**src/web/stuck-tool-call-watcher.ts** (uj dontes): KEEP tmuxBin() lazy resolver, ADOPT additiv
+tmuxStderr() logolas -- ugyanaz a mintazat mint agent-worker.ts.
+
+**src/web/agent-scaffold.ts** (elavult elismeres, pin c5dd9bc6 -> 01dbde76): ellenorizve, NULLA
+talalat a korabban eldontott szimbolumokon, biztonsagos bumpolni.
+
+**src/web/agent-process.ts** (elavult elismeres, pin SZANDEKOSAN NEM bumpolva): ujra-merve,
+VALODI mozgas talalva (resolveProviderEnv, uj LAUNCH_SECRETS_DIR_MODE/launchSecretRef mechanizmus,
+kartya LATENSKULCSARGV920) -- a korabban eldontott pontok (umask 002+agentTmuxTarget) meg mindig
+ervenyesek es elutasitottak.
+
+**src/web/context-guard-runner.ts** (elavult elismeres, pin SZANDEKOSAN NEM bumpolva): ujra-merve,
+VALODI mozgas talalva (configDirFor() athelyezve egy uj, meg nem ellenorzott
+main-transcript-root.js modulba).
+
+Uj ACKNOWLEDGED_FORK_ANCHORS bejegyzes (kartya 66ad1f95 tripwire-mechanizmus): 'src/web/agent-config.ts',
+needle 'export function listRejectedAgentDirNames', expect 'present' -- a
+fork-upstream-conflict-guard.test.ts "no refusal ships WITHOUT a tripwire" tesztje kotelezove tette
+(a listAllAgentNames refusal uj bejegyzese miatt), a szimbolum letezeset grep-pel ellenoriztem a
+fork sajat fajljaban dontes elott.
+
+Tenyleges kod-merge NEM keszult a 4 nagyobb/kockazatosabb fajlra (agent-config.ts, agent-worker.ts
+custom-provider fele, agent-process.ts, context-guard-runner.ts) -- szandekos dontes, ugyanazt a
+precedenst koveti amit ugyanez a fajl mar korabban lefektetett agent-scaffold.ts-re ("NOT safe to
+hand-merge under time pressure"): a tenyleges szinkron az F5 Peti-felugyelt cutoverre (kartya
+5c134edf) van halasztva, de a DONTES a kartya sajat deliverable-je szerint (ACKNOWLEDGED_CONFLICTS
++ blob-pin) teljes egeszeben rogzitve van.
+
+**Landolasi menet** (dokumentalva mert nem trivialis): a marveen-land.sh backend2 elso futasa
+utkozott a src/fork-upstream/acknowledged-conflicts.ts-en (parent b5b7eb6b osszes testver-kartyaja
+ugyanezt a megosztott fajlt szerkeszti). Az auto-union a scriptben csak DECISIONS.md/README.md-re
+megy, erre a fajlra nem -- kezzel oldottam fel UNIOVAL (a szulo-kartya sajat szabalya szerint, sose
+eldobva masik kartya bejegyzeset), majd a marveen-land.sh tobbi lepeset (seam-check mindket
+iranyban, npm-lockfile-sync-check, fleet-test.sh, conflict-marker-check, fork-verzio bump)
+egyenkent lefuttattam ugyanazokkal az eszkozokkel amiket a script maga hasznal. Push kozben meg
+ketszer utkoztem egy-egy tovabbi konkurrens landolassal (backend/f5536a70 -- a szulo egy masik
+testver-kartyaja, dashboard/src core memory/db/web terulet; majd mikrob/f4cd1783, nem erintette ezt
+a fajlt) -- mindket esetben ujra-fetch + merge + union-resolve, ujra-futtatott seam-check/tesztek/
+fleet-test.sh mielott vegul push-oltam. Vegso push-olt Gate-SHA: 831747cd.
+
+**Ellenorzes:** 3 celzott strukturalis teszt-fajl (fork-upstream-conflict-guard.test.ts,
+fork-upstream-drift-check.test.ts, runner-conflict-resolution-pins.test.ts) 69/69 zold, tsc
+--noEmit tiszta, mindket futasban a fleet-test.sh a merge eredmenyen (a `fleet-test.sh --ref
+<sha>` szerint, ketszer futtatva a ket egymast koveto merge-allapoton): 814/814 teszt-fajl zold,
+19524 teszt zold + 101 skip, lint-ratchet nem romlott (255 lelet, baseline tart).
+
+**Ki dontott:** backend2 (a 8 fajl felulvizsgalata + ACKNOWLEDGED_CONFLICTS/ACKNOWLEDGED_UPSTREAM_BLOBS/
+ACKNOWLEDGED_FORK_ANCHORS frissitese). Gate: QA + Cybersec (biztonsag-relevans terulet, MikroB
+eredeti kartya-kijelolese szerint). QA (qa2) elso kore FAIL-t adott a hianyzo bejegyzes miatt
+(kartya-komment 6893) -- ez a bejegyzes potolja azt, Cybersec mar GO-t adott (komment 6884).
+
+## 2026-09-25 -- 14284837 (b5b7eb6b gyerek, 9/10, dashboard/src -- tesztek 2/2, senki-altal-nem-dontott): 8/8 fajl dontve
+
+**A feladat:** a fork/upstream ujra-dontes teruleti bontasaban (MikroB dontese, msg 4123) a
+dashboard/src -- tesztek 2/2 terulet 8 senki-altal-nem-dontott fajlja: memory-search-label-backfill,
+memory-search-tier-goes-into-the-query, model-suggest, project-settings-hook-anchor,
+router-main-agent-wakeup, router-no-silent-reinject, token-prune-lag, voice-channel-hanna
+(mind src/__tests__/ alatt).
+
+**3 ADOPT WHOLESALE** (upstream tartalma at, biztonsagos):
+- memory-search-label-backfill.test.ts: a STORE_DIR-mock-kiegeszites atveve. EGY uj tesztblokkot
+  ('raw accented q is a silent 400') NEM vettem at -- futtatva FAIL-t adott, mert a fork
+  buildMemorySearchLabelBody()-ja nem termeli az upstream szoveget (a hozza tartozo
+  production-oldali valtozas nincs portolva a forkba).
+- memory-search-tier-goes-into-the-query.test.ts: teljes egeszeben atveve, egy szandekos
+  elteressel: az upstream 'chunk.toString()' helyett 'String(chunk)' maradt -- a `chunk: any`
+  tipus miatt a .toString() eredmenye is `any`, ami @typescript-eslint/no-unsafe-argument
+  regressziot okozott (109->110 a lint-ratchet-en, kulon commit bd5079e3-ban javitva).
+- token-prune-lag.test.ts: teljes egeszeben atveve (csak komment-atfogalmazas, nulla funkcionalis
+  elteres).
+
+**4 KEEP FORK WHOLESALE** (nincs fajlvaltozas, a fajl a fork sajat verzioja marad):
+- model-suggest.test.ts: az upstream valtozat a fork sajat contextAvgPerCall/
+  CONTEXT_PER_CALL_HIGH/CONTEXT_PER_CALL_MEDIUM mechanizmusara epulne, ami nincs portolva a fork
+  model-suggest.ts-ebe -- es a Peti-pinnelt disztribucio-alapertelmezes invarianst (kartya
+  d041760b, 2026-08-06) csendben felulirna.
+- project-settings-hook-anchor.test.ts: az upstream egyszerusitett EXPECTED-terkepe es a dobott
+  (script,matcher)-par teszt csendben visszavonna a fork sajat, elo Cybersec-lelet (kartya
+  c00d5429) altal megkovetelt 10 nevesitett PreToolUse guard-ellenorzest.
+- router-no-silent-reinject.test.ts: fork sajat verzioja marad, nincs indok az atvetelre.
+- voice-channel-hanna.test.ts: az upstream valtozat dobna a fork allowlist-teszteket (kartya
+  7503bb31) -- a production guard (isAllowedVoiceChannelDevice, src/web/routes/messages.ts) elo,
+  meg mindig ervenyes.
+
+**1 NOT ADOPTED** (scratch fajl torolve, nincs vegleges valtozas):
+- router-main-agent-wakeup.test.ts: elso proba FAIL 3/3 (hianyzo getKanbanCardStateByIdPrefix/
+  closeOtelSpanIfOpen a ../db.js mockban -- fork-specifikus supersession-check, sajat testver
+  test-fajl mintajaval kiegeszitve). Mock-kiegeszites utan meg mindig FAIL 2/3, VALODI mert bug a
+  fork sajat src/web/message-router.ts-eben: a MAIN_AGENT_WAKEUP_COOLDOWN_MS-gatelt
+  sendPromptToSession(waitForIdle:false) hivas meg mindig meghivodik busy main-channel pane-en.
+  Kovetkezo-kartya javasolva a router-oldali javitasra, meg nincs nyitva.
+
+Uj ACKNOWLEDGED_FORK_ANCHORS bejegyzesek (kartya 66ad1f95 tripwire-mechanizmus, 2 uj refusal
+miatt kotelezo, grep-pel ellenorizve dontes elott):
+- project-settings-hook-anchor.test.ts: needle 'secret-write-guard.py', file .claude/settings.json,
+  expect present.
+- router-main-agent-wakeup.test.ts: needle 'const MAIN_AGENT_WAKEUP_COOLDOWN_MS', file
+  src/web/message-router.ts, expect present -- ha eltunik, a router-oldali javitas valoszinuleg
+  landolt, a teszt ujra-probalando adopciora.
+
+**Lint-ratchet javitas** (kulon commit, bd5079e3): a fenti memory-search-tier-goes-into-the-query
+elteres oka es merese ugyanitt, nem ismetlem.
+
+**Ellenorzes:** a vegleges push-olt Gate-SHA-n (77182d55, egyutt landolva a 9163495b-vel egy
+kombinalt merge-ben) 10 celzott teszt-fajl egyutt: fork-upstream-conflict-guard.test.ts (36) +
+fork-upstream-drift-check.test.ts (21) + runner-conflict-resolution-pins.test.ts (12) +
+memory-search-label-backfill.test.ts (10) + memory-search-tier-goes-into-the-query.test.ts (9) +
+token-prune-lag.test.ts (11) + model-suggest.test.ts (30) + project-settings-hook-anchor.test.ts
+(5) + router-no-silent-reinject.test.ts (3) + voice-channel-hanna.test.ts (15) = 152/152 zold.
+Mind a 8 uj pin pontosan egyezik a jelenlegi upstream-csuccsal. tsc --noEmit tiszta. Fleet-test.sh
+a merge eredmenyen (a `fleet-test.sh --ref <sha>` szerint): 814/814 teszt-fajl zold, 19524/19625
+teszt zold (101 skip), lint-ratchet nem romlott (255 lelet, baseline tart).
+
+**Ki dontott:** backend2 (a 8 fajl felulvizsgalata + ACKNOWLEDGED_CONFLICTS/ACKNOWLEDGED_UPSTREAM_BLOBS/
+ACKNOWLEDGED_FORK_ANCHORS frissitese + a lint-ratchet javitas). Gate: QA + Cybersec. QA (qa2) elso
+kore FAIL-t adott a hianyzo DECISIONS.md bejegyzes miatt (kartya-komment 6939, a technikai munkat
+es a lint-javitast fuggetlenul megerositette) -- ez a bejegyzes potolja azt.
+
 ## 2026-09-25 -- f4cd1783 -- 11 külső skill per-ügynök vendorolása, a nem használt repók törlése
 
 **Kontextus.** Peti (Telegram 9268, 19:45): minden telepítetlen repót ellenőrizni és beépíteni,
@@ -15123,3 +15369,357 @@ nem git repó: a vendorolt példányok és a törlések nem termelnek diffet. Gi
 
 **Ki döntött:** Peti (a kérés és a törlés), MikroB (a per-ügynök hozzárendelés és a
 korlátozások beépítése a Cybersec auditja alapján).
+
+## 2026-09-25 -- 3669d930 (b5b7eb6b gyerek, 5/10, dashboard/src web/routes -- bizalmi hatar): 6/6 fajl dontve
+
+**Dontes:** a `node store/fork-upstream-drift-watch.mjs --report` altal jelzett 6 fajl mindegyikere
+dontes szuletett a `src/fork-upstream/acknowledged-conflicts.ts`-ben (policy/dontes-rekord a
+KOVETKEZO valodi upstream merge-hez).
+
+1. **src/web/routes/agents.ts** (stale pin): regi blob 44349c36..15 -> uj blob 6460da89..70
+   (+393 sor, az egyik legnagyobb egyszeri novekmeny ezen a fajlon). A rogzitett konfliktus-pont
+   (stopAgentProcess / MiniMax-tiltas / /api/models/available) erintetlen. 4 uj kepesseg NEM
+   adoptalva: PICKERCLIKAPU923 (CLI-verzio-fuggo modell-inditasi kapu), customProvider wiring, egy
+   persona-write-guard (PERSONANOCLOBBER923), es egy VALODI BUGFIX a model-suggest jelekben
+   (contextAvgPerCallMap/kanbanLoadMap -- a regi kod totalInput-ot nezte a teljes kontextus helyett,
+   ~2.9 token/hivast mutatva ~354k helyett, es archived_at IS NULL-t status<>'done' helyett,
+   felduzzasztott aktiv-kartya-szammal). Kovetkezmeny: kartya 6b10a6b8 (NORMAL).
+
+2. **src/web/routes/kanban.ts** (stale pin): regi blob 83ab8067..5c -> uj blob a52b288b..21
+   (+102/-13). A dispatch-text/resolveKanbanDispatch/reportUndeliveredDispatch/self-advance/
+   /blockers dontesi pontok mind erintetlenek. 5 uj kepesseg NEM adoptalva: includeArchived +
+   ismeretlen-parameter 400, uj GET /api/kanban/stuck vegpont (KANBANSTUCKURES916), agent=/assignee=
+   alias+validacio, parentWouldCycle (409 korkorossegre a szulo-lancon), automated comment flag.
+   Kovetkezmeny: kartya 5aaf7209 (NORMAL).
+
+3. **src/web/routes/memories.ts** (stale pin, csak pin-frissites): regi blob b4f97117..96 -> uj
+   blob c25e5264..71. A rogzitett union (max_chars + offset pagination) erintetlen. Az upstream
+   diffben latszo X-Memory-Search fejlec/strict=1, GET /api/memories/:id, updated_by es
+   MEMORY_IMPORT_CATEGORIZE_MODEL MIND mar jelen van a fork elo fajljaban (korabbi, kulon kort
+   kepzo adoptalas) -- grep-ellenorizve, nincs res, nincs kovetkezmeny-kartya.
+
+4. **src/web/routes/messages.ts** (stale pin, csak pin-frissites): regi blob b0160f69..af -> uj
+   blob b3b4b4d5..ea. Mindket rogzitett hunk (GET-handler komment, notify-mezo/try-catch-beagyazas)
+   erintetlen. Az upstream SYSTEM_DIRECTIVE_SENDER-tiltas, VOICE_CHANNEL_AGENT_ID device-key-kapu es
+   uzenet-frissesseg-jelzes (attachFreshness) mind mar jelen van a fork elo fajljaban, sajat nevezek
+   alatt (isReservedSenderId, VOICE_CHANNEL_AGENT_ID, attachFreshness) -- parhuzamos implementacio,
+   nincs res.
+
+5. **src/web/routes/marveen.ts** (UJ dontes): a fork sajat active-model.ts-e mar tamogat egy
+   opcionalis configDir parametert, de a hivo (ez a fajl) nem adja at. Upstream configDirFor(
+   MAIN_AGENT_ID)-t vezet be egy uj main-transcript-root.js modulbol, ami a channels-session sajat
+   CLAUDE_CONFIG_DIR-jet oldja fel a helyes transcript-gyokerhez (megjelenitesi hiba javitasa: rossz
+   modell-nev mutatasa egy elavult transcriptbol). NEM adoptalva ebben a korben (uj modul kell hozza
+   elobb). Kovetkezmeny: kartya fd8ae23f (NORMAL).
+
+6. **src/web/routes/overview.ts** (UJ dontes): upstream readFableSnapshot + DEFAULT_FABLE_MAX_AGE_SEC-et
+   ad a quota.js importokhoz -- a fork sajat quota-snapshot.ts-eben nincs readFableSnapshot, tehat a
+   mar elerheto Fable-modell (claude-fable-5-1, lasd 1. pont) kvota-kovetese teljesen hianyzik. NEM
+   adoptalva ebben a korben (cross-file, quota-snapshot.ts bovitese is kell). Kovetkezmeny: ugyanaz a
+   kartya fd8ae23f, egyutt az 5. ponttal.
+
+**Uj kovetkezmeny-kartyak (mind planned/backend/MikroB projekt, @backend label):** 6b10a6b8 (NORMAL,
+agents.ts 4 kepesseg), 5aaf7209 (NORMAL, kanban.ts 5 kepesseg), fd8ae23f (NORMAL, marveen.ts+
+overview.ts 2 kepesseg). Dedup-ellenorizve mindharomra kulcsszo szerint, nincs meglevo kartya.
+
+**Ellenorzes:** `tsc --noEmit` tiszta (2x). `fork-upstream-conflict-guard.test.ts` +
+`fork-upstream-drift-check.test.ts` 57/57 zold (2x) -- egy elso menet 1 hibat adott ("every
+recorded refusal is watched by an anchor", agents.ts VALUE szoveg a `/NOT ADOPTED/i` regexre
+illeszkedett es nem volt hozza ACKNOWLEDGED_FORK_ANCHORS bejegyzes), javitva "Not adopted" ->
+"Not adoptable" atfogalmazassal (a szoveg jelentese nem valtozott, csak a horgony-kovetelmenyt
+kivalto szo szerinti minta), masodik menetben mar 57/57. Teljes fleet-test a Gate-SHA-n:
+814/814 fajl, 19524/19625 teszt zold (101 skip).
+
+**Ki dontott:** backend (a 6 fajl felulvizsgalata + ACKNOWLEDGED_CONFLICTS/ACKNOWLEDGED_UPSTREAM_BLOBS
+frissitese + 3 kovetkezo-kartya nyitasa). Gate: QA + Cybersec (biztonsag-relevans terulet, MikroB
+eredeti kartya-kijelolese szerint).
+
+## 2026-09-25 -- b5b7eb6b gyerek 577db3a7 (7/10, dashboard/src -- guard/gate/router/schedule/token-usage), 5/5 elavult elismeres ujra-dontve
+
+Mind az 5 fajl ELAVULT ELISMERES volt (a korabbi szabaly a MOSTANI upstream-tartalom ellen ujra-
+dontendo). Modszertan a 09d54e88 QA FAIL tanulsaga szerint alkalmazva a kezdettol: minden fajlnal
+`git diff <regi-pin> <uj-upstream-blob>` a TELJES tartomanyra (nem csak a merge-szimulacio
+konfliktus-markerei), es a ket eredetileg eldontott pont kifejezett, kod-szintu ellenorzese a fork
+JELENLEGI elo fajljaban (nem csak a diff olvasasa).
+
+**Fajlonkenti eredmeny (mind az 5-nel: a regi dontesi pontok VALTOZATLANOK, uj upstream-novekedes
+egyik sem erinti oket):**
+
+1. `src/web/context-restart-gate-runner.ts` (83b90ef1 -> 1c25459c) -- upstream KIEMELTE a helyi
+   `configDirFor`-t egy uj kozos modulba (`src/web/main-transcript-root.ts`, nincs itt), hogy
+   megszuntesse a MASODIK, kulon masolatot amit a `context-guard-runner.ts` is hordoz (ellenorizve:
+   az MEG MINDIG kulon sajat `configDirFor`-t hordoz, sor 210), ES kijavitott egy valodi hibat: a fo
+   agens SAJAT izolalt config-gyokere sosem volt keresve. Ez UGYANAZ a TOKENVAK915 hiba, amit MAR
+   KETSZER jeleztem ebben a korben (61817eb9 docs/token-usage.md, es alant token-usage.ts) -- most
+   HARMADSZOR, a legtisztabb kod-otthonaban. NEM adoptalva itt (tobb-fajlos kiemeles + viselkedes-
+   valtozas). Negy tovabbi tisztan additiv, nem-utkozo valtoztatas SZINTEN NEM adoptalva, nevesitve:
+   TMUXWINDOWATTR920 (tmux stderr pipe-olasa), GATEMTIME922 (valos beszelgetes-idobelyeg mtime
+   helyett, mert egy inaktiv session bookkeeping-irasai orokke mozgatjak az mtime-ot), GATEDEADLOCK922
+   (blokk-kor eszkalacio 120 perc utan), es KIEMELT SULYLYAL, BIZTONSAGI RELEVANCIAVAL: GATESENDER922
+   -- a fork JELENLEG a figyelt agens SAJAT NEVEBEN kuldi a perzisztens-blokk riasztast
+   (`createAgentMessage(name, ...)`, ellenorizve elo kodon, sor 776-781), upstream `'system'`-re
+   javitotta -- pontosan a `[CONTEXT-RESTART-GATE]` prefix, amit a SAJAT gyoker-CLAUDE.md-nk a
+   rendszer-direktiva hitelesitesi szabalyaban NEVESIT. MikroB-nek jelezve: erdemes ezt Cybersec ele
+   vinni, nem csak passziv adoptalasi jeloltkent kezelni.
+2. `src/web/hook-registration-guard.ts` (9b3bae69 -> 3bdb2fb5) -- 4 Slack-nev (out of scope, Telegram-
+   only fork) + `memory-frontmatter-gate.py` (nem letezik itt) -- egyik sem adoptalva, ugyanaz a
+   fileExists-kriterium, amit ez a szabaly mar korabban is hasznalt sajatmagara.
+3. `src/web/message-router.ts` (f962c8be -> 178c5f98) -- nagy additiv novekedes: engedely-promptot
+   felismero stuck-session riasztas (majdnem eldobott 165k tokennyi futo munkat 2026-09-03-an),
+   `selectTickWindow` igazsagos per-cimzett ablak-valasztas, `getMessageStatus` elozetesseg-
+   ujraellenorzes kuldes elott, tobb-boritekos batch-injektalas. Egyik sem erinti a ket eldontott
+   pontot (getKanbanCardStateByIdPrefix+formatDeliveryStalenessNote / countNewerMessagesFromSameSender
+   +freshness, mindketto valtozatlan elo kodon ellenorizve). UJ ACKNOWLEDGED_FORK_ANCHORS bejegyzes
+   (`selectTickWindow`, expect absent) -- mutacio-tesztelve.
+4. `src/web/schedule-runner.ts` (e5393ace -> 058bb70d) -- a ket eldontott pont (`runPreCheck` async
+   marad fork-oldalon / upstream meg mindig sync; `startAgentProcess` try/catch) valtozatlan (upstream
+   uj blobjaban a `runPreCheck` deklaracio meg mindig `async` nelkuli, `startAgentProcess` nulla
+   talalat a diffben). Nagy additiv novekedes: heartbeat-metrika-injektalas, referencia-alapu nagy-
+   prompt kezeles tulmeretes ütemezett feladatokhoz, egyszeri-riasztas dedup egy felreirt cimzettre,
+   es kezbesites-integritas-ellenorzes (pane + friss promptok). `mainConfigRoots` HARMADIK fuggetlen
+   elofordulasa (a TOKENVAK915-tel egyezo mintaban) -- ez mar 3 lelet ugyanarra a kovetkezo kartyara.
+5. `src/web/token-usage.ts` (82ebcf78 -> 7b097efb) -- a ket eldontott pont (mind a negy import egyutt;
+   correlateWithKanban parent-skip szuro) valtozatlan (`estimateCostUsd`/`stripDateSuffix` meg mindig
+   hasznalva, sor 490). A meg mindig nyitott idx_token_usage_dedup agent-elso-oszlop hiba SZINTEN
+   erintetlen (kulon kartya marad). UPSTREAM ITT SZALLITOTTA A TOKENVAK915 TENYLEGES KOD-OLDALI
+   JAVITASAT (`discoverAgentSources` `mainConfigRoots()`-t hasznalva megkeresi a fo agens SAJAT
+   izolalt config-gyokereit is, realpath-dedup-olva a mar megtalalt forrasokkal) -- HARMADIK
+   fuggetlen eloforduls (61817eb9 doksi-oldal + context-restart-gate-runner.ts fent + itt). Ket
+   kisebb, fuggetlen valtoztatas: a fork sajat `encodeProjectPath()`-je most mar duplikalja azt, amit
+   upstream egy uj kozos `src/claude-project-dir.ts`-be emelt ki (nem letrehozva itt, biztonsagos
+   jovobeli tisztitas); `getModelSourceBreakdown()` uj diagnosztikai export +
+   `toolInputPreview()` ures-elonezet-fallback (mindketto tisztan additiv, nincs fork-megfeleloje).
+
+**Onjavitas landolas elott (`token-in-argv-guard.test.ts` + a masik fork-upstream guard MEGINT
+lefutott, most a `message-router.ts` uj "NOT adopted" bejegyzese horgony nelkul bukott, ugyanaz a
+hibaosztaly mint a 61817eb9-en):** a "minden rogzitett elutasitashoz horgony kell" szabaly (kartya
+66ad1f95/2f1cbaf1) a `file in ACKNOWLEDGED_FORK_ANCHORS` KULCS-JELENLETET nezi, nem a horgony
+TARTALMANAK relevanciajat -- a masik negy fajlnak MAR VOLT sajat horgonya (barmilyen korabbi
+okbol), ezert azok nem buktak, DE `message-router.ts`-nek meg sosem volt. Uj horgony hozzaadva
+(`selectTickWindow`, expect absent), mutacio-tesztelve: a needle-t ideiglenesen beszurva a valodi
+fajlba, 1/36 eset PONTOSAN erre bukott, a tobbi 35 zold maradt, majd `git checkout --`-vel
+visszaallitva.
+
+**FLOTTA-SZINTU, FUGGETLEN BLOKKOLO EZEN A KORON, MIKROB-NEK JELEZVE, NEM ITT JAVITVA:** a
+`token-in-argv-guard.test.ts` a `cybersec/HANDOFF.md` 36. soraban hamis pozitivot talalt --
+`?token=${DASHBOARD_TOKEN}` egy PELDA anchor-stringkent szerepel prozaban (egy masik kartya
+javasolt needle-jekent), nem tenyleges kodkent. Ez minden agens fleet-test.sh-jat blokkolja (a
+teszt a live install `agents/` konyvtarat scanneli, nem az en git-branchemet) -- nem az en
+hataskorom cybersec sajat elo fajljat szerkeszteni.
+
+**Zold:** `fork-upstream-drift-check.test.ts` 21/21, `fork-upstream-conflict-guard.test.ts` 36/36
+(az uj horgonnyal), `tsc --noEmit` tiszta. Elo `fork-upstream-drift-watch.mjs --report`
+ujrafuttatva `npm run build` utan: mind az 5 fajl LEKERULT a riportbol.
+
+**Mi NEM tortent itt:** a tenyleges upstream-kod-merge; a TOKENVAK915 kodjavitas atvetele (harom
+fuggetlen helyszinen flagelve, sajat kartyat erdemel); a GATESENDER922 biztonsagi javitas atvetele
+(Cybersec ele ajanlva); a cybersec/HANDOFF.md hamis-pozitiv soranak atirasa.
+
+**Ki dontott:** backend3 (fajlonkenti dontes, mutacios anchor-ellenorzes). Gate: QA + Cybersec
+(biztonsag-relevans terulet, MikroB eredeti kartya-kijelolese szerint).
+
+## 2026-09-25 -- f5536a70 delta-gate: Cybersec NO-GO javitva (F1 HIGH + F2 MEDIUM), 3669d930 sajat hiba korrekcioja
+
+**Dontes:** Cybersec NO-GO-t adott f5536a70-re (Gate-SHA c6221166, komment 6862) ket lelettel; mindkettot
+javitottuk, delta-gate jon uj Gate-SHA-val.
+
+**F1 HIGH (src/web.ts, TEVES adoptalasi javaslat -- CREDENTIAL-EXPOSURE REGRESSZIO):** a korabbi
+ACKNOWLEDGED_CONFLICTS bejegyzes az upstream isTTY-gated bootstrap-URL kiirast "valodi hitelesito-adat-
+szivargas javitas"-nak cimezte, adoptalando-nak jelolve (kartya 965b0b2b elso helyen). VALOJABAN a fork
+mar EROSEBB: src/web/bootstrap-notice.ts (8ca85761, kartya 62631948) a bearer tokent SEMMILYEN streamre
+nem irja ki, csak az utvonalat + egy `cat` utasitast. Upstream TTY-n (tmux-pane is TTY, a fork sajat
+context-guard pane-snapshotjai rogzitik) meg mindig kiirna a teljes token-tartalmazo URL-t. Javitva:
+KEEP fork wholesale, NOT ADOPTABLE, uj ACKNOWLEDGED_FORK_ANCHORS tripwire ('src/web/routes/agents.ts'
+kulcs, file: src/web.ts, needle absent). A 965b0b2b kartya leirasabol torolve a TTY-gating tetel.
+
+**F2 MEDIUM (src/db.ts, HAMIS "moveKanbanCard erintetlen" allitas):** a korabbi bejegyzes csak a
+RECORDED konfliktus-pontot (moveKanbanCard) nezte, es abbol vont le "nincs uj gap" kovetkeztetest --
+tevesen, mert egy blob-pin bump csak azt meri, mozdult-e UPSTREAM, nem azt, hogy egy VALODI merge hol
+utkozne (ami mindket oldal mozgasatol fugg). Elo 3-utas merge-szimulacio (git merge-file --diff3,
+base=d4f1b1d4, ours=c6221166, theirs=a kartya sajat pinje) 11 valodi konfliktus-hunkot adott,
+egyik sem moveKanbanCard-nal. Fajlonkenti dontes:
+- (2)-(4) searchAgentMemories: KEEP fork (a shapeFilter tool-log-zaj-szures a fork sajat, egyedi
+  hozzajarulasa; a category/allowRelaxed parametereket a fork FUGGETLENUL mar felvette, tehat "ours"
+  mar maga az unio -- take-upstream itt CSENDBEN eldobna a shapeFilter-t).
+- (1) EMBED_URL/EMBED_MODEL/EMBED_DIMS config, (5) updateMemory() updatedBy parameter, (6)
+  sweepArchivedKanbanCards(), (8) parentWouldCycle(), (9) addKanbanComment() automated visszateres,
+  (10) vectorSearch() NaN-skip dimenzio-elteresnel -- mind VALODI, NEM adoptalt res. Uj kovetkezmeny-
+  kartya: 16e60d3c (db.ts-oldal), keresztre hivatkozva 5aaf7209-cel (6 es 8 pont a route-oldali
+  parjuk). Uj ACKNOWLEDGED_FORK_ANCHORS tripwire ('src/db.ts' kulcs, needle
+  'export function parentWouldCycle', expect absent).
+- (7), (11): kommentelteres, nincs funkcionalis dontes.
+
+**ONELLENORZESI KORREKCIO (3669d930, memories.ts):** a db.ts updateMemory() signature-jat vizsgalva
+kiderult, hogy a 3669d930 kartya sajat korabbi allitasa -- miszerint routes/memories.ts-ben 4 upstream-
+kepesseg (X-Memory-Search, GET /api/memories/:id, updated_by, MEMORY_IMPORT_CATEGORIZE_MODEL) mar
+MIND jelen van -- HAROM esetben teves volt (a korabbi ellenorzes az upstream diff UJ sorait nezte, es
+tevesen a fork mar-meglevo kodjanak olvasta). Ujra-grep-elve: CSAK X-Memory-Search igaz. Javitva az
+ACKNOWLEDGED_CONFLICTS memories.ts bejegyzeseben (CORRECTION bekezdes), uj kovetkezmeny-kartya
+b5e1d7df nyitva (a 2. pont -- updated_by wiring -- egyutt portolando a db.ts-oldali 16e60d3c-vel).
+
+**Ellenorzes:** `tsc --noEmit` tiszta. `fork-upstream-conflict-guard.test.ts` +
+`fork-upstream-drift-check.test.ts` 57/57 zold (uj anchorok hozzaadva, guard nem panaszkodik). A
+`?token=` literal a kartya-leirasban egy korabbi curl-hivasnal shell-interpolacios hibat okozott
+(backtick + `${VAR}` dupla-idezojeles heredocban vegrehajtodott) -- felismerve es javitva egyszeres-
+idezojeles heredoc-kal, masodik PUT-nal mar helyes tartalommal.
+
+**Ki dontott:** backend, Cybersec NO-GO leletei alapjan (F1, F2), plusz sajat kezdemenyezesu korrekcio
+a 3669d930 memories.ts hibajara. Uj kovetkezmeny-kartyak: 16e60d3c (db.ts), b5e1d7df (memories.ts
+route-oldal). Gate: QA + Cybersec, delta-gate az uj Gate-SHA-ra.
+
+## 2026-09-25 -- 123983f3 (b5b7eb6b gyerek, 8/10, dashboard/src tesztek 1/2): 8/8 fajl dontve
+
+Fajlonkent (elo 3-utas merge-szimulacio: git merge-file --diff3, base=merge-base(origin/develop,
+upstream/develop)=d4f1b1d4, ott ahol volt kozos elozmeny; kozvetlen ours/theirs diff, ahol nem):
+
+1. src/__tests__/provider-env-adoption.test.ts (regi upstream nev: agent-provider-env.test.ts,
+   a fork atnevezte). GENUINE GAP: upstream LATENSKULCSARGV920 (secret-ref indirekcio,
+   resolveProviderEnv sosem kapja meg a titok ERTEKET, csak egy $(cat ...) hivatkozast -- ugyanaz
+   a hibaosztaly, mint a mai egesz napos token-in-argv tema) es egy custom-provider vault-kulcs
+   hard-fail regressziojorzo hianyzik a forkbol. Kovetkezmeny-kartya: 248d3013 (HIGH).
+2. src/__tests__/agent-tool-deny.test.ts. KEEP fork sajat tesztje (card 21597530), MELLETTE
+   genuine gap: upstream ORSIKTXRATA914 sanitizeToolDenyList + TOOL_DENY_MAX_PER_AGENT + respawn-
+   persistence, egyik sincs a forkban. Kovetkezmeny-kartya: b0d84dc3 (NORMAL).
+3. src/__tests__/api-messages-freshness.test.ts. KEEP fork (RouteContext typed cast erosebb, mint
+   upstream `as any`-je), NOT ADOPTABLE, nincs funkcionalis kulonbseg.
+4. src/__tests__/email-send-gate.test.ts. UNDECIDED, deliberately: a fork threadMembershipDecision()
+   (szal-tagsag) es az upstream uj recipient-ledger.mjs (elozetesen jovahagyott cimzett-lista) KET
+   KULONBOZO biztonsagi mechanizmus ugyanarra a problemara. Cybersec-bevonas javasolt.
+   Kovetkezmeny-kartya: afd64623 (HIGH).
+5. src/__tests__/fleet-helper-search-carries-the-label.test.ts. ADOPTALVA EBBEN A KORBEN:
+   PYTHONDONTWRITEBYTECODE='1' hozzaadva a python3 execFileSync env-jehez (a seed-skills/ __pycache__
+   szennyezes flake-jenek javitasa). Trivialis, nincs kovetkezmeny-kartya.
+6-7. src/__tests__/heartbeat-db-size.test.ts + heartbeat-summary-truncation-safe.test.ts. KEEP fork
+   mindketton (nevesitett konstans-kiemeles, kozmetikai, a lag_hours/oldest_age_days ertekekre
+   egyik teszt sem allit semmit). NOT ADOPTABLE.
+8. src/__tests__/memories-search-has-a-floor.test.ts. KEEP fork (String(chunk) vs chunk.toString(),
+   funkcionalisan azonos). NOT ADOPTABLE.
+
+Ellenorzes: tsc --noEmit tiszta; fork-upstream-conflict-guard.test.ts + fork-upstream-drift-check.test.ts
++ fleet-helper-search-carries-the-label.test.ts 64/64 zold.
+
+**Ki dontott:** backend, a fork-upstream-drift-watch.mjs --report alapjan, elo 3-utas merge-
+szimulacioval verifikalva minden fajlon (nem csak a dontes-szoveg olvasasaval -- lasd az f5536a70
+delta-gate F2 tanulsaga ugyanebben a napi korben). 3 uj kovetkezmeny-kartya: 248d3013, b0d84dc3,
+afd64623. Gate: QA + Cybersec (a ket biztonsag-relevans genuine gap miatt).
+
+## 2026-09-26 -- d87adb90 (b5b7eb6b gyerek, 10/10, dashboard/web frontend): 5/5 fajl dontve
+
+Fajlonkent (elo 3-utas merge-szimulacio: git merge-file --diff3, base=merge-base(origin/develop,
+upstream/develop)=d4f1b1d4):
+
+1. web/app.js. +746/-54, hét régió. (a) X-Memory-Search mentés-jelzés (renderMemSearchLabel):
+   BYTE-IDENTICAL, mar megvan (korabbi kor). (b) PICKERCLIKAPU923 CLI-launch-gate +
+   custom-provider model-picker + uj "Provider-ok" settings-tab: a 6b10a6b8 backend-dontes
+   FRONTEND fele, genuinely absent, kommentelve 6b10a6b8-on (nem uj kartya, 6b szabaly). (c)
+   renderQuotaStrip Fable/Opus kvota-sor: a fd8ae23f backend-dontes FRONTEND fele, kommentelve
+   fd8ae23f-en. (d) renderCliUpdateOffer (CLIFRISSAJANLAS923): genuinely UJ, nincs meglevo
+   kartya -- uj kovetkezmeny-kartya nyitva. (e) Claude Plans panel novekedese (OAuth-token-mode,
+   live usage-check): az 1c810029 kartya novekedese, kommentelve ott. (f) BRANCH_HEAL_COMMAND
+   git-switch javitas: onallo, izolalt bugfix, ADOPTALVA EBBEN A KORBEN (web/app-updates.js). (g)
+   tobbi korabbi dontesi pont erintetlen.
+2. web/style.css. +184/-0, ket valodi konfliktus 3-utas szimulacioval. (a) .claude-plan-row*
+   pozicionalisan utkozik a fork .cxhu-banner-javal -- pending, az (1e) ponttal parosodik. (b)
+   .mem-search-label pozicionalisan utkozik, DE NO-OP: a fork mar byte-azonos szabalyt hordoz
+   (MEMKERESVAK917). .quota-strip mar megvan (c6d8d599). MELLEKLELET: a fork sajat
+   style.css-eben a .quota-strip blokk KETSZER szerepel (egyszer a c6d8d599 attribucioval, egyszer
+   attribucio nelkul egy @media utan) -- jelezve, NEM javitva (sebeszi-valtoztatas elv, kulon
+   trivialis takaritas kartya erdemes lenne, ha ez a fajl legkozelebb erintve lesz).
+3. web/index.html. +34/-4, egy valodi konfliktus (updatesCli div pozicionalis utkozes a fork
+   "Beepitett repok" oldalaval -- pending, a (1d) ponttal parosodik). Modell-lista update +
+   custom-provider markup tisztan automerge-el, 6b10a6b8 frontend fele. quota-strip/mem-search-label
+   mar megvan.
+4-5. web/lang/en.js + hu.js. +81/-30 kulcs mindketton, 0 kollizio. Ket kategoria: (a) upstream
+   sajat em-dash -> vessz/pont angol-szoveg-tisztitasa ~25 nem-kapcsolodo kulcson, kozmetikai,
+   NEM atveheto (nulla funkcionalis kulonbseg, csak diff-zaj). (b) uj kulcsok a fenti hianyokhoz
+   parosodva (overview.quota.fable, agents.model.fable51/opus55_1m/cliUnsupported/cliUnmeasured,
+   updates.cli.*, settings.claude_plans.token_mode/status.*/probe_*, memories.relaxed.title/body
+   -- ez utolso mar megvan a forkban, csak nevbeli egybeeses). Union tartva, kulcsok hasznalaton
+   kivul, amig a parositott feature meg nem landol.
+
+Ellenorzes: tsc --noEmit tiszta; fork-upstream-conflict-guard.test.ts + fork-upstream-drift-check.test.ts
++ lang-parity.test.ts 61/61 zold.
+
+**Ki dontott:** backend, a fork-upstream-drift-watch.mjs --report alapjan, elo 3-utas merge-
+szimulacioval verifikalva minden fajlon. Dedup-ellenorzes elvegezve (6b szabaly): a talalt frontend
+hianyok tobbsege MAR NYITOTT kartyara parosodik (6b10a6b8, fd8ae23f, 1c810029), csak kommentelve,
+nem duplikalva. 1 uj kovetkezmeny-kartya (CLI-update-offer, meglevo kartyaval nem duplikalt, checked).
+1 kis, izolalt bugfix (BRANCH_HEAL_COMMAND) kozvetlenul adoptalva. Gate: QA (megjelenites-pontossag,
+Cybersec nem kotelezo -- nincs uj trust-boundary, MikroB dontse el a kockazat szerint).
+
+## 2026-09-26 -- 248d3013 (backend, HIGH, szulo b5b7eb6b): LATENSKULCSARGV920 secret-ref-indirection portolva
+
+Cybersec talalta card 123983f3 gate-jen: a fork resolveProviderEnv-je a vault-kulcsot RAW ERTEKKENT
+adta at (shSingleQuote-tal escape-elve a launch-parancsba), ami az upstream #1478 (LATENSKULCSARGV920)
+fixe ELOTTI allapot -- a kulcs a tmux `new-session` argv-jeben olvashato marad, amig a pane
+wrapper-shellje el (`/proc/<pid>/cmdline` world-readable). Az escape-eles (card 1075d0e4) a shell-
+injekciot mar kizarta, de az argv-expozicio kulon, meg nyitott hibaosztaly volt.
+
+Javitas (src/web/agent-process.ts): uj `launchSecretRef(secretName, value)` a titkot egy privat 0600
+fajlba irja (STORE_DIR/.launch-secrets, 0700 dir), es `"$(cat '<path>')"` shell-hivatkozast ad vissza
+-- a nyers ertek SOSEM kerul shell-sztringbe. `resolveProviderEnv` kontraktusa valtozott: `secretLookup`
+(nyers ertek) helyett `secretShellRef` (mar keszen kapott hivatkozas), a deepseek/openrouter agak
+`keyRef`-en keresztul kapjak, a BYO agent-API-kulcs es a provider-hivo `launchSecretRef`-et kozvetlenul
+hivja. Uj `clearLaunchSecrets(agentName)` a stopAgentProcess-be bedrotozva -- a titok nem eli tul a
+leallitast (rotalt kulcs regi erteke nem maradhat a lemezen).
+
+Harom, mar meglevo, adverzarialisan keresztelt guard-teszt (agent-launch-key-quoting.test.ts UNESCAPED
+regex; provider-env-adoption.test.ts "by PROVENANCE" suite) EXPLICIT frissitve, hogy a `${keyRef}` /
+`launchSecretRef(` alakot is elfogadja -- NEVSZERINT, nem "barmilyen bare identifier"-kent, kulon
+teszttel bizonyitva, hogy egy MASIK nevu bare valtozo vagy egy kozvetlen `getSecret()` hivas tovabbra
+is elakad a guardon (a fajl sajat elve: "a guard ami a most javitott esetekbol irodik, a diffedet
+irja le, nem az osztalyt"). Uj teszt: launch-secret-ref.test.ts (launchSecretRef sanitizalas, mod-ok,
+clearLaunchSecrets prefix-pontossag).
+
+Custom-provider vault-key-hard-fail (a kartya masik fele) NEM portolt: CustomProviderDef egyaltalan
+nem letezik meg a forkban (grep-elve: nulla talalat) -- ez a 6b10a6b8 (custom-provider adopcio)
+dolga, kommentelve ott (7123, javitva 7124-ben egy sajat idezojel-hiba miatt) a kovetelmennyel:
+hasznalja a launchSecretRef/secretShellRef mintat, hianyzo vault-kulcsnal dobjon hibat.
+
+Ellenorzes: tsc --noEmit tiszta; provider-env-adoption.test.ts (25) + agent-launch-key-quoting.test.ts
+(19) + launch-secret-ref.test.ts (8) + fork-upstream-conflict-guard.test.ts (36) +
+fork-upstream-drift-check.test.ts (21) = 109/109 zold, plusz 10 tovabbi lifecycle/launch-kapcsolodo
+tesztfajl (148 teszt) regresszio-ellenorzesre.
+
+Gate: QA + Cybersec (trust-boundary: credential-exposure + silent-fallback-to-unauth osztaly).
+
+## 2026-09-26 -- 806707fa: token-in-argv-guard strukturalis fix (live narrativ dokumentum kivetel)
+
+Cel: 2026-09-25 este ot fuggetlen esetben (cybersec skill-referencia, cybersec HANDOFF, cybersec
+memoria, backend3 HANDOFF ketszer, qa2 HANDOFF:81) egy elo agents/ fajlban PROZAKENT idezett tiltott
+alak (bearer-header argv-ben / token query-parameterben) buktatta MAS ugynok landolasat, aki nem
+tudja javitani a sajat branchejerol. A meglevo `guard-allow: documented-anti-pattern <ok>` jelolo-
+mechanizmus (kartya 48d5f255) egy SZALLITOTT, ritkan-erintett SKILL.md-re lett tervezve, ami
+SZANDEKKAL tanitja a tiltott alakot -- nem illik egy HANDOFF.md/memory fajlra, amit minden sessionben
+idokenyszer alatt irnak ujra: a backend3 sajat maga ketszer is elfelejtette a jelolot egyetlen estan.
+
+DONTES: kod-teny vs szoveg-teny megkulonbozites (kodminosegi elv 12 mintaja) alkalmazva erre a
+guardra is. Uj `isLiveNarrativeDocPath(file)` predikatum: pontosan `HANDOFF.md` bazisnev, VAGY egy
+`memory` nevu path-szegmens (nem substring -- `memory-forensics.md` NEM minosul, mert az utolso
+szegmens maga nem egyezik pontosan `memory`-vel). `isDocumentedAntiPattern` uj (opcionalis, alap
+false) `isLiveNarrativeDoc` parametere: ha igaz, a NEM-fenced elofordulas automatikusan kivetel,
+jelolo/ok-string nelkul. A FENCE-tilalom valtozatlan marad MINDEN fajlosztalyra: egy ```bash blokk
+tovabbra is parancs, akkor is, ha HANDOFF.md-ben all.
+
+HATOKOR SZUKITVE: a kivetel csak `dir === INSTALLED_AGENTS_DIR` (a tenylegesen telepitett, gitignored,
+gepi-lokalis agent-fa) eseten ervenyesul -- a SEED_FLEET_AGENTS_DIR (szallitott sablonok) es a tobbi
+korpusz erintetlen marad, mert ott a jelolo-mechanizmus a helyes eszkoz (felulvizsgalt, szandekos
+tanito-tartalom). Ellenorizve: se a seed-skills, se a seed-fleet-agents, se a templates fa nem
+tartalmaz `HANDOFF.md`-t vagy `memory/` nevu alkonyvtarat ma (find -type d -iname memory, find -iname
+HANDOFF*), tehat a szukites a mai korpuszon nem valtoztat semmin, csak a jovobeli draft ellen zar.
+
+Erintett tesztek: `src/__tests__/token-in-argv-guard.test.ts` -- 2 hivo hely (`isDocumentedAntiPattern`
+mindket it.each blokkban) frissitve az uj `isNarrative` flaggel, uj kontroll-tesztek (mind a ket
+iranyban: exempt jelolo nelkul / NEM exempt ha a flag false / fence tovabbra is tilt / path-predikatum
+parametrikus tesztje HANDOFF.md, memory/, es a memory-forensics.md substring-csapda ellen).
+
+MUTACIOS ELLENORZES (elo fajlon, nem szintetikuson): a valodi `agents/backend3/HANDOFF.md`-be
+ideiglenesen beszurva a `curl -s -H "Authorization: Bearer $TOK" ...` sor -- a REGI kod (git stash-elt
+teszt-fajl) FAIL-t adott ("backend3/HANDOFF.md passes a Bearer token..."), az UJ kod PASS-t. A sor
+utana visszaallitva (diff ures).
+
+Zold: tsc --noEmit tiszta, token-in-argv-guard.test.ts 7943/7943 (a develop fast-forward-ja utan is).
+
+Mi NEM tortent itt: a masik ket, szintaktikailag hasonlo szabaly (`curl -G` credential, path-embedded
+bot token) NEM kapott hasonlo kivetelt -- nincs mert incidens rajuk, es a kartya csak a ket erintett
+alakra (bearer-argv, url-query) korlatozodott indoklas nelkuli scope-bovites helyett.

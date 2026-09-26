@@ -183,6 +183,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **Gemini API kulcs (bring-your-own-key)**: opcionális, felhasználó-adta Gemini kulcs a dashboard beállításai közt, titkosított tárolással és mentés előtti probe-validációval; a nyers kulcs sosem jut kliensre, logba vagy URL-be.
 - **Kimenő-szöveg kapu**: hook a fő ügynök saját küldésein, ami elfogja a hiányzó magyar ékezetet, az em dasht, a dupla kötőjelet, a homoglifákat és egy lokális, repón kívüli szabályfájlból töltött névszűrőt. A szabályfájl magánszemély nevét tartalmazza, ezért sosem kerül a repóba.
 - **Név-szabály admin felület**: a kimenő-szöveg kapu név/kifejezés-szűrőjét a dashboard Biztonság paneljéről lehet szerkeszteni (felvétel pontos szövegként vagy regexként, törlés, a kapu három állapotának kimondása). A mentés előtt ugyanaz a Python motor ellenőrzi a mintát, amelyik a kaput is futtatja, mert egy le nem forduló minta nem zárná be a kaput, hanem CSENDBEN kikapcsolná; a szabályfájl 0600 marad, és a minták sosem kerülnek naplóba.
+- **Titkok fájlreferenciával az ágens-indító parancsban**: egy provider- vagy BYO-kulcs nem szövegként utazik az ágenst indító tmux-parancsban, hanem egy privát, csak-tulajdonosnak olvasható fájlba kerül, és a parancs csak egy shell-hivatkozást hordoz rá. A titok így nem olvasható ki a folyamatlistából, amíg az indító shell él, és leállításnál törlődik.
 
 ### Egyéb termék/dashboard-funkció
 
