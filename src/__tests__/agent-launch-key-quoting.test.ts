@@ -27,7 +27,18 @@ const SRC = readFileSync(
 // validation). Wrapping shSingleQuote's output in quotes is equally broken: `'` + `'v'` + `'` is an
 // empty string, a BARE v, and another empty string. So only the unquoted `${shSingleQuote(` form is
 // exempt, which is exactly the negative lookahead on the second alternative.
-const UNESCAPED = /ANTHROPIC_\w+=(?:["']\$\{|\$\{(?!shSingleQuote\())/
+//
+// TWO MORE EXEMPTIONS, added for card 248d3013 (LATENSKULCSARGV920): the vault key no longer
+// reaches this function as a raw value at all -- it goes to a private file first, and only a shell
+// command-substitution REFERENCE to that file crosses into the launch command (see
+// agent-process.ts's launchSecretRef). That reference is either read straight off a `keyRef`
+// binding that was itself declared `= secretShellRef(...)` inside resolveProviderEnv (proven by a
+// companion source-provenance test, not just trusted by name), or built by calling
+// `launchSecretRef(...)` directly at the two other call sites (the provider wrapper and the BYO
+// per-agent key, in startAgentProcess). Both are exempt for the SAME reason `shSingleQuote(` is:
+// the value that ends up in the shell string is not attacker/vault data any more, it is a fixed
+// shape this function's own code produces.
+const UNESCAPED = /ANTHROPIC_\w+=(?:["']\$\{|\$\{(?!shSingleQuote\(|keyRef\}|launchSecretRef\())/
 
 describe('agent launch command: vault keys are shell-escaped (card 1075d0e4)', () => {
   // The exact shape of the defect. Any secret-bearing env export that interpolates through double
@@ -59,6 +70,12 @@ describe('agent launch command: vault keys are shell-escaped (card 1075d0e4)', (
     ['single-quoted raw (the 6c30a65a miss)', "export ANTHROPIC_BASE_URL='${OLLAMA_URL}' && "],
     ['single-quoted around the escaper', "export ANTHROPIC_BASE_URL='${shSingleQuote(OLLAMA_URL)}' && "],
     ['bare raw', 'export ANTHROPIC_MODEL=${model} && '],
+    // 248d3013: the exemption is the LITERAL name `keyRef` / a `launchSecretRef(` call, not "any
+    // bare identifier" -- a differently-named bare variable, or a direct raw-secret call, must
+    // still be caught, or the exemption would swallow the exact class of bug it exists to catch.
+    ['a differently-named bare variable (not the blessed keyRef)', 'export ANTHROPIC_AUTH_TOKEN=${otherRef} && '],
+    ['a raw getSecret() call bypassing launchSecretRef entirely', 'export ANTHROPIC_AUTH_TOKEN=${getSecret(id)} && '],
+    ['keyRef double-quoted (would double-wrap the already-quoted ref)', 'export ANTHROPIC_AUTH_TOKEN="${keyRef}" && '],
   ])('UNESCAPED catches %s', (_name, line) => {
     expect(UNESCAPED.test(line)).toBe(true)
   })
@@ -67,6 +84,11 @@ describe('agent launch command: vault keys are shell-escaped (card 1075d0e4)', (
     ['the escaped interpolation', 'export ANTHROPIC_BASE_URL=${shSingleQuote(OLLAMA_URL)} && '],
     ['a bare literal', 'export ANTHROPIC_AUTH_TOKEN=ollama && '],
     ['a constant URL', 'export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && '],
+    // 248d3013 (LATENSKULCSARGV920): the secret is a private-file reference by the time it gets
+    // here, never a raw value -- see the long comment above UNESCAPED for why these two shapes
+    // are as trustworthy as shSingleQuote(...) was.
+    ['the bare keyRef sink (provenance-checked separately)', 'export ANTHROPIC_AUTH_TOKEN=${keyRef} && '],
+    ['a direct launchSecretRef(...) call (the BYO per-agent key)', 'export ANTHROPIC_API_KEY=${launchSecretRef(`agent-x-api-key`, agentApiKey)} && '],
   ])('UNESCAPED leaves %s alone', (_name, line) => {
     expect(UNESCAPED.test(line)).toBe(false)
   })
@@ -79,10 +101,20 @@ describe('agent launch command: vault keys are shell-escaped (card 1075d0e4)', (
     expect(SRC).not.toContain('ANTHROPIC_BASE_URL=${OLLAMA_URL}')
   })
 
-  it('the key exports actually go through shSingleQuote', () => {
-    const quoted = SRC.match(/(?:ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY)=\$\{shSingleQuote\(/g) ?? []
-    // Three call sites: deepseek, openrouter, and the per-agent ANTHROPIC_API_KEY.
-    expect(quoted.length, 'expected all three key exports to be escaped').toBeGreaterThanOrEqual(3)
+  it('the key exports go through launchSecretRef, not a raw interpolation (card 248d3013)', () => {
+    // Two call sites inside resolveProviderEnv (deepseek, openrouter) via the keyRef<-secretShellRef
+    // binding; provenance for THOSE two is checked source-precisely in
+    // provider-env-adoption.test.ts's PROVENANCE suite, which can see resolveProviderEnv's body in
+    // isolation. This test only needs to know the sink shape is present, not re-derive provenance.
+    const keyRefSinks = SRC.match(/ANTHROPIC_(?:AUTH_TOKEN|API_KEY)=\$\{keyRef\}/g) ?? []
+    expect(keyRefSinks.length, 'expected the deepseek and openrouter provider branches to use ${keyRef}').toBe(2)
+    // The third call site, the per-agent BYO ANTHROPIC_API_KEY in startAgentProcess, calls
+    // launchSecretRef(...) directly rather than through a keyRef binding.
+    const directCalls = SRC.match(/ANTHROPIC_API_KEY=\$\{launchSecretRef\(/g) ?? []
+    expect(directCalls.length, 'expected the BYO ANTHROPIC_API_KEY export to call launchSecretRef directly').toBeGreaterThanOrEqual(1)
+    // And the OLD shape -- a key exported through shSingleQuote directly -- must be gone, or this
+    // guard would be testing dead code left behind by an incomplete port.
+    expect(SRC).not.toMatch(/ANTHROPIC_(?:AUTH_TOKEN|API_KEY)=\$\{shSingleQuote\(/)
   })
 
   // The escaper itself, against the payload from the finding. If this ever stops holding, the

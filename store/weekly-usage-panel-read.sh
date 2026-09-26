@@ -31,6 +31,15 @@ TOKEN_FILE="${STORE}/.dashboard-token"
 # credentials.json + refresh-token lineage so shared-credential rotation can't evict it.
 PROBE_CONFIG_DIR="/home/neon/.claude-usage-probe"
 
+# PANEL SIZE (card 8fbc5273). capture-pane only sees the VISIBLE area, and since Claude Code
+# v2.1.282 /usage prints extra blocks (session cost/duration, plugin skill-listing footprint)
+# above the weekly bar, so on tmux's default 80x24 the "Current week (all models)" line falls
+# off-screen and every read FAILs. A tmux session does not survive a reboot, and revive_pane
+# (like weekly-usage-relogin.sh's ensure_pane) used to recreate it WITHOUT a size -> 80x24
+# again after every boot (measured 2026-09-25 23:00 -> 09-26 06:50: 455 minutes of FAIL).
+PANE_COLS=200
+PANE_ROWS=60
+
 hdr_file=""
 cleanup() { [ -n "$hdr_file" ] && rm -f "$hdr_file" 2>/dev/null || true; }
 trap cleanup EXIT
@@ -46,7 +55,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # to /login when the refresh token itself is dead (~monthly), which the relogin flow handles.
 revive_pane() {
   echo "revive: panel '$PANE' dead, recreating from isolated config (refresh-token auto-renew, no Peti login)..." >&2
-  tmux new-session -d -s "$PANE" -c /home/neon 2>/dev/null || return 1
+  tmux new-session -d -s "$PANE" -x "$PANE_COLS" -y "$PANE_ROWS" -c /home/neon 2>/dev/null || return 1
   sleep 1
   # env option flags (-u) MUST precede VAR=VALUE assignments (else env treats the assignment
   # as end-of-options). Isolated config dir pins the probe to its own credential lineage.
@@ -113,6 +122,9 @@ if ! tmux has-session -t "$PANE" 2>/dev/null; then
 fi
 
 # 2) Drive /usage in the dedicated panel, then capture.
+#    Re-assert the size on EVERY read, not only at creation: the panel may have been created by
+#    another path (weekly-usage-relogin.sh, a manual `tmux new-session`) at the 80x24 default.
+tmux resize-window -t "$PANE" -x "$PANE_COLS" -y "$PANE_ROWS" 2>/dev/null || true
 tmux send-keys -t "$PANE" '/usage' Enter 2>/dev/null || fail "send-keys /usage failed"
 sleep 6
 snap="$(tmux capture-pane -t "$PANE" -p 2>/dev/null || true)"
