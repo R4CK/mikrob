@@ -63,10 +63,46 @@ export function parsePollerPidsFromPs(
   return out
 }
 
+// Is this argv the provider poller itself (`bun server.ts`, `node /path/server.ts`, or the
+// `bun run --cwd <plugin> start` wrapper that spawns it)? Exported for testability.
+//
+// The env needle alone is NOT a poller identifier: channels.sh exports *_STATE_DIR before
+// `exec claude`, so the main claude process, every MCP server and shell it spawns, and -- when
+// channels.sh is the first tmux client after a boot -- the SHARED fleet-wide tmux server all
+// inherit it. Measured 2026-09-26 06:44: a stage-3 resume reaped 100+ pids off the bare needle,
+// the tmux server among them, and took the whole fleet plus the Telegram channel down with it.
+// scripts/channels.sh closed the same hole on its own reap pass (_reap_poller_pids, fd2b2c4a);
+// this is the TypeScript reaper's copy of that narrowing.
+export function isPollerArgv(argv: string[]): boolean {
+  const base = (a: string | undefined) => (a ?? '').split('/').pop() ?? ''
+  const exe = base(argv[0])
+  if (exe !== 'bun' && exe !== 'node') return false
+  if (base(argv[1]) === 'server.ts') return true
+  return argv[1] === 'run' && argv.includes('--cwd') && argv[argv.length - 1] === 'start'
+}
+
+function readArgv(pid: number): string[] | null {
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, 'utf-8').split('\0').filter((a) => a !== '')
+  } catch {
+    return null // gone, or no /proc (macOS): see below
+  }
+}
+
+// Keep only the pids whose argv is a poller. Without /proc (macOS) the argv cannot be read
+// here, and the bare needle is known to over-match, so an unreadable pid is DROPPED: a missed
+// orphan poller costs a 409 loop until the next restart, a wrong kill costs the whole fleet.
+export function filterPollerPids(pids: number[], argvOf: (pid: number) => string[] | null = readArgv): number[] {
+  return pids.filter((pid) => {
+    const argv = argvOf(pid)
+    return argv !== null && isPollerArgv(argv)
+  })
+}
+
 function listPollerPidsByStateDir(envVar: string, chanDir: string): number[] {
   try {
     const out = execSync('/bin/ps eww -e', { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
-    return parsePollerPidsFromPs(out, envVar, chanDir)
+    return filterPollerPids(parsePollerPidsFromPs(out, envVar, chanDir))
   } catch (err) {
     logger.warn({ err, chanDir }, 'channel-poller-reap: ps scan failed')
     return []
@@ -204,7 +240,10 @@ export function reapChannelOrphans(
   const chanDir = channelStateDir(provider, agentDirPath)
   const envVar = STATE_ENV_VAR[provider]
 
-  const fromBotPid = readBotPid(chanDir)
+  // bot.pid goes through the same argv check: it survives a reboot on disk, and after one the pid
+  // it names can belong to any unrelated process.
+  const rawBotPid = readBotPid(chanDir)
+  const fromBotPid = rawBotPid != null && filterPollerPids([rawBotPid]).length === 1 ? rawBotPid : null
   const fromEnvScan = listPollerPidsByStateDir(envVar, chanDir)
 
   // Deduplicate while preserving order so the bot.pid path is logged first.
