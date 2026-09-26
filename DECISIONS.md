@@ -15799,3 +15799,34 @@ TESZTELESI CSAPDA, amit KOZBEN talaltam, ES NEM JAVITOK ITT (kulon jelzendo Mikr
 Zold: mopsion-suite-run.selftest.sh 41/41 (a fenti CONTROL/negativ esetekkel egyutt), bash -n tiszta mindket erintett fajlon.
 
 A card (b) pontja (doksi a tail-pipe helyett a fajlba-iras mintajara) a szkript SAJAT Usage-fejlecebe kerult, nem egy kulon skillbe -- ez az egyetlen hely, amit MINDEN hivo garantaltan elolvas, es igy nem duplikalodik egy masik dokumentumban (a `gate-worktree-pattern` skill mas temarol szol: worktree-izolacio, nem a suite-futas monitorozasa).
+
+## 2026-09-26 -- 248d3013 delta (backend): a hivasi pont pinnelve (QA2 F FAIL, komment 7185 javitva)
+
+QA2 (komment 7185, Gate-SHA 43b8cc4b) egy meg melyebb, ugyanabba az osztalyba tartozo rest talalt,
+amit a korabbi tesztkoszoru NEM fogott meg: a TENYLEGES hivasi pont (`startAgentProcessUnlocked`,
+src/web/agent-process.ts:1887, `resolveProviderEnv(model, (id) => { ... launchSecretRef ... })`)
+maga nem volt pinnelve. Fuggetlen mutacioval igazolta: ha ezt a sort visszairjak
+`resolveProviderEnv(model, getSecret)`-re (a raw-secret regi alak), a `tsc --noEmit` TISZTA marad
+(a ket fuggveny strukturalisan azonos tipusu, `(id: string) => string | null`, nincs nominal
+tipus-megkulonbozetes), ES mind az 52 letezo teszt zold marad -- mert minden letezo teszt
+`resolveProviderEnv`/`launchSecretRef`-et KOZVETLENUL hivja, sosem a valodi hivasi ponton at.
+
+Javitas: uj teszt agent-launch-key-quoting.test.ts-ben ("the resolveProviderEnv call site wraps
+getSecret in a launchSecretRef closure, never a bare passthrough"), QA2 javasolt (b) opcioja
+szerint (source-scan a hivasi pontra, nem uj mechanizmus). Ket resz: (1) shape-check regex --
+`resolveProviderEnv(model,` utan egy `(id) =>` zarojeles nyilfuggvenynek kell allnia, NEM egy bare
+azonositonak (`resolveProviderEnv\(model,\s*[A-Za-z_$][\w$]*\s*\)` explicit tiltva); (2) a hivasi
+pont sajat closure-testenek (a `resolveProviderEnv(model,`-tol a lezaro `})`-ig kivont resznek)
+tartalmaznia kell egy `launchSecretRef(` hivast.
+
+SAJAT MUTACIOS IGAZOLAS (nem csak elhitt QA2-lelet): a valodi forrasban VISSZAIRTAM a sort
+`resolveProviderEnv(model, getSecret)`-re, lefuttattam CSAK az uj tesztet -> 1 FAIL (pontosan a
+shape-check bukott, "resolveProviderEnv must be called with an inline closure..."), majd
+visszaallitottam az eredeti sort (git diff a fajlon ures utana). A guard tehat tenylegesen fogja a
+bejelentett mutaciot, nem csak leirja.
+
+Ellenorzes: tsc --noEmit tiszta; agent-launch-key-quoting.test.ts (20) + provider-env-adoption.test.ts
+(25) + launch-secret-ref.test.ts (8) = 53/53 zold a helyi worktree-n.
+
+Gate: QA + Cybersec (ugyanaz a besorolas, mint az eredeti kartyan -- a delta csak a hivasi pontot
+pinneli, semmi mas viselkedest nem valtoztat).
