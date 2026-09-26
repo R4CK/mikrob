@@ -62,6 +62,12 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # precondition and the header-count check cannot drift between the two copies.
 # shellcheck source=./decisions-append-union.sh
 . "$(dirname "$0")/decisions-append-union.sh"
+# decisions_append_only_check_merge (card 61b6d4b1, QA FAIL 7823 + MikroB delta-gate 7825): a
+# CONFLICT-INDEPENDENT backstop for the invariant try_append_union only enforces when git itself
+# reports a conflict. Two edits to DISTANT lines in DECISIONS.md merge with ZERO conflict even when
+# one side rewrites or deletes an existing entry -- see the file's own header for the measured gap.
+# shellcheck source=./decisions-append-only-guard.sh
+. "$(dirname "$0")/decisions-append-only-guard.sh"
 # downward_check (card dfff9b37): what ELSE rides along below the gated sha. Shared verbatim with
 # marveen-land.sh -- same reason as above, a duplicated landing precondition drifts.
 # shellcheck source=./landing-downward-check.sh
@@ -514,6 +520,19 @@ if ! merge_err="$(git -C "$WT" -c user.email=backend@marveen.local -c user.name=
   fi
 fi
 say "merged --no-ff, no conflicts ($(git -C "$WT" diff --name-only "$BASE..HEAD" | wc -l) files)"
+
+# DECISIONS.md APPEND-ONLY CHECK, UNCONDITIONAL and CONFLICT-INDEPENDENT (card 61b6d4b1, QA FAIL
+# 7823 + MikroB delta-gate 7825). Runs on every merge that reaches this point, whether it was
+# conflict-free, auto-unioned above, or resolved by hand -- git's own 3-way merge only conflicts on
+# ADJACENT/overlapping hunks, so a branch that rewrites or deletes a DISTANT existing line merges
+# silently with the file's own header explaining exactly this gap and how it was measured.
+if ! decisions_append_only_check_merge "$MAIN" "$(git -C "$WT" rev-parse HEAD)" "DECISIONS.md"; then
+  echo "REFUSED: DECISIONS.md append-only invariant violated (see APPEND-ONLY VIOLATION line(s) above)."
+  echo "         An existing decision was removed or rewritten rather than appended past -- resolve"
+  echo "         by hand and file the correction as a NEW dated entry instead."
+  exit 4
+fi
+say "DECISIONS.md: append-only confirmed on both sides of the merge"
 
 # SEAM CHECK on the files BOTH sides touched, in BOTH directions: every line either side ADDED
 # since the merge base must be present in the result. Checking only the branch side is what let the

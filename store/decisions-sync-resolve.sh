@@ -23,6 +23,20 @@
 #   exit 1  not this shape; the conflict is untouched, resolve it by hand
 #   exit 2  used wrongly (no merge in progress, or the merge is not a sync merge)
 #
+# A SECOND, INDEPENDENT MODE, for AFTER a sync merge has already completed (card 61b6d4b1, QA FAIL
+# 7823 + MikroB delta-gate 7825 condition 4): everything above only runs when git itself reports a
+# conflict, but a branch that rewrites or deletes a DISTANT existing DECISIONS.md line merges with
+# an unrelated append with ZERO conflict -- the exact scenario QA measured live, and precisely
+# where the four real 2026-09-26 incidents this card's own DoD cites actually happened (an agent's
+# own `git merge origin/main`/`origin/develop`, never mopsion-land.sh's path). Run this right after
+# ANY sync merge that touched DECISIONS.md, conflicted or not:
+#   store/decisions-sync-resolve.sh --check-last-merge [<worktree>]
+#   exit 0  DECISIONS.md's append-only invariant holds on both parents of the just-made merge commit
+#   exit 1  it does not -- an existing line was removed/rewritten; `git reset --hard` before the
+#           commit lands anywhere, or fix DECISIONS.md by hand and amend
+# Shares decisions-append-only-guard.sh's check verbatim with mopsion-land.sh's own unconditional
+# post-merge call, so the two paths cannot drift on what counts as a violation.
+#
 # WHAT IT REFUSES, and this is the part that makes it safe to hand to an agent: it checks that
 # MERGE_HEAD really IS the integration branch. Run after the OPPOSITE merge (a branch merged into
 # main), `theirs-first` would be exactly the wrong order and would create the shape this whole card
@@ -37,10 +51,22 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=./decisions-append-union.sh
 . "$HERE/decisions-append-union.sh"
+# decisions_append_only_check_merge (card 61b6d4b1): the conflict-independent backstop for
+# --check-last-merge below. This file's own guarded dispatch (BASH_SOURCE check) means sourcing it
+# here is safe regardless of what $1 this script itself was called with.
+# shellcheck source=./decisions-append-only-guard.sh
+. "$HERE/decisions-append-only-guard.sh"
 
 INTEGRATION_REFS="${DECISIONS_SYNC_INTEGRATION_REFS:-origin/develop origin/main}"
 
 die() { echo "decisions-sync-resolve: $2" >&2; exit "$1"; }
+
+if [ "${1:-}" = "--check-last-merge" ]; then
+  R="${2:-$PWD}"
+  [ -d "$R/.git" ] || [ -f "$R/.git" ] || die 2 "$R is not a git working tree"
+  decisions_append_only_check_merge "$R" "$(git -C "$R" rev-parse HEAD)" "DECISIONS.md"
+  exit $?
+fi
 
 if [ "${1:-}" = "--selftest" ]; then
   fail=0
@@ -99,6 +125,40 @@ if [ "${1:-}" = "--selftest" ]; then
   out="$(bash "$0" "$R" 2>&1)"; rc=$?
   if [ "$rc" -eq 2 ]; then ok "no merge in progress is a usage error, not a resolution"
   else no "no-merge should exit 2, got rc=$rc"; fi
+
+  # --check-last-merge (card 61b6d4b1 condition 4): proves THIS script's own wiring -- that the flag
+  # resolves HEAD in the named worktree and calls the shared guard -- not the detection logic itself,
+  # which decisions-append-only-guard.sh's own --selftest already covers exhaustively (the distant-
+  # rewrite, deletion, pure-append, correction-as-new-entry and whitespace-bypass cases).
+  rm -rf "$R"; mkdir -p "$R"
+  git -C "$R" init -q -b main
+  git -C "$R" config user.email t@t; git -C "$R" config user.name t
+  git -C "$R" config commit.gpgsign false
+  { printf '## 2026-01-01 -- old entry\n\nDontes: Peti NO-GO.\n\n'; seq 1 40 | sed 's/^/padding /'; } \
+    >"$R/DECISIONS.md"
+  git -C "$R" add DECISIONS.md; git -C "$R" commit -qm base
+  git -C "$R" checkout -qb sync-branch-a
+  sed -i 's/Dontes: Peti NO-GO\./Dontes: Peti GO./' "$R/DECISIONS.md"
+  git -C "$R" commit -qam "rewrite old decision"
+  git -C "$R" checkout -q main
+  git -C "$R" checkout -qb sync-branch-b main
+  printf '\n## 2026-01-02 -- new entry\n\nSomething new.\n' >>"$R/DECISIONS.md"
+  git -C "$R" commit -qam "append"
+  git -C "$R" checkout -q sync-branch-a
+  git -C "$R" merge --no-ff sync-branch-b -m "sync merge" -q >/dev/null 2>&1
+  out="$(bash "$0" --check-last-merge "$R" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ]; then ok "--check-last-merge catches a silently-merged distant rewrite"
+  else no "--check-last-merge should have refused; got rc=0, out=$out"; fi
+
+  git -C "$R" checkout -q main
+  git -C "$R" checkout -qb sync-branch-c main
+  printf '\n## 2026-01-03 -- another new entry\n\nAlso new.\n' >>"$R/DECISIONS.md"
+  git -C "$R" commit -qam "append only"
+  git -C "$R" checkout -q sync-branch-b
+  git -C "$R" merge --no-ff sync-branch-c -m "clean sync merge" -q >/dev/null 2>&1
+  out="$(bash "$0" --check-last-merge "$R" 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ]; then ok "--check-last-merge passes a legitimate pure-append sync merge"
+  else no "--check-last-merge should have passed; got rc=$rc, out=$out"; fi
 
   if [ "$fail" -eq 0 ]; then echo "selftest: PASS"; else echo "selftest: FAIL"; fi
   exit "$fail"
