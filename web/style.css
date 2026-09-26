@@ -10354,3 +10354,19 @@ body {
   color: var(--text, inherit);
 }
 .mem-search-label code { font-size: 11px; opacity: .85; }
+
+/* Dispatch-priority chips (multi-project, 2026-09-26): the remove button keeps a 44px touch
+   target (rule 13) without growing the chip visually. */
+.kanban-priority-chip { cursor: default; gap: 2px; }
+.kanban-priority-chip-remove {
+  min-width: 44px;
+  min-height: 44px;
+  margin: -14px -12px -14px -4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.kanban-priority-chip-remove:hover { opacity: 0.7; }

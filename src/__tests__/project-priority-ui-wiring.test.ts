@@ -48,21 +48,34 @@ describe('project dispatch-priority dropdown', () => {
     expect(body).toContain("fetch('/api/config/project-priority')")
   })
 
-  it('saves via PUT to the BE sibling endpoint, sending an array (order = priority)', () => {
+  it('saves via PUT to the BE sibling endpoint, sending the whole ordered list (order = priority)', () => {
+    const body = fnBody(APP, 'async function savePriorityProjects')
+    expect(body).toContain("method: 'PUT'")
+    expect(body).toContain('/api/config/project-priority')
+    expect(body).toMatch(/JSON\.stringify\(\{\s*priority:\s*next\s*\}\)/)
+  })
+
+  it('selecting a project APPENDS it (multi-project), and never adds a duplicate', () => {
     const anchor = "kanbanPriorityProjectSelect').addEventListener('change'"
     const idx = APP.indexOf(anchor)
     expect(idx, 'the priority-select change listener was not found').toBeGreaterThan(-1)
-    const body = APP.slice(idx, idx + 1500)
-    expect(body).toContain("method: 'PUT'")
-    expect(body).toContain('/api/config/project-priority')
-    expect(body).toMatch(/priority:\s*value\s*\?\s*\[value\]\s*:\s*\[\]/)
+    const body = APP.slice(idx, idx + 400)
+    expect(body).toContain('kanbanPriorityProjects.includes(value)) return')
+    expect(body).toContain('savePriorityProjects([...kanbanPriorityProjects, value])')
   })
 
-  it('reverts the visible selection on a failed save, and never shows a raw server error', () => {
-    const anchor = "kanbanPriorityProjectSelect').addEventListener('change'"
-    const idx = APP.indexOf(anchor)
-    const body = APP.slice(idx, idx + 1500)
-    expect(body).toContain('sel.value = prevValue')
+  it('each chosen project is a removable chip, numbered in priority order', () => {
+    expect(HTML).toContain('id="kanbanPriorityChips"')
+    const body = fnBody(APP, 'function renderPriorityProjectControls')
+    expect(body).toContain('`${i + 1}. ${p}`')
+    expect(body).toContain('kanbanPriorityProjects.filter((x) => x !== p)')
+    // already-chosen projects are not offered again in the add-select
+    expect(body).toContain('if (kanbanPriorityProjects.includes(p)) continue')
+  })
+
+  it('reverts to the saved list on a failed save, and never shows a raw server error', () => {
+    const body = fnBody(APP, 'async function savePriorityProjects')
+    expect(body).toContain('kanbanPriorityProjects = prev')
     // Rule 12: no raw fetch/response error text surfaced to the user.
     expect(body).not.toMatch(/showToast\(\s*(String\(err|err\.message|err\.error)/)
     expect(body).toContain("t('kanban.filter.priority_save_failed')")
@@ -76,6 +89,8 @@ describe('project dispatch-priority dropdown', () => {
       'kanban.filter.priority_saved',
       'kanban.filter.priority_cleared',
       'kanban.filter.priority_save_failed',
+      'kanban.filter.priority_add',
+      'kanban.filter.priority_remove',
     ]
     for (const key of keys) {
       expect(HU, `HU missing ${key}`).toContain(`'${key}':`)
