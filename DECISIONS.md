@@ -15830,3 +15830,40 @@ Ellenorzes: tsc --noEmit tiszta; agent-launch-key-quoting.test.ts (20) + provide
 
 Gate: QA + Cybersec (ugyanaz a besorolas, mint az eredeti kartyan -- a delta csak a hivasi pontot
 pinneli, semmi mas viselkedest nem valtoztat).
+
+## 2026-09-26 -- 517cbcbe: mopsion-land.sh gate_verdict_check ujra push elott (acc197c8 gyerek)
+
+Fuggetlen, alacsony kockazatu resz (backend3 plan-grilling melleklete acc197c8-on): a gate_verdict_check
+csak a landolas ELEJEN futott (typecheck/bundle-check/lockfile-check/suite-evidence-check/full-suite
+elott) -- ha egy QA PASS FAILED-re valt egy hosszu landolas KOZBEN (a gate visszavonja egy uj lelet
+miatt), a mai kod push elott ezt nem vette eszre.
+
+Javitas: a MAR MEGLEVO, MAR bedrotozott gate_verdict_check fuggveny UJRA lefut push kozvetlen elott
+(a --dry-run elagazas ELE helyezve, szandekosan -- egy dry-run ugyanazt a refuse-t lassa, amit egy
+eles landolas latna, nem ugorja at csendben). Osszehasonlitas: ha az uj hivas visszaterese-erteke
+(recheck_rc) ELTER a landolas-elejen kapott gate_rc-tol, REFUSE (exit 3), kiirva mindket erteket.
+SZIMMETRIKUS (MikroB dontese acc197c8-on, msg 4374 pont 2): barmilyen valtozas refuse -- bovules ES
+szukules is, mert az utolso egy csendes gate-megkerules csatorna lenne, a kockazata csak egy
+ujrafutas. FAIL-CLOSED board-elerhetetlensegre (MikroB dontese, pont 3): a gate_verdict_check MAR
+1-et ad vissza ilyenkor refuse modban, ez MAR beleesik a fenti osszehasonlitasba, nincs kulon agra
+szukseg.
+
+TESZTELES (mutacioval igazolva): uj `store/mopsion-land-verdict-recheck.selftest.sh` -- VALODI
+mopsion-land.sh vegig egy minimalis, valodi git-fixture ellen (a mopsion-suite-evidence-gate.selftest.sh
+git-epitesi feleból), egy STUB dashboard-szerverrel, ami a MASODIK HTTP-hivasra MAS valaszt ad, mint
+az elsore (a landing-gate-verdict-check.selftest.sh stub-mintajabol, kiegeszitve flip-at-N logikaval --
+ez az, amit SEM a testver-selftest, sem a suite-evidence-gate selftest nem tudott: az utobbi fix
+/nonexistent/token miatt mindket hivasa ugyanazt (1) adja vissza, sosem terhet el). 3 eset: stabil PASS
+mindket ellenorzesen at -> at (dry-run); PASS->FAIL valtas a ket ellenorzes kozott -> REFUSE, megnevezve
+a regi/uj rc-t. A fixet stash-elve mindket uj eset elbukott (a valtas csendben athaladt volna). Az
+osszes testver-selftest (landing-gate-verdict-check.selftest.sh 36/36, mopsion-suite-evidence-gate.selftest.sh
+7/7, mopsion-script-rename-dual-invocation.test.ts 37/37) valtozatlanul zold -- a fixek nem zavarjak egymast.
+
+Zold: bash -n tiszta, store-selftests-all-run.test.ts auto-felfedezi es lefuttatja az uj selftestet.
+
+Mi NEM tortent itt: a designation-alapu drift-detektor (acc197c8 fo resze -- kell-e Cybersec/Cybered,
+nem csak QA-minimum) KULON marad, MikroB jovahagyott menetrend szerint (msg 4374 pont 1: a
+gate-dispatch-check.sh DESIGNATION-logikajanak kiemelese kozos fuggvenybe, mindket landolo/dispatcher
+altal hivva) -- az MEG folyamatban van, ez a kartya csak a QA-minimum verdikt-flip-et zarja.
+
+Gate: QA + Cybersec (push-kapu, trust-boundary -- a kartya sajat kerese szerint).
