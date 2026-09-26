@@ -62,6 +62,12 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # precondition and the header-count check cannot drift between the two copies.
 # shellcheck source=./decisions-append-union.sh
 . "$(dirname "$0")/decisions-append-union.sh"
+# decisions_append_only_check_merge (card 61b6d4b1, QA FAIL 7823 + MikroB delta-gate 7825): a
+# CONFLICT-INDEPENDENT backstop for the invariant try_append_union only enforces when git itself
+# reports a conflict. Two edits to DISTANT lines in DECISIONS.md merge with ZERO conflict even when
+# one side rewrites or deletes an existing entry -- see the file's own header for the measured gap.
+# shellcheck source=./decisions-append-only-guard.sh
+. "$(dirname "$0")/decisions-append-only-guard.sh"
 # downward_check (card dfff9b37): what ELSE rides along below the gated sha. Shared verbatim with
 # marveen-land.sh -- same reason as above, a duplicated landing precondition drifts.
 # shellcheck source=./landing-downward-check.sh
@@ -515,6 +521,19 @@ if ! merge_err="$(git -C "$WT" -c user.email=backend@marveen.local -c user.name=
 fi
 say "merged --no-ff, no conflicts ($(git -C "$WT" diff --name-only "$BASE..HEAD" | wc -l) files)"
 
+# DECISIONS.md APPEND-ONLY CHECK, UNCONDITIONAL and CONFLICT-INDEPENDENT (card 61b6d4b1, QA FAIL
+# 7823 + MikroB delta-gate 7825). Runs on every merge that reaches this point, whether it was
+# conflict-free, auto-unioned above, or resolved by hand -- git's own 3-way merge only conflicts on
+# ADJACENT/overlapping hunks, so a branch that rewrites or deletes a DISTANT existing line merges
+# silently with the file's own header explaining exactly this gap and how it was measured.
+if ! decisions_append_only_check_merge "$MAIN" "$(git -C "$WT" rev-parse HEAD)" "DECISIONS.md"; then
+  echo "REFUSED: DECISIONS.md append-only invariant violated (see APPEND-ONLY VIOLATION line(s) above)."
+  echo "         An existing decision was removed or rewritten rather than appended past -- resolve"
+  echo "         by hand and file the correction as a NEW dated entry instead."
+  exit 4
+fi
+say "DECISIONS.md: append-only confirmed on both sides of the merge"
+
 # SEAM CHECK on the files BOTH sides touched, in BOTH directions: every line either side ADDED
 # since the merge base must be present in the result. Checking only the branch side is what let the
 # batch merge drop main's own `stockLevels` manifest entry unnoticed.
@@ -790,6 +809,45 @@ if [ "$EVIDENCE_MODE" != "off" ]; then
       printf '%s\n' "$GAP_LINE" >> "$WARN_LOG" 2>/dev/null || true
       ;;
   esac
+fi
+
+# RE-CHECK RIGHT BEFORE PUSH (card 517cbcbe, backend3's plan-grilling finding on acc197c8). The
+# FIRST gate_verdict_check call above (line ~354) runs before typecheck/bundle-check/lockfile-check
+# and the full suite -- a landing that can take many minutes. Nothing since then re-asked the board
+# whether the verdict still holds: a QA PASS that the gate retracts to FAILED mid-landing (a fresh
+# finding on the same sha) would otherwise land completely unnoticed, exactly the shape 9081d02d
+# closed for a verdict that was NEVER there, not one that turned bad partway through.
+#
+# ANY CHANGE in outcome refuses, not just a worse one -- the same symmetric rule MikroB chose for
+# the sibling designation-drift problem on this same card family (acc197c8, msg 4374 point 2): the
+# cost of a spurious refuse is one re-run, and a push that should not have happened cannot be taken
+# back. Concretely, by this point `gate_rc` is only ever 0 (a real verdict) or 1-tolerated-by-
+# --allow-ungated (rc=2 already exited at line ~358) -- so:
+#   0 -> 0   nothing changed, proceed
+#   0 -> 1   the verdict vanished/became unreadable since the start check -- REFUSE
+#   0 -> 2   the verdict flipped to FAILED -- REFUSE (this is the bug this card fixes)
+#   1 -> 1   the same already-accepted state (no verdict / unreadable board) repeats -- proceed;
+#            re-litigating an unchanged, already-explicitly-tolerated state adds no safety
+#   1 -> 0   improved (a verdict appeared) -- proceed, nothing to refuse
+#   1 -> 2   a verdict landed and immediately failed -- REFUSE
+#
+# FAIL-CLOSED ON AN UNREADABLE BOARD HERE TOO (MikroB's decision, card acc197c8 msg 4374 point 3):
+# gate_verdict_check's own refuse-mode already returns 1 (not 0) when the board cannot be read, so
+# that case falls out of the SAME comparison above -- no separate branch needed.
+#
+# BEFORE the --dry-run exit below, deliberately: a dry run should report the SAME refusal a real
+# landing would hit at this point, not silently skip past it and claim a clean bill of health.
+# Nothing meaningful happens between here and the push either way, so this stays exactly what the
+# card asked for -- "right before push" -- while also being reachable by the same --dry-run harness
+# landing-gate-verdict-check.selftest.sh already drives the real script through.
+GATE_CHECK_OVERRIDE_ARMED="$ALLOW_UNGATED" gate_verdict_check "$CARD" "$SHA" refuse
+recheck_rc=$?
+if [ "$recheck_rc" -ne "$gate_rc" ]; then
+  echo "REFUSED: the gate verdict for card $CARD / $SHA changed between the start of this landing" >&2
+  echo "         and this push-time recheck (was rc=$gate_rc, now rc=$recheck_rc) -- card 517cbcbe." >&2
+  echo "         Nothing pushed. Re-run the landing to pick up the current verdict." >&2
+  rm -f "${MERGE_ERR:-}" 2>/dev/null
+  exit 3
 fi
 
 if [ "$DRY" = "--dry-run" ]; then say "DRY-RUN: not pushing"; rm -f "${MERGE_ERR:-}" 2>/dev/null; exit 0; fi
