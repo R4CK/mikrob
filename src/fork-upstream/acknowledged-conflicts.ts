@@ -535,7 +535,12 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // security-relevant (credential-argv-exposure prevention, same class as today's whole f5536a70
   // theme, plus silent-fallback-to-unauth). Genuine gap, not hand-merged this round: card 248d3013
   // (HIGH).
-  'src/__tests__/provider-env-adoption.test.ts':
+  // KEY FIX 2026-09-26 (backend, Cybersec F1 MEDIUM on the gate-run for ccdddce5): the drift-watcher
+  // matches ACKNOWLEDGED_CONFLICTS keys against the UPSTREAM tree's path, not the fork's renamed
+  // path -- keying this entry as the fork's own filename left the upstream path silently undecided
+  // (still listed under NOBODY HAS DECIDED). The key must be the upstream path; the rule text is
+  // unchanged.
+  'src/__tests__/agent-provider-env.test.ts':
     "GENUINE GAP, pending -- see card 248d3013 (HIGH). Keep the fork's existing provider-env-adoption.test.ts (card e80c011a coverage) as-is; upstream's renamed-away agent-provider-env.test.ts adds LATENSKULCSARGV920 secret-ref-indirection tests and a custom-provider vault-key-missing-throws regression guard that the fork's src/web/agent-process.ts does not implement yet. Port launchSecretRef + the vault-key hard-fail, then add equivalent tests here.",
   // NEW CONFLICT 2026-09-25 (backend, card 123983f3, dashboard/src tesztek 1/2 of 8). No shared
   // base -- both sides added a same-named test file independently after diverging. Fork's version
@@ -1621,8 +1626,10 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/routes/marveen.ts': '56e36a5fc5dfa53ca0cf33e19cc264a3918169a5',
   'src/web/routes/overview.ts': '4354050c853e16c1f8ca72d30e59bc2a3ea027b8',
   // Pinned against upstream's src/__tests__/agent-provider-env.test.ts (the fork's own file at
-  // this same relative path was renamed to provider-env-adoption.test.ts, card 123983f3).
-  'src/__tests__/provider-env-adoption.test.ts': 'f5392371591343fbfa160bb88f65ebcca2fd1fcf',
+  // this same relative path was renamed to provider-env-adoption.test.ts, card 123983f3). KEY
+  // FIX 2026-09-26 (Cybersec F1 MEDIUM, ccdddce5 gate): the key must be the upstream path the
+  // drift-watcher actually checks, not the fork's renamed filename.
+  'src/__tests__/agent-provider-env.test.ts': 'f5392371591343fbfa160bb88f65ebcca2fd1fcf',
   'src/__tests__/agent-tool-deny.test.ts': '2fc2bb6efe27090fd3de195af9b066018f46c87c',
   'src/__tests__/api-messages-freshness.test.ts': '1a7c16690c0c6f90e7b189226afe9e16a4d4353b',
   'src/__tests__/email-send-gate.test.ts': 'd3612d2f723cbd382f7bcd81de222ebc1342e08a',
