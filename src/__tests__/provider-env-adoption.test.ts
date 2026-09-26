@@ -2,10 +2,15 @@
 // the fork built ollamaEnv / deepseekEnv / openrouterEnv inline in startAgentProcess, upstream
 // extracts one pure function.
 //
-// A refactor of the string that LAUNCHES EVERY AGENT is only safe if it is provably a no-op, so
-// this file does not assert what the new function returns in isolation -- it reimplements the OLD
-// inline expressions verbatim and asserts BYTE-IDENTICAL output across every provider path. If the
-// two ever diverge, the diff is the failure message.
+// Card 248d3013 (LATENSKULCSARGV920) changed the function's OWN contract on top of that adoption:
+// the caller no longer hands resolveProviderEnv a secret's raw VALUE -- it hands a `secretShellRef`
+// callback that returns the secret's shell REFERENCE (built by `launchSecretRef`, which writes the
+// value to a private 0600 file and returns a `"$(cat '<path>')"` command-substitution string). The
+// raw value therefore never has a chance to reach a shell string inside this function, which is why
+// the old byte-identical-to-a-legacy-inline-copy framing this file used to have is gone: that
+// framing asserted a NO-OP, and this card is a deliberate behaviour change (the whole point is that
+// a vault-sourced key no longer sits in the tmux `new-session` argv, readable from
+// /proc/<pid>/cmdline for as long as the pane's wrapper shell lives).
 //
 // MINIMAX: upstream's version also adds a `minimax-` branch, and this file's conflict-guard rule
 // said to adopt the refactor "wholesale (... plus adds minimax)". Peti gave MiniMax a NO-GO on card
@@ -13,95 +18,56 @@
 // local LLM). So the shape is upstream's and the provider set is the fork's -- and that is pinned
 // below, because a later "sync with upstream" would otherwise reintroduce a declined feature as a
 // side effect of a merge, which is exactly how declined features come back.
-import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { describe, it, expect, afterAll } from 'vitest'
+import { readFileSync, unlinkSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { resolveProviderEnv, shSingleQuote } from '../web/agent-process.js'
-// OLLAMA_URL lives in config, not agent-process -- importing it from the wrong module made
-// the legacy copy below interpolate `undefined` and fail against correct code.
-import { OLLAMA_URL } from '../config.js'
+import { resolveProviderEnv, shSingleQuote, launchSecretRef, LAUNCH_SECRETS_DIR } from '../web/agent-process.js'
 import { REPO_ROOT } from './helpers/repo-location.js'
 
-/** The fork's expressions in their INTENDED shape -- landed develop, plus the escaping this branch
- * is responsible for.
- *
- * They include the key escaping backend landed in 392af013 (card 1075d0e4) WHILE this branch was
- * replacing the same lines. Pinning the pre-fix shape here would have been worse than useless: this
- * test would have PASSED against a reverted security fix, and then FAILED anyone who tried to
- * re-apply it -- a test actively defending the vulnerability.
- *
- * OLLAMA_URL IS ESCAPED HERE FOR THE SAME REASON, and it is the one line where this fixture was
- * still doing exactly what the paragraph above warns against (Cybersec NO-GO, comment 19942). They
- * did not infer it, they measured it: with the pending shSingleQuote(OLLAMA_URL) applied to the
- * source and this fixture left bare, 3 of 25 cases went RED -- so the fixture would have failed the
- * person re-applying the fix. Both sides now pin the escaped form, which means the byte-equality
- * assertion no longer depends on which of the two cards lands first.
- *
- * SO THIS IS NO LONGER A PURE NO-OP on the ollama branch, and the assertion below is deliberately
- * NOT retitled to pretend otherwise: it compares against the intended shape, and the ollama line is
- * a real behaviour change (bare -> POSIX-escaped) that this card owns. */
-function legacyExports(model: string, getSecret: (id: string) => string | null): string {
-  const isClaude = model.startsWith('claude-')
-  const isDeepseek = model.startsWith('deepseek-')
-  const isOpenRouter = !isClaude && !isDeepseek && model.includes('/')
-  const isOllama = !isClaude && !isDeepseek && !isOpenRouter
-  const ollamaEnv = isOllama ? `export ANTHROPIC_AUTH_TOKEN=ollama && export ANTHROPIC_BASE_URL=${shSingleQuote(OLLAMA_URL)} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
-  const deepseekKey = isDeepseek ? (getSecret('DEEPSEEK_API_KEY') ?? '') : ''
-  const deepseekEnv = isDeepseek ? `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(deepseekKey)} && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
-  const openrouterKey = isOpenRouter ? (getSecret('openrouter-fleet-key') ?? '') : ''
-  const openrouterEnv = isOpenRouter ? `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(openrouterKey)} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && ` : ''
-  return `${ollamaEnv}${deepseekEnv}${openrouterEnv}`
+/** Stub `secretShellRef`: the exact contract resolveProviderEnv now depends on -- a fixed,
+ *  non-secret marker for a known id, `null` otherwise. Never a raw value. */
+const REF: Record<string, string> = {
+  DEEPSEEK_API_KEY: `"$(cat '/fake/launch-secrets/deepseek-marker')"`,
+  'openrouter-fleet-key': `"$(cat '/fake/launch-secrets/openrouter-marker')"`,
 }
+const secretShellRef = (id: string): string | null => REF[id] ?? null
+const noSecret = (): string | null => null
 
-const SECRETS: Record<string, string> = {
-  DEEPSEEK_API_KEY: 'ds-test-key',
-  'openrouter-fleet-key': 'or-test-key',
-}
-const getSecret = (id: string): string | null => SECRETS[id] ?? null
-
-// Every discriminator branch, plus the shapes that historically broke it: an OpenRouter id (has a
-// '/'), an Ollama tag (has a ':'), and a value carrying a single quote (card b7fa5281's injection).
-const MODELS = [
-  'claude-opus-5',
-  'claude-sonnet-5',
-  'deepseek-v4-pro',
-  'anthropic/claude-3.5-sonnet',
-  'meta-llama/llama-3.1-70b-instruct',
-  'qwen3.6:27b',
-  'llama3:latest',
-  "evil'; rm -rf / #",
-  "deepseek-eve'l",
-  "vendor/mo'del",
-]
-
-describe('resolveProviderEnv adoption: no-op except the ollama escape (card e80c011a)', () => {
-  it.each(MODELS)('%s: byte-identical to the intended inline expressions', (model) => {
-    expect(resolveProviderEnv(model, getSecret).exportsStr).toBe(legacyExports(model, getSecret))
-  })
-
-  it('a missing secret degrades exactly as before -- empty string, not "null"', () => {
-    const none = (): string | null => null
-    for (const m of ['deepseek-v4-pro', 'vendor/model']) {
-      expect(resolveProviderEnv(m, none).exportsStr).toBe(legacyExports(m, none))
-      expect(resolveProviderEnv(m, none).exportsStr).not.toContain('null')
-    }
+describe('resolveProviderEnv adoption: provider classification unchanged (card e80c011a)', () => {
+  it('classifies each id to the right provider', () => {
+    expect(resolveProviderEnv('claude-opus-5', secretShellRef).provider).toBe('claude')
+    expect(resolveProviderEnv('deepseek-v4-pro', secretShellRef).provider).toBe('deepseek')
+    expect(resolveProviderEnv('vendor/model', secretShellRef).provider).toBe('openrouter')
+    expect(resolveProviderEnv('qwen3.6:27b', secretShellRef).provider).toBe('ollama')
   })
 
   it('claude models get an EMPTY chain, so the host OAuth path is untouched', () => {
     // The default path for the whole fleet. A non-empty string here would redirect every Claude
     // agent at a custom base URL.
-    expect(resolveProviderEnv('claude-opus-5', getSecret)).toEqual({ provider: 'claude', exportsStr: '' })
+    expect(resolveProviderEnv('claude-opus-5', secretShellRef)).toEqual({ provider: 'claude', exportsStr: '' })
   })
 
-  it('classifies each id to the right provider', () => {
-    expect(resolveProviderEnv('claude-opus-5', getSecret).provider).toBe('claude')
-    expect(resolveProviderEnv('deepseek-v4-pro', getSecret).provider).toBe('deepseek')
-    expect(resolveProviderEnv('vendor/model', getSecret).provider).toBe('openrouter')
-    expect(resolveProviderEnv('qwen3.6:27b', getSecret).provider).toBe('ollama')
+  it('the deepseek/openrouter exportsStr carries the secretShellRef output verbatim', () => {
+    // Not re-escaped, not re-quoted, not mangled -- the reference is already a complete, safe
+    // shell token by the time it reaches this function (see launchSecretRef).
+    const ds = resolveProviderEnv('deepseek-v4-pro', secretShellRef).exportsStr
+    expect(ds).toContain(`ANTHROPIC_AUTH_TOKEN=${REF.DEEPSEEK_API_KEY} && `)
+    expect(ds).toContain('ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic')
+    const or = resolveProviderEnv('vendor/model', secretShellRef).exportsStr
+    expect(or).toContain(`ANTHROPIC_AUTH_TOKEN=${REF['openrouter-fleet-key']} && `)
+    expect(or).toContain('ANTHROPIC_BASE_URL=https://openrouter.ai/api')
+  })
+
+  it('a missing secret degrades to an empty single-quoted token, not "null"', () => {
+    for (const m of ['deepseek-v4-pro', 'vendor/model']) {
+      const out = resolveProviderEnv(m, noSecret).exportsStr
+      expect(out).toContain(`=${shSingleQuote('')} && `)
+      expect(out).not.toContain('null')
+    }
   })
 
   it("a quote in the model id cannot close the shell quote (card b7fa5281's escape holds)", () => {
-    const out = resolveProviderEnv("qwen'; touch /tmp/pwned #", getSecret).exportsStr
+    const out = resolveProviderEnv("qwen'; touch /tmp/pwned #", secretShellRef).exportsStr
     expect(out).toContain(`'\\''`)   // the escape sequence, i.e. the quote was neutralised
     expect(out).not.toContain("qwen'; touch")
   })
@@ -153,53 +119,55 @@ describe('the RULE TEXT stays out too (Cybered, comment 19877)', () => {
   })
 })
 
-describe('the KEY is shell-escaped too, not just the model (card 1075d0e4)', () => {
-  // This branch nearly reverted a landed security fix, and byte-identity alone would not have
-  // caught it -- it would have CONFIRMED the revert, because the reference it compares against was
-  // the pre-fix shape. backend escaped the keys in the INLINE form on develop (392af013) while this
-  // branch was replacing those very lines with resolveProviderEnv(). Merging "my side" would have
-  // put `"${key}"` back.
-  //
-  // Why it matters more than the usual injection: the launch string runs at tmux start, BEFORE the
-  // Claude Code hook layer exists, so no PreToolUse guard can see it -- and the command is not
-  // logged, so detection is ~nil.
-  // TWO payloads, because they test different things and the first one alone would have been a
-  // vacuous test -- I wrote it that way first and it failed against correct code. Inside single
-  // quotes a `"` is inert, so the double-quote payload only proves the value is quoted AT ALL; the
-  // single-quote payload is the one that can actually break out, so it is the one that proves the
-  // ESCAPING.
-  const dq = 'x";touch /tmp/pwned;#'
-  const sq = "y';touch /tmp/pwned;#"
-  const withKey = (id: string, v: string) => (k: string): string | null => (k === id ? v : null)
+describe('the KEY never reaches a shell string at all now (card 248d3013, LATENSKULCSARGV920)', () => {
+  // Card 1075d0e4 (Cybered) escaped the key AT THE SINK because it was interpolated into a shell
+  // command string, and a hostile vault value could otherwise close the quote and inject a command
+  // -- BEFORE the Claude Code hook layer exists, so no PreToolUse guard could ever see it, and the
+  // launch command is not logged, so detection was ~nil. Card 248d3013 removes the premise: the
+  // value is written to a private 0600 file (atomicWriteFileSync, never a shell string) and the
+  // launch command carries only a reference to the file's PATH -- a fixed, non-attacker-controlled
+  // shape. The injection question does not get answered here any more, it gets made moot.
+  const hostile = [
+    ['double-quote breakout', 'x";touch /tmp/pwned;#'],
+    ['single-quote breakout', "y';touch /tmp/pwned;#"],
+    ['command substitution', '$(touch /tmp/pwned)'],
+    ['backtick substitution', '`touch /tmp/pwned`'],
+  ] as const
 
-  it('a hostile DEEPSEEK key stays DATA -- the quote cannot be closed', () => {
-    const out = resolveProviderEnv('deepseek-v4-pro', withKey('DEEPSEEK_API_KEY', sq)).exportsStr
-    // The only character that can escape single quotes is neutralised: `'` becomes `'\''`.
-    expect(out).toContain(String.raw`'y'\'';touch`)
-    // ...so the shell never sees a bare `';` that would end the value and start a command.
-    expect(out).not.toContain("=y';touch")
+  const writtenPaths: string[] = []
+  afterAll(() => {
+    for (const p of writtenPaths) { try { if (existsSync(p)) unlinkSync(p) } catch { /* best-effort */ } }
   })
 
-  it('a double-quote payload is inert because the value is single-quoted at all', () => {
-    const out = resolveProviderEnv('deepseek-v4-pro', withKey('DEEPSEEK_API_KEY', dq)).exportsStr
-    expect(out).toContain(`ANTHROPIC_AUTH_TOKEN='${dq}'`)
-    expect(out).not.toContain(`ANTHROPIC_AUTH_TOKEN="`)
+  it.each(hostile)('%s: launchSecretRef never puts the value in a shell string', (_name, value) => {
+    const ref = launchSecretRef('test-248d3013-hostile-key', value)
+    // The value is DATA in a file, not text in the command -- it must not appear in the reference.
+    expect(ref).not.toContain(value)
+    const match = ref.match(/^"\$\(cat '(.+)'\)"$/)
+    expect(match, `launchSecretRef did not return the expected "$(cat '<path>')" shape, got: ${ref}`).toBeTruthy()
+    const path = (match as RegExpMatchArray)[1]
+    expect(path.startsWith(LAUNCH_SECRETS_DIR)).toBe(true)
+    writtenPaths.push(path)
+    // ...and reading the file back gives the value byte-exact, proving nothing was lost or altered
+    // by being routed through a file instead of a shell string.
+    expect(readFileSync(path, 'utf-8')).toBe(value)
   })
 
-  it('a hostile OPENROUTER key stays DATA', () => {
-    const out = resolveProviderEnv('vendor/model', withKey('openrouter-fleet-key', sq)).exportsStr
-    expect(out).toContain(String.raw`'y'\'';touch`)
-    expect(out).not.toContain("=y';touch")
+  it('resolveProviderEnv passes the shell ref through untouched -- it never re-escapes or mangles it', () => {
+    const marker = `"$(cat '/fake/path/for/this/test')"`
+    const out = resolveProviderEnv('deepseek-v4-pro', (id) => (id === 'DEEPSEEK_API_KEY' ? marker : null)).exportsStr
+    expect(out).toContain(`ANTHROPIC_AUTH_TOKEN=${marker} && `)
   })
 
-  it('no provider branch interpolates a key into DOUBLE quotes', () => {
-    // The shape assertion, so a future "sync with upstream" that restores `"${key}"` fails here
-    // rather than silently reopening the hole.
+  it('no provider branch calls getSecret or a vault function directly -- only secretShellRef', () => {
+    // The shape assertion: a future "sync with upstream" (or a well-meaning refactor) that hands
+    // resolveProviderEnv a raw value again fails here, rather than silently reopening the
+    // LATENSKULCSARGV920 exposure this card closed.
     const src = readFileSync(join(REPO_ROOT, 'src/web/agent-process.ts'), 'utf-8')
     const fn = src.slice(src.indexOf('export function resolveProviderEnv'))
     const body = fn.slice(0, fn.indexOf('\n}'))
+    expect(body).not.toMatch(/getSecret\(/)
     expect(body).not.toMatch(/ANTHROPIC_AUTH_TOKEN="\$\{/)
-    expect(body).toContain('ANTHROPIC_AUTH_TOKEN=${shSingleQuote(key)}')
   })
 })
 
@@ -208,10 +176,10 @@ describe('MiniMax stays out (Peti NO-GO, card 48565f81)', () => {
     // Without a `minimax-` branch it falls through the discriminator to ollama, exactly as it did
     // before this refactor -- the point is that adopting upstream's shape did not smuggle the
     // declined provider in. This is the assertion that fails if someone "syncs with upstream".
-    const r = resolveProviderEnv('minimax-m3', getSecret)
+    const r = resolveProviderEnv('minimax-m3', secretShellRef)
     expect(r.provider).not.toBe('minimax')
+    expect(r.provider).toBe('ollama')
     expect(r.exportsStr).not.toContain('minimax.io')
-    expect(r.exportsStr).toBe(legacyExports('minimax-m3', getSecret))
   })
 
   it('the source carries no minimax endpoint or key at all', () => {
@@ -238,6 +206,15 @@ describe('every shell sink in resolveProviderEnv is escaped, by PROVENANCE (Cybe
   // provider added by anyone (upstream included) is covered without touching this file. Pinned at
   // source level because the string is only ever executed inside a real tmux session -- there is no
   // cheap seam to drive end-to-end, which is the same reason backend's key-quoting test is one.
+  //
+  // CARD 248d3013 (LATENSKULCSARGV920) ADDS A SECOND TRUSTED SHAPE, `${keyRef}`, because the key
+  // sinks no longer hold a raw value to escape at all -- they hold whatever `secretShellRef(...)`
+  // returned, which this function must pass through untouched (see the "KEY never reaches a shell
+  // string" describe block above for what THAT mechanism itself guarantees). Trusting `keyRef` by
+  // NAME alone would be exactly the fragility this file's sibling guard warns against ("a guard
+  // written from the instances you just fixed describes your diff, not the class"), so the
+  // dedicated provenance test below additionally proves every `${keyRef}` in this body is preceded
+  // by `const keyRef = secretShellRef(` -- not `getSecret(` or any other source.
   const SRC = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-process.ts'), 'utf-8')
 
   function resolveProviderEnvBody(): string {
@@ -263,7 +240,7 @@ describe('every shell sink in resolveProviderEnv is escaped, by PROVENANCE (Cybe
     // unrecognised (measured: 27/27 green with that exact shape present, a simple unescaped
     // `${OLLAMA_URL}` correctly caught). This form asks only "does shSingleQuote( sit immediately
     // after `${`", which holds regardless of nesting depth inside the interpolation.
-    const unescaped = [...body.matchAll(/\$\{(?!shSingleQuote\()/g)]
+    const unescaped = [...body.matchAll(/\$\{(?!shSingleQuote\(|keyRef\}|launchSecretRef\()/g)]
     expect(
       unescaped.length,
       'an interpolation reaches the tmux launch command line without shSingleQuote() immediately ' +
@@ -273,12 +250,23 @@ describe('every shell sink in resolveProviderEnv is escaped, by PROVENANCE (Cybe
     ).toBe(0)
   })
 
+  it('every ${keyRef} sink is provably sourced from secretShellRef, not getSecret or the vault', () => {
+    const body = resolveProviderEnvBody()
+    const keyRefSinks = (body.match(/\$\{keyRef\}/g) || []).length
+    expect(keyRefSinks, 'expected the deepseek and openrouter branches to each use ${keyRef}').toBe(2)
+    const provenance = (body.match(/const keyRef = secretShellRef\(/g) || []).length
+    // One-to-one: every sink has a matching declaration straight off secretShellRef, in the SAME
+    // function -- not a re-derived or renamed value that merely happens to be called keyRef.
+    expect(provenance, 'every ${keyRef} must be declared `const keyRef = secretShellRef(...)`').toBe(keyRefSinks)
+    expect(body).not.toMatch(/getSecret\(/)
+  })
+
   it('BITES: the exact bare shape this NO-GO was about is caught', () => {
     // Guard against the assertion above going vacuous (an empty match set also has length 0).
     const mutated = 'export function resolveProviderEnv(' +
       '\n  x = `export ANTHROPIC_BASE_URL=${OLLAMA_URL} && `' +
       '\n// All tmux operations route through'
-    expect([...mutated.matchAll(/\$\{(?!shSingleQuote\()/g)].length).toBe(1)
+    expect([...mutated.matchAll(/\$\{(?!shSingleQuote\(|keyRef\}|launchSecretRef\()/g)].length).toBe(1)
   })
 
   it('BITES-NESTED: the nested-brace bypass Cybered measured is caught too (card f1203a7c)', () => {
@@ -288,14 +276,31 @@ describe('every shell sink in resolveProviderEnv is escaped, by PROVENANCE (Cybe
     const mutated = 'export function resolveProviderEnv(' +
       '\n  x = `export ANTHROPIC_BASE_URL=${({ u: OLLAMA_URL }).u} && `' +
       '\n// All tmux operations route through'
-    expect([...mutated.matchAll(/\$\{(?!shSingleQuote\()/g)].length).toBeGreaterThan(0)
+    expect([...mutated.matchAll(/\$\{(?!shSingleQuote\(|keyRef\}|launchSecretRef\()/g)].length).toBeGreaterThan(0)
+  })
+
+  it('BITES-RENAMED: a differently-named bare variable is still caught (248d3013 exemption is narrow)', () => {
+    // The `keyRef}` exemption is a literal-name shape, not "any bare identifier" -- proven here so
+    // a future edit cannot widen it by accident while this test still shows green.
+    const mutated = 'export function resolveProviderEnv(' +
+      '\n  x = `export ANTHROPIC_AUTH_TOKEN=${otherRef} && `' +
+      '\n// All tmux operations route through'
+    expect([...mutated.matchAll(/\$\{(?!shSingleQuote\(|keyRef\}|launchSecretRef\()/g)].length).toBe(1)
   })
 
   it('CONTROL: a properly escaped interpolation, even nested, is not flagged', () => {
     const src = 'export function resolveProviderEnv(' +
       '\n  x = `export ANTHROPIC_BASE_URL=${shSingleQuote(({ u: OLLAMA_URL }).u)} && `' +
       '\n// All tmux operations route through'
-    expect([...src.matchAll(/\$\{(?!shSingleQuote\()/g)]).toEqual([])
+    expect([...src.matchAll(/\$\{(?!shSingleQuote\(|keyRef\}|launchSecretRef\()/g)]).toEqual([])
+  })
+
+  it('CONTROL: the bare keyRef sink is not flagged (card 248d3013)', () => {
+    const src = 'export function resolveProviderEnv(' +
+      '\n  const keyRef = secretShellRef(\'X\') ?? shSingleQuote(\'\')' +
+      '\n  x = `export ANTHROPIC_AUTH_TOKEN=${keyRef} && `' +
+      '\n// All tmux operations route through'
+    expect([...src.matchAll(/\$\{(?!shSingleQuote\(|keyRef\}|launchSecretRef\()/g)]).toEqual([])
   })
 })
 

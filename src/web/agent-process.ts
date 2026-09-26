@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -1354,10 +1354,66 @@ export function shSingleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
+// Launch secrets (LATENSKULCSARGV920, ported from upstream #1478, card 248d3013): a provider/BYO
+// API key must never travel as a literal token inside the tmux `new-session` command string. That
+// string is a real argv element for as long as the pane's wrapper shell is alive, and
+// /proc/<pid>/cmdline is world-readable -- the same exposure class the curl-argv guard
+// (token-in-argv-guard.test.ts) covers for store/*.sh, just at a different sink, and the shell-
+// injection class agent-launch-key-quoting.test.ts covers is a SEPARATE concern (the value could
+// close a quote) that this mechanism also removes, because the raw value now never reaches a shell
+// string at all: it goes to a private file, and the launch command carries only a fixed-shape
+// command-substitution reference to that file's PATH (itself sanitized and shSingleQuote-escaped).
+export const LAUNCH_SECRETS_DIR = join(STORE_DIR, '.launch-secrets')
+export const LAUNCH_SECRETS_DIR_MODE = 0o700
+export const LAUNCH_SECRET_FILE_MODE = 0o600
+
+/**
+ * Writes `value` to a private 0600 file under LAUNCH_SECRETS_DIR and returns a shell command-
+ * substitution reference to it (`"$(cat '<path>')"`), never the value itself. The spawned shell
+ * reads the file at actual exec time; this process's own launch command never carries the secret.
+ *
+ * `secretName` is filtered to `[A-Za-z0-9._-]` (no `/`, so no path traversal), and a name that is
+ * only dots (e.g. `..`) is rejected in favour of a fixed fallback -- `..` alone would otherwise
+ * resolve to the parent directory once joined.
+ */
+export function launchSecretRef(secretName: string, value: string): string {
+  const filtered = secretName.replace(/[^A-Za-z0-9._-]/g, '_')
+  const safeName = /^\.+$/.test(filtered) || !filtered ? 'unnamed' : filtered
+  mkdirSync(LAUNCH_SECRETS_DIR, { recursive: true, mode: LAUNCH_SECRETS_DIR_MODE })
+  chmodSync(LAUNCH_SECRETS_DIR, LAUNCH_SECRETS_DIR_MODE)
+  const path = join(LAUNCH_SECRETS_DIR, safeName)
+  atomicWriteFileSync(path, value, { mode: LAUNCH_SECRET_FILE_MODE })
+  return `"$(cat ${shSingleQuote(path)})"`
+}
+
+/**
+ * Removes an agent's launch-secret files on stop. A rotated key's OLD value must not sit on disk
+ * until the next launch overwrites it, and a stopped agent's secret must not sit there
+ * indefinitely. Two name shapes because there are two writers: the provider-key path
+ * (`<agent>.<vaultKey-or-envId>`) and the BYO key path (`agent-<agent>-api-key`) -- matching only
+ * one would silently leave the other behind.
+ */
+export function clearLaunchSecrets(agentName: string): number {
+  if (!existsSync(LAUNCH_SECRETS_DIR)) return 0
+  const providerPrefix = `${agentName}.`
+  const byoName = `agent-${agentName}-api-key`
+  let removed = 0
+  for (const f of readdirSync(LAUNCH_SECRETS_DIR)) {
+    if (f !== byoName && !f.startsWith(providerPrefix)) continue
+    try {
+      unlinkSync(join(LAUNCH_SECRETS_DIR, f))
+      removed += 1
+    } catch (err) {
+      logger.warn({ err, file: f }, 'launch-secret cleanup failed')
+    }
+  }
+  return removed
+}
+
 /**
  * Which provider a model id belongs to, and the shell export chain that redirects the Claude Code
  * CLI to that provider's Anthropic-compatible endpoint. Pure -- the caller supplies secrets through
- * `secretLookup`, so this is testable without a vault. Adopted from upstream (card e80c011a); the
+ * `secretShellRef`, so this is testable without a vault. Adopted from upstream (card e80c011a); the
  * fork previously built these three strings inline in startAgentProcess.
  *
  * MINIMAX IS DELIBERATELY ABSENT, and this is the one place that would quietly reintroduce it.
@@ -1376,18 +1432,27 @@ export function shSingleQuote(value: string): string {
  * Card b7fa5281: the model is shell-ESCAPED at the sink (shSingleQuote), not merely wrapped in
  * literal single quotes -- so a `'` in the value can never close the quote and inject a command.
  *
- * THE KEYS ARE ESCAPED THE SAME WAY, and that is NOT upstream's shape (card 1075d0e4, backend,
- * from Cybered's finding on this card's own gate). Upstream interpolates the vault key into DOUBLE
- * quotes, where `"` and `$(...)` still expand, so a vault value shaped `x";<command>;#` runs as the
- * host user at tmux launch -- BEFORE the hook layer exists, so no PreToolUse guard can see it.
- * Restoring upstream's `"${key}"` here would silently reopen that, which is exactly what this
- * refactor nearly did: backend fixed the INLINE form on develop while this branch was replacing it.
+ * THE KEYS WERE ESCAPED THE SAME WAY (card 1075d0e4, backend, from Cybered's finding on that
+ * card's own gate) -- upstream had interpolated the vault key into DOUBLE quotes, where `"` and
+ * `$(...)` still expand, so a vault value shaped `x";<command>;#` ran as the host user at tmux
+ * launch, BEFORE the hook layer exists, so no PreToolUse guard could see it.
+ *
+ * CARD 248d3013 (LATENSKULCSARGV920) CHANGES THE CONTRACT: the caller no longer hands this
+ * function the key's raw VALUE. It hands a `secretShellRef` callback that returns the key's shell
+ * REFERENCE (built by `launchSecretRef`, above) -- a fixed-shape, non-attacker-controlled string,
+ * never the secret. The shSingleQuote-at-the-sink invariant this file is guarded on (see
+ * agent-launch-key-quoting.test.ts and this card's own "by PROVENANCE" suite) still holds: it now
+ * lives INSIDE launchSecretRef (escaping the sanitized file PATH), one call above this function
+ * instead of textually inside it -- the raw secret value never reaches a shell string at either
+ * layer, which is strictly tighter than escaping it in place ever was.
  */
 export type ProviderKind = 'claude' | 'deepseek' | 'openrouter' | 'ollama'
 
 export function resolveProviderEnv(
   model: string,
-  secretLookup: (id: string) => string | null,
+  /** Returns the secret's shell REFERENCE (e.g. `"$(cat '/path')"`, from `launchSecretRef`), never
+   *  its value; `null`/missing degrades to an empty credential, same as before this card. */
+  secretShellRef: (id: string) => string | null,
 ): { provider: ProviderKind; exportsStr: string } {
   const isClaude = model.startsWith('claude-')
   const isDeepseek = model.startsWith('deepseek-')
@@ -1397,10 +1462,10 @@ export function resolveProviderEnv(
   const isOllama = !isClaude && !isDeepseek && !isOpenRouter
 
   if (isDeepseek) {
-    const key = secretLookup('DEEPSEEK_API_KEY') ?? ''
+    const keyRef = secretShellRef('DEEPSEEK_API_KEY') ?? shSingleQuote('')
     return {
       provider: 'deepseek',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(key)} && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   // MINIMAX IS DELIBERATELY ABSENT -- see this function's docstring. Peti NO-GO, card 48565f81 /
@@ -1408,10 +1473,10 @@ export function resolveProviderEnv(
   if (isOpenRouter) {
     // Anthropic-compatible endpoint at https://openrouter.ai/api (the SDK appends /v1/messages).
     // Key from the vault (openrouter-fleet-key).
-    const key = secretLookup('openrouter-fleet-key') ?? ''
+    const keyRef = secretShellRef('openrouter-fleet-key') ?? shSingleQuote('')
     return {
       provider: 'openrouter',
-      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${shSingleQuote(key)} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=https://openrouter.ai/api && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
     }
   }
   if (isOllama) {
@@ -1814,7 +1879,15 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     const isClaude = model.startsWith('claude-')
     // Provider discriminator + env-export chain live in resolveProviderEnv (pure, testable, one
     // place). `isClaude` stays here because the auth-mode branch below still needs it.
-    const { exportsStr: providerEnv } = resolveProviderEnv(model, getSecret)
+    //
+    // The vault value goes to a private file, and only the shell REFERENCE to it crosses into the
+    // launch command (LATENSKULCSARGV920, card 248d3013) -- `name` scopes the file so
+    // clearLaunchSecrets(name) on stop can find it by the `<agent>.` prefix without touching a
+    // sibling agent's secret.
+    const { exportsStr: providerEnv } = resolveProviderEnv(model, (id) => {
+      const value = (getSecret(id) ?? '').trim()
+      return value ? launchSecretRef(`${name}.${id}`, value) : null
+    })
     // When authMode is 'api', the agent uses its own ANTHROPIC_API_KEY from
     // the vault instead of the host's OAuth. The vault entry ID follows the
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude
@@ -1823,7 +1896,10 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     if (isClaude && authMode === 'api') {
       const agentApiKey = getSecret(`agent-${name}-api-key`) ?? ''
       if (agentApiKey) {
-        apiKeyEnv = `export ANTHROPIC_API_KEY=${shSingleQuote(agentApiKey)} && `
+        // Same rule as the provider branch above: the key goes to a file, the launch command
+        // carries only the reference (LATENSKULCSARGV920). The BYO name IS the file name (no
+        // `name.` prefix needed -- it is already agent-scoped), matching clearLaunchSecrets' byoName.
+        apiKeyEnv = `export ANTHROPIC_API_KEY=${launchSecretRef(`agent-${name}-api-key`, agentApiKey)} && `
       }
     }
     // Apply security profile: write allow/deny list into settings.json, and
@@ -2300,6 +2376,10 @@ async function stopAgentProcessUnlocked(name: string): Promise<{ ok: boolean; er
         'stopAgentProcess: killed the tmux session without the send-lock -- a delivery was still in flight past the wait budget',
       )
     }
+    // Launch secrets do not survive the stop (card 248d3013, LATENSKULCSARGV920). Without this, a
+    // rotated key's OLD value would sit on disk until the next launch, and a stopped agent's key
+    // would sit there indefinitely -- exactly the trail an incident review would go looking for.
+    clearLaunchSecrets(name)
     await delay(2000)
     // Reap any orphaned plugin grandchild that tmux did not tear down. This is
     // a LOCAL pkill against this host's process table, so it only makes sense
