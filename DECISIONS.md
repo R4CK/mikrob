@@ -15646,3 +15646,39 @@ hianyok tobbsege MAR NYITOTT kartyara parosodik (6b10a6b8, fd8ae23f, 1c810029), 
 nem duplikalva. 1 uj kovetkezmeny-kartya (CLI-update-offer, meglevo kartyaval nem duplikalt, checked).
 1 kis, izolalt bugfix (BRANCH_HEAL_COMMAND) kozvetlenul adoptalva. Gate: QA (megjelenites-pontossag,
 Cybersec nem kotelezo -- nincs uj trust-boundary, MikroB dontse el a kockazat szerint).
+
+## 2026-09-26 -- 248d3013 (backend, HIGH, szulo b5b7eb6b): LATENSKULCSARGV920 secret-ref-indirection portolva
+
+Cybersec talalta card 123983f3 gate-jen: a fork resolveProviderEnv-je a vault-kulcsot RAW ERTEKKENT
+adta at (shSingleQuote-tal escape-elve a launch-parancsba), ami az upstream #1478 (LATENSKULCSARGV920)
+fixe ELOTTI allapot -- a kulcs a tmux `new-session` argv-jeben olvashato marad, amig a pane
+wrapper-shellje el (`/proc/<pid>/cmdline` world-readable). Az escape-eles (card 1075d0e4) a shell-
+injekciot mar kizarta, de az argv-expozicio kulon, meg nyitott hibaosztaly volt.
+
+Javitas (src/web/agent-process.ts): uj `launchSecretRef(secretName, value)` a titkot egy privat 0600
+fajlba irja (STORE_DIR/.launch-secrets, 0700 dir), es `"$(cat '<path>')"` shell-hivatkozast ad vissza
+-- a nyers ertek SOSEM kerul shell-sztringbe. `resolveProviderEnv` kontraktusa valtozott: `secretLookup`
+(nyers ertek) helyett `secretShellRef` (mar keszen kapott hivatkozas), a deepseek/openrouter agak
+`keyRef`-en keresztul kapjak, a BYO agent-API-kulcs es a provider-hivo `launchSecretRef`-et kozvetlenul
+hivja. Uj `clearLaunchSecrets(agentName)` a stopAgentProcess-be bedrotozva -- a titok nem eli tul a
+leallitast (rotalt kulcs regi erteke nem maradhat a lemezen).
+
+Harom, mar meglevo, adverzarialisan keresztelt guard-teszt (agent-launch-key-quoting.test.ts UNESCAPED
+regex; provider-env-adoption.test.ts "by PROVENANCE" suite) EXPLICIT frissitve, hogy a `${keyRef}` /
+`launchSecretRef(` alakot is elfogadja -- NEVSZERINT, nem "barmilyen bare identifier"-kent, kulon
+teszttel bizonyitva, hogy egy MASIK nevu bare valtozo vagy egy kozvetlen `getSecret()` hivas tovabbra
+is elakad a guardon (a fajl sajat elve: "a guard ami a most javitott esetekbol irodik, a diffedet
+irja le, nem az osztalyt"). Uj teszt: launch-secret-ref.test.ts (launchSecretRef sanitizalas, mod-ok,
+clearLaunchSecrets prefix-pontossag).
+
+Custom-provider vault-key-hard-fail (a kartya masik fele) NEM portolt: CustomProviderDef egyaltalan
+nem letezik meg a forkban (grep-elve: nulla talalat) -- ez a 6b10a6b8 (custom-provider adopcio)
+dolga, kommentelve ott (7123, javitva 7124-ben egy sajat idezojel-hiba miatt) a kovetelmennyel:
+hasznalja a launchSecretRef/secretShellRef mintat, hianyzo vault-kulcsnal dobjon hibat.
+
+Ellenorzes: tsc --noEmit tiszta; provider-env-adoption.test.ts (25) + agent-launch-key-quoting.test.ts
+(19) + launch-secret-ref.test.ts (8) + fork-upstream-conflict-guard.test.ts (36) +
+fork-upstream-drift-check.test.ts (21) = 109/109 zold, plusz 10 tovabbi lifecycle/launch-kapcsolodo
+tesztfajl (148 teszt) regresszio-ellenorzesre.
+
+Gate: QA + Cybersec (trust-boundary: credential-exposure + silent-fallback-to-unauth osztaly).
