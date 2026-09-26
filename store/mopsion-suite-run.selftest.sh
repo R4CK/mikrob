@@ -552,6 +552,86 @@ else
   bad "the mid-run watch fired even though the memory precondition was disabled" "rc=$midrun_off_rc out=$(cat "$TMP/midrun-off-out.txt" 2>/dev/null)"
 fi
 
+# --- 14b. AN ORPHANED VITEST WHEN THE WRAPPER ITSELF DIES (card 57f4f5f1, backend's finding) -----
+# Case 14 proves the mid-run memory watch kills vitest from WITHIN this script. This proves the
+# other direction: this script's own EXIT trap kills vitest when THIS SCRIPT is the one that dies
+# first (SIGTERM, no memory pressure involved) -- the exact shape of the measured incident, where
+# stopping the wrapper/pipeline left the vitest process tree running 25 minutes later, still holding
+# CPU the SLOTS semaphore thought it had freed the instant this script's own fd closed.
+#
+# DETECTION IS BY PIDFILE, NOT `pgrep -f <absolute path>` -- measured, not assumed. run_vitest
+# launches `setsid ./node_modules/.bin/vitest ...` (a RELATIVE path, after this script's own `cd
+# "$WT"`), so the live process's argv/cmdline never contains $MIDRUN_WT at all; a pattern anchored on
+# the absolute fixture path matches nothing, live or dead, and every check built on it would pass
+# vacuously regardless of which the fake vitest actually was. Measured directly (a timestamped debug
+# line inside the fake vitest, run once by hand): it starts in well under a second, so the false
+# "already gone" a first draft of this case hit was the pattern, not timing. The fake vitest instead
+# writes ITS OWN pid to a file the instant it starts, and the checks below poll and probe that pid.
+ORPHAN_PIDFILE="$TMP/orphan-vitest.pid"
+rm -f "$ORPHAN_PIDFILE"
+cat > "$MIDRUN_WT/node_modules/.bin/vitest" <<EOF
+#!/usr/bin/env bash
+echo \$\$ > "$ORPHAN_PIDFILE"
+sleep 60 &
+wait
+EOF
+chmod +x "$MIDRUN_WT/node_modules/.bin/vitest"
+write_mem 9000000
+( env "${env_midrun[@]}" CLEANCORE_SUITE_MEMINFO="$MIDRUN_MEMINFO" CLEANCORE_SUITE_MIN_AVAIL_MB=0 \
+      bash "$MIDRUN_WT/store/$(basename "$RUN")" fakewt -- --project packages \
+      >"$TMP/orphan-out.txt" 2>&1 ) &
+orphan_wrapper_pid=$!
+# POLL for the pidfile, rather than a fixed sleep -- under the heavy concurrent load this file's own
+# fixtures create (several `sleep 300` holders plus whatever else the fleet is doing), a fixed sleep
+# risks firing before vitest has started, which would make the assertion below vacuously true for
+# the wrong reason (nothing to orphan yet, not "the trap worked"). Bounded at 10s so a genuine
+# failure to start still fails fast rather than hanging.
+waited_start=0
+while [ ! -s "$ORPHAN_PIDFILE" ] && [[ $waited_start -lt 100 ]]; do
+  sleep 0.1
+  waited_start=$((waited_start + 1))
+done
+vitest_pid="$(cat "$ORPHAN_PIDFILE" 2>/dev/null || true)"
+if [ -z "$vitest_pid" ] || ! kill -0 "$vitest_pid" 2>/dev/null; then
+  bad "the fake vitest never started (or exited immediately) -- the case below cannot prove anything" "pidfile='$vitest_pid'"
+fi
+kill -TERM "$orphan_wrapper_pid" 2>/dev/null   # kill the WRAPPER, not vitest -- the measured shape
+wait "$orphan_wrapper_pid" 2>/dev/null
+sleep 0.3
+if [ -n "$vitest_pid" ] && ! kill -0 "$vitest_pid" 2>/dev/null; then
+  ok "killing the wrapper does NOT orphan vitest -- the EXIT trap reaches it too"
+else
+  bad "vitest survived its wrapper's own termination -- exactly the measured orphan" \
+    "$(ps -o pid,ppid,cmd -p "$vitest_pid" 2>/dev/null)"
+fi
+
+# The slot must not stay held by a wrapper that is already gone.
+sleep 0.3
+( exec 8>>"${PREFIX}-midrun-1.lock"; flock -n 8 ) 2>/dev/null \
+  && ok "the slot held by the killed wrapper is free, not leaked" \
+  || bad "no slot was free after the wrapper was killed" ""
+
+# CONTROL: the SAME kill, but AFTER vitest has already finished naturally -- the trap must find
+# CURRENT_VITEST_PID already cleared and do nothing (no kill -TERM on an unrelated, possibly-reused
+# pid). A short-lived fake vitest plus a generous sleep before the signal proves this.
+cat > "$MIDRUN_WT/node_modules/.bin/vitest" <<'EOF'
+#!/usr/bin/env bash
+exec sleep 0.2
+EOF
+chmod +x "$MIDRUN_WT/node_modules/.bin/vitest"
+( env "${env_midrun[@]}" CLEANCORE_SUITE_MEMINFO="$MIDRUN_MEMINFO" CLEANCORE_SUITE_MIN_AVAIL_MB=0 \
+      bash "$MIDRUN_WT/store/$(basename "$RUN")" fakewt -- --project packages \
+      >"$TMP/orphan-done-out.txt" 2>&1 ) &
+orphan_done_pid=$!
+sleep 2   # vitest has long finished; this script is now doing the flake/skip-report/exit tail
+kill -TERM "$orphan_done_pid" 2>/dev/null
+wait "$orphan_done_pid" 2>/dev/null
+if ! grep -q "still running -- killing its process group" "$TMP/orphan-done-out.txt" 2>/dev/null; then
+  ok "CONTROL: a wrapper killed AFTER vitest already finished does not try to kill anything"
+else
+  bad "the trap tried to kill a process that had already finished" "$(cat "$TMP/orphan-done-out.txt")"
+fi
+
 # --- 15. THE REVERSE DIRECTION, WITH THE REAL fleet-test.sh (card 3e1502ec) ---------------------
 # Cases 1-14 above prove this script's OWN slot logic against synthetic `flock` holders. Those
 # holders use the identical file-naming scheme fleet-test.sh's acquire_cpu_slot() uses

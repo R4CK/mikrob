@@ -51,6 +51,15 @@
 #   store/mopsion-suite-run.sh <agent> [-- <extra vitest args>]
 #   CLEANCORE_SUITE_SLOTS=3 store/mopsion-suite-run.sh backend3
 #
+# WATCHING A BACKGROUND RUN: WRITE TO A FILE, NEVER `| tail -N` (card 57f4f5f1). A run takes
+# 60-90 minutes, so any caller watching it in the background pipes it somewhere -- and `| tail -45`
+# is the wrong shape: the pipe buffers everything while the run is alive, and if the pipe breaks
+# (the reader is stopped, the pane closes) the writer sees SIGPIPE and the run exits 141/144 with an
+# EMPTY tail -- indistinguishable from a suite that failed instantly, when what actually happened is
+# that nobody was watching any more. Redirect to a file and read the file instead:
+#   store/mopsion-suite-run.sh <agent> > "$SP/suite.log" 2>&1; echo "SUITE_EXIT=$?" >> "$SP/suite.log"
+# A file survives the reader going away; `tail -f`/`grep` on it later sees everything, live or dead.
+#
 # Env:
 #   MARVEEN_MAIN                 default /home/neon/marveen -- the SHARED anchor the slot files live
 #                                under. This is what makes the cap fleet-wide instead of per-checkout
@@ -404,7 +413,42 @@ done
 # same thing. `tee` keeps the live output exactly as before; PIPESTATUS keeps the real exit code.
 run_log="$(mktemp)"
 e2e_log="$(mktemp)"
-trap 'rm -f "$_hdr_file" "$run_log" "$e2e_log"' EXIT
+
+# ORPHANED VITEST ON WRAPPER TERMINATION (card 57f4f5f1, backend's finding). setsid gives vitest its
+# own session/process group precisely so mem_watch_and_wait can signal the whole tree with one `kill
+# -TERM -- -$vpid` (see that function's header) -- but the SAME detachment means vitest does NOT die
+# just because ITS PARENT (this script) does. Measured live: a stopped run stayed alive 25 minutes
+# later, still spinning up workers, while the SLOTS flock it was holding had already been released
+# (the flock lives on this script's own fd, which closes the instant this process exits) -- so a
+# second and third run started on top of it. Exactly the CPU-starvation the semaphore exists to
+# prevent (rule 17), from the one path the semaphore itself cannot see: its own abnormal exit.
+#
+# CURRENT_VITEST_PID is set the instant a vitest session starts and cleared the instant
+# mem_watch_and_wait has reaped it (both in run_vitest, below) -- so at any moment this script might
+# die, it names the exact live pid, or is empty because nothing is running. The EXIT trap fires for
+# normal completion (empty by then, no-op) AND for termination by a signal bash's default disposition
+# would otherwise just exit on (SIGTERM/SIGINT with no handler of their own) -- it cannot fire for
+# SIGKILL, which no process can trap; that is a kernel-level limit, not a gap in this script.
+#
+# IDENTIFIED BY THE EXACT PID THIS SCRIPT ITSELF LAUNCHED, never a name-based `pkill vitest` -- this
+# script only ever knows about, and only ever signals, the one process tree it started.
+CURRENT_VITEST_PID=""
+_kill_orphaned_vitest() {
+  rm -f "$_hdr_file" "$run_log" "$e2e_log"
+  [ -n "$CURRENT_VITEST_PID" ] || return 0
+  kill -0 "$CURRENT_VITEST_PID" 2>/dev/null || return 0
+  echo "mopsion-suite-run: exiting while vitest (pid $CURRENT_VITEST_PID) is still running -- killing its process group so it does not outlive this script (card 57f4f5f1)" >&2
+  kill -TERM -- "-$CURRENT_VITEST_PID" 2>/dev/null || kill -TERM "$CURRENT_VITEST_PID" 2>/dev/null
+  local waited=0
+  while kill -0 "$CURRENT_VITEST_PID" 2>/dev/null && [ "$waited" -lt "$MID_RUN_TERM_GRACE_S" ]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  kill -0 "$CURRENT_VITEST_PID" 2>/dev/null && {
+    kill -KILL -- "-$CURRENT_VITEST_PID" 2>/dev/null || kill -KILL "$CURRENT_VITEST_PID" 2>/dev/null
+  }
+}
+trap _kill_orphaned_vitest EXIT
 
 # THE START-TIME PRECONDITION (try_start, above) ONLY LOOKS ONCE (card e498502e, backend's finding
 # 2026-09-12). A full suite runs ~60-90 minutes; 249c6c6f started with ~13 GB free and was OOM-killed
@@ -470,10 +514,17 @@ run_vitest() {
   local log="$1"; shift
   setsid ./node_modules/.bin/vitest run "$@" >"$log" 2>&1 &
   local vpid=$!
+  CURRENT_VITEST_PID="$vpid"
   tail -n +1 -f "$log" --pid="$vpid" 2>/dev/null &
   local tail_pid=$!
   mem_watch_and_wait "$vpid"
   local st=$?
+  # By the time mem_watch_and_wait returns it has already reaped vpid (its own final `wait`, on
+  # every path -- see that function). Clearing this NOW, not at the end of run_vitest, is what keeps
+  # the EXIT trap's `kill -0 "$CURRENT_VITEST_PID"` from ever finding a REUSED pid: bash can recycle
+  # a pid the instant it is reaped, and the flake-classify/skip-report calls below run real
+  # subprocesses that could otherwise, in principle, collide with a stale value here.
+  CURRENT_VITEST_PID=""
   wait "$tail_pid" 2>/dev/null
   if [ "$st" -eq "$MID_RUN_OOM_STATUS" ]; then
     _comment "INFO-ONLY SUITE-STOPPED-MEMORY
