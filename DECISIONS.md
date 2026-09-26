@@ -15682,3 +15682,44 @@ fork-upstream-drift-check.test.ts (21) = 109/109 zold, plusz 10 tovabbi lifecycl
 tesztfajl (148 teszt) regresszio-ellenorzesre.
 
 Gate: QA + Cybersec (trust-boundary: credential-exposure + silent-fallback-to-unauth osztaly).
+
+## 2026-09-26 -- 806707fa: token-in-argv-guard strukturalis fix (live narrativ dokumentum kivetel)
+
+Cel: 2026-09-25 este ot fuggetlen esetben (cybersec skill-referencia, cybersec HANDOFF, cybersec
+memoria, backend3 HANDOFF ketszer, qa2 HANDOFF:81) egy elo agents/ fajlban PROZAKENT idezett tiltott
+alak (bearer-header argv-ben / token query-parameterben) buktatta MAS ugynok landolasat, aki nem
+tudja javitani a sajat branchejerol. A meglevo `guard-allow: documented-anti-pattern <ok>` jelolo-
+mechanizmus (kartya 48d5f255) egy SZALLITOTT, ritkan-erintett SKILL.md-re lett tervezve, ami
+SZANDEKKAL tanitja a tiltott alakot -- nem illik egy HANDOFF.md/memory fajlra, amit minden sessionben
+idokenyszer alatt irnak ujra: a backend3 sajat maga ketszer is elfelejtette a jelolot egyetlen estan.
+
+DONTES: kod-teny vs szoveg-teny megkulonbozites (kodminosegi elv 12 mintaja) alkalmazva erre a
+guardra is. Uj `isLiveNarrativeDocPath(file)` predikatum: pontosan `HANDOFF.md` bazisnev, VAGY egy
+`memory` nevu path-szegmens (nem substring -- `memory-forensics.md` NEM minosul, mert az utolso
+szegmens maga nem egyezik pontosan `memory`-vel). `isDocumentedAntiPattern` uj (opcionalis, alap
+false) `isLiveNarrativeDoc` parametere: ha igaz, a NEM-fenced elofordulas automatikusan kivetel,
+jelolo/ok-string nelkul. A FENCE-tilalom valtozatlan marad MINDEN fajlosztalyra: egy ```bash blokk
+tovabbra is parancs, akkor is, ha HANDOFF.md-ben all.
+
+HATOKOR SZUKITVE: a kivetel csak `dir === INSTALLED_AGENTS_DIR` (a tenylegesen telepitett, gitignored,
+gepi-lokalis agent-fa) eseten ervenyesul -- a SEED_FLEET_AGENTS_DIR (szallitott sablonok) es a tobbi
+korpusz erintetlen marad, mert ott a jelolo-mechanizmus a helyes eszkoz (felulvizsgalt, szandekos
+tanito-tartalom). Ellenorizve: se a seed-skills, se a seed-fleet-agents, se a templates fa nem
+tartalmaz `HANDOFF.md`-t vagy `memory/` nevu alkonyvtarat ma (find -type d -iname memory, find -iname
+HANDOFF*), tehat a szukites a mai korpuszon nem valtoztat semmin, csak a jovobeli draft ellen zar.
+
+Erintett tesztek: `src/__tests__/token-in-argv-guard.test.ts` -- 2 hivo hely (`isDocumentedAntiPattern`
+mindket it.each blokkban) frissitve az uj `isNarrative` flaggel, uj kontroll-tesztek (mind a ket
+iranyban: exempt jelolo nelkul / NEM exempt ha a flag false / fence tovabbra is tilt / path-predikatum
+parametrikus tesztje HANDOFF.md, memory/, es a memory-forensics.md substring-csapda ellen).
+
+MUTACIOS ELLENORZES (elo fajlon, nem szintetikuson): a valodi `agents/backend3/HANDOFF.md`-be
+ideiglenesen beszurva a `curl -s -H "Authorization: Bearer $TOK" ...` sor -- a REGI kod (git stash-elt
+teszt-fajl) FAIL-t adott ("backend3/HANDOFF.md passes a Bearer token..."), az UJ kod PASS-t. A sor
+utana visszaallitva (diff ures).
+
+Zold: tsc --noEmit tiszta, token-in-argv-guard.test.ts 7943/7943 (a develop fast-forward-ja utan is).
+
+Mi NEM tortent itt: a masik ket, szintaktikailag hasonlo szabaly (`curl -G` credential, path-embedded
+bot token) NEM kapott hasonlo kivetelt -- nincs mert incidens rajuk, es a kartya csak a ket erintett
+alakra (bearer-argv, url-query) korlatozodott indoklas nelkuli scope-bovites helyett.
