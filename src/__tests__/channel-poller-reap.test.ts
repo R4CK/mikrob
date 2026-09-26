@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parsePollerPidsFromPs, findOrphanChannelClaudes, type ProcRow } from '../web/channel-poller-reap.js'
+import { parsePollerPidsFromPs, findOrphanChannelClaudes, isPollerArgv, filterPollerPids, type ProcRow } from '../web/channel-poller-reap.js'
 
 // Sample rows captured from a real `ps eww -e` on macOS during the
 // 2026-06-01 channel-disconnect incident. The bun poller, the slack
@@ -147,5 +147,36 @@ describe('findOrphanChannelClaudes', () => {
       { pid: 76621, ppid: 35874, command: `${CLAUDE} --channels plugin:telegram@claude-plugins-official` },
     ]
     expect(findOrphanChannelClaudes(allLive, new Set([76621]))).toEqual([])
+  })
+})
+
+// 2026-09-26 06:44: a stage-3 resume reaped 100+ pids off the bare *_STATE_DIR needle -- the
+// shared tmux server, the main claude and every MCP child inherit it from channels.sh -- and took
+// the whole fleet down. Only the poller's own argv may qualify a pid for the kill.
+describe('isPollerArgv / filterPollerPids', () => {
+  it('accepts the real poller shapes', () => {
+    expect(isPollerArgv(['/home/neon/.bun/bin/bun', 'server.ts'])).toBe(true)
+    expect(isPollerArgv(['node', '/x/plugins/cache/slack-channel/0.1.0/server.ts'])).toBe(true)
+    expect(isPollerArgv(['bun', 'run', '--cwd', '/x/plugins/cache/telegram/0.0.6', '--silent', 'start'])).toBe(true)
+  })
+
+  it('rejects everything that merely inherited the env var (measured on this host)', () => {
+    expect(isPollerArgv(['tmux', 'new-session', '-d', '-s', 'mikrob-channels'])).toBe(false)
+    expect(isPollerArgv(['/home/neon/.local/bin/claude', '--dangerously-skip-permissions'])).toBe(false)
+    expect(isPollerArgv(['node', '/home/neon/.npm/_npx/9833/node_modules/.bin/playwright-mcp'])).toBe(false)
+    expect(isPollerArgv(['npm', 'exec', '@playwright/mcp'])).toBe(false)
+    expect(isPollerArgv(['bash', '/home/neon/marveen/store/marveen-land.sh', 'mikrob'])).toBe(false)
+    expect(isPollerArgv(['/bin/bash', '-c', 'bun server.ts'])).toBe(false)
+    expect(isPollerArgv([])).toBe(false)
+  })
+
+  it('keeps only poller pids, and drops a pid whose argv cannot be read', () => {
+    const argv: Record<number, string[] | null> = {
+      814: ['tmux', 'new-session'],
+      15674: ['/home/neon/.local/bin/claude'],
+      188429: ['/home/neon/.bun/bin/bun', 'server.ts'],
+      99999: null,
+    }
+    expect(filterPollerPids([814, 15674, 188429, 99999], (p) => argv[p] ?? null)).toEqual([188429])
   })
 })

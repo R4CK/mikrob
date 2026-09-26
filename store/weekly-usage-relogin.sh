@@ -41,7 +41,7 @@ ensure_pane() {
   mkdir -p "$PROBE_CONFIG_DIR" 2>/dev/null || true
   # Recreate the panel with a clean interactive claude (subscription login, no API token env),
   # pinned to the ISOLATED config dir so shared-credential contention can't log it out.
-  tmux new-session -d -s "$PANE" -c /home/neon 2>/dev/null || return 1
+  tmux new-session -d -s "$PANE" -x 200 -y 60 -c /home/neon 2>/dev/null || return 1
   sleep 1
   # NOTE: env option flags (-u) MUST precede VAR=VALUE assignments, else env treats the
   # assignment as the end of options and the following -u becomes the command (env error).
@@ -186,7 +186,7 @@ case "$MODE" in
     # so resizing after the URL is printed leaves it wrapped/truncated (the &state= param spills
     # to the next line and a naive head -n1 drops it -> "Missing state parameter" on the login
     # page). Wide window = the whole URL lands on one logical line.
-    tmux resize-window -t "$PANE" -x 500 2>/dev/null || true; sleep 1
+    tmux resize-window -t "$PANE" -x 500 -y 60 2>/dev/null || true; sleep 1
     # Kick /login and select the subscription (Max) option (menu default = option 1).
     tmux send-keys -t "$PANE" '/login' Enter 2>/dev/null; sleep 6
     # If the 3-way method menu is up, Enter selects the highlighted first item (subscription).
