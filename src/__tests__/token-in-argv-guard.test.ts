@@ -472,8 +472,54 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
    *   the forbidden shape across TWO bullet-prose lines with an HTML-comment marker below them, and
    *   a markdown bullet starts with `-`/`*`/plain text, never `#`.
    */
-  function isDocumentedAntiPattern(source: string, startLine: number, isMarkdown: boolean): boolean {
+  /**
+   * A per-agent RUNTIME narrative artifact -- `HANDOFF.md` or anything under a `memory/` directory,
+   * the two live-state classes agents/backend3/CLAUDE.md's own memory-tier section defines. Neither
+   * is shipped to a fresh install, neither is re-executed by anything; the NEXT session reads it as
+   * history, the way a diary entry is read, not the way a script is run.
+   *
+   * Card 806707fa: five independent landings failed in one evening (cybersec skill-reference,
+   * cybersec HANDOFF, cybersec memory, backend3 HANDOFF twice, qa2 HANDOFF:81) because an agent's
+   * own incident write-up quoted the forbidden shape IN PROSE while narrating the incident, and the
+   * existing `guard-allow` marker route (built for a reviewed, rarely-touched SKILL.md that
+   * deliberately teaches the shape) does not fit a file that gets rewritten every session under
+   * time pressure -- the SAME agent forgot the marker on its own HANDOFF.md twice in one night.
+   * Distinguishing "this corpus is executable/shipped" from "this corpus is a live text-fact log"
+   * is the prose-vs-code-fact split the fleet's own code-quality principle 12 states for a different
+   * guard; the fix here is the same split applied to this one.
+   *
+   * Scoped narrowly, not a general "*.md is fine" carve-out (that would swallow every real teaching
+   * doc too): only the exact `HANDOFF.md` basename, or a path that has a directory segment spelled
+   * exactly `memory` -- not a substring match, so a file like `memory-forensics.md` (a real reference
+   * doc under a security skill, seen in the corpus) does not qualify.
+   */
+  function isLiveNarrativeDocPath(file: string): boolean {
+    const parts = file.split(sep)
+    const base = parts[parts.length - 1]
+    return base === 'HANDOFF.md' || parts.includes('memory')
+  }
+
+  /**
+   * @param isMarkdown Markdown prose OUTSIDE a fence is never live code by construction -- the
+   *   `fencedLines` check above already separates "fenced = command, copy-pasted verbatim" from
+   *   "everything else = documentation", so the line-must-be-a-comment requirement below only
+   *   applies to corpora where the file itself IS the executable/source artifact (.sh/.py/.ts/…).
+   *   Applying it to markdown too broke a real exemption: leak-safe-secret-probe/SKILL.md teaches
+   *   the forbidden shape across TWO bullet-prose lines with an HTML-comment marker below them, and
+   *   a markdown bullet starts with `-`/`*`/plain text, never `#`.
+   * @param isLiveNarrativeDoc Card 806707fa. Unfenced text in a live per-agent narrative doc (see
+   *   `isLiveNarrativeDocPath`) is exempt WITHOUT the marker -- no reason string, no paragraph scan.
+   *   A fence still disqualifies (checked first, above, unconditionally): a fenced block is a
+   *   command to copy-paste whatever file it sits in, narrative or not.
+   */
+  function isDocumentedAntiPattern(
+    source: string,
+    startLine: number,
+    isMarkdown: boolean,
+    isLiveNarrativeDoc: boolean = false,
+  ): boolean {
     if (fencedLines(source).has(startLine)) return false
+    if (isLiveNarrativeDoc) return true
     const lines = source.split('\n')
     // The code-vs-prose gap (card 782820be): the marker+reason check alone said nothing about
     // whether the FLAGGED occurrence itself is live code. A real `curl ... # guard-allow: ...`
@@ -507,9 +553,10 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   it.each(cases)('$file: every curl reads its auth header from a file, never argv', ({ dir, file }) => {
     const source = readFileSync(join(dir, file), 'utf8')
     const isMarkdown = file.endsWith('.md')
+    const isNarrative = dir === INSTALLED_AGENTS_DIR && isLiveNarrativeDocPath(file)
     const offenders = findCurlInvocations(source)
       .filter((c) => leaksTokenInArgv(c.text))
-      .filter((c) => !isDocumentedAntiPattern(source, c.startLine, isMarkdown))
+      .filter((c) => !isDocumentedAntiPattern(source, c.startLine, isMarkdown, isNarrative))
     if (offenders.length > 0) {
       const detail = offenders.map((o) => `  line ${o.startLine}: ${o.text.trim().slice(0, 100)}`).join('\n')
       throw new Error(
@@ -533,8 +580,9 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   it.each(shellCases)('$file: no line builds a URL with a credential query parameter', ({ dir, file }) => {
     const source = readFileSync(join(dir, file), 'utf8')
     const isMarkdown = file.endsWith('.md')
+    const isNarrative = dir === INSTALLED_AGENTS_DIR && isLiveNarrativeDocPath(file)
     const offenders = credentialUrlLines(source).filter(
-      (o) => !isDocumentedAntiPattern(source, o.startLine, isMarkdown),
+      (o) => !isDocumentedAntiPattern(source, o.startLine, isMarkdown, isNarrative),
     )
     if (offenders.length > 0) {
       const detail = offenders.map((o) => `  line ${o.startLine}: ${o.text.trim().slice(0, 100)}`).join('\n')
@@ -569,10 +617,10 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   //
   // The offender line is identical in all four. Only the marker, the fence and the prose change.
   const LEAK_LINE = 'curl -s -H "Authorization: Bearer $TOK" "$DASH/api/x"'
-  const exemptCount = (doc: string, isMarkdown = false) =>
+  const exemptCount = (doc: string, isMarkdown = false, isNarrative = false) =>
     findCurlInvocations(doc)
       .filter((c) => leaksTokenInArgv(c.text))
-      .filter((c) => isDocumentedAntiPattern(doc, c.startLine, isMarkdown)).length
+      .filter((c) => isDocumentedAntiPattern(doc, c.startLine, isMarkdown, isNarrative)).length
 
   it('exemption: a marked prose occurrence IS exempt', () => {
     const doc = ['# guard-allow: documented-anti-pattern teaching the forbidden shape', `# ${LEAK_LINE}`].join('\n')
@@ -681,6 +729,58 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
       '       exists to teach; both are inline prose, not runnable -->',
     ].join('\n')
     expect(exemptCount(doc, false)).toBe(0)
+  })
+
+  // ── live narrative docs (HANDOFF.md, memory/): card 806707fa ───────────────────────────────────
+  //
+  // These four are the same control shape as the marker exemption above: two that must be exempt,
+  // two that must not, differing only in the thing isLiveNarrativeDoc claims to read.
+
+  it('exemption: unfenced prose in a live narrative doc is exempt with NO marker at all', () => {
+    // The exact failure mode from the incident: an agent narrates what tripped the OTHER guard,
+    // quoting the forbidden shape as evidence, with no `guard-allow` anywhere in the file.
+    const doc = `A landolas azert bukott, mert a live fajl szo szerint idezte: ${LEAK_LINE}`
+    expect(exemptCount(doc, true, true)).toBe(1)
+  })
+
+  it('exemption: the SAME text is NOT exempt when isLiveNarrativeDoc is false -- proves the flag gates the check', () => {
+    const doc = `A landolas azert bukott, mert a live fajl szo szerint idezte: ${LEAK_LINE}`
+    expect(exemptCount(doc, true, false)).toBe(0)
+  })
+
+  it('a marker is NOT required for the narrative exemption to apply (unlike the SKILL.md route)', () => {
+    // Same content as the "marker with no reason does not exempt anything" case above -- there an
+    // empty/absent marker correctly fails a SHIPPED teaching doc. Here, for a narrative doc, no
+    // marker is expected in the first place.
+    const doc = [`# ${LEAK_LINE}`, '(no guard-allow marker anywhere in this file)'].join('\n')
+    expect(exemptCount(doc, true, true)).toBe(1)
+  })
+
+  it('a fence still disqualifies inside a live narrative doc -- a fenced block is still a command', () => {
+    const doc = ['Idezet a hibarol:', '```bash', LEAK_LINE, '```'].join('\n')
+    expect(exemptCount(doc, true, true)).toBe(0)
+  })
+
+  it.each([
+    ['HANDOFF.md', true],
+    [join('memory', 'MEMORY.md'), true],
+    [join('memory', 'topic-testing-traps.md'), true],
+    [join('.claude-config', 'projects', '-home-neon-marveen', 'memory', 'topic-x.md'), true],
+    // Substring lookalike, not a real `memory` directory segment -- must NOT qualify (the real
+    // corpus has agents/cybersec/.claude/skills/reverse-engineering/references/memory-forensics.md).
+    [join('references', 'memory-forensics.md'), false],
+    ['HANDOFF.md.bak', false],
+    [join('notes', 'HANDOFF.md'), true], // basename match alone is enough, wherever it sits
+    ['CLAUDE.md', false],
+  ])('isLiveNarrativeDocPath(%s) -> %s', (relPath, expected) => {
+    expect(isLiveNarrativeDocPath(relPath)).toBe(expected)
+  })
+
+  it('the narrative exemption only applies to the INSTALLED agents/ scan, not shipped seed templates', () => {
+    // A shipped template is reviewed, rarely-touched material -- the class this exemption was built
+    // to route AROUND, not through. Ships nothing today named this way (checked), but the dir check
+    // at the call site is what keeps it that way if one ever is.
+    expect(SEED_FLEET_AGENTS_DIR).not.toBe(INSTALLED_AGENTS_DIR)
   })
 
   it.each(cases)('$file: a path-embedded bot token is read from a curl config, not argv', ({ dir, file }) => {
