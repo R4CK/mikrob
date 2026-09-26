@@ -168,57 +168,89 @@ function populateProjectFilter() {
   if (prev && !kanbanProjects.includes(prev)) kanbanProjectFilter = ''
 }
 
-// Project-level dispatch priority dropdown (card e291e9c4, BE sibling 2d6587fe). Single-select in
-// the UI: the API supports an ordered array (multiple projects) for a future need, but a dropdown
-// is a single choice, which is what "legordulo menu" actually asked for -- the array with zero or
-// one entries is the simplest form that fits both.
+// Project-level dispatch priority (card e291e9c4, BE sibling 2d6587fe). Multi-project since
+// Peti's 2026-09-26 request: the select ADDS a project to an ordered list, each chosen project is
+// a chip (order = priority, first chip first), and a chip's x removes it. An empty list is the
+// default order. The API always took an ordered array; only the UI was single-choice before.
+let kanbanPriorityProjects = []
+
 async function populatePriorityProjectFilter() {
   const sel = document.getElementById('kanbanPriorityProjectSelect')
   if (!sel) return
-  sel.innerHTML = `<option value="">${t('kanban.filter.priority_default')}</option>`
+  try {
+    const res = await fetch('/api/config/project-priority')
+    if (res.ok) {
+      const data = await res.json()
+      // A saved project may no longer exist (renamed/no cards left) -- drop it from the view
+      // rather than render a chip for something the board cannot show.
+      kanbanPriorityProjects = Array.isArray(data.priority)
+        ? data.priority.filter((p) => kanbanProjects.includes(p))
+        : []
+    }
+  } catch { /* keep the last known list -- the board still works without this */ }
+  renderPriorityProjectControls()
+}
+
+function renderPriorityProjectControls() {
+  const sel = document.getElementById('kanbanPriorityProjectSelect')
+  const chips = document.getElementById('kanbanPriorityChips')
+  if (!sel || !chips) return
+  // The select only offers projects not already in the list; its first option is the "add"
+  // prompt, or "Default order" when nothing is chosen yet.
+  sel.innerHTML = `<option value="">${t(kanbanPriorityProjects.length ? 'kanban.filter.priority_add' : 'kanban.filter.priority_default')}</option>`
   for (const p of kanbanProjects) {
+    if (kanbanPriorityProjects.includes(p)) continue
     const opt = document.createElement('option')
     opt.value = p
     opt.textContent = p
     sel.appendChild(opt)
   }
-  try {
-    const res = await fetch('/api/config/project-priority')
-    if (res.ok) {
-      const data = await res.json()
-      const current = Array.isArray(data.priority) ? data.priority[0] : undefined
-      // The saved project may no longer exist (renamed/no cards left) -- fall back to the default
-      // option rather than silently selecting nothing the dropdown never offered.
-      sel.value = current && kanbanProjects.includes(current) ? current : ''
-    }
-  } catch { /* leave the default selection -- the board still works without this */ }
-  // Baseline for the change handler's revert-on-failure below -- without this, the FIRST edit
-  // after page load would revert to '' regardless of what was actually loaded above.
-  sel.dataset.lastValue = sel.value
+  sel.value = ''
+  chips.innerHTML = ''
+  kanbanPriorityProjects.forEach((p, i) => {
+    const chip = document.createElement('span')
+    chip.className = 'kanban-col-chip kanban-priority-chip'
+    chip.textContent = `${i + 1}. ${p}`
+    const rm = document.createElement('button')
+    rm.type = 'button'
+    rm.className = 'kanban-priority-chip-remove'
+    rm.textContent = '\u00d7'
+    rm.title = t('kanban.filter.priority_remove', { project: p })
+    rm.setAttribute('aria-label', rm.title)
+    rm.addEventListener('click', () => {
+      savePriorityProjects(kanbanPriorityProjects.filter((x) => x !== p))
+    })
+    chip.appendChild(rm)
+    chips.appendChild(chip)
+  })
 }
 
-document.getElementById('kanbanPriorityProjectSelect').addEventListener('change', async (e) => {
-  const sel = e.target
-  const value = sel.value
-  const prevValue = sel.dataset.lastValue || ''
+async function savePriorityProjects(next) {
+  const prev = kanbanPriorityProjects
+  kanbanPriorityProjects = next
+  renderPriorityProjectControls()
   try {
     const res = await fetch('/api/config/project-priority', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ priority: value ? [value] : [] }),
+      body: JSON.stringify({ priority: next }),
     })
     if (!res.ok) throw new Error('save-failed')
-    sel.dataset.lastValue = value
-    showToast(value ? t('kanban.filter.priority_saved', { project: value }) : t('kanban.filter.priority_cleared'))
+    showToast(next.length ? t('kanban.filter.priority_saved', { project: next.join(', ') }) : t('kanban.filter.priority_cleared'))
   } catch {
-    // Revert the visible selection to what is actually saved -- a silently-failed PUT must not
-    // leave the dropdown claiming a priority that was never persisted. Never surface the raw
-    // server error text here (rule 12): the dropdown only ever offers real project names, so a
-    // rejection means the save itself failed, not a user input mistake -- a generic, localized,
-    // retry-pointing message is both honest and all that is actionable from here.
-    sel.value = prevValue
+    // Revert to what is actually saved -- a silently-failed PUT must not leave the chips claiming
+    // a priority that was never persisted. Never surface the raw server error text here (rule 12):
+    // the select only offers real project names, so a rejection means the save itself failed.
+    kanbanPriorityProjects = prev
+    renderPriorityProjectControls()
     showToast(t('kanban.filter.priority_save_failed'))
   }
+}
+
+document.getElementById('kanbanPriorityProjectSelect').addEventListener('change', (e) => {
+  const value = e.target.value
+  if (!value || kanbanPriorityProjects.includes(value)) return
+  savePriorityProjects([...kanbanPriorityProjects, value])
 })
 
 function renderKanbanColumnChips() {
