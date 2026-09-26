@@ -59,7 +59,8 @@ function psRow(pid: number, cmd: string, env: string): string {
   return `${String(pid).padStart(6)} pts/1    S      0:00 ${cmd} ${env}`
 }
 
-let killSpy: ReturnType<typeof vi.spyOn>
+const spyOnKill = () => vi.spyOn(process, 'kill').mockImplementation(() => true)
+let killSpy: ReturnType<typeof spyOnKill>
 
 beforeEach(() => {
   const needle = `${channelStateDirEnvVar('telegram')}=${channelStateDir('telegram', AGENT_DIR)}`
@@ -80,7 +81,7 @@ beforeEach(() => {
     [STRANGER, ['sshd', '-D']],
   ])
   fsState.botPid = null
-  killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+  killSpy = spyOnKill()
 })
 
 afterEach(() => {
