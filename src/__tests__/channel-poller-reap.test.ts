@@ -157,7 +157,12 @@ describe('isPollerArgv / filterPollerPids', () => {
   it('accepts the real poller shapes', () => {
     expect(isPollerArgv(['/home/neon/.bun/bin/bun', 'server.ts'])).toBe(true)
     expect(isPollerArgv(['node', '/x/plugins/cache/slack-channel/0.1.0/server.ts'])).toBe(true)
-    expect(isPollerArgv(['bun', 'run', '--cwd', '/x/plugins/cache/telegram/0.0.6', '--silent', 'start'])).toBe(true)
+    expect(isPollerArgv(['bun', '--smol', 'server.ts'])).toBe(true)
+    expect(isPollerArgv(['node', '--flag', '/abs/telegram/0.0.7/server.ts'])).toBe(true)
+  })
+
+  it('does not match the bun run wrapper (the server.ts child is the target)', () => {
+    expect(isPollerArgv(['bun', 'run', '--cwd', '/x/plugins/cache/telegram/0.0.6', '--silent', 'start'])).toBe(false)
   })
 
   it('rejects everything that merely inherited the env var (measured on this host)', () => {
