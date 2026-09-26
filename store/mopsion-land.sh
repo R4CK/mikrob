@@ -792,6 +792,45 @@ if [ "$EVIDENCE_MODE" != "off" ]; then
   esac
 fi
 
+# RE-CHECK RIGHT BEFORE PUSH (card 517cbcbe, backend3's plan-grilling finding on acc197c8). The
+# FIRST gate_verdict_check call above (line ~354) runs before typecheck/bundle-check/lockfile-check
+# and the full suite -- a landing that can take many minutes. Nothing since then re-asked the board
+# whether the verdict still holds: a QA PASS that the gate retracts to FAILED mid-landing (a fresh
+# finding on the same sha) would otherwise land completely unnoticed, exactly the shape 9081d02d
+# closed for a verdict that was NEVER there, not one that turned bad partway through.
+#
+# ANY CHANGE in outcome refuses, not just a worse one -- the same symmetric rule MikroB chose for
+# the sibling designation-drift problem on this same card family (acc197c8, msg 4374 point 2): the
+# cost of a spurious refuse is one re-run, and a push that should not have happened cannot be taken
+# back. Concretely, by this point `gate_rc` is only ever 0 (a real verdict) or 1-tolerated-by-
+# --allow-ungated (rc=2 already exited at line ~358) -- so:
+#   0 -> 0   nothing changed, proceed
+#   0 -> 1   the verdict vanished/became unreadable since the start check -- REFUSE
+#   0 -> 2   the verdict flipped to FAILED -- REFUSE (this is the bug this card fixes)
+#   1 -> 1   the same already-accepted state (no verdict / unreadable board) repeats -- proceed;
+#            re-litigating an unchanged, already-explicitly-tolerated state adds no safety
+#   1 -> 0   improved (a verdict appeared) -- proceed, nothing to refuse
+#   1 -> 2   a verdict landed and immediately failed -- REFUSE
+#
+# FAIL-CLOSED ON AN UNREADABLE BOARD HERE TOO (MikroB's decision, card acc197c8 msg 4374 point 3):
+# gate_verdict_check's own refuse-mode already returns 1 (not 0) when the board cannot be read, so
+# that case falls out of the SAME comparison above -- no separate branch needed.
+#
+# BEFORE the --dry-run exit below, deliberately: a dry run should report the SAME refusal a real
+# landing would hit at this point, not silently skip past it and claim a clean bill of health.
+# Nothing meaningful happens between here and the push either way, so this stays exactly what the
+# card asked for -- "right before push" -- while also being reachable by the same --dry-run harness
+# landing-gate-verdict-check.selftest.sh already drives the real script through.
+GATE_CHECK_OVERRIDE_ARMED="$ALLOW_UNGATED" gate_verdict_check "$CARD" "$SHA" refuse
+recheck_rc=$?
+if [ "$recheck_rc" -ne "$gate_rc" ]; then
+  echo "REFUSED: the gate verdict for card $CARD / $SHA changed between the start of this landing" >&2
+  echo "         and this push-time recheck (was rc=$gate_rc, now rc=$recheck_rc) -- card 517cbcbe." >&2
+  echo "         Nothing pushed. Re-run the landing to pick up the current verdict." >&2
+  rm -f "${MERGE_ERR:-}" 2>/dev/null
+  exit 3
+fi
+
 if [ "$DRY" = "--dry-run" ]; then say "DRY-RUN: not pushing"; rm -f "${MERGE_ERR:-}" 2>/dev/null; exit 0; fi
 
 if ! git -C "$WT" push origin HEAD:main >/dev/null 2>&1; then
