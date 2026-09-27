@@ -24,7 +24,21 @@
 #
 # WHAT IS NOT FILTERED (MikroB delta-gate condition 3): no whitespace/line-ending exception, and no
 # comment/blank-line exception. A rewrite disguised as a whitespace-only edit still removes the OLD
-# byte sequence and must still refuse; every '-' line in the diff counts, unfiltered.
+# byte sequence and must still refuse; every removed line counts, unfiltered.
+#
+# 2026-09-27 CORRECTION (Cybersec NO-GO comment 7937, confirmed by QA FAIL comment 7941, card
+# 61b6d4b1): the original implementation used `grep -E '^-[^-]|^-$'` on a plain `git diff`, which
+# has to exclude any removed line starting with TWO dashes to skip the `--- a/file` diff header --
+# but that same exclusion silently swallows a removed line whose own CONTENT starts with '-' (a
+# markdown bullet renders as `-- bullet text` in the diff, P1; a literal '--' line renders as
+# `--- ...`, P2) -- measured live: 551 of 14181 lines in the real DECISIONS.md start with '-', 92
+# of those with '--'. The same code also `return 0`-ed when the file was absent at tip (P3, a full
+# `git rm` sailed through as "nothing to check"), and produced zero visible '-' lines when
+# `.gitattributes` marked the path `-diff` (P5, git reports "Binary files differ" instead of a
+# line diff). Fixed: removed-line COUNT via `git diff --numstat` (immune to what the removed text
+# looks like) with `--text` (forces line-based diffing even under a binary/-diff attribute) and
+# `--no-textconv --no-ext-diff` (no configured filter reshapes the bytes first); file-present-at-
+# base-but-absent-at-tip is now an explicit violation, not a `return 0`.
 #
 # API (source this file to get the functions):
 #   decisions_append_only_ok <repo> <base-sha> <tip-sha> [<file>]
@@ -49,17 +63,31 @@ decisions_append_only_ok() {
   # The file did not exist yet at the merge-base -- nothing to protect (a brand-new file arriving
   # is not an append-only violation).
   git -C "$repo" cat-file -e "$base:$f" 2>/dev/null || return 0
-  # This side deleted the file entirely -- a different failure mode than this check's job (the
-  # existing SEAM CHECK in mopsion-land.sh already refuses a file whose OWN tip no longer carries
-  # it, when the other side's tip still needs it).
-  git -C "$repo" cat-file -e "$tip:$f" 2>/dev/null || return 0
+  # This side deleted the file entirely: that IS a violation (the ultimate line removal), not a
+  # different failure mode to defer to the seam check (Cybersec comment 7937, P3 -- the old
+  # `|| return 0` here let a full `git rm` of DECISIONS.md sail through as "nothing to check").
+  if ! git -C "$repo" cat-file -e "$tip:$f" 2>/dev/null; then
+    echo "    (file deleted entirely: present at $base:$f, absent at $tip:$f)" >&2
+    return 1
+  fi
+  # Removed-line COUNT via --numstat, not a line-prefix regex (Cybersec comment 7937, P1/P2/P5).
+  # A `^-[^-]|^-$` grep on a plain diff must exclude any removed line starting with two dashes to
+  # skip the `--- a/file` header -- which also silently excludes a removed line whose own CONTENT
+  # starts with '-': a markdown bullet ('- item') renders as `-- item` in the diff (P1), a literal
+  # '--' line renders as `--- ...` (P2). `--text` forces line-based diffing even when
+  # .gitattributes marks the path binary/-diff (P5: git reports "Binary files differ", zero '-'
+  # lines to grep). `--no-textconv --no-ext-diff` stop any configured filter from reshaping the
+  # bytes first. A count is immune to what the removed text looks like; a prefix match is not.
   local removed
-  # `^-[^-]|^-$` matches every genuine removed line (including a removed BLANK line, the `^-$`
-  # half) while excluding the `--- a/file` diff header, which starts with TWO dashes.
-  removed="$(git -C "$repo" diff "$base..$tip" -- "$f" | grep -E '^-[^-]|^-$')"
-  [ -z "$removed" ] && return 0
-  echo "$removed" | sed 's/^/    /' >&2
-  return 1
+  removed="$(git -C "$repo" -c color.ui=never diff --no-ext-diff --no-textconv --text --numstat \
+    "$base" "$tip" -- "$f" | awk '{print $2}')"
+  [ -z "$removed" ] && removed=0
+  if [ "$removed" != 0 ]; then
+    git -C "$repo" -c color.ui=never diff --no-ext-diff --no-textconv --text "$base" "$tip" -- "$f" \
+      | grep -E '^-' | sed 's/^/    /' >&2
+    return 1
+  fi
+  return 0
 }
 
 decisions_append_only_check_merge() {
@@ -224,6 +252,126 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
   rc=$?
   if [ "$rc" -eq 0 ]; then ok "a non-merge commit returns 0 (nothing to check)"
   else no "a non-merge commit should return 0, got rc=$rc"; fi
+
+  # 7. P1 (Cybersec comment 7937): distant REMOVAL of a markdown bullet line ('- ...') + parallel
+  # append -> merges with zero conflict (same distant-hunk shape as tests 1/2), and the OLD regex
+  # silently passed this because the diff line ('-- Bullet line...') starts with two dashes, which
+  # the old code excluded to skip the '--- a/file' header. Must now REFUSE.
+  mk_repo
+  git -C "$R" checkout -qb branch-bullet
+  sed -i '1i # DECISIONS placeholder' "$R/DECISIONS.md" >/dev/null 2>&1 || true
+  # Reset to a fixture that includes a bullet line before the padding, distant from the tail append.
+  {
+    printf '# DECISIONS\n\n## 2026-01-01 -- old entry\n\n- Bullet line that will be removed\n- Another bullet kept\n\n'
+    seq 1 40 | sed 's/^/padding line /'
+    printf '\n'
+  } >"$R/DECISIONS.md"
+  git -C "$R" commit -qam "seed bullet fixture"
+  git -C "$R" checkout -qb branch-bullet-del branch-bullet
+  sed -i '/^- Bullet line that will be removed$/d' "$R/DECISIONS.md"
+  git -C "$R" commit -qam "remove bullet line (distant)"
+  git -C "$R" checkout -q branch-bullet
+  git -C "$R" checkout -qb branch-append-bullet branch-bullet
+  printf '\n## 2026-01-02 -- new entry\n\nSomething new.\n' >>"$R/DECISIONS.md"
+  git -C "$R" commit -qam "append new entry"
+  git -C "$R" checkout -q branch-bullet-del
+  git -C "$R" merge --no-ff branch-append-bullet -m merge -q >/dev/null 2>&1
+  merge_sha="$(git -C "$R" rev-parse HEAD)"
+  decisions_append_only_check_merge "$R" "$merge_sha" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then ok "P1: removed markdown-bullet line is REFUSED (regex used to miss it)"
+  else no "P1 REGRESSION: bullet-line removal bypassed the guard (Cybersec 7937)"; fi
+
+  # 8. P2 (Cybersec comment 7937): distant removal of a line whose content ITSELF starts with two
+  # dashes ('-- literal'), which renders as `--- literal` in the diff -- three dashes, so the old
+  # regex's header-exclusion swallowed it just as thoroughly as the single-dash bullet case.
+  git -C "$R" checkout -qb branch-dashdash main
+  {
+    printf '# DECISIONS\n\n## 2026-01-01 -- old entry\n\n-- Literal double-dash marker line\n\n'
+    seq 1 40 | sed 's/^/padding line /'
+    printf '\n'
+  } >"$R/DECISIONS.md"
+  git -C "$R" commit -qam "seed dashdash fixture"
+  git -C "$R" checkout -qb branch-dashdash-del branch-dashdash
+  sed -i '/^-- Literal double-dash marker line$/d' "$R/DECISIONS.md"
+  git -C "$R" commit -qam "remove double-dash line (distant)"
+  git -C "$R" checkout -q branch-dashdash
+  git -C "$R" checkout -qb branch-append-dashdash branch-dashdash
+  printf '\n## 2026-01-02 -- new entry\n\nSomething new.\n' >>"$R/DECISIONS.md"
+  git -C "$R" commit -qam "append new entry"
+  git -C "$R" checkout -q branch-dashdash-del
+  git -C "$R" merge --no-ff branch-append-dashdash -m merge -q >/dev/null 2>&1
+  merge_sha="$(git -C "$R" rev-parse HEAD)"
+  decisions_append_only_check_merge "$R" "$merge_sha" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then ok "P2: removed double-dash-prefixed line is REFUSED"
+  else no "P2 REGRESSION: double-dash-line removal bypassed the guard (Cybersec 7937)"; fi
+
+  # 9. P3 (Cybersec comment 7937): one side deletes DECISIONS.md entirely (git rm), the other
+  # appends. The old code's `|| return 0` on the tip cat-file check treated "file absent" as
+  # "nothing to protect" instead of the ultimate line removal. Built with commit-tree (not a real
+  # merge) because a modify/delete is a genuine git conflict with no clean auto-resolution to
+  # fixture -- the check only reads the two PARENTS against their merge-base, never the merge
+  # commit's own tree, so a synthetic two-parent commit is a faithful equivalent.
+  mk_repo
+  git -C "$R" checkout -qb branch-fulldelete
+  git -C "$R" rm -q DECISIONS.md
+  git -C "$R" commit -qam "remove DECISIONS.md entirely"
+  del_sha="$(git -C "$R" rev-parse HEAD)"
+  git -C "$R" checkout -q main
+  git -C "$R" checkout -qb branch-append-fd main
+  printf '\n## 2026-01-02 -- new entry\n\nSomething new.\n' >>"$R/DECISIONS.md"
+  git -C "$R" commit -qam "append new entry"
+  append_sha="$(git -C "$R" rev-parse HEAD)"
+  tree="$(git -C "$R" rev-parse "$append_sha^{tree}")"
+  merge_sha="$(git -C "$R" commit-tree "$tree" -p "$del_sha" -p "$append_sha" -m merge)"
+  decisions_append_only_check_merge "$R" "$merge_sha" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then ok "P3: full-file deletion is REFUSED (not silently passed)"
+  else no "P3 REGRESSION: full-file deletion bypassed the guard (Cybersec 7937)"; fi
+
+  # 10. P5 (Cybersec comment 7937): .gitattributes marks DECISIONS.md `-diff`, so a plain `git
+  # diff` reports "Binary files ... differ" with ZERO '-' lines to grep even though a distant
+  # rewrite really happened -- the old regex-on-plain-diff approach had nothing to match and
+  # silently passed. `--text` on the new numstat call forces line-based diffing regardless of the
+  # attribute.
+  rm -rf "$R"
+  mkdir -p "$R"
+  git -C "$R" init -q -b main
+  git -C "$R" config user.email t@t
+  git -C "$R" config user.name t
+  git -C "$R" config commit.gpgsign false
+  printf 'DECISIONS.md -diff\n' >"$R/.gitattributes"
+  {
+    printf '# DECISIONS\n\n## 2026-01-01 -- old entry\n\nDontes: Peti NO-GO a Z ugyre.\n\n'
+    seq 1 40 | sed 's/^/padding line /'
+    printf '\n'
+  } >"$R/DECISIONS.md"
+  git -C "$R" add DECISIONS.md .gitattributes
+  git -C "$R" commit -qm base
+  base_sha="$(git -C "$R" rev-parse HEAD)"
+  git -C "$R" checkout -qb branch-attr-rewrite
+  sed -i 's/Dontes: Peti NO-GO a Z ugyre\./Dontes: Peti GO a Z ugyre./' "$R/DECISIONS.md"
+  git -C "$R" commit -qam "rewrite old decision under -diff attribute"
+  rewrite_sha="$(git -C "$R" rev-parse HEAD)"
+  # sanity: confirm this fixture really reproduces the P5 gap (a plain diff+grep finds nothing),
+  # not just a copy of test 1 under a new name.
+  if git -C "$R" diff "$base_sha..$rewrite_sha" -- DECISIONS.md 2>/dev/null | grep -qE '^-[^-]|^-$'; then
+    no "P5 fixture invalid: -diff attribute did not suppress the plain line diff as expected"
+  else
+    ok "P5 fixture confirmed: -diff attribute hides the rewrite from a plain 'git diff' grep"
+  fi
+  git -C "$R" checkout -q main
+  git -C "$R" checkout -qb branch-append-attr main
+  printf '\n## 2026-01-02 -- new entry\n\nSomething new.\n' >>"$R/DECISIONS.md"
+  git -C "$R" commit -qam "append new entry"
+  git -C "$R" checkout -q branch-attr-rewrite
+  git -C "$R" merge --no-ff branch-append-attr -m merge -q >/dev/null 2>&1
+  merge_sha="$(git -C "$R" rev-parse HEAD)"
+  decisions_append_only_check_merge "$R" "$merge_sha" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -ne 0 ]; then ok "P5: -diff-attributed rewrite is REFUSED (--text bypasses the attribute)"
+  else no "P5 REGRESSION: -diff attribute let a rewrite bypass the guard (Cybersec 7937)"; fi
 
   if [ "$fail" -eq 0 ]; then echo "selftest: PASS"; else echo "selftest: FAIL"; fi
   exit "$fail"
