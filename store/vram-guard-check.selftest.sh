@@ -397,16 +397,16 @@ check "own-busy lock with quiet utilization still ADMITs (unchanged prior behavi
 
 # BOTH dimensions holding at once: the reason names both, and the exit code is still just HOLD.
 s="$(st util-both)"
-bash "$GUARD" --config "$cfg" --state "$s" --now 30000 \
+bash "$GUARD" --config "$cfg" --state "$s" --now 300000 \
   --metrics-json '{"used_mib":9500,"total_mib":10000}' --util-samples-json '{"samples":[80,82,81]}' >/dev/null 2>&1
 check "VRAM hard AND utilization hold together name both reasons" 1 "HOLD hard+gpu-util-hold" \
-  bash "$GUARD" --config "$cfg" --state "$s" --now 30030 \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 300030 \
     --metrics-json '{"used_mib":9500,"total_mib":10000}' --util-samples-json '{"samples":[80,82,81]}'
 
 # BACKWARD COMPATIBILITY, EXPLICIT: every pre-79aeaeb1 call site never passes --util-samples-json.
 # The printed line must carry NO "util=" suffix at all in that case, not just "admit anyway" -- a
 # caller or test elsewhere in the fleet that greps the exact old line shape must not need editing.
-out="$(bash "$GUARD" --config "$cfg" --state "$(st util-compat)" --now 40000 \
+out="$(bash "$GUARD" --config "$cfg" --state "$(st util-compat)" --now 400000 \
   --metrics-json '{"used_mib":1000,"total_mib":10000}' 2>&1)"
 case "$out" in
   *"util="*) echo "FAIL no-util-seam has no util= suffix: got [$out]"; failed=$((failed+1)) ;;
@@ -426,10 +426,10 @@ esac
 EOF
 chmod +x "$stub_both"
 check "real invocation path: VRAM admits and utilization is read for real (below threshold)" 0 "ADMIT ok" \
-  env VRAM_GUARD_NVIDIA_SMI="$stub_both" bash "$GUARD" --config "$cfg" --state "$(st util-real)" --now 50000
+  env VRAM_GUARD_NVIDIA_SMI="$stub_both" bash "$GUARD" --config "$cfg" --state "$(st util-real)" --now 500000
 check "real invocation path: the util= value in the line comes from the stub, not a stub for --metrics-json" \
   0 "util=55%" \
-  env VRAM_GUARD_NVIDIA_SMI="$stub_both" bash "$GUARD" --config "$cfg" --state "$(st util-real2)" --now 50000
+  env VRAM_GUARD_NVIDIA_SMI="$stub_both" bash "$GUARD" --config "$cfg" --state "$(st util-real2)" --now 500000
 
 stub_util_hold="$tmpdir/nvidia-smi-util-hold"
 cat > "$stub_util_hold" <<'EOF'
@@ -441,10 +441,10 @@ esac
 EOF
 chmod +x "$stub_util_hold"
 s="$(st util-real-hold)"
-env VRAM_GUARD_NVIDIA_SMI="$stub_util_hold" bash "$GUARD" --config "$cfg" --state "$s" --now 51000 >/dev/null 2>&1
+env VRAM_GUARD_NVIDIA_SMI="$stub_util_hold" bash "$GUARD" --config "$cfg" --state "$s" --now 510000 >/dev/null 2>&1
 check "real invocation path: sustained high utilization holds through the real nvidia-smi path" \
   1 "HOLD gpu-util-hold" \
-  env VRAM_GUARD_NVIDIA_SMI="$stub_util_hold" bash "$GUARD" --config "$cfg" --state "$s" --now 51031
+  env VRAM_GUARD_NVIDIA_SMI="$stub_util_hold" bash "$GUARD" --config "$cfg" --state "$s" --now 510031
 
 # TIMEOUT SHARING: VRAM_GUARD_SMI_TIMEOUT bounds the utilization read too, by default, so a caller
 # that tightens the VRAM timeout for a hang does not silently keep waiting up to a longer default
@@ -461,7 +461,7 @@ EOF
 chmod +x "$stub_hang_util"
 hang_util_start=$(date +%s)
 env VRAM_GUARD_NVIDIA_SMI="$stub_hang_util" VRAM_GUARD_SMI_TIMEOUT=1 \
-  bash "$GUARD" --config "$cfg" --state "$(st util-hang)" --now 52000 >/dev/null 2>&1
+  bash "$GUARD" --config "$cfg" --state "$(st util-hang)" --now 520000 >/dev/null 2>&1
 hang_util_elapsed=$(( $(date +%s) - hang_util_start ))
 if [ "$hang_util_elapsed" -le 5 ]; then
   passed=$((passed+1))
