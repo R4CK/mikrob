@@ -15867,3 +15867,21 @@ gate-dispatch-check.sh DESIGNATION-logikajanak kiemelese kozos fuggvenybe, mindk
 altal hivva) -- az MEG folyamatban van, ez a kartya csak a QA-minimum verdikt-flip-et zarja.
 
 Gate: QA + Cybersec (push-kapu, trust-boundary -- a kartya sajat kerese szerint).
+
+## 2026-09-27 -- d4ba6ff8 (CRM 9 upstream commit) -- Peti döntés: SKIP (Telegram 9511)
+
+**Döntés.** A friss upstream-drift triage (d4ba6ff8, 248 commit) egyik klasztere 9 CRM-funkció
+commit volt (skeleton, lead-capture gate, send-state gépezet, Gmail+IMAP mail-sync, Szal-képernyő),
+amit az upstream utolsó CRM-commitja (f1e680ba) saját maga jelentett be szétválasztottnak: "the CRM
+moved to its own repository, Szotasz/marveen-crm". Kártya (6ec3ea9e) nyílt a döntésre: adopt (a már
+meglévő 9 commitot portoljuk) vagy skip (a fork nem termék, nincs rá használati eset). Peti döntése:
+**SKIP** -- a flotta nem MikroB-termékként üzemelteti a CRM-et, és az upstream is már saját repóra
+választotta szét, tehát a jövőbeli CRM-fejlesztés úgyis kimarad a további drift-körökből.
+
+**Végrehajtás.** Mind a 9 commit `scripts/upstream-new.sh mark skipped <sha> "Peti 2026-09-27
+(Telegram 9511): CRM külön repóban..."` -- a `store/upstream-ported.json` ledgerben rögzítve, `git
+log HEAD..upstream/develop` listájából kikerülnek. A 6ec3ea9e kártya MikroB által lezárva (done).
+
+**Következmény.** Ha a flottának valaha CRM-igénye keletkezik, az a `Szotasz/marveen-crm` repó saját
+adoptálási döntése lesz, nem ennek a fork-drift-nek a folytatása -- a 9 commit skip-marka nem zárja
+ki egy jövőbeli, KÜLÖN kártyán hozott adopt-döntést arra a másik repóra.
