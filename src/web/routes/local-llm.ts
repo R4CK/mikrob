@@ -143,6 +143,11 @@ const MODEL_DISABLED_FILE = join(STORE_DIR, 'local-llm-model-disabled.json')
 // (card ecf38e5a) surfaced read-only over HTTP so the dashboard can show it instead of a fleet agent
 // grepping the file.
 const ROUTING_FILE = join(STORE_DIR, 'local-llm-model-routing.json')
+// store/vram-guard-check.sh's own persisted hysteresis state (card 108c7b10's default --state path).
+// Read-only here: this route only SURFACES the guard's last confirmed decision, it never invokes
+// the guard itself (a per-request nvidia-smi spawn on a dashboard poll would be the exact "sampler
+// costs more than what it measures" trap local-llm-utilization-history.ts's own header warns about).
+const VRAM_GUARD_STATE_FILE = join(STORE_DIR, 'vram-guard-state.json')
 // Append-only, card-independent routing-decision audit trail (store/card-build-route.sh). Never
 // carries card TEXT, only its length -- see that script's own header.
 const CARD_BUILD_ROUTE_LOG_FILE = join(STORE_DIR, 'card-build-route.log')
@@ -418,6 +423,36 @@ export function isDraftableLocally(taskLevel: CodingDifficulty, threshold: Codin
  */
 export function isValidCategoryName(task: string): boolean {
   return /^[a-z0-9_-]{1,64}$/.test(task)
+}
+
+/** The two independent tiers store/vram-guard-check.sh gates local dispatch on (card 79aeaeb1 added
+ *  the utilization one). `null` for a tier means the guard has never run on this host yet -- a
+ *  missing file is NOT the same claim as "everything is fine", so the dashboard must be able to
+ *  tell the two apart (rule 12: no invented status). */
+export interface VramGuardStatus {
+  tier: 'ok' | 'soft' | 'hard' | null
+  utilTier: 'ok' | 'hold' | null
+}
+
+/** Read store/vram-guard-check.sh's persisted state file. Read-only, no shell-out: the guard's own
+ *  callers (card-build-route.sh, offload-dispatch.sh, ...) already run it on every real dispatch
+ *  decision, so the confirmed tiers here are at most as stale as the last one of those. Any
+ *  read/parse failure reads as "never run" (both fields null), same fail-soft shape every other
+ *  optional-file reader in this route already uses (readOffloadConfig, readBenchState). */
+function readVramGuardStatus(): VramGuardStatus {
+  try {
+    if (!existsSync(VRAM_GUARD_STATE_FILE)) return { tier: null, utilTier: null }
+    const doc = JSON.parse(readFileSync(VRAM_GUARD_STATE_FILE, 'utf-8')) as Record<string, unknown>
+    const tier = doc.tier
+    const utilTier = doc.util_tier
+    return {
+      tier: tier === 'ok' || tier === 'soft' || tier === 'hard' ? tier : null,
+      utilTier: utilTier === 'ok' || utilTier === 'hold' ? utilTier : null,
+    }
+  } catch (err) {
+    logger.warn({ err, file: VRAM_GUARD_STATE_FILE }, 'local-llm: vram-guard state olvashatatlan')
+    return { tier: null, utilTier: null }
+  }
 }
 
 /** Read the offload config JSON, fail-soft to an empty object (the endpoint fills defaults). */
@@ -1749,6 +1784,7 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     })
     const running = ps?.models || []
     const active = readActiveModel()
+    const vramGuard = readVramGuardStatus()
     json(res, {
       ollama_up: ollamaUp,
       active_model: active,
@@ -1759,6 +1795,9 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       running,
       bridge_active: bridge,
       gpu,
+      // card 79aeaeb1: the guard's last CONFIRMED decision, not a fresh probe (see the reader's own
+      // comment). `gpu.util_pct` above is the live number; this is what the guard DID about it.
+      vram_guard: vramGuard,
     })
     return true
   }
