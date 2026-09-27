@@ -107,8 +107,13 @@ check "VRAM_GUARD_UNREADABLE=admit restores the card's literal rule" 0 "ADMIT un
 stub="$tmpdir/nvidia-smi-two-gpus"
 cat > "$stub" <<'EOF'
 #!/usr/bin/env bash
-echo "5000, 6000"
-echo "1000, 6000"
+# This stub answers BOTH query-gpu shapes (card 79aeaeb1's REAL_RUN also probes utilization on
+# every real invocation, unconditionally) -- without the branch, this test's own utilization read
+# would receive the same two CSV rows and fail to parse as a float, forcing an unrelated HOLD.
+case "$*" in
+  *"utilization.gpu"*) printf '10\n10\n10\n' ;;
+  *) echo "5000, 6000"; echo "1000, 6000" ;;
+esac
 EOF
 chmod +x "$stub"
 # Summed: 6000/12000 = 50% -> admit. Summing matters: taken per-card, the second GPU alone reads
@@ -327,6 +332,143 @@ check "persist-failure at 96% HOLDs from the instantaneous level (the defect: it
 check "CONTROL: persist-failure at 16% still ADMITs -- not a stuck-always-HOLD stub" 0 "ADMIT ok" \
   bash "$GUARD" --config "$cfg" --state "$tmpdir/no-such-dir-2/state.json" --now 6000 \
     --metrics-json '{"used_mib":1630,"total_mib":10000}'
+
+# ---- utilization dimension (card 79aeaeb1) ------------------------------------------------------
+# Independent hysteresis, independent of the VRAM own/foreign attribution on purpose (see the
+# script's header comment). All VRAM inputs below are deliberately quiet (a low, steady reading)
+# so a failure here cannot be masked by the VRAM tier also holding.
+QUIET_VRAM='{"used_mib":1000,"total_mib":10000}'
+
+check "below-threshold utilization admits, no util= suffix wasted on a non-holding read" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$(st util-a)" --now 10000 --metrics-json "$QUIET_VRAM" \
+    --util-samples-json '{"samples":[40,45,42]}'
+
+s="$(st util-b)"
+check "first over-threshold utilization reading does NOT flip yet" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 10000 --metrics-json "$QUIET_VRAM" \
+    --util-samples-json '{"samples":[70,72,75]}'
+check "still not flipped before sustained_seconds elapses" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 10029 --metrics-json "$QUIET_VRAM" \
+    --util-samples-json '{"samples":[70,72,75]}'
+check "flips to HOLD gpu-util-hold once sustained" 1 "HOLD gpu-util-hold" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 10030 --metrics-json "$QUIET_VRAM" \
+    --util-samples-json '{"samples":[70,72,75]}'
+check "the line names the measured utilization value (median of 70/72/75 is 72)" 1 "util=72%" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 10030 --metrics-json "$QUIET_VRAM" \
+    --util-samples-json '{"samples":[70,72,75]}'
+
+# MEDIAN, NOT MEAN OR MAX: a single spike among several samples must not decide the tier -- the
+# same "one sample lies" reasoning the VRAM hysteresis already documents, applied at the sampling
+# step. [20,22,24,25,95] has a mean of 37.2 (still under 60, coincidentally passes either way) but
+# a MAX of 95 would wrongly hold; the median (24) is what the case actually pins.
+check "a single spike among samples does not hold (median, not max)" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$(st util-c)" --now 10000 --metrics-json "$QUIET_VRAM" \
+    --util-samples-json '{"samples":[20,22,24,25,95]}'
+
+# GPU_UTIL_HOLD_PCT overrides the config default (60) without editing the config file, same
+# convention as VRAM_GUARD_UNREADABLE.
+check "GPU_UTIL_HOLD_PCT env overrides the config threshold" 0 "ADMIT ok" \
+  env GPU_UTIL_HOLD_PCT=90 bash "$GUARD" --config "$cfg" --state "$(st util-d)" --now 10000 \
+    --metrics-json "$QUIET_VRAM" --util-samples-json '{"samples":[70,72,75]}'
+
+# FAIL-SAFE, same split as VRAM: tool present but the utilization query itself fails => doubt,
+# hold. Tool absent => not a subject, admit (covered implicitly by every VRAM-only case above,
+# which never pass --util-samples-json and so read the test-mode default of "not measured").
+check "utilization query present-but-failing holds (doubt, not absence)" 1 "HOLD gpu-util-hold" \
+  bash "$GUARD" --config "$cfg" --state "$(st util-e)" --now 10000 --metrics-json "$QUIET_VRAM" \
+    --util-samples-json '{"error":"nvidia-smi utilization read failed","present":true}'
+check "utilization tool absent does not hold (no subject, same as the VRAM case)" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$(st util-f)" --now 10000 --metrics-json "$QUIET_VRAM" \
+    --util-samples-json '{"error":"nvidia-smi not found","present":false}'
+
+# THE POINT OF THE CARD: our own model's compute counts, so utilization holds even while our own
+# job holds the GPU lock (lock_held would otherwise ADMIT own-busy on the VRAM dimension alone).
+# Sustained first, same as every other hysteresis case, so a one-shot reading cannot pass this.
+s="$(st util-lock)"
+bash "$GUARD" --config "$cfg" --state "$s" --now 20000 --lock-held yes --own-vram-mib 0 \
+  --metrics-json '{"used_mib":6115,"total_mib":6144}' --util-samples-json '{"samples":[95,96,97]}' >/dev/null 2>&1
+check "own-busy lock does NOT exempt utilization -- new work still goes online" 1 "HOLD gpu-util-hold own-busy" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 20031 --lock-held yes --own-vram-mib 0 \
+    --metrics-json '{"used_mib":6115,"total_mib":6144}' --util-samples-json '{"samples":[95,96,97]}'
+# CONTROL: the same lock, low utilization -> still admits own-busy as before card 79aeaeb1.
+check "own-busy lock with quiet utilization still ADMITs (unchanged prior behaviour)" 0 "ADMIT own-busy" \
+  bash "$GUARD" --config "$cfg" --state "$(st util-lock2)" --now 20000 --lock-held yes --own-vram-mib 0 \
+    --metrics-json '{"used_mib":6115,"total_mib":6144}' --util-samples-json '{"samples":[10,12,11]}'
+
+# BOTH dimensions holding at once: the reason names both, and the exit code is still just HOLD.
+s="$(st util-both)"
+bash "$GUARD" --config "$cfg" --state "$s" --now 30000 \
+  --metrics-json '{"used_mib":9500,"total_mib":10000}' --util-samples-json '{"samples":[80,82,81]}' >/dev/null 2>&1
+check "VRAM hard AND utilization hold together name both reasons" 1 "HOLD hard+gpu-util-hold" \
+  bash "$GUARD" --config "$cfg" --state "$s" --now 30030 \
+    --metrics-json '{"used_mib":9500,"total_mib":10000}' --util-samples-json '{"samples":[80,82,81]}'
+
+# BACKWARD COMPATIBILITY, EXPLICIT: every pre-79aeaeb1 call site never passes --util-samples-json.
+# The printed line must carry NO "util=" suffix at all in that case, not just "admit anyway" -- a
+# caller or test elsewhere in the fleet that greps the exact old line shape must not need editing.
+out="$(bash "$GUARD" --config "$cfg" --state "$(st util-compat)" --now 40000 \
+  --metrics-json '{"used_mib":1000,"total_mib":10000}' 2>&1)"
+case "$out" in
+  *"util="*) echo "FAIL no-util-seam has no util= suffix: got [$out]"; failed=$((failed+1)) ;;
+  *) passed=$((passed+1)) ;;
+esac
+
+# ---- the real invocation path, via a stub binary that answers BOTH query-gpu shapes -------------
+# Mirrors the VRAM section's own stub-based cases: --metrics-json is NOT passed, so this exercises
+# REAL_RUN, meaning read_vram_metrics() AND read_util_samples() both run for real against the stub.
+stub_both="$tmpdir/nvidia-smi-both"
+cat > "$stub_both" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"utilization.gpu"*) printf '55\n55\n55\n' ;;
+  *) echo "1000, 10000" ;;
+esac
+EOF
+chmod +x "$stub_both"
+check "real invocation path: VRAM admits and utilization is read for real (below threshold)" 0 "ADMIT ok" \
+  env VRAM_GUARD_NVIDIA_SMI="$stub_both" bash "$GUARD" --config "$cfg" --state "$(st util-real)" --now 50000
+check "real invocation path: the util= value in the line comes from the stub, not a stub for --metrics-json" \
+  0 "util=55%" \
+  env VRAM_GUARD_NVIDIA_SMI="$stub_both" bash "$GUARD" --config "$cfg" --state "$(st util-real2)" --now 50000
+
+stub_util_hold="$tmpdir/nvidia-smi-util-hold"
+cat > "$stub_util_hold" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"utilization.gpu"*) printf '90\n91\n92\n' ;;
+  *) echo "1000, 10000" ;;
+esac
+EOF
+chmod +x "$stub_util_hold"
+s="$(st util-real-hold)"
+env VRAM_GUARD_NVIDIA_SMI="$stub_util_hold" bash "$GUARD" --config "$cfg" --state "$s" --now 51000 >/dev/null 2>&1
+check "real invocation path: sustained high utilization holds through the real nvidia-smi path" \
+  1 "HOLD gpu-util-hold" \
+  env VRAM_GUARD_NVIDIA_SMI="$stub_util_hold" bash "$GUARD" --config "$cfg" --state "$s" --now 51031
+
+# TIMEOUT SHARING: VRAM_GUARD_SMI_TIMEOUT bounds the utilization read too, by default, so a caller
+# that tightens the VRAM timeout for a hang does not silently keep waiting up to a longer default
+# on the utilization side. Regression case for exactly the bug this card's own selftest run caught
+# (UTIL_SMI_TIMEOUT defaulting to a fixed 10s let a hang-bound case blow its 5s budget).
+stub_hang_util="$tmpdir/nvidia-smi-hang-util-only"
+cat > "$stub_hang_util" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"utilization.gpu"*) sleep 30 ;;
+  *) echo "1000, 10000" ;;
+esac
+EOF
+chmod +x "$stub_hang_util"
+hang_util_start=$(date +%s)
+env VRAM_GUARD_NVIDIA_SMI="$stub_hang_util" VRAM_GUARD_SMI_TIMEOUT=1 \
+  bash "$GUARD" --config "$cfg" --state "$(st util-hang)" --now 52000 >/dev/null 2>&1
+hang_util_elapsed=$(( $(date +%s) - hang_util_start ))
+if [ "$hang_util_elapsed" -le 5 ]; then
+  passed=$((passed+1))
+else
+  echo "FAIL util-hang-bound: a hanging utilization read took ${hang_util_elapsed}s under VRAM_GUARD_SMI_TIMEOUT=1; UTIL_SMI_TIMEOUT is not tracking it"
+  failed=$((failed+1))
+fi
 
 if [ "$failed" -eq 0 ]; then
   echo "selftest: $passed passed, 0 failed"

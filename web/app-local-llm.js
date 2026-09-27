@@ -693,6 +693,33 @@ async function llmRefreshStatus() {
     } else {
       tiles.push(llmTile(t('localLlm.status.gpu'), t('localLlm.status.no_gpu'), 'muted'))
     }
+    // card 79aeaeb1: store/vram-guard-check.sh's own last CONFIRMED verdict, distinct from the raw
+    // gpu.util_pct/mem_used_mb tile above -- that is a fresh live sample, this is what the guard
+    // DECIDED about the last few samples (hysteresis, and the VRAM own/foreign attribution the raw
+    // number never shows). `null` for either tier means the guard has never run on this host yet.
+    if (d.vram_guard) {
+      const vg = d.vram_guard
+      const holdVram = vg.tier === 'soft' || vg.tier === 'hard'
+      const holdUtil = vg.utilTier === 'hold'
+      let label, tone
+      if (vg.tier === null && vg.utilTier === null) {
+        label = t('localLlm.status.gpu_gate_unknown')
+        tone = 'muted'
+      } else if (holdVram && holdUtil) {
+        label = t('localLlm.status.gpu_gate_hold_both')
+        tone = 'warn'
+      } else if (holdVram) {
+        label = t('localLlm.status.gpu_gate_hold_vram')
+        tone = 'warn'
+      } else if (holdUtil) {
+        label = t('localLlm.status.gpu_gate_hold_util')
+        tone = 'warn'
+      } else {
+        label = t('localLlm.status.gpu_gate_admit')
+        tone = 'ok'
+      }
+      tiles.push(llmTile(t('localLlm.status.gpu_gate'), label, tone))
+    }
     grid.innerHTML = llmAnimateBatch(tiles.join(''), 'status', 'llm-tile')
 
     // Models list
