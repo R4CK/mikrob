@@ -59,8 +59,11 @@ revive_pane() {
   sleep 1
   # env option flags (-u) MUST precede VAR=VALUE assignments (else env treats the assignment
   # as end-of-options). Isolated config dir pins the probe to its own credential lineage.
+  # TELEGRAM_STATE_DIR is inherited from the tmux global env (set by mikrob-channels); left in
+  # place, the probe's telegram plugin polls with MikroB's bot token and knocks MikroB's own
+  # plugin offline (409 conflict). Measured 2026-09-27 07:4x after a post-reboot revive.
   tmux send-keys -t "$PANE" \
-    "env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR=$PROBE_CONFIG_DIR claude" Enter 2>/dev/null
+    "env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY -u TELEGRAM_STATE_DIR CLAUDE_CONFIG_DIR=$PROBE_CONFIG_DIR claude" Enter 2>/dev/null
   sleep 12
   # Trust-folder prompt, if shown (first launch in this cwd for the isolated config).
   #
