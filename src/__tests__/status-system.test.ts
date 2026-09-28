@@ -207,25 +207,31 @@ describe('/api/status', () => {
     const { res, ctx } = fakeReqRes()
     expect(await tryHandleStatus(ctx as never)).toBe(true)
     const body = JSON.parse(res.body)
-    expect(Object.keys(body)).toEqual(['overall', 'components', 'incidents', 'fetchedAt', 'system'])
+    // Card d79a69b5, fork-side: lastUpdate (card 0898db66) rides in every response variant --
+    // the default shape is a SUPERSET of the pre-fork-merge fields, not a like-for-like swap.
+    expect(Object.keys(body)).toEqual(['overall', 'components', 'incidents', 'fetchedAt', 'lastUpdate', 'system'])
     expect(body.overall).toBe('operational')
     expect(body.components).toEqual([{ name: 'API', status: 'operational' }])
     expect(body.incidents).toEqual([{ title: 'Elevated errors', description: 'Resolved - fixed', pubDate: 'Mon', link: 'l', status: 'resolved' }])
     expect(typeof body.fetchedAt).toBe('number')
     expect(body.system).toEqual(SYSTEM)
+    expect(body).toHaveProperty('lastUpdate')
   })
 
   it('?only=system makes no network call', async () => {
     const { res, ctx } = fakeReqRes('?only=system')
     await tryHandleStatus(ctx as never)
     expect(fetchMock).not.toHaveBeenCalled()
-    expect(JSON.parse(res.body)).toEqual({ system: SYSTEM })
+    const body = JSON.parse(res.body)
+    expect(body.system).toEqual(SYSTEM)
+    expect(body).toHaveProperty('lastUpdate')
+    expect(Object.keys(body)).toEqual(['system', 'lastUpdate'])
   })
 
-  it('?only=anthropic is the legacy response, byte for byte (no system key)', async () => {
+  it('?only=anthropic is the legacy response plus lastUpdate (no system key)', async () => {
     const { res, ctx } = fakeReqRes('?only=anthropic')
     await tryHandleStatus(ctx as never)
-    expect(Object.keys(JSON.parse(res.body))).toEqual(['overall', 'components', 'incidents', 'fetchedAt'])
+    expect(Object.keys(JSON.parse(res.body))).toEqual(['overall', 'components', 'incidents', 'fetchedAt', 'lastUpdate'])
   })
 
   it('an invalid ?only= is a 400, not a silent default', async () => {
@@ -240,7 +246,7 @@ describe('/api/status', () => {
     await tryHandleStatus(ctx as never)
     const body = JSON.parse(res.body)
     expect(body).toMatchObject({ overall: 'unknown', components: [], incidents: [], error: 'Failed to fetch status' })
-    expect(Object.keys(body)).toEqual(['overall', 'components', 'incidents', 'fetchedAt', 'error', 'system'])
+    expect(Object.keys(body)).toEqual(['overall', 'components', 'incidents', 'fetchedAt', 'error', 'lastUpdate', 'system'])
     expect(body.system).toEqual(SYSTEM)
   })
 
