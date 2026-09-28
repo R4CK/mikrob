@@ -1,3 +1,5 @@
+import { tmuxStderr } from './tmux-stderr.js'
+import { openQuestionIgnoringCommands } from './open-question.js'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -10,14 +12,13 @@ import { agentSessionName, capturePane } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
 import { detectPaneState } from '../pane-state.js'
 import { detectsUsageLimit } from '../model-fallback.js'
-import { readContextTokensFromProjectDir, projectsDirFor } from './active-model.js'
+import { readContextTokensFromProjectDir, projectsDirFor, readLastConversationTsFromProjectDir, readLastTurnActivityMs } from './active-model.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { getHardGuardPhase } from './context-guard-runner.js'
 import { readGateConfig, readGateRunState, writeGateRunState } from './context-restart-gate-store.js'
 import {
   getDispatchedPendingStats,
-  openInboundQuestionMessageId,
   createAgentMessage,
 } from '../db.js'
 import {
@@ -167,7 +168,18 @@ function sessionFor(name: string): string {
  * the gate's contextTokens comes back null -- which is a fail-closed BLOCK, so
  * the symptom is a gate that never opens and never says why.
  */
-function configDirFor(name: string): string | undefined {
+// EXPORTED (card d79a69b5): the new owner-command surface (builtin-commands.ts,
+// main-model.ts, midturn-commands.ts, queue-view.ts, session-control.ts,
+// system-status.ts) needs the same per-agent config-dir resolution this gate
+// already has. Upstream extracted this into its own main-transcript-root.ts
+// module at this point in its history -- NOT adopted here (src/fork-upstream/
+// acknowledged-conflicts.ts already records that extraction as deferred to a
+// supervised cutover, card 5c134edf, because its main-agent branch was not yet
+// read/verified against this fork's own resolveAgentConfigDirForRead decision).
+// Exporting the EXISTING function is the minimal unblock: zero behaviour
+// change to the gate, and the new callers get the same resolver this file's
+// own decided rule already uses.
+export function configDirFor(name: string): string | undefined {
   // resolveAgentConfigDirForRead, not readAgentClaudeConfigDir (card 272361eb, B-wave). The
   // recorded conflict rule for this file says to drop readAgentClaudeConfigDir entirely: an agent
   // whose config dir was auto-provisioned by the launcher has no field to read, so the old call
@@ -487,9 +499,31 @@ function hasLiveChildProcesses(session: string, mcpPatterns: string[]): boolean 
  * snapshot only shows whatever the terminal painted last. Between two tool
  * calls the pane reads idle; the transcript does not.
  */
-function msSinceTranscriptWrite(workingDir: string, nowMs: number): number | null {
+function msSinceTranscriptWrite(
+  workingDir: string,
+  nowMs: number,
+  configDir?: string,
+  agentForLog?: string,
+): number | null {
+  // Real conversation events first, file mtime only as a fallback (GATEMTIME922).
+  // The two answer different questions: mtime says when the FILE last grew, and
+  // an IDLE session grows it forever with untimestamped bookkeeping records
+  // (atis-latch, mode, last-prompt, custom-title, agent-name,
+  // file-history-snapshot, artifact-autoreact-ledger). A gate waiting for mtime
+  // quiet is therefore waiting for something that cannot happen: measured
+  // 2026-09-22, an agent blocked 240 minutes with no stuck work at all, and
+  // again 2026-09-24, when all three sub-agents had been idle 12+ HOURS while
+  // their transcript files were 2-3 minutes old. See
+  // readLastConversationTsFromProjectDir for the full measurement.
+  const lastTurn = readLastConversationTsFromProjectDir(workingDir, configDir)
+  if (lastTurn !== null) return Math.max(0, nowMs - lastTurn)
+
   try {
-    const dir = projectsDirFor(workingDir)
+    // configDir matters MORE here than for the token read: a missing root makes
+    // this return a huge age, which reads as "quiet" and lets the gate clear a
+    // session that is in fact mid-turn. Fail-open, so it must use the same root
+    // the context read uses.
+    const dir = projectsDirFor(workingDir, configDir)
     if (!existsSync(dir)) return null
     let newest = 0
     for (const f of readdirSync(dir)) {
@@ -498,6 +532,12 @@ function msSinceTranscriptWrite(workingDir: string, nowMs: number): number | nul
       if (m > newest) newest = m
     }
     if (newest === 0) return null
+    // Reached only by a transcript with no timestamped line at all (a brand-new
+    // session file). Logged rather than silent: if this ever becomes the normal
+    // path, the GATEMTIME922 bug is back and this line is the only thing that
+    // would say so.
+    logger.debug({ agent: agentForLog ?? workingDir },
+      'context-restart-gate: no timestamped transcript line found, falling back to file mtime')
     return Math.max(0, nowMs - newest)
   } catch { return null }
 }
@@ -644,7 +684,7 @@ export async function gatherGateInputs(name: string, nowMs: number): Promise<Gat
   const openQuestion = (() => {
     try {
       const ledgerId = agentIdForLedger(name)
-      return openQuestionBlocks(openInboundQuestionMessageId(ledgerId),
+      return openQuestionBlocks(openQuestionIgnoringCommands(ledgerId),
                                 drainSurfacedMessageId(ledgerId))
     }
     catch { return false }
@@ -667,7 +707,11 @@ export async function gatherGateInputs(name: string, nowMs: number): Promise<Gat
     pendingOutboundCount:   dispatchedStats === null ? 1 : dispatchedStats.count,
     hasStaleOutbound:       dispatchedStats?.hasStale ?? false,
     hasChildProcesses:      childProcesses,
-    msSinceTranscriptWrite: msSinceTranscriptWrite(workingDir, nowMs),
+    msSinceTranscriptWrite: msSinceTranscriptWrite(workingDir, nowMs, configDirFor(name), name),
+    msSinceTurnActivity: (() => {
+      const at = readLastTurnActivityMs(workingDir, configDirFor(name))
+      return at === null ? null : Math.max(0, nowMs - at)
+    })(),
     hasOpenQuestion:        openQuestion,
     hasLiveTaskState:       liveTaskState,
   }
@@ -696,7 +740,91 @@ export async function diagnoseAgent(name: string, nowMs: number) {
   }
 }
 
-async function checkAgent(name: string, nowMs: number): Promise<void> {
+/**
+ * Type a slash command into a session on the send lane (the only writer to
+ * the pane while it runs). Shared by the gate's /clear and the owner's
+ * /model and /context clear, so every pane write takes the same lane.
+ */
+export async function sendSlashCommand(session: string, command: string): Promise<void> {
+  await withSessionSendLock(session, null, 'deliver', async () => {
+    execFileSync(tmuxBin(), ['send-keys', '-t', session, '-l', command], { timeout: 5000 })
+    execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+  })
+}
+
+// One Escape into the pane: Claude Code stops the running turn. Same send lane
+// as the slash commands, so it never lands in the middle of a typed line.
+export async function sendInterrupt(session: string): Promise<void> {
+  await withSessionSendLock(session, null, 'deliver', async () => {
+    try {
+      execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Escape'], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (err) {
+      logger.warn({ site: 'context-restart-gate-runner.sendInterrupt', session, tmux: tmuxStderr(err) }, 'tmux send-keys Escape failed')
+      throw err
+    }
+  })
+}
+
+/**
+ * The gate's soft restart: /clear on the send lane, the run state stamped,
+ * and the wake nudge owed to the fresh session (the SessionStart replay hooks
+ * carry the thread). Callers decide WHETHER (the gate's decision, or the
+ * owner's /context clear after the same quiet checks); this is the one
+ * code path for HOW. Throws when the send fails.
+ */
+export async function performSoftClear(
+  name: string,
+  session: string,
+  nowMs: number,
+  contextTokens: number | null,
+): Promise<void> {
+  // A pane that is truly idle should accept it immediately; the SessionStart
+  // hooks fire on the next boot and inject the fresh context snapshot.
+  await sendSlashCommand(session, '/clear')
+  logger.info({ agent: name, contextTokens }, 'context-restart-gate: /clear sent')
+  writeGateRunState(name, {
+    ...readGateRunState(name),
+    firstBlockedAt: null,
+    lastClearAt: nowMs,
+    // Owe the fresh session a wake nudge; see WAKE_DELAY_MS.
+    pendingWakeAt: nowMs,
+  })
+  // Fast path: nudge in ~25s rather than at the next sweep (5 min by
+  // default). The persisted debt above is the fallback if this is lost.
+  await sleep(WAKE_DELAY_MS)
+  await deliverPendingWake(name, session, Date.now())
+}
+
+/** The main session's tmux session name, as every runner resolves it. */
+export function mainSessionName(): string {
+  return sessionFor(MAIN_AGENT_ID)
+}
+
+// Work that shares the main agent's sweep cadence (CMD920: the model-hold
+// revert runs "on the context-restart gate's sweep"). Registered, not
+// imported, so the hook's module can import this one without a cycle. Runs on
+// every main sweep tick, whether or not the gate itself is enabled.
+let mainSweepHook: ((nowMs: number) => Promise<void>) | null = null
+
+export function setMainSweepHook(fn: ((nowMs: number) => Promise<void>) | null): void {
+  mainSweepHook = fn
+}
+
+async function runMainSweepHook(): Promise<void> {
+  if (!mainSweepHook) return
+  try { await mainSweepHook(Date.now()) }
+  catch (err) { logger.warn({ err }, 'context-restart-gate: main sweep hook failed') }
+}
+
+/**
+ * One gate evaluation for one agent, including the side effects (the /clear,
+ * the persistent-block alert). EXPORTED FOR TESTS: the alert's envelope --
+ * sender, prefix and the 120-minute wording escalation -- is only observable
+ * from here, and all three were reverted by mutants that the suite passed
+ * (2026-09-24 review). A rule nobody can reach from a test is a rule nobody is
+ * measuring.
+ */
+export async function checkAgent(name: string, nowMs: number): Promise<void> {
   if (!readGateConfig(name).enabled) return   // fast-exit before any I/O
 
   // Settle any wake owed from an earlier /clear before measuring anything: the
@@ -728,26 +856,8 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         logger.info({ agent: name },
           'context-restart-gate: opening despite stale dispatched messages (beyond staleCutoffMs)')
       }
-      // Send /clear via the send lane. A pane that is truly idle should accept
-      // it immediately; the SessionStart hooks fire on the next boot and inject
-      // the fresh context snapshot.
       try {
-        await withSessionSendLock(session, null, 'deliver', async () => {
-          execFileSync(tmuxBin(), ['send-keys', '-t', session, '-l', '/clear'], { timeout: 5000 })
-          execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
-        })
-        logger.info({ agent: name, contextTokens }, 'context-restart-gate: /clear sent')
-        writeGateRunState(name, {
-          ...runState,
-          firstBlockedAt: null,
-          lastClearAt: nowMs,
-          // Owe the fresh session a wake nudge; see WAKE_DELAY_MS.
-          pendingWakeAt: nowMs,
-        })
-        // Fast path: nudge in ~25s rather than at the next sweep (5 min by
-        // default). The persisted debt above is the fallback if this is lost.
-        await sleep(WAKE_DELAY_MS)
-        await deliverPendingWake(name, session, Date.now())
+        await performSoftClear(name, session, nowMs, contextTokens)
       } catch (err) {
         logger.warn({ err, agent: name }, 'context-restart-gate: /clear send failed')
       }
@@ -836,6 +946,7 @@ function scheduleSweep(name: string, delayMs: number): void {
       logger.info({ agent: name }, 'context-restart-gate: agent gone from roster, sweep retired')
       return
     }
+    if (name === MAIN_AGENT_ID) await runMainSweepHook()
     const cfg = readGateConfig(name)
     if (!cfg.enabled) {
       // Keep polling instead of self-terminating. Dropping the timer here made
