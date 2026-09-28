@@ -163,6 +163,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **Rollback distance-guard**: az automatikus visszaállás megtagadja a célt, ha az nem őse a HEAD-nek, túl messze van, vagy nem tartalmazza a padló-commitot; ilyenkor a jelenlegi verzión marad és értesít.
 - **Fa-frissesség-ellenőrző kereséshez**: megmondja, hogy egy checkout le van-e maradva a hivatkozott ágtól, és a keresést közvetlenül a refen tudja lefuttatni a munkafa helyett. Ha a keresés nem tudott érdemben lefutni (feloldhatatlan ref, semmilyen fájlra nem illő útvonal-minta), azt külön állapotként mondja ki, nem „nincs találat”-ként.
 - **Modell-alapértelmezés a fallback-lánc primary-jén**: a distribution default megegyezik a fallback-lánc első elemével, hogy egy kvóta-revert ne kerülhessen az alapértelmezés fölé. Tudatos eltérés az upstream-től.
+- **Claude Code CLI frissítés-ajánlat**: a Frissítések oldal megméri a telepített és a legfrissebb Claude Code CLI verziót (AVX nélküli gépen a mért AVX-biztos verziót ajánlja a legfrissebb helyett), és egy gombbal, valódi indítási próbával ellenőrzött háttér-telepítést indít -- semmi nem települ a gomb megnyomása nélkül, és a már futó ügynök-sessionök a régi verzión maradnak a következő indításukig.
 
 ### Közösségi/upstream átvétel
 
