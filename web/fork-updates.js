@@ -239,6 +239,7 @@ async function forkLoadUpdates() {
     applyBtn.hidden = true
   }
   renderDiagnoseOffer()
+  renderCliUpdateOffer()
   // Independent of the version checks above: its own endpoint, its own failure state.
   renderIntegratedReposSummary()
 }

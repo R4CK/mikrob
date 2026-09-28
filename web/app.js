@@ -456,9 +456,10 @@
 // === Updates page helpers -- see web/app-updates.js ===
 // ============================================================
 // (escapeHtmlUpdates, renderUpdatesBadge, renderBranchNotice,
-//  renderDiagnoseOffer, runDiagnose, runUpdate, pollUpdateOutcome,
-//  wireBranchDriftBanner, pollUpdatesBadge, updatesCheckBtn/ApplyBtn listeners --
-//  all moved to app-updates.js as part of modularisation slice 25.)
+//  renderDiagnoseOffer, renderCliUpdateOffer, applyCliUpdate, runDiagnose,
+//  runUpdate, pollUpdateOutcome, wireBranchDriftBanner, pollUpdatesBadge,
+//  updatesCheckBtn/ApplyBtn listeners -- all moved to app-updates.js as part
+//  of modularisation slice 25.)
 /* STUB -- most helpers removed */
 
 // renderUpdatesVersion() stays: upstream function, fork-updates.js calls it.
@@ -561,6 +562,7 @@ async function loadUpdates() {
     applyBtn.hidden = true
   }
   renderDiagnoseOffer()
+  renderCliUpdateOffer()
 }
 
 async function handleRepoInstallClick(btn) {
