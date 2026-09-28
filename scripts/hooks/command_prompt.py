@@ -23,11 +23,24 @@ def attr(attrs, name):
 
 def command_block(prompt):
     """(attrs, body) when the prompt is exactly one Telegram <channel> block
-    whose body is a single-line /word command with a chat_id; else None."""
-    matches = list(CHANNEL_RX.finditer(prompt or ""))
+    whose body is a single-line /word command with a chat_id; else None.
+
+    "Exactly one block" used to mean only count(matches) == 1 -- which a
+    prompt that QUOTES a channel block inside surrounding text (an
+    inter-agent message, a REVIEW comment) also satisfies. That let anyone
+    who could get text into an agent's prompt forge the owner's chat_id and
+    trigger a command, with the whole turn silently swallowed by the hook's
+    exit 2 (Cybersec NO-GO, card d79a69b5, M1). The block must now span the
+    ENTIRE (whitespace-trimmed) prompt, not just appear somewhere in it.
+    """
+    stripped = (prompt or "").strip()
+    matches = list(CHANNEL_RX.finditer(stripped))
     if len(matches) != 1:
         return None
-    attrs, body = matches[0].group(1), matches[0].group(2).strip()
+    m = matches[0]
+    if m.start() != 0 or m.end() != len(stripped):
+        return None
+    attrs, body = m.group(1), m.group(2).strip()
     if not COMMAND_RX.match(body) or "\n" in body:
         return None
     if not TELEGRAM_SOURCE_RX.search(attrs):
