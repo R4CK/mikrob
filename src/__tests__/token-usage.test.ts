@@ -115,12 +115,30 @@ describe('pruneTokenUsage', () => {
 
   beforeEach(() => {
     getDb().exec("DELETE FROM token_usage WHERE agent = 'test-prune'")
+    getDb().exec("DELETE FROM token_usage_daily WHERE agent = 'test-prune'")
   })
 
-  it('deletes rows older than the retention window (default 90 days), keeps recent ones', () => {
-    insertRow('sess-old-1', 200)   // well past 90d
-    insertRow('sess-old-2', 91)    // just past 90d
-    insertRow('sess-recent-1', 89) // just inside 90d
+  it('folds pruned rows into token_usage_daily before deleting them, summing across runs', () => {
+    insertRow('sess-roll-1', 200)
+    insertRow('sess-roll-2', 200)
+    insertRow('sess-roll-keep', 1)
+    expect(pruneTokenUsage()).toBe(2)
+    insertRow('sess-roll-3', 200)
+    expect(pruneTokenUsage()).toBe(1)
+
+    const rows = getDb()
+      .prepare("SELECT calls, input_tokens, output_tokens, model, project FROM token_usage_daily WHERE agent = 'test-prune'")
+      .all() as Array<{ calls: number; input_tokens: number; output_tokens: number; model: string; project: string }>
+    expect(rows).toEqual([{ calls: 3, input_tokens: 3, output_tokens: 3, model: '', project: '' }])
+    // The recent row is untouched and not rolled up.
+    const kept = getDb().prepare("SELECT COUNT(*) c FROM token_usage WHERE agent = 'test-prune'").get() as { c: number }
+    expect(kept.c).toBe(1)
+  })
+
+  it('deletes rows older than the retention window (default 30 days), keeps recent ones', () => {
+    insertRow('sess-old-1', 200)   // well past 30d
+    insertRow('sess-old-2', 31)    // just past 30d
+    insertRow('sess-recent-1', 29) // just inside 30d
     insertRow('sess-recent-2', 1)  // recent
 
     const removed = pruneTokenUsage()
