@@ -1407,7 +1407,10 @@ export function initDatabase(dbPathOverride?: string): void {
       project TEXT
     )
   `)
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage(agent)`)
+  // idx_token_usage_agent(agent) was a strict prefix of idx_token_usage_agent_ts(agent, timestamp):
+  // every agent-only lookup is served by the composite, so it only cost ~5 MB and a write per row
+  // (card db3903c9). Dropped on existing databases, no longer created on new ones.
+  db.exec(`DROP INDEX IF EXISTS idx_token_usage_agent`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_ts ON token_usage(timestamp)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_agent_ts ON token_usage(agent, timestamp)`)
   // Migrations for columns added after initial release
@@ -1425,6 +1428,27 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usage_dedup ON token_usage(session_id, timestamp, input_tokens, output_tokens)`)
+
+  // Daily rollup of token_usage (card db3903c9). pruneTokenUsage folds every row it is about to
+  // delete into this table first, so the raw log can keep a short retention window while the
+  // long-range totals (per day, agent, model, project) survive indefinitely. `day` is the local
+  // (Europe/Budapest) calendar date; model/project use '' instead of NULL so the primary key
+  // actually deduplicates.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS token_usage_daily (
+      day TEXT NOT NULL,
+      agent TEXT NOT NULL,
+      model TEXT NOT NULL DEFAULT '',
+      project TEXT NOT NULL DEFAULT '',
+      calls INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+      thinking_tokens INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, agent, model, project)
+    )
+  `)
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS token_usage_cursors (
@@ -6756,11 +6780,33 @@ export function pruneAuditLogs(): void {
 // main DB-growth driver (one row per inbound token-log event); without this it
 // grows unbounded. Called from the daily decay sweep. `timestamp` is unix
 // SECONDS. Returns the number of rows removed (for logging).
+//
+// Before deleting, the doomed rows are folded into token_usage_daily in the same
+// transaction (card db3903c9): a crash between the two statements can neither lose
+// the totals nor count them twice.
 export function pruneTokenUsage(): number {
   const retentionDays = Number(getEffectiveSettingValue('TOKEN_USAGE_RETENTION_DAYS'))
   const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
-  const info = db.prepare('DELETE FROM token_usage WHERE timestamp < ?').run(cutoff)
-  return info.changes
+  const rollupAndDelete = db.transaction((c: number): number => {
+    db.prepare(`
+      INSERT INTO token_usage_daily (day, agent, model, project, calls, input_tokens, output_tokens,
+        cache_read_tokens, cache_creation_tokens, thinking_tokens)
+      SELECT date(timestamp, 'unixepoch', 'localtime'), agent, COALESCE(model, ''), COALESCE(project, ''),
+        COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
+        SUM(cache_creation_tokens), SUM(COALESCE(thinking_tokens, 0))
+      FROM token_usage WHERE timestamp < ?
+      GROUP BY 1, 2, 3, 4
+      ON CONFLICT (day, agent, model, project) DO UPDATE SET
+        calls = calls + excluded.calls,
+        input_tokens = input_tokens + excluded.input_tokens,
+        output_tokens = output_tokens + excluded.output_tokens,
+        cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+        cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
+        thinking_tokens = thinking_tokens + excluded.thinking_tokens
+    `).run(c)
+    return db.prepare('DELETE FROM token_usage WHERE timestamp < ?').run(c).changes
+  })
+  return rollupAndDelete(cutoff)
 }
 
 // Ported from upstream (HBDBKUSZOB823, e45e4d87, card a04769a6). The decay-sweep

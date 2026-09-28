@@ -411,10 +411,10 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'TOKEN_USAGE_RETENTION_DAYS',
     type: 'int',
-    default: 90,
+    default: 30,
     min: 7,
     max: 3650,
-    description: 'A token-használati napló (token_usage tábla) megőrzési ideje napokban. A napi sweep ennél régebbi sorokat törli, így a tábla nem nő korlátlanul. A modell-javaslat csak az utolsó 30 napot nézi, így a 90 nap minden fogyasztónak bőven elég.',
+    description: 'A token-használati napló (token_usage tábla) részletes sorainak megőrzési ideje napokban. A napi sweep az ennél régebbi sorokat előbb napi összesítésbe (token_usage_daily: nap, ügynök, modell, projekt szerint) írja, majd törli, így a hosszú távú összegek megmaradnak, a tábla pedig nem nő korlátlanul. A modell-javaslat csak az utolsó 30 napot nézi.',
     module: 'system',
     secret: false,
     requiresRestart: false,
