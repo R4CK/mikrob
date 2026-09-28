@@ -37,7 +37,7 @@ let ledgerDb = ''
 beforeAll(async () => {
   server = http.createServer((req, res) => {
     const chunks: Buffer[] = []
-    req.on('data', c => chunks.push(c))
+    req.on('data', (c: Buffer) => chunks.push(c))
     req.on('end', () => {
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : null
       calls.push({ path: req.url ?? '', body })

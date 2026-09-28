@@ -98,14 +98,19 @@ describe('set-bot-menu.sh: honest outcome', () => {
     writeFileSync(join(stage, 'store', '.dashboard-token'), 'dash-tok\n')
     // Own curl stub: the shared one's `${CURL_STUB_BODY:-{...}}` default
     // appends a stray `}` to any body that is set, which JSON cannot survive.
-    writeFileSync(join(bin, 'curl'), '#!/bin/bash\necho "$@" >> "$CURL_ARGV_LOG"\nprintf %s "$MENU_BODY"\n')
+    // Card d79a69b5: telegram_api_call (card 8418b098) pipes `url = "…/<method>"`
+    // via -K - on STDIN, deliberately keeping the method name out of argv -- so
+    // each invocation is logged as ONE block (a delimiter, its argv, then its
+    // stdin) rather than assuming the method name is in argv.
+    writeFileSync(join(bin, 'curl'), '#!/bin/bash\necho "===CALL===" >> "$CURL_ARGV_LOG"\necho "$@" >> "$CURL_ARGV_LOG"\ncat >> "$CURL_ARGV_LOG" 2>/dev/null\nprintf %s "$MENU_BODY"\n')
     const r = run('set-bot-menu.sh', {
       MENU_BODY: '{"ok":true,"commands":[{"command":"status","description":"Rendszer-állapot"},{"command":"queue","description":"Sor"}]}',
     }, bin)
     expect(r.status).toBe(0)
     const argv = readFileSync(join(stage, 'curl-argv.log'), 'utf-8')
     expect(argv).toContain('/api/commands/menu')
-    const sets = argv.split('\n').filter(l => l.includes('setMyCommands'))
+    const calls = argv.split('===CALL===\n').slice(1) // each element: one invocation's argv line + stdin
+    const sets = calls.filter(c => c.includes('setMyCommands'))
     expect(sets).toHaveLength(2)
     expect(sets[0]).toContain('"command": "queue"')
     expect(sets[0]).toContain('"description": "Rendszer-állapot"')

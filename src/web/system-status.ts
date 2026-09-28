@@ -199,7 +199,7 @@ export function cacheHitRatio(lines: string[], sinceMs: number): number | null {
     if (!line.includes('"usage"')) continue
     try {
       const e = JSON.parse(line)
-      const ts = typeof e?.timestamp === 'string' ? Date.parse(e.timestamp) : NaN
+      const ts = typeof e?.timestamp === 'string' ? Date.parse(e.timestamp as string) : NaN
       if (!Number.isFinite(ts) || ts < sinceMs) continue
       const u = e?.message?.usage
       if (!u || typeof u !== 'object') continue

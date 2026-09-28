@@ -205,11 +205,11 @@ describe('/api/status', () => {
 
   it('the legacy fields keep their exact shape and order; system is added after them', async () => {
     const { res, ctx } = fakeReqRes()
-    expect(await tryHandleStatus(ctx as never)).toBe(true)
+    expect(await tryHandleStatus(ctx as unknown as Parameters<typeof tryHandleStatus>[0])).toBe(true)
     const body = JSON.parse(res.body)
     // Card d79a69b5, fork-side: lastUpdate (card 0898db66) rides in every response variant --
     // the default shape is a SUPERSET of the pre-fork-merge fields, not a like-for-like swap.
-    expect(Object.keys(body)).toEqual(['overall', 'components', 'incidents', 'fetchedAt', 'lastUpdate', 'system'])
+    expect(Object.keys(body as Record<string, unknown>)).toEqual(['overall', 'components', 'incidents', 'fetchedAt', 'lastUpdate', 'system'])
     expect(body.overall).toBe('operational')
     expect(body.components).toEqual([{ name: 'API', status: 'operational' }])
     expect(body.incidents).toEqual([{ title: 'Elevated errors', description: 'Resolved - fixed', pubDate: 'Mon', link: 'l', status: 'resolved' }])
@@ -220,40 +220,40 @@ describe('/api/status', () => {
 
   it('?only=system makes no network call', async () => {
     const { res, ctx } = fakeReqRes('?only=system')
-    await tryHandleStatus(ctx as never)
+    await tryHandleStatus(ctx as unknown as Parameters<typeof tryHandleStatus>[0])
     expect(fetchMock).not.toHaveBeenCalled()
     const body = JSON.parse(res.body)
     expect(body.system).toEqual(SYSTEM)
     expect(body).toHaveProperty('lastUpdate')
-    expect(Object.keys(body)).toEqual(['system', 'lastUpdate'])
+    expect(Object.keys(body as Record<string, unknown>)).toEqual(['system', 'lastUpdate'])
   })
 
   it('?only=anthropic is the legacy response plus lastUpdate (no system key)', async () => {
     const { res, ctx } = fakeReqRes('?only=anthropic')
-    await tryHandleStatus(ctx as never)
-    expect(Object.keys(JSON.parse(res.body))).toEqual(['overall', 'components', 'incidents', 'fetchedAt', 'lastUpdate'])
+    await tryHandleStatus(ctx as unknown as Parameters<typeof tryHandleStatus>[0])
+    expect(Object.keys(JSON.parse(res.body) as Record<string, unknown>)).toEqual(['overall', 'components', 'incidents', 'fetchedAt', 'lastUpdate'])
   })
 
   it('an invalid ?only= is a 400, not a silent default', async () => {
     const { res, ctx } = fakeReqRes('?only=mind')
-    await tryHandleStatus(ctx as never)
+    await tryHandleStatus(ctx as unknown as Parameters<typeof tryHandleStatus>[0])
     expect(res.status).toBe(400)
   })
 
   it('Anthropic timeout -> overall unknown with the legacy error shape, system still complete', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('The operation was aborted due to timeout') }))
     const { res, ctx } = fakeReqRes()
-    await tryHandleStatus(ctx as never)
+    await tryHandleStatus(ctx as unknown as Parameters<typeof tryHandleStatus>[0])
     const body = JSON.parse(res.body)
     expect(body).toMatchObject({ overall: 'unknown', components: [], incidents: [], error: 'Failed to fetch status' })
-    expect(Object.keys(body)).toEqual(['overall', 'components', 'incidents', 'fetchedAt', 'error', 'lastUpdate', 'system'])
+    expect(Object.keys(body as Record<string, unknown>)).toEqual(['overall', 'components', 'incidents', 'fetchedAt', 'error', 'lastUpdate', 'system'])
     expect(body.system).toEqual(SYSTEM)
   })
 
   it('a crashing system collection does not take the Anthropic fields down', async () => {
     sysMock.fn = async () => { throw new Error('db gone') }
     const { res, ctx } = fakeReqRes()
-    await tryHandleStatus(ctx as never)
+    await tryHandleStatus(ctx as unknown as Parameters<typeof tryHandleStatus>[0])
     const body = JSON.parse(res.body)
     expect(body.overall).toBe('operational')
     expect(body.system).toEqual({ error: 'db gone' })
@@ -262,7 +262,7 @@ describe('/api/status', () => {
   it('the local part does not wait for a slow Anthropic fetch in ?only=system', async () => {
     vi.stubGlobal('fetch', vi.fn(() => new Promise(() => { /* never resolves */ })))
     const { res, ctx } = fakeReqRes('?only=system')
-    await tryHandleStatus(ctx as never)
+    await tryHandleStatus(ctx as unknown as Parameters<typeof tryHandleStatus>[0])
     expect(JSON.parse(res.body).system).toEqual(SYSTEM)
   })
 })

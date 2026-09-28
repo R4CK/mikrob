@@ -146,6 +146,7 @@ describe('patch-telegram-plugin.py', () => {
       expect(readFileSync(cfgServer, 'utf-8')).toContain('MARVEEN-PATCH(elsokor922-d4)')
       expect(readFileSync(userServer, 'utf-8')).toBe(readFileSync(FIXTURE, 'utf-8'))
       // without CLAUDE_CONFIG_DIR the user-level cache IS the launch cache
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { CLAUDE_CONFIG_DIR: _unset, ...noCfg } = env
       spawnSync('python3', [SCRIPT], { encoding: 'utf-8', env: noCfg })
       expect(readFileSync(userServer, 'utf-8')).toContain('MARVEEN-PATCH(elsokor922-d4)')

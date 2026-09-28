@@ -190,7 +190,7 @@ export function readLastAssistantModel(workingDir: string, configDir?: string): 
         const entry = JSON.parse(line)
         const model = entry?.message?.model
         if (typeof model !== 'string' || model.startsWith('<')) continue
-        const atMs = typeof entry?.timestamp === 'string' ? new Date(entry.timestamp).getTime() : NaN
+        const atMs = typeof entry?.timestamp === 'string' ? new Date(entry.timestamp as string).getTime() : NaN
         if (!Number.isFinite(atMs)) continue
         return { model, atMs }
       } catch { /* skip malformed JSON line */ }
@@ -245,8 +245,8 @@ export function readLastTurnActivityMs(workingDir: string, configDir?: string): 
       try {
         const e = JSON.parse(line)
         if (e?.type !== 'user' && e?.type !== 'assistant') continue
-        if (isLocalCommandLine(e)) continue
-        const at = typeof e.timestamp === 'string' ? new Date(e.timestamp).getTime() : NaN
+        if (isLocalCommandLine(e as { type?: unknown; message?: { content?: unknown } })) continue
+        const at = typeof e.timestamp === 'string' ? new Date(e.timestamp as string).getTime() : NaN
         if (Number.isFinite(at)) return at
       } catch { /* a line cut by the tail window, or malformed */ }
     }

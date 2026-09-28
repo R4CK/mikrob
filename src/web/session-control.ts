@@ -61,6 +61,7 @@ export function humanBusy(reason: string | undefined): string {
   return r || 'foglalt'
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export function switchVerdict(inputs: GateInputs, _cfg: GateConfig): QuietVerdict {
   if (inputs.hardGuardPhase === 'await-handoff' || inputs.hardGuardPhase === 'await-ready') {
     return { quiet: false, reason: `hard-guard-armed (phase: ${inputs.hardGuardPhase})` }

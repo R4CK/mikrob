@@ -192,9 +192,10 @@ describe('renderQuotaStrip: healthy snapshot', () => {
 })
 
 describe('loadOverview() actually calls the renderer (not just defines it)', () => {
-  it('renderQuotaStrip(d.quota) is called after the stat cards are populated, inside loadOverview', () => {
+  it('renderQuotaStrip(d.quota, d.quotaFable) is called after the stat cards are populated, inside loadOverview', () => {
     const loadStart = SRC.indexOf('async function loadOverview(')
-    const callIdx = SRC.indexOf('renderQuotaStrip(d.quota)', loadStart)
+    // Card d79a69b5 (upstream 20cb2c14): renderQuotaStrip gained a second argument, d.quotaFable.
+    const callIdx = SRC.indexOf('renderQuotaStrip(d.quota, d.quotaFable)', loadStart)
     const statSkillsIdx = SRC.indexOf("statSkillsSub", loadStart)
     expect(loadStart).toBeGreaterThan(-1)
     expect(callIdx).toBeGreaterThan(loadStart)

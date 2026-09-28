@@ -168,7 +168,7 @@ describe('mainSessionFromBody', () => {
 describe('POST /api/commands/dispatch', () => {
   it('is gated: without a credential the auth gate answers 401', () => {
     expect(requiresAuth('/api/commands/dispatch', 'POST')).toBe(true)
-    const req: any = { headers: {} }
+    const req = { headers: {} } as unknown as Parameters<typeof resolveAuth>[0]
     const url = new URL('http://localhost:3420/api/commands/dispatch')
     expect(resolveAuth(req, url, url.pathname, 'POST', 'secret-token').kind).toBe('none')
   })
