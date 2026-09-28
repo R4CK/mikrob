@@ -50,8 +50,15 @@ sleep 15
 REGISTRY_JSON=""
 DASH_TOKEN_FILE="$INSTALL_DIR/store/.dashboard-token"
 if [ -s "$DASH_TOKEN_FILE" ]; then
+  # Piped header file, not inline argv (card d79a69b5, token-in-argv-guard): a Bearer token in
+  # curl's own argv is world-readable via /proc/<pid>/cmdline. Same idiom as
+  # store/weekly-usage-panel-read.sh / store/offload-dispatch.sh.
+  hdr_file="$(mktemp)"
+  chmod 600 "$hdr_file"
+  trap 'rm -f "$hdr_file"' EXIT
+  printf 'Authorization: Bearer %s\n' "$(cat "$DASH_TOKEN_FILE")" > "$hdr_file"
   for _try in 1 2 3 4 5 6; do
-    REGISTRY_JSON="$(curl -sS -m 10 -H "Authorization: Bearer $(cat "$DASH_TOKEN_FILE")" "http://127.0.0.1:${WEB_PORT}/api/commands/menu" 2>/dev/null)"
+    REGISTRY_JSON="$(curl -sS -m 10 -H @"$hdr_file" "http://127.0.0.1:${WEB_PORT}/api/commands/menu" 2>/dev/null)"
     case "$REGISTRY_JSON" in *'"commands"'*) break ;; esac
     REGISTRY_JSON=""
     sleep 10
