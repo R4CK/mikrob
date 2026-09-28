@@ -1744,6 +1744,112 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // control and would not even describe the fork's actual guard expression.
   'src/__tests__/voice-channel-hanna.test.ts':
     "KEEP the fork's test file WHOLESALE -- upstream's version reverts the Cybersec-NO-GO-driven per-device allowlist fix (card 7503bb31: isAllowedVoiceChannelDevice), which the fork's production routes/messages.ts still enforces (grep-verified). Adopting upstream would drop real security-control coverage and would not match the fork's actual guard shape.",
+
+  // Card d79a69b5 (CMD920 cherry-pick, self-created 2026-09-28): the fork fixed a real
+  // prompt-injection bug upstream still has (Cybersec NO-GO, comment 8446/M1). command_block()
+  // used to accept a prompt that merely CONTAINED exactly one <channel> block, not one that
+  // consisted ONLY of it -- an inter-agent message quoting a Telegram command block matched too,
+  // forging the owner's chat_id in the quoted attrs and letting marveen-commands.py run the
+  // command and exit 2, silently swallowing the whole turn. Fixed by anchoring the single match
+  // to span the entire whitespace-trimmed prompt. Upstream's blob (d4ad56f5) still has the bug as
+  // of this pin -- flag it upstream (Cybersec's own suggestion), do not adopt upstream's file.
+  'scripts/hooks/command_prompt.py':
+    "KEEP the fork's fix WHOLESALE -- command_block() anchors the single <channel> match to the entire prompt, closing a real prompt-injection bug (Cybersec NO-GO, card d79a69b5 M1) that upstream's blob (d4ad56f5) still has. Re-check when upstream fixes it too.",
+
+  // Card d79a69b5: mode-only divergence, content byte-identical. The fork's git object had the
+  // executable bit stripped by an earlier chmod-on-index-only mistake (git update-index --chmod=+x
+  // without the matching filesystem chmod); shebang-files-executable.test.ts caught it.
+  'scripts/patch-telegram-plugin.py':
+    "KEEP the fork's mode (100755) -- content is byte-identical to upstream, only the executable bit differed (a prior fix set it in the git index without the matching filesystem chmod; shebang-files-executable.test.ts pins it).",
+
+  // Card d79a69b5: 3 new tests for the command_prompt.py anchoring fix above (Cybersec M1) --
+  // purely additive, upstream has no equivalent yet because upstream doesn't have the fix.
+  'src/__tests__/inbox-drain-command-prompt.test.ts':
+    "KEEP the fork's version -- 3 new tests covering the command_block() anchoring fix (Cybersec M1, same card), purely additive. Mutation-verified: all 3 fail against the pre-fix regex.",
+
+  // Card d79a69b5: `any` -> a precise Parameters<> cast, part of the lint-ratchet pass that landed
+  // alongside the CMD920 cherry-pick. No behavior change.
+  'src/__tests__/commands-dispatch-route.test.ts':
+    "KEEP the fork's cast (Parameters<typeof resolveAuth>[0] instead of `any`) -- lint-ratchet no-unsafe-argument cleanup from card d79a69b5, no behavior change.",
+
+  // Card d79a69b5: dropped an unused `vi` import (no-unused-vars), part of the same lint pass.
+  'src/__tests__/custom-commands.test.ts':
+    "KEEP the fork's version -- drops an unused `vi` import (no-unused-vars), no behavior change.",
+
+  // Card d79a69b5: `(c) =>` -> `(c: Buffer) =>`, same lint-ratchet pass (no-unsafe-argument on the
+  // stream 'data' callback parameter).
+  'src/__tests__/marveen-commands-hook.test.ts':
+    "KEEP the fork's version -- explicit Buffer type on the stream 'data' callback, lint-ratchet cleanup from card d79a69b5, no behavior change.",
+
+  // Card d79a69b5: added an eslint-disable-next-line for an intentionally-unused destructured
+  // binding (the test only needs `noCfg`, `_unset` documents what was removed from `env`).
+  'src/__tests__/patch-telegram-plugin.test.ts':
+    "KEEP the fork's version -- adds an eslint-disable-next-line for the intentionally-unused `_unset` destructure, lint-ratchet cleanup, no behavior change.",
+
+  // Card d79a69b5: async-propagation. The fork's readActiveModelFromProjectDir/
+  // readContextTokensFromProjectDir/gatherGateInputs stay ASYNC (see this file's own active-model.ts
+  // entry below) because upstream's sync versions are a measured regression (GET /api/agents froze
+  // the fleet 3.8-7.4s). Every ModelDeps.measured/.quiet call site in this test threads `async`/
+  // `await` through; behavior and assertions are otherwise identical to upstream's test.
+  'src/__tests__/main-model.test.ts':
+    "KEEP the fork's version -- mechanical async-propagation only (ModelDeps.measured/.quiet return Promises, per the fork's async active-model.ts/context-restart-gate-runner.ts decision). Same assertions as upstream, no behavior change.",
+  'src/web/main-model.ts':
+    "KEEP the fork's version -- mechanical async-propagation only (ModelDeps.measured/.quiet return Promises; every call site awaits), same reason as this file's active-model.ts entry (upstream's sync read is a measured GET /api/agents 3.8-7.4s freeze). No behavior change beyond the async signature.",
+
+  // Card d79a69b5: same async-propagation, SessionControlDeps.gather/.contextTokens.
+  'src/__tests__/session-control.test.ts':
+    "KEEP the fork's version -- mechanical async-propagation (SessionControlDeps.gather/.contextTokens return Promises), same reason as the active-model.ts entry. No behavior change.",
+  'src/web/session-control.ts':
+    "KEEP the fork's version -- mechanical async-propagation (SessionControlDeps.gather/.contextTokens return Promises, deps.gather()/.contextTokens() calls awaited), same reason as the active-model.ts entry. Also adds an eslint-disable-next-line for switchVerdict's intentionally-unused `_cfg` param (lint-ratchet).",
+
+  // Card d79a69b5: web/app.js in this fork is a modularisation-slice STUB (see that file's own
+  // acknowledged-conflicts entry) -- renderQuotaStrip actually lives in web/app-overview.js. This
+  // test's fixture path is a fork-only detail, not a behavior divergence.
+  'src/__tests__/quota-strip-fable-age.test.ts':
+    "KEEP the fork's version -- reads web/app-overview.js instead of web/app.js, because the fork's app.js is a modularisation-slice stub (see the web/app.js entry). Same assertions as upstream otherwise.",
+
+  // Card d79a69b5: two things bundled in this file's diff, decided separately.
+  // (1) MINE: the fork's telegram_api_call (card 8418b098) pipes the method name via `curl -K -`
+  //     stdin, deliberately keeping it out of argv -- so the test's curl stub now logs one block
+  //     per invocation (a delimiter, its argv, then its captured stdin) instead of assuming the
+  //     method name is readable from argv alone.
+  // (2) NOT MINE, UNDECIDED: upstream's file also carries a removed test ("keeps the old snapshot
+  //     when there is no owner chat to send to", OWNERCHAT803/CHATID0, PR #1555) and a dropped
+  //     scripts/lib/owner-chat.sh reference -- the fork has never ported OWNERCHAT803 at all
+  //     (owner-chat.sh does not exist in this tree). That piece is OUT OF SCOPE for this entry and
+  //     stays undecided; it belongs in a fresh upstream-drift triage round, not folded in here.
+  'src/__tests__/send-honesty-round2.test.ts':
+    "PARTIAL: the curl-stub delimiter change (part 1) is decided -- KEEP the fork's version, it matches telegram_api_call's -K stdin pattern (card 8418b098). The OWNERCHAT803/CHATID0 test removal (PR #1555, owner-chat.sh) is a SEPARATE, unrelated, UNDECIDED divergence -- the fork has not ported that feature; needs its own triage, not resolved by this entry.",
+
+  // Card d79a69b5: lastUpdate (card 0898db66) now rides in every /api/status response variant --
+  // the default shape is a SUPERSET of the pre-merge legacy fields, per MikroB's approval (msg
+  // 5556 condition 2). Key-order assertions updated to include it; casts are lint-ratchet cleanup.
+  'src/__tests__/status-system.test.ts':
+    "KEEP the fork's version -- lastUpdate (card 0898db66) added to every response-shape assertion, per MikroB's approval that the default ?only-less response stays a strict superset of the old 4 fields (msg 5556). `as unknown as Parameters<...>` casts are lint-ratchet cleanup, no behavior change.",
+  'src/web/routes/status.ts':
+    "KEEP the fork's version -- lastUpdate (card 0898db66) computed once before the network calls and merged into every response variant (`{ ...anthropic, lastUpdate }`), so the badge never blanks on a slow/failed external fetch. Same MikroB approval as the status-system.test.ts entry (msg 5556 condition 2).",
+
+  // Card d79a69b5: upstream deleted the eager `readActiveModelFromProjectDir` import here (unused
+  // after its own refactor) and moved configDirFor's import to context-restart-gate-runner.ts
+  // (main-transcript-root.ts stays a deferred-adoption module, card 5c134edf -- see that entry).
+  // contextStatusText() and its /context command registration go async for the same reason as
+  // active-model.ts (bounded-tail-window + request-coalescing; upstream's sync read is a measured
+  // regression).
+  'src/web/builtin-commands.ts':
+    "KEEP the fork's version -- drops the now-unused readActiveModelFromProjectDir import, redirects configDirFor to context-restart-gate-runner.ts (main-transcript-root.ts stays deferred, card 5c134edf), and makes contextStatusText async (same reason as active-model.ts). No behavior change beyond the signature.",
+
+  // Card d79a69b5: same configDirFor redirect as builtin-commands.ts (main-transcript-root.ts
+  // deferred, card 5c134edf) -- purely mechanical, no other divergence.
+  'src/web/midturn-commands.ts':
+    "KEEP the fork's version -- redirects configDirFor's import to context-restart-gate-runner.ts (main-transcript-root.ts stays deferred, card 5c134edf). No other divergence.",
+  'src/web/queue-view.ts':
+    "KEEP the fork's version -- redirects configDirFor's import to context-restart-gate-runner.ts (main-transcript-root.ts stays deferred, card 5c134edf). No other divergence.",
+
+  // Card d79a69b5: configDirFor redirect (as above) plus the same async-propagation as
+  // active-model.ts for readActiveModelFromProjectDir/readContextTokensFromProjectDir call sites,
+  // plus one `as string` cast on a JSON.parse'd timestamp (lint-ratchet).
+  'src/web/system-status.ts':
+    "KEEP the fork's version -- configDirFor redirect (main-transcript-root.ts deferred, card 5c134edf) plus async-propagation for the active-model.ts reads (same reason as that entry) plus a lint-ratchet cast on a JSON.parse'd timestamp. No behavior change.",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -2045,6 +2151,27 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/__tests__/router-no-silent-reinject.test.ts': 'cc8b2834a0462164d0ee3fbcb0df995fe659406a',
   'src/__tests__/token-prune-lag.test.ts': '2291117eb61bbc973d7796b45d0c1c481740e911',
   'src/__tests__/voice-channel-hanna.test.ts': '5e9adcfaae491e754f87801f053eb0120af69042',
+  // Card d79a69b5 (CMD920 cherry-pick, backend3, 2026-09-28) -- see the matching
+  // ACKNOWLEDGED_CONFLICTS entries above for the reasoning.
+  'scripts/hooks/command_prompt.py': 'd4ad56f59073ccefe06245c02359fe33452d8781',
+  'scripts/patch-telegram-plugin.py': 'bfac9905b341bbc1651b6c2676ac21760a92c73e',
+  'src/__tests__/commands-dispatch-route.test.ts': 'af32734889137c89a8a8a282c7460d4c6284f124',
+  'src/__tests__/custom-commands.test.ts': '00689e1dfa7ee7aa06afb8b9220cb5ecb9fa9e22',
+  'src/__tests__/inbox-drain-command-prompt.test.ts': '077eedb4af1222c2346c98f59985b1f9000d6e6b',
+  'src/__tests__/marveen-commands-hook.test.ts': '357be09787ce26fb9ec25309acdd76168a88701f',
+  'src/__tests__/patch-telegram-plugin.test.ts': '8aa0089af6f8255a0603c7150ec23a59dcab4cb3',
+  'src/__tests__/main-model.test.ts': 'ff42165400fc5f4da85dcf1815687caf7a630235',
+  'src/web/main-model.ts': 'd8e1eb2f5712c51b97c20f7fd84ac30ed39d0335',
+  'src/__tests__/session-control.test.ts': '0968e77b97416703280a751296e8842da2abe3e4',
+  'src/web/session-control.ts': '34f50006bd47986902b5c5084da99640f5ca2c86',
+  'src/__tests__/quota-strip-fable-age.test.ts': 'd024c51b8fa0c0e00fcf3d84568236d3c545b58f',
+  'src/__tests__/send-honesty-round2.test.ts': '625fb881eda4ef41a8739b78468c3435d780dd42',
+  'src/__tests__/status-system.test.ts': '54317c56e0960dd8f1d9a4580ffbe5447a04731b',
+  'src/web/routes/status.ts': 'c818392b5c985959cc874828ea149a0ae9768233',
+  'src/web/builtin-commands.ts': 'd9610d8a6b7b4218ce9f87a2c7cb05495195e79b',
+  'src/web/midturn-commands.ts': '7fcd1b25e5f3b30ef2330ada780193c1cd1325cc',
+  'src/web/queue-view.ts': 'e36011393e28c86e135c59d777133eebe8eb6c3f',
+  'src/web/system-status.ts': '0e2778d448b7ba5d761d82ea2b81bcd1e87d4c8b',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
