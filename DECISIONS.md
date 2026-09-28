@@ -15885,3 +15885,70 @@ log HEAD..upstream/develop` listájából kikerülnek. A 6ec3ea9e kártya MikroB
 **Következmény.** Ha a flottának valaha CRM-igénye keletkezik, az a `Szotasz/marveen-crm` repó saját
 adoptálási döntése lesz, nem ennek a fork-drift-nek a folytatása -- a 9 commit skip-marka nem zárja
 ki egy jövőbeli, KÜLÖN kártyán hozott adopt-döntést arra a másik repóra.
+
+---
+
+## 2026-09-28 -- d79a69b5 -- Upstream-sync: dashboard parancsok (/model, /context, egyedi parancsok) + Fable/Opus heti kvóta widget (3 upstream commit)
+
+**Döntés.** Cherry-pick-elve 3 upstream commit (Szotasz/marveen): b1d61922 (owner slash commands hook,
+`/api/status` rendszer, CMD920 A1), 26ac8c83 (`/model` + `/context` clear írások, egyéni parancsok,
+CMD920 A2) és 20cb2c14 (Fable/Opus heti kvóta a subscription strip-ben). Sajat worktree-be, egymás
+utáni commitokban (5ce37813, 69a96091, b484c7c1), plusz egy negyedik javító commit (47cc4e10) a
+flotta saját integritás-őrei által talált két problémára.
+
+**Két élő fork-funkció ütközése, MikroB jóváhagyásával (üzenet 5556) feltételekkel.**
+1. `scripts/hooks/claude-usage.py` (248 soros, saját fejlesztésű, fleet-wide zero-token `/usage`
+   handler) TÖRÖLVE -- upstream saját `marveen-commands.py`-ja explicit "absorbs the old
+   claude-usage.py", UGYANAZT a `scripts/usage-collect.py` backendet használva. Mérve mindkét
+   irányban: szintetikus success-snapshot-on tartalmilag azonos kimenet (csak ékezethelyesség javult),
+   valós (auth-error) snapshot-on az ÚJ valtozat STRIKTEN INFORMATÍVABB ("Kvóta: nem mérhető (HTTP 401
+   (credentials_file token))." vs a régi "(nincs elerheto adat)").
+2. `GET /api/status` union -- upstream refaktorált `fetchAnthropicStatus()` + `?only=system|anthropic`
+   split fogadva, a fork saját `lastUpdate` mezője (kártya 0898db66) minden válasz-változatba
+   visszafűzve. Alapértelmezett (`?only` nélküli) válasz a régi 4 mező SZIGORÚ SZUPERHALMAZA --
+   upstream saját kommentje: "the legacy fields come first, unchanged". Teszt (`status-system.test.ts`)
+   frissítve a `lastUpdate` jelenlétét pinelni a default alakban.
+
+**Mechanikus, de terjedelmes async-propagáció.** A fork saját `readActiveModelFromProjectDir`/
+`readContextTokensFromProjectDir`/`gatherGateInputs` ASYNC marad (korábbi döntés, upstream sync
+verziója mért regresszió: `GET /api/agents` 3.8-7.4s-ra fagyasztotta a flottát) -- minden új
+hívási hely (`ModelDeps`/`SessionControlDeps` interfészek, 7+2+2+1 hívási pont, tesztek) `await`-et
+kapott.
+
+**Kis, önálló függőségek portolva a 26ac8c83-mal érkező, de KORÁBBI upstream commitokból** (a
+`src/fork-upstream/acknowledged-conflicts.ts` már korábban eldöntötte, most végrehajtva): `src/web/
+tmux-stderr.ts` (TMUXWINDOWATTR920), `src/claude-project-dir.ts` (`encodeClaudeProjectDir`,
+UTKODOLODIVERG922 -- helyes könyvtár-kódolás ékezetes/space-es útvonalakra), `readLastConversationTsFromProjectDir`
++ `readTranscriptMtimeAcrossConfigDirs` (GATEMTIME922 -- valós beszélgetés-timestamp elsőbbsége a
+fájl-mtime-mal szemben, mert egy idle session timestamp nélküli bookkeeping-írásai a mtime-ot
+örökre mozgatják, mérve: 240 perces hamis blokkolás sztuk-munka nélkül). `context-restart-gate-runner.ts`
+saját `configDirFor`-ja EXPORT-olva (viselkedés-változás nélkül) 6 új fájl számára, upstream saját
+`main-transcript-root.ts` modulja NEM adoptálva -- az már korábban is elhalasztott cutover-tétel
+(kártya 5c134edf).
+
+**web/app.js "óriás konfliktus" -- nem valódi ütközés.** A fork korábban modularizálta ezt a fájlt
+("modularisation slice 25" stb.) -- a diff-algoritmus csak ezert produkált egy ~1900 soros
+konfliktus-blokkot két teljesen eltérő fájlstruktúra között. Upstream sajat, elszigetelt diffje
+(`git show 20cb2c14 -- web/app.js`) ~25 sor: egy `renderQuotaStrip(q)` -> `renderQuotaStrip(q, fable)`
+signature-bővítés. A fork oldala (stub) megtartva, a kis változtatás kézzel átvezetve a tényleges
+helyre, `web/app-overview.js`-be.
+
+**A flotta saját integritás-őrei két valódi problémát találtak, javítva ugyanebben a munkában.**
+1. `fork-upstream-conflict-guard`: a `context-restart-gate-runner.ts` régi anchor-ja
+   (`openInboundQuestionMessageId`) hamis reverziót jelzett -- a szimbólum NEM tűnt el, csak egy új
+   wrapperen (`openQuestionIgnoringCommands`, `src/web/open-question.ts`) keresztül hívódik, ami egy
+   valódi bugot javít (egy owner-parancs a ledger-ben előbb jelenik meg nyitott kérdésként, mint ahogy
+   a hook megválaszolná, tehát egy parancs önmagát blokkolta a gate-en). Anchor áthelyezve. Az
+   `active-model.ts` bejegyzés (upstream sync `readFileSync`-jének elutasítása) anchor NÉLKÜL volt --
+   pótolva.
+2. `token-in-argv-guard`: az új `scripts/set-bot-menu.sh` (a parancs-menü regisztráció) a dashboard
+   Bearer tokent nyers curl argv-ben adta át (`/proc/<pid>/cmdline`-on át kiolvasható) -- javítva a
+   fork bevett piped-header idiómájára (0600 temp fejléc-fájl, `-H @"$hdr_file"`, `trap` cleanup).
+
+**Ellenőrzés.** tsc --noEmit tiszta. 450+ célzott teszt zöld (active-model, context-restart-gate,
+hooks, commands, quota, status-system), plusz `fork-upstream-conflict-guard` (36) és
+`token-in-argv-guard` (8521, teljes fa-scan) zöld. Mind a 3 upstream SHA megjelölve `ported`-ként
+`store/upstream-ported.json`-ban (per-install, gitignored).
+
+Ki döntött: backend3 (upstream-sync epic, e5c46e87/d4ba6ff8 alatt), MikroB jóváhagyás a két élő
+fork-funkció ütközésre (üzenet 5556).

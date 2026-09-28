@@ -111,8 +111,11 @@ const EXPECTED: Record<string, Census & { why: string }> = {
     why: '/mcp plus menu navigation, inside runUnlockProbe’s lane span',
   },
   'web/context-restart-gate-runner.ts': {
-    textSites: 1, ctrlOnlySites: 1, lane: true,
-    why: 'the restart-gate /clear',
+    // Card d79a69b5 (upstream 26ac8c83): ctrlOnlySites 1 -> 2, the new sendInterrupt (owner's
+    // Escape-into-the-pane, shares the same send lane as the gate's /clear and the owner's
+    // /model /context clear).
+    textSites: 1, ctrlOnlySites: 2, lane: true,
+    why: 'the restart-gate /clear + the owner interrupt (sendInterrupt)',
   },
   'web/tmux-keys.ts': {
     textSites: 1, ctrlOnlySites: 1, lane: false,

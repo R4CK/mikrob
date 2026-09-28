@@ -31,7 +31,8 @@ const EXPECTED: Record<string, string[]> = {
   UserPromptSubmit: [
     'ledger-capture.py', 'inbox-drain.py', 'telegram-reply-directive.py',
     'provenance-gate.py', 'staleness-guard.py', 'channel-inbox-drain.py',
-    'voice-reply-directive.py', 'telegram_progress.py', 'claude-usage.py',
+    'voice-reply-directive.py', 'telegram_progress.py',
+    'marveen-commands.py',
   ],
   PostToolUse: [
     'ledger-outbound.py', 'tool-log-capture.py',
@@ -47,8 +48,8 @@ const EXPECTED: Record<string, string[]> = {
     'symlinked-node-modules-guard.py', 'blast-radius-guard.py', 'cd-chain-guard.py',
     'bash-egress-guard.py', 'noisy-command-guard.py', 'pentest-tool-install-guard.py',
   ],
-  Stop: ['telegram-reply-guard.py', 'telegram_progress_clear.py'],
-  SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py'],
+  Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py'],
+  SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py', 'marveen-commands.py'],
   SessionEnd: ['clear-capture.py'],
 }
 

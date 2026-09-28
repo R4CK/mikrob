@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID, currentBotName } from '../../config.js'
@@ -8,10 +8,10 @@ import {
 } from '../agent-config.js'
 import { readAgentTeam } from '../agent-team.js'
 import { isAgentRunning } from '../agent-process.js'
-import { json, jsonMaybeGzip } from '../http-helpers.js'
+import { jsonMaybeGzip } from '../http-helpers.js'
 import { getUpdateStatus, type AggregateUpdateStatus } from '../update-checker.js'
 import { refreshUserTurnIndex, turnsOnDay } from '../user-turn-index.js'
-import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC } from '../quota.js'
+import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, readFableSnapshot, DEFAULT_FABLE_MAX_AGE_SEC } from '../quota.js'
 import type { RouteContext } from './types.js'
 
 // The per-day user-turn tallies now come from src/web/user-turn-index.ts (card ba0d218f): the inline
@@ -159,6 +159,14 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       Math.floor(Date.now() / 1000),
       maxAgeSec,
     )
+    // Separate source (scripts/usage-collect.py), separate freshness rule --
+    // see src/web/quota.ts for why this isn't folded into readQuotaSnapshot.
+    const fableMaxAgeSec = Number(process.env.QUOTA_FABLE_MAX_AGE_SEC) || DEFAULT_FABLE_MAX_AGE_SEC
+    const quotaFable = readFableSnapshot(
+      join(PROJECT_ROOT, 'store', 'usage-latest.json'),
+      Math.floor(Date.now() / 1000),
+      fableMaxAgeSec,
+    )
 
     jsonMaybeGzip(req, res, {
       agents: { total, running },
@@ -173,6 +181,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       // overview shows a FRISSÍTÉS-BANNER when behind > 0. Null when never checked.
       upstreamUpdate: readUpstreamUpdate(),
       quota,
+      quotaFable,
     })
     return true
   }
