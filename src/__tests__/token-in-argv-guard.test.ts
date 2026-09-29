@@ -255,8 +255,15 @@ function scanTree(dir: string, base: string = dir): string[] {
   return out
 }
 
-const STORE_SCRIPTS = scanDir(STORE_DIR)
-const SCRIPTS_SCRIPTS = scanDir(SCRIPTS_DIR)
+// Card b8859278 (QA2 FAIL 8977 + Cybersec NO-GO on 971f7d4f): scanDir only read the DIRECT children
+// of store/ and scripts/, filtered to .sh -- so scripts/hooks/ (53 .py files + 2 .sh, none scanned),
+// store/'s own subdirectories, and every non-.sh source anywhere under either tree were invisible to
+// this guard. memory-lookup-nudge.py's `-H "Authorization: Bearer $(cat ...)"` recipe shipped and
+// landed with nobody catching it here for exactly that reason. scanTree (already used below for
+// seed-skills/templates/src) is recursive and TEXT_FILE-filtered (already includes .py); using it
+// here closes both gaps -- the missing recursion AND the missing extension -- in one change.
+const STORE_SCRIPTS = scanTree(STORE_DIR)
+const SCRIPTS_SCRIPTS = scanTree(SCRIPTS_DIR)
 const SEED_SKILL_DOCS = scanTree(SEED_SKILLS_DIR)
 const SEED_AGENT_DOCS = scanTree(SEED_FLEET_AGENTS_DIR)
 // Card 1a251ee5: templates/ (settings.json.template, CLAUDE.md.template, profiles/, sub-agents/,

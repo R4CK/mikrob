@@ -1415,6 +1415,8 @@ function heredocWalk(command, onHeredoc) {
     //    boundary closes that too, and additionally keeps a legitimate payload whose command
     //    merely CONTAINS a substitution (`curl -H "Authorization: Bearer $(cat tok)" -d @-
     //    <<'JSON'`) on the allow side, which closer-stepping turns into a false positive.
+    //    guard-allow: documented-anti-pattern illustrative example of a command shape this
+    //    parser must classify correctly, never executed -- not the fleet's own curl recipe.
     //
     //  * Cybered (F-5): the saved-boundary stack was a PURE PARENTHESIS COUNTER. Bash is not: a
     //    quoted `)` is a literal, and `$(( ))` is arithmetic whose second `)` closes nothing.
