@@ -1068,7 +1068,27 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "layer), full reasoning on the src/__tests__/email-send-gate.test.ts entry above. The " +
     "Gmail-connector-gate half (gmail__(reply|reply_all|send_message|forward), GMAILCONNECTOR914) " +
     "is UNTOUCHED by that decision and remains its own open question -- Cybersec's ruling was scoped " +
-    "to the recipient-safety mechanism, not the connector-exposure question.",
+    "to the recipient-safety mechanism, not the connector-exposure question." +
+    " ADOPTED 2026-09-29 (backend3, card a4164e95, measured off Cybersec's own follow-up on afd64623): " +
+    "the Gmail-connector-gate half IS now taken, ported verbatim from upstream 000b9c6d across all " +
+    "three email gates (email-send-gate.mjs gateDecision, outgoing-copy-gate.py EMAIL_TOOL_RE-" +
+    "equivalent check, email-approval-gate.py _SEND_TOOL, email_extract.py's messageId-anchor " +
+    "fallback for a connector reply/forward with no `to` field) plus the settings.json/agent-" +
+    "scaffold.ts matcher (.*[Gg]mail__.*). MEASURED, not assumed, whether the gap was live: (1) zero " +
+    "agents (main or sub) have ANY Gmail MCP server configured today (grep across every agents/*/" +
+    ".mcp.json and the shared .mcp.json files -- none). (2) the claude.ai NATIVE remote Gmail " +
+    "connector (the one GMAILCONNECTOR914's send_message/reply/forward naming targets) is explicitly " +
+    "account-level BLOCKED (~/.claude.json _mcp_local_oauth_blocked_hosts includes gmail.mcp.claude." +
+    "com). (3) this fork's OWN catalog entry (mcp-catalog.json id 'gmail') uses a DIFFERENT package " +
+    "(npm gmail-mcp-server@1.0.30) whose only send-capable tool, verified byte-exact from the actual " +
+    "published tarball (not a README reconstruction), is literally named `gmail_send_email` -- " +
+    "which the PRE-EXISTING `.*send_email.*` matcher already caught, no gap there either. So today: " +
+    "zero live exploit path. The adoption is still worthwhile as cheap, strictly-additive defensive " +
+    "hardening (the new matcher only WIDENS what is denied) against the scenario where Peti later " +
+    "enables the native connector by removing it from the blocked-hosts list instead of using the " +
+    "catalog's package-based integration -- exactly the naming convention this fix targets. Ported " +
+    "test coverage alongside: email-send-gate.test.ts, email-gate-matcher-drift.test.ts, email-" +
+    "approval-gate.test.py, outgoing-copy-gate.test.py, all green.",
   // A one-line import conflict over TWO DIFFERENT gates, not one gate named twice -- checked, not
   // assumed: the fork's EGRESS_GATE_MATCHER is 'WebFetch|mcp__firecrawl__.*' (the web-egress gate),
   // upstream's EMAIL_GATE_MATCHER is 'Bash|.*send_email.*|.*manage_email.*' plus an
@@ -2962,9 +2982,10 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "only, never that the evidence is real, so an agent can self-certify any address with " +
       "--source owner. This is a settled security decision, not a pending one. If this import ever " +
       "appears, that decision was silently reversed -- re-open it, do not wave it through. The " +
-      "Gmail-connector gate and the commandHeads/WRAPPERS detection rewrite (paired with outgoing-" +
-      "copy-gate.py's escalated Round 17) remain SEPARATE, still-open questions, untouched by this " +
-      "ruling.",
+      "Gmail-connector gate WAS adopted separately (card a4164e95, 2026-09-29, see this file's own " +
+      "entry) -- that adoption does not import recipient-ledger.mjs at all, so this needle's absence " +
+      "is unaffected. The commandHeads/WRAPPERS detection rewrite (paired with outgoing-copy-gate." +
+      "py's escalated Round 17) remains its own, still-open question.",
   },
   // Same underlying fact as the scripts/email-send-gate.mjs anchor above, watched a second time
   // under the TEST-file key: the src/__tests__/email-send-gate.test.ts entry records the same

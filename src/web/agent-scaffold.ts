@@ -787,7 +787,14 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
   return name !== MAIN_AGENT_ID && capabilities.includes(EMAIL_THREAD_REPLY_CAPABILITY)
 }
 
-export const EMAIL_GATE_MATCHER = 'Bash|.*send_email.*|.*manage_email.*'
+// GMAILCONNECTOR914: the claude.ai Gmail connector names its tools
+// mcp__claude_ai_Gmail__{send_message,reply,forward,create_draft,...} -- no
+// "send_email", no "manage_email" -- so neither alternative above ever fired
+// on it and a connector send reached the wire with no gate at all. The
+// alternative is deliberately the whole server (`.*[Gg]mail__.*`), not a list
+// of send-shaped names: the hooks classify by the OPERATION (a search or a
+// read exits 0 in every gate), and a name list is exactly what would drift.
+export const EMAIL_GATE_MATCHER = 'Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail__.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets
