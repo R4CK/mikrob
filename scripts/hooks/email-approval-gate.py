@@ -67,8 +67,20 @@ _SEND_TOOL = re.compile(r"send[-_]?email|manage_email", re.I)
 # names are kebab-case (list-domains, get-email -- measured against the resend/resend-mcp
 # source, MIT); the Gmail connector's are snake_case (search_threads, create_draft) -- the
 # allowlist accepts either separator.
-_EMAIL_SERVER_RE = re.compile(r"__(?:[a-z0-9_]*gmail|resend)__", re.I)
-_EMAIL_SAFE_TOOL_RE = re.compile(r"^(?:search|get|list|read)[-_]|^create[-_]draft$", re.I)
+#
+# Card 45b33b2b (Cybersec GO on 498d53c1 @4b341e4d, msg 6240, REGRESSION on the line below's prior
+# shape): the server-name match required the run right before "gmail"/"resend" to be [a-z0-9_]* --
+# no hyphen -- and required "__" to follow immediately, so neither a PREFIXED-with-hyphen name
+# (google-gmail) nor a SUFFIXED one (gmail-mcp) matched -- such a server's send tool went through
+# with no audit at all. Widened to match "gmail"/"resend" as a substring ANYWHERE in the server
+# segment, hyphens included on both sides -- deliberately broader than any real server name needs,
+# because the failure direction that matters is "gate ran and safe-listed a read", not "gate never
+# ran".
+_EMAIL_SERVER_RE = re.compile(r"__[a-z0-9_-]*(?:gmail|resend)[a-z0-9_-]*__", re.I)
+# "draft" ADDED as a safe VERB prefix (draft_email, draft_message): distinct from the noun usage
+# in send_draft/update_draft, where the verb (send/update) decides safety, not the word "draft"
+# appearing in the name at all.
+_EMAIL_SAFE_TOOL_RE = re.compile(r"^(?:search|get|list|read|draft)[-_]|^create[-_]draft$", re.I)
 
 
 def _bare_tool_name(name):

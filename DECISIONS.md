@@ -16000,3 +16000,40 @@ esetekkel) zöld. Teljes suite marveen-land.sh-n keresztül a landoláskor.
 Ki döntött: Cybersec (a4164e95 GO, MEDIUM követő), backend3 (végrehajtás, a Resend-specifikus
 szűkítés a Resend tool-katalógus mérése alapján a saját döntésem, mert a kártya csak az elvet
 mondta ki, a konkrét szerver-katalógust nem).
+
+## 2026-09-29 -- 45b33b2b: gmail__/resend__ deny-by-default regresszió -- kötőjeles szervernév (Cybersec GO a 498d53c1-en)
+
+**Probléma.** A 498d53c1-ben bevezetett `EMAIL_SERVER_RE` (`/__(?:[a-z0-9_]*gmail|resend)__/i`)
+két ponton szűkebb volt, mint kellett volna: a "gmail"/"resend" elé eső résznek KIZÁRÓLAG
+`[a-z0-9_]*`-nak kellett lennie (kötőjel nem fért bele), és a "gmail"/"resend" UTÁN azonnal `__`-nek
+kellett jönnie (utótag nem fért bele). Egy `google-gmail` nevű szerver PREFIX-e miatt bukott volna
+(a kötőjel a "google-" és "gmail" között), egy `gmail-mcp` nevű szerver pedig a SZUFFIX miatt (a
+"gmail" és a lezáró `__` között ott a "-mcp"). Ilyen szerver esetén a deny-by-default logika
+EGYÁLTALÁN nem futott le -- a hívás simán exit 0-val ment át, mintha a szerver nem is lenne
+gmail/resend. Ma nem élő (a katalógus `gmail` id-t használ, nincs konfigurált Gmail-szerver), de a
+hibaosztály ugyanaz, mint amit maga a 498d53c1 zárt volna: egy tool-alak, amit a regex nem
+tükrözött vissza.
+
+**Döntés.** `EMAIL_SERVER_RE` széthúzva `/__[a-z0-9_-]*(?:gmail|resend)[a-z0-9_-]*__/i`-re: a
+"gmail"/"resend" szó a szerver-szegmens BÁRMELY pontján állhat, kötőjellel körülvéve mindkét
+oldalon. Ez SZÁNDÉKOSAN szélesebb, mint amennyire egy valós szervernévnek szüksége lenne (egy
+"resendable-xyz" nevű, teljesen független szerver is illeszkedne) -- de a hibairány, ami számít, az
+"a kapu lefutott és jogosan átengedett egy olvasást", nem "a kapu soha nem futott le". Ugyanezzel a
+lépéssel az `EMAIL_SAFE_TOOL_RE` is bővült egy "draft" VERB-prefixszel (`draft_email`,
+`draft_message`) -- ez elkülönül a `send_draft`/`update_draft` NÉVSZÓ-használatától, ahol az ige
+(`send`/`update`) dönt a biztonságosságról, nem a "draft" szó jelenléte a névben.
+
+**Végrehajtás.** Mindhárom kapuba (email-send-gate.mjs, outgoing-copy-gate.py,
+email-approval-gate.py) és az `EMAIL_GATE_MATCHER`-be (agent-scaffold.ts) egységesen, ugyanazzal a
+mintázattal. A `.claude/settings.json` két érintett sora (mindkét python-kapunál) frissítve.
+
+**Ellenőrzés.** Mutáció: a JS `EMAIL_SERVER_RE`-t visszaállítottam a régi (szűk) alakra -- az új
+`gmail-mcp` canary-teszt pirosra váltott (`google-gmail` véletlenül átment a régi alakon is, mert a
+`.search()` bárhol illeszkedő "gmail__" substringet talált a string VÉGén -- ez a PREFIX-eset,
+`gmail-mcp` a SZUFFIX-eset, ami a régi alakkal tényleg nem talált), majd visszaállítva zöldre.
+email-send-gate.test.ts (166, új canary + draft_email teszttel), email-gate-matcher-drift.test.ts
+(új hyphenated-server teszt), project-settings-hook-anchor.test.ts, outgoing-copy-gate.test.py +
+email-approval-gate.test.py (mindkettő új google-gmail/gmail-mcp canary esetekkel) zöld. tsc
+--noEmit tiszta.
+
+Ki döntött: Cybersec (GO a 498d53c1-en, a regresszió mérése), backend3 (végrehajtás).
