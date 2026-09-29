@@ -1404,6 +1404,69 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'enforce, measured) -- it does NOT actually block shell-curl egress today, it only logs it. Do ' +
     'not read this entry as "shell curl is covered elsewhere". Enforcing it is tracked on card ' +
     '18055f83 (HIGH), gated on an operator allowlist decision.',
+  // Card b5b7eb6b child 971f7d4f (dedicated card, MikroB msg 5646 -- wider than d79a69b5/CMD920,
+  // whole-file hook-registration reconciliation). Full hook-by-hook comparison against
+  // upstream/develop, both `templates/settings.json.template` (sub-agent scaffold seed) AND the
+  // tracked `.claude/settings.json` (main agent, per project-settings-hook-anchor.test.ts's own
+  // #1305 rule that THAT file, not the template, is authoritative for the main agent).
+  //
+  // ALREADY CORRECT, no change: (1) the curl-deny rules upstream carries are absent here on
+  // purpose (card f6db6978, see the bash-egress-deny.test.ts entry -- upstream's rule denies the
+  // fleet's own localhost writes). (2) the PreCompact prompt differs ONLY in curl style: this
+  // fork's `printf ... | curl -s -H @-` (token via stdin, never argv/cmdline) vs upstream's older
+  // pattern of building the auth header inline on the curl command line -- deliberate hardening,
+  // keep the fork's.
+  //
+  // NOT A GAP, checked rather than assumed: several upstream UserPromptSubmit/PostToolUse hooks
+  // (telegram-reply-directive.py, telegram_progress.py, telegram_progress_reply_clear.py,
+  // channel-image-resize.sh, telegram_progress_clear.py) look template-absent but are wired
+  // through a DIFFERENT registration surface this fork already uses -- scripts/install-telegram-
+  // progress-hook.sh / scripts/install-channel-image-hook.sh and/or the tracked .claude/
+  // settings.json directly -- both are listed as legitimate surfaces in hook-registration-
+  // completeness.test.ts's own REGISTRATION_SURFACES. The sub-agent security guards (cd-chain-
+  // guard.py and the other nine Bash-matcher gates) are ALSO not template gaps: agent-scaffold.ts
+  // injects them in CODE at every spawn (its own comment: "every sub-agent -- NOT the main agent
+  // -- gets PreToolUse hooks... re-applied on every spawn"), a separate, code-side registration
+  // surface, not the template's job.
+  //
+  // ADOPTED THIS ROUND, two genuinely missing hooks (both narrow-scoped, fail-open/fail-silent by
+  // design, each with its own upstream test suite ported alongside): memory-lookup-nudge.py
+  // (upstream 11112a8a #1559 -- UserPromptSubmit, reminds the agent to search memory on a human
+  // message, injects no content, zero network/DB/subprocess by its own no-loophole test) and
+  // memory-frontmatter-gate.py (upstream 4a4eba39 #1398, MEMFMGATE918 -- PreToolUse on
+  // Write|Edit|MultiEdit, blocks a memory-file write whose frontmatter will not parse back, scoped
+  // to .../memory/*.md only, never MEMORY.md). Wired into BOTH templates/settings.json.template
+  // (sub-agent seed) and the tracked .claude/settings.json (main agent), each in its own file's
+  // existing command style. Ported memory-frontmatter-gate.test.ts (16 tests) and memory-lookup-
+  // nudge.test.ts (25 tests) verbatim; updated project-settings-hook-anchor.test.ts's EXPECTED map
+  // AND its separate EXPECTED_PRETOOLUSE_PAIRS list (two independent assertions, both needed),
+  // hook-exit-code-invariant.test.ts (memory-frontmatter-gate.py as a `gate` class), and
+  // hook-registration-guard.ts's KNOWN_HOOK_SCRIPTS (both files verified to exist in this
+  // checkout, so listing them now is safe under that file's own fileExists rule).
+  //
+  // NOT PORTED THIS ROUND, deliberately deferred rather than silently decided: (a) upstream's
+  // `agent-scaffold-memory-load-claim.test.ts` RECIPE_PRINTERS exemption for memory-lookup-
+  // nudge.py -- that whole test file (a "no hook may silently pull memory content" invariant)
+  // does not exist in this fork, so there is no invariant to extend; if that file is ever ported,
+  // the exemption needs to come with it. (b) upstream's PostToolUseFailure section (re-running
+  // tool-log-capture.py on a tool failure, not just success) -- plausible and probably safe, but
+  // not verified against this fork's own tool-log-capture.py semantics this round. (c) the three
+  // Slack-parallel hooks (slack_progress.py / slack_progress_clear.py / slack_progress_reply_
+  // clear.py) -- this fork DOES support Slack as a channel, so this is a real, user-facing gap
+  // (Slack users get no in-flight-progress-message clearing that Telegram users get), but adopting
+  // it needs the Slack send/progress-message plumbing checked for parity with the Telegram version
+  // first, not assumed. (b) and (c) are flagged, not decided; escalate to MikroB for scope (new
+  // card or continue on this one) rather than rushing either on a LOW-priority drift card.
+  'templates/settings.json.template':
+    "PARTIAL. Curl-deny removal and the PreCompact curl-style hardening are already correct (no " +
+    "change). Several apparent gaps are not real -- see the comment above for the per-hook " +
+    "breakdown (install-script/live-settings/code-side registration surfaces already cover them). " +
+    "ADOPTED: memory-lookup-nudge.py (UserPromptSubmit) and memory-frontmatter-gate.py (PreToolUse, " +
+    "Write|Edit|MultiEdit) -- both wired here AND into the tracked .claude/settings.json, with " +
+    "their own test suites ported. NOT ADOPTED, flagged for a scope decision rather than silently " +
+    "resolved: upstream's PostToolUseFailure section (re-run tool-log-capture.py on failure) and " +
+    "the three Slack-parallel progress hooks (a real gap for this fork's Slack channel support, " +
+    "not yet checked for send-plumbing parity with the Telegram version).",
   // Card b5b7eb6b child a74bead0 (upstream e3e42991 #1635 written_at-naming, 5e8a3f07 #1622
   // tmux-isolation, b49d4c5d #1555 OWNERCHAT803/CHATID0).
   'scripts/__tests__/limit-monitor-signals.test.sh':
@@ -2289,6 +2352,7 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/__tests__/messages-main-agent-no-false-warning.test.ts': '794beddce4000bcbbfb1c2a4ab66db753edf7f84',
   // Card b5b7eb6b child 057ad243, 2026-09-29 (upstream #1617/#1218).
   'src/__tests__/bash-egress-deny.test.ts': '7cc18ef433e03efa1c9cd786930e04228748f25d',
+  'templates/settings.json.template': '40a5f18a907cc618c3f8a524d33e7a91259b9244',
   // Card b5b7eb6b child 7a694de2, 2026-09-29 (BRANCHHEAL925, upstream #1566).
   'src/__tests__/branch-heal-command.test.ts': 'eefeb7eb9774bcd90011e4a9560cf39269aa1716',
   // Card 368b77f7, 2026-09-04.
@@ -2478,6 +2542,23 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "listRejectedAgentDirNames() has no upstream equivalent, so its disappearance can only mean " +
       "the filtering itself was silently dropped -- that is a security regression, not a merge to " +
       "wave through.",
+  },
+  // Card b5b7eb6b child 971f7d4f (backend3, 2026-09-29): the templates/settings.json.template
+  // entry above declines to adopt the three Slack-parallel progress hooks and the
+  // PostToolUseFailure section this round. Anchored on the simplest of the two deferred items --
+  // if slack_progress.py's command line ever appears in the template, someone already decided and
+  // wired the Slack-parity question this entry punts on, and the "NOT ADOPTED" text needs revisiting
+  // (the PostToolUseFailure deferral would need its own separate look at that point, not assumed
+  // resolved by the same commit).
+  'templates/settings.json.template': {
+    needle: 'scripts/hooks/slack_progress.py',
+    file: 'templates/settings.json.template',
+    expect: 'absent',
+    because:
+      "this entry defers the Slack-parallel progress hooks (slack_progress.py and its two " +
+      "siblings) and the PostToolUseFailure section pending a scope decision. If slack_progress.py " +
+      "appears in the template, that decision already happened elsewhere and this entry's " +
+      "'NOT ADOPTED' text is stale for at least that half.",
   },
   // Card b5b7eb6b child a74bead0 (backend3, 2026-09-29): the limit-monitor-signals.test.sh entry
   // above declines to adopt b49d4c5d's CHATID0 test section because scripts/lib/owner-chat.sh does
