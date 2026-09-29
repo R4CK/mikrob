@@ -24,7 +24,11 @@ ALERT_COOLDOWN=3600      # at most one down-alert per hour while it stays down
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STATE_DIR="${OLLAMA_GUARD_STATE_DIR:-$INSTALL_DIR/store}"
 ALERT_STAMP="$STATE_DIR/.ollama-guard-alerted"
-TG_ENV="$HOME/.claude/channels/telegram/.env"
+# The bot token lives under the install dir (<install>/.claude/channels/telegram/.env), the same
+# path build-freshness-guard.sh reads. The old $HOME-only path does not exist on this host, so
+# every alert since the guard shipped was silently "not delivered" (measured 2026-09-29).
+TG_ENV="$INSTALL_DIR/.claude/channels/telegram/.env"
+[ -f "$TG_ENV" ] || TG_ENV="$HOME/.claude/channels/telegram/.env"
 LOG_TAG="ollama-down-guard"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" || true; }
