@@ -264,6 +264,28 @@ def main():
                                   rules_file=active)
         check("resend create-domain: not on the safe list, unreadable body denies (exit 2)", code, 2)
 
+        # --- Card 45b33b2b (Cybersec GO on 498d53c1 @4b341e4d, msg 6240, REGRESSION) ---
+        # The server-name match required no hyphen before "gmail"/"resend" and no suffix after
+        # it -- google-gmail__ / gmail-mcp__ (and resend equivalents) skipped deny-by-default
+        # ENTIRELY. Canary: the hyphenated servers' send tool blocks, their read tool passes.
+        for server in ("google-gmail", "gmail-mcp"):
+            code, out, err = run_hook({"tool_name": f"mcp__{server}__send_message",
+                                       "tool_input": {"to": ["a@b.hu"], "subject": "Teszt",
+                                                      "body": CLEAN_HU_OK}}, rules_file=active)
+            check(f"{server}: send_message reaches deny-by-default, clean passes (exit 0)", code, 0)
+            code, out, err = run_hook({"tool_name": f"mcp__{server}__send_message",
+                                       "tool_input": {"to": ["a@b.hu"], "subject": "Teszt",
+                                                      "body": CLEAN_HU_OK + " — mégis."}},
+                                      rules_file=active)
+            check(f"{server}: send_message with em dash blocks (exit 2)", code, 2)
+            code, out, err = run_hook({"tool_name": f"mcp__{server}__search_threads",
+                                       "tool_input": {"q": "x — y"}}, rules_file=active)
+            check(f"{server}: search_threads is a read: passes untouched (exit 0)", code, 0)
+        # "draft" as a VERB prefix (draft_email) is safe -- distinct from send_draft/update_draft.
+        code, out, err = run_hook({"tool_name": "mcp__claude_ai_Gmail__draft_email",
+                                   "tool_input": {"q": "x — y"}}, rules_file=active)
+        check("connector draft_email (verb prefix): on the explicit safe list, passes untouched (exit 0)", code, 0)
+
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
         sys.exit(1)

@@ -74,4 +74,14 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
       expect(full.test(`mcp__resend__${tool}`), tool).toBe(true)
     }
   })
+
+  it('the canonical matcher reaches a hyphen-prefixed or hyphen-suffixed server name (card 45b33b2b)', () => {
+    // Regression: the prior server alternatives required the literal "gmail__"/"resend__"
+    // substring -- no hyphen before it, no suffix after it. google-gmail__ and gmail-mcp__
+    // (and their resend equivalents) skipped the matcher entirely.
+    const full = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    for (const server of ['google-gmail', 'gmail-mcp', 'resend-x', 'my-resend-server']) {
+      expect(full.test(`mcp__${server}__send_message`), server).toBe(true)
+    }
+  })
 })

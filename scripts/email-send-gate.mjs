@@ -398,8 +398,20 @@ const MANAGE_EMAIL_SEND_OPS = new Set(['send', 'reply', 'replyall', 'forward'])
 // Real Resend tool names are kebab-case (list-domains, get-email -- measured against the
 // resend/resend-mcp source, MIT); the Gmail connector's are snake_case (search_threads,
 // create_draft) -- the allowlist accepts either separator.
-const EMAIL_SERVER_RE = /__(?:[a-z0-9_]*gmail|resend)__/i
-const EMAIL_SAFE_TOOL_RE = /^(?:search|get|list|read)[-_]|^create[-_]draft$/i
+//
+// Card 45b33b2b (Cybersec GO on 498d53c1 @4b341e4d, msg 6240, REGRESSION on the line above): the
+// server-name match required the run right before "gmail"/"resend" to be [a-z0-9_]* -- no hyphen
+// -- and required "__" to follow immediately, so neither a PREFIXED-with-hyphen name
+// (google-gmail) nor a SUFFIXED one (gmail-mcp) matched. A server named either way sent through
+// this gate with no audit at all (exit 0, not even reached the safe-list check). Widened to match
+// "gmail"/"resend" as a substring ANYWHERE in the server segment, hyphens included on both sides
+// -- deliberately broader than a real server name needs, because the failure direction that
+// matters is "gate ran and safe-listed a read", not "gate never ran".
+const EMAIL_SERVER_RE = /__[a-z0-9_-]*(?:gmail|resend)[a-z0-9_-]*__/i
+// "draft" ADDED as a safe VERB prefix (draft_email, draft_message): distinct from the noun usage
+// in send_draft/update_draft, where the verb (send/update) is what decides safety, not the word
+// "draft" appearing in the name at all -- see the deny-by-default test for both directions.
+const EMAIL_SAFE_TOOL_RE = /^(?:search|get|list|read|draft)[-_]|^create[-_]draft$/i
 
 function bareToolName(qualifiedName) {
   const idx = qualifiedName.lastIndexOf('__')

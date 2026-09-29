@@ -62,6 +62,23 @@ describe('gateDecision', () => {
     expect(gateDecision('mcp__resend__list-domains', {}).deny).toBe(false)
   })
 
+  // Card 45b33b2b (Cybersec GO on 498d53c1 @4b341e4d, msg 6240, REGRESSION): the server-name
+  // match required the run right before "gmail"/"resend" to be [a-z0-9_]* (no hyphen) and "__"
+  // immediately after (no suffix) -- google-gmail and gmail-mcp (and resend's equivalents) skipped
+  // deny-by-default ENTIRELY (exit 0, safe-list check never reached).
+  it('deny-by-default reaches a hyphen-prefixed or hyphen-suffixed server name (canary)', () => {
+    for (const server of ['google-gmail', 'gmail-mcp', 'resend-x', 'my-resend-server']) {
+      expect(gateDecision(`mcp__${server}__send_message`, {}).deny, server).toBe(true)
+      expect(gateDecision(`mcp__${server}__search_threads`, {}).deny, server).toBe(false)
+    }
+  })
+
+  // "draft" as a VERB prefix (draft_email/draft_message) is safe -- distinct from send_draft/
+  // update_draft, where the verb (send/update) decides safety, not the noun "draft" in the name.
+  it('allows a draft_* verb-shaped tool (card 45b33b2b safe-list extension)', () => {
+    expect(gateDecision('mcp__server-gmail-autoauth-mcp__draft_email', {}).deny).toBe(false)
+  })
+
   // @aaronsb/google-workspace-mcp multiplexes read/draft/send behind one tool,
   // so the gate has to read the operation + draft flag, not just the name.
   // This replaces the server's draft-only-email policy, which blocks drafting too.
@@ -691,7 +708,9 @@ describe.skipIf(REPO_UNDER_TMP)('injectEmailSendGate', () => {
     injectEmailSendGate(s)
     const hooks = (s.hooks as Record<string, unknown>).PreToolUse as Array<Record<string, unknown>>
     expect(hooks).toHaveLength(1)
-    expect(hooks[0].matcher).toBe('Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail__.*|.*resend__.*')
+    expect(hooks[0].matcher).toBe(
+      'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*',
+    )
     const inner = (hooks[0].hooks as Array<{ command: string }>)[0]
     expect(inner.command).toContain('email-send-gate.mjs')
   })

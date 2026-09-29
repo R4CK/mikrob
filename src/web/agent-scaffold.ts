@@ -802,7 +802,14 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // are whole-server matches, not name lists, for the same reason gmail's is: the hooks decide
 // ALLOW/DENY per-operation (deny-by-default with a read/draft allowlist), the matcher's only job
 // is to make sure every call on either server reaches that decision at all.
-export const EMAIL_GATE_MATCHER = 'Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail__.*|.*resend__.*'
+//
+// Card 45b33b2b (Cybersec GO on 498d53c1 @4b341e4d, msg 6240): `.*[Gg]mail__.*`/`.*resend__.*`
+// required the literal string "gmail__"/"resend__" -- no hyphen before it (google-gmail__), no
+// suffix after it (gmail-mcp__). Either shape skipped the matcher entirely, so the hooks never
+// even ran (not "ran and allowed" -- never reached). Widened to match the word as a substring
+// anywhere in the server segment, hyphens included on both sides.
+export const EMAIL_GATE_MATCHER =
+  'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets

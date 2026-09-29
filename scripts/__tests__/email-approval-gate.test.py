@@ -392,6 +392,21 @@ with tempfile.TemporaryDirectory() as td:
     check("resend create-domain: not on the safe list, in scope, DENIED at level 1",
           code == 2 and "szint 1" in err, f"exit={code}")
 
+    # --- Card 45b33b2b (Cybersec GO on 498d53c1 @4b341e4d, msg 6240, REGRESSION) ---
+    # The server-name match required no hyphen before "gmail"/"resend" and no suffix after it --
+    # google-gmail__ / gmail-mcp__ skipped deny-by-default ENTIRELY. Canary below.
+    def hyphenated(server, tool, **ti):
+        return {"tool_name": f"mcp__{server}__{tool}", "tool_input": ti}
+    for server in ("google-gmail", "gmail-mcp"):
+        code, _, err = run_gate(store_l1, hyphenated(server, "send_message", to=["a@b.hu"], body="x"))
+        check(f"{server}: send_message reaches deny-by-default, DENIED at level 1",
+              code == 2 and "szint 1" in err, f"exit={code}")
+        code, _, _ = run_gate(store_l1, hyphenated(server, "search_threads", q="x"))
+        check(f"{server}: search_threads is a read, passes at level 1 (out of scope)", code == 0, f"exit={code}")
+    # "draft" as a VERB prefix (draft_email) is safe -- distinct from send_draft/update_draft.
+    code, _, _ = run_gate(store_l1, connector("draft_email", to=["a@b.hu"], body="x"))
+    check("connector draft_email (verb prefix) is not a send: passes at level 1", code == 0, f"exit={code}")
+
     # SQLite-version portability, kept as a STATIC check on purpose. The
     # behavioural cases above only catch the bad call on a host whose sqlite is
     # older than 3.38 -- on CI (newer) they stay green while the live install
