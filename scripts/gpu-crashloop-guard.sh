@@ -77,7 +77,11 @@ STATE_DIR="${GPU_GUARD_STATE_DIR:-$INSTALL_DIR/store}"
 ALERT_STAMP="$STATE_DIR/.gpu-crashloop-guard-alerted"
 MASKED_FLAG="$STATE_DIR/.gpu-crashloop-guard-masked.json"
 BASELINE_STAMP="$STATE_DIR/.gpu-crashloop-guard-baseline"
-TG_ENV="$HOME/.claude/channels/telegram/.env"
+# The bot token lives under the install dir (<install>/.claude/channels/telegram/.env), the same
+# path build-freshness-guard.sh reads. The old $HOME-only path does not exist on this host, so
+# every alert since the guard shipped was silently "not delivered" (measured 2026-09-29).
+TG_ENV="$INSTALL_DIR/.claude/channels/telegram/.env"
+[ -f "$TG_ENV" ] || TG_ENV="$HOME/.claude/channels/telegram/.env"
 LOG_TAG="gpu-crashloop-guard"
 read -r -a UNITS <<< "${GPU_GUARD_UNITS:-ollama.service}"
 
