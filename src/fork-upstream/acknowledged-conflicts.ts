@@ -1413,8 +1413,9 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // ALREADY CORRECT, no change: (1) the curl-deny rules upstream carries are absent here on
   // purpose (card f6db6978, see the bash-egress-deny.test.ts entry -- upstream's rule denies the
   // fleet's own localhost writes). (2) the PreCompact prompt differs ONLY in curl style: this
-  // fork's `printf ... | curl -s -H @-` (token via stdin, never argv/cmdline) vs upstream's
-  // `curl -H "Authorization: Bearer $(...)"` -- deliberate hardening, keep the fork's.
+  // fork's `printf ... | curl -s -H @-` (token via stdin, never argv/cmdline) vs upstream's older
+  // pattern of building the auth header inline on the curl command line -- deliberate hardening,
+  // keep the fork's.
   //
   // NOT A GAP, checked rather than assumed: several upstream UserPromptSubmit/PostToolUse hooks
   // (telegram-reply-directive.py, telegram_progress.py, telegram_progress_reply_clear.py,
