@@ -200,7 +200,10 @@ def main():
         # --- RESENDGATE826: method-aware resend-target verdict (round 10, card fbb36b41) ---
         case(
             "RESENDGATE826: read-only GET domain-verification query passes (no body, safe method)",
-            'curl -s -X GET https://api.resend.com/domains -H "Authorization: Bearer $KEY"',
+            # Auth header deliberately reads from a file (-H @"$hdr"), not `Bearer $KEY` on the argv:
+            # the token-in-argv guard scans this fixture file too (card b8859278), and the classifier
+            # under test here keys on method+body, not on the auth header shape.
+            'curl -s -X GET https://api.resend.com/domains -H @"$hdr"',
             ALLOW,
             rules_path=empty_rules,
         )
@@ -292,7 +295,8 @@ def main():
         )
         case(
             "RESENDGATE826 r11: -G alone (no body) is still a legitimate read, ALLOW",
-            "curl -s -G https://api.resend.com/domains -H \"Authorization: Bearer $KEY\"",
+            # Auth header from a file, not `Bearer $KEY` literal on argv (card b8859278, see r10 above).
+            "curl -s -G https://api.resend.com/domains -H @\"$hdr\"",
             ALLOW,
             rules_path=empty_rules,
         )
