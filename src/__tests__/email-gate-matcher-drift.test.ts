@@ -65,4 +65,13 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     expect(full.test('mcp__plugin_telegram_telegram__reply')).toBe(false)
     expect(full.test('Read')).toBe(false)
   })
+
+  it('the canonical matcher reaches the resend MCP server (card 498d53c1)', () => {
+    // Real Resend tool names are hyphenated (resend/resend-mcp source, MIT) -- the whole
+    // server, not a name list, is what has to reach the deny-by-default decision in the hooks.
+    const full = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    for (const tool of ['send-email', 'send-batch-emails', 'create-domain', 'list-domains', 'get-email']) {
+      expect(full.test(`mcp__resend__${tool}`), tool).toBe(true)
+    }
+  })
 })

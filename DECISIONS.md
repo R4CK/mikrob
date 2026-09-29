@@ -15952,3 +15952,51 @@ hooks, commands, quota, status-system), plusz `fork-upstream-conflict-guard` (36
 
 Ki döntött: backend3 (upstream-sync epic, e5c46e87/d4ba6ff8 alatt), MikroB jóváhagyás a két élő
 fork-funkció ütközésre (üzenet 5556).
+
+## 2026-09-29 -- 498d53c1: gmail__/resend__ email-kapuk deny-by-default (Cybersec MEDIUM a4164e95-ön)
+
+**Probléma.** A három email-küldő kapu (`email-send-gate.mjs`, `outgoing-copy-gate.py`,
+`email-approval-gate.py`) konkrét tool-NEVEKET listázott allowlist helyett (`send_email`,
+`manage_email`, `gmail__(reply|reply_all|send_message|forward)$`). Ez egy nevlist-drift, ami már
+kétszer bebizonyította magát: a Gmail connectoron a `send_draft` (a `create_draft`+`send_draft`
+páros megkerülné a kaput, mert `send_draft` egyik listázott nevet sem illeszti), és a `resend` HTTP
+MCP szerveren (`mcp.resend.com`, 16 `.claude.json`-ban a `/home/neon` projekt-scope alatt) a
+kötőjeles `send-email` tool-név, amit a `.*send_email.*` (aláhúzásos) matcher és a `/send_email/`
+kód-check egyaránt kihagy. Mérve ma: nulla élő flotta-út egyik résre sem (0 Gmail/resend MCP
+egyetlen futó sessionben sem), a rés LATENS.
+
+**Döntés (Cybersec javaslata, a4164e95 GO-jának MEDIUM követője, most átvéve).** A `gmail__` és
+`resend__` MCP-SZERVER egésze deny-by-default: minden tool-hívás küldésnek számít, KIVÉVE egy szűk,
+explicit olvasás/draft allowlistet (`search_*`/`get_*`/`list_*`/`read_*` prefix, vagy pontosan
+`create_draft`/`create-draft`). A szerver-egész megközelítés (nem egy bővebb nevlista) azért, mert
+pontosan a nevlista az, ami driftel -- ugyanaz az indoklás, ami a `.*[Gg]mail__.*` matcher-alakot
+is megalapozta (GMAILCONNECTOR914).
+
+**Tudatos szűkítés (nem regresszió).** A Resend hivatalos MCP szerverének (`resend/resend-mcp`,
+MIT, github forrásból mérve) 78 tool-neve mind kötőjeles (`send-email`, `list-domains`,
+`create-domain`, `remove-api-key`, `rotate-webhook-signing-secret` stb.), draft-fogalom nincs. Az
+allowlist ezért a Resend oldalán CSAK az olvasó (`get-*`/`list-*`) tooljait engedi át -- minden
+mutáló/admin művelet (domain-, API-key-, webhook-kezelés) is deny-by-default alá esik, nem csak a
+tényleges email-küldés. Ez szándékos: a kapu feladata a fiók egészének védelme egy alulhasznált
+(egyelőre látens) szerveren, nem csak az emailtartalom auditja. A Gmail-connector oldalán a
+korábbi teszt-fixtúrák két, korábban név-alak alapján biztonságosnak TIPPELT (nem élesben mért)
+műveletet is tartalmaztak (`update_draft`, `label_message`) -- ezek NEM kerültek fel az explicit
+allowlistre, tehát mostantól deny-by-default alá esnek. Élő Gmail-connector-forgalom ma nincs
+(ismételten mérve), tehát ez nem működő funkció visszavonása, hanem egy sosem-éles feltételezés
+tudatos szigorítása, dokumentálva a tesztekben (email-send-gate.test.ts, outgoing-copy-gate.test.py,
+email-approval-gate.test.py).
+
+**Végrehajtás.** Mindhárom kapuba portolva ugyanazzal a mintával: `EMAIL_SERVER_RE` (a szerver-
+szegmens `gmail`-re vagy `resend`-re végződik-e a `__` határok között) + `EMAIL_SAFE_TOOL_RE` (a
+bare tool-név a safe-listen van-e). `EMAIL_GATE_MATCHER` (agent-scaffold.ts) kibővítve
+`.*resend__.*`-vel, a tracked `.claude/settings.json` mindkét python-kapu sorával szinkronban
+(`email-gate-matcher-drift.test.ts` automatikusan ellenőrzi a lefedettséget).
+
+**Ellenőrzés.** tsc --noEmit tiszta. email-send-gate.test.ts (163), email-gate-matcher-drift.test.ts
+(6), project-settings-hook-anchor.test.ts (5), outgoing-copy-gate.test.py és
+email-approval-gate.test.py (mindkettő teljes futással PASS, új resend/send_draft/create_draft
+esetekkel) zöld. Teljes suite marveen-land.sh-n keresztül a landoláskor.
+
+Ki döntött: Cybersec (a4164e95 GO, MEDIUM követő), backend3 (végrehajtás, a Resend-specifikus
+szűkítés a Resend tool-katalógus mérése alapján a saját döntésem, mert a kártya csak az elvet
+mondta ki, a konkrét szerver-katalógust nem).

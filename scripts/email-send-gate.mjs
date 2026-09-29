@@ -388,6 +388,24 @@ export function isSendInvocation(cmd, depth = 0) {
 // these sends for real unless the call explicitly asks for a draft.
 const MANAGE_EMAIL_SEND_OPS = new Set(['send', 'reply', 'replyall', 'forward'])
 
+// Card 498d53c1 (Cybersec MEDIUM on a4164e95, GO'd @ce245184): a tool-NAME list drifts.
+// Two shapes already slipped past the name-list checks below before this existed: the Gmail
+// connector's own send_draft (create_draft + send_draft pair bypasses "only reply/forward/
+// send_message are sends"), and the hyphenated mcp__resend__send-email (matches neither
+// `send_email` nor any of the gmail-specific names). Rather than grow the list again for the
+// next name nobody enumerated, the SERVER itself (gmail__/resend__) is deny-by-default: every
+// tool on it is treated as a send UNLESS it matches a narrow, explicit read/draft allowlist.
+// Real Resend tool names are kebab-case (list-domains, get-email -- measured against the
+// resend/resend-mcp source, MIT); the Gmail connector's are snake_case (search_threads,
+// create_draft) -- the allowlist accepts either separator.
+const EMAIL_SERVER_RE = /__(?:[a-z0-9_]*gmail|resend)__/i
+const EMAIL_SAFE_TOOL_RE = /^(?:search|get|list|read)[-_]|^create[-_]draft$/i
+
+function bareToolName(qualifiedName) {
+  const idx = qualifiedName.lastIndexOf('__')
+  return idx === -1 ? qualifiedName : qualifiedName.slice(idx + 2)
+}
+
 // Pure decision: does this tool call send (or attempt to send) email?
 // Returns { deny, kind? }. `kind` selects the deny wording at the hook
 // entrypoint: 'draft-required' is the manage_email case (drafting is fine,
@@ -408,6 +426,12 @@ export function gateDecision(toolName, toolInput) {
   // entrypoint reads send_email-shaped fields (threadId/to), which a connector
   // reply does not carry, so the connector stays fully gated for every agent.
   if (/gmail__(reply|reply_all|send_message|forward)$/i.test(name)) return { deny: true, kind: 'connector-send' }
+  // Card 498d53c1: everything ELSE on a gmail__/resend__ server (send_draft, resend's
+  // send-email/send-batch-emails/create-domain/rotate-webhook-signing-secret/... and any
+  // future tool neither of the two checks above named) is a send unless explicitly safelisted.
+  if (EMAIL_SERVER_RE.test(name) && !EMAIL_SAFE_TOOL_RE.test(bareToolName(name))) {
+    return { deny: true, kind: 'email-server-default-deny' }
+  }
   // @aaronsb/google-workspace-mcp multiplexes read, draft and send behind one
   // manage_email tool, so the tool NAME cannot decide this one -- the operation
   // plus the draft flag can. This is what replaces the server's own

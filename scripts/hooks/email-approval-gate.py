@@ -57,7 +57,23 @@ from email_extract import collect_email_envelope  # noqa: E402
 # GMAILCONNECTOR914: the claude.ai Gmail connector's send-shaped tools carry
 # neither word (mcp__claude_ai_Gmail__send_message / reply / forward), so the
 # gate exited 0 on them and an unapproved connector send was never denied.
-_SEND_TOOL = re.compile(r"send_email|manage_email|gmail__(reply|reply_all|send_message|forward)$", re.I)
+_SEND_TOOL = re.compile(r"send[-_]?email|manage_email", re.I)
+
+# Card 498d53c1 (Cybersec MEDIUM on a4164e95): a tool-NAME list drifts -- send_draft (the
+# create_draft + send_draft pair bypasses "only reply/forward/send_message are sends") and the
+# hyphenated resend__send-email both slipped past name-list checks before this existed.
+# Deny-by-default for the whole gmail__/resend__ SERVER: any tool on it is in scope for the
+# level-gate below UNLESS it matches a narrow, explicit read/draft allowlist. Real Resend tool
+# names are kebab-case (list-domains, get-email -- measured against the resend/resend-mcp
+# source, MIT); the Gmail connector's are snake_case (search_threads, create_draft) -- the
+# allowlist accepts either separator.
+_EMAIL_SERVER_RE = re.compile(r"__(?:[a-z0-9_]*gmail|resend)__", re.I)
+_EMAIL_SAFE_TOOL_RE = re.compile(r"^(?:search|get|list|read)[-_]|^create[-_]draft$", re.I)
+
+
+def _bare_tool_name(name):
+    idx = name.rfind("__")
+    return name[idx + 2:] if idx != -1 else name
 
 # manage_email is a MULTIPLEXER, not a send tool: the same MCP tool searches the
 # mailbox, reads a thread, writes a draft AND sends. Scoping this gate on the
@@ -243,7 +259,12 @@ def main():
     tool_input = payload.get("tool_input")
     tool_input = tool_input if isinstance(tool_input, dict) else {}
 
-    if _SEND_TOOL.search(tool):
+    if _EMAIL_SERVER_RE.search(tool):
+        # Deny-by-default: everything on a gmail__/resend__ server is in scope unless it is
+        # an explicit read/draft op -- see _EMAIL_SAFE_TOOL_RE above.
+        if _EMAIL_SAFE_TOOL_RE.search(_bare_tool_name(tool)):
+            sys.exit(0)
+    elif _SEND_TOOL.search(tool):
         # A multiplexer tool is in scope only when the call is a send; a search,
         # a read or a draft is not what email_send levels.
         if _MULTIPLEX_TOOL.search(tool) and not manage_email_is_send(tool_input):

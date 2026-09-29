@@ -374,6 +374,24 @@ with tempfile.TemporaryDirectory() as td:
     code, _, err = run_gate(store_c, connector("reply", messageId="msg-43", body="Kedves Ügyfelünk! Válasz."))
     check("the same approval does not cover a reply to ANOTHER message", code == 2, f"exit={code}")
 
+    # --- Card 498d53c1 (Cybersec MEDIUM on a4164e95): gmail__/resend__ deny-by-default ---
+    # A tool-NAME list drifts -- send_draft (create_draft + send_draft pair) and the
+    # hyphenated resend__send-email both slipped past name-list checks before this
+    # existed. Only search_*/get_*/list_*/read_*/create_draft is explicitly out of
+    # scope for the level-gate; everything else on either server is in scope now.
+    code, _, err = run_gate(store_l1, connector("send_draft", draftId="d1"))
+    check("connector send_draft: in scope, DENIED at level 1", code == 2 and "szint 1" in err, f"exit={code}")
+
+    def resend(tool, **ti):
+        return {"tool_name": f"mcp__resend__{tool}", "tool_input": ti}
+    code, _, err = run_gate(store_l1, resend("send-email", to="a@b.hu", subject="T", text="x"))
+    check("resend send-email: in scope, DENIED at level 1", code == 2 and "szint 1" in err, f"exit={code}")
+    code, _, _ = run_gate(store_l1, resend("get-email", id="e1"))
+    check("resend get-email is a read: passes at level 1 (out of scope)", code == 0, f"exit={code}")
+    code, _, err = run_gate(store_l1, resend("create-domain", name="x.hu"))
+    check("resend create-domain: not on the safe list, in scope, DENIED at level 1",
+          code == 2 and "szint 1" in err, f"exit={code}")
+
     # SQLite-version portability, kept as a STATIC check on purpose. The
     # behavioural cases above only catch the bad call on a host whose sqlite is
     # older than 3.38 -- on CI (newer) they stay green while the live install

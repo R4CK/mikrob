@@ -794,7 +794,15 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // alternative is deliberately the whole server (`.*[Gg]mail__.*`), not a list
 // of send-shaped names: the hooks classify by the OPERATION (a search or a
 // read exits 0 in every gate), and a name list is exactly what would drift.
-export const EMAIL_GATE_MATCHER = 'Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail__.*'
+//
+// Card 498d53c1 (Cybersec MEDIUM on a4164e95): the same reasoning extends to `resend__` --
+// measured live, the `resend` HTTP MCP server (mcp.resend.com) sits in 16 .claude.json files
+// under the /home/neon project scope, and its send tool is `send-email` (HYPHENATED, per the
+// resend/resend-mcp source), which `.*send_email.*` (underscore) never matched. Both alternatives
+// are whole-server matches, not name lists, for the same reason gmail's is: the hooks decide
+// ALLOW/DENY per-operation (deny-by-default with a read/draft allowlist), the matcher's only job
+// is to make sure every call on either server reaches that decision at all.
+export const EMAIL_GATE_MATCHER = 'Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail__.*|.*resend__.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets
