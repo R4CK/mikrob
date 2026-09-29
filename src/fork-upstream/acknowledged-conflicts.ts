@@ -562,19 +562,50 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // Adopting upstream here would be a strictly weaker type-safety regression for no behavioural gain.
   'src/__tests__/api-messages-freshness.test.ts':
     "KEEP fork -- the `as unknown as RouteContext` cast is strictly stronger typing than upstream's `as any`. NOT ADOPTABLE, no functional difference, adopting would only loosen typing.",
-  // NEW CONFLICT 2026-09-25 (backend, card 123983f3, dashboard/src tesztek 1/2 of 8). Real shared
-  // history. Two DIFFERENT recipient-safety mechanisms for the same underlying problem (an email
-  // send reaching an unauthorized/wrong recipient): the fork's scripts/email-send-gate.mjs uses
-  // threadMembershipDecision() (a recipient must already be a participant in an existing thread);
-  // upstream introduces scripts/recipient-ledger.mjs (isValidSource/normalizeAddress/splitAddresses/
+  // DECIDED 2026-09-29 (Cybersec, card b5b7eb6b child afd64623, HIGH, msg 6175/8980). Two DIFFERENT
+  // recipient-safety mechanisms for the same underlying problem (an email send reaching an
+  // unauthorized/wrong recipient): the fork's scripts/email-send-gate.mjs uses
+  // threadMembershipDecision() (a recipient must already be a participant in an existing thread,
+  // participants read code-side from the actual Gmail API headers, never agent-supplied); upstream
+  // introduces scripts/recipient-ledger.mjs (isValidSource/normalizeAddress/splitAddresses/
   // loadLedger/isVerifiedIn -- an explicit, pre-approved recipient ledger) plus
-  // buildUnverifiedRecipientMsg replacing the fork's buildGateMsg. Grep-confirmed:
-  // scripts/recipient-ledger.mjs does not exist in the fork. This is not a same-round hand-merge
-  // call -- it needs a real security judgement (do the two mechanisms compose, or does one supersede
-  // the other) and Cybersec input given the trust-boundary (real outbound email, real recipient
-  // data). UNDECIDED, deliberately -- see card afd64623 (HIGH).
+  // buildUnverifiedRecipientMsg replacing the fork's buildGateMsg.
+  //
+  // NOT ADOPTED, in ANY form -- neither OR, nor a replacement, nor an AND layer, in the ledger's
+  // CURRENT shape. Reasoning (Cybersec, verified against the real code on both sides):
+  // (1) OR is a straight bypass: a ledger-verified-but-not-thread-member address would sail
+  //     through, defeating the one property thread-membership exists for.
+  // (2) AND adds ~zero real protection in the ledger's current shape, for one specific reason:
+  //     addRecipient() (recipient-ledger.mjs:94) validates the SOURCE STRING'S FORMAT only
+  //     (isValidSource: a regex on `mail:\S+` / `owner` / `site:...` shapes), never that the named
+  //     evidence is real. Any agent with shell access can run
+  //     `node scripts/recipient-ledger.mjs add <any-address> --source owner` and the ledger accepts
+  //     it -- so a prompt-injected agent's injected instructions can just include that add command.
+  //     A fabricated address is already excluded by thread-membership alone; the ledger step is
+  //     self-serve for exactly the case it would need to stop, so AND buys nothing today, while
+  //     adding a new writable-by-the-agent state file and CLI that a LATER accidental OR-flip would
+  //     turn into a full bypass.
+  // (3) Thread-membership's own real residual gap (the code's own comment near
+  //     threadMembershipDecision, email-send-gate.mjs, admits this): participants are read from
+  //     message HEADERS, so an inbound message's attacker-chosen Cc/Reply-To becomes a
+  //     "participant" too. An agent-writable ledger does not close this -- only an OWNER-approved
+  //     list would.
+  // If that residual gap or a first-contact (new-thread) send is ever needed, Cybersec's own
+  // requirements for the closing layer (R1-R5: owner-approval-only entry via the existing
+  // /api/approvals flow -- never an agent-run CLI or agent-writable file --, AND never OR,
+  // per-recipient, same address normalization on both gates, fail-closed on every error path,
+  // mutation-tested including an OR-regression and a Reply-To-injection case) are recorded here for
+  // whoever picks that up; it is Peti's call whether to open it, not decided by this entry.
   'src/__tests__/email-send-gate.test.ts':
-    'UNDECIDED, deliberately -- see card afd64623 (HIGH, Cybersec input recommended). Fork keeps threadMembershipDecision() (thread-participant check) unchanged for now; the adoption decision is whether to layer upstream\'s recipient-ledger.mjs (explicit verified-recipient allowlist) on top, whether it would supersede thread-membership, or the reverse -- not a same-round pick.',
+    "NOT ADOPTED -- upstream's recipient-ledger.mjs is not taken in any form (not OR, not a " +
+    "replacement, not an AND layer) in its current shape. Full reasoning in the comment above this " +
+    "entry: OR is a straight thread-membership bypass; AND adds ~zero protection today because " +
+    "addRecipient() validates the source STRING'S FORMAT only, never that the evidence is real, so " +
+    "an agent (or a prompt-injected one) can self-certify any address with `--source owner`. " +
+    "Thread-membership's own real residual gap (participants read from message headers, so an " +
+    "inbound Cc/Reply-To becomes a 'participant') is real but is NOT closed by an agent-writable " +
+    "ledger -- it needs an owner-approval-only layer (Cybersec's R1-R5, recorded above), which is " +
+    "Peti's call to open as its own card, not decided here.",
   // NEW CONFLICT 2026-09-25 (backend, card 123983f3, dashboard/src tesztek 1/2 of 8). No shared base
   // (independently-added same-named file). Upstream adds PYTHONDONTWRITEBYTECODE=1 to the python3
   // execFileSync env, fixing a real flake: fleet.py lives under the shipped seed-skills/ tree, and
@@ -1020,7 +1051,13 @@ export const ACKNOWLEDGED_CONFLICTS = {
   'scripts/email-send-gate.mjs':
     'keep both additive blocks -- the fork stripDataPayloads() literal-payload blanking (card 132fc28c false-positive fix) AND upstream MANAGE_EMAIL_SEND_OPS; neither side taken wholesale' +
     " Round 2026-09-25 (backend3, card b5b7eb6b child 09d54e88, fac936d4aa39..dfb13dd2fa30): a DIFFERENT conflict location than the point above -- the Bash-tool isSendInvocation() call. The fork's OWN source comment at this exact call site documents an already-landed prior decision (card 72f5f13b, resolved by card c7401c5f): isSendInvocation() is composed with heredocFeedsSend so a heredoc-fed interpreter send (e.g. `python3 <<'PY' ... smtplib.SMTP(...) ... PY`) still denies -- that composition is NOT recorded here in acknowledged-conflicts.ts, only in the source comment, and this round leaves it untouched either way. ADOPT upstream's refinement: `wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }` -- verified wrapperDepthHit is a REAL function, merged in cleanly elsewhere in this same file with zero conflict (an already-adopted upstream addition), so this is purely a diagnostic `kind` classification on top of an unchanged `deny: true` outcome. `isSendInvocation(cmd)` is called FIRST, identically to the fork's current code -- the heredoc-composition fix this entry already won is untouched, not weakened or bypassed. Resolution at the point below (stripDataPayloads/MANAGE_EMAIL_SEND_OPS) unchanged." +
-    " CORRECTED same round, same day (self-caught while re-verifying after a qa2 QA FAIL found the same conflict-marker-blind-spot class on scripts/watchdog.sh and scripts/install-prod-tree-guard-hook.sh): the ADOPT above was scoped correctly, but this entry did not say what ELSE arrived in the SAME old-pin..new-upstream range, non-conflicting and therefore invisible to a merge-marker-only read. Diffing the full range directly shows a SUBSTANTIAL new upstream feature, NOT adopted, NOT decided here, and security-relevant enough to flag rather than silently skip: a recipient-ledger verification system (new dependency `./recipient-ledger.mjs`, `loadLedger`/`isVerifiedIn`/`splitAddresses`; `unverifiedRecipients()` checks every to/cc/bcc/recipient(s) field on a draft or manage_email call against the ledger and denies with kind 'unverified-recipient' if any address has no recorded source) PLUS a Gmail-connector-specific gate (`gmail__(reply|reply_all|send_message|forward)` denied with kind 'connector-send', upstream's own comment stating 'before this line a sub-agent could send through the connector with no gate at all' -- GMAILCONNECTOR914). Verified NEITHER exists in the fork today (`recipient-ledger.mjs` absent, zero hits for `gmail__`/`GMAILCONNECTOR` anywhere in src/ or scripts/). Also present, not separately assessed: a `commandHeads`/`WRAPPERS`/`CMD_POSITION_KEYWORDS` rewrite of the Bash-detection internals (segmentIsSend's replacement), explicitly paired with its python twin in outgoing-copy-gate.py via a shared send-invocation-cases.json -- given outgoing-copy-gate.py's OWN entry is separately escalated to Cybersec this same round, this rewrite should be assessed TOGETHER with that escalation, not piecemeal here, so the two copies do not drift out of the parity their own shared test file exists to enforce. NOT adopted, acknowledge-only: whether the Gmail-connector gap is live and exploitable depends on whether this fork actually exposes that connector to sub-agents (not verified here), which is exactly the kind of question a dedicated card with a gate should answer, not a drift re-decision guessing at it. Resolution at the two already-decided points (stripDataPayloads/MANAGE_EMAIL_SEND_OPS, wrapperDepthHit) unchanged.",
+    " CORRECTED same round, same day (self-caught while re-verifying after a qa2 QA FAIL found the same conflict-marker-blind-spot class on scripts/watchdog.sh and scripts/install-prod-tree-guard-hook.sh): the ADOPT above was scoped correctly, but this entry did not say what ELSE arrived in the SAME old-pin..new-upstream range, non-conflicting and therefore invisible to a merge-marker-only read. Diffing the full range directly shows a SUBSTANTIAL new upstream feature, NOT adopted, NOT decided here, and security-relevant enough to flag rather than silently skip: a recipient-ledger verification system (new dependency `./recipient-ledger.mjs`, `loadLedger`/`isVerifiedIn`/`splitAddresses`; `unverifiedRecipients()` checks every to/cc/bcc/recipient(s) field on a draft or manage_email call against the ledger and denies with kind 'unverified-recipient' if any address has no recorded source) PLUS a Gmail-connector-specific gate (`gmail__(reply|reply_all|send_message|forward)` denied with kind 'connector-send', upstream's own comment stating 'before this line a sub-agent could send through the connector with no gate at all' -- GMAILCONNECTOR914). Verified NEITHER exists in the fork today (`recipient-ledger.mjs` absent, zero hits for `gmail__`/`GMAILCONNECTOR` anywhere in src/ or scripts/). Also present, not separately assessed: a `commandHeads`/`WRAPPERS`/`CMD_POSITION_KEYWORDS` rewrite of the Bash-detection internals (segmentIsSend's replacement), explicitly paired with its python twin in outgoing-copy-gate.py via a shared send-invocation-cases.json -- given outgoing-copy-gate.py's OWN entry is separately escalated to Cybersec this same round, this rewrite should be assessed TOGETHER with that escalation, not piecemeal here, so the two copies do not drift out of the parity their own shared test file exists to enforce. NOT adopted, acknowledge-only: whether the Gmail-connector gap is live and exploitable depends on whether this fork actually exposes that connector to sub-agents (not verified here), which is exactly the kind of question a dedicated card with a gate should answer, not a drift re-decision guessing at it. Resolution at the two already-decided points (stripDataPayloads/MANAGE_EMAIL_SEND_OPS, wrapperDepthHit) unchanged." +
+    " DECIDED 2026-09-29 (Cybersec, card afd64623, msg 6175/8980): the recipient-ledger half of the " +
+    "flag above is now resolved -- NOT ADOPTED in any form (not OR, not a replacement, not an AND " +
+    "layer), full reasoning on the src/__tests__/email-send-gate.test.ts entry above. The " +
+    "Gmail-connector-gate half (gmail__(reply|reply_all|send_message|forward), GMAILCONNECTOR914) " +
+    "is UNTOUCHED by that decision and remains its own open question -- Cybersec's ruling was scoped " +
+    "to the recipient-safety mechanism, not the connector-exposure question.",
   // A one-line import conflict over TWO DIFFERENT gates, not one gate named twice -- checked, not
   // assumed: the fork's EGRESS_GATE_MATCHER is 'WebFetch|mcp__firecrawl__.*' (the web-egress gate),
   // upstream's EMAIL_GATE_MATCHER is 'Bash|.*send_email.*|.*manage_email.*' plus an
@@ -2902,13 +2939,28 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
     file: 'scripts/email-send-gate.mjs',
     expect: 'absent',
     because:
-      "Card b5b7eb6b child 09d54e88 (2026-09-25): NOT adopted, acknowledge-only -- upstream's " +
-      "recipient-ledger verification system (unverifiedRecipients(), a new gmail__ connector-send " +
-      "gate closing a documented no-gate-at-all path, GMAILCONNECTOR914) requires this new " +
-      "dependency file, which the fork does not have. If this import ever appears, someone adopted " +
-      "the ledger system piecemeal -- the Gmail-connector gate and the commandHeads/WRAPPERS " +
-      "detection rewrite (paired with outgoing-copy-gate.py's escalated Round 17) need the SAME " +
-      "real decision, not a side effect of one import landing first.",
+      "Card b5b7eb6b child 09d54e88 (2026-09-25), FINAL DECISION 2026-09-29 (Cybersec, card " +
+      "afd64623, msg 6175/8980): the recipient-ledger system is NOT ADOPTED, in ANY form (not OR, " +
+      "not a replacement, not an AND layer) -- addRecipient() validates the source STRING'S FORMAT " +
+      "only, never that the evidence is real, so an agent can self-certify any address with " +
+      "--source owner. This is a settled security decision, not a pending one. If this import ever " +
+      "appears, that decision was silently reversed -- re-open it, do not wave it through. The " +
+      "Gmail-connector gate and the commandHeads/WRAPPERS detection rewrite (paired with outgoing-" +
+      "copy-gate.py's escalated Round 17) remain SEPARATE, still-open questions, untouched by this " +
+      "ruling.",
+  },
+  // Same underlying fact as the scripts/email-send-gate.mjs anchor above, watched a second time
+  // under the TEST-file key: the src/__tests__/email-send-gate.test.ts entry records the same
+  // Cybersec NOT-ADOPTED ruling and needs its own tripwire per this guard's own rule.
+  'src/__tests__/email-send-gate.test.ts': {
+    needle: "from './recipient-ledger.mjs'",
+    file: 'scripts/email-send-gate.mjs',
+    expect: 'absent',
+    because:
+      "Cybersec's NOT-ADOPTED ruling (card afd64623, msg 6175/8980) on the recipient-ledger system " +
+      "is a settled security decision. If scripts/email-send-gate.mjs ever imports recipient-" +
+      "ledger.mjs, that decision was silently reversed -- re-open it with a fresh Cybersec review, " +
+      "do not treat the import's mere presence as a completed adoption.",
   },
   '.github/workflows/test.yml': {
     needle: 'egress-drift-scan.test.py',
