@@ -1335,6 +1335,19 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // 'Bash(ncat *)'/'Bash(*/ncat *)'/'Bash(telnet *)'/'Bash(*/telnet *)', no curl entry at all) and
   // relies on a SEPARATE mechanism (the PreToolUse bash-egress-guard.py above) for shell-curl
   // egress, which parses the actual DESTINATION instead of pattern-matching the raw command text.
+  //
+  // CORRECTION 2026-09-29 (Cybersec NO-GO on this entry, msg 6141, measured): the sentence above
+  // claiming bash-egress-guard.py "covers" shell-curl egress OVERSTATES what is actually deployed.
+  // Cybersec measured BASH_EGRESS_GUARD is NOT set to enforce anywhere on this install -- the hook
+  // is LOG-ONLY. A live `curl https://example.org` probe went through, and store/bash-egress.log
+  // shows real external curls (cloudflare-dns, dns.google, pypi, anthropic) leaving unblocked. So
+  // the decision to ship zero curl-deny rules on the permission-engine side (this file's own
+  // conclusion, unchanged -- that rule really would break the fleet's own localhost writes) is
+  // CORRECT, but the compensating control this entry pointed to is wired and running, not
+  // enforcing: a compromised agent can egress to any host today. Card 18055f83 (HIGH, Cybersec
+  // NO-GO's own follow-up) tracks flipping BASH_EGRESS_GUARD to enforce, gated on an operator
+  // (Peti) allowlist decision so enforce mode does not also break legitimate calls. See
+  // [[a-compensating-control-must-be-measured-in-its-live-mode]].
   // Upstream's EXTERNAL corpus (curl-https cases DENIED) and its two vendor-allowlist-interaction
   // tests ('denies an allowlisted host too...', 'still denies curl https to a host the parser
   // allowlist would let through') are BOTH predicated on having a curl deny rule to test against --
@@ -1353,7 +1366,12 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'and its two vendor-allowlist-interaction tests are not portable -- they assert against a rule ' +
     'that does not exist on this fork. Every other describe block in the file is identical on both ' +
     'sides. Not the same cluster as 35dc6dbe/09d54e88 (bash-egress-guard.py\'s own, independently ' +
-    'suffix-matching allowlist) -- checked, no merge/overlap.',
+    'suffix-matching allowlist) -- checked, no merge/overlap.' +
+    ' CORRECTION 2026-09-29 (Cybersec NO-GO, msg 6141): the fork-side decision above is correct and ' +
+    'unchanged, but bash-egress-guard.py is LOG-ONLY on this install (BASH_EGRESS_GUARD not set to ' +
+    'enforce, measured) -- it does NOT actually block shell-curl egress today, it only logs it. Do ' +
+    'not read this entry as "shell curl is covered elsewhere". Enforcing it is tracked on card ' +
+    '18055f83 (HIGH), gated on an operator allowlist decision.',
   // Card b5b7eb6b child a74bead0 (upstream e3e42991 #1635 written_at-naming, 5e8a3f07 #1622
   // tmux-isolation, b49d4c5d #1555 OWNERCHAT803/CHATID0).
   'scripts/__tests__/limit-monitor-signals.test.sh':
