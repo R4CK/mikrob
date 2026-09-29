@@ -1305,6 +1305,46 @@ export const ACKNOWLEDGED_CONFLICTS = {
     " ROUND 2 THE SAME DAY (2026-09-05, backend2, card efaf8926, 84c4a56ef94e..ab96c868f316). That there IS a round two is itself the finding: this one file moved three times inside a single re-pin round -- d1c642f669ff when the card was written, 84c4a56ef94e when the paragraph above was measured, 754c4f801891 forty minutes later, ab96c868f316 four minutes after that. The pin went stale before the commit carrying it could land. Everything the paragraph above records is still present; the increment is +10/-1 and it is not a passive divergence. PERMDENY905: upstream inserted a detectsPermissionDialog() branch between the model-consent branch and the menu-Escape branch, because a tool-permission prompt footer ALSO reads 'Esc to cancel', so detectsBlockingMenu matches it -- and Escape on that dialog is NO, not a dismiss. THE TRIGGER IS PRESENT ON THE FORK SIDE, checked here rather than taken from upstream's note: MENU_ESC_RX matches the phrase 'esc to cancel' case-insensitively in the footer region, grep finds no detectsPermissionDialog anywhere in this tree, and channel-monitor's menu-recovery branch sends Escape with no permission check ahead of it. Two smaller items ride along: sendRoutineAlert() (new module web/routine-alert.js, absent here) replaces sendAlert on five routine paths, and several Hungarian operator alerts gained their accents, which is what CLAUDE.md's spelling rule asks for. NOT PORTED HERE, deliberately: who may answer a permission prompt on the operator's behalf is an ADOPTION decision for a card with a gate, not a rider on a landing-unblock. Card dbba0424 (HIGH) carries it, and its FIRST step is to reproduce the match against a real captured pane from THIS install -- the reasoning above says the trigger is present, which is not the same as having watched it fire. Resolution unchanged; blob bumped." +
     " Re-measured 2026-09-06 (backend3, card 79bb0364 round-2 landing-block, upstream round 16). Upstream added DANICTXHUROK906: markAgentRestartPending() and isWithinRestartGrace(), and reconcileDesiredAgents now calls the predicate instead of inlining it. The measured bug is real and specific -- the context guard's own stop was INVISIBLE to the reconcile loop, so in the ~1s window between its stop and its fresh start the loop re-launched the agent with no opts (fresh=false, i.e. --continue), the guard's fresh start then no-op'd as 'already running', and the saturated context it existed to drop was resumed (one agent back to 94% in 25 minutes on zero inbound). It touches neither the triggerMarveenMemorySave hunk this rule decides nor the STUCKINPUT827 work named as still undecided. NOT adopted this round -- it is half of a two-file change whose other half is context-guard-runner.ts, and a cross-file restart-race fix belongs on a card with a gate rather than inside a landing-unblock; it is a strong candidate and the reason is recorded here so the next round does not have to re-derive it. Resolution unchanged; blob bumped." +
     " CORRECTION 2026-09-25 (card ea86a362, backend3 retrospective B-wave audit, triggered by the agent-scaffold.ts B-wave incident -- this file was checked for the same blind spot). Three items the paragraphs above record as 'not adopted'/'undecided'/'NOT PORTED' are in fact present and correctly wired in the current tree, verified directly against the source, not from git history. (1) markAgentRestartPending()/isWithinRestartGrace() (DANICTXHUROK906, said NOT adopted above) -- present at lines 113/120, called at line 2412, pairing with context-guard-runner.ts's own call per that file's own entry. (2) detectsPermissionDialog (PERMDENY905, said 'NOT PORTED HERE, deliberately', pending card dbba0424) -- present in the import list (line 39) and called at line 1966 ahead of the menu-Escape branch, exactly the placement the finding asked for. (3) shouldAlertStuckSubAgent (STUCKINPUT827, said at the top of this entry that the fork has 'neither of which') -- present at line 1458, called at line 1469, gated by SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS. None of this is dangerous drift -- the code is present, correctly wired, alert-only where the finding asked for alert-only -- but a RECORD saying already-adopted work is absent is itself the hazard ea86a362 was opened to find: a future reader trusting this entry would not know to credit or re-verify it. Resolution retracted for these three items; they are DONE, not open.",
+  // Card b5b7eb6b child 057ad243 (upstream #1617 '73ec39e6 opt-in domains suffix allowlist in
+  // egress-vendor-hosts.json' + #1218 'e19a6411 deny the shell URL-fetch verbs on every agent, not
+  // just WebFetch'). NOT the same cluster as card 35dc6dbe/09d54e88 (EGRESSPARSER923, #1593/#1515/
+  // #1514) -- checked, and they have NOT merged: that round is about scripts/hooks/bash-egress-
+  // guard.py's own allowlist (store/bash-egress-allowlist.json, "hosts" key, suffix-matched via
+  // classify_host's `h == e or h.endswith('.' + e)` -- functionally equivalent to upstream's later
+  // domains-suffix feature already, independently), a DIFFERENT mechanism from this file's
+  // BASH_EGRESS_DENY (the Claude Code PERMISSION-ENGINE deny list). Recorded here so the next
+  // reader does not have to re-derive that these are unrelated, as the card asked.
+  //
+  // KEEP THE FORK'S SIDE WHOLESALE. This file's own header comment already documents the entire
+  // divergence (card f6db6978, measured on the live engine 2026-09-07): upstream's BASH_EGRESS_DENY
+  // carries a `Bash(curl *https://*)` rule, which on the real Claude Code 2.1.263 engine (under
+  // --dangerously-skip-permissions, so the bypass does not save it) DENIES the fleet's own
+  // localhost writes whose JSON payload merely CONTAINS "https://" in double-quoted form -- i.e.
+  // every memory write, kanban comment and inter-agent message that quotes a link would be
+  // refused, in both quote styles for some shapes. The fork therefore ships ZERO curl rules (this
+  // fork's BASH_EGRESS_DENY, verified: 'Bash(wget *)'/'Bash(*/wget *)'/'Bash(nc *)'/'Bash(*/nc *)'/
+  // 'Bash(ncat *)'/'Bash(*/ncat *)'/'Bash(telnet *)'/'Bash(*/telnet *)', no curl entry at all) and
+  // relies on a SEPARATE mechanism (the PreToolUse bash-egress-guard.py above) for shell-curl
+  // egress, which parses the actual DESTINATION instead of pattern-matching the raw command text.
+  // Upstream's EXTERNAL corpus (curl-https cases DENIED) and its two vendor-allowlist-interaction
+  // tests ('denies an allowlisted host too...', 'still denies curl https to a host the parser
+  // allowlist would let through') are BOTH predicated on having a curl deny rule to test against --
+  // neither is portable here, they would just fail against this fork's deliberately curl-rule-free
+  // constant. The fork's own compensating tests (NOT_GATED_YET's "does NOT gate a shell curl",
+  // "leaves the fleet's own localhost write alone even when its payload carries a link" with the
+  // OPPOSITE expectation of upstream's "pins the known collateral... MATCHES") are the fork-specific
+  // record of this exact tradeoff and must stay. Every OTHER describe block in the file
+  // (mergeBashEgressDeny, template parity, bashEgressDenyTargetPath, ensureBashEgressDeny) is
+  // byte-identical on both sides -- the entire conflict is confined to the BASH_EGRESS_DENY rule-set
+  // describe block, for the one reason above.
+  'src/__tests__/bash-egress-deny.test.ts':
+    "KEEP THE FORK'S SIDE WHOLESALE for the BASH_EGRESS_DENY describe block -- the fork deliberately " +
+    'ships no curl deny rule (card f6db6978, live-engine measurement: upstream\'s curl rule denies ' +
+    "the fleet's own https-carrying localhost writes), so upstream's curl-inclusive EXTERNAL corpus " +
+    'and its two vendor-allowlist-interaction tests are not portable -- they assert against a rule ' +
+    'that does not exist on this fork. Every other describe block in the file is identical on both ' +
+    'sides. Not the same cluster as 35dc6dbe/09d54e88 (bash-egress-guard.py\'s own, independently ' +
+    'suffix-matching allowlist) -- checked, no merge/overlap.',
   // Card b5b7eb6b child 7a694de2 (BRANCHHEAL925, upstream #1566): both sides independently added
   // a regression test for the SAME dashboard string (BRANCH_HEAL_COMMAND), landed as add/add so
   // git offers no merge base and reports the whole file as conflicting.
@@ -2129,6 +2169,8 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/__tests__/system-directive-auth-section.test.ts': '80d65e4651601d320447bf188d53548a5ef5f8ba',
   'src/web/channel-monitor.ts': 'e3ec92b6ea7be1a21d62e785e07c3389d2e356ae',
   'src/web/routes/messages.ts': 'b3b4b4d55807f55f036069e10c220c210e290dea',
+  // Card b5b7eb6b child 057ad243, 2026-09-29 (upstream #1617/#1218).
+  'src/__tests__/bash-egress-deny.test.ts': '7cc18ef433e03efa1c9cd786930e04228748f25d',
   // Card b5b7eb6b child 7a694de2, 2026-09-29 (BRANCHHEAL925, upstream #1566).
   'src/__tests__/branch-heal-command.test.ts': 'eefeb7eb9774bcd90011e4a9560cf39269aa1716',
   // Card 368b77f7, 2026-09-04.
