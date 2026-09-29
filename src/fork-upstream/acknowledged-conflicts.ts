@@ -1305,6 +1305,30 @@ export const ACKNOWLEDGED_CONFLICTS = {
     " ROUND 2 THE SAME DAY (2026-09-05, backend2, card efaf8926, 84c4a56ef94e..ab96c868f316). That there IS a round two is itself the finding: this one file moved three times inside a single re-pin round -- d1c642f669ff when the card was written, 84c4a56ef94e when the paragraph above was measured, 754c4f801891 forty minutes later, ab96c868f316 four minutes after that. The pin went stale before the commit carrying it could land. Everything the paragraph above records is still present; the increment is +10/-1 and it is not a passive divergence. PERMDENY905: upstream inserted a detectsPermissionDialog() branch between the model-consent branch and the menu-Escape branch, because a tool-permission prompt footer ALSO reads 'Esc to cancel', so detectsBlockingMenu matches it -- and Escape on that dialog is NO, not a dismiss. THE TRIGGER IS PRESENT ON THE FORK SIDE, checked here rather than taken from upstream's note: MENU_ESC_RX matches the phrase 'esc to cancel' case-insensitively in the footer region, grep finds no detectsPermissionDialog anywhere in this tree, and channel-monitor's menu-recovery branch sends Escape with no permission check ahead of it. Two smaller items ride along: sendRoutineAlert() (new module web/routine-alert.js, absent here) replaces sendAlert on five routine paths, and several Hungarian operator alerts gained their accents, which is what CLAUDE.md's spelling rule asks for. NOT PORTED HERE, deliberately: who may answer a permission prompt on the operator's behalf is an ADOPTION decision for a card with a gate, not a rider on a landing-unblock. Card dbba0424 (HIGH) carries it, and its FIRST step is to reproduce the match against a real captured pane from THIS install -- the reasoning above says the trigger is present, which is not the same as having watched it fire. Resolution unchanged; blob bumped." +
     " Re-measured 2026-09-06 (backend3, card 79bb0364 round-2 landing-block, upstream round 16). Upstream added DANICTXHUROK906: markAgentRestartPending() and isWithinRestartGrace(), and reconcileDesiredAgents now calls the predicate instead of inlining it. The measured bug is real and specific -- the context guard's own stop was INVISIBLE to the reconcile loop, so in the ~1s window between its stop and its fresh start the loop re-launched the agent with no opts (fresh=false, i.e. --continue), the guard's fresh start then no-op'd as 'already running', and the saturated context it existed to drop was resumed (one agent back to 94% in 25 minutes on zero inbound). It touches neither the triggerMarveenMemorySave hunk this rule decides nor the STUCKINPUT827 work named as still undecided. NOT adopted this round -- it is half of a two-file change whose other half is context-guard-runner.ts, and a cross-file restart-race fix belongs on a card with a gate rather than inside a landing-unblock; it is a strong candidate and the reason is recorded here so the next round does not have to re-derive it. Resolution unchanged; blob bumped." +
     " CORRECTION 2026-09-25 (card ea86a362, backend3 retrospective B-wave audit, triggered by the agent-scaffold.ts B-wave incident -- this file was checked for the same blind spot). Three items the paragraphs above record as 'not adopted'/'undecided'/'NOT PORTED' are in fact present and correctly wired in the current tree, verified directly against the source, not from git history. (1) markAgentRestartPending()/isWithinRestartGrace() (DANICTXHUROK906, said NOT adopted above) -- present at lines 113/120, called at line 2412, pairing with context-guard-runner.ts's own call per that file's own entry. (2) detectsPermissionDialog (PERMDENY905, said 'NOT PORTED HERE, deliberately', pending card dbba0424) -- present in the import list (line 39) and called at line 1966 ahead of the menu-Escape branch, exactly the placement the finding asked for. (3) shouldAlertStuckSubAgent (STUCKINPUT827, said at the top of this entry that the fork has 'neither of which') -- present at line 1458, called at line 1469, gated by SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS. None of this is dangerous drift -- the code is present, correctly wired, alert-only where the finding asked for alert-only -- but a RECORD saying already-adopted work is absent is itself the hazard ea86a362 was opened to find: a future reader trusting this entry would not know to credit or re-verify it. Resolution retracted for these three items; they are DONE, not open.",
+  // Card b5b7eb6b child 7a694de2 (BRANCHHEAL925, upstream #1566): both sides independently added
+  // a regression test for the SAME dashboard string (BRANCH_HEAL_COMMAND), landed as add/add so
+  // git offers no merge base and reports the whole file as conflicting.
+  'src/__tests__/branch-heal-command.test.ts':
+    "KEEP THE FORK'S SIDE WHOLESALE, not a merge. (1) Upstream's test reads web/app.js " +
+    "(APP_JS = join(REPO_ROOT, 'web', 'app.js'), HEAL_RX matched against its content) -- this " +
+    "fork already extracted the Updates page into web/app-updates.js (the same modularisation " +
+    "this file's own web/app.js entry documents), and BRANCH_HEAL_COMMAND lives ONLY there: " +
+    "measured (grep) web/app.js has zero hits for the constant, so upstream's test would throw " +
+    "its own 'not found in web/app.js' error against this tree, not merely miss coverage. This " +
+    "is not a preference, it is a straight incompatibility -- same class as the " +
+    "update-checker-branch.test.ts entry above. (2) The fork's match regex is anchored to the " +
+    "declaration keyword (`^const BRANCH_HEAL_COMMAND = '...'`, multiline), per this repo's own " +
+    "kódminőségi elv 12 (CLAUDE.md): a bare substring/bare-name match lets a comment mentioning " +
+    "the name, or a renamed constant whose old name still appears in a string, fake a pass. " +
+    "Upstream's regex has no such anchor. Functional coverage is equivalent, not a gap either " +
+    "way: fork tests three live scenarios (local main exists, two-remote --track fallback, " +
+    "fail-closed when neither switch resolves); upstream tests four (fresh clone, already-healed, " +
+    "tracks-origin-not-fork, no-main fail-closed). The one upstream check without a fork " +
+    "counterpart -- asserting @{u} resolves to origin/main after the fallback branch -- is not a " +
+    "live behavioural gap: BRANCH_HEAL_COMMAND's fallback hardcodes `--track origin/main` in the " +
+    "command string itself (the whole point of the fix, per this file's own header comment), so " +
+    "the origin-not-fork outcome is guaranteed by the pinned string, not by an emergent git " +
+    "default this repo would need a separate probe to catch. Not worth porting for a LOW card.",
   // Card 368b77f7 (URGENT: this conflict blocked EVERY marveen landing -- marveen-land.sh refuses on
   // any non-zero fleet-test, with no baseline-delta comparison to fall back on).
   // Card 73cf0a22 (the BRIDGEHU813 adoption itself). Add/add: upstream created this file in
@@ -2105,6 +2129,8 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/__tests__/system-directive-auth-section.test.ts': '80d65e4651601d320447bf188d53548a5ef5f8ba',
   'src/web/channel-monitor.ts': 'e3ec92b6ea7be1a21d62e785e07c3389d2e356ae',
   'src/web/routes/messages.ts': 'b3b4b4d55807f55f036069e10c220c210e290dea',
+  // Card b5b7eb6b child 7a694de2, 2026-09-29 (BRANCHHEAL925, upstream #1566).
+  'src/__tests__/branch-heal-command.test.ts': 'eefeb7eb9774bcd90011e4a9560cf39269aa1716',
   // Card 368b77f7, 2026-09-04.
   'src/__tests__/bridge-pairing-i18n.test.ts': '5da8970e4ff27f4d9b1fef46b179ed26e9063ea0',
   'src/config.ts': '02c6ff722fe731e1ea6c1e4180b82f379ce8e622',
