@@ -16,7 +16,25 @@ fail(){ echo "  FAIL  $*"; FAILED=1; }
 
 # Own tmux server (empty): otherwise the case would capture the real fleet's
 # panes and every result would depend on what happens to be on screen.
+#
+# #1565 item 5 (upstream 5e8a3f07): TMUX_TMPDIR ALONE DOES NOT ISOLATE. While
+# $TMUX is set -- and it always is, because the suite runs inside an agent's
+# pane -- tmux takes the socket from $TMUX and ignores TMUX_TMPDIR entirely.
+# Measured here (backend3, 2026-09-29): with TMUX_TMPDIR pointed at an empty
+# directory but $TMUX still inherited, `tmux list-sessions` still returned the
+# live fleet sessions. So every case was reading the fleet's screens, and the
+# verdict depended on what happened to be printed there at that second.
+unset TMUX TMUX_PANE
 export TMUX_TMPDIR="$BASE/tmux"; mkdir -p "$TMUX_TMPDIR"
+# Prove the isolation instead of trusting it: an error here is FINE (no
+# server = no panes); what must never happen is tmux answering with a session
+# name.
+if tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -q .; then
+  echo "  FAIL  tmux isolation BROKEN: the cases can see live sessions:"
+  tmux list-sessions -F '#{session_name}' 2>/dev/null | sed 's/^/          /'
+  echo "        Every result below would depend on what is on those screens."
+  exit 1
+fi
 
 new_case() {
   local c="$BASE/$1"; mkdir -p "$c/scripts" "$c/store" "$c/fakehome"
@@ -25,6 +43,13 @@ new_case() {
   # is not a smaller install -- it is a BROKEN one, and the difference would
   # only show up as a silently missing send. Copy what a real install has.
   mkdir -p "$c/scripts/lib"; cp "$INSTALL_DIR/scripts/lib/send-telegram.sh" "$c/scripts/lib/"
+  # Upstream 5e8a3f07, measured here too (backend3, 2026-09-29): the monitor
+  # also sources scripts/lib/content-hash.sh for the dedupe hash (card
+  # MD5SUMHIANY826's graft, see the scripts/limit-monitor.sh ACKNOWLEDGED_
+  # CONFLICTS entry). Without it every tick logged "dedupe disabled
+  # (fail-open)" -- confirmed: every case in this file passed even before this
+  # copy existed, so the text-path dedupe was never actually exercised.
+  cp "$INSTALL_DIR/scripts/lib/content-hash.sh" "$c/scripts/lib/"
   # MIOHEREDOC902: the measured quota path now lives in its own file.
   cp "$INSTALL_DIR/scripts/lib/quota-check.py" "$c/scripts/lib/"
   # The fork's limit-monitor.sh sources the SHARED canonical session-limit
@@ -251,6 +276,36 @@ elif grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
 else
   fail "a stale reading was skipped without a trace"
 fi
+if grep -q "no usable written_at" "$C/store/limit-monitor.log" 2>/dev/null; then
+  fail "a genuinely old stamp was reported as unstamped"
+else
+  pass "a genuinely old stamp is still reported as an age"
+fi
+
+# A missing / null / zero / non-numeric stamp, or a file that is not an object,
+# used to become an age counted from 1970 ("stale (1790511588s)") or a
+# traceback -- indistinguishable in the log from a truly old reading, or silent
+# on stdout. Each must skip the measured path AND name the missing stamp.
+for nostamp in 'missing|{"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'null|{"written_at":null,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'zero|{"written_at":0,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'string|{"written_at":"abc","rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'bool|{"written_at":true,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'array|[%d]'; do
+  name="${nostamp%%|*}"; fmt="${nostamp#*|}"
+  C="$(new_case "quota_nostamp_$name")"
+  # shellcheck disable=SC2059
+  printf "$fmt\n" "$((now + 3600))" > "$C/store/.claude-rate-limits.json"
+  run_case "$C"
+  if alerted "$C"; then
+    fail "nostamp/$name: alerted on a reading with no usable written_at"
+  elif grep -q "quota file has no usable written_at" "$C/store/limit-monitor.log" 2>/dev/null \
+       && ! grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
+    pass "nostamp/$name: skipped, and logged as unstamped, not as an age"
+  else
+    fail "nostamp/$name: not logged as unstamped: $(grep -i quota "$C/store/limit-monitor.log" 2>/dev/null | tr '\n' ' ')"
+  fi
+done
 
 echo "(d) a FAILED delivery must not suppress the retry"
 # This is the case the whole honest-send contract exists for. The Bot API can
