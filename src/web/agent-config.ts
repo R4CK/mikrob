@@ -783,13 +783,36 @@ export function readAgentCapabilities(name: string): string[] {
 // (writeAgentSettingsFromProfile) PUSHES this onto the deny array it is already building, so this
 // is additive by construction: it can only add deny entries, never remove the security-purpose ones
 // (SELF_PACE_TOOL_DENY, BASH_EGRESS_DENY, profile.filesystem.deny) already queued ahead of it.
+//
+// Card b5b7eb6b child b0d84dc3 (upstream ORSIKTXRATA914, 1abd45cf): only bare tool names are
+// accepted (Claude Code rule shape "ToolName" or "mcp__server__tool"), never a "Tool(pattern)"
+// rule -- this field can only ever WIDEN the deny list, and a name-shaped allowlist keeps a
+// mistyped or injected value from becoming a pattern rule with surprising reach. Deduped and
+// capped so a malformed/hostile agent-config.json cannot grow the deny list without bound.
+const TOOL_DENY_NAME_RE = /^[A-Za-z][A-Za-z0-9_]{0,127}$/
+export const TOOL_DENY_MAX_PER_AGENT = 64
+
+export function sanitizeToolDenyList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  const out: string[] = []
+  for (const v of raw) {
+    if (typeof v !== 'string') continue
+    const t = v.trim()
+    if (!TOOL_DENY_NAME_RE.test(t) || out.includes(t)) continue
+    out.push(t)
+    if (out.length >= TOOL_DENY_MAX_PER_AGENT) break
+  }
+  return out
+}
+
 export function readAgentToolDeny(name: string): string[] {
   const configPath = join(agentDir(name), 'agent-config.json')
   try {
     const config = JSON.parse(readFileOr(configPath, '{}'))
-    if (Array.isArray(config.toolDeny)) return config.toolDeny.filter((t: unknown) => typeof t === 'string')
-  } catch { /* fall through */ }
-  return []
+    return sanitizeToolDenyList(config.toolDeny)
+  } catch {
+    return []
+  }
 }
 
 export function writeAgentCapabilities(name: string, capabilities: string[]): void {

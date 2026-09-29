@@ -338,6 +338,28 @@ Ezek a sablonok az ágens scaffold során töltődnek ki és kerülnek az `agent
 
 A profil beállítása az ágens `agent-config.json` `profileId` mezőjével történik, és a dashboard "Ágensek" felületén módosítható.
 
+### toolDeny -- ágensenkénti eszköz-tiltás (kontextus-fogantyú, kártya b0d84dc3)
+
+Az `agent-config.json` opcionális `toolDeny` mezője csupasz Claude Code eszköznevek listája
+(pl. `"Artifact"`, `"Workflow"`, `"mcp__szerver__eszkoz"`), amit a scaffold MINDEN spawnkor
+hozzáfűz a `.claude/settings.json` `permissions.deny` listájához. Egy egész eszköznévre szóló
+deny nem csak tilt: a Claude Code az eszköz sémáját ki is hagyja a promptból, tehát ez a
+per-ágens kontextus-terhelés egyik fogantyúja.
+
+Fontos: a `.claude/settings.json` deny-listája a profilból SZÁRMAZTATOTT, a scaffold spawnkor
+egészben újraírja. Egy kézzel oda írt eszköznév a következő újraindításkor nyomtalanul eltűnik;
+a tartós hely a `toolDeny` mező. Minta-alakú szabály (`Bash(...)`, `Read(...)`) itt nem fogadható
+el, csak csupasz eszköznév (`sanitizeToolDenyList` elutasítja, `agent-config.ts`); a mező csak
+BŐVÍTENI tudja a tiltást, szűkíteni nem, és legfeljebb `TOOL_DENY_MAX_PER_AGENT` (64) bejegyzést
+fogad el.
+
+```json
+{
+  "profileId": "researcher",
+  "toolDeny": ["Artifact", "Workflow", "AskUserQuestion"]
+}
+```
+
 ---
 
 ## ~/.claude/scheduled-tasks/ -- ütemezett feladatok
