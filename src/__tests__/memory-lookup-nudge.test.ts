@@ -36,12 +36,16 @@ describe('memory-lookup-nudge: speaks on a human message', () => {
     const { out, code } = hook(channel())
     expect(code).toBe(0)
     expect(out).toContain('[memoria-szetnezes]')
-    expect(out).toContain('curl -s -G -D')
+    expect(out).toContain('curl -s -H @- -G -D')
     expect(out).toContain('--data-urlencode "q=KULCSSZO"')
     expect(out).toContain("grep -i '^x-memory-search'")
     expect(out).toContain('strict=1')
     // The raw-accent trap: q must never be glued into the URL.
     expect(out).not.toMatch(/api\/memories\?[^"]*q=/)
+    // Card b5b7eb6b child 971f7d4f, Cybersec NO-GO @f10dd063: the token must go via stdin
+    // header (-H @-), never on the curl argv (/proc/<pid>/cmdline leak).
+    expect(out).toContain("printf 'Authorization: Bearer %s\\n'")
+    expect(out).not.toMatch(/-H\s+"Authorization: Bearer/)
   })
 
   it('a bare terminal prompt (the owner at the dashboard) gets it too', () => {
@@ -87,11 +91,15 @@ describe('memory-lookup-nudge: speaks on a human message', () => {
       expect(out).toBe(
         '[memoria-szetnezes] Emberi uzenet: mielott valaszolsz, nezd meg, van-e rola emleked. ' +
           'A kulcsszot te valaszd (nev, tema), ne a mondat toltelekszavait.\n' +
-          `curl -s -G -D /tmp/mem-fejlec-samu.txt -H "Authorization: Bearer $(cat ${token})" ` +
+          `printf 'Authorization: Bearer %s\\n' "$(cat ${token})" | ` +
+          `curl -s -H @- -G -D /tmp/mem-fejlec-samu.txt ` +
           `--data-urlencode "agent=samu" --data-urlencode "q=KULCSSZO" "http://localhost:${port}/api/memories"\n` +
           "grep -i '^x-memory-search' /tmp/mem-fejlec-samu.txt  " +
           '(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode "strict=1")\n',
       )
+      // Card b5b7eb6b child 971f7d4f, Cybersec NO-GO @f10dd063: the token must never ride the
+      // curl argv (/proc/<pid>/cmdline leak) -- it goes via stdin header (-H @-) instead.
+      expect(out).not.toMatch(/-H\s+"Authorization: Bearer/)
     } finally {
       server.close()
       rmSync(root, { recursive: true, force: true })
