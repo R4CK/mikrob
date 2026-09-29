@@ -914,7 +914,9 @@ def collect_bash_body(cmd: str):
 
 
 def collect_mcp_body(tool_input: dict):
-    fields = ("body", "text", "html", "htmlBody", "message", "subject", "content")
+    # forwardText: the claude.ai Gmail connector's forward tool carries the
+    # added note here, not in "text"/"body" (GMAILCONNECTOR914).
+    fields = ("body", "text", "html", "htmlBody", "message", "subject", "content", "forwardText")
     got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
     return "\n".join(got)
 
@@ -1426,7 +1428,12 @@ def main():
 
     if re.search(r"telegram.*__reply$", tool, re.I):
         telegram_gate(tool_input)  # exits; never falls through
-    if re.search(r"send_email", tool, re.I):
+    # GMAILCONNECTOR914: the claude.ai Gmail connector's send-shaped tools
+    # (mcp__claude_ai_Gmail__send_message / reply / reply_all / forward) carry
+    # no "send_email" in the name, so this detector fell through to sys.exit(0)
+    # with no audit. Anything ending in "gmail__<send-shaped tool>" is a send
+    # now, whatever the server-name prefix.
+    if re.search(r"send_email", tool, re.I) or re.search(r"gmail__(reply|reply_all|send_message|forward)$", tool, re.I):
         text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
