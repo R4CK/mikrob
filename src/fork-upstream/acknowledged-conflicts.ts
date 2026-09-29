@@ -1137,7 +1137,16 @@ export const ACKNOWLEDGED_CONFLICTS = {
   'scripts/lib/send-telegram.sh': 'adopt upstream wholesale (round 2 adds telegram_api_call, the method-agnostic sibling send_telegram_message now calls)',
   'scripts/disk-space-guard.sh': 'adopt upstream wholesale -- honest-send-via-lib replaces an unchecked inline curl, no fork-specific logic in this file',
   'scripts/unit-fail-notify.sh': 'adopt upstream wholesale -- honest-send-via-lib replaces an unchecked inline curl (best-effort exit-0 contract unchanged), no fork-specific logic in this file',
-  'scripts/limit-monitor.sh': "keep the fork's session-limit-pattern.sh sourcing (canonical regex, card 115c21e7) + its own extra-signal regex, graft upstream's honest-send-via-lib + stamp-dedupe-hash-only-on-confirmed-success onto the alert block. Round 2 (MD5SUMHIANY826, QA fbb36b41 round-8 stale-blob catch): upstream replaced the bare `md5sum | awk` dedupe hash (empty string on macOS, silently swallowing every alert) with the shared scripts/lib/content-hash.sh dedupe_check() -- fail-open on no hashing tool, no stamp written on an empty hash. Grafted onto the same alert block, fork logic unchanged. Round 3 (2026-09-02, fron-ted, landing 5dd4a211, 61c0d229af89..8a34f0936860): upstream added a MEASURED quota path (scripts/lib/quota-check.py over .claude-rate-limits.json, warn at 90%, stale-skip) ahead of the text scan, a send_alert() wrapper over scripts/lib/send-telegram.sh, and a fleet-wide pane scan. Resolution principle unchanged -- fork logic stays; graft ONLY the honest-send wrapper (already the recorded rule). The measured-quota path is deliberately NOT grafted: the fork already alerts from its own quota monitor (store/quota-check.sh + quota-bridge), a second measured alerter would double-notify Peti. If MikroB wants the upstream measured path instead, that is a separate decision, not this ack.",
+  'scripts/limit-monitor.sh': "keep the fork's session-limit-pattern.sh sourcing (canonical regex, card 115c21e7) + its own extra-signal regex, graft upstream's honest-send-via-lib + stamp-dedupe-hash-only-on-confirmed-success onto the alert block. Round 2 (MD5SUMHIANY826, QA fbb36b41 round-8 stale-blob catch): upstream replaced the bare `md5sum | awk` dedupe hash (empty string on macOS, silently swallowing every alert) with the shared scripts/lib/content-hash.sh dedupe_check() -- fail-open on no hashing tool, no stamp written on an empty hash. Grafted onto the same alert block, fork logic unchanged. Round 3 (2026-09-02, fron-ted, landing 5dd4a211, 61c0d229af89..8a34f0936860): upstream added a MEASURED quota path (scripts/lib/quota-check.py over .claude-rate-limits.json, warn at 90%, stale-skip) ahead of the text scan, a send_alert() wrapper over scripts/lib/send-telegram.sh, and a fleet-wide pane scan. Resolution principle unchanged -- fork logic stays; graft ONLY the honest-send wrapper (already the recorded rule). The measured-quota path is deliberately NOT grafted: the fork already alerts from its own quota monitor (store/quota-check.sh + quota-bridge), a second measured alerter would double-notify Peti. If MikroB wants the upstream measured path instead, that is a separate decision, not this ack." +
+    " Round 4 (2026-09-29, backend3, card b5b7eb6b child a74bead0, upstream e3e42991 #1635): ported the STALE-line naming fix onto the ALREADY-grafted quota-check.py call site -- a reading with no usable written_at now logs \"quota file has no usable written_at (<reason>)\" instead of \"quota file stale (56-years-in-seconds)\", via quota-check.py's new reading_age() (see that file's own entry). Purely additive to the existing grafted block, no other divergence touched. NOT ported this round, deliberately: b49d4c5d's CHATID0 guard (ALLOWED_CHAT_ID=0 -> resolve_owner_chat_id) -- that is the scripts/lib/owner-chat.sh port, tracked on card 3026a591 (scope widened there to cover this file too, per a comment left this round), not a landing-unblock drift pin.",
+  // Round 4 companion to the limit-monitor.sh entry above (2026-09-29, backend3, card a74bead0,
+  // upstream e3e42991 #1635): NEW file relative to this ledger (was never flagged conflicting
+  // because the fork had not diverged from it before). reading_age() now names WHY a reading has
+  // no age (missing/null/non-positive/non-numeric-incl.-bool/non-dict) instead of computing an age
+  // from an implicit epoch-0 default, which used to print as a ~56-year-old reading -- the same
+  // shape as a genuinely stale file, so the log could not tell "never stamped" from "very old".
+  'scripts/lib/quota-check.py':
+    'adopt upstream\'s reading_age() naming fix (e3e42991, #1635) onto the fork\'s existing quota-check.py -- reading_age(d, now) replaces the bare `now - int(d.get("written_at") or 0)`, returning (None, reason) for every unusable stamp so the STALE line can say "nostamp\\t<reason>" instead of a garbage age. No other divergence in this file (it was not previously listed as conflicting).',
   'scripts/lib/content-hash.sh': 'adopt upstream wholesale -- brand-new shared hashing helper (MD5SUMHIANY826), no fork-specific logic to preserve',
   'src/__tests__/content-hash.test.ts': "adopt upstream wholesale -- upstream's own unit test for the new content-hash.sh, no fork-specific logic to preserve",
   'scripts/host-restart-watchdog.sh': "keep the fork's prior-shutdown cause classifier wholesale (classify_shutdown_from_log/prev_boot_log/HOST_RESTART_WATCHDOG_LIB test hook, card RELIA-A, upstream never had it), graft upstream's HOSTWD_PROC_STAT test hook + honest-send-via-lib + stamp-btime-baseline-only-on-confirmed-delivery",
@@ -1345,6 +1354,31 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'that does not exist on this fork. Every other describe block in the file is identical on both ' +
     'sides. Not the same cluster as 35dc6dbe/09d54e88 (bash-egress-guard.py\'s own, independently ' +
     'suffix-matching allowlist) -- checked, no merge/overlap.',
+  // Card b5b7eb6b child a74bead0 (upstream e3e42991 #1635 written_at-naming, 5e8a3f07 #1622
+  // tmux-isolation, b49d4c5d #1555 OWNERCHAT803/CHATID0).
+  'scripts/__tests__/limit-monitor-signals.test.sh':
+    "PARTIAL, three independent upstream fixes bundled in one file. ADOPTED (both self-contained, " +
+    "mutation-tested, no cross-file dependency): (1) 5e8a3f07's tmux isolation -- unset TMUX/" +
+    "TMUX_PANE before exporting TMUX_TMPDIR, then ASSERT isolation (fail loud if `tmux list-" +
+    "sessions` still answers) instead of trusting the old TMUX_TMPDIR-alone comment, which was " +
+    "false whenever the suite runs inside an agent's own pane (measured here too: the assertion " +
+    "would have failed before this fix, on this exact install). Also copies scripts/lib/content-" +
+    "hash.sh into each case dir -- a SEPARATE, previously-unnoticed gap this same upstream commit " +
+    "found: the fork's limit-monitor.sh sources it (see that file's own entry, round 2), but the " +
+    "test's case fixture never copied it, so the source failed silently every run and the dedupe " +
+    "hash path was never actually exercised. Confirmed on this tree before the fix: all cases " +
+    "still passed without the file present, i.e. a VACUOUS gap in exactly the class this fleet's " +
+    "own testing-traps memory topic tracks. (2) e3e42991's six written_at edge-case tests (missing/" +
+    "null/zero/string/bool/array), matching the quota-check.py + limit-monitor.sh fix on those " +
+    "files' own entries. NOT ADOPTED, deliberately: b49d4c5d's CHATID0 test section (\"(f) CHATID0: " +
+    "ALLOWED_CHAT_ID=0 resolves via the owner-chat helper\") -- it depends on scripts/lib/owner-" +
+    "chat.sh, which does not exist in this fork; porting it is the scope of card 3026a591 (widened " +
+    "this round to cover limit-monitor.sh, previously scoped to notify.sh only), not a solo call on " +
+    "a LOW drift-reconciliation card. Related but explicitly OUT OF this card's scope (flagged, not " +
+    "fixed): scripts/__tests__/ops-scripts-portable.test.sh has the SAME tmux-inherited-$TMUX gap " +
+    "(its case (b) does not set TMUX_TMPDIR or unset TMUX/TMUX_PANE at all) -- lower risk there " +
+    "since its assertion reads a SESSION= trace line rather than captured pane content, so it does " +
+    "not misverdict, but it still leaks live fleet panes into the run. Needs its own pass.",
   // Card b5b7eb6b child 7a694de2 (BRANCHHEAL925, upstream #1566): both sides independently added
   // a regression test for the SAME dashboard string (BRANCH_HEAL_COMMAND), landed as add/add so
   // git offers no merge base and reports the whole file as conflicting.
@@ -1883,7 +1917,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
   //     (owner-chat.sh does not exist in this tree). That piece is OUT OF SCOPE for this entry and
   //     stays undecided; it belongs in a fresh upstream-drift triage round, not folded in here.
   'src/__tests__/send-honesty-round2.test.ts':
-    "PARTIAL: the curl-stub delimiter change (part 1) is decided -- KEEP the fork's version, it matches telegram_api_call's -K stdin pattern (card 8418b098). The OWNERCHAT803/CHATID0 test removal (PR #1555, owner-chat.sh) is a SEPARATE, unrelated, UNDECIDED divergence -- the fork has not ported that feature; needs its own triage, not resolved by this entry.",
+    "PARTIAL: the curl-stub delimiter change (part 1) is decided -- KEEP the fork's version, it matches telegram_api_call's -K stdin pattern (card 8418b098). The OWNERCHAT803/CHATID0 test removal (PR #1555, owner-chat.sh) is a SEPARATE, unrelated, UNDECIDED divergence -- the fork has not ported that feature; needs its own triage, not resolved by this entry." +
+    " TRIAGED 2026-09-29 (backend3, card b5b7eb6b child a74bead0): the triage this entry asked for happened, and the conclusion is ESCALATE, not decide-solo -- b49d4c5d (OWNERCHAT803/CHATID0) is a 22-file cross-cutting port (new scripts/lib/owner-chat.sh + owner_chat.py, migrating 8 production alert-sender scripts including notify.sh AND limit-monitor.sh, plus src/owner-chat.ts/src/notify.ts changes), not a single-file drift pin. A dedicated card ALREADY EXISTS for the notify.sh half: 3026a591 ('notify.sh CHATID0 guard + owner-chat.sh resolver'), opened 2026-09-25 off this same entry's round-15/25 notes. Commented on 3026a591 (2026-09-29) that its own scope needs widening -- limit-monitor.sh is also a migrated consumer per b49d4c5d's file list, and the pending CHATID0 test still needs porting there too. Still UNDECIDED here for real, deliberately -- do not resolve solo when that card lands.",
 
   // Card d79a69b5: lastUpdate (card 0898db66) now rides in every /api/status response variant --
   // the default shape is a SUPERSET of the pre-merge legacy fields, per MikroB's approval (msg
@@ -2085,7 +2120,9 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'scripts/lib/send-telegram.sh': '293aecf24507b6d56bda99e5a4ff937e1491ab97',
   'scripts/disk-space-guard.sh': 'd3f693c01d607952a8165cc4d8106024008f22e4',
   'scripts/unit-fail-notify.sh': 'ada00f95a7b3665feac1305bb5287698b81839de',
-  'scripts/limit-monitor.sh': '31a0c0dcb3ef3e1b534a9c787fc653904ea6a357',
+  'scripts/limit-monitor.sh': 'dc5aec1bb751286442c4bf33d7e2e8d05b63ee73',
+  'scripts/lib/quota-check.py': '6da7f7f45ac12171564e64765d71dc66b3e04403',
+  'scripts/__tests__/limit-monitor-signals.test.sh': '80c31f3d1d2578bd8b041ed3876150d515364cf1',
   'scripts/lib/content-hash.sh': 'a2fc1103d635bd7602229447cb299f4540cd3d22',
   'src/__tests__/content-hash.test.ts': '57cbbd6ffa36d800c3c9b9e8649acba17b960949',
   'scripts/host-restart-watchdog.sh': '07948350e336ec02d58d952df016ab6b07d7d052',
@@ -2359,6 +2396,23 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "listRejectedAgentDirNames() has no upstream equivalent, so its disappearance can only mean " +
       "the filtering itself was silently dropped -- that is a security regression, not a merge to " +
       "wave through.",
+  },
+  // Card b5b7eb6b child a74bead0 (backend3, 2026-09-29): the limit-monitor-signals.test.sh entry
+  // above declines to adopt b49d4c5d's CHATID0 test section because scripts/lib/owner-chat.sh does
+  // not exist in this fork yet (card 3026a591's job). Anchored on the PRODUCTION file the port
+  // would change, not the test (per the rule below): if limit-monitor.sh's own CHAT_ID resolution
+  // line disappears, 3026a591 (or something else) already replaced it with the resolver, and the
+  // CHATID0 test section should be re-evaluated for adoption alongside it, not left refused.
+  'scripts/__tests__/limit-monitor-signals.test.sh': {
+    needle: 'CHAT_ID="$(env_val ALLOWED_CHAT_ID)"',
+    file: 'scripts/limit-monitor.sh',
+    expect: 'present',
+    because:
+      "this is the OLD chat-id resolution the CHATID0 owner-chat.sh port (b49d4c5d, card 3026a591) " +
+      "would replace with a resolver call. Its disappearance means that port landed here, and the " +
+      "limit-monitor-signals.test.sh entry's 'NOT ADOPTED' verdict on the CHATID0 test section " +
+      "needs revisiting -- not silently staying refused against a script that no longer has the " +
+      "bug it refuses to test for.",
   },
   // Card 14284837 (backend2, 2026-09-25): project-settings-hook-anchor.test.ts's entry above
   // refuses upstream's simplified EXPECTED map -- keeping the fork's test means it keeps pinning
