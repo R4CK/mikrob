@@ -104,6 +104,21 @@ describe('POST /api/messages sender guards (runtime)', () => {
     expect(r.statusCode).toBe(400)
   })
 
+  // Upstream ec5f9926 (#1574): the inter-agent queue is the busiest write path,
+  // and lacked the homoglyph check kanban/memories/daily-log already had. Warn,
+  // never block -- the row is already created.
+  it('a Cyrillic lookalike in the content is accepted with a homoglyph_warning', async () => {
+    const r = await post({ from: MAIN_AGENT_ID, to: MAIN_AGENT_ID, content: 'Kafe еxpress order' })
+    expect(r.statusCode).toBe(200)
+    expect(r.json.homoglyph_warning).toBeTruthy()
+  })
+
+  it('clean content carries no homoglyph_warning', async () => {
+    const r = await post({ from: MAIN_AGENT_ID, to: MAIN_AGENT_ID, content: 'plain latin text, 40 µs, H₂O' })
+    expect(r.statusCode).toBe(200)
+    expect(r.json).not.toHaveProperty('homoglyph_warning')
+  })
+
   // The authenticated system-directive channel (web/system-directive.ts) hangs
   // entirely off this 403: every agent's CLAUDE.md says a row from the reserved
   // sender PROVES the stop/handoff order came from the supervisor. If this

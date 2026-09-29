@@ -10,6 +10,7 @@ import {
   COMPLETION_REPORT_PREFIX,
   type AgentMessage,
 } from '../../db.js'
+import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { isAllowedVoiceChannelDevice } from '../voice-channel-device-allowlist.js'
@@ -378,6 +379,21 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
         targetRunning: false,
         warning: `'${msg.to_agent}' nem fut -- indítsd el (POST /api/agents/${msg.to_agent}/start), várd meg amíg feláll, és küldd újra. Egy leállított ügynöknek küldött üzenet nem várakozik, hanem elveszik.`,
       })
+      return true
+    }
+    // Warn-only homoglyph check (upstream ec5f9926, #1574) -- same contract as
+    // memories/daily-log/kanban. The two channels that already had this check
+    // are the low-traffic ones; the inter-agent queue is the busiest, and the
+    // damage is not legibility: this fleet's own P1/P2/P3 probes are
+    // `content LIKE` searches, so one Cyrillic letter inside a client name or
+    // an id makes every later search return zero, with nothing looking wrong.
+    // Warn, never block: the message is already created above, and a delivery
+    // that fails on a cosmetic check would be worse than a lookalike letter.
+    const homoglyphs = detectHomoglyphs(normalizedContent)
+    if (homoglyphs.length > 0) {
+      const warning = formatHomoglyphWarning(homoglyphs)
+      logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, `agent message created with ${warning}`)
+      json(res, { ...msg, homoglyph_warning: warning })
       return true
     }
     json(res, msg)
