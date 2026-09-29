@@ -71,6 +71,10 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   // checkout, scripts/hooks/tool-log-capture.py EXISTS, so fileExists is true and the pruner will
   // never treat a registered entry for it as stale.
   'tool-log-capture.py',
+  // Card b5b7eb6b child 971f7d4f (upstream 4a4eba39 #1398, MEMFMGATE918): same reasoning as
+  // tool-log-capture.py above -- scripts/hooks/memory-frontmatter-gate.py EXISTS in this checkout
+  // (ported the same round), so listing it now is safe under this file's own fileExists test.
+  'memory-frontmatter-gate.py',
 
   // Card 38c5e758: the nine Bash-matcher gates this app also writes. They were absent for a long
   // time and the earlier comment here called that harmless, on the reasoning that an unlisted

@@ -30,7 +30,7 @@ const hooks: Hooks = settings.hooks ?? {}
 const EXPECTED: Record<string, string[]> = {
   UserPromptSubmit: [
     'ledger-capture.py', 'inbox-drain.py', 'telegram-reply-directive.py',
-    'provenance-gate.py', 'staleness-guard.py', 'channel-inbox-drain.py',
+    'provenance-gate.py', 'memory-lookup-nudge.py', 'staleness-guard.py', 'channel-inbox-drain.py',
     'voice-reply-directive.py', 'telegram_progress.py',
     'marveen-commands.py',
   ],
@@ -47,6 +47,9 @@ const EXPECTED: Record<string, string[]> = {
     'secret-write-guard.py', 'big-file-guard.py', 'git-protect-guard.py', 'npm-protect-guard.py',
     'symlinked-node-modules-guard.py', 'blast-radius-guard.py', 'cd-chain-guard.py',
     'bash-egress-guard.py', 'noisy-command-guard.py', 'pentest-tool-install-guard.py',
+    // Card b5b7eb6b child 971f7d4f (upstream 4a4eba39 #1398, MEMFMGATE918): a memory write must
+    // parse back in the same PreToolUse step, or the harness never sees `description` for recall.
+    'memory-frontmatter-gate.py',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py'],
   SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py', 'marveen-commands.py'],
@@ -111,6 +114,7 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'bash-egress-guard.py', matcher: 'Bash' },
   { script: 'noisy-command-guard.py', matcher: 'Bash' },
   { script: 'pentest-tool-install-guard.py', matcher: 'Bash' },
+  { script: 'memory-frontmatter-gate.py', matcher: 'Write|Edit|MultiEdit' },
 ]
 
 describe('tracked .claude/settings.json hook anchor (#1305)', () => {
