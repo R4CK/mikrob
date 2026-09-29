@@ -30,9 +30,36 @@ describe('gateDecision', () => {
       expect(verdict.deny, tool).toBe(true)
       expect(verdict.kind, tool).toBe('connector-send')
     }
-    for (const tool of ['search_threads', 'get_message', 'get_thread', 'create_draft', 'update_draft', 'label_message']) {
+    // Card 498d53c1: only the explicit search_*/get_*/list_*/read_*/create_draft allowlist
+    // passes now (deny-by-default for the rest of the server) -- narrower than before, on
+    // purpose. update_draft and label_message moved to the deny-by-default test below.
+    for (const tool of ['search_threads', 'get_message', 'get_thread', 'create_draft']) {
       expect(gateDecision(`mcp__claude_ai_Gmail__${tool}`, {}).deny, tool).toBe(false)
     }
+  })
+
+  // Card 498d53c1 (Cybersec MEDIUM on a4164e95, GO'd @ce245184): the gmail__/resend__
+  // SERVER is deny-by-default now -- a tool-NAME list drifts (this is exactly how
+  // send_draft, or the hyphenated resend send-email, would have slipped past a list).
+  // Only the narrow read/draft allowlist is an explicit exception; everything else on
+  // either server, known or future, is a send until proven otherwise.
+  it('denies every gmail__/resend__ tool NOT on the explicit read/draft allowlist (deny-by-default)', () => {
+    // The exact bypass the card opened on: create_draft + send_draft pair.
+    expect(gateDecision('mcp__claude_ai_Gmail__send_draft', {}).deny).toBe(true)
+    // Previously guessed-safe by name shape alone -- narrowed out on purpose (see above).
+    expect(gateDecision('mcp__claude_ai_Gmail__update_draft', {}).deny).toBe(true)
+    expect(gateDecision('mcp__claude_ai_Gmail__label_message', {}).deny).toBe(true)
+    // The hyphenated Resend tool names (resend/resend-mcp source, MIT) that neither
+    // .*send_email.* (underscore) nor any prior check ever matched.
+    expect(gateDecision('mcp__resend__send-email', {}).deny).toBe(true)
+    expect(gateDecision('mcp__resend__send-batch-emails', {}).deny).toBe(true)
+    // Resend admin/mutation ops are not "email sends" but are still in-scope by design:
+    // deny-by-default means the whole server, not just the send-shaped names.
+    expect(gateDecision('mcp__resend__create-domain', {}).deny).toBe(true)
+    expect(gateDecision('mcp__resend__remove-api-key', {}).deny).toBe(true)
+    // Resend reads pass -- hyphenated get-*/list-* on the allowlist.
+    expect(gateDecision('mcp__resend__get-email', {}).deny).toBe(false)
+    expect(gateDecision('mcp__resend__list-domains', {}).deny).toBe(false)
   })
 
   // @aaronsb/google-workspace-mcp multiplexes read/draft/send behind one tool,
@@ -664,7 +691,7 @@ describe.skipIf(REPO_UNDER_TMP)('injectEmailSendGate', () => {
     injectEmailSendGate(s)
     const hooks = (s.hooks as Record<string, unknown>).PreToolUse as Array<Record<string, unknown>>
     expect(hooks).toHaveLength(1)
-    expect(hooks[0].matcher).toBe('Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail__.*')
+    expect(hooks[0].matcher).toBe('Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail__.*|.*resend__.*')
     const inner = (hooks[0].hooks as Array<{ command: string }>)[0]
     expect(inner.command).toContain('email-send-gate.mjs')
   })

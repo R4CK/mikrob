@@ -227,10 +227,42 @@ def main():
         draft_only = {"tool_name": "mcp__claude_ai_Gmail__send_message", "tool_input": {"draftId": "d1"}}
         code, out, err = run_hook(draft_only, rules_file=active)
         check("connector send of a draftId: body unreadable, fail-closed (exit 2)", code, 2)
-        for tool in ("search_threads", "get_thread", "label_message"):
+        for tool in ("search_threads", "get_thread"):
             code, out, err = run_hook({"tool_name": f"mcp__claude_ai_Gmail__{tool}", "tool_input": {"q": "x — y"}},
                                       rules_file=active)
             check(f"connector {tool} is a read: passes untouched (exit 0)", code, 0)
+
+        # --- Card 498d53c1 (Cybersec MEDIUM on a4164e95): gmail__/resend__ deny-by-default ---
+        # A tool-NAME list drifts -- send_draft (create_draft + send_draft pair) and the
+        # hyphenated resend__send-email both slipped past name-list checks before this
+        # existed. Only search_*/get_*/list_*/read_*/create_draft is explicitly out of
+        # scope; everything else on either server is audited as a send now.
+        code, out, err = run_hook({"tool_name": "mcp__claude_ai_Gmail__send_draft",
+                                   "tool_input": {"draftId": "d1"}}, rules_file=active)
+        check("connector send_draft: unreadable body, fail-closed (exit 2)", code, 2)
+        # Previously guessed-safe by shape alone -- narrowed out on purpose (see above).
+        code, out, err = run_hook({"tool_name": "mcp__claude_ai_Gmail__label_message",
+                                   "tool_input": {"q": "x — y"}}, rules_file=active)
+        check("connector label_message: no longer on the safe list, unreadable body denies (exit 2)", code, 2)
+        code, out, err = run_hook({"tool_name": "mcp__claude_ai_Gmail__create_draft",
+                                   "tool_input": {"q": "x — y"}}, rules_file=active)
+        check("connector create_draft: on the explicit safe list, passes untouched (exit 0)", code, 0)
+        # Real Resend tool names are hyphenated (resend/resend-mcp source, MIT) -- neither
+        # .*send_email.* (underscore) nor the old gmail-only connector regex ever matched them.
+        code, out, err = run_hook({"tool_name": "mcp__resend__send-email",
+                                   "tool_input": {"to": "a@b.hu", "subject": "Teszt",
+                                                  "text": CLEAN_HU_OK + " — mégis."}}, rules_file=active)
+        check("resend send-email with em dash blocks (exit 2)", code, 2)
+        code, out, err = run_hook({"tool_name": "mcp__resend__send-email",
+                                   "tool_input": {"to": "a@b.hu", "subject": "Teszt", "text": CLEAN_HU_OK}},
+                                  rules_file=active)
+        check("resend send-email clean passes (exit 0)", code, 0)
+        code, out, err = run_hook({"tool_name": "mcp__resend__get-email", "tool_input": {"id": "e1"}},
+                                  rules_file=active)
+        check("resend get-email is a read: passes untouched (exit 0)", code, 0)
+        code, out, err = run_hook({"tool_name": "mcp__resend__create-domain", "tool_input": {"name": "x.hu"}},
+                                  rules_file=active)
+        check("resend create-domain: not on the safe list, unreadable body denies (exit 2)", code, 2)
 
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)

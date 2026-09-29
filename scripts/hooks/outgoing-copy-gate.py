@@ -1417,6 +1417,15 @@ def status_report():
     ])
 
 
+_EMAIL_SERVER_RE = re.compile(r"__(?:[a-z0-9_]*gmail|resend)__", re.I)
+_EMAIL_SAFE_TOOL_RE = re.compile(r"^(?:search|get|list|read)[-_]|^create[-_]draft$", re.I)
+
+
+def _bare_tool_name(name):
+    idx = name.rfind("__")
+    return name[idx + 2:] if idx != -1 else name
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -1428,12 +1437,21 @@ def main():
 
     if re.search(r"telegram.*__reply$", tool, re.I):
         telegram_gate(tool_input)  # exits; never falls through
+    # Card 498d53c1 (Cybersec MEDIUM on a4164e95): a tool-NAME list drifts -- send_draft and
+    # the hyphenated resend__send-email both slipped past the name-list check below before
+    # this existed. Deny-by-default for the whole gmail__/resend__ SERVER: any tool on it that
+    # is not an explicit read/draft op is audited as a send, whatever it is named.
+    if _EMAIL_SERVER_RE.search(tool):
+        if _EMAIL_SAFE_TOOL_RE.search(_bare_tool_name(tool)):
+            sys.exit(0)  # explicit read/draft op -- not a send
+        text, unreadable = collect_mcp_body(tool_input), None
     # GMAILCONNECTOR914: the claude.ai Gmail connector's send-shaped tools
     # (mcp__claude_ai_Gmail__send_message / reply / reply_all / forward) carry
     # no "send_email" in the name, so this detector fell through to sys.exit(0)
     # with no audit. Anything ending in "gmail__<send-shaped tool>" is a send
-    # now, whatever the server-name prefix.
-    if re.search(r"send_email", tool, re.I) or re.search(r"gmail__(reply|reply_all|send_message|forward)$", tool, re.I):
+    # now, whatever the server-name prefix. (Kept as a fast path for readability;
+    # subsumed by the deny-by-default branch above for any gmail__/resend__ name.)
+    elif re.search(r"send_email", tool, re.I):
         text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")

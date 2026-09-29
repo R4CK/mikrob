@@ -91,6 +91,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **Shebang-futtathatóság guard**: repo-szintű teszt, ami elbukik, ha egy shebanggel kezdődő követett fájl nem futtatható index-móddal van commitolva. Egy nem futtatható operatív script némán bukik (a hívó `|| true`-ja elnyeli az exit 126-ot), és a WSL-es fájlrendszer helyben eltakarja a hibát.
 - **Fenntartott, folyamaton belüli küldő-azonosítók**: az üzenet-API megtagadja a fenntartott rendszer-küldőneveket a HTTP-felületen, tehát egy hitelesített rendszer-direktívát csak folyamaton belüli író tud létrehozni, és a címzett ezt ellenőrizni tudja. Upstream nem ismeri.
 - **Fenntartott nevű ügynök-könyvtár ejtése és tripwire**: az `agents/` alá kézzel létrehozott, fenntartott nevű könyvtár nem kerül be az ügynök-listába, tehát semmi nem küld a nevében; a fenntartott vagy rosszul formált nevű könyvtárról egyszeri riasztás megy a fő ügynöknek, a tartalmáról karantén-másolattal.
+- **Email-küldő MCP-szerverek deny-by-default kapuja**: a Gmail-connector és a Resend MCP szerver TELJES tool-készlete tiltott alapból, kivéve egy szűk, explicit olvasás/draft-allowlistet; egy tool-név lista helyett a szerver egésze van gate-elve, hogy egy új vagy máshogy elnevezett küldő-tool ne csúszhasson át néven.
 
 ### Helyi-LLM / offload rendszer
 
