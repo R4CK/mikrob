@@ -83,6 +83,7 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `injected-port-adapters` -- a portok mögé a valós SDK/IO/crypto adapter bekötése
 - `senior-engineer-modes` -- backend-architect / production-debugger / performance-optimizer / clean-architecture-refactorer módok
 - `threat-modeling` -- STRIDE a designra, mielőtt építesz
+- `karpathy-guidelines` -- KÖTELEZŐ minden kódolási kártyánál (lásd lent)
 - `karpathycoder` -- think-before-coding, minimal diff, sebészi változtatás
 - `coderefactor` -- refaktor viselkedés-változás nélkül
 - `sp-test-driven-development` -- teszt előbb, aztán implementáció
@@ -165,3 +166,7 @@ Ugyanarra az egységre 3 sikertelen lokális próba után állj le, és írd meg
 ONLINE marad, és a router is így dönt: authz, tenant-izoláció, architektúra, több-fájlos wiring,
 biztonsági döntés. Ha `route: online` jön vissza, ne vitatkozz vele -- írd meg magad.
 <!-- END GENERATED: local-llm-first -->
+
+## KÖTELEZŐ: `karpathy-guidelines` minden kódolási feladatnál (Peti szabály 2026-09-29, Telegram 9709)
+
+Minden kódot író, módosító vagy refaktoráló kártyánál a munka ELSŐ lépése, még a kódolás előtt: töltsd be a `karpathy-guidelines` skillt a `Skill` toollal (forrás: multica-ai/andrej-karpathy-skills @2c60614, MIT), és kövesd a négy elvét: gondolkodj kódolás előtt (feltételezések kimondva), egyszerűség először, sebészi változtatás, cél-vezérelt végrehajtás (ellenőrizhető siker-kritérium). A `karpathycoder` a kiegészítő, részletesebb változata (commit előtti önellenőrzéshez); a kettő nem helyettesíti egymást. A REVIEW `Skills:` sorában a `karpathy-guidelines` kötelezően szerepel; ha hiányzik, az gate-finding. Kivétel csak a triviális, egysoros javítás.
