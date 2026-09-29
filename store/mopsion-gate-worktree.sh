@@ -191,12 +191,19 @@ fi
 # fallback in --remove stops being needed, without anyone running a migration.
 printf '%s\n' "$AGENT" >"$TREE/$OWNER_FILE"
 
-# Map @cleancore/<name> -> directory inside the WORKTREE, derived from package.json names. Never a
+# The workspace package scope. It was hardcoded as @cleancore; the CleanCore -> mopsion package rename
+# (every packages/*/package.json now declares "@mopsion/<name>") turned the scoped branch below into
+# dead code, so `apps/web/node_modules/@mopsion` stayed a DIRECTORY SYMLINK into the shared main clone
+# and a live `vite dev` gate served the main clone's @mopsion/* source instead of the gated SHA's
+# (QA2, card 2cd88790, msg 5980). Same fix agent-worktree.sh already carries.
+SCOPE="@mopsion"
+
+# Map $SCOPE/<name> -> directory inside the WORKTREE, derived from package.json names. Never a
 # hardcoded list: a package added after this script was written must still resolve.
 declare -A PKG_DIR=()
 while IFS= read -r pj; do
   name="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('name',''))" "$pj" 2>/dev/null || true)"
-  case "$name" in @cleancore/*) PKG_DIR["$name"]="$(dirname "$pj")" ;; esac
+  case "$name" in "$SCOPE"/*) PKG_DIR["$name"]="$(dirname "$pj")" ;; esac
 done < <(find "$TREE/packages" "$TREE/apps" -maxdepth 3 -name package.json -not -path '*/node_modules/*' 2>/dev/null)
 
 link_entry() { # $1 = source entry, $2 = destination path
@@ -237,14 +244,14 @@ while IFS= read -r src; do
       mkdir -p "$dst/.vite"
       continue
     fi
-    if [ "$base" = "@cleancore" ]; then
-      mkdir -p "$dst/@cleancore"
+    if [ "$base" = "$SCOPE" ]; then
+      mkdir -p "$dst/$SCOPE"
       while IFS= read -r pkg; do
-        pname="@cleancore/$(basename "$pkg")"
+        pname="$SCOPE/$(basename "$pkg")"
         own="${PKG_DIR[$pname]:-}"
         # The worktree's own source when it has that package at this SHA, else the main clone's
         # entry (a package that did not exist yet at this SHA still has to resolve).
-        link_entry "${own:-$(readlink -f "$pkg")}" "$dst/@cleancore/$(basename "$pkg")"
+        link_entry "${own:-$(readlink -f "$pkg")}" "$dst/$SCOPE/$(basename "$pkg")"
         scoped=$((scoped+1))
       done < <(find "$entry" -mindepth 1 -maxdepth 1 2>/dev/null)
     else
@@ -254,6 +261,6 @@ while IFS= read -r src; do
   done < <(find "$src" -mindepth 1 -maxdepth 1 2>/dev/null)
 done < <(find "$MAIN" -maxdepth 4 -type d -name node_modules -not -path '*/node_modules/*' 2>/dev/null)
 
-echo "node_modules: $linked entry links + $scoped @cleancore links, in REAL directories (no directory symlink)"
+echo "node_modules: $linked entry links + $scoped $SCOPE links, in REAL directories (no directory symlink)"
 echo "path: $TREE"
 echo "tear down with: bash store/mopsion-gate-worktree.sh --agent $AGENT --remove $TREE"
