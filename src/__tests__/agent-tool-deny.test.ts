@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { readAgentToolDeny } from '../web/agent-config.js'
+import { readAgentToolDeny, sanitizeToolDenyList, TOOL_DENY_MAX_PER_AGENT } from '../web/agent-config.js'
 import { writeAgentSettingsFromProfile, agentSettingsPath } from '../web/agent-scaffold.js'
 import { loadProfileTemplate } from '../web/profiles.js'
 
@@ -68,6 +68,43 @@ describe('readAgentToolDeny (card 21597530)', () => {
   })
 })
 
+// Card b5b7eb6b child b0d84dc3 (upstream ORSIKTXRATA914, 1abd45cf): only bare tool names are
+// accepted, entries are deduped, and the list is capped -- ported alongside readAgentToolDeny.
+describe('sanitizeToolDenyList (card b0d84dc3)', () => {
+  it('rejects a "Tool(pattern)" shape -- this field can only ever widen the deny list with bare names', () => {
+    expect(sanitizeToolDenyList(['Bash(rm *)'])).toEqual([])
+  })
+
+  it('rejects an empty string and a name starting with a digit or symbol', () => {
+    expect(sanitizeToolDenyList(['', '1Tool', '_Tool', 'Tool Name'])).toEqual([])
+  })
+
+  it('accepts an mcp__server__tool-shaped name', () => {
+    expect(sanitizeToolDenyList(['mcp__playwright__browser_click'])).toEqual(['mcp__playwright__browser_click'])
+  })
+
+  it('trims whitespace before validating', () => {
+    expect(sanitizeToolDenyList(['  Artifact  '])).toEqual(['Artifact'])
+  })
+
+  it('dedupes repeated entries, keeping the first occurrence', () => {
+    expect(sanitizeToolDenyList(['Artifact', 'Workflow', 'Artifact'])).toEqual(['Artifact', 'Workflow'])
+  })
+
+  it('caps at TOOL_DENY_MAX_PER_AGENT, keeping the first entries in order', () => {
+    const names = Array.from({ length: TOOL_DENY_MAX_PER_AGENT + 10 }, (_, i) => `Tool${i}`)
+    const out = sanitizeToolDenyList(names)
+    expect(out).toHaveLength(TOOL_DENY_MAX_PER_AGENT)
+    expect(out).toEqual(names.slice(0, TOOL_DENY_MAX_PER_AGENT))
+  })
+
+  it('non-array input -> []', () => {
+    expect(sanitizeToolDenyList('Artifact')).toEqual([])
+    expect(sanitizeToolDenyList(null)).toEqual([])
+    expect(sanitizeToolDenyList(undefined)).toEqual([])
+  })
+})
+
 describe('writeAgentSettingsFromProfile unions toolDeny, never replaces (card 21597530)', () => {
   function deny(): string[] {
     const settings = JSON.parse(readFileSync(agentSettingsPath(AGENT_NAME), 'utf-8'))
@@ -103,5 +140,26 @@ describe('writeAgentSettingsFromProfile unions toolDeny, never replaces (card 21
     writeConfig({ toolDeny: ['TotallyNotARealTool123'] })
     expect(() => writeAgentSettingsFromProfile(AGENT_NAME, loadProfileTemplate('default'))).not.toThrow()
     expect(deny()).toContain('TotallyNotARealTool123')
+  })
+
+  it('a "Tool(pattern)" shaped toolDeny entry is rejected, not written as a pattern rule', () => {
+    writeConfig({ toolDeny: ['Bash(rm *)', 'Artifact'] })
+    writeAgentSettingsFromProfile(AGENT_NAME, loadProfileTemplate('default'))
+    const list = deny()
+    expect(list).not.toContain('Bash(rm *)')
+    expect(list).toContain('Artifact')
+  })
+
+  // Card b0d84dc3 (upstream ORSIKTXRATA914): a hand-edited toolDeny must survive a SECOND spawn
+  // write (the respawn), not only the first -- settings.json is derived state, rebuilt wholesale
+  // from the profile on every spawn, so this is the exact scenario the durable agent-config.json
+  // home exists for.
+  it('a toolDeny entry survives a second write (the respawn)', () => {
+    writeConfig({ toolDeny: ['Artifact'] })
+    writeAgentSettingsFromProfile(AGENT_NAME, loadProfileTemplate('default'))
+    expect(deny()).toContain('Artifact')
+    // The respawn: nothing about the config changed, but the scaffold rebuilds settings.json again.
+    writeAgentSettingsFromProfile(AGENT_NAME, loadProfileTemplate('default'))
+    expect(deny()).toContain('Artifact')
   })
 })
