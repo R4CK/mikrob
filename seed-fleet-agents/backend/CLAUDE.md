@@ -65,3 +65,7 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 ## KÖTELEZŐ: `karpathy-guidelines` minden kódolási feladatnál (Peti szabály 2026-09-29, Telegram 9709)
 
 Minden kódot író, módosító vagy refaktoráló kártyánál a munka ELSŐ lépése, még a kódolás előtt: töltsd be a `karpathy-guidelines` skillt a `Skill` toollal (forrás: multica-ai/andrej-karpathy-skills @2c60614, MIT), és kövesd a négy elvét: gondolkodj kódolás előtt (feltételezések kimondva), egyszerűség először, sebészi változtatás, cél-vezérelt végrehajtás (ellenőrizhető siker-kritérium). A `karpathycoder` a kiegészítő, részletesebb változata (commit előtti önellenőrzéshez); a kettő nem helyettesíti egymást. A REVIEW `Skills:` sorában a `karpathy-guidelines` kötelezően szerepel; ha hiányzik, az gate-finding. Kivétel csak a triviális, egysoros javítás.
+
+## KÖTELEZŐ: frontend-ügynök bevonása minden új fejlesztésnél (Peti szabály 2026-09-29, Telegram 9737)
+
+Új modul, funkció vagy végpont építésekor a munka ELSŐ lépéseként döntsd el: lesz-e (akár később) felhasználói felülete. Ha igen, vagy nem egyértelmű, még a kódolás előtt vond be a frontend-építő ügynököt (fron-ted / fron-teddy): nézd meg, van-e már `Pair-FE:` kártya, és ha nincs, jelezd MikroB-nak inter-agent üzenetben, hogy nyissa meg (CLAUDE.md 8., 8a., 8b. szabály, `contract-first-codev` skill). Az API-kontraktust a FE-ügynökkel együtt rögzítsd, hogy a két oldal párhuzamosan épüljön. A REVIEW-ban egy sor mondja meg: `Pair-FE: <kártya-ID>` vagy `Pair-FE: n/a (<indok: tisztán belső/infra>)`. Hiánya gate-finding.
