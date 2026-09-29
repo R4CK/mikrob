@@ -351,7 +351,10 @@ egészben újraírja. Egy kézzel oda írt eszköznév a következő újraindít
 a tartós hely a `toolDeny` mező. Minta-alakú szabály (`Bash(...)`, `Read(...)`) itt nem fogadható
 el, csak csupasz eszköznév (`sanitizeToolDenyList` elutasítja, `agent-config.ts`); a mező csak
 BŐVÍTENI tudja a tiltást, szűkíteni nem, és legfeljebb `TOOL_DENY_MAX_PER_AGENT` (64) bejegyzést
-fogad el.
+fogad el. Egy kvalifikált MCP-eszköznév (`mcp__szerver__eszköz`) kötőjelet is tartalmazhat a
+szerver-szegmensben (pl. `mcp__code-review-graph__apply_refactor_tool`) -- ezt a validáció
+elfogadja (kártya 7a52fa9c). Egy érvénytelen alakú vagy a limit fölötti bejegyzés csendben nem
+tűnik el: mindkettő WARN logot ír (`sanitizeToolDenyList: dropped ...` / `... truncated ...`).
 
 ```json
 {

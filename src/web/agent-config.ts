@@ -1,6 +1,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { logger } from '../logger.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { safeJoin, sanitizeAgentName } from './sanitize.js'
@@ -789,18 +790,38 @@ export function readAgentCapabilities(name: string): string[] {
 // rule -- this field can only ever WIDEN the deny list, and a name-shaped allowlist keeps a
 // mistyped or injected value from becoming a pattern rule with surprising reach. Deduped and
 // capped so a malformed/hostile agent-config.json cannot grow the deny list without bound.
-const TOOL_DENY_NAME_RE = /^[A-Za-z][A-Za-z0-9_]{0,127}$/
+//
+// Card 7a52fa9c (Cybersec GO on b0d84dc3 @fe4b323f, msg 6197): the regex did not allow a hyphen,
+// so a real qualified MCP tool name whose SERVER segment is hyphenated (e.g.
+// mcp__code-review-graph__apply_refactor_tool) was silently dropped -- an operator who thought
+// they had denied a dangerous MCP tool had, in fact, denied nothing, with no signal anywhere.
+// Truncation past TOOL_DENY_MAX_PER_AGENT was equally silent. Both cases now WARN.
+const TOOL_DENY_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/
 export const TOOL_DENY_MAX_PER_AGENT = 64
 
-export function sanitizeToolDenyList(raw: unknown): string[] {
+export function sanitizeToolDenyList(raw: unknown, context?: string): string[] {
   if (!Array.isArray(raw)) return []
+  const label = context ? `agent ${context}` : 'agent-config'
   const out: string[] = []
   for (const v of raw) {
-    if (typeof v !== 'string') continue
+    if (typeof v !== 'string') {
+      logger.warn({ value: v, context }, 'sanitizeToolDenyList: dropped a non-string toolDeny entry')
+      continue
+    }
     const t = v.trim()
-    if (!TOOL_DENY_NAME_RE.test(t) || out.includes(t)) continue
+    if (!TOOL_DENY_NAME_RE.test(t)) {
+      logger.warn({ value: t, context }, `sanitizeToolDenyList: dropped an invalid-shape toolDeny entry (${label})`)
+      continue
+    }
+    if (out.includes(t)) continue // silent: a duplicate is not a lost deny, the name is already in
+    if (out.length >= TOOL_DENY_MAX_PER_AGENT) {
+      logger.warn(
+        { value: t, context, max: TOOL_DENY_MAX_PER_AGENT },
+        `sanitizeToolDenyList: truncated toolDeny at TOOL_DENY_MAX_PER_AGENT (${label})`,
+      )
+      continue
+    }
     out.push(t)
-    if (out.length >= TOOL_DENY_MAX_PER_AGENT) break
   }
   return out
 }
@@ -809,7 +830,7 @@ export function readAgentToolDeny(name: string): string[] {
   const configPath = join(agentDir(name), 'agent-config.json')
   try {
     const config = JSON.parse(readFileOr(configPath, '{}'))
-    return sanitizeToolDenyList(config.toolDeny)
+    return sanitizeToolDenyList(config.toolDeny, name)
   } catch {
     return []
   }

@@ -5,12 +5,13 @@
 // function's "replaces the deny list wholesale on each spawn" comment reading as though a caller
 // could silently lose a security-purpose deny entry by supplying toolDeny; this pins that it cannot,
 // because readAgentToolDeny's result is PUSHED onto the same array, never assigned over it.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { readAgentToolDeny, sanitizeToolDenyList, TOOL_DENY_MAX_PER_AGENT } from '../web/agent-config.js'
 import { writeAgentSettingsFromProfile, agentSettingsPath } from '../web/agent-scaffold.js'
 import { loadProfileTemplate } from '../web/profiles.js'
+import { logger } from '../logger.js'
 
 const ROOT = join(__dirname, '..', '..')
 const AGENT_NAME = 'tooldeny-scaffold-test'
@@ -102,6 +103,56 @@ describe('sanitizeToolDenyList (card b0d84dc3)', () => {
     expect(sanitizeToolDenyList('Artifact')).toEqual([])
     expect(sanitizeToolDenyList(null)).toEqual([])
     expect(sanitizeToolDenyList(undefined)).toEqual([])
+  })
+})
+
+// Card 7a52fa9c (Cybersec GO on b0d84dc3 @fe4b323f, msg 6197): a hyphenated qualified MCP tool
+// name (real shape: mcp__<server>__<tool>, and the server segment CAN be hyphenated) was silently
+// dropped by the old letters/digits/underscore-only regex -- an operator who denied
+// mcp__code-review-graph__apply_refactor_tool got no deny and no warning. Truncation past
+// TOOL_DENY_MAX_PER_AGENT was equally silent.
+describe('sanitizeToolDenyList: hyphenated names and silent-drop signal (card 7a52fa9c)', () => {
+  it('keeps a hyphenated qualified MCP tool name (the exact shape that silently dropped)', () => {
+    expect(sanitizeToolDenyList(['mcp__code-review-graph__apply_refactor_tool']))
+      .toEqual(['mcp__code-review-graph__apply_refactor_tool'])
+  })
+
+  it('WARNs when an invalid-shape entry is dropped', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    expect(sanitizeToolDenyList(['Bash(rm *)', 'Artifact'])).toEqual(['Artifact'])
+    expect(warn).toHaveBeenCalledTimes(1)
+    const [fields, msg] = warn.mock.calls[0]!
+    expect(msg).toContain('sanitizeToolDenyList')
+    expect((fields as { value?: string }).value).toBe('Bash(rm *)')
+    warn.mockRestore()
+  })
+
+  it('WARNs once per entry truncated past TOOL_DENY_MAX_PER_AGENT, naming the value', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    const names = Array.from({ length: TOOL_DENY_MAX_PER_AGENT + 3 }, (_, i) => `Tool${i}`)
+    const out = sanitizeToolDenyList(names)
+    expect(out).toHaveLength(TOOL_DENY_MAX_PER_AGENT)
+    expect(warn).toHaveBeenCalledTimes(3)
+    const values = warn.mock.calls.map(([fields]) => (fields as { value?: string }).value)
+    expect(values).toEqual([`Tool${TOOL_DENY_MAX_PER_AGENT}`, `Tool${TOOL_DENY_MAX_PER_AGENT + 1}`, `Tool${TOOL_DENY_MAX_PER_AGENT + 2}`])
+    warn.mockRestore()
+  })
+
+  it('does NOT warn on a duplicate -- the name is already denied, nothing was lost', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    expect(sanitizeToolDenyList(['Artifact', 'Artifact'])).toEqual(['Artifact'])
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('readAgentToolDeny threads the agent name into the warning context', () => {
+    writeConfig({ toolDeny: ['Bash(rm *)'] })
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    expect(readAgentToolDeny(AGENT_NAME)).toEqual([])
+    expect(warn).toHaveBeenCalledTimes(1)
+    const [fields] = warn.mock.calls[0]!
+    expect((fields as { context?: string }).context).toBe(AGENT_NAME)
+    warn.mockRestore()
   })
 })
 
