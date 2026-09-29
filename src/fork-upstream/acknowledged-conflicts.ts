@@ -1757,7 +1757,36 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // Two independently measured incidents protect the fork's async runCommand; upstream's spawnSync
   // reversion reopens both.
   'src/web/command-task.ts':
-    "KEEP the fork's async execFileAsync-based runCommand WHOLESALE. (a) The fork's own comment documents a 2026-08-07 dashboard self-deadlock: a command task's script curled this very dashboard, and a SYNCHRONOUS spawn blocks the whole Node event loop (HTTP server included) until the child exits, so the curl could never be served -- exactly what upstream's spawnSync reintroduces. (b) Card 423b8274/Cybersec 8304 item 2: execFileAsync kills the process GROUP on timeout; upstream's spawnSync only kills the direct child, so a command task whose script backgrounds work or forks via a shell redirect leaves orphans running while the caller is told \"timeout\". Neither regression is adopted. ADOPT (additive, orthogonal): upstream's resolveCommandPlaceholders() ({{PROJECT_ROOT}}/{{INSTALL_DIR}} shell-quoted substitution, so a shipped command task's script does not hard-code the install path), wired into the KEPT async path as `await runCommand(resolveCommandPlaceholders(task.command), timeoutMs)` -- same call-site change as upstream's, minus the sync regression.",
+    "KEEP the fork's async execFileAsync-based runCommand WHOLESALE. (a) The fork's own comment documents a 2026-08-07 dashboard self-deadlock: a command task's script curled this very dashboard, and a SYNCHRONOUS spawn blocks the whole Node event loop (HTTP server included) until the child exits, so the curl could never be served -- exactly what upstream's spawnSync reintroduces. (b) Card 423b8274/Cybersec 8304 item 2: execFileAsync kills the process GROUP on timeout; upstream's spawnSync only kills the direct child, so a command task whose script backgrounds work or forks via a shell redirect leaves orphans running while the caller is told \"timeout\". Neither regression is adopted. ADOPT (additive, orthogonal): upstream's resolveCommandPlaceholders() ({{PROJECT_ROOT}}/{{INSTALL_DIR}} shell-quoted substitution, so a shipped command task's script does not hard-code the install path), wired into the KEPT async path as `await runCommand(resolveCommandPlaceholders(task.command), timeoutMs)` -- same call-site change as upstream's, minus the sync regression." +
+    " GAP FOUND 2026-09-29 (backend3, card b5b7eb6b child b388e2af, checking this file for upstream #1580 f5c39088): the 'ADOPT resolveCommandPlaceholders()' sentence above was never actually executed -- grep confirms `resolveCommandPlaceholders` and the literal `{{PROJECT_ROOT}}`/`{{INSTALL_DIR}}` do not appear anywhere in this file (or the whole src tree). This is a recorded decision with no code behind it, not a silent reversal -- worth its own small follow-up card rather than fixing inline here, since it is orthogonal to f5c39088 (a different, later upstream round) and this card's own named file. NOT fixed in this commit.",
+  // Card b5b7eb6b child b388e2af (upstream f5c39088 #1580, command-task-async.test.ts). Add/add:
+  // both sides independently fixed the SAME spawnSync-blocks-the-event-loop bug and wrote their own
+  // regression test for it, this fork's well before upstream's (see the command-task.ts entry
+  // above, already fully decided). KEEP THE FORK'S SIDE WHOLESALE. Checked upstream's version for
+  // anything genuinely missing rather than assuming parity: (1) upstream's 'large stdout' test --
+  // already covered structurally, not by a dedicated test: exec-async.ts's execFileAsync drains
+  // child.stdout via an event listener as data arrives (no pipe-buffer wait), unlike spawnSync's
+  // all-at-once buffering upstream's fix works around. (2) upstream's 'timeout kills the process,
+  // does not keep running in the background' -- the fork's runCommand kills the process GROUP on
+  // timeout (card 423b8274/Cybersec 8304, see the entry above), a STRONGER guarantee than upstream's
+  // direct-child-only kill, which is exactly the gap that entry already refuses to adopt. (3)
+  // upstream's 'a second tick is skipped while the first run is still in flight' (a PER-TASK
+  // in-flight guard inside runCommandTask itself) -- not needed here: schedule-runner.ts's own tick
+  // loop has a coarser but strictly stronger guard ('previous tick still running, skipping this
+  // tick', verified present) plus a single `await runCommandTask(...)` call site (this file's own
+  // test already pins both facts), so no tick can start while ANY task from the previous tick,
+  // command or otherwise, is still running -- overlap of the SAME task is structurally impossible,
+  // not merely guarded per-task. Nothing upstream has is missing; the fork's mechanism is different
+  // and, on point (3), more conservative.
+  'src/__tests__/command-task-async.test.ts':
+    "KEEP THE FORK'S SIDE WHOLESALE -- an independently-written regression test for the same bug " +
+    "upstream's f5c39088 fixes, on the ALREADY-decided fork implementation (see the command-task.ts " +
+    "entry above). The fork's test asserts the fix by source-grep (no *Sync child_process API " +
+    "anywhere in the file) plus a behavioural timer probe and an awaited-call-site check; upstream's " +
+    "asserts by mocking logger/config and probing in-flight-guard/large-stdout/background-kill " +
+    "behaviour that does not exist in this fork's architecture (see the command-task.ts entry for " +
+    "why none of it is a gap). Neither is adoptable onto the other without rewriting it for a " +
+    "different implementation.",
 
   // Same tmux-resolver reasoning as agent-worker.ts above; this file's diff is the diagnostic half
   // of the identical TMUXWINDOWATTR920 change with no functional side to weigh.
@@ -2262,7 +2291,8 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/active-model.ts': 'c7d429bdc07c4e74b39a9ad960221df7070c9470',
   'src/web/agent-config.ts': 'ed2d25fa225d29ef99bba596e732c80d174d6744',
   'src/web/agent-worker.ts': '5671caef73c3f2671e5e6631f25a18f6816c924b',
-  'src/web/command-task.ts': '541cb2411303f4ace7f52d2a94fd08a3ebc52230',
+  'src/web/command-task.ts': 'f80cf491d9cde4efb17bc2daa1ac70b65d634f9e',
+  'src/__tests__/command-task-async.test.ts': '1327b2d861b4ddaf8ffe436152130cad274b57f0',
   'src/web/stuck-tool-call-watcher.ts': '80f56ab7a9fa84b1f431db27a7eb240aa873e53c',
   // Card 14284837 (backend2, 2026-09-25), fork/upstream re-decision, area "dashboard/src --
   // tesztek 2/2" -- see the matching ACKNOWLEDGED_CONFLICTS entries above for the reasoning.
