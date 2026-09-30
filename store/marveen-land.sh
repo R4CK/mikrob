@@ -152,6 +152,12 @@ rebuild_live_install() {
 # precondition and the header-count check cannot drift between the two copies.
 # shellcheck source=./decisions-append-union.sh
 . "$(dirname "$0")/decisions-append-union.sh"
+# decisions_tail_append_ok (card 375a81c1): the invariant try_append_union does not check -- a pure
+# addition that lands somewhere other than the file's own tail. Run on the card branch alone, before
+# the merge is even attempted, so a mid-file splice is refused with a clear pointer at the branch's
+# own insertion point rather than a raw conflict three steps downstream.
+# shellcheck source=./decisions-tail-append-guard.sh
+. "$(dirname "$0")/decisions-tail-append-guard.sh"
 # shellcheck source=./bump-fork-version.sh
 . "$(dirname "$0")/bump-fork-version.sh"
 # downward_check (card dfff9b37): what ELSE rides along in origin/develop..<branch>. Shared verbatim
@@ -325,6 +331,17 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     [ -n "${LAND_LOCK_FD:-}" ] && exec {LAND_LOCK_FD}>&- 2>/dev/null
     return 0
   }
+
+  # DECISIONS.md TAIL-APPEND PRE-CHECK (card 375a81c1), on the CARD BRANCH ALONE, before the merge
+  # is even attempted. $wt's HEAD is origin/$DEFAULT_BRANCH right now (just checked out above), so
+  # its merge-base with $branch is exactly the branch's own fork point.
+  local _dtag_mb; _dtag_mb="$(git -C "$wt" merge-base HEAD "$branch" 2>/dev/null)"
+  if [ -n "$_dtag_mb" ] && ! decisions_tail_append_ok "$wt" "$_dtag_mb" "$branch" "DECISIONS.md"; then
+    echo "$agent: REFUSED -- DECISIONS.md on $branch is not a pure tail append (see the lines above)."
+    echo "$agent: Move the new/continued entry to the file's own end, referencing the parent entry"
+    echo "$agent: by date/title, and re-push."
+    return 4
+  fi
 
   # What ELSE rides along (card dfff9b37). Runs BEFORE the merge, so a refusal costs nothing and a
   # report is on screen at the one moment somebody is watching this landing. Merges dropped -- see

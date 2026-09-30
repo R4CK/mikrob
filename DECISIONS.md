@@ -16037,3 +16037,33 @@ email-approval-gate.test.py (mindkettő új google-gmail/gmail-mcp canary esetek
 --noEmit tiszta.
 
 Ki döntött: Cybersec (GO a 498d53c1-en, a regresszió mérése), backend3 (végrehajtás).
+
+## 2026-09-30 -- 375a81c1 -- DECISIONS.md: csak a fajl vegere szabad irni, uj strukturalis or a landolas elott
+
+**Dontes.** Mert (2026-09-29 reggel): 5 mopsion-landolas bukott DECISIONS.md-utkozesen (9d3ebe9e,
+fc11dd82, 2cd88790, 3f4545ab, 6e730b11), es a decisions-append-union.sh egyiket sem oldotta fel
+jogosan -- a bejegyzesek nem a fajl VEGERE kerultek, hanem a KOZEPERE, a kapcsolodo korabbi
+bejegyzes melle. Ket ag, ami ugyanoda szur be, VALODI git-utkozest kap meg akkor is, ha mindket
+oldal tiszta hozzaadas (0 torles) -- nem az osszefuzes a kerdes, hanem melyik bejegyzes kerul
+elobbre, es ezt a dontest a szerkeszto pozicioja hallgatolagosan hozza meg.
+
+**Vegrehajtas.** (1) `project-decisions-log` skill + root CLAUDE.md Dontesnaplo-szabaly bovitve:
+uj bejegyzes -- delta/folytatas is -- KIZAROLAG a fajl vegere kerulhet, a kapcsolatot a cim/szoveg
+mondja ki, sose a pozicio. (2) uj `store/decisions-tail-append-guard.sh`
+(`decisions_tail_append_ok`): a merge-base fajlja bajtra pontos elotagja-e a kartya-ag fajljanak --
+ha nem, a landolas MEG A MERGE MEGKISERLESE ELOTT visszautasitja, beszedes hibaval (hova kell
+mozgatni az uj bejegyzest). Bedrotozva `mopsion-land.sh`-ba es `marveen-land.sh`-ba, kozvetlenul a
+throwaway worktree letrehozasa utan, a tenyleges `git merge --no-ff` elott. Ez KIEGESZITI, nem
+helyettesiti a mar meglevo `decisions-append-only-guard.sh`-t (az a "semmi nem torlodott"
+invariansot ellenorzi, ez az uj a szigorubb "minden uj tartalom a vegen van" invariansot).
+
+**Ellenorzes.** Uj selftest (`decisions-tail-append-guard.sh --selftest`, 7 eset: tiszta
+tail-append PASS, mid-file splice a szulo melle REFUSE valos padding-gel a beszurasi pont utan,
+ket tail-append egy commitban PASS, tavoli atiras REFUSE, uj fajl PASS, teljes torles REFUSE, ures
+base PASS) es egy vitest wrapper (`decisions-tail-append-guard-selftest.test.ts`), ami azt is
+ellenorzi, hogy mindket landolo script tenylegesen HIVJA a guardot a sajat `merge --no-ff`
+sora ELOTT (index-osszehasonlitassal a forraskodban). `npx tsc --noEmit` a teljes marveen repon
+tiszta.
+
+Ki dontott: backend2 (dispatch: MikroB msg 6483, urgent, 5 same-morning landing-bukas merese).
+Gate: QA + Cybered (a landolasi pipeline adatvesztes-vedelmet erinti, ahogy a kartya kerte).
