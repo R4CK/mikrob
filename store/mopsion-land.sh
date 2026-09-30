@@ -68,6 +68,12 @@ die() { echo "REFUSED: $2" >&2; exit "$1"; }
 # one side rewrites or deletes an existing entry -- see the file's own header for the measured gap.
 # shellcheck source=./decisions-append-only-guard.sh
 . "$(dirname "$0")/decisions-append-only-guard.sh"
+# decisions_tail_append_ok (card 375a81c1): the invariant decisions-append-only-guard.sh does NOT
+# check -- pure additions that land somewhere other than the file's own tail. Run BEFORE the merge
+# is even attempted, on the card branch alone, so a mid-file splice is refused with a clear pointer
+# at the branch's own insertion point instead of surfacing three steps downstream as a raw conflict.
+# shellcheck source=./decisions-tail-append-guard.sh
+. "$(dirname "$0")/decisions-tail-append-guard.sh"
 # downward_check (card dfff9b37): what ELSE rides along below the gated sha. Shared verbatim with
 # marveen-land.sh -- same reason as above, a duplicated landing precondition drifts.
 # shellcheck source=./landing-downward-check.sh
@@ -452,6 +458,16 @@ rm -rf "$WT"
 git -C "$MAIN" worktree add --detach -q "$WT" origin/main || die 3 "could not create the landing worktree"
 cleanup() { git -C "$MAIN" worktree remove --force "$WT" >/dev/null 2>&1; }
 trap cleanup EXIT
+
+# DECISIONS.md TAIL-APPEND PRE-CHECK (card 375a81c1), on the CARD BRANCH ALONE, before the merge is
+# even attempted. $WT's HEAD is origin/main right now (just checked out above), so its merge-base
+# with $SHA is exactly the branch's own fork point -- the same root cause five same-morning landing
+# failures shared (9d3ebe9e, fc11dd82, 2cd88790, 3f4545ab, 6e730b11): a pure addition, but spliced
+# next to the entry it continues instead of appended at the file's own end.
+_dtag_mb="$(git -C "$WT" merge-base HEAD "$SHA" 2>/dev/null)"
+if [ -n "$_dtag_mb" ] && ! decisions_tail_append_ok "$WT" "$_dtag_mb" "$SHA" "DECISIONS.md"; then
+  die 4 "DECISIONS.md on $BRANCH is not a pure tail append (see the lines above) -- move the new/continued entry to the file's own end, referencing the parent entry by date/title, and re-push"
+fi
 
 LANDED_BY="${LANDED_BY:-$(landed_by_from_worktrees "$BRANCH" "$(git -C "$MAIN" worktree list 2>/dev/null)")}"
 say "landed-by: $LANDED_BY"
