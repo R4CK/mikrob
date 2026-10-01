@@ -38,6 +38,12 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'inbox-drain.py',
   'channel-inbox-drain.py',
   'ledger-capture.py',
+  // The Telegram sub-agent reply fix trio (telegram-subagent-reply-fix.py):
+  // without these here a stale entry survives every boot while its
+  // ledger-capture sibling is pruned (KNOWNTRIO924, review 2026-09-24).
+  'ledger-outbound.py',
+  'telegram-reply-guard.py',
+  'telegram-reply-directive.py',
   // Card 74181db2: this app now registers the outgoing-copy-gate into ROLE agents'
   // settings too (it used to reach only the main agent's, which is written from
   // templates/settings.json.template rather than from here).
