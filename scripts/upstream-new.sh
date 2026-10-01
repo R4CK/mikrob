@@ -24,8 +24,20 @@
 
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LEDGER="$ROOT/store/upstream-ported.json"
 UPSTREAM_REF="${UPSTREAM_REF:-upstream/develop}"
+
+# Card 251b1765: the ledger is ANCHORED TO THE MAIN CLONE, never to $ROOT. Every fork-agent
+# works from its own per-card worktree (store/agent-worktree-marveen.sh) with its own
+# index/working tree, but ALL of them share the same upstream review -- a decision made in one
+# worktree must be visible to the next review, wherever it runs next (same reason
+# mopsion-suite-run.sh's semaphore lock anchors to the main clone, not to the worktree
+# invoking it). Before this, $LEDGER followed $ROOT, so three worktrees independently decided
+# on the SAME shas (measured: backend/backend2/backend3 each carried their own port/skip
+# entries the other two, and the main clone's placeholder-pending rows, never saw) --
+# duplicated review work and, worse, a risk of two agents independently re-porting the same
+# upstream commit differently.
+LEDGER="${MARVEEN_MAIN:-/home/neon/marveen}/store/upstream-ported.json"
+LEDGER_LOCK="$LEDGER.lock"
 
 # Seed the ledger on first use. It is per-install state (every fork makes its own
 # decisions), so it lives under the gitignored store/ rather than being tracked.
@@ -49,6 +61,13 @@ if [ "${1:-}" = "mark" ]; then
   fi
   # Expand a short sha to the full one so the ledger stays comparable.
   FULL_SHA="$(git -C "$ROOT" rev-parse "$SHA" 2>/dev/null || echo "$SHA")"
+  # flock (card 251b1765): the ledger is now shared across every worktree that points
+  # MARVEEN_MAIN at the same main clone -- two agents marking a decision in the same second
+  # must not race a read-modify-write and drop one of them. `-x` (default) exclusive, held for
+  # the whole read+write below via a dedicated lock file next to the ledger (never the ledger
+  # file itself, so a reader never blocks on a stale fd).
+  exec 9>"$LEDGER_LOCK"
+  flock -x 9
   python3 - "$LEDGER" "$BUCKET" "$FULL_SHA" "$REASON" <<'PY'
 import json, sys, datetime
 ledger, bucket, sha, reason = sys.argv[1:5]
