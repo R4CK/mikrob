@@ -41,6 +41,20 @@ makes you forget it -- that is the failure this script exists to prevent.
 The ledger is **per-install state** -- every fork makes its own decisions -- so it lives under
 the gitignored `store/` and the script seeds it on first use. Nothing to set up.
 
+**It is anchored to the MAIN CLONE (`${MARVEEN_MAIN:-/home/neon/marveen}/store/upstream-ported.json`),
+never to the checkout invoking the script** (card 251b1765). This fleet runs every agent's upstream
+review from that agent's own per-card worktree (`store/agent-worktree-marveen.sh`) -- a separate
+index and working tree per agent -- but the review itself is ONE decision per upstream SHA, shared
+by the whole fork. Before this fix the ledger followed the invoking checkout's own root, so three
+worktrees independently reviewed and recorded the SAME commits, each blind to the other two's
+decisions -- duplicated work, and a real risk of two agents reaching different verdicts on the same
+commit without either ever finding out. Writes take an exclusive `flock` on a lock file next to the
+ledger (`<ledger>.lock`), so two agents marking a decision in the same instant cannot race a
+read-modify-write and silently drop one of them -- selftest:
+`scripts/__tests__/upstream-new-ledger.test.sh`.
+
+If you are scripting against a DIFFERENT main clone (not this fleet's), set `MARVEEN_MAIN`.
+
 ## Which upstream ref
 
 `UPSTREAM_REF` (default `upstream/develop`). Point it at whatever you track:
