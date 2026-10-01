@@ -281,7 +281,7 @@ Minden sub-ágens mappája gitignore-olt (`agents/` mappa), így a titkos kulcso
 ```json
 {
   "model": "claude-sonnet-5",
-  "profileId": "developer-senior",
+  "securityProfile": "developer-senior",
   "memoryIsolation": false,
   "team": {
     "role": "member",
@@ -336,7 +336,7 @@ Ezek a sablonok az ágens scaffold során töltődnek ki és kerülnek az `agent
 | `marketer.json` | strict | Marketing-specifikus hozzáférések |
 | `researcher.json` | strict | Kutató profil, korlátozott írás |
 
-A profil beállítása az ágens `agent-config.json` `profileId` mezőjével történik, és a dashboard "Ágensek" felületén módosítható.
+A profil beállítása az ágens `agent-config.json` `securityProfile` mezőjével történik, és a dashboard "Ágensek" felületén módosítható.
 
 ### toolDeny -- ágensenkénti eszköz-tiltás (kontextus-fogantyú, kártya b0d84dc3)
 
@@ -344,7 +344,8 @@ Az `agent-config.json` opcionális `toolDeny` mezője csupasz Claude Code eszkö
 (pl. `"Artifact"`, `"Workflow"`, `"mcp__szerver__eszkoz"`), amit a scaffold MINDEN spawnkor
 hozzáfűz a `.claude/settings.json` `permissions.deny` listájához. Egy egész eszköznévre szóló
 deny nem csak tilt: a Claude Code az eszköz sémáját ki is hagyja a promptból, tehát ez a
-per-ágens kontextus-terhelés egyik fogantyúja.
+per-ágens kontextus-terhelés egyik fogantyúja (egy kutató ágensnél a 7 soha nem használt eszköz
+levétele -25% alapterhelést mért).
 
 Fontos: a `.claude/settings.json` deny-listája a profilból SZÁRMAZTATOTT, a scaffold spawnkor
 egészben újraírja. Egy kézzel oda írt eszköznév a következő újraindításkor nyomtalanul eltűnik;
@@ -358,8 +359,8 @@ tűnik el: mindkettő WARN logot ír (`sanitizeToolDenyList: dropped ...` / `...
 
 ```json
 {
-  "profileId": "researcher",
-  "toolDeny": ["Artifact", "Workflow", "AskUserQuestion"]
+  "securityProfile": "researcher",
+  "toolDeny": ["Artifact", "Workflow", "AskUserQuestion", "ReportFindings", "SendFeedback", "ListAgents", "Skill"]
 }
 ```
 

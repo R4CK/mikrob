@@ -629,9 +629,149 @@ migrate_channels_restart() {
   return 0
 }
 
+# Idle-path keepalive probe installation (Linux only). The repo has shipped
+# scripts/channel-keepalive-probe.sh and placeholder units under scripts/systemd/
+# for a while, but nothing ever installed them, so on every existing host the ONLY
+# producer of store/.channel-keepalive freshness was organic inbound traffic.
+# A quiet night then looks exactly like a wedged session: the file ages past the
+# dashboard's 45-minute liveness ceiling, channel-monitor respawn-panes a healthy
+# main agent (conversation lost, no --continue), that kills the telegram plugin,
+# and channels.sh's dead-plugin watchdog exits 181s later for a second, whole-unit
+# restart. Measured on a live install the night of 2026-09-12/13: 13 restarts, one
+# every ~50 minutes, from midnight until the owner woke up.
+#
+# The installer template fix reaches new installs only -- this is what lands it on
+# the machines that have the bug today. Idempotent: it writes nothing once the
+# timer unit exists. The probe itself never fakes liveness (it proves the session,
+# its claude pid and a descending telegram poller are alive before touching), so a
+# genuinely dead channel still ages out and still gets recovered.
+install_keepalive_probe_timer() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  [ -x "$INSTALL_DIR/scripts/channel-keepalive-probe.sh" ] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  # Derive the install's service id from the unit that certainly exists rather
+  # than re-deriving it from .env: the units are what we are extending, and a
+  # renamed agent whose old units are still on disk must get the timer next to
+  # THOSE, not next to a name nothing else uses.
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    _svc_id="$(basename "$chan_unit" -channels.service)"
+    _ka_unit="${_svc_id}-channel-keepalive-probe"
+    [ -f "$units_dir/${_ka_unit}.timer" ] && continue
+    # BOT_NAME is only assigned further down this script, so read it here
+    # instead of inheriting an empty one into the unit Description.
+    _bot_name="$(sed -n 's/^BOT_NAME=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
+    [ -n "$_bot_name" ] || _bot_name="Marveen"
+    _tz_line="# no explicit TZ detected; inheriting host default"
+    _tz="$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)"
+    [ -n "$_tz" ] && [ "$_tz" != "UTC" ] && _tz_line="Environment=TZ=$_tz"
+    cat >"$units_dir/${_ka_unit}.service" <<EOF
+[Unit]
+Description=${_bot_name} token-free idle-path channel keepalive probe
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/scripts/channel-keepalive-probe.sh
+Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+${_tz_line}
+StandardOutput=append:$INSTALL_DIR/store/channel-keepalive-probe.log
+StandardError=append:$INSTALL_DIR/store/channel-keepalive-probe.log
+EOF
+    # No Requires=/Wants= on the triggered service -- see repair_morning_timer
+    # above for what that costs.
+    cat >"$units_dir/${_ka_unit}.timer" <<EOF
+[Unit]
+Description=${_bot_name} channel keepalive probe every 3 minutes
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=3min
+AccuracySec=20s
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl --user daemon-reload 2>/dev/null || true
+    if systemctl --user enable --now "${_ka_unit}.timer" >/dev/null 2>&1; then
+      echo -e "  Keepalive-szonda telepitve (3 percenkent, hamis respawn ellen): ${_ka_unit}.timer"
+    else
+      echo -e "  FIGYELEM: ${_ka_unit}.timer unit megirva, de az engedelyezese nem sikerult -- inditsd kezzel: systemctl --user enable --now ${_ka_unit}.timer"
+    fi
+  done
+  return 0
+}
+
+# Morning-timer parking (MORNTIMERPARK914 -- the missing half of the locked
+# MORNCONS1 decision, 2026-07-27). The #1313 installer change stops ENABLING
+# the 07:27 morning timer on NEW installs, but every already-installed Linux
+# host still fires it daily: a paid headless `claude -p` run whose config root
+# carries no channel allowlist, so its reply tool rejects the owner's chat_id
+# and the run refuses itself -- burning money and delivering nothing. On a host
+# whose headless config DOES carry an allowlist it is worse: a second briefing
+# 3 minutes before the runner-task one.
+#
+# Two MORNCONS1 conditions, both enforced here:
+#   1. The runner-side task must be PROVABLY present and enabled on THIS host
+#      before the timer stops -- otherwise the operator loses their briefing on
+#      the very morning after the update. The gate reads the LIVE task config
+#      (seeded by ensureDefaultScheduledTasks() on every dashboard start), not
+#      the repo copy; a host where the operator deleted the task (#796
+#      tombstone) keeps its timer and says so loudly.
+#   2. Noisy in the update log, silent toward the user: every branch below
+#      prints to update.sh's own output only -- nothing here can reach Telegram.
+#
+# ONE-SHOT migration, not a standing rule: #1313 documents manual re-enable
+# (`systemctl --user enable --now <id>-morning.timer`) as the supported
+# operator path, and an unconditional park would fight that operator on every
+# update check. The marker below records that the migration ran once; after
+# that, an enabled timer is treated as a deliberate choice and left alone.
+park_morning_timer() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  marker="$INSTALL_DIR/store/.morning-timer-parked"
+  [ -f "$marker" ] && return 0
+  [ -d "$units_dir" ] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  task_cfg="$HOME/.claude/scheduled-tasks/reggeli-napindito/task-config.json"
+  _park_blocked=0
+  _parked_units=""
+  for morn_timer in "$units_dir/"*-morning.timer; do
+    [ -f "$morn_timer" ] || continue
+    _mt_unit="$(basename "$morn_timer")"
+    _mt_state="$(systemctl --user is-enabled "$_mt_unit" 2>/dev/null || true)"
+    [ "$_mt_state" = "enabled" ] || continue
+    if [ ! -f "$task_cfg" ] || ! grep -q '"enabled"[[:space:]]*:[[:space:]]*true' "$task_cfg" 2>/dev/null; then
+      # MORNCONS1 condition 1: without the runner task this timer is the only
+      # briefing path -- do NOT park it, do NOT write the marker (retry on the
+      # next update check, once the dashboard has seeded the task).
+      echo -e "  FIGYELEM: ${_mt_unit} engedelyezve marad -- a reggeli-napindito runner-task nincs jelen/engedelyezve ezen a hoston, es a timer az egyetlen napindito-ut (MORNCONS1 kapu)."
+      _park_blocked=1
+      continue
+    fi
+    if systemctl --user disable --now "$_mt_unit" >/dev/null 2>&1; then
+      echo -e "  Reggeli 07:27 timer leallitva -- a napinditot a 07:30-as runner-task viszi az elo csatorna-munkamenetbol (MORNCONS1): ${_mt_unit}"
+      echo -e "  ${DIM:-}Visszakapcsolas, ha megis a timer-ut kell: systemctl --user enable --now ${_mt_unit}${NC:-}"
+      _parked_units="$_parked_units $_mt_unit"
+    else
+      echo -e "  FIGYELEM: ${_mt_unit} disable nem sikerult -- kezzel: systemctl --user disable --now ${_mt_unit}"
+      _park_blocked=1
+    fi
+  done
+  # Settle the migration only when nothing was left behind: a blocked or
+  # failed park must retry on the next run instead of being recorded as done.
+  if [ "$_park_blocked" = "0" ]; then
+    echo "parked_at=$(date +%FT%T%z) units:${_parked_units:- none-needed}" > "$marker" 2>/dev/null || true
+  fi
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
+  install_keepalive_probe_timer "$@"
+  park_morning_timer "$@"
   return 0
 }
 run_unit_maintenance
