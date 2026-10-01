@@ -9,6 +9,7 @@
 # elore-jelzest ad (Telegram + shutdown.exe /s /t 300), nem azonnali /t 0-t.
 #
 # Usage: quota-shutdown-guard.sh [--dry-run] [--force-reason "..."]
+#        quota-shutdown-guard.sh --selftest
 set -uo pipefail
 
 STORE="/home/neon/marveen/store"
@@ -17,7 +18,9 @@ API="http://localhost:3420"
 HARDSTOP="$STORE/weekly-hard-stop.json"
 STATE="$STORE/quota-shutdown-guard-state.json"
 LOG="$STORE/quota-shutdown-guard.log"
-SHUTDOWN_EXE="/mnt/c/Windows/System32/shutdown.exe"
+# Env-override only for the selftest (a FAKE binary, never the real path) -- the production
+# cron config never sets this, so it always resolves to the real shutdown.exe.
+SHUTDOWN_EXE="${SHUTDOWN_EXE:-/mnt/c/Windows/System32/shutdown.exe}"
 DRY_RUN=0
 FORCE_REASON=""
 
@@ -66,14 +69,100 @@ trigger_shutdown() {
     log "DRY-RUN: nem hivom meg a shutdown.exe-t, csak logolok."
     return 0
   fi
-  echo "{\"triggeredDate\": \"$today\", \"reason\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$reason"), \"triggeredAt\": \"$(date -Iseconds)\"}" > "$STATE"
-  # 5 perces elore-jelzes, Windows-oldalrol megszakithato: shutdown.exe /a
-  if [ -x "$SHUTDOWN_EXE" ]; then
-    "$SHUTDOWN_EXE" /s /t 300 /c "MikroB: $reason -- automatikus leallitas 5 percen belul. Megszakitas: nyiss cmd-t, futtasd: shutdown /a" 2>&1 | tee -a "$LOG"
-  else
+  # Card 0daf0033: a STATE csak SIKERES shutdown.exe hivas UTAN irodik -- ezelott a STATE a
+  # hivas ELOTT irodott, tehat egy WSL-interop hiba (mert hianyzik/nem futtathato, VAGY mert
+  # maga az exec() hibazik, lasd lent) is "ma mar elsult"-nek szamitott, es a guard a nap
+  # hatralevo reszeben csendben kihagyta az ujraprobalkozast -- a gep soha nem allt le, es
+  # senki nem tudott rola, amig valaki at nem nezte a logot.
+  if [ ! -x "$SHUTDOWN_EXE" ]; then
     log "HIBA: $SHUTDOWN_EXE nem talalhato/nem futtathato -- WSL interop hianyzik?"
+    send_telegram "Flotta: quota-shutdown-guard HIBA -- $SHUTDOWN_EXE nem futtathato (WSL interop hianyzik?). A gep NEM allt le, STATE nem irodott, ujraprobal a kovetkezo korben. Kezi beavatkozas ajanlott."
+    return 1
   fi
+  # 5 perces elore-jelzes, Windows-oldalrol megszakithato: shutdown.exe /a
+  # NEM pipe-olva tee-be: a `cmd | tee` mintanal a pipe utolso tagjanak (tee) sikeres exit
+  # code-ja elfedi a cmd sajat hibajat pipefail NELKUL is olvashatatlanna tenne a hivo szamara
+  # -- itt kulon valtozoba gyujtve, hogy a $? explicit, egyertelmu legyen.
+  local shutdown_out shutdown_rc
+  shutdown_out="$("$SHUTDOWN_EXE" /s /t 300 /c "MikroB: $reason -- automatikus leallitas 5 percen belul. Megszakitas: nyiss cmd-t, futtasd: shutdown /a" 2>&1)"
+  shutdown_rc=$?
+  printf '%s\n' "$shutdown_out" >> "$LOG"
+  if [ "$shutdown_rc" -ne 0 ]; then
+    log "HIBA: $SHUTDOWN_EXE exit=$shutdown_rc -- kimenet: $shutdown_out"
+    send_telegram "Flotta: quota-shutdown-guard HIBA -- shutdown.exe hivas sikertelen (exit=$shutdown_rc): $shutdown_out. A gep NEM allt le, STATE nem irodott, ujraprobal a kovetkezo korben. Kezi beavatkozas ajanlott."
+    return 1
+  fi
+  echo "{\"triggeredDate\": \"$today\", \"reason\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$reason"), \"triggeredAt\": \"$(date -Iseconds)\"}" > "$STATE"
+  return 0
 }
+
+if [ "${1:-}" = "--selftest" ]; then
+  # Card 0daf0033: izolalt STATE/LOG/SHUTDOWN_EXE minden esethez, SOHA nem a valodi gep leallitasa
+  # vagy az eles STATE/LOG. send_telegram no-op-ra cserelve, hogy a selftest ne kuldjon valodi
+  # Telegram uzenetet minden futtataskor.
+  n=0
+  fail=0
+  t() { n=$((n + 1)); [ "$2" = "$3" ] || { echo "  FAIL $1: got [$2] want [$3]"; fail=1; }; }
+  send_telegram() { :; }
+
+  TMPD="$(mktemp -d)"
+  trap 'rm -rf "$TMPD"' EXIT
+
+  # Case 1: shutdown.exe sikeresen lefut (exit 0) -> STATE irodik, trigger_shutdown 0-val ter vissza.
+  FAKE_OK="$TMPD/fake-ok.sh"
+  printf '#!/bin/bash\nexit 0\n' > "$FAKE_OK"
+  chmod +x "$FAKE_OK"
+  STATE="$TMPD/state-ok.json"
+  LOG="$TMPD/log-ok.txt"
+  SHUTDOWN_EXE="$FAKE_OK"
+  : > "$LOG"
+  trigger_shutdown "selftest-ok"
+  rc=$?
+  t "success: trigger_shutdown returns 0" "$rc" "0"
+  t "success: STATE file IS written" "$([ -f "$STATE" ] && echo YES || echo NO)" "YES"
+
+  # Case 2: shutdown.exe lefut de hibazik (mert a mert elesben eset: EINVAL, exit!=0) -> NO
+  # STATE, trigger_shutdown nemzerovel ter vissza, a hiba a LOG-ba is bekerul.
+  FAKE_FAIL="$TMPD/fake-fail.sh"
+  printf '#!/bin/bash\necho "shutdown.exe: Invalid argument" >&2\nexit 1\n' > "$FAKE_FAIL"
+  chmod +x "$FAKE_FAIL"
+  STATE="$TMPD/state-fail.json"
+  LOG="$TMPD/log-fail.txt"
+  SHUTDOWN_EXE="$FAKE_FAIL"
+  : > "$LOG"
+  trigger_shutdown "selftest-fail"
+  rc=$?
+  t "failure (EINVAL-shaped): trigger_shutdown returns non-zero" "$([ "$rc" -ne 0 ] && echo NONZERO || echo ZERO)" "NONZERO"
+  t "failure (EINVAL-shaped): STATE file NOT written" "$([ -f "$STATE" ] && echo YES || echo NO)" "NO"
+  t "failure (EINVAL-shaped): the exit code and the exe's own stderr are both logged" \
+    "$(grep -q 'HIBA.*exit=1.*Invalid argument' "$LOG" && echo YES || echo NO)" "YES"
+
+  # Case 3: a SHUTDOWN_EXE egyaltalan nem letezik/nem futtathato -> NO STATE, nemzero exit,
+  # a hivas meg sem kiserletve (nincs exec, csak a -x teszt bukik).
+  STATE="$TMPD/state-missing.json"
+  LOG="$TMPD/log-missing.txt"
+  SHUTDOWN_EXE="$TMPD/does-not-exist.exe"
+  : > "$LOG"
+  trigger_shutdown "selftest-missing"
+  rc=$?
+  t "missing binary: trigger_shutdown returns non-zero" "$([ "$rc" -ne 0 ] && echo NONZERO || echo ZERO)" "NONZERO"
+  t "missing binary: STATE file NOT written" "$([ -f "$STATE" ] && echo YES || echo NO)" "NO"
+
+  # Case 4: DRY_RUN=1 marad valtozatlan viselkedesu (nincs regresszio a meglevo ag ellen).
+  DRY_RUN=1
+  STATE="$TMPD/state-dryrun.json"
+  LOG="$TMPD/log-dryrun.txt"
+  SHUTDOWN_EXE="$FAKE_OK"
+  : > "$LOG"
+  trigger_shutdown "selftest-dryrun"
+  rc=$?
+  t "dry-run: trigger_shutdown returns 0 without calling the binary" "$rc" "0"
+  t "dry-run: STATE file NOT written (dry-run never commits)" "$([ -f "$STATE" ] && echo YES || echo NO)" "NO"
+  DRY_RUN=0
+
+  echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
+  exit $fail
+fi
 
 # --- FELTETEL 1: 99% heti kvota ES minden flotta-ugynok leallt ---
 percent="$(python3 -c 'import json;print(json.load(open("'"$HARDSTOP"'")).get("percent",0))' 2>/dev/null || echo 0)"
@@ -101,14 +190,18 @@ fi
 
 if [ -n "$FORCE_REASON" ]; then
   send_telegram "Flotta: quota-shutdown-guard manualis force -- $FORCE_REASON"
+  # Card 0daf0033: exit code = trigger_shutdown sajat sikeressege, nem feltetlen 0 -- a
+  # scheduled-task runner failThreshold-ja (task-config.json, failThreshold:2) csak igy latja
+  # meg, ha a shutdown.exe hivas rendszeresen hibazik; eddig a mindig-0 exit code miatt ez a
+  # jelzo soha nem tudott kioldani.
   trigger_shutdown "manualis force: $FORCE_REASON"
-  exit 0
+  exit $?
 fi
 
 if [ "$percent" -ge 99 ] 2>/dev/null && [ "$running_flotta" = "0" ]; then
   send_telegram "Flotta: heti kvota ${percent}%, minden flotta-ugynok leallt -- Peti keresere (2026-08-27) automatikus gep-leallitas indul, 5 perces megszakithato ablakkal."
   trigger_shutdown "heti kvota ${percent}%, minden flotta-ugynok leallt"
-  exit 0
+  exit $?
 fi
 
 # A napi 20:00-as, kvotatol fuggetlen hatarido-szabaly TOROLVE (Peti 2026-09-02, Telegram --
