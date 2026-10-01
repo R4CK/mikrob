@@ -53,6 +53,45 @@ say() { echo "  $*"; }
 fmt_bad_files() { sed -n 's/^\[warn\] //p' | grep -v '^Code style issues found' || true; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 
+# Migration numbers, against the CURRENT main (card 79311937, QA+Cybersec finding: c483a990's
+# landing REFUSED on a migration the branch only DELETED, 2026-10-01 02:09). Three-dot diff picks
+# ONE merge-base; under a criss-cross history (two unrelated merge-bases, git warns "multiple merge
+# bases") it can pick a base that lacks a file the branch actually inherited via the OTHER base,
+# making an unchanged migration look "new" and collide with itself on main (card TBD, measured
+# 2026-09-02: 82423624 vs origin/main, migration 0148 identical byte-for-byte on both sides, chosen
+# base a5787b90 lacked it while the other real merge-base d45d4935 had it). A same-number match is
+# only a REAL collision when the two files differ; identical content means the branch already has
+# main's own migration, not a competing one.
+#
+# --diff-filter=d (lowercase: EXCLUDE deleted) is the actual fix -- the default `git diff
+# --name-only` also lists paths the branch DELETED, so a migration removed on the branch no longer
+# exists at $sha, and `git rev-parse $sha:$m` below errored out; worse, the stale `existing` lookup
+# against origin/main then misread it as a same-numbered collision and refused a landing that was
+# gate-complete. A delete is never a numbering collision -- there is no competing file to clash with.
+#
+# Returns 0 = no collision (or none to check), 1 = a real collision (message already on stderr in
+# the same shape die() uses, so the caller can just `|| die 3 "..."` without duplicating it).
+migration_number_check() {
+  local main="$1" sha="$2"
+  local migs m n existing
+  migs="$(git -C "$main" diff --name-only --diff-filter=d "origin/main...$sha" | grep 'migrations/' || true)"
+  for m in $migs; do
+    n="$(basename "$m" | cut -d_ -f1)"
+    existing="$(git -C "$main" ls-tree --name-only origin/main packages/control-plane/migrations/ | grep "/${n}_" || true)"
+    if [ -n "$existing" ]; then
+      if [ "$(git -C "$main" rev-parse "origin/main:$existing")" = "$(git -C "$main" rev-parse "$sha:$m")" ]; then
+        say "migration $(basename "$m") -- number $n already on main, IDENTICAL content (criss-cross merge-base false match), not a collision"
+        continue
+      fi
+      echo "REFUSED: migration number $n is ALREADY TAKEN on origin/main -- renumber on the branch first" >&2
+      return 1
+    fi
+    say "migration $(basename "$m") -- number $n free on main"
+  done
+  [ -n "$migs" ] || say "no migrations in this branch"
+  return 0
+}
+
 # Measurement helpers (link_node_modules / norm_errors / typecheck_errors / test_failures) live in
 # ONE place, so a trap fixed here is not left standing in the pre-gate sentinel that shares them.
 # shellcheck source=./mopsion-tsc-lib.sh
@@ -326,6 +365,53 @@ if [ "${1:-}" = "--selftest" ]; then
   t "an unrelated root file (e.g. README.md) is still NOT bundle-relevant" \
     "$(printf 'README.md\n' | grep -qE '^(apps/web/|apps/superadmin/|packages/|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|\.npmrc$|tsconfig[A-Za-z0-9._-]*\.json$|vite\.config\.[cm]?[jt]s$)' && echo yes || echo no)" \
     "no"
+
+  # migration_number_check (card 79311937): a REAL git fixture, not pre-digested text -- this
+  # function calls git diff/ls-tree/rev-parse directly, so the regression (a deleted migration
+  # misread as a collision, c483a990's REFUSED landing) is a property of those git invocations, not
+  # of hand-fed fixture strings.
+  MIGWORK="$(mktemp -d)"
+  MIGMAIN="$MIGWORK/main"
+  git init -q -b main "$MIGMAIN"
+  git -C "$MIGMAIN" config user.email s@s
+  git -C "$MIGMAIN" config user.name s
+  mkdir -p "$MIGMAIN/packages/control-plane/migrations"
+  echo 'CREATE TABLE foo();' >"$MIGMAIN/packages/control-plane/migrations/0001_foo.sql"
+  git -C "$MIGMAIN" add -A
+  git -C "$MIGMAIN" commit -qm base
+  git -C "$MIGMAIN" update-ref refs/remotes/origin/main main
+
+  git -C "$MIGMAIN" checkout -q -b del-branch
+  git -C "$MIGMAIN" rm -q packages/control-plane/migrations/0001_foo.sql
+  git -C "$MIGMAIN" commit -qm "delete dead migration"
+  DEL_SHA="$(git -C "$MIGMAIN" rev-parse HEAD)"
+  git -C "$MIGMAIN" checkout -q main
+
+  n=$((n + 1))
+  if migration_number_check "$MIGMAIN" "$DEL_SHA" >/dev/null 2>&1; then
+    echo "  ok   migration_number_check: a branch that only DELETES a migration is NOT a collision"
+  else
+    echo "  FAIL migration_number_check: a delete-only branch was refused (regression c483a990)"
+    fail=1
+  fi
+
+  git -C "$MIGMAIN" checkout -q -b collide-branch
+  echo 'CREATE TABLE bar();' >"$MIGMAIN/packages/control-plane/migrations/0001_bar.sql"
+  git -C "$MIGMAIN" add -A
+  git -C "$MIGMAIN" commit -qm "add colliding migration"
+  COLLIDE_SHA="$(git -C "$MIGMAIN" rev-parse HEAD)"
+  git -C "$MIGMAIN" checkout -q main
+
+  n=$((n + 1))
+  if migration_number_check "$MIGMAIN" "$COLLIDE_SHA" >/dev/null 2>&1; then
+    echo "  FAIL migration_number_check: a same-numbered, different-content migration must be refused"
+    fail=1
+  else
+    echo "  ok   migration_number_check: a same-numbered, different-content migration IS refused"
+  fi
+
+  rm -rf "$MIGWORK"
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -408,28 +494,7 @@ DOWN_LOG="$(git -C "$MAIN" log --no-merges --format='%h%x09%s' "origin/main..$SH
 downward_check "$DOWN_LOG" "$CARD" "$ALLOW_STACKED" 1 "downward" \
   || die 3 "commits belonging to OTHER cards sit between origin/main and $GSHORT -- they were never gated for this landing"
 
-# Migration numbers, against the CURRENT main. Three-dot diff picks ONE merge-base; under a
-# criss-cross history (two unrelated merge-bases, git warns "multiple merge bases") it can pick a
-# base that lacks a file the branch actually inherited via the OTHER base, making an unchanged
-# migration look "new" and collide with itself on main (card TBD, measured 2026-09-02: 82423624 vs
-# origin/main, migration 0148 identical byte-for-byte on both sides, chosen base a5787b90 lacked it
-# while the other real merge-base d45d4935 had it). A same-number match is only a REAL collision
-# when the two files differ; identical content means the branch already has main's own migration,
-# not a competing one.
-MIGS="$(git -C "$MAIN" diff --name-only "origin/main...$SHA" | grep 'migrations/' || true)"
-for m in $MIGS; do
-  n="$(basename "$m" | cut -d_ -f1)"
-  existing="$(git -C "$MAIN" ls-tree --name-only origin/main packages/control-plane/migrations/ | grep "/${n}_" || true)"
-  if [ -n "$existing" ]; then
-    if [ "$(git -C "$MAIN" rev-parse "origin/main:$existing")" = "$(git -C "$MAIN" rev-parse "$SHA:$m")" ]; then
-      say "migration $(basename "$m") -- number $n already on main, IDENTICAL content (criss-cross merge-base false match), not a collision"
-      continue
-    fi
-    die 3 "migration number $n is ALREADY TAKEN on origin/main -- renumber on the branch first"
-  fi
-  say "migration $(basename "$m") -- number $n free on main"
-done
-[ -n "$MIGS" ] || say "no migrations in this branch"
+migration_number_check "$MAIN" "$SHA" || die 3 "migration number collision -- see above"
 
 # Lockfile vs package.json, BEFORE the merge (card b8c1ff36). Two cards in one day declared a
 # workspace dependency and did not regenerate pnpm-lock.yaml; both passed every gate and both blocked
