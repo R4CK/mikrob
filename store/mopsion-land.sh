@@ -412,6 +412,31 @@ if [ "${1:-}" = "--selftest" ]; then
 
   rm -rf "$MIGWORK"
 
+  # Card d8207630: poisoned-cache guard -- a HARNESS-FAULT baseline must NOT survive in the cache.
+  # Simulate: a cache file that contains only a HARNESS-FAULT line. The real code (lines ~696-712)
+  # must delete the file and exit 4 rather than reuse it on the next run. We test the decision
+  # logic in isolation with the same `grep -q '^HARNESS-FAULT'` pattern the real code uses.
+  PCACHE="$(mktemp)"
+  printf 'HARNESS-FAULT in apps/api/tsconfig.json: Check failed: index < size()\n' > "$PCACHE"
+  t "poisoned-cache: a HARNESS-FAULT baseline is detectable" \
+    "$(grep -q '^HARNESS-FAULT' "$PCACHE" && echo DETECTED || echo MISSED)" "DETECTED"
+  rm -f "$PCACHE"
+  PCACHE_CLEAN="$(mktemp)"
+  printf 'apps/api/src/main.ts: error TS2345: Argument of type'\''string'\''\n' > "$PCACHE_CLEAN"
+  t "poisoned-cache: a real error line is NOT mistaken for HARNESS-FAULT" \
+    "$(grep -q '^HARNESS-FAULT' "$PCACHE_CLEAN" && echo DETECTED || echo MISSED)" "MISSED"
+  rm -f "$PCACHE_CLEAN"
+  # Merge-side retry logic (card d8207630): grep -q on the retry's output file decides the second
+  # REFUSED check. Two probes: one that clears on retry, one that stays faulted.
+  MFAULT="$(mktemp)"
+  printf 'HARNESS-FAULT in apps/api/tsconfig.json: timeout\n' > "$MFAULT"
+  t "merge-retry: a harness-fault merge result is still detectable on the second attempt" \
+    "$(grep -q '^HARNESS-FAULT' "$MFAULT" && echo STILL_FAULTED || echo CLEARED)" "STILL_FAULTED"
+  printf '' > "$MFAULT"   # simulate retry succeeding (clean output)
+  t "merge-retry: after a clean retry the harness-fault check passes (no REFUSED)" \
+    "$(grep -q '^HARNESS-FAULT' "$MFAULT" && echo STILL_FAULTED || echo CLEARED)" "CLEARED"
+  rm -f "$MFAULT"
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -695,11 +720,28 @@ else
     link_node_modules "$BWT"
     typecheck_errors "$BWT" "$WANT_WEB" > "$BASE_ERR"
     git -C "$MAIN" worktree remove --force "$BWT" >/dev/null 2>&1
+    # Card d8207630: do NOT cache a poisoned baseline. If the harness itself crashed (V8 crash under
+    # load, timeout, missing deps), delete the file immediately so the next landing re-measures
+    # instead of inheriting a permanent REFUSED: harness fault. Measured: 3 landings refused
+    # (254e11db, cfb30062, 0e0fc05b) because one V8 crash wrote HARNESS-FAULT into the cache file
+    # for main 436f4915, and every subsequent landing hit the cache and was refused.
+    if grep -q '^HARNESS-FAULT' "$BASE_ERR"; then
+      echo "REFUSED: the baseline typecheck harness itself failed -- NOT caching this result:"
+      grep '^HARNESS-FAULT' "$BASE_ERR" | sed 's/^/    /'
+      rm -f "$BASE_ERR"
+      exit 4
+    fi
     say "typecheck: baseline main $BASE has $(wc -l < "$BASE_ERR") error(s)"
   fi
 
   MERGE_ERR="$(mktemp)"
   typecheck_errors "$WT" "$WANT_WEB" > "$MERGE_ERR"
+  # Card d8207630: a merge-side harness fault (V8 crash, timeout) is transient -- retry once before
+  # refusing. The baseline harness fault is permanent (same worktree, same load), so no retry there.
+  if grep -q '^HARNESS-FAULT' "$MERGE_ERR"; then
+    say "typecheck: merge-side HARNESS-FAULT detected -- retrying once (card d8207630)"
+    typecheck_errors "$WT" "$WANT_WEB" > "$MERGE_ERR"
+  fi
   if grep -q '^HARNESS-FAULT' "$MERGE_ERR" || grep -q '^HARNESS-FAULT' "$BASE_ERR"; then
     echo "REFUSED: the typecheck harness itself failed -- this is NOT a clean result:"
     grep -h '^HARNESS-FAULT' "$BASE_ERR" "$MERGE_ERR" | sed 's/^/    /'
