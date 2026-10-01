@@ -292,8 +292,14 @@ async function loadSettings() {
     const securityDefs = byModule.get('security') ?? []
     byModule.delete('security')
 
+    // module:'claude-plans' is just the CLAUDE_ROTATION_ENABLED toggle (PR2b)
+    // -- it renders below the plan-list widget in the synthetic Claude Plans
+    // tab, same pattern as securityDefs above.
+    const claudePlansDefs = byModule.get('claude-plans') ?? []
+    byModule.delete('claude-plans')
+
     // Fork: 'integrations' is a synthetic tab (like autonomy) rendered below.
-    const allModules = [...byModule.keys(), 'security', 'autonomy', 'integrations']
+    const allModules = [...byModule.keys(), 'security', 'autonomy', 'integrations', 'claude-plans']
     const savedTab = localStorage.getItem(SETTINGS_ACTIVE_TAB_KEY) || allModules[0]
     const activeTab = allModules.includes(savedTab) ? savedTab : allModules[0]
 
@@ -425,6 +431,45 @@ async function loadSettings() {
         renderIntegrationsContent(intContainer)
       }
     }
+
+    // Claude Plans tab (PR2b): synthetic like autonomy/security -- a hand-built
+    // plan-list + add-form widget, with the CLAUDE_ROTATION_ENABLED toggle
+    // (claudePlansDefs) appended below it exactly like security appends its
+    // registry keys after the auth card.
+    {
+      const mod = 'claude-plans'
+      const btn = document.createElement('button')
+      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
+      btn.dataset.tab = mod
+      btn.textContent = settingsModuleLabel(mod)
+      btn.addEventListener('click', () => activateSettingsTab(mod))
+      tabNav.appendChild(btn)
+
+      const panel = document.createElement('div')
+      panel.className = 'tab-panel'
+      panel.id = `settings-panel-${mod}`
+      panel.hidden = mod !== activeTab
+
+      const body = document.createElement('div')
+      body.className = 'settings-group'
+      body.id = 'claudePlansBody'
+      panel.appendChild(body)
+
+      if (claudePlansDefs.length) {
+        const group = document.createElement('div')
+        group.className = 'settings-group'
+        for (const def of claudePlansDefs) {
+          group.appendChild(buildSettingRow(def))
+        }
+        panel.appendChild(group)
+      }
+
+      tabPanels.appendChild(panel)
+
+      if (mod === activeTab) {
+        renderClaudePlansPanel(body)
+      }
+    }
   } catch (err) {
     tabPanels.innerHTML = `<p style="padding:24px;color:var(--danger)">${t('settings.error')}</p>`
   }
@@ -447,6 +492,10 @@ function activateSettingsTab(mod) {
     const grid = document.getElementById('settingsAutonomyGrid')
     const footer = document.getElementById('settingsAutonomyUpdatedAt')
     if (grid && !grid.innerHTML.trim()) renderAutonomyContent(grid, footer)
+  }
+  if (mod === 'claude-plans') {
+    const body = document.getElementById('claudePlansBody')
+    if (body && !body.innerHTML.trim()) renderClaudePlansPanel(body)
   }
 }
 
