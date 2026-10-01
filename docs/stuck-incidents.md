@@ -31,11 +31,14 @@ paraméterezés, nem létező kártya), nem döntések egy kártyáról. Beszám
 `store/redispatch-ledger.json` (a guard saját állapota) és `stuck_incidents` **két különböző
 kérdésre válaszolnak**, és összevonásuk elrontaná mindkettőt:
 
-- **A ledger egy ÉLŐ KONTROLL**: a guard backoff/cap-budgetje kártyánként (hány újrabökés történt,
-  mikor volt az utolsó). `redispatch-guard.sh reset <cardId>` (a 4. munkavégzési szabály szerint
-  minden kártya-zárásnál kötelező) **törli** a bejegyzést -- ez a HELYES viselkedés a ledger
-  szempontjából: ha nem törölné, egy egyszer beragadt kártya örökre a sapkán ülne, és a guard sosem
-  engedélyezne rá újabb újrabökést.
+- **A ledger egy ÉLŐ KONTROLL**: a guard backoff/cap-budgetje kártya+ügynök PÁRONKÉNT (hány
+  újrabökés történt, mikor volt az utolsó) -- NEM pusztán kártyánként (kártya d368aa06, 2026-10-01:
+  egy kártya-szintű kulcs mellett egy BUSY gate-ügynök last_ts-frissítése örökre backoffban
+  ragasztotta ugyanannak a kártyának egy IDLE gate-ügynökét, mert a ledger egyetlen bejegyzése
+  mindkettőjüké volt). `redispatch-guard.sh reset <cardId>` (a 4. munkavégzési szabály szerint
+  minden kártya-zárásnál kötelező) **törli** a kártya ÖSSZES ügynök-bejegyzését -- ez a HELYES
+  viselkedés a ledger szempontjából: ha nem törölné, egy egyszer beragadt kártya örökre a sapkán
+  ülne, és a guard sosem engedélyezne rá újabb újrabökést.
 - **A `stuck_incidents` egy TÖRTÉNET**: minden beragadás-incidens megmarad, feloldva vagy sem, azért
   hogy a "mikor ragadt be, mennyi ideig, mi oldotta fel, hányszor ismétlődött" kérdések egyáltalán
   megválaszolhatók legyenek.
