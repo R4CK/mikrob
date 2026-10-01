@@ -153,6 +153,21 @@
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py; exit 0'",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/secret-write-guard.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/secret-write-guard.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/big-file-guard.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/big-file-guard.py; exit 0'",
+            "timeout": 10
           }
         ]
       }

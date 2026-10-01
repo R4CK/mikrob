@@ -150,6 +150,12 @@ const CHECKOUT_ONLY: Record<string, string> = {
     'conversation-continuity ledger: same design as ledger-capture.py; the docs state it is "wired in the repo\'s project settings only (the main agent)"',
   'telegram-reply-guard.py':
     'the Stop-hook half of the Telegram reply enforcement (#856) decides from ledger_lib.open_question_with_age, i.e. the conversation_log the main-only ledger trio writes; seeded alone it would read an empty ledger and allow every stop, a silent no-op -- seeding it means seeding the ledger trio with it, a separate design decision',
+  'telegram_progress.py':
+    'posts the "Dolgozom rajta..." placeholder for an inbound Telegram message -- only the channel-owning session (the main agent) receives inbound Telegram traffic directly; sub-agents are fed via the message router\'s tmux-push path and never see a Telegram UserPromptSubmit to react to',
+  'telegram_progress_clear.py':
+    'the Stop-hook half of telegram_progress.py: clears/enforces delivery of the placeholder it posted. Same channel-ownership scope -- a seeded sub-agent would never have a placeholder to clear',
+  'telegram_progress_reply_clear.py':
+    'the PostToolUse half of the same Telegram progress-indicator trio (fires after the reply tool): clears the placeholder as soon as a reply is sent. Same channel-ownership scope as telegram_progress.py/telegram_progress_clear.py',
 }
 
 // The direction that was blind: a hook the checkout's own settings wire, which
