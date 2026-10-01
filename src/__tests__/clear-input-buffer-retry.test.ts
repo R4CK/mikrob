@@ -108,29 +108,40 @@ describe('clearInputBuffer retry + verify (card b34fa678)', () => {
   })
 })
 
-// The two call sites that ACT on the boolean. There is no harness in this suite for
+// The two call sites that ACT on the result. There is no harness in this suite for
 // performStuckInputAction (stuck-input-action.test.ts covers the pure pane-state predicates, not
 // channel-monitor), and building one for a NORMAL card would be new infrastructure rather than
 // coverage. So this pins the WIRING from the source, the way parked-clear-sequence.test.ts already
 // does for agent-process -- and says so: the runtime behaviour is pinned above, at the function
 // itself; what is asserted here is only that these two branches stopped discarding the result.
 //
+// CLEARLANE925 (card 06b24cfa) wrapped both clear-only branches in
+// clearParkedInputUnderLane (channel-monitor.ts), which itself calls clearInputBuffer under the
+// per-pane send lane and returns a 3-state ParkedClearResult instead of a boolean -- the b34fa678
+// guarantee this test pins (capture the result, report a failed clear) still holds, just through
+// the newer call shape.
+//
 // The three RE-INJECT sites deliberately keep ignoring it, matching upstream: each is immediately
 // followed by sendPromptToSession, which replaces the box contents and carries its own delivery
-// verification, so the boolean would add nothing there.
+// verification, so the result would add nothing there.
 describe('the no-re-inject call sites act on the result (card b34fa678)', () => {
   const SRC = readFileSync(
     new URL('../web/channel-monitor.ts', import.meta.url), 'utf-8')
 
   for (const branch of ['clear-preamble', 'clear-scheduled']) {
-    it(`${branch} captures the boolean and logs when the clear failed`, () => {
+    it(`${branch} captures the result and logs when the clear failed`, () => {
       const start = SRC.indexOf(`case '${branch}':`)
       expect(start, `${branch} branch not found`).toBeGreaterThan(-1)
-      const body = SRC.slice(start, SRC.indexOf('break', start))
+      // The branch body now has an EARLY break (the skipped-locked guard) before its final one --
+      // slice to the start of the NEXT case, not the first 'break', or the left-fragment check
+      // below would be silently cut off and the assertion would pass vacuously on truncated text.
+      const nextCase = SRC.indexOf(`\n      case `, start + 1)
+      const body = SRC.slice(start, nextCase > -1 ? nextCase : undefined)
       // Not a bare `await clearInputBuffer(...)` statement any more...
-      expect(body).toMatch(/const\s+cleared\s*=\s*await\s+clearInputBuffer\(/)
-      // ...and the failure is actually reported, not just captured into a dead variable.
-      expect(body).toMatch(/if\s*\(!cleared\)/)
+      expect(body).toMatch(/const\s+result\s*=\s*await\s+clearParkedInputUnderLane\(/)
+      // ...and a failed clear (a lingering fragment) is actually reported, not just captured into
+      // a dead variable.
+      expect(body).toMatch(/if\s*\(result\s*===\s*'left-fragment'\)/)
     })
   }
 })
