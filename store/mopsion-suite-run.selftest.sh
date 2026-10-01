@@ -224,6 +224,59 @@ else
   bad "caller override was duplicated or dropped" "rc=$rc occurrences=$occurrences argv=$(cat "$ARGV_CAPTURE" 2>/dev/null)"
 fi
 
+# --- 13. --dir is REWRITTEN to a bare positional path, not forwarded as-is (card d247e499) ------
+# Measured in source (QA, msg 7237): the root vitest.config.ts's `test.projects[]` means vitest's
+# own `--dir` flag does not narrow collection the way a flat config's would -- each project's
+# `include` globs already name paths from the repo root, and `--dir` has nothing to scope. A bare
+# POSITIONAL argument IS honoured (vitest filters collected files by substring match), so this
+# script accepts `--dir <path>` as a caller convenience and rewrites it to the equivalent
+# positional before the vitest invocation is built.
+: > "$ARGV_CAPTURE"
+out="$(env "${env_fake_wt[@]}" CLEANCORE_SUITE_SLOTS=2 \
+       bash "$FAKE_RUN" some-agent -- --dir apps/api 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -qx -- 'apps/api' "$ARGV_CAPTURE" && ! grep -q -- '--dir' "$ARGV_CAPTURE"; then
+  ok "--dir apps/api (two args) is rewritten to a bare 'apps/api' positional, --dir itself dropped"
+else
+  bad "--dir (space form) was not rewritten to a positional" "rc=$rc argv=$(cat "$ARGV_CAPTURE" 2>/dev/null)"
+fi
+
+: > "$ARGV_CAPTURE"
+out="$(env "${env_fake_wt[@]}" CLEANCORE_SUITE_SLOTS=2 \
+       bash "$FAKE_RUN" some-agent -- --dir=apps/api/src 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -qx -- 'apps/api/src' "$ARGV_CAPTURE" && ! grep -q -- '--dir' "$ARGV_CAPTURE"; then
+  ok "--dir=apps/api/src (= form) is rewritten to a bare positional, --dir itself dropped"
+else
+  bad "--dir= (equals form) was not rewritten to a positional" "rc=$rc argv=$(cat "$ARGV_CAPTURE" 2>/dev/null)"
+fi
+
+: > "$ARGV_CAPTURE"
+out="$(env "${env_fake_wt[@]}" CLEANCORE_SUITE_SLOTS=2 \
+       bash "$FAKE_RUN" some-agent -- --dir apps/api -t 'some test' 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -qx -- 'apps/api' "$ARGV_CAPTURE" && grep -qx -- '-t' "$ARGV_CAPTURE" \
+   && grep -qx -- 'some test' "$ARGV_CAPTURE" && ! grep -q -- '--dir' "$ARGV_CAPTURE"; then
+  ok "--dir translation does not disturb other forwarded args (order and values preserved)"
+else
+  bad "other forwarded args were disturbed by the --dir rewrite" "rc=$rc argv=$(cat "$ARGV_CAPTURE" 2>/dev/null)"
+fi
+
+: > "$ARGV_CAPTURE"
+out="$(env "${env_fake_wt[@]}" CLEANCORE_SUITE_SLOTS=2 \
+       bash "$FAKE_RUN" some-agent -- --dir 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && ! grep -q -- '--dir' "$ARGV_CAPTURE"; then
+  ok "a trailing --dir with no path is dropped, not forwarded bare to vitest"
+else
+  bad "a path-less --dir leaked through to vitest" "rc=$rc argv=$(cat "$ARGV_CAPTURE" 2>/dev/null)"
+fi
+
+: > "$ARGV_CAPTURE"
+out="$(env "${env_fake_wt[@]}" CLEANCORE_SUITE_SLOTS=2 \
+       bash "$FAKE_RUN" some-agent -- apps/api/src/pg-pool.test.ts 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -qx -- 'apps/api/src/pg-pool.test.ts' "$ARGV_CAPTURE"; then
+  ok "CONTROL: a caller-supplied bare positional (no --dir) passes through unchanged"
+else
+  bad "a bare positional (no --dir involved) was altered" "rc=$rc argv=$(cat "$ARGV_CAPTURE" 2>/dev/null)"
+fi
+
 echo
 
 # --- the api-e2e project runs in its OWN vitest process (card cae9fb67) -----------------------
