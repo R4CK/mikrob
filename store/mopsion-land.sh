@@ -131,6 +131,46 @@ migration_number_check() {
 # shellcheck source=./mopsion-bundle-check.sh
 . "$(dirname "$0")/mopsion-bundle-check.sh"
 
+# Card d8207630 / Cybersec M-1 (gate comment 10618): the HARNESS-FAULT decision logic lives in these
+# two functions so the selftest can exercise the REAL code path, not a grep pattern copied beside
+# it. Before this, the selftest only re-ran `grep -q '^HARNESS-FAULT'` on a fixture it built itself
+# -- deleting the cache-eviction or the merge-retry from the real landing path left the selftest
+# green, because the selftest never called the real path at all.
+#
+# check_baseline_fault <base_err_file>
+# If the file is a harness fault (not a real typecheck result), prints the REFUSED message, deletes
+# the poisoned cache file, and returns 4. Otherwise returns 0 and leaves the file untouched.
+check_baseline_fault() {
+  local f="$1"
+  if grep -q '^HARNESS-FAULT' "$f"; then
+    echo "REFUSED: the baseline typecheck harness itself failed -- NOT caching this result:"
+    grep '^HARNESS-FAULT' "$f" | sed 's/^/    /'
+    rm -f "$f"
+    return 4
+  fi
+  return 0
+}
+
+# check_merge_fault_with_retry <worktree> <want_web> <merge_err_file> <base_err_file>
+# Runs typecheck_errors into merge_err_file; if the result is a harness fault, retries once (a
+# merge-side fault is transient -- V8 crash, timeout -- unlike the baseline, which is permanent for
+# the same worktree/load). Returns 4 and prints REFUSED if either file is still faulted after the
+# retry, 0 otherwise.
+check_merge_fault_with_retry() {
+  local wt="$1" want_web="$2" merge_err="$3" base_err="$4"
+  typecheck_errors "$wt" "$want_web" > "$merge_err"
+  if grep -q '^HARNESS-FAULT' "$merge_err"; then
+    say "typecheck: merge-side HARNESS-FAULT detected -- retrying once (card d8207630)"
+    typecheck_errors "$wt" "$want_web" > "$merge_err"
+  fi
+  if grep -q '^HARNESS-FAULT' "$merge_err" || grep -q '^HARNESS-FAULT' "$base_err"; then
+    echo "REFUSED: the typecheck harness itself failed -- this is NOT a clean result:"
+    grep -h '^HARNESS-FAULT' "$base_err" "$merge_err" | sed 's/^/    /'
+    return 4
+  fi
+  return 0
+}
+
 # Reduce markdown on stdin to the shape the SEAM CHECK can still see: blank lines dropped, leading
 # indentation stripped. Two texts with the same skeleton differ only in whitespace, and the seam
 # check -- which matches each added line as a SUBSTRING of the result -- cannot tell them apart.
@@ -411,6 +451,55 @@ if [ "${1:-}" = "--selftest" ]; then
   fi
 
   rm -rf "$MIGWORK"
+
+  # Card d8207630 / Cybersec M-1 (gate comment 10618): these cases call the REAL decision functions
+  # (check_baseline_fault / check_merge_fault_with_retry) instead of re-running a grep pattern copied
+  # beside them. Before this fix, a mutant that deleted the cache-eviction (MUT-NOCACHE) or the
+  # merge-retry (MUT-NORETRY) from the real landing path left this selftest green at 91/91, because
+  # the selftest never called the real path at all -- see store/mopsion-land.sh.selftest.sh (if any)
+  # or the gate comment for the measurement.
+  PCACHE="$(mktemp)"
+  printf 'HARNESS-FAULT in apps/api/tsconfig.json: Check failed: index < size()\n' > "$PCACHE"
+  check_baseline_fault "$PCACHE" >/dev/null 2>&1
+  PCACHE_RC=$?
+  t "poisoned-cache: HARNESS-FAULT baseline is refused AND the cache file deleted (MUT-NOCACHE)" \
+    "rc=$PCACHE_RC,file=$([ -f "$PCACHE" ] && echo THERE || echo GONE)" "rc=4,file=GONE"
+
+  PCACHE_CLEAN="$(mktemp)"
+  printf 'apps/api/src/main.ts: error TS2345: Argument of type'\''string'\''\n' > "$PCACHE_CLEAN"
+  check_baseline_fault "$PCACHE_CLEAN" >/dev/null 2>&1
+  PCACHE_CLEAN_RC=$?
+  t "poisoned-cache: a real error line is accepted AND the file kept" \
+    "rc=$PCACHE_CLEAN_RC,file=$([ -f "$PCACHE_CLEAN" ] && echo THERE || echo GONE)" "rc=0,file=THERE"
+  rm -f "$PCACHE_CLEAN"
+
+  # Merge-side retry (card d8207630): stub typecheck_errors so the first call reports a harness
+  # fault and the second (the retry) is clean. If MUT-NORETRY removes the retry call,
+  # typecheck_errors is invoked only once and the final result is still faulted -- this single
+  # assertion (call count AND final verdict together) catches that.
+  MRETRY_N=0
+  typecheck_errors() {
+    MRETRY_N=$((MRETRY_N + 1))
+    if [ "$MRETRY_N" -eq 1 ]; then
+      printf 'HARNESS-FAULT in apps/api/tsconfig.json: timeout\n'
+    fi
+  }
+  MBASE_CLEAN="$(mktemp)"   # empty: not faulted, so only the merge side is under test
+  MERR="$(mktemp)"
+  check_merge_fault_with_retry "dummy-wt" 0 "$MERR" "$MBASE_CLEAN" >/dev/null 2>&1
+  MRETRY_RC=$?
+  t "merge-retry: retried once (MUT-NORETRY) AND a clean retry passes (no REFUSED)" \
+    "calls=$MRETRY_N,rc=$MRETRY_RC" "calls=2,rc=0"
+  rm -f "$MBASE_CLEAN" "$MERR"
+
+  # Still faulted after the retry -> REFUSED (4), not silently accepted.
+  typecheck_errors() { printf 'HARNESS-FAULT in apps/api/tsconfig.json: timeout\n'; }
+  MBASE_CLEAN2="$(mktemp)"
+  MERR2="$(mktemp)"
+  check_merge_fault_with_retry "dummy-wt" 0 "$MERR2" "$MBASE_CLEAN2" >/dev/null 2>&1
+  MSTILL_RC=$?
+  t "merge-retry: still faulted after the retry returns 4 (REFUSED)" "$MSTILL_RC" "4"
+  rm -f "$MBASE_CLEAN2" "$MERR2"
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
@@ -695,16 +784,22 @@ else
     link_node_modules "$BWT"
     typecheck_errors "$BWT" "$WANT_WEB" > "$BASE_ERR"
     git -C "$MAIN" worktree remove --force "$BWT" >/dev/null 2>&1
+    # Card d8207630: do NOT cache a poisoned baseline. If the harness itself crashed (V8 crash under
+    # load, timeout, missing deps), delete the file immediately so the next landing re-measures
+    # instead of inheriting a permanent REFUSED: harness fault. Measured: 3 landings refused
+    # (254e11db, cfb30062, 0e0fc05b) because one V8 crash wrote HARNESS-FAULT into the cache file
+    # for main 436f4915, and every subsequent landing hit the cache and was refused. Decision logic
+    # in check_baseline_fault() (Cybersec M-1, gate comment 10618) so the selftest runs the real path.
+    check_baseline_fault "$BASE_ERR" || exit 4
     say "typecheck: baseline main $BASE has $(wc -l < "$BASE_ERR") error(s)"
   fi
 
   MERGE_ERR="$(mktemp)"
-  typecheck_errors "$WT" "$WANT_WEB" > "$MERGE_ERR"
-  if grep -q '^HARNESS-FAULT' "$MERGE_ERR" || grep -q '^HARNESS-FAULT' "$BASE_ERR"; then
-    echo "REFUSED: the typecheck harness itself failed -- this is NOT a clean result:"
-    grep -h '^HARNESS-FAULT' "$BASE_ERR" "$MERGE_ERR" | sed 's/^/    /'
-    exit 4
-  fi
+  # Card d8207630: a merge-side harness fault (V8 crash, timeout) is transient -- retry once before
+  # refusing. The baseline harness fault is permanent (same worktree, same load), so no retry there.
+  # Decision logic in check_merge_fault_with_retry() (Cybersec M-1, gate comment 10618) so the
+  # selftest runs the real path instead of a grep pattern copied beside it.
+  check_merge_fault_with_retry "$WT" "$WANT_WEB" "$MERGE_ERR" "$BASE_ERR" || exit 4
   NEW="$(comm -13 "$BASE_ERR" "$MERGE_ERR")"
   if [ -n "$NEW" ]; then
     echo "REFUSED: the merge result adds $(echo "$NEW" | wc -l) typecheck error(s) main does not have:"
