@@ -13,7 +13,7 @@
 // tool_response.is_error signal still honoured. A copy of the hook runs from a
 // temp project root so the test never touches the install's store/.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { execFile } from 'node:child_process'
+import { execFile, type ExecFileException } from 'node:child_process'
 import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, rmSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -73,7 +73,7 @@ function runHook(payload: Record<string, unknown>): Promise<number> {
       'python3',
       [hookCopy],
       { encoding: 'utf-8', env: { ...process.env, WEB_PORT: String(port), MARVEEN_AGENT_ID: 'test-agent' } },
-      (err: any) => resolve(err ? (typeof err.code === 'number' ? err.code : 1) : 0),
+      (err: ExecFileException | null) => resolve(err ? (typeof err.code === 'number' ? err.code : 1) : 0),
     )
     child.stdin?.end(JSON.stringify(payload))
   })
