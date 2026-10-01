@@ -63,16 +63,17 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
   it('both counts include the shared block', () => {
     const cc = caseCount(selftest('cleancore-land.sh').out)
     const mv = caseCount(selftest('marveen-land.sh').out)
-    // 37 since card 79311937 added two migration_number_check cases (a real-git-fixture regression
-    // test for the deleted-migration false-collision bug) to cleancore-land.sh's own block -- a
-    // mopsion-only concept (migration numbering), not part of the shared downward-check lib, so it
-    // does not touch marveen-land.sh's own count. It was 35 after card 5136cf80's nine bundle-guard
-    // cases (F-1/F-2), 27 after 3bfb133e's four fmt_bad_files cases, 23 before that after
-    // edf9c837's seven pick_branch cases. This constant tracks ONE lander's own block, so it moves
-    // whenever that block does -- the assertion it feeds is about the SHARED block being identical
-    // in both, and lowering it to make an edit fit would delete exactly that guarantee.
-    expect(cc).toBeGreaterThan(37) // 37 = cleancore-land.sh's own cases
+    // 41 since card d8207630 added four HARNESS-FAULT selftest cases (poisoned-cache detection,
+    // merge-side retry, fault-on-retry, cache-clean-on-fault) to cleancore-land.sh's own block --
+    // mopsion-land.sh only, not part of the shared downward-check lib, so marveen-land.sh's own
+    // count stays at 3. Previously 37 (card 79311937: two migration_number_check cases), 35 after
+    // card 5136cf80's nine bundle-guard cases (F-1/F-2), 27 after 3bfb133e's four fmt_bad_files
+    // cases, 23 before that after edf9c837's seven pick_branch cases. This constant tracks ONE
+    // lander's own block, so it moves whenever that block does -- the assertion it feeds is about
+    // the SHARED block being identical in both, and lowering it to make an edit fit would delete
+    // exactly that guarantee.
+    expect(cc).toBeGreaterThan(41) // 41 = cleancore-land.sh's own cases
     expect(mv).toBeGreaterThan(3) //  3 = marveen-land.sh's own cases
-    expect(cc - 37).toBe(mv - 3) // the same shared block, in both
+    expect(cc - 41).toBe(mv - 3) // the same shared block, in both
   })
 })
