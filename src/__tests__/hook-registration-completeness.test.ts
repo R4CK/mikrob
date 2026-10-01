@@ -150,12 +150,13 @@ const CHECKOUT_ONLY: Record<string, string> = {
     'conversation-continuity ledger: same design as ledger-capture.py; the docs state it is "wired in the repo\'s project settings only (the main agent)"',
   'telegram-reply-guard.py':
     'the Stop-hook half of the Telegram reply enforcement (#856) decides from ledger_lib.open_question_with_age, i.e. the conversation_log the main-only ledger trio writes; seeded alone it would read an empty ledger and allow every stop, a silent no-op -- seeding it means seeding the ledger trio with it, a separate design decision',
-  'telegram_progress.py':
-    'posts the "Dolgozom rajta..." placeholder for an inbound Telegram message -- only the channel-owning session (the main agent) receives inbound Telegram traffic directly; sub-agents are fed via the message router\'s tmux-push path and never see a Telegram UserPromptSubmit to react to',
-  'telegram_progress_clear.py':
-    'the Stop-hook half of telegram_progress.py: clears/enforces delivery of the placeholder it posted. Same channel-ownership scope -- a seeded sub-agent would never have a placeholder to clear',
-  'telegram_progress_reply_clear.py':
-    'the PostToolUse half of the same Telegram progress-indicator trio (fires after the reply tool): clears the placeholder as soon as a reply is sent. Same channel-ownership scope as telegram_progress.py/telegram_progress_clear.py',
+  // telegram_progress.py / telegram_progress_clear.py / telegram_progress_reply_clear.py removed
+  // from here (HOOKSTRIPFLEET913, upstream batch 3): the old reasoning below assumed
+  // sub-agents never receive Telegram traffic directly, but channel-having sub-agents
+  // (jumanji, mira) DO, and the #1307 isolated-config strip was dropping all four channel
+  // hooks fleet-wide on every respawn with no project-scope writer to restore them. The fix
+  // ports them into templates/settings.json.template (the strip-surviving seeding layer),
+  // so they are no longer checkout-only -- see hookstripfleet-channel-hooks.test.ts.
 }
 
 // The direction that was blind: a hook the checkout's own settings wire, which

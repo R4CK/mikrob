@@ -693,11 +693,14 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // wholesale on each spawn, so without it a respawn would silently drop what ensureBashEgressDeny()
   // merged in.
   denyList.push(...BASH_EGRESS_DENY)
-  // Card 21597530: per-agent, opt-in tool-name deny (agent-config.json "toolDeny"). Pushed onto the
+  // Card 21597530: per-agent, opt-in tool-name deny (agent-config.json "toolDeny"). Merged onto the
   // SAME array as the security-purpose entries above, never replacing it -- a missing/malformed
-  // toolDeny is [] (today's behaviour), and an unknown tool name is just an inert deny entry the
-  // permission engine never matches against anything.
-  denyList.push(...readAgentToolDeny(name))
+  // toolDeny is [] (today's behaviour). Deduped against what is already queued (ORSIKTXRATA914):
+  // a toolDeny entry that happens to coincide with a SELF_PACE_TOOL_DENY/BASH_EGRESS_DENY name must
+  // not create a duplicate deny entry.
+  for (const tool of readAgentToolDeny(name)) {
+    if (!denyList.includes(tool)) denyList.push(tool)
+  }
   existing.permissions = {
     allow: profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx)),
     deny: denyList,

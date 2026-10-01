@@ -17,6 +17,7 @@ import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN
 import { resolveOwnerChatId } from './owner-chat.js'
 import { initDatabase, backfillEmbeddings, closeDbForShutdown } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
+import { DECAY_SWEEP_INTERVAL_MS } from './db.js'
 import { initHeartbeat, stopHeartbeat, ensureHeartbeatWorkerHidden } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
 import { startAgentProcess } from './web/agent-process.js'
@@ -490,7 +491,7 @@ async function main(): Promise<void> {
 
   // Memory decay (24h cycle)
   runDecaySweep()
-  decayInterval = setInterval(runDecaySweep, 24 * 60 * 60 * 1000)
+  decayInterval = setInterval(runDecaySweep, DECAY_SWEEP_INTERVAL_MS)
   logger.info('Memoria leepulesi ciklus beallitva (24 oras)')
 
   // Log rotation (LOGROTATE910): copytruncate on the launcher-redirected
