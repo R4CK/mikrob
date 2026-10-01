@@ -390,6 +390,59 @@ CORES="$(nproc 2>/dev/null || echo 1)"
 DEFAULT_MAX_WORKERS=$((CORES / SLOTS))
 [ "$DEFAULT_MAX_WORKERS" -lt 1 ] && DEFAULT_MAX_WORKERS=1
 MAX_WORKERS="${CLEANCORE_SUITE_MAX_WORKERS:-$DEFAULT_MAX_WORKERS}"
+
+# Card d247e499 (QA measurement, msg 7237): `--dir <path>` forwarded straight to vitest's own CLI
+# is a NO-OP here, measured in source -- the root vitest.config.ts defines `test.projects[]`, and
+# each project's own `include` glob (e.g. 'packages/**/src/**/*.test.ts') already names paths from
+# the repo root; vitest's `--dir` sets the search root for UNSCOPED collection, which a
+# projects-array config does not use per project the way a flat config does. A caller passing
+# `--dir apps/api` therefore still collects the WHOLE repo under every project -- the targeted,
+# minutes-long measurement this flag exists for becomes the full 60-90 minute run instead, on a
+# fully-claimed semaphore slot. A bare POSITIONAL path argument, by contrast, IS honoured per
+# project (vitest filters collected files by substring match against each one) -- measured here:
+# `vitest run apps/api/src/pg-pool.test.ts` collects exactly that file; `vitest run --dir
+# apps/api/src` does not finish collecting in 15s (the whole-repo cost). So this script accepts
+# `--dir <path>` / `--dir=<path>` as a caller convenience and REWRITES it to the equivalent bare
+# positional before constructing vitest_args -- the caller's intent (narrow to this path) is
+# honoured, just not via the flag that cannot do it in a projects-array config.
+raw_args=()
+translated_dir=0
+skip_next=0
+arglist=("$@")
+idx=0
+while [ "$idx" -lt "${#arglist[@]}" ]; do
+  a="${arglist[$idx]}"
+  if [ "$skip_next" -eq 1 ]; then
+    skip_next=0
+    idx=$((idx + 1))
+    continue
+  fi
+  case "$a" in
+    --dir=*)
+      raw_args+=("${a#--dir=}")
+      translated_dir=1
+      ;;
+    --dir)
+      next_idx=$((idx + 1))
+      if [ "$next_idx" -lt "${#arglist[@]}" ]; then
+        raw_args+=("${arglist[$next_idx]}")
+        skip_next=1
+        translated_dir=1
+      else
+        echo "mopsion-suite-run: --dir given with no path argument after it -- ignoring, not forwarding a bare --dir to vitest" >&2
+      fi
+      ;;
+    *)
+      raw_args+=("$a")
+      ;;
+  esac
+  idx=$((idx + 1))
+done
+if [ "$translated_dir" -eq 1 ]; then
+  echo "mopsion-suite-run: --dir rewritten to a positional path filter (card d247e499: --dir alone does not narrow a projects-array vitest config)" >&2
+fi
+set -- "${raw_args[@]}"
+
 vitest_args=("$@")
 caller_set_max_workers=0
 # CARD 08eb6402, CYBERSEC F1(b): evidence may ONLY be recorded for a run that covers the whole
