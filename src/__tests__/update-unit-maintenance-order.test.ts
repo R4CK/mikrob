@@ -98,7 +98,7 @@ function calledFunctionNames(wrapperBody: string): string[] {
     const line = raw.trim()
     if (!line || line === '{' || line === '}') continue
     if (/^return\b/.test(line)) continue
-    if (/\)\s*\{?$/.test(line)) continue // the wrapper's own `name() {` header line
+    if (/^[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{$/.test(line)) continue // the wrapper's own `name() {` header line
     const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s+"\$@"|\s+\$@)?$/)
     names.push(m ? m[1] : `UNRECOGNIZED: ${line}`)
   }
@@ -223,6 +223,12 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
     ['indirection through "$1"', 'install_main_inbox_observer_unit "$1"'],
     ['an `if ...; then` guard', 'if [ -d "$DATADIR" ]; then install_main_inbox_observer_unit "$@"; fi'],
     ['a `; :` no-op suffix', 'install_main_inbox_observer_unit "$@"; :'],
+    // QA FAIL (card e47dc04a, comment 11605, round 3 delta-gate): a DIFFERENT, earlier filter
+    // line -- the one meant only to skip the wrapper's own `name() {` header -- matched any line
+    // ending in `)`, so these two paren-ending shapes were dropped BEFORE the fail-closed match
+    // even ran, never reaching `names` at all (not even as UNRECOGNIZED).
+    ['command substitution ending in `)` (QA 11605)', 'install_main_inbox_observer_unit $(echo "$@")'],
+    ['parenthesised subshell call (QA 11605)', '( install_main_inbox_observer_unit "$@" )'],
   ]
   for (const [label, line] of BYPASS_SHAPES) {
     it(`CONTROL: ${label} fails the allowlist, not silently skipped`, () => {
