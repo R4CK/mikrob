@@ -16067,3 +16067,42 @@ tiszta.
 
 Ki dontott: backend2 (dispatch: MikroB msg 6483, urgent, 5 same-morning landing-bukas merese).
 Gate: QA + Cybered (a landolasi pipeline adatvesztes-vedelmet erinti, ahogy a kartya kerte).
+
+## 2026-10-02 -- FLEETVENV923: upstream fleet-python-venv PATH-pin NEM portolva (kartya 505d42ea)
+
+Upstream c4f45bd0 (feat(agents): fleet Python venv bin/ leads launch PATH, #1626) + fuggo teszt
+6158290b (FLEETVENVPINORDER930, #1654) egy altalanos FLEET_PYTHON_VENV config-kulcsot vezet be,
+ami a venv/bin-t a launch PATH ELEJERE teszi minden agent-inditasnal -- az upstream indoka:
+Homebrew python3-nak nincs csomagja, es a skill python3-hivasai (pdf-generalas, xlsx-munka,
+markitdown) import-failed emiatt.
+
+**Dontes: NEM relevans a forknak, nem portolva.** Ellenorizve, nem feltetelezve:
+- Minden `store/*.py` szkript (142 fajl) csak Python stdlib-et importal (argparse, json, re,
+  subprocess, stb.) -- nincs harmadik-feles csomagfuggoseg.
+- `grep -rl "markitdown|openpyxl|pdfkit|reportlab|python-docx|pptx" ~/.claude/skills` es a
+  `/home/neon/marveen/skills` mappa nem ad valodi talalatot (az egy "pptx" egyezes egy JS
+  konyvtar neveben volt, "pptxgenjs", nem Python).
+- A fork SAJAT ket valodi venv-igenye (voice: `web/routes/voice.ts` -- `VENV_PY =
+  join(VOICE_DIR, 'venv', 'bin', 'python')`; watchdog: `web/inbound-probe.ts` --
+  `VENV_PYTHON = join(PROJECT_ROOT, '.watchdog-venv', 'bin', 'python3')`) mar dedikalt,
+  ABSZOLUT UTVONALLAL hivatkozott venv-ekkel megoldott, PATH-sorrendtol fuggetlenul. Egy
+  globalis PATH-elejere-teves mechanizmus ehhez semmit nem tenne hozza.
+- A launch-PATH epitese mar letezik a fork sajat `src/web/agent-process.ts`-eben (2286. sor:
+  `export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH"`), tehat
+  a strukturalis hely megvan, csak a megoldando problema nincs meg ebben az installban.
+
+Egy be nem bizonyitott hianyra epitett config-kulcs + PATH-injekcios felulet biztonsagi
+felulvizsgalatot igenyelne (a kartya sajat Cybersec-gate-je ezert volt kijelolve) anelkul, hogy
+tenyleges hasznot adna -- ez pont a karpathy-guidelines "simplicity first / no speculative
+generality" elve ellen menne. `scripts/upstream-new.sh mark skipped` mindket commitra (c4f45bd0,
+6158290b) egy-soros indokkal.
+
+Ha kesobb egy valodi skill third-party Python csomagot igenyelne (pl. egy uj pdf/xlsx-skill), a
+mintat UJRA KELL ERTELMEZNI a tenyleges igeny fenyeben -- ez a dontes NEM zarja ki egy jovobeli
+venv-mechanizmust, csak azt allitja, hogy MOST nincs ra bizonyitott szukseg.
+
+Ki dontott: backend3 (dispatch: MikroB, local-llm-offload automatikus kimerules-jelzes a
+505d42ea kartyan, msg 7791; a kartya 1. lepese -- "eldonteni, releváns-e a forknak" -- explicit
+ezt a relevancia-elemzest kerte dispatch elott).
+Gate: nincs kulon gate (nem tortent kodmodositas, csak upstream-ledger-bejegyzes + DECISIONS.md
+dokumentacio); a kartya QA-gate-je a dokumentalt bizonyitekot nezheti at.
