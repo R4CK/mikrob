@@ -125,6 +125,54 @@ migration_number_check() {
 # find_conflict_markers (card 4b4c89eb): shared with marveen-land.sh, same reason as above.
 # shellcheck source=./conflict-marker-check.sh
 . "$(dirname "$0")/conflict-marker-check.sh"
+
+# DESIGNATION SNAPSHOT (card acc197c8): e792cfea landed with a merge-commit message asserting
+# "gate-teljes @ <sha>" from the card's gate designation (which security gates rule 4's risk-tiering
+# requires) AS READ AT THAT MOMENT -- MikroB's own risk-tiering correction (2-gate -> 3-gate) landed
+# on the card 56 SECONDS AFTER the push, so the landing's own claim was stale the moment it was made,
+# just not visibly so (Cybered's eventual verdict happened to be GO). Nothing before this re-asked
+# the board whether the designation still held by the time the push actually happened.
+#
+# The INFERENCE itself (GATE_LABELS/GATE_LINE -> required-gate set) is gate_designation.py, shared
+# with gate-dispatch-check.sh rather than copied (MikroB's decision, msg 4374 point 1) -- this
+# function only does the bulk-list fetch + per-card label/Gate-line extraction, the same kind of
+# small JSON-walk gate-dispatch-check.sh's own _extract_status keeps local rather than shared.
+#
+# Prints the designated set (sorted, comma-joined) or "" (no designation stated) on success;
+# prints nothing and returns 1 on an unreadable board -- FAIL-CLOSED is the caller's job, same
+# split as gate_verdict_check (this function measures, the caller decides what measuring-nothing
+# means), per MikroB's decision msg 4374 point 3.
+_gate_designation_snapshot() { # $1 = cardId
+  local card="$1" cards_json labels line
+  if [ ! -r "$GATE_CHECK_TOKEN_FILE" ]; then
+    return 1
+  fi
+  cards_json="$(printf 'Authorization: Bearer %s\n' "$(cat "$GATE_CHECK_TOKEN_FILE")" \
+    | curl -sS -m 20 -H @- "$GATE_CHECK_API/api/kanban" 2>/dev/null)" || cards_json=""
+  [ -n "$cards_json" ] || return 1
+  labels="$(CID="$card" python3 -c '
+import json, os, sys
+try: cards = json.load(sys.stdin)
+except Exception: sys.exit(0)
+for c in cards if isinstance(cards, list) else []:
+    if c.get("id") == os.environ["CID"]:
+        print(",".join(l.get("name", "").lstrip("@") for l in (c.get("labels") or [])))
+        break
+' <<< "$cards_json" 2>/dev/null)" || return 1
+  line="$(CID="$card" python3 -c '
+import json, os, re, sys
+try: cards = json.load(sys.stdin)
+except Exception: sys.exit(0)
+rx = re.compile(r"\bGate\s*:\s*(.+)$", re.M | re.I)
+for c in cards if isinstance(cards, list) else []:
+    if c.get("id") == os.environ["CID"]:
+        matches = rx.findall(c.get("description") or "")
+        if matches: print(matches[-1])
+        break
+' <<< "$cards_json" 2>/dev/null)" || return 1
+  python3 "$(dirname "${BASH_SOURCE[0]}")/gate_designation.py" "$labels" "$line" 2>/dev/null || return 1
+  return 0
+}
 # bundle_relevant / bundle_failures (card 0a907846): does the merge result still produce a browser
 # bundle? NOT shared with marveen-land.sh -- marveen ships no browser app, so there is nothing there
 # for it to check, and a copy that never runs is a copy that silently rots.
@@ -549,6 +597,25 @@ elif [ "$gate_rc" -ne 0 ]; then
   else
     exit 3
   fi
+fi
+
+# DESIGNATION SNAPSHOT, taken now so the push-time recheck below can tell whether it changed
+# (card acc197c8). FAIL-CLOSED on an unreadable board, same override as the verdict check above.
+DESIGNATION_START="$(_gate_designation_snapshot "$CARD")"
+if [ $? -ne 0 ]; then
+  if [ "$ALLOW_UNGATED" -eq 1 ]; then
+    echo "  designation-check: board unreadable, TOLERATED by --allow-ungated -- not re-checked at push"
+    DESIGNATION_START=""
+    SKIP_DESIGNATION_RECHECK=1
+  else
+    echo "REFUSED: could not read card $CARD's gate designation (labels/Gate: line) -- fails CLOSED," >&2
+    echo "         an unreadable board cannot tell whether the required-gate set changed. Override" >&2
+    echo "         with --allow-ungated once you have checked the card by hand." >&2
+    exit 3
+  fi
+else
+  SKIP_DESIGNATION_RECHECK=0
+  say "designation: $([ -n "$DESIGNATION_START" ] && echo "$DESIGNATION_START" || echo "none stated")"
 fi
 # $$ makes the path private to this process. QA2's finding on card 67beaf74 was against the pre-gate,
 # but the defect is the shape, not the script: a deterministic worktree path means a second run's
@@ -1024,6 +1091,33 @@ if [ "$recheck_rc" -ne "$gate_rc" ]; then
   echo "         Nothing pushed. Re-run the landing to pick up the current verdict." >&2
   rm -f "${MERGE_ERR:-}" 2>/dev/null
   exit 3
+fi
+
+# THE DESIGNATION HALF of the same symmetric rule (card acc197c8 itself, not its 517cbcbe sibling
+# above): the REQUIRED-GATE SET can change too, independently of any individual verdict -- that is
+# exactly what e792cfea measured (2-gate -> 3-gate, 56 seconds after push). ANY change refuses,
+# widening or narrowing both, for the same reason as above: a spurious refuse costs one re-run, a
+# push that should not have happened cannot be taken back.
+if [ "$SKIP_DESIGNATION_RECHECK" -eq 0 ]; then
+  DESIGNATION_PUSH="$(_gate_designation_snapshot "$CARD")"
+  designation_recheck_rc=$?
+  if [ "$designation_recheck_rc" -ne 0 ]; then
+    if [ "$ALLOW_UNGATED" -eq 1 ]; then
+      echo "  designation-check: board unreadable at push time, TOLERATED by --allow-ungated"
+    else
+      echo "REFUSED: could not re-read card $CARD's gate designation right before push -- fails" >&2
+      echo "         CLOSED, same as the start-of-landing check. Override with --allow-ungated." >&2
+      rm -f "${MERGE_ERR:-}" 2>/dev/null
+      exit 3
+    fi
+  elif [ "$DESIGNATION_PUSH" != "$DESIGNATION_START" ]; then
+    echo "REFUSED: card $CARD's gate designation changed between the start of this landing and this" >&2
+    echo "         push-time recheck (was '${DESIGNATION_START:-none}', now '${DESIGNATION_PUSH:-none}')" >&2
+    echo "         -- card acc197c8. Nothing pushed. Re-run the landing to pick up the current" >&2
+    echo "         designation and confirm every now-required gate has actually verdicted." >&2
+    rm -f "${MERGE_ERR:-}" 2>/dev/null
+    exit 3
+  fi
 fi
 
 if [ "$DRY" = "--dry-run" ]; then say "DRY-RUN: not pushing"; rm -f "${MERGE_ERR:-}" 2>/dev/null; exit 0; fi
