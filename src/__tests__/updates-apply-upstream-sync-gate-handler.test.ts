@@ -24,7 +24,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('node:child_process', async (orig) => ({
   ...((await orig()) as object),
-  execFileSync: vi.fn((file: string, args: string[] = [], _opts?: unknown) => {
+  execFileSync: vi.fn((file: string, args: string[] = []) => {
     const key = args.join(' ')
     for (const throwKey of h.execThrows) {
       if (key.includes(throwKey)) throw new Error(`mocked failure for: ${key}`)
