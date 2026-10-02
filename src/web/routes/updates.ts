@@ -471,11 +471,22 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     // Card 82f05633, second layer (see findOpenUpstreamSyncCards' own comment for the first):
     // refuse outright if the range about to be pulled names an UPSTREAM-SYNC card that has not
     // yet reached `done` -- a batch that landed before its own gate closed.
+    //
+    // TOCTOU fix (Cybered NO-GO, comment 11486): the check used to read `HEAD..@{u}` -- the
+    // LOCAL tracking ref, as of the dashboard's last fetch -- while the actual pull below
+    // (update.sh's own `git pull --ff-only origin <branch>`) fetches FRESH. A batch that landed
+    // on origin since the dashboard's last fetch was invisible to `@{u}` and therefore to this
+    // check, while update.sh's pull would still bring it onto the live host: exactly the window
+    // the card's own acceptance criterion says must not exist ("holds even if the process layer
+    // is missed"). Fixed by fetching immediately before computing the range, against the SAME
+    // ref the pull is about to use, fail-closed on the fetch itself too.
     let openUpstreamSyncCards: string[]
     try {
+      const branch = git.currentBranch().trim()
+      execFileSync('/usr/bin/git', ['fetch', 'origin', branch], { cwd: PROJECT_ROOT, timeout: 15_000 })
       const subjectsOut = execFileSync(
         '/usr/bin/git',
-        ['log', '--format=%s', 'HEAD..@{u}'],
+        ['log', '--format=%s', `HEAD..origin/${branch}`],
         { cwd: PROJECT_ROOT, timeout: 10_000, encoding: 'utf-8' },
       )
       openUpstreamSyncCards = findOpenUpstreamSyncCards(subjectsOut.split('\n').filter(Boolean), getKanbanCard)
@@ -483,8 +494,7 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       // FAIL-CLOSED, not fail-open: this is a security gate (card 82f05633 exists because a
       // gap here lets ungated upstream code reach the live host), so "could not determine the
       // answer" refuses the same as "the answer is yes" -- it does not silently become "no".
-      // The preflight above already proved `@{u}` resolves (behindCount ran without throwing),
-      // so a failure here is a transient git error, not a structurally missing upstream ref;
+      // A failure here (fetch or log) is a transient or network error, not evidence of safety;
       // the operator can simply retry.
       releaseLock()
       logger.warn({ err }, 'open-UPSTREAM-SYNC-card check failed -- refusing the pull (fail-closed)')

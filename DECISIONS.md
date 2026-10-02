@@ -16351,3 +16351,40 @@ nem termel hamis pozitivot a valtozatlan fajlon.
 
 Ki dontott: Cybered (NO-GO + bizonyitott bypass-alakok), backend3 (harmadik kor javitas).
 Gate: QA + Cybersec + Cybered (valtozatlan).
+
+## 2026-10-02 -- 82f05633 masodik kor: TOCTOU-javitas (fresh fetch) + handler-szintu teszt
+
+QA FAIL (11481) es Cybered NO-GO (11486) a 3054a12d-n, ket kulon lelet, ugyanazon kartyan:
+
+**Cybered NO-GO (BLOKKOLO, TOCTOU):** a check `HEAD..@{u}`-t nezte -- a LOKALIS tracking-ref,
+a dashboard UTOLSO fetch-e szerinti allapot --, miközben a tenyleges pull (update.sh `git pull
+--ff-only origin <branch>`-ja) FRISSEN fetchel. Egy UPSTREAM-SYNC koteg, ami a dashboard utolso
+fetch-e OTA landolt origin-re, lathatatlan volt a checknek, de a pull mar behozta volna. Javitva:
+a check ELOTT explicit `git fetch origin <branch>` (a `branch`-et `git.currentBranch()`-bol
+veve), a tartomany MOST `HEAD..origin/<branch>` ellen szamol -- ugyanazt latja, amit a pull
+tenylegesen behoz. A fetch-hiba is FAIL-CLOSED (ugyanaz a mintakövetés, mint a log-hibanal).
+
+**QA FAIL (lefedettsegi hezag):** a korabbi 13 teszt KIZAROLAG a ket pure fuggvenyt
+(cardsInSubject, findOpenUpstreamSyncCards) tesztelte izolaltan -- egyetlen teszt sem hivta meg
+a tenyleges HTTP route-handlert (tryHandleUpdates). Cybersec sajat mutacios tesztje (a 409-blokk
+`if (false && ...)`-ra kapcsolva) bizonyitotta: a 37/37 teszt VALTOZATLANUL zold maradt a
+teljesen KIKAPCSOLT biztonsagi kapuval is -- a gate MUKODESENEK (nem csak a dontesi logikajanak)
+nulla lefedettsege volt.
+
+Javitas: uj `updates-apply-upstream-sync-gate-handler.test.ts`, a cli-update-offer.test.ts-ben
+mar bevalt `fakeCtx`-mintat kovetve (nem uj mintat talalva ki). `node:child_process` mockolva
+(`execFileSync` argv-alapu elagazassal, `spawn` hivas-naplozassal), `../db.js` mockolva
+(`getKanbanCard`). 6 teszt: nyitott kartya -> 409 + spawn SOHA; done kartya -> pull fut + spawn
+hivodik; kartya-hivatkozas nelkuli subject -> pull fut; fetch-hiba -> 500 fail-closed + spawn
+SOHA; log-hiba -> 500 fail-closed + spawn SOHA; TOCTOU-regresszio-or (a fetch tenylegesen
+megtortent, nem csak a vegeredmeny). KOZVETLENUL ellenorizve Cybersec sajat mutaciojaval
+(409-blokk `if (false && ...)`-ra kapcsolva): az uj teszt most PIROSAT ad, nem zoldet --
+bizonyitottan nem vakuum.
+
+LOW (Cybered, nem blokkolo): a detektalas a commit-subject card-ID-jere epul; ha egy
+UPSTREAM-SYNC commit subjectje nem hordozza az ID-t, nem detektalodik (reteg-1 fedi). Konvencio
+rogzitve a 603f917d (kotegterv) kartyan: minden koteg-landolasi commit subjectje nevezze meg a
+sajat kartyajat.
+
+Ki dontott: QA (FAIL) + Cybered (NO-GO), backend3 (javitas). Dispatch: MikroB.
+Gate: QA + Cybersec + Cybered (valtozatlan).
