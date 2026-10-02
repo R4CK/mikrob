@@ -189,10 +189,51 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
   // (`run_unit_maintenance() {`) and the one call (`run_unit_maintenance`) -- both trimmed, both
   // anchored to the exact expected text, not a pattern. A second definition in ANY shape, an eval
   // string, an alias, an unset -f, or a second call all add a THIRD mention, red regardless of
-  // what syntax produced it. This cannot run out of shapes to chase, because it does not chase
-  // shapes.
+  // what syntax produced it.
+  //
+  // CYBERED NO-GO (card e47dc04a, comment 11709, round 7 delta-gate against b2d1ef35): round 7's
+  // own claim ("cannot run out of shapes to chase, because it does not chase shapes") held for
+  // every SYNTACTIC definition shape but missed a LEXICAL one -- bash joins a `\`-newline
+  // continuation into ONE token before it ever looks at syntax, so
+  //   run_unit_\
+  //   maintenance() { install_evil_unit "$@"; }
+  // is, to bash, a single `run_unit_maintenance() {` definition; to a line-based scanner it is two
+  // lines, NEITHER of which matches `/\brun_unit_maintenance\b/`, so the mention count stayed at 2
+  // and missed the evil definition entirely -- proven live, bash resolved the call to the evil
+  // body. Fixed by normalizing continuations (joining `\`+newline outside single quotes, exactly
+  // the way bash's own reader does before tokenizing) BEFORE comment-stripping or mention
+  // counting ever run.
+  //
+  // KNOWN, ACCEPTED RESIDUAL GAP (MikroB decision, round 8, comment 11709): a DYNAMICALLY
+  // assembled name -- `n=run_unit_; eval "${n}maintenance() {...}"`, or a base64-decoded `eval`
+  // argument -- also resolves to an evil definition in real bash, and NO static scanner (this
+  // one, a regex, or a tree-sitter-bash AST alike -- the AST parses `eval "..."` as an opaque
+  // string literal, same as any text) can see a name that does not exist as a literal in the
+  // source. RedHat proved the real fix is RUNTIME introspection: load just the function
+  // definitions in a disposable `bash -c` (never source the whole script -- this suite must not
+  // run a live install) and run the allowlist against `declare -f run_unit_maintenance`'s
+  // actually-resolved body, which bash itself computes and cannot be lexically fooled about. That
+  // runtime rewrite is tracked for a later round alongside the tree-sitter-bash adoption on card
+  // fb8ad8ec, not this one -- this round closes every remaining STATIC bypass measured so far.
+  function joinLineContinuations(src: string): string {
+    let out = ''
+    let inSingle = false
+    let inDouble = false
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i]
+      if (ch === '\\' && !inSingle && src[i + 1] === '\n') {
+        i++ // consume the backslash AND the newline -- two physical lines become one logical line
+        continue
+      }
+      if (ch === "'" && !inDouble) inSingle = !inSingle
+      else if (ch === '"' && !inSingle) inDouble = !inDouble
+      out += ch
+    }
+    return out
+  }
+
   function mentionLines(src: string): string[] {
-    return stripShellComments(src)
+    return stripShellComments(joinLineContinuations(src))
       .split('\n')
       .filter((line) => /\brun_unit_maintenance\b/.test(line))
       .map((line) => line.trim())
@@ -237,6 +278,8 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
       `${src}\nalias run_unit_maintenance='install_main_inbox_observer_unit'\n`],
     ['a same-line second definition right after another statement (round-6)', (src) =>
       `${src}\n}; run_unit_maintenance() { install_main_inbox_observer_unit "$@"; }\n`],
+    ['a definition name split across a `\\`-line-continuation (Cybered 11709, round-7 delta-gate)', (src) =>
+      `${src}\nrun_unit_\\\nmaintenance() { install_main_inbox_observer_unit "$@"; }\n`],
   ]
   for (const [label, mutate] of MENTION_BYPASS_SHAPES) {
     it(`CONTROL: ${label} is caught by the mention allowlist`, () => {
