@@ -97,8 +97,8 @@ function calledFunctionNames(wrapperBody: string): string[] {
   for (const raw of stripShellComments(wrapperBody).split('\n')) {
     const line = raw.trim()
     if (!line || line === '{' || line === '}') continue
-    if (/^return\b/.test(line)) continue
-    if (/^[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{$/.test(line)) continue // the wrapper's own `name() {` header line
+    if (/^return(\s+[0-9]+)?$/.test(line)) continue // bare `return`/`return <N>` only -- never a command-substitution argument
+    if (/^run_unit_maintenance\(\)\s*\{$/.test(line)) continue // the wrapper's own header line, exactly
     const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s+"\$@"|\s+\$@)?$/)
     names.push(m ? m[1] : `UNRECOGNIZED: ${line}`)
   }
@@ -161,6 +161,29 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
     expect(wrapper).toMatch(/repair_morning_timer "\$@"/)
     expect(wrapper).toMatch(/migrate_channels_restart "\$@"/)
     expect(UPDATE).toMatch(/^run_unit_maintenance$/m)
+  })
+
+  // WhiteHat NO-GO (card e47dc04a, comment 11610, round 3 delta-gate, finding C): sliceShellFn
+  // takes the FIRST `run_unit_maintenance() {` it finds, but bash runs whichever definition is
+  // LAST in effect when the bare `run_unit_maintenance` call executes -- a second, later
+  // definition changes what actually runs while leaving the wrapper this guard inspects
+  // untouched. Live repro: appending
+  // `run_unit_maintenance() { install_evil_unit "$@"; }` after the real one made bash run the
+  // evil body while every check above stayed green.
+  it('run_unit_maintenance is defined EXACTLY ONCE in update.sh', () => {
+    const defs = UPDATE.match(/^\s*(function\s+)?run_unit_maintenance\s*\(\)/gm) ?? []
+    expect(defs.length).toBe(1)
+  })
+
+  // CONTROL, reproducing WhiteHat's finding C directly: a SECOND definition appended later in
+  // the file (the form bash actually runs -- its LAST definition in effect at call time) leaves
+  // the first wrapper's own text completely untouched, so every per-wrapper check above would
+  // stay green while bash runs the evil second definition. The duplicate-definition count is the
+  // only check that can see this.
+  it('CONTROL: a second run_unit_maintenance definition appended later is caught by the duplicate count', () => {
+    const mutated = `${UPDATE}\nrun_unit_maintenance() { install_main_inbox_observer_unit "$@"; }\n`
+    const defs = mutated.match(/^\s*(function\s+)?run_unit_maintenance\s*\(\)/gm) ?? []
+    expect(defs.length).toBe(2)
   })
 
   // Cybersec NO-GO (card ef6a8031, 2026-10-02): a batch-3 upstream merge wired
@@ -239,6 +262,22 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
       expect(called.every((name) => ADOPTED_UNIT_FUNCTIONS.has(name))).toBe(false)
     })
   }
+
+  // WhiteHat NO-GO (card e47dc04a, comment 11610, round 3 delta-gate, finding B): the
+  // `/^return\b/` skip dropped the WHOLE return line unconditionally, including one whose
+  // argument is a command substitution -- bash evaluates that substitution (running the evil
+  // call) before `return` ever sees its result. Live repro on the real update.sh:
+  // `return "$(install_evil_unit "$@"; echo 0)"` ran the evil call while the guard stayed green.
+  it('CONTROL: a command substitution inside return\'s own argument fails the allowlist, not silently skipped', () => {
+    const wrapper = sliceShellFn(UPDATE, 'run_unit_maintenance')
+    const mutated = wrapper.replace(
+      /\breturn 0\b/,
+      'return "$(install_main_inbox_observer_unit "$@"; echo 0)"',
+    )
+    expect(mutated).not.toBe(wrapper)
+    const called = calledFunctionNames(mutated)
+    expect(called.every((name) => ADOPTED_UNIT_FUNCTIONS.has(name))).toBe(false)
+  })
 
   it('CONTROL: the fail-closed extractor does not flag the wrapper AS IT STANDS TODAY', () => {
     // The real wrapper is a trivial two-call dispatcher; the fail-closed rule above must not
