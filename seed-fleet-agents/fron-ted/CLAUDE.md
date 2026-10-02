@@ -40,7 +40,7 @@ Ha végeztél egy rád osztott kártyával: NE tedd done-ba. Írj eredmény-komm
 printf 'Authorization: Bearer %s\n' "$(cat __MARVEEN_INSTALL_DIR__/store/.dashboard-token)" | curl -H @- -s -X POST http://localhost:3420/api/kanban/<id>/comments -H 'Content-Type: application/json' -d '{"author":"fron-ted","content":"REVIEW: kesz, ime az eredmeny..."}'
 printf 'Authorization: Bearer %s\n' "$(cat __MARVEEN_INSTALL_DIR__/store/.dashboard-token)" | curl -H @- -s -X POST http://localhost:3420/api/kanban/<id>/move -H 'Content-Type: application/json' -d '{"status":"waiting","actor":"fron-ted","reason":"REVIEW kesz, gate-re var"}'
 ```
-Az `actor`+`reason` mező kötelező rész a hívásban (kártya 1bd7debf, Cybersec F-2 lelet): e nélkül egy
+Az `actor`+`reason` mező kötelező rész a hívásban (kártya 1bd7debf, WhiteHat F-2 lelet): e nélkül egy
 60 mp-es tömeges-státuszváltási burst (10+ esemény egy percen belül) idején a hívás 409
 `bulk_attribution_required`-ot kapna, amit válasz-ellenőrzés nélkül a hívó észre sem venne. Ha mégis
 409 jön, NE nyeld le csendben -- a válasz `error` mezője megmondja mi hiányzik.
@@ -60,5 +60,5 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `scroll-driven-3d-motion` -- scroll-storytelling, látványos 3D web
 - `threejs-specialist` -- Three.js/WebGL jelenet, 3D viewer/configurator
 - `d3-data-visualization` -- interaktív, hozzáférhető chartok
-- `taste-skill` -- anti-slop vizuális design-ítélet; 60-checkpoint pre-flight landing page, portfólió, redesign és érdemi új feature UI esetén; NEM: dashboard, adattábla, triviális komponens-tweak. **CleanCore-ban (Cybersec LOW, kártya e41f39b8, 4ec15263 gate):** a 2. pontja (picsum/Unsplash/Pexels kép-URL ajánlás) NEM alkalmazható -- a CleanCore CSP-je (`img-src 'self' data: ...`) mindhármat fail-closed blokkolja, a kép nem jelenik meg és CSS-bugnak olvasódik; helyette placeholder = `data:` URI vagy saját `/assets` fájl.
+- `taste-skill` -- anti-slop vizuális design-ítélet; 60-checkpoint pre-flight landing page, portfólió, redesign és érdemi új feature UI esetén; NEM: dashboard, adattábla, triviális komponens-tweak. **CleanCore-ban (WhiteHat LOW, kártya e41f39b8, 4ec15263 gate):** a 2. pontja (picsum/Unsplash/Pexels kép-URL ajánlás) NEM alkalmazható -- a CleanCore CSP-je (`img-src 'self' data: ...`) mindhármat fail-closed blokkolja, a kép nem jelenik meg és CSS-bugnak olvasódik; helyette placeholder = `data:` URI vagy saját `/assets` fájl.
 - `humanize-writing` -- **KÖTELEZŐ** minden commitolható, user-facing EN forrásszövegen (UI-mikroszöveg, hibaüzenet, empty state, placeholder, button label, onboarding, landing) fordítás előtt; jogi/compliance szöveget SOHA ne humanizálj.

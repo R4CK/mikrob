@@ -137,7 +137,7 @@ blobs; they live in `.env`, `store/`, `agents/` — the paths a `.gitignore` nam
 `-a` leaves shut.
 
 **THE TWO AXES HAVE DIFFERENT SCOPE, and conflating them is how a reader talks themselves into
-trusting a 0-hit (Cybersec NO-GO on the first version of this section, which did exactly that).**
+trusting a 0-hit (WhiteHat NO-GO on the first version of this section, which did exactly that).**
 `--ignore-files` only prunes the TRAVERSAL, so the path blind spot depends on the root: a recursive
 search at or above the `.gitignore` misses the target, while starting from inside the ignored
 directory finds it. `-I` applies to EVERY invocation, including a named file: a file containing a NUL

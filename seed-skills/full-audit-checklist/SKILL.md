@@ -39,7 +39,7 @@ Alapelv: **semmi nem implicit**. Ami nincs a leltárban és nincs tesztelve, azt
 - Mérd és javítsd: lassú/N+1 lekérdezések, hiányzó indexek, felesleges re-render, túl nagy payload/bundle, cache-hiány, memóriaszivárgás, O(n^2) forrópontok (capeld). Adj előtte/utána számot (nem "gyorsabbnak tűnik").
 
 ### 7. Kiegészítő, hogy TELJES ÉRTÉKŰ legyen
-- **Biztonság:** STRIDE + OWASP Top 10/ASVS végigvezetve (a Cybersec gate), nem csak a happy-path.
+- **Biztonság:** STRIDE + OWASP Top 10/ASVS végigvezetve (a WhiteHat gate), nem csak a happy-path.
 - **Adatintegritás / multi-tenant izoláció:** a tenant-scope invariáns bizonyítottan tartja magát (negatív kontroll).
 - **Frontend edge-esetek:** loading/empty/error/offline/hosszú szöveg/kis képernyő állapotok.
 - **Akadálymentesség (WCAG AA):** billentyű-navigáció, fókusz-csapda, kontraszt, aria.

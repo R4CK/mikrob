@@ -1,18 +1,18 @@
 ---
 name: cybered-gate-pattern
-description: Full Cybered gate workflow for the CleanCore fleet: board scan for waiting+REVIEW cards in Cybered scope, assume-breach kill-chain evaluation per card, verdict posting, card status update, and MikroB notification. Use this whenever running SELF-ADVANCE (Rule 11) or executing a MikroB-dispatched gate. Complements white-hat-security-testing (per-finding proof) by adding the assume-breach frame, kill-chain chaining, and fleet workflow mechanics.
+description: Full RedHat gate workflow for the CleanCore fleet: board scan for waiting+REVIEW cards in RedHat scope, assume-breach kill-chain evaluation per card, verdict posting, card status update, and MikroB notification. Use this whenever running SELF-ADVANCE (Rule 11) or executing a MikroB-dispatched gate. Complements white-hat-security-testing (per-finding proof) by adding the assume-breach frame, kill-chain chaining, and fleet workflow mechanics.
 version: "1.0.0"
 ---
 
-# Cybered Gate Pattern
+# RedHat Gate Pattern
 
 ## When to use
 
-- SELF-ADVANCE (Rule 11): no active work -> scan board -> gate next Cybered-scope card
-- MikroB dispatches a card for Cybered gate (inter-agent message with GATE-DISPATCH)
+- SELF-ADVANCE (Rule 11): no active work -> scan board -> gate next RedHat-scope card
+- MikroB dispatches a card for RedHat gate (inter-agent message with GATE-DISPATCH)
 - After a NO-GO fix cycle: re-gate the remediated card
 
-## Cybered scope (gate these, not the others)
+## RedHat scope (gate these, not the others)
 
 Gate a card if it touches ANY of:
 - **superadmin** - any endpoint under `/v1/admin/*`, session/account management for superadmin
@@ -23,7 +23,7 @@ Gate a card if it touches ANY of:
 - **file upload** - multipart, stored artifacts
 - **multi-tenant** - anything that crosses tenant boundaries or touches tenantId-gating
 
-NOT Cybered scope: pure backend domain logic with no new attack surface (warehouse read-side, i18n text, CSS, tsconfig).
+NOT RedHat scope: pure backend domain logic with no new attack surface (warehouse read-side, i18n text, CSS, tsconfig).
 
 ## Procedure
 
@@ -53,7 +53,7 @@ print(f'REVIEW:{has_review} CYBERED:{has_cybered}')
 "
 ```
 
-Pick the oldest card where REVIEW:True AND CYBERED:False AND title/description matches Cybered scope.
+Pick the oldest card where REVIEW:True AND CYBERED:False AND title/description matches RedHat scope.
 
 ### 2. Read the code — the COMMITTED code, not the working tree (BINDING)
 
@@ -182,7 +182,7 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" \
 
 ### 9. Continue SELF-ADVANCE
 
-After each gate, immediately scan for the next Cybered-scope waiting+REVIEW card. Ping MikroB when board is clean.
+After each gate, immediately scan for the next RedHat-scope waiting+REVIEW card. Ping MikroB when board is clean.
 
 ## Pitfalls
 
@@ -192,7 +192,7 @@ After each gate, immediately scan for the next Cybered-scope waiting+REVIEW card
 - **Composition root precedence**: old dev seeds can shadow new ones via `??`. Functional gap is NOT a security issue if the shadowed seed is MORE restrictive.
 - **Missing MikroB notification**: always send the inter-agent message AFTER posting the comment. The comment going in without the notification stalls MikroB's reconciliation.
 - **Working-tree GO (the reversal trap)**: reading the wiring/injection from the working tree instead of `git show <sha>:file` gives a GO on code that is not in the commit. The seam (the function that accepts the dep) is often committed while the injection (the composition-root call that passes it) is NOT → the committed code silently falls to the safe-but-inert fallback branch, and the fix ships dead. ALWAYS `git show <sha> --stat` and confirm every wiring file the verdict depends on is in the commit; `git status --short` any ` M` on those files = NO-GO. The fix for this class is trivial and specific: "commit the already-written wiring in <file>", then re-gate against the new sha. (Real case: 4d6a1148 GO→NO-GO, login-plane.ts burnWriter uncommitted.)
-- **No-op / stub dep passed a security store (trace the wiring, not the call)**: seeing a security-relevant call — `deps.sessionGenerations.bump(user.id)`, `deps.revoke(...)`, `deps.audit.record(...)` — proves NOTHING about whether the dep is the REAL store or an inert stub. STANDING PROBE on every injected guard/store/revoke/audit/burn dep: trace it to the composition root (`git show <sha>:main.ts` / the `load*Config` / `startServer` wiring) and confirm the SAME real singleton the enforcement path checks is what's injected. An inline literal (`{ bump: () => 0 }`, `new Map()` never shared, `() => true`, `{ record: () => {} }`) at the injection site is the smell → the mechanism is DEAD while the green suite (which tests the flow in isolation against a fresh store) still passes. Real case: 46d87ac9 OAuth GO→NO-GO — the OAuth deps got `sessionGenerations: { bump: () => 0 }` (main.ts:415), NOT the real `SessionGenerationStore` singleton (server.ts:351) that `assertSessionGeneration` checks and password/magic-link bump → the OAuth login neither rotated nor revoked → single-active-session violated + born-revoked session for mixed-login users. The fix: inject the real singleton (thread it from the stage that creates it). Grep `git show <sha>:main.ts` for the dep name; if the value is an inline no-op, NO-GO + new card. Same class as [[gate-committed-not-working-tree]] and the Cybersec wire-guard-into-live-path pattern.
+- **No-op / stub dep passed a security store (trace the wiring, not the call)**: seeing a security-relevant call — `deps.sessionGenerations.bump(user.id)`, `deps.revoke(...)`, `deps.audit.record(...)` — proves NOTHING about whether the dep is the REAL store or an inert stub. STANDING PROBE on every injected guard/store/revoke/audit/burn dep: trace it to the composition root (`git show <sha>:main.ts` / the `load*Config` / `startServer` wiring) and confirm the SAME real singleton the enforcement path checks is what's injected. An inline literal (`{ bump: () => 0 }`, `new Map()` never shared, `() => true`, `{ record: () => {} }`) at the injection site is the smell → the mechanism is DEAD while the green suite (which tests the flow in isolation against a fresh store) still passes. Real case: 46d87ac9 OAuth GO→NO-GO — the OAuth deps got `sessionGenerations: { bump: () => 0 }` (main.ts:415), NOT the real `SessionGenerationStore` singleton (server.ts:351) that `assertSessionGeneration` checks and password/magic-link bump → the OAuth login neither rotated nor revoked → single-active-session violated + born-revoked session for mixed-login users. The fix: inject the real singleton (thread it from the stage that creates it). Grep `git show <sha>:main.ts` for the dep name; if the value is an inline no-op, NO-GO + new card. Same class as [[gate-committed-not-working-tree]] and the WhiteHat wire-guard-into-live-path pattern.
 
 ## Forward invariants to track
 
@@ -303,13 +303,13 @@ curl -s "$HOST/superadmin" | grep -o 'src="[^"]*\.js"' # find the served bundle 
 curl -s "$HOST/<bundle-path>" | grep -c "APP_SPECIFIC_MARKER"  # 0 = wrong app served
 ```
 
-**Real case (card 2134471a, 2026-07-25):** both QA and Cybered's own first-pass GO relied on
-`GET /superadmin -> 200 + HTML+script bundle` as proof the superadmin SPA was live. Cybersec's
+**Real case (card 2134471a, 2026-07-25):** both QA and RedHat's own first-pass GO relied on
+`GET /superadmin -> 200 + HTML+script bundle` as proof the superadmin SPA was live. WhiteHat's
 deeper re-check found `GET /`, `GET /superadmin`, and `GET /superadmin/made-up-xyz` all returned
 the IDENTICAL ETag/Content-Length, and the served bundle had zero occurrences of
 `__CC_SA_API__`/`__CC_SA_TOKEN__`/`"superadmin"` — the `apps/superadmin` build was never deployed
 at all; nginx's tenant-app SPA-fallback was answering every unmatched path. The DONE had to be
-reopened. This directly corrects this skill's own earlier verdict on that card — Cybered's own
+reopened. This directly corrects this skill's own earlier verdict on that card — RedHat's own
 prior GO was the one that missed it, not just QA's.
 
 **Rule: for any prod SPA/static-frontend deploy-verification gate, NEVER accept a bare 200 as

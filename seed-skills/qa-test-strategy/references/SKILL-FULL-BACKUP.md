@@ -27,8 +27,8 @@ Kész (vagy közel kész) munka tesztelésekor és a "shippable?" döntésnél. 
 - Bug találtál, de nincs rá teszt? A javítás nem kész, amíg nincs regressziós teszt.
 
 ### Stale-PASS csapda (valós tanulság)
-Ha Cybersec NO-GO-t adott és az ügynök új commitot készített a fix után, a korábbi QA PASS már egy más artifactra vonatkozik. Kötelező lépések:
-1. Nézd meg a REVIEW kommentben és a Cybersec NO-GO-ban szereplő commit hash-t.
+Ha WhiteHat NO-GO-t adott és az ügynök új commitot készített a fix után, a korábbi QA PASS már egy más artifactra vonatkozik. Kötelező lépések:
+1. Nézd meg a REVIEW kommentben és a WhiteHat NO-GO-ban szereplő commit hash-t.
 2. Ha eltérnek (vagy ha a kártyán azóta új commit volt), NE fogadd el a régi PASS-t -- futtasd újra a teszteket a legfrissebb commiten.
 3. A verdikt-kommentbe mindig írd bele a konkrét commit hash-t (`commit <sha>`), hogy egyértelmű legyen, melyik artifactra vonatkozik.
 
@@ -229,7 +229,7 @@ Ha egy kártya célja egy guard/feature bevezetése, de a backend azt állítja,
 1. **Guard LETEZIK**: ellenőrizd, hogy a script/mechanizmus fizikailag jelen van (`ls scripts/...`, `grep -r "..."`).
 2. **CI-kötve**: a guard be van kötve a CI pipeline-ba (`.github/workflows/ci.yml` step).
 3. **Self-test zöld**: a guard saját önellenőrzése (fixture/self-test) lefut és OK-t ad.
-4. **Nem nyit új támadási felületet**: ha nincs új runtime felület -> QA-only gate elég (Cybersec nem kötelező).
+4. **Nem nyit új támadási felületet**: ha nincs új runtime felület -> QA-only gate elég (WhiteHat nem kötelező).
 5. **pnpm typecheck / tsc clean**: ha a scope tartalmaz tsc-kompatibilis kódot, a typecheck is zöld legyen.
 
 Ha mindez teljesül -> QA PASS verdikt, feltünteted: "close-as-SATISFIED -- a guard már él, no new code."
@@ -257,17 +257,17 @@ a handler és a route-policy entry már létezett, csak a `router.register()` h�
 6. Route inventory coherence: `router.registrations()` tartalmazza az új route-ot
 7. Nincs route-policy / http-status.ts módosítás (ha a policy entry már létezett és a hiba suffix-kezelt) -> minimális hot-file kollízió
 
-**Cybersec szükséges ha:** row-scoped (own/all), PII-jellegű adat (proof photos, leave records), trust-boundary
+**WhiteHat szükséges ha:** row-scoped (own/all), PII-jellegű adat (proof photos, leave records), trust-boundary
 **Csak QA:** ha pusztán adminisztratív read (pl. belső audit log, nem user-facing PII)
 
 Valós esetek: 33f5bba8 (estimating-bids POST/GET), 19756eca (proof task-photos GET), ae8c08d7 (leave list GET)
 
 ### Gate tiering ajánlás a verdiktben
 Minden PASS/FAIL komment végén jelezd, milyen gate-ek szükségesek:
-- **Cybersec szükséges**: auth, RBAC, multi-tenant scope, PII, pénz, file-upload, superadmin, publikus endpoint
-- **Cybered szükséges**: superadmin write, impersonation, internet-facing, magas-tétű publikus write path
+- **WhiteHat szükséges**: auth, RBAC, multi-tenant scope, PII, pénz, file-upload, superadmin, publikus endpoint
+- **RedHat szükséges**: superadmin write, impersonation, internet-facing, magas-tétű publikus write path
 - **Csak QA**: pure FE komponens, error page, i18n, belső audit (nincs új trust-boundary)
-Ha a kártyán Cybersec GO vagy Cybered GO már szerepel, ezt is jelezd (ne jelezd szükségesnek, ami már megvan).
+Ha a kártyán WhiteHat GO vagy RedHat GO már szerepel, ezt is jelezd (ne jelezd szükségesnek, ami már megvan).
 
 ### Claim/RBAC-függő FE gate: actor tényleges képességét is ellenőrizd (2026-07-24 tanulság)
 Ha egy FE kártya egy "claim" / "assign" / "approve" akciót drótozza be, a tesztek zöldje NEM elég -- ellenőrizd az actor tényleges RBAC képességét is:
@@ -276,7 +276,7 @@ Ha egy FE kártya egy "claim" / "assign" / "approve" akciót drótozza be, a tes
 3. Negatív FE teszt (pl. "crew-nél nincs Claim gomb") NEM elegendő bizonyíték arra, hogy a flow működik -- az RBAC-t forrásból kell olvasni, nem a FE viselkedéséből visszakövetkeztetni.
 4. Ha az RBAC hiányzik: a FE-kártyát NEM lehet lezárni az RBAC-fix kártya landolása előtt; az e2e-nek a valódi crew claim-et kell bizonyítania.
 
-Valós eset: 37ee1d6d F1 FE, 36/36 zöld, de crew actor nem rendelkezett SchedulesWrite képességgel -> Cybersec no-go flow-connectivity (813fe1fd kanon fix).
+Valós eset: 37ee1d6d F1 FE, 36/36 zöld, de crew actor nem rendelkezett SchedulesWrite képességgel -> WhiteHat no-go flow-connectivity (813fe1fd kanon fix).
 
 ### Staging race: tartalom idegen commitba kerül (2026-07-24 tanulság)
 Ha az ügynök kódja nem a saját feature-commitjában landolt (pl. WF-3 -> prettier chore 3a8a055, F1 -> prettier chore 12d1328), de a REVIEW a feature-commitra hivatkozik:
@@ -431,7 +431,7 @@ Amikor egy write-path guard (pl. site-access check) a run/entity betöltése UT�
 
 Ez belső-tenanten belüli oracle (nem cross-tenant szivárgás). QA scope-ban:
 - Ha a guard logikailag helyes és a tenant-scope invariáns tartja magát -> **nem QA FAIL** (funkcionálisan helyes)
-- Jelzd LOW findingként és delegáld Cybersecnek (ők döntik el, kell-e uniform 404)
+- Jelzd LOW findingként és delegáld WhiteHatnek (ők döntik el, kell-e uniform 404)
 - Az "opaque" claim CSAK akkor tartható a start/create path-on (ahol a guard az adatlekérés ELŐTT fut)
 
 Ellenőrizd a `??` fail-closed defaultot is: ha az AppDeps mezője optional (`workerSiteAccess?`), az `assembleAppRouter`-ben legyen `?? createInMemory...()` (empty seed = deny all), különben egy unwired router silently allow-ol -- ez QA FAIL.
@@ -486,7 +486,7 @@ grep -n "useEffect" FILE.tsx
 
 ### "REVIEW" szó != review-kész (6c5052b8 tanulság)
 A `REVIEW` szó megjelenése egy kártya kommentjeiben NEM jelenti automatikusan, hogy a kártya gate-re kész. Három különböző kontextus:
-- **Cybersec preliminary note**: "FORMAL GATE DEFERRED to when 6c5052b8 reaches REVIEW" -- jövőbeli, a kártya még in-progress
+- **WhiteHat preliminary note**: "FORMAL GATE DEFERRED to when 6c5052b8 reaches REVIEW" -- jövőbeli, a kártya még in-progress
 - **Blokkolt waiting**: "NEM done -> WAITING, 3 fuggoseg miatt" -- a kártya waiting de nem complete; az author EXPLICITON mondja "NEM done"
 - **Valódi REVIEW signal**: "REVIEW: munka kész, [commit sha], gate-eljetek" -- az author befejezettnek nyilvánítja
 
@@ -514,7 +514,7 @@ grep -n "MembershipRole\." apps/api/src/identity.ts
 ```
 Ha a domain saját belső string-et keres (nem `MembershipRole.X`), az RBAC szétcsúszás kockázata -- QA finding.
 
-Valós eset: 1a47cac2 -- `isWarehouseKeeper` 'warehouse_admin'-t keresett, `MembershipRole.WarehouseKeeper = 'warehouse'`. 80/80 PASS (vákuum), Cybersec NO-GO elo reprodukcioval. QA PASS -> Cybersec NO-GO lánc.
+Valós eset: 1a47cac2 -- `isWarehouseKeeper` 'warehouse_admin'-t keresett, `MembershipRole.WarehouseKeeper = 'warehouse'`. 80/80 PASS (vákuum), WhiteHat NO-GO elo reprodukcioval. QA PASS -> WhiteHat NO-GO lánc.
 
 ### In-memory store + periodikus refresh gate-elése (27d5c8d7 tanulság)
 Ha egy periodikusan újratöltődő in-memory store-t gate-elsz (pl. superadmin account store 90s refresh), a kritikus tulajdonság: a "burned" / egyszer felhasznált state SOHA NEM KERÜL VISSZA ÁLLÍTÁSRA refresh után.
@@ -685,7 +685,7 @@ npx tsc --noEmit 2>&1 | grep "<module-name>" | head -10
 # 0 hiba -> PASS
 ```
 
-**Valós eset (6bde1999 @ 61ea236):** 21/21 non-vacuous unit test, mind a 8 pont ✓ -> QA PASS. Cybersec külön gateeli (SoD/RBAC trust-boundary, PII).
+**Valós eset (6bde1999 @ 61ea236):** 21/21 non-vacuous unit test, mind a 8 pont ✓ -> QA PASS. WhiteHat külön gateeli (SoD/RBAC trust-boundary, PII).
 
 ### Külső API proxy endpoint QA checklist (d702d593 tanulság)
 Ha egy kártya publikus külső API-t proxyzó endpointot vezet be (pl. HuggingFace, GitHub, npm), a funkcionális QA az alábbi sorrendben fut:
@@ -1165,8 +1165,8 @@ grep -n "lockoutKey\|deviceLockoutKey\|tenantId.*deviceId" src/*.ts
 - Rate-limit guard: lockout ELŐBB fut; audit nem szivárogtat hitelesítési adatot; per-key scope tartalmaz tenant-t.
 - Flow/IA doc gate: domain-funkció nevek és i18n-kulcsok (ld. alább).
 
-### Cybersec GO érvényessége QA-FAIL fix után (79213e5a tanulság)
-Ha egy kártya QA FAIL-t kapott és a fix-commit KIZÁRÓLAG CSS-t és/vagy tesztfájlokat változtatott (NEM production logikát), a korábbi Cybersec GO érvényes marad -- nem kell újra gate-elni a biztonsági átjárón.
+### WhiteHat GO érvényessége QA-FAIL fix után (79213e5a tanulság)
+Ha egy kártya QA FAIL-t kapott és a fix-commit KIZÁRÓLAG CSS-t és/vagy tesztfájlokat változtatott (NEM production logikát), a korábbi WhiteHat GO érvényes marad -- nem kell újra gate-elni a biztonsági átjárón.
 
 **Érvényes marad, ha a fix csak:**
 - CSS módosítás (pl. `min-height: 32px → 44px` Rule-13 javítás)
@@ -1177,11 +1177,11 @@ Ha egy kártya QA FAIL-t kapott és a fix-commit KIZÁRÓLAG CSS-t és/vagy tesz
 - Production TSX/TS kódot változtat (authz, API hívás, token kezelés)
 - Új dependency-t vezet be
 - HTTP endpoint viselkedését módosítja
-- Bármit érint, ami a korábbi Cybersec GO scope-jában volt
+- Bármit érint, ami a korábbi WhiteHat GO scope-jában volt
 
-A verdiktben ezt explicit jelezd: `"A 4475351 fix csak CSS + tesztfájlok -- nincs új trust-boundary, a Cybersec GO (#N @ sha) érvényes marad."`
+A verdiktben ezt explicit jelezd: `"A 4475351 fix csak CSS + tesztfájlok -- nincs új trust-boundary, a WhiteHat GO (#N @ sha) érvényes marad."`
 
-Valós eset (79213e5a): Cybersec GO #4654 @ 8e346c6, majd QA FAIL → fix commit 4475351 (CSS 44px + non-null assertions). QA PASS #4670 @ 4475351, Cybersec GO érvényes. MikroB lezárta.
+Valós eset (79213e5a): WhiteHat GO #4654 @ 8e346c6, majd QA FAIL → fix commit 4475351 (CSS 44px + non-null assertions). QA PASS #4670 @ 4475351, WhiteHat GO érvényes. MikroB lezárta.
 
 ### Flow/IA dokumentum gate -- függvénynév + i18n teljességellenőrzés (fb99fc85 tanulság)
 Amikor flow/IA dizájn-dokumentumot gate-elsz, két ellenőrzés elengedhetetlen:
@@ -1218,7 +1218,7 @@ Valós eset (fb99fc85 @ af1b5ef):
 
 **Gate logika flow/IA artifactnál:**
 - Nincs futtatható teszt -- a gate tárgya: (a) flow-connectivity labelek pontossága, (b) domain-funkció nevek egyeznek a committed kóddal, (c) minden flow-ban említett user-facing string szerepel a i18n-keys szekcióban, (d) entitlement matrix pozitív + negatív kontrollal, (e) screen state inventory (loading/empty/error/offline).
-- **Cybersec gate**: NEM szükséges clean flow/IA dokumentumra (nincs implementált trust-boundary). A Cybersec gate az implementáció-kártyára (pl. FORM-3, SUBCON-3) vonatkozik.
+- **WhiteHat gate**: NEM szükséges clean flow/IA dokumentumra (nincs implementált trust-boundary). A WhiteHat gate az implementáció-kártyára (pl. FORM-3, SUBCON-3) vonatkozik.
 
 ### HTTP handler gate -- make-live forward invariants (f11d23eb tanulság)
 Amikor egy BE kártya guarded HTTP-handlereket vezet be (make-live kártya), négy visszatérő forward-invariant van, amit a QA gate-nek NON-VAKUOSAN kell bizonyítani:
@@ -1296,7 +1296,7 @@ git show <sha>:apps/api/src/*-http.ts | grep -n "redact\|RowScope.All.*reason\|n
 git show <sha>:apps/api/src/*-http.ts | grep -n "authorizeScoped" | head -20
 ```
 
-**Valós eset (f11d23eb @ 41c5fa2):** 13 handler, 503/503 zöld (13 leave-http + 490 rbac unit), tsc clean. Mind a 4 forward-invariant non-vakuosan igazolva: (1) attacker-body-id ignorálva + UUID teszt, (2) absent == out-of-crew LeaveNotFoundError, (3) crew-lead sick-reason null / manager full, (4) ForbiddenError worker-approve-nál. QA PASS, Cybersec gate szükséges.
+**Valós eset (f11d23eb @ 41c5fa2):** 13 handler, 503/503 zöld (13 leave-http + 490 rbac unit), tsc clean. Mind a 4 forward-invariant non-vakuosan igazolva: (1) attacker-body-id ignorálva + UUID teszt, (2) absent == out-of-crew LeaveNotFoundError, (3) crew-lead sick-reason null / manager full, (4) ForbiddenError worker-approve-nál. QA PASS, WhiteHat gate szükséges.
 
 ## Ellenőrzési lista (HTTP handler make-live kártyákhoz kiegészítve)
 - Mind a 4 forward-invariant (`randomUUID`, `requireTenant`, opaque-404, field-RBAC) non-vakuosan tesztelve
@@ -1495,7 +1495,7 @@ RTL override (`U+202E`), zero-width characters (`U+200B`, `U+FEFF`), és más ho
 # Megvan-e a `hasForbiddenTextChars` (vagy egyenértékű) hívás a domain send-jében?
 git show <sha>:packages/modules/<mod>/src/<mod>.ts | grep -n "hasForbidden\|forbidden.*char\|unicode.*check\|bidi\|rtlo\|rtl.*override"
 
-# Ha nincs -> finding: user-submitted body nem szűrt -> finding Cybersecnek (trust-boundary)
+# Ha nincs -> finding: user-submitted body nem szűrt -> finding WhiteHatnek (trust-boundary)
 # QA scope: a függvény LÉTEZIK és a send ELŐTT hívódik, reject ha talál
 ```
 
@@ -1871,7 +1871,7 @@ request(Crew 'worker-1') → approve(Crew 'worker-1')   FAIL (saját kérés jó
 - `leaveStore?: LeaveStore` -- `?? createInMemoryLeaveStore()` default
 - Üres store = elveszett leave kérések per restart (dev/test), nem security hole
 
-**Gate tiering:** LEAVE/FORM/SUBCON/KIOSK mind trust-boundary (RBAC + SoD + row-scope). Cybersec kötelező (approve SoD bypass, row-scope oracle, sick-reason field-RBAC).
+**Gate tiering:** LEAVE/FORM/SUBCON/KIOSK mind trust-boundary (RBAC + SoD + row-scope). WhiteHat kötelező (approve SoD bypass, row-scope oracle, sick-reason field-RBAC).
 
 ### vi.mock hoisting TDZ trap (ca0934fd / MessagesPage tanulság)
 Vitest automatikusan hoistol minden `vi.mock()` hívást a fájl tetejére -- az importok és `const`/`let` deklarációk ELÉ. Ha a mock factory callback-ben top-level `const`-ra hivatkozol, az a TDZ-ban van a factory futásakor: `ReferenceError: Cannot access 'MOCK_X' before initialization`.

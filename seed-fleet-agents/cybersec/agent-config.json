@@ -1,5 +1,5 @@
 {
-  "model": "claude-opus-5",
-  "displayName": "Cybersec",
+  "model": "claude-opus-5-5",
+  "displayName": "WhiteHat",
   "securityProfile": "developer-senior"
 }
