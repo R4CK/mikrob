@@ -1,8 +1,26 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync, mkdtempSync, rmSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+// @ts-expect-error -- plain .mjs hook script, no types
+import { functionDefinitionSpans, astAvailable } from '../../scripts/bash-ast.mjs'
+
+// ARMED/DISARMED dark-launch, same contract as bash-ast-boundary.test.ts (card f16b3165):
+// tree-sitter is an OPTIONAL dependency nobody has batched into package.json yet (card e47dc04a
+// round 6, MikroB decision -- the real install + fail-closed cutover is tracked separately on
+// card fb8ad8ec). DISARMED (today's default everywhere) runs the regex fallback and says so out
+// loud; point SELF_PACE_AST_MODULE_PATH at an install to arm the AST path instead.
+const AST_ARMED = astAvailable()
+
+beforeAll(() => {
+  console.log(
+    AST_ARMED
+      ? '[update-unit-maintenance-order.test.ts] ARMED -- tree-sitter present, AST definition-count ran.'
+      : '[update-unit-maintenance-order.test.ts] DISARMED -- tree-sitter absent; the regex fallback ' +
+        'decided the duplicate-definition count. Set SELF_PACE_AST_MODULE_PATH to an install to arm it.'
+  )
+})
 
 // A repair that only runs when there is something to pull is a repair that
 // never runs on the machines that need it.
@@ -176,11 +194,27 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
   // (no parens at all) was not recognized as a definition -- counted as 1 even with a malicious
   // second, parenless definition appended, which bash still runs last. Fixed to recognize all
   // three bash definition shapes: `name()`, `function name()`, and `function name` (no parens).
-  const DEF_RE = /^\s*(?:function\s+run_unit_maintenance\b(?:\s*\(\))?|run_unit_maintenance\s*\(\))/gm
+  //
+  // CYBERSEC NO-GO (card e47dc04a, round 5 delta-gate, QA 11677 live repro): `run_unit_maintenance
+  // ( ) { ... }` -- whitespace BETWEEN the parens, equally valid bash -- still matched `0` as the
+  // only recognized shape. This is exactly the hand-written-regex-chasing-bash-grammar class
+  // MikroB decided to stop patching piecemeal (round 6): the AST path below is the real answer;
+  // this regex is now explicitly the DISARMED fallback, kept only for when tree-sitter is absent.
+  const DEF_RE = /^\s*(?:function\s+run_unit_maintenance\b(?:\s*\(\s*\))?|run_unit_maintenance\s*\(\s*\))/gm
+
+  /**
+   * How many times `run_unit_maintenance` is defined in `src`. AST-backed when tree-sitter is
+   * armed (covers every bash definition shape by construction, see bash-ast.mjs); falls back to
+   * the regex above, loudly logged via the module-level ARMED/DISARMED message, when it is not.
+   */
+  function countDefinitions(src: string): number {
+    const spans = functionDefinitionSpans(src, 'run_unit_maintenance')
+    if (spans !== null) return spans.length
+    return (src.match(DEF_RE) ?? []).length
+  }
 
   it('run_unit_maintenance is defined EXACTLY ONCE in update.sh', () => {
-    const defs = UPDATE.match(DEF_RE) ?? []
-    expect(defs.length).toBe(1)
+    expect(countDefinitions(UPDATE)).toBe(1)
   })
 
   // CONTROL, reproducing WhiteHat's finding C directly: a SECOND definition appended later in
@@ -192,12 +226,12 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
     ['`name() { ... }` (WhiteHat 11610 finding C)', 'run_unit_maintenance() { install_main_inbox_observer_unit "$@"; }'],
     ['`function name() { ... }`', 'function run_unit_maintenance() { install_main_inbox_observer_unit "$@"; }'],
     ['`function name { ... }`, no parens (Cybersec round-4 delta-gate)', 'function run_unit_maintenance { install_main_inbox_observer_unit "$@"; }'],
+    ['`name ( ) { ... }`, space between parens (QA 11677 live repro, round-5 delta-gate)', 'run_unit_maintenance ( ) { install_main_inbox_observer_unit "$@"; }'],
   ]
   for (const [label, def] of SECOND_DEF_SHAPES) {
     it(`CONTROL: a second definition shaped as ${label} is caught by the duplicate count`, () => {
       const mutated = `${UPDATE}\n${def}\n`
-      const defs = mutated.match(DEF_RE) ?? []
-      expect(defs.length).toBe(2)
+      expect(countDefinitions(mutated)).toBe(2)
     })
   }
 
