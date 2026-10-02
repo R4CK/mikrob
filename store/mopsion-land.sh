@@ -147,28 +147,41 @@ _gate_designation_snapshot() { # $1 = cardId
   if [ ! -r "$GATE_CHECK_TOKEN_FILE" ]; then
     return 1
   fi
+  # WhiteHat NO-GO (acc197c8, Gate-SHA 7d8bc70a): `curl -sS` without -f accepted a 401/error body
+  # as "readable", and the python below silently treated a non-list body or a card missing from
+  # the bulk list as "no designation stated" (sys.exit(0), empty string) instead of failing
+  # closed -- if BOTH the start and push reads failed/missing-carded the same way, the symmetric
+  # recheck above compared "" == "" and passed silently. `-f` makes curl itself fail (nonzero,
+  # empty stdout) on any HTTP error status; the python now exits 1 (not 0) on a non-list body AND
+  # when the card id is not found in the list, so either failure propagates through `|| return 1`.
   cards_json="$(printf 'Authorization: Bearer %s\n' "$(cat "$GATE_CHECK_TOKEN_FILE")" \
-    | curl -sS -m 20 -H @- "$GATE_CHECK_API/api/kanban" 2>/dev/null)" || cards_json=""
+    | curl -sS -f -m 20 -H @- "$GATE_CHECK_API/api/kanban" 2>/dev/null)" || cards_json=""
   [ -n "$cards_json" ] || return 1
   labels="$(CID="$card" python3 -c '
 import json, os, sys
 try: cards = json.load(sys.stdin)
-except Exception: sys.exit(0)
-for c in cards if isinstance(cards, list) else []:
+except Exception: sys.exit(1)
+if not isinstance(cards, list): sys.exit(1)
+for c in cards:
     if c.get("id") == os.environ["CID"]:
         print(",".join(l.get("name", "").lstrip("@") for l in (c.get("labels") or [])))
         break
+else:
+    sys.exit(1)
 ' <<< "$cards_json" 2>/dev/null)" || return 1
   line="$(CID="$card" python3 -c '
 import json, os, re, sys
 try: cards = json.load(sys.stdin)
-except Exception: sys.exit(0)
+except Exception: sys.exit(1)
+if not isinstance(cards, list): sys.exit(1)
 rx = re.compile(r"\bGate\s*:\s*(.+)$", re.M | re.I)
-for c in cards if isinstance(cards, list) else []:
+for c in cards:
     if c.get("id") == os.environ["CID"]:
         matches = rx.findall(c.get("description") or "")
         if matches: print(matches[-1])
         break
+else:
+    sys.exit(1)
 ' <<< "$cards_json" 2>/dev/null)" || return 1
   python3 "$(dirname "${BASH_SOURCE[0]}")/gate_designation.py" "$labels" "$line" 2>/dev/null || return 1
   return 0
