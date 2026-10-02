@@ -1,13 +1,11 @@
 import {
-  readFileSync, writeFileSync, appendFileSync, mkdirSync, openSync, closeSync, statSync, unlinkSync,
+  readFileSync, writeFileSync, mkdirSync, openSync, closeSync, statSync, unlinkSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import type http from 'node:http'
 import { spawn, execFileSync } from 'node:child_process'
-import { execFileAsync } from '../exec-async.js'
-import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID } from '../../config.js'
+import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
-import { createAgentMessage } from '../../db.js'
 import {
   getUpdateStatus, refreshUpdateStatus,
 } from '../update-checker.js'
@@ -32,266 +30,23 @@ const DIAGNOSE_TASK = 'post-rollback-diagnose'
 // One-diagnosis-per-rollback marker (keyed by the last-result timestamp).
 const DIAGNOSE_MARKER = join(PROJECT_ROOT, 'store', 'update-diagnose.last')
 
-// store/.update-history rollback log, in update.sh's EXACT tab-separated shape (Cybered NO-GO fix,
-// card a3700b69): TIMESTAMP\tKIND\tBRANCH\tFROM_SHA\tTO_SHA\tNOTE\n -- recovery-prev-version.sh's
-// `awk -F'\t' '$2=="update"{v=$4}'` picks the rollback target off field 2 ("update") + field 4
-// (FROM_SHA) BLINDLY, so a differently-shaped line here would silently vanish from --list / never be
-// selected as the recovery target. Before this fix, the upstream-merge branch below never wrote here
-// at all -- update.sh (the fork-pull path) was the ONLY writer, so an upstream merge left NO rollback
-// point: a bad upstream commit -> clean merge -> a later restart -> recovery-prev-version.sh has no
-// record of this point to roll back to.
-const UPDATE_HISTORY_PATH = join(PROJECT_ROOT, 'store', '.update-history')
-
-/** Local-time `%Y-%m-%dT%H:%M:%S%z` (bash `date`'s format: zone offset with NO colon, e.g. +0200) --
- *  matches every existing line in store/.update-history exactly (both are written on the same host,
- *  same local TZ). */
-export function updateHistoryTimestamp(d: Date): string {
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  const offMin = -d.getTimezoneOffset() // Date.getTimezoneOffset(): minutes BEHIND UTC, sign inverted
-  const sign = offMin >= 0 ? '+' : '-'
-  const abs = Math.abs(offMin)
-  return (
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
-    `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
-    `${sign}${pad(Math.floor(abs / 60))}${pad(abs % 60)}`
-  )
-}
-
-/** Append a rollback point iff the SHA actually changed (mirrors update.sh's own
- *  `[ "$OLD_VERSION_FULL" != "$NEW_VERSION_FULL" ]` guard) -- append-only, best-effort (store/ is
- *  gitignored; a write failure here must never fail the merge that already succeeded). Exported for
- *  direct unit testing of the exact TSV shape (recovery-prev-version.sh's awk parses this blindly). */
-export function recordUpdateHistory(
-  branch: string,
-  fromSha: string,
-  toSha: string,
-  note: string,
-  historyPath: string = UPDATE_HISTORY_PATH,
-): void {
-  if (fromSha === toSha) return
-  const line = `${updateHistoryTimestamp(new Date())}\tupdate\t${branch}\t${fromSha}\t${toSha}\t${note}\n`
-  try {
-    appendFileSync(historyPath, line, { mode: 0o600 })
-  } catch (err) {
-    logger.warn({ err }, 'store/.update-history append failed (best-effort, non-fatal)')
-  }
-}
-
-/** The git operations the upstream-merge branch needs, injected so {@link performUpstreamMerge} is
- *  unit-testable without a real repo -- same DI shape as {@link GitRunner}/{@link PidfileRunner} in
- *  this same file. */
-export interface UpstreamMergeRunner {
-  revParseHead(): string
-  /** Network call: async so a 15s git fetch cannot freeze the HTTP server (card 89d0bfde). */
-  fetchUpstream(): Promise<void>
-  /** Throws on conflict or any other merge failure (the real adapter runs `git merge --no-edit`,
-   *  which exits non-zero on both). */
-  mergeUpstream(): void
-  /** Best-effort; the real adapter's own failure (no merge in progress) is swallowed by the caller. */
-  mergeAbort(): void
-  currentBranch(): string
-}
-
-export type UpstreamMergeResult =
-  | { readonly ok: true; readonly beforeSha: string; readonly afterSha: string }
-  | { readonly ok: false; readonly reason: 'merge-conflict' | 'upstream-merge-failed'; readonly message: string }
-
-/**
- * `git merge` writes its "CONFLICT (content): ..." / "Automatic merge failed" report to STDOUT, not
- * stderr -- but `execFileSync`'s thrown Error.message does NOT include stdout (Node only folds
- * stderr into the message), so {@link performUpstreamMerge}'s `msg.includes('CONFLICT')`
- * classification below would never match a real conflict without this. Found live 2026-08-04: a
- * real package-lock.json conflict against upstream/main came back as a bare 500
- * ('upstream-merge-failed') instead of the 409 'merge-conflict' with the "resolve manually"
- * guidance. Re-throws with stdout appended to the message; a no-op if the error carries no stdout.
- */
-export function foldStdoutIntoMergeError(err: unknown): never {
-  if (err instanceof Error) {
-    const stdout = (err as NodeJS.ErrnoException & { stdout?: string }).stdout
-    if (stdout) err.message = `${err.message}\n${stdout}`
-  }
-  throw err
-}
-
-/**
- * Fetch + merge upstream/main, recording a rollback point (store/.update-history) on success and
- * NEVER on failure -- an aborted/conflicted merge leaves HEAD unchanged, so there is nothing to
- * record. Pure control flow over the injected {@link UpstreamMergeRunner}; the HTTP route below is a
- * thin wrapper (lock + response shaping). `recordHistory` is injected too so a test can assert it was
- * (or was not) called without touching the real store/.update-history file.
- */
-export async function performUpstreamMerge(
-  runner: UpstreamMergeRunner,
-  recordHistory: typeof recordUpdateHistory = recordUpdateHistory,
-): Promise<UpstreamMergeResult> {
-  // Captured BEFORE the merge so a rollback point can be recorded on success -- HEAD does not move
-  // again after this in the success path (no checkout after the merge commit).
-  const beforeSha = runner.revParseHead().trim()
-  try {
-    await runner.fetchUpstream()
-    runner.mergeUpstream()
-  } catch (err) {
-    // Abort any in-progress merge so the tree is clean again. Best-effort: `merge --abort` itself
-    // fails if no merge is in progress (e.g. the fetch failed before any merge started) -- ignored.
-    try {
-      runner.mergeAbort()
-    } catch {
-      /* no merge in progress; nothing to abort */
-    }
-    const msg = err instanceof Error ? err.message : String(err)
-    // Merge conflict returns exit code 1 with CONFLICT/"Automatic merge failed" in the output. Other
-    // errors (network, missing remote) surface the raw message as a general failure.
-    const isConflict = msg.includes('CONFLICT') || msg.includes('Automatic merge failed')
-    return isConflict
-      ? {
-          ok: false,
-          reason: 'merge-conflict',
-          message:
-            'Upstream merge conflict. Resolve manually: git merge upstream/main, fix conflicts, then git commit.',
-        }
-      : { ok: false, reason: 'upstream-merge-failed', message: msg }
-  }
-  const afterSha = runner.revParseHead().trim()
-  recordHistory(runner.currentBranch().trim(), beforeSha, afterSha, 'upstream-merge')
-  return { ok: true, beforeSha, afterSha }
-}
-
-/** Real {@link UpstreamMergeRunner}: the actual git shell-outs, unchanged from the pre-refactor
- *  inline calls (same binary, args, cwd, timeouts). */
-const realUpstreamMergeRunner: UpstreamMergeRunner = {
-  revParseHead: () =>
-    execFileSync('/usr/bin/git', ['rev-parse', 'HEAD'], {
-      cwd: PROJECT_ROOT,
-      timeout: 3000,
-      encoding: 'utf-8',
-    }),
-  fetchUpstream: async () => {
-    const r = await execFileAsync('/usr/bin/git', ['fetch', 'upstream'], { cwd: PROJECT_ROOT, timeoutMs: 15_000 })
-    if (r.status !== 0) throw new Error(r.timedOut ? 'git fetch upstream timed out' : `git fetch upstream exited ${r.status}: ${r.stderr.trim().slice(0, 200)}`)
-  },
-  mergeUpstream: () => {
-    try {
-      execFileSync('/usr/bin/git', ['merge', 'upstream/main', '--no-edit'], {
-        cwd: PROJECT_ROOT,
-        timeout: 20_000,
-        encoding: 'utf-8',
-      })
-    } catch (err) {
-      foldStdoutIntoMergeError(err)
-    }
-  },
-  mergeAbort: () => {
-    execFileSync('/usr/bin/git', ['merge', '--abort'], { cwd: PROJECT_ROOT, timeout: 5_000 })
-  },
-  currentBranch: () =>
-    execFileSync('/usr/bin/git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: PROJECT_ROOT,
-      timeout: 3000,
-      encoding: 'utf-8',
-    }),
-}
-
-/** The read-only git queries {@link analyzeUpstreamChanges} needs, injected the same way as
- *  {@link UpstreamMergeRunner} so the analysis is unit-testable without a real repo. Runs BEFORE the
- *  merge (against the pre-merge HEAD), so `mergeBase`/`oursChangedFiles` reflect our fork's own
- *  divergence from the point the two histories split. */
-export interface UpstreamAnalysisRunner {
-  /** Network call: async so a 15s git fetch cannot freeze the HTTP server (card 89d0bfde). */
-  fetchUpstream(): Promise<void>
-  /** `git log --oneline <mergeBase>..upstream/main`: the incoming commits, one per line. */
-  commitsBehind(): string
-  /** `git diff --stat <mergeBase> upstream/main`: human-readable file/line change summary. */
-  diffStat(): string
-  /** Files WE changed since the merge-base (our own fork divergence). */
-  oursChangedFiles(): string
-  /** Files the upstream side changed since the merge-base. */
-  theirsChangedFiles(): string
-}
-
-export interface UpstreamAnalysis {
-  commitCount: number
-  commits: string[]
-  diffStat: string
-  /** Files touched on BOTH sides since the merge-base -- the actual conflict-risk zone (a real
-   *  conflict is still decided by git itself during the merge; this is a pre-merge heads-up). */
-  riskyFiles: string[]
-  hasRisk: boolean
-}
-
-/** Pure analysis of what an upstream merge WOULD change, run before touching HEAD. Read-only:
- *  computes the incoming commit/diff summary plus the file-level overlap between "what we changed"
- *  and "what upstream changed" since the merge-base -- the files most likely to conflict. */
-export async function analyzeUpstreamChanges(runner: UpstreamAnalysisRunner): Promise<UpstreamAnalysis> {
-  await runner.fetchUpstream()
-  const commits = runner.commitsBehind().trim().split('\n').filter(Boolean)
-  const diffStat = runner.diffStat().trim()
-  const ours = new Set(runner.oursChangedFiles().trim().split('\n').filter(Boolean))
-  const theirs = runner.theirsChangedFiles().trim().split('\n').filter(Boolean)
-  const riskyFiles = theirs.filter((f) => ours.has(f))
-  return {
-    commitCount: commits.length,
-    commits,
-    diffStat,
-    riskyFiles,
-    hasRisk: riskyFiles.length > 0,
-  }
-}
-
-/** Real {@link UpstreamAnalysisRunner}: same binary/cwd/timeout conventions as
- *  {@link realUpstreamMergeRunner}. `fetchUpstream` is separate from the merge's own fetch (idempotent,
- *  cheap) so this analysis can run standalone before {@link performUpstreamMerge}. */
-const realUpstreamAnalysisRunner: UpstreamAnalysisRunner = {
-  fetchUpstream: async () => {
-    const r = await execFileAsync('/usr/bin/git', ['fetch', 'upstream'], { cwd: PROJECT_ROOT, timeoutMs: 15_000 })
-    if (r.status !== 0) throw new Error(r.timedOut ? 'git fetch upstream timed out' : `git fetch upstream exited ${r.status}: ${r.stderr.trim().slice(0, 200)}`)
-  },
-  commitsBehind: () => {
-    const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'upstream/main'], {
-      cwd: PROJECT_ROOT, timeout: 5000, encoding: 'utf-8',
-    }).trim()
-    return execFileSync('/usr/bin/git', ['log', '--oneline', `${base}..upstream/main`], {
-      cwd: PROJECT_ROOT, timeout: 10_000, encoding: 'utf-8',
-    })
-  },
-  diffStat: () => {
-    const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'upstream/main'], {
-      cwd: PROJECT_ROOT, timeout: 5000, encoding: 'utf-8',
-    }).trim()
-    return execFileSync('/usr/bin/git', ['diff', '--stat', base, 'upstream/main'], {
-      cwd: PROJECT_ROOT, timeout: 10_000, encoding: 'utf-8',
-    })
-  },
-  oursChangedFiles: () => {
-    const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'upstream/main'], {
-      cwd: PROJECT_ROOT, timeout: 5000, encoding: 'utf-8',
-    }).trim()
-    return execFileSync('/usr/bin/git', ['diff', '--name-only', base, 'HEAD'], {
-      cwd: PROJECT_ROOT, timeout: 10_000, encoding: 'utf-8',
-    })
-  },
-  theirsChangedFiles: () => {
-    const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'upstream/main'], {
-      cwd: PROJECT_ROOT, timeout: 5000, encoding: 'utf-8',
-    }).trim()
-    return execFileSync('/usr/bin/git', ['diff', '--name-only', base, 'upstream/main'], {
-      cwd: PROJECT_ROOT, timeout: 10_000, encoding: 'utf-8',
-    })
-  },
-}
-
-/** Renders {@link UpstreamAnalysis} as a short plain-text summary for a Telegram notice / log line.
- *  Plain text only (no HTML) -- scripts/notify.sh sends with parse_mode=HTML, so unescaped commit
- *  subjects containing `<`/`&` could break the message; callers must not feed this straight into HTML
- *  without escaping if that ever changes. */
-export function formatUpstreamAnalysis(a: UpstreamAnalysis): string {
-  const lines = [
-    `Upstream elemzes: ${a.commitCount} uj commit.`,
-    a.hasRisk
-      ? `Kockazat: ${a.riskyFiles.length} fajlt MI IS modositottunk, amit az upstream is erint (utkozes-eselyes): ${a.riskyFiles.slice(0, 10).join(', ')}${a.riskyFiles.length > 10 ? ', ...' : ''}`
-      : 'Kockazat: nincs atfedes a sajat modositasainkkal, alacsony konfliktus-eselyes.',
-  ]
-  return lines.join('\n')
-}
+// NOT ADOPTED: a repo==='upstream' special path used to fetch+merge upstream/main directly onto
+// HEAD here, then hand off to update.sh in POST_MERGE_MODE -- entirely bypassing the gated, batched
+// upstream-sync process (e5c46e87) that reviews every upstream commit through QA+Cybersec+Cybered
+// before it reaches origin/develop. Cybered (card ef6a8031, comment 11275) found this is live-host
+// code execution (T1543/T1195.001) behind one dashboard click: a never-reviewed upstream unit
+// change could install/stop a systemd timer within the same minute. Peti's decision (card 55885cb1,
+// comment 11279): the button stays, but may only ever pull content that has ALREADY passed the
+// gated sync -- i.e. whatever is on this fork's own `origin` remote, the exact same thing the
+// (unchanged, pre-existing) fork-pull path below already does. So `repo==='upstream'` no longer
+// gets a special branch at all; see the apply handler below. The merge/analysis machinery that used
+// to live here (performUpstreamMerge, analyzeUpstreamChanges, formatUpstreamAnalysis, their DI
+// runner types, and the real git-shelling adapters) is deleted as dead code -- grep-verified nothing
+// else in the tree referenced them (only this file and their own now-deleted test,
+// updates-upstream-merge.test.ts, did). recordUpdateHistory/updateHistoryTimestamp/
+// UPDATE_HISTORY_PATH went with them: they existed ONLY to give the raw upstream-merge path a
+// rollback point: the fork-pull path's rollback point is recorded by update.sh itself, not by this
+// file, both before this feature existed and after its removal.
 
 /** Returns the env {@link spawnUpdateScript} hands to update.sh, with NODE_ENV stripped
  *  (AUTOUPDNODEENV905 half 2/2, card c116696f -- half 1/2 landed as update.sh's own
@@ -483,20 +238,26 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/updates/apply' && method === 'POST') {
-    // Optional body { autoStash: true, repo: 'fork' | 'upstream' }.
-    // repo defaults to 'fork' (existing behavior). 'upstream' runs a
-    // synchronous git fetch+merge without restarting services.
+    // Optional body { autoStash: true, repo?: string }. `repo` is accepted but no longer changes
+    // behavior (card 55885cb1): every accepted value below runs the SAME fork-pull path -- a plain
+    // `git pull`/update.sh run against this fork's own `origin` remote, never the raw `upstream`
+    // remote. That remote is only ever touched by the gated, batched upstream-sync process
+    // (e5c46e87); by the time anything from it is reachable here, it is already on `origin`.
+    // `repo` is still validated (not silently ignored) so a genuinely unknown value is a clear
+    // 400, not a quiet no-op -- Peti's acceptance criterion (2) on card 55885cb1. The accepted set
+    // covers both the route's own historical values ('fork'/'upstream') and the actual values the
+    // dashboard's status endpoint uses today (update-checker.ts: 'mikrob'/'marveen') -- the two
+    // never lined up (a pre-existing bug, found while fixing this card: every real button click
+    // was already getting a 400 'Invalid repo' before this change, for EITHER repo block).
     let autoStash = false
-    let repo: 'fork' | 'upstream' = 'fork'
     try {
       const buf = await readBody(ctx.req)
       if (buf.length > 0) {
         const parsed = JSON.parse(buf.toString()) as { autoStash?: unknown; repo?: unknown }
         autoStash = parsed.autoStash === true
-        if (parsed.repo === 'upstream') {
-          repo = 'upstream'
-        } else if (parsed.repo !== undefined && parsed.repo !== 'fork') {
-          json(res, { error: 'Invalid repo. Must be "fork" or "upstream".', reason: 'invalid-repo' }, 400)
+        const ACCEPTED_REPO_KEYS = new Set(['fork', 'upstream', 'mikrob', 'marveen'])
+        if (parsed.repo !== undefined && !ACCEPTED_REPO_KEYS.has(parsed.repo as string)) {
+          json(res, { error: 'Invalid repo.', reason: 'invalid-repo' }, 400)
           return true
         }
       }
@@ -641,72 +402,14 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    // Upstream merge: analyze what would change + the conflict-risk (own-divergence overlap) BEFORE
-    // touching HEAD, notify Peti with that summary, merge, then -- on success -- hand off to update.sh
-    // in POST_MERGE_MODE (rebuild + the SAME restart/health-check/auto-rollback the fork-pull path
-    // uses, skipping the pull step since the merge already advanced HEAD). Peti directive 2026-08-04
-    // (Telegram msg 3284): analyze -> assess risk -> implement -> safe restart+health-check+rollback,
-    // all behind the one button.
-    if (repo === 'upstream') {
-      let analysis: UpstreamAnalysis | undefined
-      try {
-        analysis = await analyzeUpstreamChanges(realUpstreamAnalysisRunner)
-      } catch (err) {
-        logger.warn({ err }, 'upstream pre-merge analysis failed (non-fatal, merge proceeds without it)')
-      }
-      if (analysis) {
-        try {
-          execFileSync('/bin/bash', [join(PROJECT_ROOT, 'scripts', 'notify.sh'), formatUpstreamAnalysis(analysis)], {
-            cwd: PROJECT_ROOT, timeout: 10_000,
-          })
-        } catch (err) {
-          logger.warn({ err }, 'pre-merge analysis notify failed (non-fatal)')
-        }
-      }
-      const result = await performUpstreamMerge(realUpstreamMergeRunner)
-      if (!result.ok) {
-        releaseLock()
-        logger.warn({ reason: result.reason }, 'upstream merge failed')
-        // Peti directive 2026-08-21: a merge-conflict on this button used to leave nothing but a
-        // browser toast telling the OWNER to run git commands by hand -- but the merge (and its
-        // fork-owned-vs-upstream-owned conflict judgement calls) is the orchestrator's job, not
-        // Peti's. Page MAIN_AGENT_ID via the normal inter-agent inbox so it lands as an actionable
-        // message in the orchestrator's own session, same channel every dispatch already uses.
-        try {
-          createAgentMessage(
-            'system',
-            MAIN_AGENT_ID,
-            `Upstream merge ütközés a "Frissítés telepítése" gombnál (${result.reason}). ` +
-            'A merge megszakítva (mergeAbort), a tree tiszta. Ezt te oldd fel a szokásos eljárással ' +
-            '(git merge upstream/main, upstream-owned vs fork-owned fájlok szerint dönteni, teszt+build, commit, push), ' +
-            `ne Petit kérd meg rá. Hiba: ${result.message}`
-          )
-        } catch (err) {
-          logger.warn({ err }, 'failed to page orchestrator about upstream merge conflict (non-fatal)')
-        }
-        json(res, { error: result.message, reason: result.reason }, result.reason === 'merge-conflict' ? 409 : 500)
-        return true
-      }
-      logger.info({ beforeSha: result.beforeSha, afterSha: result.afterSha }, 'upstream merge completed successfully; handing off to update.sh for rebuild+restart')
-      // Lock handoff to update.sh's own pidfile-overwrite (same as the fork path below) --
-      // releaseLock() is only called by spawnUpdateScript on a failure BEFORE that handoff.
-      // DEVIATION FROM ACKNOWLEDGED_CONFLICTS (card 4f15966e, backend, 2026-09-07): the archived
-      // rule for this file describes upstream's inline NODE_ENV-deletion fix (#1189,
-      // AUTOUPDNODEENV905) as unadopted, then records it being adopted in two halves on cards
-      // 50af1a27 and c116696f -- half (1), a buildUpdateScriptEnv(extraEnv) helper that deletes
-      // NODE_ENV from a LOCAL COPY of process.env, is confirmed present in this file (line 315) and
-      // already wired into spawnUpdateScript. Upstream's inline spawn here (the "theirs" side of
-      // this hunk) duplicates exactly what spawnUpdateScript + buildUpdateScriptEnv now do
-      // structurally for BOTH call paths, so it is dropped as redundant rather than merged.
-      spawnUpdateScript(res, {
-        AUTO_STASH: '0',
-        POST_MERGE_MODE: '1',
-        POST_MERGE_OLD_SHA: result.beforeSha,
-        MARVEEN_UPDATE_NOTIFY: '1',
-      }, pidfileContent, releaseLock)
-      return true
-    }
-
+    // NOT ADOPTED (card 55885cb1): this used to branch on `repo === 'upstream'` into a direct
+    // fetch+merge of the raw `upstream` remote onto HEAD, then an immediate POST_MERGE_MODE
+    // update.sh run -- see the removed-code comment near the top of this file. Every accepted
+    // `repo` value now runs this exact same path: a plain pull against this fork's own `origin`,
+    // through update.sh's own preflight/stash/rebuild/restart/rollback machinery, same as it
+    // always has for the non-upstream case. If there is nothing new to pull, update.sh's own
+    // "already on the latest commit" exit covers Peti's acceptance criterion (2) -- a clear
+    // message, not a silent no-op.
     spawnUpdateScript(res, { AUTO_STASH: autoStash ? '1' : '0' }, pidfileContent, releaseLock)
     return true
   }

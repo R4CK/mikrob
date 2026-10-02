@@ -16148,3 +16148,62 @@ vegen) -- ugyanaz a nem-adoptalt keepalive-funkcio macOS-oldalon.
 Ki dontott: backend3 (dispatch: MikroB urgent uzenet, 7781/korabbi + Cybersec NO-GO 11223).
 Gate: QA + Cybersec (ugyanaz a harom, ami az eredeti ef6a8031 kartyan allt -- Cybersec dontse el,
 kell-e Cybered is a javitas felulvizsgalatahoz).
+
+## 2026-10-02 -- 55885cb1: a dashboard "repo=upstream" gombja mar nem meregeli kozvetlenul az upstream remote-ot
+
+Cybered lelete (ef6a8031, komment 11275, B pont): a POST /api/updates/apply {"repo":"upstream"}
+(src/web/routes/updates.ts) git fetch upstream + git merge upstream/main --no-edit-et futtatott
+KOZVETLENUL a HEAD-en, gate nelkul, majd AZONNAL elinditotta a merge utani update.sh-t
+POST_MERGE_MODE-ban -- teljesen megkerulve a kotegelt, gate-elt upstream-szinkront (e5c46e87).
+Egy sosem-reviewolt upstream unit-valtozas (systemd/launchd, T1543/T1195.001) egy dashboard-
+kattintassal azonnal elesbe mehetett volna.
+
+PETI DONTESE (2026-10-02 08:47, Telegram 10040, komment 11279): a gomb MARAD, de CSAK gate-elt
+kotegre mehet. Elfogadasi feltetelek: (1) a gomb utja nem hiv git merge upstream/main-t, es nem
+futtat update.sh-t gate nelkuli upstream tartalomra; (2) ha nincs gate-elt koteg, beszedes uzenet,
+nem csendes no-op; (3) regresszios teszt, ami az upstream/main kozvetlen merge-et pirosra viszi;
+(4) README frissitve.
+
+Megvalositas (backend3). A teljes kulon repo === 'upstream' ag (performUpstreamMerge,
+analyzeUpstreamChanges, formatUpstreamAnalysis, a ket DI-runner tipus + a valodi git-shellelő
+adapterek, recordUpdateHistory/updateHistoryTimestamp/UPDATE_HISTORY_PATH) TOROLVE -- grep-elve
+nem hasznalta semmi mas a fan, csak ez a fajl es a sajat tesztje (updates-upstream-merge.test.ts,
+torolve vele egyutt). Minden elfogadott repo ertek MOST UGYANAZT a kodutat futja: a mar letezo
+fork-pull utat (spawnUpdateScript), ami a fork SAJAT origin remote-jat huzza -- ezt a nyers
+upstream remote-ot csak a kotegelt szinkronfolyamat (e5c46e87) erinti, es MIRE ide erkezik valami,
+az mar az origin-en van.
+
+Melleklelet, nem a biztonsagi hibabol, hanem a javitas kozben talalt kulon bug: a frontend
+(web/fork-updates.js) a repo.key-t kuldi a POST body-ban, es ez 'marveen'/'mikrob' (a
+src/web/update-checker.ts repo-kulcsai), NEM 'fork'/'upstream' (amit a route valojaban
+elfogadott) -- tehat MINDKET gomb kattintasara 400 "Invalid repo"-t adott volna vissza MEG A
+BIZTONSAGI JAVITAS ELOTT IS. Ez egy korabbi, fuggetlen regresszio (valoszinuleg a
+CleanCore->mopsion-stilusu marveen->mikrob rebrand oldalhatasa), amit itt egyutt javitottam: a
+route most 'fork', 'upstream', 'mikrob', 'marveen' erteket egyarant elfogad, es mindegyik
+ugyanazt a biztonsagos utat futja.
+
+Frontend (web/app.js) kovetkezmenyek. A handleRepoInstallClick/runRepoInstall korabban
+megkulonboztette a ket repot: 'upstream' -> nincs restart-varakozas, csak toast+reload; fork ->
+pollUpdateOutcome (restart-varakozas). Mivel MOST mindket repo ugyanazt a valodi update.sh
+rebuild+restart-ot inditja, ez a megkulonbozetes FELREVEZETO lett volna -- torolve, mindket repo
+pollUpdateOutcome-ot hasznal. A dirty-tree stash-retry ajanlat is kiterjesztve mindket repora
+(korabban csak fork-ra ajanlotta fel). Az updates.confirm.install_upstream,
+updates.toast.upstream_success, updates.toast.upstream_conflict, updates.toast.upstream_failed
+i18n kulcsok egy mar nem letezo kimenetet (restart nelkuli merge, lehetseges merge-utkozes) irtak
+le -- torolve mindket nyelvi fajlbol, egyetlen uj updates.confirm.install_repo kulcs valtja fel
+oket.
+
+Uj regressziostest (src/__tests__/updates-apply-no-raw-upstream-merge.test.ts): statikus
+forraskod-ellenorzes, hogy a route fajl nem tartalmaz git merge ... upstream/main vagy git fetch
+upstream konstrukciot, es hogy az apply-handlerben pontosan EGY spawnUpdateScript hivas van,
+semmilyen repo-ra elagazo kondicio nelkul. Ellenorizve a javitas ELOTTI forras ellen is (regex
+talal mindket mintat a bf1510d3 shan) -- nem vakuum-teszt.
+
+Kulon kartyara kiszervezve (Cybered kerese, e47dc04a). Cybered ugyanezen GO-ban (pont 2A) egy
+MASIK, szelesebb kort javasolt: a update.sh run_unit_maintenance denylist-ore erdemes
+engedelylistara valtani (a kommentektol megtisztitott kodban systemctl/launchctl csak
+daemon-reload alakban, kiveve nevszerint engedelyezett fuggveny) -- ez a e47dc04a kartya
+(predecessor-el bekotve a 4. kotegre, 0b550d89, hogy a koteg ne landolhasson elotte).
+
+Ki dontott: Peti (dontes), backend3 (megvalositas). Dispatch: MikroB (msg 7877).
+Gate: QA + Cybersec + Cybered (a kartya sajat kijelolese szerint).

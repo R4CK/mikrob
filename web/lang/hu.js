@@ -2005,11 +2005,12 @@ window._i18n.hu = {
 
   // --- Updates per-repo install buttons ---
   'updates.btn.install_repo':          'Frissítés telepítése',
-  'updates.confirm.install_fork':      'A MikroB fork frissítése. A szolgáltatások újraindulnak (~30 másodperc). Folytatod?',
-  'updates.confirm.install_upstream':  'Az upstream Marveen változásait beolvasztja a lokális branchbe. Nem indítja újra a szolgáltatásokat. Folytatod?',
-  'updates.toast.upstream_success':    'Upstream frissítés beolvasztva.',
-  'updates.toast.upstream_conflict':   'Upstream merge ütközés. Oldj fel kézzel: git merge upstream/main, javítsd az ütközéseket, majd git commit. {msg}',
-  'updates.toast.upstream_failed':     'Upstream merge nem sikerült: {msg}',
+  // Kártya 55885cb1: egyetlen megerősítő szöveg minden repo-blokkra -- mindkettő ugyanazt az
+  // update.sh pull+rebuild+restart folyamatot futtatja a fork saját origin-je ellen, a nyers
+  // upstream remote közvetlen merge-elése nélkül. A korábbi 'install_fork'/'install_upstream'
+  // megerősítések és az upstream_success/upstream_conflict/upstream_failed toastok egy olyan
+  // kimenetet írtak le (restart nélküli merge, lehetséges merge-ütközés), ami már nem létezik.
+  'updates.confirm.install_repo':      'A frissítés telepítése. A szolgáltatások újraindulnak (~30 másodperc). Folytatod?',
 
   // --- Updates toasts ---
   'updates.toast.not_started':   'Frissítés nem indult: {msg}',

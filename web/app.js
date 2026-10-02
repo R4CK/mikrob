@@ -565,12 +565,16 @@ async function loadUpdates() {
   renderCliUpdateOffer()
 }
 
+// Card 55885cb1: both repo blocks (the fork's own origin, and the "how far behind upstream are
+// we" status block) now trigger the IDENTICAL backend action -- a plain update.sh pull+rebuild+
+// restart against this fork's own origin, never a raw merge of the upstream remote (see
+// src/web/routes/updates.ts). There is no longer a repo-specific confirm/outcome branch: every
+// click gets the same confirm text, the same restart-polling flow, and the same dirty-tree
+// stash-retry offer. 'upstream'/'marveen'-specific i18n keys and the merge-conflict toast are
+// retired along with the backend branch that could ever produce that outcome.
 async function handleRepoInstallClick(btn) {
   const repoKey = btn.dataset.repo
-  const confirmKey = repoKey === 'upstream'
-    ? 'updates.confirm.install_upstream'
-    : 'updates.confirm.install_fork'
-  if (!confirm(t(confirmKey))) return
+  if (!confirm(t('updates.confirm.install_repo'))) return
   await runRepoInstall(repoKey, btn)
 }
 
@@ -594,30 +598,18 @@ async function runRepoInstall(repoKey, btn) {
     const data = await res.json().catch(() => ({}))
     if (!res.ok) {
       resetBtn()
-      if (data.reason === 'dirty-tree' && repoKey !== 'upstream') {
+      if (data.reason === 'dirty-tree') {
         if (confirm(t('updates.confirm.stash'))) {
-          // Retry with autoStash for fork
           await runRepoInstallWithStash(repoKey, btn)
         }
-        return
-      }
-      if (data.reason === 'merge-conflict') {
-        showToast(t('updates.toast.upstream_conflict', { msg: data.error || '' }))
         return
       }
       showToast(t('updates.toast.not_started', { msg: data.error || ('HTTP ' + res.status) }))
       return
     }
-    if (repoKey === 'upstream') {
-      resetBtn()
-      showToast(t('updates.toast.upstream_success'))
-      // Reload the updates view so the new commit counts are fresh.
-      await loadUpdates()
-    } else {
-      // Fork update: same poll flow as runUpdate (service restarts)
-      showToast(t('updates.toast.applying'))
-      await pollUpdateOutcome(resetBtn)
-    }
+    // Same poll flow as runUpdate: update.sh rebuilds and restarts services.
+    showToast(t('updates.toast.applying'))
+    await pollUpdateOutcome(resetBtn)
   } catch (err) {
     resetBtn()
     showToast(t('updates.toast.error', { msg: err.message || err }))
