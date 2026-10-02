@@ -16388,3 +16388,35 @@ sajat kartyajat.
 
 Ki dontott: QA (FAIL) + Cybered (NO-GO), backend3 (javitas). Dispatch: MikroB.
 Gate: QA + Cybersec + Cybered (valtozatlan).
+
+## 2026-10-02 -- e47dc04a 8. kor: line-continuation-join a mention-allowlist ELE, dinamikus-eval maradek kockazat elfogadva
+
+Folytatas a korabbi e47dc04a bejegyzesekhez (7. kor: denylist->allowlist, mention-count). Cybered
+NO-GO (11709) a landolt b2d1ef35-on: a mention-allowlist minden SZINTAKTIKAI definicio-alakot fog,
+de a bash `\`-ujsor FOLYTATAST egy tokenne fuzi MIELOTT szintaxist latna -- `run_unit_\` + ujsor +
+`maintenance() {...}` a bashnek EGY `run_unit_maintenance() {` definicio, a sor-alapu scannernek
+KET sor, egyik sem illeszkedik `/\brun_unit_maintenance\b/`-re. Elve merve: bash a masodik (evil)
+torzsre oldja fel a hivast, a mention-count valtozatlan (2) maradt -- zold maradt egy valos bypass
+mellett.
+
+Javitas: `joinLineContinuations(src)` -- a `\`+ujsor szekvenciakat (egyszeres idezojelen KIVUL,
+pontosan ugy ahogy a bash sajat olvasoja teszi tokenizalas elott) osszefuzi egyetlen logikai sorra,
+MIELOTT a comment-strip es a mention-szamlalas lefutna. Uj CONTROL teszt a pontos repro-alakra.
+
+MikroB dontes (ugyanabban a kommentben): a DINAMIKUS osztalyt (`n=run_unit_; eval "${n}maintenance()
+{...}"`, vagy base64-dekodolt eval-argumentum) NEM zarjuk statikusan ebben a korben -- RedHat
+bebizonyitotta, hogy SEMMILYEN statikus szkenneles (sem szoveg-regex, sem egy jovobeli
+tree-sitter-bash AST, mert az `eval "..."`-t opak string-literalkent parse-olna) nem latja egy
+futasidoben osszerakott nevet. A VALODI javitas RUNTIME introspekcio: a fuggveny-definiciokat egy
+eldobhato `bash -c`-ben betolteni (SOHA nem source-olva a teljes update.sh-t -- eles install
+futtatasa a suite-ban tiltott) es az allowlistet a bash SAJAT `declare -f run_unit_maintenance`
+altal felodott torzsre futtatni. Ez KULON korre van tolva, a tree-sitter-bash adoptalas (fb8ad8ec)
+melle -- ELFOGADOTT, DOKUMENTALT maradek kockazat, nem lezart hiba. Ez a 8. kor minden eddig mert
+STATIKUS bypasst zar (10+1 CONTROL teszt osszesen), a dinamikus osztaly kivetelevel.
+
+A call-body allowlist (calledFunctionNames, fail-closed a round 3 ota) valtozatlan, kulon
+ellenorzesi reteg marad.
+
+Ki dontott: Cybered (NO-GO, bizonyitott line-continuation-bypass + a declare-f javaslat), MikroB
+(a dinamikus osztaly kivetelkent elfogadasa, kulon korre halasztva). backend3: javitas.
+Gate: QA + Cybersec + Cybered (valtozatlan, kockazat-tiering szerint).
