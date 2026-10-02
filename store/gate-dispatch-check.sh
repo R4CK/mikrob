@@ -124,8 +124,11 @@ _curl_get() { # $1 = path
 # Decide from a comments JSON array on stdin. Kept as its own function so the selftest can
 # exercise the SAME code the live path uses, instead of a re-implementation of it.
 _decide() { # $1 = agent
-  AGENT="$1" python3 -c '
+  STORE_DIR="$STORE" AGENT="$1" python3 -c '
 import json, re, sys, os
+# DESIGNATION (card acc197c8): shared with mopsion-land.sh, not copied -- see gate_designation.py.
+sys.path.insert(0, os.environ.get("STORE_DIR", ""))
+from gate_designation import GATE_AGENTS, designated_from_labels, designated_from_gate_line
 agent = os.environ["AGENT"]
 try:
     d = json.load(sys.stdin)
@@ -295,7 +298,7 @@ def shas_of(comment):
     text = comment.get("content") or ""
     return structured_shas(text) or extract_shas(text)
 
-GATE_AGENTS = ("qa", "qa2", "cybersec", "cybered")
+# GATE_AGENTS imported from gate_designation (card acc197c8) -- not redefined here.
 # Who cannot be SUBMITTING work: the gates themselves (their verdicts are the other side of this
 # question), the orchestrator, and the mechanical pre-triage tool (which quotes the sha it ran
 # against and would otherwise re-arm every gate by itself).
@@ -368,58 +371,8 @@ review_comments = [c for c in cs if is_submission(c)]
 if not review_comments:
     print("ADVISE-SKIP:no-review"); sys.exit(0)
 
-def widen_qa(names):
-    return names | {"qa", "qa2"} if ("qa" in names or "qa2" in names) else names
-
-def designated_from_labels(csv):
-    names = {n.strip().lstrip("@").lower() for n in csv.split(",") if n.strip()}
-    names = {n for n in names if n in GATE_AGENTS}
-    return widen_qa(names) if names else None
-
-def designated_from_gate_line(text):
-    # DESIGNATION vs EXPLANATION (card 55af560d): a name-scan over the WHOLE line reads the
-    # explanatory parenthetical too, so a card that EXCLUDES a gate by NAMING it in its own
-    # exclusion reasoning -- "QA + Cybersec (... trust boundary, ezert Cybersec, nem Cybered)."
-    # -- woke the excluded gate anyway, because "Cybered" appears in the text. Measured on two
-    # live cards (241532d8, 35533cca): both name the excluded gate BY NAME while excluding it,
-    # which is the more carefully a card documents its own exclusion, the more certainly this
-    # bug wakes the gate it just excluded.
-    #
-    # The fix scans only the OWN designation clause of the gate line, not the whole line. A
-    # negation-word list ("nem", "not", "kimarad", ...) was considered and rejected: that is the
-    # same never-complete-vocabulary trap this fleet has hit before in other guards (see
-    # security-qualifier-vocab-lists-recur-incomplete), and it would need to grow every time a new
-    # phrasing appeared. Clause position is structural, not vocabulary, so it does not rot.
-    #
-    # TWO STEPS, AND THE ORDER MATTERS (card aa837c5b, Cybersec msg 18949). The first version CUT
-    # the line at the first "(" as well, which threw away every name after it: a perfectly ordinary
-    # "Gate: QA (functional...), Cybersec (...)" designated only QA and reported Cybersec as
-    # not-designated -- the ONE verdict that leaves no skip comment behind, so a card waiting for a
-    # gate would drop out of the sweep with nothing to show for it.
-    #
-    #   1. REMOVE the parenthesised parts instead of truncating at them, innermost-first until the
-    #      text stops changing, so nesting cannot leave a stray fragment behind. This keeps names
-    #      that sit BETWEEN parentheticals while still dropping the explanatory prose inside them --
-    #      which is where the excluded gate of card 55af560d ("..., ezert Cybersec, nem Cybered") lives.
-    #   2. THEN cut at sentence-ending punctuation, exactly as before. Dropping this half would
-    #      reopen the OTHER shape from card 55af560d, where the exclusion is a TRAILING SENTENCE rather than a
-    #      parenthetical ("QA + Cybered (...). Cybersec kimarad: ..."). The proposal from Cybersec was the
-    #      paren removal alone; keeping the sentence cut is what makes both of those cases hold at
-    #      once, and the self-test below pins each of them.
-    for _ in range(8):
-        stripped = re.sub(r"\([^()]*\)", "", text)
-        if stripped == text:
-            break
-        text = stripped
-    clause_end = re.search(r"[.!?]", text)
-    clause = text[: clause_end.start()] if clause_end else text
-    low = clause.lower()
-    names = set()
-    if re.search(r"\bqa2\b", low): names.add("qa2")
-    if re.search(r"\bqa\b", low): names.add("qa")
-    if re.search(r"\bcybersec\b", low): names.add("cybersec")
-    if re.search(r"\bcybered\b", low): names.add("cybered")
-    return widen_qa(names) if names else None
+# widen_qa/designated_from_labels/designated_from_gate_line imported from gate_designation
+# (card acc197c8) -- not redefined here. See that module for the paren-strip/clause-cut reasoning.
 
 designated = (
     designated_from_labels(os.environ.get("GATE_LABELS", ""))

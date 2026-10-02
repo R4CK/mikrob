@@ -215,6 +215,22 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
   // actually-resolved body, which bash itself computes and cannot be lexically fooled about. That
   // runtime rewrite is tracked for a later round alongside the tree-sitter-bash adoption on card
   // fb8ad8ec, not this one -- this round closes every remaining STATIC bypass measured so far.
+  //
+  // CYBERED NO-GO (card e47dc04a, comment 11751, round 8 delta-gate): the round-8 pipeline ran
+  // joinLineContinuations BEFORE stripShellComments -- backwards from how bash itself lexes.
+  // Bash does NOT honor a `\`-newline continuation inside a comment (a comment always ends at the
+  // physical newline; the backslash is just more comment text) -- so
+  //   foo=1 # \
+  //   run_unit_maintenance() { install_evil_unit "$@"; }
+  // is, to bash, TWO statements (the second a real, standalone definition); live-proven with
+  // `declare -f`. Joining FIRST merged them into one line BEFORE the comment-strip ran, so the
+  // strip then cut everything from `#` onward -- including the real second definition -- and the
+  // evil def vanished before mention-counting ever saw it (mentions stayed at 2, green). Fixed by
+  // reversing the order: strip comments against the ORIGINAL physical lines first (exactly what
+  // bash's lexer would see), THEN join continuations in what remains. Verified both ways no
+  // longer bypass: the comment+continuation shape now goes red, and the round-7 plain
+  // line-continuation (no comment involved) stays red too (nothing in `run_unit_\` is a comment,
+  // so stripping first changes nothing for that shape, and the join still merges it).
   function joinLineContinuations(src: string): string {
     let out = ''
     let inSingle = false
@@ -233,7 +249,7 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
   }
 
   function mentionLines(src: string): string[] {
-    return stripShellComments(joinLineContinuations(src))
+    return joinLineContinuations(stripShellComments(src))
       .split('\n')
       .filter((line) => /\brun_unit_maintenance\b/.test(line))
       .map((line) => line.trim())
@@ -280,6 +296,8 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
       `${src}\n}; run_unit_maintenance() { install_main_inbox_observer_unit "$@"; }\n`],
     ['a definition name split across a `\\`-line-continuation (Cybered 11709, round-7 delta-gate)', (src) =>
       `${src}\nrun_unit_\\\nmaintenance() { install_main_inbox_observer_unit "$@"; }\n`],
+    ['a REAL second definition after a comment-swallowed `\\`-continuation (Cybered 11751, round-8 delta-gate)', (src) =>
+      `${src}\nfoo=1 # \\\nrun_unit_maintenance() { install_main_inbox_observer_unit "$@"; }\n`],
   ]
   for (const [label, mutate] of MENTION_BYPASS_SHAPES) {
     it(`CONTROL: ${label} is caught by the mention allowlist`, () => {
