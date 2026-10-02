@@ -16289,3 +16289,41 @@ esetei.
 
 Ki dontott: MikroB (ketreteges dontes), backend3 (kod-reteg megvalositasa). Dispatch: MikroB.
 Gate: QA + Cybersec.
+
+## 2026-10-02 -- e47dc04a HARMAS NO-GO (WhiteHat+RedHat+QA) a 9df3b4ea-n: tiltolista maradt, nem engedelylista -- javitva
+
+A fenti (elso) e47dc04a-javitas mindharom gate-tol NO-GO/FAIL-t kapott a 9df3b4ea-n (komment
+11423/11425/11427), EGYSEGESEN ugyanazt a gyokeret jelolve: a leszallitott L1-javitas ket
+KONKRET, mar ismert nevet (install_keepalive_probe_timer, park_morning_timer) tilt egy
+TILTOLISTAVAL -- MikroB sajat elfogadasi feltetele (komment 11277) viszont kifejezetten
+ENGEDELYLISTAT irt elo: "a run_unit_maintenance() CSAK a kifejezetten adoptalt
+unit-fuggvenyeket hivhatja... minden mas hivas... piros". Cybered mert mutacioval bizonyitotta
+(M5): egy HARMADIK, meg nem nevesitett, de az acknowledged-conflicts.ts altal MAR nevszerint
+NEM-adoptaltkent jelolt fuggveny (install_main_inbox_observer_unit) a wrapperbe drotozva 48/48
+ZOLDEN atment. Ez pontosan az a kockazat, amiert a 0b550d89 (4. koteg) predecessor-fuggosegben
+var erre a kartyara: egy jovobeli upstream-batch meg nem latott nevu unit-fuggvenye ugyanugy
+atmenne.
+
+**Javitas (masodik kor):** a denylist-pinelo teszt (`no not-adopted unit function is wired...`)
+MARADT (tovabbra is hasznos, specifikus regresszio-pin a ket mar ismert nevre), de melleje
+egy VALODI ALLOWLIST-teszt kerult: `calledFunctionNames()` kigyujti a `run_unit_maintenance`
+wrapper torzsebol az OSSZES, bare-statement alakú fuggvenyhivast (`<nev>` vagy `<nev> "$@"`
+sajat soron), es a teszt minden kigyujtott nevre megkoveteli, hogy az `ADOPTED_UNIT_FUNCTIONS`
+halmazban (ma: `repair_morning_timer`, `migrate_channels_restart`) legyen -- barmi mas PIROS,
+nevtol fuggetlenul. Kontroll-teszt reprodukalja KOZVETLENUL Cybered M5 mutaciojat
+(`install_main_inbox_observer_unit "$@"` a wrapperbe drotozva) es bizonyitja, hogy az
+allowlist-check elkapja; sajat kezzel ellenorizve (node -e) az M6 mutaciot (tetszoleges uj nev)
+is elkapja.
+
+**LOW egyutt javitva (Cybersec/QA, nem blokkolo, de ugyanabban a korben rendezve):**
+`stripShellComments()` eddig MINDEN nem-idezett `#`-nal vagott, tehat egy bash
+parameter-kifejtes `#`-je (`${var#pattern}`, `$#` -- a tenyleges elofordulas: update.sh 181.
+sor, `${_node_pin#*$'\t'}`) hamisan kommentkezdetkent viselkedett volna, levagva a sor
+maradekat egy kesobbi, ugyanazon soron levo hivasrol. Javitva: egy `#` CSAK akkor kezd
+kommentet, ha SZO ELEJEN all (sor eleje VAGY kozvetlenul elotte whitespace) -- igy
+`${var#pattern}` es `$#` nem talal talalatot (a `#` ott azonositon belul all), de egy valodi,
+sor eleji vagy whitespace-utani `#` tovabbra is helyesen vagja a kommentet. Kontroll-teszt
+bizonyitja kozvetlenul.
+
+Ki dontott: WhiteHat+RedHat+QA (harmas NO-GO/FAIL), backend3 (masodik kor javitas).
+Gate: QA + Cybersec + Cybered (valtozatlan).
