@@ -170,8 +170,16 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
   // untouched. Live repro: appending
   // `run_unit_maintenance() { install_evil_unit "$@"; }` after the real one made bash run the
   // evil body while every check above stayed green.
+  //
+  // CYBERSEC NO-GO (card e47dc04a, round 4 delta-gate): the first version of this count required
+  // a literal `()` pair, so the equally-valid bash form `function run_unit_maintenance { ... }`
+  // (no parens at all) was not recognized as a definition -- counted as 1 even with a malicious
+  // second, parenless definition appended, which bash still runs last. Fixed to recognize all
+  // three bash definition shapes: `name()`, `function name()`, and `function name` (no parens).
+  const DEF_RE = /^\s*(?:function\s+run_unit_maintenance\b(?:\s*\(\))?|run_unit_maintenance\s*\(\))/gm
+
   it('run_unit_maintenance is defined EXACTLY ONCE in update.sh', () => {
-    const defs = UPDATE.match(/^\s*(function\s+)?run_unit_maintenance\s*\(\)/gm) ?? []
+    const defs = UPDATE.match(DEF_RE) ?? []
     expect(defs.length).toBe(1)
   })
 
@@ -180,11 +188,18 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
   // the first wrapper's own text completely untouched, so every per-wrapper check above would
   // stay green while bash runs the evil second definition. The duplicate-definition count is the
   // only check that can see this.
-  it('CONTROL: a second run_unit_maintenance definition appended later is caught by the duplicate count', () => {
-    const mutated = `${UPDATE}\nrun_unit_maintenance() { install_main_inbox_observer_unit "$@"; }\n`
-    const defs = mutated.match(/^\s*(function\s+)?run_unit_maintenance\s*\(\)/gm) ?? []
-    expect(defs.length).toBe(2)
-  })
+  const SECOND_DEF_SHAPES: ReadonlyArray<[label: string, def: string]> = [
+    ['`name() { ... }` (WhiteHat 11610 finding C)', 'run_unit_maintenance() { install_main_inbox_observer_unit "$@"; }'],
+    ['`function name() { ... }`', 'function run_unit_maintenance() { install_main_inbox_observer_unit "$@"; }'],
+    ['`function name { ... }`, no parens (Cybersec round-4 delta-gate)', 'function run_unit_maintenance { install_main_inbox_observer_unit "$@"; }'],
+  ]
+  for (const [label, def] of SECOND_DEF_SHAPES) {
+    it(`CONTROL: a second definition shaped as ${label} is caught by the duplicate count`, () => {
+      const mutated = `${UPDATE}\n${def}\n`
+      const defs = mutated.match(DEF_RE) ?? []
+      expect(defs.length).toBe(2)
+    })
+  }
 
   // Cybersec NO-GO (card ef6a8031, 2026-10-02): a batch-3 upstream merge wired
   // install_keepalive_probe_timer and park_morning_timer into this same entry
