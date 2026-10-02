@@ -16251,3 +16251,41 @@ to equal ['update.sh']`, a teszt sajat celja szerint helyesen).
 
 Ki dontott: Cybersec (lelet), backend3 (javitas). Dispatch: MikroB/sorrend a 55885cb1 utan.
 Gate: QA + Cybersec (a kartya sajat kijelolese szerint).
+
+## 2026-10-02 -- 82f05633: az update apply megtagadja, ha a lehuzando tartomanyban nyitott UPSTREAM-SYNC koteg van
+
+Cybersec MEDIUM lelet (55885cb1 @ 68949451): a 55885cb1 javitas mindket repo-gombot a fork
+SAJAT origin-jet huzo, biztonsagos utra tette, DE a marveen-land.sh egy koteget a GATE-ZARAS
+ELOTT pushol (a gate a branch-sha-ra fut, a push mar korabban megtortent) -- egy landolt, de meg
+nem gate-elt UPSTREAM-SYNC koteg (mint az ef6a8031 ed4633c2-je a sajat fixe elott) emiatt
+gombnyomasra lefuthatna, meg mielott bárki eldontötte volna, biztonsagos-e. Ez Peti dontesevel
+(55885cb1: csak gate-elt kotegre) szemben all -- csak a kockazat helye mozdult el a nyers
+upstream-merge-rol a landolt-de-meg-nem-gate-elt allapotra.
+
+MikroB ketreteges dontese (e5c46e87-en rogzitve): (1) FOLYAMAT -- UPSTREAM-SYNC koteg-kartya
+ezentul a gate-zaras UTAN landol (ezt a kartyat nem erinti kod-szinten, orchestracios fegyelem);
+(2) KOD -- ez a kartya: az apply megtagadja a futast, ha a HEAD..origin tartomanyban van olyan
+commit, ami NYITOTT (nem done) UPSTREAM-SYNC kartyahoz tartozik.
+
+Megvalositas: `cardsInSubject()` -- a `store/landing-downward-check.sh` `cards_in_subject()`
+fuggvenyenek PONTOS portja (ugyanaz a regex, ugyanaz a kartya 6500e1d3-as vesszo-vs-perjel
+javitasa) -- nem egy masik, esetleg elterő kivonatolo logika a "melyik kartya(ka)t nevezi meg ez
+a commit-subject" kerdesre, a 10. munkavegzesi szabaly (GitHub-first/sajat-kod-ujrafelhasznalas)
+szellemeben. `findOpenUpstreamSyncCards()` -- tiszta fuggveny, injektalt `KanbanCardLookup`-pal
+(db.ts `getKanbanCard`), minden kommentektol fuggetlen allitas: UPSTREAM-SYNC cimke a titleban
+ES status !== 'done'. A route-ban: `git log --format=%s HEAD..@{u}` adja a subjecteket, a
+talalt nyitott kartyakat egy beszedes 409-es uzenet nevezi meg.
+
+**Hiba-mod FAIL-CLOSED, nem fail-open:** ha a git-hivas maga hibazik (nem a @{u} hianya -- azt a
+preflight mar korabban kiszurte --, hanem tranziens hiba), a pull MEGTAGADVA, nem atengedve --
+ez biztonsagi kapu, a "nem tudom eldonteni" ugyanugy tiltas, mint a "igen, van nyitott kartya".
+
+Cybersec LOW (statikus regex gyenge, valtozobol jovo ref atmegy rajta): a tesztek a VALODI
+exportalt fuggvenyeket (cardsInSubject, findOpenUpstreamSyncCards) hivjak hamis bemenettel, nem
+forraskod-szoveget grep-elnek -- ez eleve kizarja ezt a gyengeseget, nem csak javitja utolag.
+13 teszt: a bash `cards_in_subject` selftest-eseteinek portja (szeparator-osztaly, kis-/nagybetu,
+kartya nelkuli subject neutralitasa) + a dontesi logika pozitiv/negativ/dedup/ures-tartomany
+esetei.
+
+Ki dontott: MikroB (ketreteges dontes), backend3 (kod-reteg megvalositasa). Dispatch: MikroB.
+Gate: QA + Cybersec.
