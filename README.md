@@ -170,7 +170,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 ### Közösségi/upstream átvétel
 
 - **Upstream-frissítés-figyelés, két rétegben**: a dashboard periodikusan összeveti a forkot a felmenő repóval és frissítés-bannert mutat, emellett egy napi Telegram-digest ugyanezt jelenti.
-- **Upstream-frissítés telepítése elemzéssel**: a merge ELŐTT megmutatja, hány commit jön, mely fájlokat érinti, és melyiket módosítottuk mi is a merge-base óta (a valódi ütközési zóna), csak utána enged mergelni és biztonságosan újraindítani.
+- **Dashboard-frissítés csak gate-elt kötegre**: a Frissítések-oldal mindkét repó-blokkjának gombja (saját fork + upstream) ugyanazt teszi -- a fork saját `origin`-jéről húz és biztonságosan újraindít. A nyers `upstream` remote-ot közvetlenül sosem meregeli: az upstream kódot kizárólag a kötegelt, gate-elt szinkronfolyamat engedi be a `origin`-re.
 - **Update-biztos közösségi átvétel + git-repo-watcher**: a nyílt forrású skillek és eszközök átvétele kizárólag additív fork-fájlként történik, sosem felmenő core-fájl szerkesztésével; egy watcher figyeli a bekötött upstream repókat, és futtatható kód változásánál re-gate-et kér, nem frissít magától.
 - **Adopt-9 közösségi átvétel + Karpathy kódminőségi alapelvek**: hat doc/skill/index repó a repón kívülre klónozva, napi szinkronnal és registryvel, plusz a négy anti-pitfall kódolási alapelv beépítve a flotta-szabályokba.
 - **anthropics/skills per-skill licenc szerinti átvétel**: a hivatalos Anthropic skill-repóban nincs root licenc, minden skill a sajátját hozza, ezért az átvétel skillenként dől el, és az átvettek pinelt hivatkozással vannak vendorolva.

@@ -1984,11 +1984,12 @@ window._i18n.en = {
 
   // --- Updates per-repo install buttons ---
   'updates.btn.install_repo':          'Install update',
-  'updates.confirm.install_fork':      'Install MikroB fork update. Services will restart (~30 seconds). Continue?',
-  'updates.confirm.install_upstream':  'This merges upstream Marveen changes into the local branch. No service restart. Continue?',
-  'updates.toast.upstream_success':    'Upstream update merged.',
-  'updates.toast.upstream_conflict':   'Upstream merge conflict. Resolve manually: git merge upstream/main, fix conflicts, then git commit. {msg}',
-  'updates.toast.upstream_failed':     'Upstream merge failed: {msg}',
+  // Card 55885cb1: one confirm text for every repo block -- both now run the identical
+  // update.sh pull+rebuild+restart against this fork's own origin, never a raw merge of the
+  // upstream remote. The separate 'install_fork'/'install_upstream' confirms and the
+  // upstream_success/upstream_conflict/upstream_failed toasts described an outcome
+  // (no-restart merge, possible merge conflict) that no longer exists.
+  'updates.confirm.install_repo':      'Install this update. Services will restart (~30 seconds). Continue?',
 
   // --- Updates toasts ---
   'updates.toast.not_started':   'Update not started: {msg}',
