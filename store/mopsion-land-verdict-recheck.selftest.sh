@@ -50,22 +50,34 @@ TOKEN_TMP="$WORK/token"; echo tok > "$TOKEN_TMP"
 # A stub dashboard whose /api/kanban/<card>/comments answer CHANGES after the Nth request -- the
 # one thing this file exists to add. $1 = card json before the flip, $2 = card json from the flip
 # onward, $3 = 1-based request number at which it flips (a flip at 2 means: 1st request sees $1,
-# 2nd request onward sees $2).
+# 2nd request onward sees $2). $4 = card id, so the DESIGNATION recheck (card acc197c8, a
+# different gate one door over, wired into the SAME mopsion-land.sh run) sees a stable, empty
+# designation for our card on the bulk /api/kanban list and never interferes with what THIS file
+# tests. Before acc197c8's WhiteHat fail-closed fix (Gate-SHA 7d8bc70a), this stub answered every
+# path -- including the bulk list -- with the comments-shaped body; a non-list body on the bulk
+# endpoint was silently treated as "no designation stated" (rc=0), so it never mattered that this
+# stub had no real /api/kanban. After the fix, that same non-list body correctly fails the
+# designation snapshot CLOSED, which would refuse this test's landing before ever reaching the
+# verdict-recheck code this file exists to exercise -- hence routing /api/kanban to a real list.
 stub_pid=""
 stub_port=""
 stub_up() {
   local portfile="$WORK/stub.port"
   rm -f "$portfile"
-  python3 - "$1" "$2" "$3" "$portfile" <<'PYSTUB' &
+  python3 - "$1" "$2" "$3" "$portfile" "$4" <<'PYSTUB' &
 import http.server, json, sys
 BEFORE = json.loads(open(sys.argv[1]).read())
 AFTER = json.loads(open(sys.argv[2]).read())
 FLIP_AT = int(sys.argv[3])
+CARD_ID = sys.argv[5]
 count = {"n": 0}
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        count["n"] += 1
-        body = BEFORE if count["n"] < FLIP_AT else AFTER
+        if self.path.endswith("/comments"):
+            count["n"] += 1
+            body = BEFORE if count["n"] < FLIP_AT else AFTER
+        else:
+            body = [{"id": CARD_ID, "labels": [], "description": ""}]
         b = json.dumps(body).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
@@ -95,7 +107,7 @@ printf '%s' "{\"comments\":[{\"author\":\"qa\",\"content\":\"QA FAIL\\nGate-SHA:
 
 OUT_FILE="$WORK/out.txt"
 land() { # $1 = card, $2 = before json, $3 = after json, $4 = flip-at request number. Sets $rc; output in $OUT_FILE.
-  stub_up "$2" "$3" "$4"
+  stub_up "$2" "$3" "$4" "$1"
   GATE_CHECK_API="http://127.0.0.1:$stub_port" GATE_CHECK_TOKEN_FILE="$TOKEN_TMP" \
     CLEANCORE_MAIN="$MAIN" MOPSION_SUITE_EVIDENCE_MODE_FILE="$MODE_FILE" \
     timeout 40 bash "$LAND" "$1" "$SHA" --dry-run --skip-typecheck --skip-bundle >"$OUT_FILE" 2>&1

@@ -90,6 +90,63 @@ PYSTUB
 }
 stub_down() { [ -n "$stub_pid" ] && kill "$stub_pid" 2>/dev/null; wait "$stub_pid" 2>/dev/null; stub_pid=""; }
 
+# WhiteHat NO-GO (acc197c8, Gate-SHA 7d8bc70a): a bulk-list response that is an HTTP error, or a
+# 200 whose body is not a list, or a 200 list that simply does not contain our card, must all be
+# treated as an UNREADABLE board by _gate_designation_snapshot -- not as "no designation stated".
+# $1 selects the failure shape: "unauthorized" (401 body), "malformed" (200, non-list body), or
+# "missing" (200, valid list, card absent). /comments always answers a stable passing QA PASS so
+# only the designation path under test is exercised.
+stub_up_bulk_fail() { # $1 = shape
+  local portfile="$WORK/stub.port"
+  rm -f "$portfile"
+  python3 - "$1" "$portfile" "$SHA" <<'PYSTUB' &
+import http.server, json, sys
+SHAPE, PORTFILE, SHA = sys.argv[1:4]
+
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.endswith("/comments"):
+            body = {"comments": [{"author": "qa", "content": "QA PASS\nGate-SHA: " + SHA}]}
+            status = 200
+        elif SHAPE == "unauthorized":
+            body = {"error": "Unauthorized"}
+            status = 401
+        elif SHAPE == "malformed":
+            body = {"error": "not a list"}
+            status = 200
+        else:  # "missing" -- valid list, but never our card
+            body = [{"id": "some-other-card", "labels": [], "description": ""}]
+            status = 200
+        b = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(b)))
+        self.end_headers(); self.wfile.write(b)
+    def log_message(self, *a): pass
+srv = http.server.HTTPServer(('127.0.0.1', 0), H)
+with open(PORTFILE, 'w') as f:
+    f.write(str(srv.server_address[1]))
+srv.serve_forever()
+PYSTUB
+  stub_pid=$!
+  stub_port=""
+  local i
+  for i in $(seq 1 200); do
+    if [ -s "$portfile" ]; then stub_port="$(cat "$portfile")"; break; fi
+    sleep 0.05
+  done
+  if [ -z "$stub_port" ]; then echo "  FAIL stub server never reported a port"; fail=1; fi
+}
+
+land_bulk_fail() { # $1 = shape. Sets $rc; output in $OUT_FILE.
+  stub_up_bulk_fail "$1"
+  GATE_CHECK_API="http://127.0.0.1:$stub_port" GATE_CHECK_TOKEN_FILE="$TOKEN_TMP" \
+    CLEANCORE_MAIN="$MAIN" MOPSION_SUITE_EVIDENCE_MODE_FILE="$MODE_FILE" \
+    timeout 40 bash "$LAND" card-x "$SHA" --dry-run --skip-typecheck --skip-bundle >"$OUT_FILE" 2>&1
+  rc=$?
+  stub_down
+}
+
 OUT_FILE="$WORK/out.txt"
 land() { # $1 = labels-before, $2 = labels-after, $3 = flip-at. Sets $rc; output in $OUT_FILE.
   stub_up "$1" "$2" "$3"
@@ -135,6 +192,33 @@ if [ "$rc" = 3 ] && grep -q "gate designation changed" "$OUT_FILE"; then
   echo "  ok   designation NARROWING also REFUSES -- the rule is symmetric, not just anti-widening"
 else
   echo "  FAIL a narrowing designation should also refuse (rc 3, named) -> rc=$rc:"; tail -8 "$OUT_FILE" | sed 's/^/       /'
+  fail=1
+fi
+
+n=$((n + 1))
+land_bulk_fail "unauthorized"
+if [ "$rc" = 3 ] && grep -q "could not read card .* gate designation" "$OUT_FILE"; then
+  echo "  ok   a 401 on the bulk list fails CLOSED (WhiteHat NO-GO acc197c8, Gate-SHA 7d8bc70a)"
+else
+  echo "  FAIL a 401 bulk-list response should refuse (rc 3, named) -> rc=$rc:"; tail -8 "$OUT_FILE" | sed 's/^/       /'
+  fail=1
+fi
+
+n=$((n + 1))
+land_bulk_fail "malformed"
+if [ "$rc" = 3 ] && grep -q "could not read card .* gate designation" "$OUT_FILE"; then
+  echo "  ok   a 200 with a non-list body fails CLOSED, not silently treated as empty designation"
+else
+  echo "  FAIL a malformed (non-list) bulk-list body should refuse (rc 3, named) -> rc=$rc:"; tail -8 "$OUT_FILE" | sed 's/^/       /'
+  fail=1
+fi
+
+n=$((n + 1))
+land_bulk_fail "missing"
+if [ "$rc" = 3 ] && grep -q "could not read card .* gate designation" "$OUT_FILE"; then
+  echo "  ok   a 200 valid list that does not contain our card fails CLOSED, not 'no designation stated'"
+else
+  echo "  FAIL a card absent from the bulk list should refuse (rc 3, named) -> rc=$rc:"; tail -8 "$OUT_FILE" | sed 's/^/       /'
   fail=1
 fi
 
