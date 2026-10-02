@@ -16207,3 +16207,47 @@ daemon-reload alakban, kiveve nevszerint engedelyezett fuggveny) -- ez a e47dc04
 
 Ki dontott: Peti (dontes), backend3 (megvalositas). Dispatch: MikroB (msg 7877).
 Gate: QA + Cybersec + Cybered (a kartya sajat kijelolese szerint).
+
+## 2026-10-02 -- e47dc04a: ef6a8031 Cybersec LOW L1-L3 javitva (az orteszt denylist->allowlist-szeruen erositve)
+
+Cybersec GO leletei az ef6a8031 delta-gate-en (komment 11261), mindharom nem-blokkolo:
+
+L1: az update-unit-maintenance-order orteszt csak a PONTOS upstream-alakot fogta (definicio a
+wrapperen belul hivva) -- mert M4 mutacio (a fuggveny definialva ES hivva a wrapperen KIVUL)
+7/7 zolden atmegy. Javitva: uj `stripShellComments()` segedfuggveny (idezett string-allapotot
+kovetve vagja le a `#`-tol a sor vegeig), es egy UJ teszt, ami a TELJES, kommentektol
+megtisztitott update.sh-fajlban keresi a csupasz neveket, nem csak a wrapper testeben --
+pontosan a 12. kodminosegi elv szerint ("az or a KOMMENTEKTOL MEGTISZTITOTT forrason
+illesszen"). Ket kontroll-teszt is kerult melle: egy bizonyitja, hogy a stripper nem eszi meg
+az ADOPTALT neveket (nem lehet ures halmazon "talalt semmit" alapon zold), egy masik
+kozvetlenul reprodukalja Cybersec M4 mutaciojat es bizonyitja, hogy az UJ ellenorzes elkapja.
+
+L2: az install-macos.sh keepalive `--load` blokk visszakerulesere semmi nem figyelt. Uj,
+dedikalt tesztfajl (`install-macos-no-keepalive-leak.test.ts`): nem puszta "keepalive"
+substring-ellenorzes (a fajl ket LEGITIM `<key>KeepAlive</key>` launchd plist-bejegyzest hord,
+a daemon sajat respawn-direktivaja, nem a channel-probe-hoz tartozik -- egy vak substring-check
+ezeken örökre false-positive lenne), hanem a konkret `channel-keepalive` kulcsszora szukitve.
+Ellenorizve a javitas ELOTTI forrason (ed4633c2): 4 talalat, nem vakuum-teszt.
+
+L3: `src/fork-upstream/acknowledged-conflicts.ts` 'update.sh' bejegyzese (c2aeefa5, 2026-09-25)
+ket elemet ("NODEPINMAC921", "SHALLOWGUARD921/UPDATEENHU921") NEM-adoptaltkent nevez meg, de
+ezek kozben MAR ADOPTALVA vannak (kulon kartyakon): NODEPINMAC921 a 109b53ef commitban (kartya
+a4767438), SHALLOWGUARD921/UPDATEENHU921 a d4efe266 commitban (#1444). Mindket allitas
+ellenorizve kozvetlen olvasassal (resolve_service_node_dir visszateresi erteke, a
+`git rev-parse --is-shallow-repository`/`.git/shallow` detektalas az update.sh-ban) ES
+`git log -S` match-csel az adoptalo commitra. A prozaba egy "PROSE-DRIFT FOUND AND CORRECTED"
+zaradek kerult (a fajl sajat, mar bevezetett "*** THE STATED GROUND IS NO LONGER TRUE..."
+mintajat kovetve), ami nevszerint megmondja, melyik ket elem mar nem all, es melyik harom
+(UPDATE_AUTO_REBASE, a harom nem-adoptalt unit-fuggveny, ZAKARFELUGY921) all meg. A fogalmazast
+ugy kellett megvalasztani, hogy a "NOT ADOPTED" (szohatarral) kifejezes ne jelenjen meg a
+korrekcios zaradekban -- a `fork-upstream-conflict-guard.test.ts` card 66ad1f95-os
+"every recorded refusal is watched by an anchor" tesztje minden ilyen szoveget UJ
+refusal-kent kezel es `ACKNOWLEDGED_FORK_ANCHORS`-bejegyzest keres hozza; mivel a maradek
+harom elemre az ANCHOR nelkuli allitas MAR korabban is helyes volt es szandekosan nem kapott
+anchort (azok a `update.sh` sajat NOT ADOPTED kommentjevel vannak oron tartva a masik,
+e6a8031-es kartyan bevezetett strukturalis teszttel), a korrekciot ugy fogalmaztam at, hogy
+tenyszeruen ugyanazt mondja, de ne triggerelje ujra a regex-et (elsore megfogott: `expected []
+to equal ['update.sh']`, a teszt sajat celja szerint helyesen).
+
+Ki dontott: Cybersec (lelet), backend3 (javitas). Dispatch: MikroB/sorrend a 55885cb1 utan.
+Gate: QA + Cybersec (a kartya sajat kijelolese szerint).

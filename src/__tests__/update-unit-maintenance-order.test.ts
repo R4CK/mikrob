@@ -25,6 +25,30 @@ import { tmpdir } from 'node:os'
 const ROOT = join(__dirname, '..', '..')
 const UPDATE = readFileSync(join(ROOT, 'update.sh'), 'utf-8')
 
+/**
+ * Strips bash `#...` comments from source text, line by line, tracking single/double-quote
+ * state so a `#` inside a quoted string is not mistaken for a comment start. Deliberately
+ * narrow (no heredoc/backtick/escape handling) -- built for the one check below, not as a
+ * general bash parser: a full-line comment or a trailing `  # ...` comment on an otherwise
+ * ordinary line of this file strips correctly, which is all this test needs.
+ */
+function stripShellComments(src: string): string {
+  return src
+    .split('\n')
+    .map((line) => {
+      let inSingle = false
+      let inDouble = false
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i]
+        if (ch === "'" && !inDouble) inSingle = !inSingle
+        else if (ch === '"' && !inSingle) inDouble = !inDouble
+        else if (ch === '#' && !inSingle && !inDouble) return line.slice(0, i)
+      }
+      return line
+    })
+    .join('\n')
+}
+
 /** Line number (1-based) of the first line matching `re`. */
 function lineOf(src: string, re: RegExp): number {
   const lines = src.split('\n')
@@ -96,6 +120,37 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
     expect(wrapper).not.toMatch(/park_morning_timer/)
     expect(UPDATE).not.toMatch(/^install_keepalive_probe_timer\(\)/m)
     expect(UPDATE).not.toMatch(/^park_morning_timer\(\)/m)
+  })
+
+  // Cybersec LOW L1 (card ef6a8031, comment 11261; fixed on card e47dc04a): the two checks
+  // above look at the exact upstream SHAPE -- a definition at top level and a call inside the
+  // wrapper. Measured mutation M4 (defining the function AND calling it OUTSIDE the wrapper,
+  // e.g. right after run_unit_maintenance instead of inside it) passes both checks 7/7 green.
+  // The 12th code-quality rule's fix for this class: scan the COMMENT-STRIPPED whole file for
+  // the bare name, not just one function's body -- a comment is allowed to name the not-adopted
+  // functions (the NOT ADOPTED breadcrumb above run_unit_maintenance does exactly that), real
+  // code is not. This is strictly stronger than, not a replacement for, the two checks above.
+  it('no not-adopted unit function name appears anywhere in the comment-stripped file', () => {
+    const stripped = stripShellComments(UPDATE)
+    expect(stripped).not.toMatch(/install_keepalive_probe_timer/)
+    expect(stripped).not.toMatch(/park_morning_timer/)
+  })
+
+  it('CONTROL: the comment stripper does not eat the adopted functions it must still see', () => {
+    // If the stripper over-strips, the test above would pass for the wrong reason (nothing
+    // left to search). Prove it still finds real, currently-adopted names after stripping.
+    const stripped = stripShellComments(UPDATE)
+    expect(stripped).toMatch(/repair_morning_timer/)
+    expect(stripped).toMatch(/migrate_channels_restart/)
+  })
+
+  it('CONTROL: a mutation that defines+calls the not-adopted function OUTSIDE the wrapper is caught', () => {
+    // Reproduces Cybersec's measured M4 gap directly: the two pre-existing checks only look at
+    // run_unit_maintenance's body and the top-level `name() {` form, so a function defined with
+    // a different declaration style and called right after the wrapper (not inside it) slips
+    // past both. The comment-stripped whole-file scan must still catch it.
+    const mutated = `${UPDATE}\nfunction install_keepalive_probe_timer { :; }\ninstall_keepalive_probe_timer\n`
+    expect(stripShellComments(mutated)).toMatch(/install_keepalive_probe_timer/)
   })
 })
 
