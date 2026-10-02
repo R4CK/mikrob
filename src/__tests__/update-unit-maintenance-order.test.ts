@@ -76,13 +76,26 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
     expect(below).not.toMatch(/^\s*sed -i\.marveen-bak .*-morning\.service/m)
   })
 
-  it('every repair is wired into the single maintenance entry point', () => {
+  it('both repairs are wired into the single maintenance entry point', () => {
     const wrapper = sliceShellFn(UPDATE, 'run_unit_maintenance')
     expect(wrapper).toMatch(/repair_morning_timer "\$@"/)
     expect(wrapper).toMatch(/migrate_channels_restart "\$@"/)
-    expect(wrapper).toMatch(/install_keepalive_probe_timer "\$@"/)
-    expect(wrapper).toMatch(/park_morning_timer "\$@"/)
     expect(UPDATE).toMatch(/^run_unit_maintenance$/m)
+  })
+
+  // Cybersec NO-GO (card ef6a8031, 2026-10-02): a batch-3 upstream merge wired
+  // install_keepalive_probe_timer and park_morning_timer into this same entry
+  // point despite both being named NOT adopted in acknowledged-conflicts.ts --
+  // the fork-upstream-conflict-guard suite does not look at update.sh function
+  // names, so nothing else would have caught it. This pins the absence the
+  // same way the tests above pin the ordering, so a future merge re-adding
+  // either call here fails loudly instead of landing silently.
+  it('no not-adopted unit function is wired into the maintenance entry point', () => {
+    const wrapper = sliceShellFn(UPDATE, 'run_unit_maintenance')
+    expect(wrapper).not.toMatch(/install_keepalive_probe_timer/)
+    expect(wrapper).not.toMatch(/park_morning_timer/)
+    expect(UPDATE).not.toMatch(/^install_keepalive_probe_timer\(\)/m)
+    expect(UPDATE).not.toMatch(/^park_morning_timer\(\)/m)
   })
 })
 

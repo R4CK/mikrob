@@ -16106,3 +16106,45 @@ Ki dontott: backend3 (dispatch: MikroB, local-llm-offload automatikus kimerules-
 ezt a relevancia-elemzest kerte dispatch elott).
 Gate: nincs kulon gate (nem tortent kodmodositas, csak upstream-ledger-bejegyzes + DECISIONS.md
 dokumentacio); a kartya QA-gate-je a dokumentalt bizonyitekot nezheti at.
+
+## 2026-10-02 -- ef6a8031 Cybersec NO-GO javitas: nem-adoptalt keepalive/morning-timer-park csendben bekerult a batch-3 merge-be
+
+Cybersec NO-GO-t adott a 3. koteg (ef6a8031, Gate-SHA ed4633c2) gate-jen (komment 11223): az
+upstream 2026-09-11..09-14 batch-je ketto, NEVSZERINT NEM adoptalt systemd-unit-karbantarto
+fuggvenyt csempeszett be a `update.sh` `run_unit_maintenance()`-ebe:
+`install_keepalive_probe_timer` (uj channel-keepalive systemd timer letrehozasa+`enable --now`)
+es `park_morning_timer` (a meglevo `*-morning.timer` `disable --now`-ja). Mindket fuggveny
+NEVSZERINT szerepel NEM-adoptaltkent `src/fork-upstream/acknowledged-conflicts.ts`-ben (kartya
+c2aeefa5, 2026-09-25: "none adopted here (each is a real behaviour/UX change to a live
+install)"), mert ezek a kovetkezo `./update.sh`-futasnal KERDES NELKUL inditanak egy uj timert
+es allitanak le egy mukodo funkciot (reggeli napindito) -- ez a kodminosegi 5. elvet (mukodo
+funkcio visszavonasa Peti explicit jovahagyasa nelkul) sertette volna. A REVIEW (komment 11127)
+"visszavonva" allitasa csak a 9-elemes CI-csomagra volt igaz; a fork-upstream-conflict-guard
+suite nem nezi az update.sh fuggvenyneveit, ezert ezt nem fogta.
+
+Hasonlo, uj launchd-szintu vezingal is talalhato volt: `install-macos.sh` egy uj, korabban nem
+letezo blokkot kapott (`scripts/install-channel-keepalive-probe.sh --load` hivas az install
+vegen) -- ugyanaz a nem-adoptalt keepalive-funkcio macOS-oldalon.
+
+**Javitas (ezen a kartyan, backend3):**
+- `update.sh`: `install_keepalive_probe_timer()` es `park_morning_timer()` definicioja es a
+  `run_unit_maintenance()`-beli hivasuk torolve. `repair_morning_timer` es
+  `migrate_channels_restart` (a fork SAJAT, korabban is adoptalt javitasai) erintetlenek.
+- `install-macos.sh`: az uj keepalive-probe `--load` blokk torolve.
+- `src/__tests__/update-unit-maintenance-order.test.ts`: a ket torolt fuggvenyt pinnelo
+  assertion eltavolitva, es egy UJ teszt ("no not-adopted unit function is wired...") pinneli,
+  hogy ezek a nevek SOHA ne jelenjenek meg ujra a `run_unit_maintenance` wrapperben --
+  strukturalis vedelem, nem csak proza, pontosan a Cybersec kerese szerint (b).
+- Teljes grep `install_main_inbox_observer_unit`/`INBOX_OBSERVER_UNIT`/`main-inbox-observer`,
+  `UPDATE_AUTO_REBASE`, `_shelve_broken_claude`, `_unit_drift`/`ZAKARFELUGY` nevekre a teljes
+  merged fan: NULLA talalat (ezek nem szivardtak be). A TELEGRAM_ENV sorok a watchdog/unit-fail
+  sablonokban VALTOZATLANUL megvannak (nem vesztek el).
+- `install-linux.sh` KEEPALIVE_UNIT blokkja ELLENORZOTT: ez a fork SAJAT, batch-3 ELOTT is mar
+  letezo kodja (megvan `8fb23bda`-n is), NEM leak -- NEM nyultam hozza.
+- LOW lelet (`/api/claude-plans` tetszoleges configDir) KISZERVEZVE sajat kartyara (`2b0bd3ae`,
+  low priority) -- Cybersec sajat minositese szerint nem lep at uj jogosultsagi hataron, nem
+  blokkolo, feleslegesen bovitette volna ennek a HIGH-javitasnak a scope-jat.
+
+Ki dontott: backend3 (dispatch: MikroB urgent uzenet, 7781/korabbi + Cybersec NO-GO 11223).
+Gate: QA + Cybersec (ugyanaz a harom, ami az eredeti ef6a8031 kartyan allt -- Cybersec dontse el,
+kell-e Cybered is a javitas felulvizsgalatahoz).
