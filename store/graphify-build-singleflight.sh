@@ -47,9 +47,33 @@ fi
 # We hold the lock. Loop: claim the current dirty state, build, then check whether a NEW request
 # arrived while we were building -- if so, what we just built is already stale, so build once
 # more before releasing the lock.
+#
+# `9>&-` closes our lock fd in the build CHILD before it runs (QA repro on card 0cfd1dbc): without
+# this, graphify.sh's own multi-process workers inherit fd 9, and if the top-level build is killed
+# (e.g. by an operator or the load-guard) but a grandchild worker survives, that grandchild keeps
+# holding the flock forever -- every future landing's `flock -n 9` then fails permanently and
+# graphify rebuilding silently stops for good. Closing the fd in the child means only OUR process
+# (the one actually doing `flock -n`/`flock -u`) can hold or release the lock.
+#
+# A failing build must not abort this script under `set -e` (WhiteHat L2) -- a failure here should
+# still retry on the next dirty landing, not wedge the dirty flag until someone notices.
 while :; do
   rm -f "$DIRTY"
-  "$GRAPHIFY_SH" build "$REPO"
+  "$GRAPHIFY_SH" build "$REPO" 9>&- || echo "graphify-build-singleflight.sh: build failed, any dirty request will be retried" >&2
   [ -e "$DIRTY" ] || break
 done
 flock -u 9
+
+# Lost-wakeup closer (WhiteHat L1): a request can touch DIRTY in the narrow window between our
+# last "no dirty, break" check above and the `flock -u 9` just above, then lose the race for the
+# lock while we still hold it -- it exits having coalesced into nothing, and nobody is left to
+# pick its request up until the NEXT landing. Re-check once after releasing: if DIRTY appeared in
+# that window, try to reclaim the lock and resume building rather than silently dropping it.
+if [ -e "$DIRTY" ] && flock -n 9; then
+  while :; do
+    rm -f "$DIRTY"
+    "$GRAPHIFY_SH" build "$REPO" 9>&- || echo "graphify-build-singleflight.sh: build failed, any dirty request will be retried" >&2
+    [ -e "$DIRTY" ] || break
+  done
+  flock -u 9
+fi
