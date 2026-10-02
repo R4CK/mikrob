@@ -223,45 +223,6 @@ export function heredocOwnerSpans(command) {
   }
 }
 
-/**
- * Every `function_definition` node in `src` whose name is exactly `name`, as `{start, end}`
- * byte-index spans into `src` (end exclusive) -- in file order. Same null contract as
- * `heredocOwnerSpans` (card f16b3165): size cap, missing dependency, or a parse containing an
- * ERROR/MISSING node all return null ("no opinion"), never a guess.
- *
- * Built for card e47dc04a (round 6, Cybersec NO-GO on `run_unit_maintenance ( ) { ... }`):
- * a hand-written regex trying to enumerate bash's function-definition shapes (`name()`,
- * `name ( )`, `function name`, `function name()`, arbitrary whitespace in every gap) is exactly
- * the class of problem this file exists to retire -- tree-sitter-bash's own `function_definition`
- * node covers all of them by construction, because it IS bash's grammar, not an approximation of
- * it. This only counts/locates definitions; it does not evaluate the body.
- *
- * @param {string} src raw shell text
- * @param {string} name the exact function name to match
- * @returns {Array<{start: number, end: number}>|null} null when no opinion can be formed
- */
-export function functionDefinitionSpans(src, name) {
-  const source = String(src ?? '')
-  if (source.length > MAX_INPUT_UNITS) return null
-  const parser = getParser()
-  if (!parser) return null
-  try {
-    const tree = parser.parse(source)
-    const clean = eachNode(tree.rootNode, (n) => !(n.type === 'ERROR' || n.isMissing))
-    if (!clean) return null
-    const spans = []
-    eachNode(tree.rootNode, (n) => {
-      if (n.type !== 'function_definition') return
-      const nameNode = n.childForFieldName('name')
-      if (!nameNode || nameNode.text !== name) return
-      spans.push({ start: n.startIndex, end: n.endIndex })
-    })
-    return spans
-  } catch {
-    return null
-  }
-}
-
 /** True when the AST recogniser is actually usable in this process (dependency present). */
 export function astAvailable() {
   return getParser() !== null
