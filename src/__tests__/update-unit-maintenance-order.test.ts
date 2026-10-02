@@ -68,14 +68,29 @@ function stripShellComments(src: string): string {
 // the functions explicitly adopted today, and ANY other name -- known or not -- is red.
 const ADOPTED_UNIT_FUNCTIONS = new Set(['repair_morning_timer', 'migrate_channels_restart'])
 
+// Cybered NO-GO (card e47dc04a, comment 11485, delta-gate on the second attempt): the FIRST
+// allowlist extractor matched only the exact `name`/`name "$@"` shape and SKIPPED every other
+// statement line (`if (m) names.push(...)` with no `else`) -- a line that does not match the
+// known-good shape is invisible to the allowlist, not rejected by it. Proven with the real
+// extractor against three shapes a natural T1543 unit-installer call takes:
+// `install_main_inbox_observer_unit "$DATADIR"` (a dir argument instead of "$@"),
+// `migrate_channels_restart "$@"; install_main_inbox_observer_unit "$@"` (compound `;`), and
+// `command install_main_inbox_observer_unit "$@"` (a `command` prefix) -- all three passed the
+// allowlist check GREEN because the not-adopted call was simply never extracted, so it never
+// had a chance to fail the subset check. The fix: FAIL CLOSED. Every non-empty, non-comment,
+// non-structural line in the wrapper body must match the one recognized adopted-call shape, or
+// it is pushed as an UNRECOGNIZED sentinel that can never be in the allowlist -- "I could not
+// parse this as a known-good call" is treated the same as "this is a bad call", never skipped.
+
 /**
  * Every function name `run_unit_maintenance`-shaped wrapper body calls as a bare statement
- * (`name` or `name "$@"` on its own line), in file order. Comment-stripped first so a NOT
- * ADOPTED breadcrumb naming a function is never mistaken for a real call. Deliberately does
- * NOT try to be a general bash statement parser -- every real call in this wrapper, adopted or
- * not, uses exactly this shape (grep-verified against every historical version of this
- * function), and the allowlist below is checking an exhaustive POSITIVE list, so a call shaped
- * differently than this would itself be worth a human look, not a thing to silently accept.
+ * (`name` or `name "$@"` on its own line), in file order -- PLUS one `'UNRECOGNIZED: <line>'`
+ * sentinel entry for every statement line that does NOT match that exact shape. Comment-stripped
+ * first so a NOT ADOPTED breadcrumb naming a function is never mistaken for a real call.
+ * Deliberately does not try to be a general bash statement parser: the wrapper this watches is a
+ * trivial two-call dispatcher today, so the one recognized shape costs nothing on the real file,
+ * and anything else -- a dir-argument call, a compound `;`/`&&` line, a `command`/`builtin`
+ * prefix, an `if`/indirection -- fails closed instead of silently passing through unexamined.
  */
 function calledFunctionNames(wrapperBody: string): string[] {
   const names: string[] = []
@@ -85,7 +100,7 @@ function calledFunctionNames(wrapperBody: string): string[] {
     if (/^return\b/.test(line)) continue
     if (/\)\s*\{?$/.test(line)) continue // the wrapper's own `name() {` header line
     const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)(?:\s+"\$@"|\s+\$@)?$/)
-    if (m) names.push(m[1])
+    names.push(m ? m[1] : `UNRECOGNIZED: ${line}`)
   }
   return names
 }
@@ -193,6 +208,38 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
     expect(mutated).not.toBe(wrapper) // the replace actually matched something
     const called = calledFunctionNames(mutated)
     expect(called.every((name) => ADOPTED_UNIT_FUNCTIONS.has(name))).toBe(false)
+  })
+
+  // CONTROL, reproducing Cybered's measured allowlist-bypass shapes (comment 11485) one by one:
+  // each of these passed the FIRST (skip-on-no-match) allowlist extractor 100% green, because a
+  // line that doesn't match the exact `name`/`name "$@"` shape was simply never extracted, so the
+  // not-adopted call never got a chance to fail the subset check. The fail-closed extractor must
+  // flag every one of these as an UNRECOGNIZED statement instead of silently passing it through.
+  const BYPASS_SHAPES: ReadonlyArray<[label: string, line: string]> = [
+    ['dir-argument instead of "$@" (Cybered 11485)', 'install_main_inbox_observer_unit "$DATADIR"'],
+    ['compound `;` on one line (Cybered 11485)', 'migrate_channels_restart "$@"; install_main_inbox_observer_unit "$@"'],
+    ['a `command` prefix (Cybered 11485)', 'command install_main_inbox_observer_unit "$@"'],
+    ['`|| true` suffix (WhiteHat 11468-class)', 'install_main_inbox_observer_unit "$@" || true'],
+    ['indirection through "$1"', 'install_main_inbox_observer_unit "$1"'],
+    ['an `if ...; then` guard', 'if [ -d "$DATADIR" ]; then install_main_inbox_observer_unit "$@"; fi'],
+    ['a `; :` no-op suffix', 'install_main_inbox_observer_unit "$@"; :'],
+  ]
+  for (const [label, line] of BYPASS_SHAPES) {
+    it(`CONTROL: ${label} fails the allowlist, not silently skipped`, () => {
+      const wrapper = sliceShellFn(UPDATE, 'run_unit_maintenance')
+      const mutated = wrapper.replace(/\breturn 0\b/, `${line}\n  return 0`)
+      expect(mutated).not.toBe(wrapper)
+      const called = calledFunctionNames(mutated)
+      expect(called.every((name) => ADOPTED_UNIT_FUNCTIONS.has(name))).toBe(false)
+    })
+  }
+
+  it('CONTROL: the fail-closed extractor does not flag the wrapper AS IT STANDS TODAY', () => {
+    // The real wrapper is a trivial two-call dispatcher; the fail-closed rule above must not
+    // itself become a false-positive source on the unmodified file.
+    const wrapper = sliceShellFn(UPDATE, 'run_unit_maintenance')
+    const called = calledFunctionNames(wrapper)
+    expect(called.every((name) => ADOPTED_UNIT_FUNCTIONS.has(name))).toBe(true)
   })
 
   // CONTROL: the extractor itself must not silently swallow a call that sits on the SAME line

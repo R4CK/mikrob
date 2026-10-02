@@ -16327,3 +16327,27 @@ bizonyitja kozvetlenul.
 
 Ki dontott: WhiteHat+RedHat+QA (harmas NO-GO/FAIL), backend3 (masodik kor javitas).
 Gate: QA + Cybersec + Cybered (valtozatlan).
+
+## 2026-10-02 -- e47dc04a HARMADIK kor: az allowlist-extractor FAIL-CLOSED-ra valtva (Cybered NO-GO a 22d81027-n)
+
+A masodik kor allowlist-je VALODI volt (calledFunctionNames ⊆ ADOPTED_UNIT_FUNCTIONS), de az
+extractor csendben KIHAGYTA minden sort, ami nem pontosan `nev` vagy `nev "$@"` alakú volt --
+`if (m) names.push(...)` ELSE nelkul. Cybered (komment 11485) harom VALODI T1543-alakot
+bizonyitott a tenyleges extractor-regexen futtatva: dir-argumentumos hivas
+(`install_main_inbox_observer_unit "$DATADIR"`), compound `;` egy soron
+(`migrate_channels_restart "$@"; install_main_inbox_observer_unit "$@"`), es `command` prefix
+(`command install_main_inbox_observer_unit "$@"`) -- mindharom ZOLDEN atment az allowlist-en,
+mert a nem-adoptalt hivas SOHA nem lett kinyerve, tehat soha nem is bukhatott a subset-checken.
+
+Javitas: FAIL-CLOSED extractor. Minden nem-ures, nem-komment, nem strukturalis (ures sor,
+`{`/`}`, `return`, a wrapper sajat header-sora) sor VAGY illeszkedik a pontos `nev`/`nev "$@"`
+alakra, VAGY egy `UNRECOGNIZED: <sor>` szentinel kerul a kigyujtott nevek koze -- ez a szentinel
+SOHA nem lehet az ADOPTED_UNIT_FUNCTIONS halmazban, tehat a subset-check automatikusan bukik. 7
+uj kontroll-teszt reprodukalja Cybered mindharom bizonyitott alakjat PLUSZ negy tovabbi,
+hasonloan termeszetes bypass-format (`|| true` utotag, `"$1"` indirekcio, `if ...; then` orzo,
+`; :` no-op utotag) -- mindegyik most PIROS. Egy tovabbi kontroll bizonyitja, hogy a maganak
+valodi, mai wrapper (ket adoptalt hivas + return) tovabbra sem bukik -- a fail-closed szabaly
+nem termel hamis pozitivot a valtozatlan fajlon.
+
+Ki dontott: Cybered (NO-GO + bizonyitott bypass-alakok), backend3 (harmadik kor javitas).
+Gate: QA + Cybersec + Cybered (valtozatlan).
