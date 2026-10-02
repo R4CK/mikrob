@@ -11,7 +11,7 @@ related_skills: [cybered-gate-pattern]
 - `PG_E2E_URL` env var kell a teszthez, de nincs futó Postgres-példány
 - CleanCore `rls-*.e2e.test.ts` fájlok futtatása
 
-## WHICH repo root -- BUILDER szerep vs GATE szerep (kártya 843abd91, Cybersec NO-GO)
+## WHICH repo root -- BUILDER szerep vs GATE szerep (kártya 843abd91, WhiteHat NO-GO)
 
 Ez a skill mindkét szerepnek szól, de a checkout NEM ugyanaz -- ugyanaz a hibaosztály, amit a
 `cybered-gate-pattern` skill "WHICH repo root" szakasza már kijavított (backend `CleanCore-worktrees/backend`
@@ -19,7 +19,7 @@ worktree-je csendben detached HEAD-re váltott 709aa3db-re, közvetlenül e0a4bb
 
 - **BUILDER** (a kártya felelőse, a SAJÁT worktree-jében dolgozik): `CC` a saját worktree útvonala --
   `CC="$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"`.
-- **GATE** (QA/Cybersec/Cybered, MÁS ügynök SHA-pinnelt kódját ellenőrzi élőben): **SOHA**
+- **GATE** (QA/WhiteHat/RedHat, MÁS ügynök SHA-pinnelt kódját ellenőrzi élőben): **SOHA**
   `agent-worktree.sh <assignee> --path` -- az a KÁRTYA TULAJDONOSÁNAK élő, nem-commitolt fáját
   jelenti; egy oda checkoutolt SHA csendben elviheti a working tree-t más ügynök munkája közben.
   Használj eldobható, process-szkópú worktree-t a megosztott fő klónról:

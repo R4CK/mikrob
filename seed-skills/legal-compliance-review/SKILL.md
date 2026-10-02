@@ -26,7 +26,7 @@ AI vagy, nem ügyvéd; ez nem jogi tanács. Kötelező erejű döntéshez / nagy
 
 ## KÖTELEZŐ lezárási protokoll (csapat-workflow)
 
-**SOHA ne tedd done-ra a saját kártyádat.** A kész állapot kizárólag QA PASS + Cybersec GO után, MikroB zárja.
+**SOHA ne tedd done-ra a saját kártyádat.** A kész állapot kizárólag QA PASS + WhiteHat GO után, MikroB zárja.
 
 Helyes sorrend minden jogi feladat végén:
 1. Kanban kártya: `waiting` státusz
@@ -35,7 +35,7 @@ Helyes sorrend minden jogi feladat végén:
    - Mely nyelvek/joghatóságok kerültek bele
    - Milyen placeholder maradt ([PRODUCT_...] stb.)
    - Pending ügyvédi felülvizsgálati pontok
-3. Innen QA + Cybersec gate jön — ezek sign-off nélkül nem kerül done-ba semmi
+3. Innen QA + WhiteHat gate jön — ezek sign-off nélkül nem kerül done-ba semmi
 
 **Buktatók (2025-07-01 eset):** Az 5 child kártyát (`c67d26a9` stb.) REVIEW komment nélkül tettem done-ra. MikroB visszanyitotta. Tanulság: a `done` gomb nem az enyém — még akkor sem, ha a tartalom elkészült és commitolva van.
 

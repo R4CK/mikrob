@@ -34,7 +34,7 @@ MikroB vagy a QA ügynök teheti, és csak NEM saját munkát.
    - E2E (kevés): csak kritikus user flow + magas kockázatú utak.
 5. **Regresszió**: minden változásnál smoke-test a kritikus utakra; minden bugra automata teszt.
 6. **Verdikt komment** a kártyára (sha-t mindig beleírni):
-   - `QA PASS -- commit <sha>, <N>/<N> teszt zöld, tsc clean. Gate: [Cybersec/Cybered szükséges-e]`
+   - `QA PASS -- commit <sha>, <N>/<N> teszt zöld, tsc clean. Gate: [WhiteHat/RedHat szükséges-e]`
    - `QA FAIL -- commit <sha>. Repro: ... Elvárt: ... Tényleges: ... Következő lépés: ...`
 7. **Move**: PASS -> `waiting` (MikroB zárja DONE-ba); FAIL -> `in_progress`.
 
@@ -86,7 +86,7 @@ Egy 60 mp-es tomeges-statuszvaltas-burst alatt actor+reason nelkul 409 `bulk_att
 - [ ] Nem saját munkát ellenőrzöm (Rule 4)
 - [ ] A REVIEW hivatkozott sha-ja == a legújabb commit (nem stale)
 - [ ] tsc clean (vitest nem type-check-el, zöld teszt mellé mindig tsc)
-- [ ] Nem-kikényszerített doc-comment invariáns (Cybersec javaslat, 2026-08-21): ha egy komment, docstring vagy migrációs fejléc GARANCIÁT állít egy adatmezőre ("ide csak redaktált szöveg kerül", "csak valódi állapotváltásnál íródik", "csak szerver-oldali logoláshoz"), van-e a kód-útvonalon MELLETTE VAGY kikényszerítő hívás, VAGY teszt, ami pont ezt az invariánst állítja? Ha egyik sincs: FINDING, függetlenül attól, hogy a mai viselkedés helyes-e -- a komment ilyenkor a jövőbeli olvasót téveszti meg. Nyomon követés: sorold fel a mezőt ÍRÓ összes hívót (nem csak a nevesítettet), és mindegyikre kérdezd meg, hogy azon az ágon lefut-e a kikényszerítés.
+- [ ] Nem-kikényszerített doc-comment invariáns (WhiteHat javaslat, 2026-08-21): ha egy komment, docstring vagy migrációs fejléc GARANCIÁT állít egy adatmezőre ("ide csak redaktált szöveg kerül", "csak valódi állapotváltásnál íródik", "csak szerver-oldali logoláshoz"), van-e a kód-útvonalon MELLETTE VAGY kikényszerítő hívás, VAGY teszt, ami pont ezt az invariánst állítja? Ha egyik sincs: FINDING, függetlenül attól, hogy a mai viselkedés helyes-e -- a komment ilyenkor a jövőbeli olvasót téveszti meg. Nyomon követés: sorold fel a mezőt ÍRÓ összes hívót (nem csak a nevesítettet), és mindegyikre kérdezd meg, hogy azon az ágon lefut-e a kikényszerítés.
 - [ ] **CleanCore kártyákon: kód-duplikáció ellenőrzés** (card 4bade960, GitHub-first: jscpd, MIT, github.com/kucherenko/jscpd) -- `bash {{INSTALL_DIR}}/store/jscpd-duplication-check.sh <CleanCore path> [threshold%, default 5]`. Exit 0 = OK; exit 1 = a duplikáció a küszöb felett -- a konzol-riport megmondja melyik fájlpár, azt nézd meg FINDING-ként. Marveen (fleet) kódon nem kötelező (belső, nem CleanCore).
 
 ## Atomic-fact buktató (magic-link tanulság)
@@ -104,9 +104,9 @@ minden atomja VERIFIED vagy UNTESTABLE (indokkal). -> `references/atomic-fact.md
 -> `references/fe-patterns.md` ## FAKE-SUCCESS demo-fallback
 
 **Role-literal vakuum** (1a47cac2): `isWarehouseKeeper` 'warehouse_admin'-t keres, enum 'warehouse' ->
-80/80 zöld vákuum, Cybersec NO-GO live reproval. -> `references/be-patterns.md` ## Role-literal vakuum
+80/80 zöld vákuum, WhiteHat NO-GO live reproval. -> `references/be-patterns.md` ## Role-literal vakuum
 
-**Stale-PASS** (Cybersec NO-GO + fix commit -> régi QA PASS érvénytelen): mindig sha-t írj a verdiktbe.
+**Stale-PASS** (WhiteHat NO-GO + fix commit -> régi QA PASS érvénytelen): mindig sha-t írj a verdiktbe.
 -> `references/verdict-and-board.md` ## Stale-PASS csapda
 
 **Rule 13 csapda**: szülő konténer `min-height: 44px` NEM teszi a gombot 44px-essé.
@@ -136,7 +136,7 @@ minden atomja VERIFIED vagy UNTESTABLE (indokkal). -> `references/atomic-fact.md
 **Child table cross-tenant FK rés** (6af23cea, 2026-07-31): child RLS `tenant_id=GUC` csak a saját sort védi; a FK-ellenőrzés bypass-olja a parent RLS-t -> B insertalhat child sort idegen parent alá. Composite FK vagy app-réteg enforcement kell.
 -> `references/be-patterns.md` ## Migráció: child table cross-tenant FK rés
 
-**Nem-kikényszerített doc-comment invariáns** (Cybersec javaslat, 2026-08-21, három azonos minta egy napon belül): `transportCause` kommentje "szerver-oldali logoláshoz" -- semmi nem olvasta (81e2484f); `provisioning_started_at` kommentje "CSAK valódi állapotváltásnál" -- működő CAS nélkül (09b41866); `last_error` kommentje "kizárólag redaktált szöveg" -- redakció nélkül a persist-határon (460c1725). Mindháromnál a komment volt az EGYETLEN "védelem", nem egy tényleges kikényszerítő hívás vagy teszt. A kód ma helyesen viselkedhet -- ez nem menti fel: a komment akkor is FINDING, ha a jelenlegi hívók mind jól viselkednek, mert a jövőbeli olvasót a garancia-állítás téveszti meg egy új hívónál. Lásd fenti "Általános" checklist-pont.
+**Nem-kikényszerített doc-comment invariáns** (WhiteHat javaslat, 2026-08-21, három azonos minta egy napon belül): `transportCause` kommentje "szerver-oldali logoláshoz" -- semmi nem olvasta (81e2484f); `provisioning_started_at` kommentje "CSAK valódi állapotváltásnál" -- működő CAS nélkül (09b41866); `last_error` kommentje "kizárólag redaktált szöveg" -- redakció nélkül a persist-határon (460c1725). Mindháromnál a komment volt az EGYETLEN "védelem", nem egy tényleges kikényszerítő hívás vagy teszt. A kód ma helyesen viselkedhet -- ez nem menti fel: a komment akkor is FINDING, ha a jelenlegi hívók mind jól viselkednek, mert a jövőbeli olvasót a garancia-állítás téveszti meg egy új hívónál. Lásd fenti "Általános" checklist-pont.
 
 **Docs corpus scan timeout untracked fájloktól** (7e2f0a13, 2026-08-01): a `no-false-storage-claims.test.ts` docs corpus scan-je timeout-ra eshet, ha a docs/ mappában sok untracked (el nem kötelezett) fájl van (pl. stitch-gen HTML-ek). Ez NEM a szóban forgó kártya regressziója. Azonosítás: `git stash -u` (untracked-et is) -> teszt újrafuttatás -> ha most zöld -> pre-existing, a stash-elt fájlok okozták -> `git stash pop`. QA PASS adható NOTE-tal; külön bug-kártya a timeout emelésre.
 

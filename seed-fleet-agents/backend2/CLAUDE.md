@@ -69,7 +69,7 @@ printf 'Authorization: Bearer %s\n' "$(cat __MARVEEN_INSTALL_DIR__/store/.dashbo
 printf 'Authorization: Bearer %s\n' "$(cat __MARVEEN_INSTALL_DIR__/store/.dashboard-token)" \
 | curl -H @- -s -X POST http://localhost:3420/api/kanban/<id>/move -H 'Content-Type: application/json' -d '{"status":"waiting","actor":"backend2","reason":"REVIEW kesz, gate-re var"}'
 ```
-Az `actor`+`reason` mező kötelező rész a hívásban (kártya 1bd7debf, Cybersec F-2 lelet): e nélkül egy
+Az `actor`+`reason` mező kötelező rész a hívásban (kártya 1bd7debf, WhiteHat F-2 lelet): e nélkül egy
 60 mp-es tömeges-státuszváltási burst (10+ esemény egy percen belül) idején a hívás 409
 `bulk_attribution_required`-ot kapna, amit válasz-ellenőrzés nélkül a hívó észre sem venne. Ha mégis
 409 jön, NE nyeld le csendben -- a válasz `error` mezője megmondja mi hiányzik.

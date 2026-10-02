@@ -1,6 +1,6 @@
 ---
 name: full-value-audit
-description: Run a FULL-VALUE audit of an app -- inventory EVERY frontend + backend function (every page, button, form, endpoint, module), test every user flow at every RBAC level (positive AND negative authz), walk superadmin flows end-to-end, test every API and every DB operation, optimize with numbers, and cover security/WCAG/i18n/observability/resilience/regression, ending in an audit report with three-gate (QA + Cybersec + Cybered) sign-off. Use whenever "teljes értékű audit", "teljes audit", "auditáld végig", "full audit", "audit everything", "minden gombot/funkciót tesztelj" comes up, or before a release / major milestone. Nothing implicit: un-inventoried or un-tested = treated as broken until proven otherwise.
+description: Run a FULL-VALUE audit of an app -- inventory EVERY frontend + backend function (every page, button, form, endpoint, module), test every user flow at every RBAC level (positive AND negative authz), walk superadmin flows end-to-end, test every API and every DB operation, optimize with numbers, and cover security/WCAG/i18n/observability/resilience/regression, ending in an audit report with three-gate (QA + WhiteHat + RedHat) sign-off. Use whenever "teljes értékű audit", "teljes audit", "auditáld végig", "full audit", "audit everything", "minden gombot/funkciót tesztelj" comes up, or before a release / major milestone. Nothing implicit: un-inventoried or un-tested = treated as broken until proven otherwise.
 version: "1.0.0"
 related_skills: [project-workflow, white-hat-security-testing]
 ---
@@ -16,7 +16,7 @@ The bar for calling an audit "done". Partial coverage is NOT a full-value audit 
 - When verifying that a whole app (not one card) is actually shippable.
 
 ## Core Principle
-**Nothing is implicit.** Anything not on the inventory and not tested is treated as BROKEN until proven otherwise. Every claim needs evidence: a repro step, a test output, a screenshot, a log line. A green test suite alone is NOT proof (the magic-link auth was 151/151 green and still hid 2 MAJOR bugs that QA + Cybersec caught). No silent gaps: if you did not test something, list it explicitly as "NOT tested / why".
+**Nothing is implicit.** Anything not on the inventory and not tested is treated as BROKEN until proven otherwise. Every claim needs evidence: a repro step, a test output, a screenshot, a log line. A green test suite alone is NOT proof (the magic-link auth was 151/151 green and still hid 2 MAJOR bugs that QA + WhiteHat caught). No silent gaps: if you did not test something, list it explicitly as "NOT tested / why".
 
 ## Procedure
 
@@ -62,7 +62,7 @@ and never hand it to an external model without reading the wrapper's own limits 
 - Measure and fix: slow / N+1 queries, missing indexes, unnecessary re-renders, oversized payload/bundle, missing cache, memory leaks, O(n^2) hotspots (cap them). Give before/after numbers -- not "feels faster".
 
 ### 7. Completeness cover (to be truly full-value)
-- **Security:** STRIDE + OWASP Top 10 / ASVS walked (the Cybersec gate), not just happy path.
+- **Security:** STRIDE + OWASP Top 10 / ASVS walked (the WhiteHat gate), not just happy path.
 - **Data integrity / multi-tenant isolation:** tenant-scope invariant provably holds (negative control).
 - **Frontend edge cases:** loading/empty/error/offline/long-text/small-screen states.
 - **Accessibility (WCAG AA):** keyboard nav, focus trap, contrast, aria.
@@ -77,9 +77,9 @@ and never hand it to an external model without reading the wrapper's own limits 
 - Split the work by role, and no one verifies their own work:
   - Inventory + optimization: engineering agents + `codebase-auditor` / `performance-optimizer`.
   - Functional testing: `qa-engineer`.
-  - Offensive testing: `cybersecurity-redteam` (Cybersec, `white-hat-security-testing` skill).
+  - Offensive testing: `cybersecurity-redteam` (WhiteHat, `white-hat-security-testing` skill).
 - MikroB orchestrates: decompose into Phase/Task/subtask kanban cards (see `project-workflow`), dispatch to role-agents via inter-agent messages (never a subagent for fleet work), each finisher writes the "REVIEW" comment FIRST, THEN moves the card to `waiting` (card e98a34d3: reversed order risks an orphaned REVIEW-less `waiting` card if a SIGSTOP freeze lands between the two steps).
-- **Three mandatory gates:** every completed piece passes QA (functional), Cybersec (per-finding security), and Cybered (adversarial red-team: assume-breach, kill-chain, active defense). DONE = QA PASS + Cybersec GO + Cybered GO. No gate verifies its own work.
+- **Three mandatory gates:** every completed piece passes QA (functional), WhiteHat (per-finding security), and RedHat (adversarial red-team: assume-breach, kill-chain, active defense). DONE = QA PASS + WhiteHat GO + RedHat GO. No gate verifies its own work.
 
 ## Pitfalls
 - **Reporting partial as full:** if the inventory is not 100% covered (tested, or explicitly skipped with a reason), it is NOT a full-value audit. Do not claim done.
@@ -113,12 +113,12 @@ and never hand it to an external model without reading the wrapper's own limits 
   reading the code.
 - Every role has a completed authz matrix (positive + negative).
 - Every found MAJOR/critical issue has a reproducible entry AND a kanban fix/optimization card.
-- All three gates signed off (QA PASS + Cybersec GO + Cybered GO) on the tested work.
+- All three gates signed off (QA PASS + WhiteHat GO + RedHat GO) on the tested work.
 
 ## Examples
 **Example 1:**
 Input: "Csinálj egy teljes értékű auditot a terméken."
-Output: A Phase/Task kanban tree; a feature inventory (every page/button + every backend handler); per-role authz matrices tested positive+negative; every endpoint + DB op tested; perf before/after numbers; an audit report with PASS/FAIL/NOT-tested per item and fix cards for every MAJOR finding; QA + Cybersec + Cybered sign-off.
+Output: A Phase/Task kanban tree; a feature inventory (every page/button + every backend handler); per-role authz matrices tested positive+negative; every endpoint + DB op tested; perf before/after numbers; an audit report with PASS/FAIL/NOT-tested per item and fix cards for every MAJOR finding; QA + WhiteHat + RedHat sign-off.
 
 **Example 2:**
 Input: "Minden gomb, minden funkció tesztelve legyen a dashboardon."

@@ -9,7 +9,7 @@ version: "1.0.0"
 The disciplined process for breaking your own product's security, proving the break, and closing it. Authorized targets only (your own code/infra). Output is always defensive: finding + proof + fix + regression test.
 
 ## When to use
-- A security-relevant card is "claimed done" and needs the mandatory Cybersec gate.
+- A security-relevant card is "claimed done" and needs the mandatory WhiteHat gate.
 - Designing/reviewing auth, multi-tenancy, payments, file handling, PII, or any trust boundary.
 - After QA passes functionally — you test what QA's happy-path/edge tests do not: the adversary's path.
 

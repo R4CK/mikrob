@@ -1,6 +1,6 @@
 ---
 name: gate-worktree-pattern
-description: Create a disposable, SHA-pinned worktree for a gate or a bug repro without corrupting the shared clone. Use whenever you need to run tests, a dev server or a repro at a specific commit -- QA/Cybersec/Cybered gates, delta-reviews, "does this land?" checks. Covers the node_modules trap that took the fleet down for 38 minutes.
+description: Create a disposable, SHA-pinned worktree for a gate or a bug repro without corrupting the shared clone. Use whenever you need to run tests, a dev server or a repro at a specific commit -- QA/WhiteHat/RedHat gates, delta-reviews, "does this land?" checks. Covers the node_modules trap that took the fleet down for 38 minutes.
 version: "1.0.0"
 ---
 
@@ -10,7 +10,7 @@ version: "1.0.0"
 
 Any time you need a checkout at a SPECIFIC commit that is not your own working tree:
 
-- a QA / Cybersec / Cybered gate on a Gate-SHA
+- a QA / WhiteHat / RedHat gate on a Gate-SHA
 - a delta-review (build the same tree twice, at two SHAs)
 - reproducing a bug at the commit that introduced it
 - running a dev server against a pinned commit
@@ -61,7 +61,7 @@ symlinks. A write inside it stays inside it: the escaping path does not exist an
 
 **A second collision, fixed the same way (card a7da80d6).** The path used to be card+sha ONLY, so
 two gates reviewing the SAME card at the SAME sha -- the normal case, since a card is gated by QA and
-Cybersec/Cybered together -- were handed the SAME directory. `--remove` by whichever gate finished
+WhiteHat/RedHat together -- were handed the SAME directory. `--remove` by whichever gate finished
 first then killed every process whose cwd was inside it and deleted the tree, taking a peer's
 running vitest with it SILENTLY: no error to the victim, just a suite that stops and a checkout that
 is gone. The agent name is now PART OF THE PATH (`cc-gate-<card>-<agent>-<sha>`) and is REQUIRED --
@@ -71,7 +71,7 @@ is gone. The agent name is now PART OF THE PATH (`cc-gate-<card>-<agent>-<sha>`)
 
 When re-verifying a fix after a NO-GO/FAIL, get the FULL changed-file list between the
 previously-judged sha and the fix -- never a hand-typed, path-scoped `git diff -- src/` or similar.
-Card c266ec74 (Cybered's finding off the a37bb36d landing): exactly that scoping missed two
+Card c266ec74 (RedHat's finding off the a37bb36d landing): exactly that scoping missed two
 stowaway commits that landed entirely under `store/`, one of them a live, un-fixed NO-GO at the time.
 
 ```bash
@@ -106,7 +106,7 @@ No pathspec, ever -- a narrowed delta-diff looks complete and is not.
   worktree; for a bundler, an alias in `vitest.config.ts` does the same job.
 
 - **A targeted gate run that touches `apps/api/src/main.ts` must also run `main-wiring.test.ts` +
-  `wiring-manifest.test.ts` (Cybered self-correction, 2026-09-24, card 344f8744).** Card 915a71d9
+  `wiring-manifest.test.ts` (RedHat self-correction, 2026-09-24, card 344f8744).** Card 915a71d9
   passed all three gates on 7a272506 with deliberately narrowed, targeted runs -- and `git diff --stat`
   showed `main.ts | 60 +++` to every gate. The diff added a new `X ?? createInMemory...()` fallback
   site, which is exactly what `main-wiring.test.ts` pins (MAIN_TS_FALLBACK_CAPABLE_DEPS must equal the

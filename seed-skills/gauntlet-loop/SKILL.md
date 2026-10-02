@@ -18,7 +18,7 @@ Matt Shumer-féle multi-agent minta (Claude Code + Opus 5). A prompt nem ad ÚJ 
 1. **Cél + referencia-sáv befogadása.** A lead megkapja az ambiciózus célt ÉS a konkrét minőség-etalont (a "bar"). Ha nincs etalon: generálj/keress egyet (pl. `frontend-design-research` awwwards referencia, jóváhagyott mockup, mintakimenet) MIELŐTT loopolsz.
 2. **Dekompozíció.** A lead a munkát a legkisebb ÖNÁLLÓAN építhető ÉS önállóan ítélhető darabokra bontja (project-workflow 1. szabály: Fázis->Feladat->alfeladat->lépés). Eldönti mi megy párhuzamosan, mi szekvenciálisan.
 3. **Builder kiosztás.** Külön builder ügynökök (role-agentek) építik a darabokat. Megkapják a specet + a darab-feladatot, de NEM a kritikus szerepét.
-4. **Friss-kontextusú kritika.** KÜLÖN sub-ügynök (a builder munkáját NEM látta belülről) nézi meg -- a valós artefakthoz, a referenciához és a spechez fér hozzá, de a builder indoklásaihoz/döntéseihez NEM. (A fleet gate-jei: QA/Cybersec/Cybered -- a szerző sosem ítéli a sajátját, 4. szabály.)
+4. **Friss-kontextusú kritika.** KÜLÖN sub-ügynök (a builder munkáját NEM látta belülről) nézi meg -- a valós artefakthoz, a referenciához és a spechez fér hozzá, de a builder indoklásaihoz/döntéseihez NEM. (A fleet gate-jei: QA/WhiteHat/RedHat -- a szerző sosem ítéli a sajátját, 4. szabály.)
 5. **Blind összehasonlítás.** A kritikus a kimenetet ÉS a referenciát EGYMÁS MELLETT, vakon hasonlítja (melyik melyik nélkül), hogy csökkentse a jóváhagyási torzítást és OBJEKTÍVEN felszínre hozza a LEGNAGYOBB eltérést. Ez az új elem a sima gate-hez képest: nem csak "megfelel-e", hanem "veri-e a referenciát".
 6. **Pass/fail re-dispatch.** Ha a kimenet VESZÍT az összevetésben: a kritikus megnevezi a LEGNAGYOBB értelmes eltérést és visszaadja a buildernek javításra (project-workflow 4a: azonnal `in_progress` + re-dispatch a bug/gap-jelentéssel). Ha nyer: a darab továbblép.
 7. **Iteráció + stop.** A ciklus ismétlődik amíg: a siker-kritérium teljesül, VAGY a javulás túl kicsi a költséghez, VAGY egy határ tüzel (idő/token/próbálkozás-cap). A stop-szabályok KÖTELEZŐK (loop-engineering: success ÉS failure ÉS hard cap).
@@ -31,7 +31,7 @@ A 8 lépést a fleet meglévő infrastruktúrája teszi megbízhatóvá -- ne é
 - **Eszköz/megfigyelés:** teszt, log, screenshot, metrika visszacsatolva (a "measure" valós, nem vélemény).
 - **Budget-határok:** 5 órás + heti kvóta-cap, token/próbálkozás-cap (loop-engineering stop-szabály).
 - **Eszkaláció:** ismételt bukás / hiányzó etalon / bizonytalanság -> Peti (Telegram).
-- **Verifikáció:** a gate-ek (QA/Cybersec/Cybered) + a blind-compare a truth-source; a puszta zöld teszt NEM elég bizonyíték.
+- **Verifikáció:** a gate-ek (QA/WhiteHat/RedHat) + a blind-compare a truth-source; a puszta zöld teszt NEM elég bizonyíték.
 
 ## Buktatók
 - **Etalon nélkül nincs Gauntlet.** A blind-compare a lényeg; referencia-sáv nélkül visszaesik sima gate-re. Előbb szerezz etalont.

@@ -77,7 +77,7 @@ aesthetic · help users recover from errors · help/docs. Score each screen agai
 - Reviewing only the happy path (skipping empty/error/loading/permission states).
 - Treating a11y/perf as later polish instead of system invariants.
 - **i18n completeness gap**: when wiring a component to i18n, catch/error branch fallback strings are easy to miss. **Before setting the card to waiting**, run: `grep -n ": '[A-Z]\|\"[A-Z]" src/**/*.tsx` on the changed files — any hit is a candidate hardcoded string. (QA peer tip; lesson: 384c86df calcError catch-branch survived the main pass and caused a FAIL/re-gate cycle.)
-- **Intl.NumberFormat with tenant-supplied currency**: `new Intl.NumberFormat(…, { currency })` throws `RangeError` on invalid/empty codes from tenant config. Always wrap in try/catch; fallback to `${value.toFixed(2)} ${currency}`. (Lesson: a106b9e1 Cybersec INFO.)
+- **Intl.NumberFormat with tenant-supplied currency**: `new Intl.NumberFormat(…, { currency })` throws `RangeError` on invalid/empty codes from tenant config. Always wrap in try/catch; fallback to `${value.toFixed(2)} ${currency}`. (Lesson: a106b9e1 WhiteHat INFO.)
 
 ## Verification
 This skill IS the verification model — QA uses the interface-review checklist above to
