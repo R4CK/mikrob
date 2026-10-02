@@ -28,21 +28,23 @@ const CODE = SRC.split('\n')
   .map((l) => l.replace(/#.*$/, ''))
   .join('\n')
 
-/** The script calls it as `"$(dirname "$0")/graphify.sh" build` -- the closing quote sits between
- *  the two words, so the needle has to tolerate it. A plain 'graphify.sh build' matches nothing. */
+/** The script now routes through the single-flight wrapper (card 0cfd1dbc) rather than calling
+ *  `graphify.sh build` directly, so it is called as `"$(dirname "$0")/graphify-build-singleflight.sh"
+ *  "$MAIN"` -- the closing quote sits between the script and its argument, so the needle has to
+ *  tolerate it. A plain 'graphify-build-singleflight.sh "' matches nothing. */
 const graphifyLine = (): string | undefined =>
-  CODE.split('\n').find((l) => /graphify\.sh"?\s+build/.test(l))
+  CODE.split('\n').find((l) => /graphify-build-singleflight\.sh"?\s+"/.test(l))
 
 describe('cleancore-land.sh announces the landing before rebuilding any index (card dba14f8e)', () => {
   it('the scan sees the real script -- otherwise every check below is vacuous', () => {
     expect(CODE).toContain('LANDED')
-    expect(CODE).toContain('graphify.sh')
+    expect(CODE).toContain('graphify-build-singleflight.sh')
     expect(SRC.length).toBeGreaterThan(5000)
   })
 
   it('the LANDED line comes BEFORE the graphify build', () => {
     const landed = CODE.indexOf('echo "LANDED')
-    const graphify = CODE.indexOf('graphify.sh')
+    const graphify = CODE.indexOf('graphify-build-singleflight.sh')
     expect(landed).toBeGreaterThan(-1)
     expect(graphify).toBeGreaterThan(-1)
     expect(

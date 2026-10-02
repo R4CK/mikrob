@@ -1190,14 +1190,21 @@ if git -C "$MAIN" merge-base --is-ancestor "$SHA" origin/main; then
   # it rots the same way the blast-radius graph did if nothing follows HEAD. It still runs -- it
   # just no longer holds the landing open.
   #
+  # SINGLE-FLIGHT + COALESCE (card 0cfd1dbc). This used to fire a bare `graphify.sh build` on
+  # EVERY landing with no dedup: a landing-heavy window accumulated up to 11 concurrent/queued
+  # builds (~1.1GB RSS each), starving the load-guard into sigstop-freeze. The wrapper below runs
+  # at most one `graphify.sh build <repo>` at a time; a landing that fires while one is already
+  # running just marks a dirty flag that the in-flight build picks up and covers with one more
+  # pass, instead of starting a second process.
+  #
   # DETACHED, AND THE REDIRECT IS THE LOAD-BEARING PART. Backgrounding alone would not free the
   # caller: a child that inherits stdout keeps the pipe open, so `noisy-run.sh` (and any other
   # reader) goes on waiting for EOF long after this script exits. Its output therefore goes to a
   # file, and the path is printed so the result is still reachable.
   GRAPH_LOG="${TMPDIR:-/tmp}/cleancore-land-graphify-$CARD-$$.log"
-  nohup "$(dirname "$0")/graphify.sh" build "$MAIN" >"$GRAPH_LOG" 2>&1 &
+  nohup "$(dirname "$0")/graphify-build-singleflight.sh" "$MAIN" >"$GRAPH_LOG" 2>&1 &
   disown 2>/dev/null || true
-  say "graphify: rebuilding the code graph in the background -> $GRAPH_LOG"
+  say "graphify: rebuilding the code graph in the background (single-flight) -> $GRAPH_LOG"
   exit 0
 fi
 echo "PUSH reported success but $GSHORT is NOT an ancestor of origin/main -- verify by hand"
