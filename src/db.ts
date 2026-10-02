@@ -6845,25 +6845,41 @@ export function pruneTokenUsage(): number {
   return rollupAndDelete(cutoff)
 }
 
-// Ported from upstream (HBDBKUSZOB823, e45e4d87, card a04769a6). The decay-sweep
-// cadence: index.ts sweeps once at boot AND on this interval, so a restart only
-// ever SHORTENS the gap between two sweeps.
+// The decay-sweep cadence. Lives HERE, beside the prune it drives, because
+// db.ts is what needs it for the lag tolerance below and memory.ts already
+// imports from db.ts -- putting it there would close an import cycle.
+// index.ts sweeps once at boot AND on this interval, so a restart only ever
+// SHORTENS the gap between two sweeps.
 export const DECAY_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
 
 /**
  * HBDBKUSZOB823: whether the daily token_usage prune is still running.
  *
- * WHAT THE LAG MEASURES. Rows below `now - retention` are deleted, so the
- * oldest surviving row's overshoot past that cutoff IS the time since the
- * last successful sweep. No separate last-run bookkeeping, and a sweep that
- * ran but deleted nothing cannot fake it.
+ * WHY THIS AND NOT A DB-SIZE THRESHOLD. The heartbeat carried a
+ * `dbSize > 100 MB` warning. Measured 2026-09-13: the DB is 481.7 MB and about
+ * 65 % of it IS the token ledger, which this sweep holds at exactly
+ * TOKEN_USAGE_RETENTION_DAYS (oldest row: 90.01 days against a 90-day
+ * retention). The size is bounded BY DESIGN and can never fall under such a
+ * threshold, so the warning can never go quiet -- and the one failure it
+ * claims to watch, the prune silently stopping, is invisible to it, because
+ * "the DB is big" is already permanently true.
  *
- * WHY TWO SWEEP CYCLES AND NOT A ROUND NUMBER (upstream measurement,
- * 2026-09-13): 50 rows sat past the cutoff, the oldest overshooting by 16.4
- * minutes -- rows that merely aged past it since the last sweep. A naive
- * "oldest row older than retention" test is true almost always. The
- * tolerance is derived from DECAY_SWEEP_INTERVAL_MS so it cannot drift from
- * the real cadence.
+ * WHAT THE LAG MEASURES. Rows below `now - retention` are deleted, so the
+ * oldest surviving row's overshoot past that cutoff IS the time since the last
+ * successful sweep. No separate last-run bookkeeping, and a sweep that ran but
+ * deleted nothing cannot fake it.
+ *
+ * WHY TWO SWEEP CYCLES AND NOT A ROUND NUMBER. Measured on the live DB the
+ * same day: 50 rows sat past the cutoff, the oldest overshooting by 16.4
+ * MINUTES -- rows that merely aged past it since the last sweep. So a naive
+ * "oldest row older than retention" test is true almost always and would die
+ * of false positives exactly the way the size threshold died of always-true.
+ * The tolerance is derived from DECAY_SWEEP_INTERVAL_MS so it cannot drift
+ * from the real cadence; two cycles means two consecutive missed sweeps with
+ * no restart in between, which is not jitter.
+ *
+ * A STATE, never a bare number: 'empty' (no rows yet) is a fresh install with
+ * nothing to judge, and must read as neither healthy nor broken.
  */
 export const TOKEN_PRUNE_OLDEST_SQL = 'SELECT MIN(timestamp) AS oldest FROM token_usage'
 
@@ -6879,7 +6895,9 @@ export interface TokenPruneLag {
 }
 
 /**
- * The verdict itself, as a PURE function: exported so the controls run
+ * The verdict itself, as a PURE function: three lines of decision inside a
+ * DB-reading wrapper is exactly the place a later refactor drops in silence,
+ * with only an end-to-end run left to notice. Exported so the controls run
  * against the SHIPPED decision and not a re-typed equivalent.
  */
 export function classifyTokenPruneLag(

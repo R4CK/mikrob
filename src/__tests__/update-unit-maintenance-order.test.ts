@@ -82,6 +82,21 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
     expect(wrapper).toMatch(/migrate_channels_restart "\$@"/)
     expect(UPDATE).toMatch(/^run_unit_maintenance$/m)
   })
+
+  // Cybersec NO-GO (card ef6a8031, 2026-10-02): a batch-3 upstream merge wired
+  // install_keepalive_probe_timer and park_morning_timer into this same entry
+  // point despite both being named NOT adopted in acknowledged-conflicts.ts --
+  // the fork-upstream-conflict-guard suite does not look at update.sh function
+  // names, so nothing else would have caught it. This pins the absence the
+  // same way the tests above pin the ordering, so a future merge re-adding
+  // either call here fails loudly instead of landing silently.
+  it('no not-adopted unit function is wired into the maintenance entry point', () => {
+    const wrapper = sliceShellFn(UPDATE, 'run_unit_maintenance')
+    expect(wrapper).not.toMatch(/install_keepalive_probe_timer/)
+    expect(wrapper).not.toMatch(/park_morning_timer/)
+    expect(UPDATE).not.toMatch(/^install_keepalive_probe_timer\(\)/m)
+    expect(UPDATE).not.toMatch(/^park_morning_timer\(\)/m)
+  })
 })
 
 describe('the maintenance itself, executed for real', () => {

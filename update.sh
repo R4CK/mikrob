@@ -629,6 +629,17 @@ migrate_channels_restart() {
   return 0
 }
 
+# NOT ADOPTED: upstream's install_keepalive_probe_timer and park_morning_timer
+# (feat batch 2026-09-11..09-14) leaked into run_unit_maintenance via this merge
+# despite being named NOT adopted in src/fork-upstream/acknowledged-conflicts.ts
+# (card c2aeefa5, 2026-09-25): each is a real behaviour/UX change to a live
+# install (installs and enables a new systemd timer; disables the morning
+# timer) that was deferred to its own card, not silently taken on a routine
+# upstream drift re-decision. Found by Cybersec (card ef6a8031, 2026-10-02):
+# the next ./update.sh on an existing host would have started a new keepalive
+# timer and stopped the morning briefing timer without being asked. Removed
+# here; adopting either is Peti's call, on its own card.
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"

@@ -1884,9 +1884,10 @@ EOF
 # via the seeded scheduled-tasks/reggeli-napindito task at 07:30 -- confirmed
 # on this fork's own live install (`/api/schedules`: schedule "30 7 * * *",
 # agent mikrob), three minutes after this timer's 07:27. Two runs of the same
-# work is one too many, and upstream measured the timer path as the weaker of
-# the two: a headless `claude -p` invocation whose config dir carries no
-# channel allowlist, so its reply tool rejects the owner's chat_id -- the run
+# work is one too many, and the timer is the weaker of the two: it launches a
+# headless `claude -p` invocation whose config dir carries no channel
+# allowlist, so its reply tool rejects the owner's chat_id and the run refuses
+# itself as a prompt injection (upstream observation, 2026-09-13) -- the run
 # still marks the day delivered on the way out, masking the failure. The
 # scheduled task runs inside the live channel session, which has the
 # allowlist. The unit files stay on disk so an operator who wants the timer

@@ -213,4 +213,16 @@ describe('writeAgentSettingsFromProfile unions toolDeny, never replaces (card 21
     writeAgentSettingsFromProfile(AGENT_NAME, loadProfileTemplate('default'))
     expect(deny()).toContain('Artifact')
   })
+
+  // Card b0d84dc3 (upstream ORSIKTXRATA914): the write must be additive to the deny list only --
+  // a toolDeny entry must never leak into permissions.allow, which the profile template owns.
+  it('does not touch the allow list', () => {
+    writeConfig({ toolDeny: ['Artifact', 'Workflow'] })
+    const profile = loadProfileTemplate('default')
+    writeAgentSettingsFromProfile(AGENT_NAME, profile)
+    const settings = JSON.parse(readFileSync(agentSettingsPath(AGENT_NAME), 'utf-8'))
+    expect(settings.permissions.allow).toHaveLength(profile.filesystem.allow.length)
+    expect(settings.permissions.allow).not.toContain('Artifact')
+    expect(settings.permissions.allow).not.toContain('Workflow')
+  })
 })

@@ -532,7 +532,9 @@ export function buildHeartbeatSummaryResponse(
     },
     // HBDBKUSZOB823: placed immediately after `counts` and BEFORE the lists,
     // for the same reason counts comes first -- a truncated read must keep the
-    // health signal and lose only the annotating card lists.
+    // health signal and lose only the annotating card lists. The retired
+    // `dbSize > 100 MB` warning could never go quiet (the DB is bounded by
+    // design at ~480 MB); this one is quiet whenever the daily sweep runs.
     token_prune: tokenPrune,
     urgent: summary.urgent.map(slim),
     waiting: waitingRecent.map(slim),
