@@ -6,6 +6,7 @@ import type http from 'node:http'
 import { spawn, execFileSync } from 'node:child_process'
 import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
+import { getKanbanCard } from '../../db.js'
 import {
   getUpdateStatus, refreshUpdateStatus,
 } from '../update-checker.js'
@@ -130,6 +131,62 @@ function readLastResult(): LastResult | null {
 // ROLLED-BACK outcome (a success or an in-progress run is not diagnosable).
 function isDiagnosable(r: LastResult | null): boolean {
   return r?.status === 'rolled-back' || r?.status === 'failed'
+}
+
+// Cybersec MEDIUM (card 55885cb1 @ 68949451, fixed on card 82f05633): both repo blocks run the
+// SAME fork-pull against this fork's own `origin` (see the big removed-code comment above), but
+// marveen-land.sh pushes a batch BEFORE its gate closes -- the gate runs against the branch sha,
+// AGREE only comes after. A landed-but-not-yet-gated UPSTREAM-SYNC batch (like ef6a8031's
+// ed4633c2 before its own fix) can therefore sit on `origin` for a while, and a button press in
+// that window would pull it straight onto the live host, exactly the thing Peti's "only a gated
+// batch" decision on 55885cb1 was trying to prevent -- it just moved from "raw upstream merge"
+// to "landed-but-ungated batch". MikroB's two-layer fix (card 82f05633, recorded on e5c46e87):
+// (1) process -- UPSTREAM-SYNC batch cards now land only AFTER their gate closes; (2) this code
+// -- refuse the pull outright if anything in the range about to be pulled names an UPSTREAM-SYNC
+// card that is not yet `done`, as a second, independent layer that holds even if (1) is ever
+// missed by a human or a script.
+//
+// Mirrors store/landing-downward-check.sh's `cards_in_subject` exactly (same regex, same
+// card 6500e1d3 fix for the comma-vs-slash separator class) rather than inventing a second,
+// possibly-divergent extractor for the same "which card(s) does this commit subject name"
+// question -- see that script's own measurement notes for why the separator class and the
+// `card`/`cards` keyword anchor are each worth keeping as they are.
+const CARD_REF_BLOCK_RE = /\bcards?[ \t]+[0-9a-f]{8}\b(?:[ \t]*[/,][ \t]*[0-9a-f]{8}\b)*/gi
+const HEX8_RE = /\b[0-9a-f]{8}\b/gi
+
+/** Every card id a commit SUBJECT line names, lowercased, in the order they appear (may repeat). */
+export function cardsInSubject(subject: string): string[] {
+  const out: string[] = []
+  for (const block of subject.match(CARD_REF_BLOCK_RE) ?? []) {
+    for (const id of block.match(HEX8_RE) ?? []) out.push(id.toLowerCase())
+  }
+  return out
+}
+
+/** Looks up one card id; returns only the two fields the check below needs, so a test can fake
+ *  this without constructing a full {@link KanbanCard}. */
+export type KanbanCardLookup = (id: string) => { title: string; status: string } | undefined
+
+/**
+ * Pure: given the subjects of the commits about to be pulled and a card lookup, returns the
+ * (deduplicated, sorted) ids of every UPSTREAM-SYNC card named in that range whose status is NOT
+ * `done`. An empty result means the pull is safe to proceed. Deliberately does not care WHICH
+ * commit named which card, or how many times -- the apply handler only needs a yes/no plus the
+ * names for its error message.
+ */
+export function findOpenUpstreamSyncCards(
+  commitSubjects: readonly string[],
+  lookupCard: KanbanCardLookup,
+): string[] {
+  const open = new Set<string>()
+  for (const subject of commitSubjects) {
+    for (const id of cardsInSubject(subject)) {
+      if (open.has(id)) continue
+      const card = lookupCard(id)
+      if (card && /UPSTREAM-SYNC/i.test(card.title) && card.status !== 'done') open.add(id)
+    }
+  }
+  return [...open].sort()
 }
 
 export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
@@ -410,6 +467,45 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
     // always has for the non-upstream case. If there is nothing new to pull, update.sh's own
     // "already on the latest commit" exit covers Peti's acceptance criterion (2) -- a clear
     // message, not a silent no-op.
+    //
+    // Card 82f05633, second layer (see findOpenUpstreamSyncCards' own comment for the first):
+    // refuse outright if the range about to be pulled names an UPSTREAM-SYNC card that has not
+    // yet reached `done` -- a batch that landed before its own gate closed.
+    let openUpstreamSyncCards: string[]
+    try {
+      const subjectsOut = execFileSync(
+        '/usr/bin/git',
+        ['log', '--format=%s', 'HEAD..@{u}'],
+        { cwd: PROJECT_ROOT, timeout: 10_000, encoding: 'utf-8' },
+      )
+      openUpstreamSyncCards = findOpenUpstreamSyncCards(subjectsOut.split('\n').filter(Boolean), getKanbanCard)
+    } catch (err) {
+      // FAIL-CLOSED, not fail-open: this is a security gate (card 82f05633 exists because a
+      // gap here lets ungated upstream code reach the live host), so "could not determine the
+      // answer" refuses the same as "the answer is yes" -- it does not silently become "no".
+      // The preflight above already proved `@{u}` resolves (behindCount ran without throwing),
+      // so a failure here is a transient git error, not a structurally missing upstream ref;
+      // the operator can simply retry.
+      releaseLock()
+      logger.warn({ err }, 'open-UPSTREAM-SYNC-card check failed -- refusing the pull (fail-closed)')
+      json(res, {
+        error: 'Nem sikerült ellenőrizni, van-e nyitott UPSTREAM-SYNC köteg a lehúzandó tartományban. Próbáld újra.',
+        reason: 'open-upstream-sync-check-failed',
+      }, 500)
+      return true
+    }
+    if (openUpstreamSyncCards.length > 0) {
+      releaseLock()
+      json(res, {
+        error:
+          'A lehúzandó tartományban nyitott UPSTREAM-SYNC köteg van, ami még nem ment át a ' +
+          `gate-en: ${openUpstreamSyncCards.join(', ')}. Várj, amíg a kártya gate-je lezárja ` +
+          '(PASS/GO + done), majd próbáld újra.',
+        reason: 'open-upstream-sync-card',
+        openCardIds: openUpstreamSyncCards,
+      }, 409)
+      return true
+    }
     spawnUpdateScript(res, { AUTO_STASH: autoStash ? '1' : '0' }, pidfileContent, releaseLock)
     return true
   }
