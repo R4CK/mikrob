@@ -171,33 +171,78 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
   // `run_unit_maintenance() { install_evil_unit "$@"; }` after the real one made bash run the
   // evil body while every check above stayed green.
   //
-  // CYBERSEC NO-GO (card e47dc04a, round 4 delta-gate): the first version of this count required
-  // a literal `()` pair, so the equally-valid bash form `function run_unit_maintenance { ... }`
-  // (no parens at all) was not recognized as a definition -- counted as 1 even with a malicious
-  // second, parenless definition appended, which bash still runs last. Fixed to recognize all
-  // three bash definition shapes: `name()`, `function name()`, and `function name` (no parens).
-  const DEF_RE = /^\s*(?:function\s+run_unit_maintenance\b(?:\s*\(\))?|run_unit_maintenance\s*\(\))/gm
+  // Rounds 4 and 5 each tightened a regex for "what a definition looks like" --
+  // `function name { ... }` (no parens, round 4), `name ( ) { ... }` (space inside the parens,
+  // round 5, QA 11677) -- and each time a NEXT shape slipped through: round 6 (comment 11684,
+  // against the round-5 fix) was still green with evil executed for a definition not at line
+  // start (`:; run_unit_maintenance() {...}`, the `^\s*` anchor never matches mid-line), a
+  // definition reached via `unset -f` immediately before the real call, an `eval` string
+  // containing a definition, and an `alias` shadowing the call -- four DIFFERENT bash features
+  // for introducing or redirecting a definition, not variants of one shape. A regex that lists
+  // "what a definition looks like" will always have a next entry; bash has more of them than any
+  // such list can enumerate.
+  //
+  // THE FIX (WhiteHat, comment 11684 -- the denylist -> allowlist principle already learned once
+  // on this card at round 1, comment 9df3b4ea): stop recognizing every shape a DEFINITION or
+  // REDEFINITION can take, and allowlist every MENTION of the name instead. In comment-stripped
+  // update.sh, the identifier `run_unit_maintenance` may appear on EXACTLY two lines: the header
+  // (`run_unit_maintenance() {`) and the one call (`run_unit_maintenance`) -- both trimmed, both
+  // anchored to the exact expected text, not a pattern. A second definition in ANY shape, an eval
+  // string, an alias, an unset -f, or a second call all add a THIRD mention, red regardless of
+  // what syntax produced it. This cannot run out of shapes to chase, because it does not chase
+  // shapes.
+  function mentionLines(src: string): string[] {
+    return stripShellComments(src)
+      .split('\n')
+      .filter((line) => /\brun_unit_maintenance\b/.test(line))
+      .map((line) => line.trim())
+  }
 
-  it('run_unit_maintenance is defined EXACTLY ONCE in update.sh', () => {
-    const defs = UPDATE.match(DEF_RE) ?? []
-    expect(defs.length).toBe(1)
+  const HEADER_LINE = 'run_unit_maintenance() {'
+  const CALL_LINE = 'run_unit_maintenance'
+
+  function mentionsAreExactlyHeaderAndCall(src: string): boolean {
+    const lines = mentionLines(src)
+    if (lines.length !== 2) return false
+    const headerCount = lines.filter((l) => l === HEADER_LINE).length
+    const callCount = lines.filter((l) => l === CALL_LINE).length
+    return headerCount === 1 && callCount === 1
+  }
+
+  it('run_unit_maintenance is mentioned in EXACTLY two places: its header and its one call', () => {
+    expect(mentionsAreExactlyHeaderAndCall(UPDATE)).toBe(true)
   })
 
-  // CONTROL, reproducing WhiteHat's finding C directly: a SECOND definition appended later in
-  // the file (the form bash actually runs -- its LAST definition in effect at call time) leaves
-  // the first wrapper's own text completely untouched, so every per-wrapper check above would
-  // stay green while bash runs the evil second definition. The duplicate-definition count is the
-  // only check that can see this.
-  const SECOND_DEF_SHAPES: ReadonlyArray<[label: string, def: string]> = [
-    ['`name() { ... }` (WhiteHat 11610 finding C)', 'run_unit_maintenance() { install_main_inbox_observer_unit "$@"; }'],
-    ['`function name() { ... }`', 'function run_unit_maintenance() { install_main_inbox_observer_unit "$@"; }'],
-    ['`function name { ... }`, no parens (Cybersec round-4 delta-gate)', 'function run_unit_maintenance { install_main_inbox_observer_unit "$@"; }'],
+  // CONTROL, reproducing every shape WhiteHat measured across rounds 3-6 (comments 11610, 11684):
+  // each of these ran evil code in bash while the PRE-allowlist check stayed green. The
+  // mention-allowlist above must reject all of them, whatever bash feature each one uses.
+  const MENTION_BYPASS_SHAPES: ReadonlyArray<[label: string, mutate: (src: string) => string]> = [
+    ['second `name() { ... }` appended (WhiteHat 11610 finding C)', (src) =>
+      `${src}\nrun_unit_maintenance() { install_main_inbox_observer_unit "$@"; }\n`],
+    ['second `function name() { ... }`', (src) =>
+      `${src}\nfunction run_unit_maintenance() { install_main_inbox_observer_unit "$@"; }\n`],
+    ['second `function name { ... }`, no parens (round-4 delta-gate, N1)', (src) =>
+      `${src}\nfunction run_unit_maintenance { install_main_inbox_observer_unit "$@"; }\n`],
+    ['second `name ( ) { ... }`, space between parens (QA 11677, round-5 delta-gate, Q1)', (src) =>
+      `${src}\nrun_unit_maintenance ( ) { install_main_inbox_observer_unit "$@"; }\n`],
+    ['second `function name ( ) { ... }`, space between parens (round-6, N5)', (src) =>
+      `${src}\nfunction run_unit_maintenance ( ) { install_main_inbox_observer_unit "$@"; }\n`],
+    ['a second definition not at line start, after `:;` (round-6, N7)', (src) =>
+      `${src}\n:; run_unit_maintenance() { install_main_inbox_observer_unit "$@"; }\n`],
+    ['`unset -f` followed by a second definition (round-6, N8)', (src) =>
+      `${src}\nunset -f run_unit_maintenance\nrun_unit_maintenance() { install_main_inbox_observer_unit "$@"; }\n`],
+    ['an `eval` string containing a second definition (round-6, N2)', (src) =>
+      `${src}\neval "run_unit_maintenance() { install_main_inbox_observer_unit \\"\\$@\\"; }"\n`],
+    ['an `alias` shadowing the call (round-6, N3)', (src) =>
+      `${src}\nalias run_unit_maintenance='install_main_inbox_observer_unit'\n`],
+    ['a same-line second definition right after another statement (round-6)', (src) =>
+      `${src}\n}; run_unit_maintenance() { install_main_inbox_observer_unit "$@"; }\n`],
   ]
-  for (const [label, def] of SECOND_DEF_SHAPES) {
-    it(`CONTROL: a second definition shaped as ${label} is caught by the duplicate count`, () => {
-      const mutated = `${UPDATE}\n${def}\n`
-      const defs = mutated.match(DEF_RE) ?? []
-      expect(defs.length).toBe(2)
+  for (const [label, mutate] of MENTION_BYPASS_SHAPES) {
+    it(`CONTROL: ${label} is caught by the mention allowlist`, () => {
+      const mutated = mutate(UPDATE)
+      expect(mutated).not.toBe(UPDATE)
+      expect(mentionsAreExactlyHeaderAndCall(mutated)).toBe(false)
     })
   }
 
