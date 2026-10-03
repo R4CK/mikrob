@@ -287,7 +287,7 @@ const gridColor = css('--border', 'rgba(0,0,0,0.08)');
 2. **Zöld teszt MAJOR-t rejt**: a puszta "minden teszt zöld" NEM bizonyíték. A magic-link auth 151/151 zölden 2 MAJOR-t rejtett; a superadmin SA-fázisban a WhiteHat két valós hibát fogott zöld tesztek mögött: (a) `sa:impersonate` UI-gomb + matrix-doc létezett, de a kód-authz-enumból HIÁNYZOTT → a legmagasabb-kockázatú akció gate-je definiálatlan; (b) audit anchor-strip bypass (null-anchor unanchored-degradálás → truncation nem detektált).
 
 **Megoldás / how to apply**:
-- Zárás/parent-auto-close ELŐTT ne bízz a `status:done` mezőben: a kártya KOMMENTJEIBEN ellenőrizd hogy van friss `qa`=PASS ÉS `cybersec`=GO, UGYANARRA a végső commitra, és nincs készítői REVIEW/fix-komment MINDKETTŐ UTÁN (stale-PASS csapda: WhiteHat-fix landolt a QA PASS után → a PASS elavult, re-gate kell).
+- Zárás/parent-auto-close ELŐTT ne bízz a `status:done` mezőben: a kártya KOMMENTJEIBEN ellenőrizd hogy van friss `qa`=PASS ÉS `whitehat` GO, UGYANARRA a végső commitra, és nincs készítői REVIEW/fix-komment MINDKETTŐ UTÁN (stale-PASS csapda: WhiteHat-fix landolt a QA PASS után → a PASS elavult, re-gate kell).
 - **A WhiteHat/QA sign-off gyakran csak inter-agent üzenetben érkezik, NEM kártya-kommentként.** Zárás előtt RÖGZÍTSD a GO/PASS-t kommentként a kártyára (audit-nyom), és csak utána zárj.
 - Ha egy parent-fázist tévesen zártál ungated gyerekre, nyisd vissza `in_progress`-re amíg minden leaf valóban gate-elt.
 - Új kártya self-audit a `waiting` előtt: minden UI-ban/route-on elérhető akció-nak legyen authz-enum bejegyzése restricted granttal; tamper-evidence-nél a strip/null-anchor legyen INVALID (nem "unanchored"); minden tamper-teszt NON-VACUOUS (a konkrét támadó-PoC tényleg bukjon).

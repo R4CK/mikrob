@@ -5,7 +5,7 @@ description: Tests JWT implementations for algorithm confusion, "none" algorithm
   JWT Editor extension, aiming to achieve authentication bypass and privilege escalation.
   Use when assessing JWT-based auth/session management, OAuth2/OIDC token handling, or
   SSO systems during a security engagement.
-domain: cybersecurity
+domain: security
 subdomain: web-application-security
 tags:
 - jwt

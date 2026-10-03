@@ -52,7 +52,7 @@ const BINARY_EXT: readonly string[] = ['.png', '.jpg']
  *  about it. A file with no NUL needs no entry -- the undeclared-NUL assertion covers it already,
  *  and covers it more strictly than any pin could. Deleting is the only form that stays true. */
 const DELIBERATE_NUL: Readonly<Record<string, number>> = {
-  // cybered-gate-pattern/SKILL.md's entry (a literal NUL quoted in prose) is GONE as of card
+  // redhat-gate-pattern/SKILL.md's entry (a literal NUL quoted in prose) is GONE as of card
   // af580149: the af580149 sync rewrote the file (0 NUL, 0 SOH now), the same "escape and delete
   // the pin" pattern the four sibling files above already went through -- deleting per this file's
   // own rule (a file with no NUL needs no entry, re-pinning at 0 is the anti-pattern this list warns

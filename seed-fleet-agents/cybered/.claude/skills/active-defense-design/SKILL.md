@@ -128,7 +128,7 @@ Never permanently deny a user without human review — false positives are catas
 
 ## Design procedure
 
-1. **Map the kill-chain paths** (from `redteam` or Cybered gate output) that reached impact.
+1. **Map the kill-chain paths** (from `redteam` or RedHat gate output) that reached impact.
 2. **For each path, identify the earliest detectable step** — the action that only an attacker
    takes. That step is your tripwire placement point.
 3. **Design the detection element** (honeytoken, honeypot, tripwire condition) for that step.

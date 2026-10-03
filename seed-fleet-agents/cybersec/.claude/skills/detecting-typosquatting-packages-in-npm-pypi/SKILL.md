@@ -11,7 +11,7 @@ description: 'Detects typosquatting attacks in npm and PyPI package registries b
   hunting in package registries.
 
   '
-domain: cybersecurity
+domain: security
 subdomain: supply-chain-security
 tags:
 - typosquatting

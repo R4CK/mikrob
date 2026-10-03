@@ -1,17 +1,19 @@
 ---
-name: cybered-gate-pattern
-description: Full Cybered gate workflow for the CleanCore fleet: board scan for waiting+REVIEW cards in Cybered scope, assume-breach kill-chain evaluation per card, verdict posting, card status update, and MikroB notification. Use this whenever running SELF-ADVANCE (Rule 11) or executing a MikroB-dispatched gate. Complements white-hat-security-testing (per-finding proof) by adding the assume-breach frame, kill-chain chaining, and fleet workflow mechanics.
+name: redhat-gate-pattern
+description: Full RedHat gate workflow for the CleanCore fleet: board scan for waiting+REVIEW cards in RedHat scope, assume-breach kill-chain evaluation per card, verdict posting, card status update, and MikroB notification. Use this whenever running SELF-ADVANCE (Rule 11) or executing a MikroB-dispatched gate. Complements white-hat-security-testing (per-finding proof) by adding the assume-breach frame, kill-chain chaining, and fleet workflow mechanics.
 ---
 
-# Cybered Gate Pattern
+# RedHat Gate Pattern
+
+> Verdict keywords: the verdict keyword of a gate role is printed by `bash {{INSTALL_DIR}}/store/gate-role.sh <role> verdict` (role = qa|qa2|whitehat|redhat); the first line of the verdict comment must start with it (parsers match on it). Agent id: `... <role> agent`, board label: `... <role> label`.
 
 ## When to use
 
-- SELF-ADVANCE (Rule 11): no active work -> scan board -> gate next Cybered-scope card
-- MikroB dispatches a card for Cybered gate (inter-agent message with GATE-DISPATCH)
+- SELF-ADVANCE (Rule 11): no active work -> scan board -> gate next RedHat-scope card
+- MikroB dispatches a card for RedHat gate (inter-agent message with GATE-DISPATCH)
 - After a NO-GO fix cycle: re-gate the remediated card
 
-## Cybered scope (gate these, not the others)
+## RedHat scope (gate these, not the others)
 
 Gate a card if it touches ANY of:
 - **superadmin** - any endpoint under `/v1/admin/*`, session/account management for superadmin
@@ -22,7 +24,7 @@ Gate a card if it touches ANY of:
 - **file upload** - multipart, stored artifacts
 - **multi-tenant** - anything that crosses tenant boundaries or touches tenantId-gating
 
-NOT Cybered scope: pure backend domain logic with no new attack surface (warehouse read-side, i18n text, CSS, tsconfig).
+NOT RedHat scope: pure backend domain logic with no new attack surface (warehouse read-side, i18n text, CSS, tsconfig).
 
 ## Procedure
 
@@ -43,16 +45,18 @@ for c in rows[:20]:
 
 For each candidate:
 ```bash
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
 printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -H @- -s "http://localhost:3420/api/kanban/$ID/comments" | python3 -c "
 import json,sys
 cs=json.load(sys.stdin)
 has_review = any('REVIEW' in (c.get('content','') or '') for c in cs)
-has_cybered = any('CYBERED' in (c.get('content','') or '').upper() and c.get('author')=='cybered' for c in cs)
-print(f'REVIEW:{has_review} CYBERED:{has_cybered}')
+has_verdict = any('$KW' in (c.get('content','') or '').upper() and c.get('author')=='$ME' for c in cs)
+print(f'REVIEW:{has_review} VERDICT:{has_verdict}')
 "
 ```
 
-Pick the oldest card where REVIEW:True AND CYBERED:False AND title/description matches Cybered scope.
+Pick the oldest card where REVIEW:True AND VERDICT:False AND title/description matches RedHat scope.
 
 ### 2. Read the code — the COMMITTED code, not the working tree (BINDING)
 
@@ -114,7 +118,7 @@ Kill-chain N (name):
 ### 4. Verdict
 
 ```
-CYBERED GO / NO-GO - [card title]
+<RedHat verdict keyword> GO / NO-GO - [card title]
 
 [2-3 sentence executive summary in Hungarian for Peti]
 
@@ -130,16 +134,20 @@ Kill-chain results:
 ### 5. Post verdict as comment
 
 ```bash
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
 TOKEN=$(cat /home/neon/marveen/store/.dashboard-token)
 printf 'Authorization: Bearer %s\n' "$TOKEN" \
 | curl -H @- -s -X POST "http://localhost:3420/api/kanban/$ID/comments" \
   -H "Content-Type: application/json" \
-  -d "{\"author\":\"cybered\",\"content\":\"CYBERED GO -- [summary]. Kill-chain 1: PASS. Kill-chain 2: PASS. [etc]\"}"
+  -d "{\"author\":\"$ME\",\"content\":\"$KW GO -- [summary]. Kill-chain 1: PASS. Kill-chain 2: PASS. [etc]\"}"
 ```
 
 **Control-char gotcha**: when the verdict text quotes an injection/control-char test (literal NUL, SOH, BIDI overrides copied from the test source), the Bash tool REJECTS the command ("contains control characters that would be hidden in the approval dialog"). Don't paste literal control chars into the verdict — describe them by name (`NUL`, `SOH`, `BIDI-override`). If the text unavoidably carries them, Write the verdict to a scratchpad file and POST via python instead of a `-d` heredoc:
 ```bash
-python3 -c "import json,urllib.request; body=json.dumps({'author':'cybered','content':open('/path/verdict.txt').read()}).encode(); req=urllib.request.Request('http://localhost:3420/api/kanban/$ID/comments', data=body, headers={'Content-Type':'application/json','Authorization':'Bearer '+open('/home/neon/marveen/store/.dashboard-token').read().strip()}); print(json.load(urllib.request.urlopen(req)).get('id'))"
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
+python3 -c "import json,urllib.request; body=json.dumps({'author':'$ME','content':open('/path/verdict.txt').read()}).encode(); req=urllib.request.Request('http://localhost:3420/api/kanban/$ID/comments', data=body, headers={'Content-Type':'application/json','Authorization':'Bearer '+open('/home/neon/marveen/store/.dashboard-token').read().strip()}); print(json.load(urllib.request.urlopen(req)).get('id'))"
 ```
 
 
@@ -159,39 +167,43 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" \
 ### 7. Notify MikroB
 
 ```bash
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
 printf 'Authorization: Bearer %s\n' "$TOKEN" \
 | curl -H @- -s -X POST http://localhost:3420/api/messages \
   -H "Content-Type: application/json" \
-  -d "{\"from\":\"cybered\",\"to\":\"mikrob\",\"content\":\"CYBERED GO -- kartya $ID [brief]. [Summary]. Kartya waiting, te zarhatod.\"}"
+  -d "{\"from\":\"$ME\",\"to\":\"mikrob\",\"content\":\"$KW GO -- kartya $ID [brief]. [Summary]. Kartya waiting, te zarhatod.\"}"
 ```
 
 For NO-GO:
 ```
-CYBERED NO-GO -- kartya $ID [brief]. [SEVERITY] finding: [what breaks + how to reproduce]. Re-dispatch szükséges a felelős agentnek.
+<RedHat verdict keyword> NO-GO -- kartya $ID [brief]. [SEVERITY] finding: [what breaks + how to reproduce]. Re-dispatch szükséges a felelős agentnek.
 ```
 
 ### 8. Log to daily log
 
 ```bash
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
 printf 'Authorization: Bearer %s\n' "$TOKEN" \
 | curl -H @- -s -X POST http://localhost:3420/api/daily-log \
   -H "Content-Type: application/json" \
-  -d "{\"agent_id\":\"cybered\",\"content\":\"## $(date +%H:%M) -- CYBERED GO $ID\\n[summary]\"}"
+  -d "{\"agent_id\":\"$ME\",\"content\":\"## $(date +%H:%M) -- $KW GO $ID\\n[summary]\"}"
 ```
 
 ### 9. Continue SELF-ADVANCE
 
-After each gate, immediately scan for the next Cybered-scope waiting+REVIEW card. Ping MikroB when board is clean.
+After each gate, immediately scan for the next RedHat-scope waiting+REVIEW card. Ping MikroB when board is clean.
 
 ## Pitfalls
 
 - **API list vs DB**: `/api/kanban?status=waiting` may return stale/done cards. Use `sqlite3 store/claudeclaw.db` for the authoritative waiting-card list.
-- **CYBERED-VERDICT:False means different things**: my verdict not found in CURRENT agent's comments != no verdict ever. Check last comment from `mikrob` - if it says "DONE" with "Cybe Red GO", the card is already closed.
+- **VERDICT:False means different things**: my verdict not found in CURRENT agent's comments != no verdict ever. Check last comment from `mikrob` - if it says "DONE" with "<RedHat verdict keyword> GO", the card is already closed.
 - **In-memory store volatility**: process restart resets gen-counters to 0 -> previously revoked tokens valid again until TTL. This is a forward-invariant for all session-revocation cards (DB-backed store needed). Don't re-gate it unless the DB store ships.
 - **Composition root precedence**: old dev seeds can shadow new ones via `??`. Functional gap is NOT a security issue if the shadowed seed is MORE restrictive.
 - **Missing MikroB notification**: always send the inter-agent message AFTER posting the comment. The comment going in without the notification stalls MikroB's reconciliation.
 - **Working-tree GO (the reversal trap)**: reading the wiring/injection from the working tree instead of `git show <sha>:file` gives a GO on code that is not in the commit. The seam (the function that accepts the dep) is often committed while the injection (the composition-root call that passes it) is NOT → the committed code silently falls to the safe-but-inert fallback branch, and the fix ships dead. ALWAYS `git show <sha> --stat` and confirm every wiring file the verdict depends on is in the commit; `git status --short` any ` M` on those files = NO-GO. The fix for this class is trivial and specific: "commit the already-written wiring in <file>", then re-gate against the new sha. (Real case: 4d6a1148 GO→NO-GO, login-plane.ts burnWriter uncommitted.)
-- **No-op / stub dep passed a security store (trace the wiring, not the call)**: seeing a security-relevant call — `deps.sessionGenerations.bump(user.id)`, `deps.revoke(...)`, `deps.audit.record(...)` — proves NOTHING about whether the dep is the REAL store or an inert stub. STANDING PROBE on every injected guard/store/revoke/audit/burn dep: trace it to the composition root (`git show <sha>:main.ts` / the `load*Config` / `startServer` wiring) and confirm the SAME real singleton the enforcement path checks is what's injected. An inline literal (`{ bump: () => 0 }`, `new Map()` never shared, `() => true`, `{ record: () => {} }`) at the injection site is the smell → the mechanism is DEAD while the green suite (which tests the flow in isolation against a fresh store) still passes. Real case: 46d87ac9 OAuth GO→NO-GO — the OAuth deps got `sessionGenerations: { bump: () => 0 }` (main.ts:415), NOT the real `SessionGenerationStore` singleton (server.ts:351) that `assertSessionGeneration` checks and password/magic-link bump → the OAuth login neither rotated nor revoked → single-active-session violated + born-revoked session for mixed-login users. The fix: inject the real singleton (thread it from the stage that creates it). Grep `git show <sha>:main.ts` for the dep name; if the value is an inline no-op, NO-GO + new card. Same class as [[gate-committed-not-working-tree]] and the Cybersec wire-guard-into-live-path pattern.
+- **No-op / stub dep passed a security store (trace the wiring, not the call)**: seeing a security-relevant call — `deps.sessionGenerations.bump(user.id)`, `deps.revoke(...)`, `deps.audit.record(...)` — proves NOTHING about whether the dep is the REAL store or an inert stub. STANDING PROBE on every injected guard/store/revoke/audit/burn dep: trace it to the composition root (`git show <sha>:main.ts` / the `load*Config` / `startServer` wiring) and confirm the SAME real singleton the enforcement path checks is what's injected. An inline literal (`{ bump: () => 0 }`, `new Map()` never shared, `() => true`, `{ record: () => {} }`) at the injection site is the smell → the mechanism is DEAD while the green suite (which tests the flow in isolation against a fresh store) still passes. Real case: 46d87ac9 OAuth GO→NO-GO — the OAuth deps got `sessionGenerations: { bump: () => 0 }` (main.ts:415), NOT the real `SessionGenerationStore` singleton (server.ts:351) that `assertSessionGeneration` checks and password/magic-link bump → the OAuth login neither rotated nor revoked → single-active-session violated + born-revoked session for mixed-login users. The fix: inject the real singleton (thread it from the stage that creates it). Grep `git show <sha>:main.ts` for the dep name; if the value is an inline no-op, NO-GO + new card. Same class as [[gate-committed-not-working-tree]] and the WhiteHat wire-guard-into-live-path pattern.
 
 ## Forward invariants to track
 
@@ -204,7 +216,7 @@ After gating session/auth cards, record invariants that need re-gating when defe
 ## Verdict format (copy-paste template)
 
 ```
-CYBERED GO -- [kártya ID] [kártya rövid neve]
+<RedHat verdict keyword> GO -- [kártya ID] [kártya rövid neve]
 
 [Executive summary magyarul, 2-3 mondat]
 
@@ -229,7 +241,7 @@ throwaway, process-scoped worktree off the shared clone instead — same shape a
 `store/cleancore-pregate.sh` — and remove it when done:
 ```bash
 CC_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
-WT="$HOME/cybered-gate-<sha>-$$"
+WT="$HOME/redhat-gate-<sha>-$$"
 git -C "$CC_MAIN" worktree add --detach "$WT" <sha>
 ln -s "$CC_MAIN/node_modules" "$WT/node_modules"   # + per-package links if the suite needs them
 cd "$WT"
@@ -302,13 +314,13 @@ curl -s "$HOST/superadmin" | grep -o 'src="[^"]*\.js"' # find the served bundle 
 curl -s "$HOST/<bundle-path>" | grep -c "APP_SPECIFIC_MARKER"  # 0 = wrong app served
 ```
 
-**Real case (card 2134471a, 2026-07-25):** both QA and Cybered's own first-pass GO relied on
-`GET /superadmin -> 200 + HTML+script bundle` as proof the superadmin SPA was live. Cybersec's
+**Real case (card 2134471a, 2026-07-25):** both QA and RedHat's own first-pass GO relied on
+`GET /superadmin -> 200 + HTML+script bundle` as proof the superadmin SPA was live. WhiteHat's
 deeper re-check found `GET /`, `GET /superadmin`, and `GET /superadmin/made-up-xyz` all returned
 the IDENTICAL ETag/Content-Length, and the served bundle had zero occurrences of
 `__CC_SA_API__`/`__CC_SA_TOKEN__`/`"superadmin"` — the `apps/superadmin` build was never deployed
 at all; nginx's tenant-app SPA-fallback was answering every unmatched path. The DONE had to be
-reopened. This directly corrects this skill's own earlier verdict on that card — Cybered's own
+reopened. This directly corrects this skill's own earlier verdict on that card — RedHat's own
 prior GO was the one that missed it, not just QA's.
 
 **Rule: for any prod SPA/static-frontend deploy-verification gate, NEVER accept a bare 200 as

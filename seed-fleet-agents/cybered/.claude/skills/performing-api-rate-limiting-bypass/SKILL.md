@@ -8,7 +8,7 @@ description: 'Tests API rate limiting for bypass vulnerabilities using Python (r
   attacks.
 
   '
-domain: cybersecurity
+domain: security
 subdomain: api-security
 tags:
 - api-security

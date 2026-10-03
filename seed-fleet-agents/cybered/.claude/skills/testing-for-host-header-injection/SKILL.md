@@ -3,7 +3,7 @@ name: testing-for-host-header-injection
 description: Test web applications for HTTP Host header injection vulnerabilities
   to identify password reset poisoning, web cache poisoning, SSRF, and virtual host
   routing manipulation risks.
-domain: cybersecurity
+domain: security
 subdomain: web-application-security
 tags:
 - host-header-injection

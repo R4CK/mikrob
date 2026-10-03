@@ -2,16 +2,16 @@
 
 ## Gate tiering ajánlás
 Minden PASS/FAIL komment végén jelezd milyen gate-ek szükségesek:
-- **Cybersec szükséges**: auth, RBAC, multi-tenant scope, PII, pénz, file-upload, superadmin, publikus endpoint
-- **Cybered szükséges**: superadmin write, impersonation, internet-facing, magas-tétű publikus write path
+- **WhiteHat szükséges**: auth, RBAC, multi-tenant scope, PII, pénz, file-upload, superadmin, publikus endpoint
+- **RedHat szükséges**: superadmin write, impersonation, internet-facing, magas-tétű publikus write path
 - **Csak QA**: pure FE komponens, error page, i18n, belső audit (nincs új trust-boundary)
-Ha a kártyán Cybersec GO / Cybered GO már szerepel, ezt is jelezd (ne jelezd szükségesnek, ami már megvan).
+Ha a kártyán WhiteHat GO / RedHat GO már szerepel, ezt is jelezd (ne jelezd szükségesnek, ami már megvan).
 
 ---
 
 ## Stale-PASS csapda
-Ha Cybersec NO-GO-t adott és az ügynök új commitot készített a fix után, a korábbi QA PASS már más artifactra vonatkozik.
-1. Nézd meg a REVIEW kommentben és a Cybersec NO-GO-ban szereplő commit hash-t
+Ha WhiteHat NO-GO-t adott és az ügynök új commitot készített a fix után, a korábbi QA PASS már más artifactra vonatkozik.
+1. Nézd meg a REVIEW kommentben és a WhiteHat NO-GO-ban szereplő commit hash-t
 2. Ha eltérnek: NE fogadd el a régi PASS-t -- futtasd újra a legfrissebb commiten
 3. A verdikt-kommentbe mindig írd bele a konkrét commit hash-t
 
@@ -73,7 +73,7 @@ Kritikus szűrők:
 - `is_gate_review()`: csak nem-mikrob/qa author, első sor REVIEW-val -> strukturális gate-kérés
 - `MIKROB_CLOSED_RE = \b(DONE|DUPLIKATUM|KONSZOLIDALVA|LEZAROM|LEZÁRVA)\b` az első soron
 - BLOCKED_MARKERS: `WAITING (bound to`, `WAITING (bound-block`, `bound to CAL-`, `GATE OSSZEVONVA`
-- Verdict detection: REGEX a nyitósoron -- `'^(QA2?\s+PASS|CYBERSEC\s+GO|...)'`
+- Verdict detection: REGEX a nyitósoron -- `'^(QA2?\s+PASS|<WhiteHat verdict keyword>\s+GO|...)'` (keywords resolved by `gate-role.sh <role> verdict`)
 - Latest-verdict per gate (NE set-különbség): chronologikusan felülírd az előző verdiktet
 
 **TÁGABB READY_RE szükséges (2026-07-25 tanulság):** Tight `REVIEW`-only szűrő 5 kártyát hagyott ki,
@@ -82,7 +82,10 @@ pontosan. Biztonságos pattern ALL non-done kártyán:
 ```python
 READY_RE = re.compile(
     r'(REVIEW|KÉSZ|ELKÉSZÜLT|BEFEJEZTEM|READY FOR|SIGN.?OFF)', re.I)
-FAIL_RE = re.compile(r'^(QA2?\s+FAIL|CYBERSEC\s+NO-GO|CYBERED\s+NO-GO)', re.I)
+import subprocess
+def role(r, f): return subprocess.check_output(['bash', '{{INSTALL_DIR}}/store/gate-role.sh', r, f], text=True).strip()
+WH, RH = role('whitehat', 'verdict'), role('redhat', 'verdict')
+FAIL_RE = re.compile(rf'^(QA2?\s+FAIL|{WH}\s+NO-GO|{RH}\s+NO-GO)', re.I)
 # Keresés az első 120 karakterben (nem 80)
 ready_coms = [x for x in coms
               if x['author'] not in GATE_AUTHORS
@@ -114,7 +117,7 @@ Valós eset: 8545ed3f + d9ff65ae stuck-in-waiting.
 
 ## "REVIEW" szó != review-kész (6c5052b8)
 Három különböző kontextus:
-1. Cybersec preliminary note: "FORMAL GATE DEFERRED to when X reaches REVIEW" -- jövőbeli
+1. WhiteHat preliminary note: "FORMAL GATE DEFERRED to when X reaches REVIEW" -- jövőbeli
 2. Blokkolt waiting: az author EXPLICITON mondja "NEM done"
 3. Valódi REVIEW signal: "REVIEW: munka kész, [commit sha], gate-eljetek"
 
@@ -163,11 +166,11 @@ Move: `in_progress`. A fix: valóban commitolni a fájlt (új commit, ne amend).
 
 ---
 
-## Cybersec GO érvényessége QA-FAIL fix után (79213e5a)
-Ha Cybersec GO-t adott, majd QA FAIL-t kapott a kártya (és volt fix commit), ellenőrizd:
-- A Cybersec GO a FIX commit ELŐTTI artifactra szólt-e?
-- Ha igen: a Cybersec GO érvényes marad (a fix a Cybersec scope-t nem érinti)?
-- Ha a fix a trust-boundary-t érinti (pl. authz logika módosul): Cybersec re-gate szükséges
+## WhiteHat GO érvényessége QA-FAIL fix után (79213e5a)
+Ha WhiteHat GO-t adott, majd QA FAIL-t kapott a kártya (és volt fix commit), ellenőrizd:
+- A WhiteHat GO a FIX commit ELŐTTI artifactra szólt-e?
+- Ha igen: a WhiteHat GO érvényes marad (a fix a WhiteHat scope-t nem érinti)?
+- Ha a fix a trust-boundary-t érinti (pl. authz logika módosul): WhiteHat re-gate szükséges
 Valós eset: SKILL-FULL-BACKUP.md#1157.
 
 ---
@@ -183,7 +186,7 @@ Test-pyramid NEM alkalmazható. Helyette spec-teljességi ellenőrzés:
 5. **Gitignore-lefedettség**: ha a skill runtime per-user adatot hoz létre (`store/contact-profiles/`), ellenőrizd a `.gitignore`-ban hogy le van-e fedve.
 6. **Skill-index / README frissítve**: ha a commit deklarálta, megvan-e? (`git show <sha>:seed-skills/.skill-index.md | grep <name>`)
 
-Cybersec hatáskör doc/skill-only esetén: **könnyű** -- PII szivárgás a template-be, injection a profil-betöltésben, új attack surface. Ha egyik sem áll fenn -> GO.
+WhiteHat hatáskör doc/skill-only esetén: **könnyű** -- PII szivárgás a template-be, injection a profil-betöltésben, új attack surface. Ha egyik sem áll fenn -> GO.
 
 Verdikt: "QA PASS -- commit <sha>\ndoc/skill-only: spec-teljességi ellenőrzés (test-pyramid N/A)."
 
@@ -232,14 +235,14 @@ Ha MikroB PETI DONTES kommentet ír (BLOCKED_MARKERS közt van), a board scan bl
 
 Ez SZÁNDÉKOS: a PETI DONTES a kártyán lévő munka elkezdésének tilalmát jelzi, nem csak egy "döntés született" kommentet. Ha fullstack mégis commitolt (pl. még a tilalom előtt volt folyamatban), a gate-scan helyesen tartja blokkban -- MikroB kell, hogy feloldja a PETI DONTES-t vagy posztoljon egy explicit "feloldás" kommentet (ami nem tartalmaz BLOCKED_MARKER szót).
 
-Ha Cybersec/Cybered mégis gateltek (a saját scan-jükből) -- az OK, a mi scan-ünknek ez nem ellentmondás. Mi konzervatívan tartjuk a blokkot.
+Ha WhiteHat/RedHat mégis gateltek (a saját scan-jükből) -- az OK, a mi scan-ünknek ez nem ellentmondás. Mi konzervatívan tartjuk a blokkot.
 
 Feloldás: MikroB posztol "FELOLDOM / GATE-ELHETŐ" kommentet (nincs benne BLOCKED_MARKER), vagy megváltoztatja a kártyát.
 
 ---
 
 ## "DONE komment de waiting státusz" csapda (MikroB pattern)
-MikroB olykor "DONE. X-gate zöld: QA PASS + Cybersec GO" kommentet ír,
+MikroB olykor "DONE. X-gate zöld: QA PASS + WhiteHat GO" kommentet ír,
 de a PUT /api/kanban/<id>/move {status:'done'} API hívás elmarad.
 A kártya `waiting`-ben ragad.
 
@@ -276,7 +279,7 @@ QA2 PASS. A planned->waiting move 409-et ad (API tiltja direct ugrást); MikroB 
 ---
 
 ## Scope-bővítő MikroB komment mint elfogadási kritérium (2cb07372 minta, 2026-08-06)
-Ha a kártyán korábban egy MikroB "SCOPE-BOVITES" komment van (pl. Cybersec/Cybered finding alapján
+Ha a kártyán korábban egy MikroB "SCOPE-BOVITES" komment van (pl. WhiteHat/RedHat finding alapján
 a scope kibővült TÖBB végpontra/felületre), ez az elfogadási kritérium RÉSZE -- nem csak a legutolsó
 REVIEW-ban leírtak számítanak.
 
@@ -292,6 +295,6 @@ Ha a REVIEW csak a scope EGYIK részét fedi (pl. "feedback" de nem "evaluations
 a scope-bővítő kommentre + a hiányzó fájl/endpoint névvel.
 
 Valós eset: 2cb07372 -- MikroB 2026-08-01 kommentje "mindket olvaso vegpontra vonatkozzon,
-ne csak a feedbackre" (Cybered finding alapján). Backend REVIEW (2026-08-06) csak
+ne csak a feedbackre" (RedHat finding alapján). Backend REVIEW (2026-08-06) csak
 listPlatformFeedbackHttp-et javította; listPlatformEvaluationsHttp továbbra is auditalatlan.
 56/56 teszt zöld + tsc clean volt a MEGLÉVŐ részre, de a scope hiányos -> QA2 FAIL.

@@ -11,7 +11,7 @@ Turn a menu/submenu tree + screen inventory into a COMPLETE, optimized, logical 
 - The menu system + screens are designed and you must connect them to real APIs across many screens, not one.
 - You need a machine-checkable map of "which surface calls which endpoint" before/while building.
 - You want the data layer optimized (no N+1, no waterfalls, cached, prefetched) and logical (one query owner per surface), not ad-hoc `fetch` scattered per component.
-- QA/Cybersec is verifying that every control reaches a real, authorized function and nothing is decorative.
+- QA/WhiteHat is verifying that every control reaches a real, authorized function and nothing is decorative.
 
 ## Core principles
 1. **Every interactive surface maps to exactly one backend contract** (or is explicitly client-only). A button/form/tab/list/filter/action with no endpoint is a dead control → wire it, or remove it, or raise a build card (rule 9 flow-connectivity). No implied-but-unwired feature.
@@ -99,7 +99,7 @@ Keep the wiring map living: adding a screen/control updates it in the SAME work.
 - **Scattered `fetch` + hand-rolled URLs** in components instead of the typed client boundary → drift, injection risk, untestable.
 - **Retrofitting perf:** wiring everything naively then "optimizing later". The map designs parallel/cache/prefetch in from the start.
 
-## Verification (QA/Cybersec gate)
+## Verification (QA/WhiteHat gate)
 Treat the wiring as failing until all pass:
 - **Completeness:** every interactive surface on every screen appears in the wiring map and resolves to a real endpoint OR a navigation target OR an explicit client-only reason. Zero dead controls.
 - **Contract truth:** every `endpoint` exists in backend source with the mapped method/shape/pagination/authz (evidence); `needs-build` gaps have build cards and honest disabled UI (no fake wire).

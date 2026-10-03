@@ -7,7 +7,7 @@ description: Build a backend feature as a PURE, dependency-free domain module wi
 The repeatable recipe for shipping a backend feature as a **pure domain** that is
 correct-by-construction and fully unit-tested with **no database, no HTTP, no
 crypto, no network** — the effectful parts are injected ports an adapter wires
-later. Every shipped piece followed this and passed QA + Cybersec gates.
+later. Every shipped piece followed this and passed QA + WhiteHat gates.
 
 ## When to use
 - A backend card whose essence is RULES + SHAPE + STATE (entities, validation,
@@ -89,7 +89,7 @@ bugs. Each test must be able to FAIL for the right reason:
   input and asserts the specific error type (`toThrow(SpecificError)`).
 - **Fail-closed / default-deny:** unknown enum value, empty/への context, missing
   field, expired token → REJECT. Parametrize over several bad values
-  (`it.each([...])`) so a future value can't silently pass (Cybersec FINDING-2).
+  (`it.each([...])`) so a future value can't silently pass (WhiteHat FINDING-2).
 - **Boundary cases:** off-by-one on expiry (`>=` inclusive), exactly-zero,
   exactly-at-threshold, last-part-smaller, terminal-state transitions rejected.
 - **Tamper/forgery:** flip a byte/field and assert verification now fails.
@@ -118,7 +118,7 @@ bugs. Each test must be able to FAIL for the right reason:
 7. **Commit ONLY your own files** (shared working tree → never `git add -A`;
    `git add <explicit paths>`). End message with the Co-Authored-By trailer.
 8. **Finish:** result comment on the card + move to `waiting` (REVIEW). NEVER
-   self-`done` — QA PASS + Cybersec GO close it (author-cannot-verify rule).
+   self-`done` — QA PASS + WhiteHat GO close it (author-cannot-verify rule).
 9. Only ping the orchestrator when BLOCKED or the whole assigned row is done.
 
 ## Pitfalls
@@ -131,7 +131,7 @@ bugs. Each test must be able to FAIL for the right reason:
 - **Cross-tenant before per-resource:** in a combined guard, check tenant FIRST
   (throw `CrossTenantAccessError`, no leak), THEN per-resource (403). Order
   matters for no-leak.
-- **Spec hidden in the card title/late message:** e.g. "(+/-300s)" or a Cybersec
+- **Spec hidden in the card title/late message:** e.g. "(+/-300s)" or a WhiteHat
   FINDING revealed after you started — reconcile the implementation to it even if
   the card was already `waiting`; it is pre-gate, a follow-up commit is correct.
 - **Money:** integer cents, half-up (`Math.round(x + Number.EPSILON)`); never
@@ -169,7 +169,7 @@ where a solo instinct (`pnpm add`) corrupts everyone. Classify FIRST, then act:
   (the ONLY file importing the lib) in a follow-up commit AFTER the batch lands;
   keep the card `[NN% - DEP-BLOKK]` in `waiting`, not `done`.
 
-## Pre-REVIEW self-check: the Cybersec HIGH classes (catch these BEFORE `waiting`)
+## Pre-REVIEW self-check: the WhiteHat HIGH classes (catch these BEFORE `waiting`)
 These three re-gate NO-GO classes recur; green tests routinely hide them. Audit
 every card against all three before you move it to `waiting`.
 
@@ -224,4 +224,4 @@ every card against all three before you move it to `waiting`.
 - [ ] Submitter/actor identity sealed from `ctx.userId`, included in canonical/hash record (not a caller-supplied field).
 - [ ] Any new dep classified: workspace-dep committed by you; real npm-dep flagged (exact range + target + peer-compat) to the orchestrator, `pnpm-lock` untouched.
 - [ ] Only your files staged (no `git add -A`); Co-Authored-By trailer.
-- [ ] Card: REVIEW comment + `waiting`. Not `done` — QA PASS + Cybersec GO close it (author-cannot-verify: you never sign off your own build).
+- [ ] Card: REVIEW comment + `waiting`. Not `done` — QA PASS + WhiteHat GO close it (author-cannot-verify: you never sign off your own build).
