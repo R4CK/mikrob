@@ -150,9 +150,17 @@ function integratedReposSummaryHtml(repos) {
     }
     const kind = `<span class="repo-card-badge repo-card-badge-kind">${esc(r.kind || 'external')}</span>` +
       (r.adoption ? ` <span class="repo-card-badge">${esc(r.adoption)}</span>` : '')
-    const enabled = r.enabled
-      ? `<span class="updates-integrated-on">${esc(t('common.yes'))}</span>`
-      : `<span class="updates-integrated-off">${esc(t('common.no'))}</span>`
+    // Card f5ab5bbe (Peti 2026-09-29): this column used to show a bare "Igen/Nem", and a
+    // pipx-only entry (code-review-graph, graphify) reads "Nem" -- which Peti misread as
+    // "not installed". It never meant that: `r.enabled` is whether git-repo-watcher.sh
+    // actively watches this entry for upstream commits, a DIFFERENT axis from `installed`
+    // (its own column, right next to this one). A pipx/version adoption has no git checkout
+    // to watch, so it legitimately watches via its PyPI version instead. The label now names
+    // the actual watch method so "nincs" cannot be read as "missing".
+    const watchMethod = r.enabled ? 'git' : (r.adoption === 'pipx' && r.pinnedVersion ? 'pypi' : 'none')
+    const enabled = watchMethod === 'none'
+      ? `<span class="updates-integrated-off">${esc(t('updates.integrated.watch.none'))}</span>`
+      : `<span class="updates-integrated-on">${esc(t('updates.integrated.watch.' + watchMethod))}</span>`
     const installed = r.installed
       ? `✓ ${esc(t('repos.installed'))}${r.pinnedVersion ? ` <code>${esc(r.pinnedVersion)}</code>` : ''}`
       : `<span class="updates-integrated-off">${esc(t('repos.not_installed'))}</span>`
