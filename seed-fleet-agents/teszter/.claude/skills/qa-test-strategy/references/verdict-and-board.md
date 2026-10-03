@@ -83,7 +83,7 @@ pontosan. Biztonságos pattern ALL non-done kártyán:
 READY_RE = re.compile(
     r'(REVIEW|KÉSZ|ELKÉSZÜLT|BEFEJEZTEM|READY FOR|SIGN.?OFF)', re.I)
 import subprocess
-def role(r, f): return subprocess.check_output(['bash', '/home/neon/marveen/store/gate-role.sh', r, f], text=True).strip()
+def role(r, f): return subprocess.check_output(['bash', '{{INSTALL_DIR}}/store/gate-role.sh', r, f], text=True).strip()
 WH, RH = role('whitehat', 'verdict'), role('redhat', 'verdict')
 FAIL_RE = re.compile(rf'^(QA2?\s+FAIL|{WH}\s+NO-GO|{RH}\s+NO-GO)', re.I)
 # Keresés az első 120 karakterben (nem 80)

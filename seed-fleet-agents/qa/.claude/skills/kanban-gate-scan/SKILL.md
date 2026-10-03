@@ -4,7 +4,7 @@ description: Scan the MikroB kanban board for cards needing a specific gate verd
 ---
 # Kanban Gate Scan
 
-> Verdict keywords: the verdict keyword of a gate role is printed by `bash /home/neon/marveen/store/gate-role.sh <role> verdict` (role = qa|qa2|whitehat|redhat); the first line of the verdict comment must start with it (parsers match on it). Agent id: `... <role> agent`, board label: `... <role> label`.
+> Verdict keywords: the verdict keyword of a gate role is printed by `bash {{INSTALL_DIR}}/store/gate-role.sh <role> verdict` (role = qa|qa2|whitehat|redhat); the first line of the verdict comment must start with it (parsers match on it). Agent id: `... <role> agent`, board label: `... <role> label`.
 
 ## Mikor használd
 Minden self-advance loop elején (Rule 11): van-e ungated REVIEW kártya amit gate-elni kell?
@@ -13,7 +13,7 @@ Minden self-advance loop elején (Rule 11): van-e ungated REVIEW kártya amit ga
 
 ```python
 import subprocess
-def role(r, f): return subprocess.check_output(['bash', '/home/neon/marveen/store/gate-role.sh', r, f], text=True).strip()
+def role(r, f): return subprocess.check_output(['bash', '{{INSTALL_DIR}}/store/gate-role.sh', r, f], text=True).strip()
 WH_A, RH_A = role('whitehat', 'agent'), role('redhat', 'agent')
 WH_V, RH_V = role('whitehat', 'verdict'), role('redhat', 'verdict')  # legacy phrasing 'KERLEK <verdict keyword>' stays recognised
 import urllib.request, json, re
@@ -29,7 +29,7 @@ def api(path):
 
 # Regex on opening line only -- avoids "NO-GO" appearing inside a GO verdict
 import subprocess
-def role(r, f): return subprocess.check_output(['bash', '/home/neon/marveen/store/gate-role.sh', r, f], text=True).strip()
+def role(r, f): return subprocess.check_output(['bash', '{{INSTALL_DIR}}/store/gate-role.sh', r, f], text=True).strip()
 WH, RH = role('whitehat', 'verdict'), role('redhat', 'verdict')
 PASS_RE = re.compile(rf'^(QA2?\s+PASS|{WH}\s+GO|{RH}\s+(FULL-CARD\s+)?GO)', re.IGNORECASE)
 FAIL_RE = re.compile(rf'^(QA2?\s+FAIL|{WH}\s+NO-GO|{RH}\s+NO-GO)', re.IGNORECASE)
@@ -297,7 +297,7 @@ Teljes gate-állapot minden kártyához (latest verdict per gate):
 
 ```python
 import subprocess
-def role(r, f): return subprocess.check_output(['bash', '/home/neon/marveen/store/gate-role.sh', r, f], text=True).strip()
+def role(r, f): return subprocess.check_output(['bash', '{{INSTALL_DIR}}/store/gate-role.sh', r, f], text=True).strip()
 WH_A, RH_A = role('whitehat', 'agent'), role('redhat', 'agent')
 def all_gate_verdicts(comments):
     gates = {}

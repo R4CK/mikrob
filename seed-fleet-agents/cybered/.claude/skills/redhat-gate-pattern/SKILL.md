@@ -5,7 +5,7 @@ description: Full RedHat gate workflow for the CleanCore fleet: board scan for w
 
 # RedHat Gate Pattern
 
-> Verdict keywords: the verdict keyword of a gate role is printed by `bash /home/neon/marveen/store/gate-role.sh <role> verdict` (role = qa|qa2|whitehat|redhat); the first line of the verdict comment must start with it (parsers match on it). Agent id: `... <role> agent`, board label: `... <role> label`.
+> Verdict keywords: the verdict keyword of a gate role is printed by `bash {{INSTALL_DIR}}/store/gate-role.sh <role> verdict` (role = qa|qa2|whitehat|redhat); the first line of the verdict comment must start with it (parsers match on it). Agent id: `... <role> agent`, board label: `... <role> label`.
 
 ## When to use
 
@@ -45,8 +45,8 @@ for c in rows[:20]:
 
 For each candidate:
 ```bash
-ME=$(bash /home/neon/marveen/store/gate-role.sh redhat agent)
-KW=$(bash /home/neon/marveen/store/gate-role.sh redhat verdict)
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
 printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -H @- -s "http://localhost:3420/api/kanban/$ID/comments" | python3 -c "
 import json,sys
 cs=json.load(sys.stdin)
@@ -134,8 +134,8 @@ Kill-chain results:
 ### 5. Post verdict as comment
 
 ```bash
-ME=$(bash /home/neon/marveen/store/gate-role.sh redhat agent)
-KW=$(bash /home/neon/marveen/store/gate-role.sh redhat verdict)
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
 TOKEN=$(cat /home/neon/marveen/store/.dashboard-token)
 printf 'Authorization: Bearer %s\n' "$TOKEN" \
 | curl -H @- -s -X POST "http://localhost:3420/api/kanban/$ID/comments" \
@@ -145,8 +145,8 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" \
 
 **Control-char gotcha**: when the verdict text quotes an injection/control-char test (literal NUL, SOH, BIDI overrides copied from the test source), the Bash tool REJECTS the command ("contains control characters that would be hidden in the approval dialog"). Don't paste literal control chars into the verdict — describe them by name (`NUL`, `SOH`, `BIDI-override`). If the text unavoidably carries them, Write the verdict to a scratchpad file and POST via python instead of a `-d` heredoc:
 ```bash
-ME=$(bash /home/neon/marveen/store/gate-role.sh redhat agent)
-KW=$(bash /home/neon/marveen/store/gate-role.sh redhat verdict)
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
 python3 -c "import json,urllib.request; body=json.dumps({'author':'$ME','content':open('/path/verdict.txt').read()}).encode(); req=urllib.request.Request('http://localhost:3420/api/kanban/$ID/comments', data=body, headers={'Content-Type':'application/json','Authorization':'Bearer '+open('/home/neon/marveen/store/.dashboard-token').read().strip()}); print(json.load(urllib.request.urlopen(req)).get('id'))"
 ```
 
@@ -167,8 +167,8 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" \
 ### 7. Notify MikroB
 
 ```bash
-ME=$(bash /home/neon/marveen/store/gate-role.sh redhat agent)
-KW=$(bash /home/neon/marveen/store/gate-role.sh redhat verdict)
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
 printf 'Authorization: Bearer %s\n' "$TOKEN" \
 | curl -H @- -s -X POST http://localhost:3420/api/messages \
   -H "Content-Type: application/json" \
@@ -183,8 +183,8 @@ For NO-GO:
 ### 8. Log to daily log
 
 ```bash
-ME=$(bash /home/neon/marveen/store/gate-role.sh redhat agent)
-KW=$(bash /home/neon/marveen/store/gate-role.sh redhat verdict)
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
 printf 'Authorization: Bearer %s\n' "$TOKEN" \
 | curl -H @- -s -X POST http://localhost:3420/api/daily-log \
   -H "Content-Type: application/json" \
