@@ -1,10 +1,12 @@
 ---
-name: cybered-gate-pattern
+name: redhat-gate-pattern
 description: Full RedHat gate workflow for the CleanCore fleet: board scan for waiting+REVIEW cards in RedHat scope, assume-breach kill-chain evaluation per card, verdict posting, card status update, and MikroB notification. Use this whenever running SELF-ADVANCE (Rule 11) or executing a MikroB-dispatched gate. Complements white-hat-security-testing (per-finding proof) by adding the assume-breach frame, kill-chain chaining, and fleet workflow mechanics.
 version: "1.0.0"
 ---
 
 # RedHat Gate Pattern
+
+> Verdict keywords: the verdict keyword of a gate role is printed by `bash {{INSTALL_DIR}}/store/gate-role.sh <role> verdict` (role = qa|qa2|whitehat|redhat); the first line of the verdict comment must start with it (parsers match on it). Agent id: `... <role> agent`, board label: `... <role> label`.
 
 ## When to use
 
@@ -44,16 +46,18 @@ for c in rows[:20]:
 
 For each candidate:
 ```bash
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
 printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -H @- -s "http://localhost:3420/api/kanban/$ID/comments" | python3 -c "
 import json,sys
 cs=json.load(sys.stdin)
 has_review = any('REVIEW' in (c.get('content','') or '') for c in cs)
-has_cybered = any('CYBERED' in (c.get('content','') or '').upper() and c.get('author')=='cybered' for c in cs)
-print(f'REVIEW:{has_review} CYBERED:{has_cybered}')
+has_verdict = any('$KW' in (c.get('content','') or '').upper() and c.get('author')=='$ME' for c in cs)
+print(f'REVIEW:{has_review} VERDICT:{has_verdict}')
 "
 ```
 
-Pick the oldest card where REVIEW:True AND CYBERED:False AND title/description matches RedHat scope.
+Pick the oldest card where REVIEW:True AND VERDICT:False AND title/description matches RedHat scope.
 
 ### 2. Read the code — the COMMITTED code, not the working tree (BINDING)
 
@@ -115,7 +119,7 @@ Kill-chain N (name):
 ### 4. Verdict
 
 ```
-CYBERED GO / NO-GO - [card title]
+<RedHat verdict keyword> GO / NO-GO - [card title]
 
 [2-3 sentence executive summary in Hungarian for Peti]
 
@@ -131,16 +135,20 @@ Kill-chain results:
 ### 5. Post verdict as comment
 
 ```bash
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
 TOKEN=$(cat {{INSTALL_DIR}}/store/.dashboard-token)
 printf 'Authorization: Bearer %s\n' "$TOKEN" \
 | curl -H @- -s -X POST "http://localhost:3420/api/kanban/$ID/comments" \
   -H "Content-Type: application/json" \
-  -d "{\"author\":\"cybered\",\"content\":\"CYBERED GO -- [summary]. Kill-chain 1: PASS. Kill-chain 2: PASS. [etc]\"}"
+  -d "{\"author\":\"$ME\",\"content\":\"$KW GO -- [summary]. Kill-chain 1: PASS. Kill-chain 2: PASS. [etc]\"}"
 ```
 
 **Control-char gotcha**: when the verdict text quotes an injection/control-char test (literal NUL, SOH, BIDI overrides copied from the test source), the Bash tool REJECTS the command ("contains control characters that would be hidden in the approval dialog"). Don't paste literal control chars into the verdict — describe them by name (`NUL`, `SOH`, `BIDI-override`). If the text unavoidably carries them, Write the verdict to a scratchpad file and POST via python instead of a `-d` heredoc:
 ```bash
-python3 -c "import json,urllib.request; body=json.dumps({'author':'cybered','content':open('/path/verdict.txt').read()}).encode(); req=urllib.request.Request('http://localhost:3420/api/kanban/$ID/comments', data=body, headers={'Content-Type':'application/json','Authorization':'Bearer '+open('{{INSTALL_DIR}}/store/.dashboard-token').read().strip()}); print(json.load(urllib.request.urlopen(req)).get('id'))"
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
+python3 -c "import json,urllib.request; body=json.dumps({'author':'$ME','content':open('/path/verdict.txt').read()}).encode(); req=urllib.request.Request('http://localhost:3420/api/kanban/$ID/comments', data=body, headers={'Content-Type':'application/json','Authorization':'Bearer '+open('{{INSTALL_DIR}}/store/.dashboard-token').read().strip()}); print(json.load(urllib.request.urlopen(req)).get('id'))"
 ```
 
 
@@ -160,24 +168,28 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" \
 ### 7. Notify MikroB
 
 ```bash
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
 printf 'Authorization: Bearer %s\n' "$TOKEN" \
 | curl -H @- -s -X POST http://localhost:3420/api/messages \
   -H "Content-Type: application/json" \
-  -d "{\"from\":\"cybered\",\"to\":\"mikrob\",\"content\":\"CYBERED GO -- kartya $ID [brief]. [Summary]. Kartya waiting, te zarhatod.\"}"
+  -d "{\"from\":\"$ME\",\"to\":\"mikrob\",\"content\":\"$KW GO -- kartya $ID [brief]. [Summary]. Kartya waiting, te zarhatod.\"}"
 ```
 
 For NO-GO:
 ```
-CYBERED NO-GO -- kartya $ID [brief]. [SEVERITY] finding: [what breaks + how to reproduce]. Re-dispatch szükséges a felelős agentnek.
+<RedHat verdict keyword> NO-GO -- kartya $ID [brief]. [SEVERITY] finding: [what breaks + how to reproduce]. Re-dispatch szükséges a felelős agentnek.
 ```
 
 ### 8. Log to daily log
 
 ```bash
+ME=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat agent)
+KW=$(bash {{INSTALL_DIR}}/store/gate-role.sh redhat verdict)
 printf 'Authorization: Bearer %s\n' "$TOKEN" \
 | curl -H @- -s -X POST http://localhost:3420/api/daily-log \
   -H "Content-Type: application/json" \
-  -d "{\"agent_id\":\"cybered\",\"content\":\"## $(date +%H:%M) -- CYBERED GO $ID\\n[summary]\"}"
+  -d "{\"agent_id\":\"$ME\",\"content\":\"## $(date +%H:%M) -- $KW GO $ID\\n[summary]\"}"
 ```
 
 ### 9. Continue SELF-ADVANCE
@@ -187,7 +199,7 @@ After each gate, immediately scan for the next RedHat-scope waiting+REVIEW card.
 ## Pitfalls
 
 - **API list vs DB**: `/api/kanban?status=waiting` may return stale/done cards. Use `sqlite3 store/claudeclaw.db` for the authoritative waiting-card list.
-- **CYBERED-VERDICT:False means different things**: my verdict not found in CURRENT agent's comments != no verdict ever. Check last comment from `mikrob` - if it says "DONE" with "Cybe Red GO", the card is already closed.
+- **VERDICT:False means different things**: my verdict not found in CURRENT agent's comments != no verdict ever. Check last comment from `mikrob` - if it says "DONE" with "<RedHat verdict keyword> GO", the card is already closed.
 - **In-memory store volatility**: process restart resets gen-counters to 0 -> previously revoked tokens valid again until TTL. This is a forward-invariant for all session-revocation cards (DB-backed store needed). Don't re-gate it unless the DB store ships.
 - **Composition root precedence**: old dev seeds can shadow new ones via `??`. Functional gap is NOT a security issue if the shadowed seed is MORE restrictive.
 - **Missing MikroB notification**: always send the inter-agent message AFTER posting the comment. The comment going in without the notification stalls MikroB's reconciliation.
@@ -205,7 +217,7 @@ After gating session/auth cards, record invariants that need re-gating when defe
 ## Verdict format (copy-paste template)
 
 ```
-CYBERED GO -- [kártya ID] [kártya rövid neve]
+<RedHat verdict keyword> GO -- [kártya ID] [kártya rövid neve]
 
 [Executive summary magyarul, 2-3 mondat]
 
@@ -230,7 +242,7 @@ throwaway, process-scoped worktree off the shared clone instead — same shape a
 `store/cleancore-pregate.sh` — and remove it when done:
 ```bash
 CC_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
-WT="$HOME/cybered-gate-<sha>-$$"
+WT="$HOME/redhat-gate-<sha>-$$"
 git -C "$CC_MAIN" worktree add --detach "$WT" <sha>
 ln -s "$CC_MAIN/node_modules" "$WT/node_modules"   # + per-package links if the suite needs them
 cd "$WT"

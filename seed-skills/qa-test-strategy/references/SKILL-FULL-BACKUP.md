@@ -4,6 +4,8 @@ description: Test-pyramid-based QA strategy, regression discipline, and independ
 ---
 # QA Test Strategy & Sign-off
 
+> Verdict keywords: the verdict keyword of a gate role is printed by `bash {{INSTALL_DIR}}/store/gate-role.sh <role> verdict` (role = qa|qa2|whitehat|redhat); the first line of the verdict comment must start with it (parsers match on it). Agent id: `... <role> agent`, board label: `... <role> label`.
+
 ## Mikor használd
 Kész (vagy közel kész) munka tesztelésekor és a "shippable?" döntésnél. A flotta szabálya: a feladat KÉSZÍTŐJE soha nem ellenőrizheti a sajátját — DONE-ba csak MikroB vagy a QA ügynök teheti, és csak NEM saját munkát.
 
@@ -152,7 +154,7 @@ Fix commit kell (lásd blocker lista), utána új REVIEW a fix SHA-val.
 ```
 @mikrob értesítés kötelező: a fejlesztő nem tud a stale állapotról. NE mozdítsd a kártya státuszát (az in_progress állapotban van, ott is kell maradnia fix commit nélkül).
 
-**Author-azonosítás (PONTOSAN)**: `c['author'] == 'qa'` / `== 'qa2'` / `startswith('cybersec')` / `== 'cybered'`. NE használj `startswith('qa')` -- az `qa2`-t is matcheli és kettős verdiktet okoz.
+**Author-azonosítás (PONTOSAN)**: `c['author'] == 'qa'` / `== 'qa2'` / `startswith(WH_A)` / `== RH_A` (agent ids from `gate-role.sh <role> agent`). NE használj `startswith('qa')` -- az `qa2`-t is matcheli és kettős verdiktet okoz.
 
 **Status-stuck kártya false-ungated csapda (2026-07-24 tanulság):** A `?status=waiting` API néha `done` státuszú kártyákat is visszaad (board API bug). Ráadásul MikroB olykor csak kommentben ír "DONE"-t, de az API státuszt nem frissíti -> a kártya `waiting`-ben marad. Mindkét esetben a scan tévesen "ungated"-nek látja. Szűrő:
 ```python
@@ -188,11 +190,14 @@ if qa_stale_after: continue  # már kezelt stale eset, ne duplikáld
 ```
 Ha a stale helyzet fennáll (nincs új commit), NE posztolj újabb stale kommentet -- a már meglévő elég, és a duplikátum zaj.
 
-**Gate verdict detection (REGEX a nyitósoron, NEM `'NO-GO' in content`):** A "CYBERED GO (RE-GATE) -- a korábbi NO-GO-m ZARVA" típusú szövegben a 'NO-GO' string megjelenik egy GO verdiktben is. Csak a **comment első sorának elejét** kell illeszteni:
+**Gate verdict detection (REGEX a nyitósoron, NEM `'NO-GO' in content`):** A "<RedHat verdict keyword> GO (RE-GATE) -- a korábbi NO-GO-m ZARVA" típusú szövegben a 'NO-GO' string megjelenik egy GO verdiktben is. Csak a **comment első sorának elejét** kell illeszteni:
 ```python
 import re
-PASS_RE = re.compile(r'^(QA2?\s+PASS|CYBERSEC\s+GO|CYBERED\s+(FULL-CARD\s+)?GO)', re.IGNORECASE)
-FAIL_RE = re.compile(r'^(QA2?\s+FAIL|CYBERSEC\s+NO-GO|CYBERED\s+NO-GO)', re.IGNORECASE)
+import subprocess
+def role(r, f): return subprocess.check_output(['bash', '{{INSTALL_DIR}}/store/gate-role.sh', r, f], text=True).strip()
+WH, RH = role('whitehat', 'verdict'), role('redhat', 'verdict')
+PASS_RE = re.compile(rf'^(QA2?\s+PASS|{WH}\s+GO|{RH}\s+(FULL-CARD\s+)?GO)', re.IGNORECASE)
+FAIL_RE = re.compile(rf'^(QA2?\s+FAIL|{WH}\s+NO-GO|{RH}\s+NO-GO)', re.IGNORECASE)
 first_line = content.strip().split('\n')[0]
 if FAIL_RE.match(first_line): verdict = 'fail'
 elif PASS_RE.match(first_line): verdict = 'pass'

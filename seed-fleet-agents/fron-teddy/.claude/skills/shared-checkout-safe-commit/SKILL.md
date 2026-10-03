@@ -20,7 +20,7 @@ backend2's work with no gate of its own.
 **marveen's fix (final, card dc185b52) is full per-agent worktree isolation, the SAME pattern
 CleanCore already proved out** -- not the branch-only Step 0 tried first. That attempt (`store/
 agent-branch.sh`, retired) ran `git checkout` on the ONE shared working tree every agent's ordinary
-Read/Edit/Write tool calls also target; Cybersec live-reproduced a TOCTOU race where a checkout
+Read/Edit/Write tool calls also target; WhiteHat live-reproduced a TOCTOU race where a checkout
 landing mid-way through a DIFFERENT agent's Read-old -> think -> Write-new sequence silently (no git
 error, no conflict) overwrote that agent's already-committed branch content in the working tree --
 worse than the original incident, which only misattributed work under the wrong SHA rather than
@@ -41,7 +41,7 @@ it the rest of the time. **From here on, every Read/Edit/Write/Bash you do again
 FILE targets that path, not `/home/neon/marveen` directly** -- this is the actual isolation, and it
 has to hold for the whole session touching this repo, not just the commit step. Running the script
 once and then continuing to edit `/home/neon/marveen/...` paths anyway defeats it completely; the
-race Cybersec found was never about the script call itself, it was about which directory your edits
+race WhiteHat found was never about the script call itself, it was about which directory your edits
 land in. Resolve the path via the script every time -- never hardcode it, the root is configurable
 (`MARVEEN_WORKTREES`) and a stale hardcoded guess is how this kind of fix quietly stops applying.
 
@@ -152,7 +152,7 @@ Solution: if you share a file with another agent, SEQUENCE commits:
 - `store/fleet-test.sh` with no `--ref` tests the local git HEAD, NEVER your uncommitted working
   tree. Running it "before I commit" as a pre-flight check silently tests the OLD code and can
   report a false "N/N green" for a fix that isn't in HEAD yet (2026-08-12 incident, card 4638c14c:
-  a security-fix review claimed green based on the pre-commit run, but Cybersec's independent
+  a security-fix review claimed green based on the pre-commit run, but WhiteHat's independent
   test on the actual commit found a real bypass the stale run never exercised). Correct order:
   commit first, THEN `store/fleet-test.sh --ref <the new SHA>` to verify what actually landed.
 - Committing is not landing (card 2a3d06a6). `git commit` never pushes on its own. In the marveen
@@ -165,7 +165,7 @@ Solution: if you share a file with another agent, SEQUENCE commits:
   session is. This is why the earlier branch-only fix (`store/agent-branch.sh`, retired) failed: it
   positioned itself as a pre-commit step, but the race it needed to close happens during ordinary
   Read/Edit/Write, long before any commit is attempted.
-- `store/agent-branch.sh` and `store/agent-branch-land.sh` are RETIRED (card dc185b52, Cybersec
+- `store/agent-branch.sh` and `store/agent-branch-land.sh` are RETIRED (card dc185b52, WhiteHat
   NO-GO with a live-reproduced TOCTOU race on the former). If you see either referenced anywhere
   (an old card, a stale note), that reference is stale -- use `store/agent-worktree-marveen.sh` +
   `store/marveen-land.sh` instead.

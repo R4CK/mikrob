@@ -5,7 +5,7 @@ description: Tests OAuth 2.0 and OpenID Connect implementations for authorizatio
   escalation, and PKCE bypass, using Burp Suite Professional and the EsPReSSO extension
   to probe the authorization server, client, and token handling. Use when assessing OAuth2/OIDC
   flows or SSO systems for misconfigurations enabling account takeover.
-domain: cybersecurity
+domain: security
 subdomain: api-security
 tags:
 - api-security

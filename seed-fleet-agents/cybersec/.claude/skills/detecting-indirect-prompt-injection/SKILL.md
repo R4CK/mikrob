@@ -5,7 +5,7 @@ description: Detect and defend against indirect prompt injection hidden in web p
   and scanning with LLM Guard's PromptInjection scanner or Hugging Face Prompt Guard 2.
   Use when an agent ingests untrusted external content and you need to screen it for
   injected instructions before the LLM processes it.
-domain: cybersecurity
+domain: security
 subdomain: ai-security
 tags:
 - ai-security

@@ -16,7 +16,7 @@ a felhasználó 50 szabályának szintézise (deduplikálva, kategóriánként).
 - **Event-Driven (ahol lehet):** szinkron hívás helyett message queue, leválasztás ("fire and forget").
 - **CQRS (ahol indokolt):** írási (Command) és olvasási (Query) logika szétválasztva teljesítményért.
 
-## II. Cybersecurity mindset (úgy kódolj, mintha a támadó már bent lenne)
+## II. Security mindset (úgy kódolj, mintha a támadó már bent lenne)
 - **Zero Trust:** alapból semmi és senki nem megbízható; minden kérés hitelesített (belső microservice is).
 - **Input validation & sanitization:** minden bemenet (URL, body, header) validált típusra/hosszra/formátumra. **Whitelist** logika, ne blacklist.
 - **Least privilege:** szolgáltatás/DB user csak a kritikushoz fér; írási jog csak indokoltan.
@@ -113,7 +113,7 @@ valós multi-tenant RBAC-enforcement munkából desztillálva; alkalmazd MINDEN 
   auditált szintetizált cél-tenant admin-contexten át hívja (dokumentált impersonation), nem
   bypass-szal. Minden privilegizált platform-művelet audit-trailt ír (Zero Trust).
 
-## XII. Auth UI: forward-oracle elkerülés (2026-07-16, 650f8eca Cybersec LOW)
+## XII. Auth UI: forward-oracle elkerülés (2026-07-16, 650f8eca WhiteHat LOW)
 
 Az auth form SOHA ne olvasson specifikus hibajelzőket a szerver response body-jából, hogy a UI-ban különböző lockout-állapotokat jelenítsen meg (pl. `remaining_secs`, `locked`, `locked_long`, `locked_permanently`). Ez **forward oracle**: az attacker tesztelőkérésekből térképezi fel a fiók állapotát és a lockout-szintet.
 

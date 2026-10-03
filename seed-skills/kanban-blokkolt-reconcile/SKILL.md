@@ -58,7 +58,10 @@ def last_commit_from_comments(comments):
 
 def gate_verdicts(comments):
     """Returns set of gate agents that gave PASS/GO."""
-    PASS_RE = re.compile(r'^(QA2?\s+PASS|CYBERSEC\s+GO|CYBERED\s+(FULL-CARD\s+)?GO)', re.IGNORECASE)
+    import subprocess
+    def role(r, f): return subprocess.check_output(['bash', '{{INSTALL_DIR}}/store/gate-role.sh', r, f], text=True).strip()
+    WH, RH = role('whitehat', 'verdict'), role('redhat', 'verdict')
+    PASS_RE = re.compile(rf'^(QA2?\s+PASS|{WH}\s+GO|{RH}\s+(FULL-CARD\s+)?GO)', re.IGNORECASE)
     verdicts = set()
     for c in comments:
         first = (c.get('content') or '').strip().split('\n')[0]

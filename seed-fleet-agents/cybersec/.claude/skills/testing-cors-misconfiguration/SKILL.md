@@ -3,7 +3,7 @@ name: testing-cors-misconfiguration
 description: Identifying and exploiting Cross-Origin Resource Sharing misconfigurations
   that allow unauthorized cross-domain data access and credential theft during security
   assessments.
-domain: cybersecurity
+domain: security
 subdomain: web-application-security
 tags:
 - penetration-testing

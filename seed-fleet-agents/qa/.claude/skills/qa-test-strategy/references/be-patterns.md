@@ -13,7 +13,7 @@ Minimális gate-checklist:
 6. Route inventory coherence: `router.registrations()` tartalmazza az új route-ot
 7. Nincs route-policy / http-status.ts módosítás (ha policy entry már létezett)
 
-Cybersec szükséges ha: row-scoped (own/all), PII adat, trust-boundary.
+WhiteHat szükséges ha: row-scoped (own/all), PII adat, trust-boundary.
 Csak QA: adminisztratív read (belső audit log, nem user-facing PII).
 
 ---
@@ -31,7 +31,7 @@ grep -n 'WarehouseKeeper\|MembershipRole\.' apps/api/src/identity.ts
 ```
 
 Ha eltérnek -> a 100% zöld teszt vákuum. Helyes pattern: tesztben `MembershipRole.X` konstans, nem hardcoded string.
-Valós eset: 1a47cac2 -- 'warehouse_admin' vs 'warehouse'. 80/80 PASS (vákuum), Cybersec NO-GO elo reprodukcioval.
+Valós eset: 1a47cac2 -- 'warehouse_admin' vs 'warehouse'. 80/80 PASS (vákuum), WhiteHat NO-GO elo reprodukcioval.
 
 ---
 
@@ -210,7 +210,7 @@ CREATE TABLE child (
 ```
 
 Ha a child tábla RLS-sel van védve DE nincs composite FK:
-- Cybersecnek ANNOTÁLNI kell (trust-boundary finding, nem feltétlenül FAIL ha az app réteg kielégítően scope-olja)
+- WhiteHatnek ANNOTÁLNI kell (trust-boundary finding, nem feltétlenül FAIL ha az app réteg kielégítően scope-olja)
 - QA-nál: NOTE a verdiktben, nem FAIL -- feltéve hogy az app réteg enforce-olja (withTenant + parent tenant check)
 
 ---
@@ -307,7 +307,7 @@ Spec-teljességi ellenőrzés:
 4. Regex szinkronban a referencia-implementációval (`quota-check.sh` / `model-fallback.ts`)
 5. Fail-safe guard: `|| echo 0`, `|| true`, `set -uo pipefail`
 6. Nincs hardcoded secret
-7. Gate-tier: read-only ops script -> QA-only elegendo, Cybersec/Cybered NEM szukseges
+7. Gate-tier: read-only ops script -> QA-only elegendo, WhiteHat/RedHat NEM szukseges
 
 Valós eset: 0d08f623 (sched-precheck-quota-monitor.sh, commit acad210) -- QA2 PASS.
 
@@ -355,7 +355,7 @@ git show <sha>:path/fix.ts | grep -n "konkrét_fix"
 git show <sha>:path/test.ts | grep -n "should not\|403\|reject\|FAIL\|unauthorized"
 # Ha nincs negatív teszt -> QA FAIL (a finding-fix nem bizonyítható tesztelhetően)
 
-# 3. A fix nem vezet be ÚJ sérülékenységet? (alapszintű check, Cybersec mélyebben nézi)
+# 3. A fix nem vezet be ÚJ sérülékenységet? (alapszintű check, WhiteHat mélyebben nézi)
 git show <sha>:path/fix.ts | grep -n "bypass\|skip\|TODO\|FIXME\|as any\|!important"
 ```
 
@@ -364,8 +364,8 @@ Döntési fa:
 - Fix megvan de 0 negatív teszt -> QA FAIL: "a fix nincs tesztelve negatív esettel"
 - Fix hiányzik (csak TODO/komment) -> QA FAIL: "a finding nincs javítva, csak dokumentálva"
 
-Gate-tier: [LOW][SEC] kártyák általában Cybersec-ot is igényelnek (trust-boundary érintett);
-QA a funkcionális helyességet + tesztlefedettséget nézi, Cybersec a tényleges exploit-megszüntetést.
+Gate-tier: [LOW][SEC] kártyák általában WhiteHat-ot is igényelnek (trust-boundary érintett);
+QA a funkcionális helyességet + tesztlefedettséget nézi, WhiteHat a tényleges exploit-megszüntetést.
 
 Valós esetek közelgő kártyákon: 914a2cc7 (CP-5 belső szerepkör határ),
 2cb07372 (Feedback cross-tenant olvasás), 8779c351 (Presign replay), 767f9fc5 (Asset-type katalógus).
@@ -396,7 +396,7 @@ curl -H "@$HDR_FILE" "$URL"
 
 Valos eset: sajat QA2 PASS-t adtam a bf6fe53-ra ("Bearer token HEADER-ben, nem URL-ben VERIFIED"),
 holott a `local-llm-queue-result.sh:25` PONTOSAN a ROSSZ mintat hasznalta. A testver `qa` FAIL-t,
-Cybersec NO-GO-t adott ugyanarra a commitra -- ok fogtak meg, en nem. Javitva 4a6ce08-ban.
+WhiteHat NO-GO-t adott ugyanarra a commitra -- ok fogtak meg, en nem. Javitva 4a6ce08-ban.
 
 **Tanulsag**: minden `-H "..."` curl-hivast, ami titkot tartalmaz, KULON ellenorizz -- a `-H` forma
 maga NEM ment meg semmit, csak a `@fajl` forma biztonsagos.

@@ -18,7 +18,7 @@ Peti 50 szabályának szintézise (deduplikálva, kategóriánként). Ez a KÖTE
 - **Event-Driven (ahol lehet):** szinkron hívás helyett message queue, leválasztás ("fire and forget").
 - **CQRS (ahol indokolt):** írási (Command) és olvasási (Query) logika szétválasztva teljesítményért.
 
-## II. Cybersecurity mindset (úgy kódolj, mintha a támadó már bent lenne)
+## II. Security mindset (úgy kódolj, mintha a támadó már bent lenne)
 - **Zero Trust:** alapból semmi és senki nem megbízható; minden kérés hitelesített (belső microservice is).
 - **Input validation & sanitization:** minden bemenet (URL, body, header) validált típusra/hosszra/formátumra. **Whitelist** logika, ne blacklist.
 - **Least privilege:** szolgáltatás/DB user csak a kritikushoz fér; írási jog csak indokoltan.

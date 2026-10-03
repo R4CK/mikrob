@@ -73,7 +73,7 @@ Kritikus szűrők:
 - `is_gate_review()`: csak nem-mikrob/qa author, első sor REVIEW-val -> strukturális gate-kérés
 - `MIKROB_CLOSED_RE = \b(DONE|DUPLIKATUM|KONSZOLIDALVA|LEZAROM|LEZÁRVA)\b` az első soron
 - BLOCKED_MARKERS: `WAITING (bound to`, `WAITING (bound-block`, `bound to CAL-`, `GATE OSSZEVONVA`
-- Verdict detection: REGEX a nyitósoron -- `'^(QA2?\s+PASS|CYBERSEC\s+GO|...)'`
+- Verdict detection: REGEX a nyitósoron -- `'^(QA2?\s+PASS|<WhiteHat verdict keyword>\s+GO|...)'` (keywords resolved by `gate-role.sh <role> verdict`)
 - Latest-verdict per gate (NE set-különbség): chronologikusan felülírd az előző verdiktet
 
 **TÁGABB READY_RE szükséges (2026-07-25 tanulság):** Tight `REVIEW`-only szűrő 5 kártyát hagyott ki,
@@ -82,7 +82,10 @@ pontosan. Biztonságos pattern ALL non-done kártyán:
 ```python
 READY_RE = re.compile(
     r'(REVIEW|KÉSZ|ELKÉSZÜLT|BEFEJEZTEM|READY FOR|SIGN.?OFF)', re.I)
-FAIL_RE = re.compile(r'^(QA2?\s+FAIL|CYBERSEC\s+NO-GO|CYBERED\s+NO-GO)', re.I)
+import subprocess
+def role(r, f): return subprocess.check_output(['bash', '/home/neon/marveen/store/gate-role.sh', r, f], text=True).strip()
+WH, RH = role('whitehat', 'verdict'), role('redhat', 'verdict')
+FAIL_RE = re.compile(rf'^(QA2?\s+FAIL|{WH}\s+NO-GO|{RH}\s+NO-GO)', re.I)
 # Keresés az első 120 karakterben (nem 80)
 ready_coms = [x for x in coms
               if x['author'] not in GATE_AUTHORS

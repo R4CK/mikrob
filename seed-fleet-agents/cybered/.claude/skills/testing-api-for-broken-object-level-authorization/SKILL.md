@@ -8,7 +8,7 @@ description: 'Tests REST and GraphQL APIs for Broken Object Level Authorization 
   for access control bypass.
 
   '
-domain: cybersecurity
+domain: security
 subdomain: api-security
 tags:
 - api-security

@@ -1,7 +1,7 @@
 ---
 name: implementing-dmarc-dkim-spf-email-security
 description: Configures SPF, DKIM, and DMARC DNS TXT records to authenticate outbound email, prevent domain spoofing, and enforce a rejection/quarantine policy on unauthenticated mail, including auditing a domain's current DNS state. Use when hardening a domain's email security posture or defending against phishing and spoofing attacks.
-domain: cybersecurity
+domain: security
 subdomain: phishing-defense
 tags:
 - phishing

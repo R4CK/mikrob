@@ -627,7 +627,7 @@ git show <sha>:apps/web/src/features/subcontractor/PartnerShell.tsx | grep "clea
 
 ## Gate-comment exhaustion before posting REVIEW
 
-When re-opening a card that has gate comments (QA FAIL / Cybersec NO-GO / Cybered NO-GO / MikroB
+When re-opening a card that has gate comments (QA FAIL / WhiteHat NO-GO / RedHat NO-GO / MikroB
 reconciliation):
 
 1. **Read ALL gate comments** — oldest first. Extract EVERY separate requested change as a concrete

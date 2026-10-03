@@ -8,9 +8,9 @@
 # A THIRD copy exists that nothing syncs: agents/<agent>/.claude/skills/<name>/SKILL.md -- the live,
 # gitignored (.gitignore:58) per-agent skill copy an ALREADY-RUNNING agent actually reads at runtime.
 # Measured concretely (2026-08-27, Cybersec finding on card 843abd91 comment #16871): after
-# cybered-gate-pattern was fixed (commit d85602e6, seed-skills/cybered-gate-pattern/SKILL.md), the
+# redhat-gate-pattern (renamed from the earlier RedHat gate skill folder name) was fixed (commit d85602e6, seed-skills/ copy), the
 # global ~/.claude/skills copy healed correctly via update.sh, but
-# agents/cybered/.claude/skills/cybered-gate-pattern/SKILL.md stayed on stale content -- Cybered would
+# agents/cybered/.claude/skills/redhat-gate-pattern/SKILL.md stayed on stale content -- Cybered would
 # keep running fixed-away-from-but-still-broken instructions until its next full re-seed (never, in
 # practice: re-seeding only happens for a brand-new agent).
 #
@@ -39,7 +39,7 @@
 #   agent-skill-drift-sync.sh                  # dry-run report over every live agent, all skills
 #   agent-skill-drift-sync.sh --apply          # actually sync STALE copies (diverged untouched)
 #   agent-skill-drift-sync.sh --agent cybered   # limit to one agent (repeatable)
-#   agent-skill-drift-sync.sh --skill cybered-gate-pattern  # limit to one skill (repeatable)
+#   agent-skill-drift-sync.sh --skill redhat-gate-pattern  # limit to one skill (repeatable)
 #   agent-skill-drift-sync.sh --telegram       # compact summary only, for Telegram/heartbeat reporting
 #   agent-skill-drift-sync.sh selftest         # fixture-based checks against a throwaway git repo
 #

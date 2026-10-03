@@ -105,7 +105,7 @@ grep -nP '[áéíóöőúüű]' FILE.tsx | grep -v '^\s*//'  # non-ASCII HU stri
 Ha egy FE kártya "claim"/"assign"/"approve" akciót drótozza be, a tesztek zöldje NEM elég:
 1. `git show HEAD:apps/api/src/rbac.ts | grep -A5 'ShiftClaim\|SchedulesWrite\|Action.X'`
 2. Crew NEM szerepel az Action.X-nél -> dead button = Rule 9 QA FAIL
-Valós eset: 37ee1d6d F1 FE, 36/36 zöld, crew nem rendelkezett SchedulesWrite -> Cybersec no-go.
+Valós eset: 37ee1d6d F1 FE, 36/36 zöld, crew nem rendelkezett SchedulesWrite -> WhiteHat no-go.
 
 ---
 

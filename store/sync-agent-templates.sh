@@ -190,7 +190,7 @@ def fix_text(text, kind='shell'):
     commands and are all code, which is why fix_json calls this with kind='shell'.
 
     Cybersec's own measurement backs the fence as the discriminator: of the 21 dry-run hits, the 18
-    settings.json hook commands and cybered-gate-pattern/SKILL.md:39 (inside a ```bash fence) are
+    settings.json hook commands and redhat-gate-pattern/SKILL.md:39 (inside a ```bash fence) are
     real, while the SKILL.md:34 prose is not.
     """
     hits = 0
@@ -550,7 +550,7 @@ if [[ "$MODE" == selftest ]]; then
     echo "  FAIL prose was rewritten -- the documented anti-pattern got inverted"; fail=1
   fi
   # The twin, so the rule is not "never touch markdown": inside a runnable fence the same line IS a
-  # copy-pasteable command and must still be fixed (cybered-gate-pattern/SKILL.md:39 is exactly that).
+  # copy-pasteable command and must still be fixed (redhat-gate-pattern/SKILL.md:39 is exactly that).
   printf '```bash\ncurl -s -H "%s" http://x\n```\n' "$bad_hdr" > "$tmp/fenced.md"
   _run_python apply "$tmp/fenced.md" >/dev/null
   if grep -q 'curl -H @-' "$tmp/fenced.md"; then
