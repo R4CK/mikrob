@@ -193,10 +193,14 @@ describe('Frissítések page carries the adopted repos strip', () => {
     expect(tds.length).toBeGreaterThanOrEqual(7)
     for (const td of tds) expect(td).toContain('data-label=')
   })
-  it('shows enabled/disabled and adoption per row (the narrowed-scope columns)', () => {
+  it('shows the watch-method (not a bare yes/no) and adoption per row (card f5ab5bbe)', () => {
     expect(OVERLAY).toContain("t('updates.integrated.col.enabled')")
     expect(OVERLAY).toContain('esc(r.adoption)')
-    expect(OVERLAY).toContain("t('common.yes')")
+    // RULE 12 (no invented state read as "missing"): a pipx-only entry (no git watch) must
+    // name ITS OWN watch method (PyPI version), not a bare "no" that reads as "not installed".
+    expect(OVERLAY).toContain("t('updates.integrated.watch.' + watchMethod)")
+    expect(OVERLAY).toContain("r.adoption === 'pipx' && r.pinnedVersion ? 'pypi' : 'none'")
+    expect(OVERLAY).not.toContain("t('common.yes')")
   })
   it('the review-note column exists ONLY when the API carries the field -- absence is not "no note"', () => {
     expect(OVERLAY).toContain("repos.some((r) => typeof r.note === 'string')")
@@ -223,6 +227,7 @@ describe('every new i18n key exists in hu AND en', () => {
     'updates.integrated.col.name', 'updates.integrated.col.kind', 'updates.integrated.col.enabled',
     'updates.integrated.col.installed', 'updates.integrated.col.last_checked',
     'updates.integrated.col.state', 'updates.integrated.col.note', 'updates.integrated.note_summary',
+    'updates.integrated.watch.git', 'updates.integrated.watch.pypi', 'updates.integrated.watch.none',
   ]
   for (const k of keys) {
     it(k, () => {
