@@ -29,7 +29,8 @@ until every branch is either resolved or explicitly logged as an accepted risk.
 5. **Reversibility & blast radius**: If this is wrong, how do we find out, and how do we undo it? What's the worst case if it ships broken?
 6. **Alternatives**: What's the simplest thing that could work? Why not that? What did we reject and why? Is the extra complexity earning its keep?
 7. **Verification**: How do we PROVE it works (not "it looks right")? What's the test, the repro, the number? A green test alone is not proof — what does it actually exercise?
-8. **The one question**: "What's the thing most likely to make this fail that we haven't talked about yet?" Ask it last, force an honest answer.
+8. **Readiness before dispatch** (idea adapted from Q00/ouroboros, Peti approval 2026-10-04, card e39b6fd7): can the builder start without asking anything? Check explicitly: goal stated, done-state observable, inputs/outputs named, every decision that changes what the product does already made (or listed as an open question to the requester), out-of-scope written down. If any item is open, the card is NOT ready -- resolve it or ask (interview-me) before dispatch, never let the builder guess.
+9. **The one question**: "What's the thing most likely to make this fail that we haven't talked about yet?" Ask it last, force an honest answer.
 
 ## Output
 A short verdict: (a) the plan's load-bearing assumptions + which are verified,
@@ -42,6 +43,8 @@ list the exact changes. Don't soften — the value is in the hole you find.
 - Don't accept "should be fine" — convert every one into a concrete "when X, then Y".
 - Don't grill forever — the goal is a decision, not paralysis. Two passes usually surface the real gap; log the residual risk and move.
 - If the plan writes to or deletes from a table, check the ACTUAL runtime-role privileges (GRANT/REVOKE migrations) and FK `ON DELETE` rules for that table before approving — not just the schema shape. A plan can look sound at the code/schema level and still be blocked by a REVOKE the runtime role hit in an unrelated earlier migration, or by a `RESTRICT`/WORM constraint on a child table. Found live 2026-08-20 (CleanCore card 328c2fac): a GO-WITH-CHANGES verdict approved a DELETE-based reap that the runtime role (`cleancore_app`) had no privilege to perform (three separate REVOKE migrations), and would have hit a WORM-protected audit table besides. Caught only because the builder re-checked grants before writing code, not by the grilling itself. `grep -rn "REVOKE\|ON DELETE" <migrations-dir>` for every table the plan touches is now part of the checklist, not optional.
+
+- Keep the gate's own probe out of the builder's dispatch (idea adapted from Q00/ouroboros, card e39b6fd7). The acceptance criteria stay visible to the builder; the exact command/mutation/probe a gate will use to verify them does not go into the dispatch message, so the build cannot be shaped to pass that one check instead of the criterion. This is the plan-level form of "the author never verifies their own work".
 
 ## Validation
 The plan is grilled enough when you can state, in one line each: the goal-check,

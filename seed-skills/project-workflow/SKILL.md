@@ -72,6 +72,7 @@ Amikor egy Feladatot alfeladat-kártyákra bontasz, és a B alfeladat a A alfela
 ## Buktatók
 - Százalék nincs natív mezőként -> címbe tett `[NN%]`. Ne próbálj nem létező progress oszlopot írni.
 - A 4. szabály megsértése (önellenőrzés) a leggyakoribb csúszás. Mindig más ellenőriz.
+- **A gate saját ellenőrző parancsa NE kerüljön az építő dispatch-üzenetébe** (Q00/ouroboros ötlet, Peti jóváhagyása 2026-10-04, kártya e39b6fd7). Az elfogadási kritérium látható az építőnek, a gate konkrét próbája (parancs, mutáció, probe) nem -- különben az építés arra az egy ellenőrzésre optimalizál, nem a kritériumra. Dispatch előtt a readiness-pontot a `plan-grilling` 8. lépése adja.
 - Beragadt kártya néma marad -> ezért kell az ütemezett monitor; ne csak manuálisra hagyatkozz.
 - Az assignee-nek futnia kell (tmux session), különben a dispatch nem ér célba.
 - **`[NN%]` PUT-frissítés NE clobberölje a címet (2026-07-02, saját hiba):** egyetlen kártyát a `GET /api/kanban/<id>` NEM ad vissza (nem-JSON) -> ha onnan olvasod a jelenlegi címet, üres string jön, és a `PUT {title: "..."}` FELÜLÍRJA az egész címet (elveszik a valós cím). Helyesen: a jelenlegi címet a `GET /api/kanban` LISTÁBÓL szűrd id-re (python), a régi `[NN%]`-t regexszel strippeld, tedd rá az újat, ÚGY PUT-old. Fail-safe: ha a base-cím üres, NE PUT-olj (különben clobber). A description-t nem érinti a title-PUT.
