@@ -69,3 +69,28 @@ Minden kódot író, módosító vagy refaktoráló kártyánál a munka ELSŐ l
 ## KÖTELEZŐ: frontend-ügynök bevonása minden új fejlesztésnél (Peti szabály 2026-09-29, Telegram 9737)
 
 Új modul, funkció vagy végpont építésekor a munka ELSŐ lépéseként döntsd el: lesz-e (akár később) felhasználói felülete. Ha igen, vagy nem egyértelmű, még a kódolás előtt vond be a frontend-építő ügynököt (fron-ted / fron-teddy): nézd meg, van-e már `Pair-FE:` kártya, és ha nincs, jelezd MikroB-nak inter-agent üzenetben, hogy nyissa meg (CLAUDE.md 8., 8a., 8b. szabály, `contract-first-codev` skill). Az API-kontraktust a FE-ügynökkel együtt rögzítsd, hogy a két oldal párhuzamosan épüljön. A REVIEW-ban egy sor mondja meg: `Pair-FE: <kártya-ID>` vagy `Pair-FE: n/a (<indok: tisztán belső/infra>)`. Hiánya gate-finding.
+
+## KÖTELEZŐ: Karpathy loop -- a hivatalos munkaciklus minden kódolási kártyánál (Peti szabály 2026-10-03, Telegram 10355)
+
+Forrás: multica-ai/andrej-karpathy-skills (MIT), `karpathy-guidelines` skill, 4. elv (Goal-Driven Execution) kiterjesztve teljes munkaciklussá. A fenti `karpathy-guidelines` szabály azt mondja meg, MIT kövess; ez a szekció azt, HOGYAN haladj. Minden kódot író, módosító vagy refaktoráló kártyán ez a sorrend, kivétel csak a triviális, egysoros javítás:
+
+1. **Gondolkodj (Think Before Coding).** Olvasd el a kártyát és a kapcsolódó kódot. Írd le a feltételezéseidet. Ha több értelmezés van, vagy a cél nem egyértelmű, ÁLLJ MEG és kérdezz (inter-agent üzenet MikroB-nak, `interview-me` skill) -- ne válassz némán.
+2. **Siker-kritérium (Goal).** Fogalmazd meg ellenőrizhető célként, mielőtt kódolsz: "javítsd a bugot" -> "repro-teszt, ami most PIROS"; "adj validációt" -> "teszt érvénytelen inputra"; "refaktor" -> "a tesztek zöldek előtte és utána".
+3. **Terv lépésekben, mindegyikhez ellenőrzéssel.** Rövid lista, formátum: `[lépés] -> ellenőrzés: [konkrét parancs vagy teszt]`.
+4. **Egy lépés, minimális diff (Simplicity + Surgical).** Csak a lépéshez szükséges kódot írd. Nincs spekulatív funkció, nincs szomszédos "javítás", a meglévő stílust kövesd.
+5. **Ellenőrizd.** Futtasd a lépés ellenőrzését (célzott teszt, typecheck; teljes suite csak a szemafor-szkripten át). Ha PIROS: vissza a 3-4. lépésre, a hibát a gyökeréig kövesd (`sp-systematic-debugging`), ne kerülgesd.
+6. **Ismételd** a 3-5. lépést, amíg a 2. pont siker-kritériuma igazoltan teljesül.
+7. **Önellenőrzés commit előtt (`karpathycoder`).** Minden megváltoztatott sor visszavezethető a kártyára? Nincs árva import, nincs felesleges absztrakció? A te változtatásod nélkül a teszt pirosra váltana? (Mutáció: vedd ki a javítást, és nézd meg, hogy a teszt elbukik-e.)
+8. **REVIEW.** Az első sor `Gate-SHA: <sha>`, utána `Skills: karpathy-guidelines, ...`, a siker-kritérium és az ellenőrzés eredménye: melyik parancs, melyik fán, milyen eredménnyel (4d. szabály).
+
+Hiányzó siker-kritérium, vagy mutációval nem igazolt teszt a REVIEW-ban: gate-lelet.
+
+## KÖTELEZŐ: indításkor a saját skilljeid betöltése (Peti szabály 2026-10-03, Telegram 10355)
+
+Minden session-indításkor (friss start, újraindítás, context-guard utáni folytatás) a HANDOFF.md után, MIELŐTT kártyához nyúlsz:
+
+1. Töltsd be a `project-workflow` és a `karpathy-guidelines` skillt a `Skill` toollal. Ezek minden kártyán kellenek.
+2. Nézd át a fenti skill-listádat (ha a fájlodban van "Skillek" szekció), és jegyezd fel magadnak, melyik illik a felvett kártyához. A kártya felvételekor az illő skilleket is töltsd be (pl. `tenant-pure-domain`, `injected-port-adapters`, `async-refactor-fail-open-guard`, `embedded-pg-e2e-runner`, `sp-test-driven-development`, `api-and-interface-design`).
+3. Ha nem tudod, van-e illő skill: a `~/.claude/skills/` katalógus leírásai alapján keress, ne improvizálj saját eljárást (20. szabály).
+
+A REVIEW `Skills:` sora mondja meg, mit használtál; a hiányzó vagy rossz skill-választás finding.
