@@ -1,7 +1,7 @@
 ---
 name: embedded-pg-e2e-runner
-description: Run RLS / PG-dependent e2e tests on WSL2 without Docker using embedded-postgres. Covers the full setup: module path resolution, CJS/ESM mismatch, LD_LIBRARY_PATH for WSL2, OOM-kill avoidance, and database URL wiring. Trigger: "run rls e2e", "PG_E2E_URL", "embedded-postgres", "e2e against real postgres", "rls-chat e2e", "run e2e without docker".
-version: "1.0.0"
+description: Run RLS / PG-dependent e2e tests on WSL2 without Docker using embedded-postgres, and run real-Redis/BullMQ e2e tests without sudo via a user-local redis-server extracted from a downloaded .deb. Covers the full setup: module path resolution, CJS/ESM mismatch, LD_LIBRARY_PATH for WSL2, OOM-kill avoidance, and database URL wiring. Trigger: "run rls e2e", "PG_E2E_URL", "embedded-postgres", "e2e against real postgres", "rls-chat e2e", "run e2e without docker", "REDIS_E2E_URL", "no redis-server binary", "sudo denied", "run real redis without root".
+version: "1.1.0"
 related_skills: [redhat-gate-pattern]
 ---
 # Embedded PG18 E2E Runner
@@ -270,3 +270,44 @@ SELECT privilege_type FROM information_schema.table_privileges
  WHERE grantee = 'cleancore_app' AND table_name = 'conversations';
 -- várt: üres (vagy csak SELECT/INSERT)
 ```
+
+## Valódi Redis+BullMQ e2e sudo/root nélkül (kártya f5e5bfa3, qa2 mérés 2026-10-04)
+
+Ugyanaz a probléma, mint a PG-nél, de a megoldás NEM embedded-postgres-szerű npm-csomag --
+`redis-server` csomagja `apt-get install`-t igényelne, ami root-ot kér. Megoldás: a `.deb`
+csomagot root nélkül, user-szkópban `apt-get download`-dal LETÖLTHETED (ez csak a HTTP-letöltés,
+nem a telepítés), majd `dpkg-deb -x`-szel egy scratch-mappába KICSOMAGOLOD -- ez sem root.
+
+```bash
+RL=/path/to/scratch/redis-local
+mkdir -p "$RL"
+cd "$RL" && apt-get download redis-server redis-tools liblzf1   # liblzf1: redis-server futásidejű függősége
+for f in *.deb; do dpkg-deb -x "$f" extracted/; done
+
+# indítás scratch-porton, saját LD_LIBRARY_PATH-tal (a liblzf.so.1 a @embedded-postgres mintájához
+# hasonlóan nincs a rendszer loader-útján):
+LD_LIBRARY_PATH="$RL/extracted/usr/lib/x86_64-linux-gnu" \
+  "$RL/extracted/usr/bin/redis-server" --port 6399 --save "" --appendonly no &
+sleep 1
+LD_LIBRARY_PATH="$RL/extracted/usr/lib/x86_64-linux-gnu" "$RL/extracted/usr/bin/redis-cli" -p 6399 ping
+# várt: PONG
+
+# a tényleges e2e futtatásakor:
+REDIS_E2E_URL=redis://127.0.0.1:6399 npx vitest run apps/api/src/provisioning-worker-entrypoint.e2e.test.ts
+
+# leállítás a gate végén:
+LD_LIBRARY_PATH="$RL/extracted/usr/lib/x86_64-linux-gnu" "$RL/extracted/usr/bin/redis-cli" -p 6399 shutdown nosave
+```
+
+**Buktató:** `redis-server: error while loading shared libraries: liblzf.so.1` -- a redis-server
+csomag maga NEM hozza magával ezt a futásidejű függőséget, a hibaüzenet a hiányzó `.so`-t
+névszerint megnevezi (ugyanaz a diagnosztikai minta, mint a fenti embedded-postgres
+`libpq.so.5` esetében): `apt-cache search <soname-töve>` megtalálja a csomagot (itt
+`liblzf1`), `apt-get download` + `dpkg-deb -x` ugyanúgy root nélkül megy, és a kicsomagolt
+`.so`-t `LD_LIBRARY_PATH`-ra fűzöd, SOHA nem a `node_modules`-ba (worktree-ben az a megosztott
+fő klónba mutató symlink lenne).
+
+Mért eredmény (kártya f5e5bfa3, Gate-SHA d090a661): a valódi `provisioning-worker-entrypoint.e2e.test.ts`
+mind a 6 tesztje zöld ezzel a redis-el, és egy szándékos mutáció (a `while`/`allSettled` ciklus
+visszaállítása sima `Promise.all`-ra) pontosan a célzott `(h)` tesztet buktatta -- a technika
+tehát nem csak "elindul", hanem a valódi BullMQ-esemény-sorrendet is hitelesen méri.
