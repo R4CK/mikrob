@@ -1,6 +1,7 @@
 ---
 name: module-spec-design
 description: KÖTELEZŐ sablon és mélység minden modul tervezéséhez (Peti szabály 2026-10-02). Használd, amikor egy új modult, egy versenytárs-elemzésből jövő hiányzó funkciót, vagy egy meglévő modul bővítését kell megtervezni (adatbázis + funkció szint). Triggerek: "modulterv", "tervezd meg a modult", "részletes modul terv", "hiányzó modulok", "gap analízis után terv", "module spec", "design the module".
+version: "1.1.0"
 ---
 # Modulterv-sablon (Peti szabály, 2026-10-02, Telegram 10045)
 
