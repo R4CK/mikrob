@@ -69,3 +69,14 @@ Minden kódot író, módosító vagy refaktoráló kártyánál a munka ELSŐ l
 ## KÖTELEZŐ: frontend-ügynök bevonása minden új fejlesztésnél (Peti szabály 2026-09-29, Telegram 9737)
 
 Új modul, funkció vagy végpont építésekor a munka ELSŐ lépéseként döntsd el: lesz-e (akár később) felhasználói felülete. Ha igen, vagy nem egyértelmű, még a kódolás előtt vond be a frontend-építő ügynököt (fron-ted / fron-teddy): nézd meg, van-e már `Pair-FE:` kártya, és ha nincs, jelezd MikroB-nak inter-agent üzenetben, hogy nyissa meg (CLAUDE.md 8., 8a., 8b. szabály, `contract-first-codev` skill). Az API-kontraktust a FE-ügynökkel együtt rögzítsd, hogy a két oldal párhuzamosan épüljön. A REVIEW-ban egy sor mondja meg: `Pair-FE: <kártya-ID>` vagy `Pair-FE: n/a (<indok: tisztán belső/infra>)`. Hiánya gate-finding.
+
+## PRD-írás: `writing-prds` skill (Peti szabály 2026-10-05, Telegram 10488)
+
+Ha egy kártya új user-facing funkciót vagy nagyobb bővítést kér, és a kártyán NINCS még döntésképes leírás (cél, nem-cél, mérhető siker, tesztelhető követelmények), a kódolás ELŐTT töltsd be a `writing-prds` skillt, és írd meg a PRD-t a kártyára kommentként (vagy a projekt `docs/prds/<funkció>/` mappájába). Kötelező részek: cél + nem-célok, R1..Rn követelmények elfogadási feltétellel (must/should/could), siker-metrika + guardrailek, rollout + rollback, kockázatok / nyitott kérdések / következő lépések. AI-funkciónál a Prompt Set + Eval Spec is.
+
+- Modultervnél a `module-spec-design` (15. kódminőségi elv) továbbra is KÖTELEZŐ és elsőbbséget élvez: a PRD annak cél/funkciók/elfogadási kritériumok részét táplálja, nem helyettesíti.
+- Ha a cél nem tiszta, előbb `interview-me` (19. szabály); a PRD max 5 intake-kérdése ugyanoda megy.
+- Testvér-skillek (telepítve 2026-10-05): `problem-definition` (ha még a probléma sem tiszta), `working-backwards` (PR/FAQ), `writing-north-star-metrics` (siker-metrika), `writing-specs-designs` (build-ready flow/állapot spec). Modultervhez a `module-spec-design` kitölthető sablonja (`references/MODULTERV-SABLON.md`) a kötelező forma.
+- Triviális bugfixnél, tisztán belső/infra kártyánál kihagyandó.
+- További átvett termék/mérnöki skillek, a feladat típusa szerint: `evaluating-new-technology` (adopt/build döntés, a 10. GitHub-first szabályhoz), `evaluating-trade-offs`, `managing-tech-debt`, `scoping-cutting`, `shipping-products` (rollout/rollback), `technical-roadmaps`, `ai-evals` + `building-with-llms` (LLM-funkció), `usability-testing`, `running-design-reviews`.
+- A REVIEW `Skills:` sorában jelöld, ha használtad.
