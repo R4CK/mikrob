@@ -131,6 +131,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 
 ### Skill-rendszer
 
+- **Kötött modulterv-sablon**: kitölthető, projekt-független sablon minden modultervhez (cél, F-azonosítós funkciók, adatmodell oszlopokkal és kényszerekkel, állapotgép, beállítások, jogosultságok, API, események, képernyők, élhelyzetek, adott-amikor-akkor elfogadási kritériumok, fázis), a kódhoz mért megvan/részleges/hiányzik jelöléssel.
 - **Öntanuló skill-flotta**: seed-skillek (köztük mély kód-elemzők és i18n lint-guard), amiket az ügynökök a visszatérő gate-hibákból tanulva maguk patchelnek.
 - **Projekt-agnosztikus skillek**: egyetlen skill sem tartalmazhat projekt- vagy terméknevet, és a szállított ügynök-sablonok sem hardkódolnak telepítés-specifikus abszolút utat (portability-sentinelt használnak, amit az installer old fel).
 - **Per-ügynök skill-hozzárendelés**: a skillek kétszintűek, közös (minden ügynök) és célzott (egy ügynök sajátja); egy napi rutin sorolja be az újakat.
@@ -174,6 +175,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **Update-biztos közösségi átvétel + git-repo-watcher**: a nyílt forrású skillek és eszközök átvétele kizárólag additív fork-fájlként történik, sosem felmenő core-fájl szerkesztésével; egy watcher figyeli a bekötött upstream repókat, és futtatható kód változásánál re-gate-et kér, nem frissít magától.
 - **Adopt-9 közösségi átvétel + Karpathy kódminőségi alapelvek**: hat doc/skill/index repó a repón kívülre klónozva, napi szinkronnal és registryvel, plusz a négy anti-pitfall kódolási alapelv beépítve a flotta-szabályokba.
 - **anthropics/skills per-skill licenc szerinti átvétel**: a hivatalos Anthropic skill-repóban nincs root licenc, minden skill a sajátját hozza, ezért az átvétel skillenként dől el, és az átvettek pinelt hivatkozással vannak vendorolva.
+- **Lenny termék- és mérnöki skillpackok**: 26 kurált skill a lenny_skills_plus gyűjteményből (PRD, build-ready spec, problémadefiníció, PR/FAQ, North Star metrika, technológia-értékelés, trade-off, tech-debt, scope-vágás, release, roadmap, UX-teszt, AI-eval, GTM), pinelt commiton vendorolva; a fejlesztő ügynökök kódolás előtt PRD-t írnak új user-facing funkcióhoz.
 - **mcp-compressor csak-könyvtár adopció**: a tömörítő N-API modult közvetlenül hívjuk, a sebezhető szerver-út sosem fordul le; pinelt verzió, telepítő-script nélkül, a repón kívül, plusz egy watcher, ami upstream-frissítéskor re-gate-et vált ki.
 - **Vendorolt skill integritás-ellenőrzés**: megnézi, hogy minden vendorolt skill tartalma tényleg az-e a commit, amit a provenance-jegyzete megnevez. Az eltéréseket nem letiltja, hanem egyszer szentesített alapvonalként rögzíti -- tartalom szerint, nem fájlnév szerint --, és csak az ezen kívüli, új eltérésre szól. A nem ellenőrizhető eset (hiányzó forrás-klón) bukás, nem csend.
 - **Beépített repók oldal frissesség-jelzéssel**: dashboard-oldal, ami minden adoptált fejlesztést (repó, vendorolt skill, MCP, eszköz) listáz telepítés-állapottal, és repónként kimondott frissesség-státuszt mutat (naprakész / N frissítés / nem mérhető) az utolsó ellenőrzés dátumával.

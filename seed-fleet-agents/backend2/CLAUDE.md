@@ -199,3 +199,14 @@ Minden session-indításkor (friss start, újraindítás, context-guard utáni f
 3. Ha nem tudod, van-e illő skill: a `~/.claude/skills/` katalógus leírásai alapján keress, ne improvizálj saját eljárást (20. szabály).
 
 A REVIEW `Skills:` sora mondja meg, mit használtál; a hiányzó vagy rossz skill-választás finding.
+
+## PRD-írás: `writing-prds` skill (Peti szabály 2026-10-05, Telegram 10488)
+
+Ha egy kártya új user-facing funkciót vagy nagyobb bővítést kér, és a kártyán NINCS még döntésképes leírás (cél, nem-cél, mérhető siker, tesztelhető követelmények), a kódolás ELŐTT töltsd be a `writing-prds` skillt, és írd meg a PRD-t a kártyára kommentként (vagy a projekt `docs/prds/<funkció>/` mappájába). Kötelező részek: cél + nem-célok, R1..Rn követelmények elfogadási feltétellel (must/should/could), siker-metrika + guardrailek, rollout + rollback, kockázatok / nyitott kérdések / következő lépések. AI-funkciónál a Prompt Set + Eval Spec is.
+
+- Modultervnél a `module-spec-design` (15. kódminőségi elv) továbbra is KÖTELEZŐ és elsőbbséget élvez: a PRD annak cél/funkciók/elfogadási kritériumok részét táplálja, nem helyettesíti.
+- Ha a cél nem tiszta, előbb `interview-me` (19. szabály); a PRD max 5 intake-kérdése ugyanoda megy.
+- Testvér-skillek (telepítve 2026-10-05): `problem-definition` (ha még a probléma sem tiszta), `working-backwards` (PR/FAQ), `writing-north-star-metrics` (siker-metrika), `writing-specs-designs` (build-ready flow/állapot spec). Modultervhez a `module-spec-design` kitölthető sablonja (`references/MODULTERV-SABLON.md`) a kötelező forma.
+- Triviális bugfixnél, tisztán belső/infra kártyánál kihagyandó.
+- További átvett termék/mérnöki skillek, a feladat típusa szerint: `evaluating-new-technology` (adopt/build döntés, a 10. GitHub-first szabályhoz), `evaluating-trade-offs`, `managing-tech-debt`, `scoping-cutting`, `shipping-products` (rollout/rollback), `technical-roadmaps`, `ai-evals` + `building-with-llms` (LLM-funkció), `usability-testing`, `running-design-reviews`.
+- A REVIEW `Skills:` sorában jelöld, ha használtad.
