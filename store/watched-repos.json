@@ -408,5 +408,28 @@
     "note": "VENDORED 2026-10-05 (Peti, Telegram 10505), global. ADAPTED USE via dev-agent rule: roster fixed sonnet/medium (rule 18), sign-off stays with gate pool, delivery via REVIEW+gates+land script not PR.",
     "last_checked_upstream_sha": "223f9506",
     "last_checked_at": "2026-10-05"
+  },
+  {
+    "name": "mattpocock-grill-with-docs",
+    "repo": "https://github.com/mattpocock/skills",
+    "branch": "main",
+    "local": "/home/neon/marveen/store/adopted/mattpocock__skills",
+    "type": "code",
+    "enabled": true,
+    "last_sha": "4588b32e",
+    "kind": "skill",
+    "adoption": "vendored",
+    "license": "MIT",
+    "reviewed_at": "2026-10-05",
+    "vendored_to": "/home/neon/.claude/skills/{grill-with-docs,grilling,domain-modeling}",
+    "vendored_subdirs": [
+      "skills/engineering/grill-with-docs",
+      "skills/engineering/domain-modeling",
+      "skills/productivity/grilling"
+    ],
+    "description": "PRD-grilling: kérdés-körös interjú a PRD-re, közben GLOSSARY.md és döntésnapló.",
+    "note": "VENDORED 2026-10-05 (Peti, Telegram 10509) top-level, separate from mattpocock-productivity (nested copies there are not discoverable). Every developer grills the writing-prds temp file with it before coding. Same clone as mattpocock-productivity.",
+    "last_checked_upstream_sha": "4588b32e",
+    "last_checked_at": "2026-10-05"
   }
 ]

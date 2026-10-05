@@ -74,6 +74,12 @@ Minden kódot író, módosító vagy refaktoráló kártyánál a munka ELSŐ l
 
 Ha egy kártya új user-facing funkciót vagy nagyobb bővítést kér, és a kártyán NINCS még döntésképes leírás (cél, nem-cél, mérhető siker, tesztelhető követelmények), a kódolás ELŐTT töltsd be a `writing-prds` skillt, és írd meg a PRD-t a kártyára kommentként (vagy a projekt `docs/prds/<funkció>/` mappájába). Kötelező részek: cél + nem-célok, R1..Rn követelmények elfogadási feltétellel (must/should/could), siker-metrika + guardrailek, rollout + rollback, kockázatok / nyitott kérdések / következő lépések. AI-funkciónál a Prompt Set + Eval Spec is.
 
+**PRD-grilling KÖTELEZŐ (Peti szabály 2026-10-05, Telegram 10509):** a `writing-prds` eredményét ELŐSZÖR egy ideiglenes fájlba mentsd (`/tmp/prd-<neved>-<kártya-ID>.md`), majd erre a fájlra futtasd a `grill-with-docs` folyamatot: töltsd be a `grilling` és a `domain-modeling` skillt (a `grill-with-docs` ezt a kettőt hívja, a Skill toolból közvetlenül nem indítható). A grilling során:
+- a TÉNYEKET (kód, séma, meglévő funkció) magad derítsd ki, ne kérdezd;
+- a DÖNTÉSI kérdéseket körönként, számozva, ajánlott válasszal tedd fel a kártya kérőjének (Peti -> MikroB-on át, ügynök -> inter-agent, egyébként kanban-komment), a kártya addig `waiting` + `BLOKKOLT-tisztázás` (19. szabály);
+- a válaszokkal frissítsd a temp-fájlt; a projekt `GLOSSARY.md`-jét a feloldott fogalmakkal töltsd; ADR-értékű döntés a projekt `DECISIONS.md`-jébe megy (ha a projektnek már van `docs/adr/` mappája, oda);
+- csak a grillingen átment, véglegesített PRD kerül a kártyára / `docs/prds/`-be, és csak utána indul a kódolás. A REVIEW `Skills:` sorában: `writing-prds, grill-with-docs`.
+
 - Modultervnél a `module-spec-design` (15. kódminőségi elv) továbbra is KÖTELEZŐ és elsőbbséget élvez: a PRD annak cél/funkciók/elfogadási kritériumok részét táplálja, nem helyettesíti.
 - Ha a cél nem tiszta, előbb `interview-me` (19. szabály); a PRD max 5 intake-kérdése ugyanoda megy.
 - Testvér-skillek (telepítve 2026-10-05): `problem-definition` (ha még a probléma sem tiszta), `working-backwards` (PR/FAQ), `writing-north-star-metrics` (siker-metrika), `writing-specs-designs` (build-ready flow/állapot spec). Modultervhez a `module-spec-design` kitölthető sablonja (`references/MODULTERV-SABLON.md`) a kötelező forma.
