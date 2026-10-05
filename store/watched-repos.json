@@ -372,5 +372,41 @@
     "note": "VENDORED 2026-10-05 (Peti, Telegram 10488/10491/10499) via store/vendor-skill.sh --ref df4fa3412a92. Due diligence: Apache-2.0, text-only (no scripts in vendored dirs), pattern scan for injection/exec/network clean. Skipped 61 skills: career/personal, hiring, sales-team, fundraising, culture/meeting rituals -- no fleet use. Re-vendor one skill: store/vendor-skill.sh --repo <repo> --name <skill> --subdir skills/<skill> --ref <sha>.",
     "last_checked_upstream_sha": "df4fa341",
     "last_checked_at": "2026-10-05"
+  },
+  {
+    "name": "emilkowalski-skill",
+    "repo": "https://github.com/emilkowalski/skill",
+    "branch": "main",
+    "local": "/home/neon/marveen/store/adopted/emilkowalski__skill",
+    "type": "code",
+    "enabled": true,
+    "last_sha": "e8a175de",
+    "kind": "skill",
+    "adoption": "vendored",
+    "license": "MIT",
+    "reviewed_at": "2026-10-05",
+    "vendored_to": "/home/neon/marveen/agents/{fron-ted,fron-teddy}/.claude/skills/<skill>",
+    "description": "Emil Kowalski UI-polish és animációs skilljei, 11 webes skill a két frontend-ügynöknél.",
+    "note": "VENDORED 2026-10-05 (Peti, Telegram 10502) per-agent (--dest) to fron-ted + fron-teddy, live and seed. MIT, text-only. Skipped: animate-expo, write-swift, ask-sonner (not our stack).",
+    "last_checked_upstream_sha": "e8a175de",
+    "last_checked_at": "2026-10-05"
+  },
+  {
+    "name": "ski043-feature-orchestrator",
+    "repo": "https://github.com/ski043/skills",
+    "branch": "main",
+    "local": "/home/neon/marveen/store/adopted/ski043__skills",
+    "type": "code",
+    "enabled": true,
+    "last_sha": "223f9506",
+    "kind": "skill",
+    "adoption": "vendored",
+    "license": "MIT",
+    "reviewed_at": "2026-10-05",
+    "vendored_to": "/home/neon/.claude/skills/feature-orchestrator",
+    "description": "Feature Orchestrator: funkció átgondolása, majd átadó prompt egy külön implementációs sessionnek.",
+    "note": "VENDORED 2026-10-05 (Peti, Telegram 10505), global. ADAPTED USE via dev-agent rule: roster fixed sonnet/medium (rule 18), sign-off stays with gate pool, delivery via REVIEW+gates+land script not PR.",
+    "last_checked_upstream_sha": "223f9506",
+    "last_checked_at": "2026-10-05"
   }
 ]
