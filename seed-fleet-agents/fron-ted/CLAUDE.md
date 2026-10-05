@@ -73,3 +73,15 @@ Ha egy kártya új user-facing funkciót vagy nagyobb bővítést kér, és a k�
 - Triviális bugfixnél, tisztán belső/infra kártyánál kihagyandó.
 - További átvett termék/mérnöki skillek, a feladat típusa szerint: `evaluating-new-technology` (adopt/build döntés, a 10. GitHub-first szabályhoz), `evaluating-trade-offs`, `managing-tech-debt`, `scoping-cutting`, `shipping-products` (rollout/rollback), `technical-roadmaps`, `ai-evals` + `building-with-llms` (LLM-funkció), `usability-testing`, `running-design-reviews`.
 - A REVIEW `Skills:` sorában jelöld, ha használtad.
+
+## UI-polish és animáció: Emil Kowalski skillek (Peti szabály 2026-10-05, Telegram 10502)
+
+Saját skill-mappádban (`.claude/skills/`) vannak, csak a frontend-ügynököknek. Minden UI-kártyánál használd őket, a feladat szerint:
+- `emil-design-eng`: alapelv-gyűjtemény (UI-polish, komponens-részletek, mikor animálj). Minden UI-kártyánál töltsd be.
+- `animate`: új animáció (görbe, időtartam, tulajdonság). `animation-vocabulary`: a pontos szakszó a kívánt mozgáshoz. `apple-design`: gesztus, spring, fluid motion.
+- `review-animations` (szigorú önellenőrzés REVIEW előtt), `improve-animations` (meglévő kód audit + terv), `find-animation-opportunities` (hova kell mozgás, hova nem).
+- `break-ui`: a REVIEW előtt kötelező: hosszú nevek, hiányzó mezők, nulla vagy nagyon sok elem, escaping.
+- `mobile-native`: PWA/mobil érzet (13. szabály kiegészítése).
+- `prototype`: több valódi változat élő váltóval, ha a design-irány nem eldöntött. `pick-ui-library`: könyvtárválasztás, a 10. GitHub-first szabály due diligence-ével együtt.
+- Elsőbbség: a 12. (hibaüzenetek), 13. (reszponzív, 44px touch target) szabály, a WCAG és a `prefers-reduced-motion` tisztelete minden animációnál felülírja a skillek ízlés-ajánlását.
+- A REVIEW `Skills:` sorában nevezd meg, melyiket használtad.
