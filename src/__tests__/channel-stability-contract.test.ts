@@ -116,10 +116,11 @@ describe('P1#5 — CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 on every agent spawn pa
     // agentTmuxTarget's runAsUser support) now precedes it in source. `promptSuggestionEnv` is
     // unique to this one line (the OTHER `const cmd = ...` in this file is the SSH remote-launch
     // path via buildRemoteLaunchCommand, which does not build this string at all).
-    // Anchor updated AGAIN (card fd10c70b, upstream 0e4aa76a EPERM /tmp-fallback): the local-launch
-    // builder is now a function, `const buildLaunchCmd = (launchCwd: string) => \`...\`` -- the
-    // EPERM fallback relaunch needs the same env string with a different cwd, so it moved from a
-    // one-shot `const cmd` to a reusable builder. Same uniqueness argument still holds.
+    //
+    // Anchor updated AGAIN (card 087e4418 merge, upstream-sync batch 7): `const cmd = \`...\`` is
+    // now `const buildLaunchCmd = (launchCwd: string) => \`...\`` -- the EPERM /tmp-fallback
+    // feature needs the launch CWD to vary between the normal start and the fallback retry, so
+    // the fixed string became a function. `promptSuggestionEnv` is still unique to this one line.
     const cmdLine = src
       .split('\n')
       .find((l) => l.includes('const buildLaunchCmd = ') && l.includes('promptSuggestionEnv'))

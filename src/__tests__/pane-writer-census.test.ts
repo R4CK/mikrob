@@ -91,14 +91,11 @@ function measure(): Map<string, Census> {
 /** The pinned classification. `lane: false` needs a reason that survives a security review. */
 const EXPECTED: Record<string, Census & { why: string }> = {
   'web/agent-process.ts': {
-    // textSites 5 -> 7, ctrlOnlySites 14 -> 15 (card fd10c70b, upstream 0e4aa76a EPERM
-    // /tmp-fallback): the trust-dialog ('1' Enter) and Bypass-Permissions-accept ('2' Enter)
-    // answers are TEXT sites (digits are not in CONTROL_KEYS), the Welcome-modal dismiss (bare
-    // Enter) is ctrl-only. All three only fire once, on the session this same branch just
-    // created moments earlier for the fallback relaunch (epermRestarted guard) -- no other
-    // writer has touched that session yet, so there is nothing to race against the lane.
     textSites: 7, ctrlOnlySites: 15, lane: true,
-    why: 'the delivery path itself, plus scheduleIdentitySetup /rename (IDENTLANE910), the modal answers, and the EPERM /tmp-fallback dialog answers on the just-created fallback session',
+    why: 'the delivery path itself, plus scheduleIdentitySetup /rename (IDENTLANE910) and the modal ' +
+      'answers, plus two new-session launch sites (the normal start and the EPERM /tmp fallback, ' +
+      'card 087e4418 merge) -- both create a session that does not exist yet, so there is no ' +
+      'concurrent writer to race against at that point',
   },
   'web/agent-worker.ts': {
     textSites: 1, ctrlOnlySites: 2, lane: true,

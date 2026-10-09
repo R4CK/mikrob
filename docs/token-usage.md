@@ -22,11 +22,17 @@ Segít megérteni:
 
 1. **Agent discovery**: A `~/.claude/projects/` könyvtárból azonosítja az ágenseket a könyvtárnevek alapján (`-agents-NAME` minta a sub-ágensekhez, `-MAIN_AGENT_ID` a fő ágenshez). Ezen felül minden ágens saját, izolált `agents/<név>/.claude-config/projects` fáját is beolvassa -- KIVÉVE, ha az a fa feloldva ugyanaz, mint a közös gyökér (tipikusan szimlink). Az a kivétel nem optimalizáció: enélkül minden izolált ágens a TELJES flotta fogyasztását a saját nevére könyvelte, és a tábla 90%-a duplikátum lett (kártya 0c4cf655).
 
+   > Upstream ugyanezt egy HARMADIK forrással bővítette (TOKENVAK915, `mainConfigRoots()`): a fő
+   > ügynök SAJÁT izolált config-gyökerét is keresi, nem csak a megosztottat. NEM ÁTVÉVE ebben a
+   > kötegben (upstream-sync batch 7, kártya 087e4418) -- ugyanaz a döntés, harmadszor megerősítve
+   > (lásd `src/fork-upstream/acknowledged-conflicts.ts`, `src/web/token-usage.ts` bejegyzés,
+   > 2026-09-25): önálló, kapuzott kártyát érdemel, nem egy szinkron-köteg utaskísérője.
+
 2. **JSONL parsing**: Rekurzívan bejárja a projekt könyvtárakat (beleértve a `subagents/` almappákat), és feldolgozza a `.jsonl` fájlokat. Csak az `assistant` típusú üzeneteket veszi figyelembe, amelyeknek van `usage` mezőjük.
 
 3. **Cursor tracking**: Fájlonként eltárolja az utolsó feldolgozott sort és fájlméretet (`token_usage_cursors` tábla). Változatlan fájlokat kihagyja, módosultakat az utolsó pozíciótól folytatja.
 
-4. **Deduplication**: `UNIQUE INDEX` az `(agent, session_id, timestamp, input_tokens, output_tokens)` kombináción. FONTOS, és ez a mondat korábban tévesen állt itt: mivel az `agent` az index ELSŐ mezője, ez az ugyanazon ÁGENSNÉVEN belüli ismétlést zárja ki, két KÜLÖNBÖZŐ ágensnév alá könyvelt azonos eseményt nem. A kulcsból az `agent` kivétele külön kártya (b774f057), és csak a meglévő duplikátumok takarítása után lehetséges, mert egy unique index nem hozható létre duplikátumos táblán.
+4. **Deduplication**: `UNIQUE INDEX` a `(session_id, timestamp, input_tokens, output_tokens)` kombináción -- az `agent` NINCS a kulcsban (kártya b774f057, landolva: a régi `agent`-első-mezős index két KÜLÖNBÖZŐ ágensnév alá könyvelt azonos eseményt nem zárt ki, ami a tábla 90%-át duplikátummá tette; a meglévő duplikátumok takarítása + az indexcsere egy migrációban ment). Az insert `ON CONFLICT ... DO UPDATE` upsert: ugyanaz a rekord kétszer nem kerül be, ütközéskor a tárolt sor marad, és csak a `model` (ha NULL) és a `thinking_tokens` (ha NULL vagy nulla) töltődik utólag. Nem `INSERT OR IGNORE`: az upsert kiegészíteni tud egy hiányos sort, felülírni nem.
 
 ### API végpontok (`src/web/routes/token-usage.ts`)
 

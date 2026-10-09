@@ -102,6 +102,29 @@ describe('WITHIN-COMMENT ORDER: a REVIEW front-loads its answer (card 34e7285e)'
     expect(out[0]).toBe('fea51c4')
   })
 
+  it('WHITEHAT/REDHAT (card cf0a8c0b): a WHITEHAT GO verdict front-loads its answer, same shape as the 57112049 CYBERSEC incident', () => {
+    const out = run([
+      {
+        author: 'backend2',
+        created_at: 100,
+        content: 'REVIEW -- 57112049 @ fea51c4 (marveen, develop, pusholva)\n\nfix details.',
+      },
+      {
+        author: 'gate-pretriage',
+        created_at: 150,
+        content: 'GATE PRE-TRIAGE (mechanikus, verdict:null) @ 6199f0b\nreszletek...',
+      },
+      {
+        author: 'cybersec',
+        created_at: 200,
+        content:
+          'WHITEHAT GO -- 57112049 @ `fea51c4` (marveen, develop). A `fea51c4`-et neztem, nem a ' +
+          'pretriage altal kiirt `6199f0b`-t.',
+      },
+    ])
+    expect(out[0]).toBe('fea51c4')
+  })
+
   it('REGRESSION (real incident 57112049): QA PASS also front-loads (uses the "commit X" form)', () => {
     const out = run([
       {

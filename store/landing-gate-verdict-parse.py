@@ -17,7 +17,7 @@ import sys
 # WHO MAY SPEAK FOR A GATE. Shared with gate-closure-check.py rather than copied -- see that
 # module for the measurements. Imported by name because both files live in store/, which is
 # sys.path[0] whenever either is run as a script (and both only ever are).
-from gate_author_role import author_role
+from gate_author_role import author_role, canonical_gate
 
 # Rule 4c: the verdict word is the comment's FIRST line. Rule 4b: `Gate-SHA:` is its own line.
 #
@@ -31,12 +31,14 @@ from gate_author_role import author_role
 # The digit belongs on FAIL as much as on PASS, and that direction is the sharper one: a `QA2 FAIL`
 # the parser cannot see is a REFUSAL that vanishes, and this file's ordering ("a failing verdict for
 # THIS sha outranks a passing one") can only rank a refusal it recognises.
-PASS = re.compile(r"^(QA2?\s+PASS|CYBERSEC\s+GO|CYBERED\s+GO)\b", re.I)
-FAIL = re.compile(r"^(QA2?\s+FAIL|CYBERSEC\s+NO-GO|CYBERED\s+NO-GO)\b", re.I)
+# WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for CYBERSEC/CYBERED, accepted alongside
+# the canonical word.
+PASS = re.compile(r"^(QA2?\s+PASS|(?:CYBERSEC|WHITEHAT)\s+GO|(?:CYBERED|REDHAT)\s+GO)\b", re.I)
+FAIL = re.compile(r"^(QA2?\s+FAIL|(?:CYBERSEC|WHITEHAT)\s+NO-GO|(?:CYBERED|REDHAT)\s+NO-GO)\b", re.I)
 QA = re.compile(r"^QA2?\s+PASS\b", re.I)
 # Which gate the verdict WORD claims to be. Same fold as the author side: the sibling digit is
-# not a separate gate.
-CLAIMS = re.compile(r"^(QA)2?\b|^(CYBERSEC)\b|^(CYBERED)\b", re.I)
+# not a separate gate. claimed_role() below folds a captured WHITEHAT/REDHAT to its canonical name.
+CLAIMS = re.compile(r"^(QA)2?\b|^(CYBERSEC|WHITEHAT)\b|^(CYBERED|REDHAT)\b", re.I)
 GATE_SHA_LINE = re.compile(r"^\s*Gate-SHA:\s*(.+)", re.I)
 HEX = re.compile(r"[0-9a-f]{7,40}", re.I)
 
@@ -54,7 +56,7 @@ def shas_in(text):
 def claimed_role(first_line):
     """The gate this verdict SAYS it comes from, or None if the line is not a verdict."""
     m = CLAIMS.match(first_line)
-    return next(g for g in m.groups() if g).upper() if m else None
+    return canonical_gate(next(g for g in m.groups() if g)) if m else None
 
 
 # A sha short enough to prefix-match half the repo is not an identification. Git's own short form
@@ -155,7 +157,7 @@ def main():
     elif any_pass:
         print("OTHERSHA|a gate verdict exists on this card, but none of them names this sha")
     else:
-        print("NONE|no QA/Cybersec/Cybered verdict on this card at all")
+        print("NONE|no QA/Cybersec(WhiteHat)/Cybered(RedHat) verdict on this card at all")
     return 0
 
 

@@ -124,7 +124,8 @@ sweep_repo() { # <label> <dir> <mainref>
       local last; last=$(git -C "$dir" log -1 --format='%ad' --date=short "$ref" 2>/dev/null)
       local subj; subj=$(git -C "$dir" log -1 --format='%s' "$ref" 2>/dev/null | cut -c1-64)
       local gated=''
-      git -C "$dir" log --format='%s%n%b' "$range" 2>/dev/null | grep -qiE 'gate-teljes|QA PASS|CYBERSEC GO|CYBERED GO' && gated=' GATED'
+      # WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for CYBERSEC/CYBERED.
+      git -C "$dir" log --format='%s%n%b' "$range" 2>/dev/null | grep -qiE 'gate-teljes|QA PASS|CYBERSEC GO|WHITEHAT GO|CYBERED GO|REDHAT GO' && gated=' GATED'
 
       local verdict='ORPHAN' detail='no card id in the range'
       local ids; ids=$(card_ids_in_range "$dir" "$range")

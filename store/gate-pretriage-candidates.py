@@ -173,8 +173,9 @@ GATE_SHA_LINE = re.compile(
 # rejects any continuation containing ETLEN rather than naming the inflections -- a word list here
 # would be incomplete again the first time someone writes a form nobody thought of. No positive
 # form of this stem contains ETLEN, so nothing legitimate is lost.
+# WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for CYBERSEC/CYBERED.
 FRONT_LOADED = re.compile(
-    r"^(?:REVIEW|QA\s+(?:PASS|FAIL)|CYBER(?:SEC|ED)\s+(?:GO|NO-GO)|"
+    r"^(?:REVIEW|QA\s+(?:PASS|FAIL)|(?:CYBER(?:SEC|ED)|WHITEHAT|REDHAT)\s+(?:GO|NO-GO)|"
     r"K[ÉE]SZ|DONE|ELK[ÉE]SZ[ÜU]LT|BEFEJEZ(?!\w*ETLEN)\w*)\b",
     re.IGNORECASE,
 )
