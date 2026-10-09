@@ -46,6 +46,15 @@ export default defineConfig({
     // reads this run's start timestamp from it to tell a marker THIS run's own suite left behind
     // mid-run from a genuinely pre-existing one (card 5dcde7d3).
     globalSetup: ['./src/__tests__/setup/record-run-start.ts'],
+    // UPSTREAM-SYNC BATCH 4 (card 0b550d89): upstream's side of this hunk also carried
+    // `testTimeout: 60000`, motivated by vitest 4 enforcing a 5s default that vitest 2 (this
+    // fork's version, package.json "vitest": "^2.1.0") does not. NOT adopted: the two tests
+    // the comment named (send-honesty-final, send-honesty-round2) already carry their own
+    // explicit per-test `timeout: 60000`/`timeout: 20000` overrides (verified by grep), so the
+    // motivating problem does not exist on this fork yet, and raising the GLOBAL default has a
+    // real cost upstream's comment did not weigh: a genuinely hung/broken test elsewhere in the
+    // suite would now wait 60s instead of vitest's shorter default before failing. Revisit if
+    // this fork ever upgrades to vitest 4.
     // Hard gates, run in every worker before any test module is imported:
     //  - assert-not-live-install: refuse to run inside a live install (see that
     //    setup file's header for the 2026-07-27 incident it prevents).
@@ -61,12 +70,12 @@ export default defineConfig({
     //    MARVEEN_SSH_DIR at a scratch directory so no test can write the operator's
     //    REAL ~/.ssh/authorized_keys. Not covered by the live-install gate above:
     //    that one inspects the CHECKOUT, and ~/.ssh is HOME-scoped -- a clean
-    //    worktree run leaked keys upstream (ENROLL813, 2026-09-15) and the same
-    //    shape existed on this fork (bridge-enroll.test.ts JANKBRIDGE803 positive
-    //    control). Declined during c2aeefa5's vitest.config.ts re-decision on
-    //    purpose, to land together with the afterEach fix and the fail-closed
-    //    guards below -- a seam alone is reach, not sufficiency (see the setup
-    //    file's own header).
+    //    worktree run leaked keys upstream (ENROLL813, 2026-09-15, upstream's own
+    //    measurement: 62 real keys) and the same shape existed on this fork
+    //    (bridge-enroll.test.ts JANKBRIDGE803 positive control). Declined during
+    //    c2aeefa5's vitest.config.ts re-decision on purpose, to land together with
+    //    the afterEach fix and the fail-closed guards below -- a seam alone is
+    //    reach, not sufficiency (see the setup file's own header).
     setupFiles: [
       './src/__tests__/setup/assert-not-live-install.ts',
       './src/__tests__/setup/assert-supported-node.ts',

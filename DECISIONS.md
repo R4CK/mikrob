@@ -16420,3 +16420,60 @@ ellenorzesi reteg marad.
 Ki dontott: Cybered (NO-GO, bizonyitott line-continuation-bypass + a declare-f javaslat), MikroB
 (a dinamikus osztaly kivetelkent elfogadasa, kulon korre halasztva). backend3: javitas.
 Gate: QA + Cybersec + Cybered (valtozatlan, kockazat-tiering szerint).
+
+## 2026-10-09 -- 0b550d89 Koteg 4 (1abd45cf..97c910e6, 33 upstream commit): konfliktusfeloldas
+
+16 fajl utkozott (.github/workflows/test.yml, package.json, package-lock.json, 4 teszt-fajl,
+src/db.ts, src/remote-enroll-fs.ts, src/web.ts, src/web/active-model.ts, src/web/agent-process.ts,
+src/web/context-guard-runner.ts, src/web/routes/kanban.ts, src/web/schedule-runner.ts,
+vitest.config.ts). A tobbi ~45 erintett fajl konfliktus nelkul auto-mergelt.
+
+**BIZTONSAGI JAVITAS (nem csak atvett upstream valtozas), src/web/agent-process.ts:** upstream uj
+AGENT_LOCAL_BASE_URL valtozoja (az ollama-agentek kulon Anthropic-kompatibilis endpoint-ja,
+OLLAMA_URL helyett) a sajat sorukban NYERSEN, shSingleQuote() nelkul volt interpolalva a shell
+exportStr-be -- pontosan az a sebezhetoseg-osztaly, amit a kartya e80c011a (Cybersec NO-GO) mar
+egyszer bezart OLLAMA_URL-re ugyanitt. config-registry.ts-ben ellenorizve: AGENT_LOCAL_BASE_URL
+`type: 'string'`, nincs valueSet -- ugyanaz az alak, zero karakter-validacio. Az uj valtozo
+adoptalva, DE shSingleQuote()-ba csomagolva, ugyanugy mint az OLLAMA_URL mellette.
+
+**UPSTREAM-SAJAT HIBA JAVITVA (nem konfliktus, a tisztan auto-mergelt reszben talalva),
+src/web/context-guard-runner.ts:** a `measuredPct` szamitasa (sor ~404) hianyos `await`-tel
+keszult -- measurePct() async, Promise<number|null>-t ad vissza, de a kod a Promise-t magat
+rendelte measuredPct-hez, amit utana szamkent hasznaltak (Math.round, osszehasonlitas,
+saturationBannerCredible() tipizalt parametere). Javitva: `await` hozzaadva.
+
+**NEM ADOPTALT, dontessel, src/web.ts:** upstream a bearer tokent meg mindig kiirja egy URL-be
+(isTTY-feltetellel), a fork sajat renderBootstrapNotice() megoldasa (kartya 62631948) viszont
+SOHA nem irja ki a tokent semmilyen stream-re. A fork megoldasa strukturalisan erosebb (nincs
+kiteheto felszin: terminal scrollback, tmux capture, session-recording). Fork oldal megtartva.
+
+**NEM ADOPTALT, dontessel, src/web/routes/kanban.ts:** upstream "program-specifikus zaro-statusz"
+(done helyett pl. testing) + "actor mezo onfelvetelnel" magyarazo szoveg -- mindketto upstream
+SAJAT, meg "done"-ra zaro lepes-2 mintajahoz van rogzitve, a fork mar regebben atallt a
+"mindig waiting, a lezarast a gate/escalateTo dontii" modellre (CLAUDE.md 4. szabaly). Az
+upstream szoveg szo szerinti atvetele ellentmondo utasitast adott volna egy MAR adoptalt
+munkafolyamat ellen. Fork oldal megtartva.
+
+**NEM ADOPTALT, mar korabban dokumentalt dontes (acknowledged-conflicts.ts ~1314. sor, kartya
+b992e9aa), .github/workflows/test.yml:** upstream 9 uj CI-lepese (egress-drift-scan,
+dash-audit-scan, mio-orszem-precheck, memory-link-audit, keepalive-probe-install,
+morning-stamp-gate, morning-timer-park, userbot-arming-gate, supabase-q-token-hiding) kozul
+csak a fork sajat ollama-boot-restore.test.sh sora maradt. 3 forras-fajl (dash-audit-scan.*,
+mio-orszem-precheck.*, memory-link-audit.test.py) ennek ellenere csendben bekerult a fan
+konfliktus nelkuli auto-merge-bol -- a memoria #242 altal leirt pontos mintat kovetve ("egy
+NEM-adoptalt dontes csendben visszaszivaroghat"). A fajlok a fan maradtak huzalozas nelkul
+(ugyanaz az allapot mint a fork sajat scripts/memory-link-audit.py-ja), a CI-huzalozasi dontes
+valtozatlan: nem adoptalt.
+
+**src/web/schedule-runner.ts:** runPreCheck() async marad (korabban tobbszor megerositett dontes,
+955f014e, pinelo teszttel vedve). Az UJ resolvePreCheckPath() helper fuggveny (nem utkozo resz
+upstream oldalan) adoptalva, mert a mar auto-mergelt fuggveny-torzs hasznalja.
+
+**vitest.config.ts:** upstream testTimeout: 60000 globalis bevezetese NEM adoptalt -- a motivalo
+problema (vitest 4 5s alapertelmezese) nem letezik ezen a forkon (vitest ^2.1.0), es a ket
+nevezett teszt mar sajat timeout-tal rendelkezik. A fork sajat exclude-listaja (dist/**,
+tests/smoke/**, tests/browser/**, agents/**, store/adopted/**/evals/fixtures/**, vendor/**) es
+3-elemu setupFiles tombje (isolate-local-llm-state.ts fork-specifikus) superset-kent megtartva.
+
+Ki dontott: backend3 (konfliktusfeloldas + 2 biztonsagi/korrektseg javitas talalva es javitva a
+mar auto-mergelt reszben). Gate: QA + Cybersec (a kartya kerese szerint).

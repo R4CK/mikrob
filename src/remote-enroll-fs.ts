@@ -34,6 +34,7 @@ import { realSshDir, describeTestRunSignal, SshDirGuardError } from './ssh-dir.j
  * homedir()/.ssh, and a plain suite run enrolled a REAL key on every pass. The
  * test stayed GREEN throughout, because its only assertion
  * (`not.toMatch(/Invalid host/)`) is satisfied by a SUCCESSFUL enrollment too.
+ * 62 keys accumulated across the fleet before anyone looked (cleaned 2026-09-15).
  *
  * The check is deliberately narrow on BOTH axes, so it cannot misfire:
  *   - only under a test runner (VITEST / NODE_ENV=test -- see test-run-marker.ts,
