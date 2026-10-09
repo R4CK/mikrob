@@ -40,9 +40,15 @@ vi.mock('../db.js', () => ({
   setMessageResult: (..._a: unknown[]) => true,
   createAgentMessage: (..._a: unknown[]) => ({ id: 999 }),
   countNewerMessagesFromSameSender: (_from: string, _to: string, id: number) => newerCounts.get(id) ?? 0,
+  // Fork-specific (not in the upstream commit this file was ported from): runMessageRouterTick
+  // also checks whether a dispatch was superseded by a newer kanban-card state before injecting.
+  // Mocked to "no card state found" so that check is a no-op here -- this file is only about the
+  // multi-envelope batching, not supersession (same reasoning as router-no-silent-reinject.test.ts).
+  getKanbanCardStateByIdPrefix: () => null,
   stampMessageTrace: (..._a: unknown[]) => false,
   upsertOtelSpan: (..._a: unknown[]) => undefined,
   closeOtelSpan: (..._a: unknown[]) => false,
+  closeOtelSpanIfOpen: (..._a: unknown[]) => false,
 }))
 vi.mock('../web/voice-directive.js', () => ({ resolveAgentChannelStateDir: () => '/tmp/none' }))
 vi.mock('../web/agent-config.js', () => ({

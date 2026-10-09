@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, buildGateMsg, buildUnverifiedRecipientMsg } from '../../scripts/email-send-gate.mjs'
-// @ts-expect-error -- plain .mjs hook script, no types
-import { isValidSource, normalizeAddress, splitAddresses, loadLedger, isVerifiedIn } from '../../scripts/recipient-ledger.mjs'
+import { gateDecision, buildGateMsg } from '../../scripts/email-send-gate.mjs'
 import { injectEmailSendGate, agentGetsEmailGate } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
@@ -34,8 +32,7 @@ describe('gateDecision', () => {
     }
     // Card 498d53c1: only the explicit search_*/get_*/list_*/read_*/create_draft allowlist
     // passes now (deny-by-default for the rest of the server) -- narrower than before, on
-    // purpose. label_message moved to the deny-by-default test below; update_draft now goes
-    // through the recipient-ledger check instead (DRAFT_TOOL_RE), see 'unverified recipients'.
+    // purpose. update_draft and label_message moved to the deny-by-default test below.
     for (const tool of ['search_threads', 'get_message', 'get_thread', 'create_draft']) {
       expect(gateDecision(`mcp__claude_ai_Gmail__${tool}`, {}).deny, tool).toBe(false)
     }
@@ -49,10 +46,8 @@ describe('gateDecision', () => {
   it('denies every gmail__/resend__ tool NOT on the explicit read/draft allowlist (deny-by-default)', () => {
     // The exact bypass the card opened on: create_draft + send_draft pair.
     expect(gateDecision('mcp__claude_ai_Gmail__send_draft', {}).deny).toBe(true)
-    // update_draft used to be a blanket deny here (narrowed out on purpose, see above) --
-    // superseded by the recipient-ledger check (DRAFT_TOOL_RE, 'unverified recipients' describe
-    // block below): an empty-input call touches no recipient field, so there is nothing to
-    // verify and nothing to deny. The address-carrying case is pinned there instead.
+    // Previously guessed-safe by name shape alone -- narrowed out on purpose (see above).
+    expect(gateDecision('mcp__claude_ai_Gmail__update_draft', {}).deny).toBe(true)
     expect(gateDecision('mcp__claude_ai_Gmail__label_message', {}).deny).toBe(true)
     // The hyphenated Resend tool names (resend/resend-mcp source, MIT) that neither
     // .*send_email.* (underscore) nor any prior check ever matched.
@@ -691,109 +686,6 @@ describe('buildGateMsg names the workaround, not just the escalation (card 84e31
   })
 })
 
-// The verified-recipient gate (2026-08-14, support@connectors.hu bounce): an
-// address that no source ever produced must not reach a To/Cc/Bcc field, not
-// even in a draft -- the owner presses send on what we typed.
-describe('unverified recipients', () => {
-  // ledger stand-in: only these two addresses have a recorded source
-  const known = new Set(['hello@connectors.hu', 'owner@example.com'])
-  const isVerified = (a: string) => known.has(a)
-  const call = (input: Record<string, unknown>, name = 'mcp__google-workspace__manage_email') =>
-    gateDecision(name, input, isVerified)
-
-  it('blocks the exact call that bounced: a guessed support@ address', () => {
-    const d = call({ operation: 'send', draft: true, to: 'support@connectors.hu' })
-    expect(d.deny).toBe(true)
-    expect(d.kind).toBe('unverified-recipient')
-    expect(d.addresses).toEqual(['support@connectors.hu'])
-  })
-
-  it('allows the same letter once the address has a source in the ledger', () => {
-    expect(call({ operation: 'send', draft: true, to: 'hello@connectors.hu' }).deny).toBe(false)
-  })
-
-  it('checks cc and bcc, not just to', () => {
-    expect(call({ operation: 'send', draft: true, to: 'hello@connectors.hu', cc: 'info@x.hu' }).kind)
-      .toBe('unverified-recipient')
-    expect(call({ operation: 'send', draft: true, to: 'hello@connectors.hu', bcc: 'info@x.hu' }).kind)
-      .toBe('unverified-recipient')
-  })
-
-  it('reports every unknown address in a comma-separated list, deduped', () => {
-    const d = call({ operation: 'send', draft: true, to: 'a@x.hu, hello@connectors.hu, b@x.hu', cc: 'a@x.hu' })
-    expect(d.addresses).toEqual(['a@x.hu', 'b@x.hu'])
-  })
-
-  it('ignores the display name and the case of the address', () => {
-    expect(call({ operation: 'send', draft: true, to: 'Connectors <HELLO@Connectors.hu>' }).deny).toBe(false)
-  })
-
-  it('leaves thread-addressed replies alone (we did not choose the recipient)', () => {
-    expect(call({ operation: 'reply', draft: true, messageId: 'abc', body: 'x' }).deny).toBe(false)
-    expect(call({ operation: 'replyAll', draft: true, messageId: 'abc', body: 'x' }).deny).toBe(false)
-  })
-
-  it('does not touch read-shaped calls', () => {
-    expect(call({ operation: 'search', query: 'from:support@connectors.hu' }).deny).toBe(false)
-  })
-
-  it('covers the draft-creating MCP tools (array recipient form)', () => {
-    expect(call({ to: ['support@connectors.hu'] }, 'mcp__claude_ai_Gmail__create_draft').kind)
-      .toBe('unverified-recipient')
-    expect(call({ to: ['hello@connectors.hu'] }, 'mcp__claude_ai_Gmail__create_draft').deny).toBe(false)
-    expect(call({ to: ['support@connectors.hu'] }, 'mcp__claude_ai_Gmail__update_draft').kind)
-      .toBe('unverified-recipient')
-  })
-
-  it('runs the address check before the draft rule, so the send path names the real problem', () => {
-    // no draft flag AND an unknown address: the address is the actionable half
-    expect(call({ operation: 'send', to: 'support@connectors.hu' }).kind).toBe('unverified-recipient')
-    // known address, no draft flag -> the original draft-kapu still applies
-    expect(call({ operation: 'send', to: 'hello@connectors.hu' }).kind).toBe('draft-required')
-  })
-
-  it('blocks everything when the ledger cannot be read (fail closed)', () => {
-    const noLedger = () => false
-    expect(gateDecision('mcp__google-workspace__manage_email',
-      { operation: 'send', draft: true, to: 'hello@connectors.hu' }, noLedger).deny).toBe(true)
-  })
-
-  it('names the address and the fix in the deny message', () => {
-    const msg = buildUnverifiedRecipientMsg(['support@connectors.hu'])
-    expect(msg).toContain('support@connectors.hu')
-    expect(msg).toContain('recipient-ledger.mjs add support@connectors.hu')
-  })
-})
-
-// The ledger behind the gate: what counts as a source, and what does not.
-describe('recipient ledger', () => {
-  it('accepts only re-openable evidence kinds as a source', () => {
-    expect(isValidSource('mail:19fff4eb1a7d3ba9')).toBe(true)
-    expect(isValidSource('site:https://connectors.hu/')).toBe(true)
-    expect(isValidSource('owner')).toBe(true)
-    expect(isValidSource('order:2347')).toBe(true)
-    // a claim is not a source
-    expect(isValidSource('megneztem')).toBe(false)
-    expect(isValidSource('biztos vagyok benne')).toBe(false)
-    expect(isValidSource('')).toBe(false)
-    expect(isValidSource('site:connectors.hu')).toBe(false) // no scheme -> not a page we can re-open
-  })
-
-  it('normalizes addresses the way the gate compares them', () => {
-    expect(normalizeAddress('  Connectors <HELLO@Connectors.hu> ')).toBe('hello@connectors.hu')
-    expect(splitAddresses('a@x.hu, B <b@X.hu>')).toEqual(['a@x.hu', 'b@x.hu'])
-    expect(splitAddresses(['a@x.hu', 'nonsense'])).toEqual(['a@x.hu'])
-  })
-
-  it('treats a missing or corrupt ledger as "nothing is verified"', () => {
-    const boom = () => { throw new Error('ENOENT') }
-    expect(loadLedger('/nope.json', boom)).toBe(null)
-    expect(loadLedger('/nope.json', () => 'not json')).toBe(null)
-    expect(loadLedger('/nope.json', () => '{"version":1}')).toBe(null) // no recipients map
-    expect(isVerifiedIn(null, 'a@x.hu')).toBe(false)
-  })
-})
-
 // The main-exempt guard: every sub-agent is gated, the main agent never is.
 // Mirrors security-profile-resolution.test.ts -- pure, keyed on the configured
 // MAIN_AGENT_ID (not a hardcoded name), so a customer install exempts its own owner.
@@ -817,7 +709,7 @@ describe.skipIf(REPO_UNDER_TMP)('injectEmailSendGate', () => {
     const hooks = (s.hooks as Record<string, unknown>).PreToolUse as Array<Record<string, unknown>>
     expect(hooks).toHaveLength(1)
     expect(hooks[0].matcher).toBe(
-      'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*|.*(?:create_draft|update_draft|draft_[a-z]+).*',
+      'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*',
     )
     const inner = (hooks[0].hooks as Array<{ command: string }>)[0]
     expect(inner.command).toContain('email-send-gate.mjs')

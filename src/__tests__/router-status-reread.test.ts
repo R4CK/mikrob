@@ -48,9 +48,13 @@ vi.mock('../db.js', () => ({
   setMessageResult: (..._a: unknown[]) => true,
   createAgentMessage: (..._a: unknown[]) => ({ id: 999 }),
   countNewerMessagesFromSameSender: (..._a: unknown[]) => 0,
+  // Fork-specific: see router-no-silent-reinject.test.ts / router-batch-inject.test.ts for the
+  // same addition and rationale (supersession check, not relevant to this file's status re-read).
+  getKanbanCardStateByIdPrefix: () => null,
   stampMessageTrace: (..._a: unknown[]) => false,
   upsertOtelSpan: (..._a: unknown[]) => undefined,
   closeOtelSpan: (..._a: unknown[]) => false,
+  closeOtelSpanIfOpen: (..._a: unknown[]) => false,
 }))
 
 vi.mock('../web/voice-directive.js', () => ({
@@ -112,7 +116,6 @@ function snapshot(ids: number[]) {
   mockGetPendingMessages.mockReturnValue(pendingRows(ids))
 }
 
-const deliveredIds = () => mockSendPrompt.mock.calls.map((_c, i) => mockMarkDelivered.mock.calls[i]?.[0])
 
 describe('message router: the row is re-read before it is delivered', () => {
   beforeEach(() => {

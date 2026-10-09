@@ -814,13 +814,13 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // 6, node -e test) this ALREADY matches upstream's own cited regression case,
 // mcp__server-gmail-autoauth-mcp__draft_email -- MATCHERGMAILSEG920's independent fix for the
 // same underlying gap was against an OLDER, narrower matcher this fork had already widened.
-//
-// MATCHERGMAILSEG920 (upstream): the draft-verb alternative below is adopted anyway, for a
-// server name that carries NEITHER "gmail" nor "resend" at all -- the recipient-ledger check
-// (DRAFT_TOOL_RE, email-send-gate.mjs) protects any create_draft/update_draft/draft_* tool
-// regardless of server name, so the matcher that reaches it should not be narrower than that.
+// Upstream's draft-verb catch-all alternative (paired with its recipient-ledger feature) is NOT
+// adopted here: the ledger itself is NOT ADOPTED, in any form (Cybersec, card afd64623, HIGH --
+// addRecipient() validates the source STRING'S FORMAT only, never that the evidence is real, so
+// an agent can self-certify any address with --source owner). See
+// ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs'] for the tripwire watching this.
 export const EMAIL_GATE_MATCHER =
-  'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*|.*(?:create_draft|update_draft|draft_[a-z]+).*'
+  'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets
