@@ -17245,3 +17245,39 @@ zöld. 37/37 teszt zöld a célzott fájlon, tsc --noEmit tiszta, eslint tiszta.
 
 **Ki döntött:** WhiteHat lelete (1f252502 gate, komment 13314), backend2 végrehajtotta.
 Gate: QA + WhiteHat.
+
+## 2026-10-09 -- 26083811: fork-tiltás ratchet követő (WhiteHat L1+L2, 405a6da0 gate)
+
+Forrás: WhiteHat 405a6da0 gate (GO @ f2f21ca4, msg 9787), L1+L2 LOW.
+
+**L1 -- stripLineComments .sh-vakság.** A komment-csupaszítás (`src/fork-upstream/acknowledged-conflicts.ts`)
+csak `.py`-ra ismerte a `#` jelölőt, minden más fájlra (beleértve `.sh`-t) a `//`-t használta. A három
+`.sh` anchor (limit-monitor.sh, install-prod-tree-guard-hook.sh, update.sh) ezért egy `#` kommentbe
+rejtett needle-lel félrevezethető lett volna: egy present-anchor zöld marad, ha a kód eltávolítva, de a
+needle egy `# ...` sorban megemlítve marad. Javítás: `file.endsWith('.py') || file.endsWith('.sh')`.
+Mutáció-proof: a régi (`.py`-only) logikát közvetlenül újra-implementálva a tesztben bizonyítva, hogy a
+needle valóban túléli a régi stripper futását; a javítást ideiglenesen visszaállítva a régi alakra az új
+teszt PIROSRA váltott a pontos elvárt módon, majd visszaállítva zöld.
+
+**L2 -- 'not adopt' család.** A `mentionsRefusal` regex bővítve `\bnot adopt`-tal (fedi: "Do NOT adopt",
+"NOT ADOPTABLE", "not adoptable"). Mérve: 13 újonnan matchelt bejegyzés, 1 már anchorolt (src/web/routes/agents.ts,
+más okból), 12 unanchored. Egyedi triage mind a 12-re:
+- 4 valódi, checkelhető production-tényre anchorolva: `scripts/watchdog.sh` (argv-embedded token token-in-argv
+  visszatérése, absent), `src/__tests__/bridge-pairing-i18n.test.ts` (playwright absent store/fleet-test.sh-ban),
+  `src/__tests__/governance-gates.test.ts` (TELEGRAM_COPY_GATE_MATCHER absent src/web/agent-scaffold.ts-ben),
+  `src/__tests__/memory-search-label-backfill.test.ts` (--data-urlencode absent src/web/agent-scaffold.ts-ben).
+- 8 a UNANCHORED_BACKLOG-ba, egyedi indokkal (lásd a teszt fájl komment-blokkja): 4 kozmetikus "no functional
+  difference" tesztfájl-jegyzet (api-messages-freshness, heartbeat-db-size, heartbeat-summary-truncation-safe,
+  memories-search-has-a-floor), 2 már meglévő backlog-bejegyzéssel azonos alapul fekvő rés duplikálása
+  (notify-delivery-honesty.test.ts -> send-honesty-round2.test.ts/card 3026a591; session-send-lock.test.ts ->
+  src/web/session-send-lock.ts), 1 teljesen test-setup fájlban élő döntés production-ellenpár nélkül
+  (assert-not-live-install.ts), 1 egy nagyobb UNION-bejegyzésbe ágyazott kozmetikus al-pont (web/lang/en.js).
+
+Tagadás/idézőjel-szűrő továbbra sincs (kódelv 12), ahogy a kártya kérte.
+
+Végeredmény: fork-upstream-conflict-guard.test.ts 39/39 zöld (2 L1 + 4 anchor-triage teszthez kötődő
+ellenőrzés új), agent-dir-namespace-runtime.test.ts 20/20 zöld egyutt futtatva, tsc --noEmit tiszta,
+eslint tiszta.
+
+**Ki döntött:** WhiteHat lelete (405a6da0 gate, msg 9787), backend2 végrehajtotta.
+Gate: QA + WhiteHat.
