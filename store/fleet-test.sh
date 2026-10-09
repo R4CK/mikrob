@@ -388,24 +388,28 @@ for a in ${ARGS[@]+"${ARGS[@]}"}; do
 done
 WORKER_ARGS=()
 if [ "$caller_set_max_workers" -eq 0 ]; then
-  # --minWorkers IS NOT OPTIONAL HERE, and the reason is the VITEST MAJOR, not this repo's config.
-  # Measured (Cybered, card 7bb39672): CleanCore runs vitest 3.2.6, where cleancore-suite-run.sh's
-  # bare --maxWorkers has been fine for months; marveen pins 2.1.9, where minThreads keeps its
-  # core-count default and then exceeds maxThreads. The pattern was copied between the two repos
-  # with nothing tying it to a version. WHEN THE VITEST MAJOR BUMP LANDS (2 -> 4, its own card),
-  # RE-MEASURE THIS LINE rather than carrying it over: stating both bounds is correct on both
-  # majors today, but the defaults that make it necessary are exactly what a major changes.
-  #
-  # The concrete failure, so nobody re-derives it: vitest 2.1.9
-  # rejects a bare --maxWorkers in this repo with
+  # DECOUPLED FROM ANY ONE BUMP (card 2f05b3e3's own landing attempt, the chicken-and-egg this
+  # introduced). vitest 2.1.9 rejects a bare --maxWorkers here with
   #   RangeError: options.minThreads and options.maxThreads must not conflict
-  # and exits 1 having run NOTHING ("Test Files no tests"). Measured directly, outside this script:
-  # `vitest run --maxWorkers 6 <file>` fails, `vitest run --minWorkers 1 --maxWorkers 6 <file>` runs.
-  # The first version of this cap shipped without it and broke every fleet-test run -- i.e. every
-  # landing, for every agent -- because the contract test asserted the flag was PASSED, never that
-  # vitest ACCEPTED it. A flag the runner refuses is not a cap, it is an outage.
-  WORKER_ARGS=(--minWorkers 1 --maxWorkers "$MAX_WORKERS")
-  echo "fleet-test.sh: --minWorkers 1 --maxWorkers $MAX_WORKERS (${CORES} cores / ${CPU_SLOTS} shared slots)"
+  # which is why --minWorkers used to be paired with it. vitest 5.0.3 does the opposite: a bare
+  # --maxWorkers runs fine (matching CleanCore's vitest 3.2.6 behaviour, which never needed the
+  # pairing either), while --minWorkers is no longer a recognised CLI flag at all -- `vitest run
+  # --minWorkers 1 <file>` fails with `CACError: Unknown option \`--minWorkers\`` and exits 1
+  # having run NOTHING. A commit that flips this hardcoded can only ever be right for the vitest
+  # version THAT SAME commit also installs -- and the dual-gate (card 88a0a5e1/03cff5c1) runs
+  # $MAIN's ALREADY-LANDED copy of this script against the merge result's REAL, possibly just-
+  # bumped node_modules (card 466decff made that real, not merely symlinked): a landing that bumps
+  # vitest and flips this flag in the SAME commit fails at $MAIN's old copy, because that old copy
+  # still carries the PRE-bump hardcoded flag against the POST-bump real vitest. So this reads the
+  # version that is ACTUALLY installed in $TEST_TREE right now, on either branch of a dependency
+  # bump, rather than assuming one.
+  vitest_major="$(node -p "require('$TEST_TREE/node_modules/vitest/package.json').version.split('.')[0]" 2>/dev/null || echo 0)"
+  if [ "$vitest_major" -ge 5 ] 2>/dev/null; then
+    WORKER_ARGS=(--maxWorkers "$MAX_WORKERS")
+  else
+    WORKER_ARGS=(--minWorkers 1 --maxWorkers "$MAX_WORKERS")
+  fi
+  echo "fleet-test.sh: ${WORKER_ARGS[*]} (vitest major ${vitest_major:-unknown}, ${CORES} cores / ${CPU_SLOTS} shared slots)"
 else
   echo "fleet-test.sh: --maxWorkers left to the caller"
 fi
