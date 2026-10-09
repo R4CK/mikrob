@@ -151,7 +151,7 @@ export function startOfLocalDay(at: Date, tz: string = CRM_TZ): number {
  * A dátum elfogadása NAP-alapú, nem másodperc-alapú: a "ma" és a "ma + 14 nap" is TELJES nap.
  * Enélkül a határ a futás órájától függne, és ugyanaz a bevitel délelőtt átmenne, délután nem.
  */
-function normalizeDate(raw: unknown, now: Date): number | null {
+function normalizeDate(raw: unknown): number | null {
   if (typeof raw === 'number' && Number.isFinite(raw)) return Math.floor(raw)
   if (typeof raw === 'string') {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw.trim())
@@ -215,7 +215,7 @@ export function checkLeadInput(input: LeadInput, now: Date = new Date()): GateOk
   const text = asTrimmed(input.next_step_text)
   if (!text) missing.push('next_step_text')
 
-  const at = normalizeDate(input.next_step_at, now)
+  const at = normalizeDate(input.next_step_at)
   const dayStart = startOfLocalDay(now)
   // A HORIZONT A TÍPUSTÓL FÜGG: cselekvésre 14 nap, ébresztésre 12 hónap.
   const horizont = type === 'wakeup' ? WAKEUP_HORIZON_DAYS : HORIZON_DAYS

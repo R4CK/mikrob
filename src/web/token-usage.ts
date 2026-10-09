@@ -9,21 +9,17 @@ import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { listAgentNames } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { estimateCostUsd, stripDateSuffix } from '../costops/model-pricing.js'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 
 // The main agent's transcripts live under the directory Claude Code derives
-// from PROJECT_ROOT, regardless of what the agent calls itself.
-//
-// Upstream extracted this exact regex into a shared src/claude-project-dir.ts
-// (encodeClaudeProjectDir) and dropped its own local copy in favour of it --
-// a safe future dedup (same regex, zero behaviour difference), but NOT adopted
-// here this round (see src/fork-upstream/acknowledged-conflicts.ts's entry for
-// this file, 2026-09-25: "cosmetic/diagnostic, cheap to pick up later but not
-// urgent"). Keeping the local copy instead of importing the shared one.
-function encodeProjectPath(p: string): string {
-  return p.replace(/[^a-zA-Z0-9-]/g, '-')
-}
+// from PROJECT_ROOT, regardless of what the agent calls itself. The encoder is
+// the tree-wide one (src/claude-project-dir.ts); claude-project-dir-encoding.test.ts
+// (UTKODOLODIVERG922, this upstream-sync batch) now forbids any hand-rolled copy
+// outside that module repo-wide -- adopted here for that reason, superseding the
+// prior "not urgent, cheap to pick up later" deferral (zero behaviour difference,
+// same regex, per src/fork-upstream/acknowledged-conflicts.ts's 2026-09-25 entry).
 
 // True when `dir` is the shared ~/.claude/projects wearing another name,
 // reached through a symlink. Compared by realpath, so a symlinked parent
@@ -69,7 +65,7 @@ export function discoverAgentSources(
   const sources: AgentTranscriptSource[] = []
   const sharedProjects = sharedRootOverride ?? PROJECTS_DIR
   if (!existsSync(sharedProjects)) return sources
-  const mainDirName = encodeProjectPath(PROJECT_ROOT)
+  const mainDirName = encodeClaudeProjectDir(PROJECT_ROOT)
   for (const entry of readdirSync(sharedProjects)) {
     const full = join(sharedProjects, entry)
     let stat

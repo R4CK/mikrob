@@ -52,7 +52,15 @@ describe('db.ts: no unixepoch() on a path a foreign writer evaluates', () => {
   })
 
   it('has no unixepoch() inside any TRIGGER body', () => {
-    const offenders = triggerBodies(SRC).filter(b => /unixepoch\s*\(/i.test(b.body)).map(b => b.name)
+    // A RAISE(ABORT, '...') message is a STRING LITERAL, never evaluated as SQL -- it can
+    // legitimately NAME unixepoch() in its advice text ("use unixepoch(), not datetime()...")
+    // without the trigger actually calling it. Strip single-quoted string contents before
+    // scanning, same reasoning as stripping comments before a code-presence check (kódelv 12):
+    // the needle must match executable SQL, not prose about it.
+    const stripStringLiterals = (s: string) => s.replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    const offenders = triggerBodies(SRC)
+      .filter(b => /unixepoch\s*\(/i.test(stripStringLiterals(b.body)))
+      .map(b => b.name)
     expect(offenders, `portable form: CAST(strftime('%s','now') AS INTEGER)`).toEqual([])
   })
 

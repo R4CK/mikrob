@@ -23,7 +23,10 @@ const UPDATE_SH = readFileSync(join(ROOT, 'update.sh'), 'utf-8')
 function extractBlock(): string {
   const start = UPDATE_SH.indexOf("BEHIND=$(git rev-list --count 'HEAD..@{u}'")
   expect(start, 'diverged-history block not found in update.sh').toBeGreaterThan(-1)
-  const end = UPDATE_SH.indexOf('\nif [ "${AHEAD:-0}" -gt 0 ]; then', start)
+  // Indented by 2 spaces here: the fork nests this block inside the POST_MERGE_MODE
+  // if/else wrapper (card 087e4418 merge), which upstream's own version of this file
+  // does not have.
+  const end = UPDATE_SH.indexOf('\n  if [ "${AHEAD:-0}" -gt 0 ]; then', start)
   expect(end, 'block end marker not found').toBeGreaterThan(start)
   return UPDATE_SH.slice(start, end)
 }
@@ -64,14 +67,6 @@ echo "REACHED_END"
   try { log = readFileSync(join(dir, 'store', 'update.log'), 'utf-8') } catch { /* may not exist */ }
   return { code, out, log }
 }
-
-// `rev-list` answers BEHIND=2 (so the branch is diverged); everything else is recorded.
-const GIT_BASE = `#!/bin/bash
-echo "git $*" >> "$STUB_CALLS"
-case "$1 $2" in
-  "rev-list --count") echo 2; exit 0 ;;
-esac
-`
 
 function gitStub(extra: string): string {
   return `#!/bin/bash

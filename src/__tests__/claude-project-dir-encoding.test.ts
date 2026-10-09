@@ -92,6 +92,10 @@ describe('the call sites go through the shared encoder', () => {
         const full = join(dir, entry)
         if (statSync(full).isDirectory()) { if (entry !== '__tests__') walk(full); continue }
         if (!entry.endsWith('.ts') || full.endsWith('claude-project-dir.ts')) continue
+        // acknowledged-conflicts.ts is a decision-log, PROSE describing past patterns (including
+        // this exact one, as a fixed historical bug) as plain string literals, not executable
+        // regex -- excluded for the same reason the comment-strip line above exists (kódelv 12).
+        if (full.endsWith('fork-upstream/acknowledged-conflicts.ts')) continue
         const src = readFileSync(full, 'utf-8')
         for (const [i, line] of src.split('\n').entries()) {
           if (line.trimStart().startsWith('//')) continue

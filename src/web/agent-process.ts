@@ -2121,7 +2121,10 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
         const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
         if (existing?.mcpServers?.worksource) {
           delete existing.mcpServers.worksource
-          writeFileSync(mcpJsonPath, JSON.stringify(existing, null, 2))
+          // writeAgentConfig, not a bare writeFileSync (card dc5b714d): .mcp.json is the exact
+          // content class the original incident was about (an mcpServers.env block can carry a
+          // credential), and a mode-less write leaves it at the umask's mercy.
+          writeAgentConfig(mcpJsonPath, JSON.stringify(existing, null, 2))
           logger.info({ name }, 'worksource channel unwired for agent (opted out)')
         }
       } catch { /* absent or unreadable -> nothing to unwire */ }
