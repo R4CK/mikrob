@@ -17203,3 +17203,45 @@ Célzott futás: 52/52 zöld (35+17, a két érintett fájlon).
 
 **Ki döntött:** RedHat lelete (LOW+INFO a ffca678d gate-jén, komment 13314), backend2
 végrehajtotta. Gate: QA + WhiteHat (vagy RedHat).
+
+## 2026-10-09 -- 405a6da0: fork-tiltás ratchet, mentionsRefusal bővítése + 38 jelölt triage
+
+**Probléma (WhiteHat 1f252502 gate leletéből, korábbi Cybersec F1 LOW komment 6560):** az
+`acknowledged-conflicts.ts` fájl `ACKNOWLEDGED_CONFLICTS` tábláján a
+`fork-upstream-conflict-guard.test.ts`-beli `mentionsRefusal` csak a `/NOT ADOPTED/i` mintát
+ismerte fel "tiltó döntésként", ami anchor-kötelessé tesz egy bejegyzést (hogy egy silent
+upstream-history-merge ne tudja visszafordítani a döntést észrevétlenül). Mérve: 157 bejegyzésből
+28 használta a "NOT ADOPTED" szót, de legalább 14 MÁS, valódi tiltó megfogalmazást használt
+("not ported", "NOT taken", "do not take", "keep the fork('s) deletion/removal") NOT ADOPTED
+nélkül -- ezek anchor-kötelezettség nélkül maradtak.
+
+**Megoldás:** a `mentionsRefusal` regex bővült a fenti, a VALÓDI korpuszból vett négy
+megfogalmazással (nem találmánnyal) -- tagadás/idézőjel-szűrő NÉLKÜL, a kártya kifejezett
+utasítása szerint (a `do not take A SIDE` hamis pozitívot is a triázs, nem a regex zárja ki).
+
+**Egyszeri triage a 14 újonnan elkapott jelöltre** (a `keychainDelete`-nek már volt anchorja):
+- **9 VALÓDI tiltás, új anchor kapott** (`ACKNOWLEDGED_FORK_ANCHORS`): scripts/install-prod-tree-
+  guard-hook.sh (hdr_file security pattern), scripts/limit-monitor.sh (session-limit-pattern.sh
+  sourcing + dupla-értesítés elkerülése), seed-scheduled-tasks/kanban-audit/SKILL.md + templates/
+  CLAUDE.md.template (piped-header `-H @-` idióma, token-in-argv ellen), src/model-fallback.ts
+  (`/upgrade` startup-hint hamis pozitív elkerülése), src/web/routes/messages.ts (`Invalid JSON
+  body` guard sorrendje), src/web/system-directive.ts (SYSTEM_DIRECTIVE_SENDER vs upstream
+  hardcoded "system"), src/web/update-checker.ts (repoConfigs két-repós mechanizmus), update.sh
+  ({{CHAT_ID}} render_seed_template), web/lang/hu.js (8 activity.* i18n kulcs).
+- **4 ZAJ, `UNANCHORED_BACKLOG`-ba véve indoklással** (nem törölve a regex-ből, a kártya
+  "besorolás, nem szűrés" utasítása szerint): installer-ollama-nonfatal.test.ts (nincs kód, amire
+  anchor mutatna), send-honesty-round2.test.ts (már saját kártyán, 3026a591), system-directive-
+  auth-section.test.ts (teszt-önhivatkozás, union nem tiltás), session-send-lock.ts (két PRÓZA
+  komment vitája, nincs futtatható kód-tény amire anchor mutathatna).
+
+**Ismert-pozitív kontroll (kódelv 12):** a `keychainDelete` anchor -- amit pont azért vettünk fel
+korábban (card 1f252502), mert a valós regresszió már megtörtént egyszer (F1-F5 merge, b8de50d2,
+2026-08-26, 13 napig észrevétlen) -- most egy dedikált teszttel a VALÓDI esemény rekonstrukciója
+ellen fut, nem csak szintetikus fixture ellen, bizonyítva hogy a mechanizmus elkapta volna.
+
+**Mutáció-bizonyíték:** az egyik új anchor (update-checker.ts) kézi eltávolítása a "no refusal
+ships WITHOUT a tripwire" tesztet PIROSRA vitte a pontos elvárt üzenettel, majd visszaállítva
+zöld. 37/37 teszt zöld a célzott fájlon, tsc --noEmit tiszta, eslint tiszta.
+
+**Ki döntött:** WhiteHat lelete (1f252502 gate, komment 13314), backend2 végrehajtotta.
+Gate: QA + WhiteHat.
