@@ -51,15 +51,15 @@ jobs:
       # boot-after-reboot path nobody exercises by hand day to day, so its own
       # selftest has to run somewhere other than a human remembering to.
       - run: bash scripts/__tests__/ollama-boot-restore.test.sh
-      # UPSTREAM-SYNC BATCH 4 (card 0b550d89, decision already recorded in
-      # src/fork-upstream/acknowledged-conflicts.ts around line 1314, card b992e9aa):
-      # NOT adopting upstream's 9 new CI steps here (egress-drift-scan, dash-audit-scan,
-      # mio-orszem-precheck, memory-link-audit, keepalive-probe-install, morning-stamp-gate,
-      # morning-timer-park, userbot-arming-gate, supabase-q-token-hiding) -- each belongs to
-      # an upstream feature (community sentinel, dash audit, keepalive probe, morning
-      # briefing timers, userbot arming, supabase token hiding) this fork has not decided to
-      # adopt. Wiring CI to run them would be the adoption decision by accident. The driver
-      # scripts/tests for 3 of the 9 (dash-audit-scan, mio-orszem-precheck, memory-link-audit)
-      # merged into the tree anyway via non-conflicting file adds elsewhere in this batch --
-      # left in place, unwired, same shape as the fork's own scripts/memory-link-audit.py
-      # already sitting unwired from an earlier round. Available for a future adoption card.
+      # UPSTREAM-SYNC (card 0b550d89, re-confirmed card 1a046537/batch 5; decision recorded in
+      # src/fork-upstream/acknowledged-conflicts.ts ~line 1314, card b992e9aa): NOT adopting
+      # upstream's CI steps here (egress-drift-scan, dash-audit-scan, mio-orszem-precheck,
+      # memory-link-audit, keepalive-probe-install, morning-stamp-gate, morning-timer-park,
+      # userbot-arming-gate, supabase-q-token-hiding -- this batch added the last one, same
+      # shape as the other 8) -- each belongs to an upstream feature (community sentinel, dash
+      # audit, keepalive probe, morning briefing timers, userbot arming, supabase token hiding)
+      # this fork has not decided to adopt. Wiring CI to run them would be the adoption decision
+      # by accident. Driver scripts/tests for some of these merge into the tree anyway via
+      # non-conflicting file adds -- left in place, unwired, same shape as the fork's own
+      # scripts/memory-link-audit.py already sitting unwired from an earlier round. Available
+      # for a future adoption card.

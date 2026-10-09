@@ -14,10 +14,19 @@ import { readBody, json, serveFile } from '../http-helpers.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { readAutoRestartConfig } from '../auto-restart-store.js'
+// configDirFor from context-restart-gate-runner.js, not upstream's main-transcript-root.js
+// (deferred supervised cutover, card 5c134edf) -- same redirect as the other command-surface
+// files (card d79a69b5).
+import { configDirFor } from '../context-restart-gate-runner.js'
 import type { RouteContext } from './types.js'
 
 async function getActiveMarveenModel(): Promise<string> {
-  return (await readActiveModelFromProjectDir(PROJECT_ROOT)) ?? 'unknown'
+  // configDirFor, not the host default: when the channels session runs on its
+  // own CLAUDE_CONFIG_DIR, the default root holds a pre-migration transcript
+  // that still parses, so the card would show a model the session stopped
+  // using. Display, not a decision -- but a wrong number here is what makes
+  // someone trust the wrong root elsewhere.
+  return (await readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(MAIN_AGENT_ID))) ?? 'unknown'
 }
 
 // Pure identity-core of the /api/marveen payload: the brand-relevant fields the
@@ -71,7 +80,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     const idCore = buildMarveenIdentityCore(currentBotName(), currentBrandName(), MAIN_AGENT_ID)
     const [model, contextTokens] = await Promise.all([
       getActiveMarveenModel(),
-      readContextTokensFromProjectDir(PROJECT_ROOT),
+      readContextTokensFromProjectDir(PROJECT_ROOT, configDirFor(MAIN_AGENT_ID)),
     ])
     json(res, {
       ...idCore,

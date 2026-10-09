@@ -16477,3 +16477,93 @@ tests/smoke/**, tests/browser/**, agents/**, store/adopted/**/evals/fixtures/**,
 
 Ki dontott: backend3 (konfliktusfeloldas + 2 biztonsagi/korrektseg javitas talalva es javitva a
 mar auto-mergelt reszben). Gate: QA + Cybersec (a kartya kerese szerint).
+
+## 2026-10-09 -- Upstream-sync 5. koteg (kartya 1a046537, Szotasz/marveen 97c910e6..2a9fc992)
+
+Minden fajlnev relativ a repo gyokerehez. Fork-oldal az alapertelmezes; csak az eltereseket
+sorolja fel ez a bejegyzes.
+
+**mcp-catalog.json, Gmail-pakett argumentumai: UPSTREAM-ot vettuk at, dontessel.** A fork regi
+oldala a `gmail-mcp-server` (karbantarto: uhbarp-ayis, van postinstall) pakettet hasznalta;
+upstream mar atallt a `@artymclabin/gmail-mcp`-re (karbantarto: artymclabin, nincs postinstall,
+a repo azonossaga ellenorizve a mar nem-utkozo `verifiedNote` szoveg alapjan). Upstream oldal
+biztonsagilag erosebb -- itt UPSTREAM gyozott, nem a fork.
+
+**scripts/__tests__/outgoing-copy-gate.test.py: upstream oldal ELUTASITVA, ellentmondas miatt.**
+Egy upstream teszt-hurok meg elvarta, hogy `label_message` a biztonsagos listan maradjon, miutan
+egy MASIK, mar meglevo, UGYANEBBEN a fajlban allo teszt explicit kimondja, hogy a kartya
+498d53c1 dontese ota `label_message` NINCS tobbe a biztonsagos listan. A ket teszt egymasnak
+ellentmond; a regebbi, mar-dontott allitas nyert, az uj hurok `label_message`-re vonatkozo sora
+torolve/kivéve.
+
+**src/db.ts (5 konfliktus-blokk): fork oldal, UNION egy blokknal.** A legelso blokk mar korabbi
+kezi UNION-t tartalmazott (B-wave, kartya 42938a74 + 3bcc1242 egyutt) -- ezt egy automatizalt
+regex-szkript elso probalkozasa VELETLENUL torolte (a `searchAgentMemories` fuggveny-aláírás
+SOR es egy MEMKERESVAK917 magyarazo komment eltunt, TS1128 szintaxis-hiba lett belole). Kezzel
+helyreallitva `git show HEAD:src/db.ts` alapjan, `npx tsc --noEmit` nulla hibaval ellenorizve.
+**Eljaras-tanulsag:** a tobbi, hasonlo "tartsd meg a HEAD-et teljesen" fajlnal egy BIZTONSAGOSABB,
+sor-alapu allapotgep-szkriptre valtottunk at (nem regex/DOTALL), amit minden ilyen fajlon
+lefuttattunk, es minden lepes utan `npx tsc --noEmit` nulla hibat igazolt.
+
+**src/web/routes/marveen.ts: tenyleges upstream JAVITAS adoptalva, a mar dontott configDirFor-
+redirekttel.** Upstream `getActiveMarveenModel()`-t es a `contextTokens` szamitast is
+`configDirFor(MAIN_AGENT_ID)`-vel bovitette (a hoszt-alapertelmezes helyett), mert egy sajat
+CLAUDE_CONFIG_DIR-en futo channels-session eseten a hoszt-alapertelmezes egy regi,
+migracio-elotti tortenetet olvasna vissza -- rossz modellt/kontextus-token-szamot mutatva a
+dashboardon. A JAVITAS VALODI, adoptalva -- de a `configDirFor` importja NEM upstream uj
+`main-transcript-root.js` moduljabol jon (az a modul halasztott, felugyelt atallas, kartya
+5c134edf, mar korabban dokumentalva tobb fajlnal: card d79a69b5), hanem a fork mar-exportalt
+`context-restart-gate-runner.js`-bol, pontosan ugyanaz a mintat kovetve, mint a tobbi uj
+parancs-feluleti fajl (builtin-commands.ts, main-model.ts, midturn-commands.ts, queue-view.ts,
+session-control.ts, system-status.ts). A fork async readActiveModelFromProjectDir/
+readContextTokensFromProjectDir szignaturaja miatt `await` is kellett mindket hivasnal.
+
+**src/web/context-restart-gate-runner.ts: egy TISZTA auto-merge melle csendben beszivargott, fel
+nem oldott import torolve.** A `import { configDirFor, newestMainConfigRoot } from
+'./main-transcript-root.js'` sor egy NEM-konfliktalt diff-hunkkent kerult be (csak upstream
+oldala modositotta azt a sort), es a mar meglevo, fork sajat `export function configDirFor(...)`
+lokalis deklaracioval TS2440 nevutkozest okozott -- a `npx tsc --noEmit` kapta el. Torolve;
+a fork lokalis `configDirFor` fuggvenye valtozatlan.
+
+**NEM ADOPTALT, dontessel: `newestMainConfigRoot` funkcio es a ket uj teszt-fajl, ami rea
+epul.** Upstream ket UJ teszt-fajlt hozott (`src/__tests__/context-guard-main-transcript-root.
+test.ts`, `src/__tests__/context-restart-gate-main-transcript-root.test.ts`), amik mindketten
+feltetelezik, hogy a `context-guard-runner.ts`/`context-restart-gate-runner.ts` `configDirFor`-ja
+a "legujabb transzkriptumu gyoker" (shared vs isolated CLAUDE_CONFIG_DIR) logikat hasznalja a
+MAIN agensre, es hogy `measureContextTokens`/`measureIdleMs`/`measurePct` EXPORTALVA es
+SZINKRON fuggvenyek. Mindharom felteves utkozik a fork mar dontott allapotaval: (1) a
+`newestMainConfigRoot` kizarolag upstream uj `main-transcript-root.js` moduljaban letezik, amit
+a fork mar tobbszor halasztott (kartya 5c134edf, "a resolver logikaja meg nincs atolvasva/
+ellenorizve a fork sajat resolveAgentConfigDirForRead dontese ellen"); (2) a fork mar korabban
+ASZINKRONRA javitotta ezeket a fuggvenyeket (kartya 42938a74, hianyzo `await` biztonsagi hiba),
+tehat a tesztek SZINKRON hivasai (nincs `await`) eleve ervenytelenek a fork architekturajan. A
+ket uj teszt-fajl TOROLVE (git rm), nem adoptalva -- ugyanaz a mintat koveti, mint a korabbi
+"nem adoptalt funkciora epulo CI-lepes" dontesek (lasd .github/workflows/test.yml fentebb).
+Ujranyitando dontes, AMIKOR a main-transcript-root.js tenyleges atallasa megtortenik.
+
+**src/web/agent-process.ts, src/web/agent-scaffold.ts, src/web/context-guard-runner.ts,
+src/web/context-restart-gate-runner.ts, src/web/hook-registration-guard.ts,
+src/web/routes/memories.ts, src/web/routes/messages.ts, src/channel-coordinator/ingest.ts,
+src/web.ts, scripts/hooks/outgoing-copy-gate.py, scripts/hooks/email-approval-gate.py,
+scripts/email-send-gate.mjs, scripts/memory-index-gate.sh, templates/CLAUDE.md.template,
+templates/settings.json.template, web/lang/en.js, web/lang/hu.js, web/style.css, tovabbi
+email-gate/memory-search teszt-fajlok:** fork oldal megtartva minden blokkon -- mar korabban
+dontott biztonsagi funkciok (device-allowlist card 7503bb31, email deny-by-default 498d53c1/
+45b33b2b, 9 extra Bash-matcher guard, progressive memory retrieval 0c5423fc, printf-pipe curl
+minta a token-argv-szivargas ellen) szupersetje upstream regebbi/szukebb oldalanak. Trivialis
+stilus-elteresek (String(chunk) vs chunk.toString(), em-dash vs vessz/pont a hu/en szovegben)
+is fork-oldal, a "nincs gondolatjel" szabaly miatt.
+
+**web/app.js: a mar dokumentalt modularizacios stub-politika (acknowledged-conflicts.ts
+~694-715. sor) szerint fork-oldal (stub) megtartva.** Az upstream ~1120 soros blokkja a
+modularizacio ELOTTI, meg monolitikus app.js-tartalom; a fork sajat tartalma mar 36+ kulon
+web/app-*.js szeletbe lett kiszervezve (ellenorizve: app-page-switch.js, app-sidebar-groups.js,
+app-i18n-nav.js leteznek es nem konfliktaltak). A dokumentalt politika szerint teljes,
+fuggveny-szintu uj-funkcio-audit ezen a korön NEM keszult (ugyanaz a "ajanlott, de nem nyitott"
+allasfoglalas, mint a korabbi korokben) -- ha egy jovobeli kor konkret regressziot talal, az
+audit akkor nyitando.
+
+Ki dontott: backend3 (konfliktusfeloldas, 1 helyreallitott db.ts serules a sajat hibajabol,
+1 valodi upstream-javitas adoptalva routes/marveen.ts-ben, 1 csendben beszivargott import-
+utkozes elkapva tsc-vel, 2 uj teszt-fajl elutasitva nem-adoptalt funkcio miatt). Gate: QA +
+Cybersec + Cybered (a kartya kerese szerint, magasabb tier mint a 4. koteg).

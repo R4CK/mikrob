@@ -93,6 +93,7 @@ from email_extract import collect_email_envelope  # noqa: E402
 # gate exited 0 on them and an unapproved connector send was never denied.
 _SEND_TOOL = re.compile(r"send[-_]?email|manage_email", re.I)
 
+
 # Card 498d53c1 (Cybersec MEDIUM on a4164e95): a tool-NAME list drifts -- send_draft (the
 # create_draft + send_draft pair bypasses "only reply/forward/send_message are sends") and the
 # hyphenated resend__send-email both slipped past name-list checks before this existed.
