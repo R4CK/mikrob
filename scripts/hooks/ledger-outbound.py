@@ -24,11 +24,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import owner_chat  # noqa: E402
 
 
-# mcp__plugin_telegram_telegram__reply, mcp__plugin_discord_discord__reply,
-# mcp__plugin_slack-channel_slack__reply, ... -- the plugin segment may carry a
-# hyphen (slack-channel); without it every Slack reply was dropped here and the
-# Stop-hook reply guard kept blocking on an already-answered message.
-REPLY_TOOL_RX = re.compile(r"^mcp__plugin_[A-Za-z0-9_-]+__reply$")
+# mcp__plugin_telegram_telegram__reply, mcp__plugin_discord_discord__reply, ...
+REPLY_TOOL_RX = re.compile(r"^mcp__plugin_[A-Za-z0-9_]+__reply$")
 
 
 def _owner_chat():
