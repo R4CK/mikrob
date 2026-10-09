@@ -36,8 +36,46 @@ _health() { local i=0; while [ "$i" -lt 20 ]; do
   sleep 1; i=$(( i + 1 )); done; return 1; }
 _restart() { "$INSTALL_DIR/scripts/stop.sh"; "$INSTALL_DIR/scripts/start.sh"; }
 
+# ZAKARFELUGY921: THE PORT ANSWERING IS NOT PROOF THAT THE SERVICES ARE UNDER
+# THEIR UNITS. That is exactly how the reported install looked for two days: the
+# dashboard answered, the channel answered, and both units were `inactive`, so
+# Restart= and OnFailure= no longer applied to anything. _health cannot see this
+# -- it only asks the port. This check asks systemd instead, and it reports
+# rather than fails: a unit drift is not fixed by a rollback, so turning it into
+# a failed update would swap a silent problem for a destructive one.
+# The SLUG is derived the same way start.sh/stop.sh derive it.
+_unit_drift() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  pidof systemd >/dev/null 2>&1 || return 0
+  local slug drift="" u scope=""
+  slug="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  slug="${slug:-marveen}"
+  if systemctl cat "${slug}-dashboard.service" >/dev/null 2>&1; then scope=""
+  elif systemctl --user cat "${slug}-dashboard.service" >/dev/null 2>&1; then scope="--user"
+  else return 0
+  fi
+  for u in "${slug}-dashboard" "${slug}-channels"; do
+    # Only enabled units are a promise; a deliberately disabled one is not drift.
+    systemctl $scope is-enabled --quiet "$u" 2>/dev/null || continue
+    systemctl $scope is-active --quiet "$u" 2>/dev/null || drift="${drift} ${u}"
+  done
+  [ -n "$drift" ] && printf '%s' "${drift# }"
+  return 0
+}
+
 _restart
-if _health; then _finish success restart 0 ""; fi
+UNIT_DRIFT="$(_unit_drift)"
+if [ -n "$UNIT_DRIFT" ]; then
+  echo "FIGYELEM: enabled, de NEM active unit(ok) a restart utan: ${UNIT_DRIFT}" >&2
+  echo "          A szolgaltatas valaszolhat a portjan, de a unitjan KIVUL fut:" >&2
+  echo "          a Restart= es az OnFailure= ilyenkor NEM vonatkozik ra." >&2
+fi
+if _health; then
+  if [ -n "$UNIT_DRIFT" ]; then
+    _finish success restart 0 "A frissites lement es a dashboard valaszol, DE enabled unit(ok) nem active: ${UNIT_DRIFT}. A szolgaltatas a unitjan kivul fut, tehat a Restart=/OnFailure= felugyelet nem ervenyes ra."
+  fi
+  _finish success restart 0 ""
+fi
 
 # Restart did not bring the dashboard back -> auto-rollback to the pre-update
 # commit (safe: ff-only ancestor, no force-push, no local-change discard) and

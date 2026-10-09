@@ -131,6 +131,7 @@ const modelInFlight = new Map<string, Promise<string | null>>()
 // so we read the right project dir for agents on a non-default config.
 export function projectsDirFor(workingDir: string, configDir?: string, homeDirOverride?: string): string {
   const base = configDir ?? join(homeDirOverride ?? homedir(), '.claude')
+  // The encoding is Claude Code's, measured -- see src/claude-project-dir.ts.
   const encoded = encodeClaudeProjectDir(workingDir)
   return join(base, 'projects', encoded)
 }
