@@ -15,12 +15,23 @@
 // The pairing invariant -- both posting sites nudge -- is a source property and is checked as one.
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { REPO_ROOT } from './helpers/repo-location.js'
 
 const SCRIPT = join(REPO_ROOT, 'store/offload-dispatch.sh')
 const SRC = readFileSync(SCRIPT, 'utf8')
+
+// Card 5595afa7: the INSTALLED gate now correctly detects a masked ollama.service user unit, which
+// this suite's own host has (deliberately, per Peti's 2026-10-01 decision). The dead-dashboard test
+// below is about dashboard-unreachable handling, not about the install gate, so it must not inherit
+// whatever the real host's mask state happens to be.
+function stubInstalledOk(dir: string): string {
+  const script = join(dir, 'installed-stub.sh')
+  writeFileSync(script, '#!/bin/sh\necho installed\nexit 0\n')
+  return script
+}
 
 /** Executable lines only: a helper named in a comment is documentation, not a call. */
 const CODE_LINES = SRC.split('\n').filter((l) => !/^\s*#/.test(l))
@@ -115,15 +126,21 @@ describe('one contract, both call sites', () => {
   it('a dead dashboard still exits 0', () => {
     // The whole path is a non-blocking dispatch step; a broken board must not fail the dispatch that
     // called it. Port 1 refuses immediately, so this costs nothing.
-    const out = execFileSync('bash', [SCRIPT, 'deadbeef'], {
-      encoding: 'utf-8',
-      env: {
-        ...process.env,
-        DASHBOARD_URL: 'http://127.0.0.1:1',
-        OFFLOAD_VRAM_GUARD: '/nonexistent',
-      },
-    })
-    expect(out).toContain('skip')
+    const dir = mkdtempSync(join(tmpdir(), 'offload-draft-nudge-'))
+    try {
+      const out = execFileSync('bash', [SCRIPT, 'deadbeef'], {
+        encoding: 'utf-8',
+        env: {
+          ...process.env,
+          DASHBOARD_URL: 'http://127.0.0.1:1',
+          OFFLOAD_VRAM_GUARD: '/nonexistent',
+          OFFLOAD_INSTALLED: stubInstalledOk(dir),
+        },
+      })
+      expect(out).toContain('skip')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

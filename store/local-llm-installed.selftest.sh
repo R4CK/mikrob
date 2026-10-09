@@ -36,12 +36,37 @@ mkdir -p "$FAKE_LOCAL_BIN"
 # to run the script with. Resolve bash's own absolute path FIRST, before any PATH override.
 BASH_ABS="$(command -v bash)"
 
-run() { # $1 = PATH to use, $2 = LOCAL_BIN_DIR, $3 = model-file content ("" = absent)
+# Fake `systemctl` stubs for the mask check (card 5595afa7). Cases A-E are not about masking, so
+# they all run against the UNMASKED stub -- without it they would read the REAL host's systemctl,
+# which on a host where gpu-crashloop-guard actually masked ollama.service would make every one of
+# them fail for the wrong reason (exactly what happened when this gate was added: all 5 pre-existing
+# cases failed with "ollama.service masked" the first time this file ran on such a host).
+FAKE_SYSTEMCTL_UNMASKED="$TMP/systemctl-unmasked"
+cat > "$FAKE_SYSTEMCTL_UNMASKED" <<'EOF'
+#!/bin/sh
+echo "enabled"
+exit 0
+EOF
+chmod +x "$FAKE_SYSTEMCTL_UNMASKED"
+
+FAKE_SYSTEMCTL_MASKED="$TMP/systemctl-masked"
+cat > "$FAKE_SYSTEMCTL_MASKED" <<'EOF'
+#!/bin/sh
+echo "masked"
+exit 1
+EOF
+chmod +x "$FAKE_SYSTEMCTL_MASKED"
+
+NO_SYSTEMCTL="/nonexistent-systemctl-$$"
+
+run() { # $1 = PATH to use, $2 = LOCAL_BIN_DIR, $3 = model-file content ("" = absent), $4 = systemctl bin (default: unmasked stub)
   local model_file="$TMP/model-$RANDOM"
   if [ -n "${3+x}" ] && [ -n "$3" ]; then
     printf '%s' "$3" > "$model_file"
   fi
+  local systemctl_bin="${4:-$FAKE_SYSTEMCTL_UNMASKED}"
   PATH="$1" LOCAL_LLM_INSTALLED_LOCAL_BIN_DIR="$2" LOCAL_LLM_INSTALLED_MODEL_FILE="$model_file" \
+    LOCAL_LLM_INSTALLED_SYSTEMCTL_BIN="$systemctl_bin" \
     "$BASH_ABS" "$SCRIPT"
 }
 
@@ -84,6 +109,30 @@ if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "^not-installed: no 'ollama' 
   PASS=$((PASS+1)); echo "OK   exit 1, not-installed        neither present, binary reason reported"
 else
   FAIL=$((FAIL+1)); FAILED+=("E: neither"); echo "FAIL rc=$rc out='$out'"
+fi
+
+echo "=== F. UNIT MASKED -> not-installed, wins over binary+model both present ==="
+out="$(run "$FAKE_BIN_DIR:/usr/bin:/bin" "$NO_LOCAL_BIN_DIR" "hf.co/some/model:Q4" "$FAKE_SYSTEMCTL_MASKED")"; rc=$?
+if [ "$rc" -eq 1 ] && [ "$out" = "not-installed: ollama.service masked" ]; then
+  PASS=$((PASS+1)); echo "OK   exit 1, 'not-installed: ollama.service masked'   deliberate mask wins over a healthy binary+model"
+else
+  FAIL=$((FAIL+1)); FAILED+=("F: masked unit"); echo "FAIL rc=$rc out='$out'"
+fi
+
+echo "=== G. NO SYSTEMCTL ON THIS HOST -> mask check is inert, falls through to the normal checks ==="
+out="$(run "$FAKE_BIN_DIR:/usr/bin:/bin" "$NO_LOCAL_BIN_DIR" "hf.co/some/model:Q4" "$NO_SYSTEMCTL")"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "installed" ]; then
+  PASS=$((PASS+1)); echo "OK   exit 0, 'installed'          an unanswerable systemctl is not read as a mask"
+else
+  FAIL=$((FAIL+1)); FAILED+=("G: no systemctl"); echo "FAIL rc=$rc out='$out'"
+fi
+
+echo "=== H. UNIT MASKED, BINARY ALSO MISSING -> mask reason reported, not the binary reason ==="
+out="$(run "$NO_OLLAMA_PATH" "$NO_LOCAL_BIN_DIR" "hf.co/some/model:Q4" "$FAKE_SYSTEMCTL_MASKED")"; rc=$?
+if [ "$rc" -eq 1 ] && [ "$out" = "not-installed: ollama.service masked" ]; then
+  PASS=$((PASS+1)); echo "OK   exit 1, 'not-installed: ollama.service masked'   mask is checked before the binary"
+else
+  FAIL=$((FAIL+1)); FAILED+=("H: masked + no binary"); echo "FAIL rc=$rc out='$out'"
 fi
 
 echo "-------------------------------------------------------------"
