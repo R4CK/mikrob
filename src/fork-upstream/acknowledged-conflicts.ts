@@ -3086,14 +3086,20 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "value was measured to fix.",
   },
   'scripts/notify.sh': {
-    needle: '$CHAT_ID" = "0"',
+    needle: 'resolve_owner_chat_id "$ENV_FILE"',
     file: 'scripts/notify.sh',
     expect: 'present',
     because:
       "The CHATID0 guard (refuse a chat_id of \"0\", the installer placeholder) was refused " +
       "2026-09-06 as its own fallback-channel-behaviour decision; commit 3e807fe4 had already " +
       "landed it the day before, measured and corrected under card 2f1cbaf1. Without this guard a " +
-      "placeholder install's fallback alert path posts to chat_id=0 instead of failing loudly.",
+      "placeholder install's fallback alert path posts to chat_id=0 instead of failing loudly. " +
+      "SUPERSEDED 2026-10-09 (backend, card 3026a591): the inline `[ \"$CHAT_ID\" = \"0\" ]` string " +
+      "compare was replaced by a call into scripts/lib/owner-chat.sh's resolve_owner_chat_id -- " +
+      "strictly stronger, not a regression: it still refuses the bare \"0\"/empty placeholder, AND " +
+      "additionally recovers a real owner chat from the main install's access.json when one is " +
+      "paired. The needle moved to the resolver call so this guard tracks the actual current " +
+      "protection instead of a literal that no longer exists in the file.",
   },
   'scripts/github-pr-monitor.sh': {
     needle: 'AUTH_ALERT_COOLDOWN=21600',
