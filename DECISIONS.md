@@ -17542,3 +17542,42 @@ javitas (ACL-bypass egy mar eleso biztonsagi kapuban, barhogy is log-only a ship
 
 **Ki döntött:** backend (karpathy-guidelines, mutacio-proof teszt). Gate: QA + Cybersec (a kartya 35dc6dbe
 sajat kijelolese szerint, egress/hook-reteg biztonsagi hatasu).
+
+## 2026-10-09 -- Kartya 35dc6dbe folytatas: Hooks + Agent-core klaszter (13 commit) dontesei
+
+**Hooks klaszter (5 commit):** mind STALE/mar-adoptalt, nincs uj follow-up kartya.
+- 6febccdf (Stop guard csatorna-fuggetlen reply-tool-nev): PENDING -- a fork tenylegesen tobb-providert
+  tamogat (ChannelProviderType: telegram/slack/discord/googlechat/teams), de a ket Telegram-specifikus
+  hook (telegram-reply-directive.py, telegram-reply-guard.py) hardkodolt tool-nevet hasznal. A helyes
+  tool-nev minta a tobbi 4 providerre SEHOL nincs a repoban (grep-elve), es a live rendszeren is csak a
+  telegram plugin van telepitve -- a talalgatas rosszabb lenne a jelenlegi hardkodnal. Dontes-kor: live
+  plugin-hozzaferes vagy marketplace-definicio ellenorzese utan.
+- 11112a8a (memory-lookup-nudge): mar ADOPTED (acknowledged-conflicts.ts sora).
+- 89bc8417 (telegram-image-resize.sh torles): nincs mit torolni, a fajl mar nem letezik ebben a forkban.
+- 03255c1e + 0db7ac66 (permission-prompt-as-question + wiring-teszt): mar adoptalva kartya dbba0424-en
+  (done, PERMDENY905), grep-pel igazolva (channel-monitor.ts:2020, pane-permission-dialog.test.ts 14 eset).
+
+**Agent-core klaszter (8 commit):**
+- 51b18820 (generic custom model-provider): PORTED kozvetve -- kartya 96c00ee5 (done) mar epitette a
+  customProvider vegponti bekotest, a 965b0b2b (done) altal halasztott tetelkent.
+- 9ce20239 (PERSONANOCLOBBER923): PENDING, dedikalt kartya mar letezik: 28923621 (planned). Nem duplikalva.
+- f3ce19ed + 75be3249 (HOSTMOVE923, CLAUDE.md/PreCompact ujra-horgonyzas): PENDING, UJ follow-up kartya
+  nyitva: 8c6f30fb. A fork sajat CLAUDE.md-generalasahoz igazitando (sajat ANCHORED_SUFFIXES-lista kell,
+  nem upstream listajanak masolasa) -- mar egyszer deferalva 965b0b2b-n, most sajat kartyat kapott.
+- 1a10db2e (ZAKARFELUGY921, update-finalizer tulelje a stop.sh-t): PENDING, UJ follow-up kartya: 3caa7e9f.
+  A fork sajat acknowledged-conflicts.ts bejegyzese mar ezt nevezte meg "a legerosebb egyedi adopcios
+  jelolt"-nek egy korabbi korben, most sajat kartyat kapott (QA gate, restart/rollback megbizhatosag).
+- a7f809d5 (oauthTokenFile, ugynokenkenti sajat setup-token): PENDING, UJ follow-up kartya: 06b48bd0.
+  Nagy (214+384 sor upstream, tobb review-korrekcios kommit), credential-kezeles trust-boundary -- NEM
+  epitve ebben a mar is nagy sync-kartyaban, sajat Gate QA+Cybersec kartyan.
+- 39a7e2ab + 0fc7aee6 (MCPOROKLES923, uj ugynok MCP-oroklese csak explicit listarol): PENDING, UJ
+  follow-up kartya: 0c3c3796. Uj fajl (mcp-inheritance.ts) + tobb erintett fajl, trust-boundary
+  (MCP-szerver-kor-bovules), sajat Gate QA+Cybersec kartyan.
+
+**Miert nem epitve helyben:** a 4 uj follow-up kartya mindegyike tobb-szaz soros, tobb-reszes, valodi
+adoptacios dontest igenylo feature (nem mechanikus port), ketto trust-boundary-erintesu (SEC gate) --
+a mar is 31-commitos sync-kartyaba zsufolasuk a 10. szabaly (GitHub-first) sajat szellemevel menne
+szembe: minden adoptacios dontes a sajat sulyanak megfelelo helyen szulessen, kulon gate-tel ahol indokolt.
+
+**Ki döntött:** backend (karpathy-guidelines, grep-elso fegyelem minden tetelre). Gate: QA + Cybersec
+(a kartya 35dc6dbe sajat kijelolese szerint).
