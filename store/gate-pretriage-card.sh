@@ -229,6 +229,21 @@ comments="$(curl -s -H @"$hdr_file" "$DASH/api/kanban/$CARD/comments" 2>/dev/nul
 board="$(curl -s -H @"$hdr_file" "$DASH/api/kanban?limit=500" 2>/dev/null || true)"
 [[ -n "$comments" && -n "$board" ]] || { echo "SKIP: dashboard unreachable"; exit 0; }
 
+# Card 514a9fb3 M1: an error response (e.g. the unknown-query-parameter 400) is
+# non-empty JSON too, so the check above alone let it through -- project/title/
+# description then all came out "" with nothing saying why. Detect the
+# {"error": ...} shape explicitly and say so, instead of degrading silently.
+board_error="$(printf '%s' "$board" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if isinstance(d, dict) and "error" in d:
+    print(d["error"])
+' 2>/dev/null || true)"
+[[ -z "$board_error" ]] || { echo "SKIP: board lekerdezes hibat adott vissza, nem kartya-listat: $board_error"; exit 0; }
+
 project="$(printf '%s' "$board" | CARD="$CARD" python3 -c '
 import json, sys, os
 d = json.load(sys.stdin); rows = d if isinstance(d, list) else d.get("cards", d.get("data", []))

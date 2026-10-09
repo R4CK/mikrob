@@ -583,7 +583,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // measured on the live install, six agents tried three different names (includeArchived/
     // archived/include_archived) for the same intent, none got feedback. Same reasoning as the
     // status/assignee fail-closed-on-unknown-VALUE comment below, one level up: unknown NAME.
-    const KNOWN_KANBAN_QUERY_PARAMS = new Set(['status', 'assignee', 'agent', 'includeArchived'])
+    // Card 514a9fb3 M1: `limit` joins the known set -- two live callers
+    // (store/gate-pretriage-card.sh, store/reconstruction-landed-sweep.sh) already
+    // sent `?limit=` before this endpoint's unknown-param 400 existed, and the 400
+    // broke both (one silently, behind `|| true`; one loudly). Grep-checked every
+    // /api/kanban? caller under store/ and scripts/ -- these two plus two `?status=`
+    // callers are the entire live set, nothing else is in play.
+    const KNOWN_KANBAN_QUERY_PARAMS = new Set(['status', 'assignee', 'agent', 'includeArchived', 'limit'])
     const unknownParams = [...ctx.url.searchParams.keys()].filter((k) => !KNOWN_KANBAN_QUERY_PARAMS.has(k))
     if (unknownParams.length > 0) {
       json(res, {
@@ -630,13 +636,31 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // say so" reasoning as the status filter above.
     const assignees = filterValues(ctx.url, 'assignee') ?? filterValues(ctx.url, 'agent')
     if (assignees !== null) {
-      const knownAgents = new Set(listAgentNames())
-      const unknownAgents = [...assignees].filter((a) => !knownAgents.has(a))
+      // Card 514a9fb3 M1: listAgentNames() only lists sub-agents with a directory
+      // under agents/ -- MikroB (MAIN_AGENT_ID) is a real, first-class agent and
+      // the assignee on 107 live cards, but has no such directory, so a plain
+      // Set-membership check 400'd `assignee=mikrob`. isKnownAgent() already
+      // carries the MAIN_AGENT_ID special case other callers (isKnownAgent's own
+      // router use) rely on -- reuse it instead of re-deriving the same rule here.
+      const unknownAgents = [...assignees].filter((a) => !isKnownAgent(a))
       if (unknownAgents.length > 0) {
         json(res, { error: `Ismeretlen agent: ${unknownAgents.join(', ')}` }, 400)
         return true
       }
       cards = cards.filter((c) => assignees.has(String(c.assignee ?? '')))
+    }
+    // Card 514a9fb3 M1: `limit=` caps the returned array (both live callers used it as
+    // a generous ceiling on an already-small board, not a real pagination need) --
+    // fail-closed on a non-numeric value rather than silently ignoring it, same
+    // reasoning as the other filters above.
+    const limitRaw = ctx.url.searchParams.get('limit')
+    if (limitRaw !== null) {
+      const limitNum = Number(limitRaw)
+      if (!Number.isInteger(limitNum) || limitNum < 0) {
+        json(res, { error: `Érvénytelen limit: ${limitRaw}` }, 400)
+        return true
+      }
+      cards = cards.slice(0, limitNum)
     }
     jsonMaybeGzip(req, res, cards)
     return true
@@ -835,6 +859,17 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const rawId: unknown = (normalized as Record<string, unknown>).id
     const suppliedId: string | null = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : null
     const id: string = suppliedId ?? randomUUID().slice(0, 8)
+    // Card 514a9fb3 L1: PUT already refuses a parent_id that would close a loop
+    // (parentWouldCycle above), but POST let a client-supplied id through
+    // uncovered -- a caller-chosen id equal to its own parent_id (or closing a
+    // loop into one) created a self-attached card the board could never walk.
+    // Checked here, before createKanbanCard, for the same reason PUT checks it
+    // before updateKanbanCard: the row must not exist yet in the refused shape.
+    const rawParentId: unknown = (normalized as Record<string, unknown>).parent_id
+    if (typeof rawParentId === 'string' && rawParentId && parentWouldCycle(id, rawParentId)) {
+      json(res, { error: `A(z) "${rawParentId}" szülővé tétele kört zárna be a szülő-láncban.` }, 409)
+      return true
+    }
     createKanbanCard({ ...normalized, id })
     // Card 4bade960: run the dedup pre-filter on EVERY new card (rule 6b was previously enforced
     // only by agent discipline before opening a card, and by the >2-day dispatch filter for cards
