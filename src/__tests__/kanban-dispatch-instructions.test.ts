@@ -119,4 +119,23 @@ describe('kanbanMoveInstructions', () => {
   // (CLAUDE.md rule 4). Upstream's "program-specific closing status" sentence, declined in
   // kanban.ts's own merge resolution (see DECISIONS.md 2026-10-09 / 0b550d89 entry) for the
   // same reason, has no step-2 "done" left to rank against on this fork. Not adapted -- removed.
+
+  // CARD 64c455da (WhiteHat M1 a 0b550d89 gate-ből): a "MIELŐTT NEKIKEZDESZ" szekció egy MÁSIK,
+  // mondatban (a description-mezőt olvasó útmutatóban) ugyanezt az upstream gate-bypass koncepciót
+  // hordozta tovább -- "más záró-státusz ... felülírja ... lásd a 2) lépésnél" -- szerveroldali
+  // done-gate hiányában ez egy kártyaleírásból jövő injekciós emelő volt: egy kártya szövege
+  // rávehetett volna egy ügynököt, hogy gate nélkül döntse el a záró-státuszt. Ez a teszt pirosra
+  // vált, ha a szöveg BÁRHOL (nem csak a már letörölt escalation-résznél) visszakapja ezt a jogot.
+  it('the description-override guidance never grants override rights over the closing status', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    // The description CAN carry stronger rules than the template (e.g. "no live restart") --
+    // that general mechanism stays. What must NEVER appear again is a sentence pointing a
+    // description-driven override AT the closing-status step.
+    expect(out).not.toMatch(/más záró-státusz/)
+    expect(out).not.toMatch(/felülírja.*2\)\s*lépésnél/)
+    // Positive control: the sentence that explains the description can override NON-gate
+    // defaults is still present, so this is not a vacuous "the feature was deleted" pass.
+    expect(out).toContain('description')
+    expect(out).toContain('nincs éles restart')
+  })
 })
