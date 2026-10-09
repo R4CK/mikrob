@@ -110,6 +110,18 @@ every tool call in the fleet, which is a strictly worse outcome than any single 
 one place that deliberately exits 0 is an unreadable hook ENVELOPE (bad JSON on stdin, no
 tool_name): at that point we do not know we are looking at a Bash call at all, and refusing an
 unknown tool call is not fail-closed, it is just broken.
+
+CARD 4ed64b20 (RedHat delta MEDIUM on 18055f83, comment 13365): a shell function or alias DEFINED
+and CALLED in the SAME command string used to hide a network command from every check above --
+`f(){ curl -s "$1"; }; f https://x` and `alias c=curl; c -s https://x` both measured rc=0 with ZERO
+log lines, because the call site uses the NAME (`f`/`c`), never the word `curl` itself. Fixed as
+its own indirection axis (_looks_network_capable): a function body or alias value that names a
+network-capable command makes the DEFINITION a finding on its own, regardless of what literal
+argument the call site supplies later. STATED LIMIT, not closed: a function/alias DEFINED in an
+EARLIER Bash tool call and used in a LATER one is invisible to this or any per-call text check --
+there is no shell state carried between hook invocations to inspect. Durable protection against
+that shape is a network-level control (per-agent egress firewall or proxy), not a smarter parser;
+see docs/bash-egress-guard.md for the same scope statement.
 """
 import json
 import os
@@ -779,6 +791,107 @@ def _has_net_marker(text):
     return any(marker in low for marker in _NET_MARKERS)
 
 
+# ---------------------------------------------------------------------------------------------
+# Step 3b: shell function / alias DEFINITIONS carrying network intent in the SAME command string
+# (RedHat delta finding on 18055f83, card 4ed64b20, comment 13365).
+#
+# `f(){ curl -s "$1"; }; f https://x` and `alias c=curl; c -s https://x` both measured rc=0 with
+# ZERO log lines. The tokenizer above treats `(` `)` `{` `}` as word-breaking punctuation (see
+# _SEPARATORS): `{` itself becomes the "command name" of the function-body segment, so neither
+# `curl` there nor the call site (`f`/`c`, not a known command name) is ever examined by
+# _judge_segment_body. Fixed the same way as every other indirection this file already refuses to
+# guess through (the `-K`/`--resolve`/`--config` axis): if the DEFINITION names a network-capable
+# command anywhere in its body/value, the definition itself is a finding, independent of what
+# literal argument the call site happens to use -- because that argument is decided by a LATER
+# segment this per-definition check does not try to thread through positional parameters.
+#
+# STATED LIMIT, NOT CLOSED (same honesty as the module docstring's SCOPE section): a function or
+# alias DEFINED in an earlier Bash tool call and used in a later one is invisible to this or any
+# text-level check -- this hook judges one command string at a time and carries no memory of a
+# prior call's shell state. Closing that gap needs a network-level control (per-agent egress
+# firewall/proxy), not a smarter parser; see docs/bash-egress-guard.md.
+_FUNC_DEF_RX = re.compile(
+    r"(?:\bfunction\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:\(\s*\))?|"
+    r"\b[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\))\s*\{"
+)
+
+
+def _find_brace_body(cmd, open_idx):
+    """Index just past the `}` matching the `{` at cmd[open_idx], honouring quotes."""
+    depth, i, n = 0, open_idx, len(cmd)
+    while i < n:
+        c = cmd[i]
+        if c == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if c == "'":
+            j = cmd.find("'", i + 1)
+            i = n if j < 0 else j + 1
+            continue
+        if c == '"':
+            j = i + 1
+            while j < n and cmd[j] != '"':
+                j += 2 if cmd[j] == "\\" else 1
+            i = n if j >= n else j + 1
+            continue
+        if c == "{":
+            depth += 1
+            i += 1
+            continue
+        if c == "}":
+            depth -= 1
+            i += 1
+            if depth == 0:
+                return i
+            continue
+        i += 1
+    return n
+
+
+def _find_function_bodies(cmd):
+    """Body text of every `name() { ... }` / `function name [()] { ... }` definition in cmd."""
+    bodies = []
+    for m in _FUNC_DEF_RX.finditer(cmd):
+        brace_idx = m.end() - 1  # the '{' the regex matched
+        end = _find_brace_body(cmd, brace_idx)
+        bodies.append(cmd[brace_idx + 1:max(brace_idx + 1, end - 1)])
+    return bodies
+
+
+def _looks_network_capable(text):
+    """True if TEXT's own command name is a direct-network command, or an interpreter one-liner
+    carrying a network marker, anywhere among its top-level or nested segments. Used for function
+    bodies and alias values: a positive here makes the DEFINITION itself a finding, regardless of
+    whether a literal target can be resolved, because the real target is decided by a call site
+    this per-definition check does not simulate (see the _FUNC_DEF_RX comment above)."""
+    try:
+        segments, nested = tokenize(strip_heredoc_bodies(text))
+    except Exception:
+        return True  # unparseable body: fail-closed, same exception boundary as everywhere else
+    for seg in segments:
+        name, idx = _command_name(seg)
+        if name is None:
+            continue
+        if name in DIRECT_NET:
+            return True
+        if name in INTERPRETERS:
+            script = _interpreter_script(seg, idx, name)
+            if script is not None:
+                marker_text = script.text
+                module_flags = _module_flag_text(seg, name)
+                if module_flags:
+                    marker_text = f"{module_flags} {marker_text}"
+                if _has_net_marker(marker_text) or _DEV_NET_RX.search(marker_text):
+                    return True
+        for w in seg:
+            if _DEV_NET_RX.search(w.text):
+                return True
+    for sub in nested:
+        if _looks_network_capable(sub):
+            return True
+    return False
+
+
 class Finding:
     __slots__ = ("kind", "command", "targets", "reason")
 
@@ -978,6 +1091,37 @@ def analyse(raw, allowed, depth=0, hatch=None):
         except Exception as exc:  # noqa: BLE001 - deliberate: one segment's failure, not the hook's
             findings.append(Finding(UNKNOWN, "<segment>", [],
                                     f"elemzesi hiba, fail-closed erre a parancsra: {type(exc).__name__}"))
+
+    # Card 4ed64b20 (RedHat delta on 18055f83): function/alias DEFINITIONS, see _looks_network_capable.
+    # Hatch-aware like every other finding: if BASH_EGRESS_ALLOW=1 appears anywhere at this level,
+    # these go to the SAME hatch channel instead of blocking, so the escape route stays symmetric.
+    hatched_here = any(_has_allow_hatch(seg) for seg in segments)
+
+    def _emit(kind_name, why):
+        if hatched_here:
+            if hatch is not None:
+                hatch.append(Finding(HATCH, kind_name, [], why))
+            return
+        findings.append(Finding(UNKNOWN, kind_name, [], why))
+
+    for body in _find_function_bodies(raw):
+        if _looks_network_capable(body):
+            _emit("<fuggveny-definicio>",
+                  "a fuggveny torzse halozati parancsot rejt, a hivasi hely donti el a tenyleges "
+                  "celt, amit ez a hook nem lat")
+    for seg in segments:
+        name, idx = _command_name(seg)
+        if name != "alias":
+            continue
+        for w in seg[idx + 1:]:
+            if w.redirect or not _ASSIGN_RX.match(w.text):
+                continue
+            value = w.text.split("=", 1)[1]
+            if _looks_network_capable(value):
+                _emit("<alias-definicio>",
+                      "az alias halozati parancsra mutat, a hivasi hely donti el a tenyleges "
+                      "celt, amit ez a hook nem lat")
+
     for sub in nested:
         findings.extend(analyse(sub, allowed, depth + 1, hatch))
     return findings

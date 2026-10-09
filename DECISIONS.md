@@ -17005,3 +17005,34 @@ taszkkal. tsc --noEmit clean.
 
 **Ki döntött:** backend2 (saját kódolási döntés a két felkínált irány között, indokolva fent).
 Gate: QA + Cybersec.
+
+## 2026-10-09: BASH_EGRESS_GUARD shell-fuggveny/alias indirekcio -- javitas + kimondott hatarok (kartya 4ed64b20)
+
+RedHat delta-gate GO a 18055f83-on (komment 13365) uj MEDIUM-ot talalt az enforce elesitese elott:
+egy shell-fuggveny vagy alias moge tett halozati parancs se nem blokkolodott, se nem naplozodott.
+Merve: `f(){ curl -s "$1"; }; f https://x` es `alias c=curl; c -s https://x` mindketto rc=0,
+NULLA naplosor -- a hivasi hely a NEVET hasznalja (f/c), sosem a curl szot, es a guard tokenizere
+a `(` `)` `{` `}` karaktereket szoelvalaszto irasjelnek kezeli, tehat a `{` maga lett a
+fuggveny-torzs szegmens "parancsneve", es a curl szo soha nem kerult vizsgalat ala.
+
+Javitas: scripts/hooks/bash-egress-guard.py-ban uj ellenorzes (_find_function_bodies,
+_looks_network_capable) -- ha egy fuggveny-definicio torzse vagy egy alias erteke halozat-kepes
+parancsot nevez meg, maga a DEFINICIO lesz lelet, fuggetlenul attol, milyen literal argumentumot
+kap a hivasi hely kesobb (ezt a hook nem szimulalja, nincs pozicionalis parameter-helyettesites).
+Ugyanaz a tengely, mint a mar meglevo -K/--resolve/--config opaque-flag kezeles: indirekcio eseten
+fail-closed, nem talalgatas. Hatch-kompatibilis: BASH_EGRESS_ALLOW=1 ugyanugy fedi ezt a leletet is.
+
+KIMONDOTT, NEM ZART HATAR (dokumentalva a modul docstringjeben es docs/bash-egress-guard.md-ben):
+egy KORABBI Bash-hivasban definialt fuggveny/alias egy KESOBBI hivasban tovabbra is lathatatlan --
+a hook egy-egy parancssort lat, nincs megorzott shell-allapota a hivasok kozott. Ennek tartos
+javitasa halozati szintu kontroll (per-agent egress tuzfal/proxy), nem egy okosabb parser. RedHat
+sajat javaslata volt ennek kimondasa, ha a teljes lefedes PreToolUse szinten nem oldhato meg.
+
+Bizonyitek: scripts/hooks/bash-egress-guard.selftest.py 132/132 eset + 11 property-assertion zold
+(uj 11. property: mutacios teszt, a _looks_network_capable kikapcsolasa nullazza a leletet a ket
+RedHat-mert probaan). src/__tests__/bash-egress-guard-wiring.test.ts 36/36 zold (uj: a ket mert
+probat BLOKKOLJA az ENERVARE bekotott hook-parancs, egy artalmatlan fuggveny/alias (ls, git) NEM
+blokkolodik tulbuzgon).
+
+Ki dontott: RedHat (lelet + javasolt alternativa), backend (vegrehajtas). Gate: QA + RedHat
+(WhiteHat tartalomszuro miatt nem gate-eli ezt a temat, lasd 18055f83 komment 13307/13364).
