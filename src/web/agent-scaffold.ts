@@ -2705,6 +2705,135 @@ export function ensureSkillsPathTrapSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// Card 965b0b2b (upstream adoption round, agent-scaffold import line): the sub-agent's own
+// default auth path (CLAUDE_CODE_OAUTH_TOKEN + store/.claude-oauth-token, auto-provisioned
+// CLAUDE_CONFIG_DIR) exists specifically to kill a recurring 401-cascade a hand-placed, expiring
+// .credentials.json caused every time -- Claude Code's own precedence picks the stale file over a
+// valid env token sitting right next to it. Documented here so the fix does not get re-broken by
+// someone "helpfully" copying a credential file across agents, which is its own hazard (no audit
+// trail, grants access to another owner's data).
+const FLEET_AUTH_BEGIN = '<!-- BEGIN GENERATED: fleet-auth-rule (auto-generated, do not edit by hand) -->'
+const FLEET_AUTH_END = '<!-- END GENERATED: fleet-auth-rule -->'
+const FLEET_AUTH_BLOCK_RE = new RegExp(
+  `${FLEET_AUTH_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${FLEET_AUTH_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+function buildFleetAuthBody(): string {
+  return [
+    '## Flotta-szintű AUTH-szabály (MEGSZEGHETETLEN)',
+    '',
+    'A sub-agentek alapértelmezés szerint a `CLAUDE_CODE_OAUTH_TOKEN` úton hitelesítenek',
+    '(`store/.claude-oauth-token`), auto-provisionált `CLAUDE_CONFIG_DIR`-rel. Ez az út',
+    'szünteti meg a visszatérő 401-kaszkádot, amit a kézzel elhelyezett, lejáró',
+    '`.credentials.json` okozott.',
+    '',
+    'A fő channels-agent ettől SZÁNDÉKOSAN eltér: alapértelmezésben a közös `~/.claude`-ot',
+    'használja. A `MAIN_AGENT_ISOLATED_CONFIG=1` kapcsolja át a flotta setup-tokenjére; ha',
+    'a botnak SAJÁT Claude-loginja van, arra a `MAIN_AGENT_CONFIG_DIR` való, és az',
+    'elsőbbséget élvez.',
+    '',
+    'A per-agent `claudeConfigDir` TÁMOGATOTT mező (nevesített plan-en keresztül is), arra',
+    'az esetre, ha egy agentnek saját Claude-loginra vagy saját plan-re van szüksége. A',
+    'használata döntés kérdése, nem tilalom.',
+    '',
+    'AMI VISZONT MEGSZEGHETETLEN:',
+    '',
+    '1. Ha egy agent "Not logged in"-t mutat, a javítás a TOKEN-FORRÁS, nem egy kézzel',
+    '   elhelyezett vagy symlinkelt `.credentials.json`. A kézi credential-elhelyezés hozta',
+    '   vissza a 401-kaszkádot minden alkalommal: a lejárt fájl a Claude Code precedenciája',
+    '   miatt akkor is nyer az érvényes env-tokennel szemben, ha az ott van mellette.',
+    '2. SOHA ne másold át másik agent tokenjét vagy credentialjét. Új agent SAJÁT,',
+    '   per-agent tokent és saját külső-szolgáltatás setupot kap (saját email, egyedi port,',
+    '   saját creds-könyvtár, saját OAuth). A másolás auditálhatatlan, és más megbízó',
+    '   adatához is hozzáférést ad.',
+  ].join('\n')
+}
+
+// Same five-rule idempotency contract as the sections above. Called on every startAgentProcess()
+// (and once for the main agent in web.ts), so an existing agent's CLAUDE.md picks up a wording fix
+// without a manual migration.
+export function ensureFleetAuthSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${FLEET_AUTH_BEGIN}\n${buildFleetAuthBody()}\n${FLEET_AUTH_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  let updated: string
+  if (FLEET_AUTH_BLOCK_RE.test(existing)) {
+    updated = existing.replace(FLEET_AUTH_BLOCK_RE, block)
+  } else {
+    updated = existing.trimEnd() + '\n\n' + block + '\n'
+  }
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+// Card 965b0b2b: measured 2026-09-21 (upstream) -- running `claude mcp list` INSIDE a
+// channel-owning agent's own session kills that session's channel-plugin MCP server (the
+// Telegram/Discord/Slack tools go dark) because the list command's own health-check connects to
+// every configured MCP server, including the channel plugin, and that second connection attempt
+// is what drops the first. The command itself reports success (prints "Connected", exits 0), so
+// nothing signals the failure -- only a channel-owning agent is affected; every other MCP server
+// and every other session is unharmed, and restarting the session restores the plugin. Adapted
+// from upstream's wording: the trailing pointer to a dedicated measurement doc is dropped here
+// because that doc was never ported to this fork (nothing to point at yet).
+const MCPLIST_BEGIN = '<!-- BEGIN GENERATED: mcp-list-channel-warning (auto-generated, do not edit by hand) -->'
+const MCPLIST_END = '<!-- END GENERATED: mcp-list-channel-warning -->'
+const MCPLIST_BLOCK_RE = new RegExp(
+  `${MCPLIST_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MCPLIST_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+function buildMcpListChannelBody(): string {
+  return [
+    '## `claude mcp list` egy csatornát birtokló ügynökben',
+    '',
+    'Ha ez az ügynök csatornát birtokol (Telegram/Discord/Slack), a saját sessionjében NE futtasd',
+    'a `claude mcp list`-et: mérve 2026-09-21-én, a parancs leállítja ennek a sessionnek a',
+    'csatorna-plugin szerverét, és a csatorna-eszközök (reply, react, edit_message,',
+    'download_attachment) elérhetetlenné válnak. A parancs kimenete közben `Connected`-et ír, és',
+    '0-val tér vissza, tehát a hibát semmi nem jelzi. Más sessionök nem sérülnek, a többi',
+    'MCP-szerver életben marad, és a session újraindítása visszahozza a plugint.',
+    'Máshol a parancs hasznos diagnosztika: a korlát a csatornát birtokló session, nem a parancs.',
+  ].join('\n')
+}
+
+// Same five-rule idempotency contract as the sections above.
+export function ensureMcpListChannelSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${MCPLIST_BEGIN}\n${buildMcpListChannelBody()}\n${MCPLIST_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  let updated: string
+  if (MCPLIST_BLOCK_RE.test(existing)) {
+    updated = existing.replace(MCPLIST_BLOCK_RE, block)
+  } else {
+    updated = existing.trimEnd() + '\n\n' + block + '\n'
+  }
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
 // The RECEIVER half of the authenticated system-directive channel (the sender
 // half is src/web/system-directive.ts). The two halves ship together on
 // purpose: an id-carrying sender with no receiver rule is zero protection that
