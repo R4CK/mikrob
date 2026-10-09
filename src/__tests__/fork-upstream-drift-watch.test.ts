@@ -12,6 +12,7 @@ import {
   CLEAN_FINGERPRINT,
   DRIFT_CARD_MARKER,
   decideDriftAction,
+  driftCardTitle,
   driftFingerprint,
   findDriftCard,
   isDriftCardTitle,
@@ -38,6 +39,11 @@ const STALE_TWO = result({
     { file: 'src/db.ts', recorded: 'cccccccccccc3333', actual: 'dddddddddddd4444', rule: 'comment-only collision' },
   ],
 })
+
+// Card baac4f36 (QA leleet a aaff8b3a gate-jén, komment 4612): corruptedPins is wired into the
+// title count, the fingerprint and the summary, but no fixture here ever carried a non-empty
+// corruptedPins -- a mutation removing any one of those three wirings stayed 23/23 green.
+const CORRUPTED_ONE = result({ corruptedPins: ['seed-skills/demo-skill/SKILL.md'] })
 
 const OPEN_CARD: OpenCard = {
   id: 'card0001',
@@ -179,6 +185,51 @@ describe('clean: report the resolution once, and never close the card by machine
     const a = decideDriftAction(clean, [], null)
     expect(a.kind).toBe('silent')
     expect(a.kind === 'silent' && a.reason).toBe('clean')
+  })
+})
+
+describe('corruptedPins is wired into the title, fingerprint and summary (card baac4f36)', () => {
+  it('counts into the title just like the other three severities', () => {
+    expect(driftCardTitle(CORRUPTED_ONE)).toContain('1 fájl újra-döntést vár')
+    // A second corrupted pin added alongside the existing stale pair must be counted too, not
+    // just the corruptedPins-only case -- the title sums all four fields.
+    const mixed = result({ stale: STALE_TWO.stale, corruptedPins: ['a', 'b'] })
+    expect(driftCardTitle(mixed)).toContain('4 fájl újra-döntést vár')
+  })
+
+  it('changes the fingerprint on its own, independent of the other three fields', () => {
+    // Both sides are non-clean via `guarded` (so neither takes the early CLEAN_FINGERPRINT
+    // return) and differ ONLY in corruptedPins -- isolates corruptedPins' own contribution to
+    // the hash, rather than comparing against the clean early-return string.
+    const withoutPin = result({ guarded: ['x'] })
+    const withPin = result({ guarded: ['x'], corruptedPins: ['seed-skills/demo-skill/SKILL.md'] })
+    expect(driftFingerprint(withPin)).not.toBe(driftFingerprint(withoutPin))
+  })
+
+  it('is order-independent, same as the other sets', () => {
+    const forward = result({ corruptedPins: ['a', 'b'] })
+    const backward = result({ corruptedPins: ['b', 'a'] })
+    expect(driftFingerprint(forward)).toBe(driftFingerprint(backward))
+  })
+
+  it('names the file and the reason in the summary', () => {
+    const body = summarizeDrift(CORRUPTED_ONE)
+    expect(body).toContain('ROMLOTT PIN')
+    expect(body).toContain('seed-skills/demo-skill/SKILL.md')
+  })
+
+  it('END-TO-END: a corruptedPins-only drift (everything else clean) still opens a card, naming it', () => {
+    const a = decideDriftAction(CORRUPTED_ONE, [], null)
+    expect(a.kind).toBe('open')
+    if (a.kind !== 'open') throw new Error('unreachable')
+    expect(a.title).toContain('1 fájl újra-döntést vár')
+    expect(a.description).toContain('seed-skills/demo-skill/SKILL.md')
+  })
+
+  it('END-TO-END: a corruptedPins-only drift is NOT isClean -- it must not be silently ignored', () => {
+    // If corruptedPins were dropped from isClean's check, this fixture would read as clean and
+    // decideDriftAction would stay silent instead of opening a card.
+    expect(decideDriftAction(CORRUPTED_ONE, [], null).kind).not.toBe('silent')
   })
 })
 
