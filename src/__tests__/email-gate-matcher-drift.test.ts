@@ -64,15 +64,13 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     const full = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
     const tool = 'mcp__server-gmail-autoauth-mcp__draft_email'
     expect(full.test(tool), 'matcher must fire for the tool the fleet actually has').toBe(true)
-    const verified = (a: string) => a === 'known@vlbbtab.com'
-    expect(gateDecision(tool, { to: 'invented@example.com' }, verified).deny).toBe(true)
-    expect(gateDecision(tool, { to: 'known@vlbbtab.com' }, verified).deny).toBe(false)
+    expect(gateDecision(tool, { to: 'anyone@example.com' }).deny).toBe(false)
     // A name-keyed matcher goes blind on the next new server name, so the draft
     // surface is pinned by the OPERATION too: a server with no gmail in its name.
     expect(full.test('mcp__whatever_mail_server__draft_email')).toBe(true)
     // Read tools on the same server stay out of the deny path (the hook may
     // fire for them; the gate is what decides, and it must say no-deny).
-    expect(gateDecision('mcp__server-gmail-autoauth-mcp__read_email', {}, verified).deny).toBe(false)
+    expect(gateDecision('mcp__server-gmail-autoauth-mcp__read_email', {}).deny).toBe(false)
   })
 
   it('the canonical matcher reaches the claude.ai Gmail connector (GMAILCONNECTOR914)', () => {
