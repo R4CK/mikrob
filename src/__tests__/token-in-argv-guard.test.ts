@@ -1164,3 +1164,39 @@ describe('path-embedded bot token (card 2834e7f3 gap 1)', () => {
     expect(scanP(['#!/usr/bin/env bash', 'curl -s "https://api.telegram.org/bot123456/getMe"'])).toEqual([])
   })
 })
+
+// Card 5a15cd5a (Cybersec NO-GO M1): a Python source file builds a curl recipe across several
+// ADJACENT STRING LITERALS, joined by Python's own implicit concatenation -- not a shell `\`
+// line-continuation. findCurlInvocations above only joins lines that END in `\`, so it missed the
+// `curl ...` on one Python string and the `-H "Authorization: Bearer $(cat ...)"` on the very next
+// one: two different "invocations" to the generic scanner, neither one individually matching the
+// leak shape. This is exactly how forged_directive_text()'s argv-Bearer line (provenance-gate.py)
+// shipped undetected by the scan above while this file's OWN other two directive-text builders
+// (629, 680 at the time) already used the sanctioned stdin form right next to it.
+//
+// Scoped narrowly to this one file's emitted text rather than generalising the joiner to Python
+// concatenation rules for every corpus file: the risk here is specifically "the TEXT an agent is
+// TOLD to run", which only this file (and its siblings covered by the generic scan already) does.
+describe('provenance-gate.py never tells an agent to put the token in curl argv (card 5a15cd5a M1)', () => {
+  // Kódelv 12 (comment-bypass): this exact file ALSO documents the bad shape as a code comment,
+  // warning future edits away from it (SECRET-IN-ARGV comment blocks at lines ~627 and ~678 at the
+  // time this test was written) -- matching on raw source would flag that prose as a violation.
+  // Strip pure `#`-comment lines before scanning, so the needle only fires on an EMITTED string.
+  const PROVENANCE_GATE_SOURCE = readFileSync(join(SCRIPTS_DIR, 'hooks', 'provenance-gate.py'), 'utf-8')
+  const PROVENANCE_GATE = PROVENANCE_GATE_SOURCE
+    .split('\n')
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n')
+  // Python's own f-string escaping (`\"Authorization: Bearer $(cat {token})\"`) puts a literal
+  // backslash before the quote; match on the shape independent of the quote style.
+  const ARGV_BEARER_RE = /Authorization:\s*Bearer\s*\$\(cat/
+
+  it('the file exists and is non-trivial (the guard is not vacuously passing)', () => {
+    expect(PROVENANCE_GATE.length).toBeGreaterThan(1000)
+  })
+
+  it('no emitted directive text puts the token in curl argv', () => {
+    const match = PROVENANCE_GATE.match(ARGV_BEARER_RE)
+    expect(match, match ? `found: ${match[0]}` : undefined).toBeNull()
+  })
+})
