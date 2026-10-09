@@ -17581,3 +17581,41 @@ szembe: minden adoptacios dontes a sajat sulyanak megfelelo helyen szulessen, ku
 
 **Ki döntött:** backend (karpathy-guidelines, grep-elso fegyelem minden tetelre). Gate: QA + Cybersec
 (a kartya 35dc6dbe sajat kijelolese szerint).
+
+## 2026-10-09 -- Kartya 35dc6dbe folytatas: copy-gate/homoglyph klaszter (15 commit) dontese + tool-log-capture.py javitas
+
+**13 commit (e4463c71, bdfb09d4, 7fdf853e, 068557b0, 6e4466f8, 3990020f, a3fdf85c, 6d7e7312, c9c9baa0,
+31c3f4be, babbc71a, 7c666ee0, 347df3d1) PENDING, nem duplikalva:** mind a `scripts/hooks/outgoing-copy-gate.py`
+fajlt erintik, ami MAR eszkalalva van a kartya 7e70144e-re (backend3, planned, GATENEVSTRIP921 miatt a
+09d54e88-bol, ket korabbi Cybersec NO-GO ugyanerre az osztalyra -- nevmaszkolas/accent-check interakcio).
+A fajl ACKNOWLEDGED_UPSTREAM_BLOBS pinje SZANDEKOSAN nincs frissitve, amig 7e70144e nem dont (cybersec GO
+komment a 09d54e88-n). Nem epitve itt, mar kiosztva sajat Cybersec-gates kartyan.
+
+**1 commit (4811efcb, TOOLLOGREDACT924) ADOPTALVA, FORK-SPECIFIKUSAN ADAPTALVA:** scripts/hooks/
+tool-log-capture.py sajat `_redact()` fuggvenye (KULONBOZIK upstream-etol, nem azonos mechanizmus) --
+elo teszteles 6 valos rest talalt, mind megerositve: (1) idezojeles ertek ("password=\"x\"") az eredeti
+mintaban a nyito idezojelnel megallt; (2) `MY_SECRET_KEY=...` tipusu *_KEY/*_SECRET/*_TOKEN/*_PASSWORD
+valtozonev nem illeszkedett (a label csak onallo szokent kerestetett); (3) URL-be agyazott jelszo
+(`user:pass@host`) egyaltalan nem volt lefedve; (4) szokoz-elvalasztott CLI-flag ertek (`--password x`,
+nincs =/: ) nem volt lefedve; (5) Basic auth-sema (csak bearer volt kezelve); (6) label nelkuli, csupasz
+JWT-alak (harom pont-elvalasztott base64url szegmens). Javitva: `_SECRET_PATTERNS` ujraepitve, mindegyik
+minta `val`/`val1`/`val2` elnevezett csoportot ad a tenylegesen redaktalando reszre (a tobbi -- label,
+elvalaszto, idezojel, URL user+@ -- valtozatlan marad), `_redact()` generikusan csak ezt a csoportot
+csereli. EGY ONKENT TALALT HIBA JAVITVA KOZBEN: a szokoz-CLI-flag mintat elsore `(?P<q>["\']?)` opcionalis
+idezojel-csoporttal probaltam, ami NEM-ILLESZKEDO (ures) csoportra hivatkozo visszautalast csinal --
+Python re-ben egy ures csoportra `(?!(?P=q))` mindig BUKIK (az ures minta mindig illeszkedik, a tagadas
+tehat mindig hamis), igy a teljes ag csendben kiesett. Kulon idezett/nem-idezett ALTERNATIVAKKA bontva
+(val1/val2), nem egy opcionalis csoporttal -- ugyanaz a csapda-osztaly, mint a bash-egress-guard.py-n
+korabban ma mar talalt "{"/"}" keyword-hiba (mindketto: egy regex-ag, ami csendben nem illeszkedik a
+helytelen feltetelezes miatt). Uj scripts/hooks/tool-log-capture.selftest.py (16 eset: 9 uj repro + 5
+pre-existing + 2 kontroll a tul-redaktalas ellen, pl. "this auth is broken today" NEM redaktalodik).
+Mutacio-proof: `git stash` a javitasra, pontosan a 9 uj eset bukott (a 7 regi/kontroll zold maradt),
+visszaallitva 16/16 zold.
+
+**Miert fork-specifikus adaptacio, nem upstream-port:** a fork sajat tool-log-capture.py-ja mar egyedi
+hiba-osztalyokat kezel (lasd a fajl sajat TOOLLOGVAKSIKER921 fejlece), a redact-regex is sajat
+mintakeszlet -- az upstream lecke (mely redaktalasi rest zar) alkalmazva lett a fork sajat kodjara,
+nem upstream kodja masolva at.
+
+**Ki döntött:** backend (karpathy-guidelines, elo repro + mutacio-proof). Gate: QA + Cybersec
+(credential-redaktalas biztonsagi kontroll, a kartya 35dc6dbe sajat kijelolese szerint).

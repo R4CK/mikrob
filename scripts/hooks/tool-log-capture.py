@@ -79,27 +79,61 @@ def _dashboard_token() -> str:
         return ''
 
 
-# Patterns that could reveal secrets if stored verbatim.
+# Label words a secret value is commonly introduced by, shared across the quoted/unquoted/
+# spaced-flag patterns below. Also matches a generic `*_KEY`/`*_SECRET`/`*_TOKEN`/`*_PASSWORD`
+# env-var-style name (e.g. MY_SECRET_KEY), which the old label-only match missed because
+# "secret" there is not a standalone word, it's a suffix segment (TOOLLOGREDACT924 lesson).
+_LABEL = r'(?:token|secret|password|api[_\-]?key|apikey|auth|credential|[A-Za-z0-9]+_(?:key|secret|token|password))'
+
+# Patterns that could reveal secrets if stored verbatim. Each pattern names a `val` group: the
+# span that gets replaced with [REDACTED]. Everything else in the match is kept verbatim.
 _SECRET_PATTERNS = [
-    # Bearer / Authorization headers
-    re.compile(r'(?i)(bearer\s+)[A-Za-z0-9+/=_\-\.]{8,}'),
-    # Generic key=value / key: value pairs
-    re.compile(r'(?i)((?:token|secret|password|api[_\-]?key|apikey|auth|credential)\s*[=:]\s*)[^\s,\'";&|]{6,}'),
-    # GitHub/Anthropic/OpenAI style tokens
-    re.compile(r'\b(ghp_|sk-|sk-ant-|xoxb-|xoxp-)[A-Za-z0-9_\-]{10,}'),
-    # Raw hex blobs ≥ 32 chars (likely hashed secrets) -- no capture group, full match replaced
-    re.compile(r'\b[0-9a-fA-F]{32,}\b'),
+    # Bearer / Basic authorization header values.
+    re.compile(r'(?i)(?:bearer|basic)\s+(?P<val>[A-Za-z0-9+/=_\-\.]{8,})'),
+    # label=value / label: value, value optionally single- or double-quoted. Quoted first so an
+    # unquoted scan of the same text never partially matches inside the quotes first.
+    re.compile(rf'(?i){_LABEL}\s*[=:]\s*(?P<q>["\'])(?P<val>(?:(?!(?P=q)).){{3,}})(?P=q)'),
+    re.compile(rf'(?i){_LABEL}\s*[=:]\s*(?P<val>[^\s,\'";&|]{{6,}})'),
+    # A CLI flag that takes its value SPACE-separated, no `=`/`:` (`--password x`, `-p x`).
+    # Scoped to a `-`/`--` flag spelling (not bare prose) to avoid flagging ordinary English
+    # sentences that happen to contain one of these words followed by a long word. Quoted and
+    # unquoted are true ALTERNATIVES (not one pattern with an optional quote group): a
+    # back-reference to an UNSET group (the quote, when absent) matches the empty string, which
+    # makes `(?!(?P=q))` an always-failing lookahead and silently drops the whole branch --
+    # caught by this file's own selftest (the unquoted spaced-flag case went from red to still
+    # red on the first attempt at this pattern).
+    re.compile(rf'(?i)--?{_LABEL}\s+'
+               rf'(?:(?P<q>["\'])(?P<val1>(?:(?!(?P=q)).){{3,}})(?P=q)|(?P<val2>[^\s,\'";&|]{{6,}}))'),
+    # GitHub/Anthropic/OpenAI style tokens.
+    re.compile(r'(?P<val>\b(?:ghp_|sk-|sk-ant-|xoxb-|xoxp-)[A-Za-z0-9_\-]{10,})'),
+    # A bare JWT: three dot-separated base64url segments, no label required.
+    re.compile(r'(?P<val>\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\b)'),
+    # URL-embedded credentials: scheme://user:PASSWORD@host -- only the password is redacted,
+    # the username and `@` stay so the shape of the command remains legible.
+    re.compile(r'[A-Za-z][A-Za-z0-9+.\-]*://[^\s/:@]+:(?P<val>[^\s/@]+)@'),
+    # Raw hex blobs >= 32 chars (likely hashed secrets).
+    re.compile(r'(?P<val>\b[0-9a-fA-F]{32,}\b)'),
 ]
 
 
 def _redact(text: str) -> str:
-    """Replace potential secret values with [REDACTED]."""
+    """Replace potential secret values with [REDACTED]. Only the sensitive group of each match
+    is replaced; everything else (label, separator, quotes, URL scheme/user/@) is kept verbatim.
+    The CLI-flag pattern has TWO candidate groups (val1 quoted, val2 unquoted) because they are
+    true alternatives, not one optional-quote pattern (see that pattern's own comment) -- redact
+    picks whichever one actually matched."""
     for pat in _SECRET_PATTERNS:
-        # Keep any leading label group (group 1), replace the secret part
-        if pat.groups:
-            text = pat.sub(lambda m: (m.group(1) if m.lastindex and m.lastindex >= 1 else '') + '[REDACTED]', text)
-        else:
-            text = pat.sub('[REDACTED]', text)
+        out = []
+        pos = 0
+        for m in pat.finditer(text):
+            gd = m.groupdict()
+            name = 'val' if 'val' in gd else next(k for k in ('val1', 'val2') if gd.get(k) is not None)
+            s, e = m.span(name)
+            out.append(text[pos:s])
+            out.append('[REDACTED]')
+            pos = e
+        out.append(text[pos:])
+        text = ''.join(out)
     return text
 
 
