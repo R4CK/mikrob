@@ -17556,3 +17556,45 @@ sor), nem csak a worktree-beli direkt futás.
 **Ki döntött:** backend2 jelezte a leletet (msg 9852), MikroB adta a strukturális javítás
 irányát és nyitotta a kártyát predecessorként a 2f05b3e3 elé (msg 9853). Gate: QA + WhiteHat
 (supply-chain: npm ci a lock alapján, integrity).
+
+## 2026-10-09 -- fleet-test.sh: a worker-flag választás a telepített vitest major verzióját olvassa ki, nem egy commit-hoz van kötve (2f05b3e3 második landolási kísérlete)
+
+Forrás: 2f05b3e3 (vitest major-emelés) második landolási kísérlete. A kártya saját commitja a
+vitest-bump MELLETT a `fleet-test.sh` worker-flag választását is megváltoztatta (`--minWorkers 1
+--maxWorkers N` -> puszta `--maxWorkers N`, mert vitest 5 elutasítja a `--minWorkers`-t, vitest 2
+viszont a puszta `--maxWorkers`-t utasította el). Ez a flag-választás MAGA IS `fleet-test.sh`
+tartalmát érinti, tehát a dual-gate (88a0a5e1/03cff5c1) aktiválódik: a MAIN MÁR-landolt kópiája
+(amely a 466decff javítás óta a lockfile-eltérésnél valódi `npm ci`-t futtat a worktree-ben) a
+merge eredményén TÉNYLEGESEN telepíti a valódi vitest 5-öt, de a MAIN kópiájának SAJÁT,
+még-nem-landolt flag-logikája a RÉGI (vitest 2-re írt) `--minWorkers 1 --maxWorkers N`-t adja át
+neki -- `CACError: Unknown option \`--minWorkers\`` -- mielőtt a branch SAJÁT (már javított)
+kópiája egyáltalán lefuthatott volna. Ugyanaz a tojás-tyúk minta, mint a 466decff-nél, csak a
+flag-választásra, nem a node_modules-bekötésre.
+
+**Javítás:** a worker-flag választás most a `$TEST_TREE/node_modules/vitest/package.json`
+tényleges `version` mezőjét olvassa ki (`node -p "require(...).version.split('.')[0]"`), és erre
+ágaz: major >= 5 -> puszta `--maxWorkers`; major < 5 -> `--minWorkers 1` + `--maxWorkers` páros.
+Ezzel a választás a TÉNYLEGESEN telepített vitest-hez igazodik, nem ahhoz, melyik commit van
+kicsekkolva -- így ÖNÁLLÓAN landolható, egy dependency-bump commit-tól függetlenül, pontosan
+ahogy a 466decff lockfile-diff javítása is önállóan landolt.
+
+**Teszt:** `src/__tests__/fleet-test-shares-cleancore-cpu-pool.test.ts` frissítve: a statikus
+ellenőrzés most két `WORKER_ARGS=(...)` ágat vár (egy puszta `--maxWorkers`, egy páros) egy
+`vitest_major` detekcióval összekötve, nem egyetlen hardcoded alakot. A dinamikus próba
+(`flagsFromScript`) a SAJÁT repó tényleges telepített vitest-major-ja alapján választja ki,
+melyik ágat olvassa ki a szkriptből, és a NEGATIVE CONTROL is major-függő (vitest 5: lone
+`--minWorkers` -> "Unknown option"; vitest <5: lone `--maxWorkers` -> "must not conflict").
+Futtatva (vitest 5.0.3 telepítve ebben a worktree-ben): 16/16 zöld. Kapcsolódó
+fleet-test.sh-tesztek (`fleet-test-lockfile-diff-npm-ci`, `fleet-test-cleans-before-checkout`,
+`fleet-test-native-binding-check`): 14/14 zöld, nincs regresszió. `tsc --noEmit` tiszta.
+`lint-ratchet.sh`: 331 lelet, alapvonal tartja.
+
+**Blast-radius:** mint a 466decff, ez a `fleet-test.sh` TELJES flotta landoló-szkriptje -- ez a
+javítás minden jövőbeli landolást érint, de csak AKKOR változtat viselkedést, ha a telepített
+vitest major eltér a korábbi feltételezett verziótól. A VÉGSŐ ellenőrzés a `marveen-land.sh`-n át
+futó `fleet-test.sh` a merge eredményén (Gate-SHA sor).
+
+**Ki döntött:** backend2 mérte a REFUSED landolási kísérletben (a MAIN régi flag-logikája a valódi
+vitest 5 ellen `CACError`-t dobott), és a 466decff mintáját követve önállóan szétválasztotta a
+flag-detekciót a vitest-bump commitjától. Gate: QA + WhiteHat (a 2f05b3e3 kártya saját gate-jével
+azonos kockázati besorolás szerint).
