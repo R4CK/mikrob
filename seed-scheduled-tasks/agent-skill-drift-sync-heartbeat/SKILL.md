@@ -25,6 +25,7 @@ MIERT IGY (kartya 222fdc5e, WhiteHat MEDIUM lelete a 13512bde-n). Ez a feladat k
 A `reasons=` mezo mondja meg, mirol szol az uzenet. Ird meg roviden, ne masold be a teljes kimenetet:
 
 - `stale-synced` -- tenylegesen szinkronizalt elavult masolatokat: soroljad fel az agent/skill parokat.
+- `running-agent-skipped` / `undetermined-agent-skipped` (a stale-ellenorzesnel, nem a hianyzo-skillnel): ha ez all a reasons-ban, sorold fel kulon, melyik agent/skill par maradt elavult es miert (fut, vagy nem allapithato meg) -- ez NEM szinkronizalt, a kovetkezo futas ujraprobalja. Ne keverd ossze a stale-synced-del: egy futas lehet CSAK ez, 0 tenyleges irassal.
 - `diverged-set-changed` -- a script kiirja a `diverged set was:` es `diverged set now:` sorokat. Az UJ vagy ELTUNT tetelekrol irj, ne a teljes listat ismeteld. A diverged nem automatikusan hiba (lehet szandekos runtime-patch, lasd a CLAUDE.md "Skill patch" konvenciojat) -- csak jelezd, NE intezkedj felette, MikroB vagy Peti dontsenek.
 - `concurrent-write-skipped` -- egy elo skill-fajl konkurrens irassal utkozott a sync alatt; emeld ki, erdemes ujra futni legkozelebb.
 - `no-baseline` -- ez az elso futas az allapot-fajl ota. Egyszeri, EGY sorban emlitsd meg, ne reszletezd.
