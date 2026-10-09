@@ -125,10 +125,10 @@ describe('watched-repos-record-review.sh', () => {
   })
 
   it('writes last_sha/last_checked_upstream_sha/last_checked_at into the state file, not the registry', () => {
-    execFileSync('bash', [RECORD_SH, 'demo', '--sha', 'abc123', '--upstream-sha', 'abc123full', '--registry', registryPath, '--state', statePath])
+    execFileSync('bash', [RECORD_SH, 'demo', '--sha', 'abc1234', '--upstream-sha', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '--registry', registryPath, '--state', statePath])
     const state = JSON.parse(readFileSync(statePath, 'utf-8'))
-    expect(state.demo.last_sha).toBe('abc123')
-    expect(state.demo.last_checked_upstream_sha).toBe('abc123full')
+    expect(state.demo.last_sha).toBe('abc1234')
+    expect(state.demo.last_checked_upstream_sha).toBe('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
     expect(typeof state.demo.last_checked_at).toBe('string')
 
     const registry = JSON.parse(readFileSync(registryPath, 'utf-8'))
@@ -139,7 +139,7 @@ describe('watched-repos-record-review.sh', () => {
   })
 
   it('appends to the note (not replacing it) only when --note-append is given, leaving other entries alone', () => {
-    execFileSync('bash', [RECORD_SH, 'demo', '--sha', 'def456', '--note-append', '2026-10-09: reviewed, no-op', '--registry', registryPath, '--state', statePath])
+    execFileSync('bash', [RECORD_SH, 'demo', '--sha', 'def4567', '--note-append', '2026-10-09: reviewed, no-op', '--registry', registryPath, '--state', statePath])
     const registry = JSON.parse(readFileSync(registryPath, 'utf-8'))
     const demo = registry.find((e: { name: string }) => e.name === 'demo')
     const other = registry.find((e: { name: string }) => e.name === 'other')
@@ -152,5 +152,72 @@ describe('watched-repos-record-review.sh', () => {
       execFileSync('bash', [RECORD_SH, 'nonexistent', '--sha', 'x', '--registry', registryPath, '--state', statePath], { stdio: 'pipe' }),
     ).toThrow()
     expect(() => readFileSync(statePath, 'utf-8')).toThrow() // never created
+  })
+
+  // Card ffca678d (RedHat LOW): this is the actual write path into watched-repos-state.json --
+  // src/web/routes/integrated-repos.ts later hands that same last_sha to git argv. An
+  // unvalidated --sha here was the injection's true origin point, three hops upstream of the
+  // git call that demonstrated it.
+  it('rejects a git-option-shaped --sha instead of writing it to the state file', () => {
+    let threw = false
+    let stderr = ''
+    try {
+      execFileSync('bash', [RECORD_SH, 'demo', '--sha', '--output=/tmp/should-not-write', '--registry', registryPath, '--state', statePath], { stdio: 'pipe' })
+    } catch (err) {
+      threw = true
+      stderr = String((err as { stderr?: Buffer }).stderr ?? '')
+    }
+    expect(threw).toBe(true)
+    expect(stderr).toContain('invalid --sha')
+    expect(() => readFileSync(statePath, 'utf-8')).toThrow() // never created
+  })
+
+  it('rejects a too-short --sha (below git\'s 7-char abbreviation floor)', () => {
+    expect(() =>
+      execFileSync('bash', [RECORD_SH, 'demo', '--sha', 'ab12', '--registry', registryPath, '--state', statePath], { stdio: 'pipe' }),
+    ).toThrow()
+  })
+
+  it('rejects a git-option-shaped --upstream-sha, even with a valid --sha', () => {
+    expect(() =>
+      execFileSync(
+        'bash',
+        [RECORD_SH, 'demo', '--sha', 'abc1234', '--upstream-sha', '--output=/tmp/should-not-write', '--registry', registryPath, '--state', statePath],
+        { stdio: 'pipe' },
+      ),
+    ).toThrow()
+    expect(() => readFileSync(statePath, 'utf-8')).toThrow() // never created
+  })
+})
+
+describe('git-repo-watcher.sh rejects a non-hex/too-short last_sha instead of using it for the prefix match (card ffca678d)', () => {
+  it('a garbage state-file last_sha is reported as ERROR:badsha and does NOT mask a real upstream change', () => {
+    const before = git(upstream, 'rev-parse', 'HEAD')
+    writeFileSync(join(upstream, 'b.txt'), 'two\n')
+    gitOk(upstream, 'add', 'b.txt')
+    gitOk(upstream, 'commit', '-q', '-m', 'second')
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true, note: 'x' },
+    ])
+    // A 1-char prefix would glob-match almost anything -- exactly the false-NOCHANGE risk the
+    // card flags. With validation, it is rejected and the watcher falls back to the clone's
+    // real HEAD (= `before`), which correctly still differs from the new upstream tip.
+    writeFileSync(statePath, JSON.stringify({ demo: { last_sha: before.slice(0, 1), last_checked_at: '2026-10-09' } }))
+    const out = runWatcherAt(dir)
+    expect(out).toContain('ERROR:badsha:demo')
+    expect(out).toContain('CHANGED:text:demo')
+    expect(out).not.toContain('NOCHANGE:demo')
+  })
+
+  it('a git-option-shaped last_sha is rejected the same way, never reaches a git argv position', () => {
+    const head = git(upstream, 'rev-parse', 'HEAD')
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true, note: 'x' },
+    ])
+    writeFileSync(statePath, JSON.stringify({ demo: { last_sha: '--output=/tmp/should-not-write', last_checked_at: '2026-10-09' } }))
+    const out = runWatcherAt(dir)
+    expect(out).toContain('ERROR:badsha:demo')
+    expect(out).toContain('NOCHANGE:demo') // falls back to real HEAD, which equals upstream here
+    expect(head).toBeTruthy()
   })
 })

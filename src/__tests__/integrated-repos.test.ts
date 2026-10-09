@@ -3,8 +3,10 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { existsSync } from 'node:fs'
 import {
   buildIntegratedRepos,
+  isValidSha,
   readRegistry,
   readState,
   redactRemote,
@@ -220,6 +222,55 @@ describe('readRegistry + buildIntegratedRepos', () => {
     expect(out.checkedAt).toBeGreaterThan(0)
     expect(out.repos.find((r) => r.name === 'notcloned')?.cloned).toBe(false)
     expect(out.repos.find((r) => r.name === 'uptodate')?.behind).toBe(0)
+  })
+})
+
+// Card ffca678d (Cybersec INFO on 197947ae gate, comment 6544): last_sha reaches a git argv
+// position unvalidated. A value shaped like a git option (e.g. "--output=<path>") gets parsed
+// as a flag, not a revision -- measured upstream: `git log -1 --format=%cI --output=<file>`
+// exits 0 and creates that file. These tests prove the fix closes it, with a real mutation
+// check (point 7 below) rather than trusting the implementation by inspection.
+describe('statusForRepo -- last_sha hex validation (card ffca678d, option-injection close)', () => {
+  it('isValidSha accepts git\'s own 7-40 char hex abbreviation range', () => {
+    expect(isValidSha(firstSha)).toBe(true) // full 40-char sha
+    expect(isValidSha(firstSha.slice(0, 7))).toBe(true) // git's own abbreviation floor
+    expect(isValidSha(firstSha.slice(0, 6))).toBe(false) // one below the floor
+  })
+
+  it('isValidSha rejects non-hex and git-option-shaped values', () => {
+    expect(isValidSha('--output=/tmp/x')).toBe(false)
+    expect(isValidSha('')).toBe(false)
+    expect(isValidSha('not-hex-at-all')).toBe(false)
+    expect(isValidSha('ABCDEF1')).toBe(false) // uppercase hex is not what git prints
+  })
+
+  it('an option-shaped last_sha never reaches git: no file is created, and vendoredSha falls back to HEAD', () => {
+    const marker = join(tmp, `pwned-${Math.random().toString(36).slice(2)}`)
+    const s = statusForRepo(cfg({ last_sha: `--output=${marker}` }))
+    expect(existsSync(marker)).toBe(false) // the actual exploit this closes
+    expect(s.vendoredSha).toBe(g(clone, ['rev-parse', 'HEAD'])) // fell back to the real HEAD
+    expect(s.error).toBeUndefined() // not a crash -- a handled, logged fallback
+  })
+
+  it('a too-short last_sha (below the 7-char floor) is rejected the same way', () => {
+    const s = statusForRepo(cfg({ last_sha: firstSha.slice(0, 3) }))
+    expect(s.vendoredSha).toBe(g(clone, ['rev-parse', 'HEAD']))
+  })
+
+  it('a valid recorded last_sha is still honoured (no regression on the real feature)', () => {
+    const s = statusForRepo(cfg({ last_sha: firstSha }))
+    expect(s.vendoredSha).toBe(firstSha)
+    expect(s.behind).toBe(2)
+  })
+
+  // MUTATION CHECK: without the fix, the option-injection test above would not merely pass
+  // differently -- it would actually create the marker file. This re-runs the exact git
+  // invocation the OLD (unvalidated) code used to make, to confirm the vulnerability this
+  // guards against is real, not hypothetical.
+  it('MUTATION: the pre-fix call shape genuinely creates the file (proves the test is non-vacuous)', () => {
+    const marker = join(tmp, `mutation-pwned-${Math.random().toString(36).slice(2)}`)
+    execFileSync('git', ['-C', clone, 'log', '-1', '--format=%cI', `--output=${marker}`], { encoding: 'utf8' })
+    expect(existsSync(marker)).toBe(true)
   })
 })
 
