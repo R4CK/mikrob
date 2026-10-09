@@ -18012,3 +18012,30 @@ visszahozva.
 **Ki döntött:** MikroB nyitotta a kártyát (fd10c70b), backend2 végezte el a teljes 19-commit
 felmérést, cherry-pick-sorozatot és konfliktus-feloldást. Gate: QA + Cybersec (a kártya
 leírása szerint, csatorna-hitelesítés/token-kezelés érintett).
+
+## 2026-10-09 -- Korrekció: a Slack haladásjelző (669a8db5, kártya fd10c70b) visszavonva
+
+A fenti fd10c70b-bejegyzés 19-commitos felmérésében a 6a304b9a upstream commitot (Slack
+progress-placeholder + Stop hook + watchdog) hibásan "tisztán additívnak" ítéltem és befogadtam
+(commit 669a8db5). A `develop`-ba landoláskor a `fork-upstream-conflict-guard.test.ts` jelezte: a
+`src/fork-upstream/acknowledged-conflicts.ts` már KÉTSZER (2026-09-25, backend3 kártya b5b7eb6b és
+backend kártya c2aeefa5) kimondta, hogy a Slack/Discord-kiegészítéseket ez a fork NEM veszi át --
+Telegram-only, a saját gyökér CLAUDE.md szerint ("A Telegram kommunikációt a Claude Code Channels
+kezeli"). A teszt saját hibaüzenete is pontosan ezt mondta: "re-decide the rule, do not just edit
+the anchor to match" -- egy kártya nem jogosult egyoldalúan felülírni egy kétszer megerősített
+flotta-döntést.
+
+**Javítás:** 669a8db5 visszavonva (commit 896bd24b), a ledger-bejegyzés (`store/upstream-ported.json`,
+a fő klónon) "ported"-ből "skipped"-re mozgatva a 6a304b9a shánál, indoklással. Az egyetlen
+független javítás, amit 669a8db5 is tartalmazott (`update-auto-rebase-optin.test.ts` 2-szóközös
+anchor) a `develop` merge (8fe916ed) révén már függetlenül megvolt, tehát nem veszett el.
+
+**Tanulság:** egy upstream commit "tisztán additív" besorolása NEM elég a befogadás eldöntéséhez --
+a meglévő `acknowledged-conflicts.ts`/fork-saját-döntés réteget is át kell nézni, mielőtt egy
+korábban már explicit elutasított képességet visszahoznánk. A `fork-adopt-investigation` skill ezt
+implicit elvárja ("check you don't already have it" / due diligence), de a gyakorlatban a per-sha
+ancestor-ellenőrzés nem helyettesíti a "van-e már KIMONDOTT no-go ugyanerre" ellenőrzést.
+
+**Ki döntött:** backend2 észlelte és javította a saját hibáját a landolási retry körében
+(fleet-test.sh, `fork-upstream-conflict-guard.test.ts` lelete). Gate: QA + Cybersec (a kártya
+leírása szerint, csatorna-hitelesítés/token-kezelés érintett).
