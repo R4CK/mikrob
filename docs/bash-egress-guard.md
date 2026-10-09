@@ -28,7 +28,13 @@ csak-curl hook egy ajtót zár és négyet nyitva hagy -- `python3 -c urllib`, `
 | `off` | kill-switch, a hook azonnal visszatér |
 
 Egyszeri kivétel egy parancsra: `BASH_EGRESS_ALLOW=1 <parancs>` (greppelhető, és csak a **saját**
-egyszerű parancsára vonatkozik, nem a sor többi részére).
+egyszerű parancsára vonatkozik, nem a sor többi részére). **Minden hatch-használat külön
+naplósort kap** (`"hatch": true`, mode + agent + a megcélzott host), log és enforce módban
+egyaránt (kártya 18055f83 RedHat NO-GO javítása, komment 13312, HIGH-1) -- korábban egy
+hatch-jelölt szegmens nyomtalanul maradt, mert sem a naplóba, sem a blokkolás-döntésbe nem
+került semmi. A tiltó üzenet (enforce módban) ettől kezdve nem is nevezi meg sem ezt a kivételt,
+sem a `BASH_EGRESS_GUARD=off` kill switchet -- az egyetlen út, amit a blokkolt híváshoz megmutat,
+az allowlist fájl, ami operátori jóváhagyást igényel.
 
 **Miért log-only az alapértelmezés.** A korpuszmérés szerint a flotta 874 205 hálózati parancsából
 845 777 (96,7%) localhost -- beleértve minden csatornát, amin egy hibát jelezni lehetne. Egy 1%-os

@@ -222,12 +222,15 @@ describe('end-to-end through the real hook', () => {
     expect(r.code).toBe(0)
   })
 
-  it('blocks a real external target AND names the way forward', () => {
+  it('blocks a real external target AND names the way forward, without advertising the hatch', () => {
     const r = verdict('curl -s https://not-on-the-list.example/payload')
     expect(r.code).toBe(2)
     expect(r.stderr).toContain('not-on-the-list.example')
     expect(r.stderr).toContain('bash-egress-allowlist.json')
-    expect(r.stderr).toContain('BASH_EGRESS_ALLOW=1')
+    // Card 18055f83 HIGH-1 (RedHat NO-GO, comment 13312): the refusal must not teach a blocked,
+    // possibly-hijacked session the exact bypass it names -- only the operator-only allowlist path.
+    expect(r.stderr).not.toContain('BASH_EGRESS_ALLOW=1')
+    expect(r.stderr).not.toContain('BASH_EGRESS_GUARD=off')
   })
 
   it('allows a host that IS on the versioned allowlist', () => {
@@ -341,5 +344,22 @@ describe.skipIf(REPO_UNDER_TMP)('end-to-end through the ACTUAL WIRED command (ca
     const added = readFileSync(logPath, 'utf-8').slice(before)
     const line = added.trim().split('\n').filter(Boolean).pop() as string
     expect(JSON.parse(line).agent).toBe('backend2')
+  })
+
+  it('an inline BASH_EGRESS_ALLOW=1 hatch still allows the call, but is logged (card 18055f83 HIGH-1, RedHat NO-GO comment 13312)', () => {
+    const logPath = join(REPO_ROOT, 'store', 'bash-egress.log')
+    const before = existsSync(logPath) ? readFileSync(logPath, 'utf-8').length : 0
+    const transcriptPath = join(REPO_ROOT, 'agents', 'qa', '.claude', 'projects', 'x', 'y.jsonl')
+    const r = runWired(
+      'BASH_EGRESS_ALLOW=1 curl -s https://not-on-the-list.example/hatch-probe-18055f83',
+      transcriptPath,
+    )
+    expect(r.code).toBe(0)
+    const added = readFileSync(logPath, 'utf-8').slice(before)
+    const line = added.trim().split('\n').filter(Boolean).pop() as string
+    const parsed = JSON.parse(line)
+    expect(parsed.hatch).toBe(true)
+    expect(parsed.agent).toBe('qa')
+    expect(JSON.stringify(parsed.findings)).toContain('not-on-the-list.example')
   })
 })

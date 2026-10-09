@@ -16486,3 +16486,41 @@ Ellenorzes: `npx vitest run src/__tests__/hook-registration-completeness.test.ts
 
 Ki dontott: backend3 (a tenyleges portolas es fork-adaptacio, nem tudva rola hogy kartyat zar le
 vele), backend (a record-korrekcio, kartya e344e366). Gate: QA + Cybersec.
+
+## 2026-10-09: BASH_EGRESS_GUARD HIGH-1 javitas -- hatch-hasznalat naplozasa (kartya 18055f83)
+
+RedHat (cybered) NO-GO a 26e88a5a-ra (komment 13312), miutan a WhiteHat sessiont az Opus 5.5
+safeguard megallitotta es MikroB a biztonsagi gate-et RedHat-ra csereelte. HIGH-1: a
+BASH_EGRESS_ALLOW=1 inline egyszeri-kivetel enforce mellett is agynok-vezerelt, nem naplozodott
+(egy hatch-megjelolt szegmens az analyse_segment()-ben korabban azonnal visszatert, mielott
+barmi barhova kerult volna), es a tiltoö uzenet maga hirdette a pontos kivetelt, amit egy
+eltérített ügynök onnan ki is tudott olvasni es nyom nelkul atjuthatott. GO minimuma (RedHat):
+(a) minden hatch-hasznalat kulon naplosor legyen (mod, agent, cel), log es enforce modban is;
+(b) a tilto uzenet ne hirdesse a hatch-et vagy a MODE_ENV=off kill switchet, csak az
+allowlist-fajlt mint operatori utat.
+
+Vegrehajtas (backend): a `_has_allow_hatch` agat ujraszerveztuk -- egy hatch-jelolt szegmens
+mostantol tovabbra is teljes ertekelesen megy at egy KULON, blokkolasra soha nem hasznalt `hatch`
+listaba (uj `analyse(..., hatch=...)` parameter, threadelve a nested bash -c testeken es
+helyettesiteseken at is), es a `log_finding()` uj `hatch` booleant ir a sorba. A `main()` MINDIG
+naplozza a hatch-listat (log es enforce modban egyarant), fuggetlenul attol, hogy a tenyleges
+`findings` ures-e -- ez a kulonbseg: korabban a "nincs talalat -> nincs naplo" korai kilepes a
+hatch-hasznalatot is lenyelte. A `_message()`-bol torolve a BASH_EGRESS_ALLOW=1 es a
+BASH_EGRESS_GUARD=off emlitese; az egyetlen megmaradt ut az allowlist-fajl.
+
+Bizonyitek: selftest.py 117/122 esetbol valtozatlan, 9->10 property-assertion (uj: hatch-hasznalat
+naplozva blokkolo talalat NELKUL is, a tiltoö uzenet NEM tartalmazza a ket kiiktatott kifejezest).
+Uj TS e2e teszt a TENYLEGESEN regisztralt parancson keresztul (bash-egress-guard-wiring.test.ts)
+bizonyitja: a hatch tovabbra is atenged egy kulso celt, DE a naplosor `hatch: true` + a helyes
+agent + a celzott host latszik rajta. 10/10 regi + uj TS teszt zold (33 osszesen a fajlban),
+tipecheck tiszta.
+
+NYITVA MARADT, NEM EZEN A KARTYAN: az INFO-1 (elesben ma egyik ugynokon sincs enforce, a
+BASH_EGRESS_ENFORCE_FLEET flag nincs beallitva a mikrob-dashboard.service kornyezeteben) tenyleges
+bekapcsolasa + a dashboard ujrainditasa + elo proba egy VALODI, futo ugynok regisztralt parancsan.
+Ez egy megosztott, elesben futo szolgaltatas (mikrob-dashboard.service) ujrainditasa minden
+ugynokre hatassal -- a backend ezt nem inditja el egyoldaluan, MikroB donteset/vegrehajtasat
+kerte (lasd a kartya kommentjeit). A MEDIUM-1 (DoH-resolverek nyitott DNS-csatorna) Peti-dontest
+igenyel, ezt MikroB viszi kulon.
+
+Ki dontott: RedHat (NO-GO + a ket pontos javitasi minimum), backend (HIGH-1 javitas). Gate: QA + WhiteHat.

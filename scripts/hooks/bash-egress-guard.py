@@ -89,6 +89,16 @@ bypass still available to the agent inline is BASH_EGRESS_ALLOW=1 <command> (par
 command TEXT, not the environment, see ALLOW_ENV below) for a single legitimate call; a durable
 per-agent exception is an operator editing that agent's settings.json directly.
 
+CARD 18055f83 FOLLOW-UP (RedHat NO-GO, comment 13312, HIGH-1): every use of the ALLOW_ENV hatch is
+now its OWN log line (mode/agent/target, see log_finding's `hatch` field below), in log mode AND
+enforce mode alike -- previously a hatch-marked segment returned from analyse_segment() before
+anything was appended anywhere, so a hijacked agent could use the hatch leaving zero trace. The
+block message (see _message()) also no longer names ALLOW_ENV or the MODE_ENV=off kill switch: the
+only escape it advertises to whatever is reading its stderr is the versioned allowlist file, an
+operator-only path. Neither change makes the hatch itself refuse to work -- it still allows the
+call it is used on -- it only ensures using it is visible and is not discoverable from the refusal
+text itself.
+
 THE ALLOWLIST IS A FILE, NOT CODE (verdict point 2): store/bash-egress-allowlist.json, versioned,
 re-read on every invocation, so an operator grant needs no restart and no deploy. A missing or
 malformed file falls back to the built-in localhost rules only -- it never widens what is allowed.
@@ -567,6 +577,10 @@ _BARE_HOST_RX = re.compile(r"^(?:\[[0-9A-Fa-f:]+\]|[A-Za-z0-9_.\-]+)(?::\d+)?$")
 LOCAL = "local"
 EXTERNAL = "external"
 UNKNOWN = "unknown"
+# Card 18055f83 HIGH-1: a Finding.kind for a hatch-bypassed call. Never placed in the `findings`
+# list main() uses to decide blocking -- only in the parallel `hatch` list main() always logs --
+# so using the hatch never changes the verdict, it only makes the use visible afterward.
+HATCH = "hatch"
 
 
 def _target_host(target):
@@ -840,11 +854,28 @@ def _judge_hostport_command(name, words, start, allowed, findings):
         return
 
 
-def analyse_segment(seg, allowed, findings, depth=0):
+def analyse_segment(seg, allowed, findings, depth=0, hatch=None):
     """Judge ONE simple command. Any error here is caught by the caller and becomes fail-closed
-    FOR THIS SEGMENT ONLY -- never an exception out of the hook (verdict point 6)."""
+    FOR THIS SEGMENT ONLY -- never an exception out of the hook (verdict point 6).
+
+    Card 18055f83 HIGH-1 (RedHat NO-GO, comment 13312): a segment carrying the ALLOW_ENV hatch
+    used to return HERE, before anything was appended to `findings` OR anywhere else -- so using
+    the hatch left zero trace in log mode and in enforce mode alike. It is still judged normally
+    into a throwaway list so `hatch` (when the caller wants it) receives what the bypassed call
+    actually targeted; that list is NEVER merged into `findings`, so the hatch still always wins
+    the verdict -- only now the use of it is recorded."""
     if _has_allow_hatch(seg):
+        if hatch is not None:
+            shadow = []
+            _judge_segment_body(seg, allowed, shadow, depth, hatch)
+            name, _ = _command_name(seg)
+            hatch.extend(shadow if shadow else
+                         [Finding(HATCH, name or "<parancs>", [], "BASH_EGRESS_ALLOW hasznalva")])
         return
+    _judge_segment_body(seg, allowed, findings, depth, hatch)
+
+
+def _judge_segment_body(seg, allowed, findings, depth, hatch=None):
     name, idx = _command_name(seg)
     if name is None:
         return
@@ -894,7 +925,7 @@ def analyse_segment(seg, allowed, findings, depth=0):
             # than refused wholesale: `nohup bash -c "cd /x && bash suite.sh $FILES"` is 1,530
             # corpus invocations with no network command in it at all, and refusing it would be
             # fail-closed with no network intent to justify it (verdict 5a).
-            findings.extend(analyse(script.text, allowed, depth=depth + 1))
+            findings.extend(analyse(script.text, allowed, depth=depth + 1, hatch=hatch))
             return
         # VERDICT 5a, THE SINGLE MOST LOAD-BEARING BRANCH IN THIS FILE. 551,816 interpreter calls
         # in the corpus show no network API at all. If fail-closed keyed on "interpreter" rather
@@ -927,8 +958,11 @@ def analyse_segment(seg, allowed, findings, depth=0):
         return
 
 
-def analyse(raw, allowed, depth=0):
-    """All findings for a whole Bash command string."""
+def analyse(raw, allowed, depth=0, hatch=None):
+    """All findings for a whole Bash command string. `hatch`, when given, receives one Finding per
+    ALLOW_ENV-hatched segment anywhere in the command (including nested `bash -c` bodies and
+    substitutions) -- see analyse_segment's docstring for why this is a separate channel from the
+    return value."""
     findings = []
     if depth > 3:  # a substitution chain this deep is pathological; stop rather than recurse away
         return findings
@@ -940,12 +974,12 @@ def analyse(raw, allowed, depth=0):
         return [Finding(UNKNOWN, "<parse>", [], "a parancs nem elemezheto")]
     for seg in segments:
         try:
-            analyse_segment(seg, allowed, findings, depth)
+            analyse_segment(seg, allowed, findings, depth, hatch)
         except Exception as exc:  # noqa: BLE001 - deliberate: one segment's failure, not the hook's
             findings.append(Finding(UNKNOWN, "<segment>", [],
                                     f"elemzesi hiba, fail-closed erre a parancsra: {type(exc).__name__}"))
     for sub in nested:
-        findings.extend(analyse(sub, allowed, depth + 1))
+        findings.extend(analyse(sub, allowed, depth + 1, hatch))
     return findings
 
 
@@ -975,12 +1009,16 @@ def _resolve_agent(payload):
     return os.environ.get("MARVEEN_AGENT_ID") or os.environ.get("CLAUDE_AGENT_ID") or ""
 
 
-def log_finding(mode, findings, cmd, agent="", path=None):
+def log_finding(mode, findings, cmd, agent="", path=None, hatch=False):
     p = Path(path) if path else LOG_PATH
     line = json.dumps({
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "mode": mode,
         "agent": agent,
+        # Card 18055f83 HIGH-1: marks a line written for an ALLOW_ENV hatch use (main()'s separate
+        # `hatch` list), as opposed to an ordinary finding -- a hatch use is ALWAYS logged, in both
+        # modes, never gates on whether it would have blocked.
+        "hatch": hatch,
         "findings": [{"kind": f.kind, "cmd": f.command, "targets": f.targets, "why": f.reason}
                      for f in findings],
         "command": _redact(cmd)[:4000],
@@ -997,6 +1035,12 @@ def log_finding(mode, findings, cmd, agent="", path=None):
 
 
 def _message(mode, findings):
+    """The refusal text shown to whatever session is blocked. Card 18055f83 HIGH-1 (RedHat NO-GO,
+    comment 13312): this used to also name BASH_EGRESS_ALLOW=1 and BASH_EGRESS_GUARD=off, which
+    taught a hijacked session the exact bypass from the very message that was supposed to stop it.
+    The only path this names now is the allowlist file, an operator-only grant -- not something the
+    blocked session can act on by itself. The hatch still exists (now logged, see log_finding), it
+    is just no longer advertised here."""
     lines = [
         "BASH-EGRESS-GUARD: ez a parancs halozati hivast tartalmaz, aminek a celja nem localhost "
         "es nincs az allowlistan (vagy egyaltalan nem feloldhato).",
@@ -1009,7 +1053,6 @@ def _message(mode, findings):
         "",
         "Ha a cel legitim kulso szolgaltatas, vedd fel az allowlistra (verziokovetett fajl, "
         f"ujrainditas nem kell): {ALLOWLIST_PATH}",
-        f"Egyszeri korre: {ALLOW_ENV}=1 <parancs>. A guard kikapcsolasa: {MODE_ENV}=off.",
         "",
         "FONTOS: ez koltseg-noveles, nem garancia. ssh/git/npm/docker es a fajlbol futtatott "
         "interpreter-szkriptek NEM esnek a hatokorbe -- reszletek a scripts/hooks/"
@@ -1036,16 +1079,24 @@ def main():
     if not isinstance(raw, str) or not raw.strip():
         sys.exit(0)
 
+    hatch = []
     try:
-        findings = analyse(raw, load_allowlist())
+        findings = analyse(raw, load_allowlist(), hatch=hatch)
     except Exception as exc:  # noqa: BLE001 - the hook itself must never raise (verdict point 6)
         findings = [Finding(UNKNOWN, "<guard>", [],
                             f"a guard hibara futott, fail-closed erre a parancsra: {type(exc).__name__}")]
 
+    agent = _resolve_agent(payload)
+    # Card 18055f83 HIGH-1: a hatch use is ALWAYS logged, in both modes, independent of whether
+    # `findings` is empty -- it must never piggyback on the ordinary "nothing to log" early exit
+    # below, or using the hatch would once again leave zero trace.
+    if hatch:
+        log_finding(mode, hatch, raw, agent=agent, hatch=True)
+
     if not findings:
         sys.exit(0)
 
-    log_finding(mode, findings, raw, agent=_resolve_agent(payload))
+    log_finding(mode, findings, raw, agent=agent)
     if mode != "enforce":
         sys.exit(0)
     sys.stderr.write(_message(mode, findings) + "\n")
