@@ -111,6 +111,24 @@ hdr_file=""   # declared before the trap so `set -u` cannot kill the handler
 trap 'rm -f "$hdr_file"; emit_end_line' EXIT
 if [[ -z "$TOK" ]]; then BATCH_END_STATUS="no-token"; log "no dashboard token; abort"; echo "ERROR no-token"; exit 0; fi
 
+# INSTALLED GATE (card 5595afa7, follow-up to Peti Telegram 8928). This script fans out to
+# offload-dispatch.sh per candidate, and THAT script already carries the same gate -- but only
+# after this one has already paid for fetching the whole kanban board and, per candidate, an extra
+# HTTP round-trip to check for an existing draft comment. Measured 2026-10-09: the overnight
+# catch-up ran this loop against 20 candidates while ollama.service was deliberately masked
+# (gpu-crashloop-guard, dxgkrnl crash-loop), and every one of those 20 calls reached
+# offload-dispatch.sh's own gate only to bounce straight back -- 20x the board-fetch/draft-check
+# cost for an answer this single check already has for free. Checking here first means the SAME
+# single log line this script already uses for the no-token/invalid-scan-cap cases, instead of 20
+# individual per-card skip lines.
+INSTALLED="${OFFLOAD_BATCH_INSTALLED:-$HERE/local-llm-installed.sh}"
+if ! bash "$INSTALLED" >/dev/null 2>&1; then
+  BATCH_END_STATUS="not-installed"
+  log "local-llm not installed/masked; abort before scanning candidates"
+  echo "ERROR not-installed"
+  exit 0
+fi
+
 # Validate SCAN_CAP. The same class as MAX_AGE_H in --status (see line 81): a non-numeric value
 # makes `(( scanned >= SCAN_CAP ))` treat it as 0, so the check fires on every iteration and the
 # cap is silently disabled for the entire run. Tested with the same character-class pattern.

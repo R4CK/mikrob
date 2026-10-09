@@ -25,6 +25,18 @@ function withLog(dir: string, logPath: string): string {
   return copy
 }
 
+// A stub for the INSTALLED gate (card 5595afa7). Every test below except the ones that exercise
+// the gate itself is about SCAN_CAP/token/END-line behavior, not about whether the local LLM is
+// installed -- so they all need a fixed "yes" answer, independent of whatever ollama.service's
+// real masked/unmasked state happens to be on the machine actually running this suite (the gate
+// was added BECAUSE a real host can have it masked, and these pre-existing tests must not start
+// failing for that reason).
+function stubInstalled(dir: string, installed: boolean): string {
+  const script = join(dir, 'installed-stub.sh')
+  writeFileSync(script, installed ? '#!/bin/sh\necho installed\nexit 0\n' : '#!/bin/sh\necho "not-installed: stub"\nexit 1\n')
+  return script
+}
+
 function run(
   script: string,
   args: string[],
@@ -133,6 +145,7 @@ describe('offload batch health signal (card 5f00664c)', () => {
       const r = run(copy, [], {
         OFFLOAD_BATCH_SCAN_CAP: bad,
         DASHBOARD_URL: 'http://127.0.0.1:1',
+        OFFLOAD_BATCH_INSTALLED: stubInstalled(dir, true),
       })
       // Best-effort, exit 0 always -- but the END line must name the failure.
       expect(r.status).toBe(0)
@@ -167,7 +180,10 @@ describe('offload batch health signal (card 5f00664c)', () => {
       // HERE resolves to the script's own directory, so this is the token the copy will read.
       writeFileSync(join(dir, '.dashboard-token'), marker)
 
-      const r = run(copy, [], { DASHBOARD_URL: 'http://127.0.0.1:1' })
+      const r = run(copy, [], {
+        DASHBOARD_URL: 'http://127.0.0.1:1',
+        OFFLOAD_BATCH_INSTALLED: stubInstalled(dir, true),
+      })
       expect(r.status).toBe(0)
 
       // (a) the END line fires on the path that was actually broken -- NOT the no-token route.
@@ -184,6 +200,32 @@ describe('offload batch health signal (card 5f00664c)', () => {
         { encoding: 'utf-8' },
       ).trim()
       expect(leaks).toBe('')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // INSTALLED GATE (card 5595afa7): the batch must not spend a board-fetch plus a per-candidate
+  // draft-check HTTP round-trip when the local LLM is not installed/masked -- it should bail with
+  // the same single-line-END pattern as no-token/invalid-scan-cap, BEFORE even validating SCAN_CAP.
+  it('exits 0 with not-installed status when the INSTALLED gate says no, without touching SCAN_CAP', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'offload-notinstalled-'))
+    try {
+      const log = join(dir, 'batch.log')
+      const copy = join(dir, 'batch.sh')
+      writeFileSync(copy, SRC.replace(/^LOG=.*$/m, `LOG="${log}"`))
+      writeFileSync(join(dir, '.dashboard-token'), 'fake-token')
+      const r = run(copy, [], {
+        // an invalid SCAN_CAP too, to prove the install gate is checked FIRST and the scan-cap
+        // validation is never reached -- the END line must say not-installed, not invalid-scan-cap.
+        OFFLOAD_BATCH_SCAN_CAP: 'abc',
+        DASHBOARD_URL: 'http://127.0.0.1:1',
+        OFFLOAD_BATCH_INSTALLED: stubInstalled(dir, false),
+      })
+      expect(r.status).toBe(0)
+      const text = readFileSync(log, 'utf-8')
+      expect(text).toMatch(/status=not-installed/)
+      expect(text).not.toMatch(/status=invalid-scan-cap/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
