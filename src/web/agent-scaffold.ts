@@ -737,7 +737,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectSymlinkedNodeModulesGuard(existing)
   injectBlastRadiusGuard(existing)
   injectCdChainGuard(existing)
-  injectBashEgressGuard(existing, name)
+  injectBashEgressGuard(existing)
   injectNoisyCommandGuard(existing)
   injectPentestToolInstallGuard(existing)
   // Card f7b33416: this one was backfill-only until now, so a freshly spawned agent ran without the
@@ -1680,23 +1680,20 @@ export function bashEgressEnforceEnabled(env: NodeJS.ProcessEnv = process.env): 
   return ['1', 'on', 'true', 'yes'].includes(String(env[BASH_EGRESS_ENFORCE_ENV] ?? '').trim().toLowerCase())
 }
 
-// The command this process actually registers for one agent. MARVEEN_AGENT_ID is baked in
-// unconditionally (card 18055f83: the log's "agent" field was always empty because nothing ever
-// set it) -- that is a log-quality fix, independent of enforce/log mode. BASH_EGRESS_GUARD=enforce
-// is baked in ONLY while the fleet switch above is on; unsetting it and waiting for the next
-// boot/backfill reverts every agent to the hook's own shipping default (log-only).
-function bashEgressGuardCommand(name: string, env: NodeJS.ProcessEnv = process.env): string {
-  const base = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-guard.py'))
-  // MUST be `export VAR=val;`, not a bare `VAR=val ` prefix: pythonHookCommand's own body is TWO
-  // statements joined by `;` (`command -v python3 ... || { ... }; python3 "<path>"`), and a bare
-  // leading assignment scopes ONLY to the first simple command before that `;` -- measured with
-  // `bash -c 'FOO=bar true || true; echo $FOO'` printing nothing. `export` persists for every
-  // later command in the SAME shell invocation, which is what actually reaches the python3 call
-  // that runs the guard.
-  const exports: string[] = []
-  if (name) exports.push(`export MARVEEN_AGENT_ID=${JSON.stringify(name)};`)
-  if (bashEgressEnforceEnabled(env)) exports.push('export BASH_EGRESS_GUARD=enforce;')
-  return exports.length ? `${exports.join(' ')} ${base}` : base
+// The enforce prefix this process bakes into the registered command, while the fleet switch above
+// is on. MUST be `export VAR=val;`, not a bare `VAR=val ` prefix: pythonHookCommand's own body is
+// TWO statements joined by `;` (`command -v python3 ... || { ... }; python3 "<path>"`), and a bare
+// leading assignment scopes ONLY to the first simple command before that `;` -- measured with
+// `bash -c 'FOO=bar true || true; echo $FOO'` printing nothing. `export` persists for every later
+// command in the SAME shell invocation, which is what actually reaches the python3 call that runs
+// the guard. (The log's caller-agent field is a SEPARATE fix, entirely on the python side: see
+// ledger_lib.agent_id_from_payload in bash-egress-guard.py's own hook payload, which resolves from
+// transcript_path -- no identity needs to be baked into this command at all.) Prefix only -- the
+// `scripts/hooks/bash-egress-guard.py` reference itself stays inline in each caller (not hidden
+// behind this helper) so the hook-guards-are-code-wired.test.ts derivation, which scans each
+// inject* function's own body text for that literal, still finds it.
+function bashEgressGuardEnforcePrefix(env: NodeJS.ProcessEnv = process.env): string {
+  return bashEgressEnforceEnabled(env) ? 'export BASH_EGRESS_GUARD=enforce; ' : ''
 }
 
 // Card 854182c7: the Bash-side egress control. The settings.permissions.deny form it replaces was
@@ -1708,13 +1705,12 @@ function bashEgressGuardCommand(name: string, env: NodeJS.ProcessEnv = process.e
 // agents whose settings.json is regenerated, and a guard that arms an arbitrary subset of the
 // fleet is not a control. The hook itself ships in LOG-ONLY mode (see its module docstring), so
 // arming it fleet-wide changes no behaviour until an operator sets BASH_EGRESS_ENFORCE_FLEET --
-// which is the point: the log is the evidence that enforcement is safe to switch on. `name`
-// defaults to '' so existing callers that pass no identity keep their old, unprefixed command.
-export function injectBashEgressGuard(existing: Record<string, unknown>, name = '', env: NodeJS.ProcessEnv = process.env): void {
+// which is the point: the log is the evidence that enforcement is safe to switch on.
+export function injectBashEgressGuard(existing: Record<string, unknown>, env: NodeJS.ProcessEnv = process.env): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = bashEgressGuardCommand(name, env)
+  const command = bashEgressGuardEnforcePrefix(env) + pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-guard.py'))
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'Bash',
@@ -1733,7 +1729,7 @@ export function ensureBashEgressGuard(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const command = bashEgressGuardCommand(name)
+  const command = bashEgressGuardEnforcePrefix() + pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-guard.py'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
@@ -1744,7 +1740,7 @@ export function ensureBashEgressGuard(name: string): boolean {
   // reach an already-provisioned agent on the next boot, not just a freshly spawned one.
   if (ptuJson.includes('bash-egress-guard.py') && hookCommandWired(ptuJson, command)) return false
   if (isUnsafeHookCommand(command)) return false
-  injectBashEgressGuard(settings, name)
+  injectBashEgressGuard(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true

@@ -16442,10 +16442,12 @@ hasonlitja. Talalt es javitott hiba kozben: egy sima `VAR=val parancs1; parancs2
 csak az ELSO `;`-vel elvalasztott utasitasra hatna, a tenyleges python3-hivasra nem -- `export
 VAR=val;` kell, ami a shell kornyezeteben marad a tovabbi utasitasokra is (merve: `bash -c
 'FOO=bar true; echo $FOO'` semmit nem ir ki, `bash -c 'export FOO=bar; true; echo $FOO'` kiirja
-a `bar`-t). A `store/bash-egress.log` `agent` mezoje korabban mindig ures volt, mert semmi nem
-allitotta be a MARVEEN_AGENT_ID-t a hivasi lancban -- ezt a scaffold mostantol minden agens
-parancsaba beleegeti, a hook pedig a message-ledger mar megkemenyitett resolverevel
-(ledger_lib.agent_id_from_payload, LEDGERCWD828) olvassa ki, fuggetlenul az enforce/log modtol.
+a `bar`-t). A `store/bash-egress.log` `agent` mezoje korabban mindig ures volt, mert a hook csak a
+MARVEEN_AGENT_ID/CLAUDE_AGENT_ID env-valtozot nezte, amit soha senki nem allitott be a hivasi
+lancban. A hook mostantol a message-ledger mar megkemenyitett resolverevel
+(ledger_lib.agent_id_from_payload, LEDGERCWD828) a SAJAT hook-payloadjabol (transcript_path) olvassa
+ki a hivo agenst -- a scaffold-nak semmit nem kell beleegetnie a parancsba ehhez, fuggetlenul az
+enforce/log modtol.
 
 Bizonyitek: 122 selftest-eset + 9 property-assertion (scripts/hooks/bash-egress-guard.selftest.py,
 korabban 117+8), uj TS wiring-teszt a tenylegesen regisztralt parancson keresztul (nem csak

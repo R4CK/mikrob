@@ -101,8 +101,10 @@ describe.skipIf(REPO_UNDER_TMP)('injectBashEgressGuard', () => {
   })
 })
 
-// Card 18055f83: the fleet-wide enforce switch and the per-agent caller-id fix. Same inverse-
-// default shape as outgoingCopyGateEnabled (an unset/typo'd var must leave the fleet on log-only).
+// Card 18055f83: the fleet-wide enforce switch. Same inverse-default shape as
+// outgoingCopyGateEnabled (an unset/typo'd var must leave the fleet on log-only). The log's
+// caller-agent field is a SEPARATE fix, entirely on the python side (ledger_lib.agent_id_from_payload
+// reading the hook's own transcript_path) -- nothing needs to be baked into this command for that.
 describe.skipIf(REPO_UNDER_TMP)('bashEgressEnforceEnabled + the command it controls', () => {
   it('is OFF by default (unset env)', () => {
     expect(bashEgressEnforceEnabled({})).toBe(false)
@@ -117,38 +119,30 @@ describe.skipIf(REPO_UNDER_TMP)('bashEgressEnforceEnabled + the command it contr
     }
   })
 
-  it('bakes MARVEEN_AGENT_ID into the registered command regardless of the flag (log-quality fix)', () => {
-    const s: Record<string, unknown> = {}
-    injectBashEgressGuard(s, 'backend2', {})
-    expect(JSON.stringify(guardEntries(s))).toContain('MARVEEN_AGENT_ID=\\"backend2\\"')
-  })
-
   it('does NOT bake BASH_EGRESS_GUARD=enforce when the fleet flag is off', () => {
     const s: Record<string, unknown> = {}
-    injectBashEgressGuard(s, 'backend2', {})
+    injectBashEgressGuard(s, {})
     expect(JSON.stringify(guardEntries(s))).not.toContain('BASH_EGRESS_GUARD=enforce')
   })
 
   it('bakes BASH_EGRESS_GUARD=enforce when the fleet flag is on', () => {
     const s: Record<string, unknown> = {}
-    injectBashEgressGuard(s, 'backend2', { [BASH_EGRESS_ENFORCE_ENV]: '1' })
+    injectBashEgressGuard(s, { [BASH_EGRESS_ENFORCE_ENV]: '1' })
     expect(JSON.stringify(guardEntries(s))).toContain('BASH_EGRESS_GUARD=enforce')
   })
 
   it('a flag flip is NOT idempotent-skipped -- the rewritten command differs, so ensure*-style re-checks must re-register', () => {
     const off: Record<string, unknown> = {}
-    injectBashEgressGuard(off, 'backend2', {})
+    injectBashEgressGuard(off, {})
     const on: Record<string, unknown> = {}
-    injectBashEgressGuard(on, 'backend2', { [BASH_EGRESS_ENFORCE_ENV]: '1' })
+    injectBashEgressGuard(on, { [BASH_EGRESS_ENFORCE_ENV]: '1' })
     expect(JSON.stringify(guardEntries(off))).not.toBe(JSON.stringify(guardEntries(on)))
   })
 
-  it('a name-less call (legacy callers) keeps the old, unprefixed command shape', () => {
+  it('a no-arg call (the generation path) keeps the plain, unprefixed command shape when the flag is unset', () => {
     const s: Record<string, unknown> = {}
     injectBashEgressGuard(s)
-    const cmd = JSON.stringify(guardEntries(s))
-    expect(cmd).not.toContain('MARVEEN_AGENT_ID')
-    expect(cmd).not.toContain('BASH_EGRESS_GUARD=enforce')
+    expect(JSON.stringify(guardEntries(s))).not.toContain('BASH_EGRESS_GUARD=enforce')
   })
 })
 
@@ -165,7 +159,7 @@ describe('tmp-checkout env gate (always runs)', () => {
 describe('the guard is wired on both paths, not just one', () => {
   it('the settings GENERATION path calls the injector', () => {
     const scaffold = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')
-    expect(scaffold).toContain('injectBashEgressGuard(existing, name)')
+    expect(scaffold).toContain('injectBashEgressGuard(existing)')
   })
 
   it('the boot BACKFILL loop calls the ensurer, so a restart arms agents that already exist', () => {
@@ -299,13 +293,15 @@ describe('end-to-end through the real hook', () => {
 // statements, never reaching the python3 call -- measured with `bash -c 'FOO=bar true; echo $FOO'`
 // printing nothing) is caught here, not just in the unit-level string checks above.
 describe.skipIf(REPO_UNDER_TMP)('end-to-end through the ACTUAL WIRED command (card 18055f83)', () => {
-  const runWired = (command: string): { code: number; stderr: string } => {
+  const runWired = (command: string, transcriptPath?: string): { code: number; stderr: string } => {
     const s: Record<string, unknown> = {}
-    injectBashEgressGuard(s, 'backend2', { [BASH_EGRESS_ENFORCE_ENV]: '1' })
+    injectBashEgressGuard(s, { [BASH_EGRESS_ENFORCE_ENV]: '1' })
     const hookCommand = (guardEntries(s)[0] as { hooks: Array<{ command: string }> }).hooks[0].command
+    const payload: Record<string, unknown> = { tool_name: 'Bash', tool_input: { command } }
+    if (transcriptPath) payload.transcript_path = transcriptPath
     try {
       execFileSync('bash', ['-c', hookCommand], {
-        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        input: JSON.stringify(payload),
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
       })
@@ -337,10 +333,11 @@ describe.skipIf(REPO_UNDER_TMP)('end-to-end through the ACTUAL WIRED command (ca
     expect(runWired('curl -s http://localhost:3420/api/agents').code).toBe(0)
   })
 
-  it('the log "agent" field is populated from the baked-in MARVEEN_AGENT_ID, not left empty', () => {
+  it('the log "agent" field resolves from the hook\'s OWN transcript_path, not left empty', () => {
     const logPath = join(REPO_ROOT, 'store', 'bash-egress.log')
     const before = existsSync(logPath) ? readFileSync(logPath, 'utf-8').length : 0
-    runWired('curl -s https://not-on-the-list.example/agent-field-probe-18055f83')
+    const transcriptPath = join(REPO_ROOT, 'agents', 'backend2', '.claude', 'projects', 'x', 'y.jsonl')
+    runWired('curl -s https://not-on-the-list.example/agent-field-probe-18055f83', transcriptPath)
     const added = readFileSync(logPath, 'utf-8').slice(before)
     const line = added.trim().split('\n').filter(Boolean).pop() as string
     expect(JSON.parse(line).agent).toBe('backend2')

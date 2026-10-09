@@ -64,12 +64,13 @@ sima elöl álló értékadás csak az ELSŐ utasításra hatna, a tényleges `p
 `bash -c 'FOO=bar true; echo $FOO'` semmit nem ír ki). Az `export` a shell KÖRNYEZETÉBE kerül, ami
 minden későbbi utasításra érvényes ugyanabban a hívásban -- ez tényleg eljut a guard-szkriptig.
 
-**A hívó-ügynök mező is itt kerül be.** A `store/bash-egress.log` `agent` mezője korábban mindig
-üres volt, mert semmi nem állította be a `MARVEEN_AGENT_ID` env-változót a hívási láncban. Mostantól
-a scaffold minden ügynök parancsába beleégeti a saját nevét (`export MARVEEN_AGENT_ID="<ügynök>";`),
-a hook pedig a `ledger_lib.agent_id_from_payload` (a message-ledger már megkeményített resolvere,
-LEDGERCWD828) segítségével olvassa ki -- ez FÜGGETLEN az enforce/log módtól, log-only alatt is
-kitöltődik.
+**A hívó-ügynök mező (ettől FÜGGETLEN fix).** A `store/bash-egress.log` `agent` mezője korábban
+mindig üres volt, mert a hook csak a `MARVEEN_AGENT_ID`/`CLAUDE_AGENT_ID` env-változót nézte, amit
+soha senki nem állított be a hívási láncban. A hook mostantól a `ledger_lib.agent_id_from_payload`-ot
+hívja (a message-ledger már megkeményített resolvere, LEDGERCWD828): a saját hook-payloadja már
+tartalmazza a `transcript_path`-t, amiből ez a resolver a `agents/<ügynök>/...` mintát felismeri --
+nincs szükség arra, hogy a scaffold bármit beleégessen a parancsba. Ez a javítás teljesen
+független az enforce/log módtól, log-only alatt is kitöltődik.
 
 ## Allowlist
 
