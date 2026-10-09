@@ -57,3 +57,5 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `engineering-standards` -- a baseline, amihez mérsz
 - `project-workflow` -- csapat-workflow, gate-ek
 - `example-skills:webapp-testing` -- Playwright-alapú éles böngésző-teszt egy futó webapp ellen (screenshot, DOM-vizsgálat, console-hiba-felderítés); HASZNÁLD, ha egy kártya kész-jelentése user-facing frontendet érint -- ne csak a kódot olvasd, tényleges böngészőben kattints végig rajta (kártya 3c9e22b1/f5eda0be, 2026-08-24: backend2 valós próbafuttatása a CleanCore landing oldalán ~20 CSP-inline-style hibát talált, amit kód-olvasással nem vettünk volna észre)
+- `unlazy` -- teljesítés-fegyelem hosszú/többrészes gate-vizsgálatra, acceptance-gate + Depth Tree (a Stop-hook NINCS bekötve, csak a skill-hivatkozás, kártya 200d2969)
+- `doubt-driven-development` -- minden nem-triviális gate-döntés friss-kontextusú adverzariális átvizsgálása (kártya 200d2969)

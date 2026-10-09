@@ -61,6 +61,10 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `sp-test-driven-development` -- teszt előbb
 - `full-value-audit` -- teljes értékű audit
 - `project-workflow` -- csapat-workflow
+- `crafter-intent-layer` -- hierarchikus Intent Layer (AGENTS.md) kiépítése a kódbázishoz (kártya 200d2969)
+- `unlazy` -- teljesítés-fegyelem hosszú/többrészes feladatra, acceptance-gate + Depth Tree (a Stop-hook NINCS bekötve, csak a skill-hivatkozás, kártya 200d2969)
+- `doubt-driven-development` -- minden nem-triviális döntés friss-kontextusú adverzariális átvizsgálása (kártya 200d2969)
+- `documentation-and-adrs` -- ADR + dokumentáció rögzítése architektúra-döntésnél, publikus API-váltásnál (kártya 200d2969)
 
 ## KÖTELEZŐ: `karpathy-guidelines` minden kódolási feladatnál (Peti szabály 2026-09-29, Telegram 9709)
 
