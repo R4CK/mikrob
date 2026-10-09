@@ -30,12 +30,20 @@
 // time already applies -- three for the main agent (as web.ts does) and five for sub-agents (as
 // startAgentProcess does). It introduces no new section anywhere. The only new thing is that it
 // happens more than once.
+//
+// EXCEPTION, added by card 8c6f30fb (HOSTMOVE923): ensureProjectRootAnchor is NOT one of the
+// section writers above -- it re-anchors already-baked literal PROJECT_ROOT paths in CLAUDE.md
+// and settings.json after a host move, rather than writing a marked section. It runs here (not
+// at agent start only) for the same reason as the rest of this file: a long-lived agent that
+// never restarts after a host move would otherwise keep naming the dead root until someone
+// hand-edits it. Main agent is excluded inside the function itself (git-tracked files).
 import {
   ensureFleetRosterSection,
   ensureAutonomySection,
   ensureLocalFirstSection,
   ensureSkillsPathTrapSection,
   ensureSystemDirectiveAuthSection,
+  ensureProjectRootAnchor,
 } from './agent-scaffold.js'
 import { listAgentNames } from './agent-config.js'
 import { MAIN_AGENT_ID } from '../config.js'
@@ -71,6 +79,7 @@ export function sweepScaffoldSections(): number {
       ensureLocalFirstSection(name)
       ensureSkillsPathTrapSection(name)
       ensureSystemDirectiveAuthSection(name)
+      ensureProjectRootAnchor(name)
       swept += 1
     } catch (err) {
       logger.warn({ err, agent: name }, 'scaffold-sweep: agent section refresh failed (continuing)')

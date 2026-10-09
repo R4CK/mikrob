@@ -17841,3 +17841,43 @@ eszkalalt kartyara hivatkozva (7e70144e, outgoing-copy-gate.py), 1 tovabb-nem-do
 hianyzo ellenorzesi adat a tobbi channel-providerre), a tobbi STALE/mar-megoldott.
 
 **Ki döntött:** backend (karpathy-guidelines). Gate: QA + Cybersec.
+
+## 2026-10-09 -- Kartya 8c6f30fb (HOSTMOVE923): sajat ensureProjectRootAnchor, nem upstream suffix-listaja
+
+Folytatasa a 35dc6dbe-n (fentebb) nyitott follow-up kartyanak. Felterkepeztem a fork sajat
+generalt tartalmat: generateClaudeMd() (agent-scaffold.ts) LLM-generalt szabadszoveges CLAUDE.md-t
+ir AGENT LETREHOZASAKOR (a Memoria/Kanban/Autonomia recept-blokkok literalis `${PROJECT_ROOT}`
+utvonalakkal), es a settings.json PreCompact/SessionStart hook-jai templates/settings.json.template-bol
+`{{PROJECT_ROOT}}` placeholder-rel egyszer kerulnek bele ("Only if the file doesn't exist yet" --
+sosem ujra-oldodik fel). Host-move utan (uj gep, uj PROJECT_ROOT) MINDKET fajl orokre a HALOTT
+regi utvonalat nevezi, amig valaki kezzel at nem irja.
+
+Upstream sajat mechanizmusa (f3ce19ed) egy INSTALL_ANCHORED_SUFFIXES listaval dolgozik (upstream
+SAJAT generalt-tartalom alakja: store/.dashboard-token, scripts/hooks/, stb.) -- ezt mar 965b0b2b-n
+elhalasztottam, mert ez a fork mas tartalmat general, es a CLAUDE.md test szabad szoveg, nem
+veges recept-lista: egy suffix-lista soha nem lenne kimerito ra.
+
+EHELYETT: egy per-agent anchor-fajl (`agents/<nev>/.claude/project-root-anchor.json`) jegyzi meg,
+melyik PROJECT_ROOT volt elo legutobb, amikor `ensureProjectRootAnchor(name)` lefutott az
+agensre. Ha a jelenlegi PROJECT_ROOT elter a rogzitettol, host-move tortent -- a CLAUDE.md es a
+settings.json teljes tartalmaban minden literalis elofordulasat a REGI gyoknek egyszeru substring-
+replace-eli az UJ gyokerre (biztonsagos: mindketto abszolut fajlrendszer-utvonal, a regi string nem
+jelenhet meg legitim modon mashogy), majd az anchor frissul. Nincs szukseg suffix-enumeraciora, es
+a mechanizmus a szabad szoveget is lefedi, nem csak fix recepteket. A fo agens KIHAGYVA (CLAUDE.md
+es settings.json is git-tracked ott, ugyanaz a dontes mint ensureFleetAuthSection-nel, kartya
+2dd28b5d/99fccbcf).
+
+Bekotve: `scaffold-section-sweeper.ts` (periodikus sweep, 15 percenkent, minden futo sub-agensre) ES
+`agent-process.ts` startAgentProcess (agens-inditaskor azonnal) -- igy a "minden bootkor ujra-
+horgonyoz" upstream-elv teljesul, periodikus sweeppel kiegeszitve a hosszu eletu, ritkan ujrainditott
+agensekre (ugyanaz az indok mint scaffold-section-sweeper.ts sajat GAP-magyarazata).
+
+Teszt: `project-root-anchor.test.ts` (4 eset: baseline-iras rewrite nelkul, no-op ha nincs drift,
+teljes re-anchor CLAUDE.md+settings.json-ra host-move szimulacioval, fo-agens no-op). Mutacio-proof:
+`git stash` az agent-scaffold.ts valtozason -> typecheck 3 db TS2339/TS2305 hibat ad (hianyzo export),
+visszaallitva zold. `npm run typecheck` tiszta, `src/__tests__/scaffold-section-sweeper.test.ts` (7),
+`agent-scaffold-main-claude-md-zero-diff.test.ts` (5) es `shebang-files-executable.test.ts` (3)
+regresszio nelkul zold.
+
+**Ki döntött:** backend (karpathy-guidelines). Gate: QA (infra/host-move megbizhatosag, nincs uj
+trust-boundary, a kartya sajat kerese szerint).
