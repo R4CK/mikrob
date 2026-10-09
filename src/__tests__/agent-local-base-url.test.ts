@@ -58,7 +58,13 @@ describe('AGENT_LOCAL_BASE_URL: the local-agent endpoint is its own key', () => 
     // auth token, which is what actually marks that branch.
     const line = src.split('\n').find(l => l.includes('ANTHROPIC_AUTH_TOKEN=ollama'))
     expect(line, 'the ollama exportsStr line is gone -- upstream restructured it again, re-verify the patch by hand').toBeDefined()
-    expect(line).toContain('ANTHROPIC_BASE_URL=${AGENT_LOCAL_BASE_URL}')
+    // UPSTREAM-SYNC BATCH 4 (card 0b550d89): upstream's own version of this assertion expected
+    // the RAW, unescaped interpolation. Found during conflict resolution that AGENT_LOCAL_BASE_URL
+    // is a settings-registry `type: 'string'` key with no valueSet -- the exact unvalidated shape
+    // card e80c011a already fixed for OLLAMA_URL on the same line -- so the ported patch wraps it
+    // in shSingleQuote(), matching the sibling pin in agent-launch-key-quoting.test.ts. Updated
+    // this assertion to match the escaped form rather than reverting the fix to pass unescaped.
+    expect(line).toContain('ANTHROPIC_BASE_URL=${shSingleQuote(AGENT_LOCAL_BASE_URL)}')
     expect(line).not.toContain('${OLLAMA_URL}')
     // And the module must not reach for OLLAMA_URL by any other route either.
     // Comment lines are stripped first: the rationale block ABOVE the builder

@@ -64,11 +64,19 @@ describe('the suite does not collect its own build output', () => {
     expect(excluded('node_modules/vitest/dist/x.test.js')).toBe(true)
   })
 
-  it("vitest's own defaults do NOT cover dist -- which is why this entry is needed", () => {
-    // The reason the config's "keep all vitest defaults" premise stopped holding.
-    // If a future vitest release starts excluding dist again, this turns red and
-    // the entry above can be reconsidered -- rather than being cargo-culted.
+  it("vitest's own defaults cover dist on this fork's installed version (vitest ^2.1.0)", () => {
+    // UPSTREAM-SYNC BATCH 4 (card 0b550d89): this test's ORIGINAL assertion (expected false)
+    // was written against vitest 4, where configDefaults.exclude dropped to just
+    // ['**/node_modules/**', '**/.git/**'] -- true upstream, measured there. This fork's
+    // package.json pins "vitest": "^2.1.0" (the installed version at merge time: 2.1.9, per
+    // `node -e "require('vitest/dist/config.cjs').configDefaults.exclude"`), whose defaults
+    // STILL include '**/dist/**' -- the opposite of upstream's premise. The config's own
+    // 'dist/**' entry is harmless (a redundant-but-correct belt-and-suspenders on 2.x, and
+    // the one thing standing between the suite and a double-collected run if this fork ever
+    // upgrades to vitest 4). Flipped to assert the fork's actual, measured behaviour rather
+    // than importing a premise true only on a vitest major version this fork does not run.
+    // Revisit (flip back) if/when this fork upgrades to vitest 4.
     const byDefaultsOnly = configDefaults.exclude.some((p) => picomatch(p)('dist/__tests__/a.test.js'))
-    expect(byDefaultsOnly).toBe(false)
+    expect(byDefaultsOnly).toBe(true)
   })
 })

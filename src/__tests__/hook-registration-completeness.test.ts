@@ -102,8 +102,13 @@ const EXEMPT: Record<string, string> = {
     'pre-existing (predates this merge), genuinely unwired on every known registration surface -- needs its own follow-up card, not activated here',
   'telegram_fallback_send.py':
     'agent-invoked CLI (manual Bot API fallback sender, see scripts/lib/send-telegram.sh), not a settings hook; since #1305 the progress installer no longer copies or names it',
-  'telegram-image-resize.sh':
-    'legacy predecessor of channel-image-resize.sh; only its old installer migration path named it, and since #1305 that installer is a no-op stub -- kept pending a maintainer decision to remove it',
+  // telegram-image-resize.sh deliberately NOT exempted here (UPSTREAM-SYNC BATCH 4, card
+  // 0b550d89): an earlier round already decided against this (src/fork-upstream/
+  // acknowledged-conflicts.ts ~line 1855/1859) -- the file does not exist in this fork at all
+  // (replaced by channel-image-resize.sh; the old path is only named in
+  // scripts/install-channel-image-hook.sh's one-time migration cleanup, not as a hook). Adding
+  // an EXEMPT entry for a ghost file is itself a stale/ghost entry, caught by this file's own
+  // "every exemption points at a file that still exists" check.
   'mio-orszem-precheck.sh':
     'scheduler preCheck for the HOST-LOCAL marveen-io-kozosseg-orszem task (ORSICTX912): the mio community sentinel is this install\'s own and deliberately NOT seeded (a repo seed would ship it to every customer install), so its registration lives in the host ~/.claude/scheduled-tasks task-config -- outside this corpus by design. Wiring is gated on the ORSICTX912 activation order (host restart -> verify -> merge -> build+restart); the hermetic fail-direction tests are scripts/__tests__/mio-orszem-precheck.test.py.',
 }

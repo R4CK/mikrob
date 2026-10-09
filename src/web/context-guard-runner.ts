@@ -402,7 +402,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const bannerIsHardError = pane !== null && paneShowsContextSaturationHardError(pane)
   const needCredibilityProbe = paneSaturatedRaw && !bannerIsHardError
   // UPSTREAM-SYNC BATCH 4 (card 0b550d89): missing `await` here, found while resolving the
-  // unrelated conflict below that reuses this value -- measurePct() is async
+  // unrelated conflict below that reuses this value -- the measurement helper above is async
   // (Promise<number | null>), and saturationBannerCredible()'s third parameter is typed
   // `number | null`, so this silently assigned a Promise object wherever `measuredPct` is
   // later compared or rounded (lines below, and the reused `pct` field in the inputs
@@ -454,8 +454,8 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // an unconfigured agent would arm tiers that are quiet there today. The
     // credibility check above therefore reads measuredPct directly.
     //
-    // UPSTREAM-SYNC BATCH 4 (card 0b550d89): the fork's side of this conflict called
-    // measurePct() a SECOND time with the same (name, cfg.limitTokens) args measuredPct
+    // UPSTREAM-SYNC BATCH 4 (card 0b550d89): the fork's side of this conflict called the
+    // measurement helper a SECOND time with the same (name, cfg.limitTokens) args measuredPct
     // (above, line ~404) already computed once this tick -- predates that extraction, not a
     // deliberate fork decision. Adopted upstream's reuse to avoid the redundant async call.
     pct: cfg.enabled ? measuredPct : null,

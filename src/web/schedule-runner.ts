@@ -724,8 +724,8 @@ export function resolvePreCheckPath(taskName: string, preCheck: string): string 
 // UPSTREAM-SYNC BATCH 4 (card 0b550d89): this is the SAME decided point re-measured
 // across multiple earlier batches (src/fork-upstream/acknowledged-conflicts.ts,
 // ~line 930: "fork keeps it ASYNC (card 955f014e)"), with a hard pinning test
-// (schedule-runner-precheck.test.ts, scheduler-tick-nonblocking.test.ts both assert
-// `export async function runPreCheck`). resolvePreCheckPath is a genuinely new,
+// (schedule-runner-precheck.test.ts, scheduler-tick-nonblocking.test.ts both assert the
+// exported function keeps its `async` keyword). resolvePreCheckPath is a genuinely new,
 // non-overlapping upstream helper -- adopted above; the async decision is unchanged.
 export async function runPreCheck(task: ScheduledTask): Promise<{ skip: boolean; prefix?: string }> {
   if (!task.preCheck) return { skip: false }

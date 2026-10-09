@@ -48,7 +48,12 @@ const RUNNER_SRC = readFileSync(
  *  helpers above it and in getContextGuardStatus below it. */
 function checkAgentBody(): string {
   const start = RUNNER_SRC.indexOf('async function checkAgent(')
-  const end = RUNNER_SRC.indexOf('export function getContextGuardStatus(')
+  // UPSTREAM-SYNC BATCH 4 (card 0b550d89): this test's own end-marker was missing `async` --
+  // getContextGuardStatus has been `export async function` since an earlier round (card
+  // 42938a74, B-wave merge union: measurePct returns a Promise on this fork, so the listing
+  // stays async rather than upstream's sync map). Not a regression from this batch; the marker
+  // was simply stale for a function this test itself does not exercise.
+  const end = RUNNER_SRC.indexOf('export async function getContextGuardStatus(')
   expect(start).toBeGreaterThan(-1)
   expect(end).toBeGreaterThan(start)
   return RUNNER_SRC.slice(start, end)

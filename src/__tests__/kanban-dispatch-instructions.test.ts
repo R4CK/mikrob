@@ -109,37 +109,14 @@ describe('kanbanMoveInstructions', () => {
     expect(out).toContain('.dashboard-token')
   })
 
-  // The template closes every card with `done`, but a board program can give a
-  // card its OWN closing status -- for example a review status, so the delegator
-  // checks the work before the card closes. Without a stated ranking the two
-  // rules collide on every such card: the agent either burns a round deciding
-  // which to follow, or silently follows the template and the work closes
-  // unreviewed. The fix is one sentence, not a global swap: for every other
-  // program `done` IS the right close, so the template keeps it as the default
-  // and only names the card as the stronger rule when the card says otherwise.
-  it('says the card own closing status outranks the template default', () => {
-    const out = kanbanMoveInstructions('abc123', 'cody')
-    expect(out).toContain('a kártya program-specifikus szabálya erősebb')
-    expect(out).toContain('záró-státuszt ír elő')
-    // `testing` is named as the concrete case, so the reader does not have to
-    // recognise the abstraction in the middle of a task.
-    expect(out).toContain('testing')
-    // ...and `done` stays the default: the sentence is an exception, not a swap.
-    expect(out).toContain('"status":"done","actor":"cody"')
-    expect(out).toContain('a "done" az alapértelmezés')
-  })
-
-  // Placement is part of the fix: the ranking has to be read WITH step 2 (the
-  // done curl it modifies), not after the escalation block where a reader who
-  // already ran the curl would meet it too late.
-  it('puts the ranking sentence with step 2, before the escalation block', () => {
-    const out = kanbanMoveInstructions('abc123', 'cody')
-    const step2 = out.indexOf('2) Állítsd a kártyát done-ra')
-    const ranking = out.indexOf('a kártya program-specifikus szabálya erősebb')
-    const escalation = out.indexOf('Ha elakadtál')
-    expect(step2).toBeGreaterThan(-1)
-    expect(escalation).toBeGreaterThan(-1)
-    expect(ranking).toBeGreaterThan(step2)
-    expect(ranking).toBeLessThan(escalation)
-  })
+  // UPSTREAM-SYNC BATCH 4 (card 0b550d89): removed the two upstream tests that lived here
+  // ("says the card own closing status outranks the template default" / "puts the ranking
+  // sentence with step 2..."). Both assert step 2 literally says `"status":"done","actor":...`
+  // and reads `2) Állítsd a kártyát done-ra` -- upstream's own, unchanged step 2. This fork's
+  // step 2 says `"status":"waiting"` (the test right above this comment already pins that,
+  // `toContain('"status":"waiting"')`, and it is untouched by this batch): the builder never
+  // sets a closing status directly, the escalateTo/gate decides it after the REVIEW comment
+  // (CLAUDE.md rule 4). Upstream's "program-specific closing status" sentence, declined in
+  // kanban.ts's own merge resolution (see DECISIONS.md 2026-10-09 / 0b550d89 entry) for the
+  // same reason, has no step-2 "done" left to rank against on this fork. Not adapted -- removed.
 })

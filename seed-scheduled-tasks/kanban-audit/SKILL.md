@@ -248,7 +248,7 @@ except Exception: print(0)
    (a `kanban_cards` séma CHECK-je szerint a `testing` is érvényes). Az ilyen kártya SEMELYIK detektorban
    nem jelenik meg (mért eset 2026-09-16: `17d07456`, `testing`, 2026-09-05 óta), az audit számára nem létezik.
    ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/kanban" | python3 -c "
+   printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -H @- -s "http://localhost:$PORT/api/kanban" | python3 -c "
 import json,sys,time
 COVERED={'planned','in_progress','waiting','done'}
 for c in json.load(sys.stdin):

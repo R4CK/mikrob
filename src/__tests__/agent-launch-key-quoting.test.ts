@@ -96,9 +96,15 @@ describe('agent launch command: vault keys are shell-escaped (card 1075d0e4)', (
   // The instance the narrow guard missed, named explicitly so a future edit cannot quietly drop it
   // back to a bare interpolation. OLLAMA_URL is cfg()-sourced, i.e. the same operator-settable input
   // class as the vault keys -- it is not a constant.
-  it('the ollama BASE_URL is escaped too, not just the keys', () => {
-    expect(SRC).toContain('ANTHROPIC_BASE_URL=${shSingleQuote(OLLAMA_URL)}')
-    expect(SRC).not.toContain('ANTHROPIC_BASE_URL=${OLLAMA_URL}')
+  //
+  // UPSTREAM-SYNC BATCH 4 (card 0b550d89): the sink itself moved from OLLAMA_URL to
+  // AGENT_LOCAL_BASE_URL (upstream's own new setting, same unvalidated-string shape -- see
+  // agent-local-base-url.test.ts). The OLLAMA_URL-shaped line this test pinned no longer exists
+  // anywhere in the file; updated the anchor to the new variable rather than letting the pin go
+  // stale and silently stop checking anything.
+  it('the local-agent BASE_URL is escaped too, not just the keys', () => {
+    expect(SRC).toContain('ANTHROPIC_BASE_URL=${shSingleQuote(AGENT_LOCAL_BASE_URL)}')
+    expect(SRC).not.toContain('ANTHROPIC_BASE_URL=${AGENT_LOCAL_BASE_URL}')
   })
 
   it('the key exports go through launchSecretRef, not a raw interpolation (card 248d3013)', () => {
