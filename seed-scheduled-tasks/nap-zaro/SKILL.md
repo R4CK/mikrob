@@ -33,9 +33,10 @@ printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -s -H @- "http://localhost:$
    frissíti az `accessed_at`-et (a keresés igen, azt itt ne használd).
    ```bash
 SINCE=<az 1. lépés last_ts értéke; ha 0, akkor: $(date -d "$TODAY 00:00" +%s)>
-python3 - "$PORT" "$TOKEN" "$SINCE" <<'PY'
-import json, sys, urllib.request, datetime as dt
-port, token, since = sys.argv[1], sys.argv[2], int(sys.argv[3])
+TOKEN="$TOKEN" python3 - "$PORT" "$SINCE" <<'PY'
+import json, os, sys, urllib.request, datetime as dt
+port, since = sys.argv[1], int(sys.argv[2])
+token = os.environ['TOKEN']
 def get(path):
     req = urllib.request.Request(f'http://localhost:{port}{path}', headers={'Authorization': f'Bearer {token}'})
     return json.load(urllib.request.urlopen(req))

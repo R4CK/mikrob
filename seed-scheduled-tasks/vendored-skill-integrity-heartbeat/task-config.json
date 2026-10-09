@@ -1,0 +1,11 @@
+{
+  "schedule": "40 4,10,16,22 * * *",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": true,
+  "type": "heartbeat",
+  "skipIfBusy": false,
+  "forceSend": false,
+  "description": "6 orankent lefuttatja a store/vendored-skill-integrity.py-t, hogy egy vendorolt skill helyi, nem-sanctioned modositasa (akar valodi titok is) ne maradjon csendben eszrevetlen -- ez a da47b612 secret-gate kivetelenek kompenzalo kontrollja, amit korabban semmi nem futtatott rendszeresen (kartya 14216622, Cybered kovetkezmeny). Csak akkor ir Telegramra, ha a script ALERT:yes verdiktet ad.",
+  "catchUpMaxAgeMinutes": 1440,
+  "createdAt": 1791539000
+}

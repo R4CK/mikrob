@@ -147,8 +147,14 @@ describe('seed template placeholders are all substituted by every seeder', () =>
       })
       // agent-skill-drift-sync-heartbeat joined the set on card 222fdc5e: its report now goes to
       // Peti only when the script's own ALERT:yes verdict says the diverged SET changed.
+      // vendored-skill-integrity-heartbeat joined the set on card 14216622, same ALERT: convention.
       expect(users.sort()).toEqual(
-        ['agent-skill-drift-sync-heartbeat', 'fleet-nudger', 'heartbeat-consolidated'].sort(),
+        [
+          'agent-skill-drift-sync-heartbeat',
+          'fleet-nudger',
+          'heartbeat-consolidated',
+          'vendored-skill-integrity-heartbeat',
+        ].sort(),
       )
     })
   })
