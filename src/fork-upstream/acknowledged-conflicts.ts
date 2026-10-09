@@ -3157,6 +3157,127 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "needs revisiting, per this file's entry: 'if keychainDelete ever gains a real caller " +
       "upstream, it comes back WITH that caller, not before').",
   },
+  // The following nine anchors were added card 405a6da0 (backend2, 2026-10-09), the WhiteHat
+  // 1f252502-gate follow-up that widened mentionsRefusal (see
+  // fork-upstream-conflict-guard.test.ts) past the literal "NOT ADOPTED" string. Each covers one of
+  // the newly-caught entries that WAS a real, checkable refusal (the ones that were not -- cosmetic/
+  // no-functional-difference, self-referential test content, or already escalated to their own card
+  // -- went to UNANCHORED_BACKLOG in that same test file instead, with the reasoning per item).
+  'scripts/install-prod-tree-guard-hook.sh': {
+    needle: 'hdr_file',
+    file: 'scripts/install-prod-tree-guard-hook.sh',
+    expect: 'present',
+    because:
+      "this entry keeps the fork's -H @\"$hdr_file\" 0600-temp-file pattern instead of upstream's " +
+      "argv-embedded Authorization header (the token-in-argv vulnerability, /proc/<pid>/cmdline is " +
+      "world-readable -- same class as watchdog.sh's b267df80 fix). hdr_file's disappearance means " +
+      "the call site reverted to the insecure form.",
+  },
+  'scripts/limit-monitor.sh': {
+    needle: 'session-limit-pattern.sh',
+    file: 'scripts/limit-monitor.sh',
+    expect: 'present',
+    because:
+      "this entry keeps the fork's canonical session-limit-pattern.sh sourcing (card 115c21e7) " +
+      "instead of a wholesale upstream replacement, and separately refuses to graft upstream's " +
+      "measured-quota alerter because the fork already alerts from its own quota monitor -- taking " +
+      "both would double-notify Peti. The sourcing line disappearing means a wholesale replacement " +
+      "happened without re-deciding either point.",
+  },
+  'seed-scheduled-tasks/kanban-audit/SKILL.md': {
+    needle: '-H @-',
+    file: 'seed-scheduled-tasks/kanban-audit/SKILL.md',
+    expect: 'present',
+    because:
+      "this entry (6a, Cybersec F1 MEDIUM) keeps the fork's piped-header curl idiom instead of " +
+      "upstream's argv-embedded Authorization header -- the same token-in-argv vulnerability class " +
+      "rejected everywhere else in this fork (watchdog.sh, install-prod-tree-guard-hook.sh, " +
+      "templates/CLAUDE.md.template, b267df80). This file is copied verbatim into every fresh " +
+      "install's seed scheduled task, so losing the idiom here teaches it to every new agent.",
+  },
+  'templates/CLAUDE.md.template': {
+    needle: '-H @-',
+    file: 'templates/CLAUDE.md.template',
+    expect: 'present',
+    because:
+      "this entry keeps the fork's piped-header -H @\"$hdr_file\" idiom in the memory/kanban command " +
+      "examples instead of upstream's argv-embedded form, same token-in-argv vulnerability class as " +
+      "the other anchors in this group. This is a TEMPLATE rendered into every fresh install's own " +
+      "CLAUDE.md, so losing the idiom here teaches the insecure form to every new agent by example.",
+  },
+  'src/model-fallback.ts': {
+    // Single-quoted, array-literal form on purpose, NOT the bare phrase: the fork's own explanatory
+    // comment a few lines above USAGE_LIMIT_FRAGMENTS permanently double-quotes this exact phrase to
+    // document why it was dropped ('NOTE (2026-06-30): dropped the "upgrade to increase your usage
+    // limit" token.') -- an absent-anchor checks RAW text (comments included, by design elsewhere in
+    // this file), so the bare phrase would read as permanently "present" via that comment and this
+    // anchor would never go green. The single-quoted, no-trailing-prose form is how a REINSTATED
+    // array entry would actually look (every real entry in USAGE_LIMIT_FRAGMENTS is `'...',` with no
+    // explanatory text attached), and that exact shape is absent today -- verified directly.
+    needle: "'upgrade to increase your usage limit'",
+    file: 'src/model-fallback.ts',
+    expect: 'absent',
+    because:
+      "this entry drops the '/upgrade to increase your usage limit' startup-hint token from " +
+      "upstream's limit-detection regex on purpose: it is Claude Code's own idle startup hint, not a " +
+      "real limit message, and including it causes a fleet-wide false-positive fallback. This exact " +
+      "array-entry shape appearing means that token was re-merged into USAGE_LIMIT_FRAGMENTS without " +
+      "re-deciding the false-positive risk.",
+  },
+  'src/web/routes/messages.ts': {
+    needle: "'Invalid JSON body'",
+    file: 'src/web/routes/messages.ts',
+    expect: 'present',
+    because:
+      "this entry's hunk-2 resolution keeps the fork's try/catch JSON-parse guard as the OUTER " +
+      "layer, with upstream's notify-field type-check nesting INSIDE it, specifically so a malformed " +
+      "body is rejected before any field-level validation runs. Losing this string means the guard " +
+      "was removed or reordered, which is the exact regression this entry refuses to take.",
+  },
+  'src/web/system-directive.ts': {
+    needle: 'from_agent="system"',
+    file: 'src/web/system-directive.ts',
+    expect: 'absent',
+    because:
+      "this entry keeps systemDirectiveEnvelope() interpolating the fork's own reserved-sender " +
+      "const (SYSTEM_DIRECTIVE_SENDER, defined in system-directive-id.ts) instead of upstream's " +
+      "hardcoded literal \"system\", because the recipient's verification checks the envelope's " +
+      "claimed sender against that reserved id -- an envelope naming upstream's literal would be " +
+      "refused as injection-suspect by the fork's own check. The hardcoded literal reappearing is " +
+      "exactly that reversal.",
+  },
+  'src/web/update-checker.ts': {
+    needle: 'repoConfigs',
+    file: 'src/web/update-checker.ts',
+    expect: 'present',
+    because:
+      "this entry's final re-measurement (2026-09-04, card f27c999b) concluded the fork's two-repo " +
+      "repoConfigs() mechanism already achieves both of upstream's single-checker outcomes (remote " +
+      "preference and correct merge-base) by a different, more general design, so upstream's " +
+      "single-result rework is not ported. repoConfigs' disappearance means that conclusion's own " +
+      "premise is gone and the comparison needs redoing, not assumed to still hold.",
+  },
+  'update.sh': {
+    needle: '{{CHAT_ID}}',
+    file: 'update.sh',
+    expect: 'present',
+    because:
+      "this entry keeps the fork's {{CHAT_ID}} substitution in render_seed_template() -- dropping it " +
+      "was a measured Cybered finding: a rendered seed task keeps the literal placeholder while the " +
+      "installed file carries the real id, so the escalation line (`reply chat_id {{CHAT_ID}}`) " +
+      "loses its destination silently. Its disappearance from update.sh is that regression returning.",
+  },
+  'web/lang/hu.js': {
+    needle: 'activity.page_title',
+    file: 'web/lang/hu.js',
+    expect: 'present',
+    because:
+      "this entry (MikroB's decision, 2026-09-04) keeps the fork's 8 activity.* i18n keys that " +
+      "upstream removed when it deleted its own Activity page and folded that content into Team -- " +
+      "the fork's Activity page is still live and still references all eight keys (web/index.html, " +
+      "web/app-activity.js, web/app-i18n-nav.js). Losing this key here (and its web/lang/en.js twin, " +
+      "same decision, same risk) means a live fork page would start rendering raw key names.",
+  },
   'scripts/hooks/bash-egress-parser.mjs': {
     needle: 'ensureBashEgressParser',
     file: 'src/web/agent-scaffold.ts',
