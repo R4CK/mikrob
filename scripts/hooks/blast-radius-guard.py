@@ -32,6 +32,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 # Resolved from THIS file so the hook and the measurement always come from the
@@ -48,6 +49,29 @@ MARKER_ROOT = Path(os.environ.get("BLAST_RADIUS_MARKER_DIR")
                    or Path(tempfile.gettempdir()) / f"blast-radius-guard-{os.getuid()}")
 SOURCE_EXT = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java"}
 DEFAULT_MAX_BEHIND = 200
+# Card 0abcaba3: before this, the only record of a firing was the one-shot /tmp marker
+# (_already_shown) -- gone the moment its temp dir is cleaned, and never written at all for a
+# below-threshold pass. So nobody could answer "how often does this guard actually run or
+# block" over any real window. Append-only, one line per REAL decision (a hub-file candidate
+# that reached the threshold check -- not every no-op early exit above, which would just be
+# log noise for files the guard never even considers). Logging failure must not affect the
+# guard's own exit code (fail-open, same as everywhere else in this file).
+LOG_PATH = Path(os.environ.get("BLAST_RADIUS_LOG") or (STORE / "blast-radius-guard.log"))
+
+
+def _log_decision(decision: str, rel: str, importers: int, threshold: int) -> None:
+    try:
+        line = json.dumps({
+            "ts": time.time(),
+            "decision": decision,
+            "file": rel,
+            "importers": importers,
+            "threshold": threshold,
+        }, ensure_ascii=False)
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 def _lib():
@@ -159,11 +183,13 @@ def main() -> None:
         if not lib.is_forced_hub(rel) and (not res["in_graph"] or res["importers"] < thr):
             sys.exit(0)
         if _already_shown(str(payload.get("session_id") or ""), root, rel):
+            _log_decision("shown-already", rel, res["importers"], thr)
             sys.exit(0)
         report = lib.render(res, thr)
     except Exception:
         sys.exit(0)
 
+    _log_decision("blocked", rel, res["importers"], thr)
     sys.stderr.write(
         "BLAST-RADIUS-GUARD: ez egy megosztott/core fajl. A CLAUDE.md Kodminosegi "
         "alapelvek 10. pontja szerint a hivok koret a szerkesztes ELOTT kell latni.\n"

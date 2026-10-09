@@ -131,6 +131,27 @@ def main() -> int:
         rc4, _ = edit(LEAF)
         check("a leaf file is never blocked", rc4 == 0)
 
+        # Card 0abcaba3: the durable decision log. Own marker dir + own log path so this
+        # block's two decisions ("blocked" then "shown-already") are not mixed in with the
+        # entries the rest of this file's cases already wrote by this point.
+        log_fx = Path(td) / "decision.log"
+        log_marker = Path(td) / "log-markers"
+        log_env = {"BLAST_RADIUS_MARKER_DIR": str(log_marker), "BLAST_RADIUS_LOG": str(log_fx)}
+        rc_log1, _ = run({"tool_name": "Edit", "session_id": "slog",
+                          "tool_input": {"file_path": str(HUB)}}, log_env)
+        check("log-test: first edit still blocks", rc_log1 == 2)
+        rc_log2, _ = run({"tool_name": "Edit", "session_id": "slog",
+                          "tool_input": {"file_path": str(HUB)}}, log_env)
+        check("log-test: second edit still passes (shown-already)", rc_log2 == 0)
+        log_lines = [json.loads(l) for l in log_fx.read_text(encoding="utf-8").splitlines() if l.strip()] \
+            if log_fx.exists() else []
+        check("the log recorded exactly one line per decision", len(log_lines) == 2)
+        decisions = [l.get("decision") for l in log_lines]
+        check("the first logged decision is 'blocked'", decisions[:1] == ["blocked"])
+        check("the second logged decision is 'shown-already'", decisions[1:2] == ["shown-already"])
+        check("every logged line names the file and a measured importer count",
+              all(l.get("file") and isinstance(l.get("importers"), int) for l in log_lines))
+
         # Test-file exclusion. NOT testable against CleanCore: measured
         # 2026-08-23, no .test.ts file there has a single importer, so every
         # such payload exits on the threshold and the exclusion is never
@@ -243,7 +264,7 @@ def main() -> int:
 
     for f in fails:
         print(f"FAIL: {f}")
-    total = 29 + (2 if Path("/mnt/h/LM_Studio_Workdir/CleanCore-worktrees/backend2/apps/api/src/pg-client.ts").exists() else 0)
+    total = 36 + (2 if Path("/mnt/h/LM_Studio_Workdir/CleanCore-worktrees/backend2/apps/api/src/pg-client.ts").exists() else 0)
     print(f"blast-radius-guard selftest: {total - len(fails)}/{total} passed"
 )
     return 1 if fails else 0

@@ -825,7 +825,11 @@ describe('no shipped script hands the dashboard Bearer token to python3 as a pos
     ...SRC_FILES.map((file) => ({ dir: SRC_DIR, file })),
   ]
 
-  it.each(corpus)('$file: no `python3 ... "$TOKEN"` positional-argument shape', ({ dir, file }) => {
+  // Cybersec, card 1a046537 delta-gate: the title is a template, not a plain string --
+  // vitest's it.each interpolates every $word in it against the case object, so a literal
+  // "$TOKEN" here (no such property on {dir, file}) rendered as "undefined" in every test
+  // name. Spelled without the leading $ so it reads as prose, not a second placeholder.
+  it.each(corpus)('$file: no python3 positional-argument TOKEN shape', ({ dir, file }) => {
     const source = readFileSync(join(dir, file), 'utf-8')
     // Only the text AFTER the `python3` token counts as ITS argv -- `"$TOKEN"` appearing BEFORE
     // it on the same line belongs to an earlier pipe segment (printf feeding curl, e.g. `printf
