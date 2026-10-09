@@ -22,6 +22,15 @@ import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
 import { tryHandleMessages } from '../web/routes/messages.js'
 import { SYSTEM_DIRECTIVE_SENDER } from '../web/system-directive.js'
+// LEGACY_SYSTEM_SENDER ('system', bare): card 5c5d7bc4 split the fork's single
+// reserved id into two -- SYSTEM_DIRECTIVE_SENDER ('system-directive') for the
+// authenticated directive channel this test file is named after, and this one
+// for the five pre-existing in-process notification writers that already used
+// the bare 'system'. Both are reserved (isReservedSenderId covers the set),
+// but a forged spelling of plain "system" sanitizes to THIS constant, not to
+// SYSTEM_DIRECTIVE_SENDER -- the upstream version of this test predates the
+// split and checked against the one id it still had.
+import { LEGACY_SYSTEM_SENDER } from '../web/system-directive-id.js'
 import { parseSystemSenderIds } from '../config.js'
 import { sanitizeAgentIdent } from '../prompt-safety.js'
 
@@ -73,9 +82,11 @@ describe('the system directive sender is reserved', () => {
 
   it('refuses the spellings that still sanitize to it', async () => {
     // The router and every reader match on the SANITIZED id, so a guard that
-    // read the raw string would let exactly these through.
+    // read the raw string would let exactly these through. These spellings
+    // sanitize to LEGACY_SYSTEM_SENDER ('system'), not SYSTEM_DIRECTIVE_SENDER
+    // -- both are reserved, but this is the bare-'system' half of the split.
     for (const forged of ['@system', 'system.', ' system ', 'system!']) {
-      expect(sanitizeAgentIdent(forged)).toBe(SYSTEM_DIRECTIVE_SENDER)
+      expect(sanitizeAgentIdent(forged)).toBe(LEGACY_SYSTEM_SENDER)
       const { status, body } = await postAs(forged, { kind: 'token' })
       expect(status, `spelling ${JSON.stringify(forged)}`).toBe(403)
       expect(String(body?.error)).toMatch(/reserved/i)
@@ -103,7 +114,7 @@ describe('the reserved check cannot be undone by configuration', () => {
     // '!isKnownAgent(' -- that substring also occurs in a helper near the top
     // of the file, and anchoring there made this assertion fail against a
     // CORRECT implementation (measured while writing this test).
-    const reserved = ROUTE_SRC.indexOf('=== SYSTEM_DIRECTIVE_SENDER')
+    const reserved = ROUTE_SRC.indexOf('isReservedSenderId(sanitizeAgentIdent(from))')
     const exemption = ROUTE_SRC.indexOf('SYSTEM_SENDERS.has(')
     const knownAgent = ROUTE_SRC.indexOf('!isOwnerSender && !isSystemSender')
     expect(reserved).toBeGreaterThan(-1)
@@ -117,6 +128,6 @@ describe('the reserved check cannot be undone by configuration', () => {
     // Documents WHY the position matters: the config layer happily accepts
     // 'system' in the list. Nothing downstream of the exemption could help.
     const parsed = parseSystemSenderIds('prod-tree-guard,system', sanitizeAgentIdent)
-    expect(parsed.has(SYSTEM_DIRECTIVE_SENDER)).toBe(true)
+    expect(parsed.has(LEGACY_SYSTEM_SENDER)).toBe(true)
   })
 })

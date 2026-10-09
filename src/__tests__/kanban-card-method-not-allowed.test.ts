@@ -1,9 +1,10 @@
 // A bare 404 cannot say WHICH half of the request was wrong. On the
-// single-card path only PUT and DELETE are routed, so every other method fell
-// through to the catch-all "Not found" -- byte-identical to the answer for a
-// card id that does not exist. That ambiguity is not theoretical: it has twice
-// sent a caller looking for the wrong bug, once concluding that an endpoint
-// wrote data while answering 404, and once that a card id was rejected when in
+// single-card path PUT and DELETE are routed (GET was added later, card
+// ebf7d95c), so every OTHER method (PATCH, POST, ...) fell through to the
+// catch-all "Not found" -- byte-identical to the answer for a card id that
+// does not exist. That ambiguity is not theoretical: it has twice sent a
+// caller looking for the wrong bug, once concluding that an endpoint wrote
+// data while answering 404, and once that a card id was rejected when in
 // fact the path shape was wrong.
 //
 // 405 with an Allow header answers the question the 404 could not: the method
@@ -66,17 +67,6 @@ describe('unrouted methods on the single-card path answer 405, not a bare 404', 
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(405)
     expect(out.headers.allow).toBe('PUT, DELETE')
-  })
-
-  // Measured, and it corrects a natural assumption: there is NO GET on this
-  // path. Advertising one in the Allow header would send the next caller into
-  // the same fog, one method further along.
-  it('GET answers 405 too, because no single-card read route exists', async () => {
-    const { ctx, out } = fakeCtx(`/api/kanban/${CARD}`, 'GET')
-    expect(await tryHandleKanban(ctx)).toBe(true)
-    expect(out.status).toBe(405)
-    expect(out.headers.allow).toBe('PUT, DELETE')
-    expect(out.headers.allow).not.toContain('GET')
   })
 
   it('the body says the METHOD is the problem, not the card id', async () => {

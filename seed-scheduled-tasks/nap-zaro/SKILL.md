@@ -22,7 +22,7 @@ egy bejegyzésben beírja. Csendes kör: a beállított csatornára NEM küld ü
 PORT="$(sed -n 's/^WEB_PORT=//p' {{INSTALL_DIR}}/.env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
 TOKEN="$(cat {{INSTALL_DIR}}/store/.dashboard-token)"
 TODAY="$(date +%F)"
-curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:$PORT/api/daily-log?agent={{MAIN_AGENT_ID}}&date=$TODAY" \
+printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -s -H @- "http://localhost:$PORT/api/daily-log?agent={{MAIN_AGENT_ID}}&date=$TODAY" \
   | python3 -c "import json,sys; rows=json.load(sys.stdin); print('MAR_LEFUTOTT' if any('Napzáró' in r['content'] for r in rows) else 'last_ts=%d' % max([r['created_at'] for r in rows] or [0]))"
    ```
    A dátumot MINDIG add meg (`date=`): a végpont alapértéke UTC-nap, este 22 és éjfél között
@@ -74,11 +74,13 @@ find ~/.claude/skills ~/.claude/scheduled-tasks {{INSTALL_DIR}}/.claude/skills -
    rövid bekezdés, időponttal, az eredménnyel, és a kártya-azonosítóval, ha van. Ne találj ki
    olyat, ami nincs az emlékekben vagy a kártyákon.
    ```bash
-python3 -c "import json,sys; print(json.dumps({'agent_id':'{{MAIN_AGENT_ID}}','content':sys.stdin.read()}))" <<'TXT' \
-  | curl -s -X POST "http://localhost:$PORT/api/daily-log" -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d @-
+python3 -c "import json,sys; print(json.dumps({'agent_id':'{{MAIN_AGENT_ID}}','content':sys.stdin.read()}))" <<'TXT' > /tmp/nap-zaro-body.$$
 ## HH:MM -- Napzáró (utolsó bejegyzés óta: HH:MM)
 <témák szerinti összefoglaló>
 TXT
+printf 'Authorization: Bearer %s\n' "$TOKEN" \
+  | curl -s -H @- -X POST "http://localhost:$PORT/api/daily-log" -H "Content-Type: application/json" -d @/tmp/nap-zaro-body.$$
+rm -f /tmp/nap-zaro-body.$$
    ```
 
 4. **Ellenőrzés.** Kérd le újra a mai naplót, és nézd meg, hogy PONTOSAN egy `Napzáró`

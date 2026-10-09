@@ -16483,11 +16483,19 @@ mar auto-mergelt reszben). Gate: QA + Cybersec (a kartya kerese szerint).
 Minden fajlnev relativ a repo gyokerehez. Fork-oldal az alapertelmezes; csak az eltereseket
 sorolja fel ez a bejegyzes.
 
-**mcp-catalog.json, Gmail-pakett argumentumai: UPSTREAM-ot vettuk at, dontessel.** A fork regi
-oldala a `gmail-mcp-server` (karbantarto: uhbarp-ayis, van postinstall) pakettet hasznalta;
-upstream mar atallt a `@artymclabin/gmail-mcp`-re (karbantarto: artymclabin, nincs postinstall,
-a repo azonossaga ellenorizve a mar nem-utkozo `verifiedNote` szoveg alapjan). Upstream oldal
-biztonsagilag erosebb -- itt UPSTREAM gyozott, nem a fork.
+**mcp-catalog.json, Gmail-pakett argumentumai: KORRIGALVA, a fork oldal maradt -- az elso
+atvetelem HIBAS volt.** Elsore upstream `@artymclabin/gmail-mcp` oldalat vettem at (karbantarto
+egyezik, nincs postinstall -- azonossag szempontjabol valoban erosebb), de a `fork-upstream-
+conflict-guard.test.ts` ACKNOWLEDGED_FORK_ANCHORS["mcp-catalog.json"] anchort buktatott: ez a
+csomag-csere MAR EGYSZER fel volt veve a forkba, majd Cybersec (kartya c2aeefa5, komment 6737)
+VISSZAVONTA, mert a `@artymclabin/gmail-mcp` 31 eszkoze (pl. `send_draft`, `reply_all`) kozul
+TOBB NINCS felismerve a harom email-approval matcher kozul egy altal sem (outgoing-copy-gate.py,
+email-approval-gate.py, email-send-gate.mjs) -- azonossag szempontjabol jobb csomag, de
+gate-bypass kockazatot hordoz, amig a matcherek nem bovulnek egyutt vele (kulon kartya,
+MikroB uzenet 4162). Az anchor kimondottan ezt az ujra-megjelenest figyeli. Visszaallitva a
+fork pre-merge allapotara: `args: ["-y", "gmail-mcp-server"]`, `verifiedAt: 2026-08-27`,
+`verifiedNote` az eredeti letezes-ellenorzesre. Ha ez a csomag-csere legkozelebb felmerul,
+csak a matcher-bovitessel EGYUTT landolhat, nem onalloan.
 
 **scripts/__tests__/outgoing-copy-gate.test.py: upstream oldal ELUTASITVA, ellentmondas miatt.**
 Egy upstream teszt-hurok meg elvarta, hogy `label_message` a biztonsagos listan maradjon, miutan
@@ -16567,3 +16575,84 @@ Ki dontott: backend3 (konfliktusfeloldas, 1 helyreallitott db.ts serules a sajat
 1 valodi upstream-javitas adoptalva routes/marveen.ts-ben, 1 csendben beszivargott import-
 utkozes elkapva tsc-vel, 2 uj teszt-fajl elutasitva nem-adoptalt funkcio miatt). Gate: QA +
 Cybersec + Cybered (a kartya kerese szerint, magasabb tier mint a 4. koteg).
+
+## 2026-10-09 -- 5. koteg, teszt-triage a `fleet-test.sh --ref` elso futasa utan (kartya 1a046537)
+
+A fuggelek feloldasa utani elso teljes `fleet-test.sh` futas 8 fajlon/14 teszten bukott, plusz egy
+lint-ratchet regresszio. Mindegyik a mar dokumentalt "tiszta auto-merge elrejthet egy nem-
+adoptalt vagy elavult mintat" (memoria #242) vagy "uj upstream teszt a REGI, meg nem bovitett
+fork-architekturat feltetelezi" mintak egyike -- nem a sajat kodom uj hibaja, kiveve a kulon
+megjelolt mcp-catalog.json korrekciot (lasd fentebb).
+
+**scripts/supabase-q.sh + seed-scheduled-tasks/nap-zaro/SKILL.md: 2 uj fajlban VALODI
+argv-token-szivargas (token-in-argv-guard.test.ts).** Mindket uj (upstream) fajl `curl -H
+"Authorization: Bearer $TOKEN"` alakot hasznalt -- a `ps`-bol kiolvashato argv-szivargas, amit a
+fork mar korabban (edb7559f) kizart MINDEN sajat scriptjebol. Javitva mindharom curl-hivas a
+`printf ... | curl -H @-` / `-H @fajl` mintara.
+
+**seed-scheduled-tasks/nap-zaro/task-config.json: `skipIfBusy: true` -> `false`
+(seed-schedule-liveness.test.ts).** A nap-zaro napi egyszeri kor (`47 21 * * *`); a `skipIfBusy`
+csak percenkent/orankent futo koroknek valo, egy napi korre allitva felesleges kihagyast
+okozhatna. Mechanikus konfig-hiba az uj fajlban, nem architekturalis dontes.
+
+**src/__tests__/email-send-gate.test.ts: duplikalt, egymasnak ellentmondo teszt-blokk torolve.**
+Az auto-merge UGYANAZZAL a leirassal ("blocks the claude.ai Gmail connector send-shaped tools...")
+KET verziot hozott be: a REGI (upstream, `update_draft`/`label_message` meg a biztonsagos listan)
+es az UJ (mar a kartya 498d53c1 deny-by-default szukitesevel, `update_draft`/`label_message`
+MAR NEM biztonsagos). A regi, elso blokk torolve -- a masodik, mar helyes blokk valtozatlan.
+
+**src/__tests__/kanban-card-method-not-allowed.test.ts: egy teszt-eset + a fejlec-komment
+korrigalva, a tobbi valtozatlan.** Az uj teszt feltetelezte, hogy a `/api/kanban/<id>` GET-re 405
+jon ("nincs ilyen route") -- de ez a GET-route MAR LETEZIK a forkban (kartya ebf7d95c, pre-merge
+HEAD-ben mar megvolt). A "GET answers 405" teszt-eset es a felteves torolve/korrigalva a
+fejlec-kommentben; a PATCH/POST/body-uzenet tesztek (amik a VALODI 405-viselkedest nezik a nem
+routed metodusokra) erintetlenek.
+
+**src/__tests__/channel-poller-reap-live-pane.test.ts + channel-poller-reap-integration.test.ts:
+2 kulonbozo gyoker-ok, 2 kulon javitas, de mindketto a MEGLEVO `isPollerArgv`/`filterPollerPids`
+szuro (kartya 8c94283b) es az UJ live-pane-guard (kartya 08a02137/PR1402CHANNELREAP) kozti
+osszjatek hianya.**
+- A live-pane teszt (`A`/`C` eset) sajat "aldozat" folyamatot `/bin/sleep 300`-kent inditott --
+  ez SOHA nem felel meg az `isPollerArgv` (bun/node + 'server.ts' argv-elem) szuronek, tehat a
+  `candidates` lista MINDIG ures volt, meg mielott a live-pane logika egyaltalan szamitana. A
+  teszt az UPSTREAM allapotara irodott (ahol ez a szuro feltehetoen nem letezett/mas volt), a
+  forknak viszont MAR VOLT ez a szukites. Javitva: az aldozat most `node -e
+  'setInterval(()=>{},1000)' server.ts` alakban indul, hogy at is menjen a szuron.
+- Az integracios teszt (`vi.mock('node:child_process', ...)`) EGY `execSync` mock-ot hasznalt
+  MINDEN hivasra (a `ps eww -e` scan ES az uj `tmux list-panes` hivas is), es a `ps`-sor-szeru
+  fixture-szoveg (`"   4104 pts/1 ... bun server.ts ..."`) VELETLENUL ervenyes pane-pid-kent
+  parse-olodott (`parseInt` a sor elejet olvassa) -- a POLLER (4104) emiatt sajat magat "elo
+  pane"-nek latta es megkimelte magat, a reap helyett. Javitva: a mock most a parancs SZOVEGE
+  alapjan agazik (`list-panes` -> egy nem-utkozo fix pid; mas -> a `ps` fixture).
+
+**src/__tests__/system-sender-reserved.test.ts: a teszt az UPSTREAM egy-azonosito vilagara
+irodott, a fork mar KETTE valasztotta (kartya 5c5d7bc4).** Upstream `SYSTEM_DIRECTIVE_SENDER`
+egyenlo a csupasz `'system'`-mel; a fork `SYSTEM_DIRECTIVE_SENDER = 'system-directive'` (az
+authentikalt direktiva-csatorna sajat azonositoja) ES `LEGACY_SYSTEM_SENDER = 'system'` (az otodik
+in-process ertesito-iro, ami mar regen a csupasz nevet hasznalja) -- MINDKETTO fenntartott
+(`isReservedSenderId`), de a "csupasz system-re hamisitott iras" teszt-esetnek a MASIK
+konstanshoz kell hasonlitania. Javitva: a forgery-spelling teszt es az .env-parse teszt most
+`LEGACY_SYSTEM_SENDER`-t var; a sorrend-teszt szoveges horgonya
+(`'=== SYSTEM_DIRECTIVE_SENDER'`, ami sosem letezett string a kodban) lecserelve a VALODI kod-
+sorra (`isReservedSenderId(sanitizeAgentIdent(from))`).
+
+**lint-ratchet.sh: `@typescript-eslint/no-unsafe-argument` 150 -> 154 (+4), ALAPVONAL
+FRISSITVE, nem javitva.** A 4 uj talalat mind UJ (upstream-rol jott) teszt-fajlban van
+(`system-sender-reserved.test.ts` 2x, `memories-import-categorize-model.test.ts` 1x,
+`desktop-lock-owner-forgery.test.ts` 1x), es mindegyik a MAR BEFOGADOTT, szazas-nagysagrendben
+elofordulo `fakeCtx(...)`-stilusu teszt-segedfuggveny `any`-parametere (`RouteContext`-re
+castolva) -- pontosan ugyanaz a minta, mint pl. a mar baseline-ban levo claude-plans-routes.test.ts
+30+ elofordulasa. Nem egyedi kod-minosegi regresszio, hanem a mar elfogadott teszt-fixture-stilus
+UJ fajlokban -- `store/lint-ratchet.sh --update`-tel emelve. **CSAPDA, amit elkerultem:** a
+scriptet ELOSZOR a `/home/neon/marveen/store/lint-ratchet.sh` ABSZOLUT utan hivtam meg, ami a
+`$ROOT="$(cd dirname(BASH_SOURCE)/.. && pwd)"` miatt az ELES telepitest irta volna felul
+(a sajat worktree-m helyett) -- ezt a HIBAT korabban mar dokumentalta a memoria, most masodszor is
+elkaptam, mielott commitoltam volna. A helyes hivas: `cd <worktree> && bash store/lint-ratchet.sh
+--update` (relativ ut, hogy a BASH_SOURCE a worktree-re oldodjon fel).
+
+Minden mas lint-szabaly (await-thenable:1, no-floating-promises:3, no-misused-promises:12,
+no-unused-vars:126, parse-error:6) VALTOZATLAN -- a baseline csak a no-unsafe-argument soron nott.
+
+Ki dontott: backend3 (8 teszt-fajl triage, 4 valodi biztonsagi/konfig-hiba javitva uj
+fajlokban, 4 elavult/hianyos teszt korrigalva a mar dontott fork-architekturahoz, 1 lint-
+baseline-emeles dokumentalt indokkal). A `fleet-test.sh --ref` masodik futasa dontia el, zold-e.

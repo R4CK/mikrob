@@ -3,6 +3,6 @@
   "agent": "{{MAIN_AGENT_ID}}",
   "enabled": true,
   "type": "task",
-  "skipIfBusy": true,
+  "skipIfBusy": false,
   "createdAt": 0
 }

@@ -30,9 +30,15 @@ const fakeTmux = join(tmp, 'fake-tmux')
 const kids: number[] = []
 
 // A long-lived process that matches BOTH candidate sources: bot.pid (written
-// below) and the env-var scan (TELEGRAM_STATE_DIR in its environment).
+// below) and the env-var scan (TELEGRAM_STATE_DIR in its environment). Its
+// own argv must ALSO pass isPollerArgv (card 8c94283b: base(argv[0]) is
+// 'bun'/'node' and some argv element is 'server.ts') -- readBotPid's result
+// and the ps-scan hits both go through that same filter before becoming a
+// candidate, so a bare `/bin/sleep` victim would never be a candidate at
+// all and every assertion below would pass for the wrong reason (nothing to
+// reap in the first place, not the live-pane guard actually firing).
 function victim(): number {
-  const p = spawn('/bin/sleep', ['300'], {
+  const p = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', 'server.ts'], {
     detached: true,
     stdio: 'ignore',
     env: { ...process.env, TELEGRAM_STATE_DIR: chanDir },
