@@ -7,7 +7,14 @@ DOCUMENTED the gate-tier filter after 18 measured false positives on 2026-08-17,
 script ever got it -- one idea, two places, and the half that runs was the half that missed out.
 Putting the rules here is what keeps the next fix from landing on only one of them.
 """
+import os
 import re
+import sys
+
+# WHITEHAT/REDHAT display-name aliases for CYBERSEC/CYBERED (card cf0a8c0b) -- one table, imported
+# rather than copied, same reasoning gate_author_role.py's own docstring gives for GATE_ROLES.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gate_author_role import gate_spellings  # noqa: E402
 
 # A structural header line that may legitimately stand BEFORE the verdict word.
 #
@@ -97,16 +104,19 @@ GATE_DECL_RX = re.compile(
 # are read-only, informational-display consumers today (cybered-gate-scan.py's risk-tiering
 # context column); turning a match into an actual gating DECISION is explicitly out of this card's
 # scope until that use is separately reviewed for safety.
+# WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for CYBERSEC/CYBERED, accepted alongside
+# the canonical word -- these two regexes are a yes/no match, not a captured token, so there is
+# nothing to normalise afterward.
 PASS_RE = re.compile(
     r'^(QA2?\s+(?:(?:GATE|VERDICT)\s*:\s*)?PASS'
-    r'|CYBERSEC\s+(?:GATE\s*:\s*)?GO'
-    r'|CYBERED\s+(?:FULL-CARD\s+)?GO)',
+    r'|(?:CYBERSEC|WHITEHAT)\s+(?:GATE\s*:\s*)?GO'
+    r'|(?:CYBERED|REDHAT)\s+(?:FULL-CARD\s+)?GO)',
     re.IGNORECASE,
 )
 FAIL_RE = re.compile(
     r'^(QA2?\s+(?:(?:GATE|VERDICT)\s*:\s*)?FAIL'
-    r'|CYBERSEC\s+(?:GATE\s*:\s*)?NO-GO'
-    r'|CYBERED\s+NO-GO)',
+    r'|(?:CYBERSEC|WHITEHAT)\s+(?:GATE\s*:\s*)?NO-GO'
+    r'|(?:CYBERED|REDHAT)\s+NO-GO)',
     re.IGNORECASE,
 )
 
@@ -191,4 +201,8 @@ def declared_gate_excludes_me(description, my_gate):
     if any(b.end() > last_anchored_end for b in BARE_DECL_RX.finditer(text)):
         return False
 
-    return not role_named(my_gate, matches[-1].group(1))
+    # Accept a display-name spelling too (card cf0a8c0b): a declaration reading "Gate: QA +
+    # WhiteHat" must name `my_gate="cybersec"` just as surely as one reading "... + Cybersec" --
+    # `gate_spellings` is the same alias table canonical_gate() folds the verdict WORD through.
+    clause = matches[-1].group(1)
+    return not any(role_named(spelling, clause) for spelling in gate_spellings(my_gate))

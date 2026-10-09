@@ -2532,7 +2532,30 @@ function buildAutonomyBody(name: string): string {
 // "ezzel napok telnek el, hogyha hulyesegeket mondanak nekem, es en meg
 // elhiszem". This block is fleet-wide, not agent-specific: a guess dressed as
 // a fact costs the same wherever it comes from.
-function buildEvidenceBody(): string {
+// `isMainAgent`: the recipient-ledger hook (scripts/email-send-gate.mjs) is
+// wired ONLY into sub-agent settings (writeAgentSettingsFromProfile, guarded by
+// `name !== MAIN_AGENT_ID`); the main agent's own sends go through the
+// approval gate (envelope-hash approval) and the Hungarian copy gate under
+// scripts/hooks/, neither of which reads the ledger. The hook FILE NAMES are
+// deliberately not written into the generated text: the seeding-surface scan in
+// hook-registration-completeness.test.ts reads this file as a corpus and would
+// take a name mention for a registration.
+// Measured 2026-09-22 (LEDGERFOAGENS922): the main agent's settings carry no
+// email-send-gate entry and its two email hooks contain zero ledger references.
+// The same paragraph cannot be true for both audiences: for a sub-agent the
+// ledger IS a machine gate, for the main agent it is NOT. Wiring the ledger for
+// the main agent is a separate owner decision; this text only stops promising a
+// protection that is not there.
+//
+// NOT ADOPTED HERE (card 5a15cd5a, upstream-sync batch 7): the recipient-ledger
+// system itself is rejected in any form (Cybersec, card afd64623, HIGH --
+// addRecipient() validates the --source STRING'S FORMAT only, never that the
+// evidence is real; see ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs']).
+// The fork relies on threadMembershipDecision() instead (real Gmail thread
+// participants). Both of upstream's audience-specific paragraphs above describe
+// the rejected mechanism, so neither is adoptable -- a single, audience-
+// independent body stays correct for both the main agent and every sub-agent.
+export function buildEvidenceBody(): string {
   return [
     '## Tények és találgatás',
     '',

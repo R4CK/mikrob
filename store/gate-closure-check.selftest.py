@@ -193,6 +193,22 @@ case("nor is 'CYBERSEC GO-ish'",
 case("and a real verdict is still read when the word simply ends",
      [c("qa", V % "aaaa1111")], "AGREE")
 
+# --- WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for CYBERSEC/CYBERED --------------
+# The gate AGENT still authors under 'cybersec'/'cybered' (internal ids unchanged); only the
+# verdict WORD and the --expect gate-name argument may now use the new persona names.
+WH = "WHITEHAT GO\nGate-SHA: %s"
+RH = "REDHAT GO\nGate-SHA: %s"
+case("a WHITEHAT GO verdict is read as the cybersec gate",
+     [c("qa", V % "bbbb2222"), c("cybersec", WH % "bbbb2222")], "AGREE", gates="qa,cybersec")
+case("...and 'qa,whitehat' as the designated-gates argument resolves to the same cybersec role",
+     [c("qa", V % "bbbb2222"), c("cybersec", WH % "bbbb2222")], "AGREE", gates="qa,whitehat")
+case("a REDHAT GO verdict is read as the cybered gate",
+     [c("qa", V % "bbbb2222"), c("cybered", RH % "bbbb2222")], "AGREE", gates="qa,redhat")
+case("a REDHAT NO-GO still FAILS the closure",
+     [c("qa", V % "bbbb2222"), c("cybered", "REDHAT NO-GO\nGate-SHA: bbbb2222")], "FAILED")
+case("a card whose latest WhiteHat verdict disagrees on sha with QA is still DISAGREE",
+     [c("qa", V % "bbbb2222"), c("cybersec", WH % "aaaa1111")], "DISAGREE")
+
 # --- THE CONTENT COMPARISON, AGAINST A REAL GIT REPO -------------------------------------------
 # The cases above all use shas that resolve nowhere, which exercises the "cannot judge" branch and
 # nothing else. The comparison itself -- the part that decides whether a differing sha is benign --
@@ -700,6 +716,11 @@ case("the LATEST GATE-KIJELOLES wins if MikroB redesignates mid-card",
      [c("mikrob", DES % "QA (1-gate)"), c("mikrob", DES % "QA + Cybersec (2-gate)"),
       c("qa", V % "bbbb2222")],
      "MISSING")  # CYBERSEC now required too, and never verdicted
+case("a GATE-KIJELOLES line spelled with the WhiteHat display name designates the cybersec role "
+     "(card cf0a8c0b)",
+     [c("mikrob", DES % "QA + WhiteHat (2-gate)"), c("qa", V % "bbbb2222"),
+      c("cybersec", WH % "bbbb2222")],
+     "AGREE")
 
 # --- A DESIGNATION MUST BE FROM MIKROB, NOT MERELY SHAPED LIKE ONE (Cybersec HIGH, card 864351a9, --
 # --- round 2). Cybersec's own live proof, reproduced byte-identically. ---------------------------

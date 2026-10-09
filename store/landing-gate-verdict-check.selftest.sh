@@ -97,6 +97,23 @@ t "a lone CYBERSEC GO is reported but does NOT satisfy the check" NOQA abc1234 \
   <<<"$(j cybersec 'CYBERSEC GO
 Gate-SHA: abc1234')"
 
+# WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for CYBERSEC/CYBERED. The gate author id
+# stays 'cybersec'/'cybered'; only the verdict WORD the parser matches may use the new name.
+t "a WHITEHAT GO is read as the cybersec gate and reported, but still does NOT satisfy QA" NOQA abc1234 \
+  <<<"$(j cybersec 'WHITEHAT GO
+Gate-SHA: abc1234')"
+t "a QA PASS plus a WHITEHAT GO on the same sha is OK" OK abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' cybersec 'WHITEHAT GO
+Gate-SHA: abc1234')"
+t "a REDHAT NO-GO naming the sha refuses, same as CYBERED NO-GO" FAILED abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' cybered 'REDHAT NO-GO
+Gate-SHA: abc1234')"
+t "WHITEHAT is still author-checked: a non-cybersec author writing it does not count" UNVERIFIED-AUTHOR abc1234 \
+  <<<"$(j qa 'WHITEHAT GO
+Gate-SHA: abc1234')"
+
 t "a card with no verdict at all -- the 08dcc153 shape" NONE abc1234 \
   <<<"$(j backend 'REVIEW: done
 Gate-SHA: abc1234')"

@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, lstatSync, symlinkSync, rmSync, realpathSync, renameSync, statSync, chmodSync, unlinkSync, mkdtempSync } from 'node:fs'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { AGENT_LOCAL_BASE_URL } from '../config.js'
 import { makeLazyBinResolver } from '../platform.js'
@@ -2087,7 +2088,18 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
         // with `option '--dangerously-load-development-channels <servers...>'
         // argument missing`, i.e. a worksourceChannel agent could not start AT ALL
         // -- not "the plugin is skipped", the process died. (2026-09-03, PR #1099.)
-        worksourceFlags = ' --channels server:worksource --dangerously-load-development-channels server:worksource'
+        //
+        // AND IT MUST BE THE ONLY FLAG NAMING worksource: passing `--channels
+        // server:worksource` ALONGSIDE it silently un-does it. The CLI appends
+        // the dev list to the plain list and then resolves the entry with a
+        // `find`, so the FIRST match wins -- the plain entry, which carries no
+        // dev mark -- and a manually configured (non-plugin) server without that
+        // mark is refused by the allowlist gate. Measured on a live agent
+        // 2026-09-21 (cli 2.1.110), printed on its own startup screen:
+        //   server:worksource · server: entries need --dangerously-load-development-channels
+        // The channel was never registered, every delivery was dropped by the
+        // client, and the server still logged `delivered` for each one.
+        worksourceFlags = ' --dangerously-load-development-channels server:worksource'
         logger.info({ name, serverPath }, 'worksource channel wired for agent')
       } catch (err) {
         // Fail OPEN, on purpose: a worksource agent that comes up without its
@@ -2096,6 +2108,26 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
         // Refusing to launch would trade a delayed message for a dead agent.
         logger.warn({ err, name }, 'Could not wire worksource channel; agent starts without it')
       }
+    } else if (name !== MAIN_AGENT_ID) {
+      // Opting OUT has to un-write what opting in wrote. .mcp.json is loaded by
+      // the CLI on its own, with no flag involved, so an entry left behind keeps
+      // spawning a worksource server on every launch -- one with no channel
+      // registered and nothing feeding its queue. Harmless to the agent, but it
+      // is a process that looks like a working wire, and during the 2026-09-21
+      // debugging it cost time twice: a dangling server was mistaken for the one
+      // under test. Half-states should not survive a toggle.
+      const mcpJsonPath = join(agentDir(name), '.mcp.json')
+      try {
+        const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
+        if (existing?.mcpServers?.worksource) {
+          delete existing.mcpServers.worksource
+          // writeAgentConfig, not a bare writeFileSync (card dc5b714d): .mcp.json is the exact
+          // content class the original incident was about (an mcpServers.env block can carry a
+          // credential), and a mode-less write leaves it at the umask's mercy.
+          writeAgentConfig(mcpJsonPath, JSON.stringify(existing, null, 2))
+          logger.info({ name }, 'worksource channel unwired for agent (opted out)')
+        }
+      } catch { /* absent or unreadable -> nothing to unwire */ }
     }
 
     if (name !== MAIN_AGENT_ID) {
@@ -2250,12 +2282,16 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // Claude Code projects directory does not yet exist and `claude` exits
     // immediately with an obscure "No deferred tool marker found" error
     // that is silent inside tmux. Detect first launch by probing for the
-    // encoded project dir and skip `--continue` only then. The encoding
-    // mirrors Claude Code's own scheme: replace every `/` with `-`.
+    // encoded project dir and skip `--continue` only then. The encoding is
+    // Claude Code's own, measured (src/claude-project-dir.ts): every character
+    // outside [a-zA-Z0-9-] becomes '-', not just '/'. A slash-only copy here
+    // named a directory that never exists on a path with an underscore or a
+    // space, so every launch on such an install looked like a first launch
+    // and never continued its session.
     const projectsRoot = claudeConfigDir
       ? join(claudeConfigDir, 'projects')
       : join(homedir(), '.claude', 'projects')
-    const encodedProject = dir.replace(/\//g, '-')
+    const encodedProject = encodeClaudeProjectDir(dir)
     const hasPriorSession = existsSync(join(projectsRoot, encodedProject))
     // opts.fresh forces a brand-new conversation (auto-restart 'fresh' mode):
     // omit --continue so the heavy accumulated context is dropped. Without it
@@ -2367,16 +2403,80 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // exactly how korall lost its `hasCompletedOnboarding` flag on every restart
     // and parked on the login picker with a perfectly good token in its env.
     const umaskPrefix = agentTmuxTarget(name).runAsUser ? 'umask 002 && ' : ''
-    const cmd = `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${dir}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    // buildLaunchCmd(launchCwd): only the launch CWD varies between the normal start and the
+    // EPERM /tmp fallback below; every env export is an absolute path and stays pointed at the
+    // real agent dir. feedbackSurveyEnv kept (card 268b257a, fork-specific, pinned by name in
+    // channel-stability-contract.test.ts) -- upstream's version of this function does not have it.
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
     // reported ok, no session existed under the agent's user, and the first
     // capture-pane failed against the router's empty tmux server.
     const startTarget = agentTmuxTarget(name)
-    runTmux(startTarget, ['new-session', '-d', '-s', session, cmd], { timeout: 10000 })
+    runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
+
+    // EPERM /tmp-fallback (2026-06-30, mirrors scripts/channels.sh:233+): on
+    // Claude Code 2.1.183+ launching `--channels` in a TRUSTED project directory
+    // throws EPERM before any dialog -- the plugin never loads, no bun poller,
+    // the sub-bot is deaf. The MAIN channels session has this fallback in
+    // channels.sh; sub-agents did NOT, so after a reboot/restart hephaestus and
+    // hermes came up with their telegram plugin silently absent. Watch the pane and, on EPERM,
+    // relaunch ONCE from a /tmp dir (untrusted -> a trust dialog fires instead of
+    // EPERM) with the agent CLAUDE.md symlinked so personality survives; the
+    // channel state dir + CLAUDE_CONFIG_DIR are absolute so the bot still
+    // attaches. Non-blocking setTimeout poller (the dashboard is single-threaded
+    // -- a synchronous sleep loop would freeze the whole event loop). Only for
+    // channel-having sub-agents; MAIN comes up via channels.sh, not this path.
+    if (hasChannel && name !== MAIN_AGENT_ID) {
+      const epermDeadline = Date.now() + 14_000
+      let epermRestarted = false
+      const checkEperm = () => {
+        if (Date.now() > epermDeadline) return
+        let pane = ''
+        try { pane = capturePane(session) ?? '' } catch { /* transient capture miss */ }
+        if (!epermRestarted && /EPERM|[Oo]peration not permitted/.test(pane)) {
+          epermRestarted = true
+          try { runTmux(null, ['kill-session', '-t', session], { timeout: 5000 }) } catch { /* already gone */ }
+          try {
+            const fallbackCwd = mkdtempSync(join(tmpdir(), `marveen-agent-${name}-`))
+            const agentClaudeMd = join(dir, 'CLAUDE.md')
+            if (existsSync(agentClaudeMd)) {
+              try { symlinkSync(agentClaudeMd, join(fallbackCwd, 'CLAUDE.md')) } catch { /* degrade to context-less */ }
+            }
+            runTmux(null, ['new-session', '-d', '-s', session, buildLaunchCmd(fallbackCwd)], { timeout: 10000 })
+            logger.warn({ name, session, fallbackCwd }, 'Agent --channels EPERM in trusted dir; relaunched from /tmp fallback')
+          } catch (err) {
+            logger.error({ err, name, session }, 'EPERM /tmp fallback relaunch failed')
+          }
+          setTimeout(checkEperm, 1000)
+          return
+        }
+        // Dialogs ONLY on the fresh /tmp path we ourselves just created (untrusted,
+        // first-run) -- mirror channels.sh. The `epermRestarted` guard is the whole
+        // point: without it this block runs on EVERY tick of EVERY channel-having
+        // sub-agent start, not just the fallback, and one of these branches answers
+        // the Bypass Permissions prompt with a keystroke. Auto-accepting that on a
+        // directory we just minted for a relaunch is a startup detail; auto-accepting
+        // it on every normal start is a security setting, and not one this function
+        // gets to make. Reported upstream on #1460 by reading the control flow: the
+        // EPERM branch returns early, so the non-EPERM path fell through to here.
+        if (epermRestarted) {
+          if (/Do you trust the files in this folder\?/.test(pane)) {
+            try { runTmux(null, ['send-keys', '-t', session, '1', 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
+          } else if (/Bypass Permissions mode/.test(pane) && /Yes, I accept/.test(pane)) {
+            try { runTmux(null, ['send-keys', '-t', session, '2', 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
+          } else if (/Welcome to Claude Code/.test(pane)) {
+            try { runTmux(null, ['send-keys', '-t', session, 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
+          }
+        }
+        if (/Listening for channel messages/.test(pane)) return
+        setTimeout(checkEperm, 1000)
+      }
+      setTimeout(checkEperm, 1500)
+    }
 
     // After a restart with --continue, a session that's been idle for >24h
     // shows the "Resume from summary" modal before the prompt input is ready

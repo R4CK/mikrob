@@ -91,8 +91,11 @@ function measure(): Map<string, Census> {
 /** The pinned classification. `lane: false` needs a reason that survives a security review. */
 const EXPECTED: Record<string, Census & { why: string }> = {
   'web/agent-process.ts': {
-    textSites: 5, ctrlOnlySites: 14, lane: true,
-    why: 'the delivery path itself, plus scheduleIdentitySetup /rename (IDENTLANE910) and the modal answers',
+    textSites: 7, ctrlOnlySites: 15, lane: true,
+    why: 'the delivery path itself, plus scheduleIdentitySetup /rename (IDENTLANE910) and the modal ' +
+      'answers, plus two new-session launch sites (the normal start and the EPERM /tmp fallback, ' +
+      'card 087e4418 merge) -- both create a session that does not exist yet, so there is no ' +
+      'concurrent writer to race against at that point',
   },
   'web/agent-worker.ts': {
     textSites: 1, ctrlOnlySites: 2, lane: true,

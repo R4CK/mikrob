@@ -812,12 +812,26 @@ def _hit_context(prose: str, pos: int, length: int) -> str:
 # domain beszallit egy "magyar szot", ami ott ekezet nelkul HELYES. Ugyanaz az
 # osztaly, mint a 2026-08-11-i `level` fajlnev-talalat. A javitas nem a szotarbol
 # vesz ki (az elrontana a valodi talalatokat is), hanem a technikai regiokat
-# vagja ki a vizsgalt szovegbol. A gondolatjel- es nev-ellenorzes NEM ezen fut.
+# vagja ki a vizsgalt szovegbol. A gondolatjel-ellenorzes NEM ezen fut (az a nyers
+# szovegen mer), a nev-ellenorzes pedig a SAJAT, szukebb maszkjan -- lasd NAME_MASK.
 #
-# UPSTREAM-KOR (kartya b4404ed2, 2026-09-06, upstream 03ca5262 d97e9683..3ba1db43).
-# Upstream NEGY uj alternativat tett ide ugyanennek az osztalynak negy alesetere.
-# EGYET vettunk at (a `level\s+\d+` alakot), HARMAT NEM, es a kulonbseg MERT, nem
-# velemeny -- mind a negy upstream hamis-pozitivot lefuttattuk ezen a forkon:
+# GATENEVSTRIP921 (kulso bejelentes 2026-09-21, sajat visszameres 2026-09-22): a
+# nev-szabaly maskepp maszkol, mint az ekezet-/token-vizsgalat. A bejelentes az
+# volt, hogy a nev-szabaly a NYERS szovegen fut, ezert URL-ben, kod-spanban vagy
+# utvonalban allo nevalak is megallitja a teljes uzenetet (harom ilyen hamis
+# pozitiv reprodukalva upstream-en). A javitas szerkezete atvetve: a kozos,
+# egyertelmuen technikai regiok (_TECH_COMMON) mindket ellenorzesnek jarnak.
+# A sajat `level\s+\d+` kiegeszitest (lasd alabb) is ide, _TECH_COMMON-ba tettuk,
+# nem egy kulon TECHNICAL-only reteghez: a nev-szabalynak sosincs dolga "level"-
+# lel, de ha a nev-maszk is kivagja, az harmatlan (nincs olyan nev, ami "level
+# <szam>" alaku lenne), es igy TECHNICAL == NAME_MASK marad, kevesebb allapot.
+#
+# UPSTREAM-KOR (kartya b4404ed2, 2026-09-06, upstream 03ca5262 d97e9683..3ba1db43),
+# UJRA MEGNEZVE ebben a kotegben (GATENEVSTRIP921 ujrastrukturalta ugyanezt a
+# teruletet, de a HAROM korabban elutasitott alesetet VISSZAHOZTA _TECH_SUFFIXED
+# nevvel -- MEGINT FELTETEL NELKUL, csak most a strip_technical-ra szukitve, nem
+# a nev-szabalyra). A dontes valtozatlan marad, MERT a korlatlansag maga a lelet,
+# nem a hatokor: mind a negy upstream hamis-pozitivot lefuttattuk ezen a forkon:
 #   - szam + magyar toldalek ("8:09-es", "2-es", "17:06-kor")     -> mar ATMEGY
 #   - tulajdonnev + toldalek ("Chrome-ot", "Drive-ra")            -> mar ATMEGY
 #   - kotojeles kisbetus azonosito ("folyamatos-ellenorzes")      -> mar ATMEGY
@@ -826,29 +840,40 @@ def _hit_context(prose: str, pos: int, length: int) -> str:
 # tokenizalo a kotojeles alakot EGESZKENT veszi (tehat "chrome-ot" sosem esik
 # "ot"-ra), plusz a DIGIT_HYPHEN_SUFFIX_ALLOWLIST es az IDENTIFIER_ALLOWLIST.
 # Az a ket allowlist KET Cybersec NO-GO eredmenye (fbb36b41 round 7/8 es round 11),
-# amelyek pontosan az upstream itteni FELTETEL NELKULI alakjat utasitottak el:
-# egy korlatlan "szamjegy-kotojel utani szo" vagy "kisbetus kotojeles alak" maszk
-# az ekezet- ES a homoglifa-vizsgalat elol is kivagja, amit elfed. Atvenni oket
-# tehat nulla nyereseg lenne, ugyanazert a tagitasert, amit ket kapu mar elutasitott.
+# amelyek pontosan az upstream itteni FELTETEL NELKUL alakjat utasitottak el: egy
+# korlatlan "szamjegy-kotojel utani szo" vagy "kisbetus kotojeles alak" maszk az
+# ekezet- ES a homoglifa-vizsgalat elol is kivagja, amit elfed -- az, hogy most
+# csak a strip_technical-t erinti (nem a nev-szabalyt is), NEM oldja fel ezt a
+# korabbi leletet, mert a strip_technical kimenete maga is ekezet-/token-vizsgalat
+# bemenete. _TECH_SUFFIXED tehat NEM kerul at: nulla nyereseg lenne, ugyanazert a
+# tagitasert, amit ket kapu mar elutasitott.
 # A negyedik eset viszont VALODI lyuk itt is: a sajat CLAUDE.md-nk beszel
 # "Level 1/2/3" autonomia-szintrol, tehat barmely magyar uzenet, ami idezi, elakadt.
 # Az atvett maszk SZANDEKOSAN szuk: csak SZAM elott vag. A "Kaptam egy level toled"
 # alak (valodi "levelet" helyett) tovabbra is fennakad -- ez a maszk negativ kontrollja.
-TECHNICAL = re.compile(
-    r"""https?://\S+                # URL
+#
+# A KET MASZK EGY FORRASBOL EPUL, hogy ne drifteljenek szet: ha valaki uj
+# technikai regiot vesz fel, a _TECH_COMMON-ba irva MINDKET ellenorzes latja.
+_TECH_COMMON = r"""
+        https?://\S+                # URL
       | [\w.+-]+@[\w-]+\.[\w.]+     # email
       | `[^`]*`                     # kod-span
       | \b\w+(?:_\w+)+\b            # snake_case azonosito
       | \b\w+\.[A-Za-z]{2,10}(?:-[a-záéíóöőúüű]{1,4})?\b   # fajlnev / domain, magyar toldalekkal (video.mp4, marveen.io, Mail.app-ot)
       | \b[\w-]*/[\w/-]+            # utvonal / slug
       | \blevel\s+\d+\b            # angol "level 1" (autonomia-szint, log-szint)
-    """,
-    re.X,
-)
+"""
+TECHNICAL = re.compile(_TECH_COMMON, re.X)
+NAME_MASK = re.compile(_TECH_COMMON, re.X)
 
 
 def strip_technical(text: str) -> str:
     return TECHNICAL.sub(" ", text)
+
+
+def strip_for_name(text: str) -> str:
+    """A nev-ellenorzes maszkja: csak az egyertelmuen technikai regiok esnek ki."""
+    return NAME_MASK.sub(" ", text)
 
 
 def is_hungarian(text: str) -> bool:
@@ -1311,7 +1336,13 @@ def audit(text: str):
         problems.append(
             f"GONDOLATJEL (em dash, U+2014) {plain.count(EM_DASH)} helyen -- allo szabaly, soha nem mehet ki."
         )
-    bad = _name_search(plain)
+    # GATENEVSTRIP921: a nev-szabaly a SAJAT maszkjan fut (NAME_MASK), nem a
+    # nyers szovegen es nem a strip_technical kimeneten -- lasd a NAME_MASK
+    # feletti indoklast. Igy a kod-spanban/URL-ben allo nevalak atmegy, a
+    # toldalekos prozai alak ("Nev-val") viszont tovabbra is bukik. A
+    # wall-clock-koltsegkeretes _name_search (fork sajatja, ReDoS-vedelem)
+    # megmarad -- csak a maszkolt szovegen hivjuk, nem a nyerse-n.
+    bad = _name_search(strip_for_name(plain))
     if bad:
         problems.append(
             f"HELYTELEN NEV: {bad.group(0)!r} -- a lokal nev-szabaly (store/outgoing-copy-gate-rules.json) szerint helytelen alak; a helyes irast a szabaly-fajl correction mezoje adja." + _name_correction()

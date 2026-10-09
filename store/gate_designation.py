@@ -59,9 +59,11 @@ def designated_from_gate_line(text):
         names.add("qa2")
     if re.search(r"\bqa\b", low):
         names.add("qa")
-    if re.search(r"\bcybersec\b", low):
+    # WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for the same cybersec/cybered roles --
+    # a "Gate: QA + WhiteHat" line must designate the cybersec gate exactly like "... + Cybersec".
+    if re.search(r"\bcybersec\b", low) or re.search(r"\bwhitehat\b", low):
         names.add("cybersec")
-    if re.search(r"\bcybered\b", low):
+    if re.search(r"\bcybered\b", low) or re.search(r"\bredhat\b", low):
         names.add("cybered")
     return widen_qa(names) if names else None
 

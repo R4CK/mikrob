@@ -57,6 +57,7 @@ import sys
 # gate_scan_lib exists to close (card 3477c793).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gate_scan_lib import GATE_DECL_RX, BARE_DECL_RX  # noqa: E402
+from gate_author_role import canonical_gate  # noqa: E402
 
 # A gate role, with any sibling number attached. `\d*` rather than an enumerated "QA2" so a future
 # CYBERSEC2/CYBERED2 needs no edit here; there are zero of those on the board today.
@@ -66,12 +67,15 @@ from gate_scan_lib import GATE_DECL_RX, BARE_DECL_RX  # noqa: E402
 # lookaround refuses a hyphen on either side too, the same fix gate_scan_lib.role_named() carries
 # for the same reason (one idea, two places is exactly what this module's own docstring warns
 # against elsewhere on this board).
-_ROLE = re.compile(r"(?<![A-Za-z0-9-])(QA|CYBERSEC|CYBERED)\d*(?![A-Za-z0-9-])", re.IGNORECASE)
+#
+# WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for CYBERSEC/CYBERED, folded to the
+# canonical role by roles() below.
+_ROLE = re.compile(r"(?<![A-Za-z0-9-])(QA|CYBERSEC|WHITEHAT|CYBERED|REDHAT)\d*(?![A-Za-z0-9-])", re.IGNORECASE)
 
 
 def roles(text):
     """The gate ROLES named in a designation line, sibling numbers normalised away."""
-    return {m.group(1).upper() for m in _ROLE.finditer(text or "")}
+    return {canonical_gate(m.group(1)) for m in _ROLE.finditer(text or "")}
 
 
 # The PRE-ANCHORING form now lives in gate_scan_lib beside the anchored rule, because the scanner

@@ -17841,3 +17841,73 @@ eszkalalt kartyara hivatkozva (7e70144e, outgoing-copy-gate.py), 1 tovabb-nem-do
 hianyzo ellenorzesi adat a tobbi channel-providerre), a tobbi STALE/mar-megoldott.
 
 **Ki döntött:** backend (karpathy-guidelines). Gate: QA + Cybersec.
+
+## 2026-10-09 -- Upstream-sync 7. koteg (kartya 087e4418, Szotasz/marveen fcbe40fe..21bd018e)
+
+Minden fajlnev relativ a repo gyokerehez. Fork-oldal az alapertelmezes; csak az eltereseket
+sorolja fel ez a bejegyzes. 11 konfliktusos fajl + 1 modify/delete.
+
+**src/__tests__/context-guard-main-transcript-root.test.ts: UJRA torolve (modify/delete).**
+A teszt a batch 5-ben mar torolt src/web/main-transcript-root.ts-re tamaszkodik (import a
+140. soron). Ez a modul es a hozza tartozo GATEVAK917/mainConfigRoots-fuggo configDirFor-javitas
+mar korabban, TOBBSZOR, deliberate fork-dontessel elutasitva (lasd acknowledged-conflicts.ts,
+"supervised cutover, card 5c134edf"). Ellenorizve: context-restart-gate-runner.ts SAJAT,
+MEGLEVO configDirFor-ja UGYANEZT a mintat ("name === MAIN_AGENT_ID ? undefined : ...") hasznalja
+SZANDEKOSAN, nem hibabol -- ez NEM egy el nem vegzett javitas, hanem egy mar dokumentalt,
+tobbszor megerositett fork-dontes. A torles konzisztens ezzel.
+
+**scripts/hooks/outgoing-copy-gate.py: FRISS review a kartya explicit kerese szerint (korabbi
+Cybersec elutasitas miatt, 2 ACKNOWLEDGED allowlist: fbb36b41 round 7/8+11).** Upstream
+GATENEVSTRIP921 ujrastrukturalta a technikai maszkot (_TECH_COMMON/_TECH_SUFFIXED kettevalasztva,
+NAME_MASK a nev-szabalynak, TECHNICAL az ekezet-/token-vizsgalatnak) -- a szerkezet ATVETVE, DE a
+_TECH_SUFFIXED HAROM korabban elutasitott alesete (szam+toldalek, tulajdonnev+toldalek,
+kotojeles-kisbetus-azonosito) MEGINT NEM, mert FELTETEL NELKUL maszkol (csak most szukebb
+hatokorben, a nev-szabalyt mar nem erinti, de a token-/ekezet-vizsgalatot meg mindig). A
+"level 1" negyedik eset (valodi lyuk, sajat CLAUDE.md "Level 1/2/3" szohasznalata miatt)
+ATVEVE, mint korabban. A nev-kereses (_name_search, fork sajat wall-clock-koltsegkeretes
+ReDoS-vedelme) MEGMARADT, csak a maszkolt szovegen hivva (GATENEVSTRIP921 celjat szolgalva a
+fork sajat ReDoS-vedelmenek elvesztese nelkul). Ellenorzes: mind a 4 outgoing-copy-gate
+teszt-fajl + a selftest zold a feloldas utan.
+
+**src/web/agent-scaffold.ts: buildEvidenceBody megint a recipient-ledgerre hivatkozott
+(gateParagraphs, isMainAgent parameter).** Ugyanaz az ismetlodo minta, mint a 6. kotegben --
+upstream LEDGERFOAGENS922/GATESCOPE921 kore ujra a MAR visszavont ledger-rendszerre epitett
+(ez utal arra, hogy upstream ezt a funkciot SOK kommitban fejlesztette, es minden koteg uj
+hivatkozast hoz). Eltavolitva, buildEvidenceBody visszaallitva parameter nelkulire. A hozza
+tartozo teszt (agent-scaffold-evidence-rule.test.ts) upstream LEDGERFOAGENS922 describe-blokkja
+is toroltve (ellentmondott a MAR OTT LEVO, kodelv-12 sajat korabbi "does not claim" tesztnek --
+ket egymasnak ellentmondo teszt csendben egyutt elt a fajlban, mert textualisan nem fedtek at
+egymast).
+
+**src/web/token-usage.ts + docs/token-usage.md: TOKENVAK915 (mainConfigRoots-alapu fo-ugynok
+izolalt-gyoker felismeres) HARMADSZOR elutasitva, konzisztensen a mar harom korban (2026-09-05,
+2026-09-11, 2026-09-25) rogzitett dontessel -- lasd acknowledged-conflicts.ts sajat bejegyzese.
+Ugyanez az encodeProjectPath/encodeClaudeProjectDir dedup (kozomegyeg funkcionalisan, csak
+"nem urgent" miatt halasztott) is kimaradt -- a sajat lokalis fuggveny visszaallitva. A hozza
+tartozo UJ upstream tesztfajl (token-usage-main-isolated-root.test.ts) egeszeben a NEM ATVETT
+funkciot tesztelte, torolve.
+
+**package.json/package-lock.json: a dependency-lista fork-kanonikus marad (acknowledged-conflicts.ts
+sajat szabalya, 2026-08-20), csak a verzio-mezo (upstream X.Y.Z-t koveti, +mikrob.N sajat szamlalo)
+es az UJ, additiv script-bejegyzesek (skill, browser-verify, start:crm -- a CRM-modulhoz es a
+scripts/skill.ts-hez, mindkettohoz letezo fajl) kerultek at. A lockfile a fork SAJAT (mar helyes)
+verzioja maradt -- upstream lockfile-ja NEM egyezett a fork package.json-javal (vitest@2 vs @4,
+better-sqlite3@11 vs @13 -- mindegyik korabban mar case-by-case elutasitott bump).
+
+**src/__tests__/prompt-injection-defense.test.ts: upstream kiszervezte importsValueBinding-et
+egy kozos helperbe (./setup/source-imports.js, TESZTIMPORTUTIL922) -- ATVEVE, a fork sajat
+lokalis masolata torolve (duplikalt deklaracio lett volna).**
+
+**Egyeb genuin union/additiv pontok:** src/web/agent-process.ts (EPERM /tmp-fallback uj funkcio,
+mkdtempSync/encodeClaudeProjectDir/buildLaunchCmd fuggvenyesitve -- a fork sajat feedbackSurveyEnv
+megtartva a kombinalt launch parancsban); src/web/active-model.ts (tiszta kommentbovites);
+src/web/channel-poller-reap.ts tesztjei (ket fuggetlen leiro-blokk egyesitve: fork sajat
+isPollerArgv/filterPollerPids + upstream uj foreign-main-poller-reaper tesztkore); update.sh
+(ket azonos "git switch main" javitas megtartva a fork oldalan; a POST_MERGE_MODE wrapper
+megtartva, benne upstream uj UPDATE_AUTO_REBASE opcionalis funkcioja -- alapertelmezes szerint
+KI, csak explicit UPDATE_AUTO_REBASE=1-re).
+
+**Ki döntött:** backend3 (konfliktusfeloldas, 1 modify/delete konzisztens korabbi dontessel
+fenntartva, TOKENVAK915 harmadszor elutasitva a mar rogzitett szabaly szerint, outgoing-copy-gate.py
+friss review a kartya explicit kerese szerint -- 3 korabban elutasitott aleset ismet elutasitva,
+1 valodi lyuk atvetve). Gate: QA + Cybersec + Cybered (a kartya kerese szerint).
