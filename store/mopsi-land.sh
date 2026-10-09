@@ -65,16 +65,29 @@
 #                                           [--allow-stacked <cardId>[,<cardId>...]]
 #                                           [--allow-main-loss] [--skip-test]
 #        mopsi-land.sh --selftest
-# Env:   CLEANCORE_MAIN      Mopsi main clone (default /mnt/h/LM_Studio_Workdir/Mopsi-main)
-#        CLEANCORE_WORKTREES agent worktree root, only used for the landed-by guess
+# Env:   MOPSI_MAIN           Mopsi main clone (default /mnt/h/LM_Studio_Workdir/Mopsi-main)
+#        MOPSI_WORKTREES      agent worktree root, only used for the landed-by guess
 #                             (default /mnt/h/LM_Studio_Workdir/Mopsi-worktrees)
+#        MOPSI_EXPECTED_REMOTE  the push remote $MAIN's origin MUST resolve to (default
+#                             git@github-mopsi:R4CK/Mopsi.git) -- see WhiteHat M1 below.
 #        MOPSI_TEST_TIMEOUT  seconds, default 1800 (turbo across 5 packages, uncached)
 #        LANDING_DOWNWARD_CHECK=off  disables the downward range check entirely (shared flag)
 # Exit:  0 landed (or dry-run clean) | 2 bad usage | 3 refused a precondition | 4 merge/test/push failed
 set -uo pipefail
 
-MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/Mopsi-main}"
-AGENT_WORKTREE_ROOT="${CLEANCORE_WORKTREES:-/mnt/h/LM_Studio_Workdir/Mopsi-worktrees}"
+# CARD 7feb477b, WHITEHAT M1 (GO comment 13178). This USED TO read CLEANCORE_MAIN, the SAME
+# variable name agent-worktree.sh/mopsion-gate-worktree.sh/mopsion-land.sh read for the mopsion
+# clone -- copied straight out of mopsion-land.sh's own line without renaming it, inconsistent
+# with this repo's OWN two Mopsi wrappers (agent-worktree-mopsi.sh, mopsi-gate-worktree.sh), which
+# already use MOPSI_MAIN. WhiteHat's live probe: exporting CLEANCORE_MAIN to a mopsion-shaped
+# clone and calling mopsi-land.sh landed and pushed to THAT clone's origin/main, silently -- the
+# weaker, mopsion-guard-free lander operating on mopsion code under a name nobody would think to
+# check. Renamed to MOPSI_MAIN, and a remote-identity assertion added below (defense in depth: even
+# a caller that still exports the wrong variable, or copies this script elsewhere, gets refused
+# rather than silently landing on an unintended remote).
+MAIN="${MOPSI_MAIN:-/mnt/h/LM_Studio_Workdir/Mopsi-main}"
+AGENT_WORKTREE_ROOT="${MOPSI_WORKTREES:-/mnt/h/LM_Studio_Workdir/Mopsi-worktrees}"
+EXPECTED_REMOTE="${MOPSI_EXPECTED_REMOTE:-git@github-mopsi:R4CK/Mopsi.git}"
 TEST_TIMEOUT="${MOPSI_TEST_TIMEOUT:-1800}"
 say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
@@ -189,6 +202,106 @@ if [ "${1:-}" = "--selftest" ]; then
   fi
   rm -rf "$SEAMWORK" "$MERGED"
 
+  # --- WhiteHat M1 (card 7feb477b comment 13178): the remote-identity assertion. Real
+  # subprocess invocations of THIS script against two throwaway fixture clones, because the
+  # check reads $MAIN's own `git remote get-url` -- there is no pure function to unit-test here.
+  M1WORK="$(mktemp -d)"
+  git init -q --bare -b main "$M1WORK/origin-right.git" >/dev/null
+  git init -q --bare -b main "$M1WORK/origin-wrong.git" >/dev/null
+  git clone -q "$M1WORK/origin-right.git" "$M1WORK/main-right" >/dev/null 2>&1
+  git -C "$M1WORK/main-right" config user.email s@s; git -C "$M1WORK/main-right" config user.name s
+  echo base > "$M1WORK/main-right/f.txt"
+  git -C "$M1WORK/main-right" add f.txt; git -C "$M1WORK/main-right" commit -qm base
+  git -C "$M1WORK/main-right" push -q origin main
+  # SAFETY: this sets main-right's PUSH url to the real remote string ONLY so the read-only check
+  # below can confirm it reads back correctly. Nothing after this line ever runs an actual `git
+  # push` or invokes mopsi-land.sh against main-right -- see the L1 block's safety note for why
+  # that combination (real remote string + an actual push) is never to be repeated.
+  git -C "$M1WORK/main-right" remote set-url --push origin git@github-mopsi:R4CK/Mopsi.git
+  git clone -q "$M1WORK/origin-wrong.git" "$M1WORK/main-wrong" >/dev/null 2>&1
+  git -C "$M1WORK/main-wrong" config user.email s@s; git -C "$M1WORK/main-wrong" config user.name s
+  echo base > "$M1WORK/main-wrong/f.txt"
+  git -C "$M1WORK/main-wrong" add f.txt; git -C "$M1WORK/main-wrong" commit -qm base
+  git -C "$M1WORK/main-wrong" push -q origin main
+  # main-wrong's origin push-url is whatever `git clone` set it to (the local bare path) --
+  # deliberately NOT git@github-mopsi:..., so it stands in for "the wrong clone" without needing
+  # a real second remote.
+
+  n=$((n+1))
+  out_m1_right="$(MOPSI_MAIN="$M1WORK/main-right" bash -c '
+    MAIN="$MOPSI_MAIN"; EXPECTED_REMOTE="git@github-mopsi:R4CK/Mopsi.git"
+    git -C "$MAIN" remote get-url --push origin
+  ' 2>&1)"
+  if [ "$out_m1_right" = "git@github-mopsi:R4CK/Mopsi.git" ]; then
+    echo "  ok   M1 fixture: the RIGHT clone's push remote reads back as expected"
+  else
+    echo "  FAIL M1 fixture: expected clone's remote mismatched -- fixture is broken (got [$out_m1_right])"
+    fail=1
+  fi
+  n=$((n+1))
+  out_m1_wrong="$(MOPSI_MAIN="$M1WORK/main-wrong" bash -c '
+    MAIN="$MOPSI_MAIN"; EXPECTED_REMOTE="git@github-mopsi:R4CK/Mopsi.git"
+    ACTUAL="$(git -C "$MAIN" remote get-url --push origin 2>/dev/null || true)"
+    [ "$ACTUAL" = "$EXPECTED_REMOTE" ] && echo MATCH || echo MISMATCH
+  ' 2>&1)"
+  if [ "$out_m1_wrong" = "MISMATCH" ]; then
+    echo "  ok   M1: a clone whose push remote is NOT git@github-mopsi:R4CK/Mopsi.git is detected as a mismatch"
+  else
+    echo "  FAIL M1: the wrong-remote clone was NOT detected as a mismatch (got [$out_m1_wrong])"
+    fail=1
+  fi
+  n=$((n+1))
+  m1_refuse_out="$(MOPSI_MAIN="$M1WORK/main-wrong" bash "$SELF_DIR/mopsi-land.sh" fixturecard deadbeefdeadbeefdeadbeefdeadbeefdeadbeef --allow-ungated --skip-test --dry-run 2>&1)"
+  m1_refuse_rc=$?
+  if [ "$m1_refuse_rc" -eq 3 ] && printf '%s' "$m1_refuse_out" | grep -q "unexpected remote"; then
+    echo "  ok   M1 end-to-end: mopsi-land.sh REFUSES (exit 3) against a clone with the wrong push remote"
+  else
+    echo "  FAIL M1 end-to-end: expected exit 3 + 'unexpected remote' message, got rc=$m1_refuse_rc:"
+    printf '%s\n' "$m1_refuse_out" | sed 's/^/       /'
+    fail=1
+  fi
+  rm -rf "$M1WORK"
+
+  # --- WhiteHat L1 (card 7feb477b comment 13178): the gate-completeness label. Real end-to-end
+  # run with --allow-ungated --skip-test, checking the resulting merge commit message is honestly
+  # labelled rather than claiming "gate-teljes" for a landing that was neither gated nor tested.
+  #
+  # SAFETY NOTE, left here on purpose after a live near-miss while writing this very case: the
+  # FIRST version of this fixture pointed its push-url at the REAL git@github-mopsi:R4CK/Mopsi.git
+  # (to satisfy the M1 remote-identity check above) and then let mopsi-land.sh actually `git push`
+  # -- which reached the real repo and created a stray `fix/l1-test` branch there (deleted by hand
+  # immediately after; `main` itself was protected by the ordinary fast-forward push rule). NEVER
+  # point a fixture's push-url at a real remote string. The fix below satisfies the remote check
+  # by passing MOPSI_EXPECTED_REMOTE equal to the FIXTURE's own (local, bare-repo) push-url, so the
+  # check passes without the fixture's push-url ever resembling a real, reachable remote.
+  L1WORK="$(mktemp -d)"
+  git init -q --bare -b main "$L1WORK/origin.git" >/dev/null
+  git clone -q "$L1WORK/origin.git" "$L1WORK/main" >/dev/null 2>&1
+  git -C "$L1WORK/main" config user.email s@s; git -C "$L1WORK/main" config user.name s
+  echo base > "$L1WORK/main/f.txt"
+  git -C "$L1WORK/main" add f.txt; git -C "$L1WORK/main" commit -qm base
+  git -C "$L1WORK/main" push -q origin main
+  git -C "$L1WORK/main" checkout -q -b fix/l1-test
+  echo changed > "$L1WORK/main/f.txt"
+  git -C "$L1WORK/main" add f.txt; git -C "$L1WORK/main" commit -qm "l1 test change"
+  L1_SHA="$(git -C "$L1WORK/main" rev-parse HEAD)"
+  git -C "$L1WORK/main" push -q origin fix/l1-test
+  git -C "$L1WORK/main" checkout -q main
+  L1_LOCAL_REMOTE="$(git -C "$L1WORK/main" remote get-url --push origin)"
+
+  n=$((n+1))
+  MOPSI_MAIN="$L1WORK/main" MOPSI_EXPECTED_REMOTE="$L1_LOCAL_REMOTE" \
+    bash "$SELF_DIR/mopsi-land.sh" l1card "$L1_SHA" --allow-ungated --skip-test >/dev/null 2>&1
+  git -C "$L1WORK/main" fetch -q origin
+  L1_MSG="$(git -C "$L1WORK/main" log -1 --format=%s origin/main 2>/dev/null || true)"
+  if printf '%s' "$L1_MSG" | grep -q "UNGATED+UNTESTED"; then
+    echo "  ok   L1: an --allow-ungated --skip-test landing's merge message says UNGATED+UNTESTED, not gate-teljes"
+  else
+    echo "  FAIL L1: expected UNGATED+UNTESTED in the merge subject, got: $L1_MSG"
+    fail=1
+  fi
+  rm -rf "$L1WORK"
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -209,7 +322,17 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-[ -d "$MAIN/.git" ] || die 3 "no Mopsi clone at $MAIN (set CLEANCORE_MAIN)"
+[ -d "$MAIN/.git" ] || die 3 "no Mopsi clone at $MAIN (set MOPSI_MAIN)"
+
+# REMOTE-IDENTITY ASSERTION (WhiteHat M1, card 7feb477b comment 13178). $MAIN resolving to the
+# Mopsi clone is necessary but not sufficient -- it is only a path, and any directory with a
+# plausible .git could sit there by mistake (a stale MOPSI_MAIN export left over from a different
+# task, a copy-pasted script run against the wrong clone). Checking the clone's OWN push remote
+# against a known-good value closes that gap structurally: a wrong clone refuses here instead of
+# silently merging and pushing to whatever repo it happens to point at.
+ACTUAL_REMOTE="$(git -C "$MAIN" remote get-url --push origin 2>/dev/null || true)"
+[ "$ACTUAL_REMOTE" = "$EXPECTED_REMOTE" ] \
+  || die 3 "the clone at $MAIN has origin push-url '$ACTUAL_REMOTE', expected '$EXPECTED_REMOTE' -- refusing to land on an unexpected remote (set MOPSI_EXPECTED_REMOTE if this is intentional)"
 
 # THE GATE VERDICT, checked first (same reasoning as mopsion-land.sh: cheapest precondition, so a
 # landing that should not happen at all costs one HTTP call, not a full merge + test first). The
@@ -273,7 +396,15 @@ trap cleanup EXIT
 
 LANDED_BY="${LANDED_BY:-$(landed_by_from_worktrees "$BRANCH" "$(git -C "$MAIN" worktree list 2>/dev/null)")}"
 say "landed-by: $LANDED_BY"
-MSG="$(printf 'merge: %s (card %s, gate-teljes @ %s)\n\nLanded-by: %s\n' "$BRANCH" "$CARD" "$GSHORT" "$LANDED_BY")"
+# GATE-COMPLETENESS LABEL (WhiteHat L1, card 7feb477b comment 13178). The merge message used to
+# say "gate-teljes" (gate-complete) unconditionally, even under --allow-ungated (gate_rc != 0,
+# tolerated rather than verified) or --skip-test (the merge result was never run). That reads as a
+# verified fact in `git log` forever, on a commit that may carry neither verification -- the same
+# false "gate-complete" shape that confused card 21e367ec. Label it honestly instead.
+GATE_LABEL="gate-teljes"
+[ "$gate_rc" -ne 0 ] && GATE_LABEL="UNGATED"
+[ "$SKIP_TEST" -eq 1 ] && GATE_LABEL="${GATE_LABEL}+UNTESTED"
+MSG="$(printf 'merge: %s (card %s, %s @ %s)\n\nLanded-by: %s\n' "$BRANCH" "$CARD" "$GATE_LABEL" "$GSHORT" "$LANDED_BY")"
 
 if ! merge_err="$(git -C "$WT" -c user.email=backend@marveen.local -c user.name=backend \
                   merge --no-ff "$SHA" -m "$MSG" 2>&1)"; then

@@ -68,14 +68,15 @@ else
   bad "worktree removal" "$remove_out"
 fi
 
-# --- unset MOPSI_GATE_ROOT falls back to the wrapped script's own default (CC_GATE_ROOT unset ->
-# $HOME), proving the wrapper does not force a Mopsi-specific root when the operator did not ask
-# for one ------------------------------------------------------------------------------------------
+# --- unset MOPSI_GATE_ROOT falls back to the wrapper's OWN $HOME/mopsi-gates default, NOT the
+# wrapped script's bare $HOME default (WhiteHat L2, card 7feb477b comment 13178: a shared $HOME
+# default let this wrapper's --remove accept a mopsion gate-worktree path by accident, since both
+# used the identical "cc-gate-<card>-<agent>-<sha>" name under the same root) ----------------------
 out="$(env -u CLEANCORE_MAIN -u CC_GATE_ROOT -u MOPSI_GATE_ROOT \
   MOPSI_MAIN="$TMP/main" bash "$RUN" --agent selftest --path cardy "$SHA" 2>&1)"
-want_default="$HOME/cc-gate-cardy-selftest-${SHA:0:7}"
+want_default="$HOME/mopsi-gates/cc-gate-cardy-selftest-${SHA:0:7}"
 if [ "$out" = "$want_default" ]; then
-  ok "unset MOPSI_GATE_ROOT falls back to the wrapped script's own \$HOME default"
+  ok "unset MOPSI_GATE_ROOT falls back to the wrapper's OWN \$HOME/mopsi-gates, not the shared \$HOME"
 else
   bad "default gate root fallback" "got [$out] want [$want_default]"
 fi
