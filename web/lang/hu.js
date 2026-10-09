@@ -512,6 +512,7 @@ window._i18n.hu = {
   'agents.model.sonnet5':        'Sonnet 5 (legújabb Sonnet, Opus-közeli)',
   'agents.model.sonnet46':       'Sonnet 4.6 (gyors és okos)',
   'agents.model.haiku45':        'Haiku 4.5 (leggyorsabb)',
+  'agents.model.cliUnsupported': 'A telepített Claude Code CLI (verzió: {version}) nem tudja elindítani a(z) "{model}" modellt -- ehhez legalább {minCli} verzió kell. Frissítsd a CLI-t, vagy válassz egy másik modellt.',
   'agents.skills.empty':         'Nincsenek skillek hozzáadva',
   'agents.skills.tab_title':              'Ügynök skilljei',
   'agents.page.analyze_btn':              'Modell elemzés',
