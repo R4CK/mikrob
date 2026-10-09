@@ -16863,3 +16863,93 @@ no-unused-vars:126, parse-error:6) VALTOZATLAN -- a baseline csak a no-unsafe-ar
 Ki dontott: backend3 (8 teszt-fajl triage, 4 valodi biztonsagi/konfig-hiba javitva uj
 fajlokban, 4 elavult/hianyos teszt korrigalva a mar dontott fork-architekturahoz, 1 lint-
 baseline-emeles dokumentalt indokkal). A `fleet-test.sh --ref` masodik futasa dontia el, zold-e.
+## 2026-10-09: TGSABLONHOOK921 hook-seeding/checkout split -- record korrekcio (kartya e344e366)
+
+A kartya e344e366 azt kerte, hogy portoljuk a TGSABLONHOOK921 (upstream, 2026-09-21)
+seeding-vs-checkout hook-regisztracios lint-felbontast erre a forkra (SEEDING_SURFACES/
+CHECKOUT_SURFACES/CHECKOUT_ONLY/unseededCheckoutHooks()), mert a 2026-09-25-i fork/upstream
+re-decision (kartya f5536a70) azt merte, hogy ez a fajl meg a regi, egykorpuszos alakot hasznalja.
+
+Felmeres (backend, 2026-10-09): a portolas idokozben MAR MEGTORTENT, csak nem e kartya alatt --
+az a4767438 upstream-sync-batch kartya (~65 fuggetlen upstream commit) hozta a tenyleges
+mechanizmus-portolast (commit e8b71678, "upstream 4d79d0dc"), es ket meg aznapi kovetkezo commit
+(e56e13d3, 0e40f1ea, mind backend3) elvegezte pontosan azt a fork-specifikus adaptaciot, amit a
+f5536a70-i megjegyzes meg nyitva hagyott: vegigjartak ennek a forknak a SAJAT `.claude/settings.json`-jat
+a SAJAT seeding-feluleteihez kepest, talaltak 5 genuinely-unseeded checkout-hookot
+(big-file-guard.py/secret-write-guard.py -> sablonba seedelve, mert altalanos Write/Edit-guard,
+nincs main-agent-specifikus scope; telegram_progress.py/_clear.py/_reply_clear.py -> eleinte
+reasoned CHECKOUT_ONLY, majd egy kesobbi merge-eredmeny teszt kiderítette, hogy mar amugy is
+seedelve vannak egy sablon-duplikacio miatt, ezert az entry-k torolve lettek mint elavultak).
+
+Egyetlen tennivalo maradt nyitva: a `src/fork-upstream/acknowledged-conflicts.ts` megfelelo
+bejegyzese meg mindig a regi, "SUPERSEDED... meg a regi egykorpuszos alakot hasznalja" allapotot
+irta le, es meg mindig e344e366-ra hivatkozott mint nyitott kovetkezo lepesre. Ezt korrigaltam:
+a bejegyzes most RESOLVED, es leirja, melyik commitok vegeztek el a tenyleges munkat.
+
+Ellenorzes: `npx vitest run src/__tests__/hook-registration-completeness.test.ts` 8/8 zold,
+`src/__tests__/fork-upstream-conflict-guard.test.ts` 36/36 zold, `npm run typecheck` tiszta.
+
+Ki dontott: backend3 (a tenyleges portolas es fork-adaptacio, nem tudva rola hogy kartyat zar le
+vele), backend (a record-korrekcio, kartya e344e366). Gate: QA + Cybersec.
+
+## 2026-10-09: BASH_EGRESS_GUARD HIGH-1 javitas -- hatch-hasznalat naplozasa (kartya 18055f83)
+
+RedHat (cybered) NO-GO a 26e88a5a-ra (komment 13312), miutan a WhiteHat sessiont az Opus 5.5
+safeguard megallitotta es MikroB a biztonsagi gate-et RedHat-ra csereelte. HIGH-1: a
+BASH_EGRESS_ALLOW=1 inline egyszeri-kivetel enforce mellett is agynok-vezerelt, nem naplozodott
+(egy hatch-megjelolt szegmens az analyse_segment()-ben korabban azonnal visszatert, mielott
+barmi barhova kerult volna), es a tiltoö uzenet maga hirdette a pontos kivetelt, amit egy
+eltérített ügynök onnan ki is tudott olvasni es nyom nelkul atjuthatott. GO minimuma (RedHat):
+(a) minden hatch-hasznalat kulon naplosor legyen (mod, agent, cel), log es enforce modban is;
+(b) a tilto uzenet ne hirdesse a hatch-et vagy a MODE_ENV=off kill switchet, csak az
+allowlist-fajlt mint operatori utat.
+
+Vegrehajtas (backend): a `_has_allow_hatch` agat ujraszerveztuk -- egy hatch-jelolt szegmens
+mostantol tovabbra is teljes ertekelesen megy at egy KULON, blokkolasra soha nem hasznalt `hatch`
+listaba (uj `analyse(..., hatch=...)` parameter, threadelve a nested bash -c testeken es
+helyettesiteseken at is), es a `log_finding()` uj `hatch` booleant ir a sorba. A `main()` MINDIG
+naplozza a hatch-listat (log es enforce modban egyarant), fuggetlenul attol, hogy a tenyleges
+`findings` ures-e -- ez a kulonbseg: korabban a "nincs talalat -> nincs naplo" korai kilepes a
+hatch-hasznalatot is lenyelte. A `_message()`-bol torolve a BASH_EGRESS_ALLOW=1 es a
+BASH_EGRESS_GUARD=off emlitese; az egyetlen megmaradt ut az allowlist-fajl.
+
+Bizonyitek: selftest.py 117/122 esetbol valtozatlan, 9->10 property-assertion (uj: hatch-hasznalat
+naplozva blokkolo talalat NELKUL is, a tiltoö uzenet NEM tartalmazza a ket kiiktatott kifejezest).
+Uj TS e2e teszt a TENYLEGESEN regisztralt parancson keresztul (bash-egress-guard-wiring.test.ts)
+bizonyitja: a hatch tovabbra is atenged egy kulso celt, DE a naplosor `hatch: true` + a helyes
+agent + a celzott host latszik rajta. 10/10 regi + uj TS teszt zold (33 osszesen a fajlban),
+tipecheck tiszta.
+
+NYITVA MARADT, NEM EZEN A KARTYAN: az INFO-1 (elesben ma egyik ugynokon sincs enforce, a
+BASH_EGRESS_ENFORCE_FLEET flag nincs beallitva a mikrob-dashboard.service kornyezeteben) tenyleges
+bekapcsolasa + a dashboard ujrainditasa + elo proba egy VALODI, futo ugynok regisztralt parancsan.
+Ez egy megosztott, elesben futo szolgaltatas (mikrob-dashboard.service) ujrainditasa minden
+ugynokre hatassal -- a backend ezt nem inditja el egyoldaluan, MikroB donteset/vegrehajtasat
+kerte (lasd a kartya kommentjeit). A MEDIUM-1 (DoH-resolverek nyitott DNS-csatorna) Peti-dontest
+igenyel, ezt MikroB viszi kulon.
+
+Ki dontott: RedHat (NO-GO + a ket pontos javitasi minimum), backend (HIGH-1 javitas). Gate: QA + WhiteHat.
+
+## 2026-10-09: BASH_EGRESS_GUARD allowlist korrekcio -- DoH-resolverek levetele (kartya 18055f83)
+
+Peti dontese (Telegram 10715, 2026-10-09 11:13, kartya komment 13319): a cloudflare-dns.com es
+dns.google ugyanaznap kerult vissza le az allowlistrol, amelyen ugyanaznap kerult fel (RedHat
+MEDIUM-1, komment 13312). Indoklas: egy DoH-resolver tetszoleges lekerdezes-nevre valaszol, tehat
+az engedelyezese gyakorlatilag nyitott DNS-csatorna -- egy eltérített ügynök barmilyen domain
+nevet barmilyen celallomashoz eljuttathatna a resolveren keresztul, ami pont az ellen vedekezik,
+amiert az allowlist egyaltalan letezik. A vegleges, jovahagyott allowlist: pypi.org,
+api.anthropic.com.
+
+Vegrehajtas (backend): store/bash-egress-allowlist.json-bol torolve a ket host, a _readme-ben
+rogzitve az indoklas es a datum. selftest.py: a ket DoH-esetet ALLOW-rol BLOCK-ra forditva (122
+eset valtozatlan szamban, csak a verdikt valtozott), uj kontroll-komment a huggingface.co melle
+kotve oket. bash-egress-guard-wiring.test.ts: a "4 Peti-approved host" e2e teszt 2-re szukult
+(pypi.org, api.anthropic.com), es egy UJ e2e teszt a TENYLEGESEN regisztralt parancson keresztul
+bizonyitja, hogy mindket DoH-host blokkolodik (nem csak az allowlist JSON-ban latszik a torles,
+hanem elesben is).
+
+Bizonyitek: selftest.py 122/122 zold, bash-egress-guard-wiring.test.ts 34/34 zold (volt 33, +1 uj
+DoH-blokkolas teszt).
+
+Ki dontott: Peti (allowlist-korrekcio, DoH-kockazat alapjan), RedHat (MEDIUM-1 felvetes), backend
+(vegrehajtas). Gate: QA + WhiteHat.

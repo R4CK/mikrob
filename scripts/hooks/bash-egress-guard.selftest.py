@@ -105,14 +105,20 @@ CASES = [
      "PREFIX-MATCH TRAP: an allowlisted name as the LEFT part of a hostile domain"),
     # --- card 18055f83: Peti-approved allowlist additions (2026-10-09, Telegram 10704), from
     # backend3's 2026-09-29 log analysis of the only real non-selftest traffic observed -----------
-    ("curl -s https://cloudflare-dns.com/dns-query?name=mopsion.com&type=TXT", ENFORCE, ALLOW,
-     "DNS-over-HTTPS lookup, the measured real traffic this host was approved for"),
-    ("curl -s https://dns.google/resolve?name=mopsion.com&type=A", ENFORCE, ALLOW,
-     "alternate DoH provider, same real-traffic class"),
     ("curl -s https://pypi.org/pypi/requests/json", ENFORCE, ALLOW,
      "python package version check"),
     ("curl -H @- -s https://api.anthropic.com/v1/organizations/usage", ENFORCE, ALLOW,
      "our own Claude API usage probe (quota monitoring) -- deliberately kept allowed"),
+    # --- card 18055f83, SAME-DAY CORRECTION (Peti decision, Telegram 10715, comment 13319,
+    # RedHat MEDIUM-1): the two DoH resolvers below were on the allowlist for a few hours, then
+    # removed -- a DoH resolver answers ARBITRARY query names, so granting it is an open DNS
+    # channel, not a narrow grant. They must BLOCK like any other ungranted host, same as the
+    # huggingface.co control case right after them.
+    ("curl -s https://cloudflare-dns.com/dns-query?name=mopsion.com&type=TXT", ENFORCE, BLOCK,
+     "DoH resolver, REMOVED from the allowlist same-day: arbitrary query names make this an open "
+     "DNS channel, not a narrow grant"),
+    ("curl -s https://dns.google/resolve?name=mopsion.com&type=A", ENFORCE, BLOCK,
+     "alternate DoH provider, same removal"),
     ("curl -s https://huggingface.co/api/models", ENFORCE, BLOCK,
      "a plausible external host that was NOT in the Peti-approved set -- stays blocked until an "
      "operator grants it on evidence, same as any other ungranted host"),
@@ -408,11 +414,18 @@ def main():
     # 7. The block message has to be actionable: a refusal without the way forward recreates the
     #    stall it was meant to prevent.
     _, msg = verdict("curl -s https://evil.example.com", ENFORCE)
-    for needle in ("bash-egress-allowlist.json", "BASH_EGRESS_ALLOW=1", "BASH_EGRESS_GUARD=off",
-                   "evil.example.com"):
+    for needle in ("bash-egress-allowlist.json", "evil.example.com"):
         if needle not in msg:
             failures.append(("<block message>", f"contains {needle!r}", "missing", msg))
             print(f"FAIL the block message must name {needle!r}")
+    # 7b. ...and it must NOT advertise the hatch or the kill switch (card 18055f83 HIGH-1, RedHat
+    #     NO-GO comment 13312): naming either here taught a blocked, possibly-hijacked session the
+    #     exact bypass from the refusal itself. The only escape route named is the allowlist file,
+    #     an operator-only grant.
+    for needle in ("BASH_EGRESS_ALLOW=1", "BASH_EGRESS_GUARD=off"):
+        if needle in msg:
+            failures.append(("<block message>", f"does NOT contain {needle!r}", "present", msg))
+            print(f"FAIL the block message must not advertise {needle!r}")
     # 8. ...and it must NOT overclaim. Verdict point 5: this is cost-raising, not a guarantee.
     if "koltseg-noveles" not in msg or "NEM esnek a hatokorbe" not in msg:
         failures.append(("<block message>", "states the limits", "missing", msg))
@@ -443,13 +456,57 @@ def main():
         failures.append(("<agent field env fallback>", "explicit-test-agent", resolved_env, ""))
         print(f"FAIL MARVEEN_AGENT_ID fallback did not resolve: got {resolved_env!r}")
 
+    # 10. A HATCH USE IS ALWAYS LOGGED (card 18055f83 HIGH-1, RedHat NO-GO comment 13312): the
+    #     hatch must still ALLOW the call (verdict unaffected), but the use itself -- mode, agent,
+    #     and the target it bypassed -- must land in the log, in BOTH log and enforce mode, even
+    #     though analyse() returns NO blocking finding for a hatched segment.
+    with tempfile.TemporaryDirectory() as td:
+        logfile = Path(td) / "hatch.log"
+        spec10 = _ilu.spec_from_file_location("beg10", str(GUARD))
+        mod10 = _ilu.module_from_spec(spec10)
+        spec10.loader.exec_module(mod10)
+        cmd = "BASH_EGRESS_ALLOW=1 curl -s https://evil.example.com"
+        hatch_events = []
+        fs = mod10.analyse(cmd, [], hatch=hatch_events)
+        if fs:
+            failures.append(("<hatch verdict>", "no blocking finding", fs, ""))
+            print("FAIL a hatched segment must still produce zero blocking findings")
+        if not hatch_events:
+            failures.append(("<hatch events>", "at least one hatch event", "none", ""))
+            print("FAIL analyse() must record the hatch use even though nothing blocks")
+        else:
+            mod10.log_finding("enforce", hatch_events, cmd, agent="qa", path=logfile, hatch=True)
+            if not logfile.exists():
+                failures.append(("<hatch log>", "log line written", "missing", ""))
+                print("FAIL a hatch use must be logged even in enforce mode")
+            else:
+                written = json.loads(logfile.read_text().strip().split("\n")[-1])
+                if written.get("hatch") is not True:
+                    failures.append(("<hatch log>", '"hatch": true', written.get("hatch"), ""))
+                    print("FAIL the logged hatch line must carry hatch=true")
+                if written.get("agent") != "qa":
+                    failures.append(("<hatch log agent>", "qa", written.get("agent"), ""))
+                    print("FAIL the hatch log line must carry the resolved agent")
+                if not any("evil.example.com" in t for f in written.get("findings", [])
+                           for t in f.get("targets", [])):
+                    failures.append(("<hatch log target>", "evil.example.com in targets", written, ""))
+                    print("FAIL the hatch log line must carry the bypassed target")
+        # ...and a benign hatch use (target that would never have blocked anyway) is STILL logged,
+        # so "every use" really means every use, not just every use that would have blocked.
+        benign = "BASH_EGRESS_ALLOW=1 curl -s http://localhost:3420/x"
+        benign_hatch = []
+        mod10.analyse(benign, [], hatch=benign_hatch)
+        if not benign_hatch:
+            failures.append(("<benign hatch events>", "at least one hatch event", "none", ""))
+            print("FAIL a hatch use on an already-local target must still be recorded")
+
     if failures:
         print(f"\n{len(failures)} FAILED")
         for cmd, expected, got, stderr in failures:
             print(f"  {cmd!r}: expected {expected}, got {got}\n    stderr: {stderr[:300]}")
         sys.exit(1)
 
-    print(f"\nAll {len(CASES)} cases + 9 property assertions passed.")
+    print(f"\nAll {len(CASES)} cases + 10 property assertions passed.")
     sys.exit(0)
 
 

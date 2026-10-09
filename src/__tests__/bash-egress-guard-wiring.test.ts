@@ -222,12 +222,15 @@ describe('end-to-end through the real hook', () => {
     expect(r.code).toBe(0)
   })
 
-  it('blocks a real external target AND names the way forward', () => {
+  it('blocks a real external target AND names the way forward, without advertising the hatch', () => {
     const r = verdict('curl -s https://not-on-the-list.example/payload')
     expect(r.code).toBe(2)
     expect(r.stderr).toContain('not-on-the-list.example')
     expect(r.stderr).toContain('bash-egress-allowlist.json')
-    expect(r.stderr).toContain('BASH_EGRESS_ALLOW=1')
+    // Card 18055f83 HIGH-1 (RedHat NO-GO, comment 13312): the refusal must not teach a blocked,
+    // possibly-hijacked session the exact bypass it names -- only the operator-only allowlist path.
+    expect(r.stderr).not.toContain('BASH_EGRESS_ALLOW=1')
+    expect(r.stderr).not.toContain('BASH_EGRESS_GUARD=off')
   })
 
   it('allows a host that IS on the versioned allowlist', () => {
@@ -312,10 +315,8 @@ describe.skipIf(REPO_UNDER_TMP)('end-to-end through the ACTUAL WIRED command (ca
     }
   }
 
-  it('the 4 Peti-approved hosts (18055f83, Telegram 10704) pass through the real wired command', () => {
+  it('the 2 Peti-approved hosts (18055f83, Telegram 10704) pass through the real wired command', () => {
     for (const url of [
-      'https://cloudflare-dns.com/dns-query?name=mopsion.com',
-      'https://dns.google/resolve?name=mopsion.com',
       'https://pypi.org/pypi/requests/json',
       'https://api.anthropic.com/v1/organizations/usage',
     ]) {
@@ -327,6 +328,20 @@ describe.skipIf(REPO_UNDER_TMP)('end-to-end through the ACTUAL WIRED command (ca
     const r = runWired('curl -s https://not-on-the-list.example/payload')
     expect(r.code).toBe(2)
     expect(r.stderr).toContain('not-on-the-list.example')
+  })
+
+  it('the DoH resolvers are BLOCKED through the real wired command (same-day correction, Telegram 10715, comment 13319)', () => {
+    // Peti removed cloudflare-dns.com/dns.google the same day they were added (RedHat MEDIUM-1:
+    // a DoH resolver answers arbitrary query names, so granting it is an open DNS channel, not a
+    // narrow grant). This runs through the ACTUAL wired command, not a synthetic env block, so it
+    // proves the removal is live, not just present in the allowlist file's JSON.
+    for (const url of [
+      'https://cloudflare-dns.com/dns-query?name=mopsion.com&type=TXT',
+      'https://dns.google/resolve?name=mopsion.com&type=A',
+    ]) {
+      const r = runWired(`curl -s ${url}`)
+      expect(r.code, url).toBe(2)
+    }
   })
 
   it('localhost-dashboard calls are untouched through the wired command', () => {
@@ -341,5 +356,22 @@ describe.skipIf(REPO_UNDER_TMP)('end-to-end through the ACTUAL WIRED command (ca
     const added = readFileSync(logPath, 'utf-8').slice(before)
     const line = added.trim().split('\n').filter(Boolean).pop() as string
     expect(JSON.parse(line).agent).toBe('backend2')
+  })
+
+  it('an inline BASH_EGRESS_ALLOW=1 hatch still allows the call, but is logged (card 18055f83 HIGH-1, RedHat NO-GO comment 13312)', () => {
+    const logPath = join(REPO_ROOT, 'store', 'bash-egress.log')
+    const before = existsSync(logPath) ? readFileSync(logPath, 'utf-8').length : 0
+    const transcriptPath = join(REPO_ROOT, 'agents', 'qa', '.claude', 'projects', 'x', 'y.jsonl')
+    const r = runWired(
+      'BASH_EGRESS_ALLOW=1 curl -s https://not-on-the-list.example/hatch-probe-18055f83',
+      transcriptPath,
+    )
+    expect(r.code).toBe(0)
+    const added = readFileSync(logPath, 'utf-8').slice(before)
+    const line = added.trim().split('\n').filter(Boolean).pop() as string
+    const parsed = JSON.parse(line)
+    expect(parsed.hatch).toBe(true)
+    expect(parsed.agent).toBe('qa')
+    expect(JSON.stringify(parsed.findings)).toContain('not-on-the-list.example')
   })
 })
