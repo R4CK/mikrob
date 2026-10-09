@@ -16498,3 +16498,26 @@ elotti legfrissebb verzioval). Tesztek: `src/__tests__/watched-repos-moving-stat
 watcher az allapotfajlbol olvas, fallback a regi mezore, a kovetett fajl byte-azonos marad egy
 watcher-futas utan; a record-review helper csak az allapotfajlt irja, a note-ot csak explicit
 kerre fuzi). Gate: QA + WhiteHat.
+
+**2026-10-09, kartya 339d29a5 (backend2): caveman skill vendorolas szukitese skills/caveman-ra.**
+A caveman upstream repo (JuliusBrussee/caveman) sajat LICENSING.md-je per-directory licencet
+allapit meg: `skills/` MIT, `engine/`/`proxy/`/Go-binarisok/`cacheengine/`/`mcp/`/`shrink/`/
+`rewriter/`/`browse/`/`shared/platform/` BSL-1.1. A korabbi vendorolas (`vendor-skill.sh --name
+caveman`, subdir nelkul) a TELJES repo-root-ot vendorolta a globalisan megosztott
+`~/.claude/skills/caveman`-ba, a BSL-licencu fat is beleertve, miközben a registry `license: MIT`-
+et irt -- pontatlan allitas arra, amit tenylegesen vendorolt. Mellekhatasul talalt masik hiba: a
+`scripts/skill-index.sh` csak EGY szintet pasztaz at (`for skill_dir in "$dir"/*/`), a root-vendor
+miatt a SKILL.md `skills/caveman/SKILL.md`-n ult (egy szinttel beljebb) -- a caveman skill
+emiatt LATHATATLAN volt a globalis skill-indexben, amikortol csak vendorolva lett. Javitas:
+re-vendor `--subdir skills/caveman`-ra (ugyanaz a mar reviewelt sha, `2fd153c6`, csak a scope
+szukult), ami (a) a SKILL.md-t a vendorolt dir sajat gyokerebe teszi (a lathatatlansagi hiba
+megszunik), (b) semmi BSL-licencu tartalmat nem vendorol tovabb (a registry `license: MIT`
+mostantol pontos), (c) a 6 fizetos Cloud-skill (`caveman-setup`/`-manage`/`-optimize`/`-discover`/
+`-evidence-review`/`-learn`, card bdd5ec40 korabbi manualis torlesi workaroundja) sosem kerul
+vendorolasra tobbet, mert a scope mar nem a teljes `skills/` mappa. `store/
+vendored-skill-sanctioned.json` caveman-bejegyzese `[]`-re uritve (a korabbi "missing:
+skills/caveman-*" sorok targy nelkul maradtak -- azok a 6 Cloud-dir hianyat sanctionoltak, amik
+most sosem vendorolodnak). Teszt: `src/__tests__/vendor-skill-subdir-scope.test.ts` (4 teszt, egy
+caveman-alaku monorepo-fixturan: root-vendor nested SKILL.md-t ad, subdir-vendor sajat-gyokerbe
+teszi, nem hozza at a scope-on kivuli tartalmat, a VENDORED.md a szukitett subdir-t rogziti).
+Gate: QA + WhiteHat (supply-chain).
