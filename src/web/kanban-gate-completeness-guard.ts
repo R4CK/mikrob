@@ -65,8 +65,15 @@ export function parseGateDesignation(gateLine: string): Set<GateAgent> | null {
   const names = new Set<GateAgent>()
   if (/\bqa2\b/.test(low)) names.add('qa2')
   if (/\bqa\b/.test(low)) names.add('qa')
-  if (/\bcybersec\b/.test(low)) names.add('cybersec')
-  if (/\bcybered\b/.test(low)) names.add('cybered')
+  // WHITEHAT/REDHAT (card cf0a8c0b, WhiteHat F1): display-name aliases for the same cybersec/
+  // cybered roles. Without this, a "Gate: QA + WhiteHat" line designated QA alone, and a
+  // "Gate: WhiteHat" line (or any line naming ONLY the new display name) designated nothing at
+  // all -- parseGateDesignation returning null reads as "no verifiable claim, nothing to check"
+  // (this function's own docstring), so the SERVER-SIDE done-guard let the card close without the
+  // security gate's verdict, force-free. Measured live on the real function: "QA + WhiteHat" ->
+  // {qa, qa2}, "WhiteHat" alone -> null.
+  if (/\bcybersec\b/.test(low) || /\bwhitehat\b/.test(low)) names.add('cybersec')
+  if (/\bcybered\b/.test(low) || /\bredhat\b/.test(low)) names.add('cybered')
   if (names.size === 0) return null
   return widenQa(names)
 }
