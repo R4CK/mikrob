@@ -265,25 +265,48 @@ fi
 # a false red) that has nothing to do with the actual change. $ROOT/node_modules must never be
 # written to from here (that is the live install, shared by every concurrent agent's own run) --
 # the fix is a REAL `npm ci` inside $TEST_TREE itself, only when the lockfiles disagree.
-if ! cmp -s "$TEST_TREE/package-lock.json" "$ROOT/package-lock.json" 2>/dev/null; then
-  echo "fleet-test.sh: package-lock.json differs from $ROOT -- running npm ci --include=dev in $TEST_TREE instead of symlinking (card 466decff)" >&2
-  [ -L "$TEST_TREE/node_modules" ] && rm -f "$TEST_TREE/node_modules"
-  ci_log="$(mktemp)"
-  if ! npm --prefix "$TEST_TREE" ci --include=dev >"$ci_log" 2>&1; then
-    cat "$ci_log" >&2
+#
+# Every branch below is SAFE ONLY BECAUSE $TEST_TREE IS A LINKED WORKTREE, never the live install
+# (same fact, same test as the SAFE-ONLY-BECAUSE comment above): a linked worktree's .git is ALWAYS
+# A FILE, the primary clone's .git is ALWAYS A DIRECTORY. If FLEET_TEST_TREE is ever pointed at
+# $ROOT itself (WhiteHat F3, card 5d365589), $TEST_TREE/node_modules IS $ROOT/node_modules -- a
+# REAL directory, not a symlink -- and without this guard the "lockfiles agree" branch's own
+# cleanup (`rm -rf "$TEST_TREE/node_modules"` when it exists and is not a symlink) would delete the
+# live install's node_modules outright. Skip the whole block in that case: $TEST_TREE already IS
+# $ROOT, so there is nothing to link or install.
+# >>> NPM_CI_SYMLINK_BLOCK_START (card 5d365589 behavior test extracts between these two markers)
+if [ -f "$TEST_TREE/.git" ]; then
+  if ! cmp -s "$TEST_TREE/package-lock.json" "$ROOT/package-lock.json" 2>/dev/null; then
+    echo "fleet-test.sh: package-lock.json differs from $ROOT -- running npm ci --include=dev in $TEST_TREE instead of symlinking (card 466decff)" >&2
+    # Remove the SYMLINK ENTRY itself before `npm ci` runs (card 5d365589, WhiteHat F1/F2). A plain
+    # `npm ci` run while $TEST_TREE/node_modules is still a symlink to $ROOT/node_modules does NOT
+    # just replace the symlink -- measured: it resolves the link and empties $ROOT/node_modules'S
+    # OWN CONTENTS in place (npm's own "Removing non-directory" reify step), i.e. it wipes the LIVE
+    # install's node_modules that every other concurrently-running agent shares. `rm -f` on a
+    # symlink path removes the link entry only, never the target, so this one line is the entire
+    # fix -- it must stay a REAL command, not a comment (F2): the behavior test below runs this
+    # exact line, not a textual stand-in for it.
+    [ -L "$TEST_TREE/node_modules" ] && rm -f "$TEST_TREE/node_modules"
+    ci_log="$(mktemp)"
+    if ! npm --prefix "$TEST_TREE" ci --include=dev >"$ci_log" 2>&1; then
+      cat "$ci_log" >&2
+      rm -f "$ci_log"
+      die 3 "npm ci failed in $TEST_TREE (package-lock.json differs from $ROOT, card 466decff) -- see output above. $ROOT/node_modules was not touched."
+    fi
     rm -f "$ci_log"
-    die 3 "npm ci failed in $TEST_TREE (package-lock.json differs from $ROOT, card 466decff) -- see output above. $ROOT/node_modules was not touched."
+  else
+    # Lockfiles agree again (e.g. a prior divergent run's branch already landed into $ROOT) -- drop
+    # any real install left behind by the branch above and go back to the cheap symlink.
+    [ -e "$TEST_TREE/node_modules" ] && [ ! -L "$TEST_TREE/node_modules" ] && rm -rf "$TEST_TREE/node_modules"
+    if [ ! -e "$TEST_TREE/node_modules" ]; then
+      ln -s "$ROOT/node_modules" "$TEST_TREE/node_modules" 2>/dev/null \
+        || die 3 "could not link node_modules into $TEST_TREE"
+    fi
   fi
-  rm -f "$ci_log"
 else
-  # Lockfiles agree again (e.g. a prior divergent run's branch already landed into $ROOT) -- drop
-  # any real install left behind by the branch above and go back to the cheap symlink.
-  [ -e "$TEST_TREE/node_modules" ] && [ ! -L "$TEST_TREE/node_modules" ] && rm -rf "$TEST_TREE/node_modules"
-  if [ ! -e "$TEST_TREE/node_modules" ]; then
-    ln -s "$ROOT/node_modules" "$TEST_TREE/node_modules" 2>/dev/null \
-      || die 3 "could not link node_modules into $TEST_TREE"
-  fi
+  echo "fleet-test.sh: TEST_TREE is not a linked worktree (.git is not a file) -- assuming it IS the live install and skipping the symlink/npm-ci block entirely (card 5d365589)" >&2
 fi
+# <<< NPM_CI_SYMLINK_BLOCK_END
 
 # Belt and braces: prove the guard will let us run. If a live marker ever appears in the test tree
 # (someone pointed FLEET_TEST_TREE at an install), fail HERE with a clear reason rather than letting

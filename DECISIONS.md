@@ -17668,3 +17668,46 @@ baseline, amit az 54f3f2cd és a 3531538d kártya is mért, tehát a bump NEM te
 a WhiteHat L1 0. lépést adott hozzá (komment 13602), backend2 végrehajtotta mindkettőt és a bump
 közben felszínre került, előre jelzett CLI-flag regressziót is. Gate: QA + WhiteHat (supply-chain:
 lockfile-diff, új tranzitív függőségek).
+
+## 2026-10-09 -- fleet-test.sh: az npm-ci-vs-symlink ág behatárolva, szöveg-ellenőrzés helyett VISELKEDÉS-teszttel (WhiteHat F1-F3, kártya 5d365589, forrás: 466decff Gate-SHA 90ebf0f7)
+
+Forrás: WhiteHat GO a 466decff-re, de három lelettel az élő klón node_modules-ának védelmére.
+
+**F1 (MEDIUM, tesztlyuk):** a `[ -L "$TEST_TREE/node_modules" ] && rm -f "$TEST_TREE/node_modules"`
+sor (a szimlink ENTRY eltávolítása npm ci előtt) törlése mellett az akkori teszt (szöveg-alapú
+`includes(...)`) zöld maradt, holott VALÓDI `npm ci`-vel mérve: ha $TEST_TREE/node_modules még
+szimlink $ROOT/node_modules-ra, az npm ci reify-lépése ("Removing non-directory") NEM csak a
+szimlinket cseréli le -- feloldja a linket és a MÖGÖTTE álló $ROOT/node_modules TARTALMÁT üríti ki
+helyben. Scratch ROOT+TEST_TREE könyvtárral, élő marker-fájllal mérve: a sor NÉLKÜL a marker-fájl
+és a teszt-dependency is eltűnik $ROOT-ból; a sorral $ROOT tartalma érintetlen marad.
+
+**F2 (LOW):** ugyanaz a sor kommenttá alakítva a régi, szöveg-alapú teszt mellett ugyanúgy zöld
+marad -- ugyanaz a hiba, más álca.
+
+**F3 (LOW):** ha `FLEET_TEST_TREE=ROOT` (a teszt-fa maga az élő telepítés), a "lockfiles egyeznek"
+ág saját takarítása (`rm -rf ... ha létezik és nem szimlink`) az ÉLŐ node_modules-t törölné, mert
+ott az nem szimlink, hanem valódi könyvtár. Javítás ugyanazzal a már bevált mintával (lásd a
+sorokkal feljebb álló, a store-fájlok takarításánál már meglévő "SAFE ONLY BECAUSE" észrevétel):
+egy linked worktree `.git`-je MINDIG fájl, a fő klón `.git`-je MINDIG könyvtár -- a teljes
+npm-ci/szimlink blokk most `[ -f "$TEST_TREE/.git" ]` mögé van zárva, ha ez hamis (TEST_TREE maga
+ROOT), a blokk NEM csinál semmit (nincs mit linkelni/telepíteni, mert TEST_TREE már ROOT).
+
+**Teszt:** `src/__tests__/fleet-test-npm-ci-live-node-modules-guard.test.ts`, 6 eset. A teszt a
+VALÓDI szöveget futtatja: a store/fleet-test.sh-ban két sentinel-komment (`NPM_CI_SYMLINK_BLOCK_
+START`/`END`) közötti blokkot kivonja és VALÓDI `npm ci`-vel, scratch ROOT/TEST_TREE könyvtárral
+futtatja -- nem egy kézzel másolt stand-in-t. 2 "REAL CODE" eset (eltérő lockfile -> npm ci,
+egyező lockfile -> szimlink) + 2 mutáció-bizonyíték F1/F2-re (a sor törlése/kommentté alakítása
+ÉLŐ `npm ci`-vel valóban kiüríti $ROOT/node_modules-t, PIROSRA viszi a tesztet) + 1 "REAL CODE" +
+1 mutáció F3-ra (a `.git`-fájl-ellenőrzés eltávolítása FLEET_TEST_TREE=ROOT mellett törli
+node_modules-t). Futtatva: 6/6 zöld. Kapcsolódó fleet-test.sh-tesztek (`fleet-test-lockfile-diff-
+npm-ci`, `fleet-test-shares-cleancore-cpu-pool`, `fleet-test-cleans-before-checkout`, `fleet-test-
+native-binding-check`) együtt: 5 fájl, 36/36 zöld, nincs regresszió. `tsc --noEmit` tiszta.
+`lint-ratchet.sh`: 331 lelet, alapvonal tartja.
+
+**Blast-radius:** mint a 466decff/d45a4e7a, ez a flotta TELJES landoló-szkriptje -- a változás csak
+akkor módosít viselkedést, ha a lockfile eltér VAGY FLEET_TEST_TREE a fő klónra mutat; a megszokott
+(egyező lockfile, külön worktree) esetben semmi nem változik.
+
+**Ki döntött:** WhiteHat mérte és jelezte (466decff Gate-SHA 90ebf0f7, msg 9877), MikroB nyitotta a
+kártyát (5d365589), backend2 reprodukálta VALÓDI `npm ci`-vel (nem csak a lelet szövegéből
+feltételezve) és implementálta mindhárom javítást. Gate: QA + Cybersec (WhiteHat).
