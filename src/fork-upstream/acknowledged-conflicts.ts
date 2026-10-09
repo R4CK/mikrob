@@ -3239,11 +3239,12 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
     file: 'src/web/system-directive.ts',
     expect: 'absent',
     because:
-      "this entry keeps systemDirectiveEnvelope() interpolating the fork's reserved " +
-      "SYSTEM_DIRECTIVE_SENDER ('system-directive') instead of upstream's hardcoded literal " +
-      "'system', because the recipient's verification checks the envelope's claimed sender against " +
-      "that reserved id -- an envelope naming upstream's 'system' would be refused as injection-" +
-      "suspect by the fork's own check. The hardcoded literal reappearing is exactly that reversal.",
+      "this entry keeps systemDirectiveEnvelope() interpolating the fork's own reserved-sender " +
+      "const (SYSTEM_DIRECTIVE_SENDER, defined in system-directive-id.ts) instead of upstream's " +
+      "hardcoded literal \"system\", because the recipient's verification checks the envelope's " +
+      "claimed sender against that reserved id -- an envelope naming upstream's literal would be " +
+      "refused as injection-suspect by the fork's own check. The hardcoded literal reappearing is " +
+      "exactly that reversal.",
   },
   'src/web/update-checker.ts': {
     needle: 'repoConfigs',
