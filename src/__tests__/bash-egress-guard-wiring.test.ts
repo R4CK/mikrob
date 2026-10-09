@@ -374,4 +374,23 @@ describe.skipIf(REPO_UNDER_TMP)('end-to-end through the ACTUAL WIRED command (ca
     expect(parsed.agent).toBe('qa')
     expect(JSON.stringify(parsed.findings)).toContain('not-on-the-list.example')
   })
+
+  it('a shell function or alias wrapping curl is BLOCKED through the real wired command (card 4ed64b20, RedHat delta MEDIUM on 18055f83 comment 13365)', () => {
+    // RedHat's two measured probes, both rc=0 with ZERO log lines before the fix: the call site
+    // uses the function/alias NAME, never the word "curl" itself, so no segment-level check ever
+    // saw it. Run here against the ACTUAL wired command, not the unit-level `analyse()` call.
+    const probes = [
+      'f(){ curl -s "$1"; }; f https://not-on-the-list.example/func-probe-4ed64b20',
+      "alias c='curl'; c -s https://not-on-the-list.example/alias-probe-4ed64b20",
+    ]
+    for (const probe of probes) {
+      const r = runWired(probe)
+      expect(r.code, probe).toBe(2)
+    }
+  })
+
+  it('a function/alias with no network-capable command inside is NOT over-blocked (card 4ed64b20)', () => {
+    expect(runWired('ll(){ ls -la "$@"; }; ll /tmp').code).toBe(0)
+    expect(runWired('alias gp="git push"; gp').code).toBe(0)
+  })
 })

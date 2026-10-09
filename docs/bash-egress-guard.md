@@ -116,6 +116,17 @@ az olyan interpreter-egysorosok (`python3 -c`, `node -e`, `perl -e`, `ruby -e`, 
 - Bármi a Bash-toolon kívül. A WebFetch és az MCP fetch-toolok külön kapun mennek
   (`scripts/hooks/egress-gate.mjs`), ami viszont a Bash-t **nem** fedi -- a kettő diszjunkt.
 
+**Shell-függvény/alias DEFINÍCIÓ, ami egy KORÁBBI Bash-hívásban keletkezett (kártya 4ed64b20,
+RedHat delta MEDIUM a 18055f83-on, komment 13365):** a hook egy-egy parancssort lát, a hívások
+között nincs megőrzött shell-állapota. Ha egy `f(){ curl ...; }` vagy `alias c=curl` egy KORÁBBI
+Bash-tool-hívásban definiálódott, egy KÉSŐBBI hívásban a puszta `f ...`/`c ...` hívás emiatt
+láthatatlan marad -- ezt semmilyen szövegelemzés nem oldja meg, mert nincs mit elemezni: a
+definíció szövege nincs is a vizsgált parancsban. Ami UGYANABBAN a parancssorban történő
+definíció+hívás (`f(){ curl -s "$1"; }; f https://x`, `alias c=curl; c -s https://x`) -- azt a
+hook a definíció szövege alapján észreveszi és leállítja (lásd lent), mert a definíció MAGA
+olvasható ebben a hívásban. A tartós védelem a korábbi-hívásos eset ellen hálózati szintű kontroll
+(per-agent egress tűzfal vagy proxy), nem egy okosabb parser.
+
 ## Ami a cél, és ami csak úgy NÉZ KI
 
 Három gate-lelet egy körben (Cybersec NO-GO + QA FAIL, 2026-09-13) mind ugyanarra a tengelyre
@@ -148,6 +159,16 @@ Ennek a mérhető ára a korpuszon: `--resolve` 570, `--connect-to` 210, wget `-
 előfordulás -- ezek mostantól fail-closed-ot kapnak. A `--dns-servers` és `--doh-url` nulla
 előfordulású; azért vannak lefedve, mert ugyanaz a tengely, és egy kapu, ami négyből kettőt nevez
 meg, miközben a doksi zárt szobát állít, pontosan az a hibaosztály, amiért ez a kártya létezik.
+
+**5. Shell-függvény/alias DEFINÍCIÓ a HÍVÁSSAL EGYÜTT, ugyanabban a parancssorban (kártya 4ed64b20,
+RedHat delta, komment 13365).** `f(){ curl -s "$1"; }; f https://x` és `alias c=curl; c -s https://x`
+mindkettő rc=0-val, NULLA naplósorral ment át a javítás előtt: a hívási hely a NEVET használja
+(`f`/`c`), sosem a `curl` szót, tehát a fenti szegmens-szintű ellenőrzések egyike sem látta meg. A
+javítás ugyanazt a tengelyt viszi tovább, mint a 2. pont: ha a definíció törzse/értéke hálózat-képes
+parancsot nevez meg, maga a DEFINÍCIÓ lesz a lelet, függetlenül attól, milyen konkrét argumentumot
+kap a hívási hely -- mert azt a hook nem szimulálja (nincs pozicionális paraméter-helyettesítés).
+Ez SZŰKEBB, mint egy teljes shell-értelmező: egy KORÁBBI Bash-hívásban definiált függvény/alias
+egy KÉSŐBBI hívásban továbbra is láthatatlan (lásd a Hatókör szakasz fenti bekezdését).
 
 ## A fail-closed költségnövelés, nem bizonyítható garancia
 
