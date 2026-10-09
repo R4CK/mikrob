@@ -254,11 +254,35 @@ Inspect by hand: git -C $TEST_TREE status"
 fi
 
 # Share the live install's node_modules by symlink instead of installing a second copy: the deps are
-# large, and a per-run `npm ci` would dominate the runtime of a 20-second suite. The symlink is
-# re-pointed every run so it cannot go stale.
-if [ ! -e "$TEST_TREE/node_modules" ]; then
-  ln -s "$ROOT/node_modules" "$TEST_TREE/node_modules" 2>/dev/null \
-    || die 3 "could not link node_modules into $TEST_TREE"
+# large, and a per-run `npm ci` would dominate the runtime of a 20-second suite.
+#
+# BUT the symlink only tells the truth when $TEST_TREE's package-lock.json matches $ROOT's (card
+# 466decff). A dependency-bump card (e.g. 2f05b3e3, vitest 2.1.9 -> 5.0.3) changes the lockfile on
+# the landing branch while $ROOT -- the live install -- is still on the OLD lockfile until someone
+# separately updates it. Symlinking unconditionally in that case makes the suite silently test the
+# OLD packages against the NEW source: measured on 2f05b3e3's landing attempt, the run banner read
+# "RUN v2.1.9" although the merge result's package.json asked for vitest ^5.0.3 -- a false green (or
+# a false red) that has nothing to do with the actual change. $ROOT/node_modules must never be
+# written to from here (that is the live install, shared by every concurrent agent's own run) --
+# the fix is a REAL `npm ci` inside $TEST_TREE itself, only when the lockfiles disagree.
+if ! cmp -s "$TEST_TREE/package-lock.json" "$ROOT/package-lock.json" 2>/dev/null; then
+  echo "fleet-test.sh: package-lock.json differs from $ROOT -- running npm ci --include=dev in $TEST_TREE instead of symlinking (card 466decff)" >&2
+  [ -L "$TEST_TREE/node_modules" ] && rm -f "$TEST_TREE/node_modules"
+  ci_log="$(mktemp)"
+  if ! npm --prefix "$TEST_TREE" ci --include=dev >"$ci_log" 2>&1; then
+    cat "$ci_log" >&2
+    rm -f "$ci_log"
+    die 3 "npm ci failed in $TEST_TREE (package-lock.json differs from $ROOT, card 466decff) -- see output above. $ROOT/node_modules was not touched."
+  fi
+  rm -f "$ci_log"
+else
+  # Lockfiles agree again (e.g. a prior divergent run's branch already landed into $ROOT) -- drop
+  # any real install left behind by the branch above and go back to the cheap symlink.
+  [ -e "$TEST_TREE/node_modules" ] && [ ! -L "$TEST_TREE/node_modules" ] && rm -rf "$TEST_TREE/node_modules"
+  if [ ! -e "$TEST_TREE/node_modules" ]; then
+    ln -s "$ROOT/node_modules" "$TEST_TREE/node_modules" 2>/dev/null \
+      || die 3 "could not link node_modules into $TEST_TREE"
+  fi
 fi
 
 # Belt and braces: prove the guard will let us run. If a live marker ever appears in the test tree
