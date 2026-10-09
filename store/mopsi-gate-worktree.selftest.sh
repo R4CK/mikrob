@@ -81,5 +81,5 @@ else
 fi
 
 echo
-echo "mopsi-gate-worktree.selftest: $pass ok, $fail failed"
+echo "mopsi-gate-worktree.selftest: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

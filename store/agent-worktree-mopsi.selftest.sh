@@ -50,5 +50,5 @@ else
 fi
 
 echo
-echo "agent-worktree-mopsi.selftest: $pass ok, $fail failed"
+echo "agent-worktree-mopsi.selftest: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
