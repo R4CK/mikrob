@@ -45,7 +45,7 @@
 #       | 6 forbidden flag (--no-security-check / --remote) | 7 shape-scan refusal
 set -euo pipefail
 
-PINNED_VERSION="1.18.0"
+PINNED_VERSION="1.18.1"
 REPOMIX_BIN="${REPOMIX_BIN:-$HOME/.npm-tools/bin/repomix}"
 OUT_DIR_DEFAULT="/home/neon/marveen/store/repomix-out"
 

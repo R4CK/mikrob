@@ -17061,3 +17061,41 @@ A script saját `--selftest`-je (10/10) és a teljes élő fán futó valós ell
 helyes.
 
 **Ki döntött:** WhiteHat lelete (M1, GO a 14216622-n), backend2 végrehajtotta. Gate: QA + WhiteHat.
+## 2026-10-09: repomix pin-emeles 1.18.0 -> 1.18.1 (kartya 1df528e0)
+
+A git-repo-figyelo 2026-09-25-i reviewja (olvasasra-korlatozott diff) ADOPT-javaslatot adott: az
+upstream 1.18.1 kiadas biztonsagi kemenyitest hordoz (nem megbizhato repo .git/config-ja ne
+futhasson le a repomix log/diff/rev-parse alfolyamataiban). A kartya nyitasa ota (2026-10-03,
+8d642912-ig figyelve) nem jott ujabb release, a npm registry dist-tag@latest ma is 1.18.1
+(publikalva 2026-09-21), tehat ez a legfrissebb biztonsagos verzio.
+
+Due diligence: license MIT (valtozatlan 1.18.0 ota). Registry tarball integritas ellenorizve
+(sha512-XtV1qD6akJSigQ3fBRex5v+rWcGa4i9cm2FL/M/PEtzO3u1uDiso3CtNbhlZiMIqJstAdy8mj2m1ynOzNnNB3g==).
+OSV lekerdezes a repomix csomagra magara TISZTA.
+
+npm audit egy pinnelt lockfile-on (diszpozabil temp konyvtarban, NEM a kozos fan): 5 HIGH lelet --
+braces csomag, GHSA-vfj7-8cjw-p6xm / CVE-2026-93687, stack-exhaustion DoS mely beagyazott
+brace-mintaknal (CVSS 7.5, CVSS vektor C:N/I:N/A:H -- CSAK szolgaltatas-megtagadas, nincs
+adat-expozicio es nincs RCE), transitiv lanc braces<-micromatch<-fast-glob<-globby<-repomix.
+NEM EZ A BUMP OKOZTA: ugyanez a lanc 4 HIGH-t ad a MA MEG PINNELT 1.18.0-n IS -- az 5. tetel
+1.18.1-nel csak egy tovabbi fa-csomopont (maga a repomix is megjelenik a listan, mert fuggo
+viszonyban all a serulekeny globby-vel), nem egy kulon CVE. Az advisory a teljes braces<=3.0.3
+tartomanyra szol (publikalva 2026-09-18, github-reviewed 2026-10-02); FIX MEG NINCS upstream. A
+2026-08-06-i "0 vulnerabilities, all severities" korabbi meres emiatt AZOTA elavult, a repomix
+verziotol fuggetlenul -- a GHSA kesobb publikalt.
+
+Hatas erre a fleetre: a store/repomix.sh wrapper altal hasznalt glob-mintak a SAJAT hivasunkbol/
+configunkbol jonnek, nem egy nem-megbizhato csomagolt repo tartalmabol. Ha valaha egy ADOPTALT/
+kulso repot csomagolnank (nem a sajat forkunkat), annak sajat repomix.config.json-ja vagy
+.repomixignore-ja elmeletileg tamadó-irhato brace-mintat hordozhatna, es a repomix-folyamatot
+leallithatna (DoS, nem adatszivargas). Kockazat-elfogadas/korlatozas dontese a QA+WhiteHat
+gate-re tartozik (supply-chain gate-kijeloles, lasd a kartya).
+
+Vegrehajtva: store/repomix.sh PINNED_VERSION="1.18.0" -> "1.18.1", store/watched-repos.json
+pinned_version mezo + datumozott note-bejegyzes, src/__tests__/repomix-wrapper-guard.test.ts
+varakozasa frissitve. CSAK repo-pin + nyilvantartas (MikroB dontese) -- az elo telepites
+(~/.npm-tools) tenyleges frissitese a Peti 10720 elo-frissitesi ablakaba kerul, ha egy futo
+folyamat hasznalja.
+
+Ki dontott: MikroB (dispatch + hatarok), backend (vegrehajtas + due diligence). Gate: QA + WhiteHat
+(supply-chain).

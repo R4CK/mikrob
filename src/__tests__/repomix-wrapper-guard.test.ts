@@ -63,7 +63,9 @@ describe('store/repomix.sh -- Cybersec conditions stay enforced (card b41c3dd3)'
     // The literal is deliberate, not brittleness: an UNREVIEWED bump must fail here, so every
     // version change is acknowledged by a human. Bumped 1.17.0 -> 1.18.0 with card 827330ce
     // (upstream security release; the ReDoS-hardened redaction also runs on the local pack path).
-    expect(pin?.[1]).toBe('1.18.0')
+    // Bumped 1.18.0 -> 1.18.1 with card 1df528e0 (upstream git-config hardening in log/diff/
+    // rev-parse subprocesses against an untrusted repo's .git/config).
+    expect(pin?.[1]).toBe('1.18.1')
     expect(WRAPPER).not.toContain('repomix@latest')
   })
 
