@@ -255,7 +255,7 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
     // refused by this check. Without it a validator that rejects everything
     // would pass the assertion above and quietly break every pairing.
     //
-    // ENROLL813 -- this branch is also where real keys came from on upstream. It
+    // ENROLL813 -- this branch is also where 62 real keys came from upstream. It
     // drives the route with a VALID tailnet address, so enrollment actually
     // runs; until beforeEach set the seam it ran against the operator's own
     // ~/.ssh. And the single assertion below used to be the whole control,

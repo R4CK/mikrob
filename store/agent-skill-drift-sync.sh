@@ -62,7 +62,7 @@
 # EVERY RUN ENDS WITH A VERDICT LINE, and callers should key on it rather than on the counts
 # (card 222fdc5e):
 #   ALERT:no  (diverged set unchanged since <when>, N entries; stale=0, no concurrent-write skips)
-#   ALERT:yes reasons=<comma-list> diverged=N stale=N skipped-concurrent=N skipped-running=N
+#   ALERT:yes reasons=<comma-list> diverged=N stale=N synced=N skipped-concurrent=N skipped-running=N
 #             skipped-undetermined=N missing=N
 # reasons: stale-synced | concurrent-write-skipped | running-agent-skipped |
 #          undetermined-agent-skipped | diverged-set-changed | no-baseline | baseline-unreadable |
@@ -77,10 +77,12 @@
 # owed, not an error -- the copy stays exactly as stale as it already was, and the next run
 # re-checks. See _agent_running_state for why the write is refused in both cases.
 #
-# PRE-EXISTING IMPRECISION, noted rather than changed here: `stale-synced` fires whenever STALE>0,
-# including on a DRY RUN where nothing was written. That predates this card and has its own
-# consumers; the `skipped-running` field exists partly so a reader can tell the two apart until
-# somebody fixes the label properly.
+# `stale` is a CLASSIFICATION count (found byte-identical to a superseded version); `synced` is an
+# OUTCOME count (actually written this run). FIXED (card 2fc54ae7, previously a known imprecision):
+# `stale-synced` now gates on `synced>0`, not `stale>0` -- a run where every stale copy was skipped
+# (running/undetermined/concurrent-write) no longer claims it synced anything, on a dry run or
+# under --apply alike. The `Stale (untouched, synced):` report header lists only entries that were
+# actually written; skipped-but-stale entries get their own `Stale (NOT synced, skipped):` section.
 # The diverged SET (not its size) is what is remembered, in $AGENT_SKILL_DRIFT_STATE
 # (default store/agent-skill-drift-state.json), and ONLY --apply advances that baseline.
 #
@@ -423,8 +425,8 @@ scan_missing_skills() {
 }
 
 run_scan() {
-  CUR=0; STALE=0; DIVERGED=0; SKIPPED=0; SKIPPED_CONCURRENT=0; SKIPPED_RUNNING=0; SKIPPED_UNDETERMINED=0
-  STALE_LIST=""; DIVERGED_LIST=""
+  CUR=0; STALE=0; STALE_SYNCED=0; DIVERGED=0; SKIPPED=0; SKIPPED_CONCURRENT=0; SKIPPED_RUNNING=0; SKIPPED_UNDETERMINED=0
+  STALE_LIST=""; STALE_SYNCED_LIST=""; STALE_SKIPPED_LIST=""; DIVERGED_LIST=""
   MISSING=0; MISSING_SYNCED=0; MISSING_SKIPPED_RUNNING=0; MISSING_SKIPPED_UNDETERMINED=0; MISSING_LIST=""
   _load_running_sessions
 
@@ -477,9 +479,11 @@ run_scan() {
             # toward the same fail-closed skip, just labelled by which one actually happened.
             if [ "$agent_state" = "undetermined" ]; then
               SKIPPED_UNDETERMINED=$((SKIPPED_UNDETERMINED+1))
+              STALE_SKIPPED_LIST="${STALE_SKIPPED_LIST}${agent}/${skill} -- could not determine whether ${agent} is running (tmux state unreadable)\n"
               agent_lines="${agent_lines}            -> SKIPPED, could not determine whether ${agent} is running (tmux state unreadable) -- re-runs when determinable\n"
             else
               SKIPPED_RUNNING=$((SKIPPED_RUNNING+1))
+              STALE_SKIPPED_LIST="${STALE_SKIPPED_LIST}${agent}/${skill} -- ${agent} is RUNNING, not synced\n"
               agent_lines="${agent_lines}            -> SKIPPED, ${agent} is RUNNING (a live agent reads and may hand-patch this file) -- re-runs when it parks\n"
             fi
           elif [ "$APPLY" -eq 1 ]; then
@@ -504,14 +508,19 @@ run_scan() {
               if [ "$live_hash" != "$classify_hash" ]; then
                 rm -f "$tmp"
                 SKIPPED_CONCURRENT=$((SKIPPED_CONCURRENT+1))
+                STALE_SKIPPED_LIST="${STALE_SKIPPED_LIST}${agent}/${skill} -- file changed between classify and sync (concurrent write), not synced\n"
                 agent_lines="${agent_lines}            -> SKIPPED, file changed between classify and sync (concurrent write) -- re-run to re-check\n"
               elif mv "$tmp" "$installed"; then
+                STALE_SYNCED=$((STALE_SYNCED+1))
+                STALE_SYNCED_LIST="${STALE_SYNCED_LIST}${agent}/${skill}\n"
                 agent_lines="${agent_lines}            -> synced\n"
               else
+                STALE_SKIPPED_LIST="${STALE_SKIPPED_LIST}${agent}/${skill} -- sync FAILED, not synced\n"
                 rm -f "$tmp"
                 agent_lines="${agent_lines}            -> SYNC FAILED (left untouched)\n"
               fi
             else
+              STALE_SKIPPED_LIST="${STALE_SKIPPED_LIST}${agent}/${skill} -- sync FAILED (render error), not synced\n"
               rm -f "$tmp"
               agent_lines="${agent_lines}            -> SYNC FAILED (left untouched)\n"
             fi
@@ -535,8 +544,21 @@ run_scan() {
 
   if [ "$TELEGRAM" -eq 1 ]; then
     echo "Agent skill drift: current=${CUR} stale=${STALE} diverged=${DIVERGED} skipped(no-canonical)=${SKIPPED} missing=${MISSING}"
-    if [ "$STALE" -gt 0 ]; then
-      echo "Stale (untouched, $([ "$APPLY" -eq 1 ] && echo synced || echo would-sync)):"
+    if [ "$APPLY" -eq 1 ]; then
+      # Card 2fc54ae7: a stale copy found is not the same as a stale copy WRITTEN -- an entry
+      # skipped because its agent is running/undetermined/concurrently-written must never appear
+      # under a "synced" header. The two lists below are populated separately in the stale case
+      # above specifically so this split cannot drift back together by accident.
+      if [ "$STALE_SYNCED" -gt 0 ]; then
+        echo "Stale (untouched, synced):"
+        printf '%b' "$STALE_SYNCED_LIST" | sed 's/^/  /'
+      fi
+      if [ -n "$STALE_SKIPPED_LIST" ]; then
+        echo "Stale (NOT synced, skipped):"
+        printf '%b' "$STALE_SKIPPED_LIST" | sed 's/^/  /'
+      fi
+    elif [ "$STALE" -gt 0 ]; then
+      echo "Stale (untouched, would-sync):"
       printf '%b' "$STALE_LIST" | sed 's/^/  /'
     fi
     if [ "$DIVERGED" -gt 0 ]; then
@@ -553,7 +575,7 @@ run_scan() {
       printf '%b' "$MISSING_LIST" | sed 's/^/  MISSING   /'
     fi
     echo "---"
-    echo "SUMMARY: current=${CUR} stale=${STALE}$([ "$APPLY" -eq 1 ] && echo '(synced)' || echo '(would-sync, dry-run)') diverged=${DIVERGED}(flagged-only) skipped=${SKIPPED}(no-canonical) missing=${MISSING}$([ "$APPLY" -eq 1 ] && [ "$MISSING_SYNC_APPLY_ENABLED" -eq 1 ] && echo '(synced-where-possible)' || echo '(would-sync, dry-run)')"
+    echo "SUMMARY: current=${CUR} stale=${STALE}$([ "$APPLY" -eq 1 ] && echo "(synced=${STALE_SYNCED})" || echo '(would-sync, dry-run)') diverged=${DIVERGED}(flagged-only) skipped=${SKIPPED}(no-canonical) missing=${MISSING}$([ "$APPLY" -eq 1 ] && [ "$MISSING_SYNC_APPLY_ENABLED" -eq 1 ] && echo '(synced-where-possible)' || echo '(would-sync, dry-run)')"
   fi
 
   emit_alert_verdict
@@ -599,7 +621,11 @@ emit_alert_verdict() {
   diverged_sha="$(printf '%s' "$diverged_now" | _hash)"
 
   reasons=""
-  [ "$STALE" -gt 0 ] && reasons="${reasons}stale-synced,"
+  # Card 2fc54ae7: this used to fire on STALE (found) rather than STALE_SYNCED (actually written),
+  # so a run where every stale copy was skipped (all owning agents running) still claimed
+  # "stale-synced" -- a report that says "synced" about a write it never attempted. Gate on the
+  # count that reflects an actual mv, not the count that reflects a classification.
+  [ "$STALE_SYNCED" -gt 0 ] && reasons="${reasons}stale-synced,"
   [ "$SKIPPED_CONCURRENT" -gt 0 ] && reasons="${reasons}concurrent-write-skipped,"
   # A skipped sync is work still owed, so it must not read as routine. It is NOT an error: the copy
   # simply stays as stale as it already was until the agent parks. Two distinct reasons (card
@@ -632,7 +658,7 @@ emit_alert_verdict() {
   fi
 
   if [ -n "$reasons" ]; then
-    echo "ALERT:yes reasons=${reasons%,} diverged=${DIVERGED} stale=${STALE} skipped-concurrent=${SKIPPED_CONCURRENT} skipped-running=${SKIPPED_RUNNING} skipped-undetermined=${SKIPPED_UNDETERMINED} missing=${MISSING} missing-skipped-running=${MISSING_SKIPPED_RUNNING} missing-skipped-undetermined=${MISSING_SKIPPED_UNDETERMINED}"
+    echo "ALERT:yes reasons=${reasons%,} diverged=${DIVERGED} stale=${STALE} synced=${STALE_SYNCED} skipped-concurrent=${SKIPPED_CONCURRENT} skipped-running=${SKIPPED_RUNNING} skipped-undetermined=${SKIPPED_UNDETERMINED} missing=${MISSING} missing-skipped-running=${MISSING_SKIPPED_RUNNING} missing-skipped-undetermined=${MISSING_SKIPPED_UNDETERMINED}"
     [ -n "$prev_list" ] && [ "$prev_list" != "$diverged_now" ] && echo "  diverged set was: ${prev_list:-(empty)}"
     [ -n "$reasons" ] && echo "  diverged set now: ${diverged_now:-(empty)}"
     [ "$MISSING" -gt 0 ] && { echo "  missing set:"; printf '%b' "$MISSING_LIST" | sed '/^$/d;s/^/    /'; }
@@ -807,6 +833,31 @@ agent-someone-else")"
     && echo "  ok   the skip is a REASON, so the run cannot read as routine" \
     || { echo "  FAIL running-agent-skipped is not among the reasons:"; echo "$out7"; fail=1; }
 
+  # --- card 2fc54ae7: a run where EVERY stale copy is skipped must not claim "stale-synced" ----
+  # (MikroB measured this live: 3 runs in a row reported "Stale (untouched, synced)" for 2 pairs
+  # that were in fact both left on 09-06/09-07 content, because every single stale hit was
+  # skipped for being on a running agent -- "stale found" and "stale written" had collapsed into
+  # one counter). This re-uses out7 (same fixture: agentG stale, running, 0 actual writes).
+  echo "$out7" | grep -q 'reasons=.*stale-synced' \
+    && { echo "  FAIL stale-synced fired even though nothing was actually synced:"; echo "$out7"; fail=1; } \
+    || echo "  ok   stale-synced did NOT fire when every stale hit was skipped, not written"
+  echo "$out7" | grep -q ' synced=0' \
+    && echo "  ok   the verdict line's synced=0 matches reality (0 actual writes)" \
+    || { echo "  FAIL verdict line missing/wrong synced=0:"; echo "$out7"; fail=1; }
+
+  g_stale
+  out7t="$(AGENT_SKILL_DRIFT_ROOT="$tmp/root" AGENT_SKILL_DRIFT_TEST_SESSIONS="agent-agentG
+agent-someone-else" bash "${BASH_SOURCE[0]}" --apply --telegram --agent agentG)"
+  echo "$out7t" | grep -q 'Stale (untouched, synced):' \
+    && { echo "  FAIL telegram report showed a 'synced' header for a run that wrote nothing:"; echo "$out7t"; fail=1; } \
+    || echo "  ok   telegram report has NO 'synced' header when nothing was actually synced"
+  echo "$out7t" | grep -q 'Stale (NOT synced, skipped):' \
+    && echo "  ok   telegram report has a NOT-synced/skipped section instead" \
+    || { echo "  FAIL telegram report missing the NOT-synced/skipped section:"; echo "$out7t"; fail=1; }
+  echo "$out7t" | grep -q 'agentG/demo-skill -- agentG is RUNNING, not synced' \
+    && echo "  ok   the skipped entry names the agent/skill pair and the reason" \
+    || { echo "  FAIL skipped entry not listed with its reason:"; echo "$out7t"; fail=1; }
+
   # THE CONTROL THAT MAKES THE CASE ABOVE MEAN SOMETHING. Same fixture, same command, only the
   # session list differs: a parked agent must still be synced. Without this, a guard that refused
   # every write would pass every assertion above.
@@ -815,6 +866,12 @@ agent-someone-else")"
   grep -q 'fix: closed the gap' "$g_target" \
     && echo "  ok   CONTROL: a PARKED agent is still synced -- the guard is not a blanket refusal" \
     || { echo "  FAIL a parked agent was not synced:"; echo "$out8"; fail=1; }
+  echo "$out8" | grep -q 'reasons=.*stale-synced' \
+    && echo "  ok   CONTROL: stale-synced DOES fire when a write actually happened" \
+    || { echo "  FAIL CONTROL: stale-synced did not fire for a real write:"; echo "$out8"; fail=1; }
+  echo "$out8" | grep -q ' synced=1' \
+    && echo "  ok   CONTROL: the verdict line's synced=1 matches the real write" \
+    || { echo "  FAIL CONTROL: verdict line missing/wrong synced=1:"; echo "$out8"; fail=1; }
 
   # FAIL-CLOSED when the reading itself fails. A tmux that errors for any reason OTHER than "no
   # server running" tells us nothing, and an agent we cannot prove is parked is treated as running

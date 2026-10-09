@@ -359,9 +359,18 @@ export function startWebServer(port = 3420): http.Server {
 
   server.listen(port, WEB_HOST, () => {
     logger.info({ port }, `Web dashboard: http://localhost:${port}`)
-    // Never print the bearer token, on ANY stream. Writing it to stderr instead of pino did not
-    // keep it out of the logs: a service manager captures stderr too (journal / StandardErrorPath).
-    // See bootstrap-notice.ts for the reasoning and the login path that replaces it.
+    // UPSTREAM-SYNC BATCH 4 (card 0b550d89): upstream's version of this hunk still prints the
+    // raw bearer token into a URL, gated on process.stderr.isTTY -- a real improvement over the
+    // PRE-renderBootstrapNotice history both sides independently measured (same 2026-09-01
+    // dated incident: a service-manager-captured stderr persisting the token to a log file),
+    // but still weaker than what this fork already landed afterward (card 62631948): NOT
+    // adopted, because renderBootstrapNotice() never prints the token at all, under any stream
+    // -- interactive or not. A TTY check narrows which CAPTURE PIPELINES see it, but does not
+    // close the class: terminal scrollback, tmux pane capture, and session-recording tools all
+    // read an interactive stdout/stderr the same way a log collector reads a redirected one, and
+    // this fork's own bootstrap-notice.ts explicitly rejected a partial mitigation (redaction/
+    // truncation) on exactly that reasoning -- not printing the secret at all is the only version
+    // with no exposure surface left to enumerate. Keeping the fork's stronger fix.
     process.stderr.write(renderBootstrapNotice(port, join(STORE_DIR, '.dashboard-token')))
   })
 

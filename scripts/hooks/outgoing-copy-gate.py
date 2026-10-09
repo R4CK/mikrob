@@ -839,7 +839,7 @@ TECHNICAL = re.compile(
       | [\w.+-]+@[\w-]+\.[\w.]+     # email
       | `[^`]*`                     # kod-span
       | \b\w+(?:_\w+)+\b            # snake_case azonosito
-      | \b\w+\.[A-Za-z]{2,10}\b     # fajlnev / domain (video.mp4, marveen.io)
+      | \b\w+\.[A-Za-z]{2,10}(?:-[a-záéíóöőúüű]{1,4})?\b   # fajlnev / domain, magyar toldalekkal (video.mp4, marveen.io, Mail.app-ot)
       | \b[\w-]*/[\w/-]+            # utvonal / slug
       | \blevel\s+\d+\b            # angol "level 1" (autonomia-szint, log-szint)
     """,

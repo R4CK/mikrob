@@ -16421,6 +16421,133 @@ Ki dontott: Cybered (NO-GO, bizonyitott line-continuation-bypass + a declare-f j
 (a dinamikus osztaly kivetelkent elfogadasa, kulon korre halasztva). backend3: javitas.
 Gate: QA + Cybersec + Cybered (valtozatlan, kockazat-tiering szerint).
 
+## 2026-10-09 -- 0b550d89 Koteg 4 (1abd45cf..97c910e6, 33 upstream commit): konfliktusfeloldas
+
+16 fajl utkozott (.github/workflows/test.yml, package.json, package-lock.json, 4 teszt-fajl,
+src/db.ts, src/remote-enroll-fs.ts, src/web.ts, src/web/active-model.ts, src/web/agent-process.ts,
+src/web/context-guard-runner.ts, src/web/routes/kanban.ts, src/web/schedule-runner.ts,
+vitest.config.ts). A tobbi ~45 erintett fajl konfliktus nelkul auto-mergelt.
+
+**BIZTONSAGI JAVITAS (nem csak atvett upstream valtozas), src/web/agent-process.ts:** upstream uj
+AGENT_LOCAL_BASE_URL valtozoja (az ollama-agentek kulon Anthropic-kompatibilis endpoint-ja,
+OLLAMA_URL helyett) a sajat sorukban NYERSEN, shSingleQuote() nelkul volt interpolalva a shell
+exportStr-be -- pontosan az a sebezhetoseg-osztaly, amit a kartya e80c011a (Cybersec NO-GO) mar
+egyszer bezart OLLAMA_URL-re ugyanitt. config-registry.ts-ben ellenorizve: AGENT_LOCAL_BASE_URL
+`type: 'string'`, nincs valueSet -- ugyanaz az alak, zero karakter-validacio. Az uj valtozo
+adoptalva, DE shSingleQuote()-ba csomagolva, ugyanugy mint az OLLAMA_URL mellette.
+
+**UPSTREAM-SAJAT HIBA JAVITVA (nem konfliktus, a tisztan auto-mergelt reszben talalva),
+src/web/context-guard-runner.ts:** a `measuredPct` szamitasa (sor ~404) hianyos `await`-tel
+keszult -- measurePct() async, Promise<number|null>-t ad vissza, de a kod a Promise-t magat
+rendelte measuredPct-hez, amit utana szamkent hasznaltak (Math.round, osszehasonlitas,
+saturationBannerCredible() tipizalt parametere). Javitva: `await` hozzaadva.
+
+**NEM ADOPTALT, dontessel, src/web.ts:** upstream a bearer tokent meg mindig kiirja egy URL-be
+(isTTY-feltetellel), a fork sajat renderBootstrapNotice() megoldasa (kartya 62631948) viszont
+SOHA nem irja ki a tokent semmilyen stream-re. A fork megoldasa strukturalisan erosebb (nincs
+kiteheto felszin: terminal scrollback, tmux capture, session-recording). Fork oldal megtartva.
+
+**NEM ADOPTALT, dontessel, src/web/routes/kanban.ts:** upstream "program-specifikus zaro-statusz"
+(done helyett pl. testing) + "actor mezo onfelvetelnel" magyarazo szoveg -- mindketto upstream
+SAJAT, meg "done"-ra zaro lepes-2 mintajahoz van rogzitve, a fork mar regebben atallt a
+"mindig waiting, a lezarast a gate/escalateTo dontii" modellre (CLAUDE.md 4. szabaly). Az
+upstream szoveg szo szerinti atvetele ellentmondo utasitast adott volna egy MAR adoptalt
+munkafolyamat ellen. Fork oldal megtartva.
+
+**NEM ADOPTALT, mar korabban dokumentalt dontes (acknowledged-conflicts.ts ~1314. sor, kartya
+b992e9aa), .github/workflows/test.yml:** upstream 9 uj CI-lepese (egress-drift-scan,
+dash-audit-scan, mio-orszem-precheck, memory-link-audit, keepalive-probe-install,
+morning-stamp-gate, morning-timer-park, userbot-arming-gate, supabase-q-token-hiding) kozul
+csak a fork sajat ollama-boot-restore.test.sh sora maradt. 3 forras-fajl (dash-audit-scan.*,
+mio-orszem-precheck.*, memory-link-audit.test.py) ennek ellenere csendben bekerult a fan
+konfliktus nelkuli auto-merge-bol -- a memoria #242 altal leirt pontos mintat kovetve ("egy
+NEM-adoptalt dontes csendben visszaszivaroghat"). A fajlok a fan maradtak huzalozas nelkul
+(ugyanaz az allapot mint a fork sajat scripts/memory-link-audit.py-ja), a CI-huzalozasi dontes
+valtozatlan: nem adoptalt.
+
+**src/web/schedule-runner.ts:** runPreCheck() async marad (korabban tobbszor megerositett dontes,
+955f014e, pinelo teszttel vedve). Az UJ resolvePreCheckPath() helper fuggveny (nem utkozo resz
+upstream oldalan) adoptalva, mert a mar auto-mergelt fuggveny-torzs hasznalja.
+
+**vitest.config.ts:** upstream testTimeout: 60000 globalis bevezetese NEM adoptalt -- a motivalo
+problema (vitest 4 5s alapertelmezese) nem letezik ezen a forkon (vitest ^2.1.0), es a ket
+nevezett teszt mar sajat timeout-tal rendelkezik. A fork sajat exclude-listaja (dist/**,
+tests/smoke/**, tests/browser/**, agents/**, store/adopted/**/evals/fixtures/**, vendor/**) es
+3-elemu setupFiles tombje (isolate-local-llm-state.ts fork-specifikus) superset-kent megtartva.
+
+Ki dontott: backend3 (konfliktusfeloldas + 2 biztonsagi/korrektseg javitas talalva es javitva a
+mar auto-mergelt reszben). Gate: QA + Cybersec (a kartya kerese szerint).
+
+**2026-10-09, kartya 726dca6b (backend2): store/watched-repos.json mozgo mezoinek
+kiköltöztetése a gitignored allapotfajlba.** A manualis review-close-out workflow (szemben a
+197947ae altal mar megoldott napi automata szinkronnal) a `last_sha`/`last_checked_upstream_sha`/
+`last_checked_at` mezoket a `note` melle kozvetlenul a kovetett `watched-repos.json`-ba irta minden
+review alkalmaval -- ez a megosztott fo klont tartosan dirty-n tartotta, blokkolva a fast-forwardot.
+MikroB dontese (msg 9580/9584) a ket felmerult opcio kozul: (1) a harom mozgo mezo a gitignored
+`store/watched-repos-state.json`-ba kerul, minden olvaso (git-repo-watcher.sh, external-repos-
+sync.sh, integrated-repos.ts) onnan olvas, a kovetett fajlbol vett ertek csak fallback; (2) a
+`note` MARAD a kovetett fajlban (review-tortenet auditalhatosaga miatt, DECISIONS.md-szeru append-
+only elv); (3) MODOSITAS a kartya eredeti (a) opciojahoz kepest: NINCS auto-commit a fo klonban --
+a fo klon csak olvasasra marad, a manualis review-close-out helyere lepo
+`store/watched-repos-record-review.sh` NEM commitol, a hivo sajat worktree-jeben kommitolja a
+note-only registry-diffet es `marveen-land.sh`-val landolja. Migracio: a fo klon aktualis (meg nem
+landolt) dirty allapota (8 erintett bejegyzes, a legfrissebb review-tartalom, ellenorizve hogy a
+mar landolt verzioknak szigoru kiterjesztese, nem elteroagazata) beolvasztva a landolt eredmenybe,
+veszteseg nelkul (22/22 registry-bejegyzes allapota migralva, note-tartalom byte-azonos a migracio
+elotti legfrissebb verzioval). Tesztek: `src/__tests__/watched-repos-moving-state.test.ts` (a
+watcher az allapotfajlbol olvas, fallback a regi mezore, a kovetett fajl byte-azonos marad egy
+watcher-futas utan; a record-review helper csak az allapotfajlt irja, a note-ot csak explicit
+kerre fuzi). Gate: QA + WhiteHat.
+
+**2026-10-09, kartya 339d29a5 (backend2): caveman skill vendorolas szukitese skills/caveman-ra.**
+A caveman upstream repo (JuliusBrussee/caveman) sajat LICENSING.md-je per-directory licencet
+allapit meg: `skills/` MIT, `engine/`/`proxy/`/Go-binarisok/`cacheengine/`/`mcp/`/`shrink/`/
+`rewriter/`/`browse/`/`shared/platform/` BSL-1.1. A korabbi vendorolas (`vendor-skill.sh --name
+caveman`, subdir nelkul) a TELJES repo-root-ot vendorolta a globalisan megosztott
+`~/.claude/skills/caveman`-ba, a BSL-licencu fat is beleertve, miközben a registry `license: MIT`-
+et irt -- pontatlan allitas arra, amit tenylegesen vendorolt. Mellekhatasul talalt masik hiba: a
+`scripts/skill-index.sh` csak EGY szintet pasztaz at (`for skill_dir in "$dir"/*/`), a root-vendor
+miatt a SKILL.md `skills/caveman/SKILL.md`-n ult (egy szinttel beljebb) -- a caveman skill
+emiatt LATHATATLAN volt a globalis skill-indexben, amikortol csak vendorolva lett. Javitas:
+re-vendor `--subdir skills/caveman`-ra (ugyanaz a mar reviewelt sha, `2fd153c6`, csak a scope
+szukult), ami (a) a SKILL.md-t a vendorolt dir sajat gyokerebe teszi (a lathatatlansagi hiba
+megszunik), (b) semmi BSL-licencu tartalmat nem vendorol tovabb (a registry `license: MIT`
+mostantol pontos), (c) a 6 fizetos Cloud-skill (`caveman-setup`/`-manage`/`-optimize`/`-discover`/
+`-evidence-review`/`-learn`, card bdd5ec40 korabbi manualis torlesi workaroundja) sosem kerul
+vendorolasra tobbet, mert a scope mar nem a teljes `skills/` mappa. `store/
+vendored-skill-sanctioned.json` caveman-bejegyzese `[]`-re uritve (a korabbi "missing:
+skills/caveman-*" sorok targy nelkul maradtak -- azok a 6 Cloud-dir hianyat sanctionoltak, amik
+most sosem vendorolodnak). Teszt: `src/__tests__/vendor-skill-subdir-scope.test.ts` (4 teszt, egy
+caveman-alaku monorepo-fixturan: root-vendor nested SKILL.md-t ad, subdir-vendor sajat-gyokerbe
+teszi, nem hozza at a scope-on kivuli tartalmat, a VENDORED.md a szukitett subdir-t rogziti).
+Gate: QA + WhiteHat (supply-chain).
+
+**2026-10-09, kartya 5d1bb755 (backend2): npm fuggosegek biztonsagi frissitese (production).**
+Heti self-audit lelete (6 advisory `npm audit --omit=dev`-en): HIGH `@modelcontextprotocol/sdk`
+1.12.0-1.30.1 (GHSA-6qxp-vccf-f47h, OAuth kliens rossz authorization-szerverhez kuldhet hitelesito
+adatot), CRITICAL `proxy-addr` 1.1.0-2.0.7 (GHSA-jqcg-44mw-7w3h, IP-hamisitas IPv4-mapped IPv6
+trust subneten -- a card eredetileg MODERATE-nek irta CVSS 9.1-gyel, az advisory sulyossaga kozben
+CRITICAL-ra frissult upstream, a friss `npm audit` szerint jarva), + 4 MODERATE (`fast-copy`
+stack-exhaustion, `fast-uri` host-case-normalizacio, `hono` tobb XSS/parser-hiba, `ip-address`
+SSRF/trust-boundary 4 CVE). Reachability: `@modelcontextprotocol/sdk` es `express`->`proxy-addr`
+a sajat kodunkban SEHOL nincs kozvetlenul importalva (csak @anthropic-ai/claude-agent-sdk peer
+dependency-je szerint telepitve) -- de mind a 6 advisory-hoz `npm audit fix` nem-torő (non-force)
+javitast ajanlott, tehat a bump VEGREHAJTVA fuggetlenul a reachability-tol (defense-in-depth,
+semmi ok a kitettsegre varni, ha ingyen javithato). Minden bump PATCH/MINOR volt a mar meglevo
+package.json semver-tartomanyon belul (1.30.0->1.32.1 sdk, 4.0.4->4.1.2 fast-copy, 3.1.7->3.1.8
+fast-uri, 4.13.3->4.13.13 hono, 10.5.0->10.7.3 ip-address, 2.0.7->2.0.8 proxy-addr) -- package.json
+NEM valtozott, csak package-lock.json. `npm audit --omit=dev` utana: 0 lelet. A worktree-ben
+futtatva (NEM a fo klonban): a backend2 worktree node_modules-a `store/agent-worktree-deps.sh
+backend2` altal mar VALODI konyvtarra volt alakitva (nem szimlink a fo klonba), ezert a marveen
+telepito-tilalom erre a worktree-re nem allt -- ellenorizve `--check`-kel kodolas elott, a CLAUDE.md
+root szabalya szerint. A `npm audit fix --omit=dev` elobb levette a dev-fuggosegeket (vitest
+elerhetetlenne valt), ezert utana teljes `npm install` kellett a dev-deps visszaallitasahoz --
+ez 8, dev-only (vitest/vite/esbuild/tinypool toolchain) advisory-t hozott vissza napvilagra, ami
+csak `vitest@5.0.3`-ra (breaking major) `--force`-szal javithato. Ez a card kiindulo keretezese
+(`npm audit --omit=dev`, production-scope) szerint HATARKOR KIVUL marad, kulon dontes kell
+(vitest major-bump + teljes teszt-suite re-validalas), nem resze ennek a kartyanak. Gate:
+QA + WhiteHat.
+
 ## 2026-10-09: BASH_EGRESS_GUARD enforce elesitese (kartya 18055f83)
 
 Peti dontese 2026-10-09 10:03 (Telegram 10704, gomb): ELESITSUK. A bash-egress-guard.py hook
@@ -16458,6 +16585,284 @@ kitoltodik.
 Ki dontott: Peti (allowlist jovahagyas + elesites), MikroB (dispatch), backend (3. lepes:
 feature-flag, selftest, elo proba, doksi). Gate: QA + WhiteHat.
 
+## 2026-10-09 -- ffca678d -- watched-repos last_sha hex-validálás git-opció-injekció ellen
+
+A döntés: a `store/watched-repos-state.json`-ból (és fallbackként a követett registryből)
+származó `last_sha` érték a `integrated-repos.ts` `statusForRepo()`-jában `git log`/`git
+rev-list` argumentumba került hex-validálás nélkül. Cybersec reprodukálta scratch-repón: egy
+`--output=<fájl>` alakú `last_sha` a `git log -1 --format=%cI <sha>` hívásban opcióként
+értelmeződik, és `exit 0`-val fájlt hoz létre (197947ae gate, komment 6544, INFO 1). Három
+belépési ponton zártam be:
+1. `src/web/routes/integrated-repos.ts`: `isValidSha()` (`^[0-9a-f]{7,40}$`, git saját 7
+   karakteres rövidítési padlójától a teljes sháig) ellenőrzi a `last_sha`-t, mielőtt git
+   argvba kerülne; érvénytelen érték eldobva (logolva), a valódi checkout HEAD-jére esik
+   vissza. A sha-pozíció elé mindhárom git-hívásban `--end-of-options` került
+   védelem-a-mélyben céllal -- mérve: `git log -1 --format=%cI --end-of-options
+   --output=/tmp/x <sha>` most hibát ad, nem fájlt ír.
+2. `store/watched-repos-record-review.sh`: a manuális review-író CLI -- ez a TÉNYLEGES
+   belépési pont, ahonnan egy hibás/rosszindulatú `--sha`/`--upstream-sha` a state-fájlba,
+   onnan az (1) pontba jutna. Ugyanazzal a regexszel validál, hangosan bukik (exit 1),
+   mielőtt bármit írna.
+3. `store/git-repo-watcher.sh`: a RedHat második LOW-ja (726dca6b gate-jéből hozva) -- a
+   NOCHANGE/CHANGED döntés bash glob prefix-matchje (`"$new_sha" == "$cur_sha"*`) egy rövid
+   vagy nem-hex `last_sha`-val hamis NOCHANGE-et adhat (egy 1 karakteres prefix majdnem
+   mindent matchel). Ugyanaz a hex-regex védi: érvénytelen `last_sha` esetén
+   `ERROR:badsha:<name>` log + a checkout valódi HEAD-jére esik vissza (soha nem a
+   false-open "mindent match" irányba).
+
+Miért fail-closed fallback, nem a teljes bejegyzés kihagyása: a HEAD-re esés biztonságos (git
+saját, friss rev-parse eredménye) és a behind-detektálás továbbra is működik, csak a
+rögzített vendored-sha helyett a tényleges checkout állapotát nézi -- ez jobb kiesési mód,
+mint csendben kihagyni a bejegyzést.
+
+Mellékesen javítva (kártya saját szövege szerint): a
+`seed-scheduled-tasks/agent-skill-drift-sync-heartbeat/SKILL.md` "Mérve élesben: pontosan ez
+történt egy futáson" mondata pontatlan volt (Cybersec INFO 2, komment 6544) -- a mérés
+homokozó-fixturen történt, az élő dry-run akkor missing=0-t mutatott. Szövege javítva.
+
+Zöld: `src/__tests__/integrated-repos.test.ts` (29, +5 új a hex-validálásra, köztük egy
+mutáció-teszt ami bizonyítja, hogy a validálás nélküli hívás tényleg fájlt hoz létre) +
+`src/__tests__/watched-repos-moving-state.test.ts` (12, +4 új: CLI-elutasítás opció-alakú és
+túl-rövid sha-ra, watcher ERROR:badsha + helyes CHANGED/NOCHANGE fallback). 41/41. tsc --noEmit
+clean. A teljes fleet-test.sh a marveen-land.sh által a merge eredményén fut, külön nem
+futtattam.
+
+Ki döntött: MikroB dispatch (RedHat javaslata a 726dca6b gate-jéből előrevéve), gate: QA +
+WhiteHat.
+
+## 2026-10-09 -- 2fc54ae7 -- agent-skill-drift-sync.sh: "Stale (untouched, synced)" hamis állítás, ha minden stale írás kihagyva
+
+A probléma: `store/agent-skill-drift-sync.sh`-ban a `STALE` számláló (hány másolat
+klasszifikálódott elavultnak) és a tényleges ÍRÁS (hány másolat lett valóban
+felülírva) egy számlálóba volt összemosva. MikroB mérése (2026-09-19 07:50,
+`--apply --telegram` háromszor egymás után): a riport mindháromszor
+`Stale (untouched, synced):` fejléc alatt sorolta fel a
+fron-teddy/frontend-design-research és qa/embedded-pg-e2e-runner párokat, és a
+verdikt `reasons=stale-synced` volt -- miközben a két élő fájl mtime-ja
+2026-09-06/09-07-ös maradt (semmi nem íródott, mindkettő a running-agent
+fail-closed ágon lett kihagyva). MikroB ezt "szinkronizálva"-ként jelentette
+Petinek -- hamisan.
+
+A döntés: két külön számláló/lista. `STALE` (klasszifikáció, változatlan
+jelentés) marad diagnosztikai mező; `STALE_SYNCED` (+`STALE_SYNCED_LIST`,
+`STALE_SKIPPED_LIST`) csak a TÉNYLEGES `mv` sikerén növekszik. A
+`reasons=stale-synced` ezentúl `STALE_SYNCED>0`-ra tüzel, nem `STALE>0`-ra. A
+telegram-riport `Stale (untouched, synced):` fejléc alatt csak a valóban írt
+párok állnak; a kihagyottak külön `Stale (NOT synced, skipped):` szekcióba
+kerülnek, okkal (running / undetermined / concurrent-write / sync-failed). A
+nem-telegram SUMMARY sor és az ALERT verdikt-sor is kapott egy `synced=N`
+mezőt a `stale=N` mellé (a kártya saját kérése: a `stale=N` marad diagnosztika,
+a `synced=N` az outcome).
+
+Miért nem a teljes bejegyzés kihagyása volt az alternatíva: a `stale=N` mező
+már eddig is a klasszifikáció száma volt (nem az írásé), ezt a kártya nem
+kérte megváltoztatni -- csak azt, hogy a "synced" CÍMKE és a `stale-synced`
+REASON ne tegyen olyan állítást, amit a futás nem igazol.
+
+Zöld: `store/agent-skill-drift-sync.sh selftest` -- a meglévő "RUNNING agent"
+fixtúra (agentG) kapott 6 új asszerciót: a reasons NEM tartalmazza
+stale-synced-et, a verdikt synced=0, a telegram-riport NEM mutat "synced"
+fejlécet, mutat "NOT synced, skipped" szekciót a konkrét okkal; a PARKED
+kontroll-ágon (ahol tényleg íródik) synced=1 és a stale-synced reason TÉNYLEG
+tüzel. MUTÁCIÓVAL igazolva: a `STALE_SYNCED` -> `STALE` visszaállítása a
+reasons-gate-ben pirosra fordítja az új asszerciókat (`stale-synced fired even
+though nothing was actually synced`), a javítással zöld. Teljes selftest:
+PASS (minden korábbi eset is zöld maradt).
+
+Mellékesen (a kártya saját szövege szerint): a
+`seed-scheduled-tasks/agent-skill-drift-sync-heartbeat/SKILL.md`-be egy
+mondat került a `running-agent-skipped`/`undetermined-agent-skipped`
+reasonokról a stale-ellenőrzésnél (korábban csak a hiányzó-skill ág
+változatára volt bullet).
+
+ÁLLANDÓ KÖVETKEZMÉNY (a kártya 6. pontja, csak JAVASOLVA, nem beépítve, a
+kódminőségi 5. elv szerint kérdés nélkül nem építek be automatikus
+viselkedést): amíg fron-teddy és qa futnak, a két másolatuk elavult marad --
+egy azonnali drift-sync futás a `folyamatos-munka-orchestrator` parkolás-
+lépése (CLAUDE.md 7. szabály) UTÁN zárná a rést. MikroB/Peti döntsön, épüljön-e
+be.
+
+Ki döntött: MikroB mérése + dispatch, gate: QA + Cybersec (riport-integritás,
+a 222fdc5e hibaosztályának fordított iránya).
+
+## 2026-10-09 -- Upstream-sync 5. koteg (kartya 1a046537, Szotasz/marveen 97c910e6..2a9fc992)
+
+Minden fajlnev relativ a repo gyokerehez. Fork-oldal az alapertelmezes; csak az eltereseket
+sorolja fel ez a bejegyzes.
+
+**mcp-catalog.json, Gmail-pakett argumentumai: KORRIGALVA, a fork oldal maradt -- az elso
+atvetelem HIBAS volt.** Elsore upstream `@artymclabin/gmail-mcp` oldalat vettem at (karbantarto
+egyezik, nincs postinstall -- azonossag szempontjabol valoban erosebb), de a `fork-upstream-
+conflict-guard.test.ts` ACKNOWLEDGED_FORK_ANCHORS["mcp-catalog.json"] anchort buktatott: ez a
+csomag-csere MAR EGYSZER fel volt veve a forkba, majd Cybersec (kartya c2aeefa5, komment 6737)
+VISSZAVONTA, mert a `@artymclabin/gmail-mcp` 31 eszkoze (pl. `send_draft`, `reply_all`) kozul
+TOBB NINCS felismerve a harom email-approval matcher kozul egy altal sem (outgoing-copy-gate.py,
+email-approval-gate.py, email-send-gate.mjs) -- azonossag szempontjabol jobb csomag, de
+gate-bypass kockazatot hordoz, amig a matcherek nem bovulnek egyutt vele (kulon kartya,
+MikroB uzenet 4162). Az anchor kimondottan ezt az ujra-megjelenest figyeli. Visszaallitva a
+fork pre-merge allapotara: `args: ["-y", "gmail-mcp-server"]`, `verifiedAt: 2026-08-27`,
+`verifiedNote` az eredeti letezes-ellenorzesre. Ha ez a csomag-csere legkozelebb felmerul,
+csak a matcher-bovitessel EGYUTT landolhat, nem onalloan.
+
+**scripts/__tests__/outgoing-copy-gate.test.py: upstream oldal ELUTASITVA, ellentmondas miatt.**
+Egy upstream teszt-hurok meg elvarta, hogy `label_message` a biztonsagos listan maradjon, miutan
+egy MASIK, mar meglevo, UGYANEBBEN a fajlban allo teszt explicit kimondja, hogy a kartya
+498d53c1 dontese ota `label_message` NINCS tobbe a biztonsagos listan. A ket teszt egymasnak
+ellentmond; a regebbi, mar-dontott allitas nyert, az uj hurok `label_message`-re vonatkozo sora
+torolve/kivéve.
+
+**src/db.ts (5 konfliktus-blokk): fork oldal, UNION egy blokknal.** A legelso blokk mar korabbi
+kezi UNION-t tartalmazott (B-wave, kartya 42938a74 + 3bcc1242 egyutt) -- ezt egy automatizalt
+regex-szkript elso probalkozasa VELETLENUL torolte (a `searchAgentMemories` fuggveny-aláírás
+SOR es egy MEMKERESVAK917 magyarazo komment eltunt, TS1128 szintaxis-hiba lett belole). Kezzel
+helyreallitva `git show HEAD:src/db.ts` alapjan, `npx tsc --noEmit` nulla hibaval ellenorizve.
+**Eljaras-tanulsag:** a tobbi, hasonlo "tartsd meg a HEAD-et teljesen" fajlnal egy BIZTONSAGOSABB,
+sor-alapu allapotgep-szkriptre valtottunk at (nem regex/DOTALL), amit minden ilyen fajlon
+lefuttattunk, es minden lepes utan `npx tsc --noEmit` nulla hibat igazolt.
+
+**src/web/routes/marveen.ts: tenyleges upstream JAVITAS adoptalva, a mar dontott configDirFor-
+redirekttel.** Upstream `getActiveMarveenModel()`-t es a `contextTokens` szamitast is
+`configDirFor(MAIN_AGENT_ID)`-vel bovitette (a hoszt-alapertelmezes helyett), mert egy sajat
+CLAUDE_CONFIG_DIR-en futo channels-session eseten a hoszt-alapertelmezes egy regi,
+migracio-elotti tortenetet olvasna vissza -- rossz modellt/kontextus-token-szamot mutatva a
+dashboardon. A JAVITAS VALODI, adoptalva -- de a `configDirFor` importja NEM upstream uj
+`main-transcript-root.js` moduljabol jon (az a modul halasztott, felugyelt atallas, kartya
+5c134edf, mar korabban dokumentalva tobb fajlnal: card d79a69b5), hanem a fork mar-exportalt
+`context-restart-gate-runner.js`-bol, pontosan ugyanaz a mintat kovetve, mint a tobbi uj
+parancs-feluleti fajl (builtin-commands.ts, main-model.ts, midturn-commands.ts, queue-view.ts,
+session-control.ts, system-status.ts). A fork async readActiveModelFromProjectDir/
+readContextTokensFromProjectDir szignaturaja miatt `await` is kellett mindket hivasnal.
+
+**src/web/context-restart-gate-runner.ts: egy TISZTA auto-merge melle csendben beszivargott, fel
+nem oldott import torolve.** A `import { configDirFor, newestMainConfigRoot } from
+'./main-transcript-root.js'` sor egy NEM-konfliktalt diff-hunkkent kerult be (csak upstream
+oldala modositotta azt a sort), es a mar meglevo, fork sajat `export function configDirFor(...)`
+lokalis deklaracioval TS2440 nevutkozest okozott -- a `npx tsc --noEmit` kapta el. Torolve;
+a fork lokalis `configDirFor` fuggvenye valtozatlan.
+
+**NEM ADOPTALT, dontessel: `newestMainConfigRoot` funkcio es a ket uj teszt-fajl, ami rea
+epul.** Upstream ket UJ teszt-fajlt hozott (`src/__tests__/context-guard-main-transcript-root.
+test.ts`, `src/__tests__/context-restart-gate-main-transcript-root.test.ts`), amik mindketten
+feltetelezik, hogy a `context-guard-runner.ts`/`context-restart-gate-runner.ts` `configDirFor`-ja
+a "legujabb transzkriptumu gyoker" (shared vs isolated CLAUDE_CONFIG_DIR) logikat hasznalja a
+MAIN agensre, es hogy `measureContextTokens`/`measureIdleMs`/`measurePct` EXPORTALVA es
+SZINKRON fuggvenyek. Mindharom felteves utkozik a fork mar dontott allapotaval: (1) a
+`newestMainConfigRoot` kizarolag upstream uj `main-transcript-root.js` moduljaban letezik, amit
+a fork mar tobbszor halasztott (kartya 5c134edf, "a resolver logikaja meg nincs atolvasva/
+ellenorizve a fork sajat resolveAgentConfigDirForRead dontese ellen"); (2) a fork mar korabban
+ASZINKRONRA javitotta ezeket a fuggvenyeket (kartya 42938a74, hianyzo `await` biztonsagi hiba),
+tehat a tesztek SZINKRON hivasai (nincs `await`) eleve ervenytelenek a fork architekturajan. A
+ket uj teszt-fajl TOROLVE (git rm), nem adoptalva -- ugyanaz a mintat koveti, mint a korabbi
+"nem adoptalt funkciora epulo CI-lepes" dontesek (lasd .github/workflows/test.yml fentebb).
+Ujranyitando dontes, AMIKOR a main-transcript-root.js tenyleges atallasa megtortenik.
+
+**src/web/agent-process.ts, src/web/agent-scaffold.ts, src/web/context-guard-runner.ts,
+src/web/context-restart-gate-runner.ts, src/web/hook-registration-guard.ts,
+src/web/routes/memories.ts, src/web/routes/messages.ts, src/channel-coordinator/ingest.ts,
+src/web.ts, scripts/hooks/outgoing-copy-gate.py, scripts/hooks/email-approval-gate.py,
+scripts/email-send-gate.mjs, scripts/memory-index-gate.sh, templates/CLAUDE.md.template,
+templates/settings.json.template, web/lang/en.js, web/lang/hu.js, web/style.css, tovabbi
+email-gate/memory-search teszt-fajlok:** fork oldal megtartva minden blokkon -- mar korabban
+dontott biztonsagi funkciok (device-allowlist card 7503bb31, email deny-by-default 498d53c1/
+45b33b2b, 9 extra Bash-matcher guard, progressive memory retrieval 0c5423fc, printf-pipe curl
+minta a token-argv-szivargas ellen) szupersetje upstream regebbi/szukebb oldalanak. Trivialis
+stilus-elteresek (String(chunk) vs chunk.toString(), em-dash vs vessz/pont a hu/en szovegben)
+is fork-oldal, a "nincs gondolatjel" szabaly miatt.
+
+**web/app.js: a mar dokumentalt modularizacios stub-politika (acknowledged-conflicts.ts
+~694-715. sor) szerint fork-oldal (stub) megtartva.** Az upstream ~1120 soros blokkja a
+modularizacio ELOTTI, meg monolitikus app.js-tartalom; a fork sajat tartalma mar 36+ kulon
+web/app-*.js szeletbe lett kiszervezve (ellenorizve: app-page-switch.js, app-sidebar-groups.js,
+app-i18n-nav.js leteznek es nem konfliktaltak). A dokumentalt politika szerint teljes,
+fuggveny-szintu uj-funkcio-audit ezen a korön NEM keszult (ugyanaz a "ajanlott, de nem nyitott"
+allasfoglalas, mint a korabbi korokben) -- ha egy jovobeli kor konkret regressziot talal, az
+audit akkor nyitando.
+
+Ki dontott: backend3 (konfliktusfeloldas, 1 helyreallitott db.ts serules a sajat hibajabol,
+1 valodi upstream-javitas adoptalva routes/marveen.ts-ben, 1 csendben beszivargott import-
+utkozes elkapva tsc-vel, 2 uj teszt-fajl elutasitva nem-adoptalt funkcio miatt). Gate: QA +
+Cybersec + Cybered (a kartya kerese szerint, magasabb tier mint a 4. koteg).
+
+## 2026-10-09 -- 5. koteg, teszt-triage a `fleet-test.sh --ref` elso futasa utan (kartya 1a046537)
+
+A fuggelek feloldasa utani elso teljes `fleet-test.sh` futas 8 fajlon/14 teszten bukott, plusz egy
+lint-ratchet regresszio. Mindegyik a mar dokumentalt "tiszta auto-merge elrejthet egy nem-
+adoptalt vagy elavult mintat" (memoria #242) vagy "uj upstream teszt a REGI, meg nem bovitett
+fork-architekturat feltetelezi" mintak egyike -- nem a sajat kodom uj hibaja, kiveve a kulon
+megjelolt mcp-catalog.json korrekciot (lasd fentebb).
+
+**scripts/supabase-q.sh + seed-scheduled-tasks/nap-zaro/SKILL.md: 2 uj fajlban VALODI
+argv-token-szivargas (token-in-argv-guard.test.ts).** Mindket uj (upstream) fajl `curl -H
+"Authorization: Bearer $TOKEN"` alakot hasznalt -- a `ps`-bol kiolvashato argv-szivargas, amit a
+fork mar korabban (edb7559f) kizart MINDEN sajat scriptjebol. Javitva mindharom curl-hivas a
+`printf ... | curl -H @-` / `-H @fajl` mintara.
+
+**seed-scheduled-tasks/nap-zaro/task-config.json: `skipIfBusy: true` -> `false`
+(seed-schedule-liveness.test.ts).** A nap-zaro napi egyszeri kor (`47 21 * * *`); a `skipIfBusy`
+csak percenkent/orankent futo koroknek valo, egy napi korre allitva felesleges kihagyast
+okozhatna. Mechanikus konfig-hiba az uj fajlban, nem architekturalis dontes.
+
+**src/__tests__/email-send-gate.test.ts: duplikalt, egymasnak ellentmondo teszt-blokk torolve.**
+Az auto-merge UGYANAZZAL a leirassal ("blocks the claude.ai Gmail connector send-shaped tools...")
+KET verziot hozott be: a REGI (upstream, `update_draft`/`label_message` meg a biztonsagos listan)
+es az UJ (mar a kartya 498d53c1 deny-by-default szukitesevel, `update_draft`/`label_message`
+MAR NEM biztonsagos). A regi, elso blokk torolve -- a masodik, mar helyes blokk valtozatlan.
+
+**src/__tests__/kanban-card-method-not-allowed.test.ts: egy teszt-eset + a fejlec-komment
+korrigalva, a tobbi valtozatlan.** Az uj teszt feltetelezte, hogy a `/api/kanban/<id>` GET-re 405
+jon ("nincs ilyen route") -- de ez a GET-route MAR LETEZIK a forkban (kartya ebf7d95c, pre-merge
+HEAD-ben mar megvolt). A "GET answers 405" teszt-eset es a felteves torolve/korrigalva a
+fejlec-kommentben; a PATCH/POST/body-uzenet tesztek (amik a VALODI 405-viselkedest nezik a nem
+routed metodusokra) erintetlenek.
+
+**src/__tests__/channel-poller-reap-live-pane.test.ts + channel-poller-reap-integration.test.ts:
+2 kulonbozo gyoker-ok, 2 kulon javitas, de mindketto a MEGLEVO `isPollerArgv`/`filterPollerPids`
+szuro (kartya 8c94283b) es az UJ live-pane-guard (kartya 08a02137/PR1402CHANNELREAP) kozti
+osszjatek hianya.**
+- A live-pane teszt (`A`/`C` eset) sajat "aldozat" folyamatot `/bin/sleep 300`-kent inditott --
+  ez SOHA nem felel meg az `isPollerArgv` (bun/node + 'server.ts' argv-elem) szuronek, tehat a
+  `candidates` lista MINDIG ures volt, meg mielott a live-pane logika egyaltalan szamitana. A
+  teszt az UPSTREAM allapotara irodott (ahol ez a szuro feltehetoen nem letezett/mas volt), a
+  forknak viszont MAR VOLT ez a szukites. Javitva: az aldozat most `node -e
+  'setInterval(()=>{},1000)' server.ts` alakban indul, hogy at is menjen a szuron.
+- Az integracios teszt (`vi.mock('node:child_process', ...)`) EGY `execSync` mock-ot hasznalt
+  MINDEN hivasra (a `ps eww -e` scan ES az uj `tmux list-panes` hivas is), es a `ps`-sor-szeru
+  fixture-szoveg (`"   4104 pts/1 ... bun server.ts ..."`) VELETLENUL ervenyes pane-pid-kent
+  parse-olodott (`parseInt` a sor elejet olvassa) -- a POLLER (4104) emiatt sajat magat "elo
+  pane"-nek latta es megkimelte magat, a reap helyett. Javitva: a mock most a parancs SZOVEGE
+  alapjan agazik (`list-panes` -> egy nem-utkozo fix pid; mas -> a `ps` fixture).
+
+**src/__tests__/system-sender-reserved.test.ts: a teszt az UPSTREAM egy-azonosito vilagara
+irodott, a fork mar KETTE valasztotta (kartya 5c5d7bc4).** Upstream `SYSTEM_DIRECTIVE_SENDER`
+egyenlo a csupasz `'system'`-mel; a fork `SYSTEM_DIRECTIVE_SENDER = 'system-directive'` (az
+authentikalt direktiva-csatorna sajat azonositoja) ES `LEGACY_SYSTEM_SENDER = 'system'` (az otodik
+in-process ertesito-iro, ami mar regen a csupasz nevet hasznalja) -- MINDKETTO fenntartott
+(`isReservedSenderId`), de a "csupasz system-re hamisitott iras" teszt-esetnek a MASIK
+konstanshoz kell hasonlitania. Javitva: a forgery-spelling teszt es az .env-parse teszt most
+`LEGACY_SYSTEM_SENDER`-t var; a sorrend-teszt szoveges horgonya
+(`'=== SYSTEM_DIRECTIVE_SENDER'`, ami sosem letezett string a kodban) lecserelve a VALODI kod-
+sorra (`isReservedSenderId(sanitizeAgentIdent(from))`).
+
+**lint-ratchet.sh: `@typescript-eslint/no-unsafe-argument` 150 -> 154 (+4), ALAPVONAL
+FRISSITVE, nem javitva.** A 4 uj talalat mind UJ (upstream-rol jott) teszt-fajlban van
+(`system-sender-reserved.test.ts` 2x, `memories-import-categorize-model.test.ts` 1x,
+`desktop-lock-owner-forgery.test.ts` 1x), es mindegyik a MAR BEFOGADOTT, szazas-nagysagrendben
+elofordulo `fakeCtx(...)`-stilusu teszt-segedfuggveny `any`-parametere (`RouteContext`-re
+castolva) -- pontosan ugyanaz a minta, mint pl. a mar baseline-ban levo claude-plans-routes.test.ts
+30+ elofordulasa. Nem egyedi kod-minosegi regresszio, hanem a mar elfogadott teszt-fixture-stilus
+UJ fajlokban -- `store/lint-ratchet.sh --update`-tel emelve. **CSAPDA, amit elkerultem:** a
+scriptet ELOSZOR a `/home/neon/marveen/store/lint-ratchet.sh` ABSZOLUT utan hivtam meg, ami a
+`$ROOT="$(cd dirname(BASH_SOURCE)/.. && pwd)"` miatt az ELES telepitest irta volna felul
+(a sajat worktree-m helyett) -- ezt a HIBAT korabban mar dokumentalta a memoria, most masodszor is
+elkaptam, mielott commitoltam volna. A helyes hivas: `cd <worktree> && bash store/lint-ratchet.sh
+--update` (relativ ut, hogy a BASH_SOURCE a worktree-re oldodjon fel).
+
+Minden mas lint-szabaly (await-thenable:1, no-floating-promises:3, no-misused-promises:12,
+no-unused-vars:126, parse-error:6) VALTOZATLAN -- a baseline csak a no-unsafe-argument soron nott.
+
+Ki dontott: backend3 (8 teszt-fajl triage, 4 valodi biztonsagi/konfig-hiba javitva uj
+fajlokban, 4 elavult/hianyos teszt korrigalva a mar dontott fork-architekturahoz, 1 lint-
+baseline-emeles dokumentalt indokkal). A `fleet-test.sh --ref` masodik futasa dontia el, zold-e.
 ## 2026-10-09: TGSABLONHOOK921 hook-seeding/checkout split -- record korrekcio (kartya e344e366)
 
 A kartya e344e366 azt kerte, hogy portoljuk a TGSABLONHOOK921 (upstream, 2026-09-21)
