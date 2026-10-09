@@ -36,6 +36,10 @@ function stageTree(scriptNames: string[]): { root: string; bin: string } {
   cpSync(join(ROOT, 'scripts', 'lib', 'send-telegram.sh'), join(scripts, 'lib', 'send-telegram.sh'))
   // limit-monitor's dedupe hash comes from the shared helper (MD5SUMHIANY826).
   cpSync(join(ROOT, 'scripts', 'lib', 'content-hash.sh'), join(scripts, 'lib', 'content-hash.sh'))
+  // CHATID0 (card a55315be): limit-monitor.sh now sources the owner-chat
+  // resolver instead of reading ALLOWED_CHAT_ID raw -- its absence here is a
+  // silently broken staged install, not a smaller one.
+  cpSync(join(ROOT, 'scripts', 'lib', 'owner-chat.sh'), join(scripts, 'lib', 'owner-chat.sh'))
   // Fork-only dependency (card 115c21e7): limit-monitor.sh sources the canonical
   // usage-limit regex from $STORE/session-limit-pattern.sh instead of inlining its
   // own pattern. Stage it alongside the other store files so the staged tree

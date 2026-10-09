@@ -42,13 +42,25 @@ SESSION="${MAIN_AGENT_ID}-channels"
 BOT_NAME="$(env_val BOT_NAME)"
 BOT_NAME="${BOT_NAME:-$MAIN_AGENT_ID}"
 
-CHAT_ID="$(env_val ALLOWED_CHAT_ID)"
-if [ -z "$CHAT_ID" ]; then
+# CHATID0 (card a55315be, 3026a591 testvere): resolve_owner_chat_id, nem nyers
+# ALLOWED_CHAT_ID olvasas -- a "0" az installer placeholdere, nem egy chat, es
+# a naiv `[ -z "$CHAT_ID" ]` ellenorzes ezt athengedi a Telegram Bot API fele,
+# ami csendben 400-zik. A resolver ugyanugy probal access.json-bol egyetlen
+# parositott DM-et felold, mint notify.sh-ban.
+. "$INSTALL_DIR/scripts/lib/owner-chat.sh"
+# Unlike notify.sh (interactive, caller sees stderr live), this runs unattended
+# under a systemd timer -- the log file is the only record, so the resolver's
+# reason line is captured into it, not left on stderr.
+RESOLVE_ERR="$(mktemp)"
+if ! CHAT_ID="$(resolve_owner_chat_id "$INSTALL_DIR/.env" 2>"$RESOLVE_ERR")"; then
   # No owner chat configured: there is nobody to alert, and guessing one would
   # send a quota warning to a stranger. Stay silent rather than misdeliver.
   log "no ALLOWED_CHAT_ID in .env, monitor cannot alert -- exiting"
+  [ -s "$RESOLVE_ERR" ] && log "$(cat "$RESOLVE_ERR")"
+  rm -f "$RESOLVE_ERR"
   exit 0
 fi
+rm -f "$RESOLVE_ERR"
 
 # Canonical CORE phrase source, shared with src/model-fallback.ts and 5 other scripts (card
 # 115c21e7), PLUS this monitor's own wider net of extra alert-only signals -- rate_limit_error/429/
