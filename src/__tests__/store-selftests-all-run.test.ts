@@ -278,21 +278,30 @@ describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b
     expect(withPorts.length).toBeGreaterThanOrEqual(2)
   })
 
-  it.each(RUNNABLE.map((s) => [s.name, s] as const))('%s passes', (_label, script) => {
-    const out = execFileSync(script.runner, [join(STORE, script.file), ...script.args], {
-      encoding: 'utf-8',
-      timeout: 180_000,
-      // Inherit nothing that could make a selftest take a different path than it does by hand.
-      env: process.env,
-    })
-    const matched = OK_SHAPES.some((re) => re.test(out))
-    expect(
-      matched,
-      `${script.file} exited 0 but printed no recognised non-zero PASS summary. ` +
-        `Either it ran no cases, or it reports in a shape this file does not know yet ` +
-        `(add it to OK_SHAPES rather than loosening one). Tail:\n${out.slice(-400)}`,
-    ).toBe(true)
-  })
+  // card 2f05b3e3: vitest 5's 5000ms default test timeout is far shorter than several of these
+  // selftests legitimately take (e.g. channels-reap-poller-pids/graphify-build-singleflight/
+  // local-llm-tune-sweep/mopsion-suite-run ~30s each). The 180_000ms cap above is the SUBPROCESS
+  // timeout (execFileSync); vitest's own per-case timeout is separate and must also be raised, or
+  // vitest kills the case long before the subprocess cap would ever fire.
+  it.each(RUNNABLE.map((s) => [s.name, s] as const))(
+    '%s passes',
+    (_label, script) => {
+      const out = execFileSync(script.runner, [join(STORE, script.file), ...script.args], {
+        encoding: 'utf-8',
+        timeout: 180_000,
+        // Inherit nothing that could make a selftest take a different path than it does by hand.
+        env: process.env,
+      })
+      const matched = OK_SHAPES.some((re) => re.test(out))
+      expect(
+        matched,
+        `${script.file} exited 0 but printed no recognised non-zero PASS summary. ` +
+          `Either it ran no cases, or it reports in a shape this file does not know yet ` +
+          `(add it to OK_SHAPES rather than loosening one). Tail:\n${out.slice(-400)}`,
+      ).toBe(true)
+    },
+    200_000,
+  )
 })
 
 // Card 0ebeff55. The discovery above keys on the `.selftest.` SUFFIX, and that is exactly how far

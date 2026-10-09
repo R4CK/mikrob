@@ -23,5 +23,5 @@ describe('email approval gate levels (EMAILKAPU901 PR2)', () => {
       console.error(res.stderr)
     }
     expect(res.status).toBe(0)
-  })
+  }, 130_000) // card 2f05b3e3: must exceed the 120_000ms subprocess cap above; vitest 5's 5000ms default does not.
 })

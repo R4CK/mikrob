@@ -180,7 +180,7 @@ describe('the files the injector points at', () => {
     // A COUNTED number, not the sentence: a harness that could report success with zero cases
     // would be worse than no harness.
     expect(out).toMatch(/All [1-9]\d* cases/)
-  })
+  }, 20000) // card 2f05b3e3: vitest 5's 5000ms default test timeout is shorter than this subprocess run.
 
   it('the allowlist is a VERSIONED FILE, not a list baked into the guard (plan-grilling point 2)', () => {
     expect(existsSync(ALLOWLIST)).toBe(true)

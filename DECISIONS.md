@@ -17598,3 +17598,73 @@ futó `fleet-test.sh` a merge eredményén (Gate-SHA sor).
 vitest 5 ellen `CACError`-t dobott), és a 466decff mintáját követve önállóan szétválasztotta a
 flag-detekciót a vitest-bump commitjától. Gate: QA + WhiteHat (a 2f05b3e3 kártya saját gate-jével
 azonos kockázati besorolás szerint).
+## 2026-10-09 -- 2f05b3e3: vitest major-emelés (2.1.9 -> 5.0.3 / vite 5.4.21 -> 8.3.4 / @vitejs/plugin-react 4.7.0 -> 6.1.2), 6 critical/high vitest-lánc advisory lezárva
+
+Forrás: 54f3f2cd (backend2, Gate-SHA 271a9194) a vitest/vite/tinypool/vite-node/@vitest-mocker/esbuild
+6 advisoryt dokumentált kivétellel hagyott nyitva (major bump igénye miatt), WhiteHat L1 (54f3f2cd gate,
+msg 9815, kártya 2f05b3e3 0. lépéseként idemásolva komment 13602-ben) rámutatott, hogy a kivétel két
+előfeltétele (nincs vitest --ui/--api, nincs vite dev-szerver) nem volt őrzve.
+
+**0. LÉPÉS -- őr-teszt a MikroB kérésre (komment 13602):**
+`src/__tests__/vitest-major-bump-attack-surface-guard.test.ts`, 5 eset: (a) nincs `vitest --ui`/`--api`
+script; (b) nincs önálló `vite` CLI-script (dev-szerver); (c) nincs `vite.config.ts/js/mts` a gyökérben;
+(d) `vitest.config.ts` nem állít `ui: true`/`api:`-t; (e) a `test` script `vitest run` (egylövetű).
+Mutáció-bizonyíték: `"debug-ui": "vitest --ui"` és `"debug-vite": "vite"` ideiglenes script-bejegyzés
+mindkettő a saját esetét PIROSRA vitte a pontos üzenettel, majd visszaállítva (git diff nulla) ZÖLD.
+
+**Alapvonal-mérés a bump ELŐTT (kódelv 7):** a worktree-ben direktben (`npx vitest run`, a worktree
+biztonságos erre -- `assert-not-live-install.ts` csak a LIVE installt tiltja), a `store/adopted/
+JuliusBrussee__caveman/**` gitignorolt, nem követett lokális könyvtárat kizárva (ez a landolás saját,
+tiszta checkoutjában nem is létezik): **887/887 fájl zöld, 30134 teszt + 101 skip = 30235.**
+
+**A bump:** `npm audit fix --force` (az `npm install` direkt verzió-megadással ERESOLVE-ra futott,
+feloldatlan okkal; a force-os audit-fix simán futott, 0 `npm ls` invalid). `tsc --noEmit` tiszta.
+
+**Mért regresszió a bump UTÁN, javítás előtt: 10/887 fájl piros, 25/30240 teszt piros** (sokkal kisebb,
+mint az 54f3f2cd kártyán mért 102/961 -- az eltérés: itt a `store/adopted/**` lokális zaj ki volt zárva
+a méréshez, és ez a bump már a 0. lépés őrét is tartalmazta). Két okcsoport, mindkettő előre jelzett:
+
+1. **vitest 5 5000ms alap test-timeout** (vitest 2.1.9-en nem volt ilyen szigorú korlát) -- 9 fájl,
+   24 teszt, mind HOSSZÚ ALFOLYAMATTAL dolgozó eset, ahol a subprocess-szintű timeout (execFileSync/
+   spawnSync `timeout:` opció, 20-180s) megvolt, de a vitest `it()`-szintű timeout nem lett emelve
+   mellé. Helyi, eset-szintű javítás (NEM globális elnyomás, kódelv a kártya szövege szerint):
+   explicit vitest-timeout minden érintett `it()`/`it.each`-en, a subprocess-cap fölé margóval --
+   `bash-egress-guard-wiring.test.ts`, `email-approval-gate.test.ts`, `landing-gate-verdict-check.test.ts`
+   (2 eset), `mopsion-script-rename-dual-invocation.test.ts` (3 eset, a 3. pontosan ezért bukott csak
+   2/3-at ezen a futáson -- időzítésfüggő, mindhármat konzisztensen javítva), `offload-batch-health.test.ts`,
+   `send-honesty-final.test.ts` (2 eset), `send-honesty-round2.test.ts` (1 eset),
+   `store-selftests-all-run.test.ts` (`it.each` 3. argumentuma 200_000ms, a 180_000ms subprocess-cap fölé).
+2. **`vitest-excludes-build-output.test.ts` utolsó esete** -- a saját komment ("Revisit (flip back)
+   if/when this fork upgrades to vitest 4") pontosan ezt a bumpot jelölte ki triggerként: vitest 5
+   `configDefaults.exclude`-ja már nem fedi a `dist/**`-et (upstream vitest-4 prémisze most igaz
+   erre a forkra is), a config saját explicit `dist/**` bejegyzése (sosem lett törölve) ismét
+   load-bearing. Assertion megfordítva `true` -> `false`, komment frissítve a tényleges verzióra.
+
+**Külön, előre nem jelzett lelet: `fleet-test-shares-cleancore-cpu-pool.test.ts` 2 esete (card 7bb39672).**
+A `fleet-test.sh` saját komentje ("WHEN THE VITEST MAJOR BUMP LANDS... RE-MEASURE THIS LINE") pontosan
+ezt várta. Mérve: vitest 2.1.9 ELUTASÍTOTTA a puszta `--maxWorkers`-t ("options.minThreads and
+options.maxThreads must not conflict"), ezért kellett mellé `--minWorkers 1`. vitest 5.0.3 MEGFORDÍTJA:
+a puszta `--maxWorkers` simán fut (igazodva a CleanCore oldali vitest 3.2.6 viselkedéshez, ami sosem
+igényelte a párosítást), míg a `--minWorkers` MÁR NEM ISMERT CLI-FLAG egyáltalán ("CACError: Unknown
+option `--minWorkers`") -- NULLA argumentummal is elbukik, ha jelen van. Javítás: `fleet-test.sh`
+`WORKER_ARGS=(--minWorkers 1 --maxWorkers "$MAX_WORKERS")` -> `WORKER_ARGS=(--maxWorkers "$MAX_WORKERS")`,
+a teszt statikus (forrás-szintű) és dinamikus (valódi vitest-indítás egy throwaway projekten) esetei
+frissítve az új iránnyal: a statikus ellenőrzés mostantól `--maxWorkers` meglétét ÉS `--minWorkers`
+HIÁNYÁT várja; a dinamikus NEGATIVE CONTROL a régi puszta `--maxWorkers` helyett puszta `--minWorkers`-t
+futtat (ez az, amit vitest 5 ténylegesen elutasít), "Unknown option" mintával.
+
+**Blast-radius:** a `store/adopted/**` kizárás, a `store-selftests-all-run.test.ts` discovery-je és a
+`fleet-test.sh` worker-flag minden landolást érint (ez a teljes suite szemafor-szkriptje) -- ezért a
+VÉGSŐ ellenőrzés a merge eredményén, a `marveen-land.sh`-n keresztül futó `fleet-test.sh` (lásd a
+REVIEW Gate-SHA sorát), nem csak a worktree-beli direkt futás.
+
+**Eredmény, a javítások UTÁN, a worktree-ben (ugyanazzal a `store/adopted/**` kizárással mint a
+bump előtti alapvonal):** 887/887 fájl zöld, 30139 teszt + 101 skip = 30240 (nincs eltűnt/gyengült
+teszt a bump előtti 30134+101-hez képest -- kódelv 7). `tsc --noEmit` tiszta. `eslint src`: 302
+probléma, `lint-ratchet.sh` szerint "no rule got worse (302 findings, baseline holds)" -- ugyanaz a
+baseline, amit az 54f3f2cd és a 3531538d kártya is mért, tehát a bump NEM termelt új lint-leletet.
+
+**Ki döntött:** a kártya saját szövege adta a feladatot (54f3f2cd maradék 6 advisoryjának lezárása),
+a WhiteHat L1 0. lépést adott hozzá (komment 13602), backend2 végrehajtotta mindkettőt és a bump
+közben felszínre került, előre jelzett CLI-flag regressziót is. Gate: QA + WhiteHat (supply-chain:
+lockfile-diff, új tranzitív függőségek).
