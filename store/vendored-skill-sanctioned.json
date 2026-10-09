@@ -3,18 +3,7 @@
   "sanctioned": {
     "~/.claude/skills/api-and-interface-design": [],
     "~/.claude/skills/browser-testing-with-devtools": [],
-    "~/.claude/skills/caveman": [
-      "missing:skills/caveman-discover/SKILL.md",
-      "missing:skills/caveman-evidence-review/SKILL.md",
-      "missing:skills/caveman-learn/CLAUDE.md",
-      "missing:skills/caveman-learn/README.md",
-      "missing:skills/caveman-learn/SKILL.md",
-      "missing:skills/caveman-learn/package.json",
-      "missing:skills/caveman-learn/tests/skill-file.test.mjs",
-      "missing:skills/caveman-manage/SKILL.md",
-      "missing:skills/caveman-optimize/SKILL.md",
-      "missing:skills/caveman-setup/SKILL.md"
-    ],
+    "~/.claude/skills/caveman": [],
     "~/.claude/skills/ci-cd-and-automation": [],
     "~/.claude/skills/constraint-driven-development": [
       "changed:SKILL.md@06479d4305f286d23cfb99f5dc85695896785269664e1f6a8d800e3b71e70c10"
