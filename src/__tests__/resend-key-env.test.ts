@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildMainSessionRespawnCmd } from '../web/channel-monitor.js'
+import { buildMainSessionRespawnCmd, mainChannelStateEnv } from '../web/channel-monitor.js'
 // MERGE NOTE (B-wave, card 42938a74): buildMainSessionRespawnCmd now takes the main-agent config
 // decision (upstream's main-config-decision.ts, adopted with this merge). Built through the
 // shipped test helper rather than a hand-made literal -- main-config-guard-wiring.test.ts asserts
@@ -80,6 +80,7 @@ describe('no launcher puts RESEND_API_KEY into a session environment', () => {
       model: 'claude-opus-5',
       continueSession: false,
       config: mainConfigDecisionForTest(),
+      channelStateEnv: mainChannelStateEnv('telegram'),
     })
     expect(putsKeyInEnv(cmd)).toBe(false)
     expect(cmd).not.toContain('.resend-api-key')
