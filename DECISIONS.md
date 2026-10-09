@@ -16478,6 +16478,213 @@ tests/smoke/**, tests/browser/**, agents/**, store/adopted/**/evals/fixtures/**,
 Ki dontott: backend3 (konfliktusfeloldas + 2 biztonsagi/korrektseg javitas talalva es javitva a
 mar auto-mergelt reszben). Gate: QA + Cybersec (a kartya kerese szerint).
 
+**2026-10-09, kartya 726dca6b (backend2): store/watched-repos.json mozgo mezoinek
+kiköltöztetése a gitignored allapotfajlba.** A manualis review-close-out workflow (szemben a
+197947ae altal mar megoldott napi automata szinkronnal) a `last_sha`/`last_checked_upstream_sha`/
+`last_checked_at` mezoket a `note` melle kozvetlenul a kovetett `watched-repos.json`-ba irta minden
+review alkalmaval -- ez a megosztott fo klont tartosan dirty-n tartotta, blokkolva a fast-forwardot.
+MikroB dontese (msg 9580/9584) a ket felmerult opcio kozul: (1) a harom mozgo mezo a gitignored
+`store/watched-repos-state.json`-ba kerul, minden olvaso (git-repo-watcher.sh, external-repos-
+sync.sh, integrated-repos.ts) onnan olvas, a kovetett fajlbol vett ertek csak fallback; (2) a
+`note` MARAD a kovetett fajlban (review-tortenet auditalhatosaga miatt, DECISIONS.md-szeru append-
+only elv); (3) MODOSITAS a kartya eredeti (a) opciojahoz kepest: NINCS auto-commit a fo klonban --
+a fo klon csak olvasasra marad, a manualis review-close-out helyere lepo
+`store/watched-repos-record-review.sh` NEM commitol, a hivo sajat worktree-jeben kommitolja a
+note-only registry-diffet es `marveen-land.sh`-val landolja. Migracio: a fo klon aktualis (meg nem
+landolt) dirty allapota (8 erintett bejegyzes, a legfrissebb review-tartalom, ellenorizve hogy a
+mar landolt verzioknak szigoru kiterjesztese, nem elteroagazata) beolvasztva a landolt eredmenybe,
+veszteseg nelkul (22/22 registry-bejegyzes allapota migralva, note-tartalom byte-azonos a migracio
+elotti legfrissebb verzioval). Tesztek: `src/__tests__/watched-repos-moving-state.test.ts` (a
+watcher az allapotfajlbol olvas, fallback a regi mezore, a kovetett fajl byte-azonos marad egy
+watcher-futas utan; a record-review helper csak az allapotfajlt irja, a note-ot csak explicit
+kerre fuzi). Gate: QA + WhiteHat.
+
+**2026-10-09, kartya 339d29a5 (backend2): caveman skill vendorolas szukitese skills/caveman-ra.**
+A caveman upstream repo (JuliusBrussee/caveman) sajat LICENSING.md-je per-directory licencet
+allapit meg: `skills/` MIT, `engine/`/`proxy/`/Go-binarisok/`cacheengine/`/`mcp/`/`shrink/`/
+`rewriter/`/`browse/`/`shared/platform/` BSL-1.1. A korabbi vendorolas (`vendor-skill.sh --name
+caveman`, subdir nelkul) a TELJES repo-root-ot vendorolta a globalisan megosztott
+`~/.claude/skills/caveman`-ba, a BSL-licencu fat is beleertve, miközben a registry `license: MIT`-
+et irt -- pontatlan allitas arra, amit tenylegesen vendorolt. Mellekhatasul talalt masik hiba: a
+`scripts/skill-index.sh` csak EGY szintet pasztaz at (`for skill_dir in "$dir"/*/`), a root-vendor
+miatt a SKILL.md `skills/caveman/SKILL.md`-n ult (egy szinttel beljebb) -- a caveman skill
+emiatt LATHATATLAN volt a globalis skill-indexben, amikortol csak vendorolva lett. Javitas:
+re-vendor `--subdir skills/caveman`-ra (ugyanaz a mar reviewelt sha, `2fd153c6`, csak a scope
+szukult), ami (a) a SKILL.md-t a vendorolt dir sajat gyokerebe teszi (a lathatatlansagi hiba
+megszunik), (b) semmi BSL-licencu tartalmat nem vendorol tovabb (a registry `license: MIT`
+mostantol pontos), (c) a 6 fizetos Cloud-skill (`caveman-setup`/`-manage`/`-optimize`/`-discover`/
+`-evidence-review`/`-learn`, card bdd5ec40 korabbi manualis torlesi workaroundja) sosem kerul
+vendorolasra tobbet, mert a scope mar nem a teljes `skills/` mappa. `store/
+vendored-skill-sanctioned.json` caveman-bejegyzese `[]`-re uritve (a korabbi "missing:
+skills/caveman-*" sorok targy nelkul maradtak -- azok a 6 Cloud-dir hianyat sanctionoltak, amik
+most sosem vendorolodnak). Teszt: `src/__tests__/vendor-skill-subdir-scope.test.ts` (4 teszt, egy
+caveman-alaku monorepo-fixturan: root-vendor nested SKILL.md-t ad, subdir-vendor sajat-gyokerbe
+teszi, nem hozza at a scope-on kivuli tartalmat, a VENDORED.md a szukitett subdir-t rogziti).
+Gate: QA + WhiteHat (supply-chain).
+
+**2026-10-09, kartya 5d1bb755 (backend2): npm fuggosegek biztonsagi frissitese (production).**
+Heti self-audit lelete (6 advisory `npm audit --omit=dev`-en): HIGH `@modelcontextprotocol/sdk`
+1.12.0-1.30.1 (GHSA-6qxp-vccf-f47h, OAuth kliens rossz authorization-szerverhez kuldhet hitelesito
+adatot), CRITICAL `proxy-addr` 1.1.0-2.0.7 (GHSA-jqcg-44mw-7w3h, IP-hamisitas IPv4-mapped IPv6
+trust subneten -- a card eredetileg MODERATE-nek irta CVSS 9.1-gyel, az advisory sulyossaga kozben
+CRITICAL-ra frissult upstream, a friss `npm audit` szerint jarva), + 4 MODERATE (`fast-copy`
+stack-exhaustion, `fast-uri` host-case-normalizacio, `hono` tobb XSS/parser-hiba, `ip-address`
+SSRF/trust-boundary 4 CVE). Reachability: `@modelcontextprotocol/sdk` es `express`->`proxy-addr`
+a sajat kodunkban SEHOL nincs kozvetlenul importalva (csak @anthropic-ai/claude-agent-sdk peer
+dependency-je szerint telepitve) -- de mind a 6 advisory-hoz `npm audit fix` nem-torő (non-force)
+javitast ajanlott, tehat a bump VEGREHAJTVA fuggetlenul a reachability-tol (defense-in-depth,
+semmi ok a kitettsegre varni, ha ingyen javithato). Minden bump PATCH/MINOR volt a mar meglevo
+package.json semver-tartomanyon belul (1.30.0->1.32.1 sdk, 4.0.4->4.1.2 fast-copy, 3.1.7->3.1.8
+fast-uri, 4.13.3->4.13.13 hono, 10.5.0->10.7.3 ip-address, 2.0.7->2.0.8 proxy-addr) -- package.json
+NEM valtozott, csak package-lock.json. `npm audit --omit=dev` utana: 0 lelet. A worktree-ben
+futtatva (NEM a fo klonban): a backend2 worktree node_modules-a `store/agent-worktree-deps.sh
+backend2` altal mar VALODI konyvtarra volt alakitva (nem szimlink a fo klonba), ezert a marveen
+telepito-tilalom erre a worktree-re nem allt -- ellenorizve `--check`-kel kodolas elott, a CLAUDE.md
+root szabalya szerint. A `npm audit fix --omit=dev` elobb levette a dev-fuggosegeket (vitest
+elerhetetlenne valt), ezert utana teljes `npm install` kellett a dev-deps visszaallitasahoz --
+ez 8, dev-only (vitest/vite/esbuild/tinypool toolchain) advisory-t hozott vissza napvilagra, ami
+csak `vitest@5.0.3`-ra (breaking major) `--force`-szal javithato. Ez a card kiindulo keretezese
+(`npm audit --omit=dev`, production-scope) szerint HATARKOR KIVUL marad, kulon dontes kell
+(vitest major-bump + teljes teszt-suite re-validalas), nem resze ennek a kartyanak. Gate:
+QA + WhiteHat.
+
+## 2026-10-09: BASH_EGRESS_GUARD enforce elesitese (kartya 18055f83)
+
+Peti dontese 2026-10-09 10:03 (Telegram 10704, gomb): ELESITSUK. A bash-egress-guard.py hook
+2026-08-23 ota csak LOG-ONLY modban futott a flottan -- Cybersec merte (057ad243-on @d6f3d6b2,
+msg 6141), hogy valos kulso curl-ok (cloudflare-dns, dns.google, pypi, anthropic) nyomtalanul
+atmentek, mert sehol nem volt `BASH_EGRESS_GUARD=enforce` beallitva. backend3 2026-09-29-i
+log-elemzese (store/bash-egress.log, 307 sor, kartya 18055f83 komment 9023) a valos, nem-selftest
+forgalmat negy hostra szukitette, mindegyikhez azonositott celial: cloudflare-dns.com + dns.google
+(DNS-over-HTTPS diagnosztika), pypi.org (python csomag-verzio-ellenorzes), api.anthropic.com
+(sajat Claude API usage-monitorozas). Peti ezt a negy hostot hagyta jova, mindent mast tovabbra is
+tilt az allowlist, amig uj evidencia alapjan fel nem veszik.
+
+Vegrehajtas (backend): a flottaszintu elesitest egy KULON, visszakapcsolhato feature-flag
+dontii el (`BASH_EGRESS_ENFORCE_FLEET`, src/web/agent-scaffold.ts), nem maga a hook alapertelmezese
+-- a hook sajat alapertelmezese tovabbra is log-only marad, ha a flag nincs beallitva. A flag
+ki/be kapcsolasa a kovetkezo dashboard-boot/backfill-korben jut ervenyre minden agensre, mindket
+iranyban (armed/reverted), mert az ensure*-ellenorzes a regisztralt parancsot a frissen szamolthoz
+hasonlitja. Talalt es javitott hiba kozben: egy sima `VAR=val parancs1; parancs2` alaku elotag
+csak az ELSO `;`-vel elvalasztott utasitasra hatna, a tenyleges python3-hivasra nem -- `export
+VAR=val;` kell, ami a shell kornyezeteben marad a tovabbi utasitasokra is (merve: `bash -c
+'FOO=bar true; echo $FOO'` semmit nem ir ki, `bash -c 'export FOO=bar; true; echo $FOO'` kiirja
+a `bar`-t). A `store/bash-egress.log` `agent` mezoje korabban mindig ures volt, mert a hook csak a
+MARVEEN_AGENT_ID/CLAUDE_AGENT_ID env-valtozot nezte, amit soha senki nem allitott be a hivasi
+lancban. A hook mostantol a message-ledger mar megkemenyitett resolverevel
+(ledger_lib.agent_id_from_payload, LEDGERCWD828) a SAJAT hook-payloadjabol (transcript_path) olvassa
+ki a hivo agenst -- a scaffold-nak semmit nem kell beleegetnie a parancsba ehhez, fuggetlenul az
+enforce/log modtol.
+
+Bizonyitek: 122 selftest-eset + 9 property-assertion (scripts/hooks/bash-egress-guard.selftest.py,
+korabban 117+8), uj TS wiring-teszt a tenylegesen regisztralt parancson keresztul (nem csak
+szintetikus env-blokkal) bizonyitja, hogy a 4 jovahagyott host atmegy, egy nem-listazott host
+blokkolodik, a localhost-dashboard-hivasok erintetlenek, es a naplo `agent` mezoje tenylegesen
+kitoltodik.
+
+Ki dontott: Peti (allowlist jovahagyas + elesites), MikroB (dispatch), backend (3. lepes:
+feature-flag, selftest, elo proba, doksi). Gate: QA + WhiteHat.
+
+## 2026-10-09 -- ffca678d -- watched-repos last_sha hex-validálás git-opció-injekció ellen
+
+A döntés: a `store/watched-repos-state.json`-ból (és fallbackként a követett registryből)
+származó `last_sha` érték a `integrated-repos.ts` `statusForRepo()`-jában `git log`/`git
+rev-list` argumentumba került hex-validálás nélkül. Cybersec reprodukálta scratch-repón: egy
+`--output=<fájl>` alakú `last_sha` a `git log -1 --format=%cI <sha>` hívásban opcióként
+értelmeződik, és `exit 0`-val fájlt hoz létre (197947ae gate, komment 6544, INFO 1). Három
+belépési ponton zártam be:
+1. `src/web/routes/integrated-repos.ts`: `isValidSha()` (`^[0-9a-f]{7,40}$`, git saját 7
+   karakteres rövidítési padlójától a teljes sháig) ellenőrzi a `last_sha`-t, mielőtt git
+   argvba kerülne; érvénytelen érték eldobva (logolva), a valódi checkout HEAD-jére esik
+   vissza. A sha-pozíció elé mindhárom git-hívásban `--end-of-options` került
+   védelem-a-mélyben céllal -- mérve: `git log -1 --format=%cI --end-of-options
+   --output=/tmp/x <sha>` most hibát ad, nem fájlt ír.
+2. `store/watched-repos-record-review.sh`: a manuális review-író CLI -- ez a TÉNYLEGES
+   belépési pont, ahonnan egy hibás/rosszindulatú `--sha`/`--upstream-sha` a state-fájlba,
+   onnan az (1) pontba jutna. Ugyanazzal a regexszel validál, hangosan bukik (exit 1),
+   mielőtt bármit írna.
+3. `store/git-repo-watcher.sh`: a RedHat második LOW-ja (726dca6b gate-jéből hozva) -- a
+   NOCHANGE/CHANGED döntés bash glob prefix-matchje (`"$new_sha" == "$cur_sha"*`) egy rövid
+   vagy nem-hex `last_sha`-val hamis NOCHANGE-et adhat (egy 1 karakteres prefix majdnem
+   mindent matchel). Ugyanaz a hex-regex védi: érvénytelen `last_sha` esetén
+   `ERROR:badsha:<name>` log + a checkout valódi HEAD-jére esik vissza (soha nem a
+   false-open "mindent match" irányba).
+
+Miért fail-closed fallback, nem a teljes bejegyzés kihagyása: a HEAD-re esés biztonságos (git
+saját, friss rev-parse eredménye) és a behind-detektálás továbbra is működik, csak a
+rögzített vendored-sha helyett a tényleges checkout állapotát nézi -- ez jobb kiesési mód,
+mint csendben kihagyni a bejegyzést.
+
+Mellékesen javítva (kártya saját szövege szerint): a
+`seed-scheduled-tasks/agent-skill-drift-sync-heartbeat/SKILL.md` "Mérve élesben: pontosan ez
+történt egy futáson" mondata pontatlan volt (Cybersec INFO 2, komment 6544) -- a mérés
+homokozó-fixturen történt, az élő dry-run akkor missing=0-t mutatott. Szövege javítva.
+
+Zöld: `src/__tests__/integrated-repos.test.ts` (29, +5 új a hex-validálásra, köztük egy
+mutáció-teszt ami bizonyítja, hogy a validálás nélküli hívás tényleg fájlt hoz létre) +
+`src/__tests__/watched-repos-moving-state.test.ts` (12, +4 új: CLI-elutasítás opció-alakú és
+túl-rövid sha-ra, watcher ERROR:badsha + helyes CHANGED/NOCHANGE fallback). 41/41. tsc --noEmit
+clean. A teljes fleet-test.sh a marveen-land.sh által a merge eredményén fut, külön nem
+futtattam.
+
+Ki döntött: MikroB dispatch (RedHat javaslata a 726dca6b gate-jéből előrevéve), gate: QA +
+WhiteHat.
+
+## 2026-10-09 -- 2fc54ae7 -- agent-skill-drift-sync.sh: "Stale (untouched, synced)" hamis állítás, ha minden stale írás kihagyva
+
+A probléma: `store/agent-skill-drift-sync.sh`-ban a `STALE` számláló (hány másolat
+klasszifikálódott elavultnak) és a tényleges ÍRÁS (hány másolat lett valóban
+felülírva) egy számlálóba volt összemosva. MikroB mérése (2026-09-19 07:50,
+`--apply --telegram` háromszor egymás után): a riport mindháromszor
+`Stale (untouched, synced):` fejléc alatt sorolta fel a
+fron-teddy/frontend-design-research és qa/embedded-pg-e2e-runner párokat, és a
+verdikt `reasons=stale-synced` volt -- miközben a két élő fájl mtime-ja
+2026-09-06/09-07-ös maradt (semmi nem íródott, mindkettő a running-agent
+fail-closed ágon lett kihagyva). MikroB ezt "szinkronizálva"-ként jelentette
+Petinek -- hamisan.
+
+A döntés: két külön számláló/lista. `STALE` (klasszifikáció, változatlan
+jelentés) marad diagnosztikai mező; `STALE_SYNCED` (+`STALE_SYNCED_LIST`,
+`STALE_SKIPPED_LIST`) csak a TÉNYLEGES `mv` sikerén növekszik. A
+`reasons=stale-synced` ezentúl `STALE_SYNCED>0`-ra tüzel, nem `STALE>0`-ra. A
+telegram-riport `Stale (untouched, synced):` fejléc alatt csak a valóban írt
+párok állnak; a kihagyottak külön `Stale (NOT synced, skipped):` szekcióba
+kerülnek, okkal (running / undetermined / concurrent-write / sync-failed). A
+nem-telegram SUMMARY sor és az ALERT verdikt-sor is kapott egy `synced=N`
+mezőt a `stale=N` mellé (a kártya saját kérése: a `stale=N` marad diagnosztika,
+a `synced=N` az outcome).
+
+Miért nem a teljes bejegyzés kihagyása volt az alternatíva: a `stale=N` mező
+már eddig is a klasszifikáció száma volt (nem az írásé), ezt a kártya nem
+kérte megváltoztatni -- csak azt, hogy a "synced" CÍMKE és a `stale-synced`
+REASON ne tegyen olyan állítást, amit a futás nem igazol.
+
+Zöld: `store/agent-skill-drift-sync.sh selftest` -- a meglévő "RUNNING agent"
+fixtúra (agentG) kapott 6 új asszerciót: a reasons NEM tartalmazza
+stale-synced-et, a verdikt synced=0, a telegram-riport NEM mutat "synced"
+fejlécet, mutat "NOT synced, skipped" szekciót a konkrét okkal; a PARKED
+kontroll-ágon (ahol tényleg íródik) synced=1 és a stale-synced reason TÉNYLEG
+tüzel. MUTÁCIÓVAL igazolva: a `STALE_SYNCED` -> `STALE` visszaállítása a
+reasons-gate-ben pirosra fordítja az új asszerciókat (`stale-synced fired even
+though nothing was actually synced`), a javítással zöld. Teljes selftest:
+PASS (minden korábbi eset is zöld maradt).
+
+Mellékesen (a kártya saját szövege szerint): a
+`seed-scheduled-tasks/agent-skill-drift-sync-heartbeat/SKILL.md`-be egy
+mondat került a `running-agent-skipped`/`undetermined-agent-skipped`
+reasonokról a stale-ellenőrzésnél (korábban csak a hiányzó-skill ág
+változatára volt bullet).
+
+ÁLLANDÓ KÖVETKEZMÉNY (a kártya 6. pontja, csak JAVASOLVA, nem beépítve, a
+kódminőségi 5. elv szerint kérdés nélkül nem építek be automatikus
+viselkedést): amíg fron-teddy és qa futnak, a két másolatuk elavult marad --
+egy azonnali drift-sync futás a `folyamatos-munka-orchestrator` parkolás-
+lépése (CLAUDE.md 7. szabály) UTÁN zárná a rést. MikroB/Peti döntsön, épüljön-e
+be.
+
+Ki döntött: MikroB mérése + dispatch, gate: QA + Cybersec (riport-integritás,
+a 222fdc5e hibaosztályának fordított iránya).
+
 ## 2026-10-09 -- Upstream-sync 5. koteg (kartya 1a046537, Szotasz/marveen 97c910e6..2a9fc992)
 
 Minden fajlnev relativ a repo gyokerehez. Fork-oldal az alapertelmezes; csak az eltereseket

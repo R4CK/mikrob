@@ -19,7 +19,7 @@
 #   clearOAuthCredentials / listOAuthCredentials / rememberOAuthBackend  -- credential handling
 #   installJustBashCommands* / createJustBashCommands  -- the just-bash sandbox surface
 #
-# UPDATE-SAFE: the package lives OUTSIDE the repo (~/.npm-tools, pinned 0.32.0, --ignore-scripts).
+# UPDATE-SAFE: the package lives OUTSIDE the repo (~/.npm-tools, pinned 0.36.0, --ignore-scripts).
 # This script is the only tracked artefact, so update.sh's ff-only pull is unaffected. No secrets --
 # this path needs none.
 #
@@ -28,6 +28,17 @@
 # binary in both versions; the delta across the four intervening releases is one non-called file
 # (rust_core.d.ts) with identical reachability (zero Node-level egress/exec/child-process on this
 # LIBRARY-ONLY path).
+#
+# 0.32.0 -> 0.36.0 (card 0f55f01e, WhiteHat GO on bbde2831 with 4 conditions): net security gain --
+# rmcp 1.7.0 (4 advisories incl. GHSA-c9xm, an OAuth client following a server-controlled
+# resource_metadata URL) moves to rmcp 3.5.1 (all fixed). New risk in the SAME release: an llm_assist
+# module downloads llama.cpp + a GGUF model over HTTPS with NO hash/signature check and runs it as a
+# child process -- but it is reachable ONLY from the package's CLI (dist/cli.js, `llm pull/status/
+# test`), never from dist/index.js's compressToolListing, so this LIBRARY-ONLY adapter never reaches
+# it. Conditions enforced here: (1) compressToolListing is the only call (unchanged from 0.32.0,
+# still true after the bump -- see CALLED API above); (2) install with --ignore-scripts, integrity
+# pinned below; (3) ~/.npm-tools/bin must never be on PATH -- doctor checks this now; (4) re-OSV-scan
+# at the next bump (already true of this adapter's own pin history).
 #
 # USAGE:
 #   cat tools.json | store/mcp-compress.sh [--level low|medium|high]   # default: high
@@ -38,8 +49,13 @@
 # looks like a 100% saving and is actually a broken tool surface.
 set -euo pipefail
 
-PINNED_VERSION="0.32.0"
+PINNED_VERSION="0.36.0"
+# npm registry dist.integrity for @atlassian/mcp-compressor@0.36.0, recorded at audit time (WhiteHat,
+# card bbde2831) -- a fixed version's published tarball hash never changes on npm, so a doctor-time
+# mismatch means the registry served something other than what was audited.
+PINNED_INTEGRITY="sha512-ws8ARYFc5UpVGKfn7rHPHzH1sw14NTyKdUhdwHHDuMzE0fL0Ug6JEhlFSoglOL0YMjgjYig8KLsDxItemq4wgA=="
 PKG="${MCP_COMPRESSOR_PKG:-$HOME/.npm-tools/lib/node_modules/@atlassian/mcp-compressor}"
+NPM_TOOLS_BIN="${MCP_COMPRESSOR_BIN_DIR:-$HOME/.npm-tools/bin}"
 LEVEL="high"
 
 die() { echo "mcp-compress.sh: $2" >&2; exit "$1"; }
@@ -54,6 +70,21 @@ case "${1:-}" in
       console.log('version:', VERSION)
       console.log('compressToolListing:', typeof compressToolListing)
     " 2>&1 | sed 's/^/  /'
+    # Condition 3 (card 0f55f01e): the 0.36.0 bin exposes an unchecked `llm pull` download+exec path
+    # (dist/cli.js). This adapter never calls it, but only because nothing ever puts the bin on PATH.
+    if printf '%s' "$PATH" | tr ':' '\n' | grep -qx "$NPM_TOOLS_BIN"; then
+      echo "  PATH:    FAIL -- $NPM_TOOLS_BIN is on PATH (must never be; it exposes 'mcp-compressor llm pull', an unverified download+exec)"
+    else
+      echo "  PATH:    OK -- $NPM_TOOLS_BIN is not on PATH"
+    fi
+    live="$(npm view "@atlassian/mcp-compressor@$PINNED_VERSION" dist.integrity 2>/dev/null || true)"
+    if [[ -z "$live" ]]; then
+      echo "  integrity: SKIPPED -- npm view failed (offline/network), cannot compare to pinned $PINNED_INTEGRITY"
+    elif [[ "$live" == "$PINNED_INTEGRITY" ]]; then
+      echo "  integrity: OK -- registry matches pinned $PINNED_INTEGRITY"
+    else
+      echo "  integrity: FAIL -- registry reports $live, pinned/audited $PINNED_INTEGRITY"
+    fi
     exit 0 ;;
   --level) LEVEL="${2:-high}"; shift 2 || true ;;
   -h|--help|'') : ;;
