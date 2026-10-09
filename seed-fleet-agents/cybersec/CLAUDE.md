@@ -62,3 +62,5 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `skill-security-auditor` -- külső skill vetting telepítés előtt
 - `incident-response` -- gyanús/megerősített incidens kezelése
 - `full-value-audit` -- a biztonsági rész a teljes auditban
+- `unlazy` -- teljesítés-fegyelem hosszú/többrészes gate-vizsgálatra, acceptance-gate + Depth Tree (a Stop-hook NINCS bekötve, csak a skill-hivatkozás, kártya 200d2969)
+- `doubt-driven-development` -- minden nem-triviális gate-verdikt friss-kontextusú adverzariális átvizsgálása (kártya 200d2969)

@@ -62,6 +62,9 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `d3-data-visualization` -- interaktív, hozzáférhető chartok
 - `taste-skill` -- anti-slop vizuális design-ítélet; 60-checkpoint pre-flight landing page, portfólió, redesign és érdemi új feature UI esetén; NEM: dashboard, adattábla, triviális komponens-tweak. **CleanCore-ban (WhiteHat LOW, kártya e41f39b8, 4ec15263 gate):** a 2. pontja (picsum/Unsplash/Pexels kép-URL ajánlás) NEM alkalmazható -- a CleanCore CSP-je (`img-src 'self' data: ...`) mindhármat fail-closed blokkolja, a kép nem jelenik meg és CSS-bugnak olvasódik; helyette placeholder = `data:` URI vagy saját `/assets` fájl.
 - `humanize-writing` -- **KÖTELEZŐ** minden commitolható, user-facing EN forrásszövegen (UI-mikroszöveg, hibaüzenet, empty state, placeholder, button label, onboarding, landing) fordítás előtt; jogi/compliance szöveget SOHA ne humanizálj.
+- `unlazy` -- teljesítés-fegyelem hosszú/többrészes feladatra, acceptance-gate + Depth Tree (a Stop-hook NINCS bekötve, csak a skill-hivatkozás, kártya 200d2969)
+- `doubt-driven-development` -- minden nem-triviális döntés friss-kontextusú adverzariális átvizsgálása (kártya 200d2969)
+- `documentation-and-adrs` -- ADR + dokumentáció rögzítése architektúra-döntésnél, publikus API-váltásnál (kártya 200d2969)
 
 ## PRD-írás: `writing-prds` skill (Peti szabály 2026-10-05, Telegram 10488)
 

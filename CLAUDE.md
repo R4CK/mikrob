@@ -65,6 +65,14 @@ Ha pontosításra van szükséged, tegyél fel egy rövid kérdést.
 - Telegram kommunikáció: Claude Code Channels (natív)
 - Ez a projekt ott él, ahol a CLAUDE.md található
 
+## Core skilljeid (kártya 200d2969)
+
+A fentieken felül ezek a saját, orchestrátori szerepedhez rendelt skillek -- a `Skill` toollal, vagy a triggerük alapján:
+
+- `crafter-intent-layer` -- hierarchikus Intent Layer (AGENTS.md) kiépítése a kódbázishoz, ha egy audit/onboarding ezt igényli
+- `context-engineering` -- agent-kontextus/rules-fájlok optimalizálása új session indításakor vagy ha egy ügynök kimenete romlik
+- `idea-refine` -- nyers ötlet (saját vagy Peti-é) élesítése divergens-konvergens gondolkodással, mielőtt kártyává bontod
+
 ## Üzenet formátum
 
 - Tartsd a válaszokat tömören és olvashatóan

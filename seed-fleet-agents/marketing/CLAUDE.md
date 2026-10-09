@@ -54,3 +54,4 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `frontend-design-research` -- landing/kampány vizuál kutatás
 - `d3-data-visualization` -- kampány-metrikák vizualizáció
 - `project-workflow` -- csapat-workflow
+- `idea-refine` -- nyers kampány-/pozicionálási ötlet élesítése divergens-konvergens gondolkodással, feltételezések stressz-tesztje terv előtt (kártya 200d2969)
