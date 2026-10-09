@@ -43,6 +43,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$sha" ]] || { echo "--sha is required" >&2; exit 1; }
+# Card ffca678d (RedHat LOW): this is the manual-review write path into watched-repos-state.json,
+# the SAME file src/web/routes/integrated-repos.ts reads last_sha from and hands to git argv
+# (vendoredDate / rev-list / log range) -- an unvalidated --sha here is the injection's actual
+# origin. Fail loudly (not silently): a human/CLI caller should see the rejection immediately,
+# not have it swallowed three hops downstream.
+HEX_SHA_RE='^[0-9a-f]{7,40}$'
+[[ "$sha" =~ $HEX_SHA_RE ]] || { echo "invalid --sha '$sha': must match $HEX_SHA_RE" >&2; exit 1; }
+[[ -z "$upstream_sha" || "$upstream_sha" =~ $HEX_SHA_RE ]] || { echo "invalid --upstream-sha '$upstream_sha': must match $HEX_SHA_RE" >&2; exit 1; }
 
 python3 - "$REGISTRY" "$STATE" "$name" "$sha" "$upstream_sha" "$note_append" <<'PY'
 import json

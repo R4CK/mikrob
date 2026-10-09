@@ -62,6 +62,15 @@ for row in "${ROWS[@]}"; do
 
   git -C "$local" fetch -q origin "$branch" 2>/dev/null || { echo "ERROR:fetch:$name"; continue; }
   new_sha="$(git -C "$local" rev-parse "origin/$branch" 2>/dev/null)"
+  # Card ffca678d (RedHat LOW): last_sha comes from the state file (or, as fallback, the
+  # tracked registry) and feeds a bash glob prefix-match below. An unvalidated value here
+  # (too short, or not hex at all) can make "$new_sha" == "$cur_sha"* match spuriously,
+  # silently turning a real CHANGED/FLAGGED into NOCHANGE. Fail-closed: reject anything that
+  # is not 7-40 lowercase hex chars and fall back to the checkout's own (trusted) HEAD.
+  if [[ -n "$last_sha" && ! "$last_sha" =~ ^[0-9a-f]{7,40}$ ]]; then
+    echo "ERROR:badsha:$name (last_sha '$last_sha' is not a valid hex sha, ignoring recorded value)"
+    last_sha=""
+  fi
   cur_sha="${last_sha:-$(git -C "$local" rev-parse HEAD 2>/dev/null)}"
   if [[ -z "$new_sha" ]]; then echo "ERROR:rev-parse:$name"; continue; fi
   # last_sha in watched-repos.json is often a SHORT (7-8 char) pinned sha, while

@@ -16584,3 +16584,48 @@ kitoltodik.
 
 Ki dontott: Peti (allowlist jovahagyas + elesites), MikroB (dispatch), backend (3. lepes:
 feature-flag, selftest, elo proba, doksi). Gate: QA + WhiteHat.
+
+## 2026-10-09 -- ffca678d -- watched-repos last_sha hex-validálás git-opció-injekció ellen
+
+A döntés: a `store/watched-repos-state.json`-ból (és fallbackként a követett registryből)
+származó `last_sha` érték a `integrated-repos.ts` `statusForRepo()`-jában `git log`/`git
+rev-list` argumentumba került hex-validálás nélkül. Cybersec reprodukálta scratch-repón: egy
+`--output=<fájl>` alakú `last_sha` a `git log -1 --format=%cI <sha>` hívásban opcióként
+értelmeződik, és `exit 0`-val fájlt hoz létre (197947ae gate, komment 6544, INFO 1). Három
+belépési ponton zártam be:
+1. `src/web/routes/integrated-repos.ts`: `isValidSha()` (`^[0-9a-f]{7,40}$`, git saját 7
+   karakteres rövidítési padlójától a teljes sháig) ellenőrzi a `last_sha`-t, mielőtt git
+   argvba kerülne; érvénytelen érték eldobva (logolva), a valódi checkout HEAD-jére esik
+   vissza. A sha-pozíció elé mindhárom git-hívásban `--end-of-options` került
+   védelem-a-mélyben céllal -- mérve: `git log -1 --format=%cI --end-of-options
+   --output=/tmp/x <sha>` most hibát ad, nem fájlt ír.
+2. `store/watched-repos-record-review.sh`: a manuális review-író CLI -- ez a TÉNYLEGES
+   belépési pont, ahonnan egy hibás/rosszindulatú `--sha`/`--upstream-sha` a state-fájlba,
+   onnan az (1) pontba jutna. Ugyanazzal a regexszel validál, hangosan bukik (exit 1),
+   mielőtt bármit írna.
+3. `store/git-repo-watcher.sh`: a RedHat második LOW-ja (726dca6b gate-jéből hozva) -- a
+   NOCHANGE/CHANGED döntés bash glob prefix-matchje (`"$new_sha" == "$cur_sha"*`) egy rövid
+   vagy nem-hex `last_sha`-val hamis NOCHANGE-et adhat (egy 1 karakteres prefix majdnem
+   mindent matchel). Ugyanaz a hex-regex védi: érvénytelen `last_sha` esetén
+   `ERROR:badsha:<name>` log + a checkout valódi HEAD-jére esik vissza (soha nem a
+   false-open "mindent match" irányba).
+
+Miért fail-closed fallback, nem a teljes bejegyzés kihagyása: a HEAD-re esés biztonságos (git
+saját, friss rev-parse eredménye) és a behind-detektálás továbbra is működik, csak a
+rögzített vendored-sha helyett a tényleges checkout állapotát nézi -- ez jobb kiesési mód,
+mint csendben kihagyni a bejegyzést.
+
+Mellékesen javítva (kártya saját szövege szerint): a
+`seed-scheduled-tasks/agent-skill-drift-sync-heartbeat/SKILL.md` "Mérve élesben: pontosan ez
+történt egy futáson" mondata pontatlan volt (Cybersec INFO 2, komment 6544) -- a mérés
+homokozó-fixturen történt, az élő dry-run akkor missing=0-t mutatott. Szövege javítva.
+
+Zöld: `src/__tests__/integrated-repos.test.ts` (29, +5 új a hex-validálásra, köztük egy
+mutáció-teszt ami bizonyítja, hogy a validálás nélküli hívás tényleg fájlt hoz létre) +
+`src/__tests__/watched-repos-moving-state.test.ts` (12, +4 új: CLI-elutasítás opció-alakú és
+túl-rövid sha-ra, watcher ERROR:badsha + helyes CHANGED/NOCHANGE fallback). 41/41. tsc --noEmit
+clean. A teljes fleet-test.sh a marveen-land.sh által a merge eredményén fut, külön nem
+futtattam.
+
+Ki döntött: MikroB dispatch (RedHat javaslata a 726dca6b gate-jéből előrevéve), gate: QA +
+WhiteHat.

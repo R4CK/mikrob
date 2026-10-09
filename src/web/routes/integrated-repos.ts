@@ -50,6 +50,20 @@ const GIT_TIMEOUT_MS = 5_000
 const GIT_MAX_BUFFER = 1 << 20 // 1 MiB -- a rev-list count/log line set is tiny
 const MAX_COMMITS = 20 // cap the preview list; the count is exact regardless
 
+// Card ffca678d (Cybersec INFO, 197947ae gate comment 6544): `last_sha` reaches a git argv
+// position below (vendoredDate / rev-list range / log range). It used to go through
+// unvalidated -- a value shaped like a git option (e.g. "--output=<path>") gets parsed as a
+// flag, not a revision (measured: `git log -1 --format=%cI --output=<file>` creates that
+// file, exit 0). `last_sha` now comes from the gitignored, less-reviewed state file
+// (store/watched-repos-state.json), so this is a cheaper injection point than the tracked
+// registry. HEX_SHA_RE matches git's own abbreviation floor (7 chars) through a full sha.
+const HEX_SHA_RE = /^[0-9a-f]{7,40}$/
+
+/** True when `sha` is a plausible git object id (lowercase hex, 7-40 chars). */
+export function isValidSha(sha: string): boolean {
+  return HEX_SHA_RE.test(sha)
+}
+
 /** One adopted repo as configured in store/watched-repos.json. */
 export interface IntegratedRepoConfig {
   name: string
@@ -257,11 +271,24 @@ export function statusForRepo(cfg: IntegratedRepoConfig): IntegratedRepoStatus {
   try {
     // What the fleet actually runs: the recorded vendored sha if present, else the checkout HEAD.
     const head = git(base.local, ['rev-parse', 'HEAD'])
-    const vendored = cfg.last_sha && cfg.last_sha.trim() ? cfg.last_sha.trim() : head
+    const recorded = cfg.last_sha && cfg.last_sha.trim() ? cfg.last_sha.trim() : ''
+    let vendored = head
+    if (recorded) {
+      if (isValidSha(recorded)) {
+        vendored = recorded
+      } else {
+        // Fail-closed: never hand an unvalidated value to git. Log and fall back to HEAD
+        // (trusted, just produced by git itself above) rather than skip the entry outright --
+        // skipping would hide real behind-detection for no added safety.
+        logger.warn(
+          `[integrated-repos] ${base.name}: last_sha "${recorded}" is not a valid hex sha -- ignoring, falling back to checkout HEAD`,
+        )
+      }
+    }
     base.vendoredSha = vendored
     base.vendoredShort = vendored.slice(0, 8)
     try {
-      base.vendoredDate = git(base.local, ['log', '-1', '--format=%cI', vendored])
+      base.vendoredDate = git(base.local, ['log', '-1', '--format=%cI', '--end-of-options', vendored])
     } catch {
       base.vendoredDate = null // the recorded sha may not be present locally; not fatal
     }
@@ -277,13 +304,14 @@ export function statusForRepo(cfg: IntegratedRepoConfig): IntegratedRepoStatus {
 
     if (upstream && upstream !== vendored) {
       // Count ONLY commits reachable from upstream but not from the vendored sha.
-      const count = git(base.local, ['rev-list', '--count', `${vendored}..${upstream}`])
+      const count = git(base.local, ['rev-list', '--count', '--end-of-options', `${vendored}..${upstream}`])
       base.behind = Number.parseInt(count, 10) || 0
       if (base.behind > 0) {
         const log = git(base.local, [
           'log',
           `-${MAX_COMMITS}`,
           '--format=%H%x1f%s%x1f%cI',
+          '--end-of-options',
           `${vendored}..${upstream}`,
         ])
         base.commits = log
