@@ -203,7 +203,25 @@ def is_self_task_notice(prompt):
 DIRECTIVE_HEADER_RX = re.compile(
     r"\A\s*\[SYSTEM-DIREKTIVA msg_id:(\d+)(?: [^\]]*)?\][ \n]?(.*)\Z", re.S
 )
-DIRECTIVE_SENDER = "system"
+# FORK DIVERGENCE FROM UPSTREAM, DELIBERATE (card a65f3777, regression from upstream batch 6
+# commits 6c97b00c/5a15cd5a). Upstream's own context-guard directive writer uses the bare sender
+# "system"; this fork's does NOT -- src/web/system-directive-id.ts:27 reserves a SEPARATE id,
+# SYSTEM_DIRECTIVE_SENDER = "system-directive", precisely because "system" is ALSO used by five
+# other in-process notification writers (ordinary agent-arrival/approval notices), one of which
+# (routes/agents.ts's "new teammate arrived" notice) interpolates a caller-supplied description
+# into the row body -- so a bare "system" row is not proof of a genuine directive, only a
+# directive-shaped one is. This hook was ported from upstream in that batch WITHOUT adapting it to
+# the fork's own constant, so every real directive (always written as "system-directive") read as
+# forged ("a sor feladoja 'system-directive', nem 'system'") while a non-directive "system" row
+# would have verified. Checked live 2026-10-09: the bare "system" sender still writes ordinary
+# notification rows today (396 of them, most recent well after this file's own cutover), so the
+# two senders coexist and must stay distinguished, not merged.
+#
+# Not imported from system-directive-id.ts at runtime (that module is TypeScript, this hook is a
+# standalone Python script with no build step) -- kept as a literal, with
+# scripts/hooks/provenance-gate-sender-sync.selftest.py asserting byte-for-byte equality against
+# the TS source so the two cannot drift apart silently again.
+DIRECTIVE_SENDER = "system-directive"
 
 
 def pane_shape(text):
