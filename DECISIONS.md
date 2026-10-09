@@ -17099,3 +17099,60 @@ folyamat hasznalja.
 
 Ki dontott: MikroB (dispatch + hatarok), backend (vegrehajtas + due diligence). Gate: QA + WhiteHat
 (supply-chain).
+
+## 2026-10-09 -- de3b0069: élő klón szinkron 1/2 -- a 47 commitolatlan élő módosítás, NULLA kerül át
+
+**Probléma.** Peti jóváhagyta (Telegram 10720, "Mehet mindkettő") az élő `/home/neon/marveen` (264
+committal lemaradva, HEAD 9cfe54e3, 2026-10-01) és a `develop` összefésülését: 45 tracked fájlban +
+2 untracked elemben (`store/gate-role.sh`, `.tmp-hb/`) kézi, commitolatlan módosítás volt. Mentés
+már megvolt a kártya nyitásakor: `/home/neon/marveen-live-dirty-20261009-1238.patch` (git diff) +
+`/home/neon/marveen-live-dirty-backup-20261009-1238.tar.gz` (fájlok).
+
+**Mérés.** Fájlonkénti 3-utas elemzés (bázis `9cfe54e3` / élő-másolat / `develop` jelen állapota,
+`git merge-file -p` 3-way merge-dzsel, konfliktusnál kézi átnézéssel) a saját worktree-ben
+(rebase-elve `origin/develop`-ra):
+
+- **20 fájl bájtra azonos** az élő másolat és a `develop` jelen állapota között -- már korábban,
+  más kártyákon landolt (pl. a Cybersec->WhiteHat/Cybered->RedHat névváltás nagy része, kártya
+  802ee067, 2026-10-02).
+- **15 fájl** `git merge-file` 3-way merge-e CLEAN_NOOP-ot ad (a merge eredménye bájtra egyezik a
+  `develop` jelen tartalmával) -- az élő módosítás SZÁNDÉKA (jellemzően ugyanaz a névváltás) a
+  `develop`-on már jelen van, csak más, nagyobb commit részeként.
+- **5 fájl** 3-way merge-e ÜTKÖZÉST ad, MINDEGYIK ugyanabba az irányba dönt: a `develop` jelen
+  állapota egy KÉSŐBBI, teljesebb/pontosabb javítást hordoz, az élő módosítás egy korábbi, mára
+  elavult állapot:
+  - `seed-scheduled-tasks/agent-skill-drift-sync-heartbeat/SKILL.md` -- a `develop` 92b5d8c6
+    commitja egy TÉNYBELI korrekciót hordoz (az élő "élesben mérve" mondat helyett "homokozó-
+    fixturén mérve, NEM éles incidens" -- a később kiderült valós tény).
+  - `seed-skills/ai-fleet-project-execution/SKILL.md`, `seed-skills/full-value-audit/SKILL.md` --
+    az élő változat a régi `cybersec`/"Cybersec" elnevezést viseli, a `develop` már a
+    WhiteHat/RedHat-ra renelt mezőnevet/elnevezést.
+  - `store/lint-baseline.json` -- generált/mért artefakt: az élő másolat egy 2026-10-01-i kézi
+    pillanatkép (122 `no-unused-vars`), a `develop` jelen értéke (126) a 264 commit alatt
+    folyamatosan ratchet-elt, VALÓS aktuális állapot -- a kézi pillanatkép eldobása helyes, nem
+    adatvesztés.
+  - `store/vendored-skill-sanctioned.json` -- az élő másolat 90 bejegyzést tartalmaz, a `develop`
+    jelen állapota 178-at (a backend2 saját 14216622 kártyáján végzett teljes `--record`
+    eredménye) -- ellenőrizve (`set(live) - set(dev) == 0`), az élő másolat KULCSAI mind
+    szerepelnek a `develop`-on, 4 kulcsnál eltérő, mindig a `develop` a frissebb/pontosabb.
+- **1 fájl** (`seed-skills/cybered-gate-pattern/SKILL.md`) a `develop`-on NEM létezik -- a 14712372
+  commit átnevezte `seed-skills/redhat-gate-pattern/SKILL.md`-re (teljes resolver-alapú átírás,
+  nem puszta szó-csere); az élő módosítás a régi útvonalon a régi szót cserélte csak ki, ezt a
+  `develop` lépése meghaladja.
+- **`store/gate-role.sh`** (élőn untracked) -- bájtra AZONOS a `develop` jelen, TRACKED
+  másolatával (a 14712372 commit már felvette); az élő klón HEAD-je sosem haladt a commit elé,
+  ezért látszott untracked-nek a saját gépén, valójában már landolt.
+- **`.tmp-hb/`** (élőn untracked, 2026-09-19 és 2026-09-29 közötti fájlok) -- kizárólag ideiglenes
+  debug-log/json-dump (`land-batch-*.log`, `kb.json`, `dxgkrnl-rootcause.md` stb.), nem forráskód,
+  nem verziókövetendő tartalom -- szándékosan eldobva.
+
+**Döntés: NULLA commit szükséges ehhez a kártyához.** A teljes 47 elemes élő-dirty készlet minden
+egyes eleme VAGY már bájtra azonos a `develop`-on, VAGY egy, a 2026-10-01-i pillanatkép óta
+landolt, teljesebb/pontosabb `develop`-javítás szándékosan elavulttá tette. Nincs olyan tartalom az
+élőn, ami a `develop`-ról hiányozna. A mentés (patch+tar) megmarad `/home/neon` alatt bizonyítékként
+és biztonsági hálóként, de az élő klónhoz ez a kártya NEM nyúlt (checkout/reset nélkül, a kártya
+tiltása szerint).
+
+**Ki döntött:** Peti jóváhagyása (Telegram 10720) alapján MikroB dispatchelte, backend2 végezte a
+fájlonkénti auditot és a döntést minden fájlra. Gate: QA + WhiteHat (hookok/szabályok érintettsége
+miatt).
