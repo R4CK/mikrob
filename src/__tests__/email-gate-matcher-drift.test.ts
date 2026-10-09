@@ -65,9 +65,15 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     const tool = 'mcp__server-gmail-autoauth-mcp__draft_email'
     expect(full.test(tool), 'matcher must fire for the tool the fleet actually has').toBe(true)
     expect(gateDecision(tool, { to: 'anyone@example.com' }).deny).toBe(false)
-    // A name-keyed matcher goes blind on the next new server name, so the draft
-    // surface is pinned by the OPERATION too: a server with no gmail in its name.
-    expect(full.test('mcp__whatever_mail_server__draft_email')).toBe(true)
+    // NOTE: upstream pairs this assertion with an operation-based catch-all
+    // alternative (any server name + draft_email) -- NOT adopted here. That
+    // widening is only meaningful alongside upstream's recipient-ledger
+    // feature (which decides deny independently of server name); this fork
+    // rejected the ledger (Cybersec, card afd64623, HIGH -- see
+    // ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs']), and
+    // EMAIL_SERVER_RE (gateDecision) still requires gmail/resend in the name,
+    // so a name-independent matcher alone would fire the hook without ever
+    // denying -- inert coverage, not a real gate.
     // Read tools on the same server stay out of the deny path (the hook may
     // fire for them; the gate is what decides, and it must say no-deny).
     expect(gateDecision('mcp__server-gmail-autoauth-mcp__read_email', {}).deny).toBe(false)
