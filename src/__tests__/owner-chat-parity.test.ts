@@ -143,7 +143,7 @@ describe('owner-chat parity: shell, Python, TS agree', () => {
     const dir = makeInstall('0', undefined)
     const mutantDir = mkdtempSync(join(tmpdir(), 'owner-chat-mutant-'))
     dirs.push(mutantDir)
-    const mutantSrc = require('node:fs').readFileSync(join(PY_LIB, 'owner_chat.py'), 'utf-8')
+    const mutantSrc: string = require('node:fs').readFileSync(join(PY_LIB, 'owner_chat.py'), 'utf-8')
       .replace('if not v or v == "0":\n        return None', 'if not v:\n        return None')
     writeFileSync(join(mutantDir, 'owner_chat.py'), mutantSrc)
     const code = `

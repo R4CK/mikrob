@@ -43,7 +43,7 @@ vi.mock('../test-run-marker.js', () => ({ markIfTestRun: (t: string) => t }))
 // with `undefined`, so we intercept the real fs read instead of re-mocking
 // owner-chat.ts itself (keeping the real resolution logic under test).
 vi.mock('node:fs', () => ({
-  readFileSync: (path: string) => {
+  readFileSync: () => {
     if (cfg.accessBody == null) throw new Error('ENOENT')
     return JSON.stringify(cfg.accessBody)
   },
