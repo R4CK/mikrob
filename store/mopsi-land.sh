@@ -136,8 +136,31 @@ pick_branch() {
 }
 
 if [ "${1:-}" = "--selftest" ]; then
+  # WhiteHat L-new (card e99d9fbf comment 13188), hardening the lesson from the M1/L1 fixture
+  # incident above: `file://`-only for this whole process tree, so a fixture mistake (a push-url
+  # that is, or resolves through pushInsteadOf to, a real ssh/https remote) can never actually
+  # reach the network from inside --selftest, no matter what a future edit sets a fixture's
+  # remote to. git itself refuses any non-file transport once this is set.
+  export GIT_ALLOW_PROTOCOL=file
   fail=0; n=0
   t() { n=$((n+1)); [ "$2" = "$3" ] || { echo "  FAIL $1: got [$2] want [$3]"; fail=1; }; }
+
+  # Self-check for the guard above: a push attempt to a ssh:// URL must be BLOCKED BY GIT ITSELF
+  # (not merely refused by this script's own remote-identity check), proving GIT_ALLOW_PROTOCOL is
+  # actually in effect for this process tree and not just set-and-ignored.
+  n=$((n+1))
+  GIT_PROTO_PROBE="$(mktemp -d)"
+  git init -q -b main "$GIT_PROTO_PROBE" >/dev/null 2>&1
+  git -C "$GIT_PROTO_PROBE" config user.email s@s; git -C "$GIT_PROTO_PROBE" config user.name s
+  echo x > "$GIT_PROTO_PROBE/f"; git -C "$GIT_PROTO_PROBE" add f; git -C "$GIT_PROTO_PROBE" commit -qm x
+  proto_probe_out="$(git -C "$GIT_PROTO_PROBE" push git@github-mopsi:R4CK/Mopsi.git HEAD:refs/heads/probe-should-never-reach-network 2>&1 || true)"
+  rm -rf "$GIT_PROTO_PROBE"
+  if printf '%s' "$proto_probe_out" | grep -qi "allowed\|not allowed\|protocol"; then
+    echo "  ok   GIT_ALLOW_PROTOCOL=file blocks an ssh:// push attempt before it reaches the network"
+  else
+    echo "  FAIL GIT_ALLOW_PROTOCOL did not block the probe push -- got: $proto_probe_out"
+    fail=1
+  fi
 
   WL="$(printf '%s\n' \
     "/mnt/h/LM_Studio_Workdir/Mopsi-main                  2695a037 (detached HEAD)" \
