@@ -77,6 +77,29 @@ describe('parseGateDesignation (ported from gate-dispatch-check.sh, same fixture
   it('unparseable free text designates nothing', () => {
     expect(parseGateDesignation('see the linked design doc')).toBeNull()
   })
+
+  // WHITEHAT/REDHAT (card cf0a8c0b, WhiteHat F1 NO-GO on the first landing attempt): the done-guard
+  // must recognise the display-name alias too, or a card gated with the new name closes without
+  // the security gate's verdict ever being required.
+  it("F1: 'QA + WhiteHat' designates cybersec, not just qa (the regression)", () => {
+    expect(parseGateDesignation('QA + WhiteHat.')).toEqual(new Set(['qa', 'qa2', 'cybersec']))
+  })
+
+  it("F1: 'WhiteHat' alone is not null -- it designates cybersec (+ widened qa/qa2 does NOT apply here)", () => {
+    expect(parseGateDesignation('WhiteHat.')).toEqual(new Set(['cybersec']))
+  })
+
+  it("F1: 'QA + WhiteHat + RedHat' designates all three roles", () => {
+    expect(parseGateDesignation('QA + WhiteHat + RedHat.')).toEqual(
+      new Set(['qa', 'qa2', 'cybersec', 'cybered']),
+    )
+  })
+
+  it('F1 CONTROL: the canonical Cybersec/Cybered spelling is unaffected by the alias addition', () => {
+    expect(parseGateDesignation('QA + Cybersec + Cybered.')).toEqual(
+      new Set(['qa', 'qa2', 'cybersec', 'cybered']),
+    )
+  })
 })
 
 describe('gateCompletenessGuardVerdict', () => {

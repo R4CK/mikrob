@@ -110,6 +110,13 @@ t "a REDHAT NO-GO naming the sha refuses, same as CYBERED NO-GO" FAILED abc1234 
   <<<"$(j qa 'QA PASS
 Gate-SHA: abc1234' cybered 'REDHAT NO-GO
 Gate-SHA: abc1234')"
+# F2 (WhiteHat, card cf0a8c0b landing round 1): the WHITEHAT-side FAIL case had no case of its own
+# -- only REDHAT NO-GO above did -- so deleting 'WHITEHAT' from the FAIL regex's alternation stayed
+# mutation-invisible (40/40 green on the mutant too).
+t "a WHITEHAT NO-GO naming the sha refuses, same as CYBERSEC NO-GO" FAILED abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' cybersec 'WHITEHAT NO-GO
+Gate-SHA: abc1234')"
 t "WHITEHAT is still author-checked: a non-cybersec author writing it does not count" UNVERIFIED-AUTHOR abc1234 \
   <<<"$(j qa 'WHITEHAT GO
 Gate-SHA: abc1234')"

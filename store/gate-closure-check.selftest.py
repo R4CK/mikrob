@@ -717,10 +717,11 @@ case("the LATEST GATE-KIJELOLES wins if MikroB redesignates mid-card",
       c("qa", V % "bbbb2222")],
      "MISSING")  # CYBERSEC now required too, and never verdicted
 case("a GATE-KIJELOLES line spelled with the WhiteHat display name designates the cybersec role "
-     "(card cf0a8c0b)",
-     [c("mikrob", DES % "QA + WhiteHat (2-gate)"), c("qa", V % "bbbb2222"),
-      c("cybersec", WH % "bbbb2222")],
-     "AGREE")
+     "(card cf0a8c0b, WhiteHat F3): QA alone is not enough once a WhiteHat-spelled designation "
+     "names the second gate too -- an undiscriminating case where cybersec's verdict was merely "
+     "PRESENT (not required) stayed green even with the alias stripped from _GATE_NAME_TOKEN",
+     [c("mikrob", DES % "QA + WhiteHat (2-gate)"), c("qa", V % "bbbb2222")],
+     "MISSING")  # CYBERSEC is required by the WhiteHat-spelled designation and never verdicted
 
 # --- A DESIGNATION MUST BE FROM MIKROB, NOT MERELY SHAPED LIKE ONE (Cybersec HIGH, card 864351a9, --
 # --- round 2). Cybersec's own live proof, reproduced byte-identically. ---------------------------
