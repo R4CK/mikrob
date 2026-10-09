@@ -36,7 +36,7 @@
 # Output lands in <repo-path>/graphify-out/ (graphify's own default), which each repo gitignores.
 set -euo pipefail
 
-PINNED_VERSION="0.9.35"
+PINNED_VERSION="0.9.67"
 # The pipx VENV binary, addressed directly. The ~/.local/bin/graphify shim is deliberately REMOVED
 # (Cybersec NO-GO @7fdb09b): while it was on PATH, any agent could call the raw CLI and skip this
 # wrapper's allowlist + egress gate, so the card's central claim ("all access is gated") was false.
