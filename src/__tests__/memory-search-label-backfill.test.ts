@@ -117,10 +117,16 @@ describe('ensureMemorySearchLabelSection', () => {
     expect(out.split(BEGIN).length - 1).toBe(1)
   })
 
-  it('writes the main agent to PROJECT_ROOT/CLAUDE.md, not agents/<name>', () => {
-    writeFileSync(join(tmpRoot, 'CLAUDE.md'), PRE_1380, 'utf-8')
+  // No-op for the main agent (card 2dd28b5d/99fccbcf pattern, re-found by WhiteHat on 965b0b2b
+  // for the sibling ensureFleetAuthSection/ensureMcpListChannelSection, and AGAIN on card
+  // 5a15cd5a for this function after upstream commit 323d7c41 enriched the body text): a
+  // runtime write to the git-tracked PROJECT_ROOT/CLAUDE.md would fight the --ff-only pull.
+  // The block is committed there statically instead.
+  it('no-ops for the main agent -- PROJECT_ROOT/CLAUDE.md is git-tracked', () => {
+    const before = PRE_1380
+    writeFileSync(join(tmpRoot, 'CLAUDE.md'), before, 'utf-8')
     ensureMemorySearchLabelSection('agent-a')
-    expect(readFileSync(join(tmpRoot, 'CLAUDE.md'), 'utf-8')).toContain(BEGIN)
+    expect(readFileSync(join(tmpRoot, 'CLAUDE.md'), 'utf-8')).toBe(before)
     expect(existsSync(join(tmpRoot, 'agents', 'agent-a', 'CLAUDE.md'))).toBe(false)
   })
 
@@ -185,5 +191,40 @@ describe('buildMemorySearchLabelBody', () => {
     const b = buildMemorySearchLabelBody('agent-b')
     expect(b).toContain('400')
     expect(b).toContain('--data-urlencode')
+  })
+})
+
+// Card 5a15cd5a (Cybersec NO-GO, H1): the main agent's own PROJECT_ROOT/CLAUDE.md carries a
+// STATICALLY COMMITTED copy of this section (ensureMemorySearchLabelSection no-ops for the
+// main agent -- see the test above, so nothing keeps that copy synced at runtime). Mirrors the
+// f390a08e pattern already established for ensureSystemDirectiveAuthSection: this body embeds
+// PROJECT_ROOT-derived absolute paths (tokenPath), which are NOT the same literal path in a
+// gate-worktree as in the real install -- a naive full-body equality would fail FALSELY in every
+// QA/Cybersec/Cybered gate-worktree. Normalise the one environment-derived path segment to a
+// fixed placeholder before comparing, on both sides, instead of hardcoding either side's literal
+// PROJECT_ROOT.
+describe('the STATIC CLAUDE.md block matches the generator (card 5a15cd5a)', () => {
+  const TOKEN_PATH_RE = /cat [^)]+\/store\/\.dashboard-token/g
+  const normalize = (s: string) => s.replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
+
+  it("the committed section in THIS checkout's own CLAUDE.md equals the generator output, modulo PROJECT_ROOT", async () => {
+    const { REPO_ROOT } = await import('./helpers/repo-location.js')
+    const claudeMd = readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8')
+    const start = claudeMd.indexOf(BEGIN)
+    const end = claudeMd.indexOf(END)
+    expect(start, 'the generated marker is missing from CLAUDE.md -- has the section never been committed?').toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    const committedBlock = claudeMd.slice(start + BEGIN.length, end).trim()
+
+    // The committed block was generated for the REAL install's main agent, whatever THIS
+    // checkout currently names it in the "?agent=" query param -- read it back rather than
+    // assume "mikrob", so a renamed install does not make this test lie about what it compares.
+    const agentMatch = committedBlock.match(/\?agent=([^&\s]+)&/)
+    expect(agentMatch, 'no ?agent=...& query param in the committed block -- did the wording change?').not.toBeNull()
+    const committedName = agentMatch![1]
+
+    const generated = buildMemorySearchLabelBody(committedName).trim()
+
+    expect(normalize(generated)).toBe(normalize(committedBlock))
   })
 })

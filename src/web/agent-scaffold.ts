@@ -3097,10 +3097,16 @@ export function buildMemorySearchLabelBody(name: string): string {
 // ensureAutonomySection / ensureSkillsPathTrapSection / ensureSystemDirectiveAuthSection,
 // plus the one extra rule above: do not append where the file already documents
 // the label inline.
+//
+// EXCEPT for the main agent (card 2dd28b5d/99fccbcf pattern, re-found by WhiteHat on 965b0b2b
+// for the sibling ensureFleetAuthSection/ensureMcpListChannelSection, and AGAIN here on card
+// 5a15cd5a after upstream commit 323d7c41 enriched buildMemorySearchLabelBody's text): its
+// target would be PROJECT_ROOT/CLAUDE.md, a git-tracked file, and a runtime write there fights
+// the --ff-only pull that keeps the live checkout current. No-op here; the block is committed
+// statically instead.
 export function ensureMemorySearchLabelSection(name: string): void {
-  const claudeMdPath = name === MAIN_AGENT_ID
-    ? join(PROJECT_ROOT, 'CLAUDE.md')
-    : join(agentDir(name), 'CLAUDE.md')
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
   let existing: string
