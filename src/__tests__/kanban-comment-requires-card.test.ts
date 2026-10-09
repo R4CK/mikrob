@@ -102,7 +102,9 @@ describe('POST /api/kanban/:id/comments -- the card must exist', () => {
     expect(out.handled).toBe(true)
     expect(out.status).toBe(200)
     expect(addKanbanComment).toHaveBeenCalledTimes(1)
-    expect(addKanbanComment).toHaveBeenCalledWith('CARD0001', 'sanyiba', 'ez elmegy')
+    // Card 5aaf7209 item 5: a 4th `automated` argument was added (false here --
+    // the request body did not set it).
+    expect(addKanbanComment).toHaveBeenCalledWith('CARD0001', 'sanyiba', 'ez elmegy', false)
   })
 
   // The 400 for a missing author/content predates this guard and must survive

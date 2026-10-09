@@ -580,6 +580,16 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_comments_card ON kanban_comments(card_id)`)
 
+  // automated flag (card 5aaf7209 item 5 / 16e60d3c item 5): a bulk/machine comment writer's own
+  // comment should not be read as a work-trace by a stuck-card detector. NULL/0 = not automated
+  // (every pre-migration row and every caller that does not pass it), so the default stays
+  // backwards-compatible.
+  try {
+    db.exec('ALTER TABLE kanban_comments ADD COLUMN automated INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // column already exists
+  }
+
   // Line-level (diff) comments (card 906c130f, vibe-kanban idea 227f4cc1): today's gate
   // verdicts/REVIEWs only live as free-text kanban_comments rows, with no link to a specific
   // file+line in a specific commit's diff. This table adds that binding; adatmodel+API only here,
@@ -3391,6 +3401,9 @@ export interface KanbanComment {
   author: string
   content: string
   created_at: number
+  /** True when the writer self-reported this as a machine/bulk comment, so a
+   *  stuck-card detector does not read it as human work-trace. */
+  automated: boolean
 }
 
 export interface KanbanLineComment {
@@ -3419,7 +3432,12 @@ export function sweepArchivedKanbanCards(): number {
   return result.changes
 }
 
-export function listKanbanCards(): KanbanCard[] {
+// includeArchived (card 5aaf7209 item 1): GET /api/kanban silently dropped the
+// parameter before this card -- the only way to see an archived card was a
+// direct DB read. Default false keeps every existing call site's behaviour
+// byte-identical (additive parameter, not a behaviour change for callers that
+// do not pass it).
+export function listKanbanCards(includeArchived = false): KanbanCard[] {
   // last_status_at: when the card LAST CHANGED COLUMN, not when its row was
   // last touched. These are not the same thing, and the difference is a real
   // blind spot: addKanbanComment() sets updated_at, so a card that has not
@@ -3427,11 +3445,12 @@ export function listKanbanCards(): KanbanCard[] {
   // comments more than anyone, so ageing measured on updated_at is mostly
   // measuring the watcher, not the work. Falls back to created_at for cards
   // that have never moved (no event rows), which is the honest age for those.
+  const where = includeArchived ? '' : 'WHERE c.archived_at IS NULL'
   return db
     .prepare(`SELECT c.rowid AS seq, c.*,
                      COALESCE((SELECT MAX(e.created_at) FROM kanban_card_events e
                                WHERE e.card_id = c.id), c.created_at) AS last_status_at
-              FROM kanban_cards c WHERE c.archived_at IS NULL ORDER BY c.sort_order ASC`)
+              FROM kanban_cards c ${where} ORDER BY c.sort_order ASC`)
     .all() as KanbanCard[]
 }
 
@@ -4718,7 +4737,11 @@ export function getUnmetPredecessorsForAllCards(): Map<string, KanbanCard[]> {
 }
 
 export function getKanbanComments(cardId: string): KanbanComment[] {
-  return db.prepare('SELECT * FROM kanban_comments WHERE card_id = ? ORDER BY created_at ASC').all(cardId) as KanbanComment[]
+  const rows = db.prepare('SELECT * FROM kanban_comments WHERE card_id = ? ORDER BY created_at ASC').all(cardId) as
+    Array<KanbanComment & { automated: number | boolean }>
+  // SQLite has no boolean type -- the column is INTEGER 0/1. Coerce here so the
+  // API/JSON response carries a real boolean, not a number that merely looks truthy.
+  return rows.map(r => ({ ...r, automated: !!r.automated }))
 }
 
 export function addKanbanLineComment(
@@ -4830,18 +4853,18 @@ export function markScheduledTaskKanbanWaiting(taskName: string): string | null 
   return card.id
 }
 
-export function addKanbanComment(cardId: string, author: string, content: string): KanbanComment {
+export function addKanbanComment(cardId: string, author: string, content: string, automated = false): KanbanComment {
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
-    'INSERT INTO kanban_comments (card_id, author, content, created_at) VALUES (?, ?, ?, ?)'
-  ).run(cardId, author, content, now)
+    'INSERT INTO kanban_comments (card_id, author, content, created_at, automated) VALUES (?, ?, ?, ?, ?)'
+  ).run(cardId, author, content, now, automated ? 1 : 0)
   db.prepare('UPDATE kanban_cards SET updated_at = ? WHERE id = ?').run(now, cardId)
   touchAncestorsOf(cardId, now)
   // Card 6cd61430: the REVIEW comment carrying `Gate-SHA:` is the fleet's most common marker, and
   // it arrives here. noteRelations cannot fail this write -- see its own comment for why that
   // isolation is deliberate rather than defensive.
   noteRelations(commentEdges(cardId, content))
-  return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now }
+  return { id: Number(info.lastInsertRowid), card_id: cardId, author, content, created_at: now, automated }
 }
 
 // --- Kanban labels (tags) ---
@@ -4950,6 +4973,26 @@ export function blockerWouldCycle(cardId: string, blockerId: string): boolean {
       seen.add(row.blocker_id)
       stack.push(row.blocker_id)
     }
+  }
+  return false
+}
+
+// parentWouldCycle (card 16e60d3c item 4 / 5aaf7209 item 4, ACKNOWLEDGED_FORK_ANCHORS tripwire
+// 'src/db.ts'): the parent_id edge instead of the blocker edge. parent_id is single-valued per row
+// (a tree, not a general graph), so a simple upward walk suffices -- no stack of multiple children
+// needed the way blockerWouldCycle's multi-edge walk requires.
+export function parentWouldCycle(cardId: string, parentId: string): boolean {
+  if (cardId === parentId) return true
+  const stmt = db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?')
+  const seen = new Set<string>([parentId])
+  let current: string | null = parentId
+  while (current) {
+    const row = stmt.get(current) as { parent_id: string | null } | undefined
+    if (!row || !row.parent_id) break
+    if (row.parent_id === cardId) return true
+    if (seen.has(row.parent_id)) break // a pre-existing cycle elsewhere -- not this re-parent's doing
+    seen.add(row.parent_id)
+    current = row.parent_id
   }
   return false
 }
