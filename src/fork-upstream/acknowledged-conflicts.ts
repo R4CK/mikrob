@@ -3290,6 +3290,56 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "symbol appears, someone adopted the second hook without re-deciding the duplication -- " +
       "re-read this key's ACKNOWLEDGED_CONFLICTS entry before keeping it.",
   },
+
+  // Card 26083811 (WhiteHat L2 from the 405a6da0 gate): mentionsRefusal widened to also catch the
+  // "not adopt(ed/able)" family. Four of the newly-caught entries name a checkable production fact;
+  // the other eight (triaged below in UNANCHORED_BACKLOG) are either cosmetic no-op notes or decisions
+  // that live entirely inside a test/setup file with no production counterpart to point at.
+  'scripts/watchdog.sh': {
+    needle: '-H "Authorization: Bearer $TOKEN"',
+    file: 'scripts/watchdog.sh',
+    expect: 'absent',
+    because:
+      "the 2026-09-25 UNION correction (qa2 QA FAIL, komment 6736) kept upstream's agent=${AGENT_ID} " +
+      "fix but explicitly refused upstream's argv-embedded token call -- the fork keeps " +
+      "-H @\"$HDR_FILE\" (a 0600 temp file, the b267df80 pattern) instead. The argv form reappearing " +
+      "means /proc/<pid>/cmdline would leak the token to any local process again.",
+  },
+  'src/__tests__/bridge-pairing-i18n.test.ts': {
+    needle: 'playwright',
+    file: 'store/fleet-test.sh',
+    expect: 'absent',
+    because:
+      "this entry's fork-only test ('the error branch actually CALLS it') exists BECAUSE the fork " +
+      "deliberately did not adopt upstream's tests/browser/** playwright suite -- the fleet's one " +
+      "mandatory gate (fleet-test.sh) runs vitest only and never invokes playwright, which is the " +
+      "actual reason dropping this vitest test would silently give up the only coverage that the " +
+      "translator is reached at all. If fleet-test.sh starts invoking playwright, that premise (and " +
+      "this entry's resolution) needs re-deciding, not assuming the vitest test is still load-bearing.",
+  },
+  'src/__tests__/governance-gates.test.ts': {
+    needle: 'TELEGRAM_COPY_GATE_MATCHER',
+    file: 'src/web/agent-scaffold.ts',
+    expect: 'absent',
+    because:
+      "this entry refuses upstream's telegram-copy-gate wiring (agentGetsTelegramCopyGate/" +
+      "injectTelegramCopyGate/TELEGRAM_COPY_GATE_MATCHER) because the fork already covers the same " +
+      "surface with injectOutgoingCopyGate bound to a default-OFF Bash matcher (card 74181db2, its " +
+      "own coverage in outgoing-copy-gate-role-wiring.test.ts). TELEGRAM_COPY_GATE_MATCHER appearing " +
+      "in the fork's own scaffold file means upstream's duplicate-wire path was adopted without " +
+      "re-deciding whether both gates firing together is safe.",
+  },
+  'src/__tests__/memory-search-label-backfill.test.ts': {
+    needle: '--data-urlencode',
+    file: 'src/web/agent-scaffold.ts',
+    expect: 'absent',
+    because:
+      "this entry refuses upstream's 'warns that a raw accented q is a silent 400' test because the " +
+      "fork's actual buildMemorySearchLabelBody() does not emit '400' or '--data-urlencode' text -- " +
+      "measured RED against the real function when tried. If '--data-urlencode' appears in this file, " +
+      "the production-side change the refused test depends on shipped without the test (or the " +
+      "re-decision) that was supposed to come with it.",
+  },
 }
 
 /** An acknowledgement whose rule rests on a fork-side fact that is no longer true. */
@@ -3328,16 +3378,20 @@ export function containsAsToken(content: string, needle: string): boolean {
  * half of a rule -- the ordinary shape of a re-measure round, see the file header above -- left the
  * anchor green for the wrong reason; a control run that also cleared the comment DID go red, proving
  * the pin had a tooth, just not where it needed one). Keyed off the anchor's own file extension
- * (`.py` -> `#`, everything else -> `//`) rather than scanning for both markers unconditionally,
- * because ACKNOWLEDGED_FORK_ANCHORS spans both TS and Python files and stripping `#` inside a TS
- * string (a URL fragment, say) or `//` inside a Python one would silently eat real content neither
- * comment style owns there. Deliberately line-comment-only, not block comments: every needle
- * anchored today sits in a line-commented region (measured against the three live anchor files),
- * and a block-comment stripper is real complexity (nesting, a `/*` inside a string) this map does
- * not need yet.
+ * (`.py`/`.sh` -> `#`, everything else -> `//`) rather than scanning for both markers
+ * unconditionally, because ACKNOWLEDGED_FORK_ANCHORS spans TS, Python and bash files and stripping
+ * `#` inside a TS string (a URL fragment, say) or `//` inside a Python/bash one would silently eat
+ * real content neither comment style owns there. Card 26083811 (WhiteHat L1, 405a6da0 gate): .sh was
+ * missing from the `#`-comment branch, so a needle left behind in a bash `#` comment (as opposed to
+ * removed code) satisfied a `present` anchor exactly the way the card 232e01e2 fix above already
+ * closed for `//` -- the three .sh anchors this map carries (limit-monitor.sh,
+ * install-prod-tree-guard-hook.sh, update.sh) rest on this branch. Deliberately line-comment-only,
+ * not block comments: every needle anchored today sits in a line-commented region (measured against
+ * the live anchor files), and a block-comment stripper is real complexity (nesting, a `/*` inside a
+ * string) this map does not need yet.
  */
 function stripLineComments(content: string, file: string): string {
-  const marker = file.endsWith('.py') ? /#.*$/ : /\/\/.*$/
+  const marker = file.endsWith('.py') || file.endsWith('.sh') ? /#.*$/ : /\/\/.*$/
   return content
     .split('\n')
     .map((line) => line.replace(marker, ''))

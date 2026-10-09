@@ -348,6 +348,43 @@ describe('fork-side anchors: a rule that rests on OUR tree goes stale when OUR t
     expect(drifted).toHaveLength(1)
   })
 
+  // Card 26083811 (WhiteHat L1, 405a6da0 gate): stripLineComments only special-cased `.py` for the
+  // `#` marker -- a .sh anchor (the map carries three: limit-monitor.sh, install-prod-tree-guard-
+  // hook.sh, update.sh) fell through to the `//` marker instead, so a needle left behind in a bash
+  // `#` comment satisfied a `present` anchor the same way the .py case above was already fixed to
+  // reject. Mutation-proof at the bottom of this test confirms this.
+  it('a present-anchor on a .sh file is NOT satisfied by a # comment either', () => {
+    const anchors = {
+      'a.sh': {
+        needle: 'touchAncestorChain',
+        file: 'demo.sh',
+        expect: 'present',
+        because: 'x',
+      },
+    } as const
+    const drifted = classifyForkAnchors(
+      anchors,
+      () => '# touchAncestorChain removed, see history'
+    )
+    expect(drifted).toHaveLength(1)
+    expect(drifted[0]!.found).toBe(false)
+  })
+
+  // MUTATION CHECK: without .sh routed to the `#` stripper -- the pre-fix code special-cased only
+  // `.py`, everything else (including .sh) got the `//` marker -- the exact fixture above is not
+  // merely theoretically wrong: the needle genuinely survives stripping, reproduced here directly
+  // against the OLD marker-selection logic rather than assumed.
+  it('MUTATION: the pre-fix (.py-only) marker selection genuinely leaves the needle in a .sh # comment (proves the test above is non-vacuous)', () => {
+    const oldMarkerFor = (file: string): RegExp => (file.endsWith('.py') ? /#.*$/ : /\/\/.*$/)
+    const stripOld = (content: string, file: string): string =>
+      content
+        .split('\n')
+        .map((line) => line.replace(oldMarkerFor(file), ''))
+        .join('\n')
+    const strippedOld = stripOld('# touchAncestorChain removed, see history', 'demo.sh')
+    expect(strippedOld).toContain('touchAncestorChain') // the OLD stripper leaves it in, unstripped
+  })
+
   // THE CONTROL that makes the two cases above mean something: real code on the SAME line as a
   // trailing comment must still be found. Without this, a stripper that ate too much (or the whole
   // line) would pass every case above by accident of never finding anything at all.
@@ -461,8 +498,12 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
   // quote/negation filter, per the comment above and CLAUDE.md rule 12 -- "do not take A SIDE" (a
   // union decision, not a refusal) is caught by this too and handled by classification in the
   // backlog below, not by excluding it from the pattern.
+  // Widened AGAIN card 26083811 (WhiteHat L2, 405a6da0 gate): the "not adopt(ed/able)" family
+  // (Do NOT adopt / NOT ADOPTABLE / not adoptable) was still missing -- measured against the real
+  // corpus: 13 more entries, 1 already anchored for a different reason, 12 newly unwatched, 4 of
+  // those 12 triaged to a new anchor and 8 to the backlog below (each cited individually there).
   const mentionsRefusal = (text: string): boolean =>
-    /NOT ADOPTED|\bnot ported\b|\bNOT taken\b|\bdo not take\b|\bkeep\b[^.]{0,30}\b(?:deletion|removal)\b/i.test(
+    /NOT ADOPTED|\bnot ported\b|\bNOT taken\b|\bdo not take\b|\bkeep\b[^.]{0,30}\b(?:deletion|removal)\b|\bnot adopt/i.test(
       text,
     )
 
@@ -514,12 +555,46 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
   //     "silently reverted" -- an anchor here could only watch a comment's wording, which is exactly
   //     the kind of pin the file's own re-measure history (this same entry, 2026-09-13) shows goes
   //     stale on its own without anyone touching the code it describes.
+  //
+  // Eight more joined 2026-10-09 (card 26083811) when mentionsRefusal widened to the "not
+  // adopt(ed/able)" family. Of the 12 newly-unwatched entries this widening caught, 4 named a
+  // checkable production fact and got a new ACKNOWLEDGED_FORK_ANCHORS entry (watchdog.sh,
+  // bridge-pairing-i18n.test.ts, governance-gates.test.ts, memory-search-label-backfill.test.ts --
+  // see those keys above); these 8 did not, each for its own reason:
+  //   - src/__tests__/api-messages-freshness.test.ts, heartbeat-db-size.test.ts,
+  //     heartbeat-summary-truncation-safe.test.ts, memories-search-has-a-floor.test.ts: each entry
+  //     says so itself -- "NOT ADOPTABLE, no functional difference" -- cosmetic style-only notes
+  //     (const extraction, String() vs .toString()) on test files, nothing behavioural to anchor.
+  //   - src/__tests__/notify-delivery-honesty.test.ts: the CHATID0/notify.sh-guard gap this entry
+  //     flags is the SAME decision send-honesty-round2.test.ts already backlogs below, tracked by
+  //     card 3026a591 -- not a second, independent gap to duplicate here.
+  //   - src/__tests__/session-send-lock.test.ts: the lock-acquisition gap its refused upstream
+  //     tests assert (a lock around the /rename send this fork does not have) is the same gap
+  //     src/web/session-send-lock.ts already backlogs below -- both sides are prose/test-only until
+  //     the fix this entry says must come FIRST actually lands.
+  //   - src/__tests__/setup/assert-not-live-install.ts: the decision (declining upstream's
+  //     isTmpRootedPath/TMP_ROOT_PREFIXES-based run-refusal) is fully implemented, and only
+  //     implemented, inside this test-setup file (grep-verified: no isTmpRootedPath/
+  //     TMP_ROOT_PREFIXES usage anywhere in it) -- src/web/tmp-root-prefixes.ts, the production file
+  //     its own entry points at, carries no trace of this decision either way, so there is no
+  //     production fact to anchor. Same shape as context-guard.test.ts above.
+  //   - web/lang/en.js: the matched phrase is one cosmetic sub-point ("purely cosmetic, zero
+  //     functional difference") inside this file's own much larger UNION-everything resolution --
+  //     not a standalone refusal with its own fact to watch.
   const UNANCHORED_BACKLOG: readonly string[] = [
     'src/__tests__/context-guard.test.ts',
     'src/__tests__/installer-ollama-nonfatal.test.ts',
     'src/__tests__/send-honesty-round2.test.ts',
     'src/__tests__/system-directive-auth-section.test.ts',
     'src/web/session-send-lock.ts',
+    'src/__tests__/api-messages-freshness.test.ts',
+    'src/__tests__/heartbeat-db-size.test.ts',
+    'src/__tests__/heartbeat-summary-truncation-safe.test.ts',
+    'src/__tests__/memories-search-has-a-floor.test.ts',
+    'src/__tests__/notify-delivery-honesty.test.ts',
+    'src/__tests__/session-send-lock.test.ts',
+    'src/__tests__/setup/assert-not-live-install.ts',
+    'web/lang/en.js',
   ]
 
   it('no refusal ships WITHOUT a tripwire -- the unanchored set may shrink, never grow', () => {
