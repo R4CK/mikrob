@@ -8,6 +8,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { importsValueBinding } from './setup/source-imports.js'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { egressDecision, firecrawlDisallowedParams, isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
@@ -660,29 +661,10 @@ describe('ensureEgressGate', () => {
 // 3. from-authentication: messages.ts source check
 // ---------------------------------------------------------------------------
 
-/**
- * True when `source` imports `binding` from `module` as a VALUE (IMPORTKAPULAZ921).
- *
- * Co-imports, any member order and multi-line import statements all count; a
- * type-only import does not, because it is erased at runtime and a guard that is
- * not there at runtime is not a guard. An aliased import still reports the
- * exported name -- the sibling assertion on the CALL is what catches an alias.
- */
-function importsValueBinding(source: string, binding: string, module: string): boolean {
-  const spec = module.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const re = new RegExp(`import\\s+(type\\s+)?\\{([^}]*)\\}\\s*from\\s*['"]${spec}['"]`, 'g')
-  for (const m of source.matchAll(re)) {
-    if (m[1]) continue                       // `import type { ... }` -- erased at runtime
-    const members = m[2].split(',').map((raw) => raw.trim()).filter(Boolean)
-    for (const member of members) {
-      if (/^type\s/.test(member)) continue   // inline `type Foo` member
-      const exported = member.split(/\s+as\s+/)[0].trim()
-      if (exported === binding) return true
-    }
-  }
-  return false
-}
-
+// importsValueBinding (IMPORTKAPULAZ921) is imported above from
+// ./setup/source-imports.js (TESZTIMPORTUTIL922, the shared extraction several
+// suites use), not redefined here.
+//
 // The relaxed check is itself test infrastructure: if it answered `true` too
 // easily, the assertion above would stay green with the defence gone -- a
 // formality that reassures by being present. These cases pin both directions.

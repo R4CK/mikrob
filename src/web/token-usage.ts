@@ -12,10 +12,15 @@ import { estimateCostUsd, stripDateSuffix } from '../costops/model-pricing.js'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 
-// Claude Code encodes a project's absolute path into a directory name by
-// replacing every non-alphanumeric/non-dash character with `-`. The main
-// agent's transcripts live under that exact directory, regardless of what
-// the agent calls itself.
+// The main agent's transcripts live under the directory Claude Code derives
+// from PROJECT_ROOT, regardless of what the agent calls itself.
+//
+// Upstream extracted this exact regex into a shared src/claude-project-dir.ts
+// (encodeClaudeProjectDir) and dropped its own local copy in favour of it --
+// a safe future dedup (same regex, zero behaviour difference), but NOT adopted
+// here this round (see src/fork-upstream/acknowledged-conflicts.ts's entry for
+// this file, 2026-09-25: "cosmetic/diagnostic, cheap to pick up later but not
+// urgent"). Keeping the local copy instead of importing the shared one.
 function encodeProjectPath(p: string): string {
   return p.replace(/[^a-zA-Z0-9-]/g, '-')
 }
@@ -156,6 +161,12 @@ export function discoverAgentSources(
       sources.push({ agent: name, projectDir: full })
     }
   }
+  // TOKENVAK915 (upstream, mainConfigRoots()-based discovery of the main agent's OWN isolated
+  // config root): NOT adopted here, re-decided multiple rounds in a row (card b5b7eb6b child
+  // 577db3a7, 2026-09-25; see src/fork-upstream/acknowledged-conflicts.ts's entry for this file)
+  // -- a behaviour change deserving its own gated card, not a rider on an upstream-sync batch.
+  // Consistent with the same decision for context-guard-runner.ts's own configDirFor (card
+  // 5c134edf, supervised cutover, also deferred this batch).
   return sources
 }
 
