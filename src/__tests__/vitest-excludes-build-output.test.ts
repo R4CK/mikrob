@@ -65,16 +65,13 @@ describe('the suite does not collect its own build output', () => {
   })
 
   it("vitest's own defaults no longer cover dist on this fork's installed version (vitest ^5.0.3)", () => {
-    // UPSTREAM-SYNC BATCH 4 (card 0b550d89): flipped once already, from vitest 2.1.9 (where
-    // configDefaults.exclude still included '**/dist/**') to assert the fork's then-measured
-    // behaviour. Card 35dc6dbe (2026-10-09): this fork has SINCE upgraded to vitest ^5.0.3
-    // (an unrelated landing, package.json already carried the bump by the time this card's
-    // merge picked it up) -- `node -e "require('vitest/dist/config.cjs').configDefaults.exclude"`
-    // now measures ['**/node_modules/**', '**/.git/**'], matching upstream's original vitest-4
-    // premise this test was written against before the 2.1.9 measurement flipped it. Flipped
-    // back to match. The config's own 'dist/**' entry is no longer redundant: it is now the
-    // ONLY thing excluding dist/, not a belt-and-suspenders -- removing it would double-collect
-    // the suite again, the exact failure this file exists to pin.
+    // UPSTREAM-SYNC BATCH 4 (card 0b550d89) flipped this to `true` when the fork pinned vitest
+    // ^2.1.0, whose configDefaults.exclude still included '**/dist/**'. Card 2f05b3e3 (the
+    // vitest major bump) is exactly the "revisit (flip back)" trigger that comment named: on
+    // vitest ^5.0.3, configDefaults.exclude no longer covers dist/** (matching the vitest-4
+    // premise the original, pre-0b550d89 version of this assertion encoded). The config's own
+    // explicit 'dist/**' entry (never removed) is now load-bearing again, not a redundant
+    // belt-and-suspenders -- this flip is exactly why removing it would have been premature.
     const byDefaultsOnly = configDefaults.exclude.some((p) => picomatch(p)('dist/__tests__/a.test.js'))
     expect(byDefaultsOnly).toBe(false)
   })

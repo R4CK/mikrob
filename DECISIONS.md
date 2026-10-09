@@ -17510,6 +17510,207 @@ Toroltem a ledger-fuggo bekezdest es parancsot, megtartva a fuggetlenul erteket 
 
 **Ki döntött:** backend3 (sajat hiba javitva a masodik fleet-test korben, mielott landolt volna).
 Gate: QA + Cybersec + Cybered (a kartya kerese szerint, valtozatlan).
+## 2026-10-09 -- 466decff: fleet-test.sh függőség-változásnál saját npm ci-t futtasson a landoló worktree-ben, a ROOT node_modules szimlink helyett
+
+Forrás: 2f05b3e3 (vitest major-emelés, backend2) landolási kísérlete. A `fleet-test.sh` a landoló eldobható
+worktree-be a ROOT (`/home/neon/marveen`, az élő klón) `node_modules`-át szimlinkelte
+feltétel nélkül, teljesítmény-okból (egy per-run `npm ci` dominálná egy ~20 másodperces suite
+futásidejét). Ez helyes addig, amíg a két fa `package-lock.json`-ja egyezik -- de egy
+függőség-emelő kártyánál (2f05b3e3: vitest 2.1.9 -> 5.0.3) a landoló merge eredménye MÁR az
+új lockfile-t hordozza, miközben a ROOT -- amit mindenki szimlinkel -- még a régin áll, amíg
+valaki külön nem frissíti. Mérve: a landolási log próbája "RUN v2.1.9"-et írt ki, holott a
+merge package.json-ja vitest ^5.0.3-at kér -- a szimlink csendben a RÉGI csomagokat tesztelte
+az ÚJ forrás ellen.
+
+MikroB döntése (msg 9853): a ROOT-ba KÖZVETLENÜL telepíteni (kézi `npm install`/`audit fix`)
+NEM megoldás -- az élő klón, a futó MikroB-szolgáltatás és minden párhuzamosan dolgozó ügynök
+fleet-test.sh futása ugyanazt a fát szimlinkeli, egy ottani install minden egyidejű landolást
+érintene (lásd a mopsion CPU-szemafor hibaosztályt, itt a fizikai fájlok is változnának futás
+közben, nem csak CPU-kontenció). Helyette strukturális javítás, ebben a kártyában: ha a
+worktree `package-lock.json`-ja ELTÉR a ROOT-étól, a `fleet-test.sh` a worktree-ben saját
+`npm --prefix "$TEST_TREE" ci --include=dev`-et futtat a szimlink helyett; ha a lockfile-ok
+egyeznek, a szimlink marad (a gyakori, költség-érzékeny eset). A ROOT `node_modules`-ához a
+script semmilyen ágon nem ír.
+
+**Implementáció:** `store/fleet-test.sh`, a node_modules-bekötő blokk (a korábbi feltétel
+nélküli `ln -s` helyén): `cmp -s` a két lockfile között dönt a két ág között; eltérésnél a
+meglévő szimlinket törli és `npm ci`-t futtat, egyezésnél a korábbi real-dir-et törli (ha egy
+előző eltérő futás hagyta ott) és visszaáll szimlinkre.
+
+**Teszt (kódelv 7, mutáció-bizonyítva):** új fájl, `src/__tests__/fleet-test-lockfile-diff-npm-ci.test.ts`
+-- statikus forrás-ellenőrzés (a diff-check megléte, a két ág helyes sorrendje, a ROOT
+node_modules-ára író parancs TILOS mintája) + 3 mutáció-proof eset (a diff-check törlése, az
+npm-ci ág törlése, az npm-ci célpontjának ROOT-ra cserélése -- mindhárom pirosra viszi a
+tesztet). Futtatva a worktree-ben (vitest 5.0.3, a 2f05b3e3 bump után): 5/5 zöld, nincs
+regresszió a kapcsolódó fleet-test.sh tesztfájlokon (`fleet-test-shares-cleancore-cpu-pool`,
+`fleet-test-cleans-before-checkout`, `fleet-test-native-binding-check`,
+`agent-worktree-marveen`, `symlinked-node-modules-guard-wiring`, `token-in-argv-guard`): 6 fájl,
+17033 teszt + 1 skip, mind zöld.
+
+**Blast-radius:** a `fleet-test.sh` a TELJES flotta landoló-szkriptje -- ez a javítás minden
+jövőbeli landolást érint, de csak AKKOR változtat viselkedést, ha egy branch lockfile-ja eltér
+a ROOT-étól (a megszokott, lockfile-t nem érintő landolásnál a szimlink-ág fut változatlanul).
+A VÉGSŐ ellenőrzés a `marveen-land.sh`-n át futó `fleet-test.sh` a merge eredményén (Gate-SHA
+sor), nem csak a worktree-beli direkt futás.
+
+**Ki döntött:** backend2 jelezte a leletet (msg 9852), MikroB adta a strukturális javítás
+irányát és nyitotta a kártyát predecessorként a 2f05b3e3 elé (msg 9853). Gate: QA + WhiteHat
+(supply-chain: npm ci a lock alapján, integrity).
+
+## 2026-10-09 -- fleet-test.sh: a worker-flag választás a telepített vitest major verzióját olvassa ki, nem egy commit-hoz van kötve (2f05b3e3 második landolási kísérlete)
+
+Forrás: 2f05b3e3 (vitest major-emelés) második landolási kísérlete. A kártya saját commitja a
+vitest-bump MELLETT a `fleet-test.sh` worker-flag választását is megváltoztatta (`--minWorkers 1
+--maxWorkers N` -> puszta `--maxWorkers N`, mert vitest 5 elutasítja a `--minWorkers`-t, vitest 2
+viszont a puszta `--maxWorkers`-t utasította el). Ez a flag-választás MAGA IS `fleet-test.sh`
+tartalmát érinti, tehát a dual-gate (88a0a5e1/03cff5c1) aktiválódik: a MAIN MÁR-landolt kópiája
+(amely a 466decff javítás óta a lockfile-eltérésnél valódi `npm ci`-t futtat a worktree-ben) a
+merge eredményén TÉNYLEGESEN telepíti a valódi vitest 5-öt, de a MAIN kópiájának SAJÁT,
+még-nem-landolt flag-logikája a RÉGI (vitest 2-re írt) `--minWorkers 1 --maxWorkers N`-t adja át
+neki -- `CACError: Unknown option \`--minWorkers\`` -- mielőtt a branch SAJÁT (már javított)
+kópiája egyáltalán lefuthatott volna. Ugyanaz a tojás-tyúk minta, mint a 466decff-nél, csak a
+flag-választásra, nem a node_modules-bekötésre.
+
+**Javítás:** a worker-flag választás most a `$TEST_TREE/node_modules/vitest/package.json`
+tényleges `version` mezőjét olvassa ki (`node -p "require(...).version.split('.')[0]"`), és erre
+ágaz: major >= 5 -> puszta `--maxWorkers`; major < 5 -> `--minWorkers 1` + `--maxWorkers` páros.
+Ezzel a választás a TÉNYLEGESEN telepített vitest-hez igazodik, nem ahhoz, melyik commit van
+kicsekkolva -- így ÖNÁLLÓAN landolható, egy dependency-bump commit-tól függetlenül, pontosan
+ahogy a 466decff lockfile-diff javítása is önállóan landolt.
+
+**Teszt:** `src/__tests__/fleet-test-shares-cleancore-cpu-pool.test.ts` frissítve: a statikus
+ellenőrzés most két `WORKER_ARGS=(...)` ágat vár (egy puszta `--maxWorkers`, egy páros) egy
+`vitest_major` detekcióval összekötve, nem egyetlen hardcoded alakot. A dinamikus próba
+(`flagsFromScript`) a SAJÁT repó tényleges telepített vitest-major-ja alapján választja ki,
+melyik ágat olvassa ki a szkriptből, és a NEGATIVE CONTROL is major-függő (vitest 5: lone
+`--minWorkers` -> "Unknown option"; vitest <5: lone `--maxWorkers` -> "must not conflict").
+Futtatva (vitest 5.0.3 telepítve ebben a worktree-ben): 16/16 zöld. Kapcsolódó
+fleet-test.sh-tesztek (`fleet-test-lockfile-diff-npm-ci`, `fleet-test-cleans-before-checkout`,
+`fleet-test-native-binding-check`): 14/14 zöld, nincs regresszió. `tsc --noEmit` tiszta.
+`lint-ratchet.sh`: 331 lelet, alapvonal tartja.
+
+**Blast-radius:** mint a 466decff, ez a `fleet-test.sh` TELJES flotta landoló-szkriptje -- ez a
+javítás minden jövőbeli landolást érint, de csak AKKOR változtat viselkedést, ha a telepített
+vitest major eltér a korábbi feltételezett verziótól. A VÉGSŐ ellenőrzés a `marveen-land.sh`-n át
+futó `fleet-test.sh` a merge eredményén (Gate-SHA sor).
+
+**Ki döntött:** backend2 mérte a REFUSED landolási kísérletben (a MAIN régi flag-logikája a valódi
+vitest 5 ellen `CACError`-t dobott), és a 466decff mintáját követve önállóan szétválasztotta a
+flag-detekciót a vitest-bump commitjától. Gate: QA + WhiteHat (a 2f05b3e3 kártya saját gate-jével
+azonos kockázati besorolás szerint).
+## 2026-10-09 -- 2f05b3e3: vitest major-emelés (2.1.9 -> 5.0.3 / vite 5.4.21 -> 8.3.4 / @vitejs/plugin-react 4.7.0 -> 6.1.2), 6 critical/high vitest-lánc advisory lezárva
+
+Forrás: 54f3f2cd (backend2, Gate-SHA 271a9194) a vitest/vite/tinypool/vite-node/@vitest-mocker/esbuild
+6 advisoryt dokumentált kivétellel hagyott nyitva (major bump igénye miatt), WhiteHat L1 (54f3f2cd gate,
+msg 9815, kártya 2f05b3e3 0. lépéseként idemásolva komment 13602-ben) rámutatott, hogy a kivétel két
+előfeltétele (nincs vitest --ui/--api, nincs vite dev-szerver) nem volt őrzve.
+
+**0. LÉPÉS -- őr-teszt a MikroB kérésre (komment 13602):**
+`src/__tests__/vitest-major-bump-attack-surface-guard.test.ts`, 5 eset: (a) nincs `vitest --ui`/`--api`
+script; (b) nincs önálló `vite` CLI-script (dev-szerver); (c) nincs `vite.config.ts/js/mts` a gyökérben;
+(d) `vitest.config.ts` nem állít `ui: true`/`api:`-t; (e) a `test` script `vitest run` (egylövetű).
+Mutáció-bizonyíték: `"debug-ui": "vitest --ui"` és `"debug-vite": "vite"` ideiglenes script-bejegyzés
+mindkettő a saját esetét PIROSRA vitte a pontos üzenettel, majd visszaállítva (git diff nulla) ZÖLD.
+
+**Alapvonal-mérés a bump ELŐTT (kódelv 7):** a worktree-ben direktben (`npx vitest run`, a worktree
+biztonságos erre -- `assert-not-live-install.ts` csak a LIVE installt tiltja), a `store/adopted/
+JuliusBrussee__caveman/**` gitignorolt, nem követett lokális könyvtárat kizárva (ez a landolás saját,
+tiszta checkoutjában nem is létezik): **887/887 fájl zöld, 30134 teszt + 101 skip = 30235.**
+
+**A bump:** `npm audit fix --force` (az `npm install` direkt verzió-megadással ERESOLVE-ra futott,
+feloldatlan okkal; a force-os audit-fix simán futott, 0 `npm ls` invalid). `tsc --noEmit` tiszta.
+
+**Mért regresszió a bump UTÁN, javítás előtt: 10/887 fájl piros, 25/30240 teszt piros** (sokkal kisebb,
+mint az 54f3f2cd kártyán mért 102/961 -- az eltérés: itt a `store/adopted/**` lokális zaj ki volt zárva
+a méréshez, és ez a bump már a 0. lépés őrét is tartalmazta). Két okcsoport, mindkettő előre jelzett:
+
+1. **vitest 5 5000ms alap test-timeout** (vitest 2.1.9-en nem volt ilyen szigorú korlát) -- 9 fájl,
+   24 teszt, mind HOSSZÚ ALFOLYAMATTAL dolgozó eset, ahol a subprocess-szintű timeout (execFileSync/
+   spawnSync `timeout:` opció, 20-180s) megvolt, de a vitest `it()`-szintű timeout nem lett emelve
+   mellé. Helyi, eset-szintű javítás (NEM globális elnyomás, kódelv a kártya szövege szerint):
+   explicit vitest-timeout minden érintett `it()`/`it.each`-en, a subprocess-cap fölé margóval --
+   `bash-egress-guard-wiring.test.ts`, `email-approval-gate.test.ts`, `landing-gate-verdict-check.test.ts`
+   (2 eset), `mopsion-script-rename-dual-invocation.test.ts` (3 eset, a 3. pontosan ezért bukott csak
+   2/3-at ezen a futáson -- időzítésfüggő, mindhármat konzisztensen javítva), `offload-batch-health.test.ts`,
+   `send-honesty-final.test.ts` (2 eset), `send-honesty-round2.test.ts` (1 eset),
+   `store-selftests-all-run.test.ts` (`it.each` 3. argumentuma 200_000ms, a 180_000ms subprocess-cap fölé).
+2. **`vitest-excludes-build-output.test.ts` utolsó esete** -- a saját komment ("Revisit (flip back)
+   if/when this fork upgrades to vitest 4") pontosan ezt a bumpot jelölte ki triggerként: vitest 5
+   `configDefaults.exclude`-ja már nem fedi a `dist/**`-et (upstream vitest-4 prémisze most igaz
+   erre a forkra is), a config saját explicit `dist/**` bejegyzése (sosem lett törölve) ismét
+   load-bearing. Assertion megfordítva `true` -> `false`, komment frissítve a tényleges verzióra.
+
+**Külön, előre nem jelzett lelet: `fleet-test-shares-cleancore-cpu-pool.test.ts` 2 esete (card 7bb39672).**
+A `fleet-test.sh` saját komentje ("WHEN THE VITEST MAJOR BUMP LANDS... RE-MEASURE THIS LINE") pontosan
+ezt várta. Mérve: vitest 2.1.9 ELUTASÍTOTTA a puszta `--maxWorkers`-t ("options.minThreads and
+options.maxThreads must not conflict"), ezért kellett mellé `--minWorkers 1`. vitest 5.0.3 MEGFORDÍTJA:
+a puszta `--maxWorkers` simán fut (igazodva a CleanCore oldali vitest 3.2.6 viselkedéshez, ami sosem
+igényelte a párosítást), míg a `--minWorkers` MÁR NEM ISMERT CLI-FLAG egyáltalán ("CACError: Unknown
+option `--minWorkers`") -- NULLA argumentummal is elbukik, ha jelen van. Javítás: `fleet-test.sh`
+`WORKER_ARGS=(--minWorkers 1 --maxWorkers "$MAX_WORKERS")` -> `WORKER_ARGS=(--maxWorkers "$MAX_WORKERS")`,
+a teszt statikus (forrás-szintű) és dinamikus (valódi vitest-indítás egy throwaway projekten) esetei
+frissítve az új iránnyal: a statikus ellenőrzés mostantól `--maxWorkers` meglétét ÉS `--minWorkers`
+HIÁNYÁT várja; a dinamikus NEGATIVE CONTROL a régi puszta `--maxWorkers` helyett puszta `--minWorkers`-t
+futtat (ez az, amit vitest 5 ténylegesen elutasít), "Unknown option" mintával.
+
+**Blast-radius:** a `store/adopted/**` kizárás, a `store-selftests-all-run.test.ts` discovery-je és a
+`fleet-test.sh` worker-flag minden landolást érint (ez a teljes suite szemafor-szkriptje) -- ezért a
+VÉGSŐ ellenőrzés a merge eredményén, a `marveen-land.sh`-n keresztül futó `fleet-test.sh` (lásd a
+REVIEW Gate-SHA sorát), nem csak a worktree-beli direkt futás.
+
+**Eredmény, a javítások UTÁN, a worktree-ben (ugyanazzal a `store/adopted/**` kizárással mint a
+bump előtti alapvonal):** 887/887 fájl zöld, 30139 teszt + 101 skip = 30240 (nincs eltűnt/gyengült
+teszt a bump előtti 30134+101-hez képest -- kódelv 7). `tsc --noEmit` tiszta. `eslint src`: 302
+probléma, `lint-ratchet.sh` szerint "no rule got worse (302 findings, baseline holds)" -- ugyanaz a
+baseline, amit az 54f3f2cd és a 3531538d kártya is mért, tehát a bump NEM termelt új lint-leletet.
+
+**Ki döntött:** a kártya saját szövege adta a feladatot (54f3f2cd maradék 6 advisoryjának lezárása),
+a WhiteHat L1 0. lépést adott hozzá (komment 13602), backend2 végrehajtotta mindkettőt és a bump
+közben felszínre került, előre jelzett CLI-flag regressziót is. Gate: QA + WhiteHat (supply-chain:
+lockfile-diff, új tranzitív függőségek).
+
+## 2026-10-09 -- fleet-test.sh: az npm-ci-vs-symlink ág behatárolva, szöveg-ellenőrzés helyett VISELKEDÉS-teszttel (WhiteHat F1-F3, kártya 5d365589, forrás: 466decff Gate-SHA 90ebf0f7)
+
+Forrás: WhiteHat GO a 466decff-re, de három lelettel az élő klón node_modules-ának védelmére.
+
+**F1 (MEDIUM, tesztlyuk):** a `[ -L "$TEST_TREE/node_modules" ] && rm -f "$TEST_TREE/node_modules"`
+sor (a szimlink ENTRY eltávolítása npm ci előtt) törlése mellett az akkori teszt (szöveg-alapú
+`includes(...)`) zöld maradt, holott VALÓDI `npm ci`-vel mérve: ha $TEST_TREE/node_modules még
+szimlink $ROOT/node_modules-ra, az npm ci reify-lépése ("Removing non-directory") NEM csak a
+szimlinket cseréli le -- feloldja a linket és a MÖGÖTTE álló $ROOT/node_modules TARTALMÁT üríti ki
+helyben. Scratch ROOT+TEST_TREE könyvtárral, élő marker-fájllal mérve: a sor NÉLKÜL a marker-fájl
+és a teszt-dependency is eltűnik $ROOT-ból; a sorral $ROOT tartalma érintetlen marad.
+
+**F2 (LOW):** ugyanaz a sor kommenttá alakítva a régi, szöveg-alapú teszt mellett ugyanúgy zöld
+marad -- ugyanaz a hiba, más álca.
+
+**F3 (LOW):** ha `FLEET_TEST_TREE=ROOT` (a teszt-fa maga az élő telepítés), a "lockfiles egyeznek"
+ág saját takarítása (`rm -rf ... ha létezik és nem szimlink`) az ÉLŐ node_modules-t törölné, mert
+ott az nem szimlink, hanem valódi könyvtár. Javítás ugyanazzal a már bevált mintával (lásd a
+sorokkal feljebb álló, a store-fájlok takarításánál már meglévő "SAFE ONLY BECAUSE" észrevétel):
+egy linked worktree `.git`-je MINDIG fájl, a fő klón `.git`-je MINDIG könyvtár -- a teljes
+npm-ci/szimlink blokk most `[ -f "$TEST_TREE/.git" ]` mögé van zárva, ha ez hamis (TEST_TREE maga
+ROOT), a blokk NEM csinál semmit (nincs mit linkelni/telepíteni, mert TEST_TREE már ROOT).
+
+**Teszt:** `src/__tests__/fleet-test-npm-ci-live-node-modules-guard.test.ts`, 6 eset. A teszt a
+VALÓDI szöveget futtatja: a store/fleet-test.sh-ban két sentinel-komment (`NPM_CI_SYMLINK_BLOCK_
+START`/`END`) közötti blokkot kivonja és VALÓDI `npm ci`-vel, scratch ROOT/TEST_TREE könyvtárral
+futtatja -- nem egy kézzel másolt stand-in-t. 2 "REAL CODE" eset (eltérő lockfile -> npm ci,
+egyező lockfile -> szimlink) + 2 mutáció-bizonyíték F1/F2-re (a sor törlése/kommentté alakítása
+ÉLŐ `npm ci`-vel valóban kiüríti $ROOT/node_modules-t, PIROSRA viszi a tesztet) + 1 "REAL CODE" +
+1 mutáció F3-ra (a `.git`-fájl-ellenőrzés eltávolítása FLEET_TEST_TREE=ROOT mellett törli
+node_modules-t). Futtatva: 6/6 zöld. Kapcsolódó fleet-test.sh-tesztek (`fleet-test-lockfile-diff-
+npm-ci`, `fleet-test-shares-cleancore-cpu-pool`, `fleet-test-cleans-before-checkout`, `fleet-test-
+native-binding-check`) együtt: 5 fájl, 36/36 zöld, nincs regresszió. `tsc --noEmit` tiszta.
+`lint-ratchet.sh`: 331 lelet, alapvonal tartja.
+
+**Blast-radius:** mint a 466decff/d45a4e7a, ez a flotta TELJES landoló-szkriptje -- a változás csak
+akkor módosít viselkedést, ha a lockfile eltér VAGY FLEET_TEST_TREE a fő klónra mutat; a megszokott
+(egyező lockfile, külön worktree) esetben semmi nem változik.
+
+**Ki döntött:** WhiteHat mérte és jelezte (466decff Gate-SHA 90ebf0f7, msg 9877), MikroB nyitotta a
+kártyát (5d365589), backend2 reprodukálta VALÓDI `npm ci`-vel (nem csak a lelet szövegéből
+feltételezve) és implementálta mindhárom javítást. Gate: QA + Cybersec (WhiteHat).
 
 ## 2026-10-09 -- Kartya 35dc6dbe (UPSTREAM-SYNC egress-klaszter): bash-egress-guard.py keyword-gap javitas
 

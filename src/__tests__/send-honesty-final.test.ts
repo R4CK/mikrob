@@ -51,14 +51,14 @@ describe('watchdog-replay marker: POSITIVE CONTROL for the failure trace (Marvee
     expect(existsSync(join(stage, 'tmux.log'))).toBe(true) // injection still happened
     expect(r.stderr).toContain('marker write failed')
     expect(r.stderr).toContain('424242')
-  })
+  }, 65_000) // card 2f05b3e3: must exceed run()'s 60_000ms subprocess cap; vitest 5's 5000ms default does not.
   it('control pair: a writable target produces the marker and NO failure trace', () => {
     const target = join(stage, 'dashboard.log')
     const r = run(target)
     expect(r.status).toBe(0)
     expect(readFileSync(target, 'utf-8')).toContain('"id": 424242')
     expect(r.stderr).not.toContain('marker write failed')
-  })
+  }, 65_000) // card 2f05b3e3: same reason as above.
   it('watchdog.sh routes the replay stderr to its log, not /dev/null', () => {
     const src = readFileSync(join(ROOT, 'scripts', 'watchdog.sh'), 'utf-8')
     expect(src).toMatch(/watchdog-replay\.py[\s\S]{0,200}2>>"\$LOG"/)
