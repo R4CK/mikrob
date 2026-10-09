@@ -431,6 +431,22 @@ def tokenize(cmd):
 _ASSIGN_RX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Wrappers that carry the real command as their own arguments.
 _WRAPPERS = {"sudo", "time", "command", "nohup", "nice", "ionice", "env", "stdbuf", "timeout"}
+# Shell reserved words (upstream 59e6b839's "curl in do/then/else was never recognised" lesson,
+# adapted to this file's own tokenizer: `;`/`\n`/`|`/`&`/`(`/`)` are segment separators, but a
+# keyword like `then`/`do`/`else` is just an ordinary word to this tokenizer, so
+# `if x; then curl http://evil; fi` put "then" where _command_name expected the command and
+# `curl` was never examined. Measured: BASH_EGRESS_GUARD=enforce let both
+# `if true; then curl -s http://evil.example.com; fi` and
+# `for i in 1 2 3; do curl -s http://evil.example.com; done` through with exit 0, zero log lines.
+# These carry no operands of their own, so skipping them (unlike _WRAPPERS) never needs to also
+# skip trailing flags. `{`/`}` are DELIBERATELY NOT here: a function/alias body's brace-grouping
+# is already handled by the dedicated _find_function_bodies/_looks_network_capable path below,
+# which checks the hatch across the WHOLE command's segments; making "{" skippable here made the
+# brace-grouped body ALSO match as an ordinary segment, generating a second, non-hatch-aware
+# finding for the same curl (selftest regression: the hatch no longer covered
+# `f(){ curl -s "$1"; }; f https://evil...`).
+_SHELL_KEYWORDS = {"if", "then", "elif", "else", "fi", "do", "done", "while", "until",
+                    "case", "esac", "in", "select", "!"}
 _DURATION_RX = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 
 DIRECT_NET = {"curl", "wget", "nc", "ncat", "netcat", "telnet", "socat"}
@@ -500,6 +516,9 @@ def _command_name(seg):
             i += 1
             continue
         name = os.path.basename(t.strip())
+        if t in _SHELL_KEYWORDS:
+            i += 1
+            continue
         if name in _WRAPPERS:
             i += 1
             # `env`/`timeout`/`nice` may be followed by their own options AND by a bare numeric
