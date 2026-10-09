@@ -17510,3 +17510,49 @@ Toroltem a ledger-fuggo bekezdest es parancsot, megtartva a fuggetlenul erteket 
 
 **Ki döntött:** backend3 (sajat hiba javitva a masodik fleet-test korben, mielott landolt volna).
 Gate: QA + Cybersec + Cybered (a kartya kerese szerint, valtozatlan).
+## 2026-10-09 -- 466decff: fleet-test.sh függőség-változásnál saját npm ci-t futtasson a landoló worktree-ben, a ROOT node_modules szimlink helyett
+
+Forrás: 2f05b3e3 (vitest major-emelés, backend2) landolási kísérlete. A `fleet-test.sh` a landoló eldobható
+worktree-be a ROOT (`/home/neon/marveen`, az élő klón) `node_modules`-át szimlinkelte
+feltétel nélkül, teljesítmény-okból (egy per-run `npm ci` dominálná egy ~20 másodperces suite
+futásidejét). Ez helyes addig, amíg a két fa `package-lock.json`-ja egyezik -- de egy
+függőség-emelő kártyánál (2f05b3e3: vitest 2.1.9 -> 5.0.3) a landoló merge eredménye MÁR az
+új lockfile-t hordozza, miközben a ROOT -- amit mindenki szimlinkel -- még a régin áll, amíg
+valaki külön nem frissíti. Mérve: a landolási log próbája "RUN v2.1.9"-et írt ki, holott a
+merge package.json-ja vitest ^5.0.3-at kér -- a szimlink csendben a RÉGI csomagokat tesztelte
+az ÚJ forrás ellen.
+
+MikroB döntése (msg 9853): a ROOT-ba KÖZVETLENÜL telepíteni (kézi `npm install`/`audit fix`)
+NEM megoldás -- az élő klón, a futó MikroB-szolgáltatás és minden párhuzamosan dolgozó ügynök
+fleet-test.sh futása ugyanazt a fát szimlinkeli, egy ottani install minden egyidejű landolást
+érintene (lásd a mopsion CPU-szemafor hibaosztályt, itt a fizikai fájlok is változnának futás
+közben, nem csak CPU-kontenció). Helyette strukturális javítás, ebben a kártyában: ha a
+worktree `package-lock.json`-ja ELTÉR a ROOT-étól, a `fleet-test.sh` a worktree-ben saját
+`npm --prefix "$TEST_TREE" ci --include=dev`-et futtat a szimlink helyett; ha a lockfile-ok
+egyeznek, a szimlink marad (a gyakori, költség-érzékeny eset). A ROOT `node_modules`-ához a
+script semmilyen ágon nem ír.
+
+**Implementáció:** `store/fleet-test.sh`, a node_modules-bekötő blokk (a korábbi feltétel
+nélküli `ln -s` helyén): `cmp -s` a két lockfile között dönt a két ág között; eltérésnél a
+meglévő szimlinket törli és `npm ci`-t futtat, egyezésnél a korábbi real-dir-et törli (ha egy
+előző eltérő futás hagyta ott) és visszaáll szimlinkre.
+
+**Teszt (kódelv 7, mutáció-bizonyítva):** új fájl, `src/__tests__/fleet-test-lockfile-diff-npm-ci.test.ts`
+-- statikus forrás-ellenőrzés (a diff-check megléte, a két ág helyes sorrendje, a ROOT
+node_modules-ára író parancs TILOS mintája) + 3 mutáció-proof eset (a diff-check törlése, az
+npm-ci ág törlése, az npm-ci célpontjának ROOT-ra cserélése -- mindhárom pirosra viszi a
+tesztet). Futtatva a worktree-ben (vitest 5.0.3, a 2f05b3e3 bump után): 5/5 zöld, nincs
+regresszió a kapcsolódó fleet-test.sh tesztfájlokon (`fleet-test-shares-cleancore-cpu-pool`,
+`fleet-test-cleans-before-checkout`, `fleet-test-native-binding-check`,
+`agent-worktree-marveen`, `symlinked-node-modules-guard-wiring`, `token-in-argv-guard`): 6 fájl,
+17033 teszt + 1 skip, mind zöld.
+
+**Blast-radius:** a `fleet-test.sh` a TELJES flotta landoló-szkriptje -- ez a javítás minden
+jövőbeli landolást érint, de csak AKKOR változtat viselkedést, ha egy branch lockfile-ja eltér
+a ROOT-étól (a megszokott, lockfile-t nem érintő landolásnál a szimlink-ág fut változatlanul).
+A VÉGSŐ ellenőrzés a `marveen-land.sh`-n át futó `fleet-test.sh` a merge eredményén (Gate-SHA
+sor), nem csak a worktree-beli direkt futás.
+
+**Ki döntött:** backend2 jelezte a leletet (msg 9852), MikroB adta a strukturális javítás
+irányát és nyitotta a kártyát predecessorként a 2f05b3e3 elé (msg 9853). Gate: QA + WhiteHat
+(supply-chain: npm ci a lock alapján, integrity).
