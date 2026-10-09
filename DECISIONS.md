@@ -17360,3 +17360,32 @@ backend2 nyit MikroB-nak jelezve, a fenti meresekkel alatamasztva).
 **Ki döntött:** a kártya saját szövege adta a két utat ("major bump VAGY dokumentált kivétel");
 backend2 a kivétel-utat választotta, miután a bumpot ténylegesen megmérte és 102/961 fájlos
 regressziót talált. Gate: QA + WhiteHat.
+
+## 2026-10-09 -- 3531538d: assert-not-live-install.ts / isTmpRootedPath backlog-korrekció (WhiteHat L1, 26083811 gate)
+
+WhiteHat lelete a 26083811 gate-en (GO @ 855ec2f5, msg 9807): a `src/__tests__/setup/
+assert-not-live-install.ts` UNANCHORED_BACKLOG-indoklása rossz volt. A korábbi indoklás ("nincs
+production fact, amire anchorolni lehetne") a `context-guard.test.ts`-szel azonos kategóriába
+sorolta, de ez a fájl NEM teszt -- nincs benne `describe`/`it` blokk, egy vitest `setupFiles`
+guard valódi, futó elutasítás-logikával (marker-alapú live-install detekció). A "teszt a saját
+másolatát deklarálhatja" indok, ami a `__tests__`-kizáró szabály mögött áll, ide nem vonatkozik:
+nincs olyan teszt-assertion mechanizmus, ami egy `isTmpRootedPath` másolatot hamisíthatna.
+
+**Javítás:**
+- `ACKNOWLEDGED_FORK_ANCHORS['src/__tests__/setup/assert-not-live-install.ts']` = `{needle:
+  'isTmpRootedPath', file: 'src/__tests__/setup/assert-not-live-install.ts', expect: 'absent'}`.
+- `fork-upstream-conflict-guard.test.ts`: `SETUP_GUARD_EXCEPTIONS` lista (egyelemű, csak ez a
+  fájl) carve-out a "production fájl, nem teszt" szabály alól, névvel indokolva a kódban.
+- Törölve az `UNANCHORED_BACKLOG`-ból, a komment-blokk bejegyzése CORRECTED jelöléssel cserélve
+  (a 26083811 eredeti szövege nem íródott át, a korrekció új dátummal/kártyával van jelölve).
+
+**Mutáció-bizonyíték:** a fájlba ideiglenesen beszúrva egy `isTmpRootedPath` függvény -> a "every
+declared anchor holds on the CURRENT tree" teszt PIROS lett, pontosan az elvárt üzenettel
+("expected 'isTmpRootedPath' absent ... found=true"); visszaállítva (`git diff` nulla), a teszt
+ismét ZÖLD.
+
+**Ellenőrzés:** fork-upstream-conflict-guard.test.ts 39/39 zöld, agent-dir-namespace-runtime.test.ts-szel
+együtt 59/59, tsc --noEmit tiszta, eslint tiszta.
+
+**Ki döntött:** WhiteHat lelete (26083811 gate, msg 9807), backend2 végrehajtotta.
+Gate: QA.
