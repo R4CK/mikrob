@@ -16521,3 +16521,29 @@ most sosem vendorolodnak). Teszt: `src/__tests__/vendor-skill-subdir-scope.test.
 caveman-alaku monorepo-fixturan: root-vendor nested SKILL.md-t ad, subdir-vendor sajat-gyokerbe
 teszi, nem hozza at a scope-on kivuli tartalmat, a VENDORED.md a szukitett subdir-t rogziti).
 Gate: QA + WhiteHat (supply-chain).
+
+**2026-10-09, kartya 5d1bb755 (backend2): npm fuggosegek biztonsagi frissitese (production).**
+Heti self-audit lelete (6 advisory `npm audit --omit=dev`-en): HIGH `@modelcontextprotocol/sdk`
+1.12.0-1.30.1 (GHSA-6qxp-vccf-f47h, OAuth kliens rossz authorization-szerverhez kuldhet hitelesito
+adatot), CRITICAL `proxy-addr` 1.1.0-2.0.7 (GHSA-jqcg-44mw-7w3h, IP-hamisitas IPv4-mapped IPv6
+trust subneten -- a card eredetileg MODERATE-nek irta CVSS 9.1-gyel, az advisory sulyossaga kozben
+CRITICAL-ra frissult upstream, a friss `npm audit` szerint jarva), + 4 MODERATE (`fast-copy`
+stack-exhaustion, `fast-uri` host-case-normalizacio, `hono` tobb XSS/parser-hiba, `ip-address`
+SSRF/trust-boundary 4 CVE). Reachability: `@modelcontextprotocol/sdk` es `express`->`proxy-addr`
+a sajat kodunkban SEHOL nincs kozvetlenul importalva (csak @anthropic-ai/claude-agent-sdk peer
+dependency-je szerint telepitve) -- de mind a 6 advisory-hoz `npm audit fix` nem-torő (non-force)
+javitast ajanlott, tehat a bump VEGREHAJTVA fuggetlenul a reachability-tol (defense-in-depth,
+semmi ok a kitettsegre varni, ha ingyen javithato). Minden bump PATCH/MINOR volt a mar meglevo
+package.json semver-tartomanyon belul (1.30.0->1.32.1 sdk, 4.0.4->4.1.2 fast-copy, 3.1.7->3.1.8
+fast-uri, 4.13.3->4.13.13 hono, 10.5.0->10.7.3 ip-address, 2.0.7->2.0.8 proxy-addr) -- package.json
+NEM valtozott, csak package-lock.json. `npm audit --omit=dev` utana: 0 lelet. A worktree-ben
+futtatva (NEM a fo klonban): a backend2 worktree node_modules-a `store/agent-worktree-deps.sh
+backend2` altal mar VALODI konyvtarra volt alakitva (nem szimlink a fo klonba), ezert a marveen
+telepito-tilalom erre a worktree-re nem allt -- ellenorizve `--check`-kel kodolas elott, a CLAUDE.md
+root szabalya szerint. A `npm audit fix --omit=dev` elobb levette a dev-fuggosegeket (vitest
+elerhetetlenne valt), ezert utana teljes `npm install` kellett a dev-deps visszaallitasahoz --
+ez 8, dev-only (vitest/vite/esbuild/tinypool toolchain) advisory-t hozott vissza napvilagra, ami
+csak `vitest@5.0.3`-ra (breaking major) `--force`-szal javithato. Ez a card kiindulo keretezese
+(`npm audit --omit=dev`, production-scope) szerint HATARKOR KIVUL marad, kulon dontes kell
+(vitest major-bump + teljes teszt-suite re-validalas), nem resze ennek a kartyanak. Gate:
+QA + WhiteHat.
