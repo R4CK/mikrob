@@ -805,6 +805,44 @@ describe('no shipped script, template or GENERATOR puts a Bearer token in curl a
   })
 })
 
+// RedHat NO-GO, card 1a046537 (upstream-sync batch 5, Gate-SHA 4102ef36): the curl-only scanner
+// above missed a THIRD argv shape entirely -- a token handed to `python3 - "$PORT" "$TOKEN" ...`
+// as a positional arg (seed-scheduled-tasks/nap-zaro/SKILL.md), which /proc/<pid>/cmdline exposes
+// exactly like a curl argv token does. Fixed there by moving the token into the ENVIRONMENT
+// (`TOKEN="$TOKEN" python3 - "$PORT" ...` + `os.environ['TOKEN']`), the same accepted boundary
+// every other fixed script in this corpus already uses. This is the regression test the gate
+// asked for, scoped to the token's own name so it does not also flag $PORT/$SINCE/other argv.
+describe('no shipped script hands the dashboard Bearer token to python3 as a positional argument', () => {
+  const corpus: Array<{ dir: string; file: string }> = [
+    { dir: REPO_ROOT, file: 'CLAUDE.md' },
+    ...STORE_SCRIPTS.map((file) => ({ dir: STORE_DIR, file })),
+    ...SCRIPTS_SCRIPTS.map((file) => ({ dir: SCRIPTS_DIR, file })),
+    ...SEED_SKILL_DOCS.map((file) => ({ dir: SEED_SKILLS_DIR, file })),
+    ...SEED_AGENT_DOCS.map((file) => ({ dir: SEED_FLEET_AGENTS_DIR, file })),
+    ...SEED_TASK_DOCS.map((file) => ({ dir: SEED_TASKS_DIR, file })),
+    ...TEMPLATE_DOCS.map((file) => ({ dir: TEMPLATES_DIR, file })),
+    ...INSTALLED_AGENT_DOCS.map((file) => ({ dir: INSTALLED_AGENTS_DIR, file })),
+    ...SRC_FILES.map((file) => ({ dir: SRC_DIR, file })),
+  ]
+
+  it.each(corpus)('$file: no `python3 ... "$TOKEN"` positional-argument shape', ({ dir, file }) => {
+    const source = readFileSync(join(dir, file), 'utf-8')
+    // Only the text AFTER the `python3` token counts as ITS argv -- `"$TOKEN"` appearing BEFORE
+    // it on the same line belongs to an earlier pipe segment (printf feeding curl, e.g. `printf
+    // ... "$TOKEN" | curl -H @- ... | python3 -c "..."`, the SAFE pattern used everywhere else in
+    // this corpus) or an env-var prefix assignment (`TOKEN="$TOKEN" python3 - ...`, the fix this
+    // test exists to pin) -- neither is python3's own argv.
+    const offender = source.split('\n').find((line) => {
+      if (/^\s*#/.test(line)) return false
+      const m = line.match(/\bpython3\b/)
+      if (!m) return false
+      const after = line.slice(m.index! + m[0].length)
+      return /"\$TOKEN"/.test(after)
+    })
+    expect(offender, `${file}: found a python3 invocation passing $TOKEN positionally: ${offender}`).toBeUndefined()
+  })
+})
+
 describe('the scanner itself catches what a naive single-line regex would miss', () => {
   it('flags a Bearer header split onto a CONTINUATION line (the offload-dispatch.sh miss)', () => {
     const script = [
