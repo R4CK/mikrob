@@ -73,6 +73,7 @@ import {
   GIT_LEADING_RX,
 } from './self-pace-gate.mjs'
 import { homedir } from 'node:os'
+import { loadLedger, isVerifiedIn, splitAddresses, SOURCE_HELP } from './recipient-ledger.mjs'
 
 // Bash command patterns that send mail. SUBGATEPOZ822 (2026-08-22): these are
 // no longer the primary trigger -- they matched CONTENT anywhere in the
@@ -418,16 +419,80 @@ function bareToolName(qualifiedName) {
   return idx === -1 ? qualifiedName : qualifiedName.slice(idx + 2)
 }
 
+// Draft-editing/creating MCP tools. Drafting (and editing a draft) is allowed, but the ADDRESS
+// still has to be verified: the owner presses send on what we typed, so an invented address
+// reaches the outside world through a draft or a draft EDIT just as surely as through a send.
+// update_draft is INCLUDED here on purpose, superseding card 498d53c1's blanket exclusion of it
+// from the safe-list (EMAIL_SAFE_TOOL_RE, below, still does not list it -- so without this check
+// it would fall to the generic server deny-by-default and be refused outright). That exclusion
+// was collateral from the server-wide sweep, not a targeted finding about update_draft's own
+// recipient risk; the ledger check is the more precise control for exactly that risk, so a call
+// that does not touch the recipient at all (no to/cc/bcc field present -- e.g. a body-only edit)
+// is unaffected, while one that does gets the SAME verification create_draft already has.
+const DRAFT_TOOL_RE = /(^|__)(create[-_]draft|update[-_]draft|draft[-_][a-z]+)$/i
+
+// RECOVERYPATH920: the recovery command in the deny message used to be the
+// relative `node scripts/recipient-ledger.mjs`. Sub-agents run with cwd
+// agents/<name>/, which has NO scripts/ directory, so from a gated agent the
+// command died with "Cannot find module .../agents/<name>/scripts/
+// recipient-ledger.mjs" -- the one path the gate offers was unreachable from
+// the only place it is ever read. Resolve it from this file's own location:
+// the gate script and the ledger CLI ship in the same directory, so this is
+// correct from any cwd.
+const LEDGER_CLI = join(dirname(fileURLToPath(import.meta.url)), 'recipient-ledger.mjs')
+
+// Tool-input fields that carry recipient addresses across the mail tools we
+// have. A reply that only names a messageId has none of these -- it is
+// addressed by the thread, not by us, so there is nothing to invent.
+const RECIPIENT_FIELDS = ['to', 'cc', 'bcc', 'recipients', 'recipient', 'recipient_email']
+
+// Every address in this call that the ledger does not know. Pure: the lookup is
+// injected so tests never touch the real ledger file.
+export function unverifiedRecipients(toolInput, isVerified) {
+  const out = []
+  for (const field of RECIPIENT_FIELDS) {
+    const value = toolInput?.[field]
+    if (value === undefined || value === null || value === '') continue
+    for (const addr of splitAddresses(value)) {
+      if (!isVerified(addr) && !out.includes(addr)) out.push(addr)
+    }
+  }
+  return out
+}
+
+// Default lookup for the live hook: read the ledger once per invocation. A
+// missing or corrupt ledger means nothing is verified, so the gate blocks --
+// an evidence store that cannot be read must never open the gate silently.
+function ledgerLookup() {
+  const ledger = loadLedger()
+  return (addr) => isVerifiedIn(ledger, addr)
+}
+
 // Pure decision: does this tool call send (or attempt to send) email?
 // Returns { deny, kind? }. `kind` selects the deny wording at the hook
 // entrypoint: 'draft-required' is the manage_email case (drafting is fine,
 // only the actual send is refused), 'send_email' is the direct MCP send tool
-// (the only path the thread-reply capability below can narrow), everything
-// else is the sub-agent governance block.
-export function gateDecision(toolName, toolInput) {
+// (the only path the thread-reply capability below can narrow),
+// 'unverified-recipient' is a draft/manage_email address with no recorded
+// source, and everything else is the sub-agent governance block.
+export function gateDecision(toolName, toolInput, isVerified = null) {
   const name = String(toolName ?? '')
+  // Lazy: only build the ledger lookup when a call actually carries addresses,
+  // so a read-shaped tool call never pays a file read.
+  const verify = isVerified ?? (() => {
+    let cached = null
+    return (addr) => (cached ??= ledgerLookup())(addr)
+  })()
   // Any MCP send_email tool, name-agnostic (gmail or a differently-named
   // server in a customer install -> the matcher + this both key on send_email).
+  // Deliberately NOT ledger-checked. This branch is either an unconditional
+  // deny, or -- with --allow-thread-reply -- a narrowing that only passes
+  // recipients read back from the live thread the reply belongs to. A
+  // participant of a thread we can read IS a sourced address in the same sense
+  // the ledger means it (the From header of a mail they sent us), so gating it
+  // against the file would refuse a legitimately sourced reply. The ledger
+  // guards the paths where an address can be typed from memory: drafting and
+  // manage_email.
   if (/send_email/i.test(name)) return { deny: true, kind: 'send_email' }
   // The claude.ai Gmail connector (mcp__claude_ai_Gmail__*) has no send_email:
   // its sends are send_message / reply / forward. Drafts stay allowed and the
@@ -438,9 +503,18 @@ export function gateDecision(toolName, toolInput) {
   // entrypoint reads send_email-shaped fields (threadId/to), which a connector
   // reply does not carry, so the connector stays fully gated for every agent.
   if (/gmail__(reply|reply_all|send_message|forward)$/i.test(name)) return { deny: true, kind: 'connector-send' }
-  // Card 498d53c1: everything ELSE on a gmail__/resend__ server (send_draft, resend's
-  // send-email/send-batch-emails/create-domain/rotate-webhook-signing-secret/... and any
-  // future tool neither of the two checks above named) is a send unless explicitly safelisted.
+  // Ledger check for every draft-editing/creating verb (create_draft, update_draft, draft_*) --
+  // BEFORE the generic server deny-by-default below, so a draft (or a draft edit) with a
+  // VERIFIED recipient is allowed, while one that names an unrecorded address is denied with the
+  // precise 'unverified-recipient' reason instead of the generic server sweep.
+  if (DRAFT_TOOL_RE.test(name)) {
+    const bad = unverifiedRecipients(toolInput, verify)
+    if (bad.length) return { deny: true, kind: 'unverified-recipient', addresses: bad }
+    return { deny: false }
+  }
+  // Card 498d53c1: everything ELSE on a gmail__/resend__ server (send_draft,
+  // resend's send-email/send-batch-emails/create-domain/rotate-webhook-signing-secret/... and any
+  // future tool neither of the checks above named) is a send unless explicitly safelisted.
   if (EMAIL_SERVER_RE.test(name) && !EMAIL_SAFE_TOOL_RE.test(bareToolName(name))) {
     return { deny: true, kind: 'email-server-default-deny' }
   }
@@ -453,6 +527,10 @@ export function gateDecision(toolName, toolInput) {
   if (/(^|__)manage_email$/i.test(name)) {
     const op = String(toolInput?.operation ?? '').toLowerCase()
     if (!MANAGE_EMAIL_SEND_OPS.has(op)) return { deny: false }
+    // The address check runs before the draft rule, so it applies to the send
+    // AND to the draft the deny message would send us back to write.
+    const bad = unverifiedRecipients(toolInput, verify)
+    if (bad.length) return { deny: true, kind: 'unverified-recipient', addresses: bad }
     // Fail safe: only an explicit draft request passes. A missing/ambiguous
     // flag is treated as a real send, even though the server would itself
     // force a draft when attachments are present.
@@ -490,6 +568,27 @@ export function buildDraftOnlyMsg(ownerName) {
     'Ird meg ugyanezt draft: true kapcsoloval, es jelezd a tulajdonosnak ' +
     `(${ownerName}), hogy a Gmail piszkozatok kozott varja a jovahagyasat. ` +
     'Csak VERIFIKALT cimre. A kuldes gombot ember nyomja meg.'
+  )
+}
+
+// Deny wording for an address the ledger does not know. This is the one deny
+// the agent can clear on its own -- by going and finding where the address
+// actually comes from. It names the exact command, so the cheap path is the
+// correct path and not "write it anyway".
+export function buildUnverifiedRecipientMsg(addresses) {
+  const list = addresses.join(', ')
+  const first = addresses[0] ?? 'cim@pelda.hu'
+  return (
+    `Nem igazolt cimzett: ${list}. ` +
+    'Ez a kapu azert van, mert egy kitalalt cimre meno level neman elveszik ' +
+    '(support@connectors.hu, 2026-08-14, 550 User doesn\'t exist). ' +
+    'Ne talalgass es ne a support@/info@ szokast hasznald: keresd meg a cimet ' +
+    'egy valodi forrasban -- a toluk kapott level From fejleceben ' +
+    '(manage_email search: from:<domain> in:anywhere), az elo oldalukon, ' +
+    'a Woo rendelesben vagy a Notion lapon. Aztan vedd fel a ledgerbe:\n' +
+    `  node ${LEDGER_CLI} add ${first} --source <forras> --note "<honnan>"\n` +
+    `  --source: ${SOURCE_HELP}\n` +
+    'Ha nem talalsz forrast, a cim NINCS meg: mondd meg a gazdanak, ne kuldj levelet.'
   )
 }
 
@@ -756,9 +855,13 @@ if (isInvokedDirectly(import.meta.url)) {
   } catch {
     allow() // malformed/empty input must never break the agent's tool calls
   }
-  const { deny: shouldDeny, kind } = gateDecision(payload?.tool_name, payload?.tool_input)
+  const { deny: shouldDeny, kind, addresses } = gateDecision(payload?.tool_name, payload?.tool_input)
   if (shouldDeny) {
     const { botName, ownerName } = readBrandEnv()
+    // An address with no recorded source loses before every other branch,
+    // including the thread-reply narrowing below: a verified thread cannot
+    // vouch for an unsourced recipient.
+    if (kind === 'unverified-recipient') deny(buildUnverifiedRecipientMsg(addresses ?? []))
     if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
     // Thread-scoped narrowing: only when the scaffold wired this agent's hook
     // command with the flag (capability-driven, regenerated on every spawn),
