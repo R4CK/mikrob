@@ -48,6 +48,8 @@ import {
   writeAgentAuthMode,
   readAgentClaudePlan,
   writeAgentClaudePlan,
+  readAgentCustomProvider,
+  writeAgentCustomProvider,
   readAgentMemoryIsolation,
   writeAgentMemoryIsolation,
   readAgentClaudeConfigDir,
@@ -489,6 +491,10 @@ interface AgentSummary {
   /** Named Claude subscription plan id (see claude-plans.ts), or null when the
    *  agent uses the raw claudeConfigDir / default resolution. */
   claudePlan: string | null
+  /** Optional per-agent custom provider id. Pure storage only (card 96c00ee5)
+   *  -- NOT yet wired to anything that launches an agent; the registry and
+   *  the launch-env wiring are a separate, security-reviewed card (f1800242). */
+  customProvider: string | null
   team: TeamConfig
   hasTelegram: boolean
   telegramBotUsername?: string
@@ -638,6 +644,7 @@ async function getAgentSummary(name: string): Promise<AgentSummary> {
     authMode: readAgentAuthMode(name),
     securityProfile: readAgentSecurityProfile(name),
     claudePlan: readAgentClaudePlan(name),
+    customProvider: readAgentCustomProvider(name),
     team: readAgentTeam(name),
     hasTelegram: tg.hasTelegram,
     telegramBotUsername: tg.botUsername,
@@ -2408,6 +2415,7 @@ function compactPrompt(): string {
     const data = JSON.parse(body.toString()) as {
       claudeMd?: string; soulMd?: string; mcpJson?: string; model?: string
       authMode?: AuthMode; apiKey?: string; claudePlan?: string; memoryIsolation?: boolean
+      customProvider?: string
       modelProfile?: string | null
     }
 
@@ -2501,6 +2509,11 @@ function compactPrompt(): string {
         return true
       }
       writeAgentClaudePlan(name, planId)
+    }
+    // Pure storage (card 96c00ee5): no registry to validate against yet, and
+    // no launch path reads this field -- that wiring is card f1800242.
+    if (data.customProvider !== undefined) {
+      writeAgentCustomProvider(name, data.customProvider)
     }
     json(res, { ok: true })
     return true

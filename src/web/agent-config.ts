@@ -565,6 +565,35 @@ export function writeAgentClaudePlan(name: string, planId: string): void {
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+// Optional per-agent custom provider id (card 96c00ee5, split from 6b10a6b8's
+// deferred customProvider item). Pure string storage, same shape as
+// claudePlan above -- NO registry validation here, because the registry
+// (listCustomProviders()) and the launch-env wiring that would actually
+// consume this value are a separate, security-reviewed card (f1800242): a
+// per-agent provider field selecting an unconnected launch path is inert
+// until that card lands, by design.
+export function readAgentCustomProvider(name: string): string | null {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    const config = JSON.parse(readFileOr(configPath, '{}'))
+    const value = config.customProvider
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  } catch { /* fall through */ }
+  return null
+}
+
+// Set (non-empty string) or clear (empty/whitespace) the per-agent custom
+// provider id.
+export function writeAgentCustomProvider(name: string, providerId: string): void {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  const trimmed = providerId.trim()
+  if (trimmed) config.customProvider = trimmed
+  else delete config.customProvider
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 // Sentinel filename. A subdirectory under agents/ that contains this empty
 // file is treated as a TECHNICAL worker, not a first-class agent: it stays
 // out of listAgentNames() (so it never appears on the dashboard, in the
