@@ -203,7 +203,7 @@ describe('offload batch health signal (card 5f00664c)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  })
+  }, 15_000) // card 2f05b3e3: the curl round-trip + subprocess here can exceed vitest 5's 5000ms default.
 
   // INSTALLED GATE (card 5595afa7): the batch must not spend a board-fetch plus a per-candidate
   // draft-check HTTP round-trip when the local LLM is not installed/masked -- it should bail with

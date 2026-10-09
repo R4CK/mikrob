@@ -33,7 +33,7 @@ describe('landing gate-verdict check', () => {
     // A counted number, not a literal: a harness that could report success with zero cases run
     // would be worse than no harness.
     expect(out).toMatch(/selftest: [1-9]\d* case\(s\), PASS/)
-  })
+  }, 130_000) // card 2f05b3e3: must exceed the 120_000ms subprocess cap above; vitest 5's 5000ms default does not.
 
   // THE WIRING. Cybersec's LOW on card 171c9f42, and it was right: the two tests that used to sit
   // here asserted on the landers' SOURCE TEXT (`toContain` of the exact call line), and mutating
@@ -52,7 +52,7 @@ describe('landing gate-verdict check', () => {
     expect(out).toContain('ok   --allow-ungated DOES tolerate a merely-missing verdict')
     // ...and the return-code contract those two rest on.
     expect(out).toContain('ok   a FAILING verdict returns 2')
-  })
+  }, 130_000) // card 2f05b3e3: must exceed the 120_000ms subprocess cap above; vitest 5's 5000ms default does not.
 
   // These remain source-level on purpose, and only for the three things that were actually WRONG
   // -- each is a defect Cybersec measured, and each assertion fails if the fix is reverted. What

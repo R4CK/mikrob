@@ -64,19 +64,15 @@ describe('the suite does not collect its own build output', () => {
     expect(excluded('node_modules/vitest/dist/x.test.js')).toBe(true)
   })
 
-  it("vitest's own defaults cover dist on this fork's installed version (vitest ^2.1.0)", () => {
-    // UPSTREAM-SYNC BATCH 4 (card 0b550d89): this test's ORIGINAL assertion (expected false)
-    // was written against vitest 4, where configDefaults.exclude dropped to just
-    // ['**/node_modules/**', '**/.git/**'] -- true upstream, measured there. This fork's
-    // package.json pins "vitest": "^2.1.0" (the installed version at merge time: 2.1.9, per
-    // `node -e "require('vitest/dist/config.cjs').configDefaults.exclude"`), whose defaults
-    // STILL include '**/dist/**' -- the opposite of upstream's premise. The config's own
-    // 'dist/**' entry is harmless (a redundant-but-correct belt-and-suspenders on 2.x, and
-    // the one thing standing between the suite and a double-collected run if this fork ever
-    // upgrades to vitest 4). Flipped to assert the fork's actual, measured behaviour rather
-    // than importing a premise true only on a vitest major version this fork does not run.
-    // Revisit (flip back) if/when this fork upgrades to vitest 4.
+  it("vitest's own defaults no longer cover dist on this fork's installed version (vitest ^5.0.3)", () => {
+    // UPSTREAM-SYNC BATCH 4 (card 0b550d89) flipped this to `true` when the fork pinned vitest
+    // ^2.1.0, whose configDefaults.exclude still included '**/dist/**'. Card 2f05b3e3 (the
+    // vitest major bump) is exactly the "revisit (flip back)" trigger that comment named: on
+    // vitest ^5.0.3, configDefaults.exclude no longer covers dist/** (matching the vitest-4
+    // premise the original, pre-0b550d89 version of this assertion encoded). The config's own
+    // explicit 'dist/**' entry (never removed) is now load-bearing again, not a redundant
+    // belt-and-suspenders -- this flip is exactly why removing it would have been premature.
     const byDefaultsOnly = configDefaults.exclude.some((p) => picomatch(p)('dist/__tests__/a.test.js'))
-    expect(byDefaultsOnly).toBe(true)
+    expect(byDefaultsOnly).toBe(false)
   })
 })

@@ -115,20 +115,20 @@ describe.each(CASES)('$oldName -> $newName', ({ oldName, newName, args, expectSu
     const { status, output } = run(oldPath, args)
     expect(status, output).toBe(expectStatus)
     expect(output).toContain(expectSubstring)
-  })
+  }, 35_000) // card 2f05b3e3: must exceed run()'s 30_000ms subprocess cap; vitest 5's 5000ms default does not.
 
   it('the NEW name actually starts and runs, identically', () => {
     const { status, output } = run(newPath, args)
     expect(status, output).toBe(expectStatus)
     expect(output).toContain(expectSubstring)
-  })
+  }, 35_000) // card 2f05b3e3: same reason as above.
 
   it('old-name and new-name invocations produce the IDENTICAL result (same file via symlink)', () => {
     const viaOld = run(oldPath, args)
     const viaNew = run(newPath, args)
     expect(viaOld.status).toBe(viaNew.status)
     expect(viaOld.output).toBe(viaNew.output)
-  })
+  }, 65_000) // card 2f05b3e3: two sequential 30_000ms-capped runs; vitest 5's 5000ms default does not cover even one.
 })
 
 // Negative control (rule 12 / karpathycoder discipline): if the symlink or the rename were
