@@ -60,16 +60,3 @@ export function keychainStore(value: string): void {
     '-A',
   ], { stdio: ['ignore', 'ignore', 'ignore'], timeout: SECURITY_TIMEOUT_MS })
 }
-
-export function keychainDelete(): boolean {
-  try {
-    execFileSync(SECURITY, [
-      'delete-generic-password',
-      '-s', SERVICE,
-      '-a', ACCOUNT,
-    ], { stdio: ['ignore', 'ignore', 'ignore'], timeout: SECURITY_TIMEOUT_MS })
-    return true
-  } catch {
-    return false
-  }
-}

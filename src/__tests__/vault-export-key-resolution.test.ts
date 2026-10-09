@@ -39,7 +39,6 @@ vi.mock('../web/keychain.js', () => ({
   keychainStore: () => {},
   keychainRetrieveStatus: () => keychainRead,
   keychainRetrieve: () => keychainRead.value,
-  keychainDelete: () => true,
 }))
 
 // Heavy deps fleet-transfer imports but exportVault does not exercise.
