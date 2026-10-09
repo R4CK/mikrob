@@ -263,6 +263,20 @@ def main():
     if args.selftest:
         return selftest()
 
+    # WhiteHat M1 (card 7ed0c7bd, follow-up on 14216622): a crash here (e.g. a corrupted
+    # baseline file) used to exit via an uncaught traceback -- no ALERT: line at all, and the
+    # heartbeat that greps for one would stay silent forever on exactly the input that most
+    # needs a human to look. A missing/unreadable verdict is now ALERT:yes itself, never silence.
+    try:
+        return run(args)
+    except Exception as exc:  # noqa: BLE001 -- deliberately broad: ANY crash must still ALERT
+        print("=" * 76)
+        print("CRASHED before producing a verdict: %s: %s" % (type(exc).__name__, exc))
+        print("ALERT:yes unsanctioned=? reason=crashed")
+        return 1
+
+
+def run(args):
     baseline = load_baseline(args.baseline)
     results, recorded = [], {}
     for root in skill_roots(args.home):
