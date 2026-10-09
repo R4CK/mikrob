@@ -59,14 +59,37 @@ chmod +x "$FAKE_SYSTEMCTL_MASKED"
 
 NO_SYSTEMCTL="/nonexistent-systemctl-$$"
 
-run() { # $1 = PATH to use, $2 = LOCAL_BIN_DIR, $3 = model-file content ("" = absent), $4 = systemctl bin (default: unmasked stub)
+# A systemctl that behaves exactly like `systemctl --user` with no session bus (card ba22ec48,
+# WhiteHat L1: env -i / cron): it cannot connect, so it answers nothing on stdout and fails.
+FAKE_SYSTEMCTL_NOBUS="$TMP/systemctl-nobus"
+cat > "$FAKE_SYSTEMCTL_NOBUS" <<'EOF'
+#!/bin/sh
+echo "Failed to connect to bus: No such file or directory" >&2
+exit 1
+EOF
+chmod +x "$FAKE_SYSTEMCTL_NOBUS"
+
+# Filesystem fallback fixtures: a real mask is a unit-file symlink to /dev/null (how
+# gpu-crashloop-guard.sh's own fallback masks it when systemctl itself has no bus to mask with).
+UNIT_FILE_MASKED="$TMP/unit-file-masked/ollama.service"
+mkdir -p "$(dirname "$UNIT_FILE_MASKED")"
+ln -s /dev/null "$UNIT_FILE_MASKED"
+
+UNIT_FILE_REAL="$TMP/unit-file-real/ollama.service"
+mkdir -p "$(dirname "$UNIT_FILE_REAL")"
+printf '[Service]\nExecStart=/usr/bin/ollama serve\n' > "$UNIT_FILE_REAL"
+
+UNIT_FILE_ABSENT="$TMP/unit-file-absent/ollama.service"
+
+run() { # $1 = PATH to use, $2 = LOCAL_BIN_DIR, $3 = model-file content ("" = absent), $4 = systemctl bin (default: unmasked stub), $5 = unit file (default: absent)
   local model_file="$TMP/model-$RANDOM"
   if [ -n "${3+x}" ] && [ -n "$3" ]; then
     printf '%s' "$3" > "$model_file"
   fi
   local systemctl_bin="${4:-$FAKE_SYSTEMCTL_UNMASKED}"
+  local unit_file="${5:-$UNIT_FILE_ABSENT}"
   PATH="$1" LOCAL_LLM_INSTALLED_LOCAL_BIN_DIR="$2" LOCAL_LLM_INSTALLED_MODEL_FILE="$model_file" \
-    LOCAL_LLM_INSTALLED_SYSTEMCTL_BIN="$systemctl_bin" \
+    LOCAL_LLM_INSTALLED_SYSTEMCTL_BIN="$systemctl_bin" LOCAL_LLM_INSTALLED_UNIT_FILE="$unit_file" \
     "$BASH_ABS" "$SCRIPT"
 }
 
@@ -133,6 +156,22 @@ if [ "$rc" -eq 1 ] && [ "$out" = "not-installed: ollama.service masked" ]; then
   PASS=$((PASS+1)); echo "OK   exit 1, 'not-installed: ollama.service masked'   mask is checked before the binary"
 else
   FAIL=$((FAIL+1)); FAILED+=("H: masked + no binary"); echo "FAIL rc=$rc out='$out'"
+fi
+
+echo "=== I. NO SESSION BUS (env -i/cron), UNIT-FILE SYMLINK TO /dev/null -> not-installed via fs fallback ==="
+out="$(run "$FAKE_BIN_DIR:/usr/bin:/bin" "$NO_LOCAL_BIN_DIR" "hf.co/some/model:Q4" "$FAKE_SYSTEMCTL_NOBUS" "$UNIT_FILE_MASKED")"; rc=$?
+if [ "$rc" -eq 1 ] && [ "$out" = "not-installed: ollama.service masked" ]; then
+  PASS=$((PASS+1)); echo "OK   exit 1, 'not-installed: ollama.service masked'   systemctl has no bus to answer with, filesystem symlink still catches the mask"
+else
+  FAIL=$((FAIL+1)); FAILED+=("I: no bus, fs-masked"); echo "FAIL rc=$rc out='$out'"
+fi
+
+echo "=== J. NO SESSION BUS, REAL (non-symlink) UNIT FILE -> not masked, falls through to installed ==="
+out="$(run "$FAKE_BIN_DIR:/usr/bin:/bin" "$NO_LOCAL_BIN_DIR" "hf.co/some/model:Q4" "$FAKE_SYSTEMCTL_NOBUS" "$UNIT_FILE_REAL")"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "installed" ]; then
+  PASS=$((PASS+1)); echo "OK   exit 0, 'installed'          an unanswerable systemctl plus a real (non-symlink) unit file is not a mask"
+else
+  FAIL=$((FAIL+1)); FAILED+=("J: no bus, real unit file"); echo "FAIL rc=$rc out='$out'"
 fi
 
 echo "-------------------------------------------------------------"
