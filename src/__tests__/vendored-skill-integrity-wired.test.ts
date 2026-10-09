@@ -105,4 +105,23 @@ describe('vendored-skill-integrity.py: ALERT:/exit-code contract the heartbeat d
       cleanup()
     }
   })
+
+  it('WhiteHat M1 (card 7ed0c7bd): a corrupted baseline still ends in ALERT:yes, never a silent traceback', () => {
+    const { home, cleanup } = buildFixture()
+    try {
+      const baseline = join(home, 'baseline.json')
+      // Not valid JSON -- this used to exit via an uncaught traceback with NO ALERT: line at
+      // all, so a heartbeat grepping for the verdict would stay silent on exactly the input
+      // that most needs a human to look (a missing/unreadable verdict is the dangerous case,
+      // not the "yes" case).
+      writeFileSync(baseline, '{not valid json')
+
+      const result = run(home, baseline)
+      expect(result.code).not.toBe(0)
+      expect(result.out).toContain('ALERT:yes')
+      expect(result.out).not.toContain('Traceback')
+    } finally {
+      cleanup()
+    }
+  })
 })

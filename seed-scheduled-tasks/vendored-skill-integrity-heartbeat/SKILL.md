@@ -20,6 +20,13 @@ agent-skill-drift-sync-heartbeat-nel:
 - `ALERT:no unsanctioned=0` -> **MARADJ CSENDBEN.** Ne irj Telegramra. Ez a rutin eset.
 - `ALERT:yes unsanctioned=N` -> kuldj EGY rovid Telegram uzenetet Petinek (reply tool, chat_id
   {{CHAT_ID}}, MarkdownV2, `Flotta:` projekt-taggel).
+- **NINCS `ALERT:` sor a kimenetben** (WhiteHat M1, kartya 7ed0c7bd) -> kezeld UGYANUGY mint egy
+  `ALERT:yes`-t, jelezd Petinek. A script sajat `try/except`-je ma mar minden varatlan hibat
+  (pl. serult baseline-fajl) `ALERT:yes ... reason=crashed`-del zar, DE ha ennek ellenere egy
+  jovobeli valtozas ismet verdikt nelkul allna meg (pl. a futas idotullepi, vagy a hivo
+  infrastruktura maga hibazik a script elott/utan), a hianyzo verdikt NEM azonos a rutin esettel --
+  az biztonsagi szempontbol a legrosszabb eset, mert pont akkor hallgat a riasztas, amikor a
+  legjobban kellene. Ne tekintsd "nincs mit jelezni"-nek.
 
 ## Ha ALERT:yes, mit irj
 

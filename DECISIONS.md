@@ -17036,3 +17036,28 @@ blokkolodik tulbuzgon).
 
 Ki dontott: RedHat (lelet + javasolt alternativa), backend (vegrehajtas). Gate: QA + RedHat
 (WhiteHat tartalomszuro miatt nem gate-eli ezt a temat, lasd 18055f83 komment 13307/13364).
+
+## 2026-10-09 -- 7ed0c7bd: vendored-skill-integrity.py hiányzó verdikt = ALERT (WhiteHat M1 a 14216622-n)
+
+**Probléma:** egy hibás/sérült baseline-fájl (pl. nem valid JSON) a scriptet uncaught traceback-kel
+állította le, ALERT: sor nélkül. A heartbeat-prompt (14216622) a kimenet UTOLSÓ ALERT: sorára van
+kötve -- ha az nincs ott, a prompt csendben marad, pontosan azon a bemeneten, ami a legjobban
+indokolná a riasztást.
+
+**Mérés (kódolás előtt):** reprodukálva egy `{not valid json` baseline-fájllal: `JSONDecodeError`
+traceback stderr-re, exit=1, stdout-ban NULLA `ALERT:` sor.
+
+**Javítás:** `main()` törzse kettévált egy `run(args)` függvényre (a teljes korábbi logika,
+változatlanul) és egy `try/except Exception` burokra, amely BÁRMELY kivétel esetén
+`ALERT:yes unsanctioned=? reason=crashed` sort ír és exit 1-gyel tér vissza -- a verdikt-sor maga
+sosem hiányzik. A heartbeat SKILL.md kapott egy explicit "NINCS ALERT: sor -> kezeld ALERT:yes-ként"
+védelmi-rétegsort, ha egy jövőbeli, a scripten KÍVÜLI hiba (pl. timeout a hívó oldalon) ismét
+verdikt nélkül hagyná a kimenetet.
+
+**Ellenőrzés:** új vitest teszt (`src/__tests__/vendored-skill-integrity-wired.test.ts`, 3. eset)
+a korrupt baseline-ra: `ALERT:yes` jelen van, `Traceback` nincs, exit != 0. Mutációval igazolva
+(a try/except kivétele -> a teszt pirosra vált, AssertionError üres stringre; visszaállítva zöld).
+A script saját `--selftest`-je (10/10) és a teljes élő fán futó valós ellenőrzés is változatlanul
+helyes.
+
+**Ki döntött:** WhiteHat lelete (M1, GO a 14216622-n), backend2 végrehajtotta. Gate: QA + WhiteHat.
