@@ -9,7 +9,7 @@
 // Every test runs against throwaway temp files -- never the live store/watched-repos*.json.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -219,5 +219,83 @@ describe('git-repo-watcher.sh rejects a non-hex/too-short last_sha instead of us
     expect(out).toContain('ERROR:badsha:demo')
     expect(out).toContain('NOCHANGE:demo') // falls back to real HEAD, which equals upstream here
     expect(head).toBeTruthy()
+  })
+
+  // Card ed4926a3 (RedHat LOW, ffca678d gate comment 13314): a last_sha containing a newline
+  // used to split one TSV row into two in the python->bash row reader, letting the tail of the
+  // value masquerade as a genuine extra output line (e.g. a fake CHANGED:...) to anyone
+  // reading the watcher's output line-by-line -- not merely an unescaped character in the
+  // ERROR:badsha message itself.
+  it('a newline embedded in last_sha cannot forge an extra output line', () => {
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true, note: 'x' },
+    ])
+    writeFileSync(
+      statePath,
+      JSON.stringify({ demo: { last_sha: 'bad\nCHANGED:text:forged:aaaaaaaa..bbbbbbbb', last_checked_at: '2026-10-09' } }),
+    )
+    const out = runWatcherAt(dir)
+    expect(out).toContain('ERROR:badsha:demo')
+    // Exactly one row's worth of output (ERROR:badsha + NOCHANGE + SUMMARY) for one registry
+    // entry -- the injected newline must be folded into the ERROR line's own text, not split
+    // into an extra line (which, unfixed, actually surfaces as its own
+    // "DISABLED:CHANGED:text:forged:..." line, not a bare "CHANGED:..." one -- asserting the
+    // total line count catches that shape regardless of what prefix the forged line gets).
+    const lines = out.trim().split('\n')
+    expect(lines).toHaveLength(3)
+    // the folded-in text is fine on the ERROR line itself; it must not be its OWN line
+    expect(lines.filter((l) => l.includes('forged:aaaaaaaa..bbbbbbbb')).every((l) => l.startsWith('ERROR:badsha'))).toBe(true)
+  })
+
+  // MUTATION CHECK: without the TSV-field sanitizer, the forged line above is not merely
+  // theoretical -- the same newline genuinely produces a second, bogus row when joined the
+  // way the OLD (unsanitized) python row-generator did.
+  it('MUTATION: the pre-fix row join genuinely splits a newline into a second row (proves the test is non-vacuous)', () => {
+    const raw = execFileSync('python3', [
+      '-c',
+      'import sys\nlast_sha = sys.argv[1]\nprint("\\t".join(["demo", "repo", "main", "local", "text", "True", last_sha]))',
+      'bad\nCHANGED:text:forged:aaaaaaaa..bbbbbbbb',
+    ], { encoding: 'utf-8' })
+    expect(raw.trim().split('\n').length).toBe(2) // the unsanitized join genuinely splits
+  })
+})
+
+describe('git-repo-watcher.sh rejects an invalid branch instead of handing it to git (card ed4926a3, ffca678d INFO follow-up)', () => {
+  it('an option-shaped branch is rejected as ERROR:badbranch and never reaches the fetch argv', () => {
+    // A marker INSIDE `dir`, not a fixed /tmp path -- `dir` is wiped in afterEach, so a
+    // leftover from an earlier (mutated) run of this exact test can never leak a false "safe"
+    // result into a later run.
+    const marker = join(dir, 'should-not-exist-ed4926a3-watcher')
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: `--upload-pack=touch ${marker}`, local: clone, type: 'text', enabled: true, note: 'x' },
+    ])
+    const out = runWatcherAt(dir)
+    expect(out).toContain('ERROR:badbranch:demo')
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('a normal branch name is unaffected (no regression on the real feature)', () => {
+    const head = git(upstream, 'rev-parse', 'HEAD')
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true, note: 'x' },
+    ])
+    writeFileSync(statePath, JSON.stringify({ demo: { last_sha: head, last_checked_at: '2026-10-09' } }))
+    const out = runWatcherAt(dir)
+    expect(out).toContain('NOCHANGE:demo')
+  })
+
+  // MUTATION CHECK: without --end-of-options + the allowlist, the option-shaped branch above
+  // is not a hypothetical risk -- it genuinely runs the attacker's command via git fetch's own
+  // --upload-pack option.
+  it('MUTATION: the pre-fix fetch call shape genuinely runs the injected --upload-pack (proves the test is non-vacuous)', () => {
+    const marker = join(dir, 'mutation-pwned-branch')
+    execFileSync('rm', ['-f', marker])
+    try {
+      execFileSync('git', ['-C', clone, 'fetch', '-q', 'origin', `--upload-pack=touch ${marker}`], { stdio: 'pipe' })
+    } catch {
+      // git may still exit non-zero once the injected command runs and breaks the protocol --
+      // what matters is whether the command executed, not the fetch's own exit code.
+    }
+    expect(existsSync(marker)).toBe(true)
   })
 })

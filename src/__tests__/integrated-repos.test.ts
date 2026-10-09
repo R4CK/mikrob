@@ -1,11 +1,13 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { existsSync } from 'node:fs'
+import { logger } from '../logger.js'
 import {
   buildIntegratedRepos,
+  isValidBranch,
   isValidSha,
   readRegistry,
   readState,
@@ -271,6 +273,55 @@ describe('statusForRepo -- last_sha hex validation (card ffca678d, option-inject
     const marker = join(tmp, `mutation-pwned-${Math.random().toString(36).slice(2)}`)
     execFileSync('git', ['-C', clone, 'log', '-1', '--format=%cI', `--output=${marker}`], { encoding: 'utf8' })
     expect(existsSync(marker)).toBe(true)
+  })
+
+  // Card ed4926a3 (RedHat LOW, ffca678d gate comment 13314): an invalid last_sha used to be
+  // quoted raw into the warn line -- a value containing control characters or a terminal
+  // escape sequence would reach whoever reads the log unfiltered.
+  it('an invalid last_sha reaches the warn log sanitized: no control chars, length-capped', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    statusForRepo(cfg({ last_sha: 'bad\x1b[31m\nsha' + 'x'.repeat(100) }))
+    expect(warn).toHaveBeenCalledTimes(1)
+    const msg = String(warn.mock.calls[0]![0])
+    expect(msg).not.toMatch(/[\x00-\x1f]/) // no raw control chars (incl. newline, ESC) reached it
+    expect(msg.length).toBeLessThan(250) // the sha portion itself was capped to 80 chars
+    warn.mockRestore()
+  })
+})
+
+describe('statusForRepo -- branch ref-name validation (card ed4926a3, ffca678d follow-up)', () => {
+  it('isValidBranch accepts ordinary branch names', () => {
+    expect(isValidBranch('main')).toBe(true)
+    expect(isValidBranch('release/2026-10')).toBe(true)
+    expect(isValidBranch('feature.fix-123')).toBe(true)
+  })
+
+  it('isValidBranch rejects option-shaped, empty, and path-traversal-shaped values', () => {
+    expect(isValidBranch('--upload-pack=x')).toBe(false)
+    expect(isValidBranch('')).toBe(false)
+    expect(isValidBranch('a..b')).toBe(false)
+  })
+
+  it('an option-shaped branch never reaches git: upstream stays null, no crash', () => {
+    const s = statusForRepo(cfg({ branch: '--upload-pack=touch /tmp/should-not-exist-ed4926a3' }))
+    expect(s.upstreamSha).toBeNull()
+    expect(existsSync('/tmp/should-not-exist-ed4926a3')).toBe(false)
+  })
+
+  it('an invalid branch warns (sanitized) instead of silently reaching git', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never)
+    statusForRepo(cfg({ branch: '--bad\x1b[31mbranch' }))
+    expect(warn).toHaveBeenCalledTimes(1)
+    const msg = String(warn.mock.calls[0]![0])
+    expect(msg).toContain('is not a valid ref name')
+    expect(msg).not.toMatch(/[\x00-\x1f]/)
+    warn.mockRestore()
+  })
+
+  it('a valid branch is unaffected (no regression on the real feature)', () => {
+    const s = statusForRepo(cfg({ branch: 'main' }))
+    expect(s.upstreamSha).toBe(upstreamHead)
+    expect(s.behind).toBe(2)
   })
 })
 

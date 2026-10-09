@@ -17156,3 +17156,50 @@ tiltása szerint).
 **Ki döntött:** Peti jóváhagyása (Telegram 10720) alapján MikroB dispatchelte, backend2 végezte a
 fájlonkénti auditot és a döntést minden fájlra. Gate: QA + WhiteHat (hookok/szabályok érintettsége
 miatt).
+
+## 2026-10-09 -- ed4926a3: watched-repos log-injekció + registry branch mező validálása (RedHat LOW+INFO a ffca678d-n)
+
+**Probléma.** RedHat két követő lelete a ffca678d gate-jéből (komment 13314): (1) LOW: a
+git-repo-watcher.sh ERROR:badsha sora és az integrated-repos.ts logger.warn-ja az érvénytelen
+last_sha-t nyersen idézte a naplóba -- egy sortörést tartalmazó érték így hamis, önálló
+"CHANGED:..."-szerű sort tudott a watcher sorok-szerint-olvasott kimenetébe tenni (a script saját
+fejlés-komentja szerint ez a kimenet KONTRAKTJA); (2) INFO: a registry `branch` mezője ugyanúgy
+validálatlan volt, mint a `last_sha` volt a ffca678d előtt.
+
+**Mérés -- a sortörés-kockázat valós, nem csak elméleti.** Repro: `last_sha` =
+`"bad\nCHANGED:text:forged:aaaaaaaa..bbbbbbbb"` a (javítás előtti) kódon egy 4. kimeneti sort
+hozott létre: `DISABLED:CHANGED:text:forged:aaaaaaaa..bbbbbbbb ()` -- a gyökér-ok NEM az
+ERROR:badsha sor idézése volt, hanem a python->bash sor-generátor (`mapfile` sort-alapú olvasása),
+ami a last_sha-ba ágyazott sortörésnél KÉT TSV-sort ír, a második egy teljesen kitalált,
+álcázott bejegyzésként. A branch oldalon: `branch = "--upload-pack=touch <marker>"` a javítás
+előtti `git fetch -q origin "$branch"` hívással VALÓDI parancsfuttatást eredményezett (mért, a
+marker fájl tényleg létrejött) -- ez self-RCE a saját gépen, nem csak hamis NOCHANGE.
+
+**Javítás (mindkét fájlban, surgical):**
+- `store/git-repo-watcher.sh`: (a) a python sor-generátor `safe()` függvénye minden mezőt
+  tab/CR/newline-mentesít MIELŐTT TSV-sorba fűzi -- ez a gyökér-ok javítása, nem csak a
+  tünet (az ERROR:badsha saját idézése is sanitizálva, `tr -cd '[:print:]' | cut -c1-80`,
+  defense-in-depth); (b) `branch` egy szűk ref-név allowlist-tel (`^[A-Za-z0-9][A-Za-z0-9._/-]
+  {0,199}$`, `..` tiltva) validálva, ERROR:badbranch + skip érvénytelen esetben; (c) a fetch
+  hívásban `--end-of-options` a branch elé (mért: git fetch ezt elfogadja és helyesen működik
+  normál branch-re). **Szándékosan NEM** került `--end-of-options` a `rev-parse "origin/$branch"`
+  hívás elé -- mért, hogy a `git rev-parse --end-of-options <ref>` a kapcsolót ÉS a `--`
+  elválasztót szó szerint visszaírja egy KÜLÖN kimeneti sorként a felbontott ref mellé, ami
+  eltörné az egysoros `$(...)` elfogást; az allowlist az egyetlen védelem ott, de elég, mert a
+  string mindig `origin/` prefixszel megy, sosem bare option-pozícióban.
+- `src/web/routes/integrated-repos.ts`: `sanitizeForLog()` (nyomtatható ASCII + 80 karakteres
+  plafon) a last_sha logger.warn elé; `isValidBranch()` (ugyanaz az allowlist mint a bash-ben)
+  a `refs/remotes/origin/<branch>` rev-parse hívás elé -- itt a string mindig prefixelt, tehát
+  argv-opcióként sosem értelmezhető, de a validálás a konzisztencia és a hibás állapot korrekt
+  jelzése miatt mégis indokolt (érvénytelen branch -> logolt figyelmeztetés, upstream=null).
+
+**Ellenőrzés:** `src/__tests__/integrated-repos.test.ts` +6 teszt (isValidBranch, log-sanitizálás
+mindkét mezőre, option-alakú branch sosem ér el gitet), `src/__tests__/watched-repos-moving-
+state.test.ts` +8 teszt (ERROR:badbranch, newline nem forgál sort, MUTATION-próbák mindkét
+gyökér-okra). Mutációval igazolva egyenként: a `sanitizeForLog`/`isValidBranch` kivétele a TS-ben
+2 tesztet pirosra visz; a bash branch-allowlist kivétele 1 tesztet; a TSV `safe()` kivétele 1
+tesztet (a sor-szám 3-ról 4-re nő) -- mindegyiket visszaállítva újra zöld. tsc --noEmit clean.
+Célzott futás: 52/52 zöld (35+17, a két érintett fájlon).
+
+**Ki döntött:** RedHat lelete (LOW+INFO a ffca678d gate-jén, komment 13314), backend2
+végrehajtotta. Gate: QA + WhiteHat (vagy RedHat).
