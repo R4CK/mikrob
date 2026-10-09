@@ -273,7 +273,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
     " Re-measured 2026-09-05 (mikrob, landing-block): upstream a515f9c8750b..1906c636641e adds a top-level import (isMalformedBodyError from a new web/malformed-body.js, which the fork does not have) and hardens the request-handler's catch block to answer 400 with route/method/bytes in the log instead of a bare 500 for a malformed JSON body -- a real, reasonable fix (measured against two live incidents in upstream's own log), but a new file + a new response shape is its own decision, not a rider on unblocking every other fork's landing. Does not touch the agent-scaffold import line or either BEGIN/END section-writer block this entry decides. Not adopted this round; candidate for a future round. Blob bumped." +
     " Re-measured 2026-09-06 (backend3, card 79bb0364 landing-block, round 15). Upstream added ensureTelegramCopyGate to the same agent-scaffold import line this rule is about, plus one call in the hook-backfill loop and its log line (GATECOPY828). NOT adopted, and this one needs a WARNING rather than a plain skip: it is the SAME capability the fork already wires in that loop as ensureOutgoingCopyGate (card 74181db2, line 620), so a future merge that takes upstream's name IN ADDITION would wire outgoing-copy-gate.py twice into every sub-agent, under two different matchers. One or the other, never both. Everything else this rule decides (the import-line union, watchEgressAllowlistForReaderRender, listAllAgentNames, ensureAgentProvenanceHook, ensureSystemDirectiveAuthSection) is untouched. Resolution unchanged; blob bumped." +
     " Re-measured 2026-09-25 (backend, card f5536a70, round 16, fork/upstream re-decision). Upstream added SEVEN more names to the same agent-scaffold import line (ensureProjectRootInClaudeMd, ensureBashEgressDeny, ensureBashEgressParser, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection), plus new top-level imports (mainAgentConfigDirIfSeparate from a new web/agent-process.js, tryHandleClaudePlans/tryHandleCustomProviders route handlers, startKanbanArchiveRunner) and a dashboard-URL isTTY-gating hardening (the bootstrap URL with the bearer token no longer prints to a redirected, non-interactive stderr stream -- a real credential-exposure fix, measured against launchd's own error-log capture on upstream's side). Checked against the fork's CURRENT src/web.ts (not the stale recorded blob): ensureBashEgressDeny, ensureMemorySearchLabelSection and mainAgentConfigDirIfSeparate are ALREADY present here (adopted through an intermediate round not individually logged in this entry) -- the import-line union rule already covers them, nothing to redo. Genuinely absent: ensureProjectRootInClaudeMd (HOSTMOVE923, CLAUDE.md re-anchoring for a worktree instance), ensureBashEgressParser (EGRESSPARSER923), ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, tryHandleClaudePlans, tryHandleCustomProviders, startKanbanArchiveRunner (web/kanban-archive-runner.ts does not exist here), and the dashboard-URL TTY-gating hardening -- eight items, each a real ADOPTION decision (new files, new routes, or a security hardening), not a passive comment/import-line resolution. Raised together on follow-up card 965b0b2b (the two prior 'raised on card 6c6d471a' items never got an actual kanban card, per this round's own check -- not repeating that gap here). Resolution at the agent-scaffold import-line conflict point unchanged (union all names, including the newly-adopted seven, at the next real merge); blob bumped." +
-    " CORRECTION 2026-09-25 (Cybersec, card f5536a70 NO-GO F1 HIGH, komment 6862, verified directly against the fork's src/web.ts and src/web/bootstrap-notice.ts before writing this paragraph). THE TTY-GATING ITEM ABOVE IS WRONG -- calling it 'a real credential-exposure fix' worth adopting is a REGRESSION, not a hardening. The fork does NOT still have the vulnerable bootstrapUrl-with-token pattern upstream's isTTY-gate is protecting: card 62631948 (commit 8ca85761, src/web/bootstrap-notice.ts) already replaced it wholesale. renderBootstrapNotice(port, tokenPath) prints ONLY the dashboard URL (no token) and an instruction to `cat` the 0600 token file -- on EVERY stream, TTY or not, per its own header comment ('the token is not printed at all ... stderr is captured by the service manager'). Upstream's isTTY-gate is WEAKER: on a non-interactive stream it prints the safe path-only message, but on `process.stderr.isTTY === true` it still writes the full `http://127.0.0.1:<port>/?token=${DASHBOARD_TOKEN}` URL verbatim (confirmed against the recorded diff hunk, blob b69c9dcb region). In this fleet a TTY is typically a tmux pane, which scrollback and this fork's own context-guard pane-snapshot mechanism (store/context-guard-last-pane-<agent>.txt) persist -- so upstream's 'fix' would put a root-equivalent bearer token into exactly the kind of long-lived, multi-reader capture the fork's own version was built to avoid. RESOLUTION FOR THIS ITEM, CORRECTED: KEEP the fork's renderBootstrapNotice() wholesale; the TTY-gating hunk is NOT ADOPTABLE, full stop, not merely deferred to a follow-up round. It is removed from card 965b0b2b's item list (see that card's own updated description). The other seven ensureXxx/tryHandleXxx/startKanbanArchiveRunner items this entry raised remain genuine, undecided ADOPTION questions -- this correction touches only the TTY-gating item. See ACKNOWLEDGED_FORK_ANCHORS['src/web.ts'] for the tripwire watching this refusal.",
+    " CORRECTION 2026-09-25 (Cybersec, card f5536a70 NO-GO F1 HIGH, komment 6862, verified directly against the fork's src/web.ts and src/web/bootstrap-notice.ts before writing this paragraph). THE TTY-GATING ITEM ABOVE IS WRONG -- calling it 'a real credential-exposure fix' worth adopting is a REGRESSION, not a hardening. The fork does NOT still have the vulnerable bootstrapUrl-with-token pattern upstream's isTTY-gate is protecting: card 62631948 (commit 8ca85761, src/web/bootstrap-notice.ts) already replaced it wholesale. renderBootstrapNotice(port, tokenPath) prints ONLY the dashboard URL (no token) and an instruction to `cat` the 0600 token file -- on EVERY stream, TTY or not, per its own header comment ('the token is not printed at all ... stderr is captured by the service manager'). Upstream's isTTY-gate is WEAKER: on a non-interactive stream it prints the safe path-only message, but on `process.stderr.isTTY === true` it still writes the full `http://127.0.0.1:<port>/?token=${DASHBOARD_TOKEN}` URL verbatim (confirmed against the recorded diff hunk, blob b69c9dcb region). In this fleet a TTY is typically a tmux pane, which scrollback and this fork's own context-guard pane-snapshot mechanism (store/context-guard-last-pane-<agent>.txt) persist -- so upstream's 'fix' would put a root-equivalent bearer token into exactly the kind of long-lived, multi-reader capture the fork's own version was built to avoid. RESOLUTION FOR THIS ITEM, CORRECTED: KEEP the fork's renderBootstrapNotice() wholesale; the TTY-gating hunk is NOT ADOPTABLE, full stop, not merely deferred to a follow-up round. It is removed from card 965b0b2b's item list (see that card's own updated description). The other seven ensureXxx/tryHandleXxx/startKanbanArchiveRunner items this entry raised remain genuine, undecided ADOPTION questions -- this correction touches only the TTY-gating item. See ACKNOWLEDGED_FORK_ANCHORS['src/web.ts'] for the tripwire watching this refusal." +
+    " RESOLVED 2026-10-09 (backend, card 965b0b2b, the seven remaining items). First, a correction: tryHandleClaudePlans is NOT absent -- it was adopted through an intermediate round not individually logged in this entry (present today at src/web.ts, src/web/routes/claude-plans.ts, src/__tests__/claude-plans-routes.test.ts), leaving six genuinely open decisions, not seven. ADOPTED (three, low-risk, verified against the fork's CURRENT mechanics before porting, not assumed from upstream's prose): ensureFleetAuthSection/buildFleetAuthBody (the CLAUDE_CODE_OAUTH_TOKEN/store/.claude-oauth-token/MAIN_AGENT_ISOLATED_CONFIG/MAIN_AGENT_CONFIG_DIR/claudeConfigDir facts it documents all verified present and in active use here); ensureMcpListChannelSection/buildMcpListChannelBody (the claude-mcp-list-kills-the-channel-plugin warning, ADAPTED -- the trailing pointer to docs/mcp-list-channel-plugin.md dropped, since that measurement doc was never ported); and startKanbanArchiveRunner, which turned out to fix a REAL bug in THIS fork's own src/db.ts, not just upstream's -- listKanbanCards() was running the auto-archive UPDATE inline on every board read (confirmed by reading the function before touching it), exactly the 'measuring the kanban changed the kanban' failure upstream's comment describes. Extracted to sweepArchivedKanbanCards() + src/web/kanban-archive-runner.ts, wired into web.ts the same way as its sibling runners (webOnly-guarded start, clearInterval on shutdown); the pre-existing kanban-archive-stale-updated-at.test.ts updated to call the sweep function directly instead of relying on listKanbanCards()'s former side effect, plus a new case pinning that listKanbanCards() no longer archives anything. DEFERRED, not refused (own follow-up card each, not built this round): ensureProjectRootInClaudeMd/HOSTMOVE923 -- a genuinely useful host-move re-anchoring mechanism, but upstream's INSTALL_ANCHORED_SUFFIXES list is upstream's OWN generated-content shape (store/.dashboard-token, scripts/hooks/, scripts/recipient-ledger.mjs, scripts/skill-lint.mjs); this fork's generated CLAUDE.md content differs and needs its OWN suffix list enumerated before the mechanism means anything here, not a blind port. ensureEvidenceSection/buildEvidenceBody -- the 'facts vs. speculation' discipline text is sound, but its embedded recipe references scripts/recipient-ledger.mjs and store/verified-recipients.json, NEITHER of which exist in this fork; porting the text without the ledger system it instructs agents to use would teach a command that fails. tryHandleCustomProviders -- a full new credential-handling REST surface (GET/POST/DELETE /api/custom-providers, backed by a new src/web/custom-providers.ts this fork does not have); real new attack surface warranting its own PRD-sized review (API contract, auth-header storage, validation), not a rider on this round. NOT ADOPTED (own ACKNOWLEDGED_FORK_ANCHORS entry below, 'scripts/hooks/bash-egress-parser.mjs' key): ensureBashEgressParser/EGRESSPARSER923 -- a DENY-LIST PreToolUse hook parsing Bash commands for external-URL shapes a command-name deny list misses (plain http://, interpreter one-liners, variable-held URLs). This fork's OWN scripts/hooks/bash-egress-guard.py is an ALLOWLIST-based judge over the same threat surface, already hardened this same session (card 4ed64b20) against the function/alias indirection class upstream's own hook explicitly admits it does not close either ('what this does not close' in its header). Adopting a second, independently-maintained Bash PreToolUse hook built on a weaker paradigm for the same ground is the same duplicate-wire hazard GATECOPY828 names two paragraphs above (ensureTelegramCopyGate vs. ensureOutgoingCopyGate) -- not an addition.",
   // The call-site half of the same upstream change, and the same INDEPENDENT-ADDITIVE class as
   // src/db.ts below rather than a disagreement (measured 2026-08-22). Two hunks, both caused by the
   // two sides adding a DIFFERENT CLAUDE.md section-writer at the same insertion point, each with
@@ -1978,18 +1979,14 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // Card 14284837 (2026-09-25, backend2), fork/upstream re-decision, area "dashboard/src --
   // tesztek 2/2" (parent b5b7eb6b). The 8 entries below were previously undecided.
 
-  // Both additions are pure test-content (a defensive config mock the fork's own
-  // agent-scaffold.ts->settings-store dynamic import already needs, per that file's own
-  // MCPOROKLES923 comment; and a new assertion), neither removes or contradicts anything
-  // fork-specific. Verified: taking the STORE_DIR mock addition leaves the other 10 tests in
-  // this file green. The SECOND addition (a new test asserting buildMemorySearchLabelBody's
-  // output warns about a raw-accented-byte silent-400) was NOT taken: it asserts on production
-  // body text (`toContain('400')`/`toContain('--data-urlencode')`) that agent-scaffold.ts's
-  // actual buildMemorySearchLabelBody does not produce -- measured red when tried. That half is
-  // a production-code addition, not a test-only decision; flagging for a follow-up card rather
-  // than porting it under this card's own scope.
-  'src/__tests__/memory-search-label-backfill.test.ts':
-    "ADOPT upstream's STORE_DIR mock addition to the '../config.js' vi.mock (needed: agent-scaffold.ts's settings-store dynamic import reads STORE_DIR at call time, verified by grep). Do NOT adopt upstream's new 'warns that a raw accented q is a silent 400' test -- measured RED against the fork's actual buildMemorySearchLabelBody (does not emit '400'/'--data-urlencode' text); that assertion depends on a production-side body-text change not made here. Follow-up card recommended for the production side if this fix is wanted.",
+  // SUPERSEDED (upstream-sync batch 6, card 5a15cd5a, 2026-10-09): the follow-up this entry
+  // recommended landed in this same batch -- commit 323d7c41 "docs(scaffold): warn that a raw
+  // accented q silently 400s in memory search (#1428)" adds BOTH the production body text
+  // (buildMemorySearchLabelBody now emits '400' and '--data-urlencode') AND the test together,
+  // consistently (verified green, 11/11, src/__tests__/memory-search-label-backfill.test.ts).
+  // No conflict remains to acknowledge; entry removed rather than left stale (the
+  // fork-upstream-conflict-guard.test.ts fork-side-anchor check caught the staleness and asked
+  // for a re-decision, not a silent anchor edit).
 
   // Cosmetic-only: String(chunk) vs chunk.toString() are behaviourally identical for the
   // Buffer/string chunks this test harness's fake `end()` ever receives. No fork content lost.
@@ -2178,6 +2175,23 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // plus one `as string` cast on a JSON.parse'd timestamp (lint-ratchet).
   'src/web/system-status.ts':
     "KEEP the fork's version -- configDirFor redirect (main-transcript-root.ts deferred, card 5c134edf) plus async-propagation for the active-model.ts reads (same reason as that entry) plus a lint-ratchet cast on a JSON.parse'd timestamp. No behavior change.",
+
+  // Card 965b0b2b (backend, 2026-10-09): filed under this key rather than 'src/web.ts' because
+  // that key's own ForkAnchor slot is already taken (ensureTelegramCopyGate, an unrelated
+  // refusal) -- same cross-file-anchor pattern already used for 'src/web/routes/agents.ts' above.
+  // Full context lives in the 'src/web.ts' entry's 2026-10-09 paragraph; this is the anchor-bearing
+  // record for the one decision in that round that is a genuine NOT ADOPTED, not a deferral.
+  'scripts/hooks/bash-egress-parser.mjs':
+    "NOT ADOPTED. Upstream's ensureBashEgressParser (EGRESSPARSER923) wires a DENY-LIST PreToolUse " +
+    "hook that parses Bash commands for external-URL shapes a command-name deny list misses " +
+    "(plain http://, interpreter one-liners, a URL held in a same-command variable). This fork's " +
+    "own scripts/hooks/bash-egress-guard.py covers the same ground with an ALLOWLIST-based judge, " +
+    "already hardened this same session (card 4ed64b20) against the function/alias indirection " +
+    "class upstream's own hook header explicitly admits it does NOT close either. Wiring a second, " +
+    "independently-maintained hook over a different paradigm for the same threat surface is the " +
+    "same duplicate-wire hazard GATECOPY828 names for ensureTelegramCopyGate vs. the fork's own " +
+    "ensureOutgoingCopyGate -- not an addition. If the fork's own guard is ever retired or proven " +
+    "insufficient, that is its own decision, made against THAT guard, not a reason to run both.",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -2226,6 +2240,7 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/context-restart-gate-runner.ts': '588c35241193764152514a9ecdd196622b2fd377',
   'src/web.ts': 'b69c9dcbe32916c6b52c9bcbdc46a8f532406618',
   'src/web/keychain.ts': '1e1730ee0d8f6b1d4b51c5c254f3fab56acfa376',
+  'scripts/hooks/bash-egress-parser.mjs': '3437b7edf7f2af22f54955adb0d1c0a8e38786fe',
   'src/web/agent-scaffold.ts': '01dbde762878cc666f0f88e81cd45002bec5a184',
   'src/db.ts': 'd66cf7edece7be86e58e94b03751fd438b19ed0f',
   'src/memory.ts': 'af9f66316bd85499a8bafe47444a9b9e0ab779bd',
@@ -2481,7 +2496,6 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/stuck-tool-call-watcher.ts': '80f56ab7a9fa84b1f431db27a7eb240aa873e53c',
   // Card 14284837 (backend2, 2026-09-25), fork/upstream re-decision, area "dashboard/src --
   // tesztek 2/2" -- see the matching ACKNOWLEDGED_CONFLICTS entries above for the reasoning.
-  'src/__tests__/memory-search-label-backfill.test.ts': 'a24a1fdaff37b8b5a43ab0d1a71acb8feb932c20',
   'src/__tests__/memory-search-tier-goes-into-the-query.test.ts': 'a72bb28deed866a7c9224f90583fc423990762ea',
   'src/__tests__/model-suggest.test.ts': 'b0014b2840c6239182369492038e1ec6dda2fbb9',
   'src/__tests__/project-settings-hook-anchor.test.ts': '79a8cf566a40c1bfce28083f2a0b68b28a36c6e6',
@@ -3138,6 +3152,178 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "needs revisiting, per this file's entry: 'if keychainDelete ever gains a real caller " +
       "upstream, it comes back WITH that caller, not before').",
   },
+  // The following nine anchors were added card 405a6da0 (backend2, 2026-10-09), the WhiteHat
+  // 1f252502-gate follow-up that widened mentionsRefusal (see
+  // fork-upstream-conflict-guard.test.ts) past the literal "NOT ADOPTED" string. Each covers one of
+  // the newly-caught entries that WAS a real, checkable refusal (the ones that were not -- cosmetic/
+  // no-functional-difference, self-referential test content, or already escalated to their own card
+  // -- went to UNANCHORED_BACKLOG in that same test file instead, with the reasoning per item).
+  'scripts/install-prod-tree-guard-hook.sh': {
+    needle: 'hdr_file',
+    file: 'scripts/install-prod-tree-guard-hook.sh',
+    expect: 'present',
+    because:
+      "this entry keeps the fork's -H @\"$hdr_file\" 0600-temp-file pattern instead of upstream's " +
+      "argv-embedded Authorization header (the token-in-argv vulnerability, /proc/<pid>/cmdline is " +
+      "world-readable -- same class as watchdog.sh's b267df80 fix). hdr_file's disappearance means " +
+      "the call site reverted to the insecure form.",
+  },
+  'scripts/limit-monitor.sh': {
+    needle: 'session-limit-pattern.sh',
+    file: 'scripts/limit-monitor.sh',
+    expect: 'present',
+    because:
+      "this entry keeps the fork's canonical session-limit-pattern.sh sourcing (card 115c21e7) " +
+      "instead of a wholesale upstream replacement, and separately refuses to graft upstream's " +
+      "measured-quota alerter because the fork already alerts from its own quota monitor -- taking " +
+      "both would double-notify Peti. The sourcing line disappearing means a wholesale replacement " +
+      "happened without re-deciding either point.",
+  },
+  'seed-scheduled-tasks/kanban-audit/SKILL.md': {
+    needle: '-H @-',
+    file: 'seed-scheduled-tasks/kanban-audit/SKILL.md',
+    expect: 'present',
+    because:
+      "this entry (6a, Cybersec F1 MEDIUM) keeps the fork's piped-header curl idiom instead of " +
+      "upstream's argv-embedded Authorization header -- the same token-in-argv vulnerability class " +
+      "rejected everywhere else in this fork (watchdog.sh, install-prod-tree-guard-hook.sh, " +
+      "templates/CLAUDE.md.template, b267df80). This file is copied verbatim into every fresh " +
+      "install's seed scheduled task, so losing the idiom here teaches it to every new agent.",
+  },
+  'templates/CLAUDE.md.template': {
+    needle: '-H @-',
+    file: 'templates/CLAUDE.md.template',
+    expect: 'present',
+    because:
+      "this entry keeps the fork's piped-header -H @\"$hdr_file\" idiom in the memory/kanban command " +
+      "examples instead of upstream's argv-embedded form, same token-in-argv vulnerability class as " +
+      "the other anchors in this group. This is a TEMPLATE rendered into every fresh install's own " +
+      "CLAUDE.md, so losing the idiom here teaches the insecure form to every new agent by example.",
+  },
+  'src/model-fallback.ts': {
+    // Single-quoted, array-literal form on purpose, NOT the bare phrase: the fork's own explanatory
+    // comment a few lines above USAGE_LIMIT_FRAGMENTS permanently double-quotes this exact phrase to
+    // document why it was dropped ('NOTE (2026-06-30): dropped the "upgrade to increase your usage
+    // limit" token.') -- an absent-anchor checks RAW text (comments included, by design elsewhere in
+    // this file), so the bare phrase would read as permanently "present" via that comment and this
+    // anchor would never go green. The single-quoted, no-trailing-prose form is how a REINSTATED
+    // array entry would actually look (every real entry in USAGE_LIMIT_FRAGMENTS is `'...',` with no
+    // explanatory text attached), and that exact shape is absent today -- verified directly.
+    needle: "'upgrade to increase your usage limit'",
+    file: 'src/model-fallback.ts',
+    expect: 'absent',
+    because:
+      "this entry drops the '/upgrade to increase your usage limit' startup-hint token from " +
+      "upstream's limit-detection regex on purpose: it is Claude Code's own idle startup hint, not a " +
+      "real limit message, and including it causes a fleet-wide false-positive fallback. This exact " +
+      "array-entry shape appearing means that token was re-merged into USAGE_LIMIT_FRAGMENTS without " +
+      "re-deciding the false-positive risk.",
+  },
+  'src/web/routes/messages.ts': {
+    needle: "'Invalid JSON body'",
+    file: 'src/web/routes/messages.ts',
+    expect: 'present',
+    because:
+      "this entry's hunk-2 resolution keeps the fork's try/catch JSON-parse guard as the OUTER " +
+      "layer, with upstream's notify-field type-check nesting INSIDE it, specifically so a malformed " +
+      "body is rejected before any field-level validation runs. Losing this string means the guard " +
+      "was removed or reordered, which is the exact regression this entry refuses to take.",
+  },
+  'src/web/system-directive.ts': {
+    needle: 'from_agent="system"',
+    file: 'src/web/system-directive.ts',
+    expect: 'absent',
+    because:
+      "this entry keeps systemDirectiveEnvelope() interpolating the fork's own reserved-sender " +
+      "const (SYSTEM_DIRECTIVE_SENDER, defined in system-directive-id.ts) instead of upstream's " +
+      "hardcoded literal \"system\", because the recipient's verification checks the envelope's " +
+      "claimed sender against that reserved id -- an envelope naming upstream's literal would be " +
+      "refused as injection-suspect by the fork's own check. The hardcoded literal reappearing is " +
+      "exactly that reversal.",
+  },
+  'src/web/update-checker.ts': {
+    needle: 'repoConfigs',
+    file: 'src/web/update-checker.ts',
+    expect: 'present',
+    because:
+      "this entry's final re-measurement (2026-09-04, card f27c999b) concluded the fork's two-repo " +
+      "repoConfigs() mechanism already achieves both of upstream's single-checker outcomes (remote " +
+      "preference and correct merge-base) by a different, more general design, so upstream's " +
+      "single-result rework is not ported. repoConfigs' disappearance means that conclusion's own " +
+      "premise is gone and the comparison needs redoing, not assumed to still hold.",
+  },
+  'update.sh': {
+    needle: '{{CHAT_ID}}',
+    file: 'update.sh',
+    expect: 'present',
+    because:
+      "this entry keeps the fork's {{CHAT_ID}} substitution in render_seed_template() -- dropping it " +
+      "was a measured Cybered finding: a rendered seed task keeps the literal placeholder while the " +
+      "installed file carries the real id, so the escalation line (`reply chat_id {{CHAT_ID}}`) " +
+      "loses its destination silently. Its disappearance from update.sh is that regression returning.",
+  },
+  'web/lang/hu.js': {
+    needle: 'activity.page_title',
+    file: 'web/lang/hu.js',
+    expect: 'present',
+    because:
+      "this entry (MikroB's decision, 2026-09-04) keeps the fork's 8 activity.* i18n keys that " +
+      "upstream removed when it deleted its own Activity page and folded that content into Team -- " +
+      "the fork's Activity page is still live and still references all eight keys (web/index.html, " +
+      "web/app-activity.js, web/app-i18n-nav.js). Losing this key here (and its web/lang/en.js twin, " +
+      "same decision, same risk) means a live fork page would start rendering raw key names.",
+  },
+  'scripts/hooks/bash-egress-parser.mjs': {
+    needle: 'ensureBashEgressParser',
+    file: 'src/web/agent-scaffold.ts',
+    expect: 'absent',
+    because:
+      "Card 965b0b2b: NOT ADOPTED, because this fork's own scripts/hooks/bash-egress-guard.py " +
+      "(allowlist-based) already covers the threat surface upstream's deny-list hook targets, and " +
+      "wiring both would be the same duplicate-wire hazard as ensureTelegramCopyGate vs. " +
+      "ensureOutgoingCopyGate (GATECOPY828, anchored under the 'src/web.ts' key above). If this " +
+      "symbol appears, someone adopted the second hook without re-deciding the duplication -- " +
+      "re-read this key's ACKNOWLEDGED_CONFLICTS entry before keeping it.",
+  },
+
+  // Card 26083811 (WhiteHat L2 from the 405a6da0 gate): mentionsRefusal widened to also catch the
+  // "not adopt(ed/able)" family. Four of the newly-caught entries name a checkable production fact;
+  // the other eight (triaged below in UNANCHORED_BACKLOG) are either cosmetic no-op notes or decisions
+  // that live entirely inside a test/setup file with no production counterpart to point at.
+  'scripts/watchdog.sh': {
+    needle: '-H "Authorization: Bearer $TOKEN"',
+    file: 'scripts/watchdog.sh',
+    expect: 'absent',
+    because:
+      "the 2026-09-25 UNION correction (qa2 QA FAIL, komment 6736) kept upstream's agent=${AGENT_ID} " +
+      "fix but explicitly refused upstream's argv-embedded token call -- the fork keeps " +
+      "-H @\"$HDR_FILE\" (a 0600 temp file, the b267df80 pattern) instead. The argv form reappearing " +
+      "means /proc/<pid>/cmdline would leak the token to any local process again.",
+  },
+  'src/__tests__/bridge-pairing-i18n.test.ts': {
+    needle: 'playwright',
+    file: 'store/fleet-test.sh',
+    expect: 'absent',
+    because:
+      "this entry's fork-only test ('the error branch actually CALLS it') exists BECAUSE the fork " +
+      "deliberately did not adopt upstream's tests/browser/** playwright suite -- the fleet's one " +
+      "mandatory gate (fleet-test.sh) runs vitest only and never invokes playwright, which is the " +
+      "actual reason dropping this vitest test would silently give up the only coverage that the " +
+      "translator is reached at all. If fleet-test.sh starts invoking playwright, that premise (and " +
+      "this entry's resolution) needs re-deciding, not assuming the vitest test is still load-bearing.",
+  },
+  'src/__tests__/governance-gates.test.ts': {
+    needle: 'TELEGRAM_COPY_GATE_MATCHER',
+    file: 'src/web/agent-scaffold.ts',
+    expect: 'absent',
+    because:
+      "this entry refuses upstream's telegram-copy-gate wiring (agentGetsTelegramCopyGate/" +
+      "injectTelegramCopyGate/TELEGRAM_COPY_GATE_MATCHER) because the fork already covers the same " +
+      "surface with injectOutgoingCopyGate bound to a default-OFF Bash matcher (card 74181db2, its " +
+      "own coverage in outgoing-copy-gate-role-wiring.test.ts). TELEGRAM_COPY_GATE_MATCHER appearing " +
+      "in the fork's own scaffold file means upstream's duplicate-wire path was adopted without " +
+      "re-deciding whether both gates firing together is safe.",
+  },
 }
 
 /** An acknowledgement whose rule rests on a fork-side fact that is no longer true. */
@@ -3176,16 +3362,20 @@ export function containsAsToken(content: string, needle: string): boolean {
  * half of a rule -- the ordinary shape of a re-measure round, see the file header above -- left the
  * anchor green for the wrong reason; a control run that also cleared the comment DID go red, proving
  * the pin had a tooth, just not where it needed one). Keyed off the anchor's own file extension
- * (`.py` -> `#`, everything else -> `//`) rather than scanning for both markers unconditionally,
- * because ACKNOWLEDGED_FORK_ANCHORS spans both TS and Python files and stripping `#` inside a TS
- * string (a URL fragment, say) or `//` inside a Python one would silently eat real content neither
- * comment style owns there. Deliberately line-comment-only, not block comments: every needle
- * anchored today sits in a line-commented region (measured against the three live anchor files),
- * and a block-comment stripper is real complexity (nesting, a `/*` inside a string) this map does
- * not need yet.
+ * (`.py`/`.sh` -> `#`, everything else -> `//`) rather than scanning for both markers
+ * unconditionally, because ACKNOWLEDGED_FORK_ANCHORS spans TS, Python and bash files and stripping
+ * `#` inside a TS string (a URL fragment, say) or `//` inside a Python/bash one would silently eat
+ * real content neither comment style owns there. Card 26083811 (WhiteHat L1, 405a6da0 gate): .sh was
+ * missing from the `#`-comment branch, so a needle left behind in a bash `#` comment (as opposed to
+ * removed code) satisfied a `present` anchor exactly the way the card 232e01e2 fix above already
+ * closed for `//` -- the three .sh anchors this map carries (limit-monitor.sh,
+ * install-prod-tree-guard-hook.sh, update.sh) rest on this branch. Deliberately line-comment-only,
+ * not block comments: every needle anchored today sits in a line-commented region (measured against
+ * the live anchor files), and a block-comment stripper is real complexity (nesting, a `/*` inside a
+ * string) this map does not need yet.
  */
 function stripLineComments(content: string, file: string): string {
-  const marker = file.endsWith('.py') ? /#.*$/ : /\/\/.*$/
+  const marker = file.endsWith('.py') || file.endsWith('.sh') ? /#.*$/ : /\/\/.*$/
   return content
     .split('\n')
     .map((line) => line.replace(marker, ''))

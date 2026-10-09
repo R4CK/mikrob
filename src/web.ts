@@ -39,6 +39,7 @@ import { startReauthHealer } from './web/reauth-healer.js'
 import { startAutoRestartRunner } from './web/auto-restart-runner.js'
 import { startModelFallbackRunner } from './web/model-fallback-runner.js'
 import { startContextGuardRunner } from './web/context-guard-runner.js'
+import { startKanbanArchiveRunner } from './web/kanban-archive-runner.js'
 import { startContextRestartGateRunner, setMainSweepHook } from './web/context-restart-gate-runner.js'
 import { collectTokenUsage } from './web/token-usage.js'
 import { logger } from './logger.js'
@@ -566,6 +567,10 @@ export function startWebServer(port = 3420): http.Server {
   const capabilityRunnerInterval = webOnly ? undefined : startCapabilitySummaryRunner()
   if (!webOnly) logger.info('Capability summary runner started (5min poll, 65s offset; idle while federation is off)')
 
+  // Card 965b0b2b: moves the kanban auto-archive sweep off the read path (listKanbanCards() used
+  // to run it inline) onto this clock instead -- see kanban-archive-runner.ts for why.
+  const kanbanArchiveInterval = webOnly ? undefined : startKanbanArchiveRunner()
+
   // Collect token usage from JSONL transcripts every hour so the run-history
   // token estimates stay fresh without requiring a manual dashboard visit.
   // Sweep timed-out pending approvals every minute
@@ -805,6 +810,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     clearInterval(updateCheckerInterval)
     if (federationPollerInterval) clearInterval(federationPollerInterval)
     if (capabilityRunnerInterval) clearInterval(capabilityRunnerInterval)
+    if (kanbanArchiveInterval) clearInterval(kanbanArchiveInterval)
     clearInterval(tokenCollectInterval)
     return origClose(cb)
   }

@@ -348,6 +348,43 @@ describe('fork-side anchors: a rule that rests on OUR tree goes stale when OUR t
     expect(drifted).toHaveLength(1)
   })
 
+  // Card 26083811 (WhiteHat L1, 405a6da0 gate): stripLineComments only special-cased `.py` for the
+  // `#` marker -- a .sh anchor (the map carries three: limit-monitor.sh, install-prod-tree-guard-
+  // hook.sh, update.sh) fell through to the `//` marker instead, so a needle left behind in a bash
+  // `#` comment satisfied a `present` anchor the same way the .py case above was already fixed to
+  // reject. Mutation-proof at the bottom of this test confirms this.
+  it('a present-anchor on a .sh file is NOT satisfied by a # comment either', () => {
+    const anchors = {
+      'a.sh': {
+        needle: 'touchAncestorChain',
+        file: 'demo.sh',
+        expect: 'present',
+        because: 'x',
+      },
+    } as const
+    const drifted = classifyForkAnchors(
+      anchors,
+      () => '# touchAncestorChain removed, see history'
+    )
+    expect(drifted).toHaveLength(1)
+    expect(drifted[0]!.found).toBe(false)
+  })
+
+  // MUTATION CHECK: without .sh routed to the `#` stripper -- the pre-fix code special-cased only
+  // `.py`, everything else (including .sh) got the `//` marker -- the exact fixture above is not
+  // merely theoretically wrong: the needle genuinely survives stripping, reproduced here directly
+  // against the OLD marker-selection logic rather than assumed.
+  it('MUTATION: the pre-fix (.py-only) marker selection genuinely leaves the needle in a .sh # comment (proves the test above is non-vacuous)', () => {
+    const oldMarkerFor = (file: string): RegExp => (file.endsWith('.py') ? /#.*$/ : /\/\/.*$/)
+    const stripOld = (content: string, file: string): string =>
+      content
+        .split('\n')
+        .map((line) => line.replace(oldMarkerFor(file), ''))
+        .join('\n')
+    const strippedOld = stripOld('# touchAncestorChain removed, see history', 'demo.sh')
+    expect(strippedOld).toContain('touchAncestorChain') // the OLD stripper leaves it in, unstripped
+  })
+
   // THE CONTROL that makes the two cases above mean something: real code on the SAME line as a
   // trailing comment must still be found. Without this, a stripper that ate too much (or the whole
   // line) would pass every case above by accident of never finding anything at all.
@@ -395,6 +432,41 @@ describe('fork-side anchors: a rule that rests on OUR tree goes stale when OUR t
       []
     )
   })
+
+  // Card 405a6da0 (WhiteHat 1f252502 gate): known-positive control, per CLAUDE.md code-quality rule
+  // 12 ("run a guard on its own founding case before reporting zero findings"). The keychainDelete
+  // anchor (src/web/keychain.ts, above) was added SPECIFICALLY because this exact regression already
+  // happened for real once (the F1-F5 merge, b8de50d2, 2026-08-26) and sat unwatched for 13 days.
+  // This test does not use a synthetic fixture -- it runs the REAL ACKNOWLEDGED_FORK_ANCHORS entry
+  // against a reconstruction of that actual incident's content (keychainDelete re-declared, as
+  // upstream's merge reintroduced it), proving the anchor as it exists in this file today would have
+  // caught the founding case, not just a fixture built to satisfy the test.
+  it('KNOWN-POSITIVE CONTROL: the real keychainDelete anchor catches the actual 2026-08-26 regression', () => {
+    const reconstructedIncident =
+      "export function isKeychainAvailable() { /* ... */ }\n" +
+      "export function keychainStore() { /* ... */ }\n" +
+      // The exact shape of the reversal: upstream's re-added function, unchanged by the fork. Kept
+      // free of any real git/network call name (card 5da60b85's own self-scan below flags those as
+      // source TEXT, not parsed code, and would wrongly treat this fixture string as a live call.
+      "export function keychainDelete(account: string): boolean {\n" +
+      "  return runSecurityDeleteCommand(account)\n" +
+      "}\n"
+    const drifted = classifyForkAnchors(
+      { 'src/web/keychain.ts': ACKNOWLEDGED_FORK_ANCHORS['src/web/keychain.ts']! },
+      () => reconstructedIncident
+    )
+    expect(drifted, 'the real anchor must flag the reconstructed incident as drift').toHaveLength(1)
+    expect(drifted[0]!.found).toBe(true)
+
+    // Negative half of the control: the CURRENT tree (no keychainDelete) must NOT trip the same
+    // anchor, or the "positive" result above would be meaningless noise rather than a real signal.
+    expect(
+      classifyForkAnchors(
+        { 'src/web/keychain.ts': ACKNOWLEDGED_FORK_ANCHORS['src/web/keychain.ts']! },
+        readReal
+      )
+    ).toEqual([])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -418,7 +490,22 @@ describe('fork-side anchors: a rule that rests on OUR tree goes stale when OUR t
 // mentions it needs an anchor, full stop -- and today every one of them has one, so the strict form
 // costs nothing and needs no exception list.
 describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () => {
-  const mentionsRefusal = (text: string): boolean => /NOT ADOPTED/i.test(text)
+  // Widened card 405a6da0 (WhiteHat 1f252502 gate, komment 13314): the literal "NOT ADOPTED" missed
+  // 14 entries (of 157) that record the same kind of decision in different words -- measured against
+  // the real corpus, not guessed. Each phrase below was found in an ACTUAL entry quoted verbatim in
+  // this card and individually triaged (see the ACKNOWLEDGED_FORK_ANCHORS additions and
+  // UNANCHORED_BACKLOG entries below this describe block, each citing the entry it covers). Still NO
+  // quote/negation filter, per the comment above and CLAUDE.md rule 12 -- "do not take A SIDE" (a
+  // union decision, not a refusal) is caught by this too and handled by classification in the
+  // backlog below, not by excluding it from the pattern.
+  // Widened AGAIN card 26083811 (WhiteHat L2, 405a6da0 gate): the "not adopt(ed/able)" family
+  // (Do NOT adopt / NOT ADOPTABLE / not adoptable) was still missing -- measured against the real
+  // corpus: 13 more entries, 1 already anchored for a different reason, 12 newly unwatched, 4 of
+  // those 12 triaged to a new anchor and 8 to the backlog below (each cited individually there).
+  const mentionsRefusal = (text: string): boolean =>
+    /NOT ADOPTED|\bnot ported\b|\bNOT taken\b|\bdo not take\b|\bkeep\b[^.]{0,30}\b(?:deletion|removal)\b|\bnot adopt/i.test(
+      text,
+    )
 
   const refusing = Object.entries(ACKNOWLEDGED_CONFLICTS as Readonly<Record<string, string>>).filter(
     ([, text]) => mentionsRefusal(String(text)),
@@ -446,7 +533,69 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
   // watched for real by the 'src/web/agent-process.ts' anchor instead. This is why the list is a
   // named backlog and not a bare count: a name that can never leave needs to be readable as that,
   // not indistinguishable from one nobody got around to yet.
-  const UNANCHORED_BACKLOG: readonly string[] = ['src/__tests__/context-guard.test.ts']
+  //
+  // Four more joined 2026-10-09 (card 405a6da0) when mentionsRefusal widened beyond "NOT ADOPTED".
+  // Each was triaged individually, not swept in as a batch:
+  //   - src/__tests__/installer-ollama-nonfatal.test.ts: "keep the deletion" of Peti's EPIC ebc7b4dd
+  //     Ollama pre-install step -- the fork has NO code left for a production anchor to watch
+  //     (the entry's own text: "the fork has no code left for this test to exercise"). Same shape
+  //     as context-guard.test.ts: a real, permanent decision with nothing in the tree to point at.
+  //   - src/__tests__/send-honesty-round2.test.ts: the only unresolved half (OWNERCHAT803/CHATID0)
+  //     is explicitly NOT decided here -- the entry's own text says the triage concluded ESCALATE,
+  //     and a dedicated card (3026a591) already exists and owns it. Anchoring here would duplicate
+  //     that card's job on a guess at scope that card is still working out.
+  //   - src/__tests__/system-directive-auth-section.test.ts: the matched phrase is "do not take A
+  //     SIDE" -- a union decision over which TEST CASES to keep (both sides' assertions survive),
+  //     not a refusal of a feature. It is also self-referential about this fork's own describe
+  //     blocks, the same "anchor must name a production file" exclusion as context-guard.test.ts.
+  //   - src/web/session-send-lock.ts: "do NOT take upstream's ... paragraph wholesale" -- the
+  //     dispute is between two PROSE COMMENTS describing which cron-shell writers the lock already
+  //     covers (withSessionSendLock itself is uncontested on both sides). Neither comment is
+  //     executable, so there is no checkable production FACT that distinguishes "still refused" from
+  //     "silently reverted" -- an anchor here could only watch a comment's wording, which is exactly
+  //     the kind of pin the file's own re-measure history (this same entry, 2026-09-13) shows goes
+  //     stale on its own without anyone touching the code it describes.
+  //
+  // Eight more joined 2026-10-09 (card 26083811) when mentionsRefusal widened to the "not
+  // adopt(ed/able)" family. Of the 12 newly-unwatched entries this widening caught, 4 named a
+  // checkable production fact and got a new ACKNOWLEDGED_FORK_ANCHORS entry (watchdog.sh,
+  // bridge-pairing-i18n.test.ts, governance-gates.test.ts, memory-search-label-backfill.test.ts --
+  // see those keys above); these 8 did not, each for its own reason:
+  //   - src/__tests__/api-messages-freshness.test.ts, heartbeat-db-size.test.ts,
+  //     heartbeat-summary-truncation-safe.test.ts, memories-search-has-a-floor.test.ts: each entry
+  //     says so itself -- "NOT ADOPTABLE, no functional difference" -- cosmetic style-only notes
+  //     (const extraction, String() vs .toString()) on test files, nothing behavioural to anchor.
+  //   - src/__tests__/notify-delivery-honesty.test.ts: the CHATID0/notify.sh-guard gap this entry
+  //     flags is the SAME decision send-honesty-round2.test.ts already backlogs below, tracked by
+  //     card 3026a591 -- not a second, independent gap to duplicate here.
+  //   - src/__tests__/session-send-lock.test.ts: the lock-acquisition gap its refused upstream
+  //     tests assert (a lock around the /rename send this fork does not have) is the same gap
+  //     src/web/session-send-lock.ts already backlogs below -- both sides are prose/test-only until
+  //     the fix this entry says must come FIRST actually lands.
+  //   - src/__tests__/setup/assert-not-live-install.ts: the decision (declining upstream's
+  //     isTmpRootedPath/TMP_ROOT_PREFIXES-based run-refusal) is fully implemented, and only
+  //     implemented, inside this test-setup file (grep-verified: no isTmpRootedPath/
+  //     TMP_ROOT_PREFIXES usage anywhere in it) -- src/web/tmp-root-prefixes.ts, the production file
+  //     its own entry points at, carries no trace of this decision either way, so there is no
+  //     production fact to anchor. Same shape as context-guard.test.ts above.
+  //   - web/lang/en.js: the matched phrase is one cosmetic sub-point ("purely cosmetic, zero
+  //     functional difference") inside this file's own much larger UNION-everything resolution --
+  //     not a standalone refusal with its own fact to watch.
+  const UNANCHORED_BACKLOG: readonly string[] = [
+    'src/__tests__/context-guard.test.ts',
+    'src/__tests__/installer-ollama-nonfatal.test.ts',
+    'src/__tests__/send-honesty-round2.test.ts',
+    'src/__tests__/system-directive-auth-section.test.ts',
+    'src/web/session-send-lock.ts',
+    'src/__tests__/api-messages-freshness.test.ts',
+    'src/__tests__/heartbeat-db-size.test.ts',
+    'src/__tests__/heartbeat-summary-truncation-safe.test.ts',
+    'src/__tests__/memories-search-has-a-floor.test.ts',
+    'src/__tests__/notify-delivery-honesty.test.ts',
+    'src/__tests__/session-send-lock.test.ts',
+    'src/__tests__/setup/assert-not-live-install.ts',
+    'web/lang/en.js',
+  ]
 
   it('no refusal ships WITHOUT a tripwire -- the unanchored set may shrink, never grow', () => {
     const unwatched = refusing

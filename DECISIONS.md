@@ -17157,6 +17157,131 @@ tiltása szerint).
 fájlonkénti auditot és a döntést minden fájlra. Gate: QA + WhiteHat (hookok/szabályok érintettsége
 miatt).
 
+## 2026-10-09 -- ed4926a3: watched-repos log-injekció + registry branch mező validálása (RedHat LOW+INFO a ffca678d-n)
+
+**Probléma.** RedHat két követő lelete a ffca678d gate-jéből (komment 13314): (1) LOW: a
+git-repo-watcher.sh ERROR:badsha sora és az integrated-repos.ts logger.warn-ja az érvénytelen
+last_sha-t nyersen idézte a naplóba -- egy sortörést tartalmazó érték így hamis, önálló
+"CHANGED:..."-szerű sort tudott a watcher sorok-szerint-olvasott kimenetébe tenni (a script saját
+fejlés-komentja szerint ez a kimenet KONTRAKTJA); (2) INFO: a registry `branch` mezője ugyanúgy
+validálatlan volt, mint a `last_sha` volt a ffca678d előtt.
+
+**Mérés -- a sortörés-kockázat valós, nem csak elméleti.** Repro: `last_sha` =
+`"bad\nCHANGED:text:forged:aaaaaaaa..bbbbbbbb"` a (javítás előtti) kódon egy 4. kimeneti sort
+hozott létre: `DISABLED:CHANGED:text:forged:aaaaaaaa..bbbbbbbb ()` -- a gyökér-ok NEM az
+ERROR:badsha sor idézése volt, hanem a python->bash sor-generátor (`mapfile` sort-alapú olvasása),
+ami a last_sha-ba ágyazott sortörésnél KÉT TSV-sort ír, a második egy teljesen kitalált,
+álcázott bejegyzésként. A branch oldalon: `branch = "--upload-pack=touch <marker>"` a javítás
+előtti `git fetch -q origin "$branch"` hívással VALÓDI parancsfuttatást eredményezett (mért, a
+marker fájl tényleg létrejött) -- ez self-RCE a saját gépen, nem csak hamis NOCHANGE.
+
+**Javítás (mindkét fájlban, surgical):**
+- `store/git-repo-watcher.sh`: (a) a python sor-generátor `safe()` függvénye minden mezőt
+  tab/CR/newline-mentesít MIELŐTT TSV-sorba fűzi -- ez a gyökér-ok javítása, nem csak a
+  tünet (az ERROR:badsha saját idézése is sanitizálva, `tr -cd '[:print:]' | cut -c1-80`,
+  defense-in-depth); (b) `branch` egy szűk ref-név allowlist-tel (`^[A-Za-z0-9][A-Za-z0-9._/-]
+  {0,199}$`, `..` tiltva) validálva, ERROR:badbranch + skip érvénytelen esetben; (c) a fetch
+  hívásban `--end-of-options` a branch elé (mért: git fetch ezt elfogadja és helyesen működik
+  normál branch-re). **Szándékosan NEM** került `--end-of-options` a `rev-parse "origin/$branch"`
+  hívás elé -- mért, hogy a `git rev-parse --end-of-options <ref>` a kapcsolót ÉS a `--`
+  elválasztót szó szerint visszaírja egy KÜLÖN kimeneti sorként a felbontott ref mellé, ami
+  eltörné az egysoros `$(...)` elfogást; az allowlist az egyetlen védelem ott, de elég, mert a
+  string mindig `origin/` prefixszel megy, sosem bare option-pozícióban.
+- `src/web/routes/integrated-repos.ts`: `sanitizeForLog()` (nyomtatható ASCII + 80 karakteres
+  plafon) a last_sha logger.warn elé; `isValidBranch()` (ugyanaz az allowlist mint a bash-ben)
+  a `refs/remotes/origin/<branch>` rev-parse hívás elé -- itt a string mindig prefixelt, tehát
+  argv-opcióként sosem értelmezhető, de a validálás a konzisztencia és a hibás állapot korrekt
+  jelzése miatt mégis indokolt (érvénytelen branch -> logolt figyelmeztetés, upstream=null).
+
+**Ellenőrzés:** `src/__tests__/integrated-repos.test.ts` +6 teszt (isValidBranch, log-sanitizálás
+mindkét mezőre, option-alakú branch sosem ér el gitet), `src/__tests__/watched-repos-moving-
+state.test.ts` +8 teszt (ERROR:badbranch, newline nem forgál sort, MUTATION-próbák mindkét
+gyökér-okra). Mutációval igazolva egyenként: a `sanitizeForLog`/`isValidBranch` kivétele a TS-ben
+2 tesztet pirosra visz; a bash branch-allowlist kivétele 1 tesztet; a TSV `safe()` kivétele 1
+tesztet (a sor-szám 3-ról 4-re nő) -- mindegyiket visszaállítva újra zöld. tsc --noEmit clean.
+Célzott futás: 52/52 zöld (35+17, a két érintett fájlon).
+
+**Ki döntött:** RedHat lelete (LOW+INFO a ffca678d gate-jén, komment 13314), backend2
+végrehajtotta. Gate: QA + WhiteHat (vagy RedHat).
+
+## 2026-10-09 -- 405a6da0: fork-tiltás ratchet, mentionsRefusal bővítése + 38 jelölt triage
+
+**Probléma (WhiteHat 1f252502 gate leletéből, korábbi Cybersec F1 LOW komment 6560):** az
+`acknowledged-conflicts.ts` fájl `ACKNOWLEDGED_CONFLICTS` tábláján a
+`fork-upstream-conflict-guard.test.ts`-beli `mentionsRefusal` csak a `/NOT ADOPTED/i` mintát
+ismerte fel "tiltó döntésként", ami anchor-kötelessé tesz egy bejegyzést (hogy egy silent
+upstream-history-merge ne tudja visszafordítani a döntést észrevétlenül). Mérve: 157 bejegyzésből
+28 használta a "NOT ADOPTED" szót, de legalább 14 MÁS, valódi tiltó megfogalmazást használt
+("not ported", "NOT taken", "do not take", "keep the fork('s) deletion/removal") NOT ADOPTED
+nélkül -- ezek anchor-kötelezettség nélkül maradtak.
+
+**Megoldás:** a `mentionsRefusal` regex bővült a fenti, a VALÓDI korpuszból vett négy
+megfogalmazással (nem találmánnyal) -- tagadás/idézőjel-szűrő NÉLKÜL, a kártya kifejezett
+utasítása szerint (a `do not take A SIDE` hamis pozitívot is a triázs, nem a regex zárja ki).
+
+**Egyszeri triage a 14 újonnan elkapott jelöltre** (a `keychainDelete`-nek már volt anchorja):
+- **9 VALÓDI tiltás, új anchor kapott** (`ACKNOWLEDGED_FORK_ANCHORS`): scripts/install-prod-tree-
+  guard-hook.sh (hdr_file security pattern), scripts/limit-monitor.sh (session-limit-pattern.sh
+  sourcing + dupla-értesítés elkerülése), seed-scheduled-tasks/kanban-audit/SKILL.md + templates/
+  CLAUDE.md.template (piped-header `-H @-` idióma, token-in-argv ellen), src/model-fallback.ts
+  (`/upgrade` startup-hint hamis pozitív elkerülése), src/web/routes/messages.ts (`Invalid JSON
+  body` guard sorrendje), src/web/system-directive.ts (SYSTEM_DIRECTIVE_SENDER vs upstream
+  hardcoded "system"), src/web/update-checker.ts (repoConfigs két-repós mechanizmus), update.sh
+  ({{CHAT_ID}} render_seed_template), web/lang/hu.js (8 activity.* i18n kulcs).
+- **4 ZAJ, `UNANCHORED_BACKLOG`-ba véve indoklással** (nem törölve a regex-ből, a kártya
+  "besorolás, nem szűrés" utasítása szerint): installer-ollama-nonfatal.test.ts (nincs kód, amire
+  anchor mutatna), send-honesty-round2.test.ts (már saját kártyán, 3026a591), system-directive-
+  auth-section.test.ts (teszt-önhivatkozás, union nem tiltás), session-send-lock.ts (két PRÓZA
+  komment vitája, nincs futtatható kód-tény amire anchor mutathatna).
+
+**Ismert-pozitív kontroll (kódelv 12):** a `keychainDelete` anchor -- amit pont azért vettünk fel
+korábban (card 1f252502), mert a valós regresszió már megtörtént egyszer (F1-F5 merge, b8de50d2,
+2026-08-26, 13 napig észrevétlen) -- most egy dedikált teszttel a VALÓDI esemény rekonstrukciója
+ellen fut, nem csak szintetikus fixture ellen, bizonyítva hogy a mechanizmus elkapta volna.
+
+**Mutáció-bizonyíték:** az egyik új anchor (update-checker.ts) kézi eltávolítása a "no refusal
+ships WITHOUT a tripwire" tesztet PIROSRA vitte a pontos elvárt üzenettel, majd visszaállítva
+zöld. 37/37 teszt zöld a célzott fájlon, tsc --noEmit tiszta, eslint tiszta.
+
+**Ki döntött:** WhiteHat lelete (1f252502 gate, komment 13314), backend2 végrehajtotta.
+Gate: QA + WhiteHat.
+
+## 2026-10-09 -- 26083811: fork-tiltás ratchet követő (WhiteHat L1+L2, 405a6da0 gate)
+
+Forrás: WhiteHat 405a6da0 gate (GO @ f2f21ca4, msg 9787), L1+L2 LOW.
+
+**L1 -- stripLineComments .sh-vakság.** A komment-csupaszítás (`src/fork-upstream/acknowledged-conflicts.ts`)
+csak `.py`-ra ismerte a `#` jelölőt, minden más fájlra (beleértve `.sh`-t) a `//`-t használta. A három
+`.sh` anchor (limit-monitor.sh, install-prod-tree-guard-hook.sh, update.sh) ezért egy `#` kommentbe
+rejtett needle-lel félrevezethető lett volna: egy present-anchor zöld marad, ha a kód eltávolítva, de a
+needle egy `# ...` sorban megemlítve marad. Javítás: `file.endsWith('.py') || file.endsWith('.sh')`.
+Mutáció-proof: a régi (`.py`-only) logikát közvetlenül újra-implementálva a tesztben bizonyítva, hogy a
+needle valóban túléli a régi stripper futását; a javítást ideiglenesen visszaállítva a régi alakra az új
+teszt PIROSRA váltott a pontos elvárt módon, majd visszaállítva zöld.
+
+**L2 -- 'not adopt' család.** A `mentionsRefusal` regex bővítve `\bnot adopt`-tal (fedi: "Do NOT adopt",
+"NOT ADOPTABLE", "not adoptable"). Mérve: 13 újonnan matchelt bejegyzés, 1 már anchorolt (src/web/routes/agents.ts,
+más okból), 12 unanchored. Egyedi triage mind a 12-re:
+- 4 valódi, checkelhető production-tényre anchorolva: `scripts/watchdog.sh` (argv-embedded token token-in-argv
+  visszatérése, absent), `src/__tests__/bridge-pairing-i18n.test.ts` (playwright absent store/fleet-test.sh-ban),
+  `src/__tests__/governance-gates.test.ts` (TELEGRAM_COPY_GATE_MATCHER absent src/web/agent-scaffold.ts-ben),
+  `src/__tests__/memory-search-label-backfill.test.ts` (--data-urlencode absent src/web/agent-scaffold.ts-ben).
+- 8 a UNANCHORED_BACKLOG-ba, egyedi indokkal (lásd a teszt fájl komment-blokkja): 4 kozmetikus "no functional
+  difference" tesztfájl-jegyzet (api-messages-freshness, heartbeat-db-size, heartbeat-summary-truncation-safe,
+  memories-search-has-a-floor), 2 már meglévő backlog-bejegyzéssel azonos alapul fekvő rés duplikálása
+  (notify-delivery-honesty.test.ts -> send-honesty-round2.test.ts/card 3026a591; session-send-lock.test.ts ->
+  src/web/session-send-lock.ts), 1 teljesen test-setup fájlban élő döntés production-ellenpár nélkül
+  (assert-not-live-install.ts), 1 egy nagyobb UNION-bejegyzésbe ágyazott kozmetikus al-pont (web/lang/en.js).
+
+Tagadás/idézőjel-szűrő továbbra sincs (kódelv 12), ahogy a kártya kérte.
+
+Végeredmény: fork-upstream-conflict-guard.test.ts 39/39 zöld (2 L1 + 4 anchor-triage teszthez kötődő
+ellenőrzés új), agent-dir-namespace-runtime.test.ts 20/20 zöld egyutt futtatva, tsc --noEmit tiszta,
+eslint tiszta.
+
+**Ki döntött:** WhiteHat lelete (405a6da0 gate, msg 9787), backend2 végrehajtotta.
+Gate: QA + WhiteHat.
+
 ## 2026-10-09 -- Upstream-sync 6. koteg (kartya 5a15cd5a, Szotasz/marveen 9fb22e5d..dc12d475)
 
 Minden fajlnev relativ a repo gyokerehez. Fork-oldal az alapertelmezes; csak az eltereseket
@@ -17179,10 +17304,42 @@ unverifiedRecipients/ledgerLookup/buildUnverifiedRecipientMsg fuggvenyei torolve
 `update_draft` visszaallitva a kartya 498d53c1 eredeti blanket-deny viselkedesere, az
 EMAIL_GATE_MATCHER es a settings.json/template matcherek visszaallitva a draft-verb-catch-all
 NELKULI alakra, a teszt-fajlokban (`email-send-gate.test.ts`, `project-settings-hook-anchor.
-test.ts`) a 'unverified recipients'/'recipient ledger' describe-blokkok es a draft-verb pair-ek
-torolve. **TANULSAG:** a `fork-upstream-conflict-guard.test.ts` futtatasa (vagy legalabb az
-ACKNOWLEDGED_FORK_ANCHORS kulcsszavas grep-je) KOTELEZO LENNE minden UJ funkcio adoptalasa ELOTT,
-nem csak a fleet-test.sh vegen -- ez a hiba elkerulheto lett volna egy korabbi ellenorzessel.
+test.ts`, `email-gate-matcher-drift.test.ts`) a 'unverified recipients'/'recipient ledger'
+describe-blokkok, a draft-verb pair-ek es az operacio-alapu (szerver-nev-fuggetlen) catch-all
+assertion is torolve -- ez utobbi inert lett volna a ledger nelkul (a hook tuzelt volna, de az
+EMAIL_SERVER_RE tovabbra is gmail/resend nevet kovetel a tenyleges deny-hez). **TANULSAG:** a
+`fork-upstream-conflict-guard.test.ts` futtatasa (vagy legalabb az ACKNOWLEDGED_FORK_ANCHORS
+kulcsszavas grep-je) KOTELEZO LENNE minden UJ funkcio adoptalasa ELOTT, nem csak a fleet-test.sh
+vegen -- ez a hiba elkerulheto lett volna egy korabbi ellenorzessel.
+
+**src/web/agent-scaffold.ts: HAROM TELJES duplikalt fuggveny-pár keletkezett az auto-mergenel,
+kezzel feloldva (MikroB dontese, 965b0b2b verzioja kanonikus).** Az origin/develop kozben
+megkapta a 965b0b2b kartyat (WhiteHat H1 NO-GO utan delta-gate GO/PASS): `ensureFleetAuthSection`/
+`ensureMcpListChannelSection` MAIN_AGENT_ID-re no-op lett (a PROJECT_ROOT/CLAUDE.md git-kovetett,
+futaskori iras `--ff-only` pull-t akasztana meg, lasd 2dd28b5d/99fccbcf), a ket blokk statikusan
+bekommitolva a gyoker CLAUDE.md-be. A batch 6 upstream UGYANEZEN FUGGVENYEK regi, nem-guardolt
+alakjat hozta -- git auto-mergelte EGYMAS MELLE a ket verziot (nincs konfliktus-jelzo, mert a
+kontextus nem fedett at), tehat `ensureMcpListChannelSection` es `ensureFleetAuthSection` (plusz
+a hozzatartozo MCPLIST_BEGIN/FLEET_AUTH_BEGIN kozos nevu const-ok es buildMcpListChannelBody/
+buildFleetAuthBody fuggvenyek) DUPLAN szerepeltek volna (`tsc` redeclare hibat adott volna).
+A REGI, nem-guardolt masolatokat toroltem, a develop (965b0b2b) guardolt alakja az egyetlen
+megmaradt. **Uj, batch 6-bol jovo `ensureEvidenceSection`-nek NEM volt develop-oldali
+megfeleloje, de UGYANAZT a sebezhetoseget hordozta** (feltetel nelkul ir a MAIN_AGENT_ID
+PROJECT_ROOT/CLAUDE.md-jebe) -- ugyanazt a no-op-guardot ra is felvettem, es a web.ts/
+agent-process.ts hivasai megmaradtak (a fuggveny most no-op MAIN-re). **docs/mcp-list-channel-
+plugin.md (uj doku-fajl) landolt, DE a gazdagabb buildMcpListChannelBody (meresi datum, doku-
+pointer, BEJOVO-nem-mertuk megjegyzes) NEM lett atvve** -- ez a committed statikus CLAUDE.md
+blokkal egyszerre kellene valtozzon (a teszt bajtra-egyezest var), kulon dontes, kimaradt ebbol
+a kotegbol (MikroB-nek jelezve).
+
+**src/__tests__/fleet-auth-section.test.ts + mcp-list-channel-section.test.ts: add/add
+konfliktus, develop verzioja az alap + upstream fuggetlen tartalma mellefuzve.** A HEAD oldal
+(batch 6, upstream eredeti) teszt-fajljai a REGI, nem-guardolt viselkedest (hand-written-skip,
+MAIN iras) tesztelik -- ezek nem fuzhetok hozza, a fuggveny mar nem igy viselkedik. Egyedul a
+`fleet-auth-section.test.ts` 'body hygiene' blokkja (host-agnosztikus szoveg-ellenorzes,
+fuggetlen a no-op-logikatol) es az `mcp-list-channel-section.test.ts` 'evidence doc' blokkja
+(a doku-fajl SAJAT prozajat ellenorzi, fuggetlenul attol hogy be van-e kotve) kerult at --
+mindkettot ujra lefuttatva zoldre a jelen allapoton.
 
 **src/web/message-router.ts: ket genuin union-pont.** (1) A fork sajat staleNote/
 queueDepthNote (kartya 9566a197/30a34eba) UNIO-zva upstream MULTI-ENVELOPE INJECTION (B1F38C8C)
@@ -17226,5 +17383,6 @@ takaritas.
 
 **Ki döntött:** backend3 (konfliktusfeloldas + 1 onmagam-javitotta hiba a recipient-ledger
 elsodleges adoptalasaban es teljes visszavonasaban, 2 genuin union a message-router.ts-ben, 1
-hivasi-hiba javitva tsc-vel, 1 lint-baseline-emeles dokumentalt indokkal). Gate: QA + Cybersec +
-Cybered (a kartya kerese szerint).
+hivasi-hiba javitva tsc-vel, 1 lint-baseline-emeles dokumentalt indokkal, 1 harom-iranyu
+fuggveny-duplikacio feloldva MikroB iranymutatasa szerint a 965b0b2b/develop ütközés miatt).
+Gate: QA + Cybersec + Cybered (a kartya kerese szerint).

@@ -1,9 +1,9 @@
 // kanban 0664aadf: a raw SQL status write that only touches the `status`
 // column (no updated_at) leaves the card's OLD updated_at in place. Since
-// listKanbanCards()'s auto-archive sweep archives 'done' cards purely by
-// comparing updated_at to a cutoff, a card that was just moved to 'done'
-// this way looks like it has been sitting untouched for weeks and gets
-// archived on the very next page load -- before anyone sees it.
+// sweepArchivedKanbanCards() archives 'done' cards purely by comparing
+// updated_at to a cutoff, a card that was just moved to 'done' this way
+// looks like it has been sitting untouched for weeks and gets archived on
+// the very next sweep -- before anyone sees it.
 //
 // The fix is a self-healing trigger (kanban_cards_status_bumps_updated_at):
 // any status-changing UPDATE that leaves updated_at unchanged gets it bumped
@@ -12,9 +12,13 @@
 // archive) and a genuinely old done card that never changed status this way
 // (must still archive -- otherwise this "fix" would just be turning the
 // feature off).
+//
+// Card 965b0b2b: the sweep used to run inline inside listKanbanCards() (every
+// board READ archived as a side effect); it is now its own function run on a
+// clock (src/web/kanban-archive-runner.ts), so these tests call it directly.
 
 import { describe, it, expect, beforeEach } from 'vitest'
-import { initDatabase, getDb, listKanbanCards, getKanbanCard, createKanbanCard } from '../db.js'
+import { initDatabase, getDb, listKanbanCards, getKanbanCard, createKanbanCard, sweepArchivedKanbanCards } from '../db.js'
 
 beforeEach(() => {
   initDatabase(':memory:')
@@ -68,7 +72,7 @@ describe('kanban_cards_status_bumps_updated_at trigger', () => {
   })
 })
 
-describe('listKanbanCards auto-archive vs. raw SQL status writes', () => {
+describe('sweepArchivedKanbanCards vs. raw SQL status writes', () => {
   it('does NOT archive a card moved to done via raw SQL this run, even though its old updated_at predates the cutoff', () => {
     const db = getDb()
     db.prepare(
@@ -79,7 +83,7 @@ describe('listKanbanCards auto-archive vs. raw SQL status writes', () => {
     // The exact shape of the bug: status-only raw SQL write, no updated_at.
     db.prepare("UPDATE kanban_cards SET status = 'done' WHERE id = ?").run('freshly-done')
 
-    listKanbanCards()
+    sweepArchivedKanbanCards()
 
     expect(getKanbanCard('freshly-done')!.archived_at).toBeNull()
   })
@@ -94,7 +98,7 @@ describe('listKanbanCards auto-archive vs. raw SQL status writes', () => {
        VALUES ('genuinely-old', 'old and done', 'done', 'normal', ?, ?)`
     ).run(OLD, OLD)
 
-    listKanbanCards()
+    sweepArchivedKanbanCards()
 
     expect(getKanbanCard('genuinely-old')!.archived_at).not.toBeNull()
   })
@@ -102,8 +106,20 @@ describe('listKanbanCards auto-archive vs. raw SQL status writes', () => {
   it('does not archive a done card moved via the production entry point (createKanbanCard + status: done)', () => {
     createKanbanCard({ id: 'prod-done', title: 'created done today', status: 'done' })
 
-    listKanbanCards()
+    sweepArchivedKanbanCards()
 
     expect(getKanbanCard('prod-done')!.archived_at).toBeNull()
+  })
+
+  it('listKanbanCards() is now a pure read -- does not archive as a side effect', () => {
+    const db = getDb()
+    db.prepare(
+      `INSERT INTO kanban_cards (id, title, status, priority, created_at, updated_at)
+       VALUES ('untouched-by-read', 'old and done', 'done', 'normal', ?, ?)`
+    ).run(OLD, OLD)
+
+    listKanbanCards()
+
+    expect(getKanbanCard('untouched-by-read')!.archived_at).toBeNull()
   })
 })

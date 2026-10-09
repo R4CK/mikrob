@@ -64,6 +64,29 @@ export function isValidSha(sha: string): boolean {
   return HEX_SHA_RE.test(sha)
 }
 
+// Card ed4926a3 (RedHat INFO, ffca678d gate comment 13314): `branch` reaches a git argv
+// position below (refs/remotes/origin/<branch>) with no validation, the same gap `last_sha`
+// had before the fix above. The literal injection risk here is lower -- the string is always
+// prefixed with "refs/remotes/origin/", so it can never itself be parsed as a git option -- but
+// an invalid value should still be rejected the same way, not silently handed to git.
+const BRANCH_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/
+
+/** True when `branch` is a plausible git ref-name component (a conservative allowlist, not
+ *  the full check-ref-format grammar -- this only needs to reject the option-shaped/control-
+ *  char cases, not accept every byte git itself would). */
+export function isValidBranch(branch: string): boolean {
+  return BRANCH_RE.test(branch) && !branch.includes('..')
+}
+
+// Card ed4926a3 (RedHat LOW, ffca678d gate comment 13314): an invalid last_sha/branch used to
+// be quoted raw into the log line below. A value containing a newline could forge an extra log
+// line; one containing a terminal escape sequence could corrupt whoever's terminal reads it.
+// Printable-ASCII-only plus a length cap neutralises both without needing to know the log
+// format a reader's terminal expects.
+function sanitizeForLog(value: string): string {
+  return value.replace(/[^\x20-\x7e]/g, '').slice(0, 80)
+}
+
 /** One adopted repo as configured in store/watched-repos.json. */
 export interface IntegratedRepoConfig {
   name: string
@@ -281,7 +304,7 @@ export function statusForRepo(cfg: IntegratedRepoConfig): IntegratedRepoStatus {
         // (trusted, just produced by git itself above) rather than skip the entry outright --
         // skipping would hide real behind-detection for no added safety.
         logger.warn(
-          `[integrated-repos] ${base.name}: last_sha "${recorded}" is not a valid hex sha -- ignoring, falling back to checkout HEAD`,
+          `[integrated-repos] ${base.name}: last_sha "${sanitizeForLog(recorded)}" is not a valid hex sha -- ignoring, falling back to checkout HEAD`,
         )
       }
     }
@@ -295,10 +318,16 @@ export function statusForRepo(cfg: IntegratedRepoConfig): IntegratedRepoStatus {
 
     // Upstream tip from ALREADY-FETCHED refs -- no network call here by design.
     let upstream: string | null = null
-    try {
-      upstream = git(base.local, ['rev-parse', `refs/remotes/origin/${branch}`])
-    } catch {
-      upstream = null // never fetched, or the branch does not exist locally
+    if (!isValidBranch(branch)) {
+      logger.warn(
+        `[integrated-repos] ${base.name}: branch "${sanitizeForLog(branch)}" is not a valid ref name -- skipping upstream lookup`,
+      )
+    } else {
+      try {
+        upstream = git(base.local, ['rev-parse', `refs/remotes/origin/${branch}`])
+      } catch {
+        upstream = null // never fetched, or the branch does not exist locally
+      }
     }
     base.upstreamSha = upstream
 

@@ -3404,13 +3404,22 @@ export interface KanbanLineComment {
   created_at: number
 }
 
-export function listKanbanCards(): KanbanCard[] {
+// Card 965b0b2b (upstream adoption): this sweep used to run INSIDE listKanbanCards(), i.e. on
+// every READ of the board -- so the act of measuring the kanban changed the kanban, and the set
+// a caller then saw was not the set that existed a moment earlier. Extracted to its own function,
+// run on a clock (src/web/kanban-archive-runner.ts) instead of on whoever happens to look.
+// Returns the number of cards archived, so a caller (the runner, or a test) can log/assert it.
+export function sweepArchivedKanbanCards(): number {
   const archiveDays = Number(getEffectiveSettingValue('KANBAN_ARCHIVE_DONE_DAYS'))
   const archiveCutoff = Math.floor(Date.now() / 1000) - archiveDays * 86400
   // Auto-archive done cards older than KANBAN_ARCHIVE_DONE_DAYS days
-  db.prepare(
+  const result = db.prepare(
     "UPDATE kanban_cards SET archived_at = ? WHERE status = 'done' AND archived_at IS NULL AND updated_at < ?"
   ).run(Math.floor(Date.now() / 1000), archiveCutoff)
+  return result.changes
+}
+
+export function listKanbanCards(): KanbanCard[] {
   // last_status_at: when the card LAST CHANGED COLUMN, not when its row was
   // last touched. These are not the same thing, and the difference is a real
   // blind spot: addKanbanComment() sets updated_at, so a card that has not
