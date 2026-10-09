@@ -3341,6 +3341,23 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "the production-side change the refused test depends on shipped without the test (or the " +
       "re-decision) that was supposed to come with it.",
   },
+  // Card 3531538d (WhiteHat L1, 26083811 gate): corrects that card's own backlog triage for this
+  // one entry. assert-not-live-install.ts has no describe/it blocks -- it is a vitest setupFiles
+  // guard with real, running refusal logic, not a test that could fake its own copy of a symbol --
+  // so the needle occurring 0 times in it is exactly an absent anchor's condition, not a reason to
+  // skip anchoring. See the ACKNOWLEDGED_CONFLICTS entry above (the isTmpRootedPath/
+  // TMP_ROOT_PREFIXES refusal) and the file-not-__tests__ rule's SETUP_GUARD_EXCEPTIONS carve-out
+  // in fork-upstream-conflict-guard.test.ts.
+  'src/__tests__/setup/assert-not-live-install.ts': {
+    needle: 'isTmpRootedPath',
+    file: 'src/__tests__/setup/assert-not-live-install.ts',
+    expect: 'absent',
+    because:
+      "this entry declines upstream's isTmpRootedPath/TMP_ROOT_PREFIXES-based run-refusal; the " +
+      "fork's own guard stays marker-based (checking that live-only files like store/claudeclaw.db " +
+      "exist), not path-based. If isTmpRootedPath appears here, upstream's path-based refusal was " +
+      "adopted without re-deciding it -- a real behaviour change (every scratchpad is tmp-rooted).",
+  },
 }
 
 /** An acknowledgement whose rule rests on a fork-side fact that is no longer true. */
