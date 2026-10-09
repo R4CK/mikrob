@@ -64,19 +64,18 @@ describe('the suite does not collect its own build output', () => {
     expect(excluded('node_modules/vitest/dist/x.test.js')).toBe(true)
   })
 
-  it("vitest's own defaults cover dist on this fork's installed version (vitest ^2.1.0)", () => {
-    // UPSTREAM-SYNC BATCH 4 (card 0b550d89): this test's ORIGINAL assertion (expected false)
-    // was written against vitest 4, where configDefaults.exclude dropped to just
-    // ['**/node_modules/**', '**/.git/**'] -- true upstream, measured there. This fork's
-    // package.json pins "vitest": "^2.1.0" (the installed version at merge time: 2.1.9, per
-    // `node -e "require('vitest/dist/config.cjs').configDefaults.exclude"`), whose defaults
-    // STILL include '**/dist/**' -- the opposite of upstream's premise. The config's own
-    // 'dist/**' entry is harmless (a redundant-but-correct belt-and-suspenders on 2.x, and
-    // the one thing standing between the suite and a double-collected run if this fork ever
-    // upgrades to vitest 4). Flipped to assert the fork's actual, measured behaviour rather
-    // than importing a premise true only on a vitest major version this fork does not run.
-    // Revisit (flip back) if/when this fork upgrades to vitest 4.
+  it("vitest's own defaults no longer cover dist on this fork's installed version (vitest ^5.0.3)", () => {
+    // UPSTREAM-SYNC BATCH 4 (card 0b550d89): flipped once already, from vitest 2.1.9 (where
+    // configDefaults.exclude still included '**/dist/**') to assert the fork's then-measured
+    // behaviour. Card 35dc6dbe (2026-10-09): this fork has SINCE upgraded to vitest ^5.0.3
+    // (an unrelated landing, package.json already carried the bump by the time this card's
+    // merge picked it up) -- `node -e "require('vitest/dist/config.cjs').configDefaults.exclude"`
+    // now measures ['**/node_modules/**', '**/.git/**'], matching upstream's original vitest-4
+    // premise this test was written against before the 2.1.9 measurement flipped it. Flipped
+    // back to match. The config's own 'dist/**' entry is no longer redundant: it is now the
+    // ONLY thing excluding dist/, not a belt-and-suspenders -- removing it would double-collect
+    // the suite again, the exact failure this file exists to pin.
     const byDefaultsOnly = configDefaults.exclude.some((p) => picomatch(p)('dist/__tests__/a.test.js'))
-    expect(byDefaultsOnly).toBe(true)
+    expect(byDefaultsOnly).toBe(false)
   })
 })
