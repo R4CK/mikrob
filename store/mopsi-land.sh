@@ -148,12 +148,21 @@ if [ "${1:-}" = "--selftest" ]; then
   # Self-check for the guard above: a push attempt to a ssh:// URL must be BLOCKED BY GIT ITSELF
   # (not merely refused by this script's own remote-identity check), proving GIT_ALLOW_PROTOCOL is
   # actually in effect for this process tree and not just set-and-ignored.
+  #
+  # MikroB caught a real defect here before this landed (card e99d9fbf, msg 9550): the first
+  # version pushed this probe at the REAL git@github-mopsi:R4CK/Mopsi.git. If GIT_ALLOW_PROTOCOL
+  # ever stops taking effect (a future edit moves the export, something unsets it before this
+  # runs), the self-check that exists to PROVE the guard works would itself become the exact
+  # incident the guard exists to prevent -- a probe branch pushed to the real repo with the real
+  # deploy key. Using invalid.invalid (RFC 2606 reserved, guaranteed to never resolve) means even
+  # a silently-ineffective guard fails safe here: DNS resolution fails before any repo, real or
+  # not, is ever contacted, and no real hostname or credential is involved in the attempt at all.
   n=$((n+1))
   GIT_PROTO_PROBE="$(mktemp -d)"
   git init -q -b main "$GIT_PROTO_PROBE" >/dev/null 2>&1
   git -C "$GIT_PROTO_PROBE" config user.email s@s; git -C "$GIT_PROTO_PROBE" config user.name s
   echo x > "$GIT_PROTO_PROBE/f"; git -C "$GIT_PROTO_PROBE" add f; git -C "$GIT_PROTO_PROBE" commit -qm x
-  proto_probe_out="$(git -C "$GIT_PROTO_PROBE" push git@github-mopsi:R4CK/Mopsi.git HEAD:refs/heads/probe-should-never-reach-network 2>&1 || true)"
+  proto_probe_out="$(git -C "$GIT_PROTO_PROBE" push ssh://git@invalid.invalid/x.git HEAD:refs/heads/probe-should-never-reach-network 2>&1 || true)"
   rm -rf "$GIT_PROTO_PROBE"
   if printf '%s' "$proto_probe_out" | grep -qi "allowed\|not allowed\|protocol"; then
     echo "  ok   GIT_ALLOW_PROTOCOL=file blocks an ssh:// push attempt before it reaches the network"
