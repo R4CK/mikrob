@@ -88,6 +88,10 @@ const EXEMPT: Record<string, string> = {
     'selftest for pentest-tool-install-guard.py, which is registered; the selftest itself is not a hook',
   'symlinked-node-modules-guard.selftest.py':
     'selftest for symlinked-node-modules-guard.py, which is registered; the selftest itself is not a hook',
+  'provenance-gate-sender-sync.selftest.py':
+    'drift guard for provenance-gate.py (card a65f3777): asserts its DIRECTIVE_SENDER literal matches ' +
+    'src/web/system-directive-id.ts\'s SYSTEM_DIRECTIVE_SENDER; provenance-gate.py itself is registered, ' +
+    'this file is a test suite, not a hook',
   // Card 4f15966e (backend, 2026-09-07): the four entries below PRE-DATE this test (all
   // present at pre-merge checkpoint b0e63a39) and are genuinely unwired on every
   // REGISTRATION_SURFACE -- this new completeness check is the first thing to notice, not
