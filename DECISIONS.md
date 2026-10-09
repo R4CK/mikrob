@@ -16477,3 +16477,24 @@ tests/smoke/**, tests/browser/**, agents/**, store/adopted/**/evals/fixtures/**,
 
 Ki dontott: backend3 (konfliktusfeloldas + 2 biztonsagi/korrektseg javitas talalva es javitva a
 mar auto-mergelt reszben). Gate: QA + Cybersec (a kartya kerese szerint).
+
+**2026-10-09, kartya 726dca6b (backend2): store/watched-repos.json mozgo mezoinek
+kiköltöztetése a gitignored allapotfajlba.** A manualis review-close-out workflow (szemben a
+197947ae altal mar megoldott napi automata szinkronnal) a `last_sha`/`last_checked_upstream_sha`/
+`last_checked_at` mezoket a `note` melle kozvetlenul a kovetett `watched-repos.json`-ba irta minden
+review alkalmaval -- ez a megosztott fo klont tartosan dirty-n tartotta, blokkolva a fast-forwardot.
+MikroB dontese (msg 9580/9584) a ket felmerult opcio kozul: (1) a harom mozgo mezo a gitignored
+`store/watched-repos-state.json`-ba kerul, minden olvaso (git-repo-watcher.sh, external-repos-
+sync.sh, integrated-repos.ts) onnan olvas, a kovetett fajlbol vett ertek csak fallback; (2) a
+`note` MARAD a kovetett fajlban (review-tortenet auditalhatosaga miatt, DECISIONS.md-szeru append-
+only elv); (3) MODOSITAS a kartya eredeti (a) opciojahoz kepest: NINCS auto-commit a fo klonban --
+a fo klon csak olvasasra marad, a manualis review-close-out helyere lepo
+`store/watched-repos-record-review.sh` NEM commitol, a hivo sajat worktree-jeben kommitolja a
+note-only registry-diffet es `marveen-land.sh`-val landolja. Migracio: a fo klon aktualis (meg nem
+landolt) dirty allapota (8 erintett bejegyzes, a legfrissebb review-tartalom, ellenorizve hogy a
+mar landolt verzioknak szigoru kiterjesztese, nem elteroagazata) beolvasztva a landolt eredmenybe,
+veszteseg nelkul (22/22 registry-bejegyzes allapota migralva, note-tartalom byte-azonos a migracio
+elotti legfrissebb verzioval). Tesztek: `src/__tests__/watched-repos-moving-state.test.ts` (a
+watcher az allapotfajlbol olvas, fallback a regi mezore, a kovetett fajl byte-azonos marad egy
+watcher-futas utan; a record-review helper csak az allapotfajlt irja, a note-ot csak explicit
+kerre fuzi). Gate: QA + WhiteHat.

@@ -9,7 +9,16 @@
 #
 # Config: store/watched-repos.json -- array of:
 #   { "name", "repo" (url), "branch", "local" (checkout path),
-#     "type": "text" | "code", "enabled": bool, "last_sha", "note" }
+#     "type": "text" | "code", "enabled": bool, "note" }
+#
+# Card 726dca6b: the reviewed baseline sha used for the NOCHANGE/CHANGED comparison below
+# used to live directly in watched-repos.json's "last_sha" field, hand-edited on every manual
+# review close-out alongside "note" -- which left the tracked registry permanently dirty on the
+# shared main clone and blocked its fast-forward. That moving value now lives in the gitignored
+# store/watched-repos-state.json (keyed by name), the SAME file store/external-repos-sync.sh
+# already write-backs to and src/web/routes/integrated-repos.ts already merges in. The registry's
+# own "last_sha" (if still present on an entry) is read only as a fallback for a name with no
+# state entry yet.
 #
 # Output (last lines, parsed by the scheduled task):
 #   CHANGED:text:<name>:<oldsha>..<newsha>     (auto-updated)
@@ -22,18 +31,26 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CFG="$HERE/watched-repos.json"
+STATE="${WATCHED_REPOS_STATE_JSON:-$HERE/watched-repos-state.json}"
 [[ -f "$CFG" ]] || { echo "SUMMARY:changed=0:flagged=0 (no config $CFG)"; exit 0; }
 
 changed=0; flagged=0
 
-# read entries as TSV via python (name, repo, branch, local, type, enabled, last_sha)
+# read entries as TSV via python (name, repo, branch, local, type, enabled, last_sha), merging
+# the state file's last_sha over the registry's own (registry value is a fallback only).
 mapfile -t ROWS < <(python3 -c '
 import json,sys
 try: d=json.load(open(sys.argv[1]))
 except Exception as e: print("ERRCFG\t"+str(e)); sys.exit(0)
+try:
+    with open(sys.argv[2], encoding="utf-8") as f: state=json.load(f)
+except Exception:
+    state={}
 for r in (d if isinstance(d,list) else []):
-    print("\t".join([str(r.get(k,"")) for k in ("name","repo","branch","local","type","enabled","last_sha")]))
-' "$CFG")
+    name=str(r.get("name",""))
+    last_sha=str((state.get(name) or {}).get("last_sha") or r.get("last_sha",""))
+    print("\t".join([name, str(r.get("repo","")), str(r.get("branch","")), str(r.get("local","")), str(r.get("type","")), str(r.get("enabled","")), last_sha]))
+' "$CFG" "$STATE")
 
 for row in "${ROWS[@]}"; do
   IFS=$'\t' read -r name repo branch local type enabled last_sha <<<"$row"
