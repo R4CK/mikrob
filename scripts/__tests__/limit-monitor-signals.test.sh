@@ -7,6 +7,10 @@
 # an isolated install dir, with HOME pointed at an empty directory so no bot
 # token is found and the alert is logged instead of sent to the owner.
 set -u
+
+# Hermetic (#1555 review round 1): inside an agent session the inherited
+# channel state dir points at a live access.json / bot token.
+unset TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR
 INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 BASE="$(mktemp -d)"
 trap 'rm -rf "$BASE"' EXIT
@@ -50,6 +54,9 @@ new_case() {
   # (fail-open)" -- confirmed: every case in this file passed even before this
   # copy existed, so the text-path dedupe was never actually exercised.
   cp "$INSTALL_DIR/scripts/lib/content-hash.sh" "$c/scripts/lib/"
+  # CHATID0: the owner-chat resolver, same reason -- its absence is a silently
+  # broken install, not a smaller one.
+  cp "$INSTALL_DIR/scripts/lib/owner-chat.sh" "$c/scripts/lib/"
   # MIOHEREDOC902: the measured quota path now lives in its own file.
   cp "$INSTALL_DIR/scripts/lib/quota-check.py" "$c/scripts/lib/"
   # The fork's limit-monitor.sh sources the SHARED canonical session-limit
@@ -426,7 +433,7 @@ fi
 
 echo "(f) CHATID0: ALLOWED_CHAT_ID=0 resolves via the owner-chat helper"
 # Portable in-place edit: BSD sed reads `-i 's/..'` as a backup suffix and
-# leaves the file unchanged, so rewrite through a temp.
+# leaves the file unchanged (#1555 review round 1), so rewrite through a temp.
 set_placeholder_chat() {
   sed 's/^ALLOWED_CHAT_ID=1$/ALLOWED_CHAT_ID=0/' "$1/.env" > "$1/.env.tmp" && mv "$1/.env.tmp" "$1/.env"
 }
@@ -466,7 +473,7 @@ else
 fi
 
 # Two paired DM entries -> the first one would be a guess, and a quota warning
-# must not reach a stranger: no send, and the log says why.
+# must not reach a stranger: no send, and the log says why (review round 1).
 C="$(deliver_case chatid0_two_dm ok)"
 set_placeholder_chat "$C"
 printf '{"allowFrom":["9999999","8888888"]}\n' > "$C/fakehome/.claude/channels/telegram/access.json"
