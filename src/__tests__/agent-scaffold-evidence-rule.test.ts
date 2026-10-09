@@ -44,11 +44,14 @@ describe('evidence-rule scaffold block', () => {
     expect(fn.slice(0, 1200)).toContain('atomicWriteFileSync')
   })
 
-  it('resolves the main agent CLAUDE.md at PROJECT_ROOT, sub-agents under agentDir', () => {
+  // No-op for the main agent (card 2dd28b5d/99fccbcf pattern, re-found by WhiteHat on
+  // 965b0b2b for the sibling ensureFleetAuthSection/ensureMcpListChannelSection): a runtime
+  // write to the git-tracked PROJECT_ROOT/CLAUDE.md would fight the --ff-only pull. Sub-agents
+  // still get the block under their own agentDir.
+  it('no-ops for the main agent, sub-agents resolve under agentDir', () => {
     const fn = SCAFFOLD.slice(SCAFFOLD.indexOf('export function ensureEvidenceSection('))
-    expect(fn.slice(0, 800)).toContain('name === MAIN_AGENT_ID')
-    expect(fn.slice(0, 800)).toContain("join(PROJECT_ROOT, 'CLAUDE.md')")
-    expect(fn.slice(0, 800)).toContain("join(agentDir(name), 'CLAUDE.md')")
+    expect(fn.slice(0, 300)).toContain('name === MAIN_AGENT_ID) return')
+    expect(fn.slice(0, 300)).toContain("join(agentDir(name), 'CLAUDE.md')")
   })
 
   it('returns without writing when the computed block is unchanged', () => {
@@ -87,16 +90,12 @@ describe('evidence-rule scaffold block', () => {
     expect(evidenceBody).toContain('nem találom sehol')
   })
 
-  it('points at the mechanical half of the rule (the recipient ledger)', () => {
-    expect(evidenceBody).toContain('store/verified-recipients.json')
-    // RECOVERYPATH920: the command has to be runnable from the cwd of the agent
-    // it is written FOR. Sub-agents run in agents/<name>/, which has no
-    // scripts/ directory, so the relative `node scripts/recipient-ledger.mjs`
-    // died with "Cannot find module" in exactly the place the gate points at.
-    // Source-level like its siblings: the absolute path is built from
-    // PROJECT_ROOT, and the relative spelling must not come back.
-    expect(evidenceBody).toContain("join(PROJECT_ROOT, 'scripts', 'recipient-ledger.mjs')")
-    expect(evidenceBody).not.toContain('node scripts/recipient-ledger.mjs')
+  // The recipient-ledger mechanical half is upstream's, NOT adopted (Cybersec, card afd64623,
+  // HIGH -- see ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs']). The prose must not
+  // claim a mechanism that does not exist in this fork.
+  it('does not claim the recipient-ledger mechanism, which this fork rejected', () => {
+    expect(evidenceBody).not.toContain('verified-recipients.json')
+    expect(evidenceBody).not.toContain('recipient-ledger.mjs')
   })
 
   it('keeps Hungarian accents and uses no em dash, like its sibling blocks', () => {

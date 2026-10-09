@@ -2514,10 +2514,15 @@ function buildAutonomyBody(name: string): string {
 // went to support@connectors.hu -- an address produced from the support@
 // convention, never read anywhere. It bounced 550 and the owner found it, not
 // the agent. His words: "Én szerintem már több ilyen szabályt fölvettünk (...)
-// ez nagyon kellemetlen, és újra meg újra előjön." Hence both halves: the prose
-// here names the class (address, URL, case number, price), and the outbound
-// half is enforced mechanically by the recipient ledger in email-send-gate.mjs,
-// because prose alone had already failed to stop it.
+// ez nagyon kellemetlen, és újra meg újra előjön."
+//
+// Upstream pairs this rule with a mechanical outbound-recipient ledger
+// (store/verified-recipients.json, scripts/recipient-ledger.mjs) -- NOT
+// adopted here (Cybersec, card afd64623, HIGH: addRecipient() validates the
+// --source STRING'S FORMAT only, never that the evidence is real, so an
+// agent can self-certify any address). The fork relies on threadMembership-
+// Decision() instead (real Gmail thread participants). This prose therefore
+// states the rule but does not claim a ledger enforces it mechanically.
 //
 // Builds the evidence-rule body. Owner-mandated on 2026-08-12 after an evening
 // in which the main agent asserted three unverified technical claims in a row
@@ -2561,12 +2566,6 @@ function buildEvidenceBody(): string {
     '- **Ár, verzió, határidő**: az élő forrásból, nem a múltkori beszélgetésből.',
     '',
     'Ha nem találsz forrást, ez a válasz: "ezt a címet/számot nem találom sehol". Ez teljes értékű, és sokkal olcsóbb, mint egy jó levél, ami senkihez nem ér el.',
-    '',
-    'Kimenő levélnél ez gépi kapu is, nem csak szabály: a `to`/`cc`/`bcc` minden címét a `store/verified-recipients.json` ledgerhez méri a PreToolUse hook, és ismeretlen címre még piszkozatot sem enged. Új cím felvétele forrás megnevezésével:',
-    '',
-    '```bash',
-    `node ${join(PROJECT_ROOT, 'scripts', 'recipient-ledger.mjs')} add <cim> --source mail:<messageId>|site:<url>|owner|crm:<ref>|order:<id>|doc:<ref> --note "<honnan>"`,
-    '```',
   ].join('\n')
 }
 
