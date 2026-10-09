@@ -13,7 +13,7 @@ import {
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   addCardBlocker, removeCardBlocker, getBlockersForCard, getBlockedByCard,
-  getBlockersForAllCards, blockerWouldCycle,
+  getBlockersForAllCards, blockerWouldCycle, parentWouldCycle,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
@@ -579,6 +579,24 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
   if (path === '/api/kanban' && method === 'GET') {
+    // Card 5aaf7209 item 1: an unknown query-parameter used to be ACCEPTED and silently ignored --
+    // measured on the live install, six agents tried three different names (includeArchived/
+    // archived/include_archived) for the same intent, none got feedback. Same reasoning as the
+    // status/assignee fail-closed-on-unknown-VALUE comment below, one level up: unknown NAME.
+    const KNOWN_KANBAN_QUERY_PARAMS = new Set(['status', 'assignee', 'agent', 'includeArchived'])
+    const unknownParams = [...ctx.url.searchParams.keys()].filter((k) => !KNOWN_KANBAN_QUERY_PARAMS.has(k))
+    if (unknownParams.length > 0) {
+      json(res, {
+        error: `Ismeretlen query-parameter: ${unknownParams.join(', ')}`,
+        known: [...KNOWN_KANBAN_QUERY_PARAMS],
+      }, 400)
+      return true
+    }
+    // includeArchived: 1/true/yes/on (case-insensitive) includes archived cards; anything else,
+    // including absence, keeps the existing archived-excluded default.
+    const includeArchivedRaw = ctx.url.searchParams.get('includeArchived')
+    const includeArchived = includeArchivedRaw !== null && /^(1|true|yes|on)$/i.test(includeArchivedRaw)
+
     // Embed each card's labels in one extra JOIN query (getLabelsForAllCards)
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
@@ -587,7 +605,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // DERIVED, never stored -- a stored flag would be a second source of truth that goes stale the
     // moment a predecessor closes, and this board is polled far more often than it is edited.
     const blockersByCard = getUnmetPredecessorsForAllCards()
-    let cards = listKanbanCards().map((card) => {
+    let cards = listKanbanCards(includeArchived).map((card) => {
       const blockers = blockersByCard.get(card.id) ?? []
       return {
         ...card,
@@ -605,8 +623,21 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // everything. Silently widening a filter is how "why is this card in my sweep?" happens.
     const wanted = filterValues(ctx.url, 'status')
     if (wanted !== null) cards = cards.filter((c) => wanted.has(String(c.status)))
-    const assignees = filterValues(ctx.url, 'assignee')
-    if (assignees !== null) cards = cards.filter((c) => assignees.has(String(c.assignee ?? '')))
+    // Card 5aaf7209 item 3: `assignee=` and `agent=` are the SAME filter under two names -- the
+    // dashboard and this fork's own CLAUDE.md teach different ones for the same intent. Accept
+    // either (assignee takes precedence if, oddly, both are given), and 400 on a name that is not a
+    // real agent rather than silently returning an empty list -- the same "an unknown value should
+    // say so" reasoning as the status filter above.
+    const assignees = filterValues(ctx.url, 'assignee') ?? filterValues(ctx.url, 'agent')
+    if (assignees !== null) {
+      const knownAgents = new Set(listAgentNames())
+      const unknownAgents = [...assignees].filter((a) => !knownAgents.has(a))
+      if (unknownAgents.length > 0) {
+        json(res, { error: `Ismeretlen agent: ${unknownAgents.join(', ')}` }, 400)
+        return true
+      }
+      cards = cards.filter((c) => assignees.has(String(c.assignee ?? '')))
+    }
     jsonMaybeGzip(req, res, cards)
     return true
   }
@@ -911,6 +942,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { code: 'bulk_attribution_required', error: BULK_ATTRIBUTION_MESSAGE }, 409)
       return true
     }
+    // parentWouldCycle (card 5aaf7209 item 4 / 16e60d3c item 4): the parent_id edge, same reasoning
+    // as the existing blockerWouldCycle check above for the blocker edge. Only checked when
+    // parent_id is actually being SET to a real value -- clearing it (null) can never create a cycle.
+    if (typeof data.parent_id === 'string' && data.parent_id && parentWouldCycle(id, data.parent_id)) {
+      json(res, { error: `A(z) "${data.parent_id}" szülővé tétele kört zárna be a szülő-láncban.` }, 409)
+      return true
+    }
     if (updateKanbanCard(id, normalizeProjectName(data), { actor: typeof actor === 'string' ? actor : undefined, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
       json(res, { ok: true }); return true
     }
@@ -1136,13 +1174,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const body = await readBody(req)
-    const { author, content } = JSON.parse(body.toString())
+    const { author, content, automated } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
-    json(res, addKanbanComment(cardId, normalizeCommentAuthor(author), normalizedContent))
+    // automated (card 5aaf7209 item 5 / 16e60d3c item 5): a bulk/machine writer's self-reported
+    // flag, so a stuck-card detector does not read its own comment as human work-trace.
+    json(res, addKanbanComment(cardId, normalizeCommentAuthor(author), normalizedContent, automated === true))
     return true
   }
 
