@@ -2326,7 +2326,10 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // naming two different CLI builds. Kept the fork's separate const -- the fork's own
     // channel-stability-contract.test.ts pins `feedbackSurveyEnv` by name in the launch command --
     // and folded upstream's measurement into that comment instead.
-    const promptSuggestionEnv = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && '
+    // CHANSPARE925 (card fd10c70b, upstream e508f06c): also disables the Agent view -- its
+    // Left key backgrounds the session into the Claude Code daemon, which keeps a second
+    // --channels copy alive (bot poller hijack).
+    const promptSuggestionEnv = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && '
     // Disable Claude Code's in-place auto-updater for every spawned agent. A
     // running agent whose updater fires does an in-place global reinstall into the
     // shared package prefix; a half-completed update can leave a broken stub and
