@@ -17281,3 +17281,82 @@ eslint tiszta.
 
 **Ki döntött:** WhiteHat lelete (405a6da0 gate, msg 9787), backend2 végrehajtotta.
 Gate: QA + WhiteHat.
+
+## 2026-10-09 -- 54f3f2cd: dev-toolchain vitest-lánc 8 advisory (2 CRITICAL), 2 fixelve + 6 dokumentált kivétel (5d1bb755 maradéka)
+
+Forrás: 5d1bb755 (backend2, QA PASS + CYBERSEC GO @ c3f5b5dd) explicit határon-kívül hagyta a
+`npm audit` teljes (nem `--omit=dev`) futásán talált 8 advisoryt, mert production-scope-ra volt
+szűkítve. Ez a kártya a maradékot zárja: 2 fixelhető nem-major bumppal, 6 marad vitest@5.0.3 +
+vite@8.3.4 major bumpot igényelve.
+
+**Fixelve (nem-force `npm audit fix`, package.json 0 diff -- a meglévő semver-range már lefedte):**
+- `brace-expansion` 5.0.9 -> 5.0.12 (GHSA-q2hr-2g5m-vwhr, GHSA-qhr7-859c-m2p7, GHSA-6j4f-fj2g-mc7p,
+  CPU/stack-exhaustion DoS a minimatch glob-illesztésben, az eslint belső függősége)
+- `source-map-js` 1.2.1 -> 1.2.2 (GHSA-68fv-2mgg-jv7q, event-loop DoS indexelt source-map
+  szakasz-offsettel, a vite/postcss belső függősége)
+
+**Megmaradt 6 (vitest@5.0.3 + vite@8.3.4 major bump igényelne, mind dev-only, reachability
+tételenként):**
+1. `tinypool` critical, GHSA-5gmw-xhrv-c9v3 + GHSA-85c8-ppgw-ccpr (prototype-pollution gadget a
+   worker-opciókban -> RCE). Reachability: tinypool a vitest belső worker-pool motorja, a
+   `run()`/worker-options kizárólag a saját `vitest.config.ts`-ünkből jön, nincs külső/untrusted
+   bemenet, ami ezeket az opciókat befolyásolná. NEM elérhető.
+2. `vitest` critical, GHSA-5xrq-8626-4rwp (CVSS 9.8, Vitest UI szerver listening állapotban
+   tetszőleges fájl olvasható/futtatható) + GHSA-82fw-gwwq-j7x9 (path traversal a
+   @vitest/mocker redirect-mock-on keresztül). Reachability: a `package.json` `test` scriptje
+   `vitest run` (nem `vitest --ui`, nem watch-mód), a `vitest.config.ts`-ben nincs `ui: true`.
+   A redirect-mock funkció attacker-kontrollált teszt-fájlt igényelne; a suite kizárólag a saját,
+   verzió-ellenőrzött teszt-fájljait futtatja. NEM elérhető.
+3. `vite` high, GHSA-4w7w-66w2-5vf9 (path traversal optimized-deps .map kezelésben) +
+   GHSA-v6wh-96g9-6wx3 (launch-editor NTLMv2 hash-szivárgás, Windows-specifikus UNC-path) +
+   GHSA-fx2h-pf6j-xcff (CVSS 7.5, `server.fs.deny` bypass Windows alternate path-on).
+   Reachability: a repo-ban NINCS `vite.config.ts`/`vite.config.js` (ellenőrizve: `find` a
+   gyökérben nulla találat) és nincs `vite dev`/dev-server script -- a `dev` script `tsx
+   src/index.ts`. Vite itt KIZÁRÓLAG a vitest transform-motorjaként él, dev-szerver soha nem
+   indul. A Windows-specifikus kettő ezen felül irreleváns (a flotta WSL2/Linux alatt fut).
+   NEM elérhető.
+4. `vite-node` moderate -- tisztán a `vite` fenti problémáit örökli (`via: vite`), ugyanaz az
+   indoklás.
+5. `@vitest/mocker` moderate, GHSA-82fw-gwwq-j7x9 (ugyanaz mint a vitest 2. pontja, a mocker a
+   vitest redirect-mock mechanizmusának komponense). NEM elérhető, ugyanazon okból.
+6. `esbuild` moderate, GHSA-67mh-4wv8-2f99 (bármely weboldal kérést küldhet a dev-szervernek és
+   olvashatja a választ -- CORS-hiányosság vite/esbuild dev-szerverben). Reachability: lásd 3.
+   pont -- nincs futó dev-szerver, ami ezt a felületet kitenné. NEM elérhető.
+
+**A major bump TÉNYLEGESEN meg lett próbálva (nem csak elméletileg elvetve), hogy a kártya
+"vagy major bump... vagy indokolt kivétel" választása ne vak döntés legyen:**
+`npm audit fix --force` -> vite 8.3.4, vitest 5.0.3, majd a törött peer-dep miatt (a
+`@vitejs/plugin-react@4.7.0` csak vite ^4-7-et támogat) `@vitejs/plugin-react` is 6.1.2-re.
+A fa ezutan tiszta volt (`npm ls` nulla `invalid` sor), `tsc --noEmit` is tiszta. A TELJES
+vitest-suite direkt futtatva (nem a megosztott fleet-test-worktree-n, a saját worktree-ben, a
+bump-allapoton) viszont **102/961 fajl piros, 74 teszt piros** (a korabbi, bump elotti
+885 fajl/25956 teszt zoldhoz kepest) -- ket onallo gyokerok:
+  - a vitest 5 (a vitest 4-gyel egyezoen) 5000 ms-os DEFAULT test-timeoutot kenyszerit, a vitest
+    2 ezt NEM tette; ~13+ store-selftest-wrapper teszt (pl. channels-reap-poller-pids 30s,
+    graphify-build-singleflight 31s, local-llm-tune-sweep 31s, mopsion-suite-run 32s,
+    vram-guard-check 10s a korabbi zold futason mérve) ettol egyenkent piros, mert a sajat
+    selftestjuk tovabb tart, mint 5s. A `vitest.config.ts` SAJAT kommentje (card 0b550d89) már
+    elore jelezte ezt: "Revisit if this fork ever upgrades to vitest 4" -- most igazolva.
+  - a vitest 5 `configDefaults.exclude` mintaja megvaltozott, a `vitest-excludes-build-output.
+    test.ts` sajat celteszje ("the suite does not collect its own build output") PIROS lett --
+    a `dist/` build-kimenet ismet bekerulne a kollekcioba vitest-sajat default nelkul, a
+    vitest.config.ts explicit `dist/**` exclude-ja addig csak tamasz volt, nem egyedüli korlát.
+  - tovabbi egyedi hibak (pl. `send-honesty-final.test.ts`, `send-honesty-round2.test.ts`
+    timeout) ugyanabbol a default-timeout-valtozasbol jonnek.
+
+Ez NEM egy pár soros javitas -- minimum egy globalis `testTimeout` beallitas (amit a
+vitest.config.ts sajat kommentje korabban EXPLICIT elvetett, mert elfedne egy valodi
+elakadt tesztet), a dist-exclude sajat celtesztjének atirasa, es a tobbi erintett fajl
+egyenkenti attekintese kell -- ez egy kulon, dedikalt kartyat/plan-grillinget igenyel (code
+elv 9: kockazatos valtozas kulon ag/flag mögott, sose a mukodo utvonal direkt helyettesitesekent),
+nem fer bele ebbe a sec-advisory-takaritasba. A probalkozas utan a bump VISSZA lett allitva a
+nem-force fixet tartalmazo allapotra (`package.json`/`package-lock.json` a ket biztonsagos
+bumpnal all, `npm ls` nulla `invalid` sor, `tsc --noEmit` tiszta).
+
+**Dontes:** 2 advisory fixelve force nelkul; 6 dev-only, bizonyitottan nem-elerheto advisory
+dokumentalt kivetelkent marad, a vitest@5/vite@8 major bump kulon kartyara kerul (uj kartyat a
+backend2 nyit MikroB-nak jelezve, a fenti meresekkel alatamasztva).
+
+**Ki döntött:** a kártya saját szövege adta a két utat ("major bump VAGY dokumentált kivétel");
+backend2 a kivétel-utat választotta, miután a bumpot ténylegesen megmérte és 102/961 fájlos
+regressziót talált. Gate: QA + WhiteHat.
