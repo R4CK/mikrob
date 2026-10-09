@@ -258,6 +258,44 @@ describe('git-repo-watcher.sh rejects a non-hex/too-short last_sha instead of us
     ], { encoding: 'utf-8' })
     expect(raw.trim().split('\n').length).toBe(2) // the unsanitized join genuinely splits
   })
+
+  // WhiteHat L1 (ed4926a3 gate, card e4bfd6f2): the ERROR:badsha line's own safe_sha value
+  // (store/git-repo-watcher.sh line 106: `tr -cd '[:print:]' | cut -c1-80`) had no test proving
+  // it strips an ESC byte AND caps length -- the TS-side equivalent (statusForRepo, card
+  // ffca678d/ed4926a3) already has this exact test, this was the missing bash-side twin.
+  it('an ESC byte and a value over 80 chars are both neutralised in the ERROR:badsha line', () => {
+    const longGarbage = '\x1b[31m' + 'z'.repeat(200) + '\x1b[0m' // non-hex, >80 chars, carries ESC
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true, note: 'x' },
+    ])
+    writeFileSync(statePath, JSON.stringify({ demo: { last_sha: longGarbage, last_checked_at: '2026-10-09' } }))
+    const out = runWatcherAt(dir)
+    expect(out).toContain('ERROR:badsha:demo')
+    // no raw control chars (incl. ESC) reached the output -- \n (0x0a) is the output's own
+    // legitimate line separator between ERROR:badsha/NOCHANGE/SUMMARY, so it is excluded here.
+    expect(out).not.toMatch(/[\x00-\x09\x0b-\x1f]/)
+    const match = out.match(/last_sha '([^']*)'/)
+    expect(match).not.toBeNull()
+    expect(match![1]!.length).toBeLessThanOrEqual(80)
+  })
+
+  // MUTATION CHECK: without the `tr -cd '[:print:]' | cut -c1-80` sanitizer, the ERROR:badsha
+  // line is not merely theoretically unsafe -- a direct, unsanitized echo of the same value
+  // genuinely leaks the raw ESC byte and the full, uncapped length. Run against this
+  // (deliberately old-shaped) echo to prove the real fix -- not just the assertions above --
+  // is what makes the test above go red if the sanitizer is removed.
+  it('MUTATION: the pre-fix (unsanitized) echo genuinely leaks the ESC byte and exceeds 80 chars (proves the test above is non-vacuous)', () => {
+    const longGarbage = '\x1b[31m' + 'z'.repeat(200) + '\x1b[0m'
+    const raw = execFileSync(
+      'bash',
+      ['-c', 'echo "ERROR:badsha:demo (last_sha \'$1\' is not a valid hex sha, ignoring recorded value)"', '--', longGarbage],
+      { encoding: 'utf-8' },
+    )
+    expect(raw).toMatch(/[\x00-\x1f]/) // the raw ESC byte survives, unsanitized
+    const match = raw.match(/last_sha '([^']*)'/)
+    expect(match).not.toBeNull()
+    expect(match![1]!.length).toBeGreaterThan(80)
+  })
 })
 
 describe('git-repo-watcher.sh rejects an invalid branch instead of handing it to git (card ed4926a3, ffca678d INFO follow-up)', () => {
