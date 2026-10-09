@@ -737,7 +737,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectSymlinkedNodeModulesGuard(existing)
   injectBlastRadiusGuard(existing)
   injectCdChainGuard(existing)
-  injectBashEgressGuard(existing)
+  injectBashEgressGuard(existing, name)
   injectNoisyCommandGuard(existing)
   injectPentestToolInstallGuard(existing)
   // Card f7b33416: this one was backfill-only until now, so a freshly spawned agent ran without the
@@ -1669,6 +1669,36 @@ export function ensureNoisyCommandGuard(name: string): boolean {
   return true
 }
 
+// Card 18055f83 (Peti approval 2026-10-09, Telegram 10704): the operator switch that decides
+// whether the command this process WRITES carries BASH_EGRESS_GUARD=enforce. Same inverse-default
+// shape as OUTGOING_COPY_GATE_ENV just above and for the same reason: an unset/typo'd variable
+// must leave the fleet where it already is (log-only), not silently flip every agent's Bash calls
+// into a blocking mode.
+export const BASH_EGRESS_ENFORCE_ENV = 'BASH_EGRESS_ENFORCE_FLEET'
+
+export function bashEgressEnforceEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return ['1', 'on', 'true', 'yes'].includes(String(env[BASH_EGRESS_ENFORCE_ENV] ?? '').trim().toLowerCase())
+}
+
+// The command this process actually registers for one agent. MARVEEN_AGENT_ID is baked in
+// unconditionally (card 18055f83: the log's "agent" field was always empty because nothing ever
+// set it) -- that is a log-quality fix, independent of enforce/log mode. BASH_EGRESS_GUARD=enforce
+// is baked in ONLY while the fleet switch above is on; unsetting it and waiting for the next
+// boot/backfill reverts every agent to the hook's own shipping default (log-only).
+function bashEgressGuardCommand(name: string, env: NodeJS.ProcessEnv = process.env): string {
+  const base = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-guard.py'))
+  // MUST be `export VAR=val;`, not a bare `VAR=val ` prefix: pythonHookCommand's own body is TWO
+  // statements joined by `;` (`command -v python3 ... || { ... }; python3 "<path>"`), and a bare
+  // leading assignment scopes ONLY to the first simple command before that `;` -- measured with
+  // `bash -c 'FOO=bar true || true; echo $FOO'` printing nothing. `export` persists for every
+  // later command in the SAME shell invocation, which is what actually reaches the python3 call
+  // that runs the guard.
+  const exports: string[] = []
+  if (name) exports.push(`export MARVEEN_AGENT_ID=${JSON.stringify(name)};`)
+  if (bashEgressEnforceEnabled(env)) exports.push('export BASH_EGRESS_GUARD=enforce;')
+  return exports.length ? `${exports.join(' ')} ${base}` : base
+}
+
 // Card 854182c7: the Bash-side egress control. The settings.permissions.deny form it replaces was
 // measured unusable (card f6db6978): a `Bash(curl *https://*)` rule matches the WHOLE command
 // string, so it cannot tell a curl's TARGET from a link riding along in the payload -- and every
@@ -1677,13 +1707,14 @@ export function ensureNoisyCommandGuard(name: string): boolean {
 // Wired on BOTH paths for the reason recorded on injectCdChainGuard: an inject* alone reaches only
 // agents whose settings.json is regenerated, and a guard that arms an arbitrary subset of the
 // fleet is not a control. The hook itself ships in LOG-ONLY mode (see its module docstring), so
-// arming it fleet-wide changes no behaviour until an operator sets BASH_EGRESS_GUARD=enforce --
-// which is the point: the log is the evidence that enforcement is safe to switch on.
-export function injectBashEgressGuard(existing: Record<string, unknown>): void {
+// arming it fleet-wide changes no behaviour until an operator sets BASH_EGRESS_ENFORCE_FLEET --
+// which is the point: the log is the evidence that enforcement is safe to switch on. `name`
+// defaults to '' so existing callers that pass no identity keep their old, unprefixed command.
+export function injectBashEgressGuard(existing: Record<string, unknown>, name = '', env: NodeJS.ProcessEnv = process.env): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-guard.py'))
+  const command = bashEgressGuardCommand(name, env)
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'Bash',
@@ -1702,15 +1733,18 @@ export function ensureBashEgressGuard(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-guard.py'))
+  const command = bashEgressGuardCommand(name)
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
   const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
   const ptuJson = JSON.stringify(ptu)
+  // A flag flip changes `command` (the enforce prefix), so hookCommandWired correctly returns
+  // false and falls through to rewrite -- this is what makes BOTH directions (arm and revert)
+  // reach an already-provisioned agent on the next boot, not just a freshly spawned one.
   if (ptuJson.includes('bash-egress-guard.py') && hookCommandWired(ptuJson, command)) return false
   if (isUnsafeHookCommand(command)) return false
-  injectBashEgressGuard(settings)
+  injectBashEgressGuard(settings, name)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true

@@ -9,7 +9,12 @@
     "Seeded from the 854182c7 corpus measurement (2,928,984 Bash commands): every host below was",
     "observed in real fleet traffic with an identifiable purpose. Hosts that appeared in the corpus",
     "but whose purpose was not identifiable were deliberately NOT seeded -- the log will show them",
-    "if they are still in use, and an operator can grant them on evidence rather than on my guess."
+    "if they are still in use, and an operator can grant them on evidence rather than on my guess.",
+    "The 4 hosts below (cloudflare-dns.com, dns.google, pypi.org, api.anthropic.com) are Peti's",
+    "2026-10-09 approval (Telegram 10704, card 18055f83) of backend3's 2026-09-29 log analysis",
+    "(store/bash-egress.log, 307 lines, card 18055f83 comment 9023): the only real non-selftest",
+    "external traffic the log showed before enforce was armed -- DoH lookups, pip version checks,",
+    "and our own Anthropic API usage probe."
   ],
   "hosts": [
     "api.github.com",
@@ -21,6 +26,10 @@
     "api.resend.com",
     "registry.npmjs.org",
     "mopsion.com",
-    "cleancore.72-62-35-139.nip.io"
+    "cleancore.72-62-35-139.nip.io",
+    "cloudflare-dns.com",
+    "dns.google",
+    "pypi.org",
+    "api.anthropic.com"
   ]
 }

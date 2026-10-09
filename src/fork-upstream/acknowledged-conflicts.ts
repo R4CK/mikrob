@@ -1449,6 +1449,13 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // NO-GO's own follow-up) tracks flipping BASH_EGRESS_GUARD to enforce, gated on an operator
   // (Peti) allowlist decision so enforce mode does not also break legitimate calls. See
   // [[a-compensating-control-must-be-measured-in-its-live-mode]].
+  //
+  // CORRECTION 2026-10-09 (card 18055f83 closed, Peti approval Telegram 10704): the operator
+  // allowlist decision landed (cloudflare-dns.com, dns.google, pypi.org, api.anthropic.com) and
+  // enforcement is now a fleet-wide, reversible switch (BASH_EGRESS_ENFORCE_FLEET env var read by
+  // src/web/agent-scaffold.ts) rather than an unset-everywhere capability. Whether THIS install is
+  // currently enforcing is an operator runtime decision, not a code fact -- check the dashboard
+  // process env, not this comment, before relying on either state.
   // Upstream's EXTERNAL corpus (curl-https cases DENIED) and its two vendor-allowlist-interaction
   // tests ('denies an allowlisted host too...', 'still denies curl https to a host the parser
   // allowlist would let through') are BOTH predicated on having a curl deny rule to test against --
@@ -1472,7 +1479,11 @@ export const ACKNOWLEDGED_CONFLICTS = {
     'unchanged, but bash-egress-guard.py is LOG-ONLY on this install (BASH_EGRESS_GUARD not set to ' +
     'enforce, measured) -- it does NOT actually block shell-curl egress today, it only logs it. Do ' +
     'not read this entry as "shell curl is covered elsewhere". Enforcing it is tracked on card ' +
-    '18055f83 (HIGH), gated on an operator allowlist decision.',
+    '18055f83 (HIGH), gated on an operator allowlist decision.' +
+    ' CORRECTION 2026-10-09 (card 18055f83 closed): enforcement is now a fleet-wide, reversible ' +
+    'operator switch (BASH_EGRESS_ENFORCE_FLEET), not an unset-everywhere capability -- whether a ' +
+    'given install is actually enforcing is a runtime fact to check, not something this comment can ' +
+    'state for all installs.',
   // Card b5b7eb6b child 971f7d4f (dedicated card, MikroB msg 5646 -- wider than d79a69b5/CMD920,
   // whole-file hook-registration reconciliation). Full hook-by-hook comparison against
   // upstream/develop, both `templates/settings.json.template` (sub-agent scaffold seed) AND the

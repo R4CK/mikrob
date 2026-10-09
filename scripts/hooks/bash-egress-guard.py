@@ -76,6 +76,19 @@ MODES (verdict point 3: kill switch AND a log-only grace period BEFORE enforceme
   BASH_EGRESS_ALLOW=1      -> per simple command, greppable one-off (same shape as the sibling
                               guards). Naming it elsewhere on the line does not cover THIS command.
 
+CARD 18055f83 (Peti approval 2026-10-09, Telegram 10704): the dashboard operator flag
+BASH_EGRESS_ENFORCE_FLEET (read by src/web/agent-scaffold.ts, NOT by this script) decides whether
+"enforce" gets baked into the command this fleet actually registers for every agent. This script
+itself never defaults to enforce on its own -- it still falls back to "log" on anything it does not
+recognise (see main()) -- the flag only controls what the GENERATED settings.json command contains.
+Unsetting the flag and letting the next boot/backfill run reverts the whole fleet to log-only.
+Once "enforce" is baked into an agent's registered command, that agent's OWN Bash-tool command
+text cannot override MODE_ENV back to log/off -- the assignment governs the hook's own subprocess,
+which is spawned by Claude Code itself, not by anything in the agent's command line. The one
+bypass still available to the agent inline is BASH_EGRESS_ALLOW=1 <command> (parsed from the
+command TEXT, not the environment, see ALLOW_ENV below) for a single legitimate call; a durable
+per-agent exception is an operator editing that agent's settings.json directly.
+
 THE ALLOWLIST IS A FILE, NOT CODE (verdict point 2): store/bash-egress-allowlist.json, versioned,
 re-read on every invocation, so an operator grant needs no restart and no deploy. A missing or
 malformed file falls back to the built-in localhost rules only -- it never widens what is allowed.
@@ -94,6 +107,18 @@ import re
 import sys
 import time
 from pathlib import Path
+
+# Card 18055f83: the log's "agent" field was always "" because MARVEEN_AGENT_ID/CLAUDE_AGENT_ID
+# were never actually set in the calling chain. Reuse the message ledger's resolver
+# (ledger_lib.agent_id_from_payload, scripts/hooks/ledger_lib.py) instead of inventing a second
+# one -- it already carries the LEDGERCWD828 lesson (cwd is mutable within a session; transcript
+# path is the session-stable anchor, env var is an explicit override, cwd is last resort). Same
+# directory, so this import needs no sys.path surgery when run as `python3 bash-egress-guard.py`.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import ledger_lib  # type: ignore
+except Exception:
+    ledger_lib = None
 
 MODE_ENV = "BASH_EGRESS_GUARD"
 ALLOW_ENV = "BASH_EGRESS_ALLOW"
@@ -935,12 +960,27 @@ def _redact(cmd):
     return _REDACT_RX.sub(lambda m: m.group(1) + "<redacted>", cmd)
 
 
-def log_finding(mode, findings, cmd, path=None):
+def _resolve_agent(payload):
+    """Caller-agent label for the log line (card 18055f83). See the import comment above for why
+    this delegates to ledger_lib rather than re-deriving it: a fail-closed import still falls
+    back to the old env-only lookup, so a missing/broken ledger_lib degrades the LOG QUALITY, not
+    the guard's own blocking behaviour."""
+    if ledger_lib is not None:
+        try:
+            agent = ledger_lib.agent_id_from_payload(payload)
+            if agent:
+                return agent
+        except Exception:
+            pass
+    return os.environ.get("MARVEEN_AGENT_ID") or os.environ.get("CLAUDE_AGENT_ID") or ""
+
+
+def log_finding(mode, findings, cmd, agent="", path=None):
     p = Path(path) if path else LOG_PATH
     line = json.dumps({
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "mode": mode,
-        "agent": os.environ.get("MARVEEN_AGENT_ID") or os.environ.get("CLAUDE_AGENT_ID") or "",
+        "agent": agent,
         "findings": [{"kind": f.kind, "cmd": f.command, "targets": f.targets, "why": f.reason}
                      for f in findings],
         "command": _redact(cmd)[:4000],
@@ -1005,7 +1045,7 @@ def main():
     if not findings:
         sys.exit(0)
 
-    log_finding(mode, findings, raw)
+    log_finding(mode, findings, raw, agent=_resolve_agent(payload))
     if mode != "enforce":
         sys.exit(0)
     sys.stderr.write(_message(mode, findings) + "\n")

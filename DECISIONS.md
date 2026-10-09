@@ -16420,3 +16420,38 @@ ellenorzesi reteg marad.
 Ki dontott: Cybered (NO-GO, bizonyitott line-continuation-bypass + a declare-f javaslat), MikroB
 (a dinamikus osztaly kivetelkent elfogadasa, kulon korre halasztva). backend3: javitas.
 Gate: QA + Cybersec + Cybered (valtozatlan, kockazat-tiering szerint).
+
+## 2026-10-09: BASH_EGRESS_GUARD enforce elesitese (kartya 18055f83)
+
+Peti dontese 2026-10-09 10:03 (Telegram 10704, gomb): ELESITSUK. A bash-egress-guard.py hook
+2026-08-23 ota csak LOG-ONLY modban futott a flottan -- Cybersec merte (057ad243-on @d6f3d6b2,
+msg 6141), hogy valos kulso curl-ok (cloudflare-dns, dns.google, pypi, anthropic) nyomtalanul
+atmentek, mert sehol nem volt `BASH_EGRESS_GUARD=enforce` beallitva. backend3 2026-09-29-i
+log-elemzese (store/bash-egress.log, 307 sor, kartya 18055f83 komment 9023) a valos, nem-selftest
+forgalmat negy hostra szukitette, mindegyikhez azonositott celial: cloudflare-dns.com + dns.google
+(DNS-over-HTTPS diagnosztika), pypi.org (python csomag-verzio-ellenorzes), api.anthropic.com
+(sajat Claude API usage-monitorozas). Peti ezt a negy hostot hagyta jova, mindent mast tovabbra is
+tilt az allowlist, amig uj evidencia alapjan fel nem veszik.
+
+Vegrehajtas (backend): a flottaszintu elesitest egy KULON, visszakapcsolhato feature-flag
+dontii el (`BASH_EGRESS_ENFORCE_FLEET`, src/web/agent-scaffold.ts), nem maga a hook alapertelmezese
+-- a hook sajat alapertelmezese tovabbra is log-only marad, ha a flag nincs beallitva. A flag
+ki/be kapcsolasa a kovetkezo dashboard-boot/backfill-korben jut ervenyre minden agensre, mindket
+iranyban (armed/reverted), mert az ensure*-ellenorzes a regisztralt parancsot a frissen szamolthoz
+hasonlitja. Talalt es javitott hiba kozben: egy sima `VAR=val parancs1; parancs2` alaku elotag
+csak az ELSO `;`-vel elvalasztott utasitasra hatna, a tenyleges python3-hivasra nem -- `export
+VAR=val;` kell, ami a shell kornyezeteben marad a tovabbi utasitasokra is (merve: `bash -c
+'FOO=bar true; echo $FOO'` semmit nem ir ki, `bash -c 'export FOO=bar; true; echo $FOO'` kiirja
+a `bar`-t). A `store/bash-egress.log` `agent` mezoje korabban mindig ures volt, mert semmi nem
+allitotta be a MARVEEN_AGENT_ID-t a hivasi lancban -- ezt a scaffold mostantol minden agens
+parancsaba beleegeti, a hook pedig a message-ledger mar megkemenyitett resolverevel
+(ledger_lib.agent_id_from_payload, LEDGERCWD828) olvassa ki, fuggetlenul az enforce/log modtol.
+
+Bizonyitek: 122 selftest-eset + 9 property-assertion (scripts/hooks/bash-egress-guard.selftest.py,
+korabban 117+8), uj TS wiring-teszt a tenylegesen regisztralt parancson keresztul (nem csak
+szintetikus env-blokkal) bizonyitja, hogy a 4 jovahagyott host atmegy, egy nem-listazott host
+blokkolodik, a localhost-dashboard-hivasok erintetlenek, es a naplo `agent` mezoje tenylegesen
+kitoltodik.
+
+Ki dontott: Peti (allowlist jovahagyas + elesites), MikroB (dispatch), backend (3. lepes:
+feature-flag, selftest, elo proba, doksi). Gate: QA + WhiteHat.

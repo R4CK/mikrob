@@ -39,6 +39,38 @@ utazna. Ezért a napló az, ami eldönti, mikor szabad `enforce`-ra kapcsolni, n
 ismételten. Ami legitim, vedd fel az allowlistára; ami feloldhatatlan cél (változó a host helyén),
 azt a hívó írja át literálra. A mért kiindulási állapot lent, a „Mért hatás" szakaszban.
 
+### Flottaszintű élesítés (kártya 18055f83, Peti jóváhagyás 2026-10-09, Telegram 10704)
+
+A fenti `BASH_EGRESS_GUARD` env-változót maga a hook olvassa, de SENKI nem állítja be sehol
+alapból -- az élesítés azon múlik, hogy a dashboard-folyamat `src/web/agent-scaffold.ts`-e
+ÍRJA-E bele az `enforce` értéket minden ügynök regisztrált hook-parancsába. Ezt egy külön,
+visszakapcsolható feature flag dönti el:
+
+```
+BASH_EGRESS_ENFORCE_FLEET=1   -> minden újonnan scaffoldolt/backfillelt ügynök parancsába
+                                  bekerül az `export BASH_EGRESS_GUARD=enforce;`.
+nincs beállítva / más érték   -> a parancs a hook saját alapértelmezését kapja (log-only).
+```
+
+A dashboard-folyamat env-jében állítod be (nem egy ügynök sajátjában), és a KÖVETKEZŐ boot/backfill
+(`ensureBashEgressGuard`, minden dashboard-indításkor fut minden ügynökre) viszi át -- nincs azonnali
+hatás, nem kell semmit kézzel szerkeszteni. Visszavonás: vedd ki a flag-et, várd meg a következő
+boot-ot -- a backfill ugyanúgy visszaírja a log-only alakot, mert az `ensure*` a REGISZTRÁLT
+parancsot a FRISSEN SZÁMOLTHOZ hasonlítja, és egy flag-váltás a parancsszöveget is megváltoztatja.
+
+**Miért `export VAR=val;`, nem `VAR=val <parancs>`.** A hook saját parancsa (`pythonHookCommand`)
+két, `;`-vel összekötött utasítás (`command -v python3 ... || { ... }; python3 "<path>"`) -- egy
+sima elöl álló értékadás csak az ELSŐ utasításra hatna, a tényleges `python3`-hívásra nem (mérve:
+`bash -c 'FOO=bar true; echo $FOO'` semmit nem ír ki). Az `export` a shell KÖRNYEZETÉBE kerül, ami
+minden későbbi utasításra érvényes ugyanabban a hívásban -- ez tényleg eljut a guard-szkriptig.
+
+**A hívó-ügynök mező is itt kerül be.** A `store/bash-egress.log` `agent` mezője korábban mindig
+üres volt, mert semmi nem állította be a `MARVEEN_AGENT_ID` env-változót a hívási láncban. Mostantól
+a scaffold minden ügynök parancsába beleégeti a saját nevét (`export MARVEEN_AGENT_ID="<ügynök>";`),
+a hook pedig a `ledger_lib.agent_id_from_payload` (a message-ledger már megkeményített resolvere,
+LEDGERCWD828) segítségével olvassa ki -- ez FÜGGETLEN az enforce/log módtól, log-only alatt is
+kitöltődik.
+
 ## Allowlist
 
 `store/bash-egress-allowlist.json`, verziókövetett, minden hívásnál újraolvasva -- egy engedély
@@ -166,7 +198,9 @@ tényleg megpróbálta lekérni. A bash ugyanígy látja; a hook nem tévedett, 
 
 `store/bash-egress.log`, JSON-soronként, `0600` jogosultsággal (a fájlt maga a hook hozza létre,
 tehát a mód a miénk -- ellentétben egy shell-átirányítással, ahol a hívó shell hozza létre előbb).
-A `-u` / `--user` / `--password` / `Authorization:` értékek redaktálva.
+A `-u` / `--user` / `--password` / `Authorization:` értékek redaktálva. Az `agent` mező a hívó
+ügynök neve (kártya 18055f83 óta ténylegesen kitöltve, lásd fent a Flottaszintű élesítés szakaszt);
+üres marad, ha egyik resolver-lépés sem tudta megállapítani.
 
 ```bash
 tail -f /home/neon/marveen/store/bash-egress.log

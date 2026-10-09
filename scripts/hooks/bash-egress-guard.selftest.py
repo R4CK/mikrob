@@ -103,6 +103,19 @@ CASES = [
      "SUFFIX-MATCH TRAP: ends with 'github.com' as a string but is a different host"),
     ("curl -s https://api.github.com.evil.example/x", ENFORCE, BLOCK,
      "PREFIX-MATCH TRAP: an allowlisted name as the LEFT part of a hostile domain"),
+    # --- card 18055f83: Peti-approved allowlist additions (2026-10-09, Telegram 10704), from
+    # backend3's 2026-09-29 log analysis of the only real non-selftest traffic observed -----------
+    ("curl -s https://cloudflare-dns.com/dns-query?name=mopsion.com&type=TXT", ENFORCE, ALLOW,
+     "DNS-over-HTTPS lookup, the measured real traffic this host was approved for"),
+    ("curl -s https://dns.google/resolve?name=mopsion.com&type=A", ENFORCE, ALLOW,
+     "alternate DoH provider, same real-traffic class"),
+    ("curl -s https://pypi.org/pypi/requests/json", ENFORCE, ALLOW,
+     "python package version check"),
+    ("curl -H @- -s https://api.anthropic.com/v1/organizations/usage", ENFORCE, ALLOW,
+     "our own Claude API usage probe (quota monitoring) -- deliberately kept allowed"),
+    ("curl -s https://huggingface.co/api/models", ENFORCE, BLOCK,
+     "a plausible external host that was NOT in the Peti-approved set -- stays blocked until an "
+     "operator grants it on evidence, same as any other ungranted host"),
     # --- RFC 3986 AUTHORITY TRAP (Cybersec blocking finding, comment 2959) ---------------------
     # The authority ends at the first of `/`, `?` or `#`. Splitting on `/` alone let the userinfo
     # rsplit reach into a QUERY or FRAGMENT and take its host from there -- so an allowlisted name
@@ -405,13 +418,38 @@ def main():
         failures.append(("<block message>", "states the limits", "missing", msg))
         print("FAIL the block message must state that this is cost-raising, not a guarantee")
 
+    # 9. THE LOG'S "agent" FIELD MUST RESOLVE A REAL CALLER (card 18055f83): it was always "" in
+    #    the wild because nothing ever set MARVEEN_AGENT_ID/CLAUDE_AGENT_ID. Reuses the SAME payload
+    #    shape Claude Code's PreToolUse hook actually sends (transcript_path), through ledger_lib's
+    #    already-hardened resolver, not a second home-grown one.
+    import importlib.util as _ilu
+    spec9 = _ilu.spec_from_file_location("beg9", str(GUARD))
+    mod9 = _ilu.module_from_spec(spec9)
+    spec9.loader.exec_module(mod9)
+    install_dir = str(GUARD.resolve().parents[2])
+    synth_payload = {"transcript_path": f"{install_dir}/agents/backend2/.claude/projects/x/y.jsonl"}
+    resolved = mod9._resolve_agent(synth_payload)
+    if resolved != "backend2":
+        failures.append(("<agent field>", "backend2", resolved, ""))
+        print(f"FAIL agent resolution from transcript_path: expected 'backend2', got {resolved!r}")
+    # Env-var fallback still works for a session with no resolvable transcript path (e.g. a
+    # launcher that names the session explicitly).
+    os.environ["MARVEEN_AGENT_ID"] = "explicit-test-agent"
+    try:
+        resolved_env = mod9._resolve_agent({})
+    finally:
+        os.environ.pop("MARVEEN_AGENT_ID", None)
+    if resolved_env != "explicit-test-agent":
+        failures.append(("<agent field env fallback>", "explicit-test-agent", resolved_env, ""))
+        print(f"FAIL MARVEEN_AGENT_ID fallback did not resolve: got {resolved_env!r}")
+
     if failures:
         print(f"\n{len(failures)} FAILED")
         for cmd, expected, got, stderr in failures:
             print(f"  {cmd!r}: expected {expected}, got {got}\n    stderr: {stderr[:300]}")
         sys.exit(1)
 
-    print(f"\nAll {len(CASES)} cases + 8 property assertions passed.")
+    print(f"\nAll {len(CASES)} cases + 9 property assertions passed.")
     sys.exit(0)
 
 

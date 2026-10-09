@@ -17,7 +17,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, statSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { injectBashEgressGuard } from '../web/agent-scaffold.js'
+import { injectBashEgressGuard, bashEgressEnforceEnabled, BASH_EGRESS_ENFORCE_ENV } from '../web/agent-scaffold.js'
 import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -101,6 +101,57 @@ describe.skipIf(REPO_UNDER_TMP)('injectBashEgressGuard', () => {
   })
 })
 
+// Card 18055f83: the fleet-wide enforce switch and the per-agent caller-id fix. Same inverse-
+// default shape as outgoingCopyGateEnabled (an unset/typo'd var must leave the fleet on log-only).
+describe.skipIf(REPO_UNDER_TMP)('bashEgressEnforceEnabled + the command it controls', () => {
+  it('is OFF by default (unset env)', () => {
+    expect(bashEgressEnforceEnabled({})).toBe(false)
+  })
+
+  it('is ON only for the recognised truthy spellings', () => {
+    for (const v of ['1', 'on', 'true', 'yes', 'ON', 'True']) {
+      expect(bashEgressEnforceEnabled({ [BASH_EGRESS_ENFORCE_ENV]: v })).toBe(true)
+    }
+    for (const v of ['0', 'off', 'false', 'no', '', 'enforce']) {
+      expect(bashEgressEnforceEnabled({ [BASH_EGRESS_ENFORCE_ENV]: v })).toBe(false)
+    }
+  })
+
+  it('bakes MARVEEN_AGENT_ID into the registered command regardless of the flag (log-quality fix)', () => {
+    const s: Record<string, unknown> = {}
+    injectBashEgressGuard(s, 'backend2', {})
+    expect(JSON.stringify(guardEntries(s))).toContain('MARVEEN_AGENT_ID=\\"backend2\\"')
+  })
+
+  it('does NOT bake BASH_EGRESS_GUARD=enforce when the fleet flag is off', () => {
+    const s: Record<string, unknown> = {}
+    injectBashEgressGuard(s, 'backend2', {})
+    expect(JSON.stringify(guardEntries(s))).not.toContain('BASH_EGRESS_GUARD=enforce')
+  })
+
+  it('bakes BASH_EGRESS_GUARD=enforce when the fleet flag is on', () => {
+    const s: Record<string, unknown> = {}
+    injectBashEgressGuard(s, 'backend2', { [BASH_EGRESS_ENFORCE_ENV]: '1' })
+    expect(JSON.stringify(guardEntries(s))).toContain('BASH_EGRESS_GUARD=enforce')
+  })
+
+  it('a flag flip is NOT idempotent-skipped -- the rewritten command differs, so ensure*-style re-checks must re-register', () => {
+    const off: Record<string, unknown> = {}
+    injectBashEgressGuard(off, 'backend2', {})
+    const on: Record<string, unknown> = {}
+    injectBashEgressGuard(on, 'backend2', { [BASH_EGRESS_ENFORCE_ENV]: '1' })
+    expect(JSON.stringify(guardEntries(off))).not.toBe(JSON.stringify(guardEntries(on)))
+  })
+
+  it('a name-less call (legacy callers) keeps the old, unprefixed command shape', () => {
+    const s: Record<string, unknown> = {}
+    injectBashEgressGuard(s)
+    const cmd = JSON.stringify(guardEntries(s))
+    expect(cmd).not.toContain('MARVEEN_AGENT_ID')
+    expect(cmd).not.toContain('BASH_EGRESS_GUARD=enforce')
+  })
+})
+
 // Always runs, so a log can never be ambiguous about whether the suite above was armed.
 describe('tmp-checkout env gate (always runs)', () => {
   it('reports whether the injector suite in this file was armed or skipped', () => {
@@ -114,7 +165,7 @@ describe('tmp-checkout env gate (always runs)', () => {
 describe('the guard is wired on both paths, not just one', () => {
   it('the settings GENERATION path calls the injector', () => {
     const scaffold = readFileSync(join(REPO_ROOT, 'src', 'web', 'agent-scaffold.ts'), 'utf-8')
-    expect(scaffold).toContain('injectBashEgressGuard(existing)')
+    expect(scaffold).toContain('injectBashEgressGuard(existing, name)')
   })
 
   it('the boot BACKFILL loop calls the ensurer, so a restart arms agents that already exist', () => {
@@ -239,5 +290,59 @@ describe('end-to-end through the real hook', () => {
     for (const weird of ['curl "unterminated', 'curl $(', 'curl `', '((((', '|||', 'curl \\']) {
       expect([0, 2], weird).toContain(verdict(weird).code)
     }
+  })
+})
+
+// Card 18055f83: drives the exact command string injectBashEgressGuard REGISTERS (not a synthetic
+// env block), so a bug in HOW the enforce/agent-id env vars get baked into the shell command (a
+// bare `VAR=val` prefix silently scopes to only the first of pythonHookCommand's two `;`-joined
+// statements, never reaching the python3 call -- measured with `bash -c 'FOO=bar true; echo $FOO'`
+// printing nothing) is caught here, not just in the unit-level string checks above.
+describe.skipIf(REPO_UNDER_TMP)('end-to-end through the ACTUAL WIRED command (card 18055f83)', () => {
+  const runWired = (command: string): { code: number; stderr: string } => {
+    const s: Record<string, unknown> = {}
+    injectBashEgressGuard(s, 'backend2', { [BASH_EGRESS_ENFORCE_ENV]: '1' })
+    const hookCommand = (guardEntries(s)[0] as { hooks: Array<{ command: string }> }).hooks[0].command
+    try {
+      execFileSync('bash', ['-c', hookCommand], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      return { code: 0, stderr: '' }
+    } catch (e) {
+      const err = e as { status: number; stderr: string }
+      return { code: err.status, stderr: err.stderr }
+    }
+  }
+
+  it('the 4 Peti-approved hosts (18055f83, Telegram 10704) pass through the real wired command', () => {
+    for (const url of [
+      'https://cloudflare-dns.com/dns-query?name=mopsion.com',
+      'https://dns.google/resolve?name=mopsion.com',
+      'https://pypi.org/pypi/requests/json',
+      'https://api.anthropic.com/v1/organizations/usage',
+    ]) {
+      expect(runWired(`curl -s ${url}`).code, url).toBe(0)
+    }
+  })
+
+  it('an unlisted host is BLOCKED through the same wired command, enforce actually reaches python3', () => {
+    const r = runWired('curl -s https://not-on-the-list.example/payload')
+    expect(r.code).toBe(2)
+    expect(r.stderr).toContain('not-on-the-list.example')
+  })
+
+  it('localhost-dashboard calls are untouched through the wired command', () => {
+    expect(runWired('curl -s http://localhost:3420/api/agents').code).toBe(0)
+  })
+
+  it('the log "agent" field is populated from the baked-in MARVEEN_AGENT_ID, not left empty', () => {
+    const logPath = join(REPO_ROOT, 'store', 'bash-egress.log')
+    const before = existsSync(logPath) ? readFileSync(logPath, 'utf-8').length : 0
+    runWired('curl -s https://not-on-the-list.example/agent-field-probe-18055f83')
+    const added = readFileSync(logPath, 'utf-8').slice(before)
+    const line = added.trim().split('\n').filter(Boolean).pop() as string
+    expect(JSON.parse(line).agent).toBe('backend2')
   })
 })
