@@ -45,7 +45,10 @@ describe('ledger-live-drain scheduled-task seed', () => {
   it('gates the model turn on a preCheck that resolves to the shipped script', () => {
     const cfg = JSON.parse(readFileSync(join(TASK_DIR, 'task-config.json'), 'utf-8'))
     expect(cfg.preCheck).toBe('{{PROJECT_ROOT}}/scripts/hooks/ledger-live-drain-precheck.sh')
-    const resolved = resolvePreCheckPath('ledger-live-drain', cfg.preCheck)
+    // UPSTREAM-SYNC BATCH 4 (card 0b550d89): cfg is `any` (JSON.parse), and resolvePreCheckPath's
+    // second parameter is typed `string` -- the assertion above already pins the exact value, so
+    // this cast narrows what the prior line already proved rather than asserting something new.
+    const resolved = resolvePreCheckPath('ledger-live-drain', cfg.preCheck as string)
     expect(resolved).toBe(join(PROJECT_ROOT, 'scripts', 'hooks', 'ledger-live-drain-precheck.sh'))
     expect(existsSync(join(ROOT, 'scripts', 'hooks', 'ledger-live-drain-precheck.sh'))).toBe(true)
   })
