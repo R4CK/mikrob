@@ -3117,6 +3117,27 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "want two parallel card-blocking UIs, or should the dependencies one absorb this one's " +
       "markup?), not something that should happen as a side effect of an unrelated merge.",
   },
+  // Card 1f252502 (backend, 2026-10-09): keychainDelete came back once already (the F1-F5 merge,
+  // b8de50d2, 2026-08-26) after this file's own entry said to keep the fork's deletion -- the
+  // narrower-scoped ea86a362 backfill round did not see src/web/keychain.ts, so the reversal sat
+  // unwatched for 13 days until a direct re-check caught it. Re-verified before this anchor was
+  // added: zero production callers (src/web/vault.ts imports only isKeychainAvailable,
+  // keychainStore, keychainRetrieveStatus); the only tree-wide hits were this function's own
+  // declaration and an unused key in two tests' vi.mock factories (vault-master-key.test.ts,
+  // vault-export-key-resolution.test.ts), both removed in the same commit as this anchor.
+  'src/web/keychain.ts': {
+    needle: 'keychainDelete',
+    file: 'src/web/keychain.ts',
+    expect: 'absent',
+    because:
+      "keychainDelete is verified-dead code (no production caller on either side of the fork, " +
+      "see this file's own ACKNOWLEDGED_CONFLICTS entry) that the fork deliberately deletes and " +
+      "upstream deliberately keeps re-adding. It already came back once without anyone noticing " +
+      "for 13 days -- if it reappears again, that is either another silent merge reversal (re-apply " +
+      "the deletion) or upstream finally gave it a real caller (then the deletion decision itself " +
+      "needs revisiting, per this file's entry: 'if keychainDelete ever gains a real caller " +
+      "upstream, it comes back WITH that caller, not before').",
+  },
 }
 
 /** An acknowledgement whose rule rests on a fork-side fact that is no longer true. */

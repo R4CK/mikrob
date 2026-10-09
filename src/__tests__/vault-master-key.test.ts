@@ -35,7 +35,6 @@ vi.mock('../web/keychain.js', () => ({
     if (keychainMock.storeThrows) throw new Error('store failed (test)')
     keychainMock.storeCalls.push(v)
   },
-  keychainDelete: () => true,
 }))
 
 const storeDir = join(tmpRoot, 'store')
@@ -154,7 +153,10 @@ describe('VAULTUJKULCS822: keychain.ts hardening (source scan)', () => {
   it('every execFileSync call in keychain.ts passes a timeout', () => {
     const src = readFileSync(join(here, '..', 'web', 'keychain.ts'), 'utf-8')
     const calls = src.split('execFileSync(').slice(1)
-    expect(calls.length).toBeGreaterThanOrEqual(3)
+    // 2, not 3: keychainDelete() (the third call) is verified-dead code the fork deletes on sight
+    // (card 1f252502) -- its own absence is pinned separately (ACKNOWLEDGED_FORK_ANCHORS,
+    // 'src/web/keychain.ts'). This floor is the remaining two real calls (retrieve, store).
+    expect(calls.length).toBeGreaterThanOrEqual(2)
     for (const c of calls) {
       // The options object of each call (up to the closing of the call) must
       // mention the shared timeout constant.
