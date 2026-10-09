@@ -1566,15 +1566,20 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "still passed without the file present, i.e. a VACUOUS gap in exactly the class this fleet's " +
     "own testing-traps memory topic tracks. (2) e3e42991's six written_at edge-case tests (missing/" +
     "null/zero/string/bool/array), matching the quota-check.py + limit-monitor.sh fix on those " +
-    "files' own entries. NOT ADOPTED, deliberately: b49d4c5d's CHATID0 test section (\"(f) CHATID0: " +
-    "ALLOWED_CHAT_ID=0 resolves via the owner-chat helper\") -- it depends on scripts/lib/owner-" +
-    "chat.sh, which does not exist in this fork; porting it is the scope of card 3026a591 (widened " +
-    "this round to cover limit-monitor.sh, previously scoped to notify.sh only), not a solo call on " +
-    "a LOW drift-reconciliation card. Related but explicitly OUT OF this card's scope (flagged, not " +
-    "fixed): scripts/__tests__/ops-scripts-portable.test.sh has the SAME tmux-inherited-$TMUX gap " +
-    "(its case (b) does not set TMUX_TMPDIR or unset TMUX/TMUX_PANE at all) -- lower risk there " +
-    "since its assertion reads a SESSION= trace line rather than captured pane content, so it does " +
-    "not misverdict, but it still leaks live fleet panes into the run. Needs its own pass.",
+    "files' own entries. (3) ADOPTED 2026-10-09 (backend, card a55315be): b49d4c5d's CHATID0 test " +
+    "section (\"(f) CHATID0: ALLOWED_CHAT_ID=0 resolves via the owner-chat helper\") -- it had been " +
+    "deferred pending scripts/lib/owner-chat.sh, which card 3026a591 ported for notify.sh; this " +
+    "card ported the SAME resolver call into limit-monitor.sh and the three '(f)' cases into this " +
+    "file, with owner-chat.sh added to new_case()'s copied libs. Mutation-proof confirmed (see this " +
+    "file's own structural-guard entry below). Deliberately NOT widened in this card: the other 6 " +
+    "upstream-migrated consumers (ledger-outbound.py, morning-briefing.sh, github-pr-monitor.sh, " +
+    "disk-space-guard.sh, stuck-modal-guard.sh, watchdog-inbound-prober.py) and the owner_chat.py " +
+    "Python port -- out of this card's own scope, same reasoning 3026a591 gave. Related but " +
+    "explicitly OUT OF this card's scope (flagged, not fixed): scripts/__tests__/ops-scripts-" +
+    "portable.test.sh has the SAME tmux-inherited-$TMUX gap (its case (b) does not set TMUX_TMPDIR " +
+    "or unset TMUX/TMUX_PANE at all) -- lower risk there since its assertion reads a SESSION= trace " +
+    "line rather than captured pane content, so it does not misverdict, but it still leaks live " +
+    "fleet panes into the run. Needs its own pass.",
   // Card b5b7eb6b child 7a694de2 (BRANCHHEAL925, upstream #1566): both sides independently added
   // a regression test for the SAME dashboard string (BRANCH_HEAL_COMMAND), landed as add/add so
   // git offers no merge base and reports the whole file as conflicting.
@@ -2670,7 +2675,7 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
   // line disappears, 3026a591 (or something else) already replaced it with the resolver, and the
   // CHATID0 test section should be re-evaluated for adoption alongside it, not left refused.
   'scripts/__tests__/limit-monitor-signals.test.sh': {
-    needle: 'CHAT_ID="$(env_val ALLOWED_CHAT_ID)"',
+    needle: 'resolve_owner_chat_id "$INSTALL_DIR/.env"',
     file: 'scripts/limit-monitor.sh',
     expect: 'present',
     because:
@@ -2678,7 +2683,15 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "would replace with a resolver call. Its disappearance means that port landed here, and the " +
       "limit-monitor-signals.test.sh entry's 'NOT ADOPTED' verdict on the CHATID0 test section " +
       "needs revisiting -- not silently staying refused against a script that no longer has the " +
-      "bug it refuses to test for.",
+      "bug it refuses to test for. " +
+      "SUPERSEDED 2026-10-09 (backend, card a55315be): the port landed. limit-monitor.sh now calls " +
+      "resolve_owner_chat_id, so the needle moved onto that call (the thing that must NOT silently " +
+      "regress back to the old raw ALLOWED_CHAT_ID read) and the CHATID0 '(f)' test section " +
+      "(upstream blob 80c31f3d1d2578bd8b041ed3876150d515364cf1) was ported into this file, with " +
+      "owner-chat.sh added to new_case()'s copied libs. Mutation-proof: reverted limit-monitor.sh " +
+      "to the pre-fix raw-read shape, confirmed exactly the 3 new CHATID0 cases went red for the " +
+      "expected reason (chat_id=0 sent, or no refusal-reason logged), restored, re-confirmed all " +
+      "green.",
   },
   // Card 14284837 (backend2, 2026-09-25): project-settings-hook-anchor.test.ts's entry above
   // refuses upstream's simplified EXPECTED map -- keeping the fork's test means it keeps pinning
