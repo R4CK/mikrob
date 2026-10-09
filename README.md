@@ -230,6 +230,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 | Channel reply-guard | [docs/channel-reply-guard.md](docs/channel-reply-guard.md) |
 | Bash egress-kapu | [docs/bash-egress-guard.md](docs/bash-egress-guard.md) |
 | Telegram haladásjelző | [docs/telegram-progress-indicator.md](docs/telegram-progress-indicator.md) |
+| Slack haladásjelző | [docs/slack-progress-indicator.md](docs/slack-progress-indicator.md) |
 | Új asszisztens onboarding | [docs/onboarding-uj-asszisztens.md](docs/onboarding-uj-asszisztens.md) |
 | Konfiguráció-referencia | [docs/config-reference.md](docs/config-reference.md) |
 | Dashboard belépés — visszaút, vészhelyzeti reset | [docs/dashboard-auth-recovery.md](docs/dashboard-auth-recovery.md) |

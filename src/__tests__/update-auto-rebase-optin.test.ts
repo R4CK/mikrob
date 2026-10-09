@@ -23,7 +23,10 @@ const UPDATE_SH = readFileSync(join(ROOT, 'update.sh'), 'utf-8')
 function extractBlock(): string {
   const start = UPDATE_SH.indexOf("BEHIND=$(git rev-list --count 'HEAD..@{u}'")
   expect(start, 'diverged-history block not found in update.sh').toBeGreaterThan(-1)
-  const end = UPDATE_SH.indexOf('\nif [ "${AHEAD:-0}" -gt 0 ]; then', start)
+  // The block lives inside this fork's POST_MERGE_MODE else-branch (card fd10c70b), so
+  // every line here is indented two spaces further than upstream's flat version -- the
+  // end-marker search must match that same indentation or it never finds the boundary.
+  const end = UPDATE_SH.indexOf('\n  if [ "${AHEAD:-0}" -gt 0 ]; then', start)
   expect(end, 'block end marker not found').toBeGreaterThan(start)
   return UPDATE_SH.slice(start, end)
 }
