@@ -66,24 +66,31 @@ describe('kanbanMoveInstructions', () => {
 
   // Text assertions cannot tell a working command from a plausible-looking one,
   // and this line's whole value is that the reader can paste it. So run the
-  // program it emits: once against a board (the answer must be THIS card's status,
-  // not a neighbour's) and once against the error object the endpoint returns when
-  // the token cannot be read -- the shape that made the first draft die on a
-  // Python TypeError, which is the one answer a pre-flight check must never give.
+  // program it emits: once against a board (the answer must be THIS card's status
+  // AND description, not a neighbour's) and once against the error object the
+  // endpoint returns when the token cannot be read -- the shape that made the
+  // first draft die on a Python TypeError, which is the one answer a pre-flight
+  // check must never give.
   const runProbeProgram = (out: string, stdin: string): string => {
     const probe = probeLine(out)!
     const program = probe.slice(probe.indexOf('python3 -c "') + 'python3 -c "'.length).replace(/"\s*$/, '')
     return execFileSync('python3', ['-c', program], { input: stdin, encoding: 'utf-8' }).trim()
   }
 
-  it('the emitted program reports THIS card status and survives an error response', () => {
+  // 2026-09-15, 7ed56208: an agent that ran exactly this probe never saw a
+  // card-specific closing-status override, because the probe printed only the
+  // status field -- the override lived one field over, in description, which
+  // the probe never fetched. The probe now prints both.
+  it('the emitted program reports THIS card status and description, and survives an error response', () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
     const board = JSON.stringify([
-      { id: 'zzz999', status: 'in_progress' },
-      { id: 'abc123', status: 'testing' },
+      { id: 'zzz999', status: 'in_progress', description: 'neighbour, must not leak' },
+      { id: 'abc123', status: 'testing', description: 'zaro-statusz: review, nem done' },
     ])
-    expect(runProbeProgram(out, board)).toBe('testing')
+    expect(runProbeProgram(out, board)).toBe('status: testing\ndescription: zaro-statusz: review, nem done')
     expect(runProbeProgram(out, JSON.stringify([{ id: 'zzz999', status: 'done' }]))).toBe('nincs ilyen kartya')
+    const noDesc = runProbeProgram(out, JSON.stringify([{ id: 'abc123', status: 'planned', description: null }]))
+    expect(noDesc).toBe('status: planned\ndescription: (nincs)')
     const err = runProbeProgram(out, JSON.stringify({ error: 'Unauthorized' }))
     expect(err).toContain('Unauthorized')
     expect(err).not.toContain('Traceback')
@@ -101,4 +108,15 @@ describe('kanbanMoveInstructions', () => {
     expect(out).toContain('$(cat ')
     expect(out).toContain('.dashboard-token')
   })
+
+  // UPSTREAM-SYNC BATCH 4 (card 0b550d89): removed the two upstream tests that lived here
+  // ("says the card own closing status outranks the template default" / "puts the ranking
+  // sentence with step 2..."). Both assert step 2 literally says `"status":"done","actor":...`
+  // and reads `2) Állítsd a kártyát done-ra` -- upstream's own, unchanged step 2. This fork's
+  // step 2 says `"status":"waiting"` (the test right above this comment already pins that,
+  // `toContain('"status":"waiting"')`, and it is untouched by this batch): the builder never
+  // sets a closing status directly, the escalateTo/gate decides it after the REVIEW comment
+  // (CLAUDE.md rule 4). Upstream's "program-specific closing status" sentence, declined in
+  // kanban.ts's own merge resolution (see DECISIONS.md 2026-10-09 / 0b550d89 entry) for the
+  // same reason, has no step-2 "done" left to rank against on this fork. Not adapted -- removed.
 })

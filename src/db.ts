@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { isForceActor } from './kanban-force-actors.js'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync, statSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, MAIN_AGENT_ID } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, APP_TZ, MAIN_AGENT_ID, EMBED_URL, EMBED_MODEL, EMBED_DIMS } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
@@ -509,6 +509,51 @@ export function initDatabase(dbPathOverride?: string): void {
   } catch {
     // column already exists
   }
+
+  // MEMIRASNYOM915: write-trace columns. Every agent patches memories with
+  // read-modify-write (read, append, write the WHOLE text back), so a lost
+  // concurrent write is invisible after the fact -- the checker only sees
+  // that its OWN text is present. These columns make the LOSS visible, they
+  // do not remove the race. NULL updated_at = never content-updated since
+  // this migration; NULL updated_by = the writer did not attribute itself.
+  try {
+    db.exec('ALTER TABLE memories ADD COLUMN updated_at INTEGER')
+  } catch {
+    // column already exists
+  }
+  try {
+    db.exec('ALTER TABLE memories ADD COLUMN updated_by TEXT')
+  } catch {
+    // column already exists
+  }
+  // Stamp updated_at on CONTENT-shaped updates only. Maintenance writes
+  // (salience decay, accessed_at bumps, embedding backfills) must NOT stamp,
+  // or updated_at would degrade into "last decay time". A separate trigger
+  // rather than extending memories_au: that one is the FTS-sync contract and
+  // fires on every update by design.
+  // Recursion safety under PRAGMA recursive_triggers=ON: the inner UPDATE
+  // changes updated_at, so the re-fired trigger fails the
+  // `new.updated_at IS old.updated_at` guard and stops. A writer that sets
+  // updated_at itself (updateMemory does) also fails the guard and keeps its
+  // own values. updated_by is cleared when the write did not (re)attribute
+  // itself, so a raw sqlite3 write never inherits the previous author --
+  // NULL-at-a-fresh-updated_at reads as "unattributed write", never as a
+  // false attribution. (Known edge, conservative direction: the same author
+  // rewriting within the same second gets updated_by cleared.)
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS memories_touch AFTER UPDATE ON memories
+    WHEN (new.content IS NOT old.content
+          OR new.keywords IS NOT old.keywords
+          OR new.category IS NOT old.category
+          OR new.agent_id IS NOT old.agent_id)
+     AND new.updated_at IS old.updated_at
+    BEGIN
+      UPDATE memories SET
+        updated_at = unixepoch(),
+        updated_by = CASE WHEN new.updated_by IS old.updated_by THEN NULL ELSE new.updated_by END
+      WHERE id = new.id;
+    END
+  `)
 
   // Daily logs table
   db.exec(`
@@ -1342,6 +1387,11 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec(`ALTER TABLE task_runs ADD COLUMN completed_at INTEGER`) } catch { /* already present */ }
   try { db.exec(`ALTER TABLE task_runs ADD COLUMN outcome TEXT`) } catch { /* already present */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_task_runs_open ON task_runs(completed_at, ts)`)
+  // Backfill for SCHEDLOST915: terminal marker rows (lost, skipped, ...) were
+  // inserted with completed_at NULL and so looked open for ever. A marker ends
+  // when it is written. Idempotent: matches nothing once applied.
+  db.exec(`UPDATE task_runs SET completed_at = ts
+           WHERE completed_at IS NULL AND status NOT IN ('fired', 'fired_late')`)
 
   // --- Pending Scheduled Task Retries ---
   // Busy-skipped scheduled tasks used to live in an in-memory Map. On a
@@ -3003,16 +3053,42 @@ export function auditMemoryRecall(agentId: string, sampleSize: number = 50): Mem
   }
 }
 
-export function updateMemory(id: number, content: string, category?: string, agentId?: string, keywords?: string): boolean {
+export function updateMemory(id: number, content: string, category?: string, agentId?: string, keywords?: string, updatedBy?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   // Read the row's CURRENT owner and category before writing. The agentId
   // parameter is optional and means "reassign to this agent", so it is absent
   // on the ordinary edit -- it cannot be used to decide whose cache went
-  // stale. Only the row itself knows that.
-  const before = db.prepare('SELECT agent_id, category FROM memories WHERE id = ?').get(id) as
-    { agent_id: string | null; category: string | null } | undefined
-  const sets: string[] = ['content = ?', 'accessed_at = ?']
-  const params: unknown[] = [content, now]
+  // stale. Only the row itself knows that. content/keywords come along for the
+  // staleness check below, for the same reason: the parameters alone cannot say
+  // whether the embedded text changed.
+  const before = db.prepare('SELECT agent_id, category, content, keywords FROM memories WHERE id = ?').get(id) as
+    { agent_id: string | null; category: string | null; content: string | null; keywords: string | null } | undefined
+  // MEMIRASNYOM915: attributed write-trace. updated_at is set explicitly here
+  // (which keeps the memories_touch trigger from firing); updated_by is the
+  // caller's self-reported identity, or explicit NULL -- never the previous
+  // author left in place.
+  const sets: string[] = ['content = ?', 'accessed_at = ?', 'updated_at = ?', 'updated_by = ?']
+  const params: unknown[] = [content, now, now, updatedBy ?? null]
+  // The stored embedding was generated from the OLD text, so an edit silently
+  // leaves the vector describing text that is no longer there. Nothing in the
+  // schema records that mismatch (there is no embedding_generated_at column),
+  // and neither search path errors: FTS and the LIKE fallback read `content`
+  // live and stay correct, while hybridSearch keeps fusing the stale vector's
+  // ranking in. Dropping it to NULL hands the row back to backfillEmbeddings,
+  // which processes exactly `WHERE embedding IS NULL` and is therefore
+  // idempotent and resumable. Deliberately NOT regenerating here: that would
+  // put a synchronous Ollama call in the path of a DB write.
+  //
+  // The trigger is the embedded TEXT changing, which is content AND keywords:
+  // both saveAgentMemory and backfillEmbeddings embed `content + ' ' + keywords`,
+  // so a keywords-only edit leaves exactly the same stale vector.
+  //
+  // Compare against the stored values rather than testing for the parameter's
+  // presence -- `content` is required and every caller passes it (the PUT route
+  // resends the unchanged body on a category-only edit), so presence alone says
+  // nothing about a change.
+  const keywordsChanged = keywords !== undefined && (before?.keywords ?? null) !== keywords
+  if (before && (before.content !== content || keywordsChanged)) sets.push('embedding = NULL')
   if (category) { sets.push('category = ?'); params.push(category) }
   if (agentId) { sets.push('agent_id = ?'); params.push(agentId) }
   if (keywords !== undefined) { sets.push('keywords = ?'); params.push(keywords) }
@@ -5782,6 +5858,10 @@ export interface TaskRunHistoryEntry {
 
 const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
+// Dispatch statuses that open a run (closed later by markTaskRunCompleted or
+// reconcileOpenTaskRuns). Must match reconcileOpenTaskRuns' own filter.
+export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late'])
+
 /**
  * Record that a run was dispatched. Returns the row id so the caller can close
  * the run later with markTaskRunCompleted -- without it there is no way to
@@ -5789,7 +5869,13 @@ const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
  */
 export function appendTaskRun(name: string, agent: string, status = 'fired'): number {
   const now = Date.now()
-  const info = db.prepare('INSERT INTO task_runs (name, agent, ts, status) VALUES (?, ?, ?, ?)').run(name, agent, now, status)
+  // Only a dispatch opens a run the watchdog will later close. Every other
+  // status (lost, lost-giveup, skipped, missed, error, ...) is a terminal marker
+  // with nothing to wait for, so it is closed at insert. Left NULL, each of them
+  // read as "still running" to any open-run query, for ever: 1127 'lost' rows on
+  // the reference install, the oldest 13 days, none ever closed (SCHEDLOST915).
+  const completedAt = OPEN_TASK_RUN_STATUSES.has(status) ? null : now
+  const info = db.prepare('INSERT INTO task_runs (name, agent, ts, status, completed_at) VALUES (?, ?, ?, ?, ?)').run(name, agent, now, status, completedAt)
   // Opportunistic TTL prune: cheap indexed DELETE, keeps the table bounded.
   db.prepare('DELETE FROM task_runs WHERE ts < ?').run(now - TASK_RUN_TTL_MS)
   return Number(info.lastInsertRowid)
@@ -6017,25 +6103,32 @@ export function clearPendingTaskRetryOwnerAlert(taskName: string, agentName: str
     .run(taskName, agentName).changes > 0
 }
 
-// --- Vector Search (Ollama + nomic-embed-text) ---
-
-const EMBED_MODEL = 'nomic-embed-text'
+// --- Vector Search (Ollama, model + endpoint configurable) ---
+// The model and endpoint come from config (EMBED_MODEL / EMBED_URL /
+// EMBED_DIMS) instead of a hardcoded literal; see the rationale block in
+// config.ts. Defaults reproduce the previous behaviour exactly.
 
 export async function generateEmbedding(text: string): Promise<number[] | null> {
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/embeddings`, {
+    const resp = await fetch(`${EMBED_URL}/api/embeddings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: EMBED_MODEL, prompt: text.slice(0, 2000) }),
       signal: AbortSignal.timeout(TOOL_TIMEOUTS['ollama-embedding']),
     })
     const data = await resp.json() as { embedding?: number[] }
-    return data.embedding || null
+    if (!data.embedding || data.embedding.length === 0) return null
+    // Matryoshka truncation. Only ever CUT, never pad: slicing a vector that is
+    // already shorter than EMBED_DIMS would silently store a dimension that
+    // does not match what the model produces.
+    return EMBED_DIMS > 0 && data.embedding.length > EMBED_DIMS
+      ? data.embedding.slice(0, EMBED_DIMS)
+      : data.embedding
   } catch (err) {
     // Debug-level so it doesn't spam default INFO logs when Ollama isn't
     // running (the common case on most user machines). Enables "why does
     // hybrid search only return FTS results?" diagnostics without noise.
-    logger.debug({ err, ollamaUrl: OLLAMA_URL }, 'Embedding generation failed (Ollama not running?)')
+    logger.debug({ err, embedUrl: EMBED_URL, embedModel: EMBED_MODEL }, 'Embedding generation failed (Ollama not running?)')
     return null
   }
 }
@@ -6061,12 +6154,19 @@ function vectorSearch(agentId: string, queryEmbedding: number[], limit: number =
         "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
       ).all(agentId)) as Memory[]
 
-  const scored = rows.map(m => {
+  // A vector written by a DIFFERENT model has a different length, and the
+  // cosine loop walks the QUERY's length: the missing entries read as undefined
+  // and the score comes back NaN. NaN compares false against everything, so it
+  // neither sorts to the top nor raises -- the search quietly returns junk.
+  // Drop the mismatches instead, so a half-migrated table degrades to "fewer
+  // results" rather than "wrong results".
+  const scored = rows.flatMap(m => {
     try {
       const emb = JSON.parse(m.embedding!) as number[]
-      return { memory: m, score: cosineSimilarity(queryEmbedding, emb) }
+      if (emb.length !== queryEmbedding.length) return []
+      return [{ memory: m, score: cosineSimilarity(queryEmbedding, emb) }]
     } catch {
-      return { memory: m, score: 0 }
+      return [{ memory: m, score: 0 }]
     }
   })
 
