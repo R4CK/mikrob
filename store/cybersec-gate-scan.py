@@ -66,7 +66,10 @@ def is_cybersec_verdict(c):
     """
     if not (c.get('author') or '').lower().startswith('cybersec'):
         return False
-    return verdict_body(c.get('content')).upper().startswith('CYBERSEC')
+    # WHITEHAT is the display-name alias for the same gate (card cf0a8c0b) -- the author id stays
+    # 'cybersec' (checked above), only the verdict WORD this agent types may read the new name.
+    body = verdict_body(c.get('content')).upper()
+    return body.startswith('CYBERSEC') or body.startswith('WHITEHAT')
 
 
 TIER_OUT_PHRASES = (

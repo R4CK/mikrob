@@ -23,8 +23,9 @@ def api(path):
 # verified by commits not just title" is also HANDLED, not ungated -- without these the sweep
 # re-surfaces the same card every round and the only way to silence it would be to post a duplicate
 # gate (churn).
+# REDHAT is the display-name alias for the same gate (card cf0a8c0b); author id stays 'cybered'.
 MY_VERDICT_RE = re.compile(
-    r'^\s*CYBERED\b.*(\b(GO|NO-GO)\b|TIER-D[OÖ]NT[EÉ]S|DUPLIK[AÁ]TUM)', re.IGNORECASE
+    r'^\s*(CYBERED|REDHAT)\b.*(\b(GO|NO-GO)\b|TIER-D[OÖ]NT[EÉ]S|DUPLIK[AÁ]TUM)', re.IGNORECASE
 )
 
 MY_GATE = 'cybered'

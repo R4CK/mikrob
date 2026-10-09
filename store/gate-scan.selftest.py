@@ -104,6 +104,17 @@ check('Gate: continued in PROSE on the same line (lesson 77fd0f07)',
 check('case-insensitive gate name',
       declared_gate_excludes_me('Gate: qa + CYBERSEC', 'cybersec'), False)
 
+# --------------------------------------------------------- WHITEHAT/REDHAT alias (card cf0a8c0b)
+check('QA + WhiteHat includes cybersec via the display-name alias',
+      declared_gate_excludes_me('Gate: QA + WhiteHat', 'cybersec'), False)
+check('QA + WhiteHat EXCLUDES cybered',
+      declared_gate_excludes_me('Gate: QA + WhiteHat', 'cybered'), True)
+check('QA + RedHat includes cybered via the display-name alias',
+      declared_gate_excludes_me('Gate: QA + RedHat', 'cybered'), False)
+check('the hyphenated-compound exclusion also holds for the display-name spelling',
+      declared_gate_excludes_me('Gate: QA (a WhiteHat-mentes valtozat a jelenleg ervenyes designacio).', 'cybersec'),
+      True)
+
 # --------------------------------------------------------- hyphenated-compound false positive (4b8962df)
 # Cybersec's self-correction of comment 21019: a plain substring test found "cybersec" inside
 # "Cybersec-mentes" (Hungarian for "Cybersec-free") and read the EXCLUDING sentence as naming the
@@ -129,6 +140,12 @@ check('base form: QA PASS', bool(PASS_RE.match('QA PASS -- everything green')), 
 check('base form: QA2 PASS', bool(PASS_RE.match('QA2 PASS')), True)
 check('base form: CYBERSEC GO', bool(PASS_RE.match('CYBERSEC GO')), True)
 check('base form: CYBERED GO', bool(PASS_RE.match('CYBERED GO')), True)
+# WHITEHAT/REDHAT display-name aliases (card cf0a8c0b)
+check('alias form: WHITEHAT GO', bool(PASS_RE.match('WHITEHAT GO')), True)
+check('alias form: REDHAT GO', bool(PASS_RE.match('REDHAT GO')), True)
+check('alias form: WHITEHAT NO-GO', bool(FAIL_RE.match('WHITEHAT NO-GO')), True)
+check('alias form: REDHAT NO-GO', bool(FAIL_RE.match('REDHAT NO-GO')), True)
+check('alias CONTROL: WHITEHAT GO does not also match FAIL_RE', bool(FAIL_RE.match('WHITEHAT GO')), False)
 # ---- sentence/clause anchoring of GATE_DECL_RX (card 82fa48b0) -----------------------------
 #
 # THE FOUNDING CASE, on its ORIGINAL text. This matters: the live 67a5ee01 no longer reproduces the

@@ -153,7 +153,7 @@ import sys
 
 # The role names and the author->role fold both live in gate_author_role.py, so that the tool
 # which PERMITS a landing and this one, which only advises, cannot drift apart (card 48b0dd36).
-from gate_author_role import GATE_ROLES, author_role  # noqa: E402  (sits with the constants it defines)
+from gate_author_role import GATE_ROLES, author_role, canonical_gate  # noqa: E402  (sits with the constants it defines)
 
 GATES = GATE_ROLES
 
@@ -176,8 +176,11 @@ _LEAD_SKIP = re.compile(r"^(?:\s*Gate-SHA:[^\n]*\n|\s*\n)*", re.IGNORECASE)
 # which parse as FAIL/NO-GO and so err toward refusing a closure. No card's readout changes: on
 # 65e0b0d5 the real `qa` verdict follows and latest_per_gate takes the last one. It is fixed because
 # the failure direction is a false PASS, not because it has bitten yet.
+# WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for CYBERSEC/CYBERED, folded to the
+# canonical role by canonical_gate() in verdict_of() below -- the regex only needs to CAPTURE the
+# token, not normalise it.
 _VERDICT = re.compile(
-    r"^\s*(QA|CYBERSEC|CYBERED)(\d*)\s*(?:GATE|VERDICT)?\s*:?\s*(PASS|FAIL|GO|NO-GO)(?![-\w])",
+    r"^\s*(QA|CYBERSEC|WHITEHAT|CYBERED|REDHAT)(\d*)\s*(?:GATE|VERDICT)?\s*:?\s*(PASS|FAIL|GO|NO-GO)(?![-\w])",
     re.IGNORECASE,
 )
 # Trailing sibling digits on a gate NAME, e.g. the "2" of "qa2". Anchored to the end so it cannot
@@ -188,7 +191,7 @@ _SIBLING_SUFFIX = re.compile(r"\d+$")
 # already in use (comments 19882, 19898), just never read by this file. Plain ASCII, matching this
 # board's own `Gate-SHA:`-style technical markers (no accented "KIJELÖLÉS").
 _GATE_DESIGNATION_LINE = re.compile(r"^\s*MikroB\s+GATE-KIJELOLES\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
-_GATE_NAME_TOKEN = re.compile(r"\b(QA|CYBERSEC|CYBERED)(\d*)\b", re.IGNORECASE)
+_GATE_NAME_TOKEN = re.compile(r"\b(QA|CYBERSEC|WHITEHAT|CYBERED|REDHAT)(\d*)\b", re.IGNORECASE)
 # Every `Gate-SHA:` line (rule 4b: line-initial, not necessarily comment-initial -- a line can sit
 # anywhere in the comment), because rule 4b lets a line name several commits ("<sha>, <sha>") and 68
 # cards on this board do. A verdict naming ANY of them is judging this card's delivery.
@@ -281,7 +284,9 @@ def verdict_of(content):
     shas = _line_shas(content)
     outcome = m.group(3).upper()
     # group(2) is the sibling number and is deliberately discarded: see the note on GATES.
-    return (m.group(1).upper(), "NO-GO" if outcome == "NO-GO" else outcome,
+    # canonical_gate() folds WHITEHAT/REDHAT to CYBERSEC/CYBERED (card cf0a8c0b) so every reader
+    # downstream of this function keeps comparing against the same GATE_ROLES names it always has.
+    return (canonical_gate(m.group(1)), "NO-GO" if outcome == "NO-GO" else outcome,
             tuple(shas) if shas else None)
 
 
@@ -338,7 +343,7 @@ def stated_designation(comments):
             continue
         names = []
         for name, _digits in _GATE_NAME_TOKEN.findall(m.group(1)):
-            u = name.upper()
+            u = canonical_gate(name)
             if u not in names:
                 names.append(u)
         if names:
@@ -1099,7 +1104,9 @@ def main():
         # own `Gate:` lines do, now that rule 4 load-balances the QA role. Normalise it to the role
         # the same way a verdict is normalised, or the caller who copies the card's designation
         # verbatim gets UNREADABLE for a perfectly valid gate set.
-        designated = [_SIBLING_SUFFIX.sub("", g) for g in designated]
+        # canonical_gate() also folds a WHITEHAT/REDHAT spelling here (card cf0a8c0b), so a caller
+        # that copies the card's own display-name designation verbatim does not get UNREADABLE.
+        designated = [canonical_gate(_SIBLING_SUFFIX.sub("", g)) for g in designated]
         unknown = [g for g in designated if g.upper() not in GATES]
         if unknown:
             print("UNREADABLE|not a gate name: %s" % ", ".join(unknown))

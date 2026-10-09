@@ -35,6 +35,35 @@ GATE_ROLES = ("QA", "CYBERSEC", "CYBERED")
 _AUTHOR_ALIASES = {"qa-engineer": "QA", "cybersecurity-redteam": "CYBERSEC"}
 _AUTHOR_SIBLING_SUFFIX = re.compile(r"\d+$")
 
+# DISPLAY-NAME ALIASES (Peti rename, 2026-10-02, Telegram 10092; parser fix card cf0a8c0b). The
+# visible persona is WhiteHat/RedHat now; the internal agent id, GATE_ROLES and verdict AUTHORSHIP
+# stay CYBERSEC/CYBERED (CLAUDE.md: "a belso azonositok ... szandekosan valtozatlanok"). This table
+# only lets a VERDICT WORD or a `Gate:` DECLARATION spelled with the new display name resolve to the
+# same canonical role every other reader already recognises. One table, so a fix here reaches every
+# parser that imports it instead of drifting between whichever ones someone edited (the exact defect
+# class gate_scan_lib.py's own docstring describes for the sibling table).
+GATE_ROLE_ALIASES = {"CYBERSEC": ("WHITEHAT",), "CYBERED": ("REDHAT",)}
+
+
+def canonical_gate(word):
+    """Fold an uppercased alias (e.g. "WHITEHAT") to its canonical GATE_ROLES name. Passthrough
+    for anything already canonical or unrecognised."""
+    word = (word or "").upper()
+    for canon, aliases in GATE_ROLE_ALIASES.items():
+        if word == canon or word in aliases:
+            return canon
+    return word
+
+
+def gate_spellings(role):
+    """Every accepted spelling of `role` (its own case preserved, aliases lowercased to match),
+    for callers that need to test free text for ANY of a role's names rather than normalise a
+    single matched token. `role` may be given in either case."""
+    up = (role or "").upper()
+    aliases = GATE_ROLE_ALIASES.get(up, ())
+    spellings = [role] + [a.lower() if (role or "").islower() else a for a in aliases]
+    return spellings
+
 
 def author_role(author):
     """The gate ROLE this author speaks for, or None for anyone else."""

@@ -27,13 +27,17 @@ BATCHES = [
 ]
 REQUEST_DELAY = 0.02   # 20ms between requests, ~991 * 20ms = ~20s total
 
-# Maps last verdict type to the expected kanban status
-PASS_VERDICTS = {"QA PASS", "CYBERSEC GO", "CYBERED GO"}
-FAIL_VERDICTS = {"QA FAIL", "CYBERSEC NO-GO", "CYBERED NO-GO"}
+# Maps last verdict type to the expected kanban status. WHITEHAT/REDHAT (card cf0a8c0b) are the
+# display-name aliases for CYBERSEC/CYBERED -- included for completeness even though every card in
+# this script's frozen batch predates the 2026-10-02 rename, so a live re-fetch stays readable if
+# a card was ever re-described afterward.
+PASS_VERDICTS = {"QA PASS", "CYBERSEC GO", "WHITEHAT GO", "CYBERED GO", "REDHAT GO"}
+FAIL_VERDICTS = {"QA FAIL", "CYBERSEC NO-GO", "WHITEHAT NO-GO", "CYBERED NO-GO", "REDHAT NO-GO"}
 
 # regex: verdict:QA PASS@2026-08-14T17:35:59.401Z
 VERDICT_RE = re.compile(
-    r"verdict:(QA PASS|QA FAIL|CYBERSEC GO|CYBERSEC NO-GO|CYBERED GO|CYBERED NO-GO)"
+    r"verdict:(QA PASS|QA FAIL|CYBERSEC GO|CYBERSEC NO-GO|WHITEHAT GO|WHITEHAT NO-GO|"
+    r"CYBERED GO|CYBERED NO-GO|REDHAT GO|REDHAT NO-GO)"
     r"@(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)"
 )
 

@@ -180,6 +180,15 @@ case("a standalone mention next to a hyphenated compound still counts",
      "Gate: QA (a Cybersec-mentes valtozat volt, most Cybersec + QA a designacio).", [], "OK", 0,
      roles={"QA", "CYBERSEC"})
 
+# --- WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for CYBERSEC/CYBERED ----------------
+case("a Gate: line spelled with the WhiteHat display name reports the canonical cybersec role",
+     "Gate: QA + WhiteHat.", [], "OK", 0, roles={"QA", "CYBERSEC"})
+case("a Gate: line spelled with the RedHat display name reports the canonical cybered role",
+     "Gate: QA + RedHat.", [], "OK", 0, roles={"QA", "CYBERED"})
+case("the hyphenated-compound exclusion also holds for the display-name spelling",
+     "Gate: QA (a WhiteHat-mentes valtozat a jelenleg ervenyes designacio).", [], "OK", 0,
+     roles={"QA"})
+
 print()
 print("selftest: %d case(s), %s" % (n, "PASS" if not failures else "FAIL"))
 for f in failures:
