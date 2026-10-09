@@ -37,6 +37,7 @@ MODEL_FILE="${LOCAL_LLM_INSTALLED_MODEL_FILE:-$HERE/local-llm-model}"
 LOCAL_BIN_DIR="${LOCAL_LLM_INSTALLED_LOCAL_BIN_DIR:-$HOME/.local/bin}"
 SYSTEMCTL_BIN="${LOCAL_LLM_INSTALLED_SYSTEMCTL_BIN:-systemctl}"
 OLLAMA_UNIT="${LOCAL_LLM_INSTALLED_OLLAMA_UNIT:-ollama.service}"
+UNIT_FILE="${LOCAL_LLM_INSTALLED_UNIT_FILE:-$HOME/.config/systemd/user/$OLLAMA_UNIT}"
 
 have_binary() {
   command -v "$OLLAMA_BIN" >/dev/null 2>&1 && return 0
@@ -47,11 +48,20 @@ have_binary() {
 # A host with no systemd user bus at all (CI, macOS, a non-systemd Linux) must not trip this: an
 # unanswerable systemctl is not evidence of a mask, and reading it that way would wrongly block an
 # install that simply isn't managed by systemd. Only an explicit "masked" answer counts.
+#
+# WhiteHat L1 (card ba22ec48): `systemctl --user` needs a session bus (DBUS_SESSION_BUS_ADDRESS),
+# which is absent under `env -i` and in a plain cron invocation -- there it cannot answer at all,
+# which this gate previously read the same as "not masked" and reported "installed" on a masked
+# host. systemd masks a unit by making its unit-FILE a symlink to /dev/null (gpu-crashloop-guard.sh's
+# own mask_one() does this directly when `systemctl --user mask` itself has no bus to use), and that
+# symlink is plain filesystem state, readable with no bus at all -- so it is the fallback here.
 unit_masked() {
-  command -v "$SYSTEMCTL_BIN" >/dev/null 2>&1 || return 1
-  local state
-  state="$("$SYSTEMCTL_BIN" --user is-enabled "$OLLAMA_UNIT" 2>/dev/null)"
-  [ "$state" = "masked" ]
+  if command -v "$SYSTEMCTL_BIN" >/dev/null 2>&1; then
+    local state
+    state="$("$SYSTEMCTL_BIN" --user is-enabled "$OLLAMA_UNIT" 2>/dev/null)"
+    [ "$state" = "masked" ] && return 0
+  fi
+  [ -L "$UNIT_FILE" ] && [ "$(readlink "$UNIT_FILE")" = "/dev/null" ]
 }
 
 if unit_masked; then
