@@ -124,6 +124,15 @@ STATE="${AGENT_SKILL_DRIFT_STATE:-$ROOT/store/agent-skill-drift-state.json}"
 # live-only skill is reported, never copied) and every copy is refused if its source directory
 # contains a symlink resolving outside itself (_dir_has_escaping_symlink). Re-disable this flag
 # again if either of those two functions is ever weakened without a matching safety review.
+#
+# F1 FOLLOW-UP on this same GO (card a9ab4a62, Cybersec sandbox finding): "seed-fleet-agents only"
+# above still used a plain `-d` existence check -- but seed-fleet-agents is the MAIN CLONE'S OWN
+# working file, not a frozen artifact, so a path existing there says nothing about whether git has
+# ever reviewed it. _seed_fleet_src() now also requires _seed_fleet_src_is_tracked_clean() (tracked
+# at HEAD, no untracked/modified content anywhere under the skill directory) before a candidate is
+# usable, re-checked a second time immediately before the actual write (same TOCTOU shape as the
+# stale-sync path). An untracked or locally-modified candidate is reported, distinctly worded, and
+# never copied -- the family keeps checking the next member in order, same as before.
 MISSING_SYNC_APPLY_ENABLED=1
 
 APPLY=0
@@ -304,17 +313,47 @@ _family_members() {
   esac
 }
 
+# Card a9ab4a62 (Cybersec F1 on 85521c7e's own GO): "TRACKED seed-fleet-agents copy" above was
+# only ever checked with `-d` -- a plain on-disk existence test. seed-fleet-agents is the MAIN
+# CLONE'S OWN WORKING FILE, not a frozen artifact: a file can sit there without ever having been
+# `git add`ed (a hand-dropped curl|sh skill install, exactly the shape F2 was written to keep out),
+# or a tracked file can carry a local, uncommitted edit nobody reviewed. Measured in Cybersec's
+# sandbox: an untracked skill placed under seed-fleet-agents/<agent>/.claude/skills/ passed the
+# old `-d` check and reached --apply. A candidate must be COMMITTED at HEAD and byte-identical to
+# what HEAD has (no untracked extras anywhere under it, no local modification) before it is usable.
+_seed_fleet_src_is_tracked_clean() {
+  local dir="$1" rel
+  rel="${dir#$ROOT/}"
+  [ "$rel" != "$dir" ] || return 1   # not under ROOT at all -- cannot verify against git, refuse
+  [ -n "$(git -C "$ROOT" ls-files -- "$rel" 2>/dev/null)" ] || return 1   # nothing tracked here
+  [ -z "$(git -C "$ROOT" status --porcelain --ignored -- "$rel" 2>/dev/null)" ]
+}
+
 # Card 85521c7e F2: resolves a missing skill's copy source to a family member's TRACKED
 # seed-fleet-agents copy, in family order -- never a sibling's live .claude/skills directory. A
 # skill that exists only in a live copy (never seeded/reviewed) has no seed-fleet-agents entry
 # anywhere in the family and this returns failure, which the caller turns into a report-only line.
+# Sets _SEED_FLEET_UNTRACKED_HIT=1 when at least one on-disk candidate existed but was refused for
+# being untracked/dirty, so the caller can word that report differently from "nothing exists here
+# at all" -- the fix above, not a second independent change.
+#
+# DELIBERATELY NOT CAPTURED VIA "$(...)": a command substitution runs its body in a SUBSHELL, so a
+# plain `_SEED_FLEET_UNTRACKED_HIT=1` set inside this function would vanish the instant the
+# substitution's subshell exits -- the caller would always see 0, no matter what happened inside.
+# (Caught by this card's own selftest: the mutation-proof case was passing for the wrong reason
+# until this was fixed.) Result goes out through the global _SEED_FLEET_SRC_DIR instead; the
+# caller reads that, not a captured stdout.
 _seed_fleet_src() {
-  local members="$1" skill="$2" s
+  local members="$1" skill="$2" s dir
+  _SEED_FLEET_SRC_DIR=""
   for s in $members; do
-    if [ -d "$SEED_FLEET_DIR/$s/.claude/skills/$skill" ]; then
-      printf '%s' "$SEED_FLEET_DIR/$s/.claude/skills/$skill"
+    dir="$SEED_FLEET_DIR/$s/.claude/skills/$skill"
+    [ -d "$dir" ] || continue
+    if _seed_fleet_src_is_tracked_clean "$dir"; then
+      _SEED_FLEET_SRC_DIR="$dir"
       return 0
     fi
+    _SEED_FLEET_UNTRACKED_HIT=1
   done
   return 1
 }
@@ -382,11 +421,20 @@ scan_missing_skills() {
         # Card 85521c7e F2: the copy source is the TRACKED seed-fleet-agents copy, never a
         # sibling's live directory. A skill present in a live sibling but absent from every family
         # member's seed-fleet-agents was never reviewed/committed -- report it, never copy it.
-        if ! src_dir="$(_seed_fleet_src "$members" "$skill")"; then
+        _SEED_FLEET_UNTRACKED_HIT=0
+        if ! _seed_fleet_src "$members" "$skill"; then
           MISSING=$((MISSING+1))
-          MISSING_LIST="${MISSING_LIST}${m}/${skill} -- present in a sibling's LIVE copy only, absent from seed-fleet-agents -- reported, never auto-synced (add it to seed-fleet-agents after review)\n"
+          if [ "$_SEED_FLEET_UNTRACKED_HIT" -eq 1 ]; then
+            # Card a9ab4a62: exists on disk under seed-fleet-agents, but not committed/clean --
+            # distinct wording from "nothing there at all" so a human knows the fix is "commit it",
+            # not "author it".
+            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- seed-fleet-agents copy exists on disk but is NOT git-tracked/clean (untracked file or local modification) -- REFUSED, never auto-synced (commit it and get it reviewed first)\n"
+          else
+            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- present in a sibling's LIVE copy only, absent from seed-fleet-agents -- reported, never auto-synced (add it to seed-fleet-agents after review)\n"
+          fi
           continue
         fi
+        src_dir="$_SEED_FLEET_SRC_DIR"
 
         MISSING=$((MISSING+1))
 
@@ -404,6 +452,13 @@ scan_missing_skills() {
           # Re-check right before writing: additive-only, so the worst a race can do is a
           # harmless second copy landing on an already-created directory -- refuse that instead.
           if [ -e "$target_dir" ]; then
+            continue
+          fi
+          # Card a9ab4a62: re-verify tracked/clean immediately before the write, same TOCTOU
+          # reasoning the stale-sync path already uses -- the window between _seed_fleet_src's
+          # selection and this line is exactly where an uncommitted edit could land.
+          if ! _seed_fleet_src_is_tracked_clean "$src_dir"; then
+            MISSING_LIST="${MISSING_LIST}${m}/${skill} -- seed-fleet-agents copy became untracked/modified between selection and copy (concurrent write), REFUSED\n"
             continue
           fi
           if _dir_has_escaping_symlink "$src_dir"; then
@@ -1089,6 +1144,22 @@ agent-someone-else" bash "${BASH_SOURCE[0]}" --apply --telegram --agent agentG)"
   printf 'outside secret\n' > "$tmp/outside-secret.txt"
   ln -s "$tmp/outside-secret.txt" "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillE/escape-link"
 
+  # family-root must be a REAL git repo for card a9ab4a62's tracked/clean check to mean anything --
+  # commit everything built so far (skillA/skillB/skillE's seed copies included) so the existing
+  # PART 6 assertions below keep passing under the new check, not because it is not being applied.
+  git init -q "$tmp/family-root"
+  git -C "$tmp/family-root" config user.email t@t; git -C "$tmp/family-root" config user.name t
+  git -C "$tmp/family-root" add -A && git -C "$tmp/family-root" commit -q -m "family-root fixtures"
+
+  # skillF: card a9ab4a62's own fixture. LIVE on backend2 only (so backend/backend3 are "missing"
+  # it); its seed-fleet-agents copy exists ON DISK but is deliberately added AFTER the commit above,
+  # so it is genuinely untracked -- exactly the gap F1 found in 85521c7e's own F2 fix (a path
+  # existing under seed-fleet-agents was treated as equivalent to "git has reviewed this").
+  mkdir -p "$tmp/family-root/agents/backend2/.claude/skills/skillF"
+  printf 'SKILL F CONTENT\n' > "$tmp/family-root/agents/backend2/.claude/skills/skillF/SKILL.md"
+  mkdir -p "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillF"
+  printf 'SKILL F CONTENT\n' > "$tmp/family-root/seed-fleet-agents/backend2/.claude/skills/skillF/SKILL.md"
+
   # Forces the running-agent guard to see nothing running (deterministic parked state), so these
   # tests exercise the sync itself, not the guard -- the guard gets its own dedicated case below.
   # Without this, "backend"/"backend2"/"backend3" are also this FLEET's own real tmux session names,
@@ -1156,6 +1227,33 @@ agent-someone-else" bash "${BASH_SOURCE[0]}" --apply --telegram --agent agentG)"
   echo "$outApplyE" | grep -q 'skillE' && echo "$outApplyE" | grep -qi 'escaping.*REFUSED\|REFUSED'\
     && echo "  ok   skillE is reported as REFUSED (escaping symlink), not silently dropped" \
     || { echo "  FAIL skillE's refusal is not reported:"; echo "$outApplyE"; fail=1; }
+
+  # SECURITY (card a9ab4a62, THE actual fix this card is about): skillF's seed-fleet-agents copy
+  # exists on disk, byte-identical to its live counterpart, but was never `git add`ed -- the old
+  # plain `-d` check would have treated it as a perfectly good source. --apply must refuse it too,
+  # worded distinctly from skillD (there is no seed entry at all) and skillE (tracked but escaping).
+  outApplyF="$(fam_run --apply --telegram)"
+  if [ ! -e "$tmp/family-root/agents/backend/.claude/skills/skillF" ] \
+     && [ ! -e "$tmp/family-root/agents/backend3/.claude/skills/skillF" ]; then
+    echo "  ok   SECURITY: an untracked seed-fleet-agents copy (skillF) is NEVER copied, even under --apply"
+  else
+    echo "  FAIL skillF (untracked seed copy) was copied -- QUARANTINE BYPASS (card a9ab4a62)"; fail=1
+  fi
+  echo "$outApplyF" | grep -q 'skillF' && echo "$outApplyF" | grep -qi 'NOT git-tracked/clean' \
+    && echo "  ok   skillF is reported with the untracked/not-clean wording, not the never-seeded wording" \
+    || { echo "  FAIL skillF's refusal is missing or miscategorized:"; echo "$outApplyF"; fail=1; }
+
+  # MUTATION PROOF (card a9ab4a62's own requirement): the refusal above must be gated on git state,
+  # not on something else that happens to look the same. Commit the exact same bytes and confirm
+  # the behaviour FLIPS to "synced" -- if it did not, the refusal above was never about trackedness.
+  git -C "$tmp/family-root" add -A && git -C "$tmp/family-root" commit -q -m "review and commit skillF"
+  fam_run --apply >/dev/null
+  if [ "$(cat "$tmp/family-root/agents/backend/.claude/skills/skillF/SKILL.md" 2>/dev/null)" = "SKILL F CONTENT" ] \
+     && [ "$(cat "$tmp/family-root/agents/backend3/.claude/skills/skillF/SKILL.md" 2>/dev/null)" = "SKILL F CONTENT" ]; then
+    echo "  ok   MUTATION: once committed, the SAME skillF is synced -- the refusal above was genuinely about git state"
+  else
+    echo "  FAIL committing skillF did not make it sync -- the untracked check is not load-bearing"; fail=1
+  fi
 
   # --agent filter narrows which member is SYNCED, but the union must still be computed from ALL
   # siblings -- otherwise a --agent backend3 run could never see what backend/backend2 have.
