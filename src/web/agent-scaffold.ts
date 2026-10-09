@@ -1669,6 +1669,33 @@ export function ensureNoisyCommandGuard(name: string): boolean {
   return true
 }
 
+// Card 18055f83 (Peti approval 2026-10-09, Telegram 10704): the operator switch that decides
+// whether the command this process WRITES carries BASH_EGRESS_GUARD=enforce. Same inverse-default
+// shape as OUTGOING_COPY_GATE_ENV just above and for the same reason: an unset/typo'd variable
+// must leave the fleet where it already is (log-only), not silently flip every agent's Bash calls
+// into a blocking mode.
+export const BASH_EGRESS_ENFORCE_ENV = 'BASH_EGRESS_ENFORCE_FLEET'
+
+export function bashEgressEnforceEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return ['1', 'on', 'true', 'yes'].includes(String(env[BASH_EGRESS_ENFORCE_ENV] ?? '').trim().toLowerCase())
+}
+
+// The enforce prefix this process bakes into the registered command, while the fleet switch above
+// is on. MUST be `export VAR=val;`, not a bare `VAR=val ` prefix: pythonHookCommand's own body is
+// TWO statements joined by `;` (`command -v python3 ... || { ... }; python3 "<path>"`), and a bare
+// leading assignment scopes ONLY to the first simple command before that `;` -- measured with
+// `bash -c 'FOO=bar true || true; echo $FOO'` printing nothing. `export` persists for every later
+// command in the SAME shell invocation, which is what actually reaches the python3 call that runs
+// the guard. (The log's caller-agent field is a SEPARATE fix, entirely on the python side: see
+// ledger_lib.agent_id_from_payload in bash-egress-guard.py's own hook payload, which resolves from
+// transcript_path -- no identity needs to be baked into this command at all.) Prefix only -- the
+// `scripts/hooks/bash-egress-guard.py` reference itself stays inline in each caller (not hidden
+// behind this helper) so the hook-guards-are-code-wired.test.ts derivation, which scans each
+// inject* function's own body text for that literal, still finds it.
+function bashEgressGuardEnforcePrefix(env: NodeJS.ProcessEnv = process.env): string {
+  return bashEgressEnforceEnabled(env) ? 'export BASH_EGRESS_GUARD=enforce; ' : ''
+}
+
 // Card 854182c7: the Bash-side egress control. The settings.permissions.deny form it replaces was
 // measured unusable (card f6db6978): a `Bash(curl *https://*)` rule matches the WHOLE command
 // string, so it cannot tell a curl's TARGET from a link riding along in the payload -- and every
@@ -1677,13 +1704,13 @@ export function ensureNoisyCommandGuard(name: string): boolean {
 // Wired on BOTH paths for the reason recorded on injectCdChainGuard: an inject* alone reaches only
 // agents whose settings.json is regenerated, and a guard that arms an arbitrary subset of the
 // fleet is not a control. The hook itself ships in LOG-ONLY mode (see its module docstring), so
-// arming it fleet-wide changes no behaviour until an operator sets BASH_EGRESS_GUARD=enforce --
+// arming it fleet-wide changes no behaviour until an operator sets BASH_EGRESS_ENFORCE_FLEET --
 // which is the point: the log is the evidence that enforcement is safe to switch on.
-export function injectBashEgressGuard(existing: Record<string, unknown>): void {
+export function injectBashEgressGuard(existing: Record<string, unknown>, env: NodeJS.ProcessEnv = process.env): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-guard.py'))
+  const command = bashEgressGuardEnforcePrefix(env) + pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-guard.py'))
   if (isUnsafeHookCommand(command)) return
   const entry = {
     matcher: 'Bash',
@@ -1702,12 +1729,15 @@ export function ensureBashEgressGuard(name: string): boolean {
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-guard.py'))
+  const command = bashEgressGuardEnforcePrefix() + pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-guard.py'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
   const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
   const ptuJson = JSON.stringify(ptu)
+  // A flag flip changes `command` (the enforce prefix), so hookCommandWired correctly returns
+  // false and falls through to rewrite -- this is what makes BOTH directions (arm and revert)
+  // reach an already-provisioned agent on the next boot, not just a freshly spawned one.
   if (ptuJson.includes('bash-egress-guard.py') && hookCommandWired(ptuJson, command)) return false
   if (isUnsafeHookCommand(command)) return false
   injectBashEgressGuard(settings)
