@@ -725,3 +725,44 @@ grep -i '^x-memory-search' /tmp/mem-fejlec-mikrob.txt
 Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a
 `&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik.
 <!-- END GENERATED: memory-search-label -->
+
+<!-- BEGIN GENERATED: fleet-auth-rule (auto-generated, do not edit by hand) -->
+## Flotta-szintű AUTH-szabály (MEGSZEGHETETLEN)
+
+A sub-agentek alapértelmezés szerint a `CLAUDE_CODE_OAUTH_TOKEN` úton hitelesítenek
+(`store/.claude-oauth-token`), auto-provisionált `CLAUDE_CONFIG_DIR`-rel. Ez az út
+szünteti meg a visszatérő 401-kaszkádot, amit a kézzel elhelyezett, lejáró
+`.credentials.json` okozott.
+
+A fő channels-agent ettől SZÁNDÉKOSAN eltér: alapértelmezésben a közös `~/.claude`-ot
+használja. A `MAIN_AGENT_ISOLATED_CONFIG=1` kapcsolja át a flotta setup-tokenjére; ha
+a botnak SAJÁT Claude-loginja van, arra a `MAIN_AGENT_CONFIG_DIR` való, és az
+elsőbbséget élvez.
+
+A per-agent `claudeConfigDir` TÁMOGATOTT mező (nevesített plan-en keresztül is), arra
+az esetre, ha egy agentnek saját Claude-loginra vagy saját plan-re van szüksége. A
+használata döntés kérdése, nem tilalom.
+
+AMI VISZONT MEGSZEGHETETLEN:
+
+1. Ha egy agent "Not logged in"-t mutat, a javítás a TOKEN-FORRÁS, nem egy kézzel
+   elhelyezett vagy symlinkelt `.credentials.json`. A kézi credential-elhelyezés hozta
+   vissza a 401-kaszkádot minden alkalommal: a lejárt fájl a Claude Code precedenciája
+   miatt akkor is nyer az érvényes env-tokennel szemben, ha az ott van mellette.
+2. SOHA ne másold át másik agent tokenjét vagy credentialjét. Új agent SAJÁT,
+   per-agent tokent és saját külső-szolgáltatás setupot kap (saját email, egyedi port,
+   saját creds-könyvtár, saját OAuth). A másolás auditálhatatlan, és más megbízó
+   adatához is hozzáférést ad.
+<!-- END GENERATED: fleet-auth-rule -->
+
+<!-- BEGIN GENERATED: mcp-list-channel-warning (auto-generated, do not edit by hand) -->
+## `claude mcp list` egy csatornát birtokló ügynökben
+
+Ha ez az ügynök csatornát birtokol (Telegram/Discord/Slack), a saját sessionjében NE futtasd
+a `claude mcp list`-et: mérve 2026-09-21-én, a parancs leállítja ennek a sessionnek a
+csatorna-plugin szerverét, és a csatorna-eszközök (reply, react, edit_message,
+download_attachment) elérhetetlenné válnak. A parancs kimenete közben `Connected`-et ír, és
+0-val tér vissza, tehát a hibát semmi nem jelzi. Más sessionök nem sérülnek, a többi
+MCP-szerver életben marad, és a session újraindítása visszahozza a plugint.
+Máshol a parancs hasznos diagnosztika: a korlát a csatornát birtokló session, nem a parancs.
+<!-- END GENERATED: mcp-list-channel-warning -->

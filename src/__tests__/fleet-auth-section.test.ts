@@ -83,11 +83,33 @@ describe('ensureFleetAuthSection', () => {
     expect(() => ensureFleetAuthSection('agent-nonexistent')).not.toThrow()
   })
 
-  it('the main agent path targets PROJECT_ROOT/CLAUDE.md', () => {
-    writeFileSync(join(tmpRoot, 'CLAUDE.md'), '# Main\n', 'utf-8')
+  it('no-ops for the MAIN agent -- PROJECT_ROOT/CLAUDE.md is git-tracked, a runtime write there would fight --ff-only (card 2dd28b5d/99fccbcf, re-found by WhiteHat on card 965b0b2b)', () => {
+    const before = '# Main\n'
+    writeFileSync(join(tmpRoot, 'CLAUDE.md'), before, 'utf-8')
     ensureFleetAuthSection('agent-a')
     const out = readFileSync(join(tmpRoot, 'CLAUDE.md'), 'utf-8')
-    expect(out).toContain(MARKER_BEGIN)
+    expect(out).toBe(before)
+  })
+})
+
+// Card 965b0b2b (WhiteHat NO-GO, H1): the main agent's own PROJECT_ROOT/CLAUDE.md carries a
+// STATICALLY COMMITTED copy of this section (ensureFleetAuthSection no-ops for the main agent --
+// see the test above -- so nothing keeps that copy synced at runtime). Mirrors the f390a08e
+// pattern already established for ensureSystemDirectiveAuthSection. This body has no
+// PROJECT_ROOT-derived path segments (no tokenPath/dashboardOrigin interpolation), so an exact
+// match is correct here -- no normalisation needed.
+describe('the STATIC CLAUDE.md block matches the generator (card 965b0b2b)', () => {
+  it("the committed section in THIS checkout's own CLAUDE.md equals the generator output", async () => {
+    const { REPO_ROOT } = await import('./helpers/repo-location.js')
+    const claudeMd = readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8')
+    const start = claudeMd.indexOf(MARKER_BEGIN)
+    const end = claudeMd.indexOf(MARKER_END)
+    expect(start, 'the generated marker is missing from CLAUDE.md -- has the section never been committed?').toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    const committedBlock = claudeMd.slice(start + MARKER_BEGIN.length, end).trim()
+
+    const { buildFleetAuthBody } = await import('../web/agent-scaffold.js')
+    expect(buildFleetAuthBody().trim()).toBe(committedBlock)
   })
 })
 
