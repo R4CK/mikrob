@@ -3154,6 +3154,78 @@ export function ensureMemorySearchLabelSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// Card 8c6f30fb (HOSTMOVE923, upstream f3ce19ed+75be3249 adapted -- deferred on 965b0b2b
+// because upstream's own fix ships an INSTALL_ANCHORED_SUFFIXES allowlist shaped for
+// upstream's OWN generated content, which this fork does not share).
+//
+// THE GAP: a sub-agent's CLAUDE.md (LLM-generated free text at creation, see the Memoria/
+// Kanban/Autonomia recipe blocks in generateClaudeMd() below) and its settings.json
+// (seeded ONCE from templates/settings.json.template -- see the "Only if the file doesn't
+// exist yet" guard a few functions up) both bake the PROJECT_ROOT value that was live AT
+// THAT MOMENT as literal absolute-path text (curl recipes, hook commands, skill-index
+// calls). A host move changes PROJECT_ROOT for the next process boot, but never touches
+// already-written files -- every one of those literal paths keeps naming the dead root
+// forever, silently, until someone hits a 401/ENOENT and hand-edits it.
+//
+// THE FIX, without a suffix list: a small per-agent anchor file remembers which
+// PROJECT_ROOT was live the last time this ran for that agent. If the live PROJECT_ROOT
+// ever differs from the recorded one, a host move happened -- every literal occurrence of
+// the OLD root in CLAUDE.md and settings.json is replaced with the new one (a plain
+// substring replace is safe here: both are absolute filesystem paths, so the old string
+// cannot legitimately appear as a fragment of anything else in these files), and the
+// anchor is updated. No suffix enumeration needed, and it covers the LLM's free-form body
+// the same as any fixed recipe. Main agent is skipped entirely: its CLAUDE.md and
+// settings.json are both git-tracked and maintained statically (same precedent as
+// ensureFleetAuthSection's no-op for MAIN_AGENT_ID -- a runtime write there fights the
+// --ff-only pull, card 2dd28b5d/99fccbcf).
+const PROJECT_ROOT_ANCHOR_FILE = 'project-root-anchor.json'
+
+function projectRootAnchorPath(name: string): string {
+  return join(agentDir(name), '.claude', PROJECT_ROOT_ANCHOR_FILE)
+}
+
+export function ensureProjectRootAnchor(name: string): void {
+  if (name === MAIN_AGENT_ID) return
+
+  const anchorPath = projectRootAnchorPath(name)
+  let recordedRoot: string | null = null
+  try {
+    const parsed = JSON.parse(readFileSync(anchorPath, 'utf-8')) as { root?: string }
+    recordedRoot = typeof parsed.root === 'string' ? parsed.root : null
+  } catch {
+    recordedRoot = null
+  }
+
+  // No anchor yet (pre-dates this mechanism, or a brand-new agent): nothing to compare
+  // against, so there is no drift to correct -- just establish the baseline for next time.
+  if (recordedRoot === null) {
+    try {
+      mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+      atomicWriteFileSync(anchorPath, JSON.stringify({ root: PROJECT_ROOT }, null, 2))
+    } catch {
+      // Best-effort: a missing anchor just means this re-checks on the next sweep tick.
+    }
+    return
+  }
+
+  if (recordedRoot === PROJECT_ROOT) return // no drift, nothing to do
+
+  const targets = [join(agentDir(name), 'CLAUDE.md'), agentSettingsPath(name)]
+  for (const path of targets) {
+    if (!existsSync(path)) continue
+    let content: string
+    try {
+      content = readFileSync(path, 'utf-8')
+    } catch {
+      continue
+    }
+    if (!content.includes(recordedRoot)) continue
+    atomicWriteFileSync(path, content.split(recordedRoot).join(PROJECT_ROOT))
+  }
+
+  atomicWriteFileSync(anchorPath, JSON.stringify({ root: PROJECT_ROOT }, null, 2))
+}
+
 export async function generateClaudeMd(name: string, description: string, model: string): Promise<string> {
   // Distribution-safe default-drive line: only emit a concrete folder when this
   // install has one configured (OWNER_DRIVE_FOLDER). A fresh install with no
