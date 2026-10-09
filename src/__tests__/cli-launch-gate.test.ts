@@ -6,7 +6,7 @@
 // the agent would come up, and every prompt would 400 unrecognized_model in the pane with nothing
 // in the launch path catching it. This pins the wiring, not the pure classification (that is
 // claude-cli-support.test.ts's job).
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { mkdirSync, rmSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -39,11 +39,34 @@ describe('refuseIfCliCannotLaunch (unit)', () => {
 
   it('refuses a model below its recorded minimum CLI version, with the version and threshold in the message', async () => {
     process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.110'
-    const msg = await refuseIfCliCannotLaunch('claude-opus-5-5')
-    expect(msg).not.toBeNull()
-    expect(msg).toContain('2.1.110')
-    expect(msg).toContain('2.1.280')
-    expect(msg).toContain('claude-opus-5-5')
+    const refusal = await refuseIfCliCannotLaunch('claude-opus-5-5')
+    expect(refusal).not.toBeNull()
+    expect(refusal?.message).toContain('2.1.110')
+    expect(refusal?.message).toContain('2.1.280')
+    expect(refusal?.message).toContain('claude-opus-5-5')
+    expect(refusal?.code).toBe('cli_unsupported')
+    expect(refusal?.params).toEqual({ model: 'claude-opus-5-5', version: '2.1.110', minCli: '2.1.280' })
+  })
+
+  it('the message is proper, fully-accented Hungarian by default, not a transliterated/hardcoded copy', async () => {
+    process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.110'
+    const refusal = await refuseIfCliCannotLaunch('claude-opus-5-5')
+    expect(refusal?.message).toContain('telepített')
+    expect(refusal?.message).toContain('verzió')
+    expect(refusal?.message).toContain('legalább')
+  })
+
+  it('switches to English when DASHBOARD_LANG is set to en', async () => {
+    const mod = await import('../settings-store.js')
+    const spy = vi.spyOn(mod, 'getEffectiveSettingValue').mockReturnValue('en')
+    try {
+      process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.110'
+      const refusal = await refuseIfCliCannotLaunch('claude-opus-5-5')
+      expect(refusal?.message).toContain('The installed Claude Code CLI')
+      expect(refusal?.message).not.toContain('telepített')
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('allows the same model once the installed CLI meets the minimum', async () => {

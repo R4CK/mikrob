@@ -1445,6 +1445,7 @@ window._i18n.en = {
   'agents.model.sonnet5':        'Sonnet 5 (newest Sonnet, near-Opus)',
   'agents.model.sonnet46':       'Sonnet 4.6 (fast and smart)',
   'agents.model.haiku45':        'Haiku 4.5 (fastest)',
+  'agents.model.cliUnsupported': 'The installed Claude Code CLI (version: {version}) cannot launch "{model}" -- it needs at least version {minCli}. Update the CLI, or choose a different model.',
   'agents.skills.empty':         'No skills added',
   'agents.skills.tab_title':              'Agent skills',
   'agents.page.analyze_btn':              'Model analysis',

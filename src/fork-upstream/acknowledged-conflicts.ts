@@ -1228,7 +1228,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
   'scripts/stuck-modal-guard.sh': 'adopt upstream wholesale -- honest-send-via-lib + backoff-stamp-only-on-success, no fork-specific logic in this file',
   'src/__tests__/notify-delivery-honesty.test.ts': 'adopt upstream wholesale -- trivial test-scaffolding update to stage the new scripts/lib/send-telegram.sh alongside notify.sh' +
     " Re-measured 2026-09-06 (backend3, card 79bb0364 landing-block, round 15). The recorded rule called this 'trivial test-scaffolding'; it is not any more. Upstream parameterised the chat id through stageScript/runNotify and added four CHATID0 cases: notify.sh is the FALLBACK channel, its guard was `[ -z \"$CHAT_ID\" ]`, and the installer's ALLOWED_CHAT_ID=0 placeholder is not empty -- so on an install with no chat bound both the primary path and the fallback posted to chat_id=0. Each case hands the script a curl stub that would report SUCCESS, so passing proves the send was PREVENTED rather than merely failing downstream. The fork's scripts/notify.sh carries the same `[ -z \"$CHAT_ID\" ]` guard, so the test is not adoptable on its own -- it would go red on arrival. Adopt the notify.sh guard and these cases TOGETHER, on their own card. Resolution changed from 'adopt wholesale' to that; blob bumped." +
-    " Re-measured 2026-09-25 (backend, card f5536a70, fbeb2e33..f84e69aa, fork/upstream re-decision round). One more piece since round 15: notify.sh now also sources a new scripts/lib/owner-chat.sh (an owner-chat-id RESOLVER, staged alongside send-telegram.sh) -- the CHATID0 guard and this resolver are the same feature (the resolver is presumably what replaces the bare ALLOWED_CHAT_ID=0 read the guard rejects), so they belong on the SAME follow-up card, not two. No follow-up card exists yet under either name (checked: no open/planned/waiting/in_progress card mentions CHATID0 or 'notify.sh guard') -- opened follow-up card 3026a591 this round. Decision unchanged (not adoptable alone); blob bumped.",
+    " Re-measured 2026-09-25 (backend, card f5536a70, fbeb2e33..f84e69aa, fork/upstream re-decision round). One more piece since round 15: notify.sh now also sources a new scripts/lib/owner-chat.sh (an owner-chat-id RESOLVER, staged alongside send-telegram.sh) -- the CHATID0 guard and this resolver are the same feature (the resolver is presumably what replaces the bare ALLOWED_CHAT_ID=0 read the guard rejects), so they belong on the SAME follow-up card, not two. No follow-up card exists yet under either name (checked: no open/planned/waiting/in_progress card mentions CHATID0 or 'notify.sh guard') -- opened follow-up card 3026a591 this round. Decision unchanged (not adoptable alone); blob bumped." +
+    " ADOPTED 2026-10-09 (backend, card 3026a591). Ported scripts/lib/owner-chat.sh verbatim from upstream b49d4c5d (resolve_owner_chat_id: env key first, then the main install's access.json single-DM-entry fallback; TELEGRAM_STATE_DIR deliberately not honoured, same reasoning as upstream). Rewired scripts/notify.sh's guard to call it instead of the bare `grep ALLOWED_CHAT_ID` + string-compare it carried since 3e807fe4 (that inline guard REFUSED chat_id=0; the resolver can additionally recover a real owner chat from access.json when the configured value is the placeholder -- a materially different, better behaviour, not just a refactor). Ported this file's five CHATID0 cases verbatim from blob f84e69aad4a3ebad926004d168446a5394c52d78 (already the pinned blob below), parameterising stageScript/runNotify with a chatId argument and staging owner-chat.sh alongside send-telegram.sh. Mutation-proof: reverted notify.sh to the pre-fix inline-guard shape, confirmed exactly 2 of the 9 tests in this file went red for the expected reason (chat_id=0 silently sent), restored, re-confirmed 9/9 green. Deliberately NOT widened to scripts/limit-monitor.sh in this same card, despite backend3's 2026-09-29 comment on 3026a591 that the same resolver/same pattern applies there too (upstream b49d4c5d migrates 8 consumers total) -- this card's own acceptance criteria named only owner-chat.sh + notify.sh + this test file; limit-monitor.sh's CHATID0 section (scripts/__tests__/limit-monitor-signals.test.sh '(f)', upstream blob 80c31f3d1d2578bd8b041ed3876150d515364cf1) is left for a dedicated follow-up, not silently folded in or silently dropped. Resolution: adopted, not open; blob unchanged (same pin).",
   // NOT an upstream conflict -- upstream deleted this file outright when notify.sh stopped
   // inlining its curl call (NOTIFYVAKSWEEP826). It is the fork's OWN corpus-wide security guard
   // (card b43d6dfd): it scans every scripts/*.sh + store/*.sh for a bare `-d "text=$VAR"` that
@@ -3080,14 +3081,20 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "value was measured to fix.",
   },
   'scripts/notify.sh': {
-    needle: '$CHAT_ID" = "0"',
+    needle: 'resolve_owner_chat_id "$ENV_FILE"',
     file: 'scripts/notify.sh',
     expect: 'present',
     because:
       "The CHATID0 guard (refuse a chat_id of \"0\", the installer placeholder) was refused " +
       "2026-09-06 as its own fallback-channel-behaviour decision; commit 3e807fe4 had already " +
       "landed it the day before, measured and corrected under card 2f1cbaf1. Without this guard a " +
-      "placeholder install's fallback alert path posts to chat_id=0 instead of failing loudly.",
+      "placeholder install's fallback alert path posts to chat_id=0 instead of failing loudly. " +
+      "SUPERSEDED 2026-10-09 (backend, card 3026a591): the inline `[ \"$CHAT_ID\" = \"0\" ]` string " +
+      "compare was replaced by a call into scripts/lib/owner-chat.sh's resolve_owner_chat_id -- " +
+      "strictly stronger, not a regression: it still refuses the bare \"0\"/empty placeholder, AND " +
+      "additionally recovers a real owner chat from the main install's access.json when one is " +
+      "paired. The needle moved to the resolver call so this guard tracks the actual current " +
+      "protection instead of a literal that no longer exists in the file.",
   },
   'scripts/github-pr-monitor.sh': {
     needle: 'AUTH_ALERT_COOLDOWN=21600',

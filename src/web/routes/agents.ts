@@ -17,6 +17,7 @@ import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
+import { getEffectiveSettingValue } from '../../settings-store.js'
 import { claudeSupportForCli, baseModelId } from '../../claude-cli-support.js'
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
@@ -235,13 +236,42 @@ itt írhatod meg.
 // grep-verified zero call sites outside their own test files before this change).
 // Fails OPEN: an unmeasured CLI version never blocks a model (same contract as
 // claudeSupportForCli itself).
-export async function refuseIfCliCannotLaunch(model: string): Promise<string | null> {
+export interface CliLaunchRefusal {
+  message: string
+  code: 'cli_unsupported'
+  params: { model: string; version: string; minCli: string }
+}
+
+// Spelling rule (root CLAUDE.md, Peti 2026-07-18): every Hungarian sentence a
+// user can see needs full accents, and it must come from an i18n source, not
+// a hardcoded literal duplicated wherever it is needed. This mirrors the
+// resolveLang()/getEffectiveSettingValue('DASHBOARD_LANG') pattern already
+// used by src/web/routes/federation.ts and src/web/inbox-nudge-watcher.ts --
+// both languages live in ONE place (this function), not copy-pasted at each
+// call site, and `code`+`params` ride along in the same shape security.ts's
+// RemoteEnrollError already uses, so a future FE translate-on-code consumer
+// (tracked separately, WhiteHat I2 on card 6b10a6b8) can key off `code`
+// without a backend change.
+function cliLaunchRefusalText(model: string, version: string, minCli: string): string {
+  const lang = (() => {
+    try { return getEffectiveSettingValue('DASHBOARD_LANG') === 'en' ? 'en' : 'hu' } catch { return 'hu' }
+  })()
+  return lang === 'en'
+    ? `The installed Claude Code CLI (version: ${version}) cannot launch "${model}" -- it needs at least version ${minCli}. Update the CLI, or choose a different model.`
+    : `A telepített Claude Code CLI (verzió: ${version}) nem tudja elindítani a(z) "${model}" modellt -- ehhez legalább ${minCli} verzió kell. Frissítsd a CLI-t, vagy válassz egy másik modellt.`
+}
+
+export async function refuseIfCliCannotLaunch(model: string): Promise<CliLaunchRefusal | null> {
   const { version } = await measureClaudeCliVersion()
   const support = claudeSupportForCli(version)
-  if (!support.measured) return null
+  if (!support.measured || version == null) return null
   const hit = support.unsupported.find(u => u.id === baseModelId(model))
   if (!hit) return null
-  return `A telepitett Claude Code CLI (verzio: ${version}) nem tudja elinditani a(z) "${model}" modellt -- ehhez legalabb ${hit.minCli} verzio kell. Frissitsd a CLI-t, vagy valassz egy masik modellt.`
+  return {
+    message: cliLaunchRefusalText(model, version, hit.minCli),
+    code: 'cli_unsupported',
+    params: { model, version, minCli: hit.minCli },
+  }
 }
 
 // Short-TTL caches so the synchronous, frequently-polled status endpoints
@@ -1048,7 +1078,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // INSTALLED CLI cannot launch (measured 2026-09-23: a pinned old CLI 400s on every prompt
     // for claude-fable-5-1/claude-opus-5-5 -- the agent comes up and is silently deaf).
     const cliRefusal = await refuseIfCliCannotLaunch(model)
-    if (cliRefusal) { json(res, { error: cliRefusal }, 400); return true }
+    if (cliRefusal) { json(res, { error: cliRefusal.message, code: cliRefusal.code, params: cliRefusal.params }, 400); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
     scaffoldAgentDir(name)
@@ -2417,7 +2447,7 @@ function compactPrompt(): string {
       }
       // Card 6b10a6b8 (PICKERCLIKAPU923): same CLI-launch gate as POST /api/agents above.
       const cliRefusal = await refuseIfCliCannotLaunch(data.model)
-      if (cliRefusal) { json(res, { error: cliRefusal }, 400); return true }
+      if (cliRefusal) { json(res, { error: cliRefusal.message, code: cliRefusal.code, params: cliRefusal.params }, 400); return true }
       writeAgentModel(name, data.model)
     }
     // Card c755f4b2 Block B: optional generic capability tier. An unknown id
