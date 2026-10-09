@@ -1178,7 +1178,7 @@ window._i18n.en = {
   'integrations.gemini.err.delete':     'Failed to remove. Please try again.',
   'integrations.gemini.err.load':       'Failed to load integration status.',
   'settings.module.claude-plans': 'Claude plans',
-  'settings.claude_plans.intro':  'Registered Claude subscriptions (plans). A plan points at an already-logged-in, persistent CLAUDE_CONFIG_DIR -- the login itself (claude setup-token) is a manual step done ahead of time; this just registers it. Automatic key rotation (see the toggle below) is not wired up yet.',
+  'settings.claude_plans.intro':  'Registered Claude subscriptions (plans). A plan points at an already-logged-in, persistent CLAUDE_CONFIG_DIR; the login itself (claude setup-token) is a manual step done ahead of time, this just registers it. Automatic key rotation is controlled by the toggle below; its prerequisites are listed in the toggle description.',
   'settings.claude_plans.empty':  'No plans registered yet.',
   'settings.claude_plans.active': 'Currently active',
   'settings.claude_plans.no_channels': 'channels disabled',

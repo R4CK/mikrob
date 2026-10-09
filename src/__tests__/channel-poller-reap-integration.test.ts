@@ -23,7 +23,17 @@ vi.mock('node:child_process', async (orig) => {
   const real = await orig<typeof import('node:child_process')>()
   return {
     ...real,
-    execSync: vi.fn(() => psState.out),
+    // reapChannelOrphans now also calls execSync for the live-pane guard
+    // (`tmux list-panes`, card 08a02137/PR1402CHANNELREAP) -- a single
+    // unconditional mock answering EVERY execSync call with the `ps`
+    // fixture text would have every PID row in psState.out parse as a
+    // "live" pane pid (parseInt reads the leading digits off any row), so
+    // POLLER itself would come back marked live and get spared instead of
+    // reaped. Branch on the command so the two call sites stay independent;
+    // the tmux branch returns one pid that never collides with a test
+    // fixture pid, which keeps `live` non-empty (no fail-safe) and empty of
+    // overlap (nothing here is protected by the live-pane guard).
+    execSync: vi.fn((cmd: string) => (String(cmd).includes('list-panes') ? '99999\n' : psState.out)),
     execFileSync: vi.fn(() => ''),
   }
 })

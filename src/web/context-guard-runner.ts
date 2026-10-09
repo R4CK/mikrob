@@ -425,7 +425,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           // The actionable field: this is what says WHAT to fix. Same branch as
           // measurePct's, and it only runs on this rare state change.
           model: (name === MAIN_AGENT_ID
-            ? readActiveModelFromProjectDir(PROJECT_ROOT)
+            ? readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(name))
             : readAgentModel(name)) ?? null,
         },
         // Fleet-side checks should match on the fields above (name, model, pct,
