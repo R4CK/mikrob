@@ -16629,3 +16629,58 @@ futtattam.
 
 Ki döntött: MikroB dispatch (RedHat javaslata a 726dca6b gate-jéből előrevéve), gate: QA +
 WhiteHat.
+
+## 2026-10-09 -- 2fc54ae7 -- agent-skill-drift-sync.sh: "Stale (untouched, synced)" hamis állítás, ha minden stale írás kihagyva
+
+A probléma: `store/agent-skill-drift-sync.sh`-ban a `STALE` számláló (hány másolat
+klasszifikálódott elavultnak) és a tényleges ÍRÁS (hány másolat lett valóban
+felülírva) egy számlálóba volt összemosva. MikroB mérése (2026-09-19 07:50,
+`--apply --telegram` háromszor egymás után): a riport mindháromszor
+`Stale (untouched, synced):` fejléc alatt sorolta fel a
+fron-teddy/frontend-design-research és qa/embedded-pg-e2e-runner párokat, és a
+verdikt `reasons=stale-synced` volt -- miközben a két élő fájl mtime-ja
+2026-09-06/09-07-ös maradt (semmi nem íródott, mindkettő a running-agent
+fail-closed ágon lett kihagyva). MikroB ezt "szinkronizálva"-ként jelentette
+Petinek -- hamisan.
+
+A döntés: két külön számláló/lista. `STALE` (klasszifikáció, változatlan
+jelentés) marad diagnosztikai mező; `STALE_SYNCED` (+`STALE_SYNCED_LIST`,
+`STALE_SKIPPED_LIST`) csak a TÉNYLEGES `mv` sikerén növekszik. A
+`reasons=stale-synced` ezentúl `STALE_SYNCED>0`-ra tüzel, nem `STALE>0`-ra. A
+telegram-riport `Stale (untouched, synced):` fejléc alatt csak a valóban írt
+párok állnak; a kihagyottak külön `Stale (NOT synced, skipped):` szekcióba
+kerülnek, okkal (running / undetermined / concurrent-write / sync-failed). A
+nem-telegram SUMMARY sor és az ALERT verdikt-sor is kapott egy `synced=N`
+mezőt a `stale=N` mellé (a kártya saját kérése: a `stale=N` marad diagnosztika,
+a `synced=N` az outcome).
+
+Miért nem a teljes bejegyzés kihagyása volt az alternatíva: a `stale=N` mező
+már eddig is a klasszifikáció száma volt (nem az írásé), ezt a kártya nem
+kérte megváltoztatni -- csak azt, hogy a "synced" CÍMKE és a `stale-synced`
+REASON ne tegyen olyan állítást, amit a futás nem igazol.
+
+Zöld: `store/agent-skill-drift-sync.sh selftest` -- a meglévő "RUNNING agent"
+fixtúra (agentG) kapott 6 új asszerciót: a reasons NEM tartalmazza
+stale-synced-et, a verdikt synced=0, a telegram-riport NEM mutat "synced"
+fejlécet, mutat "NOT synced, skipped" szekciót a konkrét okkal; a PARKED
+kontroll-ágon (ahol tényleg íródik) synced=1 és a stale-synced reason TÉNYLEG
+tüzel. MUTÁCIÓVAL igazolva: a `STALE_SYNCED` -> `STALE` visszaállítása a
+reasons-gate-ben pirosra fordítja az új asszerciókat (`stale-synced fired even
+though nothing was actually synced`), a javítással zöld. Teljes selftest:
+PASS (minden korábbi eset is zöld maradt).
+
+Mellékesen (a kártya saját szövege szerint): a
+`seed-scheduled-tasks/agent-skill-drift-sync-heartbeat/SKILL.md`-be egy
+mondat került a `running-agent-skipped`/`undetermined-agent-skipped`
+reasonokról a stale-ellenőrzésnél (korábban csak a hiányzó-skill ág
+változatára volt bullet).
+
+ÁLLANDÓ KÖVETKEZMÉNY (a kártya 6. pontja, csak JAVASOLVA, nem beépítve, a
+kódminőségi 5. elv szerint kérdés nélkül nem építek be automatikus
+viselkedést): amíg fron-teddy és qa futnak, a két másolatuk elavult marad --
+egy azonnali drift-sync futás a `folyamatos-munka-orchestrator` parkolás-
+lépése (CLAUDE.md 7. szabály) UTÁN zárná a rést. MikroB/Peti döntsön, épüljön-e
+be.
+
+Ki döntött: MikroB mérése + dispatch, gate: QA + Cybersec (riport-integritás,
+a 222fdc5e hibaosztályának fordított iránya).
