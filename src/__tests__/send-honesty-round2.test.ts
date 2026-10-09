@@ -216,7 +216,7 @@ describe('watchdog-replay.py: the injection path now leaves a record (MSGSZIVARG
     expect(marker.agent).toBe('testbot')
     // Full date in the stamp -- time-only lines are the measured instrument trap.
     expect(marker.time).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
-  })
+  }, 65_000) // card 2f05b3e3: must exceed runReplay's 60_000ms subprocess cap; vitest 5's 5000ms default does not.
   it('RED-BEFORE property: with no pending messages, no marker and no injection', () => {
     const { r, logTarget, tmuxLog } = runReplay([])
     expect(r.status).toBe(0)

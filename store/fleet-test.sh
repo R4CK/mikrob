@@ -254,12 +254,59 @@ Inspect by hand: git -C $TEST_TREE status"
 fi
 
 # Share the live install's node_modules by symlink instead of installing a second copy: the deps are
-# large, and a per-run `npm ci` would dominate the runtime of a 20-second suite. The symlink is
-# re-pointed every run so it cannot go stale.
-if [ ! -e "$TEST_TREE/node_modules" ]; then
-  ln -s "$ROOT/node_modules" "$TEST_TREE/node_modules" 2>/dev/null \
-    || die 3 "could not link node_modules into $TEST_TREE"
+# large, and a per-run `npm ci` would dominate the runtime of a 20-second suite.
+#
+# BUT the symlink only tells the truth when $TEST_TREE's package-lock.json matches $ROOT's (card
+# 466decff). A dependency-bump card (e.g. 2f05b3e3, vitest 2.1.9 -> 5.0.3) changes the lockfile on
+# the landing branch while $ROOT -- the live install -- is still on the OLD lockfile until someone
+# separately updates it. Symlinking unconditionally in that case makes the suite silently test the
+# OLD packages against the NEW source: measured on 2f05b3e3's landing attempt, the run banner read
+# "RUN v2.1.9" although the merge result's package.json asked for vitest ^5.0.3 -- a false green (or
+# a false red) that has nothing to do with the actual change. $ROOT/node_modules must never be
+# written to from here (that is the live install, shared by every concurrent agent's own run) --
+# the fix is a REAL `npm ci` inside $TEST_TREE itself, only when the lockfiles disagree.
+#
+# Every branch below is SAFE ONLY BECAUSE $TEST_TREE IS A LINKED WORKTREE, never the live install
+# (same fact, same test as the SAFE-ONLY-BECAUSE comment above): a linked worktree's .git is ALWAYS
+# A FILE, the primary clone's .git is ALWAYS A DIRECTORY. If FLEET_TEST_TREE is ever pointed at
+# $ROOT itself (WhiteHat F3, card 5d365589), $TEST_TREE/node_modules IS $ROOT/node_modules -- a
+# REAL directory, not a symlink -- and without this guard the "lockfiles agree" branch's own
+# cleanup (`rm -rf "$TEST_TREE/node_modules"` when it exists and is not a symlink) would delete the
+# live install's node_modules outright. Skip the whole block in that case: $TEST_TREE already IS
+# $ROOT, so there is nothing to link or install.
+# >>> NPM_CI_SYMLINK_BLOCK_START (card 5d365589 behavior test extracts between these two markers)
+if [ -f "$TEST_TREE/.git" ]; then
+  if ! cmp -s "$TEST_TREE/package-lock.json" "$ROOT/package-lock.json" 2>/dev/null; then
+    echo "fleet-test.sh: package-lock.json differs from $ROOT -- running npm ci --include=dev in $TEST_TREE instead of symlinking (card 466decff)" >&2
+    # Remove the SYMLINK ENTRY itself before `npm ci` runs (card 5d365589, WhiteHat F1/F2). A plain
+    # `npm ci` run while $TEST_TREE/node_modules is still a symlink to $ROOT/node_modules does NOT
+    # just replace the symlink -- measured: it resolves the link and empties $ROOT/node_modules'S
+    # OWN CONTENTS in place (npm's own "Removing non-directory" reify step), i.e. it wipes the LIVE
+    # install's node_modules that every other concurrently-running agent shares. `rm -f` on a
+    # symlink path removes the link entry only, never the target, so this one line is the entire
+    # fix -- it must stay a REAL command, not a comment (F2): the behavior test below runs this
+    # exact line, not a textual stand-in for it.
+    [ -L "$TEST_TREE/node_modules" ] && rm -f "$TEST_TREE/node_modules"
+    ci_log="$(mktemp)"
+    if ! npm --prefix "$TEST_TREE" ci --include=dev >"$ci_log" 2>&1; then
+      cat "$ci_log" >&2
+      rm -f "$ci_log"
+      die 3 "npm ci failed in $TEST_TREE (package-lock.json differs from $ROOT, card 466decff) -- see output above. $ROOT/node_modules was not touched."
+    fi
+    rm -f "$ci_log"
+  else
+    # Lockfiles agree again (e.g. a prior divergent run's branch already landed into $ROOT) -- drop
+    # any real install left behind by the branch above and go back to the cheap symlink.
+    [ -e "$TEST_TREE/node_modules" ] && [ ! -L "$TEST_TREE/node_modules" ] && rm -rf "$TEST_TREE/node_modules"
+    if [ ! -e "$TEST_TREE/node_modules" ]; then
+      ln -s "$ROOT/node_modules" "$TEST_TREE/node_modules" 2>/dev/null \
+        || die 3 "could not link node_modules into $TEST_TREE"
+    fi
+  fi
+else
+  echo "fleet-test.sh: TEST_TREE is not a linked worktree (.git is not a file) -- assuming it IS the live install and skipping the symlink/npm-ci block entirely (card 5d365589)" >&2
 fi
+# <<< NPM_CI_SYMLINK_BLOCK_END
 
 # Belt and braces: prove the guard will let us run. If a live marker ever appears in the test tree
 # (someone pointed FLEET_TEST_TREE at an install), fail HERE with a clear reason rather than letting
@@ -364,24 +411,28 @@ for a in ${ARGS[@]+"${ARGS[@]}"}; do
 done
 WORKER_ARGS=()
 if [ "$caller_set_max_workers" -eq 0 ]; then
-  # --minWorkers IS NOT OPTIONAL HERE, and the reason is the VITEST MAJOR, not this repo's config.
-  # Measured (Cybered, card 7bb39672): CleanCore runs vitest 3.2.6, where cleancore-suite-run.sh's
-  # bare --maxWorkers has been fine for months; marveen pins 2.1.9, where minThreads keeps its
-  # core-count default and then exceeds maxThreads. The pattern was copied between the two repos
-  # with nothing tying it to a version. WHEN THE VITEST MAJOR BUMP LANDS (2 -> 4, its own card),
-  # RE-MEASURE THIS LINE rather than carrying it over: stating both bounds is correct on both
-  # majors today, but the defaults that make it necessary are exactly what a major changes.
-  #
-  # The concrete failure, so nobody re-derives it: vitest 2.1.9
-  # rejects a bare --maxWorkers in this repo with
+  # DECOUPLED FROM ANY ONE BUMP (card 2f05b3e3's own landing attempt, the chicken-and-egg this
+  # introduced). vitest 2.1.9 rejects a bare --maxWorkers here with
   #   RangeError: options.minThreads and options.maxThreads must not conflict
-  # and exits 1 having run NOTHING ("Test Files no tests"). Measured directly, outside this script:
-  # `vitest run --maxWorkers 6 <file>` fails, `vitest run --minWorkers 1 --maxWorkers 6 <file>` runs.
-  # The first version of this cap shipped without it and broke every fleet-test run -- i.e. every
-  # landing, for every agent -- because the contract test asserted the flag was PASSED, never that
-  # vitest ACCEPTED it. A flag the runner refuses is not a cap, it is an outage.
-  WORKER_ARGS=(--minWorkers 1 --maxWorkers "$MAX_WORKERS")
-  echo "fleet-test.sh: --minWorkers 1 --maxWorkers $MAX_WORKERS (${CORES} cores / ${CPU_SLOTS} shared slots)"
+  # which is why --minWorkers used to be paired with it. vitest 5.0.3 does the opposite: a bare
+  # --maxWorkers runs fine (matching CleanCore's vitest 3.2.6 behaviour, which never needed the
+  # pairing either), while --minWorkers is no longer a recognised CLI flag at all -- `vitest run
+  # --minWorkers 1 <file>` fails with `CACError: Unknown option \`--minWorkers\`` and exits 1
+  # having run NOTHING. A commit that flips this hardcoded can only ever be right for the vitest
+  # version THAT SAME commit also installs -- and the dual-gate (card 88a0a5e1/03cff5c1) runs
+  # $MAIN's ALREADY-LANDED copy of this script against the merge result's REAL, possibly just-
+  # bumped node_modules (card 466decff made that real, not merely symlinked): a landing that bumps
+  # vitest and flips this flag in the SAME commit fails at $MAIN's old copy, because that old copy
+  # still carries the PRE-bump hardcoded flag against the POST-bump real vitest. So this reads the
+  # version that is ACTUALLY installed in $TEST_TREE right now, on either branch of a dependency
+  # bump, rather than assuming one.
+  vitest_major="$(node -p "require('$TEST_TREE/node_modules/vitest/package.json').version.split('.')[0]" 2>/dev/null || echo 0)"
+  if [ "$vitest_major" -ge 5 ] 2>/dev/null; then
+    WORKER_ARGS=(--maxWorkers "$MAX_WORKERS")
+  else
+    WORKER_ARGS=(--minWorkers 1 --maxWorkers "$MAX_WORKERS")
+  fi
+  echo "fleet-test.sh: ${WORKER_ARGS[*]} (vitest major ${vitest_major:-unknown}, ${CORES} cores / ${CPU_SLOTS} shared slots)"
 else
   echo "fleet-test.sh: --maxWorkers left to the caller"
 fi

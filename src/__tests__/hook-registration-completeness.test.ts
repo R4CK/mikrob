@@ -92,6 +92,8 @@ const EXEMPT: Record<string, string> = {
     'drift guard for provenance-gate.py (card a65f3777): asserts its DIRECTIVE_SENDER literal matches ' +
     'src/web/system-directive-id.ts\'s SYSTEM_DIRECTIVE_SENDER; provenance-gate.py itself is registered, ' +
     'this file is a test suite, not a hook',
+  'tool-log-capture.selftest.py':
+    'selftest for tool-log-capture.py, which is registered; the selftest itself is not a hook',
   // Card 4f15966e (backend, 2026-09-07): the four entries below PRE-DATE this test (all
   // present at pre-merge checkpoint b0e63a39) and are genuinely unwired on every
   // REGISTRATION_SURFACE -- this new completeness check is the first thing to notice, not

@@ -85,18 +85,28 @@ function problems(source: string): string[] {
       found.push('a vitest invocation does not carry the computed worker cap')
     // AND the cap must be a flag vitest ACCEPTS, not merely one we pass. vitest 2.1.9 rejects a
     // bare --maxWorkers in this repo -- "options.minThreads and options.maxThreads must not
-    // conflict" -- and exits 1 having run nothing. The first version of this cap shipped without
-    // --minWorkers and broke every fleet-test run, i.e. every landing for every agent, while this
-    // very contract stayed green: it asserted the flag was PASSED, never that the runner took it.
-    // That gap is the reason for this line.
-    // Anchored to the ASSIGNMENT line, not to the file. Two earlier versions of this check were
+    // conflict" -- which is why --minWorkers used to be paired with it; vitest 5.0.3 flips this,
+    // rejecting --minWorkers outright ("CACError: Unknown option `--minWorkers`") while accepting
+    // a bare --maxWorkers. A commit that hardcodes one answer can only ever be right for the
+    // vitest version THAT SAME commit installs -- and the dual-gate (card 88a0a5e1/03cff5c1)
+    // means a dependency-bump commit touching this file is tested by $MAIN's ALREADY-LANDED copy
+    // against the merge result's REAL node_modules (card 466decff), so a hardcoded flip fails at
+    // the OLD copy the moment it meets the NEW vitest it was never updated for. The fix (card
+    // 2f05b3e3's own landing attempt) reads the vitest major ACTUALLY installed in $TEST_TREE and
+    // branches on it, so this file no longer needs to change in lockstep with any one bump.
+    // Anchored to the ASSIGNMENT lines, not to the file. Two earlier versions of this check were
     // vacuous for the same reason and both were found by mutation, not by reading: the flag name
     // also appears in the echo that reports the cap and in the comment above it, so a file-wide
     // regex stays green after the flag is deleted from the array that actually reaches vitest.
     const assign = t.split('\n').filter((l) => /WORKER_ARGS=\(/.test(l) && !/WORKER_ARGS=\(\)/.test(l))
-    if (assign.length === 0) found.push('no WORKER_ARGS assignment carrying the cap')
-    else if (!assign.every((l) => /--minWorkers/.test(l) && /--maxWorkers/.test(l)))
-      found.push('the cap is assigned without BOTH --minWorkers and --maxWorkers (vitest 2.x rejects a lone --maxWorkers as conflicting)')
+    if (assign.length !== 2) found.push('expected exactly 2 WORKER_ARGS assignments (one per vitest major branch), found ' + assign.length)
+    else {
+      const maxOnly = assign.filter((l) => /--maxWorkers/.test(l) && !/--minWorkers/.test(l))
+      const minAndMax = assign.filter((l) => /--minWorkers/.test(l) && /--maxWorkers/.test(l))
+      if (maxOnly.length !== 1) found.push('no assignment branch with --maxWorkers alone (the vitest >=5 case)')
+      if (minAndMax.length !== 1) found.push('no assignment branch pairing --minWorkers with --maxWorkers (the vitest <5 case)')
+    }
+    if (!/vitest_major/.test(t)) found.push('no runtime vitest-major detection -- the branch choice would be hardcoded again')
     // A caller who passed their own --maxWorkers has already made the CPU-budget decision; silently
     // overriding it would make this a policy rather than a default, unlike the CleanCore side.
     if (!/caller_set_max_workers/.test(t))
@@ -407,12 +417,20 @@ describe('fleet-test.sh behaviourally contends with cleancore-suite-run.sh\'s ow
 //
 // Everything above is a SOURCE contract: it proves the cap is composed and reaches the invocation
 // lines. It cannot prove vitest ACCEPTS it, and that is precisely what went wrong: a bare
-// --maxWorkers is valid on vitest 3.x (where cleancore-suite-run.sh's copy of this pattern has run
-// for months) and is REJECTED on the 2.1.9 this repo pins, because minThreads keeps its core-count
-// default and then exceeds maxThreads. The flag was passed, the runner refused it, every fleet-test
-// run exited 1 having collected nothing, and the contract suite stayed green throughout. Cybered's
-// own harness could not see it either -- it proved argument passing with a stub npx, and a stub
-// accepts everything.
+// --maxWorkers was valid on vitest 3.x (where cleancore-suite-run.sh's copy of this pattern ran for
+// months) and was REJECTED on the 2.1.9 this repo originally pinned, because minThreads kept its
+// core-count default and then exceeded maxThreads. The flag was passed, the runner refused it,
+// every fleet-test run exited 1 having collected nothing, and the contract suite stayed green
+// throughout. Cybered's own harness could not see it either -- it proved argument passing with a
+// stub npx, and a stub accepts everything.
+//
+// vitest 5.0.3 inverts which flag the pool rejects relative to 2.1.9: a bare --maxWorkers now
+// runs fine (matching vitest 3.x's behaviour), while --minWorkers has been removed from the CLI
+// outright ("CACError: Unknown option `--minWorkers`"). fleet-test.sh (card 2f05b3e3's own
+// landing attempt) no longer hardcodes one answer -- it reads the vitest major ACTUALLY
+// installed in $TEST_TREE and picks the matching branch. This probe does the same against
+// whichever vitest major is installed in THIS repo right now, so it stays meaningful across a
+// bump either way instead of needing its own update in lockstep with one.
 //
 // So this case LAUNCHES THE REAL vitest with the flags the script actually composes, in a throwaway
 // project with one trivial test. Deliberately NOT through fleet-test.sh: that would reset and
@@ -423,11 +441,23 @@ describe('fleet-test.sh behaviourally contends with cleancore-suite-run.sh\'s ow
 // The flags are READ OUT OF THE SCRIPT, never hardcoded here. A copy would pass while the script
 // drifted, which is the same class of blindness this case exists to close.
 describe('the composed worker cap is a flag vitest ACCEPTS, not merely one we pass (card 7bb39672)', () => {
+  const installedVitestMajor = (): number => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'node_modules', 'vitest', 'package.json'), 'utf-8')) as { version: string }
+    return Number(pkg.version.split('.')[0])
+  }
+
   const flagsFromScript = (): string[] => {
-    const line = readFileSync(SCRIPT, 'utf-8')
+    const assignments = readFileSync(SCRIPT, 'utf-8')
       .split('\n')
-      .find((l) => /WORKER_ARGS=\(/.test(l) && !/WORKER_ARGS=\(\)/.test(l))
-    if (!line) throw new Error('no WORKER_ARGS assignment found in fleet-test.sh')
+      .filter((l) => /WORKER_ARGS=\(/.test(l) && !/WORKER_ARGS=\(\)/.test(l))
+    const major = installedVitestMajor()
+    // Mirror the script's own branch choice: >=5 takes the --maxWorkers-only line, <5 takes the
+    // one pairing --minWorkers with --maxWorkers -- same selection fleet-test.sh itself makes at
+    // runtime from the vitest ACTUALLY present, not from which commit happens to be checked out.
+    const line = major >= 5
+      ? assignments.find((l) => /--maxWorkers/.test(l) && !/--minWorkers/.test(l))
+      : assignments.find((l) => /--minWorkers/.test(l) && /--maxWorkers/.test(l))
+    if (!line) throw new Error(`no matching WORKER_ARGS assignment in fleet-test.sh for installed vitest major ${major}`)
     const inner = line.slice(line.indexOf('(') + 1, line.lastIndexOf(')'))
     // $MAX_WORKERS is a shell expansion; any positive integer exercises the same pool check.
     return inner
@@ -460,16 +490,20 @@ describe('the composed worker cap is a flag vitest ACCEPTS, not merely one we pa
 
   it("vitest starts its pool with the script's own flags", () => {
     const r = runVitestWith(flagsFromScript())
-    expect(r.out).not.toMatch(/must not conflict/)
+    expect(r.out).not.toMatch(/Unknown option/)
     expect(r.status).toBe(0)
   })
 
-  it('NEGATIVE CONTROL: a lone --maxWorkers is what the pool rejects, so this case can fail', () => {
+  it('NEGATIVE CONTROL: the OTHER major\'s flag shape is what the pool rejects, so this case can fail', () => {
     // Without this, the case above would pass just as happily against a vitest that accepts
     // anything -- and "the runner accepts everything" is exactly the assumption that hid the
-    // outage. This pins that the probe can tell the two apart on THIS vitest.
-    const r = runVitestWith(['--maxWorkers', '2'])
-    expect(r.out).toMatch(/must not conflict/)
+    // outage. This pins that the probe can tell the two apart on THIS vitest: vitest 5.x refuses
+    // a lone --minWorkers outright ("Unknown option"); vitest <5 refuses a bare --maxWorkers with
+    // no --minWorkers ("must not conflict"). Picking the WRONG major's shape on purpose is the
+    // negative control, mirrored from the branch fleet-test.sh did NOT take.
+    const major = installedVitestMajor()
+    const r = major >= 5 ? runVitestWith(['--minWorkers', '1']) : runVitestWith(['--maxWorkers', '2'])
+    expect(r.out).toMatch(major >= 5 ? /Unknown option/ : /must not conflict/)
   })
 })
 

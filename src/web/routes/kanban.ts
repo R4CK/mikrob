@@ -13,7 +13,7 @@ import {
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   addCardBlocker, removeCardBlocker, getBlockersForCard, getBlockedByCard,
-  getBlockersForAllCards, blockerWouldCycle,
+  getBlockersForAllCards, blockerWouldCycle, parentWouldCycle,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
@@ -579,6 +579,30 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
   if (path === '/api/kanban' && method === 'GET') {
+    // Card 5aaf7209 item 1: an unknown query-parameter used to be ACCEPTED and silently ignored --
+    // measured on the live install, six agents tried three different names (includeArchived/
+    // archived/include_archived) for the same intent, none got feedback. Same reasoning as the
+    // status/assignee fail-closed-on-unknown-VALUE comment below, one level up: unknown NAME.
+    // Card 514a9fb3 M1: `limit` joins the known set -- two live callers
+    // (store/gate-pretriage-card.sh, store/reconstruction-landed-sweep.sh) already
+    // sent `?limit=` before this endpoint's unknown-param 400 existed, and the 400
+    // broke both (one silently, behind `|| true`; one loudly). Grep-checked every
+    // /api/kanban? caller under store/ and scripts/ -- these two plus two `?status=`
+    // callers are the entire live set, nothing else is in play.
+    const KNOWN_KANBAN_QUERY_PARAMS = new Set(['status', 'assignee', 'agent', 'includeArchived', 'limit'])
+    const unknownParams = [...ctx.url.searchParams.keys()].filter((k) => !KNOWN_KANBAN_QUERY_PARAMS.has(k))
+    if (unknownParams.length > 0) {
+      json(res, {
+        error: `Ismeretlen query-parameter: ${unknownParams.join(', ')}`,
+        known: [...KNOWN_KANBAN_QUERY_PARAMS],
+      }, 400)
+      return true
+    }
+    // includeArchived: 1/true/yes/on (case-insensitive) includes archived cards; anything else,
+    // including absence, keeps the existing archived-excluded default.
+    const includeArchivedRaw = ctx.url.searchParams.get('includeArchived')
+    const includeArchived = includeArchivedRaw !== null && /^(1|true|yes|on)$/i.test(includeArchivedRaw)
+
     // Embed each card's labels in one extra JOIN query (getLabelsForAllCards)
     // instead of an N+1 per-card lookup, so the footer-pill UI gets
     // everything it needs in a single round trip.
@@ -587,7 +611,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // DERIVED, never stored -- a stored flag would be a second source of truth that goes stale the
     // moment a predecessor closes, and this board is polled far more often than it is edited.
     const blockersByCard = getUnmetPredecessorsForAllCards()
-    let cards = listKanbanCards().map((card) => {
+    let cards = listKanbanCards(includeArchived).map((card) => {
       const blockers = blockersByCard.get(card.id) ?? []
       return {
         ...card,
@@ -605,8 +629,39 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // everything. Silently widening a filter is how "why is this card in my sweep?" happens.
     const wanted = filterValues(ctx.url, 'status')
     if (wanted !== null) cards = cards.filter((c) => wanted.has(String(c.status)))
-    const assignees = filterValues(ctx.url, 'assignee')
-    if (assignees !== null) cards = cards.filter((c) => assignees.has(String(c.assignee ?? '')))
+    // Card 5aaf7209 item 3: `assignee=` and `agent=` are the SAME filter under two names -- the
+    // dashboard and this fork's own CLAUDE.md teach different ones for the same intent. Accept
+    // either (assignee takes precedence if, oddly, both are given), and 400 on a name that is not a
+    // real agent rather than silently returning an empty list -- the same "an unknown value should
+    // say so" reasoning as the status filter above.
+    const assignees = filterValues(ctx.url, 'assignee') ?? filterValues(ctx.url, 'agent')
+    if (assignees !== null) {
+      // Card 514a9fb3 M1: listAgentNames() only lists sub-agents with a directory
+      // under agents/ -- MikroB (MAIN_AGENT_ID) is a real, first-class agent and
+      // the assignee on 107 live cards, but has no such directory, so a plain
+      // Set-membership check 400'd `assignee=mikrob`. isKnownAgent() already
+      // carries the MAIN_AGENT_ID special case other callers (isKnownAgent's own
+      // router use) rely on -- reuse it instead of re-deriving the same rule here.
+      const unknownAgents = [...assignees].filter((a) => !isKnownAgent(a))
+      if (unknownAgents.length > 0) {
+        json(res, { error: `Ismeretlen agent: ${unknownAgents.join(', ')}` }, 400)
+        return true
+      }
+      cards = cards.filter((c) => assignees.has(String(c.assignee ?? '')))
+    }
+    // Card 514a9fb3 M1: `limit=` caps the returned array (both live callers used it as
+    // a generous ceiling on an already-small board, not a real pagination need) --
+    // fail-closed on a non-numeric value rather than silently ignoring it, same
+    // reasoning as the other filters above.
+    const limitRaw = ctx.url.searchParams.get('limit')
+    if (limitRaw !== null) {
+      const limitNum = Number(limitRaw)
+      if (!Number.isInteger(limitNum) || limitNum < 0) {
+        json(res, { error: `Érvénytelen limit: ${limitRaw}` }, 400)
+        return true
+      }
+      cards = cards.slice(0, limitNum)
+    }
     jsonMaybeGzip(req, res, cards)
     return true
   }
@@ -804,6 +859,17 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const rawId: unknown = (normalized as Record<string, unknown>).id
     const suppliedId: string | null = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : null
     const id: string = suppliedId ?? randomUUID().slice(0, 8)
+    // Card 514a9fb3 L1: PUT already refuses a parent_id that would close a loop
+    // (parentWouldCycle above), but POST let a client-supplied id through
+    // uncovered -- a caller-chosen id equal to its own parent_id (or closing a
+    // loop into one) created a self-attached card the board could never walk.
+    // Checked here, before createKanbanCard, for the same reason PUT checks it
+    // before updateKanbanCard: the row must not exist yet in the refused shape.
+    const rawParentId: unknown = (normalized as Record<string, unknown>).parent_id
+    if (typeof rawParentId === 'string' && rawParentId && parentWouldCycle(id, rawParentId)) {
+      json(res, { error: `A(z) "${rawParentId}" szülővé tétele kört zárna be a szülő-láncban.` }, 409)
+      return true
+    }
     createKanbanCard({ ...normalized, id })
     // Card 4bade960: run the dedup pre-filter on EVERY new card (rule 6b was previously enforced
     // only by agent discipline before opening a card, and by the >2-day dispatch filter for cards
@@ -909,6 +975,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
           typeof reason === 'string' ? reason : undefined,
           id)) {
       json(res, { code: 'bulk_attribution_required', error: BULK_ATTRIBUTION_MESSAGE }, 409)
+      return true
+    }
+    // parentWouldCycle (card 5aaf7209 item 4 / 16e60d3c item 4): the parent_id edge, same reasoning
+    // as the existing blockerWouldCycle check above for the blocker edge. Only checked when
+    // parent_id is actually being SET to a real value -- clearing it (null) can never create a cycle.
+    if (typeof data.parent_id === 'string' && data.parent_id && parentWouldCycle(id, data.parent_id)) {
+      json(res, { error: `A(z) "${data.parent_id}" szülővé tétele kört zárna be a szülő-láncban.` }, 409)
       return true
     }
     if (updateKanbanCard(id, normalizeProjectName(data), { actor: typeof actor === 'string' ? actor : undefined, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
@@ -1136,13 +1209,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const body = await readBody(req)
-    const { author, content } = JSON.parse(body.toString())
+    const { author, content, automated } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
-    json(res, addKanbanComment(cardId, normalizeCommentAuthor(author), normalizedContent))
+    // automated (card 5aaf7209 item 5 / 16e60d3c item 5): a bulk/machine writer's self-reported
+    // flag, so a stuck-card detector does not read its own comment as human work-trace.
+    json(res, addKanbanComment(cardId, normalizeCommentAuthor(author), normalizedContent, automated === true))
     return true
   }
 
