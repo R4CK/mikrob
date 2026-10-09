@@ -1980,18 +1980,14 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // Card 14284837 (2026-09-25, backend2), fork/upstream re-decision, area "dashboard/src --
   // tesztek 2/2" (parent b5b7eb6b). The 8 entries below were previously undecided.
 
-  // Both additions are pure test-content (a defensive config mock the fork's own
-  // agent-scaffold.ts->settings-store dynamic import already needs, per that file's own
-  // MCPOROKLES923 comment; and a new assertion), neither removes or contradicts anything
-  // fork-specific. Verified: taking the STORE_DIR mock addition leaves the other 10 tests in
-  // this file green. The SECOND addition (a new test asserting buildMemorySearchLabelBody's
-  // output warns about a raw-accented-byte silent-400) was NOT taken: it asserts on production
-  // body text (`toContain('400')`/`toContain('--data-urlencode')`) that agent-scaffold.ts's
-  // actual buildMemorySearchLabelBody does not produce -- measured red when tried. That half is
-  // a production-code addition, not a test-only decision; flagging for a follow-up card rather
-  // than porting it under this card's own scope.
-  'src/__tests__/memory-search-label-backfill.test.ts':
-    "ADOPT upstream's STORE_DIR mock addition to the '../config.js' vi.mock (needed: agent-scaffold.ts's settings-store dynamic import reads STORE_DIR at call time, verified by grep). Do NOT adopt upstream's new 'warns that a raw accented q is a silent 400' test -- measured RED against the fork's actual buildMemorySearchLabelBody (does not emit '400'/'--data-urlencode' text); that assertion depends on a production-side body-text change not made here. Follow-up card recommended for the production side if this fix is wanted.",
+  // SUPERSEDED (upstream-sync batch 6, card 5a15cd5a, 2026-10-09): the follow-up this entry
+  // recommended landed in this same batch -- commit 323d7c41 "docs(scaffold): warn that a raw
+  // accented q silently 400s in memory search (#1428)" adds BOTH the production body text
+  // (buildMemorySearchLabelBody now emits '400' and '--data-urlencode') AND the test together,
+  // consistently (verified green, 11/11, src/__tests__/memory-search-label-backfill.test.ts).
+  // No conflict remains to acknowledge; entry removed rather than left stale (the
+  // fork-upstream-conflict-guard.test.ts fork-side-anchor check caught the staleness and asked
+  // for a re-decision, not a silent anchor edit).
 
   // Cosmetic-only: String(chunk) vs chunk.toString() are behaviourally identical for the
   // Buffer/string chunks this test harness's fake `end()` ever receives. No fork content lost.
@@ -2501,7 +2497,6 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/stuck-tool-call-watcher.ts': '80f56ab7a9fa84b1f431db27a7eb240aa873e53c',
   // Card 14284837 (backend2, 2026-09-25), fork/upstream re-decision, area "dashboard/src --
   // tesztek 2/2" -- see the matching ACKNOWLEDGED_CONFLICTS entries above for the reasoning.
-  'src/__tests__/memory-search-label-backfill.test.ts': 'a24a1fdaff37b8b5a43ab0d1a71acb8feb932c20',
   'src/__tests__/memory-search-tier-goes-into-the-query.test.ts': 'a72bb28deed866a7c9224f90583fc423990762ea',
   'src/__tests__/model-suggest.test.ts': 'b0014b2840c6239182369492038e1ec6dda2fbb9',
   'src/__tests__/project-settings-hook-anchor.test.ts': '79a8cf566a40c1bfce28083f2a0b68b28a36c6e6',
@@ -3329,17 +3324,6 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "own coverage in outgoing-copy-gate-role-wiring.test.ts). TELEGRAM_COPY_GATE_MATCHER appearing " +
       "in the fork's own scaffold file means upstream's duplicate-wire path was adopted without " +
       "re-deciding whether both gates firing together is safe.",
-  },
-  'src/__tests__/memory-search-label-backfill.test.ts': {
-    needle: '--data-urlencode',
-    file: 'src/web/agent-scaffold.ts',
-    expect: 'absent',
-    because:
-      "this entry refuses upstream's 'warns that a raw accented q is a silent 400' test because the " +
-      "fork's actual buildMemorySearchLabelBody() does not emit '400' or '--data-urlencode' text -- " +
-      "measured RED against the real function when tried. If '--data-urlencode' appears in this file, " +
-      "the production-side change the refused test depends on shipped without the test (or the " +
-      "re-decision) that was supposed to come with it.",
   },
   // Card 3531538d (WhiteHat L1, 26083811 gate): corrects that card's own backlog triage for this
   // one entry. assert-not-live-install.ts has no describe/it blocks -- it is a vitest setupFiles

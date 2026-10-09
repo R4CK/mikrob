@@ -49,6 +49,10 @@ vi.mock('../db.js', () => ({
     if (toAgent) return []
     return mockGetPendingMessages()
   },
+  // The router re-reads the row's status immediately before sending (TICKVAKSAG916). Pending
+  // here keeps these fixtures on the delivery path they were written to measure -- same failure
+  // signature as the two notes below if omitted: 0 sends, no missing-export error.
+  getMessageStatus: () => 'pending',
   markMessageDelivered: (...a: unknown[]) => mockMarkDelivered(...a),
   markMessageFailed: (...a: unknown[]) => mockMarkFailed(...a),
   markMessageDone: (..._a: unknown[]) => true,

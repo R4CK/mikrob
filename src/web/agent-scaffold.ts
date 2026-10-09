@@ -810,7 +810,15 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // required the literal string "gmail__"/"resend__" -- no hyphen before it (google-gmail__), no
 // suffix after it (gmail-mcp__). Either shape skipped the matcher entirely, so the hooks never
 // even ran (not "ran and allowed" -- never reached). Widened to match the word as a substring
-// anywhere in the server segment, hyphens included on both sides.
+// anywhere in the server segment, hyphens included on both sides. VERIFIED (upstream-sync batch
+// 6, node -e test) this ALREADY matches upstream's own cited regression case,
+// mcp__server-gmail-autoauth-mcp__draft_email -- MATCHERGMAILSEG920's independent fix for the
+// same underlying gap was against an OLDER, narrower matcher this fork had already widened.
+// Upstream's draft-verb catch-all alternative (paired with its recipient-ledger feature) is NOT
+// adopted here: the ledger itself is NOT ADOPTED, in any form (Cybersec, card afd64623, HIGH --
+// addRecipient() validates the source STRING'S FORMAT only, never that the evidence is real, so
+// an agent can self-certify any address with --source owner). See
+// ACKNOWLEDGED_FORK_ANCHORS['scripts/email-send-gate.mjs'] for the tripwire watching this.
 export const EMAIL_GATE_MATCHER =
   'Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*'
 
@@ -2392,6 +2400,12 @@ const LOCAL_FIRST_BLOCK_RE = new RegExp(
   `${LOCAL_FIRST_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${LOCAL_FIRST_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
+const EVIDENCE_BEGIN = '<!-- BEGIN GENERATED: evidence-rule (auto-generated, do not edit by hand) -->'
+const EVIDENCE_END = '<!-- END GENERATED: evidence-rule -->'
+const EVIDENCE_BLOCK_RE = new RegExp(
+  `${EVIDENCE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${EVIDENCE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
 // Builds the text body that goes between the BEGIN/END markers.
 // Single source of truth -- called by both generateClaudeMd() (initial
 // generation) and ensureFleetRosterSection() (idempotent update on respawn).
@@ -2494,6 +2508,99 @@ function buildAutonomyBody(name: string): string {
     '',
     '**Level 3 (autonóm)**: elvégzed a műveletet, majd utána jelented a főágensnek.',
   ].join('\n')
+}
+
+// Extended 2026-08-14 with "A konkrétum mindig forrásból jön", after a letter
+// went to support@connectors.hu -- an address produced from the support@
+// convention, never read anywhere. It bounced 550 and the owner found it, not
+// the agent. His words: "Én szerintem már több ilyen szabályt fölvettünk (...)
+// ez nagyon kellemetlen, és újra meg újra előjön."
+//
+// Upstream pairs this rule with a mechanical outbound-recipient ledger
+// (store/verified-recipients.json, scripts/recipient-ledger.mjs) -- NOT
+// adopted here (Cybersec, card afd64623, HIGH: addRecipient() validates the
+// --source STRING'S FORMAT only, never that the evidence is real, so an
+// agent can self-certify any address). The fork relies on threadMembership-
+// Decision() instead (real Gmail thread participants). This prose therefore
+// states the rule but does not claim a ledger enforces it mechanically.
+//
+// Builds the evidence-rule body. Owner-mandated on 2026-08-12 after an evening
+// in which the main agent asserted three unverified technical claims in a row
+// (a connector had "expired", it had "stopped working", a sub-agent "could
+// never reach it"). All three were false, and a request to an external
+// contractor was already being drafted on top of them. The owner's words:
+// "ezzel napok telnek el, hogyha hulyesegeket mondanak nekem, es en meg
+// elhiszem". This block is fleet-wide, not agent-specific: a guess dressed as
+// a fact costs the same wherever it comes from.
+function buildEvidenceBody(): string {
+  return [
+    '## Tények és találgatás',
+    '',
+    'Ez a legfontosabb szabályod. Fontosabb, mint a gyorsaság.',
+    '',
+    'Minden állításodnak HÁROM formája lehet, és mindig ki kell derülnie, melyik:',
+    '',
+    '1. **Tény.** Ellenőrizted, és meg tudod mondani, honnan tudod. Mondd is meg, egy fél mondatban.',
+    '2. **Tipp.** Jelöld annak, ugyanabban a mondatban, ahol elhangzik. Nem a bekezdés végén, nem később.',
+    '3. **Nem tudom.** Ez teljes értékű válasz. Mondd ki egyszerűen, és ha van rá mód, nézd meg.',
+    '',
+    'Amit SOSEM csinálsz:',
+    '',
+    '- Nem találsz ki magyarázatot arra, miért romlott el valami. Ha nem nézted meg, akkor nem tudod, miért.',
+    '- Nem jelented ki, hogy valami lehetetlen, nem elérhető, lejárt vagy leállt, amíg meg nem nézted. A "nincs rá út" a legdrágább mondatod, mert lezár egy irányt.',
+    '- Nem becsülsz dátumot, időtartamot vagy számot emlékezetből. Nézd meg a git logot, a fájl dátumát, a naplót.',
+    '- Nem építesz tervet, levelet vagy külső kérést ellenőrizetlen állításra. Ha valami RÁÉPÜL egy állításra, azt az állítást KÖTELEZŐ előtte ellenőrizni.',
+    '',
+    'Hol ellenőrizz, mielőtt kérdezel vagy kijelentesz: a fájl maga, a config, a telepített program, az API válasza, az élő weboldal, a git történet. A saját forrásaink előbb, a gazda ideje utoljára.',
+    '',
+    'Ha kiderül, hogy tévedtél: javítsd ki röviden, és mondd meg, mi épült rá közben. Ne magyarázkodj, ne ostorozd magad, csak a következményt add át.',
+    '',
+    '### A konkrétum mindig forrásból jön',
+    '',
+    'A fenti szabály leggyakoribb megszegése nem egy hosszú hamis állítás, hanem egy rövid, ártatlannak látszó konkrétum, amit a szokásból írsz le. Email cím, telefonszám, URL, ügyszám, azonosító, számlaszám, verzió, ár.',
+    '',
+    'Ezekre nincs "valószínűleg". Vagy megvan a forrás, vagy nincs meg az adat:',
+    '',
+    '- **Email cím**: a tőlük kapott levél From fejléce, az élő oldaluk, a rendelés, a szerződés. SOHA nem a `support@`, `info@`, `hello@` szokásból, és soha nem névből összerakva.',
+    '- **URL, ügyszám, azonosító, számlaszám**: onnan, ahol le van írva. Ha fejből idézed, az tipp, és jelöld annak.',
+    '- **Ár, verzió, határidő**: az élő forrásból, nem a múltkori beszélgetésből.',
+    '',
+    'Ha nem találsz forrást, ez a válasz: "ezt a címet/számot nem találom sehol". Ez teljes értékű, és sokkal olcsóbb, mint egy jó levél, ami senkihez nem ér el.',
+  ].join('\n')
+}
+
+// Idempotently ensures the evidence-rule block is present and current in the
+// agent's CLAUDE.md. Called on every startAgentProcess() alongside
+// ensureAutonomySection(), so existing agents pick it up on respawn.
+//
+// Idempotency contract mirrors ensureFleetRosterSection (five rules apply).
+// EXCEPT for the main agent (card 965b0b2b/2dd28b5d pattern): its target would be
+// PROJECT_ROOT/CLAUDE.md, a git-tracked file, and a runtime write there fights the --ff-only
+// pull that keeps the live checkout current. No-op here; if the main agent needs this block,
+// commit it statically instead.
+export function ensureEvidenceSection(name: string): void {
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${EVIDENCE_BEGIN}\n${buildEvidenceBody()}\n${EVIDENCE_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  let updated: string
+  if (EVIDENCE_BLOCK_RE.test(existing)) {
+    updated = existing.replace(EVIDENCE_BLOCK_RE, block)
+  } else {
+    updated = existing.trimEnd() + '\n\n' + block + '\n'
+  }
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
 }
 
 // Idempotently ensures the autonomy-wiring block is present and current in the
@@ -2976,6 +3083,13 @@ export function buildMemorySearchLabelBody(name: string): string {
     '',
     'Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a',
     '`&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik.',
+    '',
+    'NYERS ÉKEZET A `q`-BAN = HTTP 400, ÜRES TÖRZZSEL. A `q=funkcionális` alak 400-at ad, a',
+    '`q=funkcion%C3%A1lis` és a `-G --data-urlencode "q=..."` alak 200-at. A 400-on NINCS',
+    '`X-Memory-Search` fejléc, tehát a fenti `grep` némán semmit nem ír, és a nulla sor pontosan',
+    'úgy néz ki, mint egy üres találat, holott a keresés EL SEM INDULT. Ezért: a magyar keresőszót',
+    'százalék-kódold (vagy `-G --data-urlencode`), vagy keress ékezet nélküli szótővel, és a',
+    '`grep` mellett a fejléc LÉTÉT is nézd: ha nincs `X-Memory-Search` sor, az elszállt kérés, nem üres találat.',
   ].join('\n')
 }
 

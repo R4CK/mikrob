@@ -34,7 +34,7 @@ vi.mock('../web/atomic-write.js', () => ({
   atomicWriteFileSync: (path: string, content: string) => writeFileSync(path, content, 'utf-8'),
 }))
 
-const { ensureFleetAuthSection } = await import('../web/agent-scaffold.js')
+const { ensureFleetAuthSection, buildFleetAuthBody } = await import('../web/agent-scaffold.js')
 
 const MARKER_BEGIN = '<!-- BEGIN GENERATED: fleet-auth-rule (auto-generated, do not edit by hand) -->'
 const MARKER_END = '<!-- END GENERATED: fleet-auth-rule -->'
@@ -108,8 +108,18 @@ describe('the STATIC CLAUDE.md block matches the generator (card 965b0b2b)', () 
     expect(end).toBeGreaterThan(start)
     const committedBlock = claudeMd.slice(start + MARKER_BEGIN.length, end).trim()
 
-    const { buildFleetAuthBody } = await import('../web/agent-scaffold.js')
     expect(buildFleetAuthBody().trim()).toBe(committedBlock)
+  })
+})
+
+// Upstream (AUTHSECT919): the block ships to every install, so it must not carry one
+// deployment's operator name or agent names -- same reason as template-identity-hygiene.
+// Independent of the no-op-for-MAIN behavior above, kept alongside it.
+describe('body hygiene', () => {
+  it('is host-agnostic: no operator or per-install agent names', () => {
+    const body = buildFleetAuthBody()
+    expect(body).not.toMatch(/\/(Users|home)\/[A-Za-z0-9._-]+/)
+    expect(body).not.toMatch(/Juhász|Viktor|Szabolcs|marveenja/i)
   })
 })
 

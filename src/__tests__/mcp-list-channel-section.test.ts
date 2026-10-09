@@ -3,6 +3,13 @@
 // in its own session (measured 2026-09-21 upstream: it silently drops that session's own channel
 // plugin). Adapted from upstream's wording -- the trailing pointer to a dedicated measurement doc
 // is dropped, because that doc was never ported to this fork.
+//
+// DEFERRED (upstream-sync batch 6, docs/mcp-list-channel-plugin.md landed in this batch): the
+// richer body (measurement date, doc pointer, BEJÖVŐ-not-measured caveat) is NOT adopted here --
+// 965b0b2b's gated, statically-committed CLAUDE.md block would need updating in lockstep (the
+// STATIC-block test below requires a byte-exact match), and that is a separate, explicit decision
+// beyond this sync batch's scope. The evidence doc itself lands standalone; its own content is
+// still covered below.
 import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -128,5 +135,25 @@ describe('wiring contracts', () => {
   it('web.ts calls the ensure for the main agent too', () => {
     const src = readFileSync(join(__dirname, '../../src/web.ts'), 'utf-8')
     expect(src).toContain('ensureMcpListChannelSection(MAIN_AGENT_ID)')
+  })
+})
+
+// Upstream (MCPLISTCSATORNA921): docs/mcp-list-channel-plugin.md landed in this sync batch as a
+// standalone evidence doc, not yet wired into buildMcpListChannelBody() (see the DEFERRED note at
+// the top of this file). Its own content is still worth pinning independently of that wiring
+// decision -- these checks are about the doc's prose, not about ensureMcpListChannelSection.
+describe('mcp-list channel warning: the evidence doc', () => {
+  it('separates what was measured from what was not', async () => {
+    const { REPO_ROOT } = await import('./helpers/repo-location.js')
+    const doc = readFileSync(join(REPO_ROOT, 'docs', 'mcp-list-channel-plugin.md'), 'utf-8')
+    expect(doc).toMatch(/Amit a mérés MEGÁLLAPÍT/)
+    expect(doc).toMatch(/Amit a mérés NEM állapít meg/)
+    expect(doc).toMatch(/külső beküldő mérte/)
+  })
+
+  it('records the before-state as a separate round, which is what makes the after meaningful', async () => {
+    const { REPO_ROOT } = await import('./helpers/repo-location.js')
+    const doc = readFileSync(join(REPO_ROOT, 'docs', 'mcp-list-channel-plugin.md'), 'utf-8')
+    expect(doc).toMatch(/két külön körben|KÜLÖN körben/)
   })
 })

@@ -17389,3 +17389,124 @@ együtt 59/59, tsc --noEmit tiszta, eslint tiszta.
 
 **Ki döntött:** WhiteHat lelete (26083811 gate, msg 9807), backend2 végrehajtotta.
 Gate: QA.
+
+## 2026-10-09 -- Upstream-sync 6. koteg (kartya 5a15cd5a, Szotasz/marveen 9fb22e5d..dc12d475)
+
+Minden fajlnev relativ a repo gyokerehez. Fork-oldal az alapertelmezes; csak az eltereseket
+sorolja fel ez a bejegyzes.
+
+**HIBA, ONMAGAMNAK JAVITVA EGY KOROBEN: a recipient-ledger rendszer (scripts/recipient-ledger.mjs)
+ELSORE ADOPTALVA lett, majd TELJESEN VISSZAVONVA.** A merge soran a `scripts/email-send-gate.mjs`
+ket konfliktusa (DRAFT_TOOL_RE + a ledger-fuggvenyek) UNION-kent nezett ki -- egy valodi, jol
+indokolt uj biztonsagi funkcionak tunt (a support@connectors.hu bounce-incidenshez kotve), es
+EZT elfogadtam, union-mergeltem a fork sajat deny-by-default logikajaval, bovitve a
+DRAFT_TOOL_RE-t `update_draft`-tal is, bovitve az EMAIL_GATE_MATCHER-t es a settings.json
+matchereket egy draft-verb-catch-all-lal. A `fork-upstream-conflict-guard.test.ts` MAR LETEZO
+ACKNOWLEDGED_FORK_ANCHORS tripwire-ja (kartya afd64623, Cybersec HIGH, 2026-09-29) elkapta: ezt
+a rendszert MAR EGYSZER ELUTASITOTTA Cybersec, SEMMILYEN formaban (sem OR, sem AND-reteg) --
+`addRecipient()` a `--source` STRING FORMATJAT validalja csak, nem azt, hogy a bizonyitek valodi,
+tehat egy agens (vagy egy prompt-injektalt agens) `--source owner`-rel BARMELY cimet
+onmaga-hitelesithetne. TELJESEN VISSZAVONVA: `scripts/recipient-ledger.mjs` torolve, az
+email-send-gate.mjs ledger-importja/DRAFT_TOOL_RE/LEDGER_CLI/RECIPIENT_FIELDS/
+unverifiedRecipients/ledgerLookup/buildUnverifiedRecipientMsg fuggvenyei torolve, az
+`update_draft` visszaallitva a kartya 498d53c1 eredeti blanket-deny viselkedesere, az
+EMAIL_GATE_MATCHER es a settings.json/template matcherek visszaallitva a draft-verb-catch-all
+NELKULI alakra, a teszt-fajlokban (`email-send-gate.test.ts`, `project-settings-hook-anchor.
+test.ts`, `email-gate-matcher-drift.test.ts`) a 'unverified recipients'/'recipient ledger'
+describe-blokkok, a draft-verb pair-ek es az operacio-alapu (szerver-nev-fuggetlen) catch-all
+assertion is torolve -- ez utobbi inert lett volna a ledger nelkul (a hook tuzelt volna, de az
+EMAIL_SERVER_RE tovabbra is gmail/resend nevet kovetel a tenyleges deny-hez). **TANULSAG:** a
+`fork-upstream-conflict-guard.test.ts` futtatasa (vagy legalabb az ACKNOWLEDGED_FORK_ANCHORS
+kulcsszavas grep-je) KOTELEZO LENNE minden UJ funkcio adoptalasa ELOTT, nem csak a fleet-test.sh
+vegen -- ez a hiba elkerulheto lett volna egy korabbi ellenorzessel.
+
+**src/web/agent-scaffold.ts: HAROM TELJES duplikalt fuggveny-pár keletkezett az auto-mergenel,
+kezzel feloldva (MikroB dontese, 965b0b2b verzioja kanonikus).** Az origin/develop kozben
+megkapta a 965b0b2b kartyat (WhiteHat H1 NO-GO utan delta-gate GO/PASS): `ensureFleetAuthSection`/
+`ensureMcpListChannelSection` MAIN_AGENT_ID-re no-op lett (a PROJECT_ROOT/CLAUDE.md git-kovetett,
+futaskori iras `--ff-only` pull-t akasztana meg, lasd 2dd28b5d/99fccbcf), a ket blokk statikusan
+bekommitolva a gyoker CLAUDE.md-be. A batch 6 upstream UGYANEZEN FUGGVENYEK regi, nem-guardolt
+alakjat hozta -- git auto-mergelte EGYMAS MELLE a ket verziot (nincs konfliktus-jelzo, mert a
+kontextus nem fedett at), tehat `ensureMcpListChannelSection` es `ensureFleetAuthSection` (plusz
+a hozzatartozo MCPLIST_BEGIN/FLEET_AUTH_BEGIN kozos nevu const-ok es buildMcpListChannelBody/
+buildFleetAuthBody fuggvenyek) DUPLAN szerepeltek volna (`tsc` redeclare hibat adott volna).
+A REGI, nem-guardolt masolatokat toroltem, a develop (965b0b2b) guardolt alakja az egyetlen
+megmaradt. **Uj, batch 6-bol jovo `ensureEvidenceSection`-nek NEM volt develop-oldali
+megfeleloje, de UGYANAZT a sebezhetoseget hordozta** (feltetel nelkul ir a MAIN_AGENT_ID
+PROJECT_ROOT/CLAUDE.md-jebe) -- ugyanazt a no-op-guardot ra is felvettem, es a web.ts/
+agent-process.ts hivasai megmaradtak (a fuggveny most no-op MAIN-re). **docs/mcp-list-channel-
+plugin.md (uj doku-fajl) landolt, DE a gazdagabb buildMcpListChannelBody (meresi datum, doku-
+pointer, BEJOVO-nem-mertuk megjegyzes) NEM lett atvve** -- ez a committed statikus CLAUDE.md
+blokkal egyszerre kellene valtozzon (a teszt bajtra-egyezest var), kulon dontes, kimaradt ebbol
+a kotegbol (MikroB-nek jelezve).
+
+**src/__tests__/fleet-auth-section.test.ts + mcp-list-channel-section.test.ts: add/add
+konfliktus, develop verzioja az alap + upstream fuggetlen tartalma mellefuzve.** A HEAD oldal
+(batch 6, upstream eredeti) teszt-fajljai a REGI, nem-guardolt viselkedest (hand-written-skip,
+MAIN iras) tesztelik -- ezek nem fuzhetok hozza, a fuggveny mar nem igy viselkedik. Egyedul a
+`fleet-auth-section.test.ts` 'body hygiene' blokkja (host-agnosztikus szoveg-ellenorzes,
+fuggetlen a no-op-logikatol) es az `mcp-list-channel-section.test.ts` 'evidence doc' blokkja
+(a doku-fajl SAJAT prozajat ellenorzi, fuggetlenul attol hogy be van-e kotve) kerult at --
+mindkettot ujra lefuttatva zoldre a jelen allapoton.
+
+**src/web/message-router.ts: ket genuin union-pont.** (1) A fork sajat staleNote/
+queueDepthNote (kartya 9566a197/30a34eba) UNIO-zva upstream MULTI-ENVELOPE INJECTION (B1F38C8C)
+funkciojaval -- a batch feje megtartja a ket router-oldali megjegyzest a sajat wrapped
+szovegeben, mielott a batch-be kerul. (2) A fork sajat `getKanbanCardStateByIdPrefix`
+szuperszedalas-ellenorzese es az upstream uj `getMessageStatus` elo-ujraolvasas (TICKVAKSAG916,
+#1366 -- a sor statuszat KOZVETLENUL a kuldes elott ujraolvassa, nem a tick elejen vett
+pillanatkepre bizza) egyutt elfernek, csak sorrendben kellett egyesiteni. Egy hivasi hiba
+(`stampTraceOnMessage(m, now)` -- a fork sajat fuggvenye csak 1 argumentumot var) a tsc
+--noEmit-ben derult ki es javitva (a plusz `now` argumentum torolve).
+
+**docs/security-hardening.md + scripts/hooks/browser-content-notice.py: ADOPTALVA (nem a
+ledger-resz).** Upstream uj, opt-in PostToolUse hookja (BROWSERNOTICE920) bongeszo/kereses-
+eredmenyeket csomagol `<untrusted>` borítékba. A kod mar tisztan auto-mergelt (nem volt
+konfliktus), csak a dokumentacio hianyzott -- hozzaadva. `hook-registration-completeness.
+test.ts` EXEMPT-bejegyzese is hozzaadva (opt-in, nincs alapertelmezett regisztracio).
+`channel-process-gate.py` is uj, letezo fajl -- sajat EXEMPT-bejegyzes. A MAR KORABBAN
+elutasitott `telegram-image-resize.sh` ghost-EXEMPT upstream ujra-probalkozasa ISMET
+elutasitva (a fajl meg nem letezik a forkban).
+
+**src/web/agent-worker.ts + src/web/stuck-tool-call-watcher.ts: TMUXWINDOWATTR920 adoptalva, a
+fork sajat `tmuxBin()` fuggvenyevel (nem a `TMUX` konstanssal, amit upstream hasznal -- az nem
+letezik ezekben a fajlokban).** A stderr-pipe-olas + logger.debug-ra iranyitas mindket helyen
+atveve.
+
+**src/__tests__/router-main-agent-wakeup.test.ts: UJRA torolve (modify/delete konfliktus).**
+MikroB mar korabban (2026-09-07) dontott: ez a teszt ellentmond a fork sajat message-wake-field/
+message-wake-deciders teszteinek, a fork always-deliver viselkedese marad. Upstream modositotta
+a fajlt ebben a kotegben is, de a torles-dontes valtozatlan.
+
+**lint-ratchet.sh: `@typescript-eslint/no-unused-vars` 126 -> 155 (+29), ALAPVONAL FRISSITVE.**
+A tobbseg ket UJ teszt-fajlban (`router-batch-inject.test.ts`, `router-status-reread.test.ts`)
+van, upstream sajat `(..._a: unknown[]) => <literal>` mock-mintajabol -- ez a `vi.fn()` tipus-
+kovetkeztetesehez KELL (a hivo oldalon `(...a: unknown[])`-kent szort be ugyanazt a mockot), tehat
+a `()`-re egyszerusitese `TS2556`/`TS2493` hibakat dobna (probaltam, visszavontam). A MAR ebben a
+fajlban dokumentalt mintakovetes (lasd message-router-tick-cap.test.ts sajat kommentjet ugyanerre
+a problemara) szerint csak ott egyszerusithetö `()`-re, ahol a mock ERTEKE nem fugg a hivo altal
+vart tipustol -- ott mar igy van. `src/__tests__/router-status-reread.test.ts`-bol egy VALODI
+holt kod (`deliveredIds`, sosem hivott helper) torolve, az nem baseline-emeles, hanem tenyleges
+takaritas.
+
+**Ki döntött:** backend3 (konfliktusfeloldas + 1 onmagam-javitotta hiba a recipient-ledger
+elsodleges adoptalasaban es teljes visszavonasaban, 2 genuin union a message-router.ts-ben, 1
+hivasi-hiba javitva tsc-vel, 1 lint-baseline-emeles dokumentalt indokkal, 1 harom-iranyu
+fuggveny-duplikacio feloldva MikroB iranymutatasa szerint a 965b0b2b/develop ütközés miatt).
+Gate: QA + Cybersec + Cybered (a kartya kerese szerint).
+
+## 2026-10-09 -- Upstream-sync 6. koteg, kiegeszites: buildEvidenceBody is hivatkozott a NEM adoptalt ledgerre
+
+Masodik fleet-test kor talalta: `agent-scaffold-evidence-rule.test.ts` ket problemaja. (1) A teszt
+meg a regi, nem-guardolt `ensureEvidenceSection`-t varta (MAIN_AGENT_ID -> PROJECT_ROOT/CLAUDE.md
+elagazas) -- javitva a no-op-for-MAIN alakra, a fleet-auth/mcp-list testverek mintaja szerint.
+(2) `buildEvidenceBody()` szo szerint allitotta, hogy "a kimeno fel gepi kapu is... a
+store/verified-recipients.json ledgerhez meri", es egy torolt scriptet (`recipient-ledger.mjs`)
+hivott meg parancskent minden agens CLAUDE.md-jeben -- ez a MAR VISSZAVONT recipient-ledger
+rendszerre hivatkozott (Cybersec afd64623, HIGH). Egy szabaly, ami egy nem-letezo mechanizmust
+allit es egy torolt scriptet hivna meg, rosszabb mint a hianya -- hamis biztonsagerzetet ad.
+Toroltem a ledger-fuggo bekezdest es parancsot, megtartva a fuggetlenul erteket tartalmazo reszt
+(harom-allitas-forma szabaly, konkretum-forrasigeny szabaly). Teszt frissitve.
+
+**Ki döntött:** backend3 (sajat hiba javitva a masodik fleet-test korben, mielott landolt volna).
+Gate: QA + Cybersec + Cybered (a kartya kerese szerint, valtozatlan).
