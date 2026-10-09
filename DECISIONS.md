@@ -16457,3 +16457,32 @@ kitoltodik.
 
 Ki dontott: Peti (allowlist jovahagyas + elesites), MikroB (dispatch), backend (3. lepes:
 feature-flag, selftest, elo proba, doksi). Gate: QA + WhiteHat.
+
+## 2026-10-09: TGSABLONHOOK921 hook-seeding/checkout split -- record korrekcio (kartya e344e366)
+
+A kartya e344e366 azt kerte, hogy portoljuk a TGSABLONHOOK921 (upstream, 2026-09-21)
+seeding-vs-checkout hook-regisztracios lint-felbontast erre a forkra (SEEDING_SURFACES/
+CHECKOUT_SURFACES/CHECKOUT_ONLY/unseededCheckoutHooks()), mert a 2026-09-25-i fork/upstream
+re-decision (kartya f5536a70) azt merte, hogy ez a fajl meg a regi, egykorpuszos alakot hasznalja.
+
+Felmeres (backend, 2026-10-09): a portolas idokozben MAR MEGTORTENT, csak nem e kartya alatt --
+az a4767438 upstream-sync-batch kartya (~65 fuggetlen upstream commit) hozta a tenyleges
+mechanizmus-portolast (commit e8b71678, "upstream 4d79d0dc"), es ket meg aznapi kovetkezo commit
+(e56e13d3, 0e40f1ea, mind backend3) elvegezte pontosan azt a fork-specifikus adaptaciot, amit a
+f5536a70-i megjegyzes meg nyitva hagyott: vegigjartak ennek a forknak a SAJAT `.claude/settings.json`-jat
+a SAJAT seeding-feluleteihez kepest, talaltak 5 genuinely-unseeded checkout-hookot
+(big-file-guard.py/secret-write-guard.py -> sablonba seedelve, mert altalanos Write/Edit-guard,
+nincs main-agent-specifikus scope; telegram_progress.py/_clear.py/_reply_clear.py -> eleinte
+reasoned CHECKOUT_ONLY, majd egy kesobbi merge-eredmeny teszt kiderítette, hogy mar amugy is
+seedelve vannak egy sablon-duplikacio miatt, ezert az entry-k torolve lettek mint elavultak).
+
+Egyetlen tennivalo maradt nyitva: a `src/fork-upstream/acknowledged-conflicts.ts` megfelelo
+bejegyzese meg mindig a regi, "SUPERSEDED... meg a regi egykorpuszos alakot hasznalja" allapotot
+irta le, es meg mindig e344e366-ra hivatkozott mint nyitott kovetkezo lepesre. Ezt korrigaltam:
+a bejegyzes most RESOLVED, es leirja, melyik commitok vegeztek el a tenyleges munkat.
+
+Ellenorzes: `npx vitest run src/__tests__/hook-registration-completeness.test.ts` 8/8 zold,
+`src/__tests__/fork-upstream-conflict-guard.test.ts` 36/36 zold, `npm run typecheck` tiszta.
+
+Ki dontott: backend3 (a tenyleges portolas es fork-adaptacio, nem tudva rola hogy kartyat zar le
+vele), backend (a record-korrekcio, kartya e344e366). Gate: QA + Cybersec.
