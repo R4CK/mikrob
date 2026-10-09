@@ -317,6 +317,10 @@ def main():
     print("=" * 76)
     print("vendored dirs: %d | clean or sanctioned: %d | needing attention: %d"
           % (len(results), len(results) - failures, failures))
+    # ALERT:yes|no (card 14216622): a scheduled heartbeat reads this one line, same convention as
+    # agent-skill-drift-sync.sh -- the decision comes from the script, not from a prompt counting
+    # "needing attention" itself.
+    print("ALERT:%s unsanctioned=%d" % ("yes" if failures else "no", failures))
     return 1 if failures else 0
 
 

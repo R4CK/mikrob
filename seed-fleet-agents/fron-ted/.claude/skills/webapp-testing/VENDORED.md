@@ -11,7 +11,7 @@ change it upstream, or fork it and re-point this entry.
 | commit date     | 2026-08-07T13:14:14-04:00                                                              |
 | vendored at     | 2026-08-13T16:10:18+02:00                                                              |
 | licence         | see UPSTREAM-LICENSE next to this file (upstream: `skills/webapp-testing/LICENSE.txt`) |
-| watch clone     | /home/neon/marveen/store/adopted/anthropics\_\_skills                                  |
+| watch clone     | /home/neon/marveen/store/adopted/anthropics__skills                                   |
 
 > **Usage restriction:** Apache-2.0 (per-skill LICENSE.txt). scripts/with_server.py subprocess.Popen(shell=True) az OPERATOR altal atadott --server stringre: soha ne adj neki nem-megbizhato bemenetet. Elofeltetel: python playwright csomag + chromium (jelenleg NINCS telepitve). Atfedes: a flottanak van mcp**playwright**\* MCP-je is; ez a scriptelt, ismetelheto ut (with_server.py szerver-lifecycle).
 

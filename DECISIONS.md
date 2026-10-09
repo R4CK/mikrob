@@ -16684,3 +16684,55 @@ be.
 
 Ki döntött: MikroB mérése + dispatch, gate: QA + Cybersec (riport-integritás,
 a 222fdc5e hibaosztályának fordított iránya).
+
+## 2026-10-09 -- 14216622: vendored-skill-integrity.py bekötése egy rendszeres körbe
+
+**Probléma:** a da47b612 secret-gate kivétele (két JWT-alakú helyőrző a vendorolt
+testing-api-for-broken-object-level-authorization SKILL.md-ben) kompenzáló kontrollként a
+store/vendored-skill-integrity.py-t nevezte meg, de ezt semmi nem futtatta rendszeresen -- csak a
+saját --selftest-je, fixture-ön. Két mellékhiba is kiderült a kártya szövegéből: a
+browser-testing-with-devtools skill dokumentált, FORK NOTE-os lokális adaptációja soha nem lett
+`--record`-dal rögzítve, és a fron-ted webapp-testing VENDORED.md "watch clone" sora
+markdown-escapelt alakban (`anthropics\_\_skills`) tárolta az útvonalat, ezért a checker
+"watch clone missing"-nek látta.
+
+**Mérés (kódolás előtt, a teljes élő fát átfutva):** 178 vendorolt könyvtárból 37 "needing
+attention" volt (36 UNSANCTIONED + 1 UNVERIFIABLE). Mindegyiket átnéztem (diff az upstream watch
+clone ellen): a 13 cybered + 13 cybersec Tier-1 biztonsági skill (da47b612) egységesen
+`domain: cybersecurity` -> `domain: security` taxonómia-átírást hordoz; a 3 jogász compliance-os
+skill (f4cd1783) ugyanezt a "cybersecurity"->"security" szóhasználati cserét prózában;
+documentation-and-adrs a 2026-10-02-i watched-repos.json bejegyzésben már dokumentált "ADR Status:
+Proposed" sor átvételét; browser-testing-with-devtools a saját VENDORED.md FORK NOTE-ja szerinti
+Playwright-adaptációt. Egyik sem titkot, hálózati hívást vagy végrehajtható kódot hordozott -- mind
+magyarázható, korábban már eldöntött, csak soha nem `--record`-olt delta.
+
+**Döntés (irány a) a kártya két felkínált iránya közül):** a kártya "fleet-test VAGY ütemezett
+feladat" választást kínált a bekötésre, a secret-gate FIXTURE_EXCEPTIONS kiterjesztése helyett.
+A fleet-test/vitest-be kötött, LIVE gépi állapotot (`~/.claude/skills`, `~/marveen/agents/*`)
+vizsgáló, hard-failing teszt elvetve: a live fa megosztott, és a többi ügynök szinkron-késése
+("live install NOT fast-forwarded") miatt egy ilyen teszt a landolással/gate-eléssel semmilyen
+kapcsolatban nem álló okból pirosíthatna bármelyik agent gate-worktree-jében futó fleet-testet --
+ez pont az a zaj-osztály, amit a flotta mindenhol kerül. Helyette: (1) `seed-scheduled-tasks/
+vendored-skill-integrity-heartbeat` -- ugyanaz a 6 óránkénti heartbeat-minta mint
+agent-skill-drift-sync-heartbeat, csak akkor ír Telegramra, ha a script maga ad `ALERT:yes`-t;
+(2) a script maga kapott egy `ALERT:yes|no unsanctioned=N` záró sort (ugyanaz a konvenció, amit
+agent-skill-drift-sync.sh már használ), hogy a heartbeat-prompt a döntést a scriptből idézze, ne
+maga számolja; (3) ez az ALERT:/exit-code szerződés egy ÚJ, fixture-alapú (nem élő gépi állapotra
+kötött) vitest-teszttel pinelve (`src/__tests__/vendored-skill-integrity-wired.test.ts`) --
+mutációval igazolva (az ALERT-sor kivétele pirosra vitte, visszaállítva zöld).
+
+**A 37 pre-existing delta rögzítése:** a webapp-testing escape-hiba javítása után (seed +
+az élő fron-ted-másolat közvetlen fix -- a seed-fleet-agents a tracked forrás, landolással kerül
+be; az élő fő-klón seed-fleet-agents másolatát NEM írtam, az a "fő klón csak fetch/landolás-alap"
+szabály alá esik, úgyhogy ott a `UNVERIFIABLE` addig áll, amíg a live install nem szinkronizálódik
+a landolt developra -- ismert, máshol is jelzett lag) `--record`-dal rögzítve mind a 37 (most 36,
+a webapp-testing javítva) átnézett, ártalmatlan delta. Az integritás-futás ezután tiszta, az egy
+kivétellel, ami a live-install-lag.
+
+**Ellenőrzés:** új vitest-teszt 2/2 zöld, mutációval igazolva mindkét irányban (ALERT:no/exit 0 a
+tiszta fixtúrán, ALERT:yes/exit 1 a tampered fixtúrán, --record után ismét tiszta). A meglévő
+`seed-placeholder-substitution.test.ts` "ismert {{CHAT_ID}}-felhasználók" pinje frissítve az új
+taszkkal. tsc --noEmit clean.
+
+**Ki döntött:** backend2 (saját kódolási döntés a két felkínált irány között, indokolva fent).
+Gate: QA + Cybersec.
