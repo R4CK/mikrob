@@ -2718,7 +2718,7 @@ const FLEET_AUTH_BLOCK_RE = new RegExp(
   `${FLEET_AUTH_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${FLEET_AUTH_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-function buildFleetAuthBody(): string {
+export function buildFleetAuthBody(): string {
   return [
     '## Flotta-szintű AUTH-szabály (MEGSZEGHETETLEN)',
     '',
@@ -2749,13 +2749,15 @@ function buildFleetAuthBody(): string {
   ].join('\n')
 }
 
-// Same five-rule idempotency contract as the sections above. Called on every startAgentProcess()
-// (and once for the main agent in web.ts), so an existing agent's CLAUDE.md picks up a wording fix
-// without a manual migration.
+// Same five-rule idempotency contract as ensureFleetRosterSection / ensureAutonomySection /
+// ensureSkillsPathTrapSection -- EXCEPT for the main agent: its target would be
+// PROJECT_ROOT/CLAUDE.md, a git-tracked file, and a runtime write there fights the --ff-only pull
+// that keeps the live checkout current (card 2dd28b5d/99fccbcf, the same regression WhiteHat found
+// again here on card 965b0b2b). The block is committed there statically instead (same content this
+// function would otherwise write); this function no-ops for the main agent on purpose.
 export function ensureFleetAuthSection(name: string): void {
-  const claudeMdPath = name === MAIN_AGENT_ID
-    ? join(PROJECT_ROOT, 'CLAUDE.md')
-    : join(agentDir(name), 'CLAUDE.md')
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
   const block = `${FLEET_AUTH_BEGIN}\n${buildFleetAuthBody()}\n${FLEET_AUTH_END}`
@@ -2793,7 +2795,7 @@ const MCPLIST_BLOCK_RE = new RegExp(
   `${MCPLIST_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MCPLIST_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-function buildMcpListChannelBody(): string {
+export function buildMcpListChannelBody(): string {
   return [
     '## `claude mcp list` egy csatornát birtokló ügynökben',
     '',
@@ -2807,11 +2809,12 @@ function buildMcpListChannelBody(): string {
   ].join('\n')
 }
 
-// Same five-rule idempotency contract as the sections above.
+// Same five-rule idempotency contract as the sections above -- EXCEPT for the main agent, for the
+// exact reason ensureFleetAuthSection's comment above states (card 2dd28b5d/99fccbcf regression,
+// re-found by WhiteHat on card 965b0b2b): no-op here, the block is committed statically instead.
 export function ensureMcpListChannelSection(name: string): void {
-  const claudeMdPath = name === MAIN_AGENT_ID
-    ? join(PROJECT_ROOT, 'CLAUDE.md')
-    : join(agentDir(name), 'CLAUDE.md')
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
   const block = `${MCPLIST_BEGIN}\n${buildMcpListChannelBody()}\n${MCPLIST_END}`
