@@ -37,6 +37,7 @@ import { readClaudePlansState } from './claude-plans-state.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { paneOneLine } from './pane-text.js'
 import { withSessionSendLock, tryAcquireSessionSendLane, type SendLockMode } from './session-send-lock.js'
 import {
   buildTmuxInvocation,
@@ -58,7 +59,7 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureLocalFirstSection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection } from './agent-scaffold.js'
+import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureLocalFirstSection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
@@ -1963,6 +1964,9 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     ensureSkillsPathTrapSection(name)
     ensureSystemDirectiveAuthSection(name)
     ensureMemorySearchLabelSection(name)
+    ensureFleetAuthSection(name)
+    ensureEvidenceSection(name)
+    ensureMcpListChannelSection(name)
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
     // (and slack/discord) poller that falls back to the main agent's bot
@@ -3109,7 +3113,9 @@ export async function sendPromptToSession(
     logger.warn({ err, session }, 'Pre-send capture-pane failed; skipping truncated-preamble check')
   }
 
-  const oneLine = text.replace(/\r?\n/g, ' ')
+  // The mapping lives in pane-text.ts: the provenance gate re-applies it to
+  // the queue row, so the two must never drift (DIREKTIVASORTORES920).
+  const oneLine = paneOneLine(text)
   // STUCKINPUT827: remember the EXACT byte stream we are about to type. If the
   // submitting Enter does not land, the stuck-input watcher re-injects THIS
   // instead of guessing from a lossy screen scrape. Recorded before the send so

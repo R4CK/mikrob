@@ -422,8 +422,8 @@ function bareToolName(qualifiedName) {
 // Returns { deny, kind? }. `kind` selects the deny wording at the hook
 // entrypoint: 'draft-required' is the manage_email case (drafting is fine,
 // only the actual send is refused), 'send_email' is the direct MCP send tool
-// (the only path the thread-reply capability below can narrow), everything
-// else is the sub-agent governance block.
+// (the only path the thread-reply capability below can narrow), and
+// everything else is the sub-agent governance block.
 export function gateDecision(toolName, toolInput) {
   const name = String(toolName ?? '')
   // Any MCP send_email tool, name-agnostic (gmail or a differently-named
@@ -438,9 +438,9 @@ export function gateDecision(toolName, toolInput) {
   // entrypoint reads send_email-shaped fields (threadId/to), which a connector
   // reply does not carry, so the connector stays fully gated for every agent.
   if (/gmail__(reply|reply_all|send_message|forward)$/i.test(name)) return { deny: true, kind: 'connector-send' }
-  // Card 498d53c1: everything ELSE on a gmail__/resend__ server (send_draft, resend's
-  // send-email/send-batch-emails/create-domain/rotate-webhook-signing-secret/... and any
-  // future tool neither of the two checks above named) is a send unless explicitly safelisted.
+  // Card 498d53c1: everything ELSE on a gmail__/resend__ server (send_draft, update_draft,
+  // resend's send-email/send-batch-emails/create-domain/rotate-webhook-signing-secret/... and any
+  // future tool neither of the checks above named) is a send unless explicitly safelisted.
   if (EMAIL_SERVER_RE.test(name) && !EMAIL_SAFE_TOOL_RE.test(bareToolName(name))) {
     return { deny: true, kind: 'email-server-default-deny' }
   }

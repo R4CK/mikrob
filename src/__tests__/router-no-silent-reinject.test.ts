@@ -37,6 +37,10 @@ vi.mock('../db.js', () => ({
     if (toAgent) return [] // per-agent query of the reconnect pre-pass
     return mockGetPendingMessages()
   },
+  // The router re-reads the row's status immediately before sending (the tick
+  // works from a snapshot taken at its start, TICKVAKSAG916). Pending here keeps
+  // these fixtures on the delivery path they were written to measure.
+  getMessageStatus: () => 'pending',
   markMessageDelivered: (id: number) => mockMarkDelivered(id),
   markMessageFailed: (id: number) => mockMarkFailed(id),
   markMessageDone: () => true,

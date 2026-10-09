@@ -17156,3 +17156,75 @@ tiltása szerint).
 **Ki döntött:** Peti jóváhagyása (Telegram 10720) alapján MikroB dispatchelte, backend2 végezte a
 fájlonkénti auditot és a döntést minden fájlra. Gate: QA + WhiteHat (hookok/szabályok érintettsége
 miatt).
+
+## 2026-10-09 -- Upstream-sync 6. koteg (kartya 5a15cd5a, Szotasz/marveen 9fb22e5d..dc12d475)
+
+Minden fajlnev relativ a repo gyokerehez. Fork-oldal az alapertelmezes; csak az eltereseket
+sorolja fel ez a bejegyzes.
+
+**HIBA, ONMAGAMNAK JAVITVA EGY KOROBEN: a recipient-ledger rendszer (scripts/recipient-ledger.mjs)
+ELSORE ADOPTALVA lett, majd TELJESEN VISSZAVONVA.** A merge soran a `scripts/email-send-gate.mjs`
+ket konfliktusa (DRAFT_TOOL_RE + a ledger-fuggvenyek) UNION-kent nezett ki -- egy valodi, jol
+indokolt uj biztonsagi funkcionak tunt (a support@connectors.hu bounce-incidenshez kotve), es
+EZT elfogadtam, union-mergeltem a fork sajat deny-by-default logikajaval, bovitve a
+DRAFT_TOOL_RE-t `update_draft`-tal is, bovitve az EMAIL_GATE_MATCHER-t es a settings.json
+matchereket egy draft-verb-catch-all-lal. A `fork-upstream-conflict-guard.test.ts` MAR LETEZO
+ACKNOWLEDGED_FORK_ANCHORS tripwire-ja (kartya afd64623, Cybersec HIGH, 2026-09-29) elkapta: ezt
+a rendszert MAR EGYSZER ELUTASITOTTA Cybersec, SEMMILYEN formaban (sem OR, sem AND-reteg) --
+`addRecipient()` a `--source` STRING FORMATJAT validalja csak, nem azt, hogy a bizonyitek valodi,
+tehat egy agens (vagy egy prompt-injektalt agens) `--source owner`-rel BARMELY cimet
+onmaga-hitelesithetne. TELJESEN VISSZAVONVA: `scripts/recipient-ledger.mjs` torolve, az
+email-send-gate.mjs ledger-importja/DRAFT_TOOL_RE/LEDGER_CLI/RECIPIENT_FIELDS/
+unverifiedRecipients/ledgerLookup/buildUnverifiedRecipientMsg fuggvenyei torolve, az
+`update_draft` visszaallitva a kartya 498d53c1 eredeti blanket-deny viselkedesere, az
+EMAIL_GATE_MATCHER es a settings.json/template matcherek visszaallitva a draft-verb-catch-all
+NELKULI alakra, a teszt-fajlokban (`email-send-gate.test.ts`, `project-settings-hook-anchor.
+test.ts`) a 'unverified recipients'/'recipient ledger' describe-blokkok es a draft-verb pair-ek
+torolve. **TANULSAG:** a `fork-upstream-conflict-guard.test.ts` futtatasa (vagy legalabb az
+ACKNOWLEDGED_FORK_ANCHORS kulcsszavas grep-je) KOTELEZO LENNE minden UJ funkcio adoptalasa ELOTT,
+nem csak a fleet-test.sh vegen -- ez a hiba elkerulheto lett volna egy korabbi ellenorzessel.
+
+**src/web/message-router.ts: ket genuin union-pont.** (1) A fork sajat staleNote/
+queueDepthNote (kartya 9566a197/30a34eba) UNIO-zva upstream MULTI-ENVELOPE INJECTION (B1F38C8C)
+funkciojaval -- a batch feje megtartja a ket router-oldali megjegyzest a sajat wrapped
+szovegeben, mielott a batch-be kerul. (2) A fork sajat `getKanbanCardStateByIdPrefix`
+szuperszedalas-ellenorzese es az upstream uj `getMessageStatus` elo-ujraolvasas (TICKVAKSAG916,
+#1366 -- a sor statuszat KOZVETLENUL a kuldes elott ujraolvassa, nem a tick elejen vett
+pillanatkepre bizza) egyutt elfernek, csak sorrendben kellett egyesiteni. Egy hivasi hiba
+(`stampTraceOnMessage(m, now)` -- a fork sajat fuggvenye csak 1 argumentumot var) a tsc
+--noEmit-ben derult ki es javitva (a plusz `now` argumentum torolve).
+
+**docs/security-hardening.md + scripts/hooks/browser-content-notice.py: ADOPTALVA (nem a
+ledger-resz).** Upstream uj, opt-in PostToolUse hookja (BROWSERNOTICE920) bongeszo/kereses-
+eredmenyeket csomagol `<untrusted>` borítékba. A kod mar tisztan auto-mergelt (nem volt
+konfliktus), csak a dokumentacio hianyzott -- hozzaadva. `hook-registration-completeness.
+test.ts` EXEMPT-bejegyzese is hozzaadva (opt-in, nincs alapertelmezett regisztracio).
+`channel-process-gate.py` is uj, letezo fajl -- sajat EXEMPT-bejegyzes. A MAR KORABBAN
+elutasitott `telegram-image-resize.sh` ghost-EXEMPT upstream ujra-probalkozasa ISMET
+elutasitva (a fajl meg nem letezik a forkban).
+
+**src/web/agent-worker.ts + src/web/stuck-tool-call-watcher.ts: TMUXWINDOWATTR920 adoptalva, a
+fork sajat `tmuxBin()` fuggvenyevel (nem a `TMUX` konstanssal, amit upstream hasznal -- az nem
+letezik ezekben a fajlokban).** A stderr-pipe-olas + logger.debug-ra iranyitas mindket helyen
+atveve.
+
+**src/__tests__/router-main-agent-wakeup.test.ts: UJRA torolve (modify/delete konfliktus).**
+MikroB mar korabban (2026-09-07) dontott: ez a teszt ellentmond a fork sajat message-wake-field/
+message-wake-deciders teszteinek, a fork always-deliver viselkedese marad. Upstream modositotta
+a fajlt ebben a kotegben is, de a torles-dontes valtozatlan.
+
+**lint-ratchet.sh: `@typescript-eslint/no-unused-vars` 126 -> 155 (+29), ALAPVONAL FRISSITVE.**
+A tobbseg ket UJ teszt-fajlban (`router-batch-inject.test.ts`, `router-status-reread.test.ts`)
+van, upstream sajat `(..._a: unknown[]) => <literal>` mock-mintajabol -- ez a `vi.fn()` tipus-
+kovetkeztetesehez KELL (a hivo oldalon `(...a: unknown[])`-kent szort be ugyanazt a mockot), tehat
+a `()`-re egyszerusitese `TS2556`/`TS2493` hibakat dobna (probaltam, visszavontam). A MAR ebben a
+fajlban dokumentalt mintakovetes (lasd message-router-tick-cap.test.ts sajat kommentjet ugyanerre
+a problemara) szerint csak ott egyszerusithetö `()`-re, ahol a mock ERTEKE nem fugg a hivo altal
+vart tipustol -- ott mar igy van. `src/__tests__/router-status-reread.test.ts`-bol egy VALODI
+holt kod (`deliveredIds`, sosem hivott helper) torolve, az nem baseline-emeles, hanem tenyleges
+takaritas.
+
+**Ki döntött:** backend3 (konfliktusfeloldas + 1 onmagam-javitotta hiba a recipient-ledger
+elsodleges adoptalasaban es teljes visszavonasaban, 2 genuin union a message-router.ts-ben, 1
+hivasi-hiba javitva tsc-vel, 1 lint-baseline-emeles dokumentalt indokkal). Gate: QA + Cybersec +
+Cybered (a kartya kerese szerint).
