@@ -315,10 +315,8 @@ describe.skipIf(REPO_UNDER_TMP)('end-to-end through the ACTUAL WIRED command (ca
     }
   }
 
-  it('the 4 Peti-approved hosts (18055f83, Telegram 10704) pass through the real wired command', () => {
+  it('the 2 Peti-approved hosts (18055f83, Telegram 10704) pass through the real wired command', () => {
     for (const url of [
-      'https://cloudflare-dns.com/dns-query?name=mopsion.com',
-      'https://dns.google/resolve?name=mopsion.com',
       'https://pypi.org/pypi/requests/json',
       'https://api.anthropic.com/v1/organizations/usage',
     ]) {
@@ -330,6 +328,20 @@ describe.skipIf(REPO_UNDER_TMP)('end-to-end through the ACTUAL WIRED command (ca
     const r = runWired('curl -s https://not-on-the-list.example/payload')
     expect(r.code).toBe(2)
     expect(r.stderr).toContain('not-on-the-list.example')
+  })
+
+  it('the DoH resolvers are BLOCKED through the real wired command (same-day correction, Telegram 10715, comment 13319)', () => {
+    // Peti removed cloudflare-dns.com/dns.google the same day they were added (RedHat MEDIUM-1:
+    // a DoH resolver answers arbitrary query names, so granting it is an open DNS channel, not a
+    // narrow grant). This runs through the ACTUAL wired command, not a synthetic env block, so it
+    // proves the removal is live, not just present in the allowlist file's JSON.
+    for (const url of [
+      'https://cloudflare-dns.com/dns-query?name=mopsion.com&type=TXT',
+      'https://dns.google/resolve?name=mopsion.com&type=A',
+    ]) {
+      const r = runWired(`curl -s ${url}`)
+      expect(r.code, url).toBe(2)
+    }
   })
 
   it('localhost-dashboard calls are untouched through the wired command', () => {

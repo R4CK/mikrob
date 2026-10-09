@@ -16524,3 +16524,27 @@ kerte (lasd a kartya kommentjeit). A MEDIUM-1 (DoH-resolverek nyitott DNS-csator
 igenyel, ezt MikroB viszi kulon.
 
 Ki dontott: RedHat (NO-GO + a ket pontos javitasi minimum), backend (HIGH-1 javitas). Gate: QA + WhiteHat.
+
+## 2026-10-09: BASH_EGRESS_GUARD allowlist korrekcio -- DoH-resolverek levetele (kartya 18055f83)
+
+Peti dontese (Telegram 10715, 2026-10-09 11:13, kartya komment 13319): a cloudflare-dns.com es
+dns.google ugyanaznap kerult vissza le az allowlistrol, amelyen ugyanaznap kerult fel (RedHat
+MEDIUM-1, komment 13312). Indoklas: egy DoH-resolver tetszoleges lekerdezes-nevre valaszol, tehat
+az engedelyezese gyakorlatilag nyitott DNS-csatorna -- egy eltérített ügynök barmilyen domain
+nevet barmilyen celallomashoz eljuttathatna a resolveren keresztul, ami pont az ellen vedekezik,
+amiert az allowlist egyaltalan letezik. A vegleges, jovahagyott allowlist: pypi.org,
+api.anthropic.com.
+
+Vegrehajtas (backend): store/bash-egress-allowlist.json-bol torolve a ket host, a _readme-ben
+rogzitve az indoklas es a datum. selftest.py: a ket DoH-esetet ALLOW-rol BLOCK-ra forditva (122
+eset valtozatlan szamban, csak a verdikt valtozott), uj kontroll-komment a huggingface.co melle
+kotve oket. bash-egress-guard-wiring.test.ts: a "4 Peti-approved host" e2e teszt 2-re szukult
+(pypi.org, api.anthropic.com), es egy UJ e2e teszt a TENYLEGESEN regisztralt parancson keresztul
+bizonyitja, hogy mindket DoH-host blokkolodik (nem csak az allowlist JSON-ban latszik a torles,
+hanem elesben is).
+
+Bizonyitek: selftest.py 122/122 zold, bash-egress-guard-wiring.test.ts 34/34 zold (volt 33, +1 uj
+DoH-blokkolas teszt).
+
+Ki dontott: Peti (allowlist-korrekcio, DoH-kockazat alapjan), RedHat (MEDIUM-1 felvetes), backend
+(vegrehajtas). Gate: QA + WhiteHat.

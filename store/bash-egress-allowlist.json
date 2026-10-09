@@ -10,11 +10,17 @@
     "observed in real fleet traffic with an identifiable purpose. Hosts that appeared in the corpus",
     "but whose purpose was not identifiable were deliberately NOT seeded -- the log will show them",
     "if they are still in use, and an operator can grant them on evidence rather than on my guess.",
-    "The 4 hosts below (cloudflare-dns.com, dns.google, pypi.org, api.anthropic.com) are Peti's",
-    "2026-10-09 approval (Telegram 10704, card 18055f83) of backend3's 2026-09-29 log analysis",
-    "(store/bash-egress.log, 307 lines, card 18055f83 comment 9023): the only real non-selftest",
-    "external traffic the log showed before enforce was armed -- DoH lookups, pip version checks,",
-    "and our own Anthropic API usage probe."
+    "pypi.org and api.anthropic.com are Peti's 2026-10-09 approval (Telegram 10704, card 18055f83)",
+    "of backend3's 2026-09-29 log analysis (store/bash-egress.log, 307 lines, card 18055f83 comment",
+    "9023): the only real non-selftest external traffic the log showed before enforce was armed --",
+    "pip version checks and our own Anthropic API usage probe.",
+    "CORRECTION 2026-10-09 (Peti decision, Telegram 10715, card 18055f83 comment 13319, RedHat",
+    "MEDIUM-1): cloudflare-dns.com and dns.google were REMOVED again, same day they were added.",
+    "A DoH resolver answers arbitrary query names, so granting it is effectively an open DNS",
+    "channel -- whatever name a hijacked agent resolves through it reaches that name's own",
+    "authoritative server, defeating the point of an allowlist. They are not re-added here; if DoH",
+    "traffic is needed again, it needs its own narrower design (e.g. fixed query names), not a",
+    "blanket grant of the resolver."
   ],
   "hosts": [
     "api.github.com",
@@ -27,8 +33,6 @@
     "registry.npmjs.org",
     "mopsion.com",
     "cleancore.72-62-35-139.nip.io",
-    "cloudflare-dns.com",
-    "dns.google",
     "pypi.org",
     "api.anthropic.com"
   ]

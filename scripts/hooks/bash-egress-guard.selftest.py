@@ -105,14 +105,20 @@ CASES = [
      "PREFIX-MATCH TRAP: an allowlisted name as the LEFT part of a hostile domain"),
     # --- card 18055f83: Peti-approved allowlist additions (2026-10-09, Telegram 10704), from
     # backend3's 2026-09-29 log analysis of the only real non-selftest traffic observed -----------
-    ("curl -s https://cloudflare-dns.com/dns-query?name=mopsion.com&type=TXT", ENFORCE, ALLOW,
-     "DNS-over-HTTPS lookup, the measured real traffic this host was approved for"),
-    ("curl -s https://dns.google/resolve?name=mopsion.com&type=A", ENFORCE, ALLOW,
-     "alternate DoH provider, same real-traffic class"),
     ("curl -s https://pypi.org/pypi/requests/json", ENFORCE, ALLOW,
      "python package version check"),
     ("curl -H @- -s https://api.anthropic.com/v1/organizations/usage", ENFORCE, ALLOW,
      "our own Claude API usage probe (quota monitoring) -- deliberately kept allowed"),
+    # --- card 18055f83, SAME-DAY CORRECTION (Peti decision, Telegram 10715, comment 13319,
+    # RedHat MEDIUM-1): the two DoH resolvers below were on the allowlist for a few hours, then
+    # removed -- a DoH resolver answers ARBITRARY query names, so granting it is an open DNS
+    # channel, not a narrow grant. They must BLOCK like any other ungranted host, same as the
+    # huggingface.co control case right after them.
+    ("curl -s https://cloudflare-dns.com/dns-query?name=mopsion.com&type=TXT", ENFORCE, BLOCK,
+     "DoH resolver, REMOVED from the allowlist same-day: arbitrary query names make this an open "
+     "DNS channel, not a narrow grant"),
+    ("curl -s https://dns.google/resolve?name=mopsion.com&type=A", ENFORCE, BLOCK,
+     "alternate DoH provider, same removal"),
     ("curl -s https://huggingface.co/api/models", ENFORCE, BLOCK,
      "a plausible external host that was NOT in the Peti-approved set -- stays blocked until an "
      "operator grants it on evidence, same as any other ungranted host"),
