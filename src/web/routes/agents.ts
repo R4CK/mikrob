@@ -17,6 +17,8 @@ import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
+import { claudeSupportForCli, baseModelId } from '../../claude-cli-support.js'
+import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
 import {
   agentDir,
@@ -222,6 +224,24 @@ ${description}
 Alapértelmezett hangnem: tömör, pontos, túlzás nélkül. A részletes személyiséget
 itt írhatod meg.
 `
+}
+
+// Card 6b10a6b8 (upstream PICKERCLIKAPU923, adopted -- adapted to the fork's existing
+// "{ error }" + 400 convention rather than upstream's unprecedented 422; isValidModelId
+// right above already uses 400 for the same field, and this fork has no other 422 route).
+// Gates model selection on POST /api/agents and PUT /api/agents/:name against the
+// INSTALLED Claude Code CLI's measured capability (claude-cli-support.ts /
+// claude-cli-version.ts, both already present and tested, but unused until now --
+// grep-verified zero call sites outside their own test files before this change).
+// Fails OPEN: an unmeasured CLI version never blocks a model (same contract as
+// claudeSupportForCli itself).
+export async function refuseIfCliCannotLaunch(model: string): Promise<string | null> {
+  const { version } = await measureClaudeCliVersion()
+  const support = claudeSupportForCli(version)
+  if (!support.measured) return null
+  const hit = support.unsupported.find(u => u.id === baseModelId(model))
+  if (!hit) return null
+  return `A telepitett Claude Code CLI (verzio: ${version}) nem tudja elinditani a(z) "${model}" modellt -- ehhez legalabb ${hit.minCli} verzio kell. Frissitsd a CLI-t, vagy valassz egy masik modellt.`
 }
 
 // Short-TTL caches so the synchronous, frequently-polled status endpoints
@@ -1024,6 +1044,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: new InvalidModelIdError(model).message }, 400)
       return true
     }
+    // Card 6b10a6b8 (PICKERCLIKAPU923): a syntactically valid model id can still be one the
+    // INSTALLED CLI cannot launch (measured 2026-09-23: a pinned old CLI 400s on every prompt
+    // for claude-fable-5-1/claude-opus-5-5 -- the agent comes up and is silently deaf).
+    const cliRefusal = await refuseIfCliCannotLaunch(model)
+    if (cliRefusal) { json(res, { error: cliRefusal }, 400); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
     scaffoldAgentDir(name)
@@ -2390,6 +2415,9 @@ function compactPrompt(): string {
         json(res, { error: new InvalidModelIdError(data.model).message }, 400)
         return true
       }
+      // Card 6b10a6b8 (PICKERCLIKAPU923): same CLI-launch gate as POST /api/agents above.
+      const cliRefusal = await refuseIfCliCannotLaunch(data.model)
+      if (cliRefusal) { json(res, { error: cliRefusal }, 400); return true }
       writeAgentModel(name, data.model)
     }
     // Card c755f4b2 Block B: optional generic capability tier. An unknown id

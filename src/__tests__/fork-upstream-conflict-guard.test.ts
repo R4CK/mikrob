@@ -572,12 +572,13 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
   //     tests assert (a lock around the /rename send this fork does not have) is the same gap
   //     src/web/session-send-lock.ts already backlogs below -- both sides are prose/test-only until
   //     the fix this entry says must come FIRST actually lands.
-  //   - src/__tests__/setup/assert-not-live-install.ts: the decision (declining upstream's
-  //     isTmpRootedPath/TMP_ROOT_PREFIXES-based run-refusal) is fully implemented, and only
-  //     implemented, inside this test-setup file (grep-verified: no isTmpRootedPath/
-  //     TMP_ROOT_PREFIXES usage anywhere in it) -- src/web/tmp-root-prefixes.ts, the production file
-  //     its own entry points at, carries no trace of this decision either way, so there is no
-  //     production fact to anchor. Same shape as context-guard.test.ts above.
+  //   - src/__tests__/setup/assert-not-live-install.ts: CORRECTED 2026-10-09 (card 3531538d,
+  //     WhiteHat L1 on this very gate). The "same shape as context-guard.test.ts" call above was
+  //     wrong: that file has describe/it blocks that could fake a copy of a symbol, this one has
+  //     none -- it is a vitest setupFiles guard with real, running refusal logic. The needle
+  //     occurring 0 times in it is exactly an absent anchor's condition, not a reason to skip
+  //     anchoring. Anchored below (ACKNOWLEDGED_FORK_ANCHORS), carved out of the __tests__-file
+  //     rule via SETUP_GUARD_EXCEPTIONS, removed from the list below.
   //   - web/lang/en.js: the matched phrase is one cosmetic sub-point ("purely cosmetic, zero
   //     functional difference") inside this file's own much larger UNION-everything resolution --
   //     not a standalone refusal with its own fact to watch.
@@ -593,7 +594,6 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     'src/__tests__/memories-search-has-a-floor.test.ts',
     'src/__tests__/notify-delivery-honesty.test.ts',
     'src/__tests__/session-send-lock.test.ts',
-    'src/__tests__/setup/assert-not-live-install.ts',
     'web/lang/en.js',
   ]
 
@@ -623,6 +623,13 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     expect(stale, 'these are anchored (or no longer refuse) -- delete them from the backlog').toEqual([])
   })
 
+  // Files under __tests__/ that are NOT tests: vitest setupFiles guards with real, running logic
+  // and no describe/it blocks, so the "a test can declare its own copy of any symbol" rationale
+  // below does not apply to them -- there is no test-assertion mechanism here that could fake a
+  // copy. Card 3531538d (WhiteHat L1, 26083811 gate). Keep this list narrow and named, not a path
+  // pattern: each entry needs its own "no describe/it" check before being added.
+  const SETUP_GUARD_EXCEPTIONS = ['src/__tests__/setup/assert-not-live-install.ts']
+
   it('an anchor points at a PRODUCTION file, not at a test that may declare its own copy', () => {
     // Measured while writing these: TELEGRAM_COPY_GATE_MATCHER reads as three occurrences tree-wide
     // and looks adopted -- all three inside a test that declares its own const of that name and says
@@ -630,6 +637,7 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     // reversal that never happened, which is the same "a name in prose and code cannot be asserted
     // by name" failure the fleet keeps meeting.
     for (const [key, anchor] of Object.entries(ACKNOWLEDGED_FORK_ANCHORS)) {
+      if (anchor && SETUP_GUARD_EXCEPTIONS.includes(anchor.file)) continue
       expect(
         anchor?.file.includes('__tests__'),
         `${key}: the anchor reads ${anchor?.file}, a test file -- a test can declare its own copy ` +
