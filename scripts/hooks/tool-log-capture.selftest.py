@@ -24,6 +24,15 @@ CASES = [
     ("curl https://user:supersecretpass@example.com/path",
      "curl https://user:[REDACTED]@example.com/path",
      "a URL-embedded password -- the username and @ stay so the shape is still legible"),
+    ("redis://:mysecretpass123@localhost:6379", "redis://:[REDACTED]@localhost:6379",
+     "an EMPTY user (the normal redis URL form) -- a `+` quantifier on the user would have "
+     "required a char that is not there"),
+    ("postgres://user:pass@word@host/db", "postgres://user:[REDACTED]@host/db",
+     "an unencoded @ INSIDE the password itself -- must redact to the LAST @ before the host, "
+     "not stop at the first one and leave '@word' exposed"),
+    ("mongodb+srv://user:secretpass@cluster.example.com/db",
+     "mongodb+srv://user:[REDACTED]@cluster.example.com/db",
+     "a non-http(s) scheme (mongodb+srv) -- the scheme match must not be http(s)-only"),
     ("curl --password supersecretvalue123 https://x", "curl --password [REDACTED] https://x",
      "a CLI flag whose value is SPACE-separated, no = or : at all"),
     ("mysql -u root --password mysecretpass123", "mysql -u root --password [REDACTED]",

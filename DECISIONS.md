@@ -17619,3 +17619,24 @@ nem upstream kodja masolva at.
 
 **Ki döntött:** backend (karpathy-guidelines, elo repro + mutacio-proof). Gate: QA + Cybersec
 (credential-redaktalas biztonsagi kontroll, a kartya 35dc6dbe sajat kijelolese szerint).
+
+## 2026-10-09 -- Kartya 35dc6dbe: e116296e (TOOLLOGURLSCHEME924) kiegeszito javitas, 31/31 commit lezarva
+
+Kozvetlen folytatas az elozo bejegyzesnek: e116296e (upstream kovetkezo commitja ugyanarra a
+tool-log-capture.py _redact()-ra) 2 tovabbi, elo teszteles altal igazolt rest talalt a sajat frissen
+irt mintamban: (1) ures felhasznalonev (`redis://:pass@host`, a szokasos redis-URL-alak) nem illeszkedett,
+mert a felhasznalonev-osztaly `+` (legalabb 1 karakter) volt; (2) idezojelezetlen `@` a jelszoban
+(`postgres://user:pass@word@host`) csak az ELSO `@`-ig redaktalt, a jelszo maradek reszet ("word")
+szabadon hagyva. Javitva: felhasznalonev `*`-ra (nulla-vagy-tobb), jelszo lusta mintaval + lookahead,
+ami az UTOLSO `@`-ig fut a host elott. 3 uj teszt (2 valos repro, piros git stash-sel igazolva, + 1
+mongodb+srv kontroll ami mar az elozo korben is zold volt, nem uj regresszio).
+
+**Ezzel a kartya 35dc6dbe mind a 31 upstream commitja dontesre kerult**: 2 ADOPTED/PORTED kozvetlenul
+(51b18820 kartya 96c00ee5-n keresztul, e116296e+4811efcb helyben), 1 valodi javitas helyben
+(bash-egress-guard.py keyword-gap, lasd korabbi bejegyzes), 4 UJ follow-up kartya nyitva nagyobb,
+tobb-reszes tetelekre (8c6f30fb HOSTMOVE923, 3caa7e9f ZAKARFELUGY921, 06b48bd0 oauthTokenFile,
+0c3c3796 MCPOROKLES923), 1 meglevo kartyara hivatkozva (28923621 PERSONANOCLOBBER923), 13 mar
+eszkalalt kartyara hivatkozva (7e70144e, outgoing-copy-gate.py), 1 tovabb-nem-donthetove (6febccdf,
+hianyzo ellenorzesi adat a tobbi channel-providerre), a tobbi STALE/mar-megoldott.
+
+**Ki döntött:** backend (karpathy-guidelines). Gate: QA + Cybersec.

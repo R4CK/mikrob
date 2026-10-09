@@ -109,8 +109,13 @@ _SECRET_PATTERNS = [
     # A bare JWT: three dot-separated base64url segments, no label required.
     re.compile(r'(?P<val>\beyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]{5,}\b)'),
     # URL-embedded credentials: scheme://user:PASSWORD@host -- only the password is redacted,
-    # the username and `@` stay so the shape of the command remains legible.
-    re.compile(r'[A-Za-z][A-Za-z0-9+.\-]*://[^\s/:@]+:(?P<val>[^\s/@]+)@'),
+    # the username and `@` stay so the shape of the command remains legible. Any RFC 3986 scheme
+    # (postgres://, redis://, amqp://, mongodb+srv://, not just http(s)); the user may be EMPTY
+    # (redis://:pass@host is the normal redis form, so `+` would have required a char that is
+    # not there); and the password is matched LAZILY up to the LAST unencoded `@` before the
+    # host (a lookahead requires no further `@` before the next `/`/whitespace/end), so a
+    # password that itself contains `@` is not cut short at the first one.
+    re.compile(r'[A-Za-z][A-Za-z0-9+.\-]*://[^\s/:@]*:(?P<val>[^\s/]+?)@(?=[^@\s/]*(?:/|\s|$))'),
     # Raw hex blobs >= 32 chars (likely hashed secrets).
     re.compile(r'(?P<val>\b[0-9a-fA-F]{32,}\b)'),
 ]
