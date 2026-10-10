@@ -2392,6 +2392,67 @@ export function getStuckIncidentAnswers(query: StuckIncidentQuery): StuckInciden
   }
 }
 
+// Card 7b0b822f: upstream's getStuckKanbanCards() (PULL, scans every non-done card on demand) vs
+// this fork's stuck_incidents mechanism (EVENT-driven, a row only exists once heartbeat-consolidated's
+// D section has actually ticked while a card was stalled, see getStuckIncidentAnswers above). These
+// answer DIFFERENT questions and this function does not replace or feed the other: stuck_incidents is
+// a historical log of past detections; this is a live snapshot of right-now idleness, with no
+// dependency on the heartbeat having run at all (useful if the heartbeat itself is down, or before
+// its first tick on a card). It is read-only and never writes to stuck_incidents.
+//
+// "Started-then-idle" (upstream's own term, card 5aaf7209): scoped to status === 'in_progress' only,
+// the same scope the 10-minute heartbeat rule (root CLAUDE.md rule 3) already uses -- a `waiting`
+// card is waiting on a gate, not stalled, and `planned`/`done`/`testing` were never "started" in that
+// sense. Idle time is measured from the LATER of last_status_at (same derivation as
+// listKanbanCards's own last_status_at: last kanban_card_events row, falling back to created_at) and
+// the most recent NON-automated comment -- an `automated: true` comment (bulk/machine writer) must
+// not look like human work-trace, per the same reasoning the automated flag itself was added for.
+export const STUCK_KANBAN_IDLE_THRESHOLD_SEC = 600
+
+export interface StuckKanbanCardSummary {
+  readonly cardId: string
+  readonly title: string
+  readonly assignee: string | null
+  readonly lastActivityAt: number
+  readonly idleSeconds: number
+}
+
+export function getStuckKanbanCards(
+  nowSec: number = Math.floor(Date.now() / 1000),
+  idleThresholdSec: number = STUCK_KANBAN_IDLE_THRESHOLD_SEC,
+): StuckKanbanCardSummary[] {
+  const rows = db
+    .prepare(
+      `SELECT c.id, c.title, c.assignee,
+              COALESCE((SELECT MAX(e.created_at) FROM kanban_card_events e WHERE e.card_id = c.id), c.created_at)
+                AS last_status_at,
+              (SELECT MAX(created_at) FROM kanban_comments WHERE card_id = c.id AND automated = 0) AS last_comment_at
+         FROM kanban_cards c
+        WHERE c.status = 'in_progress' AND c.archived_at IS NULL`,
+    )
+    .all() as Array<{
+    id: string
+    title: string
+    assignee: string | null
+    last_status_at: number
+    last_comment_at: number | null
+  }>
+
+  return rows
+    .map((r) => {
+      const lastActivityAt = Math.max(r.last_status_at, r.last_comment_at ?? 0)
+      return {
+        cardId: r.id,
+        title: r.title,
+        assignee: r.assignee,
+        lastActivityAt,
+        idleSeconds: nowSec - lastActivityAt,
+      }
+    })
+    .filter((s) => s.idleSeconds >= idleThresholdSec)
+    .sort((a, b) => b.idleSeconds - a.idleSeconds)
+}
+
 export function getDb(): Database.Database {
   return db
 }

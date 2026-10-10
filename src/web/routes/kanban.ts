@@ -26,6 +26,7 @@ import {
   getTokenPruneLag, type TokenPruneLag,
   queryKanbanRelations, cardsTouchingFile, filesTouchedByCard,
   RELATION_FILTER_COLUMNS, type RelationFilterColumn, type RelationQuery,
+  getStuckKanbanCards,
 } from '../../db.js'
 import { isForceActor } from '../../kanban-force-actors.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -685,6 +686,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // naming items; the numbers ONLY ever come from counts.
   if (path === '/api/kanban/heartbeat-summary' && method === 'GET') {
     json(res, buildHeartbeatSummaryResponse(getHeartbeatKanbanSummary(), countNewHotMemories(MAIN_AGENT_ID), countPlannedKanbanCards(), getDbFileSizeMb(), getTokenPruneLag()))
+    return true
+  }
+
+  // Card 7b0b822f: a live, on-demand "which in_progress cards are idle right now" scan -- see
+  // getStuckKanbanCards's own comment in db.ts for why this is deliberately separate from (not a
+  // replacement for) the event-driven stuck_incidents mechanism under /api/stuck-incidents.
+  if (path === '/api/kanban/stuck' && method === 'GET') {
+    json(res, getStuckKanbanCards())
     return true
   }
 
