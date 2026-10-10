@@ -18068,3 +18068,11 @@ ellenőrzi) ugyanerre a tartalomra frissítve.
 **Ki döntött:** forrás a CYBERSEC GO verdikt (1dec4841) MEDIUM F1 lelete, a 3caa7e9f kártyán; a
 javítás a cf8d047a kártyán backend2 saját munkája. Gate: QA + Cybersec (update.sh az élő frissítési
 út, rollback-biztonsági kártya, `update-safety` skill).
+
+## 2026-10-10 -- anthropics/skills docx/pdf/pptx/xlsx: nem vendoráljuk, a licencük tiltja
+
+**Döntés:** a négy dokumentum-skill (docx, pdf, pptx, xlsx) az `anthropics/skills` repóból NEM kerül a flottába. A külső klónból (`~/.claude/external/anthropics-skills`) sparse-checkouttal kizárva.
+
+**Miért:** a négy `LICENSE.txt` (vizsgálva a 8a1541c4 commiton, mind a négy azonos) a megállapodást is felülíró ("notwithstanding anything in the Agreement") kiegészítő korlátozással tiltja a Services-en kívüli másolat tartását, a másolást, a származékos művet és a továbbadást. Belső célra sincs kivétel. Licenckonform út: a hivatalos plugin marketplace (`document-skills@anthropic-agent-skills`), ha elérhető lesz.
+
+**Ki döntött:** jogász (kártya 5d01f2ea, SKIP), QA PASS ugyanerre a commitra; a klón-kizárás MikroB döntése. Nyitott: a git-objektumokban a régebbi commitok tartalma megmarad, a teljes eltávolítás partial clone-nal vagy újraklónozással lehetséges.
