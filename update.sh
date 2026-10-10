@@ -12,6 +12,10 @@ NC='\033[0m'
 
 INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$INSTALL_DIR"
+# Card 508153a9: the shared state-based node_modules check, same implementation fleet-test.sh uses
+# for the identical symlink-vs-npm-ci decision. Overridable so a test can point it at a scratch
+# fixture without touching $INSTALL_DIR itself.
+NODE_MODULES_STALE_CHECK_PY="${NODE_MODULES_STALE_CHECK_PY:-$INSTALL_DIR/store/node-modules-stale-check.py}"
 # ── Language (saved by installer, falls back to HU) ──────────────────────────
 MARVEEN_LANG="$(cat "${INSTALL_DIR}/.lang" 2>/dev/null || echo hu)"
 export MARVEEN_LANG
@@ -1021,6 +1025,7 @@ run_seed_refresh() {
 }
 run_seed_refresh
 
+# >>> NPM_CI_STATE_DECISION_BLOCK_START (card 508153a9)
 if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
   # Already on the latest commit -- but "no new commits" does NOT guarantee the
   # compiled dist/ matches the source. A prior update can pull new source and
@@ -1038,13 +1043,27 @@ if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
     DIST_STALE=1
   fi
 
-  if [ "$FORCE_REBUILD" = "1" ] || [ "$DIST_STALE" = "1" ]; then
+  # DEPS_STALE (card 508153a9, RedHat R1): the exact gap this card closes. OLD_VERSION==NEW_VERSION
+  # here means nothing new to pull -- including right after sync_live_install() (marveen-land.sh)
+  # fast-forwards $INSTALL_DIR's source outside of this script entirely, moving package-lock.json
+  # without ever running npm ci. Without this check, a dist-fresh / no-reseed-flag run took the
+  # "already up to date" exit at the bottom of this branch WITHOUT ever reaching the npm-ci decision
+  # below (that decision is only reached if this branch falls through) -- the stale node_modules
+  # would sit there, invisible, until a later update happened to also change package.json's text.
+  DEPS_STALE=0
+  if python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"; then
+    DEPS_STALE=1
+  fi
+
+  if [ "$FORCE_REBUILD" = "1" ] || [ "$DIST_STALE" = "1" ] || [ "$DEPS_STALE" = "1" ]; then
     # Self-heal (or forced): do NOT exit, do NOT set SKIP_BUILD -- let the
-    # build block below run and the script reach the end-of-run restart.
-    # The dep-install diff (OLD..NEW) is empty here, so npm ci stays skipped;
-    # only the rebuild + restart we actually need will run.
+    # build block below run and the script reach the end-of-run restart. The dep-install diff
+    # (OLD..NEW) is empty here, but the state-based check right below independently re-evaluates
+    # node_modules staleness and will still trigger npm ci when DEPS_STALE=1.
     if [ "$FORCE_REBUILD" = "1" ]; then
       echo -e "  ${ORANGE}↻${NC} Mar a legfrissebb verzion ($NEW_VERSION), de --rebuild -> ujraforditas + restart"
+    elif [ "$DEPS_STALE" = "1" ]; then
+      echo -e "  ${ORANGE}↻${NC} Mar a legfrissebb verzion ($NEW_VERSION), de a node_modules elavult a sajat lockhoz kepest -> ongyogyito fuggoseg-telepites + ujraforditas + restart"
     else
       echo -e "  ${ORANGE}↻${NC} Mar a legfrissebb verzion ($NEW_VERSION), de a dist elavult (built=${BUILT_COMMIT:-none}) -> ongyogyito ujraforditas + restart"
     fi
@@ -1091,7 +1110,16 @@ fi
 # critical CVE is present in the installed production tree. The operator
 # gets a loud stop with a CVE pointer instead of silently running a
 # patched-over malicious dep.
-if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock)?\.json$"; then
+#
+# The git-diff check alone is NOT enough (card 508153a9, RedHat R1 follow-up on d1641163): it only
+# sees OLD_VERSION..NEW_VERSION, which is empty right after sync_live_install() (marveen-land.sh)
+# fast-forwards $INSTALL_DIR's source without running npm ci there -- a landing can move
+# package-lock.json while $INSTALL_DIR/node_modules stays on the old packages, and this script
+# would see "no diff" and never notice. Add a state-based check, the same helper fleet-test.sh uses
+# for the identical decision (store/node-modules-stale-check.py), so a stale node_modules is caught
+# regardless of what the diff says.
+if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock)?\.json$" \
+  || python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"; then
   echo -e "  Fuggosegek frissitese (lock-strict)..."
   RESULT_PHASE="npm-ci"
   # --include=dev adopted from upstream (AUTOUPDNODEENV905, card 50af1a27). Under
@@ -1122,6 +1150,7 @@ if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock
     echo -e "  A frissites folytatodik, de vizsgald meg: npm audit --omit=dev"
   fi
 fi
+# <<< NPM_CI_STATE_DECISION_BLOCK_END
 
 # Native module rebuild for current Node ABI (critical when Node version changes;
 # better-sqlite3 NODE_MODULE_VERSION must match the running node binary).

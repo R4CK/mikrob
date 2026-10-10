@@ -74,62 +74,20 @@ CPU_KEEPALIVE_S="${CLEANCORE_SUITE_KEEPALIVE_S:-300}"
 
 die() { echo "fleet-test.sh: $2" >&2; exit "$1"; }
 
-# root_node_modules_is_stale (card d1641163, source: e6df15da RedHat N3). The npm-ci-vs-symlink
-# decision below only ever compared $TEST_TREE's package-lock.json against $ROOT's -- two lockfiles
-# being byte-identical says nothing about whether $ROOT/node_modules itself still matches what
-# $ROOT's OWN lockfile declares. sync_live_install() (store/marveen-land.sh) fast-forwards $ROOT's
-# SOURCE on every landing but deliberately never runs npm ci there (same unattended-install risk this
-# script itself avoids against $ROOT) -- so after a dependency-bump lands, $ROOT/package-lock.json
-# can move while $ROOT/node_modules stays on the old packages until someone runs `npm ci` by hand.
-# Measured live: lock declared vitest ^5.0.3, $ROOT/node_modules had 2.1.9 installed.
-#
-# npm records exactly what it actually installed in node_modules/.package-lock.json (written by
-# `npm install`/`npm ci`, untouched by a bare source fast-forward) -- comparing THAT against
-# package-lock.json is the read-only way to answer "is $ROOT's own node_modules in sync with its own
-# lock", without running npm against $ROOT. True (rc 0) means stale: the symlink branch must not
-# trust $ROOT/node_modules as-is, and should fall through to the real-`npm-ci`-in-$TEST_TREE branch
-# instead. Unreadable/malformed JSON is also stale (fail loud, never silently trust an unverifiable
-# $ROOT) -- the one exception is a MISSING node_modules/.package-lock.json, which means $ROOT has
-# never been installed at all and is covered by the pre-existing "nothing to symlink from" failure
-# further down, not by this check.
+# root_node_modules_is_stale (card d1641163, source: e6df15da RedHat N3; extracted into
+# store/node-modules-stale-check.py by card 508153a9 so update.sh's npm-ci decision can share the
+# EXACT same check -- see that file's docstring for the full reasoning and the F1/F2 fixes it
+# carries). The npm-ci-vs-symlink decision below only ever compared $TEST_TREE's package-lock.json
+# against $ROOT's -- two lockfiles being byte-identical says nothing about whether $ROOT/node_modules
+# itself still matches what $ROOT's OWN lockfile declares. sync_live_install() (store/marveen-land.sh)
+# fast-forwards $ROOT's SOURCE on every landing but deliberately never runs npm ci there (same
+# unattended-install risk this script itself avoids against $ROOT) -- so after a dependency-bump
+# lands, $ROOT/package-lock.json can move while $ROOT/node_modules stays on the old packages until
+# someone runs `npm ci` by hand. Measured live: lock declared vitest ^5.0.3, $ROOT/node_modules had
+# 2.1.9 installed. True (rc 0) means stale: the symlink branch must not trust $ROOT/node_modules
+# as-is, and should fall through to the real-`npm-ci`-in-$TEST_TREE branch instead.
 root_node_modules_is_stale() {
-  python3 - "$ROOT" <<'PY'
-import json
-import platform
-import sys
-
-root = sys.argv[1]
-try:
-    with open(f"{root}/package-lock.json") as f:
-        declared = json.load(f).get("packages", {})
-except (OSError, json.JSONDecodeError):
-    sys.exit(0)  # no lockfile to compare against -- treat as unverifiable/stale
-try:
-    with open(f"{root}/node_modules/.package-lock.json") as f:
-        installed = json.load(f).get("packages", {})
-except FileNotFoundError:
-    sys.exit(1)  # never installed at all -- not THIS check's job, let the caller's own check catch it
-except (OSError, json.JSONDecodeError):
-    sys.exit(0)
-
-node_os = "linux" if sys.platform.startswith("linux") else sys.platform
-node_cpu = {"x86_64": "x64", "aarch64": "arm64"}.get(platform.machine(), platform.machine())
-
-for key, entry in declared.items():
-    if key == "":  # the root package entry itself; npm's install-state file never carries it
-        continue
-    os_list = entry.get("os")
-    if os_list is not None and node_os not in os_list:
-        continue  # optional dep for a different platform -- legitimately absent from installed
-    cpu_list = entry.get("cpu")
-    if cpu_list is not None and node_cpu not in cpu_list:
-        continue
-    inst = installed.get(key)
-    if inst is None or inst.get("version") != entry.get("version"):
-        sys.exit(0)  # stale
-
-sys.exit(1)  # every applicable declared package matches what is actually installed
-PY
+  python3 "${NODE_MODULES_STALE_CHECK_PY:-$(dirname "${BASH_SOURCE[0]}")/node-modules-stale-check.py}" "$ROOT"
 }
 
 # INCOMPLETE RUN detection (card 85823628, extracted into a function for card d54d5de6 so it has a
