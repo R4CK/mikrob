@@ -18280,3 +18280,29 @@ egyutt -- igy a skill maga is lathato a listabol, nem csak a diszken fekvo fajlb
 
 **Ki dontott:** Peti jovahagyasa (Telegram 10867) az 5 javaslatra, ebbol ez az 1. A konkret
 implementacios valasztas (code-comprehension mint celskill) fullstack sajat merese/dontese. Gate: QA.
+
+## 2026-10-10 -- code-review-graph pipx upgrade 2.3.8 -> 2.3.9 a registry pin szerint (kartya 68bdd57b, forras: d2666c85 leltar)
+
+A d2666c85 leltar talalta: a `store/watched-repos.json` pin `2.3.9`, de az elesben telepitett
+`code-review-graph` meg `2.3.8` volt (a pin 2026-10-09-en kartya 0abcaba3-ban mar fel lett emelve
+a repoban, de a tenyleges `pipx upgrade/install` MikroB dontesere varva meg nem futott a
+sema-migracios kockazat miatt). Peti jovahagyta mind az 5 javaslatot (Telegram 10867, 2026-10-10),
+ez a 2. pont.
+
+Vegrehajtva: `pipx install --force code-review-graph==2.3.9` (a `watched-repos.json` sajat,
+2026-10-09-i korrekcioja szerint KIZAROLAG ez az alak, `pipx upgrade` TILOS, mert a verzio-pinnelt
+specre nezve csendes no-op lenne). A telepitett wheel sha256-ja egyezik a PyPI JSON API altal
+jelzettel (`908500a23f23fe05...`). A kartya sajat hatokore csak az install + egy MCP tool-hivasos
+ellenorzes volt (nem a teljes v9->v13 sema-migracio/rebuild/dual-repo smoke-test, amit a
+watched-repos.json egy korabbi, szelesebb kori terve emlit) -- a sajat MCP-kapcsolatomon
+`list_graph_stats_tool` hivas sikeres volt az upgrade utan, hiba vagy automatikus migracio nem
+jelentkezett. A 7 mar elofutva levo `code_review_graph serve` folyamatot (mas ugynokok aktiv
+session-jei) NEM allitottam le/inditottam ujra -- azok a regi (2.3.8) kodot futtatjak tovabb a
+sajat folyamatuk vegeig, ugyanaz a mintat kovetve mint a korabbi 2.3.7->2.3.8 bumpnal.
+
+Mellekes lelet: a `graphifyy` pin (`0.9.67`, `store/graphify.sh` scriptben) ELTER a tenylegesen
+telepitett verziotol (`0.9.31`, `pipx list` szerint). A kartya sajat szovege szerint ez NEM e
+kartya hatokore ("csak a code-review-graph tartozik ide") -- kulon jelezve MikroB-nak, nem
+javitva itt.
+
+**Ki dontott:** Peti jovahagyasa (Telegram 10867) az 5 javaslatra, ebbol ez a 2. Gate: QA.
