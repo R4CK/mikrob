@@ -21,6 +21,7 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { isReservedSenderId } from './system-directive-id.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
+import { OAUTH_TOKEN_FILE_KEY } from './agent-oauth-token-file.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
@@ -450,6 +451,22 @@ function safeReadJson(path: string): Record<string, unknown> {
   try { return JSON.parse(readFileSync(path, 'utf-8')) } catch { return {} }
 }
 
+// WhiteHat F2 follow-up (card 006b506b, on 06b48bd0): oauthTokenFile is a LOCAL filesystem path on
+// whichever host set it. Carried verbatim through a fleet bundle, it would, on import, point the
+// receiving agent at a path on the IMPORTING host -- one that may not exist, may belong to another
+// agent's token, or, in a crafted bundle, may be any path an attacker chooses, which
+// decideOwnOauthToken would then validate as if an operator had set it there deliberately. This
+// field's write path is "manual agent-config edit only" (agent-oauth-token-file.test.ts); transfer
+// import/export is not that path. Stripped on BOTH sides: export, so the path never leaves the
+// host it was set on (also keeps the module docstring's "machine-specific paths are NOT included"
+// claim actually true); import, so a bundle from elsewhere -- crafted or not -- cannot set it.
+function stripOauthTokenFile(config: Record<string, unknown>): Record<string, unknown> {
+  if (!Object.prototype.hasOwnProperty.call(config, OAUTH_TOKEN_FILE_KEY)) return config
+  const rest = { ...config }
+  delete rest[OAUTH_TOKEN_FILE_KEY]
+  return rest
+}
+
 function safeReadText(path: string): string {
   try { return readFileSync(path, 'utf-8') } catch { return '' }
 }
@@ -548,7 +565,7 @@ function exportMainAgent(
     },
     claudeMd: safeReadText(join(PROJECT_ROOT, 'CLAUDE.md')),
     soulMd: safeReadText(join(PROJECT_ROOT, 'SOUL.md')),
-    config: safeReadJson(join(PROJECT_ROOT, 'agent-config.json')),
+    config: stripOauthTokenFile(safeReadJson(join(PROJECT_ROOT, 'agent-config.json'))),
     mcp,
     settings,
     channelsAccess,
@@ -602,7 +619,7 @@ function exportAgent(
 
   return {
     name,
-    config: safeReadJson(join(dir, 'agent-config.json')),
+    config: stripOauthTokenFile(safeReadJson(join(dir, 'agent-config.json'))),
     claudeMd: safeReadText(join(dir, 'CLAUDE.md')),
     soulMd: safeReadText(join(dir, 'SOUL.md')),
     mcp,
@@ -960,7 +977,7 @@ function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker): void {
   if (ma.claudeMd) trackedWrite(join(PROJECT_ROOT, 'CLAUDE.md'), ma.claudeMd, tracker)
   if (ma.soulMd) trackedWrite(join(PROJECT_ROOT, 'SOUL.md'), ma.soulMd, tracker)
   if (ma.config && Object.keys(ma.config).length)
-    trackedWrite(join(PROJECT_ROOT, 'agent-config.json'), JSON.stringify(ma.config, null, 2), tracker)
+    trackedWrite(join(PROJECT_ROOT, 'agent-config.json'), JSON.stringify(stripOauthTokenFile(ma.config), null, 2), tracker)
   trackedWrite(join(PROJECT_ROOT, '.mcp.json'), JSON.stringify(deplaceholderMcp(ma.mcp), null, 2), tracker)
   trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(ma.settings, null, 2), tracker)
 
@@ -984,7 +1001,7 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
   const claudeDir = safeJoin(dir, '.claude')
   trackedMkdir(claudeDir, tracker)
 
-  trackedWrite(join(dir, 'agent-config.json'), JSON.stringify(agent.config, null, 2), tracker)
+  trackedWrite(join(dir, 'agent-config.json'), JSON.stringify(stripOauthTokenFile(agent.config), null, 2), tracker)
   if (agent.claudeMd) trackedWrite(join(dir, 'CLAUDE.md'), agent.claudeMd, tracker)
   if (agent.soulMd) trackedWrite(join(dir, 'SOUL.md'), agent.soulMd, tracker)
 

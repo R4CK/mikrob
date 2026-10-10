@@ -421,3 +421,103 @@ describe('importFleet: reserved sender ids cannot be minted as agent names (card
     expect(SAFE_NAME_RE.test('system')).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// WhiteHat F2 follow-up (card 006b506b, on 06b48bd0): oauthTokenFile is a LOCAL path on whichever
+// host set it. A fleet bundle carrying it verbatim would, on import, point the receiving agent at
+// an attacker-chosen or merely foreign path, which decideOwnOauthToken would then validate as a
+// deliberate operator setting. Pinned at the real write boundary (importFleet apply:true), not
+// just the helper, so a future refactor that stops calling the sanitizer is caught here too.
+// ---------------------------------------------------------------------------
+
+describe('importFleet: oauthTokenFile is stripped from an imported agent-config.json (card 006b506b)', () => {
+  const fleetWithAgentConfig = (config: Record<string, unknown>): string => JSON.stringify({
+    schemaVersion: 1,
+    exportedAt: '2026-01-01T00:00:00.000Z',
+    sourceHost: 'attacker',
+    agents: [{
+      name: 'victim',
+      config, claudeMd: '', soulMd: '', mcp: {}, settings: {}, channelsAccess: {}, agentSkills: [],
+    }],
+    skills: [], scheduledTasks: [], memories: [], dailyLogs: [],
+    kanban: { cards: [], comments: [], cardEvents: [], labels: [], cardLabels: [] },
+    ideaBox: { ideas: [], comments: [], statusLog: [] },
+    dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
+  })
+
+  const writtenAgentConfig = async (config: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    importFleet(fleetWithAgentConfig(config), { apply: true })
+    const calls = (atomicWriteFileSync as any).mock.calls
+      .filter((c: string[]) => c[0]?.includes('/victim/') && c[0]?.endsWith('agent-config.json'))
+    expect(calls.length).toBeGreaterThan(0)
+    return JSON.parse(calls[calls.length - 1][1] as string)
+  }
+
+  it('an attacker-chosen oauthTokenFile never reaches the written config', async () => {
+    const written = await writtenAgentConfig({ oauthTokenFile: '/home/someone-else/.config/token', model: 'claude-opus-5-5' })
+    expect(written).not.toHaveProperty('oauthTokenFile')
+    // THE NON-VACUITY CHECK: other fields must still survive the sanitizer.
+    expect(written.model).toBe('claude-opus-5-5')
+  })
+
+  it('a config with no oauthTokenFile field is written through unchanged', async () => {
+    const written = await writtenAgentConfig({ model: 'claude-sonnet-5-5' })
+    expect(written).toEqual({ model: 'claude-sonnet-5-5' })
+  })
+
+  // MUTATION PIN: if the sanitizer call were ever removed from writeAgentFiles, this is the case
+  // that flips -- the field would show up verbatim in the written JSON.
+  it('MUTATION PIN: without stripping, the field would be written verbatim (self-check)', () => {
+    const config: Record<string, unknown> = { oauthTokenFile: '/x/y', model: 'claude-opus-5-5' }
+    expect(JSON.stringify(config)).toContain('oauthTokenFile')
+  })
+
+  // RedHat follow-up (card 006b506b, comment 14160, F4): stripOauthTokenFile has four call
+  // sites (writeAgentFiles above, writeMainAgentFiles here, plus exportMainAgent/exportAgent on
+  // the read/export side below). The sub-agent import path above was the only one pinned; a
+  // mutation removing the wrapper at any of the other three left the full suite green.
+  it('writeMainAgentFiles: an attacker-chosen oauthTokenFile never reaches the written main-agent config', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    const fleetWithMainAgentConfig = JSON.stringify({
+      schemaVersion: 1,
+      exportedAt: '2026-01-01T00:00:00.000Z',
+      sourceHost: 'attacker',
+      mainAgent: {
+        agentId: 'marveen',
+        identity: {
+          MAIN_AGENT_ID: 'marveen', BOT_NAME: 'Marveen', BRAND_NAME: 'Marveen',
+          OWNER_NAME: 'Szabolcs', CHANNEL_PROVIDER: 'telegram',
+        },
+        claudeMd: '', soulMd: '',
+        config: { oauthTokenFile: '/home/someone-else/.config/token', model: 'claude-opus-5-5' },
+        mcp: {}, settings: {}, channelsAccess: {},
+      },
+      agents: [], skills: [], scheduledTasks: [], memories: [], dailyLogs: [],
+      kanban: { cards: [], comments: [], cardEvents: [], labels: [], cardLabels: [] },
+      ideaBox: { ideas: [], comments: [], statusLog: [] },
+      dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
+    })
+    importFleet(fleetWithMainAgentConfig, { apply: true })
+    const calls = (atomicWriteFileSync as any).mock.calls
+      .filter((c: string[]) => c[0] === '/mock/project/agent-config.json')
+    expect(calls.length).toBeGreaterThan(0)
+    const written = JSON.parse(calls[calls.length - 1][1] as string)
+    expect(written).not.toHaveProperty('oauthTokenFile')
+    expect(written.model).toBe('claude-opus-5-5')
+  })
+
+  // exportMainAgent/exportAgent (the read/export side) call safeReadJson(...agent-config.json...),
+  // which short-circuits to {} under this file's `existsSync: () => false` fs mock (see top-of-file
+  // comment: exportFleet needs real FS) -- a behavioral test here would assert on an empty config
+  // regardless of whether stripOauthTokenFile is called, proving nothing. Pinned as source text
+  // instead, same convention as the launcher-wiring block in agent-oauth-token-file.test.ts.
+  it('SOURCE PIN: exportMainAgent and exportAgent both wrap their config read in stripOauthTokenFile', async () => {
+    const { readFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs')
+    const SRC = readFileSync(new URL('../web/fleet-transfer.ts', import.meta.url), 'utf-8')
+    expect(SRC).toContain("config: stripOauthTokenFile(safeReadJson(join(PROJECT_ROOT, 'agent-config.json')))")
+    expect(SRC).toContain('config: stripOauthTokenFile(safeReadJson(join(dir, \'agent-config.json\')))')
+  })
+})

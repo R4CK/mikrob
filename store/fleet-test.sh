@@ -426,7 +426,10 @@ if [ "$caller_set_max_workers" -eq 0 ]; then
   # still carries the PRE-bump hardcoded flag against the POST-bump real vitest. So this reads the
   # version that is ACTUALLY installed in $TEST_TREE right now, on either branch of a dependency
   # bump, rather than assuming one.
-  vitest_major="$(node -p "require('$TEST_TREE/node_modules/vitest/package.json').version.split('.')[0]" 2>/dev/null || echo 0)"
+  # TEST_TREE goes in via argv, not interpolated into the JS source string (WhiteHat INFO I3,
+  # card d4675258, 2f05b3e3 follow-up): a path containing an apostrophe would otherwise break
+  # the quoted literal and silently fall onto the pre-bump --minWorkers branch.
+  vitest_major="$(node -e "console.log(require(require('path').join(process.argv[1], 'node_modules/vitest/package.json')).version.split('.')[0])" "$TEST_TREE" 2>/dev/null || echo 0)"
   if [ "$vitest_major" -ge 5 ] 2>/dev/null; then
     WORKER_ARGS=(--maxWorkers "$MAX_WORKERS")
   else

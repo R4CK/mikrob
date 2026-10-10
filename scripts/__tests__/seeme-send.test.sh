@@ -34,7 +34,7 @@ import sqlite3, sys
 con = sqlite3.connect(sys.argv[1])
 con.execute('''CREATE TABLE approvals (
   id TEXT PRIMARY KEY, category TEXT, status TEXT, content_hash TEXT,
-  consumed_at INTEGER, resolved_at INTEGER
+  consumed_at INTEGER, resolved_at INTEGER, action_description TEXT
 )''')
 con.commit()
 con.close()
@@ -47,17 +47,21 @@ anchor_for() {
 }
 
 insert_approval() {
-  # insert_approval <id> <status> <content_hash> <consumed_at-or-NULL> <resolved_at-offset-seconds-or-NULL>
+  # insert_approval <id> <status> <content_hash> <consumed_at-or-NULL> <resolved_at-offset-seconds-or-NULL> [action_description]
+  # action_description defaults to '' -- fine for every case that is expected
+  # to be rejected BEFORE the description-binding check (status/consumed_at/
+  # content_hash/freshness all run first in _diagnose_approval).
   python3 -c "
 import sqlite3, sys, time
 con = sqlite3.connect(sys.argv[1])
 consumed = None if sys.argv[5] == 'NULL' else int(sys.argv[5])
 resolved = None if sys.argv[6] == 'NULL' else int(time.time()) + int(sys.argv[6])
-con.execute('INSERT INTO approvals (id, category, status, content_hash, consumed_at, resolved_at) VALUES (?, ?, ?, ?, ?, ?)',
-            (sys.argv[2], 'external_message', sys.argv[3], sys.argv[4], consumed, resolved))
+desc = sys.argv[7] if len(sys.argv) > 7 else ''
+con.execute('INSERT INTO approvals (id, category, status, content_hash, consumed_at, resolved_at, action_description) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (sys.argv[2], 'external_message', sys.argv[3], sys.argv[4], consumed, resolved, desc))
 con.commit()
 con.close()
-" "$SEEME_DB_PATH" "$1" "$2" "$3" "$4" "$5"
+" "$SEEME_DB_PATH" "$1" "$2" "$3" "$4" "$5" "${6:-}"
 }
 
 consumed_at_of() {
@@ -142,7 +146,7 @@ TEXT="A pontos szoveg, amire a johavagyas szol."
 ANCHOR="$(anchor_for "$TO" "$TEXT")"
 
 APPROVED_FRESH="11111111-1111-1111-1111-111111111111"
-insert_approval "$APPROVED_FRESH" "approved" "$ANCHOR" "NULL" "-60"
+insert_approval "$APPROVED_FRESH" "approved" "$ANCHOR" "NULL" "-60" "SMS a $TO szamra. Szoveg: $TEXT"
 out="$(run "$TO" "$APPROVED_FRESH" "$TEXT")"; rc=$?
 [ $rc -eq 0 ] && echo "$out" | grep -q "approved, friss" \
   && pass "approved + friss + egyezo hash -> dry-run atmegy" \
@@ -188,7 +192,7 @@ out="$(run "$TO" "$ALREADY_USED" "$TEXT")"; rc=$?
 
 echo "--- F1: a valodi (nem dry-run) kuldesi probalkozas tenyleg elfogyasztja ---"
 REAL_USE="77777777-7777-7777-7777-777777777777"
-insert_approval "$REAL_USE" "approved" "$(anchor_for "$TO" "$TEXT")" "NULL" "-60"
+insert_approval "$REAL_USE" "approved" "$(anchor_for "$TO" "$TEXT")" "NULL" "-60" "SMS a $TO szamra. Szoveg: $TEXT"
 out1="$(run_real "$TO" "$REAL_USE" "$TEXT")"; rc1=$?
 [ $rc1 -eq 1 ] && echo "$out1" | grep -qi "credentials" \
   && pass "valodi utra terve: a hitelesito-adat hianyan all el (varhato, nincs fixture .env)" \
@@ -201,6 +205,41 @@ out2="$(run_real "$TO" "$REAL_USE" "$TEXT")"; rc2=$?
 [ $rc2 -eq 1 ] && echo "$out2" | grep -qi "MAR FELHASZNALT" \
   && pass "UJBOLI probalkozas UGYANAZZAL az approval-lal -> elutasitva (egyszer-hasznalatos a consume utan is)" \
   || fail "masodik-hasznalat-elutasitast vartam, kaptam (rc=$rc2): $out2"
+
+echo "--- C1 (779b9660 CYBERED NO-GO, msg 14141): a leirasnak szo szerint tartalmaznia kell a cimzettet+szoveget ---"
+
+NO_DESC="88888888-8888-8888-8888-888888888888"
+insert_approval "$NO_DESC" "approved" "$(anchor_for "$TO" "$TEXT")" "NULL" "-60" ""
+out="$(run "$TO" "$NO_DESC" "$TEXT")"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -qi "leirasa NEM tartalmazza" \
+  && pass "egyezo hash, de a leiras NEM tartalmazza a cimzettet/szoveget -> elutasitva (C1)" \
+  || fail "leiras-kotes elutasitast vartam, kaptam (rc=$rc): $out"
+
+MISMATCHED_DESC="99999999-9999-9999-9999-999999999999"
+insert_approval "$MISMATCHED_DESC" "approved" "$(anchor_for "$TO" "$TEXT")" "NULL" "-60" "SMS johavagyva, reszletek a jegyzekben."
+out="$(run "$TO" "$MISMATCHED_DESC" "$TEXT")"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -qi "leirasa NEM tartalmazza" \
+  && pass "egyezo hash, altalanos/nem-kotott leiras -> elutasitva (C1, a johavagyo nem ezt latta)" \
+  || fail "leiras-kotes elutasitast vartam, kaptam (rc=$rc): $out"
+
+BOUND_DESC="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+insert_approval "$BOUND_DESC" "approved" "$(anchor_for "$TO" "$TEXT")" "NULL" "-60" "SMS a $TO szamra (SeeMe). Szoveg: $TEXT"
+out="$(run "$TO" "$BOUND_DESC" "$TEXT")"; rc=$?
+[ $rc -eq 0 ] && echo "$out" | grep -q "approved, friss" \
+  && pass "hash egyezik ES a leiras szo szerint tartalmazza a cimzettet+szoveget -> dry-run atmegy" \
+  || fail "varva: dry-run siker kotott leirassal, kaptam (rc=$rc): $out"
+
+echo "--- C2 (779b9660 CYBERED NO-GO, msg 14141): --approval validalva a BELSO agon is, \\Z nem \$ ---"
+
+out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to 36305552860 --approval "$(printf 'x\nFORGED\tOK\t1')" --dry-run 2>&1)"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -qi "nem UUID alaku" \
+  && pass "tab/ujsor a --approval-ban, BELSO cimzettel -> elutasitva (korabban csak a KULSO agon validalt)" \
+  || fail "belso-agi approval-validacios elutasitast vartam, kaptam (rc=$rc): $out"
+
+out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to 36305552860 --reference $'abc\n' --dry-run 2>&1)"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -qi "reference" \
+  && pass "--reference zaro ujsorral -> elutasitva (\\Z nem engedi at a zaro ujsor elotti egyezest)" \
+  || fail "zaro-ujsoros reference elutasitast vartam, kaptam (rc=$rc): $out"
 
 echo "--- F3 (779b9660): --reference es --approval validalas ---"
 
@@ -231,6 +270,27 @@ print(m.seeme_response_ok({'code': '1', 'message': 'elutasitva'}))
 expected="$(printf 'False\nTrue\nTrue\nFalse')"
 [ "$out" = "$expected" ] \
   && pass "seeme_response_ok: hianyzo code=HIBA, code=0/result=OK=SIKER, mas code=HIBA" \
+  || fail "varva:\n$expected\nkaptam:\n$out"
+
+echo "--- C3 (779b9660 CYBERED NO-GO, msg 14141): nem-objektum JSON valasz nem omlik AttributeError-ba ---"
+out="$(python3 -c "
+import sys, os
+sys.path.insert(0, os.path.dirname('$SCRIPT'))
+import importlib.util
+spec = importlib.util.spec_from_file_location('seeme_send', '$SCRIPT')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+# A MERT HIBA: egy szintaktikailag ervenyes, de nem-objektum JSON valasz
+# (null/[]/\"ok\"/1) a regi kodban payload.get()-nel AttributeError-t dobott.
+print(m.is_usable_response_shape(None))
+print(m.is_usable_response_shape([]))
+print(m.is_usable_response_shape('ok'))
+print(m.is_usable_response_shape(1))
+print(m.is_usable_response_shape({'code': '0'}))
+")"
+expected="$(printf 'False\nFalse\nFalse\nFalse\nTrue')"
+[ "$out" = "$expected" ] \
+  && pass "is_usable_response_shape: null/[]/\"ok\"/1 elutasitva, dict elfogadva" \
   || fail "varva:\n$expected\nkaptam:\n$out"
 
 echo "--- mutacios kontroll (4. kikotes: a kontroll TUDJON bukni) ---"

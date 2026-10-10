@@ -27,6 +27,28 @@ import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync, statSync } from 'node:fs'
 import type { AuthMode } from './agent-config.js'
 
+// WhiteHat F1 follow-up (card 006b506b, on 06b48bd0): the launcher used to feed this module's
+// decision via `readFileOr(path, '{}')` -- a helper EVERY other config reader in this fleet uses,
+// because for them a missing/unreadable file correctly means "no config, use defaults". For THIS
+// field that equivalence is wrong: an agent-config.json that EXISTS but cannot be read (permission
+// denied, a transient I/O error, anything other than "truly absent") silently became '{}', which
+// resolveOauthTokenFileSetting reads as 'unset' -- so a configured agent started on the FLEET token
+// with no signal anywhere that its own-token setting was never actually consulted. Measured: the
+// 54-case suite stayed fully green with the read swapped for an always-'{}' stub. A real ENOENT (no
+// file at all) is the ONLY read outcome equivalent to "no field, use the fleet token" -- everything
+// else must refuse, the same fail-closed stance the rest of this module already takes for a
+// present-but-unusable value.
+export type AgentConfigRead = { ok: true; raw: string } | { ok: false; reason: 'unreadable' }
+
+export function readAgentConfigForOauthDecision(path: string): AgentConfigRead {
+  try {
+    return { ok: true, raw: readFileSync(path, 'utf-8') }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, raw: '{}' }
+    return { ok: false, reason: 'unreadable' }
+  }
+}
+
 export const OAUTH_TOKEN_FILE_KEY = 'oauthTokenFile'
 export const SETUP_TOKEN_PREFIX = 'sk-ant-oat'
 
@@ -64,6 +86,27 @@ export function resolveOauthTokenFileSetting(rawConfigJson: string): OauthTokenF
   if (!TOKEN_FILE_PATH_ALLOWED.test(path)) return { state: 'invalid', reason: 'path-bad-characters' }
   if (path.split('/').some((segment) => segment === '..')) return { state: 'invalid', reason: 'path-parent-traversal' }
   return { state: 'set', path }
+}
+
+// WhiteHat F4 follow-up (card 006b506b, on 06b48bd0): nothing stopped two DIFFERENT agents from
+// naming the SAME oauthTokenFile path. Both would then authenticate as the same Claude identity,
+// sharing its quota and its blast radius -- precisely what a per-agent token exists to prevent (the
+// root CLAUDE.md's standing rule: an agent never runs on another agent's credential). The field has
+// no write-API path to gate at write time (manual agent-config.json edit only, see the launcher
+// wiring test "the API cannot write the field"), so this is checked at launch instead, against
+// every OTHER currently-known agent's own config.
+export function findOauthTokenFileCollision(
+  path: string,
+  thisAgentName: string,
+  otherAgents: readonly { name: string; configRead: AgentConfigRead }[],
+): string | null {
+  for (const other of otherAgents) {
+    if (other.name === thisAgentName) continue
+    if (!other.configRead.ok) continue // an unreadable OTHER agent's config is that agent's own problem
+    const setting = resolveOauthTokenFileSetting(other.configRead.raw)
+    if (setting.state === 'set' && setting.path === path) return other.name
+  }
+  return null
 }
 
 // Pure: a setting the field cannot take effect under is a conflict, and a
@@ -153,6 +196,32 @@ export function checkOauthTokenFile(
   return { ok: true, path, fingerprint: tokenFingerprint(value) }
 }
 
+// WhiteHat F3 follow-up (card 006b506b, on 06b48bd0): checkOauthTokenFile runs once, at decide
+// time, early in the launcher. The actual secret is read much later -- by a SEPARATE shell process
+// (`$(cat '<path>')`), after config-dir isolation and other I/O -- so there is a real check-then-use
+// window in which the file could be swapped (a symlink repoint, a replaced file keeping the same
+// owner/mode). This cannot be closed to zero without handing the shell a file descriptor instead
+// of a path, which the module's own design deliberately avoids (see the file header: the secret
+// must never enter the JS-built command string). What CAN be done: re-run the SAME validation
+// immediately before the launch command is built, right next to the actual use, and refuse if
+// anything -- including the CONTENT, via the fingerprint -- no longer matches what was decided.
+// That shrinks the exploitable window from "the whole launcher" to "between this call and the
+// shell's own cat", which is as tight as a path-based design gets.
+export type OauthTokenReverifyResult = { ok: true } | { ok: false; reason: string; detail: string }
+
+export function reverifyOauthTokenFile(
+  path: string,
+  expectedFingerprint: string,
+  opts: { uid: number | null; fleetTokenPath: string },
+): OauthTokenReverifyResult {
+  const check = checkOauthTokenFile(path, opts)
+  if (!check.ok) return { ok: false, reason: check.reason, detail: check.detail }
+  if (check.fingerprint !== expectedFingerprint) {
+    return { ok: false, reason: 'content-changed-since-check', detail: '' }
+  }
+  return { ok: true }
+}
+
 // The launch-command fragment: the fleet token's shape, with this file.
 export function ownOauthTokenExport(path: string): string {
   return `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${path}')" && `
@@ -165,7 +234,7 @@ export type OwnOauthTokenDecision =
 
 // The whole decision from its inputs, so it is testable without an agent dir.
 export function decideOwnOauthToken(input: {
-  rawConfigJson: string
+  configRead: AgentConfigRead
   isMainAgent: boolean
   isRemote: boolean
   isClaudeModel: boolean
@@ -175,7 +244,12 @@ export function decideOwnOauthToken(input: {
   fleetTokenPath: string
   uid: number | null
 }): OwnOauthTokenDecision {
-  const setting = resolveOauthTokenFileSetting(input.rawConfigJson)
+  // Fail-closed on the READ itself, before the field is even parsed: an unreadable
+  // agent-config.json might contain "oauthTokenFile", and there is no way to tell from here --
+  // unlike resolveOauthTokenFileSetting's own unparseable-JSON branch, which still gets to look at
+  // the bytes it DID receive.
+  if (!input.configRead.ok) return { kind: 'refused', path: null, reason: 'config-unreadable', detail: '' }
+  const setting = resolveOauthTokenFileSetting(input.configRead.raw)
   if (setting.state === 'unset') return { kind: 'unset' }
   if (setting.state === 'invalid') return { kind: 'refused', path: null, reason: setting.reason, detail: '' }
   const conflict = oauthTokenFileConflict(input)
