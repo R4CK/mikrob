@@ -40,11 +40,23 @@ import type { AuthMode } from './agent-config.js'
 // present-but-unusable value.
 export type AgentConfigRead = { ok: true; raw: string } | { ok: false; reason: 'unreadable' }
 
+// RedHat follow-up (card 48639c7d, on 006b506b comment 14160, F1 remainder): readFileSync on a
+// DANGLING symlink -- the link itself exists, but its target doesn't -- also raises ENOENT, making
+// it indistinguishable from a truly absent path by that error code alone. Something IS configured
+// at this path (an operator or a prior write put a symlink there); treating that the same as "no
+// file was ever here" would be exactly the silent-fallback-to-the-fleet-token failure this module
+// exists to prevent, just reached through a broken link instead of a broken read. lstat, which does
+// not follow the link, is what tells the two apart: ENOENT from lstat itself means truly absent
+// (unset); anything lstat can see, followed by a read failure, means present-but-broken (refuse).
 export function readAgentConfigForOauthDecision(path: string): AgentConfigRead {
   try {
-    return { ok: true, raw: readFileSync(path, 'utf-8') }
+    lstatSync(path)
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, raw: '{}' }
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? { ok: true, raw: '{}' } : { ok: false, reason: 'unreadable' }
+  }
+  try {
+    return { ok: true, raw: readFileSync(path, 'utf-8') }
+  } catch {
     return { ok: false, reason: 'unreadable' }
   }
 }
@@ -63,6 +75,24 @@ export type OauthTokenFileSetting =
   | { state: 'invalid'; reason: string }
   | { state: 'set'; path: string }
 
+const KEY_QUOTED = `"${OAUTH_TOKEN_FILE_KEY}"`
+
+// RedHat follow-up (card 48639c7d, on 006b506b comment 14160, F1 remainder): the full-key-text
+// check below catches a truncation that cuts the write off AFTER the key name, but a crash or a
+// non-atomic truncate/rewrite can just as easily cut if off WHILE writing the key name itself --
+// e.g. the file ends in `{"oauthTok` -- and `"oauthTokenFile"` as a whole substring is nowhere in
+// that text to find. The surviving tail is still a PREFIX of the quoted key, though, which a config
+// that never mentioned this field at all has no reason to end in. Checked from length 2 (`"o`) so a
+// bare trailing quote -- unremarkable in any truncated JSON, not specific to this key -- never
+// false-positives.
+function endsInTruncatedKeyName(raw: string): boolean {
+  const trimmed = raw.trimEnd()
+  for (let n = 2; n < KEY_QUOTED.length; n++) {
+    if (trimmed.endsWith(KEY_QUOTED.slice(0, n))) return true
+  }
+  return false
+}
+
 // Pure: raw agent-config.json text -> the field's state.
 export function resolveOauthTokenFileSetting(rawConfigJson: string): OauthTokenFileSetting {
   let config: unknown
@@ -72,7 +102,7 @@ export function resolveOauthTokenFileSetting(rawConfigJson: string): OauthTokenF
     // Every other reader treats an unparseable config as {}. Here that would
     // mean "unset", i.e. the fleet token -- so a broken file that mentions the
     // key refuses instead.
-    return rawConfigJson.includes(`"${OAUTH_TOKEN_FILE_KEY}"`)
+    return (rawConfigJson.includes(KEY_QUOTED) || endsInTruncatedKeyName(rawConfigJson))
       ? { state: 'invalid', reason: 'config-unparseable' }
       : { state: 'unset' }
   }
@@ -95,8 +125,30 @@ export function resolveOauthTokenFileSetting(rawConfigJson: string): OauthTokenF
 // no write-API path to gate at write time (manual agent-config.json edit only, see the launcher
 // wiring test "the API cannot write the field"), so this is checked at launch instead, against
 // every OTHER currently-known agent's own config.
+//
+// RedHat follow-up (card 48639c7d, on 006b506b comment 14160): literal path-string equality missed
+// every spelling of "the same file" that isn't byte-identical to the stored string -- `/./`, `//`,
+// a directory symlink, a hardlink, all resolve to the identical bytes but a different string, and
+// a BYTE-IDENTICAL COPY (genuinely a separate file, different inode) is not even a spelling trick --
+// it IS the same credential, so it IS the same Claude identity, which is exactly the thing this
+// check exists to catch. Fingerprint equality (the same sha256-prefix this module already computes
+// for the reverify check) catches all of those in one comparison, because it is defined on the
+// SECRET VALUE, not on how the path to it was written -- read the OTHER agent's own copy of the
+// bytes, not the caller's, so two different token values that happen to share a fingerprint-prefix
+// collision (an accepted, already-relied-upon risk elsewhere in this module) and one agent's
+// unreadable file (fail-open: that agent's own problem, same stance as an unreadable config) behave
+// the same way here as everywhere else in this file.
+function readTokenFingerprintOrNull(path: string): string | null {
+  try {
+    return tokenFingerprint(exportedValue(readFileSync(path, 'utf-8')))
+  } catch {
+    return null
+  }
+}
+
 export function findOauthTokenFileCollision(
   path: string,
+  fingerprint: string,
   thisAgentName: string,
   otherAgents: readonly { name: string; configRead: AgentConfigRead }[],
 ): string | null {
@@ -104,7 +156,10 @@ export function findOauthTokenFileCollision(
     if (other.name === thisAgentName) continue
     if (!other.configRead.ok) continue // an unreadable OTHER agent's config is that agent's own problem
     const setting = resolveOauthTokenFileSetting(other.configRead.raw)
-    if (setting.state === 'set' && setting.path === path) return other.name
+    if (setting.state !== 'set') continue
+    if (setting.path === path) return other.name
+    const otherFingerprint = readTokenFingerprintOrNull(setting.path)
+    if (otherFingerprint !== null && otherFingerprint === fingerprint) return other.name
   }
   return null
 }

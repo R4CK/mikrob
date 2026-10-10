@@ -1890,13 +1890,19 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     return { ok: false, error: `oauthTokenFile: ${ownOauth.reason}${ownOauth.detail ? ` (${ownOauth.detail})` : ''}` }
   }
   const ownTokenFile = ownOauth.kind === 'ok' ? ownOauth.path : null
+  // Narrowed via the 'fingerprint' property, not a repeated discriminant check on the decision's
+  // kind -- that is read in exactly one place (see the launcher-wiring test below); this derives
+  // from the SAME narrowing as ownTokenFile's line above, via `in` operator narrowing, not an
+  // independent second consultation of the decision.
+  const ownTokenFingerprint = 'fingerprint' in ownOauth ? ownOauth.fingerprint : null
 
   // oauthTokenFile uniqueness across agents (WhiteHat F4, card 006b506b): two agents sharing the
   // same token file would share its quota and its blast radius, the opposite of what a per-agent
   // token is for. No write-API path exists for this field, so it is checked here, at launch.
-  if (ownTokenFile) {
+  if (ownTokenFile && ownTokenFingerprint) {
     const collision = findOauthTokenFileCollision(
       ownTokenFile,
+      ownTokenFingerprint,
       name,
       listAgentNames()
         .filter((other) => other !== name)

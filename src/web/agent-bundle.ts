@@ -80,9 +80,16 @@ const CHANNEL_SECRET_DIRS = ['approved'] as const
 // to another host: a remote agent's ssh host/workdir, a per-agent
 // CLAUDE_CONFIG_DIR and a per-agent setup-token file (oauthTokenFile, card
 // 06b48bd0) point at paths/credentials that only exist on the source machine.
-// Stripped on import so an imported agent starts as a clean local agent the
-// operator can re-point if needed.
-const MACHINE_SPECIFIC_CONFIG_KEYS = ['remoteHost', 'remoteWorkdir', 'claudeConfigDir', 'oauthTokenFile'] as const
+// runAsUser, authMode and claudePlan carry the same host-specific-trust shape
+// (card 48639c7d, RedHat F2 follow-up on 006b506b: a crafted fleet import left
+// all six fields -- these three plus the original three -- intact, each one
+// capable of re-pointing the importing host's agent at another account's
+// config dir, a foreign remote host, or an elevated run-as-user). Stripped on
+// import so an imported agent starts as a clean local agent the operator can
+// re-point if needed.
+export const MACHINE_SPECIFIC_CONFIG_KEYS = [
+  'remoteHost', 'remoteWorkdir', 'claudeConfigDir', 'oauthTokenFile', 'runAsUser', 'authMode', 'claudePlan',
+] as const
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix))

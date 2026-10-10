@@ -21,7 +21,7 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { isReservedSenderId } from './system-directive-id.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
-import { OAUTH_TOKEN_FILE_KEY } from './agent-oauth-token-file.js'
+import { MACHINE_SPECIFIC_CONFIG_KEYS } from './agent-bundle.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
@@ -460,10 +460,22 @@ function safeReadJson(path: string): Record<string, unknown> {
 // import/export is not that path. Stripped on BOTH sides: export, so the path never leaves the
 // host it was set on (also keeps the module docstring's "machine-specific paths are NOT included"
 // claim actually true); import, so a bundle from elsewhere -- crafted or not -- cannot set it.
-function stripOauthTokenFile(config: Record<string, unknown>): Record<string, unknown> {
-  if (!Object.prototype.hasOwnProperty.call(config, OAUTH_TOKEN_FILE_KEY)) return config
+//
+// RedHat follow-up (card 48639c7d, on 006b506b comment 14160): oauthTokenFile wasn't the only
+// field with this shape. A crafted fleet import left claudeConfigDir, remoteHost, remoteWorkdir,
+// runAsUser, authMode and claudePlan all intact -- each one able to re-point the importing host's
+// agent at another account's config dir, a foreign remote host, or an elevated run-as-user. The
+// single-agent bundle import path (agent-bundle.ts's sanitizeImportedConfig) already strips the
+// same class of field via MACHINE_SPECIFIC_CONFIG_KEYS; reused here instead of a second list that
+// could drift out of sync with it.
+function stripMachineSpecificConfig(config: Record<string, unknown>): Record<string, unknown> {
+  let changed = false
+  for (const key of MACHINE_SPECIFIC_CONFIG_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(config, key)) { changed = true; break }
+  }
+  if (!changed) return config
   const rest = { ...config }
-  delete rest[OAUTH_TOKEN_FILE_KEY]
+  for (const key of MACHINE_SPECIFIC_CONFIG_KEYS) delete rest[key]
   return rest
 }
 
@@ -565,7 +577,7 @@ function exportMainAgent(
     },
     claudeMd: safeReadText(join(PROJECT_ROOT, 'CLAUDE.md')),
     soulMd: safeReadText(join(PROJECT_ROOT, 'SOUL.md')),
-    config: stripOauthTokenFile(safeReadJson(join(PROJECT_ROOT, 'agent-config.json'))),
+    config: stripMachineSpecificConfig(safeReadJson(join(PROJECT_ROOT, 'agent-config.json'))),
     mcp,
     settings,
     channelsAccess,
@@ -619,7 +631,7 @@ function exportAgent(
 
   return {
     name,
-    config: stripOauthTokenFile(safeReadJson(join(dir, 'agent-config.json'))),
+    config: stripMachineSpecificConfig(safeReadJson(join(dir, 'agent-config.json'))),
     claudeMd: safeReadText(join(dir, 'CLAUDE.md')),
     soulMd: safeReadText(join(dir, 'SOUL.md')),
     mcp,
@@ -977,7 +989,7 @@ function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker): void {
   if (ma.claudeMd) trackedWrite(join(PROJECT_ROOT, 'CLAUDE.md'), ma.claudeMd, tracker)
   if (ma.soulMd) trackedWrite(join(PROJECT_ROOT, 'SOUL.md'), ma.soulMd, tracker)
   if (ma.config && Object.keys(ma.config).length)
-    trackedWrite(join(PROJECT_ROOT, 'agent-config.json'), JSON.stringify(stripOauthTokenFile(ma.config), null, 2), tracker)
+    trackedWrite(join(PROJECT_ROOT, 'agent-config.json'), JSON.stringify(stripMachineSpecificConfig(ma.config), null, 2), tracker)
   trackedWrite(join(PROJECT_ROOT, '.mcp.json'), JSON.stringify(deplaceholderMcp(ma.mcp), null, 2), tracker)
   trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(ma.settings, null, 2), tracker)
 
@@ -1001,7 +1013,7 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
   const claudeDir = safeJoin(dir, '.claude')
   trackedMkdir(claudeDir, tracker)
 
-  trackedWrite(join(dir, 'agent-config.json'), JSON.stringify(stripOauthTokenFile(agent.config), null, 2), tracker)
+  trackedWrite(join(dir, 'agent-config.json'), JSON.stringify(stripMachineSpecificConfig(agent.config), null, 2), tracker)
   if (agent.claudeMd) trackedWrite(join(dir, 'CLAUDE.md'), agent.claudeMd, tracker)
   if (agent.soulMd) trackedWrite(join(dir, 'SOUL.md'), agent.soulMd, tracker)
 
