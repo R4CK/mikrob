@@ -15,10 +15,13 @@ import {
   resolveOauthTokenFileSetting,
   oauthTokenFileConflict,
   checkOauthTokenFile,
+  reverifyOauthTokenFile,
+  findOauthTokenFileCollision,
   ownOauthTokenExport,
   ownOauthExportMissing,
   ownOauthLaunchVerdict,
   decideOwnOauthToken,
+  readAgentConfigForOauthDecision,
   SETUP_TOKEN_PREFIX,
 } from '../web/agent-oauth-token-file.js'
 
@@ -176,9 +179,94 @@ describe('checkOauthTokenFile: the file itself', () => {
   })
 })
 
+describe('reverifyOauthTokenFile: closes most of the check-then-use window (WhiteHat F3, card 006b506b)', () => {
+  it('matches the original fingerprint -> ok', () => {
+    const p = tokenFile('rv1.token', FAKE_TOKEN)
+    const original = check(p)
+    expect(original.ok).toBe(true)
+    expect(reverifyOauthTokenFile(p, (original as { fingerprint: string }).fingerprint, { uid: UID, fleetTokenPath: fleet }))
+      .toEqual({ ok: true })
+  })
+
+  // THE CASE THIS EXISTS FOR: content swapped in place between the original check and this one,
+  // everything else (owner, mode, prefix) identical -- only checkOauthTokenFile's fingerprint
+  // differs, which is exactly what a path-based re-check CAN catch.
+  it('content swapped in place (same owner/mode, different valid-shaped token) -> content-changed-since-check', () => {
+    const p = tokenFile('rv2.token', FAKE_TOKEN)
+    const original = check(p)
+    const swapped = `${SETUP_TOKEN_PREFIX}01-FAKE-a-DIFFERENT-token-same-shape_1111111111`
+    writeFileSync(p, swapped)
+    chmodSync(p, 0o600)
+    expect(reverifyOauthTokenFile(p, (original as { fingerprint: string }).fingerprint, { uid: UID, fleetTokenPath: fleet }))
+      .toEqual({ ok: false, reason: 'content-changed-since-check', detail: '' })
+  })
+
+  it('the file was removed between check and use -> missing, not silently skipped', () => {
+    const p = tokenFile('rv3.token', FAKE_TOKEN)
+    const original = check(p)
+    rmSync(p)
+    expect(reverifyOauthTokenFile(p, (original as { fingerprint: string }).fingerprint, { uid: UID, fleetTokenPath: fleet }))
+      .toMatchObject({ ok: false, reason: 'missing' })
+  })
+
+  it('a symlink repoint between check and use -> not-regular-file (the file identity, not just its bytes)', () => {
+    const p = tokenFile('rv4.token', FAKE_TOKEN)
+    const original = check(p)
+    const elsewhere = tokenFile('rv4-elsewhere.token', FAKE_TOKEN)
+    rmSync(p)
+    symlinkSync(elsewhere, p)
+    expect(reverifyOauthTokenFile(p, (original as { fingerprint: string }).fingerprint, { uid: UID, fleetTokenPath: fleet }))
+      .toMatchObject({ ok: false, reason: 'not-regular-file' })
+  })
+
+  it('reuses checkOauthTokenFile -- a MODE widened between check and use is caught the same way', () => {
+    const p = tokenFile('rv5.token', FAKE_TOKEN)
+    const original = check(p)
+    chmodSync(p, 0o644)
+    expect(reverifyOauthTokenFile(p, (original as { fingerprint: string }).fingerprint, { uid: UID, fleetTokenPath: fleet }))
+      .toMatchObject({ ok: false, reason: 'mode-too-open' })
+  })
+})
+
+describe('findOauthTokenFileCollision: two agents must not share one token file (WhiteHat F4, card 006b506b)', () => {
+  const cfg = (raw: string) => ({ ok: true as const, raw })
+
+  it('no other agent uses this path -> no collision', () => {
+    expect(findOauthTokenFileCollision('/x/mine.token', 'me', [
+      { name: 'other1', configRead: cfg('{}') },
+      { name: 'other2', configRead: cfg(JSON.stringify({ oauthTokenFile: '/x/different.token' })) },
+    ])).toBeNull()
+  })
+
+  it('another agent names the SAME path -> collision, named', () => {
+    expect(findOauthTokenFileCollision('/x/shared.token', 'me', [
+      { name: 'other1', configRead: cfg('{}') },
+      { name: 'other2', configRead: cfg(JSON.stringify({ oauthTokenFile: '/x/shared.token' })) },
+    ])).toBe('other2')
+  })
+
+  it('this agent is skipped even if the list includes a stale self-entry', () => {
+    expect(findOauthTokenFileCollision('/x/mine.token', 'me', [
+      { name: 'me', configRead: cfg(JSON.stringify({ oauthTokenFile: '/x/mine.token' })) },
+    ])).toBeNull()
+  })
+
+  it('an unreadable OTHER agent config is skipped, not treated as a collision', () => {
+    expect(findOauthTokenFileCollision('/x/mine.token', 'me', [
+      { name: 'other1', configRead: { ok: false, reason: 'unreadable' } },
+    ])).toBeNull()
+  })
+
+  it('an invalid (not "set") value on the other side never collides', () => {
+    expect(findOauthTokenFileCollision('/x/mine.token', 'me', [
+      { name: 'other1', configRead: cfg(JSON.stringify({ oauthTokenFile: 123 })) },
+    ])).toBeNull()
+  })
+})
+
 describe('decideOwnOauthToken: the whole decision', () => {
   const ctx = (raw: string, over: Partial<Parameters<typeof decideOwnOauthToken>[0]> = {}) => decideOwnOauthToken({
-    rawConfigJson: raw, isMainAgent: false, isRemote: false, isClaudeModel: true, authMode: 'shared',
+    configRead: { ok: true, raw }, isMainAgent: false, isRemote: false, isClaudeModel: true, authMode: 'shared',
     hasExplicitConfigDir: false, hasClaudePlan: false, fleetTokenPath: fleet, uid: UID, ...over,
   })
 
@@ -204,6 +292,62 @@ describe('decideOwnOauthToken: the whole decision', () => {
     expect(ctx(raw)).toMatchObject({ kind: 'ok' })
     expect(ctx(raw, { isClaudeModel: false })).toMatchObject({ kind: 'refused', path: p, reason: 'non-claude-model' })
     expect(ctx(raw, { authMode: 'api' })).toMatchObject({ kind: 'refused', path: p, reason: 'auth-mode-api' })
+  })
+
+  // WhiteHat F1 follow-up (card 006b506b, on 06b48bd0): an UNREADABLE agent-config.json (as
+  // opposed to a genuinely absent one) must refuse, never silently become 'unset' -- the file
+  // might name oauthTokenFile, and there is no way to tell from a failed read.
+  it('an unreadable config read -> refused with config-unreadable, never unset', () => {
+    expect(decideOwnOauthToken({
+      configRead: { ok: false, reason: 'unreadable' },
+      isMainAgent: false, isRemote: false, isClaudeModel: true, authMode: 'shared',
+      hasExplicitConfigDir: false, hasClaudePlan: false, fleetTokenPath: fleet, uid: UID,
+    })).toEqual({ kind: 'refused', path: null, reason: 'config-unreadable', detail: '' })
+  })
+})
+
+describe('readAgentConfigForOauthDecision: distinguishes absent from unreadable (WhiteHat F1, card 006b506b)', () => {
+  it('a missing file (ENOENT) reads as ok, raw "{}" -- the one equivalent to "no field"', () => {
+    expect(readAgentConfigForOauthDecision(join(tmp, 'does-not-exist.json'))).toEqual({ ok: true, raw: '{}' })
+  })
+
+  it('an existing, readable file reads as ok with its actual bytes', () => {
+    const p = join(tmp, 'agent-config.json')
+    writeFileSync(p, '{"oauthTokenFile":"/x/y"}')
+    expect(readAgentConfigForOauthDecision(p)).toEqual({ ok: true, raw: '{"oauthTokenFile":"/x/y"}' })
+  })
+
+  it('a file that exists but cannot be read (mode 0000) reads as NOT ok -- never silently "{}"', () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return // root bypasses mode bits
+    const p = join(tmp, 'locked-config.json')
+    writeFileSync(p, '{"oauthTokenFile":"/x/y"}')
+    chmodSync(p, 0o000)
+    try {
+      expect(readAgentConfigForOauthDecision(p)).toEqual({ ok: false, reason: 'unreadable' })
+    } finally {
+      chmodSync(p, 0o600) // afterEach's rmSync needs permission to remove it
+    }
+  })
+
+  // THE MUTATION THIS PINS: swapping this reader back for the old `readFileOr(path, '{}')` makes
+  // the unreadable-file case above come back `{ ok: true, raw: '{}' }` instead -- resolving to
+  // 'unset' and starting the agent on the fleet token with nothing to show it. Measured pre-fix:
+  // the full suite (54 cases at the time) stayed green with exactly that swap.
+  it('an unreadable file fed through decideOwnOauthToken refuses -- not the fleet-token fallback', () => {
+    const p = join(tmp, 'locked-config2.json')
+    writeFileSync(p, '{"oauthTokenFile":"/x/y"}')
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return
+    chmodSync(p, 0o000)
+    try {
+      const decision = decideOwnOauthToken({
+        configRead: readAgentConfigForOauthDecision(p),
+        isMainAgent: false, isRemote: false, isClaudeModel: true, authMode: 'shared',
+        hasExplicitConfigDir: false, hasClaudePlan: false, fleetTokenPath: fleet, uid: UID,
+      })
+      expect(decision).toEqual({ kind: 'refused', path: null, reason: 'config-unreadable', detail: '' })
+    } finally {
+      chmodSync(p, 0o600)
+    }
   })
 })
 
@@ -346,6 +490,24 @@ describe('launcher wiring (agent-process.ts)', () => {
     expect(FN).not.toMatch(/readFileSync\(\s*own(TokenFile|Oauth)/)
   })
 
+  // WhiteHat F3 follow-up (card 006b506b): the re-check must run AFTER the 'own' claim is logged
+  // (inside the same `if (ownLaunch.kind === 'own')` block the log-gate test above pins) and
+  // BEFORE the launch command is built -- re-validating after the command already ran would be
+  // pointless, and skipping it entirely is the gap this card closes.
+  it('re-validates the file right next to the use, inside the own-token branch, before buildLaunchCmd', () => {
+    const ownBlockAt = FN.indexOf("if (ownLaunch.kind === 'own') {")
+    expect(ownBlockAt).toBeGreaterThan(0)
+    const reverifyAt = FN.indexOf('reverifyOauthTokenFile(', ownBlockAt)
+    expect(reverifyAt).toBeGreaterThan(ownBlockAt)
+    expect(reverifyAt).toBeLessThan(FN.indexOf('const buildLaunchCmd'))
+    expect(FN.slice(reverifyAt, reverifyAt + 400)).toMatch(
+      /reverifyOauthTokenFile\(ownLaunch\.path, ownLaunch\.fingerprint, \{[\s\S]*?\}\)/,
+    )
+    const refuseAt = FN.indexOf('if (!reverify.ok) {', reverifyAt)
+    expect(refuseAt).toBeGreaterThan(reverifyAt)
+    expect(FN.slice(refuseAt, refuseAt + 400)).toMatch(/return \{ ok: false, error: `oauthTokenFile: \$\{reverify\.reason\}/)
+  })
+
   // PR #1511 review mutant: `const ownTokenFile = ... ? ownOauth.path : null` -> `null`
   // left all tests green while the agent ran on the fleet token and the log still
   // claimed the own token. The link is pinned end to end: the ok path is handed to
@@ -374,8 +536,30 @@ describe('launcher wiring (agent-process.ts)', () => {
     expect(FN.split("ownOauth.kind === 'ok'").length - 1).toBe(1)
   })
 
+  // WhiteHat F4 follow-up (card 006b506b): the collision check must run BEFORE the remote branch
+  // and before any launch step (same timing requirement as the decision itself), and must refuse
+  // the start, not merely warn.
+  it('checks cross-agent collision before the remote branch, and refuses on a hit', () => {
+    const collisionAt = FN.indexOf('findOauthTokenFileCollision(')
+    expect(collisionAt).toBeGreaterThan(0)
+    expect(collisionAt).toBeLessThan(FN.indexOf('return startRemoteAgentProcess('))
+    expect(collisionAt).toBeLessThan(FN.indexOf('runTmux('))
+    const refuseAt = FN.indexOf('if (collision) {', collisionAt)
+    expect(refuseAt).toBeGreaterThan(collisionAt)
+    expect(FN.slice(refuseAt, refuseAt + 300)).toMatch(/return \{ ok: false, error: `oauthTokenFile: shared with agent/)
+  })
+
   it('the API cannot write the field (write path: manual agent-config edit only)', () => {
     const routes = readFileSync(join(__dirname, '../web/routes/agents.ts'), 'utf-8')
     expect(routes).not.toContain('oauthTokenFile')
+  })
+
+  // WhiteHat F1 follow-up (card 006b506b): the launcher must feed the decision via the
+  // fail-closed reader, not `readFileOr(path, '{}')` -- that helper is correct for every OTHER
+  // config field (missing/unreadable both mean "use defaults"), but wrong here specifically.
+  it('reads agent-config.json via readAgentConfigForOauthDecision, not readFileOr', () => {
+    const call = FN.slice(FN.indexOf('decideOwnOauthToken({'), FN.indexOf('isMainAgent:'))
+    expect(call).toContain("configRead: readAgentConfigForOauthDecision(join(dir, 'agent-config.json'))")
+    expect(call).not.toContain('readFileOr(')
   })
 })
