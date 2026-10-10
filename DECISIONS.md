@@ -18527,3 +18527,38 @@ sortores-flatten, oversized-entry `continue` nem `break`, `failed` mezo a hibrid
 **Ki dontott:** RedHat R1-R4 feltetelei (komment 14537, kartya 5a4bea2e); a konkret implementacio
 es a teszt-fedezet fullstack sajat merese/dontese (pl. a 0.15-os hasonlosagi kuszob erteke). Gate:
 QA + Cybersec (a javitas iranyat RedHat adta).
+
+## 2026-10-10 -- token-optimizer-mcp es ibelick-ui-skills: SKIP/NEM-TELEPITENDO dontes (kartya d587ee68, forras: d2666c85 leltar, 5. tetel)
+
+A d2666c85 leltar 5. tetelet a 2260a8ac kartya mar vegrehajtotta (store/watched-repos.json
+regisztracio mindket klonra, enabled=false), MEG MIELOTT d587ee68 self-advance-ban sorra kerult
+volna -- ezert d587ee68-nal nincs uj kod-/JSON-valtozas. A QA FAIL (@ce296659) ugy mutatta meg:
+a JSON-allapot rendben van, de a kartya CIME es leirasa EXPLICITEN ezt a lepest "dontes"-kent
+(skip/nem-telepitendo DONTES) nevezi meg -- ez a root CLAUDE.md Dontesnaplo-szabalya szerint
+DECISIONS.md-bejegyzest igenyel, amit a kanban-komment maga nem helyettesit. A 4 testver-tetel
+(00be4f09, 68bdd57b, 03199aae, 8d1c27c8) mindegyike kapott sajat bejegyzest -- ez az 5. maradt ki,
+mert a tenyleges vegrehajtas a 2260a8ac kartyan torent, dontesnaplo nelkul.
+
+A dontes maga:
+
+- **token-optimizer-mcp** (https://github.com/ooples/token-optimizer-mcp.git, rogzitett sha
+  dc1f9b0f5459e33d099668755067c8fae1bae09b, MIT licenc): klonozva, DE SZANDEKOSAN NEM
+  TELEPITVE/ADOPTALVA. Ok: a `scripts/postinstall.cjs` `npm install`-kor AUTOMATIKUSAN hookot
+  irna 15 AI-kliens configjaba, hacsak nincs CI/nem-globalis telepites -- ugyanaz a kockazat-
+  osztaly, amit a code-review-graph installerenel mar egyszer eltavolitottunk. Elo npm audit/OSV-
+  ellenorzes meg nem tortent. Ha egyszer adoptalasra kerul, csak a bevett "library-only, nincs
+  auto-hook, pinelt verzio, repon kivul telepitve" mintaval (mint code-review-graph/repomix/mcp-
+  compressor), sajat due-diligence kartyan.
+- **ibelick-ui-skills** (https://github.com/ibelick/ui-skills.git, rogzitett sha
+  ebf5f26cd275b1412be8a2c8784c4f8da628e7c2, MIT licenc, Julien Thibeaut): a tenyleges vendorlasa a
+  MAR nyitott f557353a (fron-ted) kartyan folyik -- enabled=false marad, amig az le nem zarul es a
+  sync-mod el nem dontik, git-watch-oljon-e vagy csak egyszeri vendor maradjon.
+
+QA fuggetlen ellenorzese (komment a d587ee68-on): SEMMI NEM TELEPULT -- nincs .mcp.json-bejegyzes,
+nincs package.json-fuggoseg, a store/adopted/token-optimizer-mcp klonban nincs dist/ es nincs
+node_modules/, a fo klon node_modules-aban nincs token-optimizer-* csomag, es a ~/.claude alatti
+kliens-config fajlok (a postinstall-hooktol felt celpontok) kozul egyik sem hivatkozik ra.
+
+**Ki dontott:** a token-optimizer-mcp skip-dontes maga a 2260a8ac kartyan torent (fullstack sajat
+merese/dontese a postinstall-hook kockazatrol); ez a bejegyzes a QA FAIL (d587ee68) altal
+hianyolt dokumentacios potlas, kod-/JSON-valtozas nelkul. Gate: QA (ujra).
