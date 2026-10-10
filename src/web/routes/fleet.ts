@@ -1,7 +1,23 @@
+import { createHash } from 'node:crypto'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
+import { findConsumableApproval, consumeApproval, findPendingApproval } from '../../db.js'
+import { createAndNotifyApproval } from './approvals.js'
 import type { RouteContext } from './types.js'
+
+// Card 68254bd7 (RedHat NO-GO 14837, MikroB decision 14841): the 'session'/'device' kind-check
+// below is a USEFUL early filter but WhiteHat/RedHat both measured that it is not a closed gate
+// on its own -- the shared fleet bearer can mint itself a session or device credential via three
+// separate routes (bridge-enroll, break-glass password reset + login, deleting the last user to
+// reopen the bootstrap exception), none of which this card's own scope covers (RedHat named them
+// as a broader "shared bearer is the dashboard's root" issue, routed to MikroB for its own,
+// separate decision). The kind-check therefore stays as an additional layer, never the only one:
+// an APPLYING import additionally requires a human-resolved, content-bound approval -- the same
+// approved/unconsumed/in-window/content_hash mechanism scripts/hooks/email-approval-gate.py
+// already uses for outgoing email, applied here from TypeScript instead of a PreToolUse hook.
+const FLEET_IMPORT_APPROVAL_CATEGORY = 'fleet_import_apply'
+const FLEET_IMPORT_APPROVAL_WINDOW_S = Number(process.env.FLEET_IMPORT_APPROVAL_WINDOW_S) || 1800
 
 export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -80,6 +96,38 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
       { authKind: ctx.auth?.kind ?? 'none', user: ctx.auth?.kind === 'session' ? ctx.auth.user : undefined, apply, allowRiskyFields, bodyBytes: rawBody.length },
       'Fleet import: request received',
     )
+
+    // Card 68254bd7 (MikroB decision 14841): apply=true additionally requires a human-RESOLVED
+    // approval bound to this EXACT payload (content_hash = sha256 of the raw import body, same
+    // binding style as EMAILKAPU901's envelope hash). No consumable approval yet -> open one (or
+    // reuse an already-pending one for this same hash, so a caller retrying before the owner has
+    // acted does not spam a fresh Telegram ping) and refuse the import for THIS call -- the
+    // caller must resubmit the identical body after the owner approves, which is exactly the
+    // pattern the email gate already trains agents on.
+    if (apply) {
+      const contentHash = createHash('sha256').update(rawBody).digest('hex')
+      const consumable = findConsumableApproval(FLEET_IMPORT_APPROVAL_CATEGORY, contentHash, FLEET_IMPORT_APPROVAL_WINDOW_S)
+      const consumed = consumable ? consumeApproval(consumable.id) : false
+      if (!consumed) {
+        const existingPending = findPendingApproval(FLEET_IMPORT_APPROVAL_CATEGORY, contentHash)
+        const approval = existingPending ?? createAndNotifyApproval({
+          agent_id: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? 'session') : 'device-key',
+          category: FLEET_IMPORT_APPROVAL_CATEGORY,
+          action_description: `Fleet import apply (${rawBody.length} bytes, allowRiskyFields=${allowRiskyFields})`,
+          content_hash: contentHash,
+        })
+        logger.warn(
+          { authKind: ctx.auth?.kind, approvalId: approval.id, contentHash },
+          'Fleet import: apply=true refused pending human approval',
+        )
+        json(res, {
+          error: 'Fleet import (apply=true) requires a human-approved request. An approval has been opened; resubmit the identical body once it is approved.',
+          approval_id: approval.id,
+        }, 403)
+        return true
+      }
+      logger.info({ approvalId: consumable!.id, contentHash }, 'Fleet import: apply=true approval consumed')
+    }
 
     // importFleet handles JSON parse (and encrypted blob detection) internally
     try {

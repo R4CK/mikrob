@@ -87,9 +87,16 @@ describe('buildOwnerApprovalText (leg 1: what the owner reads)', () => {
 
 describe('wiring contracts on the route source', () => {
   it('the POST handler notifies the OWNER, not only the main agent', () => {
+    // Card 68254bd7 (MikroB 14841): the create+notify sequence moved into a shared
+    // createAndNotifyApproval() function (so POST /api/fleet/import?apply=true can reuse it
+    // without a second HTTP round-trip) -- the POST handler now DELEGATES to it rather than
+    // calling notifyOwner/notifyMainAgent inline. Pin both layers: the handler reaches the
+    // shared function, and that function's OWN body still calls owner before main-agent.
     const post = ROUTE.slice(ROUTE.indexOf("path === '/api/approvals' && method === 'POST'"))
-    const owner = post.indexOf('notifyOwner(approval)')
-    const main = post.indexOf('notifyMainAgent(approval)')
+    expect(post.indexOf('createAndNotifyApproval(')).toBeGreaterThan(0)
+    const shared = ROUTE.slice(ROUTE.indexOf('export function createAndNotifyApproval('))
+    const owner = shared.indexOf('notifyOwner(approval)')
+    const main = shared.indexOf('notifyMainAgent(approval)')
     expect(owner).toBeGreaterThan(0)
     expect(main).toBeGreaterThan(owner)
   })
@@ -107,7 +114,12 @@ describe('wiring contracts on the route source', () => {
   })
 
   it('the POST handler reads timeout_seconds from the body', () => {
-    expect(ROUTE).toContain('computeTimeoutAt(category, timeout_seconds)')
+    // Same createAndNotifyApproval extraction as above: the POST handler passes timeout_seconds
+    // THROUGH to the shared function, which is what actually calls computeTimeoutAt now.
+    const post = ROUTE.slice(ROUTE.indexOf("path === '/api/approvals' && method === 'POST'"))
+    expect(post).toContain('timeout_seconds,')
+    const shared = ROUTE.slice(ROUTE.indexOf('export function createAndNotifyApproval('))
+    expect(shared).toContain('computeTimeoutAt(params.category, params.timeout_seconds)')
   })
 
   it('a failed owner send is loud, not silent', () => {
