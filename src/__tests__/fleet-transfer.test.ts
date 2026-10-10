@@ -615,10 +615,12 @@ describe('importFleet: risky fields (toolDeny/securityProfile/capabilities/custo
     expect(config.model).toBe('claude-opus-5-5')
   })
 
-  it('default (no allowRiskyFields): settings.hooks stripped, other settings keys survive', async () => {
+  // Card 68254bd7 F2 (WhiteHat NO-GO 14284): settings.json's allowlist is EMPTY -- every key is
+  // either directly executable or privilege-shaping, and the file is regenerated from the
+  // agent's security profile on every spawn anyway, so there is no key this path needs to carry.
+  it('default (no allowRiskyFields): the ENTIRE settings object is stripped, not just hooks', async () => {
     const { settings } = await importAndRead({}, RISKY_SETTINGS)
-    expect(settings).not.toHaveProperty('hooks')
-    expect(settings.other).toBe('kept')
+    expect(settings).toEqual({})
   })
 
   it('default: the apply result carries a warning naming the stripped fields', async () => {
@@ -626,8 +628,10 @@ describe('importFleet: risky fields (toolDeny/securityProfile/capabilities/custo
     expect((result as { warnings?: string[] }).warnings?.some((w) => w.includes('toolDeny'))).toBe(true)
   })
 
-  it('a config/settings with none of the risky fields produces no warning', async () => {
-    const { result } = await importAndRead({ model: 'claude-opus-5-5' }, { other: 'kept' })
+  it('a config/settings with nothing outside the allowlist produces no warning', async () => {
+    // settings.json's allowlist is EMPTY (see the test above), so "no risky settings" means an
+    // empty settings object, not merely "no hooks key" -- any settings content is risky now.
+    const { result } = await importAndRead({ model: 'claude-opus-5-5' }, {})
     expect((result as { warnings?: string[] }).warnings ?? []).toEqual([])
   })
 
@@ -657,5 +661,96 @@ describe('importFleet: risky fields (toolDeny/securityProfile/capabilities/custo
   it('MUTATION PIN: without stripping, the risky fields would be written verbatim (self-check)', () => {
     expect(JSON.stringify(RISKY_CONFIG)).toContain('toolDeny')
     expect(JSON.stringify(RISKY_SETTINGS)).toContain('hooks')
+  })
+
+  // Card 68254bd7 F4 (WhiteHat NO-GO 14284): writeMainAgentFiles calls the SAME
+  // stripRiskyConfigFields/stripRiskySettings as writeAgentFiles, but only the sub-agent branch
+  // (above) had a test pinning it -- the MAIN agent branch (MikroB/mainAgent, not agents[]) had
+  // none, so a copy-paste that skipped the strip there specifically would have gone unnoticed.
+  it('the MAIN agent branch strips risky fields too, not just sub-agents', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    ;(atomicWriteFileSync as any).mockClear()
+    const fleet = {
+      schemaVersion: 1,
+      exportedAt: '2026-01-01T00:00:00.000Z',
+      sourceHost: 'attacker',
+      mainAgent: {
+        config: RISKY_CONFIG, claudeMd: '', soulMd: '', mcp: {}, settings: RISKY_SETTINGS, channelsAccess: {},
+      },
+      agents: [], skills: [], scheduledTasks: [], memories: [], dailyLogs: [],
+      kanban: { cards: [], comments: [], cardEvents: [], labels: [], cardLabels: [] },
+      ideaBox: { ideas: [], comments: [], statusLog: [] },
+      dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
+    }
+    importFleet(JSON.stringify(fleet), { apply: true })
+    const calls = (atomicWriteFileSync as any).mock.calls
+    const configCall = calls.find((c: string[]) => c[0]?.endsWith('agent-config.json') && !c[0]?.includes('/agents/'))
+    const settingsCall = calls.find((c: string[]) => c[0]?.endsWith('settings.json') && !c[0]?.includes('/agents/'))
+    expect(configCall, 'main agent-config.json was never written').toBeDefined()
+    expect(settingsCall, 'main settings.json was never written').toBeDefined()
+    expect(JSON.parse(configCall![1] as string)).not.toHaveProperty('toolDeny')
+    expect(JSON.parse(settingsCall![1] as string)).toEqual({})
+  })
+
+  // Proves the ALLOWLIST property itself, not just the four named keys: a field nobody has named
+  // yet (not toolDeny/securityProfile/capabilities/customProvider) is stripped too, because it is
+  // simply not on SAFE_CONFIG_IMPORT_KEYS -- a blocklist would have let this one through.
+  it('an UNNAMED, unrecognized config key is stripped too (allowlist, not blocklist)', async () => {
+    const { config } = await importAndRead({ model: 'claude-opus-5-5', someFutureField: 'danger' }, {})
+    expect(config).not.toHaveProperty('someFutureField')
+    expect(config.model).toBe('claude-opus-5-5')
+  })
+
+  // Card 68254bd7 F2 point (c): .mcp.json's command/args pass through deplaceholderMcp untouched
+  // (it only de-placeholders env/headers vault refs) -- stripRiskyMcpCommands closes that.
+  describe('.mcp.json command/args', () => {
+    const fleetWithMcp = (mcp: Record<string, unknown>): string => JSON.stringify({
+      schemaVersion: 1,
+      exportedAt: '2026-01-01T00:00:00.000Z',
+      sourceHost: 'attacker',
+      agents: [{
+        name: 'victim',
+        config: {}, claudeMd: '', soulMd: '', mcp, settings: {}, channelsAccess: {}, agentSkills: [],
+      }],
+      skills: [], scheduledTasks: [], memories: [], dailyLogs: [],
+      kanban: { cards: [], comments: [], cardEvents: [], labels: [], cardLabels: [] },
+      ideaBox: { ideas: [], comments: [], statusLog: [] },
+      dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
+    })
+    const RISKY_MCP = { mcpServers: { evil: { command: 'curl', args: ['evil.example.com'] } } }
+
+    const importAndReadMcp = async (
+      mcp: Record<string, unknown>,
+      options: { allowRiskyFields?: boolean } = {},
+    ): Promise<Record<string, unknown>> => {
+      const { importFleet } = await import('../web/fleet-transfer.js')
+      const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+      ;(atomicWriteFileSync as any).mockClear()
+      importFleet(fleetWithMcp(mcp), { apply: true, ...options })
+      const calls = (atomicWriteFileSync as any).mock.calls
+      const mcpCall = calls.find((c: string[]) => c[0]?.includes('/victim/') && c[0]?.endsWith('.mcp.json'))
+      return JSON.parse(mcpCall![1] as string)
+    }
+
+    it('default: command/args stripped, rest of the server entry survives', async () => {
+      const mcpWithUrl = { mcpServers: { evil: { command: 'curl', args: ['x'], url: 'http://127.0.0.1:1' } } }
+      const result = await importAndReadMcp(mcpWithUrl)
+      const server = (result.mcpServers as Record<string, Record<string, unknown>>).evil
+      expect(server).not.toHaveProperty('command')
+      expect(server).not.toHaveProperty('args')
+      expect(server.url).toBe('http://127.0.0.1:1')
+    })
+
+    it('allowRiskyFields: true imports command/args verbatim', async () => {
+      const result = await importAndReadMcp(RISKY_MCP, { allowRiskyFields: true })
+      const server = (result.mcpServers as Record<string, Record<string, unknown>>).evil
+      expect(server.command).toBe('curl')
+      expect(server.args).toEqual(['evil.example.com'])
+    })
+
+    it('MUTATION PIN: without stripping, command/args would be written verbatim (self-check)', () => {
+      expect(JSON.stringify(RISKY_MCP)).toContain('curl')
+    })
   })
 })

@@ -113,7 +113,8 @@ describe('agent launch command: vault keys are shell-escaped (card 1075d0e4)', (
     // provider-env-adoption.test.ts's PROVENANCE suite, which can see resolveProviderEnv's body in
     // isolation. This test only needs to know the sink shape is present, not re-derive provenance.
     const keyRefSinks = SRC.match(/ANTHROPIC_(?:AUTH_TOKEN|API_KEY)=\$\{keyRef\}/g) ?? []
-    expect(keyRefSinks.length, 'expected the deepseek and openrouter provider branches to use ${keyRef}').toBe(2)
+    // Card f1800242 added a third: the custom-provider branch's own `const keyRef = secretShellRef(...)`.
+    expect(keyRefSinks.length, 'expected the deepseek, openrouter and custom-provider branches to use ${keyRef}').toBe(3)
     // The third call site, the per-agent BYO ANTHROPIC_API_KEY in startAgentProcess, calls
     // launchSecretRef(...) directly rather than through a keyRef binding.
     const directCalls = SRC.match(/ANTHROPIC_API_KEY=\$\{launchSecretRef\(/g) ?? []

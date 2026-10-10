@@ -276,5 +276,34 @@ case "$OUT" in
   *) fail "G3: agent dir name with a single quote -> resolves normally, no shell escape" "$OUT" ;;
 esac
 
+# 21) QA FAIL follow-up (card bc32d233, 2026-10-10): a truly EMPTY, whitespace-only, or
+#     NUL-containing config file (a realistic crash-mid-non-atomic-write result) named neither
+#     KEY_QUOTED nor a truncated key tail, so it fell through json.loads' except-branch to ""
+#     (unset) -> the FLEET token -- the G1 fail-open class, on whole-file instead of field-level
+#     corruption. Three sub-cases, each must refuse at the config level, never fleet-fallback.
+rm -f "$AGENT_OWN/agent-config.json"
+: > "$AGENT_OWN/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=config-unreadable") pass "21a: empty (0-byte) config -> refuse, no fleet fallback" ;;
+  *) fail "21a: empty (0-byte) config -> refuse, no fleet fallback" "$OUT" ;;
+esac
+
+printf '   \n  ' > "$AGENT_OWN/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=config-unreadable") pass "21b: whitespace-only config -> refuse, no fleet fallback" ;;
+  *) fail "21b: whitespace-only config -> refuse, no fleet fallback" "$OUT" ;;
+esac
+
+printf '{"foo":1}\x00{"bar":2}' > "$AGENT_OWN/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=config-unreadable") pass "21c: NUL-containing config (key not named) -> refuse, no fleet fallback" ;;
+  *) fail "21c: NUL-containing config (key not named) -> refuse, no fleet fallback" "$OUT" ;;
+esac
+rm -rf "$AGENT_OWN/agent-config.json"
+write_own_config
+
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

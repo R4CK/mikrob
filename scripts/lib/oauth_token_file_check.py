@@ -66,6 +66,16 @@ def resolve(agent_dir: str) -> str:
         except OSError:
             return "REFUSE:config-unreadable"
 
+        # QA FAIL (card bc32d233, 2026-10-10): a truly empty, whitespace-only, or NUL-containing
+        # config file (the realistic result of a crash mid non-atomic write) named neither test nor
+        # key below -- json.loads raises, but KEY_QUOTED is absent and the file does not end in a
+        # truncated key name, so this fell through to "" (unset) -> the FLEET token, exactly the
+        # fail-open class G1 exists to close, just on whole-file instead of field-level corruption.
+        # Mirrors readAgentConfigForOauthDecision's OWN pre-json.loads check, same order: raw-text
+        # degeneracy is checked BEFORE parsing, never inferred from the parse failure.
+        if raw.strip() == "" or "\0" in raw:
+            return "REFUSE:config-unreadable"
+
     try:
         config = json.loads(raw)
     except Exception:
