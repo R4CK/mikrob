@@ -107,25 +107,32 @@ import argparse, hashlib, json, os, re, sqlite3, sys, time, urllib.error, urllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ENV_FILE = os.path.join(ROOT, "store", "seeme-gateway.env")
-# INTERNAL_FILE es DASH_TOKEN_FILE felulirhato env-valtozoval -- KIZAROLAG a
-# hermetikus teszt (seeme-send.test.sh) miatt, ami egy fris checkoutban (CI,
-# uj worktree) SOSEM latja a valodi store/ tartalmat (gitignore-olt). Alapertelmezett
-# viselkedes valtozatlan: eles hasznalatnal egyik env-valtozo sincs beallitva, tehat
-# a ROOT-hoz kepesti utvonal marad ervenyben. Mert eset: script-tests-runner.test.ts
-# a CI-n PIROSAT adott (`osztalyozas` mindig KULSO -- "a fajl NEM LETEZIK"), mert a
-# +36305552860 teszt-szam csak az EN sajat, nem-committolt store/seeme-internal-
-# numbers.json-omban szerepelt -- egy fris checkout ezt sosem latja.
-INTERNAL_FILE = os.environ.get("SEEME_INTERNAL_FILE") or os.path.join(ROOT, "store", "seeme-internal-numbers.json")
+# INTERNAL_FILE es DB_PATH felulirhato env-valtozoval -- KIZAROLAG a hermetikus
+# teszt (seeme-send.test.sh) miatt, ami egy fris checkoutban (CI, uj worktree)
+# SOSEM latja a valodi store/ tartalmat (gitignore-olt). 34573931 (RedHat A2,
+# meres: egy privat hamis DB-vel rc=0, egy tamado-megadta belso-lista-fajllal
+# rc=0): a felulirast SEEME_TEST_MODE=1-hez kotjuk, amit eles hasznalatnal SOHA
+# senki nem allit be -- enelkul BARKI, aki a szkriptet hivo folyamat env-jet
+# befolyasolja (pl. egy prompt-injektalt agent), a sajat irhato DB-jere/listajara
+# iranyithatta a kaput. Alapertelmezett viselkedes valtozatlan: a ROOT-hoz kepesti
+# utvonal marad ervenyben. Mert eset: script-tests-runner.test.ts a CI-n PIROSAT
+# adott (`osztalyozas` mindig KULSO -- "a fajl NEM LETEZIK"), mert a +36305552860
+# teszt-szam csak az EN sajat, nem-committolt store/seeme-internal-numbers.json-
+# omban szerepelt -- egy fris checkout ezt sosem latja.
+_TEST_MODE = os.environ.get("SEEME_TEST_MODE") == "1"
+INTERNAL_FILE = (_TEST_MODE and os.environ.get("SEEME_INTERNAL_FILE")) or os.path.join(ROOT, "store", "seeme-internal-numbers.json")
 LOG_FILE = os.path.join(ROOT, "store", "seeme-send.log")
 # 779b9660 (fd10c70b WhiteHat F1): approval verification moved from an HTTP round
 # trip to the same direct-SQLite, atomic-consume pattern as
 # scripts/hooks/email-approval-gate.py (EMAILKAPU901 PR2) -- that file already
 # carries the reviewed one-shot-consumption design for this exact table, so this
-# reuses it rather than inventing a second one. SEEME_DB_PATH is override-only,
-# same reason as SEEME_INTERNAL_FILE above: a fresh checkout's store/ never has
-# the real DB.
-DB_PATH = os.environ.get("SEEME_DB_PATH") or os.path.join(ROOT, "store", "claudeclaw.db")
-APPROVAL_WINDOW_S = int(os.environ.get("SEEME_APPROVAL_WINDOW_S", "1800"))
+# reuses it rather than inventing a second one. DB_PATH is override-only, same
+# reason and same SEEME_TEST_MODE gate as INTERNAL_FILE above.
+DB_PATH = (_TEST_MODE and os.environ.get("SEEME_DB_PATH")) or os.path.join(ROOT, "store", "claudeclaw.db")
+# 34573931 (RedHat A2, meres: 90 napos johavagyas, felfujt ablakkal, atment):
+# nincs env-felulirasa es nem is lesz -- semmilyen hivo folyamat nem allithatja
+# at a frissesseg-ablakot, tehat ez nem tamadhato ugyanazzal a mintaval.
+APPROVAL_WINDOW_S = 1800
 DEFAULT_BASE = "https://seeme.hu/gateway"
 # Elovigyazatossagbol, NEM mert protekcio -- lasd a fejlecet.
 USER_AGENT = "kaszap-jobs-seeme-gateway/1.0 (+marveen)"
