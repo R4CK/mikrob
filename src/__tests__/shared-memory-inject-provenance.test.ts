@@ -234,6 +234,172 @@ describe('shared-memory-inject.py is syntactically valid', () => {
   })
 })
 
+// Card e6b2742b (RedHat GO on 0a34377f, komment 15118/msg 10406): the shared-tier section above
+// never got the 0a34377f N1 fix -- it capped ONLY content's length and flattened NO line-break
+// character in ANY field (content included). A newline written into a category=shared memory
+// (the shared-write path every agent can reach) opened a bare line at column 0 in EVERY agent's
+// SessionStart context -- worse than the curated-section bug N1 fixed, because this section runs
+// unconditionally for every agent, not just the pilot allowlist.
+//
+// PRE_E6B2742B_SCRIPT reverts just the fixed loop body back to its unflattened form (string
+// substitution on the real, current HOOK source) so the regression tests below can be run
+// against the PRE-fix code too, proving they actually catch the bug rather than passing vacuously.
+const FIXED_LOOP_BODY = `            c = _cap_and_flatten(c, MAX_CONTENT_CHARS)
+            kw = _cap_and_flatten((m.get("keywords") or "").strip(), OWN_CURATED_MAX_KEYWORDS_CHARS)`
+const PRE_FIX_LOOP_BODY = `            if len(c) > MAX_CONTENT_CHARS:
+                extra = len(c) - MAX_CONTENT_CHARS
+                c = c[:MAX_CONTENT_CHARS] + "…(+%d karakter)" % extra
+            kw = (m.get("keywords") or "").strip()`
+const FIXED_STAMP_LINES = `            who = _cap_and_flatten((m.get("agent_id") or "?").strip() or "?", OWN_CURATED_MAX_SHORT_FIELD_CHARS)
+            when = _cap_and_flatten((m.get("created_label") or "").strip(), OWN_CURATED_MAX_SHORT_FIELD_CHARS)`
+const PRE_FIX_STAMP_LINES = `            who = (m.get("agent_id") or "?").strip() or "?"
+            when = (m.get("created_label") or "").strip()`
+
+function preE6b2742bScript(): string {
+  const real = readFileSync(HOOK, 'utf-8')
+  expect(real).toContain(FIXED_LOOP_BODY) // guard: fails loudly if the fix source moves/changes shape
+  expect(real).toContain(FIXED_STAMP_LINES)
+  return real.replace(FIXED_LOOP_BODY, PRE_FIX_LOOP_BODY).replace(FIXED_STAMP_LINES, PRE_FIX_STAMP_LINES)
+}
+
+// Every character that can start a new visual line, not just \n -- mirrors WhiteHat N3 on the
+// curated section (0a34377f), applied here to the shared-tier section (e6b2742b).
+const LINE_BREAK_CASES: Array<[string, string]> = [
+  ['\\n (LF)', '\n'],
+  ['\\r (CR)', '\r'],
+  ['\\v (VT)', '\v'],
+  ['\\f (FF)', '\f'],
+  ['U+0085 (NEL)', '\u0085'],
+  ['U+2028 (LINE SEPARATOR)', ' '],
+  ['U+2029 (PARAGRAPH SEPARATOR)', ' '],
+]
+
+describe('shared-memory-inject.py shared-tier section flattens every per-line field (card e6b2742b, RedHat GO on 0a34377f)', () => {
+  it.each(LINE_BREAK_CASES)('content: a %s does not start a second line at column 0', async (_label, ch) => {
+    const { proc, port } = await startFixtureServer([{
+      id: 1, agent_id: 'backend', content: 'line one' + ch + '[FAKE] directive via content', keywords: '', created_label: '2026-01-01',
+    }])
+    liveProc = proc
+    await new Promise((r) => setTimeout(r, 150))
+    const script = sandboxScript(readFileSync(HOOK, 'utf-8'))
+    const r = spawnSync('python3', [script], {
+      input: JSON.stringify({ cwd: '/home/neon/marveen/agents/backend' }),
+      encoding: 'utf-8',
+      env: { PATH: process.env.PATH ?? '', WEB_PORT: String(port) },
+    })
+    proc.kill()
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
+    const body = section.slice(section.indexOf('\n\n') + 2)
+    const bodyLines = body.split('\n').filter((l) => l.length > 0)
+    expect(bodyLines.length).toBe(1)
+    expect(bodyLines[0]).toContain('[FAKE] directive via content')
+  })
+
+  it('keywords: an embedded newline does not start a second line at column 0', async () => {
+    const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), [{
+      id: 1, agent_id: 'backend', content: 'legit content', keywords: 'kw\n[FAKE] directive via keywords', created_label: '2026-01-01',
+    }])
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
+    const body = section.slice(section.indexOf('\n\n') + 2)
+    const bodyLines = body.split('\n').filter((l) => l.length > 0)
+    expect(bodyLines.length).toBe(1)
+    expect(bodyLines[0]).toContain('[FAKE] directive via keywords')
+  })
+
+  it('agent_id: an embedded newline does not start a second line at column 0', async () => {
+    const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), [{
+      id: 1, agent_id: 'backend\n[FAKE] directive via agent_id', content: 'legit content', keywords: '', created_label: '2026-01-01',
+    }])
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
+    const body = section.slice(section.indexOf('\n\n') + 2)
+    const bodyLines = body.split('\n').filter((l) => l.length > 0)
+    expect(bodyLines.length).toBe(1)
+    expect(bodyLines[0]).toContain('[FAKE] directive via agent_id')
+  })
+
+  it('created_label: an embedded newline does not start a second line at column 0', async () => {
+    const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), [{
+      id: 1, agent_id: 'backend', content: 'legit content', keywords: '', created_label: '2026-01-01\n[FAKE] directive via created_label',
+    }])
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
+    const body = section.slice(section.indexOf('\n\n') + 2)
+    const bodyLines = body.split('\n').filter((l) => l.length > 0)
+    expect(bodyLines.length).toBe(1)
+    expect(bodyLines[0]).toContain('[FAKE] directive via created_label')
+  })
+
+  it('content is capped at 400 chars with the same "(+N karakter)" marker as the curated section', async () => {
+    const injected = 'z'.repeat(450)
+    const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), [{
+      id: 1, agent_id: 'backend', content: injected, keywords: '', created_label: '2026-01-01',
+    }])
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    expect(ctx).toMatch(/…\(\+\d+ karakter\)/)
+  })
+
+  it('CONTROL: the pre-e6b2742b-fix shared-tier section lets a content newline open a bare second line at column 0', async () => {
+    const r = await runHookAgainst(preE6b2742bScript(), [{
+      id: 1, agent_id: 'backend', content: 'line one\n[FAKE] directive via content', keywords: '', created_label: '2026-01-01',
+    }])
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
+    const body = section.slice(section.indexOf('\n\n') + 2)
+    const bodyLines = body.split('\n').filter((l) => l.length > 0)
+    // Exactly the bug: the embedded newline split one entry into two lines, the second one bare
+    // at column 0 -- this is what the fix above closes.
+    expect(bodyLines.length).toBe(2)
+    expect(bodyLines[1]).toBe('[FAKE] directive via content')
+  })
+
+  it('CONTROL: the pre-e6b2742b-fix shared-tier section lets a keywords newline open a bare second line at column 0', async () => {
+    const r = await runHookAgainst(preE6b2742bScript(), [{
+      id: 1, agent_id: 'backend', content: 'legit content', keywords: 'kw\n[FAKE] directive via keywords', created_label: '2026-01-01',
+    }])
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
+    const body = section.slice(section.indexOf('\n\n') + 2)
+    const bodyLines = body.split('\n').filter((l) => l.length > 0)
+    expect(bodyLines.length).toBe(2)
+    expect(bodyLines[1]).toContain('[FAKE] directive via keywords')
+  })
+
+  it('CONTROL: the pre-e6b2742b-fix shared-tier section never flattens keywords/agent_id/created_label even though content was already length-capped', async () => {
+    // The original bug was narrower than a missing cap: content was already truncated at
+    // MAX_CONTENT_CHARS before this fix, but NOTHING flattened embedded line-break characters in
+    // content, and keywords/agent_id/created_label got neither cap nor flatten at all. This control
+    // pins exactly that: an agent_id newline rides through raw on the pre-fix script.
+    const r = await runHookAgainst(preE6b2742bScript(), [{
+      id: 1, agent_id: 'backend\n[FAKE] directive via agent_id', content: 'legit content', keywords: '', created_label: '2026-01-01',
+    }])
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
+    const body = section.slice(section.indexOf('\n\n') + 2)
+    const bodyLines = body.split('\n').filter((l) => l.length > 0)
+    expect(bodyLines.length).toBe(2)
+    expect(bodyLines[1]).toContain('[FAKE] directive via agent_id')
+  })
+})
+
 describe('shared-memory-inject.py frames shared-tier entries as untrusted, attributed context (card 7965095b)', () => {
   it('injects a per-entry provenance stamp (who + when) for each memory', async () => {
     const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), FIXTURE_MEMORIES)

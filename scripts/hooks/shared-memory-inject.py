@@ -286,17 +286,22 @@ def main():
     for m in (mems or []):
         c = (m.get("content") or "").strip()
         if c:
-            if len(c) > MAX_CONTENT_CHARS:
-                extra = len(c) - MAX_CONTENT_CHARS
-                c = c[:MAX_CONTENT_CHARS] + "…(+%d karakter)" % extra
-            kw = (m.get("keywords") or "").strip()
+            # Card e6b2742b (RedHat GO on 0a34377f, komment 15118/msg 10406): this shared-tier
+            # section never got the 0a34377f N1 fix -- it still truncated ONLY content, and did
+            # not flatten line breaks in ANY field (content included). A newline written into a
+            # category=shared memory (the shared-write path any agent can reach) opened a bare
+            # line at column 0 in EVERY agent's SessionStart context, the exact injection the
+            # curated section's _cap_and_flatten already closes on its own branch. Same helper,
+            # same per-field caps, applied here too.
+            c = _cap_and_flatten(c, MAX_CONTENT_CHARS)
+            kw = _cap_and_flatten((m.get("keywords") or "").strip(), OWN_CURATED_MAX_KEYWORDS_CHARS)
             # Provenance (card 7965095b): who wrote this entry and when, so the
             # reader can see it is ANOTHER agent's recollection, not a system
             # directive. agent_id is caller-supplied at write time and not itself
             # authenticated -- this is not an identity guarantee, only a label
             # that lets a reader notice an implausible claimed author.
-            who = (m.get("agent_id") or "?").strip() or "?"
-            when = (m.get("created_label") or "").strip()
+            who = _cap_and_flatten((m.get("agent_id") or "?").strip() or "?", OWN_CURATED_MAX_SHORT_FIELD_CHARS)
+            when = _cap_and_flatten((m.get("created_label") or "").strip(), OWN_CURATED_MAX_SHORT_FIELD_CHARS)
             stamp = "[%s%s]" % (who, (", " + when) if when else "")
             lines.append("- " + stamp + " " + c + ((" (%s)" % kw) if kw else ""))
 
