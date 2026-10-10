@@ -403,5 +403,19 @@
     "description": "Kontextusablak-optimalizáló MCP-szerver (külső cache/tömörítés). Klónozva, DE SOHA NEM REGISZTRÁLVA -- registry-rés, a napi sync nem látta.",
     "enabled_reason": "NEM ADOPTÁLT, NEM TELEPÍTETT. Csak most regisztrálva (kártya 2260a8ac, a d2666c85 leltár találta meg nem-regisztrált klónként). Piros zászló: scripts/postinstall.cjs `npm install`-kor AUTOMATIKUSAN telepít hookokat 15 AI-kliens configjába, hacsak nincs CI/nem-globális telepítés -- ugyanaz az osztály, amit a code-review-graph installerénél már egyszer eltávolítottunk. Élő npm audit/OSV-ellenőrzés MÉG NEM történt. Ha adoptálásra kerül, csak a bevett 'library-only, nincs auto-hook, pinelt verzió, repon kívül telepítve' mintával (mint code-review-graph/repomix/mcp-compressor), saját due-diligence kártyán.",
     "note": "REGISZTRÁLVA 2026-10-10 (kártya 2260a8ac, fullstack), a d2666c85 leltár (komment 14016) találta meg nem-regisztrált klónként store/adopted/token-optimizer-mcp alatt. Lemezen mért utolsó commit 2026-07-31, sha dc1f9b0f5459e33d099668755067c8fae1bae09b. MIT licenc (LICENSE fájl ellenőrizve). Nincs dist/ build jelen -- soha nem lett nálunk telepítve/futtatva, csak klónozva. A repóban commitolt néhány példa-fájl windows-os C:\\Users\\cheat\\... útvonalakra hivatkozik -- ez a feltöltő saját gépének maradványa, nem a mi futásunk nyoma. Nincs adoptálási döntés ebben a körben -- csak katalogizálás, ahogy a d2666c85 kártya kérte."
+  },
+  {
+    "name": "ibelick-ui-skills",
+    "repo": "https://github.com/ibelick/ui-skills.git",
+    "branch": "main",
+    "local": "/home/neon/marveen/store/adopted/ibelick__ui-skills",
+    "type": "code",
+    "enabled": false,
+    "kind": "skill",
+    "adoption": "none",
+    "license": "MIT",
+    "reviewed_at": "2026-10-10",
+    "description": "A ui-skills.dev teljes Astro-weboldala, 7 frontend/design SKILL.md-vel a skills/ alkonyvtarban (baseline-ui, create-design-md, fixing-accessibility, fixing-metadata, fixing-motion-performance, improve-ui, ui-skills-root).",
+    "enabled_reason": "REGISZTRALVA 2026-10-10 (kartya 2260a8ac, fullstack), qa2 QA FAIL-je (komment 14037, kartya d2666c85) talalta meg nem-regisztralt klonkent store/adopted/ibelick__ui-skills alatt. Utolso commit 2026-09-30, sha ebf5f26cd275b1412be8a2c8784c4f8da628e7c2. MIT licenc (LICENSE fajl ellenorizve, Julien Thibeaut). Nincs postinstall/auto-hook script (package.json scriptjei artalmatlan Astro-site-eszkozok: dev/build/test/typecheck/smoke). A tenyleges vendoralasa a MAR nyitott f557353a kartyan (fron-ted) folyik -- enabled=false marad, amig az le nem zarul es a sync-mod el nem dontik, git-watch-oljon-e vagy csak egyszeri vendor maradjon."
   }
 ]
