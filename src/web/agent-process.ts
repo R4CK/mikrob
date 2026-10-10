@@ -62,7 +62,7 @@ import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
-import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
+import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited, toDeniedMcpServerEntries } from './mcp-inheritance.js'
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
@@ -1074,6 +1074,30 @@ function provisionIsolatedConfigDir(
     // kills the second bot on every restart.
     for (const pid of extraPluginIds) scopedPlugins[pid] = true
     settings.enabledPlugins = scopedPlugins
+
+    // Card 67e73b48 (RedHat R1 follow-up, 1d31cfcc): the gap-fill/scaffold/seed paths above only
+    // filter what THIS agent's own config files receive -- they cannot stop the Claude Code CLI's
+    // ancestor-directory .mcp.json discovery, which hands every agent PROJECT_ROOT/.mcp.json's
+    // servers regardless of that filter. `deniedMcpServers` (settings.json, merges from every
+    // scope, verified against the live docs 2026-10-10) genuinely blocks a matching server
+    // regardless of origin -- so deny-list the root servers this agent did not inherit. Force-set
+    // on every provision, same posture as enabledPlugins above: recomputed from the current root
+    // .mcp.json + allowlist, never preserved stale from an older copy. The main agent is exempt
+    // (its config mirrors the operator's own, same exemption as readInheritableMcpServerNames).
+    if (name === MAIN_AGENT_ID) {
+      delete settings.deniedMcpServers
+    } else {
+      const rootMcpPath = join(PROJECT_ROOT, '.mcp.json')
+      let rootServers: Record<string, unknown> = {}
+      if (existsSync(rootMcpPath)) {
+        try {
+          const parsed = JSON.parse(readFileSync(rootMcpPath, 'utf-8')) as { mcpServers?: unknown }
+          if (isPlainObject(parsed.mcpServers)) rootServers = parsed.mcpServers as Record<string, unknown>
+        } catch { /* unparseable root file -- nothing to deny-list from it */ }
+      }
+      const { dropped } = filterInheritableMcpServers(rootServers, readInheritableMcpServerNames())
+      settings.deniedMcpServers = toDeniedMcpServerEntries(dropped)
+    }
     // Keys the isolated file already carries that the shared file never
     // mentions must SURVIVE this rewrite. The rewrite runs on every main-agent
     // start, so a straight copy silently drops agent-only configuration. That

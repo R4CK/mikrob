@@ -85,3 +85,18 @@ export function logNotInherited(name: string, path: 'scaffold' | 'seed' | 'seed-
     'MCP inheritance: servers not on the inheritable list were not given to the agent',
   )
 }
+
+/**
+ * Card 67e73b48 (RedHat R1 follow-up, 1d31cfcc): the inheritance filter above only governs what
+ * a fresh agent's OWN config files receive -- it cannot stop the Claude Code CLI's own
+ * ancestor-directory .mcp.json discovery, which hands every agent PROJECT_ROOT/.mcp.json's
+ * servers regardless of this list (see the module header). `deniedMcpServers` in settings.json
+ * is a genuine denylist that merges from every settings scope and blocks a matching server
+ * regardless of where it was declared (code.claude.com/docs/en/managed-mcp, verified live
+ * 2026-10-10) -- unlike enabledMcpjsonServers/disabledMcpjsonServers, it is not an approval gate.
+ * This turns the "dropped" names from filterInheritableMcpServers into the settings.json shape
+ * that actually closes the ancestor-discovery gap per agent. Pure: never mutates `dropped`.
+ */
+export function toDeniedMcpServerEntries(dropped: string[]): Array<{ serverName: string }> {
+  return dropped.map((serverName) => ({ serverName }))
+}
