@@ -9,14 +9,13 @@
 // this one lacked (the mutation-found directory-re-tightening case, a wider path-traversal set,
 // a live shell-substitution proof, and a source-literal + call-site-wiring guard) -- folded in
 // below as additional `it` blocks rather than picking one side wholesale.
-import { describe, it, expect, afterEach, beforeEach } from 'vitest'
-import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, mkdirSync, chmodSync, rmSync } from 'node:fs'
+import { describe, it, expect, afterEach } from 'vitest'
+import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, mkdirSync, chmodSync } from 'node:fs'
 import { join, dirname, basename } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
   launchSecretRef,
-  clearLaunchSecrets,
   LAUNCH_SECRETS_DIR,
   LAUNCH_SECRETS_DIR_MODE,
   LAUNCH_SECRET_FILE_MODE,

@@ -96,7 +96,7 @@ describe.skipIf(!HAVE_TIMEOUT)('_claude_runs is a real launch probe, not --versi
         const log = join(mkdtempSync(join(tmpdir(), 'clirv-log-')), 'env')
         const dir = mockClaude('healthy', log)
         expect(runProbe(src, dir, { CLAUDE_CODE_OAUTH_TOKEN: 'leak-oauth', ANTHROPIC_API_KEY: 'leak-key', ANTHROPIC_AUTH_TOKEN: 'leak-tok' })).toBe(0)
-        const seen = Object.fromEntries(readFileSync(log, 'utf-8').trim().split('\n').map(l => l.split('=', 2)))
+        const seen: Record<string, string> = Object.fromEntries(readFileSync(log, 'utf-8').trim().split('\n').map(l => l.split('=', 2) as [string, string]))
         expect(seen.OAUTH).toBe('unset')
         expect(seen.APIKEY).toBe('unset')
         expect(seen.AUTHTOK).toBe('unset')
