@@ -1051,7 +1051,13 @@ if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
   # below (that decision is only reached if this branch falls through) -- the stale node_modules
   # would sit there, invisible, until a later update happened to also change package.json's text.
   DEPS_STALE=0
-  if python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"; then
+  python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"
+  DEPS_STALE_RC=$?
+  # Fail-closed (card 6070f801, WhiteHat F1): exit 1 is the ONLY confirmed-fresh signal the checker
+  # gives. Any other code (0=confirmed stale, 127=python3 itself missing, or an uncaught crash) must
+  # be treated as stale -- `if python3 ...; then` used to treat every nonzero code as "not stale",
+  # which silently skipped the self-heal on a crash or a missing interpreter.
+  if [ "$DEPS_STALE_RC" -ne 1 ]; then
     DEPS_STALE=1
   fi
 
@@ -1118,8 +1124,13 @@ fi
 # would see "no diff" and never notice. Add a state-based check, the same helper fleet-test.sh uses
 # for the identical decision (store/node-modules-stale-check.py), so a stale node_modules is caught
 # regardless of what the diff says.
+python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"
+NPM_CI_DEPS_STALE_RC=$?
+# Fail-closed (card 6070f801, WhiteHat F1): exit 1 is the ONLY confirmed-fresh signal; any other
+# code (0=confirmed stale, 127=python3 itself missing, or an uncaught crash) must trigger npm ci,
+# the same contract as the DEPS_STALE check above.
 if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock)?\.json$" \
-  || python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"; then
+  || [ "$NPM_CI_DEPS_STALE_RC" -ne 1 ]; then
   echo -e "  Fuggosegek frissitese (lock-strict)..."
   RESULT_PHASE="npm-ci"
   # --include=dev adopted from upstream (AUTOUPDNODEENV905, card 50af1a27). Under

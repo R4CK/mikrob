@@ -69,5 +69,20 @@ def is_stale(root: str) -> bool:
     return False  # every applicable declared package matches what is actually installed, on disk
 
 
+# Exit 1 is the ONLY confirmed-fresh signal a caller may trust. Any other exit code (a crash
+# inside is_stale, a missing argv[1], or -- at the shell level -- python3 itself being unavailable)
+# must read as stale. Before this fix an uncaught exception exited 1 by default (Python's own
+# default for an unhandled exception), indistinguishable from a genuine fresh verdict (card 6070f801,
+# WhiteHat F1 on 508153a9): 8 measured crash shapes all silently told both callers "not stale".
 if __name__ == "__main__":
-    sys.exit(0 if is_stale(sys.argv[1]) else 1)
+    try:
+        root_arg = sys.argv[1]
+    except IndexError:
+        print("node-modules-stale-check: missing <root-dir> argument -- treating as stale (fail-closed)", file=sys.stderr)
+        sys.exit(0)
+    try:
+        stale = is_stale(root_arg)
+    except Exception as exc:  # fail-closed: never let an unexpected error exit 1 ("fresh")
+        print(f"node-modules-stale-check: unexpected error ({exc}) -- treating as stale (fail-closed)", file=sys.stderr)
+        sys.exit(0)
+    sys.exit(0 if stale else 1)

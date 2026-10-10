@@ -144,6 +144,29 @@ describe('fleet-test.sh refuses to symlink $ROOT/node_modules when it is stale r
     expect(rootNodeModulesSurvived(root)).toBe(true)
   })
 
+  it('FAIL-CLOSED (card 6070f801, WhiteHat F1): if the stale-check script itself cannot run (missing python3 or a bad path -- rc=127), root_node_modules_is_stale() reports stale, not fresh', () => {
+    const root = join(scratchRoot, 'ROOT')
+    const testTree = join(scratchRoot, 'TEST_TREE')
+    mkdirSync(root, { recursive: true })
+    makeRoot(root, '5.0.3', '5.0.3') // fresh fixture -- without the fail-closed fix this would symlink
+    makeMatchingWorktree(root, testTree)
+
+    const brokenHarness = `set -uo pipefail\nROOT="${root}"\nTEST_TREE="${testTree}"\nNODE_MODULES_STALE_CHECK_PY="/nonexistent/node-modules-stale-check.py"\ndie() { echo "die: $2" >&2; exit "$1"; }\n${harnessScript}\n`
+    let result: { status: number | null; stderr: string }
+    try {
+      const stderr = execFileSync('bash', ['-c', brokenHarness], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+      result = { status: 0, stderr }
+    } catch (e) {
+      const err = e as { status: number | null; stderr: Buffer | string }
+      result = { status: err.status, stderr: String(err.stderr) }
+    }
+
+    expect(result.stderr).toContain('live install dependency state stale')
+    if (existsSync(join(testTree, 'node_modules'))) {
+      expect(lstatSync(join(testTree, 'node_modules')).isSymbolicLink()).toBe(false)
+    }
+  })
+
   it('MUTATION: removing the root_node_modules_is_stale() check lets a stale $ROOT get symlinked in (proves the test catches the N3 bypass)', () => {
     const root = join(scratchRoot, 'ROOT')
     const testTree = join(scratchRoot, 'TEST_TREE')

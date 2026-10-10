@@ -88,6 +88,11 @@ die() { echo "fleet-test.sh: $2" >&2; exit "$1"; }
 # as-is, and should fall through to the real-`npm-ci`-in-$TEST_TREE branch instead.
 root_node_modules_is_stale() {
   python3 "${NODE_MODULES_STALE_CHECK_PY:-$(dirname "${BASH_SOURCE[0]}")/node-modules-stale-check.py}" "$ROOT"
+  local rc=$?
+  # Fail-closed (card 6070f801, WhiteHat F1): exit 1 is the ONLY confirmed-fresh signal the checker
+  # gives. Any other code -- 0 (confirmed stale), 127 (python3 itself missing), or an uncaught crash
+  # the checker did not already fail-close itself -- must be treated as stale here too.
+  [ "$rc" -ne 1 ]
 }
 
 # INCOMPLETE RUN detection (card 85823628, extracted into a function for card d54d5de6 so it has a
