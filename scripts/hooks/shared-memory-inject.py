@@ -119,6 +119,34 @@ def _agents_own_active_card_query(api, token, agent):
 # fake directive reads as if it came from the hook itself rather than from a recalled row.
 OWN_CURATED_MAX_CONTENT_CHARS = 400
 
+# WhiteHat N1 (MEDIUM, card 0a34377f, komment 14926, CYBERSEC NO-GO on the first R2 cut): the fix
+# above flattened/capped ONLY the content field. keywords, category, created_label and agent_id go
+# into the same line RAW -- a newline written into any of them (keywords is attacker-writable via
+# the same unauthenticated-write path the header already warns about) opens a fresh line at column
+# 0 exactly like the content case, just through a sibling field. Measured: a newline in keywords or
+# agent_id produced one extra line starting at column 0; content did not. Every per-line field now
+# goes through the same flatten-then-cap helper; only the length limit differs (content needs more
+# room than a tag/name/date field).
+OWN_CURATED_MAX_SHORT_FIELD_CHARS = 64
+OWN_CURATED_MAX_KEYWORDS_CHARS = 200
+
+# Every character that can start a new visual line in a terminal or a markdown-ish render --
+# not just \n -- counts as a line break here (WhiteHat N3: U+0085/U+2028/U+2029/\v/\f all rode
+# through the content-only fix unflattened). Escaped explicitly (not pasted as raw bytes) so the
+# source itself never carries an invisible line-breaking character.
+_LINE_BREAK_CHARS = ("\n", "\r", "\v", "\f", "\u0085", "\u2028", "\u2029")
+
+
+def _cap_and_flatten(value, max_chars):
+    v = value
+    if len(v) > max_chars:
+        extra = len(v) - max_chars
+        v = v[:max_chars] + "…(+%d karakter)" % extra
+    v = v.replace("\r\n", " ")
+    for ch in _LINE_BREAK_CHARS:
+        v = v.replace(ch, " ")
+    return v
+
 
 def _own_curated_memory_section(api, token, agent):
     if agent not in _feature_enabled_agents():
@@ -143,7 +171,16 @@ def _own_curated_memory_section(api, token, agent):
         # memories_count=0.
         return None, 0, 0, card_id, True
 
-    mems = data if isinstance(data, list) else data.get("memories", data.get("data", []))
+    if isinstance(data, list):
+        mems = data
+    elif isinstance(data, dict):
+        mems = data.get("memories", data.get("data", []))
+    else:
+        # WhiteHat N6 (LOW, komment 14926): a 200 response that is neither a list nor an object
+        # (null, a bare string) used to raise AttributeError inside main()'s try/except, which
+        # swallowed it silently -- no measurement row at all, not even failed=True. Treat it the
+        # same as a transport failure: the search attempt happened and did not yield usable data.
+        return None, 0, 0, card_id, True
     # R2: the label used to claim "SAJÁT KURÁLT" (own, curated) unconditionally, but agent_id is
     # caller-supplied at write time and never authenticated (same caveat already stated for the
     # shared-tier section above) -- the per-line stamp below lets a reader notice an implausible
@@ -169,17 +206,16 @@ def _own_curated_memory_section(api, token, agent):
         c = (m.get("content") or "").strip()
         if not c:
             continue
-        # R2: cap + flatten BEFORE sizing/budgeting, same order as the shared-tier section --
-        # flattening first means an embedded newline can never land a fragment at column 0.
-        if len(c) > OWN_CURATED_MAX_CONTENT_CHARS:
-            extra = len(c) - OWN_CURATED_MAX_CONTENT_CHARS
-            c = c[:OWN_CURATED_MAX_CONTENT_CHARS] + "…(+%d karakter)" % extra
-        c = c.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
-        kw = (m.get("keywords") or "").strip()
-        when = (m.get("created_label") or "").strip()
-        who = (m.get("agent_id") or "?").strip() or "?"
+        # R2 + WhiteHat N1 fix (komment 14926): cap + flatten EVERY field that ends up on the
+        # line, not just content -- a newline in keywords/category/created_label/agent_id opened
+        # the exact same column-0 injection the content-only fix was meant to close.
+        c = _cap_and_flatten(c, OWN_CURATED_MAX_CONTENT_CHARS)
+        kw = _cap_and_flatten((m.get("keywords") or "").strip(), OWN_CURATED_MAX_KEYWORDS_CHARS)
+        when = _cap_and_flatten((m.get("created_label") or "").strip(), OWN_CURATED_MAX_SHORT_FIELD_CHARS)
+        who = _cap_and_flatten((m.get("agent_id") or "?").strip() or "?", OWN_CURATED_MAX_SHORT_FIELD_CHARS)
+        category = _cap_and_flatten((m.get("category") or "?").strip() or "?", OWN_CURATED_MAX_SHORT_FIELD_CHARS)
         line = "- [%s, %s%s] %s%s" % (
-            (m.get("category") or "?"), who, (", " + when) if when else "", c, ((" (%s)" % kw) if kw else ""),
+            category, who, (", " + when) if when else "", c, ((" (%s)" % kw) if kw else ""),
         )
         line_tokens = _estimate_tokens(line)
         if line_tokens > budget_left:
@@ -250,17 +286,22 @@ def main():
     for m in (mems or []):
         c = (m.get("content") or "").strip()
         if c:
-            if len(c) > MAX_CONTENT_CHARS:
-                extra = len(c) - MAX_CONTENT_CHARS
-                c = c[:MAX_CONTENT_CHARS] + "…(+%d karakter)" % extra
-            kw = (m.get("keywords") or "").strip()
+            # Card e6b2742b (RedHat GO on 0a34377f, komment 15118/msg 10406): this shared-tier
+            # section never got the 0a34377f N1 fix -- it still truncated ONLY content, and did
+            # not flatten line breaks in ANY field (content included). A newline written into a
+            # category=shared memory (the shared-write path any agent can reach) opened a bare
+            # line at column 0 in EVERY agent's SessionStart context, the exact injection the
+            # curated section's _cap_and_flatten already closes on its own branch. Same helper,
+            # same per-field caps, applied here too.
+            c = _cap_and_flatten(c, MAX_CONTENT_CHARS)
+            kw = _cap_and_flatten((m.get("keywords") or "").strip(), OWN_CURATED_MAX_KEYWORDS_CHARS)
             # Provenance (card 7965095b): who wrote this entry and when, so the
             # reader can see it is ANOTHER agent's recollection, not a system
             # directive. agent_id is caller-supplied at write time and not itself
             # authenticated -- this is not an identity guarantee, only a label
             # that lets a reader notice an implausible claimed author.
-            who = (m.get("agent_id") or "?").strip() or "?"
-            when = (m.get("created_label") or "").strip()
+            who = _cap_and_flatten((m.get("agent_id") or "?").strip() or "?", OWN_CURATED_MAX_SHORT_FIELD_CHARS)
+            when = _cap_and_flatten((m.get("created_label") or "").strip(), OWN_CURATED_MAX_SHORT_FIELD_CHARS)
             stamp = "[%s%s]" % (who, (", " + when) if when else "")
             lines.append("- " + stamp + " " + c + ((" (%s)" % kw) if kw else ""))
 
