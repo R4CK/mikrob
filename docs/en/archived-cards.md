@@ -87,8 +87,8 @@ Response:
 Restores a single archived card (`archived_at = NULL`). Returns 404 if the card is not archived or does not exist.
 
 ```bash
-curl -s -X POST http://localhost:3420/api/kanban/AB12CD34/unarchive \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)"
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X POST \
+  http://localhost:3420/api/kanban/AB12CD34/unarchive
 ```
 
 Response: `{ "ok": true }`

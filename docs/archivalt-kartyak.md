@@ -87,8 +87,8 @@ Válasz:
 Visszaállít egy archivált kártyát (`archived_at = NULL`). Csak archivált kártyán működik; aktív kártyán 404-et ad vissza.
 
 ```bash
-curl -s -X POST http://localhost:3420/api/kanban/AB12CD34/unarchive \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)"
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X POST \
+  http://localhost:3420/api/kanban/AB12CD34/unarchive
 ```
 
 Válasz: `{ "ok": true }`

@@ -281,4 +281,21 @@ describe('findForeignMainPollers', () => {
     ]
     expect(findForeignMainPollers([900], noOwner, new Set([35264]))).toEqual([])
   })
+
+  // ARGV-FILTER regression (card 0dab76a3, WhiteHat finding on 087e4418): the
+  // env-var candidate filter (parseMainDirPollerPids) only checks inherited
+  // environment, so a non-poller DESCENDANT of a foreign claude -- some other
+  // child process that happens to still carry the inherited env var -- could
+  // reach this function too. It must NOT be treated as the poller just
+  // because its env matches: its immediate parent is a plain shell, not the
+  // `bun run --cwd ... start` wrapper the real poller always sits under.
+  it('does not reap a non-poller descendant whose parent is not the bun-run wrapper', () => {
+    const withStray: ProcRow[] = [
+      ...procs,
+      { pid: 44099, ppid: 44098, command: 'cat /tmp/some-file' }, // NOT the poller
+      { pid: 44098, ppid: 44000, command: 'sh -c cat /tmp/some-file' }, // plain shell, not the wrapper
+    ]
+    const legit = new Set([35264])
+    expect(findForeignMainPollers([35352, 44099], withStray, legit)).toEqual([])
+  })
 })
