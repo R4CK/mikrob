@@ -1,22 +1,19 @@
 // MCPOROKLES923: which MCP servers may a NEW agent inherit? An explicit list.
 //
-// Owner decision (b), 2026-09-23: an agent inherits connectors only from a named
-// list; everything else stays out until someone grants it by name. Before this,
-// two paths handed a new agent the operator's connectors wholesale:
-//   1. agent-scaffold.ts copied the project-root .mcp.json (here: aiam-blog);
-//   2. agent-process.ts seeded the isolated .claude.json from a FULL copy of the
-//      shared ~/.claude.json and gap-filled it on every spawn. Measured on the
-//      reference install: google-drive and Filesystem (the owner's Drive, full
-//      access) were in all 15 agents' configs; over the last 30 days 9 of 14
-//      sub-agents never called google-drive and none ever called Filesystem.
-// On a customer install ~/.claude.json is exactly where Claude Code puts the mail
-// or bank connector, so "inherit everything" meant "every new agent gets the
-// mailbox". One list, enforced on every writer, closes the concept rather than
-// one endpoint.
+// Owner decision (upstream 39a7e2ab/#1513, adopted on card 0c3c3796): an agent
+// inherits connectors only from a named list; everything else stays out until
+// someone grants it by name. Before this, two paths handed a new agent the
+// operator's connectors wholesale:
+//   1. agent-scaffold.ts copied the project-root .mcp.json wholesale;
+//   2. agent-process.ts seeded the isolated .claude.json from a FULL copy of
+//      the shared ~/.claude.json and gap-filled it on every spawn (issue #834).
+// On this install ~/.claude.json and the project-root .mcp.json carry
+// firecrawl, hostinger, playwright and the filesystem server -- broader
+// capability/attack surface than a brand-new sub-agent needs by default.
 //
-// The default is the NARROW reading: an empty list inherits nothing. The list is
-// configuration (AGENT_INHERITED_MCP_SERVERS), not code, because each install's
-// connectors are its own.
+// The default is the NARROW reading: an empty list inherits nothing. The list
+// is configuration (AGENT_INHERITED_MCP_SERVERS), not code, because each
+// install's connectors are its own.
 //
 // Scope, stated: this filters what is INHERITED. It never removes a server an
 // agent already has (the gap-fill is additive), and it does not apply to the

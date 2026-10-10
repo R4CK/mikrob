@@ -164,6 +164,12 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   // akadni -- akkor ide kerul, ugyanezzel az indokkal.
   { path: 'src/__tests__/fixtures/skill-scan/14-api-key-shaped.md', reason: 'skill-scan fixture: an api-key-shaped string is the subject under test' },
   { path: 'src/__tests__/fixtures/skill-scan/14-api-key-shaped.expected.json', reason: 'skill-scan golden output from the original Python scanner: it quotes the fixture above' },
+  // Card fcd8b794: not under __tests__/, so FIXTURE_EXCEPTIONS (TEST_PATH-gated) cannot apply --
+  // same reasoning as secret-gate.test.ts's own entry above. The file's entire subject is
+  // synthetic secret-shaped fixtures for the redaction path it selftests; the specific line that
+  // tripped this (an `sk-ant-api03-...` fixture, pre-existing, untouched by this card) is one of
+  // many such literals already in the file.
+  { path: 'scripts/hooks/activity-memory-capture.selftest.py', reason: 'activity-memory-capture redaction selftest: synthetic secret-shaped fixtures are the subject under test' },
 ];
 
 /**

@@ -3,15 +3,15 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-// MCPOROKLES923 -- owner decision (b): a NEW agent inherits MCP servers only from
-// an explicit list (AGENT_INHERITED_MCP_SERVERS), on BOTH inheritance paths:
+// MCPOROKLES923 (card 0c3c3796, upstream 39a7e2ab) -- a NEW agent inherits MCP
+// servers only from an explicit list (AGENT_INHERITED_MCP_SERVERS), on BOTH
+// inheritance paths:
 //   1. agent-scaffold.ts: the project-root .mcp.json copy;
 //   2. agent-process.ts: the isolated .claude.json first-seed + gap-fill from the
-//      shared ~/.claude.json (measured: google-drive and Filesystem, i.e. the
-//      owner's Drive, in all 15 agents' configs).
-// Marveen's two controls: (i) an UNLISTED server does not arrive; (ii) a LISTED one
-// does -- without (ii) a green run could just mean "we copy nothing any more".
-// And the 2026-09-05 scope-collision rule must survive the filter.
+//      shared ~/.claude.json.
+// Two controls: (i) an UNLISTED server does not arrive; (ii) a LISTED one does --
+// without (ii) a green run could just mean "we copy nothing any more". And the
+// 2026-09-05 scope-collision rule must survive the filter.
 
 const SANDBOX = mkdtempSync(join(tmpdir(), 'mcpinherit-'))
 let LIST = ''
@@ -113,7 +113,7 @@ describe('path 1: scaffold copies the project .mcp.json THROUGH the list', () =>
 })
 
 describe('path 2: the isolated .claude.json seed and gap-fill go THROUGH the list', () => {
-  it('(i)+(ii) on the FIRST SEED: the Drive/Filesystem shape is stopped, a listed server arrives', () => {
+  it('(i)+(ii) on the FIRST SEED: an unlisted server is stopped, a listed server arrives', () => {
     writeSharedDotClaude({ 'google-drive': def('gdrive'), Filesystem: def('fs'), 'aiam-blog': def('blog') })
     LIST = 'aiam-blog'
     ensureIsolatedChannelConfigDir('uj3', 'telegram')

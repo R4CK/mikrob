@@ -58,6 +58,9 @@ const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-main-claudemd-zerodiff-'))
 
 vi.mock('../config.js', () => ({
   PROJECT_ROOT: tmpRoot,
+  // agent-scaffold.js now imports mcp-inheritance.js, which imports settings-store.js,
+  // which derives OVERRIDES_PATH from STORE_DIR at module-import time (MCPOROKLES923).
+  STORE_DIR: '/nonexistent/claudeclaw-test-store',
   OWNER_NAME: 'TestOwner',
   MAIN_AGENT_ID: 'mikrob',
   BOT_NAME: 'mikrob',

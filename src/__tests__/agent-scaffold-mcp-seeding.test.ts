@@ -1,7 +1,9 @@
-// A scaffolded agent must actually RECEIVE the shared MCP config (card e6fc74e0).
+// A scaffolded agent must actually RECEIVE the shared MCP config it is entitled to (card e6fc74e0),
+// and must NOT receive servers that are not on the inheritable allowlist (MCPOROKLES923, card
+// 0c3c3796, upstream 39a7e2ab).
 //
-// THE DEFECT THIS PINS. The seeding guard used to be `if (!existsSync(mcpJson))`, and an EMPTY
-// `.mcp.json` satisfies it. That is not a hypothetical file: `.mcp.json` is gitignored
+// THE e6fc74e0 DEFECT THIS STILL PINS. The seeding guard used to be `if (!existsSync(mcpJson))`, and
+// an EMPTY `.mcp.json` satisfies it. That is not a hypothetical file: `.mcp.json` is gitignored
 // (.gitignore:98), untracked copies accumulate under `seed-fleet-agents/<agent>/`, and
 // `install-linux.sh:1531` copies those directories into `agents/` with `cp -r` -- into exactly the
 // path the guard inspects. Measured on this checkout: 14 such files, 13 an empty `{"mcpServers":{}}`.
@@ -11,6 +13,11 @@
 //
 // The general shape, worth more than this instance: an empty file that satisfies an `if (!exists)`
 // sentinel is not neutral -- it switches a branch OFF, with no trace in any log or guard.
+//
+// THE MCPOROKLES923 CHANGE. Before, the seeding step was a plain copy: every new agent got the
+// WHOLE shared PROJECT_ROOT/.mcp.json, including any mail/bank/credentialed connector an operator
+// might park there. Now a new agent inherits ONLY the servers named in AGENT_INHERITED_MCP_SERVERS
+// (comma-separated setting, default empty = inherit nothing).
 //
 // These tests drive the real `scaffoldAgentDir` against a temporary PROJECT_ROOT rather than asserting
 // on the source text, so the guard's SHAPE is free to change as long as the outcome holds.
@@ -22,6 +29,10 @@ import { join } from 'node:path'
 const SHARED = { mcpServers: { 'code-review-graph': { type: 'stdio', command: 'x', args: [] } } }
 
 let root: string
+
+function setInheritedSetting(value: string): void {
+  writeFileSync(join(root, 'store', 'config-overrides.json'), JSON.stringify({ AGENT_INHERITED_MCP_SERVERS: value }))
+}
 
 /** Load agent-scaffold with PROJECT_ROOT pointed at a throwaway tree. */
 async function loadScaffold(): Promise<typeof import('../web/agent-scaffold.js')> {
@@ -49,25 +60,34 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
-describe('scaffolded agents receive the shared MCP config', () => {
-  it('copies the shared config when the agent has NO .mcp.json yet', async () => {
+describe('scaffolded agents receive ONLY the inheritable-listed MCP servers', () => {
+  it('with NO AGENT_INHERITED_MCP_SERVERS set, a new agent inherits NOTHING (narrow default)', async () => {
     writeFileSync(join(root, '.mcp.json'), JSON.stringify(SHARED))
+    const { scaffoldAgentDir } = await loadScaffold()
+    scaffoldAgentDir('fresh')
+    expect(servers(agentMcp('fresh'))).toEqual([])
+  })
+
+  it('a server named on AGENT_INHERITED_MCP_SERVERS IS inherited', async () => {
+    writeFileSync(join(root, '.mcp.json'), JSON.stringify(SHARED))
+    setInheritedSetting('code-review-graph')
     const { scaffoldAgentDir } = await loadScaffold()
     scaffoldAgentDir('fresh')
     expect(servers(agentMcp('fresh'))).toEqual(['code-review-graph'])
   })
 
   it('REPLACES a pre-placed EMPTY .mcp.json -- the case the old `!existsSync` guard let through', async () => {
-    // This is the regression. The file below is byte-for-byte what the seed directories carry and
-    // what `cp -r` delivers into agents/ on an install from a polluted checkout.
+    // This is the e6fc74e0 regression. The file below is byte-for-byte what the seed directories
+    // carry and what `cp -r` delivers into agents/ on an install from a polluted checkout.
     writeFileSync(join(root, '.mcp.json'), JSON.stringify(SHARED))
+    setInheritedSetting('code-review-graph')
     mkdirSync(join(root, 'agents', 'seeded'), { recursive: true })
     writeFileSync(agentMcp('seeded'), JSON.stringify({ mcpServers: {} }, null, 2))
     const { scaffoldAgentDir } = await loadScaffold()
     scaffoldAgentDir('seeded')
     expect(
       servers(agentMcp('seeded')),
-      'an empty pre-placed .mcp.json still suppressed the copy -- the agent gets no shared servers',
+      'an empty pre-placed .mcp.json still suppressed the copy -- the agent gets no inheritable servers',
     ).toEqual(['code-review-graph'])
   })
 
