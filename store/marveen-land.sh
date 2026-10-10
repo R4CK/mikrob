@@ -81,13 +81,25 @@ g() { git -C "$MAIN" "$@"; }
 # gate). --ff-only is the whole safety story: it can only ever fast-forward or refuse, never force,
 # so a dirty/diverged $MAIN is left untouched and reported, not overridden.
 sync_live_install() {
-  local current
+  local current before
   current="$(git -C "$MAIN" symbolic-ref --short -q HEAD 2>/dev/null || true)"
   # Not on the tracked branch (detached, or mid manual work on something else) -- nothing to sync,
   # and merging origin/$DEFAULT_BRANCH into an unrelated checkout would not even make sense.
   [ "$current" = "$DEFAULT_BRANCH" ] || return 0
+  before="$(git -C "$MAIN" rev-parse HEAD)"
   if git -C "$MAIN" merge --ff-only -q "origin/$DEFAULT_BRANCH" 2>/dev/null; then
     say "live install ($MAIN) fast-forwarded to origin/$DEFAULT_BRANCH"
+    # card 5d365589 WhiteHat N3: this fast-forward only ever moves the SOURCE -- it never runs
+    # `npm ci`, on purpose (a blind auto-install on every landing is its own risk: it would run
+    # unattended against whatever the live install happens to be doing at that moment). Measured
+    # consequence when nobody notices: after 2f05b3e3 (vitest 2.1.9 -> 5.0.3) landed, the live
+    # node_modules stayed on 2.1.9 until someone manually ran `npm ci --include=dev` in $MAIN --
+    # a step that exists nowhere in code, so the next dependency-bump land hits the exact same gap.
+    # This does not auto-install either (same risk, unchanged) -- it only makes the gap loud instead
+    # of silent, by diffing the two lockfile-relevant files across the fast-forward.
+    if ! git -C "$MAIN" diff --quiet "$before" HEAD -- package.json package-lock.json 2>/dev/null; then
+      say "live install's package.json/package-lock.json changed by this fast-forward -- run 'npm ci --include=dev' in $MAIN by hand (card 5d365589 N3), or the live node_modules stays on the OLD dependency set"
+    fi
   else
     say "live install ($MAIN) NOT fast-forwarded (dirty tree or diverged) -- sync it by hand, tell MikroB"
   fi
