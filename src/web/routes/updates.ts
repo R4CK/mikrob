@@ -190,7 +190,7 @@ export function findOpenUpstreamSyncCards(
 }
 
 export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
-  const { res, path, method } = ctx
+  const { res, req, path, method } = ctx
 
   if (path === '/api/updates' && method === 'GET') {
     json(res, getUpdateStatus())

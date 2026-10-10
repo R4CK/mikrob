@@ -31,7 +31,8 @@ import {
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readFileOr } from './agent-config.js'
+import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
 import { worksourceRootFor } from './worksource-queue.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
 import { readClaudePlansState } from './claude-plans-state.js'
@@ -55,8 +56,12 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
+import { decideContinueFlag, verifyContinueLaunch } from './channel-continue-policy.js'
+import { measureClaudeCliVersion } from './claude-cli-version.js'
+import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
+import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
@@ -910,14 +915,28 @@ function reconcileMcpServers(
   }
   const own = isPlainObject(cur.mcpServers) ? cur.mcpServers : {}
   const projectScoped = projectScopedServerNames(cwd)
+  // MCPOROKLES923: a sub-agent gap-fills ONLY servers on the inheritable list
+  // (mcp-inheritance.ts). Additive as before: nothing the agent already has is
+  // removed. The main agent is exempt -- its config mirrors the operator's own.
+  const allowed = name === MAIN_AGENT_ID ? null : readInheritableMcpServerNames()
   const added: string[] = []
   const shadowed: string[] = []
+  const notInherited: string[] = []
   for (const [key, def] of Object.entries(shared.mcpServers)) {
     if (key in own) continue
-    if (projectScoped.has(key)) { shadowed.push(key); continue }
+    // Both reasons are judged independently and BOTH are logged: an unlisted
+    // server the agent also owns at project scope is a list refusal AND a
+    // collision. Recording only the first reason hid the collision trace the
+    // 2026-09-05 rule exists to leave.
+    const unlisted = allowed !== null && !allowed.has(key)
+    const collides = projectScoped.has(key)
+    if (unlisted) notInherited.push(key)
+    if (collides) shadowed.push(key)
+    if (unlisted || collides) continue
     own[key] = def
     added.push(key)
   }
+  logNotInherited(name, 'gap-fill', notInherited)
   // Log the skips even when nothing was added: a silent skip is how this class
   // of bug stays invisible, and the name alone tells the next reader where the
   // agent's real definition lives.
@@ -938,10 +957,18 @@ function reconcileMcpServers(
 // shared config is copied: without this the very first launch of a new agent
 // starts out shadowed, which is the same outage as the gap-fill one, just
 // earlier. Mutates `cfg` in place.
-function stripProjectScopedCollisions(cfg: Record<string, unknown>, cwd: string, name: string): void {
+// `alreadyRemoved` are names an earlier filter (the inheritable list) took out of
+// `cfg` first; any of them the agent owns at project scope is still a collision
+// and is logged as one, so the trace does not depend on which rule ran first.
+function stripProjectScopedCollisions(
+  cfg: Record<string, unknown>,
+  cwd: string,
+  name: string,
+  alreadyRemoved: readonly string[] = [],
+): void {
   const projectScoped = projectScopedServerNames(cwd)
   if (projectScoped.size === 0) return
-  const dropped: string[] = []
+  const dropped: string[] = alreadyRemoved.filter((key) => projectScoped.has(key))
   if (isPlainObject(cfg.mcpServers)) {
     for (const key of Object.keys(cfg.mcpServers)) {
       if (projectScoped.has(key)) { delete (cfg.mcpServers as Record<string, unknown>)[key]; dropped.push(key) }
@@ -1169,15 +1196,26 @@ function provisionIsolatedConfigDir(
       const sharedDot = join(homedir(), '.claude.json')
       if (!existsSync(dotClaude)) {
         let seed: Record<string, unknown> = { hasCompletedOnboarding: true }
+        let notInheritedOnSeed: string[] = []
         if (existsSync(sharedDot)) {
           try { seed = JSON.parse(readFileSync(sharedDot, 'utf-8')) as Record<string, unknown> } catch { /* keep minimal */ }
         }
         seed.hasCompletedOnboarding = true
+        // MCPOROKLES923: the seed copies the shared config for its consent flags,
+        // NOT for its connectors: a sub-agent's seed keeps only the servers on the
+        // inheritable list. The main agent is exempt (its config mirrors the
+        // operator's own ~/.claude.json).
+        if (name !== MAIN_AGENT_ID && isPlainObject(seed.mcpServers)) {
+          const { kept, dropped } = filterInheritableMcpServers(seed.mcpServers, readInheritableMcpServerNames())
+          seed.mcpServers = kept
+          notInheritedOnSeed = dropped
+          logNotInherited(name, 'seed', dropped)
+        }
         // The seed is a FULL copy of the shared config, so it carries the same
         // scope-collision risk as the gap-fill below: a shared entry whose name
         // the agent owns in its own .mcp.json would arrive at local scope and
         // shadow it, credentials included. Strip those before writing.
-        stripProjectScopedCollisions(seed, cwd, name)
+        stripProjectScopedCollisions(seed, cwd, name, notInheritedOnSeed)
         writeJsonAtomic(dotClaude, seed, { groupShared: perUser })
       } else {
         try {
@@ -1397,6 +1435,13 @@ export function shSingleQuote(value: string): string {
 // string at all: it goes to a private file, and the launch command carries only a fixed-shape
 // command-substitution reference to that file's PATH (itself sanitized and shSingleQuote-escaped).
 export const LAUNCH_SECRETS_DIR = join(STORE_DIR, '.launch-secrets')
+
+// The directory's and the file's mode live together, because the two have to move as one. The
+// `chmodSync` on every call in launchSecretRef below is not caution: `mkdirSync`'s mode only
+// applies when it CREATES the directory, never when one already exists. Upstream's own mutant
+// (card 14256aac) proved the gap -- degrading the mode 0700 -> 0755 stayed GREEN, because the
+// directory already existed at 0700 from an earlier run. A directory left looser by an older
+// version, a different umask or a manual change would otherwise outlive the fix unnoticed.
 export const LAUNCH_SECRETS_DIR_MODE = 0o700
 export const LAUNCH_SECRET_FILE_MODE = 0o600
 
@@ -1408,6 +1453,16 @@ export const LAUNCH_SECRET_FILE_MODE = 0o600
  * `secretName` is filtered to `[A-Za-z0-9._-]` (no `/`, so no path traversal), and a name that is
  * only dots (e.g. `..`) is rejected in favour of a fixed fallback -- `..` alone would otherwise
  * resolve to the parent directory once joined.
+ *
+ * WHAT THIS DOES NOT FOLLOW FROM, worth saying out loud: the exposure did not DISAPPEAR, it
+ * MOVED. Until now it sat in the process list, readable by any user on the host; now it sits in a
+ * 0600 file, persistently. That is stricter, but not nothing -- this fleet has no per-agent OS
+ * user yet, so any agent that can run a shell can still read another agent's launch-secret file.
+ * Same class as the fleet's own OAuth token file (store/.claude-oauth-token), closed the same way:
+ * OS-user isolation, not another export shape. And one NEW dependency this creates: the secret
+ * now lives under `store/`, which only `.gitignore` keeps out of the repo (same line that already
+ * excludes store/.dashboard-token) -- if that line ever disappeared, the next commit would carry
+ * the key.
  */
 export function launchSecretRef(secretName: string, value: string): string {
   const filtered = secretName.replace(/[^A-Za-z0-9._-]/g, '_')
@@ -1425,6 +1480,11 @@ export function launchSecretRef(secretName: string, value: string): string {
  * indefinitely. Two name shapes because there are two writers: the provider-key path
  * (`<agent>.<vaultKey-or-envId>`) and the BYO key path (`agent-<agent>-api-key`) -- matching only
  * one would silently leave the other behind.
+ *
+ * What is STILL true afterward: a crash or an external `kill` does not go through this path, so
+ * that file sits on disk until the next launch overwrites it. After rotating a key, the correct
+ * step is to RESTART the affected agent, which rewrites the file with the fresh value; a leftover
+ * file for an agent that was deleted entirely is its own follow-up (card LAUNCHSECRETTAKARIT922).
  */
 export function clearLaunchSecrets(agentName: string): number {
   if (!existsSync(LAUNCH_SECRETS_DIR)) return 0
@@ -1502,7 +1562,8 @@ export function resolveProviderEnv(
     }
   }
   // MINIMAX IS DELIBERATELY ABSENT -- see this function's docstring. Peti NO-GO, card 48565f81 /
-  // CLAUDE.md rule 17.
+  // CLAUDE.md rule 17. Upstream batch 8 (94765127) added a MiniMax provider branch here; NOT
+  // adopted, same binding decision, same reasoning as every earlier batch that saw this.
   if (isOpenRouter) {
     // Anthropic-compatible endpoint at https://openrouter.ai/api (the SDK appends /v1/messages).
     // Key from the vault (openrouter-fleet-key).
@@ -1830,6 +1891,32 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
   // Remote agents are handled entirely by the ssh path above (with its own
   // start guard), before any local already-running check / scaffolding.
   const remote = readAgentRemoteConfig(name)
+
+  // Per-agent setup-token file (agent-config.json "oauthTokenFile", upstream
+  // 2fb86ef2, card 06b48bd0). Decided before ANY launch step, remote agents
+  // included: a present but unusable field refuses the start, loudly, and
+  // never falls back to the fleet token (see agent-oauth-token-file.ts).
+  // Absent field -> 'unset' -> every branch below runs exactly as before.
+  const ownOauth = decideOwnOauthToken({
+    rawConfigJson: readFileOr(join(dir, 'agent-config.json'), '{}'),
+    isMainAgent: name === MAIN_AGENT_ID,
+    isRemote: !!(remote.host && remote.workdir),
+    isClaudeModel: resolveOpenRouterModel(readAgentModel(name)).startsWith('claude-'),
+    authMode: readAgentAuthMode(name),
+    hasExplicitConfigDir: readAgentClaudeConfigDir(name) !== null,
+    hasClaudePlan: !!readAgentClaudePlan(name),
+    fleetTokenPath: FLEET_OAUTH_TOKEN_PATH,
+    uid: typeof process.getuid === 'function' ? process.getuid() : null,
+  })
+  if (ownOauth.kind === 'refused') {
+    logger.error(
+      { name, path: ownOauth.path, reason: ownOauth.reason, detail: ownOauth.detail },
+      'oauthTokenFile: agent NOT started (fail-closed, no fallback to the fleet token)',
+    )
+    return { ok: false, error: `oauthTokenFile: ${ownOauth.reason}${ownOauth.detail ? ` (${ownOauth.detail})` : ''}` }
+  }
+  const ownTokenFile = ownOauth.kind === 'ok' ? ownOauth.path : null
+
   if (remote.host && remote.workdir) {
     return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
   }
@@ -1925,6 +2012,17 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     const model = resolveOpenRouterModel(readAgentModel(name))
     const authMode = readAgentAuthMode(name)
     const isClaude = model.startsWith('claude-')
+    // oauthTokenFile backstop: the decision above already refused a non-Claude
+    // agent with its own token. Re-checked on the launcher's own isClaude, so a
+    // drift between the two predicates refuses instead of launching with a
+    // setup-token that no export site will use.
+    if (ownTokenFile && !isClaude) {
+      logger.error(
+        { name, path: ownTokenFile, model },
+        'oauthTokenFile: agent is not a Claude OAuth agent -- NOT started (a setup-token cannot take effect here)',
+      )
+      return { ok: false, error: 'oauthTokenFile: not a Claude OAuth agent' }
+    }
     // Provider discriminator + env-export chain live in resolveProviderEnv (pure, testable, one
     // place). `isClaude` stays here because the auth-mode branch below still needs it.
     //
@@ -2198,7 +2296,10 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // credential is absent or expired, which would silently put the agent
     // back on the shared identity -- exactly what own_team excludes.
     const isOwnTeam = isClaude && authMode === 'own_team'
-    if (!claudeConfigDir && hasFleetOauthToken() && !isOwnTeam) {
+    if (ownTokenFile) {
+      // oauthTokenFile: the agent's own setup-token file, INSTEAD of the fleet file.
+      oauthTokenEnv = ownOauthTokenExport(ownTokenFile)
+    } else if (!claudeConfigDir && hasFleetOauthToken() && !isOwnTeam) {
       oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
     }
     // Isolation must also cover CHANNEL-LESS Claude-OAuth agents, not just
@@ -2239,6 +2340,14 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
           logger.warn({ name }, 'own_team auth: isolated config dir provisioning failed; agent falls back to the shared ~/.claude and will use the HOST credential, not its own Team login')
           if (hasChannel) maybeAlertSharedConfigCollision(name)
         }
+      } else if (ownTokenFile) {
+        // oauthTokenFile: isolated exactly like the fleet branch below; only the
+        // token source differs, so the fleet token's presence is irrelevant here.
+        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null)
+        if (isolated) {
+          claudeConfigDir = isolated
+          oauthTokenEnv = ownOauthTokenExport(ownTokenFile)
+        }
       } else if (hasFleetOauthToken()) {
         // Token present -> isolation works; any earlier degradation is resolved,
         // so re-arm the one-shot alert for a future token loss.
@@ -2262,6 +2371,34 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
         // only get the WARN.
         if (hasChannel) maybeAlertSharedConfigCollision(name)
       }
+    }
+    // oauthTokenFile: a Claude agent with its own token must run isolated. On the
+    // shared ~/.claude the rotating host credential wins over the env token, so
+    // the agent would silently authenticate as the host, not with its own token.
+    if (ownTokenFile && isClaude && !claudeConfigDir) {
+      logger.error(
+        { name, path: ownTokenFile },
+        'oauthTokenFile: isolated config dir could not be provisioned -- agent NOT started (the shared ~/.claude would authenticate it with the host credential)',
+      )
+      return { ok: false, error: 'oauthTokenFile: isolated config dir could not be provisioned' }
+    }
+    // oauthTokenFile: the claim is derived from the launch env itself, not from
+    // the decision. One verdict drives both the refusal and the log: an 'ok'
+    // decision that did not reach oauthTokenEnv would run the agent on the
+    // fleet token (or none) while the log said otherwise, so it refuses.
+    const ownLaunch = ownOauthLaunchVerdict(ownOauth, oauthTokenEnv)
+    if (ownLaunch.kind === 'refuse') {
+      logger.error(
+        { name, path: ownLaunch.path },
+        'oauthTokenFile: own token decided but NOT in the launch env -- agent NOT started (no fallback to the fleet token)',
+      )
+      return { ok: false, error: 'oauthTokenFile: own token did not reach the launch env' }
+    }
+    if (ownLaunch.kind === 'own') {
+      logger.info(
+        { name, path: ownLaunch.path, fingerprint: ownLaunch.fingerprint },
+        'oauthTokenFile: own setup-token exported instead of the fleet token',
+      )
     }
     // Per-project trust pre-seed in the config root this session will ACTUALLY
     // use (isolated CLAUDE_CONFIG_DIR when set, shared ~/.claude.json
@@ -2298,14 +2435,28 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // omit --continue so the heavy accumulated context is dropped. Without it
     // we resume the prior session (the 'continue' mode / normal restart).
     //
-    // CC 2.1.193 REGRESSION: a `--continue` resume does NOT re-initialise the
-    // `--channels` plugin MCP server -- the agent comes up with the plugin
-    // absent from /mcp, no bun poller, no bot.pid -> permanently deaf on its
-    // channel. A FRESH launch loads the plugin correctly. So channel-having
-    // agents are ALWAYS launched fresh: the lost conversation context is the
-    // price of a reachable bot (file/db memory persists either way). Channel-
-    // less agents keep --continue to preserve their accumulated context.
-    const continueFlag = (hasPriorSession && !opts.fresh && !hasChannel) ? '--continue ' : ''
+    // CC 2.1.193 REGRESSION: a `--continue` resume did NOT re-initialise the
+    // `--channels` plugin MCP server -- the agent came up deaf on its channel.
+    // So channel-having agents were ALWAYS launched fresh. MEASURED ABSENT on
+    // Claude Code 2.1.280 (CONTRESUME922, 2026-09-23: real Telegram message
+    // from a resumed session, context kept). The narrowing lives in
+    // channel-continue-policy.ts and is CONDITIONAL: telegram provider, the
+    // fleet-token auth path, no ephemeral launch-secret in the launch (a
+    // resume of such a command starts without its key), measured CLI >= the
+    // floor; and after a resumed launch the plugin is VERIFIED (bun poller +
+    // bot.pid) with a fresh fallback, see below. Channel-less agents keep
+    // --continue as before.
+    const usesLaunchSecret = providerEnv !== '' || apiKeyEnv !== ''
+    const installedCli = hasChannel ? (await measureClaudeCliVersion()).version : null
+    const continueDecision = decideContinueFlag({
+      hasPriorSession, fresh: !!opts.fresh, hasChannel, isMainAgent: name === MAIN_AGENT_ID,
+      provider: agentProvider, usesLaunchSecret, fleetTokenLaunch: oauthTokenEnv !== '',
+      useMcpJsonForChannel, installedCli,
+    })
+    if (hasChannel && hasPriorSession && !opts.fresh) {
+      logger.info({ name, useContinue: continueDecision.useContinue, reason: continueDecision.reason, installedCli }, 'channel agent resume decision')
+    }
+    const continueFlag = continueDecision.useContinue ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
     // Slack plugin is third-party; its "not on approved allowlist" check is
@@ -2362,7 +2513,10 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // naming two different CLI builds. Kept the fork's separate const -- the fork's own
     // channel-stability-contract.test.ts pins `feedbackSurveyEnv` by name in the launch command --
     // and folded upstream's measurement into that comment instead.
-    const promptSuggestionEnv = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && '
+    // CHANSPARE925 (card fd10c70b, upstream e508f06c): also disables the Agent view -- its
+    // Left key backgrounds the session into the Claude Code daemon, which keeps a second
+    // --channels copy alive (bot poller hijack).
+    const promptSuggestionEnv = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && '
     // Disable Claude Code's in-place auto-updater for every spawned agent. A
     // running agent whose updater fires does an in-place global reinstall into the
     // shared package prefix; a half-completed update can leave a broken stub and
@@ -2406,8 +2560,9 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     const umaskPrefix = agentTmuxTarget(name).runAsUser ? 'umask 002 && ' : ''
     // buildLaunchCmd(launchCwd): only the launch CWD varies between the normal start and the
     // EPERM /tmp fallback below; every env export is an absolute path and stays pointed at the
-    // real agent dir. feedbackSurveyEnv kept (card 268b257a, fork-specific, pinned by name in
-    // channel-stability-contract.test.ts) -- upstream's version of this function does not have it.
+    // real agent dir. feedbackSurveyEnv kept in the string (card 268b257a, see MERGE NOTE above):
+    // this fork's own const, pinned by name in channel-stability-contract.test.ts -- upstream's
+    // version of this function does not have it.
     const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
@@ -2418,6 +2573,34 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)], { timeout: 10000 })
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
+
+    // Condition 3 of the resume narrowing: a resumed channel agent must bring
+    // its plugin up (bun poller under the claude pid + bot.pid) within the
+    // window, or it is relaunched FRESH. Measured: the plugin appears within
+    // seconds on a healthy resume; a deaf resume never shows it. Async so the
+    // start call returns as before; the fallback goes through the normal
+    // start path (kill + reap + fresh), which never uses --continue.
+    if (continueFlag && hasChannel && name !== MAIN_AGENT_ID) {
+      void verifyContinueLaunch({
+        probe: () => {
+          const pid = getClaudePidForSession(session)
+          return pid ? probeChannelPluginLiveness(pid, agentProvider, name) : 'unknown'
+        },
+      }).then(async (v) => {
+        if (v.outcome === 'alive') {
+          logger.info({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin alive, context kept')
+          return
+        }
+        logger.warn({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin NOT alive within the window; relaunching FRESH')
+        try { runTmux(agentTmuxTarget(name), ['kill-session', '-t', session], { timeout: 5000 }) } catch { /* already gone */ }
+        try {
+          const r = await startAgentProcess(name, { fresh: true })
+          logger.info({ name, ok: r.ok, error: r.error ?? null }, 'resumed channel agent: fresh fallback launched')
+        } catch (err) {
+          logger.error({ err, name }, 'resumed channel agent: fresh fallback failed')
+        }
+      }).catch((err) => logger.error({ err, name }, 'resume verification crashed'))
+    }
 
     // EPERM /tmp-fallback (2026-06-30, mirrors scripts/channels.sh:233+): on
     // Claude Code 2.1.183+ launching `--channels` in a TRUSTED project directory
@@ -3126,7 +3309,7 @@ export async function sendPromptToSession(
   session: string,
   text: string,
   host: string | null = null,
-  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode } = {},
+  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; onBusySend?: () => void; onEmitStart?: () => void } = {},
 ): Promise<'sent' | 'aborted-busy' | 'skipped-locked'> {
   const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
   // PANEWRITERS805: the three modal dismissals are probe+act keystroke writers
@@ -3191,6 +3374,30 @@ export async function sendPromptToSession(
       return 'aborted-busy'
     }
     logger.warn({ session }, 'sendPromptToSession: pane still busy after wait-until-idle budget; sending best-effort')
+    // AUDITBORITEKVESZ918: a best-effort send into a BUSY pane is the one
+    // delivery mode that can arrive spliced. Measured 2026-09-18 16:00 on the
+    // main session: three tasks fired inside 18s (drain :08, memoria :13,
+    // kanban-audit :26), the third one's idle wait timed out after the 12s
+    // budget, and the prompt reached the agent with its HEAD CUT OFF -- no
+    // <scheduled-task> envelope, body starting mid-line. task_runs still said
+    // 'fired', so a corrupted delivery was indistinguishable from a clean run.
+    // This callback lets the caller record THAT instead of a false green. It
+    // does not change delivery: the send still proceeds (a session that never
+    // idles must still get its prompt), only the bookkeeping learns the
+    // difference. Never throws into the send path.
+    try {
+      opts.onBusySend?.()
+    } catch (err) {
+      logger.warn({ err, session }, 'sendPromptToSession: onBusySend callback threw; ignored (delivery continues)')
+    }
+    // CORRECTED 2026-09-23 (PROMPTCSONK923): the 09-18 incident above was NOT
+    // a truncation -- that session's transcript holds the full 44448-char
+    // kanban-audit prompt, envelope and all; "head cut off" was read off the
+    // pane, where an input box taller than the pane shows only its tail. A
+    // busy-pane send queued whole in a live repro. Real damage comes from a
+    // foreign keystroke mid-stream, busy or not; the scheduler judges each
+    // delivery from the transcript (delivery-integrity.ts). onBusySend records
+    // a send condition, not an integrity verdict.
   }
 
   // DELIVLOCK805: everything from here to `return 'sent'` EMITS keystrokes into
@@ -3200,6 +3407,14 @@ export async function sendPromptToSession(
   // (session-send-lock): normal delivery is fail-open (a stuck holder must not
   // silence the fleet); a `recover` caller skips instead of racing a live send.
   const emitToPane = async (): Promise<'sent'> => {
+  // PROMPTCSONK923: tell the caller the moment the first keystroke of THIS
+  // prompt is about to be emitted (we hold the lane from here). The scheduler
+  // judges delivery from transcript prompts recorded after this instant.
+  try {
+    opts.onEmitStart?.()
+  } catch (err) {
+    logger.warn({ err, session }, 'sendPromptToSession: onEmitStart callback threw; ignored (delivery continues)')
+  }
   // Pre-flight buffer-clear when a stale preamble is detected. Reading
   // the pane is best-effort: a capture failure here means we cannot
   // prove the buffer is clean, but proceeding without the clear is no

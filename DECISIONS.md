@@ -17951,3 +17951,167 @@ regresszio nelkul zold.
 
 **Ki döntött:** backend (karpathy-guidelines). Gate: QA (infra/host-move megbizhatosag, nincs uj
 trust-boundary, a kartya sajat kerese szerint).
+## 2026-10-09 -- Csatorna-infra megbízhatósági felvétel: 19 upstream commit (kártya fd10c70b)
+
+A kártya 19 upstream commitot sorolt fel a channel-monitor/poller/voice/sms/slack
+megbízhatósági klaszterből (`UPSTREAM_REF=upstream/develop`). Az eljárás a `fork-adopt-
+investigation` skill mintáját követte: fetch read-only, merge-base-hez viszonyított diff,
+cherry-pick kronológikus sorrendben (legrégebbi előbb, mert a kártya szövege szerint "sorrend
+számít").
+
+**Előszűrés:** `git merge-base --is-ancestor <sha> HEAD` mind a 19 commitra -- 5 már ANCESTOR
+volt (4477a8b5, db261a7b, 6521276a, 0a5c5f20, d847b4e4), egy korábbi upstream-sync már bevette.
+Ledger-jelölés: `ported`, indok "már ancestor-ja a HEAD-nek", a jelenlegi HEAD sha-jával.
+
+**Cherry-pick-elt 14 commit, kronológikus sorrendben, mindegyik saját commit + teszt-futás +
+ledger-jelölés:**
+1. `9dab5e28` (STT timeout 60s->160s) -- tiszta cherry-pick.
+2. `45d7eb0e` (channel-monitor INFO trace) -- tiszta auto-merge.
+3. `0e4aa76a` (EPERM /tmp-fallback + foreign-poller reap + update.sh auto-rebase) -- 3 kézi
+   merge: update.sh (a fork saját POST_MERGE_MODE wrappere köré az upstream UPDATE_AUTO_REBASE
+   opt-in beágyazva, a teszt indentálás-horgonya javítva), agent-process.ts (`buildLaunchCmd`
+   függvénnyé alakítva az EPERM-relaunch miatt, a fork saját `feedbackSurveyEnv` konstansa
+   megtartva), channel-poller-reap.test.ts (import-lista + két describe-blokk unionja).
+   Mellékesen felfedve: `pane-writer-census.test.ts` (kártya 1d421873) helyesen észrevette az
+   új send-keys helyeket, EXPECTED frissítve indokkal.
+4. `f5fd9b9a` (tmux auth race) -- tiszta auto-merge.
+5. `6a304b9a` (Slack progress placeholder + Stop hook + watchdog, ~4800 sor) -- 2 kézi merge:
+   `.claude/settings.json` (hook-unió, `claude-usage.py`-t NEM vettük át, mert a diffből
+   kiderült hogy az a commit-on KÍVÜLI, már-létező sor volt upstream fájában, nem ennek a
+   commitnak a hozadéka), `project-settings-hook-anchor.test.ts` (ugyanaz az unió).
+6. `11bbfc74` (channel-monitor state-dir export) -- tiszta auto-merge, downstream
+   típus-hiba javítva (`resend-key-env.test.ts` hívása `channelStateEnv`-et is kapott).
+7. `00140c57` (respawn state-dir wiring teszt) -- tiszta cherry-pick.
+8. `32cd969d` (bot.pid saját-plugin ellenőrzés) -- 1 kézi merge: a fork már függetlenül
+   javította ugyanazt a host-wide ps-grep hibát (kanban c0390130), a két javítás egyesítve.
+9. `e508f06c` (Agent view letiltása minden launchnál) -- 2 kézi merge: agent-worker.ts
+   (`customEnvPrefix` kihagyva, nincs a fork fájában definiálva), agent-process.ts (a flag a
+   fork saját `promptSuggestionEnv` konstansába került, nem az upstream által összevont
+   stringbe).
+10. `b58445a2` (keepalive self-timeout) -- tiszta auto-merge.
+11. `1080fede` (keepalive configured provider) -- tiszta cherry-pick.
+12. `afd6769c` (SeeMe SMS gateway wrapper) -- tiszta, pusztán additív; MÁS üzemeltető
+    (Cirmi CRM) funkciója, ezen a telepítésen inert (nincs `store/seeme-internal-numbers.json`,
+    semmi nem hívja), de a kártya saját előírása szerint megtartva parity-ért.
+13. `ab5325c0` (guard-riasztás dinamikus sender) -- 1 kézi merge: a fork már biztonságosabb
+    header-átadást használ (`-H @hdr_file`, kártya b267df80, token nem kerül argv-be/`/proc/
+    <pid>/cmdline`-ba), ez megmaradt, az upstream `$(_guard_sender)` hozzáadva rá.
+14. `0e4aa76a`, `b49d4c5d` (chat_id=0 placeholder fallback) -- a payload (resolveAlertOwnerChat/
+    soleDmOwner, owner_chat.py, 6 consumer migrálás) új volt, de a konfliktus-halmaz nagy
+    része onnan jött, hogy a fork MÁR függetlenül portolta a CHATID0-javítást (kártyák
+    a55315be/3026a591) más commit-sha alatt -- byte-azonos tartalom, csak fájl-mode
+    eltérés (`owner-chat.sh`), illetve a fork saját, védettebb alakja (mktemp-es stderr
+    capture) megtartva.
+
+**Mért eredmény minden commit után:** `tsc --noEmit` tiszta, az érintett vitest-fájlok és
+shell-suite-ok zöldek (összesítve: több száz TS-teszt + több száz shell-assert, lásd az
+egyes commit-üzeneteket). A `morning-stamp-gate.test.sh` modify/delete-konfliktusnál a fork
+KÉSŐBBI, már ancestor commitja (`0e40f1ea`) törölte ezt a fájlt -- törölve maradt, nem lett
+visszahozva.
+
+**Ki döntött:** MikroB nyitotta a kártyát (fd10c70b), backend2 végezte el a teljes 19-commit
+felmérést, cherry-pick-sorozatot és konfliktus-feloldást. Gate: QA + Cybersec (a kártya
+leírása szerint, csatorna-hitelesítés/token-kezelés érintett).
+
+## 2026-10-09 -- Korrekció: a Slack haladásjelző (669a8db5, kártya fd10c70b) visszavonva
+
+A fenti fd10c70b-bejegyzés 19-commitos felmérésében a 6a304b9a upstream commitot (Slack
+progress-placeholder + Stop hook + watchdog) hibásan "tisztán additívnak" ítéltem és befogadtam
+(commit 669a8db5). A `develop`-ba landoláskor a `fork-upstream-conflict-guard.test.ts` jelezte: a
+`src/fork-upstream/acknowledged-conflicts.ts` már KÉTSZER (2026-09-25, backend3 kártya b5b7eb6b és
+backend kártya c2aeefa5) kimondta, hogy a Slack/Discord-kiegészítéseket ez a fork NEM veszi át --
+Telegram-only, a saját gyökér CLAUDE.md szerint ("A Telegram kommunikációt a Claude Code Channels
+kezeli"). A teszt saját hibaüzenete is pontosan ezt mondta: "re-decide the rule, do not just edit
+the anchor to match" -- egy kártya nem jogosult egyoldalúan felülírni egy kétszer megerősített
+flotta-döntést.
+
+**Javítás:** 669a8db5 visszavonva (commit 896bd24b), a ledger-bejegyzés (`store/upstream-ported.json`,
+a fő klónon) "ported"-ből "skipped"-re mozgatva a 6a304b9a shánál, indoklással. Az egyetlen
+független javítás, amit 669a8db5 is tartalmazott (`update-auto-rebase-optin.test.ts` 2-szóközös
+anchor) a `develop` merge (8fe916ed) révén már függetlenül megvolt, tehát nem veszett el.
+
+**Tanulság:** egy upstream commit "tisztán additív" besorolása NEM elég a befogadás eldöntéséhez --
+a meglévő `acknowledged-conflicts.ts`/fork-saját-döntés réteget is át kell nézni, mielőtt egy
+korábban már explicit elutasított képességet visszahoznánk. A `fork-adopt-investigation` skill ezt
+implicit elvárja ("check you don't already have it" / due diligence), de a gyakorlatban a per-sha
+ancestor-ellenőrzés nem helyettesíti a "van-e már KIMONDOTT no-go ugyanerre" ellenőrzést.
+
+**Ki döntött:** backend2 észlelte és javította a saját hibáját a landolási retry körében
+(fleet-test.sh, `fork-upstream-conflict-guard.test.ts` lelete). Gate: QA + Cybersec (a kártya
+leírása szerint, csatorna-hitelesítés/token-kezelés érintett).
+
+## 2026-10-10 -- Upstream-sync 8. köteg (144d7756..94765127, kártya 14256aac): 16 konfliktusos fájl
+
+Nagy kiterjedésű merge, 16 konfliktusos fájl (`scripts/email-send-gate.mjs`,
+`scripts/hooks/outgoing-copy-gate.py`, `src/db.ts`, `src/web.ts`, `src/web/agent-process.ts`,
+`src/web/agent-scaffold.ts`, `src/web/cli-update.ts`, `src/web/message-router.ts`,
+`src/web/routes/{agents,kanban,updates}.ts`, `web/app.js`, `web/index.html` + 3 teszt-fájl).
+Döntések fájlonként (a fork-oldal az alapértelmezés, de minden esetben ELLENŐRIZVE, nem vakon):
+
+1. **CRM modul (src/crm/, web-crm/, docs/crm/) -- ELFOGADVA a törlés.** Upstream saját döntése
+   (f1e680ba, "the CRM moved to its own repository, Szotasz/marveen-crm"), a tulajdonos
+   (Szotasz) döntötte el a 7. kötegben frissen behozott CRM-modulról, hogy külön repóba kerül.
+   A fork sosem fejlesztette tovább a CRM-et sajátosan (a merge-base-ig minden CRM-commit
+   upstream eredetű), csak egy saját post-merge teszt-fix érintette (`src/crm/leads-gate.ts`,
+   commit 2329e197) -- nincs elvesztendő fork-specifikus munka. 19 fájl törölve.
+2. **`src/web/agent-process.ts` + `src/db.ts` (kötelező oldal-oldal review, rule 3 a kártyán):**
+   a MINIMAX provider-ág (CLAUDE.md 17. szabály, Peti NO-GO 48565f81) NEM került be. Három
+   duplikált-deklaráció hiba a merge-ből (LAUNCH_SECRETS_DIR*/launchSecretRef/clearLaunchSecrets
+   kétszer, eltérő strukturális helyen; `parentWouldCycle` kétszer, db.ts-ben, a fork már korábban
+   portolta -- card 16e60d3c/5aaf7209) -- mindhárom konszolidálva egy definícióra, a két oldal
+   dokumentációjának értékes részeit egyesítve.
+3. **Bash egress: WHITEHAT GO-szintű, mért allowlist-alapú `bash-egress-guard.py` (card
+   f6db6978/854182c7, 2.9M valódi Bash-parancson mérve) marad az egyetlen bekötött egress-gate.**
+   Upstream saját, denylist-alapú párhuzamos mechanizmusa (EGRESSPARSER923,
+   `scripts/hooks/bash-egress-parser.mjs`) NEM került be -- ez már egy KORÁBBI körben
+   (`src/fork-upstream/acknowledged-conflicts.ts`, 'scripts/hooks/bash-egress-parser.mjs' kulcs)
+   kimondott, tripwire-rel védett döntés volt, amit ez a kör csak megerősített (a fájl + teszt
+   törölve, a BASH_EGRESS_DENY szűk, biztonságos tool-name-deny lista viszont megmaradt/elfogadva).
+4. **Üzenetsor fair batch: `selectFairBatch` (fork, 2026-08-08, urgency-promotion) marad,
+   upstream `selectTickWindow` (fc5748f5) NEM került be** -- ugyanaz a korábban kimondott,
+   tripwire-rel védett döntés (`src/web/message-router.ts` kulcs), megerősítve.
+5. **`src/web/routes/agents.ts`: a modell-választó marad `CLAUDE_MODELS` (card 5d2002b5, egyetlen
+   forrás a heti tier-léptővel), a kliens-oldali `cli`/`claudeSupport` mezők és a hozzá tartozó
+   `applyClaudeCliGate` FE-funkció NEM lett bekötve** (card 6b10a6b8 korábbi döntése: a fork a
+   CLI-gate-et INDÍTÁSKOR érvényesíti, `refuseIfCliCannotLaunch`, nem a picker-listában -- a HTML
+   `agentModelCliHint`/`editAgentModelCliHint` elemek grep-ellenőrizve inaktívak, nincs FE-kódjuk).
+   Egy duplikált `refuseIfCliCannotLaunch` definíció (upstream eredeti, 422-es alakja) + két
+   duplikált hívás (POST/PUT, a már meglévő fork-adaptált 400-as hívás mellett) konszolidálva.
+6. **`src/web/routes/kanban.ts`: a fork teljes guard-láncolata (newDevStopWouldBlock,
+   landedGuardVerdict, gateCompletenessGuardVerdict, planGrillingGuardVerdict,
+   draftReviewGuardVerdict, dependencyBlockBody, bulkAttributionRequired) megmaradt** (ezek
+   mindegyike upstream-nek nincs), KIBŐVÍTVE upstream két valódi javításával: a szülő-kártya
+   LÉTEZÉSÉNEK ellenőrzése (404, nem csendes dangling reference) és a hiba-üzenet pontosítása
+   (saját-szülő vs. hosszabb kör).
+7. **`scripts/email-send-gate.mjs`: a fork saját, adverzariálisan hardened `isSendInvocation` +
+   heredoc-kompozíció (card 72f5f13b/c7401c5f, ~150 teszt) megmaradt, KIBŐVÍTVE** upstream
+   `wrapperDepthHit`/`wrapper-depth` megkülönböztetésével (ez már bekötött, csak eddig nem volt
+   hívva ezen a pontnál -- valódi, átfedés-mentes addíció).
+8. **`web/app.js` + `web/index.html`: a fork modularizációja (app-kanban.js/app-updates.js/
+   app-elements.js, slice 25/30/35/38) megmaradt.** Upstream ~5300 soros, nem-modularizált inline
+   kanban-blokkja és a duplikált `renderCliUpdateOffer`/`applyCliUpdate` NEM került be. A
+   `#updatesCommitList` konténer hiánya SZÁNDÉKOS (fork-updates.js dokumentálja: a fork saját
+   `#updatesRepos`-ra cserélte, az upstream `loadUpdates()` ezen a ponton holt kód). A kanban-blokk
+   esetleges genuinely ÚJ UI-viselkedését NEM nézte át ez a kártya sor szerint (frontend-terület,
+   MikroB/Fron Ted felé jelezve, nem találgatva).
+9. **3 új, kizárólag a fentebb NEM-adoptált funkciókat tesztelő fájl törölve**
+   (`src/__tests__/{bash-egress-parser,picker-cli-gate,outgoing-copy-gate-interagent-homoglyph,
+   outgoing-copy-gate-at-file}.test.ts`), és egy ÖTÖDIK, meglévő fájl (`outgoing-copy-gate.py`
+   `inter_agent_homoglyph_gate` + 3 segédfüggvénye, INTERAGENTHOMOGLIF923) ismét eltávolítva --
+   ugyanaz a korábban kimondott ok (card ee7bc2ba/26f2b4f2: a `_gate_log` hívás célpontja máig
+   nem létezik, a funkció élesben NameError-ral állna le).
+
+**Mért eredmény:** `tsc --noEmit` tiszta, `fork-upstream-conflict-guard.test.ts` 39/39 (minden
+korábban kimondott tripwire-döntés megerősítve, nem csendben felülírva), a közvetlenül érintett
+teszt-fájlok (launch-secret-ref, kanban-*, agent-tool-deny, agent-custom-provider-field,
+agent-launch-key-quoting, cli-update-offer, email-send-gate*, message-router-tick-cap,
+message-router-fair-batch, channels-reap-poller-pids) mind zöldek. Teljes `fleet-test.sh` a
+landolás részeként.
+
+**Ki döntött:** backend3, a kártya saját "fork-oldal alapértelmezés + minden eltérés névszerint
+ide" utasítása szerint. Minden NEM-trivális döntésnél (CRM, MiniMax, egress-parser, selectTickWindow,
+picker-CLI-gate) ellenőrizve a `src/fork-upstream/acknowledged-conflicts.ts` korábbi, kimondott
+precedensével -- 2 esetben (selectTickWindow, ensureBashEgressParser) a saját magyarázó
+kommentjeim véletlenül megsértették a tripwire-t (a needle szó szerinti előfordulása kommentben is
+számít), átfogalmazva. Gate: QA + Cybersec + Cybered (a kártya kérése szerint, agent-process.ts/
+db.ts trust-boundary + a kanban-endpoint write-path érintett).

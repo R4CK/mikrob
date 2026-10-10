@@ -114,7 +114,7 @@ describe('P1#5 — CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 on every agent spawn pa
     // Anchor updated (card 4f15966e, backend, 2026-09-07): the literal `export PATH=` immediately
     // after the opening backtick is no longer true -- ${umaskPrefix} (card bd450735/e80c011a,
     // agentTmuxTarget's runAsUser support) now precedes it in source. `promptSuggestionEnv` is
-    // unique to this one cmd line (the OTHER `const cmd = ...` in this file is the SSH remote-launch
+    // unique to this one line (the OTHER `const cmd = ...` in this file is the SSH remote-launch
     // path via buildRemoteLaunchCommand, which does not build this string at all).
     //
     // Anchor updated AGAIN (card 087e4418 merge, upstream-sync batch 7): `const cmd = \`...\`` is

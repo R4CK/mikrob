@@ -725,6 +725,9 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         if (ensureNoisyCommandGuard(agentName)) noisyGuardPatched.push(agentName)
         if (ensureGitProtectGuard(agentName)) gitGuardPatched.push(agentName)
         if (ensureTaskstateReplayMatcher(agentName)) taskstateMatcherPatched.push(agentName)
+        // Upstream batch 8's boot-time migration for the second Bash egress hook (EGRESSPARSER923)
+        // is not adopted here either --
+        // same reasoning as agent-scaffold.ts's injection call site.
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
         ensureQuarantineReader(agentName)
       }
