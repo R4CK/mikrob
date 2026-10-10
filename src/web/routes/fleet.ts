@@ -19,6 +19,43 @@ import type { RouteContext } from './types.js'
 const FLEET_IMPORT_APPROVAL_CATEGORY = 'fleet_import_apply'
 const FLEET_IMPORT_APPROVAL_WINDOW_S = Number(process.env.FLEET_IMPORT_APPROVAL_WINDOW_S) || 1800
 
+// Card 68254bd7 delta-gate (RedHat NO-GO 14953, MikroB decision 14957): the approval mechanism
+// below is NOT a human-enforced gate as it stands -- PATCH /api/approvals/:id has no auth-kind
+// check at all, and resolved_by is self-reported, so the SAME shared fleet bearer the kind-check
+// above blocks can mint its own "approved" row directly (or via the three routes already named in
+// the comment above: bridge-enroll, break-glass password reset, deleting the last user). A hard,
+// literal constant on purpose, NOT an environment variable -- an env-driven toggle on a privilege
+// gate is exactly the class this fork's own DECISIONS.md already warns about elsewhere (any parent
+// process could set it). Flip to false only in a reviewed commit, once card 3fb0ef97 (a
+// non-forgeable approval channel) ships.
+const FLEET_IMPORT_APPLY_FAIL_CLOSED = true
+
+/**
+ * F-A fix (card 657b32f2, RedHat delta-gate 14953): allowRiskyFields was NOT bound into the
+ * approval's content_hash, so a caller could get an innocuous allowRiskyFields=false request
+ * approved, then resend the IDENTICAL body with allowRiskyFields=true -- same rawBody hash, same
+ * approval, but a riskier import than the owner actually saw. Exported pure function so it is
+ * independently unit-testable without a live route/DB, even while FLEET_IMPORT_APPLY_FAIL_CLOSED
+ * keeps the call site below unreachable.
+ */
+export function fleetImportContentHash(rawBody: string, allowRiskyFields: boolean): string {
+  return createHash('sha256').update(rawBody).update(`\u0000allowRiskyFields=${allowRiskyFields}`).digest('hex')
+}
+
+/**
+ * F-B fix (card 657b32f2, RedHat delta-gate 14953): the approval description named only the byte
+ * count and the flag, so the human approver had no way to tell WHICH surfaces would change.
+ * Per-agent/per-field enumeration would need to replicate importFleet's own parsing here -- out of
+ * scope for this follow-up -- so this names the surface CLASSES instead, which is static and cheap.
+ */
+export function fleetImportApprovalDescription(bodyBytes: number, allowRiskyFields: boolean): string {
+  const base = `Fleet import apply (${bodyBytes} bytes, allowRiskyFields=${allowRiskyFields}). ` +
+    'Approving this authorizes importing verbatim fleet surfaces (CLAUDE.md/SOUL.md, agent skills, ' +
+    'scheduled-task prompts, .mcp.json command/args/url) for every agent in the payload.'
+  if (!allowRiskyFields) return base
+  return `${base} INCLUDING risky fields: toolDeny, securityProfile, capabilities, customProvider, settings.hooks.`
+}
+
 export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -58,6 +95,18 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
     // capabilities/customProvider/settings.hooks) -- default false, same `=== 'true'` posture as
     // `apply` above (an unknown/garbage value never accidentally opts in).
     const allowRiskyFields = ctx.url.searchParams.get('allowRiskyFields') === 'true'
+
+    // Card 68254bd7 delta (RedHat NO-GO 14953, MikroB decision 14957): hard fail-closed, ahead of
+    // EVERY check below (auth kind included) -- "mindig 403, approval-kérést sem nyit". The
+    // kind-check and approval-opening code further down stay in place, UPDATED for when this flag
+    // is removed (F-A/F-B above), but are intentionally unreachable until then.
+    if (apply && FLEET_IMPORT_APPLY_FAIL_CLOSED) {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Fleet import: apply=true hard-refused (fail-closed pending card 3fb0ef97 -- no approval opened)')
+      json(res, {
+        error: 'Fleet import (apply=true) is disabled until a non-forgeable approval channel ships (card 3fb0ef97). Use apply=false (dry-run) for now.',
+      }, 403)
+      return true
+    }
 
     // Card 68254bd7 (MikroB follow-up, msg 10134): an APPLYING import must come from a human --
     // a browser session or a device key -- never the shared fleet dashboard bearer every agent
@@ -105,7 +154,7 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
     // caller must resubmit the identical body after the owner approves, which is exactly the
     // pattern the email gate already trains agents on.
     if (apply) {
-      const contentHash = createHash('sha256').update(rawBody).digest('hex')
+      const contentHash = fleetImportContentHash(rawBody, allowRiskyFields)
       const consumable = findConsumableApproval(FLEET_IMPORT_APPROVAL_CATEGORY, contentHash, FLEET_IMPORT_APPROVAL_WINDOW_S)
       const consumed = consumable ? consumeApproval(consumable.id) : false
       if (!consumed) {
@@ -113,7 +162,7 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
         const approval = existingPending ?? createAndNotifyApproval({
           agent_id: ctx.auth?.kind === 'session' ? (ctx.auth.user ?? 'session') : 'device-key',
           category: FLEET_IMPORT_APPROVAL_CATEGORY,
-          action_description: `Fleet import apply (${rawBody.length} bytes, allowRiskyFields=${allowRiskyFields})`,
+          action_description: fleetImportApprovalDescription(rawBody.length, allowRiskyFields),
           content_hash: contentHash,
         })
         logger.warn(
