@@ -37,7 +37,10 @@ const channelsSh = readFileSync(join(REPO_ROOT, 'scripts', 'channels.sh'), 'utf-
  * channels-reap-scope.test.ts uses for its awk program -- the test runs the REAL bash, not a
  * hand-copied restatement of it that could drift from the shipped file. */
 function extractFallbackBlock(): string {
-  const startNeedle = 'if [ "$_plugin_alive" != "true" ]; then\n    _watchdog_claude_pid='
+  // Anchor updated (card fd10c70b, upstream 32cd969d): the condition gained a second clause,
+  // `&& [ "$_bot_hijacked" != "true" ]` -- a hijacked bot.pid must not count as "alive" just
+  // because the fallback's own pgrep found a bun grandchild.
+  const startNeedle = 'if [ "$_plugin_alive" != "true" ] && [ "$_bot_hijacked" != "true" ]; then\n    _watchdog_claude_pid='
   const start = channelsSh.indexOf(startNeedle)
   if (start < 0) throw new Error('watchdog fallback block not found in channels.sh')
   const end = channelsSh.indexOf('\n  fi\n', start)

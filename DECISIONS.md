@@ -17951,3 +17951,91 @@ regresszio nelkul zold.
 
 **Ki döntött:** backend (karpathy-guidelines). Gate: QA (infra/host-move megbizhatosag, nincs uj
 trust-boundary, a kartya sajat kerese szerint).
+## 2026-10-09 -- Csatorna-infra megbízhatósági felvétel: 19 upstream commit (kártya fd10c70b)
+
+A kártya 19 upstream commitot sorolt fel a channel-monitor/poller/voice/sms/slack
+megbízhatósági klaszterből (`UPSTREAM_REF=upstream/develop`). Az eljárás a `fork-adopt-
+investigation` skill mintáját követte: fetch read-only, merge-base-hez viszonyított diff,
+cherry-pick kronológikus sorrendben (legrégebbi előbb, mert a kártya szövege szerint "sorrend
+számít").
+
+**Előszűrés:** `git merge-base --is-ancestor <sha> HEAD` mind a 19 commitra -- 5 már ANCESTOR
+volt (4477a8b5, db261a7b, 6521276a, 0a5c5f20, d847b4e4), egy korábbi upstream-sync már bevette.
+Ledger-jelölés: `ported`, indok "már ancestor-ja a HEAD-nek", a jelenlegi HEAD sha-jával.
+
+**Cherry-pick-elt 14 commit, kronológikus sorrendben, mindegyik saját commit + teszt-futás +
+ledger-jelölés:**
+1. `9dab5e28` (STT timeout 60s->160s) -- tiszta cherry-pick.
+2. `45d7eb0e` (channel-monitor INFO trace) -- tiszta auto-merge.
+3. `0e4aa76a` (EPERM /tmp-fallback + foreign-poller reap + update.sh auto-rebase) -- 3 kézi
+   merge: update.sh (a fork saját POST_MERGE_MODE wrappere köré az upstream UPDATE_AUTO_REBASE
+   opt-in beágyazva, a teszt indentálás-horgonya javítva), agent-process.ts (`buildLaunchCmd`
+   függvénnyé alakítva az EPERM-relaunch miatt, a fork saját `feedbackSurveyEnv` konstansa
+   megtartva), channel-poller-reap.test.ts (import-lista + két describe-blokk unionja).
+   Mellékesen felfedve: `pane-writer-census.test.ts` (kártya 1d421873) helyesen észrevette az
+   új send-keys helyeket, EXPECTED frissítve indokkal.
+4. `f5fd9b9a` (tmux auth race) -- tiszta auto-merge.
+5. `6a304b9a` (Slack progress placeholder + Stop hook + watchdog, ~4800 sor) -- 2 kézi merge:
+   `.claude/settings.json` (hook-unió, `claude-usage.py`-t NEM vettük át, mert a diffből
+   kiderült hogy az a commit-on KÍVÜLI, már-létező sor volt upstream fájában, nem ennek a
+   commitnak a hozadéka), `project-settings-hook-anchor.test.ts` (ugyanaz az unió).
+6. `11bbfc74` (channel-monitor state-dir export) -- tiszta auto-merge, downstream
+   típus-hiba javítva (`resend-key-env.test.ts` hívása `channelStateEnv`-et is kapott).
+7. `00140c57` (respawn state-dir wiring teszt) -- tiszta cherry-pick.
+8. `32cd969d` (bot.pid saját-plugin ellenőrzés) -- 1 kézi merge: a fork már függetlenül
+   javította ugyanazt a host-wide ps-grep hibát (kanban c0390130), a két javítás egyesítve.
+9. `e508f06c` (Agent view letiltása minden launchnál) -- 2 kézi merge: agent-worker.ts
+   (`customEnvPrefix` kihagyva, nincs a fork fájában definiálva), agent-process.ts (a flag a
+   fork saját `promptSuggestionEnv` konstansába került, nem az upstream által összevont
+   stringbe).
+10. `b58445a2` (keepalive self-timeout) -- tiszta auto-merge.
+11. `1080fede` (keepalive configured provider) -- tiszta cherry-pick.
+12. `afd6769c` (SeeMe SMS gateway wrapper) -- tiszta, pusztán additív; MÁS üzemeltető
+    (Cirmi CRM) funkciója, ezen a telepítésen inert (nincs `store/seeme-internal-numbers.json`,
+    semmi nem hívja), de a kártya saját előírása szerint megtartva parity-ért.
+13. `ab5325c0` (guard-riasztás dinamikus sender) -- 1 kézi merge: a fork már biztonságosabb
+    header-átadást használ (`-H @hdr_file`, kártya b267df80, token nem kerül argv-be/`/proc/
+    <pid>/cmdline`-ba), ez megmaradt, az upstream `$(_guard_sender)` hozzáadva rá.
+14. `0e4aa76a`, `b49d4c5d` (chat_id=0 placeholder fallback) -- a payload (resolveAlertOwnerChat/
+    soleDmOwner, owner_chat.py, 6 consumer migrálás) új volt, de a konfliktus-halmaz nagy
+    része onnan jött, hogy a fork MÁR függetlenül portolta a CHATID0-javítást (kártyák
+    a55315be/3026a591) más commit-sha alatt -- byte-azonos tartalom, csak fájl-mode
+    eltérés (`owner-chat.sh`), illetve a fork saját, védettebb alakja (mktemp-es stderr
+    capture) megtartva.
+
+**Mért eredmény minden commit után:** `tsc --noEmit` tiszta, az érintett vitest-fájlok és
+shell-suite-ok zöldek (összesítve: több száz TS-teszt + több száz shell-assert, lásd az
+egyes commit-üzeneteket). A `morning-stamp-gate.test.sh` modify/delete-konfliktusnál a fork
+KÉSŐBBI, már ancestor commitja (`0e40f1ea`) törölte ezt a fájlt -- törölve maradt, nem lett
+visszahozva.
+
+**Ki döntött:** MikroB nyitotta a kártyát (fd10c70b), backend2 végezte el a teljes 19-commit
+felmérést, cherry-pick-sorozatot és konfliktus-feloldást. Gate: QA + Cybersec (a kártya
+leírása szerint, csatorna-hitelesítés/token-kezelés érintett).
+
+## 2026-10-09 -- Korrekció: a Slack haladásjelző (669a8db5, kártya fd10c70b) visszavonva
+
+A fenti fd10c70b-bejegyzés 19-commitos felmérésében a 6a304b9a upstream commitot (Slack
+progress-placeholder + Stop hook + watchdog) hibásan "tisztán additívnak" ítéltem és befogadtam
+(commit 669a8db5). A `develop`-ba landoláskor a `fork-upstream-conflict-guard.test.ts` jelezte: a
+`src/fork-upstream/acknowledged-conflicts.ts` már KÉTSZER (2026-09-25, backend3 kártya b5b7eb6b és
+backend kártya c2aeefa5) kimondta, hogy a Slack/Discord-kiegészítéseket ez a fork NEM veszi át --
+Telegram-only, a saját gyökér CLAUDE.md szerint ("A Telegram kommunikációt a Claude Code Channels
+kezeli"). A teszt saját hibaüzenete is pontosan ezt mondta: "re-decide the rule, do not just edit
+the anchor to match" -- egy kártya nem jogosult egyoldalúan felülírni egy kétszer megerősített
+flotta-döntést.
+
+**Javítás:** 669a8db5 visszavonva (commit 896bd24b), a ledger-bejegyzés (`store/upstream-ported.json`,
+a fő klónon) "ported"-ből "skipped"-re mozgatva a 6a304b9a shánál, indoklással. Az egyetlen
+független javítás, amit 669a8db5 is tartalmazott (`update-auto-rebase-optin.test.ts` 2-szóközös
+anchor) a `develop` merge (8fe916ed) révén már függetlenül megvolt, tehát nem veszett el.
+
+**Tanulság:** egy upstream commit "tisztán additív" besorolása NEM elég a befogadás eldöntéséhez --
+a meglévő `acknowledged-conflicts.ts`/fork-saját-döntés réteget is át kell nézni, mielőtt egy
+korábban már explicit elutasított képességet visszahoznánk. A `fork-adopt-investigation` skill ezt
+implicit elvárja ("check you don't already have it" / due diligence), de a gyakorlatban a per-sha
+ancestor-ellenőrzés nem helyettesíti a "van-e már KIMONDOTT no-go ugyanerre" ellenőrzést.
+
+**Ki döntött:** backend2 észlelte és javította a saját hibáját a landolási retry körében
+(fleet-test.sh, `fork-upstream-conflict-guard.test.ts` lelete). Gate: QA + Cybersec (a kártya
+leírása szerint, csatorna-hitelesítés/token-kezelés érintett).

@@ -2439,7 +2439,10 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // naming two different CLI builds. Kept the fork's separate const -- the fork's own
     // channel-stability-contract.test.ts pins `feedbackSurveyEnv` by name in the launch command --
     // and folded upstream's measurement into that comment instead.
-    const promptSuggestionEnv = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false && '
+    // CHANSPARE925 (card fd10c70b, upstream e508f06c): also disables the Agent view -- its
+    // Left key backgrounds the session into the Claude Code daemon, which keeps a second
+    // --channels copy alive (bot poller hijack).
+    const promptSuggestionEnv = 'export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && '
     // Disable Claude Code's in-place auto-updater for every spawned agent. A
     // running agent whose updater fires does an in-place global reinstall into the
     // shared package prefix; a half-completed update can leave a broken stub and
@@ -2483,8 +2486,9 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     const umaskPrefix = agentTmuxTarget(name).runAsUser ? 'umask 002 && ' : ''
     // buildLaunchCmd(launchCwd): only the launch CWD varies between the normal start and the
     // EPERM /tmp fallback below; every env export is an absolute path and stays pointed at the
-    // real agent dir. feedbackSurveyEnv kept (card 268b257a, fork-specific, pinned by name in
-    // channel-stability-contract.test.ts) -- upstream's version of this function does not have it.
+    // real agent dir. feedbackSurveyEnv kept in the string (card 268b257a, see MERGE NOTE above):
+    // this fork's own const, pinned by name in channel-stability-contract.test.ts -- upstream's
+    // version of this function does not have it.
     const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
