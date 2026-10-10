@@ -3552,9 +3552,13 @@ function touchAncestorsOf(cardId: string, now: number): void {
 // NOTE: upstream's own parentWouldCycle(cardId, parentId) landed in THIS same hunk's upstream half
 // (94765127) -- not adopted here as a second definition, because the fork already has one, further
 // down this file (card 16e60d3c/5aaf7209, ACKNOWLEDGED_FORK_ANCHORS 'src/db.ts' tripwire), already
-// wired into src/web/routes/kanban.ts's PUT/POST handlers. The two are functionally equivalent (same
-// cycle-walk-and-depth-cap contract); keeping both would be a duplicate `export function
-// parentWouldCycle` and a TypeScript error.
+// wired into src/web/routes/kanban.ts's PUT/POST handlers. CORRECTION (card 14256aac, same merge):
+// the two were NOT functionally equivalent -- upstream's walk fails closed (refuses) on a
+// pre-existing cycle or a chain past ANCESTOR_DEPTH_LIMIT, the fork's prior version silently broke
+// out and allowed the write (caught by upstream's own new src/__tests__/kanban-parent-cycle.test.ts,
+// "terminates on data that already contains a cycle"). The fork's kept definition below now matches
+// upstream's fail-closed contract; keeping both would still be a duplicate `export function
+// parentWouldCycle` and a TypeScript error, so there is still only one definition.
 
 export function createKanbanCard(card: {
   id: string
@@ -5013,18 +5017,23 @@ export function blockerWouldCycle(cardId: string, blockerId: string): boolean {
 // 'src/db.ts'): the parent_id edge instead of the blocker edge. parent_id is single-valued per row
 // (a tree, not a general graph), so a simple upward walk suffices -- no stack of multiple children
 // needed the way blockerWouldCycle's multi-edge walk requires.
+//
+// FAIL-CLOSED on a pre-existing cycle or a chain past ANCESTOR_DEPTH_LIMIT, not just on a cycle
+// through cardId itself (card 14256aac, upstream-sync batch 8 merge, src/__tests__/kanban-parent-
+// cycle.test.ts "terminates on data that already contains a cycle"): a parent chain that cannot be
+// walked to a root is already broken data, and extending a new write onto it is refused rather than
+// silently accepted -- matching touchAncestorChain's own depth/cycle guard above.
 export function parentWouldCycle(cardId: string, parentId: string): boolean {
   if (cardId === parentId) return true
   const stmt = db.prepare('SELECT parent_id FROM kanban_cards WHERE id = ?')
-  const seen = new Set<string>([parentId])
+  const seen = new Set<string>()
   let current: string | null = parentId
+  let depth = 0
   while (current) {
-    const row = stmt.get(current) as { parent_id: string | null } | undefined
-    if (!row || !row.parent_id) break
-    if (row.parent_id === cardId) return true
-    if (seen.has(row.parent_id)) break // a pre-existing cycle elsewhere -- not this re-parent's doing
-    seen.add(row.parent_id)
-    current = row.parent_id
+    if (current === cardId) return true
+    if (seen.has(current) || ++depth > ANCESTOR_DEPTH_LIMIT) return true
+    seen.add(current)
+    current = (stmt.get(current) as { parent_id: string | null } | undefined)?.parent_id ?? null
   }
   return false
 }

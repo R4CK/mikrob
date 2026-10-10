@@ -20,7 +20,17 @@ const wrap = (n: number, cmd: string) => 'nohup '.repeat(n) + cmd
 const CYR_A = String.fromCodePoint(0x430)
 
 let dir: string
-beforeAll(() => { dir = mkdtempSync(join(tmpdir(), 'headdepth-')) })
+beforeAll(() => {
+  dir = mkdtempSync(join(tmpdir(), 'headdepth-'))
+  // GATEPERSIST816(2) (this fork's own, deliberately stricter-than-upstream decision, kept on
+  // card 14256aac's merge): the email path fails CLOSED when OUTGOING_COPY_GATE_RULES names a
+  // missing/unreadable rules file, unlike upstream's fail-OPEN-with-warning design. This test
+  // file is about wrapper-depth/content-audit precedence, not the rules-file policy, so it
+  // supplies a valid (empty) rules file -- the same "nothing known yet" shape production uses
+  // (store/outgoing-copy-gate-rules.json) -- rather than exercising that unrelated, already-
+  // decided fail-closed path by accident.
+  writeFileSync(join(dir, 'rules.json'), JSON.stringify({ bad_name_patterns: [] }))
+})
 afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
 
 function copyGate(cmd: string): { code: number | null; err: string } {
