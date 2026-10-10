@@ -1157,6 +1157,12 @@ def collect_mcp_body(tool_input: dict):
 MDV2_ESCAPE = re.compile(r"\\([^\w\s])")
 
 
+def collect_telegram_body(tool_input: dict) -> str:
+    fields = ("text", "caption", "message")
+    got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
+    return MDV2_ESCAPE.sub(r"\1", "\n".join(got))
+
+
 # --- Telegram sent from a Bash command (card 74181db2) -----------------------
 #
 # WHY THIS EXISTS AT ALL. The gate's telegram branch matches on the TOOL NAME
@@ -1410,7 +1416,7 @@ def telegram_gate(tool_input: dict) -> None:
         sys.exit(0)
     if problems:
         sys.stderr.write(
-            f"KIMENO-SZOVEG KAPU ({label}): TILTVA, az uzenet nem mehet ki igy.\n\n"
+            "KIMENO-SZOVEG KAPU (Telegram): TILTVA, az uzenet nem mehet ki igy.\n\n"
             + "\n".join(f"  - {p}" for p in problems)
             + "\n\nJavitsd a szoveget es kuldd ujra (a MarkdownV2 escape-eket a kapu "
               "az ellenorzes elott feloldja, azok nem szamitanak hibanak).\n"

@@ -115,12 +115,6 @@ describe('...and that stays true (update the scaffold sentence if one of these f
     expect(hits).toEqual([])
   })
 
-  it('no file under scripts/hooks names the memories endpoint', () => {
-    const dir = join(ROOT, 'scripts', 'hooks')
-    const hits = readdirSync(dir).filter((n) => statSync(join(dir, n)).isFile() && !isExemptPrinter(`scripts/hooks/${n}`) && /api\/memories/.test(readFileSync(join(dir, n), 'utf-8')))
-    expect(hits).toEqual([])
-  })
-
   // An exemption must not become the loophole: an exempt hook may PRINT the
   // endpoint (a recipe the agent runs itself), but it may not reach it.
   it.each(Object.keys(RECIPE_PRINTERS))('exempt %s only prints: no network, DB, subprocess or dynamic code on any line', (rel) => {

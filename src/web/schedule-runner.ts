@@ -1381,17 +1381,10 @@ async function attemptFireTaskUnguarded(
     const taskBody = preCheckPrefix
       ? `[Pre-check eredmeny]\n${preCheckPrefix}\n\n[Feladat]\n${promptWithMetrics}`
       : promptWithMetrics
-    // SCHEDPROMPTREF917: the size-guard measures the SKILL.md body alone
-    // (task.prompt, before pre-check/metrics are spliced in) -- those two are
-    // runner-generated per fire and the task author has no control over
-    // their length, so folding them in would make the guard fire on
-    // something the operator cannot fix from the SKILL.md.
-    maybeSendSizeGuardNotice(task.name, task.prompt.length, now)
-    const { block: scheduledTaskBlock } = buildScheduledTaskBlock(task.name, taskBody, host, now)
     const fullPrompt =
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
-      scheduledTaskBlock
+      wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
     let typedAt = Date.now() // replaced by onEmitStart; see the note after the call
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a

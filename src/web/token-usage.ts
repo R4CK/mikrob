@@ -10,7 +10,6 @@ import { listAgentNames } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { estimateCostUsd, stripDateSuffix } from '../costops/model-pricing.js'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
-import { toolInputPreview } from './tool-input-preview.js'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 
@@ -295,26 +294,17 @@ async function parseJsonlFile(
     }
 
     let toolName: string | null = null
-    let toolInput: unknown = undefined
     let thinkingTokens = 0
     if (Array.isArray(content)) {
       for (const block of content) {
         if (block.type === 'tool_use' && block.name && !toolName) {
           toolName = block.name
-          toolInput = block.input
         }
         // Estimate thinking tokens from char length (no per-block count in API)
         if (block.type === 'thinking' && typeof block.thinking === 'string') {
           thinkingTokens += Math.ceil(block.thinking.length / 4)
         }
       }
-    }
-
-    // APRO920 (b): a tool-calling turn has no text block, so `preview` above
-    // stays '' -- that's the "Bash" row with no command visible in the token
-    // log. Fill it from the tool's own input (redacted) when there is one.
-    if (!preview && toolName) {
-      preview = toolInputPreview(toolName, toolInput) || ''
     }
 
     calls.push({
