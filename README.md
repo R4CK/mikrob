@@ -144,6 +144,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **Upstream-drift figyelő, ami egy kártyát gondoz, nem sokat nyit**: naponta egyszer valódi merge dry-runnal megnézi, hogy az upstream oldal elmozdult-e ahhoz képest, amit róla eldöntöttünk, és az eredményt EGYETLEN kanban-kártyán tartja: nyit egyet, ha nincs nyitva, egyébként arra kommentel, és hallgat, amíg a drift nem mozdul. Elérhetetlen upstream esetén nem szólal meg és nem is jegyzi fel, hogy szólt volna.
 - **Skill-frontmatter épség-ellenőrzés**: landoláskor átnézi a seed-skillek YAML-fejlécét, és pirosra váltja a landolást lezáratlan blokknál, illetve hiányzó vagy kétszer szereplő `name`/`description` kulcsnál -- egy olvashatatlan fejlécű skill némán kimarad a felkínált skill-készletből.
 - **Verziókövetett, nem-terjedő skill-archívum**: a seed-skillek és ügynök-sablonok gyűjteményében nem szereplő globális skillek verziókövetett, auditálható mentése egy, a repón KÍVÜLI, remote nélküli helyi git repóban -- egyirányú (élő másolat -> archívum), nincs automatikus visszaállás, és egy strukturális őr biztosítja, hogy egyetlen telepítő se olvassa.
+- **Telepített, de be nem kötött képesség bekötése**: a `code-comprehension` skill és az építő ügynökök CLAUDE.md-je ismerteti a már telepített, de addig sehonnan nem hivatkozott `store/graphify.sh` kódgráf-lekérdezést (callers/callees/blast-radius), hogy a telepített képesség ne maradjon holtan a kártya-leltár szerint senkinek nem szóló eszközként.
 
 ### Rendszer-üzemeltetés, self-healing, monitoring
 
