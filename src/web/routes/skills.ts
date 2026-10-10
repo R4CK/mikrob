@@ -383,6 +383,20 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/skills/import' && method === 'POST') {
+    // Card 4f4cb0df (CYBERED NO-GO B1, MikroB decision 15101/15397): this route writes into the
+    // FLEET-WIDE ~/.claude/skills directory (every agent picks up what lands here) with no
+    // auth-kind check at all -- the shared bearer every agent holds could reach it. Same hibaosztály
+    // and same fix as the agents.ts overwrite=1 gate: a hard-refused literal constant, not an
+    // approval mechanism (PATCH /api/approvals/:id was shown forgeable by the same shared bearer),
+    // until a non-forgeable approval channel ships (card 3fb0ef97).
+    const SKILLS_IMPORT_FAIL_CLOSED = true
+    if (SKILLS_IMPORT_FAIL_CLOSED) {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Skill import: hard-refused (fail-closed pending card 3fb0ef97)')
+      json(res, {
+        error: 'Skill import is disabled until a non-forgeable approval channel ships (card 3fb0ef97). Add the skill directory manually for now.',
+      }, 403)
+      return true
+    }
     const body = await readBody(req)
     const contentType = req.headers['content-type'] || ''
     const { file } = parseMultipart(body, contentType)
