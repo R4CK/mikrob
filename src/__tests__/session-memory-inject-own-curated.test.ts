@@ -176,7 +176,7 @@ describe('shared-memory-inject.py own-curated-memory section (card 5a4bea2e part
     // these (measured: 7/12 mutants survived the old path-only fixture) now fails the test.
     const requests = readRequestLog(dir)
     expect(requests).toContain('/api/kanban?assignee=fullstack&status=in_progress&limit=1')
-    expect(requests).toContain('/api/memories?agent=fullstack&q=Fix%20the%20widget%20widget%20is%20broken&mode=hybrid&limit=20')
+    expect(requests).toContain('/api/memories?agent=fullstack&q=Fix%20the%20widget%20widget%20is%20broken&mode=hybrid&limit=20&self_authenticated=1')
   })
 
   it('agent not in the pilot allowlist -> no own-curated section even with a card and memories available', async () => {
