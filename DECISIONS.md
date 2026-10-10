@@ -18306,3 +18306,32 @@ kartya hatokore ("csak a code-review-graph tartozik ide") -- kulon jelezve Mikro
 javitva itt.
 
 **Ki dontott:** Peti jovahagyasa (Telegram 10867) az 5 javaslatra, ebbol ez a 2. Gate: QA.
+
+## 2026-10-10 -- code-review-graph 2.3.9-kompatibilitasi javitas (kartya 68bdd57b folytatasa, MikroB jelzese 10236)
+
+Az elozo bejegyzesben vegrehajtott 2.3.9 upgrade MikroB szerint eltorte a `store/blast-radius-check.py
+--selftest` 5 "refresh e2e" esetet (30/35), amin at MINDEN marveen-land fleet-test pirosra ment volna
+(backend3 14256aac landolasa mar REFUSED emiatt). Azonnali 1. lepes: visszaalltam
+`code-review-graph==2.3.8`-ra (`pipx install --force`), igazoltam 35/35 PASS, jeleztem MikroBnak
+(uzenet 10240), hogy a develop ujra zold.
+
+2. lepes, gyokerok: ujra telepitettem 2.3.9-et izolaltan reprodukalva a hibat, majd lepesrol lepesre
+visszakovetve a `refresh_only()` -> `rebuild_in_background()` lancot egy sajat teszt-fixturen. A
+tenyleges ok: a code-review-graph 2.3.9 a `build` parancsnal IS lefuttatja a `_assert_graph_matches_root`
+ellenorzest (korabban, 2.3.8-ban, csak az `update` parancsnal futott) -- ez pontosan azt a
+"index-worktree elsokent letrehozva, teljes rebuild kell" agat torte el a `refresh_only()`
+docstring-jeben leirt tervezett folyamatban, ahol a meglevo `graph.db` (meg a regi `root`-ra
+anchorolva) szandekosan AT van irva egy uj, `idx`-re (index-worktree) anchorolt teljes epitessel.
+2.3.9 ezt most "a graf mas repo-gyokerre volt epitve" hibaval visszadobja, meg egy TELJES build()
+eseten is, mert a regi graph.db meg letezik a data_dir-ben amikor a build elindul.
+
+Javitas: `rebuild_in_background()` a teljes build elinditasa ELOTT torli a regi `graph.db`
+(plusz `-wal`/`-shm` sidecar) fajlt a `data_dir`-ben -- biztonsagos, mert a hivo
+(`refresh_only()`) ezen a ponton meg kizarolagosan birtokolja a `lock_path`-ot, mielott ennek a
+fuggvenynek a sajat `flock` subprocess-e ujra megszerezné. Ellenorizve: `--selftest` 35/35 PASS
+2.3.9-cel telepitve (korabban 30/35 volt), es a `src/__tests__/graph-tooling-selftests.test.ts`
+vitest-csomagja is 10/10 zold. A gep allapota most: `code-review-graph==2.3.9` (pin szerinti,
+veglegesen telepitve, nem visszaallitva).
+
+**Ki dontott:** MikroB jelzese (10236) a prioritasra/sorrendre; a gyokerok felderitese es a
+konkret javitas fullstack sajat merese/dontese. Gate: QA.
