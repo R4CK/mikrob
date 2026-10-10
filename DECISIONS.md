@@ -18252,3 +18252,31 @@ valtozatlanul zold (nincs regresszio a mar mukodo shared-tier szakaszon).
 **Ki dontott:** MikroB plan-grilling (14296), fullstack az implementacio (5a4bea2e). Gate:
 QA + Cybered (a verdikt szerint, nem a kartya eredeti leirasa szerinti QA+Cybersec -- a
 plan-grilling az ujabb, iranyado dontes).
+
+## 2026-10-10 -- graphify kodgraf-eszkoz bekotese a code-comprehension skillbe es az epito ugynokok CLAUDE.md-jebe (kartya 00be4f09, forras: d2666c85 leltar, REVIEW 14016/14056, QA PASS 14087)
+
+A d2666c85 leltar talalta: a `store/graphify.sh` (pipx-telepitett, egress-gated, deterministikus-csak
+AST kodgraf-wrapper, kartya 3646bde7) MAR ADOPTALVA infra-szinten, de ZERO hivatkozas volt barmelyik
+ugynok CLAUDE.md-jeben vagy skillben -- telepitve, de senkinek nincs szolva, hogy hasznalja. Peti
+jovahagyta mind az 5 javaslatot (Telegram 10867, 2026-10-10), ez az 1. pont.
+
+Dontes: a legjobban illeszkedo core-skill a `code-comprehension` (mely-megertes kodolas/debug elott,
+a `Procedure` szakasz 2. lepese pont a callers/callees felderitesrol szol). A Procedure 2. lepesehez
+egy mondat keult: nagy/ismeretlen repon a `store/graphify.sh query/explain/affected` determinisztikus,
+no-egress AST-valasz (callers/callees/blast-radius) masodpercek alatt, a breadth-kor rovidre zarasara,
+de a nevezett `path:line`-okat utana manualisan ellenorizni kell (az `explain` fuzzy-illesztes, egy
+teves talalat is 0-val ter vissza).
+
+A mondat bekerult az 5 helyre, ahol a `code-comprehension` SKILL.md fizikailag letezik: a kanonikus
+`seed-skills/code-comprehension/SKILL.md`, az elo globalis `~/.claude/skills/code-comprehension/`,
+es a negy epito ugynok (backend, backend2, backend3, fullstack) sajat vendorolt masolata a
+`seed-fleet-agents/<ugynok>/.claude/skills/code-comprehension/` alatt -- mindegyiknel a sajat,
+mar letezo frontmatter-formatuma (teljes vs. sztripettelt) megtartva, csak a Procedure-sor azonos.
+
+A harom epito ugynok CLAUDE.md-jeben (backend, backend2, fullstack -- backend3-nak nincs sajat
+CLAUDE.md-je a seed-fleet-agents alatt), ahol a `code-comprehension` skill addig vendorolva volt, de
+a "Core skilljeid" listaban NEM szerepelt, most felvettem egy sort a listaba, a graphify-utalassal
+egyutt -- igy a skill maga is lathato a listabol, nem csak a diszken fekvo fajlbol.
+
+**Ki dontott:** Peti jovahagyasa (Telegram 10867) az 5 javaslatra, ebbol ez az 1. A konkret
+implementacios valasztas (code-comprehension mint celskill) fullstack sajat merese/dontese. Gate: QA.
