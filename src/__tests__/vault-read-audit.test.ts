@@ -17,9 +17,10 @@ const SSH_KEY_ID = 'ssh-key-abc123'
 // A marker, not a key-shaped string: the repo's secret-gate rightly refuses anything that looks like a real private key.
 const SSH_PRIVATE = 'SSH-PRIVATE-MARKER-do-not-serve-7c1e'
 const getSecretSpy = vi.fn((id: string) => (id === 'EXISTS' ? SECRET_VALUE : id === SSH_KEY_ID ? SSH_PRIVATE : null))
+const setSecretSpy = vi.fn()
 vi.mock('../web/vault.js', () => ({
   listSecrets: () => [{ id: SSH_KEY_ID, label: 'test key', createdAt: '', updatedAt: '' }],
-  setSecret: () => undefined,
+  setSecret: (...args: unknown[]) => setSecretSpy(...args),
   deleteSecret: () => false,
   getSecret: (id: string) => getSecretSpy(id),
   getSecretsForEnv: () => ({}),
@@ -232,5 +233,65 @@ describe('POST /api/vault/bindings: an SSH private key cannot be bound', () => {
     const { res } = await post({ vaultSecretId: 'EXISTS', headerName: 'Authorization' })
     expect(res.statusCode).toBe(400)
     expect(JSON.parse(res.body).error).toBe('No targets found for this server')
+  })
+})
+
+describe('POST /api/vault/import: an SSH private key id cannot be imported (card 466f21fe F3, RedHat 14256aac)', () => {
+  // Card 1512 (isSshPrivateKeyId) closed the explicit /api/vault/bindings route (above), but the
+  // import route passed imp.vaultId straight to setSecret/addBinding with no such check -- an
+  // import could both overwrite the ssh-key-* vault entry with an arbitrary MCP-env value AND
+  // create exactly the binding isSshPrivateKeyId exists to close off everywhere. createBinding is
+  // false throughout: the point is the vaultId-level refusal, not the binding-write path (already
+  // covered above), and real addBinding/syncSecret writes are not mocked in this file on purpose
+  // (see the binding-route tests above, which engineer their own fixtures to avoid that write too).
+  const mcpFixture = join(tmp, 'import-fixture.mcp.json')
+  writeFileSync(mcpFixture, JSON.stringify({ mcpServers: { 'srv-x': { env: { TOKEN: 'IMPORTED-VALUE' } } } }))
+
+  async function postImport(imports: unknown[]) {
+    const res = mkRes()
+    const req = Readable.from([Buffer.from(JSON.stringify({ imports }))]) as unknown as http.IncomingMessage
+    ;(req as unknown as { headers: object; method: string }).headers = {}
+    ;(req as unknown as { method: string }).method = 'POST'
+    const ctx: RouteContext = {
+      req, res: res as unknown as http.ServerResponse,
+      path: '/api/vault/import', method: 'POST',
+      url: new URL('http://127.0.0.1:3420/api/vault/import'), auth: { kind: 'token' },
+    }
+    const handled = await tryHandleConnectors(ctx)
+    return { handled, res }
+  }
+
+  it('an import targeting an ssh-key- id is refused: setSecret never runs, an error names the refusal', async () => {
+    setSecretSpy.mockClear()
+    logSpy.warn.mockClear()
+    const { handled, res } = await postImport([
+      { serverName: 'srv-x', envVar: 'TOKEN', vaultId: SSH_KEY_ID, label: 'ssh', createBinding: false, targets: [{ mcpFilePath: mcpFixture, serverName: 'srv-x' }] },
+    ])
+    expect(handled).toBe(true)
+    const body = JSON.parse(res.body)
+    expect(body.imported).toBe(0)
+    expect(body.errors.some((e: string) => e.includes(SSH_KEY_ID) && e.toLowerCase().includes('refused'))).toBe(true)
+    expect(setSecretSpy).not.toHaveBeenCalled()
+    const rows = logSpy.warn.mock.calls.filter(c => c[0]?.event === 'vault-binding-refused')
+    expect(rows).toHaveLength(1)
+    expect(rows[0][0]).toMatchObject({ vaultSecretId: SSH_KEY_ID, via: 'import' })
+  })
+
+  it('control: an ordinary vaultId still imports normally through the same loop', async () => {
+    setSecretSpy.mockClear()
+    const { res } = await postImport([
+      { serverName: 'srv-x', envVar: 'TOKEN', vaultId: 'OTHER-ID', label: 'other', createBinding: false, targets: [{ mcpFilePath: mcpFixture, serverName: 'srv-x' }] },
+    ])
+    const body = JSON.parse(res.body)
+    expect(body.imported).toBe(1)
+    expect(body.errors).toEqual([])
+    expect(setSecretSpy).toHaveBeenCalledWith('OTHER-ID', 'other', 'IMPORTED-VALUE')
+  })
+
+  // MUTATION PIN: without the guard, this exact request would have called setSecretSpy with
+  // SSH_KEY_ID and incremented `imported` -- this is the case that flips if the
+  // `isSshPrivateKeyId(imp.vaultId)` check is ever removed from the import loop.
+  it('MUTATION PIN: self-check -- the refused import never reaches setSecret with the ssh-key id', () => {
+    expect(setSecretSpy.mock.calls.some((c) => c[0] === SSH_KEY_ID)).toBe(false)
   })
 })

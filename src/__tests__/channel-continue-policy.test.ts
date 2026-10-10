@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { decideContinueFlag, verifyContinueLaunch, CONTINUE_MIN_CLI, type ContinueDecisionInput } from '../web/channel-continue-policy.js'
+import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction, CONTINUE_MIN_CLI, type ContinueDecisionInput } from '../web/channel-continue-policy.js'
 
 // CONTRESUME922 narrowing (approved 2026-09-23 with three conditions). The
 // measurement: on Claude Code 2.1.280 a hand-launched --continue session of a
@@ -60,6 +60,24 @@ describe('verifyContinueLaunch (condition 3)', () => {
   })
 })
 
+describe('decideContinueTimeoutAction (card 466f21fe F1)', () => {
+  it('alive always keeps the session, regardless of generation', () => {
+    expect(decideContinueTimeoutAction('alive', false)).toBe('kept')
+    expect(decideContinueTimeoutAction('alive', true)).toBe('kept')
+  })
+  it('timeout with no generation change relaunches fresh -- the normal deaf-resume case', () => {
+    expect(decideContinueTimeoutAction('timeout', false)).toBe('relaunch-fresh')
+  })
+  it('timeout WITH a generation change (a stop or a newer start happened mid-window) skips the fallback -- the F1 fix', () => {
+    expect(decideContinueTimeoutAction('timeout', true)).toBe('skip-stopped')
+  })
+  // MUTATION PIN: without the generationChanged branch, this exact input ('timeout', true) would
+  // fall through to 'relaunch-fresh' -- this is the case that flips if that check is ever removed.
+  it('MUTATION PIN: self-check -- a changed generation never produces relaunch-fresh', () => {
+    expect(decideContinueTimeoutAction('timeout', true)).not.toBe('relaunch-fresh')
+  })
+})
+
 describe('the launch path is wired to the policy', () => {
   it('startAgentProcess decides with decideContinueFlag from the measured inputs and no longer hardcodes !hasChannel', () => {
     expect(PROCESS_SRC).not.toContain("(hasPriorSession && !opts.fresh && !hasChannel) ? '--continue ' : ''")
@@ -76,5 +94,44 @@ describe('the launch path is wired to the policy', () => {
     expect(block).toContain('probeChannelPluginLiveness(pid, agentProvider, name)')
     expect(block).toContain("['kill-session', '-t', session]")
     expect(block).toContain('startAgentProcess(name, { fresh: true })')
+  })
+  it('the timeout fallback is routed through decideContinueTimeoutAction, not a bare if(v.outcome==="alive") (card 466f21fe F1)', () => {
+    const at = PROCESS_SRC.indexOf('if (continueFlag && hasChannel && name !== MAIN_AGENT_ID) {')
+    const block = PROCESS_SRC.slice(at, at + 2500)
+    expect(block).toContain('decideContinueTimeoutAction(v.outcome, generationChanged)')
+    expect(block).toContain("action === 'kept'")
+    expect(block).toContain("action === 'skip-stopped'")
+  })
+  it('every launch bumps its own agentLaunchGeneration entry BEFORE the verify window opens', () => {
+    const newSessionAt = PROCESS_SRC.indexOf("runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)]")
+    const continueAt = PROCESS_SRC.indexOf('if (continueFlag && hasChannel && name !== MAIN_AGENT_ID) {')
+    const between = PROCESS_SRC.slice(newSessionAt, continueAt)
+    expect(newSessionAt).toBeGreaterThan(-1)
+    expect(continueAt).toBeGreaterThan(newSessionAt)
+    expect(between).toContain('const myLaunchGeneration = Symbol()')
+    expect(between).toContain('agentLaunchGeneration.set(name, myLaunchGeneration)')
+  })
+  it('stopAgentProcessUnlocked bumps the generation too, before killing the session (card 466f21fe F1)', () => {
+    const stopAt = PROCESS_SRC.indexOf('async function stopAgentProcessUnlocked(name: string)')
+    expect(stopAt).toBeGreaterThan(-1)
+    const killAt = PROCESS_SRC.indexOf("kill-session", stopAt)
+    const bumpAt = PROCESS_SRC.indexOf('agentLaunchGeneration.set(name, Symbol())', stopAt)
+    expect(bumpAt).toBeGreaterThan(stopAt)
+    expect(bumpAt).toBeLessThan(killAt)
+  })
+})
+
+describe('card 466f21fe F2 (design note): a restart triggered for a SECURITY reason must force fresh', () => {
+  // F2 named no current code defect ("Nem hibát, hanem munkamódszer-változást jelzek") -- the
+  // fresh switch already existed. This locks in the one such call site that exists today
+  // (context-guard-runner.ts's saturated-context restart, DANICTXHUROK906) so a future edit
+  // dropping `fresh: true` there is caught, rather than leaving the principle as prose only.
+  const GUARD_SRC = readFileSync(join(ROOT, 'src', 'web', 'context-guard-runner.ts'), 'utf-8')
+  it('the context-guard restart of a sub-agent forces fresh: true', () => {
+    expect(GUARD_SRC).toContain('const res = await restartAgentProcess(name, { fresh: true })')
+  })
+  it('MUTATION PIN: self-check -- a non-fresh call would not match the pinned text', () => {
+    expect(GUARD_SRC).not.toContain('const res = await restartAgentProcess(name, { fresh: false })')
+    expect(GUARD_SRC).not.toContain('const res = await restartAgentProcess(name)')
   })
 })

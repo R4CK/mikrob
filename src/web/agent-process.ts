@@ -57,7 +57,7 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { decideContinueFlag, verifyContinueLaunch } from './channel-continue-policy.js'
+import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction } from './channel-continue-policy.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE } from '../config.js'
@@ -134,6 +134,25 @@ interface LifecycleEntry {
 }
 
 const lifecycleInFlight = new Map<string, LifecycleEntry>()
+
+// Card 466f21fe F1 (CYBERSEC GO 14256aac, measured: 'unknown' probe polls 31 times then 'timeout'
+// at 90000ms). verifyContinueLaunch's async callback (below, near the --continue launch) decides,
+// AFTER a 90s window, whether to relaunch a resumed channel agent FRESH -- but it has no way to
+// tell "the session legitimately disappeared because someone (the operator/MikroB) just PARKED
+// this agent" from "the resume genuinely never brought its plugin up". Measured on the real
+// function: a parked agent's missing session reads as 'unknown', the check polls it all the way to
+// 'timeout', then kill-session's (harmlessly, on an already-gone session) and calls
+// startAgentProcess(fresh:true) -- resurrecting the just-parked agent within 90s (rule 7, quota).
+// The same gap also double-restarts a slow-but-healthy agent: a stop+start within the window
+// reuses the same session NAME, so the OLD verify call keeps measuring the NEW session.
+//
+// Fix: a persistent per-agent generation token, bumped by EVERY start and EVERY stop (not just
+// in-flight like lifecycleInFlight above, which is cleared once an operation settles -- this one
+// has to survive past that point so a callback scheduled minutes earlier can still compare against
+// it). The verify callback captures its own generation at launch time and, before acting on a
+// 'timeout', confirms the agent's CURRENT generation still matches -- if a stop or a newer start
+// happened in between, the fallback is skipped: the current state is no longer this call's business.
+const agentLaunchGeneration = new Map<string, symbol>()
 
 /** Exported for tests: how many agents currently have an operation in flight. */
 export function lifecycleInFlightCount(): number {
@@ -2705,6 +2724,10 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // capture-pane failed against the router's empty tmux server.
     const startTarget = agentTmuxTarget(name)
     runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)], { timeout: 10000 })
+    // Card 466f21fe F1: bump the generation on EVERY launch (continue or fresh), captured below
+    // before the verify window opens. See the Map's own comment for the full reasoning.
+    const myLaunchGeneration = Symbol()
+    agentLaunchGeneration.set(name, myLaunchGeneration)
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
 
@@ -2721,8 +2744,14 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
           return pid ? probeChannelPluginLiveness(pid, agentProvider, name) : 'unknown'
         },
       }).then(async (v) => {
-        if (v.outcome === 'alive') {
+        const generationChanged = agentLaunchGeneration.get(name) !== myLaunchGeneration
+        const action = decideContinueTimeoutAction(v.outcome, generationChanged)
+        if (action === 'kept') {
           logger.info({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin alive, context kept')
+          return
+        }
+        if (action === 'skip-stopped') {
+          logger.info({ name, session }, 'resumed channel agent: a stop or a newer start happened during the verify window -- skipping fresh fallback')
           return
         }
         logger.warn({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin NOT alive within the window; relaunching FRESH')
@@ -2864,6 +2893,11 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
 async function stopAgentProcessUnlocked(name: string): Promise<{ ok: boolean; error?: string }> {
   const session = agentSessionName(name)
   if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
+
+  // Card 466f21fe F1: bump the launch generation on every stop, same as on every start -- an
+  // in-flight --continue verify callback checks this before acting on a timeout, so a stop that
+  // lands mid-window is not undone by that callback's own fresh-fallback. See the Map's comment.
+  agentLaunchGeneration.set(name, Symbol())
 
   const target = agentTmuxTarget(name)
   const host = target.host
@@ -4293,6 +4327,12 @@ function optsKeyOf(opts: { fresh?: boolean }): string {
   return `fresh=${opts.fresh === true}`
 }
 
+// Card 466f21fe F2 (CYBERSEC GO 14256aac, design note, not a bug in existing code): `--continue`
+// means a channel agent's restart is no longer a clean slate -- a prompt-injected or
+// secret-carrying conversation survives it if the launch is not fresh. ANY restart triggered for
+// a SECURITY reason (token rotation, injection suspicion, key rotation) MUST pass `fresh: true`
+// explicitly; `opts.fresh` already exists for exactly this. context-guard-runner.ts is the one
+// such call site today and already does this (channel-continue-policy.test.ts locks it in).
 export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   return withLifecycleLock(name, 'start', optsKeyOf(opts), () => startAgentProcessUnlocked(name, opts))
 }
