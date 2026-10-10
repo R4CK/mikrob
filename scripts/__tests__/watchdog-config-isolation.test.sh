@@ -30,8 +30,12 @@ trap 'rm -rf "$TMP"' EXIT
 # The watchdog resolves store/.claude-oauth-token relative to its own
 # INSTALL_DIR; run it from a fixture install so the token file is ours.
 FIXTURE_INSTALL="$TMP/install"
-mkdir -p "$FIXTURE_INSTALL/scripts" "$FIXTURE_INSTALL/store" "$FIXTURE_INSTALL/agents"
+mkdir -p "$FIXTURE_INSTALL/scripts/lib" "$FIXTURE_INSTALL/store" "$FIXTURE_INSTALL/agents"
 cp "$WATCHDOG" "$FIXTURE_INSTALL/scripts/watchdog.sh"
+# Card bc32d233: agent_launch_env's config-level resolution moved into this sibling script
+# (scripts/lib/oauth_token_file_check.py), relative to watchdog.sh's own INSTALL_DIR -- the fixture
+# install must carry it too, same as the watchdog script itself.
+cp "$REPO_DIR/scripts/lib/oauth_token_file_check.py" "$FIXTURE_INSTALL/scripts/lib/oauth_token_file_check.py"
 WD="$FIXTURE_INSTALL/scripts/watchdog.sh"
 
 AGENT_ISO="$FIXTURE_INSTALL/agents/iso-agent"
@@ -166,6 +170,110 @@ case "$OUT" in
   "isolation=yes prefix="*CLAUDE_CONFIG_DIR*CLAUDE_CODE_OAUTH_TOKEN*)
     pass "no oauthTokenFile field -> unaffected, still fleet-token isolation" ;;
   *) fail "no oauthTokenFile field -> unaffected, still fleet-token isolation" "$OUT" ;;
+esac
+
+# --- card bc32d233 (006b506b Cybersec delta-GO ea46eecf, G1-G4): the config-level resolution's
+# own fail-closed behaviour (G1), the two content checks missing from the file-level checks (G2,
+# fleet-token copy + bad characters), and the shell-injection class the old f-string interpolation
+# opened (G3) -- see oauth_token_file_check.py and agent_launch_env's own comments for the full
+# reasoning. Baseline restored first: test 11 above removed AGENT_OWN's .claude-config dir. ---
+mkdir -p "$AGENT_OWN/.claude-config"
+write_own_config
+printf '%s' "$FAKE_SETUP_TOKEN" > "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+
+# 13) G1: agent-config.json is a DIRECTORY, not a file -> refuse at the config level, never a
+#     silent "unset" -> fleet-token fallback (the bug: `except Exception: print('')` caught this
+#     and every other read failure the same way).
+rm -f "$AGENT_OWN/agent-config.json"
+mkdir -p "$AGENT_OWN/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=config-unreadable") pass "G1: config path is a directory -> refuse, no fleet fallback" ;;
+  *) fail "G1: config path is a directory -> refuse, no fleet fallback" "$OUT" ;;
+esac
+rm -rf "$AGENT_OWN/agent-config.json"
+
+# 14) G1: config truncated mid-key-name (a crash/non-atomic write cut if off WHILE writing the key)
+#     still REFUSEs -- the truncated tail is a prefix of "oauthTokenFile", so a config that never
+#     mentioned the field at all could not produce this text.
+printf '{"oauthTok' > "$AGENT_OWN/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=config-unparseable") pass "G1: config truncated mid-key-name -> refuse" ;;
+  *) fail "G1: config truncated mid-key-name -> refuse" "$OUT" ;;
+esac
+
+# 15) G1: field value is a number, not a string -> refuse (not silently unset).
+printf '{"oauthTokenFile": 42}' > "$AGENT_OWN/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=not-a-string") pass "G1: field value is a number -> refuse" ;;
+  *) fail "G1: field value is a number -> refuse" "$OUT" ;;
+esac
+
+# 16) G1: field value is an empty string after trim -> refuse (blank).
+printf '{"oauthTokenFile": "   "}' > "$AGENT_OWN/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=blank") pass "G1: field value is blank -> refuse" ;;
+  *) fail "G1: field value is blank -> refuse" "$OUT" ;;
+esac
+
+# 17) G1: path contains a '..' segment -> refuse (path-parent-traversal), same as the TS reference.
+printf '{"oauthTokenFile": "/tmp/../etc/foo"}' > "$AGENT_OWN/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=path-parent-traversal") pass "G1: path with '..' segment -> refuse" ;;
+  *) fail "G1: path with '..' segment -> refuse" "$OUT" ;;
+esac
+write_own_config
+
+# 18) G2: own token file content is a byte-identical COPY of the fleet token (different inode, same
+#     bytes) -> refuse. The old bash mirror only checked `-ef` (same inode/same file), which a copy
+#     is not, so this is a genuinely new check, not a re-measurement of test 10's same-FILE case.
+#     The fleet token here is given the setup-token shape too (same precedence as the TS reference:
+#     checkOauthTokenFile's bad-prefix check runs BEFORE its same-as-fleet-token check), so this
+#     test actually reaches the content-equality check instead of failing on the prefix first.
+printf '%s' "$FAKE_SETUP_TOKEN" > "$FIXTURE_INSTALL/store/.claude-oauth-token"
+cp "$FIXTURE_INSTALL/store/.claude-oauth-token" "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=same-as-fleet-token") pass "G2: own file is a byte-identical COPY of the fleet token -> refuse" ;;
+  *) fail "G2: own file is a byte-identical COPY of the fleet token -> refuse" "$OUT" ;;
+esac
+echo "sk-test-fixture-token" > "$FIXTURE_INSTALL/store/.claude-oauth-token" # restore for later tests
+
+# 19) G2: own token content contains a space after the setup-token prefix -- the old bash mirror
+#     only checked the first 20 bytes for the prefix and never looked past it.
+printf '%s with a space' "$FAKE_SETUP_TOKEN" > "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=content-bad-characters") pass "G2: token content has a space -> refuse" ;;
+  *) fail "G2: token content has a space -> refuse" "$OUT" ;;
+esac
+printf '%s' "$FAKE_SETUP_TOKEN" > "$OWN_TOKEN_FILE"
+chmod 600 "$OWN_TOKEN_FILE"
+
+# 20) G3 regression guard: an agent directory whose NAME contains a single quote must not let the
+#     quote escape the quoted shell argument the old f-string-interpolated `python3 -c "..."`
+#     built (the surviving mutant: a quote in the path broke OUT of the quoted command). AGENT_DIR
+#     now reaches the check script as argv, never interpolated into Python source, so this must
+#     resolve normally (SET, own file in the prefix), not crash and not silently fall back to the
+#     fleet token.
+AGENT_QUOTE="$FIXTURE_INSTALL/agents/quote's-agent"
+mkdir -p "$AGENT_QUOTE/.claude-config"
+QUOTE_TOKEN_FILE="$TMP/quote-agent.token"
+printf '%s' "$FAKE_SETUP_TOKEN" > "$QUOTE_TOKEN_FILE"
+chmod 600 "$QUOTE_TOKEN_FILE"
+printf '{"oauthTokenFile": "%s"}\n' "$QUOTE_TOKEN_FILE" > "$AGENT_QUOTE/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_QUOTE")"
+case "$OUT" in
+  "isolation=yes prefix="*"$QUOTE_TOKEN_FILE"*)
+    pass "G3: agent dir name with a single quote -> resolves normally, no shell escape" ;;
+  *) fail "G3: agent dir name with a single quote -> resolves normally, no shell escape" "$OUT" ;;
 esac
 
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"

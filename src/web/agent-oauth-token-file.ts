@@ -55,7 +55,14 @@ export function readAgentConfigForOauthDecision(path: string): AgentConfigRead {
     return (err as NodeJS.ErrnoException).code === 'ENOENT' ? { ok: true, raw: '{}' } : { ok: false, reason: 'unreadable' }
   }
   try {
-    return { ok: true, raw: readFileSync(path, 'utf-8') }
+    const raw = readFileSync(path, 'utf-8')
+    // Cybered follow-up (card bc32d233, 48639c7d GO 14284): an empty, whitespace-only, or NUL-
+    // containing config is not a shape the normal write path ever produces (a crash mid non-atomic
+    // write is the realistic cause) -- resolveOauthTokenFileSetting's unparseable-JSON branch reads
+    // it as "doesn't mention the key" -> unset -> fleet token, the exact silent fallback this module
+    // exists to prevent. Treat it the same as a read that failed outright.
+    if (raw.trim() === '' || raw.includes('\0')) return { ok: false, reason: 'unreadable' }
+    return { ok: true, raw }
   } catch {
     return { ok: false, reason: 'unreadable' }
   }
@@ -138,8 +145,15 @@ export function resolveOauthTokenFileSetting(rawConfigJson: string): OauthTokenF
 // collision (an accepted, already-relied-upon risk elsewhere in this module) and one agent's
 // unreadable file (fail-open: that agent's own problem, same stance as an unreadable config) behave
 // the same way here as everywhere else in this file.
+// Cybered follow-up (card bc32d233, 48639c7d GO 14284): this reads a path a DIFFERENT agent's own
+// config names, not this launcher's own validated token file -- checkOauthTokenFile's lstat+isFile
+// guard protects the own-token path, but nothing protected this one. A FIFO at that path blocks
+// readFileSync forever (measured: the dashboard's synchronous launch request hangs past any client
+// timeout); lstat itself never blocks on a FIFO, so checking isFile() first -- same check
+// checkOauthTokenFile already makes -- closes the hang without ever opening the pipe.
 function readTokenFingerprintOrNull(path: string): string | null {
   try {
+    if (!lstatSync(path).isFile()) return null
     return tokenFingerprint(exportedValue(readFileSync(path, 'utf-8')))
   } catch {
     return null
