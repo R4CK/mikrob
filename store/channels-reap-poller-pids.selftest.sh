@@ -89,6 +89,44 @@ out="$(_reap_poller_pids "$FAKE_TMUX" "$FAKE_CLAUDE")"
 [ -z "$out" ] && ok "tmux-server-shaped and claude-shaped candidates are never reaped" \
               || bad "tmux/claude false positive" "got: [$out]"
 
+# --- 5. the 8c94283b widening: a vendored-plugin version bump moves server.ts off argv[1] -------
+# Three real shapes a start-script version bump could take, none of which the old exact-argv[1]
+# check recognised: an absolute path, a leading flag before the file, and a different interpreter
+# with its own flag. All three must still be reaped -- that is the whole point of the fix.
+#
+# A SLEEPER SCRIPT FILE, not `bash -c '...' extra args`: bash tail-call-execs a `-c` script whose
+# only command is a simple external command (e.g. "sleep 30"), which REPLACES the process and
+# drops any trailing positional args from the real /proc/<pid>/cmdline entirely -- verified while
+# writing this case (a `bash -c 'sleep 30' notserver.ts` process is, in fact, just `sleep 30`).
+# Running an actual SCRIPT FILE (not -c) keeps every trailing arg in argv, which is what every
+# case below actually needs.
+SLEEPER="$TMP/sleeper.sh"
+printf '#!/usr/bin/env bash\nsleep 30\n' > "$SLEEPER"
+chmod +x "$SLEEPER"
+mkdir -p "$TMP/poller3"
+cp "$TMP/poller1/server.ts" "$TMP/poller3/server.ts"
+( exec bash "$SLEEPER" "$TMP/poller3/server.ts" ) & POLLER_ABS=$!          # bun /abs/path/server.ts
+( exec bash "$SLEEPER" "--smol" "server.ts" ) & POLLER_FLAG_THEN_FILE=$!   # bun --smol server.ts
+( exec bash "$SLEEPER" "--flag" "server.ts" ) & POLLER_NODE_FLAG=$!        # node --flag server.ts
+sleep 0.2
+out="$(_reap_poller_pids "$POLLER_ABS" "$POLLER_FLAG_THEN_FILE" "$POLLER_NODE_FLAG" | sort -n)"
+want="$(printf '%s\n%s\n%s\n' "$POLLER_ABS" "$POLLER_FLAG_THEN_FILE" "$POLLER_NODE_FLAG" | sort -n)"
+if [ "$out" = "$want" ]; then
+  ok "8c94283b: absolute-path, flag-before-file and alternate-interpreter shapes are all reaped"
+else
+  bad "8c94283b widening" "got: [$out] want: [$want]"
+fi
+
+# --- 6. the 8c94283b negative control: a package-manager wrapper is NOT reaped ------------------
+# `bun run server start` (or any "run ... start" wrapper) never names server.ts in its own argv --
+# the widening to "any argv element" must not accidentally start matching on substrings or on the
+# wrapper's subcommand.
+( exec bash "$SLEEPER" "run" "start" ) & NOTPOLLER_WRAPPER=$!   # bun run ... start
+sleep 0.2
+out="$(_reap_poller_pids "$NOTPOLLER_WRAPPER")"
+[ -z "$out" ] && ok "8c94283b: a 'run ... start' package-manager wrapper is never reaped" \
+              || bad "8c94283b wrapper false positive" "got: [$out]"
+
 echo
 echo "channels-reap-poller-pids.selftest: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
