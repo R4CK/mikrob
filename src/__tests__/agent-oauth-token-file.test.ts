@@ -585,10 +585,17 @@ describe('launcher wiring (agent-process.ts)', () => {
   // 06b48bd0 wiring): a hardcoded `isRemote: false` or `hasExplicitConfigDir: false` would
   // silently let a remote or explicit-config-dir agent fall into the local/implicit decision
   // path, and the full suite stayed green under both mutations until this pin existed.
+  //
+  // Cybered follow-up (card bc32d233, 006b506b delta-GO ea46eecf, G4): the pin matched on raw
+  // source text, so commenting the real line out and leaving its text behind in a `//` comment kept
+  // it green too (measured: both lines, 100/100). Strip comments from the sliced call before
+  // matching -- this test ONLY, not the shared `FN`/`call`-building other tests in this describe
+  // block rely on for their own index/slice arithmetic.
   it("the decision gets the launcher's own isRemote and hasExplicitConfigDir discriminators, not hardcoded false", () => {
     const call = FN.slice(FN.indexOf('decideOwnOauthToken({'), FN.indexOf("if (ownOauth.kind === 'refused') {"))
-    expect(call).toContain('isRemote: !!(remote.host && remote.workdir),')
-    expect(call).toContain('hasExplicitConfigDir: readAgentClaudeConfigDir(name) !== null,')
+    const callCode = call.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+    expect(callCode).toContain('isRemote: !!(remote.host && remote.workdir),')
+    expect(callCode).toContain('hasExplicitConfigDir: readAgentClaudeConfigDir(name) !== null,')
   })
 
   it('backstop: an own token on an agent the launcher sees as non-Claude refuses before any export', () => {

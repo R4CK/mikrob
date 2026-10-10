@@ -74,51 +74,61 @@ fi
 # checkOauthTokenFile's checks (path shape, mode, ownership via same-file
 # test, non-empty, setup-token prefix); that TS module is canonical -- keep
 # this in sync if its rules change.
+#
+# Card bc32d233 (006b506b Cybersec delta-GO ea46eecf, G1-G4): the config-level resolution (ENOENT
+# vs any other read/parse failure, field type/shape) moved into scripts/lib/oauth_token_file_check.py
+# (one script, mirroring resolveOauthTokenFileSetting/readAgentConfigForOauthDecision exactly,
+# instead of this file's own bare `except Exception: print('')`, which silently treated an
+# unreadable config or a malformed-but-key-naming one as "unset" -> fleet token, G1). AGENT_DIR is
+# passed as argv, never interpolated into a Python source string -- G3's surviving mutant was
+# exactly that interpolation: a single-quote in the path broke out of the quoted shell argument the
+# old f-string built. The remaining FILE-level checks (isolation dir, symlink/missing, mode,
+# fleet-identity, setup-token shape) stay here, plus two checks G2 found missing: content-bad-
+# characters and a byte-identical COPY of the fleet token under another name (not just the same
+# inode) -- also delegated to the same script so the comparison never prints either token's value.
+OAUTH_TOKEN_FILE_CHECK_PY="${OAUTH_TOKEN_FILE_CHECK_PY:-$INSTALL_DIR/scripts/lib/oauth_token_file_check.py}"
 agent_launch_env() {
   local AGENT_DIR="$1"
-  local OWN_TOKEN_PATH
-  OWN_TOKEN_PATH=$(python3 -c "
-import json
-try:
-    d = json.load(open('$AGENT_DIR/agent-config.json'))
-except Exception:
-    print('')
-else:
-    v = d.get('oauthTokenFile')
-    print(v if isinstance(v, str) else '')
-" 2>/dev/null)
+  local CONFIG_VERDICT
+  CONFIG_VERDICT=$(python3 "$OAUTH_TOKEN_FILE_CHECK_PY" "$AGENT_DIR" 2>/dev/null)
 
-  if [ -n "$OWN_TOKEN_PATH" ]; then
-    case "$OWN_TOKEN_PATH" in
-      /*) ;;
-      *) printf '%s' "REFUSE:not-absolute"; return ;;
-    esac
-    case "$OWN_TOKEN_PATH" in
-      *[!A-Za-z0-9_./-]*) printf '%s' "REFUSE:path-bad-characters"; return ;;
-    esac
-    if [ ! -d "$AGENT_DIR/.claude-config" ]; then
-      printf '%s' "REFUSE:not-isolated"; return
-    fi
-    if [ -L "$OWN_TOKEN_PATH" ] || [ ! -f "$OWN_TOKEN_PATH" ]; then
-      printf '%s' "REFUSE:missing-or-symlink"; return
-    fi
-    if [ ! -s "$OWN_TOKEN_PATH" ]; then
-      printf '%s' "REFUSE:empty"; return
-    fi
-    local MODE
-    MODE=$(stat -c '%a' "$OWN_TOKEN_PATH" 2>/dev/null || stat -f '%Lp' "$OWN_TOKEN_PATH" 2>/dev/null)
-    if [ "$MODE" != "600" ]; then
-      printf '%s' "REFUSE:mode-not-0600"; return
-    fi
-    if [ -s "$INSTALL_DIR/store/.claude-oauth-token" ] && [ "$OWN_TOKEN_PATH" -ef "$INSTALL_DIR/store/.claude-oauth-token" ]; then
-      printf '%s' "REFUSE:is-fleet-token-file"; return
-    fi
-    if ! head -c 20 "$OWN_TOKEN_PATH" 2>/dev/null | grep -q '^sk-ant-oat'; then
-      printf '%s' "REFUSE:not-a-setup-token"; return
-    fi
-    printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$OWN_TOKEN_PATH')\" && "
-    return
-  fi
+  case "$CONFIG_VERDICT" in
+    REFUSE:*)
+      printf '%s' "$CONFIG_VERDICT"
+      return
+      ;;
+    SET:*)
+      local OWN_TOKEN_PATH="${CONFIG_VERDICT#SET:}"
+      if [ ! -d "$AGENT_DIR/.claude-config" ]; then
+        printf '%s' "REFUSE:not-isolated"; return
+      fi
+      if [ -L "$OWN_TOKEN_PATH" ] || [ ! -f "$OWN_TOKEN_PATH" ]; then
+        printf '%s' "REFUSE:missing-or-symlink"; return
+      fi
+      if [ ! -s "$OWN_TOKEN_PATH" ]; then
+        printf '%s' "REFUSE:empty"; return
+      fi
+      local MODE
+      MODE=$(stat -c '%a' "$OWN_TOKEN_PATH" 2>/dev/null || stat -f '%Lp' "$OWN_TOKEN_PATH" 2>/dev/null)
+      if [ "$MODE" != "600" ]; then
+        printf '%s' "REFUSE:mode-not-0600"; return
+      fi
+      if [ -s "$INSTALL_DIR/store/.claude-oauth-token" ] && [ "$OWN_TOKEN_PATH" -ef "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+        printf '%s' "REFUSE:is-fleet-token-file"; return
+      fi
+      if ! head -c 20 "$OWN_TOKEN_PATH" 2>/dev/null | grep -q '^sk-ant-oat'; then
+        printf '%s' "REFUSE:not-a-setup-token"; return
+      fi
+      if python3 "$OAUTH_TOKEN_FILE_CHECK_PY" --bad-content-characters "$OWN_TOKEN_PATH" 2>/dev/null; then
+        printf '%s' "REFUSE:content-bad-characters"; return
+      fi
+      if python3 "$OAUTH_TOKEN_FILE_CHECK_PY" --same-as-fleet-token "$OWN_TOKEN_PATH" "$INSTALL_DIR/store/.claude-oauth-token" 2>/dev/null; then
+        printf '%s' "REFUSE:same-as-fleet-token"; return
+      fi
+      printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$OWN_TOKEN_PATH')\" && "
+      return
+      ;;
+  esac
 
   if [ -d "$AGENT_DIR/.claude-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
     printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "

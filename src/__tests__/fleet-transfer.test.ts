@@ -9,6 +9,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { _encryptForTest, _decryptForTest, ENCRYPTED_FLEET_VERSION, MIN_VAULT_PASSWORD_LEN } from '../web/fleet-transfer.js'
 
+/** Strip comments so a SOURCE PIN matches executed code, not prose -- same convention as
+ *  update-github-repo-rce.test.ts and siblings. */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+}
+
 // ---------------------------------------------------------------------------
 // Crypto round-trip
 // ---------------------------------------------------------------------------
@@ -515,9 +521,13 @@ describe('importFleet: oauthTokenFile is stripped from an imported agent-config.
   // comment: exportFleet needs real FS) -- a behavioral test here would assert on an empty config
   // regardless of whether stripMachineSpecificConfig is called, proving nothing. Pinned as source
   // text instead, same convention as the launcher-wiring block in agent-oauth-token-file.test.ts.
+  // Card bc32d233 (006b506b Cybersec delta-GO ea46eecf, G4): a comment reciting this exact call
+  // text (e.g. the call commented out, with the old line left as prose) kept this pin green under
+  // the TS test suite's own "pins match on comment text too" pattern (install-github-repo-rce.test.ts
+  // and siblings) -- strip comments first, same convention.
   it('SOURCE PIN: exportMainAgent and exportAgent both wrap their config read in stripMachineSpecificConfig', async () => {
     const { readFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs')
-    const SRC = readFileSync(new URL('../web/fleet-transfer.ts', import.meta.url), 'utf-8')
+    const SRC = stripComments(readFileSync(new URL('../web/fleet-transfer.ts', import.meta.url), 'utf-8'))
     expect(SRC).toContain("config: stripMachineSpecificConfig(safeReadJson(join(PROJECT_ROOT, 'agent-config.json')))")
     expect(SRC).toContain('config: stripMachineSpecificConfig(safeReadJson(join(dir, \'agent-config.json\')))')
   })
