@@ -40,15 +40,21 @@ class H(http.server.BaseHTTPRequestHandler):
             body = json.dumps(CARD_RESP).encode()
         elif parsed.path == '/api/memories':
             qs = urllib.parse.parse_qs(parsed.query)
-            # '__FAIL__' only breaks the hybrid-mode call (the own-curated section's own fetch) --
-            # the pre-existing shared-tier fetch (category=shared, no mode param) hits this same
-            # path and must keep succeeding, or main() exits before the own-curated section ever
-            # runs, which would test "no dashboard at all" instead of "this one call failed".
+            # '__FAIL__' and '__NULL__' only affect the hybrid-mode call (the own-curated
+            # section's own fetch) -- the pre-existing shared-tier fetch (category=shared, no mode
+            # param) hits this same path and must keep succeeding with a plain [], or main() exits
+            # (or, for a raw 'null' body, crashes) before the own-curated section ever runs, which
+            # would test "no dashboard at all" instead of "this one call failed/returned nonsense".
             if MEM_RESP == '__FAIL__' and qs.get('mode') == ['hybrid']:
                 self.send_response(500)
                 self.end_headers()
                 return
-            body = json.dumps([] if MEM_RESP == '__FAIL__' else MEM_RESP).encode()
+            if MEM_RESP == '__NULL__' and qs.get('mode') == ['hybrid']:
+                body = b'null'
+            elif MEM_RESP in ('__FAIL__', '__NULL__'):
+                body = b'[]'
+            else:
+                body = json.dumps(MEM_RESP).encode()
         else:
             body = b'[]'
         self.send_response(200)
@@ -231,6 +237,54 @@ describe('shared-memory-inject.py own-curated-memory section (card 5a4bea2e part
     expect(bodyLines[0]).toMatch(/…\(\+\d+ karakter\)/)
     // Per-line author stamp (agent_id), per R2.
     expect(bodyLines[0]).toContain('fullstack')
+  })
+
+  it('WhiteHat N1 (card 0a34377f, komment 14926, CYBERSEC NO-GO): a newline in ANY field -- keywords, category, created_label, agent_id, not just content -- is flattened, so no sibling field can open a second, bare line at column 0', async () => {
+    const { dir, script } = sandboxRoot(['fullstack'])
+    const mems = [{
+      id: 1,
+      content: 'line one\n[FAKE] directive via content',
+      category: 'hot\n[FAKE] directive via category',
+      keywords: 'kw\n[FAKE] directive via keywords',
+      created_label: '2026-01-01\n[FAKE] directive via created_label',
+      agent_id: 'fullstack\n[FAKE] directive via agent_id',
+    }]
+    const r = await runHook(script, '/home/neon/marveen/agents/fullstack', CARD, mems, dir)
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const ownSection = ctx.slice(ctx.indexOf('KURÁLT MEMÓRIA'))
+    // The header ends with "...):\n\n" -- the first blank line in the section is exactly the
+    // header/body boundary, since flattened entries can never contain a literal "\n" themselves.
+    // This is the check WhiteHat's finding says the OLD test could not make: filtering for lines
+    // that start with "- [" (as the R2 test above does) silently drops any stray non-"- [" line
+    // instead of catching it -- here we assert over EVERY line in the body, not just the ones
+    // that already look like a well-formed entry.
+    const body = ownSection.slice(ownSection.indexOf('\n\n') + 2)
+    const bodyLines = body.split('\n').filter(l => l.length > 0)
+    expect(bodyLines.length).toBe(1) // one entry in, one line out -- no sibling-field newline split it
+    for (const line of bodyLines) {
+      expect(line.startsWith('- [')).toBe(true)
+    }
+    // All five injected fake-directive fragments are still present (truncation/flattening is not
+    // a content filter) but none of them start a line of its own.
+    expect(bodyLines[0]).toContain('[FAKE] directive via content')
+    expect(bodyLines[0]).toContain('[FAKE] directive via category')
+    expect(bodyLines[0]).toContain('[FAKE] directive via keywords')
+    expect(bodyLines[0]).toContain('[FAKE] directive via created_label')
+    expect(bodyLines[0]).toContain('[FAKE] directive via agent_id')
+  })
+
+  it('WhiteHat N6 (card 0a34377f, komment 14926): a 200 response that is neither a list nor an object (e.g. a bare `null`) logs failed=true instead of crashing or silently producing no measurement row at all', async () => {
+    const { dir, script } = sandboxRoot(['fullstack'])
+    const r = await runHook(script, '/home/neon/marveen/agents/fullstack', CARD, '__NULL__', dir)
+    expect(r.status, r.stderr).toBe(0)
+    const logPath = join(dir, 'store', 'session-memory-inject-measurements.jsonl')
+    expect(existsSync(logPath)).toBe(true)
+    const row = JSON.parse(readFileSync(logPath, 'utf-8').trim())
+    expect(row.card_id).toBe('card123')
+    expect(row.memories_count).toBe(0)
+    expect(row.failed).toBe(true)
   })
 
   it('an oversized entry is skipped, not a budget-ending stop (R3): a smaller entry further down the ranked list still gets included', async () => {

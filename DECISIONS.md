@@ -18641,3 +18641,49 @@ tesztelve, a masik 3 fajl pinnelesen kivul esett. Osszesen 9 teszteset (6-rol), 
 **Ki dontott:** a leleteket RedHat adta (59cfcb21 CYBERED GO, komment 14453/c7933508), MikroB
 fogalmazta a javitas iranyat (0fb92c16 kartya-leiras). A vegrehajtas fullstack sajat munkaja.
 Gate: QA + Cybered (a javitas iranyat RedHat adta).
+
+## 2026-10-10 -- 0a34377f CYBERSEC NO-GO javitas: R2 teljes-sor-flatten + vectorSearch agent-hatar regresszio + N6 robusztussag (kartya 0a34377f, forras: WhiteHat NO-GO komment 14926)
+
+A korabbi, "claude-mem A resz (5a4bea2e): flotta-kiterjesztes elofeltetelei R1-R4" bejegyzes
+R2 javitasa CSAK a `content` mezot lapositotta/vagta -- a sorba kerulo `keywords`, `category`,
+`created_label` es `agent_id` mezo nyers maradt. WhiteHat (CYBERSEC NO-GO, komment 14926) merte:
+egy sortores a `keywords` vagy `agent_id` mezoben UGYANAZT a 0. oszlopos hamis-fejlec/direktiva
+kockazatot nyitja meg, amit az R2 eppen bezarni probalt a content-en -- es a `POST /api/memories`
+(src/web/routes/memories.ts) ezeket a mezoket semmilyen normalizalas nelkul tarolja.
+
+**Javitas (N1, MEDIUM):** egyetlen `_cap_and_flatten(value, max_chars)` segedfuggveny mostantol
+MINDEN sorba kerulo mezore fut (content: 400 karakter, keywords: 200, category/created_label/
+agent_id: 64), es a sortores-keszlet bovult a CR/LF/VT/FF mellett U+0085, U+2028, U+2029-re is
+(N3, LOW -- ugyanaz a gyoker, ugyanaz a javitas zarja). Regresszios teszt: egy bejegyzes, amelynek
+MIND AZ OT mezojebe sortores van irva, es az allitas az, hogy a szekcio teljes torzse pontosan 1
+sor, es az a sor "- ["-fel kezdodik -- ez eppen azt a resst fedi, amit WhiteHat jelzett: a regi
+teszt csak a "- [" kezdetu sorokra szurt, igy egy kulon, nem "- [" alaku sor lathatatlan maradt
+neki.
+
+**Javitas (N6, LOW):** egy 200-as valasz, ami nem lista es nem objektum (pl. nyers `null`), a
+`main()` try/except-je altal csendben elnyelt AttributeError-t dobott, es EGYETLEN meresi sor
+sem kerult a naploba (nem failed=True, nem 0). Mostantol ezt az esetet kulon agkent kezeli a
+fuggveny, es `failed=True`-t ad vissza, ugyanugy mint egy transport-hiba eseten.
+
+**Uj regresszios teszt (N4, MEDIUM-LOW, tesztlyuk, nem kod-hiba):** a `vectorSearch` SQL-jenek
+agent/shared hatara (`agent_id = ? OR category = 'shared'`) semmilyen mutacios lefedettseget nem
+kapott -- egy mutacio, ami ezt kiszelesiti (pl. `agent_id IS NOT NULL`), 352/352 memoria-teszttel
+zoldon maradt volna. Uj teszt ket agent sorával, azonos embeddinggel (igy csak a hatar
+donthet), amely elvarja, hogy A ugynok hybridSearch hivasa SOHA ne adja vissza B ugynok nem-shared
+sorat, es hogy egy shared-kategoriaju, mas agent_id-hez tartozo sor VISSZA kell jojjon. Sajat
+mutacio-proof a valodi fajlon (`agent_id = ? OR category = 'shared'` -> `agent_id = ? OR 1=1`):
+pontosan ez az uj teszt bukott, semelyik masik.
+
+N2 (LOW, ugyanaz a gyoker mint N1): a javitas a kulon mezo-korlatokkal egyutt megszunt (200/64
+karakter eros korlat, a korabbi "csak a token-keret tartja a felso hatart" allapot helyett).
+N5 (LOW, nem e kartya hatokore -- az agent_id iraskori hitelesitese egy kulon, melyebb kerdes,
+lasd 7965095b): nem valtozott, a fejlec szovege mar most kimondja, hogy a szerzo-belyeg nem
+hitelesitett.
+
+**Mert allapot:** embed-model-split.test.ts 12/12 zold (10-rol, 2 uj N4 eset), session-memory-
+inject-own-curated.test.ts 10/10 zold (8-rol, 1 uj N1 es 1 uj N6 eset), skill-archive-no-
+propagation.test.ts 9/9 zold (erintetlen, csak egyutt futtatva), tsc --noEmit tiszta.
+
+**Ki dontott:** WhiteHat talalta a leleteket (CYBERSEC NO-GO, komment 14926) es adta a javitas
+iranyat; a kartya sajat szovege szerint ezert a kovetkezo biztonsagi gate RedHat (nem Cybersec,
+fuggetlenseg miatt). A vegrehajtas fullstack sajat munkaja. Gate: QA + RedHat.
