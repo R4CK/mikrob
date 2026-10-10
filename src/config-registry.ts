@@ -514,6 +514,8 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
     valueSet: [
+      // Opus 5.5: ONLY the 1M variant is offered (owner decision 2026-09-23, Marveen 28541).
+      'claude-opus-5-5[1m]',
       'claude-opus-5',
       'claude-opus-5[1m]',
       'claude-sonnet-5',

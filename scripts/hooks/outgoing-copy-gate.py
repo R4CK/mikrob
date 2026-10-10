@@ -82,6 +82,18 @@ import time
 # eldobasa a heredoc-taplalt VALODI kuldot vesztette volna el (FN).
 _HEREDOC = re.compile(r"(<<-?\s*'?(\w+)'?[^\n]*)\n.*?\n\2(?=\s|$)", re.S)
 _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
+# KWSPLIT924: shell reserved words that put the NEXT word in command position.
+# The segmenter splits on operators only, so `if true; then sendmail x; fi`
+# gave the segment [then, sendmail, x] whose "program" was `then`: the send was
+# not recognised and the copy audit was silently skipped (same for do / else /
+# elif / { / !, and the condition after if / while / until). They are stripped
+# ONLY at the head of a segment, i.e. in command position, never as separators:
+# `echo then sendmail x` stays a single echo. `in` is deliberately NOT here: the
+# words after it are data, and `for m in sendmail msmtp; do which $m; done` must
+# stay false. `for` / `case` are not here either: the word after them is a name
+# or a subject, not a command. Mirrored in email-send-gate.mjs (CMD_POSITION_KEYWORDS);
+# the shared send-invocation-cases.json binds the two.
+_CMD_POSITION_KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "{", "!"))
 _SENDER_PROG = re.compile(r"^(sendmail|msmtp|swaks)$", re.I)
 _SENDPY = re.compile(r"^send\.py$", re.I)
 _PYTHON = re.compile(r"^python3?$", re.I)
@@ -249,7 +261,15 @@ def _segments_tokens(cmd: str):
     lex.whitespace_split = True
     segments, cur = [], []
     for tok in lex:
-        if tok in ("|", "||", "&", "&&", ";", "(", ")", ";;", "|&"):
+        # SEGSPLIT923: shlex(punctuation_chars) returns a RUN of operator
+        # characters as ONE token, so `$(date); sendmail ...` (after the
+        # subshell mask: `;date); sendmail`) yielded the token ");" -- not in
+        # the list, so it did not split, `sendmail` landed mid-segment, and the
+        # send was NOT recognised: the copy audit was silently skipped. The JS
+        # twin (email-send-gate.mjs) said true on the same input; nothing in
+        # the conformance list covered it. A token made ONLY of operator
+        # characters is always an operator sequence, so it separates.
+        if tok in ("|", "||", "&", "&&", ";", "(", ")", ";;", "|&") or (tok and set(tok) <= set("();|&")):
             if cur:
                 segments.append(cur)
             cur = []
@@ -260,9 +280,97 @@ def _segments_tokens(cmd: str):
     return segments
 
 
-def _segment_is_send(toks, depth: int) -> bool:
-    while toks and _ENV_ASSIGN.match(toks[0]):
+# SENDWRAP924: a wrapper in front of the sender -- `sudo sendmail x`,
+# `time -p sendmail x`, `env -i sendmail x`, `timeout 10 sendmail x` -- made
+# the wrapper the "program", so the send was not recognised and the copy audit
+# was silently skipped (13 measured shapes, both copies). A wrapper is stepped
+# over WITH its own flags: a flag that takes a value consumes it, so in
+# `sudo -u sendmail true` the program is `true`, not `sendmail`.
+# name -> (short flags taking a value, long flags taking a value, positional
+# arguments before the command). An UNKNOWN long flag without `=` may or may
+# not take a value, so both readings are tried and either one being a send
+# counts: an unknown flag errs toward auditing, never toward skipping.
+# `command -v/-V` looks a name up and runs nothing. `function NAME` and
+# `coproc [NAME]` put their body in command position. Mirrored in
+# email-send-gate.mjs (WRAPPERS / commandHeads); send-invocation-cases.json
+# binds the two.
+_WRAPPERS = {
+    "time": ("fo", ("format", "output"), 0),
+    "sudo": ("ughpCUrtDRT", ("user", "group", "host", "prompt", "close-from", "other-user",
+                             "role", "type", "chdir", "chroot", "command-timeout"), 0),
+    "env": ("uCS", ("unset", "chdir", "split-string"), 0),
+    "nohup": ("", (), 0),
+    "nice": ("n", ("adjustment",), 0),
+    "exec": ("a", (), 0),
+    "command": ("", (), 0),
+    "xargs": ("ILnPsdEa", ("arg-file", "delimiter", "eof", "replace", "max-lines", "max-args",
+                           "max-procs", "max-chars", "process-slot-var"), 0),
+    "timeout": ("sk", ("signal", "kill-after"), 1),
+    # setsid: for future use and symmetry. NOT measured local traffic: the hits the
+    # first count found all sat inside quoted remote (ssh) command strings or heredoc
+    # bodies, and that pattern was not quote-aware (Marveen's correction, 2026-09-24).
+    "setsid": ("", (), 0),
+}
+_HEAD_DEPTH = 8
+
+
+def _command_heads(toks, _d: int = 0):
+    """Every token list that can be the real command of this segment, after the
+    leading assignments, command-position keywords and wrappers are stepped over."""
+    while toks and (_ENV_ASSIGN.match(toks[0]) or toks[0] in _CMD_POSITION_KEYWORDS):
         toks = toks[1:]
+    if not toks:
+        return [toks]
+    w = _basename(toks[0])
+    if _d >= _HEAD_DEPTH:
+        # Still a wrapper at the depth bound: the real command is out of sight,
+        # so it counts as a send (None) -- the bound errs toward auditing, like
+        # an unknown flag does. It used to return the wrapper itself, and nine
+        # nested wrappers + sendmail was silently skipped (Samu, #1521 review).
+        return [None] if (w in _WRAPPERS or w in ("function", "coproc")) else [toks]
+    if w == "function":
+        return _command_heads(toks[2:], _d + 1)
+    if w == "coproc":
+        return _command_heads(toks[1:], _d + 1) + _command_heads(toks[2:], _d + 1)
+    spec = _WRAPPERS.get(w)
+    if spec is None:
+        return [toks]
+    short_val, long_val, positionals = spec
+    i, starts = 1, []
+    while i < len(toks):
+        t = toks[i]
+        if t == "--":
+            i += 1
+            break
+        if t.startswith("--"):
+            if "=" not in t and t[2:] in long_val:
+                i += 2
+                continue
+            if "=" not in t:
+                starts.append(i + 2)
+            i += 1
+            continue
+        if t.startswith("-") and len(t) > 1:
+            if w == "command" and ("v" in t or "V" in t):
+                return []
+            k = next((j for j, ch in enumerate(t[1:], 1) if ch in short_val), -1)
+            i += 2 if k == len(t) - 1 else 1
+            continue
+        break
+    starts.insert(0, i)
+    heads = []
+    for s in starts:
+        heads += _command_heads(toks[s + positionals:], _d + 1)
+    return heads
+
+
+def _segment_is_send(toks, depth: int) -> bool:
+    return any(_head_is_send(h, depth) for h in _command_heads(toks))
+
+
+def _head_is_send(toks, depth: int) -> bool:
+    if toks is None:  # the depth bound was hit on a wrapper: audit it
+        return True
     if not toks:
         return False
     prog = _basename(toks[0])
@@ -299,6 +407,23 @@ def _segment_is_send(toks, depth: int) -> bool:
     if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) for t in rest):
         return _curl_resend_verdict(rest) != "read"
     return False
+
+
+def wrapper_depth_hit(cmd: str) -> bool:
+    """True when some segment is still a wrapper at the depth bound, so it was
+    counted as a send without the real command being seen (HEADDEPTH924). The
+    gate uses it to say WHY it blocks: "I could not audit the letter" is the
+    wrong reason for `nohup x9 git status` (Marveen, #1522 review)."""
+    # Only when the depth bound is the WHOLE reason: if a visible segment is a
+    # send on its own (`sendmail x; sudo x9 true`), that send is the reason,
+    # and the ordinary wording must stay (Samu, #1523 review).
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return False
+    heads = [h for toks in segments for h in _command_heads(toks)]
+    return any(h is None for h in heads) and not any(
+        h is not None and _head_is_send(h, 0) for h in heads)
 
 
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
@@ -1477,6 +1602,8 @@ def _bare_tool_name(name):
     return name[idx + 2:] if idx != -1 else name
 
 
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -1521,6 +1648,16 @@ def main():
         # Email first makes the failure direction safe: a Telegram send names no mail vendor,
         # so it still reaches the branch below; and anything that looks like BOTH is treated as
         # the email it is, on the fail-closed path.
+        #
+        # Upstream batch 8 (94765127) wires a call to inter_agent_homoglyph_gate() here instead
+        # of the telegram branch below -- NOT adopted (and its definition + dedicated helpers
+        # removed from this merge entirely, see the block above `def main()`): this fork already
+        # evaluated that exact function on card ee7bc2ba (Cybersec NO-GO @ 26f2b4f2) and found it
+        # half-wired dead code (calls the undefined `_gate_log`, own tests red), by MikroB's
+        # decision removed rather than landed half-finished. Re-checked fresh here, not reused
+        # blindly (per this card's own instruction): `_gate_log` is STILL undefined anywhere in
+        # this file, so the upstream call site would NameError the first time it reached an
+        # unreadable body. The prior finding still holds.
         if is_send_invocation(cmd):
             text, unreadable = collect_bash_body(cmd)
         elif telegram_bash_enabled() and is_telegram_bash_send(cmd):
@@ -1531,6 +1668,17 @@ def main():
         sys.exit(0)
 
     if unreadable or not text.strip():
+        if tool == "Bash" and wrapper_depth_hit(cmd):
+            sys.stderr.write(
+                "KIMENO-SZOVEG KAPU: TILTVA, mert a parancs valodi fejet nem latom.\n"
+                f"Ok: a parancs a burkolo-korlatnal ({_HEAD_DEPTH} egymasba agyazott burkolo: sudo, "
+                "time, env, nohup, nice, timeout...) is meg burkolo, tehat nem tudom eldonteni, "
+                "hogy levelkuldes-e. Ez szandekosan fail-closed.\n\n"
+                f"Ha ez NEM levelkuldes: csokkentsd a burkolok szamat {_HEAD_DEPTH} vagy kevesebb ala.\n"
+                "Ha levelkuldes: tedd vizsgalhatova -- ABSZOLUT utvonalu stdin-atiranyitas "
+                "(< /teljes/ut/body.txt), vagy --body-ban atadott szoveg.\n"
+            )
+            sys.exit(2)
         reason = unreadable or "a hook nem talalt vizsgalhato szoveget a hivasban"
         sys.stderr.write(
             "KIMENO-SZOVEG KAPU: TILTVA, mert a levelet nem tudtam megvizsgalni.\n"

@@ -507,6 +507,8 @@ window._i18n.hu = {
   'agents.model.inherit':        'Öröklött (alapértelmezett)',
   'agents.model.fable51':       'Fable 5.1 (legújabb Fable)',
   'agents.model.fable5':         'Fable 5',
+  'agents.model.opus55_1m':      'Opus 5.5 (1M kontextus, legújabb Opus)',
+  'agents.model.cliUnmeasured':  'A telepített Claude Code verziója nem mérhető ({err}), a lista nem szűrt: egy régebbi CLI-n nem minden modell indul el.',
   'agents.model.opus5':          'Opus 5',
   'agents.model.opus48':         'Opus 4.8 (1M kontextus, alapértelmezett)',
   'agents.model.sonnet5':        'Sonnet 5 (legújabb Sonnet, Opus-közeli)',
@@ -1734,7 +1736,6 @@ window._i18n.hu = {
   'updates.confirm.stash':       'A working tree-ben lokális változtatások vannak. Stash-eljem őket automatikusan, frissítsek, majd visszaállítsam?',
   'updates.confirm.apply':       'Frissítés most. A szolgáltatások újraindulnak, a dashboard ~30 másodpercig nem érhető el. Folytatod?',
   'updates.install_failed':      'Telepítés sikertelen',
-  'updates.config_failed':       'Konfiguráció sikertelen',
   'updates.cli.title':           'Claude Code CLI',
   'updates.cli.installed':       'Telepített verzió: {v}',
   'updates.cli.latest':          'Elérhető: {v}',
@@ -1752,6 +1753,7 @@ window._i18n.hu = {
   'updates.cli.done':            'Kész: a telepített Claude Code CLI most {v}, és éles próbával indul.',
   'updates.cli.failed':          'CLI frissítés sikertelen: {msg}',
   'updates.cli.up_to_date':      'A Claude Code CLI naprakész.',
+  'updates.config_failed':       'Konfiguráció sikertelen',
 
   // --- Common copy buttons ---
   'common.copy':                 'Másolás',

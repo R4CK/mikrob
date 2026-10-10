@@ -1440,6 +1440,8 @@ window._i18n.en = {
   'agents.model.inherit':        'Inherited (default)',
   'agents.model.fable51':       'Fable 5.1 (newest Fable)',
   'agents.model.fable5':         'Fable 5',
+  'agents.model.opus55_1m':      'Opus 5.5 (1M context, newest Opus)',
+  'agents.model.cliUnmeasured':  'The installed Claude Code version could not be measured ({err}); the list is unfiltered: on an older CLI not every model launches.',
   'agents.model.opus5':          'Opus 5',
   'agents.model.opus48':         'Opus 4.8 (1M context, default)',
   'agents.model.sonnet5':        'Sonnet 5 (newest Sonnet, near-Opus)',
@@ -1731,7 +1733,6 @@ window._i18n.en = {
   'updates.confirm.stash':       'There are local changes in the working tree. Stash them automatically, update, then restore?',
   'updates.confirm.apply':       'Update now. Services will restart; dashboard will be unavailable for ~30 seconds. Continue?',
   'updates.install_failed':      'Install failed',
-  'updates.config_failed':       'Config failed',
   'updates.cli.title':           'Claude Code CLI',
   'updates.cli.installed':       'Installed version: {v}',
   'updates.cli.latest':          'Available: {v}',
@@ -1749,6 +1750,7 @@ window._i18n.en = {
   'updates.cli.done':            'Done: the installed Claude Code CLI is now {v}, and it launches under a real probe.',
   'updates.cli.failed':          'CLI update failed: {msg}',
   'updates.cli.up_to_date':      'The Claude Code CLI is up to date.',
+  'updates.config_failed':       'Config failed',
 
   // --- Common copy buttons ---
   'common.copy':                 'Copy',

@@ -3,12 +3,19 @@
 // provider-env-adoption.test.ts for that side): a vault-sourced key never travels as a literal
 // token in the tmux `new-session` argv. It is written to a private 0600 file instead, and the
 // launch command carries only a shell command-substitution reference to that file.
+//
+// MERGED WITH UPSTREAM'S OWN LATER launch-secret-ref.test.ts (card 14256aac, upstream batch 8):
+// both files test the same two functions, independently written; upstream's had several cases
+// this one lacked (the mutation-found directory-re-tightening case, a wider path-traversal set,
+// a live shell-substitution proof, and a source-literal + call-site-wiring guard) -- folded in
+// below as additional `it` blocks rather than picking one side wholesale.
 import { describe, it, expect, afterEach } from 'vitest'
-import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readFileSync, readdirSync, statSync, unlinkSync, mkdirSync, chmodSync } from 'node:fs'
+import { join, dirname, basename } from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import {
   launchSecretRef,
-  clearLaunchSecrets,
   LAUNCH_SECRETS_DIR,
   LAUNCH_SECRETS_DIR_MODE,
   LAUNCH_SECRET_FILE_MODE,
@@ -78,44 +85,73 @@ describe('launchSecretRef', () => {
     expect(path).toBe(join(LAUNCH_SECRETS_DIR, 'unnamed'))
     unlinkSync(path)
   })
-})
 
-describe('clearLaunchSecrets', () => {
-  it('removes the provider-key files for an agent, and the BYO key file, and nothing else', () => {
-    const agent = `${TEST_PREFIX}-agentA`
-    const otherAgent = `${TEST_PREFIX}-agentB`
-    launchSecretRef(`${agent}.DEEPSEEK_API_KEY`, 'a')
-    launchSecretRef(`${agent}.openrouter-fleet-key`, 'b')
-    launchSecretRef(`agent-${agent}-api-key`, 'c')
-    // A sibling agent's secret, and an unrelated file that merely starts similarly, must survive.
-    launchSecretRef(`${otherAgent}.DEEPSEEK_API_KEY`, 'd')
-    launchSecretRef(`agent-${otherAgent}-api-key`, 'e')
-
-    const removed = clearLaunchSecrets(agent)
-    expect(removed).toBe(3)
-    expect(existsSync(testPath(`${agent}.DEEPSEEK_API_KEY`))).toBe(false)
-    expect(existsSync(testPath(`${agent}.openrouter-fleet-key`))).toBe(false)
-    expect(existsSync(testPath(`agent-${agent}-api-key`))).toBe(false)
-    expect(existsSync(testPath(`${otherAgent}.DEEPSEEK_API_KEY`))).toBe(true)
-    expect(existsSync(testPath(`agent-${otherAgent}-api-key`))).toBe(true)
-
-    clearLaunchSecrets(otherAgent)
+  // Upstream's mutation-found gap (batch 8, card 14256aac): `mkdirSync`'s mode only applies when
+  // it CREATES the directory, so a directory left looser by an older version, a different umask,
+  // or a manual change outlives a fix that only sets the mode at creation time. The chmod-every-
+  // call line already in launchSecretRef covers this; this pins that it keeps covering it.
+  it('re-tightens an already-existing, looser directory -- not only at creation', () => {
+    mkdirSync(LAUNCH_SECRETS_DIR, { recursive: true })
+    chmodSync(LAUNCH_SECRETS_DIR, 0o777)
+    expect(statSync(LAUNCH_SECRETS_DIR).mode & 0o777).toBe(0o777) // positive control: really loose
+    launchSecretRef(`${TEST_PREFIX}.retighten`, 'x')
+    expect(statSync(LAUNCH_SECRETS_DIR).mode & 0o777).toBe(LAUNCH_SECRETS_DIR_MODE)
   })
 
-  it('an agent name that is a PREFIX of another agent name does not clear the other one', () => {
-    // 'agentA' vs 'agentAA' -- the naive `startsWith` shape used elsewhere in this file could
-    // over-match without the trailing '.' in providerPrefix; this proves it does not.
-    const short = `${TEST_PREFIX}-agentA`
-    const long = `${TEST_PREFIX}-agentAA`
-    launchSecretRef(`${short}.DEEPSEEK_API_KEY`, 'a')
-    launchSecretRef(`${long}.DEEPSEEK_API_KEY`, 'b')
-    clearLaunchSecrets(short)
-    expect(existsSync(testPath(`${short}.DEEPSEEK_API_KEY`))).toBe(false)
-    expect(existsSync(testPath(`${long}.DEEPSEEK_API_KEY`))).toBe(true)
-    clearLaunchSecrets(long)
+  // Wider than the path-separator case above: the property that matters is the DIRECTORY the
+  // file lands in, not the shape of the name. Upstream's own first version of this asserted the
+  // name's shape instead and missed that an all-dots name resolves to the parent directory once
+  // joined -- fixed in launchSecretRef (see the dots case above), re-measured here across every
+  // shape, including ones with no leading '..' at all.
+  it('every traversal-shaped name still lands inside LAUNCH_SECRETS_DIR, not just the ../ ones', () => {
+    for (const bad of ['../../../etc/malicious', '..', '.', '/etc/passwd', '', 'a/../../b']) {
+      const ref = launchSecretRef(bad, 'x')
+      const path = /\$\(cat '(.+)'\)/.exec(ref)?.[1] ?? ''
+      expect(dirname(path), bad).toBe(LAUNCH_SECRETS_DIR)
+      expect(basename(path), bad).not.toContain('/')
+      unlinkSync(path)
+    }
+    expect(existsSync('/etc/malicious')).toBe(false)
   })
 
-  it('returns 0 for an agent that never had a launch secret written', () => {
-    expect(clearLaunchSecrets(`${TEST_PREFIX}-never-launched`)).toBe(0)
+  // Every assertion above measures the TEXT's shape. This measures that the substitution,
+  // actually executed, returns the ORIGINAL secret -- i.e. that the agent really does receive the
+  // key, not just that the string looks right.
+  it('the shell actually returns the value from the reference (the mechanism works, not just looks right)', () => {
+    const value = 'proba-ertek-shell-12345'
+    const ref = launchSecretRef(`${TEST_PREFIX}.shell`, value)
+    const out = execFileSync('/bin/sh', ['-c', `printf %s ${ref}`], { encoding: 'utf-8' })
+    expect(out).toBe(value)
+    const path = /\$\(cat '(.+)'\)/.exec(ref)?.[1] ?? ''
+    unlinkSync(path)
+  })
+
+  // WHY THIS IS SEPARATE FROM EVERY TEST ABOVE: those measure launchSecretRef and
+  // resolveProviderEnv. The fix's effect hangs on one line at each CALL SITE -- if a caller goes
+  // back to interpolating the value, every test above stays green and the secret is back in `ps`.
+  // This reads the SOURCE and pins the forbidden shape, plus that stopAgentProcess's own BODY (not
+  // just somewhere in the file) calls clearLaunchSecrets -- mutation-measured: moving that call to
+  // a dead spot survived the weaker "appears somewhere in the file" assertion this one replaces.
+  it('the source never reverts to the literal shape, and cleanup is wired into stopAgentProcess itself', () => {
+    const source = readFileSync(
+      join(fileURLToPath(import.meta.url), '..', '..', 'web', 'agent-process.ts'),
+      'utf-8',
+    )
+    const forbidden = /export ANTHROPIC_(API_KEY|AUTH_TOKEN)="\$\{/g
+    const hits = source.match(forbidden) ?? []
+    expect(hits, `the secret's VALUE must not interpolate into the launch command: ${hits.join(', ')}`).toHaveLength(0)
+    // Positive control on the pattern itself.
+    const sample = 'export ANTHROPIC_AUTH_TOKEN="${key}" && '
+    expect(sample.match(forbidden) ?? []).toHaveLength(1)
+    // ...and the RIGHT shape must be present at every call site (not just "the wrong one is gone").
+    expect((source.match(/launchSecretRef\(/g) ?? []).length).toBeGreaterThanOrEqual(3)
+
+    const stopStart = source.indexOf('async function stopAgentProcessUnlocked(')
+    expect(stopStart, 'stopAgentProcessUnlocked not found').toBeGreaterThan(-1)
+    const stopEnd = source.indexOf('\nexport ', stopStart + 10)
+    const stopBody = source.slice(stopStart, stopEnd > 0 ? stopEnd : undefined)
+    expect(stopBody).toContain('clearLaunchSecrets(name)')
+    expect(stopBody).toContain('kill-session') // positive control on the slice itself
+    expect(stopBody.length).toBeGreaterThan(200)
   })
 })
