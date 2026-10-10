@@ -91,17 +91,20 @@ BELSO SZAMOK: store/seeme-internal-numbers.json -> {"internal": ["36305552860", 
 
 JoVAHAGYAS KERESE (kulso cimzettnel, a hash-sel):
   HASH=$(printf '%s\n%s' "<cimzett, pl. 36301234567>" "<a pontos szoveg>" | sha256sum | cut -d' ' -f1)
+  DESC=$(printf 'Cimzett: %s\nSzoveg: %s\nIndok: %s' "36301234567" "<a pontos szoveg szo szerint>" "<...>")
   printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -H @- -s \
     -X POST http://localhost:3420/api/approvals -H 'Content-Type: application/json' \
     -d "{\"agent_id\":\"<a te neved>\",\"category\":\"external_message\",\"content_hash\":\"$HASH\",
-         \"action_description\":\"SMS a 36301234567 szamra (SeeMe). Szoveg: <a pontos szoveg szo szerint>. Indok: <...>\"}"
+         \"action_description\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$DESC")}"
   A kuldeskor megadott --to es a STDIN-rol jovo szoveg MUSZAJ bajtra pontosan egyezzen
   azzal, amire a hash keszult -- a legkisebb elteres (nagybetu, szokoz, uj sor) mas
   hash-t ad, es az approval nem fog illeszkedni (F1 pontosan ezt zarja ki).
-  A `action_description`-nek SZO SZERINT tartalmazni KELL a normalizalt (36...) cimzettet
-  ES a pontos kuldendo szoveget (CYBERED C1, msg 14141): a hash onmagaban nem lathato a
-  johavagyonak, csak ez a szoveg -- ha a leiras nem egyezik azzal, ami tenylegesen elmegy,
-  a kuldes elutasitva, FUGGETLENUL attol, hogy a hash matematikailag egyezik-e.
+  A `action_description`-nek KULON SORBAN, SZO SZERINT es EGESZ SORKENT kell tartalmazni
+  a `Cimzett: <normalizalt (36...) szam>` es a `Szoveg: <a pontos kuldendo szoveg>` sort
+  (CYBERED C1, msg 14141; RedHat L1, delta-GO komment 14242) -- a hash onmagaban nem lathato
+  a johavagyonak, csak ez a szoveg, es a kotes SOR-EGYENLOSEG, nem reszsztring-tartalmazas:
+  ha a cimzett vagy a szoveg csak egy hosszabb sor RESZEKENT vagy egy tagadas/Indok-pelda
+  SZELETEKENT szerepel, az elutasitva, FUGGETLENUL attol, hogy a hash matematikailag egyezik-e.
 """
 import argparse, hashlib, json, os, re, sqlite3, sys, time, urllib.error, urllib.parse, urllib.request
 
@@ -219,10 +222,22 @@ def _description_binds(description, to_number, text):
     description, and the owner would approve something they never read.
     Requiring the description to contain the normalized recipient AND the
     exact outgoing text, verbatim, restores that binding: whatever the owner
-    approved is provably what they saw."""
+    approved is provably what they saw.
+
+    LINE EQUALITY, not containment (RedHat L1, delta-GO komment 14242): the
+    earlier `to_number in description and text in description` check matched
+    a bare SUBSTRING anywhere in the description, which RedHat measured to
+    pass on: a trimmed negation ("Ne kattintson a X linkre" approved, "kattintson
+    a X linkre" sent), the approved text occurring only inside a negative
+    example in the Indok ("...hogy a 'X' uzenet NE menjen ki"), and the
+    recipient number occurring as part of a LONGER digit run (e.g. "1" +
+    to_number). Each required field must now be its OWN, WHOLE line -- a
+    substring of a longer line no longer satisfies it, and a line crafted to
+    equal `Szoveg: <text>` exactly is, by construction, what it claims to be."""
     if description is None:
         return False
-    return to_number in description and text in description
+    lines = description.split("\n")
+    return f"Cimzett: {to_number}" in lines and f"Szoveg: {text}" in lines
 
 
 def _diagnose_approval(row, anchor, to_number, text):
@@ -329,6 +344,25 @@ def is_usable_response_shape(payload):
     SMS that may already have gone out. Extracted to a pure, unit-testable
     function on purpose, same reason as seeme_response_ok (F2)."""
     return isinstance(payload, dict)
+
+
+def ketertelmu_nonobject_log_line(stamp, to, reference, payload):
+    """RedHat L2 (delta-GO komment 14242): the is_usable_response_shape GATE
+    was pinned, but the actual AUDIT LINE it produces was not -- a test
+    could delete this log() call entirely (losing the audit trail, the
+    whole point of C3) while still passing, because nothing asserted on the
+    log content. Extracted so a test can."""
+    return f"{stamp}\tKETERTELMU\tvalasz-nem-objektum\t{to}\treference={reference}\t{logsafe(json.dumps(payload)[:400])}"
+
+
+def ok_send_log_line(stamp, to, reference, payload, approval_id, text):
+    """RedHat L3 (delta-GO komment 14242): split/price come straight from the
+    gateway response -- untrusted network content, same reason logsafe
+    already wraps every other response-derived log field. Extracted so a
+    test can pin the logsafe-wrapping without a live/fake gateway."""
+    segments = logsafe(payload.get("split"))
+    price = logsafe(payload.get("price"))
+    return f"{stamp}\tOK\t{to}\treference={reference}\trészek={segments}\tár={price}\tapproval={approval_id or '-'}\tlen={len(text)}"
 
 
 def main():
@@ -444,7 +478,7 @@ def main():
     # crash left NO log line at all, same ambiguous-outcome class as the
     # network-error branch above, but silent.
     if not is_usable_response_shape(payload):
-        log(f"{stamp}\tKETERTELMU\tvalasz-nem-objektum\t{to}\treference={reference}\t{logsafe(json.dumps(payload)[:400])}")
+        log(ketertelmu_nonobject_log_line(stamp, to, reference, payload))
         die(f"a valasz JSON, de nem objektum (HTTP {code_http}): {json.dumps(payload)[:400]}\n"
             f"      KETERTELMU: nem tudom eldonteni, sikeres volt-e. NEM kuldok ujra "
             f"(duplikatum-veszely). Ellenorizd a SeeMe portalon a `reference={reference}` alapjan.")
@@ -455,10 +489,8 @@ def main():
         log(f"{stamp}\tFAIL\tcode={logsafe(code)}\t{to}\treference={reference}\t{logsafe(message)}")
         die(f"a SeeMe elutasitotta (code={code or 'HIANYZIK'}): {message}")
 
-    segments = payload.get("split")
-    price = payload.get("price")
-    log(f"{stamp}\tOK\t{to}\treference={reference}\trészek={segments}\tár={price}\tapproval={args.approval or '-'}\tlen={len(text)}")
-    print(f"OK reference={reference} részek={segments} ár={price}")
+    log(ok_send_log_line(stamp, to, reference, payload, args.approval, text))
+    print(f"OK reference={reference} részek={logsafe(payload.get('split'))} ár={logsafe(payload.get('price'))}")
 
 
 if __name__ == "__main__":
