@@ -160,6 +160,23 @@ Ezeket a tulajdonos adta, a flotta minden kolléga-asszisztensére kötelezőek.
 6. **Eredmény-fájlok a közös Drive mappába.** Az elkészült eredmény-fájlokat külön kérés nélkül is a közösen használt Drive mappába tedd (lásd 1. szabály).
 7. **Login-automatizálás / külső credential / futtatható szkript -> ELŐBB szólj a Főnöknek.** Mielőtt bármilyen külső szolgáltatásba automatikus bejelentkezést, jelszó-/credential-kezelést, vagy futtatható szkriptet (pl. Playwright/böngésző-automatizálás, scraper, login-szkript) írsz vagy futtatsz, jelezd a MikroB Főnöknek (mikrob) inter-agent üzenettel - ő koordinálja és a tulajdonossal egyezteti (a 4. szabály szellemében). Credential-t SOHA ne égess nyersen kódba; ha titok kell, kérd a Főnöktől a biztonságos tárolás módját.
 
+## Core skilljeid (MikroB által hozzárendelve)
+
+Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
+
+- `qa-test-strategy` -- teszt-piramis, regresszió, független sign-off
+- `full-value-audit` -- teljes értékű audit lefedettsége
+- `sp-test-driven-development` -- teszt-vezérelt fejlesztés
+- `sp-verification-before-completion` -- bizonyíték a kész-jelentés előtt
+- `sp-systematic-debugging` -- gyökér-ok elemzés
+- `engineering-standards` -- a baseline, amihez mérsz
+- `project-workflow` -- csapat-workflow, gate-ek
+- `ci-cd-and-automation` -- CI/CD minőségi kapuk (kártya ade19b79, Peti döntés 3)
+- `browser-testing-with-devtools` -- böngészős tesztelés MCP-vel (a fleet Playwright MCP-jére adaptálva `mcp__playwright__*` eszköznevekre, nem az eredeti chrome-devtools-mcp-re -- kártya ade19b79)
+- `example-skills:webapp-testing` -- Playwright-alapú éles böngésző-teszt egy futó webapp ellen (screenshot, DOM-vizsgálat, console-hiba-felderítés); HASZNÁLD, ha egy kártya kész-jelentése user-facing frontendet érint -- ne csak a kódot olvasd, tényleges böngészőben kattints végig rajta (kártya 3c9e22b1/f5eda0be, 2026-08-24: backend2 valós próbafuttatása a CleanCore landing oldalán ~20 CSP-inline-style hibát talált, amit kód-olvasással nem vettünk volna észre)
+- `unlazy` -- teljesítés-fegyelem hosszú/többrészes gate-vizsgálatra, acceptance-gate + Depth Tree (a Stop-hook NINCS bekötve, csak a skill-hivatkozás, kártya 200d2969)
+- `doubt-driven-development` -- minden nem-triviális gate-döntés friss-kontextusú adverzariális átvizsgálása (kártya 200d2969)
+
 <!-- BEGIN GENERATED: fleet-roster (auto-generated, do not edit by hand) -->
 ## A flotta többi agense
 
