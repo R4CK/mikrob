@@ -28,10 +28,14 @@ ATVETT ELEMEK, ES MIERT (ellenorizve a sajat testverenel, nem feltetelezve):
      kategoria level=1 ES maxLevel=1, locked -- SOHA nem autonom), DE A LISTA MAGA
      KuLoN FAJL, MERT NEM oRoKoLHETo VALTOZATLANUL -- lasd store/seeme-internal-numbers.json
      sajat fejleceben, miert (a ket sms-gate.app-os bejegyzesbol csak EGY vonatkozik ide).
-  3. `external_message` approval lekerdezese a `/api/approvals/<id>`-n, es hogy a
-     cimzett szama SZEREPELJEN a jovahagyas leirasaban. VALTOZATLANUL atvett: ugyanaz
-     a kormanyzasi API, ugyanaz a kategoria, a governance-nak nincs koze ahhoz, MELYIK
-     gateway viszi tovabb az uzenetet.
+  3. `external_message` approval, EGYSZER-HASZNALATOS, IDoKORLATOS, a pontos
+     cimzett+szoveg parhoz hash-sel kotve (779b9660, fd10c70b WhiteHat F1 utan --
+     korabban a leirasban SZOVEGESEN kellett szerepelnie a cimzett szamanak, ez
+     reszsztring-hamisithato volt). VALTOZATLANUL atvett ELV: ugyanaz a
+     kormanyzasi tabla (approvals), ugyanaz a kategoria, a governance-nak nincs
+     koze ahhoz, MELYIK gateway viszi tovabb az uzenetet -- csak a lekerdezes
+     MODJA (kozvetlen SQLite, nem HTTP) kovet egy masik, mar meglevo fleet-
+     mintat (scripts/hooks/email-approval-gate.py, EMAILKAPU901 PR2).
   4. NINCS UJRAKuLDES (retry). VALTOZATLANUL atvett: egy kimeno SMS nem idempotens
      FUGGETLENuL attol, melyik gateway kuldi -- egy nema halozati hiba utani "biztos
      ami biztos" ujraprobalkozas itt is ket SMS-t jelenthet.
@@ -59,12 +63,22 @@ HASZNALAT:
   printf '%s' "A szoveg" | python3 scripts/sms/seeme-send.py --to 36305552860 --dry-run
 
   --dry-run    : a cimzett-alakot, az osztalyozast es a KAPUT ellenorzi, kiirja, van-e
-                 credentials -- de NEM kuld, credentials nelkul is lefut.
-  --approval   : kulso cimzettnel KOTELEZO. A szkript lekerdezi, es CSAK `approved`
-                 statusznal kuld, ES csak ha a cimzett szama SZEREPEL a keres
-                 leirasaban.
+                 credentials -- de NEM kuld, credentials nelkul is lefut, ES NEM
+                 hasznalja fel (consume) az approval-t (lasd lent).
+  --approval   : kulso cimzettnel KOTELEZO, UUID alak. 779b9660 (fd10c70b WhiteHat
+                 F1) ota a jovahagyas az approvals adatbazisban KOTVE van a pontos
+                 cimzett+szoveg parhoz (content_hash = sha256(cimzett+"\n"+szoveg)),
+                 EGYSZER-HASZNALATOS (atomikus consumed_at, ugyanaz a mechanizmus,
+                 mint scripts/hooks/email-approval-gate.py-ban, EMAILKAPU901 PR2) es
+                 IDoKORLATOS (az approval dontesetol -- resolved_at -- SEEME_APPROVAL_WINDOW_S
+                 masodpercig friss, alapertelmezetten 1800 = 30 perc, ugyanaz az
+                 ablak, mint az email-kapunal). A leiras szoveges cimzett-egyezese
+                 (korabbi, reszsztring-alapu ellenorzes) EZZEL MEGSZuNT: a hash-kotes
+                 strukturalisan kizarja, hogy egy johavagyas mas cimzettre vagy mas
+                 szovegre ervenyes legyen, tehat nincs mit a leirasbol kiolvasni.
   --reference  : sajat azonosito a SeeMe fele (opcionalis, alapertelmezetten
-                 `fleet-adhoc-<unix-ido>`).
+                 `fleet-adhoc-<unix-ido>`). Csak `[A-Za-z0-9._-]` (max 64 karakter) --
+                 lasd F3 lejjebb.
 
 CREDENTIALS: store/seeme-gateway.env (0600), sorai:
   SEEME_API_KEY=...
@@ -74,8 +88,18 @@ BELSO SZAMOK: store/seeme-internal-numbers.json -> {"internal": ["36305552860", 
   Ami ITT nincs benne, az KULSO, es approval-kotelesse valik. Default-deny.
   A SZAMFORMATUM ITT ES A KULDESNEL IS: '+' NELKuLI nemzetkozi alak (36...), ahogy a
   SeeMe API varja -- lasd kaszap-crm/src/lib/sms.ts normalizeHungarianMobile().
+
+JoVAHAGYAS KERESE (kulso cimzettnel, a hash-sel):
+  HASH=$(printf '%s\n%s' "<cimzett, pl. 36301234567>" "<a pontos szoveg>" | sha256sum | cut -d' ' -f1)
+  printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -H @- -s \
+    -X POST http://localhost:3420/api/approvals -H 'Content-Type: application/json' \
+    -d "{\"agent_id\":\"<a te neved>\",\"category\":\"external_message\",\"content_hash\":\"$HASH\",
+         \"action_description\":\"SMS a <cimzett> szamra (SeeMe). Szoveg: <...>. Indok: <...>\"}"
+  A kuldeskor megadott --to es a STDIN-rol jovo szoveg MUSZAJ bajtra pontosan egyezzen
+  azzal, amire a hash keszult -- a legkisebb elteres (nagybetu, szokoz, uj sor) mas
+  hash-t ad, es az approval nem fog illeszkedni (F1 pontosan ezt zarja ki).
 """
-import argparse, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, hashlib, json, os, re, sqlite3, sys, time, urllib.error, urllib.parse, urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ENV_FILE = os.path.join(ROOT, "store", "seeme-gateway.env")
@@ -89,8 +113,15 @@ ENV_FILE = os.path.join(ROOT, "store", "seeme-gateway.env")
 # numbers.json-omban szerepelt -- egy fris checkout ezt sosem latja.
 INTERNAL_FILE = os.environ.get("SEEME_INTERNAL_FILE") or os.path.join(ROOT, "store", "seeme-internal-numbers.json")
 LOG_FILE = os.path.join(ROOT, "store", "seeme-send.log")
-DASH_TOKEN_FILE = os.environ.get("SEEME_DASH_TOKEN_FILE") or os.path.join(ROOT, "store", ".dashboard-token")
-DASH_BASE = "http://localhost:3420"
+# 779b9660 (fd10c70b WhiteHat F1): approval verification moved from an HTTP round
+# trip to the same direct-SQLite, atomic-consume pattern as
+# scripts/hooks/email-approval-gate.py (EMAILKAPU901 PR2) -- that file already
+# carries the reviewed one-shot-consumption design for this exact table, so this
+# reuses it rather than inventing a second one. SEEME_DB_PATH is override-only,
+# same reason as SEEME_INTERNAL_FILE above: a fresh checkout's store/ never has
+# the real DB.
+DB_PATH = os.environ.get("SEEME_DB_PATH") or os.path.join(ROOT, "store", "claudeclaw.db")
+APPROVAL_WINDOW_S = int(os.environ.get("SEEME_APPROVAL_WINDOW_S", "1800"))
 DEFAULT_BASE = "https://seeme.hu/gateway"
 # Elovigyazatossagbol, NEM mert protekcio -- lasd a fejlecet.
 USER_AGENT = "kaszap-jobs-seeme-gateway/1.0 (+marveen)"
@@ -152,42 +183,83 @@ def load_internal():
     return nums, f"{len(nums)} belso szam betoltve"
 
 
-def check_approval(approval_id, to_number):
-    if not os.path.exists(DASH_TOKEN_FILE):
-        die(f"nincs dashboard-token ({DASH_TOKEN_FILE}), az approval nem ellenorizhető")
-    tok = open(DASH_TOKEN_FILE, encoding="utf-8").read().strip()
-    req = urllib.request.Request(
-        f"{DASH_BASE}/api/approvals/{approval_id}",
-        headers={"Authorization": f"Bearer {tok}"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            body = resp.read().decode("utf-8")
-            code = resp.status
-    except urllib.error.HTTPError as exc:
-        die(f"az approval lekerdezese HTTP {exc.code} -- a kapu ZARVA marad")
-    except Exception as exc:
-        die(f"az approval lekerdezese nem sikerult ({exc}) -- a kapu ZARVA marad")
-    if code != 200:
-        die(f"az approval lekerdezese HTTP {code}")
-    try:
-        rec = json.loads(body)
-    except Exception:
-        die("az approval valasza nem JSON")
-    if isinstance(rec, list):
-        rec = rec[0] if rec else {}
-    status = str(rec.get("status", "")).lower()
+APPROVAL_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+# 779b9660 (fd10c70b WhiteHat F3): a newline/tab in --reference used to land
+# verbatim in the tab-separated log line, forging an extra, indistinguishable
+# row. Restricting the charset makes that structurally impossible.
+REFERENCE_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def approval_content_hash(to_number, text):
+    """The anchor an approval must carry to authorize sending exactly THIS
+    (recipient, text) pair -- see the module docstring for how to request one."""
+    return hashlib.sha256(f"{to_number}\n{text}".encode("utf-8")).hexdigest()
+
+
+def _diagnose_approval(row, anchor):
+    """row is (id, status, content_hash, consumed_at, resolved_at) or None.
+    Dies with a specific reason; never returns on failure."""
+    if not row:
+        die("nincs ilyen approval 'external_message' kategoriaban -- ellenorizd az --approval azonositot")
+    _id, status, content_hash, consumed_at, resolved_at = row
     if status != "approved":
-        die(f"az approval statusza '{status or 'ISMERETLEN'}', nem 'approved' -- NEM kuldok.\n"
+        die(f"az approval statusza '{status}', nem 'approved' -- NEM kuldok.\n"
             f"      (pending eseten VARJ, ne kuldj; a level-1 kategoria sosem lesz autonom)")
-    if str(rec.get("category")) != "external_message":
-        die(f"az approval kategoriaja '{rec.get('category')}', nem 'external_message' -- "
-            f"egy mas celra kapott engedely NEM ervenyes ide")
-    desc = str(rec.get("action_description") or "")
-    if to_number not in desc.replace(" ", "").replace("-", "").replace("+", ""):
-        die(f"az approval leirasaban NEM szerepel a cimzett szama ({to_number}).\n"
-            f"      Egy jovahagyas EGY cimzettre szol; nem hasznalom ujra masra.")
-    return rec
+    if consumed_at is not None:
+        die("ez a johavagyas MAR FELHASZNALT (egyszer-hasznalatos) -- kerj uj johavagyast "
+            "a kuldendo cimzett+szoveg parra")
+    if content_hash != anchor:
+        die("az approval content_hash-ja NEM egyezik a kuldendo cimzett+szoveg sha256-javal -- "
+            "a johavagyas MAS cimzettre vagy MAS szovegre szol (lasd a modul fejleceben, "
+            "hogyan kell a hash-t keszitni)")
+    if resolved_at is None or resolved_at < time.time() - APPROVAL_WINDOW_S:
+        die(f"az approval dontese tul regi (az elfogadhato ablak {APPROVAL_WINDOW_S} masodperc "
+            f"a dontestol) -- kerj uj johavagyast")
+
+
+def _fetch_approval_row(con, approval_id):
+    return con.execute(
+        "SELECT id, status, content_hash, consumed_at, resolved_at FROM approvals"
+        " WHERE id=? AND category='external_message'",
+        (approval_id,),
+    ).fetchone()
+
+
+def verify_approval(approval_id, anchor):
+    """Read-only check, safe to call from --dry-run: dies if the approval would
+    not authorize this exact (recipient, text) pair, otherwise returns quietly.
+    Does NOT consume -- see consume_approval for the real-send path."""
+    if not os.path.exists(DB_PATH):
+        die(f"az approvals adatbazis hianyzik ({DB_PATH}) -- a kapu ZARVA marad")
+    con = sqlite3.connect(DB_PATH, timeout=5)
+    try:
+        con.execute("PRAGMA busy_timeout=5000")
+        row = _fetch_approval_row(con, approval_id)
+    finally:
+        con.close()
+    _diagnose_approval(row, anchor)
+
+
+def consume_approval(approval_id, anchor):
+    """Atomic one-shot consume, same pattern as
+    scripts/hooks/email-approval-gate.py find_and_consume. ONLY call this on the
+    path that actually attempts a send -- never from --dry-run, which must stay
+    side-effect-free."""
+    con = sqlite3.connect(DB_PATH, timeout=5)
+    try:
+        con.execute("PRAGMA busy_timeout=5000")
+        row = _fetch_approval_row(con, approval_id)
+        _diagnose_approval(row, anchor)
+        cur = con.execute(
+            "UPDATE approvals SET consumed_at=CAST(strftime('%s','now') AS INTEGER)"
+            " WHERE id=? AND consumed_at IS NULL",
+            (approval_id,),
+        )
+        con.commit()
+        if cur.rowcount == 0:
+            die("verseny: egy masik folyamat kozben mar felhasznalta ezt a johavagyast")
+    finally:
+        con.close()
 
 
 def log(line):
@@ -196,6 +268,23 @@ def log(line):
             fh.write(line.rstrip() + "\n")
     except Exception as exc:
         print(f"FIGYELEM: a naplo-iras nem sikerult ({exc})", file=sys.stderr)
+
+
+def logsafe(value):
+    """779b9660 F3: a tab-separated log line field must never itself contain a
+    tab or newline -- --reference is now charset-validated so it cannot, but the
+    SeeMe RESPONSE body is untrusted network content and could, so every
+    response-derived field passed to log() goes through this first."""
+    return str(value).replace("\t", " ").replace("\n", " ").replace("\r", " ")
+
+
+def seeme_response_ok(payload):
+    """779b9660 (fd10c70b WhiteHat F2): extracted to a pure, unit-testable
+    function on purpose -- the bug (HTTP 200 {"error":...} with no "code" key
+    counting as success) lived in an inline boolean that no test could reach
+    without a live/fake gateway. Success is EXPLICIT only: code=="0" or
+    result=="OK"; anything else -- including a missing code -- is a failure."""
+    return str(payload.get("code", "")) == "0" or payload.get("result") == "OK"
 
 
 def main():
@@ -230,25 +319,35 @@ def main():
     print(f"osztalyozas : {'BELSO' if is_internal else 'KULSO'}  ({internal_note})")
     print(f"hossz       : {len(text)} karakter")
 
+    anchor = approval_content_hash(to, text)
     if not is_internal:
         if not args.approval:
             die("KULSO cimzett, es nincs --approval.\n"
                 "      Az `external_message` level=1 ES maxLevel=1 (locked), tehat ez SOHA nem\n"
-                "      autonom. Elobb kerj jovahagyast, a cimzett szamaval a leirasban:\n"
-                "        bash scripts/approval-request.sh --category external_message <<'EOF'\n"
-                f"        SMS-t kuldenek a {to} szamra (SeeMe). A szoveg: \"...\". Indok: ...\n"
-                "        EOF")
-        rec = check_approval(args.approval, to)
-        print(f"approval    : {args.approval} -> approved "
-              f"(kert: {rec.get('requested_at')}, dontott: {rec.get('resolved_at')})")
+                "      autonom. Elobb kerj jovahagyast a hash-sel kotve -- lasd a modul fejleceben\n"
+                "      a 'JOVAHAGYAS KERESE' szakaszt.")
+        if not APPROVAL_ID_RE.match(args.approval):
+            die(f"az --approval ({args.approval!r}) nem UUID alaku -- nem probalom lekerdezni")
+        verify_approval(args.approval, anchor)
+        print(f"approval    : {args.approval} -> approved, friss, a cimzett+szoveg parhoz kotve")
     elif args.approval:
         print("approval    : megadva, de a cimzett BELSO -- nem kotelezo, nem is hasznalom kapunak")
+
+    if args.reference is not None and not REFERENCE_RE.match(args.reference):
+        die(f"a --reference ({args.reference!r}) csak [A-Za-z0-9._-] karaktereket tartalmazhat, "
+            f"max 64 hosszan -- egy ujsor/tab hamis naplosort irhatna")
 
     if args.dry_run:
         creds = "megvan" if os.path.exists(ENV_FILE) else f"NINCS ({ENV_FILE})"
         print(f"credentials : {creds}")
-        print("DRY-RUN: a kapu-ellenorzesek lefutottak, NEM kuldtem el.")
+        print("DRY-RUN: a kapu-ellenorzesek lefutottak, NEM kuldtem el, az approval-t NEM hasznaltam fel.")
         return
+
+    if not is_internal:
+        # Csak MOST, a tenyleges kuldesi probalkozas kuszoben fogy el az approval --
+        # a fenti verify_approval meg nem consume-olt, hogy a dry-run side-effect-
+        # mentes maradjon (lasd a fuggveny docstringjet).
+        consume_approval(args.approval, anchor)
 
     env = read_env()
     base = env.get("SEEME_BASE") or DEFAULT_BASE
@@ -273,7 +372,7 @@ def main():
             code_http, body = resp.status, resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")[:400]
-        log(f"{stamp}\tFAIL\tHTTP {exc.code}\t{to}\treference={reference}\t{body}")
+        log(f"{stamp}\tFAIL\tHTTP {exc.code}\t{to}\treference={reference}\t{logsafe(body)}")
         die(f"HTTP {exc.code} -- NEM kuldtem el, es NEM probalom ujra.\n      valasz: {body}")
     except Exception as exc:
         # KETERTELMU AG: a kimeno kereslet UTAZOTT, de a valasz nem erkezett vissza
@@ -287,18 +386,14 @@ def main():
     try:
         payload = json.loads(body)
     except Exception:
-        log(f"{stamp}\tFAIL\tnem-JSON\t{to}\treference={reference}\t{body[:400]}")
+        log(f"{stamp}\tFAIL\tnem-JSON\t{to}\treference={reference}\t{logsafe(body[:400])}")
         die(f"a valasz nem JSON (HTTP {code_http}): {body[:400]}")
 
-    # A SZOLGALTATO HIBAT IS HTTP 200-ZAL AD (a `code` mezoben) -- ugyanaz a szerzodes,
-    # amit a Cirmi CRM sajat, elesben mukodo kliense (src/lib/sms.ts) mar hasznal es
-    # MERT: code "0" vagy ures, VAGY result=="OK" jelenti a sikert.
     code = str(payload.get("code", ""))
-    ok = code == "0" or code == "" or payload.get("result") == "OK"
-    if not ok:
+    if not seeme_response_ok(payload):
         message = str(payload.get("message") or payload.get("error") or json.dumps(payload)[:200])
-        log(f"{stamp}\tFAIL\tcode={code}\t{to}\treference={reference}\t{message}")
-        die(f"a SeeMe elutasitotta (code={code}): {message}")
+        log(f"{stamp}\tFAIL\tcode={logsafe(code)}\t{to}\treference={reference}\t{logsafe(message)}")
+        die(f"a SeeMe elutasitotta (code={code or 'HIANYZIK'}): {message}")
 
     segments = payload.get("split")
     price = payload.get("price")
