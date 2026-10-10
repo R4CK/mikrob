@@ -9,9 +9,14 @@ body) from a send invocation, used by BOTH gates:
     a send is allowed only on an exact match.
 
 The extraction boundary (Marveen, msg 17900) is deterministic-or-deny:
-  - readable literal (--body "...", < /abs/path, heredoc, MCP fields) -> text
+  - readable literal (--body "...", heredoc, MCP fields) -> text
   - anything shell-expanded at run time ($(cat), `...`, $VAR, unresolvable
     path, pipe) -> unreadable_reason, and the CALLER must fail closed.
+  - a file-body form (< /abs/path, or any GATEBINVAK916 @file/-F/--post-file/-T
+    shape) -> ALSO unreadable_reason (TOCTOU924, card 14256aac): this gate
+    anchors an approval on what it reads, and the actual send reads the same
+    path again later, so a file swapped in between would be approved under a
+    different letter's anchor. Fail-closed, not merely unresolved.
 The SAME boundary applies to recipients (msg 17936): a --to that comes from a
 variable is not "approximately right", it is unreadable -> deny. A body+subject
 hash alone would let an approved letter be re-sent to a DIFFERENT recipient.
@@ -20,51 +25,8 @@ collect_bash_body / collect_mcp_body moved here VERBATIM from
 outgoing-copy-gate.py (behavior-neutral; parity proven byte-for-byte against a
 golden captured from the pre-move code -- scripts/__tests__/email-extract-parity.test.py).
 """
-import json
 import os
 import re
-import stat
-
-# FIFOTIMEOUT924 (card 0dab76a3, Cybered C1 HIGH on 087e4418): a plain
-# open()+read() on a FIFO with no writer blocks forever, past this hook's
-# timeout -- and per Claude Code's own docs a timed-out PreToolUse hook does
-# NOT block the tool call, it falls through the normal permission flow. So a
-# `curl -d @fifo` (or `wget --post-file=fifo`, `-T fifo`, `-F body=<fifo`, or
-# the older `< fifo` redirect) hangs this hook past its deadline and the send
-# goes through unaudited and unapproved -- the one thing the email gates exist
-# to prevent. O_NONBLOCK on the open() call makes a FIFO return immediately
-# instead of waiting for a writer; the mode check runs on the ALREADY-OPENED
-# fd's fstat (not a second, racy stat() on the path), so what gets refused is
-# what was actually opened, not what the path looked like a moment earlier.
-# A size cap keeps a legitimate-but-huge regular file from stalling the audit
-# on its own (unrelated to the FIFO bug, cheap to add here).
-_MAX_BODY_FILE_BYTES = 1024 * 1024  # 1 MiB
-
-
-def _safe_read_text(path: str):
-    """(text, unreadable_reason) for `path`, refusing anything that is not a
-    plain regular file once opened, and anything over _MAX_BODY_FILE_BYTES."""
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-    except OSError as exc:
-        return ("", str(exc))  # same wording the old bare open() raised -- golden parity
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            return ("", "nem szabalyos fajl (pl. FIFO vagy socket) -- elutasitva")
-        if st.st_size > _MAX_BODY_FILE_BYTES:
-            return ("", f"tul nagy ({st.st_size} byte > {_MAX_BODY_FILE_BYTES})")
-        with os.fdopen(fd, encoding="utf-8", errors="replace") as f:
-            fd = -1  # fdopen() took ownership of the fd; the finally below must not close it again
-            return (f.read(), None)
-    except OSError as exc:
-        return ("", f"nem olvashato ({exc})")
-    finally:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
 
 
 def collect_bash_body(cmd: str):
@@ -93,27 +55,31 @@ def collect_bash_body(cmd: str):
     # `(?<![<=])`: a `=<` is curl's `-F "name=<file"` (read by the file-body
     # forms below), not a shell redirect; the quoted form would otherwise be
     # taken as a redirect to a path ending in the closing quote.
+    # TOCTOU924 (card 14256aac, Cybersec NO-GO F2 on e8b479d0, MikroB decision): this gate
+    # ANCHORS an approval on the content it reads here, but the actual send (curl/sendmail,
+    # a separate process) reads the same path again, LATER. Measured live: an attacker who
+    # can swap the file between this hook's read and the send's own read gets an approved
+    # anchor for letter A while letter B is what actually goes out (19/60 runs in the live
+    # measurement). A `<` redirect is a file read by definition, so it carries the same
+    # TOCTOU exposure as the GATEBINVAK916 @file forms below -- unreadable, never anchored,
+    # matching the pre-GATEBINVAK916 parent's fail-closed behaviour for this gate. The copy
+    # gate (outgoing-copy-gate.py) keeps reading this shape: it only AUDITS text at call
+    # time, it never binds an approval to it, so it carries no TOCTOU risk.
     redirect = re.search(r"(?<![<=])<(?!<)\s*([^\s|;&<>]+)", cmd)
     if redirect:
-        raw = redirect.group(1)
-        path = os.path.expandvars(os.path.expanduser(raw))
-        if "$" in path:
-            return ("\n".join(parts), f"a torzs egy fel nem oldhato utvonalrol jon ({raw})")
-        text, reason = _safe_read_text(path)
-        if reason:
-            return ("\n".join(parts), f"a torzs-fajl nem olvashato ({path}: {reason})")
-        parts.append(text)
+        return ("\n".join(parts),
+                f"a torzs egy fajlbol jon (< {redirect.group(1)}) -- fajl-torzset ez a kapu "
+                "nem horgonyoz (a kapu es a tenyleges kuldes kozott a fajl kicserelhetne a "
+                "jovahagyott tartalmat), hasznalj inline --body-t")
     # GATEBINVAK916: curl's `@file` payload (-d/--data/--data-binary/--json/
-    # --data-urlencode @path). Before this branch the body of such a call was
-    # never read: on the Resend path that made every @file letter -- clean ones
-    # too -- fail closed with the generic "no inspectable text" reason, and the
-    # real content was never audited. --data-raw is deliberately NOT here: it
-    # sends a literal "@path", it reads no file.
-    # Every curl/wget shape that sends a FILE as the body, each with its own
-    # label: an unreadable one then says WHICH shape failed, instead of the
-    # generic "no inspectable text" that this change exists to retire
-    # (Marveen's #1507 review: `--data-urlencode name@file` LOOKED handled --
-    # the flag was in the @ regex -- but the name@ form never matched).
+    # --data-urlencode @path) and the sibling file-body shapes below. TOCTOU924
+    # (see the `<` redirect comment above): this gate ANCHORS an approval on
+    # what it reads, and a file read between the hook and the actual send can
+    # carry different content than what was approved -- so these forms are
+    # unreadable here too, same as the `<` redirect, never read or anchored.
+    # --data-raw is deliberately NOT in _FILE_BODY_FORMS: it sends a literal
+    # "@path", it reads no file, so it carries no TOCTOU exposure and stays an
+    # ordinary inline literal.
     for label, rx in _FILE_BODY_FORMS:
         for m in rx.finditer(cmd):
             ref = m.group(1)
@@ -122,10 +88,10 @@ def collect_bash_body(cmd: str):
                 if not parts:
                     return ("", f"a torzs stdin-rol jon ({label} {ref}), heredoc nelkul -- a hook nem latja")
                 continue
-            text, reason = _read_body_file(ref, label)
-            if reason:
-                return ("\n".join(parts), reason)
-            parts.append(text)
+            return ("\n".join(parts),
+                    f"a torzs egy fajlbol jon ({label} {ref}) -- fajl-torzset ez a kapu nem "
+                    "horgonyoz (a kapu es a tenyleges kuldes kozott a fajl kicserelhetne a "
+                    "jovahagyott tartalmat), hasznalj inline --body-t")
     if not parts and re.search(r"\|\s*(python3?|node|tsx)?[^|]*send", cmd):
         return ("", "a torzs egy pipe-bol jon, a hook nem latja")
     return ("\n".join(parts), None)
@@ -154,39 +120,6 @@ _FILE_BODY_FORMS = (
     ("curl -T/--upload-file", re.compile(
         r"(?:^|\s)(?:-T|--upload-file)(?:=|\s+)" + _REF)),
 )
-
-
-def _read_body_file(ref: str, label: str):
-    """(text, unreadable_reason) for a file named as a request body."""
-    shown = f"@{ref}" if label == "@" else f"{label} {ref}"  # as the user typed it
-    path = os.path.expandvars(os.path.expanduser(ref))
-    if "$" in path:
-        return ("", f"a torzs egy fel nem oldhato utvonalrol jon ({shown})")
-    data, reason = _safe_read_text(path)
-    if reason:
-        return ("", f"a torzs-fajl ({shown}) nem olvashato ({path}: {reason})")
-    return _payload_text(data, ref)
-
-
-# The prose fields of a JSON payload. A JSON body is audited through these,
-# DECODED: the raw file would show "\u00e1" for "a" with an accent, and the
-# accent audit would read escape sequences instead of the letter.
-_PAYLOAD_TEXT_FIELDS = ("subject", "text", "html", "body", "content", "message")
-
-
-def _payload_text(data: str, raw: str):
-    """(text, unreadable_reason) for a payload read from an @file."""
-    try:
-        obj = json.loads(data)
-    except ValueError:
-        return (data, None)  # not JSON: the file IS the text
-    if not isinstance(obj, dict):
-        return ("", f"a torzs-fajl (@{raw}) JSON, de nem objektum -- a hook nem tudja, mi benne a szoveg")
-    got = [str(obj[f]) for f in _PAYLOAD_TEXT_FIELDS if obj.get(f)]
-    if not got:
-        return ("", f"a torzs-fajl (@{raw}) JSON-jaban nincs ismert szoveg-mezo "
-                    f"({', '.join(_PAYLOAD_TEXT_FIELDS)})")
-    return ("\n".join(got), None)
 
 
 def collect_mcp_body(tool_input: dict):

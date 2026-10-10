@@ -243,6 +243,22 @@ def delta_keys(res):
             + ["orphan-pyc:" + r for r in res["orphan_pyc"]])
 
 
+def reappeared_paths(res, sanctioned):
+    """Paths a sanctioned "missing:<path>" entry claims are excluded, but that ARE present in
+    `res` (not in res["missing"]) -- card fd0b2180.
+
+    A sanctioned "missing:<path>" entry records a DELIBERATE exclusion (e.g. Peti removing a
+    paid feature's files after vendoring). If <path> is no longer in res["missing"] -- present
+    live again, whether byte-identical to upstream or not -- that is the exclusion being
+    silently undone, typically by a re-vendor that copied upstream's current tree without
+    consulting this baseline. Nothing else in delta_keys(res) catches this: a file that matches
+    upstream exactly is invisible to missing/extra/changed alike, so this checks the BASELINE's
+    sanctioned "missing:" entries directly, not today's delta set. Never sanctionable, same
+    reasoning as orphan-pyc in run()."""
+    return [k[len("missing:"):] for k in sanctioned
+            if k.startswith("missing:") and k[len("missing:"):] not in res["missing"]]
+
+
 def load_baseline(path):
     if not os.path.isfile(path):
         return {}
@@ -296,6 +312,7 @@ def run(args):
         # An orphan .pyc is never sanctionable: it is the one case the __pycache__
         # exclusion would otherwise swallow, so a baseline entry must not license it.
         new += [k for k in keys if k.startswith("orphan-pyc:") and k in sanctioned]
+        new += ["reappeared:" + r for r in reappeared_paths(res, sanctioned)]
         bad = res["unverifiable"] or new
         if bad:
             failures += 1
@@ -477,12 +494,29 @@ def selftest():
               True,
               os.path.join(fake_home, "marveen", "agents", "fron-ted", ".claude", "skills") in roots
               and os.path.join(fake_home, "marveen", "seed-fleet-agents", "fron-ted", ".claude", "skills") in roots)
+
+        # 10. REAPPEARED924 (card fd0b2180): a sanctioned "missing:<path>" entry is a deliberate
+        #     exclusion decision. If the path is back and matches upstream byte-for-byte, it is
+        #     INVISIBLE to missing/extra/changed (clean's own check #1 above proves this case is
+        #     otherwise silent) -- only a direct check against the baseline's own "missing:"
+        #     claims catches it.
+        clean_res = inspect(clean, parse_vendored_md(os.path.join(clean, "VENDORED.md")))
+        check("a sanctioned 'missing:<path>' that is actually present (matching upstream) is flagged reappeared",
+              ["SKILL.md"], reappeared_paths(clean_res, {"missing:SKILL.md"}))
+
+        # 11. Negative control: a path that really IS missing must NOT be flagged -- otherwise
+        #     every ordinary sanctioned exclusion would alarm on every run.
+        missing_live = make_live("missing-live")
+        os.remove(os.path.join(missing_live, "SKILL.md"))
+        missing_res = inspect(missing_live, parse_vendored_md(os.path.join(missing_live, "VENDORED.md")))
+        check("a path that is genuinely still missing is NOT flagged reappeared",
+              [], reappeared_paths(missing_res, {"missing:SKILL.md"}))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     for f in fails:
         print("FAIL: %s" % f)
-    print("selftest: %d checks, %d failed" % (10, len(fails)))
+    print("selftest: %d checks, %d failed" % (12, len(fails)))
     return 1 if fails else 0
 
 
