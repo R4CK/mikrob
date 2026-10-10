@@ -343,7 +343,18 @@ def rebuild_in_background(lock_path: Path, idx: Path, data_dir: Path) -> str:
     child re-acquires the SAME lock file, independently, and holds it for the build's full
     duration; a concurrent refresh_only() then finds the lock busy and skips cleanly (its existing
     120s-wait-then-skip path), rather than racing the build.
+
+    code-review-graph 2.3.9 compat (card 68bdd57b): starting with 2.3.9, `build` ALSO runs
+    `_assert_graph_matches_root` before writing -- previously only `update` did. The existing
+    graph.db at `data_dir` is still anchored at the OLD root (whatever `root` was in refresh_only,
+    not `idx`), so a plain `build --repo idx` now refuses with "was built for a different
+    repository root" instead of overwriting it. The old db is being fully replaced here anyway
+    (that is this function's entire purpose), so remove it first -- safe because the caller
+    (refresh_only()) still holds `lock_path` exclusively at this point, before this function's own
+    `flock` subprocess re-acquires it.
     """
+    for suffix in ("", "-wal", "-shm"):
+        (data_dir / f"graph.db{suffix}").unlink(missing_ok=True)
     exe = CRG_PYTHON if os.path.exists(CRG_PYTHON) else sys.executable
     log_path = Path(os.environ.get("TMPDIR", "/tmp")) / f"blast-radius-rebuild-{os.getpid()}.log"
     with open(log_path, "w") as log:
