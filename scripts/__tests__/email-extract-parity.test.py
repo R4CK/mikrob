@@ -92,8 +92,12 @@ check(f"golden parity: {len(golden['bash'])} bash + {len(golden['mcp'])} mcp cas
 CANARIES = [
     ("substitution-boundary regex broken -> $(cat) branch must fail parity",
      r"\$\(|`|\$\{?\w", r"\$NEVERMATCH\(", "subst-dollar-paren"),
+    # FIFOTIMEOUT924 (card 0dab76a3): the redirect branch now reads through
+    # _safe_read_text (FIFO/size-guarded open) instead of a bare open()+read();
+    # the canary mutates its OWN output instead, same intent (break only the
+    # `< /abs/path` branch's text, not the @file forms' _read_body_file calls).
     ("redirect file-read mutated (strip) -> < /abs/path branch must fail parity",
-     "parts.append(fh.read())", "parts.append(fh.read().strip())", "redirect-abs-file"),
+     "        parts.append(text)\n    # GATEBINVAK916:", "        parts.append(text.strip())\n    # GATEBINVAK916:", "redirect-abs-file"),
     ("MCP field set loses 'subject' -> mcp branch must fail parity",
      '"body", "text", "html", "htmlBody", "message", "subject", "content"',
      '"body", "text", "html", "htmlBody", "message", "content"', "mcp-body-subject"),

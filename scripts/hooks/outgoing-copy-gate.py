@@ -32,6 +32,7 @@ import html
 import json
 import os
 import re
+import stat
 import sys
 import threading
 import time
@@ -1025,6 +1026,46 @@ def accentless_evidence(words):
     return {w for w in words if w in ACCENTLESS and w not in AMBIGUOUS_TRIGGER}
 
 
+# FIFOTIMEOUT924 (card 0dab76a3, Cybered C1 HIGH on 087e4418): a plain
+# open()+read() on a FIFO with no writer blocks forever, past this hook's
+# timeout -- and a timed-out PreToolUse hook does not block the tool call, it
+# falls through the normal permission flow. So `sendmail ... < fifo` hangs
+# this gate past its deadline and the send goes through unaudited. O_NONBLOCK
+# on the open() call makes a FIFO return immediately instead of waiting for a
+# writer; the mode check runs on the ALREADY-OPENED fd's fstat (not a second,
+# racy stat() on the path), so what gets refused is what was actually opened.
+# Mirrors email_extract.py's _safe_read_text -- this file keeps its own copy
+# of collect_bash_body (see the module docstring), so it keeps its own copy
+# of this too.
+_MAX_BODY_FILE_BYTES = 1024 * 1024  # 1 MiB
+
+
+def _safe_read_text(path: str):
+    """(text, unreadable_reason) for `path`, refusing anything that is not a
+    plain regular file once opened, and anything over _MAX_BODY_FILE_BYTES."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError as exc:
+        return ("", str(exc))  # same wording the old bare open() raised -- golden parity
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return ("", "nem szabalyos fajl (pl. FIFO vagy socket) -- elutasitva")
+        if st.st_size > _MAX_BODY_FILE_BYTES:
+            return ("", f"tul nagy ({st.st_size} byte > {_MAX_BODY_FILE_BYTES})")
+        with os.fdopen(fd, encoding="utf-8", errors="replace") as f:
+            fd = -1  # fdopen() took ownership of the fd; the finally below must not close it again
+            return (f.read(), None)
+    except OSError as exc:
+        return ("", f"nem olvashato ({exc})")
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
 def collect_bash_body(cmd: str):
     """Return (text, unreadable_reason). text is '' when nothing was recovered."""
     parts = []
@@ -1054,11 +1095,10 @@ def collect_bash_body(cmd: str):
         path = os.path.expandvars(os.path.expanduser(raw))
         if "$" in path:
             return ("\n".join(parts), f"a torzs egy fel nem oldhato utvonalrol jon ({raw})")
-        try:
-            with open(path, encoding="utf-8", errors="replace") as fh:
-                parts.append(fh.read())
-        except OSError as exc:
-            return ("\n".join(parts), f"a torzs-fajl nem olvashato ({path}: {exc})")
+        text, reason = _safe_read_text(path)
+        if reason:
+            return ("\n".join(parts), f"a torzs-fajl nem olvashato ({path}: {reason})")
+        parts.append(text)
     if not parts and re.search(r"\|\s*(python3?|node|tsx)?[^|]*send", cmd):
         return ("", "a torzs egy pipe-bol jon, a hook nem latja")
     return ("\n".join(parts), None)
