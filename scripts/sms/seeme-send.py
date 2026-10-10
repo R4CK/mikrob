@@ -94,10 +94,14 @@ JoVAHAGYAS KERESE (kulso cimzettnel, a hash-sel):
   printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -H @- -s \
     -X POST http://localhost:3420/api/approvals -H 'Content-Type: application/json' \
     -d "{\"agent_id\":\"<a te neved>\",\"category\":\"external_message\",\"content_hash\":\"$HASH\",
-         \"action_description\":\"SMS a <cimzett> szamra (SeeMe). Szoveg: <...>. Indok: <...>\"}"
+         \"action_description\":\"SMS a 36301234567 szamra (SeeMe). Szoveg: <a pontos szoveg szo szerint>. Indok: <...>\"}"
   A kuldeskor megadott --to es a STDIN-rol jovo szoveg MUSZAJ bajtra pontosan egyezzen
   azzal, amire a hash keszult -- a legkisebb elteres (nagybetu, szokoz, uj sor) mas
   hash-t ad, es az approval nem fog illeszkedni (F1 pontosan ezt zarja ki).
+  A `action_description`-nek SZO SZERINT tartalmazni KELL a normalizalt (36...) cimzettet
+  ES a pontos kuldendo szoveget (CYBERED C1, msg 14141): a hash onmagaban nem lathato a
+  johavagyonak, csak ez a szoveg -- ha a leiras nem egyezik azzal, ami tenylegesen elmegy,
+  a kuldes elutasitva, FUGGETLENUL attol, hogy a hash matematikailag egyezik-e.
 """
 import argparse, hashlib, json, os, re, sqlite3, sys, time, urllib.error, urllib.parse, urllib.request
 
@@ -183,11 +187,14 @@ def load_internal():
     return nums, f"{len(nums)} belso szam betoltve"
 
 
-APPROVAL_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
+APPROVAL_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,64}\Z")
 # 779b9660 (fd10c70b WhiteHat F3): a newline/tab in --reference used to land
 # verbatim in the tab-separated log line, forging an extra, indistinguishable
 # row. Restricting the charset makes that structurally impossible.
-REFERENCE_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+# \Z, not $ (CYBERED C2, msg 14141): Python's $ also matches just before a
+# trailing \n, so "abc\n" satisfied the old pattern and split the log line in
+# two on write. \Z matches only the absolute end of the string.
+REFERENCE_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}\Z")
 
 
 def approval_content_hash(to_number, text):
@@ -196,12 +203,28 @@ def approval_content_hash(to_number, text):
     return hashlib.sha256(f"{to_number}\n{text}".encode("utf-8")).hexdigest()
 
 
-def _diagnose_approval(row, anchor):
-    """row is (id, status, content_hash, consumed_at, resolved_at) or None.
-    Dies with a specific reason; never returns on failure."""
+def _description_binds(description, to_number, text):
+    """CYBERED C1 (msg 14141, komment 14141): the hash alone binds nothing a
+    HUMAN ever sees -- the REQUESTING agent computes it, and the owner's
+    Telegram approval text (buildOwnerApprovalText) shows only
+    action_description. A compromised/prompt-injected requester could set
+    content_hash for (evil_number, evil_text) while writing an innocuous
+    description, and the owner would approve something they never read.
+    Requiring the description to contain the normalized recipient AND the
+    exact outgoing text, verbatim, restores that binding: whatever the owner
+    approved is provably what they saw."""
+    if description is None:
+        return False
+    return to_number in description and text in description
+
+
+def _diagnose_approval(row, anchor, to_number, text):
+    """row is (id, status, content_hash, consumed_at, resolved_at,
+    action_description) or None. Dies with a specific reason; never returns on
+    failure."""
     if not row:
         die("nincs ilyen approval 'external_message' kategoriaban -- ellenorizd az --approval azonositot")
-    _id, status, content_hash, consumed_at, resolved_at = row
+    _id, status, content_hash, consumed_at, resolved_at, action_description = row
     if status != "approved":
         die(f"az approval statusza '{status}', nem 'approved' -- NEM kuldok.\n"
             f"      (pending eseten VARJ, ne kuldj; a level-1 kategoria sosem lesz autonom)")
@@ -215,17 +238,22 @@ def _diagnose_approval(row, anchor):
     if resolved_at is None or resolved_at < time.time() - APPROVAL_WINDOW_S:
         die(f"az approval dontese tul regi (az elfogadhato ablak {APPROVAL_WINDOW_S} masodperc "
             f"a dontestol) -- kerj uj johavagyast")
+    if not _description_binds(action_description, to_number, text):
+        die("az approval leirasa NEM tartalmazza szo szerint a cimzettet ES a pontos kuldendo "
+            "szoveget -- a johavagyo csak azt lathatta jovahagyottnak, amit a leirasban "
+            "tenylegesen elolvasott (CYBERED C1): ird bele a leirasba a normalizalt cimzettet "
+            "es a szo szerinti szoveget, aztan kerj uj johavagyast")
 
 
 def _fetch_approval_row(con, approval_id):
     return con.execute(
-        "SELECT id, status, content_hash, consumed_at, resolved_at FROM approvals"
+        "SELECT id, status, content_hash, consumed_at, resolved_at, action_description FROM approvals"
         " WHERE id=? AND category='external_message'",
         (approval_id,),
     ).fetchone()
 
 
-def verify_approval(approval_id, anchor):
+def verify_approval(approval_id, anchor, to_number, text):
     """Read-only check, safe to call from --dry-run: dies if the approval would
     not authorize this exact (recipient, text) pair, otherwise returns quietly.
     Does NOT consume -- see consume_approval for the real-send path."""
@@ -237,10 +265,10 @@ def verify_approval(approval_id, anchor):
         row = _fetch_approval_row(con, approval_id)
     finally:
         con.close()
-    _diagnose_approval(row, anchor)
+    _diagnose_approval(row, anchor, to_number, text)
 
 
-def consume_approval(approval_id, anchor):
+def consume_approval(approval_id, anchor, to_number, text):
     """Atomic one-shot consume, same pattern as
     scripts/hooks/email-approval-gate.py find_and_consume. ONLY call this on the
     path that actually attempts a send -- never from --dry-run, which must stay
@@ -249,7 +277,7 @@ def consume_approval(approval_id, anchor):
     try:
         con.execute("PRAGMA busy_timeout=5000")
         row = _fetch_approval_row(con, approval_id)
-        _diagnose_approval(row, anchor)
+        _diagnose_approval(row, anchor, to_number, text)
         cur = con.execute(
             "UPDATE approvals SET consumed_at=CAST(strftime('%s','now') AS INTEGER)"
             " WHERE id=? AND consumed_at IS NULL",
@@ -287,6 +315,15 @@ def seeme_response_ok(payload):
     return str(payload.get("code", "")) == "0" or payload.get("result") == "OK"
 
 
+def is_usable_response_shape(payload):
+    """CYBERED C3 (msg 14141): a syntactically valid JSON body that is not a
+    dict (null, [], "ok", 1) used to reach payload.get() and raise
+    AttributeError AFTER the send attempt, leaving no log line at all for an
+    SMS that may already have gone out. Extracted to a pure, unit-testable
+    function on purpose, same reason as seeme_response_ok (F2)."""
+    return isinstance(payload, dict)
+
+
 def main():
     ap = argparse.ArgumentParser(add_help=True)
     ap.add_argument("--to", required=True, help="cimzett, magyar mobil, barmilyen szokasos alakban")
@@ -319,6 +356,13 @@ def main():
     print(f"osztalyozas : {'BELSO' if is_internal else 'KULSO'}  ({internal_note})")
     print(f"hossz       : {len(text)} karakter")
 
+    # CYBERED C2 (msg 14141): validated unconditionally, BEFORE the is_internal
+    # branch -- previously this only ran on the external path, yet the raw
+    # value still reached the log line's `approval=` field on the internal
+    # path too, so a newline/tab there forged an indistinguishable extra row.
+    if args.approval is not None and not APPROVAL_ID_RE.match(args.approval):
+        die(f"az --approval ({args.approval!r}) nem UUID alaku -- nem probalom lekerdezni")
+
     anchor = approval_content_hash(to, text)
     if not is_internal:
         if not args.approval:
@@ -326,9 +370,7 @@ def main():
                 "      Az `external_message` level=1 ES maxLevel=1 (locked), tehat ez SOHA nem\n"
                 "      autonom. Elobb kerj jovahagyast a hash-sel kotve -- lasd a modul fejleceben\n"
                 "      a 'JOVAHAGYAS KERESE' szakaszt.")
-        if not APPROVAL_ID_RE.match(args.approval):
-            die(f"az --approval ({args.approval!r}) nem UUID alaku -- nem probalom lekerdezni")
-        verify_approval(args.approval, anchor)
+        verify_approval(args.approval, anchor, to, text)
         print(f"approval    : {args.approval} -> approved, friss, a cimzett+szoveg parhoz kotve")
     elif args.approval:
         print("approval    : megadva, de a cimzett BELSO -- nem kotelezo, nem is hasznalom kapunak")
@@ -347,7 +389,7 @@ def main():
         # Csak MOST, a tenyleges kuldesi probalkozas kuszoben fogy el az approval --
         # a fenti verify_approval meg nem consume-olt, hogy a dry-run side-effect-
         # mentes maradjon (lasd a fuggveny docstringjet).
-        consume_approval(args.approval, anchor)
+        consume_approval(args.approval, anchor, to, text)
 
     env = read_env()
     base = env.get("SEEME_BASE") or DEFAULT_BASE
@@ -388,6 +430,17 @@ def main():
     except Exception:
         log(f"{stamp}\tFAIL\tnem-JSON\t{to}\treference={reference}\t{logsafe(body[:400])}")
         die(f"a valasz nem JSON (HTTP {code_http}): {body[:400]}")
+
+    # CYBERED C3 (msg 14141): a non-dict JSON response (null/[]/"ok"/1) used to
+    # hit payload.get() and raise AttributeError AFTER the send attempt -- the
+    # SMS could already be gone, the approval already consumed, and this
+    # crash left NO log line at all, same ambiguous-outcome class as the
+    # network-error branch above, but silent.
+    if not is_usable_response_shape(payload):
+        log(f"{stamp}\tKETERTELMU\tvalasz-nem-objektum\t{to}\treference={reference}\t{logsafe(json.dumps(payload)[:400])}")
+        die(f"a valasz JSON, de nem objektum (HTTP {code_http}): {json.dumps(payload)[:400]}\n"
+            f"      KETERTELMU: nem tudom eldonteni, sikeres volt-e. NEM kuldok ujra "
+            f"(duplikatum-veszely). Ellenorizd a SeeMe portalon a `reference={reference}` alapjan.")
 
     code = str(payload.get("code", ""))
     if not seeme_response_ok(payload):
