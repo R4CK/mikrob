@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, symlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -40,6 +40,19 @@ function run(opts: {
   mkdirSync(bin)
   mkdirSync(join(dir, 'store'))
 
+  // This box has a REAL /usr/bin/systemd-run (WSL), so a plain `PATH="$bin:/usr/bin:/bin"`
+  // would silently defeat the 'absent' case -- `command -v systemd-run` would find the
+  // real binary and exercise the if-branch's (possibly failing) real bus connection
+  // instead of the elif setsid-only branch the test name promises. Build a curated PATH
+  // with only the few external commands the block actually needs, symlinked from the
+  // real ones, so 'absent' means absent regardless of what else is installed.
+  const safeBin = join(dir, 'safe-bin')
+  mkdirSync(safeBin)
+  for (const cmd of ['bash', 'touch', 'rm']) {
+    symlinkSync(`/usr/bin/${cmd}`, join(safeBin, cmd))
+  }
+  const pathEntries = opts.systemdRun === 'absent' ? [bin, safeBin] : [bin, safeBin, '/usr/bin', '/bin']
+
   writeFileSync(join(bin, 'setsid'), '#!/bin/bash\nexec "$@"\n', { mode: 0o755 })
   chmodSync(join(bin, 'setsid'), 0o755)
 
@@ -77,8 +90,8 @@ exit ${opts.finalizeExitCode ?? 0}
   chmodSync(finalizeScript, 0o755)
 
   const script = `
-set -u
-PATH="${bin}:/usr/bin:/bin"
+set -eu
+PATH="${pathEntries.join(':')}"
 INSTALL_DIR="${dir}"
 RESULT_FILE="${resultFile}"
 BUILT_COMMIT_FILE="${dir}/store/built-commit"

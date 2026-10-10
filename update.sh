@@ -1748,10 +1748,18 @@ if command -v systemd-run >/dev/null 2>&1 && [ -d "$XDG_RUN" ]; then
   # setsid is NOT hoisted out of this branch on purpose: macOS has no setsid at
   # all (measured), and this branch only runs where systemd-run exists.
   (
+    # cf8d047a CYBERED NO-GO (C1, HIGH): update.sh runs under `set -e` (line 4),
+    # which this subshell inherits. A bare `systemd-run ...; if [ $? -ne 0 ]`
+    # let errexit kill the subshell on a non-zero systemd-run exit BEFORE the
+    # `if` ever ran -- so when systemd-run truly never launched anything (e.g.
+    # no user bus), the fallback never fired either: no finalizer run at all,
+    # no restart, no result file, no notification. Capturing the status via
+    # `|| _rc=$?` keeps the command's own exit out of errexit's reach.
+    _rc=0
     XDG_RUNTIME_DIR="$XDG_RUN" setsid systemd-run --user --scope --collect --quiet \
       bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" \
-      < /dev/null >> "$FINALIZE_LOG" 2>&1
-    if [ $? -ne 0 ] && [ ! -f "$RESULT_FILE.started" ]; then
+      < /dev/null >> "$FINALIZE_LOG" 2>&1 || _rc=$?
+    if [ "$_rc" -ne 0 ] && [ ! -f "$RESULT_FILE.started" ]; then
       setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1
     fi
   ) &
