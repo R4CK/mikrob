@@ -151,7 +151,8 @@ TEXT="A pontos szoveg, amire a johavagyas szol."
 ANCHOR="$(anchor_for "$TO" "$TEXT")"
 
 APPROVED_FRESH="11111111-1111-1111-1111-111111111111"
-insert_approval "$APPROVED_FRESH" "approved" "$ANCHOR" "NULL" "-60" "SMS a $TO szamra. Szoveg: $TEXT"
+insert_approval "$APPROVED_FRESH" "approved" "$ANCHOR" "NULL" "-60" "Cimzett: $TO
+Szoveg: $TEXT"
 out="$(run "$TO" "$APPROVED_FRESH" "$TEXT")"; rc=$?
 [ $rc -eq 0 ] && echo "$out" | grep -q "approved, friss" \
   && pass "approved + friss + egyezo hash -> dry-run atmegy" \
@@ -197,7 +198,8 @@ out="$(run "$TO" "$ALREADY_USED" "$TEXT")"; rc=$?
 
 echo "--- F1: a valodi (nem dry-run) kuldesi probalkozas tenyleg elfogyasztja ---"
 REAL_USE="77777777-7777-7777-7777-777777777777"
-insert_approval "$REAL_USE" "approved" "$(anchor_for "$TO" "$TEXT")" "NULL" "-60" "SMS a $TO szamra. Szoveg: $TEXT"
+insert_approval "$REAL_USE" "approved" "$(anchor_for "$TO" "$TEXT")" "NULL" "-60" "Cimzett: $TO
+Szoveg: $TEXT"
 out1="$(run_real "$TO" "$REAL_USE" "$TEXT")"; rc1=$?
 [ $rc1 -eq 1 ] && echo "$out1" | grep -qi "credentials" \
   && pass "valodi utra terve: a hitelesito-adat hianyan all el (varhato, nincs fixture .env)" \
@@ -228,7 +230,8 @@ out="$(run "$TO" "$MISMATCHED_DESC" "$TEXT")"; rc=$?
   || fail "leiras-kotes elutasitast vartam, kaptam (rc=$rc): $out"
 
 BOUND_DESC="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-insert_approval "$BOUND_DESC" "approved" "$(anchor_for "$TO" "$TEXT")" "NULL" "-60" "SMS a $TO szamra (SeeMe). Szoveg: $TEXT"
+insert_approval "$BOUND_DESC" "approved" "$(anchor_for "$TO" "$TEXT")" "NULL" "-60" "Cimzett: $TO
+Szoveg: $TEXT"
 out="$(run "$TO" "$BOUND_DESC" "$TEXT")"; rc=$?
 [ $rc -eq 0 ] && echo "$out" | grep -q "approved, friss" \
   && pass "hash egyezik ES a leiras szo szerint tartalmazza a cimzettet+szoveget -> dry-run atmegy" \
@@ -298,6 +301,92 @@ expected="$(printf 'False\nFalse\nFalse\nFalse\nTrue')"
   && pass "is_usable_response_shape: null/[]/\"ok\"/1 elutasitva, dict elfogadva" \
   || fail "varva:\n$expected\nkaptam:\n$out"
 
+echo "--- L1 (34573931, RedHat delta-GO 14242): sor-egyenloseg, nem reszsztring-tartalmazas ---"
+
+out="$(python3 -c "
+import sys, os
+sys.path.insert(0, os.path.dirname('$SCRIPT'))
+import importlib.util
+spec = importlib.util.spec_from_file_location('seeme_send', '$SCRIPT')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+to, text = '36301234567', 'kattintson a http://x.example/l linkre'
+# A MERT HIBA (RedHat): a reszsztring-tartalmazas a kovetkezoket mind
+# atengedte -- a sor-egyenloseg mindharmat elutasitja.
+print(m._description_binds('Cimzett: ' + to + '\n' + 'Szoveg: Ne kattintson a http://x.example/l linkre, csalas', to, text))
+print(m._description_binds('Indok: hogy a \'Szoveg: ' + text + '\' uzenet NE menjen ki', to, text))
+print(m._description_binds('Cimzett: 1' + to + '\nSzoveg: ' + text, to, text))
+# A becsuletes eset tovabbra is atmegy.
+print(m._description_binds('Cimzett: ' + to + '\nSzoveg: ' + text, to, text))
+")"
+expected="$(printf 'False\nFalse\nFalse\nTrue')"
+[ "$out" = "$expected" ] \
+  && pass "_description_binds: sor-egyenloseg zarja a trimmelt tagadast, az Indok-peldat es a hosszabb szamsorba agyazott cimzettet; a becsuletes eset atmegy" \
+  || fail "varva:\n$expected\nkaptam:\n$out"
+
+echo "--- L2 (34573931, RedHat delta-GO 14242): a ket fel (cimzett/szoveg) KULON pinnelve ---"
+
+out="$(python3 -c "
+import sys, os
+sys.path.insert(0, os.path.dirname('$SCRIPT'))
+import importlib.util
+spec = importlib.util.spec_from_file_location('seeme_send', '$SCRIPT')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+to, text = '36301234567', 'A pontos szoveg.'
+desc = 'Cimzett: ' + to + '\nSzoveg: ' + text
+# Csak a cimzett-sor van jo: a szoveg-sor hianyzik/mas -> el kell utasitani.
+print(m._description_binds('Cimzett: ' + to + '\nSzoveg: MAS szoveg.', to, text))
+# Csak a szoveg-sor van jo: a cimzett-sor hianyzik/mas -> el kell utasitani.
+print(m._description_binds('Cimzett: 36309999999\nSzoveg: ' + text, to, text))
+# Mindketto jo -> atmegy.
+print(m._description_binds(desc, to, text))
+")"
+expected="$(printf 'False\nFalse\nTrue')"
+[ "$out" = "$expected" ] \
+  && pass "_description_binds: a cimzett-sor ES a szoveg-sor is KULON-KULON kotelezo (egyik hianya/elteresese eleg az elutasitashoz)" \
+  || fail "varva:\n$expected\nkaptam:\n$out"
+
+out="$(python3 -c "
+import sys, os
+sys.path.insert(0, os.path.dirname('$SCRIPT'))
+import importlib.util
+spec = importlib.util.spec_from_file_location('seeme_send', '$SCRIPT')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+# A MERT HIBA (RedHat): a C3 kaput (is_usable_response_shape) egy teszt mar
+# pinnelte, de a tenyleges AUDIT-SORT (amit log() tenylegesen kiir) semmi --
+# egy mutans, ami kitorli a log()-hivast, zolden maradt volna.
+line = m.ketertelmu_nonobject_log_line('2026-10-10T10:00:00+0200', '36301234567', 'ref-1', [])
+print('KETERTELMU' in line and 'valasz-nem-objektum' in line and '36301234567' in line and 'ref-1' in line)
+")"
+[ "$out" = "True" ] \
+  && pass "ketertelmu_nonobject_log_line: a C3 audit-sor tenylegesen tartalmazza a vart mezoket (nem csak a kapu, a naplo-tartalom is pinnelve)" \
+  || fail "varva: True, kaptam: $out"
+
+echo "--- L3 (34573931, RedHat delta-GO 14242): logsafe a split/price mezore a SIKERES agon ---"
+
+out="$(python3 -c "
+import sys, os
+sys.path.insert(0, os.path.dirname('$SCRIPT'))
+import importlib.util
+spec = importlib.util.spec_from_file_location('seeme_send', '$SCRIPT')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+# A MERT HIBA (RedHat): egy rosszindulatu/MITM gateway valaszanak split/price
+# mezojebe tett tab/ujsor egy TELJES, hamis OK-sort irt a naplo-fajlba, mert
+# ezek a mezok logsafe nelkul kerultek a sorba. logsafe utan a sor EGY fizikai
+# sor marad, a tab/ujsor szokozre cserelve.
+payload = {'split': '1\n2026-10-10T09:00:00+0200\tOK\t36300000001\treference=forged\tapproval=peti', 'price': 'x\ty'}
+line = m.ok_send_log_line('2026-10-10T10:00:00+0200', '36301234567', 'ref-1', payload, 'approval-id-1', 'szoveg')
+print(line.count(chr(10)))
+print('\t' not in line.split('ár=')[1].split('\tapproval=')[0])
+")"
+expected="$(printf '0\nTrue')"
+[ "$out" = "$expected" ] \
+  && pass "ok_send_log_line: a gateway split/price mezoje logsafe-elt -- nincs beagyazott ujsor/tab, nem keletkezik hamis sor" \
+  || fail "varva:\n$expected\nkaptam:\n$out"
+
 echo "--- A2 (34573931, RedHat): SEEME_INTERNAL_FILE/SEEME_DB_PATH csak SEEME_TEST_MODE=1 mellett szamit ---"
 
 # A MERT HIBA: egy tamado-befolyasolt env (pl. prompt-injektalt agent) a
@@ -326,7 +415,7 @@ con.execute('''CREATE TABLE approvals (
 )''')
 con.execute('INSERT INTO approvals VALUES (?, ?, ?, ?, ?, ?, ?)',
             ('99999999-0000-0000-0000-000000000000', 'external_message', 'approved',
-             '$(anchor_for "$TO" "$TEXT")', None, int(time.time()) - 60, 'SMS a $TO szamra. Szoveg: $TEXT'))
+             '$(anchor_for "$TO" "$TEXT")', None, int(time.time()) - 60, 'Cimzett: $TO\nSzoveg: $TEXT'))
 con.commit()
 con.close()
 " "$FAKE_DB"
