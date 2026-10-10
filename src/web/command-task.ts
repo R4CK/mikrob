@@ -1,7 +1,8 @@
 import { execFileAsync } from "./exec-async.js"
 import { join } from "node:path"
 import { readFileSync } from "node:fs"
-import { STORE_DIR, TELEGRAM_BOT_TOKEN } from "../config.js"
+import { PROJECT_ROOT, STORE_DIR, TELEGRAM_BOT_TOKEN } from "../config.js"
+import { shQuote } from "./ssh-tmux.js"
 import { resolveOwnerChatId } from "../owner-chat.js"
 import { atomicWriteFileSync } from "./atomic-write.js"
 import { logger } from "../logger.js"
@@ -86,6 +87,16 @@ async function runCommand(cmd: string, timeoutMs: number): Promise<{ ok: boolean
   return { ok: false, detail: `exit ${r.status}${tail ? ": " + tail : ""}` }
 }
 
+// A shipped command task cannot hard-code the install path, and the node
+// seeder copies task-config.json without template rendering. So the command
+// may name the install root as {{PROJECT_ROOT}} / {{INSTALL_DIR}} (the same
+// placeholders preCheck accepts), resolved here at run time. The root is
+// inserted shell-quoted, so a template writes it bare:
+//   python3 {{PROJECT_ROOT}}/scripts/x.py  ->  python3 '/path/to/root'/scripts/x.py
+export function resolveCommandPlaceholders(cmd: string, root: string = PROJECT_ROOT): string {
+  return cmd.replace(/\{\{(PROJECT_ROOT|INSTALL_DIR)\}\}/g, () => shQuote(root))
+}
+
 export async function runCommandTask(task: ScheduledTask, now: number): Promise<void> {
   if (!task.command) {
     logger.warn({ task: task.name }, "command task has no command, skipping")
@@ -94,7 +105,7 @@ export async function runCommandTask(task: ScheduledTask, now: number): Promise<
   const timeoutMs = task.timeoutMs && task.timeoutMs > 0 ? task.timeoutMs : 10_000
   const failThreshold = task.failThreshold && task.failThreshold > 0 ? task.failThreshold : 2
   const map = load()
-  const { ok, detail } = await runCommand(task.command, timeoutMs)
+  const { ok, detail } = await runCommand(resolveCommandPlaceholders(task.command), timeoutMs)
   const { next, action } = evaluateCommandResult(map[task.name], ok, failThreshold, now)
   map[task.name] = next
   persist()
