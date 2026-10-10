@@ -474,10 +474,11 @@ describe('importFleet: oauthTokenFile is stripped from an imported agent-config.
     expect(JSON.stringify(config)).toContain('oauthTokenFile')
   })
 
-  // RedHat follow-up (card 006b506b, comment 14160, F4): stripOauthTokenFile has four call
-  // sites (writeAgentFiles above, writeMainAgentFiles here, plus exportMainAgent/exportAgent on
-  // the read/export side below). The sub-agent import path above was the only one pinned; a
-  // mutation removing the wrapper at any of the other three left the full suite green.
+  // RedHat follow-up (card 006b506b, comment 14160, F4): stripOauthTokenFile (since renamed
+  // stripMachineSpecificConfig, card 48639c7d) has four call sites (writeAgentFiles above,
+  // writeMainAgentFiles here, plus exportMainAgent/exportAgent on the read/export side below).
+  // The sub-agent import path above was the only one pinned; a mutation removing the wrapper at
+  // any of the other three left the full suite green.
   it('writeMainAgentFiles: an attacker-chosen oauthTokenFile never reaches the written main-agent config', async () => {
     const { importFleet } = await import('../web/fleet-transfer.js')
     const { atomicWriteFileSync } = await import('../web/atomic-write.js')
@@ -512,12 +513,32 @@ describe('importFleet: oauthTokenFile is stripped from an imported agent-config.
   // exportMainAgent/exportAgent (the read/export side) call safeReadJson(...agent-config.json...),
   // which short-circuits to {} under this file's `existsSync: () => false` fs mock (see top-of-file
   // comment: exportFleet needs real FS) -- a behavioral test here would assert on an empty config
-  // regardless of whether stripOauthTokenFile is called, proving nothing. Pinned as source text
-  // instead, same convention as the launcher-wiring block in agent-oauth-token-file.test.ts.
-  it('SOURCE PIN: exportMainAgent and exportAgent both wrap their config read in stripOauthTokenFile', async () => {
+  // regardless of whether stripMachineSpecificConfig is called, proving nothing. Pinned as source
+  // text instead, same convention as the launcher-wiring block in agent-oauth-token-file.test.ts.
+  it('SOURCE PIN: exportMainAgent and exportAgent both wrap their config read in stripMachineSpecificConfig', async () => {
     const { readFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs')
     const SRC = readFileSync(new URL('../web/fleet-transfer.ts', import.meta.url), 'utf-8')
-    expect(SRC).toContain("config: stripOauthTokenFile(safeReadJson(join(PROJECT_ROOT, 'agent-config.json')))")
-    expect(SRC).toContain('config: stripOauthTokenFile(safeReadJson(join(dir, \'agent-config.json\')))')
+    expect(SRC).toContain("config: stripMachineSpecificConfig(safeReadJson(join(PROJECT_ROOT, 'agent-config.json')))")
+    expect(SRC).toContain('config: stripMachineSpecificConfig(safeReadJson(join(dir, \'agent-config.json\')))')
+  })
+
+  // RedHat follow-up (card 48639c7d, 006b506b comment 14160, F2 remainder): a crafted fleet import
+  // left claudeConfigDir, remoteHost, remoteWorkdir, runAsUser, authMode and claudePlan all intact
+  // (measured: all six survived alongside the stripped oauthTokenFile). These now go through the
+  // same MACHINE_SPECIFIC_CONFIG_KEYS list agent-bundle.ts's single-agent import path already uses.
+  it('an imported config cannot carry claudeConfigDir, remoteHost, remoteWorkdir, runAsUser, authMode or claudePlan either', async () => {
+    const written = await writtenAgentConfig({
+      claudeConfigDir: '/home/other-agent/.claude-config',
+      remoteHost: 'evil.example.com',
+      remoteWorkdir: '/home/attacker/workdir',
+      runAsUser: 'root',
+      authMode: 'own_team',
+      claudePlan: 'stolen-plan',
+      model: 'claude-opus-5-5',
+    })
+    for (const key of ['claudeConfigDir', 'remoteHost', 'remoteWorkdir', 'runAsUser', 'authMode', 'claudePlan']) {
+      expect(written).not.toHaveProperty(key)
+    }
+    expect(written.model).toBe('claude-opus-5-5')
   })
 })
