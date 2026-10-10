@@ -104,6 +104,22 @@ describe('writeCustomProviders / listCustomProviders: round-trip + fail-closed s
     fs.writeFileSync(REGISTRY_PATH, '{ not json')
     expect(() => listCustomProviders()).toThrow(CustomProviderValidationError)
   })
+
+  // F2 (card 657b32f2, WhiteHat LOW on f1800242): listCustomProviders() has its OWN duplicate-id
+  // check (so a hand-tampered/fleet-transfer-imported file is caught the same way a non-loopback
+  // baseUrl is, two tests above) -- but every existing duplicate-id test drove writeCustomProviders'
+  // check instead, which never exercises this one. Hand-writing the file bypasses writeCustomProviders
+  // entirely, the same technique the two tests above already use for the non-loopback/corrupt cases.
+  it('re-validates duplicate ids at READ time too, not just at write time', async () => {
+    const fs = await import('node:fs')
+    fs.writeFileSync(REGISTRY_PATH, JSON.stringify({
+      providers: [
+        { id: 'dup', baseUrl: 'http://127.0.0.1:1', secretId: 'a' },
+        { id: 'dup', baseUrl: 'http://127.0.0.1:2', secretId: 'b' },
+      ],
+    }))
+    expect(() => listCustomProviders()).toThrow(CustomProviderValidationError)
+  })
 })
 
 describe('getCustomProviderOrThrow: fail-closed lookup', () => {

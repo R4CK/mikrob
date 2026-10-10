@@ -114,7 +114,14 @@ export function listCustomProviders(): CustomProviderDef[] {
 }
 
 /** Validates every entry (fail-closed, same rule as listCustomProviders) BEFORE writing any of
- *  them -- a bad entry never reaches disk, "mentéskor" validation per Peti's decision. */
+ *  them -- a bad entry never reaches disk, "mentéskor" validation per Peti's decision.
+ *
+ *  F3 (card 657b32f2, WhiteHat LOW on f1800242): no production caller exists yet -- there is no
+ *  registry-write route, so today the registry is seeded by hand-editing store/custom-providers.json
+ *  (which listCustomProviders() re-validates on every read regardless). This function stays: it is
+ *  the fail-closed save path a future write route must call rather than writing the file directly,
+ *  and it is exercised directly by this module's own tests. Deleting it is a decision for Peti to
+ *  make explicitly (the card's own text), not a default outcome of this follow-up. */
 export function writeCustomProviders(defs: CustomProviderDef[]): void {
   const validated = defs.map(validateDef)
   const seen = new Set<string>()
