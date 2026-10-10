@@ -130,6 +130,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **Heti-% modell-lépcső, per-ügynök**: ahogy a heti keret fogy, minden szerep-ügynök egy lépcsővel lejjebb lép a modell-létrán a SAJÁT bázisáról, tehát a munka nem áll le, csak olcsóbban fut. A létra egyetlen forrásból jön.
 - **Automatikus kontextus-compact a nagy ügynökökön**: egy ütemezett, nulla-token figyelő tömörítést indít azon az ügynökön, aminek a kontextusa a plafon felé nő, mert a költséget az újraolvasott kontextus mennyisége hajtja.
 - **Load-brake: PSI-alapú fékezés a flotta-ügynökökön**: hiszterézissel debounce-olt terhelés-állapotgép a rendszer-nyomás alapján, ami cgroup CPU-korláttal fékezi az ügynököket túlterhelésnél, és hibás kiértékelés esetén biztonságos csak-naplózó módra esik vissza, nem állítja le a felügyeletet. A kártyára írt fékezés-jegyzet EPIZÓD-szintű: egy jegyzet a fékezés kezdetén, egy a végén a ciklusszámmal, és közben időkorlátos életjel, a ki-be kapcsolás minden egyes ciklusa helyett. Upstream nem ismeri.
+- **Saját kurált memória injektálása session-indításkor, token-kerettel**: a meglévő hibrid kereséssel (FTS5 + vektor + RRF) az ügynök AKTUÁLIS kártyájához relevánsat válogat a saját hot/warm/cold memóriáiból, és egy fix token-kereten belül, adatként (nem utasításként) megjelölve húzza be a session kontextusába. Aktív kártya nélkül nem injektál semmit, hogy ne termeljen zajt. Feature flag mögött, ügynökönkénti opt-in, pilot egyetlen ügynökön méréssel.
 
 ### Skill-rendszer
 
