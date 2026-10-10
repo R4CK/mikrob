@@ -15,6 +15,9 @@ import { tmpdir } from 'node:os'
 
 const SANDBOX = mkdtempSync(join(tmpdir(), 'mcpinherit-'))
 let LIST = ''
+// F4 (card 1d31cfcc): drives the "unreadable setting" branch of
+// readInheritableMcpServerNames without a separate mock module -- flipped per-test.
+let THROW_SETTING = false
 
 vi.mock('node:os', async (orig) => {
   const actual = await orig<typeof import('node:os')>()
@@ -32,8 +35,11 @@ vi.mock('../settings-store.js', async (orig) => {
   const actual = await orig<typeof import('../settings-store.js')>()
   return {
     ...actual,
-    getEffectiveSettingValue: (key: string) =>
-      key === 'AGENT_INHERITED_MCP_SERVERS' ? LIST : actual.getEffectiveSettingValue(key),
+    getEffectiveSettingValue: (key: string) => {
+      if (key !== 'AGENT_INHERITED_MCP_SERVERS') return actual.getEffectiveSettingValue(key)
+      if (THROW_SETTING) throw new Error('settings-store unreachable (simulated)')
+      return LIST
+    },
   }
 })
 
@@ -69,7 +75,7 @@ function isolatedServers(name: string): string[] {
   return Object.keys(j.mcpServers ?? {}).sort()
 }
 
-beforeEach(() => { resetSandbox(); LIST = '' })
+beforeEach(() => { resetSandbox(); LIST = ''; THROW_SETTING = false })
 afterAll(() => rmSync(SANDBOX, { recursive: true, force: true }))
 
 describe('the list itself', () => {
@@ -286,5 +292,60 @@ describe('the 2026-09-05 scope-collision rule survives the filter', () => {
     ])
     expect(logRows(spy, 'ket6', (o) => Array.isArray(o.shadowed))).toEqual([])
     spy.mockRestore()
+  })
+})
+
+describe('F4 test gaps (card 1d31cfcc, WhiteHat GO 0c3c3796)', () => {
+  it('unreadable setting: getEffectiveSettingValue throwing is the narrow default, not a crash', () => {
+    THROW_SETTING = true
+    expect(readInheritableMcpServerNames().size).toBe(0)
+  })
+
+  it('default (no root .mcp.json at all): the new agent gets the valid empty shape', () => {
+    // No writeProjectMcp() call -- PROJECT_ROOT/.mcp.json simply does not exist.
+    scaffoldAgentDir('nodef')
+    expect(agentMcpServers('nodef')).toEqual([])
+  })
+
+  it('unparseable root .mcp.json: inherits nothing, and the log never carries a content fragment (F3)', () => {
+    mkdirSync(join(SANDBOX, 'project'), { recursive: true })
+    // Deliberately malformed from position 0 (not just a trailing typo): on
+    // Node's V8, JSON.parse quotes a snippet of input THIS shaped in its
+    // SyntaxError message ("Unexpected token 'g', \"garbage SE\"... is not
+    // valid JSON") -- exactly the leak F3 flagged if a secret sat there.
+    writeFileSync(join(SANDBOX, 'project', '.mcp.json'), 'garbage SECRET-TOKEN-VALUE not json')
+    const spy = vi.spyOn(logger, 'warn')
+    scaffoldAgentDir('badjson')
+    expect(agentMcpServers('badjson')).toEqual([])
+    const call = spy.mock.calls.find((c) => (c[0] as Record<string, unknown>)?.name === 'badjson')
+    expect(call).toBeDefined()
+    const payload = call![0] as Record<string, unknown>
+    // The regression this guards: passing the raw JSON.parse error as `err` lets
+    // pino's own serializer pull out `.message`, which on V8 can quote a
+    // fragment of the malformed input (see comment above). Asserting on the
+    // CALL ARGUMENTS directly (not JSON.stringify(spy.mock.calls), which drops
+    // Error.message because it is non-enumerable and so would pass even
+    // un-fixed) is what makes this test actually kill the regression.
+    expect(payload.err).toBeUndefined()
+    expect(typeof payload.errName).toBe('string')
+    spy.mockRestore()
+  })
+
+  it('F2 fix: a project-scoped mcpServers entry inside shared ~/.claude.json projects[] is filtered too', () => {
+    writeFileSync(
+      join(SANDBOX, 'home', '.claude.json'),
+      JSON.stringify({
+        hasCompletedOnboarding: true,
+        mcpServers: {},
+        projects: {
+          '/some/other/project': { mcpServers: { 'aiam-blog': def('blog'), gmail: def('gmail') } },
+        },
+      }),
+    )
+    LIST = 'aiam-blog'
+    ensureIsolatedChannelConfigDir('projfilt', 'telegram')
+    const p = join(SANDBOX, 'agents', 'projfilt', '.claude-config', '.claude.json')
+    const j = JSON.parse(readFileSync(p, 'utf-8')) as { projects: Record<string, { mcpServers: Record<string, unknown> }> }
+    expect(Object.keys(j.projects['/some/other/project'].mcpServers)).toEqual(['aiam-blog'])
   })
 })

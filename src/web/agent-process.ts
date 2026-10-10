@@ -1212,6 +1212,24 @@ function provisionIsolatedConfigDir(
           notInheritedOnSeed = dropped
           logNotInherited(name, 'seed', dropped)
         }
+        // F2 (card 1d31cfcc, WhiteHat GO 0c3c3796): the seed is a FULL copy of
+        // the shared ~/.claude.json, which can carry its OWN per-project
+        // mcpServers under seed.projects[<path>] (set by `claude mcp add
+        // --scope project` run interactively in some directory). The filter
+        // above only ever touched the TOP-LEVEL seed.mcpServers; every
+        // project's own entry passed through unfiltered. Same allowlist, same
+        // exemption for the main agent (its config mirrors the operator's own).
+        if (name !== MAIN_AGENT_ID && isPlainObject(seed.projects)) {
+          const allowed = readInheritableMcpServerNames()
+          const droppedAcrossProjects: string[] = []
+          for (const projectEntry of Object.values(seed.projects)) {
+            if (!isPlainObject(projectEntry) || !isPlainObject(projectEntry.mcpServers)) continue
+            const { kept, dropped } = filterInheritableMcpServers(projectEntry.mcpServers, allowed)
+            projectEntry.mcpServers = kept
+            droppedAcrossProjects.push(...dropped)
+          }
+          logNotInherited(name, 'seed-projects', droppedAcrossProjects)
+        }
         // The seed is a FULL copy of the shared config, so it carries the same
         // scope-collision risk as the gap-fill below: a shared entry whose name
         // the agent owns in its own .mcp.json would arrive at local scope and
