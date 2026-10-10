@@ -18197,3 +18197,15 @@ pre-triage `secret-in-argv` lelete alhamis pozitivnak bizonyult (egy teszt-fixtu
 iranyat (komment 14386, "ez az en hibam" -- a hely jovahagyasa az o felelossege volt). A javitast
 fullstack vegzte ugyanazon a kartyan (59cfcb21). Gate: QA + Cybered (a javitas iranyat Cybersec
 adta, tehat nem fuggetlen gate ra).
+
+## 2026-10-10 -- BSL-szarmazek skill a publikus history-ban: nincs history-atiras (Peti, A opcio)
+
+**Dontes:** Peti (Telegram 10888, `mikrob:bsl:a`) az A opciot valasztotta: csak elore meno javitas, a
+R4CK/mikrob git history-jat NEM irjuk at, a repot nem allitjuk privatra, es a licencadot nem ertesitjuk.
+
+**Alap:** a jogasz ertekelese (kartya 93b76f52, QA PASS 14457). A kint levo
+`store/skill-archive/evidence-gated-delivery/SKILL.md` 19 pontjabol 3 epul a loki-mode (BSL 1.1)
+otleteire, sajat szoveggel es kifejezett attribucioval, a Competing-Use klauzula nem triggerel. A
+history-atiras csak reszlegesen hatna: negy fuggetlen, publikus marveen-repo mar tartalmazza az
+ac4d0e93 commitot. Az okot az 59cfcb21 megszuntette (a fajl a develop HEAD-en 404, az archivum
+remote nelkuli helyi repoban el). Kapcsolodo: a 2026-10-10-i skill-archivum bejegyzes fent.
