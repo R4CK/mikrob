@@ -23,6 +23,49 @@ golden captured from the pre-move code -- scripts/__tests__/email-extract-parity
 import json
 import os
 import re
+import stat
+
+# FIFOTIMEOUT924 (card 0dab76a3, Cybered C1 HIGH on 087e4418): a plain
+# open()+read() on a FIFO with no writer blocks forever, past this hook's
+# timeout -- and per Claude Code's own docs a timed-out PreToolUse hook does
+# NOT block the tool call, it falls through the normal permission flow. So a
+# `curl -d @fifo` (or `wget --post-file=fifo`, `-T fifo`, `-F body=<fifo`, or
+# the older `< fifo` redirect) hangs this hook past its deadline and the send
+# goes through unaudited and unapproved -- the one thing the email gates exist
+# to prevent. O_NONBLOCK on the open() call makes a FIFO return immediately
+# instead of waiting for a writer; the mode check runs on the ALREADY-OPENED
+# fd's fstat (not a second, racy stat() on the path), so what gets refused is
+# what was actually opened, not what the path looked like a moment earlier.
+# A size cap keeps a legitimate-but-huge regular file from stalling the audit
+# on its own (unrelated to the FIFO bug, cheap to add here).
+_MAX_BODY_FILE_BYTES = 1024 * 1024  # 1 MiB
+
+
+def _safe_read_text(path: str):
+    """(text, unreadable_reason) for `path`, refusing anything that is not a
+    plain regular file once opened, and anything over _MAX_BODY_FILE_BYTES."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError as exc:
+        return ("", str(exc))  # same wording the old bare open() raised -- golden parity
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return ("", "nem szabalyos fajl (pl. FIFO vagy socket) -- elutasitva")
+        if st.st_size > _MAX_BODY_FILE_BYTES:
+            return ("", f"tul nagy ({st.st_size} byte > {_MAX_BODY_FILE_BYTES})")
+        with os.fdopen(fd, encoding="utf-8", errors="replace") as f:
+            fd = -1  # fdopen() took ownership of the fd; the finally below must not close it again
+            return (f.read(), None)
+    except OSError as exc:
+        return ("", f"nem olvashato ({exc})")
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
 
 def collect_bash_body(cmd: str):
     """Return (text, unreadable_reason). text is '' when nothing was recovered."""
@@ -56,11 +99,10 @@ def collect_bash_body(cmd: str):
         path = os.path.expandvars(os.path.expanduser(raw))
         if "$" in path:
             return ("\n".join(parts), f"a torzs egy fel nem oldhato utvonalrol jon ({raw})")
-        try:
-            with open(path, encoding="utf-8", errors="replace") as fh:
-                parts.append(fh.read())
-        except OSError as exc:
-            return ("\n".join(parts), f"a torzs-fajl nem olvashato ({path}: {exc})")
+        text, reason = _safe_read_text(path)
+        if reason:
+            return ("\n".join(parts), f"a torzs-fajl nem olvashato ({path}: {reason})")
+        parts.append(text)
     # GATEBINVAK916: curl's `@file` payload (-d/--data/--data-binary/--json/
     # --data-urlencode @path). Before this branch the body of such a call was
     # never read: on the Resend path that made every @file letter -- clean ones
@@ -120,11 +162,9 @@ def _read_body_file(ref: str, label: str):
     path = os.path.expandvars(os.path.expanduser(ref))
     if "$" in path:
         return ("", f"a torzs egy fel nem oldhato utvonalrol jon ({shown})")
-    try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
-            data = fh.read()
-    except OSError as exc:
-        return ("", f"a torzs-fajl ({shown}) nem olvashato ({path}: {exc})")
+    data, reason = _safe_read_text(path)
+    if reason:
+        return ("", f"a torzs-fajl ({shown}) nem olvashato ({path}: {reason})")
     return _payload_text(data, ref)
 
 

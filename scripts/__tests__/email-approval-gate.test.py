@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import tokenize
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -255,6 +256,77 @@ with tempfile.TemporaryDirectory() as td:
     approve(store, b_anchor)
     code, _, _ = run_gate(store, bash_payload)
     check("level 2 Bash send with approval: ALLOWED", code == 0, f"exit={code}")
+
+    # --- FIFOTIMEOUT924: a FIFO as the body must FAIL FAST, never hang past the
+    # hook's timeout (card 0dab76a3, Cybered C1 HIGH on 087e4418). A timed-out
+    # PreToolUse hook does NOT block the tool call (Claude Code's own docs), so
+    # a body-file read that blocks on a FIFO with no writer is a gate bypass,
+    # not merely a slow test. Each shape here is run with an explicit short
+    # subprocess timeout well under the hook's real 10s budget: if the fix
+    # regresses, this FAILS FAST with a clear message instead of silently
+    # eating the wrapper's 120s budget.
+    def run_gate_fast(store, payload, timeout_s=3):
+        env = dict(os.environ, EMAIL_APPROVAL_GATE_STORE=store,
+                   EMAIL_APPROVAL_WINDOW_S=str(WINDOW),
+                   OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
+        t0 = time.monotonic()
+        try:
+            proc = subprocess.run([sys.executable, GATE], input=json.dumps(payload).encode(),
+                                  capture_output=True, env=env, timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            return (None, time.monotonic() - t0, "", "")
+        return (proc.returncode, time.monotonic() - t0, proc.stdout.decode(), proc.stderr.decode())
+
+    store = make_store(os.path.join(td, "sfifo"), level=2)
+    fifo_dir = os.path.join(td, "fifo-bodies")
+    os.makedirs(fifo_dir, exist_ok=True)
+
+    def mkfifo_at(name):
+        path = os.path.join(fifo_dir, name)
+        os.mkfifo(path)  # no writer ever opens it -- that is the point
+        return path
+
+    # The 4 GATEBINVAK916 shapes RedHat measured, plus the pre-existing `<` redirect.
+    fifo_cases = [
+        ("curl -d @fifo", lambda p: f'curl -s https://api.resend.com/emails -H "X-Dummy: 1" -d @{p}'),
+        ("curl -F body=<fifo", lambda p: f'curl -s https://api.resend.com/emails -F body=<{p}'),
+        ("wget --post-file=fifo", lambda p: f'wget -q https://api.resend.com/emails --post-file={p}'),
+        ("curl -T fifo", lambda p: f'curl -s -T {p} https://api.resend.com/emails'),
+        ("sendmail < fifo (pre-existing shape)", lambda p: f'sendmail a@b.hu < {p}'),
+    ]
+    for label, build_cmd in fifo_cases:
+        fifo_path = mkfifo_at(f"{abs(hash(label))}.fifo")
+        code, elapsed, _, err = run_gate_fast(store, {"tool_name": "Bash", "tool_input": {"command": build_cmd(fifo_path)}})
+        check(f"FIFO body ({label}): denied fast, not hung past the real 10s hook timeout",
+              code == 2 and elapsed < 3, f"exit={code} elapsed={elapsed:.2f}s err={err[:150]!r}")
+
+    # Oversized regular file: denied too (size cap), still FAST -- not the FIFO
+    # bug, but the same helper enforces both, cheap to prove here.
+    big_path = os.path.join(fifo_dir, "big.txt")
+    with open(big_path, "w", encoding="utf-8") as fh:
+        fh.write("x" * (1024 * 1024 + 1))
+    code, elapsed, _, err = run_gate_fast(store, {"tool_name": "Bash", "tool_input": {
+        "command": f'curl -s https://api.resend.com/emails -d @{big_path}'}})
+    check("oversized regular file body: denied (size cap), fast",
+          code == 2 and elapsed < 3, f"exit={code} elapsed={elapsed:.2f}s err={err[:150]!r}")
+
+    # Control: a REGULAR file of normal size still works end-to-end (approve + allow) --
+    # the fix must not collaterally break the legitimate @file path GATEBINVAK916 added.
+    ok_path = os.path.join(fifo_dir, "ok.txt")
+    with open(ok_path, "w", encoding="utf-8") as fh:
+        fh.write('{"subject": "FIFO-fix regular file", "text": "Rendes level."}')
+    # --to is on the command line (collect_bash_recipients reads it there, not from
+    # the JSON body) -- the body file supplies subject+text, same as RedHat's repro.
+    ok_payload = {"tool_name": "Bash", "tool_input": {
+        "command": f'curl -s https://api.resend.com/emails --to a@b.hu -d @{ok_path}'}}
+    code, elapsed, _, err = run_gate_fast(store, ok_payload)
+    ok_anchor = anchor_from_stderr(err)
+    check("regular @file body still denied-without-approval (not unreadable), fast",
+          code == 2 and ok_anchor is not None and elapsed < 3, f"exit={code} elapsed={elapsed:.2f}s err={err[:150]!r}")
+    approve(store, ok_anchor)
+    code, elapsed, _, _ = run_gate_fast(store, ok_payload)
+    check("regular @file body with approval: ALLOWED, fast",
+          code == 0 and elapsed < 3, f"exit={code} elapsed={elapsed:.2f}s")
 
     # --- FAIL-CLOSED, each branch separately --------------------------------
     store = make_store(os.path.join(td, "sf1"), level=2)
