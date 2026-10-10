@@ -18113,3 +18113,58 @@ pre-triage `secret-in-argv` lelete alhamis pozitivnak bizonyult (egy teszt-fixtu
 iranyat (komment 14386, "ez az en hibam" -- a hely jovahagyasa az o felelossege volt). A javitast
 fullstack vegzte ugyanazon a kartyan (59cfcb21). Gate: QA + Cybered (a javitas iranyat Cybersec
 adta, tehat nem fuggetlen gate ra).
+
+## 2026-10-10 -- session-inditasi sajat-kuralt-memoria injekcio, "A" resz (kartya 5a4bea2e, MikroB plan-grilling verdikt 14296)
+
+Peti jovahagyta (Telegram 9192, 2026-09-25, parent 18db137d) a `claude-mem` KONCEPCIOJANAK
+portolasat a sajat rendszerunkbe, a tenyleges daemon/Chroma-DB telepites nelkul (15 agens =
+15 Bun-daemon lett volna, auto-binaris telepitessel, cloud synccel -- NO-GO). Ket otlet:
+(1) automatikus, tomor tool-megfigyeles-naplozas hookbol (PostToolUse); (2) session-inditasi
+memoria-injekcio explicit token-kerettel, a meglevo hibrid keresesre (FTS5 + lokalis embedding
++ RRF) epitve.
+
+**Plan-grilling (MikroB, komment 14296, 1b szabaly) verdiktje: GO-WITH-CHANGES.** Teherhordo
+feltevesek, amik NEM igazoltak: "a naplozott megfigyeles artalmatlan" (a PostToolUse kimenet
+idegen tartalmat -- weboldal, fajl, masik ugynok uzenete -- is hordozhat, ami memoriaba kerulve
+session-inditaskor masik ugynok kontextusaba injektalodna: tarolt prompt-injekcio); "a redakcio
+kiszuri a titkot" (a flotta sajat activity-redaktora ma is 19-bol 7 esetben szivargott, fcd8b794
+RedHat); "hasznos jel, nem zaj" (a Dream Engine egy reggel 19 puszta-parancsnev memoriat talalt
+-- pontosan ezt termelne egy query nelkuli "legfrissebb memoriak" injekcio).
+
+Kotelezo valtoztatasok: (1) KET kartya sorrendben -- A: CSAK a mar letezo, kurált memoriakbol
+olvaso injekcio (ez a kartya); B: automatikus naplozas, csak (A) meresenek EREDMENYE utan indul
+(kulon kartya, meg nem nyitva). (2) (B)-re vonatkozo korlatok (determinisztikus metaadat, soha
+szabad szoveg) ERRE a kartyara nem vonatkoznak, mert (A) nem ir uj memoriat, csak olvas. (3) Az
+injektalt tartalom ADATKENT jelolve kerul a kontextusba, nem utasitaskent. (4) Feature flag
+alapbol KI, ugynokonkenti opt-in, pilot EGYETLEN ugynokon (fullstack) 48 oraig, utana meres.
+(5) Token-keret: max 1500 token/session-inditas, merve es naplozva.
+
+**Implementacio:** a meglevo, mar bedrotozott `scripts/hooks/shared-memory-inject.py`
+SessionStart hook kapott egy MASODIK szakaszt (nem uj hook-fajl -- a meglevo mar vezetekelve
+van a pilot-ugynok elo settings.json-jaban, egy uj fajl drotozasa az agent-scaffold.ts-be/
+templates/settings.json.template-be/hook-registration-completeness.test.ts-be nyult volna,
+feleslegesen nagy felszin egy pilot-only feature-hoz -- sebeszi valtoztatas, 3. kodminosegi elv).
+A masodik szakasz:
+- feature-flag: `store/session-memory-inject-agents.json` ("enabled_agents" lista), hianyzo
+  fajl = senki sem engedelyezett (fail-safe KI);
+- relevancia-horgony: az ugynok SAJAT in_progress kartyaja (cim+leiras mint lekerdezo szoveg) --
+  aktiv kartya nelkul NEM injektal semmit (nincs mibol rangsorolni, a plan-grilling altal merten
+  zajos "legfrissebb memoriak" alternativa helyett);
+- `GET /api/memories?...&mode=hybrid` (a mar letezo hibrid vegpont, FTS5+embedding+RRF),
+  kiszurve a `shared` kategoriat (azt a meglevo szakasz mar hordozza, nincs duplikacio);
+- token-koltseg becsles char/4 (ugyanaz a konvencio, mint src/web/token-usage.ts
+  thinking-block becslese), a lista a koltsegvetes alatt all meg, nem tulcsordul;
+- meres: minden injekcios probalkozas (ures injekcio is) egy sort ir a
+  `store/session-memory-inject-measurements.jsonl`-be (agent, card_id, memories_count,
+  estimated_tokens), hogy a 48 orás pilot utan legyen mibol merni, es a nevezo (hany
+  session-inditas injektalt nullat) is lathato legyen.
+
+Uj regresszios teszt (`src/__tests__/session-memory-inject-own-curated.test.ts`, 5 eset): alap-KI
+flag nelkul, pilot-ugynok aktiv kartyaval (shared kiszurve, meres naplozva), nem-pilot ugynok
+(nincs injekcio), pilot-ugynok aktiv kartya NELKUL (nulla-szamossagu meres, de nincs tartalom),
+token-koltsegvetes betartasa nagy bemeneten. A meglevo `shared-memory-inject-provenance.test.ts`
+valtozatlanul zold (nincs regresszio a mar mukodo shared-tier szakaszon).
+
+**Ki dontott:** MikroB plan-grilling (14296), fullstack az implementacio (5a4bea2e). Gate:
+QA + Cybered (a verdikt szerint, nem a kartya eredeti leirasa szerinti QA+Cybersec -- a
+plan-grilling az ujabb, iranyado dontes).
