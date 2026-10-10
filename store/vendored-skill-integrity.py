@@ -87,12 +87,23 @@ def skill_roots(home):
     return roots
 
 
+# CommonMark's escapable-punctuation set (https://spec.commonmark.org/0.31.2/#backslash-escapes):
+# a backslash before any of these is the LITERAL character, never a markdown construct. A table
+# formatter/linter that reflows a VENDORED.md can backslash-escape the underscores in a path like
+# `anthropics__skills` (markdown would otherwise read `__..__` as emphasis) -- MARKDOWNESC924, card
+# d69b54fd: the row was read RAW, so `\_` stayed in the string, `os.path.isdir()` on a path
+# containing a literal backslash never matched anything on disk, and every such row went
+# UNVERIFIABLE silently (a fail-closed outcome that LOOKS like a real content mismatch, not like
+# a parser bug -- the two are not the same signal and this fixed the wrong one if left alone).
+_MD_ESCAPE_RE = re.compile(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])")
+
+
 def parse_vendored_md(path):
     text = open(path, encoding="utf-8", errors="replace").read()
 
     def row(key):
         m = re.search(r"^\|\s*%s\s*\|\s*(.+?)\s*\|\s*$" % re.escape(key), text, re.M)
-        return m.group(1).strip() if m else None
+        return _MD_ESCAPE_RE.sub(r"\1", m.group(1).strip()) if m else None
 
     sha = (row("vendored commit") or "").strip("`").strip()
     subdir = row("subdir") or ""
@@ -511,12 +522,36 @@ def selftest():
         missing_res = inspect(missing_live, parse_vendored_md(os.path.join(missing_live, "VENDORED.md")))
         check("a path that is genuinely still missing is NOT flagged reappeared",
               [], reappeared_paths(missing_res, {"missing:SKILL.md"}))
+
+        # 12. MARKDOWNESC924 (card d69b54fd): a watch-clone path containing an underscore
+        #     (e.g. the OWNER__REPO clone-dir naming scheme vendor-skill.sh itself uses, card
+        #     f64fe6e1) can arrive markdown-escaped (`\_`) if something reflows the table. The
+        #     raw row used to carry the backslash straight into os.path.isdir(), which never
+        #     matches anything real -- silent UNVERIFIABLE on a perfectly fine clone.
+        escaped_name = "owner__repo_clone"
+        real_clone_dir = os.path.join(tmp, escaped_name)
+        os.makedirs(os.path.join(real_clone_dir, "skills", "demo"), exist_ok=True)
+        shutil.copytree(os.path.join(clone, ".git"), os.path.join(real_clone_dir, ".git"))
+        esc_path = escaped_name.replace("_", r"\_")
+        esc_dir = os.path.join(tmp, "escaped")
+        os.makedirs(esc_dir, exist_ok=True)
+        shutil.copy(os.path.join(clone, "skills", "demo", "SKILL.md"), os.path.join(esc_dir, "SKILL.md"))
+        with open(os.path.join(esc_dir, "VENDORED.md"), "w") as fh:
+            fh.write("| vendored commit | `%s` |\n| subdir | skills/demo |\n"
+                     "| watch clone | %s |\n| source repo | x |\n"
+                     % (sha, os.path.join(tmp, esc_path)))
+        meta = parse_vendored_md(os.path.join(esc_dir, "VENDORED.md"))
+        check("parse_vendored_md decodes a markdown-escaped underscore in the watch-clone path",
+              real_clone_dir, meta["clone"])
+        res = inspect(esc_dir, meta)
+        check("...and the skill verifies OK once the path resolves for real",
+              (True, None), (res["ok"], res["unverifiable"]))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     for f in fails:
         print("FAIL: %s" % f)
-    print("selftest: %d checks, %d failed" % (12, len(fails)))
+    print("selftest: %d checks, %d failed" % (14, len(fails)))
     return 1 if fails else 0
 
 
