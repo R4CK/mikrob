@@ -283,10 +283,11 @@ supabase/.temp
 # they were meant to be tracked. The off/warn/enforce MODE file is different (hand-edited config,
 # nothing writes it) and gets its own named exception below, next to load-guard-config.json.
 
-# card 59cfcb21: a versioned, internal, NON-propagating archive of global skills that have no
-# tracked copy anywhere (neither seed-skills/ nor seed-fleet-agents/). Deliberately tracked under
-# store/*, which the blanket rule above would otherwise swallow. No installer reads this directory
-# (verified by grep in store/skill-archive-no-propagation.selftest.sh) -- that is the whole point:
-# unlike seed-skills/, nothing here ships to a fresh install.
-!store/skill-archive/
-!store/skill-archive/**
+# card 59cfcb21 F1 fix: the skill archive used to be tracked here (!store/skill-archive/**), but
+# this repo's origin is a PUBLIC GitHub remote -- Cybersec measured (komment 14381, F1 HIGH) that
+# the archived, loki-mode-derived content was served live from raw.githubusercontent.com the moment
+# it landed on develop, in violation of the legal ruling (card c2c98b0d) that this content stay an
+# unpublished, internal fleet tool. The archive now lives OUTSIDE this repo entirely, at
+# ~/.claude/skill-archive -- a separate, remote-less local git repo (store/skill-archive-sync.sh /
+# store/skill-archive-restore.sh). store/skill-archive/ is therefore just an ordinary path under
+# the blanket `store/*` ignore above; no exception needed or wanted here.

@@ -6,14 +6,15 @@ Peti request (2026-08-23, Telegram image "ASK FOR THE HOOK"): catch install/buil
 with a progress bar, keep only errors/failures/the final summary, leave everything else -- short
 commands included -- completely alone.
 
-WHY BLOCK-AND-SUGGEST, NOT A SILENT REWRITE
-Checked against the real Claude Code hook schema first (all three existing PreToolUse guards in
-this repo -- git-protect-guard.py, npm-protect-guard.py, secret-write-guard.py -- confirm it):
-a PreToolUse hook can only ALLOW (exit 0) or BLOCK (exit 2, stderr shown to the agent) a tool call.
-There is no field to substitute a different command string; Bash always runs exactly what the agent
-asked for, or not at all. So "rewrite before it runs" is implemented the only way the platform
-allows: block the noisy raw form, and hand back the exact filtered command to run instead. The agent
-sees the reason and reruns through scripts/noisy-run.sh, which does the real filtering.
+REWRITE MODE (card fc3a6a39, 2026-10-10)
+Earlier revisions of this file claimed the PreToolUse hook schema has no way to substitute a
+different command string. That claim was stale: the current hooks docs (code.claude.com/docs/en/hooks)
+document `hookSpecificOutput.updatedInput`, which DOES replace the executed input -- verified live
+before building this, not from memory. `NOISY_GUARD_MODE=rewrite` (default stays `block`, the
+original behavior) makes the hook transparently substitute the wrapped `noisy-run.sh` invocation via
+`updatedInput` instead of blocking: the agent's original Bash call just runs filtered, no extra
+block/retry round-trip. `updatedInput` replaces the WHOLE tool_input object, so every other field
+(not just `command`) is carried through unchanged.
 
 WHAT COUNTS AS NOISY
 npm/pnpm/yarn install|ci|add|update and `npm run build`; test runners (npx vitest/jest/playwright,
@@ -37,6 +38,7 @@ import re
 import sys
 
 ALLOW_ENV = "NOISY_RUN_ALLOW_RAW"
+MODE_ENV = "NOISY_GUARD_MODE"
 
 _ENV_PREFIX = r"(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)*"
 # `rtk` (card f5fc0227 pilot) sits in the SAME wrapper position as sudo/time: `rtk npm test` is still
@@ -149,6 +151,22 @@ def main():
                     if rx.search(seg):
                         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                         wrapped = _suggest(here, raw)
+                        if os.environ.get(MODE_ENV) == "rewrite":
+                            updated_input = dict(ti)
+                            updated_input["command"] = wrapped
+                            print(json.dumps({
+                                "hookSpecificOutput": {
+                                    "hookEventName": "PreToolUse",
+                                    "permissionDecision": "allow",
+                                    "permissionDecisionReason": (
+                                        "noisy-command-guard: routed through noisy-run.sh "
+                                        "(NOISY_GUARD_MODE=rewrite) -- raw install/build/test "
+                                        "output filtered to errors/warnings/summary"
+                                    ),
+                                    "updatedInput": updated_input,
+                                }
+                            }))
+                            sys.exit(0)
                         sys.stderr.write(
                             "NOISY-COMMAND-GUARD: ez a parancs jellemzoen sok, keves "
                             "informaciotartalmu kimenetet ad (install/build/teszt/progress-bar). "
