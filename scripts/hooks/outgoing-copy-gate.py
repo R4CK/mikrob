@@ -1042,7 +1042,19 @@ _MAX_BODY_FILE_BYTES = 1024 * 1024  # 1 MiB
 
 def _safe_read_text(path: str):
     """(text, unreadable_reason) for `path`, refusing anything that is not a
-    plain regular file once opened, and anything over _MAX_BODY_FILE_BYTES."""
+    plain regular file once opened, and anything over _MAX_BODY_FILE_BYTES.
+
+    SIZEBOUND924 (card 14256aac, Cybersec NO-GO F1 on e8b479d0): st_size from fstat is not
+    the size that gets READ -- it is 0 (unreliable) on procfs/sysfs regardless of actual
+    content length, and can change between the fstat above and the read below on a sparse
+    file another process is rewriting. Measured: a 0-byte-stat /proc file with 8 MiB of real
+    content sailed through the st_size check and had all 8 MiB read and audited; a rewritten
+    sparse file passed the size check as "small" in 18/80 runs and then grew past a 400 MB
+    RLIMIT_AS during the read. The st_size check above is kept as a cheap fast-path (skips
+    reading a file that HONESTLY reports being huge), but the actual enforcement is the
+    bounded read below: asking for one byte more than the cap and rejecting on overrun is
+    correct regardless of what any stat() said.
+    """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     except OSError as exc:
@@ -1053,9 +1065,15 @@ def _safe_read_text(path: str):
             return ("", "nem szabalyos fajl (pl. FIFO vagy socket) -- elutasitva")
         if st.st_size > _MAX_BODY_FILE_BYTES:
             return ("", f"tul nagy ({st.st_size} byte > {_MAX_BODY_FILE_BYTES})")
-        with os.fdopen(fd, encoding="utf-8", errors="replace") as f:
-            fd = -1  # fdopen() took ownership of the fd; the finally below must not close it again
-            return (f.read(), None)
+        # os.read(fd, n), not TextIOWrapper.read(n): the latter bounds by DECODED CHARACTER
+        # count, not bytes -- a multi-byte UTF-8 file could read past the byte cap before the
+        # character count catches up. A single os.read() call on an already-confirmed regular
+        # file returns up to `n` bytes without a short-read (no EOF-before-n surprises the way
+        # a pipe/socket could cause), so one call is enough to bound it exactly.
+        raw = os.read(fd, _MAX_BODY_FILE_BYTES + 1)
+        if len(raw) > _MAX_BODY_FILE_BYTES:
+            return ("", f"tul nagy (tobb mint {_MAX_BODY_FILE_BYTES} byte a tenyleges olvasasban)")
+        return (raw.decode("utf-8", errors="replace"), None)
     except OSError as exc:
         return ("", f"nem olvashato ({exc})")
     finally:

@@ -53,16 +53,26 @@ def load_from_source(source, tag):
     return mod_ns
 
 
+def _fill(s):
+    """Substitute the {BODY_FILE*} placeholders -- used for cmd_template, and since
+    TOCTOU924 (card 14256aac) also for the expected `reason`, which now echoes the
+    resolved absolute path back (a path that is only the same string when run from
+    this exact checkout -- the placeholder keeps the golden fixture checkout-agnostic)."""
+    return s.replace("{BODY_FILE_LATIN1}", BODY_FILE_LATIN1).replace("{BODY_FILE}", BODY_FILE)
+
+
 def run_parity(ns, golden):
     """Return list of (case, what, got, want) mismatches."""
     mismatches = []
     for name, case in golden["bash"].items():
-        cmd = case["cmd_template"].replace("{BODY_FILE_LATIN1}", BODY_FILE_LATIN1).replace("{BODY_FILE}", BODY_FILE)
+        cmd = _fill(case["cmd_template"])
         text, reason = ns["collect_bash_body"](cmd)
-        if text != case["text"]:
-            mismatches.append((name, "text", text, case["text"]))
-        if reason != case["reason"]:
-            mismatches.append((name, "reason", reason, case["reason"]))
+        want_text = _fill(case["text"])
+        want_reason = _fill(case["reason"]) if case["reason"] is not None else None
+        if text != want_text:
+            mismatches.append((name, "text", text, want_text))
+        if reason != want_reason:
+            mismatches.append((name, "reason", reason, want_reason))
     for name, case in golden["mcp"].items():
         text = ns["collect_mcp_body"](case["tool_input"])
         if text != case["text"]:
@@ -92,19 +102,19 @@ check(f"golden parity: {len(golden['bash'])} bash + {len(golden['mcp'])} mcp cas
 CANARIES = [
     ("substitution-boundary regex broken -> $(cat) branch must fail parity",
      r"\$\(|`|\$\{?\w", r"\$NEVERMATCH\(", "subst-dollar-paren"),
-    # FIFOTIMEOUT924 (card 0dab76a3): the redirect branch now reads through
-    # _safe_read_text (FIFO/size-guarded open) instead of a bare open()+read();
-    # the canary mutates its OWN output instead, same intent (break only the
-    # `< /abs/path` branch's text, not the @file forms' _read_body_file calls).
-    ("redirect file-read mutated (strip) -> < /abs/path branch must fail parity",
-     "        parts.append(text)\n    # GATEBINVAK916:", "        parts.append(text.strip())\n    # GATEBINVAK916:", "redirect-abs-file"),
+    # TOCTOU924 (card 14256aac, Cybersec NO-GO F2 on e8b479d0): the redirect branch no
+    # longer reads the file at all (FAIL-CLOSED: every file-body form is unreadable here,
+    # never anchored -- see email_extract.py's module docstring). There is no read left to
+    # mutate, so this mutates the DENIAL WORDING instead, proving the parity check compares
+    # the exact reason string, not just "was it denied". The earlier decode-policy canary
+    # (replace->ignore on a bare open()+read()) no longer applies: nothing in this branch
+    # decodes a file any more, so there is nothing left for that mutation to catch.
+    ("redirect denial wording mutated -> < /abs/path branch must fail parity",
+     '"jovahagyott tartalmat), hasznalj inline --body-t")',
+     '"jovahagyott tartalmat), hasznalj inline --body-t!!")', "redirect-abs-file"),
     ("MCP field set loses 'subject' -> mcp branch must fail parity",
      '"body", "text", "html", "htmlBody", "message", "subject", "content"',
      '"body", "text", "html", "htmlBody", "message", "content"', "mcp-body-subject"),
-    # this one needs the latin-1 fixture: on clean UTF-8 the mutation is
-    # behavior-equivalent (found by an external mutation probe during PR1)
-    ("decode policy replace->ignore -> invalid-utf8 branch must fail parity",
-     'errors="replace"', 'errors="ignore"', "redirect-invalid-utf8"),
 ]
 for name, old, new, expect_case in CANARIES:
     assert old in module_source, f"canary target not found in module source: {old!r}"

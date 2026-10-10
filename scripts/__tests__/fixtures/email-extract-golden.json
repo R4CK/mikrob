@@ -18,13 +18,13 @@
     },
     "redirect-abs-file": {
       "cmd_template": "sendmail a@b.hu --subject \"Fájlból jövő törzs\" < {BODY_FILE}",
-      "text": "Fájlból jövő törzs\nKedves Ugyfelunk!\n\nEz a torzs-fixture EKEZETTEL: árvíztűrő tükörfúrógép.\nMasodik bekezdes, hogy tobb soros legyen.\n",
-      "reason": null
+      "text": "Fájlból jövő törzs",
+      "reason": "a torzs egy fajlbol jon (< {BODY_FILE}) -- fajl-torzset ez a kapu nem horgonyoz (a kapu es a tenyleges kuldes kozott a fajl kicserelhetne a jovahagyott tartalmat), hasznalj inline --body-t"
     },
     "redirect-invalid-utf8": {
       "cmd_template": "sendmail a@b.hu < {BODY_FILE_LATIN1}",
-      "text": "Latin-1 sor: t�rzs �kezettel, invalid UTF-8 bajtokkal.\n",
-      "reason": null
+      "text": "",
+      "reason": "a torzs egy fajlbol jon (< {BODY_FILE_LATIN1}) -- fajl-torzset ez a kapu nem horgonyoz (a kapu es a tenyleges kuldes kozott a fajl kicserelhetne a jovahagyott tartalmat), hasznalj inline --body-t"
     },
     "subst-dollar-paren": {
       "cmd_template": "send.py --body \"$(cat /tmp/level.txt)\" --subject \"Utána jövő tárgy\"",
@@ -54,12 +54,12 @@
     "redirect-unresolvable-var-path": {
       "cmd_template": "sendmail a@b.hu < $NOPE_VAR_EMAILKAPU901/body.txt",
       "text": "",
-      "reason": "a torzs egy fel nem oldhato utvonalrol jon ($NOPE_VAR_EMAILKAPU901/body.txt)"
+      "reason": "a torzs egy fajlbol jon (< $NOPE_VAR_EMAILKAPU901/body.txt) -- fajl-torzset ez a kapu nem horgonyoz (a kapu es a tenyleges kuldes kozott a fajl kicserelhetne a jovahagyott tartalmat), hasznalj inline --body-t"
     },
     "redirect-missing-file": {
       "cmd_template": "sendmail a@b.hu < /nonexistent-emailkapu901/body.txt",
       "text": "",
-      "reason": "a torzs-fajl nem olvashato (/nonexistent-emailkapu901/body.txt: [Errno 2] No such file or directory: '/nonexistent-emailkapu901/body.txt')"
+      "reason": "a torzs egy fajlbol jon (< /nonexistent-emailkapu901/body.txt) -- fajl-torzset ez a kapu nem horgonyoz (a kapu es a tenyleges kuldes kozott a fajl kicserelhetne a jovahagyott tartalmat), hasznalj inline --body-t"
     },
     "pipe-into-send": {
       "cmd_template": "cat /tmp/x.txt | python3 send.py --to a@b.hu",

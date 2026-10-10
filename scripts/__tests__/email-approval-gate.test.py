@@ -300,32 +300,58 @@ with tempfile.TemporaryDirectory() as td:
         check(f"FIFO body ({label}): denied fast, not hung past the real 10s hook timeout",
               code == 2 and elapsed < 3, f"exit={code} elapsed={elapsed:.2f}s err={err[:150]!r}")
 
-    # Oversized regular file: denied too (size cap), still FAST -- not the FIFO
-    # bug, but the same helper enforces both, cheap to prove here.
-    big_path = os.path.join(fifo_dir, "big.txt")
-    with open(big_path, "w", encoding="utf-8") as fh:
-        fh.write("x" * (1024 * 1024 + 1))
-    code, elapsed, _, err = run_gate_fast(store, {"tool_name": "Bash", "tool_input": {
-        "command": f'curl -s https://api.resend.com/emails -d @{big_path}'}})
-    check("oversized regular file body: denied (size cap), fast",
-          code == 2 and elapsed < 3, f"exit={code} elapsed={elapsed:.2f}s err={err[:150]!r}")
-
-    # Control: a REGULAR file of normal size still works end-to-end (approve + allow) --
-    # the fix must not collaterally break the legitimate @file path GATEBINVAK916 added.
+    # TOCTOU924 (card 14256aac, Cybersec NO-GO F2 on e8b479d0, MikroB decision): a FILE
+    # body is NEVER anchored by this gate any more, regular file or not -- the hook reads
+    # it at approval time, the actual send reads it again later, and a file swapped in
+    # between would be approved under one letter's anchor while a different one goes out.
+    # So a REGULAR @file body must be denied as unreadable (no anchor to even approve),
+    # same as a FIFO -- and no approval can ever make it ALLOWED, only an inline --body can.
     ok_path = os.path.join(fifo_dir, "ok.txt")
     with open(ok_path, "w", encoding="utf-8") as fh:
-        fh.write('{"subject": "FIFO-fix regular file", "text": "Rendes level."}')
+        fh.write('{"subject": "regular file body", "text": "Rendes level."}')
     # --to is on the command line (collect_bash_recipients reads it there, not from
     # the JSON body) -- the body file supplies subject+text, same as RedHat's repro.
     ok_payload = {"tool_name": "Bash", "tool_input": {
         "command": f'curl -s https://api.resend.com/emails --to a@b.hu -d @{ok_path}'}}
     code, elapsed, _, err = run_gate_fast(store, ok_payload)
-    ok_anchor = anchor_from_stderr(err)
-    check("regular @file body still denied-without-approval (not unreadable), fast",
-          code == 2 and ok_anchor is not None and elapsed < 3, f"exit={code} elapsed={elapsed:.2f}s err={err[:150]!r}")
-    approve(store, ok_anchor)
+    check("a regular @file body is denied as UNREADABLE too (no anchor given) -- not merely 'needs approval'",
+          code == 2 and anchor_from_stderr(err) is None and "fajlbol jon" in err and elapsed < 3,
+          f"exit={code} elapsed={elapsed:.2f}s err={err[:200]!r}")
+
+    # Even an approval recorded against the file's OWN content (what an attacker could get
+    # approved by first putting the clean letter in the file, then swapping it before the
+    # send) does not help: there is no anchor path through a file body at all, approved or
+    # not. Uses the gate's own content_anchor() (imported directly, not reimplemented here)
+    # so the anchor is the real one, not a guessed format.
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location("email_approval_gate_anchor_helper", GATE)
+    _gate_mod = _ilu.module_from_spec(_spec)
+    import sys as _sys
+    _sys.modules[_spec.name] = _gate_mod
+    _spec.loader.exec_module(_gate_mod)
+    fake_anchor = _gate_mod.content_anchor({"to": ["a@b.hu"], "cc": [], "bcc": [],
+                                            "text": "regular file body\nRendes level."})
+    approve(store, fake_anchor)
     code, elapsed, _, _ = run_gate_fast(store, ok_payload)
-    check("regular @file body with approval: ALLOWED, fast",
+    check("...and pre-approving the file's own content anchor still does not allow it through",
+          code == 2 and elapsed < 3, f"exit={code} elapsed={elapsed:.2f}s")
+
+    # Positive control: a DIFFERENT letter (distinct content, so its anchor cannot collide
+    # with the fake_anchor approved above) sent inline (--body, not a file) still goes
+    # through the normal approval loop -- the fix narrows the file-body path, not the gate.
+    # sendmail, not curl: curl has no real --to/--subject/--body flags, so a curl command
+    # built that way is not recognised as a send at all (is_send_invocation needs either a
+    # real mail-vendor invocation or a data flag) -- the SAME shape as the already-proven
+    # bash_payload case above, just distinct content.
+    inline_payload = {"tool_name": "Bash", "tool_input": {
+        "command": 'sendmail --to a@b.hu --subject "inline control letter" --body "Ez egy mas level."'}}
+    code, elapsed, _, err = run_gate_fast(store, inline_payload)
+    inline_anchor = anchor_from_stderr(err)
+    check("control: the same letter sent INLINE still gets a real anchor and is denied-pending-approval",
+          code == 2 and inline_anchor is not None, f"exit={code} err={err[:200]!r}")
+    approve(store, inline_anchor)
+    code, elapsed, _, _ = run_gate_fast(store, inline_payload)
+    check("control: ...and ALLOWED once approved, proving the gate itself still works end-to-end",
           code == 0 and elapsed < 3, f"exit={code} elapsed={elapsed:.2f}s")
 
     # --- FAIL-CLOSED, each branch separately --------------------------------
