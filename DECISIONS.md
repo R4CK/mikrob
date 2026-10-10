@@ -18431,3 +18431,28 @@ mashol -- csak ez a DECISIONS.md-bejegyzes a tracked nyom.
 
 **Ki dontott:** Peti jovahagyasa (Telegram 10867, 2026-10-10) az 5 javaslatra; a d2666c85
 leltar es a jelen torles reszletes vegrehajtasa fullstack sajat merese/dontese. Gate: QA.
+
+## 2026-10-10 -- QA FAIL javitas a 03199aae-n (ld. a fentebbi "anthropics-skills klon torlese" bejegyzest): maradek nev a napi sync-listaban
+
+A fenti, korabbi "~/.claude/external/anthropics-skills klon torlese" bejegyzeshez (kartya
+03199aae) tartozo QA (@ce296659) FAIL-t adott: a sajat grep-ellenorzesem a torolt klon TELJES
+UTVONALARA (`external/anthropics-skills`) kerestem, nem a CSUPASZ NEVRE (`anthropics-skills`) --
+ez elfedett egy valodi maradek hivatkozast a `store/external-repos-sync.sh:117` napi pull-
+listajaban (`EXT="$HOME/.claude/external"` ala celozva, tehat pontosan a torolt klonra mutatott).
+Funkcionalisan artalmatlan volt (a `pull()` fail-safe skip-eli a nem-letezo klont), de a REVIEW
+tenyallitasa ("semmi nem hivatkozik ra aktivan") pontatlan volt.
+
+Javitas: a `anthropics-skills` nev eltavolitva a pull-listabol. Ez elrontotta
+`src/__tests__/external-repos-sync-writeback.test.ts` egy tesztjet, ami -- fuggetlenul a torolt
+klontol -- a csupasz nevet hasznalta SAJAT scratch-fixturakent, pont azert, mert az szerepelt a
+hardcode-olt (nem env-felulirhato) pull-listaban. A fixtura-nevet `awesome-agent-skills`-re
+cserelve (meg szabad nev a listaban, nem hasznalja mas teszt ugyanebben a fajlban) -- a teszt
+tartalma/celja valtozatlan, csak a nev.
+
+Verifikacio: `grep -rln "anthropics-skills" <teljes worktree, .sh/.ts/.json/.mjs/.js, node_modules
+kizarva>` most KIZAROLAG a fenti magyarazo kommentet talalja a teszt-fajlban, semmi mas kodot/
+configot. `external-repos-sync-writeback.test.ts` 7/7 zold, `watched-repos-moving-state.test.ts`
+19/19 zold, `tsc --noEmit` tiszta.
+
+**Ki dontott:** QA FAIL-lelet (@ce296659); a javitas es a fixtura-atnevezes fullstack sajat
+merese/dontese. Gate: QA (ujra).
