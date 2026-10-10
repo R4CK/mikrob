@@ -6,6 +6,11 @@
 #             unattended auto-update task, silent for a dashboard-triggered run)
 INSTALL_DIR="$1"; OLD_FULL="$2"; OLD_SHORT="$3"; PORT="$4"
 RESULT_FILE="$5"; BUILT="$6"; NEW_SHORT="$7"; NODE_PIN_DIR="$8"; NOTIFY="${9:-0}"
+# cf8d047a (MEDIUM F1, 3caa7e9f): the very first thing we do, before anything
+# that could fail, is prove we actually started -- the launcher's fallback
+# below reads this to tell "systemd-run itself never ran us" apart from "we
+# ran and then exited non-zero" (a legitimate rolled-back/failed outcome).
+touch "$RESULT_FILE.started" 2>/dev/null || true
 [ -n "$NODE_PIN_DIR" ] && export PATH="$NODE_PIN_DIR:$PATH"
 cd "$INSTALL_DIR" 2>/dev/null || true
 
