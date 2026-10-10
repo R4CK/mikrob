@@ -18456,3 +18456,28 @@ leltar es a jelen torles reszletes vegrehajtasa fullstack sajat merese/dontese. 
 **Ismert eltérés a 3. szabály/heartbeat D szekció saját idle-definíciójától (WhiteHat F1, Gate-SHA 604c61b2, komment):** a végpont NEM nézi a kártya `updated_at`-ját vagy a mező-szintű eseményeket (cím/`[NN%]` szerkesztés, `kanban_card_field_events`) -- csak a státusz-eseményt és a nem-automatizált kommentet. Mért: 10 élő kártyából 8-nál a két detektor egyezik, 2-nél nem (egy felső szintű kártyánál, amit valószínűleg a gyerekei érintése frissít, a kettő között 14,8 napos eltérés volt). Jelenleg nincs automatizmus-fogyasztója (a végpont önálló, PULL-alapú), tehát ez ma nem okoz kárt; ha bármi erre épít (3a. szabály, re-dispatch, heartbeat), a definíciót KÖZÖS függvénnyé kell tenni a heartbeat D szekcióval, vagy a végpontot explicit "kommentelés-alapú idle"-ként kell dokumentálni. Nem blokkoló, külön kártyára hagyva.
 
 **Ki döntött:** backend (a felbontás-kérdést a kártya saját szövege vetette fel, a választ a kódbázis tényleges állapotának ellenőrzésével adtam); Gate: QA (funkcionális) + Cybersec/WhiteHat (auth, adatkitettség, DoS -- GO, Gate-SHA 604c61b2).
+
+## 2026-10-10 -- QA FAIL javitas a 03199aae-n (ld. a fentebbi "anthropics-skills klon torlese" bejegyzest): maradek nev a napi sync-listaban
+
+A fenti, korabbi "~/.claude/external/anthropics-skills klon torlese" bejegyzeshez (kartya
+03199aae) tartozo QA (@ce296659) FAIL-t adott: a sajat grep-ellenorzesem a torolt klon TELJES
+UTVONALARA (`external/anthropics-skills`) kerestem, nem a CSUPASZ NEVRE (`anthropics-skills`) --
+ez elfedett egy valodi maradek hivatkozast a `store/external-repos-sync.sh:117` napi pull-
+listajaban (`EXT="$HOME/.claude/external"` ala celozva, tehat pontosan a torolt klonra mutatott).
+Funkcionalisan artalmatlan volt (a `pull()` fail-safe skip-eli a nem-letezo klont), de a REVIEW
+tenyallitasa ("semmi nem hivatkozik ra aktivan") pontatlan volt.
+
+Javitas: a `anthropics-skills` nev eltavolitva a pull-listabol. Ez elrontotta
+`src/__tests__/external-repos-sync-writeback.test.ts` egy tesztjet, ami -- fuggetlenul a torolt
+klontol -- a csupasz nevet hasznalta SAJAT scratch-fixturakent, pont azert, mert az szerepelt a
+hardcode-olt (nem env-felulirhato) pull-listaban. A fixtura-nevet `awesome-agent-skills`-re
+cserelve (meg szabad nev a listaban, nem hasznalja mas teszt ugyanebben a fajlban) -- a teszt
+tartalma/celja valtozatlan, csak a nev.
+
+Verifikacio: `grep -rln "anthropics-skills" <teljes worktree, .sh/.ts/.json/.mjs/.js, node_modules
+kizarva>` most KIZAROLAG a fenti magyarazo kommentet talalja a teszt-fajlban, semmi mas kodot/
+configot. `external-repos-sync-writeback.test.ts` 7/7 zold, `watched-repos-moving-state.test.ts`
+19/19 zold, `tsc --noEmit` tiszta.
+
+**Ki dontott:** QA FAIL-lelet (@ce296659); a javitas es a fixtura-atnevezes fullstack sajat
+merese/dontese. Gate: QA (ujra).

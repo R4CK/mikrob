@@ -114,7 +114,7 @@ pull() {
 # 1) Pull the repos that exist. (2026-07-31 Peti adopt-9: +6 doc/skill/index repos, cloned
 #    OUTSIDE the tracked marveen repo so the Szotasz/marveen ff-only update stays intact.)
 for r in awesome-claude-skills claude-agent-sdk superpowers Skill_Seekers loki-mode \
-         anthropics-skills claude-code-best-practice awesome-claude-code-jqueryscript \
+         claude-code-best-practice awesome-claude-code-jqueryscript \
          awesome-agent-skills claude-skills-alirezarezvani claude-code-ultimate-guide \
          awesome-claude-code; do pull "$r"; done
 
