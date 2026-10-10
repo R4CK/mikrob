@@ -15,11 +15,11 @@ import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-mess
 import { formatDeliveryStalenessNote } from '../kanban-state-stamp.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { measureClaudeCliVersion } from '../claude-cli-version.js'
+import { claudeSupportForCli, baseModelId } from '../../claude-cli-support.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
-import { claudeSupportForCli, baseModelId } from '../../claude-cli-support.js'
-import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, addCuratedManual, removeCuratedManual } from '../openrouter-models.js'
 import {
   agentDir,
@@ -745,6 +745,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // options without the key would let the operator pick a model that 401s.
     const hasOpenRouter = getSecret('openrouter-fleet-key') !== null
     const orCatalog = loadOpenRouterCatalog()
+    // PICKERCLIKAPU923: the INSTALLED CLI decides which Claude ids are launchable (2.1.110, the
+    // customer pin, answers 400 unrecognized_model on claude-fable-5-1 and claude-opus-5-5). This
+    // fork enforces that at LAUNCH time instead of here (refuseIfCliCannotLaunch, below in this
+    // file, card 6b10a6b8) -- the picker keeps every option, unfiltered, and a model the installed
+    // CLI measurably cannot launch is refused (400 + message) at the point it would actually fail.
+    // Upstream batch 8 (94765127) instead exposes raw `cli`/`claudeSupport` fields here so the
+    // PICKER itself can grey out unsupported options client-side; not adopted, no frontend
+    // consumer is wired to read them, and this fork's launch-time refusal already covers the case.
     json(res, {
       // Card 5d2002b5: the ONE source, shared with the weekly-tier ladder (src/model-catalog.ts).
       // A model added there appears both here and as a valid tier target, in one edit.
@@ -1074,6 +1082,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: `The name "${name}" is reserved for in-process system senders -- pick another name for the agent` }, 400)
       return true
     }
+    // Upstream batch 8's duplicate CLI-launch gate check here (its own, unadapted
+    // refuseIfCliCannotLaunch/422) is not adopted -- this fork's own adoption (card 6b10a6b8)
+    // already gates this same write further down (cliRefusal, after the description/model-id
+    // checks), using the fork-adapted function and 400 convention.
     if (!description) { json(res, { error: 'Description is required' }, 400); return true }
     // Card b7fa5281: reject a shell-unsafe model id BEFORE scaffolding anything -- the value ends up
     // in the agent-launch shell command, so a quote in it is command injection.
@@ -2453,7 +2465,9 @@ function compactPrompt(): string {
         json(res, { error: new InvalidModelIdError(data.model).message }, 400)
         return true
       }
-      // Card 6b10a6b8 (PICKERCLIKAPU923): same CLI-launch gate as POST /api/agents above.
+      // Card 6b10a6b8 (PICKERCLIKAPU923): same CLI-launch gate as POST /api/agents above. Upstream
+      // batch 8's duplicate, unadapted version of this same gate (422, raw refuseIfCliCannotLaunch)
+      // is not adopted -- same reasoning as the POST handler above.
       const cliRefusal = await refuseIfCliCannotLaunch(data.model)
       if (cliRefusal) { json(res, { error: cliRefusal.message, code: cliRefusal.code, params: cliRefusal.params }, 400); return true }
       writeAgentModel(name, data.model)

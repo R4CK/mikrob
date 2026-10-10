@@ -980,9 +980,23 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // parentWouldCycle (card 5aaf7209 item 4 / 16e60d3c item 4): the parent_id edge, same reasoning
     // as the existing blockerWouldCycle check above for the blocker edge. Only checked when
     // parent_id is actually being SET to a real value -- clearing it (null) can never create a cycle.
-    if (typeof data.parent_id === 'string' && data.parent_id && parentWouldCycle(id, data.parent_id)) {
-      json(res, { error: `A(z) "${data.parent_id}" szülővé tétele kört zárna be a szülő-láncban.` }, 409)
-      return true
+    //
+    // Two refinements folded in from upstream batch 8 (94765127): the parent must actually EXIST
+    // (404, not a silent dangling reference), and the error message distinguishes "own parent"
+    // from a longer cycle -- both genuine improvements with no overlap with this fork's own guards.
+    if (typeof data.parent_id === 'string' && data.parent_id) {
+      if (!getKanbanCard(data.parent_id)) {
+        json(res, { error: 'A szülő kártya nem található' }, 404)
+        return true
+      }
+      if (parentWouldCycle(id, data.parent_id)) {
+        json(res, {
+          error: data.parent_id === id
+            ? 'Egy kártya nem lehet a saját szülője'
+            : `A(z) "${data.parent_id}" szülővé tétele kört zárna be a szülő-láncban.`,
+        }, 409)
+        return true
+      }
     }
     if (updateKanbanCard(id, normalizeProjectName(data), { actor: typeof actor === 'string' ? actor : undefined, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
       json(res, { ok: true }); return true

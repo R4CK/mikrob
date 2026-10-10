@@ -18039,3 +18039,79 @@ ancestor-ellenőrzés nem helyettesíti a "van-e már KIMONDOTT no-go ugyanerre"
 **Ki döntött:** backend2 észlelte és javította a saját hibáját a landolási retry körében
 (fleet-test.sh, `fork-upstream-conflict-guard.test.ts` lelete). Gate: QA + Cybersec (a kártya
 leírása szerint, csatorna-hitelesítés/token-kezelés érintett).
+
+## 2026-10-10 -- Upstream-sync 8. köteg (144d7756..94765127, kártya 14256aac): 16 konfliktusos fájl
+
+Nagy kiterjedésű merge, 16 konfliktusos fájl (`scripts/email-send-gate.mjs`,
+`scripts/hooks/outgoing-copy-gate.py`, `src/db.ts`, `src/web.ts`, `src/web/agent-process.ts`,
+`src/web/agent-scaffold.ts`, `src/web/cli-update.ts`, `src/web/message-router.ts`,
+`src/web/routes/{agents,kanban,updates}.ts`, `web/app.js`, `web/index.html` + 3 teszt-fájl).
+Döntések fájlonként (a fork-oldal az alapértelmezés, de minden esetben ELLENŐRIZVE, nem vakon):
+
+1. **CRM modul (src/crm/, web-crm/, docs/crm/) -- ELFOGADVA a törlés.** Upstream saját döntése
+   (f1e680ba, "the CRM moved to its own repository, Szotasz/marveen-crm"), a tulajdonos
+   (Szotasz) döntötte el a 7. kötegben frissen behozott CRM-modulról, hogy külön repóba kerül.
+   A fork sosem fejlesztette tovább a CRM-et sajátosan (a merge-base-ig minden CRM-commit
+   upstream eredetű), csak egy saját post-merge teszt-fix érintette (`src/crm/leads-gate.ts`,
+   commit 2329e197) -- nincs elvesztendő fork-specifikus munka. 19 fájl törölve.
+2. **`src/web/agent-process.ts` + `src/db.ts` (kötelező oldal-oldal review, rule 3 a kártyán):**
+   a MINIMAX provider-ág (CLAUDE.md 17. szabály, Peti NO-GO 48565f81) NEM került be. Három
+   duplikált-deklaráció hiba a merge-ből (LAUNCH_SECRETS_DIR*/launchSecretRef/clearLaunchSecrets
+   kétszer, eltérő strukturális helyen; `parentWouldCycle` kétszer, db.ts-ben, a fork már korábban
+   portolta -- card 16e60d3c/5aaf7209) -- mindhárom konszolidálva egy definícióra, a két oldal
+   dokumentációjának értékes részeit egyesítve.
+3. **Bash egress: WHITEHAT GO-szintű, mért allowlist-alapú `bash-egress-guard.py` (card
+   f6db6978/854182c7, 2.9M valódi Bash-parancson mérve) marad az egyetlen bekötött egress-gate.**
+   Upstream saját, denylist-alapú párhuzamos mechanizmusa (EGRESSPARSER923,
+   `scripts/hooks/bash-egress-parser.mjs`) NEM került be -- ez már egy KORÁBBI körben
+   (`src/fork-upstream/acknowledged-conflicts.ts`, 'scripts/hooks/bash-egress-parser.mjs' kulcs)
+   kimondott, tripwire-rel védett döntés volt, amit ez a kör csak megerősített (a fájl + teszt
+   törölve, a BASH_EGRESS_DENY szűk, biztonságos tool-name-deny lista viszont megmaradt/elfogadva).
+4. **Üzenetsor fair batch: `selectFairBatch` (fork, 2026-08-08, urgency-promotion) marad,
+   upstream `selectTickWindow` (fc5748f5) NEM került be** -- ugyanaz a korábban kimondott,
+   tripwire-rel védett döntés (`src/web/message-router.ts` kulcs), megerősítve.
+5. **`src/web/routes/agents.ts`: a modell-választó marad `CLAUDE_MODELS` (card 5d2002b5, egyetlen
+   forrás a heti tier-léptővel), a kliens-oldali `cli`/`claudeSupport` mezők és a hozzá tartozó
+   `applyClaudeCliGate` FE-funkció NEM lett bekötve** (card 6b10a6b8 korábbi döntése: a fork a
+   CLI-gate-et INDÍTÁSKOR érvényesíti, `refuseIfCliCannotLaunch`, nem a picker-listában -- a HTML
+   `agentModelCliHint`/`editAgentModelCliHint` elemek grep-ellenőrizve inaktívak, nincs FE-kódjuk).
+   Egy duplikált `refuseIfCliCannotLaunch` definíció (upstream eredeti, 422-es alakja) + két
+   duplikált hívás (POST/PUT, a már meglévő fork-adaptált 400-as hívás mellett) konszolidálva.
+6. **`src/web/routes/kanban.ts`: a fork teljes guard-láncolata (newDevStopWouldBlock,
+   landedGuardVerdict, gateCompletenessGuardVerdict, planGrillingGuardVerdict,
+   draftReviewGuardVerdict, dependencyBlockBody, bulkAttributionRequired) megmaradt** (ezek
+   mindegyike upstream-nek nincs), KIBŐVÍTVE upstream két valódi javításával: a szülő-kártya
+   LÉTEZÉSÉNEK ellenőrzése (404, nem csendes dangling reference) és a hiba-üzenet pontosítása
+   (saját-szülő vs. hosszabb kör).
+7. **`scripts/email-send-gate.mjs`: a fork saját, adverzariálisan hardened `isSendInvocation` +
+   heredoc-kompozíció (card 72f5f13b/c7401c5f, ~150 teszt) megmaradt, KIBŐVÍTVE** upstream
+   `wrapperDepthHit`/`wrapper-depth` megkülönböztetésével (ez már bekötött, csak eddig nem volt
+   hívva ezen a pontnál -- valódi, átfedés-mentes addíció).
+8. **`web/app.js` + `web/index.html`: a fork modularizációja (app-kanban.js/app-updates.js/
+   app-elements.js, slice 25/30/35/38) megmaradt.** Upstream ~5300 soros, nem-modularizált inline
+   kanban-blokkja és a duplikált `renderCliUpdateOffer`/`applyCliUpdate` NEM került be. A
+   `#updatesCommitList` konténer hiánya SZÁNDÉKOS (fork-updates.js dokumentálja: a fork saját
+   `#updatesRepos`-ra cserélte, az upstream `loadUpdates()` ezen a ponton holt kód). A kanban-blokk
+   esetleges genuinely ÚJ UI-viselkedését NEM nézte át ez a kártya sor szerint (frontend-terület,
+   MikroB/Fron Ted felé jelezve, nem találgatva).
+9. **3 új, kizárólag a fentebb NEM-adoptált funkciókat tesztelő fájl törölve**
+   (`src/__tests__/{bash-egress-parser,picker-cli-gate,outgoing-copy-gate-interagent-homoglyph,
+   outgoing-copy-gate-at-file}.test.ts`), és egy ÖTÖDIK, meglévő fájl (`outgoing-copy-gate.py`
+   `inter_agent_homoglyph_gate` + 3 segédfüggvénye, INTERAGENTHOMOGLIF923) ismét eltávolítva --
+   ugyanaz a korábban kimondott ok (card ee7bc2ba/26f2b4f2: a `_gate_log` hívás célpontja máig
+   nem létezik, a funkció élesben NameError-ral állna le).
+
+**Mért eredmény:** `tsc --noEmit` tiszta, `fork-upstream-conflict-guard.test.ts` 39/39 (minden
+korábban kimondott tripwire-döntés megerősítve, nem csendben felülírva), a közvetlenül érintett
+teszt-fájlok (launch-secret-ref, kanban-*, agent-tool-deny, agent-custom-provider-field,
+agent-launch-key-quoting, cli-update-offer, email-send-gate*, message-router-tick-cap,
+message-router-fair-batch, channels-reap-poller-pids) mind zöldek. Teljes `fleet-test.sh` a
+landolás részeként.
+
+**Ki döntött:** backend3, a kártya saját "fork-oldal alapértelmezés + minden eltérés névszerint
+ide" utasítása szerint. Minden NEM-trivális döntésnél (CRM, MiniMax, egress-parser, selectTickWindow,
+picker-CLI-gate) ellenőrizve a `src/fork-upstream/acknowledged-conflicts.ts` korábbi, kimondott
+precedensével -- 2 esetben (selectTickWindow, ensureBashEgressParser) a saját magyarázó
+kommentjeim véletlenül megsértették a tripwire-t (a needle szó szerinti előfordulása kommentben is
+számít), átfogalmazva. Gate: QA + Cybersec + Cybered (a kártya kérése szerint, agent-process.ts/
+db.ts trust-boundary + a kanban-endpoint write-path érintett).

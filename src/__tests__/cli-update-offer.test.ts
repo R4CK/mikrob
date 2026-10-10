@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { readFileSync, writeFileSync, mkdtempSync, chmodSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, chmodSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {

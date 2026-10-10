@@ -1412,11 +1412,18 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec(`ALTER TABLE task_runs ADD COLUMN completed_at INTEGER`) } catch { /* already present */ }
   try { db.exec(`ALTER TABLE task_runs ADD COLUMN outcome TEXT`) } catch { /* already present */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_task_runs_open ON task_runs(completed_at, ts)`)
+  // Migration: delivery integrity (PROMPTCSONK923). What the session's own
+  // transcript shows actually ARRIVED, compared with what was typed: 'intact',
+  // or how it broke ('head-lost', 'split', ...). NULL = not verified (remote
+  // agent, command task, transcript not readable, or a row from before this
+  // column). Separate from `status`, which says how the DISPATCH went and is
+  // stamped before anything has arrived.
+  try { db.exec(`ALTER TABLE task_runs ADD COLUMN delivery TEXT`) } catch { /* already present */ }
   // Backfill for SCHEDLOST915: terminal marker rows (lost, skipped, ...) were
   // inserted with completed_at NULL and so looked open for ever. A marker ends
   // when it is written. Idempotent: matches nothing once applied.
   db.exec(`UPDATE task_runs SET completed_at = ts
-           WHERE completed_at IS NULL AND status NOT IN ('fired', 'fired_late')`)
+           WHERE completed_at IS NULL AND status NOT IN ('fired', 'fired_late', 'fired_busy')`)
 
   // --- Pending Scheduled Task Retries ---
   // Busy-skipped scheduled tasks used to live in an in-memory Map. On a
@@ -3508,7 +3515,11 @@ const ANCESTOR_DEPTH_LIMIT = 16
  *
  * Cycle- and depth-guarded: `parent_id` is editable through the API, so a looping or runaway chain is
  * reachable input rather than a theoretical worry. Both cases stop and warn instead of throwing -- a
- * bad edge must not take down the write that triggered the stamp.
+ * bad edge must not take down the write that triggered the stamp. NOT a `while (parent)` loop for the
+ * same reason upstream's own version of this comment gives: a path that writes parent_id directly (a
+ * script, a migration, a hand-edited database) can bypass parentWouldCycle (card 16e60d3c/5aaf7209,
+ * already adopted further down this file), so this loop has to survive a cycle that got in some other
+ * way, not just the one the public API refuses up front.
  */
 function touchAncestorChain(parentId: string | null | undefined, now: number, startedAt: string): void {
   if (!parentId) return // root card: the common case, and it costs nothing
@@ -3538,6 +3549,12 @@ function touchAncestorsOf(cardId: string, now: number): void {
   const row = db.prepare('SELECT parent_id FROM kanban_cards WHERE id=?').get(cardId) as { parent_id: string | null } | undefined
   touchAncestorChain(row?.parent_id, now, cardId)
 }
+// NOTE: upstream's own parentWouldCycle(cardId, parentId) landed in THIS same hunk's upstream half
+// (94765127) -- not adopted here as a second definition, because the fork already has one, further
+// down this file (card 16e60d3c/5aaf7209, ACKNOWLEDGED_FORK_ANCHORS 'src/db.ts' tripwire), already
+// wired into src/web/routes/kanban.ts's PUT/POST handlers. The two are functionally equivalent (same
+// cycle-walk-and-depth-cap contract); keeping both would be a duplicate `export function
+// parentWouldCycle` and a TypeScript error.
 
 export function createKanbanCard(card: {
   id: string
@@ -5933,6 +5950,9 @@ export interface TaskRunHistoryEntry {
   // claims and conflating them is how a finished task kept looking stuck.
   completed_at: number | null
   outcome: string | null
+  // Delivery integrity (PROMPTCSONK923): what the transcript shows arrived.
+  // null = not verified -- NOT 'intact'.
+  delivery: string | null
   duration_ms: number | null
 }
 
@@ -5940,7 +5960,13 @@ const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 // Dispatch statuses that open a run (closed later by markTaskRunCompleted or
 // reconcileOpenTaskRuns). Must match reconcileOpenTaskRuns' own filter.
-export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late'])
+// 'fired_busy' (AUDITBORITEKVESZ918) belongs here with the other two: it is a
+// DELIVERED run whose prompt went into a busy pane, so it is open until the
+// watchdog sweep closes it. Left out, appendTaskRun would stamp completed_at at
+// injection time and a run that has not even started would read as finished --
+// and the authentication path that proves a wrapper-less prompt really came from
+// the scheduler (see docs + the boritek-nelkuli skill) looks for an OPEN run.
+export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late', 'fired_busy'])
 
 /**
  * Record that a run was dispatched. Returns the row id so the caller can close
@@ -5969,6 +5995,18 @@ export type TaskRunOutcome = 'done' | 'abandoned' | 'lost' | 'interrupted'
  * already-closed row, so a duplicate sweep (or a reconcile racing a live sweep)
  * cannot turn a 'done' into an 'abandoned'. First writer wins.
  */
+/**
+ * Record the delivery-integrity verdict of a run (PROMPTCSONK923). Written
+ * once: a later sweep cannot overwrite the first observation. Returns true
+ * when the row was updated.
+ */
+export function setTaskRunDelivery(runId: number, verdict: string): boolean {
+  const info = db.prepare(
+    'UPDATE task_runs SET delivery = ? WHERE id = ? AND delivery IS NULL'
+  ).run(verdict, runId)
+  return info.changes > 0
+}
+
 export function markTaskRunCompleted(runId: number, outcome: TaskRunOutcome, completedAt = Date.now()): boolean {
   const info = db.prepare(
     'UPDATE task_runs SET completed_at = ?, outcome = ? WHERE id = ? AND completed_at IS NULL'
@@ -5977,21 +6015,31 @@ export function markTaskRunCompleted(runId: number, outcome: TaskRunOutcome, com
 }
 
 /**
- * Close runs that a restart orphaned.
+ * Close EVERY run that a restart orphaned (SCHEDSORZAR923).
  *
  * The watchdog's in-flight map lives in memory, so a dashboard restart loses
- * every open run it was tracking and those rows would stay open for ever --
- * re-introducing the exact "cannot tell running from finished" problem this
- * change removes, just in a smaller window. Rows older than maxAgeMs with no
- * completed_at are closed as 'interrupted': we genuinely do not know whether
- * they finished, and saying so is more useful than either optimistic 'done'
- * or alarming 'abandoned'.
+ * every open run it was tracking. Nothing else can ever close those rows: the
+ * sweep that closes rows only walks the map. Until 2026-09-23 this reconcile
+ * closed only rows OLDER than the tracking ceiling (6 h), so a run that was
+ * minutes old at the restart stayed open for ever and fed the stuck-run alert
+ * for hours (measured: hermes-soak-orszem 08:34:48, 8 minutes old at the
+ * 08:43:12 restart, still open 4 hours later). Age is not a criterion: the map
+ * is gone for ALL of them.
+ *
+ * The close stamp is completed_at = ts, a zero duration, on purpose. A "now"
+ * stamp LOOKS like a measurement and lies: the 2026-09-10 sweep produced
+ * 14-16 day "durations" that way and a threshold was later derived from them.
+ * A zero duration is obviously not a measurement, and outcome 'interrupted'
+ * says why: we genuinely do not know whether the run finished. Duration
+ * statistics filter on outcome = 'done' and never see these rows.
  */
-export function reconcileOpenTaskRuns(maxAgeMs: number, now = Date.now()): number {
+export function reconcileOpenTaskRuns(now = Date.now()): number {
   const info = db.prepare(
-    `UPDATE task_runs SET completed_at = ?, outcome = 'interrupted'
-     WHERE completed_at IS NULL AND ts < ? AND status IN ('fired', 'fired_late')`
-  ).run(now, now - maxAgeMs)
+    // 'fired_busy' (AUDITBORITEKVESZ918) is an open dispatch status like the
+    // other two, so the reconcile must be able to close it.
+    `UPDATE task_runs SET completed_at = ts, outcome = 'interrupted'
+     WHERE completed_at IS NULL AND ts <= ? AND status IN ('fired', 'fired_late', 'fired_busy')`
+  ).run(now)
   return info.changes
 }
 
@@ -6003,6 +6051,12 @@ export function reconcileOpenTaskRuns(maxAgeMs: number, now = Date.now()): numbe
  * judgement the operator can make: "running 5 min, typically finishes in 40 s"
  * says something; "running 5 min" alone does not.
  */
+/** The dispatch status of one task_runs row ('fired' | 'fired_late' | 'fired_busy' | ...), or null. */
+export function getTaskRunStatus(runId: number): string | null {
+  const row = db.prepare('SELECT status FROM task_runs WHERE id = ?').get(runId) as { status: string } | undefined
+  return row?.status ?? null
+}
+
 export function getTaskRunMedianDurationMs(name: string, minSamples = 5, limit = 50): number | null {
   const rows = db.prepare(
     `SELECT (completed_at - ts) AS d FROM task_runs
@@ -6017,8 +6071,8 @@ export function getTaskRunMedianDurationMs(name: string, minSamples = 5, limit =
 
 export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryEntry[] {
   const rows = db.prepare(
-    'SELECT ts, status, agent, completed_at, outcome FROM task_runs WHERE name = ? ORDER BY ts DESC LIMIT ?'
-  ).all(name, limit) as { ts: number; status: string; agent: string; completed_at: number | null; outcome: string | null }[]
+    'SELECT ts, status, agent, completed_at, outcome, delivery FROM task_runs WHERE name = ? ORDER BY ts DESC LIMIT ?'
+  ).all(name, limit) as { ts: number; status: string; agent: string; completed_at: number | null; outcome: string | null; delivery: string | null }[]
 
   // token_usage.timestamp is in seconds; task_runs.ts is in ms -- divide by 1000
   const tokenStmt = db.prepare(
@@ -6039,6 +6093,7 @@ export function listTaskRunHistory(name: string, limit: number): TaskRunHistoryE
       tokens_est: tokenRow.total > 0 ? tokenRow.total : null,
       completed_at: completedAt,
       outcome: row.outcome ?? null,
+      delivery: row.delivery ?? null,
       duration_ms: completedAt != null ? completedAt - row.ts : null,
     }
   })

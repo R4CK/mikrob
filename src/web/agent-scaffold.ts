@@ -8,6 +8,7 @@ import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
+import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
 import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
@@ -745,6 +746,14 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectAgentStalenessHook(existing)
   // Card 4f15966e: same gap, same fix, for the provenance guard.
   injectAgentProvenanceHook(existing)
+  // Upstream batch 8 (94765127, EGRESSPARSER923) adds a SECOND Bash PreToolUse egress parser here
+  // (scripts/hooks/bash-egress-parser.mjs) -- NOT adopted: this fork's own bash-egress-guard.py
+  // (card f6db6978/854182c7, measured on 2.9M real Bash commands across 12,675 sessions) already
+  // covers the same threat class (network intent for ANY interpreter, not just curl/wget) more
+  // thoroughly, and running both on every Bash call would double-gate the same tool. The narrow,
+  // non-overlapping BASH_EGRESS_DENY whole-tool-name deny list (wget/nc/ncat/telnet, below) IS
+  // adopted -- it is a safe blunt backstop, not a substring-matched pattern, so it does not carry
+  // the false-positive risk our own hook's docstring measured against `settings.permissions.deny`.
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -1011,14 +1020,22 @@ export function removeOutgoingCopyGate(existing: Record<string, unknown>): boole
 //
 // So the curl half is NOT a deny rule at all -- it needs a PreToolUse hook that parses the command
 // and looks at the destination, which is the shape this fork already uses for its other gates and
-// which continues on card 854182c7. Until that lands, a shell `curl` is NOT gated here, and
-// docs/security-hardening.md says so rather than implying coverage we do not have.
+// which continues on card 854182c7 (bash-egress-guard.py, measured on 2.9M real Bash commands).
+// Until that lands, a shell `curl` is NOT gated here, and docs/security-hardening.md says so
+// rather than implying coverage we do not have. Upstream batch 8 (94765127) later shipped its own
+// narrower curl/interpreter parser (scripts/hooks/bash-egress-parser.mjs, EGRESSPARSER923) for
+// this same gap -- not adopted (see the injection call site above): this fork's own hook already
+// covers more interpreters and is the one actually wired in.
 //
 // WHAT IS HERE: the verbs with no internal use in this install at all -- wget, nc, ncat, telnet --
 // denied whole. Measured: the wget rule fires (DENIED), and nothing in the fleet's own paths uses
 // any of them, so this half is protection without a false positive. A deny rule is checked BEFORE
 // the --dangerously-skip-permissions bypass (measured), so it binds on permissive profiles too.
 // Sanctioned tooling that speaks HTTPS on its own account (git, gh, npm) is deliberately untouched.
+//   - `curl *https://*` cannot be written as `*curl *https://*` for free: a
+//     leading `*` also matches inside a word. `*nc *` would deny `rsync -a x y`
+//     ("...nc " is a suffix of "rsync "). Hence `nc *` (anchored) plus an
+//     explicit `*/nc *` for absolute-path invocations.
 export const BASH_EGRESS_DENY = [
   'Bash(wget *)',
   'Bash(*/wget *)',
@@ -1228,6 +1245,12 @@ export function injectEgressGate(existing: Record<string, unknown>): void {
 // Idempotently wire the git-protect-guard PreToolUse hook (blocks whole-tree
 // destructive git operations: `add -A`, `checkout -- .`, `reset --hard`,
 // `clean -fd`, and their `-C <path>` / env-prefixed forms).
+//
+// Upstream batch 8 (94765127, EGRESSPARSER923) added a second Bash egress PreToolUse hook's
+// predicate+injector pair here -- NOT adopted, same reasoning as the injection call site and the
+// BASH_EGRESS_DENY comment above: this fork's own bash-egress-guard.py already covers the same
+// gap (curl/interpreter network intent) more thoroughly, and is the one actually wired in. See
+// src/fork-upstream/acknowledged-conflicts.ts for the decision record and its tripwire.
 //
 // Applied to ALL agents, main included: the danger is not a role, it is the
 // SHARED CHECKOUT. One `git add -A` from any agent stages every other agent's
@@ -1521,6 +1544,9 @@ export function ensureEgressGate(name: string): boolean {
 // twice in one day, so waiting for every agent to respawn is too slow: this runs
 // in the startup migration loop next to ensureEgressGate, so a dashboard restart
 // arms the whole fleet at once. Returns true when it actually changed a file.
+//
+// Upstream batch 8's boot-time migration counterpart for the second Bash egress hook
+// (EGRESSPARSER923) is not adopted here, same reasoning as the injector above.
 export function ensureNpmProtectGuard(name: string): boolean {
   const settingsPath = agentSettingsPath(name)
   let settings: Record<string, unknown> = {}
@@ -2339,6 +2365,10 @@ export function scaffoldAgentDir(name: string) {
   // Deliberately narrow: a file that declares even ONE server is a real configuration and is left
   // alone, exactly as before. Unparseable content is treated as configured too -- overwriting
   // something we cannot read would be worse than leaving it.
+  //
+  // Upstream batch 8's plain `!existsSync(mcpJson)` guard (MCPOROKLES923) is the older, narrower
+  // check this fork's own e6fc74e0 fix replaces -- not adopted; the actual inheritance-filtering
+  // body below (filterInheritableMcpServers/mcp-inheritance.ts) is shared and unaffected either way.
   const mcpNeedsSeeding = ((): boolean => {
     if (!existsSync(mcpJson)) return true
     try {
@@ -2350,14 +2380,26 @@ export function scaffoldAgentDir(name: string) {
     }
   })()
   if (mcpNeedsSeeding) {
-    // Copy shared MCP config so agents get access to common tools (e.g. aiam-blog)
+    // Inherit the project's shared MCP servers, filtered to the allowlisted subset
+    // (AGENT_INHERITED_MCP_SERVERS, mcp-inheritance.ts) rather than a blanket copy.
     const sharedMcp = join(PROJECT_ROOT, '.mcp.json')
+    let inherited: Record<string, unknown> = { mcpServers: {} }
     if (existsSync(sharedMcp)) {
-      copyFileSync(sharedMcp, mcpJson)
-    } else {
-      // Valid empty shape -- `claude /doctor` rejects plain "{}"
-      atomicWriteFileSync(mcpJson, JSON.stringify({ mcpServers: {} }, null, 2))
+      try {
+        const parsed = JSON.parse(readFileSync(sharedMcp, 'utf-8')) as Record<string, unknown>
+        const servers = parsed && typeof parsed.mcpServers === 'object' && parsed.mcpServers !== null && !Array.isArray(parsed.mcpServers)
+          ? parsed.mcpServers as Record<string, unknown>
+          : {}
+        const { kept, dropped } = filterInheritableMcpServers(servers, readInheritableMcpServerNames())
+        logNotInherited(name, 'scaffold', dropped)
+        inherited = { ...parsed, mcpServers: kept }
+      } catch (err) {
+        // Unparseable root config: inherit nothing rather than copy what we cannot filter.
+        logger.warn({ err, name }, 'MCP inheritance: project .mcp.json unreadable, new agent inherits no servers')
+      }
     }
+    // Valid empty shape when nothing is inherited -- `claude /doctor` rejects plain "{}"
+    atomicWriteFileSync(mcpJson, JSON.stringify(inherited, null, 2))
   }
   // Seed settings.json from template so the agent gets the PreCompact
   // hook (memory save + skill reflection) out of the box. Only if the

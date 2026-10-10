@@ -324,7 +324,14 @@
 //  Card detail, Breakdown modal -- all moved to app-kanban.js, slice 30.
 //  loadKanban() is called from switchPage and startKanbanRefresh() in app.js.
 //  app-kanban.js is loaded AFTER this file in index.html.)
+//
+// Upstream batch 8 (94765127) re-introduces the full, un-modularised kanban section inline here
+// (thousands of lines) -- not adopted structurally: this fork's app-kanban.js module split
+// (slice 30) stands. Any genuinely NEW upstream kanban-UI behaviour from that block is a separate,
+// frontend-owned review (not attempted line-by-line in this backend merge card) -- flagged to
+// MikroB/Fron Ted rather than guessed at.
 /* STUB -- content removed */
+
 
 // ============================================================
 // === Elements + Modal helpers + Avatar Gallery -- see web/app-elements.js ===
@@ -563,6 +570,9 @@ async function loadUpdates() {
   }
   renderDiagnoseOffer()
   renderCliUpdateOffer()
+  // Upstream batch 8 (94765127) defines renderCliUpdateOffer/applyCliUpdate inline here -- not
+  // adopted, same modularisation-slice deviation as the kanban block above: both functions
+  // already live in app-updates.js (slice 25), loaded after this file.
 }
 
 // Card 55885cb1: both repo blocks (the fork's own origin, and the "how far behind upstream are
