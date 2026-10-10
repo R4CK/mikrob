@@ -1920,6 +1920,17 @@ export function shouldBriefAfterStart(
   return opts.fresh === true && result.ok
 }
 
+/**
+ * F4 (card 657b32f2, WhiteHat LOW on f1800242): a remote (ssh) launch has no provider-env override
+ * at all (see buildRemoteLaunchCommand), so a configured customProviderId cannot take effect there.
+ * Pure predicate so the "remote + customProvider -> loud refusal" decision is unit-testable without
+ * the tmux/ssh side effects of startAgentProcessUnlocked itself.
+ */
+export function refuseRemoteCustomProvider(isRemote: boolean, customProviderId: string | null): string | null {
+  if (!isRemote || !customProviderId) return null
+  return `customProvider '${customProviderId}' cannot be used on a remote (ssh) agent -- the remote launch path has no provider-env override`
+}
+
 async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
@@ -1985,6 +1996,17 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
   }
 
   if (remote.host && remote.workdir) {
+    // F4 (card 657b32f2, WhiteHat LOW on f1800242): startRemoteAgentProcess builds its launch
+    // command from the laptop's own ~/.claude login with no provider-env override at all (see
+    // buildRemoteLaunchCommand) -- a configured customProviderId cannot be honored there. Silently
+    // ignoring it would start the agent against the default provider while its own config implies a
+    // specific loopback endpoint; loud refusal instead, matching every other fail-closed branch in
+    // this function (oauthTokenFile above, resolveProviderEnv's own catch below).
+    const refusal = refuseRemoteCustomProvider(true, customProviderId)
+    if (refusal) {
+      logger.error({ name, customProviderId }, 'customProvider: agent NOT started (remote launch cannot honor it)')
+      return { ok: false, error: refusal }
+    }
     return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
   }
 
