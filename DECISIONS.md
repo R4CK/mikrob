@@ -18604,3 +18604,40 @@ kerulo, a repoban kovetett dokumentacios nyom.
 **Ki dontott:** a hibat qa2 talalta (d69b54fd QA PASS komment, 14865), MikroB jelezte kovetokent
 (4f5f08fd); a javitas (a 15 sor atirasa + a sweep-pel igazolas) fullstack sajat vegrehajtasa.
 Gate: QA.
+
+## 2026-10-10 -- korrekcio: a 59cfcb21 F4 bejegyzes tulzott mutacio-lefedettseget allitott (kartya 0fb92c16, RedHat 59cfcb21 CYBERED GO utomunka)
+
+A fentebbi, "2026-10-10 -- skill-archive kikerul a publikus repobol..." bejegyzes F4 pontja ezt
+allitotta: "Mutacios regresszios teszt mindket uj ellenorzesre (`src/__tests__/skill-archive-no-propagation.test.ts`, 3 eset)." Ez tulzott volt: a 3 teszteset tenylegesen a (b) altalanos
+wildcard-masolas es a (c) szo-szerinti nev-egyezes ellenorzesre adott mutacios bizonyitekot, DE a
+(a) tenyleges iranyitasi-kotes allowlist-ellenorzesre NEM volt mutacios teszt -- egy olyan
+szerkesztes, ami egy UJ, listan-nem-levo konyvtarat kezd olvasni anelkul, hogy a "skill-archive"
+szot kiirna vagy altalanos wildcard-masolast hasznalna, zoldon maradt volna at ezen az oron.
+
+**Javitas (kartya 0fb92c16, item 3):** `src/__tests__/skill-archive-no-propagation.test.ts` kapott
+egy uj mutacios tesztet kifejezetten az (a) szabalyra (`*_DIR="$INSTALL_DIR/<nev>"` mintaju
+iranyitasi-kotes egy nem-engedelyezett konyvtarra), plusz a letezo (c) szo-szerinti-nev mutacio
+kiterjesztve mind az 5 `FILES` bejegyzesre (install-linux.sh, install-macos.sh, install-lang.sh,
+update.sh, store/agent-skill-drift-sync.sh) -- korabban csak install-linux.sh es update.sh volt
+tesztelve, a masik 3 fajl pinnelesen kivul esett. Osszesen 9 teszteset (6-rol), mind zold.
+
+**Ugyanezen a koron (0fb92c16 item 1-2, 5):**
+- `skill-archive-sync.sh` es `skill-archive-restore.sh`: a nev-szanitizalas mostantol a dot-kezdetu
+  neveket (kulonosen ".git") is tiltja -- egy ".git" nevu "skill" a sync.sh-ban DEST-et az archivum
+  SAJAT .git konyvtarara allitotta volna, es a kovetkezo `rm -rf "$DEST"` a teljes archivum-
+  tortenetet torolte volna (merve). `skill-archive-sync.sh` mostantol explicit ellenorzi, hogy az
+  archivum-repon NINCS git remote (`git remote` ures), mielott barmit masolna/commitolna -- a
+  "remote-tilalom" korabban csak proza volt, kikenyszerites nelkul.
+- A `~/.claude/skill-archive` kulon, remote nelkuli repoban a `ponytail/LICENSE-MIT.txt` es
+  `sp-diagnosing-superpowers/LICENSE-MIT.txt` szerzoi jogi sora KOVETKEZTETETT volt
+  ("DietrichGebert and contributors" / "obra and contributors"), nem a tenyleges forras-LICENSE-bol
+  masolt. Javitva a tenyleges upstream LICENSE szovegere (ponytail: "Copyright (c) 2026
+  DietrichGebert", a `DietrichGebert/ponytail` repo LICENSE fajljabol, commit 16f29800; sp-
+  diagnosing-superpowers: "Copyright (c) 2025 Jesse Vincent", az `obra/superpowers` repo LICENSE
+  fajljabol, raw.githubusercontent.com-rol frissen lekerve 2026-10-10-en) -- ez a fenti DECISIONS
+  bejegyzesben NEM volt dokumentalva, a javitas kulon commitban tortent a `~/.claude/skill-archive`
+  SAJAT (git-kovetett, remote nelkuli) repojaban, nem ebben a repoban (nincs git diff itt).
+
+**Ki dontott:** a leleteket RedHat adta (59cfcb21 CYBERED GO, komment 14453/c7933508), MikroB
+fogalmazta a javitas iranyat (0fb92c16 kartya-leiras). A vegrehajtas fullstack sajat munkaja.
+Gate: QA + Cybered (a javitas iranyat RedHat adta).

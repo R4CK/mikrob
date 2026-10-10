@@ -91,4 +91,84 @@ describe('skill-archive-no-propagation.selftest.sh', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  // Card 0fb92c16 item 3 (RedHat 59cfcb21 follow-up): the two mutation proofs above only ever
+  // exercised rule (b) and rule (c). Rule (a) -- the actual directory-binding allowlist, which is
+  // the check that would catch a FUTURE installer edit that starts iterating a brand-new,
+  // unlisted directory without ever spelling "skill-archive" or doing a generic wildcard copy --
+  // had ZERO mutation coverage and stayed green under any edit to it. This proves it independently.
+  it('MUTATION PROOF (F4 rule a): an installer binding an unlisted directory via *_DIR="$INSTALL_DIR/<name>" flips the guard to FAIL even without naming "skill-archive" or wildcard-copying', () => {
+    const root = mkdtempSync(join(tmpdir(), 'skill-archive-guard-dirbind-'))
+    try {
+      mkdirSync(join(root, 'store'), { recursive: true })
+      copyFileSync(SCRIPT, join(root, 'store', 'skill-archive-no-propagation.selftest.sh'))
+      writeFileSync(join(root, 'install-linux.sh'), '#!/usr/bin/env bash\necho hello\n')
+      writeFileSync(join(root, 'update.sh'), '#!/usr/bin/env bash\necho hello\n')
+
+      const clean = run(root)
+      expect(clean.code).toBe(0)
+      expect(clean.out).toContain('PASS')
+
+      // Tamper: a brand-new, unlisted directory binding. No "skill-archive" substring, no
+      // generic store/~/.claude wildcard -- only rule (a)'s allowlist check can catch this.
+      writeFileSync(
+        join(root, 'install-linux.sh'),
+        '#!/usr/bin/env bash\nINSTALL_DIR="$HOME/.marveen"\nFOO_DIR="$INSTALL_DIR/not-on-the-allowlist"\ncp -r "$FOO_DIR" "$HOME/.claude/skills/foo"\n'
+      )
+
+      const tampered = run(root)
+      expect(tampered.code).toBe(1)
+      expect(tampered.out).toContain('FAIL')
+      expect(tampered.out).toContain('not-on-the-allowlist')
+      expect(tampered.out).not.toContain('references skill-archive by name')
+      expect(tampered.out).not.toContain('generic whole-directory copy')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // Card 0fb92c16 item 3: the mutation proofs above only ever tampered install-linux.sh and
+  // update.sh. The selftest's FILES array has 5 entries (install-linux.sh, install-macos.sh,
+  // install-lang.sh, update.sh, store/agent-skill-drift-sync.sh) -- the other 3 had no mutation
+  // test pinning that the guard actually reads and checks them. This parametrizes the literal-name
+  // mutation proof across all 5, so a future edit that drops one FILES entry (or breaks the guard's
+  // handling of it) shows up here instead of only being discoverable by reading the shell source.
+  const REAL_FILES = [
+    'install-linux.sh',
+    'install-macos.sh',
+    'install-lang.sh',
+    'update.sh',
+    'store/agent-skill-drift-sync.sh',
+  ]
+
+  function allFilesRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), 'skill-archive-guard-allfiles-'))
+    mkdirSync(join(root, 'store'), { recursive: true })
+    copyFileSync(SCRIPT, join(root, 'store', 'skill-archive-no-propagation.selftest.sh'))
+    for (const f of REAL_FILES) {
+      writeFileSync(join(root, f), '#!/usr/bin/env bash\necho hello\n')
+    }
+    return root
+  }
+
+  it.each(REAL_FILES)(
+    'MUTATION PROOF (all 5 FILES entries pinned): %s referencing "skill-archive" flips the guard to FAIL and names that exact file',
+    (target) => {
+      const root = allFilesRoot()
+      try {
+        const clean = run(root)
+        expect(clean.code).toBe(0)
+        expect(clean.out).toContain('PASS')
+
+        writeFileSync(join(root, target), '#!/usr/bin/env bash\ncp -r store/skill-archive/foo ~/.claude/skills/foo\n')
+
+        const tampered = run(root)
+        expect(tampered.code).toBe(1)
+        expect(tampered.out).toContain('FAIL')
+        expect(tampered.out).toContain(target)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+  )
 })
