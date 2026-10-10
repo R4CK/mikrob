@@ -110,6 +110,38 @@ cp -R "$src/." "$dest/" 2>/dev/null || { echo "vendor-skill: copy failed" >&2; e
 # -- a vendored skill directory must never be a git working tree, in either mode, so there is no
 # case where keeping .git would be correct.
 rm -rf "$dest/.git"
+
+# EXCLUSION924 (card fd0b2180, Cybersec F1 on 728179d1): a re-vendor copies whatever upstream
+# ships TODAY, with no memory of a deliberate exclusion decision (e.g. Peti removing a paid
+# feature's files after the first vendor). store/vendored-skill-sanctioned.json's "missing:<path>"
+# entries ARE that memory -- re-apply them here, after the copy, so a path Peti excluded stays
+# excluded across every re-vendor, not just the one where it was removed by hand. Key format must
+# match vendored-skill-integrity.py's own: $HOME prefix replaced by literal `~`.
+SANCTIONED_FILE="${VENDOR_SANCTIONED_FILE:-$HERE/vendored-skill-sanctioned.json}"
+if [[ -f "$SANCTIONED_FILE" ]]; then
+  dest_key="${dest/#"$HOME"/\~}"
+  while IFS= read -r excl; do
+    [[ -n "$excl" ]] || continue
+    # A malformed/malicious sanctioned.json entry must not escape $dest via an absolute path or
+    # a `..` segment -- this is a trusted, repo-controlled file today, but the blast radius of a
+    # typo (rm -rf outside $dest) is large enough that the check is cheap insurance regardless.
+    case "$excl" in
+      /*|*..*) echo "vendor-skill: refusing suspicious sanctioned exclusion path '$excl'" >&2; continue ;;
+    esac
+    rm -rf "${dest:?}/${excl:?}"
+  done < <(python3 -c "
+import json, sys
+try:
+    with open(sys.argv[1], encoding='utf-8') as fh:
+        data = json.load(fh)
+except (OSError, ValueError):
+    sys.exit(0)
+for k in data.get('sanctioned', {}).get(sys.argv[2], []):
+    if k.startswith('missing:'):
+        print(k[len('missing:'):])
+" "$SANCTIONED_FILE" "$dest_key")
+fi
+
 [[ -n "$LICENSE_FILE" ]] && cp "$LICENSE_FILE" "$dest/UPSTREAM-LICENSE"
 
 # The two ${VAR:+...}${VAR:-...} halves cannot share one variable: when LICENSE_FILE is SET the
