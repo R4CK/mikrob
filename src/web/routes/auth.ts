@@ -112,6 +112,17 @@ const USER_ADMIN_KINDS = ['token', 'session'] as const
 // would turn one leaked device into unlimited, unexpiring access.
 const DEVICE_KEY_ADMIN_KINDS = ['token', 'session'] as const
 
+// Who may MINT a new credential (a device key or a dashboard user), as opposed to listing or
+// revoking/deleting an existing one. 'token' -- the shared dashboard bearer every fleet agent
+// holds -- is deliberately EXCLUDED here even though it is in the two lists above: WhiteHat (card
+// 68254bd7 F1, NO-GO 14284) found that the shared bearer could mint itself a device key (POST
+// /api/auth/device-keys) or a dashboard user (POST /api/auth/users, then log in for a session),
+// and either new credential's kind ('device'/'session') passes the apply=true human-only gate on
+// POST /api/fleet/import -- a two-step bypass of that gate using nothing but the token every agent
+// already has. Listing and revoking/deleting are NOT part of this escalation (they reduce or
+// merely read access, never grant a new one), so they stay on the wider lists above.
+const CREDENTIAL_MINT_KINDS = ['session'] as const
+
 const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
 const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
 
@@ -300,7 +311,15 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/auth/users' && method === 'POST') {
-    if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
+    // First-user bootstrap is the ONE exception to session-only minting (module header comment:
+    // "creating the FIRST user ... is reachable with a valid bearer, so there is never an
+    // unauthenticated first-run setup page"). Once at least one user exists, the shared bearer
+    // can no longer mint a new one -- card 68254bd7 F1 (WhiteHat NO-GO 14284): that path, plus
+    // POST /api/auth/device-keys below, let the shared token self-escalate to a 'session'/'device'
+    // credential and bypass any kind-gated endpoint that excludes 'token' on purpose (e.g.
+    // POST /api/fleet/import?apply=true).
+    const isBootstrap = countDashboardUsers(true) === 0
+    if (!kindAllowed(auth, CREDENTIAL_MINT_KINDS) && !(isBootstrap && auth?.kind === 'token')) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
@@ -344,7 +363,7 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/auth/device-keys' && method === 'POST') {
-    if (!kindAllowed(auth, DEVICE_KEY_ADMIN_KINDS)) {
+    if (!kindAllowed(auth, CREDENTIAL_MINT_KINDS)) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }

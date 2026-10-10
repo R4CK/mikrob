@@ -209,8 +209,13 @@ describe('revocation + expiry', () => {
 })
 
 describe('management endpoints (mint/list/revoke)', () => {
-  it('token mints a key; the raw value appears in the response ONCE and never in list', async () => {
-    const r = await call('POST', '/api/auth/device-keys', { auth: TOKEN_AUTH, body: { name: 'MacBook Bridge' } })
+  // Card 68254bd7 F1 (WhiteHat NO-GO 14284): minting is now SESSION-ONLY -- the shared token
+  // could otherwise mint itself a device key and use its 'device' kind to bypass endpoints that
+  // deliberately exclude 'token' (e.g. POST /api/fleet/import?apply=true). List/GET and
+  // DELETE/revoke stay reachable by token (they never grant a NEW credential).
+  const SESSION_AUTH: RouteContext['auth'] = { kind: 'session', user: 'op' }
+  it('session mints a key; the raw value appears in the response ONCE and never in list', async () => {
+    const r = await call('POST', '/api/auth/device-keys', { auth: SESSION_AUTH, body: { name: 'MacBook Bridge' } })
     expect(r.res.statusCode).toBe(201)
     const body = r.json()
     expect(String(body.key).startsWith('mvdk_')).toBe(true)
@@ -218,23 +223,23 @@ describe('management endpoints (mint/list/revoke)', () => {
     const list = await call('GET', '/api/auth/device-keys', { auth: TOKEN_AUTH })
     expect(JSON.stringify(list.json())).not.toContain(String(body.key))
   })
-  it('session may mint too (operator parity with token)', async () => {
-    const r = await call('POST', '/api/auth/device-keys', { auth: { kind: 'session', user: 'op' }, body: { name: 'phone' } })
-    expect(r.res.statusCode).toBe(201)
+  it('the shared token can no longer mint a device key', async () => {
+    const r = await call('POST', '/api/auth/device-keys', { auth: TOKEN_AUTH, body: { name: 'phone' } })
+    expect(r.res.statusCode).toBe(403)
   })
   it('mint validates the name', async () => {
-    const r = await call('POST', '/api/auth/device-keys', { auth: TOKEN_AUTH, body: { name: '' } })
+    const r = await call('POST', '/api/auth/device-keys', { auth: SESSION_AUTH, body: { name: '' } })
     expect(r.res.statusCode).toBe(400)
   })
   it('mint validates expires_in_days', async () => {
-    const r = await call('POST', '/api/auth/device-keys', { auth: TOKEN_AUTH, body: { name: 'x', expires_in_days: -5 } })
+    const r = await call('POST', '/api/auth/device-keys', { auth: SESSION_AUTH, body: { name: 'x', expires_in_days: -5 } })
     expect(r.res.statusCode).toBe(400)
-    const r2 = await call('POST', '/api/auth/device-keys', { auth: TOKEN_AUTH, body: { name: 'x', expires_in_days: 30 } })
+    const r2 = await call('POST', '/api/auth/device-keys', { auth: SESSION_AUTH, body: { name: 'x', expires_in_days: 30 } })
     expect(r2.res.statusCode).toBe(201)
     expect(r2.json().expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000))
   })
   it('DELETE revokes by id; the key stops resolving', async () => {
-    const minted = await call('POST', '/api/auth/device-keys', { auth: TOKEN_AUTH, body: { name: 'phone' } })
+    const minted = await call('POST', '/api/auth/device-keys', { auth: SESSION_AUTH, body: { name: 'phone' } })
     const { id, key } = minted.json() as { id: number; key: string }
     const del = await call('DELETE', `/api/auth/device-keys/${id}`, { auth: TOKEN_AUTH })
     expect(del.res.statusCode).toBe(200)

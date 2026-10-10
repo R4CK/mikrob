@@ -270,7 +270,9 @@ describe('users CRUD', () => {
 
   it('rejects a duplicate username with 409', async () => {
     await seedUser('alice')
-    const dup = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username: 'alice', password: GOOD_PW } })
+    // Card 68254bd7 F1: a second create is past the first-user bootstrap exception, so it must
+    // use a session, not the shared token (which would now 403 before reaching the dup check).
+    const dup = await call('POST', '/api/auth/users', { auth: { kind: 'session', user: 'alice' }, body: { username: 'alice', password: GOOD_PW } })
     expect(dup.res.statusCode).toBe(409)
   })
 
@@ -307,6 +309,18 @@ describe('users CRUD', () => {
     expect((list.json().users as unknown[]).length).toBe(2)
     const del = await call('DELETE', '/api/auth/users/bob', { auth: SESSION_AUTH })
     expect(del.res.statusCode).toBe(200)
+  })
+
+  // Card 68254bd7 F1 (WhiteHat NO-GO 14284): the shared token could mint itself a dashboard user
+  // (then log in for a session) or a device key, and either new credential's kind passes a gate
+  // that deliberately excludes 'token' (e.g. POST /api/fleet/import?apply=true). Fix: token may
+  // only mint the FIRST user (documented bootstrap exception, module header comment) -- once one
+  // exists, minting requires a session.
+  it('token may create the FIRST user (bootstrap) but not a second one', async () => {
+    await seedUser('alice') // zero users beforehand -> bootstrap -> token succeeds (seedUser asserts 201)
+    const second = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username: 'bob', password: GOOD_PW } })
+    expect(second.res.statusCode).toBe(403)
+    expect(getDashboardUser('bob')).toBeUndefined()
   })
 })
 

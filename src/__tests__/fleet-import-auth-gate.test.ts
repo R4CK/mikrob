@@ -12,6 +12,10 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
 
+vi.mock('../web/atomic-write.js', () => ({
+  atomicWriteFileSync: vi.fn(),
+}))
+
 function fakeCtx(
   qs: string,
   auth: RouteContext['auth'],
@@ -76,5 +80,71 @@ describe('POST /api/fleet/import -- auth-kind gate on apply=true (card 68254bd7)
     expect(await tryHandleFleet(ctx)).toBe(true)
     expect(out.status).toBe(400)
     expect(out.body.errors?.[0]).toMatch(/Érvénytelen JSON/)
+  })
+})
+
+// Card 68254bd7 F4 (WhiteHat NO-GO 14284): the `allowRiskyFields` QUERY STRING parsing itself
+// (routes/fleet.ts: `ctx.url.searchParams.get('allowRiskyFields') === 'true'`) had no route-level
+// test -- fleet-transfer.test.ts pins importFleet's OWN allowRiskyFields boolean parameter, but
+// nothing proved the route actually parses the query string into it correctly. A mutant that made
+// the route always pass `true` (or never read the query string) survived.
+describe('POST /api/fleet/import -- allowRiskyFields query-string parsing (card 68254bd7 F4)', () => {
+  function fakeCtxWithBody(
+    qs: string,
+    auth: RouteContext['auth'],
+    body: unknown,
+  ): { ctx: RouteContext; out: { status: number; body: any } } {
+    const { ctx, out } = fakeCtx(qs, auth)
+    const payload = JSON.stringify(body)
+    // Override the no-data 'end'-only emission: emit the real body first.
+    process.nextTick(() => { (ctx.req as unknown as EventEmitter).emit('data', Buffer.from(payload)) })
+    return { ctx, out }
+  }
+
+  const fleetWithRiskyAgent = (): Record<string, unknown> => ({
+    schemaVersion: 1,
+    exportedAt: '2026-01-01T00:00:00.000Z',
+    sourceHost: 'attacker',
+    agents: [{
+      name: 'victim',
+      config: { toolDeny: ['Bash'], model: 'claude-opus-5-5' },
+      claudeMd: '', soulMd: '', mcp: {}, settings: {}, channelsAccess: {}, agentSkills: [],
+    }],
+    skills: [], scheduledTasks: [], memories: [], dailyLogs: [],
+    kanban: { cards: [], comments: [], cardEvents: [], labels: [], cardLabels: [] },
+    ideaBox: { ideas: [], comments: [], statusLog: [] },
+    dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
+  })
+
+  it('omitted (default false): toolDeny is stripped before it ever reaches disk', async () => {
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    ;(atomicWriteFileSync as any).mockClear()
+    const { ctx } = fakeCtxWithBody('?apply=true', { kind: 'session', user: 'peti' }, fleetWithRiskyAgent())
+    await tryHandleFleet(ctx)
+    const calls = (atomicWriteFileSync as any).mock.calls
+    const configCall = calls.find((c: string[]) => c[0]?.endsWith('agent-config.json'))
+    expect(configCall, 'agent-config.json was never written').toBeDefined()
+    expect(JSON.parse(configCall![1] as string)).not.toHaveProperty('toolDeny')
+  })
+
+  it('?allowRiskyFields=true: toolDeny survives verbatim', async () => {
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    ;(atomicWriteFileSync as any).mockClear()
+    const { ctx } = fakeCtxWithBody('?apply=true&allowRiskyFields=true', { kind: 'session', user: 'peti' }, fleetWithRiskyAgent())
+    await tryHandleFleet(ctx)
+    const calls = (atomicWriteFileSync as any).mock.calls
+    const configCall = calls.find((c: string[]) => c[0]?.endsWith('agent-config.json'))
+    expect(configCall, 'agent-config.json was never written').toBeDefined()
+    expect(JSON.parse(configCall![1] as string).toolDeny).toEqual(['Bash'])
+  })
+
+  it('?allowRiskyFields=yes (not the literal "true") is still treated as false', async () => {
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    ;(atomicWriteFileSync as any).mockClear()
+    const { ctx } = fakeCtxWithBody('?apply=true&allowRiskyFields=yes', { kind: 'session', user: 'peti' }, fleetWithRiskyAgent())
+    await tryHandleFleet(ctx)
+    const calls = (atomicWriteFileSync as any).mock.calls
+    const configCall = calls.find((c: string[]) => c[0]?.endsWith('agent-config.json'))
+    expect(JSON.parse(configCall![1] as string)).not.toHaveProperty('toolDeny')
   })
 })

@@ -21,7 +21,7 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { isReservedSenderId } from './system-directive-id.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
-import { MACHINE_SPECIFIC_CONFIG_KEYS, RISKY_CONFIG_IMPORT_KEYS } from './agent-bundle.js'
+import { MACHINE_SPECIFIC_CONFIG_KEYS } from './agent-bundle.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
@@ -443,6 +443,41 @@ function deplaceholderMcp(mcpObj: Record<string, unknown>): Record<string, unkno
   return result
 }
 
+// Card 68254bd7 F2 (WhiteHat NO-GO 14284, point (c) ".mcp.json command fields"): deplaceholderMcp
+// above only touches env/headers vault refs -- an mcpServers[*] entry's own `command` (the
+// executable that runs on agent start) and `args` pass through completely unmodified, the same
+// consequence class as settings.json's `hooks`. Same allowlist posture: stripped by default,
+// kept only with allowRiskyFields. The rest of a server's definition (url, env, headers, type)
+// is left alone -- those configure WHERE/HOW to talk to an already-running server, not what
+// process to launch.
+function stripRiskyMcpCommands(
+  mcpObj: Record<string, unknown>,
+  allow: boolean,
+): { mcp: Record<string, unknown>; hadRisky: boolean } {
+  if (allow) return { mcp: mcpObj, hadRisky: hasMcpCommand(mcpObj) }
+  const result = JSON.parse(JSON.stringify(mcpObj)) as Record<string, unknown>
+  const servers = result.mcpServers as Record<string, Record<string, unknown>> | undefined
+  let hadRisky = false
+  if (servers) {
+    for (const [, cfg] of Object.entries(servers)) {
+      if (!cfg || typeof cfg !== 'object') continue
+      const c = cfg as Record<string, unknown>
+      for (const field of ['command', 'args'] as const) {
+        if (Object.prototype.hasOwnProperty.call(c, field)) { hadRisky = true; delete c[field] }
+      }
+    }
+  }
+  return { mcp: result, hadRisky }
+}
+
+function hasMcpCommand(mcpObj: Record<string, unknown>): boolean {
+  const servers = mcpObj.mcpServers as Record<string, Record<string, unknown>> | undefined
+  if (!servers) return false
+  return Object.values(servers).some((cfg) =>
+    cfg && typeof cfg === 'object' && ('command' in cfg || 'args' in cfg),
+  )
+}
+
 // ---------------------------------------------------------------------------
 // File helpers
 // ---------------------------------------------------------------------------
@@ -479,38 +514,51 @@ function stripMachineSpecificConfig(config: Record<string, unknown>): Record<str
   return rest
 }
 
-// Card 68254bd7 (48639c7d CYBERED GO 14284): RISKY_CONFIG_IMPORT_KEYS (toolDeny, securityProfile,
-// capabilities, customProvider) change SECURITY POSTURE, not just portability -- see that const's
-// own comment in agent-bundle.ts. Allowlist posture: stripped unless the caller passes the
-// explicit, logged `allowRiskyFields` opt-in through to importFleet. `hadRisky` tells the caller
-// whether anything WOULD have been stripped, so a dry-run (or an apply that chose NOT to opt in)
-// can still warn the operator a bundle carries these fields, not just silently drop them.
+// Card 68254bd7 F2 (WhiteHat NO-GO 14284, re-opened after the card's own original ask was
+// implemented as a blocklist of 4 named keys instead): ALLOWLIST posture, not blocklist -- only a
+// key on this list passes import by default; anything else is stripped, including a field nobody
+// has named yet. Built from every field this fork's OWN code actually reads back out of
+// agent-config.json (agent-config.ts's readAgent*/team's readTeam, grepped 2026-10-10), minus the
+// ones MACHINE_SPECIFIC_CONFIG_KEYS already strips unconditionally (authMode, claudePlan,
+// remoteHost, remoteWorkdir, claudeConfigDir, oauthTokenFile, runAsUser -- gone before this runs)
+// and minus RISKY_CONFIG_IMPORT_KEYS (toolDeny, securityProfile, capabilities, customProvider --
+// still opt-in only, same as before). None of these seven change what tools an agent can call,
+// its security posture, or what process it launches under.
+const SAFE_CONFIG_IMPORT_KEYS = [
+  'channelProvider', 'displayName', 'memoryIsolation', 'model', 'modelProfile', 'team', 'voice', 'worksourceChannel',
+] as const
+
+// `hadRisky` now means "the bundle carried at least one key NOT on the allowlist" -- a renamed,
+// typo'd, or genuinely new field all report the same way (stripped, warned), never silently
+// passed through for being merely unrecognized.
 function stripRiskyConfigFields(
   config: Record<string, unknown>,
   allow: boolean,
 ): { config: Record<string, unknown>; hadRisky: boolean } {
-  let hadRisky = false
-  for (const key of RISKY_CONFIG_IMPORT_KEYS) {
-    if (Object.prototype.hasOwnProperty.call(config, key)) { hadRisky = true; break }
-  }
+  const allowed = new Set<string>(SAFE_CONFIG_IMPORT_KEYS)
+  const hadRisky = Object.keys(config).some((key) => !allowed.has(key))
   if (!hadRisky || allow) return { config, hadRisky }
-  const rest = { ...config }
-  for (const key of RISKY_CONFIG_IMPORT_KEYS) delete rest[key]
+  const rest: Record<string, unknown> = {}
+  for (const key of SAFE_CONFIG_IMPORT_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(config, key)) rest[key] = config[key]
+  }
   return { config: rest, hadRisky }
 }
 
-// Same posture, for settings.json's `hooks` -- a PreToolUse/PostToolUse command hook runs
-// arbitrary shell the next time the imported agent processes a tool call. Unlike the config-level
-// fields, this lives in a DIFFERENT file (settings.json, not agent-config.json), so it needs its
-// own strip, not a shared key list.
+// Same allowlist posture, for settings.json. EVERY key here is either directly executable
+// (hooks, a PreToolUse/PostToolUse command) or privilege-shaping (permissions, apiKeyHelper's own
+// command, statusLine's command, env) -- and settings.json is regenerated from the agent's
+// security profile on every spawn anyway (agent-scaffold.ts), so there is no legitimate key this
+// import path needs to carry verbatim. The allowlist is therefore empty: everything is stripped
+// by default, kept only with the explicit allowRiskyFields opt-in. Lives in its own function (not
+// a shared key list) because it is a different file (settings.json, not agent-config.json).
 function stripRiskySettings(
   settings: Record<string, unknown>,
   allow: boolean,
 ): { settings: Record<string, unknown>; hadRisky: boolean } {
-  const hadRisky = Object.prototype.hasOwnProperty.call(settings, 'hooks')
+  const hadRisky = Object.keys(settings).length > 0
   if (!hadRisky || allow) return { settings, hadRisky }
-  const rest = { ...settings }
-  delete rest['hooks']
+  const rest: Record<string, unknown> = {}
   return { settings: rest, hadRisky }
 }
 
@@ -902,14 +950,21 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
   // carries fields that change security posture.
   const allConfigs = [fleet.mainAgent?.config, ...(fleet.agents ?? []).map(a => a.config)]
   const allSettings = [fleet.mainAgent?.settings, ...(fleet.agents ?? []).map(a => a.settings)]
+  const allMcp = [fleet.mainAgent?.mcp, ...(fleet.agents ?? []).map(a => a.mcp)]
+  // Machine-specific keys (authMode, claudePlan, remoteHost, ...) are stripped unconditionally at
+  // apply time, BEFORE the allowlist check -- counting them here would warn on every ordinary
+  // transfer that merely carries them, not just a risky one.
+  const configAllowlist = new Set<string>([...SAFE_CONFIG_IMPORT_KEYS, ...MACHINE_SPECIFIC_CONFIG_KEYS])
   const hasRiskyConfig = allConfigs.some(
-    (c) => c && RISKY_CONFIG_IMPORT_KEYS.some((key) => Object.prototype.hasOwnProperty.call(c, key)),
+    (c) => c && Object.keys(c).some((key) => !configAllowlist.has(key)),
   )
-  const hasRiskyHooks = allSettings.some((s) => s && Object.prototype.hasOwnProperty.call(s, 'hooks'))
-  if (hasRiskyConfig || hasRiskyHooks) {
+  const hasRiskySettings = allSettings.some((s) => s && Object.keys(s).length > 0)
+  const hasRiskyMcp = allMcp.some((m) => m && hasMcpCommand(m))
+  if (hasRiskyConfig || hasRiskySettings || hasRiskyMcp) {
     warnings.push(
-      'A fájl kockázatos mezőt tartalmaz (toolDeny/securityProfile/capabilities/customProvider/' +
-      'settings.hooks) -- apply-nál ez kihagyásra kerül, hacsak nem adsz explicit allowRiskyFields jóváhagyást.',
+      'A fájl az allowlistán kívüli mezőt tartalmaz (pl. toolDeny/securityProfile/capabilities/' +
+      'customProvider, settings.json bármely kulcsa, vagy .mcp.json command/args) -- apply-nál ez ' +
+      'kihagyásra kerül, hacsak nem adsz explicit allowRiskyFields jóváhagyást.',
     )
   }
 
@@ -1045,7 +1100,9 @@ function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker, allowRi
     hadRisky = hadRisky || stripped.hadRisky
     trackedWrite(join(PROJECT_ROOT, 'agent-config.json'), JSON.stringify(stripped.config, null, 2), tracker)
   }
-  trackedWrite(join(PROJECT_ROOT, '.mcp.json'), JSON.stringify(deplaceholderMcp(ma.mcp), null, 2), tracker)
+  const strippedMcp = stripRiskyMcpCommands(deplaceholderMcp(ma.mcp), allowRiskyFields)
+  hadRisky = hadRisky || strippedMcp.hadRisky
+  trackedWrite(join(PROJECT_ROOT, '.mcp.json'), JSON.stringify(strippedMcp.mcp, null, 2), tracker)
   const strippedSettings = stripRiskySettings(ma.settings, allowRiskyFields)
   hadRisky = hadRisky || strippedSettings.hadRisky
   trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(strippedSettings.settings, null, 2), tracker)
@@ -1077,7 +1134,8 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker, allowRiskyFi
   if (agent.soulMd) trackedWrite(join(dir, 'SOUL.md'), agent.soulMd, tracker)
 
   // .mcp.json: de-placeholder vault refs (path denormalization happens at fleet level)
-  trackedWrite(join(dir, '.mcp.json'), JSON.stringify(deplaceholderMcp(agent.mcp), null, 2), tracker)
+  const strippedMcp = stripRiskyMcpCommands(deplaceholderMcp(agent.mcp), allowRiskyFields)
+  trackedWrite(join(dir, '.mcp.json'), JSON.stringify(strippedMcp.mcp, null, 2), tracker)
 
   const strippedSettings = stripRiskySettings(agent.settings, allowRiskyFields)
   trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(strippedSettings.settings, null, 2), tracker)
@@ -1099,7 +1157,7 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker, allowRiskyFi
     trackedMkdir(skillDir, tracker)
     trackedWrite(join(skillDir, 'SKILL.md'), skill.skillMd, tracker)
   }
-  return strippedConfig.hadRisky || strippedSettings.hadRisky
+  return strippedConfig.hadRisky || strippedSettings.hadRisky || strippedMcp.hadRisky
 }
 
 function importVaultSection(vault: VaultExport, tracker: WriteTracker): void {
@@ -1396,8 +1454,9 @@ export function importFleet(
     const applyWarnings: string[] = []
     if (anyRiskyStripped) {
       applyWarnings.push(
-        'Kockázatos mezők (toolDeny/securityProfile/capabilities/customProvider/settings.hooks) ' +
-        'kihagyva az importból (nincs allowRiskyFields jóváhagyás).',
+        'Az allowlistán kívüli mező(k) (pl. toolDeny/securityProfile/capabilities/customProvider, ' +
+        'settings.json bármely kulcsa, vagy .mcp.json command/args) kihagyva az importból ' +
+        '(nincs allowRiskyFields jóváhagyás).',
       )
     }
     const sourceIdentity = fleet.mainAgent?.identity
