@@ -2345,11 +2345,13 @@ function compactPrompt(): string {
     let bundle: Buffer | undefined
     let overrideName = ''
     let overwrite = false
+    let allowRiskyFields = false
     if (contentType.includes('multipart/form-data')) {
       const { file, fields } = parseMultipart(body, contentType)
       if (file) bundle = file.data
       overrideName = (fields.name || '').trim()
       overwrite = fields.overwrite === '1' || fields.overwrite === 'true'
+      allowRiskyFields = fields.allowRiskyFields === '1' || fields.allowRiskyFields === 'true'
     } else {
       // Raw .tar.gz body; name/overwrite from query string.
       bundle = body
@@ -2357,25 +2359,49 @@ function compactPrompt(): string {
       const nameMatch = url.match(/[?&]name=([^&]+)/)
       if (nameMatch) overrideName = decodeURIComponent(nameMatch[1]).trim()
       overwrite = /[?&]overwrite=(1|true)\b/.test(url)
+      allowRiskyFields = /[?&]allowRiskyFields=(1|true)\b/.test(url)
     }
     if (!bundle || bundle.length === 0) { json(res, { error: 'No bundle uploaded' }, 400); return true }
+
+    // Card 4f4cb0df (WhiteHat, 68254bd7 szomszédja): overwrite=1 replaces an EXISTING agent's
+    // directory -- hooks, settings, config -- and this route is reachable with the shared fleet
+    // bearer every agent holds, the same hibaosztály as fleet-transfer.ts's apply=true. 68254bd7's
+    // own delta-gate (RedHat NO-GO 14953, MikroB decision 14957) found that a session/device
+    // auth-kind check alone is NOT a closed gate here either -- the shared bearer can mint itself
+    // a session/device credential via bridge-enroll, break-glass password reset+login, or deleting
+    // the last user to reopen the bootstrap exception. So, same as FLEET_IMPORT_APPLY_FAIL_CLOSED
+    // in routes/fleet.ts: hard-refuse overwrite=1 unconditionally (not an approval mechanism, since
+    // PATCH /api/approvals/:id was shown forgeable by the same shared bearer) until a non-forgeable
+    // approval channel ships (card 3fb0ef97). A fresh (non-overwrite) import is unaffected by this
+    // gate -- it cannot clobber an existing, already-trusted agent -- but still gets the shared
+    // risky-field/file allowlist below regardless of allowRiskyFields history.
+    const AGENT_IMPORT_OVERWRITE_FAIL_CLOSED = true
+    if (overwrite && AGENT_IMPORT_OVERWRITE_FAIL_CLOSED) {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Agent import: overwrite=1 hard-refused (fail-closed pending card 3fb0ef97)')
+      json(res, {
+        error: 'Agent import (overwrite=1) is disabled until a non-forgeable approval channel ships (card 3fb0ef97). Re-import under a different name, or delete the existing agent first, for now.',
+      }, 403)
+      return true
+    }
+
     try {
       // One endpoint accepts either format: peek the manifest, then dispatch to
       // the single-agent or whole-fleet importer.
       if (peekBundleKind(bundle) === 'fleet') {
-        const result = importAllAgentsBundle(bundle, { overwrite })
+        const result = importAllAgentsBundle(bundle, { overwrite, allowRiskyFields })
+        for (const a of result.imported) seedContextGuardForNewAgent(a.name)
         // An imported agent is a NEW agent on this machine: the bundle carries
         // the agent directory, never store/context-guard.json. Same rule as
         // creation (fleet policy, 2026-09-08) and idempotent, so re-importing over an
         // agent an operator has already configured leaves that row alone.
-        for (const a of result.imported) seedContextGuardForNewAgent(a.name)
         logger.info(
           { imported: result.imported.map((a) => a.name), skipped: result.skipped, secrets: result.includesSecrets },
           'Fleet imported from bundle',
         )
-        // Any collision (even with some fresh agents already imported) returns
-        // 409 so the UI can offer to overwrite the rest; re-POSTing with
-        // overwrite=1 is idempotent for the already-imported ones.
+        // Any collision (even with some fresh agents already imported) returns 409 to surface
+        // the skip list. Card 4f4cb0df: overwrite=1 is now hard-refused above (403) before this
+        // call is ever reached, so a collision here can no longer be resolved by re-POSTing with
+        // overwrite=1 -- delete the conflicting agent(s) first, or import under a different name.
         const hasCollision = result.skipped.some((s) => s.reason === 'already exists')
         json(res, {
           ok: true,
@@ -2387,7 +2413,7 @@ function compactPrompt(): string {
         return true
       }
 
-      const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite })
+      const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite, allowRiskyFields })
       seedContextGuardForNewAgent(result.name)
       logger.info({ name: result.name, overwritten: result.overwritten, secrets: result.manifest.includesSecrets }, 'Agent imported from bundle')
       json(res, {

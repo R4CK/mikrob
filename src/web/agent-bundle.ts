@@ -16,6 +16,7 @@ import { agentDir } from './agent-config.js'
 import { sanitizeAgentName } from './sanitize.js'
 import { isReservedSenderId } from './system-directive-id.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { logger } from '../logger.js'
 
 // Portable per-agent export/import bundle.
 //
@@ -91,19 +92,86 @@ export const MACHINE_SPECIFIC_CONFIG_KEYS = [
   'remoteHost', 'remoteWorkdir', 'claudeConfigDir', 'oauthTokenFile', 'runAsUser', 'authMode', 'claudePlan',
 ] as const
 
-// Card 68254bd7 (48639c7d CYBERED GO, comment 14284): these change an agent's SECURITY POSTURE
-// (which tools it denies, its security profile, its declared capabilities, which LLM provider it
-// launches under) rather than merely its location -- unlike MACHINE_SPECIFIC_CONFIG_KEYS above,
-// stripping them is not about portability, it is about not letting an untrusted whole-fleet
-// transfer file (fleet-transfer.ts's importFleet) silently widen another agent's attack surface.
-// Allowlist posture: stripped by default on import, kept only with the explicit, logged
-// `allowRiskyFields` opt-in (see fleet-transfer.ts). NOT applied to agent-bundle.ts's own
-// single-agent bundle import (sanitizeImportedConfig below) -- that path's trust model (a bundle
-// IS code, not just data) is a separate, broader question Cybered explicitly left to a follow-up
-// card, not folded into this one.
-export const RISKY_CONFIG_IMPORT_KEYS = [
-  'toolDeny', 'securityProfile', 'capabilities', 'customProvider',
+// Card 68254bd7 (48639c7d CYBERED GO, comment 14284) named these fields -- toolDeny,
+// securityProfile, capabilities, customProvider -- because they change an agent's SECURITY
+// POSTURE rather than merely its location, and flagged that this bundle import path
+// (sanitizeImportedConfig below) did NOT strip them, unlike fleet-transfer.ts's importFleet.
+// That gap (plus the same passthrough for .claude/settings.json's hooks, .mcp.json's
+// command/args, and the raw .claude/hooks/ directory copied verbatim by PORTABLE_ENTRIES
+// above) is card 4f4cb0df (WhiteHat, 68254bd7 szomszédja). Fixed by reusing fleet-transfer.ts's
+// own allowlist functions here (this module is the lower-level one fleet-transfer.ts already
+// imports MACHINE_SPECIFIC_CONFIG_KEYS from, so the shared code lives here, not duplicated) --
+// see SAFE_CONFIG_IMPORT_KEYS / stripRiskyConfigFields / stripRiskyMcpCommands /
+// stripRiskySettings below, and sanitizeImportedConfig's new `allow` parameter.
+
+// Allowlist posture (not blocklist): only a key on this list survives import by default;
+// everything else -- including a field nobody has named yet -- is stripped, kept only with the
+// explicit, logged `allowRiskyFields` opt-in. Moved here verbatim from fleet-transfer.ts (card
+// 4f4cb0df) so agent-bundle.ts's own single-agent/fleet-bundle import path can reuse the exact
+// same list instead of drifting out of sync with a second copy.
+export const SAFE_CONFIG_IMPORT_KEYS = [
+  'channelProvider', 'displayName', 'memoryIsolation', 'model', 'modelProfile', 'team', 'voice', 'worksourceChannel',
 ] as const
+
+// `hadRisky` means "the bundle carried at least one key NOT on the allowlist".
+export function stripRiskyConfigFields(
+  config: Record<string, unknown>,
+  allow: boolean,
+): { config: Record<string, unknown>; hadRisky: boolean } {
+  const allowed = new Set<string>(SAFE_CONFIG_IMPORT_KEYS)
+  const hadRisky = Object.keys(config).some((key) => !allowed.has(key))
+  if (!hadRisky || allow) return { config, hadRisky }
+  const rest: Record<string, unknown> = {}
+  for (const key of SAFE_CONFIG_IMPORT_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(config, key)) rest[key] = config[key]
+  }
+  return { config: rest, hadRisky }
+}
+
+// settings.json: every key is either directly executable (hooks) or privilege-shaping
+// (permissions, apiKeyHelper, statusLine, env), and settings.json is regenerated from the
+// agent's security profile on every spawn anyway (agent-scaffold.ts) -- so the allowlist is
+// empty, everything stripped by default, kept only with allowRiskyFields.
+export function stripRiskySettings(
+  settings: Record<string, unknown>,
+  allow: boolean,
+): { settings: Record<string, unknown>; hadRisky: boolean } {
+  const hadRisky = Object.keys(settings).length > 0
+  if (!hadRisky || allow) return { settings, hadRisky }
+  return { settings: {}, hadRisky }
+}
+
+export function hasMcpCommand(mcpObj: Record<string, unknown>): boolean {
+  const servers = mcpObj.mcpServers as Record<string, Record<string, unknown>> | undefined
+  if (!servers) return false
+  return Object.values(servers).some((cfg) =>
+    cfg && typeof cfg === 'object' && ('command' in cfg || 'args' in cfg),
+  )
+}
+
+// .mcp.json: a server's own `command` (the executable that runs on agent start) and `args` are
+// the same consequence class as settings.json's hooks. Same allowlist posture: stripped by
+// default, kept only with allowRiskyFields. url/env/headers/type are left alone -- those
+// configure WHERE/HOW to talk to an already-running server, not what process to launch.
+export function stripRiskyMcpCommands(
+  mcpObj: Record<string, unknown>,
+  allow: boolean,
+): { mcp: Record<string, unknown>; hadRisky: boolean } {
+  if (allow) return { mcp: mcpObj, hadRisky: hasMcpCommand(mcpObj) }
+  const result = JSON.parse(JSON.stringify(mcpObj)) as Record<string, unknown>
+  const servers = result.mcpServers as Record<string, Record<string, unknown>> | undefined
+  let hadRisky = false
+  if (servers) {
+    for (const [, cfg] of Object.entries(servers)) {
+      if (!cfg || typeof cfg !== 'object') continue
+      const c = cfg as Record<string, unknown>
+      for (const field of ['command', 'args'] as const) {
+        if (Object.prototype.hasOwnProperty.call(c, field)) { hadRisky = true; delete c[field] }
+      }
+    }
+  }
+  return { mcp: result, hadRisky }
+}
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix))
@@ -237,17 +305,58 @@ export function readBundleManifest(extractedRoot: string): BundleManifest {
 }
 
 // Strip machine-specific fields from a staged agent-config.json in place, so an
-// imported agent never inherits the source host's ssh/remote/config-dir paths.
-export function sanitizeImportedConfig(stagedAgentDir: string): void {
+// imported agent never inherits the source host's ssh/remote/config-dir paths. `allow` is the
+// same allowRiskyFields opt-in as stripRiskyConfigFields -- default false also strips the
+// security-posture fields (toolDeny/securityProfile/capabilities/customProvider/...) that this
+// path previously let through verbatim (card 4f4cb0df). Returns whether any risky (non-allowlisted)
+// field was present, for the caller to log.
+export function sanitizeImportedConfig(stagedAgentDir: string, allow = false): boolean {
   const cfgPath = join(stagedAgentDir, 'agent-config.json')
-  if (!existsSync(cfgPath)) return
+  if (!existsSync(cfgPath)) return false
   let cfg: Record<string, unknown>
-  try { cfg = JSON.parse(readFileSync(cfgPath, 'utf-8')) } catch { return }
-  let changed = false
-  for (const key of MACHINE_SPECIFIC_CONFIG_KEYS) {
-    if (key in cfg) { delete cfg[key]; changed = true }
+  try { cfg = JSON.parse(readFileSync(cfgPath, 'utf-8')) } catch { return false }
+  for (const key of MACHINE_SPECIFIC_CONFIG_KEYS) delete cfg[key]
+  const stripped = stripRiskyConfigFields(cfg, allow)
+  atomicWriteFileSync(cfgPath, JSON.stringify(stripped.config, null, 2))
+  return stripped.hadRisky
+}
+
+// settings.json / .mcp.json / .claude/hooks on a staged agent import: the same risk class as
+// agent-config.json's security-posture fields above, for the OTHER files PORTABLE_ENTRIES
+// copies verbatim (card 4f4cb0df, 68254bd7 szomszédja -- WhiteHat's "settings.hooks (kódfuttatás
+// az ügynök indításakor!)"). Stripped by default, kept only with allowRiskyFields.
+// .claude/hooks is not even part of fleet-transfer.ts's export format (it never ships hook
+// SCRIPT FILES, only settings.json's `hooks` key) -- here the whole directory is removed by
+// default rather than filtered field-by-field, since a hook script's behaviour cannot be
+// allowlisted the way JSON config can. Returns whether any risky file/field was present.
+function stripRiskyBundleFiles(stagedAgentDir: string, allow: boolean): boolean {
+  let hadRisky = false
+
+  const settingsPath = join(stagedAgentDir, '.claude', 'settings.json')
+  if (existsSync(settingsPath)) {
+    let settings: Record<string, unknown>
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { settings = {} }
+    const stripped = stripRiskySettings(settings, allow)
+    hadRisky = hadRisky || stripped.hadRisky
+    atomicWriteFileSync(settingsPath, JSON.stringify(stripped.settings, null, 2))
   }
-  if (changed) atomicWriteFileSync(cfgPath, JSON.stringify(cfg, null, 2))
+
+  const mcpPath = join(stagedAgentDir, '.mcp.json')
+  if (existsSync(mcpPath)) {
+    let mcp: Record<string, unknown>
+    try { mcp = JSON.parse(readFileSync(mcpPath, 'utf-8')) } catch { mcp = {} }
+    const stripped = stripRiskyMcpCommands(mcp, allow)
+    hadRisky = hadRisky || stripped.hadRisky
+    atomicWriteFileSync(mcpPath, JSON.stringify(stripped.mcp, null, 2))
+  }
+
+  const hooksPath = join(stagedAgentDir, '.claude', 'hooks')
+  if (existsSync(hooksPath)) {
+    hadRisky = true
+    if (!allow) rmSync(hooksPath, { recursive: true, force: true })
+  }
+
+  return hadRisky
 }
 
 export interface ImportResult {
@@ -267,8 +376,9 @@ export interface ImportResult {
 // Returns the final installed name + the bundle manifest.
 export function importAgentBundle(
   bundle: Buffer,
-  opts: { overrideName?: string; overwrite?: boolean; resolveDest?: (name: string) => string } = {},
+  opts: { overrideName?: string; overwrite?: boolean; allowRiskyFields?: boolean; resolveDest?: (name: string) => string } = {},
 ): ImportResult {
+  const allowRiskyFields = opts.allowRiskyFields === true
   const resolveDest = opts.resolveDest ?? agentDir
   const work = makeTempDir('marveen-agent-import-')
   try {
@@ -300,7 +410,16 @@ export function importAgentBundle(
       throw new Error(`Agent name "${name}" is reserved for in-process system senders`)
     }
 
-    sanitizeImportedConfig(stagedAgentDir)
+    const hadRisky = sanitizeImportedConfig(stagedAgentDir, allowRiskyFields) ||
+      stripRiskyBundleFiles(stagedAgentDir, allowRiskyFields)
+    if (hadRisky) {
+      logger.warn(
+        { name, allowRiskyFields },
+        allowRiskyFields
+          ? 'Agent import: allowRiskyFields=true -- toolDeny/securityProfile/capabilities/customProvider/settings.hooks/.claude/hooks/.mcp.json command will be imported verbatim'
+          : 'Agent import: risky fields/files stripped (toolDeny/securityProfile/capabilities/customProvider/settings.hooks/.claude/hooks/.mcp.json command)',
+      )
+    }
 
     const dest = resolveDest(name) // agentDir: safeJoin rejects traversal
     const exists = existsSync(dest)
@@ -462,8 +581,9 @@ export interface FleetImportResult {
 // A malformed bundle (bad archive / wrong kind) throws as a whole.
 export function importAllAgentsBundle(
   bundle: Buffer,
-  opts: { overwrite?: boolean; resolveDest?: (name: string) => string } = {},
+  opts: { overwrite?: boolean; allowRiskyFields?: boolean; resolveDest?: (name: string) => string } = {},
 ): FleetImportResult {
+  const allowRiskyFields = opts.allowRiskyFields === true
   const resolveDest = opts.resolveDest ?? agentDir
   const work = makeTempDir('marveen-fleet-import-')
   try {
@@ -495,7 +615,16 @@ export function importAllAgentsBundle(
       // fifteen agents, and the skip list is what the UI already shows.
       if (isReservedSenderId(name)) { skipped.push({ name, reason: 'reserved name' }); continue }
 
-      sanitizeImportedConfig(stagedAgentDir)
+      const hadRisky = sanitizeImportedConfig(stagedAgentDir, allowRiskyFields) ||
+        stripRiskyBundleFiles(stagedAgentDir, allowRiskyFields)
+      if (hadRisky) {
+        logger.warn(
+          { name, allowRiskyFields },
+          allowRiskyFields
+            ? 'Fleet agent import: allowRiskyFields=true -- toolDeny/securityProfile/capabilities/customProvider/settings.hooks/.claude/hooks/.mcp.json command will be imported verbatim'
+            : 'Fleet agent import: risky fields/files stripped (toolDeny/securityProfile/capabilities/customProvider/settings.hooks/.claude/hooks/.mcp.json command)',
+        )
+      }
       const dest = resolveDest(name) // agentDir: safeJoin rejects traversal
       const exists = existsSync(dest)
       if (exists && !opts.overwrite) { skipped.push({ name, reason: 'already exists' }); continue }

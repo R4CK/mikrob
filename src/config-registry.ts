@@ -499,8 +499,13 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'AGENT_INHERITED_MCP_SERVERS',
     type: 'string',
-    default: '',
-    description: 'Vesszővel elválasztott MCP-szerver-nevek, amelyeket egy ÚJ ügynök örökölhet (pl. aiam-blog). Minden más kimarad, amíg valaki név szerint oda nem adja. Üresen hagyva az új ügynök semmilyen connectort nem örököl (szűk alapértelmezés). Két helyről örököl: a projekt-gyökér .mcp.json-jából és a közös ~/.claude.json-ból, és a lista mindkettőre vonatkozik. A meglévő ügynöktől semmit nem vesz el. A fő ügynökre nem vonatkozik.',
+    // MikroB decision (card 67e73b48 N2, WhiteHat NO-GO msg 10434, 2026-10-10): code-review-graph
+    // (blast-radius checks, CLAUDE.md kodminosegi elv 10.) and context7 (live docs, GitHub-first
+    // szabaly) are read-only, credential-free, and useful to every agent -- an empty default would
+    // silently drop both from the whole fleet on the next dashboard restart, which is a working-tool
+    // regression, not a security gain. Still a narrow ALLOWLIST (anything else stays out by name).
+    default: 'code-review-graph,context7',
+    description: 'Vesszővel elválasztott MCP-szerver-nevek, amelyeket egy ÚJ ügynök örökölhet (pl. aiam-blog). Minden más kimarad, amíg valaki név szerint oda nem adja. Alapértelmezés: code-review-graph, context7 (mindkettő olvasó-jellegű, hitelesítő adat nélküli, és minden ügynöknek haszos -- MikroB döntés, card 67e73b48). Két helyről örököl: a projekt-gyökér .mcp.json-jából és a közös ~/.claude.json-ból, és a lista mindkettőre vonatkozik. A meglévő ügynöktől semmit nem vesz el. A fő ügynökre nem vonatkozik.',
     module: 'agents',
     secret: false,
     requiresRestart: false,

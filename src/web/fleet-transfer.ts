@@ -21,7 +21,10 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { isReservedSenderId } from './system-directive-id.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
-import { MACHINE_SPECIFIC_CONFIG_KEYS } from './agent-bundle.js'
+import {
+  MACHINE_SPECIFIC_CONFIG_KEYS, SAFE_CONFIG_IMPORT_KEYS,
+  stripRiskyConfigFields, stripRiskyMcpCommands, stripRiskySettings, hasMcpCommand,
+} from './agent-bundle.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
@@ -443,41 +446,6 @@ function deplaceholderMcp(mcpObj: Record<string, unknown>): Record<string, unkno
   return result
 }
 
-// Card 68254bd7 F2 (WhiteHat NO-GO 14284, point (c) ".mcp.json command fields"): deplaceholderMcp
-// above only touches env/headers vault refs -- an mcpServers[*] entry's own `command` (the
-// executable that runs on agent start) and `args` pass through completely unmodified, the same
-// consequence class as settings.json's `hooks`. Same allowlist posture: stripped by default,
-// kept only with allowRiskyFields. The rest of a server's definition (url, env, headers, type)
-// is left alone -- those configure WHERE/HOW to talk to an already-running server, not what
-// process to launch.
-function stripRiskyMcpCommands(
-  mcpObj: Record<string, unknown>,
-  allow: boolean,
-): { mcp: Record<string, unknown>; hadRisky: boolean } {
-  if (allow) return { mcp: mcpObj, hadRisky: hasMcpCommand(mcpObj) }
-  const result = JSON.parse(JSON.stringify(mcpObj)) as Record<string, unknown>
-  const servers = result.mcpServers as Record<string, Record<string, unknown>> | undefined
-  let hadRisky = false
-  if (servers) {
-    for (const [, cfg] of Object.entries(servers)) {
-      if (!cfg || typeof cfg !== 'object') continue
-      const c = cfg as Record<string, unknown>
-      for (const field of ['command', 'args'] as const) {
-        if (Object.prototype.hasOwnProperty.call(c, field)) { hadRisky = true; delete c[field] }
-      }
-    }
-  }
-  return { mcp: result, hadRisky }
-}
-
-function hasMcpCommand(mcpObj: Record<string, unknown>): boolean {
-  const servers = mcpObj.mcpServers as Record<string, Record<string, unknown>> | undefined
-  if (!servers) return false
-  return Object.values(servers).some((cfg) =>
-    cfg && typeof cfg === 'object' && ('command' in cfg || 'args' in cfg),
-  )
-}
-
 // ---------------------------------------------------------------------------
 // File helpers
 // ---------------------------------------------------------------------------
@@ -514,53 +482,11 @@ function stripMachineSpecificConfig(config: Record<string, unknown>): Record<str
   return rest
 }
 
-// Card 68254bd7 F2 (WhiteHat NO-GO 14284, re-opened after the card's own original ask was
-// implemented as a blocklist of 4 named keys instead): ALLOWLIST posture, not blocklist -- only a
-// key on this list passes import by default; anything else is stripped, including a field nobody
-// has named yet. Built from every field this fork's OWN code actually reads back out of
-// agent-config.json (agent-config.ts's readAgent*/team's readTeam, grepped 2026-10-10), minus the
-// ones MACHINE_SPECIFIC_CONFIG_KEYS already strips unconditionally (authMode, claudePlan,
-// remoteHost, remoteWorkdir, claudeConfigDir, oauthTokenFile, runAsUser -- gone before this runs)
-// and minus RISKY_CONFIG_IMPORT_KEYS (toolDeny, securityProfile, capabilities, customProvider --
-// still opt-in only, same as before). None of these seven change what tools an agent can call,
-// its security posture, or what process it launches under.
-const SAFE_CONFIG_IMPORT_KEYS = [
-  'channelProvider', 'displayName', 'memoryIsolation', 'model', 'modelProfile', 'team', 'voice', 'worksourceChannel',
-] as const
-
-// `hadRisky` now means "the bundle carried at least one key NOT on the allowlist" -- a renamed,
-// typo'd, or genuinely new field all report the same way (stripped, warned), never silently
-// passed through for being merely unrecognized.
-function stripRiskyConfigFields(
-  config: Record<string, unknown>,
-  allow: boolean,
-): { config: Record<string, unknown>; hadRisky: boolean } {
-  const allowed = new Set<string>(SAFE_CONFIG_IMPORT_KEYS)
-  const hadRisky = Object.keys(config).some((key) => !allowed.has(key))
-  if (!hadRisky || allow) return { config, hadRisky }
-  const rest: Record<string, unknown> = {}
-  for (const key of SAFE_CONFIG_IMPORT_KEYS) {
-    if (Object.prototype.hasOwnProperty.call(config, key)) rest[key] = config[key]
-  }
-  return { config: rest, hadRisky }
-}
-
-// Same allowlist posture, for settings.json. EVERY key here is either directly executable
-// (hooks, a PreToolUse/PostToolUse command) or privilege-shaping (permissions, apiKeyHelper's own
-// command, statusLine's command, env) -- and settings.json is regenerated from the agent's
-// security profile on every spawn anyway (agent-scaffold.ts), so there is no legitimate key this
-// import path needs to carry verbatim. The allowlist is therefore empty: everything is stripped
-// by default, kept only with the explicit allowRiskyFields opt-in. Lives in its own function (not
-// a shared key list) because it is a different file (settings.json, not agent-config.json).
-function stripRiskySettings(
-  settings: Record<string, unknown>,
-  allow: boolean,
-): { settings: Record<string, unknown>; hadRisky: boolean } {
-  const hadRisky = Object.keys(settings).length > 0
-  if (!hadRisky || allow) return { settings, hadRisky }
-  const rest: Record<string, unknown> = {}
-  return { settings: rest, hadRisky }
-}
+// Card 4f4cb0df: SAFE_CONFIG_IMPORT_KEYS / stripRiskyConfigFields / stripRiskyMcpCommands /
+// stripRiskySettings moved to agent-bundle.ts (imported above alongside
+// MACHINE_SPECIFIC_CONFIG_KEYS) so agent-bundle.ts's own single-agent/fleet-agent bundle import
+// path -- which previously let these same fields through verbatim -- can reuse the exact same
+// allowlist instead of a second copy that could drift out of sync.
 
 function safeReadText(path: string): string {
   try { return readFileSync(path, 'utf-8') } catch { return '' }
