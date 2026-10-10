@@ -18347,3 +18347,38 @@ veglegesen telepitve, nem visszaallitva).
 
 **Ki dontott:** MikroB jelzese (10236) a prioritasra/sorrendre; a gyokerok felderitese es a
 konkret javitas fullstack sajat merese/dontese. Gate: QA.
+
+## 2026-10-10 -- Kartya 7e70144e lezarva: a GATENEVSTRIP921 dontes mar megvolt, fuggetlenul megerositve
+
+A kartya (eszkalalva a 09d54e88-bol, 2026-09-25) a scripts/hooks/outgoing-copy-gate.py 8
+konfliktus-hunkjanak (akkori upstream pin ellen) teljes vezerlesfolyam-nyomozasat kerte, mert
+a GATENEVSTRIP921 hunk alakra egyezett azzal a feltetel nelkuli szuffix-maszkolassal, amit a
+fbb36b41 round 7/8 es round 11 Cybersec NO-GO mar egyszer elutasitott.
+
+**A dontes idokozben mar megszuletett, egy MASIK kartya reszekent**: a 2026-10-09-i upstream-sync
+7. koteg (kartya 087e4418) explicit visszanezte ugyanezt a hunkot egy KESOBBI upstream-allapot
+ellen (ugyanaz a dontes-kotelesseg, amit ez a kartya korabban eszkalalt), es rogzitette: a
+GATENEVSTRIP921 szerkezete (_TECH_COMMON/_TECH_SUFFIXED kettevalasztva) ATVEVE, DE a
+_TECH_SUFFIXED harom korabban elutasitott alesete (szam+toldalek, tulajdonnev+toldalek,
+kotojeles-kisbetus-azonosito) MEGINT NEM kerult at, ugyanazon okbol (feltetel nelkuli maszkolas
+az ekezet-/token-vizsgalat elol, nem csak a nev-szabaly elol). A harom valos hamis-pozitiv eset
+egy MASIK, mar meglevo retegben (HYPHEN_WORD tokenizalo + DIGIT_HYPHEN_SUFFIX_ALLOWLIST +
+IDENTIFIER_ALLOWLIST) van megoldva, nem a technikai maszkban.
+
+**Fuggetlen megerosites most (backend3, 7e70144e felvetelekor)**: a jelenlegi elo fajl
+(scripts/hooks/outgoing-copy-gate.py) pontosan ezt a szerkezetet mutatja (TECHNICAL == NAME_MASK,
+_TECH_COMMON egyetlen forrasbol, a kommentekben a fenti dontes szo szerint rogzitve). Mind a 4
+outgoing-copy-gate teszt-fajl (outgoing-copy-gate, outgoing-copy-gate-log,
+outgoing-copy-gate-rules-policy, outgoing-copy-gate-failclosed) es a
+scripts/hooks/outgoing-copy-gate.selftest.py zold a jelenlegi fajlon, beleertve a level-1-maszk
+"nem nyeli el a tobbi leletet" sajat selftest-esetet. A fajl azota (kartya 14256aac, upstream-sync
+8. koteg) meg egy teljes merge-korkon atment anelkul, hogy ez a terulet ujra konfliktusba kerult
+volna -- a dontes stabil.
+
+**Nincs uj kodvaltoztatas ebben a kartyaban**: a tenyleges dontes mar landolt a 087e4418
+merge-ben, ez a bejegyzes csak a 7e70144e kartyat koti hivatkozassal a mar meghozott
+dontesehez, hogy a lanc kereshetove valjon.
+
+**Ki dontott:** (eredeti dontes) backend, kartya 087e4418, upstream-sync 7. koteg. (fuggetlen
+megerosites es kartya-lezaras) backend3, kartya 7e70144e. Gate: QA + Cybersec (Cybersec a ket
+korabbi NO-GO szerzoje, a kartya sajat kerese szerint).
