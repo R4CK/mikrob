@@ -11,9 +11,13 @@
 // firecrawl, hostinger, playwright and the filesystem server -- broader
 // capability/attack surface than a brand-new sub-agent needs by default.
 //
-// The default is the NARROW reading: an empty list inherits nothing. The list
-// is configuration (AGENT_INHERITED_MCP_SERVERS), not code, because each
-// install's connectors are its own.
+// The posture is a NARROW ALLOWLIST: only servers named on the list are inherited, everything
+// else stays out. The list is configuration (AGENT_INHERITED_MCP_SERVERS), not code, because each
+// install's connectors are its own. The default is NOT empty: code-review-graph and context7 are
+// read-only, credential-free, and useful to every agent (MikroB decision, card 67e73b48 N2,
+// WhiteHat NO-GO msg 10434) -- an empty default would silently drop both from the whole fleet on
+// the next restart, a working-tool regression with no matching security gain. config-registry.ts
+// carries the actual default string; this module only reads whatever is effective.
 //
 // Scope, stated: this filters what is INHERITED. It never removes a server an
 // agent already has (the gap-fill is additive), and it does not apply to the

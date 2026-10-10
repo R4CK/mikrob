@@ -6,10 +6,15 @@
 // module owns the HTTP concerns: the credential-kind allowlist, input
 // validation, the audit row and the operator notification.
 //
-// Principal discipline (same as routes/auth.ts): enrollment GRANTS access
-// (SSH tunnel + a fresh device key), so it is allowlisted to token+session.
-// A device key must never enroll further devices -- one leaked Bridge would
-// otherwise become unlimited Bridges.
+// Principal discipline (same as routes/auth.ts's CREDENTIAL_MINT_KINDS): enrollment MINTS a new
+// credential (a device key, via a fresh SSH tunnel), so 'token' -- the shared dashboard bearer
+// every fleet agent holds -- is deliberately EXCLUDED, same as POST /api/auth/device-keys and
+// POST /api/auth/users. Card 67e73b48 (WhiteHat NO-GO N1, msg 10434): token was previously
+// allowlisted here, which let the shared bearer mint itself a device credential this way, then
+// use that device credential to pass the human-only gate on POST /api/connectors
+// (scope=project, type=stdio) -- a two-step bypass of that gate using nothing but the token
+// every agent already has, the same escalation class as 68254bd7 F1. A device key must never
+// enroll further devices either -- one leaked Bridge would otherwise become unlimited Bridges.
 
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
@@ -23,7 +28,7 @@ import type { RouteContext } from './types.js'
 
 const BODY_MAX_BYTES = 8 * 1024
 const NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
-const ENROLL_KINDS = ['token', 'session'] as const
+const ENROLL_KINDS = ['session'] as const
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : ''
