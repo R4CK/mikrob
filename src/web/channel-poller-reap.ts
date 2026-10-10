@@ -557,18 +557,34 @@ export function nearestClaudeAncestor(pid: number, byPid: Map<number, ProcRow>):
   return null
 }
 
-/**
- * Pure: from the candidate MAIN-dir poller pids, return those whose owning
- * claude (nearest claude ancestor) is NOT a legit main-session pane leader.
- *
- * Fail-safe on two fronts:
- *   - legitClaudePids empty (the main channels session could not be resolved)
- *     -> return [] : without the legit set we cannot tell the real poller from
- *     a thief, and killing the real one would take the bot down.
- *   - a candidate whose owning claude cannot be resolved -> skipped : we never
- *     kill on an ambiguous parent chain.
- * Exported for testability.
- */
+// The poller's own parent, two hops below its owning claude: `bun run
+// --cwd <plugin-root> [flags] start` (see the parseMainDirPollerPids/
+// channel-plugin-unlock.ts comments on this exact shape). Exported for
+// testability.
+const BUN_RUN_WRAPPER_RE = /^bun run --cwd \S+(?: \S+)* start$/
+
+// Pure: from the candidate MAIN-dir poller pids, return those whose owning
+// claude (nearest claude ancestor) is NOT a legit main-session pane leader.
+//
+// ARGV-FILTERED (card 0dab76a3, WhiteHat finding on 087e4418): the env-var
+// candidate filter (parseMainDirPollerPids) matches on inherited environment
+// alone, so a non-poller DESCENDANT of a foreign claude -- some further
+// child process that merely inherited CLAUDE_PLUGIN_ROOT, not the poller
+// itself -- could land on the kill list too. The real poller sits at a
+// FIXED position: `bun server.ts` (the poller) under a `bun run --cwd ...
+// start` wrapper (the plugin's own launch line) under the owning claude --
+// never deeper. A candidate whose immediate parent does not match that
+// wrapper shape is skipped: it may be some other subprocess that merely
+// shares the inherited environment, not the poller.
+//
+// Fail-safe on two fronts:
+//   - legitClaudePids empty (the main channels session could not be resolved)
+//     -> return [] : without the legit set we cannot tell the real poller from
+//     a thief, and killing the real one would take the bot down.
+//   - a candidate whose parent is not the wrapper shape, or whose owning
+//     claude cannot be resolved -> skipped : we never kill on an ambiguous
+//     or argv-mismatched parent chain.
+// Exported for testability.
 export function findForeignMainPollers(
   candidatePollerPids: number[],
   procs: ProcRow[],
@@ -579,6 +595,8 @@ export function findForeignMainPollers(
   for (const p of procs) byPid.set(p.pid, p)
   const out: number[] = []
   for (const pid of candidatePollerPids) {
+    const parentRow = byPid.get(byPid.get(pid)?.ppid ?? -1)
+    if (!parentRow || !BUN_RUN_WRAPPER_RE.test(parentRow.command.trim())) continue
     const owner = nearestClaudeAncestor(pid, byPid)
     if (owner == null) continue
     if (legitClaudePids.has(owner)) continue

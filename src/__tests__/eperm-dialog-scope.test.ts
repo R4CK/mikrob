@@ -49,4 +49,18 @@ describe('EPERM watcher dialog scope', () => {
     expect(body).toContain('epermRestarted = true')
     expect(body).toContain('buildLaunchCmd(fallbackCwd)')
   })
+
+  // WhiteHat finding on 087e4418 (card 0dab76a3): the fallback cwd only carried CLAUDE.md,
+  // so an EPERM-triggered relaunch came up without the project-level `.claude/settings.json`
+  // (the PreCompact memory-save/skill-reflection hook) -- a silent, no-hook degrade on every
+  // such relaunch. The symlink must be IN PLACE before the tmux new-session that launches
+  // from fallbackCwd, same ordering as the existing CLAUDE.md symlink.
+  it('also symlinks the agent .claude/settings.json into the fallback cwd, before launch', () => {
+    const body = epermWatcherBody()
+    const settingsIdx = body.indexOf("join(dir, '.claude', 'settings.json')")
+    expect(settingsIdx, 'the fallback no longer symlinks the agent settings.json').toBeGreaterThan(-1)
+    const launchIdx = body.indexOf('buildLaunchCmd(fallbackCwd)')
+    expect(launchIdx).toBeGreaterThan(settingsIdx)
+    expect(body).toContain("join(fallbackCwd, '.claude', 'settings.json')")
+  })
 })

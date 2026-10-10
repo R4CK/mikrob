@@ -2671,6 +2671,21 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
             if (existsSync(agentClaudeMd)) {
               try { symlinkSync(agentClaudeMd, join(fallbackCwd, 'CLAUDE.md')) } catch { /* degrade to context-less */ }
             }
+            // WhiteHat finding on 087e4418 (card 0dab76a3): the fallback cwd is a brand-new
+            // mkdtemp dir, so without this the project-level `.claude/settings.json` -- the
+            // PreCompact memory-save/skill-reflection hook, seeded per-agent (see the
+            // "Seed settings.json from template" comment elsewhere in this file) -- was
+            // silently absent on an EPERM-triggered relaunch. CLAUDE_CONFIG_DIR (claudeConfigEnv,
+            // above) stays pointed at the real agent dir regardless of cwd, but that is a
+            // SEPARATE, global config dir from the project-level `<cwd>/.claude/settings.json`
+            // Claude Code also reads -- symlinking it in keeps the two in parity.
+            const agentSettingsJson = join(dir, '.claude', 'settings.json')
+            if (existsSync(agentSettingsJson)) {
+              try {
+                mkdirSync(join(fallbackCwd, '.claude'), { recursive: true })
+                symlinkSync(agentSettingsJson, join(fallbackCwd, '.claude', 'settings.json'))
+              } catch { /* degrade to hook-less, same as before this fix */ }
+            }
             runTmux(null, ['new-session', '-d', '-s', session, buildLaunchCmd(fallbackCwd)], { timeout: 10000 })
             logger.warn({ name, session, fallbackCwd }, 'Agent --channels EPERM in trusted dir; relaunched from /tmp fallback')
           } catch (err) {

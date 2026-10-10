@@ -213,7 +213,7 @@ a közös `~/.claude` viselkedésre.
 `GET /api/settings` -- összes nem-titkos beállítás lekérése:
 
 ```bash
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- \
   http://localhost:3420/api/settings
 ```
 
@@ -222,9 +222,8 @@ Válasz: `{ "settings": [ { "key", "type", "value", "default", "description", "m
 `POST /api/settings` -- egy beállítás mentése:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/settings \
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:3420/api/settings \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   -d '{"key": "KANBAN_WIP_WARN_PCT", "value": 75}'
 ```
 

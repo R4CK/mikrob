@@ -213,7 +213,7 @@ then restart the channels session -- all three launch paths fall back to the sha
 `GET /api/settings` -- fetch all non-secret settings:
 
 ```bash
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- \
   http://localhost:3420/api/settings
 ```
 
@@ -222,9 +222,8 @@ Response: `{ "settings": [ { "key", "type", "value", "default", "description", "
 `POST /api/settings` -- save a single setting:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/settings \
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:3420/api/settings \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
   -d '{"key": "KANBAN_WIP_WARN_PCT", "value": 75}'
 ```
 
