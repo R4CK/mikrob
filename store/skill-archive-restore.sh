@@ -40,6 +40,14 @@ if ! [[ "$SKILL" =~ ^[A-Za-z0-9._-]+$ ]]; then
   exit 2
 fi
 
+# A dot-prefixed name -- ".git" above all -- would make SRC below resolve to the archive's own
+# control directory, copying its internals (incl. the fact that it IS a git repo) into the live,
+# publicly-shipped ~/.claude/skills tree (card 59cfcb21 F-LOW, utomunka kartya 0fb92c16, item 1).
+if [[ "$SKILL" == .* ]]; then
+  echo "skill-archive-restore: refusing dot-prefixed skill name '$SKILL' -- it could collide with the archive's own .git or other hidden entries" >&2
+  exit 2
+fi
+
 if [ "$YES" -ne 1 ]; then
   echo "skill-archive-restore: refusing without --yes -- this is a manual, deliberate restore, never an automated one" >&2
   exit 2

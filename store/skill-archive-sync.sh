@@ -42,6 +42,15 @@ if ! [[ "$SKILL" =~ ^[A-Za-z0-9._-]+$ ]]; then
   exit 2
 fi
 
+# A dot-prefixed name -- ".git" above all -- collides with the ARCHIVE'S OWN control directory
+# or other hidden files at $ARCHIVE_ROOT/$SKILL. Measured: a SKILL of ".git" makes DEST below
+# resolve to $ARCHIVE_ROOT/.git, and `rm -rf "$DEST"` then deletes the archive's entire git
+# history (card 59cfcb21 F-LOW, utomunka kartya 0fb92c16, item 1).
+if [[ "$SKILL" == .* ]]; then
+  echo "skill-archive-sync: refusing dot-prefixed skill name '$SKILL' -- it could collide with the archive's own .git or other hidden entries" >&2
+  exit 2
+fi
+
 [ -d "$FROM" ] || { echo "skill-archive-sync: source not found: $FROM" >&2; exit 1; }
 
 REAL_FROM="$(cd "$FROM" && pwd -P)"
@@ -61,6 +70,13 @@ if [ ! -d "$ARCHIVE_ROOT/.git" ]; then
   git -C "$ARCHIVE_ROOT" config user.name "skill-archive-sync"
   git -C "$ARCHIVE_ROOT" config user.email "skill-archive-sync@local"
   echo "skill-archive-sync: initialized a new local git repo at $ARCHIVE_ROOT (no remote -- never pushed anywhere)"
+fi
+
+# The remote-less promise (card 59cfcb21 F1) was never actually enforced -- nothing stopped a
+# later `git remote add` from turning this into a pushable repo. Refuse to operate if one shows up.
+if git -C "$ARCHIVE_ROOT" remote 2>/dev/null | grep -q .; then
+  echo "skill-archive-sync: refusing -- $ARCHIVE_ROOT has a git remote configured, but this archive must stay local-only (card 59cfcb21 F1)" >&2
+  exit 2
 fi
 
 DEST="$ARCHIVE_ROOT/$SKILL"

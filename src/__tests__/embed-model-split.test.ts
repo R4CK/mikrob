@@ -141,3 +141,44 @@ describe('vectorSearch: tool-log-shaped rows and near-orthogonal rows are exclud
     expect(contents).toContain('relevant row, matches the query')
   })
 })
+
+// WhiteHat N4 (card 0a34377f, komment 14926, CYBERSEC NO-GO): the vector branch's agent/category
+// boundary (`agent_id = ? OR category = 'shared'`) had ZERO regression coverage -- a mutation that
+// widened it to return every agent's rows (e.g. `agent_id IS NOT NULL`) left all 352 memory-related
+// tests green. The hook consuming this (shared-memory-inject.py's own-curated section) trusts the
+// API to enforce this boundary; it is not re-checked client-side.
+describe('vectorSearch: the agent/shared boundary is enforced, not incidental (card 0a34377f WhiteHat N4)', () => {
+  it('never returns another agent\'s non-shared row through hybridSearch', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    const insert = db.prepare(
+      `INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, embedding)
+       VALUES ('0', ?, 'semantic', 1.0, ?, ?, ?, 'warm', ?, ?)`
+    )
+    // Both rows carry an IDENTICAL embedding to the query, so a correct boundary is the ONLY
+    // thing that can keep victim's row out -- a cosine/shape/budget difference cannot explain it.
+    insert.run('attacker agent own row, matches the query', now, now, 'attacker', 'alpha', JSON.stringify([1, 0, 0, 0]))
+    insert.run('victim agent non-shared row, matches the query', now, now, 'victim', 'alpha', JSON.stringify([1, 0, 0, 0]))
+
+    stubEmbedding([1, 0, 0, 0])
+    const hits = await hybridSearch('attacker', 'zzzznincsilyenszo', 10)
+    const contents = hits.map(h => h.content)
+    expect(contents).toContain('attacker agent own row, matches the query')
+    expect(contents).not.toContain('victim agent non-shared row, matches the query')
+  })
+
+  it('still returns a shared-category row belonging to another agent', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    const insert = db.prepare(
+      `INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, embedding)
+       VALUES ('0', ?, 'semantic', 1.0, ?, ?, ?, ?, ?, ?)`
+    )
+    insert.run('other agent shared row, matches the query', now, now, 'other-agent', 'shared', 'alpha', JSON.stringify([1, 0, 0, 0]))
+
+    stubEmbedding([1, 0, 0, 0])
+    const hits = await hybridSearch('requesting-agent', 'zzzznincsilyenszo', 10)
+    const contents = hits.map(h => h.content)
+    expect(contents).toContain('other agent shared row, matches the query')
+  })
+})

@@ -18691,3 +18691,86 @@ Gate: QA.
 **Mérés:** fleet-import-auth-gate.test.ts újraírva (13 teszt: minden auth-kind + egy előzetesen jóváhagyott sor is 403-at kap, nulla approval-sor jön létre, dry-run érintetlen) + 4 új unit teszt a két kimentett függvényre. Mutáció-verifikálva: a flag `false`-ra állítva 8/13 teszt bukik (a régi üzenet/viselkedés tér vissza); a hash-függvényből az `allowRiskyFields`-kötés eltávolítva 2/4 teszt bukik. fleet-transfer.test.ts (41) + approvals-delivery.test.ts (14) + auth-routes.test.ts + auth-device-keys.test.ts + bridge-enroll.test.ts (összesen 130 a hat fájlon) zöld, regresszió nincs. `npx tsc --noEmit` tiszta, `lint-ratchet.sh` "no rule got worse" (330 lelet).
 
 **Ki döntött:** RedHat mérte a delta-gate NO-GO-t (14953, Gate-SHA f9f3802764ee074de0eac1477ce825f4518064cb); MikroB döntött a hard fail-closed mechanizmusról (14957); backend implementálta. Gate: QA + Cybered/RedHat (a kártya saját sora szerint).
+
+## 2026-10-10 -- korrekcio: a 59cfcb21 F4 bejegyzes tulzott mutacio-lefedettseget allitott (kartya 0fb92c16, RedHat 59cfcb21 CYBERED GO utomunka)
+
+A fentebbi, "2026-10-10 -- skill-archive kikerul a publikus repobol..." bejegyzes F4 pontja ezt
+allitotta: "Mutacios regresszios teszt mindket uj ellenorzesre (`src/__tests__/skill-archive-no-propagation.test.ts`, 3 eset)." Ez tulzott volt: a 3 teszteset tenylegesen a (b) altalanos
+wildcard-masolas es a (c) szo-szerinti nev-egyezes ellenorzesre adott mutacios bizonyitekot, DE a
+(a) tenyleges iranyitasi-kotes allowlist-ellenorzesre NEM volt mutacios teszt -- egy olyan
+szerkesztes, ami egy UJ, listan-nem-levo konyvtarat kezd olvasni anelkul, hogy a "skill-archive"
+szot kiirna vagy altalanos wildcard-masolast hasznalna, zoldon maradt volna at ezen az oron.
+
+**Javitas (kartya 0fb92c16, item 3):** `src/__tests__/skill-archive-no-propagation.test.ts` kapott
+egy uj mutacios tesztet kifejezetten az (a) szabalyra (`*_DIR="$INSTALL_DIR/<nev>"` mintaju
+iranyitasi-kotes egy nem-engedelyezett konyvtarra), plusz a letezo (c) szo-szerinti-nev mutacio
+kiterjesztve mind az 5 `FILES` bejegyzesre (install-linux.sh, install-macos.sh, install-lang.sh,
+update.sh, store/agent-skill-drift-sync.sh) -- korabban csak install-linux.sh es update.sh volt
+tesztelve, a masik 3 fajl pinnelesen kivul esett. Osszesen 9 teszteset (6-rol), mind zold.
+
+**Ugyanezen a koron (0fb92c16 item 1-2, 5):**
+- `skill-archive-sync.sh` es `skill-archive-restore.sh`: a nev-szanitizalas mostantol a dot-kezdetu
+  neveket (kulonosen ".git") is tiltja -- egy ".git" nevu "skill" a sync.sh-ban DEST-et az archivum
+  SAJAT .git konyvtarara allitotta volna, es a kovetkezo `rm -rf "$DEST"` a teljes archivum-
+  tortenetet torolte volna (merve). `skill-archive-sync.sh` mostantol explicit ellenorzi, hogy az
+  archivum-repon NINCS git remote (`git remote` ures), mielott barmit masolna/commitolna -- a
+  "remote-tilalom" korabban csak proza volt, kikenyszerites nelkul.
+- A `~/.claude/skill-archive` kulon, remote nelkuli repoban a `ponytail/LICENSE-MIT.txt` es
+  `sp-diagnosing-superpowers/LICENSE-MIT.txt` szerzoi jogi sora KOVETKEZTETETT volt
+  ("DietrichGebert and contributors" / "obra and contributors"), nem a tenyleges forras-LICENSE-bol
+  masolt. Javitva a tenyleges upstream LICENSE szovegere (ponytail: "Copyright (c) 2026
+  DietrichGebert", a `DietrichGebert/ponytail` repo LICENSE fajljabol, commit 16f29800; sp-
+  diagnosing-superpowers: "Copyright (c) 2025 Jesse Vincent", az `obra/superpowers` repo LICENSE
+  fajljabol, raw.githubusercontent.com-rol frissen lekerve 2026-10-10-en) -- ez a fenti DECISIONS
+  bejegyzesben NEM volt dokumentalva, a javitas kulon commitban tortent a `~/.claude/skill-archive`
+  SAJAT (git-kovetett, remote nelkuli) repojaban, nem ebben a repoban (nincs git diff itt).
+
+**Ki dontott:** a leleteket RedHat adta (59cfcb21 CYBERED GO, komment 14453/c7933508), MikroB
+fogalmazta a javitas iranyat (0fb92c16 kartya-leiras). A vegrehajtas fullstack sajat munkaja.
+Gate: QA + Cybered (a javitas iranyat RedHat adta).
+
+## 2026-10-10 -- 0a34377f CYBERSEC NO-GO javitas: R2 teljes-sor-flatten + vectorSearch agent-hatar regresszio + N6 robusztussag (kartya 0a34377f, forras: WhiteHat NO-GO komment 14926)
+
+A korabbi, "claude-mem A resz (5a4bea2e): flotta-kiterjesztes elofeltetelei R1-R4" bejegyzes
+R2 javitasa CSAK a `content` mezot lapositotta/vagta -- a sorba kerulo `keywords`, `category`,
+`created_label` es `agent_id` mezo nyers maradt. WhiteHat (CYBERSEC NO-GO, komment 14926) merte:
+egy sortores a `keywords` vagy `agent_id` mezoben UGYANAZT a 0. oszlopos hamis-fejlec/direktiva
+kockazatot nyitja meg, amit az R2 eppen bezarni probalt a content-en -- es a `POST /api/memories`
+(src/web/routes/memories.ts) ezeket a mezoket semmilyen normalizalas nelkul tarolja.
+
+**Javitas (N1, MEDIUM):** egyetlen `_cap_and_flatten(value, max_chars)` segedfuggveny mostantol
+MINDEN sorba kerulo mezore fut (content: 400 karakter, keywords: 200, category/created_label/
+agent_id: 64), es a sortores-keszlet bovult a CR/LF/VT/FF mellett U+0085, U+2028, U+2029-re is
+(N3, LOW -- ugyanaz a gyoker, ugyanaz a javitas zarja). Regresszios teszt: egy bejegyzes, amelynek
+MIND AZ OT mezojebe sortores van irva, es az allitas az, hogy a szekcio teljes torzse pontosan 1
+sor, es az a sor "- ["-fel kezdodik -- ez eppen azt a resst fedi, amit WhiteHat jelzett: a regi
+teszt csak a "- [" kezdetu sorokra szurt, igy egy kulon, nem "- [" alaku sor lathatatlan maradt
+neki.
+
+**Javitas (N6, LOW):** egy 200-as valasz, ami nem lista es nem objektum (pl. nyers `null`), a
+`main()` try/except-je altal csendben elnyelt AttributeError-t dobott, es EGYETLEN meresi sor
+sem kerult a naploba (nem failed=True, nem 0). Mostantol ezt az esetet kulon agkent kezeli a
+fuggveny, es `failed=True`-t ad vissza, ugyanugy mint egy transport-hiba eseten.
+
+**Uj regresszios teszt (N4, MEDIUM-LOW, tesztlyuk, nem kod-hiba):** a `vectorSearch` SQL-jenek
+agent/shared hatara (`agent_id = ? OR category = 'shared'`) semmilyen mutacios lefedettseget nem
+kapott -- egy mutacio, ami ezt kiszelesiti (pl. `agent_id IS NOT NULL`), 352/352 memoria-teszttel
+zoldon maradt volna. Uj teszt ket agent sorával, azonos embeddinggel (igy csak a hatar
+donthet), amely elvarja, hogy A ugynok hybridSearch hivasa SOHA ne adja vissza B ugynok nem-shared
+sorat, es hogy egy shared-kategoriaju, mas agent_id-hez tartozo sor VISSZA kell jojjon. Sajat
+mutacio-proof a valodi fajlon (`agent_id = ? OR category = 'shared'` -> `agent_id = ? OR 1=1`):
+pontosan ez az uj teszt bukott, semelyik masik.
+
+N2 (LOW, ugyanaz a gyoker mint N1): a javitas a kulon mezo-korlatokkal egyutt megszunt (200/64
+karakter eros korlat, a korabbi "csak a token-keret tartja a felso hatart" allapot helyett).
+N5 (LOW, nem e kartya hatokore -- az agent_id iraskori hitelesitese egy kulon, melyebb kerdes,
+lasd 7965095b): nem valtozott, a fejlec szovege mar most kimondja, hogy a szerzo-belyeg nem
+hitelesitett.
+
+**Mert allapot:** embed-model-split.test.ts 12/12 zold (10-rol, 2 uj N4 eset), session-memory-
+inject-own-curated.test.ts 10/10 zold (8-rol, 1 uj N1 es 1 uj N6 eset), skill-archive-no-
+propagation.test.ts 9/9 zold (erintetlen, csak egyutt futtatva), tsc --noEmit tiszta.
+
+**Ki dontott:** WhiteHat talalta a leleteket (CYBERSEC NO-GO, komment 14926) es adta a javitas
+iranyat; a kartya sajat szovege szerint ezert a kovetkezo biztonsagi gate RedHat (nem Cybersec,
+fuggetlenseg miatt). A vegrehajtas fullstack sajat munkaja. Gate: QA + RedHat.
