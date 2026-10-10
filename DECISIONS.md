@@ -18800,3 +18800,34 @@ jelzi a helyes allapotot.
 **Ki dontott:** a leletet WhiteHat adta (CYBERSEC GO a 0fb92c16-on, komment f0b88947/msg 10408).
 A vegrehajtas fullstack sajat munkaja. Gate: QA + Cybered (a leleteket WhiteHat adta, a kartya
 a9878e3e sajat sora szerint).
+
+## 2026-10-10 -- korrekcio: a 0a34377f NO-GO javitas bejegyzes N3 allitasa tulzott volt a teszt-lefedettsegre (kartya e6b2742b, WhiteHat meres, msg 10419 -- NEM verdikt)
+
+A fentebbi, "2026-10-10 -- 0a34377f CYBERSEC NO-GO javitas..." bejegyzes azt allitja, hogy "a
+sortores-keszlet bovult a CR/LF/VT/FF mellett U+0085, U+2028, U+2029-re is (N3, LOW -- ugyanaz a
+gyoker, ugyanaz a javitas zarja)", es ezt ugy mutatja be, mintha a hivatkozott regresszios teszt
+(`src/__tests__/session-memory-inject-own-curated.test.ts`, "WhiteHat N1" eset) mind a 7 osztalyt
+karakterenkent igazolta volna.
+
+**Ez tulzott volt.** A KOD oldala helyes: a `_cap_and_flatten` helper forraskodjaban a
+`_LINE_BREAK_CHARS` tuple valoban mind a 7 (illetve a CRLF specialis esettel egyutt 8) osztalyt
+tartalmazza, es ezt a kartya e6b2742b sajat, uj tesztjei (lasd lejjebb) kozvetlenul, karakterenkent
+igazoljak IS a kozos helperre. DE a 0a34377f-hez tartozo sajat regresszios teszt magat csak egyetlen
+literalis LF-fel (`\n`) injektalt minden mezobe (content/category/keywords/created_label/agent_id
+egyszerre) -- a maradek 6-7 osztalyt (CR, CRLF, VT, FF, U+0085, U+2028, U+2029) ez a konkret
+teszteset soha nem probalta egyedileg a kurat (own-curated) szekcio sajat hivasara.
+
+**Miert nem kritikus most:** a `_cap_and_flatten` ugyanazon az EGYETLEN, megosztott fuggvenyen
+fut at mindket aghoz (shared-tier ES own-curated szekcio egyarant, lasd
+`scripts/hooks/shared-memory-inject.py`) -- es a kartya e6b2742b uj tesztjei
+(`src/__tests__/shared-memory-inject-provenance.test.ts`, a shared-tier agra) most mar
+karakterenkent, mind a 8 osztalyra, tobb mezore (content/keywords/agent_id/created_label) is
+igazoljak EZT a kozos fuggvenyt, MUTACIO-bizonyitekkal egyutt. Mivel a kurat szekcio ugyanazt a
+fuggvenyt hivja, a tenyleges viselkedes a nem-LF osztalyokra is bizonyitott -- csak nem a sajat,
+0a34377f-hez tartozo teszt-fajljaban, hanem a kozos helper tesztjeben.
+
+**Javitas:** ez a korrekcio a fajl VEGERE kerul (nem a hibas bejegyzes szerkesztesekent), a projekt
+DECISIONS.md fegyelmenek megfeleloen. A hivatkozott, tulzott bejegyzes szovege erintetlen marad.
+
+**Ki dontott:** WhiteHat merese (msg 10419, nem verdikt -- a kartya e6b2742b fuggetlen biztonsagi
+gate-je Cybered a kartya sajat, atirt Gate-sora szerint). A vegrehajtas fullstack sajat munkaja.

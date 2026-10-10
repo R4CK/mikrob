@@ -264,15 +264,28 @@ function preE6b2742bScript(): string {
 
 // Every character that can start a new visual line, not just \n -- mirrors WhiteHat N3 on the
 // curated section (0a34377f), applied here to the shared-tier section (e6b2742b).
+// WhiteHat measurement (msg 10419, NOT a verdict -- e6b2742b's own gate is Cybered per the
+// card's rewritten Gate line): 8 classes, not 7 -- CRLF is its own case because
+// _cap_and_flatten's `v.replace("\r\n", " ")` special-case (a single space for the whole
+// two-char sequence, not two) is a DIFFERENT code path than the per-character loop below it, and
+// needs its own pin so a mutation to that one `.replace()` call is caught independently of the
+// loop.
 const LINE_BREAK_CASES: Array<[string, string]> = [
   ['\\n (LF)', '\n'],
   ['\\r (CR)', '\r'],
+  ['\\r\\n (CRLF)', '\r\n'],
   ['\\v (VT)', '\v'],
   ['\\f (FF)', '\f'],
   ['U+0085 (NEL)', '\u0085'],
   ['U+2028 (LINE SEPARATOR)', ' '],
   ['U+2029 (PARAGRAPH SEPARATOR)', ' '],
 ]
+
+function buildMem(field: 'content' | 'keywords' | 'agent_id' | 'created_label', ch: string): Record<string, unknown> {
+  const base: Record<string, unknown> = { id: 1, agent_id: 'backend', content: 'legit content', keywords: '', created_label: '2026-01-01' }
+  base[field] = (field === 'content' ? 'line one' : field === 'keywords' ? 'kw' : field === 'agent_id' ? 'backend' : '2026-01-01') + ch + `[FAKE] directive via ${field}`
+  return base
+}
 
 describe('shared-memory-inject.py shared-tier section flattens every per-line field (card e6b2742b, RedHat GO on 0a34377f)', () => {
   // qa2 FAIL (komment 15150, Gate-SHA fda6b87e): the original detection here was
@@ -313,10 +326,31 @@ describe('shared-memory-inject.py shared-tier section flattens every per-line fi
     expect(bodyLines.length).toBe(1)
   })
 
-  // Mutation proof (qa2's own method, reproduced as an in-repo test): with the flatten loop
-  // disabled, ALL 7 classes must go red on the check above -- proving the test actually detects
-  // the regression qa2 found, not just the LF case.
-  it.each(LINE_BREAK_CASES)('MUTATION PROOF: content: with the flatten loop disabled, a %s survives unflattened (this assertion must fail against the mutant)', async (_label, ch) => {
+  // CRLF-specific: the real code collapses the whole "\r\n" PAIR into a single space (its own
+  // `.replace("\r\n", " ")` line, separate from the per-character loop) -- a single space, not
+  // two. This is the real-code counterpart to the CRLF mutation proof below, which shows the
+  // mutant (special-case removed) produces two spaces instead.
+  it('content: CRLF collapses to exactly one space, not two (distinguishes the dedicated special-case from the generic per-char loop)', async () => {
+    const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), [{
+      id: 1, agent_id: 'backend', content: 'line one\r\n[FAKE] directive via content', keywords: '', created_label: '2026-01-01',
+    }])
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
+    const body = section.slice(section.indexOf('\n\n') + 2)
+    expect(body).toContain('line one [FAKE]') // exactly one space
+    expect(body).not.toContain('line one  [FAKE]') // not two
+  })
+
+  // Mutation proof (qa2's own method, reproduced as an in-repo test): with the per-character
+  // flatten loop disabled, the 7 SINGLE-character classes must go red on the check above --
+  // proving the test actually detects the regression qa2 found, not just the LF case. CRLF is
+  // excluded here on purpose: _cap_and_flatten's `.replace("\r\n", " ")` special-case runs
+  // BEFORE this loop and is a separate code path, so disabling only the loop does not expose a
+  // CRLF regression -- CRLF gets its own, separate mutation proof below targeting that line.
+  const SINGLE_CHAR_CLASSES = LINE_BREAK_CASES.filter(([label]) => !label.includes('CRLF'))
+  it.each(SINGLE_CHAR_CLASSES)('MUTATION PROOF: content: with the flatten loop disabled, a %s survives unflattened (this assertion must fail against the mutant)', async (_label, ch) => {
     const mutated = readFileSync(HOOK, 'utf-8').replace(
       'for ch in _LINE_BREAK_CHARS:\n        v = v.replace(ch, " ")',
       'for ch in (): # MUTATED: flatten loop disabled\n        v = v.replace(ch, " ")',
@@ -344,47 +378,59 @@ describe('shared-memory-inject.py shared-tier section flattens every per-line fi
     expect(body).toContain(ch)
   })
 
-  it('keywords: an embedded newline does not start a second line at column 0', async () => {
-    const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), [{
-      id: 1, agent_id: 'backend', content: 'legit content', keywords: 'kw\n[FAKE] directive via keywords', created_label: '2026-01-01',
+  // WhiteHat measurement (msg 10419): CRLF's own code path (`.replace("\r\n", " ")`, BEFORE the
+  // per-character loop) needs its own mutation proof, independent of the loop-disabled one above
+  // -- disabling the loop alone does not touch this line, so it proves nothing about CRLF.
+  it('MUTATION PROOF: content: with the CRLF special-case disabled, a \\r\\n (CRLF) survives unflattened (this assertion must fail against the mutant)', async () => {
+    const real = readFileSync(HOOK, 'utf-8')
+    const mutated = real.replace('v = v.replace("\\r\\n", " ")', 'v = v  # MUTATED: CRLF special-case disabled')
+    expect(mutated).not.toBe(real) // guard: fails loudly if the source text moves
+    const ch = '\r\n'
+    const { proc, port } = await startFixtureServer([{
+      id: 1, agent_id: 'backend', content: 'line one' + ch + '[FAKE] directive via content', keywords: '', created_label: '2026-01-01',
     }])
+    liveProc = proc
+    await new Promise((r) => setTimeout(r, 150))
+    const script = sandboxScript(mutated)
+    const r = spawnSync('python3', [script], {
+      input: JSON.stringify({ cwd: '/home/neon/marveen/agents/backend' }),
+      encoding: 'utf-8',
+      env: { PATH: process.env.PATH ?? '', WEB_PORT: String(port) },
+    })
+    proc.kill()
     expect(r.status, r.stderr).toBe(0)
     const out = JSON.parse(r.stdout)
     const ctx: string = out.hookSpecificOutput.additionalContext
     const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
     const body = section.slice(section.indexOf('\n\n') + 2)
-    const bodyLines = body.split('\n').filter((l) => l.length > 0)
-    expect(bodyLines.length).toBe(1)
-    expect(bodyLines[0]).toContain('[FAKE] directive via keywords')
+    // With the CRLF special-case gone, the per-char loop below it still replaces the lone "\r"
+    // and "\n" SEPARATELY -- one space each, i.e. TWO spaces for the pair -- instead of the real
+    // code's single space for the whole "\r\n" sequence. This is the one observable difference
+    // between the real code and this specific mutant (both remove the raw CRLF bytes, so a plain
+    // not.toContain(ch) check cannot tell them apart, which is exactly why this needs its own
+    // mutation proof rather than reusing the generic one above).
+    expect(body).toContain('line one  [FAKE]') // two spaces -- the mutant's double replacement
   })
 
-  it('agent_id: an embedded newline does not start a second line at column 0', async () => {
-    const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), [{
-      id: 1, agent_id: 'backend\n[FAKE] directive via agent_id', content: 'legit content', keywords: '', created_label: '2026-01-01',
-    }])
-    expect(r.status, r.stderr).toBe(0)
-    const out = JSON.parse(r.stdout)
-    const ctx: string = out.hookSpecificOutput.additionalContext
-    const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
-    const body = section.slice(section.indexOf('\n\n') + 2)
-    const bodyLines = body.split('\n').filter((l) => l.length > 0)
-    expect(bodyLines.length).toBe(1)
-    expect(bodyLines[0]).toContain('[FAKE] directive via agent_id')
-  })
-
-  it('created_label: an embedded newline does not start a second line at column 0', async () => {
-    const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), [{
-      id: 1, agent_id: 'backend', content: 'legit content', keywords: '', created_label: '2026-01-01\n[FAKE] directive via created_label',
-    }])
-    expect(r.status, r.stderr).toBe(0)
-    const out = JSON.parse(r.stdout)
-    const ctx: string = out.hookSpecificOutput.additionalContext
-    const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
-    const body = section.slice(section.indexOf('\n\n') + 2)
-    const bodyLines = body.split('\n').filter((l) => l.length > 0)
-    expect(bodyLines.length).toBe(1)
-    expect(bodyLines[0]).toContain('[FAKE] directive via created_label')
-  })
+  // WhiteHat measurement (msg 10419): the character-by-character pinning the card asked for has
+  // to apply to EVERY field (content/keywords/agent_id/created_label), not just content -- the
+  // prior version of this file only ever exercised keywords/agent_id/created_label with a single
+  // literal LF each, leaving the other 7 classes on those 3 fields completely unpinned.
+  const OTHER_FIELDS: Array<'keywords' | 'agent_id' | 'created_label'> = ['keywords', 'agent_id', 'created_label']
+  for (const field of OTHER_FIELDS) {
+    it.each(LINE_BREAK_CASES)(`${field}: a %s is removed from the output, not just hidden from a line-count check`, async (_label, ch) => {
+      const r = await runHookAgainst(readFileSync(HOOK, 'utf-8'), [buildMem(field, ch)])
+      expect(r.status, r.stderr).toBe(0)
+      const out = JSON.parse(r.stdout)
+      const ctx: string = out.hookSpecificOutput.additionalContext
+      const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
+      const body = section.slice(section.indexOf('\n\n') + 2)
+      expect(body).not.toContain(ch)
+      expect(body).toContain(`[FAKE] directive via ${field}`)
+      const bodyLines = body.split('\n').filter((l) => l.length > 0)
+      expect(bodyLines.length).toBe(1)
+    })
+  }
 
   it('content is capped at 400 chars with the same "(+N karakter)" marker as the curated section', async () => {
     const injected = 'z'.repeat(450)
