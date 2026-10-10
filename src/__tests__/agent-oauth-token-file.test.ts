@@ -79,6 +79,30 @@ describe('resolveOauthTokenFileSetting: only an ABSENT key is "unset"', () => {
       expect(resolveOauthTokenFileSetting(raw), raw).toEqual({ state: 'invalid', reason })
     }
   })
+
+  // RedHat follow-up (card 48639c7d, comment 14160, F1 remainder): the key-name-substring check
+  // above only catches a truncation that happens to stop AFTER the full key text -- one that stops
+  // WHILE writing the key name itself leaves no occurrence of the full `"oauthTokenFile"` text to
+  // find, so it fell through to 'unset' pre-fix (measured: RedHat's own repro, `..."oauthTok`).
+  it('a truncation that cuts off mid-key-name is INVALID, not unset (RedHat repro: ..."oauthTok)', () => {
+    const cases = [
+      '{"oauthTok',
+      '{"other":"x","oauthTokenFi',
+      '{"o',
+    ]
+    for (const raw of cases) {
+      expect(resolveOauthTokenFileSetting(raw), raw).toEqual({ state: 'invalid', reason: 'config-unparseable' })
+    }
+  })
+
+  // MUTATION PIN / non-vacuity: a truncation that stops BEFORE any quote character (so no prefix
+  // of the key's opening quote survives) has no signal to find, and a config that never mentioned
+  // this field at all must still read as 'unset' -- the fix must not become "any unparseable JSON
+  // refuses", only "unparseable JSON that shows a partial key name refuses".
+  it('a truncation with no key-name fragment at all still reads as unset', () => {
+    expect(resolveOauthTokenFileSetting('{broken')).toEqual({ state: 'unset' })
+    expect(resolveOauthTokenFileSetting('{"model":"claude-opus-5-5", "x":1')).toEqual({ state: 'unset' })
+  })
 })
 
 describe('oauthTokenFileConflict: a setting the field cannot take effect under refuses', () => {
@@ -230,37 +254,106 @@ describe('reverifyOauthTokenFile: closes most of the check-then-use window (Whit
 
 describe('findOauthTokenFileCollision: two agents must not share one token file (WhiteHat F4, card 006b506b)', () => {
   const cfg = (raw: string) => ({ ok: true as const, raw })
+  const FP = 'aaaaaaaa' // placeholder fingerprint: these cases never reach the content read (path mismatch, no other 'set' value, or a path that doesn't exist on disk)
 
   it('no other agent uses this path -> no collision', () => {
-    expect(findOauthTokenFileCollision('/x/mine.token', 'me', [
+    expect(findOauthTokenFileCollision('/x/mine.token', FP, 'me', [
       { name: 'other1', configRead: cfg('{}') },
       { name: 'other2', configRead: cfg(JSON.stringify({ oauthTokenFile: '/x/different.token' })) },
     ])).toBeNull()
   })
 
   it('another agent names the SAME path -> collision, named', () => {
-    expect(findOauthTokenFileCollision('/x/shared.token', 'me', [
+    expect(findOauthTokenFileCollision('/x/shared.token', FP, 'me', [
       { name: 'other1', configRead: cfg('{}') },
       { name: 'other2', configRead: cfg(JSON.stringify({ oauthTokenFile: '/x/shared.token' })) },
     ])).toBe('other2')
   })
 
   it('this agent is skipped even if the list includes a stale self-entry', () => {
-    expect(findOauthTokenFileCollision('/x/mine.token', 'me', [
+    expect(findOauthTokenFileCollision('/x/mine.token', FP, 'me', [
       { name: 'me', configRead: cfg(JSON.stringify({ oauthTokenFile: '/x/mine.token' })) },
     ])).toBeNull()
   })
 
   it('an unreadable OTHER agent config is skipped, not treated as a collision', () => {
-    expect(findOauthTokenFileCollision('/x/mine.token', 'me', [
+    expect(findOauthTokenFileCollision('/x/mine.token', FP, 'me', [
       { name: 'other1', configRead: { ok: false, reason: 'unreadable' } },
     ])).toBeNull()
   })
 
   it('an invalid (not "set") value on the other side never collides', () => {
-    expect(findOauthTokenFileCollision('/x/mine.token', 'me', [
+    expect(findOauthTokenFileCollision('/x/mine.token', FP, 'me', [
       { name: 'other1', configRead: cfg(JSON.stringify({ oauthTokenFile: 123 })) },
     ])).toBeNull()
+  })
+
+  // RedHat follow-up (card 48639c7d, comment 14160, F4): literal path-string equality missed
+  // every case below -- each one resolves to the SAME bytes via a DIFFERENT path string (or, for
+  // the last case, is not a path trick at all: a genuinely separate file holding the identical
+  // secret value). Real temp files: a read-based check cannot be proven against fixture strings.
+  describe('path-spelling and copy tricks (fingerprint-based, not path-string-based)', () => {
+    let dir: string
+    beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'oauth-collision-fp-')) })
+    afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+    const fp = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex').slice(0, 8)
+
+    it('a dotted-path variant of the SAME file (/./) collides', () => {
+      const real = join(dir, 'mine.token')
+      writeFileSync(real, FAKE_TOKEN)
+      const dotted = join(dir, '.', 'mine.token')
+      expect(findOauthTokenFileCollision(real, fp(FAKE_TOKEN), 'me', [
+        { name: 'other1', configRead: cfg(JSON.stringify({ oauthTokenFile: dotted })) },
+      ])).toBe('other1')
+    })
+
+    it('a directory-symlink path to the SAME file collides', () => {
+      writeFileSync(join(dir, 'mine.token'), FAKE_TOKEN)
+      const linkDir = join(dir, 'linked')
+      symlinkSync(dir, linkDir, 'dir')
+      expect(findOauthTokenFileCollision(join(dir, 'mine.token'), fp(FAKE_TOKEN), 'me', [
+        { name: 'other1', configRead: cfg(JSON.stringify({ oauthTokenFile: join(linkDir, 'mine.token') })) },
+      ])).toBe('other1')
+    })
+
+    it('a hardlink to the SAME file collides', () => {
+      const real = join(dir, 'mine.token')
+      writeFileSync(real, FAKE_TOKEN)
+      const hardlink = join(dir, 'mine-hardlink.token')
+      linkSync(real, hardlink)
+      expect(findOauthTokenFileCollision(real, fp(FAKE_TOKEN), 'me', [
+        { name: 'other1', configRead: cfg(JSON.stringify({ oauthTokenFile: hardlink })) },
+      ])).toBe('other1')
+    })
+
+    it('a byte-identical COPY (separate file, separate inode, same secret value) collides', () => {
+      const real = join(dir, 'mine.token')
+      const copy = join(dir, 'copy.token')
+      writeFileSync(real, FAKE_TOKEN)
+      writeFileSync(copy, FAKE_TOKEN)
+      expect(findOauthTokenFileCollision(real, fp(FAKE_TOKEN), 'me', [
+        { name: 'other1', configRead: cfg(JSON.stringify({ oauthTokenFile: copy })) },
+      ])).toBe('other1')
+    })
+
+    it('MUTATION PIN: different content at a different path does NOT collide (self-check)', () => {
+      const real = join(dir, 'mine.token')
+      const other = join(dir, 'other.token')
+      writeFileSync(real, FAKE_TOKEN)
+      writeFileSync(other, `${SETUP_TOKEN_PREFIX}01-genuinely-different-value`)
+      expect(findOauthTokenFileCollision(real, fp(FAKE_TOKEN), 'me', [
+        { name: 'other1', configRead: cfg(JSON.stringify({ oauthTokenFile: other })) },
+      ])).toBeNull()
+    })
+
+    it("an other agent's declared path that does not exist on disk is skipped, not a collision", () => {
+      const real = join(dir, 'mine.token')
+      writeFileSync(real, FAKE_TOKEN)
+      expect(findOauthTokenFileCollision(real, fp(FAKE_TOKEN), 'me', [
+        { name: 'other1', configRead: cfg(JSON.stringify({ oauthTokenFile: join(dir, 'does-not-exist.token') })) },
+      ])).toBeNull()
+    })
   })
 })
 
@@ -327,6 +420,23 @@ describe('readAgentConfigForOauthDecision: distinguishes absent from unreadable 
     } finally {
       chmodSync(p, 0o600) // afterEach's rmSync needs permission to remove it
     }
+  })
+
+  // RedHat follow-up (card 48639c7d, comment 14160, F1 remainder): a dangling symlink also reads
+  // ENOENT from readFileSync -- the SAME error code a truly absent path gives -- so without lstat
+  // first, something an operator (or a prior process) actually put there reads as "no file was ever
+  // here", silently falling back to the fleet token exactly like the already-fixed unreadable-file
+  // case above, just reached through a broken link.
+  it('a dangling symlink (something IS configured here, but its target is gone) reads as NOT ok -- never "{}"', () => {
+    const p = join(tmp, 'dangling-config.json')
+    symlinkSync(join(tmp, 'target-that-does-not-exist.json'), p)
+    expect(readAgentConfigForOauthDecision(p)).toEqual({ ok: false, reason: 'unreadable' })
+  })
+
+  it('MUTATION PIN: a dangling symlink would read as ok/"{}" under plain readFileSync (self-check)', () => {
+    const p = join(tmp, 'dangling-config-2.json')
+    symlinkSync(join(tmp, 'also-missing.json'), p)
+    expect(() => readFileSync(p, 'utf-8')).toThrow(/ENOENT/)
   })
 
   // THE MUTATION THIS PINS: swapping this reader back for the old `readFileOr(path, '{}')` makes

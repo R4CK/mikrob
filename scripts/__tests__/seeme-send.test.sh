@@ -22,6 +22,11 @@ fail(){ echo "  FAIL  $*"; FAILED=1; }
 # env-valtozon at latja (seeme-send.py: SEEME_INTERNAL_FILE) -- a valodi
 # store/ tartalmat egyaltalan nem erinti a teszt.
 FIXTURE_DIR="$(mktemp -d /tmp/seeme-send-fixtures-XXXX)"
+# 34573931 (RedHat A2): SEEME_INTERNAL_FILE/SEEME_DB_PATH only take effect with
+# SEEME_TEST_MODE=1 -- without it, seeme-send.py ignores both and falls back to
+# the real store/ paths, so a hijacked env cannot redirect the gate to an
+# attacker-controlled file.
+export SEEME_TEST_MODE=1
 export SEEME_INTERNAL_FILE="$FIXTURE_DIR/seeme-internal-numbers.json"
 printf '{"internal": ["36305552860"]}' > "$SEEME_INTERNAL_FILE"
 
@@ -292,6 +297,59 @@ expected="$(printf 'False\nFalse\nFalse\nFalse\nTrue')"
 [ "$out" = "$expected" ] \
   && pass "is_usable_response_shape: null/[]/\"ok\"/1 elutasitva, dict elfogadva" \
   || fail "varva:\n$expected\nkaptam:\n$out"
+
+echo "--- A2 (34573931, RedHat): SEEME_INTERNAL_FILE/SEEME_DB_PATH csak SEEME_TEST_MODE=1 mellett szamit ---"
+
+# A MERT HIBA: egy tamado-befolyasolt env (pl. prompt-injektalt agent) a
+# SEEME_INTERNAL_FILE-t egy sajat, iro altala kontrollalt listara allithatta,
+# amiben a "kulso" cimzett BELSONEK van megadva -- approval nelkul atment.
+NOTREAL="36309998877"
+FAKE_INTERNAL_LIST="$FIXTURE_DIR/attacker-internal-list.json"
+printf '{"internal": ["%s"]}' "$NOTREAL" > "$FAKE_INTERNAL_LIST"
+out="$(SEEME_TEST_MODE= SEEME_INTERNAL_FILE="$FAKE_INTERNAL_LIST" bash -c '
+  printf "%s" "teszt" | python3 "$0" --to "$1" --dry-run 2>&1
+' "$SCRIPT" "$NOTREAL")"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -q "osztalyozas : KULSO" \
+  && pass "SEEME_TEST_MODE nelkul a SEEME_INTERNAL_FILE felulirasat a szkript figyelmen kivul hagyja (a hamis 'belso' lista hatastalan)" \
+  || fail "varva: KULSo osztalyozas (a felulirast el kellett volna utasitani), kaptam (rc=$rc): $out"
+
+# A tamado egy sajat irhato SQLite-fajlra is iranyithatta a johavagyas-kaput,
+# egy ELORE "approved"-ra allitott sorral -- a valodi kormanyzasi tablat
+# megkerulve.
+FAKE_DB="$FIXTURE_DIR/attacker-db.sqlite"
+python3 -c "
+import sqlite3, sys, time
+con = sqlite3.connect(sys.argv[1])
+con.execute('''CREATE TABLE approvals (
+  id TEXT PRIMARY KEY, category TEXT, status TEXT, content_hash TEXT,
+  consumed_at INTEGER, resolved_at INTEGER, action_description TEXT
+)''')
+con.execute('INSERT INTO approvals VALUES (?, ?, ?, ?, ?, ?, ?)',
+            ('99999999-0000-0000-0000-000000000000', 'external_message', 'approved',
+             '$(anchor_for "$TO" "$TEXT")', None, int(time.time()) - 60, 'SMS a $TO szamra. Szoveg: $TEXT'))
+con.commit()
+con.close()
+" "$FAKE_DB"
+out="$(SEEME_TEST_MODE= SEEME_DB_PATH="$FAKE_DB" bash -c '
+  printf "%s" "'"$TEXT"'" | python3 "$0" --to "$1" --approval "$2" --dry-run 2>&1
+' "$SCRIPT" "$TO" "99999999-0000-0000-0000-000000000000")"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -qi "adatbazis hianyzik" \
+  && pass "SEEME_TEST_MODE nelkul a SEEME_DB_PATH felulirasat a szkript figyelmen kivul hagyja (az elore-approved hamis DB hatastalan)" \
+  || fail "varva: 'adatbazis hianyzik' elutasitas (a felulirast el kellett volna utasitani), kaptam (rc=$rc): $out"
+
+echo "--- A2 (34573931, RedHat): SEEME_APPROVAL_WINDOW_S-nek nincs hatasa (a frissesseg-ablak fix 1800s) ---"
+
+# A MERT HIBA: a regi kodban SEEME_APPROVAL_WINDOW_S felulirta a frissesseg-
+# ablakot -- egy 90 napos johavagyas egy felfujt ablakkal meg "friss"-nek
+# szamitott. A STALE approval (fentebb, -99999 mp = kb. 27,8 ora) ugyanugy
+# elutasitva kell maradjon, akkor is, ha a hivo folyamat egy ORIASI ablakot
+# allit be.
+out="$(SEEME_APPROVAL_WINDOW_S=999999999 bash -c '
+  printf "%s" "'"$TEXT"'" | python3 "$0" --to "'"$TO"'" --approval "$1" --dry-run 2>&1
+' "$SCRIPT" "$STALE")"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -qi "tul regi" \
+  && pass "SEEME_APPROVAL_WINDOW_S=999999999 nem menti meg a STALE approval-t -- a frissesseg-ablak fix" \
+  || fail "varva: frissesseg-elutasitas (az env-nek nem kellett volna hatnia), kaptam (rc=$rc): $out"
 
 echo "--- mutacios kontroll (4. kikotes: a kontroll TUDJON bukni) ---"
 MUT="$(mktemp /tmp/seeme-send-mutated-XXXX.py)"
