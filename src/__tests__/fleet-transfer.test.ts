@@ -452,7 +452,7 @@ describe('importFleet: oauthTokenFile is stripped from an imported agent-config.
     const calls = (atomicWriteFileSync as any).mock.calls
       .filter((c: string[]) => c[0]?.includes('/victim/') && c[0]?.endsWith('agent-config.json'))
     expect(calls.length).toBeGreaterThan(0)
-    return JSON.parse(calls[calls.length - 1][1])
+    return JSON.parse(calls[calls.length - 1][1] as string)
   }
 
   it('an attacker-chosen oauthTokenFile never reaches the written config', async () => {
