@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, symlinkSync, linkSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -354,6 +355,20 @@ describe('findOauthTokenFileCollision: two agents must not share one token file 
         { name: 'other1', configRead: cfg(JSON.stringify({ oauthTokenFile: join(dir, 'does-not-exist.token') })) },
       ])).toBeNull()
     })
+
+    // Cybered follow-up (card bc32d233, 48639c7d GO 14284, F4 FIFO hang): a path an OTHER agent's
+    // config names can be anything, including a named pipe with no writer -- readFileSync on that
+    // blocks forever (measured: the dashboard's synchronous launch request never returns). lstat
+    // itself never blocks on a FIFO, so this must resolve to "not a collision" promptly, never hang.
+    it("an other agent's declared path pointing at a FIFO is skipped, not read (never hangs)", () => {
+      const real = join(dir, 'mine.token')
+      writeFileSync(real, FAKE_TOKEN)
+      const fifoPath = join(dir, 'other.fifo')
+      execFileSync('mkfifo', [fifoPath])
+      expect(findOauthTokenFileCollision(real, fp(FAKE_TOKEN), 'me', [
+        { name: 'other1', configRead: cfg(JSON.stringify({ oauthTokenFile: fifoPath })) },
+      ])).toBeNull()
+    })
   })
 })
 
@@ -437,6 +452,38 @@ describe('readAgentConfigForOauthDecision: distinguishes absent from unreadable 
     const p = join(tmp, 'dangling-config-2.json')
     symlinkSync(join(tmp, 'also-missing.json'), p)
     expect(() => readFileSync(p, 'utf-8')).toThrow(/ENOENT/)
+  })
+
+  // Cybered follow-up (card bc32d233, 48639c7d GO 14284): the unparseable-JSON branch in
+  // resolveOauthTokenFileSetting only refuses when the raw text mentions the key (whole or
+  // truncated) -- an empty, whitespace-only, or NUL-containing file mentions nothing, so it read as
+  // 'unset' -> fleet token, the realistic result of a crash mid non-atomic write. Caught here,
+  // before resolveOauthTokenFileSetting ever sees the bytes, same posture as the unreadable-file and
+  // dangling-symlink cases above.
+  describe('an empty, whitespace-only, or NUL-containing file reads as NOT ok (bc32d233)', () => {
+    it('0-byte file', () => {
+      const p = join(tmp, 'empty-config.json')
+      writeFileSync(p, '')
+      expect(readAgentConfigForOauthDecision(p)).toEqual({ ok: false, reason: 'unreadable' })
+    })
+
+    it('whitespace-only file', () => {
+      const p = join(tmp, 'whitespace-config.json')
+      writeFileSync(p, '   \n\t  \n')
+      expect(readAgentConfigForOauthDecision(p)).toEqual({ ok: false, reason: 'unreadable' })
+    })
+
+    it('NUL-byte content (does not mention the key at all)', () => {
+      const p = join(tmp, 'nul-config.json')
+      writeFileSync(p, '\0\0\0\0')
+      expect(readAgentConfigForOauthDecision(p)).toEqual({ ok: false, reason: 'unreadable' })
+    })
+
+    it('MUTATION PIN: a plain, non-empty, key-free unparseable file is still just unset (control)', () => {
+      const p = join(tmp, 'garbage-config.json')
+      writeFileSync(p, 'not json at all')
+      expect(readAgentConfigForOauthDecision(p)).toEqual({ ok: true, raw: 'not json at all' })
+    })
   })
 
   // THE MUTATION THIS PINS: swapping this reader back for the old `readFileOr(path, '{}')` makes
