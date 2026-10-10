@@ -100,3 +100,44 @@ describe('vectorSearch: a vector of the WRONG dimension is skipped, not scored',
     expect(contents).not.toContain('rossz dimenzio sor')
   })
 })
+
+// Card 5a4bea2e R1 (RedHat GO, komment 14537): the vector branch used to have neither the
+// tool-log shape filter nor a relevance floor, so a "Bash: ..."-shaped row with a perfect cosine
+// match and a near-orthogonal row both came back as real hits. Both measured live on a synthetic
+// corpus by the gate; these are the regression tests for the fix.
+describe('vectorSearch: tool-log-shaped rows and near-orthogonal rows are excluded (card 5a4bea2e R1)', () => {
+  it('excludes a tool-log-shaped row even when its embedding is a perfect match', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    const insert = db.prepare(
+      `INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, embedding)
+       VALUES ('0', ?, 'semantic', 1.0, ?, ?, 'shapetest', 'warm', ?, ?)`
+    )
+    insert.run('Bash: git push', now, now, 'alpha', JSON.stringify([1, 0, 0, 0]))
+    insert.run('a real written-down lesson about the widget', now, now, 'alpha', JSON.stringify([1, 0, 0, 0]))
+
+    stubEmbedding([1, 0, 0, 0])
+    // FTS finds nothing for this nonsense query, so any surviving row came from the vector branch.
+    const hits = await hybridSearch('shapetest', 'zzzznincsilyenszo', 10)
+    const contents = hits.map(h => h.content)
+    expect(contents).not.toContain('Bash: git push')
+    expect(contents).toContain('a real written-down lesson about the widget')
+  })
+
+  it('excludes a near-orthogonal row below the similarity floor', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    const insert = db.prepare(
+      `INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, embedding)
+       VALUES ('0', ?, 'semantic', 1.0, ?, ?, 'simtest', 'warm', ?, ?)`
+    )
+    insert.run('unrelated row, orthogonal to the query', now, now, 'alpha', JSON.stringify([0, 1, 0, 0]))
+    insert.run('relevant row, matches the query', now, now, 'alpha', JSON.stringify([1, 0, 0, 0]))
+
+    stubEmbedding([1, 0, 0, 0]) // cosine(query, row1) = 0, cosine(query, row2) = 1
+    const hits = await hybridSearch('simtest', 'zzzznincsilyenszo', 10)
+    const contents = hits.map(h => h.content)
+    expect(contents).not.toContain('unrelated row, orthogonal to the query')
+    expect(contents).toContain('relevant row, matches the query')
+  })
+})

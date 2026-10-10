@@ -18530,3 +18530,126 @@ dontesehez, hogy a lanc kereshetove valjon.
 **Ki dontott:** (eredeti dontes) backend, kartya 087e4418, upstream-sync 7. koteg. (fuggetlen
 megerosites es kartya-lezaras) backend3, kartya 7e70144e. Gate: QA + Cybersec (Cybersec a ket
 korabbi NO-GO szerzoje, a kartya sajat kerese szerint).
+
+## 2026-10-10 -- claude-mem A resz (5a4bea2e): flotta-kiterjesztes elofeltetelei R1-R4 (kartya 0a34377f, forras: CYBERED GO 14537, 92bc09db)
+
+RedHat (komment 14537) a sajat-kuralt-memoria session-inditasi injekcio (5a4bea2e, pilot:
+fullstack, alapbol KI) GO-ja mellett negy javitasi feltetelt szabott a FLOTTA-SZINTU kiterjesztes
+ele -- a pilot maga nem volt blokkolva (az elo DB-ben a pilot-ugynoknek 1 nem-shared memoriaja
+volt, nincs mit szivargatni), de a "csak kuralt memoria" es az "adatkent kezeld" iger
+gyengebb volt, mint a leiras allitotta. A negy feltetel (scripts/hooks/shared-memory-inject.py
+`_own_curated_memory_section` + `src/db.ts` `vectorSearch`):
+
+- **R1** (src/db.ts, `vectorSearch`): a vektoros ag korabban se az alak-szurot
+  (`excludeToolLogShapeSql`, eddig csak az FTS agon), se hasonlosagi kuszobot nem alkalmazott --
+  egy "Bash: git push" alaku sor es egy a lekerdezessel merogleges (cos~0) sor is valos
+  talalatkent jott vissza. Mostantol a vektoros SQL lekerdezes is tartalmazza az alak-szurot, es a
+  pontozott talalatok kozul csak a `MIN_VECTOR_SIMILARITY = 0.15` fole kerulnek tovabb (itelet,
+  nem levezetett szam -- a pilot merese alapjan hangolhato).
+- **R2** (shared-memory-inject.py): a sajat-kuralt szekcio bejegyzesenkent nem vagott (a shared
+  szekcio 400 karakteres vagasaval ellentetben) es nem normalizalt sortorest -- egy 4500 karakteres
+  bejegyzes egeszeben bejott, es egy bejegyzesbe irt sortores egy hamis fejlecet/direktivat a 0.
+  oszlopban jelenithetett meg, mintha a hook maga irta volna. Most `OWN_CURATED_MAX_CONTENT_CHARS
+  = 400` vagas (ugyanaz a "...(+N karakter)" jeloles, mint a shared szekcioban) ES a beszurt
+  tartalom sortoresei szokozre cserelve, MIELOTT a sor meretet/koltseget szamolnank. Soronkent
+  szerzo-belyeg (`agent_id`) is bekerult; a fejlec cime "SAJAT KURALT MEMORIA" -> "KURALT MEMORIA"
+  (a bovitett magyarazattal, hogy az agent_id iraskor NEM hitelesitett), mert a regi cim tobbet
+  igert, mint amit a rendszer garantal.
+- **R3** (shared-memory-inject.py): egy tul nagy bejegyzes a token-keretbe `break`-kel a TELJES
+  hatralevo, meg rangsorolt listat eldobta, nem csak sajat magat -- egy kisebb, meg relevans
+  bejegyzes a sor vegen soha nem kerult be, ha elotte egy nagy allt. `break` -> `continue`. Kulon
+  problema: a hibrid keresesi hivas kivetelenel (idotulepes, hideg embedding) a mereskent naplozott
+  `memories_count=0` megkulonbozhetetlen volt a "valoban nincs talalat" esettol -- uj `failed`
+  mezo a meresi sorban (`store/session-memory-inject-measurements.jsonl`) ezt szetvalasztja.
+- **R4** (teszt-infra, `src/__tests__/session-memory-inject-own-curated.test.ts`): a fixture-szerver
+  korabban PATH szerint routingolt es a lekerdezesi stringet teljesen figyelmen kivul hagyta -- a
+  gate 12 mutansos sweepje 7 zoldet talalt pont a lekerdezesi string (agent=, assignee=, status=,
+  mode=, a `urllib.parse.quote()` hivas) mutacioira. A fixture most minden bejovo kerest (path +
+  query) fajlba logol, es a teszt pontosan ra illeszkedik a hook altal kuldott ket URL-re.
+
+Verifikacio: `embed-model-split.test.ts` 2 uj teszttel (alak-szurt sor kizarasa tokeletes cosine
+mellett is, es kuszob ala eso sor kizarasa) 10/10 zold.
+`session-memory-inject-own-curated.test.ts` 3 uj teszttel (400 karakteres vagas +
+sortores-flatten, oversized-entry `continue` nem `break`, `failed` mezo a hibrid-hivas bukasanal)
+8/8 zold. `tsc --noEmit` tiszta. Teljes `fleet-test.sh` a landolas Gate-SHA-jan.
+
+**Ki dontott:** RedHat R1-R4 feltetelei (komment 14537, kartya 5a4bea2e); a konkret implementacio
+es a teszt-fedezet fullstack sajat merese/dontese (pl. a 0.15-os hasonlosagi kuszob erteke). Gate:
+QA + Cybersec (a javitas iranyat RedHat adta).
+
+## 2026-10-10 -- token-optimizer-mcp es ibelick-ui-skills: SKIP/NEM-TELEPITENDO dontes (kartya d587ee68, forras: d2666c85 leltar, 5. tetel)
+
+A d2666c85 leltar 5. tetelet a 2260a8ac kartya mar vegrehajtotta (store/watched-repos.json
+regisztracio mindket klonra, enabled=false), MEG MIELOTT d587ee68 self-advance-ban sorra kerult
+volna -- ezert d587ee68-nal nincs uj kod-/JSON-valtozas. A QA FAIL (@ce296659) ugy mutatta meg:
+a JSON-allapot rendben van, de a kartya CIME es leirasa EXPLICITEN ezt a lepest "dontes"-kent
+(skip/nem-telepitendo DONTES) nevezi meg -- ez a root CLAUDE.md Dontesnaplo-szabalya szerint
+DECISIONS.md-bejegyzest igenyel, amit a kanban-komment maga nem helyettesit. A 4 testver-tetel
+(00be4f09, 68bdd57b, 03199aae, 8d1c27c8) mindegyike kapott sajat bejegyzest -- ez az 5. maradt ki,
+mert a tenyleges vegrehajtas a 2260a8ac kartyan torent, dontesnaplo nelkul.
+
+A dontes maga:
+
+- **token-optimizer-mcp** (https://github.com/ooples/token-optimizer-mcp.git, rogzitett sha
+  dc1f9b0f5459e33d099668755067c8fae1bae09b, MIT licenc): klonozva, DE SZANDEKOSAN NEM
+  TELEPITVE/ADOPTALVA. Ok: a `scripts/postinstall.cjs` `npm install`-kor AUTOMATIKUSAN hookot
+  irna 15 AI-kliens configjaba, hacsak nincs CI/nem-globalis telepites -- ugyanaz a kockazat-
+  osztaly, amit a code-review-graph installerenel mar egyszer eltavolitottunk. Elo npm audit/OSV-
+  ellenorzes meg nem tortent. Ha egyszer adoptalasra kerul, csak a bevett "library-only, nincs
+  auto-hook, pinelt verzio, repon kivul telepitve" mintaval (mint code-review-graph/repomix/mcp-
+  compressor), sajat due-diligence kartyan.
+- **ibelick-ui-skills** (https://github.com/ibelick/ui-skills.git, rogzitett sha
+  ebf5f26cd275b1412be8a2c8784c4f8da628e7c2, MIT licenc, Julien Thibeaut): a tenyleges vendorlasa a
+  MAR nyitott f557353a (fron-ted) kartyan folyik -- enabled=false marad, amig az le nem zarul es a
+  sync-mod el nem dontik, git-watch-oljon-e vagy csak egyszeri vendor maradjon.
+
+QA fuggetlen ellenorzese (komment a d587ee68-on): SEMMI NEM TELEPULT -- nincs .mcp.json-bejegyzes,
+nincs package.json-fuggoseg, a store/adopted/token-optimizer-mcp klonban nincs dist/ es nincs
+node_modules/, a fo klon node_modules-aban nincs token-optimizer-* csomag, es a ~/.claude alatti
+kliens-config fajlok (a postinstall-hooktol felt celpontok) kozul egyik sem hivatkozik ra.
+
+**Ki dontott:** a token-optimizer-mcp skip-dontes maga a 2260a8ac kartyan torent (fullstack sajat
+merese/dontese a postinstall-hook kockazatrol); ez a bejegyzes a QA FAIL (d587ee68) altal
+hianyolt dokumentacios potlas, kod-/JSON-valtozas nelkul. Gate: QA (ujra).
+
+## 2026-10-10 -- 15 vendorolt skill VENDORED.md watch-clone sora atirva a megtartott klon utjara (kartya 4f5f08fd, 8d1c27c8 koveto, forras: qa2 d69b54fd QA PASS, komment 14865)
+
+A 8d1c27c8 kartya (addyosmani__agent-skills + caveman duplikatum-klonok torlese) pre-deletion
+grep-sweepje csak a git-kovetett fat nezte -- a `~/.claude/skills/*/VENDORED.md` es
+`~/marveen/agents/<ugynok>/.claude/skills/*/VENDORED.md` fajlok HOST-LOCAL, nem git-kovetett
+tartalmak (a marveen repo `.gitignore`-ja `/agents/`-t kizarja), ezert ezekre akkor nem terjedt
+ki az ellenorzes. A teljes elo integrity-sweep (`store/vendored-skill-integrity.py`, 207 vendorolt
+konyvtar) ezt 15 "UNVERIFIABLE: watch clone missing: store/adopted/addyosmani__agent-skills"
+talalatkent fedte fel (qa2 jelzese, d69b54fd QA PASS komment, FUGGETLENUL ellenorizve: a hiba mar
+a d69b54fd ELOTT is megvolt, nem az okozta).
+
+Az erintett 15 fajl (mind a `| watch clone | ... |` sor, az upstream repo es a vendorolt commit
+valtozatlan, csak az UTVONAL rossz):
+- `~/.claude/skills/{api-and-interface-design,browser-testing-with-devtools,ci-cd-and-automation,
+  constraint-driven-development,context-engineering,deprecation-and-migration,
+  documentation-and-adrs,interview-me}/VENDORED.md` (8 db)
+- `~/marveen/{agents,seed-fleet-agents}/{backend,backend2,backend3}/.claude/skills/
+  observability-and-instrumentation/VENDORED.md` (6 db) + `~/marveen/agents/fullstack/.claude/
+  skills/observability-and-instrumentation/VENDORED.md` (1 db) -- osszesen 7 db.
+
+Javitas: mind a 15 sorban a `store/adopted/addyosmani__agent-skills` -> `store/adopted/
+agent-skills` (a watched-repos.json-ban regisztralt, megtartott klon -- ugyanaz az upstream repo,
+https://github.com/addyosmani/agent-skills, csak masik local-utvonal). KIHAGYVA (szandekosan, nem
+hiba): `~/.claude/skills/{idea-refine,doubt-driven-development}/VENDORED.md` 2 sora a
+`/home/neon/marveen-agent-worktrees/backend/store/adopted/addyosmani__agent-skills` utvonalra
+mutat -- ez a backend ugynok SAJAT worktree-jenek MEG LETEZO, 8d1c27c8 altal nem erintett
+masolata, a sweep ezt "OK"-nak jelzi, nincs mit javitani rajta (kulon, nem ezen kartya hatokore
+tartozo duplikatum-kerdes, ha egyaltalan).
+
+Verifikacio: `python3 store/vendored-skill-integrity.py` (olvasas-only, --record NELKUL) a
+javitas UTAN: `vendored dirs: 207 | clean or sanctioned: 207 | needing attention: 0`, 0 talalat a
+"addyosmani__agent-skills" szovegre (korabban 15), es mind a 15 erintett skill fejlese kulon-kulon
+"OK"-ra valtott.
+
+**Ez host-local iras, nincs git diff** (a `/agents/` a marveen repo `.gitignore`-jaban van, a
+`~/.claude/skills/*` pedig a repon kivul eli). Ez a bejegyzes a DECISIONS.md-be a fajl VEGERE
+kerulo, a repoban kovetett dokumentacios nyom.
+
+**Ki dontott:** a hibat qa2 talalta (d69b54fd QA PASS komment, 14865), MikroB jelezte kovetokent
+(4f5f08fd); a javitas (a 15 sor atirasa + a sweep-pel igazolas) fullstack sajat vegrehajtasa.
+Gate: QA.
