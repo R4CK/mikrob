@@ -2179,33 +2179,9 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
       logger.warn({ err, name }, 'pre-launch detached-claude reap failed (continuing)')
     }
 
-    // Custom provider check runs FIRST and BEFORE resolveOpenRouterModel, so
-    // an explicit customProvider field in agent-config.json takes priority over
-    // all string-pattern discriminators. This prevents model ids like `mistral:7b`
-    // from accidentally matching the Ollama branch when the operator intends a
-    // custom Anthropic-compatible endpoint.
-    const rawModel = readAgentModel(name)
-    const customProviderId = readAgentCustomProvider(name)
-    // isCustom is true whenever an id is set -- even if the definition is missing.
-    // The guard below catches the missing-definition case and aborts before any
-    // string-pattern discriminator runs, so a deleted provider never silently
-    // falls through to the Ollama branch.
-    const isCustom = customProviderId !== null
-    const customProviderDef = customProviderId ? loadCustomProvider(customProviderId) : null
-
-    if (isCustom && !customProviderDef) {
-      // Provider id is set in agent-config but not found in custom-providers.json
-      // (deleted via DELETE /api/custom-providers/:id or corrupt store).
-      // Abort launch with a clear error rather than silently falling through to Ollama.
-      logger.error({ name, customProviderId }, 'Custom provider not found in store -- agent launch aborted. Add it in Settings > Providers.')
-      throw new Error(`Custom provider "${customProviderId}" not found. Add it in Settings > Providers.`)
-    }
-
     // `openrouter-auto:<tier>` resolves to the tier's current recommended model
     // (weekly-refreshed); a concrete OpenRouter id (contains '/') passes through.
-    // Skip this resolution entirely for custom providers -- their model ids go
-    // verbatim to the custom endpoint and have no openrouter-auto semantics.
-    const model = isCustom ? rawModel : resolveOpenRouterModel(rawModel)
+    const model = resolveOpenRouterModel(readAgentModel(name))
     const authMode = readAgentAuthMode(name)
     const isClaude = model.startsWith('claude-')
     // oauthTokenFile backstop: the decision above already refused a non-Claude agent (or, now, a
