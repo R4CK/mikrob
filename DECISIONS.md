@@ -18818,3 +18818,60 @@ fuggetlenseg miatt). A vegrehajtas fullstack sajat munkaja. Gate: QA + RedHat.
 **Mérés:** típuskontroll tiszta (`tsc --noEmit`, exit 0). Célzott tesztek: `channel-continue-policy.test.ts` (18, +9 új F1/F2-re), `vault-read-audit.test.ts` (21, +3 új F3-ra) -- mind zöld, mind mutáció-verifikálva KÖZVETLENÜL a valódi fájlokon (a `decideContinueTimeoutAction` generáció-ága, az `agentLaunchGeneration` start- és stop-oldali bump-ja, a context-guard `fresh:true` hívása és az import-route ssh-key-ellenőrzése egyenként kiiktatva -> a megfelelő teszt pirosra váltott, majd visszaállítva zöld). Kapcsolódó regressziós kör (`agent-lifecycle-lock`, `agent-process-no-sleep-spawn`, `auto-restart-deferral-lifecycle`, `context-guard-*` 8 fájl, `federation-lifecycle`): 277/277 zöld, nincs regresszió.
 
 **Ki döntött:** WhiteHat (Cybersec) mérte F1-F3-at a 8. upstream-köteg gate-jén (14256aac, komment 14415), MikroB nyitotta az utómunka-kártyát (14417); backend2 implementálta mindhármat. Gate: QA + Cybered, a kártya saját szövege szerint.
+
+## 2026-10-10 -- korrekcio: a "2026-10-10 -- korrekcio: a 59cfcb21 F4 bejegyzes..." bejegyzes ket allitasa hibas volt (kartya a9878e3e F3, WhiteHat CYBERSEC GO a 0fb92c16-on, komment f0b88947/msg 10408)
+
+A fentebbi, "2026-10-10 -- korrekcio: a 59cfcb21 F4 bejegyzes tulzott mutacio-lefedettseget
+allitott..." bejegyzes ket ponton hibas volt:
+
+1. **Rossz baseline-szam.** A bejegyzes sajat elso bekezdese azt mondja, hogy a javitas elott "a 3
+   teszteset" fedte le a (b) es (c) szabalyt -- majd ket sorral lejjebb ugyanaz a bejegyzes azt
+   allitja, hogy a javitas utan "9 teszteset (6-rol)" lett zold. A ket szam egymasnak mond ellent
+   a sajat bejegyzesen belul: a helyes baseline 3 volt, nem 6. (9 teszteset a 3-rol, nem a 6-rol.)
+2. **Rossz Gate-sor.** A bejegyzes zaro sora "Gate: QA + Cybered (a javitas iranyat RedHat
+   adta)"-t irt. A tenyleges allasfoglalas (lasd a kartya a9878e3e sajat Forras-sora: "WhiteHat
+   CYBERSEC GO a 0fb92c16-on") az volt, hogy a lelet RedHat-tol jott, de a 0fb92c16 kartya sajat
+   feltetele szerint ("ha RedHat iranymutatasat koveted, Cybersec a fuggetlen gate") a tenyleges
+   fuggetlen biztonsagi gate WhiteHat (Cybersec) volt, nem RedHat (Cybered) -- ahogy a 0fb92c16
+   REVIEW-ja is QA + WhiteHat-ra irta at a kartya eredeti "QA + Cybered" sorat, es ahogy a tenyleges
+   WhiteHat CYBERSEC GO verdikt (f0b88947, msg 10408) is igazolja.
+
+**Javitas:** ez a korrekcios bejegyzes a fajl VEGERE kerul (nem a hibas bejegyzes szerkesztesekent),
+a projekt DECISIONS.md fegyelmenek megfeleloen (lasd a root CLAUDE.md "UJ bejegyzes... KIZAROLAG a
+fajl VEGERE kerulhet" szabalyat). A hibas bejegyzes szovege erintetlen marad, ez a korrekcio
+jelzi a helyes allapotot.
+
+**Ki dontott:** a leletet WhiteHat adta (CYBERSEC GO a 0fb92c16-on, komment f0b88947/msg 10408).
+A vegrehajtas fullstack sajat munkaja. Gate: QA + Cybered (a leleteket WhiteHat adta, a kartya
+a9878e3e sajat sora szerint).
+
+## 2026-10-10 -- korrekcio: a 0a34377f NO-GO javitas bejegyzes N3 allitasa tulzott volt a teszt-lefedettsegre (kartya e6b2742b, WhiteHat meres, msg 10419 -- NEM verdikt)
+
+A fentebbi, "2026-10-10 -- 0a34377f CYBERSEC NO-GO javitas..." bejegyzes azt allitja, hogy "a
+sortores-keszlet bovult a CR/LF/VT/FF mellett U+0085, U+2028, U+2029-re is (N3, LOW -- ugyanaz a
+gyoker, ugyanaz a javitas zarja)", es ezt ugy mutatja be, mintha a hivatkozott regresszios teszt
+(`src/__tests__/session-memory-inject-own-curated.test.ts`, "WhiteHat N1" eset) mind a 7 osztalyt
+karakterenkent igazolta volna.
+
+**Ez tulzott volt.** A KOD oldala helyes: a `_cap_and_flatten` helper forraskodjaban a
+`_LINE_BREAK_CHARS` tuple valoban mind a 7 (illetve a CRLF specialis esettel egyutt 8) osztalyt
+tartalmazza, es ezt a kartya e6b2742b sajat, uj tesztjei (lasd lejjebb) kozvetlenul, karakterenkent
+igazoljak IS a kozos helperre. DE a 0a34377f-hez tartozo sajat regresszios teszt magat csak egyetlen
+literalis LF-fel (`\n`) injektalt minden mezobe (content/category/keywords/created_label/agent_id
+egyszerre) -- a maradek 6-7 osztalyt (CR, CRLF, VT, FF, U+0085, U+2028, U+2029) ez a konkret
+teszteset soha nem probalta egyedileg a kurat (own-curated) szekcio sajat hivasara.
+
+**Miert nem kritikus most:** a `_cap_and_flatten` ugyanazon az EGYETLEN, megosztott fuggvenyen
+fut at mindket aghoz (shared-tier ES own-curated szekcio egyarant, lasd
+`scripts/hooks/shared-memory-inject.py`) -- es a kartya e6b2742b uj tesztjei
+(`src/__tests__/shared-memory-inject-provenance.test.ts`, a shared-tier agra) most mar
+karakterenkent, mind a 8 osztalyra, tobb mezore (content/keywords/agent_id/created_label) is
+igazoljak EZT a kozos fuggvenyt, MUTACIO-bizonyitekkal egyutt. Mivel a kurat szekcio ugyanazt a
+fuggvenyt hivja, a tenyleges viselkedes a nem-LF osztalyokra is bizonyitott -- csak nem a sajat,
+0a34377f-hez tartozo teszt-fajljaban, hanem a kozos helper tesztjeben.
+
+**Javitas:** ez a korrekcio a fajl VEGERE kerul (nem a hibas bejegyzes szerkesztesekent), a projekt
+DECISIONS.md fegyelmenek megfeleloen. A hivatkozott, tulzott bejegyzes szovege erintetlen marad.
+
+**Ki dontott:** WhiteHat merese (msg 10419, nem verdikt -- a kartya e6b2742b fuggetlen biztonsagi
+gate-je Cybered a kartya sajat, atirt Gate-sora szerint). A vegrehajtas fullstack sajat munkaja.
