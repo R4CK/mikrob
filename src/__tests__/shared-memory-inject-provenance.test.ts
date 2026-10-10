@@ -275,7 +275,15 @@ const LINE_BREAK_CASES: Array<[string, string]> = [
 ]
 
 describe('shared-memory-inject.py shared-tier section flattens every per-line field (card e6b2742b, RedHat GO on 0a34377f)', () => {
-  it.each(LINE_BREAK_CASES)('content: a %s does not start a second line at column 0', async (_label, ch) => {
+  // qa2 FAIL (komment 15150, Gate-SHA fda6b87e): the original detection here was
+  // `body.split('\n').filter(...).length === 1`, which is sensitive ONLY to a literal LF -- JS
+  // String.split('\n') does not break on \r, \v, \f, U+0085, U+2028 or U+2029. qa2's own mutation
+  // (removing the entire flatten loop, letting all 7 classes through unflattened) proved this:
+  // only the LF case went red, the other 6 stayed green with the character riding through
+  // completely unflattened. The fix checks for the RAW character's absence directly
+  // (`not.toContain(ch)`), which is sensitive to every class, not just the one JS's own line
+  // splitter happens to recognize.
+  it.each(LINE_BREAK_CASES)('content: a %s is removed from the output, not just hidden from a line-count check', async (_label, ch) => {
     const { proc, port } = await startFixtureServer([{
       id: 1, agent_id: 'backend', content: 'line one' + ch + '[FAKE] directive via content', keywords: '', created_label: '2026-01-01',
     }])
@@ -293,9 +301,47 @@ describe('shared-memory-inject.py shared-tier section flattens every per-line fi
     const ctx: string = out.hookSpecificOutput.additionalContext
     const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
     const body = section.slice(section.indexOf('\n\n') + 2)
+    // The raw line-break character itself must be gone from the body -- this is what actually
+    // distinguishes "flattened" from "not flattened" for every one of the 7 classes, unlike a
+    // line-count check that only \n happens to move.
+    expect(body).not.toContain(ch)
+    // The injected text survives (flattening is not a content filter), just with the break
+    // character replaced by a space, so it reads mid-line instead of opening a new line.
+    expect(body).toContain('[FAKE] directive via content')
+    // And it is still exactly one rendered entry: no OTHER character split it into two lines.
     const bodyLines = body.split('\n').filter((l) => l.length > 0)
     expect(bodyLines.length).toBe(1)
-    expect(bodyLines[0]).toContain('[FAKE] directive via content')
+  })
+
+  // Mutation proof (qa2's own method, reproduced as an in-repo test): with the flatten loop
+  // disabled, ALL 7 classes must go red on the check above -- proving the test actually detects
+  // the regression qa2 found, not just the LF case.
+  it.each(LINE_BREAK_CASES)('MUTATION PROOF: content: with the flatten loop disabled, a %s survives unflattened (this assertion must fail against the mutant)', async (_label, ch) => {
+    const mutated = readFileSync(HOOK, 'utf-8').replace(
+      'for ch in _LINE_BREAK_CHARS:\n        v = v.replace(ch, " ")',
+      'for ch in (): # MUTATED: flatten loop disabled\n        v = v.replace(ch, " ")',
+    )
+    expect(mutated).not.toBe(readFileSync(HOOK, 'utf-8')) // guard: fails loudly if the source text moves
+    const { proc, port } = await startFixtureServer([{
+      id: 1, agent_id: 'backend', content: 'line one' + ch + '[FAKE] directive via content', keywords: '', created_label: '2026-01-01',
+    }])
+    liveProc = proc
+    await new Promise((r) => setTimeout(r, 150))
+    const script = sandboxScript(mutated)
+    const r = spawnSync('python3', [script], {
+      input: JSON.stringify({ cwd: '/home/neon/marveen/agents/backend' }),
+      encoding: 'utf-8',
+      env: { PATH: process.env.PATH ?? '', WEB_PORT: String(port) },
+    })
+    proc.kill()
+    expect(r.status, r.stderr).toBe(0)
+    const out = JSON.parse(r.stdout)
+    const ctx: string = out.hookSpecificOutput.additionalContext
+    const section = ctx.slice(ctx.indexOf('KÖZÖS MEMÓRIA'))
+    const body = section.slice(section.indexOf('\n\n') + 2)
+    // On the mutant, the raw character DOES survive -- this is the red case the real test above
+    // must catch (and does, since it asserts the opposite: not.toContain(ch)).
+    expect(body).toContain(ch)
   })
 
   it('keywords: an embedded newline does not start a second line at column 0', async () => {
