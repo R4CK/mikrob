@@ -74,8 +74,22 @@ fi
 
 # The remote-less promise (card 59cfcb21 F1) was never actually enforced -- nothing stopped a
 # later `git remote add` from turning this into a pushable repo. Refuse to operate if one shows up.
+#
+# F2 fix (card a9878e3e, WhiteHat F2 on 0fb92c16): `git remote` only lists remotes defined in
+# .git/config. Measured: a legacy .git/remotes/<name> file (the pre-git-1.5 remote-definition
+# format; `git pull <name>`/`git push <name>` still honor it) and a `branch.<branch>.remote`
+# config value pointing directly at a URL (valid without ever running `git remote add`) both let
+# a push succeed while `git remote` still prints nothing. All three paths are checked now.
 if git -C "$ARCHIVE_ROOT" remote 2>/dev/null | grep -q .; then
   echo "skill-archive-sync: refusing -- $ARCHIVE_ROOT has a git remote configured, but this archive must stay local-only (card 59cfcb21 F1)" >&2
+  exit 2
+fi
+if [ -d "$ARCHIVE_ROOT/.git/remotes" ] && [ -n "$(ls -A "$ARCHIVE_ROOT/.git/remotes" 2>/dev/null)" ]; then
+  echo "skill-archive-sync: refusing -- $ARCHIVE_ROOT has a legacy .git/remotes/ definition, but this archive must stay local-only (card a9878e3e F2)" >&2
+  exit 2
+fi
+if git -C "$ARCHIVE_ROOT" config --get-regexp '^branch\..*\.remote$' 2>/dev/null | grep -q .; then
+  echo "skill-archive-sync: refusing -- $ARCHIVE_ROOT has a branch.<name>.remote config set, but this archive must stay local-only (card a9878e3e F2)" >&2
   exit 2
 fi
 

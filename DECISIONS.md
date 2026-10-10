@@ -18774,3 +18774,29 @@ propagation.test.ts 9/9 zold (erintetlen, csak egyutt futtatva), tsc --noEmit ti
 **Ki dontott:** WhiteHat talalta a leleteket (CYBERSEC NO-GO, komment 14926) es adta a javitas
 iranyat; a kartya sajat szovege szerint ezert a kovetkezo biztonsagi gate RedHat (nem Cybersec,
 fuggetlenseg miatt). A vegrehajtas fullstack sajat munkaja. Gate: QA + RedHat.
+
+## 2026-10-10 -- korrekcio: a "2026-10-10 -- korrekcio: a 59cfcb21 F4 bejegyzes..." bejegyzes ket allitasa hibas volt (kartya a9878e3e F3, WhiteHat CYBERSEC GO a 0fb92c16-on, komment f0b88947/msg 10408)
+
+A fentebbi, "2026-10-10 -- korrekcio: a 59cfcb21 F4 bejegyzes tulzott mutacio-lefedettseget
+allitott..." bejegyzes ket ponton hibas volt:
+
+1. **Rossz baseline-szam.** A bejegyzes sajat elso bekezdese azt mondja, hogy a javitas elott "a 3
+   teszteset" fedte le a (b) es (c) szabalyt -- majd ket sorral lejjebb ugyanaz a bejegyzes azt
+   allitja, hogy a javitas utan "9 teszteset (6-rol)" lett zold. A ket szam egymasnak mond ellent
+   a sajat bejegyzesen belul: a helyes baseline 3 volt, nem 6. (9 teszteset a 3-rol, nem a 6-rol.)
+2. **Rossz Gate-sor.** A bejegyzes zaro sora "Gate: QA + Cybered (a javitas iranyat RedHat
+   adta)"-t irt. A tenyleges allasfoglalas (lasd a kartya a9878e3e sajat Forras-sora: "WhiteHat
+   CYBERSEC GO a 0fb92c16-on") az volt, hogy a lelet RedHat-tol jott, de a 0fb92c16 kartya sajat
+   feltetele szerint ("ha RedHat iranymutatasat koveted, Cybersec a fuggetlen gate") a tenyleges
+   fuggetlen biztonsagi gate WhiteHat (Cybersec) volt, nem RedHat (Cybered) -- ahogy a 0fb92c16
+   REVIEW-ja is QA + WhiteHat-ra irta at a kartya eredeti "QA + Cybered" sorat, es ahogy a tenyleges
+   WhiteHat CYBERSEC GO verdikt (f0b88947, msg 10408) is igazolja.
+
+**Javitas:** ez a korrekcios bejegyzes a fajl VEGERE kerul (nem a hibas bejegyzes szerkesztesekent),
+a projekt DECISIONS.md fegyelmenek megfeleloen (lasd a root CLAUDE.md "UJ bejegyzes... KIZAROLAG a
+fajl VEGERE kerulhet" szabalyat). A hibas bejegyzes szovege erintetlen marad, ez a korrekcio
+jelzi a helyes allapotot.
+
+**Ki dontott:** a leletet WhiteHat adta (CYBERSEC GO a 0fb92c16-on, komment f0b88947/msg 10408).
+A vegrehajtas fullstack sajat munkaja. Gate: QA + Cybered (a leleteket WhiteHat adta, a kartya
+a9878e3e sajat sora szerint).
