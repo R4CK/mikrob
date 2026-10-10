@@ -153,6 +153,7 @@ describe('agent bundle export/import', () => {
       remoteHost: 'devbox',
       remoteWorkdir: '/home/user/proj',
       claudeConfigDir: '/home/user/.claude-alt',
+      oauthTokenFile: '/home/user/tokens/other-agent.token',
       displayName: 'Keep me',
     }))
     sanitizeImportedConfig(stagedAgent)
@@ -160,6 +161,7 @@ describe('agent bundle export/import', () => {
     expect(cfg.remoteHost).toBeUndefined()
     expect(cfg.remoteWorkdir).toBeUndefined()
     expect(cfg.claudeConfigDir).toBeUndefined()
+    expect(cfg.oauthTokenFile).toBeUndefined()
     expect(cfg.model).toBe('claude-sonnet-5')
     expect(cfg.displayName).toBe('Keep me')
   })

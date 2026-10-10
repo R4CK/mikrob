@@ -471,6 +471,16 @@ describe('launcher wiring (agent-process.ts)', () => {
     expect(FN).toContain("const isClaude = model.startsWith('claude-')")
   })
 
+  // WhiteHat/QA follow-up (card 006b506b, qa2 gate comment 14159, L6/L7 mutants on the
+  // 06b48bd0 wiring): a hardcoded `isRemote: false` or `hasExplicitConfigDir: false` would
+  // silently let a remote or explicit-config-dir agent fall into the local/implicit decision
+  // path, and the full suite stayed green under both mutations until this pin existed.
+  it("the decision gets the launcher's own isRemote and hasExplicitConfigDir discriminators, not hardcoded false", () => {
+    const call = FN.slice(FN.indexOf('decideOwnOauthToken({'), FN.indexOf("if (ownOauth.kind === 'refused') {"))
+    expect(call).toContain('isRemote: !!(remote.host && remote.workdir),')
+    expect(call).toContain('hasExplicitConfigDir: readAgentClaudeConfigDir(name) !== null,')
+  })
+
   it('backstop: an own token on an agent the launcher sees as non-Claude refuses before any export', () => {
     const isClaudeAt = FN.indexOf("const isClaude = model.startsWith('claude-')")
     const guardAt = FN.indexOf('if (ownTokenFile && !isClaude) {')
@@ -547,6 +557,17 @@ describe('launcher wiring (agent-process.ts)', () => {
     const refuseAt = FN.indexOf('if (collision) {', collisionAt)
     expect(refuseAt).toBeGreaterThan(collisionAt)
     expect(FN.slice(refuseAt, refuseAt + 300)).toMatch(/return \{ ok: false, error: `oauthTokenFile: shared with agent/)
+  })
+
+  // RedHat follow-up (card 006b506b, comment 14160, F4): the "others" list fed to
+  // findOauthTokenFileCollision must be the real fleet, excluding only the launching agent --
+  // a mutant that empties the list (e.g. `listAgentNames().filter(() => false)`) left every
+  // existing unit green, because none of them checked what populated the third argument.
+  it("the collision check's other-agents list comes from listAgentNames(), excluding only this agent", () => {
+    const collisionCall = FN.slice(FN.indexOf('findOauthTokenFileCollision('), FN.indexOf('if (collision) {'))
+    expect(collisionCall).toContain('listAgentNames()')
+    expect(collisionCall).toContain(".filter((other) => other !== name)")
+    expect(collisionCall).toContain('.map((other) => ({ name: other, configRead: readAgentConfigForOauthDecision(join(agentDir(other), \'agent-config.json\')) }))')
   })
 
   it('the API cannot write the field (write path: manual agent-config edit only)', () => {
