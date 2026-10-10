@@ -91,6 +91,20 @@ export const MACHINE_SPECIFIC_CONFIG_KEYS = [
   'remoteHost', 'remoteWorkdir', 'claudeConfigDir', 'oauthTokenFile', 'runAsUser', 'authMode', 'claudePlan',
 ] as const
 
+// Card 68254bd7 (48639c7d CYBERED GO, comment 14284): these change an agent's SECURITY POSTURE
+// (which tools it denies, its security profile, its declared capabilities, which LLM provider it
+// launches under) rather than merely its location -- unlike MACHINE_SPECIFIC_CONFIG_KEYS above,
+// stripping them is not about portability, it is about not letting an untrusted whole-fleet
+// transfer file (fleet-transfer.ts's importFleet) silently widen another agent's attack surface.
+// Allowlist posture: stripped by default on import, kept only with the explicit, logged
+// `allowRiskyFields` opt-in (see fleet-transfer.ts). NOT applied to agent-bundle.ts's own
+// single-agent bundle import (sanitizeImportedConfig below) -- that path's trust model (a bundle
+// IS code, not just data) is a separate, broader question Cybered explicitly left to a follow-up
+// card, not folded into this one.
+export const RISKY_CONFIG_IMPORT_KEYS = [
+  'toolDeny', 'securityProfile', 'capabilities', 'customProvider',
+] as const
+
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix))
 }

@@ -38,6 +38,10 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/fleet/import' && method === 'POST') {
     const apply = ctx.url.searchParams.get('apply') === 'true'
+    // Card 68254bd7: the explicit, logged opt-in for risky fields (toolDeny/securityProfile/
+    // capabilities/customProvider/settings.hooks) -- default false, same `=== 'true'` posture as
+    // `apply` above (an unknown/garbage value never accidentally opts in).
+    const allowRiskyFields = ctx.url.searchParams.get('allowRiskyFields') === 'true'
 
     // M1: check vault password length for import side too
     if (vaultPassword !== undefined && vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {
@@ -56,7 +60,7 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
 
     // importFleet handles JSON parse (and encrypted blob detection) internally
     try {
-      const result = importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply })
+      const result = importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply, allowRiskyFields })
       if ('dryRun' in result && result.errors.length > 0) {
         json(res, result, 400)
       } else {

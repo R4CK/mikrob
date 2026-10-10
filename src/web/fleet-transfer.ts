@@ -21,7 +21,7 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { isReservedSenderId } from './system-directive-id.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
-import { MACHINE_SPECIFIC_CONFIG_KEYS } from './agent-bundle.js'
+import { MACHINE_SPECIFIC_CONFIG_KEYS, RISKY_CONFIG_IMPORT_KEYS } from './agent-bundle.js'
 import { safeJoin } from './sanitize.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
@@ -479,6 +479,41 @@ function stripMachineSpecificConfig(config: Record<string, unknown>): Record<str
   return rest
 }
 
+// Card 68254bd7 (48639c7d CYBERED GO 14284): RISKY_CONFIG_IMPORT_KEYS (toolDeny, securityProfile,
+// capabilities, customProvider) change SECURITY POSTURE, not just portability -- see that const's
+// own comment in agent-bundle.ts. Allowlist posture: stripped unless the caller passes the
+// explicit, logged `allowRiskyFields` opt-in through to importFleet. `hadRisky` tells the caller
+// whether anything WOULD have been stripped, so a dry-run (or an apply that chose NOT to opt in)
+// can still warn the operator a bundle carries these fields, not just silently drop them.
+function stripRiskyConfigFields(
+  config: Record<string, unknown>,
+  allow: boolean,
+): { config: Record<string, unknown>; hadRisky: boolean } {
+  let hadRisky = false
+  for (const key of RISKY_CONFIG_IMPORT_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(config, key)) { hadRisky = true; break }
+  }
+  if (!hadRisky || allow) return { config, hadRisky }
+  const rest = { ...config }
+  for (const key of RISKY_CONFIG_IMPORT_KEYS) delete rest[key]
+  return { config: rest, hadRisky }
+}
+
+// Same posture, for settings.json's `hooks` -- a PreToolUse/PostToolUse command hook runs
+// arbitrary shell the next time the imported agent processes a tool call. Unlike the config-level
+// fields, this lives in a DIFFERENT file (settings.json, not agent-config.json), so it needs its
+// own strip, not a shared key list.
+function stripRiskySettings(
+  settings: Record<string, unknown>,
+  allow: boolean,
+): { settings: Record<string, unknown>; hadRisky: boolean } {
+  const hadRisky = Object.prototype.hasOwnProperty.call(settings, 'hooks')
+  if (!hadRisky || allow) return { settings, hadRisky }
+  const rest = { ...settings }
+  delete rest['hooks']
+  return { settings: rest, hadRisky }
+}
+
 function safeReadText(path: string): string {
   try { return readFileSync(path, 'utf-8') } catch { return '' }
 }
@@ -862,6 +897,22 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
   const db = getDb()
   const warnings: string[] = []
 
+  // Card 68254bd7: surface this BEFORE apply, independent of whether the caller would actually
+  // pass allowRiskyFields -- a dry-run preview should not need to opt in just to find out a bundle
+  // carries fields that change security posture.
+  const allConfigs = [fleet.mainAgent?.config, ...(fleet.agents ?? []).map(a => a.config)]
+  const allSettings = [fleet.mainAgent?.settings, ...(fleet.agents ?? []).map(a => a.settings)]
+  const hasRiskyConfig = allConfigs.some(
+    (c) => c && RISKY_CONFIG_IMPORT_KEYS.some((key) => Object.prototype.hasOwnProperty.call(c, key)),
+  )
+  const hasRiskyHooks = allSettings.some((s) => s && Object.prototype.hasOwnProperty.call(s, 'hooks'))
+  if (hasRiskyConfig || hasRiskyHooks) {
+    warnings.push(
+      'A fájl kockázatos mezőt tartalmaz (toolDeny/securityProfile/capabilities/customProvider/' +
+      'settings.hooks) -- apply-nál ez kihagyásra kerül, hacsak nem adsz explicit allowRiskyFields jóváhagyást.',
+    )
+  }
+
   const existingAgents = new Set(listAgentNames())
   const newAgents = (fleet.agents ?? []).map(a => a.name).filter(n => !existingAgents.has(n))
 
@@ -982,16 +1033,22 @@ function cleanupTracked(tracker: WriteTracker): void {
   }
 }
 
-function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker): void {
+function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker, allowRiskyFields: boolean): boolean {
   const claudeDir = join(PROJECT_ROOT, '.claude')
   trackedMkdir(claudeDir, tracker)
+  let hadRisky = false
 
   if (ma.claudeMd) trackedWrite(join(PROJECT_ROOT, 'CLAUDE.md'), ma.claudeMd, tracker)
   if (ma.soulMd) trackedWrite(join(PROJECT_ROOT, 'SOUL.md'), ma.soulMd, tracker)
-  if (ma.config && Object.keys(ma.config).length)
-    trackedWrite(join(PROJECT_ROOT, 'agent-config.json'), JSON.stringify(stripMachineSpecificConfig(ma.config), null, 2), tracker)
+  if (ma.config && Object.keys(ma.config).length) {
+    const stripped = stripRiskyConfigFields(stripMachineSpecificConfig(ma.config), allowRiskyFields)
+    hadRisky = hadRisky || stripped.hadRisky
+    trackedWrite(join(PROJECT_ROOT, 'agent-config.json'), JSON.stringify(stripped.config, null, 2), tracker)
+  }
   trackedWrite(join(PROJECT_ROOT, '.mcp.json'), JSON.stringify(deplaceholderMcp(ma.mcp), null, 2), tracker)
-  trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(ma.settings, null, 2), tracker)
+  const strippedSettings = stripRiskySettings(ma.settings, allowRiskyFields)
+  hadRisky = hadRisky || strippedSettings.hadRisky
+  trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(strippedSettings.settings, null, 2), tracker)
 
   // Main agent channel access: written into the #915-resolved state dir for
   // known providers (install-scoped on a fresh target), legacy shared base for
@@ -1005,22 +1062,25 @@ function writeMainAgentFiles(ma: MainAgentExport, tracker: WriteTracker): void {
     trackedMkdir(provDir, tracker)
     trackedWrite(join(provDir, 'access.json'), JSON.stringify(access, null, 2), tracker)
   }
+  return hadRisky
 }
 
-function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
+function writeAgentFiles(agent: AgentExport, tracker: WriteTracker, allowRiskyFields: boolean): boolean {
   // B1: names already validated by validateNames() before this is called
   const dir = safeJoin(AGENTS_BASE_DIR, agent.name)
   const claudeDir = safeJoin(dir, '.claude')
   trackedMkdir(claudeDir, tracker)
 
-  trackedWrite(join(dir, 'agent-config.json'), JSON.stringify(stripMachineSpecificConfig(agent.config), null, 2), tracker)
+  const strippedConfig = stripRiskyConfigFields(stripMachineSpecificConfig(agent.config), allowRiskyFields)
+  trackedWrite(join(dir, 'agent-config.json'), JSON.stringify(strippedConfig.config, null, 2), tracker)
   if (agent.claudeMd) trackedWrite(join(dir, 'CLAUDE.md'), agent.claudeMd, tracker)
   if (agent.soulMd) trackedWrite(join(dir, 'SOUL.md'), agent.soulMd, tracker)
 
   // .mcp.json: de-placeholder vault refs (path denormalization happens at fleet level)
   trackedWrite(join(dir, '.mcp.json'), JSON.stringify(deplaceholderMcp(agent.mcp), null, 2), tracker)
 
-  trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(agent.settings, null, 2), tracker)
+  const strippedSettings = stripRiskySettings(agent.settings, allowRiskyFields)
+  trackedWrite(join(claudeDir, 'settings.json'), JSON.stringify(strippedSettings.settings, null, 2), tracker)
 
   for (const [provider, access] of Object.entries(agent.channelsAccess ?? {})) {
     const provDir = safeJoin(claudeDir, 'channels', provider)
@@ -1039,6 +1099,7 @@ function writeAgentFiles(agent: AgentExport, tracker: WriteTracker): void {
     trackedMkdir(skillDir, tracker)
     trackedWrite(join(skillDir, 'SKILL.md'), skill.skillMd, tracker)
   }
+  return strippedConfig.hadRisky || strippedSettings.hadRisky
 }
 
 function importVaultSection(vault: VaultExport, tracker: WriteTracker): void {
@@ -1059,8 +1120,14 @@ const EMPTY_DIFF: DiffReport = {
 
 export function importFleet(
   rawBody: string,
-  options: { vaultPassword?: string; apply: boolean },
+  options: { vaultPassword?: string; apply: boolean; allowRiskyFields?: boolean },
 ): DiffReport | ImportResult {
+  const allowRiskyFields = !!options.allowRiskyFields
+  // Card 68254bd7: the opt-in itself must be auditable -- a log line the owner (or an incident
+  // review) can grep for, independent of whatever the request body/warnings end up saying.
+  if (allowRiskyFields) {
+    logger.warn({ apply: options.apply }, 'Fleet import: allowRiskyFields=true -- toolDeny/securityProfile/capabilities/customProvider/settings.hooks will be imported verbatim')
+  }
   // Auto-detect encrypted export: {"enc":1,"blob":"..."}
   // H2/M2: decrypt FIRST, before any file writes or DB commits (fail-fast on wrong password)
   let jsonBody: string
@@ -1117,15 +1184,16 @@ export function importFleet(
   const tracker: WriteTracker = { files: [], dirs: [] }
   const globalSkillsDir = join(homedir(), '.claude', 'skills')
 
+  let anyRiskyStripped = false
   try {
     // 0. Main agent files (PROJECT_ROOT level -- main agent persona, settings, channel pairing)
     if (fleet.mainAgent) {
-      writeMainAgentFiles(fleet.mainAgent, tracker)
+      if (writeMainAgentFiles(fleet.mainAgent, tracker, allowRiskyFields)) anyRiskyStripped = true
     }
 
     // 1. Sub-agent files
     for (const agent of fleet.agents ?? []) {
-      writeAgentFiles(agent, tracker)
+      if (writeAgentFiles(agent, tracker, allowRiskyFields)) anyRiskyStripped = true
     }
 
     // 2. Global skills
@@ -1326,6 +1394,12 @@ export function importFleet(
     // Preference: use identity object (full set) if present; fall back to agentId-only for
     // exports produced before the identity field was added.
     const applyWarnings: string[] = []
+    if (anyRiskyStripped) {
+      applyWarnings.push(
+        'Kockázatos mezők (toolDeny/securityProfile/capabilities/customProvider/settings.hooks) ' +
+        'kihagyva az importból (nincs allowRiskyFields jóváhagyás).',
+      )
+    }
     const sourceIdentity = fleet.mainAgent?.identity
     const sourceAgentId = sourceIdentity?.MAIN_AGENT_ID ?? fleet.mainAgent?.agentId
     if (sourceAgentId && typeof sourceAgentId === 'string') {
