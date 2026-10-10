@@ -305,5 +305,67 @@ esac
 rm -rf "$AGENT_OWN/agent-config.json"
 write_own_config
 
+# 22) RedHat NO-GO 14838 / QA2 FAIL 14840 (card bc32d233 delta-gate, 2026-10-10): the checker
+#     itself failing to run, crashing, or emitting anything other than exactly UNSET/SET:*/
+#     REFUSE:* used to fall through agent_launch_env's case silently to the unconditional
+#     fleet-token fallback -- G1's fail-open class at the PROCESS level, not the config-content
+#     level. All four must refuse, never fleet-fallback.
+write_own_config  # own-token-agent has a normal, valid config for all four sub-cases below
+
+# 22a) checker binary missing entirely.
+OUT="$(OAUTH_TOKEN_FILE_CHECK_PY="$TMP/does-not-exist.py" bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=checker-failed") pass "22a: checker script missing -> refuse, no fleet fallback" ;;
+  *) fail "22a: checker script missing -> refuse, no fleet fallback" "$OUT" ;;
+esac
+
+# 22b) checker crashes (raises, non-zero exit, nothing on stdout).
+CRASHING_CHECKER="$TMP/crashing-check.py"
+printf '%s\n' '#!/usr/bin/env python3' 'raise RuntimeError("simulated crash")' > "$CRASHING_CHECKER"
+OUT="$(OAUTH_TOKEN_FILE_CHECK_PY="$CRASHING_CHECKER" bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=checker-failed") pass "22b: checker crashes -> refuse, no fleet fallback" ;;
+  *) fail "22b: checker crashes -> refuse, no fleet fallback" "$OUT" ;;
+esac
+
+# 22c) checker exits 0 but prints nothing (empty stdout) -- the exact scenario QA2 measured
+#      (14840): "" must never again be read as the legitimate UNSET sentinel.
+EMPTY_CHECKER="$TMP/empty-check.py"
+printf '%s\n' '#!/usr/bin/env python3' 'pass' > "$EMPTY_CHECKER"
+OUT="$(OAUTH_TOKEN_FILE_CHECK_PY="$EMPTY_CHECKER" bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=checker-failed") pass "22c: checker exits 0 with empty stdout -> refuse, no fleet fallback" ;;
+  *) fail "22c: checker exits 0 with empty stdout -> refuse, no fleet fallback" "$OUT" ;;
+esac
+
+# 22d) checker prints more than one line (contract violation) -- must not be mistaken for a
+#      literal "UNSET" or "SET:*"/"REFUSE:*" match.
+MULTILINE_CHECKER="$TMP/multiline-check.py"
+printf '%s\n' '#!/usr/bin/env python3' 'print("UNSET")' 'print("extra garbage line")' > "$MULTILINE_CHECKER"
+OUT="$(OAUTH_TOKEN_FILE_CHECK_PY="$MULTILINE_CHECKER" bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=checker-failed") pass "22d: checker prints more than one line -> refuse, no fleet fallback" ;;
+  *) fail "22d: checker prints more than one line -> refuse, no fleet fallback" "$OUT" ;;
+esac
+
+# 23) RedHat NO-GO 14838 point 2 (card bc32d233): a config file with invalid UTF-8 bytes used to
+#     crash the REAL checker with an uncaught UnicodeDecodeError (OSError is the only caught
+#     exception type) -- empty stdout, non-zero exit, same fail-open fleet-fallback path as #22.
+#     Uses the REAL checker (no override), so this also proves the Python-side errors="replace"
+#     fix specifically. Asserting the EXACT reason (not just "isolation=refuse*") matters: the
+#     __main__ belt-and-suspenders try/except (also added this delta) would catch the same
+#     UnicodeDecodeError and print "REFUSE:checker-failed" even WITHOUT the errors="replace" fix,
+#     which would make this test pass on the mutated code too and defeat its own purpose. With
+#     the real fix, decoding succeeds (replacement chars), json.loads succeeds, and resolution
+#     proceeds normally to the next real check (the garbled value is not an absolute path).
+printf '{"oauthTokenFile": "\xff\xfe-invalid-utf8"}' > "$AGENT_OWN/agent-config.json"
+OUT="$(bash "$WD" --launch-env "$AGENT_OWN")"
+case "$OUT" in
+  "isolation=refuse reason=not-absolute") pass "23: invalid UTF-8 bytes in config naming the key -> decoded (not crashed), refused on the garbled value" ;;
+  *) fail "23: invalid UTF-8 bytes in config naming the key -> decoded (not crashed), refused on the garbled value" "$OUT" ;;
+esac
+rm -rf "$AGENT_OWN/agent-config.json"
+write_own_config
+
 echo "watchdog-config-isolation: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

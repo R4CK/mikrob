@@ -157,6 +157,36 @@ export function startApprovalTimeoutSweeper(): NodeJS.Timeout {
   }, 60_000)
 }
 
+// Shared by the HTTP POST handler below AND any in-process caller that needs to open an
+// approval request without a round-trip through its own route (card 68254bd7, MikroB 14841:
+// POST /api/fleet/import?apply=true gates on this same mechanism). Owner + main-agent
+// notification always fires -- a caller that skips it would recreate exactly the closed-loop
+// bug APPROVALVAK821 fixed, just from a second call site.
+export function createAndNotifyApproval(params: {
+  agent_id: string
+  category: string
+  action_description: string
+  action_payload?: string | null
+  timeout_seconds?: unknown
+  content_hash?: string | null
+}): Approval {
+  const id = randomUUID()
+  const timeout_at = computeTimeoutAt(params.category, params.timeout_seconds)
+  const approval = createApproval({
+    id,
+    agent_id: params.agent_id,
+    category: params.category,
+    action_description: params.action_description,
+    action_payload: params.action_payload ?? null,
+    timeout_at,
+    content_hash: params.content_hash ?? null,
+  })
+  notifyOwner(approval)
+  notifyMainAgent(approval)
+  logger.info({ id, agent_id: params.agent_id, category: params.category }, 'Approval request created')
+  return approval
+}
+
 export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -196,21 +226,14 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const id = randomUUID()
-    const timeout_at = computeTimeoutAt(category, timeout_seconds)
-    const approval = createApproval({
-      id,
+    const approval = createAndNotifyApproval({
       agent_id: agent_id.trim(),
       category: category.trim(),
       action_description: action_description.trim(),
       action_payload: typeof action_payload === 'string' ? action_payload : null,
-      timeout_at,
+      timeout_seconds,
       content_hash: typeof content_hash === 'string' ? content_hash : null,
     })
-
-    notifyOwner(approval)
-    notifyMainAgent(approval)
-    logger.info({ id, agent_id, category }, 'Approval request created')
     json(res, approval, 201)
     return true
   }

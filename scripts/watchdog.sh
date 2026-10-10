@@ -89,13 +89,28 @@ fi
 OAUTH_TOKEN_FILE_CHECK_PY="${OAUTH_TOKEN_FILE_CHECK_PY:-$INSTALL_DIR/scripts/lib/oauth_token_file_check.py}"
 agent_launch_env() {
   local AGENT_DIR="$1"
-  local CONFIG_VERDICT
+  local CONFIG_VERDICT CONFIG_RC
   CONFIG_VERDICT=$(python3 "$OAUTH_TOKEN_FILE_CHECK_PY" "$AGENT_DIR" 2>/dev/null)
+  CONFIG_RC=$?
+
+  # Card bc32d233 (RedHat NO-GO 14838, QA2 FAIL 14840, MikroB 14734's own named requirement):
+  # a missing/crashing/empty-output checker used to fall through this case silently to the
+  # unconditional fleet-token fallback below -- exactly the fail-open class G1 exists to close,
+  # just at the PROCESS level instead of the config-content level. A non-zero exit, or any
+  # output that is not exactly "UNSET"/"SET:*"/"REFUSE:*" (empty, multi-line, garbage), is now
+  # REFUSE:checker-failed. "UNSET" (never "") is the checker's explicit "no field" sentinel --
+  # see oauth_token_file_check.py's own docstring for why an empty string is never trusted here.
+  if [ "$CONFIG_RC" -ne 0 ]; then
+    printf '%s' "REFUSE:checker-failed"
+    return
+  fi
 
   case "$CONFIG_VERDICT" in
     REFUSE:*)
       printf '%s' "$CONFIG_VERDICT"
       return
+      ;;
+    UNSET)
       ;;
     SET:*)
       local OWN_TOKEN_PATH="${CONFIG_VERDICT#SET:}"
@@ -126,6 +141,10 @@ agent_launch_env() {
         printf '%s' "REFUSE:same-as-fleet-token"; return
       fi
       printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$OWN_TOKEN_PATH')\" && "
+      return
+      ;;
+    *)
+      printf '%s' "REFUSE:checker-failed"
       return
       ;;
   esac
