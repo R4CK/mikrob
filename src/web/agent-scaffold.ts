@@ -2395,7 +2395,17 @@ export function scaffoldAgentDir(name: string) {
         inherited = { ...parsed, mcpServers: kept }
       } catch (err) {
         // Unparseable root config: inherit nothing rather than copy what we cannot filter.
-        logger.warn({ err, name }, 'MCP inheritance: project .mcp.json unreadable, new agent inherits no servers')
+        //
+        // F3 (card 1d31cfcc, WhiteHat GO 0c3c3796): a JSON.parse SyntaxError's own
+        // .message can quote a fragment of the malformed input verbatim (measured,
+        // Node 22/V8: `JSON.parse("garbage SECRET-TOKEN not json")` throws
+        // `Unexpected token 'g', "garbage SE"... is not valid JSON` -- the first ~10
+        // characters of the file, which is exactly where a secret-bearing line would
+        // sit if the root .mcp.json were ever corrupted mid-write). Logging `err`
+        // directly (pino serializes Error.message) would carry that fragment into
+        // the log. Log only the error's TYPE, never its message.
+        const errName = err instanceof Error ? err.constructor.name : typeof err
+        logger.warn({ errName, name }, 'MCP inheritance: project .mcp.json unreadable, new agent inherits no servers')
       }
     }
     // Valid empty shape when nothing is inherited -- `claude /doctor` rejects plain "{}"

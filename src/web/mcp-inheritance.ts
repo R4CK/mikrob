@@ -20,6 +20,26 @@
 // main agent, whose isolated config is by design a mirror of the operator's own
 // ~/.claude.json. The scope-collision rule (agent-process.ts, 2026-09-05) runs
 // in addition, never instead.
+//
+// What this does NOT and CANNOT cover (card 1d31cfcc F1, WhiteHat GO 0c3c3796):
+// Claude Code itself, at session start, resolves project-scope MCP servers by
+// discovering .mcp.json in the working directory's ANCESTOR tree -- not only
+// the agent's own directory. Measured live: an agent whose own <agentDir>/.mcp.json
+// declares nothing still ends up with the servers declared in the fleet's
+// PROJECT_ROOT/.mcp.json (an ancestor of every agentDir), because that discovery
+// happens inside the Claude Code CLI at runtime, entirely outside the files this
+// module writes. There is no documented Claude Code setting (checked against the
+// official docs, 2026-10-10) that disables ancestor-directory .mcp.json discovery
+// for a given project path -- enabledMcpjsonServers/disabledMcpjsonServers/
+// enableAllProjectMcpServers govern per-project APPROVAL of servers already
+// discovered, not WHERE discovery looks. This filter therefore narrows what a
+// fresh agent's OWN config files inherit; it is not, and cannot be, a boundary
+// against the operator's own PROJECT_ROOT/.mcp.json reaching every agent that
+// runs underneath it. Today that root file declares only two read-only,
+// credential-free servers (code-review-graph, context7), so the gap has no live
+// exposure -- but anything added to PROJECT_ROOT/.mcp.json in the future reaches
+// every agent regardless of this list, and that must stay a conscious choice
+// about what lives in the root file, not an assumption that this filter covers it.
 
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { logger } from '../logger.js'
@@ -58,7 +78,7 @@ export function filterInheritableMcpServers(
  * The trace every refusal leaves: which servers were NOT inherited, by name only
  * (never the definition -- it can carry credentials), and on which path.
  */
-export function logNotInherited(name: string, path: 'scaffold' | 'seed' | 'gap-fill', dropped: string[]): void {
+export function logNotInherited(name: string, path: 'scaffold' | 'seed' | 'seed-projects' | 'gap-fill', dropped: string[]): void {
   if (dropped.length === 0) return
   logger.info(
     { event: 'mcp-not-inherited', name, path, notInherited: dropped, setting: INHERITED_MCP_SETTING },

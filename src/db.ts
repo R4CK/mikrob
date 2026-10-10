@@ -7441,6 +7441,40 @@ export function setApprovalTelegramMessageId(id: string, telegramMessageId: numb
     .run(telegramMessageId, id).changes > 0
 }
 
+// Card 68254bd7 (MikroB 14841, RedHat NO-GO 14837): the same approved-unconsumed-in-window-
+// content-hash pattern scripts/hooks/email-approval-gate.py already uses for outgoing email,
+// now needed from TypeScript (POST /api/fleet/import?apply=true). Mirrors that hook's own SQL
+// exactly (category/status/content_hash/consumed_at/resolved_at-window), so a caller only has
+// to supply the two things that differ per use: the category and the window.
+export function findConsumableApproval(category: string, contentHash: string, windowSeconds: number): Approval | undefined {
+  const cutoff = Math.floor(Date.now() / 1000) - windowSeconds
+  return db.prepare(`
+    SELECT * FROM approvals
+    WHERE category = ? AND status = 'approved' AND content_hash = ?
+      AND consumed_at IS NULL AND resolved_at >= ?
+    ORDER BY resolved_at DESC LIMIT 1
+  `).get(category, contentHash, cutoff) as Approval | undefined
+}
+
+// Atomic: the WHERE clause's `consumed_at IS NULL` is what makes this race-safe -- two
+// concurrent callers can both SELECT the same row via findConsumableApproval above, but only
+// one UPDATE can win (changes > 0), so only one of them may proceed with the gated action.
+export function consumeApproval(id: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare('UPDATE approvals SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL')
+    .run(now, id).changes > 0
+}
+
+// A pending request for the SAME category+hash already exists -- reused so a caller retrying
+// before the owner has acted does not spam a fresh Telegram ping on every retry (mirrors the
+// email gate's own standing-recipient dedup, email-approval-gate.py lines ~411-412).
+export function findPendingApproval(category: string, contentHash: string): Approval | undefined {
+  return db.prepare(`
+    SELECT * FROM approvals WHERE category = ? AND content_hash = ? AND status = 'pending'
+    ORDER BY requested_at DESC LIMIT 1
+  `).get(category, contentHash) as Approval | undefined
+}
+
 export function listApprovals(opts: {
   agent_id?: string
   category?: string

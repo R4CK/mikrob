@@ -18482,6 +18482,55 @@ configot. `external-repos-sync-writeback.test.ts` 7/7 zold, `watched-repos-movin
 **Ki dontott:** QA FAIL-lelet (@ce296659); a javitas es a fixtura-atnevezes fullstack sajat
 merese/dontese. Gate: QA (ujra).
 
+## 2026-10-10 -- MCP-öröklés: a gyökér .mcp.json ancestor-betöltése nincs és nem is lehet a saját listánkkal kizárva (kártya 1d31cfcc, WhiteHat GO 0c3c3796 F1-F4)
+
+**F1 (MEDIUM) -- döntés: dokumentáció-pontosítás, nem kód-kerítés.** WhiteHat mérése szerint egy ügynök SAJÁT (üres) `.mcp.json`-ja mellett is betöltődik a gyökér (PROJECT_ROOT) `.mcp.json`-ban deklarált `code-review-graph` és `context7`. Élőben megismételve, a saját sessionömben: a `backend` ügynök `.mcp.json`-ja kizárólag `firecrawl`-t deklarálja, a `code-review-graph`/`context7` tool-ok mégis elérhetők voltak -- vagyis a Claude Code CLI a `.mcp.json`-t az ANCESTOR könyvtárfán is megkeresi futás közben, ez a mi íráskori szűrésünktől (mcp-inheritance.ts) teljesen független, belső CLI-viselkedés. A Claude Code hivatalos dokumentációjában (context7, 2026-10-10 lekérdezve) NEM szerepel olyan beállítás, ami ezt az ancestor-keresést egy adott projekt-útra kikapcsolná -- `enabledMcpjsonServers`/`disabledMcpjsonServers`/`enableAllProjectMcpServers` a már MEGTALÁLT szerverek jóváhagyását szabályozzák, nem azt, HOL keres a CLI. Mivel nincs ismert, dokumentált kapcsoló, és a gyökér `.mcp.json` ma két ártalmatlan, hitelesítő-adat-mentes szervert (code-review-graph, context7) deklarál -- élő kitettség nincs --, a döntés: a `mcp-inheritance.ts` fejkommentjét pontosítottam (a filter hatóköre EXPLICIT kimondva: csak azt szabályozza, mit ír bele egy friss ügynök SAJÁT fájljaiba, a CLI saját élő ancestor-felfedezését nem tudja és nem is állítja, hogy tudná befolyásolni). Ha a gyökér `.mcp.json`-hoz a jövőben bármi hitelesítő-adatot hordozó szerver kerül, az a döntés attól a ponttól tudatos kockázatvállalás, nem ennek a szűrőnek a hibája.
+
+**F2 (LOW) -- javítva.** A `provisionIsolatedConfigDir` első-seed ága a megosztott `~/.claude.json`-t TELJES egészében másolja, és a tetején lévő `mcpServers` mezőt már szűrte az allowlist -- de a `projects[<út>].mcpServers` ágakat (amik `claude mcp add --scope project` interaktív hívásból származhatnak) nem. Javítva: minden `seed.projects[*]` bejegyzés saját `mcpServers`-ét is átfuttatjuk ugyanazon az allowlisten (`agent-process.ts`), a fő ügynök ugyanúgy kivételt kap. Ezen az installon ma a gyökér projekt-bejegyzés `mcpServers`-e üres, tehát élő hatása nincs, de a rés valódi volt.
+
+**F3 (LOW) -- javítva.** `agent-scaffold.ts`-ben a gyökér `.mcp.json` JSON.parse-hibáját a `logger.warn({ err, name }, ...)` hívás a NYERS error-objektummal naplózta. Mérve (Node 22/V8): egy olyan korrupt fájl, ami NEM érvényes JSON-nal kezdődik, a `SyntaxError.message`-be belefoglalja a bemenet első kb. 10 karakterét szó szerint (`Unexpected token 'g', "garbage SE"... is not valid JSON`), amit a pino logger ki is ír. Javítva: csak az error TÍPUSát (`err.constructor.name`) logoljuk, a message-et sosem.
+
+**F4 -- 4 új teszt** (`mcp-inheritance.test.ts`): olvashatatlan-beállítás ág (getEffectiveSettingValue dobása -> üres Set), alapértelmezés ág (nincs gyökér `.mcp.json` egyáltalán -> érvényes üres alak), érthetetlen-fájl ág (F3 regresszió-teszt, mutáció-verifikálva: a javítás visszavonásával a teszt pirosra vált, a logolt call argumentumban tényleg megjelent a `"garbage SE"...` idézet), és az F2 javítás saját regresszió-tesztje (mutáció-verifikálva: a javítás blokk kivételével a teszt pirosra vált, `gmail` is átjött a `projects[]`-ből).
+
+**Mérés:** típuskontroll tiszta, `lint-ratchet.sh` "no rule got worse" (331 lelet, baseline tartja). Célzott tesztek: mcp-inheritance.test.ts (23, +4 új), agent-scaffold-mcp-seeding.test.ts (6), isolated-config-mcp-reconcile.test.ts (12), worksource-wiring.test.ts (20), shared-claude-onboarded.test.ts (6) -- mind zöld, 67/67.
+
+**Ki döntött:** WhiteHat jelezte a 4 leletet (GO 0c3c3796 follow-up, nem gate-feltétel volt); backend döntött F1 hatókör-pontosításáról (kódkerítés helyett dokumentáció, mert nincs dokumentált CLI-kapcsoló és nincs élő kitettség) és implementálta F2-F4 javítását. Gate: QA + Cybersec, nem user-facing, nincs Pair-FE (kártya saját szövege szerint).
+
+## 2026-10-10 -- Kartya 7e70144e lezarva: a GATENEVSTRIP921 dontes mar megvolt, fuggetlenul megerositve
+
+A kartya (eszkalalva a 09d54e88-bol, 2026-09-25) a scripts/hooks/outgoing-copy-gate.py 8
+konfliktus-hunkjanak (akkori upstream pin ellen) teljes vezerlesfolyam-nyomozasat kerte, mert
+a GATENEVSTRIP921 hunk alakra egyezett azzal a feltetel nelkuli szuffix-maszkolassal, amit a
+fbb36b41 round 7/8 es round 11 Cybersec NO-GO mar egyszer elutasitott.
+
+**A dontes idokozben mar megszuletett, egy MASIK kartya reszekent**: a 2026-10-09-i upstream-sync
+7. koteg (kartya 087e4418) explicit visszanezte ugyanezt a hunkot egy KESOBBI upstream-allapot
+ellen (ugyanaz a dontes-kotelesseg, amit ez a kartya korabban eszkalalt), es rogzitette: a
+GATENEVSTRIP921 szerkezete (_TECH_COMMON/_TECH_SUFFIXED kettevalasztva) ATVEVE, DE a
+_TECH_SUFFIXED harom korabban elutasitott alesete (szam+toldalek, tulajdonnev+toldalek,
+kotojeles-kisbetus-azonosito) MEGINT NEM kerult at, ugyanazon okbol (feltetel nelkuli maszkolas
+az ekezet-/token-vizsgalat elol, nem csak a nev-szabaly elol). A harom valos hamis-pozitiv eset
+egy MASIK, mar meglevo retegben (HYPHEN_WORD tokenizalo + DIGIT_HYPHEN_SUFFIX_ALLOWLIST +
+IDENTIFIER_ALLOWLIST) van megoldva, nem a technikai maszkban.
+
+**Fuggetlen megerosites most (backend3, 7e70144e felvetelekor)**: a jelenlegi elo fajl
+(scripts/hooks/outgoing-copy-gate.py) pontosan ezt a szerkezetet mutatja (TECHNICAL == NAME_MASK,
+_TECH_COMMON egyetlen forrasbol, a kommentekben a fenti dontes szo szerint rogzitve). Mind a 4
+outgoing-copy-gate teszt-fajl (outgoing-copy-gate, outgoing-copy-gate-log,
+outgoing-copy-gate-rules-policy, outgoing-copy-gate-failclosed) es a
+scripts/hooks/outgoing-copy-gate.selftest.py zold a jelenlegi fajlon, beleertve a level-1-maszk
+"nem nyeli el a tobbi leletet" sajat selftest-esetet. A fajl azota (kartya 14256aac, upstream-sync
+8. koteg) meg egy teljes merge-korkon atment anelkul, hogy ez a terulet ujra konfliktusba kerult
+volna -- a dontes stabil.
+
+**Nincs uj kodvaltoztatas ebben a kartyaban**: a tenyleges dontes mar landolt a 087e4418
+merge-ben, ez a bejegyzes csak a 7e70144e kartyat koti hivatkozassal a mar meghozott
+dontesehez, hogy a lanc kereshetove valjon.
+
+**Ki dontott:** (eredeti dontes) backend, kartya 087e4418, upstream-sync 7. koteg. (fuggetlen
+megerosites es kartya-lezaras) backend3, kartya 7e70144e. Gate: QA + Cybersec (Cybersec a ket
+korabbi NO-GO szerzoje, a kartya sajat kerese szerint).
+
 ## 2026-10-10 -- claude-mem A resz (5a4bea2e): flotta-kiterjesztes elofeltetelei R1-R4 (kartya 0a34377f, forras: CYBERED GO 14537, 92bc09db)
 
 RedHat (komment 14537) a sajat-kuralt-memoria session-inditasi injekcio (5a4bea2e, pilot:
@@ -18604,6 +18653,34 @@ kerulo, a repoban kovetett dokumentacios nyom.
 **Ki dontott:** a hibat qa2 talalta (d69b54fd QA PASS komment, 14865), MikroB jelezte kovetokent
 (4f5f08fd); a javitas (a 15 sor atirasa + a sweep-pel igazolas) fullstack sajat vegrehajtasa.
 Gate: QA.
+
+## 2026-10-10 -- SeeMe SMS-kapu lánc: összesített döntés-rögzítés (kártyák 779b9660, 34573931, 3fb0ef97)
+
+**Döntés:** a SeeMe SMS-kapu approval-mechanizmusa három ponton szigorodott, és a kapu AKTIVÁLÁSA (élő `seeme-gateway.env` + tényleges hívó) további két, még nyitott feltételhez van kötve.
+
+- **Egyszer-használatos, friss, szöveghez kötött approval (779b9660, WhiteHat F1):** egy jóváhagyás csak EGYETLEN, pontos (nem részsztring-, nem negatív-mintás) mezőnkénti egyezésű recipiens+szöveg párra érvényes, és legfeljebb 1800 másodpercig friss. Korábban egy approval két különböző szöveget és két számalakot is kiszolgált.
+- **Env-felülírás csak teszt módban, ez NEM biztonsági határ (34573931 A2, commit 5c8c1b8c):** a `SEEME_DB_PATH`/`INTERNAL_FILE`/`WINDOW` env-változók csak `SEEME_TEST_MODE=1` alatt hatnak; éles módban a path-override-ok és az ablak-felülírás hatástalanok.
+- **A resolved_by-ra NEM kódolunk ide (MikroB döntés, msg 10117):** a dashboard közös bearer tokenje miatt egy ügynök PATCH-e és Peti kattintása a szerver szemszögéből megkülönböztethetetlen; a Telegram-gomb callback is ugyanabba a közös tokenbe futna MikroB sessionjén, a bizalmi lánc ugyanott szakadna meg. Valódi megoldás önálló kártyán (3fb0ef97, BLOKKOLT-terv, plan-grillinggel indul).
+
+**Az aktiválás feltétele (ma nincs élő kitettség: nincs `seeme-gateway.env`, nincs hívó):**
+- **A1 -- nem-hamisítható jóváhagyási csatorna:** 3fb0ef97 adja, ügynök-tokentől független írási út nélkül nem kapcsolható be a kapu.
+- **A3 -- `seeme-gateway.env` olvashatósága:** a közös UID (neon) alatt minden ügynök olvashatja; érdemi zárása a Közös UID-tervtől (8eca67f0) függ, addig blokkolva.
+
+**Ki döntött:** 779b9660 forrása fd10c70b CYBERSEC GO (6ec8bb71) WhiteHat követő-lelete, gate QA + Cybered (MikroB döntése: az F1 javítás alakját Cybersec adta, ezért nem független). 34573931 forrása 779b9660 RedHat A1-A3, gate QA + Cybered; az A1/A3 záró döntése MikroB (msg 10117, 10116). 3fb0ef97 még nyitott (planned, plan-grilling előtt).
+
+## 2026-10-10 -- fleet-import apply=true: megosztott bearer eset kezelve emberi jóváhagyással, nem csak kind-ellenőrzéssel (kártya 68254bd7, RedHat NO-GO 14837, MikroB döntés 14841)
+
+**Döntés:** a `session`/`device` hitelesítés-típus ellenőrzés (korábbi delta-fix) NEM elegendő önmagában, mert RedHat méréssel igazolta, hogy a megosztott flotta-bearer ('token') HÁROM külön útvonalon tud magának `device` vagy `session` hitelesítést szerezni (bridge-enroll eszközkulcs-kibocsátás, break-glass jelszó-reset + login, az utolsó dashboard-felhasználó törlése -> bootstrap-kivétel újranyitása). MikroB döntése: a POST `/api/fleet/import?apply=true` mostantól egy EMBER ÁLTAL FELOLDOTT, a kérés PONTOS bájtjaihoz kötött `/api/approvals` bejegyzést is igényel (`category=fleet_import_apply`, `content_hash=sha256(raw import body)`, `approved` + fel nem használt + időablakon belüli), ugyanazzal a mintával, amit a `scripts/hooks/email-approval-gate.py` (EMAILKAPU901) már kimért TypeScript-be átemelve. A kind-ellenőrzés MARAD, de csak kiegészítő rétegként.
+
+**Megvalósítás:** `src/db.ts`: `findConsumableApproval`/`consumeApproval`/`findPendingApproval` (ugyanaz az SQL-minta, mint az email-gate-é, atomikus consume: `consumed_at IS NULL` a WHERE-ben zárja ki a versenyhelyzetet). `src/web/routes/approvals.ts`: a POST-handler create+notify logikája kiemelve egy exportált `createAndNotifyApproval()`-ba, hogy a fleet-import route is hívhassa HTTP-körút nélkül. `src/web/routes/fleet.ts`: `apply=true`-nál nincs felhasználható (approved+unconsumed+hash-egyező+időablakon belüli) jóváhagyás -> az import NEM fut le, egy jóváhagyás NYÍLIK (vagy egy már-nyitott, ugyanerre a hash-re szóló NEM duplikálódik), 403 + `approval_id` megy vissza; a hívónak a PONTOSAN UGYANAZT a bájtsorozatot kell újraküldenie jóváhagyás után.
+
+**A kártya saját szövegének másik fele (CLAUDE.md/SOUL.md/skillek/ütemezett promptok/.mcp.json url mezői, amiket a config/settings/mcp-command allowlist nem fed) MikroB döntése szerint EZZEL a gate-tel lezárva** -- ezek a mezők csak egy APPLY-olt importon íródnak ki, és az apply mostantól az emberi jóváhagyás mögé került, tehát nincs önálló külön javítás rájuk ebben a kártyán.
+
+**NEM e kártya része, explicit NEM megoldott, MikroB saját döntés-szövege szerint sem adott erre utasítást:** a RedHat által nevesített három útvonal (bridge-enroll eszközkulcs-kibocsátás, break-glass jelszó-reset+login, utolsó-felhasználó-törlés -> bootstrap-kivétel) egy SZÉLESEBB, flotta-szintű architektúra-kérdés ("a megosztott bearer a dashboard tényleges root-ja"), amit RedHat MikroB saját, külön döntésére utalt. Ha ezt be akarjuk zárni, az nem lehet pusztán "még egy kind-kivétel törlése" lista -- RedHat saját szavaival: "minden hitelesítő-kibocsátó és -átíró útvonalat le kellene zárni, ez karbantarthatatlan lista." Ezért flag marad, nem fix.
+
+**Mérés:** RedHat NO-GO 1/11 mutáció-rést is mért (a főügynök .mcp.json command/args stripjének hiányzó tesztje) -- pótolva (fleet-transfer.test.ts, mutáció-verifikálva: a strip bypass-elésével a teszt pirosra vált a várt módon). Teljes érintett felszín: fleet-transfer.test.ts (42, +1 új), fleet-import-auth-gate.test.ts (16, 7 régi frissítve + 9 új az approval-mechanizmusra), approvals.test.ts/approvals-module/approvals-notify/approvals-delivery (2 forrás-pin frissítve a createAndNotifyApproval-kiemelés miatt)/approvals-ui-contract/approvals-prompt-contract, email-approval-gate.test.ts, auth-routes.test.ts, auth-device-keys.test.ts, bridge-enroll.test.ts, voice-channel-hanna.test.ts, voice-channel-device-allowlist.test.ts, auth-gate.test.ts -- mind zöld, 230/230. typecheck tiszta, lint-ratchet.sh "no rule got worse" (331 lelet).
+
+**Ki döntött:** RedHat mérte F1-et nyitva (NO-GO 14837); MikroB döntött a mechanizmusról (14841, emberi jóváhagyás /api/approvals-on, nem szélesebb kind-lista); backend implementálta. Gate: QA + Cybered/RedHat (re-gate a WhiteHat/RedHat saját instrukciója szerint).
 
 ## 2026-10-10 -- korrekcio: a 59cfcb21 F4 bejegyzes tulzott mutacio-lefedettseget allitott (kartya 0fb92c16, RedHat 59cfcb21 CYBERED GO utomunka)
 

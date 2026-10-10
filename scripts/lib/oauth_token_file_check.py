@@ -14,8 +14,13 @@ path breaking out of an f-string-built `python3 -c "..."` call) and never printi
 itself (only path/verdict), the same posture agent-oauth-token-file.ts keeps.
 
 Usage: oauth_token_file_check.py <agent-dir> <fleet-token-path>
-Exactly one line on stdout:
-  ""              -- unset: field absent (or config file truly absent, ENOENT) -> fleet-token path
+Exactly one line on stdout, ALWAYS (never a crash/traceback -- card bc32d233, RedHat/QA2 delta-GO
+follow-up: watchdog.sh's case-statement treats anything that is not exactly "UNSET" or "SET:*" or
+"REFUSE:*" as a checker failure and refuses, so this script must never produce empty/partial/
+multi-line output or a non-zero exit for a condition it can anticipate):
+  "UNSET"         -- field absent (or config file truly absent, ENOENT) -> fleet-token path.
+                     An explicit sentinel, not "", so an empty string can never be confused with
+                     a checker that printed nothing because it crashed.
   "REFUSE:<why>"  -- present but unusable at the CONFIG level -> watchdog.sh must refuse the restart
   "SET:<path>"    -- validated path; watchdog.sh still runs its own FILE-level checks on <path>
                      (isolation dir, symlink/missing, mode, fleet-file identity, setup-token
@@ -61,7 +66,16 @@ def resolve(agent_dir: str) -> str:
         raw = "{}"
     else:
         try:
-            with open(cfg_path, "r", encoding="utf-8") as f:
+            # errors="replace" (card bc32d233, RedHat/QA2 delta-GO follow-up, 2026-10-10):
+            # a config file with invalid UTF-8 bytes used to raise UnicodeDecodeError here,
+            # UNCAUGHT (this try only catches OSError) -- the whole script crashed with a
+            # traceback on stderr, nothing on stdout, and watchdog.sh's `2>/dev/null` swallowed
+            # the stderr while its case-statement fell through an empty CONFIG_VERDICT to the
+            # unconditional fleet-token fallback. Decoding with replacement characters instead
+            # (matching the TS reference's readFileSync('utf-8') behavior, which never throws
+            # on invalid bytes) means a byte-corrupt config is read, not crashed on, and falls
+            # through to the EXISTING json.loads/key-presence logic below like any other file.
+            with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
                 raw = f.read()
         except OSError:
             return "REFUSE:config-unreadable"
@@ -84,10 +98,10 @@ def resolve(agent_dir: str) -> str:
         # same as every other reader's "{}" fallback.
         if KEY_QUOTED in raw or ends_in_truncated_key_name(raw):
             return "REFUSE:config-unparseable"
-        return ""
+        return "UNSET"
 
     if not isinstance(config, dict) or OAUTH_TOKEN_FILE_KEY not in config:
-        return ""
+        return "UNSET"
 
     value = config[OAUTH_TOKEN_FILE_KEY]
     if not isinstance(value, str):
@@ -150,6 +164,15 @@ if __name__ == "__main__":
     elif len(sys.argv) == 3 and sys.argv[1] == "--bad-content-characters":
         sys.exit(0 if has_bad_content_characters(sys.argv[2]) else 1)
     elif len(sys.argv) == 2 and not sys.argv[1].startswith("--"):
-        print(resolve(sys.argv[1]))
+        # Belt-and-suspenders (card bc32d233): resolve() is written to never raise for any
+        # condition it anticipates, but an exception from a cause nobody anticipated (OOM, a
+        # future regression) must still produce exactly one valid line rather than a crash --
+        # the docstring's whole contract. watchdog.sh's case-statement already treats any
+        # other output as REFUSE:checker-failed; this is what makes that the case-statement's
+        # unreachable branch rather than the thing it actually has to defend against.
+        try:
+            print(resolve(sys.argv[1]))
+        except Exception:
+            print("REFUSE:checker-failed")
     else:
         _usage()
