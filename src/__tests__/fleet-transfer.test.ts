@@ -421,3 +421,56 @@ describe('importFleet: reserved sender ids cannot be minted as agent names (card
     expect(SAFE_NAME_RE.test('system')).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// WhiteHat F2 follow-up (card 006b506b, on 06b48bd0): oauthTokenFile is a LOCAL path on whichever
+// host set it. A fleet bundle carrying it verbatim would, on import, point the receiving agent at
+// an attacker-chosen or merely foreign path, which decideOwnOauthToken would then validate as a
+// deliberate operator setting. Pinned at the real write boundary (importFleet apply:true), not
+// just the helper, so a future refactor that stops calling the sanitizer is caught here too.
+// ---------------------------------------------------------------------------
+
+describe('importFleet: oauthTokenFile is stripped from an imported agent-config.json (card 006b506b)', () => {
+  const fleetWithAgentConfig = (config: Record<string, unknown>): string => JSON.stringify({
+    schemaVersion: 1,
+    exportedAt: '2026-01-01T00:00:00.000Z',
+    sourceHost: 'attacker',
+    agents: [{
+      name: 'victim',
+      config, claudeMd: '', soulMd: '', mcp: {}, settings: {}, channelsAccess: {}, agentSkills: [],
+    }],
+    skills: [], scheduledTasks: [], memories: [], dailyLogs: [],
+    kanban: { cards: [], comments: [], cardEvents: [], labels: [], cardLabels: [] },
+    ideaBox: { ideas: [], comments: [], statusLog: [] },
+    dashboardSettings: { autonomy: {}, autoRestart: {}, agentsDesired: {}, norbertPersonal: {} },
+  })
+
+  const writtenAgentConfig = async (config: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    importFleet(fleetWithAgentConfig(config), { apply: true })
+    const calls = (atomicWriteFileSync as any).mock.calls
+      .filter((c: string[]) => c[0]?.includes('/victim/') && c[0]?.endsWith('agent-config.json'))
+    expect(calls.length).toBeGreaterThan(0)
+    return JSON.parse(calls[calls.length - 1][1] as string)
+  }
+
+  it('an attacker-chosen oauthTokenFile never reaches the written config', async () => {
+    const written = await writtenAgentConfig({ oauthTokenFile: '/home/someone-else/.config/token', model: 'claude-opus-5-5' })
+    expect(written).not.toHaveProperty('oauthTokenFile')
+    // THE NON-VACUITY CHECK: other fields must still survive the sanitizer.
+    expect(written.model).toBe('claude-opus-5-5')
+  })
+
+  it('a config with no oauthTokenFile field is written through unchanged', async () => {
+    const written = await writtenAgentConfig({ model: 'claude-sonnet-5-5' })
+    expect(written).toEqual({ model: 'claude-sonnet-5-5' })
+  })
+
+  // MUTATION PIN: if the sanitizer call were ever removed from writeAgentFiles, this is the case
+  // that flips -- the field would show up verbatim in the written JSON.
+  it('MUTATION PIN: without stripping, the field would be written verbatim (self-check)', () => {
+    const config: Record<string, unknown> = { oauthTokenFile: '/x/y', model: 'claude-opus-5-5' }
+    expect(JSON.stringify(config)).toContain('oauthTokenFile')
+  })
+})

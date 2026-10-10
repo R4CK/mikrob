@@ -31,8 +31,8 @@ import {
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readFileOr } from './agent-config.js'
-import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel } from './agent-config.js'
+import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, readAgentConfigForOauthDecision, reverifyOauthTokenFile, findOauthTokenFileCollision } from './agent-oauth-token-file.js'
 import { worksourceRootFor } from './worksource-queue.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
 import { readClaudePlansState } from './claude-plans-state.js'
@@ -1872,7 +1872,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
   // never falls back to the fleet token (see agent-oauth-token-file.ts).
   // Absent field -> 'unset' -> every branch below runs exactly as before.
   const ownOauth = decideOwnOauthToken({
-    rawConfigJson: readFileOr(join(dir, 'agent-config.json'), '{}'),
+    configRead: readAgentConfigForOauthDecision(join(dir, 'agent-config.json')),
     isMainAgent: name === MAIN_AGENT_ID,
     isRemote: !!(remote.host && remote.workdir),
     isClaudeModel: resolveOpenRouterModel(readAgentModel(name)).startsWith('claude-'),
@@ -1890,6 +1890,26 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     return { ok: false, error: `oauthTokenFile: ${ownOauth.reason}${ownOauth.detail ? ` (${ownOauth.detail})` : ''}` }
   }
   const ownTokenFile = ownOauth.kind === 'ok' ? ownOauth.path : null
+
+  // oauthTokenFile uniqueness across agents (WhiteHat F4, card 006b506b): two agents sharing the
+  // same token file would share its quota and its blast radius, the opposite of what a per-agent
+  // token is for. No write-API path exists for this field, so it is checked here, at launch.
+  if (ownTokenFile) {
+    const collision = findOauthTokenFileCollision(
+      ownTokenFile,
+      name,
+      listAgentNames()
+        .filter((other) => other !== name)
+        .map((other) => ({ name: other, configRead: readAgentConfigForOauthDecision(join(agentDir(other), 'agent-config.json')) })),
+    )
+    if (collision) {
+      logger.error(
+        { name, path: ownTokenFile, collision },
+        'oauthTokenFile: shared with another agent -- agent NOT started (per-agent tokens must be unique)',
+      )
+      return { ok: false, error: `oauthTokenFile: shared with agent "${collision}"` }
+    }
+  }
 
   if (remote.host && remote.workdir) {
     return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
@@ -2373,6 +2393,21 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
         { name, path: ownLaunch.path, fingerprint: ownLaunch.fingerprint },
         'oauthTokenFile: own setup-token exported instead of the fleet token',
       )
+      // WhiteHat F3 (card 006b506b): re-validate right next to the actual use, not just at the
+      // top of this function -- a swap in the gap between decideOwnOauthToken and here (config-dir
+      // isolation and other I/O happened in between) is caught here instead of silently launching
+      // on whatever now sits at that path.
+      const reverify = reverifyOauthTokenFile(ownLaunch.path, ownLaunch.fingerprint, {
+        uid: typeof process.getuid === 'function' ? process.getuid() : null,
+        fleetTokenPath: FLEET_OAUTH_TOKEN_PATH,
+      })
+      if (!reverify.ok) {
+        logger.error(
+          { name, path: ownLaunch.path, reason: reverify.reason, detail: reverify.detail },
+          'oauthTokenFile: file changed between check and use -- agent NOT started (no fallback to the fleet token)',
+        )
+        return { ok: false, error: `oauthTokenFile: ${reverify.reason}${reverify.detail ? ` (${reverify.detail})` : ''}` }
+      }
     }
     // Per-project trust pre-seed in the config root this session will ACTUALLY
     // use (isolated CLAUDE_CONFIG_DIR when set, shared ~/.claude.json
