@@ -31,8 +31,9 @@ import {
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider } from './agent-config.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, readAgentConfigForOauthDecision, reverifyOauthTokenFile, findOauthTokenFileCollision } from './agent-oauth-token-file.js'
+import { getCustomProviderOrThrow } from './custom-providers.js'
 import { worksourceRootFor } from './worksource-queue.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
 import { readClaudePlansState } from './claude-plans-state.js'
@@ -1539,14 +1540,31 @@ export function clearLaunchSecrets(agentName: string): number {
  * instead of textually inside it -- the raw secret value never reaches a shell string at either
  * layer, which is strictly tighter than escaping it in place ever was.
  */
-export type ProviderKind = 'claude' | 'deepseek' | 'openrouter' | 'ollama'
+export type ProviderKind = 'claude' | 'deepseek' | 'openrouter' | 'ollama' | 'custom'
 
 export function resolveProviderEnv(
   model: string,
   /** Returns the secret's shell REFERENCE (e.g. `"$(cat '/path')"`, from `launchSecretRef`), never
    *  its value; `null`/missing degrades to an empty credential, same as before this card. */
   secretShellRef: (id: string) => string | null,
+  /** Per-agent customProvider id (agent-config.json, card 96c00ee5). Takes priority over every
+   *  model-string heuristic below: a custom endpoint can speak any model-id shape, so only an
+   *  explicit per-agent signal -- never the model string -- may route a launch through it. */
+  customProviderId?: string | null,
 ): { provider: ProviderKind; exportsStr: string } {
+  if (customProviderId) {
+    // getCustomProviderOrThrow is fail-closed (registry missing, entry missing, or baseUrl no
+    // longer loopback all throw) -- never a silent fallback to the model-string heuristics below.
+    const def = getCustomProviderOrThrow(customProviderId)
+    const keyRef = secretShellRef(def.secretId)
+    if (!keyRef) {
+      throw new Error('custom provider \'' + customProviderId + '\': vault key \'' + def.secretId + '\' is missing -- refusing rather than falling back')
+    }
+    return {
+      provider: 'custom',
+      exportsStr: `export ANTHROPIC_AUTH_TOKEN=${keyRef} && export ANTHROPIC_BASE_URL=${shSingleQuote(def.baseUrl)} && export ANTHROPIC_MODEL=${shSingleQuote(model)} && `,
+    }
+  }
   const isClaude = model.startsWith('claude-')
   const isDeepseek = model.startsWith('deepseek-')
   // OpenRouter model ids are `provider/model` (contain '/'); Ollama tags use
@@ -1897,11 +1915,16 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
   // included: a present but unusable field refuses the start, loudly, and
   // never falls back to the fleet token (see agent-oauth-token-file.ts).
   // Absent field -> 'unset' -> every branch below runs exactly as before.
+  // Card f1800242: a custom provider (any registered id) takes priority over the model-string
+  // heuristic in resolveProviderEnv, so a setup-token field cannot "take effect" alongside one
+  // either (see agent-oauth-token-file.ts's own isCustomProvider comment).
+  const customProviderId = readAgentCustomProvider(name)
   const ownOauth = decideOwnOauthToken({
     configRead: readAgentConfigForOauthDecision(join(dir, 'agent-config.json')),
     isMainAgent: name === MAIN_AGENT_ID,
     isRemote: !!(remote.host && remote.workdir),
     isClaudeModel: resolveOpenRouterModel(readAgentModel(name)).startsWith('claude-'),
+    isCustomProvider: !!customProviderId,
     authMode: readAgentAuthMode(name),
     hasExplicitConfigDir: readAgentClaudeConfigDir(name) !== null,
     hasClaudePlan: !!readAgentClaudePlan(name),
@@ -2038,13 +2061,13 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     const model = resolveOpenRouterModel(readAgentModel(name))
     const authMode = readAgentAuthMode(name)
     const isClaude = model.startsWith('claude-')
-    // oauthTokenFile backstop: the decision above already refused a non-Claude
-    // agent with its own token. Re-checked on the launcher's own isClaude, so a
-    // drift between the two predicates refuses instead of launching with a
-    // setup-token that no export site will use.
-    if (ownTokenFile && !isClaude) {
+    // oauthTokenFile backstop: the decision above already refused a non-Claude agent (or, now, a
+    // custom-provider agent -- card f1800242) with its own token. Re-checked on the launcher's own
+    // isClaude/customProviderId, so a drift between these and the decision's predicates refuses
+    // instead of launching with a setup-token that no export site will use.
+    if (ownTokenFile && (!isClaude || customProviderId)) {
       logger.error(
-        { name, path: ownTokenFile, model },
+        { name, path: ownTokenFile, model, customProviderId },
         'oauthTokenFile: agent is not a Claude OAuth agent -- NOT started (a setup-token cannot take effect here)',
       )
       return { ok: false, error: 'oauthTokenFile: not a Claude OAuth agent' }
@@ -2056,10 +2079,16 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // launch command (LATENSKULCSARGV920, card 248d3013) -- `name` scopes the file so
     // clearLaunchSecrets(name) on stop can find it by the `<agent>.` prefix without touching a
     // sibling agent's secret.
-    const { exportsStr: providerEnv } = resolveProviderEnv(model, (id) => {
-      const value = (getSecret(id) ?? '').trim()
-      return value ? launchSecretRef(`${name}.${id}`, value) : null
-    })
+    let providerEnv: string
+    try {
+      providerEnv = resolveProviderEnv(model, (id) => {
+        const value = (getSecret(id) ?? '').trim()
+        return value ? launchSecretRef(`${name}.${id}`, value) : null
+      }, customProviderId).exportsStr
+    } catch (err) {
+      logger.error({ err, name, customProviderId }, 'customProvider: agent NOT started (fail-closed)')
+      return { ok: false, error: `customProvider: ${err instanceof Error ? err.message : String(err)}` }
+    }
     // When authMode is 'api', the agent uses its own ANTHROPIC_API_KEY from
     // the vault instead of the host's OAuth. The vault entry ID follows the
     // convention `agent-{name}-api-key`. We inject it as an env var so Claude

@@ -253,7 +253,8 @@ describe('every shell sink in resolveProviderEnv is escaped, by PROVENANCE (Cybe
   it('every ${keyRef} sink is provably sourced from secretShellRef, not getSecret or the vault', () => {
     const body = resolveProviderEnvBody()
     const keyRefSinks = (body.match(/\$\{keyRef\}/g) || []).length
-    expect(keyRefSinks, 'expected the deepseek and openrouter branches to each use ${keyRef}').toBe(2)
+    // Card f1800242 added a third: the custom-provider branch's own `const keyRef = secretShellRef(...)`.
+    expect(keyRefSinks, 'expected the deepseek, openrouter and custom-provider branches to each use ${keyRef}').toBe(3)
     const provenance = (body.match(/const keyRef = secretShellRef\(/g) || []).length
     // One-to-one: every sink has a matching declaration straight off secretShellRef, in the SAME
     // function -- not a re-derived or renamed value that merely happens to be called keyRef.
@@ -301,6 +302,43 @@ describe('every shell sink in resolveProviderEnv is escaped, by PROVENANCE (Cybe
       '\n  x = `export ANTHROPIC_AUTH_TOKEN=${keyRef} && `' +
       '\n// All tmux operations route through'
     expect([...src.matchAll(/\$\{(?!shSingleQuote\(|keyRef\}|launchSecretRef\()/g)]).toEqual([])
+  })
+})
+
+// Card f1800242: customProviderId takes priority over every model-string heuristic above.
+describe('resolveProviderEnv: customProviderId (card f1800242)', () => {
+  const REGISTRY_PATH = join(REPO_ROOT, 'store', 'custom-providers.json')
+
+  afterAll(() => { try { unlinkSync(REGISTRY_PATH) } catch { /* best-effort */ } })
+
+  it('routes through the registry entry, ignoring the model-string heuristic entirely', async () => {
+    const { writeCustomProviders } = await import('../web/custom-providers.js')
+    writeCustomProviders([{ id: 'local-ollama', baseUrl: 'http://127.0.0.1:11434', secretId: 'LOCAL_KEY' }])
+    const ref = (id: string) => (id === 'LOCAL_KEY' ? `"$(cat '/fake/launch-secrets/local-marker')"` : null)
+    // Note the model string starts with "claude-" -- a case the plain heuristic would classify as
+    // 'claude' with an EMPTY exportsStr. customProviderId must override that entirely.
+    const result = resolveProviderEnv('claude-opus-5', ref, 'local-ollama')
+    expect(result.provider).toBe('custom')
+    expect(result.exportsStr).toBe(
+      `export ANTHROPIC_AUTH_TOKEN="$(cat '/fake/launch-secrets/local-marker')" && export ANTHROPIC_BASE_URL=${shSingleQuote('http://127.0.0.1:11434')} && export ANTHROPIC_MODEL=${shSingleQuote('claude-opus-5')} && `,
+    )
+  })
+
+  it('a missing registry entry fail-closes (throws), never silently falls back to a model heuristic', async () => {
+    const { writeCustomProviders } = await import('../web/custom-providers.js')
+    writeCustomProviders([])
+    expect(() => resolveProviderEnv('qwen3.6:27b', secretShellRef, 'no-such-id')).toThrow()
+  })
+
+  it('a missing vault key fail-closes (throws), never a silent empty credential', async () => {
+    const { writeCustomProviders } = await import('../web/custom-providers.js')
+    writeCustomProviders([{ id: 'keyless', baseUrl: 'http://127.0.0.1:1', secretId: 'MISSING_KEY' }])
+    expect(() => resolveProviderEnv('qwen3.6:27b', noSecret, 'keyless')).toThrow()
+  })
+
+  it('no customProviderId -> byte-identical to the 2-arg call (back-compat)', () => {
+    expect(resolveProviderEnv('qwen3.6:27b', secretShellRef)).toEqual(resolveProviderEnv('qwen3.6:27b', secretShellRef, null))
+    expect(resolveProviderEnv('qwen3.6:27b', secretShellRef)).toEqual(resolveProviderEnv('qwen3.6:27b', secretShellRef, undefined))
   })
 })
 

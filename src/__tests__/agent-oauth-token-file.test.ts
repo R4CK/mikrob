@@ -2,10 +2,9 @@
 // 2fb86ef2/#1511, adapted on card 06b48bd0). Every token below is a FAKE value
 // with the setup-token prefix; no real token is read or written anywhere here.
 //
-// Adaptation note: the fork has no customProvider launch-env wiring yet (card
-// f1800242 is still planned), so oauthTokenFileConflict takes a single
-// isClaudeModel flag instead of upstream's separate isCustomProvider param --
-// there is nothing for it to discriminate against yet.
+// Adaptation note: card f1800242 landed the customProvider launch-env wiring, so
+// oauthTokenFileConflict now takes the separate isCustomProvider param too,
+// matching upstream's split.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, chmodSync, symlinkSync, linkSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -107,7 +106,7 @@ describe('resolveOauthTokenFileSetting: only an ABSENT key is "unset"', () => {
 })
 
 describe('oauthTokenFileConflict: a setting the field cannot take effect under refuses', () => {
-  const base = { isMainAgent: false, isRemote: false, isClaudeModel: true, authMode: 'shared' as const, hasExplicitConfigDir: false, hasClaudePlan: false }
+  const base = { isMainAgent: false, isRemote: false, isClaudeModel: true, isCustomProvider: false, authMode: 'shared' as const, hasExplicitConfigDir: false, hasClaudePlan: false }
   it('a plain shared-mode local sub-agent has no conflict', () => {
     expect(oauthTokenFileConflict(base)).toBeNull()
   })
@@ -119,6 +118,13 @@ describe('oauthTokenFileConflict: a setting the field cannot take effect under r
     expect(oauthTokenFileConflict({ ...base, isClaudeModel: false })).toBe('non-claude-model')
     expect(oauthTokenFileConflict({ ...base, hasExplicitConfigDir: true })).toBe('explicit-config-dir')
     expect(oauthTokenFileConflict({ ...base, hasClaudePlan: true })).toBe('explicit-config-dir')
+  })
+  // Card f1800242: a custom-provider agent refuses BEFORE the isClaudeModel check even runs,
+  // because a model string that happens to start with "claude-" must not read as a Claude OAuth
+  // agent here when the launcher will actually route it through the custom endpoint.
+  it('a custom-provider agent conflicts, even with a claude-shaped model string', () => {
+    expect(oauthTokenFileConflict({ ...base, isCustomProvider: true })).toBe('custom-provider')
+    expect(oauthTokenFileConflict({ ...base, isCustomProvider: true, isClaudeModel: true })).toBe('custom-provider')
   })
 })
 
@@ -374,7 +380,7 @@ describe('findOauthTokenFileCollision: two agents must not share one token file 
 
 describe('decideOwnOauthToken: the whole decision', () => {
   const ctx = (raw: string, over: Partial<Parameters<typeof decideOwnOauthToken>[0]> = {}) => decideOwnOauthToken({
-    configRead: { ok: true, raw }, isMainAgent: false, isRemote: false, isClaudeModel: true, authMode: 'shared',
+    configRead: { ok: true, raw }, isMainAgent: false, isRemote: false, isClaudeModel: true, isCustomProvider: false, authMode: 'shared',
     hasExplicitConfigDir: false, hasClaudePlan: false, fleetTokenPath: fleet, uid: UID, ...over,
   })
 
@@ -402,13 +408,20 @@ describe('decideOwnOauthToken: the whole decision', () => {
     expect(ctx(raw, { authMode: 'api' })).toMatchObject({ kind: 'refused', path: p, reason: 'auth-mode-api' })
   })
 
+  // Card f1800242: a custom-provider agent refuses even with a claude-shaped model string.
+  it('a valid file on a custom-provider agent -> refused, never ok', () => {
+    const p = tokenFile('ok3b.token', FAKE_TOKEN)
+    const raw = JSON.stringify({ oauthTokenFile: p })
+    expect(ctx(raw, { isCustomProvider: true })).toMatchObject({ kind: 'refused', path: p, reason: 'custom-provider' })
+  })
+
   // WhiteHat F1 follow-up (card 006b506b, on 06b48bd0): an UNREADABLE agent-config.json (as
   // opposed to a genuinely absent one) must refuse, never silently become 'unset' -- the file
   // might name oauthTokenFile, and there is no way to tell from a failed read.
   it('an unreadable config read -> refused with config-unreadable, never unset', () => {
     expect(decideOwnOauthToken({
       configRead: { ok: false, reason: 'unreadable' },
-      isMainAgent: false, isRemote: false, isClaudeModel: true, authMode: 'shared',
+      isMainAgent: false, isRemote: false, isClaudeModel: true, isCustomProvider: false, authMode: 'shared',
       hasExplicitConfigDir: false, hasClaudePlan: false, fleetTokenPath: fleet, uid: UID,
     })).toEqual({ kind: 'refused', path: null, reason: 'config-unreadable', detail: '' })
   })
@@ -498,7 +511,7 @@ describe('readAgentConfigForOauthDecision: distinguishes absent from unreadable 
     try {
       const decision = decideOwnOauthToken({
         configRead: readAgentConfigForOauthDecision(p),
-        isMainAgent: false, isRemote: false, isClaudeModel: true, authMode: 'shared',
+        isMainAgent: false, isRemote: false, isClaudeModel: true, isCustomProvider: false, authMode: 'shared',
         hasExplicitConfigDir: false, hasClaudePlan: false, fleetTokenPath: fleet, uid: UID,
       })
       expect(decision).toEqual({ kind: 'refused', path: null, reason: 'config-unreadable', detail: '' })
@@ -628,6 +641,14 @@ describe('launcher wiring (agent-process.ts)', () => {
     expect(FN).toContain("const isClaude = model.startsWith('claude-')")
   })
 
+  // Card f1800242: the decision AND the launcher's own backstop check both see the same
+  // customProviderId -- a drift here would reopen exactly the gap this card closed.
+  it("the decision and the launcher's own backstop both key off customProviderId", () => {
+    const call = FN.slice(FN.indexOf('decideOwnOauthToken({'), FN.indexOf("if (ownOauth.kind === 'refused') {"))
+    expect(call).toContain('isCustomProvider: !!customProviderId,')
+    expect(FN).toContain('if (ownTokenFile && (!isClaude || customProviderId)) {')
+  })
+
   // WhiteHat/QA follow-up (card 006b506b, qa2 gate comment 14159, L6/L7 mutants on the
   // 06b48bd0 wiring): a hardcoded `isRemote: false` or `hasExplicitConfigDir: false` would
   // silently let a remote or explicit-config-dir agent fall into the local/implicit decision
@@ -647,7 +668,7 @@ describe('launcher wiring (agent-process.ts)', () => {
 
   it('backstop: an own token on an agent the launcher sees as non-Claude refuses before any export', () => {
     const isClaudeAt = FN.indexOf("const isClaude = model.startsWith('claude-')")
-    const guardAt = FN.indexOf('if (ownTokenFile && !isClaude) {')
+    const guardAt = FN.indexOf('if (ownTokenFile && (!isClaude || customProviderId)) {')
     expect(guardAt).toBeGreaterThan(isClaudeAt)
     expect(guardAt).toBeLessThan(FN.indexOf('oauthTokenEnv = '))
     expect(FN.slice(guardAt, guardAt + 500)).toMatch(/return \{ ok: false, error: 'oauthTokenFile: not a Claude OAuth agent' \}/)

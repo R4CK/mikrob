@@ -1,8 +1,10 @@
 // Per-agent setup-token file: agent-config.json "oauthTokenFile" (upstream
-// 2fb86ef2, #1511, adapted on card 06b48bd0 -- the fork has no customProvider
-// launch-env wiring yet (card f1800242 is still planned), so the conflict
-// check below takes a single isClaude flag instead of upstream's separate
-// isCustomProvider/isClaudeModel pair; re-add the split if/when f1800242 lands.
+// 2fb86ef2, #1511, adapted on card 06b48bd0 -- the fork now has customProvider
+// launch-env wiring (card f1800242), so the conflict check below takes the
+// separate isCustomProvider/isClaudeModel pair, matching upstream's split: a
+// custom-provider agent's own setup-token can never "take effect" either,
+// since resolveProviderEnv routes a custom-provider agent through its
+// registry entry regardless of what the model string says.
 //
 // An agent with this field authenticates from ITS OWN long-lived setup-token
 // file instead of the fleet file (store/.claude-oauth-token). The launcher
@@ -185,6 +187,7 @@ export function oauthTokenFileConflict(input: {
   isMainAgent: boolean
   isRemote: boolean
   isClaudeModel: boolean
+  isCustomProvider: boolean
   authMode: AuthMode
   hasExplicitConfigDir: boolean
   hasClaudePlan: boolean
@@ -193,6 +196,11 @@ export function oauthTokenFileConflict(input: {
   if (input.isMainAgent) return 'main-agent'
   // A remote agent's session runs on another host; a local path means nothing there.
   if (input.isRemote) return 'remote-agent'
+  // A custom-provider agent (card f1800242) routes through its registry entry's own
+  // ANTHROPIC_AUTH_TOKEN/BASE_URL regardless of the model string -- checked BEFORE isClaudeModel,
+  // because a model string that happens to start with "claude-" would otherwise read as a Claude
+  // OAuth agent here while actually launching against the custom endpoint.
+  if (input.isCustomProvider) return 'custom-provider'
   // A setup-token is a Claude OAuth credential. A non-Claude model (Ollama,
   // DeepSeek, OpenRouter, ...) authenticates with its own key/vault entry, and
   // the launcher never exports an OAuth token for it, so the field cannot take
@@ -307,6 +315,7 @@ export function decideOwnOauthToken(input: {
   isMainAgent: boolean
   isRemote: boolean
   isClaudeModel: boolean
+  isCustomProvider: boolean
   authMode: AuthMode
   hasExplicitConfigDir: boolean
   hasClaudePlan: boolean

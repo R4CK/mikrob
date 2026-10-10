@@ -567,11 +567,13 @@ export function writeAgentClaudePlan(name: string, planId: string): void {
 
 // Optional per-agent custom provider id (card 96c00ee5, split from 6b10a6b8's
 // deferred customProvider item). Pure string storage, same shape as
-// claudePlan above -- NO registry validation here, because the registry
-// (listCustomProviders()) and the launch-env wiring that would actually
-// consume this value are a separate, security-reviewed card (f1800242): a
-// per-agent provider field selecting an unconnected launch path is inert
-// until that card lands, by design.
+// claudePlan above -- still NO registry validation HERE: the id is only
+// checked against the registry (getCustomProviderOrThrow() in
+// custom-providers.ts) at launch time, in resolveProviderEnv
+// (agent-process.ts). This is deliberate (card f1800242, WhiteHat L3): the
+// stored value is reachable via fleet-transfer import, which bypasses this
+// module's PUT-path validation, so the trust boundary has to sit at the READ
+// site, not here.
 export function readAgentCustomProvider(name: string): string | null {
   const configPath = join(agentDir(name), 'agent-config.json')
   try {
