@@ -67,8 +67,36 @@ index_skills_dir() {
       name=$(basename "$skill_dir")
     fi
 
+    # c13c6340 (qa2 observation, 339d29a5): `description:` can be a plain one-liner,
+    # or a YAML block scalar (folded `>` / literal `|`) whose actual text lives on the
+    # indented lines that follow -- a single-line grep only ever saw the indicator
+    # character itself. Fold any block scalar's lines (joined by spaces, since the
+    # index is a single-row markdown table cell either way).
     local desc
-    desc=$(grep -m1 "^description:" "$skill_md" 2>/dev/null | sed 's/^description: *//' | tr -d '"' | tr -d "'" | cut -c1-120)
+    desc=$(awk '
+      state == 0 && /^description:[ \t]*/ {
+        val = $0
+        sub(/^description:[ \t]*/, "", val)
+        if (val ~ /^[>|][+-]?$/) { state = 1; next }
+        gsub(/"/, "", val)
+        gsub(/'"'"'/, "", val)
+        result = val; exit
+      }
+      state == 1 {
+        if (indent < 0) {
+          if ($0 ~ /^[ \t]*$/) { next }
+          match($0, /^[ \t]*/); indent = RLENGTH
+        }
+        match($0, /^[ \t]*/); cur = RLENGTH
+        if ($0 !~ /^[ \t]*$/ && cur < indent) { exit }
+        line = substr($0, indent + 1)
+        gsub(/"/, "", line)
+        gsub(/'"'"'/, "", line)
+        if (line == "") { next }
+        result = (result == "") ? line : result " " line
+      }
+      END { print result }
+    ' "$skill_md" | cut -c1-120)
     if [ -z "$desc" ]; then
       desc="(nincs leírás)"
     fi

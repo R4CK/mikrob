@@ -172,6 +172,80 @@ describe('skill-index.sh -- AGENT_DIR mode (merged index)', () => {
   })
 })
 
+describe('skill-index.sh -- YAML block-scalar descriptions (c13c6340)', () => {
+  // qa2 observation on card 339d29a5: the old `grep -m1 "^description:" | sed 's/^description: *//'`
+  // only ever looked at the FIRST line, so a folded (`>`) or literal (`|`) multi-line description
+  // in the frontmatter was truncated to just the block-scalar indicator character.
+  let tmpHome: string
+
+  beforeEach(() => {
+    tmpHome = mkdtempSync(join(tmpdir(), 'skill-index-test-'))
+  })
+
+  afterEach(() => {
+    rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  it('reads a folded (">") multi-line description in full, not just ">"', () => {
+    mkdirSync(join(tmpHome, '.claude', 'skills', 'skill-folded'), { recursive: true })
+    writeFileSync(
+      join(tmpHome, '.claude', 'skills', 'skill-folded', 'SKILL.md'),
+      [
+        '---',
+        'name: skill-folded',
+        'description: >',
+        '  KÖTELEZŐ checklist teljes értékű audithoz.',
+        '  Trigger: release előtti végigellenőrzés.',
+        'version: "1.0.0"',
+        '---',
+        '',
+        '# skill-folded',
+        '',
+      ].join('\n'),
+    )
+    runScript([], { HOME: tmpHome })
+    const content = readFileSync(join(tmpHome, '.claude', 'skills', '.skill-index.md'), 'utf-8')
+    expect(content).toContain('KÖTELEZŐ checklist teljes értékű audithoz')
+    expect(content).toContain('release előtti végigellenőrzés')
+    // the old bug: the cell held only the bare indicator
+    expect(content).not.toMatch(/\|\s*>\s*\|/)
+  })
+
+  it('reads a literal ("|") multi-line description in full, not just "|"', () => {
+    mkdirSync(join(tmpHome, '.claude', 'skills', 'skill-literal'), { recursive: true })
+    writeFileSync(
+      join(tmpHome, '.claude', 'skills', 'skill-literal', 'SKILL.md'),
+      [
+        '---',
+        'name: skill-literal',
+        'description: |',
+        '  Első sor a literal leírásból.',
+        '  Második sor, amit a régi kód sosem látott.',
+        '---',
+        '',
+        '# skill-literal',
+        '',
+      ].join('\n'),
+    )
+    runScript([], { HOME: tmpHome })
+    const content = readFileSync(join(tmpHome, '.claude', 'skills', '.skill-index.md'), 'utf-8')
+    expect(content).toContain('Első sor a literal leírásból')
+    expect(content).toContain('Második sor, amit a régi kód sosem látott')
+    expect(content).not.toMatch(/\|\s*\|\s*\|/)
+  })
+
+  it('still handles a plain single-line description unchanged', () => {
+    mkdirSync(join(tmpHome, '.claude', 'skills', 'skill-plain'), { recursive: true })
+    writeFileSync(
+      join(tmpHome, '.claude', 'skills', 'skill-plain', 'SKILL.md'),
+      makeSkillMd('skill-plain', 'A perfectly ordinary one-line description'),
+    )
+    runScript([], { HOME: tmpHome })
+    const content = readFileSync(join(tmpHome, '.claude', 'skills', '.skill-index.md'), 'utf-8')
+    expect(content).toContain('A perfectly ordinary one-line description')
+  })
+})
+
 describe('skill-index.sh -- graceful handling of missing global dir', () => {
   it('exits cleanly when ~/.claude/skills does not exist', () => {
     const emptyHome = mkdtempSync(join(tmpdir(), 'skill-index-test-'))
