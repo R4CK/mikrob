@@ -523,7 +523,45 @@ def selftest():
         check("a path that is genuinely still missing is NOT flagged reappeared",
               [], reappeared_paths(missing_res, {"missing:SKILL.md"}))
 
-        # 12. MARKDOWNESC924 (card d69b54fd): a watch-clone path containing an underscore
+        # 13. SYMREAP924 (card f3a6f30a): reappeared_paths() itself is unit-tested above (10/11),
+        #     but the WIRING into run() -- the "new += ['reappeared:' + r for r in ...]" line --
+        #     has no coverage: deleting just that one line from run() would leave every check
+        #     above green, since none of them call run() itself. Exercise run() end-to-end: a
+        #     sanctioned "missing:SKILL.md" that has quietly reappeared must surface as a
+        #     run()-level failure (nonzero return, printed as ALERT:yes).
+        reappear_home = os.path.join(tmp, "reappear-home")
+        reappear_dir = os.path.join(reappear_home, ".claude", "skills", "demo2")
+        os.makedirs(reappear_dir, exist_ok=True)
+        shutil.copy(os.path.join(clone, "skills", "demo", "SKILL.md"), os.path.join(reappear_dir, "SKILL.md"))
+        with open(os.path.join(reappear_dir, "VENDORED.md"), "w") as fh:
+            fh.write("| vendored commit | `%s` |\n| subdir | skills/demo |\n"
+                     "| watch clone | %s |\n| source repo | x |\n" % (sha, clone))
+        reappear_key = reappear_dir.replace(reappear_home, "~")
+        reappear_baseline = os.path.join(tmp, "reappear-baseline.json")
+        with open(reappear_baseline, "w", encoding="utf-8") as fh:
+            json.dump({"sanctioned": {reappear_key: ["missing:SKILL.md"]}}, fh)
+
+        def run_captured(**kwargs):
+            old_stdout = sys.stdout
+            sys.stdout = buf = io.StringIO()
+            try:
+                rc = run(argparse.Namespace(record=False, quiet=True, **kwargs))
+            finally:
+                sys.stdout = old_stdout
+            return rc, buf.getvalue()
+
+        rc, out = run_captured(home=reappear_home, baseline=reappear_baseline)
+        check("run() surfaces a reappeared sanctioned path as a failure", (1, True),
+              (rc, "reappeared:SKILL.md" in out))
+
+        # 14. Negative control: a sanctioned path that genuinely stays missing must NOT fail
+        #     run() -- otherwise every ordinary exclusion would alarm and the ALERT line would
+        #     be noise nobody trusts.
+        os.remove(os.path.join(reappear_dir, "SKILL.md"))
+        rc2, _out2 = run_captured(home=reappear_home, baseline=reappear_baseline)
+        check("run() does not fail when the sanctioned path is genuinely still missing", 0, rc2)
+
+        # 15. MARKDOWNESC924 (card d69b54fd): a watch-clone path containing an underscore
         #     (e.g. the OWNER__REPO clone-dir naming scheme vendor-skill.sh itself uses, card
         #     f64fe6e1) can arrive markdown-escaped (`\_`) if something reflows the table. The
         #     raw row used to carry the backslash straight into os.path.isdir(), which never
@@ -551,7 +589,7 @@ def selftest():
 
     for f in fails:
         print("FAIL: %s" % f)
-    print("selftest: %d checks, %d failed" % (14, len(fails)))
+    print("selftest: %d checks, %d failed" % (16, len(fails)))
     return 1 if fails else 0
 
 
