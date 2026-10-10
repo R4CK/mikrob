@@ -18040,6 +18040,43 @@ ancestor-ellenőrzés nem helyettesíti a "van-e már KIMONDOTT no-go ugyanerre"
 (fleet-test.sh, `fork-upstream-conflict-guard.test.ts` lelete). Gate: QA + Cybersec (a kártya
 leírása szerint, csatorna-hitelesítés/token-kezelés érintett).
 
+## 2026-10-10 -- update.sh finalizer dupla-futás javítva (kártya cf8d047a, forrás 3caa7e9f CYBERSEC GO MEDIUM F1)
+
+A `systemd-run --user --scope ... bash "$FINALIZE_SCRIPT" ... || setsid bash "$FINALIZE_SCRIPT" ... &`
+lista `||` ága nem csak akkor futott, ha a `systemd-run` MAGA nem indult el, hanem akkor IS, ha a
+finalizer elindult és NEM NULLA kóddal lépett ki (a `--scope` a belső parancs kilépési kódját adja
+vissza). A finalizer `rolled-back`/`failed` esetén 1-gyel/6-tal lép ki -- ez egy legitim hiba-kimenet,
+nem a `systemd-run` hibája. Mérve a valódi `store/update-finalize.sh`-val: egy rollback után a
+result-fájl `rolled-back/6`-ról `success/0`-ra íródott át a MÁSODIK (duplikált) futás miatt, két
+egymásnak ellentmondó értesítés ment ki, és 3 restart történt a 2 helyett.
+
+**Javítás:** a finalizer a saját indulásának bizonyítékaként egy `"$RESULT_FILE.started"` jelzőfájlt
+ír legelső lépésként (mielőtt bármi elromolhatna). A launcher ezt nézi: a fallback KIZÁRÓLAG akkor fut,
+ha a jelzőfájl HIÁNYZIK (a `systemd-run` sosem jutott el odáig, hogy elindítsa a finalizert) -- nem
+elég, hogy az első próbálkozás kilépési kódja nem nulla. Az `A || B &` alakot `( A; if ...; then B; fi ) &`
+váltja, a detach-szemantika (setsid + systemd-run scope) változatlan.
+
+**Teszt:** `src/__tests__/update-finalize-launch.test.ts`, a blokk kinyerve verbatim az update.sh-ból
+(ugyanaz a technika, mint a többi anchor-alapú update.sh-teszt ezen a forkon). 5 eset: normál siker,
+rollback (exit 6, ez a regresszió-szcenárió), hiba a finalizerben de elindult (exit 1), `systemd-run`
+sosem indít el semmit (a fallback jogosan fut), nincs `systemd-run` a PATH-on (az elif-ág). Mutáció-
+bizonyíték: a régi `A || B &` alakra visszaállítva a rollback és a "hiba, de elindult" eset 2 futást mér
+(piros), a javított alakra visszaállítva mindkettő zöld (1 futás). A `store/update-finalize.sh`
+(a tesztben a beágyazott heredoc-tartalommal byte-azonosnak kell maradnia -- `rollback-distance-guard.test.ts`
+ellenőrzi) ugyanerre a tartalomra frissítve.
+
+**Ki döntött:** forrás a CYBERSEC GO verdikt (1dec4841) MEDIUM F1 lelete, a 3caa7e9f kártyán; a
+javítás a cf8d047a kártyán backend2 saját munkája. Gate: QA + Cybersec (update.sh az élő frissítési
+út, rollback-biztonsági kártya, `update-safety` skill).
+
+## 2026-10-10 -- anthropics/skills docx/pdf/pptx/xlsx: nem vendoráljuk, a licencük tiltja
+
+**Döntés:** a négy dokumentum-skill (docx, pdf, pptx, xlsx) az `anthropics/skills` repóból NEM kerül a flottába. A külső klónból (`~/.claude/external/anthropics-skills`) sparse-checkouttal kizárva.
+
+**Miért:** a négy `LICENSE.txt` (vizsgálva a 8a1541c4 commiton, mind a négy azonos) a megállapodást is felülíró ("notwithstanding anything in the Agreement") kiegészítő korlátozással tiltja a Services-en kívüli másolat tartását, a másolást, a származékos művet és a továbbadást. Belső célra sincs kivétel. Licenckonform út: a hivatalos plugin marketplace (`document-skills@anthropic-agent-skills`), ha elérhető lesz.
+
+**Ki döntött:** jogász (kártya 5d01f2ea, SKIP), QA PASS ugyanerre a commitra; a klón-kizárás MikroB döntése. Nyitott: a git-objektumokban a régebbi commitok tartalma megmarad, a teljes eltávolítás partial clone-nal vagy újraklónozással lehetséges.
+
 ## 2026-10-10 -- Upstream-sync 8. köteg (144d7756..94765127, kártya 14256aac): 16 konfliktusos fájl
 
 Nagy kiterjedésű merge, 16 konfliktusos fájl (`scripts/email-send-gate.mjs`,
@@ -18116,39 +18153,3 @@ kommentjeim véletlenül megsértették a tripwire-t (a needle szó szerinti el�
 számít), átfogalmazva. Gate: QA + Cybersec + Cybered (a kártya kérése szerint, agent-process.ts/
 db.ts trust-boundary + a kanban-endpoint write-path érintett).
 
-## 2026-10-10 -- update.sh finalizer dupla-futás javítva (kártya cf8d047a, forrás 3caa7e9f CYBERSEC GO MEDIUM F1)
-
-A `systemd-run --user --scope ... bash "$FINALIZE_SCRIPT" ... || setsid bash "$FINALIZE_SCRIPT" ... &`
-lista `||` ága nem csak akkor futott, ha a `systemd-run` MAGA nem indult el, hanem akkor IS, ha a
-finalizer elindult és NEM NULLA kóddal lépett ki (a `--scope` a belső parancs kilépési kódját adja
-vissza). A finalizer `rolled-back`/`failed` esetén 1-gyel/6-tal lép ki -- ez egy legitim hiba-kimenet,
-nem a `systemd-run` hibája. Mérve a valódi `store/update-finalize.sh`-val: egy rollback után a
-result-fájl `rolled-back/6`-ról `success/0`-ra íródott át a MÁSODIK (duplikált) futás miatt, két
-egymásnak ellentmondó értesítés ment ki, és 3 restart történt a 2 helyett.
-
-**Javítás:** a finalizer a saját indulásának bizonyítékaként egy `"$RESULT_FILE.started"` jelzőfájlt
-ír legelső lépésként (mielőtt bármi elromolhatna). A launcher ezt nézi: a fallback KIZÁRÓLAG akkor fut,
-ha a jelzőfájl HIÁNYZIK (a `systemd-run` sosem jutott el odáig, hogy elindítsa a finalizert) -- nem
-elég, hogy az első próbálkozás kilépési kódja nem nulla. Az `A || B &` alakot `( A; if ...; then B; fi ) &`
-váltja, a detach-szemantika (setsid + systemd-run scope) változatlan.
-
-**Teszt:** `src/__tests__/update-finalize-launch.test.ts`, a blokk kinyerve verbatim az update.sh-ból
-(ugyanaz a technika, mint a többi anchor-alapú update.sh-teszt ezen a forkon). 5 eset: normál siker,
-rollback (exit 6, ez a regresszió-szcenárió), hiba a finalizerben de elindult (exit 1), `systemd-run`
-sosem indít el semmit (a fallback jogosan fut), nincs `systemd-run` a PATH-on (az elif-ág). Mutáció-
-bizonyíték: a régi `A || B &` alakra visszaállítva a rollback és a "hiba, de elindult" eset 2 futást mér
-(piros), a javított alakra visszaállítva mindkettő zöld (1 futás). A `store/update-finalize.sh`
-(a tesztben a beágyazott heredoc-tartalommal byte-azonosnak kell maradnia -- `rollback-distance-guard.test.ts`
-ellenőrzi) ugyanerre a tartalomra frissítve.
-
-**Ki döntött:** forrás a CYBERSEC GO verdikt (1dec4841) MEDIUM F1 lelete, a 3caa7e9f kártyán; a
-javítás a cf8d047a kártyán backend2 saját munkája. Gate: QA + Cybersec (update.sh az élő frissítési
-út, rollback-biztonsági kártya, `update-safety` skill).
-
-## 2026-10-10 -- anthropics/skills docx/pdf/pptx/xlsx: nem vendoráljuk, a licencük tiltja
-
-**Döntés:** a négy dokumentum-skill (docx, pdf, pptx, xlsx) az `anthropics/skills` repóból NEM kerül a flottába. A külső klónból (`~/.claude/external/anthropics-skills`) sparse-checkouttal kizárva.
-
-**Miért:** a négy `LICENSE.txt` (vizsgálva a 8a1541c4 commiton, mind a négy azonos) a megállapodást is felülíró ("notwithstanding anything in the Agreement") kiegészítő korlátozással tiltja a Services-en kívüli másolat tartását, a másolást, a származékos művet és a továbbadást. Belső célra sincs kivétel. Licenckonform út: a hivatalos plugin marketplace (`document-skills@anthropic-agent-skills`), ha elérhető lesz.
-
-**Ki döntött:** jogász (kártya 5d01f2ea, SKIP), QA PASS ugyanerre a commitra; a klón-kizárás MikroB döntése. Nyitott: a git-objektumokban a régebbi commitok tartalma megmarad, a teljes eltávolítás partial clone-nal vagy újraklónozással lehetséges.
