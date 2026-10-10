@@ -19,7 +19,7 @@
 // directories, with a REAL `npm ci`, and checks that $ROOT/node_modules' actual file content
 // survives -- not just that the script exits 0.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, lstatSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, lstatSync, readlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -123,8 +123,35 @@ describe('fleet-test.sh npm-ci-vs-symlink block protects the live $ROOT/node_mod
     const result = runBlock(realBlock, root, testTree)
 
     expect(result.status).toBe(0)
+    // Being A symlink is not enough (WhiteHat N2, card 5d365589): it must point at $ROOT's
+    // node_modules specifically, or a dangling/misdirected link would pass this same assertion.
     expect(lstatSync(join(testTree, 'node_modules')).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(join(testTree, 'node_modules'))).toBe(join(root, 'node_modules'))
     expect(rootNodeModulesSurvived(root)).toBe(true)
+  })
+
+  it('MUTATION (N2): pointing the `ln -s` at the wrong target is caught (being *a* symlink is not enough)', () => {
+    const root = join(scratchRoot, 'ROOT')
+    const testTree = join(scratchRoot, 'TEST_TREE')
+    mkdirSync(root, { recursive: true })
+    makeRoot(root)
+    mkdirSync(testTree, { recursive: true })
+    writeFileSync(join(testTree, 'package.json'), readFileSync(join(root, 'package.json')))
+    writeFileSync(join(testTree, 'package-lock.json'), readFileSync(join(root, 'package-lock.json')))
+    writeFileSync(join(testTree, '.git'), 'gitdir: /nonexistent/for/this/test\n')
+
+    const mutated = realBlock.replace(
+      'ln -s "$ROOT/node_modules" "$TEST_TREE/node_modules"',
+      'ln -s "$ROOT/node_modules_WRONG_TARGET" "$TEST_TREE/node_modules"',
+    )
+    expect(mutated, 'the mutation did not apply').not.toBe(realBlock)
+
+    runBlock(mutated, root, testTree)
+
+    // The old assertion (isSymbolicLink() only) would still pass here -- the link exists, it is
+    // just dangling. The target check is what catches this.
+    expect(lstatSync(join(testTree, 'node_modules')).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(join(testTree, 'node_modules'))).not.toBe(join(root, 'node_modules'))
   })
 
   it('MUTATION (F1): deleting the symlink-removal line lets a diverged npm ci wipe $ROOT/node_modules', () => {
