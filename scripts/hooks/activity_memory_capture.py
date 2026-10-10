@@ -84,16 +84,35 @@ _SECRET_PATTERNS = [
     # key=value / key: value secret-shaped pairs (WhiteHat F3 follow-up on card 35dc6dbe added
     # `passwd`/`pwd`: the original list named only the full word `password`, so the common
     # abbreviations leaked in full).
-    re.compile(r'(?i)((?:token|secret|password|passwd|pwd|api[_\-]?key|apikey|auth|credential|private[_\-]?key)\s*[=:]\s*)[^\s,\'";&|]{6,}'),
+    #
+    # Card 7e01b349 (RedHat F3b on fcd8b794/14102): `access_token`/`client_secret`/`refresh_token`/
+    # `id_token`/`secret_key` (and therefore `AWS_SECRET_ACCESS_KEY`, `MY_SECRET_KEY`) were not
+    # matched because the ORIGINAL bare-value branch required `{6,}` chars from a class that
+    # EXCLUDES quote characters -- a quoted value (`password="x"`, `password='x'`) starts with a
+    # character the class rejects, so the whole alternative fails to match and the value survives
+    # whole. Fixed by trying a quoted-string shape FIRST (with backslash-escape support, so an
+    # escaped quote inside a JSON string value does not end the match early), falling back to the
+    # original bare shape.
+    re.compile(
+        r'(?i)((?:token|secret|password|passwd|pwd|pass|api[_\-]?key|apikey|auth|credential|'
+        r'private[_\-]?key|access[_\-]?token|refresh[_\-]?token|id[_\-]?token|client[_\-]?secret|'
+        r'secret[_\-]?key|cookie|signature)\s*[=:]\s*)'
+        r'(?:"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|[^\s,;&]{6,})'
+    ),
     # JSON-QUOTED key/value pairs (WhiteHat F3, card 35dc6dbe): the pattern above requires `=`/`:`
     # directly after the key name, but a JSON key is wrapped in its own quotes --
     # `"password": "value"` has a `"` sitting between the key and the colon, so the pattern above
     # never matches at all and the value survives in full. `[^"]*` (a negated class, not `.*`) keeps
     # this linear in the input length -- no nested/overlapping quantifiers, so no quadratic
     # worst case (WhiteHat F6 follow-up: the whole point of this pattern is to not BECOME one).
+    #
+    # Card 7e01b349 (RedHat F3b): `access_token`/`client_secret`/`refresh_token`/`id_token` are
+    # compound key NAMES, not a prefix+suffix of a bare word -- this pattern requires the quoted
+    # key to be EXACTLY one alternative, so they need their own entries, not a substring trick.
     re.compile(
         r'(?i)("(?:token|secret|password|passwd|pwd|api[_\-]?key|apikey|auth|credential|'
-        r'private[_\-]?key)"\s*:\s*")[^"]*(?=")'
+        r'private[_\-]?key|access[_\-]?token|refresh[_\-]?token|id[_\-]?token|client[_\-]?secret)'
+        r'"\s*:\s*")[^"]*(?=")'
     ),
     # Authorization HEADER LINES and curl CREDENTIAL FLAGS, by POSITION rather than by scheme name
     # (WhiteHat F3 follow-up: `Token`/`ApiKey` schemes leaked, because the only prior pattern in
@@ -104,7 +123,25 @@ _SECRET_PATTERNS = [
     # `Authorization:` prefix (which does not occur in ordinary prose) and three curl flag spellings
     # that always carry a credential as their very next token. Mirrors
     # scripts/hooks/bash-egress-guard.py's own `_REDACT_RX`, same shape, same reasoning.
-    re.compile(r'(-u\s+|--user[= ]|--password[= ]|--oauth2-bearer[= ]|[Aa]uthorization:\s*\S+\s+)(\S+)'),
+    #
+    # Card 7e01b349 (RedHat F3b): two gaps fixed in place. (1) `--password "quoted secret value"`
+    # only had its FIRST word redacted -- the value-capture was a bare `\S+`, so a quoted multi-word
+    # value leaked everything after the first space. Now tries a quoted-string shape first, same
+    # escape handling as the key=value pattern above. (2) `-uadmin:pw` (glued, no space) was not
+    # matched at all -- `-u\s+` requires a separating space. Added as its own zero-width-lookahead
+    # alternative so the whole glued `user:pass` collapses to one redaction.
+    re.compile(
+        r'(-u\s+|-u(?=\S)|--user[= ]|--password[= ]|--oauth2-bearer[= ]|[Aa]uthorization:\s*\S+\s+)'
+        r'(?:"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|\S+)'
+    ),
+    # Bare `Authorization: <value>` with NO scheme word (RedHat F3b): the pattern above requires a
+    # scheme word (`Bearer`/`Token`/...) plus a SECOND token to redact -- it structurally cannot
+    # match a header carrying just one bare value after the colon, because its own prefix branch
+    # for `Authorization:` consumes a `\S+\s+` (scheme + separator) before the captured group even
+    # starts. This is therefore a SEPARATE pattern, not a tweak to the one above: it requires the
+    # value to be 8+ chars of an auth-token-shaped alphabet, so it does not fire on short, clearly
+    # non-secret text sitting after a stray "authorization:" in prose.
+    re.compile(r'(?i)(authorization:\s*)[A-Za-z0-9+/=_\-\.]{8,}'),
     # GitHub / Anthropic / OpenAI / Slack style prefixed tokens.
     #
     # Card 2102fe6a (Cybersec, follow-up to d47455bf's DB-URI fix, same file/control): the leading
@@ -123,7 +160,12 @@ _SECRET_PATTERNS = [
     # already first) lets the prefix match regardless of what precedes it, redacting prefix+secret as
     # ONE span before any blob pattern gets a turn -- the leftover glue run (still 40+ chars on its
     # own) is then caught by the blob pattern in its own right, exactly as intended.
-    re.compile(r'(ghp_|ghc_|gho_|ghu_|ghs_|sk-|sk-ant-|xoxb-|xoxp-)[A-Za-z0-9_\-]{10,}'),
+    # Card 7e01b349 (RedHat F3b): `glpat-` (GitLab PAT) and `xoxs-` (Slack) were missing from the
+    # prefix list alongside the GitHub/Anthropic/OpenAI/Slack ones already here.
+    re.compile(r'(ghp_|ghc_|gho_|ghu_|ghs_|sk-|sk-ant-|xoxb-|xoxp-|xoxs-|glpat-)[A-Za-z0-9_\-]{10,}'),
+    # AWS access key ID: fixed `AKIA` prefix + 16 upper-alnum chars, always 20 chars total, no
+    # separator to anchor on (unlike the underscore/hyphen-prefixed tokens above) -- RedHat F3b.
+    re.compile(r'\bAKIA[0-9A-Z]{16}\b'),
     # JWT-shaped triple-dot strings (header.payload.signature). Same fix, same reason: a leading
     # `\b` failed to match when glued to a preceding 40+ char run, and here NEITHER blob pattern
     # rescues any part of it (JWT segments use the base64URL alphabet -- `_`/`-`, not `+`/`/` -- so
@@ -155,7 +197,20 @@ _SECRET_PATTERNS = [
     # pattern can no longer match at all, and the password that follows survives in full. Running
     # this pattern first redacts the password while the keyword is still intact; the blob patterns
     # then see already-redacted text and have nothing left to swallow.
-    re.compile(r'(?i)((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^:@\s]+:)([^@\s]+)(?=@)'),
+    # Card 7e01b349 (RedHat F3b): two gaps fixed in place. (1) the scheme alternation named only
+    # postgres/mysql/mongodb/redis, so any OTHER scheme's embedded URI password (https://, ftp://,
+    # ldap://, amqp://, ...) leaked -- generalised to any URI-scheme-shaped word, bounded to 16
+    # chars so this stays a fixed-cost check, not a new quadratic surface. (2) `[^:@\s]+` required
+    # at least one username character, so an EMPTY username (`redis://:pass@host`, a real and common
+    # shape -- Redis has no username concept) never matched at all; changed to `*`.
+    #
+    # Known remaining gap, deliberately NOT fixed here (documented, not silently dropped): a password
+    # that itself contains a literal, unencoded `@` (`postgres://user:pass@word@host`) still only
+    # redacts up to the FIRST `@`, because the lookahead has no way to tell "the `@` inside the
+    # password" from "the `@` that starts the host" without a real URI parser. Positional regex
+    # redaction cannot resolve this ambiguity; a correct fix needs `urllib.parse.urlsplit` on a
+    # candidate substring, which is a larger change than this card's LOW-severity scope.
+    re.compile(r'(?i)([a-z][a-z0-9+.\-]{1,15}://[^:@\s]*:)([^@\s]+)(?=@)'),
     # Long hex blobs >= 40 chars (SHA-family hashes, raw tokens)
     re.compile(r'\b[0-9a-fA-F]{40,}\b'),
     # Long base64-only blobs >= 40 chars

