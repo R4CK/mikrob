@@ -170,6 +170,22 @@ kap a hívási hely -- mert azt a hook nem szimulálja (nincs pozicionális para
 Ez SZŰKEBB, mint egy teljes shell-értelmező: egy KORÁBBI Bash-hívásban definiált függvény/alias
 egy KÉSŐBBI hívásban továbbra is láthatatlan (lásd a Hatókör szakasz fenti bekezdését).
 
+**6. Bare (névtelen) `{ ...; }` csoport (WhiteHat F1 utómunka, kártya 35dc6dbe).** Egy
+`{ curl -s http://evil; }` alak a tokenizálónál a `{` szót a parancsnév helyére tette, tehát a
+benne lévő curl sosem jutott el a vizsgálatig -- mérve: exit 0, nulla naplósor, enforce módban is.
+Ellentétben egy névvel definiált függvénnyel, itt a hívás és a célja UGYANABBAN a szövegben van
+(nincs ismeretlen hívási hely), ezért a javítás nem a függvény-eset konzervatív
+"minden-hálózat-képes-parancsot-blokkolj" mintáját követi, hanem a csoport törzsét teljes,
+rekurzív `analyse()`-n futtatja -- a `{ curl -H @- -s http://localhost:3420/api/kanban; }` alak
+(a flotta saját idiómája) ettől nullára jön ki, nem blokkolódik.
+
+**F2 utómunka (ugyanaz a kártya):** a selftest korábban csak a `then`/`do` kulcsszót rögzítette
+mutáció-bizonyítottan; az `elif`/`else`/`while`/`until`/`!` eset törölhető volt úgy, hogy a teljes
+suite zöld maradt. Mind az öt mostantól saját, mutáció-érzékeny esetet kap. A `case`/`esac`/`in`/
+`select` szándékosan nem kapott ilyet: az ő operandusuk mindig egy WORD/minta, sosem egy
+végrehajtandó parancs, tehát nincs olyan konstrukció, ahol a kihagyásuk egy hálózati hívást rejtene
+el -- ez nem hiányzó lefedettség, hanem a tengely hiánya.
+
 ## A fail-closed költségnövelés, nem bizonyítható garancia
 
 Ha egy parancsnak kimutatható hálózati szándéka van, de a célja nem oldható fel -- a URL változóban

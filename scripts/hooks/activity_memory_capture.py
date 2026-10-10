@@ -81,8 +81,30 @@ def _agent_id_from_cwd(cwd: str) -> str:
 _SECRET_PATTERNS = [
     # Authorization: Bearer <token>
     re.compile(r'(?i)(bearer\s+)[A-Za-z0-9+/=_\-\.]{8,}'),
-    # key=value / key: value secret-shaped pairs
-    re.compile(r'(?i)((?:token|secret|password|api[_\-]?key|apikey|auth|credential|private[_\-]?key)\s*[=:]\s*)[^\s,\'";&|]{6,}'),
+    # key=value / key: value secret-shaped pairs (WhiteHat F3 follow-up on card 35dc6dbe added
+    # `passwd`/`pwd`: the original list named only the full word `password`, so the common
+    # abbreviations leaked in full).
+    re.compile(r'(?i)((?:token|secret|password|passwd|pwd|api[_\-]?key|apikey|auth|credential|private[_\-]?key)\s*[=:]\s*)[^\s,\'";&|]{6,}'),
+    # JSON-QUOTED key/value pairs (WhiteHat F3, card 35dc6dbe): the pattern above requires `=`/`:`
+    # directly after the key name, but a JSON key is wrapped in its own quotes --
+    # `"password": "value"` has a `"` sitting between the key and the colon, so the pattern above
+    # never matches at all and the value survives in full. `[^"]*` (a negated class, not `.*`) keeps
+    # this linear in the input length -- no nested/overlapping quantifiers, so no quadratic
+    # worst case (WhiteHat F6 follow-up: the whole point of this pattern is to not BECOME one).
+    re.compile(
+        r'(?i)("(?:token|secret|password|passwd|pwd|api[_\-]?key|apikey|auth|credential|'
+        r'private[_\-]?key)"\s*:\s*")[^"]*(?=")'
+    ),
+    # Authorization HEADER LINES and curl CREDENTIAL FLAGS, by POSITION rather than by scheme name
+    # (WhiteHat F3 follow-up: `Token`/`ApiKey` schemes leaked, because the only prior pattern in
+    # this file matched the literal word `bearer`). WhiteHat F5 flagged the naive alternative --
+    # keying a pattern on the literal word `Basic` with a lenient base64-charset value -- as a false
+    # positive risk: "Basic knowledge is important" is all alnum, 9+ chars, and would match. This
+    # pattern sidesteps that trap entirely: it never tests a scheme NAME, only the fixed
+    # `Authorization:` prefix (which does not occur in ordinary prose) and three curl flag spellings
+    # that always carry a credential as their very next token. Mirrors
+    # scripts/hooks/bash-egress-guard.py's own `_REDACT_RX`, same shape, same reasoning.
+    re.compile(r'(-u\s+|--user[= ]|--password[= ]|--oauth2-bearer[= ]|[Aa]uthorization:\s*\S+\s+)(\S+)'),
     # GitHub / Anthropic / OpenAI / Slack style prefixed tokens.
     #
     # Card 2102fe6a (Cybersec, follow-up to d47455bf's DB-URI fix, same file/control): the leading

@@ -136,6 +136,82 @@ for sentence in (
     r = amc._redact(sentence)
     check(f'prose-not-falsely-redacted: {sentence!r}', r, ['[REDACTED]'], [sentence])
 
+# ---------------------------------------------------------------------------
+# WhiteHat F3 follow-up on card 35dc6dbe: remaining redaction gaps measured at 10 of 19 probed
+# shapes leaking in full (JSON-quoted keys, curl -u/--user, Token/ApiKey Authorization schemes,
+# and the passwd/pwd abbreviations) before the patterns added above this fixture block.
+# ---------------------------------------------------------------------------
+
+# JSON-quoted key/value secrets: the key=value pattern needs `=`/`:` immediately after the key
+# name, but a JSON key sits inside its own quotes first.
+for key, value in (
+    ('password', 'SuperSecretValue123'),
+    ('api_key', 'notARealKeyValue78901234'),
+    ('token', 'abc123secrettoken456'),
+    ('passwd', 'SuperSecretValue123'),
+    ('pwd', 'SuperSecretValue123'),
+):
+    r = amc._redact(f'{{"{key}": "{value}"}}')
+    check(f'json-key-{key}', r, [value], ['[REDACTED]', f'"{key}"'])
+
+# curl credential flags -- the value is the token right after the flag, not a key=value pair.
+r = amc._redact('curl -u admin:SuperSecret123 https://x.example.com')
+check('curl-dash-u', r, ['SuperSecret123'], ['[REDACTED]'])
+r = amc._redact('curl --user admin:SuperSecret123 https://x.example.com')
+check('curl-dash-dash-user', r, ['SuperSecret123'], ['[REDACTED]'])
+r = amc._redact('curl --oauth2-bearer SuperSecretToken123 https://x.example.com')
+check('curl-oauth2-bearer', r, ['SuperSecretToken123'], ['[REDACTED]'])
+
+# Authorization header, by scheme -- Token/ApiKey/Basic were not `bearer`, so the bearer-only
+# pattern never saw them; the new position-based pattern does not key on the scheme word at all.
+for scheme in ('Token', 'ApiKey', 'Basic'):
+    r = amc._redact(f'Authorization: {scheme} SuperSecretToken1234567890')
+    check(f'authorization-{scheme.lower()}-scheme', r, ['SuperSecretToken1234567890'], ['[REDACTED]'])
+
+# key=value abbreviations: only the full word `password` was in the original alternation.
+r = amc._redact('passwd=super_secret_value_here')
+check('passwd-kv', r, ['super_secret_value_here'], ['[REDACTED]'])
+r = amc._redact('pwd=super_secret_value_here')
+check('pwd-kv', r, ['super_secret_value_here'], ['[REDACTED]'])
+
+# ---------------------------------------------------------------------------
+# WhiteHat F4 + F5 follow-up on card 35dc6dbe: F5 flagged that a naive fix for the Authorization
+# scheme gap above -- keying a pattern on the literal word "Basic" with a lenient base64-charset
+# value -- would false-positive on ordinary English ("basic" is a common word, and plenty of
+# english words are, by coincidence, within the base64/hex charset). The pattern actually added
+# above sidesteps this by keying on the `Authorization:` PREFIX, never on the scheme word alone --
+# so this is the prose-negative-control F4 says must exist to PIN that design choice, not just
+# assert it in a docstring.
+# ---------------------------------------------------------------------------
+for sentence in (
+    'this is basic knowledge, nothing advanced',
+    'the basic plan covers everything most tenants need',
+    'authorization for this request came from the basic tier, not a scheme header',
+):
+    r = amc._redact(sentence)
+    check(f'prose-basic-not-falsely-redacted: {sentence!r}', r, ['[REDACTED]'], [sentence])
+
+# ---------------------------------------------------------------------------
+# WhiteHat F6 follow-up on card 35dc6dbe: a latent quadratic (catastrophic-backtracking) regex is
+# not a risk IF every pattern in _SECRET_PATTERNS only uses negated-class repeats (`[^"]*`,
+# `[^\s,'";&|]{6,}`) rather than nested/overlapping greedy wildcards -- those are linear in the
+# input length, with no ambiguous-backtrack blowup. This pins that property with a real clock, on
+# a pathological input shaped to stress exactly the patterns added above (many adjacent quotes and
+# colons, the shape that would blow up a naively-written `".*":\s*".*"` alternative).
+# ---------------------------------------------------------------------------
+import time as _time  # noqa: E402
+
+_pathological = '{"a":"' + ('x"a":"' * 20000) + 'end"}'
+_start = _time.monotonic()
+amc._redact(_pathological)
+_elapsed = _time.monotonic() - _start
+if _elapsed > 2.0:
+    FAILURES.append(
+        f'FAIL [redos]: _redact took {_elapsed:.2f}s on a {len(_pathological)}-char pathological '
+        'input -- a pattern in _SECRET_PATTERNS may have quadratic/catastrophic-backtracking '
+        'worst-case behaviour'
+    )
+
 # Clean text: no redaction of ordinary content
 r = amc._redact('git commit -m "feat(api): add endpoint"')
 check('clean-git-commit', r, ['[REDACTED]'], ['git commit'])
