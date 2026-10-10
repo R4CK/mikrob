@@ -228,10 +228,15 @@ describe('external-repos-sync.sh write-back (card 307abedd, moved off the tracke
   })
 
   it('leaves the tracked registry fully untouched and writes every repo into its own STATE entry (surgical write)', async () => {
-    const { clone } = setupRepo('anthropics-skills')
+    // Fixture name must be one of the hardcoded repo names in external-repos-sync.sh's own
+    // pull-list (not env-overridable), so pull() actually runs for it. 'anthropics-skills' was
+    // dropped from that list (card 03199aae: its only clone, ~/.claude/external/anthropics-skills,
+    // was deleted as a duplicate) -- 'awesome-agent-skills' is still in the list and otherwise
+    // unused by this file's other fixtures.
+    const { clone } = setupRepo('awesome-agent-skills')
     const sha = git(clone, 'rev-parse', 'HEAD')
     const before = [
-      { name: 'anthropics-skills', last_sha: sha, last_checked_at: '2020-01-01', note: 'do not touch me', enabled: true },
+      { name: 'awesome-agent-skills', last_sha: sha, last_checked_at: '2020-01-01', note: 'do not touch me', enabled: true },
       { name: 'unrelated-repo', last_sha: 'deadbeef', last_checked_at: '2020-01-01' },
     ]
     writeJson(before)
@@ -239,7 +244,7 @@ describe('external-repos-sync.sh write-back (card 307abedd, moved off the tracke
     await runSync()
 
     expect(readJson()).toEqual(before)
-    expect(readState()['anthropics-skills']?.last_sha).toBe(sha)
+    expect(readState()['awesome-agent-skills']?.last_sha).toBe(sha)
     expect(readState()['unrelated-repo']).toBeUndefined() // never pulled, never touched
   })
 
