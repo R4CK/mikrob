@@ -55,8 +55,10 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `ui-ux-pro-max` -- GENESIS gold-standard UI/UX, mikrointerakciók
 - `user-flow-menu-design` -- teljes user-flow és menü/navigáció
 - `wcag-overlay-patterns` -- hozzáférhető overlay + kontraszt-gate
+- `fixing-accessibility` -- vendorolt (ibelick/ui-skills MIT, kártya f557353a/e39b6fd7, Peti jóváhagyás Telegram 10372): rövid, priorizált WCAG-ellenőrzőlista konkrét fix-mintákkal (accessible name, keyboard, focus/dialog, forms, aria-live). A `wcag-overlay-patterns` az overlay-specifikus mélyebb implementáció, az `a11y-audit` a teljes automatizált szkennelés -- ez a gyors, kódolás-közbeni referencia.
 - `seniorfrontenddeveloper` -- React/Next.js, bundle, Core Web Vitals
 - `gsap-motion-specialist` -- GSAP timeline, ScrollTrigger, mozgás
+- `fixing-motion-performance` -- vendorolt (ibelick/ui-skills MIT, kártya f557353a/e39b6fd7, Peti jóváhagyás Telegram 10372): animáció-TELJESÍTMÉNY ellenőrzőlista (layout-thrashing, compositor-tulajdonságok, scroll-linked motion, blur-korlátok). Nem a `review-animations`/`animate` ízlés-/döntés-skillek duplikátuma -- azok MIT animáljunk és HOGYAN érezzen, ez MENNYIRE fut jól a renderelő-motoron.
 - `scroll-driven-3d-motion` -- scroll-storytelling, látványos 3D web
 - `threejs-specialist` -- Three.js/WebGL jelenet, 3D viewer/configurator
 - `d3-data-visualization` -- interaktív, hozzáférhető chartok
