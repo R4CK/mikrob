@@ -18481,3 +18481,49 @@ configot. `external-repos-sync-writeback.test.ts` 7/7 zold, `watched-repos-movin
 
 **Ki dontott:** QA FAIL-lelet (@ce296659); a javitas es a fixtura-atnevezes fullstack sajat
 merese/dontese. Gate: QA (ujra).
+
+## 2026-10-10 -- claude-mem A resz (5a4bea2e): flotta-kiterjesztes elofeltetelei R1-R4 (kartya 0a34377f, forras: CYBERED GO 14537, 92bc09db)
+
+RedHat (komment 14537) a sajat-kuralt-memoria session-inditasi injekcio (5a4bea2e, pilot:
+fullstack, alapbol KI) GO-ja mellett negy javitasi feltetelt szabott a FLOTTA-SZINTU kiterjesztes
+ele -- a pilot maga nem volt blokkolva (az elo DB-ben a pilot-ugynoknek 1 nem-shared memoriaja
+volt, nincs mit szivargatni), de a "csak kuralt memoria" es az "adatkent kezeld" iger
+gyengebb volt, mint a leiras allitotta. A negy feltetel (scripts/hooks/shared-memory-inject.py
+`_own_curated_memory_section` + `src/db.ts` `vectorSearch`):
+
+- **R1** (src/db.ts, `vectorSearch`): a vektoros ag korabban se az alak-szurot
+  (`excludeToolLogShapeSql`, eddig csak az FTS agon), se hasonlosagi kuszobot nem alkalmazott --
+  egy "Bash: git push" alaku sor es egy a lekerdezessel merogleges (cos~0) sor is valos
+  talalatkent jott vissza. Mostantol a vektoros SQL lekerdezes is tartalmazza az alak-szurot, es a
+  pontozott talalatok kozul csak a `MIN_VECTOR_SIMILARITY = 0.15` fole kerulnek tovabb (itelet,
+  nem levezetett szam -- a pilot merese alapjan hangolhato).
+- **R2** (shared-memory-inject.py): a sajat-kuralt szekcio bejegyzesenkent nem vagott (a shared
+  szekcio 400 karakteres vagasaval ellentetben) es nem normalizalt sortorest -- egy 4500 karakteres
+  bejegyzes egeszeben bejott, es egy bejegyzesbe irt sortores egy hamis fejlecet/direktivat a 0.
+  oszlopban jelenithetett meg, mintha a hook maga irta volna. Most `OWN_CURATED_MAX_CONTENT_CHARS
+  = 400` vagas (ugyanaz a "...(+N karakter)" jeloles, mint a shared szekcioban) ES a beszurt
+  tartalom sortoresei szokozre cserelve, MIELOTT a sor meretet/koltseget szamolnank. Soronkent
+  szerzo-belyeg (`agent_id`) is bekerult; a fejlec cime "SAJAT KURALT MEMORIA" -> "KURALT MEMORIA"
+  (a bovitett magyarazattal, hogy az agent_id iraskor NEM hitelesitett), mert a regi cim tobbet
+  igert, mint amit a rendszer garantal.
+- **R3** (shared-memory-inject.py): egy tul nagy bejegyzes a token-keretbe `break`-kel a TELJES
+  hatralevo, meg rangsorolt listat eldobta, nem csak sajat magat -- egy kisebb, meg relevans
+  bejegyzes a sor vegen soha nem kerult be, ha elotte egy nagy allt. `break` -> `continue`. Kulon
+  problema: a hibrid keresesi hivas kivetelenel (idotulepes, hideg embedding) a mereskent naplozott
+  `memories_count=0` megkulonbozhetetlen volt a "valoban nincs talalat" esettol -- uj `failed`
+  mezo a meresi sorban (`store/session-memory-inject-measurements.jsonl`) ezt szetvalasztja.
+- **R4** (teszt-infra, `src/__tests__/session-memory-inject-own-curated.test.ts`): a fixture-szerver
+  korabban PATH szerint routingolt es a lekerdezesi stringet teljesen figyelmen kivul hagyta -- a
+  gate 12 mutansos sweepje 7 zoldet talalt pont a lekerdezesi string (agent=, assignee=, status=,
+  mode=, a `urllib.parse.quote()` hivas) mutacioira. A fixture most minden bejovo kerest (path +
+  query) fajlba logol, es a teszt pontosan ra illeszkedik a hook altal kuldott ket URL-re.
+
+Verifikacio: `embed-model-split.test.ts` 2 uj teszttel (alak-szurt sor kizarasa tokeletes cosine
+mellett is, es kuszob ala eso sor kizarasa) 10/10 zold.
+`session-memory-inject-own-curated.test.ts` 3 uj teszttel (400 karakteres vagas +
+sortores-flatten, oversized-entry `continue` nem `break`, `failed` mezo a hibrid-hivas bukasanal)
+8/8 zold. `tsc --noEmit` tiszta. Teljes `fleet-test.sh` a landolas Gate-SHA-jan.
+
+**Ki dontott:** RedHat R1-R4 feltetelei (komment 14537, kartya 5a4bea2e); a konkret implementacio
+es a teszt-fedezet fullstack sajat merese/dontese (pl. a 0.15-os hasonlosagi kuszob erteke). Gate:
+QA + Cybersec (a javitas iranyat RedHat adta).

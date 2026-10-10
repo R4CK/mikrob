@@ -6348,16 +6348,29 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
+// Card 5a4bea2e R1 (RedHat GO, komment 14537): a vector branch had neither the
+// tool-log shape filter nor a relevance floor, so a "Bash: git push"-shaped row
+// (all-noise) and a row orthogonal to the query (cosine ~0) both came back as
+// real hits -- measured live on a synthetic corpus. 0.15 is a soft floor: it
+// drops near-orthogonal/negative matches while still letting a loosely-related
+// memory through (cosine similarity is not calibrated the way FTS rank is, so
+// this is a judgement call, not a derived number -- revisit if the pilot
+// measurement shows it too strict or too loose).
+const MIN_VECTOR_SIMILARITY = 0.15
+
 function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10, category?: string): Memory[] {
   // Same push-down as searchAgentMemories: this branch scores EVERY embedded
-  // row in JS, so filtering in SQL is both correct and strictly less work.
+  // row in JS, so filtering in SQL is both correct and strictly less work. The
+  // shape filter (card 3bcc1242) now applies here too -- it used to be FTS-only,
+  // which let tool-log-shaped rows back in through this branch alone.
+  const shapeFilter = excludeToolLogShapeSql()
   const rows = (category
     ? db.prepare(
-        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ?"
-      ).all(agentId, category)
+        `SELECT * FROM memories m WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ? AND (${shapeFilter.sql})`
+      ).all(agentId, category, ...shapeFilter.params)
     : db.prepare(
-        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
-      ).all(agentId)) as Memory[]
+        `SELECT * FROM memories m WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND (${shapeFilter.sql})`
+      ).all(agentId, ...shapeFilter.params)) as Memory[]
 
   // A vector written by a DIFFERENT model has a different length, and the
   // cosine loop walks the QUERY's length: the missing entries read as undefined
@@ -6373,7 +6386,7 @@ function vectorSearch(agentId: string, queryEmbedding: number[], limit: number =
     } catch {
       return [{ memory: m, score: 0 }]
     }
-  })
+  }).filter(s => s.score >= MIN_VECTOR_SIMILARITY)
 
   scored.sort((a, b) => b.score - a.score)
   return scored.slice(0, limit).map(s => s.memory)
