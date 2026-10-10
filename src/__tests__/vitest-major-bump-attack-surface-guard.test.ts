@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
+import * as ts from 'typescript'
 
 // Card 2f05b3e3, step 0 (MikroB comment 13602, WhiteHat L1 on 54f3f2cd gate, msg 9815): the
 // 54f3f2cd DECISIONS.md exception for 6 vitest/vite advisories (tinypool prototype-pollution,
@@ -16,8 +17,21 @@ import { join } from 'node:path'
 // reopen a CVSS 9.8 hole with no advisory-exception review. This guard fails loudly if either
 // fact stops being true, BEFORE the vitest major bump (this card's main step) is attempted.
 
+// Lexer-based, not regex-based (WhiteHat INFO I1, card d4675258, 2f05b3e3 follow-up): the old
+// `/\/\*[\s\S]*?\*\//` regex does not know about string/template literals, so a config value like
+// `comment: "/* not closed"` makes it consume everything up to the NEXT real `*/` anywhere later in
+// the file -- which can delete a genuine `ui: true` along the way and blind this exact guard. The
+// TypeScript scanner tokenizes string/template literals as single tokens, so it cannot be fooled
+// this way.
 function stripComments(src: string): string {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, src)
+  let result = ''
+  for (let kind = scanner.scan(); kind !== ts.SyntaxKind.EndOfFileToken; kind = scanner.scan()) {
+    if (kind !== ts.SyntaxKind.SingleLineCommentTrivia && kind !== ts.SyntaxKind.MultiLineCommentTrivia) {
+      result += src.slice(scanner.getTokenPos(), scanner.getTextPos())
+    }
+  }
+  return result
 }
 
 const repoRoot = join(process.cwd())
@@ -54,5 +68,10 @@ describe('no vitest --ui/--api server, no vite dev server (card 2f05b3e3 step 0)
 
   it('the `test` script is a one-shot `vitest run`, not watch mode (which the UI flag pairs with)', () => {
     expect(pkg.scripts.test).toBe('vitest run')
+  })
+
+  it('stripComments does not let an unterminated-comment-shaped string literal hide a real `ui: true` (I1 regression)', () => {
+    const exploit = `export default defineConfig({\n  test: {\n    comment: "/* not closed",\n    ui: true,\n  }\n})\n/* real trailing comment */\n`
+    expect(stripComments(exploit)).toMatch(/\bui\s*:\s*true\b/)
   })
 })
