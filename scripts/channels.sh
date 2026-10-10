@@ -811,15 +811,27 @@ MAIN_CHAN_DIR="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER"
 # (NUL-separated, unambiguous) rather than field-splitting that line. Linux
 # only -- the callers already guard with `2>/dev/null` for the macOS path,
 # where /proc does not exist and this helper harmlessly returns nothing.
+#
+# 8c94283b (Cybersec, 2026-09-18, fd2b2c4a's gate): argv[1]==EXACTLY "server.ts" is a vendored-
+# plugin version away from going silently blind. A bump of the vendored telegram-plugin's start
+# script to `bun /abs/path/server.ts`, `bun --smol server.ts` or `node --flag server.ts` moves the
+# real poller's server.ts off argv[1] (or behind a leading flag), so the old check stops matching
+# it at all and the orphan-poller class (409-Conflict on every cycle, measured live 2026-09-18)
+# comes back. Fixed to ANY argv element whose basename is server.ts, via a shell-pattern case
+# match (no extra fork per candidate) rather than a position-dependent field read.
 _reap_poller_pids() {
   for _p in "$@"; do
     # -r first, not a redirection failure: a race (the pid already exited) must stay silent, and
     # bash prints a redirection-open error to the CALLER's stderr before `2>/dev/null` on the same
     # command line would take effect (redirections apply in the order written, left to right).
     [ -r "/proc/$_p/cmdline" ] || continue
-    if [ "$(tr '\0' '\n' < "/proc/$_p/cmdline" 2>/dev/null | sed -n 2p)" = "server.ts" ]; then
-      echo "$_p"
-    fi
+    _is_poller=0
+    while IFS= read -r -d '' _arg; do
+      case "$_arg" in
+        server.ts|*/server.ts) _is_poller=1; break ;;
+      esac
+    done < "/proc/$_p/cmdline" 2>/dev/null
+    [ "$_is_poller" = 1 ] && echo "$_p"
   done
 }
 
