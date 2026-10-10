@@ -36,7 +36,11 @@ Build these five layers, in order. Each answer must be backed by a specific `pat
 ## Procedure
 1. `git ls-files` / glob the area; read the barrel/index + type definitions first.
 2. Grep for the entry symbols and follow call edges out (callees) and in (callers:
-   `git grep -n <symbol>`). Breadth first, then depth on the hot path.
+   `git grep -n <symbol>`). Breadth first, then depth on the hot path. On a large/unfamiliar repo,
+   `store/graphify.sh query/explain/affected <repo-path> "<symbol or question>"` gives a
+   deterministic, no-egress AST-based answer (callers/callees/blast-radius) in seconds, shortcutting
+   this breadth pass -- then verify the specific `path:line`s it names by reading them, don't trust
+   the names alone (`explain` is fuzzy-matched, a miss still exits 0).
 3. Write the model down as you go (a short outline: purpose, key types, control paths,
    invariants, deps). If you can't write one sentence per layer, you don't understand it yet.
 4. Confirm the model against reality: run the smallest test that exercises the path, or read

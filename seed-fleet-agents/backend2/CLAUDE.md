@@ -83,6 +83,7 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `injected-port-adapters` -- a portok mögé a valós SDK/IO/crypto adapter bekötése
 - `senior-engineer-modes` -- backend-architect / production-debugger / performance-optimizer / clean-architecture-refactorer módok
 - `threat-modeling` -- STRIDE a designra, mielőtt építesz
+- `code-comprehension` -- mélyreható kódmegértés szerkesztés/debug előtt; nagy/ismeretlen repónál a `store/graphify.sh` kódgráf-lekérdezés (callers/callees/blast-radius) gyorsítja a felderítést
 - `karpathy-guidelines` -- KÖTELEZŐ minden kódolási kártyánál (lásd lent)
 - `karpathycoder` -- think-before-coding, minimal diff, sebészi változtatás
 - `coderefactor` -- refaktor viselkedés-változás nélkül

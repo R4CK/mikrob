@@ -56,6 +56,7 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `seniorfrontenddeveloper` -- React/Next.js komponensek, hookok, Core Web Vitals, a11y
 - `frontend-design-research` -- modern design-kutatás UI előtt
 - `wcag-overlay-patterns` -- hozzáférhető modal/drawer/overlay + WCAG kontraszt-gate
+- `code-comprehension` -- mélyreható kódmegértés szerkesztés/debug előtt; nagy/ismeretlen repónál a `store/graphify.sh` kódgráf-lekérdezés (callers/callees/blast-radius) gyorsítja a felderítést
 - `karpathy-guidelines` -- KÖTELEZŐ minden kódolási kártyánál (lásd lent)
 - `karpathycoder` -- minimal diff, sebészi változtatás
 - `sp-test-driven-development` -- teszt előbb
