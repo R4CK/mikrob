@@ -18562,3 +18562,45 @@ kliens-config fajlok (a postinstall-hooktol felt celpontok) kozul egyik sem hiva
 **Ki dontott:** a token-optimizer-mcp skip-dontes maga a 2260a8ac kartyan torent (fullstack sajat
 merese/dontese a postinstall-hook kockazatrol); ez a bejegyzes a QA FAIL (d587ee68) altal
 hianyolt dokumentacios potlas, kod-/JSON-valtozas nelkul. Gate: QA (ujra).
+
+## 2026-10-10 -- 15 vendorolt skill VENDORED.md watch-clone sora atirva a megtartott klon utjara (kartya 4f5f08fd, 8d1c27c8 koveto, forras: qa2 d69b54fd QA PASS, komment 14865)
+
+A 8d1c27c8 kartya (addyosmani__agent-skills + caveman duplikatum-klonok torlese) pre-deletion
+grep-sweepje csak a git-kovetett fat nezte -- a `~/.claude/skills/*/VENDORED.md` es
+`~/marveen/agents/<ugynok>/.claude/skills/*/VENDORED.md` fajlok HOST-LOCAL, nem git-kovetett
+tartalmak (a marveen repo `.gitignore`-ja `/agents/`-t kizarja), ezert ezekre akkor nem terjedt
+ki az ellenorzes. A teljes elo integrity-sweep (`store/vendored-skill-integrity.py`, 207 vendorolt
+konyvtar) ezt 15 "UNVERIFIABLE: watch clone missing: store/adopted/addyosmani__agent-skills"
+talalatkent fedte fel (qa2 jelzese, d69b54fd QA PASS komment, FUGGETLENUL ellenorizve: a hiba mar
+a d69b54fd ELOTT is megvolt, nem az okozta).
+
+Az erintett 15 fajl (mind a `| watch clone | ... |` sor, az upstream repo es a vendorolt commit
+valtozatlan, csak az UTVONAL rossz):
+- `~/.claude/skills/{api-and-interface-design,browser-testing-with-devtools,ci-cd-and-automation,
+  constraint-driven-development,context-engineering,deprecation-and-migration,
+  documentation-and-adrs,interview-me}/VENDORED.md` (8 db)
+- `~/marveen/{agents,seed-fleet-agents}/{backend,backend2,backend3}/.claude/skills/
+  observability-and-instrumentation/VENDORED.md` (6 db) + `~/marveen/agents/fullstack/.claude/
+  skills/observability-and-instrumentation/VENDORED.md` (1 db) -- osszesen 7 db.
+
+Javitas: mind a 15 sorban a `store/adopted/addyosmani__agent-skills` -> `store/adopted/
+agent-skills` (a watched-repos.json-ban regisztralt, megtartott klon -- ugyanaz az upstream repo,
+https://github.com/addyosmani/agent-skills, csak masik local-utvonal). KIHAGYVA (szandekosan, nem
+hiba): `~/.claude/skills/{idea-refine,doubt-driven-development}/VENDORED.md` 2 sora a
+`/home/neon/marveen-agent-worktrees/backend/store/adopted/addyosmani__agent-skills` utvonalra
+mutat -- ez a backend ugynok SAJAT worktree-jenek MEG LETEZO, 8d1c27c8 altal nem erintett
+masolata, a sweep ezt "OK"-nak jelzi, nincs mit javitani rajta (kulon, nem ezen kartya hatokore
+tartozo duplikatum-kerdes, ha egyaltalan).
+
+Verifikacio: `python3 store/vendored-skill-integrity.py` (olvasas-only, --record NELKUL) a
+javitas UTAN: `vendored dirs: 207 | clean or sanctioned: 207 | needing attention: 0`, 0 talalat a
+"addyosmani__agent-skills" szovegre (korabban 15), es mind a 15 erintett skill fejlese kulon-kulon
+"OK"-ra valtott.
+
+**Ez host-local iras, nincs git diff** (a `/agents/` a marveen repo `.gitignore`-jaban van, a
+`~/.claude/skills/*` pedig a repon kivul eli). Ez a bejegyzes a DECISIONS.md-be a fajl VEGERE
+kerulo, a repoban kovetett dokumentacios nyom.
+
+**Ki dontott:** a hibat qa2 talalta (d69b54fd QA PASS komment, 14865), MikroB jelezte kovetokent
+(4f5f08fd); a javitas (a 15 sor atirasa + a sweep-pel igazolas) fullstack sajat vegrehajtasa.
+Gate: QA.
