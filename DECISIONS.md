@@ -18400,3 +18400,34 @@ Semmi nem veszett el: a tenylegesen hasznalt tartalom a masik, mar vendorolt klo
 
 **Ki dontott:** Peti jovahagyasa (Telegram 10867, 2026-10-10) az 5 javaslatra; a d2666c85
 leltar es a jelen torles reszletes vegrehajtasa fullstack sajat merese/dontese. Gate: QA.
+
+## 2026-10-10 -- store/adopted/addyosmani__agent-skills + store/adopted/caveman duplikatum-klonok torlese (kartya 8d1c27c8, forras: d2666c85 leltar)
+
+A d2666c85 leltar (fullstack REVIEW 14016/14056, QA PASS 14087) ket tovabbi duplikatum-klont
+talalt a `store/adopted/` alatt (szimlink a `~/marveen-vendor-cache/adopted`-ra, lasd
+store-watch-exclusions.sh -- a ket utvonal UGYANAZ a fizikai hely, nincs kulon vendor-cache
+tukor amit kulon kellene tisztitani): `store/adopted/addyosmani__agent-skills` es
+`store/adopted/caveman`. Mindkettonek van mar regisztralt, azonos remote-u parja: az
+`addyosmani__agent-skills` remote-ja (`https://github.com/addyosmani/agent-skills`) egyezik a
+`store/adopted/agent-skills` regisztralt klonnal (watched-repos.json "name":"agent-skills"); a
+`caveman` remote-ja (`https://github.com/JuliusBrussee/caveman`) egyezik a
+`store/adopted/JuliusBrussee__caveman` regisztralt klonnal (watched-repos.json "name":"caveman").
+Peti jovahagyta mind az 5 javaslatot (Telegram 10867, 2026-10-10); ez a kartya a 4. pont.
+
+Torles elott ellenorizve: a ket duplikatum remote-ja `git remote -v`-vel egyezik a megfelelo
+regisztralt klon remote-javal; a `watched-repos.json`-ban SEM a bare `store/adopted/caveman`,
+SEM a `store/adopted/addyosmani__agent-skills` utvonalra NINCS kulon registry-sor (csak a
+regisztralt parjaikra van) -- tehat ez a kartya nem igenyel registry-torlest, csak lemezi
+klon-torlest. Grep a teljes `agent/fullstack/work` worktree-ben (`store/`, `seed-*`,
+`.mcp.json`, `src/*.ts`, `store/git-repo-watcher.sh`) mindket utvonalra KIZAROLAG a DECISIONS.md
+korabbi naploit talalta -- sem kod, sem config, sem seed-fajl nem hivatkozik rajuk aktivan.
+
+Elvegezve: `rm -rf store/adopted/addyosmani__agent-skills store/adopted/caveman` (mindket lemezi
+klon torolve; a megtartott testverek -- JuliusBrussee__caveman, agent-skills, es a tobbi
+`store/adopted/` bejegyzes -- erintetlenek). Semmi nem veszett el: a tenylegesen hasznalt
+tartalom a megfelelo regisztralt klonbol jon. A `store/adopted/` teljes faja gitignored
+(`.gitignore:23: store/*`), tehat ez a torles nem jar git-diff-fel a watched-repos.json-on vagy
+mashol -- csak ez a DECISIONS.md-bejegyzes a tracked nyom.
+
+**Ki dontott:** Peti jovahagyasa (Telegram 10867, 2026-10-10) az 5 javaslatra; a d2666c85
+leltar es a jelen torles reszletes vegrehajtasa fullstack sajat merese/dontese. Gate: QA.
