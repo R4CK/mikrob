@@ -1587,6 +1587,11 @@ cat > "$FINALIZE_SCRIPT" <<'FINALIZE_EOF'
 #             unattended auto-update task, silent for a dashboard-triggered run)
 INSTALL_DIR="$1"; OLD_FULL="$2"; OLD_SHORT="$3"; PORT="$4"
 RESULT_FILE="$5"; BUILT="$6"; NEW_SHORT="$7"; NODE_PIN_DIR="$8"; NOTIFY="${9:-0}"
+# cf8d047a (MEDIUM F1, 3caa7e9f): the very first thing we do, before anything
+# that could fail, is prove we actually started -- the launcher's fallback
+# below reads this to tell "systemd-run itself never ran us" apart from "we
+# ran and then exited non-zero" (a legitimate rolled-back/failed outcome).
+touch "$RESULT_FILE.started" 2>/dev/null || true
 [ -n "$NODE_PIN_DIR" ] && export PATH="$NODE_PIN_DIR:$PATH"
 cd "$INSTALL_DIR" 2>/dev/null || true
 
@@ -1710,6 +1715,16 @@ XDG_RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null)}"
 # trace at all, so a run that died mid-restart looked identical to one that
 # never started. Every branch below writes here now.
 FINALIZE_LOG="$INSTALL_DIR/store/update-finalize.log"
+# cf8d047a (MEDIUM F1, source 3caa7e9f CYBERSEC GO 1dec4841): the `||` below
+# used to fire whenever the WRAPPED command's own exit code was non-zero, not
+# only when systemd-run itself failed to launch anything -- `--scope` relays
+# the finalizer's own exit status, and the finalizer exits 1/6 on a legitimate
+# failed/rolled-back outcome. That ran the finalizer a SECOND time: measured,
+# the second run overwrote the result file from rolled-back/6 back to
+# success/0, sent two contradicting notifications, and restarted services a
+# third time. The marker file the finalizer writes as its first statement
+# (above) distinguishes "never started" from "started and then failed".
+rm -f "$RESULT_FILE.started" 2>/dev/null || true
 if command -v systemd-run >/dev/null 2>&1 && [ -d "$XDG_RUN" ]; then
   # Linux/systemd: the finalizer runs inside a transient scope whose OWN cgroup
   # is separate from the dashboard cgroup, so it survives stop.sh tearing that
@@ -1732,10 +1747,14 @@ if command -v systemd-run >/dev/null 2>&1 && [ -d "$XDG_RUN" ]; then
   #
   # setsid is NOT hoisted out of this branch on purpose: macOS has no setsid at
   # all (measured), and this branch only runs where systemd-run exists.
-  XDG_RUNTIME_DIR="$XDG_RUN" setsid systemd-run --user --scope --collect --quiet \
-    bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" \
-    < /dev/null >> "$FINALIZE_LOG" 2>&1 \
-    || setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
+  (
+    XDG_RUNTIME_DIR="$XDG_RUN" setsid systemd-run --user --scope --collect --quiet \
+      bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" \
+      < /dev/null >> "$FINALIZE_LOG" 2>&1
+    if [ $? -ne 0 ] && [ ! -f "$RESULT_FILE.started" ]; then
+      setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1
+    fi
+  ) &
 elif command -v setsid >/dev/null 2>&1; then
   # macOS/launchd or no user-systemd: no cgroup self-kill. Detach in the
   # background so a parent signal during restart cannot abort the health/
