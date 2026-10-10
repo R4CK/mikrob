@@ -18831,3 +18831,54 @@ DECISIONS.md fegyelmenek megfeleloen. A hivatkozott, tulzott bejegyzes szovege e
 
 **Ki dontott:** WhiteHat merese (msg 10419, nem verdikt -- a kartya e6b2742b fuggetlen biztonsagi
 gate-je Cybered a kartya sajat, atirt Gate-sora szerint). A vegrehajtas fullstack sajat munkaja.
+
+## 2026-10-10 -- claude-mem A resz (5a4bea2e) flotta-kiterjesztese elesitve (kartya 86d5de34, Peti jovahagyta Telegram 10914)
+
+Peti jovahagyta (Telegram 10914, "Elobb e6b2742b, utana mehet") a sessio-inditasi sajat-kuralt-memoria
+injekcio (5a4bea2e, pilot: csak fullstack 48 oraig) kiterjeszteset a teljes flottara, azzal a
+feltetellel, hogy elotte az e6b2742b (shared-tier lapitas/flatten delta-javitas) lezarul. e6b2742b
+QA PASS + CYBERED GO-val zart (dc569e05), es a RedHat altal szabott R1-R4 elofeltetelek (kartya
+0a34377f) is mar korabban leztak (CYBERED GO, f0b88947).
+
+**Vegrehajtas (nem kodmasolas, a mar letezo kapcsolo bekapcsolasa):** a mukodo mechanizmus
+(`scripts/hooks/shared-memory-inject.py` mar bedrotozott SessionStart hook, lasd az 5a4bea2e es
+0a34377f bejegyzeseket feljebb) valtozatlan maradt. Az ELO telepites `store/session-memory-inject-agents.json`
+("enabled_agents" lista -- hianyzo fajl vagy nem-szereplo nev = fail-safe KI) `enabled_agents`
+mezoje a pilot-only `["fullstack"]`-rol a `GET /api/agents` altal mert teljes ugynok-listara
+bovult (16 ugynok: backend, backend2, backend3, cybered, cybersec, fron-ted, fron-teddy, fullstack,
+jogasz, logs, marketing, penzugy, qa, qa2, teszter, videooo -- a fo channels-agent nem szerepel,
+mert a hook `_agent_id_from_cwd()`-je a "agents/<nev>" cwd-mintara epul, a fo channels-agent cwd-je
+nem ilyen alaku, tehat ra ez a feature-flag soha nem is vonatkozott). A fajl `store/*`-glob alatt
+gitignored, tehat ez NEM commit-szintu valtoztatas, hanem kozvetlen futasi-allapot modositas az
+ELO telepitesen (/home/neon/marveen), ugyanugy, ahogy a `local-llm-offload-active.json`-fele
+kapcsolok is mukodnek.
+
+**Agent-hatar (a kartya sajat elfogadasi kriteriuma -- "mas ugynok memoriaja nem szivarog at"):**
+a sajat-kuralt szekcio szerver-oldali lekerdezese (`hybridSearch`/`searchAgentMemories`/
+`vectorSearch`, `src/db.ts`) MINDEN agon `(agent_id = ? OR category = 'shared')` SQL-szuresen megy
+at -- ez mar letezo, nem ujonnan irt kod. A hatart bizonyito regressziós teszt mar korabban
+landolt (`src/__tests__/embed-model-split.test.ts`, "vectorSearch: the agent/shared boundary is
+enforced, not incidental (card 0a34377f WhiteHat N4)": soha nem ad vissza masik ugynok
+nem-shared sorat, DE egy masik ugynok shared-kategoriaju sorat helyesen visszaadja) -- ez a
+garancia FUGGETLEN attol, hany ugynok van bekapcsolva a feature-flagben, tehat a fleet-wide
+kapcsolas nem igenyelt uj tesztet erre a pontra (nem duplikaltam a mar letezo lefedettseget).
+
+**Token-meres ugynokonkent:** a mar letezo `store/session-memory-inject-measurements.jsonl`
+append-only naplo minden sorban `agent` mezot hord, tehat az ugynokonkenti bontas a bovites
+elott is, most is ugyanazzal a mechanizmussal lekerdezheto (pl. `jq 'select(.agent=="qa")'`) --
+nem epult kulon riport-eszkoz, mert a kartya szovege csak a MERES meglettet kerte, nem uj
+dashboard-nezetet.
+
+**Ki-kapcsolo dokumentalva:** egy ugynok nevenek torlese az `enabled_agents` listabol csak azt az
+egy ugynokot tiltja le; a fajl teljes torlese mindenkit (fail-safe default KI, lasd
+`_feature_enabled_agents()` a hook-fajlban). Eletbe lepes: minden erintett ugynoknel a
+KOVETKEZO session-inditaskor (nem azonnal) -- futo ugynok-sessiont vagy a dashboardot ez a kartya
+nem indit ujra, a tenyleges ujrainditas idozitese MikroB dontese (67e73b48 miatt most tiltva is
+van az elesites/ujrainditas idozitese, kulon kartya).
+
+**README:** a `README.md` "Saját kurált memória injektálása session-indításkor, token-kerettel"
+bejegyzese (Helyi-LLM / offload rendszer kategoria) helyben frissult: a pilot-only allitas helyett
+a flotta-szintu elesitest es az agent-hatar garanciat irja le, a tomor fork-fejlesztes formatumban.
+
+**Ki dontott:** Peti (Telegram 10914). A vegrehajtas (feature-flag bovites, README, ez a bejegyzes)
+fullstack sajat munkaja. Gate: QA + Cybersec, a kartya sajat kijelolese szerint.
