@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readdirSync, mkdirSync, copyFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, mkdirSync, symlinkSync, existsSync, lstatSync, copyFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -89,7 +89,7 @@ describe('vendor-skill.sh respects vendored-skill-sanctioned.json "missing:" exc
     expect(readdirSync(dest).sort()).toEqual(['SKILL.md', 'VENDORED.md'])
   })
 
-  it('refuses a suspicious exclusion path (absolute or containing ..) instead of rm -rf-ing it', () => {
+  it('refuses a suspicious exclusion path (absolute or containing ..) with a nonzero exit', () => {
     const upstream = makeUpstream()
     const skillsDir = mkdtemp('vendor-skill-skills-')
     const sanctionedPath = join(mkdtemp('vendor-skill-sanctioned-'), 'sanctioned.json')
@@ -99,12 +99,122 @@ describe('vendor-skill.sh respects vendored-skill-sanctioned.json "missing:" exc
     runVendor(upstream, skillsDir, sanctionedPath)
 
     writeFileSync(sanctionedPath, JSON.stringify({ sanctioned: { [dest]: ['missing:../../../etc/passwd'] } }))
+    // FAILCLOSED924 (card f3a6f30a): a refused entry used to degrade to "not excluded" with
+    // exit 0 -- a silent skip of a deliberate exclusion decision. It must now fail loud, so a
+    // caller (or a human watching the vendor run) notices immediately instead of waiting for
+    // the next integrity-heartbeat sweep.
+    const res = runVendor(upstream, skillsDir, sanctionedPath)
+    expect(res.status).not.toBe(0)
+    expect(res.stderr).toContain('refusing suspicious')
+    // The legitimate files are untouched -- a refused exclusion never deletes anything else.
+    expect(readdirSync(dest).sort()).toEqual(['CLOUD.md', 'SKILL.md', 'VENDORED.md'])
+  })
+
+  it('refuses a sanctioned-exclusion entry whose resolved path escapes dest through a symlink', () => {
+    // SYMLINKESC924 (card f3a6f30a, RedHat): upstream ships a symlinked directory. Pre-fix,
+    // `cp -R` copied it AS a symlink into dest, and a sanctioned "missing:<path through it>"
+    // rm -rf would then delete the file OUTSIDE dest that the symlink pointed at. The -L copy
+    // fix dereferences the symlink into a real directory, so the deletion only ever reaches the
+    // copy inside dest -- the external original must survive untouched.
+    const outside = mkdtemp('vendor-skill-outside-')
+    const sentinelPath = join(outside, 'sentinel.txt')
+    writeFileSync(sentinelPath, 'do not delete me\n')
+
+    const upstream = makeUpstream()
+    mkdirSync(join(upstream, 'skills', 'foo', 'linked'))
+    symlinkSync(outside, join(upstream, 'skills', 'foo', 'linked', 'target'), 'dir')
+    git(upstream, 'add', '-A')
+    git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'add symlinked dir')
+
+    const skillsDir = mkdtemp('vendor-skill-skills-')
+    const sanctionedPath = join(mkdtemp('vendor-skill-sanctioned-'), 'sanctioned.json')
+    const dest = join(skillsDir, 'foo')
+
+    writeFileSync(sanctionedPath, JSON.stringify({ sanctioned: {} }))
+    let res = runVendor(upstream, skillsDir, sanctionedPath)
+    expect(res.status, res.stderr).toBe(0)
+    // Dereferenced by -L: a real directory holding a copy of sentinel.txt, not a symlink.
+    expect(lstatSync(join(dest, 'linked', 'target')).isSymbolicLink()).toBe(false)
+    expect(existsSync(join(dest, 'linked', 'target', 'sentinel.txt'))).toBe(true)
+
+    writeFileSync(sanctionedPath, JSON.stringify({ sanctioned: { [dest]: ['missing:linked/target/sentinel.txt'] } }))
+    res = runVendor(upstream, skillsDir, sanctionedPath)
+    expect(res.status, res.stderr).toBe(0)
+    // The copy inside dest is gone (the exclusion did apply, just to the copy)...
+    expect(existsSync(join(dest, 'linked', 'target', 'sentinel.txt'))).toBe(false)
+    // ...but the real file outside dest was never touched.
+    expect(existsSync(sentinelPath)).toBe(true)
+    expect(readFileSync(sentinelPath, 'utf-8')).toBe('do not delete me\n')
+  })
+
+  it('refuses to vendor when the sanctioned-exclusions file is corrupt JSON (fail-closed)', () => {
+    const upstream = makeUpstream()
+    const skillsDir = mkdtemp('vendor-skill-skills-')
+    const sanctionedPath = join(mkdtemp('vendor-skill-sanctioned-'), 'sanctioned.json')
+
+    writeFileSync(sanctionedPath, '{ this is not valid json')
+    const res = runVendor(upstream, skillsDir, sanctionedPath)
+    expect(res.status).not.toBe(0)
+    expect(res.stderr).toContain('unreadable/corrupt')
+  })
+
+  it('a file upstream ships named VENDORED.md is never written through as a symlink', () => {
+    // WRITETHRU924 (card f3a6f30a, RedHat): upstream coincidentally shipping a file literally
+    // named VENDORED.md that is a symlink would, pre-fix, make this script's own
+    // `cat > dest/VENDORED.md` provenance write follow the symlink and overwrite whatever it
+    // points to. The -L copy dereferences it into a plain file; this proves the final write
+    // lands on a fresh file with OUR provenance content, not upstream's, and the symlink's
+    // original target is untouched.
+    const outside = mkdtemp('vendor-skill-outside-')
+    const sentinelPath = join(outside, 'sentinel.txt')
+    writeFileSync(sentinelPath, 'untouched\n')
+
+    const upstream = makeUpstream()
+    symlinkSync(sentinelPath, join(upstream, 'skills', 'foo', 'VENDORED.md'))
+    git(upstream, 'add', '-A')
+    git(upstream, '-c', 'commit.gpgsign=false', 'commit', '-qm', 'upstream ships a VENDORED.md symlink')
+
+    const skillsDir = mkdtemp('vendor-skill-skills-')
+    const sanctionedPath = join(mkdtemp('vendor-skill-sanctioned-'), 'sanctioned.json')
+    const dest = join(skillsDir, 'foo')
+    writeFileSync(sanctionedPath, JSON.stringify({ sanctioned: {} }))
+
     const res = runVendor(upstream, skillsDir, sanctionedPath)
     expect(res.status, res.stderr).toBe(0)
-    expect(res.stderr).toContain('refusing suspicious')
-    // The legitimate files are untouched -- a refused exclusion degrades to "not excluded",
-    // never to "vendor failed" or "something else got deleted".
-    expect(readdirSync(dest).sort()).toEqual(['CLOUD.md', 'SKILL.md', 'VENDORED.md'])
+    expect(lstatSync(join(dest, 'VENDORED.md')).isSymbolicLink()).toBe(false)
+    expect(readFileSync(join(dest, 'VENDORED.md'), 'utf-8')).toContain('VENDORED -- do not edit here')
+    expect(readFileSync(sentinelPath, 'utf-8')).toBe('untouched\n')
+  })
+
+  it('applies a sanctioned exclusion recorded with a real ~/-prefixed key (the tilde transform)', () => {
+    // The real store/vendored-skill-sanctioned.json keys every entry as "~/..." -- the bash
+    // `dest_key="${dest/#"$HOME"/\~}"` anchored-prefix substitution is what produces that form.
+    // Every other test in this file points skillsDir at a plain /tmp path that never starts
+    // with $HOME, so the substitution never actually fires there and a break in the anchor
+    // (e.g. turning it into an unanchored replace) would go unnoticed. Point a fake $HOME at
+    // the skills dir's parent so the substitution engages for real.
+    const upstream = makeUpstream()
+    const fakeHome = mkdtemp('vendor-skill-fake-home-')
+    const skillsDir = join(fakeHome, '.claude', 'skills')
+    mkdirSync(skillsDir, { recursive: true })
+    const sanctionedPath = join(mkdtemp('vendor-skill-sanctioned-'), 'sanctioned.json')
+    const dest = join(skillsDir, 'foo')
+
+    writeFileSync(sanctionedPath, JSON.stringify({ sanctioned: {} }))
+    let res = spawnSync('bash', [SCRIPT, '--repo', upstream, '--name', 'foo', '--subdir', 'skills/foo'], {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: fakeHome, CLAUDE_SKILLS_DIR: skillsDir, VENDOR_SANCTIONED_FILE: sanctionedPath },
+    })
+    expect(res.status, res.stderr).toBe(0)
+
+    rmSync(join(dest, 'CLOUD.md'))
+    writeFileSync(sanctionedPath, JSON.stringify({ sanctioned: { '~/.claude/skills/foo': ['missing:CLOUD.md'] } }))
+    res = spawnSync('bash', [SCRIPT, '--repo', upstream, '--name', 'foo', '--subdir', 'skills/foo'], {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: fakeHome, CLAUDE_SKILLS_DIR: skillsDir, VENDOR_SANCTIONED_FILE: sanctionedPath },
+    })
+    expect(res.status, res.stderr).toBe(0)
+    expect(readdirSync(dest).sort()).toEqual(['SKILL.md', 'VENDORED.md'])
   })
 
   it('control: without a sanctioned entry, a re-vendor restores whatever upstream currently ships', () => {

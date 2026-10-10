@@ -25,7 +25,7 @@
 # Destination precedence: --dest, then $CLAUDE_SKILLS_DIR, then ~/.claude/skills (the default is
 # unchanged, so every existing caller keeps vendoring to the global dir).
 #
-# Exit: 0 ok | 2 bad usage | 3 clone/fetch failed | 4 subdir missing
+# Exit: 0 ok | 2 bad usage | 3 clone/fetch failed | 4 subdir missing | 5 sanctioned-exclusion check failed
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -100,7 +100,16 @@ dest="$SKILLS_DIR/$NAME"
 mkdir -p "$dest"
 # Replace the vendored payload but KEEP our own VENDORED.md/UPSTREAM-LICENSE (rewritten below).
 find "$dest" -mindepth 1 -maxdepth 1 ! -name 'VENDORED.md' ! -name 'UPSTREAM-LICENSE' -exec rm -rf {} + 2>/dev/null
-cp -R "$src/." "$dest/" 2>/dev/null || { echo "vendor-skill: copy failed" >&2; exit 4; }
+# SYMLINKESC924 (card f3a6f30a, RedHat follow-up on fd0b2180): plain `cp -R` preserves symlinks
+# as symlinks. An upstream symlink (e.g. a vendored dir someone symlinked to a shared asset, or
+# a planted one) then lands INSIDE $dest as a live symlink that can point anywhere on disk --
+# every later operation that walks into it (the sanctioned-exclusion rm -rf below, or a reader
+# of the vendored skill) escapes $dest through it. `-L` dereferences every symlink at copy time,
+# so $dest only ever contains the symlink's TARGET content, never the symlink itself; the two
+# escape vectors this closes are: (1) a sanctioned "missing:<path>" naming a path through such a
+# symlinked directory, and (2) upstream shipping a file named VENDORED.md/UPSTREAM-LICENSE that
+# is itself a symlink, which this script's own writes further below would otherwise follow.
+cp -RL "$src/." "$dest/" 2>/dev/null || { echo "vendor-skill: copy failed" >&2; exit 4; }
 # Card 728179d1 (Cybersec, card 3c73a420): a root-vendored skill (no --subdir) has src == $clone,
 # so `cp -R "$src/."` copies $clone/.git along with the payload -- the vendored copy becomes a full
 # git working tree tracking upstream, which a bare `git pull`/`git restore`/`git checkout .` can
@@ -120,28 +129,59 @@ rm -rf "$dest/.git"
 SANCTIONED_FILE="${VENDOR_SANCTIONED_FILE:-$HERE/vendored-skill-sanctioned.json}"
 if [[ -f "$SANCTIONED_FILE" ]]; then
   dest_key="${dest/#"$HOME"/\~}"
+  # FAILCLOSED924 (card f3a6f30a): a corrupt/unreadable sanctioned.json used to make this whole
+  # block silently apply ZERO exclusions (python swallowed the error with sys.exit(0), bash read
+  # zero lines from the empty pipe) -- a previously-sanctioned-missing path then quietly
+  # reappears with exit 0, and nothing notices until the next integrity-heartbeat run, hours
+  # later. A corrupt baseline must fail the vendor now, not go unnoticed until then.
+  sanctioned_excl="$(python3 -c "
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as fh:
+    data = json.load(fh)
+for k in data.get('sanctioned', {}).get(sys.argv[2], []):
+    if k.startswith('missing:'):
+        print(k[len('missing:'):])
+" "$SANCTIONED_FILE" "$dest_key")"
+  if [[ $? -ne 0 ]]; then
+    echo "vendor-skill: sanctioned-exclusions file unreadable/corrupt ($SANCTIONED_FILE) -- refusing to vendor without the exclusion guarantee" >&2
+    exit 5
+  fi
+  dest_real="$(realpath -m -- "$dest")"
   while IFS= read -r excl; do
     [[ -n "$excl" ]] || continue
     # A malformed/malicious sanctioned.json entry must not escape $dest via an absolute path or
     # a `..` segment -- this is a trusted, repo-controlled file today, but the blast radius of a
     # typo (rm -rf outside $dest) is large enough that the check is cheap insurance regardless.
+    # A rejected entry now aborts the vendor (nonzero exit) instead of silently skipping it: a
+    # silent skip degrades a deliberate exclusion decision back to "not excluded" with no signal.
     case "$excl" in
-      /*|*..*) echo "vendor-skill: refusing suspicious sanctioned exclusion path '$excl'" >&2; continue ;;
+      /*|*..*) echo "vendor-skill: refusing suspicious sanctioned exclusion path '$excl'" >&2; exit 5 ;;
     esac
-    rm -rf "${dest:?}/${excl:?}"
-  done < <(python3 -c "
-import json, sys
-try:
-    with open(sys.argv[1], encoding='utf-8') as fh:
-        data = json.load(fh)
-except (OSError, ValueError):
-    sys.exit(0)
-for k in data.get('sanctioned', {}).get(sys.argv[2], []):
-    if k.startswith('missing:'):
-        print(k[len('missing:'):])
-" "$SANCTIONED_FILE" "$dest_key")
+    # REALPATH924 (card f3a6f30a): the lexical ".." check above catches a bad ENTRY, but says
+    # nothing about a symlink COMPONENT already inside $dest resolving the same entry outside
+    # it. Resolve the real, symlink-free path and require it to stay under $dest before deleting
+    # anything through it -- this is defense in depth alongside the -L copy fix above, for any
+    # symlink that ends up in $dest some other way (a pre-existing dir from before this fix, or
+    # a future copy path that does not go through the -L step).
+    target="$dest/$excl"
+    if [[ -e "$target" || -L "$target" ]]; then
+      target_real="$(realpath -m -- "$target")"
+      case "$target_real" in
+        "$dest_real"/*) ;;
+        *) echo "vendor-skill: sanctioned exclusion '$excl' resolves outside dest ($target_real), refusing" >&2; exit 5 ;;
+      esac
+    fi
+    rm -rf -- "${dest:?}/${excl:?}"
+  done <<< "$sanctioned_excl"
 fi
 
+# WRITETHRU924 (card f3a6f30a): upstream shipping a file literally named UPSTREAM-LICENSE (or
+# VENDORED.md, below) that is a symlink would otherwise have this write FOLLOW it and overwrite
+# whatever it points to -- `cp`'s default is to follow an existing destination symlink, same as
+# the shell's own `>` redirection. The -L copy above already dereferences such a symlink into a
+# plain file, so this is defense in depth: unlink first if, for any other reason, it is still a
+# symlink, so the write always lands on a fresh regular file under $dest.
+[[ -L "$dest/UPSTREAM-LICENSE" ]] && rm -f "$dest/UPSTREAM-LICENSE"
 [[ -n "$LICENSE_FILE" ]] && cp "$LICENSE_FILE" "$dest/UPSTREAM-LICENSE"
 
 # The two ${VAR:+...}${VAR:-...} halves cannot share one variable: when LICENSE_FILE is SET the
@@ -153,6 +193,9 @@ else
   LICENSE_ROW="(upstream ships no LICENSE file -- verify before use)"
 fi
 
+# See WRITETHRU924 above: the shell's `>` redirection follows an existing destination symlink
+# exactly like `cp` does.
+[[ -L "$dest/VENDORED.md" ]] && rm -f "$dest/VENDORED.md"
 cat > "$dest/VENDORED.md" <<EOF
 # VENDORED -- do not edit here
 
