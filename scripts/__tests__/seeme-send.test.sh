@@ -15,19 +15,59 @@ fail(){ echo "  FAIL  $*"; FAILED=1; }
 # HERMETIKUS FIXTURE-OK -- kartya `fda30df6`-hoz hasonlo osztaly, itt meg
 # eles kiadas elott elkapva: a `store/` gitignore-olt, tehat egy FRIS
 # checkout (CI, uj worktree) SOSEM latja az EN sajat, nem-committolt
-# store/seeme-internal-numbers.json-omat vagy a store/.dashboard-token-emet.
-# A +36305552860 teszt-szam ezert csak NALAM klasszifikalodott BELSo-kent --
-# CI-n a szkript minden cimzettet KULSonek latott ("a fajl NEM LETEZIK"),
-# es a script-tests-runner.test.ts PIROSAT adott. A ket fixture SAJAT,
-# eldobhato temp konyvtarban el, es a szkript env-valtozon at latja oket
-# (seeme-send.py: SEEME_INTERNAL_FILE / SEEME_DASH_TOKEN_FILE) -- a valodi
+# store/seeme-internal-numbers.json-omat. A +36305552860 teszt-szam ezert
+# csak NALAM klasszifikalodott BELSo-kent -- CI-n a szkript minden cimzettet
+# KULSonek latott ("a fajl NEM LETEZIK"), es a script-tests-runner.test.ts
+# PIROSAT adott. A fixture SAJAT, eldobhato temp konyvtarban el, es a szkript
+# env-valtozon at latja (seeme-send.py: SEEME_INTERNAL_FILE) -- a valodi
 # store/ tartalmat egyaltalan nem erinti a teszt.
 FIXTURE_DIR="$(mktemp -d /tmp/seeme-send-fixtures-XXXX)"
 export SEEME_INTERNAL_FILE="$FIXTURE_DIR/seeme-internal-numbers.json"
-export SEEME_DASH_TOKEN_FILE="$FIXTURE_DIR/.dashboard-token"
 printf '{"internal": ["36305552860"]}' > "$SEEME_INTERNAL_FILE"
-printf 'teszt-fixture-token-nem-valodi' > "$SEEME_DASH_TOKEN_FILE"
+
+# 779b9660 (fd10c70b WhiteHat F1): a jovahagyas-ellenorzes most kozvetlen
+# SQLite-ra megy (SEEME_DB_PATH), nem HTTP-re -- a fixture tehat egy sajat,
+# eldobhato DB-fajl a valodi approvals tabla minimalis also-halmazaval.
+export SEEME_DB_PATH="$FIXTURE_DIR/claudeclaw.db"
+python3 -c "
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.execute('''CREATE TABLE approvals (
+  id TEXT PRIMARY KEY, category TEXT, status TEXT, content_hash TEXT,
+  consumed_at INTEGER, resolved_at INTEGER
+)''')
+con.commit()
+con.close()
+" "$SEEME_DB_PATH"
 trap 'rm -rf "$FIXTURE_DIR"' EXIT
+
+anchor_for() {
+  # anchor_for <to> <text> -- the exact hash seeme-send.py will compute
+  python3 -c "import hashlib,sys; print(hashlib.sha256((sys.argv[1]+chr(10)+sys.argv[2]).encode()).hexdigest())" "$1" "$2"
+}
+
+insert_approval() {
+  # insert_approval <id> <status> <content_hash> <consumed_at-or-NULL> <resolved_at-offset-seconds-or-NULL>
+  python3 -c "
+import sqlite3, sys, time
+con = sqlite3.connect(sys.argv[1])
+consumed = None if sys.argv[5] == 'NULL' else int(sys.argv[5])
+resolved = None if sys.argv[6] == 'NULL' else int(time.time()) + int(sys.argv[6])
+con.execute('INSERT INTO approvals (id, category, status, content_hash, consumed_at, resolved_at) VALUES (?, ?, ?, ?, ?, ?)',
+            (sys.argv[2], 'external_message', sys.argv[3], sys.argv[4], consumed, resolved))
+con.commit()
+con.close()
+" "$SEEME_DB_PATH" "$1" "$2" "$3" "$4" "$5"
+}
+
+consumed_at_of() {
+  python3 -c "
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+row = con.execute('SELECT consumed_at FROM approvals WHERE id=?', (sys.argv[2],)).fetchone()
+print(row[0] if row else 'MISSING')
+" "$SEEME_DB_PATH" "$1"
+}
 
 run() {
   # run <to> <approval-or-empty> <stdin-text>
@@ -35,6 +75,14 @@ run() {
   local args=(--to "$to" --dry-run)
   [ -n "$approval" ] && args=(--to "$to" --approval "$approval" --dry-run)
   printf '%s' "$text" | python3 "$SCRIPT" "${args[@]}" 2>&1
+}
+
+run_real() {
+  # run_real <to> <approval> <text> -- WITHOUT --dry-run (no SEEME_BASE/creds
+  # fixture exists, so this always dies at read_env() -- used only to observe
+  # whether consume_approval() ran before that point).
+  local to="$1" approval="$2" text="$3"
+  printf '%s' "$text" | python3 "$SCRIPT" --to "$to" --approval "$approval" 2>&1
 }
 
 echo "--- alapveto osztalyozas es normalizalas ---"
@@ -78,9 +126,112 @@ out="$(printf '%s' "$long_text" | python3 "$SCRIPT" --to +36305552860 --dry-run 
   || fail "hossz-limit elutasitasat vartam, kaptam (rc=$rc): $out"
 
 out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to +36301234567 --approval "nem-letezo-approval-id-xyz" --dry-run 2>&1)"; rc=$?
-[ $rc -eq 1 ] && echo "$out" | grep -qi "az approval lekerdezese" \
-  && pass "nem letezo approval-id -> lekerdezesi hiba, elutasitva" \
-  || fail "nem letezo approval-id elutasitasat vartam, kaptam (rc=$rc): $out"
+[ $rc -eq 1 ] && echo "$out" | grep -qi "nem UUID alaku" \
+  && pass "nem UUID-alaku approval-id -> formatum-hiba, elutasitva (DB meg sem kerdezve)" \
+  || fail "formatum-elutasitast vartam, kaptam (rc=$rc): $out"
+
+out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to +36301234567 --approval "00000000-0000-0000-0000-000000000000" --dry-run 2>&1)"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -qi "nincs ilyen approval" \
+  && pass "UUID-alaku, de nem letezo approval-id -> elutasitva" \
+  || fail "nem-letezo approval elutasitasat vartam, kaptam (rc=$rc): $out"
+
+echo "--- F1 (779b9660): egyszer-hasznalatos, friss, szoveghez kotott approval ---"
+
+TO="36301234567"
+TEXT="A pontos szoveg, amire a johavagyas szol."
+ANCHOR="$(anchor_for "$TO" "$TEXT")"
+
+APPROVED_FRESH="11111111-1111-1111-1111-111111111111"
+insert_approval "$APPROVED_FRESH" "approved" "$ANCHOR" "NULL" "-60"
+out="$(run "$TO" "$APPROVED_FRESH" "$TEXT")"; rc=$?
+[ $rc -eq 0 ] && echo "$out" | grep -q "approved, friss" \
+  && pass "approved + friss + egyezo hash -> dry-run atmegy" \
+  || fail "varva: dry-run siker, kaptam (rc=$rc): $out"
+[ "$(consumed_at_of "$APPROVED_FRESH")" = "None" ] \
+  && pass "dry-run NEM consume-olta az approval-t (consumed_at meg NULL)" \
+  || fail "a dry-runnak nem kellett volna consume-olnia, de consumed_at mar ki van toltve"
+
+WRONG_TEXT_MATCH="22222222-2222-2222-2222-222222222222"
+insert_approval "$WRONG_TEXT_MATCH" "approved" "$ANCHOR" "NULL" "-60"
+out="$(run "$TO" "$WRONG_TEXT_MATCH" "MAS szoveg, mint amire a johavagyas szol.")"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -qi "content_hash" \
+  && pass "egyezo approval, de MAS szoveg a kuldeskor -> elutasitva (hash nem egyezik)" \
+  || fail "szoveg-kotes elutasitasat vartam, kaptam (rc=$rc): $out"
+
+WRONG_NUMBER="33333333-3333-3333-3333-333333333333"
+insert_approval "$WRONG_NUMBER" "approved" "$ANCHOR" "NULL" "-60"
+out="$(run "36309999999" "$WRONG_NUMBER" "$TEXT")"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -qi "content_hash" \
+  && pass "egyezo approval, de MAS cimzett a kuldeskor -> elutasitva (hash nem egyezik)" \
+  || fail "cimzett-kotes elutasitasat vartam, kaptam (rc=$rc): $out"
+
+STALE="44444444-4444-4444-4444-444444444444"
+insert_approval "$STALE" "approved" "$(anchor_for "$TO" "$TEXT")" "NULL" "-99999"
+out="$(run "$TO" "$STALE" "$TEXT")"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -qi "tul regi" \
+  && pass "100000 masodperce dontott approval -> elutasitva (nem friss)" \
+  || fail "frissesseg-elutasitast vartam, kaptam (rc=$rc): $out"
+
+PENDING="55555555-5555-5555-5555-555555555555"
+insert_approval "$PENDING" "pending" "$(anchor_for "$TO" "$TEXT")" "NULL" "NULL"
+out="$(run "$TO" "$PENDING" "$TEXT")"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -q "nem 'approved'" \
+  && pass "pending approval -> elutasitva" \
+  || fail "pending-elutasitast vartam, kaptam (rc=$rc): $out"
+
+ALREADY_USED="66666666-6666-6666-6666-666666666666"
+insert_approval "$ALREADY_USED" "approved" "$(anchor_for "$TO" "$TEXT")" "$(( $(date +%s) - 10 ))" "-60"
+out="$(run "$TO" "$ALREADY_USED" "$TEXT")"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -qi "MAR FELHASZNALT" \
+  && pass "mar consumed_at-tal rendelkezo approval -> elutasitva (egyszer-hasznalatos)" \
+  || fail "mar-felhasznalt elutasitast vartam, kaptam (rc=$rc): $out"
+
+echo "--- F1: a valodi (nem dry-run) kuldesi probalkozas tenyleg elfogyasztja ---"
+REAL_USE="77777777-7777-7777-7777-777777777777"
+insert_approval "$REAL_USE" "approved" "$(anchor_for "$TO" "$TEXT")" "NULL" "-60"
+out1="$(run_real "$TO" "$REAL_USE" "$TEXT")"; rc1=$?
+[ $rc1 -eq 1 ] && echo "$out1" | grep -qi "credentials" \
+  && pass "valodi utra terve: a hitelesito-adat hianyan all el (varhato, nincs fixture .env)" \
+  || fail "credentials-hibat vartam a valodi uton, kaptam (rc=$rc1): $out1"
+[ "$(consumed_at_of "$REAL_USE")" != "None" ] \
+  && pass "a VALODI (nem dry-run) probalkozas CONSUME-OLTA az approval-t, meg a sikertelen kuldes ELLENERE is" \
+  || fail "a valodi probalkozasnak consume-olnia kellett volna, de consumed_at meg NULL"
+
+out2="$(run_real "$TO" "$REAL_USE" "$TEXT")"; rc2=$?
+[ $rc2 -eq 1 ] && echo "$out2" | grep -qi "MAR FELHASZNALT" \
+  && pass "UJBOLI probalkozas UGYANAZZAL az approval-lal -> elutasitva (egyszer-hasznalatos a consume utan is)" \
+  || fail "masodik-hasznalat-elutasitast vartam, kaptam (rc=$rc2): $out2"
+
+echo "--- F3 (779b9660): --reference es --approval validalas ---"
+
+out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to 36305552860 --reference "$(printf 'x\ty\nFORGED\tOK\t1')" --dry-run 2>&1)"; rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -qi "reference" \
+  && pass "tab/ujsor a --reference-ben -> elutasitva (naplosor-hamisitas lezarva)" \
+  || fail "reference-validacios elutasitast vartam, kaptam (rc=$rc): $out"
+
+out="$(printf '%s' "teszt" | python3 "$SCRIPT" --to 36305552860 --reference "rendben-123.ok_1" --dry-run 2>&1)"; rc=$?
+[ $rc -eq 0 ] \
+  && pass "engedett karakterkeszletu --reference atmegy" \
+  || fail "varva: siker rendben alaku referenciaval, kaptam (rc=$rc): $out"
+
+echo "--- F2 (779b9660): hianyzo 'code' mezo NEM szamit sikernek ---"
+out="$(python3 -c "
+import sys, os
+sys.path.insert(0, os.path.dirname('$SCRIPT'))
+import importlib.util
+spec = importlib.util.spec_from_file_location('seeme_send', '$SCRIPT')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+# A MERT HIBA: HTTP 200 {\"error\":\"invalid key\"}, nincs 'code' mezo.
+print(m.seeme_response_ok({'error': 'invalid key'}))
+print(m.seeme_response_ok({'code': '0'}))
+print(m.seeme_response_ok({'result': 'OK'}))
+print(m.seeme_response_ok({'code': '1', 'message': 'elutasitva'}))
+")"
+expected="$(printf 'False\nTrue\nTrue\nFalse')"
+[ "$out" = "$expected" ] \
+  && pass "seeme_response_ok: hianyzo code=HIBA, code=0/result=OK=SIKER, mas code=HIBA" \
+  || fail "varva:\n$expected\nkaptam:\n$out"
 
 echo "--- mutacios kontroll (4. kikotes: a kontroll TUDJON bukni) ---"
 MUT="$(mktemp /tmp/seeme-send-mutated-XXXX.py)"
