@@ -62,6 +62,9 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `sp-systematic-debugging` -- gyökér-ok bug esetén
 - `full-value-audit` -- teljes értékű audit ha kéri
 - `project-workflow` -- kötelező csapat-workflow, kanban felbontás
+- `api-and-interface-design` -- stabil, nehezen félrehasználható API/interfész-tervezés (kártya ade19b79, Peti döntés 3)
+- `ci-cd-and-automation` -- CI/CD pipeline + minőségi kapuk automatizálása (kártya ade19b79)
+- `deprecation-and-migration` -- leépítés/migráció fegyelme (expand/contract, DB-séma-migráció) (kártya ade19b79)
 - `crafter-intent-layer` -- hierarchikus Intent Layer (AGENTS.md) kiépítése a kódbázishoz (kártya 200d2969)
 - `unlazy` -- teljesítés-fegyelem hosszú/többrészes feladatra, acceptance-gate + Depth Tree (a Stop-hook NINCS bekötve, csak a skill-hivatkozás, kártya 200d2969)
 - `doubt-driven-development` -- minden nem-triviális döntés friss-kontextusú adverzariális átvizsgálása (kártya 200d2969)
