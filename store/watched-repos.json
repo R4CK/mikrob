@@ -417,5 +417,25 @@
     "reviewed_at": "2026-10-10",
     "description": "A ui-skills.dev teljes Astro-weboldala, 7 frontend/design SKILL.md-vel a skills/ alkonyvtarban (baseline-ui, create-design-md, fixing-accessibility, fixing-metadata, fixing-motion-performance, improve-ui, ui-skills-root).",
     "enabled_reason": "REGISZTRALVA 2026-10-10 (kartya 2260a8ac, fullstack), qa2 QA FAIL-je (komment 14037, kartya d2666c85) talalta meg nem-regisztralt klonkent store/adopted/ibelick__ui-skills alatt. Utolso commit 2026-09-30, sha ebf5f26cd275b1412be8a2c8784c4f8da628e7c2. MIT licenc (LICENSE fajl ellenorizve, Julien Thibeaut). Nincs postinstall/auto-hook script (package.json scriptjei artalmatlan Astro-site-eszkozok: dev/build/test/typecheck/smoke). A tenyleges vendoralasa a MAR nyitott f557353a kartyan (fron-ted) folyik -- enabled=false marad, amig az le nem zarul es a sync-mod el nem dontik, git-watch-oljon-e vagy csak egyszeri vendor maradjon."
+  },
+  {
+    "name": "mattpocock-wizard",
+    "repo": "https://github.com/mattpocock/skills",
+    "branch": "main",
+    "local": "/home/neon/marveen/store/adopted/mattpocock__skills",
+    "type": "code",
+    "enabled": true,
+    "kind": "skill",
+    "adoption": "vendored",
+    "license": "MIT",
+    "reviewed_at": "2026-10-10",
+    "vendored_to": [
+      "seed-skills/wizard",
+      "/home/neon/.claude/skills/wizard"
+    ],
+    "vendored_subdir": "skills/engineering/wizard",
+    "description": "Interaktiv bash-wizard GENERATOR olyan lepesekhez, amiket csak ember tud elvegezni (credential/CI-secret beallitas, 3rd-party dashboard vegigjaras, egyszeri migracio/cutover).",
+    "note": "VENDORED 2026-10-10 (kartya 69699ab7, fullstack) store/vendor-skill.sh-val, --ref 49dd158d1076134a641b33efb035946536778336 (a kor kezdetekor a checkoutolt tip 4588b32e volt, csak template.sh-t erinto, pozitiv biztonsagi/korrektsegi javitasokat tartalmazo ff-only elore-lepes: .env fajl 0600 modban jon letre, az ertekek idezojelesen escape-elve, EOF-on explicit hiba ures bemenet helyett -- atnezve, nincs piros zaszlo). skill-security-auditor: PASS -- nincs halozati hivas/eval/base64-decode/exfiltracio a template.sh-ban, a `gh secret set`/`gh variable set` oldalhatas pontosan a SKILL.md altal dokumentalt, emberi-jovahagyassal jaro muvelet, nem rejtett. Az `agents/openai.yaml` egy masik platform (nem Claude Code) katalogus-megjelenitesi metaadata, nalunk hasznalaton kivul, de a vendorolt masolat byte-azonossaganak megtartasa miatt NEM toroltem -- lasd VENDORED.md 'ne szerkeszd itt' konvenciot. Elsoben TRACKED helyre vendorolva (seed-skills/wizard, ez a kartya commitja), majd masolva ~/.claude/skills/wizard-ba az azonnali hasznalhatosagert -- ez korrigalja a 453d64cc-nel talalt mintat (csak ~/.claude/skills-be vendorolt tartalomnak nincs mentese).",
+    "enabled_reason": "ADOPTALT es vendorolt (kartya 69699ab7). Celcsoport: flotta-szintu (minden ugynok, nem csak egy szerep -- Hostinger/VPS/OAuth-provisioning tobb ugynoknel is elojon)."
   }
 ]
