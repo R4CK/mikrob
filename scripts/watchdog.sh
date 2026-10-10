@@ -58,8 +58,68 @@ fi
 # no isolation (degraded shared mode is then the intended behaviour). The
 # token is read inside the pane via $(cat), so the literal secret never lands
 # in the command string, `ps` output or tmux pane history.
+# oauthTokenFile (card 006b506b WhiteHat F5, MikroB comment 13989): a second
+# launch site besides src/web/agent-process.ts -- this one hadn't been taught
+# the field at all, so a watchdog-triggered respawn of an agent configured with
+# its own setup-token silently exported the FLEET token instead, exactly the
+# failure src/web/agent-oauth-token-file.ts's fail-closed stance exists to
+# prevent (an agent given its own token that quietly ran on the fleet's would
+# spend exactly the quota the field exists to protect, with no signal anywhere
+# that it happened). Present-but-unusable must refuse the restart, never fall
+# back to the fleet token. Both call sites capture this via command
+# substitution (a subshell), so the refusal cannot travel out as a global the
+# way resolve_agent_provider's AGENT_PROVIDER does -- it is encoded in stdout
+# instead, as a "REFUSE:<reason>" line the prefix text can never otherwise
+# produce (the prefix is always "export ... && "). This mirrors a SUBSET of
+# checkOauthTokenFile's checks (path shape, mode, ownership via same-file
+# test, non-empty, setup-token prefix); that TS module is canonical -- keep
+# this in sync if its rules change.
 agent_launch_env() {
   local AGENT_DIR="$1"
+  local OWN_TOKEN_PATH
+  OWN_TOKEN_PATH=$(python3 -c "
+import json
+try:
+    d = json.load(open('$AGENT_DIR/agent-config.json'))
+except Exception:
+    print('')
+else:
+    v = d.get('oauthTokenFile')
+    print(v if isinstance(v, str) else '')
+" 2>/dev/null)
+
+  if [ -n "$OWN_TOKEN_PATH" ]; then
+    case "$OWN_TOKEN_PATH" in
+      /*) ;;
+      *) printf '%s' "REFUSE:not-absolute"; return ;;
+    esac
+    case "$OWN_TOKEN_PATH" in
+      *[!A-Za-z0-9_./-]*) printf '%s' "REFUSE:path-bad-characters"; return ;;
+    esac
+    if [ ! -d "$AGENT_DIR/.claude-config" ]; then
+      printf '%s' "REFUSE:not-isolated"; return
+    fi
+    if [ -L "$OWN_TOKEN_PATH" ] || [ ! -f "$OWN_TOKEN_PATH" ]; then
+      printf '%s' "REFUSE:missing-or-symlink"; return
+    fi
+    if [ ! -s "$OWN_TOKEN_PATH" ]; then
+      printf '%s' "REFUSE:empty"; return
+    fi
+    local MODE
+    MODE=$(stat -c '%a' "$OWN_TOKEN_PATH" 2>/dev/null || stat -f '%Lp' "$OWN_TOKEN_PATH" 2>/dev/null)
+    if [ "$MODE" != "600" ]; then
+      printf '%s' "REFUSE:mode-not-0600"; return
+    fi
+    if [ -s "$INSTALL_DIR/store/.claude-oauth-token" ] && [ "$OWN_TOKEN_PATH" -ef "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+      printf '%s' "REFUSE:is-fleet-token-file"; return
+    fi
+    if ! head -c 20 "$OWN_TOKEN_PATH" 2>/dev/null | grep -q '^sk-ant-oat'; then
+      printf '%s' "REFUSE:not-a-setup-token"; return
+    fi
+    printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$OWN_TOKEN_PATH')\" && "
+    return
+  fi
+
   if [ -d "$AGENT_DIR/.claude-config" ] && [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
     printf '%s' "export CLAUDE_CONFIG_DIR=\"$AGENT_DIR/.claude-config\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
   fi
@@ -71,7 +131,11 @@ agent_launch_env() {
 if [ "${1:-}" = "--launch-env" ]; then
   [ -n "${2:-}" ] || { echo "usage: watchdog.sh --launch-env <agent-dir>" >&2; exit 2; }
   ENV_PREFIX="$(agent_launch_env "$2")"
-  if [ -n "$ENV_PREFIX" ]; then echo "isolation=yes prefix=$ENV_PREFIX"; else echo "isolation=no"; fi
+  case "$ENV_PREFIX" in
+    REFUSE:*) echo "isolation=refuse reason=${ENV_PREFIX#REFUSE:}" ;;
+    "") echo "isolation=no" ;;
+    *) echo "isolation=yes prefix=$ENV_PREFIX" ;;
+  esac
   exit 0
 fi
 
@@ -223,6 +287,12 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
   fi
 
   ISO_ENV="$(agent_launch_env "$AGENT_DIR")"
+  case "$ISO_ENV" in
+    REFUSE:*)
+      echo "$(timestamp) [watchdog] $AGENT_ID: oauthTokenFile set but unusable (${ISO_ENV#REFUSE:}) -- NOT restarted (fail-closed, no fallback to the fleet token)" >> "$LOG"
+      continue
+      ;;
+  esac
 
   CMD="${ISO_ENV}export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
 
