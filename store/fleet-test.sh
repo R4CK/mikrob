@@ -75,6 +75,16 @@ case "$TEST_TREE" in
     die 2 "FLEET_TEST_TREE points under a temp dir ($TEST_TREE). That is exactly the case this script exists to avoid: 7 suites would silently SKIP there." ;;
 esac
 
+# FLEET_TEST_TREE == $ROOT (the live install) must be refused HERE, before the reset/clean/
+# checkout block below ever runs (card 5d365589 WhiteHat N1). Measured on a scratch copy: with
+# FLEET_TEST_TREE=$ROOT, `git reset --hard` + `git clean -fdq` + `git checkout --detach` all ran
+# on the live clone BEFORE the later "$TEST_TREE contains a LIVE marker" belt-and-braces check
+# (that one only exists inside the symlink block, far downstream) ever got a chance to refuse --
+# uncommitted tracked changes were reverted, an untracked file was deleted, and HEAD went
+# detached. `-ef` compares inodes, so it still catches the live install even through a symlink.
+[ "$TEST_TREE" -ef "$ROOT" ] \
+  && die 2 "FLEET_TEST_TREE ($TEST_TREE) IS the live install ($ROOT) -- refusing before the reset/clean/checkout below would run against it. Point FLEET_TEST_TREE at a disposable worktree instead."
+
 REF=""
 ARGS=()
 while [ $# -gt 0 ]; do
