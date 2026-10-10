@@ -18374,3 +18374,29 @@ konkret javitas fullstack sajat merese/dontese. Gate: QA.
 **Gate:** Cybersec GO (komment 14484, Gate-SHA 9a0f47b193dac011986ea1f4b7394e34e0df3040) a landolt, alapértelmezetten `block` állapotra. A `NOISY_GUARD_MODE=rewrite` FLOTTA-SZINTŰ bekapcsolása előtt két aktiválási blokkoló áll (F1: a rewrite megkerülheti a Claude Code permissions.deny/ask szabályait összetett (metakarakteres) parancssoron, mert a deny/ask az eredeti, nem az átírt parancson nem illeszkedik egy `bash -c '...'` belsejére; F2: env-előtagos és cd/export/értékadás-tartalmú parancson az átírás nem azonos szemantikájú) -- ezeket külön kártya (ff43b10e, gate QA + Cybered) viszi tovább, nem ez a kártya. QA FAIL (komment 14485) egyetlen oka ez a hiányzó DECISIONS.md-bejegyzés volt, a funkcionális/technikai oldal QA szerint teljesen igazolt.
 
 **Ki döntött:** plan-grilling GO-WITH-CHANGES verdikt (komment 14362) a dispatch előtt (1b. szabály, execution trust boundary); az implementáció backend2 munkája (komment 14466). Gate: QA + Cybersec, a kártya saját szövege szerint.
+
+## 2026-10-10 -- ~/.claude/external/anthropics-skills klon torlese + registry-sor eltavolitasa (kartya 03199aae, forras: d2666c85 leltar)
+
+A d2666c85 leltar (fullstack REVIEW 14016/14056, QA PASS 14087) duplikatum-leletet talalt:
+az `anthropics-skills` bejegyzes (`~/.claude/external/anthropics-skills`, github.com/anthropics/skills.git)
+UGYANAZ a felso repo, mint a mar regisztralt `anthropic-mcp-builder`/`anthropic-webapp-testing`
+bejegyzesek -- azok egy MASIK klonbol (`store/adopted/anthropics__skills`, pinelt ref f17010c9)
+mar vendoroljak a tenylegesen hasznalt 2 subdir-t (mcp-builder, webapp-testing). Ez a masodik
+klon csak azert figyelte a repot, hogy a docx/pdf/pptx/xlsx tartalmat kovesse, amit korabban
+TUDATOSAN kihagytunk a vendorolasbol (Anthropic-proprietary, source-available licenc per-skill
+LICENSE.txt-vel -- lasd a torolt bejegyzes `license_note` meze). Peti jovahagyta mind az 5
+javaslatot (Telegram 10867, 2026-10-10); ez a kartya a 3. pont.
+
+Torles elott ellenorizve: a klon remote-ja `https://github.com/anthropics/skills.git` (egyezik a
+registry-vel); grep a teljes `agent/fullstack/work` worktree-ben (`store/`, `seed-*`,
+`.mcp.json`) a klon utvonalara (`external/anthropics-skills`) KIZAROLAG a `watched-repos.json`
+sajat bejegyzeset es a DECISIONS.md korabbi (2260a8ac) naploit talalta -- sem kod, sem config,
+sem seed-fajl nem hivatkozik ra aktivan. Nincs symlinkelve aktiv skillkent sem (csak a loki-mode
+klonnak van auto-link-je, az erintetlen marad).
+
+Elvegezve: `rm -rf ~/.claude/external/anthropics-skills` (lemezi klon torolve); a
+`watched-repos.json`-bol a teljes `anthropics-skills` registry-objektum eltavolitva (15 sor).
+Semmi nem veszett el: a tenylegesen hasznalt tartalom a masik, mar vendorolt klonbol jon.
+
+**Ki dontott:** Peti jovahagyasa (Telegram 10867, 2026-10-10) az 5 javaslatra; a d2666c85
+leltar es a jelen torles reszletes vegrehajtasa fullstack sajat merese/dontese. Gate: QA.

@@ -96,21 +96,6 @@
     "enabled_reason": "ADOPTALT -- vendorolt-kulso, a external-repos-daily-sync tartja frissen (a git-repo-watcher NE dupla-huzza). NEM eldontetlen."
   },
   {
-    "name": "anthropics-skills",
-    "repo": "https://github.com/anthropics/skills.git",
-    "branch": "main",
-    "local": "/home/neon/.claude/external/anthropics-skills",
-    "type": "text",
-    "enabled": false,
-    "kind": "skill",
-    "adoption": "vendored-external",
-    "license_note": "PER-SKILL licenc, NEM egyseges README-MIT (javitva 2026-08-13, card 8998518e): a repoban NINCS root LICENSE; minden skill sajat LICENSE.txt-t hoz. mcp-builder/webapp-testing/skill-creator/... = Apache-2.0 (verbatim vendorolhato). docx/pdf/pptx/xlsx (+ algorithmic-art, brand-guidelines, canvas-design, claude-api, frontend-design, internal-comms) = Anthropic-proprietary, source-available: a LICENSE.txt EXPLICITEN tiltja a masolatok Services-en kivuli tartasat, a reprodukciot es a szarmazekos muvet -- ezeket verbatim vendorolni NEM szabad, a hivatalos plugin-marketplace-en jonnek be. doc-coauthoring: EGYALTALAN nincs LICENSE.txt -> nincs explicit grant, ne vendoroljuk.",
-    "reviewed_at": "2026-08-13",
-    "note": "ADOPTALT 2026-07-31 (Peti adopt-9). Klon ~/.claude/external, NAPONTA szinkron az external-repos-daily-sync-kel. Licenc-besorolas JAVITVA 2026-08-13 (card 8998518e) -- lasd license_note. A repon KIVUL -> ff-only update sertetlen. | 2026-08-23: external-repos-sync.sh ff-only frissitve 3b3fad96-ra. Gyors supply-chain scan (uj/valtozott .sh/.py fajlok curl/wget/eval/subprocess/base64-mintakra): nincs gyanus talalat, csak teszt/dokumentacio/profiler-szkript tartalom. Nincs symlink-elve aktiv skillkent (csak superpowers-nek van auto-link), tehat nem fut automatikusan. | 2026-10-10 (card 2260a8ac, fullstack): note frissítve -- a daily sync tovább él (lemezen mért utolsó commit 2026-09-28, sha 8a1541c4a3ffa5a20a5a91de0dcf3f0bab1d1ef4), a korábbi note-bejegyzés 2026-08-23-ra volt datálva. DUPLIKÁTUM-LELET (kártya d2666c85, komment 14016): ez UGYANAZ a felső repó (github.com/anthropics/skills, remote-dal igazolva), mint a már regisztrált anthropic-mcp-builder/anthropic-webapp-testing bejegyzések -- azok EGY MÁSIK klónból (store/adopted/anthropics__skills, pinelt ref f17010c9) már vendorolják a ténylegesen használt 2 subdir-t (mcp-builder, webapp-testing). Ez a klón egy FELESLEGES második checkout csak azért, hogy figyelje azt a tartalmat (docx/pdf/pptx/xlsx stb.), amit korábban TUDATOSAN kihagytunk a vendorolásból (Anthropic-proprietary licenc, lásd anthropic-mcp-builder note-ja). Javaslat: ez a bejegyzés + a lemezi klón törölhető, semmi nem vész el.",
-    "description": "Hivatalos Anthropic Agent Skills referencia (kanonikus SKILL.md minták).",
-    "enabled_reason": "ADOPTALT -- vendorolt-kulso, a external-repos-daily-sync tartja frissen (a git-repo-watcher NE dupla-huzza). NEM eldontetlen."
-  },
-  {
     "name": "claude-skills-alirezarezvani",
     "repo": "https://github.com/alirezarezvani/claude-skills.git",
     "branch": "main",
