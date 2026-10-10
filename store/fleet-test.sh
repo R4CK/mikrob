@@ -26,8 +26,24 @@
 # Exit: the vitest exit code | 2 bad usage | 3 setup failed
 set -uo pipefail
 
+# >>> ROOT_GUARD_BLOCK_START (card e6df15da C1 behavior test extracts between these two markers)
 ROOT="/home/neon/marveen"
 TEST_TREE="${FLEET_TEST_TREE:-/home/neon/marveen-test}"
+# Normalize FLEET_TEST_TREE to an absolute path, relative to the CALLER's cwd, before anything below
+# compares or uses it (card e6df15da, RedHat C1 on top of WhiteHat's N1 above). Without this, a
+# RELATIVE value (".", "./", "sub/..") passes the `-ef` check below because it is not yet $ROOT from
+# the caller's cwd -- but every later `git -C "$TEST_TREE"` call, including the destructive
+# reset/clean/checkout trio, runs AFTER `cd "$ROOT"` further down, where "." (etc.) now DOES mean
+# $ROOT. Measured: FLEET_TEST_TREE=. run from another directory reset --hard + clean -fdq +
+# checkout --detach'd the live install, losing an uncommitted edit and an untracked file and
+# detaching HEAD -- exactly the damage N1 exists to prevent, reached through a relative path
+# instead of an absolute one. Resolving against $PWD here (before any `cd`) is enough: it does not
+# need to exist or be canonical (no `..`/symlink resolution) for the `-ef` comparison below or the
+# later `git -C` calls to behave correctly.
+case "$TEST_TREE" in
+  /*) : ;;
+  *) TEST_TREE="$PWD/$TEST_TREE" ;;
+esac
 # How long to queue behind another agent's run before giving up. A full suite is ~40s including the
 # build, so this is many runs deep; it exists so a stuck holder fails loudly instead of hanging.
 LOCK_WAIT_SECONDS="${FLEET_TEST_LOCK_WAIT:-900}"
@@ -84,6 +100,7 @@ esac
 # detached. `-ef` compares inodes, so it still catches the live install even through a symlink.
 [ "$TEST_TREE" -ef "$ROOT" ] \
   && die 2 "FLEET_TEST_TREE ($TEST_TREE) IS the live install ($ROOT) -- refusing before the reset/clean/checkout below would run against it. Point FLEET_TEST_TREE at a disposable worktree instead."
+# <<< ROOT_GUARD_BLOCK_END
 
 REF=""
 ARGS=()
@@ -218,6 +235,7 @@ fi
 
 # Create once, reuse forever. `git worktree add --detach` fails if the path exists, so the
 # create and the update paths are deliberately separate.
+# >>> DESTRUCTIVE_RESET_BLOCK_START (card e6df15da C1 behavior test extracts between these two markers)
 if [ ! -d "$TEST_TREE/.git" ] && [ ! -f "$TEST_TREE/.git" ]; then
   echo "fleet-test.sh: creating the fleet test worktree at $TEST_TREE (one-time)" >&2
   git worktree add --detach "$TEST_TREE" "$TARGET" >/dev/null 2>&1 \
@@ -262,6 +280,7 @@ Inspect by hand: git -C $TEST_TREE status"
     rm -f "$TEST_TREE/store/.dashboard-token" "$TEST_TREE/store/claudeclaw.db" "$TEST_TREE/store/.claude-oauth-token"
   fi
 fi
+# <<< DESTRUCTIVE_RESET_BLOCK_END
 
 # Share the live install's node_modules by symlink instead of installing a second copy: the deps are
 # large, and a per-run `npm ci` would dominate the runtime of a 20-second suite.
