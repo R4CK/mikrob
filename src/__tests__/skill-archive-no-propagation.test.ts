@@ -58,4 +58,37 @@ describe('skill-archive-no-propagation.selftest.sh', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  // Cybersec F4 (komment 14381): a plain substring match is evadable by a GENERIC wildcard copy
+  // that never spells "skill-archive" at all -- e.g. `cp -r "$ROOT/store/"* "$dest/"` would sweep
+  // in any future stray directory, named or not, without ever matching `grep -q "skill-archive"`.
+  // This proves the hardened guard (card 59cfcb21 F1 fix, MikroB komment 14386) catches that case
+  // via its generic-wildcard-copy check, independent of the literal-name belt-and-braces check.
+  it('MUTATION PROOF: a generic wildcard copy of store/ or ~/.claude/ flips the guard to FAIL even without naming "skill-archive"', () => {
+    const root = mkdtempSync(join(tmpdir(), 'skill-archive-guard-wildcard-'))
+    try {
+      mkdirSync(join(root, 'store'), { recursive: true })
+      copyFileSync(SCRIPT, join(root, 'store', 'skill-archive-no-propagation.selftest.sh'))
+      writeFileSync(join(root, 'install-linux.sh'), '#!/usr/bin/env bash\necho hello\n')
+      writeFileSync(join(root, 'update.sh'), '#!/usr/bin/env bash\necho hello\n')
+
+      const clean = run(root)
+      expect(clean.code).toBe(0)
+      expect(clean.out).toContain('PASS')
+
+      // Tamper: a generic whole-directory copy, no mention of "skill-archive" anywhere.
+      writeFileSync(
+        join(root, 'update.sh'),
+        '#!/usr/bin/env bash\nROOT="$(pwd)"\ncp -r "$ROOT/store/"* "$HOME/.claude/skills/"\n'
+      )
+
+      const tampered = run(root)
+      expect(tampered.code).toBe(1)
+      expect(tampered.out).not.toContain('references skill-archive by name')
+      expect(tampered.out).toContain('generic whole-directory copy')
+      expect(tampered.out).toContain('update.sh')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })

@@ -18153,3 +18153,47 @@ kommentjeim véletlenül megsértették a tripwire-t (a needle szó szerinti el�
 számít), átfogalmazva. Gate: QA + Cybersec + Cybered (a kártya kérése szerint, agent-process.ts/
 db.ts trust-boundary + a kanban-endpoint write-path érintett).
 
+## 2026-10-10 -- skill-archive kikerul a publikus repobol kulon, remote nelkuli helyi repoba (kartya 59cfcb21, forras Cybersec NO-GO 14381, MikroB fix-utasitas 14386)
+
+A kartya elso kore (kommit deaba09d) a `store/skill-archive/` konyvtarat EBBEN a repoban
+verziokovette egy gitignore-kivetellel (`!store/skill-archive/**`). Cybersec NO-GO-ja (F1 HIGH,
+Gate-SHA ac4d0e93) mertre: ennek a repo-nak az origin-ja PUBLIKUS GitHub remote (R4CK/mikrob,
+GitHub API `private=false`), es a ac4d0e93 mar rajta volt az `origin/develop`-on -- a
+raw.githubusercontent.com/R4CK/mikrob/develop/store/skill-archive/evidence-gated-delivery/SKILL.md
+HTTP 200-at adott, a tartalom sha256-ja (92da8cfa...) bajtra megegyezett a mentett masolattal. Ez
+ellentmond a jogi dontesnek (kartya c2c98b0d, komment 14044, Q1/Q3/Q4: a loki-mode-eredetu,
+BSL 1.1 tartalom KIZAROLAG belso, nem publikalt fleet-eszkoz maradhat) -- a "nem terjed" felteteol
+(MikroB DONTES 14256, 5. pont) a telepitokre volt merve, a tavoli git-remote-ra nem.
+
+**Dontes (MikroB, komment 14386):** az archivum KIKERUL a tracked fabol elore mutato iranyban
+(`git rm -r --cached`, a gitignore-kivetel torolve), es egy MASIK, a repon KIVULI, remote NELKULI
+helyi git repoba kerul (`~/.claude/skill-archive`, `git init`, origin nincs). History-atiras NINCS
+-- az mar a publikus origin-en lathato commitokat erinti, es Peti/jogasz hataskore, nem automatizmus.
+
+**Tovabbi javitasok ugyanezen a koron (Cybersec F2-F5):**
+- F2 (MEDIUM, a mento/visszaallito script nem szurte a skill nevet): `skill-archive-sync.sh` es
+  `skill-archive-restore.sh` mostantol `^[A-Za-z0-9._-]+$` mintara szukiti a skill-nevet (nincs
+  `..`, nincs `/`), es realpath-mal ellenorzi, hogy a `--from`/`--to` tenyleg a `~/.claude/skills`
+  ala esik-e -- igy egy tetszoleges forras/cel mar a masolas ELOTT elutasul.
+- F3 (MEDIUM, a gitignore-kivetel eltuntette a titok-fajl szabalyokat az archivum alatt): magatol
+  megszunt az F1 javitassal egyutt -- nincs tobb kivetel, a `store/*` blanket-szaly ujra ervenyes.
+- F4 (LOW, a terjedes-or szo szerinti `grep -q "skill-archive"` kijatszhato konkatenacioval vagy
+  altalanos wildcard-masolassal): `store/skill-archive-no-propagation.selftest.sh` mostantol a
+  telepitok TENYLEGES forras-kotes-eit (`*_DIR="$INSTALL_DIR/<nev>"` / `"${VAR:-$ROOT/<nev>}"`)
+  veti ossze egy zart allowlistel, es kulon detektalja az altalanos `store/`/`~/.claude/` wildcard-
+  masolast -- a regi szo-szerinti ellenorzes megmaradt harmadik retegkent. Mutacios regresszios
+  teszt mindket uj ellenorzesre (`src/__tests__/skill-archive-no-propagation.test.ts`, 3 eset).
+- F5 (LOW, harmadik fel MIT-tartalom licencjelzes nelkul): `ponytail` es
+  `sp-diagnosing-superpowers` mellett `LICENSE-MIT.txt` az uj kulso archivumban (teljes MIT-szoveg +
+  forras-hivatkozas), nem ebben a repoban -- az archivum tartalma mar nem resze ennek a trackelt
+  fanak.
+
+**Mert allapot (Gate-SHA ac4d0e93-on, Cybersec + QA2 fuggetlen ellenorzese):** a 29 skill tartalma
+tiszta (0 hiteleesito-alak, 0 e-mail/telefon/IBAN), a repo titokkapuja (`secret-gate`) PASS, a
+pre-triage `secret-in-argv` lelete alhamis pozitivnak bizonyult (egy teszt-fixture URL-fragment
+`#token=${VALID_TOKEN}` az oauth-callback-jwt-wiring skillben, nem valos parancssori titok).
+
+**Ki dontott:** Cybersec talalta (NO-GO, komment 14381), MikroB fogadta el es adta ki a javitas
+iranyat (komment 14386, "ez az en hibam" -- a hely jovahagyasa az o felelossege volt). A javitast
+fullstack vegzte ugyanazon a kartyan (59cfcb21). Gate: QA + Cybered (a javitas iranyat Cybersec
+adta, tehat nem fuggetlen gate ra).
