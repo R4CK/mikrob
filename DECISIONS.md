@@ -18653,3 +18653,17 @@ kerulo, a repoban kovetett dokumentacios nyom.
 **Ki dontott:** a hibat qa2 talalta (d69b54fd QA PASS komment, 14865), MikroB jelezte kovetokent
 (4f5f08fd); a javitas (a 15 sor atirasa + a sweep-pel igazolas) fullstack sajat vegrehajtasa.
 Gate: QA.
+
+## 2026-10-10 -- SeeMe SMS-kapu lánc: összesített döntés-rögzítés (kártyák 779b9660, 34573931, 3fb0ef97)
+
+**Döntés:** a SeeMe SMS-kapu approval-mechanizmusa három ponton szigorodott, és a kapu AKTIVÁLÁSA (élő `seeme-gateway.env` + tényleges hívó) további két, még nyitott feltételhez van kötve.
+
+- **Egyszer-használatos, friss, szöveghez kötött approval (779b9660, WhiteHat F1):** egy jóváhagyás csak EGYETLEN, pontos (nem részsztring-, nem negatív-mintás) mezőnkénti egyezésű recipiens+szöveg párra érvényes, és legfeljebb 1800 másodpercig friss. Korábban egy approval két különböző szöveget és két számalakot is kiszolgált.
+- **Env-felülírás csak teszt módban, ez NEM biztonsági határ (34573931 A2, commit 5c8c1b8c):** a `SEEME_DB_PATH`/`INTERNAL_FILE`/`WINDOW` env-változók csak `SEEME_TEST_MODE=1` alatt hatnak; éles módban a path-override-ok és az ablak-felülírás hatástalanok.
+- **A resolved_by-ra NEM kódolunk ide (MikroB döntés, msg 10117):** a dashboard közös bearer tokenje miatt egy ügynök PATCH-e és Peti kattintása a szerver szemszögéből megkülönböztethetetlen; a Telegram-gomb callback is ugyanabba a közös tokenbe futna MikroB sessionjén, a bizalmi lánc ugyanott szakadna meg. Valódi megoldás önálló kártyán (3fb0ef97, BLOKKOLT-terv, plan-grillinggel indul).
+
+**Az aktiválás feltétele (ma nincs élő kitettség: nincs `seeme-gateway.env`, nincs hívó):**
+- **A1 -- nem-hamisítható jóváhagyási csatorna:** 3fb0ef97 adja, ügynök-tokentől független írási út nélkül nem kapcsolható be a kapu.
+- **A3 -- `seeme-gateway.env` olvashatósága:** a közös UID (neon) alatt minden ügynök olvashatja; érdemi zárása a Közös UID-tervtől (8eca67f0) függ, addig blokkolva.
+
+**Ki döntött:** 779b9660 forrása fd10c70b CYBERSEC GO (6ec8bb71) WhiteHat követő-lelete, gate QA + Cybered (MikroB döntése: az F1 javítás alakját Cybersec adta, ezért nem független). 34573931 forrása 779b9660 RedHat A1-A3, gate QA + Cybered; az A1/A3 záró döntése MikroB (msg 10117, 10116). 3fb0ef97 még nyitott (planned, plan-grilling előtt).
