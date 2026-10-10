@@ -1,6 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, readdirSync, mkdirSync, copyFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -11,7 +11,26 @@ import { tmpdir } from 'node:os'
 // "missing:<path>" entries after the copy step and re-deleting them. VENDOR_SANCTIONED_FILE
 // lets this test point at a throwaway baseline instead of the real, tracked one.
 const ROOT = join(__dirname, '..', '..')
-const SCRIPT = join(ROOT, 'store', 'vendor-skill.sh')
+
+// Test-isolation fix (found while landing card 68254bd7, unrelated card): vendor-skill.sh derives
+// its git-clone-cache dir (ADOPTED_DIR) from its OWN on-disk location (`$(dirname "$0")/adopted`),
+// never from an env var. Invoking the real store/vendor-skill.sh directly, as this file used to,
+// made every clone in this test land in the REAL, TRACKED store/adopted/ of whatever checkout runs
+// the suite -- never cleaned up, and racing any other test (e.g. token-in-argv-guard.test.ts) that
+// scans store/adopted/ concurrently in the same vitest run (TOCTOU ENOENT, or a stray curl-shaped
+// fixture string). Fixed the same way vendor-skill-dest.test.ts / vendor-skill-no-git.test.ts
+// already do: copy the script into a throwaway sandbox so `$(dirname "$0")` -- and therefore
+// ADOPTED_DIR -- resolves inside the sandbox instead.
+let scriptSandbox: string
+let SCRIPT: string
+beforeAll(() => {
+  scriptSandbox = mkdtempSync(join(tmpdir(), 'vendor-skill-sanctioned-script-'))
+  SCRIPT = join(scriptSandbox, 'vendor-skill.sh')
+  copyFileSync(join(ROOT, 'store', 'vendor-skill.sh'), SCRIPT)
+})
+afterAll(() => {
+  rmSync(scriptSandbox, { recursive: true, force: true })
+})
 
 const dirs: string[] = []
 function mkdtemp(prefix: string): string {
