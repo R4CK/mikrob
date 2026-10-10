@@ -32,9 +32,8 @@ Nézd át, mi történt **az előző memória-kör óta**. Két dolgot csinálj:
 Ha volt fontos döntés, preferencia, tanulság vagy bármi ami később hasznos, mentsd el:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/memories \
+printf 'Authorization: Bearer %s\n' "$(cat {{INSTALL_DIR}}/store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:3420/api/memories \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" \
   -d '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}'
 ```
 
