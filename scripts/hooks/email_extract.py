@@ -212,6 +212,16 @@ def collect_mcp_recipients(tool_input: dict):
 # STRICT base64 string (hash the literal string, as today) are accepted;
 # everything else is unreadable_reason, fail-closed (a new approval is
 # required rather than silently anchoring the wrong thing).
+# WhiteHat2 NO-GO F1' (card e4eb72c9, komment 16365/16368, delta on the allow-list above):
+# Python's `re.match`/`$` anchors at the end of the string OR right before a TRAILING newline --
+# "abc/def\n" matches _STRICT_B64_RE (the JS side has no such exception: a trailing "\n" makes
+# isFilePath's own `/^[A-Za-z0-9+\/]+=*$/` fail, so the MCP server reads the string as a relative
+# FILE instead, same bypass class as the one this allow-list exists to close). `fullmatch` has no
+# such exception -- `$` inside it still means "end of string", but `fullmatch` additionally
+# requires the WHOLE string to be consumed, so a trailing "\n" (or anything else after the base64
+# body) fails. Measured: a full 1-5 char / 15-symbol-alphabet search for hook=inline vs MCP=file
+# pairs found 40 matches, all of the "<alnum with at least one `/`> + trailing \n" shape; 0 after
+# this fix.
 _ABS_PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
 _STRICT_B64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
 
@@ -235,14 +245,20 @@ def collect_mcp_attachments(tool_input: dict):
         if not isinstance(content, str) or not content:
             return [], f"a '{filename}' melleklet tartalma hianyzik vagy nem szoveg"
         if _ABS_PATH_RE.match(content):
+            # L1 (WhiteHat2 komment 16365, LOW): a NUL byte or a lone surrogate in `content`
+            # raises ValueError/UnicodeEncodeError from open()/the OS call, not OSError -- an
+            # uncaught one would crash this function with a traceback, and main()'s own net
+            # (card e4eb72c9) does not wrap collect_email_envelope, so the hook would exit 1,
+            # which PreToolUse treats as NON-blocking. Caught here, same fail-closed outcome
+            # as an unreadable file.
             try:
                 with open(content, "rb") as fh:
                     data = fh.read()
-            except OSError as exc:
+            except (OSError, ValueError) as exc:
                 return [], f"a '{filename}' melleklet fajlja nem olvashato ({content}): {exc!r}"
             out.append({"filename": filename, "path": content,
                         "sha256": hashlib.sha256(data).hexdigest()})
-        elif _STRICT_B64_RE.match(content) and len(content) % 4 == 0:
+        elif _STRICT_B64_RE.fullmatch(content) and len(content) % 4 == 0:
             out.append({"filename": filename,
                         "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()})
         else:
