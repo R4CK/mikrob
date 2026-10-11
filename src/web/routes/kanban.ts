@@ -30,6 +30,7 @@ import {
 } from '../../db.js'
 import { isForceActor } from '../../kanban-force-actors.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
+import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
@@ -1152,6 +1153,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
     const { status, sort_order, actor, force, reason } = JSON.parse(body.toString())
+    // Card 2520b85a (measurement-only slice): see agent-identity-measure.ts.
+    measureAgentIdentityClaim(ctx, 'POST /api/kanban/:id/move', actor)
     if (newDevStopWouldBlock(id, status, force === true, typeof actor === 'string' ? actor : undefined)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
       return true
@@ -1355,6 +1358,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // silently rewriting an unverified author -- see
     // src/__tests__/kanban-comment-author-trust-boundary.test.ts, which pins the current,
     // deliberate behavior as a regression.
+    // Card 2520b85a (measurement-only slice): observe legacy-token vs per-agent-key usage and
+    // claim/identity mismatches, without enforcing anything -- see agent-identity-measure.ts.
+    measureAgentIdentityClaim(ctx, 'POST /api/kanban/:id/comments', author)
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.

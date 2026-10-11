@@ -18,6 +18,7 @@ import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
 import { isReservedSenderId } from '../system-directive-id.js'
 import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -143,6 +144,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'from, to, and content are required' }, 400)
       return true
     }
+    // Card 2520b85a (measurement-only slice): see agent-identity-measure.ts.
+    measureAgentIdentityClaim(ctx, 'POST /api/messages', from)
     // Security: the channel-coordinator id grants channel-inbound delivery
     // (verbatim <channel> + reply-expected framing) in the message-router. The
     // ONLY legitimate writer of that id is the in-process coordinator, which
