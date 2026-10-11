@@ -55,3 +55,15 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `d3-data-visualization` -- kampány-metrikák vizualizáció
 - `project-workflow` -- csapat-workflow
 - `idea-refine` -- nyers kampány-/pozicionálási ötlet élesítése divergens-konvergens gondolkodással, feltételezések stressz-tesztje terv előtt (kártya 200d2969)
+
+## Skill-használat: melyik feladathoz melyik (KÖTELEZŐ, Peti szabály 2026-09-24, 20. szabály)
+
+| Feladat típusa | Első skill | Mellé |
+|---|---|---|
+| Pozicionálás, GTM, landing copy | `marketing-gtm` | `humanize-writing` |
+| Végleges kampány-/landing-/social szöveg | `humanize-writing` | `marketing-gtm` |
+| Landing/kampány vizuál | `frontend-design-research` | - |
+| Kampány-metrika chart/dashboard | `d3-data-visualization` | - |
+| Nem-triviális, többlépéses feladat | `project-workflow` | - |
+
+A REVIEW-komment `Skills: <a ténylegesen betöltött skillek>` sora kötelező (a 20. munkavégzési szabály, a `Gate-SHA:` sor mintájára). Ha egyik sem illett: `Skills: nincs illő` + egy félmondat, miért.
