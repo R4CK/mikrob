@@ -346,18 +346,18 @@ describe('marveen-land.sh (card dc185b52)', () => {
     expect(() => git(main, 'merge-base', '--is-ancestor', preLandTip, 'origin/develop')).not.toThrow()
   }, LAND_TIMEOUT_MS)
 
-  it('--all lands every agent/*/work branch with unmerged work in one sweep', async () => {
+  it('--all reports every agent/*/work branch with unmerged work, but lands none of them (card cd3e577b, MikroB decision 16324)', async () => {
     await commitInWorktree('backend', { 'backend-new.txt': 'x\n' })
     await commitInWorktree('fullstack', { 'fullstack-new.txt': 'y\n' })
 
     const r = await runLand(['--all'], writeStub(0))
     expect(r.status).toBe(0)
-    expect(r.out).toContain('backend: LANDED')
-    expect(r.out).toContain('fullstack: LANDED')
+    expect(r.out).toContain('agent/backend/work has unlanded commit(s), not landed automatically')
+    expect(r.out).toContain('agent/fullstack/work has unlanded commit(s), not landed automatically')
 
     gitOk(main, 'fetch', '-q', 'origin', 'develop')
     const files = git(main, 'ls-tree', '-r', '--name-only', 'origin/develop')
-    expect(files.split('\n')).toEqual(expect.arrayContaining(['backend-new.txt', 'fullstack-new.txt']))
+    expect(files.split('\n')).not.toEqual(expect.arrayContaining(['backend-new.txt', 'fullstack-new.txt']))
   }, LAND_TIMEOUT_MS)
 
   it('landing again after a clean land is a no-op, not an error', async () => {
