@@ -22,10 +22,48 @@ export const FORBIDDEN_ASSIGNEE_MESSAGE =
   'kartyat. Adj felelos szerep-ugynokot (fazis -> lead agent, level -> szerep-ugynok terheles ' +
   'szerint, root CLAUDE.md 6a szabaly).'
 
+export const INVALID_ASSIGNEE_TYPE_MESSAGE =
+  'assignee csak szoveg (string) vagy ures (null/undefined) lehet, nem tomb/objektum/szam.'
+
+// WhiteHat F3 (NO-GO komment 15784/10562, kartya e25a549a): zero-width/formatting karakterek es
+// Cirill/Gorog hasonmasok atmentek a sima .trim().toLowerCase() osszevetesen. Nem csak a 6 betu
+// ("mikrob") hasonmasait listazzuk, hanem egy szokasos, hatarolt Cirill/Gorog->Latin tablat -- igy
+// a jovoben barmelyik iranyban hasonlo betucsere is elkapva marad, nem csak a ma mert eset.
+const INVISIBLE_RE = /[​‌‍⁠﻿­]/g
+const CONFUSABLES: Record<string, string> = {
+  'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c',
+  'у': 'y', 'х': 'x', 'і': 'i', 'ј': 'j', 'ѕ': 's',
+  'к': 'k', 'м': 'm',
+  'А': 'A', 'Е': 'E', 'О': 'O', 'Р': 'P', 'С': 'C',
+  'У': 'Y', 'Х': 'X', 'І': 'I', 'Ј': 'J', 'Ѕ': 'S',
+  'К': 'K', 'М': 'M',
+  'ο': 'o', 'Ο': 'O', // Greek omicron
+}
+
+function foldConfusables(s: string): string {
+  let out = ''
+  for (const ch of s) out += CONFUSABLES[ch] ?? ch
+  return out
+}
+
 /**
- * True when `value` names MikroB (any case/whitespace variant), i.e. the field this guards
- * against. A non-string or any other agent name returns false.
+ * True when `value` names MikroB -- any case/whitespace variant, full-width form (NFKC-folded),
+ * zero-width/soft-hyphen-padded, or Cirill/Gorog look-alike letters (WhiteHat F3). A non-string
+ * value is never forbidden here -- see isInvalidAssigneeShape for that check.
  */
 export function isForbiddenAssignee(value: unknown): boolean {
-  return typeof value === 'string' && value.trim().toLowerCase() === FORBIDDEN_ASSIGNEE
+  if (typeof value !== 'string') return false
+  const folded = foldConfusables(value.normalize('NFKC').replace(INVISIBLE_RE, ''))
+  return folded.trim().toLowerCase() === FORBIDDEN_ASSIGNEE
+}
+
+/**
+ * True when `value` is present but not a string (WhiteHat F1, kartya e25a549a): a single-element
+ * array like ["mikrob"] skips the plain `typeof value === 'string'` check entirely, and
+ * better-sqlite3 silently unwraps a one-element array bind parameter to its scalar -- so the
+ * array form reached the DB as the literal string "mikrob". assignee has no legitimate shape
+ * other than string/null/undefined; anything else is rejected before it reaches the DB layer.
+ */
+export function isInvalidAssigneeShape(value: unknown): boolean {
+  return value !== undefined && value !== null && typeof value !== 'string'
 }

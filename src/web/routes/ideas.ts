@@ -3,7 +3,7 @@ import { createReadStream, existsSync, mkdirSync, unlinkSync, writeFileSync } fr
 import { execFile } from 'node:child_process'
 import { extname, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
-import { MAIN_AGENT_ID, BOT_NAME, PROJECT_ROOT } from '../../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { listIdeas, createIdea, updateIdea, deleteIdea, listIdeaCategories, createKanbanCard, getDb, getIdeaComments, addIdeaComment, logIdeaStatusChange, getIdeaStatusLog, listIdeaAttachments, getIdeaAttachment, addIdeaAttachment, deleteIdeaAttachment } from '../../db.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
@@ -377,13 +377,14 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
     const cardId = randomUUID().slice(0, 8)
     const status = phase === 'plan' ? 'planned' : 'waiting'
     const title = phase === 'plan' ? idea.title : `[Részlet kidolgozás] ${idea.title}`
+    // Kartya e25a549a: nincs tobbe assignee=BOT_NAME (elesben "MikroB", ami mostantol tiltott
+    // ertek) -- felelos nelkul marad, a 6a sweep osztja ki a tenyleges szerep-ugynoknek.
     createKanbanCard({
       id: cardId,
       title,
       description: idea.description ?? '',
       status,
       priority: 'normal',
-      assignee: BOT_NAME,
       project: 'Fejlesztési ötletek',
     })
     logIdeaStatusChange(ideaId, idea.status, 'kanban', MAIN_AGENT_ID, `promote:${phase}`)
@@ -430,30 +431,38 @@ export async function tryHandleIdeas(ctx: RouteContext): Promise<boolean> {
       ? `${baseDesc}\n\n## Siker-kritérium\n${success_criteria.trim()}`.trimStart()
       : baseDesc
     const parentId = randomUUID().slice(0, 8)
+    // Kartya e25a549a: nincs tobbe assignee=BOT_NAME a szulon (elesben "MikroB", tiltott ertek) --
+    // felelos nelkul marad, a 6a sweep osztja ki. A gyerek-alfeladatok assignee-je CALLER-CONTROLLED
+    // (st.assignee, a jovahagyott breakdown-UI-bol), ezert a createKanbanCard() sajat
+    // assertValidAssignee() backstopja dobhat -- 400-ra forditva, nem 500-ra.
     createKanbanCard({
       id: parentId,
       title: idea.title,
       description: parentDesc,
       status: 'planned',
       priority: 'normal',
-      assignee: BOT_NAME,
       project: 'Fejlesztési ötletek',
     })
     const childIds: string[] = []
-    for (const st of subtasks) {
-      if (!st.title) continue
-      const childId = randomUUID().slice(0, 8)
-      createKanbanCard({
-        id: childId,
-        title: String(st.title).slice(0, 120),
-        description: (st.description ?? '').slice(0, 500),
-        status: 'planned',
-        priority: (st.priority && VALID_PRIORITIES.has(st.priority) ? st.priority : 'normal') as 'low' | 'normal' | 'high' | 'urgent',
-        assignee: st.assignee || BOT_NAME,
-        project: 'Fejlesztési ötletek',
-        parent_id: parentId,
-      })
-      childIds.push(childId)
+    try {
+      for (const st of subtasks) {
+        if (!st.title) continue
+        const childId = randomUUID().slice(0, 8)
+        createKanbanCard({
+          id: childId,
+          title: String(st.title).slice(0, 120),
+          description: (st.description ?? '').slice(0, 500),
+          status: 'planned',
+          priority: (st.priority && VALID_PRIORITIES.has(st.priority) ? st.priority : 'normal') as 'low' | 'normal' | 'high' | 'urgent',
+          assignee: st.assignee ?? undefined,
+          project: 'Fejlesztési ötletek',
+          parent_id: parentId,
+        })
+        childIds.push(childId)
+      }
+    } catch (err) {
+      json(res, { error: (err as Error).message }, 400)
+      return true
     }
     logIdeaStatusChange(ideaId, idea.status, 'kanban', MAIN_AGENT_ID, `promote-breakdown:${childIds.length} subtasks`)
     updateIdea(ideaId, { status: 'kanban', kanban_id: parentId })
