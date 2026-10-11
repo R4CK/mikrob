@@ -109,6 +109,24 @@ export function deleteOwnTokenSecret(planId: string, secretId: string | null | u
   if (secretId && secretId === tokenSecretIdFor(planId)) deleteSecret(secretId)
 }
 
+// Card 93ed929a (WhiteHat F1 on 517fdcc5, comment 16354): this whole file had no principal gate
+// at all -- the shared agent bearer every fleet agent holds could create/edit/delete plans
+// (including vault-secret writes) and, worse, trigger POST /rotate, which swaps the live
+// Claude credential and restarts agents (CLAUDE_ROTATION_FLEET even restarts the whole fleet).
+// Same human-only posture as POST /api/connectors's project-scope stdio add (card 67e73b48) and
+// POST /api/fleet/import?apply=true (card 68254bd7): a browser session or a device key, never
+// the shared 'token' credential. Unconditional (not behind CLAUDE_ROTATION_ENABLED/FLEET or any
+// other flag) -- this is what makes the fail-closed-at-startup requirement trivially true: there
+// is no code path where rotation can run without this check already having passed, independent
+// of whatever the rotation env vars are set to.
+function rejectIfNotHumanAuth(ctx: RouteContext): boolean {
+  if (ctx.auth?.kind === 'session' || ctx.auth?.kind === 'device') return false
+  logger.warn({ authKind: ctx.auth?.kind ?? 'none', path: ctx.path, method: ctx.method },
+    'Claude plans: write/rotate rejected for non-human credential')
+  json(ctx.res, { error: 'This operation requires a browser session or a device key, not the shared agent token.' }, 403)
+  return true
+}
+
 export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -121,6 +139,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
 
   // Create a new plan.
   if (path === '/api/claude-plans' && method === 'POST') {
+    if (rejectIfNotHumanAuth(ctx)) return true
     let body: unknown
     try {
       body = JSON.parse((await readBody(req)).toString())
@@ -182,6 +201,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   // way because a first assignment and a later rotation are the same
   // operation: "agentId is now on targetPlanId").
   if (path === '/api/claude-plans/rotate' && method === 'POST') {
+    if (rejectIfNotHumanAuth(ctx)) return true
     let body: unknown
     try {
       body = JSON.parse((await readBody(req)).toString())
@@ -373,6 +393,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   // a differing id in the body is discarded, so this can never rename a plan
   // into colliding with a different existing entry.
   if (idMatch && method === 'PUT') {
+    if (rejectIfNotHumanAuth(ctx)) return true
     let body: unknown
     try {
       body = JSON.parse((await readBody(req)).toString())
@@ -431,6 +452,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   // simply starts reporting planUnresolved afterwards (resolveAgentConfigDir
   // already handles that) -- deleting here does not touch any agent config.
   if (idMatch && method === 'DELETE') {
+    if (rejectIfNotHumanAuth(ctx)) return true
     const current = readClaudePlans()
     const removed = current.find((p) => p.id === idMatch[1])
     const next = current.filter((p) => p.id !== idMatch[1])

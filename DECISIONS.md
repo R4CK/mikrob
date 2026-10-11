@@ -19850,3 +19850,23 @@ A teszt-helper (`makeCtx`) kiegeszitve `res.setHeader` stub-bal es `req.headers 
 Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
 
 **Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, MikroB dontese 16623 utan).
+
+## 2026-10-11 -- Kartya 93ed929a: /api/claude-plans principal-kapu, mielott a CLAUDE_ROTATION_ENABLED/FLEET bekapcsolhato (upstream 10. koteg, WhiteHat F1 a 517fdcc5 GO-n, komment 16354)
+
+Forras: WhiteHat 517fdcc5 GO (komment 16354, msg 10802), F1 MEDIUM (HIGH, ha a rotacio be van kapcsolva): az upstream 10. koteg a `/api/claude-plans` route-okat PRINCIPAL-KAPU NELKUL hozta -- a teljes fajl (`src/web/routes/claude-plans.ts`) sosem ellenorizte `ctx.auth`-ot. A kozos flotta-bearer, amit minden agent hord, letrehozhatott/modosithatott/torolhetett plant (vault-titkos iras is), es -- a legsulyosabb -- elindithatta a `POST /rotate`-ot, ami a LIVE Claude-hitelesito adatot cserelt es a fo-agenst (CLAUDE_ROTATION_FLEET eseten a TELJES flottat) ujrainditotta. Elo hatas MA nulla, mert `CLAUDE_ROTATION_ENABLED` es `CLAUDE_ROTATION_FLEET` alapertek 0 es nincs beallitva ezen a telepitesen.
+
+**Javitas (1): session/device-only kapu a plan-iro es rotalo route-okra.** `rejectIfNotHumanAuth(ctx)` -- UGYANAZ a minta, mint a POST /api/connectors project-scope stdio add (kartya 67e73b48) es a POST /api/fleet/import?apply=true (kartya 68254bd7): `ctx.auth?.kind === 'session' || ctx.auth?.kind === 'device'`, kulonben 403 + warn-log. Bedrotozva MIND a negy erzekeny hivasi helyre: `POST /api/claude-plans` (plan letrehozas), `PUT /api/claude-plans/:id` (modositas), `DELETE /api/claude-plans/:id` (torles), `POST /api/claude-plans/rotate` (a tenyleges rotacio). `GET /api/claude-plans`, `GET .../state` es `POST .../:id/probe` VALTOZATLAN (olvaso, illetve mar sajat rate-limittel vedett -- nem a kartya kore).
+
+**Javitas (2): fail-closed indulas -- STRUKTURALISAN, nem egy kulon startup-ellenorzessel.** A kapu NEM feltetel nelkuli env-kapcsolok mogott (nem `if (isRotationEnabled() && !gateArmed)`-tipusu kulon logika), hanem FELTETLEN minden hivason, fuggetlenul a `CLAUDE_ROTATION_ENABLED`/`CLAUDE_ROTATION_FLEET` ertekétol. Ez strukturalisan kizarja a kartya altal felvetett "a kapcsolo be van kapcsolva, de a kapu nincs elesitve" allapotot: nincs olyan kodut, amin a rotacio a kapu elott futhatna, FUGGETLENUL attol, mire vannak allitva a rotacios env-valtozok. Kulon futasideju assert-et SZANDEKOSAN nem epitettunk -- egy ujabb, kulon ellenorizheto/kikerulheto mechanizmus tobb kockazatot adna, mint amennyit megszuntetne, amikor a kapu maga mar feltetel nelkul all.
+
+**Teszt (`claude-plans-routes.test.ts`, +8 teszt, mutacioval ellenorizve):** a megelozo 38 teszt (irt a kapu elott) a `fakeCtx` ALAPERTELMEZETT `{kind:'session'}` auth-javal VALTOZATLANUL zold marad (a kapu visszafele kompatibilis a dashboard-sessionre). Uj negativ tesztek: kozos token, nincs auth-principal (`{}`, kulon megjegyezve, miert nem `undefined` -- a JS default-parameter szemantika `undefined`-re is a defaultot alkalmazta volna), federacios peer -- mindharom 403, SEMMI iras (fajl-tartalom bajtra pontos egyezes vagy a lista valtozatlan). Pozitiv kontroll: device-kulcs 201-et kap. PUT/DELETE/rotate: kozos token eseten 403, a fajl/az allapot valtozatlan, `hardRestartMarveenChannels` SOHA nem hivodik. Mutacio (`rejectIfNotHumanAuth` korlatlanul `false`-t ad vissza): PONTOSAN a 7 uj negativ teszt valtott PIROSRA, a 39 pozitiv (default session-auth) teszt zold maradt. Visszaallitva, 46/46 zold. `npx tsc --noEmit` tiszta.
+
+**(4) GATESENDER922/GATEDEADLOCK922:** mar javitva a 517fdcc5 delta-korben (lasd fentebb a fajlban) -- a tesztek visszaallitva, mutacioval igazolva, a kartya ezen pontja mar zart volt a felvetelkor.
+
+**(5) env-kapcsolok:** `CLAUDE_ROTATION_ENABLED` es `CLAUDE_ROTATION_FLEET` EZEN a kartyan NEM kapcsolodik be -- ez a kartya a kapu megepitese, nem a rotacio elesitese. A bekapcsolas kulon, Peti jovahagyasaval jon, ha egyaltalan jon.
+
+Celzott futas (5 claude-plans-* fajl): 92/92 zold.
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a kartya sajat kijelolese -- a javitasi iranyt WhiteHat adta, a re-gate RedHate).
