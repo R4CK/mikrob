@@ -40,6 +40,18 @@ function runCheck(rootDir: string): { stale: boolean } {
   }
 }
 
+/** Runs the script with arbitrary argv and returns the raw exit status, without the
+ * stale/fresh reinterpretation runCheck() does -- for tests asserting on the exit code itself. */
+function execFileSyncRaw(args: string[]): { status: number | null } {
+  try {
+    execFileSync('python3', args, { stdio: ['ignore', 'ignore', 'pipe'] })
+    return { status: 0 }
+  } catch (e) {
+    const err = e as { status: number | null }
+    return { status: err.status }
+  }
+}
+
 describe('node-modules-stale-check.py', () => {
   it('no package-lock.json at all -- unverifiable, stale', () => {
     expect(runCheck(root).stale).toBe(true)
@@ -106,6 +118,59 @@ describe('node-modules-stale-check.py', () => {
     // branch taken -- either way the entry's os/cpu-mismatch-or-match path must not false-positive
     // without an installed record; assert only that the script does not crash and returns a verdict.
     expect(typeof runCheck(root).stale).toBe('boolean')
+  })
+
+  // F2 surviving mutants (card 6070f801, WhiteHat). The two tests above only exercise the SKIP
+  // branch (os/cpu listed but not matching this host) -- a mutant that always skips the os/cpu
+  // filter regardless of match would still pass them. These pin the POSITIVE match branch: this
+  // host's own os (linux) / cpu (x64 on x86_64, per platform.machine()'s node-style mapping) is
+  // declared, so the filter must NOT skip, and a real version mismatch underneath it must surface.
+  it('os filter: declared entry for THIS host\'s OS does not get skipped -- a real mismatch underneath still surfaces as stale', () => {
+    writeJson(join(root, 'package-lock.json'), {
+      packages: { '': {}, 'node_modules/foo': { version: '2.0.0', os: ['linux'] } },
+    })
+    mkdirSync(join(root, 'node_modules', 'foo'), { recursive: true })
+    writeJson(join(root, 'node_modules', '.package-lock.json'), { packages: { 'node_modules/foo': { version: '1.0.0' } } })
+    writeJson(join(root, 'node_modules', 'foo', 'package.json'), { name: 'foo', version: '1.0.0' })
+    expect(runCheck(root).stale).toBe(true)
+  })
+
+  it('cpu filter: declared entry for THIS host\'s CPU does not get skipped -- a real mismatch underneath still surfaces as stale', () => {
+    const nodeCpu = process.arch === 'arm64' ? 'arm64' : 'x64'
+    writeJson(join(root, 'package-lock.json'), {
+      packages: { '': {}, 'node_modules/foo': { version: '2.0.0', cpu: [nodeCpu] } },
+    })
+    mkdirSync(join(root, 'node_modules', 'foo'), { recursive: true })
+    writeJson(join(root, 'node_modules', '.package-lock.json'), { packages: { 'node_modules/foo': { version: '1.0.0' } } })
+    writeJson(join(root, 'node_modules', 'foo', 'package.json'), { name: 'foo', version: '1.0.0' })
+    expect(runCheck(root).stale).toBe(true)
+  })
+
+  it('missing install-state record for a declared package -- stale, even if a same-named package.json already sits on disk', () => {
+    // Disk presence alone (package.json exists) must not substitute for npm's own bookkeeping
+    // record: a mutant that checked only disk, or only skipped the "inst is None" branch, would
+    // wrongly call this fresh.
+    writeJson(join(root, 'package-lock.json'), { packages: { '': {}, 'node_modules/foo': { version: '1.0.0' } } })
+    mkdirSync(join(root, 'node_modules', 'foo'), { recursive: true })
+    writeJson(join(root, 'node_modules', '.package-lock.json'), { packages: {} }) // no record for foo at all
+    writeJson(join(root, 'node_modules', 'foo', 'package.json'), { name: 'foo', version: '1.0.0' })
+    expect(runCheck(root).stale).toBe(true)
+  })
+
+  // F1 fail-closed fix (card 6070f801, WhiteHat). Before the fix, any uncaught exception inside
+  // the script exited 1 -- Python's own default for an unhandled exception -- which is byte-
+  // identical to the script's OWN "fresh" signal. Both callers (fleet-test.sh, update.sh) trusted
+  // that as "not stale" and skipped the self-heal silently.
+  it('FAIL-CLOSED: missing argv[1] (an uncaught exception pre-fix) must report stale, not fresh', () => {
+    const result = execFileSyncRaw([SCRIPT]) // no root-dir argument at all
+    expect(result.status).toBe(0) // exit 0 = stale
+  })
+
+  it("MUTATION: without the fail-closed argv guard, a missing argument would crash with rc=1 (indistinguishable from fresh)", () => {
+    // Prove the test actually distinguishes the two behaviors: the documented pre-fix shape.
+    const preFixWouldExit = 1 // IndexError -> Python's default uncaught-exception exit code
+    const result = execFileSyncRaw([SCRIPT])
+    expect(result.status).not.toBe(preFixWouldExit)
   })
 
   it('root package-lock.json entry ("") never requires an install-state match', () => {

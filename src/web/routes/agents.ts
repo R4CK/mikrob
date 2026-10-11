@@ -2384,6 +2384,21 @@ function compactPrompt(): string {
       return true
     }
 
+    // Card 4f4cb0df (CYBERED NO-GO B2, MikroB decision 15397): a fresh (non-overwrite) import is
+    // unaffected by the gate above, but the client-controlled allowRiskyFields=1 switch let it back
+    // in through the front door anyway -- toolDeny/securityProfile/capabilities/customProvider,
+    // .claude/settings.json hooks, .claude/hooks/, and .mcp.json command/args all pass through
+    // verbatim for ANY authenticated caller, shared bearer included, no approval. Same fix as
+    // overwrite: hard-refuse the switch itself until card 3fb0ef97 ships, instead of trusting it.
+    const AGENT_IMPORT_ALLOW_RISKY_FIELDS_FAIL_CLOSED = true
+    if (allowRiskyFields && AGENT_IMPORT_ALLOW_RISKY_FIELDS_FAIL_CLOSED) {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Agent import: allowRiskyFields=1 hard-refused (fail-closed pending card 3fb0ef97)')
+      json(res, {
+        error: 'Agent import (allowRiskyFields=1) is disabled until a non-forgeable approval channel ships (card 3fb0ef97). Import without risky fields for now.',
+      }, 403)
+      return true
+    }
+
     try {
       // One endpoint accepts either format: peek the manifest, then dispatch to
       // the single-agent or whole-fleet importer.

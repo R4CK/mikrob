@@ -18940,3 +18940,15 @@ fullstack sajat munkaja. Gate: QA + Cybersec, a kartya sajat kijelolese szerint.
 **Mérés:** típuskontroll tiszta (`tsc --noEmit`, exit 0). Célzott tesztek: `bridge-enroll.test.ts` (+4 új N1-re, a meglévő token-es esetek session-re átírva), `connectors-project-stdio-auth-gate.test.ts` (8, érintetlen -- a lánc második fele itt már eddig is zárt volt), `agent-scaffold-mcp-seeding.test.ts` (+2 N2-re), `mcp-inheritance.test.ts` (29), `isolated-config-mcp-reconcile.test.ts`, `config-registry.test.ts` -- mind zöld, 83/83 a célzott klaszteren.
 
 **Ki döntött:** WhiteHat adta a N1 javítási irányt (NO-GO, msg 10434) és kérte a RedHat re-gate-et; MikroB döntött N2-ről (msg 10434 komment 15205); backend2 implementálta mindkettőt. Gate: QA + Cybered, a kártya saját szövege szerint.
+
+## 2026-10-10 -- card 4f4cb0df: POST /api/agents/import és /api/skills/import overwrite=1 hard fail-closed a megosztott bearerre is (WhiteHat NO-GO, 68254bd7 szomszédja)
+
+**Mi volt a hiba (WhiteHat NO-GO a 68254bd7-en, msg 10270, 4. pont):** a `src/web/routes/agents.ts`-ben a POST /api/agents/import a megosztott bearerrel is elérhető, és `overwrite=1`-gyel egy MEGLÉVŐ ügynök mappáját cseréli le, hookokkal együtt -- ugyanaz a hibaosztály, mint a fleet-import `apply=true` ága, amit a 68254bd7 már lezárt a session-only, human-only kapuval. A 68254bd7 saját REVIEW-ja ezt a POST /api/agents/import ágat tudatosan kihagyta, ezért nyitotta MikroB ezt a külön kártyát (predecessor: 68254bd7).
+
+**Mit tiltottunk és miért:** a POST /api/agents/import `overwrite=1` ága mostantól MINDEN auth-kind-ra (session, device, a megosztott token is) kemény 403-at ad, amíg a nem-hamisítható jóváhagyási csatorna (kártya 3fb0ef97, jelenleg `planned`) el nem készül -- ugyanaz a hard fail-closed mintázat, mint a 68254bd7 `FLEET_IMPORT_APPLY_FAIL_CLOSED` literálja: szándékosan hardkódolt konstans, nem env-vezérelt, hogy ne legyen bespoke jóváhagyás-nyitó kódút, amit egy megosztott bearer megkerülhetne. Emellé közös, megosztott kockázatos-mező allowlist (`SAFE_CONFIG_IMPORT_KEYS`) a fleet-import oldalon lévő minta alapján, nem másolatként -- ugyanazon a kódúton.
+
+**Hogyan nyitható újra:** a 3fb0ef97 (nem-hamisítható jóváhagyási csatorna) leszállítása után az overwrite=1 ág ismét engedélyezhető a csatornán keresztül, a 68254bd7-nél leírt mintával -- addig re-import csak más néven, vagy a meglévő ügynök mappájának kézi törlése után.
+
+**Mérés:** típuskontroll tiszta. Célzott teszt: `agents-import-auth-gate.test.ts` -- az overwrite=1 ág minden auth-kind-ra 403-at ad, mutáció-pin-nel (a javítás nélkül a teszt pirosra vált). A teljes mopsion-suite-run.sh futás a merge eredményén (a 67e73b48-cal egy landolásban): 952 passed (954 test file), 27233 passed + 101 skipped (27336 teszt), Gate-SHA: ac37ee68.
+
+**Ki döntött:** a leletet WhiteHat adta (NO-GO, msg 10270); a végrehajtás backend2 saját munkája, a 68254bd7-nél kialakult minta követésével, saját jóváhagyási mechanizmus írása nélkül (MikroB utasítása, msg 10432). Gate: QA + Cybered, a kártya saját sora szerint.

@@ -145,11 +145,105 @@ describe('update.sh: the npm-ci decision is state-based, not git-diff-only (card
     makeStaleInstall(installDir)
     const mutated = block.replace(
       `if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock)?\\.json$" \\
-  || python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"; then`,
+  || [ "$NPM_CI_DEPS_STALE_RC" -ne 1 ]; then`,
       `if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock)?\\.json$"; then`,
     )
     expect(mutated, 'the mutation did not apply').not.toBe(block)
     const result = runHarness(mutated, installDir, { oldVersion: 'old', newVersion: 'new', gitDiffOutput: 'README.md' })
+    expect(result.stdout).not.toContain('FAKE_NPM_CI_CALLED')
+  })
+
+  it('FAIL-CLOSED (card 6070f801, WhiteHat F1): if the stale-check script itself cannot run (bad path -- rc=127), update.sh still runs npm ci instead of silently trusting "fresh"', () => {
+    makeFreshInstall(installDir) // fresh fixture -- without the fail-closed fix, npm ci would NOT run
+    const harness = `
+set -uo pipefail
+INSTALL_DIR="${installDir}"
+NODE_MODULES_STALE_CHECK_PY="/nonexistent/node-modules-stale-check.py"
+OLD_VERSION="abc"
+NEW_VERSION="abc"
+NEW_VERSION_FULL="abc-full"
+BUILT_COMMIT_FILE="${join(installDir, '.built-commit')}"
+FORCE_REBUILD=0
+RESEED_FLEET=0
+REGEN_CLAUDEMD=0
+MARVEEN_LANG=hu
+BOLD='' GREEN='' RED='' ORANGE='' DIM='' NC=''
+RESULT_STATUS="" RESULT_PHASE="" RESULT_MSG=""
+restore_stash_before_exit() { :; }
+git() { if [ "\${1:-}" = "diff" ]; then printf '%s\\n' ""; fi; }
+NPM_CI_CALLED=0
+npm() { if [ "\${1:-}" = "ci" ]; then NPM_CI_CALLED=1; echo "FAKE_NPM_CI_CALLED"; fi; return 0; }
+retry() { shift 2; "$@"; }
+${block}
+echo "REACHED_END_OF_BLOCK npm_ci_called=\${NPM_CI_CALLED}"
+`
+    mkdirSync(join(installDir, 'dist'), { recursive: true })
+    writeFileSync(join(installDir, '.built-commit'), 'abc-full\n')
+    let result: { stdout: string; status: number | null }
+    try {
+      const stdout = execFileSync('bash', ['-c', harness], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+      result = { stdout, status: 0 }
+    } catch (e) {
+      const err = e as { status: number | null; stdout: Buffer | string }
+      result = { stdout: String(err.stdout), status: err.status }
+    }
+    expect(result.stdout).toContain('node_modules elavult')
+    expect(result.stdout).toContain('FAKE_NPM_CI_CALLED')
+  })
+
+  it('MUTATION: without the DEPS_STALE_RC fail-closed check, a broken stale-check path (rc=127) would be silently read as fresh and skip npm ci', () => {
+    makeFreshInstall(installDir)
+    const mutated = block.replace(
+      `DEPS_STALE=0
+  python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"
+  DEPS_STALE_RC=$?
+  # Fail-closed (card 6070f801, WhiteHat F1): exit 1 is the ONLY confirmed-fresh signal the checker
+  # gives. Any other code (0=confirmed stale, 127=python3 itself missing, or an uncaught crash) must
+  # be treated as stale -- \`if python3 ...; then\` used to treat every nonzero code as "not stale",
+  # which silently skipped the self-heal on a crash or a missing interpreter.
+  if [ "$DEPS_STALE_RC" -ne 1 ]; then
+    DEPS_STALE=1
+  fi`,
+      `DEPS_STALE=0
+  if python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"; then
+    DEPS_STALE=1
+  fi`,
+    )
+    expect(mutated, 'the mutation did not apply').not.toBe(block)
+    const harness = `
+set -uo pipefail
+INSTALL_DIR="${installDir}"
+NODE_MODULES_STALE_CHECK_PY="/nonexistent/node-modules-stale-check.py"
+OLD_VERSION="abc"
+NEW_VERSION="abc"
+NEW_VERSION_FULL="abc-full"
+BUILT_COMMIT_FILE="${join(installDir, '.built-commit')}"
+FORCE_REBUILD=0
+RESEED_FLEET=0
+REGEN_CLAUDEMD=0
+MARVEEN_LANG=hu
+BOLD='' GREEN='' RED='' ORANGE='' DIM='' NC=''
+RESULT_STATUS="" RESULT_PHASE="" RESULT_MSG=""
+restore_stash_before_exit() { :; }
+git() { if [ "\${1:-}" = "diff" ]; then printf '%s\\n' ""; fi; }
+NPM_CI_CALLED=0
+npm() { if [ "\${1:-}" = "ci" ]; then NPM_CI_CALLED=1; echo "FAKE_NPM_CI_CALLED"; fi; return 0; }
+retry() { shift 2; "$@"; }
+${mutated}
+echo "REACHED_END_OF_BLOCK npm_ci_called=\${NPM_CI_CALLED}"
+`
+    mkdirSync(join(installDir, 'dist'), { recursive: true })
+    writeFileSync(join(installDir, '.built-commit'), 'abc-full\n')
+    let result: { stdout: string }
+    try {
+      const stdout = execFileSync('bash', ['-c', harness], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+      result = { stdout }
+    } catch (e) {
+      const err = e as { stdout: Buffer | string }
+      result = { stdout: String(err.stdout) }
+    }
+    // Without the fail-closed fix, rc=127 (missing script) is nonzero, so the OLD `if python3 ...;
+    // then` reads it as "not stale" -- the self-heal never triggers, npm ci never runs.
     expect(result.stdout).not.toContain('FAKE_NPM_CI_CALLED')
   })
 
