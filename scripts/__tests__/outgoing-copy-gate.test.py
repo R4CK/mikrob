@@ -195,6 +195,52 @@ def main():
         code, out, err = run_hook(email_payload(CLEAN_HU_OK + units), rules_file=active)
         check("unit notation (micro sign, super/subscript digits) passes (exit 0)", code, 0)
 
+        # 5d3. F1 (card 079c13d8, WhiteHat follow-up on 7e70144e): test gap --
+        # the fork's _TECH_COMMON mask deliberately does NOT contain a generic
+        # "lowercase hyphenated identifier" pattern (two earlier Cybersec NO-GOs,
+        # fbb36b41 round 7/8 and round 11, rejected exactly that shape because it
+        # swallows real prose, not just identifiers). Nothing until now pinned
+        # the CONSEQUENCE of ever reintroducing it: strip_technical() feeds
+        # mixed_script_words() (see audit()'s "prose = strip_technical(plain)"
+        # line), so a mask that strips a whole lowercase-hyphenated span would
+        # silently remove a homoglyph riding inside it, BEFORE the homoglyph
+        # check ever sees the word. A lowercase, hyphenated, non-identifier
+        # compound with a homoglyph half must still be caught today.
+        hyphen_homoglyph = "onteszt-kоszonom"  # "onteszt-koszonom" with Cyrillic 'o'
+        code, out, err = run_hook(
+            email_payload(f"Szia! {hyphen_homoglyph} a segitseget, majd irok reszletesen is."),
+            rules_file=active,
+        )
+        check("hyphenated lowercase homoglyph still blocks (exit 2)", code, 2)
+        check_true("hyphenated homoglyph: stderr names it", "VEGYES IRASRENDSZERU" in err, err)
+
+        # 5f. F3 (card 079c13d8, WhiteHat follow-up on 7e70144e, preliminary):
+        # KNOWN, DOCUMENTED gap, not fixed here. accent_check_tokens() tokenizes
+        # with HYPHEN_WORD, which takes a hyphenated run of letters as ONE token
+        # (see its own comment: "a kotojeles alakot EGESZKENT veszi"). That is
+        # deliberate for genuine kebab-case identifiers ("folyamatos-ellenorzes"
+        # already passes, same comment block). But it means a hyphenated PROSE
+        # compound made of two accentless Hungarian words -- "mar-keszen" (már
+        # készen, joined with a hyphen instead of a space) -- is looked up as the
+        # single string "mar-keszen" in ACCENTLESS, which only has single-word
+        # keys ("keszen" -> "készen" among them), so the compound matches
+        # nothing and the missing-accent finding never fires. Splitting on "-"
+        # and checking each half separately would close this, but was NOT done:
+        # it would also split real kebab identifiers that are not technical
+        # enough to be caught by strip_technical (no dot/slash/@, e.g. a plain
+        # "fajl-nev"-shaped slug in prose), and "fajl" is itself an ACCENTLESS
+        # key -- exactly the identifier-vs-prose ambiguity the two earlier
+        # NO-GOs (see _TECH_COMMON's own comment block) already rejected a
+        # broad fix for. This test PINS the current, known-accepted gap so a
+        # future change to accent_check_tokens must touch it deliberately, not
+        # widen or narrow it as an unseen side effect.
+        code, out, err = run_hook(
+            email_payload(CLEAN_HU_OK + " A riport mar-keszen van, holnap küldöm."),
+            rules_file=active,
+        )
+        check("F3 KNOWN GAP: hyphenated accentless compound passes uncaught (exit 0)", code, 0)
+        check_true("F3 KNOWN GAP: no missing-accent finding for the compound", "HIANYZO EKEZETEK" not in err, err)
+
         # 5e. clean, correctly-accented text with an active (matching-nothing)
         # rule and no em dash/double-hyphen/homoglyph -> passes clean.
         code, out, err = run_hook(email_payload(CLEAN_HU_OK), rules_file=active)
