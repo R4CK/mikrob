@@ -2671,6 +2671,18 @@ export function countDashboardUsers(includeDisabled = false): number {
   return (db.prepare(sql).get() as { c: number }).c
 }
 
+// Card 9655494c (F1-B1, RedHat NO-GO): countDashboardUsers()===0 is a CURRENT-state check, so
+// deleting the last user (shared token is allowed to do this, by design -- "back to token-only
+// mode") reopens the first-user bootstrap exception forever, letting the token mint itself a
+// session on demand. This checks whether bootstrap has EVER happened instead, via dashboard_users'
+// own AUTOINCREMENT counter (sqlite_sequence), which never resets on delete.
+export function hasDashboardBootstrapEverHappened(): boolean {
+  const row = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'dashboard_users'`).get() as
+    | { seq: number }
+    | undefined
+  return !!row && row.seq > 0
+}
+
 export function updateDashboardUserPassword(userId: number, passwordHash: string): void {
   db.prepare('UPDATE dashboard_users SET password_hash = ?, updated_at = ? WHERE id = ?')
     .run(passwordHash, Math.floor(Date.now() / 1000), userId)
