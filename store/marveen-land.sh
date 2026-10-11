@@ -88,6 +88,25 @@ say() { echo "  $*"; }
 die() { echo "REFUSED: $2" >&2; exit "$1"; }
 g() { git -C "$MAIN" "$@"; }
 
+# release_land_lock_fd (card cd3e577b, RedHat NO-GO 16401 finding B2): land_one's cleanup() calls
+# THIS, so it is the one real fd-close land_one actually runs in production -- pulled out to its
+# own top-level function, defined here (BEFORE the --selftest block below, which `exit`s well
+# before land_one's own definition is ever reached) so --selftest can call this SAME function
+# directly (it is already live by then) instead of testing a hand-written copy. RedHat measured
+# the first attempt at this test (comment 16401, B2) doing exactly that: the old --selftest defined
+# its own `cleanup_fixed`/`cleanup_buggy`, which pinned the test's OWN code, not land_one's
+# cleanup() -- reverting land_one's real fd-close to the old bare-exec bug left all 55 cases green.
+#
+# RedHat NO-GO 16276, B2b (the bug this exists to prevent regressing): a bare `exec {FD}>&-
+# 2>/dev/null` (no command) is not scoped to this one close -- bash applies a bare exec's
+# redirections PERMANENTLY to the current shell, silencing the script's own stderr for every later
+# call in the same process (the --all sweep, before R4 removed land_one from it). Wrapping the
+# close in a brace group scopes the `2>/dev/null` to that group alone.
+release_land_lock_fd() {
+  [ -n "${LAND_LOCK_FD:-}" ] && { exec {LAND_LOCK_FD}>&-; } 2>/dev/null
+  return 0
+}
+
 # card 02f462e1: a landing pushes from a DISPOSABLE worktree (land_one's $wt) that shares $MAIN's
 # .git, so `g fetch` above already refreshed $MAIN's origin/$DEFAULT_BRANCH ref -- but $MAIN's own
 # CHECKED-OUT branch and working-tree files do not follow along on their own. Left alone, that is
@@ -229,40 +248,48 @@ if [ "${1:-}" = "--selftest" ]; then
   # Conflict-marker check (card 4b4c89eb) -- same sharing reason.
   conflict_marker_selftest_cases
 
-  # card cd3e577b, RedHat NO-GO 16276 B2b + MikroB decision 16324 (B2, "legyen rögzítve tesztben"):
-  # the FIXED cleanup() wraps the fd-close in a brace group, `{ exec {FD}>&-; } 2>/dev/null`, so the
-  # `2>/dev/null` redirection is scoped to that one close and the script's own stderr survives
-  # afterwards. The BUGGY form is a bare `exec {FD}>&- 2>/dev/null` (no command) -- bash applies a
-  # bare exec's redirections PERMANENTLY to the current shell, so stderr stays /dev/null forever
-  # after the first call. Tested here directly, isolated from git/network/the --all sweep (which
-  # R4 now removes land_one from entirely, making the bug unreachable THERE) -- this is the
-  # mechanism itself, run in a subshell so neither case touches this process's own stderr.
+  # card cd3e577b, RedHat NO-GO 16276 B2b + 16401 B2 (second finding: the FIRST version of this
+  # test pinned a hand-copied `cleanup_fixed`/`cleanup_buggy`, not land_one's actual cleanup() --
+  # reverting the real fix left every case here green). Fixed per MikroB decision 16402: call the
+  # REAL release_land_lock_fd (defined near the top of this file, already live by the time this
+  # block runs, and the exact function land_one's cleanup() calls) directly, isolated from
+  # git/network/the --all sweep (which R4 now removes land_one from entirely, making the bug
+  # unreachable THERE) in a subshell so neither case touches this process's own stderr.
   n=$((n + 1))
   fixed_survives="$(
     {
-      cleanup_fixed() { [ -n "${FD:-}" ] && { exec {FD}>&-; } 2>/dev/null; }
-      exec {FD}>/dev/null
-      cleanup_fixed
+      exec {LAND_LOCK_FD}>/dev/null
+      release_land_lock_fd
       echo stderr-alive >&2
     } 2>&1 1>/dev/null
   )"
   if [ "$fixed_survives" = "stderr-alive" ]; then
-    echo "  ok   the brace-grouped fd-close leaves the script's own stderr untouched afterwards"
+    echo "  ok   the REAL release_land_lock_fd leaves this process's own stderr untouched afterwards"
   else
-    echo "  FAIL expected stderr to survive the fixed cleanup -> got: [$fixed_survives]"; fail=1
+    echo "  FAIL expected stderr to survive the real release_land_lock_fd -> got: [$fixed_survives]"; fail=1
   fi
 
+  # Sensitivity check: the test above must actually CATCH a regression to the old bare-exec bug,
+  # not pass vacuously. Extracts release_land_lock_fd's OWN source text out of THIS running script
+  # ($0, not a hand-written copy), mutates only the brace-group back to the old bare
+  # `exec ... 2>/dev/null` (RedHat NO-GO 16276 B2b) in a throwaway string, and confirms that
+  # reproduces the bug.
   n=$((n + 1))
+  real_fn_src="$(awk '/^release_land_lock_fd\(\) \{/{p=1} p{print} p&&/^}/{exit}' "$0")"
+  mutant_fn_src="$(printf '%s\n' "$real_fn_src" | sed 's/{ exec {LAND_LOCK_FD}>&-; } 2>\/dev\/null/exec {LAND_LOCK_FD}>\&- 2>\/dev\/null/')"
+  if [ -z "$real_fn_src" ] || [ "$mutant_fn_src" = "$real_fn_src" ]; then
+    echo "  FAIL could not extract/mutate release_land_lock_fd's real source from $0 -- selftest and production have drifted"; fail=1
+  fi
   buggy_survives="$(
     {
-      cleanup_buggy() { [ -n "${FD:-}" ] && exec {FD}>&- 2>/dev/null; }
-      exec {FD}>/dev/null
-      cleanup_buggy
+      eval "$mutant_fn_src"
+      exec {LAND_LOCK_FD}>/dev/null
+      release_land_lock_fd
       echo stderr-alive >&2
     } 2>&1 1>/dev/null
   )"
   if [ -z "$buggy_survives" ]; then
-    echo "  ok   MUTATION CAUGHT: reverting to the bare exec silences this process's own stderr (B2b)"
+    echo "  ok   MUTATION CAUGHT: reverting release_land_lock_fd to the old bare exec silences this process's own stderr (B2b)"
   else
     echo "  FAIL the bare-exec mutation should have silenced stderr too, but got: [$buggy_survives]"; fail=1
   fi
@@ -414,13 +441,10 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
   # but redefining `cleanup` below to ALSO remove the worktree needs a trap already in place) must
   # release the lock, so the trap is set right after acquiring it rather than threaded through every
   # early return by hand.
-  # RedHat NO-GO 16276, B2b: `exec {FD}>&- 2>/dev/null` is a BARE exec (no command), so the
-  # `2>/dev/null` redirection is not scoped to this one close -- it permanently reassigns the
-  # SCRIPT's own stderr to /dev/null from here on, for every later call in this function and
-  # every later landing in the same process (--all). Measured: a scratch --all run silenced the
-  # card/* orphan-branch notice (see the --all loop further down) after the FIRST agent's cleanup
-  # ran. Wrapping the exec in a brace group scopes the redirection to that group only.
-  cleanup() { [ -n "${LAND_LOCK_FD:-}" ] && { exec {LAND_LOCK_FD}>&-; } 2>/dev/null; return 0; }
+  # release_land_lock_fd (defined near the top of this file, see its own header for RedHat NO-GO
+  # 16276 B2b and 16401 B2): the actual fd-close, pulled into its own function so --selftest can
+  # test the real one.
+  cleanup() { release_land_lock_fd; }
   trap cleanup RETURN
 
   g fetch -q origin "$DEFAULT_BRANCH" || die 3 "could not fetch origin/$DEFAULT_BRANCH"
@@ -442,8 +466,7 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
   # is not needed) to also remove the worktree, on top of the lock release set above.
   cleanup() {
     [ -n "${wt:-}" ] && g worktree remove --force "$wt" >/dev/null 2>&1
-    # Same brace-group scoping as the first cleanup() above, same reason (B2b).
-    [ -n "${LAND_LOCK_FD:-}" ] && { exec {LAND_LOCK_FD}>&-; } 2>/dev/null
+    release_land_lock_fd
     return 0
   }
 
@@ -478,6 +501,12 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
   # AND THE `|| true` IS GONE. In report mode the helper already returns 0 for every outcome except
   # a FAILING verdict, so `|| true` swallowed the one answer worth acting on: it made a QA FAIL
   # indistinguishable from a pass, on the branch about to be merged.
+  # N2 (MikroB decision 16402, RedHat NO-GO 16401 finding N2): _note_ungated_landing used to be
+  # called from inside this gate-check block, i.e. BEFORE the merge/fleet-test/push even run --
+  # measured live: a fleet-test failure after an --allow-ungated tolerance left 2 "UNGATED LANDING"
+  # comments on a card whose branch never actually landed (rc 4, nothing pushed). Collected here
+  # instead and only posted once the push is CONFIRMED to have landed, further down.
+  local -a _ungated_pending=()
   if [ -n "$LAND_CARD" ]; then
     local land_sha
     land_sha="$(git -C "$wt" rev-parse "$branch" 2>/dev/null)" || land_sha="$branch"
@@ -496,7 +525,7 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     elif [ "$gate_rc" -ne 0 ] && [ "$verdict_mode" = "refuse" ]; then
       if [ "$CARD_ALLOW_UNGATED" = "1" ]; then
         say "$agent: gate-check: no usable verdict, TOLERATED by --allow-ungated -- this landing is deliberately ungated"
-        _note_ungated_landing "$agent" "$LAND_CARD" "no usable QA verdict for $land_sha"
+        _ungated_pending+=("no usable QA verdict for $land_sha")
       else
         echo "$agent: REFUSED -- card $LAND_CARD has no passing gate verdict for $land_sha."
         echo "$agent: --card landings require one; override with --allow-ungated if this is deliberate."
@@ -516,7 +545,7 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
       elif [ "$designation_rc" -ne 0 ]; then
         if [ "$CARD_ALLOW_UNGATED" = "1" ]; then
           say "$agent: designated-gate-check: no AGREE from the card's designated gates, TOLERATED by --allow-ungated"
-          _note_ungated_landing "$agent" "$LAND_CARD" "the card's designated gates do not all AGREE on $land_sha"
+          _ungated_pending+=("the card's designated gates do not all AGREE on $land_sha")
         else
           echo "$agent: REFUSED -- card $LAND_CARD's designated gates do not all AGREE on $land_sha."
           echo "$agent: --card landings require this; override with --allow-ungated if this is deliberate."
@@ -804,8 +833,24 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     # sentence, still gives AGREE), so this comment uses it instead -- the merge sha IS useful
     # information (it is what actually landed), it just must not look like a fresh gate declaration.
     if [ "$CARD_BRANCH_MODE" = "1" ] && [ -n "$LAND_CARD" ]; then
+      # N1 (MikroB decision 16402): print the designation this landing actually checked against,
+      # so a later weakening of the card's "Gate:" line (editable by anyone, not re-snapshotted) is
+      # visible on the card itself instead of silent. "nincs kijelolve" when the card designated
+      # nothing beyond the QA mandate (card_designated_gates_agree's CARD_DESIGNATED_GATES_CSV is
+      # only set once the board was actually read, i.e. whenever LAND_CARD is set and the branch
+      # got this far -- empty is a real answer, not "unknown").
+      local _designated_note="${CARD_DESIGNATED_GATES_CSV:-nincs kijelolve}"
+      [ -n "$_designated_note" ] || _designated_note="nincs kijelolve"
       kanban_comment_on "$LAND_CARD" "LANDOLVA (automatikus, marveen-land.sh --card)
-Merge-SHA: $gate_sha (a gate altal mar verdiktelt Gate-SHA a korabbi REVIEW-ban all)"
+Merge-SHA: $gate_sha (a gate altal mar verdiktelt Gate-SHA a korabbi REVIEW-ban all)
+Designated: $_designated_note"
+      # N2: ungated tolerances collected above are posted ONLY now, after the push is confirmed to
+      # have actually landed -- never for a run that got this far and then failed later (there is
+      # no "later" past this point in land_one).
+      local _ungated_why
+      for _ungated_why in "${_ungated_pending[@]}"; do
+        _note_ungated_landing "$agent" "$LAND_CARD" "$_ungated_why"
+      done
     fi
     return 0
   fi

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# card_designated_gates_agree -- do ALL the gates a card's own "Gate:" line/labels designate AGREE
-# on the sha about to be landed? (card cd3e577b, MikroB's decision on RedHat's second NO-GO, comment
-# 16324, overriding the weaker reading in 16277.)
+# card_designated_gates_agree -- do ALL the gates a card's own "Gate:" line(s) designate AGREE
+# on the sha about to be landed? (card cd3e577b, MikroB's decisions on RedHat's second NO-GO,
+# comment 16324, and third NO-GO, comment 16402 -- the latter is the N1 change below, overriding
+# the weaker reading in 16277/16324.)
 #
 # WHY THIS EXISTS ON TOP OF gate_verdict_check (landing-gate-verdict-check.sh). That helper is
 # QA-mandatory only: landing-gate-verdict-parse.py returns OK the moment it finds a QA PASS naming
@@ -14,16 +15,30 @@
 # (F1, per-card worktree/landing) exists to close, so checking QA alone is not enough for --card mode.
 #
 # This reuses gate-closure-check.py (already measuring "do the gates agree with each other, on THIS
-# sha" for the 4a board-reconciliation rule) rather than inventing a second comparison -- and reuses
-# the exact labels/Gate-line extraction mopsion-land.sh's _gate_designation_snapshot already proved,
-# rewritten here rather than sourced from that file: mopsion-land.sh is a separate, higher-risk
-# production lander and this card's scope is marveen-land.sh's --card mode only (surgical change).
+# sha" for the 4a board-reconciliation rule) rather than inventing a second comparison.
+#
+# N1 (MikroB decision 16402, on this card's own designation reading): TWO changes from the first
+# cut of this file. (a) LABELS NO LONGER COUNT -- "A @qa címke nem kijelölés" -- only the
+# description's own "Gate: ..." line(s) designate; a kanban label is informational routing, not a
+# binding requirement, and mopsion-land.sh's older label-priority reading is a SEPARATE, unchanged
+# tool for a separate lander. (b) the designated set is the UNION of EVERY "Gate: ..." line in the
+# description (a card can grow a second Gate: line in a later delta round), not just the last one.
+# (c) if NONE of the description's "Gate:" lines resolve to a known gate name at all, that is no
+# longer "nothing extra to require" -- it is REFUSED (rc 1, overridable with --allow-ungated, same
+# as every other missing-verdict case): a card must say what gates it needs, in words a machine can
+# read, or an operator has to say "--allow-ungated" out loud to land it anyway.
 #
 #   card_designated_gates_agree <cardId> <sha>
 #
-# Return: 0 = AGREE (or the card designates no gates at all -- nothing extra to require),
-#         1 = no usable AGREE yet (missing/stale/unresolved/unreadable -- overridable),
+# Return: 0 = AGREE on every description "Gate:" line's union,
+#         1 = no usable AGREE yet (missing/stale/unresolved/unreadable/no-interpretable-Gate-line
+#             -- overridable),
 #         2 = a FAILING verdict for this sha exists among the designated gates (never overridable).
+#
+# Sets CARD_DESIGNATED_GATES_CSV (global, deliberately not `local`, same shape as LAND_LOCK_FD) to
+# whatever it read -- possibly empty -- on every return path once the board was readable, so the
+# caller can print the ACTUAL designation it checked against into its landing/ungated comment
+# (MikroB decision 16402, N1: "a landolás-komment írja ki a kiolvasott kijelölést").
 card_designated_gates_agree() {
   local card="$1" sha="$2" h="${GATE_CHECK_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-token}"
   local api="${GATE_CHECK_API:-http://127.0.0.1:3420}"
@@ -42,10 +57,14 @@ card_designated_gates_agree() {
     return 1
   fi
 
-  local here designated
+  local here gates_csv rc
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  designated="$(CID="$card" python3 -c '
+  # N1: labels are deliberately NOT read here any more -- only the description's "Gate:" line(s),
+  # unioned across every match. gate_designation.py's designated_from_gate_line is imported
+  # directly (not via its CLI, which only ever took one line) so every match can be unioned here.
+  gates_csv="$(CID="$card" PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" python3 -c '
 import json, os, re, sys
+from gate_designation import designated_from_gate_line
 try:
     cards = json.load(sys.stdin)
 except Exception:
@@ -55,27 +74,29 @@ if not isinstance(cards, list):
 cid = os.environ["CID"]
 for c in cards:
     if c.get("id") == cid:
-        labels = ",".join(l.get("name", "").lstrip("@") for l in (c.get("labels") or []))
         rx = re.compile(r"\bGate\s*:\s*(.+)$", re.M | re.I)
-        matches = rx.findall(c.get("description") or "")
-        line = matches[-1] if matches else ""
-        print(labels + "\n" + line)
+        union = set()
+        for m in rx.findall(c.get("description") or ""):
+            names = designated_from_gate_line(m)
+            if names:
+                union |= names
+        print(",".join(sorted(union)))
         sys.exit(0)
 sys.exit(1)
 ' <<< "$cards_json" 2>/dev/null)"
-  if [ $? -ne 0 ]; then
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
     echo "REFUSED: card $card not found on the board -- cannot read its designated gates." >&2
     return 1
   fi
-  local labels gate_line
-  labels="$(printf '%s' "$designated" | sed -n '1p')"
-  gate_line="$(printf '%s' "$designated" | sed -n '2p')"
-  local gates_csv
-  gates_csv="$(python3 "$here/gate_designation.py" "$labels" "$gate_line" 2>/dev/null)"
+  CARD_DESIGNATED_GATES_CSV="$gates_csv"
   if [ -z "$gates_csv" ]; then
-    # No designation at all -- nothing extra to require (card cd3e577b's own card is the normal
-    # case: it DOES designate, this branch is for cards that do not).
-    return 0
+    # N1 (MikroB decision 16402): no "Gate:" line in the description resolved to a known gate name
+    # at all -- this no longer passes through as "nothing extra to require". A card must say what
+    # it needs in a machine-readable way, or --allow-ungated has to be said out loud to land it.
+    echo "REFUSED: card $card has no interpretable 'Gate:' line in its description -- cannot tell" >&2
+    echo "         what it designates. Fails CLOSED on purpose. Override with --allow-ungated." >&2
+    return 1
   fi
 
   local comments_json verdict

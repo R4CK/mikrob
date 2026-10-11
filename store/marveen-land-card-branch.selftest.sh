@@ -59,11 +59,13 @@ TOKEN_TMP="$WORK/token"; echo tok > "$TOKEN_TMP"
 # what gate_verdict_check (card cd3e577b R1) reads to decide whether a --card landing may proceed.
 CAPTURE_DIR="$WORK/captured"; mkdir -p "$CAPTURE_DIR"
 GET_DIR="$WORK/get-fixtures"; mkdir -p "$GET_DIR"
-# card cd3e577b, MikroB decision 16324: card_designated_gates_agree reads the card's Gate: line
-# off the BULK /api/kanban listing (same shape mopsion-land.sh's _gate_designation_snapshot already
-# reads in production), not the per-card endpoint above. Defaults to "[]" -- a card absent from this
-# list designates nothing extra, so the pre-existing tests below (which never set one) are
-# unaffected; set_gate_line() below lets the new B1 test cases opt a card into a real designation.
+# card cd3e577b, MikroB decisions 16324/16402: card_designated_gates_agree reads the card's
+# description "Gate:" line(s) off the BULK /api/kanban listing (same shape mopsion-land.sh's
+# _gate_designation_snapshot already reads in production, minus the labels source -- N1 (16402)
+# dropped that one), not the per-card endpoint above. Defaults to "[]"; set_gate_line() below
+# registers each test card with a real (possibly empty) description before it lands, since N1
+# made BOTH "card absent from the board" and "no interpretable Gate: line" refuse (rc 1,
+# overridable) rather than pass through as "nothing extra to require".
 BULK_FILE="$WORK/kanban-bulk.json"; echo '[]' > "$BULK_FILE"
 set_gate_line() { # $1 = card id, $2 = the text after "Gate:" in the card's description
   python3 -c "
@@ -135,11 +137,18 @@ stub_down() { [ -n "$stub_pid" ] && kill "$stub_pid" 2>/dev/null; wait "$stub_pi
 stub_up
 trap stub_down EXIT
 
-# Register the pre-existing test cards with NO designation (empty Gate: clause) up front, so
-# card_designated_gates_agree's new check (card cd3e577b, MikroB decision 16324) finds them on the
-# board and reads "nothing extra to require" instead of "card not found" -- a fail-closed refusal
-# that would otherwise sink every test below that never cared about a designated-gate set at all.
-for c in aaa111 bbb222 ccc333 ddd444; do set_gate_line "$c" ""; done
+# Register the pre-existing test cards up front, so card_designated_gates_agree's new check (card
+# cd3e577b, MikroB decisions 16324/16402) finds them on the board instead of "card not found" --
+# a fail-closed refusal that would otherwise sink every test below that never cared about a
+# designated-gate set at all. aaa111/bbb222 land WITHOUT --allow-ungated further down, so (N1,
+# 16402: an empty/uninterpretable "Gate:" line now REFUSES rather than passing through) they get a
+# real, satisfiable "Gate: QA" designation matching their existing QA PASS fixture. ccc333/ddd444
+# are only ever landed via gate_verdict_check's OWN missing/failing-verdict paths (which refuse
+# before card_designated_gates_agree is even reached, or via --allow-ungated), so an empty clause
+# is still fine for them and keeps those two cases about what they were built to test.
+set_gate_line aaa111 "QA"
+set_gate_line bbb222 "QA"
+for c in ccc333 ddd444; do set_gate_line "$c" ""; done
 
 OUT_FILE="$WORK/out.txt"
 land_card() { # $1 = card id, $2 = agent, extra args passed through
@@ -406,6 +415,147 @@ if [ "$rc" = 0 ] && grep -q "LANDED card/eee555 -> origin/develop" "$OUT_FILE"; 
   echo "  ok   a fresh QA PASS + a fresh RedHat GO on the SAME sha lands cleanly (B1 fixed)"
 else
   echo "  FAIL expected eee555 to land once both designated gates agree -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+# card cd3e577b, MikroB decision 16402 (RedHat NO-GO 16401, finding N1): the designated-gate set
+# is now the UNION of EVERY "Gate:" line in the description, labels no longer count at all, and a
+# card with no interpretable "Gate:" line refuses instead of passing through.
+set_card_desc() { # $1 = card id, $2 = full description text, $3 = CSV of @-prefixed label names (optional)
+  python3 -c "
+import json
+cid, desc, labels_csv = '$1', '''$2''', '''${3:-}'''
+with open('$BULK_FILE') as f:
+    cards = json.load(f)
+cards = [c for c in cards if c.get('id') != cid]
+labels = [{'name': n} for n in labels_csv.split(',') if n]
+cards.append({'id': cid, 'description': desc, 'labels': labels})
+with open('$BULK_FILE', 'w') as f:
+    json.dump(cards, f)
+"
+}
+
+# N1a: no interpretable "Gate:" line at all -- refuses without --allow-ungated, lands with it.
+git -C "$MAIN" checkout -q -b card/fff666 develop
+echo "fff666 content" > "$MAIN/fff666.txt"
+git -C "$MAIN" add fff666.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card fff666: add fff666.txt"
+git -C "$MAIN" checkout -q develop
+SHA_FFF666="$(git -C "$MAIN" rev-parse card/fff666)"
+set_card_desc fff666 "no Gate line here at all"
+set_verdict fff666 pass "$SHA_FFF666"
+
+n=$((n + 1))
+land_card fff666 backend3
+if [ "$rc" != 0 ] && grep -q "no interpretable 'Gate:' line" "$OUT_FILE"; then
+  echo "  ok   a QA PASS alone does not land a card with no interpretable Gate: line (N1)"
+else
+  echo "  FAIL expected a no-interpretable-Gate-line refusal -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+land_card fff666 backend3 --allow-ungated
+if [ "$rc" = 0 ] && grep -q "LANDED card/fff666 -> origin/develop" "$OUT_FILE"; then
+  echo "  ok   --allow-ungated tolerates the no-interpretable-Gate-line case and lands anyway (N1)"
+else
+  echo "  FAIL --allow-ungated should have let fff666 land -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+if [ -f "$CAPTURE_DIR/fff666.ndjson" ] && grep -q "UNGATED LANDING" "$CAPTURE_DIR/fff666.ndjson" \
+   && grep -q "Designated: nincs kijelolve" "$CAPTURE_DIR/fff666.ndjson"; then
+  echo "  ok   the landing comment names the actual (empty) designation it checked, and the ungated note landed too (N1+N2)"
+else
+  echo "  FAIL expected an UNGATED LANDING comment + Designated: line for fff666"; fail=1
+fi
+
+# N1b: the designated set is the UNION of every "Gate:" line, not just the last one -- a card that
+# grew a second Gate: line in a later delta round still requires BOTH.
+git -C "$MAIN" checkout -q -b card/bad777 develop
+echo "bad777 content" > "$MAIN/bad777.txt"
+git -C "$MAIN" add bad777.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card bad777: add bad777.txt"
+git -C "$MAIN" checkout -q develop
+SHA_GGG777="$(git -C "$MAIN" rev-parse card/bad777)"
+set_card_desc bad777 "First delta round.
+Gate: QA
+
+Second delta round, a new finding needs a security gate too.
+Gate: RedHat (trust boundary)"
+printf '[{"author":"qa","content":"QA PASS\\nGate-SHA: %s"}]' "$SHA_GGG777" > "$GET_DIR/bad777.json"
+
+n=$((n + 1))
+land_card bad777 backend3
+if [ "$rc" != 0 ] && grep -q "card bad777's designated gates" "$OUT_FILE"; then
+  echo "  ok   a QA PASS alone does not land a card whose SECOND Gate: line also designates RedHat (N1, union)"
+else
+  echo "  FAIL expected a designated-gate refusal (union includes the second Gate: line) -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+printf '[{"author":"qa","content":"QA PASS\\nGate-SHA: %s"},{"author":"cybered","content":"CYBERED GO\\nGate-SHA: %s"}]' \
+  "$SHA_GGG777" "$SHA_GGG777" > "$GET_DIR/bad777.json"
+
+n=$((n + 1))
+land_card bad777 backend3
+if [ "$rc" = 0 ] && grep -q "LANDED card/bad777 -> origin/develop" "$OUT_FILE"; then
+  echo "  ok   QA PASS + RedHat GO (the union of both Gate: lines) lands cleanly (N1, union)"
+else
+  echo "  FAIL expected bad777 to land once both unioned gates agree -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+# N1c: a label alone, with no "Gate:" line in the description, no longer counts as designation --
+# "A @qa cimke nem kijeloles" (MikroB 16402). A QA PASS verdict exists, but with no interpretable
+# Gate: line the landing must still refuse without --allow-ungated.
+git -C "$MAIN" checkout -q -b card/dead88 develop
+echo "dead88 content" > "$MAIN/dead88.txt"
+git -C "$MAIN" add dead88.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card dead88: add dead88.txt"
+git -C "$MAIN" checkout -q develop
+SHA_HHH888="$(git -C "$MAIN" rev-parse card/dead88)"
+set_card_desc dead88 "no Gate line, only a label" "@qa"
+set_verdict dead88 pass "$SHA_HHH888"
+
+n=$((n + 1))
+land_card dead88 backend3
+if [ "$rc" != 0 ] && grep -q "no interpretable 'Gate:' line" "$OUT_FILE"; then
+  echo "  ok   a @qa LABEL alone (no Gate: line) does not designate -- still refuses (N1c)"
+else
+  echo "  FAIL expected the label-only card to refuse as no-interpretable-Gate-line -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+# N2: the "UNGATED LANDING" note must be posted ONLY after a successful merge+push -- not when the
+# gate-check tolerance was granted but the landing failed for an UNRELATED reason afterwards (here:
+# a forced fleet-test failure). Bypasses land_card() to override MARVEEN_LAND_TEST per-call.
+git -C "$MAIN" checkout -q -b card/face99 develop
+echo "face99 content" > "$MAIN/face99.txt"
+git -C "$MAIN" add face99.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card face99: add face99.txt"
+git -C "$MAIN" checkout -q develop
+set_card_desc face99 "no Gate line here either"
+
+n=$((n + 1))
+MARVEEN_MAIN="$MAIN" MARVEEN_LAND_TEST="false" MARVEEN_LAND_BUILD="true" \
+  MARVEEN_LAND_DEVELOP_LOCK_FILE="$LOCK_DIR/.marveen-land-develop.lock" \
+  KANBAN_COMMENT_API="http://127.0.0.1:$stub_port" KANBAN_COMMENT_TOKEN_FILE="$TOKEN_TMP" \
+  GATE_CHECK_API="http://127.0.0.1:$stub_port" GATE_CHECK_TOKEN_FILE="$TOKEN_TMP" \
+  timeout 30 bash "$LAND" --card face99 --agent backend3 --allow-ungated >"$OUT_FILE" 2>&1; rc=$?
+if [ "$rc" != 0 ] && grep -q "fleet-test failed" "$OUT_FILE"; then
+  echo "  ok   a forced fleet-test failure still refuses even though the gate-check was tolerated (N2 setup)"
+else
+  echo "  FAIL expected a fleet-test refusal for face99 -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+if ! git -C "$MAIN" merge-base --is-ancestor card/face99 origin/develop 2>/dev/null; then
+  echo "  ok   the fleet-test-refused landing pushed nothing"
+else
+  echo "  FAIL a fleet-test-refused landing should not have pushed anything"; fail=1
+fi
+
+n=$((n + 1))
+if [ ! -f "$CAPTURE_DIR/face99.ndjson" ] || ! grep -q "UNGATED LANDING" "$CAPTURE_DIR/face99.ndjson"; then
+  echo "  ok   NO 'UNGATED LANDING' comment was posted for a tolerated-but-never-landed card (N2 fix)"
+else
+  echo "  FAIL an UNGATED LANDING comment should not have been posted before the landing actually succeeded"; fail=1
 fi
 
 # card cd3e577b, MikroB decision 16324 (RedHat NO-GO 16322, finding B2): the --all sweep must list,
