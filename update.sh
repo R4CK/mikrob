@@ -1051,8 +1051,13 @@ if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
   # below (that decision is only reached if this branch falls through) -- the stale node_modules
   # would sit there, invisible, until a later update happened to also change package.json's text.
   DEPS_STALE=0
-  python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"
-  DEPS_STALE_RC=$?
+  # RedHat B1 (6070f801, comment 15695): this script runs under `set -e` (line 4). A BARE
+  # `cmd; RC=$?` is NOT exempt from errexit -- only a command that is part of an &&/|| list or an
+  # if/while condition is. The checker's own confirmed-fresh signal is rc=1 (see the fail-closed
+  # comment below), which is the NORMAL case on a fresh node_modules, so the script aborted right
+  # here on every ordinary run and never reached the fail-closed check it was meant to feed.
+  DEPS_STALE_RC=0
+  python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR" || DEPS_STALE_RC=$?
   # Fail-closed (card 6070f801, WhiteHat F1): exit 1 is the ONLY confirmed-fresh signal the checker
   # gives. Any other code (0=confirmed stale, 127=python3 itself missing, or an uncaught crash) must
   # be treated as stale -- `if python3 ...; then` used to treat every nonzero code as "not stale",
@@ -1124,8 +1129,11 @@ fi
 # would see "no diff" and never notice. Add a state-based check, the same helper fleet-test.sh uses
 # for the identical decision (store/node-modules-stale-check.py), so a stale node_modules is caught
 # regardless of what the diff says.
-python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"
-NPM_CI_DEPS_STALE_RC=$?
+# RedHat B1 (6070f801, comment 15695): same errexit gap as the DEPS_STALE check above -- a bare
+# `cmd; RC=$?` under `set -e` aborts the script when cmd's exit code (rc=1, confirmed-fresh, the
+# normal case) is nonzero, before the assignment below is ever reached.
+NPM_CI_DEPS_STALE_RC=0
+python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR" || NPM_CI_DEPS_STALE_RC=$?
 # Fail-closed (card 6070f801, WhiteHat F1): exit 1 is the ONLY confirmed-fresh signal; any other
 # code (0=confirmed stale, 127=python3 itself missing, or an uncaught crash) must trigger npm ci,
 # the same contract as the DEPS_STALE check above.
