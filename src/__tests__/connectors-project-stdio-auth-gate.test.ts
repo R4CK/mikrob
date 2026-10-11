@@ -2,11 +2,18 @@
 // type=stdio writes an arbitrary command into PROJECT_ROOT/.mcp.json, which every agent's Claude
 // Code session loads via ancestor-directory discovery regardless of its own .mcp.json/inheritance
 // filter (R1) -- the shared fleet dashboard bearer every agent holds could otherwise plant a
-// command there and have it reach the whole fleet. Same human-only posture as POST
-// /api/fleet/import?apply=true (fleet.ts, card 68254bd7, fleet-import-auth-gate.test.ts): a
-// browser session or a device key, never the shared 'token' credential. Route-level test: the
-// auth-kind gate runs right after body parsing, before any `claude mcp add` shell-out, so a 403
-// (or its absence) is enough to pin the gate without a real connector pipeline.
+// command there and have it reach the whole fleet.
+//
+// Card 34f972bb delta (RedHat GO 67e73b48, comment 15391, R1): the session/device kind-check this
+// file originally pinned is not a closed gate on its own -- the shared fleet bearer can mint
+// itself a session via the break-glass password-reset + login path (auth.ts:265-297, unrelated to
+// this file) without ever holding a real human credential. Until card 3fb0ef97 (a non-forgeable
+// approval channel) ships, a project-scope stdio write is hard fail-closed: ALWAYS 403, for every
+// auth kind. This file now pins that unconditional refusal rather than the session/device
+// allowance it supersedes -- same posture as fleet-import-auth-gate.test.ts (card 657b32f2).
+//
+// Route-level test: the gate runs right after body parsing, before any `claude mcp add` shell-out,
+// so a 403 (or its absence) is enough to pin the gate without a real connector pipeline.
 import { describe, it, expect, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { tryHandleConnectors } from '../web/routes/connectors.js'
@@ -42,36 +49,18 @@ function fakeCtx(auth: RouteContext['auth'], body: unknown): { ctx: RouteContext
 
 const projectStdioBody = { name: 'evil', type: 'stdio', command: 'whatever', scope: 'project' }
 
-describe('POST /api/connectors -- auth-kind gate on scope=project + type=stdio (card 67e73b48)', () => {
-  it('project-scope stdio with the shared agent bearer (kind: token) is rejected, 403', async () => {
-    const { ctx, out } = fakeCtx({ kind: 'token' }, projectStdioBody)
+describe('POST /api/connectors -- scope=project + type=stdio is hard fail-closed (card 34f972bb)', () => {
+  it.each([
+    ['the shared agent bearer (kind: token)', { kind: 'token' } as RouteContext['auth']],
+    ['no auth principal at all', undefined],
+    ['a federation peer credential', { kind: 'federation', peer: 'some-peer' } as RouteContext['auth']],
+    ['a browser session', { kind: 'session', user: 'peti' } as RouteContext['auth']],
+    ['a device key', { kind: 'device', device: 'phone', deviceId: 1 } as RouteContext['auth']],
+  ])('refused, 403, with %s -- before any `claude mcp add` shell-out', async (_label, auth) => {
+    const { ctx, out } = fakeCtx(auth, projectStdioBody)
     expect(await tryHandleConnectors(ctx)).toBe(true)
     expect(out.status).toBe(403)
-    expect(out.body.error).toMatch(/browser session or a device key/)
-  })
-
-  it('project-scope stdio with no auth principal at all is rejected, 403', async () => {
-    const { ctx, out } = fakeCtx(undefined, projectStdioBody)
-    expect(await tryHandleConnectors(ctx)).toBe(true)
-    expect(out.status).toBe(403)
-  })
-
-  it('project-scope stdio with a federation peer credential is rejected, 403 (not on the allowlist)', async () => {
-    const { ctx, out } = fakeCtx({ kind: 'federation', peer: 'some-peer' }, projectStdioBody)
-    expect(await tryHandleConnectors(ctx)).toBe(true)
-    expect(out.status).toBe(403)
-  })
-
-  it('project-scope stdio with a browser session passes the gate (reaches claude mcp add, not a 403)', async () => {
-    const { ctx, out } = fakeCtx({ kind: 'session', user: 'peti' }, projectStdioBody)
-    expect(await tryHandleConnectors(ctx)).toBe(true)
-    expect(out.status).not.toBe(403)
-  })
-
-  it('project-scope stdio with a device key passes the gate (reaches claude mcp add, not a 403)', async () => {
-    const { ctx, out } = fakeCtx({ kind: 'device', device: 'phone', deviceId: 1 }, projectStdioBody)
-    expect(await tryHandleConnectors(ctx)).toBe(true)
-    expect(out.status).not.toBe(403)
+    expect(out.body.error).toMatch(/3fb0ef97/)
   })
 
   it('USER-scope stdio with the shared agent bearer is NOT blocked by this gate (scope=project only)', async () => {
@@ -86,14 +75,16 @@ describe('POST /api/connectors -- auth-kind gate on scope=project + type=stdio (
     expect(out.status).not.toBe(403)
   })
 
-  // MUTATION PIN: without the gate, a token-credentialed request would sail straight through to
-  // `claude mcp add` (mocked here) and return 200 -- this is the case that flips if the
-  // `data.scope === 'project' && data.type === 'stdio' && ctx.auth?.kind !== 'session' &&
-  // ctx.auth?.kind !== 'device'` check is ever removed.
-  it('MUTATION PIN: self-check -- a session-credentialed request past the gate returns ok:true, never 403', async () => {
+  // MUTATION PIN: without CONNECTORS_PROJECT_STDIO_FAIL_CLOSED (or with it flipped), a
+  // session-credentialed request would instead reach the OLD kind-check below (which it already
+  // passes) and sail through to `claude mcp add` (mocked here), returning ok:true. The message
+  // below is the one unique to this hard gate, so a flip (or a condition broadened/narrowed by a
+  // future edit) changes the assertion, not just the status code.
+  it('MUTATION PIN: the refusal message names the specific disabled-until-3fb0ef97 reason, even for a session', async () => {
     const { ctx, out } = fakeCtx({ kind: 'session', user: 'peti' }, projectStdioBody)
     expect(await tryHandleConnectors(ctx)).toBe(true)
-    expect(out.status).not.toBe(403)
-    expect(out.body.ok).toBe(true)
+    expect(out.body.error).toBe(
+      'A project-scope stdio connector is disabled until a non-forgeable approval channel ships (card 3fb0ef97).',
+    )
   })
 })

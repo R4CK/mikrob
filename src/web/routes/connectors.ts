@@ -23,6 +23,19 @@ import {
 } from '../vault-bindings.js'
 import type { RouteContext } from './types.js'
 
+// Card 34f972bb (RedHat GO 67e73b48 follow-up, comment 15391, R1): the session/device kind-check
+// a few lines below (added by card 67e73b48 itself) is a USEFUL early filter but not a closed
+// gate on its own -- the shared fleet bearer can mint itself a session via the break-glass
+// password-reset + login path (auth.ts:265-297, three calls, unrelated to this file) without ever
+// holding a real human credential. A project-scope stdio connector write lands in
+// PROJECT_ROOT/.mcp.json, which every agent's Claude Code session loads regardless of its own
+// .mcp.json (ancestor-directory discovery, measured in 67e73b48) -- fleet-wide persistence from a
+// credential every agent already holds. Same posture, same literal-constant-not-env-var reasoning,
+// as FLEET_IMPORT_APPLY_FAIL_CLOSED (routes/fleet.ts, card 68254bd7): a hard, logged 403 for EVERY
+// auth kind (including session/device), ahead of the kind-check below, until card 3fb0ef97 (a
+// non-forgeable approval channel) ships. Flip to false only in a reviewed commit once that lands.
+const CONNECTORS_PROJECT_STDIO_FAIL_CLOSED = true
+
 // The catalog is the union of the committed mcp-catalog.json (the MCPs the
 // central devs ship) and an optional, gitignored mcp-catalog.local.json where
 // a user keeps their own dev-only MCPs. This way a user's private MCP list
@@ -424,6 +437,18 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const nameChanged = sanitizedName !== rawName
+
+    // Card 34f972bb delta (RedHat GO 67e73b48, comment 15391, R1): hard fail-closed, ahead of
+    // the kind-check below (auth kind included) -- see CONNECTORS_PROJECT_STDIO_FAIL_CLOSED's own
+    // comment at the top of this file for why. The kind-check further down stays in place,
+    // intentionally unreachable until the flag is removed.
+    if (data.scope === 'project' && data.type === 'stdio' && CONNECTORS_PROJECT_STDIO_FAIL_CLOSED) {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Connectors: project-scope stdio add hard-refused (fail-closed pending card 3fb0ef97 -- no approval opened)')
+      json(res, {
+        error: 'A project-scope stdio connector is disabled until a non-forgeable approval channel ships (card 3fb0ef97).',
+      }, 403)
+      return true
+    }
 
     // Card 67e73b48 (RedHat R2, 1d31cfcc follow-up): a project-scope stdio add writes into
     // PROJECT_ROOT/.mcp.json, which every agent's Claude Code session loads regardless of its
