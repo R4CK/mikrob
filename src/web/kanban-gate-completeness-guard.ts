@@ -28,7 +28,7 @@ import { isForceActor } from '../kanban-force-actors.js'
 import { logger } from '../logger.js'
 import type { LandedVerdict } from './kanban-landed-guard.js'
 
-export type GateAgent = 'qa' | 'qa2' | 'cybersec' | 'cybered'
+export type GateAgent = 'qa' | 'qa2' | 'cybersec' | 'cybersec2' | 'cybered'
 
 /** Only agents allowed to close a card despite a missing gate verdict -- same actor set as the
  *  landing guard, same reasoning: MikroB is the orchestrator with final call. */
@@ -55,6 +55,18 @@ function widenQa(names: Set<GateAgent>): Set<GateAgent> {
   return names
 }
 
+// WhiteHat2/cybersec2 (card 21abfe0b, RedHat NO-GO B1): the SAME sibling-widening shape as
+// widenQa above, ported from the shell side's widen_cybersec() (store/gate_designation.py) so the
+// two stay in agreement rather than drifting the way this file already drifted from
+// gate_designation.py once (B2/F2 history on the same card).
+function widenCybersec(names: Set<GateAgent>): Set<GateAgent> {
+  if (names.has('cybersec') || names.has('cybersec2')) {
+    names.add('cybersec')
+    names.add('cybersec2')
+  }
+  return names
+}
+
 /** Which gate agents a Gate: line actually designates -- `null` if it names none (an unparseable or
  *  free-text line makes no verifiable claim, so this guard has nothing to check, same silent-vs-
  *  verified split as the landing guard's `allowUnverified`). */
@@ -73,9 +85,16 @@ export function parseGateDesignation(gateLine: string): Set<GateAgent> | null {
   // security gate's verdict, force-free. Measured live on the real function: "QA + WhiteHat" ->
   // {qa, qa2}, "WhiteHat" alone -> null.
   if (/\bcybersec\b/.test(low) || /\bwhitehat\b/.test(low)) names.add('cybersec')
+  // WhiteHat2/cybersec2 (card 21abfe0b, RedHat NO-GO B1): bare `\bcybersec\b`/`\bwhitehat\b` above
+  // never matched "cybersec2"/"whitehat2" at all -- the trailing digit is a word character, so the
+  // `\b` after the base word never found a boundary there. Measured on the real function before
+  // this fix: "QA + WhiteHat2" -> {qa, qa2} (Cybersec silently dropped), "WhiteHat2" ALONE -> null
+  // (no gate recognised at all, so the guard allowed ANY close, force-free -- the fail-open this
+  // NO-GO is about). Added as its own clause, same shape as the qa2 clause above.
+  if (/\bcybersec2\b/.test(low) || /\bwhitehat2\b/.test(low)) names.add('cybersec2')
   if (/\bcybered\b/.test(low) || /\bredhat\b/.test(low)) names.add('cybered')
   if (names.size === 0) return null
-  return widenQa(names)
+  return widenQa(widenCybersec(names))
 }
 
 // PASS/GO/SKIP only -- the card's own wording (243de9b9): a gate must have APPROVED or explicitly
@@ -96,7 +115,7 @@ const REVIEW_RX = /^\s*REVIEW\b/im
  *  Cybered's GO landed before QA's "REVIEW: QA PASS", so QA's own comment "started a new round" a
  *  moment after Cybered had already verdicted the SAME commit -- Cybered's real, fresh GO was
  *  discarded as pre-round). Only a non-gate author (the builder, MikroB, ...) can open a new round. */
-const GATE_AGENT_NAMES: ReadonlySet<string> = new Set<GateAgent>(['qa', 'qa2', 'cybersec', 'cybered'])
+const GATE_AGENT_NAMES: ReadonlySet<string> = new Set<GateAgent>(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered'])
 
 interface Comment {
   readonly author: string
@@ -433,7 +452,12 @@ export function gateCompletenessGuardVerdict(cardId: string, nextStatus: unknown
     const qaFamilyOk = hasFreshVerdict(comments, 'qa', sinceTs) || hasFreshVerdict(comments, 'qa2', sinceTs)
     if (!qaFamilyOk) missing.push('QA')
   }
-  if (designated.has('cybersec') && !hasFreshVerdict(comments, 'cybersec', sinceTs)) missing.push('Cybersec')
+  // Cybersec/Cybersec2 are ONE requirement, same reasoning as the QA/QA2 family check above --
+  // card 21abfe0b, RedHat NO-GO B1.
+  if (designated.has('cybersec') || designated.has('cybersec2')) {
+    const cybersecFamilyOk = hasFreshVerdict(comments, 'cybersec', sinceTs) || hasFreshVerdict(comments, 'cybersec2', sinceTs)
+    if (!cybersecFamilyOk) missing.push('Cybersec')
+  }
   if (designated.has('cybered') && !hasFreshVerdict(comments, 'cybered', sinceTs)) missing.push('Cybered')
   if (missing.length === 0) return { blocked: false }
 
