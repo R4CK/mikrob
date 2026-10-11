@@ -19164,3 +19164,42 @@ Mindegyik a KÖZÖS primitívre épül (a `author` mező bizalma), tehát a kiha
 **Kód NEM módosult ebben a körben** (WhiteHat2 verdiktje: "doksi-javítás kell, kód nem" -- a teszt és a route-kód már a `a77bf738`-ban helyesen rögzíti a jelenlegi viselkedést, csak a DECISIONS-szöveg állítása volt túl erős).
 
 **Ki döntött:** backend3 (a WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16091/16101). Delta-gate: QA + WhiteHat2 (cybersec2).
+
+## 2026-10-11 -- 81452ce2: kötelező spec-sablon nem triviális kártyához, warn-only kapu + auto termékdöntés-flag
+
+**Forrás:** Peti 10994/10998/11000; MikroB plan-grilling GO-WITH-CHANGES (komment 16170). Saját folyamat a
+zazencodes/zazencodes-season-3 `software-factory-claude-code` mintájára -- CLEAN-ROOM: a repónak NINCS
+licence (GitHub `license:null`), ezért csak az ötletet (kötelező spec elfogadási kritériummal) vettük át,
+kódot/prompt-/sablon-szöveget NEM másoltunk.
+
+**Mit szállít:** (1) saját spec-sablon (Kontextus, Követelmények, Ellenőrizhető elfogadási kritériumok,
+Nincs benne, Feltételezések -- utóbbiban kötelező `Termékdöntés: igen/nem` mező soronként) a
+`project-workflow` és a `plan-grilling` skillbe; (2) `src/web/kanban-spec-template-guard.ts`: a
+`planned -> in_progress` átmeneten (mindkét útvonal, PUT és POST /move) megnézi, nem-triviális-e a kártya
+(`[FÁZIS]`/`[FAZIS]`/`[FELADAT]` cím-tag VAGY `priority` HIGH/URGENT VAGY `[SEC]` cím-tag -- a verdikt
+SZŰK definíciója), és ha igen, de a leírás/komment-korpuszból hiányzik egy a sablon öt szakaszából,
+egyszeri `SPEC-TEMPLATE WARN` kommentet ír; (3) ha egy `Feltételezések` sor `Termékdöntés: igen`-nel zár,
+automatikusan `[BLOKKOLT-Peti-dontes]` cím-taget kap a kártya + jóváhagyás-kérő komment megy (F4-bekötés,
+a tag maga már létező konvenció, pl. kártya 8b588834).
+
+**Miért warn-only, nem blokkoló kapu:** a plan-grilling verdikt kifejezetten egyhetes, csak-mérő
+bevezetést kért (teherhordó feltevés: egy kötelező spec nem lassíthatja túlzottan a kis kártyákat) --
+a guard SOHA nem ad 409-et, csak kommentet ír; a `planned -> in_progress` sikeres marad akkor is, ha a
+spec hiányzik. A `kanban-plan-grilling-guard.ts` mintájára épülő, valódi (blokkoló) kapuvá válás a mérési
+hét után, külön döntés -- ez a kártya nem azt szállítja.
+
+**Miért explicit mező, nem regex a termékdöntés-felismerésre:** a plan-grilling verdikt kimondottan ezt
+kérte (a tartalom-alapú kitalálás hamis pozitív/negatívot termelne); a `PRODUCT_DECISION_RX` csak a
+kimondott `Termékdöntés: igen` mintára illeszkedik, nem a feltételezés szövegére.
+
+**Teszt:** `src/__tests__/kanban-spec-template-guard.test.ts` (16 eset) -- `isNonTrivialCard`/
+`missingSpecSections` egységtesztek, a guard mutáció-pin-je ("Termékdöntés: nem" NEM tag-el,
+"Termékdöntés: igen" tag-el, dupla-warn elkerülve, `SPEC_TEMPLATE_GUARD=off` minden hatást kikapcsol,
+`getKanbanCard` hiba fail-open). `npx vitest run src/__tests__/kanban-spec-template-guard.test.ts`: 16/16
+zöld ezen a worktree-n; `npx tsc --noEmit -p .` tiszta.
+
+**Nincs benne (ebben a körben):** a gate-ek (QA + WhiteHat2) REVIEW-beli kritériumonkénti
+teljesül/nem-teljesül jelzése a kártya 4. követelménye, de ez a gate-ek SAJÁT REVIEW-formátuma, nem egy
+kódolt mechanizmus -- a spec-sablon maga adja meg a kritériumokat, amikre a gate hivatkozhat.
+
+**Ki döntött:** backend2. Gate: QA + WhiteHat2 (ügynök-instrukciós felület, a kártya saját kijelölése).
