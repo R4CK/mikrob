@@ -169,9 +169,15 @@ export async function tryHandleKanbanVerdicts(ctx: RouteContext): Promise<boolea
       json(res, { error: `verdict kötelező, egyike: ${VALID_VERDICTS.join(', ')}` }, 400)
       return true
     }
+    // B1' (RedHat NO-GO, 2bfa4c67 comment 16824, HIGH): the shared dashboard token must never be
+    // able to write a verdict record at all, not even an UNVERIFIED one -- measured bypass (K1):
+    // the common token, author:"qa" in the body, got a 201 with author_verified=0, and the
+    // completeness guard let the close through on it. A verdict record's whole point is an
+    // authenticated claim; an unverified one is worth exactly as much as the forgeable comment it
+    // was meant to replace, so it is now rejected outright instead of stored as a weaker fact.
     const { author, verified } = resolveVerdictAuthor(ctx, claimedAuthor)
-    if (!author) {
-      json(res, { error: 'author kötelező (vagy hitelesített agent:<id> kulcs, vagy a body author mezője)' }, 400)
+    if (!verified || !author) {
+      json(res, { error: 'verdikt rögzítése kizárólag hitelesített agent:<id> kulccsal lehetséges (a közös dashboard-token nem elég)' }, 403)
       return true
     }
     // B1 / W1: exact role-allowlist, regardless of author_verified -- the measured bypass (RedHat
@@ -221,6 +227,13 @@ export async function tryHandleKanbanVerdicts(ctx: RouteContext): Promise<boolea
       author,
       authorVerified: verified,
     })
+    // B2' (RedHat NO-GO, 2bfa4c67 comment 16824, MEDIUM): nothing ever called the manual
+    // POST /proposals endpoint, so the self-exclusion check never actually had anything to exclude
+    // against (measured, P4). The server now records the proposer itself, from the SAME
+    // authenticated write that states the NO-GO/FAIL, instead of depending on a separate call.
+    if (verdict === 'FAIL' || verdict === 'NO-GO') {
+      addKanbanFixProposal(cardId, author, providedSha)
+    }
     json(res, row, 201)
     return true
   }
@@ -260,10 +273,13 @@ export async function tryHandleKanbanVerdicts(ctx: RouteContext): Promise<boolea
     return true
   }
 
-  // B2 / W3: records WHO proposed the fix a gate is being asked to verdict on. Authenticated-only
-  // (an agent:<id> device key) -- the shared dashboard token cannot write a proposal, because an
-  // unauthenticated claim here would be worse than none: it would make the self-exclusion look
-  // enforced while being exactly as forgeable as the request-body field it replaces.
+  // B2' (RedHat NO-GO, 2bfa4c67 comment 16824, MEDIUM): a manual write here was ALWAYS exactly as
+  // forgeable as the request-body `proposer` field it replaced -- measured (P5/P6): ANY
+  // authenticated agent:<id> key could write (or overwrite) a proposal for ANY card, including one
+  // it had no NO-GO/FAIL on, and the LATEST write won regardless of who it came from. The POST
+  // handler above now records the proposer automatically, from the SAME write that states the
+  // NO-GO/FAIL -- there is no longer a legitimate reason for a separate, independently-callable
+  // write path, so it is retired outright rather than re-scoped. GET (read-only) is unaffected.
   const proposalsMatch = kanbanProposalsMatch(path)
   if (proposalsMatch && method === 'GET') {
     const cardId = decodeURIComponent(proposalsMatch[1])
@@ -271,34 +287,7 @@ export async function tryHandleKanbanVerdicts(ctx: RouteContext): Promise<boolea
     return true
   }
   if (proposalsMatch && method === 'POST') {
-    const cardId = decodeURIComponent(proposalsMatch[1])
-    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
-    const agentId = ctx.auth?.kind === 'device' ? agentKeyToAgentId(ctx.auth.device) : null
-    if (!agentId) {
-      json(res, { error: 'javaslat rögzítése kizárólag hitelesített agent:<id> kulccsal lehetséges' }, 403)
-      return true
-    }
-    const body = await readBody(req)
-    let parsed: Record<string, unknown> = {}
-    if (body.length > 0) {
-      try {
-        parsed = JSON.parse(body.toString()) as Record<string, unknown>
-      } catch {
-        json(res, { error: 'Invalid JSON body' }, 400)
-        return true
-      }
-    }
-    // N5 (card 2bfa4c67 round 2, WhiteHat2 NO-GO): a proposal is bound to the SAME current round's
-    // Gate-SHA the verdict-side check (above) requires, so the set-semantics exclusion stays
-    // scoped to this round instead of blocking the proposer forever on a stale, superseded one.
-    const providedSha = parseProvidedSha(parsed.sha)
-    const shaError = shaBindingError(cardId, providedSha)
-    if (shaError) {
-      json(res, { error: shaError }, 400)
-      return true
-    }
-    const row = addKanbanFixProposal(cardId, agentId, providedSha)
-    json(res, row, 201)
+    json(res, { error: 'javaslat rögzítése csak automatikusan történik, egy hitelesített NO-GO/FAIL verdikt írásakor (POST /verdicts) -- nincs kézi végpont' }, 403)
     return true
   }
 

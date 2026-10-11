@@ -91,6 +91,22 @@ describe('gateCompletenessGuardVerdict + structured kanban_verdicts (additive OR
       const v = gateCompletenessGuardVerdict('c1', 'done', false, 'qa')
       expect(v.blocked).toBe(false)
     })
+
+    // B3' (RedHat NO-GO, 2bfa4c67 comment 16824, MEDIUM, G10/G5): a FRESH, genuinely positive
+    // comment whose FIRST LINE is "CYBERED GO" but whose BODY TEXT cites an earlier NO-GO it fixed
+    // (or merely says "fail-closed") used to read as a fresh negative anywhere in the text,
+    // falsely blocking a legitimate close. Only the first line is the actual verdict.
+    it('a fresh GO-comment whose body text cites an older NO-GO/"fail-closed": NOT a disagreement', () => {
+      process.env.AGENT_VERDICT_RECORD = '1'
+      createKanbanCard({ id: 'c3', title: 'z', status: 'waiting', description: 'Gate: Cybered' })
+      addKanbanVerdict('c3', { gate: 'CYBERED', verdict: 'GO', author: 'cybered', authorVerified: true })
+      addKanbanComment(
+        'c3', 'cybered',
+        'CYBERED GO\nMeasured: a RedHat NO-GO 16623 B1 javitasa zold, es a fail-closed viselkedes is helyes.',
+      )
+      const v = gateCompletenessGuardVerdict('c3', 'done', false, 'qa')
+      expect(v.blocked).toBe(false)
+    })
   })
 
   // B1 (b): defense in depth -- a structured row from an author outside the gate's own role must
@@ -129,13 +145,19 @@ describe('gateCompletenessGuardVerdict + structured kanban_verdicts (additive OR
       expect(v.blocked).toBe(false)
     })
 
-    it('CONTROL: an UNVERIFIED FAIL IS overridden by a later UNVERIFIED PASS (unchanged, neither side authenticated)', () => {
+    // B1' (RedHat NO-GO, 2bfa4c67 comment 16824, HIGH): previously an all-unverified sequence
+    // still satisfied the guard via the latest unverified PASS -- exactly the measured bypass (K1,
+    // the common token writing an unverified "qa PASS" record). Unverified rows are now dropped
+    // entirely by freshStructuredRow, so neither row counts, and QA reads as missing (same as if
+    // no structured record existed at all).
+    it('an all-UNVERIFIED sequence satisfies NOTHING -- neither row counts, QA stays missing', () => {
       process.env.AGENT_VERDICT_RECORD = '1'
       addKanbanVerdict('c1', { gate: 'QA', verdict: 'FAIL', author: 'qa', authorVerified: false })
       addKanbanVerdict('c1', { gate: 'QA', verdict: 'PASS', author: 'qa', authorVerified: false })
       addKanbanVerdict('c1', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2', authorVerified: true })
       const v = gateCompletenessGuardVerdict('c1', 'done', false, 'qa')
-      expect(v.blocked).toBe(false)
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA verdiktjét is megköveteli')
     })
   })
 
@@ -147,7 +169,10 @@ describe('gateCompletenessGuardVerdict + structured kanban_verdicts (additive OR
     it('a negative comment BEFORE a later structured PASS still triggers DISAGREE-SOURCE', () => {
       process.env.AGENT_VERDICT_RECORD = '1'
       addKanbanComment('c1', 'qa', 'QA FAIL')
-      addKanbanVerdict('c1', { gate: 'QA', verdict: 'PASS', author: 'qa', authorVerified: false })
+      // VERIFIED (B1', 2bfa4c67 comment 16824): an unverified row no longer reaches the disagree
+      // check at all (freshStructuredRow drops it outright), so this test needs a verified PASS to
+      // exercise the thing it is actually about -- order-independent negative-comment detection.
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'PASS', author: 'qa', authorVerified: true })
       // Force a REAL chronological gap between the comment and the structured row -- addKanbanComment
       // and addKanbanVerdict both stamp wall-clock seconds, which a fast unit test cannot reliably
       // separate, so the old (buggy) `afterTs = row.created_at` check and the fixed `sinceTs` check
