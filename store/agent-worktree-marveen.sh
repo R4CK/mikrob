@@ -36,8 +36,18 @@
 # enabler and why the switch is opt-in rather than a sweep.
 #
 # Usage:
-#   agent-worktree-marveen.sh <agent>          # create (or top up) the agent's worktree
-#   agent-worktree-marveen.sh <agent> --path   # print the path and exit (for scripting)
+#   agent-worktree-marveen.sh <agent>                    # create (or top up) the agent's worktree
+#   agent-worktree-marveen.sh <agent> --path             # print the path and exit (for scripting)
+#   agent-worktree-marveen.sh <agent> --card <cardId>              # per-CARD worktree (card F1,
+#   agent-worktree-marveen.sh <agent> --card <cardId> --path       # cd3e577b): branch card/<cardId>
+#                                                                   # off origin/<default>, own
+#                                                                   # worktree keyed by card id, not
+#                                                                   # by agent -- so a card's commits
+#                                                                   # can never ride along in a
+#                                                                   # DIFFERENT card's landing (the
+#                                                                   # 1cdac111/c40385b1 class). <agent>
+#                                                                   # is still required (attribution
+#                                                                   # only, not part of the path).
 #
 # Env overrides (tests only -- production uses the real marveen checkout):
 #   MARVEEN_MAIN         default /home/neon/marveen
@@ -52,23 +62,45 @@ ROOT="${MARVEEN_WORKTREES:-/home/neon/marveen-agent-worktrees}"
 die() { echo "agent-worktree-marveen.sh: $2" >&2; exit "$1"; }
 
 AGENT="${1:-}"
-[ -n "$AGENT" ] || die 2 "usage: agent-worktree-marveen.sh <agent> [--path]"
+[ -n "$AGENT" ] || die 2 "usage: agent-worktree-marveen.sh <agent> [--path | --card <cardId> [--path]]"
 case "$AGENT" in
   # Same restriction as agent-worktree.sh / the retired agent-branch.sh, for the same reason: the
   # name becomes both a directory and a branch, and a case-only difference must never resolve two
   # agents to one tree on a filesystem that could be case-insensitive.
   *[!a-z0-9-]*|-*|'') die 2 "agent name must match [a-z0-9-]+ (got: $AGENT)" ;;
 esac
+shift
 
-TREE="$ROOT/$AGENT"
-BRANCH="agent/${AGENT}/work"
+CARD=""
+PATH_ONLY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --path) PATH_ONLY=1 ;;
+    --card) shift; CARD="${1:-}"; [ -n "$CARD" ] || die 2 "--card needs a card id" ;;
+    --card=*) CARD="${1#--card=}" ;;
+    *) die 2 "unknown option: $1" ;;
+  esac
+  shift
+done
+
+if [ -n "$CARD" ]; then
+  # Same shape self-advance-pickup.sh already validates card ids with -- kept identical on purpose
+  # so the two tools never disagree about what a valid card id looks like.
+  case "$CARD" in *[!0-9a-f]*|'') die 2 "card id must be hex (got: $CARD)" ;; esac
+  [ "${#CARD}" -ge 6 ] || die 2 "card id too short (got: $CARD)"
+  TREE="$ROOT/card/$CARD"
+  BRANCH="card/$CARD"
+else
+  TREE="$ROOT/$AGENT"
+  BRANCH="agent/${AGENT}/work"
+fi
 
 [ -d "$MAIN/.git" ] || die 3 "no marveen clone at $MAIN (set MARVEEN_MAIN)"
 
 DEFAULT_BRANCH="$(git -C "$MAIN" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
 [ -n "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH="develop"
 
-if [ "${2:-}" = "--path" ]; then echo "$TREE"; exit 0; fi
+if [ "$PATH_ONLY" = "1" ]; then echo "$TREE"; exit 0; fi
 
 git -C "$MAIN" fetch origin "$DEFAULT_BRANCH" --quiet || die 3 "could not fetch origin/$DEFAULT_BRANCH"
 
@@ -101,11 +133,18 @@ if [ -L "$TREE/node_modules" ]; then
   echo "node_modules: symlink -> $MAIN/node_modules (SHARED with every worktree; \`bash store/agent-worktree-deps.sh $AGENT\` makes it real)"
 elif [ -d "$TREE/node_modules" ]; then
   echo "node_modules: real directory -- no shared-ground symlink here"
-elif [ "${MARVEEN_WORKTREE_REAL_DEPS:-0}" = "1" ]; then
+elif [ -z "$CARD" ] && [ "${MARVEEN_WORKTREE_REAL_DEPS:-0}" = "1" ]; then
   bash "$MAIN/store/agent-worktree-deps.sh" "$AGENT" || die 3 "could not populate node_modules"
 else
   ln -s "$MAIN/node_modules" "$TREE/node_modules"
-  echo "node_modules: linked from $MAIN/node_modules (shared; run \`bash store/agent-worktree-deps.sh $AGENT\` to make it a real directory)"
+  if [ -n "$CARD" ]; then
+    # agent-worktree-deps.sh is keyed by AGENT (resolves the per-agent tree internally), not by card
+    # id -- it has no --card mode yet, so MARVEEN_WORKTREE_REAL_DEPS is deliberately not honoured
+    # here. A card-worktree therefore always shares node_modules with $MAIN for now.
+    echo "node_modules: linked from $MAIN/node_modules (shared -- real-deps for card worktrees is not built yet, see store/agent-worktree-deps.sh)"
+  else
+    echo "node_modules: linked from $MAIN/node_modules (shared; run \`bash store/agent-worktree-deps.sh $AGENT\` to make it a real directory)"
+  fi
 fi
 
 echo "path:   $TREE"

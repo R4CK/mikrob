@@ -231,6 +231,12 @@ export FLEET_TEST_AGENT=""
 # the rebuild branch without running a real 16s tsc against the live install.
 BUILD_CMD="${MARVEEN_LAND_BUILD:-npm run build}"
 MAX_ATTEMPTS="${MARVEEN_LAND_MAX_ATTEMPTS:-3}"
+# card cd3e577b (F1, software-factory phase b8ac0ef1): set by the top-level `--card` invocation
+# below, never otherwise. Tells land_one's success path to ALSO post the Gate-SHA onto the card it
+# just landed, instead of only printing it for a human to copy -- the copy-paste step is exactly
+# where the 51-card vacuous-Gate-SHA class (card 0711c19b, see the comment on `gate_sha` further
+# down) kept entering.
+CARD_BRANCH_MODE=0
 
 # ONE LANDING AT A TIME, MACHINE-WIDE (card 24d1543f). Measured 2026-09-18 14:30-15:40: two
 # `--all` sweeps plus 3 per-agent landings plus 2 CleanCore suites plus gate vitests all in flight
@@ -274,11 +280,17 @@ acquire_land_lock() {
 
 land_one() {
   local agent="$1" dry="$2"
+  # card cd3e577b (F1): a THIRD, optional argument overrides which branch gets landed -- the
+  # top-level `--card <id>` mode (below) passes `card/<id>` here so a card-worktree branch (created
+  # by agent-worktree-marveen.sh --card) lands on its own, structurally unable to carry another
+  # card's commits along, instead of the shared agent/<agent>/work branch every other card on that
+  # agent also commits to. Every other reference in this function already reads `$branch`, not
+  # `$agent`, for the branch name, so this is the only line that needed to change.
+  local branch="${3:-agent/${agent}/work}"
   # Scoped to this landing: --all lands several agents in one run, and a stale name here would post
   # one agent's queueing notice onto another agent's card.
   export FLEET_TEST_AGENT="$agent"
   KANBAN_COMMENT_AGENT="$agent"
-  local branch="agent/${agent}/work"
 
   g show-ref --verify --quiet "refs/heads/$branch" || { say "$agent: no branch $branch -- nothing to land"; return 0; }
 
@@ -647,6 +659,16 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     # that is easy to copy. Fixing the source does not heal the 51 cards already written this way.
     echo "Gate-SHA: $gate_sha"
     [ "$gate_sha" = "$merge_sha" ] || say "$agent: the develop tip above is the +mikrob version bump committed on top of that merge -- it carries no card content, do not put it in the REVIEW"
+    # card cd3e577b (F1): the --card top-level mode knows LAND_CARD is exactly the card this branch
+    # belongs to (by construction -- card/<id> only ever carries that one card's commits), so it can
+    # post the Gate-SHA onto the card directly instead of leaving it to be copied by hand into a
+    # REVIEW comment. kanban_comment_on, not kanban_comment: the latter looks up "the agent's own
+    # in_progress card by assignee", which is the wrong card if the agent has moved on to something
+    # else by the time this landing (possibly queued behind the develop lock for a while) finishes.
+    if [ "$CARD_BRANCH_MODE" = "1" ] && [ -n "$LAND_CARD" ]; then
+      kanban_comment_on "$LAND_CARD" "LANDOLVA (automatikus, marveen-land.sh --card)
+Gate-SHA: $gate_sha"
+    fi
     return 0
   fi
   echo "$agent: PUSH reported success but $merge_sha is NOT an ancestor of origin/$DEFAULT_BRANCH -- verify by hand"
@@ -658,12 +680,13 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
 # script's whole point -- pushing the already-tested merge onto a different base, or skipping the
 # re-test to save two minutes, would put code on develop that no fleet-test ever saw.
 land_with_retry() {
-  local agent="$1" dry="$2" attempt=1 rc
+  local agent="$1" dry="$2" branch_override="${3:-}" attempt=1 rc
+  local disp_branch="${branch_override:-agent/${agent}/work}"
   while :; do
-    land_one "$agent" "$dry"; rc=$?
+    land_one "$agent" "$dry" "$branch_override"; rc=$?
     [ "$rc" -eq 5 ] || return "$rc"
     if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
-      echo "$agent: REFUSED -- lost the push race $attempt time(s) in a row; origin/$DEFAULT_BRANCH keeps moving during the merge+test window. Nothing pushed; agent/${agent}/work is untouched."
+      echo "$agent: REFUSED -- lost the push race $attempt time(s) in a row; origin/$DEFAULT_BRANCH keeps moving during the merge+test window. Nothing pushed; $disp_branch is untouched."
       return 4
     fi
     attempt=$((attempt+1))
@@ -673,6 +696,39 @@ land_with_retry() {
 
 DRY=0; LAND_CARD=""; ALLOW_STACKED=""
 TARGET="${1:-}"; [ $# -gt 0 ] && shift
+
+# card cd3e577b (F1): `marveen-land.sh --card <id> --agent <agent> [--dry-run]` lands the card's OWN
+# card/<id> worktree branch (created by `agent-worktree-marveen.sh <agent> --card <id>`) instead of
+# the agent's shared agent/<agent>/work branch. Parsed separately from the existing per-agent
+# `--card <id>` OPTION below (which names a card for the downward-check/gate-verdict report on an
+# agent/*/work landing but never changes which branch is merged) -- that grammar already treats
+# `--card` as an option of an agent target, so a `--card` TARGET needs its own branch here rather
+# than overloading the same flag two ways in one loop. --agent is required (not inferred from the
+# board) so this script keeps making zero API calls of its own -- the caller, which already knows
+# the card's assignee because it just created the worktree, passes it.
+if [ "$TARGET" = "--card" ]; then
+  CARD_BRANCH_ID="${1:-}"
+  [ -n "$CARD_BRANCH_ID" ] || die 2 "--card needs a card id"
+  shift
+  case "$CARD_BRANCH_ID" in *[!0-9a-f]*|'') die 2 "card id must be hex (got: $CARD_BRANCH_ID)" ;; esac
+  [ "${#CARD_BRANCH_ID}" -ge 6 ] || die 2 "card id too short (got: $CARD_BRANCH_ID)"
+  CARD_AGENT=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dry-run) DRY=1 ;;
+      --agent) shift; [ $# -gt 0 ] || die 2 "--agent needs a name"; CARD_AGENT="$1" ;;
+      --agent=*) CARD_AGENT="${1#--agent=}" ;;
+      *) die 2 "unknown option: $1" ;;
+    esac
+    shift
+  done
+  [ -n "$CARD_AGENT" ] || die 2 "--card requires --agent <name> for attribution (locking, fleet-test queue, version-bump commit message)"
+  LAND_CARD="$CARD_BRANCH_ID"
+  CARD_BRANCH_MODE=1
+  land_with_retry "$CARD_AGENT" "$DRY" "card/$CARD_BRANCH_ID"
+  exit $?
+fi
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1 ;;
@@ -700,9 +756,23 @@ case "$TARGET" in
       agent="${b#agent/}"; agent="${agent%/work}"
       land_with_retry "$agent" "$DRY" || overall=1
     done < <(g for-each-ref --format='%(refname:short)' 'refs/heads/agent/*/work')
+    # card cd3e577b (F1), plan-grilling change (3): the sweep must also know about card/<id>
+    # branches, and must NEVER land a gate-less one -- only a card that is waiting+REVIEW (i.e. has
+    # a human/agent-declared Gate-SHA already on it) is safe to land unattended, because landing a
+    # card branch still means pushing untested-by-review code to origin/develop. Resolving "is this
+    # card waiting+REVIEW" needs the kanban API, which this script otherwise never calls (see the
+    # --agent requirement above) -- so this sweep SKIPS card/* branches by design for now rather
+    # than growing an API dependency into the one script whose whole job is "trust nothing but git
+    # and fleet-test.sh". Landing a card/<id> branch stays an explicit, one-at-a-time
+    # `marveen-land.sh --card <id> --agent <agent>` call (by the owning agent, after REVIEW+waiting)
+    # until a follow-up card wires a real waiting+REVIEW check into this sweep.
+    while IFS= read -r b; do
+      [ -n "$b" ] || continue
+      echo "marveen-land.sh --all: $b exists but card/* branches are not swept automatically (land with: marveen-land.sh --card ${b#card/} --agent <owner>)" >&2
+    done < <(g for-each-ref --format='%(refname:short)' 'refs/heads/card/*')
     exit $overall
     ;;
-  '') die 2 "usage: marveen-land.sh <agent> [--dry-run] [--card <id>] [--allow-stacked <id>[,<id>...]] | marveen-land.sh --all [--dry-run]" ;;
+  '') die 2 "usage: marveen-land.sh <agent> [--dry-run] [--card <id>] [--allow-stacked <id>[,<id>...]] | marveen-land.sh --card <id> --agent <agent> [--dry-run] | marveen-land.sh --all [--dry-run]" ;;
   *)
     land_with_retry "$TARGET" "$DRY"
     exit $?
