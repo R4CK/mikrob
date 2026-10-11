@@ -27,17 +27,6 @@
 #   UNKNOWN     -- none of the above. Reported, never removed automatically -- a human decides.
 set -uo pipefail
 
-MODE="dry-run"
-CONFIRMED=0
-for arg in "$@"; do
-  case "$arg" in
-    --dry-run) MODE="dry-run" ;;
-    --apply) MODE="apply" ;;
-    --yes) CONFIRMED=1 ;;
-    *) echo "wsl-home-cleanup: unknown argument: $arg" >&2; exit 2 ;;
-  esac
-done
-
 HOME_DIR="${WSL_HOME_CLEANUP_HOME:-/home/neon}"
 MARVEEN_MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
 CLEANCORE_MAIN="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
@@ -106,14 +95,26 @@ load_worktrees() {
     esac
   done < <(git -C "$repo" worktree list --porcelain 2>/dev/null | awk '/^worktree/{print $2}')
 }
-load_worktrees "$MARVEEN_MAIN"
-load_worktrees "$CLEANCORE_MAIN"
 
 # --- live-process-cwd check -----------------------------------------------------------------
+# F1 (QA FAIL, card bc1e7ef2): /proc/*/cwd alone is blind to a process that was started ELSEWHERE
+# but has an open file descriptor INTO the candidate dir -- e.g. a `tail -f`/log-writer/build whose
+# own cwd is some other agent's worktree, redirecting its output into a dir this script is about to
+# classify. QA reproduced this directly: a background `tail -f` with cwd outside the target dir, fd
+# 6 pointed into it, made the dir classify DISPOSABLE and `--apply --yes` removed it while the
+# process was still alive and reading the file. /proc/*/fd/* is checked for the same reason and with
+# the same readlink+prefix pattern as cwd -- a live reference to the directory is a live reference,
+# whichever fd slot holds it.
 has_live_process_under() {
-  local dir="$1" link target
+  local dir="$1" link target fd
   for link in /proc/[0-9]*/cwd; do
     target=$(readlink -f "$link" 2>/dev/null) || continue
+    case "$target" in
+      "$dir"|"$dir"/*) return 0 ;;
+    esac
+  done
+  for fd in /proc/[0-9]*/fd/*; do
+    target=$(readlink -f "$fd" 2>/dev/null) || continue
     case "$target" in
       "$dir"|"$dir"/*) return 0 ;;
     esac
@@ -160,8 +161,6 @@ referenced_by_open_card() {
 }
 
 DASHBOARD_UP=0
-dashboard_reachable && { DASHBOARD_UP=1; load_open_card_ids; }
-[ -n "$OPEN_CARD_IDS_FILE" ] && trap 'rm -f "$OPEN_CARD_IDS_FILE"' EXIT
 
 classify() {
   local name="$1" path="$2"
@@ -230,42 +229,66 @@ remove_entry() {
   rm -rf "$path"
 }
 
-keep_count=0; active_count=0; disposable_count=0; unknown_count=0
-disposable_paths=()
+main() {
+  local MODE="dry-run" CONFIRMED=0 arg
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run) MODE="dry-run" ;;
+      --apply) MODE="apply" ;;
+      --yes) CONFIRMED=1 ;;
+      *) echo "wsl-home-cleanup: unknown argument: $arg" >&2; return 2 ;;
+    esac
+  done
 
-for path in "$HOME_DIR"/*/ "$HOME_DIR"/.[!.]*/; do
-  [ -d "$path" ] || continue
-  path="${path%/}"
-  name="$(basename "$path")"
-  cls=$(classify "$name" "$path")
-  case "$cls" in
-    KEEP) keep_count=$((keep_count + 1)) ;;
-    ACTIVE) active_count=$((active_count + 1)) ;;
-    DISPOSABLE) disposable_count=$((disposable_count + 1)); disposable_paths+=("$path") ;;
-    UNKNOWN) unknown_count=$((unknown_count + 1)) ;;
-  esac
-  printf '%-11s %s\n' "$cls" "$path"
-done
+  load_worktrees "$MARVEEN_MAIN"
+  load_worktrees "$CLEANCORE_MAIN"
+  dashboard_reachable && { DASHBOARD_UP=1; load_open_card_ids; }
+  [ -n "$OPEN_CARD_IDS_FILE" ] && trap 'rm -f "$OPEN_CARD_IDS_FILE"' RETURN
 
-say "summary: KEEP=$keep_count ACTIVE=$active_count DISPOSABLE=$disposable_count UNKNOWN=$unknown_count"
-[ "$DASHBOARD_UP" = 1 ] || say "note: dashboard unreachable during this run -- every registered worktree with no live process was failed OPEN to ACTIVE (not guessed into DISPOSABLE)"
+  local keep_count=0 active_count=0 disposable_count=0 unknown_count=0
+  local disposable_paths=() path name cls
 
-if [ "$MODE" = "dry-run" ]; then
-  say "dry-run: nothing removed. Re-run with --apply --yes to remove the $disposable_count DISPOSABLE entries above."
-  exit 0
-fi
+  for path in "$HOME_DIR"/*/ "$HOME_DIR"/.[!.]*/; do
+    [ -d "$path" ] || continue
+    path="${path%/}"
+    name="$(basename "$path")"
+    cls=$(classify "$name" "$path")
+    case "$cls" in
+      KEEP) keep_count=$((keep_count + 1)) ;;
+      ACTIVE) active_count=$((active_count + 1)) ;;
+      DISPOSABLE) disposable_count=$((disposable_count + 1)); disposable_paths+=("$path") ;;
+      UNKNOWN) unknown_count=$((unknown_count + 1)) ;;
+    esac
+    printf '%-11s %s\n' "$cls" "$path"
+  done
 
-if [ "$CONFIRMED" != 1 ]; then
-  echo "wsl-home-cleanup: --apply requires --yes (read the --dry-run report first). Refusing." >&2
-  exit 2
-fi
+  say "summary: KEEP=$keep_count ACTIVE=$active_count DISPOSABLE=$disposable_count UNKNOWN=$unknown_count"
+  [ "$DASHBOARD_UP" = 1 ] || say "note: dashboard unreachable during this run -- every registered worktree with no live process was failed OPEN to ACTIVE (not guessed into DISPOSABLE)"
 
-removed=0; skipped=0
-for path in "${disposable_paths[@]}"; do
-  if remove_entry "$path"; then
-    removed=$((removed + 1))
-  else
-    skipped=$((skipped + 1))
+  if [ "$MODE" = "dry-run" ]; then
+    say "dry-run: nothing removed. Re-run with --apply --yes to remove the $disposable_count DISPOSABLE entries above."
+    return 0
   fi
-done
-say "apply done: removed=$removed skipped=$skipped"
+
+  if [ "$CONFIRMED" != 1 ]; then
+    echo "wsl-home-cleanup: --apply requires --yes (read the --dry-run report first). Refusing." >&2
+    return 2
+  fi
+
+  local removed=0 skipped=0
+  for path in "${disposable_paths[@]}"; do
+    if remove_entry "$path"; then
+      removed=$((removed + 1))
+    else
+      skipped=$((skipped + 1))
+    fi
+  done
+  say "apply done: removed=$removed skipped=$skipped"
+}
+
+# Only auto-run when executed, never when sourced (the selftest sources this file to call classify()
+# and friends directly, the way mopsion-bundle-check.sh's selftest already does for that script).
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  main "$@"
+  exit $?
+fi

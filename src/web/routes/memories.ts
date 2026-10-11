@@ -263,7 +263,11 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       let content = m.content
       if (maxChars !== null && content.length > maxChars) {
         const remaining = content.length - maxChars
-        content = content.slice(0, maxChars) + `...(${remaining} chars more, GET /api/memories/${m.id})`
+        // Card 517fdcc5: memGetMatch's new boundary check scopes the follow-up fetch to `?agent=`
+        // (or a device key) the same way this listing was scoped -- carry it through so a caller
+        // who listed with `?agent=X` does not get a 404 on the hint it was just handed.
+        const hintQs = agentId ? `?agent=${encodeURIComponent(agentId)}` : ''
+        content = content.slice(0, maxChars) + `...(${remaining} chars more, GET /api/memories/${m.id}${hintQs})`
       }
       return {
         ...m,
@@ -312,12 +316,32 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
   }
 
   // Single memory fetch -- returns full content regardless of max_chars (card 0c5423fc).
+  //
+  // Card 517fdcc5 delta (QA FAIL 10812 + MikroB 10814): this used to run the id lookup with no
+  // agent-boundary check at all, same gap as a second, unreachable GET /:id block upstream added
+  // in this card's own merge (identical route-match, placed after this one in file order -- a
+  // path/method dispatcher runs the FIRST match and returns, so that block never executed; it is
+  // deleted below rather than kept as dead code).
+  //
+  // The boundary here mirrors the list endpoint's existing one (getAgentMemories in db.ts:
+  // `agent_id = ? OR category = 'shared'`), not a new invariant: a device-key caller's identity
+  // (agentKeyToAgentId, same precedent as the POST handler above) takes priority over a
+  // caller-claimed `?agent=`; a shared-token/session caller keeps today's behaviour (`?agent=`
+  // trusted as given, or no scoping at all if omitted -- full isolation for the shared token is
+  // out of scope here, see card 2520b85a). A row that does not match the resolved scope answers
+  // the same 404 as a missing id, so this is not a new oracle for "does this id exist".
   const memGetMatch = path.match(/^\/api\/memories\/(\d+)$/)
   if (memGetMatch && method === 'GET') {
     const id = parseInt(memGetMatch[1], 10)
+    const authenticatedAgentId = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
+    const scopeAgentId = authenticatedAgentId || url.searchParams.get('agent') || ''
     const db2 = getDb()
     const row = db2.prepare('SELECT * FROM memories WHERE id = ?').get(id) as Memory | undefined
     if (!row) { json(res, { error: 'Memory not found' }, 404); return true }
+    if (scopeAgentId && row.agent_id !== scopeAgentId && row.category !== 'shared') {
+      json(res, { error: 'Memory not found' }, 404)
+      return true
+    }
     json(res, {
       ...row,
       embedding: undefined,
@@ -525,24 +549,10 @@ Respond ONLY with JSON, nothing else:
   }
 
   const memUpdateMatch = path.match(/^\/api\/memories\/(\d+)$/)
-  // GET /api/memories/:id -- read ONE memory back by id.
-  //
-  // Added 2026-09-14. Until then the id-addressed routes were PUT/PATCH/DELETE
-  // only: a memory could be referenced by id, edited by id and deleted by id,
-  // but never READ by id. The shared tier is full of such pointers ("see shared
-  // 5131"), and the only way to follow one was keyword search -- which silently
-  // fails when the keywords do not match. A sub-agent hit exactly that: the
-  // 404 from this path read as "the record does not exist", when what did not
-  // exist was the route. An absent route and an absent row must not look alike.
-  if (memUpdateMatch && method === 'GET') {
-    const id = parseInt(memUpdateMatch[1], 10)
-    const row = getDb()
-      .prepare('SELECT id, agent_id, category, content, keywords, created_at, accessed_at FROM memories WHERE id = ?')
-      .get(id) as Record<string, unknown> | undefined
-    if (!row) { json(res, { error: 'Memory not found' }, 404); return true }
-    json(res, row)
-    return true
-  }
+  // GET /api/memories/:id used to also be handled here (added 2026-09-14, no agent-boundary
+  // check). It was dead code by the time of card 517fdcc5's merge -- the SAME route/method is
+  // matched and returned by memGetMatch above, which runs first -- so it is removed rather than
+  // fixed in place; memGetMatch above now carries the boundary check for this path.
 
   if (memUpdateMatch && (method === 'PUT' || method === 'PATCH')) {
     const id = parseInt(memUpdateMatch[1], 10)
