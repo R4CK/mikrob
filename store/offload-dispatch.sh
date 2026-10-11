@@ -94,6 +94,15 @@ OFFLOAD_LEAF_MAX_ATTEMPTS="${OFFLOAD_LEAF_MAX_ATTEMPTS:-2}"
 # only costs a Draft-Review adjudication. Default 600s (10 min) matches rule 3's own stuck-card
 # threshold, per the card's own suggestion. See resolve_leaves()'s is_stale_in_progress() below.
 OFFLOAD_STALE_IN_PROGRESS_SECONDS="${OFFLOAD_STALE_IN_PROGRESS_SECONDS:-600}"
+# NON-INTEGER GUARD (card f8e7f7cb, Cybersec F1 LOW on eeebd2b5, Gate-SHA bdb35dfa). A value like
+# "10m" used to reach resolve_leaves()'s python as-is, where int(...) raises ValueError before any
+# leaf is resolved -- the uncaught exception aborts that python process with no stdout, and because
+# resolve_leaves()'s caller redirects stderr to /dev/null, the whole function silently returns empty,
+# so EVERY leaf (including a fresh "planned" one) resolves to zero, with no trace of why.
+if ! [[ "$OFFLOAD_STALE_IN_PROGRESS_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "offload-dispatch: OFFLOAD_STALE_IN_PROGRESS_SECONDS='$OFFLOAD_STALE_IN_PROGRESS_SECONDS' is not an integer -- falling back to the documented default (600s)" >&2
+  OFFLOAD_STALE_IN_PROGRESS_SECONDS=600
+fi
 export ATTEMPTS_FILE EXHAUSTED_TTL_SECONDS OFFLOAD_LEAF_MAX_ATTEMPTS OFFLOAD_STALE_IN_PROGRESS_SECONDS
 
 # --- attempts-file helper: every call is flock-serialized on its OWN lock file (not the per-$CARD one
