@@ -19308,3 +19308,17 @@ A harom erintett teszt (es a hozzajuk tartozo, mar hasznalatlanna valo `writeTra
 **Teszt:** `scripts/__tests__/email-extract-parity.test.py` (3 F1' eset + 1 L1 eset + 1 L2 eset, mind mutáció-proofolva -- a `fullmatch`→`match` visszaállítás 3 tesztet pirosra visz, a `ValueError` elkapás kivétele tracebacket dob a teszt-futásban, a `--attach-body` kivétele a regexből 1 tesztet pirosra visz) és `scripts/__tests__/email-approval-gate.test.py` (teljes futás zöld, regresszió nélkül).
 
 **Ki döntött:** backend (WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16368). Delta-gate: QA + WhiteHat2 (cybersec2), ugyanarra a SHA-ra.
+
+## 2026-10-11 -- 2520b85a: per-agent identitás, measurement-only szelet (plan-grilling verdikt: GO-WITH-CHANGES)
+
+**Forrás:** WhiteHat2 1cdac111 delta (msg 10708) -- nincs kártya az ügynökönkénti API-azonosításra, amire a komment-szerző hitelesítése (1cdac111 maradék kockázat), a strukturált verdikt-rekord szerzője (2bfa4c67 F2) és a nem-hamisítható jóváhagyási csatorna (3fb0ef97) épül. A kártya saját feladat-leírása: "terv + plan-grilling, utána megvalósítás kapcsoló mögött".
+
+**Plan-grilling eredmény (plan-grilling skill, teljes jegyzőkönyv a kártya kommentjén):** a per-agent identitás ALAPMECHANIZMUSA már létezik (kártya 84dcc5d4: `auth-device-keys.ts` `createDeviceKey()` + `AGENT_KEY_PREFIX='agent:'` + `agentKeyToAgentId()`, `auth-gate.ts` már felold device-key hívást, `RouteContext.auth` már átmegy minden route handlerbe) -- eddig egyetlen fogyasztó használta (`routes/memories.ts`). A `kanban.ts`-ben MÁR VAN egy explicit, pinnelt döntés (kártya 1cdac111, `kanban-comment-author-trust-boundary.test.ts`): a comment `author` mező CLAIM, nem bizonyított identitás, és ezt NEM szabad csendben enforce-ra váltani ezen a kártyán.
+
+**Döntés:** CSAK a measurement-only szelet épül most, flag mögött (`AGENT_IDENTITY_MEASURE`, alapértelmezés ON, mert tisztán megfigyelés -- `off`-ra állítva nulla új kódút). Az ENFORCE mód (mismatch esetén 403/felülírás) KÜLÖN, jövőbeli döntés, a mért adatok birtokában -- ezen a kártyán tudatosan NEM épül be.
+
+**Megvalósítás:** új `src/web/agent-identity-measure.ts` modul, `measureAgentIdentityClaim(ctx, endpoint, claimedValue)` -- legacy megosztott token hívásnál INFO log (`authKind: legacy-token`), `agent:<id>` device-kulcsos hívásnál INFO (egyezés) vagy WARN (eltérés a claimed és az agentId között) log, minden más auth-kind vagy hiányzó claim csendes no-op, belső hiba fail-open (try/catch, SOHA nem dob, SOHA nem blokkolja a valódi kérést). Bekötve 3 helyen: `POST /api/kanban/:id/comments` (author), `POST /api/kanban/:id/move` (actor), `POST /api/messages` (from).
+
+**Teszt:** `src/__tests__/agent-identity-measure.test.ts` (10 teszt, logger-spy-jal, mind mutáció-proofolva -- a mismatch-ág kikapcsolása 1 tesztet pirosra visz), plusz a 3 érintett route meglévő teszt-alkészlete (`kanban-id-guard`, `kanban-dispatch-instructions`, `kanban-comment-author-trust-boundary`, `messages-post-sender-guards`, `messages-main-agent-no-false-warning`, `messages-module`, `messages-invalid-json-400`) változatlanul zöld -- a változás tisztán additív, egyetlen meglévő assertion sem módosult. `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** backend (plan-grilling verdikt, MikroB-nak jelezve a kártya kommentjén). Gate: QA + WhiteHat + RedHat (a kártya saját, trust-boundary kockázatú kijelölése).
