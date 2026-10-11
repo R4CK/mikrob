@@ -175,12 +175,18 @@ classify() {
     echo "ACTIVE"
     return
   fi
+  # B1 (WhiteHat NO-GO 16566 on Gate-SHA 789fd6ef, MikroB decision 16567): this check used to live
+  # INSIDE the `if [ -n "$owner" ]` branch below, so it only ever ran for REGISTERED worktrees. An
+  # unregistered plain dir with a live process writing into it -- QA's own repro: a bare `mkdir` +
+  # a `tail -f` redirected in from elsewhere, cwd outside the dir -- skipped this check entirely
+  # and fell straight through to the DISPOSABLE pattern/age match, getting removed out from under
+  # the still-running process. It now runs for EVERY candidate, registered or not.
+  if has_live_process_under "$path"; then
+    echo "ACTIVE"
+    return
+  fi
   local owner="${WORKTREE_OWNER[$path]:-}"
   if [ -n "$owner" ]; then
-    if has_live_process_under "$path"; then
-      echo "ACTIVE"
-      return
-    fi
     if [ "$DASHBOARD_UP" = 1 ]; then
       if referenced_by_open_card "$name"; then
         echo "ACTIVE"
@@ -193,15 +199,15 @@ classify() {
     fi
   fi
   if matches_any "$name" "${DISPOSABLE_PATTERNS[@]}"; then
-    local now mtime age_h
-    now=$(date +%s)
-    mtime=$(stat -c %Y "$path" 2>/dev/null || echo "$now")
-    age_h=$(( (now - mtime) / 3600 ))
-    if [ "$age_h" -ge "$MIN_AGE_HOURS" ]; then
-      echo "DISPOSABLE"
+    # B2 (WhiteHat NO-GO 16566, MikroB decision 16567): age used to be the TOP-LEVEL dir's own
+    # mtime, which does not change when a file deep inside is edited -- a dir that looked old at
+    # the top could still hold content someone touched minutes ago. Age is now whether ANY file
+    # anywhere inside the dir (any depth) was modified within the last $MIN_AGE_HOURS hours.
+    if [ -n "$(find "$path" -mmin "-$((MIN_AGE_HOURS * 60))" -print -quit 2>/dev/null)" ]; then
+      echo "UNKNOWN"
       return
     fi
-    echo "UNKNOWN"
+    echo "DISPOSABLE"
     return
   fi
   echo "UNKNOWN"
@@ -212,6 +218,15 @@ remove_entry() {
   if [ -n "$owner" ]; then
     if [ -n "$(git -C "$path" status --porcelain 2>&1)" ]; then
       say "SKIP (uncommitted changes in registered worktree): $path"
+      return 1
+    fi
+    # B3 (WhiteHat NO-GO 16566, MikroB decision 16567): a clean, registered worktree can still be
+    # on a detached HEAD that no branch, remote-tracking ref or tag points to -- `git status
+    # --porcelain` only looks at the working tree, it says nothing about this. `git worktree
+    # remove --force` would turn that commit into a dangling object, recoverable only until the
+    # next `git gc`. Refuse removal unless HEAD is reachable from some branch/remote/tag.
+    if [ -n "$(git -C "$path" rev-list -n1 HEAD --not --branches --remotes --tags 2>&1)" ]; then
+      say "SKIP (HEAD commit not reachable from any branch/remote/tag in registered worktree): $path"
       return 1
     fi
     say "removing registered worktree: $path (owner $owner)"
