@@ -19047,3 +19047,11 @@ A `needsFleetOauthFor` kiemelés (kör 1) után a teljes landolási fleet-test 2
 **Tanulság, MÉG EGYSZER, mert most már három eset ugyanerre a kártyára:** minden forrás-oldali kifejezés-átalakítás (nem csak feltétel-csere, KIEMELÉS is) UTÁN azonnal grep a pontos RÉGI szöveges alakra a teljes `src/__tests__/` fölött, MIELŐTT a fleet-test-re bíznám a felfedezést -- ez olcsóbb, mint egy teljes suite-kör.
 
 **Ki döntött:** backend3. Delta-gate: QA + RedHat.
+
+## 2026-10-11 -- outgoing-copy-gate.py F1 delta: az eredeti elutasított ASCII maszk is fedve (kártya 079c13d8, CYBERED NO-GO komment 15958)
+
+**Pontosítás az előző (F1 lezárását állító) bejegyzéshez:** az ott hivatkozott mutáció-ellenőrzés csak a UNICODE-tudatos kisbetűs-kötőjeles maszkra (`\b\w+-\w+\b`) vonatkozott. Az EREDETI, a két Cybersec NO-GO (fbb36b41 round 7/8 és round 11) által elutasított alak ASCII-only és feltétel nélküli volt (upstream 03ca5262, #1114: `\b[a-z]+(?:-[a-z]+){1,4}\b`, rövid ideig `_TECH_SUFFIXED` néven élt). RedHat megmérte: ennek a visszahozása minden korábbi tesztet (a 5d3-at is) zölden hagy, mert egy ASCII maszk SOSEM tud egy cirill-tartalmú szót elvágni (a `\b` két `\w` karakter között nem határ, és a cirill betű a Python `re` UNICODE móddal `\w`-nek számít). A valódi hatása más: a `strip_for_name()` UGYANAZT a `_TECH_COMMON` maszkot használja (`NAME_MASK == TECHNICAL`), tehát egy ilyen maszk a NÉV-szabályt némítaná el kisbetűs, toldalékos névalakra ("kovach-val", "a kovach-fele") -- a 347df3d1 (GATENEVSTRIP921) lyuk kisbetűs változata, amit a meglévő name-mask teszt (nagybetűs, kis/nagybetű-érzékeny szintetikus minta) nem fed.
+
+**Javítás:** új teszt (`scripts/__tests__/outgoing-copy-gate.test.py`, 5d4. blokk), kis/nagybetű-FÜGGETLEN szintetikus szabállyal (`(?i)kovach`), két kisbetűs, toldalékos mondatra ("kovach-val beszeltem tegnap", "a kovach-fele megoldas jo lesz"), HELYTELEN NEV blokkolást várva. Mutáció-ellenőrzés (ideiglenes, nem szállított): az eredeti ASCII maszk visszahozása mind a négy új assercót pirosra viszi (`got=0 want=2`), visszaállítva, újra zöld (python-teszt + selftest).
+
+**Ki döntött:** backend3. Delta-gate: QA + RedHat.

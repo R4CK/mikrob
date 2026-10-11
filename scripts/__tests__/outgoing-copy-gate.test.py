@@ -214,6 +214,34 @@ def main():
         check("hyphenated lowercase homoglyph still blocks (exit 2)", code, 2)
         check_true("hyphenated homoglyph: stderr names it", "VEGYES IRASRENDSZERU" in err, err)
 
+        # 5d4. B1 (card 079c13d8, CYBERED NO-GO, comment 15958): 5d3 only pins the
+        # consequence for a UNICODE-AWARE lowercase-hyphenated mask. The ORIGINAL
+        # mask the two Cybersec NO-GOs (fbb36b41 round 7/8, round 11) rejected was
+        # ASCII-only and unconditional (upstream 03ca5262, #1114: \b[a-z]+(?:-[a-z]+)
+        # {1,4}\b, lived briefly as _TECH_SUFFIXED). RedHat measured: reintroducing
+        # THAT exact pattern leaves every existing test green (including 5d3, since
+        # an ASCII mask cannot span a non-ASCII homoglyph -- \b never falls inside a
+        # mixed-script run). Its real effect is different: it silences the NAME
+        # rule on a lowercase, suffixed form of the name ("kovach-val" = "with
+        # Kovach", "a kovach-fele" = "the Kovach one"), because strip_for_name()
+        # shares the SAME _TECH_COMMON mask (NAME_MASK == TECHNICAL by construction,
+        # see the comment above both) and would cut the whole hyphenated span
+        # before _name_search() ever runs on it. A case-INSENSITIVE rule (so the
+        # test does not depend on whatever casing the real, untracked rules file
+        # happens to use) must still catch the lowercase, hyphenated form today.
+        name_active = rules_path(tmp, "name-active.json")
+        write_rules(name_active, {
+            "bad_name_patterns": [r"(?i)kovach"],
+            "correction": "A helyes alak: Kovach.",
+        })
+        for bad_sentence in (
+            CLEAN_HU_OK + " kovach-val beszeltem tegnap.",
+            CLEAN_HU_OK + " a kovach-fele megoldas jo lesz.",
+        ):
+            code, out, err = run_hook(email_payload(bad_sentence), rules_file=name_active)
+            check(f"lowercase hyphenated name form still blocks (exit 2): {bad_sentence!r}", code, 2)
+            check_true(f"lowercase hyphenated name form: stderr names it: {bad_sentence!r}", "HELYTELEN NEV" in err, err)
+
         # 5f. F3 (card 079c13d8, WhiteHat follow-up on 7e70144e, preliminary):
         # KNOWN, DOCUMENTED gap, not fixed here. accent_check_tokens() tokenizes
         # with HYPHEN_WORD, which takes a hyphenated run of letters as ONE token
