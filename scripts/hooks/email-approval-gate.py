@@ -431,10 +431,21 @@ def content_anchor(env: dict) -> str:
         stay valid for the letters they approved. There is no ambiguity to
         exploit: the extractor decides bcc deterministically, and any
         non-empty bcc changes the hash -- fail-closed in the only direction
-        that matters."""
+        that matters.
+
+    Card e4eb72c9: attachments join the canon the SAME conditional way as
+    bcc -- the extractor (email_extract.collect_mcp_attachments) already
+    hashes each attachment's actual bytes (reading a file-path attachment at
+    hook time), so this anchor pins WHAT was attached, not merely that an
+    attachment field existed. Without this, an approved letter could be
+    re-sent with ANY local file attached and the hash would not change --
+    the same gap the bcc fix closed for the hidden-recipient case. Every
+    attachment-less anchor stays byte-identical to the pre-fix value."""
     fields = {"to": env["to"], "cc": env["cc"], "text": env["text"]}
     if env.get("bcc"):
         fields["bcc"] = env["bcc"]
+    if env.get("attachments"):
+        fields["attachments"] = env["attachments"]
     canon = json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
