@@ -8,6 +8,7 @@ import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { AGENT_MESSAGES_DDL, AGENT_MESSAGES_ALTER_COLUMNS } from './schema/agent-messages-ddl.js'
 import { isQuietMessageClass } from './web/message-wake.js'
+import { isForbiddenAssignee, isInvalidAssigneeShape, FORBIDDEN_ASSIGNEE_MESSAGE, INVALID_ASSIGNEE_TYPE_MESSAGE } from './web/kanban-assignee-guard.js'
 import {
   MARKER_SOURCE,
   NODE_CARD,
@@ -3621,6 +3622,17 @@ function touchAncestorsOf(cardId: string, now: number): void {
 // upstream's fail-closed contract; keeping both would still be a duplicate `export function
 // parentWouldCycle` and a TypeScript error, so there is still only one definition.
 
+// Kartya e25a549a, QA FAIL (qa2, 15782) + CYBERSEC NO-GO (10562): a kanban.ts ket HTTP
+// route-handlere mar elutasitja az assignee="mikrob" irast, de a HARMADIK/NEGYEDIK/OTODIK iro-ut
+// (POST /api/kanban/:id/breakdown/accept, POST /api/ideas/:id/promote[-breakdown]) KOZVETLENUL ezt
+// a fuggvenyt hivja, a route-szintu ellenorzes megkerulesevel. Strukturalis vedelem a KOZOS
+// iro-fuggvenyben (kodminosegi elv 6), nem csak a ket ismert hivoban -- egy jovoben nyilo hatodik
+// iro-ut sem tudja megkerulni csendben.
+function assertValidAssignee(assignee: unknown): void {
+  if (isInvalidAssigneeShape(assignee)) throw new Error(INVALID_ASSIGNEE_TYPE_MESSAGE)
+  if (isForbiddenAssignee(assignee)) throw new Error(FORBIDDEN_ASSIGNEE_MESSAGE)
+}
+
 export function createKanbanCard(card: {
   id: string
   title: string
@@ -3632,6 +3644,7 @@ export function createKanbanCard(card: {
   parent_id?: string
   due_date?: number
 }): void {
+  assertValidAssignee(card.assignee)
   const now = Math.floor(Date.now() / 1000)
   const status = card.status ?? 'planned'
   const maxRow = db.prepare(
@@ -3877,6 +3890,7 @@ export function updateKanbanCard(
   fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
   opts?: { actor?: string; force?: boolean; reason?: string }
 ): boolean {
+  if (fields.assignee !== undefined) assertValidAssignee(fields.assignee)
   const card = getKanbanCard(id)
   if (!card) return false
   const statusChanges = fields.status !== undefined && fields.status !== card.status

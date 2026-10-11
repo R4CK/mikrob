@@ -39,7 +39,7 @@ import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.
 import { planGrillingGuardVerdict } from '../kanban-plan-grilling-guard.js'
 import { draftReviewGuardVerdict } from '../kanban-draft-review-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
-import { isForbiddenAssignee, FORBIDDEN_ASSIGNEE_MESSAGE } from '../kanban-assignee-guard.js'
+import { isForbiddenAssignee, FORBIDDEN_ASSIGNEE_MESSAGE, isInvalidAssigneeShape, INVALID_ASSIGNEE_TYPE_MESSAGE } from '../kanban-assignee-guard.js'
 
 // Card project-name drift (Peti 2026-08-08): `project` was free-text with no case-folding, so
 // "CleanCore" / "cleancore" / "MikroB" / "mikrob-infra" / "fleet-infra" / "marveen" / "Infra" all
@@ -857,6 +857,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    if (isInvalidAssigneeShape(data.assignee)) {
+      json(res, { error: INVALID_ASSIGNEE_TYPE_MESSAGE }, 400)
+      return true
+    }
     if (isForbiddenAssignee(data.assignee)) {
       json(res, { error: FORBIDDEN_ASSIGNEE_MESSAGE }, 400)
       return true
@@ -955,6 +959,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     if (newDevStopWouldBlock(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
+      return true
+    }
+    if (isInvalidAssigneeShape(data.assignee)) {
+      json(res, { error: INVALID_ASSIGNEE_TYPE_MESSAGE }, 400)
       return true
     }
     if (isForbiddenAssignee(data.assignee)) {
@@ -1330,24 +1338,34 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const db = getDb()
-    const created = db.transaction(() => {
-      const ids: string[] = []
-      for (const st of subtasks) {
-        const id = randomUUID().slice(0, 8).toUpperCase()
-        createKanbanCard({
-          id,
-          title: st.title,
-          description: st.description,
-          assignee: st.assignee ?? undefined,
-          priority: (st.priority as any) ?? 'normal',
-          project: parent.project ?? undefined,
-          parent_id: parentId,
-        })
-        ids.push(id)
-      }
-      addKanbanComment(parentId, BOT_NAME, `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`)
-      return ids
-    })()
+    // Kartya e25a549a: st.assignee CALLER-CONTROLLED (ez a masodik ismert iro-ut, ami a ket
+    // route-handler guardjat megkerulte); a createKanbanCard() sajat assertValidAssignee()
+    // backstopja dob, ha tiltott/rossz-tipusu -- a tranzakcio automatikusan visszagorog, 400-ra
+    // forditva, nem 500-ra.
+    let created: string[]
+    try {
+      created = db.transaction(() => {
+        const ids: string[] = []
+        for (const st of subtasks) {
+          const id = randomUUID().slice(0, 8).toUpperCase()
+          createKanbanCard({
+            id,
+            title: st.title,
+            description: st.description,
+            assignee: st.assignee ?? undefined,
+            priority: (st.priority as any) ?? 'normal',
+            project: parent.project ?? undefined,
+            parent_id: parentId,
+          })
+          ids.push(id)
+        }
+        addKanbanComment(parentId, BOT_NAME, `Auto-breakdown: ${ids.length} subtask létrehozva (${ids.join(', ')})`)
+        return ids
+      })()
+    } catch (err) {
+      json(res, { error: (err as Error).message }, 400)
+      return true
+    }
     json(res, { ok: true, created })
     return true
   }

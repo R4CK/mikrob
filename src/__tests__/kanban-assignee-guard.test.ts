@@ -8,10 +8,11 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Readable } from 'node:stream'
 import type http from 'node:http'
-import { initDatabase, getKanbanCard, createKanbanCard } from '../db.js'
+import { initDatabase, getKanbanCard, createKanbanCard, createIdea, updateKanbanCard } from '../db.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
+import { tryHandleIdeas } from '../web/routes/ideas.js'
 import type { RouteContext } from '../web/routes/types.js'
-import { isForbiddenAssignee } from '../web/kanban-assignee-guard.js'
+import { isForbiddenAssignee, isInvalidAssigneeShape } from '../web/kanban-assignee-guard.js'
 
 function fakeCtx(path: string, method: string, body?: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
@@ -39,6 +40,122 @@ describe('isForbiddenAssignee (pure check)', () => {
     expect(isForbiddenAssignee(undefined)).toBe(false)
     expect(isForbiddenAssignee('mikrob-infra')).toBe(false)
     expect(isForbiddenAssignee('not-mikrob')).toBe(false)
+  })
+
+  it('a non-string value is never "forbidden" here (that is isInvalidAssigneeShape\'s job)', () => {
+    expect(isForbiddenAssignee(['mikrob'])).toBe(false)
+    expect(isForbiddenAssignee({ name: 'mikrob' })).toBe(false)
+  })
+
+  // WhiteHat F3 (NO-GO komment 15784, kartya e25a549a): zero-width/formatting karakterek es
+  // Cirill/Gorog hasonmasok mertek szerint atmentek a sima trim+lowercase osszevetesen.
+  it('catches zero-width / soft-hyphen padded and full-width variants (WhiteHat F3)', () => {
+    expect(isForbiddenAssignee('mi​krob')).toBe(true) // ZWSP
+    expect(isForbiddenAssignee('mikro­b')).toBe(true) // soft hyphen
+    expect(isForbiddenAssignee('﻿mikrob')).toBe(true) // BOM
+    expect(isForbiddenAssignee('ｍｉｋｒｏｂ')).toBe(true) // full-width "mikrob"
+  })
+
+  it('catches Cyrillic/Greek look-alike letters (WhiteHat F3)', () => {
+    expect(isForbiddenAssignee('mіkrоb')).toBe(true) // Cyrillic і (U+0456) + о (U+043E) -- mіkrоb visually
+    expect(isForbiddenAssignee('мikrob')).toBe(true) // Cyrillic м (U+043C) in place of m
+  })
+
+  it('does not fold an unrelated real agent name into a false positive', () => {
+    expect(isForbiddenAssignee('bаckend2')).toBe(false) // Cyrillic а folded to "a" -> "backend2", still not mikrob
+  })
+})
+
+describe('isInvalidAssigneeShape (pure check, WhiteHat F1)', () => {
+  it('rejects array, object, number, boolean', () => {
+    expect(isInvalidAssigneeShape(['mikrob'])).toBe(true)
+    expect(isInvalidAssigneeShape({ name: 'mikrob' })).toBe(true)
+    expect(isInvalidAssigneeShape(42)).toBe(true)
+    expect(isInvalidAssigneeShape(true)).toBe(true)
+  })
+
+  it('accepts string, null, undefined', () => {
+    expect(isInvalidAssigneeShape('backend2')).toBe(false)
+    expect(isInvalidAssigneeShape(null)).toBe(false)
+    expect(isInvalidAssigneeShape(undefined)).toBe(false)
+  })
+})
+
+describe('createKanbanCard / updateKanbanCard structural backstop (WhiteHat F1/F2, kartya e25a549a)', () => {
+  // Measured: better-sqlite3 silently unwraps a one-element array bind parameter to its scalar,
+  // so assignee: ['mikrob'] reached the DB as the literal string "mikrob" through the two original
+  // route-handlers (typeof check skipped it) -- confirmed directly against better-sqlite3 before
+  // this fix (INSERT ... VALUES (?, ?) .run('x', ['mikrob']) -> row { id: 'x', assignee: 'mikrob' }).
+  it('createKanbanCard throws on a single-element array assignee (F1)', () => {
+    expect(() => createKanbanCard({ id: 'arr1', title: 'x', assignee: ['mikrob'] as unknown as string }))
+      .toThrow(/csak szoveg/)
+    expect(getKanbanCard('arr1')).toBeFalsy()
+  })
+
+  it('createKanbanCard throws on assignee="mikrob" directly (F2: the shared write path, not just the two routes)', () => {
+    expect(() => createKanbanCard({ id: 'direct1', title: 'x', assignee: 'mikrob' })).toThrow(/mikrob/i)
+    expect(getKanbanCard('direct1')).toBeFalsy()
+  })
+
+  it('updateKanbanCard throws on assignee="mikrob" and leaves the row unchanged', () => {
+    createKanbanCard({ id: 'u1', title: 'x', assignee: 'backend2' })
+    expect(() => updateKanbanCard('u1', { assignee: 'mikrob' })).toThrow(/mikrob/i)
+    expect(getKanbanCard('u1')?.assignee).toBe('backend2')
+  })
+})
+
+describe('POST /api/kanban/:id/breakdown/accept bypasses the route guard without the backstop (F2)', () => {
+  beforeEach(() => {
+    createKanbanCard({ id: 'parent1', title: 'parent', status: 'planned', assignee: 'backend2' })
+  })
+
+  it('refuses a subtask with assignee="mikrob" (QA\'s own live repro) with 400, no card created', async () => {
+    const { ctx, out } = fakeCtx('/api/kanban/parent1/breakdown/accept', 'POST', {
+      subtasks: [{ title: 'sub', description: 'd', assignee: 'mikrob', priority: 'normal' }],
+    })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toMatch(/mikrob/i)
+  })
+
+  it('a real agent subtask still works normally (control)', async () => {
+    const { ctx, out } = fakeCtx('/api/kanban/parent1/breakdown/accept', 'POST', {
+      subtasks: [{ title: 'sub', description: 'd', assignee: 'backend3', priority: 'normal' }],
+    })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(getKanbanCard(out.body.created[0])?.assignee).toBe('backend3')
+  })
+})
+
+describe('idea promotion no longer hardcodes assignee=BOT_NAME (MikroB) and the breakdown path is covered', () => {
+  beforeEach(() => {
+    createIdea({ id: 'idea1', title: 'Idea', description: 'd', category: 'infra', scope: 'munka', status: 'new', source: 'test', kanban_id: null, impact: null, effort: null })
+  })
+
+  it('POST /api/ideas/:id/promote creates the parent card with no assignee, not BOT_NAME', async () => {
+    const { ctx, out } = fakeCtx('/api/ideas/idea1/promote', 'POST', { phase: 'plan' })
+    expect(await tryHandleIdeas(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(getKanbanCard(out.body.kanban_id)?.assignee).toBeFalsy()
+  })
+
+  it('POST /api/ideas/:id/promote-breakdown refuses a child subtask with assignee="mikrob" with 400', async () => {
+    const { ctx, out } = fakeCtx('/api/ideas/idea1/promote-breakdown', 'POST', {
+      subtasks: [{ title: 'sub', assignee: 'mikrob', priority: 'normal' }],
+    })
+    expect(await tryHandleIdeas(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toMatch(/mikrob/i)
+  })
+
+  it('POST /api/ideas/:id/promote-breakdown with no subtask assignee leaves the parent unassigned, not BOT_NAME (control)', async () => {
+    const { ctx, out } = fakeCtx('/api/ideas/idea1/promote-breakdown', 'POST', {
+      subtasks: [{ title: 'sub', priority: 'normal' }],
+    })
+    expect(await tryHandleIdeas(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(getKanbanCard(out.body.parent_id)?.assignee).toBeFalsy()
   })
 })
 
