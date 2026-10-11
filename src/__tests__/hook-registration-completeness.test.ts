@@ -88,6 +88,9 @@ const EXEMPT: Record<string, string> = {
     'selftest for pentest-tool-install-guard.py, which is registered; the selftest itself is not a hook',
   'symlinked-node-modules-guard.selftest.py':
     'selftest for symlinked-node-modules-guard.py, which is registered; the selftest itself is not a hook',
+  'telegram_progress_watchdog.selftest.py':
+    'selftest for telegram_progress_watchdog.py (card dadeab30), which is registered as a launchd/' +
+    'systemd daemon, not a PreToolUse/PostToolUse hook; the selftest itself is not a hook',
   'provenance-gate-sender-sync.selftest.py':
     'drift guard for provenance-gate.py (card a65f3777): asserts its DIRECTIVE_SENDER literal matches ' +
     'src/web/system-directive-id.ts\'s SYSTEM_DIRECTIVE_SENDER; provenance-gate.py itself is registered, ' +
