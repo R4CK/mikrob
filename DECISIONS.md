@@ -19697,3 +19697,53 @@ hozzá):** F4 (gitignore-olt fájl elvész egy egyébként tiszta worktree-ben),
 worktree az awk `$2`-n csonkul), F6 (a dry-run riport nem ad okot az ACTIVE besoroláshoz).
 
 **Ki döntött:** backend2 (MikroB döntése a WhiteHat NO-GO után). Delta-gate: QA + RedHat.
+
+## 2026-10-11 -- d8d035f8: WhiteHat (cybersec, cybersec2) és RedHat (cybered) pin a heti model-fallback lépcső alól
+
+**Forrás:** Peti, Telegram 11011 (2026-10-11). A kártya eredeti premisszája (10097, 2026-10-02: fix
+Opus 5.5) elavult -- a 10812/10814 óta (2026-10-09) mindkét biztonsági gate claude-sonnet-5-5-ön fut.
+MikroB a 16511 kommentben leállította a dispatch-et, amíg nem tisztázódik, mire kell a pin; a 16515
+döntés: a pin megmarad, de a cél claude-sonnet-5-5, hatókör cybersec + cybersec2 + cybered.
+
+**Kockázat, ha nincs pin:** a heti model-fallback lépcső (és az 5 órás banner-fallback) minden nem-MAIN
+ügynököt automatikusan lefelé lépcsőz a terhelés nővén -- a két biztonsági gate pont akkor esne a
+legdrágább pillanatban olcsóbb modellre, amikor a flotta a legtöbb munkát próbálja átnyomni rajtuk.
+Ugyanaz a kockázati osztály, amit a QA/QA2 `NO_HAIKU_AGENTS` padló már véd (a magic-link 151/151-zöld,
+2 MAJOR hibát rejtő esete): egy leépített review-gate nem véd semmit.
+
+**Javítás:** `src/model-catalog.ts`-ben új, deklaratív `MODEL_PINNED_AGENTS` halmaz (`cybersec`,
+`cybersec2`, `cybered`) + `isModelPinned()`, a meglévő `NO_HAIKU_AGENTS`/`applyNoHaikuFloor` minta
+szerint (fix lista, nem config-mező -- egy ritkán változó listának nem kell saját séma/migráció).
+`src/web/model-fallback-runner.ts`: `checkAgent()` a függvény ELSŐ sorában visszatér pinnelt névre,
+MIELŐTT a parkolt-ügynök ág vagy a banner/heti tengely bármit kiszámolna -- tehát a pin MINDKÉT
+tengelyt kizárja (banner-fallback ÉS heti tier), nem csak a hetit. `updateStoredModelForParkedAgent()`
+ugyanezt a kaput saját magában is megismétli (védelem rétegezve, MikroB kifejezett kérésére: "amit a
+checkAgent és az updateStoredModelForParkedAgent is tisztel"). `readFleetTierState()` a dashboard-sorban
+is `exempt=true`-nak jelöli a pinnelt ügynököt (`collect(name, isModelPinned(name))`), hogy a kezelőfelület
+ne hazudjon egy célmodellt, amit a sweep sosem írna ki.
+
+**Teszt:** `src/__tests__/model-pinned-agents.test.ts`, új fájl, 10 teszt. Tiszta függvény-szint:
+`isModelPinned` a három névre igaz, máshol hamis; 99%-os heti terhelésnél (`weeklyTierIndex(99,...)` =
+tier 2) egy NEM pinnelt ügynök lépcsőzne (`weeklyTargetModel` elmozdul a bázisáról), a pinnelt nem --
+az `isModelPinned` eredménye a %-tól függetlenül igaz. Forrás-drótozási szint (a `parked-agent-
+cheaper-tier-wins.test.ts` mintáját követve, mert a runner IO-ja miatt a függvények nem exportáltak):
+`checkAgent` a pin-kaput a parkolt-ágnál ELŐBB futtatja; `updateStoredModelForParkedAgent` a saját
+kapuját a modell-olvasás ELŐTT futtatja; `readFleetTierState` a `collect(name, isModelPinned(name))`
+hívást tartalmazza. MUTÁCIÓ-PROOF mindhárom kapura KÜLÖN-KÜLÖN: a `checkAgent`-beli kapu kivétele
+pontosan 1 tesztet (a wiring-sorrend tesztet) visz pirosra, 9/10 marad zöld; az `updateStoredModel
+ForParkedAgent`-beli kapu kivétele pontosan 1 másikat; a `readFleetTierState` exempt-sor visszaállítása
+`false`-ra pontosan a dashboard-wiring tesztet. Mindhárom után visszaállítva, 10/10 zöld megerősítve.
+Regresszió: `model-catalog.test.ts` (meglévő), `parked-agent-cheaper-tier-wins.test.ts`,
+`model-fallback.test.ts`, `runner-conflict-resolution-pins.test.ts` -- mind zöld a változás után
+(101/101 összesen az öt fájlon). `tsc --noEmit` tiszta.
+
+**Nem ebben a körben:** a `MODEL_LADDER`/`CLAUDE_MODELS`/`MODEL_ALIASES` még a régi "5" család neveit
+(`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5-...`) ismeri, nem a mai "5.5" családot
+(`claude-sonnet-5-5` stb.) -- ez azt jelenti, hogy egy `claude-sonnet-5-5`-ön futó, NEM pinnelt ügynök
+a heti ramp `weeklyTargetModel()`-jének off-catalog védelme miatt ma is a saját bázisán marad (a
+függvény off-ladder bázisra önmagát adja vissza), DE a banner-fallback tengely (`chain.indexOf`) egy
+ilyen modellt a lánc elején (index 0) kezelne, és egy valódi 5h-limit banire levinné egy RÉGI névre.
+Ez a kártya kifejezetten a pin-mechanizmust kérte, nem a teljes katalógus 5.5-re frissítését -- a
+katalógus-frissítés külön kártya, ha Peti úgy dönt (nem nyitva ebben a körben, csak megjegyezve).
+
+**Ki döntött:** Peti (11011), MikroB (16515). Gate: QA + RedHat.
