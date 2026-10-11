@@ -161,6 +161,21 @@ r = amc._redact('curl --user admin:SuperSecret123 https://x.example.com')
 check('curl-dash-dash-user', r, ['SuperSecret123'], ['[REDACTED]'])
 r = amc._redact('curl --oauth2-bearer SuperSecretToken123 https://x.example.com')
 check('curl-oauth2-bearer', r, ['SuperSecretToken123'], ['[REDACTED]'])
+# Card 7e01b349 (RedHat F4b): `--password` had NO dedicated fixture of its own -- it only ever rode
+# along inside other cases, so a mutation that broke JUST this flag's own branch would not have
+# been caught by anything in this file. Pinned on its own now.
+r = amc._redact('curl --password SuperSecretValue123 https://x.example.com')
+check('curl-dash-dash-password', r, ['SuperSecretValue123'], ['[REDACTED]'])
+
+# Card 7e01b349 (RedHat NO-GO on 80c80706, F4b): the curl-oauth2-bearer fixture above uses a long
+# alnum value, which the UNRELATED bearer-token pattern (matching any bare "bearer <token>"
+# substring -- "--oauth2-bearer" itself contains the word "bearer") ALSO redacts independently.
+# Deleting the --oauth2-bearer alternative from the curl-flag pattern left that fixture green:
+# nothing there actually pinned the flag-specific branch. A short value (<8 chars) sidesteps the
+# bearer-pattern's own 8-char minimum, so only the curl-flag pattern's own alternative can redact
+# it here.
+r = amc._redact('curl --oauth2-bearer ab https://x.example.com')
+check('curl-oauth2-bearer-short', r, ['bearer ab'], ['[REDACTED]'])
 
 # Authorization header, by scheme -- Token/ApiKey/Basic were not `bearer`, so the bearer-only
 # pattern never saw them; the new position-based pattern does not key on the scheme word at all.
@@ -173,6 +188,96 @@ r = amc._redact('passwd=super_secret_value_here')
 check('passwd-kv', r, ['super_secret_value_here'], ['[REDACTED]'])
 r = amc._redact('pwd=super_secret_value_here')
 check('pwd-kv', r, ['super_secret_value_here'], ['[REDACTED]'])
+
+# ---------------------------------------------------------------------------
+# Card 7e01b349 (RedHat F3b on fcd8b794/14102): remaining gaps on top of the F3 block above --
+# compound JSON/kv key names, quoted multi-word values, glued curl flags, empty-username and
+# non-DB URI schemes, and the extra provider prefixes. Several fixture values below are built via
+# string concatenation rather than written as a literal: the shape alone (a real-looking GitLab/
+# Slack/AWS credential) trips the repo's own secret-write-guard pre-commit scan, which cannot tell
+# a test fixture from a real one.
+# ---------------------------------------------------------------------------
+
+# Compound JSON key names: the key=value pattern allows a substring match, but the JSON-quoted
+# pattern requires the quoted key to be EXACTLY one alternative -- access_token/client_secret/
+# refresh_token were not in that list at all.
+for key, value in (
+    ('access_token', 'SuperSecretValue123'),
+    ('client_secret', 'SuperSecretValue123'),
+    ('refresh_token', 'SuperSecretValue123'),
+):
+    r = amc._redact(f'{{"{key}": "{value}"}}')
+    check(f'json-key-compound-{key}', r, [value], ['[REDACTED]', f'"{key}"'])
+
+# Same compound names via plain key=value (substring match, no quotes).
+for key, value in (
+    ('access_token', 'SuperSecretValue123'),
+    ('client_secret', 'SuperSecretValue123'),
+    ('MY_SECRET_KEY', 'SuperSecretValue123'),  # suffix-compound: "secret_key" inside the full name
+):
+    r = amc._redact(f'{key}={value}')
+    check(f'kv-compound-{key}', r, [value], ['[REDACTED]'])
+
+# Quoted VALUES in the key=value pattern: the bare-value branch excludes quote characters from its
+# own character class, so a value that STARTS with a quote never matched at all.
+r = amc._redact('password="super secret value"')
+check('kv-quoted-double', r, ['super secret value'], ['[REDACTED]'])
+r = amc._redact("password='super secret value'")
+check('kv-quoted-single', r, ['super secret value'], ['[REDACTED]'])
+_fake_ghp = 'ghp_' + 'AAABBBCCCDDDEEEFFFGGGHHH'
+r = amc._redact(f'export API_KEY="{_fake_ghp}"')
+check('export-api-key-quoted', r, ['AAABBBCCCDDDEEEFFFGGGHHH'], ['[REDACTED]'])
+
+# `--password` with a quoted, multi-word value: the old `\S+` capture only grabbed the first word.
+r = amc._redact('curl --password "super secret value" https://x.example.com')
+check('curl-dash-dash-password-quoted-multiword', r, ['super secret value'], ['[REDACTED]'])
+
+# Card 7e01b349 (RedHat NO-GO on 80c80706, F4b): the fixture above only asserts the FULL original
+# value is gone -- a mutation that redacts just the first word (e.g. dropping the quoted-value
+# alternative so the bare \S+ branch grabs only up to the first space) still makes the WHOLE
+# string absent, because "super" is gone from it, even though "secret value" -- the rest of the
+# password -- survives in full. Asserting the TAIL specifically closes that gap.
+r = amc._redact('curl --password "a b c" https://x.example.com')
+check('curl-dash-dash-password-quoted-tail-not-leaked', r, ['b c'], ['[REDACTED]'])
+
+# Glued `-u` (no space): curl accepts both `-u user:pass` and `-uuser:pass`.
+r = amc._redact('curl -uadmin:SuperSecret123 https://x.example.com')
+check('curl-dash-u-glued', r, ['SuperSecret123'], ['[REDACTED]'])
+
+# Bare `Authorization: <value>` with no scheme word at all.
+r = amc._redact('Authorization: SuperSecretToken1234567890')
+check('authorization-bare-no-scheme', r, ['SuperSecretToken1234567890'], ['[REDACTED]'])
+r = amc._redact('AUTHORIZATION: SuperSecretToken1234567890')
+check('authorization-bare-uppercase', r, ['SuperSecretToken1234567890'], ['[REDACTED]'])
+
+# DB-URI: empty username (Redis has no username concept) and a non-DB scheme.
+r = amc._redact('redis://:SuperSecret123@cache.internal:6379/0')
+check('db-uri-empty-username', r, ['SuperSecret123'], ['[REDACTED]'])
+r = amc._redact('curl https://admin:SuperSecret123@api.example.com/x')
+check('uri-non-db-scheme', r, ['SuperSecret123'], ['[REDACTED]'])
+
+# New provider prefixes. Key names deliberately carry NO secret-shaped word of their own (no
+# "token"/"key"/...) so these fixtures are pinned to the PREFIX pattern, not incidentally
+# redacted via the key=value pattern matching a word in the variable name.
+_fake_glpat = 'glpat-' + 'AAABBBCCCDDDEEEFFFGGGHHH'
+r = amc._redact(f'X_GITLAB_VALUE={_fake_glpat}')
+check('gitlab-pat-prefix', r, ['AAABBBCCCDDDEEEFFFGGGHHH'], ['[REDACTED]'])
+_fake_xoxs = 'xoxs-' + 'AAABBBCCCDDDEEEFFFGGGHHH'
+r = amc._redact(f'X_SLACK_VALUE={_fake_xoxs}')
+check('slack-xoxs-prefix', r, ['AAABBBCCCDDDEEEFFFGGGHHH'], ['[REDACTED]'])
+_fake_akia = 'AKIA' + 'ABCDEFGHIJ123456'
+r = amc._redact(f'AWS_ACCESS_KEY_ID={_fake_akia}')
+check('aws-access-key-id', r, [_fake_akia], ['[REDACTED]'])
+
+# Negative control: `cookie`/`pass`/`signature` as key names must not fire on ordinary prose that
+# merely contains those words without the `=`/`:` shape.
+for sentence in (
+    'the cookie recipe needs more butter',
+    'please pass the salt',
+    'the digital signature on this document looks fine',
+):
+    r = amc._redact(sentence)
+    check(f'prose-compound-keywords-not-falsely-redacted: {sentence!r}', r, ['[REDACTED]'], [sentence])
 
 # ---------------------------------------------------------------------------
 # WhiteHat F4 + F5 follow-up on card 35dc6dbe: F5 flagged that a naive fix for the Authorization
@@ -210,6 +315,43 @@ if _elapsed > 2.0:
         f'FAIL [redos]: _redact took {_elapsed:.2f}s on a {len(_pathological)}-char pathological '
         'input -- a pattern in _SECRET_PATTERNS may have quadratic/catastrophic-backtracking '
         'worst-case behaviour'
+    )
+
+# Card 7e01b349 (RedHat F4b): the probe above uses key "a", which is not one of the actual
+# alternatives in _SECRET_PATTERNS (token/secret/password/...) -- the alternation rejects it
+# immediately and the quantifier bodies behind it never actually engage, so this measured timing
+# alone, not matching. A SECOND probe using a REAL key name is needed to exercise the quoted-value
+# alternative this card's fix added (`"(?:[^"\\]|\\.)*"`), which is the new quantifier shape in
+# this file.
+_pathological_keyed = '{"password":"' + ('x\\"password":"' * 20000) + 'end"}'
+_start = _time.monotonic()
+amc._redact(_pathological_keyed)
+_elapsed = _time.monotonic() - _start
+if _elapsed > 2.0:
+    FAILURES.append(
+        f'FAIL [redos-keyed]: _redact took {_elapsed:.2f}s on a {len(_pathological_keyed)}-char '
+        'pathological input built from a REAL key name -- the quoted-value alternative added for '
+        'card 7e01b349 may have quadratic/catastrophic-backtracking worst-case behaviour'
+    )
+
+# Card 7e01b349 (RedHat NO-GO on 80c80706, F4b): the probe above is JSON-shaped and does not
+# reliably exercise the KV pattern's OWN quoted-value alternative (`(?:[^"\\]|\\.)*"`, the first
+# pattern in _SECRET_PATTERNS, not the JSON-quoted one). A regression that turns that alternative
+# into the classic (X+|Y)* catastrophic-backtracking shape (adding a `+` to the first branch:
+# `(?:[^"\\]+|\\.)*"`) stayed green against the probe above but blows up on a kv-style, dangling
+# -quote input. Measured on that mutated pattern: this exact shape takes ~3s; on the real code,
+# under 0.01s. Deliberately small (exponential blowup from an unresolved alternation, not the
+# quadratic repeated-substring shape the probes above use) -- 26 characters already separates the
+# two cases cleanly without needing a multi-second pass even on the vulnerable shape.
+_pathological_kv_quoted = 'password="' + ('a' * 26) + '\\'
+_start = _time.monotonic()
+amc._redact(_pathological_kv_quoted)
+_elapsed = _time.monotonic() - _start
+if _elapsed > 2.0:
+    FAILURES.append(
+        f'FAIL [redos-kv-quoted]: _redact took {_elapsed:.2f}s on a {len(_pathological_kv_quoted)}-'
+        'char kv-style dangling-quote input -- the kv pattern\'s own quoted-value alternative may '
+        'have quadratic/catastrophic-backtracking worst-case behaviour'
     )
 
 # Clean text: no redaction of ordinary content

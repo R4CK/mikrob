@@ -618,7 +618,10 @@ describe('launcher wiring (agent-process.ts)', () => {
   })
 
   it('both export sites put the own file FIRST, and the fleet export only in the else-branch', () => {
-    expect(FN).toMatch(/if \(ownTokenFile\) \{\n\s+\/\/ oauthTokenFile[^\n]*\n\s+oauthTokenEnv = ownOauthTokenExport\(ownTokenFile\)\n\s+\} else if \(!claudeConfigDir && hasFleetOauthToken\(\) && !isOwnTeam\) \{/)
+    // needsFleetOauth (BYOCUSTFOAUTH805, card 617d136d): folds the own_team exclusion this
+    // regex used to spell out as `!isOwnTeam` together with the BYO/custom-provider exclusion
+    // (isClaude && authMode !== 'api') -- same ordering invariant, stricter guard condition.
+    expect(FN).toMatch(/if \(ownTokenFile\) \{\n\s+\/\/ oauthTokenFile[^\n]*\n\s+oauthTokenEnv = ownOauthTokenExport\(ownTokenFile\)\n\s+\} else if \(!claudeConfigDir && hasFleetOauthToken\(\) && needsFleetOauth\) \{/)
     const ownBranch = FN.match(/\} else if \(ownTokenFile\) \{[\s\S]*?\n {6}\} else if \(hasFleetOauthToken\(\)\) \{/)?.[0] ?? ''
     expect(ownBranch).not.toBe('')
     expect(ownBranch).toContain('oauthTokenEnv = ownOauthTokenExport(ownTokenFile)')

@@ -67,6 +67,24 @@ export function decideContinueFlag(i: ContinueDecisionInput): ContinueDecision {
 
 export type ContinueVerifyOutcome = 'alive' | 'timeout'
 
+export type ContinueTimeoutAction = 'kept' | 'skip-stopped' | 'relaunch-fresh'
+
+/**
+ * Card 466f21fe F1 (CYBERSEC GO 14256aac): what to do once verifyContinueLaunch settles.
+ *
+ * A 'timeout' outcome looks IDENTICAL whether the resume genuinely never brought its plugin up,
+ * or the agent was simply stopped (parked) mid-window -- its session (and so its pid) vanishes,
+ * the probe reads 'unknown', and polling runs out the same way either way. `generationChanged`
+ * is the caller's answer to "did a stop or a newer start happen since this verify call began":
+ * if so, this call's timeout says nothing about the CURRENT agent and must not relaunch it --
+ * someone else already decided its fate. Pure: the caller does the actual kill/relaunch/logging.
+ */
+export function decideContinueTimeoutAction(outcome: ContinueVerifyOutcome, generationChanged: boolean): ContinueTimeoutAction {
+  if (outcome === 'alive') return 'kept'
+  if (generationChanged) return 'skip-stopped'
+  return 'relaunch-fresh'
+}
+
 /**
  * Condition 3: poll the plugin-liveness probe until it says 'alive' or the
  * window closes. 'unknown' (a failed ps) and 'down' both keep polling: only a

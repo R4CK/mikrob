@@ -1,10 +1,12 @@
 ---
 name: engineering-standards
 description: The fleet's synthesized engineering standard — 10 categories covering architecture, security, infra, QA, data, resilience, secrets, observability, and code hygiene. The non-negotiable baseline for every dev agent on any production code. Use when designing, building, reviewing, or auditing any system.
+version: "1.0.0"
+related_skills: [injected-port-adapters, legal-compliance-review, project-workflow, qa-test-strategy, tenant-pure-domain]
 ---
 # Engineering Standards (a flotta mérnöki alapszabálya)
 
-a felhasználó 50 szabályának szintézise (deduplikálva, kategóriánként). Ez a KÖTELEZŐ baseline minden production kódra. Minden dev ügynök (és MikroB CTO-ként) ezt tartja. Lásd még: `project-workflow` (csapat-folyamat), `qa-test-strategy`, `legal-compliance-review`.
+Peti 50 szabályának szintézise (deduplikálva, kategóriánként). Ez a KÖTELEZŐ baseline minden production kódra. Minden dev ügynök (és MikroB CTO-ként) ezt tartja. Lásd még: `project-workflow` (csapat-folyamat), `qa-test-strategy`, `legal-compliance-review`.
 
 ## I. Architektúra és modularitás
 - **SRP:** egy modul/osztály/függvény = egy feladat. Ha "és"-sel írod le, bontsd szét.

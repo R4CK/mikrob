@@ -31,7 +31,7 @@ import {
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider } from './agent-config.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, readAgentConfigForOauthDecision, reverifyOauthTokenFile, findOauthTokenFileCollision } from './agent-oauth-token-file.js'
 import { getCustomProviderOrThrow } from './custom-providers.js'
 import { worksourceRootFor } from './worksource-queue.js'
@@ -57,12 +57,12 @@ import {
 } from './ssh-tmux.js'
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
-import { decideContinueFlag, verifyContinueLaunch } from './channel-continue-policy.js'
+import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction } from './channel-continue-policy.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
-import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
+import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited, toDeniedMcpServerEntries } from './mcp-inheritance.js'
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
@@ -134,6 +134,25 @@ interface LifecycleEntry {
 }
 
 const lifecycleInFlight = new Map<string, LifecycleEntry>()
+
+// Card 466f21fe F1 (CYBERSEC GO 14256aac, measured: 'unknown' probe polls 31 times then 'timeout'
+// at 90000ms). verifyContinueLaunch's async callback (below, near the --continue launch) decides,
+// AFTER a 90s window, whether to relaunch a resumed channel agent FRESH -- but it has no way to
+// tell "the session legitimately disappeared because someone (the operator/MikroB) just PARKED
+// this agent" from "the resume genuinely never brought its plugin up". Measured on the real
+// function: a parked agent's missing session reads as 'unknown', the check polls it all the way to
+// 'timeout', then kill-session's (harmlessly, on an already-gone session) and calls
+// startAgentProcess(fresh:true) -- resurrecting the just-parked agent within 90s (rule 7, quota).
+// The same gap also double-restarts a slow-but-healthy agent: a stop+start within the window
+// reuses the same session NAME, so the OLD verify call keeps measuring the NEW session.
+//
+// Fix: a persistent per-agent generation token, bumped by EVERY start and EVERY stop (not just
+// in-flight like lifecycleInFlight above, which is cleared once an operation settles -- this one
+// has to survive past that point so a callback scheduled minutes earlier can still compare against
+// it). The verify callback captures its own generation at launch time and, before acting on a
+// 'timeout', confirms the agent's CURRENT generation still matches -- if a stop or a newer start
+// happened in between, the fallback is skipped: the current state is no longer this call's business.
+const agentLaunchGeneration = new Map<string, symbol>()
 
 /** Exported for tests: how many agents currently have an operation in flight. */
 export function lifecycleInFlightCount(): number {
@@ -596,6 +615,13 @@ export function ensureMainAgentIsolatedConfigDir(
   try { enabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { enabled = false }
   if (!enabled) return null
   if (!hasFleetOauthToken()) return null
+  return provisionMainIsolatedConfigDir(provider)
+}
+
+// Shared provisioning call for the generic isolated dir, factored out so the
+// fleet-token-gated path (above) and the token-mode-rotation path (below)
+// cannot drift on what they actually provision.
+function provisionMainIsolatedConfigDir(provider?: string): string | null {
   return provisionIsolatedConfigDir(
     join(PROJECT_ROOT, '.channels-config'),
     PROJECT_ROOT,
@@ -603,6 +629,21 @@ export function ensureMainAgentIsolatedConfigDir(
     MAIN_AGENT_ID,
     readExtraChannelPluginIds(),
   )
+}
+
+// Same generic isolated dir as ensureMainAgentIsolatedConfigDir, but for a
+// TOKEN-MODE rotated claude-plans entry (ClaudePlan.tokenSecretId): gated
+// only on MAIN_AGENT_ISOLATED_CONFIG=1, NOT on hasFleetOauthToken(). A
+// token-mode plan supplies its OWN token at launch (see
+// resolveMainAgentRotatedTokenSecretId) instead of the flotta's, so requiring
+// a flotta token to even provision the shared dir would be the wrong gate --
+// an install with rotation configured but no flotta token registered should
+// still be able to run token-mode plans.
+export function ensureMainAgentIsolatedConfigDirForRotatedToken(provider?: string): string | null {
+  let enabled = false
+  try { enabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { enabled = false }
+  if (!enabled) return null
+  return provisionMainIsolatedConfigDir(provider)
 }
 
 // READ-ONLY sibling of the two resolvers above: which config dir will the main
@@ -759,7 +800,9 @@ export function resolveMainAgentConfigDir(): string | null {
 // either threshold this returns null even if a stale activePlanByAgent entry
 // exists on disk, so turning rotation off (or dropping back to one plan)
 // cannot strand the main agent on a dir nobody is maintaining anymore.
-export function resolveMainAgentRotatedConfigDir(): string | null {
+// Shared by both resolveMainAgentRotatedConfigDir and
+// resolveMainAgentRotatedTokenSecretId, so the two can never gate differently.
+function resolveActiveMainPlan(): ReturnType<typeof getClaudePlan> {
   let isolationEnabled = false
   try { isolationEnabled = String(getEffectiveSettingValue('MAIN_AGENT_ISOLATED_CONFIG')) === '1' } catch { return null }
   if (!isolationEnabled) return null
@@ -769,8 +812,24 @@ export function resolveMainAgentRotatedConfigDir(): string | null {
   const activeId = readClaudePlansState().activePlanByAgent[MAIN_AGENT_ID]
   if (!activeId) return null
 
-  const plan = getClaudePlan(activeId)
-  return plan ? plan.configDir : null
+  return getClaudePlan(activeId)
+}
+
+export function resolveMainAgentRotatedConfigDir(): string | null {
+  return resolveActiveMainPlan()?.configDir ?? null
+}
+
+// The main agent's token-mode rotation counterpart: the vault secret id
+// holding the active plan's raw CLAUDE_CODE_OAUTH_TOKEN, when the active plan
+// is token-mode (ClaudePlan.tokenSecretId set) rather than configDir-mode.
+// Every token-mode plan shares the SAME generic isolated CLAUDE_CONFIG_DIR
+// (ensureMainAgentIsolatedConfigDir) -- this resolver answers ONLY "which
+// token", never "which dir". See ClaudePlan.tokenSecretId for why token-mode
+// exists at all (2026-09-12 incident: a configDir-mode plan registered but
+// never actually logged into, on a remote host, wedged the main session on an
+// interactive OAuth-code prompt no headless session can complete).
+export function resolveMainAgentRotatedTokenSecretId(): string | null {
+  return resolveActiveMainPlan()?.tokenSecretId ?? null
 }
 
 // Shared provisioning core for BOTH the sub-agents (ensureIsolatedChannelConfigDir)
@@ -1074,6 +1133,30 @@ function provisionIsolatedConfigDir(
     // kills the second bot on every restart.
     for (const pid of extraPluginIds) scopedPlugins[pid] = true
     settings.enabledPlugins = scopedPlugins
+
+    // Card 67e73b48 (RedHat R1 follow-up, 1d31cfcc): the gap-fill/scaffold/seed paths above only
+    // filter what THIS agent's own config files receive -- they cannot stop the Claude Code CLI's
+    // ancestor-directory .mcp.json discovery, which hands every agent PROJECT_ROOT/.mcp.json's
+    // servers regardless of that filter. `deniedMcpServers` (settings.json, merges from every
+    // scope, verified against the live docs 2026-10-10) genuinely blocks a matching server
+    // regardless of origin -- so deny-list the root servers this agent did not inherit. Force-set
+    // on every provision, same posture as enabledPlugins above: recomputed from the current root
+    // .mcp.json + allowlist, never preserved stale from an older copy. The main agent is exempt
+    // (its config mirrors the operator's own, same exemption as readInheritableMcpServerNames).
+    if (name === MAIN_AGENT_ID) {
+      delete settings.deniedMcpServers
+    } else {
+      const rootMcpPath = join(PROJECT_ROOT, '.mcp.json')
+      let rootServers: Record<string, unknown> = {}
+      if (existsSync(rootMcpPath)) {
+        try {
+          const parsed = JSON.parse(readFileSync(rootMcpPath, 'utf-8')) as { mcpServers?: unknown }
+          if (isPlainObject(parsed.mcpServers)) rootServers = parsed.mcpServers as Record<string, unknown>
+        } catch { /* unparseable root file -- nothing to deny-list from it */ }
+      }
+      const { dropped } = filterInheritableMcpServers(rootServers, readInheritableMcpServerNames())
+      settings.deniedMcpServers = toDeniedMcpServerEntries(dropped)
+    }
     // Keys the isolated file already carries that the shared file never
     // mentions must SURVIVE this rewrite. The rewrite runs on every main-agent
     // start, so a straight copy silently drops agent-only configuration. That
@@ -2377,12 +2460,6 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     }
     let claudeConfigDir = planResolution.configDir
     let oauthTokenEnv = ''
-    // Shared-home agents (no isolated config dir) authenticate from the rotating
-    // ~/.claude/.credentials.json by default. If the operator has a long-lived
-    // fleet setup-token, export it so EVERY locally launched agent uses the
-    // stable token instead -- this is what makes the Linux credentials-guard
-    // rename safe (a shared sub-agent with no env token would otherwise be
-    // locked out once credentials.json is moved aside). No-op without a token.
     // authMode 'own_team' (OWNTEAMVAK914): the operator explicitly opted this
     // agent OUT of the fleet credential -- it authenticates from its OWN
     // /login credential (dashboard auth-flow -> /login in the agent's tmux).
@@ -2391,10 +2468,19 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // credential is absent or expired, which would silently put the agent
     // back on the shared identity -- exactly what own_team excludes.
     const isOwnTeam = isClaude && authMode === 'own_team'
+    // Only Claude-OAuth agents need the fleet token at ALL (used below, for the shared-home
+    // fallback export, the isolation gate, and the BYO-provider launch env): BYO/custom-endpoint
+    // agents (Ollama, DeepSeek, OpenRouter, generic custom) authenticate via their own
+    // ANTHROPIC_API_KEY/AUTH_TOKEN, and own_team agents authenticate via their own /login
+    // credential -- neither may receive the fleet's CLAUDE_CODE_OAUTH_TOKEN (BYOCUSTFOAUTH805:
+    // upstream's own_team/BYO-401 test for this shared-home branch expects this name, not the
+    // narrower !isOwnTeam this branch used before -- !isOwnTeam alone would still export the
+    // fleet token to a BYO agent that is not own_team).
+    const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam
     if (ownTokenFile) {
       // oauthTokenFile: the agent's own setup-token file, INSTEAD of the fleet file.
       oauthTokenEnv = ownOauthTokenExport(ownTokenFile)
-    } else if (!claudeConfigDir && hasFleetOauthToken() && !isOwnTeam) {
+    } else if (!claudeConfigDir && hasFleetOauthToken() && needsFleetOauth) {
       oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
     }
     // Isolation must also cover CHANNEL-LESS Claude-OAuth agents, not just
@@ -2407,7 +2493,6 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // 2026-07-25). Only agents that never touch Anthropic OAuth stay on the
     // shared root: local/BYO-endpoint models (Ollama/DeepSeek/OpenRouter) and
     // per-agent API-key (authMode 'api') agents.
-    const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam
     if (!claudeConfigDir && (hasChannel || needsFleetOauth || isOwnTeam) && name !== MAIN_AGENT_ID) {
       if (isOwnTeam) {
         // own_team isolates WITHOUT the fleet token: the isolated dir is where
@@ -2456,7 +2541,10 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
           // Read the token at launch via $(cat) so the literal secret never
           // appears in the JS-built command string or in `ps`. The file is 0600
           // and the value lands only in this process's own environment.
-          oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+          // BYO/custom-endpoint agents: no OAuth export, only config-dir isolation.
+          if (needsFleetOauth) {
+            oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
+          }
         }
       } else {
         logger.warn({ name }, 'isolated-config: no fleet OAuth token (store/.claude-oauth-token); keeping shared ~/.claude. Run `claude setup-token` and store it to enable per-agent isolation.')
@@ -2569,6 +2657,15 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     const continueFlag = continueDecision.useContinue ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
+    // BYO/custom-endpoint agents must have CLAUDE_CODE_OAUTH_TOKEN removed from
+    // their environment, not just omitted from the launch export. The parent tmux
+    // server carries the fleet OAuth token in its own env, and
+    // every new pane inherits it. The Claude CLI prefers CLAUDE_CODE_OAUTH_TOKEN
+    // over ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN, so the inherited token would
+    // reach the custom endpoint -> 401, even after the explicit export was removed.
+    // An active `unset` at launch strips the inherited value before exec.
+    // Claude-OAuth agents (needsFleetOauth=true) must keep the token intact.
+    const byoUnsetEnv = !needsFleetOauth ? 'unset CLAUDE_CODE_OAUTH_TOKEN && ' : ''
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''
@@ -2673,7 +2770,13 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // real agent dir. feedbackSurveyEnv kept in the string (card 268b257a, see MERGE NOTE above):
     // this fork's own const, pinned by name in channel-stability-contract.test.ts -- upstream's
     // version of this function does not have it.
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    //
+    // `${byoUnsetEnv}` (upstream, card e80c011a lineage): a BYO/custom agent must drop the
+    // tmux-server-global CLAUDE_CODE_OAUTH_TOKEN (set by channels.sh's _tmux_set_auth_globals,
+    // inherited by every session on the shared server) before its own provider credential is
+    // exported, or the CLI prefers the inherited fleet token over it -> 401 against the
+    // third-party endpoint. Depends on `needsFleetOauth` above.
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
@@ -2681,8 +2784,19 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // capture-pane failed against the router's empty tmux server.
     const startTarget = agentTmuxTarget(name)
     runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)], { timeout: 10000 })
+    // Card 466f21fe F1: bump the generation on EVERY launch (continue or fresh), captured below
+    // before the verify window opens. See the Map's own comment for the full reasoning.
+    const myLaunchGeneration = Symbol()
+    agentLaunchGeneration.set(name, myLaunchGeneration)
 
     logger.info({ name, session, channelDir: agentChannelDir, runAsUser: startTarget.runAsUser ?? null }, 'Agent tmux session started')
+    // APRO920 (c)(2): the --model value actually passed, with the config-chain
+    // element that supplied it (agent-config.json / model-choices / default) --
+    // D001 measured 227 claude-sonnet-4-6 token_usage rows under agent='marveen'
+    // with no task_title, spread across 21 sessions, which looked like a CLI
+    // fallback-model pattern rather than a configured source; this line lets a
+    // later audit tell the two apart without re-deriving the resolution by hand.
+    logger.info({ name, model, source: resolveAgentModelDetailed(name).source }, 'Agent launch model resolved')
 
     // Condition 3 of the resume narrowing: a resumed channel agent must bring
     // its plugin up (bun poller under the claude pid + bot.pid) within the
@@ -2697,8 +2811,14 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
           return pid ? probeChannelPluginLiveness(pid, agentProvider, name) : 'unknown'
         },
       }).then(async (v) => {
-        if (v.outcome === 'alive') {
+        const generationChanged = agentLaunchGeneration.get(name) !== myLaunchGeneration
+        const action = decideContinueTimeoutAction(v.outcome, generationChanged)
+        if (action === 'kept') {
           logger.info({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin alive, context kept')
+          return
+        }
+        if (action === 'skip-stopped') {
+          logger.info({ name, session }, 'resumed channel agent: a stop or a newer start happened during the verify window -- skipping fresh fallback')
           return
         }
         logger.warn({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin NOT alive within the window; relaunching FRESH')
@@ -2840,6 +2960,11 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
 async function stopAgentProcessUnlocked(name: string): Promise<{ ok: boolean; error?: string }> {
   const session = agentSessionName(name)
   if (!isAgentRunning(name)) return { ok: false, error: 'Agent is not running' }
+
+  // Card 466f21fe F1: bump the launch generation on every stop, same as on every start -- an
+  // in-flight --continue verify callback checks this before acting on a timeout, so a stop that
+  // lands mid-window is not undone by that callback's own fresh-fallback. See the Map's comment.
+  agentLaunchGeneration.set(name, Symbol())
 
   const target = agentTmuxTarget(name)
   const host = target.host
@@ -4269,6 +4394,12 @@ function optsKeyOf(opts: { fresh?: boolean }): string {
   return `fresh=${opts.fresh === true}`
 }
 
+// Card 466f21fe F2 (CYBERSEC GO 14256aac, design note, not a bug in existing code): `--continue`
+// means a channel agent's restart is no longer a clean slate -- a prompt-injected or
+// secret-carrying conversation survives it if the launch is not fresh. ANY restart triggered for
+// a SECURITY reason (token rotation, injection suspicion, key rotation) MUST pass `fresh: true`
+// explicitly; `opts.fresh` already exists for exactly this. context-guard-runner.ts is the one
+// such call site today and already does this (channel-continue-policy.test.ts locks it in).
 export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   return withLifecycleLock(name, 'start', optsKeyOf(opts), () => startAgentProcessUnlocked(name, opts))
 }

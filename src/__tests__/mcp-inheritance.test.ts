@@ -46,7 +46,7 @@ vi.mock('../settings-store.js', async (orig) => {
 const { scaffoldAgentDir } = await import('../web/agent-scaffold.js')
 const { ensureIsolatedChannelConfigDir } = await import('../web/agent-process.js')
 const { MAIN_AGENT_ID } = await import('../config.js')
-const { filterInheritableMcpServers, readInheritableMcpServerNames } = await import('../web/mcp-inheritance.js')
+const { filterInheritableMcpServers, readInheritableMcpServerNames, toDeniedMcpServerEntries } = await import('../web/mcp-inheritance.js')
 const { logger } = await import('../logger.js')
 
 const def = (cmd: string) => ({ command: 'npx', args: [cmd] })
@@ -74,6 +74,11 @@ function isolatedServers(name: string): string[] {
   const j = JSON.parse(readFileSync(p, 'utf-8')) as { mcpServers?: Record<string, unknown> }
   return Object.keys(j.mcpServers ?? {}).sort()
 }
+function isolatedDenied(name: string): string[] | undefined {
+  const p = join(SANDBOX, 'agents', name, '.claude-config', 'settings.json')
+  const j = JSON.parse(readFileSync(p, 'utf-8')) as { deniedMcpServers?: Array<{ serverName: string }> }
+  return j.deniedMcpServers?.map((e) => e.serverName).sort()
+}
 
 beforeEach(() => { resetSandbox(); LIST = ''; THROW_SETTING = false })
 afterAll(() => rmSync(SANDBOX, { recursive: true, force: true }))
@@ -92,6 +97,64 @@ describe('the list itself', () => {
     expect(Object.keys(kept)).toEqual(['a'])
     expect(dropped).toEqual(['b'])
     expect(Object.keys(servers)).toEqual(['a', 'b'])
+  })
+
+  it('toDeniedMcpServerEntries maps names to the settings.json denylist shape, pure', () => {
+    const dropped = ['code-review-graph', 'context7']
+    expect(toDeniedMcpServerEntries(dropped)).toEqual([
+      { serverName: 'code-review-graph' },
+      { serverName: 'context7' },
+    ])
+    expect(dropped).toEqual(['code-review-graph', 'context7'])
+    expect(toDeniedMcpServerEntries([])).toEqual([])
+  })
+})
+
+// Card 67e73b48 (RedHat R1 follow-up, 1d31cfcc): the filter above only governs what a fresh
+// agent's OWN config files inherit -- it cannot stop the Claude Code CLI's ancestor-directory
+// .mcp.json discovery, which hands every agent PROJECT_ROOT/.mcp.json's servers regardless of
+// this filter. `deniedMcpServers` in the agent's own settings.json is a genuine, cross-scope
+// denylist (verified against the live docs) that closes that gap structurally. These tests
+// exercise the wiring in provisionIsolatedConfigDir (agent-process.ts), reached here through
+// ensureIsolatedChannelConfigDir exactly like the .mcp.json-seed tests above.
+describe('R1 structural fix: deniedMcpServers deny-lists what this agent did not inherit', () => {
+  it('a root server NOT on the allowlist is deny-listed; a listed one is not', () => {
+    writeProjectMcp({ 'code-review-graph': def('crg'), context7: def('c7') })
+    LIST = 'code-review-graph'
+    ensureIsolatedChannelConfigDir('deny1', 'telegram')
+    expect(isolatedDenied('deny1')).toEqual(['context7'])
+  })
+
+  it('empty allowlist (the default): every root server is deny-listed', () => {
+    writeProjectMcp({ 'code-review-graph': def('crg'), context7: def('c7') })
+    LIST = ''
+    ensureIsolatedChannelConfigDir('deny2', 'telegram')
+    expect(isolatedDenied('deny2')).toEqual(['code-review-graph', 'context7'])
+  })
+
+  it('no root .mcp.json: the denylist is the valid empty shape, not missing/crashed', () => {
+    ensureIsolatedChannelConfigDir('deny3', 'telegram')
+    expect(isolatedDenied('deny3')).toEqual([])
+  })
+
+  it('the main agent is exempt: no deniedMcpServers key at all', () => {
+    writeProjectMcp({ 'code-review-graph': def('crg'), context7: def('c7') })
+    LIST = ''
+    ensureIsolatedChannelConfigDir(MAIN_AGENT_ID, 'telegram')
+    const p = join(SANDBOX, 'agents', MAIN_AGENT_ID, '.claude-config', 'settings.json')
+    const j = JSON.parse(readFileSync(p, 'utf-8')) as Record<string, unknown>
+    expect('deniedMcpServers' in j).toBe(false)
+  })
+
+  it('recomputed on every provision, not stuck on an older root/allowlist snapshot', () => {
+    writeProjectMcp({ 'code-review-graph': def('crg') })
+    LIST = 'code-review-graph'
+    ensureIsolatedChannelConfigDir('deny4', 'telegram')
+    expect(isolatedDenied('deny4')).toEqual([])
+    writeProjectMcp({ 'code-review-graph': def('crg'), context7: def('c7') })
+    LIST = ''
+    ensureIsolatedChannelConfigDir('deny4', 'telegram')
+    expect(isolatedDenied('deny4')).toEqual(['code-review-graph', 'context7'])
   })
 })
 

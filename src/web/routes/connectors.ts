@@ -425,6 +425,18 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     }
     const nameChanged = sanitizedName !== rawName
 
+    // Card 67e73b48 (RedHat R2, 1d31cfcc follow-up): a project-scope stdio add writes into
+    // PROJECT_ROOT/.mcp.json, which every agent's Claude Code session loads regardless of its
+    // own .mcp.json (R1, ancestor-directory discovery) -- the shared dashboard bearer every
+    // fleet agent holds could otherwise plant an arbitrary command there. Same human-only
+    // posture as POST /api/fleet/import?apply=true (fleet.ts, card 68254bd7): a browser session
+    // or a device key, never the shared 'token' credential.
+    if (data.scope === 'project' && data.type === 'stdio' && ctx.auth?.kind !== 'session' && ctx.auth?.kind !== 'device') {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Connectors: project-scope stdio add rejected for non-human credential')
+      json(res, { error: 'A project-scope stdio connector requires a browser session or a device key, not the shared agent token.' }, 403)
+      return true
+    }
+
     try {
       const scopeFlag = data.scope === 'project' ? '-s project' : '-s user'
 
@@ -922,6 +934,18 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       }
       if (!value) {
         errors.push(`Could not read value for ${imp.envVar} from ${imp.serverName}`)
+        continue
+      }
+      // VAULTSZELES826 (card 466f21fe F3): the explicit POST /api/vault/bindings route refuses an
+      // SSH private key id before any write (line ~833 above) -- this import route passed
+      // imp.vaultId straight to setSecret/addBinding with no such check, so an import could both
+      // overwrite the ssh-key-* vault entry with an arbitrary MCP-env value AND create the exact
+      // binding isSshPrivateKeyId exists to close off everywhere (env var or header).
+      if (isSshPrivateKeyId(imp.vaultId)) {
+        const { kind, principal } = principalOf(ctx.auth)
+        logger.warn({ event: 'vault-binding-refused', vaultSecretId: imp.vaultId, kind, principal, via: 'import' },
+          'vault: SSH private key import refused')
+        errors.push(`Refused: ${imp.vaultId} is an SSH private key id and cannot be imported`)
         continue
       }
       setSecret(imp.vaultId, imp.label, value)

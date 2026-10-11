@@ -17,7 +17,9 @@
 // THE MCPOROKLES923 CHANGE. Before, the seeding step was a plain copy: every new agent got the
 // WHOLE shared PROJECT_ROOT/.mcp.json, including any mail/bank/credentialed connector an operator
 // might park there. Now a new agent inherits ONLY the servers named in AGENT_INHERITED_MCP_SERVERS
-// (comma-separated setting, default empty = inherit nothing).
+// (comma-separated setting). Default (card 67e73b48 N2, MikroB decision): 'code-review-graph,context7'
+// -- NOT empty; those two are read-only/credential-free and useful fleet-wide, an empty default
+// would silently drop both on the next restart. Anything else still stays out until named.
 //
 // These tests drive the real `scaffoldAgentDir` against a temporary PROJECT_ROOT rather than asserting
 // on the source text, so the guard's SHAPE is free to change as long as the outcome holds.
@@ -61,8 +63,16 @@ afterEach(() => {
 })
 
 describe('scaffolded agents receive ONLY the inheritable-listed MCP servers', () => {
-  it('with NO AGENT_INHERITED_MCP_SERVERS set, a new agent inherits NOTHING (narrow default)', async () => {
+  it('with NO AGENT_INHERITED_MCP_SERVERS override, a new agent inherits the real default (code-review-graph, context7) -- card 67e73b48 N2', async () => {
     writeFileSync(join(root, '.mcp.json'), JSON.stringify(SHARED))
+    const { scaffoldAgentDir } = await loadScaffold()
+    scaffoldAgentDir('fresh')
+    expect(servers(agentMcp('fresh'))).toEqual(['code-review-graph'])
+  })
+
+  it('an EXPLICITLY empty AGENT_INHERITED_MCP_SERVERS override still inherits nothing (narrow allowlist, not a hardcoded floor)', async () => {
+    writeFileSync(join(root, '.mcp.json'), JSON.stringify(SHARED))
+    setInheritedSetting('')
     const { scaffoldAgentDir } = await loadScaffold()
     scaffoldAgentDir('fresh')
     expect(servers(agentMcp('fresh'))).toEqual([])

@@ -504,6 +504,49 @@ export function getModelDistribution(from?: number, to?: number, agent?: string)
   }))
 }
 
+// APRO920 (c)(1): a Bash row in the token log said only "Bash"; likewise the
+// model distribution said only "claude-sonnet-4-6, 227 rows" with no way to
+// tell WHICH task or agent drove them (D001, ELSOKOR922 Phase 0: all 227 rows
+// were agent='marveen', task_title empty, spread across 21 sessions -- a CLI
+// fallback-model pattern, not one configured source). This breaks a single
+// model's rows down by agent / session_id / task_title so that question is
+// answerable from the API, not by hand-editing a SQL query against the DB.
+export interface ModelSourceBreakdownEntry {
+  agent: string
+  sessionId: string
+  taskTitle: string | null
+  count: number
+  totalTokens: number
+  firstSeen: number
+  lastSeen: number
+}
+
+export function getModelSourceBreakdown(model: string, from?: number, to?: number): ModelSourceBreakdownEntry[] {
+  const db = getDb()
+  const hasModelCol = db.prepare("SELECT COUNT(*) as n FROM pragma_table_info('token_usage') WHERE name='model'").get() as { n: number }
+  if (!hasModelCol.n || !model) return []
+
+  const conditions: string[] = ['model = ?']
+  const params: any[] = [model]
+  if (from) { conditions.push('timestamp >= ?'); params.push(from) }
+  if (to) { conditions.push('timestamp <= ?'); params.push(to) }
+
+  const sql = `
+    SELECT agent,
+      session_id as sessionId,
+      task_title as taskTitle,
+      COUNT(*) as count,
+      SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) as totalTokens,
+      MIN(timestamp) as firstSeen,
+      MAX(timestamp) as lastSeen
+    FROM token_usage
+    WHERE ${conditions.join(' AND ')}
+    GROUP BY agent, session_id, task_title
+    ORDER BY count DESC
+  `
+  return db.prepare(sql).all(...params) as ModelSourceBreakdownEntry[]
+}
+
 export interface ToolStatEntry {
   tool_name: string
   model: string | null

@@ -11,9 +11,13 @@
 // firecrawl, hostinger, playwright and the filesystem server -- broader
 // capability/attack surface than a brand-new sub-agent needs by default.
 //
-// The default is the NARROW reading: an empty list inherits nothing. The list
-// is configuration (AGENT_INHERITED_MCP_SERVERS), not code, because each
-// install's connectors are its own.
+// The posture is a NARROW ALLOWLIST: only servers named on the list are inherited, everything
+// else stays out. The list is configuration (AGENT_INHERITED_MCP_SERVERS), not code, because each
+// install's connectors are its own. The default is NOT empty: code-review-graph and context7 are
+// read-only, credential-free, and useful to every agent (MikroB decision, card 67e73b48 N2,
+// WhiteHat NO-GO msg 10434) -- an empty default would silently drop both from the whole fleet on
+// the next restart, a working-tool regression with no matching security gain. config-registry.ts
+// carries the actual default string; this module only reads whatever is effective.
 //
 // Scope, stated: this filters what is INHERITED. It never removes a server an
 // agent already has (the gap-fill is additive), and it does not apply to the
@@ -84,4 +88,19 @@ export function logNotInherited(name: string, path: 'scaffold' | 'seed' | 'seed-
     { event: 'mcp-not-inherited', name, path, notInherited: dropped, setting: INHERITED_MCP_SETTING },
     'MCP inheritance: servers not on the inheritable list were not given to the agent',
   )
+}
+
+/**
+ * Card 67e73b48 (RedHat R1 follow-up, 1d31cfcc): the inheritance filter above only governs what
+ * a fresh agent's OWN config files receive -- it cannot stop the Claude Code CLI's own
+ * ancestor-directory .mcp.json discovery, which hands every agent PROJECT_ROOT/.mcp.json's
+ * servers regardless of this list (see the module header). `deniedMcpServers` in settings.json
+ * is a genuine denylist that merges from every settings scope and blocks a matching server
+ * regardless of where it was declared (code.claude.com/docs/en/managed-mcp, verified live
+ * 2026-10-10) -- unlike enabledMcpjsonServers/disabledMcpjsonServers, it is not an approval gate.
+ * This turns the "dropped" names from filterInheritableMcpServers into the settings.json shape
+ * that actually closes the ancestor-discovery gap per agent. Pure: never mutates `dropped`.
+ */
+export function toDeniedMcpServerEntries(dropped: string[]): Array<{ serverName: string }> {
+  return dropped.map((serverName) => ({ serverName }))
 }

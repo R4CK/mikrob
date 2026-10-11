@@ -1,6 +1,8 @@
 ---
 name: code-comprehension
 description: Build an accurate, evidence-based mental model of unfamiliar code at the deepest level — control flow, data flow, invariants, state, side effects, dependencies, and the "why". Use BEFORE changing, reviewing, debugging, or explaining any non-trivial code you did not just write. Triggers on "understand this code", "how does this work", "trace this", "what does this module do", "map the data flow", "értsd meg a kódot", "hogyan működik".
+version: "1.0.0"
+related_skills: [defensive-security-analysis, function-explanation, refactoring-support]
 ---
 # Code Comprehension (deep understanding)
 

@@ -112,10 +112,24 @@ def parse_vendored_md(path):
     return {"sha": sha, "subdir": subdir, "clone": row("watch clone"), "repo": row("source repo")}
 
 
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
 def upstream_hashes(clone, sha, subdir):
     """Payload at <sha> as {relpath: sha256}. Returns (None, reason) when it cannot be built --
-    the caller MUST treat that as a failure, not as an empty diff."""
-    cmd = ["git", "-C", clone, "archive", sha]
+    the caller MUST treat that as a failure, not as an empty diff.
+
+    ARCHIVEINJ924 (card e3b6a5d6, WhiteHat follow-up on d69b54fd): `sha` comes straight from a
+    VENDORED.md table cell with no format check -- a cell reading e.g. "--output=/path/evil"
+    would make `git archive` write an arbitrary file on disk (git parses a leading-dash argument
+    as an option, not a tree-ish, same class as a classic CLI argument-injection bug; measured:
+    `git archive --output=/tmp/pwned.tar <sha>` with no `--` writes the file). Two independent
+    closures: the sha must look like an actual hex object name before it ever reaches git, and a
+    `--` stops git from treating ANYTHING after it as an option even if the regex here had a gap.
+    """
+    if not _SHA_RE.match(sha):
+        return None, "vendored commit is not a valid hex sha: %r" % sha
+    cmd = ["git", "-C", clone, "archive", "--", sha]
     if subdir:
         cmd.append(subdir)
     proc = subprocess.run(cmd, capture_output=True)
@@ -584,12 +598,44 @@ def selftest():
         res = inspect(esc_dir, meta)
         check("...and the skill verifies OK once the path resolves for real",
               (True, None), (res["ok"], res["unverifiable"]))
+
+        # 16. MARKDOWNESC924 negative control (card e3b6a5d6 F1): a backslash NOT followed by a
+        #     punctuation char is not a markdown escape and must survive raw. A mutant that
+        #     widened the pattern to `\(.)` (strip the backslash before ANY char, not just
+        #     punctuation) would pass check 15 above just as well -- it still decodes `\_`
+        #     correctly -- but would also wrongly eat the backslash out of a literal `\n` or
+        #     `\d`, silently corrupting any watch-clone path that happens to contain one.
+        raw_dir = os.path.join(tmp, "rawbackslash")
+        os.makedirs(raw_dir, exist_ok=True)
+        with open(os.path.join(raw_dir, "VENDORED.md"), "w") as fh:
+            fh.write("| vendored commit | `%s` |\n| subdir | skills/demo |\n"
+                     "| watch clone | %s |\n| source repo | x |\n" % (sha, r"C:\new\demo"))
+        meta = parse_vendored_md(os.path.join(raw_dir, "VENDORED.md"))
+        check("a backslash before a non-punctuation char is left raw, not stripped",
+              r"C:\new\demo", meta["clone"])
+
+        # 17. ARCHIVEINJ924 (card e3b6a5d6 F2): a VENDORED.md "vendored commit" cell that looks
+        #     like a git-archive OPTION, not a sha, must fail closed (unverifiable), and -- the
+        #     actual exploit this guards -- must NOT create the file it names. Pre-fix,
+        #     `git archive --output=<path> <subdir>` (no `--`, no sha-shape check) wrote <path>
+        #     to disk; this proves both that it fails closed AND that nothing lands on disk.
+        canary_path = os.path.join(tmp, "archive-injection-canary.tar")
+        hostile_dir = os.path.join(tmp, "hostile")
+        os.makedirs(hostile_dir, exist_ok=True)
+        with open(os.path.join(hostile_dir, "VENDORED.md"), "w") as fh:
+            fh.write("| vendored commit | `--output=%s` |\n| subdir | skills/demo |\n"
+                     "| watch clone | %s |\n| source repo | x |\n" % (canary_path, clone))
+        meta = parse_vendored_md(os.path.join(hostile_dir, "VENDORED.md"))
+        res = inspect(hostile_dir, meta)
+        check("a non-hex 'vendored commit' cell fails closed instead of reaching git archive",
+              (False, True), (res["ok"], bool(res["unverifiable"])))
+        check("...and the injected --output path is never created", False, os.path.exists(canary_path))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
     for f in fails:
         print("FAIL: %s" % f)
-    print("selftest: %d checks, %d failed" % (16, len(fails)))
+    print("selftest: %d checks, %d failed" % (19, len(fails)))
     return 1 if fails else 0
 
 

@@ -570,6 +570,16 @@ assert_eq "discord outbound is captured" "valasz egy masik csatornara" "$H_OUT"
 H_MID="$(db_scalar "$DB_H" "SELECT message_id FROM conversation_log WHERE direction='out'")"
 assert_eq "discord outbound records its message_id" "7002" "$H_MID"
 
+# (h2b) the Slack plugin's REAL tool name carries a hyphen in the plugin
+#       segment (slack-channel), unlike emit_reply_provider's <p>_<p> shape.
+#       The script gate used to reject it, so no Slack reply ever reached the
+#       ledger and telegram-reply-guard kept blocking an answered message.
+DB_HS="$TMPDIR_BASE/hs.db"
+echo '{"tool_name":"mcp__plugin_slack-channel_slack__reply","tool_input":{"chat_id":"D0SLACKDM1","text":"slack valasz"},"tool_response":[{"type":"text","text":"Sent 1 message(s) to D0SLACKDM1 [ts: 1789638721.065709]"}]}' \
+    | run_hook ledger-outbound.py "$DB_HS"
+HS_OUT="$(db_scalar "$DB_HS" "SELECT text FROM conversation_log WHERE direction='out'")"
+assert_eq "slack-channel outbound (hyphenated plugin id) is captured" "slack valasz" "$HS_OUT"
+
 # (h3) a split reply answers "sent 2 parts (ids: A, B)" -> the first id is used
 DB_H2="$TMPDIR_BASE/h2.db"
 emit_reply_provider discord 10000000001 "hosszu valasz" "sent 2 parts (ids: 991, 992)" \

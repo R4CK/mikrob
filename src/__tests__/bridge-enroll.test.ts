@@ -228,10 +228,52 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
     expect(listDeviceKeys()).toHaveLength(0)
   })
 
+  // Card 67e73b48 (WhiteHat NO-GO N1, msg 10434): the shared fleet bearer ('token') previously
+  // passed this gate (ENROLL_KINDS used to include 'token'), minted itself a device credential
+  // this way, then used THAT device credential to pass the human-only gate on POST /api/connectors
+  // (scope=project, type=stdio) -- a two-step bypass using nothing but the token every agent
+  // already has, the same escalation class as 68254bd7 F1. 'token' is now refused unconditionally,
+  // before any body validation -- a well-formed body makes no difference.
+  it('refuses the shared agent bearer (kind: token) even with a perfectly well-formed body -- card 67e73b48 N1', async () => {
+    const { line } = makeKeyLine()
+    const r = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', {
+      auth: { kind: 'token' },
+      body: { key_line: line, name: 'Well-formed phone' },
+    })
+    expect(r.statusCode).toBe(403)
+    expect(r.json().code).toBe('forbidden_credential')
+    expect(listDeviceKeys()).toHaveLength(0)
+  })
+
+  // MUTATION PIN: with ENROLL_KINDS reverted to ['token', 'session'], this same call would
+  // instead proceed to body validation/enrollment (400 or 201, never 403) -- this is the case
+  // that flips.
+  it('MUTATION PIN: token never reaches body validation (would 400/201 if the mint-gate regressed)', async () => {
+    const r = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', {
+      auth: { kind: 'token' },
+      body: { key_line: 'not a key', name: '' }, // invalid body -- would 400 if parsed at all
+    })
+    expect(r.statusCode).toBe(403)
+  })
+
+  // Regression chain WhiteHat asked for (msg 10434 N1): token -> bridge-enroll -> device key ->
+  // POST /api/connectors (scope=project, type=stdio) must 403 at some step. It now 403s at step
+  // one -- bridge-enroll never mints the device credential the later step would have accepted --
+  // so there is no device key to carry forward into the connectors call.
+  it('regression chain: token -> bridge-enroll -> (no device key is ever minted)', async () => {
+    const { line } = makeKeyLine()
+    const enroll = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', {
+      auth: { kind: 'token' },
+      body: { key_line: line, name: 'Chain Phone' },
+    })
+    expect(enroll.statusCode).toBe(403)
+    expect(listDeviceKeys()).toHaveLength(0) // nothing to carry into a connectors call
+  })
+
   it('400s on a missing name or invalid key line without side effects', async () => {
-    const bad1 = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'token' }, body: { key_line: makeKeyLine().line, name: '' } })
+    const bad1 = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'session', user: 'peti' }, body: { key_line: makeKeyLine().line, name: '' } })
     expect(bad1.statusCode).toBe(400)
-    const bad2 = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'token' }, body: { key_line: 'not a key', name: 'ok name' } })
+    const bad2 = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'session', user: 'peti' }, body: { key_line: 'not a key', name: 'ok name' } })
     expect(bad2.statusCode).toBe(400)
     expect(listDeviceKeys()).toHaveLength(0)
   })
@@ -244,7 +286,7 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
     // would be worse than the original bug.
     const { line } = makeKeyLine()
     const r = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', {
-      auth: { kind: 'token' },
+      auth: { kind: 'session', user: 'peti' },
       body: { key_line: line, name: 'Route Phone', host: 'jaequas2605@gmail.com' },
     })
     expect(r.statusCode).toBe(400)
@@ -264,7 +306,7 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
     // rule out. A control that passes on both outcomes is not a control, so the
     // success and failure cases are now told apart explicitly.
     const ok = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', {
-      auth: { kind: 'token' },
+      auth: { kind: 'session', user: 'peti' },
       body: { key_line: line, name: 'Route Phone', host: '100.124.123.12' },
     })
     expect(String(ok.json().error ?? '')).not.toMatch(/Invalid host/)
@@ -288,7 +330,7 @@ describe('POST /api/security/bridge-enroll (HTTP)', () => {
     // a host-key file candidate instead: point readFile via a real file the
     // resolver checks -- not injectable here, so accept either outcome:
     const { line, installId } = makeKeyLine()
-    const r = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'token' }, body: { key_line: line, name: 'Route Phone' } })
+    const r = await call(tryHandleSecurity, 'POST', '/api/security/bridge-enroll', { auth: { kind: 'session', user: 'peti' }, body: { key_line: line, name: 'Route Phone' } })
     if (r.statusCode === 400) {
       // No host key obtainable in this environment -- the documented hard-fail
       // path; assert it stayed side-effect-free.
