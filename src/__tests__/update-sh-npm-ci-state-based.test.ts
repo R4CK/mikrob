@@ -64,6 +64,12 @@ interface HarnessOpts {
   newVersion: string
   gitDiffOutput: string // what `git diff OLD NEW --name-only` should print
   distFresh?: boolean // default true -- BUILT_COMMIT matches NEW_VERSION_FULL
+  // RedHat B1 (6070f801, comment 15695): the harness ran under `set -uo pipefail` only -- no
+  // `-e`. update.sh ITSELF runs under `set -e` (its own line 4), and a bare `cmd; RC=$?` is not
+  // exempt from errexit, so a harness without `-e` cannot see a regression that only manifests
+  // under the real script's own shell options. Default stays the historical '-uo pipefail' so
+  // every pre-existing test keeps its exact prior behavior; errexit tests opt in explicitly.
+  shellOpts?: string
 }
 
 function runHarness(block: string, root: string, opts: HarnessOpts): { stdout: string; status: number | null } {
@@ -74,7 +80,7 @@ function runHarness(block: string, root: string, opts: HarnessOpts): { stdout: s
     writeFileSync(builtCommitFile, `${opts.newVersion}-full\n`)
   }
   const harness = `
-set -uo pipefail
+set ${opts.shellOpts ?? '-uo pipefail'}
 INSTALL_DIR="${root}"
 NODE_MODULES_STALE_CHECK_PY="${STALE_CHECK_PY}"
 OLD_VERSION="${opts.oldVersion}"
@@ -195,8 +201,13 @@ echo "REACHED_END_OF_BLOCK npm_ci_called=\${NPM_CI_CALLED}"
     makeFreshInstall(installDir)
     const mutated = block.replace(
       `DEPS_STALE=0
-  python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"
-  DEPS_STALE_RC=$?
+  # RedHat B1 (6070f801, comment 15695): this script runs under \`set -e\` (line 4). A BARE
+  # \`cmd; RC=$?\` is NOT exempt from errexit -- only a command that is part of an &&/|| list or an
+  # if/while condition is. The checker's own confirmed-fresh signal is rc=1 (see the fail-closed
+  # comment below), which is the NORMAL case on a fresh node_modules, so the script aborted right
+  # here on every ordinary run and never reached the fail-closed check it was meant to feed.
+  DEPS_STALE_RC=0
+  python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR" || DEPS_STALE_RC=$?
   # Fail-closed (card 6070f801, WhiteHat F1): exit 1 is the ONLY confirmed-fresh signal the checker
   # gives. Any other code (0=confirmed stale, 127=python3 itself missing, or an uncaught crash) must
   # be treated as stale -- \`if python3 ...; then\` used to treat every nonzero code as "not stale",
@@ -259,5 +270,79 @@ echo "REACHED_END_OF_BLOCK npm_ci_called=\${NPM_CI_CALLED}"
     // path even though node_modules is stale -- npm ci never gets a chance to run.
     expect(result.status).toBe(0)
     expect(result.stdout).not.toContain('FAKE_NPM_CI_CALLED')
+  })
+})
+
+describe("update.sh: both stale-check call sites survive the script's own `set -e` (card 6070f801, RedHat B1)", () => {
+  const block = extractBlock(readFileSync(SCRIPT, 'utf-8'))
+
+  it('REAL CODE: OLD==NEW, fresh node_modules (checker rc=1, the NORMAL case) -- reaches the up-to-date message under set -e', () => {
+    makeFreshInstall(installDir)
+    const result = runHarness(block, installDir, { oldVersion: 'abc', newVersion: 'abc', gitDiffOutput: '', shellOpts: '-euo pipefail' })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('legfrissebb verzi')
+  })
+
+  it('MUTATION: reverting the FIRST call site to a bare `cmd; RC=$?` aborts the script under set -e on the identical fixture', () => {
+    makeFreshInstall(installDir)
+    const mutated = block.replace(
+      'DEPS_STALE_RC=0\n  python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR" || DEPS_STALE_RC=$?',
+      'python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"\n  DEPS_STALE_RC=$?',
+    )
+    expect(mutated, 'the mutation did not apply').not.toBe(block)
+    const result = runHarness(mutated, installDir, { oldVersion: 'abc', newVersion: 'abc', gitDiffOutput: '', shellOpts: '-euo pipefail' })
+    expect(result.status).not.toBe(0)
+    expect(result.stdout).not.toContain('legfrissebb verzi')
+  })
+
+  it('REAL CODE: OLD!=NEW (first call site skipped entirely), fresh node_modules -- the SECOND call site also survives set -e', () => {
+    makeFreshInstall(installDir)
+    const result = runHarness(block, installDir, { oldVersion: 'old', newVersion: 'new', gitDiffOutput: 'README.md', shellOpts: '-euo pipefail' })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('REACHED_END_OF_BLOCK')
+    expect(result.stdout).not.toContain('FAKE_NPM_CI_CALLED')
+  })
+
+  it('MUTATION: reverting the SECOND call site aborts the script under set -e when OLD!=NEW and node_modules is fresh', () => {
+    makeFreshInstall(installDir)
+    const mutated = block.replace(
+      'NPM_CI_DEPS_STALE_RC=0\npython3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR" || NPM_CI_DEPS_STALE_RC=$?',
+      'python3 "$NODE_MODULES_STALE_CHECK_PY" "$INSTALL_DIR"\nNPM_CI_DEPS_STALE_RC=$?',
+    )
+    expect(mutated, 'the mutation did not apply').not.toBe(block)
+    const result = runHarness(mutated, installDir, { oldVersion: 'old', newVersion: 'new', gitDiffOutput: 'README.md', shellOpts: '-euo pipefail' })
+    expect(result.status).not.toBe(0)
+    expect(result.stdout).not.toContain('REACHED_END_OF_BLOCK')
+  })
+})
+
+describe('update.sh: default NODE_MODULES_STALE_CHECK_PY path when the override env var is unset (card 6070f801, RedHat B2/E4 pin)', () => {
+  it('resolves to $INSTALL_DIR/store/node-modules-stale-check.py', () => {
+    const scriptText = readFileSync(SCRIPT, 'utf-8')
+    const lineMatch = scriptText.match(/^NODE_MODULES_STALE_CHECK_PY=.*$/m)
+    expect(lineMatch, 'could not find the default-path assignment line in update.sh').toBeTruthy()
+    const harness = `
+unset NODE_MODULES_STALE_CHECK_PY
+INSTALL_DIR="${installDir}"
+${lineMatch![0]}
+echo "RESOLVED:$NODE_MODULES_STALE_CHECK_PY"
+`
+    const stdout = execFileSync('bash', ['-c', harness], { encoding: 'utf-8' })
+    expect(stdout.trim()).toBe(`RESOLVED:${join(installDir, 'store', 'node-modules-stale-check.py')}`)
+  })
+
+  it('MUTATION: a wrong default suffix is caught by the test above', () => {
+    const scriptText = readFileSync(SCRIPT, 'utf-8')
+    const lineMatch = scriptText.match(/^NODE_MODULES_STALE_CHECK_PY=.*$/m)!
+    const mutatedLine = lineMatch[0].replace('node-modules-stale-check.py', 'node-modules-stale-check.pyX')
+    expect(mutatedLine, 'the mutation did not apply').not.toBe(lineMatch[0])
+    const harness = `
+unset NODE_MODULES_STALE_CHECK_PY
+INSTALL_DIR="${installDir}"
+${mutatedLine}
+echo "RESOLVED:$NODE_MODULES_STALE_CHECK_PY"
+`
+    const stdout = execFileSync('bash', ['-c', harness], { encoding: 'utf-8' })
+    expect(stdout.trim()).not.toBe(`RESOLVED:${join(installDir, 'store', 'node-modules-stale-check.py')}`)
   })
 })

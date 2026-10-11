@@ -4,7 +4,7 @@
 // corrupted hidden lock, not-installed, os/cpu filter) -- this file gives each of those branches a
 // dedicated, mutation-verified red test, plus the two actual bugs (F1 fail-open, F2 disk-vs-record).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -195,5 +195,81 @@ describe('node-modules-stale-check.py', () => {
     writeJson(join(root, 'node_modules', '.package-lock.json'), { packages: { 'node_modules/foo': { version: '1.0.0' } } })
     const preFixWouldSay = false // version match in the hidden lock alone -> sys.exit(1) in the old code
     expect(runCheck(root).stale).not.toBe(preFixWouldSay)
+  })
+
+  // D1 (card 6070f801, RedHat B2): the `except IndexError` branch (missing argv[1]) and the
+  // `except Exception as exc` branch (is_stale() itself crashing) are TWO SEPARATE except clauses
+  // that both happen to sys.exit(0). The existing FAIL-CLOSED test above only drives the first one
+  // -- a mutant that flips ONLY the second branch's exit code back to 1 (reverting half of the F1
+  // fix) stayed green. This fixture forces an uncaught exception INSIDE is_stale() itself (not one
+  // of the two already-handled OSError/JSONDecodeError cases): `packages` parses as a JSON STRING
+  // instead of an object, so `declared.items()` raises AttributeError once the for-loop is reached.
+  function writeNonDictPackagesLock(rootDir: string): void {
+    writeFileSync(join(rootDir, 'package-lock.json'), JSON.stringify({ packages: 'not-an-object' }))
+    mkdirSync(join(rootDir, 'node_modules'))
+    writeJson(join(rootDir, 'node_modules', '.package-lock.json'), { packages: {} })
+  }
+
+  it('D1: an uncaught exception from is_stale() itself (not a missing-argv IndexError) reports stale, not fresh', () => {
+    writeNonDictPackagesLock(root)
+    const result = execFileSyncRaw([SCRIPT, root])
+    expect(result.status).toBe(0) // exit 0 = stale, via the `except Exception` branch
+  })
+
+  it('MUTATION (D1): reverting the `except Exception` branch\'s exit code from 0 to 1 is caught by the test above', () => {
+    const scriptText = readFileSync(SCRIPT, 'utf-8')
+    // Anchored on the preceding print() text, which is UNIQUE to the `except Exception` branch --
+    // the sibling `except IndexError` branch (missing argv[1]) also ends in `sys.exit(0)`, so
+    // anchoring on that line alone would match both and mutate the wrong one (or, with a stricter
+    // uniqueness check, refuse to mutate at all).
+    const anchor = 'unexpected error ({exc}) -- treating as stale (fail-closed)", file=sys.stderr)\n        sys.exit(0)'
+    expect(scriptText, 'expected to find the except-Exception branch verbatim').toContain(anchor)
+    const mutated = scriptText.replace(anchor, anchor.replace(/sys\.exit\(0\)$/, 'sys.exit(1)'))
+    expect(mutated, 'the mutation did not apply').not.toBe(scriptText)
+    writeNonDictPackagesLock(root) // must actually reach is_stale()'s uncaught-exception path
+    const mutatedPath = join(root, '_mutated_check.py')
+    writeFileSync(mutatedPath, mutated)
+    const result = execFileSyncRaw([mutatedPath, root])
+    expect(result.status, 'the mutant must NOT report stale (0) -- it reverts to the pre-fix fresh (1) misreport').not.toBe(0)
+  })
+
+  // D7 (card 6070f801, RedHat B2): the existing cpu-filter "skip" test above only asserts
+  // `typeof ... === 'boolean'` because it hardcoded `cpu: ['arm64']` without checking the actual
+  // host CPU -- on an arm64 runner that declared entry would NOT be skipped, so the test could not
+  // commit to a definite stale/fresh verdict. A mutant that deletes the cpu-skip branch entirely
+  // (making every cpu-tagged entry fall through to the normal match check) still passed it. This
+  // pins a DEFINITE expected value by declaring a cpu tag guaranteed to differ from this host's own.
+  it('D7: cpu filter definite pin -- a declared entry tagged for a DIFFERENT cpu than this host is skipped, even with no installed record for it', () => {
+    const thisHostCpu = process.arch === 'arm64' ? 'arm64' : 'x64'
+    const otherCpu = thisHostCpu === 'arm64' ? 'x64' : 'arm64'
+    writeJson(join(root, 'package-lock.json'), {
+      packages: { '': {}, 'node_modules/other-cpu-only': { version: '1.0.0', cpu: [otherCpu] } },
+    })
+    mkdirSync(join(root, 'node_modules'))
+    writeJson(join(root, 'node_modules', '.package-lock.json'), { packages: {} }) // no record at all
+    expect(runCheck(root).stale).toBe(false)
+  })
+
+  it('MUTATION (D7): removing the cpu-skip branch surfaces the other-cpu entry as a false mismatch', () => {
+    const scriptText = readFileSync(SCRIPT, 'utf-8')
+    const anchor = '        cpu_list = entry.get("cpu")\n        if cpu_list is not None and node_cpu not in cpu_list:\n            continue\n'
+    expect(scriptText, 'expected to find the cpu-skip branch verbatim').toContain(anchor)
+    const mutated = scriptText.replace(anchor, '')
+    expect(mutated, 'the mutation did not apply').not.toBe(scriptText)
+    const mutatedPath = join(root, '_mutated_check.py')
+    writeFileSync(mutatedPath, mutated)
+
+    const thisHostCpu = process.arch === 'arm64' ? 'arm64' : 'x64'
+    const otherCpu = thisHostCpu === 'arm64' ? 'x64' : 'arm64'
+    writeJson(join(root, 'package-lock.json'), {
+      packages: { '': {}, 'node_modules/other-cpu-only': { version: '1.0.0', cpu: [otherCpu] } },
+    })
+    mkdirSync(join(root, 'node_modules'))
+    writeJson(join(root, 'node_modules', '.package-lock.json'), { packages: {} })
+
+    const result = execFileSyncRaw([mutatedPath, root])
+    // Without the skip, `other-cpu-only` is checked for real: no installed record (`inst is None`)
+    // -> stale (exit 0). D7's own fixed test above expects fresh (exit 1) for the identical fixture.
+    expect(result.status).toBe(0)
   })
 })
