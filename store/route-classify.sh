@@ -72,6 +72,19 @@ log_verdict() { # $1 = verdict, $2 = path (prefilter|windowed|empty), $3 = model
 
 [ -n "${TEXT// }" ] || { log_verdict UNKNOWN empty 0; echo UNKNOWN; exit 0; }
 
+# MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01, Peti Telegram 10951). Checked first, same
+# ordering as the VRAM guard below: UNKNOWN is this stage's existing "abstain" answer (missing
+# guard, saturated GPU, no model) -- the switch being off is the same statement reached without
+# spending a model call first, and it is safe by construction per this file's own header (stage 1
+# only ever moves LOCAL -> ONLINE, so abstaining can never open a hole).
+# shellcheck source=./local-first-draft-check.sh
+. "$HERE/local-first-draft-check.sh"
+if ! local_first_draft_enabled; then
+  log_verdict UNKNOWN local-first-draft-off 0
+  echo UNKNOWN
+  exit 0
+fi
+
 # Only the first 600 characters. The decision is about what the task IS, and on this board the tail
 # of a card is postmortem quotes, gate prose and log excerpts -- the same noise that made the keyword
 # matcher fire on the fleet's own dialect.
