@@ -19387,3 +19387,51 @@ Egy `../`-alaku vagy abszolut-utu `senderId` (pl. egy hibas/kompromittalt plugin
 **Teszt:** `src/__tests__/agent-identity-measure.test.ts` (10 teszt, logger-spy-jal, mind mutáció-proofolva -- a mismatch-ág kikapcsolása 1 tesztet pirosra visz), plusz a 3 érintett route meglévő teszt-alkészlete (`kanban-id-guard`, `kanban-dispatch-instructions`, `kanban-comment-author-trust-boundary`, `messages-post-sender-guards`, `messages-main-agent-no-false-warning`, `messages-module`, `messages-invalid-json-400`) változatlanul zöld -- a változás tisztán additív, egyetlen meglévő assertion sem módosult. `npx tsc --noEmit` tiszta.
 
 **Ki döntött:** backend (plan-grilling verdikt, MikroB-nak jelezve a kártya kommentjén). Gate: QA + WhiteHat + RedHat (a kártya saját, trust-boundary kockázatú kijelölése).
+
+## 2026-10-11 -- a046302b -- Licenc nélküli publikus repó ötletének clean-room átvétele: jogi megerősítés
+
+**AI Draft -- nem jogi tanács, kötelező erejű döntéshez humán ügyvéd kell.**
+
+**Kontextus.** Peti döntése (Telegram 10994/10998/11000, 2026-10-11): saját "software factory" folyamatot építünk a `zazencodes/zazencodes-season-3` `src/software-factory-claude-code` mintájára. A repónak NINCS licence (GitHub API `license:null`). A mi repónk (`R4CK/mikrob`) PUBLIKUS. Referencia commit: `555467c3`.
+
+**1. döntés -- licenc nélküli publikus repó jogi helyzete: MINDEN JOG FENNTARTVA.**
+
+Szerzői jog automatikusan keletkezik a mű létrejöttekor (US Copyright Act; EU: 2001/29/EK irányelv; Magyarország: 1999. évi LXXVI. törvény 1. §). Licenc hiánya NEM jelent közkincsbe adást. Engedély hiányában harmadik fél technikailag még az olvasáson túli semmilyen cselekményre sem kap jogot -- de a joggyakorlat az "olvasás" (forráskód megtekintése) ellen nem lép fel; az átvétel ellen igen.
+
+**2. döntés -- mit szabad átvenni: az ÖTLET szabad, a KIFEJEZÉS nem.**
+
+Az ötlet-kifejezés elválasztás alapelve (idea-expression dichotomy, US: Baker v. Selden 1879; EU: Szoftver-irányelv 2009/24/EK 1. cikk (2); Magyarország: Szjt. 1. § (6)) kimondja: **az ötlet, elv, módszer, folyamat, rendszer, koncepció önmagában NEM oltalmazott** -- csak az ezeket megvalósító konkrét kifejezés (kód, szöveg, sablon).
+
+Ami SZABAD (ötlet-szint):
+- Folyamat-felépítés általánosan: "kártyánkénti worktree + spec + verdikt + approver + körplafon" mint koncepció.
+- Szerepek fogalma: spec-writer, approver, reviewer mint szerep-típusok.
+- Lépéssorrend elvként: spec -> review -> verdict -> land mint absztrakt szekvencia.
+- Hibajelenség-azonosítók (pl. "verdikt-hamisítás", "végtelen NO-GO kör") ha SAJÁT szövegezéssel írjuk le.
+
+Ami TILOS:
+- Prompt-szöveg verbatim vagy közel-verbatim másolása.
+- Sablon-szöveg átvétele (még "átírással" sem, ha a struktúra és kulcsszavak egyezők).
+- Kód átvétele (akár "fordítás" formájában is: ha valaki a forrást elolvassa és fejből átírja, az is levezetett mű lehet, ha az egyezés nem triviális).
+- Fájlnév-struktúra, könyvtár-elrendezés ha az elég egyedi és kreatív ahhoz, hogy kifejezésnek minősüljön (általában nem az, de kerüljük az egyező elnevezéseket).
+
+**3. döntés -- hogyan jelöljük az inspirációt: "ihletett" szint, nem "alapuló".**
+
+Az inspirációt jelölni KELL (jó gyakorlat + transzparencia), de a szövegezés számít:
+- Helyes: "Inspired by the software-factory concept in zazencodes/zazencodes-season-3 (no license; ideas only, no expression copied)."
+- Kerülendő: "Based on / ported from / derived from zazencodes/..." -- ezek levezetett-mű implikációt hordoznak.
+- A `DECISIONS.md`-ben és a kártya-kommentekben elegendő az "ihletett forrás" megjelölés commit SHA-val (`555467c3`).
+- Kódban NEM szükséges fájlszintű attribúció (az ötlet nem oltalmazott), de ha valaki célszerűnek látja, a "Concept inspired by..." megjegyzés nem árt.
+
+**4. döntés -- F1-F5 kockázatértékelés.**
+
+Az F1-F5 kártyák mind fogalmi szinten valósítanak meg valamit (worktree-izoláció, verdikt-API, spec-sablon, approver-flow, körplafon). A konkrét implementáció minden esetben saját kód, saját prompt, saját API. Feltéve, hogy:
+- egyetlen fejlesztő sem olvassa el a zazencodes forrást ÁTVÉTELI SZÁNDÉKKAL;
+- prompt-szövegeket és sablon-szövegeket SAJÁT MEGFOGALMAZÁSBAN írják;
+- a fájlstruktúra és elnevezések nem ismétlik szó szerint a forrást;
+
+-- az F1-F5 kockázata **alacsony**, az indulást nem blokkolom.
+
+**Emelt kockázat (jelzés MikroB felé, nem blokk):** a spec-sablon (F3) és az approver-flow (F4) a legsérülékenyebb pont, mert a sablon-szöveg természetszerűleg hasonlíthat az eredeti folyamat-leírásokra, ha a fejlesztő olvasta azokat. Javasolt óvintézkedés: az F3/F4 fejlesztője a zazencodes forrást NE olvassa el implementáció-szinten; elegendő a fázis-kártya leírása (ami már saját szövegezésű). Ha valaki belenézett: dokumentálja mikor és mennyit látott, hogy utólag bizonyítható legyen a clean-room jelleg.
+
+**Ki döntött:** jogász.
+**Hivatkozás:** kártya a046302b (szülő b8ac0ef1); forrás: zazencodes/zazencodes-season-3 @555467c3 (no license).
