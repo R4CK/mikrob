@@ -153,7 +153,18 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     if (agentIdAlias && !url.searchParams.get('agent')) {
       logger.warn({ agent_id: agentIdAlias }, '[DEPRECATED] GET /api/memories: use "agent" instead of "agent_id"')
     }
-    const agentId = url.searchParams.get('agent') || agentIdAlias || ''
+    // Card 517fdcc5 delta #2 (RedHat NO-GO 16623, MikroB decision): the /:id boundary fix let a
+    // device-key caller's authenticated identity override a forged `?agent=`, but this listing
+    // (and the q-search branches below, which all read the same `agentId`) still trusted the
+    // query param alone -- a device agent:<id> caller could read a DIFFERENT agent's private row
+    // through the list or the search even though /:id already refused it for the same identity.
+    // Same precedent as the POST handler's authenticatedAgentId (card 84dcc5d4) and memGetMatch
+    // (card 3d186397): a device-key identity, when present, is authoritative and overrides
+    // whatever `?agent=` claims. A shared-token/session caller is unaffected (no device identity
+    // to prefer) -- full isolation for that caller stays on card 2520b85a.
+    const requestedAgentId = url.searchParams.get('agent') || agentIdAlias || ''
+    const authenticatedAgentId = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
+    const agentId = authenticatedAgentId || requestedAgentId
     const tier = url.searchParams.get('tier') || url.searchParams.get('category') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const mode = url.searchParams.get('mode') || 'fts'

@@ -19668,3 +19668,19 @@ Mutacio-ellenorzes: a validacio visszahelyezve a mutacio UTANRA (a regi, hibas s
 Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
 
 **Ki döntött:** backend3. Gate: QA + WhiteHat (a kartya sajat kijelolese, MikroB dontese a 10812 utan).
+
+## 2026-10-11 -- Kartya 517fdcc5 delta #3 (folytatas a fajl elejebb levo bejegyzesekhez): RedHat NO-GO (16623) javitva -- a LISTA es a q-kereses is a device-kulcsos azonossagot elsobbsegezi
+
+RedHat NO-GO (16623, MikroB dontese 16623 utan): a `/:id` hatar-javitas (delta #1, lasd fentebb a fajlban) csak a `memGetMatch` kezelore terjedt ki, de a `GET /api/memories` lista-ag es a q-kereses-ag UGYANAZT az `agentId` valtozot olvassa, es az addig KIZAROLAG a `?agent=` query-parameterbol szamitodott -- egy hitelesitett device-kulcsos hivo (`agent:<id>`) a `/:id` kapun kivul, a listan vagy a kereso-agon at TOVABBRA IS kiolvashatta egy MASIK agent privat sorat, mert a hamisithato `?agent=` parameter elsobbseget kapott a sajat, hitelesitett azonossaga felett.
+
+**Javitas:** a lista-ag elejen (`agentId` szamitasa) ugyanaz a minta, mint a `/:id`-n es a POST kezelon (`authenticatedAgentId`, kartya 84dcc5d4): `agentId = (device agent:<id> kulcsbol szamitott azonossag) || ?agent= parameter`. Mivel a q-kereses agai (`searchAgentMemories`, a substring-fallback, `hybridSearch`) MIND ugyanezt az `agentId`-t hasznaljak, a javitas EGY helyen zarja mindket utat -- nincs kulon kod a kereses-agra. Kozos tokenes/session hivo valtozatlan (nincs hitelesitett azonossaga, amit elsobbsegezni lehetne).
+
+**Teszt (`memories-get-by-id.test.ts`, +5 teszt, mutacioval ellenorizve):** device-kulcsos hivo hamisitott `?agent=`-mel a listan NEM latja a masik agent sorat; ugyanaz a kulcs `?q=`-val (parameter nelkul) SEM latja; a SAJAT kulcsa a SAJAT sorat latja; kozos tokenes hivonal a `?agent=` valtozatlanul mukodik (backward-compat pin); a csonkolasi-hint tovabbviszi a `?agent=`-et egy hosszabb tartalmu sorra (a korabbi teszt tul rovid tartalommal nem erte el a min. 50 karakteres kuszobot, uj, dedikalt hosszu-tartalmu sor kellett). Mutacio (az `authenticatedAgentId` prioritas kivetelezve, `agentId = requestedAgentId`): 3 teszt PIROSRA valtott (a tamado latta a victim sorat a listan es a keresesnel, a tulajdonos NEM latta a sajatjat -- mert a teszt-fixture-ben a "victim" nev maga a hitelesitett azonossag, nem a parameter). Visszaallitva, 12/12 zold.
+
+A teszt-helper (`makeCtx`) kiegeszitve `res.setHeader` stub-bal es `req.headers = {}`-vel -- a lista-ag `X-Memory-Search` fejlecet ir es a `jsonMaybeGzip` a `req.headers['accept-encoding']`-et olvassa, ami korabban (a `/:id`-only tesztekben) sosem futott.
+
+`npx tsc --noEmit` tiszta. Celzott futas (6 memories-* fajl): 67/67 zold.
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, MikroB dontese 16623 utan).
