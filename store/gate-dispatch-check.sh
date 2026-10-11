@@ -198,6 +198,16 @@ review_rx = re.compile(r"^(?:[#*\-]+[ \t]*)?REVIEW\b", re.M)
 # list/heading marker. A stricter match fails into the OLD heuristics (the field simply does not
 # count), which is the same fail-open direction the rest of this script takes.
 #
+# CORRECTION (card 1aeae282): "fenced blocks are removed before matching" protects the NORMAL,
+# well-formed quote shape (one real open/close pair) -- it is not a general-purpose defence against
+# a comment body that was never written by a human typing markdown. An author whose text is raw,
+# unescaped model output (local-llm) can produce fencing with an odd delimiter count or other shape
+# the non-greedy fence_rx does not pair the way a human writer would intend, which could in theory
+# leave a Gate-SHA line outside what fence_rx strips even though it reads as "inside a fence" to a
+# person looking at the comment. That is exactly why GENERATED_COMMENT_AUTHORS (below) excludes that
+# author by IDENTITY, before this or any other content-shape rule ever runs, rather than trusting a
+# fence to contain whatever that author happens to write.
+#
 # MIGRATION IS THE DEFAULT, NOT A PHASE: no field -> the old heuristics run unchanged, so a card
 # written before this convention (i.e. every card today) behaves exactly as it did. Fail-open, same
 # stance as the rest of this script.
@@ -304,6 +314,19 @@ def shas_of(comment):
 # against and would otherwise re-arm every gate by itself).
 NON_SUBMITTERS = set(GATE_AGENTS) | {"mikrob", "gate-pretriage"}
 
+# GENERATED-COMMENT AUTHORS (card 1aeae282, Cybersec F1 on 3cb36c6e). post_draft_comment
+# interpolates the local-llm model raw output into a comment body with no fencing -- so whatever
+# the model happens to write, including a line that LOOKS like "Gate-SHA: <sha>" or
+# "Submitted-by: <agent>", lands verbatim. Neither NON_SUBMITTERS (checked further down, by design
+# AFTER the Submitted-by override, so a human can rescue a mikrob/gate comment with that field) nor
+# the fence-stripping protections are the right shape here: this author CONTENT is not trustworthy
+# input to any of the content-based rules at all, so no content signal may ever rescue or arm a
+# comment from this author -- the check has to run before every one of them, not slot into the
+# NON_SUBMITTERS ordering. Same set `kanban-landed-guard.ts` already exports as
+# GENERATED_COMMENT_AUTHORS (and `kanban-draft-review-guard.ts` already keys off of) -- this mirrors
+# that list rather than inventing a second one.
+GENERATED_COMMENT_AUTHORS = {"local-llm", "gate-pretriage"}
+
 # WHAT COUNTS AS A SUBMISSION (card b60835e1; incidents beeb6963 and 339cd617). The line-anchored
 # REVIEW prefix was the ONLY signal, and build agents do not always write it: real announcements
 # read "JAVITVA -- commit ac792b3b" and "CYBERED NO-GO JAVITVA. Uj commit 66f36444". Measured on the
@@ -323,6 +346,14 @@ NON_SUBMITTERS = set(GATE_AGENTS) | {"mikrob", "gate-pretriage"}
 def is_submission(c):
     author = (c.get("author") or "").lower()
     if author == agent.lower():
+        return False
+    # GENERATED-COMMENT AUTHORS (card 1aeae282): checked BEFORE every content-based rule below,
+    # including the Submitted-by override -- unlike a human NON_SUBMITTER, this author text is
+    # unescaped model output, so a hallucinated "Gate-SHA:"/"Submitted-by:" line must never be able
+    # to arm (or even be read as a rescue for) a draft comment. Returning here, not falling into the
+    # ordinary NON_SUBMITTERS check further down, is the point: that check sits AFTER the
+    # Submitted-by override on purpose (card ec0e64b4), and this author must never reach it.
+    if author in GENERATED_COMMENT_AUTHORS:
         return False
     text = c.get("content") or ""
     # SUBMITTED-BY OVERRIDE (card ec0e64b4): checked before the identity exclusion below, so it can
@@ -823,6 +854,21 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     t "gate-pretriage naming a sha is not a submission" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"gate-pretriage","created_at":100,"content":"GATE PRE-TRIAGE (mechanikus, verdict:null) @ 66f36444"}]'
     t "mikrob naming a sha is not a submission"        "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"mikrob","created_at":100,"content":"TIER-DONTES valtozatlan: QA + Cybered. Friss commit 66f36444."}]'
     t "an engineering comment with no sha is not a submission" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"backend","created_at":100,"content":"Kerdes MikroB-nak: melyik migracios szamot vegyem?"}]'
+
+    # LOCAL-LLM DRAFT CONTENT (card 1aeae282, Cybersec F1 on 3cb36c6e real incident). post_draft_comment
+    # interpolates the model raw output with no fencing, so a Gate-SHA or Submitted-by line the model
+    # happens to write lands verbatim in the comment body. Before the GENERATED_COMMENT_AUTHORS check,
+    # the FIRST TWO of these answered ALLOW:no-verdict -- a false gate wake, not an authz bypass, but
+    # real quota burn on every draft the model happened to phrase that way (the third, a benign draft
+    # with no field at all, was never armed either way -- kept as a regression control, not a mutation
+    # pin). Mutation check: comment out the `if author in GENERATED_COMMENT_AUTHORS: return False` line
+    # near the top of is_submission() and the FIRST TWO go red while every other case in this file,
+    # including the third, stays green -- proving those two are the only coverage for this author, not
+    # a duplicate of the Submitted-by/Gate-SHA cases above (those fixtures are all authored by
+    # engineering/gate roles, never local-llm).
+    t "local-llm draft with a Gate-SHA line is not a submission"   "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"local-llm","created_at":100,"content":"Helyi draft, nem komment a kartyarol.\nGate-SHA: 1234abcd"}]'
+    t "local-llm draft with a Submitted-by line is not a submission" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"local-llm","created_at":100,"content":"Helyi draft.\nSubmitted-by: backend"}]'
+    t "a benign local-llm draft (no field at all) is not a submission" "ADVISE-SKIP:no-review" cybersec <<< '[{"author":"local-llm","created_at":100,"content":"Helyi draft, csak javaslat."}]'
     # ANOTHER GATE own multi-sha verdict must not arm this gate either (card 02be824f, Cybersec
     # finding on 7405ca61 real shape): a gate agent legitimately declares Gate-SHA with every
     # commit it reviewed, and a structured_shas() hit used to arm is_submission() BEFORE the

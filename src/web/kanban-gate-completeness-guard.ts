@@ -23,9 +23,10 @@
 // clause-scoping: only the text BEFORE the first `.`/`(`/`!`/`?` is the actual designation clause.
 // Ported here verbatim rather than re-derived, so this guard inherits that hardening instead of
 // re-introducing the bug it fixed.
-import { getKanbanCard, getKanbanComments, listKanbanCards } from '../db.js'
+import { getKanbanCard, getKanbanComments, listKanbanCards, getFreshKanbanVerdict, type GateVerdictGate } from '../db.js'
 import { isForceActor } from '../kanban-force-actors.js'
 import { logger } from '../logger.js'
+import { isAgentVerdictRecordEnabled } from './kanban-verdicts.js'
 import type { LandedVerdict } from './kanban-landed-guard.js'
 
 export type GateAgent = 'qa' | 'qa2' | 'cybersec' | 'cybersec2' | 'cybered'
@@ -377,8 +378,31 @@ function currentRoundStartTs(comments: readonly Comment[], knownOtherCardIds: Re
   return Math.max(...entries.map((e) => e.ts))
 }
 
+// Card 2bfa4c67 (F2): the structured kanban_verdicts table is an ADDITIVE second source -- a gate
+// counts as having verdicted if EITHER this comment-parse says so OR a fresh structured PASS/GO
+// row exists, never a replacement for the comment-parse itself (that machinery stays exactly as
+// it was, see the long regex history above). Flag-gated: when AGENT_VERDICT_RECORD is off, this
+// always returns false and the OR below degrades to a no-op, byte-identical to before this card.
+const GATE_AGENT_TO_CANONICAL: Readonly<Record<GateAgent, GateVerdictGate>> = {
+  qa: 'QA', qa2: 'QA', cybersec: 'CYBERSEC', cybersec2: 'CYBERSEC', cybered: 'CYBERED',
+}
+
+function hasFreshStructuredVerdict(cardId: string, agent: GateAgent, sinceTs: number | null): boolean {
+  if (!isAgentVerdictRecordEnabled()) return false
+  try {
+    const row = getFreshKanbanVerdict(cardId, GATE_AGENT_TO_CANONICAL[agent], sinceTs)
+    return row !== null && (row.verdict === 'PASS' || row.verdict === 'GO')
+  } catch (err) {
+    // Same fail-open rule as the rest of this guard: a read failure here must never BLOCK a close
+    // that the comment-parse path would otherwise allow.
+    logger.warn({ err, cardId, agent }, 'gate-completeness-guard: structured verdict read failed, ignored')
+    return false
+  }
+}
+
 /** Does `agent` have a fresh (post-latest-REVIEW) verdict-shaped comment on this card? */
-function hasFreshVerdict(comments: readonly Comment[], agent: GateAgent, sinceTs: number | null): boolean {
+function hasFreshVerdict(cardId: string, comments: readonly Comment[], agent: GateAgent, sinceTs: number | null): boolean {
+  if (hasFreshStructuredVerdict(cardId, agent, sinceTs)) return true
   return comments.some(
     (c) =>
       (c.author ?? '').toLowerCase() === agent &&
@@ -449,16 +473,16 @@ export function gateCompletenessGuardVerdict(cardId: string, nextStatus: unknown
   // that nothing ever asked for -- either one satisfies the QA-family requirement.
   const missing: string[] = []
   if (designated.has('qa') || designated.has('qa2')) {
-    const qaFamilyOk = hasFreshVerdict(comments, 'qa', sinceTs) || hasFreshVerdict(comments, 'qa2', sinceTs)
+    const qaFamilyOk = hasFreshVerdict(cardId, comments, 'qa', sinceTs) || hasFreshVerdict(cardId, comments, 'qa2', sinceTs)
     if (!qaFamilyOk) missing.push('QA')
   }
   // Cybersec/Cybersec2 are ONE requirement, same reasoning as the QA/QA2 family check above --
   // card 21abfe0b, RedHat NO-GO B1.
   if (designated.has('cybersec') || designated.has('cybersec2')) {
-    const cybersecFamilyOk = hasFreshVerdict(comments, 'cybersec', sinceTs) || hasFreshVerdict(comments, 'cybersec2', sinceTs)
+    const cybersecFamilyOk = hasFreshVerdict(cardId, comments, 'cybersec', sinceTs) || hasFreshVerdict(cardId, comments, 'cybersec2', sinceTs)
     if (!cybersecFamilyOk) missing.push('Cybersec')
   }
-  if (designated.has('cybered') && !hasFreshVerdict(comments, 'cybered', sinceTs)) missing.push('Cybered')
+  if (designated.has('cybered') && !hasFreshVerdict(cardId, comments, 'cybered', sinceTs)) missing.push('Cybered')
   if (missing.length === 0) return { blocked: false }
 
   const names = missing.join(', ')
