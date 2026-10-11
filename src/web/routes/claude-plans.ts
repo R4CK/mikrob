@@ -26,6 +26,7 @@ import { probePlanUsage, observationFromProbe, usageFromProbe } from '../../clau
 import { agentDir, writeAgentClaudePlan } from '../agent-config.js'
 import { restartAgentProcess } from '../agent-process.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 
 /** Minimum gap between two manual probes of the same plan (POST .../probe). */
@@ -119,8 +120,16 @@ export function deleteOwnTokenSecret(planId: string, secretId: string | null | u
 // other flag) -- this is what makes the fail-closed-at-startup requirement trivially true: there
 // is no code path where rotation can run without this check already having passed, independent
 // of whatever the rotation env vars are set to.
+//
+// Delta (RedHat NO-GO 16876, B1): `kind === 'device'` alone is NOT a human credential -- card
+// 9655494c's agent:<id> device-key issuance means a fleet agent (e.g. the gate agents the
+// 2bfa4c67 verdict path is built on) can hold its OWN device key, which resolves to this exact
+// `kind: 'device'` shape. Measured: a device key for 'agent:qa' passed every write/rotate route
+// this gate exists to close. The device branch must exclude any key that agentKeyToAgentId
+// resolves to an agent id -- only a non-agent device key (phone/Bridge pairing) stays human.
 function rejectIfNotHumanAuth(ctx: RouteContext): boolean {
-  if (ctx.auth?.kind === 'session' || ctx.auth?.kind === 'device') return false
+  const isAgentDeviceKey = ctx.auth?.kind === 'device' && agentKeyToAgentId(ctx.auth.device) !== null
+  if (!isAgentDeviceKey && (ctx.auth?.kind === 'session' || ctx.auth?.kind === 'device')) return false
   logger.warn({ authKind: ctx.auth?.kind ?? 'none', path: ctx.path, method: ctx.method },
     'Claude plans: write/rotate rejected for non-human credential')
   json(ctx.res, { error: 'This operation requires a browser session or a device key, not the shared agent token.' }, 403)

@@ -19992,3 +19992,21 @@ Mutacio-ellenorzes (mindket fixre, `sanitize.ts`-ben, manualisan visszaallitva m
 Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
 
 **Ki döntött:** backend3. Gate: QA + RedHat (a kartya sajat kijelolese -- WhiteHat javasolta a javitast, a re-gate RedHate).
+
+## 2026-10-11 -- Kartya 93ed929a delta: RedHat NO-GO (16876) B1 javitva -- az agent-kiadott device-kulcs mar NEM szamit embernek
+
+RedHat NO-GO (16876) a Gate-SHA 6fd8f0af-re: a `rejectIfNotHumanAuth` MINDEN `kind === 'device'`-et embernek vett, de a kartya 9655494c altal landolt agent:<id> device-kulcs-kiadas EZT a PONTOS alakot adja ki a flotta sajat ugynokeinek (a gate-ugynokok -- qa, cybered, stb -- a 2bfa4c67 verdikt-ut pont ezekre a kulcsokra epul). Mert: egy agent:qa device-kulccsal POST /api/claude-plans 201, PUT 200, DELETE (feltetelezve) es POST /rotate 200 -- a kapu PONTOSAN azt engedte at, amit ki kellett volna zarnia (egy ugynok sajat hitelesitoje, nem egy ember).
+
+**Javitas (B1):** a `device` agon kulon ellenorzes: `agentKeyToAgentId(ctx.auth.device) !== null` -> HA az agent-azonositora oldodik fel, NEM ember, 403. Csak egy NEM-agent alaku device-kulcs (telefon/Bridge-parositas) marad engedett. `agentKeyToAgentId` import `auth-device-keys.js`-bol.
+
+**N1 (tesztlyuk, ugyanebben a korben javitva):** a kartya eredeti "nincs auth-principal" teszje `{}`-t adott at, a VALODI termelesi alak (`web.ts`) viszont `ctx.auth === undefined`-t ad a kezelonek egy auth nelkuli hivasnal -- a ket alak KULONBOZIK egy `!ctx.auth`-tipusu fail-open mutansra. A `fakeCtx` teszt-helper `null`-t hasznal MOST kulon "explicit nincs auth" jelzeskent (a `undefined` argumentum, meg explicit is, a JS default-parameter szemantika miatt a defaultot valtja ki -- `null` NEM).
+
+**Teszt (`claude-plans-routes.test.ts`, +8 teszt, mutacioval ellenorizve mindket fixre):** B1 -- `agent:qa` device-kulccsal mind a negy ut (POST/PUT/DELETE/rotate) 403, `hardRestartMarveenChannels` SOHA nem hivodik; pozitiv kontroll `phone` device-kulccsal 201. N1 -- `ctx.auth === undefined` 403. Mutacio: (a) az `isAgentDeviceKey` kikapcsolasa -> mind az 5 B1-teszt PIROSRA valtott (409/200/201 a varni 403 helyett -- PONTOSAN a RedHat merese); (b) egy `!ctx.auth -> return false` fail-open sor hozzaadasa -> PONTOSAN az N1-teszt PIROSRA valtott, a tobbi 52 zold maradt (igazolva, hogy a teszt a VALODI production-alakot pineli, nem a `{}`-t). Mindket mutacio utan visszaallitva, 53/53 zold.
+
+`npx tsc --noEmit` tiszta. Celzott futas (6 claude-plans-*/auth-agent-keys fajl): 110/110 zold. `lint-ratchet.sh`: valtozatlan (323 lelet, tart).
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**(P1, kulon kartya, nem ebben a korben javitva):** RedHat jelezte, hogy a 9655494c F1-B1 lanca addig nyitva all, amig a kozos tokennel "session" szerezheto (bootstrap+login) -- ez a `CLAUDE_ROTATION_*` kapcsolok bekapcsolasanak egy MASIK, fuggetlen elofeltetele. A DECISIONS (5) pontja ("a kapcsolok csak e kartya lezarasa utan, Peti jovahagyasaval") ezzel bovul: a 9655494c F1-B1 lezarasa IS feltetel, nem csak Peti jovahagyasa.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, a RedHat verdiktje utan).

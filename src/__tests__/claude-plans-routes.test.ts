@@ -60,12 +60,22 @@ const { CLAUDE_PLANS_STATE_PATH } = await import('../web/claude-plans-state.js')
 // `auth` defaults to a session caller so every PRE-EXISTING test in this file (written before
 // that gate existed) keeps exercising the actual CRUD/rotation logic unchanged. The negative
 // tests for the gate itself pass `auth` explicitly.
+//
+// A default parameter substitutes on an explicit `undefined` argument JUST AS MUCH as on an
+// omitted one -- `fakeCtx(a, b, c, undefined)` and `fakeCtx(a, b, c)` are indistinguishable to
+// JS, both landing on the default. That makes a plain `= {kind:'session'}` default unable to
+// express "no auth at all" (the PRODUCTION shape RedHat's N1 finding named -- web.ts hands the
+// handler `ctx.auth === undefined` for a request with no principal, not `{}`). `null` is NOT
+// substituted by a default parameter (only `undefined` is), so it is used here as the distinct
+// "explicitly no auth" marker: omit the argument for the session default, pass `null` for a
+// genuine `ctx.auth === undefined`.
 function fakeCtx(
   method: string,
   path: string,
   body?: unknown,
-  auth: { kind?: string } | undefined = { kind: 'session' },
+  auth: { kind?: string; device?: string } | null = { kind: 'session' },
 ): { ctx: RouteContext; out: { status: number; body: any } } {
+  const resolvedAuth = auth === null ? undefined : auth
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -79,7 +89,7 @@ function fakeCtx(
       if (event === 'end') cb()
     },
   }
-  return { ctx: { req, res, path: url.pathname, method, url, auth } as RouteContext, out }
+  return { ctx: { req, res, path: url.pathname, method, url, auth: resolvedAuth } as RouteContext, out }
 }
 
 function plan(over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -591,5 +601,58 @@ describe('tryHandleClaudePlans -- write/rotate require a human credential (card 
     await tryHandleClaudePlans(ctx)
     expect(out.status).toBe(403)
     expect(out.body.error).toContain('browser session or a device key')
+  })
+
+  // N1 (RedHat 16876): the fail-open check for "no principal at all" must pin the ACTUAL
+  // production shape -- ctx.auth === undefined -- not the earlier `{}` stand-in, which an M6
+  // mutant (the gate accepting a falsy ctx.auth) passed vacuously because `{}.kind` and
+  // `undefined`'s own `?.kind` both read as undefined through optional chaining, but a mutant
+  // checking `!ctx.auth` specifically only sees the REAL undefined case.
+  it('N1: a request with no auth object at all (ctx.auth === undefined) is rejected (403)', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan(), null)
+    expect(await tryHandleClaudePlans(ctx)).toBe(true)
+    expect(out.status).toBe(403)
+    expect(existsSync(CLAUDE_PLANS_PATH)).toBe(false)
+  })
+
+  // B1 (RedHat NO-GO 16876, HIGH if rotation is ever enabled): `kind === 'device'` alone is NOT
+  // a human credential. Card 9655494c issues agent:<id> device keys to fleet agents (including
+  // the gate agents the 2bfa4c67 verdict path is built on) -- every one of those resolves to
+  // exactly this `{kind:'device', device:'agent:<id>'}` shape, which the first cut of this gate
+  // let straight through. Measured by RedHat: an 'agent:qa' device key passed POST/PUT/DELETE
+  // and /rotate. Only a non-agent device key (phone/Bridge pairing) is actually human.
+  it.each([
+    ['POST', '/api/claude-plans', plan()],
+    ['PUT', '/api/claude-plans/pro', plan({ label: 'Renamed' })],
+    ['DELETE', '/api/claude-plans/pro', undefined],
+    ['POST', '/api/claude-plans/rotate', { targetPlanId: 'team' }],
+  ] as const)('B1: an agent-issued device key (agent:qa) is rejected (403) on %s %s', async (method, path, body) => {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'pro' })).ctx)
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Team Seat' })).ctx)
+    rotationEnabled = '1'
+    mainIsolated = '1'
+    const { ctx, out } = fakeCtx(method, path, body, { kind: 'device', device: 'agent:qa' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(403)
+    expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+  })
+
+  // Positive control for B1: a non-agent device key (the Bridge/phone pairing shape) is still
+  // treated as human -- the fix must not collapse the whole device branch to session-only.
+  it('B1 positive control: a non-agent device key (phone pairing) still succeeds', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan(), { kind: 'device', device: 'phone' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(201)
+  })
+
+  // MUTATION PIN: with the agentKeyToAgentId exclusion removed (device alone treated as
+  // human again), this exact agent:qa request would instead succeed (201) and, on the rotate
+  // route with rotation enabled, actually restart the main agent.
+  it('MUTATION PIN: B1 -- the agent-device rejection is specifically the agentKeyToAgentId check', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan(), { kind: 'device', device: 'agent:qa' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body.error).toContain('browser session or a device key')
+    expect(existsSync(CLAUDE_PLANS_PATH)).toBe(false)
   })
 })
