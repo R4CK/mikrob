@@ -1,6 +1,7 @@
 ---
 name: senior-engineer-modes
 description: Seven senior-engineer operating modes (build MVP, audit codebase, debug production, optimize performance, refactor to clean architecture, architect backend, build frontend components). Each mode has a matching subagent in ~/.claude/agents/. Use to pick the right engineering persona for a coding task, or to dispatch the matching agent. Triggers on engineering work like "build an app", "audit the code", "debug this", "make it faster", "refactor", "design the backend", "build a UI component".
+version: "1.0.0"
 ---
 # Senior Engineer Modes
 

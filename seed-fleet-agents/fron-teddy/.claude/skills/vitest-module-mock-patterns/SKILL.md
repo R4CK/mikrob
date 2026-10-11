@@ -6,6 +6,7 @@ description: Vitest ES module mock patterns for React component tests. Covers: v
 # Vitest ES Module Mock Patterns
 
 ## When to use
+
 - Mocking one or more named exports of a module while keeping the rest real
 - Testing a component with a real `setTimeout` delay you need to wait for
 - Testing a form inside an overlay where `userEvent.click(submit)` triggers the overlay's `onClick` and cancels the dialog
@@ -17,17 +18,19 @@ description: Vitest ES module mock patterns for React component tests. Covers: v
 ## Pattern 1: vi.mock + importOriginal + post-mock import (the hoisting trap)
 
 ### Why this pattern
+
 Vitest hoists `vi.mock()` calls to the top of the file at compile time. Any import that appears BEFORE `vi.mock()` in the source is still evaluated before the mock is installed — the mock never intercepts it. The solution: declare the mock first, then import the module AFTER.
 
 ### Correct pattern
+
 ```typescript
 // 1. DECLARE mock first (hoisted to top by Vitest at compile time)
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
   return {
-    ...actual,                    // keep everything real
+    ...actual, // keep everything real
     adminApi: {
-      ...actual.adminApi,         // keep the real adminApi shape
+      ...actual.adminApi, // keep the real adminApi shape
       crewStats: {
         get: vi.fn(),
         set: vi.fn(),
@@ -50,12 +53,14 @@ beforeEach(() => {
 ```
 
 ### Common pitfall: spreading nested real objects
+
 When the mocked module has deeply nested objects, always spread each level:
+
 ```typescript
 // WRONG — wipes all other adminApi methods not named here
 return {
   ...actual,
-  adminApi: { crewStats: { get: vi.fn() } }  // rest of adminApi gone
+  adminApi: { crewStats: { get: vi.fn() } }, // rest of adminApi gone
 }
 
 // CORRECT — preserve the full nested shape
@@ -63,18 +68,19 @@ return {
   ...actual,
   adminApi: {
     ...actual.adminApi,
-    crewStats: { ...actual.adminApi.crewStats, get: vi.fn() }
-  }
+    crewStats: { ...actual.adminApi.crewStats, get: vi.fn() },
+  },
 }
 ```
 
 ### Mocking named function exports (not nested objects)
+
 ```typescript
 vi.mock('@/api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/client')>()
   return {
     ...actual,
-    getToken: vi.fn(),    // replaces the named export
+    getToken: vi.fn(), // replaces the named export
     clearToken: vi.fn(),
   }
 })
@@ -84,6 +90,7 @@ const mockGetToken = getToken as ReturnType<typeof vi.fn>
 ```
 
 ### Mocking useNavigate without a router context
+
 ```typescript
 const mockNavigate = vi.fn()
 vi.mock('react-router-dom', async (importOriginal) => {
@@ -98,6 +105,7 @@ vi.mock('react-router-dom', async (importOriginal) => {
 ## Pattern 2: useParams with MemoryRouter (when you DO need routing)
 
 When the component calls `useParams()` to read a URL segment, wrap in `MemoryRouter + Routes + Route`:
+
 ```typescript
 function renderPage(tenantId = 'tenant-1') {
   return render(
@@ -109,6 +117,7 @@ function renderPage(tenantId = 'tenant-1') {
   )
 }
 ```
+
 Do NOT mock `useParams` — MemoryRouter + Routes provides the real context and avoids the infinite-redirect loop (see `vitest-react-router-guard` skill).
 
 ---
@@ -118,6 +127,7 @@ Do NOT mock `useParams` — MemoryRouter + Routes provides the real context and 
 `vi.useFakeTimers()` replaces `setTimeout` globally, including the polling `setTimeout` that `waitFor()` uses internally. Result: `waitFor()` never advances and the test times out.
 
 **WRONG** (causes timeout):
+
 ```typescript
 beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
@@ -131,13 +141,14 @@ it('navigates after 1500ms delay', async () => {
 ```
 
 **CORRECT** — let real time pass, raise waitFor timeout:
+
 ```typescript
 // No fake timers at all
 it('navigates after 1500ms delay', async () => {
   // ... trigger the action ...
   await waitFor(
     () => expect(mockNavigate).toHaveBeenCalledWith('/login', { replace: true }),
-    { timeout: 2000 },  // real 1500ms delay + 500ms margin
+    { timeout: 2000 } // real 1500ms delay + 500ms margin
   )
 })
 ```
@@ -149,12 +160,14 @@ Rule of thumb: if the component's `setTimeout` delay is ≤ 2000ms, skip fake ti
 ## Pattern 4: fireEvent.submit to bypass overlay onClick
 
 When a modal/dialog has:
+
 - An outer overlay `<div onClick={onCancel}>` that closes the dialog
 - An inner `<form>` with a submit button
 
 `userEvent.click(submitBtn)` triggers pointer events that bubble up and hit the overlay's `onClick`, cancelling the dialog before the form submits.
 
 **Fix:** bypass pointer events entirely:
+
 ```typescript
 // WRONG — bubbles up, hits overlay onClick, dialog cancelled
 await userEvent.click(screen.getByRole('button', { name: 'Confirm' }))
@@ -167,6 +180,7 @@ fireEvent.submit(container.querySelector('form')!)
 ```
 
 Also works for TOTP / StepUpModal patterns where the overlay closes on outside click:
+
 ```typescript
 fireEvent.change(screen.getByPlaceholderText('123456'), { target: { value: '654321' } })
 fireEvent.submit(screen.getByRole('dialog').querySelector('form')!)
@@ -178,20 +192,23 @@ await waitFor(() => expect(mockApi).toHaveBeenCalledWith('654321'))
 ## Pattern 5: element disambiguation when text appears multiple times
 
 ### Multiple elements with the same visible text
+
 If a page renders the same string in multiple places (heading h1 + a plain div, or a label duplicated in two sections), `getByText('foo')` throws "Found multiple elements with text 'foo'".
 
 **Solutions by case:**
 
-| Situation | Fix |
-|-----------|-----|
-| Heading (h1/h2) vs plain div | `getByRole('heading', { name: 'foo' })` |
-| Button in header vs in modal | `getAllByRole('button', { name: 'X' })[last]` for modal button |
-| Text embedded in longer string | `getByText(/regex/)` — partial match |
-| Two "Save" buttons in DOM | `getAllByRole('button', { name: 'Save' })[0]` by DOM order |
-| Asserting ANY presence | `expect(screen.getAllByText(/text/).length).toBeGreaterThanOrEqual(1)` |
+| Situation                      | Fix                                                                    |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| Heading (h1/h2) vs plain div   | `getByRole('heading', { name: 'foo' })`                                |
+| Button in header vs in modal   | `getAllByRole('button', { name: 'X' })[last]` for modal button         |
+| Text embedded in longer string | `getByText(/regex/)` — partial match                                   |
+| Two "Save" buttons in DOM      | `getAllByRole('button', { name: 'Save' })[0]` by DOM order             |
+| Asserting ANY presence         | `expect(screen.getAllByText(/text/).length).toBeGreaterThanOrEqual(1)` |
 
 ### Scoped queries
+
 Use `within()` to scope to a specific container:
+
 ```typescript
 import { within } from '@testing-library/react'
 
@@ -200,7 +217,9 @@ const toggle = within(row).getByRole('switch')
 ```
 
 ### Switches by MODULE_CATALOG position
+
 When multiple identical controls appear in a fixed order (feature flag toggles):
+
 ```typescript
 // MODULE_CATALOG[0] = m1_warehouse
 expect(screen.getAllByRole('switch')[0]).toHaveAttribute('aria-checked', 'true')
@@ -215,6 +234,7 @@ expect(screen.getAllByRole('switch')[1]).toHaveAttribute('aria-checked', 'false'
 HTML `<input type="number">` sanitizes non-numeric strings to `""` in jsdom. If a component guards with `value !== ''`, passing `'abc'` to `fireEvent.change` will result in `value = ""` and the guard will prevent any alert.
 
 **Use a valid-number-but-out-of-range value instead:**
+
 ```typescript
 // WRONG — 'abc' becomes "" in type="number", guard fires wrong branch
 fireEvent.change(input, { target: { value: 'abc' } })
@@ -227,6 +247,7 @@ await waitFor(() => screen.getByRole('alert'))
 ---
 
 ## Pitfalls checklist
+
 - `vi.mock()` below an `import` statement: Vitest hoists it but the import already evaluated. ALWAYS declare `vi.mock()` before any `import` of the mocked module.
 - Fake timers + `waitFor()`: use real timers with `{ timeout: N }` for delays ≤ 2s.
 - `fireEvent.submit` vs `userEvent.click` for dialogs with backdrop `onClick`.
@@ -235,6 +256,7 @@ await waitFor(() => screen.getByRole('alert'))
 - If one test leaks `vi.useFakeTimers()`, ALL subsequent tests in that file inherit fake timers. Always pair with `afterEach(() => vi.useRealTimers())` or remove fake timers entirely.
 
 ## Verification
+
 - [ ] `vi.mock()` declarations appear before any `import` of the mocked module in source
 - [ ] Post-mock imports cast `.as ReturnType<typeof vi.fn>` for type-safe mock assertions
 - [ ] No `vi.useFakeTimers()` combined with `waitFor()` in the same test
