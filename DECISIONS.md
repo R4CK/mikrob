@@ -19672,3 +19672,15 @@ A root CLAUDE.md 7. kódminőségi elve ("eltűnő/gyengülő teszt = FAIL, nem 
 **Mérés a visszaállítás után:** mind a 9 érintett tesztfájl (helyben futtatva) PASS; `local-first-draft-check.selftest.sh` 14/14 PASS (a worktree-regressziós eset is zöld, mert az a flag-fájl TÉNYLEGES, {"enabled":false} tartalmával dolgozik, nem a hiány-esettel); `tsc --noEmit` tiszta.
 
 **Ki döntött:** a kódolást (resolution-fix + absence=OFF) fullstack végezte MikroB 16743 szó szerinti szövege szerint; a 29-teszt-regressziót fullstack mérte a saját fleet-test futásán (merge sha 4bfc3ffab2efe749e2aa7fb1e349b5dc1345ec3c); a visszaállítás fullstack döntése volt a mérés alapján, a root CLAUDE.md 5/7. elvére hivatkozva -- MikroB felé a REVIEW kommentben jelezve, nem elhallgatva. Delta-gate: QA + WhiteHat2 (változatlan, a B1 teljes köre és a B2 mindkét iránya ugyanúgy tesztelt).
+
+## 2026-10-11 -- Kártya d57d8a01 delta (harmadik kör): WhiteHat2 B2-megjegyzés (komment 16810) beépítve -- human-credential-only, nem csak session-only
+
+WhiteHat2 (komment 16810, a b8c5d0fe-n mért kódra hivatkozva) a B2-javítást (csak tulajdonosi session kapcsolhatja vissza a helyi-LLM kill-switch-et) pontosította, MIELŐTT a REVIEW elment volna: a `src/web/routes/fleet.ts:119` már létező mintáját (`kind !== 'session' && kind !== 'device'` -> 403) kellett volna követni, nem egy új, session-only szigorítást kitalálni -- ÉS ugyanakkor ez a minta magán a fleet.ts-en is hiányos, mert egy `agent:<id>` nevű, FLOTTA-ÜGYNÖKNEK kiadott device-kulcs (kártya 2bfa4c67/9655494c) `kind==='device'`-ként érkezik, tehát szó szerint másolva átengedné azt is -- holott egy ügynök-kulcs nem emberi hitelesítő adat, csak azért, hogy a `kind` mezője 'device'.
+
+Javítás: a POST `/api/local-llm/first-draft-enabled` {enabled:true} ága most `kind === 'session'` VAGY (`kind === 'device'` ÉS a már létező `agentKeyToAgentId()` segédfüggvény (src/web/auth-device-keys.ts) null-t ad a device névre, tehát NEM `agent:` prefixű) esetén engedi át -- a meglévő konvenciót használva, nem egy új startsWith-et. A `enabled:false` irány változatlanul bárkinek nyitva marad (fail-safe irány). A default audit-note (ha a hívó nem ad saját note-ot) most tartalmazza a hívó auth.kind-ját (és device esetén a nevét), nem csak az időbélyeget (WhiteHat2 5. pontja).
+
+**Teszt-mátrix (WhiteHat2 saját megadása szerint, mind lefedve):** közös token -> 403; `agent:backend` device-kulcs -> 403; session -> 200; emberi (nem agent-named) device-kulcs -> 200; token + enabled:false -> 200. `src/__tests__/local-llm-first-draft-switch.test.ts`: 20/20 PASS. `tsc --noEmit` tiszta.
+
+A level-2 (`/api/approvals`) út továbbra NEM került be -- az előző bejegyzés indoka (657b32f2/14957, forgeable `PATCH /api/approvals/:id`) változatlanul áll, WhiteHat2 megjegyzése sem kérte ezt.
+
+**Ki döntött:** WhiteHat2 adta a pontos javítási mintát a kártyán (komment 16810), a kódolást fullstack végezte el szó szerint a megadott feltétel és teszt-mátrix szerint, REVIEW előtt.

@@ -8,6 +8,7 @@ import { STORE_DIR, MAIN_AGENT_ID } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import { decideModelTrust, relabelCatalogueTrust } from '../../local-llm-model-trust.js'
 import { readBenchState, benchInfoFor } from '../../local-llm-bench-state.js'
 import {
@@ -2015,17 +2016,27 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'missing_field', message: 'Adj meg egy enabled mezőt (true/false).' }, 400)
       return true
     }
+    // WhiteHat2 (comment 16810, point 5): the note is the only on-disk audit trail for who flipped
+    // the switch, so a default note must name the caller's auth kind, not just the timestamp.
+    const callerLabel =
+      ctx.auth?.kind === 'session'
+        ? `session:${ctx.auth.user ?? 'unknown'}`
+        : ctx.auth?.kind === 'device'
+          ? `device:${ctx.auth.device ?? 'unknown'}`
+          : ctx.auth?.kind ?? 'none'
     const note =
       typeof parsed.note === 'string' && parsed.note.trim()
         ? parsed.note.trim().slice(0, 500)
-        : `${new Date().toISOString()}: dashboard toggle -> ${parsed.enabled ? 'enabled' : 'disabled'}`
+        : `${new Date().toISOString()}: dashboard toggle -> ${parsed.enabled ? 'enabled' : 'disabled'} (${callerLabel})`
 
     // B2 (card d57d8a01, QA FAIL 16742 secondary finding, MikroB decision 16743 -- BLOCKING per
     // Peti's own card text: re-enabling is "Peti jóváhagyása alapján", not any token-holder's).
     // Turning the switch OFF stays open to any authenticated caller -- that is the fail-safe
     // direction (forces ONLINE) and restricting it too would make an emergency kill harder to
     // pull. Turning it back ON reopens the GPU-overload risk the switch exists for, so it is
-    // restricted to an owner browser session -- hard, with NO approval-opening fallback.
+    // restricted to a human credential -- an owner browser session, or a device key that is NOT
+    // one of the `agent:<id>` keys issued to fleet agents (card 2bfa4c67/9655494c) -- with NO
+    // approval-opening fallback.
     //
     // MikroB's own decision text said "tulajdonosi session VAGY level-2 jóváhagyás". The level-2
     // (POST /api/approvals + PATCH /api/approvals/:id) half is deliberately NOT offered here:
@@ -2035,12 +2046,17 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     // guard, which the shared bearer token defeats trivially by naming a different resolved_by on
     // the same token. Wiring this switch to that channel would not add a second control, it would
     // let the shared token approve its own re-enable through a different door. Until a real
-    // non-forgeable approval channel ships (card 3fb0ef97), this stays session-only, same as
-    // POST /api/fleet/import?apply=true already does for the identical reason.
-    if (parsed.enabled === true && ctx.auth?.kind !== 'session') {
-      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'first-draft-enabled: re-enable rejected for non-owner-session credential')
+    // non-forgeable approval channel ships (card 3fb0ef97), this stays human-credential-only, the
+    // same `kind === 'session' || kind === 'device'` posture as POST /api/fleet/import?apply=true
+    // (fleet.ts:119) -- EXCEPT fleet.ts:119 itself does not yet exclude an `agent:<id>` device key
+    // (WhiteHat2, comment 16810, measured against b8c5d0fe): a key issued to a fleet agent is not
+    // a human credential just because its `kind` is 'device', so it is excluded here explicitly via
+    // the existing agentKeyToAgentId() convention check rather than copying that gap forward.
+    const isHumanDevice = ctx.auth?.kind === 'device' && agentKeyToAgentId(ctx.auth.device) === null
+    if (parsed.enabled === true && ctx.auth?.kind !== 'session' && !isHumanDevice) {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none', device: ctx.auth?.kind === 'device' ? ctx.auth.device : undefined }, 'first-draft-enabled: re-enable rejected for non-human credential')
       json(res, {
-        error: 'Re-enabling the local-first-draft switch requires an owner browser session, not the shared agent token.',
+        error: 'A helyi LLM visszakapcsolása csak a tulajdonos munkamenetéből vagy saját eszközkulcsával lehetséges, a megosztott flotta-tokennel nem.',
       }, 403)
       return true
     }

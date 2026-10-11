@@ -146,13 +146,16 @@ describe('POST /api/local-llm/first-draft-enabled', () => {
 })
 
 // Card d57d8a01, QA FAIL 16742 secondary finding + MikroB decision 16743 (B2, BLOCKING per Peti's
-// own card text): re-enabling must not be reachable with the shared fleet bearer token.
-describe('POST /api/local-llm/first-draft-enabled -- re-enabling is owner-session-only (B2)', () => {
+// own card text): re-enabling must not be reachable with the shared fleet bearer token, or with a
+// device key issued to a fleet agent (`agent:<id>`, card 2bfa4c67/9655494c) -- only a human
+// credential (owner session, or a device key that is NOT agent-named) may re-enable (WhiteHat2,
+// comment 16810, the fleet.ts:119 pattern corrected for the agent-device-key gap it itself has).
+describe('POST /api/local-llm/first-draft-enabled -- re-enabling is human-credential-only (B2)', () => {
   it.each([
     ['the shared agent bearer (kind: token)', { kind: 'token' } as RouteContext['auth']],
     ['no auth principal at all', undefined],
     ['a federation peer credential', { kind: 'federation', peer: 'some-peer' } as RouteContext['auth']],
-    ['a device key', { kind: 'device', device: 'phone', deviceId: 1 } as RouteContext['auth']],
+    ['an agent-issued device key', { kind: 'device', device: 'agent:backend', deviceId: 1 } as RouteContext['auth']],
   ])('{enabled:true} is refused (403) with %s, and the file is NOT written', async (_label, auth) => {
     const r = await post({ enabled: true }, auth)
     expect(r.status).toBe(403)
@@ -166,9 +169,15 @@ describe('POST /api/local-llm/first-draft-enabled -- re-enabling is owner-sessio
     expect(existsSync(FLAG_FILE)).toBe(true)
   })
 
+  it('{enabled:true} succeeds with a human (non agent-named) device key', async () => {
+    const r = await post({ enabled: true }, { kind: 'device', device: 'phone', deviceId: 1 })
+    expect(r.status).toBe(200)
+    expect(existsSync(FLAG_FILE)).toBe(true)
+  })
+
   it.each([
     ['the shared agent bearer (kind: token)', { kind: 'token' } as RouteContext['auth']],
-    ['a device key', { kind: 'device', device: 'phone', deviceId: 1 } as RouteContext['auth']],
+    ['an agent-issued device key', { kind: 'device', device: 'agent:backend', deviceId: 1 } as RouteContext['auth']],
     ['no auth principal at all', undefined],
   ])('{enabled:false} (the fail-safe direction) still succeeds with %s -- disabling stays open to anyone', async (_label, auth) => {
     const r = await post({ enabled: false }, auth)
@@ -180,5 +189,10 @@ describe('POST /api/local-llm/first-draft-enabled -- re-enabling is owner-sessio
     await post({ enabled: true }, { kind: 'token' } as RouteContext['auth'])
     expect(spawnSpy).not.toHaveBeenCalled()
     expect(execFileSpy).not.toHaveBeenCalled()
+  })
+
+  it('the default audit note names the caller when enabling', async () => {
+    const r = await post({ enabled: true }, { kind: 'session', user: 'peti' })
+    expect(r.body.note).toContain('session:peti')
   })
 })
