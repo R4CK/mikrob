@@ -2468,16 +2468,21 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // credential is absent or expired, which would silently put the agent
     // back on the shared identity -- exactly what own_team excludes.
     const isOwnTeam = isClaude && authMode === 'own_team'
+    // Only Claude-OAuth agents need the fleet token at ALL (used below, for the shared-home
+    // fallback export, the isolation gate, and the BYO-provider launch env): BYO/custom-endpoint
+    // agents (Ollama, DeepSeek, OpenRouter, generic custom) authenticate via their own
+    // ANTHROPIC_API_KEY/AUTH_TOKEN, and own_team agents authenticate via their own /login
+    // credential -- neither may receive the fleet's CLAUDE_CODE_OAUTH_TOKEN (BYOCUSTFOAUTH805:
+    // upstream's own_team/BYO-401 test for this shared-home branch expects this name, not the
+    // narrower !isOwnTeam this branch used before -- !isOwnTeam alone would still export the
+    // fleet token to a BYO agent that is not own_team).
+    const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam
     if (ownTokenFile) {
       // oauthTokenFile: the agent's own setup-token file, INSTEAD of the fleet file.
       oauthTokenEnv = ownOauthTokenExport(ownTokenFile)
-    } else if (!claudeConfigDir && hasFleetOauthToken() && !isOwnTeam) {
+    } else if (!claudeConfigDir && hasFleetOauthToken() && needsFleetOauth) {
       oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
     }
-    // Only Claude-OAuth agents need the fleet token at ALL (used below, for the isolation
-    // gate and the BYO-provider launch env): BYO/custom-endpoint agents (Ollama, DeepSeek,
-    // OpenRouter, generic custom) authenticate via their own ANTHROPIC_API_KEY/AUTH_TOKEN.
-    const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam
     // Isolation must also cover CHANNEL-LESS Claude-OAuth agents, not just
     // channel ones. A shared-root agent authenticates from the ROTATING shared
     // credential (macOS Keychain entry / .credentials.json), which Claude Code
