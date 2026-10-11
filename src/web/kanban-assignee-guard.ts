@@ -25,11 +25,19 @@ export const FORBIDDEN_ASSIGNEE_MESSAGE =
 export const INVALID_ASSIGNEE_TYPE_MESSAGE =
   'assignee csak szoveg (string) vagy ures (null/undefined) lehet, nem tomb/objektum/szam.'
 
-// WhiteHat F3 (NO-GO komment 15784/10562, kartya e25a549a): zero-width/formatting karakterek es
-// Cirill/Gorog hasonmasok atmentek a sima .trim().toLowerCase() osszevetesen. Nem csak a 6 betu
-// ("mikrob") hasonmasait listazzuk, hanem egy szokasos, hatarolt Cirill/Gorog->Latin tablat -- igy
-// a jovoben barmelyik iranyban hasonlo betucsere is elkapva marad, nem csak a ma mert eset.
-const INVISIBLE_RE = /[​‌‍⁠﻿­]/g
+// WhiteHat F3 (NO-GO komment 15784/10562) + RedHat NO-GO delta B2 (komment 15997, kartya
+// e25a549a): a korabbi, hatarolt INVISIBLE_RE (6 kodpont) + Cirill/Gorog-only tablazat 21 tovabbi
+// format/lathatatlan/hasonmas alakot (pl. "@mikrob", "mikrob.", LRM/RLM/RLO/FSI+PDI/CGJ/Mongolian
+// VS/ALM/invisible-times/VS16/TAG/Hangul filler/braille blank/NUL, dotless i, kiskapitalis,
+// gorog iota+kappa, armeny o, kombinalo pont, torok nagy I) hagyott at (merve: a guard fuggveny
+// kozvetlen hivasa a Gate-SHA fajan, mind a 21 PASS volt). Javitas RedHat sajat javaslata szerint:
+// az osszevetes alakja "csak betu/szam" -- NFKC, hasonmas-fold, majd MINDEN nem betu/szam karakter
+// (formazo \p{Cf}, jel \p{M}, elvalaszto \p{Z}, pontozas/szimbolum) eltavolitasa, kisbetus, es
+// azzal egyenlo-e "mikrob". Ez a @/. formakat es az osszes formazo/lathatatlan karaktert EGYSZERRE
+// viszi, kategoria szerint, nem kodpontonkent felsorolva -- jovobeli hasonlo karakter is elkapva
+// marad. A CONFUSABLES tablazat csak azokra a hasonmasokra kell, amik MAGUK betu-kategoriaba
+// tartoznak (a kategoria-alapu szures ezeket nem tavolitja el onmagaban), plusz a Hangul filler
+// (U+3164), ami Unicode szerint Lo (betu) kategoriaju, noha vizualisan ures.
 const CONFUSABLES: Record<string, string> = {
   'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c',
   'у': 'y', 'х': 'x', 'і': 'i', 'ј': 'j', 'ѕ': 's',
@@ -38,6 +46,14 @@ const CONFUSABLES: Record<string, string> = {
   'У': 'Y', 'Х': 'X', 'І': 'I', 'Ј': 'J', 'Ѕ': 'S',
   'К': 'K', 'М': 'M',
   'ο': 'o', 'Ο': 'O', // Greek omicron
+  'ι': 'i', 'κ': 'k', // Greek iota, kappa (RedHat delta B2)
+  'ı': 'i', 'İ': 'I', // Turkish dotless/dotted i
+  'ᴍ': 'm', 'ɪ': 'i', 'ᴋ': 'k', 'ʀ': 'r', 'ᴏ': 'o', 'ʙ': 'b', // small-caps lookalikes
+  'օ': 'o', // Armenian o
+  // Hangul filler, Lo category, visually blank, not caught by the letter/digit keep-filter below.
+  // NFKC runs BEFORE this fold and rewrites U+3164 to U+1160 (Hangul Jungseong Filler) -- the key
+  // has to be the POST-normalize codepoint, not the one a caller would type.
+  'ᅠ': '',
 }
 
 function foldConfusables(s: string): string {
@@ -46,15 +62,24 @@ function foldConfusables(s: string): string {
   return out
 }
 
+// Keep only letters and digits (Unicode-aware) after confusable folding -- this single filter
+// drops every format/mark/separator/punctuation/symbol character category at once (\p{Cf}, \p{M},
+// \p{Z}, and everything else outside \p{L}/\p{N}), including combining marks that NFKC leaves
+// attached (e.g. Turkish İ decomposes to I + combining-dot-above, the mark falls here).
+function lettersAndDigitsOnly(s: string): string {
+  return s.replace(/[^\p{L}\p{N}]/gu, '')
+}
+
 /**
- * True when `value` names MikroB -- any case/whitespace variant, full-width form (NFKC-folded),
- * zero-width/soft-hyphen-padded, or Cirill/Gorog look-alike letters (WhiteHat F3). A non-string
- * value is never forbidden here -- see isInvalidAssigneeShape for that check.
+ * True when `value` names MikroB -- any case/whitespace/punctuation variant, full-width form
+ * (NFKC-folded), any formatting/invisible/combining character, or a look-alike letter (Cirill,
+ * Gorog, Armenian, small-caps, Turkish dotless-i, Hangul filler -- WhiteHat F3 + RedHat delta B2).
+ * A non-string value is never forbidden here -- see isInvalidAssigneeShape for that check.
  */
 export function isForbiddenAssignee(value: unknown): boolean {
   if (typeof value !== 'string') return false
-  const folded = foldConfusables(value.normalize('NFKC').replace(INVISIBLE_RE, ''))
-  return folded.trim().toLowerCase() === FORBIDDEN_ASSIGNEE
+  const folded = lettersAndDigitsOnly(foldConfusables(value.normalize('NFKC')))
+  return folded.toLowerCase() === FORBIDDEN_ASSIGNEE
 }
 
 /**

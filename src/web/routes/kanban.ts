@@ -249,17 +249,30 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     // `actor` field itself is real and already used elsewhere in this file's API
     // handlers; a correctly-scoped mention of it belongs in its own card, not folded
     // into a closing-status sentence that does not apply to this fork's model.
-    `Ha elakadtál / ${escalateTo} döntésére/lépésére vársz (a fenti "waiting"-be tétel MÁS eset -- az a KÉSZ munkára szól): HÁROM lépés kell EGYÜTT, a fenti 1-2 helyett:`,
+    `Ha elakadtál / ${escalateTo} döntésére/lépésére vársz (a fenti "waiting"-be tétel MÁS eset -- az a KÉSZ munkára szól): ${isMainAgent ? 'HÁROM' : 'KÉT'} lépés kell EGYÜTT, a fenti 1-2 helyett:`,
     `  a) Írj egy kommentet ami KÖZVETLENÜL ${escalateTo}-hez szól, egyértelműen megfogalmazva mit kell eldöntenie/megtennie (NE a saját belső elemzésedet írd oda, NE "REVIEW" előtaggal -- ez nem kész munka) -- ugyanaz a comments hívás mint fent, "content" mezőben.`,
-    `  b) Told át a kártyát ${escalateTo}-re, hogy egyértelmű legyen a felelősség (a te neved NE maradjon rajta, ha nem te vagy a blokkoló):`,
-    `     ${auth}`,
-    `     | curl -s -H @- -X PUT ${cardUrl} \\`,
-    `       -H 'Content-Type: application/json' \\`,
-    `       -d '{"assignee":"${escalateTo}"}'`,
-    `  c) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással).`,
+    // Card e25a549a / RedHat NO-GO (komment 15997, B1): escalateTo itt MAIN_AGENT_ID, és a
+    // kanban-assignee-guard STRUKTURÁLISAN tiltja az assignee=MAIN_AGENT_ID-t (Peti 10943: MikroB
+    // kiosztó, nem tulajdonos) -- a korábbi "told át ${escalateTo}-re" lépés mindig 400-at adna.
+    // A kártya marad a végrehajtőn: a fenti a) komment már KÖZVETLENÜL escalateTo-hoz szól, ez maga
+    // a blokkolt-átadás jele (MikroB saját waiting-sweepje, CLAUDE.md 4a szabály, ezt olvassa ki),
+    // nem az assignee-mező. A main-agent ág (escalateTo=OWNER_NAME) nem forbidden érték, ott a régi
+    // reassign-lépés érintetlen marad.
+    ...(isMainAgent
+      ? [
+          `  b) Told át a kártyát ${escalateTo}-re, hogy egyértelmű legyen a felelősség (a te neved NE maradjon rajta, ha nem te vagy a blokkoló):`,
+          `     ${auth}`,
+          `     | curl -s -H @- -X PUT ${cardUrl} \\`,
+          `       -H 'Content-Type: application/json' \\`,
+          `       -d '{"assignee":"${escalateTo}"}'`,
+          `  c) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással).`,
+        ]
+      : [
+          `  b) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással) -- a kártya a TE NEVEDEN marad, NE próbáld ${escalateTo}-re áttolni (az assignee mező strukturálisan tiltja, 400-at ad).`,
+        ]),
     isMainAgent
       ? `Ez azért kritikus, mert ${OWNER_NAME} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű, homályos kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`
-      : `FONTOS: ${OWNER_NAME}-hez (az operátorhoz) EGYENESEN NE told át a kártyát, még ha a blokk végül tőle igényel is döntést -- ${MAIN_AGENT_ID} a delegálód, ő triázsol és ő dönti el, hogy tovább kell-e ${OWNER_NAME}-hez eszkalálnia. Ez azért kritikus, mert ${MAIN_AGENT_ID} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`,
+      : `FONTOS: ${OWNER_NAME}-hez (az operátorhoz) EGYENESEN NE told át a kártyát, még ha a blokk végül tőle igényel is döntést -- ${MAIN_AGENT_ID} a delegálód, ő triázsol és ő dönti el, hogy tovább kell-e ${OWNER_NAME}-hez eszkalálnia. ${MAIN_AGENT_ID} a "waiting" + a KÖZVETLENÜL hozzá szóló komment alapján látja a blokkot a saját sweepjében -- nem kell (és strukturálisan nem is lehet) átadni neki a kártyát.`,
     'A kártyát SOHA nem teszed magad done-ba -- a lezárás mindig MikroB vagy a kijelölt gate lépése, a te dolgod a "waiting" + REVIEW-komment. Az eredmény-kommentet (1) ne hagyd ki: az a kártyán a látható eredmény.',
   ].join('\n')
 }
