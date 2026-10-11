@@ -33,13 +33,24 @@
 #                                         # downward report into a refusal; --allow-stacked names
 #                                         # the foreign cards you are taking on purpose.
 #   marveen-land.sh --card <id> --agent <agent> [--dry-run] [--allow-ungated]
+#                   [--allow-ungated-reason <text>]
 #                                         # land that card's OWN card/<id> branch (card cd3e577b).
-#                                         # REQUIRES a passing gate verdict on the sha being landed
-#                                         # (refuse mode, card 9081d02d's helper, MikroB decision
-#                                         # comment 16277 on cd3e577b) -- --allow-ungated tolerates
-#                                         # a MISSING verdict only, never a FAILING one.
-#   marveen-land.sh --all [--dry-run]     # land every agent/*/work branch with unmerged work,
-#                                         # sequentially (never concurrent -- shared object store)
+#                                         # REQUIRES a passing QA verdict AND an AGREE from every
+#                                         # gate the card's own "Gate:" line/labels designate, on
+#                                         # the sha being landed (refuse mode, card 9081d02d's
+#                                         # helper + card-designated-gates-check.sh, MikroB decision
+#                                         # comments 16277 and 16324 on cd3e577b) -- --allow-ungated
+#                                         # tolerates a MISSING/non-AGREE verdict only, never a
+#                                         # FAILING one, and leaves an "UNGATED LANDING" comment on
+#                                         # the card (who/when/why); --allow-ungated-reason supplies
+#                                         # the why in the open instead of a generic placeholder.
+#   marveen-land.sh --all [--dry-run]     # REPORT ONLY (card cd3e577b, MikroB decision 16324): lists
+#                                         # every agent/*/work and card/* branch that is not yet an
+#                                         # ancestor of origin/develop. Lands NOTHING any more -- the
+#                                         # owning agent lands its own agent/<agent>/work branch with
+#                                         # a plain `marveen-land.sh <agent>` call, and a card/<id>
+#                                         # branch with `--card <id> --agent <owner>`, so nothing
+#                                         # reaches develop without the gate its own branch requires.
 #   marveen-land.sh --selftest
 #
 # Env overrides (tests only):
@@ -195,6 +206,11 @@ rebuild_live_install() {
 # its gate ran. Same shape as downward_check above: shared code, different default.
 # shellcheck source=./landing-gate-verdict-check.sh
 . "$(dirname "$0")/landing-gate-verdict-check.sh"
+# card_designated_gates_agree (card cd3e577b, MikroB decision 16324): QA-mandatory alone is not
+# enough for --card mode -- see that file's header for RedHat's measured finding (B1, comment
+# 16322) and why it is a separate check rather than a change to gate_verdict_check itself.
+# shellcheck source=./card-designated-gates-check.sh
+. "$(dirname "$0")/card-designated-gates-check.sh"
 # find_conflict_markers (card 4b4c89eb): shared with cleancore-land.sh, same reason as the two
 # libraries above -- one copy of the check, not two that can drift.
 # shellcheck source=./conflict-marker-check.sh
@@ -212,6 +228,45 @@ if [ "${1:-}" = "--selftest" ]; then
   downward_selftest_cases
   # Conflict-marker check (card 4b4c89eb) -- same sharing reason.
   conflict_marker_selftest_cases
+
+  # card cd3e577b, RedHat NO-GO 16276 B2b + MikroB decision 16324 (B2, "legyen rögzítve tesztben"):
+  # the FIXED cleanup() wraps the fd-close in a brace group, `{ exec {FD}>&-; } 2>/dev/null`, so the
+  # `2>/dev/null` redirection is scoped to that one close and the script's own stderr survives
+  # afterwards. The BUGGY form is a bare `exec {FD}>&- 2>/dev/null` (no command) -- bash applies a
+  # bare exec's redirections PERMANENTLY to the current shell, so stderr stays /dev/null forever
+  # after the first call. Tested here directly, isolated from git/network/the --all sweep (which
+  # R4 now removes land_one from entirely, making the bug unreachable THERE) -- this is the
+  # mechanism itself, run in a subshell so neither case touches this process's own stderr.
+  n=$((n + 1))
+  fixed_survives="$(
+    {
+      cleanup_fixed() { [ -n "${FD:-}" ] && { exec {FD}>&-; } 2>/dev/null; }
+      exec {FD}>/dev/null
+      cleanup_fixed
+      echo stderr-alive >&2
+    } 2>&1 1>/dev/null
+  )"
+  if [ "$fixed_survives" = "stderr-alive" ]; then
+    echo "  ok   the brace-grouped fd-close leaves the script's own stderr untouched afterwards"
+  else
+    echo "  FAIL expected stderr to survive the fixed cleanup -> got: [$fixed_survives]"; fail=1
+  fi
+
+  n=$((n + 1))
+  buggy_survives="$(
+    {
+      cleanup_buggy() { [ -n "${FD:-}" ] && exec {FD}>&- 2>/dev/null; }
+      exec {FD}>/dev/null
+      cleanup_buggy
+      echo stderr-alive >&2
+    } 2>&1 1>/dev/null
+  )"
+  if [ -z "$buggy_survives" ]; then
+    echo "  ok   MUTATION CAUGHT: reverting to the bare exec silences this process's own stderr (B2b)"
+  else
+    echo "  FAIL the bare-exec mutation should have silenced stderr too, but got: [$buggy_survives]"; fail=1
+  fi
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -247,6 +302,12 @@ CARD_BRANCH_MODE=0
 # check runs in refuse mode (see land_one below), never report -- set only by the top-level --card
 # invocation's own --allow-ungated flag, mirroring cleancore-land.sh's ALLOW_UNGATED exactly.
 CARD_ALLOW_UNGATED=0
+# card cd3e577b, RedHat NO-GO 16322 non-blocking R1 + MikroB decision 16324 ("--allow-ungated
+# hagyjon kommentet a kartyan: ki, mikor, miert"): an ungated --card landing used to leave no trace
+# on the card at all (measured: zero "ungated" comments on it), only a line in the script's own
+# stdout nobody reads later. --allow-ungated-reason lets the caller say WHY in the open; _note_
+# ungated_landing (defined after kanban-comment-lib.sh is sourced below) posts who/when/why.
+CARD_ALLOW_UNGATED_REASON=""
 
 # ONE LANDING AT A TIME, MACHINE-WIDE (card 24d1543f). Measured 2026-09-18 14:30-15:40: two
 # `--all` sweeps plus 3 per-agent landings plus 2 CleanCore suites plus gate vitests all in flight
@@ -277,6 +338,19 @@ KANBAN_COMMENT_AGENT=""
 export KANBAN_COMMENT_AGENT
 # shellcheck source=./kanban-comment-lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/kanban-comment-lib.sh"
+
+# card cd3e577b, MikroB decision 16324: every time --allow-ungated actually tolerates a missing/
+# non-AGREE verdict, say so ON THE CARD -- who (the landing agent), when (the comment's own
+# timestamp), why (the specific check's reason plus the caller's own --allow-ungated-reason, if
+# given). Best-effort like every other kanban_comment* call; never fails the landing itself.
+_note_ungated_landing() {
+  local agent="$1" card="$2" why="$3"
+  local reason_line="(nincs kulon indok megadva a hivashoz)"
+  [ -n "$CARD_ALLOW_UNGATED_REASON" ] && reason_line="$CARD_ALLOW_UNGATED_REASON"
+  kanban_comment_on "$card" "UNGATED LANDING (--allow-ungated, $agent)
+
+Ok: $why. Indok a hivastol: $reason_line" "$agent"
+}
 
 # Sets LAND_LOCK_FD (global, deliberately not `local` -- same shape as fleet-test.sh's own
 # acquire_cpu_slot/CPU_FD) on success.
@@ -422,10 +496,32 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     elif [ "$gate_rc" -ne 0 ] && [ "$verdict_mode" = "refuse" ]; then
       if [ "$CARD_ALLOW_UNGATED" = "1" ]; then
         say "$agent: gate-check: no usable verdict, TOLERATED by --allow-ungated -- this landing is deliberately ungated"
+        _note_ungated_landing "$agent" "$LAND_CARD" "no usable QA verdict for $land_sha"
       else
         echo "$agent: REFUSED -- card $LAND_CARD has no passing gate verdict for $land_sha."
         echo "$agent: --card landings require one; override with --allow-ungated if this is deliberate."
         return 6
+      fi
+    fi
+
+    # card cd3e577b, MikroB decision 16324: the QA-mandatory check above is not enough on its own --
+    # every gate the card's OWN "Gate:" line/labels designate must AGREE on this sha, not just QA.
+    if [ "$verdict_mode" = "refuse" ]; then
+      card_designated_gates_agree "$LAND_CARD" "$land_sha"
+      local designation_rc=$?
+      if [ "$designation_rc" -eq 2 ]; then
+        echo "$agent: REFUSED -- card $LAND_CARD's designated gates carry a FAILING verdict for $land_sha."
+        echo "$agent: Nothing merged, nothing pushed. Fix the finding and re-gate."
+        return 5
+      elif [ "$designation_rc" -ne 0 ]; then
+        if [ "$CARD_ALLOW_UNGATED" = "1" ]; then
+          say "$agent: designated-gate-check: no AGREE from the card's designated gates, TOLERATED by --allow-ungated"
+          _note_ungated_landing "$agent" "$LAND_CARD" "the card's designated gates do not all AGREE on $land_sha"
+        else
+          echo "$agent: REFUSED -- card $LAND_CARD's designated gates do not all AGREE on $land_sha."
+          echo "$agent: --card landings require this; override with --allow-ungated if this is deliberate."
+          return 6
+        fi
       fi
     fi
   fi
@@ -761,6 +857,8 @@ if [ "$TARGET" = "--card" ]; then
       --agent) shift; [ $# -gt 0 ] || die 2 "--agent needs a name"; CARD_AGENT="$1" ;;
       --agent=*) CARD_AGENT="${1#--agent=}" ;;
       --allow-ungated) CARD_ALLOW_UNGATED=1 ;;
+      --allow-ungated-reason) shift; [ $# -gt 0 ] || die 2 "--allow-ungated-reason needs text"; CARD_ALLOW_UNGATED_REASON="$1" ;;
+      --allow-ungated-reason=*) CARD_ALLOW_UNGATED_REASON="${1#--allow-ungated-reason=}" ;;
       *) die 2 "unknown option: $1" ;;
     esac
     shift
@@ -793,33 +891,49 @@ fi
 
 case "$TARGET" in
   --all)
-    overall=0
+    # card cd3e577b, MikroB decision 16324 (overriding RedHat's "leave it" suggestion in 16322):
+    # --all no longer LANDS agent/*/work branches -- it only lists/notifies, exactly like it
+    # already did for card/* branches. RedHat measured the old behaviour directly: a real --all run
+    # landed agent/alpha/work's commit with no gate check at all (alpha.txt reaching origin/develop
+    # ungated) -- precisely the "code reaches develop without its own required gate" class this
+    # whole card exists to close. An agent/<agent>/work branch now lands only via its OWNER calling
+    # `marveen-land.sh <agent>` directly (report mode there, unchanged -- see this file's header on
+    # gate_verdict_check for why marveen gates AFTER landing); a card/<id> branch only via its owner
+    # calling `--card <id> --agent <owner>` (refuse mode, gated as of this same card). This also
+    # changes what the repo-sync-deploy scheduled task's --all sweep actually does; MikroB owns
+    # updating that task's own prompt separately.
+    g fetch -q origin "$DEFAULT_BRANCH" || true
     while IFS= read -r b; do
       [ -n "$b" ] || continue
       agent="${b#agent/}"; agent="${agent%/work}"
-      land_with_retry "$agent" "$DRY" || overall=1
+      if g merge-base --is-ancestor "$b" "origin/$DEFAULT_BRANCH" 2>/dev/null; then
+        continue
+      fi
+      say "marveen-land.sh --all: $b has unlanded commit(s), not landed automatically (land with: marveen-land.sh $agent)"
     done < <(g for-each-ref --format='%(refname:short)' 'refs/heads/agent/*/work')
-    # card cd3e577b (F1), plan-grilling change (3): the sweep must also know about card/<id>
-    # branches, and must NEVER land a gate-less one -- only a card that is waiting+REVIEW (i.e. has
-    # a human/agent-declared Gate-SHA already on it) is safe to land unattended, because landing a
-    # card branch still means pushing untested-by-review code to origin/develop. Resolving "is this
-    # card waiting+REVIEW" needs the kanban API, which this script otherwise never calls (see the
-    # --agent requirement above) -- so this sweep SKIPS card/* branches by design for now rather
-    # than growing an API dependency into the one script whose whole job is "trust nothing but git
-    # and fleet-test.sh". Landing a card/<id> branch stays an explicit, one-at-a-time
-    # `marveen-land.sh --card <id> --agent <agent>` call (by the owning agent, after REVIEW+waiting)
-    # until a follow-up card wires a real waiting+REVIEW check into this sweep.
-    # RedHat NO-GO 16276, B2b/B2c: this used to be `echo ... >&2`. On a repo with any agent/*/work
-    # branches, the FIRST land_with_retry call above's cleanup already reassigned the script's own
-    # stderr to /dev/null for the rest of the process (the bug just fixed above) -- so on the real
-    # 19-branch board this notice never reached anyone, even though the code producing it was
-    # correct. `say` (stdout) both survives that bug's blast radius and matches every other
-    # landing-progress line in this script.
+    # card cd3e577b (F1), plan-grilling change (3): must NEVER land a card/<id> branch unattended --
+    # only a card that is waiting+REVIEW (i.e. has a human/agent-declared Gate-SHA already on it) is
+    # safe to land, and resolving "is this card waiting+REVIEW" needs the kanban API, which this
+    # script otherwise never calls (see the --agent requirement above) -- so this sweep SKIPS card/*
+    # branches by design, same as agent/*/work above. Landing one stays an explicit, one-at-a-time
+    # `marveen-land.sh --card <id> --agent <agent>` call (by the owning agent, after REVIEW+waiting).
+    # RedHat NO-GO 16276, B2b/B2c: this used to be `echo ... >&2`, and on a repo with any
+    # agent/*/work branches the first cleanup reassigned the script's own stderr to /dev/null for
+    # the rest of the process (fixed above) -- so this notice never reached anyone even though the
+    # code producing it was correct. `say` (stdout) survives that bug's blast radius.
+    # RedHat NO-GO 16322, non-blocking R2 + MikroB decision 16324 ("a landolt card/* agakat az
+    # --all ne sorolja"): filter out branches already an ancestor of origin/develop, same as the
+    # agent/*/work loop above -- card/* branches are never deleted after landing (requirement 5), so
+    # an unfiltered list only grows and a human skimming it for "what still needs a --card landing"
+    # has to re-check each one by hand.
     while IFS= read -r b; do
       [ -n "$b" ] || continue
+      if g merge-base --is-ancestor "$b" "origin/$DEFAULT_BRANCH" 2>/dev/null; then
+        continue
+      fi
       say "marveen-land.sh --all: $b exists but card/* branches are not swept automatically (land with: marveen-land.sh --card ${b#card/} --agent <owner>)"
     done < <(g for-each-ref --format='%(refname:short)' 'refs/heads/card/*')
-    exit $overall
+    exit 0
     ;;
   '') die 2 "usage: marveen-land.sh <agent> [--dry-run] [--card <id>] [--allow-stacked <id>[,<id>...]] | marveen-land.sh --card <id> --agent <agent> [--dry-run] | marveen-land.sh --all [--dry-run]" ;;
   *)

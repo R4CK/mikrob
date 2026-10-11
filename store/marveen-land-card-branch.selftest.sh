@@ -59,13 +59,31 @@ TOKEN_TMP="$WORK/token"; echo tok > "$TOKEN_TMP"
 # what gate_verdict_check (card cd3e577b R1) reads to decide whether a --card landing may proceed.
 CAPTURE_DIR="$WORK/captured"; mkdir -p "$CAPTURE_DIR"
 GET_DIR="$WORK/get-fixtures"; mkdir -p "$GET_DIR"
+# card cd3e577b, MikroB decision 16324: card_designated_gates_agree reads the card's Gate: line
+# off the BULK /api/kanban listing (same shape mopsion-land.sh's _gate_designation_snapshot already
+# reads in production), not the per-card endpoint above. Defaults to "[]" -- a card absent from this
+# list designates nothing extra, so the pre-existing tests below (which never set one) are
+# unaffected; set_gate_line() below lets the new B1 test cases opt a card into a real designation.
+BULK_FILE="$WORK/kanban-bulk.json"; echo '[]' > "$BULK_FILE"
+set_gate_line() { # $1 = card id, $2 = the text after "Gate:" in the card's description
+  python3 -c "
+import json
+cid, line = '$1', '''$2'''
+with open('$BULK_FILE') as f:
+    cards = json.load(f)
+cards = [c for c in cards if c.get('id') != cid]
+cards.append({'id': cid, 'description': 'Gate: ' + line, 'labels': []})
+with open('$BULK_FILE', 'w') as f:
+    json.dump(cards, f)
+"
+}
 stub_pid=""
 stub_up() {
   local portfile="$WORK/stub.port"
   rm -f "$portfile"
-  python3 - "$CAPTURE_DIR" "$portfile" "$GET_DIR" <<'PYSTUB' &
+  python3 - "$CAPTURE_DIR" "$portfile" "$GET_DIR" "$BULK_FILE" <<'PYSTUB' &
 import http.server, json, sys, re, os
-CAPTURE_DIR, PORTFILE, GET_DIR = sys.argv[1:4]
+CAPTURE_DIR, PORTFILE, GET_DIR, BULK_FILE = sys.argv[1:5]
 
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
@@ -81,13 +99,18 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(resp)))
         self.end_headers(); self.wfile.write(resp)
     def do_GET(self):
-        m = re.search(r'/api/kanban/([^/]+)/comments', self.path)
         resp = b"[]"
-        if m:
-            fp = os.path.join(GET_DIR, f"{m.group(1)}.json")
-            if os.path.isfile(fp):
-                with open(fp, "rb") as f:
+        if self.path.rstrip('/') == '/api/kanban':
+            if os.path.isfile(BULK_FILE):
+                with open(BULK_FILE, "rb") as f:
                     resp = f.read()
+        else:
+            m = re.search(r'/api/kanban/([^/]+)/comments', self.path)
+            if m:
+                fp = os.path.join(GET_DIR, f"{m.group(1)}.json")
+                if os.path.isfile(fp):
+                    with open(fp, "rb") as f:
+                        resp = f.read()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(resp)))
@@ -111,6 +134,12 @@ stub_down() { [ -n "$stub_pid" ] && kill "$stub_pid" 2>/dev/null; wait "$stub_pi
 
 stub_up
 trap stub_down EXIT
+
+# Register the pre-existing test cards with NO designation (empty Gate: clause) up front, so
+# card_designated_gates_agree's new check (card cd3e577b, MikroB decision 16324) finds them on the
+# board and reads "nothing extra to require" instead of "card not found" -- a fail-closed refusal
+# that would otherwise sink every test below that never cared about a designated-gate set at all.
+for c in aaa111 bbb222 ccc333 ddd444; do set_gate_line "$c" ""; done
 
 OUT_FILE="$WORK/out.txt"
 land_card() { # $1 = card id, $2 = agent, extra args passed through
@@ -338,6 +367,102 @@ if printf '%s' "$closure_verdict" | grep -q "^AGREE"; then
 else
   echo "  FAIL expected AGREE from gate-closure-check.py, got: $closure_verdict"; fail=1
 fi
+
+# card cd3e577b, MikroB decision 16324 (RedHat NO-GO 16322, finding B1): QA-mandatory alone must
+# not be enough -- a card designating "QA + RedHat" with a FRESH QA PASS but only an OLD RedHat
+# NO-GO (naming a sha that is not the one being landed) must still REFUSE.
+git -C "$MAIN" checkout -q -b card/eee555 develop
+echo "eee555 content" > "$MAIN/eee555.txt"
+git -C "$MAIN" add eee555.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card eee555: add eee555.txt"
+git -C "$MAIN" checkout -q develop
+SHA_EEE555="$(git -C "$MAIN" rev-parse card/eee555)"
+set_gate_line eee555 "QA + RedHat (trust boundary)"
+printf '[{"author":"qa","content":"QA PASS\\nGate-SHA: %s"},{"author":"cybered","content":"CYBERED NO-GO\\nGate-SHA: 0000000deadbeef"}]' \
+  "$SHA_EEE555" > "$GET_DIR/eee555.json"
+
+n=$((n + 1))
+land_card eee555 backend3
+if [ "$rc" != 0 ] && grep -q "card eee555's designated gates" "$OUT_FILE"; then
+  echo "  ok   a fresh QA PASS does not land a card whose designated RedHat gate only NO-GO'd an OLDER sha (B1)"
+else
+  echo "  FAIL expected a designated-gate refusal -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+if ! git -C "$MAIN" merge-base --is-ancestor card/eee555 origin/develop 2>/dev/null; then
+  echo "  ok   the B1-refused landing pushed nothing"
+else
+  echo "  FAIL a B1-refused landing should not have pushed anything"; fail=1
+fi
+
+# Now RedHat re-gates the ACTUAL sha with a GO: both designated gates agree, so the same card lands.
+printf '[{"author":"qa","content":"QA PASS\\nGate-SHA: %s"},{"author":"cybered","content":"CYBERED GO\\nGate-SHA: %s"}]' \
+  "$SHA_EEE555" "$SHA_EEE555" > "$GET_DIR/eee555.json"
+
+n=$((n + 1))
+land_card eee555 backend3
+if [ "$rc" = 0 ] && grep -q "LANDED card/eee555 -> origin/develop" "$OUT_FILE"; then
+  echo "  ok   a fresh QA PASS + a fresh RedHat GO on the SAME sha lands cleanly (B1 fixed)"
+else
+  echo "  FAIL expected eee555 to land once both designated gates agree -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+# card cd3e577b, MikroB decision 16324 (RedHat NO-GO 16322, finding B2): the --all sweep must list,
+# never land, agent/*/work AND card/* branches -- and must not keep re-listing an already-landed
+# card/* branch. Same repro shape as the RedHat/QA reports: 2 agent branches + 1 card branch.
+git -C "$MAIN" branch -q agent/zalpha/work develop
+git -C "$MAIN" worktree add -q "$WORK/zalpha-wt" agent/zalpha/work >/dev/null
+echo alpha > "$WORK/zalpha-wt/zalpha.txt"
+git -C "$WORK/zalpha-wt" add zalpha.txt
+git -C "$WORK/zalpha-wt" -c user.email=s@s -c user.name=s commit -qm "agent zalpha: add zalpha.txt"
+git -C "$MAIN" worktree remove --force "$WORK/zalpha-wt" >/dev/null
+
+git -C "$MAIN" checkout -q -b card/zzz999 develop
+echo "zzz999 content" > "$MAIN/zzz999.txt"
+git -C "$MAIN" add zzz999.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card zzz999: add zzz999.txt"
+git -C "$MAIN" checkout -q develop
+
+all_out="$(MARVEEN_MAIN="$MAIN" MARVEEN_LAND_DEVELOP_LOCK_FILE="$LOCK_DIR/.marveen-land-develop.lock" \
+  timeout 30 bash "$LAND" --all --dry-run 2>&1)"; all_rc=$?
+
+n=$((n + 1))
+if printf '%s' "$all_out" | grep -q "agent/zalpha/work has unlanded commit"; then
+  echo "  ok   --all lists an unlanded agent/*/work branch instead of landing it (B2/R4)"
+else
+  echo "  FAIL expected --all to list agent/zalpha/work -> rc=$all_rc: $all_out"; fail=1
+fi
+
+n=$((n + 1))
+if ! git -C "$MAIN" merge-base --is-ancestor agent/zalpha/work origin/develop 2>/dev/null; then
+  echo "  ok   --all did not land agent/zalpha/work (R4: the owner lands it themselves)"
+else
+  echo "  FAIL --all should not have landed agent/zalpha/work"; fail=1
+fi
+
+n=$((n + 1))
+if printf '%s' "$all_out" | grep -q "card/zzz999 exists but card/\* branches are not swept"; then
+  echo "  ok   --all lists the unlanded card/zzz999 branch (B2)"
+else
+  echo "  FAIL expected --all to list card/zzz999 -> rc=$all_rc: $all_out"; fail=1
+fi
+
+# The already-landed card/aaa111 (landed earlier in this file) must NOT keep showing up in --all's
+# card/* notice (MikroB 16324, "a landolt card/* agakat az --all ne sorolja").
+n=$((n + 1))
+if ! printf '%s' "$all_out" | grep -q "card/aaa111 exists but"; then
+  echo "  ok   --all does not re-list the already-landed card/aaa111 (MikroB 16324)"
+else
+  echo "  FAIL --all should not list an already-landed card/* branch -> $all_out"; fail=1
+fi
+
+# The brace-group mutation test (reverting the bare `exec {FD}>&- 2>/dev/null`, card cd3e577b B2)
+# does NOT belong here any more: R4 (MikroB decision 16324) made --all never call land_one/cleanup
+# at all, so the stderr-muting bug is structurally unreachable from --all now -- there is nothing
+# left for that mutation to silence in THIS fixture. The mechanism itself (a bare `exec` permanently
+# reassigning the whole script's stderr vs. the brace-group scoping it to one close) is tested
+# directly, isolated from git/network, in marveen-land.sh's own --selftest block.
 
 rm -rf "$WORK"
 
