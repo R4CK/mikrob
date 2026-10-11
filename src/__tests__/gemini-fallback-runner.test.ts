@@ -24,6 +24,9 @@ const fakeState: GeminiFallbackState = {
 let writtenState: GeminiFallbackState | null = null
 let telegramMessages: string[] = []
 let weeklyActive = false
+let weeklyNewDevStopActive = false
+/** null = no config file on disk (real.readFileSync throws ENOENT) -> exercises the default. */
+let engageConfigJson: string | null = null
 let apiKey = 'fake-api-key-that-is-long-enough'
 let keyValidResult: GeminiKeyValidation = { valid: true, modelCount: 50 }
 
@@ -37,7 +40,11 @@ vi.mock('node:fs', async (orig) => {
         return JSON.stringify(fakeState)
       }
       if (p.endsWith('weekly-hard-stop.json')) {
-        return JSON.stringify({ active: weeklyActive })
+        return JSON.stringify({ active: weeklyActive, newDevStopActive: weeklyNewDevStopActive })
+      }
+      if (p.endsWith('gemini-fallback-config.json')) {
+        if (engageConfigJson === null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        return engageConfigJson
       }
       return real.readFileSync(path)
     }),
@@ -75,6 +82,8 @@ beforeEach(() => {
   telegramMessages = []
   writtenState = null
   weeklyActive = false
+  weeklyNewDevStopActive = false
+  engageConfigJson = null
   keyValidResult = { valid: true, modelCount: 50 }
   apiKey = 'fake-api-key-that-is-long-enough'
   fakeState.route = 'claude'
@@ -187,5 +196,57 @@ describe('key validation caching', () => {
     vi.clearAllMocks()
     await runGeminiFallbackCheck()
     expect(validateGeminiKey).toHaveBeenCalledOnce()
+  })
+})
+
+// Card 3de7d530: claudeExhausted also engages at the 85% newDevStop threshold, not just the
+// 98% hard stop, gated by a configurable engageOn switch defaulting to "newDevStop".
+describe('newDevStop engagement (card 3de7d530)', () => {
+  it('engages on newDevStopActive alone (hard stop still false), default config', async () => {
+    weeklyActive = false
+    weeklyNewDevStopActive = true
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('gemini')
+  })
+
+  it('missing config file behaves like the default ("newDevStop") -- engages on newDevStopActive', async () => {
+    engageConfigJson = null
+    weeklyActive = false
+    weeklyNewDevStopActive = true
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('gemini')
+  })
+
+  it('engageOn: "hardStopOnly" does NOT engage on newDevStopActive alone', async () => {
+    engageConfigJson = JSON.stringify({ engageOn: 'hardStopOnly' })
+    weeklyActive = false
+    weeklyNewDevStopActive = true
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('claude')
+  })
+
+  it('engageOn: "hardStopOnly" still engages on the real hard stop (active)', async () => {
+    engageConfigJson = JSON.stringify({ engageOn: 'hardStopOnly' })
+    weeklyActive = true
+    weeklyNewDevStopActive = false
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('gemini')
+  })
+
+  it('an invalid engageOn value in the config falls back to the "newDevStop" default', async () => {
+    engageConfigJson = JSON.stringify({ engageOn: 'bogus' })
+    weeklyActive = false
+    weeklyNewDevStopActive = true
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('gemini')
+  })
+
+  it('reverts once both thresholds clear, same as the existing revert path', async () => {
+    fakeState.route = 'gemini'
+    fakeState.engagedAt = Date.now() - 20 * 60 * 1000
+    weeklyActive = false
+    weeklyNewDevStopActive = false
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('claude')
   })
 })
