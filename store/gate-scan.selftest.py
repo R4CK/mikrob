@@ -146,6 +146,11 @@ check('alias form: REDHAT GO', bool(PASS_RE.match('REDHAT GO')), True)
 check('alias form: WHITEHAT NO-GO', bool(FAIL_RE.match('WHITEHAT NO-GO')), True)
 check('alias form: REDHAT NO-GO', bool(FAIL_RE.match('REDHAT NO-GO')), True)
 check('alias CONTROL: WHITEHAT GO does not also match FAIL_RE', bool(FAIL_RE.match('WHITEHAT GO')), False)
+# CYBERSEC2/WhiteHat2 sibling-digit tolerance (card 21abfe0b), same shape as QA2 above.
+check('sibling form: CYBERSEC2 GO', bool(PASS_RE.match('CYBERSEC2 GO')), True)
+check('sibling form: WHITEHAT2 GO', bool(PASS_RE.match('WHITEHAT2 GO')), True)
+check('sibling form: CYBERSEC2 NO-GO', bool(FAIL_RE.match('CYBERSEC2 NO-GO')), True)
+check('sibling CONTROL: an unrelated CYBERSEC3 is not a recognised sibling', bool(PASS_RE.match('CYBERSEC3 GO')), False)
 # ---- sentence/clause anchoring of GATE_DECL_RX (card 82fa48b0) -----------------------------
 #
 # THE FOUNDING CASE, on its ORIGINAL text. This matters: the live 67a5ee01 no longer reproduces the

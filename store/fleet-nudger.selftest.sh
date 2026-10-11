@@ -32,6 +32,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 SCENARIO, PORT_FILE = sys.argv[1], sys.argv[2]
 
 # Every waiting card is already answered by every gate -> nobody has work.
+# (card 21abfe0b: cybersec2 joined GATE, so it needs its own answer here too, same as qa2's.)
 ALL_ANSWERED = {
     'cards': [
         {'id': 'c1', 'status': 'waiting', 'title': 'plain card', 'assignee': 'backend'},
@@ -43,6 +44,7 @@ ALL_ANSWERED = {
             {'author': 'qa', 'created_at': 200, 'content': 'QA PASS'},
             {'author': 'qa2', 'created_at': 201, 'content': 'QA2 PASS'},
             {'author': 'cybersec', 'created_at': 202, 'content': 'GO'},
+            {'author': 'cybersec2', 'created_at': 204, 'content': 'GO'},
             {'author': 'cybered', 'created_at': 203, 'content': 'GO'},
         ],
         # c2 is BLOKKOLT: dropped before any comment is fetched. If the title filter regressed, this
@@ -52,6 +54,8 @@ ALL_ANSWERED = {
 }
 
 # A REVIEW cybered has not answered -> exactly cybered has work.
+# (card 21abfe0b: cybersec2 must also answer here, or it would show as open too and break the
+# "exactly cybered" assertion -- same reason ALL_ANSWERED needed a cybersec2 line above.)
 ONE_OPEN = {
     'cards': [{'id': 'c1', 'status': 'waiting', 'title': 'plain card', 'assignee': 'backend'}],
     'comments': {
@@ -60,6 +64,7 @@ ONE_OPEN = {
             {'author': 'qa', 'created_at': 200, 'content': 'QA PASS'},
             {'author': 'qa2', 'created_at': 201, 'content': 'QA2 PASS'},
             {'author': 'cybersec', 'created_at': 202, 'content': 'GO'},
+            {'author': 'cybersec2', 'created_at': 204, 'content': 'GO'},
         ],
     },
 }
@@ -281,6 +286,17 @@ run_case no-review ""          # negative: parked card, nothing submitted
 run_case designated "qa qa2"    # designation: Gate: QA. excludes cybersec/cybered end-to-end
 # The gate that already answered (even with a one-line out-of-scope note) drops out; the one that
 # has not still gets woken. Card 8e4e5b58.
+#
+# NOTE (card 21abfe0b): fleet-nudger.sh hardcodes CHECK="$ROOT/store/gate-dispatch-check.sh" with
+# ROOT="/home/neon/marveen" literally (by design: it runs from cron against the live install, not
+# from a worktree) -- so THIS specific end-to-end case always exercises the LIVE $MAIN copy of
+# gate-dispatch-check.sh/gate_designation.py, never the branch's own. The widen_cybersec fold this
+# card adds there (so a "Gate: Cybersec" designation also arms cybersec2, exactly like QA/QA2) is
+# proven directly against the branch's own files by gate-dispatch-check.sh's OWN selftest and a
+# plain `python3 -c "from gate_designation import designated_gates; ..."` import -- both exercise
+# the worktree copy, unlike this case. This expectation stays pinned to today's $MAIN behaviour
+# (cybersec alone) until that landed-copy gap is itself closed; it will need updating once
+# gate_designation.py's cybersec2 fold is live at $MAIN.
 run_case out-of-scope "cybersec"
 
 # MISSING TIER DECISION -> LOUD (card 50d75b47). Rule 4 makes the gate set a per-card DECISION; a

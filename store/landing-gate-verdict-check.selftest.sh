@@ -121,6 +121,22 @@ t "WHITEHAT is still author-checked: a non-cybersec author writing it does not c
   <<<"$(j qa 'WHITEHAT GO
 Gate-SHA: abc1234')"
 
+# CYBERSEC2 / WhiteHat2 (card 21abfe0b): the cybersec/cybersec2 sibling relationship, same pattern
+# as QA/QA2 above -- cybersec2 is the trailing-sibling-digit author, author_role() folds it to the
+# CYBERSEC role (gate_author_role.py), so its GO/NO-GO is that role's verdict.
+t "a CYBERSEC2-authored GO satisfies the Cybersec role, same as cybersec itself" OK abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' cybersec2 'CYBERSEC GO
+Gate-SHA: abc1234')"
+t "a CYBERSEC2-authored NO-GO naming the sha refuses, same as cybersec's own NO-GO" FAILED abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' cybersec2 'CYBERSEC NO-GO
+Gate-SHA: abc1234
+the sibling re-checked and it is broken')"
+t "a non-gate author writing CYBERSEC GO is still UNVERIFIED-AUTHOR, cybersec2 included in the gate set or not" UNVERIFIED-AUTHOR abc1234 \
+  <<<"$(j backend 'CYBERSEC GO
+Gate-SHA: abc1234')"
+
 t "a card with no verdict at all -- the 08dcc153 shape" NONE abc1234 \
   <<<"$(j backend 'REVIEW: done
 Gate-SHA: abc1234')"

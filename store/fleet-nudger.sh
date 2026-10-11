@@ -33,7 +33,7 @@ printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
 # from THIS SAME snapshot for exactly this purpose; the ENG loop just never read it.
 ENG_ALWAYS="fron-ted fron-teddy"
 ENG_CONDITIONAL="backend fullstack"
-GATE="qa qa2 cybersec cybered"
+GATE="qa qa2 cybersec cybersec2 cybered"
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
@@ -92,7 +92,7 @@ out["_card_ids"]=[c.get("id") for c in cards if c.get("id")]
 # line has no designation decision AT ALL -- and absence is indistinguishable from a deliberate
 # 2-gate default, so a gate can be left out by omission instead of by MikroB choosing (rule 4).
 # Derived from THIS SAME snapshot, so it costs no extra request.
-gate_names={"qa","qa2","cybersec","cybered"}
+gate_names={"qa","qa2","cybersec","cybersec2","cybered"}
 no_desig=[]
 for cid in gate_cards:
     m=meta.get(cid) or {}
@@ -413,7 +413,7 @@ else
   state_set tierFp "$NO_DESIG"
   if [ -n "$NO_DESIG" ]; then
     n_desig="$(echo $NO_DESIG | wc -w)"
-    tier_msg="TIER-DONTES HIANYZIK $n_desig gate-jelolt kartyan: $NO_DESIG. Egyiken sincs sem gate-cimke (@qa/@qa2/@cybersec/@cybered), sem Gate: sor a LEIRASBAN -- tehat a 4. szabaly szerinti kockazat-alapu tier-dontes nem szuletett meg, csak elmaradt. Kerlek dontsd el kartyankent, es ird be a Gate: sort a LEIRASBA (kommentbe nem eleg, onnan a tool nem olvassa). Ez automatikus jelzes; ujra csak akkor szol, ha ez a kartya-halmaz valtozik."
+    tier_msg="TIER-DONTES HIANYZIK $n_desig gate-jelolt kartyan: $NO_DESIG. Egyiken sincs sem gate-cimke (@qa/@qa2/@cybersec/@cybersec2/@cybered), sem Gate: sor a LEIRASBAN -- tehat a 4. szabaly szerinti kockazat-alapu tier-dontes nem szuletett meg, csak elmaradt. Kerlek dontsd el kartyankent, es ird be a Gate: sort a LEIRASBA (kommentbe nem eleg, onnan a tool nem olvassa). Ez automatikus jelzes; ujra csak akkor szol, ha ez a kartya-halmaz valtozik."
     if [ "$DRY_RUN" = "1" ]; then
       echo "GATE-TIER-MISSING:$NO_DESIG"
     elif tmux has-session -t mikrob-channels 2>/dev/null; then

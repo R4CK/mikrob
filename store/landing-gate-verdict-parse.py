@@ -32,13 +32,17 @@ from gate_author_role import author_role, canonical_gate
 # the parser cannot see is a REFUSAL that vanishes, and this file's ordering ("a failing verdict for
 # THIS sha outranks a passing one") can only rank a refusal it recognises.
 # WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for CYBERSEC/CYBERED, accepted alongside
-# the canonical word.
-PASS = re.compile(r"^(QA2?\s+PASS|(?:CYBERSEC|WHITEHAT)\s+GO|(?:CYBERED|REDHAT)\s+GO)\b", re.I)
-FAIL = re.compile(r"^(QA2?\s+FAIL|(?:CYBERSEC|WHITEHAT)\s+NO-GO|(?:CYBERED|REDHAT)\s+NO-GO)\b", re.I)
+# the canonical word. The literal `2?` after each word is the SAME sibling-digit tolerance as
+# `QA2?` above (only "2" -- the one sibling that actually exists, same as QA/QA2, not an arbitrary
+# digit), now also on CYBERSEC/WHITEHAT (card 21abfe0b, the cybersec2/WhiteHat2 sibling): the
+# measured incident that forced `QA2?` applies identically if a sibling ever writes "CYBERSEC2 GO"
+# literally.
+PASS = re.compile(r"^(QA2?\s+PASS|(?:CYBERSEC|WHITEHAT)2?\s+GO|(?:CYBERED|REDHAT)2?\s+GO)\b", re.I)
+FAIL = re.compile(r"^(QA2?\s+FAIL|(?:CYBERSEC|WHITEHAT)2?\s+NO-GO|(?:CYBERED|REDHAT)2?\s+NO-GO)\b", re.I)
 QA = re.compile(r"^QA2?\s+PASS\b", re.I)
 # Which gate the verdict WORD claims to be. Same fold as the author side: the sibling digit is
 # not a separate gate. claimed_role() below folds a captured WHITEHAT/REDHAT to its canonical name.
-CLAIMS = re.compile(r"^(QA)2?\b|^(CYBERSEC|WHITEHAT)\b|^(CYBERED|REDHAT)\b", re.I)
+CLAIMS = re.compile(r"^(QA)2?\b|^(CYBERSEC|WHITEHAT)2?\b|^(CYBERED|REDHAT)2?\b", re.I)
 GATE_SHA_LINE = re.compile(r"^\s*Gate-SHA:\s*(.+)", re.I)
 HEX = re.compile(r"[0-9a-f]{7,40}", re.I)
 

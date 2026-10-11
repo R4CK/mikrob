@@ -8,7 +8,7 @@
 # changes; every skill keeps working unchanged.
 #
 # Usage: gate-role.sh <role> <field>
-#   role:  qa | qa2 | whitehat | redhat
+#   role:  qa | qa2 | whitehat | whitehat2 | redhat
 #   field: agent   -- agent id (API author/from/agent_id, assignee, tmux session)
 #          verdict -- the verdict keyword the gate's first comment line starts with
 #                     (append " GO"/" NO-GO" for the security gates, " PASS"/" FAIL" for QA)
@@ -19,11 +19,12 @@ set -euo pipefail
 
 role="${1:-}"; field="${2:-}"
 case "$role" in
-  qa)       agent=qa;       verdict=QA;       subagent=qa-engineer ;;
-  qa2)      agent=qa2;      verdict=QA;       subagent=qa-engineer ;;
-  whitehat) agent=cybersec; verdict=CYBERSEC; subagent=cybersecurity-redteam ;;
-  redhat)   agent=cybered;  verdict=CYBERED;  subagent=cybered ;;
-  *) echo "gate-role.sh: unknown role '$role' (qa|qa2|whitehat|redhat)" >&2; exit 2 ;;
+  qa)        agent=qa;        verdict=QA;       subagent=qa-engineer ;;
+  qa2)       agent=qa2;       verdict=QA;       subagent=qa-engineer ;;
+  whitehat)  agent=cybersec;  verdict=CYBERSEC; subagent=cybersecurity-redteam ;;
+  whitehat2) agent=cybersec2; verdict=CYBERSEC; subagent=cybersecurity-redteam ;;
+  redhat)    agent=cybered;   verdict=CYBERED;  subagent=cybered ;;
+  *) echo "gate-role.sh: unknown role '$role' (qa|qa2|whitehat|whitehat2|redhat)" >&2; exit 2 ;;
 esac
 case "$field" in
   agent)   printf '%s\n' "$agent" ;;
