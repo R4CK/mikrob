@@ -137,6 +137,21 @@ t "a non-gate author writing CYBERSEC GO is still UNVERIFIED-AUTHOR, cybersec2 i
   <<<"$(j backend 'CYBERSEC GO
 Gate-SHA: abc1234')"
 
+# F2, QA NO-GO comment 16214 (card 21abfe0b): cybered2/RedHat2 does NOT exist (unlike cybersec2),
+# so CYBERED/REDHAT must NOT get the same `2?` sibling-digit tolerance CYBERSEC/WHITEHAT got.
+# Before the fix, "CYBERED2 GO" both PASS-matched and claimed_role()=="CYBERED", and
+# author_role("cybered2") (an earlier, unrelated rule) also answered "CYBERED" -- so a forged
+# cybered2 comment slipped into `other_passes` looking like a real sibling verdict. Now the
+# comment matches no verdict regex at all, so on its own it reports NONE, same as any other
+# unrecognised text.
+t "a lone CYBERED2 GO is not recognised as any verdict -- cybered2 does not exist" NONE abc1234 \
+  <<<"$(j cybered2 'CYBERED2 GO
+Gate-SHA: abc1234')"
+t "a QA PASS plus a fake CYBERED2 GO is still OK (QA alone satisfies it), not a RedHat claim" OK abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' cybered2 'CYBERED2 GO
+Gate-SHA: abc1234')"
+
 t "a card with no verdict at all -- the 08dcc153 shape" NONE abc1234 \
   <<<"$(j backend 'REVIEW: done
 Gate-SHA: abc1234')"
