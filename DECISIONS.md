@@ -19767,6 +19767,54 @@ katalógus-frissítés külön kártya, ha Peti úgy dönt (nem nyitva ebben a k
 
 **Ki döntött:** backend (plan-grilling, MikroB válaszai alapján). Gate: QA + RedHat (WhiteHat2 javasolta a szeletelést, a biztonsági gate ezért RedHat).
 
+## 2026-10-11 -- e7f91eb9: GENERATED_COMMENT_AUTHORS kizárás a gate-closure-check.py és a kanban-gate-completeness-guard.ts Gate-SHA/REVIEW olvasásából
+
+**Forrás:** WhiteHat2 L1 az 1aeae282 gate-jéből. Ugyanaz a hibaosztály, mint az 1aeae282-ben
+(gate-dispatch-check.sh): a `post_draft_comment` a local-llm modell nyers, nem fencelt kimenetét
+írja a komment törzsébe, tehát egy modell-írta sor, ami csak ÚGY NÉZ KI, mint egy "REVIEW"-nyitás
+vagy egy "Gate-SHA: <sha>" deklaráció, gate-ténykként olvasódott be, holott senki nem jelentette be
+azt a commitot erre a körre.
+
+**Két fogyasztó, négy olvasási pont:**
+1. `gate-closure-check.py`: `declared_shas()` a LEGUTOLSÓ REVIEW-nyitó kommentet veszi, szerzőtől
+   függetlenül -- egy local-llm draft, ami ÚJABB (hamis) Gate-SHA-t hordoz, felülírta a valódi
+   deklarált shát, és a már AGREE-nek jelzett kártya UNRESOLVED-re fordult. `undeclared_post_review_
+   shas()` ugyanígy: a `review_idx` keresése és a review UTÁNI "árva sha" keresés sem szűrt szerzőre,
+   tehát egy valódi REVIEW UTÁN érkező local-llm komment stray Gate-SHA-ja STALE-re fordíthatott egy
+   egyébként egyező kártyát.
+2. `kanban-gate-completeness-guard.ts`: `latestReviewAt()` (a FALLBACK kör-határ, amikor a kártyán
+   SOHA senki nem használta a Gate-SHA konvenciót) csak a gate-ügynököket (`GATE_AGENT_NAMES`) szűrte
+   ki a "ki nyithat új kört" kérdésből, a generált szerzőket nem. A PRIMARY kör-határ, `currentRound
+   StartTs()` (Gate-SHA-sor alapján) pedig EGYÁLTALÁN nem szűrt szerzőre -- egy local-llm draft stray
+   Gate-SHA-ja ugyanúgy mozgathatta a kör-határt, mint egy valódi builder-átadás.
+
+**Javítás:** mindkét fájlban `GENERATED_COMMENT_AUTHORS = {"local-llm", "gate-pretriage"}` (mirror,
+nem import -- Python és TS nem oszthat modult; a kanonikus forrás `kanban-landed-guard.ts`-ben
+marad, a `kanban-gate-completeness-guard.ts` import-olja onnan, a `.py` a `gate-dispatch-check.sh`
+mintáját másolja). Négy olvasási pont zárva: `declared_shas()`, `undeclared_post_review_shas()`
+(review_idx keresés ÉS a review utáni candidate-lista), `latestReviewAt()`, `currentRoundStartTs()`.
+Case-insensitive mindenhol (szerzőnév kis-nagybetűs kezelése, a kártya INFO pontja).
+
+**Teszt:** `gate-closure-check.selftest.py` 4 új eset (133 -> 137, mind zöld): egy local-llm REVIEW
+a valódi deklarált shát nem írja felül; case-insensitiv ("Local-LLM"); egy local-llm stray post-review
+Gate-SHA nem csinál árva-shát egy egyébként AGREE kártyából; `gate-pretriage` ugyanúgy kizárva.
+`kanban-gate-completeness-guard.test.ts` 5 új eset (71 -> 76, mind zöld): a `currentRoundStartTs`
+útvonal (Gate-SHA-s kártya) 3 esete, a `latestReviewAt` FALLBACK útvonal (nincs Gate-SHA a kártyán
+sehol) 1 önálló esete, plusz egy CONTROL (egy valódi builder-átadás a local-llm draft UTÁN továbbra
+is helyesen újranyitja a kört -- a javítás nem kapcsolja ki a staleness-ellenőrzést egészében).
+
+MUTÁCIÓ-PROOF mindegyik olvasási pontra KÜLÖN-KÜLÖN. Python: `_is_generated_author()` `False`-ra
+cserélve pontosan a 4 új esetet viszi pirosra (133/137), semmi mást; visszaállítva 137/137. TS:
+`latestReviewAt()`-beli kizárás kivétele pontosan 1 tesztet (a FALLBACK-specifikus esetet) viszi
+pirosra (71/72); `currentRoundStartTs()`-beli kizárás kivétele pontosan 3 tesztet (a Gate-SHA-s
+eseteket, a FALLBACK-eset és a CONTROL érintetlen) visz pirosra (69/72). Mindkét mutáció után
+visszaállítva, 72/72 (illetve a testvér-fájllal együtt 76/76) zöld megerősítve. Regresszió:
+`kanban-landed-guard.test.ts`, `kanban-draft-review-guard.test.ts`, `kanban-gate-completeness-guard-
+structured-verdict.test.ts` -- mind zöld. `tsc --noEmit` és `python3 -m py_compile` tiszta.
+
+**Ki döntött:** MikroB (gate: qa, cybersec -- a javítási irányt WhiteHat2 adta, ezért a biztonsági
+gate WhiteHat/cybersec, nem WhiteHat2/cybersec2).
+
 ## 2026-10-11 -- 2bfa4c67 delta: RedHat B1-B3 + QA FAIL (16564) + WhiteHat W1-W4 (16573) javítva, a 9655494c F1-re épülve
 
 **Forrás:** a 2bfa4c67 (strukturált gate-verdikt rekord) első landolása (Gate-SHA 20f0ae19) mindhárom gate-től elutasítást kapott ugyanarra a shára: RedHat B1 (nincs szerep-/szerzőkötés a verdikt-írásnál), B2 (a javaslattevő-kizárás a kérés saját mezőjét nézte, kihagyható), B3 (strukturált és komment-alapú verdikt eltérésénél a guard csendben a megengedőbb forrást választja); QA FAIL (16564, kritikus, saját reprodukcióval igazolva: egy hitelesített strukturált FAIL mellett egy hamisítható komment-PASS a zárást engedte); WhiteHat NO-GO (16573): W1 (pontos azonosítós role-allowlist, nem prefix), W2 (a rekord sha-ja a REVIEW Gate-SHA-hoz kötve -- MEDIUM, nem RedHat/QA lelet), W3 (a javaslattevő szerver-oldali, hitelesített mező legyen, NE a kommentekből levezetett, fail-closed B2 helyett -- a fail-closed maga szolgáltatás-megtagadási eszköz), W4 (determinisztikus sorrend másodperc-egyezésnél -- LOW). MikroB sorrend-döntése (16557/16559): a 9655494c F1 (agent-kulcs kiosztás) UTÁN jöhet a B1/W1 javítása, mert a szerep-allowlist a hitelesített kulcs identitására épül; az F1 ezen a körön belül landolt (Gate-SHA 56fc5391).

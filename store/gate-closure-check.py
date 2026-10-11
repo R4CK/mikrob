@@ -215,6 +215,22 @@ _PARENT_MARKED_SHA = re.compile(
 )
 _HEX_ONLY_SEGMENT = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
+# GENERATED-COMMENT AUTHORS (card e7f91eb9, WhiteHat2 L1 on 1aeae282's own gate). post_draft_comment
+# interpolates the local-llm model's raw output into a comment body with no fencing, so whatever the
+# model happens to write -- including a line that LOOKS like "Gate-SHA: <sha>" or opens with "REVIEW"
+# -- lands verbatim and is NOT trustworthy input to declared_shas()/undeclared_post_review_shas(): a
+# draft that cites a different Gate-SHA than the real round makes an already-verdicted card read
+# STALE or UNRESOLVED. Same set `kanban-landed-guard.ts` exports as GENERATED_COMMENT_AUTHORS (and
+# `gate-dispatch-check.sh` already mirrors) -- this mirrors that list rather than inventing a second
+# one. Case-insensitive on purpose (card e7f91eb9 INFO): author comparisons elsewhere in this file
+# already lowercase/strip before comparing (e.g. stated_designation()'s "mikrob" check); this one
+# follows the same convention so a differently-cased author string is not a silent bypass.
+GENERATED_COMMENT_AUTHORS = {"local-llm", "gate-pretriage"}
+
+
+def _is_generated_author(c):
+    return ((c or {}).get("author") or "").strip().lower() in GENERATED_COMMENT_AUTHORS
+
 
 def _is_path_token(tok):
     """A '/'-bearing token is a branch name or a path, not a sha citation -- ONLY when some
@@ -298,6 +314,8 @@ def declared_shas(comments):
     """
     found = []
     for c in comments:
+        if _is_generated_author(c):
+            continue
         content = (c or {}).get("content")
         if not isinstance(content, str):
             continue
@@ -373,6 +391,8 @@ def undeclared_post_review_shas(comments):
     """
     review_idx = None
     for i, c in enumerate(comments):
+        if _is_generated_author(c):
+            continue
         content = (c or {}).get("content")
         if isinstance(content, str) and _REVIEW_OPEN.match(content[_LEAD_SKIP.match(content).end():]):
             review_idx = i
@@ -382,6 +402,8 @@ def undeclared_post_review_shas(comments):
     gate_shas = set()
     candidates = []
     for c in comments[review_idx + 1:]:
+        if _is_generated_author(c):
+            continue
         content = (c or {}).get("content")
         if not isinstance(content, str):
             continue
