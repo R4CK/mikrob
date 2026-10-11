@@ -19517,3 +19517,29 @@ olvasás, nem `--apply`): lásd a mérési sort fent.
 **Teszt:** `kanban-verdicts.test.ts` (24 teszt: flag-kapcsolás, szerző-feloldás verified/unverified, önjavaslat-kizárás + testvér-kivétel, actor-allowlist, append-only audit, migráció-rollback), `kanban-gate-completeness-guard-structured-verdict.test.ts` (4 teszt, VALÓDI DB-vel, flag ON/OFF, PASS/GO vs NO-GO/FAIL, mutáció-proofolva -- a hasFreshStructuredVerdict kikapcsolása 1 tesztet pirosra visz), plusz a meglévő `kanban-gate-completeness-guard.test.ts` (67 teszt) változatlanul zöld. `npx tsc --noEmit` tiszta.
 
 **Ki döntött:** backend (MikroB plan-grilling verdiktje + RedHat 16225 bővítés alapján). Gate: QA + WhiteHat (trust boundary) + RedHat (auth-közeli, magas tét) -- a kártya saját kijelölése.
+
+## 2026-10-11 -- bc1e7ef2 delta-fix: QA FAIL F1 (open file descriptor blind to liveness check)
+
+**Forrás:** QA FAIL (komment, Gate-SHA ca59cabc), saját, eldobható, SHA-ra pinelt gate-worktree-ben
+reprodukálva. A HAS_ACTIVE_CHILD javítás és a szimlink-követés/`$HOME`-on-kívüli-cél eset (a dispatch
+másik explicit fókusz-pontja) saját mutáció-proof-fal/reprodukcióval igazoltan rendben; az F1 valódi,
+blokkoló.
+
+**F1 (BLOKKOLÓ):** a `has_live_process_under()` KIZÁRÓLAG `/proc/*/cwd`-t nézte -- egy folyamat, aminek
+a cwd-je MÁSHOL van, de VAN NYITOTT FILE-LEÍRÓJA a célmappába (pl. egy máshonnan indult `tail -f`/
+log-író/build, ami csak a kimenetét írja a mappába), teljesen látatlan maradt a liveness-ellenőrzésnek.
+QA saját reprodukciója: egy `tail -f` háttérfolyamat, cwd egy másik könyvtárban, a 6-os file-leírója a
+célmappába mutatva -- a script DISPOSABLE-nek osztályozta a mappát, és `--apply --yes` feltétel nélkül
+törölte, MIKÖZBEN a folyamat még élt és aktívan olvasta a fájlt.
+
+**Javítás:** `has_live_process_under()` a `/proc/*/cwd` ág MELLETT most a `/proc/*/fd/*` célpontjait is
+végignézi (ugyanaz a `readlink -f` + prefix-összehasonlítás minta). Egy élő hivatkozás a célmappára élő
+hivatkozás, függetlenül attól, melyik fd-slotban utazik.
+
+**Teszt:** `store/wsl-home-cleanup.selftest.sh` új, VALÓDI (nem stubolt) esete: egy háttér `tail -f`
+folyamat, cwd a selftest saját tmp-mappájában, az fd-je a célmappába mutatva -- QA saját reprodukciós
+módszerét követi, nem egy elvonatkoztatott fixture. MUTÁCIÓ-PROOF: az fd-ellenőrző ág kivéve, PONTOSAN
+ez az egy teszt bukik (18/19), minden más zöld marad. Teljes selftest 19/19 zöld a javítással.
+`bash -n store/wsl-home-cleanup.sh`: tiszta.
+
+**Ki döntött:** backend2 (QA FAIL alapján). Delta-gate: QA + WhiteHat, ugyanarra a sorra.
