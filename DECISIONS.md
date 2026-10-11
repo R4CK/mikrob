@@ -19867,6 +19867,8 @@ Forras: WhiteHat 517fdcc5 GO (komment 16354, msg 10802), F1 MEDIUM (HIGH, ha a r
 
 Celzott futas (5 claude-plans-* fajl): 92/92 zold.
 
-Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+**lint-ratchet mellekhatas (javitva, baseline frissitve):** a `fakeCtx` korabban `ctx: any`-t adott vissza; az uj tesztek ujabb `tryHandleClaudePlans(any)` hivasokkal 14 uj `@typescript-eslint/no-unsafe-argument` leletet termeltek volna (192 -> 206, REFUSED). Javitas: `fakeCtx` visszateresi tipusa `RouteContext` (egyetlen `as RouteContext` cast a konstrukcios pontnal, nem a hivasi helyeken) -- ez NEM csak az uj hivasokat javitja, a FAJL OSSZES korabbi, mar-is `any`-vel hivott helyet is (192 -> 133, JAVULAS). `store/lint-ratchet.sh --update` lefuttatva, a baseline a szigorubb szamra rogzitve, hogy a javulas ne legyen visszakolthetо egy kesobbi korben eszrevetlenul.
+
+Teljes fleet-test.sh a vegso shan: 981/981 fajl zold, lint-ratchet JAVULAST jelez es tart az uj baseline-on.
 
 **Ki döntött:** backend3. Gate: QA + RedHat (a kartya sajat kijelolese -- a javitasi iranyt WhiteHat adta, a re-gate RedHate).

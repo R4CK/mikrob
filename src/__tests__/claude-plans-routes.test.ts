@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import type { RouteContext } from '../web/routes/types.js'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-routes-test-'))
 
@@ -64,7 +65,7 @@ function fakeCtx(
   path: string,
   body?: unknown,
   auth: { kind?: string } | undefined = { kind: 'session' },
-): { ctx: any; out: { status: number; body: any } } {
+): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -78,7 +79,7 @@ function fakeCtx(
       if (event === 'end') cb()
     },
   }
-  return { ctx: { req, res, path: url.pathname, method, url, auth }, out }
+  return { ctx: { req, res, path: url.pathname, method, url, auth } as RouteContext, out }
 }
 
 function plan(over: Record<string, unknown> = {}): Record<string, unknown> {
