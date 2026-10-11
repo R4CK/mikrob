@@ -48,24 +48,6 @@ CLEANCORE="${CLEANCORE_MAIN:-/mnt/h/LM_Studio_Workdir/mopsion}"
 DASH="${DASHBOARD_URL:-http://localhost:3420}"
 FOOTER='Log-alapú rekonstrukció a 2026-09-08-i kanban-DB-kiürülés után'
 
-DO_COMMENT=0
-ONLY_CARD=""
-ONLY_ASSIGNEE=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-  --comment) DO_COMMENT=1 ;;
-  --card) ONLY_CARD="${2:?--card needs an id}"; shift ;;
-  # Narrow to one agent's cards. Exists so the FIRST --comment run can be limited to the author's
-  # own board before anything is written to five other agents' cards (MikroB's call, msg 945).
-  --assignee) ONLY_ASSIGNEE="${2:?--assignee needs a name}"; shift ;;
-  *) echo "usage: $0 [--comment] [--card <id>] [--assignee <name>]" >&2; exit 2 ;;
-  esac
-  shift
-done
-
-hdr="$(mktemp)"; trap 'rm -f "$hdr"' EXIT
-printf 'Authorization: Bearer %s\n' "$(cat "$MAIN/store/.dashboard-token")" > "$hdr"
-
 # `first_landed <repo> <branch> <cardId>` -> "<sha>" of the first commit ATTRIBUTING the card that is
 # also an ancestor of <branch>, or empty. Existence alone is not the question (see point 2 above).
 #
@@ -114,6 +96,36 @@ first_landed() {
   done < <(git -C "$repo" log --oneline --reverse --extended-regexp --regexp-ignore-case \
     --grep="(cards?|kártya|kartya)[^0-9a-zA-Z]{0,4}$card" "$branch" 2>/dev/null)
 }
+
+# SOURCING GUARD (card 9ff184d8): reconstruction-landed-sweep.selftest.sh needs the real
+# first_landed() above, not a hand-copied regex -- two of QA's mutations on the real function
+# (6f887d39, plural-regex revert and --reverse removal) left a selftest testing its OWN duplicated
+# logic green both times, because the test never actually ran the function it claimed to cover.
+# Sourcing this file makes BASH_SOURCE[0] (this file) differ from $0 (the sourcing script), so a
+# `source` pulls in first_landed() above without also running the dashboard sweep below (which
+# needs a live token file and dashboard, neither available from a selftest). Direct execution is
+# unaffected: BASH_SOURCE[0] equals $0 there, so the guard is a no-op.
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+DO_COMMENT=0
+ONLY_CARD=""
+ONLY_ASSIGNEE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+  --comment) DO_COMMENT=1 ;;
+  --card) ONLY_CARD="${2:?--card needs an id}"; shift ;;
+  # Narrow to one agent's cards. Exists so the FIRST --comment run can be limited to the author's
+  # own board before anything is written to five other agents' cards (MikroB's call, msg 945).
+  --assignee) ONLY_ASSIGNEE="${2:?--assignee needs a name}"; shift ;;
+  *) echo "usage: $0 [--comment] [--card <id>] [--assignee <name>]" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+hdr="$(mktemp)"; trap 'rm -f "$hdr"' EXIT
+printf 'Authorization: Bearer %s\n' "$(cat "$MAIN/store/.dashboard-token")" > "$hdr"
 
 cards_json="$(curl -sf -H @"$hdr" "$DASH/api/kanban?limit=600")" || {
   echo "reconstruction-sweep: could not read the board at $DASH" >&2; exit 3; }
