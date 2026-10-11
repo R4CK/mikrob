@@ -125,6 +125,15 @@ if [ "${CARD_BUILD_ROUTE:-on}" = "off" ]; then
   online kill-switch
 fi
 
+# --- 0a0. MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01, Peti Telegram 10951): the dashboard
+# toggle, not the script-local CARD_BUILD_ROUTE kill-switch above -- that one only silences THIS
+# classifier; this one is the single ON/OFF every local-first entry point shares.
+# shellcheck source=./local-first-draft-check.sh
+. "$HERE/local-first-draft-check.sh"
+if ! local_first_draft_enabled; then
+  online local-first-draft-off
+fi
+
 # --- 0a. INSTALLED GATE (Peti Telegram 8928, 2026-09-19): "ha nincs telepitve local-llm akkor ez
 # az ag el se induljon" -- local-llm-installed.sh is a network-free ollama-binary + configured-model
 # check, cheaper than the VRAM guard below and cheaper still than reading the card and asking the

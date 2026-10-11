@@ -529,6 +529,15 @@ fi
 CARD="${1:-}"
 [[ -z "$CARD" ]] && { echo "usage: offload-dispatch.sh <cardId> [assignee]" >&2; exit 2; }
 
+# MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01, Peti Telegram 10951), checked before even the
+# INSTALLED gate below -- same ordering principle (cheapest, most authoritative gate first).
+# shellcheck source=./local-first-draft-check.sh
+. "$HERE/local-first-draft-check.sh"
+if ! local_first_draft_enabled; then
+  echo "offload-dispatch: SKIPPED -- local-first-draft is OFF (dashboard switch). Nothing was drafted; the card is untouched and goes online as usual." >&2
+  exit 0
+fi
+
 # INSTALLED GATE (Peti Telegram 8928, 2026-09-19): "ha nincs telepitve local-llm akkor ez az ag el se
 # induljon". Same network-free precheck as card-build-route.sh's 0a and self-advance-pickup.sh's
 # step 0 -- a host with no local runtime at all should never take the per-card lock below, resolve

@@ -265,6 +265,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01, Peti Telegram 10951) -- the card's own acceptance
+# criterion is that every local-first entry point reads this flag AS ITS FIRST STEP. Checked here,
+# before ANY model resolution (route_model_for_task/read_model below), not just before the VRAM
+# guard: read_model() dies loudly on a missing model config (by design, see its own comment), and on
+# a host where no model has ever been configured yet that die would fire BEFORE the switch was ever
+# consulted -- the caller would see "no model configured" instead of "this call belongs online",
+# which is the wrong answer when the switch is simply off. Only gates `generate` (the mode that
+# actually dispatches to the local model); --health/--list are diagnostics, not drafts, and stay
+# unaffected. Missing helper -> skipped, same direction as every other "missing guard" case in this
+# file.
+if [[ "$MODE" == "generate" ]] && [[ -f "$HERE/local-first-draft-check.sh" ]]; then
+  . "$HERE/local-first-draft-check.sh"
+  if ! local_first_draft_enabled; then
+    echo "local-llm: local-first-draft is OFF (dashboard switch) -- this call belongs online" >&2
+    exit 9
+  fi
+fi
 
 # PER-TASK MODEL ROUTING (card baf1b1b0, Peti kerese 2026-09-02): explicit --model always wins
 # (checked first, below); otherwise, if --task names a template with an entry in
