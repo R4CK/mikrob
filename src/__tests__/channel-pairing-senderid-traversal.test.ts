@@ -24,7 +24,7 @@
 // senderId.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -142,6 +142,42 @@ describe('POST /api/agents/:name/channels/telegram/approve -- senderId traversal
     // retry with the same code) can still complete the pairing.
     expect(access.pending).toHaveProperty('abc123')
   })
+
+  // Card 25aaada5 F1 (WhiteHat, MEDIUM): safeJoin is LEXICAL -- it proves the resolved STRING
+  // stays inside approvedDir, but says nothing about whether the filesystem entry already AT
+  // that path is itself a symlink. 'lnk' is not a traversal shape (safeJoin accepts it), so the
+  // route proceeds to the marker write, which used to be a plain writeFileSync and would follow
+  // the symlink to wherever it points, outside approved/ entirely. writeFileNoFollowSync (O_
+  // NOFOLLOW) refuses instead.
+  it('F1: a symlink already sitting at approved/<name> is NOT followed -- external target untouched', async () => {
+    const approvedDir = join(stateDir, 'approved')
+    mkdirSync(approvedDir, { recursive: true })
+    const externalFile = join(tmpdir(), `symlink-escape-target-${Date.now()}.txt`)
+    writeFileSync(externalFile, 'ORIG')
+    symlinkSync(externalFile, join(approvedDir, 'lnk'))
+    writeAccessWithPending('lnk', 'CHAT9')
+    const { ctx, out } = fakeCtx({ code: 'abc123' })
+    expect(await tryHandleAgents(ctx, webDir)).toBe(true)
+    // The write fails (ELOOP via O_NOFOLLOW), caught by the route's outer try/catch -> 500. The
+    // point of this test is the file content, not the status code.
+    expect(out.status).toBe(500)
+    expect(readFileSync(externalFile, 'utf-8')).toBe('ORIG')
+  })
+
+  // Card 25aaada5 F3 (LOW, test gap WhiteHat flagged): safeJoin's `target.startsWith(resolvedBase
+  // + sep)` check -- WITHOUT the `+ sep`, a sibling directory whose name has approvedDir's name
+  // as a raw string PREFIX (e.g. "approved-evil" starts with "approved") would incorrectly pass.
+  // No test pinned this before; the mutant (dropping `+ sep`) measured 0/53 red.
+  it('F3: a sibling directory sharing approvedDir\'s name as a string prefix is REJECTED (400)', async () => {
+    // approvedDir's name is literally "approved" (join(chDir, 'approved')) -- "../approved-evil/f"
+    // resolves to a SIBLING of approvedDir whose name starts with "approved" as a raw string,
+    // which is exactly the shape the `+ sep` boundary exists to reject.
+    writeAccessWithPending('../approved-evil/f')
+    const { ctx, out } = fakeCtx({ code: 'abc123' })
+    expect(await tryHandleAgents(ctx, webDir)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(existsSync(join(stateDir, 'approved-evil'))).toBe(false)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -225,6 +261,30 @@ describe('runInviteMonitorTick -- senderId traversal on auto-approve (card 3d186
     expect(access.pending).toHaveProperty('code1')
     const invites = JSON.parse(readFileSync(join(chDir, 'invites.json'), 'utf-8'))
     expect(invites.invites.tok1.used).toBe(false)
+  })
+
+  // Card 25aaada5 F1: same symlink-following gap as routes/agents.ts, this time on the
+  // UNATTENDED auto-approval sweep -- 'tgt' is not a traversal shape, so the tick proceeds to
+  // the marker write, which used to follow a pre-planted symlink to an external file.
+  it('F1: a symlink already sitting at approved/<name> is NOT followed -- external target untouched', () => {
+    const approvedDir = join(chDir, 'approved')
+    mkdirSync(approvedDir, { recursive: true })
+    const externalFile = join(tmpdir(), `invite-symlink-escape-target-${Date.now()}.txt`)
+    writeFileSync(externalFile, 'ORIG')
+    symlinkSync(externalFile, join(approvedDir, 'tgt'))
+    setup('tgt')
+    expect(() => runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)).not.toThrow()
+    expect(readFileSync(externalFile, 'utf-8')).toBe('ORIG')
+  })
+
+  // Card 25aaada5 F3: same `+ sep` boundary gap as routes/agents.ts -- a sibling directory
+  // sharing approvedDir's name ("approved") as a raw string prefix.
+  it('F3: a sibling directory sharing approvedDir\'s name as a string prefix does not escape', () => {
+    setup('../approved-evil/f')
+    const accessBefore = readFileSync(join(chDir, 'access.json'), 'utf-8')
+    expect(() => runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)).not.toThrow()
+    expect(existsSync(join(chDir, '..', 'approved-evil'))).toBe(false)
+    expect(readFileSync(join(chDir, 'access.json'), 'utf-8')).toBe(accessBefore)
   })
 })
 

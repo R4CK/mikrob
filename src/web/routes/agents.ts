@@ -143,7 +143,7 @@ import {
   loadProfileTemplate,
   resolveProfilePlaceholders,
 } from '../profiles.js'
-import { sanitizeAgentName, safeJoin } from '../sanitize.js'
+import { sanitizeAgentName, safeJoin, writeFileNoFollowSync } from '../sanitize.js'
 import { isReservedSenderId } from '../system-directive-id.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
@@ -1823,7 +1823,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // contract (the channel server polls approved/ to send the "Paired!"
       // confirmation; current server keys off the filename, the chatId
       // contents keep us aligned with the documented format).
-      writeFileSync(markerPath, String(entry.chatId ?? ''))
+      // Card 25aaada5: writeFileNoFollowSync refuses to follow a symlink already sitting at
+      // markerPath instead of silently writing through it (see sanitize.ts's own comment).
+      writeFileNoFollowSync(markerPath, String(entry.chatId ?? ''))
 
       logger.info({ name, provider, senderId: entry.senderId, code }, 'Channel pairing approved')
       json(res, { ok: true, senderId: entry.senderId })

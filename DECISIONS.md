@@ -19872,3 +19872,25 @@ Celzott futas (5 claude-plans-* fajl): 92/92 zold.
 Teljes fleet-test.sh a vegso shan: 981/981 fajl zold, lint-ratchet JAVULAST jelez es tart az uj baseline-on.
 
 **Ki döntött:** backend3. Gate: QA + RedHat (a kartya sajat kijelolese -- a javitasi iranyt WhiteHat adta, a re-gate RedHate).
+
+## 2026-10-11 -- Kartya 25aaada5: safeJoin symlink-kovetes (F1) + sep-hatar teszt (F3), kovetkezo a 3d186397 safeJoin javitashoz (WhiteHat GO melletti nyitott leletek, komment 16456)
+
+Elozmeny: 3d186397 (senderId traversal javitas), WhiteHat GO mellett nyitott kovetok leletek. F2 (validacio az allowFrom-modositas UTAN fut) MAR JAVITVA a 3d186397 delta #2-ben (lasd fentebb a fajlban) -- ez a kartya CSAK F1-et es F3-at erintette.
+
+**F1 (MEDIUM): a safeJoin LEXIKALIS -- a RESOLVED STRING-et probalja, nem azt, hogy a celpontnal MAR LETEZO fajlrendszer-bejegyzes maga szimlink-e.** Mert: a `pending`/`invites`/`approved` az ugynok SAJAT konyvtaraban el (`agents/<nev>/.claude/channels/...`), tehat barki azonos UID-ju iro (pl. prompt-injektalt sub-agent) elohozhat egy pending bejegyzest/invite-ot/szimlinket, majd a megosztott bearerrel hivhatja az approve route-ot -- confused-deputy fajlıras a shared bearer "nevében". Mert-meres (WhiteHat): egy `approved/` konyvtarban mar meglevo szimlink egy kivuli fajlra mutatva, a pending senderId = a szimlink neve -> HTTP 200, a kivuli fajl tartalma ORIG -> CHAT9 valtozott.
+
+Javitas: `src/web/sanitize.ts`-ben uj `writeFileNoFollowSync(path, content)` -- `fs.openSync(path, O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW)` + `writeSync`/`closeSync` -- egy mar letezo szimlinkre az open() ELOOP-pal bukik, nem koveti. Bedrotozva MINDKET hivasi helyre (`routes/agents.ts` ~1826. sor, `channel-invites.ts` ~267. sor), a korabbi plain `writeFileSync(markerPath, ...)` helyett. A `writeFileSync` import `channel-invites.ts`-bol torolve (az egyetlen hasznalata volt).
+
+**F3 (LOW, tesztlyuk): a safeJoin `target.startsWith(resolvedBase + sep)` hataranak `+ sep` resze nem volt pinelve -- a mutans (a `+ sep` elhagyasa) 0/53 piros volt.** Egy testver-konyvtar, aminek a neve STRING-PREFIXKENT tartalmazza az approvedDir nevet (pl. "approved-evil" <- "approved"-bol), a `+ sep` nelkul HELYTELENUL atmenne. Teszt: `../approved-evil/f` alaku senderId mindket hivasi helyen.
+
+**Teszt (`channel-pairing-senderid-traversal.test.ts`, +4 teszt [F1 x2, F3 x2], mutacioval ellenorizve mindket helyen):**
+- F1: egy ELORE telepitett szimlink `approved/lnk` (routes/agents.ts) / `approved/tgt` (channel-invites.ts) nevvel, egy kulso fajlra mutatva (`ORIG` tartalommal) -- a hivas utan a kulso fajl tartalma VALTOZATLAN `ORIG` marad.
+- F3: `../approved-evil/f` alaku senderId elutasitva (400 / nincs mutacio), a sibling konyvtar nem jon letre.
+
+Mutacio-ellenorzes (mindket fixre, `sanitize.ts`-ben, manualisan visszaallitva majd javitva): (a) a `+ sep` elhagyasa -> mindket F3 teszt PIROS (egyik 400 helyett 500-at, a masik access.json-mutaciot mert); (b) az `O_NOFOLLOW` flag elhagyasa -> mindket F1 teszt PIROS, a kulso fajl tartalma TENYLEGESEN `CHAT9`-re/uresre valtozott a szimlinken keresztul, igazolva a repro valosagat. Mindket mutacio utan visszaallitva, 16/16 zold.
+
+`npx tsc --noEmit` tiszta. `npx eslint` a ket erintett route-fajlra: a jelzett leletek mind pre-existing (nem az en soraim), `lint-ratchet.sh` valtozatlan (323 lelet, tart). Celzott futas (traversal + invite-token-not-logged + agents-import-auth-gate): 41/41 zold.
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a kartya sajat kijelolese -- WhiteHat javasolta a javitast, a re-gate RedHate).
