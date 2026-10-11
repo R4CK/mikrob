@@ -19518,6 +19518,113 @@ olvasás, nem `--apply`): lásd a mérési sort fent.
 
 **Ki döntött:** backend (MikroB plan-grilling verdiktje + RedHat 16225 bővítés alapján). Gate: QA + WhiteHat (trust boundary) + RedHat (auth-közeli, magas tét) -- a kártya saját kijelölése.
 
+## 2026-10-11 -- bc1e7ef2 delta-fix: QA FAIL F1 (open file descriptor blind to liveness check)
+
+**Forrás:** QA FAIL (komment, Gate-SHA ca59cabc), saját, eldobható, SHA-ra pinelt gate-worktree-ben
+reprodukálva. A HAS_ACTIVE_CHILD javítás és a szimlink-követés/`$HOME`-on-kívüli-cél eset (a dispatch
+másik explicit fókusz-pontja) saját mutáció-proof-fal/reprodukcióval igazoltan rendben; az F1 valódi,
+blokkoló.
+
+**F1 (BLOKKOLÓ):** a `has_live_process_under()` KIZÁRÓLAG `/proc/*/cwd`-t nézte -- egy folyamat, aminek
+a cwd-je MÁSHOL van, de VAN NYITOTT FILE-LEÍRÓJA a célmappába (pl. egy máshonnan indult `tail -f`/
+log-író/build, ami csak a kimenetét írja a mappába), teljesen látatlan maradt a liveness-ellenőrzésnek.
+QA saját reprodukciója: egy `tail -f` háttérfolyamat, cwd egy másik könyvtárban, a 6-os file-leírója a
+célmappába mutatva -- a script DISPOSABLE-nek osztályozta a mappát, és `--apply --yes` feltétel nélkül
+törölte, MIKÖZBEN a folyamat még élt és aktívan olvasta a fájlt.
+
+**Javítás:** `has_live_process_under()` a `/proc/*/cwd` ág MELLETT most a `/proc/*/fd/*` célpontjait is
+végignézi (ugyanaz a `readlink -f` + prefix-összehasonlítás minta). Egy élő hivatkozás a célmappára élő
+hivatkozás, függetlenül attól, melyik fd-slotban utazik.
+
+**Teszt:** `store/wsl-home-cleanup.selftest.sh` új, VALÓDI (nem stubolt) esete: egy háttér `tail -f`
+folyamat, cwd a selftest saját tmp-mappájában, az fd-je a célmappába mutatva -- QA saját reprodukciós
+módszerét követi, nem egy elvonatkoztatott fixture. MUTÁCIÓ-PROOF: az fd-ellenőrző ág kivéve, PONTOSAN
+ez az egy teszt bukik (18/19), minden más zöld marad. Teljes selftest 19/19 zöld a javítással.
+`bash -n store/wsl-home-cleanup.sh`: tiszta.
+
+**Ki döntött:** backend2 (QA FAIL alapján). Delta-gate: QA + WhiteHat, ugyanarra a sorra.
+
+## 2026-10-11 -- card cd3e577b delta: RedHat NO-GO a kartyankenti worktree/ag (F1) landolo utjan (komment 16276)
+
+**A NO-GO oka:** a 84ea5e33 F1 (store/agent-worktree-marveen.sh --card mod, marveen-land.sh --card mod, self-advance-pickup.sh 4b lepes) a kodolvasas es a scratch-repos futtatas szerint strukturalisan megoldja a kiindulo problemat (egy kartya munkaja nem utazhat egy masik kartya landolasaban gate nelkul), de harom reszleten elesett.
+
+**B1 (MEDIUM, a sajat kimenete tori a lezarast):** a landolas utan automatikusan irt "LANDOLVA" komment sor elejen "Gate-SHA: <merge sha>" allt. A gate-closure-check.py ezt UJ, meg nem verdiktelt shakent olvasta, es a REVIEW-ban mar igazoltan AGREE kartyat STALE-re ejtette minden sikeres --card landolas utan. Javitas: a sor "Merge-SHA:" (sor elejen nem "Gate-SHA:"), a merge shat tovabbra is kiirva, csak nem a kapu-lezaro eszkoz altal ujra-verdiktkent olvasott kulcsszoval.
+
+**B2 (MEDIUM):** (a) agent-worktree-marveen.sh --card most figyelmeztet, ha az agensnek van nem landolt commitja a sajat agent/<agent>/work agan (sose blokkol, sose nyul az aghoz); (b) a marveen-land.sh cleanup()-jaban egy `exec {FD}>&- 2>/dev/null` parancs (nem brace-group-ba csomagolva) a SCRIPT teljes stderr-jet tartosan /dev/null-ra iranyitotta az elso agens feldolgozasa utan -- ezert a --all sweep card/* ertesitese az eles 19-agas repon nemán maradt, holott a kod helyes volt; javitva brace-group-os korlatozassal, es az ertesites stdout-ra (`say`) ment at.
+
+**R1 (dontes, MikroB komment 16277):** a --card landolas MOSTANTOL megkoveteli a landolando sha-ra szolo, at nem bukott gate-verdiktet (gate_verdict_check refuse mod, ugyanaz a mechanizmus mint a cleancore-land.sh/mopsion-land.sh-ban, --allow-ungated felulbiralja a HIANYZO verdiktet, egy BUKOTT verdiktet soha). A sima agent/<agent>/work ut valtozatlanul report mod marad (az a sha meg nem letezik, amikor annak a gate-je fut).
+
+**R2 (LOW-MEDIUM):** a self-advance-pickup.sh elozo-kartya-takaritasa eddig a kartya "done" allitasat bizonyitekkent fogadta el es --force-szal torolt, fuggetlenul attol, hogy a card/<id> ag valoban landolt-e. Javitas: `merge-base --is-ancestor` ellenorzes a torles elott, --force elhagyva -- ha az ag nem ancestor-ja az origin/<default>-nak, a worktree a helyen marad, figyelmeztetessel.
+
+**Nem ebben a deltaban:** R3 (a cleanup stderr-nemitasanak gyokeret, csak a --all uj sora ment at stdout-ra -- a gyoker javitva a brace-group-mal, igy ez mar lezart), R4/R5 (info, nem blokkolo, a meglevo korlatok dokumentalva maradnak a kodban).
+
+**Meres:** uj/bovitett selftestek mind a negy erintett fajlhoz (agent-worktree-marveen.selftest.sh 7->10, marveen-land-card-branch.selftest.sh 14->19, self-advance-pickup.selftest.sh 40->42, marveen-land.sh --selftest valtozatlanul 53/53), minden eset a real szkriptek ellen scratch repon/stub dashboardon. A B1-javitast a valodi gate-closure-check.py-val is megerositve (REVIEW+QA PASS+az uj Merge-SHA-s komment -> AGREE, nem STALE).
+
+**Ki dontott:** a leletet RedHat adta (NO-GO, komment 16276, Gate-SHA 84ea5e33af4d49a31df15d4c5846a53350eed74c), az R1 dontest MikroB (komment 16277), a javitast fullstack vegezte. Delta-gate: QA + RedHat.
+
+## 2026-10-11 -- card cd3e577b masodik delta: RedHat NO-GO a QA-egyedul elegendo gate-kovetelmenyre (komment 16322)
+
+**A NO-GO oka:** az elozo delta (fent) R1-implementacioja (`gate_verdict_check` refuse mod) csak QA PASS-t kovetelt a landolando shara, a kartya sajat "Gate:" soraban/labeljeiben kijelolt biztonsagi gatet (pl. RedHat) csak JELENTETTE, nem KOVETELTE. RedHat merte: egy scratch kartyan, ahol a kijelolt gate "QA + Cybered", egy REGI Cybered NO-GO allt egy korabbi shara, az UJ csucsra viszont csak egy fris QA PASS volt -- a landolas LANDED (rc 0), a biztonsagi gate ujra-ellenorzese nelkul. Ez pontosan a "kod gate nelkul a developban" osztaly, amire a kartya epul.
+
+**B1 (MEDIUM, dontes: MikroB komment 16324):** uj, kulon ellenorzes (`store/card-designated-gates-check.sh`, `card_designated_gates_agree`) a meglevo QA-kotelezo ellenorzes MELLETT, nem helyette: a kartya "Gate:" soraban/labeljeiben kijelolt OSSZES gate AGREE-jet koveteli a landolando shara, a mar bevalt `gate-closure-check.py --expect <sha> --no-landed` eszkozzel (ugyanaz, amit a 4a munkavegzesi szabaly board-reconciliation-je hasznal), nem uj osszehasonlito logikaval. A kartya "Gate:" sorat/labeljeit a `/api/kanban` bulk listarol olvassa, ugyanaz a kinyeres, mint a mopsion-land.sh mar bevalt `_gate_designation_snapshot`-ja -- SZANDEKOSAN nem azt a fajlt bovitve/sourceolva (mopsion-land.sh elkulonitett, magasabb kockazatu production landolo, a kartya hatokore csak a marveen-land.sh --card modja). Nincs designalt gate -> nincs extra kovetelmeny (0, a regi viselkedes). FAILED verdikt -> sose felulbiralhato (--allow-ungated sem). Egyeb nem-AGREE (MISSING/STALE/NOSHA/stb.) -> ugyanugy tolerálhato --allow-ungated-dal, mint a QA-ellenorzes hianya.
+
+**B2 (MEDIUM, dontes: MikroB komment 16324):** uj selftest-eset a QA repro-alakjara (2 agent/*/work ag + 1 card/* ag egyutt, `--all --dry-run`), es a stderr brace-group-fix mechanizmusa KULON, determinisztikus mutacios teszttel (`marveen-land.sh --selftest`): a regi bare `exec {FD}>&- 2>/dev/null` alak visszaallitva piros lesz (a sajat stderr elnemul), a javitott brace-group-os alak zold marad.
+
+**R4 (dontes, MikroB komment 16324, FELULIRVA RedHat sajat "ne nyulj hozza" javaslatat a 16322-ben):** a `--all` sweep MOSTANTOL SOHA nem landol semmit -- csak listaz/ertesit, ugyanugy agent/*/work agakra, mint korabban csak card/*-ra. A tulajdonos agens a sajat agent/<agent>/work agat sima `marveen-land.sh <agent>` hivassal, egy card/<id> agat `--card <id> --agent <tulajdonos>` hivassal landolja maga. Ez erinti a repo-sync-deploy utemezett feladat --all hivasat is -- annak promptjat MikroB igazitja kulon.
+
+**Egyeb, nem blokkolo, mind megvalositva ugyanebben a deltaban:** --allow-ungated hasznalatakor UNGATED LANDING komment a kartyan (ki=landolo agens, mikor=komment idobelyege, miert=a konkret ellenorzes oka + opcionalis `--allow-ungated-reason <szoveg>` kapcsolo); az `--all` card/* ertesitese mostantol kiszuri a mar landolt (ancestor) agakat, nem sorolja fel ujra es ujra.
+
+**Meres:** `marveen-land-card-branch.selftest.sh` 19->26 (uj esetek: B1 regi-NO-GO + fris-QA-PASS refuse, majd fris RedHat GO utan sikeres landolas; B2 kombinalt agent+card --all repro, 5 uj assertion), `marveen-land.sh --selftest` 53->55 (a brace-group mechanizmus + mutacios teszt), `agent-worktree-marveen.selftest.sh` es `self-advance-pickup.selftest.sh` valtozatlanul 10/10 es 42/42 (nem erintett fajlok). `tsc --noEmit` tiszta, `lint-ratchet.sh`: "no rule got worse (354 lelet)".
+
+**Ki dontott:** a leletet RedHat adta (NO-GO, komment 16322, Gate-SHA 21004c6c183b58a31cef4e9d713c2310cf3fd022), a B1/B2/R4 es az ungated-komment/szures dontest MikroB (komment 16324), a javitast fullstack vegezte. Delta-gate: QA + RedHat.
+
+## 2026-10-11 -- card d57d8a01: helyi LLM kikapcsolo gomb a dashboardon + minden belepesi pont tiszteletben tartja
+
+**Peti kerese (Telegram 10951):** a helyi LLM csak akkor kapcsolhato vissza, ha (1) magas GPU-terhelesnel a feladat automatikusan online megy, es (2) van egy konkret kikapcsolo gomb. (1) mar megvolt (79aeaeb1, gpu-util-hold) -- sajat futtatassal megerositve: `vram-guard-check.selftest.sh` 48/48 es `vram-guard-wiring.selftest.sh` 19/19 PASS, a masodik tenylegesen ellenorzi mind a hat erintett belepesi pont (card-build-route.sh, local-llm-rag.sh, offload-dispatch.sh, gate-pretriage.sh, i18n-draft.sh, route-classify.sh) vram-guard-hivasat es a HOLD->ONLINE/UNKNOWN iranyt. (2) HIANYZOTT: a store/local-first-draft.json {"enabled":false} kapcsolot KIZAROLAG self-advance-pickup.sh olvasta, a dashboardon nem volt hozza vezerlo, a masik hat belepesi pont (card-build-route.sh, offload-dispatch.sh, route-classify.sh, gate-pretriage.sh, i18n-draft.sh, local-llm.sh, local-llm-rag.sh) egyike sem nezte meg.
+
+**Megoldas, egyetlen forras mindket iranyban:**
+- OLVASAS: uj `store/local-first-draft-check.sh` (`local_first_draft_enabled`), kivonva self-advance-pickup.sh sajat, korabban duplikalt logikajabol (DRY), es bedrotozva MIND A HET tobbi belepesi pontba, mindegyikbe a sajat, mar letezo "legolcsobb/leghatarozottabb kapu elobb" sorrendjebe (altalaban meg a VRAM-guard elott): card-build-route.sh, offload-dispatch.sh, route-classify.sh (UNKNOWN-ra esik, a sajat abstain-valaszara), i18n-draft.sh (exit 3), local-llm.sh (`generate` mod, exit 9), local-llm-rag.sh (online()-on at, az advisory-skip logikajaba is bekotve), gate-pretriage.sh (`--explain` advisory-resz).
+- IRAS: uj Bearer-vedett `GET`/`POST /api/local-llm/first-draft-enabled` vegpont (src/web/routes/local-llm.ts), amely KIZAROLAG a store/local-first-draft.json fajlt irja/olvassa -- semmilyen folyamatot nem indit (nincs spawn/execFile a kezelo kodjaban, sajat teszttel megerositve mock-olt child_process-szel).
+- UI: uj kapcsolo (checkbox) a dashboard Lokalis LLM lapjan, a Statusz szekcio FOLOTT (web/index.html, web/app-local-llm.js), i18n hu/en (web/lang/hu.js, en.js), beszedes hiba-/mentve-uzenettel (12. munkavegzesi szabaly).
+
+**Teszteles:**
+- `store/local-first-draft-check.selftest.sh` (UJ, 13 eset): a helper fuggveny maga (absence=ON, env felulbiralja a fajlt, hibas JSON fail-open), MUTANS-PIROSITO teszt a helperre, es MUTANS-PIROSITO sweep mind a HET valodi belepesi ponton `LOCAL_FIRST_DRAFT=off`-fal (mindegyik a sajat dokumentalt online/UNKNOWN/exit-kodjara esik, ollama/GPU nelkul is -- bizonyitva, hogy a kapcsolo a modellhivas ELOTT dol el, nem csak dokumentalva van).
+- `src/__tests__/local-llm-first-draft-switch.test.ts` (UJ, 9 eset): a GET/POST vegpont (hianyzo fajl=enabled, fajl-tukrozes, hibas JSON fail-open mindket iranyban, hianyzo/rossz tipusu `enabled` mezo 400-ra), es a kartya sajat elfogadasi kriteriuma ("a kapcsolo nem inditja el az ollamat magatol") -- mock-olt `spawn`/`execFile` sosem hivodik a POST/GET kezelo alatt.
+- Regresszio: `tsc --noEmit` tiszta; `lint-ratchet.sh` valtozatlan (354 lelet); `lang-parity.test.ts` 4/4 (hu/en kulcs-egyezes); 291/291 meglevo local-llm UI/route teszt zold (local-llm-rag-routes-by-default, advisory-envelope, local-llm-page-routing-redesign, local-llm-categories, stb.); `card-build-route.selftest.sh` 70/70, `offload-dispatch.selftest.sh` 43/43, `self-advance-pickup.selftest.sh` 42/42 (a DRY-refaktor utan is valtozatlan).
+- `local-llm-rag.sh`-nal es `local-llm.sh`-nal a helper-forrasolas DEFENZIVEN irva (`[ -f ... ] &&`), mert egy meglevo teszt (`local-llm-rag-routes-by-default.test.ts`, "fails closed when the router is not built") a scriptet SAJAT testverei nelkul masolja at egy ures mappaba -- egy feltetlen `source` ott `set -e` alatt elszallt volna; ez a tenyleges regressziot okozo lelet volt sajat futtatas kozben, javitva es a teszt most zold.
+
+**Nem ebben a kartyaban:** MikroB kapcsolja vissza a helyi LLM-et (ollama unmask + local-first-draft bekapcsolasa) Peti jovahagyasa alapjan -- ez a kartya csak a kapcsolot epiti, nem kapcsol vissza semmit.
+
+**Ki dontott:** Peti kerese (Telegram 10951), MikroB adta a kartyat, a javitast fullstack vegezte. Gate: QA + WhiteHat (uj irhato vegpont).
+
+## 2026-10-11 -- card cd3e577b harmadik delta: RedHat NO-GO a stderr-teszt tesztmasolatara + a kijeloles-olvasas gyengesegeire (komment 16401)
+
+**A NO-GO oka:** a masodik delta (fent) B2-je uj selftest-eseteket adott a brace-group stderr-fix mellett, de a `marveen-land.sh --selftest`-ben a mutacios teszt sajat `cleanup_fixed`/`cleanup_buggy` fuggvenyeket definialt, nem a `land_one` tenyleges `cleanup()`-jat -- RedHat merte: a termelesi `cleanup()` visszaallitasa a regi bare `exec {FD}>&- 2>/dev/null` alakra mind a negy erintett selftestben ZOLD maradt (55/55), mert a teszt a sajat masolatat rogzitette, nem a kodot. A DECISIONS.md elozo bejegyzese ezert hamis allitast tartalmazott ("a regi alak visszaallitva piros lesz a termelesi kodon"). RedHat tovabba ket gyengeseget mert a kijeloles-olvasasban: a `Gate:` sor szerkesztheto es sosem pillanatkepezve/ujraellenorizve (N1), es az UNGATED komment a gate-ellenorzes pillanataban irodik, a merge/fleet-test/push ELOTT, igy egy kesobbi sikertelen landolas utan is a kartyan marad (N2, mert: --allow-ungated + sikertelen fleet-test -> 2 UNGATED komment egy soha-nem-landolt agra).
+
+**B2 (BLOKKOLO, dontes: MikroB komment 16402):** a lock-elengedes kiemelve egy kulon, top-level `release_land_lock_fd()` fuggvenybe (`marveen-land.sh` teteje, a `--selftest` blokk `exit`je elott, hogy mar elo legyen amikor a teszt lefut), amit `land_one` MINDKET `cleanup()` definicioja ezt hivja. A `--selftest` mostantol EZT a VALODI fuggvenyt hivja kozvetlenul (nem masolatot), plusz egy kulon erzekenyseg-teszt, ami a fuggveny sajat forrasat a futo szkriptbol ($0) kivonja, a brace-group-ot a regi bare exec alakra mutalja egy dobhato string-ben, es megerositi, hogy EZ valoban elnemitja a sajat stderr-t -- igy a teszt bizonyitottan erzekeny a pontos regresszora, nem csak formalisan lefed.
+
+**N1 (dontes: MikroB komment 16402, most bevezetve):** a kijelolt gate-halmaz a leiras OSSZES "Gate:" soranak UNIOJA (nem csak az utolso -- egy kartya egy kesobbi delta-korben kaphat masodik Gate: sort, es akkor mindkettot koveteli), es a kanban-LABELEK TOBBE NEM szamitanak kijelolesnek ("a @qa cimke nem kijeloles") -- csak a leiras sajat "Gate:" sora(i). Ha a leirasban EGY SEM ertelmezheto Gate: sor van, az mostantol REFUSED (korabban "nincs extra kovetelmeny" volt), --allow-ungated-dal felulirhato. A landolas-komment (a `LANDOLVA`/Merge-SHA automatikus komment) mostantol kiirja a TENYLEGESEN kiolvasott kijelolest (`Designated: <csv>` vagy `nincs kijelolve`), hogy egy kesobbi gyengites lathato legyen a kartyan, nem nema.
+
+**N2 (dontes: MikroB komment 16402):** az UNGATED LANDING komment(ek) mostantol a kartyat erinto `land_one` futason belul egy tombben gyulnek (`_ungated_pending`), es CSAK a push tenyleges sikeret megerosito ellenorzes UTAN iratnak ki -- egy olyan futasra, ami a gate-ellenorzesen tul ment, de kesobb (fleet-test, push-race, seam-check, stb.) elbukott, SOHA nem kerul ilyen komment a kartyara.
+
+**Meres:** `marveen-land.sh --selftest` 55/55 (valtozatlan esetszam, a brace-group teszt most a valodi `release_land_lock_fd`-t hivja + egy kulon erzekenyseg-teszt a mutacio-kivonasra). `marveen-land-card-branch.selftest.sh` 26->35 (uj esetek: N1a no-interpretable-Gate-line refuse+allow-ungated+Designated-sor, N1b ket kulon Gate: sor unioja, N1c @qa-label-csak nem kijeloles, N2 egy kenytelen fleet-test-bukas utan NINCS UNGATED komment -- plusz az aaa111/bbb222 fixtura "Gate: QA"-ra frissult, mert az uresen hagyott Gate: sor mar REFUSED-ot adna N1 alatt). `tsc --noEmit` tiszta, `lint-ratchet.sh`: "no rule got worse (354 lelet)". `agent-worktree-marveen.selftest.sh` es `self-advance-pickup.selftest.sh` valtozatlanul 10/10 es 42/42 (nem erintett fajlok).
+
+**Ki dontott:** a leletet RedHat adta (NO-GO, komment 16401, Gate-SHA 65f05d726465fb2ce9228ab653bdb0485b416355), a B2/N1/N2 dontest MikroB (komment 16402), a javitast fullstack vegezte. Delta-gate: QA + RedHat.
+
+## 2026-10-11 -- card cd3e577b negyedik delta: RedHat NO-GO a hivohelyek rogzitetlensegere + egy masik kartya gate nelkuli tartalmara (komment 16486)
+
+**A NO-GO oka:** a harmadik delta (fent) B2-je a lock-elengedest egy kulon `release_land_lock_fd()` fuggvenybe emelte, es a `--selftest` ezt a VALODI fuggvenyt hivja -- ez helyes, de RedHat merte, hogy semmi nem rogzitette, hogy `land_one` ket `cleanup()` definicioja TENYLEGESEN HIVJA ezt a fuggvenyt: a hivohelyeket (nem a fuggveny torzset) visszaallitva a regi bare `exec {FD}>&- 2>/dev/null` alakra mind a harom mutans (P1: elso cleanup(), P2: masodik cleanup(), P3: a zar el sem engedve) ZOLD maradt a negy erintett selftestben (B2'). Masreszt a Gate-SHA (0ce80233) kozvetlen szuloje egy MASIK kartya (d57d8a01, helyi-LLM kikapcsolo gomb) gate nelkuli, REVIEW nelkuli munkaja volt, ugyanazon az `agent/fullstack/work` agon -- pontosan az a hibaosztaly (egy kartya munkaja egy masik kartya landolasaban utazik gate nelkul), amit maga a cd3e577b (F1, per-card worktree) meg akar szuntetni (B3).
+
+**B2' (BLOKKOLO, dontes: MikroB komment 16487, a 16486-ban RedHat ket javaslata kozul az egyszerubbet valasztva):** `acquire_land_lock()` sajat bare `exec {LAND_LOCK_FD}>&-` hivasa (a sikertelen `flock` utani visszavonas) is `release_land_lock_fd()`-t hiv mostantol -- a fuggvenyen KIVUL a termelesi kodban sehol nincs tobbe bare `exec {LAND_LOCK_FD}>&-` alak. Ket uj, komment-mentesitett szoveg-pin a `--selftest`-ben: (1) a `$0` production-resze (a `--selftest` blokk es a `release_land_lock_fd` sajat torzse kiszurve) nem tartalmazhatja a bare mintat; (2) `land_one` mindket `cleanup() {` definicioja (szoveg szerint kivonva) tartalmazza a `release_land_lock_fd` hivast. Mind a harom RedHat-mutans (P1, P2, P3) kezzel visszamerve PIROS lett a javitas utan.
+
+**B3 (BLOKKOLO, dontes: MikroB komment 16487):** a cd3e577b delta-javitasa (harmadik delta tartalma, a `0ce80233` sajat diffje) ujraepitve az ELOZO, tiszta `65f05d72` tetejere, az `5b2d9cd0` (d57d8a01 munkaja) NELKUL -- `git checkout 65f05d72` + `git branch -f agent/fullstack/work` + `git cherry-pick 0ce80233` (egyetlen `DECISIONS.md` ukozes, farok-hozzafuzessel oldva, a kod 5 fajlja tisztan felment). Az `5b2d9cd0` at nem vesztett: sajat `card/d57d8a01` agra (uj worktree, `agent-worktree-marveen.sh fullstack --card d57d8a01`, `origin/develop`-rol) cherry-pickelve, ott a kartya sajat soraban folytatodik kulon REVIEW/gate-tel, ma nem landol.
+
+**N-a (nem blokkolo, de olcso volt, ugyanebben a korben, dontes: MikroB komment 16487):** uj teszteset (`cafe66`) a `marveen-land-card-branch.selftest.sh`-ban, FORDITOTT sorrendben a Gate: sorokkal (elobb "Gate: QA + RedHat", kesobb egy szukebb "Gate: QA" sor) -- ez megkuloniti az UNIO-olvasast az utolso-sor-olvasastol (a korabbi N1b teszt sorrendje csak bovult, igy a ket olvasasi mod ott egyformat adott).
+
+**Meres:** `marveen-land.sh --selftest` 57/57 (55 + 2 uj B2' pin). `marveen-land-card-branch.selftest.sh` 37/37 (35 + 2 uj N-a eset). `agent-worktree-marveen.selftest.sh` 10/10, `self-advance-pickup.selftest.sh` 42/42 (valtozatlan). `tsc --noEmit` tiszta. `lint-ratchet.sh`: "no rule got worse (354 lelet)". Kezi mutacio-visszameres (P1, P2, P3 a RedHat altal mert pontos forgatokonyvben) mindharom esetben PIROS a javitas utan, a DECISIONS.md elozo tul-altalanos "a teszt bizonyitottan erzekeny" allitasa itt pontositva: az ERZEKENYSEG most a hivohelyekre IS kiterjed, nem csak a fuggveny torzsere.
+
+**Ki dontott:** a leletet RedHat adta (NO-GO, komment 16486, Gate-SHA 0ce80233c25b9e880e6ec439331c2fa53901e34f), a B2'/B3/N-a dontest MikroB (komment 16487), a javitast fullstack vegezte. Delta-gate: QA + RedHat (5. kor).
+
 ## 2026-10-11 -- Kartya 517fdcc5 delta (folytatas a "Koteg 10/11 upstream-sync" bejegyzesehez, a fajl elejebb): QA FAIL (CRITICAL) + RedHat NO-GO javitva, DECISIONS/acknowledged-conflicts korrekcio
 
 Ez a bejegyzes eredetileg a parent "Koteg 10/11 upstream-sync" bejegyzes UTAN, de masok tail-appendjei ELE kerult (git-konfliktus-feloldasi hiba a landolaskor) -- a decisions-tail-append-guard ezt elkapta, a bejegyzes szoveg-valtozas nelkul a fajl VALODI vegere athelyezve. A parent bejegyzesre cimmel/datummal hivatkozik, nem ujra beillesztve.

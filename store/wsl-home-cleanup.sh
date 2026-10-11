@@ -97,10 +97,24 @@ load_worktrees() {
 }
 
 # --- live-process-cwd check -----------------------------------------------------------------
+# F1 (QA FAIL, card bc1e7ef2): /proc/*/cwd alone is blind to a process that was started ELSEWHERE
+# but has an open file descriptor INTO the candidate dir -- e.g. a `tail -f`/log-writer/build whose
+# own cwd is some other agent's worktree, redirecting its output into a dir this script is about to
+# classify. QA reproduced this directly: a background `tail -f` with cwd outside the target dir, fd
+# 6 pointed into it, made the dir classify DISPOSABLE and `--apply --yes` removed it while the
+# process was still alive and reading the file. /proc/*/fd/* is checked for the same reason and with
+# the same readlink+prefix pattern as cwd -- a live reference to the directory is a live reference,
+# whichever fd slot holds it.
 has_live_process_under() {
-  local dir="$1" link target
+  local dir="$1" link target fd
   for link in /proc/[0-9]*/cwd; do
     target=$(readlink -f "$link" 2>/dev/null) || continue
+    case "$target" in
+      "$dir"|"$dir"/*) return 0 ;;
+    esac
+  done
+  for fd in /proc/[0-9]*/fd/*; do
+    target=$(readlink -f "$fd" 2>/dev/null) || continue
     case "$target" in
       "$dir"|"$dir"/*) return 0 ;;
     esac

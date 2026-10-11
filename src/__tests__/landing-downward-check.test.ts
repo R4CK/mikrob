@@ -72,8 +72,12 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // edf9c837's seven pick_branch cases. This constant tracks ONE lander's own block, so it moves
     // whenever that block does -- the assertion it feeds is about the SHARED block being identical
     // in both, and lowering it to make an edit fit would delete exactly that guarantee.
+    //
+    // marveen-land.sh's own-case constant moved 3 -> 7 with card cd3e577b (F1 per-card
+    // worktree/branch: card_designated_gates_agree + --card/--all gate-requirement cases), which
+    // only touches marveen-land.sh, not the shared lib or cleancore-land.sh's own block.
     expect(cc).toBeGreaterThan(41) // 41 = cleancore-land.sh's own cases
-    expect(mv).toBeGreaterThan(3) //  3 = marveen-land.sh's own cases
-    expect(cc - 41).toBe(mv - 3) // the same shared block, in both
+    expect(mv).toBeGreaterThan(7) //  7 = marveen-land.sh's own cases
+    expect(cc - 41).toBe(mv - 7) // the same shared block, in both
   })
 })
