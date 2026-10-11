@@ -1274,6 +1274,19 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { author, content, automated } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
+    // `author` is a self-reported body field, not derived from auth identity (card 1cdac111,
+    // Cybersec LOW finding on 3906d77b): every fleet agent authenticates with the same shared
+    // dashboard Bearer token, which resolveAuth (auth-gate.ts) resolves to the generic
+    // { kind: 'token' } with no caller identity at all -- so any token holder can claim to be
+    // "qa", "cybersec" or any other agent, and the server has no way to check. DECISION (card
+    // 1cdac111): building real per-caller identity is a distinct, larger authentication
+    // project, not done here; the accepted mitigation is that every CONSUMER of this field
+    // (store/gate_author_role.py -> gate-closure-check.py and the enforcing
+    // landing-gate-verdict-parse.py, fixed by card 48b0dd36; kanban-draft-review-guard.ts)
+    // treats `author` as a claim, never as proof. Do not "fix" this here by rejecting or
+    // silently rewriting an unverified author -- see
+    // src/__tests__/kanban-comment-author-trust-boundary.test.ts, which pins the current,
+    // deliberate behavior as a regression.
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.
