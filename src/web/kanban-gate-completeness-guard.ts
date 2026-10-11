@@ -23,10 +23,10 @@
 // clause-scoping: only the text BEFORE the first `.`/`(`/`!`/`?` is the actual designation clause.
 // Ported here verbatim rather than re-derived, so this guard inherits that hardening instead of
 // re-introducing the bug it fixed.
-import { getKanbanCard, getKanbanComments, listKanbanCards, getFreshKanbanVerdict, type GateVerdictGate } from '../db.js'
+import { getKanbanCard, getKanbanComments, listKanbanCards, getFreshKanbanVerdict, type GateVerdictGate, type KanbanVerdict } from '../db.js'
 import { isForceActor } from '../kanban-force-actors.js'
 import { logger } from '../logger.js'
-import { isAgentVerdictRecordEnabled } from './kanban-verdicts.js'
+import { isAgentVerdictRecordEnabled, GATE_ROLE_AGENTS } from './kanban-verdicts.js'
 import type { LandedVerdict } from './kanban-landed-guard.js'
 
 export type GateAgent = 'qa' | 'qa2' | 'cybersec' | 'cybersec2' | 'cybered'
@@ -387,28 +387,78 @@ const GATE_AGENT_TO_CANONICAL: Readonly<Record<GateAgent, GateVerdictGate>> = {
   qa: 'QA', qa2: 'QA', cybersec: 'CYBERSEC', cybersec2: 'CYBERSEC', cybered: 'CYBERED',
 }
 
-function hasFreshStructuredVerdict(cardId: string, agent: GateAgent, sinceTs: number | null): boolean {
-  if (!isAgentVerdictRecordEnabled()) return false
+/** The freshest structured verdict row for `agent`'s canonical gate, or null if there is none, the
+ *  flag is off, or the read failed. B1 (b), defense in depth: re-checks the SAME role-allowlist
+ *  the POST route (kanban-verdicts.ts) already enforces -- a row from a non-gate-role author is
+ *  never trusted here either, even if that route-level check is ever bypassed or regresses. */
+function freshStructuredRow(cardId: string, agent: GateAgent, sinceTs: number | null): KanbanVerdict | null {
+  if (!isAgentVerdictRecordEnabled()) return null
   try {
-    const row = getFreshKanbanVerdict(cardId, GATE_AGENT_TO_CANONICAL[agent], sinceTs)
-    return row !== null && (row.verdict === 'PASS' || row.verdict === 'GO')
+    const canonical = GATE_AGENT_TO_CANONICAL[agent]
+    const row = getFreshKanbanVerdict(cardId, canonical, sinceTs)
+    if (row === null) return null
+    if (!(GATE_ROLE_AGENTS[canonical] as readonly string[]).includes(row.author.toLowerCase())) return null
+    return row
   } catch (err) {
     // Same fail-open rule as the rest of this guard: a read failure here must never BLOCK a close
     // that the comment-parse path would otherwise allow.
     logger.warn({ err, cardId, agent }, 'gate-completeness-guard: structured verdict read failed, ignored')
-    return false
+    return null
   }
 }
 
-/** Does `agent` have a fresh (post-latest-REVIEW) verdict-shaped comment on this card? */
-function hasFreshVerdict(cardId: string, comments: readonly Comment[], agent: GateAgent, sinceTs: number | null): boolean {
-  if (hasFreshStructuredVerdict(cardId, agent, sinceTs)) return true
+function commentOnlyFresh(comments: readonly Comment[], agent: GateAgent, sinceTs: number | null): boolean {
   return comments.some(
     (c) =>
       (c.author ?? '').toLowerCase() === agent &&
       VERDICT_RX.test(c.content ?? '') &&
       (sinceTs === null || c.created_at >= sinceTs),
   )
+}
+
+// A NO-GO/FAIL-shaped comment, same word-boundary discipline as VERDICT_RX above.
+const NEGATIVE_VERDICT_RX = /\bFAIL\b|\bNO[- ]GO\b/i
+
+function commentHasFreshNegative(comments: readonly Comment[], agent: GateAgent, afterTs: number): boolean {
+  return comments.some(
+    (c) => (c.author ?? '').toLowerCase() === agent && NEGATIVE_VERDICT_RX.test(c.content ?? '') && c.created_at >= afterTs,
+  )
+}
+
+type VerdictStatus = 'ok' | 'missing' | 'disagree'
+
+/** Card 2bfa4c67 delta (RedHat B3 + QA FAIL, comment 16564): a fresh structured record is now
+ *  AUTHORITATIVE when one exists, not a one-way OR falling back into the comment-parse path. The
+ *  old OR let a structured FAIL/NO-GO be silently bypassed by a forgeable "PASS" comment (QA's
+ *  measured repro: an authenticated FAIL record sat next to a comment-only PASS, and the close
+ *  was allowed) -- a structured FAIL/NO-GO now NEVER falls back to the comment-parse path. A
+ *  structured GO/PASS that a LATER comment from the SAME gate contradicts is `disagree`, not a
+ *  silent `ok` either: the two sources disagree and the guard must not pick a side. */
+function freshVerdictStatus(cardId: string, comments: readonly Comment[], agent: GateAgent, sinceTs: number | null): VerdictStatus {
+  const row = freshStructuredRow(cardId, agent, sinceTs)
+  if (!row) return commentOnlyFresh(comments, agent, sinceTs) ? 'ok' : 'missing'
+  const structuredPositive = row.verdict === 'PASS' || row.verdict === 'GO'
+  if (!structuredPositive) return 'missing'
+  if (commentHasFreshNegative(comments, agent, row.created_at)) return 'disagree'
+  if (row.author_verified === 0) {
+    // B1 (d): until 2520b85a enforces per-agent auth fleet-wide, a close that relies on an
+    // UNVERIFIED structured record stays visible (here: in the server log), not silent.
+    logger.info(
+      { cardId, agent, gate: GATE_AGENT_TO_CANONICAL[agent] },
+      'gate-completeness-guard: closing on an UNVERIFIED structured verdict record (author_verified=0)',
+    )
+  }
+  return 'ok'
+}
+
+/** QA/QA2 (and Cybersec/Cybersec2) are ONE requirement -- a `disagree` on either sibling blocks
+ *  the whole family, even if the other sibling reads `ok`: the disagreement itself is the unsafe
+ *  signal, and the guard must not quietly prefer whichever sibling happens to agree with it. */
+function familyStatus(cardId: string, comments: readonly Comment[], agents: readonly GateAgent[], sinceTs: number | null): VerdictStatus {
+  const statuses = agents.map((a) => freshVerdictStatus(cardId, comments, a, sinceTs))
+  if (statuses.includes('disagree')) return 'disagree'
+  if (statuses.includes('ok')) return 'ok'
+  return 'missing'
 }
 
 function allowUnverified(cardId: string, reason: string, extra: Record<string, unknown> = {}): LandedVerdict {
@@ -472,18 +522,39 @@ export function gateCompletenessGuardVerdict(cardId: string, nextStatus: unknown
   // acting, not about requiring both). A Gate line naming only "QA" must not demand a qa2 verdict
   // that nothing ever asked for -- either one satisfies the QA-family requirement.
   const missing: string[] = []
+  const disagree: string[] = []
   if (designated.has('qa') || designated.has('qa2')) {
-    const qaFamilyOk = hasFreshVerdict(cardId, comments, 'qa', sinceTs) || hasFreshVerdict(cardId, comments, 'qa2', sinceTs)
-    if (!qaFamilyOk) missing.push('QA')
+    const s = familyStatus(cardId, comments, ['qa', 'qa2'], sinceTs)
+    if (s === 'disagree') disagree.push('QA')
+    else if (s === 'missing') missing.push('QA')
   }
   // Cybersec/Cybersec2 are ONE requirement, same reasoning as the QA/QA2 family check above --
   // card 21abfe0b, RedHat NO-GO B1.
   if (designated.has('cybersec') || designated.has('cybersec2')) {
-    const cybersecFamilyOk = hasFreshVerdict(cardId, comments, 'cybersec', sinceTs) || hasFreshVerdict(cardId, comments, 'cybersec2', sinceTs)
-    if (!cybersecFamilyOk) missing.push('Cybersec')
+    const s = familyStatus(cardId, comments, ['cybersec', 'cybersec2'], sinceTs)
+    if (s === 'disagree') disagree.push('Cybersec')
+    else if (s === 'missing') missing.push('Cybersec')
   }
-  if (designated.has('cybered') && !hasFreshVerdict(cardId, comments, 'cybered', sinceTs)) missing.push('Cybered')
-  if (missing.length === 0) return { blocked: false }
+  if (designated.has('cybered')) {
+    const s = familyStatus(cardId, comments, ['cybered'], sinceTs)
+    if (s === 'disagree') disagree.push('Cybered')
+    else if (s === 'missing') missing.push('Cybered')
+  }
+  if (missing.length === 0 && disagree.length === 0) return { blocked: false }
+
+  // B3: a disagreement between the structured record and the comment-parse path is its own
+  // blocking reason -- distinct wording from "missing", so MikroB (or whoever force:true's past
+  // it) can tell the two apart instead of re-dispatching a gate that already DID verdict.
+  if (disagree.length > 0) {
+    const disagreeNames = disagree.join(', ')
+    return {
+      blocked: true,
+      message:
+        `DISAGREE-SOURCE: ez a kártya nem zárható: ${disagreeNames} esetén a strukturált verdikt-rekord és a ` +
+        `komment-alapú verdikt ELLENTMOND egymásnak a jelenlegi körre (RedHat B3 / QA 16564) -- a guard a két ` +
+        `forrás közül nem választ csendben. MikroB döntse el, melyik hiteles, és ha szükséges, force:true-val zárja.`,
+    }
+  }
 
   const names = missing.join(', ')
   return {

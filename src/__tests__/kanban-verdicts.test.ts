@@ -117,8 +117,13 @@ describe('kanban-verdicts', () => {
       expect(out.body).toMatchObject({ gate: 'CYBERSEC', verdict: 'NO-GO', author: 'cybersec2', author_verified: 1 })
     })
 
-    it('rejects a self-proposed verdict with 403, no row created', async () => {
-      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', author: 'qa', proposer: 'qa' })
+    it('rejects a self-proposed verdict with 403, no row created -- proposer comes from an AUTHENTICATED proposal record, not the request body', async () => {
+      createDeviceKey('agent:qa')
+      const propose = fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:qa', deviceId: 1 })
+      await tryHandleKanbanVerdicts(propose.ctx)
+      expect(propose.out.status).toBe(201)
+
+      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', author: 'qa' })
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
       expect(out.status).toBe(403)
       const list = fakeCtx('/api/kanban/c1/verdicts', 'GET')
@@ -126,10 +131,51 @@ describe('kanban-verdicts', () => {
       expect(list.out.body).toEqual([])
     })
 
-    it('a sibling-proposed verdict is accepted (different agent, same role family)', async () => {
-      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2', proposer: 'cybersec' })
+    it('a request-body proposer claim is IGNORED -- self-proposal is accepted when no authenticated proposal record exists', async () => {
+      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', author: 'qa', proposer: 'qa' })
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
       expect(out.status).toBe(201)
+    })
+
+    it('a sibling-proposed verdict is accepted (different agent, same role family)', async () => {
+      createDeviceKey('agent:cybersec')
+      const propose = fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:cybersec', deviceId: 1 })
+      await tryHandleKanbanVerdicts(propose.ctx)
+
+      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2' })
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(201)
+    })
+
+    it('rejects an author authenticated but NOT in the gate role (RedHat T5: fullstack writing a QA verdict)', async () => {
+      createDeviceKey('agent:fullstack')
+      const { ctx, out } = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'GO' },
+        { kind: 'device', device: 'agent:fullstack', deviceId: 1 },
+      )
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(403)
+      const list = fakeCtx('/api/kanban/c1/verdicts', 'GET')
+      await tryHandleKanbanVerdicts(list.ctx)
+      expect(list.out.body).toEqual([])
+    })
+
+    it('rejects a gate value not designated on the card\'s own "Gate:" line', async () => {
+      createKanbanCard({ id: 'c2', title: 'y', status: 'planned', description: 'Gate: QA' })
+      const { ctx, out } = fakeCtx('/api/kanban/c2/verdicts', 'POST', { gate: 'CYBERED', verdict: 'GO', author: 'cybered' })
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(400)
+    })
+
+    it('a designated gate is accepted; a card with no Gate: line at all is permissive (matches the completeness guard default)', async () => {
+      createKanbanCard({ id: 'c2', title: 'y', status: 'planned', description: 'Gate: QA + Cybered' })
+      const ok = fakeCtx('/api/kanban/c2/verdicts', 'POST', { gate: 'CYBERED', verdict: 'GO', author: 'cybered' })
+      expect(await tryHandleKanbanVerdicts(ok.ctx)).toBe(true)
+      expect(ok.out.status).toBe(201)
+      // c1 (from beforeEach) has no description at all -- no verifiable claim, so nothing is rejected.
+      const noLine = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERED', verdict: 'GO', author: 'cybered' })
+      expect(await tryHandleKanbanVerdicts(noLine.ctx)).toBe(true)
+      expect(noLine.out.status).toBe(201)
     })
 
     it('rejects an invalid gate value with 400', async () => {
@@ -211,6 +257,51 @@ describe('kanban-verdicts', () => {
     })
   })
 
+  describe('POST/GET /api/kanban/:id/proposals (authenticated-only, card 2bfa4c67 delta B2/W3)', () => {
+    it('an agent:<id> device key may propose; GET returns the latest row', async () => {
+      createDeviceKey('agent:backend')
+      const { ctx, out } = fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:backend', deviceId: 1 })
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(201)
+      expect(out.body).toMatchObject({ card_id: 'c1', proposer: 'backend' })
+
+      const get = fakeCtx('/api/kanban/c1/proposals', 'GET')
+      await tryHandleKanbanVerdicts(get.ctx)
+      expect(get.out.body).toMatchObject({ proposer: 'backend' })
+    })
+
+    it('the shared dashboard token cannot propose (403, nothing written)', async () => {
+      const { ctx, out } = fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'token' })
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(403)
+      const get = fakeCtx('/api/kanban/c1/proposals', 'GET')
+      await tryHandleKanbanVerdicts(get.ctx)
+      expect(get.out.body).toBeNull()
+    })
+
+    it('no auth at all cannot propose (403)', async () => {
+      const { ctx, out } = fakeCtx('/api/kanban/c1/proposals', 'POST', undefined)
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(403)
+    })
+
+    it('append-only: a second proposal supersedes the first as the latest', async () => {
+      createDeviceKey('agent:backend')
+      createDeviceKey('agent:backend2')
+      await tryHandleKanbanVerdicts(fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:backend', deviceId: 1 }).ctx)
+      await tryHandleKanbanVerdicts(fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:backend2', deviceId: 2 }).ctx)
+      const get = fakeCtx('/api/kanban/c1/proposals', 'GET')
+      await tryHandleKanbanVerdicts(get.ctx)
+      expect(get.out.body).toMatchObject({ proposer: 'backend2' })
+    })
+
+    it('404s for a nonexistent card', async () => {
+      const { ctx, out } = fakeCtx('/api/kanban/nope/proposals', 'POST', undefined, { kind: 'device', device: 'agent:backend', deviceId: 1 })
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(404)
+    })
+  })
+
   describe('migration rollback (kanban_verdicts, kanban_gate_assignments)', () => {
     it('DROP TABLE leaves a neighbouring table intact, and re-running the CREATE recreates it, usable', () => {
       const db = getDb()
@@ -234,6 +325,23 @@ describe('kanban-verdicts', () => {
       expect(db.prepare('SELECT * FROM kanban_verdicts').all()).toEqual([])
       db.exec(`INSERT INTO kanban_verdicts (card_id, gate, verdict, author, author_verified, created_at) VALUES ('c1','QA','PASS','qa',0,0)`)
       expect(db.prepare('SELECT * FROM kanban_verdicts').all()).toHaveLength(1)
+    })
+
+    it('kanban_fix_proposals: DROP TABLE + CREATE TABLE IF NOT EXISTS is the same additive/rollback shape', () => {
+      const db = getDb()
+      db.exec(`INSERT INTO kanban_fix_proposals (card_id, proposer, created_at) VALUES ('c1','qa',0)`)
+      db.exec('DROP TABLE kanban_fix_proposals')
+      expect(() => db.prepare('SELECT * FROM kanban_fix_proposals').all()).toThrow()
+      expect(db.prepare('SELECT * FROM kanban_cards WHERE id = ?').get('c1')).toBeTruthy()
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS kanban_fix_proposals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT NOT NULL, proposer TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        )
+      `)
+      expect(db.prepare('SELECT * FROM kanban_fix_proposals').all()).toEqual([])
+      db.exec(`INSERT INTO kanban_fix_proposals (card_id, proposer, created_at) VALUES ('c1','qa',0)`)
+      expect(db.prepare('SELECT * FROM kanban_fix_proposals').all()).toHaveLength(1)
     })
   })
 })
