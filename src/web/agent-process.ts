@@ -31,7 +31,7 @@ import {
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider, type AuthMode } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider, readJsonObjectForWrite, type AuthMode } from './agent-config.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, readAgentConfigForOauthDecision, reverifyOauthTokenFile, findOauthTokenFileCollision } from './agent-oauth-token-file.js'
 import { getCustomProviderOrThrow } from './custom-providers.js'
 import { worksourceRootFor } from './worksource-queue.js'
@@ -351,6 +351,12 @@ export function ownChannelProviderForScope(
 ): string | null {
   return hasOwnToken && resolvedProvider ? resolvedProvider : null
 }
+
+// NOT ADOPTED (köteg 10 auto-merge reintroduced upstream's syncTeamsDisplayName() helper here --
+// already explicitly decided against in an EARLIER round, ENVTMPMODE925/#1595: this write already
+// goes through writeAgentConfig(), which forces AGENT_CONFIG_MODE on every write, not just on
+// create -- a stronger guarantee than upstream's create-only fix. See env-tmp-mode.test.ts's own
+// comment for the original decision. Deleted again rather than left as dead code.
 
 // Wrap the telegram plugin's bun stdio server in a tee that persists each
 // inbound channel notification to <stateDir>/inbox-pending.jsonl, which the
@@ -1437,6 +1443,57 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
   }
 }
 
+// Pre-approve a custom ANTHROPIC_API_KEY in a config root's .claude.json so
+// Claude Code's "Detected a custom API key" TUI prompt never renders in
+// --channels (non-interactive) mode.
+//
+// Root cause: when a custom provider uses authHeader=x-api-key, agent-process
+// exports ANTHROPIC_API_KEY. The Claude Code TUI treats ANTHROPIC_API_KEY as
+// an approval-required key (it shows "Detected a custom API key in your
+// environment / Do you want to use this API key?"). In --channels mode this
+// dialog cannot be answered interactively, so the agent parks on "Not logged
+// in". The ANTHROPIC_AUTH_TOKEN (Bearer) path has no such gate.
+//
+// Fix: mirror the CLI's own approval storage. The CLI stores the key as
+//   customApiKeyResponses.approved: [key.trim().slice(-20)]
+// (empirically verified from the 2.1.222 binary: `function Jne(e){return
+//  e.trim().slice(-20)}`). Pre-seeding this entry before spawn makes the CLI
+// treat the key as already approved. Idempotent; atomic 0600 write.
+//
+// NOT WIRED (köteg 10, upstream ab5325c0 range): this function itself is adopted
+// (readJsonObjectForWrite-protected, pinned by silent-external-failures.test.ts),
+// but the CALLER -- upstream's buildCustomProviderLaunchEnv, and the isCustom/
+// customProviderDef resolution it needs at the top of startAgentProcessUnlocked --
+// is NOT adopted here (restructures the customProvider launch-env lookup this fork
+// does differently, via resolveProviderEnv below). Own card to actually invoke this.
+export function stampCustomApiKeyApproval(dotClaudePath: string, apiKey: string): boolean {
+  const suffix = apiKey.trim().slice(-20)
+  if (!suffix) return false
+  try {
+    // JSONCLOBBER926B: a corrupt .claude.json is refused, not reset to a
+    // one-key object. It carries the agent's onboarding and project-trust
+    // flags and its local-scope MCP servers (credentials included), and the
+    // old "start fresh" silently destroyed all of them. The refusal lands in
+    // the catch below: no stamp, a warn naming the file, and the file intact.
+    const data = readJsonObjectForWrite(dotClaudePath)
+    const existing = (data.customApiKeyResponses && typeof data.customApiKeyResponses === 'object' && !Array.isArray(data.customApiKeyResponses))
+      ? data.customApiKeyResponses as Record<string, unknown>
+      : {}
+    const approved = Array.isArray(existing.approved) ? existing.approved as string[] : []
+    if (approved.includes(suffix)) return false
+    data.customApiKeyResponses = { ...existing, approved: [...approved, suffix] }
+    atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+    logger.info({ dotClaudePath }, 'custom-api-key: pre-stamped customApiKeyResponses.approved (prevents interactive approval prompt in --channels TUI)')
+    return true
+  } catch (err) {
+    logger.warn({ err, dotClaudePath }, 'custom-api-key: could not stamp approval (agent may park on API key prompt if running non-interactively)')
+    return false
+  }
+}
+
+// NOT ADOPTED (köteg 10, upstream ab5325c0 range, see the matching NOT-ADOPTED note further down
+// in startAgentProcessUnlocked for why): buildCustomProviderLaunchEnv, upstream's full
+// customProvider launch-env builder (envPrefix + customApiKeyForApproval). Own card.
 // Pre-stamp the Fable overage-consent acknowledgment in a config root's
 // .claude.json so the "Fable 5 now uses usage credits" dialog never renders.
 //
@@ -2229,6 +2286,15 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // launch command (LATENSKULCSARGV920, card 248d3013) -- `name` scopes the file so
     // clearLaunchSecrets(name) on stop can find it by the `<agent>.` prefix without touching a
     // sibling agent's secret.
+    //
+    // NOT ADOPTED (köteg 10, upstream ab5325c0 range): upstream's stampCustomApiKeyApproval /
+    // customApiKeyForApproval pre-seeds Claude Code's "Detected a custom API key" TUI approval into
+    // .claude.json for authHeader=x-api-key custom providers, so a --channels (non-interactive)
+    // agent does not park on that dialog. Real gap, not wired here -- it needs isCustom/
+    // customProviderDef resolved earlier in this function (upstream's version restructures the
+    // customProvider lookup this fork does differently, via resolveProviderEnv below), plus
+    // JSONCLOBBER926B's readJsonObjectForWrite (also not adopted this round, see DECISIONS.md).
+    // Own card, not a rider on a 33-commit batch.
     let providerEnv: string
     try {
       providerEnv = resolveProviderEnv(model, (id) => {
@@ -2369,10 +2435,12 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
         if (!existsSync(serverPath)) throw new Error(`worksource server not found at ${serverPath}`)
         const mcpJsonPath = join(agentDir(name), '.mcp.json')
         let mcpConfig: { mcpServers: Record<string, unknown> } = { mcpServers: {} }
-        try {
-          const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
-          if (existing && typeof existing === 'object' && existing.mcpServers) mcpConfig = { mcpServers: existing.mcpServers }
-        } catch { /* absent or unreadable -> start from empty, do not fail the launch */ }
+        // JSONCLOBBER926B: absent -> start from empty; an existing but corrupt
+        // .mcp.json is refused (it may hold the agent's other MCP servers), and
+        // the refusal lands in this block's catch: the agent starts without the
+        // worksource channel, as for any other wiring failure, and the file stays.
+        const existing = readJsonObjectForWrite(mcpJsonPath)
+        if (isPlainObject(existing.mcpServers)) mcpConfig = { mcpServers: existing.mcpServers }
         mcpConfig.mcpServers.worksource = {
           command: process.execPath,
           args: [serverPath],
@@ -2505,10 +2573,12 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // fleet token to a BYO agent that is not own_team).
     // needsFleetOauthFor (RedHat NO-GO B1, comment 15850, card 617d136d) also excludes
     // customProviderId: isClaude alone is `model.startsWith('claude-')`, which says nothing about
-    // WHERE the request goes -- see the function's own doc comment above.
+    // WHERE the request goes -- see the function's own doc comment above. This fork's version is
+    // strictly safer than upstream's own `isClaude && authMode !== 'api' && !isOwnTeam` (ab5325c0,
+    // this köteg's own range) -- that shape is exactly the bug RedHat/WhiteHat found on 617d136d.
     const needsFleetOauth = needsFleetOauthFor(isClaude, authMode, isOwnTeam, customProviderId)
     if (ownTokenFile) {
-      // oauthTokenFile: the agent's own setup-token file, INSTEAD of the fleet file.
+      // oauthTokenFile: the agent's own setup-token file, INSTEAD of the fleet file (2fb86ef2).
       oauthTokenEnv = ownOauthTokenExport(ownTokenFile)
     } else if (!claudeConfigDir && hasFleetOauthToken() && needsFleetOauth) {
       oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
