@@ -19649,6 +19649,105 @@ Teljes suite + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
 
 **Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, 16380 vege).
 
+## 2026-10-11 -- bc1e7ef2 delta-fix round 2: WhiteHat NO-GO on 789fd6ef (B1/B2/B3)
+
+**Forrás:** WhiteHat (cybersec) NO-GO, komment 16566, saját eldobható SHA-pinnelt gate-worktree-ben
+(`/home/neon/wh-gate-789fd6ef`) reprodukálva, `--apply` csak ál-$HOME-on futtatva. MikroB döntés
+(16567) a javítás irányára, gate-kijelölést is átírta: Re-gate QA + RedHat (a B1-B3 javítási sorokat
+WhiteHat ÉS WhiteHat2 is javasolta, ezért a biztonsági gate RedHat).
+
+**B1 (HIGH, BLOKKOLÓ):** a `has_live_process_under()` hívás a `classify()`-ban az `if [ -n "$owner" ]`
+ágon BELÜL futott, tehát csak REGISZTRÁLT worktree-kre nézte a cwd/fd-t. QA saját reprodukciós alakja
+(sima `mkdir` + `tail -f`, nem worktree) a `--apply --yes` alatt a 789fd6ef fán IS törlődött, mert egy
+nem regisztrált mappa sosem jutott el az `owner`-ágig. Élő mérés (ca59cabc dry-run, élő `/home/neon`):
+DISPOSABLE=193, ebből 69 nem regisztrált -- ott a javítás korábban nem védett.
+
+**B2 (HIGH/MEDIUM, BLOKKOLÓ az `--apply` jóváhagyásához):** az életkor-jel a CSAK a tető mappa saját
+mtime-ja volt. Egy mély fájl szerkesztése nem mozdítja a tető mtime-ját, tehát egy régi-tetejű, de
+frissen szerkesztett tartalmú mappa (pl. `qa-deep`) DISPOSABLE-nek osztályozódott és törlődött.
+
+**B3 (MEDIUM-HIGH, BLOKKOLÓ az `--apply` jóváhagyásához):** egy tiszta (git status szerint nem dirty),
+REGISZTRÁLT worktree detached HEAD-je, amire semelyik branch/remote/tag nem mutat, `git worktree
+remove --force` után dangling objektummá válik -- `git gc`-ig menthető, de a `status --porcelain` ezt
+nem látja, tehát a meglévő dirty-ellenőrzés nem véd ellene.
+
+**Javítás:**
+1. B1: a `has_live_process_under()` hívás kikerült a `if owner` ágból, MINDEN jelölt mappára lefut,
+   közvetlenül a `HAS_ACTIVE_CHILD` rövidzár után, mielőtt a `classify()` egyáltalán megnézné, van-e
+   `owner`-je a mappának.
+2. B2: az életkor-ellenőrzés `find "$path" -mmin "-$((MIN_AGE_HOURS*60))" -print -quit` -- ha BÁRMELY
+   fájl a fában (bármilyen mélységben) az ablakon belül módosult, a mappa UNKNOWN, nem DISPOSABLE.
+3. B3: `remove_entry()`-ben, a dirty-ellenőrzés UTÁN, regisztrált worktree-nél: `git rev-list -n1 HEAD
+   --not --branches --remotes --tags` -- ha nem üres (a HEAD semelyik branch/remote/tag-ről nem
+   érhető el), SKIP, nincs törlés.
+
+**Teszt:** `store/wsl-home-cleanup.selftest.sh`, MikroB kifejezett utasítása szerint (16567: "a teszt a
+classify()/--apply útvonalon fusson, ne a függvényt hívja közvetlenül") -- az előző kör `has_live_
+process_under()`-t KÖZVETLENÜL hívó esete KICSERÉLVE két `classify()`-szintű, UNREGISZTERT mappás
+esetre (fd-ág és cwd-ág, QA saját alakja), plusz egy `classify()`-szintű mély-mtime eset (B2), plusz egy
+`remove_entry()`-szintű eset egy valódi, detached HEAD-es, el nem ért commitú registered worktree-vel
+(B3). 22/22 zöld. MUTÁCIÓ-PROOF mindhárom javításra KÜLÖN-KÜLÖN: a B1-fix kikapcsolása (a hívás elé
+`false &&`) pontosan a 2 új B1-tesztet viszi pirosra (20/22), minden más zöld; a B2-fix visszaállítása
+a régi top-mtime logikára pontosan 1 tesztet visz pirosra (21/22); a B3-ellenőrző blokk kivétele
+pontosan 1 tesztet visz pirosra (21/22). Mindhárom mutáció után a javítás visszaállítva, 22/22 zöld
+megerősítve. `bash -n store/wsl-home-cleanup.sh`: tiszta.
+
+**Nem ebben a körben (MikroB döntés: nem blokkoló, csak akkor javítjuk, ha olcsó -- ez a kör nem nyúlt
+hozzá):** F4 (gitignore-olt fájl elvész egy egyébként tiszta worktree-ben), F5 (szóközös útvonalú
+worktree az awk `$2`-n csonkul), F6 (a dry-run riport nem ad okot az ACTIVE besoroláshoz).
+
+**Ki döntött:** backend2 (MikroB döntése a WhiteHat NO-GO után). Delta-gate: QA + RedHat.
+
+## 2026-10-11 -- d8d035f8: WhiteHat (cybersec, cybersec2) és RedHat (cybered) pin a heti model-fallback lépcső alól
+
+**Forrás:** Peti, Telegram 11011 (2026-10-11). A kártya eredeti premisszája (10097, 2026-10-02: fix
+Opus 5.5) elavult -- a 10812/10814 óta (2026-10-09) mindkét biztonsági gate claude-sonnet-5-5-ön fut.
+MikroB a 16511 kommentben leállította a dispatch-et, amíg nem tisztázódik, mire kell a pin; a 16515
+döntés: a pin megmarad, de a cél claude-sonnet-5-5, hatókör cybersec + cybersec2 + cybered.
+
+**Kockázat, ha nincs pin:** a heti model-fallback lépcső (és az 5 órás banner-fallback) minden nem-MAIN
+ügynököt automatikusan lefelé lépcsőz a terhelés nővén -- a két biztonsági gate pont akkor esne a
+legdrágább pillanatban olcsóbb modellre, amikor a flotta a legtöbb munkát próbálja átnyomni rajtuk.
+Ugyanaz a kockázati osztály, amit a QA/QA2 `NO_HAIKU_AGENTS` padló már véd (a magic-link 151/151-zöld,
+2 MAJOR hibát rejtő esete): egy leépített review-gate nem véd semmit.
+
+**Javítás:** `src/model-catalog.ts`-ben új, deklaratív `MODEL_PINNED_AGENTS` halmaz (`cybersec`,
+`cybersec2`, `cybered`) + `isModelPinned()`, a meglévő `NO_HAIKU_AGENTS`/`applyNoHaikuFloor` minta
+szerint (fix lista, nem config-mező -- egy ritkán változó listának nem kell saját séma/migráció).
+`src/web/model-fallback-runner.ts`: `checkAgent()` a függvény ELSŐ sorában visszatér pinnelt névre,
+MIELŐTT a parkolt-ügynök ág vagy a banner/heti tengely bármit kiszámolna -- tehát a pin MINDKÉT
+tengelyt kizárja (banner-fallback ÉS heti tier), nem csak a hetit. `updateStoredModelForParkedAgent()`
+ugyanezt a kaput saját magában is megismétli (védelem rétegezve, MikroB kifejezett kérésére: "amit a
+checkAgent és az updateStoredModelForParkedAgent is tisztel"). `readFleetTierState()` a dashboard-sorban
+is `exempt=true`-nak jelöli a pinnelt ügynököt (`collect(name, isModelPinned(name))`), hogy a kezelőfelület
+ne hazudjon egy célmodellt, amit a sweep sosem írna ki.
+
+**Teszt:** `src/__tests__/model-pinned-agents.test.ts`, új fájl, 10 teszt. Tiszta függvény-szint:
+`isModelPinned` a három névre igaz, máshol hamis; 99%-os heti terhelésnél (`weeklyTierIndex(99,...)` =
+tier 2) egy NEM pinnelt ügynök lépcsőzne (`weeklyTargetModel` elmozdul a bázisáról), a pinnelt nem --
+az `isModelPinned` eredménye a %-tól függetlenül igaz. Forrás-drótozási szint (a `parked-agent-
+cheaper-tier-wins.test.ts` mintáját követve, mert a runner IO-ja miatt a függvények nem exportáltak):
+`checkAgent` a pin-kaput a parkolt-ágnál ELŐBB futtatja; `updateStoredModelForParkedAgent` a saját
+kapuját a modell-olvasás ELŐTT futtatja; `readFleetTierState` a `collect(name, isModelPinned(name))`
+hívást tartalmazza. MUTÁCIÓ-PROOF mindhárom kapura KÜLÖN-KÜLÖN: a `checkAgent`-beli kapu kivétele
+pontosan 1 tesztet (a wiring-sorrend tesztet) visz pirosra, 9/10 marad zöld; az `updateStoredModel
+ForParkedAgent`-beli kapu kivétele pontosan 1 másikat; a `readFleetTierState` exempt-sor visszaállítása
+`false`-ra pontosan a dashboard-wiring tesztet. Mindhárom után visszaállítva, 10/10 zöld megerősítve.
+Regresszió: `model-catalog.test.ts` (meglévő), `parked-agent-cheaper-tier-wins.test.ts`,
+`model-fallback.test.ts`, `runner-conflict-resolution-pins.test.ts` -- mind zöld a változás után
+(101/101 összesen az öt fájlon). `tsc --noEmit` tiszta.
+
+**Nem ebben a körben:** a `MODEL_LADDER`/`CLAUDE_MODELS`/`MODEL_ALIASES` még a régi "5" család neveit
+(`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5-...`) ismeri, nem a mai "5.5" családot
+(`claude-sonnet-5-5` stb.) -- ez azt jelenti, hogy egy `claude-sonnet-5-5`-ön futó, NEM pinnelt ügynök
+a heti ramp `weeklyTargetModel()`-jének off-catalog védelme miatt ma is a saját bázisán marad (a
+függvény off-ladder bázisra önmagát adja vissza), DE a banner-fallback tengely (`chain.indexOf`) egy
+ilyen modellt a lánc elején (index 0) kezelne, és egy valódi 5h-limit banire levinné egy RÉGI névre.
+Ez a kártya kifejezetten a pin-mechanizmust kérte, nem a teljes katalógus 5.5-re frissítését -- a
+katalógus-frissítés külön kártya, ha Peti úgy dönt (nem nyitva ebben a körben, csak megjegyezve).
+
+**Ki döntött:** Peti (11011), MikroB (16515). Gate: QA + RedHat.
+
 ## 2026-10-11 -- Kartya 3d186397 delta #2 (folytatas a fajl elejebb levo "senderId path-traversal audit" bejegyzeshez): QA FAIL javitva -- a validacio az allowFrom-modositas ELE kerult
 
 QA FAIL (10812) es WhiteHat F2 (ugyanaz a gyoker-ok, komment 10812/10815): a safeJoin-ellenorzes a MARKER-fajl irasara korlatozodott mindket hivasi helyen, de az allowFrom-push, a pending-kod torlese es az access.json kiirasa MAR AZ ELOTT lefutott. Egy traversal-alaku senderId ezert a `routes/agents.ts` uton 500-at adott VISSZA ("Failed to approve pairing"), MIKOZBEN a sender MAR bekerult az allowFrom-ba -- a jovahagyo felrevezetve latta a hibas valaszt. A `channel-invites.ts` auto-jovahagyasi sweep-jen (EMBERI JOVAHAGYAS NELKUL) meg sulyosabb: a hiba csak `logger.warn`, a mutacio (allowFrom, pending, invite-token elkoltese) FELTETEL NELKUL lefutott.
