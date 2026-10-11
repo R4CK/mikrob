@@ -105,21 +105,56 @@ load_worktrees() {
 # process was still alive and reading the file. /proc/*/fd/* is checked for the same reason and with
 # the same readlink+prefix pattern as cwd -- a live reference to the directory is a live reference,
 # whichever fd slot holds it.
-has_live_process_under() {
-  local dir="$1" link target fd
-  for link in /proc/[0-9]*/cwd; do
-    target=$(readlink -f "$link" 2>/dev/null) || continue
+#
+# B1' (RedHat NO-GO 16676, Gate-SHA 55c566e0): a readlink sweep over every /proc/[0-9]*/cwd and
+# /proc/[0-9]*/fd/* entry is itself slow (live box: 2688-3029 open fds). The B1 fix called it once
+# PER CANDIDATE from classify(), turning one run into ~249 full sweeps -- measured 2321.9s (38.7
+# minutes) end to end, long enough for a process to start cwd'd into an already-classified dir
+# before removal reached it. scan_live_proc_targets() now does the sweep ONCE; classify() (via
+# main()) reuses a single pre-built scan for every candidate (LIVE_PROC_TARGETS_PRIMED below), and
+# remove_entry() always takes its own FRESH scan immediately before deleting -- the TOCTOU
+# re-check that the window above made necessary.
+scan_live_proc_targets() {
+  # RedHat's literal suggestion (16676) was "egy readlink -f hívás az összes útra" -- one readlink
+  # -f invocation fed every /proc/[0-9]*/cwd and /proc/[0-9]*/fd/* path, instead of one `readlink`
+  # fork per path (8.2s for ~2660 fds on this box). That single-invocation form IS much faster
+  # (0.14s measured), but turned out unreliable here with this many arguments: measured dropping
+  # ~95% of them with no error output (2740 args in, ~140-150 lines out), apparently silently,
+  # even for a target proven present and stable by an independent, narrower readlink call made a
+  # moment earlier -- a real finding during this card's own round-3 verification, not something
+  # RedHat's note anticipated. `find`'s `-printf '%l'` reads each symlink's target with its own
+  # single lstat/readlink syscall (no further canonicalization needed -- the kernel already
+  # stores /proc/<pid>/cwd and fd/* as fully-resolved absolute paths, nothing nested to follow),
+  # inside ONE process instead of one fork per path: same ~0.1s speed, and it reliably returned
+  # every entry across repeated runs where the batched `readlink -f` call did not.
+  find /proc -maxdepth 3 \( -path '/proc/[0-9]*/cwd' -o -path '/proc/[0-9]*/fd/*' \) \
+    -printf '%l\n' 2>/dev/null
+}
+
+path_under_targets() {
+  local dir="$1" targets="$2" target
+  [ -n "$targets" ] || return 1
+  while IFS= read -r target; do
+    [ -n "$target" ] || continue
     case "$target" in
       "$dir"|"$dir"/*) return 0 ;;
     esac
-  done
-  for fd in /proc/[0-9]*/fd/*; do
-    target=$(readlink -f "$fd" 2>/dev/null) || continue
-    case "$target" in
-      "$dir"|"$dir"/*) return 0 ;;
-    esac
-  done
+  done <<< "$targets"
   return 1
+}
+
+# Set by main() for the duration of one run (and unset again on return, via the RETURN trap
+# below) -- a direct standalone call to classify()/has_live_process_under() (every selftest does
+# this) falls through to its own fresh scan instead, unchanged from before.
+LIVE_PROC_TARGETS_PRIMED=0
+LIVE_PROC_TARGETS=""
+
+has_live_process_under() {
+  if [ "$LIVE_PROC_TARGETS_PRIMED" = 1 ]; then
+    path_under_targets "$1" "$LIVE_PROC_TARGETS"
+    return $?
+  fi
+  path_under_targets "$1" "$(scan_live_proc_targets)"
 }
 
 # --- kanban in_progress/waiting reference check (best-effort, fail OPEN to ACTIVE) ---------
@@ -213,8 +248,50 @@ classify() {
   echo "UNKNOWN"
 }
 
+# N4 (RedHat NO-GO 16676, non-blocking): predicts, without removing anything, whether remove_entry
+# would skip this registered worktree (dirty / unreachable HEAD) -- so the dry-run report can say
+# how many of its DISPOSABLE entries --apply would actually remove, instead of promising all of
+# them and then quietly skipping some.
+would_skip_removal() {
+  local path="$1" owner="${WORKTREE_OWNER[$1]:-}"
+  if [ -n "$owner" ]; then
+    if [ -n "$(git -C "$path" status --porcelain 2>&1)" ]; then
+      echo "uncommitted changes in registered worktree"
+      return 0
+    fi
+    if [ -n "$(git -C "$path" rev-list -n1 HEAD --not --branches --remotes --tags 2>&1)" ]; then
+      echo "HEAD unreachable from any branch/remote/tag"
+      return 0
+    fi
+    return 1
+  fi
+  if { [ -d "$path/.git" ] || [ -f "$path/.git" ]; } && [ -n "$(git -C "$path" status --porcelain 2>&1)" ]; then
+    echo "uncommitted changes in unregistered git dir"
+    return 0
+  fi
+  return 1
+}
+
 remove_entry() {
   local path="$1" owner="${WORKTREE_OWNER[$1]:-}"
+
+  # B1' (RedHat NO-GO 16676, Gate-SHA 55c566e0): re-verify FRESH right before deleting, ignoring
+  # any classify-time cache -- the live run measured 38.7 minutes between classifying the first
+  # candidate and removing the first DISPOSABLE one (249 entries), long enough for a process to
+  # start with its cwd/fd pointed into an already-classified dir, or for a file inside it to be
+  # written. Re-run the same two checks that made it DISPOSABLE in the first place; if either no
+  # longer holds, SKIP instead of trusting the stale classification (RedHat's harness: a dir
+  # classified DISPOSABLE at second 9, a process started cwd'd into it, the dir was still removed
+  # at second 140 without this check).
+  if path_under_targets "$path" "$(scan_live_proc_targets)"; then
+    say "SKIP (a live process now has cwd/fd under this dir -- re-checked at removal time): $path"
+    return 1
+  fi
+  if [ -n "$(find "$path" -mmin "-$((MIN_AGE_HOURS * 60))" -print -quit 2>/dev/null)" ]; then
+    say "SKIP (a file under this dir was modified since classification -- re-checked at removal time): $path"
+    return 1
+  fi
+
   if [ -n "$owner" ]; then
     if [ -n "$(git -C "$path" status --porcelain 2>&1)" ]; then
       say "SKIP (uncommitted changes in registered worktree): $path"
@@ -231,8 +308,13 @@ remove_entry() {
     fi
     say "removing registered worktree: $path (owner $owner)"
     git -C "$owner" worktree remove --force "$path" 2>&1
+    # N5 (RedHat NO-GO 16676, non-blocking): this used to `return $?` AFTER the prune call below,
+    # so a worktree remove that failed (e.g. a locked worktree) but left nothing for prune to
+    # clean up reported success (prune's own exit code) while the directory was still there. Keep
+    # the remove step's own exit code.
+    local rc=$?
     git -C "$owner" worktree prune 2>/dev/null
-    return $?
+    return "$rc"
   fi
   if [ -d "$path/.git" ] || [ -f "$path/.git" ]; then
     if [ -n "$(git -C "$path" status --porcelain 2>&1)" ]; then
@@ -258,30 +340,52 @@ main() {
   load_worktrees "$MARVEEN_MAIN"
   load_worktrees "$CLEANCORE_MAIN"
   dashboard_reachable && { DASHBOARD_UP=1; load_open_card_ids; }
-  [ -n "$OPEN_CARD_IDS_FILE" ] && trap 'rm -f "$OPEN_CARD_IDS_FILE"' RETURN
 
-  local keep_count=0 active_count=0 disposable_count=0 unknown_count=0
-  local disposable_paths=() path name cls
+  # B1' (RedHat NO-GO 16676): one /proc sweep for the whole classify loop below, instead of one
+  # per candidate (see scan_live_proc_targets()'s comment). Unprimed again on return so a direct
+  # classify() call outside main() (every selftest does this) keeps taking its own fresh scan.
+  LIVE_PROC_TARGETS="$(scan_live_proc_targets)"
+  LIVE_PROC_TARGETS_PRIMED=1
+  trap 'rm -f "$OPEN_CARD_IDS_FILE"; LIVE_PROC_TARGETS_PRIMED=0; LIVE_PROC_TARGETS=""' RETURN
+
+  local keep_count=0 active_count=0 disposable_count=0 removable_count=0 unknown_count=0
+  local disposable_paths=() path name cls reason
 
   for path in "$HOME_DIR"/*/ "$HOME_DIR"/.[!.]*/; do
     [ -d "$path" ] || continue
     path="${path%/}"
     name="$(basename "$path")"
     cls=$(classify "$name" "$path")
+    reason=""
     case "$cls" in
       KEEP) keep_count=$((keep_count + 1)) ;;
       ACTIVE) active_count=$((active_count + 1)) ;;
-      DISPOSABLE) disposable_count=$((disposable_count + 1)); disposable_paths+=("$path") ;;
+      DISPOSABLE)
+        disposable_count=$((disposable_count + 1))
+        disposable_paths+=("$path")
+        # N4 (RedHat NO-GO 16676, non-blocking): a registered worktree that is dirty or has an
+        # unreachable HEAD will be SKIPPED by remove_entry -- count it out of what --apply
+        # actually removes instead of promising all DISPOSABLE entries.
+        if reason=$(would_skip_removal "$path"); then
+          :
+        else
+          removable_count=$((removable_count + 1))
+        fi
+        ;;
       UNKNOWN) unknown_count=$((unknown_count + 1)) ;;
     esac
-    printf '%-11s %s\n' "$cls" "$path"
+    if [ -n "$reason" ]; then
+      printf '%-11s %s  (apply would SKIP: %s)\n' "$cls" "$path" "$reason"
+    else
+      printf '%-11s %s\n' "$cls" "$path"
+    fi
   done
 
   say "summary: KEEP=$keep_count ACTIVE=$active_count DISPOSABLE=$disposable_count UNKNOWN=$unknown_count"
   [ "$DASHBOARD_UP" = 1 ] || say "note: dashboard unreachable during this run -- every registered worktree with no live process was failed OPEN to ACTIVE (not guessed into DISPOSABLE)"
 
   if [ "$MODE" = "dry-run" ]; then
-    say "dry-run: nothing removed. Re-run with --apply --yes to remove the $disposable_count DISPOSABLE entries above."
+    say "dry-run: nothing removed. Re-run with --apply --yes to remove $removable_count of the $disposable_count DISPOSABLE entries above ($((disposable_count - removable_count)) would be SKIPPED -- see reasons above)."
     return 0
   fi
 
