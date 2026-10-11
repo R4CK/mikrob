@@ -19815,6 +19815,42 @@ structured-verdict.test.ts` -- mind zöld. `tsc --noEmit` és `python3 -m py_com
 **Ki döntött:** MikroB (gate: qa, cybersec -- a javítási irányt WhiteHat2 adta, ezért a biztonsági
 gate WhiteHat/cybersec, nem WhiteHat2/cybersec2).
 
+## 2026-10-11 -- Kartya 3d186397 delta #2 (folytatas a fajl elejebb levo "senderId path-traversal audit" bejegyzeshez): QA FAIL javitva -- a validacio az allowFrom-modositas ELE kerult
+
+QA FAIL (10812) es WhiteHat F2 (ugyanaz a gyoker-ok, komment 10812/10815): a safeJoin-ellenorzes a MARKER-fajl irasara korlatozodott mindket hivasi helyen, de az allowFrom-push, a pending-kod torlese es az access.json kiirasa MAR AZ ELOTT lefutott. Egy traversal-alaku senderId ezert a `routes/agents.ts` uton 500-at adott VISSZA ("Failed to approve pairing"), MIKOZBEN a sender MAR bekerult az allowFrom-ba -- a jovahagyo felrevezetve latta a hibas valaszt. A `channel-invites.ts` auto-jovahagyasi sweep-jen (EMBERI JOVAHAGYAS NELKUL) meg sulyosabb: a hiba csak `logger.warn`, a mutacio (allowFrom, pending, invite-token elkoltese) FELTETEL NELKUL lefutott.
+
+**Javitas (mindket helyen azonos mintat kovetve):** a `safeJoin(approvedDir, senderId)` hivas MOST a legelso lepes, MINDEN mellekhatas (allowFrom-push, pending-torles, dmPolicy, access.json/invites.json iras) ELOTT, kulon try/catch-ben:
+- `routes/agents.ts` (`POST /approve`, emberi jovahagyas): elutasitasnal 400 ("Invalid sender identifier"), NULLA mutacio -- a pending kod NEM fogyott el, egy kesobbi, javitott plugin-valasz vagy emberi retry ujra probalhatja.
+- `channel-invites.ts` (`runInviteMonitorTick`, automatikus sweep): elutasitasnal `continue` a belso ciklusra -- a tetel NEM lesz jovahagyva, az invite-token NEM fogy el, a kovetkezo tick ujra probalja; a TOBBI, masik ugynok/provider ervenyes tetele erintetlen.
+
+A marker-fajl irasa (mkdirSync+writeFileSync) MARADT kulon try/catch-ben, MERT a path mar bizonyitottan biztonsagos (a safeJoin mar lefutott) -- ha a fajl-iras egyeb okbol (diszk, jogosultsag) bukik, az NEM vonja vissza a mar validalt, biztonsagos mutaciot, csak warn-t logol.
+
+**Teszt (`channel-pairing-senderid-traversal.test.ts`, 12 teszt, mindket helyre uj MUTATION PIN, az elozo kor tesztjei FRISSITVE az UJ, helyes viselkedesre):**
+- `routes/agents.ts`: traversal/abszolut-ut 400-at ad (nem 500), ES az access.json BAJTRA PONTOSAN valtozatlan marad (nincs allowFrom-push, nincs pending-torles).
+- `channel-invites.ts`: traversal/abszolut-ut eseten SEM az access.json, SEM az invites.json nem valtozik; a MUTATION PIN kulon ellenorzi, hogy az invite-token `used` mezoje `false` marad.
+
+Mutacio-ellenorzes: a validacio visszahelyezve a mutacio UTANRA (a regi, hibas sorrend) mindket helyen -- mind a harom uj/frissitett teszt PIROSRA valtott (`routes/agents.ts`: 500 helyett 400 varva, allowFrom tartalmazza a rejektalt erteket; `channel-invites.ts`: access.json/invites.json valtozik, allowFrom tartalmazza az erteket, a token elfogy). A javitas visszaallitasaval mind zold. `npx tsc --noEmit` tiszta, a celzott 8 fajl 84 teszt zold.
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + WhiteHat (a kartya sajat kijelolese, MikroB dontese a 10812 utan).
+
+## 2026-10-11 -- Kartya 517fdcc5 delta #3 (folytatas a fajl elejebb levo bejegyzesekhez): RedHat NO-GO (16623) javitva -- a LISTA es a q-kereses is a device-kulcsos azonossagot elsobbsegezi
+
+RedHat NO-GO (16623, MikroB dontese 16623 utan): a `/:id` hatar-javitas (delta #1, lasd fentebb a fajlban) csak a `memGetMatch` kezelore terjedt ki, de a `GET /api/memories` lista-ag es a q-kereses-ag UGYANAZT az `agentId` valtozot olvassa, es az addig KIZAROLAG a `?agent=` query-parameterbol szamitodott -- egy hitelesitett device-kulcsos hivo (`agent:<id>`) a `/:id` kapun kivul, a listan vagy a kereso-agon at TOVABBRA IS kiolvashatta egy MASIK agent privat sorat, mert a hamisithato `?agent=` parameter elsobbseget kapott a sajat, hitelesitett azonossaga felett.
+
+**Javitas:** a lista-ag elejen (`agentId` szamitasa) ugyanaz a minta, mint a `/:id`-n es a POST kezelon (`authenticatedAgentId`, kartya 84dcc5d4): `agentId = (device agent:<id> kulcsbol szamitott azonossag) || ?agent= parameter`. Mivel a q-kereses agai (`searchAgentMemories`, a substring-fallback, `hybridSearch`) MIND ugyanezt az `agentId`-t hasznaljak, a javitas EGY helyen zarja mindket utat -- nincs kulon kod a kereses-agra. Kozos tokenes/session hivo valtozatlan (nincs hitelesitett azonossaga, amit elsobbsegezni lehetne).
+
+**Teszt (`memories-get-by-id.test.ts`, +5 teszt, mutacioval ellenorizve):** device-kulcsos hivo hamisitott `?agent=`-mel a listan NEM latja a masik agent sorat; ugyanaz a kulcs `?q=`-val (parameter nelkul) SEM latja; a SAJAT kulcsa a SAJAT sorat latja; kozos tokenes hivonal a `?agent=` valtozatlanul mukodik (backward-compat pin); a csonkolasi-hint tovabbviszi a `?agent=`-et egy hosszabb tartalmu sorra (a korabbi teszt tul rovid tartalommal nem erte el a min. 50 karakteres kuszobot, uj, dedikalt hosszu-tartalmu sor kellett). Mutacio (az `authenticatedAgentId` prioritas kivetelezve, `agentId = requestedAgentId`): 3 teszt PIROSRA valtott (a tamado latta a victim sorat a listan es a keresesnel, a tulajdonos NEM latta a sajatjat -- mert a teszt-fixture-ben a "victim" nev maga a hitelesitett azonossag, nem a parameter). Visszaallitva, 12/12 zold.
+
+A teszt-helper (`makeCtx`) kiegeszitve `res.setHeader` stub-bal es `req.headers = {}`-vel -- a lista-ag `X-Memory-Search` fejlecet ir es a `jsonMaybeGzip` a `req.headers['accept-encoding']`-et olvassa, ami korabban (a `/:id`-only tesztekben) sosem futott.
+
+`npx tsc --noEmit` tiszta. Celzott futas (6 memories-* fajl): 67/67 zold.
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, MikroB dontese 16623 utan).
+
 ## 2026-10-11 -- 2bfa4c67 delta: RedHat B1-B3 + QA FAIL (16564) + WhiteHat W1-W4 (16573) javítva, a 9655494c F1-re épülve
 
 **Forrás:** a 2bfa4c67 (strukturált gate-verdikt rekord) első landolása (Gate-SHA 20f0ae19) mindhárom gate-től elutasítást kapott ugyanarra a shára: RedHat B1 (nincs szerep-/szerzőkötés a verdikt-írásnál), B2 (a javaslattevő-kizárás a kérés saját mezőjét nézte, kihagyható), B3 (strukturált és komment-alapú verdikt eltérésénél a guard csendben a megengedőbb forrást választja); QA FAIL (16564, kritikus, saját reprodukcióval igazolva: egy hitelesített strukturált FAIL mellett egy hamisítható komment-PASS a zárást engedte); WhiteHat NO-GO (16573): W1 (pontos azonosítós role-allowlist, nem prefix), W2 (a rekord sha-ja a REVIEW Gate-SHA-hoz kötve -- MEDIUM, nem RedHat/QA lelet), W3 (a javaslattevő szerver-oldali, hitelesített mező legyen, NE a kommentekből levezetett, fail-closed B2 helyett -- a fail-closed maga szolgáltatás-megtagadási eszköz), W4 (determinisztikus sorrend másodperc-egyezésnél -- LOW). MikroB sorrend-döntése (16557/16559): a 9655494c F1 (agent-kulcs kiosztás) UTÁN jöhet a B1/W1 javítása, mert a szerep-allowlist a hitelesített kulcs identitására épül; az F1 ezen a körön belül landolt (Gate-SHA 56fc5391).
@@ -19838,6 +19874,80 @@ gate WhiteHat/cybersec, nem WhiteHat2/cybersec2).
 **Teszt:** új `store/agent-key-provision.selftest.sh`, egy PATH-shim-elt `python3` wrapperrel, ami a valódi interpreterre delegál, de előtte argv-ját és stdin-jét naplózza -- (1) a javított script futtatásakor egy marker jelszó/felhasználónév SOHA nem jelenik meg a naplózott argv-ban, de megjelenik a naplózott stdin-ben (funkcionális bizonyíték, hogy az adat tényleg eljut); (2) statikus regressziós grep: a régi `python3 ... "$DASH_USER" "$DASH_PASS"` argv-alak nem térhet vissza a fájlba; (3) mutáció-proof: a fix blokkot programozottan visszaállítva a régi alakra, az (1) teszt helyesen pirosra vált (a marker megjelenik az argv-naplóban) -- ez igazolja, hogy a teszt tényleg a hibát fogja meg, nem csak zöldet mutat. Mindhárom lépés PASS, a kimenet a repó `ok   <leírás>` + záró `selftest: PASS` konvencióját követi (ez a `store-selftests-all-run.test.ts` OK_SHAPES-ében már ismert alak -- az első beadás egy ad-hoc "ALL PASS" záróval ismeretlen alaknak számított, ez okozott egy valódi, nem flaky meta-teszt pirosat a landolás 2. kísérletén; a kimenetet a meglévő alakra igazítottam, nem az OK_SHAPES listát bővítettem). `bash -n` szintaxis-ellenőrzés tiszta. A meglévő `auth-agent-keys.test.ts` (11 teszt, szerver-oldali route-logika, ezt a scriptet nem érinti) változatlanul 11/11 zöld.
 
 **Ki döntött:** backend (QA FAIL 16667, MikroB döntése 16670). Re-gate az F1-re: QA + RedHat.
+
+## 2026-10-11 -- bc1e7ef2 (3. kör): B1' TOCTOU-javítás a wsl-home-cleanup.sh classify/remove_entry rése, N4/N5
+
+**Forrás:** RedHat NO-GO (16676, Gate-SHA 55c566e0) az előző kör (B1/B2/B3) delta-gate-jén. B1/B2/B3
+mind működik mérve, de egy ÚJ, a B1 saját invariánsát sértő hézag maradt: a "van élő folyamat" és az
+"életkor" ellenőrzés az OSZTÁLYOZÁSKOR fut, a TÖRLÉS előtt nincs újraellenőrzés, és az osztályozás az
+élő gépen 38,7 percig tartott (249 bejegyzés, kb. 3000 fd, `has_live_process_under()` candidate-enként
+külön /proc-bejárást csinált). RedHat harness-mérése: egy mappa 9 másodpercnél DISPOSABLE-nek
+osztályozva, UTÁNA indult egy folyamat a cwd-jével a mappában, a szkript 140 másodpercig futott, a
+mappa TÖRLŐDÖTT, a folyamat él, cwd-je "(deleted)" -- pontosan az a hibaosztály, amit a B1 zárni akart,
+csak időben eltolva.
+
+**Javítás (B1', blokkoló):** (1) `scan_live_proc_targets()` egyetlen hívással olvassa az ÖSSZES
+`/proc/[0-9]*/cwd` és `/proc/[0-9]*/fd/*` célt egy futás egészére, nem candidate-enként --
+`classify()` (`main()`-en át) egyetlen, run elején felvett scant használ mindegyik jelöltre
+(`LIVE_PROC_TARGETS_PRIMED`), a standalone `classify()`-hívás (minden selftest ezt teszi) változatlanul
+saját friss scant vesz. (2) `remove_entry()` a SAJÁT ELEJÉN mindig FRISS scant vesz (a classify-kori
+cache-t figyelmen kívül hagyva) és újrafuttatja az életkor-find-ot is -- ha bármelyik megváltozott
+(élő folyamat jelent meg, vagy egy fájl frissen íródott a mappában), SKIP, nem bízik a elavult
+osztályozásban.
+
+**Implementáció-részlet, mérve ezen a körön (a valódi talált hiba, nem a card-leírás):** RedHat
+szó szerinti javaslata "egy readlink -f hívás az összes útra" volt -- ez a saját mérésemben IS
+8,2s -> 0,14s gyorsulást adott (~2660 fd), DE a teljes batch-readlink (egyetlen `readlink -f` hívás
+2700+ argumentummal) ezen a gépen MEGBÍZHATATLANNAK bizonyult: mérve kb. 95%-ban csendben, hibaüzenet
+nélkül elhagyta a bemeneti argumentumokat (2740 be, ~140-150 sor ki), még egy független, szűkebb
+readlink-hívással függetlenül igazolt, stabil célpontra is. Csere: `find /proc -maxdepth 3 \(
+-path '/proc/[0-9]*/cwd' -o -path '/proc/[0-9]*/fd/*' \) -printf '%l\n'` -- egy process, saját
+lstat/readlink syscall mappánként, ugyanolyan gyors (~0,1s), de ismételt futásokon mindig teljes és
+helyes listát adott. Ez a felfedezés ÚJ ebben a körben, nem a RedHat-jelentés része -- a card eredeti
+javaslata (batch readlink) a saját tesztkörnyezetemben hamis-negatívot okozott (a pre-existing B1
+fd/cwd tesztek elkezdtek megbízhatatlanul bukni), ami rávezetett a `find`-alapú, bizonyítottan
+megbízható alternatívára.
+
+**N4 (nem blokkoló):** a dry-run jelentés korábban a `disposable_count`-ot ígérte törlésre, de a
+`remove_entry()` kihagy egy dirty vagy elérhetetlen-HEAD-ű regisztrált worktree-t -- a jelentés
+túlbecsülte a törlést. `would_skip_removal()` előre jelzi (törlés nélkül) melyik DISPOSABLE
+bejegyzést hagyná ki az `--apply`, a dry-run most `removable_count` / `disposable_count` alakban
+jelent, és a kihagyandó sorokhoz okot ír ("apply would SKIP: ..."). Mérve az élő `/home/neon`-on
+(csak olvasó, `--dry-run`): a 128 regisztrált worktree közül sok dirty, a jelentés most ezt soronként
+kimondja.
+
+**N5 (nem blokkoló):** `remove_entry()` a `git worktree remove --force` saját kilépési kódját adta
+vissza `return $?`-tel, DE ez a sor a `git worktree prune` UTÁN állt, tehát a `prune` kódját adta
+vissza -- egy ZÁROLT (git worktree lock) regisztrált worktree-nél a remove elbukott, a prune-nak
+nem volt mit takarítania (0-t adott), és a hívó "removed"-nek olvasta a sikertelen törlést. Javítás:
+a remove lépés kódja külön változóba, a prune UTÁN azt adja vissza a funkció.
+
+**Teszt:** `wsl-home-cleanup.selftest.sh` 22 -> 26 eset (4 új: B1' élő-folyamat tengely, B1'
+életkor tengely, N5 zárolt worktree, N4 `would_skip_removal` jelzés), mind zöld, 6/6 ismételt
+futáson stabilan (korábban az eredeti, meglévő B1 fd/cwd tesztek elkezdtek flakelni a gyorsítás
+UTÁN, mert a várakozó ciklusuk "ls /proc/pid/fd nem üres" feltétele mindig azonnal igaz volt -- fd
+0/1/2 a fork pillanatától létezik --, és a RÉGI, lassú `has_live_process_under()` 8,2s-os
+véletlenszerű várakozása addig véletlenül fedezte ezt a versenyhelyzetet; a várakozási feltételt a
+tényleges cél-fd-re/cwd-re javítottam, nem a hibát kerülgettem). MUTÁCIÓ-PROOF, mind külön-külön: a
+B1' élő-folyamat-ág kikapcsolása -> pontosan 1 piros (25/26); a B1' életkor-ág kikapcsolása ->
+pontosan 1 piros (25/26); az N5 javítás visszaállítása (`return $?` a prune UTÁN) -> pontosan 1
+piros (25/26); a `would_skip_removal()` kikapcsolása (`return 1` az elején) -> pontosan 1 piros
+(25/26). Regresszió: a teljes selftest 26/26, `bash -n` tiszta. `npx tsc --noEmit` nem releváns
+(tisztán bash fájl, nincs TS-érintés).
+
+**Mérve az élő `/home/neon`-on, csak `--dry-run` (olvasó, semmi törölve):** teljes futás 3m13,5s
+(real), KEEP=13 ACTIVE=6 DISPOSABLE=192 UNKNOWN=38, "49 of the 192 DISPOSABLE entries... 143 would
+be SKIPPED" (N4 jelentés). Ez a RedHat-mérte 38,7 perchez képest ~12x gyorsulás, DE NEM a B1'
+osztályozás-gyorsítás önmagában méri ezt a maradék 3+ percet -- az N4 `would_skip_removal()` minden
+DISPOSABLE regisztrált worktree-re 2 git-hívást (status + rev-list) futtat, és a 192 DISPOSABLE-ből
+a többség regisztrált worktree, ez adja a fennmaradó időt. Ha ez a 3 perc magában (a N4 nélkül, csak
+B1') sokkal rövidebb lenne, azt nem mértem elkülönítve -- ha a 3 perc problémát jelent rendszeres
+(napi) futásnál, az N4-riportolás opcionálissá tétele (`--skip-reason`/hasonló kapcsoló) egy
+következő, külön kártya, nem ebben a körben bővítve tovább a scope-ot.
+
+**Ki döntött:** RedHat (16676, Gate-SHA 55c566e0), MikroB (16677). Gate: QA + RedHat. Az élő
+`--apply` továbbra is csak Peti jóváhagyásával futhat (22. kódminőségi elv), ebben a körben csak
+`--dry-run` futott az élő `/home/neon`-on.
 
 ## 2026-10-11 -- 2bfa4c67 round 2: WhiteHat2 CYBERSEC NO-GO (N1/N2/N3/N5) javítva a 3d702874-en
 

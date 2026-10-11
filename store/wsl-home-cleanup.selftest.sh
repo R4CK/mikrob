@@ -82,9 +82,14 @@ touch -d '2 days ago' "$fdtest_dir" # old enough to be DISPOSABLE if the live ch
 # cwd is $tmp (NOT $fdtest_dir) -- the exact shape QA measured: cwd elsewhere, fd into the target.
 ( cd "$tmp" && exec tail -f "$fdtest_dir/live.log" >/dev/null 2>&1 ) &
 fdtest_pid=$!
-# Give the kernel a moment to populate /proc/<pid>/fd for the new process.
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [ -e "/proc/$fdtest_pid/fd" ] && [ -n "$(ls /proc/"$fdtest_pid"/fd 2>/dev/null)" ] && break
+# Wait for tail's OWN fd into live.log specifically (B1' speedup fix, card bc1e7ef2 round 3):
+# "ls /proc/<pid>/fd is non-empty" is trivially true from fork onward (fd 0/1/2 always exist), so
+# it never actually waited for tail to exec and open live.log -- the race was always latent here,
+# just masked by the OLD has_live_process_under()'s own per-link readlink-fork loop (8.2s for a
+# ~2600-fd /proc on this box), which gave the race enough time to resolve by accident. The new
+# single-readlink-call scan (0.14s) removed that accidental delay and exposed it for real.
+for _ in $(seq 1 30); do
+  readlink -f /proc/"$fdtest_pid"/fd/* 2>/dev/null | grep -qF "$fdtest_dir/live.log" && break
   sleep 0.2
 done
 [ "$(classify qa-gate-openfile "$fdtest_dir")" = ACTIVE ] \
@@ -98,9 +103,9 @@ HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
 cwdtest_dir="$FAKE_HOME/qa-cwd-live"
 mkdir -p "$cwdtest_dir"
 touch -d '2 days ago' "$cwdtest_dir"
-( cd "$cwdtest_dir" && exec sleep 5 ) &
+( cd "$cwdtest_dir" && exec sleep 15 ) &
 cwdtest_pid=$!
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for _ in $(seq 1 30); do
   [ "$(readlink -f "/proc/$cwdtest_pid/cwd" 2>/dev/null)" = "$cwdtest_dir" ] && break
   sleep 0.2
 done
@@ -182,7 +187,11 @@ mkdir -p "$FAKE_HOME/some-random-project"
   || bad "non-matching dir did not classify UNKNOWN"
 
 # --- remove_entry(): registered worktree, clean -> proper git worktree remove -----------------
+# B1' (RedHat NO-GO 16676) made remove_entry() re-check age fresh at its own start (see below) --
+# backdate every file so this freshly-created worktree does not trip that re-check by accident;
+# that re-check has its own dedicated tests further down.
 HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+find "$FAKE_HOME/top-worktree" -exec touch -d '2 days ago' {} +
 WORKTREE_OWNER["$FAKE_HOME/top-worktree"]="$FAKE_MAIN"
 remove_entry "$FAKE_HOME/top-worktree" >/dev/null 2>&1
 if [ ! -d "$FAKE_HOME/top-worktree" ] && ! git -C "$FAKE_MAIN" worktree list | grep -q top-worktree; then
@@ -224,10 +233,87 @@ fi
 
 # --- remove_entry(): plain non-git dir -> rm -rf -----------------------------------------------
 mkdir -p "$FAKE_HOME/plain-disposable-dir"
+touch -d '2 days ago' "$FAKE_HOME/plain-disposable-dir" # old enough to pass the B1' age re-check
 remove_entry "$FAKE_HOME/plain-disposable-dir" >/dev/null 2>&1
 [ ! -d "$FAKE_HOME/plain-disposable-dir" ] \
   && ok "remove_entry rm -rf's a plain non-git disposable dir" \
   || bad "plain non-git dir was not removed"
+
+# --- remove_entry(): B1' fix (RedHat NO-GO 16676), live-process axis -- classify DISPOSABLE,
+# THEN a process starts with its cwd under the dir BEFORE remove_entry runs; remove_entry must
+# re-check fresh (not trust the classify-time snapshot) and skip, leaving the dir in place.
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+toctou_dir="$FAKE_HOME/qa-toctou-race"
+mkdir -p "$toctou_dir"
+touch -d '2 days ago' "$toctou_dir"
+[ "$(classify qa-toctou-race "$toctou_dir")" = DISPOSABLE ] \
+  || bad "setup: qa-toctou-race did not classify DISPOSABLE before the race"
+( cd "$toctou_dir" && exec sleep 15 ) &
+toctou_pid=$!
+# Generous retry window (CPU-contention-tolerant, root CLAUDE.md rule 17): this box runs the
+# fleet's shared test slots, and a loaded machine can take longer than the pre-existing B1 tests'
+# fixed 10x0.2s window to even schedule the forked `sleep`'s /proc/<pid>/cwd into place.
+for _ in $(seq 1 60); do
+  [ "$(readlink -f "/proc/$toctou_pid/cwd" 2>/dev/null)" = "$toctou_dir" ] && break
+  sleep 0.2
+done
+if remove_entry "$toctou_dir" >/dev/null 2>&1; then
+  bad "remove_entry must refuse a dir that gained a live process after classification, it did not (B1' regression)"
+else
+  [ -d "$toctou_dir" ] \
+    && ok "remove_entry re-checks fresh and skips a dir that gained a live process after classification (B1' fix)" \
+    || bad "B1' TOCTOU: dir was removed despite a live process starting after classification"
+fi
+kill "$toctou_pid" 2>/dev/null
+wait "$toctou_pid" 2>/dev/null
+
+# --- remove_entry(): B1' fix, age axis -- classify DISPOSABLE, THEN a file is written inside
+# before remove_entry runs; remove_entry must re-check age fresh and skip.
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+age_race_dir="$FAKE_HOME/qa-toctou-age"
+mkdir -p "$age_race_dir"
+touch -d '2 days ago' "$age_race_dir"
+[ "$(classify qa-toctou-age "$age_race_dir")" = DISPOSABLE ] \
+  || bad "setup: qa-toctou-age did not classify DISPOSABLE before the race"
+echo written-after-classify > "$age_race_dir/just-now"
+if remove_entry "$age_race_dir" >/dev/null 2>&1; then
+  bad "remove_entry must refuse a dir modified after classification, it did not (B1' age-axis regression)"
+else
+  [ -d "$age_race_dir" ] \
+    && ok "remove_entry re-checks age fresh and skips a dir modified after classification (B1' age-axis fix)" \
+    || bad "B1' TOCTOU (age): dir was removed despite being modified after classification"
+fi
+
+# --- remove_entry(): N5 fix (RedHat NO-GO 16676, non-blocking) -- a LOCKED registered worktree
+# must report failure (the remove step's own exit code), not prune's unrelated success -----------
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=()
+git -C "$FAKE_MAIN" branch qa-locked-branch >/dev/null 2>&1
+git -C "$FAKE_MAIN" worktree add -q "$FAKE_HOME/qa-locked-worktree" qa-locked-branch >/dev/null 2>&1
+find "$FAKE_HOME/qa-locked-worktree" -exec touch -d '2 days ago' {} +
+git -C "$FAKE_MAIN" worktree lock "$FAKE_HOME/qa-locked-worktree" >/dev/null 2>&1
+WORKTREE_OWNER["$FAKE_HOME/qa-locked-worktree"]="$FAKE_MAIN"
+if remove_entry "$FAKE_HOME/qa-locked-worktree" >/dev/null 2>&1; then
+  bad "remove_entry must report failure for a locked registered worktree, it did not (N5 regression)"
+else
+  [ -d "$FAKE_HOME/qa-locked-worktree" ] \
+    && ok "remove_entry reports failure (not prune's exit code) for a locked registered worktree (N5 fix)" \
+    || bad "N5: locked worktree directory is gone despite the lock"
+fi
+git -C "$FAKE_MAIN" worktree unlock "$FAKE_HOME/qa-locked-worktree" >/dev/null 2>&1
+
+# --- would_skip_removal() / main() dry-run: N4 fix (RedHat NO-GO 16676, non-blocking) -- a
+# DISPOSABLE, registered, DIRTY worktree must not be counted in "would remove N of M" -----------
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+n4_dir="$FAKE_HOME/qa-n4-dirty-disposable"
+git -C "$FAKE_MAIN" branch qa-n4-branch >/dev/null 2>&1
+git -C "$FAKE_MAIN" worktree add -q "$n4_dir" qa-n4-branch >/dev/null 2>&1
+find "$n4_dir" -exec touch -d '2 days ago' {} +
+echo dirty >> "$n4_dir/f"
+WORKTREE_OWNER["$n4_dir"]="$FAKE_MAIN"
+reason="$(would_skip_removal "$n4_dir")"
+[ -n "$reason" ] \
+  && ok "would_skip_removal() flags a dirty registered worktree with a reason (N4 fix)" \
+  || bad "would_skip_removal() did not flag the dirty registered worktree"
 
 # --- main(): dry-run never removes anything, even with matching old DISPOSABLE dirs ------------
 rm -rf "$FAKE_HOME"; mkdir -p "$FAKE_HOME"

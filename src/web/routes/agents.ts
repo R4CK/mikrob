@@ -1788,6 +1788,25 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
       if (!entry) { json(res, { error: 'Invalid or expired code' }, 404); return true }
 
+      // Card 3d186397 QA FAIL delta (10812, MikroB decision): entry.senderId is whatever the
+      // EXTERNAL channel plugin wrote into access.json's `pending` map for an unrecognized
+      // inbound sender -- this server trusts it as a path segment with no validation of its own.
+      // safeJoin must be resolved BEFORE any side effect (allowFrom/pending/access.json), not
+      // after: the first cut of this fix ran safeJoin last, so an invalid senderId still got
+      // pushed into allowFrom (and the pending code consumed) before the marker write failed --
+      // the caller saw a misleading 500 "could not approve" while the sender had, in fact,
+      // already been approved. Rejecting the WHOLE request up front keeps approval atomic: either
+      // every effect (allowFrom, pending removal, dmPolicy, marker file) happens, or none does.
+      const approvedDir = join(chDir, 'approved')
+      let markerPath: string
+      try {
+        markerPath = safeJoin(approvedDir, entry.senderId)
+      } catch (err) {
+        logger.warn({ err, name, provider, senderId: entry.senderId, code }, 'Channel pairing rejected: invalid senderId')
+        json(res, { error: 'Invalid sender identifier' }, 400)
+        return true
+      }
+
       if (!access.allowFrom) access.allowFrom = []
       if (!access.allowFrom.includes(entry.senderId)) {
         access.allowFrom.push(entry.senderId)
@@ -1799,19 +1818,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
       atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2))
 
-      const approvedDir = join(chDir, 'approved')
       mkdirSync(approvedDir, { recursive: true })
       // Marker contents = chatId, per the plugin's /telegram:access pair
       // contract (the channel server polls approved/ to send the "Paired!"
       // confirmation; current server keys off the filename, the chatId
       // contents keep us aligned with the documented format).
-      // Card 3d186397 (Cybersec out-of-scope note on 7503bb31, comment 5384):
-      // entry.senderId is whatever the EXTERNAL channel plugin wrote into
-      // access.json's `pending` map for an unrecognized inbound sender -- this
-      // server trusts it as a path segment with no validation. safeJoin
-      // resolves-then-checks the prefix, so a `../`-shaped or absolute
-      // senderId throws instead of writing outside approvedDir.
-      writeFileSync(safeJoin(approvedDir, entry.senderId), String(entry.chatId ?? ''))
+      writeFileSync(markerPath, String(entry.chatId ?? ''))
 
       logger.info({ name, provider, senderId: entry.senderId, code }, 'Channel pairing approved')
       json(res, { ok: true, senderId: entry.senderId })
