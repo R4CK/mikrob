@@ -874,3 +874,4 @@ export function writeAgentCapabilities(name: string, capabilities: string[]): vo
   config.capabilities = capabilities
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
+

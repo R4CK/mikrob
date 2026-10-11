@@ -356,27 +356,20 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "(11) token-prune-lag comments (DECAY_SWEEP_INTERVAL_MS / classifyTokenPruneLag / getTokenPruneLag) -- code is BYTE-IDENTICAL on both sides; only the doc-comments differ, upstream's being more detailed (explains why a raw db-size threshold was rejected, with the 481.7 MB / 65% measurement). Cosmetic only, no functional decision needed; the richer upstream comment MAY be adopted at the next real merge as a documentation improvement, at no risk, but is not itself an ADOPTION decision this rule needs to track. " +
     "SUMMARY: of Cybersec's flagged hunks, (2)-(4) confirmed correctly resolved as KEEP-fork already (no action needed); (1),(5),(6),(8),(9),(10) are genuine, real ADOPTION gaps needing follow-up work, raised together on a new db.ts follow-up card (see kanban entry cross-references for (6) and (8), which are the SAME decisions as items already on card 5aaf7209 -- not duplicated as separate items). (7) and (11) are cosmetic, no decision needed. The 'moveKanbanCard() untouched' framing above is retired as the wrong lens for this file; it correctly describes ONE historical conflict point but was never a complete inventory, and this correction is what makes it one." +
     " RE-GROUNDED 2026-10-09 (backend, cards 16e60d3c/5aaf7209, picked up 13.9 days after the above round -- grep-before-trust, per this fleet's own established discipline for aged drift cards). Of the six items the db.ts follow-up card (16e60d3c) carried, FOUR had already landed through intervening, unrelated work and the card's own prose was stale: (1) config.js ALREADY exports EMBED_URL/EMBED_MODEL/EMBED_DIMS (config.ts:450-453) and db.ts already imports them -- the hardcoded generateEmbedding() the item described no longer exists. (5)/item-2-on-16e60d3c updateMemory() ALREADY has the updatedBy parameter AND src/web/routes/memories.ts's PUT/PATCH handler ALREADY destructures and passes updated_by through -- fully wired, not a two-file gap anymore. (6) sweepArchivedKanbanCards() ALREADY exists as its own function AND src/web/kanban-archive-runner.ts ALREADY exists as a file -- both halves of this item are done. (10) vectorSearch() ALREADY has the flatMap dimension-mismatch skip (`if (emb.length !== queryEmbedding.length) return []`) -- the NaN-score defect Cybersec flagged as highest-priority is already fixed. ADOPTED THIS ROUND, the two genuinely remaining items: (8) parentWouldCycle(cardId, parentId) added to db.ts, mirroring blockerWouldCycle for the parent_id single-chain (ACKNOWLEDGED_FORK_ANCHORS 'src/db.ts' tripwire flipped present, see that entry). (9) addKanbanComment() now takes an `automated` parameter (persisted via a new INTEGER NOT NULL DEFAULT 0 column, migrated), and both addKanbanComment's and getKanbanComments' returned objects carry a real `automated: boolean` (coerced from the stored 0/1, not merely passed through as a number). Both (8) and (9) land alongside their src/web/routes/kanban.ts route-side wiring (card 5aaf7209) in the SAME change, per this entry's own prior warning that piecemeal landing needs re-checking.",
-  // NEW DECISION 2026-09-25 (card f5536a70, fork/upstream re-decision round). Upstream DELETED
-  // buildMemoryContext() (a [Memoria kontextus] block built from 3 FTS hits + 5 recent rows,
-  // keyed on the OLD chat_id scheme) with a comment explaining why: it never had a caller from the
-  // first release on, and it did not read the agent hot/warm/cold tiers at all -- upstream removed
-  // it rather than wire it (HOTMEMHAMIS925), leaving whether an agent's memory should auto-load as
-  // a separate product decision needing a NEW loader keyed on agent_id+category with a size cap.
-  // Verified against THIS fork's current tree, not assumed from upstream's comment: grep for
-  // buildMemoryContext across src/**/*.ts finds exactly two things -- its own declaration in
-  // src/memory.ts, and its dedicated unit suite src/__tests__/memory-context-truncation.test.ts.
-  // No production caller exists here either; the claim upstream's removal comment makes is true of
-  // this fork's tree too, independently confirmed rather than taken on faith.
-  // Resolution: per kódminőségi elv 3 (pre-existing dead code, unrelated to any change actually
-  // being made, gets FLAGGED not deleted on sight) this entry does NOT delete the function as part
-  // of a drift-decision round -- that would be applying a behavior change (and an orphaned test
-  // file) outside the scope of what this card asks for (recording the merge rule). The RULE for the
-  // next real merge: adopt upstream's removal (delete buildMemoryContext() and its MEMORY_CONTENT_MAX_CHARS
-  // constant) AND retire src/__tests__/memory-context-truncation.test.ts in the same commit -- do
-  // not let the function survive as an even-more-orphaned relic once upstream's side of the
-  // conflict marker no longer has it to diff against.
+  // NEW DECISION 2026-09-25 (card f5536a70, fork/upstream re-decision round; EXECUTED 2026-10-10,
+  // card 617d136d -- see the active entry below). Upstream DELETED the memory-context builder it
+  // used to export from this file (a [Memoria kontextus] block built from 3 FTS hits + 5 recent
+  // rows, keyed on the OLD chat_id scheme) with a comment explaining why: it never had a caller
+  // from the first release on, and it did not read the agent hot/warm/cold tiers at all -- upstream
+  // removed it rather than wire it (HOTMEMHAMIS925), leaving whether an agent's memory should
+  // auto-load as a separate product decision needing a NEW loader keyed on agent_id+category with
+  // a size cap. Verified against THIS fork's current tree at the time, not assumed from upstream's
+  // comment: a grep across src/**/*.ts found exactly two things -- its own declaration in
+  // src/memory.ts, and its dedicated unit suite (retired in the same commit as the function).
+  // No production caller existed here either; the claim upstream's removal comment makes was true
+  // of this fork's tree too, independently confirmed rather than taken on faith.
   'src/memory.ts':
-    'adopt upstream: delete buildMemoryContext() (zero production callers, verified in this tree too) and MEMORY_CONTENT_MAX_CHARS, retiring its dedicated test src/__tests__/memory-context-truncation.test.ts in the same commit -- not applied in this drift-decision round, only the merge rule is recorded',
+    'EXECUTED 2026-10-10 (card 617d136d, Köteg 9/11): the deletion recorded below as a standing rule for "the next real merge" has now run -- the function named by this entry and its MEMORY_CONTENT_MAX_CHARS constant are gone from src/memory.ts, and its dedicated unit suite (the file this entry names, under src/__tests__/) is retired in the same commit. No further action needed on this file for this class of conflict.',
   // NEW DECISION 2026-09-25 (card f5536a70, fork/upstream re-decision round). Comment-only conflict,
   // zero code divergence -- both sides document the SAME allowlist invariant (a channel-coordinator
   // device key must ALSO be on the out-of-band voice-channel-device-allowlist.ts, never minted from
