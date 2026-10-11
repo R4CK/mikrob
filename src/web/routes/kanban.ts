@@ -30,6 +30,7 @@ import {
 } from '../../db.js'
 import { isForceActor } from '../../kanban-force-actors.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
+import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
@@ -41,6 +42,7 @@ import { draftReviewGuardVerdict } from '../kanban-draft-review-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
 import { specTemplateGuardCheck } from '../kanban-spec-template-guard.js'
 import { isForbiddenAssignee, FORBIDDEN_ASSIGNEE_MESSAGE, isInvalidAssigneeShape, INVALID_ASSIGNEE_TYPE_MESSAGE } from '../kanban-assignee-guard.js'
+import { isInvalidKanbanIdShape, isValidKanbanId, KANBAN_ID_PATTERN_DESC, INVALID_KANBAN_ID_MESSAGE } from '../kanban-id-guard.js'
 
 // Card project-name drift (Peti 2026-08-08): `project` was free-text with no case-folding, so
 // "CleanCore" / "cleancore" / "MikroB" / "mikrob-infra" / "fleet-infra" / "marveen" / "Infra" all
@@ -157,7 +159,25 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
 // alternative to spawning a separate per-session card for every agent run: the
 // result goes where the work was asked for, with zero extra board clutter. The
 // token is read from the store at call time (never embedded in the message).
+// WhiteHat2 GO (card 335fb927, F1 from 41d8e96f msg 10760): `id` used to flow into this
+// renderer's 3 command blocks with no format check and no quoting -- one sits inside a
+// DOUBLE-quoted `python3 -c "..."` argument, where `$(...)` is expanded by the OUTER shell
+// before python ever runs, and the other two are bare (unquoted) curl URL arguments. Measured:
+// id = `x$(echo pwned > marker)` ran its substitution in all 3 blocks. POST/PUT /api/kanban now
+// reject a non-conforming id/parent_id at creation time (kanban-id-guard.ts), so a legitimately
+// created card can never reach here with a bad id -- but this renderer is the thing that actually
+// hands shell commands to another agent to paste, so it checks AGAIN, independently, and renders
+// nothing at all rather than trust an upstream guard it cannot see from here.
 export function kanbanMoveInstructions(id: string, target: string): string {
+  if (!isValidKanbanId(id)) {
+    return [
+      `HIBA: a kártya-azonosító ("${JSON.stringify(id)}") nem felel meg a várt formátumnak ` +
+      `(${KANBAN_ID_PATTERN_DESC}) -- parancsot FAIL-CLOSED nem renderelünk (parancs-injekció ` +
+      'elleni védelem, kártya 335fb927).',
+      'NE futtass semmit ebből az üzenetből, és ne illeszd be sehova. Jelezd MikroB-nak a kártya ' +
+      'azonosítóját, hogy ellenőrizhesse, mielőtt bárki hozzányúlna.',
+    ].join('\n')
+  }
   const tokenPath = join(STORE_DIR, '.dashboard-token')
   const base = `http://${WEB_HOST}:${WEB_PORT}`
   // The token is read from STDIN (`-H @-`), never as an argv element: /proc/<pid>/cmdline
@@ -218,7 +238,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   // REVIEW/move commands below, with `-H @-` reading the header from stdin.
   const statusProbe =
     `  ${auth}\n` +
-    `  | curl -s -H @- ${base}/api/kanban | python3 -c "import sys,json;d=json.load(sys.stdin);c=(next((x for x in d if x.get('id')=='${id}'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120]))"`
+    `  | curl -s -H @- '${base}/api/kanban' | python3 -c "import sys,json;d=json.load(sys.stdin);c=(next((x for x in d if x.get('id')=='${id}'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120]))"`
   return [
     'MIELŐTT NEKIKEZDESZ: nézd meg a kártya AKTUÁLIS státuszát ÉS leírását. Ez az üzenet egy foglalt session sorában KÉSHET, és közben a munka elkészülhetett -- a leírás pedig a kártya saját, ennél a sablonnál erősebb szabályait hordozhatja (lásd lent):',
     statusProbe,
@@ -236,13 +256,13 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     '',
     '1) Írj egy "REVIEW" kezdetű rövid eredmény-összefoglalót kommentként (1-2 mondat: mi lett a vége):',
     `  ${auth}`,
-    `  | curl -s -H @- -X POST ${commentUrl} \\`,
+    `  | curl -s -H @- -X POST '${commentUrl}' \\`,
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"author":"${target}","content":"REVIEW -- AZ EREDMENY ROVIDEN"}'`,
     '',
     `2) Állítsd a kártyát waiting-re -- a kész terméket SOHA nem teszed magad done-ba, a lezárás ${escalateTo} (vagy a kijelölt gate) lépése a REVIEW komment után:`,
     `  ${auth}`,
-    `  | curl -s -H @- -X POST ${moveUrl} \\`,
+    `  | curl -s -H @- -X POST '${moveUrl}' \\`,
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"status":"waiting"}'`,
     '',
@@ -272,7 +292,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
       ? [
           `  b) Told át a kártyát ${escalateTo}-re, hogy egyértelmű legyen a felelősség (a te neved NE maradjon rajta, ha nem te vagy a blokkoló):`,
           `     ${auth}`,
-          `     | curl -s -H @- -X PUT ${cardUrl} \\`,
+          `     | curl -s -H @- -X PUT '${cardUrl}' \\`,
           `       -H 'Content-Type: application/json' \\`,
           `       -d '{"assignee":"${escalateTo}"}'`,
           `  c) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással).`,
@@ -922,6 +942,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // A test-only cast would have hidden that; naming the type is the actual fix.
     const rawId: unknown = (normalized as Record<string, unknown>).id
     const suppliedId: string | null = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : null
+    // Card 335fb927 (WhiteHat2 F1): a caller-supplied id with no format check flowed, unquoted,
+    // into the dispatch renderer's shell command blocks -- checked BEFORE it can ever become a
+    // row, same reason the assignee shape/forbidden checks above run before createKanbanCard.
+    if (isInvalidKanbanIdShape(suppliedId)) {
+      json(res, { error: INVALID_KANBAN_ID_MESSAGE }, 400)
+      return true
+    }
     const id: string = suppliedId ?? randomUUID().slice(0, 8)
     // Card 514a9fb3 L1: PUT already refuses a parent_id that would close a loop
     // (parentWouldCycle above), but POST let a client-supplied id through
@@ -930,6 +957,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Checked here, before createKanbanCard, for the same reason PUT checks it
     // before updateKanbanCard: the row must not exist yet in the refused shape.
     const rawParentId: unknown = (normalized as Record<string, unknown>).parent_id
+    if (isInvalidKanbanIdShape(rawParentId)) {
+      json(res, { error: INVALID_KANBAN_ID_MESSAGE }, 400)
+      return true
+    }
     if (typeof rawParentId === 'string' && rawParentId && parentWouldCycle(id, rawParentId)) {
       json(res, { error: `A(z) "${rawParentId}" szülővé tétele kört zárna be a szülő-láncban.` }, 409)
       return true
@@ -1034,7 +1065,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = draftReviewGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { code: 'draft_review_required', error: v.message }, 409); return true }
     }
-    specTemplateGuardCheck(id, data.status, typeof actor === 'string' ? actor : undefined)
+    // Captured BEFORE any mutation -- card 81452ce2 delta-gate F1 (WhiteHat2 komment 16326):
+    // specTemplateGuardCheck must fire only AFTER the transition actually succeeds, past every
+    // remaining 409 guard below, never on a request one of them rejects. By the time we could
+    // call getKanbanCard again after a successful write, its status is already the new one, so
+    // the pre-transition status is captured here and carried to the call site.
+    const specTemplatePrevStatus = getKanbanCard(id)?.status
     {
       const v = dependencyBlockBody(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, v.body!, 409); return true }
@@ -1057,6 +1093,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Two refinements folded in from upstream batch 8 (94765127): the parent must actually EXIST
     // (404, not a silent dangling reference), and the error message distinguishes "own parent"
     // from a longer cycle -- both genuine improvements with no overlap with this fork's own guards.
+    if (isInvalidKanbanIdShape((data as Record<string, unknown>).parent_id)) {
+      json(res, { error: INVALID_KANBAN_ID_MESSAGE }, 400)
+      return true
+    }
     if (typeof data.parent_id === 'string' && data.parent_id) {
       if (!getKanbanCard(data.parent_id)) {
         json(res, { error: 'A szülő kártya nem található' }, 404)
@@ -1072,6 +1112,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       }
     }
     if (updateKanbanCard(id, normalizeProjectName(data), { actor: typeof actor === 'string' ? actor : undefined, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
+      specTemplateGuardCheck(id, specTemplatePrevStatus, data.status, typeof actor === 'string' ? actor : undefined)
       json(res, { ok: true }); return true
     }
     // Card c4f2de32: distinguish "no such card" from "refused to re-open reviewed work", so the
@@ -1112,6 +1153,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
     const { status, sort_order, actor, force, reason } = JSON.parse(body.toString())
+    // Card 2520b85a (measurement-only slice): see agent-identity-measure.ts.
+    measureAgentIdentityClaim(ctx, 'POST /api/kanban/:id/move', actor)
     if (newDevStopWouldBlock(id, status, force === true, typeof actor === 'string' ? actor : undefined)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
       return true
@@ -1132,7 +1175,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = draftReviewGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { code: 'draft_review_required', error: v.message }, 409); return true }
     }
-    specTemplateGuardCheck(id, status, typeof actor === 'string' ? actor : undefined)
+    // See the sibling comment in the PUT handler (card 81452ce2 delta-gate F1): captured BEFORE
+    // any mutation, the guard itself fires only AFTER moveKanbanCard actually succeeds below.
+    const specTemplatePrevStatus = getKanbanCard(id)?.status
     {
       const v = dependencyBlockBody(id, status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, v.body!, 409); return true }
@@ -1147,6 +1192,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true, typeof reason === 'string' ? reason : undefined)) {
+      specTemplateGuardCheck(id, specTemplatePrevStatus, status, typeof actor === 'string' ? actor : undefined)
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
       // Fire-and-forget: fireKanbanDispatch's own try/catch means this never rejects, and
@@ -1312,6 +1358,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // silently rewriting an unverified author -- see
     // src/__tests__/kanban-comment-author-trust-boundary.test.ts, which pins the current,
     // deliberate behavior as a regression.
+    // Card 2520b85a (measurement-only slice): observe legacy-token vs per-agent-key usage and
+    // claim/identity mismatches, without enforcing anything -- see agent-identity-measure.ts.
+    measureAgentIdentityClaim(ctx, 'POST /api/kanban/:id/comments', author)
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.

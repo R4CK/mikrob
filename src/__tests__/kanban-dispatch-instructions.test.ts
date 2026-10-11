@@ -8,7 +8,9 @@ import { MAIN_AGENT_ID, OWNER_NAME } from '../config.js'
 // line immediately followed by the `| curl ... | python3 -c ...` line.
 const probeLine = (out: string): string | undefined => {
   const lines = out.split('\n')
-  const idx = lines.findIndex((l) => l.includes('/api/kanban |'))
+  // Card 335fb927: the status-probe URL is now single-quoted (parancs-injekció elleni
+  // védelem, lásd kanban-id-guard.test.ts), so the literal substring is "/api/kanban' |".
+  const idx = lines.findIndex((l) => l.includes("/api/kanban' |"))
   return idx === -1 ? undefined : `${lines[idx - 1]}\n${lines[idx]}`
 }
 
@@ -115,7 +117,8 @@ describe('kanbanMoveInstructions', () => {
     const probe = probeLine(out)!
     const [authLine, curlLine] = probe.split('\n')
     expect(authLine).toMatch(/^\s*printf 'Authorization: Bearer %s\\n' "\$\(cat .*\)" \\$/)
-    expect(curlLine).toMatch(/^\s*\|\s*curl -s -H @- http:\/\//)
+    // Card 335fb927: the URL argument is now single-quoted (parancs-injekció elleni védelem).
+    expect(curlLine).toMatch(/^\s*\|\s*curl -s -H @- 'http:\/\//)
     // The regression shape: curl's own command-line carrying "printf" as if it were a
     // hostname/argument, which is what a mid-line splice produced.
     expect(curlLine).not.toMatch(/curl\s+-s\s+printf\b/)

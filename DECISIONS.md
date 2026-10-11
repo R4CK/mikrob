@@ -19261,6 +19261,103 @@ A harom erintett teszt (es a hozzajuk tartozo, mar hasznalatlanna valo `writeTra
 
 **Ki döntött:** backend3. Gate: QA + Cybersec + Cybered (a GATESENDER922 miatt a Cybersec gate-nek erdemes kulon figyelnie a context-restart-gate-runner.ts erintetlensegere).
 
+## 2026-10-11 -- e4eb72c9 delta-fix: melléklet-allow-list (F1) + Bash-ág fail-closed (F2), F3/F4 kimondott maradék kockázat
+
+**Forrás:** WhiteHat2 (cybersec2) NO-GO (komment 16134) a korábbi, a2cb71f1-et megelőző mellékletes-horgony javításra (16120/a5a8e43d): a `collect_mcp_attachments` (email_extract.py) a `_ABS_PATH_RE`-t (abszolút útvonal) egyedüli fájl-jelzőnek vette, és minden más sztringet INLINE SZÖVEGKÉNT hashelt -- a gmail-mcp-server@1.0.30 saját `isFilePath`-je viszont relatív útvonalat (`./x`, `../x`, kiterjesztéses bare filename: `report.pdf`, `.env`, `dir/x`) is FÁJLNAK tekint, és azt a saját cwd-jéhez képest olvassa be küldéskor. A hook ezeket a stringet magát hashelte, a fájl bájtjait soha -- a kártya saját célja ("jóváhagyott levélhez utólag bármilyen helyi fájl csatolható" megszűnjön) a relatív alakra nem teljesült.
+
+**Javítás (F1):** allow-list, nem az MCP regexének másolása (az verzióról verzióra változik): `collect_mcp_attachments` csak KÉT alakot fogad el -- abszolút útvonal (beolvas + hash-el, változatlan) VAGY szigorú base64 (`^[A-Za-z0-9+/]+={0,2}$` ÉS hossz % 4 == 0, hash-eli a literál stringet, változatlan). Minden más (relatív útvonal, `./x`, `../x`, kiterjesztéses bare filename, nem-4-többszörös base64, nem-base64-karakter) `unreadable_reason`-nel fail-closed TILTVA. Negatív regresszió: 6 relatív/bare-filename eset + 2 base64-határeset, mind pirosra vált egy widening-mutánson (az allow-list _STRICT_B64_RE ágának `elif True`-ra cserélve -- 8 teszt bukik), zöld a javítással.
+
+**Javítás (F2):** a Bash-extrakciós ág (`collect_bash_body`) soha nem töltötte az `attachments` mezőt, így egy swaks `--attach <file>` / `--attach @<file>` küldés horgonya azonos volt melléklettel és nélküle. A javítás fail-closed utat választ (nem hash-elést): egy `--attach`/`--attach-body` flag a Bash-parancsban a teljes hívást `unreadable_reason`-nel tiltja -- ugyanaz a TOCTOU-indoklás, mint a már meglévő `<`/`@file` test-formáknál (a csatolás egy KÉSŐBBI folyamatban történik, a hook csak egyszer olvasna). Negatív regresszió: `--attach report.pdf` és `--attach @report.pdf` mindkettő `unreadable_reason`-t ad, mutációval igazolva (az attach-detekció kikapcsolva -> mindkét teszt pirosra vált).
+
+**F3 (TOCTOU, abszolút útvonalnál) és F4 (állandó-címzett nyom mellékletet nem tartalmaz) -- NEM javítva ebben a körben, kimondott maradék kockázat (MikroB döntése, komment 16136):**
+- F3: a hook a PreToolUse pillanatában hash-el, a tényleges küldés (külön folyamat) később olvassa újra ugyanazt a fájlt -- a két olvasás között a fájl (vagy egy szimlink célja) átírható, és egy jóváhagyás egyszer-használatos volta csak az ismételt kísérletet zárja ki, nem az egyetlen versenyfutást. Hatás ma: nincs (nincs gmail MCP konfigurálva ezen a gépen); a2cb71f1 (gmail-csomag-csere) megérkezésekor él.
+- F4: ha a címzett az élesített állandó listán van, a jóváhagyás nélküli küldés nyoma (`standing_trace`, email-approval-gate.py) csak a címzettet és a szöveg első 120 karakterét rögzíti, mellékletet nem -- a gazda a napi naplóban nem látja, hogy a level mellékletet is vitt.
+- Mindkettő nyitva marad, amíg az a2cb71f1 (gmail-csomag-csere) blokkolva van ezen a kártyán; a blokk FELOLDÁSÁNAK feltétele F1+F2 (ez a kör), nem F3/F4.
+
+**Teszt:** `scripts/__tests__/email-extract-parity.test.py` (összes eset zöld, 8 új negatív F1-eset + 2 F2-eset) és `scripts/__tests__/email-approval-gate.test.py` (teljes futás zöld, regresszió nélkül) -- mindkettő saját, önálló mutáció-proof-fal (lásd fent). Teljes `fleet-test.sh` a `marveen-land.sh` saját futásán, a merge eredményén.
+
+**Ki döntött:** backend (a WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16136). Delta-gate: QA + WhiteHat2 (cybersec2), ugyanarra a SHA-ra (4. munkavégzési szabály 4a pontja).
+
+## 2026-10-11 -- 81452ce2 delta-gate: WhiteHat2 NO-GO javítás (F1/F2), F3/F4 korlát kimondva
+
+Kapcsolódik a fenti, azonos napi bejegyzéshez (a kártya első landolásának delta-gate javítása, komment
+16326 NO-GO, komment 16331 MikroB teendő-lista).
+
+**F1 (blokkoló, javítva):** a `specTemplateGuardCheck` korábban a PUT/POST-move kezelőben a
+`dependencyBlockBody`/`bulk_attribution_required` 409-ellenőrzések ELŐTT futott -- egy elutasított
+kérés (pl. feloldatlan függőség) is írt kommentet/cím-taget, mielőtt a tábla egyáltalán tudta volna, hogy
+a kérés nem mehet át. Mért kihasználás (WhiteHat2): egy harmadik fél (`mallory`) kommentjébe írt
+`Termékdöntés: igen` + egy elutasított `in_progress`-kérés is lefagyasztotta a kártya cím-tagjét
+(`[BLOKKOLT-Peti-dontes]`), amit a `fleet-nudger.sh` kizár a self-advance/gate-jelöltek közül -- tehát
+egy idegen token-birtokos egy MÁSIK ügynök kártyáját tudta lefagyasztani. Javítás: a hívás helye átkerült
+a sikeres `updateKanbanCard`/`moveKanbanCard` UTÁNI ágba mindkét kezelőben (`src/web/routes/kanban.ts`),
+a tranzíció ELŐTTI állapotot (`specTemplatePrevStatus`) a hívó explicit elmenti és adja át, mert a
+mutáció után a kártya állapota már az ÚJ érték. A termékdöntés-mező forrása korlátozva: csak a kártya
+saját leírása, vagy a kártya felelősének (assignee), vagy `mikrob` kommentje fogadott el -- egy
+harmadik fél kommentje nem.
+
+**F2 (blokkoló, javítva):** a guard korábban a SAJÁT kommentjeit is beleolvasta a szakasz-ellenőrzésbe és
+a termékdöntés-keresésbe. Mivel a figyelmeztető komment felsorolja mind az öt szakasz nevét, a MÁSODIK
+hívástól a hiányzó szakaszok listája üresnek látszott -- a kártya spec nélkül is "kielégítettnek" tűnt
+(az `alreadyWarned`-dedup ág emiatt holt kód volt, egy ezt kivevő mutáns is zöld maradt). Javítás: mindkét
+szöveg-scan kizárja a `spec-template-guard` szerzőjű kommenteket a forrásszövegből (az `alreadyWarned`
+ellenőrzés viszont a TELJES komment-listát nézi, hogy valóban észlelje a saját korábbi figyelmeztetést).
+A `PRODUCT_DECISION_RX` mostantól szóhatárt követel az `igen` után és tiltja a `/nem` folytatást
+(`igen\b(?!\s*\/)`), így a kitöltetlen sablonsor (`Termékdöntés: igen/nem`) nem illeszkedik. A feloldás
+tartós: egy explicit `Termékdöntés-jóváhagyva` komment `mikrob`-tól véglegesen leállítja az automatikus
+cím-tag visszatételét, még akkor is, ha a döntés-sor fizikailag a kártyán marad.
+
+**F3/F4 (nem blokkoló, dokumentálva, nem kódolva):** a termékdöntés-jelölés önbevalláson áll -- aki nem
+akarja, hogy MikroB lássa, `nem`-et ír vagy kihagyja a mezőt, és az őr ezt nem tudja észlelni (a
+plan-grilling verdikt szándékosan tiltja a tartalom-alapú kitalálást). A gate-eknek kritériumonként kell
+ellenőriznie, hogy a feltételezések között nincs-e eltitkolt termékdöntés -- ez emberi/gate-felelősség,
+nem ez a kártya kódolja. A `project-workflow` skill szövege javítva: korábban azt állította, hogy "a
+munka a döntésig nem folytatódik" -- ez hamis volt, mert a warn-only kapcsoló alatt a kártya
+`in_progress`-be MEGY, a tag és a komment csak látható jelzés, nem blokk.
+
+**Teszt:** `src/__tests__/kanban-spec-template-guard.test.ts` bővült 22 esetre (harmadik fél kizárva,
+assignee/mikrob elfogadva, kitöltetlen placeholder kizárva, tartós jóváhagyás, VALÓDI fail-open mutáció
+egy tényleges `getKanbanCard` dobással, VALÓDI "nem warn kétszer" mutáció-próba). Új
+`src/__tests__/kanban-spec-template-guard-wiring.test.ts` (6 eset, forrás-szöveg alapú): mindkét
+hívási hely a sikeres írás UTÁN és a függőség-őr UTÁN áll, és a hívás száma pontosan 2 -- ha valaki
+törli az egyik hívást vagy visszateszi a régi sorrendet, ez a teszt pirosra vált.
+`npx vitest run src/__tests__/kanban-spec-template-guard*.test.ts`: 28/28 zöld; `npx tsc --noEmit -p .`
+tiszta.
+
+**Ki döntött:** backend2 (a WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16331). Delta-gate:
+QA + WhiteHat2.
+
+## 2026-10-11 -- 335fb927: kártya-azonosító formátum-ellenőrzés + fail-closed dispatch-renderer (parancs-injekció a kártya id-n át)
+
+**Forrás:** WhiteHat2 GO a 41d8e96f-en (msg 10760), F1 MEDIUM, ELŐZETES lelet: a kártya-azonosítót a kliens adja meg a `POST /api/kanban`-on (formátum-ellenőrzés nélkül), és a dispatch-renderer (`kanbanMoveInstructions`, `routes/kanban.ts`) idézőjel és ellenőrzés nélkül fűzi a kártya-id-t a parancsblokkjaiba -- ebből hármat emel ki a keresett átadás-üzenet (a Python-státuszprobe, és két curl-URL argumentum). Mérve: `id = x$(echo pwned > marker)` mellett MIND A 3 parancsblokk végrehajtja a shell-behelyettesítést, mert a Python-probe egy DUPLA-idézőjelű `python3 -c "..."` argumentumba kerül (ahol a `$(...)`-t a KÜLSŐ shell oldja fel, még PYTHON előtt), a másik két blokk pedig idézőjel nélküli curl-URL argumentum volt. Egy token-birtokos így egy másik ügynökre kiosztott kártyával tetszőleges parancsot futtathatott a CÍMZETT gépén, abban a pillanatban, amikor az ügynök -- a dispatch-minta szerint elvárt módon -- szó szerint lefuttatja az üzenetben kapott parancsokat.
+
+**Javítás (allow-list, nem escapelés):** új `src/web/kanban-id-guard.ts` modul, `isValidKanbanId`/`isInvalidKanbanIdShape` -- `^[A-Za-z0-9_-]{1,64}$`, egy karakterosztály ami szerkezetileg kizárja az ÖSSZES itt releváns shell-metakaraktert (`$`, backtick, `"`, `'`, szóköz, zárójel, `|`, `;`, `<`/`>`), nem egy escaping-séma.
+1. `POST /api/kanban`: a kliens-megadott `id` ÉS `parent_id` is ellenőrzött -- nem-megfelelő alak 400, nem jön létre kártya.
+2. `PUT /api/kanban/:id`: a `parent_id` ugyanígy ellenőrzött (az `id` maga az URL-útvonalból jön, egy létező sor keresésére, nem új sor létrehozására -- ott a formátum-ellenőrzés a (3) pont szerinti felméréssel már lefedett).
+3. `kanbanMoveInstructions` MAGA is, FÜGGETLENÜL ellenőrzi az `id`-t (ugyanazzal a függvénnyel) -- ha nem megfelelő, EGYETLEN parancsot sem renderel, egy biztonságos, "ne futtass semmit, jelezd MikroB-nak" szövegre vált. Ez a MÁSODIK védelmi vonal: akkor is tartja a vonalat, ha a route-szintű ellenőrzés valahonnan megkerülhető lenne, mert ez a renderer az, ami tényleg shell-parancsot ad át egy másik ügynöknek. A 3 parancsblokk URL-argumentuma emellett egyes-idézőjelbe került (curl `'url'`), védelmi mélységként.
+4. Felmérés a meglévő táblán (3077 sor, `store/claudeclaw.db`, `SELECT id, parent_id FROM kanban_cards` az allow-list regexére illesztve): **0 nem-megfelelő `id`, 0 nem-megfelelő `parent_id`** -- migráció vagy kivétellista nem szükséges, a szigorítás semelyik meglévő kártyát nem töri.
+5. Negatív teszt mindhárom parancsblokkra, MINDKÉT ágon (sub-agent cél ÉS `MAIN_AGENT_ID` cél, WhiteHat2 F2 LOW): `src/__tests__/kanban-id-guard.test.ts`, mutáció-proofolva (a renderer fail-closed ága kikapcsolva -> 3 teszt pirosra vált; a POST-route ellenőrzése kikapcsolva -> 1 teszt pirosra vált), mindkettő visszaállítva zölden. A kvóta-/idézés-változás miatt a meglévő `kanban-dispatch-instructions.test.ts` két asszerciója (a probe-sor keresési mintája és a curl-sor regexe) frissült az új, egyes-idézőjeles alakra -- ugyanaz a viselkedés, csak a literál string megváltozott.
+
+**Teszt:** teljes kanban-* teszt-alkészlet (61 fájl, 826 teszt) zöld, `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** backend (MikroB dispatch alapján, komment-lánc 41d8e96f msg 10760). Gate: QA + RedHat (a javítási irányt a WhiteHat2 adta).
+
+## 2026-10-11 -- e4eb72c9 delta-fix #2: F1' (base64 trailing-newline bypass, fullmatch) + L1 (ValueError fail-closed) + L2 (--attach-body teszt)
+
+**Forrás:** WhiteHat2 NO-GO (komment 16365) a delta #1-re (4b2e70a4): az F1 allow-list szigorú base64 ága `_STRICT_B64_RE.match()`-ot használt, és Python `re`-ben a `$` a sztring vége ELŐTT VAGY egy záró `\n` ELŐTT is illeszkedik -- `"abc/def\n"` emiatt szigorú base64-nek számított és INLINE szövegként hash-elődött. A gmail-mcp-server JS regexe (`/^[A-Za-z0-9+\/]+=*$/`) nem ismeri ezt a kivételt, tehát a `\n`-es sztringet NEM base64-ként, hanem (a benne lévő `/` miatt) relatív FÁJLKÉNT olvassa be küldéskor -- ugyanaz a tartalom-pin bypass, amit az F1 allow-list bezárni hivatott. WhiteHat2 mérése: 813 615 string kimerítő kereséssel (1-5 karakter, 15 szimbólumos ábécé) 40 hook=inline/MCP=fájl párt talált, mind `<alnum, legalább egy "/"> + záró "\n"` alakú.
+
+**Javítás (F1'):** `_STRICT_B64_RE.match(content)` -> `_STRICT_B64_RE.fullmatch(content)` -- a `fullmatch` a TELJES sztringet megköveteli, a `$` benne nem enged kivételt a záró újsorra. Negatív regresszió: `"abc/def\n"`, `"a/b\n"` (a valódi bypass alakja) és `"abc\n"` (collateral, ártalmatlan de szigorúbb elutasítás, WhiteHat2 saját megjegyzése szerint elfogadható) mind fail-closed TILTVA.
+
+**Javítás (L1, LOW):** `collect_mcp_attachments` az abszolút-útvonalú ág fájl-megnyitásánál csak `OSError`-t fogott; egy NUL bájtot vagy lone-surrogate-ot tartalmazó útvonal `ValueError`/`UnicodeEncodeError`-t dob, amit a régi kód nem fogott el -- traceback, a hook 1-es kilépési kóddal állt volna le (nem blokkoló PreToolUse-kontextusban, bár ezt magát WhiteHat2 sem futtatta, a dokumentált viselkedésre hivatkozva). Javítás: `except (OSError, ValueError)`, ugyanaz a fail-closed `unreadable_reason` útvonal. Negatív teszt: NUL bájtot tartalmazó útvonal.
+
+**Javítás (L2, LOW, teszt-hiány):** a `--attach-body` flag már benne volt a detekciós regexben (`_BASH_ATTACH_RE`), de nem volt dedikált negatív tesztje -- csak `--attach` és `--attach @` volt lefedve. Hozzáadva.
+
+**Nem ebben a körben (WhiteHat2 saját, nem-blokkoló listája):** a `mutt -a`/`mail -A`/`mail -a` és a curl SMTP-feltöltéses alakok a Bash-ág `is_send_invocation` ELŐSZŰRŐjének hatókörén kívül esnek (a kapu rájuk egyáltalán nem fut) -- ez `outgoing-copy-gate.py`'s hatóköre, nem ezé a diffé, és egyik eszköz sincs telepítve ezen a gépen. A swaks egyedi-előtagú rövidítés-elfogadása (Perl Getopt::Long, pl. `--att F`) nem verifikált (a swaks nincs telepítve); tipp, nem mért tény. Az F3 (TOCTOU) feloldását MikroB az a2cb71f1 (gmail-csomag-csere) ÉLESÍTÉSI feltételeként rögzítette (saját komment, nem ez a kártya).
+
+**Teszt:** `scripts/__tests__/email-extract-parity.test.py` (3 F1' eset + 1 L1 eset + 1 L2 eset, mind mutáció-proofolva -- a `fullmatch`→`match` visszaállítás 3 tesztet pirosra visz, a `ValueError` elkapás kivétele tracebacket dob a teszt-futásban, a `--attach-body` kivétele a regexből 1 tesztet pirosra visz) és `scripts/__tests__/email-approval-gate.test.py` (teljes futás zöld, regresszió nélkül).
+
+**Ki döntött:** backend (WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16368). Delta-gate: QA + WhiteHat2 (cybersec2), ugyanarra a SHA-ra.
+
 ## 2026-10-11 -- Kartya 3d186397: senderId path-traversal audit, VAN RES, javitva (writeFileSync a channels-state fara)
 
 Audit-feladat (Cybersec out-of-scope megjegyzes 7503bb31 kommentjen, 5384): a channels-state faba iro `writeFileSync`-ek kozul melyik vesz at hivo/plugin-befolyasolta fajlnevet, es van-e traversal-szuro rajta.
@@ -19298,3 +19395,128 @@ Mutacio-ellenorzes (`context-restart-gate-wiring.test.ts`): a `createAgentMessag
 Teljes suite + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
 
 **Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, 16380 vege).
+
+## 2026-10-11 -- 2520b85a: per-agent identitás, measurement-only szelet (plan-grilling verdikt: GO-WITH-CHANGES)
+
+**Forrás:** WhiteHat2 1cdac111 delta (msg 10708) -- nincs kártya az ügynökönkénti API-azonosításra, amire a komment-szerző hitelesítése (1cdac111 maradék kockázat), a strukturált verdikt-rekord szerzője (2bfa4c67 F2) és a nem-hamisítható jóváhagyási csatorna (3fb0ef97) épül. A kártya saját feladat-leírása: "terv + plan-grilling, utána megvalósítás kapcsoló mögött".
+
+**Plan-grilling eredmény (plan-grilling skill, teljes jegyzőkönyv a kártya kommentjén):** a per-agent identitás ALAPMECHANIZMUSA már létezik (kártya 84dcc5d4: `auth-device-keys.ts` `createDeviceKey()` + `AGENT_KEY_PREFIX='agent:'` + `agentKeyToAgentId()`, `auth-gate.ts` már felold device-key hívást, `RouteContext.auth` már átmegy minden route handlerbe) -- eddig egyetlen fogyasztó használta (`routes/memories.ts`). A `kanban.ts`-ben MÁR VAN egy explicit, pinnelt döntés (kártya 1cdac111, `kanban-comment-author-trust-boundary.test.ts`): a comment `author` mező CLAIM, nem bizonyított identitás, és ezt NEM szabad csendben enforce-ra váltani ezen a kártyán.
+
+**Döntés:** CSAK a measurement-only szelet épül most, flag mögött (`AGENT_IDENTITY_MEASURE`, alapértelmezés ON, mert tisztán megfigyelés -- `off`-ra állítva nulla új kódút). Az ENFORCE mód (mismatch esetén 403/felülírás) KÜLÖN, jövőbeli döntés, a mért adatok birtokában -- ezen a kártyán tudatosan NEM épül be.
+
+**Megvalósítás:** új `src/web/agent-identity-measure.ts` modul, `measureAgentIdentityClaim(ctx, endpoint, claimedValue)` -- legacy megosztott token hívásnál INFO log (`authKind: legacy-token`), `agent:<id>` device-kulcsos hívásnál INFO (egyezés) vagy WARN (eltérés a claimed és az agentId között) log, minden más auth-kind vagy hiányzó claim csendes no-op, belső hiba fail-open (try/catch, SOHA nem dob, SOHA nem blokkolja a valódi kérést). Bekötve 3 helyen: `POST /api/kanban/:id/comments` (author), `POST /api/kanban/:id/move` (actor), `POST /api/messages` (from).
+
+**Teszt:** `src/__tests__/agent-identity-measure.test.ts` (10 teszt, logger-spy-jal, mind mutáció-proofolva -- a mismatch-ág kikapcsolása 1 tesztet pirosra visz), plusz a 3 érintett route meglévő teszt-alkészlete (`kanban-id-guard`, `kanban-dispatch-instructions`, `kanban-comment-author-trust-boundary`, `messages-post-sender-guards`, `messages-main-agent-no-false-warning`, `messages-module`, `messages-invalid-json-400`) változatlanul zöld -- a változás tisztán additív, egyetlen meglévő assertion sem módosult. `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** backend (plan-grilling verdikt, MikroB-nak jelezve a kártya kommentjén). Gate: QA + WhiteHat + RedHat (a kártya saját, trust-boundary kockázatú kijelölése).
+
+## 2026-10-11 -- a046302b -- Licenc nélküli publikus repó ötletének clean-room átvétele: jogi megerősítés
+
+**AI Draft -- nem jogi tanács, kötelező erejű döntéshez humán ügyvéd kell.**
+
+**Kontextus.** Peti döntése (Telegram 10994/10998/11000, 2026-10-11): saját "software factory" folyamatot építünk a `zazencodes/zazencodes-season-3` `src/software-factory-claude-code` mintájára. A repónak NINCS licence (GitHub API `license:null`). A mi repónk (`R4CK/mikrob`) PUBLIKUS. Referencia commit: `555467c3`.
+
+**1. döntés -- licenc nélküli publikus repó jogi helyzete: MINDEN JOG FENNTARTVA.**
+
+Szerzői jog automatikusan keletkezik a mű létrejöttekor (US Copyright Act; EU: 2001/29/EK irányelv; Magyarország: 1999. évi LXXVI. törvény 1. §). Licenc hiánya NEM jelent közkincsbe adást. Engedély hiányában harmadik fél technikailag még az olvasáson túli semmilyen cselekményre sem kap jogot -- de a joggyakorlat az "olvasás" (forráskód megtekintése) ellen nem lép fel; az átvétel ellen igen.
+
+**2. döntés -- mit szabad átvenni: az ÖTLET szabad, a KIFEJEZÉS nem.**
+
+Az ötlet-kifejezés elválasztás alapelve (idea-expression dichotomy, US: Baker v. Selden 1879; EU: Szoftver-irányelv 2009/24/EK 1. cikk (2); Magyarország: Szjt. 1. § (6)) kimondja: **az ötlet, elv, módszer, folyamat, rendszer, koncepció önmagában NEM oltalmazott** -- csak az ezeket megvalósító konkrét kifejezés (kód, szöveg, sablon).
+
+Ami SZABAD (ötlet-szint):
+- Folyamat-felépítés általánosan: "kártyánkénti worktree + spec + verdikt + approver + körplafon" mint koncepció.
+- Szerepek fogalma: spec-writer, approver, reviewer mint szerep-típusok.
+- Lépéssorrend elvként: spec -> review -> verdict -> land mint absztrakt szekvencia.
+- Hibajelenség-azonosítók (pl. "verdikt-hamisítás", "végtelen NO-GO kör") ha SAJÁT szövegezéssel írjuk le.
+
+Ami TILOS:
+- Prompt-szöveg verbatim vagy közel-verbatim másolása.
+- Sablon-szöveg átvétele (még "átírással" sem, ha a struktúra és kulcsszavak egyezők).
+- Kód átvétele (akár "fordítás" formájában is: ha valaki a forrást elolvassa és fejből átírja, az is levezetett mű lehet, ha az egyezés nem triviális).
+- Fájlnév-struktúra, könyvtár-elrendezés ha az elég egyedi és kreatív ahhoz, hogy kifejezésnek minősüljön (általában nem az, de kerüljük az egyező elnevezéseket).
+
+**3. döntés -- hogyan jelöljük az inspirációt: "ihletett" szint, nem "alapuló".**
+
+Az inspirációt jelölni KELL (jó gyakorlat + transzparencia), de a szövegezés számít:
+- Helyes: "Inspired by the software-factory concept in zazencodes/zazencodes-season-3 (no license; ideas only, no expression copied)."
+- Kerülendő: "Based on / ported from / derived from zazencodes/..." -- ezek levezetett-mű implikációt hordoznak.
+- A `DECISIONS.md`-ben és a kártya-kommentekben elegendő az "ihletett forrás" megjelölés commit SHA-val (`555467c3`).
+- Kódban NEM szükséges fájlszintű attribúció (az ötlet nem oltalmazott), de ha valaki célszerűnek látja, a "Concept inspired by..." megjegyzés nem árt.
+
+**4. döntés -- F1-F5 kockázatértékelés.**
+
+Az F1-F5 kártyák mind fogalmi szinten valósítanak meg valamit (worktree-izoláció, verdikt-API, spec-sablon, approver-flow, körplafon). A konkrét implementáció minden esetben saját kód, saját prompt, saját API. Feltéve, hogy:
+- egyetlen fejlesztő sem olvassa el a zazencodes forrást ÁTVÉTELI SZÁNDÉKKAL;
+- prompt-szövegeket és sablon-szövegeket SAJÁT MEGFOGALMAZÁSBAN írják;
+- a fájlstruktúra és elnevezések nem ismétlik szó szerint a forrást;
+
+-- az F1-F5 kockázata **alacsony**, az indulást nem blokkolom.
+
+**Emelt kockázat (jelzés MikroB felé, nem blokk):** a spec-sablon (F3) és az approver-flow (F4) a legsérülékenyebb pont, mert a sablon-szöveg természetszerűleg hasonlíthat az eredeti folyamat-leírásokra, ha a fejlesztő olvasta azokat. Javasolt óvintézkedés: az F3/F4 fejlesztője a zazencodes forrást NE olvassa el implementáció-szinten; elegendő a fázis-kártya leírása (ami már saját szövegezésű). Ha valaki belenézett: dokumentálja mikor és mennyit látott, hogy utólag bizonyítható legyen a clean-room jelleg.
+
+**Ki döntött:** jogász.
+**Hivatkozás:** kártya a046302b (szülő b8ac0ef1); forrás: zazencodes/zazencodes-season-3 @555467c3 (no license).
+
+## 2026-10-11 -- bc1e7ef2: WSL home-könyvtár takarítás-osztályozó (dry-run; --apply live NEM futott)
+
+**Döntés:** a `/home/neon` megosztott könyvtárban felgyűlt egyszer-használatos gate/land/test
+worktree-k és probe-direk (`cc-*`, `marveen-land-*`, `qa-gate-*`, `marveen-test*`, `guard-probe*`,
+stb.) osztályozására és takarítására a `store/wsl-home-cleanup.sh` KEEP/ACTIVE/DISPOSABLE/UNKNOWN
+négy osztályt használ, dry-run alapértelmezéssel. Csak a DISPOSABLE (regisztrált worktree-nél NEM
+szerepel élő folyamat alatt, NEM hivatkozza rá nyitott kanban-kártya, a neve egyezik egy ismert
+egyszer-használatos mintával, ÉS a mtime-ja 24 óránál régebbi) kerülhet törlésre `--apply --yes`-re,
+soha az UNKNOWN (ember dönt).
+
+**Mérés, ami a kártyát elindította (Peti, 2026-09-25):** `/home/neon` alatt 184 top-level dir, 137
+belőlük egyszer-használatos `cc-*`/`marveen-land-*` gate/land worktree (legrégebbi 2026-07-24), plusz
+`marveen-node_modules-pnpm-backup` (885M), `marveen-v131`, `marveen-test`, `marveen-qa-test`,
+`guard-probe`, `pg-e2e-qa`, stb. Egy élő dry-run futás ma (2026-10-11): KEEP=13, ACTIVE=3-4
+(a kettő a futás pillanatának élő folyamat-illesztésén mozog), DISPOSABLE=193, UNKNOWN=36-39.
+
+**Kritikus javítás ebben a kártyában (HAS_ACTIVE_CHILD hibaosztály):** az első verzió a
+`HAS_ACTIVE_CHILD` védelmet `"$HOME_DIR"/*` mintával jelölte, ami MINDEN regisztrált worktree saját
+top-level dirjét védetté tette (akkor is, ha a worktree MAGA a top-level dir, nem egy konténer alatt
+él) -- ez a valódi osztályozási logikát (élő folyamat / nyitott kártya-hivatkozás) elérhetetlenné
+tette minden regisztrált worktree-re, és mérve 194 DISPOSABLE-ből 69-re esett vissza, miközben a
+helyes szám (a konténer-direk, pl. `gate-worktrees/`, `marveen-scratch-worktrees/`, védelme
+MELLETT) 193 körül van. A javítás a mintát `"$HOME_DIR"/*/*`-re szűkítette (a worktree-nek a
+top-level dir ALATT, nem a top-level dirKÉNT kell élnie ahhoz, hogy a konténer védelmet kapjon).
+
+**Selftest (`store/wsl-home-cleanup.selftest.sh`, 18 eset):** throwaway `git init`-elt repókon és
+fake `$HOME_DIR`-en keresztül teszteli a `load_worktrees` NESTED-vs-TOP-LEVEL megkülönböztetését, a
+`classify()` mind a négy ágát (KEEP elsőbbsége, HAS_ACTIVE_CHILD, élő-folyamat, kártya-hivatkozás,
+dashboard-fail-open, DISPOSABLE kor-küszöb, UNKNOWN), a `remove_entry()` dirty-worktree-kizárását, és
+a `main()` dry-run/`--apply`-`--yes` útjait. Mutáció-próba: a `HAS_ACTIVE_CHILD` mintát visszaállítva
+`"$HOME_DIR"/*`-re a vonatkozó teszt pirosra vált (17/18, 1 FAIL) -- a selftest valóban méri a
+javítást, nem csak lefut.
+
+**Strukturális refaktor a tesztelhetőségért:** a script korábban top-szintű végrehatású volt
+(argumentum-parse + fő ciklus + exit a fájl aljára égetve), ami lehetetlenné tette a `classify()`
+izolált meghívását. A fő logika `main()`-be került, és a fájl csak akkor futtatja le magát, ha
+közvetlenül hívják (`[ "${BASH_SOURCE[0]}" = "${0}" ]`), nem ha egy selftest `source`-olja -- ugyanaz
+a minta, mint a `mopsion-bundle-check.sh`/selftest párosnál. Viselkedés-azonosság igazolva: a
+refaktor előtti és utáni dry-run futás ugyanazt az összegzést adta (KEEP=13, DISPOSABLE=193).
+
+**`--apply` ÉLES futtatás a valós boxon NEM történt meg, és ebben a kártyában SZÁNDÉKOSAN nem is
+fog:** MikroB (komment) és WhiteHat2 (msg 10831) mindketten megállították az éles törlést, amíg ez a
+kártya REVIEW-t és gate-et nem kap -- a gate QA + WhiteHat (nem a kártya eredeti "QA + Cybersec"
+jelölése, WhiteHat2 explicit felülírta törlő-művelet home-könyvtárban indokkal). A CLAUDE.md 22.
+szabálya (ebben a kártyában hozzáadva) kimondja: egy regisztrált worktree-t a `remove_entry` SOHA nem
+töröl, ha `git status --porcelain` nem üres, és az ÉLES `--apply` futtatás Peti explicit
+jóváhagyását igényli minden egyes alkalommal, mert megosztott, több ügynök munkáját hordozó
+infrastruktúráról van szó.
+
+**Ismert, már jelzett mellékhatás (nem ennek a kártyának a hibája, MikroB komment):** a 81452ce2
+delta-gate landolásakor (4ce3c17b merge) a korábbi WIP-commit (9234823a, a script dry-run-only
+változata) is landolt a `develop`-ra, GATE NÉLKÜL, mert a `marveen-land.sh` a teljes ágat landolja.
+MikroB mérése szerint ennek nincs élő hatása (0 ütemezett hívó a scheduled-tasks alatt), és a
+rendszeres hibaosztály (egy kártya landolása más, nem gate-elt kártya commitját is magával viszi)
+javítása a kártyánkénti worktree-epic (cd3e577b) feladata, nem ez a kártya.
+
+**Teszt:** `bash store/wsl-home-cleanup.selftest.sh`: 18/18 zöld (saját worktree, agent/backend2/work
+ágon). `bash -n store/wsl-home-cleanup.sh`: tiszta. Élő dry-run futás a valós `/home/neon`-on (csak
+olvasás, nem `--apply`): lásd a mérési sort fent.
+
+**Ki döntött:** backend2 (Peti eredeti kérése, MikroB és WhiteHat2 explicit korlátozásával az
+`--apply` élesítésére). Gate: QA + WhiteHat.
