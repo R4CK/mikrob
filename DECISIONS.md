@@ -19141,3 +19141,26 @@ sajat kijelolese szerint.
 **Teszt:** `src/__tests__/connectors-project-stdio-auth-gate.test.ts` teljesen átírva a `fleet-import-auth-gate.test.ts` (kártya 657b32f2) mintájára: `it.each` az ÖT auth-fajtára (token/none/federation/session/device), mind 403-at vár, az üzenet a `3fb0ef97`-re hivatkozik. A régi "session/device atmegy" tesztek torolve (mar nem igazak). Mutacio-pin: a session-es hivas most a SPECIFIKUS, uj uzenetet varja, nem csak a 403 kodot -- egy flag-visszaallitas vagy a feltetel szukitese/bovitese az assercot, nem csak a statust valtja.
 
 **Ki döntött:** backend3. Gate: QA + Cybersec/WhiteHat (a javítás irányát a RedHat adta, kártya saját kijelölése).
+
+## 2026-10-11 -- kanban komment-szerző (author) trust boundary delta: a maradék kockázat pontosítása + teljes fogyasztó-lista (kártya 1cdac111, WhiteHat2/cybersec2 NO-GO, komment 16090)
+
+**A korábbi bejegyzés (fentebb, "kanban komment-szerzo (author) nem auth-identitasbol jon, es ez marad") pontosítása, nem visszavonása.** A WhiteHat2 (cybersec2) gate megmérte: a "mindenhol csak jelzésként, SOHA tanúsítványként" állítás a KIKÉNYSZERÍTŐ oldalon (`store/landing-gate-verdict-parse.py`, ami egy `origin/develop`-ra pusholást enged/tilt, és `store/gate-closure-check.py`, ami a lezárási döntést adja) TÉNYSZERŰEN HAMIS, ha a hamisítás SZÁNDÉKOS (nem csak véletlen téves címkézés): egy token-birtokos, aki a request body `author` mezőjét `qa`/`cybersec` névre hamisítja, a landing-parse-en `OK`-t, a closure-checken `AGREE`-t kap -- tetszőleges kódot tud "átgate-eltetni" a developra és lezárni. Egy hamisított `author: mikrob` "GATE-KIJELOLES: QA (1-gate)" komment pedig egy valós, 2-gate-es (QA+Cybersec) kijelölést 1-gate-esre szűkítve a biztonsági gate-et teljesen elveszi.
+
+**MARADÉK KOCKÁZAT, kimondva (ez a mitigáció tényleges hatóköre):** a jelenlegi, "jelzés nem tanúsítvány" minta KIZÁRÓLAG a BECSÜLETES TÉVESZTÉS (téves saját-névre írás, pl. az építő elfelejti átírni az `author`-t) ellen védi -- ezt a `qa_pass_mislabeled`/`UNVERIFIED-AUTHOR` eset fogja meg. A SZÁNDÉKOS vagy prompt-injekcióval megtévesztett, megosztott tokent birtokló ügynök elleni védelem NINCS, amíg minden ügynök ugyanazt a flotta-bearert osztja. Ennek a maradék kockázatnak a FELTÉTELE a lezáráshoz: ügynökönkénti rendszer-felhasználó + ügynökönkénti token (terv: kártya 8ffa0c8a). Amíg ez nem landol, a kanban-kommentek szerzősége a flotta ÖNKÉNT-FEGYELMEZETT, nem kriptográfiailag zárt rétege -- ez a tény, nem a korábbi bejegyzés "elfogadható, mert csak jelzés" árnyalata.
+
+**Teljes fogyasztó-lista (a korábbi bejegyzés 1. lépése hiányos volt -- WhiteHat2 F2).** Az `author` mezőt jelzésként/döntési bemenetként olvasó MINDEN hely, a korábban felsorolt öt (`store/gate_author_role.py`, `store/gate-closure-check.py`, `store/landing-gate-verdict-parse.py`, `src/web/kanban-draft-review-guard.ts`, `store/cybersec-gate-scan.py`) MELLETT:
+- `src/web/kanban-gate-completeness-guard.ts` -- a `done`-ra zárást blokkolja a `Gate:` sor szerint; a `hasFreshVerdict` az `author == agent` egyezést nézi.
+- `src/web/kanban-plan-grilling-guard.ts` -- `author == mikrob` + plan-grilling verdikt dönt a `planned -> in_progress` átmenetről.
+- `src/web/kanban-landed-guard.ts` -- `GENERATED_COMMENT_AUTHORS` deny-lista.
+- `store/gate_designation.py`, `store/gate-decl-check.py`, `store/gate-dispatch-check.sh`, `store/gate_scan_lib.py`, `store/cybered-gate-scan.py`, `store/gate-pretriage-candidates.py`.
+- `store/cybersec-gate-scan.py` saját `mikrob_marker`-e: egy hamisított `author: mikrob` + "DONE"/blokk-szó kivonja a kártyát a gate-scan köréből.
+- a `gate-reconciler` ütemezett feladat (MikroB prompt-alapú sweepje) -- a verdiktet ugyanígy a szerzőhöz köti.
+- a draft-review guard a REVIEW szerzőjét is csak önbevallásból ismeri, nincs külön ellenőrzés.
+
+Mindegyik a KÖZÖS primitívre épül (a `author` mező bizalma), tehát a kihasználhatóság egy helyen bizonyított (landing-parse + closure-check, WhiteHat2 B/D mérései) a TÖBBI felsorolt helyre is átvihető ugyanazzal a mechanizmussal -- egyenként nem lettek újra lemérve.
+
+**F3 (nem ebben a körben, jövőbeli opció):** a hívó loopback-peer-portja alapján (`req.socket.remotePort` -> `/proc/net/tcp` -> `/proc/<pid>/fd` -> szülői lánc/cwd) a valódi hívó ügynök azonossága FELEMELHETŐ (nem hitelesítés, ugyanaz a UNIX user, de drágábbá teszi a hamisítást), flag mögé tehető. A TÉNYLEGES megoldás a fent nevezett 8ffa0c8a terv (ügynökönkénti felhasználó+token) -- ezt a bejegyzést onnantól kell majd frissíteni, ne a mostani állítást.
+
+**Kód NEM módosult ebben a körben** (WhiteHat2 verdiktje: "doksi-javítás kell, kód nem" -- a teszt és a route-kód már a `a77bf738`-ban helyesen rögzíti a jelenlegi viselkedést, csak a DECISIONS-szöveg állítása volt túl erős).
+
+**Ki döntött:** backend3 (a WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16091/16101). Delta-gate: QA + WhiteHat2 (cybersec2).
