@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { Readable } from 'node:stream'
 import type http from 'node:http'
-import { initDatabase, getDb, createKanbanCard } from '../db.js'
+import { initDatabase, getDb, createKanbanCard, addKanbanComment } from '../db.js'
 import { createDeviceKey } from '../web/auth-device-keys.js'
 import { tryHandleKanbanVerdicts, resolveVerdictAuthor, isSelfProposedVerdict, isAgentVerdictRecordEnabled } from '../web/kanban-verdicts.js'
 import type { RouteContext } from '../web/routes/types.js'
@@ -299,6 +299,83 @@ describe('kanban-verdicts', () => {
       const { ctx, out } = fakeCtx('/api/kanban/nope/proposals', 'POST', undefined, { kind: 'device', device: 'agent:backend', deviceId: 1 })
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
       expect(out.status).toBe(404)
+    })
+  })
+
+  // Card 2bfa4c67 round 2 (WhiteHat2 NO-GO on 3d702874, N1/W2, MikroB 16574: BLOCKING). The
+  // measured bypass: a verdict record citing an arbitrary sha (or none at all) was accepted as
+  // "about" the card's current round regardless. The bar is the latest builder hand-off's OWN
+  // declared Gate-SHA (`latestReviewGateSha`) -- when no hand-off ever used that convention, there
+  // is nothing to bind against, so the check stays permissive (same as the Gate: line default).
+  describe('N1/W2 sha binding to the latest REVIEW Gate-SHA', () => {
+    const REVIEW_SHA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    const WRONG_SHA = 'ffffffffffffffffffffffffffffffffffffffff'
+
+    it('no REVIEW with Gate-SHA ever on the card: sha is NOT required (permissive default)', async () => {
+      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', author: 'qa' })
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(201)
+    })
+
+    it('a REVIEW with Gate-SHA exists: a missing sha is rejected with 400 (the measured bypass)', async () => {
+      addKanbanComment('c1', 'backend', `REVIEW: kesz.\nGate-SHA: ${REVIEW_SHA}`)
+      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', author: 'qa' })
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(400)
+    })
+
+    it('a REVIEW with Gate-SHA exists: a WRONG sha is rejected with 400', async () => {
+      addKanbanComment('c1', 'backend', `REVIEW: kesz.\nGate-SHA: ${REVIEW_SHA}`)
+      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', sha: WRONG_SHA, author: 'qa' })
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(400)
+    })
+
+    it('a REVIEW with Gate-SHA exists: the matching sha (full or short-prefix form) is accepted', async () => {
+      addKanbanComment('c1', 'backend', `REVIEW: kesz.\nGate-SHA: ${REVIEW_SHA}`)
+      const full = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', sha: REVIEW_SHA, author: 'qa' })
+      expect(await tryHandleKanbanVerdicts(full.ctx)).toBe(true)
+      expect(full.out.status).toBe(201)
+      const short = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'GO', sha: REVIEW_SHA.slice(0, 8), author: 'cybersec' })
+      expect(await tryHandleKanbanVerdicts(short.ctx)).toBe(true)
+      expect(short.out.status).toBe(201)
+    })
+  })
+
+  // Card 2bfa4c67 round 2 (WhiteHat2 NO-GO on 3d702874, N5). The measured bypass: the exclusion
+  // used to be "latest proposal wins", so a LATER, unrelated proposal from a DIFFERENT agent
+  // silently cleared an earlier, still-relevant exclusion.
+  describe('N5 set-semantics proposer exclusion, scoped to the current round', () => {
+    it('an earlier proposal from the gate stays blocking even after a later, different proposal', async () => {
+      createDeviceKey('agent:cybersec')
+      createDeviceKey('agent:backend')
+      await tryHandleKanbanVerdicts(
+        fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:cybersec', deviceId: 1 }).ctx,
+      )
+      await tryHandleKanbanVerdicts(
+        fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:backend', deviceId: 2 }).ctx,
+      )
+      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec' })
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(403)
+    })
+
+    it('a proposal scoped to an OLD round (different Gate-SHA) does not block the gate in the CURRENT round', async () => {
+      createDeviceKey('agent:cybersec')
+      addKanbanComment('c1', 'backend', 'REVIEW: round 1.\nGate-SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+      await tryHandleKanbanVerdicts(
+        fakeCtx(
+          '/api/kanban/c1/proposals', 'POST', { sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+          { kind: 'device', device: 'agent:cybersec', deviceId: 1 },
+        ).ctx,
+      )
+      addKanbanComment('c1', 'backend', 'REVIEW: round 2.\nGate-SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+      const { ctx, out } = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST',
+        { gate: 'CYBERSEC', verdict: 'GO', sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', author: 'cybersec' },
+      )
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(201)
     })
   })
 

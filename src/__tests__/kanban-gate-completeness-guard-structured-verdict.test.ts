@@ -5,7 +5,7 @@
 // regex machinery in isolation), this file uses the REAL database so the structured path is
 // actually exercised end to end, flag included.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { initDatabase, createKanbanCard, addKanbanVerdict, addKanbanComment } from '../db.js'
+import { initDatabase, getDb, createKanbanCard, addKanbanVerdict, addKanbanComment } from '../db.js'
 import { gateCompletenessGuardVerdict } from '../web/kanban-gate-completeness-guard.js'
 
 describe('gateCompletenessGuardVerdict + structured kanban_verdicts (additive OR)', () => {
@@ -103,6 +103,63 @@ describe('gateCompletenessGuardVerdict + structured kanban_verdicts (additive OR
       const v = gateCompletenessGuardVerdict('c1', 'done', false, 'qa')
       expect(v.blocked).toBe(true)
       expect(v.message).toContain('QA verdiktjét is megköveteli')
+    })
+  })
+
+  // Card 2bfa4c67 round 2 (WhiteHat2 NO-GO on 3d702874, N2 HIGH): the measured bypass -- a
+  // VERIFIED FAIL/NO-GO record was silently overridden by a LATER, UNVERIFIED PASS/GO for the
+  // same gate, because freshStructuredRow only ever looked at the single newest row.
+  describe('verified-negative precedence (N2)', () => {
+    it('a VERIFIED FAIL is NOT overridden by a later UNVERIFIED PASS for the same gate', () => {
+      process.env.AGENT_VERDICT_RECORD = '1'
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'FAIL', author: 'qa', authorVerified: true })
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'PASS', author: 'qa', authorVerified: false })
+      addKanbanVerdict('c1', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2', authorVerified: true })
+      const v = gateCompletenessGuardVerdict('c1', 'done', false, 'qa')
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA verdiktjét is megköveteli')
+    })
+
+    it('CONTROL: a VERIFIED FAIL IS overridden by a later VERIFIED PASS', () => {
+      process.env.AGENT_VERDICT_RECORD = '1'
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'FAIL', author: 'qa', authorVerified: true })
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'PASS', author: 'qa', authorVerified: true })
+      addKanbanVerdict('c1', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2', authorVerified: true })
+      const v = gateCompletenessGuardVerdict('c1', 'done', false, 'qa')
+      expect(v.blocked).toBe(false)
+    })
+
+    it('CONTROL: an UNVERIFIED FAIL IS overridden by a later UNVERIFIED PASS (unchanged, neither side authenticated)', () => {
+      process.env.AGENT_VERDICT_RECORD = '1'
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'FAIL', author: 'qa', authorVerified: false })
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'PASS', author: 'qa', authorVerified: false })
+      addKanbanVerdict('c1', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2', authorVerified: true })
+      const v = gateCompletenessGuardVerdict('c1', 'done', false, 'qa')
+      expect(v.blocked).toBe(false)
+    })
+  })
+
+  // Card 2bfa4c67 round 2 (WhiteHat2 NO-GO on 3d702874, N3): the measured bypass -- a genuine,
+  // comment-only FAIL written FIRST (right after a REVIEW hand-off) was invisible to the DISAGREE
+  // check once a (forgeable) structured PASS arrived LATER, because the old check only looked for
+  // a negative comment AT OR AFTER the structured row's own timestamp.
+  describe('order-independent comment-negative detection (N3)', () => {
+    it('a negative comment BEFORE a later structured PASS still triggers DISAGREE-SOURCE', () => {
+      process.env.AGENT_VERDICT_RECORD = '1'
+      addKanbanComment('c1', 'qa', 'QA FAIL')
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'PASS', author: 'qa', authorVerified: false })
+      // Force a REAL chronological gap between the comment and the structured row -- addKanbanComment
+      // and addKanbanVerdict both stamp wall-clock seconds, which a fast unit test cannot reliably
+      // separate, so the old (buggy) `afterTs = row.created_at` check and the fixed `sinceTs` check
+      // would otherwise both pass by accident (both rows land in the same second). Explicit
+      // timestamps make the order deterministic: the comment is unambiguously BEFORE the row.
+      const db = getDb()
+      db.exec(`UPDATE kanban_comments SET created_at = 100 WHERE card_id = 'c1' AND content = 'QA FAIL'`)
+      db.exec(`UPDATE kanban_verdicts SET created_at = 200 WHERE card_id = 'c1' AND gate = 'QA'`)
+      addKanbanVerdict('c1', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2', authorVerified: true })
+      const v = gateCompletenessGuardVerdict('c1', 'done', false, 'qa')
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('DISAGREE-SOURCE')
     })
   })
 })
