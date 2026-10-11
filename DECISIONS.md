@@ -19039,3 +19039,11 @@ A pin (`agent-oauth-token-file.test.ts`, 644. és 673. sor) a régi, bare `isCla
 **F2 (MEDIUM-LOW, B4/B9), F3 (MEDIUM), F4 (MEDIUM-LOW):** WhiteHat saját minősítése szerint "nem blokkoló, külön kártyára" -- ebben a delta-körben SZÁNDÉKOSAN nem nyúltam hozzájuk (scope-tágítás elkerülése, karpathy-guidelines sebészi elv). F2/B4 (a `${byoUnsetEnv}` komment-megkerülés) VÉLETLENÜL már zárva van a round 5/6 B2-fixemmel (ugyanaz a hiba, a RedHat is megtalálta B2-ként) -- ez bónusz, nem ebben a körben célzott munka. F2/B9 (az `unset` sorrendje nincs pinelve), F3 (claude-plans nyers token, nincs hívó-hitelesítés) és F4 (body-file ZWSP-s tag-megkerülés) MARADÉKA MikroB döntésére várva, külön kártyán (a RedHat R2/R4/R5 listájával együtt várhatóan egy batch).
 
 **Ki döntött:** backend3. Delta-gate: QA + RedHat (a javítási sort a WhiteHat adta, komment 15852).
+
+## 2026-10-11 -- 617d136d delta-gate javítás kör 3: két elfelejtett literál-pin frissítve (saját fleet-test találta)
+
+A `needsFleetOauthFor` kiemelés (kör 1) után a teljes landolási fleet-test 2 bukást adott: `isolated-channel-config.test.ts` KÉT HELYEN (188. és 196. sor körüli `it`-ek) hardcode-olta a RÉGI, inline `const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam` kifejezést szó szerint -- ugyanaz a hibaosztály, amit ez a kártya már kétszer dokumentált (round 6, a WhiteHat F1 pin). A `grep` a pontos régi literálra ELŐRE lefutott volna, ha a kiemelés UTÁN azonnal megteszem -- ehelyett a saját, sietős fleet-test-futás derítette ki. Mindkét helyen frissítve a `needsFleetOauthFor(isClaude, authMode, isOwnTeam, customProviderId)` hívásra. Átfogó grep a régi literálra `src/__tests__/` és `src/web/` alatt: nulla további egyezés.
+
+**Tanulság, MÉG EGYSZER, mert most már három eset ugyanerre a kártyára:** minden forrás-oldali kifejezés-átalakítás (nem csak feltétel-csere, KIEMELÉS is) UTÁN azonnal grep a pontos RÉGI szöveges alakra a teljes `src/__tests__/` fölött, MIELŐTT a fleet-test-re bíznám a felfedezést -- ez olcsóbb, mint egy teljes suite-kör.
+
+**Ki döntött:** backend3. Delta-gate: QA + RedHat.

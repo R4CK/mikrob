@@ -189,7 +189,9 @@ describe('isolated-config launcher wiring', () => {
     // The shared root's rotating credential (macOS Keychain /.credentials.json)
     // wins over a valid CLAUDE_CODE_OAUTH_TOKEN env var, so a shared-root agent
     // 401s whenever it rotates -- the gate must not be hasChannel-only.
-    expect(SRC).toMatch(/const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam/)
+    // needsFleetOauthFor (RedHat/WhiteHat NO-GO, card 617d136d): the inline boolean expression
+    // was extracted into a pure, unit-testable function (also excluding customProviderId now).
+    expect(SRC).toMatch(/const needsFleetOauth = needsFleetOauthFor\(isClaude, authMode, isOwnTeam, customProviderId\)/)
     expect(SRC).toMatch(/\(hasChannel \|\| needsFleetOauth \|\| isOwnTeam\) && name !== MAIN_AGENT_ID/)
   })
 
@@ -205,7 +207,7 @@ describe('isolated-config launcher wiring', () => {
     // to exclude BYO/custom-endpoint agents (Ollama/DeepSeek/OpenRouter/custom),
     // and one shared boolean keeps both exclusions from drifting apart.
     expect(SRC).toMatch(/const isOwnTeam = isClaude && authMode === 'own_team'/)
-    expect(SRC).toMatch(/const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam/)
+    expect(SRC).toMatch(/const needsFleetOauth = needsFleetOauthFor\(isClaude, authMode, isOwnTeam, customProviderId\)/)
     expect(SRC).toMatch(/!claudeConfigDir && hasFleetOauthToken\(\) && needsFleetOauth/)
     // The own_team isolation branch comes BEFORE the hasFleetOauthToken() gate
     // (isolation must not require the fleet token for own_team) and contains
