@@ -234,6 +234,46 @@ check("attachments: non-dict entry -> unreadable_reason",
 check("attachments: missing/empty content -> unreadable_reason",
       mod.collect_mcp_attachments({"attachments": [{"filename": "x", "content": ""}]})[1] is not None)
 
+# WhiteHat2 NO-GO F1 (card e4eb72c9, komment 16134): the gmail MCP server's own
+# isFilePath treats every one of these as a FILE (reads it relative to its own
+# cwd at send time), but the OLD code here hashed them as inline TEXT -- the
+# approval anchor pinned the literal string, never the bytes the server
+# actually attached. Each must now be fail-closed unreadable, not hashed.
+for bad_content in ("./report.pdf", "../../.env", "report.pdf", ".env", "data/report.pdf",
+                    "../../../../home/x/.ssh/id_rsa"):
+    atts, reason = mod.collect_mcp_attachments(
+        {"attachments": [{"filename": "f", "content": bad_content}]})
+    check(f"attachments: relative/bare-filename content {bad_content!r} -> "
+          "unreadable_reason, fail-closed (not hashed as inline text)",
+          atts == [] and reason is not None, f"got atts={atts!r} reason={reason!r}")
+
+# M9 (QA/WhiteHat2 mutant): widening _ABS_PATH_RE to also match these relative
+# forms is exactly the regression this allow-list closes -- it must NOT make
+# the above green again. Confirmed by the allow-list design itself: the
+# accepted shapes are absolute-path OR strict-base64, not "matches some
+# path-like regex", so widening the absolute-path side has no effect on the
+# relative forms above (they still fail the base64 check too).
+check("attachments: strict base64 boundary -- not-multiple-of-4 length is rejected",
+      mod.collect_mcp_attachments({"attachments": [{"filename": "f", "content": "QQ="}]})[1] is not None)
+check("attachments: strict base64 boundary -- non-base64 char is rejected",
+      mod.collect_mcp_attachments({"attachments": [{"filename": "f", "content": "QQ==x"}]})[1] is not None)
+
+# WhiteHat2 NO-GO F2 (card e4eb72c9, komment 16134): the Bash extraction branch
+# never populated `attachments`, so a swaks `--attach <file>` sent an envelope
+# anchored IDENTICALLY with or without the attachment (measured: 9ac71cacbd
+# for all three). Now fail-closed: the attach flag makes the whole call
+# unreadable, same TOCTOU rationale as the `<`/@file body forms.
+env = mod.collect_email_envelope(
+    "Bash", {"command": 'swaks --to a@b.hu --body "b" --attach report.pdf'})
+check("envelope/bash: swaks --attach <file> -> unreadable_reason, fail-closed "
+      "(F2, not silently sent with an un-anchored attachment)",
+      env["unreadable_reason"] is not None, f"got {env!r}")
+
+env = mod.collect_email_envelope(
+    "Bash", {"command": 'swaks --to a@b.hu --body "b" --attach @report.pdf'})
+check("envelope/bash: swaks --attach @<file> -> unreadable_reason, fail-closed (F2)",
+      env["unreadable_reason"] is not None, f"got {env!r}")
+
 env = mod.collect_email_envelope(
     "mcp__server-gmail-autoauth-mcp__send_email",
     {"to": ["a@b.hu"], "subject": "t", "body": "b",

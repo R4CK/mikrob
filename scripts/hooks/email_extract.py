@@ -30,8 +30,28 @@ import os
 import re
 
 
+# WhiteHat2 NO-GO F2 (card e4eb72c9, komment 16134): the Bash extraction branch
+# never populates `attachments` at all (collect_mcp_attachments is only called
+# on the MCP/connector branch), so a Bash sender that DOES carry a file
+# attachment -- swaks's `--attach <file>` / `--attach @<file>` -- goes out with
+# an anchor that is identical with and without the attachment, and identical
+# across two DIFFERENT attached files (measured: 9ac71cacbd for all three).
+# Hashing the referenced file here would face the same TOCTOU exposure as the
+# `<`/@file body forms above (the attach happens in a LATER process, after
+# this hook reads), so this takes the same fail-closed route as those: a
+# swaks/relative --attach flag makes the call unreadable rather than silently
+# anchoring a letter with no attachment information in it.
+_BASH_ATTACH_RE = re.compile(r"(?:^|\s)--attach(?:-body)?(?:=|\s+)['\"]?@?([^\s'\"|;&<>]+)")
+
+
 def collect_bash_body(cmd: str):
     """Return (text, unreadable_reason). text is '' when nothing was recovered."""
+    attach_m = _BASH_ATTACH_RE.search(cmd)
+    if attach_m:
+        return ("", f"a parancs mellekletet csatol (--attach {attach_m.group(1)}) -- a Bash-agon "
+                "ez nem hashelheto (a csatolas egy kesobbi folyamatban tortenik, ugyanaz a "
+                "TOCTOU-kitettseg, mint a fajl-torzsnel) -- hasznalj MCP send_email-t "
+                "melleklettel, vagy tavolitsd el a mellekletet")
     parts = []
     for m in re.finditer(r"--(?:body|subject)[= ]+(\"([^\"]*)\"|'([^']*)'|(\S+))", cmd):
         val = m.group(2) or m.group(3) or m.group(4) or ""
@@ -175,7 +195,25 @@ def collect_mcp_recipients(tool_input: dict):
 # only -- an approved letter could be re-sent with ANY local file attached
 # and the hash would not change. Both shapes get hashed so the anchor pins
 # WHAT was actually attached, not just the envelope text.
+#
+# WhiteHat2 NO-GO F1 (card e4eb72c9, komment 16134): this hook's own idea of
+# "file" (_ABS_PATH_RE, absolute path only) and the MCP server's idea of
+# "file" (gmail-mcp-server@1.0.30 dist/utils/gmail-operations.js:425-444
+# isFilePath) disagree -- the server treats a RELATIVE path (`./x`, `../x`,
+# a bare filename with an extension like `report.pdf` or `.env`, or any
+# string containing `/`/`\` that is not base64-shaped) as a file too, and
+# reads it relative to its own cwd at send time. This hook used to hash
+# every such string as INLINE TEXT (the plain sha256 of the literal
+# characters), so an approval anchored on that string never matched the
+# bytes the server actually attached -- the content-pin the card exists to
+# add was bypassed by the simplest possible relative path. Fix: an
+# allow-list, not a copy of the server's regex (which drifts across
+# versions) -- only an ABSOLUTE path (read + hash the real bytes) or a
+# STRICT base64 string (hash the literal string, as today) are accepted;
+# everything else is unreadable_reason, fail-closed (a new approval is
+# required rather than silently anchoring the wrong thing).
 _ABS_PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
+_STRICT_B64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
 
 
 def collect_mcp_attachments(tool_input: dict):
@@ -204,9 +242,15 @@ def collect_mcp_attachments(tool_input: dict):
                 return [], f"a '{filename}' melleklet fajlja nem olvashato ({content}): {exc!r}"
             out.append({"filename": filename, "path": content,
                         "sha256": hashlib.sha256(data).hexdigest()})
-        else:
+        elif _STRICT_B64_RE.match(content) and len(content) % 4 == 0:
             out.append({"filename": filename,
                         "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()})
+        else:
+            return [], (f"a '{filename}' melleklet tartalma se nem abszolut utvonal, se nem "
+                        "szigoru base64 (pl. relativ utvonal: './x', '../x', 'nev.ext') -- "
+                        "az MCP-szerver ezt megis FAJLNAK olvashatja, es ezt a hook nem tudja "
+                        "hashelni a bytejai szerint -- fail-closed, uj jovahagyas kell "
+                        f"({content[:60]!r})")
     out.sort(key=lambda a: (a.get("path", ""), a["filename"], a["sha256"]))
     return out, None
 
