@@ -18865,3 +18865,13 @@ A `marveen-land.sh backend3 --card 617d136d` REFUSED-t adott: a trusted `$MAIN` 
 **Javítás:** `src/web/agent-process.ts`, a `needsFleetOauth` deklaráció feljebb hozva (az `isOwnTeam` után, a shared-home fallback elé), a fallback feltétel `!isOwnTeam` -> `needsFleetOauth`-ra cserélve. A csatorna-izolációs ág és a `byoUnsetEnv` ág (mindkettő már helyesen `needsFleetOauth`-ot használt) érintetlen.
 
 **Ki döntött:** backend3 (a hiba a landolási fleet-test futásán derült ki, nem a saját fleet-test futásaimon -- azok a `$MAIN` trusted copy helyett a scratch worktree-t nézték, ami NEM futtatta a landolás saját, develop-alapú ellenőrzését ugyanazzal a merge-bázissal). Gate: QA + Cybersec + Cybered (kártya 617d136d saját kijelölése) -- a security-releváns jelleg miatt (fleet Claude-token BYO-ágenshez szivárgása) a Cybersec gate-nek külön figyelmet kell rá fordítania.
+
+## 2026-10-11 -- Köteg 9/11 (kártya 617d136d), round 6: a round 5 javítás egy MÁSIK, fork-natív tesztet tört el -- regex frissítve
+
+A round 5 fix (`!isOwnTeam` -> `needsFleetOauth` a shared-home fallback ágon) a saját fleet-test futásán zöldre vitte az upstream-adoptált `isolated-channel-config.test.ts`-t, de elrontott egy MÁSIK, teljesen fork-natív, biztonsági tesztet: `src/__tests__/agent-oauth-token-file.test.ts` > "both export sites put the own file FIRST, and the fleet export only in the else-branch" (card bc32d233/f1800242, az oauthTokenFile fail-closed/FIFO-hang munkához tartozik, a Köteg 9 merge egyáltalán nem érintette). A teszt egy szó szerinti regexet futtat a forrás ellen, és a régi `!isOwnTeam` literál benne volt a mintában -- a teszt TÉNYLEGES szándéka strukturális (ownTokenFile-ág előbb, fleet-export csak az else-if-ben), a `!isOwnTeam` csak az akkor-aktuális feltétel szövege volt, nem a teszt lényege.
+
+**Javítás:** a regexben `!isOwnTeam` -> `needsFleetOauth`, minden más változatlan (a teszt a sorrend-invariánst ugyanúgy ellenőrzi). Átfogó grep (`hasFleetOauthToken() && !isOwnTeam` mintára, escapelt és nem escapelt alakban) nem talált további egyezést a `src/__tests__/` alatt -- nincs harmadik hely, ami ugyanerre a literálra pineznék.
+
+**Tanulság ennek a kártyának:** egy forrás-oldali feltétel-csere, még ha egyetlen sor és helyes is, TÖBB, egymástól független tesztfájlban hardcode-olt literál-mintát érinthet (itt kettő: egy upstream-adoptált és egy fork-natív). A javítás után mindig `grep` a pontos régi literálra a teljes `src/__tests__/` alatt, nem csak a közvetlenül hibázó tesztfájl megnézése -- ez itt megmentett egy harmadik kör felesleges landolás-visszadobástól.
+
+**Ki döntött:** backend3. Gate: QA + Cybersec + Cybered.
