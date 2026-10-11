@@ -25,6 +25,7 @@ collect_bash_body / collect_mcp_body moved here VERBATIM from
 outgoing-copy-gate.py (behavior-neutral; parity proven byte-for-byte against a
 golden captured from the pre-move code -- scripts/__tests__/email-extract-parity.test.py).
 """
+import hashlib
 import os
 import re
 
@@ -165,6 +166,51 @@ def collect_mcp_recipients(tool_input: dict):
             norm(tool_input.get("bcc")), None)
 
 
+# --- attachments (card e4eb72c9) ---------------------------------------------
+# The gmail MCP send tool's `attachments[].content` field accepts EITHER a
+# base64 string OR an ABSOLUTE local file path in the SAME key (measured
+# against gmail-mcp-server@1.0.30 dist/index.js:198: "Base64 encoded content
+# ... OR ABSOLUTE file path to read from disk"). Before this, the approval
+# anchor (content_anchor in email-approval-gate.py) covered to/cc/bcc/text
+# only -- an approved letter could be re-sent with ANY local file attached
+# and the hash would not change. Both shapes get hashed so the anchor pins
+# WHAT was actually attached, not just the envelope text.
+_ABS_PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
+
+
+def collect_mcp_attachments(tool_input: dict):
+    """Return (attachments, unreadable_reason). attachments: list of
+    {"filename", "sha256"} (plus "path" when the content was a file
+    reference), sorted for a deterministic hash order. A missing/empty list
+    is not an error (most letters have none)."""
+    raw = tool_input.get("attachments")
+    if not raw:
+        return [], None
+    if not isinstance(raw, list):
+        return [], "a melleklet-lista alakja nem lista"
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return [], "egy melleklet-bejegyzes alakja nem objektum"
+        filename = str(item.get("filename") or "")
+        content = item.get("content")
+        if not isinstance(content, str) or not content:
+            return [], f"a '{filename}' melleklet tartalma hianyzik vagy nem szoveg"
+        if _ABS_PATH_RE.match(content):
+            try:
+                with open(content, "rb") as fh:
+                    data = fh.read()
+            except OSError as exc:
+                return [], f"a '{filename}' melleklet fajlja nem olvashato ({content}): {exc!r}"
+            out.append({"filename": filename, "path": content,
+                        "sha256": hashlib.sha256(data).hexdigest()})
+        else:
+            out.append({"filename": filename,
+                        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()})
+    out.sort(key=lambda a: (a.get("path", ""), a["filename"], a["sha256"]))
+    return out, None
+
+
 # The claude.ai Gmail connector's send-shaped tools (mcp__claude_ai_Gmail__*):
 # no "send_email" in the name, so the name-based test above never saw them.
 CONNECTOR_SEND_RE = re.compile(r"gmail__(reply|reply_all|send_message|forward)$", re.I)
@@ -176,6 +222,7 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
     Returns {"to", "cc", "bcc", "text", "unreadable_reason"}; text is the combined
     subject+body exactly as the copy gate audits it. The CALLER decides policy
     (e.g. an empty recipient list on a send is itself grounds to deny)."""
+    attachments = []
     if re.search(r"send_email", tool_name or "", re.I) or CONNECTOR_SEND_RE.search(tool_name or ""):
         ti = tool_input if isinstance(tool_input, dict) else {}
         text = collect_mcp_body(ti)
@@ -186,6 +233,9 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
         # the addresses: an approval for one message cannot answer another.
         if not to and ti.get("messageId"):
             to = [f"messageId:{ti['messageId']}"]
+        attachments, att_reason = collect_mcp_attachments(ti)
+        if att_reason and not reason:
+            reason = att_reason
     elif tool_name == "Bash":
         cmd = str((tool_input or {}).get("command") or "") if isinstance(tool_input, dict) else ""
         text, reason = collect_bash_body(cmd)
@@ -194,6 +244,7 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
         else:
             to, cc, bcc = [], [], []
     else:
-        return {"to": [], "cc": [], "bcc": [], "text": "",
+        return {"to": [], "cc": [], "bcc": [], "text": "", "attachments": [],
                 "unreadable_reason": f"nem email-kuldo tool ({tool_name!r})"}
-    return {"to": to, "cc": cc, "bcc": bcc, "text": text, "unreadable_reason": reason}
+    return {"to": to, "cc": cc, "bcc": bcc, "text": text, "attachments": attachments,
+            "unreadable_reason": reason}

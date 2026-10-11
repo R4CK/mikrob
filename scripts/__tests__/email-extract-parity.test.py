@@ -200,6 +200,53 @@ env = mod.collect_email_envelope("Read", {"file_path": "/x"})
 check("envelope/non-send tool: unreadable, never silently hashable",
       env["unreadable_reason"] is not None)
 
+# --- 6. attachments (card e4eb72c9) -------------------------------------------
+check("attachments: missing field -> empty list, no error",
+      mod.collect_mcp_attachments({}) == ([], None))
+
+base64_hash = __import__("hashlib").sha256(b"QQ==").hexdigest()
+check("attachments: inline (base64-looking) content is hashed as given",
+      mod.collect_mcp_attachments(
+          {"attachments": [{"filename": "a.txt", "content": "QQ=="}]})
+      == ([{"filename": "a.txt", "sha256": base64_hash}], None))
+
+with tempfile.TemporaryDirectory() as td:
+    fpath = os.path.join(td, "report.pdf")
+    with open(fpath, "wb") as fh:
+        fh.write(b"%PDF-1.4 fake")
+    file_hash = __import__("hashlib").sha256(b"%PDF-1.4 fake").hexdigest()
+    atts, reason = mod.collect_mcp_attachments(
+        {"attachments": [{"filename": "report.pdf", "content": fpath}]})
+    check("attachments: absolute file path is READ and its bytes hashed",
+          reason is None and atts == [{"filename": "report.pdf", "path": fpath, "sha256": file_hash}],
+          f"got atts={atts!r} reason={reason!r}")
+
+    missing_path = os.path.join(td, "gone.pdf")
+    atts, reason = mod.collect_mcp_attachments(
+        {"attachments": [{"filename": "gone.pdf", "content": missing_path}]})
+    check("attachments: unreadable file path -> unreadable_reason, fail-closed",
+          atts == [] and reason is not None, f"got atts={atts!r} reason={reason!r}")
+
+check("attachments: non-list value -> unreadable_reason",
+      mod.collect_mcp_attachments({"attachments": "oops"})[1] is not None)
+check("attachments: non-dict entry -> unreadable_reason",
+      mod.collect_mcp_attachments({"attachments": ["oops"]})[1] is not None)
+check("attachments: missing/empty content -> unreadable_reason",
+      mod.collect_mcp_attachments({"attachments": [{"filename": "x", "content": ""}]})[1] is not None)
+
+env = mod.collect_email_envelope(
+    "mcp__server-gmail-autoauth-mcp__send_email",
+    {"to": ["a@b.hu"], "subject": "t", "body": "b",
+     "attachments": [{"filename": "a.txt", "content": "QQ=="}]})
+check("envelope/mcp: attachments key is populated from tool_input",
+      env["attachments"] == [{"filename": "a.txt", "sha256": base64_hash}]
+      and env["unreadable_reason"] is None, f"got {env!r}")
+
+env = mod.collect_email_envelope(
+    "Bash", {"command": 'send.py --to a@b.hu --subject "t" --body "b"'})
+check("envelope/bash: attachments key present (empty, Bash has none)",
+      env["attachments"] == [], f"got {env!r}")
+
 print()
 if failed:
     print(f"{len(failed)} FAILED: {failed}", file=sys.stderr)
