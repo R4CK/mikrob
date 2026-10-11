@@ -130,16 +130,21 @@ else
   echo "  FAIL local-llm-rag.sh ignored the switch -> rc=$rc: $out"; fail=1
 fi
 
-# Points --repo at this selftest's OWN containing repo (whatever checkout/worktree/TEST_TREE copy
-# it is running from), never the shared live /home/neon/marveen -- that was the first version, and
-# under fleet-test.sh's full-suite concurrency (hundreds of other test files, other agents' live
-# git activity) a `gate-pretriage.sh --explain` pointed at the shared, mutable live checkout can
-# transiently race (index.lock, a concurrent fetch/checkout) for a reason that has nothing to do
-# with this switch. The repo this file itself lives in already has the `HEAD~1` gate-pretriage.sh
-# needs as its default BASE (a real git history, not a bare init), so there is nothing to skip.
-REPO_ROOT="$(cd "$HERE/.." && pwd)"
+# Points --repo at a THROWAWAY git repo created fresh inside $WORK, never the selftest's own
+# containing checkout -- that was the second version, and it still failed under fleet-test.sh's
+# full-suite run: the containing checkout IS the single shared TEST_TREE that every one of the
+# ~980 other test files runs against concurrently, so `gate-pretriage.sh`'s `git diff`/`git
+# rev-parse` (run before it ever reaches the local-first-draft check) can still transiently race
+# on that shared index/refs for a reason that has nothing to do with this switch. $WORK is a
+# private mktemp -d that nothing else touches, so a 2-commit repo built here has zero concurrency
+# exposure while still giving gate-pretriage.sh a real `HEAD~1` to resolve.
+GATE_REPO="$WORK/gate-pretriage-repo"
+mkdir -p "$GATE_REPO"
+git -C "$GATE_REPO" init -q
+git -C "$GATE_REPO" -c user.email=selftest@local -c user.name=selftest commit -q --allow-empty -m "c1"
+git -C "$GATE_REPO" -c user.email=selftest@local -c user.name=selftest commit -q --allow-empty -m "c2"
 n=$((n + 1))
-out="$(LOCAL_FIRST_DRAFT=off bash "$HERE/gate-pretriage.sh" --repo "$REPO_ROOT" --explain 2>&1)"
+out="$(LOCAL_FIRST_DRAFT=off bash "$HERE/gate-pretriage.sh" --repo "$GATE_REPO" --explain 2>&1)"
 if printf '%s' "$out" | grep -q "local model not asked -- local-first-draft is OFF"; then
   echo "  ok   gate-pretriage.sh --explain: LOCAL_FIRST_DRAFT=off -> advisory summary skipped, no model call"
 else
