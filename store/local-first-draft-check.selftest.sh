@@ -5,6 +5,14 @@
 # pontot leallit").
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# TEMP DIAGNOSTIC (fullstack, 2026-10-11): fleet-test.sh has shown this exact case failing 3/3
+# inside the real 982-file suite while 50+ isolated/stressed reproductions outside it all passed.
+# Tee everything to a fixed /tmp path (outside any worktree, so it survives TEST_TREE being reset
+# for the next run) to see which case actually fails and why, before deciding this is the CPU-
+# contention flake class (root CLAUDE.md rule 17) vs a real regression. Will be removed before the
+# final commit regardless of outcome.
+exec > >(tee -a "/tmp/ldc-selftest-trace-$(date +%s)-$$.log") 2>&1
+echo "== local-first-draft-check.selftest.sh pid=$$ host=$(hostname) HERE=$HERE =="
 fail=0
 n=0
 
