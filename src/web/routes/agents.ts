@@ -143,7 +143,7 @@ import {
   loadProfileTemplate,
   resolveProfilePlaceholders,
 } from '../profiles.js'
-import { sanitizeAgentName, safeJoin, writeFileNoFollowSync } from '../sanitize.js'
+import { sanitizeAgentName, safeJoin, writeFileNoFollowSync, isPlausibleChannelSenderId } from '../sanitize.js'
 import { isReservedSenderId } from '../system-directive-id.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
@@ -1798,6 +1798,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // already been approved. Rejecting the WHOLE request up front keeps approval atomic: either
       // every effect (allowFrom, pending removal, dmPolicy, marker file) happens, or none does.
       const approvedDir = join(chDir, 'approved')
+      // Card 25aaada5 B2: safeJoin alone lets through shapes that resolve inside approvedDir
+      // but are unusable as a filename ('.', 'x/..' -> approvedDir itself, 'sub/id', an embedded
+      // NUL, an unreasonable length) -- each failed at some OTHER layer, always after the
+      // mutation below had already run. Checked before safeJoin so the reason surfaced is the
+      // real one.
+      if (!isPlausibleChannelSenderId(entry.senderId as string)) {
+        logger.warn({ name, provider, senderId: entry.senderId, code }, 'Channel pairing rejected: implausible senderId shape')
+        json(res, { error: 'Invalid sender identifier' }, 400)
+        return true
+      }
       let markerPath: string
       try {
         markerPath = safeJoin(approvedDir, entry.senderId)

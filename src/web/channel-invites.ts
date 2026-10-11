@@ -30,7 +30,7 @@ import { logger } from '../logger.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { agentDir } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { safeJoin, writeFileNoFollowSync } from './sanitize.js'
+import { safeJoin, writeFileNoFollowSync, isPlausibleChannelSenderId } from './sanitize.js'
 
 interface InviteEntry {
   createdAt: number
@@ -244,6 +244,12 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
       // the actual auto-approval logic for OTHER valid entries, in other providers/agents, is
       // unaffected (this is a `continue` of the inner loop, not the whole sweep).
       const approvedDir = join(accessPath, '..', 'approved')
+      // Card 25aaada5 B2: see routes/agents.ts's own comment on isPlausibleChannelSenderId --
+      // same shapes, same "check before any mutation" requirement, checked first here too.
+      if (!isPlausibleChannelSenderId(pEntry.senderId)) {
+        logger.warn({ name, provider, senderId: pEntry.senderId }, 'invite-monitor: rejected implausible senderId shape, not auto-approving')
+        continue
+      }
       let markerPath: string
       try {
         markerPath = safeJoin(approvedDir, pEntry.senderId)

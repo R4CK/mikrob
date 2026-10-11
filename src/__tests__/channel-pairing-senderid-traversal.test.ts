@@ -178,6 +178,64 @@ describe('POST /api/agents/:name/channels/telegram/approve -- senderId traversal
     expect(out.status).toBe(400)
     expect(existsSync(join(stateDir, 'approved-evil'))).toBe(false)
   })
+
+  // Card 25aaada5 delta, RedHat NO-GO (16934) B1: O_NOFOLLOW only protects the LAST path
+  // component. If approvedDir ITSELF is a symlink to an external directory, the senderId
+  // ('victim', not a traversal shape) passes safeJoin fine, and the write landed in the
+  // EXTERNAL directory -- unprotected by the F1 fix. Measured by RedHat as XA.
+  it('B1 (XA): approvedDir ITSELF being a symlink does not let the write escape', async () => {
+    const externalDir = mkdtempSync(join(tmpdir(), 'approved-dir-escape-'))
+    // approvedDir does not exist yet -- plant it as a symlink BEFORE the route's own
+    // mkdirSync(approvedDir, {recursive:true}), which no-ops on an existing symlinked dir.
+    symlinkSync(externalDir, join(stateDir, 'approved'))
+    writeAccessWithPending('victim', 'CHAT-X')
+    const { ctx, out } = fakeCtx({ code: 'abc123' })
+    expect(await tryHandleAgents(ctx, webDir)).toBe(true)
+    expect(out.status).toBe(500)
+    expect(existsSync(join(externalDir, 'victim'))).toBe(false)
+  })
+
+  // XB: an intermediate component (not the directory the caller passed, but one safeJoin
+  // walks through for a slash-containing senderId) is a symlink. B2 already rejects any
+  // senderId containing '/' outright, so this is really pinning that B2 runs -- kept as its
+  // own case because it is the shape RedHat measured, distinct from XA.
+  it('B1/B2 (XB): a slash-containing senderId ("sub/id") is rejected before any symlink is even consulted', async () => {
+    const approvedDir = join(stateDir, 'approved')
+    mkdirSync(approvedDir, { recursive: true })
+    const externalDir = mkdtempSync(join(tmpdir(), 'approved-sub-escape-'))
+    symlinkSync(externalDir, join(approvedDir, 'sub'))
+    writeAccessWithPending('sub/id', 'CHAT-X')
+    const { ctx, out } = fakeCtx({ code: 'abc123' })
+    expect(await tryHandleAgents(ctx, webDir)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(existsSync(join(externalDir, 'id'))).toBe(false)
+  })
+
+  // B2: shapes that resolve INSIDE approvedDir (so safeJoin alone accepts them) but are not
+  // usable filenames -- each used to fail at some OTHER layer, always AFTER the allowFrom
+  // mutation. it.each covers every shape RedHat named plus the positive control.
+  it.each([
+    ['empty string', ''],
+    ['"."', '.'],
+    ['".."', '..'],
+    ['"x/.." (resolves to approvedDir itself)', 'x/..'],
+    ['an embedded NUL byte', 'bad\0id'],
+    ['a 300-character id', 'x'.repeat(300)],
+  ] as const)('B2: %s is rejected (400) BEFORE any access.json mutation', async (_label, senderId) => {
+    writeAccessWithPending(senderId)
+    const before = readFileSync(join(stateDir, 'access.json'), 'utf-8')
+    const { ctx, out } = fakeCtx({ code: 'abc123' })
+    expect(await tryHandleAgents(ctx, webDir)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(readFileSync(join(stateDir, 'access.json'), 'utf-8')).toBe(before)
+  })
+
+  it('B2 positive control: a plain numeric senderId still succeeds', async () => {
+    writeAccessWithPending('12345')
+    const { ctx, out } = fakeCtx({ code: 'abc123' })
+    await tryHandleAgents(ctx, webDir)
+    expect(out.status).toBe(200)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -285,6 +343,43 @@ describe('runInviteMonitorTick -- senderId traversal on auto-approve (card 3d186
     expect(() => runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)).not.toThrow()
     expect(existsSync(join(chDir, '..', 'approved-evil'))).toBe(false)
     expect(readFileSync(join(chDir, 'access.json'), 'utf-8')).toBe(accessBefore)
+  })
+
+  // Card 25aaada5 delta, RedHat NO-GO (16934) B1 (XD): the unattended sweep's symlinked
+  // approvedDir case -- more severe than routes/agents.ts's XA because there is no human in
+  // the loop seeing the 500. approvedDir must not exist yet (same ordering as the agents.ts
+  // XA test) so the symlink can be planted before the tick's own mkdirSync.
+  it('B1 (XD): approvedDir ITSELF being a symlink does not let the unattended sweep escape', () => {
+    const externalDir = mkdtempSync(join(tmpdir(), 'invite-approved-dir-escape-'))
+    symlinkSync(externalDir, join(chDir, 'approved'))
+    setup('victim')
+    expect(() => runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)).not.toThrow()
+    expect(existsSync(join(externalDir, 'victim'))).toBe(false)
+  })
+
+  // B2: same shape denylist as routes/agents.ts, on the unattended sweep -- each shape must be
+  // skipped (not approved, not consumed) rather than silently half-approved.
+  it.each([
+    ['empty string', ''],
+    ['"."', '.'],
+    ['".."', '..'],
+    ['"x/.." (resolves to approvedDir itself)', 'x/..'],
+    ['an embedded NUL byte', 'bad\0id'],
+    ['a 300-character id', 'x'.repeat(300)],
+    ['a slash-containing id ("sub/id")', 'sub/id'],
+  ] as const)('B2: %s is skipped, allowFrom/invites untouched', (_label, senderId) => {
+    setup(senderId)
+    const accessBefore = readFileSync(join(chDir, 'access.json'), 'utf-8')
+    const invitesBefore = readFileSync(join(chDir, 'invites.json'), 'utf-8')
+    expect(() => runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)).not.toThrow()
+    expect(readFileSync(join(chDir, 'access.json'), 'utf-8')).toBe(accessBefore)
+    expect(readFileSync(join(chDir, 'invites.json'), 'utf-8')).toBe(invitesBefore)
+  })
+
+  it('B2 positive control: a plain numeric senderId still gets approved', () => {
+    setup('12345')
+    runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)
+    expect(existsSync(join(chDir, 'approved', '12345'))).toBe(true)
   })
 })
 
