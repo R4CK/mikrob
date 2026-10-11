@@ -18926,3 +18926,43 @@ a flotta-szintu elesitest es az agent-hatar garanciat irja le, a tomor fork-fejl
 
 **Ki dontott:** Peti (Telegram 10914). A vegrehajtas (feature-flag bovites, README, ez a bejegyzes)
 fullstack sajat munkaja. Gate: QA + Cybersec, a kartya sajat kijelolese szerint.
+
+## 2026-10-11 -- kanban komment-szerzo (author) nem auth-identitasbol jon, es ez marad (kartya 1cdac111, Cybersec LOW lelet a 3906d77b-n, komment 5475)
+
+**A lelet:** `POST /api/kanban/:id/comments` az `author` mezot a request BODY-bol veszi
+(kanban.ts:1235-1243), nem az auth-identitasbol. Minden flotta-ugynok UGYANAZT a megosztott
+dashboard Bearer tokent hasznalja; `resolveAuth` (auth-gate.ts) ezt a generikus `{ kind: 'token' }`
+eredmenyre oldja fel, semmilyen hivo-azonossaggal -- tehat barmelyik token-birtokos kommentelhet
+`author: "qa"` vagy `author: "cybersec"` nevvel, es a szerver nem tudja megmondani, hogy ki irta
+valojaban.
+
+**Felmeres (kartya 1. lepese):** az `author` mezot SZIGNALKENT olvaso helyek mind mar a helyes,
+"gyenge jelzes, nem bizonyitek" modellt kovetik: `store/gate_author_role.py` (a kozos tabla,
+sajat dokumentacioja szo szerint kimondja: "this table is therefore not authentication -- it
+cannot be... the weaker, still useful statement: a verdict that does not even CLAIM to come from
+the gate is not that gate's verdict"), amit `store/gate-closure-check.py` (tanacsado olvaso) ES
+`store/landing-gate-verdict-parse.py` (a VALODI KIKENYSZERITO, ami egy origin/develop-re pusholast
+enged/tilt) egyarant hasznal -- ez utobbi gap-jet mar a 48b0dd36 kartya zarta be korabban.
+`src/web/kanban-draft-review-guard.ts` es `store/cybersec-gate-scan.py` is ugyanezt a mintat
+koveti.
+
+**Dontes (kartya 1c. lepese, a kartya sajat "alternativa" aga):** a valodi, auth-alapu
+szarmaztatas (2. lepes: a body `author` csak akkor fogadhato el, ha egyezik egy azonositott
+hivoval) MA NEM MEGOLDHATO a megosztott-token architekturan -- ehhez per-ugynok hitelesites
+kellene, ami kulon, nagyobb projekt, nem ez a kartya. Az elfogadott, mar reszben elesitett
+mitigacio: `author` MINDENHOL csak JELZESKENT kezelendo, SOHA nem tanusitvanykent -- ezt a 48b0dd36
+kartya mar bevezette a kikenyszerito oldalon, ez a dontes csak rogziti/dokumentalja a teljes
+kepet es zarja a kartyat.
+
+**Strukturalis rogzites:** a route-kodban (kanban.ts, az `author`/`content` ellenorzes utan) egy
+komment mutatja ide es a 48b0dd36-ra; uj regresszios teszt
+(`src/__tests__/kanban-comment-author-trust-boundary.test.ts`) pinneli a jelenlegi, szandekos
+viselkedest (egy hamisitott `author` elmegy, a normalizalas sem kulonbozteti meg valodi/hamisitott
+hivot, egy valodi author byte-pontosan tovabbmegy) -- ha egy jovobeli valtozas valodi
+auth-szarmaztatast epit be, ez a teszt bukjon el elsonek, es ez a bejegyzes frissuljon, ne csendben
+valjon hamissa.
+
+**Ki dontott:** backend (ez a kartya sajat felmerese es dontese, a kartya altal explicit
+engedelyezett "alternativa" agon -- nincs kulon Peti-/MikroB-jovahagyas igenyelve, mert a kartya
+maga irta elo ezt a kimenetet, ha a szarmaztatas nem oldhato meg). Gate: QA + Cybersec, a kartya
+sajat kijelolese szerint.
