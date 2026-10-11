@@ -8,10 +8,14 @@
 // dependency-free (testable without I/O). This runner is the I/O side --
 // state files, vault, Telegram, network -- exactly as the module's header says.
 //
-// claudeExhausted mapping: the CLAUDE.md "weekly hard-stop" (weekly-hard-stop.json
-// `active` flag) is the operational definition -- the fleet is frozen and Gemini
-// is the only remaining option. We do NOT require the model-fallback chain to
-// have bottomed out (that is a separate, shorter-window mechanism).
+// claudeExhausted mapping (card 3de7d530): by default also engages at the
+// 85% "new-dev-stop" threshold (weekly-hard-stop.json `newDevStopActive`), not
+// only at the 98% hard stop (`active`) -- Peti 11057: in-flight/gate work is
+// still Claude, but a card that would otherwise sit idle under the stop can be
+// drafted on Gemini instead. Configurable via gemini-fallback-config.json
+// (`engageOn: "newDevStop" | "hardStopOnly"`); missing/invalid file defaults
+// to "newDevStop", the requested default. We do NOT require the model-fallback
+// chain to have bottomed out (that is a separate, shorter-window mechanism).
 //
 // Key validation: the vault entry for the Gemini key is `integration.gemini.apiKey`.
 // We validate with a REAL API call (GET /v1beta/models) and cache the result for
@@ -45,6 +49,9 @@ const STORE = join(ROOT, 'store')
 
 const STATE_PATH = join(STORE, 'gemini-fallback-state.json')
 const WEEKLY_HARD_STOP_PATH = join(STORE, 'weekly-hard-stop.json')
+const ENGAGE_CONFIG_PATH = join(STORE, 'gemini-fallback-config.json')
+
+export type GeminiEngageOn = 'newDevStop' | 'hardStopOnly'
 
 const MIN_ENGAGEMENT_MS = 10 * 60 * 1000  // 10 min anti-flap
 const KEY_VALIDATION_TTL_MS = 60 * 60 * 1000  // re-validate key once per hour
@@ -76,13 +83,27 @@ function writeState(state: GeminiFallbackState): void {
   writeFileSync(STATE_PATH, JSON.stringify(state, null, 2) + '\n', { mode: 0o600 })
 }
 
-function readWeeklyHardStop(): { active: boolean } {
+function readEngageOn(): GeminiEngageOn {
+  try {
+    const raw = JSON.parse(readFileSync(ENGAGE_CONFIG_PATH, 'utf-8'))
+    return raw.engageOn === 'hardStopOnly' ? 'hardStopOnly' : 'newDevStop'
+  } catch {
+    return 'newDevStop'
+  }
+}
+
+/** claudeExhausted fact for decideGeminiFallback, per the engageOn config (see header comment). */
+function readClaudeExhausted(engageOn: GeminiEngageOn): boolean {
+  let hardStopActive = false
+  let newDevStopActive = false
   try {
     const raw = JSON.parse(readFileSync(WEEKLY_HARD_STOP_PATH, 'utf-8'))
-    return { active: raw.active === true }
+    hardStopActive = raw.active === true
+    newDevStopActive = raw.newDevStopActive === true
   } catch {
-    return { active: false }
+    // missing/corrupt file -> treat as not exhausted (fail toward Claude)
   }
+  return hardStopActive || (engageOn === 'newDevStop' && newDevStopActive)
 }
 
 async function sendTelegram(text: string): Promise<void> {
@@ -112,7 +133,8 @@ async function sendTelegram(text: string): Promise<void> {
 export async function runGeminiFallbackCheck(): Promise<void> {
   const now = Date.now()
   const state = readState()
-  const { active: claudeExhausted } = readWeeklyHardStop()
+  const engageOn = readEngageOn()
+  const claudeExhausted = readClaudeExhausted(engageOn)
 
   // Key validation: use cached result unless TTL expired or never checked
   let keyValid = state.keyValid
@@ -145,7 +167,7 @@ export async function runGeminiFallbackCheck(): Promise<void> {
   }
 
   const action = decideGeminiFallback(facts)
-  console.log(`[gemini-runner] route=${state.route} exhausted=${claudeExhausted} keyValid=${keyValid} action=${action.kind}`)
+  console.log(`[gemini-runner] route=${state.route} exhausted=${claudeExhausted} engageOn=${engageOn} keyValid=${keyValid} action=${action.kind}`)
 
   const newState: GeminiFallbackState = {
     ...state,
