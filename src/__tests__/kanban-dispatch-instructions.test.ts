@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { kanbanMoveInstructions } from '../web/routes/kanban.js'
+import { MAIN_AGENT_ID, OWNER_NAME } from '../config.js'
 
 // The one line of the dispatch that is a COMMAND rather than prose.
 const probeLine = (out: string): string | undefined =>
@@ -137,5 +138,25 @@ describe('kanbanMoveInstructions', () => {
     // defaults is still present, so this is not a vacuous "the feature was deleted" pass.
     expect(out).toContain('description')
     expect(out).toContain('nincs éles restart')
+  })
+
+  // Card e25a549a / RedHat NO-GO (komment 15997, B1): a kanban-assignee-guard strukturálisan
+  // tiltja az assignee=MAIN_AGENT_ID írást (Peti 10943), de ez a sablon a nem-main-agent ágon
+  // pontosan EZT a PUT-ot írta elő elakadás esetén ("told át <escalateTo>-re"), ahol
+  // escalateTo=MAIN_AGENT_ID -- a tanácsolt lépés a guard miatt mindig 400-at adott volna. A
+  // kártya a végrehajtón marad, a közvetlenül MAIN_AGENT_ID-hez szóló komment + a "waiting"
+  // státusz a jelzés (MikroB saját waiting-sweepje olvassa ki, CLAUDE.md 4a szabály).
+  it('a sub-agent escalation path never instructs reassigning the card to MAIN_AGENT_ID', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    expect(out).not.toContain(`"assignee":"${MAIN_AGENT_ID}"`)
+    expect(out).toContain(`a TE NEVEDEN marad`)
+  })
+
+  // Positive control: the main-agent's OWN escalation (to the human operator) is a different
+  // value (OWNER_NAME, never the forbidden "mikrob"), so the old reassignment step is untouched
+  // there -- this guards against the fix accidentally deleting the main-agent branch too.
+  it('the main agent escalating to the operator still reassigns the card (unaffected branch)', () => {
+    const out = kanbanMoveInstructions('abc123', MAIN_AGENT_ID)
+    expect(out).toContain(`"assignee":"${OWNER_NAME}"`)
   })
 })
