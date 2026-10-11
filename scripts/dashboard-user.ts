@@ -7,6 +7,16 @@
 //   npm run dashboard-user -- remove <username>
 //   npm run dashboard-user -- sessions:clear [<username>]
 //   npm run dashboard-user -- security:reset
+//   npm run dashboard-user -- agent-key:mint <agentId> [--rotate]
+//   npm run dashboard-user -- agent-key:revoke <agentId>
+//
+// agent-key:mint/:revoke (card 9655494c F1-B1, RedHat NO-GO 17005): minting or retiring a fleet
+// agent's own agent:<id> identity key used to be an HTTP endpoint gated on a browser SESSION --
+// but the shared dashboard token can itself produce a session (create the first user, or
+// break-glass-reset an existing owner's password, then log in), so a session proved nothing about
+// a human. Moved here instead: same trust root as every other command in this file ("I can run
+// this CLI" IS the credential), straight to the database, no HTTP round-trip to forge a session
+// against.
 //
 // THIS IS THE BREAK-GLASS PATH. It talks to SQLite directly -- no HTTP, no
 // auth gate -- so it works even when the web login is misconfigured, throttled
@@ -28,6 +38,11 @@ import { hashPassword, assertPasswordPolicy, PasswordPolicyError } from '../src/
 import { revokeAllForUser } from '../src/web/auth-sessions.js'
 import { securityReset } from '../src/web/security-reset.js'
 import { notifySecurityEvent } from '../src/notify.js'
+import { mintAgentDeviceKey, findAgentDeviceKeys, revokeAgentDeviceKeys } from '../src/web/auth-device-keys.js'
+
+// Same shape as the retired HTTP route's own validation (card 9655494c F1): a fleet agent id, as
+// used in AGENT_KEY_PREFIX + agentId ('agent:<id>') and everywhere in CLAUDE.md's agent roster.
+const AGENT_ID_RE = /^[a-z][a-z0-9-]{0,31}$/
 
 function usage(): never {
   process.stderr.write(
@@ -37,7 +52,9 @@ function usage(): never {
     '  dashboard-user list\n' +
     '  dashboard-user remove <username>\n' +
     '  dashboard-user sessions:clear [<username>]\n' +
-    '  dashboard-user security:reset      # revoke ALL device keys + clear ALL browser sessions\n',
+    '  dashboard-user security:reset      # revoke ALL device keys + clear ALL browser sessions\n' +
+    '  dashboard-user agent-key:mint <agentId> [--rotate]\n' +
+    '  dashboard-user agent-key:revoke <agentId>\n',
   )
   process.exit(2)
 }
@@ -166,6 +183,37 @@ async function main(): Promise<void> {
         `Security reset done: ${r.deviceKeysRevoked} device key(s) revoked, ${r.sessionsCleared} browser session(s) cleared.\n` +
         'Passwords and the dashboard token are untouched. Devices must be re-enrolled with new keys.\n',
       )
+      break
+    }
+    case 'agent-key:mint': {
+      const agentId = positional[0]
+      if (!agentId) usage()
+      if (!AGENT_ID_RE.test(agentId)) {
+        process.stderr.write('Invalid agentId (1-32 chars: lowercase letters, digits, -, starting with a letter).\n')
+        process.exit(1)
+      }
+      const rotate = rest.includes('--rotate')
+      const existing = findAgentDeviceKeys(agentId)
+      if (existing.length > 0 && !rotate) {
+        process.stderr.write(`agent_id "${agentId}" already has a key -- pass --rotate to replace it.\n`)
+        process.exit(1)
+      }
+      if (rotate) revokeAgentDeviceKeys(agentId)
+      const minted = mintAgentDeviceKey(agentId)
+      // The raw key exists ONLY here, once -- the caller (store/agent-key-provision.sh) writes it
+      // straight to the agent's own 0600 file and never logs this output anywhere.
+      process.stdout.write(`${minted.key}\n`)
+      break
+    }
+    case 'agent-key:revoke': {
+      const agentId = positional[0]
+      if (!agentId) usage()
+      const revoked = revokeAgentDeviceKeys(agentId)
+      if (revoked === 0) {
+        process.stderr.write(`No key found for agent_id "${agentId}".\n`)
+        process.exit(1)
+      }
+      process.stdout.write(`Revoked ${revoked} key(s) for "${agentId}".\n`)
       break
     }
     case 'sessions:clear': {

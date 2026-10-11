@@ -45,9 +45,6 @@ import {
   listDeviceKeys,
   revokeDeviceKey,
   getDeviceKey,
-  mintAgentDeviceKey,
-  findAgentDeviceKeys,
-  revokeAgentDeviceKeys,
 } from '../auth-device-keys.js'
 import { removeBridgeSshAccess, sshDirOverride } from '../bridge-enroll.js'
 import {
@@ -129,12 +126,6 @@ const CREDENTIAL_MINT_KINDS = ['session'] as const
 
 const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
 const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
-
-// Card 9655494c (F1): a fleet agent id, as used in AGENT_KEY_PREFIX + agentId ('agent:<id>') and
-// everywhere in CLAUDE.md's agent roster (backend, backend2, qa2, fron-ted, ...). Deliberately its
-// OWN regex, not DEVICE_KEY_NAME_RE loosened to allow the colon -- the card is explicit that the
-// general device-name route must keep rejecting it.
-const AGENT_ID_RE = /^[a-z][a-z0-9-]{0,31}$/
 
 // { authenticated, method, user, device, login_available, setup_required }.
 // authenticated keeps its exact old meaning for token callers (existing probes
@@ -440,65 +431,24 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // Card 9655494c (F1): agent:<id> keys are a SEPARATE route from the generic device-key one
-  // above, deliberately -- the agent_id comes from its own field/path segment, never parsed out
-  // of a free-text `name`, and BOTH mint and revoke are session-only (CREDENTIAL_MINT_KINDS, not
-  // the wider DEVICE_KEY_ADMIN_KINDS): the shared dashboard token must not be able to issue OR
-  // retire an agent's own identity credential, keeping the whole lifecycle under the owner.
+  // Card 9655494c F1-B1 (RedHat NO-GO 17005, MikroB decision 17006): mint/rotate/revoke for an
+  // agent:<id> identity key is no longer reachable over HTTP AT ALL, under any auth kind --
+  // including a real session. The measured bypass: a session proves nothing about a human,
+  // because the shared dashboard token can itself produce one, either by creating the FIRST user
+  // (bootstrap, X1) or by break-glass-resetting an existing owner's password (X3), then logging in
+  // as that user. A session-only gate (the previous CREDENTIAL_MINT_KINDS check) therefore never
+  // separated "the owner" from "anyone holding the one token every fleet script already has".
+  // The fix is structural, not a stronger check: this capability is retired from HTTP entirely, and
+  // moved to a local-only CLI (`npm run dashboard-user -- agent-key:mint/:revoke`, called by
+  // store/agent-key-provision.sh) that talks to the database directly -- the same trust root as
+  // the rest of break-glass tooling (scripts/dashboard-user.ts: "I can run this CLI IS the root
+  // credential"), which has no HTTP round-trip and therefore no session to forge in the first place.
   if (path === '/api/auth/agent-keys' && method === 'POST') {
-    if (!kindAllowed(auth, CREDENTIAL_MINT_KINDS)) {
-      json(res, FORBIDDEN_KIND, 403)
-      return true
-    }
-    let body: Record<string, unknown>
-    try {
-      body = await parseJsonBody(req)
-    } catch {
-      json(res, { error: 'Invalid JSON' }, 400)
-      return true
-    }
-    const agentId = str(body.agent_id).trim()
-    if (!AGENT_ID_RE.test(agentId)) {
-      json(res, { error: 'Invalid agent_id (1-32 chars: lowercase letters, digits, -, starting with a letter)' }, 400)
-      return true
-    }
-    const rotate = body.rotate === true
-    let expiresInDays: number | undefined
-    if (body.expires_in_days !== undefined && body.expires_in_days !== null && body.expires_in_days !== 0) {
-      const n = Number(body.expires_in_days)
-      if (!Number.isFinite(n) || n <= 0 || n > DEVICE_KEY_MAX_EXPIRY_DAYS) {
-        json(res, { error: `Invalid expires_in_days (1-${DEVICE_KEY_MAX_EXPIRY_DAYS})` }, 400)
-        return true
-      }
-      expiresInDays = n
-    }
-    const existing = findAgentDeviceKeys(agentId)
-    if (existing.length > 0 && !rotate) {
-      json(res, { error: `agent_id "${agentId}" already has a key -- pass rotate:true to replace it` }, 409)
-      return true
-    }
-    let revoked = 0
-    if (rotate) revoked = revokeAgentDeviceKeys(agentId)
-    const minted = mintAgentDeviceKey(agentId, { expiresInDays })
-    logger.info({ id: minted.id, agentId, rotated: revoked }, 'agent device key minted')
-    json(res, { ok: true, id: minted.id, agent_id: agentId, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt, rotated: revoked }, 201)
+    json(res, { error: 'agent-kulcs kiadása csak helyi CLI-ből lehetséges (npm run dashboard-user -- agent-key:mint), HTTP-n nem' }, 403)
     return true
   }
-
-  const agentKeyMatch = /^\/api\/auth\/agent-keys\/([^/]+)$/.exec(path)
-  if (agentKeyMatch && method === 'DELETE') {
-    if (!kindAllowed(auth, CREDENTIAL_MINT_KINDS)) {
-      json(res, FORBIDDEN_KIND, 403)
-      return true
-    }
-    const agentId = decodeURIComponent(agentKeyMatch[1]!)
-    const revoked = revokeAgentDeviceKeys(agentId)
-    if (revoked === 0) {
-      json(res, { error: 'No key found for this agent_id' }, 404)
-      return true
-    }
-    logger.info({ agentId, revoked }, 'agent device key(s) revoked')
-    json(res, { ok: true, revoked })
+  if (/^\/api\/auth\/agent-keys\/[^/]+$/.test(path) && method === 'DELETE') {
+    json(res, { error: 'agent-kulcs visszavonása csak helyi CLI-ből lehetséges (npm run dashboard-user -- agent-key:revoke), HTTP-n nem' }, 403)
     return true
   }
 
