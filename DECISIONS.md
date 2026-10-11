@@ -19814,3 +19814,39 @@ structured-verdict.test.ts` -- mind zöld. `tsc --noEmit` és `python3 -m py_com
 
 **Ki döntött:** MikroB (gate: qa, cybersec -- a javítási irányt WhiteHat2 adta, ezért a biztonsági
 gate WhiteHat/cybersec, nem WhiteHat2/cybersec2).
+
+## 2026-10-11 -- Kartya 3d186397 delta #2 (folytatas a fajl elejebb levo "senderId path-traversal audit" bejegyzeshez): QA FAIL javitva -- a validacio az allowFrom-modositas ELE kerult
+
+QA FAIL (10812) es WhiteHat F2 (ugyanaz a gyoker-ok, komment 10812/10815): a safeJoin-ellenorzes a MARKER-fajl irasara korlatozodott mindket hivasi helyen, de az allowFrom-push, a pending-kod torlese es az access.json kiirasa MAR AZ ELOTT lefutott. Egy traversal-alaku senderId ezert a `routes/agents.ts` uton 500-at adott VISSZA ("Failed to approve pairing"), MIKOZBEN a sender MAR bekerult az allowFrom-ba -- a jovahagyo felrevezetve latta a hibas valaszt. A `channel-invites.ts` auto-jovahagyasi sweep-jen (EMBERI JOVAHAGYAS NELKUL) meg sulyosabb: a hiba csak `logger.warn`, a mutacio (allowFrom, pending, invite-token elkoltese) FELTETEL NELKUL lefutott.
+
+**Javitas (mindket helyen azonos mintat kovetve):** a `safeJoin(approvedDir, senderId)` hivas MOST a legelso lepes, MINDEN mellekhatas (allowFrom-push, pending-torles, dmPolicy, access.json/invites.json iras) ELOTT, kulon try/catch-ben:
+- `routes/agents.ts` (`POST /approve`, emberi jovahagyas): elutasitasnal 400 ("Invalid sender identifier"), NULLA mutacio -- a pending kod NEM fogyott el, egy kesobbi, javitott plugin-valasz vagy emberi retry ujra probalhatja.
+- `channel-invites.ts` (`runInviteMonitorTick`, automatikus sweep): elutasitasnal `continue` a belso ciklusra -- a tetel NEM lesz jovahagyva, az invite-token NEM fogy el, a kovetkezo tick ujra probalja; a TOBBI, masik ugynok/provider ervenyes tetele erintetlen.
+
+A marker-fajl irasa (mkdirSync+writeFileSync) MARADT kulon try/catch-ben, MERT a path mar bizonyitottan biztonsagos (a safeJoin mar lefutott) -- ha a fajl-iras egyeb okbol (diszk, jogosultsag) bukik, az NEM vonja vissza a mar validalt, biztonsagos mutaciot, csak warn-t logol.
+
+**Teszt (`channel-pairing-senderid-traversal.test.ts`, 12 teszt, mindket helyre uj MUTATION PIN, az elozo kor tesztjei FRISSITVE az UJ, helyes viselkedesre):**
+- `routes/agents.ts`: traversal/abszolut-ut 400-at ad (nem 500), ES az access.json BAJTRA PONTOSAN valtozatlan marad (nincs allowFrom-push, nincs pending-torles).
+- `channel-invites.ts`: traversal/abszolut-ut eseten SEM az access.json, SEM az invites.json nem valtozik; a MUTATION PIN kulon ellenorzi, hogy az invite-token `used` mezoje `false` marad.
+
+Mutacio-ellenorzes: a validacio visszahelyezve a mutacio UTANRA (a regi, hibas sorrend) mindket helyen -- mind a harom uj/frissitett teszt PIROSRA valtott (`routes/agents.ts`: 500 helyett 400 varva, allowFrom tartalmazza a rejektalt erteket; `channel-invites.ts`: access.json/invites.json valtozik, allowFrom tartalmazza az erteket, a token elfogy). A javitas visszaallitasaval mind zold. `npx tsc --noEmit` tiszta, a celzott 8 fajl 84 teszt zold.
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + WhiteHat (a kartya sajat kijelolese, MikroB dontese a 10812 utan).
+
+## 2026-10-11 -- Kartya 517fdcc5 delta #3 (folytatas a fajl elejebb levo bejegyzesekhez): RedHat NO-GO (16623) javitva -- a LISTA es a q-kereses is a device-kulcsos azonossagot elsobbsegezi
+
+RedHat NO-GO (16623, MikroB dontese 16623 utan): a `/:id` hatar-javitas (delta #1, lasd fentebb a fajlban) csak a `memGetMatch` kezelore terjedt ki, de a `GET /api/memories` lista-ag es a q-kereses-ag UGYANAZT az `agentId` valtozot olvassa, es az addig KIZAROLAG a `?agent=` query-parameterbol szamitodott -- egy hitelesitett device-kulcsos hivo (`agent:<id>`) a `/:id` kapun kivul, a listan vagy a kereso-agon at TOVABBRA IS kiolvashatta egy MASIK agent privat sorat, mert a hamisithato `?agent=` parameter elsobbseget kapott a sajat, hitelesitett azonossaga felett.
+
+**Javitas:** a lista-ag elejen (`agentId` szamitasa) ugyanaz a minta, mint a `/:id`-n es a POST kezelon (`authenticatedAgentId`, kartya 84dcc5d4): `agentId = (device agent:<id> kulcsbol szamitott azonossag) || ?agent= parameter`. Mivel a q-kereses agai (`searchAgentMemories`, a substring-fallback, `hybridSearch`) MIND ugyanezt az `agentId`-t hasznaljak, a javitas EGY helyen zarja mindket utat -- nincs kulon kod a kereses-agra. Kozos tokenes/session hivo valtozatlan (nincs hitelesitett azonossaga, amit elsobbsegezni lehetne).
+
+**Teszt (`memories-get-by-id.test.ts`, +5 teszt, mutacioval ellenorizve):** device-kulcsos hivo hamisitott `?agent=`-mel a listan NEM latja a masik agent sorat; ugyanaz a kulcs `?q=`-val (parameter nelkul) SEM latja; a SAJAT kulcsa a SAJAT sorat latja; kozos tokenes hivonal a `?agent=` valtozatlanul mukodik (backward-compat pin); a csonkolasi-hint tovabbviszi a `?agent=`-et egy hosszabb tartalmu sorra (a korabbi teszt tul rovid tartalommal nem erte el a min. 50 karakteres kuszobot, uj, dedikalt hosszu-tartalmu sor kellett). Mutacio (az `authenticatedAgentId` prioritas kivetelezve, `agentId = requestedAgentId`): 3 teszt PIROSRA valtott (a tamado latta a victim sorat a listan es a keresesnel, a tulajdonos NEM latta a sajatjat -- mert a teszt-fixture-ben a "victim" nev maga a hitelesitett azonossag, nem a parameter). Visszaallitva, 12/12 zold.
+
+A teszt-helper (`makeCtx`) kiegeszitve `res.setHeader` stub-bal es `req.headers = {}`-vel -- a lista-ag `X-Memory-Search` fejlecet ir es a `jsonMaybeGzip` a `req.headers['accept-encoding']`-et olvassa, ami korabban (a `/:id`-only tesztekben) sosem futott.
+
+`npx tsc --noEmit` tiszta. Celzott futas (6 memories-* fajl): 67/67 zold.
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, MikroB dontese 16623 utan).

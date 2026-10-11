@@ -232,6 +232,26 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
       const [pCode, pEntry] = pendingEntries[0]
       const [tToken, tEntry] = live[0]
 
+      // Card 3d186397 QA FAIL delta (10812, MikroB decision): pEntry.senderId is plugin-written,
+      // unvalidated external channel content (same class as routes/agents.ts's pairing-approval
+      // write). The first cut of this fix only guarded the MARKER file write (wrapped in its own
+      // try/catch, warn-only) -- an invalid senderId still got pushed into allowFrom, the pending
+      // code consumed, and the invite token spent, all BEFORE the marker write was ever
+      // attempted. Unlike the human-approval route this sweep runs with NO human review at all,
+      // so a rejected senderId silently becoming a real allowlist entry is worse here, not
+      // better. The senderId must be validated BEFORE any of those effects; on rejection, this
+      // entry is skipped entirely (not approved, not consumed) so the next tick can retry it --
+      // the actual auto-approval logic for OTHER valid entries, in other providers/agents, is
+      // unaffected (this is a `continue` of the inner loop, not the whole sweep).
+      const approvedDir = join(accessPath, '..', 'approved')
+      let markerPath: string
+      try {
+        markerPath = safeJoin(approvedDir, pEntry.senderId)
+      } catch (err) {
+        logger.warn({ err, name, provider, senderId: pEntry.senderId }, 'invite-monitor: rejected invalid senderId, not auto-approving')
+        continue
+      }
+
       if (!access.allowFrom) access.allowFrom = []
       if (!access.allowFrom.includes(pEntry.senderId)) access.allowFrom.push(pEntry.senderId)
       if (access.pending) delete access.pending[pCode]
@@ -243,13 +263,8 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
       if (activeInviteCount(store, now) === 0) access.dmPolicy = 'allowlist'
 
       try {
-        const approvedDir = join(accessPath, '..', 'approved')
         mkdirSync(approvedDir, { recursive: true })
-        // Card 3d186397: pEntry.senderId is plugin-written, unvalidated external
-        // channel content (same class as routes/agents.ts's pairing-approval
-        // write) -- safeJoin rejects a `../`-shaped or absolute senderId
-        // instead of writing outside approvedDir.
-        writeFileSync(safeJoin(approvedDir, pEntry.senderId), '')
+        writeFileSync(markerPath, '')
       } catch (err) {
         logger.warn({ err, name, senderId: pEntry.senderId }, 'invite-monitor: failed to write approved marker')
       }
