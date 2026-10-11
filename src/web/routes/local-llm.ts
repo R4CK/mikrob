@@ -1974,14 +1974,18 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // GET /api/local-llm/first-draft-enabled -> the master kill-switch state (card d57d8a01). Absence
-  // of the file, or any unreadable/unparseable content, means ENABLED -- same fail-open default
-  // store/local-first-draft-check.sh and every shell caller already use (plan-grilling point 2:
-  // "absence = ON"), so the API and the shell side can never disagree about what "no file" means.
+  // GET /api/local-llm/first-draft-enabled -> the master kill-switch state (card d57d8a01).
+  // MikroB decision 16743 (QA FAIL 16742 / WhiteHat2 NO-GO 16744, B1): a MISSING file now means
+  // DISABLED (fail-closed), flipped from the original "absence = ON" -- store/local-first-draft-
+  // check.sh's shell side made the same flip, for the same reason (a kill switch whose own state
+  // cannot be found should default to the safe direction). A file that EXISTS but will not parse
+  // still fails open (enabled stays true): that is a config hiccup on an install that clearly HAS
+  // state, not a resolution failure, and stays unchanged (WhiteHat2 measured this as LOW).
   if (path === '/api/local-llm/first-draft-enabled' && method === 'GET') {
-    let enabled = true
+    let enabled = false
     let note = ''
     if (existsSync(FIRST_DRAFT_FLAG_FILE)) {
+      enabled = true
       try {
         const parsed = JSON.parse(readFileSync(FIRST_DRAFT_FLAG_FILE, 'utf-8'))
         enabled = parsed?.enabled !== false
@@ -2016,6 +2020,32 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       typeof parsed.note === 'string' && parsed.note.trim()
         ? parsed.note.trim().slice(0, 500)
         : `${new Date().toISOString()}: dashboard toggle -> ${parsed.enabled ? 'enabled' : 'disabled'}`
+
+    // B2 (card d57d8a01, QA FAIL 16742 secondary finding, MikroB decision 16743 -- BLOCKING per
+    // Peti's own card text: re-enabling is "Peti jóváhagyása alapján", not any token-holder's).
+    // Turning the switch OFF stays open to any authenticated caller -- that is the fail-safe
+    // direction (forces ONLINE) and restricting it too would make an emergency kill harder to
+    // pull. Turning it back ON reopens the GPU-overload risk the switch exists for, so it is
+    // restricted to an owner browser session -- hard, with NO approval-opening fallback.
+    //
+    // MikroB's own decision text said "tulajdonosi session VAGY level-2 jóváhagyás". The level-2
+    // (POST /api/approvals + PATCH /api/approvals/:id) half is deliberately NOT offered here:
+    // card 657b32f2 (RedHat delta-gate 14953, MikroB decision 14957, see fleet.ts's
+    // FLEET_IMPORT_APPLY_FAIL_CLOSED and its own comment) measured that PATCH /api/approvals/:id
+    // has NO auth-kind check at all -- only a self-reported "resolved_by != requesting agent_id"
+    // guard, which the shared bearer token defeats trivially by naming a different resolved_by on
+    // the same token. Wiring this switch to that channel would not add a second control, it would
+    // let the shared token approve its own re-enable through a different door. Until a real
+    // non-forgeable approval channel ships (card 3fb0ef97), this stays session-only, same as
+    // POST /api/fleet/import?apply=true already does for the identical reason.
+    if (parsed.enabled === true && ctx.auth?.kind !== 'session') {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'first-draft-enabled: re-enable rejected for non-owner-session credential')
+      json(res, {
+        error: 'Re-enabling the local-first-draft switch requires an owner browser session, not the shared agent token.',
+      }, 403)
+      return true
+    }
+
     try {
       atomicWriteFileSync(FIRST_DRAFT_FLAG_FILE, JSON.stringify({ enabled: parsed.enabled, note }, null, 2) + '\n')
     } catch (err) {

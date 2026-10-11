@@ -13,15 +13,18 @@ trap 'rm -rf "$WORK"' EXIT
 
 # --- 1. the helper function itself ---------------------------------------------------------------
 
+# MikroB decision 16743 (card d57d8a01, B1): flipped from the original "absence = ON" -- for a
+# kill switch, a flag file that cannot be found at all (as opposed to one that exists but will not
+# parse, the NEXT case below, still ON) must fail CLOSED.
 n=$((n + 1))
-if (
+if ! (
   . "$HERE/local-first-draft-check.sh"
   LOCAL_FIRST_DRAFT_FLAG_FILE="$WORK/no-such-file.json"
   local_first_draft_enabled
 ); then
-  echo "  ok   absent flag file = ENABLED (plan-grilling point 2: absence = ON)"
+  echo "  ok   absent flag file = DISABLED (MikroB decision 16743: a missing switch fails closed, not open)"
 else
-  echo "  FAIL absent flag file should be enabled"; fail=1
+  echo "  FAIL absent flag file should now be disabled (fail-closed)"; fail=1
 fi
 
 n=$((n + 1))
@@ -71,6 +74,38 @@ if (
 else
   echo "  FAIL an unparseable file should fail open (enabled)"; fail=1
 fi
+
+# --- 1b. WORKTREE REGRESSION (QA FAIL 16742 B1, WhiteHat2 NO-GO 16744, MikroB decision 16743) ---
+# The real-world topology every agent runs in (root CLAUDE.md's own mandatory worktree discipline):
+# the dashboard writes the switch into the RUNNING INSTALL's store/, while every entry point is a
+# runnable copy that lives in a SEPARATE agent worktree. Reproduces that shape with a throwaway
+# "install" (a fresh git repo, never the real /home/neon/marveen checkout) plus a real `git
+# worktree add` off it -- and proves a call made from the WORKTREE copy sees the switch that was
+# only ever written into the "install"'s store/, never into the worktree's own.
+n=$((n + 1))
+FAKE_MAIN="$WORK/fake-main"
+mkdir -p "$FAKE_MAIN/store"
+git init -q "$FAKE_MAIN"
+cp "$HERE/local-first-draft-check.sh" "$HERE/local-llm-state-dir.sh" "$FAKE_MAIN/store/"
+git -C "$FAKE_MAIN" add -A
+git -C "$FAKE_MAIN" -c user.email=selftest@local -c user.name=selftest commit -qm init
+
+FAKE_WORKTREE="$WORK/fake-worktree"
+git -C "$FAKE_MAIN" worktree add --detach -q "$FAKE_WORKTREE" HEAD
+
+# The switch is OFF, written ONLY into the fake "install"'s store/ -- never touches the worktree's
+# own copy, exactly as the real dashboard route writes into STORE_DIR of the process it runs in.
+echo '{"enabled": false}' > "$FAKE_MAIN/store/local-first-draft.json"
+
+if ! (
+  . "$FAKE_WORKTREE/store/local-first-draft-check.sh"
+  local_first_draft_enabled
+); then
+  echo "  ok   a call from a SECOND worktree sees the switch written into the main checkout's store/, not its own empty one (QA FAIL 16742 B1 regression)"
+else
+  echo "  FAIL a worktree-local call should see the OFF switch the main checkout's store/ carries"; fail=1
+fi
+git -C "$FAKE_MAIN" worktree remove --force "$FAKE_WORKTREE" >/dev/null 2>&1 || true
 
 # --- 2. MUTATION-PINNING: every real entry point actually calls the shared helper -----------------
 # card d57d8a01's own acceptance test: "a kapcsolo minden belepesi pontot leallit (mutans-pirosito

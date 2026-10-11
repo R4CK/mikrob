@@ -34,7 +34,12 @@ const { tryHandleLocalLlm } = await import('../web/routes/local-llm.js')
 
 const FLAG_FILE = join(SANDBOX_STORE, 'local-first-draft.json')
 
-function ctx(path: string, method: string, body?: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
+function ctx(
+  path: string,
+  method: string,
+  body?: unknown,
+  auth?: RouteContext['auth'],
+): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -42,7 +47,7 @@ function ctx(path: string, method: string, body?: unknown): { ctx: RouteContext;
   }
   const req = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]) as unknown as http.IncomingMessage
   const url = new URL(`http://localhost:3420${path}`)
-  return { ctx: { req, res, path: url.pathname, method, url } as RouteContext, out }
+  return { ctx: { req, res, path: url.pathname, method, url, auth } as RouteContext, out }
 }
 
 async function get(): Promise<{ status: number; body: any }> {
@@ -50,8 +55,11 @@ async function get(): Promise<{ status: number; body: any }> {
   await tryHandleLocalLlm(c)
   return out
 }
-async function post(body: unknown): Promise<{ status: number; body: any }> {
-  const { ctx: c, out } = ctx('/api/local-llm/first-draft-enabled', 'POST', body)
+// Defaults to an owner browser session, since that is the credential the dashboard toggle itself
+// uses -- tests exercising the B2 restriction (card d57d8a01, MikroB decision 16743) pass an
+// explicit auth to override this.
+async function post(body: unknown, auth: RouteContext['auth']): Promise<{ status: number; body: any }> {
+  const { ctx: c, out } = ctx('/api/local-llm/first-draft-enabled', 'POST', body, auth)
   await tryHandleLocalLlm(c)
   return out
 }
@@ -67,10 +75,10 @@ afterAll(() => {
 })
 
 describe('GET /api/local-llm/first-draft-enabled', () => {
-  it('no file at all -> enabled:true (absence = ON, same default every shell reader uses)', async () => {
+  it('no file at all -> enabled:false (MikroB decision 16743: a missing switch fails closed)', async () => {
     const r = await get()
     expect(r.status).toBe(200)
-    expect(r.body).toEqual({ enabled: true, note: '' })
+    expect(r.body).toEqual({ enabled: false, note: '' })
   })
 
   it('reflects a {"enabled": false} file written by hand/by a previous POST', async () => {
@@ -90,7 +98,7 @@ describe('GET /api/local-llm/first-draft-enabled', () => {
 
 describe('POST /api/local-llm/first-draft-enabled', () => {
   it('rejects a missing enabled field (400), does not touch the file', async () => {
-    const r = await post({})
+    const r = await post({}, { kind: 'session', user: 'peti' })
     expect(r.status).toBe(400)
     expect(existsSync(FLAG_FILE)).toBe(false)
   })
@@ -109,7 +117,7 @@ describe('POST /api/local-llm/first-draft-enabled', () => {
   })
 
   it('{enabled:false} persists the switch, with a default note, and GET reflects it', async () => {
-    const r = await post({ enabled: false })
+    const r = await post({ enabled: false }, { kind: 'session', user: 'peti' })
     expect(r.body.enabled).toBe(false)
     expect(r.body.note).toContain('disabled')
     const stored = JSON.parse(readFileSync(FLAG_FILE, 'utf-8'))
@@ -118,20 +126,58 @@ describe('POST /api/local-llm/first-draft-enabled', () => {
   })
 
   it('{enabled:true, note:"..."} persists the caller-supplied note verbatim (trimmed)', async () => {
-    const r = await post({ enabled: true, note: '  Peti approved re-enable  ' })
+    const r = await post({ enabled: true, note: '  Peti approved re-enable  ' }, { kind: 'session', user: 'peti' })
     expect(r.body).toEqual({ enabled: true, note: 'Peti approved re-enable' })
   })
 
   it('a non-boolean enabled value is rejected (400), not coerced', async () => {
-    const r = await post({ enabled: 'false' })
+    const r = await post({ enabled: 'false' }, { kind: 'session', user: 'peti' })
     expect(r.status).toBe(400)
     expect(existsSync(FLAG_FILE)).toBe(false)
   })
 
   it('flipping the switch (either direction) never spawns or execs anything -- it only ever writes JSON', async () => {
-    await post({ enabled: false })
-    await post({ enabled: true })
+    await post({ enabled: false }, { kind: 'session', user: 'peti' })
+    await post({ enabled: true }, { kind: 'session', user: 'peti' })
     await get()
+    expect(spawnSpy).not.toHaveBeenCalled()
+    expect(execFileSpy).not.toHaveBeenCalled()
+  })
+})
+
+// Card d57d8a01, QA FAIL 16742 secondary finding + MikroB decision 16743 (B2, BLOCKING per Peti's
+// own card text): re-enabling must not be reachable with the shared fleet bearer token.
+describe('POST /api/local-llm/first-draft-enabled -- re-enabling is owner-session-only (B2)', () => {
+  it.each([
+    ['the shared agent bearer (kind: token)', { kind: 'token' } as RouteContext['auth']],
+    ['no auth principal at all', undefined],
+    ['a federation peer credential', { kind: 'federation', peer: 'some-peer' } as RouteContext['auth']],
+    ['a device key', { kind: 'device', device: 'phone', deviceId: 1 } as RouteContext['auth']],
+  ])('{enabled:true} is refused (403) with %s, and the file is NOT written', async (_label, auth) => {
+    const r = await post({ enabled: true }, auth)
+    expect(r.status).toBe(403)
+    expect(existsSync(FLAG_FILE)).toBe(false)
+  })
+
+  it('{enabled:true} succeeds with an owner browser session', async () => {
+    const r = await post({ enabled: true }, { kind: 'session', user: 'peti' })
+    expect(r.status).toBe(200)
+    expect(r.body).toEqual({ enabled: true, note: r.body.note })
+    expect(existsSync(FLAG_FILE)).toBe(true)
+  })
+
+  it.each([
+    ['the shared agent bearer (kind: token)', { kind: 'token' } as RouteContext['auth']],
+    ['a device key', { kind: 'device', device: 'phone', deviceId: 1 } as RouteContext['auth']],
+    ['no auth principal at all', undefined],
+  ])('{enabled:false} (the fail-safe direction) still succeeds with %s -- disabling stays open to anyone', async (_label, auth) => {
+    const r = await post({ enabled: false }, auth)
+    expect(r.body.enabled).toBe(false)
+    expect(existsSync(FLAG_FILE)).toBe(true)
+  })
+
+  it('refusing a re-enable never spawns or execs anything either', async () => {
+    await post({ enabled: true }, { kind: 'token' } as RouteContext['auth'])
     expect(spawnSpy).not.toHaveBeenCalled()
     expect(execFileSpy).not.toHaveBeenCalled()
   })
