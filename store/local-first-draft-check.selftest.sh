@@ -106,6 +106,16 @@ git -C "$FAKE_MAIN" worktree add --detach -q "$FAKE_WORKTREE" HEAD
 # own copy, exactly as the real dashboard route writes into STORE_DIR of the process it runs in.
 echo '{"enabled": false}' > "$FAKE_MAIN/store/local-first-draft.json"
 
+(
+  . "$FAKE_WORKTREE/store/local-llm-state-dir.sh"
+  resolve_local_llm_state_dir "$FAKE_WORKTREE/store"
+  echo "DIAG: TMPDIR=${TMPDIR:-unset} WORK=$WORK"
+  echo "DIAG: FAKE_MAIN=$FAKE_MAIN FAKE_WORKTREE=$FAKE_WORKTREE"
+  echo "DIAG: dotgit content: [$(cat "$FAKE_WORKTREE/.git" 2>&1)]"
+  echo "DIAG: LOCAL_LLM_STATE_ORIGIN=$LOCAL_LLM_STATE_ORIGIN LOCAL_LLM_STATE_RESOLVED=$LOCAL_LLM_STATE_RESOLVED"
+  echo "DIAG: flag file exists? $( [ -f "$LOCAL_LLM_STATE_RESOLVED/local-first-draft.json" ] && echo yes || echo no )"
+  echo "DIAG: LOCAL_LLM_STATE_DIR env=${LOCAL_LLM_STATE_DIR:-unset}"
+)
 if ! (
   . "$FAKE_WORKTREE/store/local-first-draft-check.sh"
   local_first_draft_enabled
