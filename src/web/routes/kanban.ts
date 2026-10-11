@@ -39,6 +39,7 @@ import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.
 import { planGrillingGuardVerdict } from '../kanban-plan-grilling-guard.js'
 import { draftReviewGuardVerdict } from '../kanban-draft-review-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
+import { isForbiddenAssignee, FORBIDDEN_ASSIGNEE_MESSAGE } from '../kanban-assignee-guard.js'
 
 // Card project-name drift (Peti 2026-08-08): `project` was free-text with no case-folding, so
 // "CleanCore" / "cleancore" / "MikroB" / "mikrob-infra" / "fleet-infra" / "marveen" / "Infra" all
@@ -856,6 +857,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    if (isForbiddenAssignee(data.assignee)) {
+      json(res, { error: FORBIDDEN_ASSIGNEE_MESSAGE }, 400)
+      return true
+    }
     // ONE id, used for BOTH the row and the response (card f27c999b, adopted from upstream).
     // It used to be `createKanbanCard({ id, ...normalized })` with a generated id, and `normalized`
     // still carries a caller-supplied `id` -- so the spread OVERRODE the generated one in the row
@@ -950,6 +955,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     if (newDevStopWouldBlock(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
+      return true
+    }
+    if (isForbiddenAssignee(data.assignee)) {
+      json(res, { error: FORBIDDEN_ASSIGNEE_MESSAGE }, 400)
       return true
     }
     // Closing a card is the only moment where "did this actually land?" changes the outcome
