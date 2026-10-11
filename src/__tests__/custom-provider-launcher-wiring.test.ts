@@ -20,7 +20,7 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { refuseRemoteCustomProvider } from '../web/agent-process.js'
+import { refuseRemoteCustomProvider, needsFleetOauthFor } from '../web/agent-process.js'
 
 const SRC = readFileSync(join(import.meta.dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
 
@@ -73,5 +73,37 @@ describe('F4: a remote agent refuses a customProvider it cannot honor', () => {
     // And the refusal must actually be acted on (an early return), not just called and ignored.
     const between = remoteBranch.slice(refusalIdx, delegateIdx)
     expect(between).toMatch(/return \{ ok: false, error: refusal \}/)
+  })
+})
+
+// RedHat NO-GO B1 (comment 15850, card 617d136d): needsFleetOauth was true whenever
+// isClaude && authMode !== 'api' && !isOwnTeam, with no check for customProviderId -- so an
+// agent with a claude-prefixed model string AND a customProvider configured still got
+// needsFleetOauth=true, and both the shared-home export and the channel-isolation export (gated
+// on needsFleetOauth) would hand the fleet's CLAUDE_CODE_OAUTH_TOKEN to resolveProviderEnv's
+// third-party ANTHROPIC_BASE_URL. byoUnsetEnv (`!needsFleetOauth ? 'unset ... && ' : ''`) is the
+// SAME boolean inverted, so this one predicate drives all three sites at once -- behaviorally
+// pinning it here covers the export-omission AND the unset-inclusion RedHat asked for, without
+// startAgentProcessUnlocked's tmux/filesystem side effects (same F1 reasoning as the top of this
+// file).
+describe('B1: needsFleetOauthFor excludes customProvider agents even with a claude-prefixed model', () => {
+  it('a claude-prefixed model WITH a customProviderId never needs the fleet token (the bypass this card closes)', () => {
+    expect(needsFleetOauthFor(true, 'shared', false, 'my-litellm-proxy')).toBe(false)
+  })
+
+  it('byoUnsetEnv for that same combination unsets the inherited tmux-server token', () => {
+    const needsFleetOauth = needsFleetOauthFor(true, 'shared', false, 'my-litellm-proxy')
+    const byoUnsetEnv = !needsFleetOauth ? 'unset CLAUDE_CODE_OAUTH_TOKEN && ' : ''
+    expect(byoUnsetEnv).toBe('unset CLAUDE_CODE_OAUTH_TOKEN && ')
+  })
+
+  it('a claude-prefixed model WITHOUT a customProviderId still needs the fleet token (no regression)', () => {
+    expect(needsFleetOauthFor(true, 'shared', false, null)).toBe(true)
+  })
+
+  it('own_team and authMode api still exclude regardless of customProviderId (unchanged invariants)', () => {
+    expect(needsFleetOauthFor(true, 'shared', true, null)).toBe(false) // own_team
+    expect(needsFleetOauthFor(true, 'api', false, null)).toBe(false) // api key
+    expect(needsFleetOauthFor(false, 'shared', false, null)).toBe(false) // not Claude at all
   })
 })

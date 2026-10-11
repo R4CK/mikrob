@@ -31,7 +31,7 @@ import {
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider, type AuthMode } from './agent-config.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, readAgentConfigForOauthDecision, reverifyOauthTokenFile, findOauthTokenFileCollision } from './agent-oauth-token-file.js'
 import { getCustomProviderOrThrow } from './custom-providers.js'
 import { worksourceRootFor } from './worksource-queue.js'
@@ -2014,6 +2014,25 @@ export function refuseRemoteCustomProvider(isRemote: boolean, customProviderId: 
   return `customProvider '${customProviderId}' cannot be used on a remote (ssh) agent -- the remote launch path has no provider-env override`
 }
 
+/**
+ * RedHat NO-GO B1 (comment 15850, card 617d136d): isClaude alone (`model.startsWith('claude-')`)
+ * says nothing about WHERE the request actually goes -- an agent with a customProviderId can
+ * carry a claude-prefixed model string while resolveProviderEnv points ANTHROPIC_BASE_URL at a
+ * third party. Without excluding customProviderId here, the fleet's CLAUDE_CODE_OAUTH_TOKEN
+ * (which the CLI prefers over ANTHROPIC_AUTH_TOKEN) was exported straight to that third party on
+ * the shared-home, channel-isolation, and byoUnsetEnv sites. Pure predicate, unit-testable
+ * without startAgentProcessUnlocked's tmux/filesystem side effects (same reasoning as
+ * refuseRemoteCustomProvider above).
+ */
+export function needsFleetOauthFor(
+  isClaude: boolean,
+  authMode: AuthMode,
+  isOwnTeam: boolean,
+  customProviderId: string | null,
+): boolean {
+  return isClaude && authMode !== 'api' && !isOwnTeam && !customProviderId
+}
+
 async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
@@ -2476,7 +2495,10 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // upstream's own_team/BYO-401 test for this shared-home branch expects this name, not the
     // narrower !isOwnTeam this branch used before -- !isOwnTeam alone would still export the
     // fleet token to a BYO agent that is not own_team).
-    const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam
+    // needsFleetOauthFor (RedHat NO-GO B1, comment 15850, card 617d136d) also excludes
+    // customProviderId: isClaude alone is `model.startsWith('claude-')`, which says nothing about
+    // WHERE the request goes -- see the function's own doc comment above.
+    const needsFleetOauth = needsFleetOauthFor(isClaude, authMode, isOwnTeam, customProviderId)
     if (ownTokenFile) {
       // oauthTokenFile: the agent's own setup-token file, INSTEAD of the fleet file.
       oauthTokenEnv = ownOauthTokenExport(ownTokenFile)

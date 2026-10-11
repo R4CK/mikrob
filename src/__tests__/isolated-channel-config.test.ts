@@ -260,6 +260,13 @@ describe('isolated-config launcher wiring', () => {
     // byoUnsetEnv must be defined and wired into the cmd string so the inherited
     // token is removed before exec for non-Claude-OAuth agents.
     expect(SRC).toMatch(/const byoUnsetEnv = !needsFleetOauth \? 'unset CLAUDE_CODE_OAUTH_TOKEN && ' : ''/)
-    expect(SRC).toMatch(/\$\{byoUnsetEnv\}/)
+    // RedHat NO-GO B2 (comment 15850, card 617d136d): a bare /\$\{byoUnsetEnv\}/ match was
+    // satisfied by a COMMENT quoting the same literal a few lines above the real template
+    // usage -- deleting byoUnsetEnv from the actual buildLaunchCmd string left the comment
+    // behind and the test still passed (CLAUDE.md code-quality principle 12: match the
+    // DECLARATION/real usage, not a substring a comment can also contain). Anchored instead
+    // to its neighbours in the buildLaunchCmd template literal, a sequence a comment cannot
+    // plausibly reproduce verbatim.
+    expect(SRC).toMatch(/\$\{autoUpdaterEnv\}\$\{byoUnsetEnv\}\$\{promptSuggestionEnv\}/)
   })
 })
