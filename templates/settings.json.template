@@ -206,6 +206,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py --stop; exit 0'",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }
