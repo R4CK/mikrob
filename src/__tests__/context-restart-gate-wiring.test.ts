@@ -40,7 +40,7 @@ vi.mock('../web/main-transcript-root.js', () => ({
   newestMainConfigRoot: () => CONFIG_DIR,
 }))
 vi.mock('../web/claude-plans.js', () => ({ resolveAgentConfigDirForRead: () => CONFIG_DIR }))
-vi.mock('../web/agent-config.js', () => ({ listAgentNames: () => [MAIN, SUB] }))
+vi.mock('../web/agent-config.js', () => ({ listAgentNames: () => [MAIN, SUB], agentConfigRoot: () => CONFIG_DIR }))
 
 /**
  * A transcript whose FILE is fresh but whose last real turn is old -- the exact

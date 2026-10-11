@@ -31,7 +31,7 @@ import {
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider, type AuthMode } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider, readJsonObjectForWrite, type AuthMode } from './agent-config.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, readAgentConfigForOauthDecision, reverifyOauthTokenFile, findOauthTokenFileCollision } from './agent-oauth-token-file.js'
 import { getCustomProviderOrThrow } from './custom-providers.js'
 import { worksourceRootFor } from './worksource-queue.js'
@@ -352,27 +352,11 @@ export function ownChannelProviderForScope(
   return hasOwnToken && resolvedProvider ? resolvedProvider : null
 }
 
-/**
- * Teams name-sync write: set TEAMS_BOT_DISPLAY_NAME in the agent's teams .env
- * to `displayName`, only on drift. Returns whether it wrote.
- *
- * ENVTMPMODE925: the teams .env holds the bot's app secret, so a file this call
- * CREATES is 0600. writeFileSync's `mode` applies only on creation, so an
- * existing .env keeps whatever mode the operator gave it (the write is in
- * place, no rename). Without it a missing .env came up at the umask default.
- */
-export function syncTeamsDisplayName(envPath: string, displayName: string | null | undefined): boolean {
-  if (!displayName) return false
-  const raw = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : ''
-  const current = raw.match(/^TEAMS_BOT_DISPLAY_NAME=(.*)$/m)?.[1]?.trim()
-  if (current === displayName) return false
-  const line = `TEAMS_BOT_DISPLAY_NAME=${displayName}`
-  const next = current !== undefined
-    ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, line)
-    : (raw === '' || raw.endsWith('\n') ? raw + line + '\n' : raw + '\n' + line + '\n')
-  writeFileSync(envPath, next, { mode: 0o600 })
-  return true
-}
+// NOT ADOPTED (köteg 10 auto-merge reintroduced upstream's syncTeamsDisplayName() helper here --
+// already explicitly decided against in an EARLIER round, ENVTMPMODE925/#1595: this write already
+// goes through writeAgentConfig(), which forces AGENT_CONFIG_MODE on every write, not just on
+// create -- a stronger guarantee than upstream's create-only fix. See env-tmp-mode.test.ts's own
+// comment for the original decision. Deleted again rather than left as dead code.
 
 // Wrap the telegram plugin's bun stdio server in a tee that persists each
 // inbound channel notification to <stateDir>/inbox-pending.jsonl, which the
@@ -1459,10 +1443,57 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
   }
 }
 
+// Pre-approve a custom ANTHROPIC_API_KEY in a config root's .claude.json so
+// Claude Code's "Detected a custom API key" TUI prompt never renders in
+// --channels (non-interactive) mode.
+//
+// Root cause: when a custom provider uses authHeader=x-api-key, agent-process
+// exports ANTHROPIC_API_KEY. The Claude Code TUI treats ANTHROPIC_API_KEY as
+// an approval-required key (it shows "Detected a custom API key in your
+// environment / Do you want to use this API key?"). In --channels mode this
+// dialog cannot be answered interactively, so the agent parks on "Not logged
+// in". The ANTHROPIC_AUTH_TOKEN (Bearer) path has no such gate.
+//
+// Fix: mirror the CLI's own approval storage. The CLI stores the key as
+//   customApiKeyResponses.approved: [key.trim().slice(-20)]
+// (empirically verified from the 2.1.222 binary: `function Jne(e){return
+//  e.trim().slice(-20)}`). Pre-seeding this entry before spawn makes the CLI
+// treat the key as already approved. Idempotent; atomic 0600 write.
+//
+// NOT WIRED (köteg 10, upstream ab5325c0 range): this function itself is adopted
+// (readJsonObjectForWrite-protected, pinned by silent-external-failures.test.ts),
+// but the CALLER -- upstream's buildCustomProviderLaunchEnv, and the isCustom/
+// customProviderDef resolution it needs at the top of startAgentProcessUnlocked --
+// is NOT adopted here (restructures the customProvider launch-env lookup this fork
+// does differently, via resolveProviderEnv below). Own card to actually invoke this.
+export function stampCustomApiKeyApproval(dotClaudePath: string, apiKey: string): boolean {
+  const suffix = apiKey.trim().slice(-20)
+  if (!suffix) return false
+  try {
+    // JSONCLOBBER926B: a corrupt .claude.json is refused, not reset to a
+    // one-key object. It carries the agent's onboarding and project-trust
+    // flags and its local-scope MCP servers (credentials included), and the
+    // old "start fresh" silently destroyed all of them. The refusal lands in
+    // the catch below: no stamp, a warn naming the file, and the file intact.
+    const data = readJsonObjectForWrite(dotClaudePath)
+    const existing = (data.customApiKeyResponses && typeof data.customApiKeyResponses === 'object' && !Array.isArray(data.customApiKeyResponses))
+      ? data.customApiKeyResponses as Record<string, unknown>
+      : {}
+    const approved = Array.isArray(existing.approved) ? existing.approved as string[] : []
+    if (approved.includes(suffix)) return false
+    data.customApiKeyResponses = { ...existing, approved: [...approved, suffix] }
+    atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+    logger.info({ dotClaudePath }, 'custom-api-key: pre-stamped customApiKeyResponses.approved (prevents interactive approval prompt in --channels TUI)')
+    return true
+  } catch (err) {
+    logger.warn({ err, dotClaudePath }, 'custom-api-key: could not stamp approval (agent may park on API key prompt if running non-interactively)')
+    return false
+  }
+}
+
 // NOT ADOPTED (köteg 10, upstream ab5325c0 range, see the matching NOT-ADOPTED note further down
-// in startAgentProcessUnlocked for why): stampCustomApiKeyApproval + buildCustomProviderLaunchEnv,
-// upstream's pre-seed of the "Detected a custom API key" TUI approval for x-api-key custom
-// providers in --channels mode. Own card.
+// in startAgentProcessUnlocked for why): buildCustomProviderLaunchEnv, upstream's full
+// customProvider launch-env builder (envPrefix + customApiKeyForApproval). Own card.
 // Pre-stamp the Fable overage-consent acknowledgment in a config root's
 // .claude.json so the "Fable 5 now uses usage credits" dialog never renders.
 //
@@ -2404,10 +2435,12 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
         if (!existsSync(serverPath)) throw new Error(`worksource server not found at ${serverPath}`)
         const mcpJsonPath = join(agentDir(name), '.mcp.json')
         let mcpConfig: { mcpServers: Record<string, unknown> } = { mcpServers: {} }
-        try {
-          const existing = JSON.parse(readFileSync(mcpJsonPath, 'utf-8')) as { mcpServers?: Record<string, unknown> }
-          if (existing && typeof existing === 'object' && existing.mcpServers) mcpConfig = { mcpServers: existing.mcpServers }
-        } catch { /* absent or unreadable -> start from empty, do not fail the launch */ }
+        // JSONCLOBBER926B: absent -> start from empty; an existing but corrupt
+        // .mcp.json is refused (it may hold the agent's other MCP servers), and
+        // the refusal lands in this block's catch: the agent starts without the
+        // worksource channel, as for any other wiring failure, and the file stays.
+        const existing = readJsonObjectForWrite(mcpJsonPath)
+        if (isPlainObject(existing.mcpServers)) mcpConfig = { mcpServers: existing.mcpServers }
         mcpConfig.mcpServers.worksource = {
           command: process.execPath,
           args: [serverPath],

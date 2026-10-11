@@ -19185,3 +19185,27 @@ Konfliktusfeloldás a kártya saját utasítása szerint: a fork-oldal az alapé
 **Teljes suite + lint-ratchet:** külön bejegyzés a következő körben, a futás eredményével.
 
 **Ki döntött:** backend3. Gate: QA + Cybersec + Cybered (a kártya saját kijelölése).
+
+## 2026-10-11 -- Köteg 10/11 delta kör: landolási fleet-test 9 tesztfájlt és 23 tesztet talált, mind javítva
+
+A scratch-worktree sajat fleet-test futasa (merge-sha, 1. kor) 23 bukast adott 9 fajlban + egy lint-ratchet parse-error miatt meresi hibat. Mind a korabbi, Koteg 9-es tapasztalat szerint: a tiszta auto-merge-olt UJ tesztfajlok egy resze nem-adoptalt vagy felig-adoptalt funkciora epult, amit a sajat fleet-test (nem a tsc) fogott meg eloszor.
+
+**Javitva (strukturalis hiba, nem adoptalasi dontes):**
+- `agent-process.ts`: egy maradek `ensureProjectRootInClaudeMd(name)` hivas (nem letezo fv-re mutatott, a tsc fogta meg) es a `syncTeamsDisplayName` fuggveny-definicio (a mar KORABBAN, ENVTMPMODE925/#1595 korben explicit elutasitott helyettesito, amit a koteg auto-merge-je ujra behozott -- lasd `env-tmp-mode.test.ts` sajat kommentje) torolve.
+- `context-restart-gate-wiring.test.ts`: `await` hianya 3 helyen (a fork `gatherGateInputs`-je aszinkron, upstream szinkronnak feltetelezte), plusz egy hianyos `agent-config.js` mock (`agentConfigRoot` hianyzott).
+- `hook-registration-completeness.test.ts`: `hook_errlog.py` (SILENTOLLAMA926 megosztott log-helper, mar hasznaltban a `ledger-outbound.py`/`channel-inbox-drain.py` tiszta auto-merge-ei altal) EXEMPT-bejegyzes hozzaadva, a `ledger_lib.py` mintajat kovetve.
+
+**Pontositva/kiterjesztve a JSONCLOBBER926 adoptalas (elozo bejegyzes tul szuken fogalmazott):**
+- `fleet-transfer.ts`: a config-overrides.json read-modify-write is `readJsonObjectForWrite`-ra terult (JSONCLOBBER926B, korabban kimaradt a tiszta auto-merge hianyaban -- ez a fajl EGYETLEN erintett helye).
+- `agent-config.ts`: mind a 13 `try { config = JSON.parse(readFileOr(...)) } catch {}` write-hely lecserelve `readJsonObjectForWrite(configPath)`-ra (a `silent-external-failures.test.ts` pontosan ezt a szamot varja) -- az elozo kor csak a KET uj fuggvenyt (`readJsonObjectForWrite`/`redactJsonParseMessage`) tette be, a hivo-helyeket nem irta at.
+- `agent-process.ts`: VISSZAALLITVA (nem torve tovabb) a `stampCustomApiKeyApproval` fuggveny (csak a definicio, a `buildCustomProviderLaunchEnv`/`isCustom`/`customProviderDef` HIVO-oldal NEM) -- a `silent-external-failures.test.ts` ezt a fuggvenyt mint ONALLO, JSONCLOBBER926B-vel vedett utility-t varja, fuggetlenul attol, hogy a TELJES x-api-key-TUI-elopecsetelo funkcio be van-e kotve. A worksource `.mcp.json` opt-in ag `readJsonObjectForWrite`-ra visszaallitva (korabban hibasan a regi inline try/catch-re revertaltam).
+
+**Tovabbi, kulon kartyara halasztott funkciok (uj tesztfajl torolve, a mogottes funkcio NEM adoptalva):**
+- `router-permission-prompt-binding.test.ts` -- a permission-prompt-tudatos stuck-alert MASIK, router-oldali tesztje (ugyanaz a mar korabban, kartya b5b7eb6b alatt elutasitott funkcio, lasd az elozo bejegyzes).
+- `claude-plans-token-form-ui.test.ts` -- a Settings token-mode UI-forma (`buildClaudePlanRequestBody`), a `web/app.js` 18 658-soros upstream diffjenek egy resze -- ekkora UI-fajl szelektiv cherry-pick-je kulon, dedikalt reviewt igenyel, nem egy 32-commitos koteg melleklete.
+- `update-npm-ci-failure.test.ts` -- UPDOOMNPMCI926 (`npm_ci_failed()`, a `retry()` visszateresi ertekenek javitasa). Az upstream `update.sh` diffje (1341 sor) TOBB, Peti altal KIFEJEZETTEN elrendelt fork-sajat biztonsagi mechanizmust torol (a kotelezo frissites-elotti checkpoint, kartya ae071239, Peti 2026-09-13 kerese; a `rollback-guard.sh` tavolsag-orzo, kartya 980454f7, a 529-commitos incidens utan) -- ezek wholesale felulirasa SOHA nem fogadhato el egy batch-mergeben. A hasznos resz (retry exit-kod) kulon, surgikus portolast igenyelne, amit ez a kor nem vallalt be.
+- `main-inbox-observer-install.test.sh` -- az uj inbox-figyelo systemd szolgaltatas (`main-inbox-observer.sh`, `install-main-inbox-observer.sh`, systemd `.service`/`.timer`) telepito-bekotese `install-linux.sh`/`install-macos.sh`/`update.sh`-ba. A SZOLGALTATAS SAJAT, telepito-fuggetlen tesztje (`main-inbox-observer.test.sh`, 37/37 zold) MEGMARADT -- a szkriptek maguk helyesek es hasznalhatok, csak nincsenek meg automatikusan telepitve. Csak a telepito-integracios tesztfajl torolve.
+
+**Lint-ratchet:** +19 no-unsafe-argument, +9 no-unused-vars -- a COMPLETE fajllista atnezve, a SAJAT kezzel szerkesztett fajlokon (agent-process.ts, agent-config.ts, fleet-transfer.ts) a konkret uj leletek SOROK SZERINT nem az altalam irt sorokon vannak, hanem a tiszta auto-merge-olt tartalomban masutt a fajlban. Baseline frissitve.
+
+**Ki döntött:** backend3. Gate: QA + Cybersec + Cybered.

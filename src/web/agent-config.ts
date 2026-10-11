@@ -201,7 +201,7 @@ export function readAgentModel(name: string): string {
 export function writeAgentModelProfile(name: string, profile: string | null): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch { /* start fresh */ }
+  config = readJsonObjectForWrite(configPath)
   if (profile === null) delete config.modelProfile
   else config.modelProfile = profile
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
@@ -213,7 +213,7 @@ export function writeAgentModel(name: string, model: string): void {
   if (!isValidModelId(model)) throw new InvalidModelIdError(model)
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   config.model = model
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
@@ -232,7 +232,7 @@ export function readAgentDisplayName(name: string): string {
 export function writeAgentDisplayName(name: string, displayName: string): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   config.displayName = displayName
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
@@ -446,7 +446,7 @@ export function writeAgentRemoteConfig(
   const w = workdir.trim()
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
 
   // Clearing: both empty -> remove the fields, agent becomes local.
   if (!h && !w) {
@@ -487,7 +487,7 @@ export function readAgentChannelProvider(name: string): string | null {
 export function writeAgentChannelProvider(name: string, provider: string): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   config.channelProvider = provider
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
@@ -526,7 +526,7 @@ export function readAgentMemoryIsolation(name: string): boolean {
 export function writeAgentMemoryIsolation(name: string, enabled: boolean): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   if (enabled) config.memoryIsolation = true
   else delete config.memoryIsolation
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
@@ -559,7 +559,7 @@ export function readAgentWorksourceChannel(name: string): boolean {
 export function writeAgentWorksourceChannel(name: string, enabled: boolean): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   if (enabled) config.worksourceChannel = true
   else delete config.worksourceChannel
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
@@ -569,7 +569,7 @@ export function writeAgentAuthMode(name: string, mode: AuthMode): void {
   if (!VALID_AUTH_MODES.has(mode)) return
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   config.authMode = mode
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
@@ -577,7 +577,7 @@ export function writeAgentAuthMode(name: string, mode: AuthMode): void {
 export function writeAgentSecurityProfile(name: string, profileId: string): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   config.securityProfile = profileId
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
@@ -605,7 +605,7 @@ export function readAgentClaudePlan(name: string): string | null {
 export function writeAgentClaudePlan(name: string, planId: string): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   const trimmed = planId.trim()
   if (trimmed) config.claudePlan = trimmed
   else delete config.claudePlan
@@ -636,7 +636,7 @@ export function readAgentCustomProvider(name: string): string | null {
 export function writeAgentCustomProvider(name: string, providerId: string): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   const trimmed = providerId.trim()
   if (trimmed) config.customProvider = trimmed
   else delete config.customProvider
@@ -798,7 +798,7 @@ export function writeAgentVoiceConfig(name: string, patch: Partial<AgentVoiceCon
   }
   const configPath = join(agentConfigRoot(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   const current = readAgentVoiceConfig(name)
   config.voice = {
     responseMode: patch.responseMode ?? current.responseMode,
@@ -917,7 +917,7 @@ export function readAgentToolDeny(name: string): string[] {
 export function writeAgentCapabilities(name: string, capabilities: string[]): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   config.capabilities = capabilities
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
