@@ -5,14 +5,6 @@
 # pontot leallit").
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# TEMP DIAGNOSTIC (fullstack, 2026-10-11): fleet-test.sh has shown this exact case failing 3/3
-# inside the real 982-file suite while 50+ isolated/stressed reproductions outside it all passed.
-# Tee everything to a fixed /tmp path (outside any worktree, so it survives TEST_TREE being reset
-# for the next run) to see which case actually fails and why, before deciding this is the CPU-
-# contention flake class (root CLAUDE.md rule 17) vs a real regression. Will be removed before the
-# final commit regardless of outcome.
-exec > >(tee -a "/tmp/ldc-selftest-trace-$(date +%s)-$$.log") 2>&1
-echo "== local-first-draft-check.selftest.sh pid=$$ host=$(hostname) HERE=$HERE =="
 fail=0
 n=0
 
@@ -106,17 +98,16 @@ git -C "$FAKE_MAIN" worktree add --detach -q "$FAKE_WORKTREE" HEAD
 # own copy, exactly as the real dashboard route writes into STORE_DIR of the process it runs in.
 echo '{"enabled": false}' > "$FAKE_MAIN/store/local-first-draft.json"
 
-(
-  . "$FAKE_WORKTREE/store/local-llm-state-dir.sh"
-  resolve_local_llm_state_dir "$FAKE_WORKTREE/store"
-  echo "DIAG: TMPDIR=${TMPDIR:-unset} WORK=$WORK"
-  echo "DIAG: FAKE_MAIN=$FAKE_MAIN FAKE_WORKTREE=$FAKE_WORKTREE"
-  echo "DIAG: dotgit content: [$(cat "$FAKE_WORKTREE/.git" 2>&1)]"
-  echo "DIAG: LOCAL_LLM_STATE_ORIGIN=$LOCAL_LLM_STATE_ORIGIN LOCAL_LLM_STATE_RESOLVED=$LOCAL_LLM_STATE_RESOLVED"
-  echo "DIAG: flag file exists? $( [ -f "$LOCAL_LLM_STATE_RESOLVED/local-first-draft.json" ] && echo yes || echo no )"
-  echo "DIAG: LOCAL_LLM_STATE_DIR env=${LOCAL_LLM_STATE_DIR:-unset}"
-)
 if ! (
+  # The vitest global setup (src/__tests__/setup/isolate-local-llm-state.ts, card 4c5c540c) exports
+  # LOCAL_LLM_STATE_DIR per worker for test isolation, and execFileSync (store-selftests-all-run.test.ts)
+  # inherits it into this script's process -- which this case must NOT see, because it exists
+  # specifically to exercise the worktree-vs-install git-dir detection in resolve_local_llm_state_dir(),
+  # whose own priority-1 rule is "env wins outright". Same pattern as
+  # local-llm-model-routing.selftest.sh's own `unset LOCAL_LLM_STATE_DIR` before testing state-dir
+  # resolution. Without this, running under the real fleet-test suite always resolves to the
+  # worker's throwaway env dir (no flag file there -> fails open) instead of detecting the worktree.
+  unset LOCAL_LLM_STATE_DIR
   . "$FAKE_WORKTREE/store/local-first-draft-check.sh"
   local_first_draft_enabled
 ); then
