@@ -85,7 +85,10 @@ SCAN_GLOBS = [
     os.path.expanduser("~/.claude/channels/telegram/progress"),
 ]
 DOWN_GRACE_SEC = 120        # agent down + placeholder older than this -> fire
-WEDGED_SEC = 15 * 60        # agent up, no hung-reply signal, this old -> fire (backstop)
+# agent up, no hung-reply signal, this old -> fire (blunt backstop). Env-tunable
+# (dadeab30, RedHat/QA gate question #3) so a live install can lower it without
+# a code change, same as wedged_up_sec()/stale_sec() below.
+DEFAULT_WEDGED_SEC = 15 * 60
 # UPPER age bound (TGORPHAN908): a marker older than this marks a DEAD round,
 # not a stuck one -- there is no question behind it that needs an answer today.
 # Deliver NOTHING; drop the marker. Without this bound, a fleet restart after a
@@ -121,6 +124,10 @@ def _env_int(name, default):
 
 def wedged_up_sec():
     return _env_int("TELEGRAM_WATCHDOG_WEDGED_UP_SEC", DEFAULT_WEDGED_UP_SEC)
+
+
+def wedged_sec():
+    return _env_int("TELEGRAM_WATCHDOG_WEDGED_SEC", DEFAULT_WEDGED_SEC)
 
 
 def stale_sec():
@@ -414,7 +421,7 @@ def handle_dir(progress_dir):
         elif reply_hung and age > up_sec:
             fire = True
             reason = "reply-hung"
-        elif age > WEDGED_SEC:
+        elif age > wedged_sec():
             fire = True
             reason = "wedged-backstop"
         else:
