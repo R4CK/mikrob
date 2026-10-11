@@ -30,7 +30,7 @@ function fakeCtx(path: string, method: string, body?: unknown, auth?: RouteConte
 describe('kanban-verdicts', () => {
   beforeEach(() => {
     initDatabase(':memory:')
-    createKanbanCard({ id: 'c1', title: 'x', status: 'planned' } as any)
+    createKanbanCard({ id: 'c1', title: 'x', status: 'planned' })
     process.env.AGENT_VERDICT_RECORD = '1'
   })
   afterEach(() => {

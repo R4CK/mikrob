@@ -11,7 +11,7 @@ import { gateCompletenessGuardVerdict } from '../web/kanban-gate-completeness-gu
 describe('gateCompletenessGuardVerdict + structured kanban_verdicts (additive OR)', () => {
   beforeEach(() => {
     initDatabase(':memory:')
-    createKanbanCard({ id: 'c1', title: 'x', status: 'waiting', description: 'Gate: QA + Cybersec' } as any)
+    createKanbanCard({ id: 'c1', title: 'x', status: 'waiting', description: 'Gate: QA + Cybersec' })
   })
   afterEach(() => {
     delete process.env.AGENT_VERDICT_RECORD

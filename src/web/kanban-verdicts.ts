@@ -11,7 +11,6 @@
 // Flag (plan-grilling requirement (5)): AGENT_VERDICT_RECORD env var. Default OFF -- the routes in
 // this module are reachable only when it is "1"/"true"; off, tryHandleKanbanVerdicts always
 // returns false (pass-through), so a fresh install/default config sees zero new behavior.
-import type http from 'node:http'
 import { readBody, json } from './http-helpers.js'
 import { forceActors } from '../kanban-force-actors.js'
 import { agentKeyToAgentId } from './auth-device-keys.js'
