@@ -2293,8 +2293,10 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // agent does not park on that dialog. Real gap, not wired here -- it needs isCustom/
     // customProviderDef resolved earlier in this function (upstream's version restructures the
     // customProvider lookup this fork does differently, via resolveProviderEnv below), plus
-    // JSONCLOBBER926B's readJsonObjectForWrite (also not adopted this round, see DECISIONS.md).
-    // Own card, not a rider on a 33-commit batch.
+    // JSONCLOBBER926B's readJsonObjectForWrite IS adopted in this file (see stampCustomApiKeyApproval
+    // below, and the worksource .mcp.json read further down) -- that part of the gap is closed; what
+    // remains unwired is this caller-side lookup restructuring only. Own card, not a rider on a
+    // 33-commit batch.
     let providerEnv: string
     try {
       providerEnv = resolveProviderEnv(model, (id) => {
