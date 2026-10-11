@@ -25,26 +25,30 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))
 
-function makeCtx(path: string, method = 'GET'): { ctx: RouteContext; getBody: () => any; status: () => number } {
-  const url = new URL(`http://localhost:3420${path}`)
+function makeCtx(pathWithQuery: string, method = 'GET'): { ctx: RouteContext; getBody: () => any; status: () => number } {
+  const url = new URL(`http://localhost:3420${pathWithQuery}`)
   let responseBody = ''
   let statusCode = 200
   const res = {
     writeHead: (code: number) => { statusCode = code },
     end: (body?: string) => { responseBody = body || '' },
   }
+  // ctx.path is the bare pathname -- the route matchers anchor with `$` and never see the query
+  // string, which lives on ctx.url (url.searchParams) instead, same as the real HTTP dispatch.
   return {
-    ctx: { req: {} as any, res: res as any, path, method, url },
+    ctx: { req: {} as any, res: res as any, path: url.pathname, method, url },
     getBody: () => (responseBody ? JSON.parse(responseBody) : null),
     status: () => statusCode,
   }
 }
 
 let seededId = 0
+let victimPrivateId = 0
 
 beforeAll(() => {
   initDatabase(':memory:')
   seededId = saveAgentMemory('agent-a', 'a pointer target the keyword search would miss', 'shared', 'zzz-unrelated').id
+  victimPrivateId = saveAgentMemory('victim', 'victim private hot-tier content', 'hot', 'secret').id
 })
 
 afterAll(() => { vi.restoreAllMocks() })
@@ -69,5 +73,59 @@ describe('GET /api/memories/:id', () => {
     // router, which is indistinguishable from a missing record.
     expect(handled).toBe(true)
     expect(status()).toBe(404)
+  })
+})
+
+// Card 517fdcc5 (QA FAIL 10812, CRITICAL): GET /api/memories/:id had NO agent-boundary check --
+// anyone who knew or guessed a trivially-sequential id could read ANY other agent's private
+// ('hot'/'warm'/'cold', i.e. not 'shared') memory in full. There was also a second, dead-code copy
+// of this handler added by the same merge (identical route match, shadowed by the one above) --
+// deleting it is covered implicitly: if it had survived instead of being deleted, these tests
+// would exercise it and fail the same way, since both paths are reached through tryHandleMemories.
+describe('GET /api/memories/:id -- agent-boundary check (card 517fdcc5)', () => {
+  it('a `?agent=` scope that does not own the row, and the row is not shared, 404s -- not the content', async () => {
+    const { ctx, getBody, status } = makeCtx(`/api/memories/${victimPrivateId}?agent=attacker`)
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(status()).toBe(404)
+    expect(JSON.stringify(getBody())).not.toContain('victim private hot-tier content')
+  })
+
+  it('the owning agent\'s own `?agent=` scope still gets the full row', async () => {
+    const { ctx, getBody, status } = makeCtx(`/api/memories/${victimPrivateId}?agent=victim`)
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(status()).toBe(200)
+    expect(getBody().content).toBe('victim private hot-tier content')
+  })
+
+  it('a `?agent=` scope CAN still read a shared row (shared is cross-agent by design)', async () => {
+    const { ctx, getBody, status } = makeCtx(`/api/memories/${seededId}?agent=attacker`)
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(status()).toBe(200)
+    expect(getBody().content).toContain('pointer target')
+  })
+
+  it('a device key for a DIFFERENT agent overrides a forged `?agent=` param, not just a missing one', async () => {
+    const { ctx, status } = makeCtx(`/api/memories/${victimPrivateId}?agent=victim`)
+    ;(ctx as any).auth = { kind: 'device', device: 'agent:attacker' }
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    // Without the auth override this would be 200 (the ?agent=victim claim alone would pass) --
+    // the device identity must win over a caller-supplied agent param, the same precedent as the
+    // POST handler's authenticatedAgentId (card 84dcc5d4).
+    expect(status()).toBe(404)
+  })
+
+  // Backward-compat pin: no scope at all (no device key, no ?agent=) keeps today's status quo --
+  // full isolation for the shared-token caller is explicitly out of scope here (card 2520b85a),
+  // this card only closes the identified-caller gap.
+  it('no scope at all (shared-token caller, no ?agent=) is UNCHANGED -- still returns the row', async () => {
+    const { ctx, getBody, status } = makeCtx(`/api/memories/${victimPrivateId}`)
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(status()).toBe(200)
+    expect(getBody().content).toBe('victim private hot-tier content')
   })
 })
