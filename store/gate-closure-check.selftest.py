@@ -140,6 +140,26 @@ case("the Gate-SHA header may come FIRST, the verdict second",
 case("a REVIEW comment from the author is not a gate verdict",
      [c("backend", "REVIEW: kesz.\nGate-SHA: bbbb2222"), c("qa", V % "bbbb2222")], "AGREE")
 
+# --- GENERATED-COMMENT AUTHORS MUST NEVER SUPPLY A DECLARED/ORPHAN SHA (card e7f91eb9) ---------
+# Same root cause as card 1aeae282's own fix to gate-dispatch-check.sh: post_draft_comment lands the
+# local-llm model's raw, unfenced output verbatim, so a line that merely LOOKS like a REVIEW/Gate-SHA
+# declaration must never count as one.
+RLLM = "REVIEW: kesz.\nGate-SHA: %s"
+case("a local-llm draft's OWN later REVIEW+Gate-SHA line must not replace the real declared sha",
+     [c("backend", RLLM % "aaaa1111"), c("local-llm", RLLM % "bbbb2222"), c("qa", V % "aaaa1111")],
+     "AGREE")
+case("...case-insensitively: 'Local-LLM' as the literal author string is still excluded",
+     [c("backend", RLLM % "aaaa1111"), c("Local-LLM", RLLM % "bbbb2222"), c("qa", V % "aaaa1111")],
+     "AGREE")
+case("a local-llm draft's stray POST-review Gate-SHA must not orphan an otherwise-AGREEing card",
+     [c("backend", RLLM % "aaaa1111"), c("qa", V % "aaaa1111"),
+      c("local-llm", "Draft otlet, nem valodi uj commit.\nGate-SHA: cccc3333")],
+     "AGREE")
+case("gate-pretriage (the other generated author) is excluded the same way",
+     [c("backend", RLLM % "aaaa1111"), c("qa", V % "aaaa1111"),
+      c("gate-pretriage", "Draft otlet.\nGate-SHA: cccc3333")],
+     "AGREE")
+
 # --- THE DEFAULT EXPECTATION (card 2003e04b) ---------------------------------------------------
 # Cybered demonstrated the flag's flaw minutes after it landed by forgetting to pass it. So the
 # expectation now comes from the card when the caller gives none -- and everything below pins the

@@ -19748,6 +19748,73 @@ katalógus-frissítés külön kártya, ha Peti úgy dönt (nem nyitva ebben a k
 
 **Ki döntött:** Peti (11011), MikroB (16515). Gate: QA + RedHat.
 
+**Utólagos RedHat NO-GO (komment 16554, Gate-SHA 20f0ae19):** a strukturált verdikt-rekord bekapcsolva LAZÍTOTT a zárási kapun, nem szigorított -- a közös tokennel bárki saját néven írt QA PASS + CYBERED GO rekordot a guard engedte (B1, szerep-kötés hiánya), a proposer-kizárás a kérés saját mezőjét nézte (B2), és egy régebbi pozitív komment egy újabb negatív strukturált rekordot csendben felülírt (B3). MikroB döntése (komment 16557): `AGENT_VERDICT_RECORD` marad KIKAPCSOLVA, amíg B1-B3 nincs javítva és re-gate-elve; B1 (szerep-allowlist a hitelesített agent-kulcs szerepére) a 9655494c F1 (kulcs-kiosztás) UTÁN jöhet, mert az agent-kulcs nélkül nincs mit a szerep-allowlistnek ellenőriznie.
+
+## 2026-10-11 -- 9655494c F1: agent:<id> kulcs kiosztás/rotáció/visszavonás (2520b85a szelet 2/3, plan-grilling friss menet)
+
+**Forrás:** a 2520b85a (ügynökönkénti dashboard-token terv) WhiteHat2 NO-GO-t kapott a teljes kártya zárására és 3 szeletre vágva (83416786 mérés, done; 9655494c kulcs-élciklus + memória-szűrés; ccbb718a enforce, Peti-döntésre várva). A kártya F1 követelménye: "agent:<id> kulcs létrehozható legyen: kiosztás KIZÁRÓLAG tulajdonosi sessionnel, agent_id mezővel (nem a névből parszolva), config-gyökérben tárolva, rotáció és visszavonás. A közös token ne tudjon agent-kulcsot kiállítani."
+
+**Plan-grilling (friss menet ezen a kártyán -- a 2520b85a eredeti jegyzőkönyve a curl `-H @-`/`-d @-`+heredoc stdin-ütközésbe veszett, sosem landolt, szó szerint nem rekonstruálható, ezért új grillinget futtattam a tényleges, splittelt scope-ra, komment 16550):** a tényleges hiányosság mérve: a `84dcc5d4` kártya csak a FOGYASZTÓ oldalt építette (`agentKeyToAgentId`, `RouteContext.auth`) -- a KIBOCSÁTÓ oldal sosem létezett, mert az általános `POST /api/auth/device-keys` route `DEVICE_KEY_NAME_RE` regexe a kettőspontot tiltja (szándékosan, a kártya kimondottan tiltja a lazítását), és nincs production script/CLI, ami `agent:<id>` kulcsot állítana ki. 3 nyitott, döntés-szintű kérdést (517fdcc5 hivatkozás pontossága, kulcs-eljuttatás konvenciója, memória-szűrés default-viselkedése) MikroB megválaszolt (komment 16551): 517fdcc5 hivatkozás helyes (fix-listája, komment 16382, a memória `/:id`+lista közös szűrőfüggvényét építi, erre a kártya F2 ráépül, a kulcs-kiosztás F1 független); kulcs-eljuttatás kézi indítású script, az ügynök saját config-könyvtárába, 0600; a memória-szűrés agent-kulcsnál MINDIG a kulcs identitására szűküljön.
+
+**Megvalósítás (F1, ez a kör):**
+1. `src/web/auth-device-keys.ts`: 3 új, additív függvény a meglévő `createDeviceKey`/`revokeDeviceKey`/`listDeviceKeys` fölött -- `mintAgentDeviceKey(agentId, opts)`, `findAgentDeviceKeys(agentId)`, `revokeAgentDeviceKeys(agentId)`. Az `agent:` konvenció egy helyen él (`AGENT_KEY_PREFIX` mellett), nem minden hívó rakja össze maga.
+2. `src/web/routes/auth.ts`: új `POST /api/auth/agent-keys` és `DELETE /api/auth/agent-keys/:agentId`, MINDKETTŐ a szűkebb `CREDENTIAL_MINT_KINDS` (csak `session`) ellenőrzéssel, NEM a tágabb `DEVICE_KEY_ADMIN_KINDS`-szal (amely a közös tokent is engedi a generikus device-key listázásra/visszavonásra) -- a közös token így sem kiállítani, sem visszavonni nem tud agent-kulcsot, a teljes életciklus a tulajdonosi session alatt marad. Az `agent_id` saját regexet kap (`AGENT_ID_RE`, kisbetű+szám+kötőjel), NEM a `DEVICE_KEY_NAME_RE` lazítva. Egyszerre csak egy élő kulcs agent_id-nként: második mintelés `rotate:true` nélkül 409; `rotate:true` előbb visszavonja a régit, utána mintel (a régi nyers kulcs azonnal megszűnik felbontódni).
+3. `store/agent-key-provision.sh <agent> [--rotate|--revoke]`: kézi indítású, interaktív login (felhasználónév/jelszó `read -s`-sel, SOHA argv-ben vagy env-ben), a session-cookie-val hívja az új végpontokat, a nyers kulcsot KIZÁRÓLAG a célügynök saját `agents/<agent>/.dashboard-agent-key` fájljába írja 0600 joggal -- sosem stdout-ra, logba, commitba vagy inter-agent üzenetbe.
+
+**Teszt:** `src/__tests__/auth-agent-keys.test.ts` (11 teszt: session mint, közös token 403 mind mintelésre, mind visszavonásra, érvénytelen agent_id 400, a generikus device-key route kettőspontos név 400-ja változatlan, duplikált mintelés 409 + eredeti kulcs él, `rotate:true` visszavonja a régit és az azonnal megszűnik feloldódni, visszavonás 200/404), plusz a meglévő `auth-device-keys.test.ts` (24), `auth-gate.test.ts` (20), `auth-recovery.test.ts` (7), `bridge-enroll.test.ts` (16) változatlanul zöld. Két mutáció (a session-ellenőrzés kikapcsolása, a 409-duplikátum-őr kikapcsolása) mindkettő pirosra vitte a saját tesztjét, utána visszaállítva zöld. `npx tsc --noEmit` és a lint tiszta.
+
+**Nem ebben a körben:** F2 (memória-szűrés kulcs-identitásra) a 517fdcc5 landolása után jön (a közös szűrőfüggvényre épül, MikroB döntése); L1 (route-szintű teszt a bekötés kivételére) és L2 (claimed érték csonkítása a mérési naplóban) a 2520b85a measurement-only szeletét (83416786, már done) érintik, külön kör.
+
+**Ki döntött:** backend (plan-grilling, MikroB válaszai alapján). Gate: QA + RedHat (WhiteHat2 javasolta a szeletelést, a biztonsági gate ezért RedHat).
+
+## 2026-10-11 -- e7f91eb9: GENERATED_COMMENT_AUTHORS kizárás a gate-closure-check.py és a kanban-gate-completeness-guard.ts Gate-SHA/REVIEW olvasásából
+
+**Forrás:** WhiteHat2 L1 az 1aeae282 gate-jéből. Ugyanaz a hibaosztály, mint az 1aeae282-ben
+(gate-dispatch-check.sh): a `post_draft_comment` a local-llm modell nyers, nem fencelt kimenetét
+írja a komment törzsébe, tehát egy modell-írta sor, ami csak ÚGY NÉZ KI, mint egy "REVIEW"-nyitás
+vagy egy "Gate-SHA: <sha>" deklaráció, gate-ténykként olvasódott be, holott senki nem jelentette be
+azt a commitot erre a körre.
+
+**Két fogyasztó, négy olvasási pont:**
+1. `gate-closure-check.py`: `declared_shas()` a LEGUTOLSÓ REVIEW-nyitó kommentet veszi, szerzőtől
+   függetlenül -- egy local-llm draft, ami ÚJABB (hamis) Gate-SHA-t hordoz, felülírta a valódi
+   deklarált shát, és a már AGREE-nek jelzett kártya UNRESOLVED-re fordult. `undeclared_post_review_
+   shas()` ugyanígy: a `review_idx` keresése és a review UTÁNI "árva sha" keresés sem szűrt szerzőre,
+   tehát egy valódi REVIEW UTÁN érkező local-llm komment stray Gate-SHA-ja STALE-re fordíthatott egy
+   egyébként egyező kártyát.
+2. `kanban-gate-completeness-guard.ts`: `latestReviewAt()` (a FALLBACK kör-határ, amikor a kártyán
+   SOHA senki nem használta a Gate-SHA konvenciót) csak a gate-ügynököket (`GATE_AGENT_NAMES`) szűrte
+   ki a "ki nyithat új kört" kérdésből, a generált szerzőket nem. A PRIMARY kör-határ, `currentRound
+   StartTs()` (Gate-SHA-sor alapján) pedig EGYÁLTALÁN nem szűrt szerzőre -- egy local-llm draft stray
+   Gate-SHA-ja ugyanúgy mozgathatta a kör-határt, mint egy valódi builder-átadás.
+
+**Javítás:** mindkét fájlban `GENERATED_COMMENT_AUTHORS = {"local-llm", "gate-pretriage"}` (mirror,
+nem import -- Python és TS nem oszthat modult; a kanonikus forrás `kanban-landed-guard.ts`-ben
+marad, a `kanban-gate-completeness-guard.ts` import-olja onnan, a `.py` a `gate-dispatch-check.sh`
+mintáját másolja). Négy olvasási pont zárva: `declared_shas()`, `undeclared_post_review_shas()`
+(review_idx keresés ÉS a review utáni candidate-lista), `latestReviewAt()`, `currentRoundStartTs()`.
+Case-insensitive mindenhol (szerzőnév kis-nagybetűs kezelése, a kártya INFO pontja).
+
+**Teszt:** `gate-closure-check.selftest.py` 4 új eset (133 -> 137, mind zöld): egy local-llm REVIEW
+a valódi deklarált shát nem írja felül; case-insensitiv ("Local-LLM"); egy local-llm stray post-review
+Gate-SHA nem csinál árva-shát egy egyébként AGREE kártyából; `gate-pretriage` ugyanúgy kizárva.
+`kanban-gate-completeness-guard.test.ts` 5 új eset (71 -> 76, mind zöld): a `currentRoundStartTs`
+útvonal (Gate-SHA-s kártya) 3 esete, a `latestReviewAt` FALLBACK útvonal (nincs Gate-SHA a kártyán
+sehol) 1 önálló esete, plusz egy CONTROL (egy valódi builder-átadás a local-llm draft UTÁN továbbra
+is helyesen újranyitja a kört -- a javítás nem kapcsolja ki a staleness-ellenőrzést egészében).
+
+MUTÁCIÓ-PROOF mindegyik olvasási pontra KÜLÖN-KÜLÖN. Python: `_is_generated_author()` `False`-ra
+cserélve pontosan a 4 új esetet viszi pirosra (133/137), semmi mást; visszaállítva 137/137. TS:
+`latestReviewAt()`-beli kizárás kivétele pontosan 1 tesztet (a FALLBACK-specifikus esetet) viszi
+pirosra (71/72); `currentRoundStartTs()`-beli kizárás kivétele pontosan 3 tesztet (a Gate-SHA-s
+eseteket, a FALLBACK-eset és a CONTROL érintetlen) visz pirosra (69/72). Mindkét mutáció után
+visszaállítva, 72/72 (illetve a testvér-fájllal együtt 76/76) zöld megerősítve. Regresszió:
+`kanban-landed-guard.test.ts`, `kanban-draft-review-guard.test.ts`, `kanban-gate-completeness-guard-
+structured-verdict.test.ts` -- mind zöld. `tsc --noEmit` és `python3 -m py_compile` tiszta.
+
+**Ki döntött:** MikroB (gate: qa, cybersec -- a javítási irányt WhiteHat2 adta, ezért a biztonsági
+gate WhiteHat/cybersec, nem WhiteHat2/cybersec2).
+
 ## 2026-10-11 -- Kartya 3d186397 delta #2 (folytatas a fajl elejebb levo "senderId path-traversal audit" bejegyzeshez): QA FAIL javitva -- a validacio az allowFrom-modositas ELE kerult
 
 QA FAIL (10812) es WhiteHat F2 (ugyanaz a gyoker-ok, komment 10812/10815): a safeJoin-ellenorzes a MARKER-fajl irasara korlatozodott mindket hivasi helyen, de az allowFrom-push, a pending-kod torlese es az access.json kiirasa MAR AZ ELOTT lefutott. Egy traversal-alaku senderId ezert a `routes/agents.ts` uton 500-at adott VISSZA ("Failed to approve pairing"), MIKOZBEN a sender MAR bekerult az allowFrom-ba -- a jovahagyo felrevezetve latta a hibas valaszt. A `channel-invites.ts` auto-jovahagyasi sweep-jen (EMBERI JOVAHAGYAS NELKUL) meg sulyosabb: a hiba csak `logger.warn`, a mutacio (allowFrom, pending, invite-token elkoltese) FELTETEL NELKUL lefutott.

@@ -167,6 +167,29 @@ export function findDeviceKeyByInstallId(installId: string): DeviceKeyInfo | nul
   return row ? rowToInfo(row) : null
 }
 
+// Card 9655494c (F1): issuance side of the agent:<id> convention (84dcc5d4 built only the
+// consumer -- agentKeyToAgentId -- with no way to actually mint a conforming key, since the
+// general-purpose device-key route's DEVICE_KEY_NAME_RE rejects the colon by design, on purpose,
+// per the card). These wrap createDeviceKey/revokeDeviceKey so the `agent:` convention lives in
+// ONE place, next to AGENT_KEY_PREFIX, rather than being reconstructed by every caller.
+export function mintAgentDeviceKey(agentId: string, opts: { expiresInDays?: number } = {}): MintedDeviceKey {
+  return createDeviceKey(AGENT_KEY_PREFIX + agentId, opts)
+}
+
+export function findAgentDeviceKeys(agentId: string): DeviceKeyInfo[] {
+  const name = AGENT_KEY_PREFIX + agentId
+  return listDeviceKeys().filter((k) => k.name === name)
+}
+
+/** Revokes every key minted for this agent id (normally 0 or 1). Returns the count revoked. */
+export function revokeAgentDeviceKeys(agentId: string): number {
+  let count = 0
+  for (const key of findAgentDeviceKeys(agentId)) {
+    if (revokeDeviceKey(key.id)) count++
+  }
+  return count
+}
+
 // Revocation is immediate: the row and any cached entry go together, so the
 // very next request with the key falls through the gate.
 export function revokeDeviceKey(id: number): boolean {

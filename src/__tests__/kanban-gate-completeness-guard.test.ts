@@ -331,6 +331,67 @@ describe('gateCompletenessGuardVerdict', () => {
     })
   })
 
+  describe('a GENERATED (local-llm/gate-pretriage) comment must never move the round boundary (card e7f91eb9, WhiteHat2 L1 on 1aeae282)', () => {
+    it('a local-llm draft REVIEW-opening comment with a DIFFERENT Gate-SHA must not make real, fresh verdicts read as stale', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: a1b2c3d', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: a1b2c3d', created_at: 200 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: a1b2c3d', created_at: 300 },
+        // post_draft_comment lands the local-llm model's raw output unfenced -- this one HAPPENS to
+        // contain a REVIEW-shaped line citing a different (bogus) Gate-SHA, posted after both real
+        // verdicts. Must not read as a new round the way a real builder hand-off would.
+        { author: 'local-llm', content: 'REVIEW: draft otlet\nGate-SHA: deadbee', created_at: 400 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('is case-insensitive on the author string ("Local-LLM")', () => {
+      card.description = 'Gate: QA'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: a1b2c3d', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: a1b2c3d', created_at: 200 },
+        { author: 'Local-LLM', content: 'REVIEW: draft\nGate-SHA: deadbee', created_at: 300 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('gate-pretriage (the other generated author) is excluded the same way', () => {
+      card.description = 'Gate: QA'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: a1b2c3d', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: a1b2c3d', created_at: 200 },
+        { author: 'gate-pretriage', content: 'REVIEW: draft\nGate-SHA: deadbee', created_at: 300 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('no comment on the card ever uses the Gate-SHA convention -- latestReviewAt alone decides, and a local-llm REVIEW must not win there either', () => {
+      card.description = 'Gate: QA'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS', created_at: 200 },
+        // No Gate-SHA anywhere on the card, so currentRoundStartTs() returns null and the code
+        // falls back to latestReviewAt() alone -- exactly the fallback path card e7f91eb9 names.
+        { author: 'local-llm', content: 'REVIEW: draft otlet', created_at: 300 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('CONTROL: a genuine builder hand-off AFTER a local-llm draft still correctly reopens the round', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: a1b2c3d', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: a1b2c3d', created_at: 200 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: a1b2c3d', created_at: 300 },
+        { author: 'local-llm', content: 'REVIEW: draft otlet\nGate-SHA: deadbee', created_at: 400 },
+        { author: 'backend2', content: 'REVIEW -- valodi javitas\nGate-SHA: e5f6071', created_at: 500 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      expect(v.blocked).toBe(true) // neither gate has verdicted e5f6071 yet -- must still block
+    })
+  })
+
   it('the Gate-SHA-first comment shape (REVIEW on line 2, not line 1) is recognised as a round-marker', () => {
     card.description = 'Gate: QA + Cybersec'
     comments = [

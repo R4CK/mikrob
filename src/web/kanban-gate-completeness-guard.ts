@@ -27,7 +27,7 @@ import { getKanbanCard, getKanbanComments, listKanbanCards, getFreshKanbanVerdic
 import { isForceActor } from '../kanban-force-actors.js'
 import { logger } from '../logger.js'
 import { isAgentVerdictRecordEnabled } from './kanban-verdicts.js'
-import type { LandedVerdict } from './kanban-landed-guard.js'
+import { GENERATED_COMMENT_AUTHORS, type LandedVerdict } from './kanban-landed-guard.js'
 
 export type GateAgent = 'qa' | 'qa2' | 'cybersec' | 'cybersec2' | 'cybered'
 
@@ -139,7 +139,15 @@ interface Comment {
  *  convention at all (the field stays optional, CLAUDE.md 4b). */
 function latestReviewAt(comments: readonly Comment[]): number | null {
   const stamps = comments
-    .filter((c) => REVIEW_RX.test(c.content ?? '') && !GATE_AGENT_NAMES.has((c.author ?? '').toLowerCase()))
+    .filter((c) => {
+      const author = (c.author ?? '').toLowerCase()
+      // GENERATED_COMMENT_AUTHORS (card e7f91eb9, WhiteHat2 L1 on 1aeae282's own gate): the same
+      // unescaped-model-output risk as kanban-landed-guard.ts and gate-dispatch-check.sh already
+      // guard against, applied to THIS boundary -- a local-llm draft comment opening with "REVIEW"
+      // must never move the round boundary, any more than a real gate agent's own verdict can
+      // (the GATE_AGENT_NAMES check right beside this one).
+      return REVIEW_RX.test(c.content ?? '') && !GATE_AGENT_NAMES.has(author) && !GENERATED_COMMENT_AUTHORS.has(author)
+    })
     .map((c) => c.created_at)
   return stamps.length ? Math.max(...stamps) : null
 }
@@ -364,6 +372,11 @@ function currentRoundStartTs(comments: readonly Comment[], knownOtherCardIds: Re
   const entries: Array<{ sha: string; ts: number }> = []
 
   for (const c of comments) {
+    // GENERATED_COMMENT_AUTHORS (card e7f91eb9): a local-llm draft's unescaped output can contain a
+    // line that LOOKS like "Gate-SHA: <sha>" even though nobody declared that commit for this round
+    // -- the same risk latestReviewAt() above guards against, applied to this (PRIMARY) boundary
+    // mechanism, since it reads Gate-SHA lines from every comment with no author filter at all.
+    if (GENERATED_COMMENT_AUTHORS.has((c.author ?? '').toLowerCase())) continue
     for (const s of extractGateShas(c.content ?? '', knownOtherCardIds)) {
       const idx = entries.findIndex((e) => s.startsWith(e.sha) || e.sha.startsWith(s))
       if (idx === -1) {

@@ -45,6 +45,9 @@ import {
   listDeviceKeys,
   revokeDeviceKey,
   getDeviceKey,
+  mintAgentDeviceKey,
+  findAgentDeviceKeys,
+  revokeAgentDeviceKeys,
 } from '../auth-device-keys.js'
 import { removeBridgeSshAccess, sshDirOverride } from '../bridge-enroll.js'
 import {
@@ -125,6 +128,12 @@ const CREDENTIAL_MINT_KINDS = ['session'] as const
 
 const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
 const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
+
+// Card 9655494c (F1): a fleet agent id, as used in AGENT_KEY_PREFIX + agentId ('agent:<id>') and
+// everywhere in CLAUDE.md's agent roster (backend, backend2, qa2, fron-ted, ...). Deliberately its
+// OWN regex, not DEVICE_KEY_NAME_RE loosened to allow the colon -- the card is explicit that the
+// general device-name route must keep rejecting it.
+const AGENT_ID_RE = /^[a-z][a-z0-9-]{0,31}$/
 
 // { authenticated, method, user, device, login_available, setup_required }.
 // authenticated keeps its exact old meaning for token callers (existing probes
@@ -424,6 +433,68 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     }
     logger.info({ id, name: key.name, installId: key.installId ?? undefined, sshRemoved }, 'device key revoked')
     json(res, { ok: true, ...(key.installId ? { ssh_removed: sshRemoved } : {}) })
+    return true
+  }
+
+  // Card 9655494c (F1): agent:<id> keys are a SEPARATE route from the generic device-key one
+  // above, deliberately -- the agent_id comes from its own field/path segment, never parsed out
+  // of a free-text `name`, and BOTH mint and revoke are session-only (CREDENTIAL_MINT_KINDS, not
+  // the wider DEVICE_KEY_ADMIN_KINDS): the shared dashboard token must not be able to issue OR
+  // retire an agent's own identity credential, keeping the whole lifecycle under the owner.
+  if (path === '/api/auth/agent-keys' && method === 'POST') {
+    if (!kindAllowed(auth, CREDENTIAL_MINT_KINDS)) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    let body: Record<string, unknown>
+    try {
+      body = await parseJsonBody(req)
+    } catch {
+      json(res, { error: 'Invalid JSON' }, 400)
+      return true
+    }
+    const agentId = str(body.agent_id).trim()
+    if (!AGENT_ID_RE.test(agentId)) {
+      json(res, { error: 'Invalid agent_id (1-32 chars: lowercase letters, digits, -, starting with a letter)' }, 400)
+      return true
+    }
+    const rotate = body.rotate === true
+    let expiresInDays: number | undefined
+    if (body.expires_in_days !== undefined && body.expires_in_days !== null && body.expires_in_days !== 0) {
+      const n = Number(body.expires_in_days)
+      if (!Number.isFinite(n) || n <= 0 || n > DEVICE_KEY_MAX_EXPIRY_DAYS) {
+        json(res, { error: `Invalid expires_in_days (1-${DEVICE_KEY_MAX_EXPIRY_DAYS})` }, 400)
+        return true
+      }
+      expiresInDays = n
+    }
+    const existing = findAgentDeviceKeys(agentId)
+    if (existing.length > 0 && !rotate) {
+      json(res, { error: `agent_id "${agentId}" already has a key -- pass rotate:true to replace it` }, 409)
+      return true
+    }
+    let revoked = 0
+    if (rotate) revoked = revokeAgentDeviceKeys(agentId)
+    const minted = mintAgentDeviceKey(agentId, { expiresInDays })
+    logger.info({ id: minted.id, agentId, rotated: revoked }, 'agent device key minted')
+    json(res, { ok: true, id: minted.id, agent_id: agentId, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt, rotated: revoked }, 201)
+    return true
+  }
+
+  const agentKeyMatch = /^\/api\/auth\/agent-keys\/([^/]+)$/.exec(path)
+  if (agentKeyMatch && method === 'DELETE') {
+    if (!kindAllowed(auth, CREDENTIAL_MINT_KINDS)) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    const agentId = decodeURIComponent(agentKeyMatch[1]!)
+    const revoked = revokeAgentDeviceKeys(agentId)
+    if (revoked === 0) {
+      json(res, { error: 'No key found for this agent_id' }, 404)
+      return true
+    }
+    logger.info({ agentId, revoked }, 'agent device key(s) revoked')
+    json(res, { ok: true, revoked })
     return true
   }
 
