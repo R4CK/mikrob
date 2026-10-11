@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterEach } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync, symlinkSync, chmodSync } from 'node:fs'
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync, symlinkSync, chmodSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -87,14 +87,30 @@ function makeVoices(dest: string): string {
 }
 
 describe('install-voice.sh step 2 venv gate', () => {
+  // Each test below has step 2 run a REAL `python3 -m venv`, so dest is not a tiny fixture dir --
+  // measured at ~12 MB apiece (card a4a6a5e5). Tracked here and removed in afterEach rather than
+  // per-test, so a test that fails before reaching its own cleanup still gets swept.
+  const created: string[] = []
+  function tmpDest(prefix: string): string {
+    const dest = mkdtempSync(join(tmpdir(), prefix))
+    created.push(dest)
+    return dest
+  }
+
   beforeAll(() => {
     // python3 with a usable venv module is what step 2 calls; without it these
     // tests would measure the environment, not the gate.
     execFileSync('bash', ['-c', 'python3 -m venv --help'], { stdio: 'ignore' })
   })
 
+  afterEach(() => {
+    for (const dest of created.splice(0)) {
+      rmSync(dest, { recursive: true, force: true })
+    }
+  })
+
   it('rebuilds a venv that exists but has no pip (the 09-21 regression)', () => {
-    const dest = mkdtempSync(join(tmpdir(), 'voice-broken-'))
+    const dest = tmpDest('voice-broken-')
     makeBrokenVenv(dest)
     expect(existsSync(join(dest, 'venv', 'bin', 'python'))).toBe(true)
     expect(existsSync(join(dest, 'venv', 'bin', 'pip'))).toBe(false)
@@ -108,7 +124,7 @@ describe('install-voice.sh step 2 venv gate', () => {
   })
 
   it('keeps the downloaded voice models when it rebuilds the venv', () => {
-    const dest = mkdtempSync(join(tmpdir(), 'voice-scope-'))
+    const dest = tmpDest('voice-scope-')
     makeBrokenVenv(dest)
     const model = makeVoices(dest)
 
@@ -124,7 +140,7 @@ describe('install-voice.sh step 2 venv gate', () => {
   })
 
   it('leaves a working venv untouched (idempotency is still the point)', () => {
-    const dest = mkdtempSync(join(tmpdir(), 'voice-ok-'))
+    const dest = tmpDest('voice-ok-')
     makeWorkingVenv(dest)
 
     const r = runStep2(dest)
@@ -136,7 +152,7 @@ describe('install-voice.sh step 2 venv gate', () => {
   })
 
   it('creates the venv when nothing is there yet', () => {
-    const dest = mkdtempSync(join(tmpdir(), 'voice-empty-'))
+    const dest = tmpDest('voice-empty-')
 
     const r = runStep2(dest)
 
