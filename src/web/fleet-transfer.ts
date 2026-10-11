@@ -1393,7 +1393,7 @@ export function importFleet(
       // takeover keys -- the old "start fresh if corrupt" silently replaced ALL of them with
       // just the ones this import sets. readJsonObjectForWrite throws instead, taking this
       // call's own failure path: the import fails, nothing is written (overrides or .env).
-      const overrides: Record<string, unknown> = readJsonObjectForWrite(overridesPath)
+      const overrides = readJsonObjectForWrite(overridesPath)
       if (sourceIdentity && typeof sourceIdentity === 'object') {
         // Full identity takeover: iterate all keys generically (no hardcoded names)
         for (const [key, val] of Object.entries(sourceIdentity)) {

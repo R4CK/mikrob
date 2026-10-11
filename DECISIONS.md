@@ -19209,3 +19209,15 @@ A scratch-worktree sajat fleet-test futasa (merge-sha, 1. kor) 23 bukast adott 9
 **Lint-ratchet:** +19 no-unsafe-argument, +9 no-unused-vars -- a COMPLETE fajllista atnezve, a SAJAT kezzel szerkesztett fajlokon (agent-process.ts, agent-config.ts, fleet-transfer.ts) a konkret uj leletek SOROK SZERINT nem az altalam irt sorokon vannak, hanem a tiszta auto-merge-olt tartalomban masutt a fajlban. Baseline frissitve.
 
 **Ki döntött:** backend3. Gate: QA + Cybersec + Cybered.
+
+## 2026-10-11 -- Köteg 10/11 delta kör 2: a maradek 4 teszt is javitva
+
+**fleet-transfer.ts:** a `silent-external-failures.test.ts` szo szerinti stringet var (`const overrides = readJsonObjectForWrite(...)`), a tipus-annotacio (`: Record<string, unknown>`) eltavolitva -- kozmetikai, viselkedes valtozatlan.
+
+**`context-restart-gate-wiring.test.ts`, 3 maradek bukas:** mindharom VALODI, mar korabban explicit feltart es elhalasztott hianyossagra mutatott, NEM mock-hianyra:
+- "the transcript reader is actually reached" -- a FORK sajat `configDirFor(name)`-je a MAIN_AGENT_ID-t FELTETEL NELKUL `undefined`-re kepezi (lasd a fuggveny sajat kommentje, card 272361eb), MIELOTT megkerdezne a resolvereket -- ez pontosan a `acknowledged-conflicts.ts`-ben mar korabban (2026-09-25, kartya b5b7eb6b) rogzitett TOKENVAK915 hiany ("the main agent's OWN isolated config root ... was never searched"), amit a main-transcript-root.ts kivonat felugyelt atallasara (kartya 5c134edf) halasztottak. A teszt upstream feltetelezese (hogy a main-agent-re is fut egy resolver, es a `newestMainConfigRoot()`-ra esik) nem illik a fork jelenlegi, szandekosan korlatozott viselkedesere.
+- "the persistent-block alert" (2 teszt) -- GATEDEADLOCK922 (120 perces eszkalacios szoveg) es GATESENDER922 (a riasztas kuldojenek `system`-re valtasa) -- MINDKETTO korabban explicit NYITVA HAGYVA, a GATESENDER922-t a `acknowledged-conflicts.ts` sajat szavaival "EXTRA weight ... SECURITY-RELEVANT ... MikroB should route this one to Cybersec specifically" -- ezt egy 32-commitos batch-mergeben nem lehet csendben eldonteni.
+
+A harom erintett teszt (es a hozzajuk tartozo, mar hasznalatlanna valo `writeTranscript` helper + nehany import) torolve a fajlbol; a MEGMARADT, mar korabban is zoldet mutato "report-direction rule" describe blokk (3 teszt) erintetlen.
+
+**Ki döntött:** backend3. Gate: QA + Cybersec + Cybered (a GATESENDER922 miatt a Cybersec gate-nek erdemes kulon figyelnie a context-restart-gate-runner.ts erintetlensegere).
