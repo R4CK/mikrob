@@ -81,6 +81,26 @@ export function applyNoHaikuFloor(agentName: string, targetModel: string): strin
   return MODEL_LADDER[bottomIdx - 1] ?? targetModel
 }
 
+/**
+ * Agents fully exempt from BOTH model-fallback axes (banner-fallback and the weekly tier). Peti's
+ * decision (Telegram 11011, 2026-10-11, card d8d035f8): the two security gates (WhiteHat / cybersec +
+ * cybersec2, and RedHat / cybered) must stay on claude-sonnet-5-5 -- the weekly cost ramp or a
+ * usage-limit banner must never step them down, because a downgraded gate is the same "151/151 green,
+ * 2 MAJOR bugs hidden" risk the whole mandatory-gate rule exists to prevent. Declarative on purpose,
+ * mirroring NO_HAIKU_AGENTS above: a fixed, rarely-changing list, not a config flag needing its own
+ * schema/migration.
+ */
+export const MODEL_PINNED_AGENTS: ReadonlySet<string> = new Set([
+  'cybersec',
+  'cybersec2',
+  'cybered',
+])
+
+/** Whether an agent is exempt from both model-fallback axes. See MODEL_PINNED_AGENTS. */
+export function isModelPinned(agentName: string): boolean {
+  return MODEL_PINNED_AGENTS.has(agentName)
+}
+
 /** Every id the ladder knows, for validation. */
 export function isLadderModel(model: string): boolean {
   return MODEL_LADDER.includes(model)
