@@ -58,7 +58,9 @@ describe('parseGateDesignation (ported from gate-dispatch-check.sh, same fixture
     const line =
       'QA + Cybersec (a kartya uj UNAUTH statikus route-ot vezet be, ami fajlnevet vesz at az URL-bol -- trust boundary, ezert Cybersec, nem Cybered).'
     const d = parseGateDesignation(line)
-    expect(d).toEqual(new Set(['qa', 'qa2', 'cybersec']))
+    // Widened to include cybersec2 (card 21abfe0b, B1): bare "Cybersec" now widens the same way
+    // bare "QA" already widened to qa2 below -- either sibling satisfies the family either way.
+    expect(d).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
     expect(d?.has('cybered')).toBe(false)
   })
 
@@ -82,22 +84,59 @@ describe('parseGateDesignation (ported from gate-dispatch-check.sh, same fixture
   // must recognise the display-name alias too, or a card gated with the new name closes without
   // the security gate's verdict ever being required.
   it("F1: 'QA + WhiteHat' designates cybersec, not just qa (the regression)", () => {
-    expect(parseGateDesignation('QA + WhiteHat.')).toEqual(new Set(['qa', 'qa2', 'cybersec']))
+    // Widened to include cybersec2 (card 21abfe0b, B1), same reasoning as the 241532d8-shape test.
+    expect(parseGateDesignation('QA + WhiteHat.')).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
   })
 
-  it("F1: 'WhiteHat' alone is not null -- it designates cybersec (+ widened qa/qa2 does NOT apply here)", () => {
-    expect(parseGateDesignation('WhiteHat.')).toEqual(new Set(['cybersec']))
+  it("F1: 'WhiteHat' alone is not null -- it designates cybersec (+ widened cybersec2; qa/qa2 does NOT apply here)", () => {
+    expect(parseGateDesignation('WhiteHat.')).toEqual(new Set(['cybersec', 'cybersec2']))
   })
 
   it("F1: 'QA + WhiteHat + RedHat' designates all three roles", () => {
     expect(parseGateDesignation('QA + WhiteHat + RedHat.')).toEqual(
-      new Set(['qa', 'qa2', 'cybersec', 'cybered']),
+      new Set(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered']),
     )
   })
 
   it('F1 CONTROL: the canonical Cybersec/Cybered spelling is unaffected by the alias addition', () => {
     expect(parseGateDesignation('QA + Cybersec + Cybered.')).toEqual(
-      new Set(['qa', 'qa2', 'cybersec', 'cybered']),
+      new Set(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered']),
+    )
+  })
+
+  // WhiteHat2/cybersec2 (card 21abfe0b, RedHat NO-GO B1). The widening is SYMMETRIC and BIDIRECTIONAL
+  // within the cybersec/cybersec2 family -- exactly like the pre-existing qa/qa2 widening above
+  // (naming EITHER sibling widens the designated set to include BOTH), ported verbatim from the
+  // shell side's widen_cybersec() (store/gate_designation.py, same card). The five inputs RedHat
+  // measured directly against the real function BEFORE this fix: "QA + WhiteHat2" -> {qa, qa2}
+  // (Cybersec silently dropped), "QA + cybersec2" -> {qa, qa2} (same drop), "WhiteHat2" alone ->
+  // null (fail-open: no gate recognised at all, so the completeness guard allowed ANY close
+  // force-free), "QA + WhiteHat" -> {cybersec, qa, qa2} (now ALSO widened to cybersec2, see F1
+  // above), "QA + Cybersec2 + RedHat" -> {cybered, qa, qa2} (Cybersec2 dropped, Cybered
+  // unaffected). All five are asserted below against the FIXED function.
+  it('B1: "QA + WhiteHat2" designates cybersec (+cybersec2, +qa2), the regression RedHat measured', () => {
+    expect(parseGateDesignation('QA + WhiteHat2.')).toEqual(
+      new Set(['qa', 'qa2', 'cybersec', 'cybersec2']),
+    )
+  })
+
+  it('B1: "QA + cybersec2" (canonical spelling, digit suffix) designates the same widened set', () => {
+    expect(parseGateDesignation('QA + cybersec2.')).toEqual(
+      new Set(['qa', 'qa2', 'cybersec', 'cybersec2']),
+    )
+  })
+
+  it('B1: "WhiteHat2" ALONE is not null -- the fail-open RedHat\'s NO-GO is about', () => {
+    expect(parseGateDesignation('WhiteHat2.')).toEqual(new Set(['cybersec', 'cybersec2']))
+  })
+
+  it('B1 CONTROL: "QA + WhiteHat" (no digit) widens to the same set as "QA + WhiteHat2" (symmetric family)', () => {
+    expect(parseGateDesignation('QA + WhiteHat.')).toEqual(new Set(['qa', 'qa2', 'cybersec', 'cybersec2']))
+  })
+
+  it('B1: "QA + Cybersec2 + RedHat" designates all three families, Cybered unaffected', () => {
+    expect(parseGateDesignation('QA + Cybersec2 + RedHat.')).toEqual(
+      new Set(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered']),
     )
   })
 })
@@ -187,6 +226,50 @@ describe('gateCompletenessGuardVerdict', () => {
       { author: 'qa', content: 'QA PASS', created_at: 200 },
     ]
     expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+  })
+
+  // WhiteHat2/cybersec2 (card 21abfe0b, RedHat NO-GO B1). Integration-level versions of the
+  // parseGateDesignation unit tests above: the fail-open RedHat measured was that a
+  // "Gate: WhiteHat2" card closed with NO Cybersec/Cybersec2 verdict at all, force-free, because
+  // the OLD parseGateDesignation returned null for it (treated as "no verifiable claim").
+  it('B1: a cybersec2-authored GO satisfies a "Gate: WhiteHat2" card (the fail-open this NO-GO closes)', () => {
+    card.description = 'Gate: QA + WhiteHat2'
+    comments = [
+      { author: 'backend2', content: 'REVIEW -- kesz', created_at: 100 },
+      { author: 'qa', content: 'QA PASS', created_at: 200 },
+      { author: 'cybersec2', content: 'CYBERSEC GO', created_at: 201 },
+    ]
+    expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+  })
+
+  it('B1: "Gate: WhiteHat2" alone with NO security verdict at all is now BLOCKED, not fail-open', () => {
+    card.description = 'Gate: WhiteHat2'
+    comments = [{ author: 'backend2', content: 'REVIEW -- kesz', created_at: 100 }]
+    const v = gateCompletenessGuardVerdict('c1', 'done', false)
+    expect(v.blocked).toBe(true)
+    expect(v.message).toContain('Cybersec')
+  })
+
+  it('B1: a plain cybersec GO also satisfies a "Gate: WhiteHat2" card (the family is bidirectional)', () => {
+    card.description = 'Gate: QA + WhiteHat2'
+    comments = [
+      { author: 'backend2', content: 'REVIEW -- kesz', created_at: 100 },
+      { author: 'qa', content: 'QA PASS', created_at: 200 },
+      { author: 'cybersec', content: 'CYBERSEC GO', created_at: 201 },
+    ]
+    expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+  })
+
+  it('B1: a cybersec2 NO-GO does NOT satisfy the requirement, same as cybersec\'s own NO-GO', () => {
+    card.description = 'Gate: QA + WhiteHat2'
+    comments = [
+      { author: 'backend2', content: 'REVIEW -- kesz', created_at: 100 },
+      { author: 'qa', content: 'QA PASS', created_at: 200 },
+      { author: 'cybersec2', content: 'CYBERSEC NO-GO -- one HIGH open', created_at: 201 },
+    ]
+    const v = gateCompletenessGuardVerdict('c1', 'done', false)
+    expect(v.blocked).toBe(true)
+    expect(v.message).toContain('Cybersec')
   })
 
   it('no Gate: line at all -> allowed, logged as unverified (not silently identical to verified)', () => {
