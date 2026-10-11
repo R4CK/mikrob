@@ -1970,6 +1970,25 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_gate_assignments_card ON kanban_gate_assignments(card_id, created_at)`)
 
+  // Card 2bfa4c67 delta (RedHat B2 / WhiteHat W3, comments 16554/16573): who proposed the fix a
+  // gate is now asked to verdict on, so a gate can never verdict its own proposal. The original
+  // plan (derive the proposer from the request body, or from free-text comments) is forgeable
+  // under the one shared dashboard token either way, and "fail closed if it cannot be derived"
+  // (MikroB 16557) is itself a denial-of-service lever -- anyone holding the shared token could
+  // block a legitimate gate with an ambiguous comment. So this table only ever gets a row from an
+  // AUTHENTICATED agent:<id> device-key write (enforced at the route, not here); a card with no
+  // row here simply has no verifiable proposer, and the exclusion is skipped rather than failing
+  // closed. APPEND-ONLY: a new proposal (after a NO-GO/fix cycle) adds a row, the latest one wins.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_fix_proposals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id TEXT NOT NULL,
+      proposer TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_fix_proposals_card ON kanban_fix_proposals(card_id, created_at)`)
+
   // --- OTel Distributed Tracing (card def5a189) ---
   // SQLite-native span store. No external OTel SDK: spans are written via
   // /api/spans and the message-router middleware injects trace context into
@@ -4232,6 +4251,32 @@ export function setKanbanGateAssignment(cardId: string, gates: readonly GateVerd
     .prepare('INSERT INTO kanban_gate_assignments (card_id, gates, actor, created_at) VALUES (?, ?, ?, ?)')
     .run(cardId, JSON.stringify(gates), actor, now)
   return db.prepare('SELECT * FROM kanban_gate_assignments WHERE id = ?').get(info.lastInsertRowid) as KanbanGateAssignment
+}
+
+// --- Structured fix-PROPOSAL records (card 2bfa4c67 delta, B2/W3) -- append-only, latest row =
+// the current, authenticated claim of who proposed the fix a gate is being asked to verdict on.
+
+export interface KanbanFixProposal {
+  readonly id: number
+  readonly card_id: string
+  readonly proposer: string
+  readonly created_at: number
+}
+
+export function addKanbanFixProposal(cardId: string, proposer: string): KanbanFixProposal {
+  const now = Math.floor(Date.now() / 1000)
+  const info = db
+    .prepare('INSERT INTO kanban_fix_proposals (card_id, proposer, created_at) VALUES (?, ?, ?)')
+    .run(cardId, proposer, now)
+  return db.prepare('SELECT * FROM kanban_fix_proposals WHERE id = ?').get(info.lastInsertRowid) as KanbanFixProposal
+}
+
+/** The most recently claimed proposer for this card, or null if none was ever authenticated. */
+export function getLatestKanbanFixProposal(cardId: string): KanbanFixProposal | null {
+  const row = db
+    .prepare('SELECT * FROM kanban_fix_proposals WHERE card_id = ? ORDER BY created_at DESC, id DESC LIMIT 1')
+    .get(cardId)
+  return (row as KanbanFixProposal | undefined) ?? null
 }
 
 /** The current assignment (latest row), or null if none was ever set for this card. */

@@ -19851,6 +19851,104 @@ Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
 
 **Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, MikroB dontese 16623 utan).
 
+## 2026-10-11 -- 2bfa4c67 delta: RedHat B1-B3 + QA FAIL (16564) + WhiteHat W1-W4 (16573) javítva, a 9655494c F1-re épülve
+
+**Forrás:** a 2bfa4c67 (strukturált gate-verdikt rekord) első landolása (Gate-SHA 20f0ae19) mindhárom gate-től elutasítást kapott ugyanarra a shára: RedHat B1 (nincs szerep-/szerzőkötés a verdikt-írásnál), B2 (a javaslattevő-kizárás a kérés saját mezőjét nézte, kihagyható), B3 (strukturált és komment-alapú verdikt eltérésénél a guard csendben a megengedőbb forrást választja); QA FAIL (16564, kritikus, saját reprodukcióval igazolva: egy hitelesített strukturált FAIL mellett egy hamisítható komment-PASS a zárást engedte); WhiteHat NO-GO (16573): W1 (pontos azonosítós role-allowlist, nem prefix), W2 (a rekord sha-ja a REVIEW Gate-SHA-hoz kötve -- MEDIUM, nem RedHat/QA lelet), W3 (a javaslattevő szerver-oldali, hitelesített mező legyen, NE a kommentekből levezetett, fail-closed B2 helyett -- a fail-closed maga szolgáltatás-megtagadási eszköz), W4 (determinisztikus sorrend másodperc-egyezésnél -- LOW). MikroB sorrend-döntése (16557/16559): a 9655494c F1 (agent-kulcs kiosztás) UTÁN jöhet a B1/W1 javítása, mert a szerep-allowlist a hitelesített kulcs identitására épül; az F1 ezen a körön belül landolt (Gate-SHA 56fc5391).
+
+**Megvalósítás (B1/W1 + B3 + B2/W3, ebben a körben):**
+1. **B1/W1 (szerep-allowlist, pontos azonosítóra):** `kanban-verdicts.ts` új `GATE_ROLE_AGENTS` (`QA: [qa,qa2]`, `CYBERSEC: [cybersec,cybersec2]`, `CYBERED: [cybered]`), a POST `/verdicts` ÚJ 403-at ad, ha a feloldott szerző (hitelesített VAGY body-claim, függetlenül a `author_verified`-től) nincs a gate szerepében -- ez pontosan a RedHat T5 mért bypass (egy hitelesített, de nem-gate-szerepű szerző, `fullstack`, QA-ra ír GO-t). B1 (c): új, 400-as ellenőrzés -- a gate a kártya saját "Gate:" sorában kijelölt gate-ek egyike legyen (a `kanban-gate-completeness-guard.ts` `extractGateLine`/`parseGateDesignation` újrahasznosítva, NEM újraírva -- ez egy tudatos, kétirányú modul-cross-import a meglévő `isAgentVerdictRecordEnabled` import mellé, biztonságos, mert mindkét oldal csak függvénytörzsön belül, sosem modul-betöltéskor hívja a másikat). Nincs "Gate:" sor a kártyán -> megengedő (ugyanaz az alapértelmezés, mint a guard saját `allowUnverified`-je). B1 (b), védelem a mélyben: `kanban-gate-completeness-guard.ts` `freshStructuredRow()` (az átnevezett `hasFreshStructuredVerdict`) UGYANEZT az allowlistet (importálva) ellenőrzi a sorra -- egy nem-szerepű szerzőjű rekordot a guard sem bízik meg, akkor sem, ha a POST-oldali ellenőrzés valaha megkerülhető lenne. B1 (d): ha egy zárás egy UNVERIFIED (author_verified=0) strukturált rekordra épül, a `freshVerdictStatus()` `logger.info`-t ír -- a 2520b85a enforce-ág előtti stopgap-láthatóság, dokumentáltan nem blokkoló.
+2. **B3 (DISAGREE-SOURCE):** `kanban-gate-completeness-guard.ts` `hasFreshVerdict` (tiszta OR) helyett `freshVerdictStatus()` + `familyStatus()`: ha fresh strukturált rekord van, az AUTORITATÍV, nem eshet vissza csendben a komment-útra -- egy strukturált FAIL/NO-GO SOHA nem old fel egy komment-PASS-t (`missing`, QA 16564 pontos repróját lezárja). Egy strukturált GO/PASS, amit egy KÉSŐBBI, ugyanattól a gate-től jövő NO-GO/FAIL-komment ellentmond, `disagree`-t ad, ÚJ, elkülönített `DISAGREE-SOURCE:` üzenettel (nem azonos a "missing" szöveggel) -- MikroB lássa a különbséget egy valódi eltérés és egy egyszerűen hiányzó verdikt között. Nincs strukturált rekord esetén a régi, puszta-komment viselkedés BÁJTRA AZONOS marad (külön segédfüggvény, `commentOnlyFresh`, nem érintve).
+3. **B2/W3 (javaslattevő, szerver-oldali, hitelesített):** új tábla `kanban_fix_proposals` (`db.ts`, additív, rollback tesztelt) + `POST/GET /api/kanban/:id/proposals`, KIZÁRÓLAG `agent:<id>` eszközkulcs-hitelesítéssel írható (a közös token 403-at kap -- egy hitelesítetlen javaslat-rekord ROSSZABB lenne, mint a jelenlegi body-mező, mert hitelesnek TŰNNE, miközben ugyanúgy hamisítható lenne). A `POST /verdicts` a javaslattevőt a LEGFRISSEBB hitelesített `kanban_fix_proposals` sorból olvassa, NEM a kérés testéből (RedHat B2 pontos lelete: a mező kihagyása megkerülte a kizárást) és NEM a kommentekből levezetve (WhiteHat W3: a levezetés ugyanúgy hamisítható a közös token alatt, és a "ha nem vezethető le, fail-closed" maga szolgáltatás-megtagadási eszköz). Ha nincs hitelesített javaslat-rekord a kártyán, a kizárás egyszerűen inaktív (nem blokkol) -- ez SZÁNDÉKOSAN nem fail-closed, pontosan a W3 ajánlása szerint.
+4. **Nem ebben a körben (dokumentált, ok megadva):** W2 (a rekord sha-ja a legfrissebb REVIEW Gate-SHA-hoz kötve) -- a POST `/verdicts` route ma nem olvas kommenteket, a bekötése új függőséget (kanban_comments) és az ÖSSZES meglévő teszt-fixtúra átírását igényelné (azok ma nem állítanak be REVIEW+Gate-SHA kommentet), külön, saját kört érdemel; nincs RedHat/QA lelet mögötte, csak WhiteHat MEDIUM. W4 (szigorú `>` vagy REVIEW-id szerinti sorrend a másodperc-egyezésre) -- a mérlegelés tudatos: egy szigorúbb `>` egy VALÓDI, ugyanabban a másodpercben írt friss verdiktet is "régi körinek" minősítene, ami nagyobb regressziós kockázat, mint a WhiteHat által LOW-nak jelölt, ritka old-round ütközés; nem alkalmazva ebben a körben. N1-N5 (RedHat 16554, nem blokkoló: gate-assignment mező inert a GET-en kívül, méretkorlátok, M9-M11 mutáns-fedés, gate-closure-check.py dual-read, DECISIONS cross-ref) -- továbbra is nyitva, nem ebben a körben.
+
+**Teszt:** `kanban-verdicts.test.ts` 24 -> 39 teszt (új: role-allowlist 403 nem-szerepű szerzőre, gate-designation 400/permisszív eset, proposals route 5 teszt, authenticated-proposal-alapú self-exclusion 2 frissített + 1 új "body-proposer ignorálva" teszt, kanban_fix_proposals migráció-rollback). `kanban-gate-completeness-guard-structured-verdict.test.ts` 4 -> 8 teszt (3 DISAGREE-SOURCE eset + 1 role-allowlist védelem-a-mélyben eset). Mindkét fájl + a meglévő `kanban-gate-completeness-guard.test.ts` (67) együtt: 109/109 zöld. Teljes kanban-tesztkör (64 fájl): 880/880 zöld, regresszió nélkül. 3 mutáció (B3 structuredPositive kényszerítve true-ra, B3 disagree-detekció kikapcsolva, B1 role-check kikapcsolva) mindhárom esetben a megfelelő új tesztet pirosra vitte, utána visszaállítva zöld. `tsc --noEmit` és `eslint` tiszta az érintett fájlokon. `lint-ratchet.sh`: "no rule got worse (382 lelet, baseline tart)".
+
+**Ki döntött:** backend (RedHat B1-B3 16554, QA FAIL 16564, WhiteHat NO-GO 16573, MikroB sorrend-döntése 16557/16559 alapján). Re-gate: QA + WhiteHat2 + RedHat (16557/16573 szerint, WhiteHat helyett WhiteHat2 -- ő adta a NO-GO-t ezen a shán).
+
+## 2026-10-11 -- 9655494c F1 delta: agent-key-provision.sh DASH_PASS argv-kiszivárgás javítva (QA FAIL 16667, MikroB döntés 16670)
+
+**Forrás:** QA FAIL (16667) saját, eldobható, SHA-pinelt gate-worktree-ben (Gate-SHA 56fc5391): a `store/agent-key-provision.sh` a `DASH_USER`/`DASH_PASS` interaktívan beolvasott hitelesítő adatokat egy `python3 -c "..." "$DASH_USER" "$DASH_PASS" "$LOGIN_PAYLOAD"` hívás argv-jába adta át, ami a futás teljes ideje alatt bármely helyi folyamat számára látható a `/proc/<pid>/cmdline`-on, és a `ps`-ben is -- pont az a kockázat, amit a script saját fejkommentje ("never pass credentials as argv ... visible in /proc/<pid>/cmdline") már névvel illetett a loginra, de a kódja nem követte. MikroB döntése (16670): a javítás elsőbbséget kapott a 2bfa4c67 előtt (a 9655494c maradt `in_progress`, a 2bfa4c67 visszament `planned`-ra), és a scriptet a javításig senki nem futtathatja élesben.
+
+**Javítás:** a login-payload építő `python3 -c` hívás STDIN-ről olvassa a felhasználónevet és a jelszót (`printf '%s\n%s\n' "$DASH_USER" "$DASH_PASS" | python3 -c "..."`, két sor, `sys.stdin.readline()`), argv-ban csak a kimeneti fájl útvonala marad. A mint-payload (`agent_id`, `rotate`) változatlanul argv-n megy, mert nem titok.
+
+**Teszt:** új `store/agent-key-provision.selftest.sh`, egy PATH-shim-elt `python3` wrapperrel, ami a valódi interpreterre delegál, de előtte argv-ját és stdin-jét naplózza -- (1) a javított script futtatásakor egy marker jelszó/felhasználónév SOHA nem jelenik meg a naplózott argv-ban, de megjelenik a naplózott stdin-ben (funkcionális bizonyíték, hogy az adat tényleg eljut); (2) statikus regressziós grep: a régi `python3 ... "$DASH_USER" "$DASH_PASS"` argv-alak nem térhet vissza a fájlba; (3) mutáció-proof: a fix blokkot programozottan visszaállítva a régi alakra, az (1) teszt helyesen pirosra vált (a marker megjelenik az argv-naplóban) -- ez igazolja, hogy a teszt tényleg a hibát fogja meg, nem csak zöldet mutat. Mindhárom lépés PASS, a kimenet a repó `ok   <leírás>` + záró `selftest: PASS` konvencióját követi (ez a `store-selftests-all-run.test.ts` OK_SHAPES-ében már ismert alak -- az első beadás egy ad-hoc "ALL PASS" záróval ismeretlen alaknak számított, ez okozott egy valódi, nem flaky meta-teszt pirosat a landolás 2. kísérletén; a kimenetet a meglévő alakra igazítottam, nem az OK_SHAPES listát bővítettem). `bash -n` szintaxis-ellenőrzés tiszta. A meglévő `auth-agent-keys.test.ts` (11 teszt, szerver-oldali route-logika, ezt a scriptet nem érinti) változatlanul 11/11 zöld.
+
+**Ki döntött:** backend (QA FAIL 16667, MikroB döntése 16670). Re-gate az F1-re: QA + RedHat.
+
+## 2026-10-11 -- bc1e7ef2 (3. kör): B1' TOCTOU-javítás a wsl-home-cleanup.sh classify/remove_entry rése, N4/N5
+
+**Forrás:** RedHat NO-GO (16676, Gate-SHA 55c566e0) az előző kör (B1/B2/B3) delta-gate-jén. B1/B2/B3
+mind működik mérve, de egy ÚJ, a B1 saját invariánsát sértő hézag maradt: a "van élő folyamat" és az
+"életkor" ellenőrzés az OSZTÁLYOZÁSKOR fut, a TÖRLÉS előtt nincs újraellenőrzés, és az osztályozás az
+élő gépen 38,7 percig tartott (249 bejegyzés, kb. 3000 fd, `has_live_process_under()` candidate-enként
+külön /proc-bejárást csinált). RedHat harness-mérése: egy mappa 9 másodpercnél DISPOSABLE-nek
+osztályozva, UTÁNA indult egy folyamat a cwd-jével a mappában, a szkript 140 másodpercig futott, a
+mappa TÖRLŐDÖTT, a folyamat él, cwd-je "(deleted)" -- pontosan az a hibaosztály, amit a B1 zárni akart,
+csak időben eltolva.
+
+**Javítás (B1', blokkoló):** (1) `scan_live_proc_targets()` egyetlen hívással olvassa az ÖSSZES
+`/proc/[0-9]*/cwd` és `/proc/[0-9]*/fd/*` célt egy futás egészére, nem candidate-enként --
+`classify()` (`main()`-en át) egyetlen, run elején felvett scant használ mindegyik jelöltre
+(`LIVE_PROC_TARGETS_PRIMED`), a standalone `classify()`-hívás (minden selftest ezt teszi) változatlanul
+saját friss scant vesz. (2) `remove_entry()` a SAJÁT ELEJÉN mindig FRISS scant vesz (a classify-kori
+cache-t figyelmen kívül hagyva) és újrafuttatja az életkor-find-ot is -- ha bármelyik megváltozott
+(élő folyamat jelent meg, vagy egy fájl frissen íródott a mappában), SKIP, nem bízik a elavult
+osztályozásban.
+
+**Implementáció-részlet, mérve ezen a körön (a valódi talált hiba, nem a card-leírás):** RedHat
+szó szerinti javaslata "egy readlink -f hívás az összes útra" volt -- ez a saját mérésemben IS
+8,2s -> 0,14s gyorsulást adott (~2660 fd), DE a teljes batch-readlink (egyetlen `readlink -f` hívás
+2700+ argumentummal) ezen a gépen MEGBÍZHATATLANNAK bizonyult: mérve kb. 95%-ban csendben, hibaüzenet
+nélkül elhagyta a bemeneti argumentumokat (2740 be, ~140-150 sor ki), még egy független, szűkebb
+readlink-hívással függetlenül igazolt, stabil célpontra is. Csere: `find /proc -maxdepth 3 \(
+-path '/proc/[0-9]*/cwd' -o -path '/proc/[0-9]*/fd/*' \) -printf '%l\n'` -- egy process, saját
+lstat/readlink syscall mappánként, ugyanolyan gyors (~0,1s), de ismételt futásokon mindig teljes és
+helyes listát adott. Ez a felfedezés ÚJ ebben a körben, nem a RedHat-jelentés része -- a card eredeti
+javaslata (batch readlink) a saját tesztkörnyezetemben hamis-negatívot okozott (a pre-existing B1
+fd/cwd tesztek elkezdtek megbízhatatlanul bukni), ami rávezetett a `find`-alapú, bizonyítottan
+megbízható alternatívára.
+
+**N4 (nem blokkoló):** a dry-run jelentés korábban a `disposable_count`-ot ígérte törlésre, de a
+`remove_entry()` kihagy egy dirty vagy elérhetetlen-HEAD-ű regisztrált worktree-t -- a jelentés
+túlbecsülte a törlést. `would_skip_removal()` előre jelzi (törlés nélkül) melyik DISPOSABLE
+bejegyzést hagyná ki az `--apply`, a dry-run most `removable_count` / `disposable_count` alakban
+jelent, és a kihagyandó sorokhoz okot ír ("apply would SKIP: ..."). Mérve az élő `/home/neon`-on
+(csak olvasó, `--dry-run`): a 128 regisztrált worktree közül sok dirty, a jelentés most ezt soronként
+kimondja.
+
+**N5 (nem blokkoló):** `remove_entry()` a `git worktree remove --force` saját kilépési kódját adta
+vissza `return $?`-tel, DE ez a sor a `git worktree prune` UTÁN állt, tehát a `prune` kódját adta
+vissza -- egy ZÁROLT (git worktree lock) regisztrált worktree-nél a remove elbukott, a prune-nak
+nem volt mit takarítania (0-t adott), és a hívó "removed"-nek olvasta a sikertelen törlést. Javítás:
+a remove lépés kódja külön változóba, a prune UTÁN azt adja vissza a funkció.
+
+**Teszt:** `wsl-home-cleanup.selftest.sh` 22 -> 26 eset (4 új: B1' élő-folyamat tengely, B1'
+életkor tengely, N5 zárolt worktree, N4 `would_skip_removal` jelzés), mind zöld, 6/6 ismételt
+futáson stabilan (korábban az eredeti, meglévő B1 fd/cwd tesztek elkezdtek flakelni a gyorsítás
+UTÁN, mert a várakozó ciklusuk "ls /proc/pid/fd nem üres" feltétele mindig azonnal igaz volt -- fd
+0/1/2 a fork pillanatától létezik --, és a RÉGI, lassú `has_live_process_under()` 8,2s-os
+véletlenszerű várakozása addig véletlenül fedezte ezt a versenyhelyzetet; a várakozási feltételt a
+tényleges cél-fd-re/cwd-re javítottam, nem a hibát kerülgettem). MUTÁCIÓ-PROOF, mind külön-külön: a
+B1' élő-folyamat-ág kikapcsolása -> pontosan 1 piros (25/26); a B1' életkor-ág kikapcsolása ->
+pontosan 1 piros (25/26); az N5 javítás visszaállítása (`return $?` a prune UTÁN) -> pontosan 1
+piros (25/26); a `would_skip_removal()` kikapcsolása (`return 1` az elején) -> pontosan 1 piros
+(25/26). Regresszió: a teljes selftest 26/26, `bash -n` tiszta. `npx tsc --noEmit` nem releváns
+(tisztán bash fájl, nincs TS-érintés).
+
+**Mérve az élő `/home/neon`-on, csak `--dry-run` (olvasó, semmi törölve):** teljes futás 3m13,5s
+(real), KEEP=13 ACTIVE=6 DISPOSABLE=192 UNKNOWN=38, "49 of the 192 DISPOSABLE entries... 143 would
+be SKIPPED" (N4 jelentés). Ez a RedHat-mérte 38,7 perchez képest ~12x gyorsulás, DE NEM a B1'
+osztályozás-gyorsítás önmagában méri ezt a maradék 3+ percet -- az N4 `would_skip_removal()` minden
+DISPOSABLE regisztrált worktree-re 2 git-hívást (status + rev-list) futtat, és a 192 DISPOSABLE-ből
+a többség regisztrált worktree, ez adja a fennmaradó időt. Ha ez a 3 perc magában (a N4 nélkül, csak
+B1') sokkal rövidebb lenne, azt nem mértem elkülönítve -- ha a 3 perc problémát jelent rendszeres
+(napi) futásnál, az N4-riportolás opcionálissá tétele (`--skip-reason`/hasonló kapcsoló) egy
+következő, külön kártya, nem ebben a körben bővítve tovább a scope-ot.
+
+**Ki döntött:** RedHat (16676, Gate-SHA 55c566e0), MikroB (16677). Gate: QA + RedHat. Az élő
+`--apply` továbbra is csak Peti jóváhagyásával futhat (22. kódminőségi elv), ebben a körben csak
+`--dry-run` futott az élő `/home/neon`-on.
+
 ## 2026-10-11 -- Kartya 93ed929a: /api/claude-plans principal-kapu, mielott a CLAUDE_ROTATION_ENABLED/FLEET bekapcsolhato (upstream 10. koteg, WhiteHat F1 a 517fdcc5 GO-n, komment 16354)
 
 Forras: WhiteHat 517fdcc5 GO (komment 16354, msg 10802), F1 MEDIUM (HIGH, ha a rotacio be van kapcsolva): az upstream 10. koteg a `/api/claude-plans` route-okat PRINCIPAL-KAPU NELKUL hozta -- a teljes fajl (`src/web/routes/claude-plans.ts`) sosem ellenorizte `ctx.auth`-ot. A kozos flotta-bearer, amit minden agent hord, letrehozhatott/modosithatott/torolhetett plant (vault-titkos iras is), es -- a legsulyosabb -- elindithatta a `POST /rotate`-ot, ami a LIVE Claude-hitelesito adatot cserelt es a fo-agenst (CLAUDE_ROTATION_FLEET eseten a TELJES flottat) ujrainditotta. Elo hatas MA nulla, mert `CLAUDE_ROTATION_ENABLED` es `CLAUDE_ROTATION_FLEET` alapertek 0 es nincs beallitva ezen a telepitesen.

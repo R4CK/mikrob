@@ -18,8 +18,15 @@ import {
   getKanbanCard,
   addKanbanVerdict, getKanbanVerdicts,
   setKanbanGateAssignment, getKanbanGateAssignment, getKanbanGateAssignmentEvents,
+  addKanbanFixProposal, getLatestKanbanFixProposal,
   type GateVerdictGate, type GateVerdictWord,
 } from '../db.js'
+// Cross-import with kanban-gate-completeness-guard.ts (which already imports
+// isAgentVerdictRecordEnabled from THIS module) -- a deliberate two-file cycle, safe here because
+// both sides only ever call these at request time, inside a function body, never at module-load
+// top level. Reused rather than re-derived so the POST-side designation check (below) and the
+// enforcing guard's own parse agree by construction instead of by discipline.
+import { extractGateLine, parseGateDesignation, type GateAgent } from './kanban-gate-completeness-guard.js'
 import type { RouteContext } from './routes/types.js'
 
 export function isAgentVerdictRecordEnabled(): boolean {
@@ -38,6 +45,34 @@ function isGateVerdictWord(v: unknown): v is GateVerdictWord {
   return typeof v === 'string' && (VALID_VERDICTS as readonly string[]).includes(v.toUpperCase()) && v === v.toUpperCase()
 }
 
+// RedHat B1 / WhiteHat W1 (comments 16554/16573): the measured bypass was an authenticated author
+// who simply isn't in the gate's own role (e.g. `fullstack` writing a GO record for the QA gate).
+// This is the EXACT identifier allowlist, not a prefix/pattern match -- a gate may only write (or,
+// in the completeness guard below, be TRUSTED for) its own designated role.
+export const GATE_ROLE_AGENTS: Readonly<Record<GateVerdictGate, readonly GateAgent[]>> = {
+  QA: ['qa', 'qa2'],
+  CYBERSEC: ['cybersec', 'cybersec2'],
+  CYBERED: ['cybered'],
+}
+
+function isGateRoleAgent(gate: GateVerdictGate, author: string): boolean {
+  return (GATE_ROLE_AGENTS[gate] as readonly string[]).includes(author.trim().toLowerCase())
+}
+
+/** B1 (c): a verdict may only be recorded for a gate the card's OWN "Gate: ..." line actually
+ *  designates -- the SAME parser the enforcing completeness guard uses (imported above), so the
+ *  two can never silently disagree. A card with no parseable Gate: line makes no verifiable claim
+ *  at all, the same permissive default the guard itself applies (`allowUnverified`), so nothing is
+ *  rejected here either -- this is an extra check, not a stricter one. */
+function isGateDesignatedOnCard(cardId: string, gate: GateVerdictGate): boolean {
+  const card = getKanbanCard(cardId)
+  const gateLine = extractGateLine(card?.description ?? null)
+  if (gateLine === null) return true
+  const designated = parseGateDesignation(gateLine)
+  if (designated === null) return true
+  return GATE_ROLE_AGENTS[gate].some((a) => designated.has(a))
+}
+
 /** Resolve the caller's identity for a verdict record: an authenticated `agent:<id>` device key
  *  (card 84dcc5d4) is VERIFIED; anything else falls back to the body's own claim, UNVERIFIED. The
  *  claim is still required (an empty/missing author is a 400, handled by the caller) -- this
@@ -52,8 +87,12 @@ export function resolveVerdictAuthor(ctx: RouteContext, claimedAuthor: unknown):
 }
 
 /** RedHat 16225 (card 21abfe0b): a gate must never verdict the fix direction IT proposed. Compares
- *  the resolved author against the request's own `proposer` claim -- same agent (case-insensitive)
- *  is rejected; a sibling (cybersec vs cybersec2) is a DIFFERENT agent and is allowed. */
+ *  the resolved author against a proposer claim -- same agent (case-insensitive) is rejected; a
+ *  sibling (cybersec vs cybersec2) is a DIFFERENT agent and is allowed. Card 2bfa4c67 delta
+ *  (WhiteHat W3, comment 16573): the CALLER now passes the latest AUTHENTICATED
+ *  kanban_fix_proposals row, never the request body's own `proposer` field -- that field was
+ *  trivially omittable (RedHat B2) and a comment-derived proposer is just as forgeable under the
+ *  one shared dashboard token as the body field it would replace. */
 export function isSelfProposedVerdict(author: string, proposer: unknown): boolean {
   if (typeof proposer !== 'string' || !proposer.trim()) return false
   return proposer.trim().toLowerCase() === author.trim().toLowerCase()
@@ -61,6 +100,7 @@ export function isSelfProposedVerdict(author: string, proposer: unknown): boolea
 
 const kanbanVerdictsMatch = (path: string) => path.match(/^\/api\/kanban\/([^/]+)\/verdicts$/)
 const kanbanGateAssignmentMatch = (path: string) => path.match(/^\/api\/kanban\/([^/]+)\/gate-assignment$/)
+const kanbanProposalsMatch = (path: string) => path.match(/^\/api\/kanban\/([^/]+)\/proposals$/)
 
 export async function tryHandleKanbanVerdicts(ctx: RouteContext): Promise<boolean> {
   if (!isAgentVerdictRecordEnabled()) return false
@@ -83,7 +123,7 @@ export async function tryHandleKanbanVerdicts(ctx: RouteContext): Promise<boolea
       json(res, { error: 'Invalid JSON body' }, 400)
       return true
     }
-    const { gate, verdict, sha, round, findings_ref, proposer, author: claimedAuthor } = parsed
+    const { gate, verdict, sha, round, findings_ref, author: claimedAuthor } = parsed
     if (!isGateVerdictGate(gate)) {
       json(res, { error: `gate kötelező, egyike: ${VALID_GATES.join(', ')}` }, 400)
       return true
@@ -97,7 +137,22 @@ export async function tryHandleKanbanVerdicts(ctx: RouteContext): Promise<boolea
       json(res, { error: 'author kötelező (vagy hitelesített agent:<id> kulcs, vagy a body author mezője)' }, 400)
       return true
     }
-    if (isSelfProposedVerdict(author, proposer)) {
+    // B1 / W1: exact role-allowlist, regardless of author_verified -- the measured bypass (RedHat
+    // T5) was an authenticated, but wrong-role, author (`fullstack` writing to the QA gate).
+    if (!isGateRoleAgent(gate, author)) {
+      json(res, { error: `a(z) "${author}" ügynök nem tagja a ${gate} gate szerepkörének` }, 403)
+      return true
+    }
+    // B1 (c): the gate must actually be among the card's own designated gates.
+    if (!isGateDesignatedOnCard(cardId, gate)) {
+      json(res, { error: `a ${gate} gate nincs a kártya saját "Gate:" sorában kijelölve` }, 400)
+      return true
+    }
+    // B2 / W3: proposer comes ONLY from the latest authenticated kanban_fix_proposals row, never
+    // from the request body. No row at all is not a block (WhiteHat W3: fail-closed-on-unknown is
+    // itself a denial-of-service lever) -- the exclusion is simply inert until a proposal exists.
+    const latestProposal = getLatestKanbanFixProposal(cardId)
+    if (latestProposal && isSelfProposedVerdict(author, latestProposal.proposer)) {
       json(res, { error: 'a javaslattevő (proposer) ügynök nem adhat verdiktet a saját javaslatára' }, 403)
       return true
     }
@@ -107,7 +162,7 @@ export async function tryHandleKanbanVerdicts(ctx: RouteContext): Promise<boolea
       sha: typeof sha === 'string' ? sha : null,
       round: typeof round === 'number' && Number.isInteger(round) && round > 0 ? round : 1,
       findingsRef: typeof findings_ref === 'string' ? findings_ref : null,
-      proposer: typeof proposer === 'string' ? proposer : null,
+      proposer: latestProposal ? latestProposal.proposer : null,
       author,
       authorVerified: verified,
     })
@@ -146,6 +201,29 @@ export async function tryHandleKanbanVerdicts(ctx: RouteContext): Promise<boolea
       return true
     }
     const row = setKanbanGateAssignment(cardId, gates, actor)
+    json(res, row, 201)
+    return true
+  }
+
+  // B2 / W3: records WHO proposed the fix a gate is being asked to verdict on. Authenticated-only
+  // (an agent:<id> device key) -- the shared dashboard token cannot write a proposal, because an
+  // unauthenticated claim here would be worse than none: it would make the self-exclusion look
+  // enforced while being exactly as forgeable as the request-body field it replaces.
+  const proposalsMatch = kanbanProposalsMatch(path)
+  if (proposalsMatch && method === 'GET') {
+    const cardId = decodeURIComponent(proposalsMatch[1])
+    json(res, getLatestKanbanFixProposal(cardId))
+    return true
+  }
+  if (proposalsMatch && method === 'POST') {
+    const cardId = decodeURIComponent(proposalsMatch[1])
+    if (!getKanbanCard(cardId)) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    const agentId = ctx.auth?.kind === 'device' ? agentKeyToAgentId(ctx.auth.device) : null
+    if (!agentId) {
+      json(res, { error: 'javaslat rögzítése kizárólag hitelesített agent:<id> kulccsal lehetséges' }, 403)
+      return true
+    }
+    const row = addKanbanFixProposal(cardId, agentId)
     json(res, row, 201)
     return true
   }

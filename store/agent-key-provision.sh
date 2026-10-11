@@ -47,7 +47,15 @@ COOKIE_JAR="$(mktemp)"
 trap 'rm -f "$COOKIE_JAR"' EXIT
 
 LOGIN_PAYLOAD="$(mktemp)"
-python3 -c "import json,sys; json.dump({'username': sys.argv[1], 'password': sys.argv[2]}, open(sys.argv[3], 'w'))" "$DASH_USER" "$DASH_PASS" "$LOGIN_PAYLOAD"
+# Neither credential goes into argv (visible to any local process via /proc/<pid>/cmdline, the
+# QA FAIL this fixes, comment 16667/16670): both go over this process's own stdin instead, which
+# only the parent shell holding the pipe can see.
+printf '%s\n%s\n' "$DASH_USER" "$DASH_PASS" | python3 -c "
+import json, sys
+user = sys.stdin.readline().rstrip('\n')
+password = sys.stdin.readline().rstrip('\n')
+json.dump({'username': user, 'password': password}, open(sys.argv[1], 'w'))
+" "$LOGIN_PAYLOAD"
 unset DASH_PASS
 
 LOGIN_STATUS="$(curl -s -o /dev/null -w '%{http_code}' -c "$COOKIE_JAR" -X POST "$DASHBOARD_URL/api/auth/login" -H 'Content-Type: application/json' --data-binary "@$LOGIN_PAYLOAD")"
