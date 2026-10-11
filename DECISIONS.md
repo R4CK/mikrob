@@ -19541,3 +19541,23 @@ Mutacio-ellenorzes (`context-restart-gate-wiring.test.ts`): a `createAgentMessag
 Teljes suite + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
 
 **Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, 16380 vege).
+
+## 2026-10-11 -- Kartya 3d186397 delta #2 (folytatas a fajl elejebb levo "senderId path-traversal audit" bejegyzeshez): QA FAIL javitva -- a validacio az allowFrom-modositas ELE kerult
+
+QA FAIL (10812) es WhiteHat F2 (ugyanaz a gyoker-ok, komment 10812/10815): a safeJoin-ellenorzes a MARKER-fajl irasara korlatozodott mindket hivasi helyen, de az allowFrom-push, a pending-kod torlese es az access.json kiirasa MAR AZ ELOTT lefutott. Egy traversal-alaku senderId ezert a `routes/agents.ts` uton 500-at adott VISSZA ("Failed to approve pairing"), MIKOZBEN a sender MAR bekerult az allowFrom-ba -- a jovahagyo felrevezetve latta a hibas valaszt. A `channel-invites.ts` auto-jovahagyasi sweep-jen (EMBERI JOVAHAGYAS NELKUL) meg sulyosabb: a hiba csak `logger.warn`, a mutacio (allowFrom, pending, invite-token elkoltese) FELTETEL NELKUL lefutott.
+
+**Javitas (mindket helyen azonos mintat kovetve):** a `safeJoin(approvedDir, senderId)` hivas MOST a legelso lepes, MINDEN mellekhatas (allowFrom-push, pending-torles, dmPolicy, access.json/invites.json iras) ELOTT, kulon try/catch-ben:
+- `routes/agents.ts` (`POST /approve`, emberi jovahagyas): elutasitasnal 400 ("Invalid sender identifier"), NULLA mutacio -- a pending kod NEM fogyott el, egy kesobbi, javitott plugin-valasz vagy emberi retry ujra probalhatja.
+- `channel-invites.ts` (`runInviteMonitorTick`, automatikus sweep): elutasitasnal `continue` a belso ciklusra -- a tetel NEM lesz jovahagyva, az invite-token NEM fogy el, a kovetkezo tick ujra probalja; a TOBBI, masik ugynok/provider ervenyes tetele erintetlen.
+
+A marker-fajl irasa (mkdirSync+writeFileSync) MARADT kulon try/catch-ben, MERT a path mar bizonyitottan biztonsagos (a safeJoin mar lefutott) -- ha a fajl-iras egyeb okbol (diszk, jogosultsag) bukik, az NEM vonja vissza a mar validalt, biztonsagos mutaciot, csak warn-t logol.
+
+**Teszt (`channel-pairing-senderid-traversal.test.ts`, 12 teszt, mindket helyre uj MUTATION PIN, az elozo kor tesztjei FRISSITVE az UJ, helyes viselkedesre):**
+- `routes/agents.ts`: traversal/abszolut-ut 400-at ad (nem 500), ES az access.json BAJTRA PONTOSAN valtozatlan marad (nincs allowFrom-push, nincs pending-torles).
+- `channel-invites.ts`: traversal/abszolut-ut eseten SEM az access.json, SEM az invites.json nem valtozik; a MUTATION PIN kulon ellenorzi, hogy az invite-token `used` mezoje `false` marad.
+
+Mutacio-ellenorzes: a validacio visszahelyezve a mutacio UTANRA (a regi, hibas sorrend) mindket helyen -- mind a harom uj/frissitett teszt PIROSRA valtott (`routes/agents.ts`: 500 helyett 400 varva, allowFrom tartalmazza a rejektalt erteket; `channel-invites.ts`: access.json/invites.json valtozik, allowFrom tartalmazza az erteket, a token elfogy). A javitas visszaallitasaval mind zold. `npx tsc --noEmit` tiszta, a celzott 8 fajl 84 teszt zold.
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + WhiteHat (a kartya sajat kijelolese, MikroB dontese a 10812 utan).

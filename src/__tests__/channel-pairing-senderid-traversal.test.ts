@@ -97,43 +97,50 @@ describe('POST /api/agents/:name/channels/telegram/approve -- senderId traversal
     expect(readFileSync(join(stateDir, 'approved', '555666777'), 'utf-8')).toBe('555')
   })
 
-  it('a `../`-shaped senderId is REJECTED (500), and nothing is written outside approved/', async () => {
+  // Card 3d186397 QA FAIL delta (10812): a traversal senderId must be rejected BEFORE
+  // access.json is touched at all -- the first cut of this fix validated the senderId only
+  // when writing the marker file, by which point allowFrom/pending/dmPolicy had ALREADY been
+  // mutated and persisted, so a rejected request still silently approved the sender. These
+  // tests pin the fixed, fail-closed-before-any-effect behaviour: 400, not 500, and access.json
+  // byte-for-byte unchanged.
+  it('a `../`-shaped senderId is REJECTED (400) BEFORE any access.json mutation', async () => {
     writeAccessWithPending('../../evil-traversal-marker')
+    const before = readFileSync(join(stateDir, 'access.json'), 'utf-8')
     const { ctx, out } = fakeCtx({ code: 'abc123' })
     expect(await tryHandleAgents(ctx, webDir)).toBe(true)
-    expect(out.status).toBe(500)
-    expect(out.body).toEqual({ error: 'Failed to approve pairing' })
+    expect(out.status).toBe(400)
+    expect(out.body).toEqual({ error: 'Invalid sender identifier' })
+    // access.json is untouched: no allowFrom push, no pending deletion, no dmPolicy change.
+    expect(readFileSync(join(stateDir, 'access.json'), 'utf-8')).toBe(before)
     // Would land at stateDir/../../evil-traversal-marker == two levels above stateDir.
     expect(existsSync(join(stateDir, '..', '..', 'evil-traversal-marker'))).toBe(false)
-    // approved/ itself is created (mkdirSync runs before the safeJoin throw) but stays empty --
-    // the rejected write never lands inside it either.
-    expect(readdirSync(join(stateDir, 'approved'))).toEqual([])
+    // approved/ is never created either -- the rejection happens before that mkdirSync.
+    expect(existsSync(join(stateDir, 'approved'))).toBe(false)
   })
 
-  it('an absolute-path senderId is REJECTED (500), and nothing is written at that path', async () => {
+  it('an absolute-path senderId is REJECTED (400), and nothing is written at that path', async () => {
     const absTarget = join(tmpdir(), `pairing-traversal-abs-marker-${Date.now()}`)
     writeAccessWithPending(absTarget)
     const { ctx, out } = fakeCtx({ code: 'abc123' })
     expect(await tryHandleAgents(ctx, webDir)).toBe(true)
-    expect(out.status).toBe(500)
+    expect(out.status).toBe(400)
     expect(existsSync(absTarget)).toBe(false)
   })
 
-  // MUTATION PIN: with the fix reverted to a bare `join(approvedDir, entry.senderId)`, the
-  // traversal case above would instead return {ok:true} (status defaults to 0/200-ish success
-  // path) and actually create the file two levels above stateDir -- see the manual mutation check
-  // in the card's DECISIONS.md entry. This assertion distinguishes "rejected" from "silently
-  // wrote somewhere unexpected but also somehow errored for another reason".
-  it('MUTATION PIN: the traversal rejection is specifically the safeJoin throw, not an unrelated error', async () => {
+  // MUTATION PIN: with the validate-before-mutate ordering reverted (safeJoin moved back after
+  // the access.json write, as the first cut of this fix had it), this traversal case would
+  // instead return 500 (not 400) AND leave the rejected senderId in allowFrom -- see the card's
+  // QA FAIL (10812) and DECISIONS.md entry for the measured before/after.
+  it('MUTATION PIN: a rejected senderId never reaches allowFrom, and the pending code is not consumed', async () => {
     writeAccessWithPending('../outside-marker')
-    const { ctx } = fakeCtx({ code: 'abc123' })
+    const { ctx, out } = fakeCtx({ code: 'abc123' })
     await tryHandleAgents(ctx, webDir)
-    // access.json mutation (allowFrom/pending/dmPolicy) happens BEFORE the safeJoin call in the
-    // same try block, so it still committed -- only the marker write failed. This confirms we are
-    // inside that specific try/catch, at the writeFileSync(safeJoin(...)) line, not erroring earlier.
+    expect(out.status).toBe(400)
     const access = JSON.parse(readFileSync(join(stateDir, 'access.json'), 'utf-8'))
-    expect(access.allowFrom).toContain('../outside-marker')
-    expect(access.pending).toEqual({})
+    expect(access.allowFrom ?? []).not.toContain('../outside-marker')
+    // The pending code is NOT consumed either -- a later, corrected plugin response (or a human
+    // retry with the same code) can still complete the pairing.
+    expect(access.pending).toHaveProperty('abc123')
   })
 })
 
@@ -176,30 +183,48 @@ describe('runInviteMonitorTick -- senderId traversal on auto-approve (card 3d186
     expect(existsSync(join(chDir, 'approved', '111222333'))).toBe(true)
   })
 
-  it('a `../`-shaped senderId does not escape approved/ -- auto-approve still completes otherwise', () => {
+  // Card 3d186397 QA FAIL delta (10812): this sweep runs with NO human review at all, so a
+  // traversal senderId silently becoming a real allowlist entry is worse here than on the
+  // human-approval route. The first cut of this fix only guarded the marker write (warn-only,
+  // mutation already committed) -- fixed to validate BEFORE any access.json/invites.json effect,
+  // skipping the entry entirely (not approved, not consumed) so a later tick can retry it.
+  it('a `../`-shaped senderId is skipped entirely -- NOT approved, NOT consumed, NOTHING escapes', () => {
     setup('../../invite-traversal-marker')
+    const accessBefore = readFileSync(join(chDir, 'access.json'), 'utf-8')
+    const invitesBefore = readFileSync(join(chDir, 'invites.json'), 'utf-8')
     expect(() => runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)).not.toThrow()
-    // The write is caught internally (logger.warn). With the fix, nothing lands anywhere outside
-    // approved/. `join(approvedDir, '../../invite-traversal-marker')` textually normalizes to one
-    // level ABOVE chDir (approved/ and telegram/ each cancel one `..`) -- that is the exact path a
-    // reverted bare-join would have written to, so check it directly rather than only "not inside
-    // approved/" (which a different escape depth could satisfy vacuously).
+    // Would land at chDir/../invite-traversal-marker == one level above chDir (approved/ and
+    // telegram/ each cancel one `..` in `join(approvedDir, '../../invite-traversal-marker')`).
     expect(existsSync(join(chDir, '..', 'invite-traversal-marker'))).toBe(false)
-    // approved/ itself is created (mkdirSync runs before the safeJoin throw) but stays empty.
-    expect(readdirSync(join(chDir, 'approved'))).toEqual([])
-    // The rest of the approval (allowFrom, pending removal, token spend) still happened -- the
-    // monitor's own try/catch around just the marker write means a hostile senderId cannot stall
-    // the whole tick, which matters because `pending` is driven by the same untrusted plugin.
-    const access = JSON.parse(readFileSync(join(chDir, 'access.json'), 'utf-8'))
-    expect(access.allowFrom).toContain('../../invite-traversal-marker')
-    expect(access.pending).toEqual({})
+    // approved/ is never created -- the rejection happens before that mkdirSync.
+    expect(existsSync(join(chDir, 'approved'))).toBe(false)
+    // Neither file was written at all: the rejected entry is skipped before any mutation, not
+    // approved-then-rolled-back.
+    expect(readFileSync(join(chDir, 'access.json'), 'utf-8')).toBe(accessBefore)
+    expect(readFileSync(join(chDir, 'invites.json'), 'utf-8')).toBe(invitesBefore)
   })
 
-  it('an absolute-path senderId does not escape approved/', () => {
+  it('an absolute-path senderId is skipped the same way, and does not escape', () => {
     const absTarget = join(tmpdir(), `invite-traversal-abs-marker-${Date.now()}`)
     setup(absTarget)
+    const accessBefore = readFileSync(join(chDir, 'access.json'), 'utf-8')
     runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)
     expect(existsSync(absTarget)).toBe(false)
+    expect(readFileSync(join(chDir, 'access.json'), 'utf-8')).toBe(accessBefore)
+  })
+
+  // MUTATION PIN: with the validate-before-mutate ordering reverted (safeJoin only guarding the
+  // marker write, as the first cut of this fix had it), a rejected senderId would still end up
+  // in allowFrom and its invite token would still be spent -- this is the exact shape QA 10812
+  // measured on channel-invites.ts.
+  it('MUTATION PIN: a rejected senderId never reaches allowFrom and its invite token is not spent', () => {
+    setup('../outside-marker')
+    runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)
+    const access = JSON.parse(readFileSync(join(chDir, 'access.json'), 'utf-8'))
+    expect(access.allowFrom ?? []).not.toContain('../outside-marker')
+    expect(access.pending).toHaveProperty('code1')
+    const invites = JSON.parse(readFileSync(join(chDir, 'invites.json'), 'utf-8'))
+    expect(invites.invites.tok1.used).toBe(false)
   })
 })
 
