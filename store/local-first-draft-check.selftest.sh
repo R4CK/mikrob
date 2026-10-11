@@ -130,16 +130,20 @@ else
   echo "  FAIL local-llm-rag.sh ignored the switch -> rc=$rc: $out"; fail=1
 fi
 
+# Points --repo at this selftest's OWN containing repo (whatever checkout/worktree/TEST_TREE copy
+# it is running from), never the shared live /home/neon/marveen -- that was the first version, and
+# under fleet-test.sh's full-suite concurrency (hundreds of other test files, other agents' live
+# git activity) a `gate-pretriage.sh --explain` pointed at the shared, mutable live checkout can
+# transiently race (index.lock, a concurrent fetch/checkout) for a reason that has nothing to do
+# with this switch. The repo this file itself lives in already has the `HEAD~1` gate-pretriage.sh
+# needs as its default BASE (a real git history, not a bare init), so there is nothing to skip.
+REPO_ROOT="$(cd "$HERE/.." && pwd)"
 n=$((n + 1))
-if [ -d /home/neon/marveen/.git ]; then
-  out="$(LOCAL_FIRST_DRAFT=off bash "$HERE/gate-pretriage.sh" --repo /home/neon/marveen --explain 2>&1)"
-  if printf '%s' "$out" | grep -q "local model not asked -- local-first-draft is OFF"; then
-    echo "  ok   gate-pretriage.sh --explain: LOCAL_FIRST_DRAFT=off -> advisory summary skipped, no model call"
-  else
-    echo "  FAIL gate-pretriage.sh ignored the switch -> $out"; fail=1
-  fi
+out="$(LOCAL_FIRST_DRAFT=off bash "$HERE/gate-pretriage.sh" --repo "$REPO_ROOT" --explain 2>&1)"
+if printf '%s' "$out" | grep -q "local model not asked -- local-first-draft is OFF"; then
+  echo "  ok   gate-pretriage.sh --explain: LOCAL_FIRST_DRAFT=off -> advisory summary skipped, no model call"
 else
-  echo "  ok   gate-pretriage.sh case skipped (no real marveen clone on this host to point --repo at)"
+  echo "  FAIL gate-pretriage.sh ignored the switch -> $out"; fail=1
 fi
 
 # Control proving the mutation above is real: reverting local-first-draft-check.sh's own body to
