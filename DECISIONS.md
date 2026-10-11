@@ -19129,3 +19129,15 @@ sajat kijelolese szerint.
 **Ki döntött:** backend2. Delta-gate: QA + RedHat (a javítási irányt a WhiteHat adta korábban, az újra-gate ennek a körnek is RedHaté, MikroB 10565/10634 szerint).
 
 **Ki döntött:** backend3. Delta-gate: QA + RedHat.
+
+## 2026-10-11 -- 34f972bb: POST /api/connectors scope=project+stdio kemény fail-closed a 3fb0ef97-ig
+
+**Forrás:** 67e73b48 CYBERED GO (komment 15391, R1). A kártya 67e73b48-ban beépített session/device kind-check (`ctx.auth?.kind !== 'session' && !== 'device'`) hasznos korai szűrő, de NEM zárt kapu: a megosztott flotta-bearer break-glass jelszó-reset + login úton (auth.ts:265-297, 3 hívás, ettől a fájltól független) session-t tud szerezni magának anélkül, hogy valódi emberi hitelesítő adatot birtokolna. Egy `scope=project` + `type=stdio` írás a `PROJECT_ROOT/.mcp.json`-ba kerül, amit MINDEN ügynök Claude Code session-je betölt (ancestor-directory discovery, mérve 67e73b48-ban) -- flotta-szintű perzisztencia egy olyan hitelesítő adatból, amit minden ügynök már amúgy is birtokol.
+
+**Javítás:** a `routes/fleet.ts` `FLEET_IMPORT_APPLY_FAIL_CLOSED` mintáját követve (kártya 68254bd7, ugyanaz az indoklás: kemény, LITERÁL konstans, nem env-változó -- egy env-vezérelt kapcsoló egy jogosultsági kapun pont az az osztály, amit a DECISIONS.md már máshol is óv), új `CONNECTORS_PROJECT_STDIO_FAIL_CLOSED = true` konstans a `routes/connectors.ts` tetején. A `POST /api/connectors` handlerben ez a check a NÉVVALIDÁLÁS UTÁN, de a meglévő session/device kind-check ELŐTT fut, és MINDEN auth-fajtára (token/device/session/federation/none) feltétel nélkül 403-at ad, amíg a 3fb0ef97 (nem-hamisítható jóváhagyási csatorna) el nem készül. A régi kind-check kódja a helyén marad, SZÁNDÉKOSAN elérhetetlen, a flag későbbi, átgondolt commitban történő false-ra állításáig.
+
+**Hatókör-ellenőrzés (a kártya kéri, hogy a user-scope és a nem-stdio ág érintetlen maradjon, ha nem ad ugyanilyen perzisztenciát):** a `catalogInstallMatch` (katalógusból telepítés) route MINDIG `--scope user`-t használ, sosem `project`-et -- nem érintett. A `user`-scope stdio és a `project`-scope http/sse ágak a meglévő teszt szerint is változatlanul átmennek.
+
+**Teszt:** `src/__tests__/connectors-project-stdio-auth-gate.test.ts` teljesen átírva a `fleet-import-auth-gate.test.ts` (kártya 657b32f2) mintájára: `it.each` az ÖT auth-fajtára (token/none/federation/session/device), mind 403-at vár, az üzenet a `3fb0ef97`-re hivatkozik. A régi "session/device atmegy" tesztek torolve (mar nem igazak). Mutacio-pin: a session-es hivas most a SPECIFIKUS, uj uzenetet varja, nem csak a 403 kodot -- egy flag-visszaallitas vagy a feltetel szukitese/bovitese az assercot, nem csak a statust valtja.
+
+**Ki döntött:** backend3. Gate: QA + Cybersec/WhiteHat (a javítás irányát a RedHat adta, kártya saját kijelölése).
