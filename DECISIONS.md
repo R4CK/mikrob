@@ -19814,3 +19814,77 @@ structured-verdict.test.ts` -- mind zöld. `tsc --noEmit` és `python3 -m py_com
 
 **Ki döntött:** MikroB (gate: qa, cybersec -- a javítási irányt WhiteHat2 adta, ezért a biztonsági
 gate WhiteHat/cybersec, nem WhiteHat2/cybersec2).
+
+## 2026-10-11 -- bc1e7ef2 (3. kör): B1' TOCTOU-javítás a wsl-home-cleanup.sh classify/remove_entry rése, N4/N5
+
+**Forrás:** RedHat NO-GO (16676, Gate-SHA 55c566e0) az előző kör (B1/B2/B3) delta-gate-jén. B1/B2/B3
+mind működik mérve, de egy ÚJ, a B1 saját invariánsát sértő hézag maradt: a "van élő folyamat" és az
+"életkor" ellenőrzés az OSZTÁLYOZÁSKOR fut, a TÖRLÉS előtt nincs újraellenőrzés, és az osztályozás az
+élő gépen 38,7 percig tartott (249 bejegyzés, kb. 3000 fd, `has_live_process_under()` candidate-enként
+külön /proc-bejárást csinált). RedHat harness-mérése: egy mappa 9 másodpercnél DISPOSABLE-nek
+osztályozva, UTÁNA indult egy folyamat a cwd-jével a mappában, a szkript 140 másodpercig futott, a
+mappa TÖRLŐDÖTT, a folyamat él, cwd-je "(deleted)" -- pontosan az a hibaosztály, amit a B1 zárni akart,
+csak időben eltolva.
+
+**Javítás (B1', blokkoló):** (1) `scan_live_proc_targets()` egyetlen hívással olvassa az ÖSSZES
+`/proc/[0-9]*/cwd` és `/proc/[0-9]*/fd/*` célt egy futás egészére, nem candidate-enként --
+`classify()` (`main()`-en át) egyetlen, run elején felvett scant használ mindegyik jelöltre
+(`LIVE_PROC_TARGETS_PRIMED`), a standalone `classify()`-hívás (minden selftest ezt teszi) változatlanul
+saját friss scant vesz. (2) `remove_entry()` a SAJÁT ELEJÉN mindig FRISS scant vesz (a classify-kori
+cache-t figyelmen kívül hagyva) és újrafuttatja az életkor-find-ot is -- ha bármelyik megváltozott
+(élő folyamat jelent meg, vagy egy fájl frissen íródott a mappában), SKIP, nem bízik a elavult
+osztályozásban.
+
+**Implementáció-részlet, mérve ezen a körön (a valódi talált hiba, nem a card-leírás):** RedHat
+szó szerinti javaslata "egy readlink -f hívás az összes útra" volt -- ez a saját mérésemben IS
+8,2s -> 0,14s gyorsulást adott (~2660 fd), DE a teljes batch-readlink (egyetlen `readlink -f` hívás
+2700+ argumentummal) ezen a gépen MEGBÍZHATATLANNAK bizonyult: mérve kb. 95%-ban csendben, hibaüzenet
+nélkül elhagyta a bemeneti argumentumokat (2740 be, ~140-150 sor ki), még egy független, szűkebb
+readlink-hívással függetlenül igazolt, stabil célpontra is. Csere: `find /proc -maxdepth 3 \(
+-path '/proc/[0-9]*/cwd' -o -path '/proc/[0-9]*/fd/*' \) -printf '%l\n'` -- egy process, saját
+lstat/readlink syscall mappánként, ugyanolyan gyors (~0,1s), de ismételt futásokon mindig teljes és
+helyes listát adott. Ez a felfedezés ÚJ ebben a körben, nem a RedHat-jelentés része -- a card eredeti
+javaslata (batch readlink) a saját tesztkörnyezetemben hamis-negatívot okozott (a pre-existing B1
+fd/cwd tesztek elkezdtek megbízhatatlanul bukni), ami rávezetett a `find`-alapú, bizonyítottan
+megbízható alternatívára.
+
+**N4 (nem blokkoló):** a dry-run jelentés korábban a `disposable_count`-ot ígérte törlésre, de a
+`remove_entry()` kihagy egy dirty vagy elérhetetlen-HEAD-ű regisztrált worktree-t -- a jelentés
+túlbecsülte a törlést. `would_skip_removal()` előre jelzi (törlés nélkül) melyik DISPOSABLE
+bejegyzést hagyná ki az `--apply`, a dry-run most `removable_count` / `disposable_count` alakban
+jelent, és a kihagyandó sorokhoz okot ír ("apply would SKIP: ..."). Mérve az élő `/home/neon`-on
+(csak olvasó, `--dry-run`): a 128 regisztrált worktree közül sok dirty, a jelentés most ezt soronként
+kimondja.
+
+**N5 (nem blokkoló):** `remove_entry()` a `git worktree remove --force` saját kilépési kódját adta
+vissza `return $?`-tel, DE ez a sor a `git worktree prune` UTÁN állt, tehát a `prune` kódját adta
+vissza -- egy ZÁROLT (git worktree lock) regisztrált worktree-nél a remove elbukott, a prune-nak
+nem volt mit takarítania (0-t adott), és a hívó "removed"-nek olvasta a sikertelen törlést. Javítás:
+a remove lépés kódja külön változóba, a prune UTÁN azt adja vissza a funkció.
+
+**Teszt:** `wsl-home-cleanup.selftest.sh` 22 -> 26 eset (4 új: B1' élő-folyamat tengely, B1'
+életkor tengely, N5 zárolt worktree, N4 `would_skip_removal` jelzés), mind zöld, 6/6 ismételt
+futáson stabilan (korábban az eredeti, meglévő B1 fd/cwd tesztek elkezdtek flakelni a gyorsítás
+UTÁN, mert a várakozó ciklusuk "ls /proc/pid/fd nem üres" feltétele mindig azonnal igaz volt -- fd
+0/1/2 a fork pillanatától létezik --, és a RÉGI, lassú `has_live_process_under()` 8,2s-os
+véletlenszerű várakozása addig véletlenül fedezte ezt a versenyhelyzetet; a várakozási feltételt a
+tényleges cél-fd-re/cwd-re javítottam, nem a hibát kerülgettem). MUTÁCIÓ-PROOF, mind külön-külön: a
+B1' élő-folyamat-ág kikapcsolása -> pontosan 1 piros (25/26); a B1' életkor-ág kikapcsolása ->
+pontosan 1 piros (25/26); az N5 javítás visszaállítása (`return $?` a prune UTÁN) -> pontosan 1
+piros (25/26); a `would_skip_removal()` kikapcsolása (`return 1` az elején) -> pontosan 1 piros
+(25/26). Regresszió: a teljes selftest 26/26, `bash -n` tiszta. `npx tsc --noEmit` nem releváns
+(tisztán bash fájl, nincs TS-érintés).
+
+**Mérve az élő `/home/neon`-on, csak `--dry-run` (olvasó, semmi törölve):** teljes futás 3m13,5s
+(real), KEEP=13 ACTIVE=6 DISPOSABLE=192 UNKNOWN=38, "49 of the 192 DISPOSABLE entries... 143 would
+be SKIPPED" (N4 jelentés). Ez a RedHat-mérte 38,7 perchez képest ~12x gyorsulás, DE NEM a B1'
+osztályozás-gyorsítás önmagában méri ezt a maradék 3+ percet -- az N4 `would_skip_removal()` minden
+DISPOSABLE regisztrált worktree-re 2 git-hívást (status + rev-list) futtat, és a 192 DISPOSABLE-ből
+a többség regisztrált worktree, ez adja a fennmaradó időt. Ha ez a 3 perc magában (a N4 nélkül, csak
+B1') sokkal rövidebb lenne, azt nem mértem elkülönítve -- ha a 3 perc problémát jelent rendszeres
+(napi) futásnál, az N4-riportolás opcionálissá tétele (`--skip-reason`/hasonló kapcsoló) egy
+következő, külön kártya, nem ebben a körben bővítve tovább a scope-ot.
+
+**Ki döntött:** RedHat (16676, Gate-SHA 55c566e0), MikroB (16677). Gate: QA + RedHat. Az élő
+`--apply` továbbra is csak Peti jóváhagyásával futhat (22. kódminőségi elv), ebben a körben csak
+`--dry-run` futott az élő `/home/neon`-on.
