@@ -30,6 +30,7 @@ import { logger } from '../logger.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { agentDir } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { safeJoin } from './sanitize.js'
 
 interface InviteEntry {
   createdAt: number
@@ -244,7 +245,11 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
       try {
         const approvedDir = join(accessPath, '..', 'approved')
         mkdirSync(approvedDir, { recursive: true })
-        writeFileSync(join(approvedDir, pEntry.senderId), '')
+        // Card 3d186397: pEntry.senderId is plugin-written, unvalidated external
+        // channel content (same class as routes/agents.ts's pairing-approval
+        // write) -- safeJoin rejects a `../`-shaped or absolute senderId
+        // instead of writing outside approvedDir.
+        writeFileSync(safeJoin(approvedDir, pEntry.senderId), '')
       } catch (err) {
         logger.warn({ err, name, senderId: pEntry.senderId }, 'invite-monitor: failed to write approved marker')
       }

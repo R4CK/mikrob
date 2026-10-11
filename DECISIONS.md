@@ -19357,3 +19357,19 @@ QA + WhiteHat2.
 **Teszt:** `scripts/__tests__/email-extract-parity.test.py` (3 F1' eset + 1 L1 eset + 1 L2 eset, mind mutáció-proofolva -- a `fullmatch`→`match` visszaállítás 3 tesztet pirosra visz, a `ValueError` elkapás kivétele tracebacket dob a teszt-futásban, a `--attach-body` kivétele a regexből 1 tesztet pirosra visz) és `scripts/__tests__/email-approval-gate.test.py` (teljes futás zöld, regresszió nélkül).
 
 **Ki döntött:** backend (WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16368). Delta-gate: QA + WhiteHat2 (cybersec2), ugyanarra a SHA-ra.
+
+## 2026-10-11 -- Kartya 3d186397: senderId path-traversal audit, VAN RES, javitva (writeFileSync a channels-state fara)
+
+Audit-feladat (Cybersec out-of-scope megjegyzes 7503bb31 kommentjen, 5384): a channels-state faba iro `writeFileSync`-ek kozul melyik vesz at hivo/plugin-befolyasolta fajlnevet, es van-e traversal-szuro rajta.
+
+**Repro/meres (nem csak allitas):** grep `pending\[` a teljes `src/`-re -- az `access.json` `pending` mezojet KIZAROLAG a KULSO csatorna-plugin (telegram@claude-plugins-official es tarsai) irja, a sajat TypeScript-kod csak OLVASSA. Ket helyen a `pending[code].senderId` (plugin-irta, soha nem validalt ertek) kerult kozvetlenul `writeFileSync(join(approvedDir, senderId), ...)`-be fajlnevkent, SEMMILYEN traversal-szures nelkul:
+- `src/web/routes/agents.ts` ~1808. sor, `POST /api/agents/:name/channels/:provider/approve` -- a parolasi jovahagyas markerje.
+- `src/web/channel-invites.ts` ~252. sor, `runInviteMonitorTick` auto-jovahagyasi sweepje -- ugyanaz az alak.
+
+Egy `../`-alaku vagy abszolut-utu `senderId` (pl. egy hibas/kompromittalt plugin-folyamat valaszabol) ezert a `approved/` konyvtaron KIVULI, tetszoleges fajlba irt volna -- `routes/agents.ts`-nel a `chatId` (hivo-kontrollalt tartalom) a fajl TARTALMA is. URL-kodolt traversal-alak (`%2e%2e%2f`) inert, mert semmi nem dekodolja a senderId-t irasi elott -- nem kulon vektorkent, hanem mint a keresesi tartomany resze, ellenorizve.
+
+**Javitas:** mindket hely a mar bevalt `safeJoin(base, ...parts)` helpert hasznalja (`src/web/sanitize.ts`, resolve-utan-prefix-ellenorzes, `agentDir()` mar ugyanezt teszi az agent-nevre) -- `writeFileSync(join(...))` -> `writeFileSync(safeJoin(...))` mindket helyen. A `safeJoin` abszolut-utu injekciot is elkapja (a `resolve(base, absPath)` az abszolut utat adja vissza, ami nem kezdodik a base-prefixszel).
+
+**Teszt (`src/__tests__/channel-pairing-senderid-traversal.test.ts`, 11 teszt, MUTACIOVAL ellenorizve):** mindket hivo helyre viselkedesi teszt (a valodi route/`runInviteMonitorTick` valodi ideiglenes `fs`-fan, pozitiv kontroll + `../`-alak + abszolut-ut), plusz egy forras-szintu korpusz-pin (`writeFileSync(join(..., *.senderId))` alak tiltva a teljes `src/`-ben, az `invite-token-not-logged.test.ts` `LOGGED_SECRET_RX` mintajat kovetve). A mutacio (mindket `safeJoin` visszaallitva `join`-ra) igazoltan PIROSRA valtotta mind a ket viselkedesi tesztet (routes/agents.ts: 500 helyett 200; channel-invites.ts: a kiszamitott escape-celpont -- `join(approvedDir, '../../X')` textualisan `chDir`-tol EGY szinttel feljebb normalizalodik, nem kettovel, ez volt az elso, hibas melysegu assert ok -- letezik), ES a korpusz-pint is -- harom fuggetlen reteg, mind erzekeny.
+
+**Ki döntött:** backend3. Gate: QA + Cybersec (a kartya sajat kijelolese).
