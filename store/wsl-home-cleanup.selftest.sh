@@ -67,16 +67,18 @@ load_worktrees "$CLEANCORE_MAIN"
   && ok "the container dir itself is not registered as a worktree (only its child is)" \
   || bad "container dir should not itself be in WORKTREE_OWNER"
 
-# --- has_live_process_under(): REAL process, cwd ELSEWHERE but an open fd INTO the dir ----------
-# QA's own reproduction on card bc1e7ef2 (F1 FAIL): a process whose cwd is outside the candidate
-# dir, but which holds an open file descriptor pointing into it (a `tail -f`/log-writer redirected
-# there from elsewhere), was completely invisible to a cwd-only check -- classify() called it
-# DISPOSABLE and --apply --yes removed the dir out from under the still-running process. This is
-# the REAL function (not stubbed, unlike every classify()-level case below it), because the defect
-# is specifically in what /proc paths it reads.
+# --- classify(): B1 fix -- an UNREGISTERED dir with an open fd into it classifies ACTIVE --------
+# QA's own reproduction (WhiteHat NO-GO 16566 on the first F1 fix): a process whose cwd is outside
+# the candidate dir, but which holds an open file descriptor pointing into it (a `tail -f`/
+# log-writer redirected there from elsewhere), was invisible as long as the live-process check only
+# ran inside the registered-worktree branch -- an UNREGISTERED, DISPOSABLE-pattern-matching, old dir
+# skipped it entirely. This calls classify() (the actual dispatch, not the bare function) so it
+# exercises the real --apply decision path, per MikroB's instruction (16567).
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
 fdtest_dir="$FAKE_HOME/qa-gate-openfile"
 mkdir -p "$fdtest_dir"
 : > "$fdtest_dir/live.log"
+touch -d '2 days ago' "$fdtest_dir" # old enough to be DISPOSABLE if the live check did not protect it
 # cwd is $tmp (NOT $fdtest_dir) -- the exact shape QA measured: cwd elsewhere, fd into the target.
 ( cd "$tmp" && exec tail -f "$fdtest_dir/live.log" >/dev/null 2>&1 ) &
 fdtest_pid=$!
@@ -85,13 +87,39 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ -e "/proc/$fdtest_pid/fd" ] && [ -n "$(ls /proc/"$fdtest_pid"/fd 2>/dev/null)" ] && break
   sleep 0.2
 done
-if has_live_process_under "$fdtest_dir"; then
-  ok "has_live_process_under sees an open fd into the dir even with cwd elsewhere (QA's fix)"
-else
-  bad "has_live_process_under missed an open fd into the dir -- QA's FAIL would reproduce"
-fi
+[ "$(classify qa-gate-openfile "$fdtest_dir")" = ACTIVE ] \
+  && ok "classify(): B1 fix -- an UNREGISTERED dir with an open fd into it classifies ACTIVE, not DISPOSABLE (QA's repro)" \
+  || bad "classify(): B1 regression -- unregistered dir with a live fd classified something other than ACTIVE"
 kill "$fdtest_pid" 2>/dev/null
 wait "$fdtest_pid" 2>/dev/null
+
+# --- classify(): B1 fix -- an UNREGISTERED dir with a live process cwd under it classifies ACTIVE
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+cwdtest_dir="$FAKE_HOME/qa-cwd-live"
+mkdir -p "$cwdtest_dir"
+touch -d '2 days ago' "$cwdtest_dir"
+( cd "$cwdtest_dir" && exec sleep 5 ) &
+cwdtest_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ "$(readlink -f "/proc/$cwdtest_pid/cwd" 2>/dev/null)" = "$cwdtest_dir" ] && break
+  sleep 0.2
+done
+[ "$(classify qa-cwd-live "$cwdtest_dir")" = ACTIVE ] \
+  && ok "classify(): B1 fix -- an UNREGISTERED dir with a live process cwd under it classifies ACTIVE" \
+  || bad "classify(): B1 regression -- unregistered dir with a live cwd process classified something other than ACTIVE"
+kill "$cwdtest_pid" 2>/dev/null
+wait "$cwdtest_pid" 2>/dev/null
+
+# --- classify(): B2 fix -- a deep, recently-written file keeps an old-topped dir out of DISPOSABLE
+# WhiteHat NO-GO 16566: age used to be the top dir's own mtime, which a deep edit does not change.
+HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0
+deep_dir="$FAKE_HOME/qa-gate-deep"
+mkdir -p "$deep_dir/sub/sub2"
+touch -d '2 days ago' "$deep_dir" "$deep_dir/sub"
+echo recent > "$deep_dir/sub/sub2/just-written" # mtime = now, deep inside, top mtime untouched
+[ "$(classify qa-gate-deep "$deep_dir")" = UNKNOWN ] \
+  && ok "classify(): B2 fix -- a deep, recently-written file keeps an old-topped dir out of DISPOSABLE" \
+  || bad "classify(): B2 regression -- old top mtime with a fresh deep file was wrongly DISPOSABLE"
 
 # --- classify(): KEEP always wins, before anything else is even looked at ---------------------
 HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0; OPEN_CARD_IDS_FILE=""
@@ -172,6 +200,26 @@ else
   [ -d "$FAKE_HOME/gate-worktrees/nested-worktree" ] \
     && ok "remove_entry refuses and leaves a dirty registered worktree untouched" \
     || bad "dirty registered worktree was removed despite uncommitted changes"
+fi
+
+# --- remove_entry(): B3 fix -- clean registered worktree, HEAD unreachable from any ref -> refused
+# WhiteHat NO-GO 16566: a clean, registered worktree can be on a detached HEAD that no branch/
+# remote/tag points to; `git worktree remove --force` would turn that commit into a dangling
+# object (recoverable only until the next `git gc`). `git status --porcelain` does not catch this.
+git -C "$FAKE_MAIN" worktree add -q --detach "$FAKE_HOME/qa-detached-worktree" >/dev/null 2>&1
+(
+  cd "$FAKE_HOME/qa-detached-worktree" || exit 1
+  echo change > f
+  git add -A
+  git commit -qm "dangling commit, not on any branch"
+) >/dev/null 2>&1
+WORKTREE_OWNER["$FAKE_HOME/qa-detached-worktree"]="$FAKE_MAIN"
+if remove_entry "$FAKE_HOME/qa-detached-worktree" >/dev/null 2>&1; then
+  bad "remove_entry must refuse a clean worktree with an unreachable HEAD commit, it did not"
+else
+  [ -d "$FAKE_HOME/qa-detached-worktree" ] \
+    && ok "remove_entry refuses a clean registered worktree whose HEAD commit is unreachable from any branch/remote/tag (B3 fix)" \
+    || bad "remove_entry removed the worktree despite the unreachable-HEAD guard"
 fi
 
 # --- remove_entry(): plain non-git dir -> rm -rf -----------------------------------------------

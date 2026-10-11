@@ -19649,6 +19649,55 @@ Teljes suite + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
 
 **Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, 16380 vege).
 
+## 2026-10-11 -- bc1e7ef2 delta-fix round 2: WhiteHat NO-GO on 789fd6ef (B1/B2/B3)
+
+**Forrás:** WhiteHat (cybersec) NO-GO, komment 16566, saját eldobható SHA-pinnelt gate-worktree-ben
+(`/home/neon/wh-gate-789fd6ef`) reprodukálva, `--apply` csak ál-$HOME-on futtatva. MikroB döntés
+(16567) a javítás irányára, gate-kijelölést is átírta: Re-gate QA + RedHat (a B1-B3 javítási sorokat
+WhiteHat ÉS WhiteHat2 is javasolta, ezért a biztonsági gate RedHat).
+
+**B1 (HIGH, BLOKKOLÓ):** a `has_live_process_under()` hívás a `classify()`-ban az `if [ -n "$owner" ]`
+ágon BELÜL futott, tehát csak REGISZTRÁLT worktree-kre nézte a cwd/fd-t. QA saját reprodukciós alakja
+(sima `mkdir` + `tail -f`, nem worktree) a `--apply --yes` alatt a 789fd6ef fán IS törlődött, mert egy
+nem regisztrált mappa sosem jutott el az `owner`-ágig. Élő mérés (ca59cabc dry-run, élő `/home/neon`):
+DISPOSABLE=193, ebből 69 nem regisztrált -- ott a javítás korábban nem védett.
+
+**B2 (HIGH/MEDIUM, BLOKKOLÓ az `--apply` jóváhagyásához):** az életkor-jel a CSAK a tető mappa saját
+mtime-ja volt. Egy mély fájl szerkesztése nem mozdítja a tető mtime-ját, tehát egy régi-tetejű, de
+frissen szerkesztett tartalmú mappa (pl. `qa-deep`) DISPOSABLE-nek osztályozódott és törlődött.
+
+**B3 (MEDIUM-HIGH, BLOKKOLÓ az `--apply` jóváhagyásához):** egy tiszta (git status szerint nem dirty),
+REGISZTRÁLT worktree detached HEAD-je, amire semelyik branch/remote/tag nem mutat, `git worktree
+remove --force` után dangling objektummá válik -- `git gc`-ig menthető, de a `status --porcelain` ezt
+nem látja, tehát a meglévő dirty-ellenőrzés nem véd ellene.
+
+**Javítás:**
+1. B1: a `has_live_process_under()` hívás kikerült a `if owner` ágból, MINDEN jelölt mappára lefut,
+   közvetlenül a `HAS_ACTIVE_CHILD` rövidzár után, mielőtt a `classify()` egyáltalán megnézné, van-e
+   `owner`-je a mappának.
+2. B2: az életkor-ellenőrzés `find "$path" -mmin "-$((MIN_AGE_HOURS*60))" -print -quit` -- ha BÁRMELY
+   fájl a fában (bármilyen mélységben) az ablakon belül módosult, a mappa UNKNOWN, nem DISPOSABLE.
+3. B3: `remove_entry()`-ben, a dirty-ellenőrzés UTÁN, regisztrált worktree-nél: `git rev-list -n1 HEAD
+   --not --branches --remotes --tags` -- ha nem üres (a HEAD semelyik branch/remote/tag-ről nem
+   érhető el), SKIP, nincs törlés.
+
+**Teszt:** `store/wsl-home-cleanup.selftest.sh`, MikroB kifejezett utasítása szerint (16567: "a teszt a
+classify()/--apply útvonalon fusson, ne a függvényt hívja közvetlenül") -- az előző kör `has_live_
+process_under()`-t KÖZVETLENÜL hívó esete KICSERÉLVE két `classify()`-szintű, UNREGISZTERT mappás
+esetre (fd-ág és cwd-ág, QA saját alakja), plusz egy `classify()`-szintű mély-mtime eset (B2), plusz egy
+`remove_entry()`-szintű eset egy valódi, detached HEAD-es, el nem ért commitú registered worktree-vel
+(B3). 22/22 zöld. MUTÁCIÓ-PROOF mindhárom javításra KÜLÖN-KÜLÖN: a B1-fix kikapcsolása (a hívás elé
+`false &&`) pontosan a 2 új B1-tesztet viszi pirosra (20/22), minden más zöld; a B2-fix visszaállítása
+a régi top-mtime logikára pontosan 1 tesztet visz pirosra (21/22); a B3-ellenőrző blokk kivétele
+pontosan 1 tesztet visz pirosra (21/22). Mindhárom mutáció után a javítás visszaállítva, 22/22 zöld
+megerősítve. `bash -n store/wsl-home-cleanup.sh`: tiszta.
+
+**Nem ebben a körben (MikroB döntés: nem blokkoló, csak akkor javítjuk, ha olcsó -- ez a kör nem nyúlt
+hozzá):** F4 (gitignore-olt fájl elvész egy egyébként tiszta worktree-ben), F5 (szóközös útvonalú
+worktree az awk `$2`-n csonkul), F6 (a dry-run riport nem ad okot az ACTIVE besoroláshoz).
+
+**Ki döntött:** backend2 (MikroB döntése a WhiteHat NO-GO után). Delta-gate: QA + RedHat.
+
 **Utólagos RedHat NO-GO (komment 16554, Gate-SHA 20f0ae19):** a strukturált verdikt-rekord bekapcsolva LAZÍTOTT a zárási kapun, nem szigorított -- a közös tokennel bárki saját néven írt QA PASS + CYBERED GO rekordot a guard engedte (B1, szerep-kötés hiánya), a proposer-kizárás a kérés saját mezőjét nézte (B2), és egy régebbi pozitív komment egy újabb negatív strukturált rekordot csendben felülírt (B3). MikroB döntése (komment 16557): `AGENT_VERDICT_RECORD` marad KIKAPCSOLVA, amíg B1-B3 nincs javítva és re-gate-elve; B1 (szerep-allowlist a hitelesített agent-kulcs szerepére) a 9655494c F1 (kulcs-kiosztás) UTÁN jöhet, mert az agent-kulcs nélkül nincs mit a szerep-allowlistnek ellenőriznie.
 
 ## 2026-10-11 -- 9655494c F1: agent:<id> kulcs kiosztás/rotáció/visszavonás (2520b85a szelet 2/3, plan-grilling friss menet)
