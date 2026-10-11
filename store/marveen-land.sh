@@ -294,6 +294,41 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "  FAIL the bare-exec mutation should have silenced stderr too, but got: [$buggy_survives]"; fail=1
   fi
 
+  # RedHat NO-GO 16486, B2' (fourth round): the two tests above pin release_land_lock_fd's OWN
+  # body, but RedHat measured that reverting land_one's CALL SITES (the two cleanup() definitions,
+  # or acquire_land_lock's own fd-close) back to an inline bare `exec {LAND_LOCK_FD}>&- 2>/dev/null`
+  # left every one of the 55 prior cases green -- nothing pinned that the call sites actually call
+  # the function. Two textual (comment-stripped) pins on $0 itself, scoped to production code only
+  # (excluding this --selftest block's own string literals, which quote the bug pattern on purpose).
+  n=$((n + 1))
+  prod_src="$(awk '
+    /^if \[ "\$\{1:-\}" = "--selftest" \]; then$/ { in_st = 1 }
+    in_st { if ($0 == "fi") { in_st = 0 }; next }
+    /^release_land_lock_fd\(\) \{$/ { in_fn = 1 }
+    in_fn { if ($0 == "}") { in_fn = 0 }; next }
+    { print }
+  ' "$0" | grep -v '^[[:space:]]*#')"
+  if printf '%s\n' "$prod_src" | grep -qE 'exec \{LAND_LOCK_FD\}>&-'; then
+    echo "  FAIL found a bare 'exec {LAND_LOCK_FD}>&-' in production code outside release_land_lock_fd (B2')"; fail=1
+  else
+    echo "  ok   no bare exec {LAND_LOCK_FD}>&- exists outside release_land_lock_fd anywhere in production code (B2')"
+  fi
+
+  n=$((n + 1))
+  cleanup_bodies="$(printf '%s\n' "$prod_src" | awk '
+    /cleanup\(\) \{.*\}/ { print; next }
+    /cleanup\(\) \{[[:space:]]*$/ { p = 1; print; next }
+    p { print }
+    p && /^[[:space:]]*}[[:space:]]*$/ { p = 0 }
+  ')"
+  cleanup_defs="$(printf '%s\n' "$cleanup_bodies" | grep -c 'cleanup() {')"
+  cleanup_calls="$(printf '%s\n' "$cleanup_bodies" | grep -c 'release_land_lock_fd')"
+  if [ "$cleanup_defs" -eq 2 ] && [ "$cleanup_calls" -eq 2 ]; then
+    echo "  ok   both land_one cleanup() definitions call release_land_lock_fd, not an inline exec (B2')"
+  else
+    echo "  FAIL expected exactly 2 cleanup() definitions each calling release_land_lock_fd, got defs=$cleanup_defs calls=$cleanup_calls"; fail=1
+  fi
+
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
 fi
@@ -385,7 +420,10 @@ acquire_land_lock() {
   : >>"$LAND_LOCK_FILE" 2>/dev/null || return 1
   exec {LAND_LOCK_FD}>>"$LAND_LOCK_FILE" || return 1
   if flock -n "$LAND_LOCK_FD"; then return 0; fi
-  exec {LAND_LOCK_FD}>&-
+  # RedHat NO-GO 16486, B2': route this fd-close through release_land_lock_fd too, so there is
+  # exactly ONE place in production code that closes LAND_LOCK_FD with a bare exec (the function
+  # itself) -- a selftest pin below greps for that invariant across the whole file.
+  release_land_lock_fd
   return 1
 }
 

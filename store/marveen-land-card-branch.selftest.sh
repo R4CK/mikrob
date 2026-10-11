@@ -522,6 +522,44 @@ else
   echo "  FAIL expected the label-only card to refuse as no-interpretable-Gate-line -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
 fi
 
+# N-a (RedHat NO-GO 16486, measured tool gap): the union must be read from EVERY "Gate:" line, not
+# just the LAST one -- bad777/N1b above only grows the designation (QA, then QA+RedHat), so a
+# last-line-only mutant happens to refuse there too and the gap goes uncaught. Here the order is
+# REVERSED: the first round designates "QA + RedHat", a later round's line narrows the TEXT to just
+# "Gate: QA" -- the union must still require RedHat (a card cannot un-designate a gate by writing a
+# weaker line later), while a last-line-only reader would wrongly settle for QA alone.
+git -C "$MAIN" checkout -q -b card/cafe66 develop
+echo "cafe66 content" > "$MAIN/cafe66.txt"
+git -C "$MAIN" add cafe66.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card cafe66: add cafe66.txt"
+git -C "$MAIN" checkout -q develop
+SHA_CAFE66="$(git -C "$MAIN" rev-parse card/cafe66)"
+set_card_desc cafe66 "First round, high risk.
+Gate: QA + RedHat
+
+Second round, text narrowed by mistake -- the union must not shrink.
+Gate: QA"
+printf '[{"author":"qa","content":"QA PASS\\nGate-SHA: %s"}]' "$SHA_CAFE66" > "$GET_DIR/cafe66.json"
+
+n=$((n + 1))
+land_card cafe66 backend3
+if [ "$rc" != 0 ] && grep -q "card cafe66's designated gates" "$OUT_FILE"; then
+  echo "  ok   a QA PASS alone does not land cafe66 even though its LAST Gate: line only says QA (N-a, union over last-line)"
+else
+  echo "  FAIL expected cafe66 to refuse on the union (RedHat still required from the first Gate: line) -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+printf '[{"author":"qa","content":"QA PASS\\nGate-SHA: %s"},{"author":"cybered","content":"CYBERED GO\\nGate-SHA: %s"}]' \
+  "$SHA_CAFE66" "$SHA_CAFE66" > "$GET_DIR/cafe66.json"
+
+n=$((n + 1))
+land_card cafe66 backend3
+if [ "$rc" = 0 ] && grep -q "LANDED card/cafe66 -> origin/develop" "$OUT_FILE"; then
+  echo "  ok   QA PASS + RedHat GO (the union of both Gate: lines) lands cafe66 cleanly (N-a)"
+else
+  echo "  FAIL expected cafe66 to land once both unioned gates agree -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
 # N2: the "UNGATED LANDING" note must be posted ONLY after a successful merge+push -- not when the
 # gate-check tolerance was granted but the landing failed for an UNRELATED reason afterwards (here:
 # a forced fleet-test failure). Bypasses land_card() to override MARVEEN_LAND_TEST per-call.
