@@ -61,7 +61,7 @@ function fakeRes(): { res: http.ServerResponse; getBody: () => any } {
   return { res, getBody: () => (body ? JSON.parse(body) : null) }
 }
 
-async function post(bodyPayload: unknown, auth?: RouteContext['auth']): Promise<any> {
+async function post(bodyPayload: unknown, auth?: RouteContext['auth']): Promise<{ id: number }> {
   const { res, getBody } = fakeRes()
   await tryHandleMemories({
     req: fakeReq(bodyPayload),
@@ -71,7 +71,7 @@ async function post(bodyPayload: unknown, auth?: RouteContext['auth']): Promise<
     url: new URL('http://x/api/memories'),
     auth,
   })
-  return getBody()
+  return getBody() as { id: number }
 }
 
 function rowFor(id: number): { agent_id: string; written_by_agent_key: string | null } {
