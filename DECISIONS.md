@@ -18882,3 +18882,15 @@ a flotta-szintu elesitest es az agent-hatar garanciat irja le, a tomor fork-fejl
 
 **Ki dontott:** Peti (Telegram 10914). A vegrehajtas (feature-flag bovites, README, ez a bejegyzes)
 fullstack sajat munkaja. Gate: QA + Cybersec, a kartya sajat kijelolese szerint.
+
+## 2026-10-11 -- card 84dcc5d4: memoria-iras szerzo-hitelesitese, uj written_by_agent_key oszlop (WhiteHat F1 a 86d5de34-en)
+
+**A hiba (WhiteHat F1, 86d5de34, msg 10474):** a POST /api/memories `agent_id` mezoje nem volt hitelesitve -- a megosztott dashboard tokennel bárki irhatott memoriat masik ugynok (pl. qa, cybersec) neve alatt, es a session-inditasi sajat-kuralt memoria-injekcio ezt a hamisitott sort a celpont ugynoknek SAJAT, megbizhato emlekekent toltotte be -- prompt-injekcios ut.
+
+**Javitas, ket resz:** (1) Iras oldalon (`src/web/routes/memories.ts`): ha a hivo per-agent device key-vel hitelesitett (`agent:<id>` konvencio, `src/web/auth-device-keys.ts`), EZ az identitas kerul `agent_id`-kent (a body ertekenek felulirasaval), es egy UJ `written_by_agent_key` oszlopba is beirodik (`src/db.ts`, schema-bovites). A megosztott tokennel erkezo iras a regi viselkedest tartja byte-for-byte: body-beli `agent_id` bizalma, `written_by_agent_key` NULL. (2) Olvasas oldalon: `hybridSearch`/`searchAgentMemories`/`vectorSearch` uj `selfAuthenticatedOnly` parametere -- egy sor csak akkor szamit "sajatnak", ha `written_by_agent_key` egyezik a lekerdezo ugynokkel, nem elegendo ha csak az `agent_id` egyezik. Minden korabbi sor (es minden jovobeli megosztott-tokenes iras) `written_by_agent_key = NULL`, tehat a lyuk MINDEN meglevo adatra is azonnal zarodik, nem csak az ezutan irt sorokra. A `scripts/hooks/shared-memory-inject.py` sajat-kuralt lekerdezese mostantol mindig `self_authenticated=1`-et kuld.
+
+**Meg nem tortent:** per-agent device key-ek minteseje/szetosztasa a 4 gate-ugynoknek (qa, cybersec, cybered -- es a 4. kivett ugynok) kulon dontes MikroB reszerol; addig ok a session-inditasi sajat-kuralt injekciobol kivannak (mar korabban kivéve, MikroB 20:5x).
+
+**Meres:** teljes mopsion/marveen suite a merge eredmenyen (`marveen-land.sh fullstack`, Gate-SHA d30a371d): 956/956 teszt-fajl zold, 27277 teszt zold + 101 skip. `lint-ratchet.sh`: `@typescript-eslint/no-unused-vars` 155 -> 154 (javulas), semmi nem romlott.
+
+**Ki dontott:** a leletet WhiteHat adta (CYBERSEC GO a 86d5de34-en, F1 kovetelmeny), a javitast backend3 kezdte (commit 80f116f0), a landolast + lint-fixet (commit 6f255146) fullstack vegezte. Gate: QA + Cybered, a kartya sajat kijelolese szerint.
