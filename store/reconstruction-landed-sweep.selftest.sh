@@ -3,14 +3,26 @@
 # store/reconstruction-landed-sweep.sh's first_landed() (card 6f887d39).
 #
 # The script itself talks to the live dashboard and two fixed repo paths, so this does not invoke it
-# as a subprocess -- it runs the SAME git-log invocation the fix uses (extended regex, case-insensitive,
-# "card|kártya|kartya" immediately before the id) against a throwaway repo, and checks it against real
-# commit shapes pulled from marveen's own history so the cases are not invented.
+# as a subprocess -- instead it SOURCES the real file (card 9ff184d8) and calls the real first_landed()
+# against a throwaway repo, with real commit shapes pulled from marveen's own history so the cases
+# are not invented. Sourcing (rather than running) skips the dashboard sweep below first_landed() in
+# the real file -- see that file's own BASH_SOURCE guard comment.
+#
+# WHY SOURCING, NOT A COPIED REGEX (QA, card 6f887d39, gate on 02c77848 + comment 4226). This file
+# used to hand-copy first_landed()'s grep pattern into its own attributed()/first_landed_sha()
+# helpers. QA mutated the REAL file twice (reverted the plural "cards?" back to "card", and removed
+# --reverse) and measured this selftest staying 9/9 green BOTH times -- it was testing its own frozen
+# copy, not the function it claimed to cover. Sourcing the real file means a mutation there is now
+# exercised directly; re-running the same two mutations after this fix turns the matching cases red
+# (case7a for the plural revert, case8 for the --reverse removal), confirmed by hand before landing.
 set -uo pipefail
 
 pass=0; fail=0
 ok()  { pass=$((pass+1)); }
 bad() { fail=$((fail+1)); echo "  FAIL: $1"; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/reconstruction-landed-sweep.sh"
 
 G() { git -C "$1" -c user.email=t@t -c user.name=t -c commit.gpgsign=false "${@:2}"; }
 
@@ -19,26 +31,16 @@ REPO="$TMP/r"; mkdir -p "$REPO"
 G "$REPO" init -q -b main
 echo one > "$REPO/f"; G "$REPO" add -A; G "$REPO" commit -qm c0
 
-# attributed(): 1 if any commit on main is found by the fixed pattern for <id>, else 0.
+# attributed(): 1 if the REAL first_landed() (sourced above) finds a commit on main for <id>, else 0.
 attributed() {
   local id="$1"
-  git -C "$REPO" log --oneline --extended-regexp --regexp-ignore-case \
-    --grep="(cards?|kártya|kartya)[^0-9a-zA-Z]{0,4}$id" main 2>/dev/null | grep -q .
-  [ $? -eq 0 ] && echo 1 || echo 0
+  [ -n "$(first_landed "$REPO" main "$id")" ] && echo 1 || echo 0
 }
 
-# first_landed_sha(): mirrors the REAL first_landed() in reconstruction-landed-sweep.sh (same
-# ordering, same ancestor check) so the revert-precedence case exercises the actual returned sha,
-# not just whether something matched.
+# first_landed_sha(): thin wrapper so the revert-precedence case reads naturally; calls straight
+# through to the REAL first_landed(), no copy.
 first_landed_sha() {
-  local id="$1" sha
-  while read -r sha _; do
-    [ -n "$sha" ] || continue
-    if git -C "$REPO" merge-base --is-ancestor "$sha" main 2>/dev/null; then
-      echo "$sha"; return 0
-    fi
-  done < <(git -C "$REPO" log --oneline --reverse --extended-regexp --regexp-ignore-case \
-    --grep="(cards?|kártya|kartya)[^0-9a-zA-Z]{0,4}$id" main 2>/dev/null)
+  first_landed "$REPO" main "$1"
 }
 
 # case 1: the real false positive this card exists for -- 5f2499713903's actual body text.
