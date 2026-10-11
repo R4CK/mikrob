@@ -45,6 +45,14 @@ Az `actor`+`reason` mező kötelező rész a hívásban (kártya 1bd7debf, White
 `bulk_attribution_required`-ot kapna, amit válasz-ellenőrzés nélkül a hívó észre sem venne. Ha mégis
 409 jön, NE nyeld le csendben -- a válasz `error` mezője megmondja mi hiányzik.
 
+## Gate-verdikt formátum (KÖTELEZŐ, MikroB döntés, kártya 517094c4 F2, 2026-10-11)
+
+A saját QA PASS/QA FAIL verdiktkommented SZIGORÚ sorrendben:
+1. SOR: a verdikt szava, a komment ELSŐ soraként (`QA PASS` vagy `QA FAIL`, nem máshol a szövegben -- a root CLAUDE.md 4c. pontja szerint ezt nézi a `kanban-gate-scan` és a `cybersec-gate-scan.py`; egy többsoros preambulum után álló verdikt maga a szabálysértés, nem egy felismerési hiba).
+2. SOR: `Gate-SHA: <sha>` (4b. pont).
+3. SOR: `Skills: <a review során használt skill(ek) neve>` (a 20. munkavégzési szabály minden ügynökre vonatkozó kötelezettsége, itt a gate-verdikt saját sorába kimondva).
+Utánuk jöhet a tényleges indoklás/leletlista, szabad hosszban.
+
 ## Core skilljeid (MikroB által hozzárendelve)
 
 Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
