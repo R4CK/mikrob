@@ -167,6 +167,16 @@ check('curl-oauth2-bearer', r, ['SuperSecretToken123'], ['[REDACTED]'])
 r = amc._redact('curl --password SuperSecretValue123 https://x.example.com')
 check('curl-dash-dash-password', r, ['SuperSecretValue123'], ['[REDACTED]'])
 
+# Card 7e01b349 (RedHat NO-GO on 80c80706, F4b): the curl-oauth2-bearer fixture above uses a long
+# alnum value, which the UNRELATED bearer-token pattern (matching any bare "bearer <token>"
+# substring -- "--oauth2-bearer" itself contains the word "bearer") ALSO redacts independently.
+# Deleting the --oauth2-bearer alternative from the curl-flag pattern left that fixture green:
+# nothing there actually pinned the flag-specific branch. A short value (<8 chars) sidesteps the
+# bearer-pattern's own 8-char minimum, so only the curl-flag pattern's own alternative can redact
+# it here.
+r = amc._redact('curl --oauth2-bearer ab https://x.example.com')
+check('curl-oauth2-bearer-short', r, ['bearer ab'], ['[REDACTED]'])
+
 # Authorization header, by scheme -- Token/ApiKey/Basic were not `bearer`, so the bearer-only
 # pattern never saw them; the new position-based pattern does not key on the scheme word at all.
 for scheme in ('Token', 'ApiKey', 'Basic'):
@@ -221,6 +231,14 @@ check('export-api-key-quoted', r, ['AAABBBCCCDDDEEEFFFGGGHHH'], ['[REDACTED]'])
 # `--password` with a quoted, multi-word value: the old `\S+` capture only grabbed the first word.
 r = amc._redact('curl --password "super secret value" https://x.example.com')
 check('curl-dash-dash-password-quoted-multiword', r, ['super secret value'], ['[REDACTED]'])
+
+# Card 7e01b349 (RedHat NO-GO on 80c80706, F4b): the fixture above only asserts the FULL original
+# value is gone -- a mutation that redacts just the first word (e.g. dropping the quoted-value
+# alternative so the bare \S+ branch grabs only up to the first space) still makes the WHOLE
+# string absent, because "super" is gone from it, even though "secret value" -- the rest of the
+# password -- survives in full. Asserting the TAIL specifically closes that gap.
+r = amc._redact('curl --password "a b c" https://x.example.com')
+check('curl-dash-dash-password-quoted-tail-not-leaked', r, ['b c'], ['[REDACTED]'])
 
 # Glued `-u` (no space): curl accepts both `-u user:pass` and `-uuser:pass`.
 r = amc._redact('curl -uadmin:SuperSecret123 https://x.example.com')
@@ -314,6 +332,26 @@ if _elapsed > 2.0:
         f'FAIL [redos-keyed]: _redact took {_elapsed:.2f}s on a {len(_pathological_keyed)}-char '
         'pathological input built from a REAL key name -- the quoted-value alternative added for '
         'card 7e01b349 may have quadratic/catastrophic-backtracking worst-case behaviour'
+    )
+
+# Card 7e01b349 (RedHat NO-GO on 80c80706, F4b): the probe above is JSON-shaped and does not
+# reliably exercise the KV pattern's OWN quoted-value alternative (`(?:[^"\\]|\\.)*"`, the first
+# pattern in _SECRET_PATTERNS, not the JSON-quoted one). A regression that turns that alternative
+# into the classic (X+|Y)* catastrophic-backtracking shape (adding a `+` to the first branch:
+# `(?:[^"\\]+|\\.)*"`) stayed green against the probe above but blows up on a kv-style, dangling
+# -quote input. Measured on that mutated pattern: this exact shape takes ~3s; on the real code,
+# under 0.01s. Deliberately small (exponential blowup from an unresolved alternation, not the
+# quadratic repeated-substring shape the probes above use) -- 26 characters already separates the
+# two cases cleanly without needing a multi-second pass even on the vulnerable shape.
+_pathological_kv_quoted = 'password="' + ('a' * 26) + '\\'
+_start = _time.monotonic()
+amc._redact(_pathological_kv_quoted)
+_elapsed = _time.monotonic() - _start
+if _elapsed > 2.0:
+    FAILURES.append(
+        f'FAIL [redos-kv-quoted]: _redact took {_elapsed:.2f}s on a {len(_pathological_kv_quoted)}-'
+        'char kv-style dangling-quote input -- the kv pattern\'s own quoted-value alternative may '
+        'have quadratic/catastrophic-backtracking worst-case behaviour'
     )
 
 # Clean text: no redaction of ordinary content

