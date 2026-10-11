@@ -81,7 +81,7 @@ function postComment(cardId: string, payload: unknown) {
   return tryHandleKanban({
     req, res, path, method: 'POST',
     url: new URL(`http://localhost${path}`),
-  } as any).then(handled => ({ handled, ...captured }))
+  } as unknown as Parameters<typeof tryHandleKanban>[0]).then(handled => ({ handled, ...captured }))
 }
 
 describe('POST /api/kanban/:id/comments -- author trust boundary (card 1cdac111)', () => {
