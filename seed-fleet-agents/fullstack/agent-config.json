@@ -1,6 +1,6 @@
 {
-  "model": "claude-opus-5",
-  "displayName": "Fullstack",
+  "model": "claude-sonnet-5",
+  "displayName": "DevO",
   "securityProfile": "developer-senior",
   "authMode": "shared"
 }
