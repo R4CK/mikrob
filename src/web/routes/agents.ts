@@ -1805,7 +1805,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // contract (the channel server polls approved/ to send the "Paired!"
       // confirmation; current server keys off the filename, the chatId
       // contents keep us aligned with the documented format).
-      writeFileSync(join(approvedDir, entry.senderId), String(entry.chatId ?? ''))
+      // Card 3d186397 (Cybersec out-of-scope note on 7503bb31, comment 5384):
+      // entry.senderId is whatever the EXTERNAL channel plugin wrote into
+      // access.json's `pending` map for an unrecognized inbound sender -- this
+      // server trusts it as a path segment with no validation. safeJoin
+      // resolves-then-checks the prefix, so a `../`-shaped or absolute
+      // senderId throws instead of writing outside approvedDir.
+      writeFileSync(safeJoin(approvedDir, entry.senderId), String(entry.chatId ?? ''))
 
       logger.info({ name, provider, senderId: entry.senderId, code }, 'Channel pairing approved')
       json(res, { ok: true, senderId: entry.senderId })
