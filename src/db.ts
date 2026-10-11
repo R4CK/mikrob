@@ -1913,6 +1913,63 @@ export function initDatabase(dbPathOverride?: string): void {
   // line in the same step. Null for keys minted outside the pairing flow.
   try { db.exec(`ALTER TABLE device_keys ADD COLUMN install_id TEXT`) } catch { /* column already exists */ }
 
+  // Structured gate-verdict records (card 2bfa4c67, F2): a verdict comment's TEXT is parsed by
+  // gate-closure-check.py and kanban-gate-completeness-guard.ts with a long, hard-won regex
+  // pipeline (parser-fragility: 4b/4c CLAUDE.md rule-patches), and its `author` field comes from
+  // the request BODY under the one shared dashboard token, so any caller can claim to be any gate
+  // (WhiteHat2 1cdac111 F1). This table is an ADDITIVE, opt-in-read second source, not a
+  // replacement: a new table + two columns on the existing design, zero rows = zero behavior
+  // change, and reading it is gated on AGENT_VERDICT_RECORD (see kanban-verdicts.ts) everywhere it
+  // is consulted. Rollback is `DROP TABLE kanban_verdicts` -- nothing else references it while the
+  // flag is off, see kanban-verdicts.test.ts's rollback test.
+  //
+  // `author_verified`: per the plan-grilling verdict on this card (MikroB, load-bearing
+  // assumption), the structured record does NOT by itself prove authorship while every agent still
+  // shares one dashboard token (card 8ffa0c8a is the eventual network-level fix; card 2520b85a's
+  // measurement-only slice observes but does not yet ENFORCE per-agent identity). So `author` is
+  // resolved from an authenticated `agent:<id>` device key (card 84dcc5d4) when the caller
+  // presents one, with `author_verified=1`; otherwise it falls back to the body's own claim with
+  // `author_verified=0` -- stored, never silently upgraded, so a reader can tell "this really was
+  // WhiteHat2" from "WhiteHat2 was merely claimed".
+  //
+  // `proposer`: RedHat 16225 (card 21abfe0b) -- the agent that proposed the FIX direction a gate is
+  // now asked to verdict on. A gate must never verdict its own proposal (enforced at the route,
+  // not here); a sibling (cybersec vs cybersec2) MAY, since they are different agents.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_verdicts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id TEXT NOT NULL,
+      gate TEXT NOT NULL,
+      verdict TEXT NOT NULL,
+      sha TEXT,
+      round INTEGER NOT NULL DEFAULT 1,
+      findings_ref TEXT,
+      proposer TEXT,
+      author TEXT NOT NULL,
+      author_verified INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_verdicts_card ON kanban_verdicts(card_id, created_at)`)
+
+  // Structured gate-ASSIGNMENT records (card 2bfa4c67, requirement 3): which gates a card
+  // requires, as a field instead of free prose in the description's "Gate: ..." line. APPEND-ONLY
+  // (a new row per change, never an UPDATE) so this table doubles as its own audit trail --
+  // `getKanbanGateAssignmentEvents` below reads the same rows a write produces, no separate event
+  // table needed. Write access is restricted to the MikroB-only actor allowlist at the route layer
+  // (kanban-verdicts.ts, reusing kanban-force-actors.ts's forceActors()), per the plan-grilling
+  // verdict's requirement (2).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_gate_assignments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id TEXT NOT NULL,
+      gates TEXT NOT NULL,
+      actor TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_gate_assignments_card ON kanban_gate_assignments(card_id, created_at)`)
+
   // --- OTel Distributed Tracing (card def5a189) ---
   // SQLite-native span store. No external OTel SDK: spans are written via
   // /api/spans and the message-router middleware injects trace context into
@@ -4089,6 +4146,108 @@ export function getKanbanCardFieldEvents(cardId: string): KanbanCardFieldEvent[]
   return db
     .prepare('SELECT * FROM kanban_card_field_events WHERE card_id = ? ORDER BY created_at ASC, id ASC')
     .all(cardId) as KanbanCardFieldEvent[]
+}
+
+// --- Structured gate-verdict records (card 2bfa4c67) -- see the CREATE TABLE comment above for
+// the full rationale (additive, author_verified, proposer). ---
+
+export type GateVerdictGate = 'QA' | 'CYBERSEC' | 'CYBERED'
+export type GateVerdictWord = 'PASS' | 'FAIL' | 'GO' | 'NO-GO'
+
+export interface KanbanVerdict {
+  readonly id: number
+  readonly card_id: string
+  readonly gate: GateVerdictGate
+  readonly verdict: GateVerdictWord
+  readonly sha: string | null
+  readonly round: number
+  readonly findings_ref: string | null
+  readonly proposer: string | null
+  readonly author: string
+  readonly author_verified: 0 | 1
+  readonly created_at: number
+}
+
+export interface AddKanbanVerdictInput {
+  gate: GateVerdictGate
+  verdict: GateVerdictWord
+  sha?: string | null
+  round?: number
+  findingsRef?: string | null
+  proposer?: string | null
+  author: string
+  authorVerified: boolean
+}
+
+export function addKanbanVerdict(cardId: string, input: AddKanbanVerdictInput): KanbanVerdict {
+  const now = Math.floor(Date.now() / 1000)
+  const info = db
+    .prepare(
+      'INSERT INTO kanban_verdicts (card_id, gate, verdict, sha, round, findings_ref, proposer, author, author_verified, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    .run(
+      cardId,
+      input.gate,
+      input.verdict,
+      input.sha ?? null,
+      input.round ?? 1,
+      input.findingsRef ?? null,
+      input.proposer ?? null,
+      input.author,
+      input.authorVerified ? 1 : 0,
+      now,
+    )
+  return db.prepare('SELECT * FROM kanban_verdicts WHERE id = ?').get(info.lastInsertRowid) as KanbanVerdict
+}
+
+/** All verdicts for a card, oldest first -- the full history, not just the latest per gate. */
+export function getKanbanVerdicts(cardId: string): KanbanVerdict[] {
+  return db
+    .prepare('SELECT * FROM kanban_verdicts WHERE card_id = ? ORDER BY created_at ASC, id ASC')
+    .all(cardId) as KanbanVerdict[]
+}
+
+/** The newest verdict `gate` recorded for `cardId` at or after `sinceTs` (or at all, if `sinceTs`
+ *  is null) -- the structured-record half of the completeness guard's freshness check. */
+export function getFreshKanbanVerdict(cardId: string, gate: GateVerdictGate, sinceTs: number | null): KanbanVerdict | null {
+  const row = sinceTs === null
+    ? db.prepare('SELECT * FROM kanban_verdicts WHERE card_id = ? AND gate = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(cardId, gate)
+    : db.prepare('SELECT * FROM kanban_verdicts WHERE card_id = ? AND gate = ? AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT 1').get(cardId, gate, sinceTs)
+  return (row as KanbanVerdict | undefined) ?? null
+}
+
+// --- Structured gate-ASSIGNMENT records (card 2bfa4c67) -- append-only, latest row = current. ---
+
+export interface KanbanGateAssignment {
+  readonly id: number
+  readonly card_id: string
+  readonly gates: string
+  readonly actor: string
+  readonly created_at: number
+}
+
+export function setKanbanGateAssignment(cardId: string, gates: readonly GateVerdictGate[], actor: string): KanbanGateAssignment {
+  const now = Math.floor(Date.now() / 1000)
+  const info = db
+    .prepare('INSERT INTO kanban_gate_assignments (card_id, gates, actor, created_at) VALUES (?, ?, ?, ?)')
+    .run(cardId, JSON.stringify(gates), actor, now)
+  return db.prepare('SELECT * FROM kanban_gate_assignments WHERE id = ?').get(info.lastInsertRowid) as KanbanGateAssignment
+}
+
+/** The current assignment (latest row), or null if none was ever set for this card. */
+export function getKanbanGateAssignment(cardId: string): KanbanGateAssignment | null {
+  const row = db
+    .prepare('SELECT * FROM kanban_gate_assignments WHERE card_id = ? ORDER BY created_at DESC, id DESC LIMIT 1')
+    .get(cardId)
+  return (row as KanbanGateAssignment | undefined) ?? null
+}
+
+/** Every assignment ever set for this card, oldest first -- the append-only log IS the audit
+ *  trail (plan-grilling requirement (2): "minden módosítás eseménynaplóba kerüljön"). */
+export function getKanbanGateAssignmentEvents(cardId: string): KanbanGateAssignment[] {
+  return db
+    .prepare('SELECT * FROM kanban_gate_assignments WHERE card_id = ? ORDER BY created_at ASC, id ASC')
+    .all(cardId) as KanbanGateAssignment[]
 }
 
 export function getChildCards(parentId: string): KanbanCard[] {
