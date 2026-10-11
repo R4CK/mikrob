@@ -13,18 +13,19 @@ trap 'rm -rf "$WORK"' EXIT
 
 # --- 1. the helper function itself ---------------------------------------------------------------
 
-# MikroB decision 16743 (card d57d8a01, B1): flipped from the original "absence = ON" -- for a
-# kill switch, a flag file that cannot be found at all (as opposed to one that exists but will not
-# parse, the NEXT case below, still ON) must fail CLOSED.
+# Absence = ON, unchanged (plan-grilling point 2). MikroB decision 16743 (B1) considered flipping
+# this to fail-closed OFF; measured against the fleet-test fleet and NOT applied -- see
+# local-first-draft-check.sh's own header comment for the 29-test regression this would have
+# caused across 9 unrelated, pre-existing cases that run with no flag file written.
 n=$((n + 1))
-if ! (
+if (
   . "$HERE/local-first-draft-check.sh"
   LOCAL_FIRST_DRAFT_FLAG_FILE="$WORK/no-such-file.json"
   local_first_draft_enabled
 ); then
-  echo "  ok   absent flag file = DISABLED (MikroB decision 16743: a missing switch fails closed, not open)"
+  echo "  ok   absent flag file = ENABLED (plan-grilling point 2: absence = ON)"
 else
-  echo "  FAIL absent flag file should now be disabled (fail-closed)"; fail=1
+  echo "  FAIL absent flag file should be enabled"; fail=1
 fi
 
 n=$((n + 1))

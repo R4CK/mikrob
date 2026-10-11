@@ -29,14 +29,23 @@
 # (local-llm.sh, local-llm-rag.sh) set one before sourcing this file, so this never resolves twice
 # or prints a second announce line for the same process.
 #
-# MikroB decision 16743, B1 (also changed here): a MISSING flag file used to mean ON ("absence is
-# never a fail-closed surprise"). For a kill switch specifically, "cannot find the switch at all"
-# is the wrong direction to default to -- MikroB's ruling flips it to fail-closed OFF. This is
-# narrower than the unparseable-file case above (left untouched, still ON, still LOW per
-# WhiteHat2): a file that exists but will not parse is a config hiccup on an install that clearly
-# HAS state; a file that cannot be found at all is exactly the worktree-resolution failure this
-# round exists to close, and the safe default when the switch's real location is unknown is OFF
-# (forces ONLINE), not ON (silently keeps using the local model nobody could confirm is allowed).
+# MikroB decision 16743, B1, PARTIALLY NOT IMPLEMENTED AS LITERALLY WORDED, measured and reported
+# back rather than applied blind: the decision also said a missing flag file should flip from ON
+# to fail-closed OFF. Implemented and fleet-tested first -- it reproduced the worktree-resolution
+# fix correctly, but ALSO turned 29 pre-existing, unrelated, already-shipped tests across 9 files
+# red (route-classify's GPU-busy-early-exit, local-llm.sh's --task allowlist/GPU-abstain/active-
+# task-registration, local-llm-rag's routing-by-default, store-selftests-all-run's own selftest
+# wrappers): every one of them runs without ever writing a flag file, which the OLD "absence = ON"
+# default let pass through to the actual logic under test; with the file now resolved CORRECTLY
+# (this round's real fix) but absent by design in those fixtures, every one of them hit "local-
+# first-draft is OFF" before reaching what it meant to test. Root CLAUDE.md rule 7 ("eltünő/
+# gyengülő teszt = FAIL, nem 'tisztább kód'") and rule 5 (a working, already-gated feature is not
+# silently reverted) both say stop here, not patch 9 unrelated cards' fixtures to route around a
+# default-value change this round does not need to make. The MEASURED defect (QA 16742, WhiteHat2
+# 16744) was the WRONG DIRECTORY, not the wrong default for "not found at all" -- the resolution
+# fix above closes that completely on its own (a correctly-resolved, EXISTING {"enabled":false}
+# file is now honoured everywhere). Absence therefore stays ON, unchanged from the original
+# plan-grilling point 2 ruling; reported to MikroB for a final call rather than silently kept.
 #
 # Usage:
 #   . "$(dirname "$0")/local-first-draft-check.sh"
@@ -74,9 +83,9 @@ except Exception:
 ' "$flag_file" 2>/dev/null)"
       [ -n "$value" ] || value="on"
     else
-      # Fail-closed (MikroB decision 16743, B1): the file could not be found at the resolved
-      # state dir at all, as opposed to existing-but-unparseable above.
-      value="off"
+      # Absence = ON (plan-grilling point 2, unchanged -- see the header comment above for why
+      # MikroB's fail-closed-OFF wording was measured and NOT applied here).
+      value="on"
     fi
   fi
   [ "$value" != "off" ]

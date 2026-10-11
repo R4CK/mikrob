@@ -1974,18 +1974,17 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // GET /api/local-llm/first-draft-enabled -> the master kill-switch state (card d57d8a01).
-  // MikroB decision 16743 (QA FAIL 16742 / WhiteHat2 NO-GO 16744, B1): a MISSING file now means
-  // DISABLED (fail-closed), flipped from the original "absence = ON" -- store/local-first-draft-
-  // check.sh's shell side made the same flip, for the same reason (a kill switch whose own state
-  // cannot be found should default to the safe direction). A file that EXISTS but will not parse
-  // still fails open (enabled stays true): that is a config hiccup on an install that clearly HAS
-  // state, not a resolution failure, and stays unchanged (WhiteHat2 measured this as LOW).
+  // GET /api/local-llm/first-draft-enabled -> the master kill-switch state (card d57d8a01). Absence
+  // of the file, or any unreadable/unparseable content, means ENABLED -- same fail-open default
+  // store/local-first-draft-check.sh's shell side uses (plan-grilling point 2: "absence = ON"), so
+  // the API and the shell side can never disagree about what "no file" means. MikroB decision
+  // 16743 (B1) considered flipping this to fail-closed for a missing file specifically; measured
+  // and NOT applied -- see local-first-draft-check.sh's header comment for why (29 unrelated,
+  // pre-existing tests broke).
   if (path === '/api/local-llm/first-draft-enabled' && method === 'GET') {
-    let enabled = false
+    let enabled = true
     let note = ''
     if (existsSync(FIRST_DRAFT_FLAG_FILE)) {
-      enabled = true
       try {
         const parsed = JSON.parse(readFileSync(FIRST_DRAFT_FLAG_FILE, 'utf-8'))
         enabled = parsed?.enabled !== false

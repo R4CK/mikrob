@@ -75,10 +75,10 @@ afterAll(() => {
 })
 
 describe('GET /api/local-llm/first-draft-enabled', () => {
-  it('no file at all -> enabled:false (MikroB decision 16743: a missing switch fails closed)', async () => {
+  it('no file at all -> enabled:true (absence = ON, same default every shell reader uses)', async () => {
     const r = await get()
     expect(r.status).toBe(200)
-    expect(r.body).toEqual({ enabled: false, note: '' })
+    expect(r.body).toEqual({ enabled: true, note: '' })
   })
 
   it('reflects a {"enabled": false} file written by hand/by a previous POST', async () => {
