@@ -30,6 +30,7 @@ import {
   buildAgentTierRows,
   decideParkedModelUpdate,
   applyNoHaikuFloor,
+  isModelPinned,
   type AgentTierRow,
 } from '../model-catalog.js'
 import {
@@ -159,6 +160,9 @@ export async function restartFor(name: string, opts: { fresh: boolean }): Promis
  * no banner axis, and a write instead of a write+restart.
  */
 function updateStoredModelForParkedAgent(name: string, weeklyIdx: number): void {
+  // Pinned agents (card d8d035f8, Peti 11011): hold whatever model they are on, park/start cycle
+  // included -- the weekly ramp must never touch them, not even via the no-live-session path.
+  if (isModelPinned(name)) return
   const currentModel = readModelFor(name)
   const agentTier = Math.max(0, weeklyIdx)
   // The model-CHOICE decision is a pure function (model-catalog.ts, card a115cd7f): it also enforces
@@ -214,6 +218,11 @@ export function resolveTargetModel(agentName: string, bannerModel: string, weekl
 }
 
 async function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig, weeklyIdx: number): Promise<void> {
+  // Pinned agents (card d8d035f8, Peti 11011, Telegram): exempt from BOTH axes -- the banner-fallback
+  // (5h-limit downgrade/revert) and the weekly tier. Checked before anything else so neither axis ever
+  // computes a target for them, running or parked.
+  if (isModelPinned(name)) return
+
   // A PARKED sub-agent has no live pane, so the banner axis (which needs to read a usage-limit
   // banner and restart a running session) cannot apply -- but the WEEKLY tier still must update its
   // STORED model, or a park/start cycle silently exempts it from the whole ramp: it would start back
@@ -328,7 +337,8 @@ async function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig,
  * The read-only per-agent tier state the dashboard renders (card 5d2002b5 redesign, point 4).
  * Recomputes the fleet tier from the live weekly % (seeded with the in-memory tier so the hysteresis
  * matches what the sweep will do), then, for every agent, reports its DURABLE base, its actual current
- * model, and where the ramp targets it from its OWN base. mikrob-channels (MAIN) is exempt.
+ * model, and where the ramp targets it from its OWN base. mikrob-channels (MAIN) is exempt, and so is
+ * any MODEL_PINNED_AGENTS member (card d8d035f8).
  *
  * The base shown is the durable baseline when the agent has been stepped down, else its current model
  * (never stepped => it IS its own base). No IO beyond reading the same files the sweep reads.
@@ -351,7 +361,7 @@ export function readFleetTierState(): {
     rows.push({ name, baseModel, currentModel, exempt })
   }
   collect(MAIN_AGENT_ID, true)
-  for (const name of listAgentNames()) collect(name, false)
+  for (const name of listAgentNames()) collect(name, isModelPinned(name))
 
   return {
     weeklyTierEnabled: cfg.weeklyTierEnabled,
