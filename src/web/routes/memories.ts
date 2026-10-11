@@ -10,6 +10,7 @@ import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MO
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { HybridSearchTrace } from '../../db.js'
 import type { RouteContext } from './types.js'
 
@@ -93,7 +94,7 @@ function containsSuspiciousContent(content: string): boolean {
 }
 
 export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
-  const { req, res, path, method, url } = ctx
+  const { req, res, path, method, url, auth } = ctx
 
   if (path === '/api/memories' && method === 'POST') {
     const body = await readBody(req)
@@ -112,12 +113,25 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `Invalid category "${category}". Allowed: ${[...MEMORY_CATEGORIES].join(', ')}` }, 400)
       return true
     }
+    // Card 84dcc5d4 (WhiteHat F1 on 86d5de34, HIGH): agent_id in the body is caller-supplied and
+    // never authenticated -- the shared dashboard token lets any caller claim to be any agent.
+    // When the caller instead authenticated with a per-agent device key (name convention
+    // "agent:<id>", see auth-device-keys.ts), that key's identity is the AUTHENTICATED agent_id:
+    // it overrides whatever the body claims (closing the forgery for anyone who adopts a key) and
+    // is recorded separately so the own-curated session-injection query (hybridSearch's
+    // selfAuthenticatedOnly) can require it. A shared-token caller (today's status quo for every
+    // existing write) keeps the old behaviour byte-for-byte: body agent_id trusted, written_by
+    // null, so the write simply never qualifies as "self" for that stricter query -- not a
+    // regression, since nothing qualified before this card either.
+    const authenticatedAgentId = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
+    const agentId = authenticatedAgentId || data.agent_id || MAIN_AGENT_ID
     const result = saveAgentMemory(
-      data.agent_id || MAIN_AGENT_ID,
+      agentId,
       data.content.trim(),
       category,
       data.keywords || undefined,
-      true
+      true,
+      authenticatedAgentId
     )
     // Warn-only homoglyph check (GATEHOMOGLIFSWEEP816): the save above already
     // happened -- legitimate Cyrillic/Greek content (quotes, foreign records)
@@ -180,8 +194,13 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // `limit`, which meant a filtered search truncated silently -- and said
     // relaxed=false while doing it. Every search branch below takes it now.
     const searchCategory = tier || undefined
+    // Card 84dcc5d4: opt-in, used by the session-start own-curated injection ONLY (it is the
+    // consumer this card's HIGH finding is about) -- restricts results to rows an AUTHENTICATED
+    // per-agent key wrote (written_by_agent_key = agentId), not merely rows self-reporting this
+    // agent_id in an unauthenticated write body. Every other caller omits it, unaffected.
+    const selfAuthenticatedOnly = url.searchParams.get('self_authenticated') === '1'
     if (q && mode === 'hybrid') {
-      results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, hybridTrace, searchCategory)
+      results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, hybridTrace, searchCategory, selfAuthenticatedOnly)
     } else if (q && agentId) {
       results = searchAgentMemories(agentId, q, limit, searchTrace, !strictOnly, searchCategory)
       if (results.length === 0) {

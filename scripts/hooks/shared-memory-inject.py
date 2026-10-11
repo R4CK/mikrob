@@ -156,7 +156,13 @@ def _own_curated_memory_section(api, token, agent):
     if not query:
         return None, 0, 0, None, False  # no active card -> no anchor -> no injection, not a guess
 
-    url = "%s/memories?agent=%s&q=%s&mode=hybrid&limit=%d" % (
+    # Card 84dcc5d4 (WhiteHat F1 on 86d5de34, HIGH): self_authenticated=1 restricts the server's
+    # answer to rows an AUTHENTICATED per-agent key wrote (written_by_agent_key = agent), not
+    # merely rows self-reporting this agent_id in an unauthenticated POST body -- the shared
+    # dashboard token this hook itself uses to READ is not the issue; the issue was that the
+    # WRITE side never required proof of identity, so a forged row could ride this exact query
+    # straight into the agent's own "trusted, self-curated" context.
+    url = "%s/memories?agent=%s&q=%s&mode=hybrid&limit=%d&self_authenticated=1" % (
         api, agent, urllib.parse.quote(query), SESSION_MEMORY_INJECT_MAX_CANDIDATES,
     )
     req = urllib.request.Request(url)

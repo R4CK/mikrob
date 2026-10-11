@@ -34,6 +34,23 @@ export interface DeviceKeyPrincipal {
   name: string
 }
 
+// Card 84dcc5d4: a fleet role-agent can use a device key, minted with this naming convention, as
+// an AUTHENTICATED identity for its own memory writes (POST /api/memories), instead of the one
+// shared dashboard token every other fleet script also uses. The convention lives here (next to
+// createDeviceKey) rather than in memories.ts so a future minting script/CLI uses the same
+// constant the server checks against.
+export const AGENT_KEY_PREFIX = 'agent:'
+
+/** `device` is the resolved device-key name from AuthResult (`{ kind: 'device', device }`).
+ *  Returns the agent id if the name follows the `agent:<id>` convention, else null -- a Bridge/
+ *  phone device key (e.g. "Peti's iPhone") never matches, so this is a no-op for every key minted
+ *  before this card. */
+export function agentKeyToAgentId(device: string | null | undefined): string | null {
+  if (!device || !device.startsWith(AGENT_KEY_PREFIX)) return null
+  const id = device.slice(AGENT_KEY_PREFIX.length).trim()
+  return id || null
+}
+
 export interface DeviceKeyInfo {
   id: number
   name: string
