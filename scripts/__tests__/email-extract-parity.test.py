@@ -258,6 +258,33 @@ check("attachments: strict base64 boundary -- not-multiple-of-4 length is reject
 check("attachments: strict base64 boundary -- non-base64 char is rejected",
       mod.collect_mcp_attachments({"attachments": [{"filename": "f", "content": "QQ==x"}]})[1] is not None)
 
+# WhiteHat2 NO-GO F1' (card e4eb72c9, komment 16365/16368, delta on F1): Python's `re.match`/`$`
+# anchors before a TRAILING newline too, so "abc/def\n" used to pass _STRICT_B64_RE.match -- the
+# gmail-mcp server's JS regex has no such exception, so it reads the SAME string as a relative
+# FILE (it contains "/"), the same content-pin bypass F1 exists to close. `fullmatch` has no such
+# exception: a trailing "\n" (or anything else) makes the whole string fail to match.
+for sneaky_content in ("abc/def\n", "a/b\n", "abc\n"):
+    atts, reason = mod.collect_mcp_attachments(
+        {"attachments": [{"filename": "f", "content": sneaky_content}]})
+    check(f"attachments: trailing-newline base64 bypass {sneaky_content!r} -> "
+          "unreadable_reason, fail-closed (F1', fullmatch not match)",
+          atts == [] and reason is not None, f"got atts={atts!r} reason={reason!r}")
+
+# L1 (WhiteHat2 komment 16365, LOW): a NUL byte in an absolute-path attachment raises ValueError
+# from open(), not OSError -- must be caught the same fail-closed way as an unreadable file.
+nul_path = "/tmp/" + "x" * 3 + "\x00" + "y"
+atts, reason = mod.collect_mcp_attachments(
+    {"attachments": [{"filename": "f", "content": nul_path}]})
+check("attachments: NUL byte in absolute path -> unreadable_reason, fail-closed (L1, ValueError caught)",
+      atts == [] and reason is not None, f"got atts={atts!r} reason={reason!r}")
+
+# L2 (WhiteHat2 komment 16365, LOW): the --attach-body flag was in the detection regex but had no
+# dedicated test -- only --attach and --attach @ were covered.
+env = mod.collect_email_envelope(
+    "Bash", {"command": 'swaks --to a@b.hu --body "b" --attach-body report.pdf'})
+check("envelope/bash: swaks --attach-body <file> -> unreadable_reason, fail-closed (F2/L2)",
+      env["unreadable_reason"] is not None, f"got {env!r}")
+
 # WhiteHat2 NO-GO F2 (card e4eb72c9, komment 16134): the Bash extraction branch
 # never populated `attachments`, so a swaks `--attach <file>` sent an envelope
 # anchored IDENTICALLY with or without the attachment (measured: 9ac71cacbd

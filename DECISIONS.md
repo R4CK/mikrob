@@ -19292,3 +19292,19 @@ A harom erintett teszt (es a hozzajuk tartozo, mar hasznalatlanna valo `writeTra
 **Teszt:** teljes kanban-* teszt-alkészlet (61 fájl, 826 teszt) zöld, `npx tsc --noEmit` tiszta.
 
 **Ki döntött:** backend (MikroB dispatch alapján, komment-lánc 41d8e96f msg 10760). Gate: QA + RedHat (a javítási irányt a WhiteHat2 adta).
+
+## 2026-10-11 -- e4eb72c9 delta-fix #2: F1' (base64 trailing-newline bypass, fullmatch) + L1 (ValueError fail-closed) + L2 (--attach-body teszt)
+
+**Forrás:** WhiteHat2 NO-GO (komment 16365) a delta #1-re (4b2e70a4): az F1 allow-list szigorú base64 ága `_STRICT_B64_RE.match()`-ot használt, és Python `re`-ben a `$` a sztring vége ELŐTT VAGY egy záró `\n` ELŐTT is illeszkedik -- `"abc/def\n"` emiatt szigorú base64-nek számított és INLINE szövegként hash-elődött. A gmail-mcp-server JS regexe (`/^[A-Za-z0-9+\/]+=*$/`) nem ismeri ezt a kivételt, tehát a `\n`-es sztringet NEM base64-ként, hanem (a benne lévő `/` miatt) relatív FÁJLKÉNT olvassa be küldéskor -- ugyanaz a tartalom-pin bypass, amit az F1 allow-list bezárni hivatott. WhiteHat2 mérése: 813 615 string kimerítő kereséssel (1-5 karakter, 15 szimbólumos ábécé) 40 hook=inline/MCP=fájl párt talált, mind `<alnum, legalább egy "/"> + záró "\n"` alakú.
+
+**Javítás (F1'):** `_STRICT_B64_RE.match(content)` -> `_STRICT_B64_RE.fullmatch(content)` -- a `fullmatch` a TELJES sztringet megköveteli, a `$` benne nem enged kivételt a záró újsorra. Negatív regresszió: `"abc/def\n"`, `"a/b\n"` (a valódi bypass alakja) és `"abc\n"` (collateral, ártalmatlan de szigorúbb elutasítás, WhiteHat2 saját megjegyzése szerint elfogadható) mind fail-closed TILTVA.
+
+**Javítás (L1, LOW):** `collect_mcp_attachments` az abszolút-útvonalú ág fájl-megnyitásánál csak `OSError`-t fogott; egy NUL bájtot vagy lone-surrogate-ot tartalmazó útvonal `ValueError`/`UnicodeEncodeError`-t dob, amit a régi kód nem fogott el -- traceback, a hook 1-es kilépési kóddal állt volna le (nem blokkoló PreToolUse-kontextusban, bár ezt magát WhiteHat2 sem futtatta, a dokumentált viselkedésre hivatkozva). Javítás: `except (OSError, ValueError)`, ugyanaz a fail-closed `unreadable_reason` útvonal. Negatív teszt: NUL bájtot tartalmazó útvonal.
+
+**Javítás (L2, LOW, teszt-hiány):** a `--attach-body` flag már benne volt a detekciós regexben (`_BASH_ATTACH_RE`), de nem volt dedikált negatív tesztje -- csak `--attach` és `--attach @` volt lefedve. Hozzáadva.
+
+**Nem ebben a körben (WhiteHat2 saját, nem-blokkoló listája):** a `mutt -a`/`mail -A`/`mail -a` és a curl SMTP-feltöltéses alakok a Bash-ág `is_send_invocation` ELŐSZŰRŐjének hatókörén kívül esnek (a kapu rájuk egyáltalán nem fut) -- ez `outgoing-copy-gate.py`'s hatóköre, nem ezé a diffé, és egyik eszköz sincs telepítve ezen a gépen. A swaks egyedi-előtagú rövidítés-elfogadása (Perl Getopt::Long, pl. `--att F`) nem verifikált (a swaks nincs telepítve); tipp, nem mért tény. Az F3 (TOCTOU) feloldását MikroB az a2cb71f1 (gmail-csomag-csere) ÉLESÍTÉSI feltételeként rögzítette (saját komment, nem ez a kártya).
+
+**Teszt:** `scripts/__tests__/email-extract-parity.test.py` (3 F1' eset + 1 L1 eset + 1 L2 eset, mind mutáció-proofolva -- a `fullmatch`→`match` visszaállítás 3 tesztet pirosra visz, a `ValueError` elkapás kivétele tracebacket dob a teszt-futásban, a `--attach-body` kivétele a regexből 1 tesztet pirosra visz) és `scripts/__tests__/email-approval-gate.test.py` (teljes futás zöld, regresszió nélkül).
+
+**Ki döntött:** backend (WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16368). Delta-gate: QA + WhiteHat2 (cybersec2), ugyanarra a SHA-ra.
