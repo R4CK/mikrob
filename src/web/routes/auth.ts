@@ -55,6 +55,7 @@ import {
   getDashboardUser,
   listDashboardUsers,
   countDashboardUsers,
+  hasDashboardBootstrapEverHappened,
   updateDashboardUserPassword,
   deleteDashboardUser,
   logConfigChange,
@@ -326,8 +327,11 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     // can no longer mint a new one -- card 68254bd7 F1 (WhiteHat NO-GO 14284): that path, plus
     // POST /api/auth/device-keys below, let the shared token self-escalate to a 'session'/'device'
     // credential and bypass any kind-gated endpoint that excludes 'token' on purpose (e.g.
-    // POST /api/fleet/import?apply=true).
-    const isBootstrap = countDashboardUsers(true) === 0
+    // POST /api/fleet/import?apply=true). Card 9655494c F1-B1 (RedHat NO-GO): this must be
+    // "bootstrap has EVER happened", not "0 users RIGHT NOW" -- the shared token is also allowed
+    // to delete the last user (see DELETE below), and a current-state check would let it reopen
+    // this exception by deleting then re-creating, forever.
+    const isBootstrap = !hasDashboardBootstrapEverHappened()
     if (!kindAllowed(auth, CREDENTIAL_MINT_KINDS) && !(isBootstrap && auth?.kind === 'token')) {
       json(res, FORBIDDEN_KIND, 403)
       return true

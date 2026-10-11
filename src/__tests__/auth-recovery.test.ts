@@ -85,6 +85,10 @@ beforeEach(() => {
   db.prepare('DELETE FROM device_keys').run()
   db.prepare('DELETE FROM auth_sessions').run()
   db.prepare('DELETE FROM dashboard_users').run()
+  // hasDashboardBootstrapEverHappened() (card 9655494c F1-B1) reads sqlite_sequence, which
+  // survives a plain DELETE -- reset it too or the break-glass tests below lose the token
+  // bootstrap path once an earlier test in this file has created any user.
+  db.prepare("DELETE FROM sqlite_sequence WHERE name = 'dashboard_users'").run()
   db.prepare('DELETE FROM config_change_log').run()
 })
 

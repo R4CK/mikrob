@@ -1988,6 +1988,15 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_fix_proposals_card ON kanban_fix_proposals(card_id, created_at)`)
+  // Card 2bfa4c67 round 2 (WhiteHat2 NO-GO, N5): the exclusion used to be "latest proposal wins",
+  // so ANY later proposal from a different agent silently cleared an earlier, still-relevant
+  // exclusion. `sha` scopes a proposal to the round it was written for (same convention as
+  // kanban_verdicts.sha, bound to the latest REVIEW's own Gate-SHA -- see latestReviewGateSha in
+  // kanban-gate-completeness-guard.ts) so the set-semantics fix below (N5) can tell "still this
+  // round's proposal" from "an old round's, now irrelevant" without blocking a gate forever.
+  // Nullable: additive, existing rows (written before this column existed) simply carry no scope
+  // and fall back to the unscoped set-check (kanban-verdicts.ts).
+  try { db.exec(`ALTER TABLE kanban_fix_proposals ADD COLUMN sha TEXT`) } catch { /* column already exists */ }
 
   // --- OTel Distributed Tracing (card def5a189) ---
   // SQLite-native span store. No external OTel SDK: spans are written via
@@ -2660,6 +2669,18 @@ export function countDashboardUsers(includeDisabled = false): number {
     ? 'SELECT COUNT(*) AS c FROM dashboard_users'
     : 'SELECT COUNT(*) AS c FROM dashboard_users WHERE disabled = 0'
   return (db.prepare(sql).get() as { c: number }).c
+}
+
+// Card 9655494c (F1-B1, RedHat NO-GO): countDashboardUsers()===0 is a CURRENT-state check, so
+// deleting the last user (shared token is allowed to do this, by design -- "back to token-only
+// mode") reopens the first-user bootstrap exception forever, letting the token mint itself a
+// session on demand. This checks whether bootstrap has EVER happened instead, via dashboard_users'
+// own AUTOINCREMENT counter (sqlite_sequence), which never resets on delete.
+export function hasDashboardBootstrapEverHappened(): boolean {
+  const row = db.prepare(`SELECT seq FROM sqlite_sequence WHERE name = 'dashboard_users'`).get() as
+    | { seq: number }
+    | undefined
+  return !!row && row.seq > 0
 }
 
 export function updateDashboardUserPassword(userId: number, passwordHash: string): void {
@@ -4226,13 +4247,18 @@ export function getKanbanVerdicts(cardId: string): KanbanVerdict[] {
     .all(cardId) as KanbanVerdict[]
 }
 
-/** The newest verdict `gate` recorded for `cardId` at or after `sinceTs` (or at all, if `sinceTs`
- *  is null) -- the structured-record half of the completeness guard's freshness check. */
-export function getFreshKanbanVerdict(cardId: string, gate: GateVerdictGate, sinceTs: number | null): KanbanVerdict | null {
-  const row = sinceTs === null
-    ? db.prepare('SELECT * FROM kanban_verdicts WHERE card_id = ? AND gate = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(cardId, gate)
-    : db.prepare('SELECT * FROM kanban_verdicts WHERE card_id = ? AND gate = ? AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT 1').get(cardId, gate, sinceTs)
-  return (row as KanbanVerdict | undefined) ?? null
+/** Every verdict row for `gate` on `cardId` at or after `sinceTs` (or all, if `sinceTs` is null),
+ *  oldest first -- card 2bfa4c67 round 2 (WhiteHat2 N2): the completeness guard needs the whole
+ *  sequence, not just the newest row, to apply authenticated-negative precedence (a verified
+ *  FAIL/NO-GO must not be silently overridden by a later UNVERIFIED PASS/GO). Replaces the old
+ *  single-row `getFreshKanbanVerdict`, which could only ever see the latest row and therefore had
+ *  no way to apply that precedence at all. */
+export function getKanbanVerdictsForGate(cardId: string, gate: GateVerdictGate, sinceTs: number | null): KanbanVerdict[] {
+  return (
+    sinceTs === null
+      ? db.prepare('SELECT * FROM kanban_verdicts WHERE card_id = ? AND gate = ? ORDER BY created_at ASC, id ASC').all(cardId, gate)
+      : db.prepare('SELECT * FROM kanban_verdicts WHERE card_id = ? AND gate = ? AND created_at >= ? ORDER BY created_at ASC, id ASC').all(cardId, gate, sinceTs)
+  ) as KanbanVerdict[]
 }
 
 // --- Structured gate-ASSIGNMENT records (card 2bfa4c67) -- append-only, latest row = current. ---
@@ -4260,15 +4286,26 @@ export interface KanbanFixProposal {
   readonly id: number
   readonly card_id: string
   readonly proposer: string
+  readonly sha: string | null
   readonly created_at: number
 }
 
-export function addKanbanFixProposal(cardId: string, proposer: string): KanbanFixProposal {
+export function addKanbanFixProposal(cardId: string, proposer: string, sha: string | null = null): KanbanFixProposal {
   const now = Math.floor(Date.now() / 1000)
   const info = db
-    .prepare('INSERT INTO kanban_fix_proposals (card_id, proposer, created_at) VALUES (?, ?, ?)')
-    .run(cardId, proposer, now)
+    .prepare('INSERT INTO kanban_fix_proposals (card_id, proposer, sha, created_at) VALUES (?, ?, ?, ?)')
+    .run(cardId, proposer, sha, now)
   return db.prepare('SELECT * FROM kanban_fix_proposals WHERE id = ?').get(info.lastInsertRowid) as KanbanFixProposal
+}
+
+/** Every proposal ever recorded for this card, oldest first -- card 2bfa4c67 round 2 (WhiteHat2
+ *  N5): the self-exclusion check needs the WHOLE set, not just the latest row, because "latest
+ *  wins" let a later, unrelated proposal from a different agent silently clear an earlier, still-
+ *  relevant exclusion. */
+export function getKanbanFixProposals(cardId: string): KanbanFixProposal[] {
+  return db
+    .prepare('SELECT * FROM kanban_fix_proposals WHERE card_id = ? ORDER BY created_at ASC, id ASC')
+    .all(cardId) as KanbanFixProposal[]
 }
 
 /** The most recently claimed proposer for this card, or null if none was ever authenticated. */

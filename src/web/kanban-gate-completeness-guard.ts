@@ -23,7 +23,7 @@
 // clause-scoping: only the text BEFORE the first `.`/`(`/`!`/`?` is the actual designation clause.
 // Ported here verbatim rather than re-derived, so this guard inherits that hardening instead of
 // re-introducing the bug it fixed.
-import { getKanbanCard, getKanbanComments, listKanbanCards, getFreshKanbanVerdict, type GateVerdictGate, type KanbanVerdict } from '../db.js'
+import { getKanbanCard, getKanbanComments, listKanbanCards, getKanbanVerdictsForGate, type GateVerdictGate, type GateVerdictWord, type KanbanVerdict } from '../db.js'
 import { isForceActor } from '../kanban-force-actors.js'
 import { logger } from '../logger.js'
 import { isAgentVerdictRecordEnabled, GATE_ROLE_AGENTS } from './kanban-verdicts.js'
@@ -155,6 +155,39 @@ function latestReviewAt(comments: readonly Comment[]): number | null {
 // `m`: a Gate-SHA line can sit on any line of a comment (CLAUDE.md 4b: "line-initial", not
 // necessarily comment-initial), same reasoning as REVIEW_RX above.
 const GATE_SHA_LINE_RX = /^\s*Gate-SHA\s*:\s*(.+)$/gim
+
+/** The single sha the most recent builder hand-off (a non-gate, non-generated REVIEW comment)
+ *  declared on its OWN "Gate-SHA: ..." line -- card 2bfa4c67 round 2 (WhiteHat2 N1/W2): a verdict
+ *  or fix-proposal record is only trustworthy as "about the current round" if its own `sha` field
+ *  is bound to this value (kanban-verdicts.ts enforces the match; this function only looks it up).
+ *  Deliberately simpler than {@link currentRoundStartTs}'s whole-card sha-citation sweep: that
+ *  function answers "which round is CURRENTLY open" from every citation on the card, including
+ *  gate replies; this one answers a narrower question -- "what did the LATEST hand-off itself
+ *  declare" -- so a gate's own Gate-SHA line (restating the same commit back) never counts, and
+ *  wrong-sha confusion from an older, superseded hand-off cannot leak in either. Null when no
+ *  qualifying REVIEW ever used the Gate-SHA convention (the same permissive default every other
+ *  guard in this file applies to an unverifiable claim). */
+export function latestReviewGateSha(comments: readonly Comment[]): string | null {
+  let best: { ts: number; content: string } | null = null
+  for (const c of comments) {
+    const author = (c.author ?? '').toLowerCase()
+    if (GATE_AGENT_NAMES.has(author) || GENERATED_COMMENT_AUTHORS.has(author)) continue
+    if (!REVIEW_RX.test(c.content ?? '')) continue
+    // `>=`, not `>`: comments come in ascending (ties: insertion) order, and two REVIEW hand-offs
+    // written within the same second (common in tests, and possible live) must resolve to the
+    // LATER one, not whichever happened to be seen first.
+    if (!best || c.created_at >= best.ts) best = { ts: c.created_at, content: c.content ?? '' }
+  }
+  if (!best) return null
+  GATE_SHA_LINE_RX.lastIndex = 0
+  let shaLine: string | null = null
+  let m: RegExpExecArray | null
+  // Last Gate-SHA line in the comment wins, same convention as extractGateLine's own "last wins".
+  while ((m = GATE_SHA_LINE_RX.exec(best.content)) !== null) shaLine = m[1] ?? null
+  if (shaLine === null) return null
+  const tok = /\b[0-9a-f]{6,40}\b/i.exec(shaLine)
+  return tok ? tok[0].toLowerCase() : null
+}
 
 // Card 367c23a9, real incident on d0b4f003: three gate agents cited the SAME round's Gate-SHA in
 // three different shapes on one line -- "bc7ceddc (a sajat munka merge-je: f3380837, alap
@@ -400,18 +433,44 @@ const GATE_AGENT_TO_CANONICAL: Readonly<Record<GateAgent, GateVerdictGate>> = {
   qa: 'QA', qa2: 'QA', cybersec: 'CYBERSEC', cybersec2: 'CYBERSEC', cybered: 'CYBERED',
 }
 
-/** The freshest structured verdict row for `agent`'s canonical gate, or null if there is none, the
- *  flag is off, or the read failed. B1 (b), defense in depth: re-checks the SAME role-allowlist
- *  the POST route (kanban-verdicts.ts) already enforces -- a row from a non-gate-role author is
+const NEGATIVE_WORDS: ReadonlySet<GateVerdictWord> = new Set(['FAIL', 'NO-GO'])
+
+/** Card 2bfa4c67 round 2 (WhiteHat2 N2, HIGH): "the latest row wins" let an UNVERIFIED PASS/GO
+ *  record silently override an earlier, AUTHENTICATED FAIL/NO-GO for the same gate -- author_verified
+ *  was stored but nothing ever compared it across rows. Precedence, scanning oldest to newest: a
+ *  negative row always becomes the new effective row (fail-closed bias -- a gate saying "no" is
+ *  never the side that is safe to drop silently); a positive row overrides UNLESS the current
+ *  effective row is a VERIFIED negative and the positive row is itself unverified -- an unverified
+ *  claim must not be the thing that clears an authenticated "no". Two unverified rows, or a
+ *  verified positive answering a verified negative, still behave exactly as before (latest wins). */
+function effectiveStructuredRow(rows: readonly KanbanVerdict[]): KanbanVerdict | null {
+  let effective: KanbanVerdict | null = null
+  for (const row of rows) {
+    if (NEGATIVE_WORDS.has(row.verdict)) {
+      effective = row
+      continue
+    }
+    const blockedByVerifiedNegative =
+      effective !== null && NEGATIVE_WORDS.has(effective.verdict) && effective.author_verified === 1 && row.author_verified !== 1
+    if (blockedByVerifiedNegative) continue
+    effective = row
+  }
+  return effective
+}
+
+/** The EFFECTIVE structured verdict row for `agent`'s canonical gate (see
+ *  {@link effectiveStructuredRow}), or null if there is none, the flag is off, or the read failed.
+ *  B1 (b), defense in depth: re-checks the SAME role-allowlist the POST route (kanban-verdicts.ts)
+ *  already enforces -- a row from a non-gate-role author is dropped from the sequence entirely,
  *  never trusted here either, even if that route-level check is ever bypassed or regresses. */
 function freshStructuredRow(cardId: string, agent: GateAgent, sinceTs: number | null): KanbanVerdict | null {
   if (!isAgentVerdictRecordEnabled()) return null
   try {
     const canonical = GATE_AGENT_TO_CANONICAL[agent]
-    const row = getFreshKanbanVerdict(cardId, canonical, sinceTs)
-    if (row === null) return null
-    if (!(GATE_ROLE_AGENTS[canonical] as readonly string[]).includes(row.author.toLowerCase())) return null
-    return row
+    const rows = getKanbanVerdictsForGate(cardId, canonical, sinceTs).filter((row) =>
+      (GATE_ROLE_AGENTS[canonical] as readonly string[]).includes(row.author.toLowerCase()),
+    )
+    return effectiveStructuredRow(rows)
   } catch (err) {
     // Same fail-open rule as the rest of this guard: a read failure here must never BLOCK a close
     // that the comment-parse path would otherwise allow.
@@ -452,7 +511,12 @@ function freshVerdictStatus(cardId: string, comments: readonly Comment[], agent:
   if (!row) return commentOnlyFresh(comments, agent, sinceTs) ? 'ok' : 'missing'
   const structuredPositive = row.verdict === 'PASS' || row.verdict === 'GO'
   if (!structuredPositive) return 'missing'
-  if (commentHasFreshNegative(comments, agent, row.created_at)) return 'disagree'
+  // N3 (WhiteHat2, card 2bfa4c67 round 2): checked ONLY for a negative comment at-or-after the
+  // structured row's own timestamp, so a genuine FAIL comment written FIRST, with a (forgeable)
+  // structured PASS arriving LATER, was invisible to this check -- the comment-order, not the
+  // round, decided whether the disagreement was caught. Any negative comment anywhere in the
+  // CURRENT round (since sinceTs) now counts, regardless of which side came first.
+  if (commentHasFreshNegative(comments, agent, sinceTs ?? 0)) return 'disagree'
   if (row.author_verified === 0) {
     // B1 (d): until 2520b85a enforces per-agent auth fleet-wide, a close that relies on an
     // UNVERIFIED structured record stays visible (here: in the server log), not silent.

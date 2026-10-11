@@ -43,10 +43,18 @@ read -r -p "Dashboard username (owner session): " DASH_USER
 read -r -s -p "Dashboard password: " DASH_PASS
 echo
 
-COOKIE_JAR="$(mktemp)"
-trap 'rm -f "$COOKIE_JAR"' EXIT
+# F1-B2 (RedHat NO-GO 16825): every file that can ever hold a credential (cookie, login payload,
+# mint payload, mint response) lives in ONE 0700 scratch dir, removed by a SINGLE EXIT trap --
+# not a per-file `rm -f` after each step, which a `set -e` die on an earlier line (e.g. curl
+# failing because the dashboard is unreachable) skips entirely, leaving that one file's plaintext
+# secret behind in $TMPDIR.
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+COOKIE_JAR="$WORK/cookies"
+LOGIN_PAYLOAD="$WORK/login.json"
+MINT_PAYLOAD="$WORK/mint.json"
+RESPONSE="$WORK/response.json"
 
-LOGIN_PAYLOAD="$(mktemp)"
 # Neither credential goes into argv (visible to any local process via /proc/<pid>/cmdline, the
 # QA FAIL this fixes, comment 16667/16670): both go over this process's own stdin instead, which
 # only the parent shell holding the pipe can see.
@@ -59,7 +67,6 @@ json.dump({'username': user, 'password': password}, open(sys.argv[1], 'w'))
 unset DASH_PASS
 
 LOGIN_STATUS="$(curl -s -o /dev/null -w '%{http_code}' -c "$COOKIE_JAR" -X POST "$DASHBOARD_URL/api/auth/login" -H 'Content-Type: application/json' --data-binary "@$LOGIN_PAYLOAD")"
-rm -f "$LOGIN_PAYLOAD"
 [ "$LOGIN_STATUS" = "200" ] || die 3 "login failed (http $LOGIN_STATUS) -- wrong credentials, or no dashboard_users row exists yet (create one first)"
 
 if [ "$ACTION" = "revoke" ]; then
@@ -72,15 +79,11 @@ fi
 
 ROTATE_FLAG="false"
 [ "$ACTION" = "rotate" ] && ROTATE_FLAG="true"
-MINT_PAYLOAD="$(mktemp)"
 python3 -c "import json,sys; json.dump({'agent_id': sys.argv[1], 'rotate': sys.argv[2] == 'true'}, open(sys.argv[3], 'w'))" "$AGENT" "$ROTATE_FLAG" "$MINT_PAYLOAD"
 
-RESPONSE="$(mktemp)"
 STATUS="$(curl -s -o "$RESPONSE" -w '%{http_code}' -b "$COOKIE_JAR" -X POST "$DASHBOARD_URL/api/auth/agent-keys" -H 'Content-Type: application/json' --data-binary "@$MINT_PAYLOAD")"
-rm -f "$MINT_PAYLOAD"
 if [ "$STATUS" != "201" ]; then
   ERR="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('error','?'))" "$RESPONSE" 2>/dev/null || echo "?")"
-  rm -f "$RESPONSE"
   die 4 "mint failed (http $STATUS): $ERR"
 fi
 
@@ -95,7 +98,6 @@ fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(fd, 'w') as f:
     f.write(resp['key'])
 " "$RESPONSE" "$KEY_FILE"
-rm -f "$RESPONSE"
 chmod 600 "$KEY_FILE"
 
 echo "agent-key-provision.sh: minted agent:$AGENT -> $KEY_FILE (0600, not printed)."

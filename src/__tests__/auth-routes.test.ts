@@ -102,7 +102,11 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
-  getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
+  // Card 9655494c F1-B1: dashboard_users.id is AUTOINCREMENT, and hasDashboardBootstrapEverHappened()
+  // (production fix) deliberately reads its sqlite_sequence row so bootstrap eligibility survives a
+  // DELETE. This shared-DB test file resets state between tests via DELETE, so it must also reset
+  // the sequence to get back to a genuine zero-users-ever state for the next test.
+  getDb().exec("DELETE FROM auth_sessions; DELETE FROM dashboard_users; DELETE FROM sqlite_sequence WHERE name = 'dashboard_users'")
   _clearSessionCacheForTest()
   _resetThrottleForTest()
 })
@@ -321,6 +325,20 @@ describe('users CRUD', () => {
     const second = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username: 'bob', password: GOOD_PW } })
     expect(second.res.statusCode).toBe(403)
     expect(getDashboardUser('bob')).toBeUndefined()
+  })
+
+  // Card 9655494c F1-B1 (RedHat NO-GO 16825, X2): deleting the only user brings the count back to
+  // 0, which used to reopen the bootstrap exception for the shared token -- an infinite loop that
+  // lets the token mint itself a session (and from there an agent key) on demand. Bootstrap must be
+  // a one-time-ever event, not a "0 users right now" event.
+  it('token deleting the last user does NOT reopen bootstrap -- it stays 403 on re-create', async () => {
+    await seedUser('alice') // bootstrap
+    const del = await call('DELETE', '/api/auth/users/alice', { auth: TOKEN_AUTH })
+    expect(del.res.statusCode).toBe(200)
+    expect(getDashboardUser('alice')).toBeUndefined() // back to 0 users, same as a fresh install
+    const rebootstrap = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username: 'mallory', password: GOOD_PW } })
+    expect(rebootstrap.res.statusCode).toBe(403)
+    expect(getDashboardUser('mallory')).toBeUndefined()
   })
 })
 
