@@ -228,6 +228,28 @@ describe('gateCompletenessGuardVerdict', () => {
     expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
   })
 
+  // Card f5ff1d5a: qa2's own verdict comment starts "QA2 PASS" (rule 4c), not "QA PASS" -- the
+  // incident this card describes is a close-guard that only recognized the literal "QA PASS"
+  // string, forcing MikroB to force-close cards whose QA2 verdict was real but unrecognized.
+  // VERDICT_RX (word-boundary \bPASS\b) plus the exact-author check already handle this: measured
+  // directly (no change needed in production code), these two cases just close the regression gap.
+  it('f5ff1d5a: author qa2 posting literal "QA2 PASS" satisfies the QA/QA2 family (word-boundary PASS, not the literal "QA PASS" string)', () => {
+    card.description = 'Gate: QA'
+    comments = [
+      { author: 'backend2', content: 'REVIEW -- kesz', created_at: 100 },
+      { author: 'qa2', content: 'QA2 PASS\nGate-SHA: deadbeef', created_at: 200 },
+    ]
+    expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+  })
+
+  it('f5ff1d5a: the same "QA2 PASS" text from a NON-gate author does NOT satisfy (author check stays exact, not just content-shaped)', () => {
+    card.description = 'Gate: QA'
+    comments = [{ author: 'backend2', content: 'QA2 PASS (quoting someone else, not a real verdict)', created_at: 200 }]
+    const v = gateCompletenessGuardVerdict('c1', 'done', false)
+    expect(v.blocked).toBe(true)
+    expect(v.message).toContain('QA')
+  })
+
   // WhiteHat2/cybersec2 (card 21abfe0b, RedHat NO-GO B1). Integration-level versions of the
   // parseGateDesignation unit tests above: the fail-open RedHat measured was that a
   // "Gate: WhiteHat2" card closed with NO Cybersec/Cybersec2 verdict at all, force-free, because
