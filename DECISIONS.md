@@ -20010,3 +20010,29 @@ Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
 **(P1, kulon kartya, nem ebben a korben javitva):** RedHat jelezte, hogy a 9655494c F1-B1 lanca addig nyitva all, amig a kozos tokennel "session" szerezheto (bootstrap+login) -- ez a `CLAUDE_ROTATION_*` kapcsolok bekapcsolasanak egy MASIK, fuggetlen elofeltetele. A DECISIONS (5) pontja ("a kapcsolok csak e kartya lezarasa utan, Peti jovahagyasaval") ezzel bovul: a 9655494c F1-B1 lezarasa IS feltetel, nem csak Peti jovahagyasa.
 
 **Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, a RedHat verdiktje utan).
+
+## 2026-10-11 -- Kartya 25aaada5 delta: RedHat NO-GO (16934) B1 (koztes szimlink) + B2 (alak-denylist) javitva
+
+RedHat NO-GO (16934) a Gate-SHA 0322724a-ra: ket blokkolo, mindket felvetel szerint a kartya sajat F1 javitasi iranyat ("O_NOFOLLOW nyitas VAGY lstat-ellenorzes MINDEN utvonal-elemre") es a MikroB 16759 kulon kovetelmenyet (alak-allowlist) csak RESZBEN fedte az elozo delta.
+
+**B1 (HIGH): az O_NOFOLLOW csak az UTOLSO utvonal-elemet vedte.** Ha `approved/` MAGA (vagy egy koztes elem, pl. a `sub` a `sub/id`-ben) szimlink egy kulso konyvtarra, az `open()` meg a NOFOLLOW-ellenorzes elott VEGIGMEGY a szimlinken a szulo-konyvtar feloldasahoz. Merve (RedHat, XA-XD): approved/ szimlinkkent egy kulso konyvtarra, senderId = victim -> HTTP 200, a kulso konyvtarban letrejott a victim fajl; a felugyelet NELKULI invite-sweepben (XD) ugyanez, meg sulyosabb (nincs ember, aki a 500-at latna).
+
+Javitas: `writeFileNoFollowSync` MOST a nyitas ELOTT `realpathSync(dirname(path))`-ot hasonlit `resolve(dirname(path))`-hoz -- ha a szulo-konyvtar lanca BARMELYIK pontjan szimlink van, a ketto elter, es a fuggveny dob, mielott az open() egyaltalan lefutna.
+
+**B2 (a kartya sajat F1 javitasi iranya + MikroB 16759): alak-denylist a safeJoin-on tul.** A safeJoin csak azt bizonyitja, hogy a feloldott UT a bazison belul van -- nem azt, hogy az alak HASZNALHATO fajlnev. Az ures string, `.`, `..`, egy `/` vagy `\` karaktert tartalmazo alak (pl. `sub/id`, `x/..` -- ami VISSZA approvedDir-re oldodik fel), egy NUL-bajtot tartalmazo alak, es egy 300 karakteres alak MIND atmegy a safeJoin-on, majd MASIK retegen bukik (EISDIR, NUL a writeFileSync belsejeben, kernel ENAMETOOLONG) -- MINDIG a mutacio UTAN, mert a hiba a route sajat generikus try/catch-ebe esik. Nincs a kodbazisban megerositett, provider-specifikus (telegram/slack/discord/googlechat/teams) senderId-format, ezert ez SZANDEKOSAN egy denylist a mert patologikus alakokra, nem egy kitalalt pozitiv format, ami egy MASIK provider valodi azonositojat utasithatna el.
+
+Uj `isPlausibleChannelSenderId(senderId)` a `sanitize.ts`-ben, bedrotozva MINDKET hivasi helyre, a mutacio-pozicioban ELSOKENT (meg a safeJoin elott is), ugyanazt a "minden mellekhatas elott" mintat kovetve, mint a 3d186397 delta #2.
+
+**Teszt (`channel-pairing-senderid-traversal.test.ts`, +18 teszt, mutacioval ellenorizve mindket fixre):**
+- B1: `approved/` MAGA egy szimlink (XA routes/agents.ts-en, XD channel-invites.ts-en) -- a kulso celpont nem jon letre. B1/B2 XB (`sub/id`): mar B2-vel elutasitva, meg mielott barmilyen szimlink szamitana.
+- B2: it.each a 6 named alakra (ures, `.`, `..`, `x/..`, NUL, 300-karakter) + a `sub/id` (csak channel-invites.ts-en, kulon) + pozitiv kontroll (sima numerikus azonosito).
+
+Mutacio: (a) a `realpathSync`-ellenorzes torlese -> mindket XA/XD teszt PIROSRA valtott (a kulso celpont LETREJOTT); (b) `isPlausibleChannelSenderId` korlatlanul `true`-ra -> mind a 12 B2-teszt PIROSRA valtott (a `..` onmagaban zold maradt, mert azt a safeJoin FUGGETLENUL mar elutasitja -- ez helyes, nem hiba). Mindket mutacio utan visszaallitva, 34/34 zold.
+
+**Mellekhatas (javitva):** az uj `isPlausibleChannelSenderId(entry.senderId)` hivas `routes/agents.ts`-ben egy uj `no-unsafe-argument` leletet termelt (`entry` tipizalatlan JSON-bol jon) -- `entry.senderId as string` cast-tal javitva, nincs uj lelet, `lint-ratchet.sh` valtozatlan (323, tart).
+
+`npx tsc --noEmit` tiszta. Celzott futas (3 fajl): 59/59 zold.
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, a RedHat verdiktje utan).
