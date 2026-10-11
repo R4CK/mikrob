@@ -10,7 +10,7 @@
 // (`gatherGateInputs` / `checkAgent`) with the production defaults, and each one
 // names the mutant it kills.
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -40,7 +40,16 @@ vi.mock('../web/main-transcript-root.js', () => ({
   newestMainConfigRoot: () => CONFIG_DIR,
 }))
 vi.mock('../web/claude-plans.js', () => ({ resolveAgentConfigDirForRead: () => CONFIG_DIR }))
-vi.mock('../web/agent-config.js', () => ({ listAgentNames: () => [MAIN, SUB], agentConfigRoot: () => CONFIG_DIR }))
+// agentConfigRoot is NAME-dependent in production (main -> PROJECT_ROOT, sub-agent ->
+// PROJECT_ROOT/agents/<name>) -- a constant mock here would collapse every agent's
+// readContextTokensFromProjectDir() onto the SAME cache key/directory, which is what made the
+// restored 'persistent-block alert' tests below read contextTokens as null (wrong directory, not
+// a missing transcript) when this mock was first patched in (card 517fdcc5 round 1, which only
+// needed the mock to exist, not to route correctly, since no test at the time depended on it).
+vi.mock('../web/agent-config.js', () => ({
+  listAgentNames: () => [MAIN, SUB],
+  agentConfigRoot: (name: string) => (name === MAIN ? PROJECT_ROOT : join(PROJECT_ROOT, 'agents', name)),
+}))
 
 afterAll(() => { rmSync(FIXTURE, { recursive: true, force: true }) })
 
@@ -86,6 +95,92 @@ describe('restart gate wiring: the report-direction rule runs with the productio
     // would also hold for a gate that filters nothing at all.
     const unfiltered = getDispatchedPendingStats(SUB, Date.now(), 2 * 3600_000, 'nobody-is-called-this')
     expect(unfiltered.count).toBe(2)
+  })
+})
+
+// --- The alert ENVELOPE: sender, prefix, and the wording escalation ---------
+// All three were reverted by mutants that the suite passed. They are only
+// observable from `checkAgent`, because the alert is a side effect, so the
+// tests drive that and read the row back out of the database.
+//
+// Card 517fdcc5 delta (RedHat NO-GO 16377): this block was deleted on a prior
+// round's belief that GATEDEADLOCK922/GATESENDER922 were still deferred
+// upstream features -- that belief was stale for THIS round's own merge (see
+// acknowledged-conflicts.ts's 2026-10-11 correction on this file): the code
+// landed through this same batch's clean auto-merge, live and untested.
+// Restored verbatim from 1780f1bd/a6b28b05's parent.
+describe('restart gate wiring: the persistent-block alert', () => {
+  const ALERT_AGENT = 'gatewire-blocked'
+  let runState: Record<string, unknown> = {}
+  const cfg = {
+    enabled: true,
+    thresholdTokens: 1000,
+    persistentBlockAlertMs: 60_000,
+    staleCutoffMs: 2 * 3600_000,
+    transcriptQuietMs: 60_000,
+    sweepIntervalMs: 300_000,
+  }
+
+  beforeAll(async () => {
+    vi.doMock('../web/context-restart-gate-store.js', () => ({
+      readGateConfig: () => cfg,
+      readGateRunState: () => runState,
+      writeGateRunState: (_n: string, s: Record<string, unknown>) => { runState = s },
+      pickGateConfig: () => cfg,
+    }))
+    vi.resetModules()
+    // The alert only fires on a MEASURED reading: an unmeasurable context is
+    // fail-closed `block`, and deliberately never escalates to `block-alert`
+    // (every fresh session reads null for about a minute). So this agent needs
+    // a transcript of its own, above the threshold, or the whole describe
+    // block would be measuring the absence of a transcript.
+    const { encodeClaudeProjectDir } = await import('../claude-project-dir.js')
+    const dir = join(CONFIG_DIR, 'projects',
+                     encodeClaudeProjectDir(join(PROJECT_ROOT, 'agents', ALERT_AGENT)))
+    mkdirSync(dir, { recursive: true })
+    const turnTs = new Date(Date.now() - 3 * 3600 * 1000).toISOString()
+    writeFileSync(join(dir, 'session.jsonl'),
+      `{"type":"assistant","timestamp":"${turnTs}","message":{"usage":{"input_tokens":900000}}}\n`)
+    const { initDatabase } = await import('../db.js')
+    initDatabase(':memory:')
+  })
+  afterAll(() => { vi.doUnmock('../web/context-restart-gate-store.js'); vi.resetModules() })
+
+  async function alertRowsAfter(blockedMinutes: number): Promise<string[]> {
+    const now = Date.now()
+    runState = { firstBlockedAt: now - blockedMinutes * 60_000, lastAlertAt: null }
+    const { createAgentMessage, getDb } = await import('../db.js')
+    // A row that BLOCKS the gate: dispatched work outstanding.
+    createAgentMessage(ALERT_AGENT, 'gatewire-other', `Most rajtad a sor (${blockedMinutes}).`)
+    const { checkAgent } = await import('../web/context-restart-gate-runner.js')
+    await checkAgent(ALERT_AGENT, now)
+    // The PREFIX, not just "CONTEXT-RESTART-GATE": the wake nudge sent to a
+    // freshly cleared session carries the plain prefix, and a loose LIKE picked
+    // THAT row up first -- the assertion then measured the wrong message.
+    return (getDb().prepare(
+      "SELECT from_agent, to_agent, content FROM agent_messages"
+      + " WHERE content LIKE '%CONTEXT-RESTART-GATE-RIASZTAS%'",
+    ).all() as Array<{ from_agent: string, to_agent: string, content: string }>)
+      .map((r) => `${r.from_agent}|${r.to_agent}|${r.content}`)
+  }
+
+  // KILLS: reverting the sender to the watched agent's name (GATESENDER922).
+  // That revert is invisible to every other test, and it is the one that makes
+  // a genuine supervisory alert fail the fleet's own authenticity check.
+  it('is sent BY "system" TO the main agent, with its own prefix', async () => {
+    const rows = await alertRowsAfter(30)
+    expect(rows.length).toBeGreaterThan(0)
+    expect(rows[0].startsWith(`system|${MAIN}|`)).toBe(true)
+    expect(rows[0]).toContain('[CONTEXT-RESTART-GATE-RIASZTAS]')
+  })
+
+  // KILLS: dropping the >= 120 minute wording escalation. The test file header
+  // claimed this was covered; it was not, on any of the five tests there.
+  it('escalates its WORDING past 120 minutes, and not before', async () => {
+    const early = await alertRowsAfter(30)
+    expect(early.some((r) => r.includes('NEM fog megszunni'))).toBe(false)
+    const late = await alertRowsAfter(130)
+    expect(late.some((r) => r.includes('NEM fog megszunni'))).toBe(true)
   })
 })
 
