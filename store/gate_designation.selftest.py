@@ -26,7 +26,8 @@ def check(label, got, want):
 
 
 # --- designated_gates() direct calls --------------------------------------------------------
-check("labels only", designated_gates("qa,cybersec", ""), frozenset({"qa", "qa2", "cybersec"}))
+check("labels only", designated_gates("qa,cybersec", ""),
+      frozenset({"qa", "qa2", "cybersec", "cybersec2"}))
 check("gate-line fallback when no labels", designated_gates("", "Gate: QA + Cybered."),
       frozenset({"qa", "qa2", "cybered"}))
 check("labels override a conflicting gate-line",
@@ -34,6 +35,8 @@ check("labels override a conflicting gate-line",
 check("neither source -> None", designated_gates("", ""), None)
 check("unknown label names are dropped", designated_gates("not-a-gate", ""), None)
 check("qa2 label widens to qa too", designated_gates("qa2", ""), frozenset({"qa", "qa2"}))
+check("cybersec2 label widens to cybersec too", designated_gates("cybersec2", ""),
+      frozenset({"cybersec", "cybersec2"}))
 
 # --- CLI entrypoint, exactly as mopsion-land.sh would call it -------------------------------
 def cli(labels, line):
@@ -44,7 +47,7 @@ def cli(labels, line):
     return out.stdout.strip()
 
 
-check("CLI: labels -> sorted comma-joined", cli("cybersec,qa", ""), "cybersec,qa,qa2")
+check("CLI: labels -> sorted comma-joined", cli("cybersec,qa", ""), "cybersec,cybersec2,qa,qa2")
 check("CLI: no designation -> empty string", cli("", ""), "")
 check("CLI: gate-line only", cli("", "Gate: Cybered."), "cybered")
 

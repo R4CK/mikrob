@@ -178,7 +178,7 @@ else
 fi
 
 n=$((n + 1))
-if grep -q "was 'cybersec,qa,qa2', now 'cybered,cybersec,qa,qa2'" "$OUT_FILE"; then
+if grep -q "was 'cybersec,cybersec2,qa,qa2', now 'cybered,cybersec,cybersec2,qa,qa2'" "$OUT_FILE"; then
   echo "  ok   the refusal names the OLD and NEW designation, not just that something changed"
 else
   echo "  FAIL the refusal message did not name both designations as expected:"
