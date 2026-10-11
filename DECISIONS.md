@@ -19435,3 +19435,66 @@ Az F1-F5 kártyák mind fogalmi szinten valósítanak meg valamit (worktree-izol
 
 **Ki döntött:** jogász.
 **Hivatkozás:** kártya a046302b (szülő b8ac0ef1); forrás: zazencodes/zazencodes-season-3 @555467c3 (no license).
+
+## 2026-10-11 -- bc1e7ef2: WSL home-könyvtár takarítás-osztályozó (dry-run; --apply live NEM futott)
+
+**Döntés:** a `/home/neon` megosztott könyvtárban felgyűlt egyszer-használatos gate/land/test
+worktree-k és probe-direk (`cc-*`, `marveen-land-*`, `qa-gate-*`, `marveen-test*`, `guard-probe*`,
+stb.) osztályozására és takarítására a `store/wsl-home-cleanup.sh` KEEP/ACTIVE/DISPOSABLE/UNKNOWN
+négy osztályt használ, dry-run alapértelmezéssel. Csak a DISPOSABLE (regisztrált worktree-nél NEM
+szerepel élő folyamat alatt, NEM hivatkozza rá nyitott kanban-kártya, a neve egyezik egy ismert
+egyszer-használatos mintával, ÉS a mtime-ja 24 óránál régebbi) kerülhet törlésre `--apply --yes`-re,
+soha az UNKNOWN (ember dönt).
+
+**Mérés, ami a kártyát elindította (Peti, 2026-09-25):** `/home/neon` alatt 184 top-level dir, 137
+belőlük egyszer-használatos `cc-*`/`marveen-land-*` gate/land worktree (legrégebbi 2026-07-24), plusz
+`marveen-node_modules-pnpm-backup` (885M), `marveen-v131`, `marveen-test`, `marveen-qa-test`,
+`guard-probe`, `pg-e2e-qa`, stb. Egy élő dry-run futás ma (2026-10-11): KEEP=13, ACTIVE=3-4
+(a kettő a futás pillanatának élő folyamat-illesztésén mozog), DISPOSABLE=193, UNKNOWN=36-39.
+
+**Kritikus javítás ebben a kártyában (HAS_ACTIVE_CHILD hibaosztály):** az első verzió a
+`HAS_ACTIVE_CHILD` védelmet `"$HOME_DIR"/*` mintával jelölte, ami MINDEN regisztrált worktree saját
+top-level dirjét védetté tette (akkor is, ha a worktree MAGA a top-level dir, nem egy konténer alatt
+él) -- ez a valódi osztályozási logikát (élő folyamat / nyitott kártya-hivatkozás) elérhetetlenné
+tette minden regisztrált worktree-re, és mérve 194 DISPOSABLE-ből 69-re esett vissza, miközben a
+helyes szám (a konténer-direk, pl. `gate-worktrees/`, `marveen-scratch-worktrees/`, védelme
+MELLETT) 193 körül van. A javítás a mintát `"$HOME_DIR"/*/*`-re szűkítette (a worktree-nek a
+top-level dir ALATT, nem a top-level dirKÉNT kell élnie ahhoz, hogy a konténer védelmet kapjon).
+
+**Selftest (`store/wsl-home-cleanup.selftest.sh`, 18 eset):** throwaway `git init`-elt repókon és
+fake `$HOME_DIR`-en keresztül teszteli a `load_worktrees` NESTED-vs-TOP-LEVEL megkülönböztetését, a
+`classify()` mind a négy ágát (KEEP elsőbbsége, HAS_ACTIVE_CHILD, élő-folyamat, kártya-hivatkozás,
+dashboard-fail-open, DISPOSABLE kor-küszöb, UNKNOWN), a `remove_entry()` dirty-worktree-kizárását, és
+a `main()` dry-run/`--apply`-`--yes` útjait. Mutáció-próba: a `HAS_ACTIVE_CHILD` mintát visszaállítva
+`"$HOME_DIR"/*`-re a vonatkozó teszt pirosra vált (17/18, 1 FAIL) -- a selftest valóban méri a
+javítást, nem csak lefut.
+
+**Strukturális refaktor a tesztelhetőségért:** a script korábban top-szintű végrehatású volt
+(argumentum-parse + fő ciklus + exit a fájl aljára égetve), ami lehetetlenné tette a `classify()`
+izolált meghívását. A fő logika `main()`-be került, és a fájl csak akkor futtatja le magát, ha
+közvetlenül hívják (`[ "${BASH_SOURCE[0]}" = "${0}" ]`), nem ha egy selftest `source`-olja -- ugyanaz
+a minta, mint a `mopsion-bundle-check.sh`/selftest párosnál. Viselkedés-azonosság igazolva: a
+refaktor előtti és utáni dry-run futás ugyanazt az összegzést adta (KEEP=13, DISPOSABLE=193).
+
+**`--apply` ÉLES futtatás a valós boxon NEM történt meg, és ebben a kártyában SZÁNDÉKOSAN nem is
+fog:** MikroB (komment) és WhiteHat2 (msg 10831) mindketten megállították az éles törlést, amíg ez a
+kártya REVIEW-t és gate-et nem kap -- a gate QA + WhiteHat (nem a kártya eredeti "QA + Cybersec"
+jelölése, WhiteHat2 explicit felülírta törlő-művelet home-könyvtárban indokkal). A CLAUDE.md 22.
+szabálya (ebben a kártyában hozzáadva) kimondja: egy regisztrált worktree-t a `remove_entry` SOHA nem
+töröl, ha `git status --porcelain` nem üres, és az ÉLES `--apply` futtatás Peti explicit
+jóváhagyását igényli minden egyes alkalommal, mert megosztott, több ügynök munkáját hordozó
+infrastruktúráról van szó.
+
+**Ismert, már jelzett mellékhatás (nem ennek a kártyának a hibája, MikroB komment):** a 81452ce2
+delta-gate landolásakor (4ce3c17b merge) a korábbi WIP-commit (9234823a, a script dry-run-only
+változata) is landolt a `develop`-ra, GATE NÉLKÜL, mert a `marveen-land.sh` a teljes ágat landolja.
+MikroB mérése szerint ennek nincs élő hatása (0 ütemezett hívó a scheduled-tasks alatt), és a
+rendszeres hibaosztály (egy kártya landolása más, nem gate-elt kártya commitját is magával viszi)
+javítása a kártyánkénti worktree-epic (cd3e577b) feladata, nem ez a kártya.
+
+**Teszt:** `bash store/wsl-home-cleanup.selftest.sh`: 18/18 zöld (saját worktree, agent/backend2/work
+ágon). `bash -n store/wsl-home-cleanup.sh`: tiszta. Élő dry-run futás a valós `/home/neon`-on (csak
+olvasás, nem `--apply`): lásd a mérési sort fent.
+
+**Ki döntött:** backend2 (Peti eredeti kérése, MikroB és WhiteHat2 explicit korlátozásával az
+`--apply` élesítésére). Gate: QA + WhiteHat.
