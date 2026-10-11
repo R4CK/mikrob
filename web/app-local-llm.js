@@ -192,6 +192,63 @@ async function llmPostDifficulty(value) {
   }
 }
 
+// Master local-first-draft kill-switch (card d57d8a01, Peti Telegram 10951).
+let _llmFirstDraftBound = false
+
+function llmFirstDraftMsg(text, cls) {
+  const m = document.getElementById('llmFirstDraftMsg')
+  if (!m) return
+  m.textContent = text || ''
+  m.className = 'llm-offload-msg' + (cls ? ' ' + cls : '')
+}
+
+function llmRenderFirstDraft(enabled) {
+  const toggle = document.getElementById('llmFirstDraftToggle')
+  const label = document.getElementById('llmFirstDraftLabel')
+  if (toggle) toggle.checked = !!enabled
+  if (label) label.textContent = t(enabled ? 'localLlm.firstDraft.on' : 'localLlm.firstDraft.off')
+}
+
+async function llmLoadFirstDraft() {
+  try {
+    const res = await fetch('/api/local-llm/first-draft-enabled')
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const d = await res.json()
+    llmRenderFirstDraft(d.enabled)
+    llmFirstDraftMsg('')
+  } catch (e) {
+    llmFirstDraftMsg(t('localLlm.firstDraft.load_error'), 'bad')
+  }
+}
+
+async function llmPostFirstDraft(enabled) {
+  try {
+    const res = await fetch('/api/local-llm/first-draft-enabled', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const d = await res.json()
+    llmRenderFirstDraft(d.enabled)
+    llmFirstDraftMsg(t(d.enabled ? 'localLlm.firstDraft.saved_on' : 'localLlm.firstDraft.saved_off'), 'ok')
+  } catch (e) {
+    // Rule 12: speak the failure in the flow with a retry-able message; put the toggle back where
+    // it actually is (the write may or may not have landed), not where the click left it.
+    llmFirstDraftMsg(t('localLlm.firstDraft.save_error'), 'bad')
+    llmLoadFirstDraft()
+  }
+}
+
+function llmSetupFirstDraft() {
+  const toggle = document.getElementById('llmFirstDraftToggle')
+  if (toggle && !_llmFirstDraftBound) {
+    _llmFirstDraftBound = true
+    toggle.addEventListener('change', () => llmPostFirstDraft(toggle.checked))
+  }
+  llmLoadFirstDraft()
+}
+
 function llmSetupOffload() {
   const slider = document.getElementById('llmOffloadSlider')
   const out = document.getElementById('llmOffloadValue')
@@ -246,6 +303,7 @@ async function loadLocalLlm() {
   await llmRefreshUsage()
   await llmRefreshQueue()
   await llmRefreshCategories()
+  llmSetupFirstDraft()
   llmSetupOffload()
   llmSetupQueueFilter()
   stopLocalLlmPoll()

@@ -19435,3 +19435,23 @@ Az F1-F5 kártyák mind fogalmi szinten valósítanak meg valamit (worktree-izol
 
 **Ki döntött:** jogász.
 **Hivatkozás:** kártya a046302b (szülő b8ac0ef1); forrás: zazencodes/zazencodes-season-3 @555467c3 (no license).
+**Ki dontott:** a leletet RedHat adta (NO-GO, komment 16322, Gate-SHA 21004c6c183b58a31cef4e9d713c2310cf3fd022), a B1/B2/R4 es az ungated-komment/szures dontest MikroB (komment 16324), a javitast fullstack vegezte. Delta-gate: QA + RedHat.
+
+## 2026-10-11 -- card d57d8a01: helyi LLM kikapcsolo gomb a dashboardon + minden belepesi pont tiszteletben tartja
+
+**Peti kerese (Telegram 10951):** a helyi LLM csak akkor kapcsolhato vissza, ha (1) magas GPU-terhelesnel a feladat automatikusan online megy, es (2) van egy konkret kikapcsolo gomb. (1) mar megvolt (79aeaeb1, gpu-util-hold) -- sajat futtatassal megerositve: `vram-guard-check.selftest.sh` 48/48 es `vram-guard-wiring.selftest.sh` 19/19 PASS, a masodik tenylegesen ellenorzi mind a hat erintett belepesi pont (card-build-route.sh, local-llm-rag.sh, offload-dispatch.sh, gate-pretriage.sh, i18n-draft.sh, route-classify.sh) vram-guard-hivasat es a HOLD->ONLINE/UNKNOWN iranyt. (2) HIANYZOTT: a store/local-first-draft.json {"enabled":false} kapcsolot KIZAROLAG self-advance-pickup.sh olvasta, a dashboardon nem volt hozza vezerlo, a masik hat belepesi pont (card-build-route.sh, offload-dispatch.sh, route-classify.sh, gate-pretriage.sh, i18n-draft.sh, local-llm.sh, local-llm-rag.sh) egyike sem nezte meg.
+
+**Megoldas, egyetlen forras mindket iranyban:**
+- OLVASAS: uj `store/local-first-draft-check.sh` (`local_first_draft_enabled`), kivonva self-advance-pickup.sh sajat, korabban duplikalt logikajabol (DRY), es bedrotozva MIND A HET tobbi belepesi pontba, mindegyikbe a sajat, mar letezo "legolcsobb/leghatarozottabb kapu elobb" sorrendjebe (altalaban meg a VRAM-guard elott): card-build-route.sh, offload-dispatch.sh, route-classify.sh (UNKNOWN-ra esik, a sajat abstain-valaszara), i18n-draft.sh (exit 3), local-llm.sh (`generate` mod, exit 9), local-llm-rag.sh (online()-on at, az advisory-skip logikajaba is bekotve), gate-pretriage.sh (`--explain` advisory-resz).
+- IRAS: uj Bearer-vedett `GET`/`POST /api/local-llm/first-draft-enabled` vegpont (src/web/routes/local-llm.ts), amely KIZAROLAG a store/local-first-draft.json fajlt irja/olvassa -- semmilyen folyamatot nem indit (nincs spawn/execFile a kezelo kodjaban, sajat teszttel megerositve mock-olt child_process-szel).
+- UI: uj kapcsolo (checkbox) a dashboard Lokalis LLM lapjan, a Statusz szekcio FOLOTT (web/index.html, web/app-local-llm.js), i18n hu/en (web/lang/hu.js, en.js), beszedes hiba-/mentve-uzenettel (12. munkavegzesi szabaly).
+
+**Teszteles:**
+- `store/local-first-draft-check.selftest.sh` (UJ, 13 eset): a helper fuggveny maga (absence=ON, env felulbiralja a fajlt, hibas JSON fail-open), MUTANS-PIROSITO teszt a helperre, es MUTANS-PIROSITO sweep mind a HET valodi belepesi ponton `LOCAL_FIRST_DRAFT=off`-fal (mindegyik a sajat dokumentalt online/UNKNOWN/exit-kodjara esik, ollama/GPU nelkul is -- bizonyitva, hogy a kapcsolo a modellhivas ELOTT dol el, nem csak dokumentalva van).
+- `src/__tests__/local-llm-first-draft-switch.test.ts` (UJ, 9 eset): a GET/POST vegpont (hianyzo fajl=enabled, fajl-tukrozes, hibas JSON fail-open mindket iranyban, hianyzo/rossz tipusu `enabled` mezo 400-ra), es a kartya sajat elfogadasi kriteriuma ("a kapcsolo nem inditja el az ollamat magatol") -- mock-olt `spawn`/`execFile` sosem hivodik a POST/GET kezelo alatt.
+- Regresszio: `tsc --noEmit` tiszta; `lint-ratchet.sh` valtozatlan (354 lelet); `lang-parity.test.ts` 4/4 (hu/en kulcs-egyezes); 291/291 meglevo local-llm UI/route teszt zold (local-llm-rag-routes-by-default, advisory-envelope, local-llm-page-routing-redesign, local-llm-categories, stb.); `card-build-route.selftest.sh` 70/70, `offload-dispatch.selftest.sh` 43/43, `self-advance-pickup.selftest.sh` 42/42 (a DRY-refaktor utan is valtozatlan).
+- `local-llm-rag.sh`-nal es `local-llm.sh`-nal a helper-forrasolas DEFENZIVEN irva (`[ -f ... ] &&`), mert egy meglevo teszt (`local-llm-rag-routes-by-default.test.ts`, "fails closed when the router is not built") a scriptet SAJAT testverei nelkul masolja at egy ures mappaba -- egy feltetlen `source` ott `set -e` alatt elszallt volna; ez a tenyleges regressziot okozo lelet volt sajat futtatas kozben, javitva es a teszt most zold.
+
+**Nem ebben a kartyaban:** MikroB kapcsolja vissza a helyi LLM-et (ollama unmask + local-first-draft bekapcsolasa) Peti jovahagyasa alapjan -- ez a kartya csak a kapcsolot epiti, nem kapcsol vissza semmit.
+
+**Ki dontott:** Peti kerese (Telegram 10951), MikroB adta a kartyat, a javitast fullstack vegezte. Gate: QA + WhiteHat (uj irhato vegpont).

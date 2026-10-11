@@ -338,6 +338,18 @@ else:
 }
 
 if [[ "$MODE" == "generate" ]]; then
+  # MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01, Peti Telegram 10951), checked before the VRAM
+  # guard below -- cheapest, most authoritative gate. Only gates `generate` (the mode that actually
+  # dispatches to the local model); --health/--list are diagnostics, not drafts, and stay unaffected.
+  # Missing helper -> skipped, same direction as every other "missing guard" case in this file.
+  if [[ -f "$HERE/local-first-draft-check.sh" ]]; then
+    . "$HERE/local-first-draft-check.sh"
+    if ! local_first_draft_enabled; then
+      echo "local-llm: local-first-draft is OFF (dashboard switch) -- this call belongs online" >&2
+      exit 9
+    fi
+  fi
+
   # VRAM choke-point (card 234306ca, plan-grilling GO-WITH-CHANGES, MikroB decision comment 6511).
   # Defense-in-depth ALONGSIDE each dispatcher's own direct vram-guard-check.sh call (card f9bad591's
   # option A, kept as-is this round) -- this is what protects a FUTURE dispatcher that forgets its

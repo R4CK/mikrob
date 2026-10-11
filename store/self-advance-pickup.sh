@@ -91,24 +91,17 @@ LOCAL_LLM_INSTALLED=0
 bash "$INSTALLED" >/dev/null 2>&1 && LOCAL_LLM_INSTALLED=1
 
 # --- 1. FLAG --------------------------------------------------------------------------------------
-# Env var wins over the file; either says the literal string "off" to disable. Anything else --
-# including the flag file simply not existing -- means ON. Absence = ON (plan-grilling point 2).
-LOCAL_FIRST_DRAFT="${LOCAL_FIRST_DRAFT:-}"
-if [ -z "$LOCAL_FIRST_DRAFT" ] && [ -f "$FLAG_FILE" ]; then
-  LOCAL_FIRST_DRAFT="$(python3 -c '
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-    print("off" if d.get("enabled") is False else "on")
-except Exception:
-    print("on")
-' "$FLAG_FILE" 2>/dev/null)"
-fi
+# card d57d8a01: the read logic itself now lives in local-first-draft-check.sh (shared with every
+# other local-first entry point, DRY), not duplicated here. LOCAL_FIRST_DRAFT_FLAG_FILE lets this
+# script keep its own FLAG_FILE override (tests already rely on SELF_ADVANCE_PICKUP_FLAG_FILE).
+# shellcheck source=./local-first-draft-check.sh
+. "$HERE/local-first-draft-check.sh"
+LOCAL_FIRST_DRAFT_FLAG_FILE="$FLAG_FILE"
 
 if [ "$LOCAL_LLM_INSTALLED" -eq 0 ]; then
   echo "local-llm: not installed, branch skipped" >&2
   log_skip not-installed
-elif [ "$LOCAL_FIRST_DRAFT" = "off" ]; then
+elif ! local_first_draft_enabled; then
   echo "self-advance-pickup: $CARD_ID -> LOCAL_FIRST_DRAFT=off, skipping local draft" >&2
   log_skip flag-off
 else

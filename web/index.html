@@ -958,6 +958,19 @@
            Kategóriák -> Használat-mérték -> Feladatok és kártyák. Overrides the earlier layout;
            each block's own content/ids/logic are unchanged, only their position moved. -->
 
+      <!-- Master kill-switch (card d57d8a01, Peti Telegram 10951): the ONE on/off every local-first
+           entry point reads first. Placed above Status, deliberately -- it is the control that
+           decides whether anything below even matters. -->
+      <div class="llm-section">
+        <h2 class="llm-section-title" data-i18n="localLlm.firstDraft.title">Helyi LLM -- fő kapcsoló</h2>
+        <p class="llm-offload-desc" data-i18n="localLlm.firstDraft.desc">Ha ki van kapcsolva, minden belépési pont (kártya-draft, routing, i18n-draft, offload) ONLINE-ra esik -- a helyi modellt semmi nem hívja meg.</p>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="llmFirstDraftToggle" aria-describedby="llmFirstDraftMsg" style="width:18px;height:18px;accent-color:var(--accent);flex-shrink:0;cursor:pointer;">
+          <span id="llmFirstDraftLabel" data-i18n="localLlm.firstDraft.on">Bekapcsolva</span>
+        </div>
+        <div id="llmFirstDraftMsg" class="llm-offload-msg" role="status" aria-live="polite"></div>
+      </div>
+
       <!-- Status -->
       <div class="llm-section">
         <h2 class="llm-section-title" data-i18n="localLlm.status.title">Állapot</h2>

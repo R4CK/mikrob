@@ -272,7 +272,14 @@ if [[ "$EXPLAIN" == "1" ]]; then
   if [[ -f "$VRAM_GUARD" ]]; then
     vram_line="$(bash "$VRAM_GUARD" 2>/dev/null)"; vram_rc=$?
   fi
-  if [[ "$vram_rc" -ne 0 ]]; then
+  # MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01, Peti Telegram 10951), checked alongside the
+  # VRAM guard above -- same direction (local model not asked), same reason (advisory-only, never
+  # evidence, so skipping it costs nothing this report depends on).
+  # shellcheck source=./local-first-draft-check.sh
+  . "$HERE/local-first-draft-check.sh"
+  if ! local_first_draft_enabled; then
+    echo "(local model not asked -- local-first-draft is OFF (dashboard switch); the mechanical report above stands on its own)"
+  elif [[ "$vram_rc" -ne 0 ]]; then
     echo "(local model not asked -- ${vram_line:-no output from the vram guard} (rc=$vram_rc); the mechanical report above stands on its own)"
   else
     git diff --stat "$BASE" "$HEAD_REF" 2>/dev/null | tail -40 \
