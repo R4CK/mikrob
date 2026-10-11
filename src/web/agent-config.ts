@@ -64,6 +64,53 @@ export function readFileOr(path: string, fallback: string): string {
   try { return readFileSync(path, 'utf-8') } catch { return fallback }
 }
 
+// JSONCLOBBER926 (upstream card 035e46d0, köteg 10): the read half of every read-modify-write on a
+// JSON config file (agent-config.json, .mcp.json, settings.json, task-config). Until now each site
+// did `try { JSON.parse(readFileOr(path, '{}')) } catch {}` and then WROTE the result back: a file
+// that existed but was unreadable or not valid JSON (a half-written save, a stray character, a
+// permissions slip) was silently replaced by a one-key object, and every other setting in it was
+// gone with no log line. A MISSING file is the normal "first write" and yields {}. An EXISTING file
+// that cannot be read or parsed as a JSON object is a fault: warn with the path and refuse (throw),
+// so the caller's request fails visibly instead of destroying the file -- the same rule
+// hook-registration-guard already applies to settings.json. Adopted here (only this pair, not the
+// rest of upstream's agent-config.ts diff, which removes fork-specific re-exports/aliases this file
+// still needs) because several OTHER files in this same batch (model-fallback-runner.ts,
+// agent-team.ts, routes/agents.ts, routes/schedules.ts, routes/connectors.ts, scheduled-tasks-io.ts)
+// already call it on a clean, unconflicted merge, and src/__tests__/silent-external-failures.test.ts
+// pins it at all of those call sites by exact source string.
+//
+// A JSON.parse error message is NOT safe to log: on Node 22 V8 quotes ~10 characters of the input
+// around the bad byte, and the files this helper guards (.mcp.json, settings.json) are exactly the
+// ones that carry API keys. Keep only the position, never the excerpt.
+export function redactJsonParseMessage(message: string): string {
+  const pos = /at position \d+(?: \(line \d+ column \d+\))?/.exec(message)
+  return pos ? `SyntaxError ${pos[0]}` : 'SyntaxError (excerpt omitted)'
+}
+
+export function readJsonObjectForWrite(path: string): Record<string, unknown> {
+  if (!existsSync(path)) return {}
+  let raw: string
+  try {
+    raw = readFileSync(path, 'utf-8')
+  } catch (err) {
+    logger.warn({ path, err: (err as Error)?.message }, 'JSON config exists but cannot be read -- refusing to overwrite it')
+    throw new Error(`${path} exists but cannot be read; refusing to overwrite it`)
+  }
+  if (!raw.trim()) return {}
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (err) {
+    logger.warn({ path, err: redactJsonParseMessage(String((err as Error)?.message ?? err)) }, 'JSON config is not valid JSON -- refusing to overwrite it (fix or remove the file)')
+    throw new Error(`${path} is not valid JSON; refusing to overwrite it`)
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    logger.warn({ path }, 'JSON config is not an object -- refusing to overwrite it')
+    throw new Error(`${path} is not a JSON object; refusing to overwrite it`)
+  }
+  return parsed as Record<string, unknown>
+}
+
 export function extractDescriptionFromClaudeMd(content: string): string {
   // Try to grab first meaningful paragraph after any heading
   const lines = content.split('\n').filter((l) => l.trim() && !l.startsWith('#'))

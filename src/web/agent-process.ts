@@ -352,6 +352,28 @@ export function ownChannelProviderForScope(
   return hasOwnToken && resolvedProvider ? resolvedProvider : null
 }
 
+/**
+ * Teams name-sync write: set TEAMS_BOT_DISPLAY_NAME in the agent's teams .env
+ * to `displayName`, only on drift. Returns whether it wrote.
+ *
+ * ENVTMPMODE925: the teams .env holds the bot's app secret, so a file this call
+ * CREATES is 0600. writeFileSync's `mode` applies only on creation, so an
+ * existing .env keeps whatever mode the operator gave it (the write is in
+ * place, no rename). Without it a missing .env came up at the umask default.
+ */
+export function syncTeamsDisplayName(envPath: string, displayName: string | null | undefined): boolean {
+  if (!displayName) return false
+  const raw = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : ''
+  const current = raw.match(/^TEAMS_BOT_DISPLAY_NAME=(.*)$/m)?.[1]?.trim()
+  if (current === displayName) return false
+  const line = `TEAMS_BOT_DISPLAY_NAME=${displayName}`
+  const next = current !== undefined
+    ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, line)
+    : (raw === '' || raw.endsWith('\n') ? raw + line + '\n' : raw + '\n' + line + '\n')
+  writeFileSync(envPath, next, { mode: 0o600 })
+  return true
+}
+
 // Wrap the telegram plugin's bun stdio server in a tee that persists each
 // inbound channel notification to <stateDir>/inbox-pending.jsonl, which the
 // channel-inbox-drain UserPromptSubmit hook then pulls into the next turn.
@@ -1437,6 +1459,10 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
   }
 }
 
+// NOT ADOPTED (köteg 10, upstream ab5325c0 range, see the matching NOT-ADOPTED note further down
+// in startAgentProcessUnlocked for why): stampCustomApiKeyApproval + buildCustomProviderLaunchEnv,
+// upstream's pre-seed of the "Detected a custom API key" TUI approval for x-api-key custom
+// providers in --channels mode. Own card.
 // Pre-stamp the Fable overage-consent acknowledgment in a config root's
 // .claude.json so the "Fable 5 now uses usage credits" dialog never renders.
 //
@@ -2229,6 +2255,15 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // launch command (LATENSKULCSARGV920, card 248d3013) -- `name` scopes the file so
     // clearLaunchSecrets(name) on stop can find it by the `<agent>.` prefix without touching a
     // sibling agent's secret.
+    //
+    // NOT ADOPTED (köteg 10, upstream ab5325c0 range): upstream's stampCustomApiKeyApproval /
+    // customApiKeyForApproval pre-seeds Claude Code's "Detected a custom API key" TUI approval into
+    // .claude.json for authHeader=x-api-key custom providers, so a --channels (non-interactive)
+    // agent does not park on that dialog. Real gap, not wired here -- it needs isCustom/
+    // customProviderDef resolved earlier in this function (upstream's version restructures the
+    // customProvider lookup this fork does differently, via resolveProviderEnv below), plus
+    // JSONCLOBBER926B's readJsonObjectForWrite (also not adopted this round, see DECISIONS.md).
+    // Own card, not a rider on a 33-commit batch.
     let providerEnv: string
     try {
       providerEnv = resolveProviderEnv(model, (id) => {
@@ -2505,10 +2540,12 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // fleet token to a BYO agent that is not own_team).
     // needsFleetOauthFor (RedHat NO-GO B1, comment 15850, card 617d136d) also excludes
     // customProviderId: isClaude alone is `model.startsWith('claude-')`, which says nothing about
-    // WHERE the request goes -- see the function's own doc comment above.
+    // WHERE the request goes -- see the function's own doc comment above. This fork's version is
+    // strictly safer than upstream's own `isClaude && authMode !== 'api' && !isOwnTeam` (ab5325c0,
+    // this köteg's own range) -- that shape is exactly the bug RedHat/WhiteHat found on 617d136d.
     const needsFleetOauth = needsFleetOauthFor(isClaude, authMode, isOwnTeam, customProviderId)
     if (ownTokenFile) {
-      // oauthTokenFile: the agent's own setup-token file, INSTEAD of the fleet file.
+      // oauthTokenFile: the agent's own setup-token file, INSTEAD of the fleet file (2fb86ef2).
       oauthTokenEnv = ownOauthTokenExport(ownTokenFile)
     } else if (!claudeConfigDir && hasFleetOauthToken() && needsFleetOauth) {
       oauthTokenEnv = `export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')" && `
