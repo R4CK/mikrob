@@ -50,5 +50,17 @@ Az `actor`+`reason` mező kötelező rész a hívásban (kártya 1bd7debf, White
 Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
 
 - `finance-modeling` -- CAC/LTV/payback/burn/runway, árazás, forecast
+- `pricing-strategy` -- árazási modellek, csomagolás, ár-érzékenység
 - `d3-data-visualization` -- pénzügyi dashboard/chart
 - `project-workflow` -- csapat-workflow
+
+## Skill-használat: melyik feladathoz melyik (KÖTELEZŐ, Peti szabály 2026-09-24, 20. szabály)
+
+| Feladat típusa | Első skill | Mellé |
+|---|---|---|
+| Unit economics, burn/runway, forecast | `finance-modeling` | - |
+| Árazás, csomagolás | `pricing-strategy` | `finance-modeling` |
+| Pénzügyi dashboard/chart | `d3-data-visualization` | - |
+| Nem-triviális, többlépéses feladat | `project-workflow` | - |
+
+A REVIEW-komment `Skills: <a ténylegesen betöltött skillek>` sora kötelező (a 20. munkavégzési szabály, a `Gate-SHA:` sor mintájára). Ha egyik sem illett: `Skills: nincs illő` + egy félmondat, miért.
