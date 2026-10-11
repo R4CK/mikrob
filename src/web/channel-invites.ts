@@ -23,14 +23,14 @@
 //
 // The invite-token is a "shared secret" that grants exactly one auto-approve.
 // Tokens are 16 random bytes (base64url, ~22 chars), unguessable in practice.
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes, createHash } from 'node:crypto'
 import { logger } from '../logger.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { agentDir } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { safeJoin } from './sanitize.js'
+import { safeJoin, writeFileNoFollowSync } from './sanitize.js'
 
 interface InviteEntry {
   createdAt: number
@@ -264,7 +264,9 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
 
       try {
         mkdirSync(approvedDir, { recursive: true })
-        writeFileSync(markerPath, '')
+        // Card 25aaada5: writeFileNoFollowSync refuses to follow a symlink already sitting at
+        // markerPath instead of silently writing through it (see sanitize.ts's own comment).
+        writeFileNoFollowSync(markerPath, '')
       } catch (err) {
         logger.warn({ err, name, senderId: pEntry.senderId }, 'invite-monitor: failed to write approved marker')
       }
