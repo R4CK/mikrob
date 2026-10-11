@@ -97,6 +97,16 @@ echo base > "$TMP/fake-main/f.txt"
 git -C "$TMP/fake-main" add f.txt
 git -C "$TMP/fake-main" commit -qm base
 
+# An origin remote with a develop tip (card cd3e577b R2): self-advance-pickup.sh's cleanup now
+# checks `merge-base --is-ancestor card/<id> origin/<default>` before removing a done card's
+# worktree, same shape as production's real marveen clone -- so the fixture needs the same shape,
+# not just a bare local repo with no remote at all.
+git init -q --bare "$TMP/origin.git"
+git -C "$TMP/fake-main" remote add origin "$TMP/origin.git"
+git -C "$TMP/fake-main" push -q origin HEAD:refs/heads/develop
+git -C "$TMP/fake-main" fetch -q origin
+git -C "$TMP/fake-main" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
+
 board() { # writes $TMP/reqs/board.json from "<id>:<title>:<status>" triples
   python3 -c '
 import json, sys
@@ -328,7 +338,7 @@ board "$PREV_CARD:[MikroB] still in progress:in_progress" "$NEXT_CARD:[MikroB] n
 mkdir -p "$TMP/markers"
 printf '%s' "$PREV_CARD" > "$TMP/markers/backend2"
 mkdir -p "$TMP/cardtrees"
-git -C "$TMP/fake-main" worktree add -q "$TMP/cardtrees/$PREV_CARD" -b "card/$PREV_CARD-2" HEAD
+git -C "$TMP/fake-main" worktree add -q "$TMP/cardtrees/$PREV_CARD" "card/$PREV_CARD"
 STUB_CARD_WORKTREE=1 STUB_ROUTE="$TMP/route-online.sh" run backend2 "$NEXT_CARD" >/dev/null 2>&1; rc=$?
 assert_exit "$rc" 0 "not-done-previous round -> still picks up"
 if [ -d "$TMP/cardtrees/$PREV_CARD" ]; then
@@ -338,6 +348,28 @@ else
   printf 'FAIL the not-yet-done previous worktree was removed\n'
 fi
 git -C "$TMP/fake-main" worktree remove --force "$TMP/cardtrees/$PREV_CARD" >/dev/null 2>&1
+
+echo
+echo "-- a previous card whose branch is done but never actually landed is left alone (R2) --"
+rm -rf "$TMP/markers" "$TMP/cardtrees"
+PREV_CARD2="cccc3333"
+board "$PREV_CARD2:[MikroB] still in progress:done" "$NEXT_CARD:[MikroB] next card:in_progress"
+mkdir -p "$TMP/markers"
+printf '%s' "$PREV_CARD2" > "$TMP/markers/backend2"
+mkdir -p "$TMP/cardtrees"
+git -C "$TMP/fake-main" worktree add -q "$TMP/cardtrees/$PREV_CARD2" -b "card/$PREV_CARD2" HEAD
+echo unlanded > "$TMP/cardtrees/$PREV_CARD2/unlanded.txt"
+git -C "$TMP/cardtrees/$PREV_CARD2" add unlanded.txt
+git -C "$TMP/cardtrees/$PREV_CARD2" -c user.email=s@s -c user.name=s commit -qm "card $PREV_CARD2: not landed"
+STUB_CARD_WORKTREE=1 STUB_ROUTE="$TMP/route-online.sh" run backend2 "$NEXT_CARD" >/dev/null 2>&1; rc=$?
+assert_exit "$rc" 0 "not-landed-previous round -> still picks up"
+if [ -d "$TMP/cardtrees/$PREV_CARD2" ]; then
+  PASS=$((PASS+1)); printf 'OK   a done card whose branch never reached origin/develop is left alone (R2)\n'
+else
+  FAIL=$((FAIL+1)); FAILED+=("a done card whose branch is not an ancestor of origin/develop must not have its worktree removed (R2)")
+  printf 'FAIL the not-yet-landed previous worktree was removed\n'
+fi
+git -C "$TMP/fake-main" worktree remove --force "$TMP/cardtrees/$PREV_CARD2" >/dev/null 2>&1
 
 echo
 echo "-------------------------------------------------------------"

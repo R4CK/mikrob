@@ -104,6 +104,20 @@ if [ "$PATH_ONLY" = "1" ]; then echo "$TREE"; exit 0; fi
 
 git -C "$MAIN" fetch origin "$DEFAULT_BRANCH" --quiet || die 3 "could not fetch origin/$DEFAULT_BRANCH"
 
+# RedHat NO-GO 16276, B2a (cd3e577b's own plan-grilling mitigation, never implemented until now):
+# picking up a CARD worktree is also the moment the agent is moving off its shared agent/<agent>/
+# work branch for this card -- if that branch has commits that never landed, they go quiet unless
+# something says so here. Report-only (never blocks the new card-worktree, never touches the old
+# branch): the agent/<agent>/work landing path is unchanged and still owns getting them in.
+if [ -n "$CARD" ] && git -C "$MAIN" show-ref --verify --quiet "refs/heads/agent/$AGENT/work"; then
+  orphan_log="$(git -C "$MAIN" log --no-merges --format='%h %s' "origin/$DEFAULT_BRANCH..agent/$AGENT/work" 2>/dev/null || true)"
+  if [ -n "$orphan_log" ]; then
+    echo "WARNING: agent/$AGENT/work has unlanded commit(s) not yet on origin/$DEFAULT_BRANCH:"
+    echo "$orphan_log" | sed 's/^/  /'
+    echo "  (land with: marveen-land.sh $AGENT -- this card-worktree pickup does not touch that branch)"
+  fi
+fi
+
 if [ -e "$TREE/.git" ]; then
   echo "worktree already present: $TREE ($(git -C "$TREE" rev-parse --abbrev-ref HEAD))"
 else

@@ -196,8 +196,23 @@ for r in rows if isinstance(rows, list) else []:
         if [ "$PREV_STATUS" = "done" ]; then
           PREV_PATH="$(bash "$MARVEEN_WORKTREE_SCRIPT" "$AGENT" --card "$PREV_CARD" --path 2>/dev/null)"
           if [ -n "$PREV_PATH" ]; then
-            git -C "$MARVEEN_MAIN" worktree remove --force "$PREV_PATH" >/dev/null 2>&1 \
-              && echo "self-advance-pickup: removed done card $PREV_CARD's worktree ($PREV_PATH) -- branch card/$PREV_CARD is untouched" >&2
+            # R2 (RedHat NO-GO 16276): the card's own status ("done") was being trusted as proof the
+            # branch actually landed, and --force threw away whatever was on disk either way --
+            # measured: a done card whose card/<id> branch never reached origin/<default> (merge
+            # raced, or the card closed without a landing at all) lost its own uncommitted file
+            # silently, with the branch left behind unreachable from anywhere a human would look.
+            # merge-base --is-ancestor is the actual, checkable claim "done" was standing in for;
+            # dropping --force means a genuinely dirty/unpushed tree refuses to remove instead of
+            # being thrown away.
+            _psab_default="$(git -C "$MARVEEN_MAIN" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+            [ -n "$_psab_default" ] || _psab_default="develop"
+            if git -C "$MARVEEN_MAIN" merge-base --is-ancestor "card/$PREV_CARD" "origin/$_psab_default" 2>/dev/null; then
+              git -C "$MARVEEN_MAIN" worktree remove "$PREV_PATH" >/dev/null 2>&1 \
+                && echo "self-advance-pickup: removed done card $PREV_CARD's worktree ($PREV_PATH) -- branch card/$PREV_CARD is untouched" >&2 \
+                || echo "self-advance-pickup: card $PREV_CARD's branch is landed but the worktree ($PREV_PATH) would not remove cleanly (dirty/unpushed?) -- left in place, check by hand" >&2
+            else
+              echo "self-advance-pickup: card $PREV_CARD is done but card/$PREV_CARD is NOT an ancestor of origin/$_psab_default -- worktree ($PREV_PATH) kept, not removed" >&2
+            fi
           fi
         fi
       fi

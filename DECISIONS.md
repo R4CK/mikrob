@@ -19078,3 +19078,21 @@ A `needsFleetOauthFor` kiemelés (kör 1) után a teljes landolási fleet-test 2
 **Meres:** celzott teszt-klaszter (`memory-write-author-auth.test.ts` + `memories-zero-result-fallback.test.ts` + `embed-model-split.test.ts` + `agent-boundary-mutation.test.ts` + `session-memory-inject-own-curated.test.ts` + `fts-or-fallback.test.ts`): 56/56 zold. `npx eslint` az uj tesztekre: tiszta.
 
 **Ki dontott:** a leletet RedHat adta (NO-GO, komment 15755, Gate-SHA d30a371d a mar landolt fixre), a javitast (csak teszt, nincs production-valtoztatas) fullstack vegezte. Delta-gate: QA + RedHat.
+
+## 2026-10-11 -- card cd3e577b delta: RedHat NO-GO a kartyankenti worktree/ag (F1) landolo utjan (komment 16276)
+
+**A NO-GO oka:** a 84ea5e33 F1 (store/agent-worktree-marveen.sh --card mod, marveen-land.sh --card mod, self-advance-pickup.sh 4b lepes) a kodolvasas es a scratch-repos futtatas szerint strukturalisan megoldja a kiindulo problemat (egy kartya munkaja nem utazhat egy masik kartya landolasaban gate nelkul), de harom reszleten elesett.
+
+**B1 (MEDIUM, a sajat kimenete tori a lezarast):** a landolas utan automatikusan irt "LANDOLVA" komment sor elejen "Gate-SHA: <merge sha>" allt. A gate-closure-check.py ezt UJ, meg nem verdiktelt shakent olvasta, es a REVIEW-ban mar igazoltan AGREE kartyat STALE-re ejtette minden sikeres --card landolas utan. Javitas: a sor "Merge-SHA:" (sor elejen nem "Gate-SHA:"), a merge shat tovabbra is kiirva, csak nem a kapu-lezaro eszkoz altal ujra-verdiktkent olvasott kulcsszoval.
+
+**B2 (MEDIUM):** (a) agent-worktree-marveen.sh --card most figyelmeztet, ha az agensnek van nem landolt commitja a sajat agent/<agent>/work agan (sose blokkol, sose nyul az aghoz); (b) a marveen-land.sh cleanup()-jaban egy `exec {FD}>&- 2>/dev/null` parancs (nem brace-group-ba csomagolva) a SCRIPT teljes stderr-jet tartosan /dev/null-ra iranyitotta az elso agens feldolgozasa utan -- ezert a --all sweep card/* ertesitese az eles 19-agas repon nemán maradt, holott a kod helyes volt; javitva brace-group-os korlatozassal, es az ertesites stdout-ra (`say`) ment at.
+
+**R1 (dontes, MikroB komment 16277):** a --card landolas MOSTANTOL megkoveteli a landolando sha-ra szolo, at nem bukott gate-verdiktet (gate_verdict_check refuse mod, ugyanaz a mechanizmus mint a cleancore-land.sh/mopsion-land.sh-ban, --allow-ungated felulbiralja a HIANYZO verdiktet, egy BUKOTT verdiktet soha). A sima agent/<agent>/work ut valtozatlanul report mod marad (az a sha meg nem letezik, amikor annak a gate-je fut).
+
+**R2 (LOW-MEDIUM):** a self-advance-pickup.sh elozo-kartya-takaritasa eddig a kartya "done" allitasat bizonyitekkent fogadta el es --force-szal torolt, fuggetlenul attol, hogy a card/<id> ag valoban landolt-e. Javitas: `merge-base --is-ancestor` ellenorzes a torles elott, --force elhagyva -- ha az ag nem ancestor-ja az origin/<default>-nak, a worktree a helyen marad, figyelmeztetessel.
+
+**Nem ebben a deltaban:** R3 (a cleanup stderr-nemitasanak gyokeret, csak a --all uj sora ment at stdout-ra -- a gyoker javitva a brace-group-mal, igy ez mar lezart), R4/R5 (info, nem blokkolo, a meglevo korlatok dokumentalva maradnak a kodban).
+
+**Meres:** uj/bovitett selftestek mind a negy erintett fajlhoz (agent-worktree-marveen.selftest.sh 7->10, marveen-land-card-branch.selftest.sh 14->19, self-advance-pickup.selftest.sh 40->42, marveen-land.sh --selftest valtozatlanul 53/53), minden eset a real szkriptek ellen scratch repon/stub dashboardon. A B1-javitast a valodi gate-closure-check.py-val is megerositve (REVIEW+QA PASS+az uj Merge-SHA-s komment -> AGREE, nem STALE).
+
+**Ki dontott:** a leletet RedHat adta (NO-GO, komment 16276, Gate-SHA 84ea5e33af4d49a31df15d4c5846a53350eed74c), az R1 dontest MikroB (komment 16277), a javitast fullstack vegezte. Delta-gate: QA + RedHat.

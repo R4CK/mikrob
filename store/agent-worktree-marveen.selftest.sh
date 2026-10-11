@@ -81,6 +81,41 @@ else
   echo "  FAIL expected node_modules to be a symlink in the card worktree"; fail=1
 fi
 
+# RedHat NO-GO 16276, B2a: picking up a card worktree for an agent that has an unlanded commit
+# sitting on its own agent/<agent>/work branch must SAY SO (plan-grilling's own mitigation, never
+# implemented until now) -- never block, never touch that branch.
+git -C "$MAIN" worktree add -q -b agent/zz/work "$WORK/zz-work" develop >/dev/null
+echo orphan > "$WORK/zz-work/orphan.txt"
+git -C "$WORK/zz-work" add orphan.txt
+git -C "$WORK/zz-work" -c user.email=s@s -c user.name=s commit -qm "card 77777777: orphan work"
+git -C "$MAIN" worktree remove --force "$WORK/zz-work" >/dev/null
+
+n=$((n + 1))
+if out="$(run zz --card cafebabe12 2>&1)" && printf '%s' "$out" | grep -q "agent/zz/work has unlanded commit"; then
+  echo "  ok   --card on an agent with an unlanded agent/<agent>/work commit warns about it"
+else
+  echo "  FAIL expected an unlanded-commit warning -> $out"; fail=1
+fi
+
+n=$((n + 1))
+if out="$(run zz --card cafebabe12 2>&1)" && ! git -C "$MAIN" log --oneline agent/zz/work -1 | grep -q "77777777.*squash\|amend"; then
+  branch3="$(git -C "$MAIN" rev-parse --abbrev-ref agent/zz/work 2>/dev/null)"
+  if [ "$branch3" = "agent/zz/work" ] && git -C "$MAIN" log -1 --format=%s agent/zz/work | grep -q "77777777"; then
+    echo "  ok   the warning never touches/rewrites agent/<agent>/work itself"
+  else
+    echo "  FAIL agent/zz/work should be untouched -> $branch3"; fail=1
+  fi
+else
+  echo "  FAIL could not re-verify agent/zz/work -> $out"; fail=1
+fi
+
+n=$((n + 1))
+if out="$(run backend --card deadbeef12 2>&1)" && ! printf '%s' "$out" | grep -q "unlanded commit"; then
+  echo "  ok   no spurious warning for an agent whose agent/<agent>/work has nothing unlanded"
+else
+  echo "  FAIL backend has no unlanded work, should not warn -> $out"; fail=1
+fi
+
 rm -rf "$WORK"
 
 echo ""

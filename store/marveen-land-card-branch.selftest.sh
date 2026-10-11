@@ -45,19 +45,27 @@ git -C "$MAIN" add bbb222.txt
 git -C "$MAIN" commit -qm "card bbb222: add bbb222.txt"
 git -C "$MAIN" checkout -q develop
 
+# card cd3e577b R1: gate_verdict_check reads the sha being landed BEFORE the merge (the card
+# branch's own tip), so it is knowable up front -- not the merge commit the lander produces.
+SHA_AAA111="$(git -C "$MAIN" rev-parse card/aaa111)"
+SHA_BBB222="$(git -C "$MAIN" rev-parse card/bbb222)"
+
 LOCK_DIR="$WORK/store"; mkdir -p "$LOCK_DIR"
 TOKEN_TMP="$WORK/token"; echo tok > "$TOKEN_TMP"
 
 # Stub dashboard: /api/kanban/<card>/comments captures every POST body into a file named after the
-# card id, so the test can tell exactly which card a Gate-SHA comment landed on.
+# card id, so the test can tell exactly which card a Gate-SHA comment landed on. GET on the same
+# path serves a fixture file ($GET_DIR/<card>.json), or an empty list if none was placed -- this is
+# what gate_verdict_check (card cd3e577b R1) reads to decide whether a --card landing may proceed.
 CAPTURE_DIR="$WORK/captured"; mkdir -p "$CAPTURE_DIR"
+GET_DIR="$WORK/get-fixtures"; mkdir -p "$GET_DIR"
 stub_pid=""
 stub_up() {
   local portfile="$WORK/stub.port"
   rm -f "$portfile"
-  python3 - "$CAPTURE_DIR" "$portfile" <<'PYSTUB' &
-import http.server, json, sys, re
-CAPTURE_DIR, PORTFILE = sys.argv[1:3]
+  python3 - "$CAPTURE_DIR" "$portfile" "$GET_DIR" <<'PYSTUB' &
+import http.server, json, sys, re, os
+CAPTURE_DIR, PORTFILE, GET_DIR = sys.argv[1:4]
 
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
@@ -68,6 +76,18 @@ class H(http.server.BaseHTTPRequestHandler):
             with open(f"{CAPTURE_DIR}/{m.group(1)}.ndjson", "a") as f:
                 f.write(body.decode() + "\n")
         resp = json.dumps({"ok": True}).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(resp)))
+        self.end_headers(); self.wfile.write(resp)
+    def do_GET(self):
+        m = re.search(r'/api/kanban/([^/]+)/comments', self.path)
+        resp = b"[]"
+        if m:
+            fp = os.path.join(GET_DIR, f"{m.group(1)}.json")
+            if os.path.isfile(fp):
+                with open(fp, "rb") as f:
+                    resp = f.read()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(resp)))
@@ -99,11 +119,28 @@ land_card() { # $1 = card id, $2 = agent, extra args passed through
     MARVEEN_LAND_TEST="true" MARVEEN_LAND_BUILD="true" \
     MARVEEN_LAND_DEVELOP_LOCK_FILE="$LOCK_DIR/.marveen-land-develop.lock" \
     KANBAN_COMMENT_API="http://127.0.0.1:$stub_port" KANBAN_COMMENT_TOKEN_FILE="$TOKEN_TMP" \
+    GATE_CHECK_API="http://127.0.0.1:$stub_port" GATE_CHECK_TOKEN_FILE="$TOKEN_TMP" \
     timeout 30 bash "$LAND" --card "$card" --agent "$agent" "$@" >"$OUT_FILE" 2>&1
   rc=$?
 }
 
+# card cd3e577b R1 (MikroB decision 16277): writes a GET fixture for card <id>'s /comments so
+# gate_verdict_check (refuse mode, now the --card default) sees a verdict. $2 = QA PASS author, or
+# omit for no fixture at all (NONE).
+set_verdict() { # $1 = card id, $2 = "pass"|"fail"|none (default: remove fixture)
+  local card="$1" kind="${2:-}"
+  case "$kind" in
+    pass) printf '[{"author":"qa","content":"QA PASS\\nGate-SHA: %s"}]' "$3" > "$GET_DIR/$card.json" ;;
+    fail) printf '[{"author":"qa","content":"QA FAIL\\nGate-SHA: %s"}]' "$3" > "$GET_DIR/$card.json" ;;
+    *) rm -f "$GET_DIR/$card.json" ;;
+  esac
+}
+
 echo "marveen-land.sh --card <id> --agent <agent> selftest (card cd3e577b)"
+
+# card cd3e577b R1: --card mode defaults to refuse-mode gate_verdict_check, so these mechanics
+# tests need a passing QA verdict on the sha being landed, same as a real gated card would carry.
+set_verdict aaa111 pass "$SHA_AAA111"
 
 n=$((n + 1))
 land_card aaa111 backend --dry-run
@@ -156,10 +193,14 @@ else
 fi
 
 n=$((n + 1))
-if [ -f "$CAPTURE_DIR/aaa111.ndjson" ] && grep -q "Gate-SHA:" "$CAPTURE_DIR/aaa111.ndjson"; then
-  echo "  ok   the automated Gate-SHA comment was posted to card aaa111 (the card actually landed)"
+# B1 (RedHat NO-GO 16276): the auto-posted comment must NOT use a "Gate-SHA:" line -- that is the
+# keyword gate-closure-check.py reads as a freshly-declared, unverdicted sha, which drops a
+# successful --card landing's own card to STALE. "Merge-SHA:" is not that keyword.
+if [ -f "$CAPTURE_DIR/aaa111.ndjson" ] && grep -q "Merge-SHA:" "$CAPTURE_DIR/aaa111.ndjson" \
+   && ! grep -q "^Gate-SHA:" "$CAPTURE_DIR/aaa111.ndjson"; then
+  echo "  ok   the automated post-landing comment names the merge sha as Merge-SHA:, not Gate-SHA: (B1)"
 else
-  echo "  FAIL expected an automated Gate-SHA comment captured for card aaa111"; fail=1
+  echo "  FAIL expected a Merge-SHA: (not Gate-SHA:) comment captured for card aaa111"; fail=1
 fi
 
 n=$((n + 1))
@@ -168,6 +209,8 @@ if [ ! -f "$CAPTURE_DIR/bbb222.ndjson" ]; then
 else
   echo "  FAIL card bbb222 should not have received any comment from landing aaa111"; fail=1
 fi
+
+set_verdict bbb222 pass "$SHA_BBB222"
 
 n=$((n + 1))
 land_card bbb222 backend2
@@ -189,10 +232,11 @@ else
 fi
 
 n=$((n + 1))
-if [ -f "$CAPTURE_DIR/bbb222.ndjson" ] && grep -q "Gate-SHA:" "$CAPTURE_DIR/bbb222.ndjson"; then
-  echo "  ok   the second landing posted ITS Gate-SHA to bbb222, not to aaa111"
+if [ -f "$CAPTURE_DIR/bbb222.ndjson" ] && grep -q "Merge-SHA:" "$CAPTURE_DIR/bbb222.ndjson" \
+   && ! grep -q "^Gate-SHA:" "$CAPTURE_DIR/bbb222.ndjson"; then
+  echo "  ok   the second landing posted ITS Merge-SHA to bbb222, not to aaa111 (B1)"
 else
-  echo "  FAIL expected an automated Gate-SHA comment captured for card bbb222"; fail=1
+  echo "  FAIL expected an automated Merge-SHA comment captured for card bbb222"; fail=1
 fi
 
 n=$((n + 1))
@@ -217,6 +261,82 @@ if [ "$rc" = 2 ] && printf '%s' "$out" | grep -q "card id must be hex"; then
   echo "  ok   --card with a non-hex id is refused (exit 2)"
 else
   echo "  FAIL --card BADID should be refused -> rc=$rc: $out"; fail=1
+fi
+
+# R1 (MikroB decision 16277): a --card landing with NO gate verdict at all must be REFUSED by
+# default, and tolerated only with --allow-ungated.
+git -C "$MAIN" checkout -q -b card/ccc333 develop
+echo "ccc333 content" > "$MAIN/ccc333.txt"
+git -C "$MAIN" add ccc333.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card ccc333: add ccc333.txt"
+git -C "$MAIN" checkout -q develop
+set_verdict ccc333 none
+
+n=$((n + 1))
+land_card ccc333 backend3
+if [ "$rc" != 0 ] && grep -q "no passing gate verdict" "$OUT_FILE"; then
+  echo "  ok   --card REFUSES to land with no gate verdict at all (R1)"
+else
+  echo "  FAIL expected a refusal for an ungated card -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+if ! git -C "$MAIN" merge-base --is-ancestor card/ccc333 origin/develop 2>/dev/null; then
+  echo "  ok   the refused ungated landing pushed nothing"
+else
+  echo "  FAIL an R1-refused landing should not have pushed anything"; fail=1
+fi
+
+n=$((n + 1))
+land_card ccc333 backend3 --allow-ungated
+if [ "$rc" = 0 ] && grep -q "LANDED card/ccc333 -> origin/develop" "$OUT_FILE"; then
+  echo "  ok   --allow-ungated tolerates the missing verdict and lands anyway (R1 override)"
+else
+  echo "  FAIL --allow-ungated should have let ccc333 land -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+# A FAILING verdict is never overridden by --allow-ungated, same as cleancore-land.sh.
+git -C "$MAIN" checkout -q -b card/ddd444 develop
+echo "ddd444 content" > "$MAIN/ddd444.txt"
+git -C "$MAIN" add ddd444.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card ddd444: add ddd444.txt"
+git -C "$MAIN" checkout -q develop
+SHA_DDD444="$(git -C "$MAIN" rev-parse card/ddd444)"
+set_verdict ddd444 fail "$SHA_DDD444"
+
+n=$((n + 1))
+land_card ddd444 backend3 --allow-ungated
+if [ "$rc" != 0 ] && grep -q "FAILING gate verdict" "$OUT_FILE"; then
+  echo "  ok   a FAILING verdict refuses even with --allow-ungated (never overridden)"
+else
+  echo "  FAIL a FAILING verdict should refuse regardless of --allow-ungated -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+# B1, confirmed against the REAL gate-closure-check.py: a REVIEW + QA PASS + the auto-posted
+# post-landing comment must still read AGREE for the gated sha, not STALE.
+n=$((n + 1))
+closure_comments="$(python3 -c "
+import json
+base = [
+    {'author': 'fullstack', 'content': 'REVIEW: ready\nGate-SHA: $SHA_AAA111'},
+    {'author': 'qa', 'content': 'QA PASS\nGate-SHA: $SHA_AAA111'},
+]
+with open('$CAPTURE_DIR/aaa111.ndjson') as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        c = json.loads(line)
+        base.append({'author': c.get('author', 'fullstack'), 'content': c.get('content', '')})
+print(json.dumps(base))
+")"
+# --no-landed: this is a scratch repo the real tool's hardcoded MARVEEN_MAIN clone knows nothing
+# about, and landedness is not what B1 is about -- RedHat's own measurement used the same flag.
+closure_verdict="$(printf '%s' "$closure_comments" | python3 "$HERE/gate-closure-check.py" qa --expect "$SHA_AAA111" --no-landed)"
+if printf '%s' "$closure_verdict" | grep -q "^AGREE"; then
+  echo "  ok   gate-closure-check.py still gives AGREE after the auto-posted comment (B1): $closure_verdict"
+else
+  echo "  FAIL expected AGREE from gate-closure-check.py, got: $closure_verdict"; fail=1
 fi
 
 rm -rf "$WORK"
