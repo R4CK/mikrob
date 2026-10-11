@@ -640,8 +640,10 @@ describe('launcher wiring (agent-process.ts)', () => {
   it("the decision gets the launcher's own isClaude discriminator", () => {
     const call = FN.slice(FN.indexOf('decideOwnOauthToken({'), FN.indexOf("if (ownOauth.kind === 'refused') {"))
     expect(call).toContain("isClaudeModel: resolveOpenRouterModel(readAgentModel(name)).startsWith('claude-'),")
-    // Same predicate the launcher uses further down.
-    expect(FN).toContain("const isClaude = model.startsWith('claude-')")
+    // Same predicate the launcher uses further down. WhiteHat NO-GO (comment 15852, card
+    // 617d136d): isClaude also excludes customProviderId now, matching upstream's own
+    // `!isCustom && ...` shape (00140c57) that the Köteg 9 merge had dropped.
+    expect(FN).toContain("const isClaude = !customProviderId && model.startsWith('claude-')")
   })
 
   // Card f1800242: the decision AND the launcher's own backstop check both see the same
@@ -670,7 +672,7 @@ describe('launcher wiring (agent-process.ts)', () => {
   })
 
   it('backstop: an own token on an agent the launcher sees as non-Claude refuses before any export', () => {
-    const isClaudeAt = FN.indexOf("const isClaude = model.startsWith('claude-')")
+    const isClaudeAt = FN.indexOf("const isClaude = !customProviderId && model.startsWith('claude-')")
     const guardAt = FN.indexOf('if (ownTokenFile && (!isClaude || customProviderId)) {')
     expect(guardAt).toBeGreaterThan(isClaudeAt)
     expect(guardAt).toBeLessThan(FN.indexOf('oauthTokenEnv = '))

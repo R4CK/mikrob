@@ -19029,3 +19029,13 @@ A round 5 fix (`!isOwnTeam` -> `needsFleetOauth` a shared-home fallback ágon) a
 **Nem ebben a körben (MikroB saját, nem-blokkoló listája szerint, külön kártyán):** R2 (claude-plans nyers token -> vault), R4 (SCHEDPROMPTREF917 félig bent), R5 (retire-script nem atomi settings.json-írás).
 
 **Ki döntött:** backend3 (a lelet RedHat/Cybered-é, komment 15850). Delta-gate: QA + RedHat (+ WhiteHat, ha addig nem adott verdiktet, MikroB komment 15851 szerint).
+
+## 2026-10-11 -- 617d136d delta-gate javítás kör 2: WhiteHat F1 zárva (komment 15852)
+
+**F1 (MEDIUM-HIGH, a NO-GO oka):** a RedHat B1-gyel UGYANAZ a gyökér, mélyebb szinten. `isClaude` (agent-process.ts, a launcher ~2186. sora, `model.startsWith('claude-')`) önmagában NEM zárta ki a customProviderId-t -- és ez `needsFleetOauthFor`-on KÍVÜL máshol is hat (pl. az `oauthTokenFile` backstop guard, `if (ownTokenFile && (!isClaude || customProviderId))`, ami bár OR-ral már kezelte a customProviderId esetét a MAGA szintjén, a `needsFleetOauth`-ba szivárgó `isClaude` maga volt hiányos). Upstream (00140c57, src/web/agent-process.ts:1882) ugyanitt `!isCustom && model.startsWith('claude-')`-t ír -- a Köteg 9 konfliktus-feloldás a fork szűkebb, bare alakját tartotta meg, elvesztve ezt a védelmet. Javítás: `const isClaude = !customProviderId && model.startsWith('claude-')`, pontosan az upstream kifejezés fordítása a fork névalakjára. Az előző körben kiemelt `needsFleetOauthFor(..., !customProviderId)` emellett MARAD (szándékos védelmi redundancia, nem egyszerűsítve ki): két egymástól független kódút véd ugyanazon invariáns ellen, és ennek a kártyának a teljes története pont azt mutatja, hogy egyetlen hely elég volt a hiba kétszeri visszatéréséhez.
+
+A pin (`agent-oauth-token-file.test.ts`, 644. és 673. sor) a régi, bare `isClaude`-stringre épült szó szerint -- frissítve az új alakra. Nincs más hívó-hely, ami a régi literált kereste volna (grep ellenőrizve).
+
+**F2 (MEDIUM-LOW, B4/B9), F3 (MEDIUM), F4 (MEDIUM-LOW):** WhiteHat saját minősítése szerint "nem blokkoló, külön kártyára" -- ebben a delta-körben SZÁNDÉKOSAN nem nyúltam hozzájuk (scope-tágítás elkerülése, karpathy-guidelines sebészi elv). F2/B4 (a `${byoUnsetEnv}` komment-megkerülés) VÉLETLENÜL már zárva van a round 5/6 B2-fixemmel (ugyanaz a hiba, a RedHat is megtalálta B2-ként) -- ez bónusz, nem ebben a körben célzott munka. F2/B9 (az `unset` sorrendje nincs pinelve), F3 (claude-plans nyers token, nincs hívó-hitelesítés) és F4 (body-file ZWSP-s tag-megkerülés) MARADÉKA MikroB döntésére várva, külön kártyán (a RedHat R2/R4/R5 listájával együtt várhatóan egy batch).
+
+**Ki döntött:** backend3. Delta-gate: QA + RedHat (a javítási sort a WhiteHat adta, komment 15852).

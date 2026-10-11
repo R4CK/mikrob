@@ -2202,7 +2202,15 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // (weekly-refreshed); a concrete OpenRouter id (contains '/') passes through.
     const model = resolveOpenRouterModel(readAgentModel(name))
     const authMode = readAgentAuthMode(name)
-    const isClaude = model.startsWith('claude-')
+    // !customProviderId (WhiteHat NO-GO, comment 15852, card 617d136d): upstream's own version of
+    // this line (00140c57, src/web/agent-process.ts:1882) is `!isCustom && model.startsWith('claude-')`
+    // -- the Köteg 9 conflict resolution kept the fork's bare `model.startsWith('claude-')` and
+    // dropped that guard. A claude-prefixed model string says nothing about WHERE the request goes:
+    // a customProvider agent can use any model-id shape, including a claude- one, while
+    // resolveProviderEnv points it at a third-party ANTHROPIC_BASE_URL. Every downstream use of
+    // isClaude in this function (the oauthTokenFile backstop below, and needsFleetOauthFor via
+    // needsFleetOauth) now correctly treats a customProvider agent as non-Claude for auth purposes.
+    const isClaude = !customProviderId && model.startsWith('claude-')
     // oauthTokenFile backstop: the decision above already refused a non-Claude agent (or, now, a
     // custom-provider agent -- card f1800242) with its own token. Re-checked on the launcher's own
     // isClaude/customProviderId, so a drift between these and the decision's predicates refuses
