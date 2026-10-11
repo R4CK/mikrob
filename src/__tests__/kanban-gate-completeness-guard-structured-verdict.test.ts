@@ -5,7 +5,7 @@
 // regex machinery in isolation), this file uses the REAL database so the structured path is
 // actually exercised end to end, flag included.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { initDatabase, createKanbanCard, addKanbanVerdict } from '../db.js'
+import { initDatabase, createKanbanCard, addKanbanVerdict, addKanbanComment } from '../db.js'
 import { gateCompletenessGuardVerdict } from '../web/kanban-gate-completeness-guard.js'
 
 describe('gateCompletenessGuardVerdict + structured kanban_verdicts (additive OR)', () => {
@@ -56,5 +56,53 @@ describe('gateCompletenessGuardVerdict + structured kanban_verdicts (additive OR
     expect(v.blocked).toBe(true)
     expect(v.message).toContain('QA')
     expect(v.message).toContain('Cybersec')
+  })
+
+  // Card 2bfa4c67 delta (RedHat B3 + QA FAIL 16564): the measured bypass -- a structured FAIL/NO-GO
+  // must never fall back to a forgeable comment-PASS, and a structured GO/PASS a later comment
+  // contradicts must block as DISAGREE-SOURCE, not silently resolve to the permissive side.
+  describe('DISAGREE-SOURCE (B3)', () => {
+    it('structured FAIL + a comment-only PASS for the SAME gate: still blocked, never falls back (QA 16564 repro)', () => {
+      process.env.AGENT_VERDICT_RECORD = '1'
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'FAIL', author: 'qa', authorVerified: true })
+      addKanbanComment('c1', 'qa', 'QA PASS')
+      addKanbanVerdict('c1', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2', authorVerified: true })
+      const v = gateCompletenessGuardVerdict('c1', 'done', false, 'qa')
+      expect(v.blocked).toBe(true)
+      expect(v.message).not.toContain('DISAGREE-SOURCE')
+      expect(v.message).toContain('QA verdiktjét is megköveteli')
+    })
+
+    it('structured GO + a LATER comment-only NO-GO for the same gate: DISAGREE-SOURCE, not a silent ok', () => {
+      process.env.AGENT_VERDICT_RECORD = '1'
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'PASS', author: 'qa', authorVerified: true })
+      addKanbanComment('c1', 'qa', 'QA NO-GO')
+      addKanbanVerdict('c1', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2', authorVerified: true })
+      const v = gateCompletenessGuardVerdict('c1', 'done', false, 'qa')
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('DISAGREE-SOURCE')
+      expect(v.message).toContain('QA')
+    })
+
+    it('structured GO + no contradicting comment: ok, no disagreement', () => {
+      process.env.AGENT_VERDICT_RECORD = '1'
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'GO', author: 'qa', authorVerified: true })
+      addKanbanVerdict('c1', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2', authorVerified: true })
+      const v = gateCompletenessGuardVerdict('c1', 'done', false, 'qa')
+      expect(v.blocked).toBe(false)
+    })
+  })
+
+  // B1 (b): defense in depth -- a structured row from an author outside the gate's own role must
+  // never be trusted by the guard, even if it somehow reached the table.
+  describe('role-allowlist defense in depth (B1/W1)', () => {
+    it('a structured PASS row whose author is NOT in the QA role is ignored, card stays missing', () => {
+      process.env.AGENT_VERDICT_RECORD = '1'
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'PASS', author: 'fullstack', authorVerified: true })
+      addKanbanVerdict('c1', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2', authorVerified: true })
+      const v = gateCompletenessGuardVerdict('c1', 'done', false, 'qa')
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA verdiktjét is megköveteli')
+    })
   })
 })
