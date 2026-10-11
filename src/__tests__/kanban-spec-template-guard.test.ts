@@ -2,6 +2,11 @@
 // plan-grilling verdict (comment 16170) this guard is WARN-ONLY -- it must never block the
 // transition, only post a warning comment, and must auto-flag an explicit "Termékdöntés: igen"
 // field rather than guessing from content.
+//
+// DELTA-GATE (WhiteHat2 NO-GO, komment 16326): F1 (fire only after a successful transition, trust
+// only the card's own description / assignee / mikrob for the product-decision field) and F2
+// (exclude the guard's own comments from both scans, reject the unfilled "igen/nem" placeholder,
+// durable mikrob approval) are covered below.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const card = {
@@ -10,13 +15,17 @@ const card = {
   status: 'planned' as string,
   description: null as string | null,
   priority: 'normal' as string,
+  assignee: 'backend2' as string | null,
 }
 let comments: Array<{ author: string; content: string }> = []
 const addedComments: Array<{ cardId: string; author: string; content: string }> = []
 const titleUpdates: Array<{ cardId: string; title: string }> = []
 
 vi.mock('../db.js', () => ({
-  getKanbanCard: (id: string) => (id === card.id ? card : undefined),
+  getKanbanCard: (id: string) => {
+    if (id === 'throws') throw new Error('db unavailable')
+    return id === card.id ? card : undefined
+  },
   getKanbanComments: () => comments,
   addKanbanComment: (cardId: string, author: string, content: string) => {
     addedComments.push({ cardId, author, content })
@@ -47,6 +56,7 @@ beforeEach(() => {
   card.status = 'planned'
   card.description = null
   card.priority = 'normal'
+  card.assignee = 'backend2'
   comments = []
   addedComments.length = 0
   titleUpdates.length = 0
@@ -83,52 +93,87 @@ describe('missingSpecSections', () => {
 
 describe('specTemplateGuardCheck', () => {
   it('a trivial card (normal priority, no tag) gets no comment even with no spec', () => {
-    specTemplateGuardCheck('c1', 'in_progress', 'backend2')
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
     expect(addedComments).toHaveLength(0)
   })
 
   it('WARN-ONLY: a non-trivial card missing the spec gets a comment but the caller never sees a block', () => {
     card.priority = 'high'
     // the function has no return value to check -- its only observable effect is the comment
-    expect(() => specTemplateGuardCheck('c1', 'in_progress', 'backend2')).not.toThrow()
+    expect(() => specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')).not.toThrow()
     expect(addedComments).toHaveLength(1)
     expect(addedComments[0].content).toContain('SPEC-TEMPLATE WARN')
   })
 
-  it('does not warn twice for the same missing spec', () => {
+  it('does not warn twice for the same missing spec (real: the guard\'s own comment is excluded from the scan)', () => {
     card.priority = 'high'
-    specTemplateGuardCheck('c1', 'in_progress', 'backend2')
-    specTemplateGuardCheck('c1', 'in_progress', 'backend2')
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
     expect(addedComments).toHaveLength(1)
+    // mutation-proof: the warn comment itself names all five sections -- confirm the scan really
+    // excludes it (if it didn't, missingSpecSections on the post-warn text would already be [])
+    expect(missingSpecSections(addedComments[0].content)).toHaveLength(0)
   })
 
   it('a non-trivial card WITH the full spec gets no warning', () => {
     card.priority = 'high'
     card.description = FULL_SPEC
-    specTemplateGuardCheck('c1', 'in_progress', 'backend2')
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
     expect(addedComments).toHaveLength(0)
   })
 
-  it('only fires on planned -> in_progress, not other transitions', () => {
+  it('only fires on planned -> in_progress, not other prev/next combinations', () => {
     card.priority = 'high'
-    card.status = 'waiting'
-    specTemplateGuardCheck('c1', 'in_progress', 'backend2')
+    specTemplateGuardCheck('c1', 'waiting', 'in_progress', 'backend2')
+    expect(addedComments).toHaveLength(0)
+    specTemplateGuardCheck('c1', 'planned', 'waiting', 'backend2')
     expect(addedComments).toHaveLength(0)
   })
 
-  it('"Termékdöntés: igen" auto-tags [BLOKKOLT-Peti-dontes] and requests approval', () => {
+  it('"Termékdöntés: igen" in the card description auto-tags [BLOKKOLT-Peti-dontes] and requests approval', () => {
     card.priority = 'high'
     card.description = FULL_SPEC.replace('Termékdöntés: nem', 'Termékdöntés: igen')
-    specTemplateGuardCheck('c1', 'in_progress', 'backend2')
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
     expect(card.title).toContain('[BLOKKOLT-Peti-dontes]')
     expect(titleUpdates).toHaveLength(1)
     expect(addedComments.some((c) => c.content.includes('Jóváhagyás-kérés'))).toBe(true)
   })
 
+  it('"Termékdöntés: igen" in a comment from the card\'s OWN assignee also auto-tags', () => {
+    card.priority = 'high'
+    comments = [{ author: 'backend2', content: 'Feltételezések: Termékdöntés: igen' }]
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
+    expect(card.title).toContain('[BLOKKOLT-Peti-dontes]')
+  })
+
+  it('"Termékdöntés: igen" in a comment from mikrob also auto-tags', () => {
+    card.priority = 'high'
+    comments = [{ author: 'mikrob', content: 'Feltételezések: Termékdöntés: igen' }]
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
+    expect(card.title).toContain('[BLOKKOLT-Peti-dontes]')
+  })
+
+  it('F1: "Termékdöntés: igen" in a comment from a THIRD PARTY (not assignee, not mikrob) does NOT auto-tag', () => {
+    card.priority = 'high'
+    card.assignee = 'backend2'
+    comments = [{ author: 'mallory', content: 'Feltételezések: Termékdöntés: igen' }]
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
+    expect(card.title).not.toContain('[BLOKKOLT-Peti-dontes]')
+    expect(titleUpdates).toHaveLength(0)
+  })
+
   it('MUTATION-PROOF: "Termékdöntés: nem" does NOT auto-tag', () => {
     card.priority = 'high'
     card.description = FULL_SPEC // ends in "Termékdöntés: nem"
-    specTemplateGuardCheck('c1', 'in_progress', 'backend2')
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
+    expect(card.title).not.toContain('[BLOKKOLT-Peti-dontes]')
+  })
+
+  it('F2: the unfilled template placeholder "Termékdöntés: igen/nem" does NOT auto-tag', () => {
+    card.priority = 'high'
+    card.description = 'Feltételezések: a foo mukodik (Termékdöntés: igen/nem)'
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
     expect(card.title).not.toContain('[BLOKKOLT-Peti-dontes]')
   })
 
@@ -136,7 +181,17 @@ describe('specTemplateGuardCheck', () => {
     card.priority = 'high'
     card.title = '[BLOKKOLT-Peti-dontes] cim'
     card.description = FULL_SPEC.replace('Termékdöntés: nem', 'Termékdöntés: igen')
-    specTemplateGuardCheck('c1', 'in_progress', 'backend2')
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
+    expect(titleUpdates).toHaveLength(0)
+  })
+
+  it('F2: a durable "Termékdöntés-jóváhagyva" comment from mikrob permanently stops the re-tag, even though the decision line is still present', () => {
+    card.priority = 'high'
+    card.title = 'cim' // tag already removed by a human after approval
+    card.description = FULL_SPEC.replace('Termékdöntés: nem', 'Termékdöntés: igen')
+    comments = [{ author: 'mikrob', content: 'Termékdöntés-jóváhagyva, mehet tovább.' }]
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
+    expect(card.title).not.toContain('[BLOKKOLT-Peti-dontes]')
     expect(titleUpdates).toHaveLength(0)
   })
 
@@ -144,12 +199,18 @@ describe('specTemplateGuardCheck', () => {
     process.env.SPEC_TEMPLATE_GUARD = 'off'
     card.priority = 'urgent'
     card.description = FULL_SPEC.replace('Termékdöntés: nem', 'Termékdöntés: igen')
-    specTemplateGuardCheck('c1', 'in_progress', 'backend2')
+    specTemplateGuardCheck('c1', 'planned', 'in_progress', 'backend2')
     expect(addedComments).toHaveLength(0)
     expect(titleUpdates).toHaveLength(0)
   })
 
-  it('a getKanbanCard throw is swallowed (fail-open), never crashes the caller', () => {
-    expect(() => specTemplateGuardCheck('does-not-exist', 'in_progress', 'backend2')).not.toThrow()
+  it('getKanbanCard returning nothing for an unknown id is a silent no-op', () => {
+    expect(() => specTemplateGuardCheck('does-not-exist', 'planned', 'in_progress', 'backend2')).not.toThrow()
+    expect(addedComments).toHaveLength(0)
+  })
+
+  it('MUTATION-PROOF fail-open: a getKanbanCard THROW (not a mere undefined) is swallowed, never crashes the caller', () => {
+    expect(() => specTemplateGuardCheck('throws', 'planned', 'in_progress', 'backend2')).not.toThrow()
+    expect(addedComments).toHaveLength(0)
   })
 })

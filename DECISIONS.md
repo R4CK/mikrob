@@ -19277,3 +19277,52 @@ A harom erintett teszt (es a hozzajuk tartozo, mar hasznalatlanna valo `writeTra
 **Teszt:** `scripts/__tests__/email-extract-parity.test.py` (összes eset zöld, 8 új negatív F1-eset + 2 F2-eset) és `scripts/__tests__/email-approval-gate.test.py` (teljes futás zöld, regresszió nélkül) -- mindkettő saját, önálló mutáció-proof-fal (lásd fent). Teljes `fleet-test.sh` a `marveen-land.sh` saját futásán, a merge eredményén.
 
 **Ki döntött:** backend (a WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16136). Delta-gate: QA + WhiteHat2 (cybersec2), ugyanarra a SHA-ra (4. munkavégzési szabály 4a pontja).
+
+## 2026-10-11 -- 81452ce2 delta-gate: WhiteHat2 NO-GO javítás (F1/F2), F3/F4 korlát kimondva
+
+Kapcsolódik a fenti, azonos napi bejegyzéshez (a kártya első landolásának delta-gate javítása, komment
+16326 NO-GO, komment 16331 MikroB teendő-lista).
+
+**F1 (blokkoló, javítva):** a `specTemplateGuardCheck` korábban a PUT/POST-move kezelőben a
+`dependencyBlockBody`/`bulk_attribution_required` 409-ellenőrzések ELŐTT futott -- egy elutasított
+kérés (pl. feloldatlan függőség) is írt kommentet/cím-taget, mielőtt a tábla egyáltalán tudta volna, hogy
+a kérés nem mehet át. Mért kihasználás (WhiteHat2): egy harmadik fél (`mallory`) kommentjébe írt
+`Termékdöntés: igen` + egy elutasított `in_progress`-kérés is lefagyasztotta a kártya cím-tagjét
+(`[BLOKKOLT-Peti-dontes]`), amit a `fleet-nudger.sh` kizár a self-advance/gate-jelöltek közül -- tehát
+egy idegen token-birtokos egy MÁSIK ügynök kártyáját tudta lefagyasztani. Javítás: a hívás helye átkerült
+a sikeres `updateKanbanCard`/`moveKanbanCard` UTÁNI ágba mindkét kezelőben (`src/web/routes/kanban.ts`),
+a tranzíció ELŐTTI állapotot (`specTemplatePrevStatus`) a hívó explicit elmenti és adja át, mert a
+mutáció után a kártya állapota már az ÚJ érték. A termékdöntés-mező forrása korlátozva: csak a kártya
+saját leírása, vagy a kártya felelősének (assignee), vagy `mikrob` kommentje fogadott el -- egy
+harmadik fél kommentje nem.
+
+**F2 (blokkoló, javítva):** a guard korábban a SAJÁT kommentjeit is beleolvasta a szakasz-ellenőrzésbe és
+a termékdöntés-keresésbe. Mivel a figyelmeztető komment felsorolja mind az öt szakasz nevét, a MÁSODIK
+hívástól a hiányzó szakaszok listája üresnek látszott -- a kártya spec nélkül is "kielégítettnek" tűnt
+(az `alreadyWarned`-dedup ág emiatt holt kód volt, egy ezt kivevő mutáns is zöld maradt). Javítás: mindkét
+szöveg-scan kizárja a `spec-template-guard` szerzőjű kommenteket a forrásszövegből (az `alreadyWarned`
+ellenőrzés viszont a TELJES komment-listát nézi, hogy valóban észlelje a saját korábbi figyelmeztetést).
+A `PRODUCT_DECISION_RX` mostantól szóhatárt követel az `igen` után és tiltja a `/nem` folytatást
+(`igen\b(?!\s*\/)`), így a kitöltetlen sablonsor (`Termékdöntés: igen/nem`) nem illeszkedik. A feloldás
+tartós: egy explicit `Termékdöntés-jóváhagyva` komment `mikrob`-tól véglegesen leállítja az automatikus
+cím-tag visszatételét, még akkor is, ha a döntés-sor fizikailag a kártyán marad.
+
+**F3/F4 (nem blokkoló, dokumentálva, nem kódolva):** a termékdöntés-jelölés önbevalláson áll -- aki nem
+akarja, hogy MikroB lássa, `nem`-et ír vagy kihagyja a mezőt, és az őr ezt nem tudja észlelni (a
+plan-grilling verdikt szándékosan tiltja a tartalom-alapú kitalálást). A gate-eknek kritériumonként kell
+ellenőriznie, hogy a feltételezések között nincs-e eltitkolt termékdöntés -- ez emberi/gate-felelősség,
+nem ez a kártya kódolja. A `project-workflow` skill szövege javítva: korábban azt állította, hogy "a
+munka a döntésig nem folytatódik" -- ez hamis volt, mert a warn-only kapcsoló alatt a kártya
+`in_progress`-be MEGY, a tag és a komment csak látható jelzés, nem blokk.
+
+**Teszt:** `src/__tests__/kanban-spec-template-guard.test.ts` bővült 22 esetre (harmadik fél kizárva,
+assignee/mikrob elfogadva, kitöltetlen placeholder kizárva, tartós jóváhagyás, VALÓDI fail-open mutáció
+egy tényleges `getKanbanCard` dobással, VALÓDI "nem warn kétszer" mutáció-próba). Új
+`src/__tests__/kanban-spec-template-guard-wiring.test.ts` (6 eset, forrás-szöveg alapú): mindkét
+hívási hely a sikeres írás UTÁN és a függőség-őr UTÁN áll, és a hívás száma pontosan 2 -- ha valaki
+törli az egyik hívást vagy visszateszi a régi sorrendet, ez a teszt pirosra vált.
+`npx vitest run src/__tests__/kanban-spec-template-guard*.test.ts`: 28/28 zöld; `npx tsc --noEmit -p .`
+tiszta.
+
+**Ki döntött:** backend2 (a WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16331). Delta-gate:
+QA + WhiteHat2.
