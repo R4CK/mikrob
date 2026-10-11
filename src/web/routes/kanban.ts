@@ -207,8 +207,17 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   // gives the reader no reason to ever read it. Two agent incidents on one card
   // (2026-09-15, 7ed56208) confirmed the failure mode -- the reader ran exactly
   // this probe, saw a status, and never saw the override sitting one field over.
+  // The auth line ends in a shell line-continuation backslash, meant to be the
+  // LAST character before an actual newline -- embedding it mid-line (as a
+  // previous version of this probe did, `curl -s ${auth} ${base}/api/kanban`)
+  // put the whole printf command into curl's OWN argv (the backslash merely
+  // escaped the following space), so the token ended up readable in
+  // /proc/<pid>/cmdline and curl tried to resolve "printf" as a hostname --
+  // the probe never ran. Same two-line printf-piped-into-curl shape as the
+  // REVIEW/move commands below, with `-H @-` reading the header from stdin.
   const statusProbe =
-    `  curl -s ${auth} ${base}/api/kanban | python3 -c "import sys,json;d=json.load(sys.stdin);c=(next((x for x in d if x.get('id')=='${id}'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120]))"`
+    `  ${auth}\n` +
+    `  | curl -s -H @- ${base}/api/kanban | python3 -c "import sys,json;d=json.load(sys.stdin);c=(next((x for x in d if x.get('id')=='${id}'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120]))"`
   return [
     'MIELŐTT NEKIKEZDESZ: nézd meg a kártya AKTUÁLIS státuszát ÉS leírását. Ez az üzenet egy foglalt session sorában KÉSHET, és közben a munka elkészülhetett -- a leírás pedig a kártya saját, ennél a sablonnál erősebb szabályait hordozhatja (lásd lent):',
     statusProbe,
