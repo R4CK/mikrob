@@ -1065,7 +1065,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = draftReviewGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { code: 'draft_review_required', error: v.message }, 409); return true }
     }
-    specTemplateGuardCheck(id, data.status, typeof actor === 'string' ? actor : undefined)
+    // Captured BEFORE any mutation -- card 81452ce2 delta-gate F1 (WhiteHat2 komment 16326):
+    // specTemplateGuardCheck must fire only AFTER the transition actually succeeds, past every
+    // remaining 409 guard below, never on a request one of them rejects. By the time we could
+    // call getKanbanCard again after a successful write, its status is already the new one, so
+    // the pre-transition status is captured here and carried to the call site.
+    const specTemplatePrevStatus = getKanbanCard(id)?.status
     {
       const v = dependencyBlockBody(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, v.body!, 409); return true }
@@ -1107,6 +1112,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       }
     }
     if (updateKanbanCard(id, normalizeProjectName(data), { actor: typeof actor === 'string' ? actor : undefined, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
+      specTemplateGuardCheck(id, specTemplatePrevStatus, data.status, typeof actor === 'string' ? actor : undefined)
       json(res, { ok: true }); return true
     }
     // Card c4f2de32: distinguish "no such card" from "refused to re-open reviewed work", so the
@@ -1169,7 +1175,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = draftReviewGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { code: 'draft_review_required', error: v.message }, 409); return true }
     }
-    specTemplateGuardCheck(id, status, typeof actor === 'string' ? actor : undefined)
+    // See the sibling comment in the PUT handler (card 81452ce2 delta-gate F1): captured BEFORE
+    // any mutation, the guard itself fires only AFTER moveKanbanCard actually succeeds below.
+    const specTemplatePrevStatus = getKanbanCard(id)?.status
     {
       const v = dependencyBlockBody(id, status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, v.body!, 409); return true }
@@ -1184,6 +1192,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true, typeof reason === 'string' ? reason : undefined)) {
+      specTemplateGuardCheck(id, specTemplatePrevStatus, status, typeof actor === 'string' ? actor : undefined)
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
       // Fire-and-forget: fireKanbanDispatch's own try/catch means this never rejects, and

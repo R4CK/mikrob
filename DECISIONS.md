@@ -19278,6 +19278,55 @@ A harom erintett teszt (es a hozzajuk tartozo, mar hasznalatlanna valo `writeTra
 
 **Ki döntött:** backend (a WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16136). Delta-gate: QA + WhiteHat2 (cybersec2), ugyanarra a SHA-ra (4. munkavégzési szabály 4a pontja).
 
+## 2026-10-11 -- 81452ce2 delta-gate: WhiteHat2 NO-GO javítás (F1/F2), F3/F4 korlát kimondva
+
+Kapcsolódik a fenti, azonos napi bejegyzéshez (a kártya első landolásának delta-gate javítása, komment
+16326 NO-GO, komment 16331 MikroB teendő-lista).
+
+**F1 (blokkoló, javítva):** a `specTemplateGuardCheck` korábban a PUT/POST-move kezelőben a
+`dependencyBlockBody`/`bulk_attribution_required` 409-ellenőrzések ELŐTT futott -- egy elutasított
+kérés (pl. feloldatlan függőség) is írt kommentet/cím-taget, mielőtt a tábla egyáltalán tudta volna, hogy
+a kérés nem mehet át. Mért kihasználás (WhiteHat2): egy harmadik fél (`mallory`) kommentjébe írt
+`Termékdöntés: igen` + egy elutasított `in_progress`-kérés is lefagyasztotta a kártya cím-tagjét
+(`[BLOKKOLT-Peti-dontes]`), amit a `fleet-nudger.sh` kizár a self-advance/gate-jelöltek közül -- tehát
+egy idegen token-birtokos egy MÁSIK ügynök kártyáját tudta lefagyasztani. Javítás: a hívás helye átkerült
+a sikeres `updateKanbanCard`/`moveKanbanCard` UTÁNI ágba mindkét kezelőben (`src/web/routes/kanban.ts`),
+a tranzíció ELŐTTI állapotot (`specTemplatePrevStatus`) a hívó explicit elmenti és adja át, mert a
+mutáció után a kártya állapota már az ÚJ érték. A termékdöntés-mező forrása korlátozva: csak a kártya
+saját leírása, vagy a kártya felelősének (assignee), vagy `mikrob` kommentje fogadott el -- egy
+harmadik fél kommentje nem.
+
+**F2 (blokkoló, javítva):** a guard korábban a SAJÁT kommentjeit is beleolvasta a szakasz-ellenőrzésbe és
+a termékdöntés-keresésbe. Mivel a figyelmeztető komment felsorolja mind az öt szakasz nevét, a MÁSODIK
+hívástól a hiányzó szakaszok listája üresnek látszott -- a kártya spec nélkül is "kielégítettnek" tűnt
+(az `alreadyWarned`-dedup ág emiatt holt kód volt, egy ezt kivevő mutáns is zöld maradt). Javítás: mindkét
+szöveg-scan kizárja a `spec-template-guard` szerzőjű kommenteket a forrásszövegből (az `alreadyWarned`
+ellenőrzés viszont a TELJES komment-listát nézi, hogy valóban észlelje a saját korábbi figyelmeztetést).
+A `PRODUCT_DECISION_RX` mostantól szóhatárt követel az `igen` után és tiltja a `/nem` folytatást
+(`igen\b(?!\s*\/)`), így a kitöltetlen sablonsor (`Termékdöntés: igen/nem`) nem illeszkedik. A feloldás
+tartós: egy explicit `Termékdöntés-jóváhagyva` komment `mikrob`-tól véglegesen leállítja az automatikus
+cím-tag visszatételét, még akkor is, ha a döntés-sor fizikailag a kártyán marad.
+
+**F3/F4 (nem blokkoló, dokumentálva, nem kódolva):** a termékdöntés-jelölés önbevalláson áll -- aki nem
+akarja, hogy MikroB lássa, `nem`-et ír vagy kihagyja a mezőt, és az őr ezt nem tudja észlelni (a
+plan-grilling verdikt szándékosan tiltja a tartalom-alapú kitalálást). A gate-eknek kritériumonként kell
+ellenőriznie, hogy a feltételezések között nincs-e eltitkolt termékdöntés -- ez emberi/gate-felelősség,
+nem ez a kártya kódolja. A `project-workflow` skill szövege javítva: korábban azt állította, hogy "a
+munka a döntésig nem folytatódik" -- ez hamis volt, mert a warn-only kapcsoló alatt a kártya
+`in_progress`-be MEGY, a tag és a komment csak látható jelzés, nem blokk.
+
+**Teszt:** `src/__tests__/kanban-spec-template-guard.test.ts` bővült 22 esetre (harmadik fél kizárva,
+assignee/mikrob elfogadva, kitöltetlen placeholder kizárva, tartós jóváhagyás, VALÓDI fail-open mutáció
+egy tényleges `getKanbanCard` dobással, VALÓDI "nem warn kétszer" mutáció-próba). Új
+`src/__tests__/kanban-spec-template-guard-wiring.test.ts` (6 eset, forrás-szöveg alapú): mindkét
+hívási hely a sikeres írás UTÁN és a függőség-őr UTÁN áll, és a hívás száma pontosan 2 -- ha valaki
+törli az egyik hívást vagy visszateszi a régi sorrendet, ez a teszt pirosra vált.
+`npx vitest run src/__tests__/kanban-spec-template-guard*.test.ts`: 28/28 zöld; `npx tsc --noEmit -p .`
+tiszta.
+
+**Ki döntött:** backend2 (a WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16331). Delta-gate:
+QA + WhiteHat2.
+
 ## 2026-10-11 -- 335fb927: kártya-azonosító formátum-ellenőrzés + fail-closed dispatch-renderer (parancs-injekció a kártya id-n át)
 
 **Forrás:** WhiteHat2 GO a 41d8e96f-en (msg 10760), F1 MEDIUM, ELŐZETES lelet: a kártya-azonosítót a kliens adja meg a `POST /api/kanban`-on (formátum-ellenőrzés nélkül), és a dispatch-renderer (`kanbanMoveInstructions`, `routes/kanban.ts`) idézőjel és ellenőrzés nélkül fűzi a kártya-id-t a parancsblokkjaiba -- ebből hármat emel ki a keresett átadás-üzenet (a Python-státuszprobe, és két curl-URL argumentum). Mérve: `id = x$(echo pwned > marker)` mellett MIND A 3 parancsblokk végrehajtja a shell-behelyettesítést, mert a Python-probe egy DUPLA-idézőjelű `python3 -c "..."` argumentumba kerül (ahol a `$(...)`-t a KÜLSŐ shell oldja fel, még PYTHON előtt), a másik két blokk pedig idézőjel nélküli curl-URL argumentum volt. Egy token-birtokos így egy másik ügynökre kiosztott kártyával tetszőleges parancsot futtathatott a CÍMZETT gépén, abban a pillanatban, amikor az ügynök -- a dispatch-minta szerint elvárt módon -- szó szerint lefuttatja az üzenetben kapott parancsokat.
@@ -19308,6 +19357,22 @@ A harom erintett teszt (es a hozzajuk tartozo, mar hasznalatlanna valo `writeTra
 **Teszt:** `scripts/__tests__/email-extract-parity.test.py` (3 F1' eset + 1 L1 eset + 1 L2 eset, mind mutáció-proofolva -- a `fullmatch`→`match` visszaállítás 3 tesztet pirosra visz, a `ValueError` elkapás kivétele tracebacket dob a teszt-futásban, a `--attach-body` kivétele a regexből 1 tesztet pirosra visz) és `scripts/__tests__/email-approval-gate.test.py` (teljes futás zöld, regresszió nélkül).
 
 **Ki döntött:** backend (WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16368). Delta-gate: QA + WhiteHat2 (cybersec2), ugyanarra a SHA-ra.
+
+## 2026-10-11 -- Kartya 3d186397: senderId path-traversal audit, VAN RES, javitva (writeFileSync a channels-state fara)
+
+Audit-feladat (Cybersec out-of-scope megjegyzes 7503bb31 kommentjen, 5384): a channels-state faba iro `writeFileSync`-ek kozul melyik vesz at hivo/plugin-befolyasolta fajlnevet, es van-e traversal-szuro rajta.
+
+**Repro/meres (nem csak allitas):** grep `pending\[` a teljes `src/`-re -- az `access.json` `pending` mezojet KIZAROLAG a KULSO csatorna-plugin (telegram@claude-plugins-official es tarsai) irja, a sajat TypeScript-kod csak OLVASSA. Ket helyen a `pending[code].senderId` (plugin-irta, soha nem validalt ertek) kerult kozvetlenul `writeFileSync(join(approvedDir, senderId), ...)`-be fajlnevkent, SEMMILYEN traversal-szures nelkul:
+- `src/web/routes/agents.ts` ~1808. sor, `POST /api/agents/:name/channels/:provider/approve` -- a parolasi jovahagyas markerje.
+- `src/web/channel-invites.ts` ~252. sor, `runInviteMonitorTick` auto-jovahagyasi sweepje -- ugyanaz az alak.
+
+Egy `../`-alaku vagy abszolut-utu `senderId` (pl. egy hibas/kompromittalt plugin-folyamat valaszabol) ezert a `approved/` konyvtaron KIVULI, tetszoleges fajlba irt volna -- `routes/agents.ts`-nel a `chatId` (hivo-kontrollalt tartalom) a fajl TARTALMA is. URL-kodolt traversal-alak (`%2e%2e%2f`) inert, mert semmi nem dekodolja a senderId-t irasi elott -- nem kulon vektorkent, hanem mint a keresesi tartomany resze, ellenorizve.
+
+**Javitas:** mindket hely a mar bevalt `safeJoin(base, ...parts)` helpert hasznalja (`src/web/sanitize.ts`, resolve-utan-prefix-ellenorzes, `agentDir()` mar ugyanezt teszi az agent-nevre) -- `writeFileSync(join(...))` -> `writeFileSync(safeJoin(...))` mindket helyen. A `safeJoin` abszolut-utu injekciot is elkapja (a `resolve(base, absPath)` az abszolut utat adja vissza, ami nem kezdodik a base-prefixszel).
+
+**Teszt (`src/__tests__/channel-pairing-senderid-traversal.test.ts`, 11 teszt, MUTACIOVAL ellenorizve):** mindket hivo helyre viselkedesi teszt (a valodi route/`runInviteMonitorTick` valodi ideiglenes `fs`-fan, pozitiv kontroll + `../`-alak + abszolut-ut), plusz egy forras-szintu korpusz-pin (`writeFileSync(join(..., *.senderId))` alak tiltva a teljes `src/`-ben, az `invite-token-not-logged.test.ts` `LOGGED_SECRET_RX` mintajat kovetve). A mutacio (mindket `safeJoin` visszaallitva `join`-ra) igazoltan PIROSRA valtotta mind a ket viselkedesi tesztet (routes/agents.ts: 500 helyett 200; channel-invites.ts: a kiszamitott escape-celpont -- `join(approvedDir, '../../X')` textualisan `chDir`-tol EGY szinttel feljebb normalizalodik, nem kettovel, ez volt az elso, hibas melysegu assert ok -- letezik), ES a korpusz-pint is -- harom fuggetlen reteg, mind erzekeny.
+
+**Ki döntött:** backend3. Gate: QA + Cybersec (a kartya sajat kijelolese).
 
 ## 2026-10-11 -- 2520b85a: per-agent identitás, measurement-only szelet (plan-grilling verdikt: GO-WITH-CHANGES)
 

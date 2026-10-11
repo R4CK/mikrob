@@ -14,6 +14,19 @@
 //    separate, future decision, not this card's job.
 // 3. Product-decision assumptions are found by an EXPLICIT field in the spec ("Termékdöntés:
 //    igen/nem"), never by a regex guessing at the assumption's content.
+//
+// DELTA-GATE (WhiteHat2 NO-GO, komment 16326, 2026-10-11): two MEDIUM findings fixed here.
+// F1: the caller now invokes this ONLY after the planned -> in_progress transition has actually
+// SUCCEEDED (past every 409 guard) -- a rejected request writes nothing. The "product decision"
+// field is also only trusted from the card's own description or a comment from the card's
+// assignee / mikrob, never from an arbitrary third party's comment.
+// F2: both text scans exclude this guard's OWN comments (otherwise the warn comment's listing of
+// all five section names satisfies its own "is the template present" check on the next call, and
+// a quoted "Termékdöntés: igen" in the guard's own approval-request comment re-triggers itself).
+// The product-decision regex no longer matches the unfilled template placeholder
+// ("Termékdöntés: igen/nem"), and an explicit, durable "Termékdöntés-jóváhagyva" comment from
+// mikrob permanently stops the auto-tag from being re-applied, even if the decision line is still
+// physically present in the description.
 import { getKanbanCard, getKanbanComments, updateKanbanCard, addKanbanComment } from '../db.js'
 import { logger } from '../logger.js'
 
@@ -22,6 +35,7 @@ const GUARD_AUTHOR = 'spec-template-guard'
 const SEC_TAG_RX = /\[SEC\]/i
 const PHASE_OR_TASK_TAG_RX = /\[(F[ÁA]ZIS|FELADAT)\]/i
 const BLOCKED_PETI_DECISION_TAG = '[BLOKKOLT-Peti-dontes]'
+const APPROVAL_RX = /Term[ée]kd[öo]nt[ée]s-j[óo]v[áa]hagyva/i
 
 /** Exported for tests -- this is the one place that decides what counts as "nem triviális", and the
  *  plan-grilling verdict is explicit that it must stay narrow (not every HIGH-ish card). */
@@ -48,8 +62,9 @@ export function missingSpecSections(text: string): string[] {
 }
 
 // The explicit field the plan-grilling verdict asked for, instead of a content-guessing regex. Any
-// assumption line ending in this field, with "igen", names a product decision.
-const PRODUCT_DECISION_RX = /Term[ée]kd[öo]nt[ée]s\s*:\s*igen/i
+// assumption line ending in this field, with "igen" NOT followed by "/nem" (the unfilled template
+// placeholder "Termékdöntés: igen/nem" must never self-match, F2), names a product decision.
+const PRODUCT_DECISION_RX = /Term[ée]kd[öo]nt[ée]s\s*:\s*igen\b(?!\s*\/)/i
 
 interface Comment {
   readonly author: string
@@ -62,22 +77,33 @@ function cardText(description: string | null, comments: readonly Comment[]): str
 
 /**
  * Side effect only -- this guard never blocks a transition (plan-grilling verdict: warn-only for a
- * week). Call it alongside the blocking guards on planned -> in_progress; it swallows its own
- * errors, same fail-open rule as every other kanban guard (a checker that throws must not freeze
- * the board).
+ * week). Call it ONLY after the planned -> in_progress transition has actually succeeded (F1 --
+ * never on a request a later 409 guard rejects), passing the status the card had BEFORE that
+ * transition (the caller must capture it before attempting the write; by the time this function
+ * can look the card up again, its status is already the new one). It swallows its own errors, same
+ * fail-open rule as every other kanban guard (a checker that throws must not freeze the board).
  */
-export function specTemplateGuardCheck(cardId: string, nextStatus: unknown, actor?: string): void {
+export function specTemplateGuardCheck(
+  cardId: string,
+  prevStatus: string | null | undefined,
+  nextStatus: unknown,
+  actor?: string,
+): void {
   try {
     if (process.env.SPEC_TEMPLATE_GUARD === 'off') return
     if (nextStatus !== 'in_progress') return
+    if (prevStatus !== 'planned') return // only a fresh dispatch is in scope, same as the sibling guards
 
     const card = getKanbanCard(cardId)
     if (!card) return
-    if (card.status !== 'planned') return // only a fresh dispatch is in scope, same as the sibling guards
     if (!isNonTrivialCard(card.title ?? '', card.priority)) return
 
     const comments = getKanbanComments(cardId)
-    const text = cardText(card.description ?? null, comments)
+    // F2: exclude the guard's OWN comments from both scans -- otherwise the warn comment (which
+    // names all five sections) satisfies the next "is the template present" check on itself, and a
+    // quoted "Termékdöntés: igen" inside the guard's own approval-request comment re-triggers it.
+    const foreignComments = comments.filter((c) => c.author !== GUARD_AUTHOR)
+    const text = cardText(card.description ?? null, foreignComments)
 
     const missing = missingSpecSections(text)
     if (missing.length > 0) {
@@ -96,7 +122,21 @@ export function specTemplateGuardCheck(cardId: string, nextStatus: unknown, acto
       }
     }
 
-    if (PRODUCT_DECISION_RX.test(text) && !(card.title ?? '').includes(BLOCKED_PETI_DECISION_TAG)) {
+    // F1: the product-decision field is only trusted from the card's own description, or from a
+    // comment authored by the card's assignee or by mikrob -- never from an arbitrary third party's
+    // comment (anyone with API access could otherwise forge the field and freeze someone else's
+    // card out of the self-advance/gate nudger via the title tag it adds below).
+    const trustedAuthors = new Set<string>(['mikrob'])
+    if (card.assignee) trustedAuthors.add(card.assignee)
+    const trustedComments = foreignComments.filter((c) => trustedAuthors.has(c.author))
+    const trustedText = cardText(card.description ?? null, trustedComments)
+
+    // F2: an explicit, durable approval from mikrob permanently stops the auto-tag, even though the
+    // decision line is still physically present in the description -- resolution must not depend on
+    // deleting the comment or the description line (there was no such path before).
+    const alreadyApproved = comments.some((c) => c.author === 'mikrob' && APPROVAL_RX.test(c.content ?? ''))
+
+    if (!alreadyApproved && PRODUCT_DECISION_RX.test(trustedText) && !(card.title ?? '').includes(BLOCKED_PETI_DECISION_TAG)) {
       updateKanbanCard(
         cardId,
         { title: `${BLOCKED_PETI_DECISION_TAG} ${card.title}` },
@@ -107,7 +147,8 @@ export function specTemplateGuardCheck(cardId: string, nextStatus: unknown, acto
         GUARD_AUTHOR,
         `A kártya specje "Termékdöntés: igen" feltételezést jelöl -- automatikusan ${BLOCKED_PETI_DECISION_TAG} ` +
           `jelölést kapott. Jóváhagyás-kérés: MikroB (vagy Peti rajta keresztül) döntsön a kártyán ` +
-          `megnevezett termékdöntésről, mielőtt a munka folytatódik.`,
+          `megnevezett termékdöntésről, mielőtt a munka folytatódik. A feloldás tartós: mikrob egy ` +
+          `"Termékdöntés-jóváhagyva" kommentje kell, a cím-tag utólagos kézi törlése nem elég.`,
         true,
       )
     }

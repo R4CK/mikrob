@@ -62,9 +62,15 @@ az öt szakaszt:
   `(Termékdöntés: igen/nem)`. Ez a mező szándékosan EXPLICIT (nem egy a szövegen futó regex találja
   ki, hogy egy feltételezés termékdöntés-jellegű-e) -- a plan-grilling verdikt kifejezetten ezt kérte.
 
-**Termékdöntés automatikus jelölése (F4-bekötés).** Ha egy feltételezés sora `Termékdöntés: igen`-nel
-zárul, a kártya automatikusan `[BLOKKOLT-Peti-dontes]` cím-taget kap és egy jóváhagyás-kérő komment megy
-MikroB-nak -- a munka a döntésig nem folytatódik azon a ponton. A gép: `src/web/kanban-spec-template-guard.ts`.
+**Termékdöntés automatikus jelölése (F4-bekötés).** Ha a kártya leírásában, vagy a kártya felelősének
+(assignee) vagy MikroB-nak egy kommentjében egy feltételezés sora `Termékdöntés: igen`-nel zárul (a
+kitöltetlen `igen/nem` sablon-placeholder nem illeszkedik, és a mezőt más, harmadik fél kommentjéből a
+gép nem fogadja el), a kártya automatikusan `[BLOKKOLT-Peti-dontes]` cím-taget kap és egy jóváhagyás-kérő
+komment megy MikroB-nak. **A DÖNTÉSIG NEM SZABAD folytatni a kártyán megnevezett termékdöntés pontján --
+de a rendszer ma ezt csak JELZI, nem ÁLLÍTJA MEG: a warn-only kapcsoló alatt a kártya `in_progress`-be
+MEGY, a tag és a komment csak látható figyelmeztetés (WhiteHat2 NO-GO, komment 16326, F3/F4).** A
+feloldás tartós: egy `Termékdöntés-jóváhagyva` komment MikroB-tól, ami a tagot a döntés-sor törlése
+nélkül is véglegesen leállítja. A gép: `src/web/kanban-spec-template-guard.ts`.
 
 **A kapcsoló MOST warn-only (plan-grilling GO-WITH-CHANGES, mérési időszak egy hétig).** A hiányzó
 sablon ma csak egy figyelmeztető kommentet kap (`SPEC-TEMPLATE WARN`), a `planned -> in_progress`
