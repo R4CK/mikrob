@@ -21,7 +21,7 @@
 import { describe, it, expect, vi, beforeAll } from 'vitest'
 import { EventEmitter } from 'node:events'
 import type http from 'node:http'
-import { initDatabase, getDb, hybridSearch, clearMemoryCache } from '../db.js'
+import { initDatabase, getDb, hybridSearch, searchAgentMemories, clearMemoryCache } from '../db.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 vi.mock('../config.js', async () => {
@@ -167,5 +167,109 @@ describe('hybridSearch selfAuthenticatedOnly (card 84dcc5d4): agent_id match alo
 
     const selfOnly = await hybridSearch('qa', 'zzzqueryterm3', 10, undefined, undefined, true)
     expect(selfOnly.map(m => m.content)).toContain('authenticated qa-written row zzzqueryterm3')
+  })
+})
+
+// RedHat NO-GO on 84dcc5d4 (msg 10474, comment 15755): a mutation and the targeted 12-file test
+// cluster (131 tests) showed the real HIGH-risk gap is at the route, not at hybridSearch's own
+// parameter -- the two tests above call hybridSearch directly with selfAuthenticatedOnly=true, so
+// a route that silently drops ?self_authenticated=1 (never reaching hybridSearch, or reaching it
+// as `false`) stayed 131/131 green. The three describe blocks below pin the three mutants RedHat
+// named (M1/M2 route wiring, M4/M14 vector branch, M6 LIKE fallback), each verified to flip red
+// under the exact mutation RedHat described before being added here.
+function makeGetCtx(searchParams: Record<string, string>): { ctx: RouteContext; body: () => any } {
+  const url = new URL('http://localhost:3420/api/memories')
+  for (const [k, v] of Object.entries(searchParams)) url.searchParams.set(k, v)
+  let responseBody = ''
+  const res = {
+    writeHead: vi.fn(),
+    setHeader: vi.fn(),
+    end: (b?: string) => { responseBody = b || '' },
+  } as unknown as http.ServerResponse
+  return {
+    ctx: { req: {} as http.IncomingMessage, res, path: '/api/memories', method: 'GET', url },
+    body: () => (responseBody ? JSON.parse(responseBody) : null),
+  }
+}
+
+describe('GET /api/memories?self_authenticated=1 actually reaches hybridSearch through the real route (card 84dcc5d4, RedHat M1/M2)', () => {
+  it('excludes a NULL written_by_agent_key row even though the route, not hybridSearch directly, is the caller', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(
+      `INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, written_by_agent_key)
+       VALUES ('0', ?, 'semantic', 1.0, ?, ?, 'qa', 'hot', ?, NULL)`
+    ).run('route-level unauthenticated row zzzroutequeryterm', now, now, 'zzzroutequeryterm')
+    db.prepare(
+      `INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, written_by_agent_key)
+       VALUES ('0', ?, 'semantic', 1.0, ?, ?, 'qa', 'hot', ?, 'qa')`
+    ).run('route-level authenticated qa row zzzroutequeryterm', now, now, 'zzzroutequeryterm')
+
+    const { ctx, body } = makeGetCtx({ agent: 'qa', q: 'zzzroutequeryterm', mode: 'hybrid', self_authenticated: '1' })
+    await expect(tryHandleMemories(ctx)).resolves.toBe(true)
+    const contents = (body() as { content: string }[]).map(m => m.content)
+    expect(contents).toContain('route-level authenticated qa row zzzroutequeryterm')
+    expect(contents).not.toContain('route-level unauthenticated row zzzroutequeryterm')
+  })
+
+  it('without self_authenticated=1, the same route returns BOTH rows (the restriction is opt-in, not always-on)', async () => {
+    const { ctx, body } = makeGetCtx({ agent: 'qa', q: 'zzzroutequeryterm', mode: 'hybrid' })
+    await expect(tryHandleMemories(ctx)).resolves.toBe(true)
+    const contents = (body() as { content: string }[]).map(m => m.content)
+    expect(contents).toContain('route-level authenticated qa row zzzroutequeryterm')
+    expect(contents).toContain('route-level unauthenticated row zzzroutequeryterm')
+  })
+})
+
+describe('hybridSearch vector branch honors selfAuthenticatedOnly (card 84dcc5d4, RedHat M4/M14)', () => {
+  it('excludes a NULL written_by_agent_key row that matches ONLY by embedding, not by FTS text', async () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    // Neither row's content/keywords contain the query term below, so the FTS branch finds
+    // nothing and the answer -- if any -- comes from the vector branch alone, isolating M4/M14.
+    db.prepare(
+      `INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, embedding, written_by_agent_key)
+       VALUES ('0', ?, 'semantic', 1.0, ?, ?, 'qa', 'hot', 'alpha', ?, NULL)`
+    ).run('vector-only unauthenticated row', now, now, JSON.stringify([1, 0, 0, 0]))
+    db.prepare(
+      `INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, embedding, written_by_agent_key)
+       VALUES ('0', ?, 'semantic', 1.0, ?, ?, 'qa', 'hot', 'alpha', ?, 'qa')`
+    ).run('vector-only authenticated qa row', now, now, JSON.stringify([1, 0, 0, 0]))
+
+    vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ embedding: [1, 0, 0, 0] }) })))
+    try {
+      const selfOnly = await hybridSearch('qa', 'zzzznincsilyenszovectoronly', 10, undefined, undefined, true)
+      const contents = selfOnly.map(m => m.content)
+      expect(contents).toContain('vector-only authenticated qa row')
+      expect(contents).not.toContain('vector-only unauthenticated row')
+    } finally {
+      // Restore the file-wide null-embedding stub so later tests are unaffected.
+      vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ embedding: null }) })))
+    }
+  })
+})
+
+// Runs last on purpose (mirrors ad209cdf's own pattern): dropping memories_fts forces every FTS
+// query in the rest of this suite's shared :memory: DB to fail, which is the only honest way to
+// reach searchAgentMemories' catch/LIKE fallback without mocking the database driver itself.
+describe('searchAgentMemories LIKE fallback honors selfAuthenticatedOnly when FTS is unavailable (card 84dcc5d4, RedHat M6)', () => {
+  it('excludes a NULL written_by_agent_key row via the catch-branch LIKE query, category filter included', () => {
+    const db = getDb()
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(
+      `INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, written_by_agent_key)
+       VALUES ('0', ?, 'semantic', 1.0, ?, ?, 'qa', 'hot', ?, NULL)`
+    ).run('fallback unauthenticated row zzzfallbackqueryterm', now, now, 'zzzfallbackqueryterm')
+    db.prepare(
+      `INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, written_by_agent_key)
+       VALUES ('0', ?, 'semantic', 1.0, ?, ?, 'qa', 'hot', ?, 'qa')`
+    ).run('fallback authenticated qa row zzzfallbackqueryterm', now, now, 'zzzfallbackqueryterm')
+
+    db.exec('DROP TABLE IF EXISTS memories_fts')
+
+    const selfOnly = searchAgentMemories('qa', 'zzzfallbackqueryterm', 10, undefined, true, 'hot', true)
+    const contents = selfOnly.map(m => m.content)
+    expect(contents).toContain('fallback authenticated qa row zzzfallbackqueryterm')
+    expect(contents).not.toContain('fallback unauthenticated row zzzfallbackqueryterm')
   })
 })
