@@ -67,6 +67,32 @@ load_worktrees "$CLEANCORE_MAIN"
   && ok "the container dir itself is not registered as a worktree (only its child is)" \
   || bad "container dir should not itself be in WORKTREE_OWNER"
 
+# --- has_live_process_under(): REAL process, cwd ELSEWHERE but an open fd INTO the dir ----------
+# QA's own reproduction on card bc1e7ef2 (F1 FAIL): a process whose cwd is outside the candidate
+# dir, but which holds an open file descriptor pointing into it (a `tail -f`/log-writer redirected
+# there from elsewhere), was completely invisible to a cwd-only check -- classify() called it
+# DISPOSABLE and --apply --yes removed the dir out from under the still-running process. This is
+# the REAL function (not stubbed, unlike every classify()-level case below it), because the defect
+# is specifically in what /proc paths it reads.
+fdtest_dir="$FAKE_HOME/qa-gate-openfile"
+mkdir -p "$fdtest_dir"
+: > "$fdtest_dir/live.log"
+# cwd is $tmp (NOT $fdtest_dir) -- the exact shape QA measured: cwd elsewhere, fd into the target.
+( cd "$tmp" && exec tail -f "$fdtest_dir/live.log" >/dev/null 2>&1 ) &
+fdtest_pid=$!
+# Give the kernel a moment to populate /proc/<pid>/fd for the new process.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ -e "/proc/$fdtest_pid/fd" ] && [ -n "$(ls /proc/"$fdtest_pid"/fd 2>/dev/null)" ] && break
+  sleep 0.2
+done
+if has_live_process_under "$fdtest_dir"; then
+  ok "has_live_process_under sees an open fd into the dir even with cwd elsewhere (QA's fix)"
+else
+  bad "has_live_process_under missed an open fd into the dir -- QA's FAIL would reproduce"
+fi
+kill "$fdtest_pid" 2>/dev/null
+wait "$fdtest_pid" 2>/dev/null
+
 # --- classify(): KEEP always wins, before anything else is even looked at ---------------------
 HAS_ACTIVE_CHILD=(); WORKTREE_OWNER=(); DASHBOARD_UP=0; OPEN_CARD_IDS_FILE=""
 [ "$(classify marveen /anything/not/real)" = KEEP ] \
