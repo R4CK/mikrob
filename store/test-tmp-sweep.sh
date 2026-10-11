@@ -31,6 +31,9 @@
 # 900s = 15 minutes; MIN_AGE_MIN defaults well past that.
 #
 # Usage: test-tmp-sweep.sh [--dry-run]
+# Env (test hooks, used by test-tmp-sweep.selftest.sh): TEST_TMP_SWEEP_MIN_AGE_MIN,
+# TEST_TMP_SWEEP_SRC (fake test-source tree), TEST_TMP_SWEEP_TARGET_DIR (fake sweep target,
+# instead of the real /tmp).
 set -uo pipefail
 
 DRY_RUN=0
@@ -38,6 +41,7 @@ DRY_RUN=0
 
 MIN_AGE_MIN="${TEST_TMP_SWEEP_MIN_AGE_MIN:-60}"
 SRC_ROOT="${TEST_TMP_SWEEP_SRC:-/home/neon/marveen/src}"
+TARGET_DIR="${TEST_TMP_SWEEP_TARGET_DIR:-/tmp}"
 
 say() { echo "test-tmp-sweep: $*"; }
 run() { if [ "$DRY_RUN" = 1 ]; then echo "  [dry-run] $*"; else eval "$@"; fi; }
@@ -74,12 +78,12 @@ checked=0
 # reaches this list), THEN filtered down to known prefixes in one grep pass.
 while read -r name; do
   [ -n "$name" ] || continue
-  entry="/tmp/$name"
+  entry="$TARGET_DIR/$name"
   [ -e "$entry" ] || continue
   checked=$((checked + 1))
   say "removing: $entry"
   run "rm -rf '$entry'"
   removed=$((removed + 1))
-done < <(find /tmp -mindepth 1 -maxdepth 1 -mmin "+$MIN_AGE_MIN" -printf '%f\n' 2>/dev/null | grep -E "$prefix_regex")
+done < <(find "$TARGET_DIR" -mindepth 1 -maxdepth 1 -mmin "+$MIN_AGE_MIN" -printf '%f\n' 2>/dev/null | grep -E "$prefix_regex")
 
 say "done, $prefix_count known prefix(es), $removed/$checked entrie(s) removed (age > ${MIN_AGE_MIN}m)"
