@@ -124,7 +124,7 @@ describe('POST /api/kanban/:id/breakdown/accept bypasses the route guard without
     })
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
-    expect(getKanbanCard(out.body.created[0])?.assignee).toBe('backend3')
+    expect(getKanbanCard(out.body.created[0] as string)?.assignee).toBe('backend3')
   })
 })
 
@@ -137,7 +137,7 @@ describe('idea promotion no longer hardcodes assignee=BOT_NAME (MikroB) and the 
     const { ctx, out } = fakeCtx('/api/ideas/idea1/promote', 'POST', { phase: 'plan' })
     expect(await tryHandleIdeas(ctx)).toBe(true)
     expect(out.status).toBe(200)
-    expect(getKanbanCard(out.body.kanban_id)?.assignee).toBeFalsy()
+    expect(getKanbanCard(out.body.kanban_id as string)?.assignee).toBeFalsy()
   })
 
   it('POST /api/ideas/:id/promote-breakdown refuses a child subtask with assignee="mikrob" with 400', async () => {
@@ -155,7 +155,7 @@ describe('idea promotion no longer hardcodes assignee=BOT_NAME (MikroB) and the 
     })
     expect(await tryHandleIdeas(ctx)).toBe(true)
     expect(out.status).toBe(200)
-    expect(getKanbanCard(out.body.parent_id)?.assignee).toBeFalsy()
+    expect(getKanbanCard(out.body.parent_id as string)?.assignee).toBeFalsy()
   })
 })
 
