@@ -17,12 +17,12 @@ az elején egyszer feloldod a sajátodat, és onnantól `$CC`-t (shellben) vagy 
 használsz:
 
 ```bash
-CC="$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"   # pl. backend, fullstack
+CC="$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"   # pl. backend, fullstack
 ```
 
 ```python
 import subprocess
-CC = subprocess.run(['/home/neon/marveen/store/agent-worktree.sh', '<a te agent-neved>', '--path'],
+CC = subprocess.run(['{{INSTALL_DIR}}/store/agent-worktree.sh', '<a te agent-neved>', '--path'],
                     capture_output=True, text=True).stdout.strip()
 ```
 
@@ -215,7 +215,7 @@ print('Done.')
 
 ```bash
 cd "$QA_WT"   # a fenti eldobható worktree, NEM a megosztott fő klón
-cd "$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"
+cd "$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
 git add packages/i18n/messages/de.json packages/i18n/messages/es.json \
         packages/i18n/messages/fr.json packages/i18n/messages/it.json \
         packages/i18n/messages/pl.json
@@ -230,7 +230,7 @@ git commit -m "feat(i18n): <namespace> translations — de/es/fr/it/pl"
 
 ```bash
 cd "$QA_WT"   # ugyanaz az eldobható worktree
-cd "$(/home/neon/marveen/store/agent-worktree.sh <a te agent-neved> --path)"
+cd "$({{INSTALL_DIR}}/store/agent-worktree.sh <a te agent-neved> --path)"
 npx vitest run apps/web/src/i18n-locale-guard.test.ts
 # 14/14 kell
 ```
@@ -356,6 +356,7 @@ Languages that commonly differ from EN:
 - **Plural forms**: ICU MessageFormat (`{count, plural, one {...} other {...}}`) csak akkor fordítandó, ha a szöveg valóban más (pl. PL 4 formájú plurális). FR-ben `site`/`sites` ugyanaz.
 - **Template-only strings**: ha az EN value csupa `{placeholder}` és elválasztó (`{score} / 5`, `{value} m²`), ez LEGIT_SAME, nem fordítandó.
 - **Stale HEAD csapda**: ha a kártya egy korábbi commit hash-t jelöl, mindig `git show <sha>:file`-lal ellenőrizz -- a HEAD-en esetleg már javítva van, de a commit-en nem volt az! (Valós eset: 4573921 double-brace volt, a1d9f96 javította; HEAD-en check = téves PASS.)
+- **`agent-worktree.sh <ügynök> --path` önmagában NEM elég bizonyíték a worktree létezésére**: a `--path` ág a szkriptben MIELŐTT bármilyen létezés-ellenőrzés/mkdir/worktree-add futna, már kiszámolja és kiírja az elméleti útvonalat, majd kilép -- exit 0-val visszaad egy utat akkor is, ha az a könyvtár SOSE lett létrehozva (valós eset QA2-nél, kártya c4f431e4: a kiírt útvonalra `cd`-zve/írva azonnal FileNotFoundError). Ha a te ügynök-neved nem a fejlesztő-ügynökök állandó-worktree mintáját követi (nincs `.../CleanCore-worktrees/<neved>` könyvtár), nyiss előbb egy eldobható worktree-t a HEAD-en (lásd fent a `QA_WT` mintát), ne a `--path` kimenetére építs feltételezés nélkül.
 
 ## Ellenőrzés
 

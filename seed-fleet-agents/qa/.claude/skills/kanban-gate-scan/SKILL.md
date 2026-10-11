@@ -86,14 +86,18 @@ def is_gate_review(cm):
         head = content[:500].upper()
         return first_line.startswith('REVIEW') and any(m in head for m in SELF_WORK)
     # Structural: starts with REVIEW, or first 60 chars contain 'REVIEW:'
-    # 'DRAFT-REVIEW: ELFOGADVA/RESZBEN/ELUTASITVA' is the local-llm-offload classification marker
-    # (card 1338e68b) a BUILDER posts on a rejected/accepted local-model draft -- it is a judgment
-    # about the DRAFT, never a gate request, but its first line contains the substring 'REVIEW:'
-    # and false-positived as a gate-ready REVIEW (card 8b5559cf, 2026-09-12: a rejected draft on a
-    # still-in_progress measurement card surfaced as "ungated", even though no REVIEW had been
-    # posted at all). Exclude it before the loose substring check below.
-    if first_line.startswith('DRAFT-REVIEW'): return False
-    return first_line.startswith('REVIEW') or 'REVIEW:' in content[:60].upper()
+    # NOT a bare substring test: 'Draft-Review:' (the mandatory local-llm-draft acceptance
+    # marker, card 1338e68b -- 'ELFOGADVA'/'RESZBEN'/'ELUTASITVA'/'FELESLEGES') contains the
+    # literal substring 'REVIEW:' and false-positived a still-in_progress, un-REVIEW'd card
+    # (33093fbe, qa2 sweep 2026-09-18: comment 4182 'Draft-Review: FELESLEGES' at content start
+    # matched 'REVIEW:' in content[:60], even though no actual gate REVIEW existed yet -- the
+    # card was in_progress/80%/backend2, not waiting). Fix: require 'REVIEW:' to start at a word
+    # boundary not immediately preceded by a hyphen/letter (i.e. reject 'Draft-Review:',
+    # 'Pre-Review:' etc.), or just require the STANDALONE line to start with 'REVIEW' not
+    # 'DRAFT-REVIEW'.
+    head = content[:60].upper()
+    has_review_colon = bool(re.search(r'(?<![A-Z-])REVIEW:', head))
+    return first_line.startswith('REVIEW') or has_review_colon
 
 # MikroB-blocked markers: skip cards where MikroB says the gate is deferred/consolidated
 BLOCKED_MARKERS = ('BLOKKOLVA', 'KOTOTT FELTETEL', 'kotott-blokk', 'kötött-blokk',
@@ -180,10 +184,41 @@ for c in all_cards:
     if not gate_reviews: continue
 
     last_review_id = max(cm['id'] for cm in gate_reviews)
+    # NOT a literal 'QA PASS'/'QA FAIL' substring, and NOT the anchored PASS_RE/FAIL_RE either
+    # (those require the line to START with "QA PASS"/"QA2 PASS"). QA (and qa2) write several
+    # verdict-line shapes that a caller already knows is a qa/qa2 comment -- measured 2026-08-24
+    # (card 71188a2a sweep): "QA GATE (PARTIAL/section-scoped, re-gate on the fix): PASS" and
+    # "QA VERDICT: PASS (...)" both slipped past the old literal-substring check on 3 separate
+    # cards (d2558d8b, 8d76979f, 4bec483f) in one sweep, each already fully gated by QA. A false
+    # "still ungated" wastes a full independent re-gate (worktree, tests, mutation) on work
+    # someone else already did thoroughly -- worse than the opposite miss, since the API status
+    # filter (`status not in ('waiting','in_progress')`) already excludes truly closed cards
+    # regardless.
+    #
+    # SELF-CAUGHT REGRESSION, same session: my first attempt checked ONLY the literal first
+    # line for PASS/FAIL. That broke the fleet's own `Gate-SHA:`-first convention (root
+    # CLAUDE.md rule 4b) -- MY OWN qa2 verdicts always lead with "Gate-SHA: <sha>\n\n" before
+    # "QA2 PASS -- ...", so the verdict word never appears on line 1 of MY OWN comments. Two of
+    # this session's own just-posted PASS verdicts (f48dc50e, 71188a2a) reappeared as "ungated"
+    # on the very next scan because of this. Fix: skip a leading `Gate-SHA:` line (and any blank
+    # lines) before taking "the first line" to search.
+    QA_OWN_VERDICT_RE = re.compile(r'\b(PASS|FAIL)\b')
+    def qa_own_verdict(content):
+        first = ''
+        for line in (content or '').split('\n'):
+            s = line.strip()
+            if not s: continue
+            if re.match(r'^Gate-SHA:', s, re.IGNORECASE): continue
+            first = s.upper()
+            break
+        m = QA_OWN_VERDICT_RE.findall(first)
+        if 'FAIL' in m: return 'fail'
+        if 'PASS' in m: return 'pass'
+        return None
     last_verdict_id = max(
         (cm['id'] for cm in comments
          if (cm.get('author') or '').lower() in ('qa', 'qa2')
-         and any(k in (cm.get('content') or '') for k in ('QA PASS','QA FAIL','QA2 PASS','QA2 FAIL'))),
+         and qa_own_verdict(cm.get('content'))),
         default=-1
     )
     if last_review_id <= last_verdict_id: continue  # already gated
@@ -290,6 +325,9 @@ for n in needs:
 - **Redundáns REVIEW ugyanazon commiten (2026-07-24 tanulság):** A scan felszínre hozhat kártyákat ahol fron-ted/fron-teddy ÚJ REVIEW-t posztolt egy MÁR TELJESEN GATE-ELT commitra (pl. `fron-ted#4620 REVIEW: bug már ki van javítva -- commit dc074ab`). Ilyenkor a scan helyesen listázza (új REVIEW-id > utolsó verdict-id), DE: (a) ha a REVIEW-ban említett commit sha UGYANAZ mint amire a meglévő QA PASS szól, és (b) MikroB már DONE-kommentet adott -- NE gate-elj újra, csak posztolj rövid megjegyzést ("már gated @ sha, MikroB lezárhatja") és értesítsd MikroB-ot inter-agent üzenettel. Így a kártyák nem kerülnek ki a scanből (a scan helyesen jelzi a DONE-hiányt), de nem pazarolsz gate-munkát ismételt futtatásra. Valós esetek: 725d3bc9 (dc074ab), 5477ae68 (5986ccc), f1218257 (5986ccc).
 - **`npm run typecheck` WIP-interferencia (2026-07-31 tanulság, 82dac857):** A typecheck a WORKING TREE-t futtatja, nem a gate-elt commitot. Ha TS-hibát kapsz gate közben, MINDIG ellenőrizd: `git diff <gated-sha> -- <file>` -- ha a hiba a WIP diff-ben van (másik agent uncommitted kódja), az NEM a gated commit hibája. Ilyenkor: (a) a committed verziót ellenőrzöd (`git show <sha>:file | grep -n ...`), (b) a QA PASS/FAIL kommentben jelzed hogy a hiba WIP-tól jött + melyik kártyától.
 - **Closeable-scan false-positive: hiányzó kötelező gate (2026-07-31 tanulság, 82dac857):** A `all_gate_verdicts` csak a JELENLÉVŐ verdict-ek alapján ítél -- ha WhiteHat nem adott formális verdiktet (csak "előzetes input" kommentet írt), a scan "closeable"-nak mutatja a kártyát ha QA PASS + RedHat GO van. DE: trust-boundary kártyán (új write path, tenant-scope, authz) WhiteHat GO KÖTELEZŐ (rule 4). A closeable-scan csak MikroB-nak adott TÁJÉKOZTATÓ jelzés; a zárást MikroB végzi és ő ellenőrzi hogy minden kötelező gate jelen van.
+- **`Draft-Review:` hamis pozitív a `REVIEW:` szubsztring-teszten (qa2 tanulság, 2026-09-18, kártya 33093fbe):** a local-llm-draft kötelező elfogadási jelölése (`Draft-Review: ELFOGADVA/RESZBEN/ELUTASITVA/FELESLEGES`, lásd kártya 1338e68b) a KOMMENT ELEJÉN áll, és a `'REVIEW:' in content[:60].upper()` szubsztring-teszt ráakadt, mert "Draft-Review:" tartalmazza a "REVIEW:" alsztringet. Egy `in_progress`/`[80%]`/backend2-nél még aktívan épülő kártyát (nincs valódi gate-REVIEW, még folyamatban van) tévesen ungated-ként mutatott. Fix (fent): a `REVIEW:` mintát negatív lookbehinddel kell keresni (`(?<![A-Z-])REVIEW:`), hogy a `-REVIEW:` végű prefixek (Draft-Review, Pre-Review) ne illeszkedjenek.
+- **Saját (qa/qa2) verdikt-formátum vakfolt (2026-08-24 tanulság, 71188a2a-sweep):** a `last_verdict_id` régen literál `'QA PASS' in content` / `'QA2 PASS' in content` szubsztring-egyezést nézett. QA sokszor MÁS alakban írja a verdiktet ugyanabban a jelentésben -- "QA GATE (PARTIAL/section-scoped, re-gate on the fix): PASS", "QA VERDICT: PASS (egy hiányzó kötelező elemmel...)" -- egyik sem tartalmazza literálisan a "QA PASS" szót. Ez 3 kártyát (d2558d8b, 8d76979f, 4bec483f) egy sweep alatt tévesen ungated-ként mutatott, holott QA már alaposan (worktree, teszt, mutáció) meggate-elte mindet -- majdnem redundáns újra-gate-elés lett volna.
+  **SAJÁT KÖVETKEZŐ HIBA, UGYANEBBEN A SESSION-BEN:** az első javítás csak a szó szerinti ELSŐ SORT nézte -- de a fleet `Gate-SHA:`-első konvenciója (root CLAUDE.md 4b szabály) miatt a SAJÁT qa2-verdiktjeim mindig `"Gate-SHA: <sha>\n\nQA2 PASS -- ..."` alakúak, tehát a verdikt-szó SOHA nincs az 1. soron. Két, ugyanebben a sweepben frissen postázott saját PASS (f48dc50e, 71188a2a) a KÖVETKEZŐ scan-futáson megint ungated-ként jelent meg. Végső fix (a fenti kódban): a `Gate-SHA:`-val kezdődő és üres sorokat át kell ugrani, mielőtt az "első sort" vesszük a PASS/FAIL kereséshez. **Tanulság a tanulságra: minden scan-patch után FUTTASD ÚJRA a scant, mielőtt a régi verdiktjeidre hagyatkozol** -- egy önmagát igazoltnak hívő javítás pont ugyanabba a hibaosztályba eshet, amit javítani próbált.
 
 ## Gate reconciliation (closeable cards)
 
