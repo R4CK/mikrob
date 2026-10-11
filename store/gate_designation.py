@@ -10,15 +10,15 @@ copied, because a copy drifts (see `gate_author_role.py`'s header for the same a
 already on this board).
 
 TWO SOURCES, in priority order (unchanged from the original):
-  1. GATE_LABELS -- the card's own kanban labels (@qa/@qa2/@cybersec/@cybered). Durable, because it
-     takes a deliberate act by MikroB to attach one. Authoritative when present.
+  1. GATE_LABELS -- the card's own kanban labels (@qa/@qa2/@cybersec/@cybersec2/@cybered). Durable,
+     because it takes a deliberate act by MikroB to attach one. Authoritative when present.
   2. GATE_LINE -- the card's free-text "Gate: ..." line, when no labels exist yet. Weaker (prose,
      easy to under-specify), used as a fallback until labels are the norm.
 Neither present -> None (no exclusion / no designation known).
 """
 import re
 
-GATE_AGENTS = ("qa", "qa2", "cybersec", "cybered")
+GATE_AGENTS = ("qa", "qa2", "cybersec", "cybersec2", "cybered")
 
 
 def widen_qa(names):
@@ -27,10 +27,16 @@ def widen_qa(names):
     return names | {"qa", "qa2"} if ("qa" in names or "qa2" in names) else names
 
 
+def widen_cybersec(names):
+    """Cybersec (WhiteHat) and cybersec2 (WhiteHat2) are capacity twins for load-balancing (card
+    21abfe0b), same relationship as qa/qa2 -- naming one designates both."""
+    return names | {"cybersec", "cybersec2"} if ("cybersec" in names or "cybersec2" in names) else names
+
+
 def designated_from_labels(csv):
     names = {n.strip().lstrip("@").lower() for n in csv.split(",") if n.strip()}
     names = {n for n in names if n in GATE_AGENTS}
-    return widen_qa(names) if names else None
+    return widen_cybersec(widen_qa(names)) if names else None
 
 
 def designated_from_gate_line(text):
@@ -61,11 +67,15 @@ def designated_from_gate_line(text):
         names.add("qa")
     # WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for the same cybersec/cybered roles --
     # a "Gate: QA + WhiteHat" line must designate the cybersec gate exactly like "... + Cybersec".
-    if re.search(r"\bcybersec\b", low) or re.search(r"\bwhitehat\b", low):
+    # WHITEHAT2 (card 21abfe0b): the cybersec2 twin, same alias relationship -- checked BEFORE the
+    # bare cybersec/whitehat patterns so "cybersec2"/"whitehat2" is not also read as the bare name.
+    if re.search(r"\bcybersec2\b", low) or re.search(r"\bwhitehat2\b", low):
+        names.add("cybersec2")
+    elif re.search(r"\bcybersec\b", low) or re.search(r"\bwhitehat\b", low):
         names.add("cybersec")
     if re.search(r"\bcybered\b", low) or re.search(r"\bredhat\b", low):
         names.add("cybered")
-    return widen_qa(names) if names else None
+    return widen_cybersec(widen_qa(names)) if names else None
 
 
 def designated_gates(gate_labels, gate_line):

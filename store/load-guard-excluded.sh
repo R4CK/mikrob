@@ -7,14 +7,15 @@
 # sibling-guards-drift-check-the-wrapper-unwrap). One file, sourced by both.
 #
 # EXCLUSION IS HARDCODED, NOT CONFIGURABLE (KOCKAZAT #2 mitigation, phase 19f3bbb5 plan-grilling
-# verdict): MikroB and the full gate-pool (qa/qa2/cybersec/cybered -- qa2 included even though the
-# card's own prose only names qa, because rule 4/6a establish qa2 as an equal-standing QA-gate
-# member for load-balancing) can never be a throttle target of ANY kind. A runtime config file
-# cannot add or remove from this list.
+# verdict): MikroB and the full gate-pool (qa/qa2/cybersec/cybersec2/cybered -- qa2 and cybersec2
+# included even though the card's own prose only names qa/cybersec, because rule 4/6a establish
+# qa2 and cybersec2 as equal-standing gate members for load-balancing, card 21abfe0b for
+# cybersec2) can never be a throttle target of ANY kind. A runtime config file cannot add or
+# remove from this list.
 #
 # Usage: `. load-guard-excluded.sh` then call `is_excluded "$session_name"`.
 
-EXCLUDED_SESSIONS=(agent-qa agent-qa2 agent-cybersec agent-cybered)
+EXCLUDED_SESSIONS=(agent-qa agent-qa2 agent-cybersec agent-cybersec2 agent-cybered)
 
 is_excluded() {
   local s="$1"

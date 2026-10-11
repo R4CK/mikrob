@@ -302,13 +302,15 @@ _agent_running_state() {
 # --- clone-family MISSING-skill detection (card a6abb230) -------------------------------------
 # Known sibling groups. Not derived from anything live (no naming convention reliably implies
 # "same family" -- qa2 does, cybersec2 would not), so this is a short, explicit list, same spirit as
-# the root CLAUDE.md's own hardcoded "ma: backend<->backend2, qa<->qa2, fron-ted<->fron-teddy" note.
-# An agent not listed here returns nothing and is simply never part of a missing-skill comparison.
+# the root CLAUDE.md's own hardcoded "ma: backend<->backend2, qa<->qa2, fron-ted<->fron-teddy,
+# cybersec<->cybersec2" note. An agent not listed here returns nothing and is simply never part of
+# a missing-skill comparison. cybersec/cybersec2 added card 21abfe0b (WhiteHat2 stood up).
 _family_members() {
   case "$1" in
     backend|backend2|backend3) echo "backend backend2 backend3" ;;
     qa|qa2)                    echo "qa qa2" ;;
     fron-ted|fron-teddy)       echo "fron-ted fron-teddy" ;;
+    cybersec|cybersec2)        echo "cybersec cybersec2" ;;
     *) echo "" ;;
   esac
 }

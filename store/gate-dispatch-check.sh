@@ -83,7 +83,7 @@
 # hits on the live board were cards whose OWN text designated other gates).
 #
 # TWO SOURCES, in priority order:
-#   1. GATE_LABELS -- the card's own kanban labels (@qa/@qa2/@cybersec/@cybered). Durable,
+#   1. GATE_LABELS -- the card's own kanban labels (@qa/@qa2/@cybersec/@cybersec2/@cybered). Durable,
 #      because it takes a deliberate act by MikroB to attach one (rule 2's own convention,
 #      just not yet used for gate designation). Authoritative when present.
 #   2. GATE_LINE -- the card's free-text "Gate: ..." line, when no labels exist yet. Weaker
@@ -394,6 +394,13 @@ mine = [c for c in cs if (c.get("author") or "").lower() == agent.lower()]
 if agent == "qa2":
     qa_pass_rx = re.compile(r"^\s*QA\s+PASS\b", re.I)
     mine = mine + [c for c in cs if (c.get("author") or "").lower() == "qa" and qa_pass_rx.search(c.get("content") or "")]
+# CYBERSEC2-COVERED-BY-CYBERSEC (card 21abfe0b, same QA2-covered-by-QA relationship): cybersec2
+# (WhiteHat2) exists for load-sharing, not as a second mandatory review layer -- a CYBERSEC GO on
+# this SAME submission already covers cybersec2. Narrow on purpose: only a GO counts (a NO-GO does
+# not excuse cybersec2 from anything), and only for agent == cybersec2.
+if agent == "cybersec2":
+    cybersec_go_rx = re.compile(r"^\s*CYBERSEC\s+GO\b", re.I)
+    mine = mine + [c for c in cs if (c.get("author") or "").lower() == "cybersec" and cybersec_go_rx.search(c.get("content") or "")]
 if not mine:
     print("ALLOW:no-verdict"); sys.exit(0)
 
@@ -909,6 +916,14 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"qa","created_at":200,"content":"QA PASS -- commit abc1234"}]'
     d "decide: the QA-covers-qa2 exception is qa2-only" "ALLOW:no-verdict"     0 cybersec
 
+    # CYBERSEC2-covered-by-CYBERSEC (card 21abfe0b, same relationship as QA2-covered-by-QA).
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"CYBERSEC GO -- commit abc1234"}]'
+    d "decide: CYBERSEC GO covers cybersec2"                "ADVISE-SKIP:already-gated" 8 cybersec2
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"CYBERSEC NO-GO -- unpinned mutant"}]'
+    d "decide: a CYBERSEC NO-GO does NOT cover cybersec2"   "ALLOW:no-verdict"          0 cybersec2
+    SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"},{"author":"cybersec","created_at":200,"content":"CYBERSEC GO -- commit abc1234"}]'
+    d "decide: the CYBERSEC-covers-cybersec2 exception is cybersec2-only" "ALLOW:no-verdict" 0 cybered
+
     # INFO-ONLY (card a5732476, e00c12ad-shape): a later comment carrying a stray hex-looking
     # token that is NOT the gated commit -- a CI run id, a coverage hash, baseline data -- falls
     # through to the extract_shas() scrape and re-arms the gate as if it named new work, unless
@@ -966,6 +981,9 @@ print(",".join(c.get("id") or "" for c in cards if isinstance(c, dict)))
     SELFTEST_JSON='[{"author":"backend","created_at":100,"content":"REVIEW"}]'
     dd "designation: Gate: QA. also designates qa2 (twin)"     "ALLOW:no-verdict"      0 qa2 "" "QA."
     dd "designation: a QA2-only label also designates qa"      "ALLOW:no-verdict"      0 qa "qa2" ""
+    # CYBERSEC/CYBERSEC2 symmetry (card 21abfe0b): naming either designates both.
+    dd "designation: Gate: WhiteHat. also designates cybersec2 (twin)" "ALLOW:no-verdict" 0 cybersec2 "" "QA + WhiteHat."
+    dd "designation: a cybersec2-only label also designates cybersec" "ALLOW:no-verdict"  0 cybersec "cybersec2" ""
     # Unrecognized free text (no gate keyword at all) must not accidentally exclude everyone.
     dd "designation: unparseable gate-line -> no exclusion"    "ALLOW:no-verdict"      0 cybered "" "see the linked design doc"
 

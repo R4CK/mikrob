@@ -106,16 +106,19 @@ GATE_DECL_RX = re.compile(
 # scope until that use is separately reviewed for safety.
 # WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for CYBERSEC/CYBERED, accepted alongside
 # the canonical word -- these two regexes are a yes/no match, not a captured token, so there is
-# nothing to normalise afterward.
+# nothing to normalise afterward. The literal `2?` after CYBERSEC/WHITEHAT is the same
+# sibling-digit tolerance as `QA2?` (card 21abfe0b, the cybersec2/WhiteHat2 sibling: only "2", the
+# one sibling that exists, not an arbitrary digit) -- a verdict literally typed as "CYBERSEC2 GO"
+# must match exactly like "CYBERSEC GO" does.
 PASS_RE = re.compile(
     r'^(QA2?\s+(?:(?:GATE|VERDICT)\s*:\s*)?PASS'
-    r'|(?:CYBERSEC|WHITEHAT)\s+(?:GATE\s*:\s*)?GO'
+    r'|(?:CYBERSEC|WHITEHAT)2?\s+(?:GATE\s*:\s*)?GO'
     r'|(?:CYBERED|REDHAT)\s+(?:FULL-CARD\s+)?GO)',
     re.IGNORECASE,
 )
 FAIL_RE = re.compile(
     r'^(QA2?\s+(?:(?:GATE|VERDICT)\s*:\s*)?FAIL'
-    r'|(?:CYBERSEC|WHITEHAT)\s+(?:GATE\s*:\s*)?NO-GO'
+    r'|(?:CYBERSEC|WHITEHAT)2?\s+(?:GATE\s*:\s*)?NO-GO'
     r'|(?:CYBERED|REDHAT)\s+NO-GO)',
     re.IGNORECASE,
 )
