@@ -81,6 +81,8 @@ GEMINI_ROUTE="$(get_gemini_route)"
 #      tags_for() UPPERCASES all tags, so the comparison must use the uppercase form.
 #   4. MOPSION tag: catches [mopsion] in title when the project field is empty/unset.
 #   5. SEC tag: sensitive security/authz/money cards must not leave the fleet (card a92e9913 F4).
+#   6. AUTH / RBAC / TENANT / PII / PENZ tags: Peti permanent rule (Telegram 11131) --
+#      security, authorization, and financial cards NEVER go through the Gemini route.
 # Returns 1 (false/allowed) only when none of the above conditions match.
 is_gemini_blocked() {
   local project="$1" tags="$2"
@@ -89,11 +91,17 @@ is_gemini_blocked() {
   # 2. Project-level block (case-insensitive).
   local proj_upper="${project^^}"
   case "$proj_upper" in MOPSION|CLEANCORE) return 0 ;; esac
-  # 3-5. Tag-level blocks. Wrap in commas to prevent partial substring matches.
+  # 3-8. Tag-level blocks. Wrap in commas to prevent partial substring matches.
   local tag_csv=",$tags,"
   [[ "$tag_csv" == *",BLOKKOLT-PETI-STOP,"* ]] && return 0
   [[ "$tag_csv" == *",MOPSION,"* ]] && return 0
   [[ "$tag_csv" == *",SEC,"* ]] && return 0
+  # Auth/RBAC/tenant/financial/PII -- Peti permanent rule (Telegram 11131)
+  [[ "$tag_csv" == *",AUTH,"* ]] && return 0
+  [[ "$tag_csv" == *",RBAC,"* ]] && return 0
+  [[ "$tag_csv" == *",TENANT,"* ]] && return 0
+  [[ "$tag_csv" == *",PII,"* ]] && return 0
+  [[ "$tag_csv" == *",PENZ,"* ]] && return 0
   return 1
 }
 

@@ -145,6 +145,27 @@ describe('is_gemini_blocked() blocks mopsion and BLOKKOLT-Peti-stop cards (card 
     expect(runIsGeminiBlocked('fleet', 'SEC,BE,HIGH')).toBe('BLOCKED')
   })
 
+  // Peti permanent rule (Telegram 11131): auth/RBAC/tenant/financial/PII tags blocked
+  it('blocks AUTH tag (Peti rule Telegram 11131)', () => {
+    expect(runIsGeminiBlocked('fleet', 'AUTH,BE,HIGH')).toBe('BLOCKED')
+  })
+
+  it('blocks RBAC tag (Peti rule Telegram 11131)', () => {
+    expect(runIsGeminiBlocked('fleet', 'RBAC,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks TENANT tag (Peti rule Telegram 11131)', () => {
+    expect(runIsGeminiBlocked('fleet', 'TENANT,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks PII tag (Peti rule Telegram 11131)', () => {
+    expect(runIsGeminiBlocked('fleet', 'PII,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks PENZ tag (Peti rule Telegram 11131)', () => {
+    expect(runIsGeminiBlocked('fleet', 'PENZ,BE,NORMAL')).toBe('BLOCKED')
+  })
+
   it('fail-closed: empty project is blocked (could be unmapped mopsion card)', () => {
     expect(runIsGeminiBlocked('', 'BE,NORMAL')).toBe('BLOCKED')
   })
