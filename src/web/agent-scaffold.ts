@@ -3585,3 +3585,58 @@ Output ONLY the markdown content, no code fences.`
   }
   return cleaned
 }
+
+// ACKONCLOSE927: message-close section injected into every agent's CLAUDE.md.
+// Ported from upstream 59e85ead (lost during Köteg 11 fork-side conflict resolution).
+const MSGCLOSE_BEGIN = '<!-- BEGIN GENERATED: message-close (auto-generated, do not edit by hand) -->'
+const MSGCLOSE_END = '<!-- END GENERATED: message-close -->'
+const MSGCLOSE_BLOCK_RE = new RegExp(
+  `${MSGCLOSE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MSGCLOSE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+export function buildMessageCloseBody(): string {
+  return [
+    '## Üzenet lezárása: bejövő riportnál `notify:false`',
+    '',
+    'Egy neked jött inter-agent üzenetet a `PUT /api/messages/<id>` zár le (`"status":"done"` vagy',
+    '`"failed"`). A lezárás ALAPBÓL egy `[Eredmény] msg_id:<id>` nyugtát küld vissza az eredeti feladónak.',
+    '',
+    '- DELEGÁLT FELADAT (a feladó az eredményre vár): zárd a szokásos módon, a nyugta maga az',
+    '  eredmény -- a `result` mezőbe írd, mit csináltál.',
+    '- BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): zárd `"notify":false`-szal. Itt a nyugta',
+    '  csak a feladó sorát növeli, és nála egy ágens-kört visz el (mérve 2026-09-27: három lezárás a',
+    '  feladó várakozó sorát 1-ről 4-re vitte).',
+    '',
+    '```bash',
+    `curl -s -X PUT ${dashboardOrigin}/api/messages/<id> -H "Content-Type: application/json" \\`,
+    `  -H "Authorization: Bearer $(cat ${tokenPath})" --data-binary '{"status":"done","notify":false}'`,
+    '```',
+    'A `notify` csak valódi JSON boolean lehet: a `"false"` string 400-at kap, és ilyenkor a lezárás sem',
+    'történik meg. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
+  ].join('\n')
+}
+
+// Idempotently ensures the message-close block is present and current in the
+// agent's CLAUDE.md; same contract as ensureMcpListChannelSection.
+export function ensureMessageCloseSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody()}\n${MSGCLOSE_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = MSGCLOSE_BLOCK_RE.test(existing)
+    ? existing.replace(MSGCLOSE_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
