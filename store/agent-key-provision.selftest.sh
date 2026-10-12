@@ -133,4 +133,4 @@ else
   pass "N1: the raw key never appears in the script's combined stdout+stderr"
 fi
 
-exit "$FAIL"
+[ "$FAIL" -eq 0 ] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }
