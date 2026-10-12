@@ -78,4 +78,17 @@ describe('D1 — verify-channels-health.sh static assertions', () => {
     expect(src).toMatch(/exit.*\$fail/)
     expect(src).toMatch(/fail=0/)
   })
+
+  // Card d95f71c9 point 4: check (e) flags a running main agent that is missing
+  // one of the three respawn-protective env vars, checking KEY presence only
+  // (never reading a value, even though none of these three are secret).
+  it('check (e): verifies presence of the three respawn-protective env var KEYS without reading values', () => {
+    const src = readScript()
+    expect(src).toMatch(/CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY/)
+    expect(src).toMatch(/CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION/)
+    expect(src).toMatch(/CLAUDE_CODE_DISABLE_AGENT_VIEW/)
+    // Key-only extraction: cut on the first "=" of each NUL-split environ line,
+    // never the raw grep-the-whole-line-with-value pattern check (c) uses for PATH.
+    expect(src).toMatch(/cut -d= -f1/)
+  })
 })

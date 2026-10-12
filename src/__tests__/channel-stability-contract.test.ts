@@ -156,6 +156,34 @@ describe('P1#5 — CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 on every agent spawn pa
       expect(l, 'a launch command does not carry the env prefix').toContain('${MCP_BATCH_ENV}')
     }
   })
+
+  // Card d95f71c9: channels.sh was only ONE of three paths that (re)spawn the main
+  // agent. channel-watchdog.sh's and stuck-modal-guard.sh's own respawn commands
+  // were measured missing the survey/prompt-suggestion/MCP-tuning vars entirely
+  // (channel-watchdog.sh had the two CLAUDE_CODE_* ones but not the MCP_* tuning
+  // set; stuck-modal-guard.sh had neither) -- comments stripped first for the same
+  // reason as above (both files' own fix-comments name the variables).
+  it('channel-watchdog.sh respawn command carries the survey/MCP-tuning vars too', () => {
+    const sh = stripBashComments(read('scripts/channel-watchdog.sh'))
+    const line = sh.split('\n').find((l) => l.startsWith('RESPAWN_CMD='))
+    expect(line, 'RESPAWN_CMD assignment is gone or renamed').toBeDefined()
+    expect(line).toMatch(/CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1/)
+    expect(line).toMatch(/CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false/)
+    expect(line).toMatch(/MCP_SERVER_CONNECTION_BATCH_SIZE=10/)
+    expect(line).toMatch(/MCP_CONNECTION_NONBLOCKING=1/)
+    expect(line).toMatch(/MCP_TIMEOUT=60000/)
+  })
+
+  it('stuck-modal-guard.sh respawn command carries the survey/MCP-tuning vars too', () => {
+    const sh = stripBashComments(read('scripts/stuck-modal-guard.sh'))
+    const line = sh.split('\n').find((l) => l.includes('local RESPAWN_CMD='))
+    expect(line, 'RESPAWN_CMD assignment is gone or renamed').toBeDefined()
+    expect(line).toMatch(/CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1/)
+    expect(line).toMatch(/CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false/)
+    expect(line).toMatch(/MCP_SERVER_CONNECTION_BATCH_SIZE=10/)
+    expect(line).toMatch(/MCP_CONNECTION_NONBLOCKING=1/)
+    expect(line).toMatch(/MCP_TIMEOUT=60000/)
+  })
 })
 
 describe('P2#4 — independent systemd-timer watchdog', () => {

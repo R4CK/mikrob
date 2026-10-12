@@ -157,6 +157,28 @@ else
   unset _p _missing CLAUDE_ARGV
 fi
 
+# (e) running main-agent carries the respawn-protective env vars (card d95f71c9
+# H3/point-4). Three respawn paths (channels.sh, channel-watchdog.sh,
+# stuck-modal-guard.sh) set these; a path that regresses leaves the running
+# process missing the key. Only the KEY NAMES are checked, never a value --
+# PATH is read by (c) above since it is not sensitive, but these three are
+# plain presence flags and there is no reason to read their contents either way.
+if [ -n "$CLAUDE_PID" ] && [ -r "/proc/$CLAUDE_PID/environ" ]; then
+  _keys="$(tr '\0' '\n' < "/proc/$CLAUDE_PID/environ" | cut -d= -f1)"
+  _missing=""
+  for _v in CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION CLAUDE_CODE_DISABLE_AGENT_VIEW; do
+    echo "$_keys" | grep -qx "$_v" || _missing="$_missing $_v"
+  done
+  if [ -z "$_missing" ]; then
+    note "(e) OK: respawn-protective env vars present"
+  else
+    note "(e) FAIL: missing env var(s):$_missing -- a respawn path regressed"; fail=1
+  fi
+  unset _keys _missing _v
+else
+  note "(e) SKIP: cannot read /proc/$CLAUDE_PID/environ"
+fi
+
 if [ "$fail" -eq 0 ]; then
   echo "verify-channels-health: HEALTHY"
 else
