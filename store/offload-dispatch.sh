@@ -140,9 +140,21 @@ _parts = _stdin.split(b"\x00", 1)
 title = _parts[0].decode("utf-8", "replace")
 desc  = _parts[1].decode("utf-8", "replace") if len(_parts) > 1 else ""
 
+
+# N1 (RedHat 17653, card e87e7520): fullwidth/compatibility obfuscation ("ｓｅｃｒｅｔ",
+# mathematical bold/italic letters) passed norm() unblocked because NFD only decomposes
+# COMBINING ACCENTS, not compatibility characters -- NFKD is required for those. Separately,
+# Cyrillic homoglyphs (visually identical to Latin but a distinct codepoint: а/е/о/р/с/у/х/...)
+# have NO NFKD decomposition to Latin at all, so they need an explicit substitution table.
+_HOMOGLYPH_MAP = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x",
+    "і": "i", "ѕ": "s", "һ": "h", "ԃ": "d", "ɡ": "g", "ⅰ": "i",
+})
+
 def norm(s):
-    """casefold + strip Unicode accents (NFD decompose -> ASCII)."""
-    return unicodedata.normalize("NFD", s.strip().casefold()).encode("ascii", "ignore").decode()
+    """casefold + homoglyph map + NFKD-normalize (handles fullwidth/compat chars) -> ASCII."""
+    s = s.strip().casefold().translate(_HOMOGLYPH_MAP)
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
 
 # 1. Project allowlist (fail-closed: empty/unknown = blocked).
 ALLOWED_PROJECTS = {"mikrob"}
@@ -154,6 +166,10 @@ BLOCKED_TAGS = {
     "mopsion","cleancore","sec","security","auth","authz","rbac","tenant","superadmin",
     "pii","penz","penzugy","finance","billing","payment","secret","crypto",
     "gdpr","privacy","legal","cybersec",
+    # N6 (RedHat 17653, card e87e7520): exact-match tags missing from the set -- "fin" and
+    # "biztonsag" are already stems in SENS_RE (title/desc text), but a TAG literally named
+    # "fin" or "biztonsag" fell through here because this set never had them.
+    "fin","biztonsag",
 }
 for tag in tags_csv.split(","):
     t = norm(tag)
@@ -182,7 +198,16 @@ SENS_RE = re.compile(
     r"|permission|access|szemelyes|hozzaferes)",
     re.IGNORECASE
 )
-if SENS_RE.search(title_n) or SENS_RE.search(desc_n):
+# N6 second half (RedHat 17653, card e87e7520): Hungarian tenant-isolation co-occurrence,
+# ported from the routers own prefilter (card-build-route.sh) -- a bare "berlo" (tenant)
+# stem alone is too broad (also a literal building tenant), only sensitive when it co-occurs
+# with a separation/isolation verb within 40 chars, either order. Already NFKD+ASCII-stripped
+# above, so only the ASCII stems are needed here (no accented variants to match).
+TENANT_ISOLATION_RE = re.compile(
+    r"berlo.{0,40}(elkulonit|szetvalaszt)|(elkulonit|szetvalaszt).{0,40}berlo"
+)
+if (SENS_RE.search(title_n) or SENS_RE.search(desc_n)
+        or TENANT_ISOLATION_RE.search(title_n) or TENANT_ISOLATION_RE.search(desc_n)):
     sys.exit(0)  # blocked
 
 sys.exit(ALLOWED_RC)  # allowed -- the ONE code that means a deliberate, completed "allowed" verdict

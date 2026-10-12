@@ -388,6 +388,51 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'clean title', 'clean desc')).toBe('ALLOWED')
   })
 
+  // N1 (RedHat 17653, card e87e7520): fullwidth-Latin obfuscation ("ｓｅｃｒｅｔ") bypassed the
+  // old NFD-only norm(), which decomposes combining accents but not compatibility chars. NFKD
+  // decomposes fullwidth forms to plain ASCII, so these must now BLOCK.
+  it('blocks fullwidth-Latin obfuscated "secret" in the title (N1, NFKD)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'ｓｅｃｒｅｔ kezeles', '')).toBe('BLOCKED')
+  })
+
+  it('blocks fullwidth-Latin obfuscated "jelszo" in the description (N1, NFKD)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'clean title', 'ｊｅｌｓｚｏ csere')).toBe('BLOCKED')
+  })
+
+  // N1 second half: Cyrillic homoglyphs (visually identical to Latin, distinct codepoint) have
+  // no NFKD decomposition to Latin at all -- only the explicit substitution table catches them.
+  // "ѕесrеt" below uses Cyrillic с/е/ѕ in place of Latin c/e/s.
+  it('blocks a Cyrillic-homoglyph "secret" (N1, homoglyph map)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'ѕеcrеt handling', '')).toBe('BLOCKED')
+  })
+
+  it('still allows a genuinely clean card after the N1 fix (no over-blocking regression)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Add logging to the dashboard API endpoint', 'Export the monthly report.')).toBe('ALLOWED')
+  })
+
+  // N6 first half (RedHat 17653, card e87e7520): BLOCKED_TAGS was missing exact-match entries
+  // for "fin" and "biztonsag" -- both stems already existed in SENS_RE for title/desc text, but
+  // a TAG literally named "fin"/"biztonsag" fell through because BLOCKED_TAGS never had them.
+  it('blocks FIN tag (N6, exact-match tag addition)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'FIN,NORMAL', 'Clean title', '')).toBe('BLOCKED')
+  })
+
+  it('blocks BIZTONSAG tag (N6, exact-match tag addition)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BIZTONSAG,NORMAL', 'Clean title', '')).toBe('BLOCKED')
+  })
+
+  // N6 second half: Hungarian tenant-isolation co-occurrence, ported from the routers prefilter.
+  // A bare "berlo" (tenant/lessee) stem alone must stay ALLOWED (also means a literal building
+  // tenant); it only blocks when it co-occurs with a separation/isolation verb within 40 chars.
+  it('blocks "berlo" co-occurring with "elkulonit" within 40 chars, either order (N6)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'A berlok adatainak elkulonitese kotelezo', '')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'A berlok adatainak szetvalasztasa fontos', '')).toBe('BLOCKED')
+  })
+
+  it('allows a bare "berlo" mention with no isolation verb nearby (N6, no over-blocking)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'A berlo szerzodese februarban lejar', '')).toBe('ALLOWED')
+  })
+
   // T1: CALL-SITE GUARD -- is_gemini_blocked must be called at both Gemini call sites.
   // These tests go RED if the guard is removed from either call site.
 })
@@ -410,12 +455,16 @@ describe('try_leaf() end-to-end behavioral guard (T1, RedHat 17510 finding 3)', 
     ragRc?: number // which branch of try_leaf's local-RAG result to exercise (default 5 = transient)
   }
 
-  function runTryLeaf(opts: TryLeafOpts): { geminiCalled: boolean; geminiArgs: string } {
+  function runTryLeaf(
+    opts: TryLeafOpts & { advisoryDraftStub?: string; qualityGateStub?: string },
+  ): { geminiCalled: boolean; geminiArgs: string } {
     const dispatchSrc = src(DISPATCH)
     const isBlockedFn = extractFn(dispatchSrc, 'is_gemini_blocked')
     const routeEnabledFn = extractFn(dispatchSrc, 'gemini_route_enabled')
     const tryLeafFn = extractFn(dispatchSrc, 'try_leaf')
     const ragRc = opts.ragRc ?? 5
+    const advisoryDraftStub = opts.advisoryDraftStub ?? 'advisory_draft() { cat >/dev/null; }'
+    const qualityGateStub = opts.qualityGateStub ?? 'draft_quality_ok() { echo "OK"; }'
 
     const script = `
 set -uo pipefail
@@ -441,9 +490,9 @@ attempts_op() { echo '{"attempts":2}'; }
 graph_repo_for() { echo ""; }
 graph_args_for() { :; }
 decompose_sample_context() { :; }
-draft_quality_ok() { echo "OK"; }
+${qualityGateStub}
 post_draft_comment() { :; }
-advisory_draft() { cat >/dev/null; }
+${advisoryDraftStub}
 post_exhausted_notice() { :; }
 nudge_leaf_owner() { :; }
 try_gemini_for_leaf() { echo "CALLED:$*" >> "$RECORD"; return 0; }
@@ -521,6 +570,33 @@ rm -rf "$HERE" "$RAG" "$RECORD"
 
   it('categorical-online (RAG rc=9) never reaches try_gemini_for_leaf for a sensitive leaf either', () => {
     const r = runTryLeaf({ fastPath: false, ragRc: 9, project: 'mikrob', tags: 'BE,NORMAL', title: 'Auth middleware review', desc: 'Tenant-scoped authorization check.' })
+    expect(r.geminiCalled).toBe(false)
+  })
+
+  // N2 (RedHat 17653, card e87e7520): the CS3a sub-branch -- rc=9 WITH a non-empty advisory
+  // draft that then FAILS draft_quality_ok -- was never exercised by any existing test, because
+  // the stub advisory_draft() always returned empty output. A regression that reintroduced an
+  // unguarded try_gemini_for_leaf call in this specific sub-branch would stay green forever.
+  // These stub advisory_draft() to actually return a draft, and draft_quality_ok() to FAIL it,
+  // for both a content-allowed and a content-sensitive leaf -- Gemini must never be reached.
+  const CS3A_ADVISORY_STUB = 'advisory_draft() { cat >/dev/null; echo "mock non-empty advisory draft text"; }'
+  const CS3A_QUALITY_FAIL_STUB = 'draft_quality_ok() { printf "FAIL\\ttoo short\\n"; }'
+
+  it('CS3a: advisory-draft quality-gate failure never reaches try_gemini_for_leaf, for an allowed-by-content leaf (N2)', () => {
+    const r = runTryLeaf({
+      fastPath: false, ragRc: 9, project: 'mikrob', tags: 'BE,NORMAL',
+      title: 'Add CSV export', desc: 'Export the monthly report.',
+      advisoryDraftStub: CS3A_ADVISORY_STUB, qualityGateStub: CS3A_QUALITY_FAIL_STUB,
+    })
+    expect(r.geminiCalled).toBe(false)
+  })
+
+  it('CS3a: advisory-draft quality-gate failure never reaches try_gemini_for_leaf, for a sensitive leaf (N2)', () => {
+    const r = runTryLeaf({
+      fastPath: false, ragRc: 9, project: 'mikrob', tags: 'BE,NORMAL',
+      title: 'Auth middleware review', desc: 'Tenant-scoped authorization check.',
+      advisoryDraftStub: CS3A_ADVISORY_STUB, qualityGateStub: CS3A_QUALITY_FAIL_STUB,
+    })
     expect(r.geminiCalled).toBe(false)
   })
 })
@@ -863,6 +939,84 @@ describe('gemini-offload-call.sh detects secrets fail-closed (F2, card a92e9913)
 
   it('blocks (exit 2, no output) on a quoted credential value containing spaces (WhiteHat2 H3)', () => {
     const r = redactInput('secret: "my secret value here"')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  // M1 (WhiteHat2 H3 remainder, card e87e7520): \b treats "_" as a word character, so \bsecret
+  // never matched the "secret" inside an underscore-glued key name like APP_SECRET or
+  // auth_token (no boundary between "_" and the next letter). Fixed with a negative lookbehind
+  // excluding only letters/digits.
+  it('blocks (exit 2, no output) on an underscore-prefixed secret key (WhiteHat2 H3 / M1)', () => {
+    const r = redactInput('APP_SECRET="a b c d e f g h"')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on an underscore-prefixed token key (WhiteHat2 H3 / M1)', () => {
+    const r = redactInput("auth_token = 'x y z 1 2 3 4 5'")
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('still allows a clean word that merely contains "secret" as a mid-word substring (no over-blocking, M1)', () => {
+    const r = redactInput('the ultrasecretrecipe card title mentions nothing sensitive here')
+    expect(r.exitCode).toBe(0)
+  })
+
+  // N5 (RedHat 17653, card e87e7520): 9 secret/PII shapes that reached Gemini unblocked.
+  it('blocks (exit 2, no output) on an AWS ASIA temporary-credential key id (N5)', () => {
+    const r = redactInput('ASIA' + 'Q'.repeat(16))
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a Google OAuth refresh token (N5)', () => {
+    const r = redactInput('1//0' + 'a'.repeat(25))
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a Cookie: session= header (N5)', () => {
+    const r = redactInput('Cookie: sessionid=abcdef1234567890')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a Stripe whsec_ webhook secret (N5)', () => {
+    const r = redactInput('whsec_' + 'a'.repeat(20))
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a context-free base64url high-entropy token (N5)', () => {
+    // Underscores break up any 32+ run of pure hex chars, so this is caught by the NEW
+    // opaque_b64url pattern specifically, not by the pre-existing hex32 pattern.
+    const r = redactInput('ab1C_de2D_fg3E_hi4F_jk5G_lm6H_no7I_pq8J_')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on prose "the token is <value>" (N5)', () => {
+    const r = redactInput('the token is AbCdEf123456')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on prose "the password for the box is <value>" (N5)', () => {
+    const r = redactInput('the password for the box is Sup3rSecr3t')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a space-formatted Hungarian phone number with parens (N5)', () => {
+    const r = redactInput('call them at +36 (30) 123-4567')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a bare/unlabeled IBAN (N5)', () => {
+    const r = redactInput('HU42117730161111101800000000')
     expect(r.exitCode).toBe(2)
     expect(r.output).toBe('')
   })

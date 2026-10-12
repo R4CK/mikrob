@@ -133,7 +133,11 @@ SECRET_PATTERNS = [
     # optional `["\']?` right after the key name. (b) a quoted value containing spaces (`secret:
     # "my secret value"`) didn't match the old unquoted charset (no space in it); fixed by matching
     # a quoted value as "anything but that quote char, >=8 chars" instead of the narrow charset.
-    (r'(?i)\b(password|passwd|secret|token|api[_-]?key|auth[_-]?key|access[_-]?key)["\']?[=:\s]+'
+    # (c) WhiteHat2 H3 remainder (card e87e7520): \b treats "_" as a word char, so \bsecret never
+    # matched the "secret" inside APP_SECRET or auth_token (no boundary between "_" and the next
+    # letter). Fixed with a negative lookbehind that excludes only letters/digits -- "_" now acts
+    # as a boundary while "mysecretsauce" (a letter right before "secret") still does not match.
+    (r'(?i)(?<![A-Za-z0-9])(password|passwd|secret|token|api[_-]?key|auth[_-]?key|access[_-]?key)["\']?[=:\s]+'
      r'(?:"[^"\n]{8,}"|\'[^\'\n]{8,}\'|[A-Za-z0-9_\-.=+/]{8,})', 'cred'),
     # Database URLs with embedded password
     (r'(?i)(postgres|mysql|mongodb|redis)://[^:]+:[^@]{4,}@', 'dburl'),
@@ -144,6 +148,23 @@ SECRET_PATTERNS = [
     # Long base64-shaped opaque blob (40+ chars, mixed case + digits, no spaces -- generic
     # high-entropy token shape not covered by a provider-specific pattern above)
     (r'(?<![A-Za-z0-9+/=])(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[0-9])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])', 'opaque_token'),
+    # N5 (RedHat 17653, card e87e7520): 9 secret/PII shapes that reached Gemini unblocked.
+    # AWS temporary-credential (STS) key id -- same shape as AKIA but for session tokens.
+    (r'\bASIA[0-9A-Z]{16}\b', 'aws_asia'),
+    # Google OAuth refresh token ("1//0...")
+    (r'\b1//0[A-Za-z0-9_-]{20,}\b', 'google_refresh'),
+    # Cookie: ...session...=<value> header -- not caught by the line-start .env pattern because
+    # "Cookie:" precedes the key= assignment instead of starting the line.
+    (r'(?i)\bcookie:\s*[^\n]*?session[A-Za-z0-9_]*=[A-Za-z0-9%_.\-]{8,}', 'cookie_session'),
+    # Stripe webhook signing secret
+    (r'\bwhsec_[A-Za-z0-9]{16,}\b', 'stripe_whsec'),
+    # Context-free base64url high-entropy token (opaque_token's URL-safe charset, "-"/"_" instead
+    # of "+"/"/", no provider prefix to key on)
+    (r'(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*[a-z])(?=[A-Za-z0-9_-]*[A-Z])(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{40,}(?![A-Za-z0-9_-])', 'opaque_b64url'),
+    # Prose form: "the token is <value>" (no "=" / ":" separator for the "cred" pattern to catch)
+    (r'(?i)\bthe\s+token\s+is\s+[A-Za-z0-9_\-./+=]{8,}\b', 'prose_token'),
+    # Prose form: "the password for the <thing> is <value>"
+    (r'(?i)\bthe\s+password\s+for\s+the\s+\S+\s+is\s+\S{4,}\b', 'prose_password'),
 ]
 
 for pattern, label in SECRET_PATTERNS:
@@ -159,13 +180,17 @@ for pattern, label in SECRET_PATTERNS:
 # response as a secret: exit 2, nothing sent.
 PII_PATTERNS = [
     (r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', 'email'),
-    (r'(?<!\d)(\+36|06)[ -]?\d{1,2}[ -]?\d{3}[ -]?\d{4}\b', 'hu_phone'),
+    # N5 (card e87e7520): parenthesized area code, e.g. "+36 (30) 123-4567" -- the old charset
+    # had no "(" / ")", so this spaced-and-parenthesized form passed through.
+    (r'(?<!\d)(\+36|06)[ -]?\(?\d{1,2}\)?[ -]?\d{3}[ -]?\d{4}\b', 'hu_phone'),
     # Hungarian TAJ (social security) number: 9 digits, grouped 3-3-3
     (r'\b\d{3}[ -]?\d{3}[ -]?\d{3}\b(?=.{0,20}(?i:taj))|(?i:taj)[^\n]{0,20}?\b\d{3}[ -]?\d{3}[ -]?\d{3}\b', 'hu_taj'),
     # Hungarian tax number (adoszam): 8 digits - 1 - 2 digits
     (r'\b\d{8}-\d-\d{2}\b', 'hu_adoszam'),
     # Credit card number shape (13-19 digits, optionally grouped in 4s)
     (r'\b(?:\d[ -]?){13,19}\b', 'cc_number'),
+    # N5: bare/unlabeled IBAN (2-letter country code + 2 check digits + up to 30 alnum)
+    (r'\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b', 'iban'),
 ]
 
 for pattern, label in PII_PATTERNS:
