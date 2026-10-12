@@ -73,8 +73,8 @@ get_gemini_route() {
 }
 GEMINI_ROUTE="$(get_gemini_route)"
 
-# is_gemini_blocked PROJECT TAGS [TITLE]: returns 0 (true/blocked) when a leaf must NOT go to
-# Gemini.  Fail-closed by design (WhiteHat2 F1, card a92e9913):
+# is_gemini_blocked PROJECT TAGS [TITLE [DESC]]: returns 0 (true/blocked) when a leaf must NOT
+# go to Gemini.  Fail-closed by design (WhiteHat2 F1, card a92e9913):
 #
 #   1. PROJECT ALLOWLIST (not a blocklist): only the fleet's own project ("mikrob", casefold) may
 #      reach the external Gemini API.  Every other project -- including unknown / empty ones --
@@ -84,22 +84,25 @@ GEMINI_ROUTE="$(get_gemini_route)"
 #      Extended blocklist (WhiteHat2 F1b, Peti Telegram 11131): mopsion, cleancore, sec, security,
 #      auth, authz, rbac, tenant, superadmin, pii, penz, penzugy, finance, billing, payment,
 #      secret, crypto, gdpr, privacy, legal, cybersec.
-#   3. CONTENT GATE on the card title (WhiteHat2 F1c): if the title contains a sensitive keyword
-#      the card is blocked regardless of tags.  Reuses the same sensitive-domain vocabulary as the
-#      router's prefilter (card-build-route).
+#   3. CONTENT GATE on the card title AND description (card a92e9913, MikroB 11335): if either
+#      contains a sensitive keyword the card is blocked regardless of tags.  Reuses the same
+#      sensitive-domain vocabulary as the router's prefilter (card-build-route).
+#      A card like 6a4e34c1 (SSE ?token= leak, no sensitive tag, no sensitive title) is blocked
+#      because the description reveals the sensitive nature.
 #   4. CATEGORICAL-ONLINE leaves NEVER go to Gemini (WhiteHat2 F1d): the router already classified
 #      the card as security/authz/multi-file; sending it to an external API discards that verdict.
 #      Enforcement: the categorical-online branch no longer contains a try_gemini_for_leaf call.
 #
-# Returns 1 (false/allowed) only when all three gates pass.
+# Returns 1 (false/allowed) only when all four gates pass.
 is_gemini_blocked() {
-  local project="$1" tags="$2" title="${3:-}"
+  local project="$1" tags="$2" title="${3:-}" desc="${4:-}"
   python3 -c '
 import sys, unicodedata, re
 
 project  = sys.argv[1]
 tags_csv = sys.argv[2] if len(sys.argv) > 2 else ""
 title    = sys.argv[3] if len(sys.argv) > 3 else ""
+desc     = sys.argv[4] if len(sys.argv) > 4 else ""
 
 def norm(s):
     """casefold + strip Unicode accents (NFD decompose -> ASCII)."""
@@ -123,7 +126,7 @@ for tag in tags_csv.split(","):
     if t in BLOCKED_TAGS:
         sys.exit(0)  # blocked
 
-# 3. Content gate on title (sensitive keyword -> blocked, fail-closed).
+# 3. Content gate on title AND description (sensitive keyword -> blocked, fail-closed).
 SENS_RE = re.compile(
     r"\b(biztons|security|auth|authz|rbac|tenant|superadmin"
     r"|penz|penzugy|fizet|szamla|jelszo|password"
@@ -132,11 +135,21 @@ SENS_RE = re.compile(
     r"|hacker|exploit|pentest|inject|sqli|xss)\b",
     re.IGNORECASE
 )
-if SENS_RE.search(title):
+if SENS_RE.search(title) or SENS_RE.search(desc):
     sys.exit(0)  # blocked
 
 sys.exit(1)  # allowed
-' "$project" "$tags" "$title"
+' "$project" "$tags" "$title" "$desc"
+}
+
+# gemini_route_enabled: returns 0 (true) when the Gemini route is active.
+# Fail-closed: the flag file must EXPLICITLY exist; absence = disabled.
+# Default ship state: disabled (store/gemini-offload-enabled does not exist).
+# Enables without a tracked-file chmod: create/remove the flag file at runtime.
+# MikroB restores gemini-offload-call.sh chmod +x after all gates GO, then creates
+# store/gemini-offload-enabled to re-enable the route (card a92e9913 O1).
+gemini_route_enabled() {
+  [[ -f "${HERE}/gemini-offload-enabled" ]]
 }
 
 # gemini_draft_comment_body: same contract as draft_comment_body but for a Gemini-sourced draft.
@@ -769,7 +782,7 @@ $leaf_desc"
 
   # GEMINI ROUTE, LOCAL LLM NOT AVAILABLE (card a92e9913): skip the RAG call entirely.
   if [[ "$GEMINI_ROUTE" == "gemini" && "${LOCAL_LLM_AVAILABLE:-1}" -eq 0 ]]; then
-    if ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title"; then
+    if gemini_route_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc"; then
       try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
     else
       echo "offload-dispatch: leaf $leaf_id -> gemini blocked (project=$leaf_project)" >&2
@@ -820,7 +833,7 @@ $leaf_desc"
     echo "offload-dispatch: leaf $leaf_id -> local attempt failed (rc=$rc), attempt ${n:-?}/$OFFLOAD_LEAF_MAX_ATTEMPTS" >&2
     if [[ "${n:-0}" -ge "$OFFLOAD_LEAF_MAX_ATTEMPTS" ]]; then
       # GEMINI FALLBACK when local LLM is exhausted (card a92e9913): try Gemini before giving up.
-      if [[ "$GEMINI_ROUTE" == "gemini" ]] && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title"; then
+      if [[ "$GEMINI_ROUTE" == "gemini" ]] && gemini_route_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc"; then
         try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
       fi
       post_exhausted_notice "$post_id"
