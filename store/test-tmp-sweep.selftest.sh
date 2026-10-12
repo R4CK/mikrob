@@ -36,6 +36,7 @@ run_sweep() {
     "TEST_TMP_SWEEP_SRC=$FAKE_SRC" \
     "TEST_TMP_SWEEP_TARGET_DIR=$FAKE_TARGET" \
     "TEST_TMP_SWEEP_MIN_AGE_MIN=${TEST_TMP_SWEEP_MIN_AGE_MIN_OVERRIDE:-60}" \
+    "TEST_TMP_SWEEP_LOCKFILE=$FAKE_ROOT/sweep.lock" \
     bash "$SWEEP" "$@"
 }
 
@@ -192,8 +193,44 @@ else
   echo "  FAIL 50-entry sweep took ${ELAPSED}s (>= 10s) -- has_live_process may still be O(pids*fds)"; fail=1
 fi
 
+# --- case 12 (B6): 60 open fds inside an old tree -- no SIGPIPE under pipefail ------------
+# pins that has_live_process() uses awk exit status (no pipe) and fires correctly when a
+# process holds many distinct fds inside the tree (old awk|grep -q silently failed at 25+).
+reset_target
+B6_ENTRY="$FAKE_TARGET/known-leak-b6fd"
+touch_old "$B6_ENTRY"
+for i in $(seq 1 60); do touch -d '2 hours ago' "$B6_ENTRY/f$i"; done
+(
+  for i in $(seq 1 60); do exec {_}<"$B6_ENTRY/f$i"; done
+  sleep 30
+) &
+B6_PID=$!
+sleep 0.3
+run_sweep > /dev/null 2>&1
+kill "$B6_PID" 2>/dev/null; wait "$B6_PID" 2>/dev/null || true
+if [ -e "$B6_ENTRY" ]; then
+  echo "  ok   60 open fds inside an old tree prevent removal (no SIGPIPE under pipefail)"
+else
+  echo "  FAIL tree removed despite 60 open fds -- has_live_process SIGPIPE bug"; fail=1
+fi
+
+# --- case 13 (B6 cwd): process cwd inside old tree -- has_live_process fires correctly ----
+reset_target
+CWD_ENTRY="$FAKE_TARGET/known-leak-cwdtest"
+touch_old "$CWD_ENTRY"
+(cd "$CWD_ENTRY" && sleep 30) &
+CWD_PID=$!
+sleep 0.3
+run_sweep > /dev/null 2>&1
+kill "$CWD_PID" 2>/dev/null; wait "$CWD_PID" 2>/dev/null || true
+if [ -e "$CWD_ENTRY" ]; then
+  echo "  ok   a process with cwd inside an old tree prevents removal"
+else
+  echo "  FAIL tree removed despite live cwd -- has_live_process failed"; fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
-  echo "selftest: 11 passed, 0 failed"
+  echo "selftest: 13 passed, 0 failed"
   exit 0
 else
   echo "selftest: FAILED"

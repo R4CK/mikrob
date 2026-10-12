@@ -155,15 +155,22 @@ owned_by_us() {
 # Best-effort: documented limitation (N1 from comment 17221): a path-based socket held open by a
 # process whose cwd is '/' (not inside the entry) is not caught; that is acceptable for this
 # sweep's use-case (test scratch dirs, not server sockets).
+#
+# B6 (MEDIUM, fixed here): the original awk|grep -q pipe under set -o pipefail silently
+# fails when a live process holds 25+ distinct fds inside the tree: grep -q exits after the
+# first match, awk gets SIGPIPE on the next write, the pipeline exits 141, and the caller
+# reads that as "no live process" -- fail-open, the tree is deleted. Fix: awk sets its own
+# exit status ({found=1;exit} / END{exit !found}), no pipe, no SIGPIPE.
 has_live_process() {
   [ -n "$LIVE_SNAPSHOT" ] && [ -f "$LIVE_SNAPSHOT" ] || return 1
   local target
   target="$(readlink -f -- "$1" 2>/dev/null)" || return 1
   [ -n "$target" ] || return 1
-  # match: snapshot line IS $target, OR starts with $target/ (a path inside the tree)
+  # match: snapshot line IS $target, OR starts with $target/ (a path inside the tree).
+  # No pipe to grep -q: under pipefail, awk SIGPIPE on grep's early exit = 141 = fail-open.
   awk -v t="$target" \
-    'index($0,t)==1 && (length($0)==length(t) || substr($0,length(t)+1,1)=="/")'  \
-    "$LIVE_SNAPSHOT" | grep -q .
+    'index($0,t)==1 && (length($0)==length(t) || substr($0,length(t)+1,1)=="/") {found=1; exit} END{exit !found}' \
+    "$LIVE_SNAPSHOT"
 }
 
 removed=0
