@@ -88,10 +88,21 @@ fi
 # 5. Windows-side WSL watchdog (outer net for a TOTAL WSL wedge). WSL-only +
 # self-guarded; idempotent, so a deleted/missing Windows task self-heals at
 # logon. Silent no-op on non-WSL / no-powershell hosts.
-WSL_WD_INSTALLER="$(dirname "$0")/install-wsl-watchdog.sh"
-if [ -x "$WSL_WD_INSTALLER" ]; then
-  bash "$WSL_WD_INSTALLER" >>"$LOG" 2>&1 \
-    && log "WSL watchdog ensured" || log "WSL watchdog ensure skipped/failed"
+#
+# Card 58badae1 B2 (MikroB 17774 + cybered 17782): a persistent,
+# version-controlled flag -- store/.wsl-watchdog-disabled -- is the PRIMARY
+# protection against a manual Disable being silently undone at the next
+# logon. install-wsl-watchdog.sh checks the same file itself (so it is safe
+# even if called some other way), but this early exit means a deliberately
+# disabled watchdog does not even re-render its files at every logon.
+if [ -f "$INSTALL_DIR/store/.wsl-watchdog-disabled" ]; then
+  log "WSL watchdog: $INSTALL_DIR/store/.wsl-watchdog-disabled present -- skipping (card 58badae1 B2)"
+else
+  WSL_WD_INSTALLER="$(dirname "$0")/install-wsl-watchdog.sh"
+  if [ -x "$WSL_WD_INSTALLER" ]; then
+    bash "$WSL_WD_INSTALLER" >>"$LOG" 2>&1 \
+      && log "WSL watchdog ensured" || log "WSL watchdog ensure skipped/failed"
+  fi
 fi
 
 log "startup.sh: done"

@@ -15,6 +15,43 @@ set -euo pipefail
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+# WhiteHat2 delta NO-GO H1' (card 58badae1, comment 17781): the disabled/ready
+# classification is a pure function, extracted so it can be unit-tested
+# directly with synthetic English/Hungarian/empty/error-text samples -- not
+# only through the end-to-end DRY_RUN seam, which never exercises this
+# parsing at all. Classification source is `schtasks /Query ... /XML`, whose
+# <Enabled> tag is NOT localized (unlike the /FO LIST text columns, which
+# read "Letiltva"/"Deaktiviert" on a non-English Windows and silently fell
+# through to "ready" -- the single most dangerous direction, since that path
+# re-enables a disabled task). Fail-closed: anything that is not clearly
+# "exists and enabled" or "does not exist" classifies as "unknown", and
+# "unknown" is treated exactly like "disabled" by the caller (skip /Create).
+classify_task_state() { # $1 = query exit code, stdin = query output (XML or empty)
+  local rc="$1" out
+  out="$(cat)"
+  if [ "$rc" -ne 0 ] && [ -z "$out" ]; then
+    echo "not-found"
+    return
+  fi
+  if printf '%s' "$out" | grep -qi '<Enabled>false</Enabled>'; then
+    echo "disabled"
+    return
+  fi
+  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -qi '<Enabled>true</Enabled>'; then
+    echo "ready"
+    return
+  fi
+  echo "unknown"
+}
+
+# CLI-only entry point for the selftest to call classify_task_state() directly
+# with synthetic input, with zero side effects and zero real binary calls.
+# Usage: INSTALL_WSL_WATCHDOG_CLASSIFY_SELFTEST=1 bash install-wsl-watchdog.sh <rc> <<<"<query output>"
+if [ "${INSTALL_WSL_WATCHDOG_CLASSIFY_SELFTEST:-0}" = "1" ]; then
+  classify_task_state "${1:-1}"
+  exit 0
+fi
+
 # --- guard: WSL only ---
 if ! grep -qi microsoft /proc/version 2>/dev/null; then
   echo "not WSL -- Windows watchdog not applicable; no-op."
@@ -45,13 +82,21 @@ case "${DRY_RUN_RAW,,}" in
     ;;
 esac
 
-WSLEXE="/mnt/c/Windows/System32/wsl.exe"
+# cybered test-isolation incident (card 58badae1, comment 17782, 20:47:38): a
+# mutation of the DRY_RUN selector logic itself fell through to this REAL
+# branch during a test run and called the real powershell.exe/schtasks.exe.
+# These three paths are now independently overridable so a test harness can
+# force them to local fake binaries as a SECOND, independent line of defense
+# that does not depend on DRY_RUN's own selector being correct -- a selftest
+# should set all three regardless of which DRY_RUN value it is exercising.
+WSLEXE="${INSTALL_WSL_WATCHDOG_WSLEXE_BIN:-/mnt/c/Windows/System32/wsl.exe}"
 WSL_USER="$(id -un)"
 
 if [ "$DRY_RUN" = "1" ]; then
   PS="(dry-run: powershell.exe not invoked)"
 else
-  PS="$(command -v powershell.exe || true)"
+  PS="${INSTALL_WSL_WATCHDOG_POWERSHELL_BIN:-}"
+  [ -z "$PS" ] && PS="$(command -v powershell.exe || true)"
   [ -z "$PS" ] && PS="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
   if [ ! -x "$PS" ]; then
     echo "powershell.exe not reachable -- cannot install Windows watchdog; no-op."
@@ -84,9 +129,14 @@ if [ "$DRY_RUN" = "1" ]; then
   # WhiteHat2 NO-GO H2: the comment above said "never under /mnt/c" but nothing
   # enforced it -- a value under /mnt/ is real Windows-backed storage even
   # with a "fake"-looking name (the exact incident this card exists to fix).
-  case "$WSL_DIR" in
+  # cybered N9 (comment 17782): a textual-only check is beaten by a path like
+  # "/tmp/../mnt/x" (never literally starts with "/mnt/"); normalize with
+  # `realpath -m` (no filesystem access required, pure lexical resolution)
+  # before comparing.
+  WSL_DIR_REAL="$(realpath -m "$WSL_DIR")"
+  case "$WSL_DIR_REAL" in
     /mnt/*)
-      echo "INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR resolves under /mnt/ ($WSL_DIR) -- refusing: dry-run must never touch real Windows-backed storage; abort." >&2
+      echo "INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR resolves under /mnt/ ($WSL_DIR_REAL) -- refusing: dry-run must never touch real Windows-backed storage; abort." >&2
       exit 1
       ;;
   esac
@@ -105,7 +155,7 @@ WATCHDOG_WSL="${WSL_DIR}/mikrob-wsl-watchdog.ps1"
 # call at all (see section 2 below), so there is no name to isolate; a REAL
 # install must always use the real production name.
 TASK_NAME="MikroB-WSL-Watchdog"
-SCHTASKS="/mnt/c/Windows/System32/schtasks.exe"
+SCHTASKS="${INSTALL_WSL_WATCHDOG_SCHTASKS_BIN:-/mnt/c/Windows/System32/schtasks.exe}"
 
 # Fresh-boot grace (card 58badae1 original requirement + F1 follow-up): skip
 # UNHEALTHY counting for the first N seconds of WSL distro uptime, default 25
@@ -136,9 +186,17 @@ cat > "$WATCHDOG_WSL" <<PS1EOF
 # read 3x UNHEALTHY and triggered an unnecessary restart cycle. Skipped reads
 # during the window are logged but never advance \$fails.
 \$FreshBootGraceSec = $FRESH_BOOT_GRACE_SEC
+# N2 (cybered 17782, MikroB 17774): the grace window must be upper-bounded --
+# the PID1-age clock (M1) resets to near-zero on every watchdog-issued
+# restart, so a genuine boot-loop (the distro dying and restarting faster
+# than the grace window) would otherwise skip forever and never reach
+# MaxFails. After MaxFreshSkips consecutive skips (~50 min @ 5-min cadence),
+# this read counts toward \$fails like any other, instead of being skipped.
+\$MaxFreshSkips = 10
 \$StateDir    = "\$env:LOCALAPPDATA\\MikroB"
 \$StateFile   = "\$StateDir\\wsl-watchdog-fails.txt"
 \$RestartCountFile = "\$StateDir\\wsl-watchdog-restart-count.txt"
+\$FreshSkipCountFile = "\$StateDir\\wsl-watchdog-freshskip-count.txt"
 \$LogFile     = "\$StateDir\\wsl-watchdog.log"
 New-Item -ItemType Directory -Force -Path \$StateDir | Out-Null
 function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf8 \$LogFile }
@@ -146,11 +204,13 @@ function Log(\$m){ "\$(Get-Date -Format o) \$m" | Out-File -Append -Encoding utf
 # Probe INSIDE wsl. If the VM/systemd is wedged, wsl.exe can't run it and
 # \$LASTEXITCODE != 0 -> that IS the total-wedge signal.
 \$out = & wsl.exe -d \$Distro -u \$WslUser -- \$Probe 2>\$null
-\$healthy = (\$LASTEXITCODE -eq 0) -and (\$out -match "OK")
+\$probeExit = \$LASTEXITCODE
+\$healthy = (\$probeExit -eq 0) -and (\$out -match "OK")
 
 if (\$healthy) {
   Set-Content -Path \$StateFile -Value "0"
   Set-Content -Path \$RestartCountFile -Value "0"
+  Set-Content -Path \$FreshSkipCountFile -Value "0"
   exit 0
 }
 
@@ -162,22 +222,33 @@ if (\$healthy) {
 # was only 1703s old, because vmIdleTimeout=-1 keeps the VM up across this
 # watchdog's own terminate+relaunch. Using VM uptime meant the grace window
 # never covered the one case it exists for: a distro this watchdog itself
-# just restarted. `ps -o etimes= -p 1` is the distro instance's own clock. A
+# just restarted. 'ps -o etimes= -p 1' is the distro instance's own clock. A
 # failed read (wedged VM) falls through as "not fresh" so a genuine total
 # wedge is never masked by the grace window.
 \$uptimeOut = & wsl.exe -d \$Distro -u \$WslUser -- ps -o etimes= -p 1 2>\$null
 \$uptimeSec = 0
-if (\$LASTEXITCODE -eq 0 -and \$uptimeOut -match '([0-9]+)') { \$uptimeSec = [double]\$matches[1] }
+# cybered N10 (comment 17782): an unanchored match takes the first digit
+# sequence ANYWHERE in the output, including inside an unrelated warning
+# string on a 0-exit run -- anchor to "the whole trimmed line is a number".
+if (\$LASTEXITCODE -eq 0 -and \$uptimeOut -match '^\s*([0-9]+)\s*$') { \$uptimeSec = [double]\$matches[1] }
 if (\$uptimeSec -gt 0 -and \$uptimeSec -lt \$FreshBootGraceSec) {
-  Log "probe unhealthy (out='\$out' exit=\$LASTEXITCODE) -- SKIPPED, fresh boot (uptime=\${uptimeSec}s < grace=\${FreshBootGraceSec}s)"
-  exit 0
+  \$freshSkips = 0
+  if (Test-Path \$FreshSkipCountFile) { \$freshSkips = [int](Get-Content \$FreshSkipCountFile -ErrorAction SilentlyContinue) }
+  \$freshSkips++
+  if (\$freshSkips -lt \$MaxFreshSkips) {
+    Set-Content -Path \$FreshSkipCountFile -Value "\$freshSkips"
+    Log "probe unhealthy (out='\$out' exit=\$probeExit) -- SKIPPED, fresh boot (uptime=\${uptimeSec}s < grace=\${FreshBootGraceSec}s, skip \$freshSkips/\$MaxFreshSkips)"
+    exit 0
+  }
+  Log "probe unhealthy (out='\$out' exit=\$probeExit) -- fresh-boot grace EXCEEDED MaxFreshSkips (\$MaxFreshSkips): treating as a boot-loop, counting toward failure threshold"
+  Set-Content -Path \$FreshSkipCountFile -Value "0"
 }
 
 \$fails = 0
 if (Test-Path \$StateFile) { \$fails = [int](Get-Content \$StateFile -ErrorAction SilentlyContinue) }
 \$fails++
 Set-Content -Path \$StateFile -Value "\$fails"
-Log "probe unhealthy (out='\$out' exit=\$LASTEXITCODE) -- consecutive fails=\$fails/\$MaxFails"
+Log "probe unhealthy (out='\$out' exit=\$probeExit) -- consecutive fails=\$fails/\$MaxFails"
 
 if (\$fails -ge \$MaxFails) {
   \$restarts = 0
@@ -250,27 +321,32 @@ TR="wscript.exe //B //Nologo ${LAUNCHER_WIN}"
 # WhiteHat2 NO-GO H1 (card 58badae1, comment 17766): /Create /F unconditionally
 # OVERWRITES an existing task, and /F turns a deliberately Disabled task back
 # to Ready -- exactly what undid MikroB's manual Disable at 20:11. Query the
-# task's current state first; if it already exists and is Disabled, render
+# task's current state first via the locale-independent XML form (H1', comment
+# 17781) and classify_task_state(); if it already exists and is Disabled, OR
+# the state cannot be determined (unknown -- a failed/ambiguous query), render
 # the files (so a later, explicit re-enable has fresh content) but SKIP the
-# /Create call so the Disabled state is never touched by this script.
-# INSTALL_WSL_WATCHDOG_DRYRUN_TASK_STATE lets a selftest simulate the query
-# result without ever invoking the real schtasks.exe (same dry-run contract
-# as everywhere else in this script).
+# /Create call so neither a Disabled state nor an inconclusive read is ever
+# acted on by this script. INSTALL_WSL_WATCHDOG_DRYRUN_TASK_STATE lets a
+# selftest simulate the end-to-end state without ever invoking schtasks.exe.
 if [ "$DRY_RUN" = "1" ]; then
   TASK_STATE="${INSTALL_WSL_WATCHDOG_DRYRUN_TASK_STATE:-not-found}"
 else
-  TASK_QUERY_OUT="$("$SCHTASKS" /Query /TN "$TASK_NAME" /FO LIST /V 2>/dev/null || true)"
-  if [ -z "$TASK_QUERY_OUT" ]; then
-    TASK_STATE="not-found"
-  elif echo "$TASK_QUERY_OUT" | grep -qi '^Scheduled Task State:.*Disabled'; then
-    TASK_STATE="disabled"
-  else
-    TASK_STATE="ready"
-  fi
+  TASK_QUERY_OUT="$("$SCHTASKS" /Query /TN "$TASK_NAME" /XML 2>/dev/null)"; QUERY_RC=$?
+  TASK_STATE="$(printf '%s' "$TASK_QUERY_OUT" | classify_task_state "$QUERY_RC")"
 fi
 
-if [ "$TASK_STATE" = "disabled" ]; then
-  echo "Scheduled Task '$TASK_NAME' is currently Disabled -- skipping /Create (card 58badae1 H1: /F would re-enable it). Files rendered; registration state left untouched. Re-enable manually once ready."
+# B2 (MikroB 17774 + cybered 17782): a persistent, version-controlled disable
+# flag is the PRIMARY protection -- it does not depend on schtasks.exe, a
+# Windows locale, or the query succeeding at all, and startup.sh checks the
+# same file before even invoking this installer. The flag always wins over
+# whatever the query found.
+DISABLE_FLAG="${INSTALL_WSL_WATCHDOG_DISABLE_FLAG:-$INSTALL_DIR/store/.wsl-watchdog-disabled}"
+if [ -f "$DISABLE_FLAG" ]; then
+  TASK_STATE="disabled"
+fi
+
+if [ "$TASK_STATE" = "disabled" ] || [ "$TASK_STATE" = "unknown" ]; then
+  echo "Scheduled Task '$TASK_NAME' state is '$TASK_STATE' -- skipping /Create (card 58badae1 H1/H1'/B2: never re-enable a disabled task, and never guess on an inconclusive read). Files rendered; registration state left untouched. Re-enable manually once ready."
 elif [ "$DRY_RUN" = "1" ]; then
   # Card 58badae1 incident: schtasks.exe is NEVER invoked in dry-run, not even
   # a stubbed one on PATH -- the real binary is called by its hardcoded
