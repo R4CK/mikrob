@@ -98,34 +98,47 @@ GEMINI_ROUTE="$(get_gemini_route)"
 #      unblocked (measured: 3 of 6 tag-less sensitive cards). Dropping the trailing boundary is a
 #      deliberate false-positive-tolerant choice: a blocked card merely gets no Gemini draft
 #      (routes online as usual), which is the acceptable side of this card's fail-closed design.
+#      FULL TEXT, NOT A PREFIX (WhiteHat2 H1, card 40d2a253): title/desc are inspected in full,
+#      because try_leaf() sends the SAME full leaf_title+leaf_desc to Gemini as "$task" (line
+#      ~836) -- a cap here that the outbound call does not share would let a sensitive word past
+#      the cut point through unblocked. To inspect the full text without risking an oversized
+#      python3 argv (the previous fix's concern, see below), title/desc are passed over STDIN, not
+#      as command-line arguments -- argv has an OS-level length ceiling, stdin does not.
 #   4. CATEGORICAL-ONLINE leaves NEVER go to Gemini (WhiteHat2 F1d): the router already classified
 #      the card as security/authz/multi-file; sending it to an external API discards that verdict.
 #      Enforcement: the categorical-online branch no longer contains a try_gemini_for_leaf call.
 #
-# FAIL-CLOSED ON INTERPRETER FAILURE (RedHat 17510 finding 2): the Python classifier can itself
-# fail before reaching an explicit sys.exit -- missing python3 (rc=127), an oversized argv for a
-# very long description (E2BIG, rc=126), or any other interpreter crash. The OLD code returned
-# that raw exit code straight to the caller, and the call sites do `! is_gemini_blocked ...` --
-# in bash, "! " of ANY non-zero code is true, so rc=126/127 were silently treated exactly like
-# the real "allowed" (rc=1) outcome. Fixed by checking the exit code explicitly: ONLY rc=1 (the
-# interpreter actually reached the final "allowed" line) returns allowed; every other outcome,
-# including an interpreter crash, returns blocked. Title/desc are also length-capped before being
-# passed as argv so a legitimately long description does not hit the OS arg-length limit at all.
+# FAIL-CLOSED ON INTERPRETER FAILURE (RedHat 17510 finding 2, sharpened by WhiteHat2 H2): the
+# Python classifier can fail before reaching an explicit sys.exit -- missing python3 (rc=127), or
+# any other interpreter crash, INCLUDING an uncaught Python exception, which exits with code 1 by
+# default. The old "allowed" signal was ALSO exit code 1 -- so a genuine classifier bug (regex
+# error, bad encoding, anything raising) was silently indistinguishable from "allowed", the exact
+# opposite of fail-closed. Fixed by giving "allowed" its own code that nothing else can produce:
+# $ALLOWED_RC (42, below). ONLY that exact code returns allowed; every other outcome -- 0 (explicit
+# blocked), 1 (uncaught exception), 126/127 (interpreter crash), anything else -- returns blocked.
 #
 # Returns 1 (false/allowed) only when all four gates pass AND the classifier ran to completion.
 is_gemini_blocked() {
   local project="$1" tags="$2" title="${3:-}" desc="${4:-}"
-  # Defensive cap (RedHat 17510 finding 2): avoid E2BIG on an oversized argv in the first place.
-  title="${title:0:1000}"
-  desc="${desc:0:8000}"
   local rc
-  python3 -c '
+  # Distinct "allowed" exit code (WhiteHat2 H2, matches the Python ALLOWED_RC constant below):
+  # cannot collide with a bare Python exception (1) or any shell/OS failure code, so only a
+  # deliberate, successful "allowed" verdict matches. A literal, not an env var, to sidestep a
+  # bash quirk: a `VAR=val command` prefix assignment on a `local -r` variable is itself an
+  # assignment and bash refuses it as a readonly violation, even though it's command-scoped.
+  printf '%s\0%s' "$title" "$desc" | python3 -c '
 import sys, unicodedata, re
 
 project  = sys.argv[1]
 tags_csv = sys.argv[2] if len(sys.argv) > 2 else ""
-title    = sys.argv[3] if len(sys.argv) > 3 else ""
-desc     = sys.argv[4] if len(sys.argv) > 4 else ""
+ALLOWED_RC = 42  # must match the bash-side check below
+
+# title/desc come over stdin (WhiteHat2 H1): NUL-separated, no argv length ceiling, no cap needed
+# -- this is the exact same full text try_leaf() sends to Gemini as "$task".
+_stdin = sys.stdin.buffer.read()
+_parts = _stdin.split(b"\x00", 1)
+title = _parts[0].decode("utf-8", "replace")
+desc  = _parts[1].decode("utf-8", "replace") if len(_parts) > 1 else ""
 
 def norm(s):
     """casefold + strip Unicode accents (NFD decompose -> ASCII)."""
@@ -152,6 +165,12 @@ for tag in tags_csv.split(","):
 # 3. Content gate on NORMALIZED title AND description (sensitive stem -> blocked, fail-closed).
 # Leading-boundary-only stems (RedHat 17510 finding 1): matches a stem at the start of a word,
 # but also matches it as the start of a longer word ("jogosultsag", "biztonsag", "finance").
+# VOCABULARY PARITY WITH THE ROUTER (RedHat 17567 B2, card a92e9913): the routers own authz/PII
+# prefilter (card-build-route.sh) blocks on "permission", "access control", "szemelyes adat" and
+# "hozzaferes" (Hungarian for "access") -- this gates vocabulary did not have them, so e.g.
+# "Permission model for the export" or "Szemelyes adat maszkolasa a naploban" passed through
+# unblocked despite being exactly the authz/PII categories named in Petis standing rule
+# (Telegram 11131). Added below.
 title_n = norm(title)
 desc_n = norm(desc)
 SENS_RE = re.compile(
@@ -159,16 +178,17 @@ SENS_RE = re.compile(
     r"|penz|penzugy|fizet|szamla|afa|payroll|berszamfejtes|jelszo|password"
     r"|token|secret|titok|jogosult|gdpr|privacy|kulcs"
     r"|kripto|crypto|pii|billing|payment|legal|jogi|cybersec|fin"
-    r"|hacker|exploit|pentest|inject|sqli|xss)",
+    r"|hacker|exploit|pentest|inject|sqli|xss"
+    r"|permission|access|szemelyes|hozzaferes)",
     re.IGNORECASE
 )
 if SENS_RE.search(title_n) or SENS_RE.search(desc_n):
     sys.exit(0)  # blocked
 
-sys.exit(1)  # allowed
-' "$project" "$tags" "$title" "$desc"
+sys.exit(ALLOWED_RC)  # allowed -- the ONE code that means a deliberate, completed "allowed" verdict
+' "$project" "$tags"
   rc=$?
-  [[ "$rc" -eq 1 ]] && return 1
+  [[ "$rc" -eq 42 ]] && return 1  # must match the Python-side ALLOWED_RC constant above
   return 0
 }
 

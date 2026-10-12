@@ -87,8 +87,10 @@ SECRET_PATTERNS = [
     (r'\bsk-ant-[A-Za-z0-9_-]{20,}', 'anthropic'),
     # ElevenLabs
     (r'(?i)xi-api-key["\'\s:=]+[A-Za-z0-9_-]{16,}', 'elevenlabs'),
-    # Bearer token (>= 8 chars)
-    (r'(?i)\bBearer\s+[A-Za-z0-9_\-.=+/]{8,}', 'bearer'),
+    # Bearer token. WhiteHat2 H2 (card 40d2a253): an 8-char floor missed short real-world tokens
+    # (test/staging keys, short API gateway tokens) -- lowered to 4, still well above any English
+    # word that could follow "Bearer" in ordinary prose.
+    (r'(?i)\bBearer\s+[A-Za-z0-9_\-.=+/]{4,}', 'bearer'),
     # JWT
     (r'\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}', 'jwt'),
     # GitHub tokens
@@ -124,8 +126,15 @@ SECRET_PATTERNS = [
     (r'(?i)AccountKey=[A-Za-z0-9+/]{40,}={0,2}', 'azure'),
     # .env KEY=value (indented, export, or plain; value >= 8 non-space chars)
     (r'(?m)^[ \t]*(export[ \t]+)?[A-Za-z_][A-Za-z0-9_]+=\S{8,}', 'env'),
-    # inline credential assignments (password=, secret=, api_key= ...)
-    (r'(?i)\b(password|passwd|secret|token|api[_-]?key|auth[_-]?key|access[_-]?key)[=:\s]+["\']?[A-Za-z0-9_\-.=+/]{8,}["\']?', 'cred'),
+    # inline credential assignments (password=, secret=, api_key= ...). WhiteHat2 H3 (card
+    # 40d2a253) found two gaps: (a) JSON-style `"apiKey": "..."` has a closing quote on the KEY
+    # itself right before the separator ("apiKey"<HERE>: "value") -- the old pattern required the
+    # separator immediately after the key name, so the stray quote broke the match; fixed with an
+    # optional `["\']?` right after the key name. (b) a quoted value containing spaces (`secret:
+    # "my secret value"`) didn't match the old unquoted charset (no space in it); fixed by matching
+    # a quoted value as "anything but that quote char, >=8 chars" instead of the narrow charset.
+    (r'(?i)\b(password|passwd|secret|token|api[_-]?key|auth[_-]?key|access[_-]?key)["\']?[=:\s]+'
+     r'(?:"[^"\n]{8,}"|\'[^\'\n]{8,}\'|[A-Za-z0-9_\-.=+/]{8,})', 'cred'),
     # Database URLs with embedded password
     (r'(?i)(postgres|mysql|mongodb|redis)://[^:]+:[^@]{4,}@', 'dburl'),
     # Basic auth header
