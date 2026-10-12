@@ -29,7 +29,21 @@ fi
 # INSTALL_WSL_WATCHDOG_DRY_RUN=1 renders every file (PS1, launcher vbs) and
 # prints the registration command it WOULD run, but calls neither
 # powershell.exe nor schtasks.exe -- this is the ONLY mode a selftest may use.
-DRY_RUN="${INSTALL_WSL_WATCHDOG_DRY_RUN:-0}"
+#
+# WhiteHat2 NO-GO H2 (card 58badae1, comment 17766): the old exact-match
+# `[ "$DRY_RUN" = "1" ]` fails OPEN for any other truthy-looking value
+# (true/yes/on/TRUE) -- those silently fell through to a REAL install. Any
+# value is now normalized to exactly "1" or "0", and an unrecognized value
+# aborts instead of guessing which one was meant.
+DRY_RUN_RAW="${INSTALL_WSL_WATCHDOG_DRY_RUN:-0}"
+case "${DRY_RUN_RAW,,}" in
+  1|true|yes|on) DRY_RUN=1 ;;
+  0|''|false|no|off) DRY_RUN=0 ;;
+  *)
+    echo "INSTALL_WSL_WATCHDOG_DRY_RUN='$DRY_RUN_RAW' is not a recognized boolean (1/true/yes/on or 0/false/no/off) -- refusing to guess; abort." >&2
+    exit 1
+    ;;
+esac
 
 WSLEXE="/mnt/c/Windows/System32/wsl.exe"
 WSL_USER="$(id -un)"
@@ -67,6 +81,15 @@ if [ "$DRY_RUN" = "1" ]; then
   # resolve to a real path under /mnt/c, real or "fake"-looking.
   WIN_LOCALAPPDATA="${INSTALL_WSL_WATCHDOG_DRYRUN_WIN_LOCALAPPDATA:-C:\\DRYRUN-NOT-REAL}"
   WSL_DIR="${INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR:?dry-run requires INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR (a scratch dir, never under /mnt/c)}/MikroB"
+  # WhiteHat2 NO-GO H2: the comment above said "never under /mnt/c" but nothing
+  # enforced it -- a value under /mnt/ is real Windows-backed storage even
+  # with a "fake"-looking name (the exact incident this card exists to fix).
+  case "$WSL_DIR" in
+    /mnt/*)
+      echo "INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR resolves under /mnt/ ($WSL_DIR) -- refusing: dry-run must never touch real Windows-backed storage; abort." >&2
+      exit 1
+      ;;
+  esac
 else
   WIN_LOCALAPPDATA="$("$PS" -NoProfile -Command '$env:LOCALAPPDATA' 2>/dev/null | tr -d '\r')"
   [ -z "$WIN_LOCALAPPDATA" ] && { echo "could not resolve LOCALAPPDATA; abort"; exit 1; }
@@ -131,14 +154,20 @@ if (\$healthy) {
   exit 0
 }
 
-# Fresh-boot grace: read /proc/uptime INSIDE wsl (a separate call -- the
-# liveness probe's own exit code/output must stay UNHEALTHY-or-OK only, this
-# is a second, independent signal). A failed uptime read (wedged VM) falls
-# through as "not fresh" so a genuine total wedge is never masked by the grace
-# window.
-\$uptimeOut = & wsl.exe -d \$Distro -u \$WslUser -- cat /proc/uptime 2>\$null
+# Fresh-boot grace: read the DISTRO's PID 1 age INSIDE wsl (a separate call --
+# the liveness probe's own exit code/output must stay UNHEALTHY-or-OK only,
+# this is a second, independent signal). WhiteHat2 NO-GO M1 (card 58badae1,
+# comment 17766): /proc/uptime is the WSL2 VM's lifetime, not the distro's --
+# measured live, /proc/uptime read 10887s (3h) while the distro's own PID 1
+# was only 1703s old, because vmIdleTimeout=-1 keeps the VM up across this
+# watchdog's own terminate+relaunch. Using VM uptime meant the grace window
+# never covered the one case it exists for: a distro this watchdog itself
+# just restarted. `ps -o etimes= -p 1` is the distro instance's own clock. A
+# failed read (wedged VM) falls through as "not fresh" so a genuine total
+# wedge is never masked by the grace window.
+\$uptimeOut = & wsl.exe -d \$Distro -u \$WslUser -- ps -o etimes= -p 1 2>\$null
 \$uptimeSec = 0
-if (\$LASTEXITCODE -eq 0 -and \$uptimeOut -match '^([0-9.]+)') { \$uptimeSec = [double]\$matches[1] }
+if (\$LASTEXITCODE -eq 0 -and \$uptimeOut -match '([0-9]+)') { \$uptimeSec = [double]\$matches[1] }
 if (\$uptimeSec -gt 0 -and \$uptimeSec -lt \$FreshBootGraceSec) {
   Log "probe unhealthy (out='\$out' exit=\$LASTEXITCODE) -- SKIPPED, fresh boot (uptime=\${uptimeSec}s < grace=\${FreshBootGraceSec}s)"
   exit 0
@@ -217,7 +246,32 @@ echo "Rendered hidden VBS launcher -> $LAUNCHER_WIN"
 #    so /TR needs no inner quotes. /F overwrites, so re-running is idempotent.
 # ----------------------------------------------------------------------------
 TR="wscript.exe //B //Nologo ${LAUNCHER_WIN}"
+
+# WhiteHat2 NO-GO H1 (card 58badae1, comment 17766): /Create /F unconditionally
+# OVERWRITES an existing task, and /F turns a deliberately Disabled task back
+# to Ready -- exactly what undid MikroB's manual Disable at 20:11. Query the
+# task's current state first; if it already exists and is Disabled, render
+# the files (so a later, explicit re-enable has fresh content) but SKIP the
+# /Create call so the Disabled state is never touched by this script.
+# INSTALL_WSL_WATCHDOG_DRYRUN_TASK_STATE lets a selftest simulate the query
+# result without ever invoking the real schtasks.exe (same dry-run contract
+# as everywhere else in this script).
 if [ "$DRY_RUN" = "1" ]; then
+  TASK_STATE="${INSTALL_WSL_WATCHDOG_DRYRUN_TASK_STATE:-not-found}"
+else
+  TASK_QUERY_OUT="$("$SCHTASKS" /Query /TN "$TASK_NAME" /FO LIST /V 2>/dev/null || true)"
+  if [ -z "$TASK_QUERY_OUT" ]; then
+    TASK_STATE="not-found"
+  elif echo "$TASK_QUERY_OUT" | grep -qi '^Scheduled Task State:.*Disabled'; then
+    TASK_STATE="disabled"
+  else
+    TASK_STATE="ready"
+  fi
+fi
+
+if [ "$TASK_STATE" = "disabled" ]; then
+  echo "Scheduled Task '$TASK_NAME' is currently Disabled -- skipping /Create (card 58badae1 H1: /F would re-enable it). Files rendered; registration state left untouched. Re-enable manually once ready."
+elif [ "$DRY_RUN" = "1" ]; then
   # Card 58badae1 incident: schtasks.exe is NEVER invoked in dry-run, not even
   # a stubbed one on PATH -- the real binary is called by its hardcoded
   # absolute path below, so faking PATH alone cannot intercept it.
