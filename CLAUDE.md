@@ -791,8 +791,9 @@ Egy neked jött inter-agent üzenetet a `PUT /api/messages/<id>` zár le (`"stat
   feladó várakozó sorát 1-ről 4-re vitte).
 
 ```bash
-curl -s -X PUT http://localhost:3420/api/messages/<id> -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat /home/neon/marveen/store/.dashboard-token)" --data-binary '{"status":"done","notify":false}'
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" \
+| curl -H @- -s -X PUT http://localhost:3420/api/messages/<id> -H "Content-Type: application/json" \
+  --data-binary '{"status":"done","notify":false}'
 ```
 A `notify` csak valódi JSON boolean lehet: a `"false"` string 400-at kap, és ilyenkor a lezárás sem
 történik meg. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.

@@ -70,9 +70,9 @@ describe('message-close section: what it says (ACKONCLOSE927)', () => {
     expect(body).toMatch(/string 400-at kap/)
   })
 
-  it('the example is a PUT on the message id, with the bearer token', () => {
-    expect(body).toMatch(/curl -s -X PUT \S+\/api\/messages\/<id>/)
-    expect(body).toMatch(/Authorization: Bearer \$\(cat /)
+  it('the example is a PUT on the message id, with the bearer token via stdin header (not argv)', () => {
+    expect(body).toMatch(/curl -H @- -s -X PUT \S+\/api\/messages\/<id>/)
+    expect(body).toMatch(/printf 'Authorization: Bearer %s\\n' "\$\(cat /)
   })
 })
 
