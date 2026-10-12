@@ -47,7 +47,11 @@ describe('kanban-verdicts', () => {
     })
 
     it('AGENT_VERDICT_RECORD=1: the route handles the request', async () => {
-      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', author: 'qa' })
+      createDeviceKey('agent:qa')
+      const { ctx, out } = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS' },
+        { kind: 'device', device: 'agent:qa', deviceId: 1 },
+      )
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
       expect(out.status).toBe(201)
     })
@@ -99,11 +103,23 @@ describe('kanban-verdicts', () => {
   })
 
   describe('POST /api/kanban/:id/verdicts', () => {
-    it('records a verdict with an unverified (body-claimed) author when no device key is presented', async () => {
+    // B1' (RedHat NO-GO, 2bfa4c67 comment 16824, HIGH): the measured bypass was exactly this
+    // shape -- the shared dashboard token, author:"qa" in the body, used to get a 201 with
+    // author_verified=0, and the completeness guard let a close through on it. A verdict record is
+    // now authenticated-only; there is no unverified write path left to record.
+    it('rejects the common dashboard token with a body-claimed author, no device key: 403, nothing written', async () => {
       const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', sha: 'abc123', author: 'qa' })
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
-      expect(out.status).toBe(201)
-      expect(out.body).toMatchObject({ card_id: 'c1', gate: 'QA', verdict: 'PASS', sha: 'abc123', author: 'qa', author_verified: 0 })
+      expect(out.status).toBe(403)
+      const list = fakeCtx('/api/kanban/c1/verdicts', 'GET')
+      await tryHandleKanbanVerdicts(list.ctx)
+      expect(list.out.body).toEqual([])
+    })
+
+    it('rejects a missing author with no device key AND no body claim: 403, same as any other unverified attempt', async () => {
+      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS' })
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(403)
     })
 
     it('records a verdict with a VERIFIED author when an agent:<id> device key is presented', async () => {
@@ -117,32 +133,53 @@ describe('kanban-verdicts', () => {
       expect(out.body).toMatchObject({ gate: 'CYBERSEC', verdict: 'NO-GO', author: 'cybersec2', author_verified: 1 })
     })
 
-    it('rejects a self-proposed verdict with 403, no row created -- proposer comes from an AUTHENTICATED proposal record, not the request body', async () => {
+    // B2' (RedHat NO-GO, 2bfa4c67 comment 16824, MEDIUM): the proposer is now recorded
+    // automatically by the SAME authenticated write that states the NO-GO/FAIL -- there is no
+    // separate "propose" step to call first any more.
+    it('rejects a self-proposed verdict with 403, no second row created -- the proposer is the agent\'s own prior NO-GO, recorded automatically', async () => {
       createDeviceKey('agent:qa')
-      const propose = fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:qa', deviceId: 1 })
-      await tryHandleKanbanVerdicts(propose.ctx)
-      expect(propose.out.status).toBe(201)
+      const noGo = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'NO-GO' },
+        { kind: 'device', device: 'agent:qa', deviceId: 1 },
+      )
+      expect(await tryHandleKanbanVerdicts(noGo.ctx)).toBe(true)
+      expect(noGo.out.status).toBe(201)
 
-      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', author: 'qa' })
+      const { ctx, out } = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS' },
+        { kind: 'device', device: 'agent:qa', deviceId: 1 },
+      )
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
       expect(out.status).toBe(403)
       const list = fakeCtx('/api/kanban/c1/verdicts', 'GET')
       await tryHandleKanbanVerdicts(list.ctx)
-      expect(list.out.body).toEqual([])
+      expect(list.out.body).toHaveLength(1) // only the NO-GO -- the self-proposed PASS never wrote
     })
 
-    it('a request-body proposer claim is IGNORED -- self-proposal is accepted when no authenticated proposal record exists', async () => {
-      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', author: 'qa', proposer: 'qa' })
+    it('a request-body proposer claim is IGNORED -- self-proposal is accepted when no authenticated NO-GO/FAIL ever happened', async () => {
+      createDeviceKey('agent:qa')
+      const { ctx, out } = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', proposer: 'qa' },
+        { kind: 'device', device: 'agent:qa', deviceId: 1 },
+      )
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
       expect(out.status).toBe(201)
     })
 
     it('a sibling-proposed verdict is accepted (different agent, same role family)', async () => {
       createDeviceKey('agent:cybersec')
-      const propose = fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:cybersec', deviceId: 1 })
-      await tryHandleKanbanVerdicts(propose.ctx)
+      createDeviceKey('agent:cybersec2')
+      const noGo = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'NO-GO' },
+        { kind: 'device', device: 'agent:cybersec', deviceId: 1 },
+      )
+      expect(await tryHandleKanbanVerdicts(noGo.ctx)).toBe(true)
+      expect(noGo.out.status).toBe(201)
 
-      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2' })
+      const { ctx, out } = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'GO' },
+        { kind: 'device', device: 'agent:cybersec2', deviceId: 2 },
+      )
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
       expect(out.status).toBe(201)
     })
@@ -162,18 +199,24 @@ describe('kanban-verdicts', () => {
 
     it('rejects a gate value not designated on the card\'s own "Gate:" line', async () => {
       createKanbanCard({ id: 'c2', title: 'y', status: 'planned', description: 'Gate: QA' })
-      const { ctx, out } = fakeCtx('/api/kanban/c2/verdicts', 'POST', { gate: 'CYBERED', verdict: 'GO', author: 'cybered' })
+      createDeviceKey('agent:cybered')
+      const { ctx, out } = fakeCtx(
+        '/api/kanban/c2/verdicts', 'POST', { gate: 'CYBERED', verdict: 'GO' },
+        { kind: 'device', device: 'agent:cybered', deviceId: 1 },
+      )
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
       expect(out.status).toBe(400)
     })
 
     it('a designated gate is accepted; a card with no Gate: line at all is permissive (matches the completeness guard default)', async () => {
       createKanbanCard({ id: 'c2', title: 'y', status: 'planned', description: 'Gate: QA + Cybered' })
-      const ok = fakeCtx('/api/kanban/c2/verdicts', 'POST', { gate: 'CYBERED', verdict: 'GO', author: 'cybered' })
+      createDeviceKey('agent:cybered')
+      const auth = { kind: 'device', device: 'agent:cybered', deviceId: 1 } as const
+      const ok = fakeCtx('/api/kanban/c2/verdicts', 'POST', { gate: 'CYBERED', verdict: 'GO' }, auth)
       expect(await tryHandleKanbanVerdicts(ok.ctx)).toBe(true)
       expect(ok.out.status).toBe(201)
       // c1 (from beforeEach) has no description at all -- no verifiable claim, so nothing is rejected.
-      const noLine = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERED', verdict: 'GO', author: 'cybered' })
+      const noLine = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERED', verdict: 'GO' }, auth)
       expect(await tryHandleKanbanVerdicts(noLine.ctx)).toBe(true)
       expect(noLine.out.status).toBe(201)
     })
@@ -190,12 +233,6 @@ describe('kanban-verdicts', () => {
       expect(out.status).toBe(400)
     })
 
-    it('rejects a missing author (no device key, no body claim) with 400', async () => {
-      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS' })
-      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
-      expect(out.status).toBe(400)
-    })
-
     it('404s for a nonexistent card', async () => {
       const { ctx, out } = fakeCtx('/api/kanban/nope/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', author: 'qa' })
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
@@ -205,8 +242,14 @@ describe('kanban-verdicts', () => {
 
   describe('GET /api/kanban/:id/verdicts', () => {
     it('returns the full history, oldest first', async () => {
-      await tryHandleKanbanVerdicts(fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', author: 'qa' }).ctx)
-      await tryHandleKanbanVerdicts(fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec' }).ctx)
+      createDeviceKey('agent:qa')
+      createDeviceKey('agent:cybersec')
+      await tryHandleKanbanVerdicts(
+        fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS' }, { kind: 'device', device: 'agent:qa', deviceId: 1 }).ctx,
+      )
+      await tryHandleKanbanVerdicts(
+        fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'GO' }, { kind: 'device', device: 'agent:cybersec', deviceId: 2 }).ctx,
+      )
       const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'GET')
       await tryHandleKanbanVerdicts(ctx)
       expect(out.body).toHaveLength(2)
@@ -257,48 +300,42 @@ describe('kanban-verdicts', () => {
     })
   })
 
-  describe('POST/GET /api/kanban/:id/proposals (authenticated-only, card 2bfa4c67 delta B2/W3)', () => {
-    it('an agent:<id> device key may propose; GET returns the latest row', async () => {
+  // B2' (RedHat NO-GO, 2bfa4c67 comment 16824, MEDIUM): the manual write was ALWAYS exactly as
+  // forgeable as the body `proposer` field it replaced -- measured (P5/P6): any authenticated
+  // agent:<id> key could write a proposal for ANY card, including one it had no NO-GO/FAIL on, and
+  // the latest write won regardless of who wrote it. The proposer is now recorded automatically by
+  // the verdicts route itself (see the POST /verdicts tests above); there is no independently
+  // callable write path left to test here.
+  describe('POST/GET /api/kanban/:id/proposals (write retired, card 2bfa4c67 comment 16824 B2\')', () => {
+    it('POST is refused with 403 regardless of auth -- no manual write path exists any more', async () => {
       createDeviceKey('agent:backend')
-      const { ctx, out } = fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:backend', deviceId: 1 })
-      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
-      expect(out.status).toBe(201)
-      expect(out.body).toMatchObject({ card_id: 'c1', proposer: 'backend' })
+      const authed = fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:backend', deviceId: 1 })
+      expect(await tryHandleKanbanVerdicts(authed.ctx)).toBe(true)
+      expect(authed.out.status).toBe(403)
 
-      const get = fakeCtx('/api/kanban/c1/proposals', 'GET')
-      await tryHandleKanbanVerdicts(get.ctx)
-      expect(get.out.body).toMatchObject({ proposer: 'backend' })
-    })
+      const token = fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'token' })
+      expect(await tryHandleKanbanVerdicts(token.ctx)).toBe(true)
+      expect(token.out.status).toBe(403)
 
-    it('the shared dashboard token cannot propose (403, nothing written)', async () => {
-      const { ctx, out } = fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'token' })
-      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
-      expect(out.status).toBe(403)
       const get = fakeCtx('/api/kanban/c1/proposals', 'GET')
       await tryHandleKanbanVerdicts(get.ctx)
       expect(get.out.body).toBeNull()
     })
 
-    it('no auth at all cannot propose (403)', async () => {
-      const { ctx, out } = fakeCtx('/api/kanban/c1/proposals', 'POST', undefined)
-      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
-      expect(out.status).toBe(403)
-    })
-
-    it('append-only: a second proposal supersedes the first as the latest', async () => {
+    it('GET reflects the proposal the verdicts route auto-recorded for a NO-GO/FAIL', async () => {
       createDeviceKey('agent:backend')
-      createDeviceKey('agent:backend2')
-      await tryHandleKanbanVerdicts(fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:backend', deviceId: 1 }).ctx)
-      await tryHandleKanbanVerdicts(fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:backend2', deviceId: 2 }).ctx)
+      await tryHandleKanbanVerdicts(
+        fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'FAIL' }, { kind: 'device', device: 'agent:backend', deviceId: 1 }).ctx,
+      )
+      // 'backend' is not a QA/CYBERSEC/CYBERED role agent, so the verdict write itself is refused
+      // (403, role-allowlist) -- use a real gate agent instead to exercise the auto-record path.
+      createDeviceKey('agent:qa')
+      await tryHandleKanbanVerdicts(
+        fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'FAIL' }, { kind: 'device', device: 'agent:qa', deviceId: 2 }).ctx,
+      )
       const get = fakeCtx('/api/kanban/c1/proposals', 'GET')
       await tryHandleKanbanVerdicts(get.ctx)
-      expect(get.out.body).toMatchObject({ proposer: 'backend2' })
-    })
-
-    it('404s for a nonexistent card', async () => {
-      const { ctx, out } = fakeCtx('/api/kanban/nope/proposals', 'POST', undefined, { kind: 'device', device: 'agent:backend', deviceId: 1 })
-      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
-      expect(out.status).toBe(404)
+      expect(get.out.body).toMatchObject({ card_id: 'c1', proposer: 'qa' })
     })
   })
 
@@ -312,31 +349,51 @@ describe('kanban-verdicts', () => {
     const WRONG_SHA = 'ffffffffffffffffffffffffffffffffffffffff'
 
     it('no REVIEW with Gate-SHA ever on the card: sha is NOT required (permissive default)', async () => {
-      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', author: 'qa' })
+      createDeviceKey('agent:qa')
+      const { ctx, out } = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS' },
+        { kind: 'device', device: 'agent:qa', deviceId: 1 },
+      )
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
       expect(out.status).toBe(201)
     })
 
     it('a REVIEW with Gate-SHA exists: a missing sha is rejected with 400 (the measured bypass)', async () => {
+      createDeviceKey('agent:qa')
       addKanbanComment('c1', 'backend', `REVIEW: kesz.\nGate-SHA: ${REVIEW_SHA}`)
-      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', author: 'qa' })
+      const { ctx, out } = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS' },
+        { kind: 'device', device: 'agent:qa', deviceId: 1 },
+      )
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
       expect(out.status).toBe(400)
     })
 
     it('a REVIEW with Gate-SHA exists: a WRONG sha is rejected with 400', async () => {
+      createDeviceKey('agent:qa')
       addKanbanComment('c1', 'backend', `REVIEW: kesz.\nGate-SHA: ${REVIEW_SHA}`)
-      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', sha: WRONG_SHA, author: 'qa' })
+      const { ctx, out } = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', sha: WRONG_SHA },
+        { kind: 'device', device: 'agent:qa', deviceId: 1 },
+      )
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
       expect(out.status).toBe(400)
     })
 
     it('a REVIEW with Gate-SHA exists: the matching sha (full or short-prefix form) is accepted', async () => {
+      createDeviceKey('agent:qa')
+      createDeviceKey('agent:cybersec')
       addKanbanComment('c1', 'backend', `REVIEW: kesz.\nGate-SHA: ${REVIEW_SHA}`)
-      const full = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', sha: REVIEW_SHA, author: 'qa' })
+      const full = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS', sha: REVIEW_SHA },
+        { kind: 'device', device: 'agent:qa', deviceId: 1 },
+      )
       expect(await tryHandleKanbanVerdicts(full.ctx)).toBe(true)
       expect(full.out.status).toBe(201)
-      const short = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'GO', sha: REVIEW_SHA.slice(0, 8), author: 'cybersec' })
+      const short = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'GO', sha: REVIEW_SHA.slice(0, 8) },
+        { kind: 'device', device: 'agent:cybersec', deviceId: 2 },
+      )
       expect(await tryHandleKanbanVerdicts(short.ctx)).toBe(true)
       expect(short.out.status).toBe(201)
     })
@@ -344,18 +401,23 @@ describe('kanban-verdicts', () => {
 
   // Card 2bfa4c67 round 2 (WhiteHat2 NO-GO on 3d702874, N5). The measured bypass: the exclusion
   // used to be "latest proposal wins", so a LATER, unrelated proposal from a DIFFERENT agent
-  // silently cleared an earlier, still-relevant exclusion.
+  // silently cleared an earlier, still-relevant exclusion. B2' (RedHat 16824) replaced the manual
+  // "propose" call with an automatic one on NO-GO/FAIL -- these tests now drive that path directly.
   describe('N5 set-semantics proposer exclusion, scoped to the current round', () => {
-    it('an earlier proposal from the gate stays blocking even after a later, different proposal', async () => {
+    it('an earlier NO-GO from the gate stays blocking even after a later, different proposal', async () => {
       createDeviceKey('agent:cybersec')
-      createDeviceKey('agent:backend')
+      createDeviceKey('agent:cybersec2')
       await tryHandleKanbanVerdicts(
-        fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:cybersec', deviceId: 1 }).ctx,
+        fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'NO-GO' }, { kind: 'device', device: 'agent:cybersec', deviceId: 1 }).ctx,
       )
+      // A later, different sibling's own NO-GO must not clear cybersec's earlier exclusion.
       await tryHandleKanbanVerdicts(
-        fakeCtx('/api/kanban/c1/proposals', 'POST', undefined, { kind: 'device', device: 'agent:backend', deviceId: 2 }).ctx,
+        fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'NO-GO' }, { kind: 'device', device: 'agent:cybersec2', deviceId: 2 }).ctx,
       )
-      const { ctx, out } = fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec' })
+      const { ctx, out } = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'GO' },
+        { kind: 'device', device: 'agent:cybersec', deviceId: 1 },
+      )
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
       expect(out.status).toBe(403)
     })
@@ -365,14 +427,16 @@ describe('kanban-verdicts', () => {
       addKanbanComment('c1', 'backend', 'REVIEW: round 1.\nGate-SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
       await tryHandleKanbanVerdicts(
         fakeCtx(
-          '/api/kanban/c1/proposals', 'POST', { sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+          '/api/kanban/c1/verdicts', 'POST',
+          { gate: 'CYBERSEC', verdict: 'NO-GO', sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
           { kind: 'device', device: 'agent:cybersec', deviceId: 1 },
         ).ctx,
       )
       addKanbanComment('c1', 'backend', 'REVIEW: round 2.\nGate-SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
       const { ctx, out } = fakeCtx(
         '/api/kanban/c1/verdicts', 'POST',
-        { gate: 'CYBERSEC', verdict: 'GO', sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', author: 'cybersec' },
+        { gate: 'CYBERSEC', verdict: 'GO', sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+        { kind: 'device', device: 'agent:cybersec', deviceId: 1 },
       )
       expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
       expect(out.status).toBe(201)

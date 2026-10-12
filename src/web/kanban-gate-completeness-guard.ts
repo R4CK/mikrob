@@ -467,8 +467,12 @@ function freshStructuredRow(cardId: string, agent: GateAgent, sinceTs: number | 
   if (!isAgentVerdictRecordEnabled()) return null
   try {
     const canonical = GATE_AGENT_TO_CANONICAL[agent]
+    // B1' (RedHat NO-GO, 2bfa4c67 comment 16824, HIGH), defense in depth: an UNVERIFIED row must
+    // never count towards closing a card, even if it somehow reached the table (the POST route in
+    // kanban-verdicts.ts now refuses to write one at all; this re-checks the same invariant here
+    // rather than trusting that route alone, same posture as the role-allowlist check beside it).
     const rows = getKanbanVerdictsForGate(cardId, canonical, sinceTs).filter((row) =>
-      (GATE_ROLE_AGENTS[canonical] as readonly string[]).includes(row.author.toLowerCase()),
+      (GATE_ROLE_AGENTS[canonical] as readonly string[]).includes(row.author.toLowerCase()) && row.author_verified === 1,
     )
     return effectiveStructuredRow(rows)
   } catch (err) {
@@ -491,9 +495,22 @@ function commentOnlyFresh(comments: readonly Comment[], agent: GateAgent, sinceT
 // A NO-GO/FAIL-shaped comment, same word-boundary discipline as VERDICT_RX above.
 const NEGATIVE_VERDICT_RX = /\bFAIL\b|\bNO[- ]GO\b/i
 
+/** The comment's own first line, trimmed -- the slice a gate's verdict word actually lives on by
+ *  convention (CLAUDE.md 4c: "CYBERED NO-GO" etc. is the comment's first line). */
+function firstLine(content: string): string {
+  const idx = content.indexOf('\n')
+  return (idx === -1 ? content : content.slice(0, idx)).trim()
+}
+
+// B3' (RedHat NO-GO, 2bfa4c67 comment 16824, MEDIUM): the old check matched FAIL/NO-GO ANYWHERE in
+// the comment body, not just the verdict line -- measured false positives (G10, G5): a fresh
+// CYBERED GO whose BODY TEXT cites an earlier "NO-GO 16623" it fixed, or merely mentions
+// "fail-closed", both read as a fresh disagreement and blocked a legitimate close (and, reversed,
+// let the shared token write a bogus "FAIL" comment under a gate's name to block ANY close, a
+// DoS). Only the FIRST LINE carries the gate's actual verdict by convention, so only it is tested.
 function commentHasFreshNegative(comments: readonly Comment[], agent: GateAgent, afterTs: number): boolean {
   return comments.some(
-    (c) => (c.author ?? '').toLowerCase() === agent && NEGATIVE_VERDICT_RX.test(c.content ?? '') && c.created_at >= afterTs,
+    (c) => (c.author ?? '').toLowerCase() === agent && NEGATIVE_VERDICT_RX.test(firstLine(c.content ?? '')) && c.created_at >= afterTs,
   )
 }
 
@@ -517,14 +534,8 @@ function freshVerdictStatus(cardId: string, comments: readonly Comment[], agent:
   // round, decided whether the disagreement was caught. Any negative comment anywhere in the
   // CURRENT round (since sinceTs) now counts, regardless of which side came first.
   if (commentHasFreshNegative(comments, agent, sinceTs ?? 0)) return 'disagree'
-  if (row.author_verified === 0) {
-    // B1 (d): until 2520b85a enforces per-agent auth fleet-wide, a close that relies on an
-    // UNVERIFIED structured record stays visible (here: in the server log), not silent.
-    logger.info(
-      { cardId, agent, gate: GATE_AGENT_TO_CANONICAL[agent] },
-      'gate-completeness-guard: closing on an UNVERIFIED structured verdict record (author_verified=0)',
-    )
-  }
+  // B1' fix: freshStructuredRow (above) now only ever returns a VERIFIED row, so there is nothing
+  // left to log here -- an unverified record no longer reaches this point at all.
   return 'ok'
 }
 
