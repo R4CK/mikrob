@@ -258,6 +258,23 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
         continue
       }
 
+      // Card 25aaada5 N1 (RedHat 16934/17101): the symlink-safe marker write must happen BEFORE
+      // the allowFrom/pending/invite mutation, not after -- this sweep runs with NO human review
+      // at all (see the 3d186397 comment above), so a symlink-at-the-marker failure silently
+      // leaving a half-approved sender (allowFrom populated, invite spent, marker missing) is
+      // worse here than on the human-approval route. On write failure, skip this entry entirely
+      // (not approved, not consumed) so a later tick can retry it -- same "every effect or none"
+      // ordering as the isPlausibleChannelSenderId/safeJoin checks above.
+      try {
+        mkdirSync(approvedDir, { recursive: true })
+        // Card 25aaada5: writeFileNoFollowSync refuses to follow a symlink already sitting at
+        // markerPath instead of silently writing through it (see sanitize.ts's own comment).
+        writeFileNoFollowSync(markerPath, '')
+      } catch (err) {
+        logger.warn({ err, name, senderId: pEntry.senderId }, 'invite-monitor: rejected (symlink or write failure), not auto-approving')
+        continue
+      }
+
       if (!access.allowFrom) access.allowFrom = []
       if (!access.allowFrom.includes(pEntry.senderId)) access.allowFrom.push(pEntry.senderId)
       if (access.pending) delete access.pending[pCode]
@@ -267,15 +284,6 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
       tEntry.usedAt = now
 
       if (activeInviteCount(store, now) === 0) access.dmPolicy = 'allowlist'
-
-      try {
-        mkdirSync(approvedDir, { recursive: true })
-        // Card 25aaada5: writeFileNoFollowSync refuses to follow a symlink already sitting at
-        // markerPath instead of silently writing through it (see sanitize.ts's own comment).
-        writeFileNoFollowSync(markerPath, '')
-      } catch (err) {
-        logger.warn({ err, name, senderId: pEntry.senderId }, 'invite-monitor: failed to write approved marker')
-      }
 
       writeAccess(accessPath, access)
       writeInvites(invitesPath, store)

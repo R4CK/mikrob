@@ -20139,3 +20139,27 @@ Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
 **Nem ebben a körben:** a bootstrap/break-glass maga (X1 első fele, X3) MikroB döntése szerint külön kártyán (6eca461e mellett) megy, nem itt -- ez a kör kizárólag azt zárja, hogy egy ÍGY megszerzett session agent-kulcsot tudjon kiváltani. A `CLAUDE_ROTATION_*` kapcsolók és az élő kulcskiadás a kártya lezárásáig tilos, változatlanul.
 
 **Ki döntött:** backend (RedHat harmadik NO-GO 17005 a 9655494c F1-re, MikroB döntése a visszaadáskor, komment 17006, msg_id 11085). Re-gate: QA + RedHat (a kártya saját gate-kijelölése, "Gate: qa, cybered").
+
+## 2026-10-12 -- 25aaada5 harmadik RedHat NO-GO (komment 17101, B1'/N1/N2) javítva
+
+**Forrás:** RedHat (cybered) delta-gate NO-GO a b44c69fd780d4f905cc78fb2e35f78d9ca96a110-ra (a 16934-es NO-GO B1/B2 javítása után). Mérés: saját, eldobható, SHA-pinnelt worktree a VALÓDI `tryHandleAgents` approve route-on és a VALÓDI `runInviteMonitorTick`-en, gyerekfolyamatos versenymérés.
+
+**Mért bypass-ok (mind a b44c69fd fán, RedHat saját mérése):**
+- B1' (MEDIUM, a 16934 B1 maradék ága): `writeFileNoFollowSync` a szimlink-ellenőrzés (`realpathSync(dirname)`) ÉS a nyitás KÖZÖTT két külön syscall volt -- egy másodpercekig futó, triviális könyvtár-váltogató gyerekfolyamattal 120000 hívásból ~7% kiírt a sandboxon kívülre.
+- N1 (LOW, fél-jóváhagyás): a marker-írás az `allowFrom`/`pending`/`dmPolicy` mutáció UTÁN futott mindkét hívási helyen -- egy szimlink az UTOLSÓ útvonal-elemen (ahol az O_NOFOLLOW már helyesen dobott) a dobás ELŐTT engedte lefutni a mutációt, fél-jóváhagyást hagyva hátra.
+- N2 (LOW, hosszkorlát + denylist hézag): a hosszkorlát 200 UTF-16 kódegység volt, nem a valós 255-BÁJTOS fájlnév-limit -- 86 db 3-bájtos karakter (258 bájt) átment a kódegység-ellenőrzésen, majd ENAMETOOLONG-gal bukott, a mutáció UTÁN. A denylist csak NUL-t tiltott, más vezérlőkaraktert (tab, sortörés) nem.
+
+**Javítás:**
+1. **B1'** (`sanitize.ts`, `writeFileNoFollowSync`): a szülő-könyvtárat EGYSZER nyitja meg `O_DIRECTORY|O_NOFOLLOW`-val, a `realpathSync`-ellenőrzést és a marker-fájl nyitását is EZEN A FD-N keresztül (`/proc/self/fd/<fd>/...`) végzi -- egy fd, miután megnyílt, mindig ugyanarra a könyvtár-inode-ra mutat, függetlenül attól, mi történik a PATH-szal utána. Platformon, ahol nincs `/proc/self/fd` (ellenőrizve `existsSync` egyszeri hívással modul-betöltéskor), a régi, egy-syscallos `realpathSync(dir)`-majd-`openSync(path)` alak marad tartalékként, kimondva a kódkommentben.
+2. **N1** (`routes/agents.ts` + `channel-invites.ts`): a `mkdirSync`+`writeFileNoFollowSync` (a marker-írás) MOST a mutáció ELŐTT fut mindkét hívási helyen -- ugyanaz az "minden hatás vagy semelyik" elv, amit a safeJoin/isPlausibleChannelSenderId ellenőrzések már követtek, kiterjesztve a szimlink-ellenőrzésre is. A sweep oldalán (`channel-invites.ts`) a korábbi warn-only `catch` most `continue`-t ad: egy írási hiba a bejegyzést teljesen kihagyja (nem jóváhagyva, nem elhasználva), nem fél-jóváhagyást hagy hátra.
+3. **N2** (`sanitize.ts`, `isPlausibleChannelSenderId`): a hosszkorlát `Buffer.byteLength(senderId, 'utf8') > 255`-re cserélve (a valós fájlnév-limit), a NUL-csak ellenőrzés egy teljes C0-vezérlőkaraktr + DEL regexre (`/[\x00-\x1f\x7f]/`) szélesítve.
+
+**Teszt:** `channel-pairing-senderid-traversal.test.ts` 34 -> 48 (+14): B1' (determinisztikus TOCTOU-repró, `vi.mock('node:fs', importOriginal)`-on át egyszer-tüzelő `realpathSync`-hook, a valódi nyitás UTÁN cseréli a könyvtárat szimlinkre -- `vi.spyOn` közvetlenül az ESM-modulnévtéren nem működik, lásd a fájl tetején a megjegyzést), N1 (a marker-szimlink dobás UTÁN access.json byte-azonos marad, a `pending` kód nem fogy el), N2 (260-bájtos-de-130-kódegységes alak + tab-karakter, mindkét hívási helyen), és M6/M12 (RedHat 17101 N4 tesztlyuk-jelzése: backslash-csak alak és nem-string `senderId` típus -- korábban mindkettő 100% zölden maradt egy célzott mutánson, mert semelyik teszt nem gyakorolta ezt a konkrét alakot). Mutáció-proof mind az 5 fixre, KÜLÖN-KÜLÖN visszaállítva és igazolva: B1' (a fd-pinnelt nyitás kikapcsolása -> pontosan a 2 B1'-teszt pirosra, a külső könyvtárba TÉNYLEGESEN kiíródott, igazolva a repro valóságát), N1 mindkét hívási helyen (a sorrend visszaállítása -> pontosan az adott N1-teszt pirosra, access.json tényleg megváltozott), N2 (a régi denylist visszaállítása -> pontosan a 3 N2-teszt pirosra, ahol a kontroll-karakter eset tényleg 200-at adott és allowFrom tényleg módosult; a bájthossz-eset a sweep oldalán zölden maradt, mert az N1-fix ott független védelmet ad ugyanarra a konkrét alakra -- ez átfedő védelem, nem hiányzó teszt). Mindegyik visszaállítva, a teljes fájl 48/48 zöld.
+
+Egy eslint-only mellékhatás (`no-control-regex` disable-comment feleslegesnek bizonyult, mert a szabály ezen a konfigon nem triggerel ilyen mintára) eltávolítva -- a `lint-ratchet.sh` ezt parse-error-bucket-ként (null ruleId) számolta, 6 -> 7, a comment eltávolítása után vissza 6-ra, "no rule got worse".
+
+`npx tsc --noEmit` tiszta. Celzott futas: 48/48 zold.
+
+Teljes fleet-test.sh a Gate-SHA-n: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, a RedHat verdiktje utan).

@@ -1817,6 +1817,21 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         return true
       }
 
+      // Card 25aaada5 N1 (RedHat 16934/17101): the symlink-safe marker write must happen BEFORE
+      // the allowFrom/pending/dmPolicy mutation, not after -- the first cut of this fix wrote the
+      // marker last, so a symlink at the final path component threw only once the sender had
+      // already been half-approved (allowFrom pushed and persisted, pending consumed, marker
+      // write failed). Same "every effect or none" ordering as the safeJoin/isPlausibleChannelSenderId
+      // checks above, now extended to cover the symlink check too.
+      mkdirSync(approvedDir, { recursive: true })
+      // Marker contents = chatId, per the plugin's /telegram:access pair
+      // contract (the channel server polls approved/ to send the "Paired!"
+      // confirmation; current server keys off the filename, the chatId
+      // contents keep us aligned with the documented format).
+      // Card 25aaada5: writeFileNoFollowSync refuses to follow a symlink already sitting at
+      // markerPath instead of silently writing through it (see sanitize.ts's own comment).
+      writeFileNoFollowSync(markerPath, String(entry.chatId ?? ''))
+
       if (!access.allowFrom) access.allowFrom = []
       if (!access.allowFrom.includes(entry.senderId)) {
         access.allowFrom.push(entry.senderId)
@@ -1827,15 +1842,6 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       access.dmPolicy = 'allowlist'
 
       atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2))
-
-      mkdirSync(approvedDir, { recursive: true })
-      // Marker contents = chatId, per the plugin's /telegram:access pair
-      // contract (the channel server polls approved/ to send the "Paired!"
-      // confirmation; current server keys off the filename, the chatId
-      // contents keep us aligned with the documented format).
-      // Card 25aaada5: writeFileNoFollowSync refuses to follow a symlink already sitting at
-      // markerPath instead of silently writing through it (see sanitize.ts's own comment).
-      writeFileNoFollowSync(markerPath, String(entry.chatId ?? ''))
 
       logger.info({ name, provider, senderId: entry.senderId, code }, 'Channel pairing approved')
       json(res, { ok: true, senderId: entry.senderId })
