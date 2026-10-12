@@ -6,6 +6,18 @@ import type { GeminiResult } from '../gemini-client.js'
 let killSwitchJson: string | null = null
 let fallbackStateJson: string | null = null
 let writtenQueue: unknown = null
+let forcedSpawnResult: { status: number | null; error?: Error } | null = null
+
+vi.mock('node:child_process', async (orig) => {
+  const real = await orig<typeof import('node:child_process')>()
+  return {
+    ...real,
+    spawnSync: vi.fn((...args: Parameters<typeof real.spawnSync>) => {
+      if (forcedSpawnResult) return forcedSpawnResult as ReturnType<typeof real.spawnSync>
+      return real.spawnSync(...args)
+    }),
+  }
+})
 
 vi.mock('node:fs', async (orig) => {
   const real = await orig<typeof import('node:fs')>()
@@ -36,6 +48,7 @@ vi.mock('../web/vault.js', () => ({
 }))
 
 vi.mock('../db.js', () => ({
+  initDatabase: vi.fn(),
   listKanbanCards: vi.fn(() => []),
   getLabelsForAllCards: vi.fn(() => new Map()),
 }))
@@ -59,6 +72,7 @@ beforeEach(() => {
   killSwitchJson = null
   fallbackStateJson = null
   writtenQueue = null
+  forcedSpawnResult = null
   vi.restoreAllMocks()
 })
 
@@ -99,7 +113,7 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
     expect(isEligibleForGeminiOrdering(card({ labels: ['BLOKKOLT-Peti-dontes'] }))).toBe(false)
     expect(isEligibleForGeminiOrdering(card({ labels: ['blokkolt-tisztazas'] }))).toBe(false)
   })
-  it('a BLOCKED_TAG_WORDS label (e.g. @security): excluded', () => {
+  it('an exact blocked-tag label (e.g. @security): excluded', () => {
     expect(isEligibleForGeminiOrdering(card({ labels: ['@security'] }))).toBe(false)
   })
   it('sensitive-stem title (plain ASCII stem): excluded', () => {
@@ -111,11 +125,32 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
     expect(isEligibleForGeminiOrdering(card({ title: 'Uj Szamla export' }))).toBe(false)
     expect(isEligibleForGeminiOrdering(card({ title: 'Új Számla export' }))).toBe(false)
   })
-  it('bracketed sensitive label, e.g. [Biztonsag]-style tag: excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ labels: ['[Biztonsag]'] }))).toBe(false)
+  // WhiteHat F1 (comment 17666) regression corpus: words the earlier hand-ported vocabulary
+  // missed, now covered because the landed filter's own SENS_RE already includes them.
+  it('authz/PII title stems missing from the earlier port (permission/access/szemelyes/hozzaferes): excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Permission model for the export' }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Access review of the export job' }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Szemelyes adat maszkolasa a naploban' }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Hozzaferes-kezeles atirasa' }))).toBe(false)
+  })
+  it('a label matches the blocked set only by EXACT value, not by content-stem (mirrors is_gemini_blocked: tags are never stem-matched)', () => {
+    expect(isEligibleForGeminiOrdering(card({ labels: ['finance'] }))).toBe(false)
+    // "[Biztonsag]" and "biztonsag" are not literal BLOCKED_TAGS members (that set has "security",
+    // not the Hungarian word) and are not a blokkolt-* prefix, so a benign-titled card carrying
+    // them is NOT excluded by the tag check alone -- this is the landed filter's real behavior,
+    // not a gap introduced by this module.
+    expect(isEligibleForGeminiOrdering(card({ labels: ['[Biztonsag]'] }))).toBe(true)
   })
   it('a benign label alongside a benign title: still eligible', () => {
     expect(isEligibleForGeminiOrdering(card({ labels: ['@frontend', 'ui'] }))).toBe(true)
+  })
+  it('fail-closed: a crashed/killed subprocess (status null) is treated as blocked, never allowed', () => {
+    forcedSpawnResult = { status: null, error: new Error('spawn bash ENOENT') }
+    expect(isEligibleForGeminiOrdering(card())).toBe(false)
+  })
+  it('fail-closed: an unexpected exit code (neither 0 nor 1) is treated as blocked', () => {
+    forcedSpawnResult = { status: 2 }
+    expect(isEligibleForGeminiOrdering(card())).toBe(false)
   })
 })
 

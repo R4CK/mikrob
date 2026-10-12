@@ -741,6 +741,18 @@ if [[ "${1:-}" == "--test-attempts-op" ]]; then
   exit 0
 fi
 
+# --check-blocked PROJECT TAGS [TITLE [DESC]]: exposes is_gemini_blocked to external callers (card
+# 23a14c4b, WhiteHat F1 NO-GO comment 17666) so a single vocabulary/normalization serves both this
+# script's own dispatch path and any other caller -- no second copy of the sensitive-word list to
+# drift out of sync, which is exactly how F1 happened (the TS port missed the permission/access/
+# szemelyes/hozzaferes stems and the non-ASCII strip). Exit code matches is_gemini_blocked's own
+# convention: 0 = blocked, 1 = allowed.
+if [[ "${1:-}" == "--check-blocked" ]]; then
+  shift
+  is_gemini_blocked "${1:-}" "${2:-}" "${3:-}" "${4:-}"
+  exit $?
+fi
+
 CARD="${1:-}"
 [[ -z "$CARD" ]] && { echo "usage: offload-dispatch.sh <cardId> [assignee]" >&2; exit 2; }
 
