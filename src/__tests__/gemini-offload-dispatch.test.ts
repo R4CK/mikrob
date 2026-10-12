@@ -298,11 +298,25 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Add logging to the dashboard API endpoint', '')).toBe('ALLOWED')
   })
 
-  // RedHat 17510 finding 2: is_gemini_blocked returned the raw python3 exit code, and the
-  // call sites do `! is_gemini_blocked ...` -- in bash, "!" of ANY nonzero code is true, so an
-  // interpreter crash (missing python3 rc=127, oversized argv rc=126) was silently treated as
-  // "allowed" instead of blocked. Behavioral test: force the exit code and verify only rc=1
-  // is ever treated as allowed.
+  // WhiteHat2 H1 (card 40d2a253, non-blocking GO finding on a92e9913): the content gate used
+  // to cap title/desc at 1000/8000 chars before inspecting them, but try_leaf() sends the FULL,
+  // uncapped title+desc to Gemini as "$task" -- a sensitive word placed past the old cut point
+  // reached Gemini unblocked. Fixed by inspecting the full text (via stdin, no argv cap needed).
+  it('blocks a sensitive word placed past the old 8000-char description cap (WhiteHat2 H1)', () => {
+    const pad = 'x'.repeat(9000)
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'clean title', `${pad} biztonsagi resz`)).toBe('BLOCKED')
+  })
+
+  it('still allows a long but genuinely clean description past the old cap (no over-blocking)', () => {
+    const pad = 'x'.repeat(9000)
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'clean title', `${pad} nothing sensitive here`)).toBe('ALLOWED')
+  })
+
+  // RedHat 17510 finding 2, sharpened by WhiteHat2 H2 (card 40d2a253): is_gemini_blocked used
+  // to treat rc=1 as "allowed" -- but rc=1 is ALSO what a bare, uncaught Python exception exits
+  // with by default, so a genuine classifier bug was silently indistinguishable from "allowed".
+  // Fixed by giving "allowed" its own code (42) that nothing else can produce; rc=1 now means
+  // BLOCKED, same as any other unexpected interpreter outcome.
   function runIsGeminiBlockedWithFakeRc(rc: number): 'BLOCKED' | 'ALLOWED' {
     const fnDef = extractFn(src(DISPATCH), 'is_gemini_blocked')
     const result = execFileSync('bash', ['-c',
@@ -319,11 +333,19 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlockedWithFakeRc(126)).toBe('BLOCKED')
   })
 
-  it('fail-closed on any other unexpected nonzero rc -> BLOCKED, not allowed', () => {
-    expect(runIsGeminiBlockedWithFakeRc(42)).toBe('BLOCKED')
+  it('fail-closed on rc=1, the SAME code a bare Python exception exits with (WhiteHat2 H2) -> BLOCKED, not allowed', () => {
+    expect(runIsGeminiBlockedWithFakeRc(1)).toBe('BLOCKED')
   })
 
-  it('an explicit rc=1 ("allowed") still passes through (fail-closed fix does not break the real path)', () => {
+  it('fail-closed on any other unexpected nonzero rc -> BLOCKED, not allowed', () => {
+    expect(runIsGeminiBlockedWithFakeRc(99)).toBe('BLOCKED')
+  })
+
+  it('rc=42, the deliberate allowed signal, passes through as ALLOWED', () => {
+    expect(runIsGeminiBlockedWithFakeRc(42)).toBe('ALLOWED')
+  })
+
+  it('the real classifier still returns ALLOWED end-to-end for a genuinely clean card (fail-closed fix does not break the real path)', () => {
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'clean title', 'clean desc')).toBe('ALLOWED')
   })
 
@@ -762,6 +784,26 @@ describe('gemini-offload-call.sh detects secrets fail-closed (F2, card a92e9913)
 
   it('blocks (exit 2, no output) on a Hungarian tax number / adószám (PII)', () => {
     const r = redactInput('adoszam: 12345678-1-02')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  // WhiteHat2 H3 (card 40d2a253, non-blocking GO finding on a92e9913): three secret shapes
+  // still reached Gemini through the old "cred"/"bearer" patterns.
+  it('blocks (exit 2, no output) on JSON-style "apiKey": "..." (WhiteHat2 H3)', () => {
+    const r = redactInput('{"apiKey": "AbCdEf1234567890"}')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a short Bearer token (WhiteHat2 H3)', () => {
+    const r = redactInput('Authorization: Bearer ab12cd')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a quoted credential value containing spaces (WhiteHat2 H3)', () => {
+    const r = redactInput('secret: "my secret value here"')
     expect(r.exitCode).toBe(2)
     expect(r.output).toBe('')
   })
