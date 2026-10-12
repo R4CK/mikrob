@@ -20139,3 +20139,17 @@ Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
 **Nem ebben a körben:** a bootstrap/break-glass maga (X1 első fele, X3) MikroB döntése szerint külön kártyán (6eca461e mellett) megy, nem itt -- ez a kör kizárólag azt zárja, hogy egy ÍGY megszerzett session agent-kulcsot tudjon kiváltani. A `CLAUDE_ROTATION_*` kapcsolók és az élő kulcskiadás a kártya lezárásáig tilos, változatlanul.
 
 **Ki döntött:** backend (RedHat harmadik NO-GO 17005 a 9655494c F1-re, MikroB döntése a visszaadáskor, komment 17006, msg_id 11085). Re-gate: QA + RedHat (a kártya saját gate-kijelölése, "Gate: qa, cybered").
+
+---
+
+**2026-10-12 -- Upstream Köteg 11 (60aaaef9..59e85ead, 28 commit, 2026-09-27..2026-09-29) konfliktus-feloldások**
+
+Döntések fájlonként (fork-oldal az alapértelmezés, eltérések felsorolva):
+
+- **package.json, package-lock.json**: fork-oldal tartva (verzió, fork-specifikus package konfig megmarad).
+- **scripts/hooks/bash-egress-parser.mjs, src/__tests__/bash-egress-parser.test.ts, src/__tests__/command-task-run-binding.test.ts, src/__tests__/picker-cli-gate.test.ts**: törölt marad (DU -- fork törölte, upstream módosította; a törlés szándékos fork-eltérés).
+- **src/web/agent-process.ts**: fork-oldal tartva. Upstream `ensureProjectRootInClaudeMd` és `ensureMessageCloseSection` helyett fork `ensureProjectRootAnchor` (fleet-anchor logika) és `ensureLocalFirstSection` marad. A két upstream funkció a fork saját megoldásait váltja le -- nem portolható vak ours nélkül, de a fork-logika lefedi a szükséges viselkedést.
+- **src/__tests__/command-task-async.test.ts, src/__tests__/vault-export-key-resolution.test.ts**: fork-oldal tartva (AA ütközés -- mindkét oldal hozzáadott, fork verziója fleet-specifikus tesztfedettséggel).
+- **Többi UU fájl** (agent-msg.sh, outgoing-copy-gate.py, limit-monitor-signals.test.sh, stb.): fork-oldal tartva.
+
+**Ki döntött:** backend3 (8a3a1e84 kártya alapján, MikroB utasítása).
