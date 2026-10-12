@@ -73,36 +73,70 @@ get_gemini_route() {
 }
 GEMINI_ROUTE="$(get_gemini_route)"
 
-# is_gemini_blocked PROJECT TAGS: returns 0 (true/blocked) when a leaf must NOT go to Gemini.
-# Fail-closed: the allowed set is narrow; anything outside it is blocked.
-#   1. Empty/unknown project: could be an unmapped mopsion card -- block it (card a92e9913 B1).
-#   2. mopsion / CleanCore project (case-insensitive): private-codebase, no external API call.
-#   3. BLOKKOLT-PETI-STOP tag: card explicitly blocked from any automated action.
-#      tags_for() UPPERCASES all tags, so the comparison must use the uppercase form.
-#   4. MOPSION tag: catches [mopsion] in title when the project field is empty/unset.
-#   5. SEC tag: sensitive security/authz/money cards must not leave the fleet (card a92e9913 F4).
-#   6. AUTH / RBAC / TENANT / PII / PENZ tags: Peti permanent rule (Telegram 11131) --
-#      security, authorization, and financial cards NEVER go through the Gemini route.
-# Returns 1 (false/allowed) only when none of the above conditions match.
+# is_gemini_blocked PROJECT TAGS [TITLE]: returns 0 (true/blocked) when a leaf must NOT go to
+# Gemini.  Fail-closed by design (WhiteHat2 F1, card a92e9913):
+#
+#   1. PROJECT ALLOWLIST (not a blocklist): only the fleet's own project ("mikrob", casefold) may
+#      reach the external Gemini API.  Every other project -- including unknown / empty ones --
+#      is blocked.  Empty project is blocked (unknown = unsafe).
+#   2. TAG BLOCKS: casefold + Unicode-accent-strip so PÉNZ, Penz, penz all map to "penz".
+#      ALL BLOKKOLT-* patterns are blocked regardless of suffix.
+#      Extended blocklist (WhiteHat2 F1b, Peti Telegram 11131): mopsion, cleancore, sec, security,
+#      auth, authz, rbac, tenant, superadmin, pii, penz, penzugy, finance, billing, payment,
+#      secret, crypto, gdpr, privacy, legal, cybersec.
+#   3. CONTENT GATE on the card title (WhiteHat2 F1c): if the title contains a sensitive keyword
+#      the card is blocked regardless of tags.  Reuses the same sensitive-domain vocabulary as the
+#      router's prefilter (card-build-route).
+#   4. CATEGORICAL-ONLINE leaves NEVER go to Gemini (WhiteHat2 F1d): the router already classified
+#      the card as security/authz/multi-file; sending it to an external API discards that verdict.
+#      Enforcement: the categorical-online branch no longer contains a try_gemini_for_leaf call.
+#
+# Returns 1 (false/allowed) only when all three gates pass.
 is_gemini_blocked() {
-  local project="$1" tags="$2"
-  # 1. Fail-closed on empty project.
-  [[ -z "${project// }" ]] && return 0
-  # 2. Project-level block (case-insensitive).
-  local proj_upper="${project^^}"
-  case "$proj_upper" in MOPSION|CLEANCORE) return 0 ;; esac
-  # 3-8. Tag-level blocks. Wrap in commas to prevent partial substring matches.
-  local tag_csv=",$tags,"
-  [[ "$tag_csv" == *",BLOKKOLT-PETI-STOP,"* ]] && return 0
-  [[ "$tag_csv" == *",MOPSION,"* ]] && return 0
-  [[ "$tag_csv" == *",SEC,"* ]] && return 0
-  # Auth/RBAC/tenant/financial/PII -- Peti permanent rule (Telegram 11131)
-  [[ "$tag_csv" == *",AUTH,"* ]] && return 0
-  [[ "$tag_csv" == *",RBAC,"* ]] && return 0
-  [[ "$tag_csv" == *",TENANT,"* ]] && return 0
-  [[ "$tag_csv" == *",PII,"* ]] && return 0
-  [[ "$tag_csv" == *",PENZ,"* ]] && return 0
-  return 1
+  local project="$1" tags="$2" title="${3:-}"
+  python3 -c '
+import sys, unicodedata, re
+
+project  = sys.argv[1]
+tags_csv = sys.argv[2] if len(sys.argv) > 2 else ""
+title    = sys.argv[3] if len(sys.argv) > 3 else ""
+
+def norm(s):
+    """casefold + strip Unicode accents (NFD decompose -> ASCII)."""
+    return unicodedata.normalize("NFD", s.strip().casefold()).encode("ascii", "ignore").decode()
+
+# 1. Project allowlist (fail-closed: empty/unknown = blocked).
+ALLOWED_PROJECTS = {"mikrob"}
+if not project.strip() or norm(project) not in ALLOWED_PROJECTS:
+    sys.exit(0)  # blocked
+
+# 2. Tag blocks: casefold + accent-strip each tag.
+BLOCKED_TAGS = {
+    "mopsion","cleancore","sec","security","auth","authz","rbac","tenant","superadmin",
+    "pii","penz","penzugy","finance","billing","payment","secret","crypto",
+    "gdpr","privacy","legal","cybersec",
+}
+for tag in tags_csv.split(","):
+    t = norm(tag)
+    if t.startswith("blokkolt-"):   # ANY BLOKKOLT-* suffix
+        sys.exit(0)  # blocked
+    if t in BLOCKED_TAGS:
+        sys.exit(0)  # blocked
+
+# 3. Content gate on title (sensitive keyword -> blocked, fail-closed).
+SENS_RE = re.compile(
+    r"\b(biztons|security|auth|authz|rbac|tenant|superadmin"
+    r"|penz|penzugy|fizet|szamla|jelszo|password"
+    r"|token|secret|titok|jogosult|gdpr|privacy|kulcs"
+    r"|kripto|crypto|pii|billing|payment|legal|jogi|cybersec"
+    r"|hacker|exploit|pentest|inject|sqli|xss)\b",
+    re.IGNORECASE
+)
+if SENS_RE.search(title):
+    sys.exit(0)  # blocked
+
+sys.exit(1)  # allowed
+' "$project" "$tags" "$title"
 }
 
 # gemini_draft_comment_body: same contract as draft_comment_body but for a Gemini-sourced draft.
@@ -735,7 +769,7 @@ $leaf_desc"
 
   # GEMINI ROUTE, LOCAL LLM NOT AVAILABLE (card a92e9913): skip the RAG call entirely.
   if [[ "$GEMINI_ROUTE" == "gemini" && "${LOCAL_LLM_AVAILABLE:-1}" -eq 0 ]]; then
-    if ! is_gemini_blocked "$leaf_project" "$leaf_tags"; then
+    if ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title"; then
       try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
     else
       echo "offload-dispatch: leaf $leaf_id -> gemini blocked (project=$leaf_project)" >&2
@@ -776,10 +810,9 @@ $leaf_desc"
     fi
     attempts_op categorical-online "$leaf_id" >/dev/null
     echo "offload-dispatch: leaf $leaf_id -> categorical online (router decision), no retry" >&2
-    # GEMINI FALLBACK for ONLINE-category leaves (card a92e9913).
-    if [[ "$GEMINI_ROUTE" == "gemini" ]] && ! is_gemini_blocked "$leaf_project" "$leaf_tags"; then
-      try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
-    fi
+    # F1d (WhiteHat2, card a92e9913): categorical-online leaves NEVER go to Gemini.
+    # The router already classified this card as auth/security/multi-file -- sending it to an
+    # external API would discard that verdict.  No Gemini fallback here.
     return 1
   else
     entry="$(attempts_op transient-fail "$leaf_id")"
@@ -787,7 +820,7 @@ $leaf_desc"
     echo "offload-dispatch: leaf $leaf_id -> local attempt failed (rc=$rc), attempt ${n:-?}/$OFFLOAD_LEAF_MAX_ATTEMPTS" >&2
     if [[ "${n:-0}" -ge "$OFFLOAD_LEAF_MAX_ATTEMPTS" ]]; then
       # GEMINI FALLBACK when local LLM is exhausted (card a92e9913): try Gemini before giving up.
-      if [[ "$GEMINI_ROUTE" == "gemini" ]] && ! is_gemini_blocked "$leaf_project" "$leaf_tags"; then
+      if [[ "$GEMINI_ROUTE" == "gemini" ]] && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title"; then
         try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
       fi
       post_exhausted_notice "$post_id"
