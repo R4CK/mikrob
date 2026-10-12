@@ -94,3 +94,28 @@ describe('weekly-usage-relogin.sh panel size', () => {
     expect(src).toMatch(/^\s*tmux resize-window -t "\$PANE" -x 500 -y 60\b/m)
   })
 })
+
+// PROBE_CONFIG_DIR 700 (card 90424157 F2): it holds .credentials.json. Measured on the live
+// install: the dir was 775, only the file inside was 600 -- so the file was sealed but the
+// directory listing and replace-the-file-via-rename permission were not. Source-text checks
+// only (not execution): PROBE_CONFIG_DIR is a hardcoded live path in both scripts, not
+// env-overridable, so running the real mkdir/chmod here would touch /home/neon/.claude-usage-probe.
+describe('PROBE_CONFIG_DIR permissions (card 90424157 F2)', () => {
+  it('weekly-usage-panel-read.sh creates/tightens the dir to 700 before (re)creating the panel', () => {
+    const src = readFileSync(READER, 'utf-8')
+    expect(src).toMatch(/mkdir -p -m 700 "\$PROBE_CONFIG_DIR"/)
+    expect(src).toMatch(/chmod 700 "\$PROBE_CONFIG_DIR"/)
+    // Must run before the panel exists, not after -- an already-dead panel means a fresh config
+    // dir may need creating too.
+    const mkdirIdx = src.indexOf('mkdir -p -m 700 "$PROBE_CONFIG_DIR"')
+    const newSessionIdx = src.indexOf('tmux new-session', mkdirIdx)
+    expect(mkdirIdx).toBeGreaterThan(-1)
+    expect(newSessionIdx).toBeGreaterThan(mkdirIdx)
+  })
+
+  it('weekly-usage-relogin.sh creates/tightens the dir to 700 before (re)creating the panel', () => {
+    const src = readFileSync(RELOGIN, 'utf-8')
+    expect(src).toMatch(/mkdir -p -m 700 "\$PROBE_CONFIG_DIR"/)
+    expect(src).toMatch(/chmod 700 "\$PROBE_CONFIG_DIR"/)
+  })
+})
