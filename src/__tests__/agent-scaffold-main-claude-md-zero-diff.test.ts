@@ -91,12 +91,14 @@ const {
   ensureFleetAuthSection,
   ensureEvidenceSection,
   ensureMcpListChannelSection,
+  ensureMessageCloseSection,
 } = await import('../web/agent-scaffold.js')
 
 const SCAFFOLD_SOURCE = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
 
-// The four functions WhiteHat/965b0b2b established the no-op-for-MAIN pattern for, in web.ts's
-// call order. ensureAutonomySection/ensureSkillsPathTrapSection/ensureSystemDirectiveAuthSection
+// The five functions WhiteHat/965b0b2b (four) and ACKONCLOSE927 (one more) established the
+// no-op-for-MAIN pattern for, in web.ts's call order.
+// ensureAutonomySection/ensureSkillsPathTrapSection/ensureSystemDirectiveAuthSection
 // are NOT in this list -- they still write for MAIN, relying on content-match idempotency, which
 // check B below still exercises correctly.
 const MAIN_EXEMPT_FUNCTIONS = [
@@ -104,9 +106,10 @@ const MAIN_EXEMPT_FUNCTIONS = [
   'ensureFleetAuthSection',
   'ensureEvidenceSection',
   'ensureMcpListChannelSection',
+  'ensureMessageCloseSection',
 ]
 
-describe('the no-op-for-MAIN guard is present in source, on all four exempt writers (card 5a15cd5a QA FAIL fix)', () => {
+describe('the no-op-for-MAIN guard is present in source, on all five exempt writers (card 5a15cd5a QA FAIL fix)', () => {
   for (const fnName of MAIN_EXEMPT_FUNCTIONS) {
     it(`${fnName}'s first statement is the MAIN_AGENT_ID no-op guard`, () => {
       const start = SCAFFOLD_SOURCE.indexOf(`export function ${fnName}(`)
@@ -128,7 +131,7 @@ const TOKEN_PATH_RE = /cat [^)]+\/store\/\.dashboard-token/g
 const normalize = (s: string) => s.replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
 
 describe('every static main-agent CLAUDE.md writer stays in sync with its committed block (card 5a15cd5a)', () => {
-  it('produces a zero-diff (modulo PROJECT_ROOT) after all seven writers run, in the same order web.ts calls them', async () => {
+  it('produces a zero-diff (modulo PROJECT_ROOT) after all eight writers run, in the same order web.ts calls them', async () => {
     const { REPO_ROOT } = await import('./helpers/repo-location.js')
     const original = readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8')
 
@@ -145,6 +148,7 @@ describe('every static main-agent CLAUDE.md writer stays in sync with its commit
       ensureFleetAuthSection('mikrob')
       ensureEvidenceSection('mikrob')
       ensureMcpListChannelSection('mikrob')
+      ensureMessageCloseSection('mikrob')
 
       const after = readFileSync(copyPath, 'utf-8')
       expect(normalize(after), 'a main-agent section writer changed the committed CLAUDE.md -- its generator text drifted from the statically committed block').toBe(normalize(original))

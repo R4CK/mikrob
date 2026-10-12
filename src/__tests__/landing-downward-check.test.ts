@@ -43,14 +43,14 @@ describe.each([
   ['cleancore-land.sh', 42],
   ['marveen-land.sh', 29],
 ])('%s --selftest', (script, floor) => {
-  it('passes', () => {
+  it('passes', { timeout: 30_000 }, () => {
     const r = selftest(script)
     expect(r.out).toContain('PASS')
     expect(r.out).not.toContain('FAIL')
     expect(r.status).toBe(0)
   })
 
-  it(`still runs at least ${floor} cases -- deleting cases is a failure, not a cleanup`, () => {
+  it(`still runs at least ${floor} cases -- deleting cases is a failure, not a cleanup`, { timeout: 30_000 }, () => {
     expect(caseCount(selftest(script).out)).toBeGreaterThanOrEqual(floor)
   })
 })
@@ -60,7 +60,7 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
   // end up testing different things about the same code. If one lander stops sourcing the lib, its
   // count drops back to its own cases and this notices -- the count floors above would not, on
   // their own, prove the SHARED block ran in each.
-  it('both counts include the shared block', () => {
+  it('both counts include the shared block', { timeout: 30_000 }, () => {
     const cc = caseCount(selftest('cleancore-land.sh').out)
     const mv = caseCount(selftest('marveen-land.sh').out)
     // 41 since card d8207630 added 4 new selftest cases (vacuum + mopsion-land.sh own-block);

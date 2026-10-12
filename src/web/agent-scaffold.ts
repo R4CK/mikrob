@@ -3619,9 +3619,8 @@ export function buildMessageCloseBody(): string {
 // Idempotently ensures the message-close block is present and current in the
 // agent's CLAUDE.md; same contract as ensureMcpListChannelSection.
 export function ensureMessageCloseSection(name: string): void {
-  const claudeMdPath = name === MAIN_AGENT_ID
-    ? join(PROJECT_ROOT, 'CLAUDE.md')
-    : join(agentDir(name), 'CLAUDE.md')
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
   const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody()}\n${MSGCLOSE_END}`

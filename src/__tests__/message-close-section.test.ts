@@ -97,10 +97,10 @@ describe('message-close section: idempotent insert and update', () => {
     expect(out).toContain('tail')
   })
 
-  it('the main agent is written at PROJECT_ROOT/CLAUDE.md', () => {
+  it('the main agent CLAUDE.md is not modified (no-op for MAIN_AGENT_ID)', () => {
     writeFileSync(join(tmpRoot, 'CLAUDE.md'), '# Main\n', 'utf-8')
     ensureMessageCloseSection('agent-a')
-    expect(readFileSync(join(tmpRoot, 'CLAUDE.md'), 'utf-8')).toContain(BEGIN)
+    expect(readFileSync(join(tmpRoot, 'CLAUDE.md'), 'utf-8')).not.toContain(BEGIN)
   })
 })
 
