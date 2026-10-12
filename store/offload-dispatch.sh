@@ -156,6 +156,20 @@ def norm(s):
     s = s.strip().casefold().translate(_HOMOGLYPH_MAP)
     return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
 
+# F2 (WhiteHat NO-GO, komment 17848, card e87e7520): the homoglyph table is open-ended and
+# norm() silently DROPS any non-ASCII letter it does not know (encode("ascii","ignore")) --
+# measured: 226 (stem, position, char) combinations across 18 sensitive stems bypassed the
+# gate with a single untabled homoglyph (Greek, Armenian, small-caps, struck-through Latin).
+# Fail-closed instead: after homoglyph-map + NFKD decomposition, if a non-ASCII LETTER
+# (unicodedata category L*) remains, treat it as blocked. Genuine Hungarian text is NOT
+# affected -- NFKD decomposes a/e/i/o/u-with-accent into base-ASCII-letter + a COMBINING
+# MARK (category Mn, not L*), so ordinary Hungarian title/desc text passes through clean.
+# The homoglyph table stays a convenience (lets a KNOWN homoglyph normalize to its real
+# word for SENS_RE matching); this check is the actual guarantee, not the table.
+def has_unmapped_letter(s):
+    decomposed = unicodedata.normalize("NFKD", s.translate(_HOMOGLYPH_MAP))
+    return any(ord(ch) > 127 and unicodedata.category(ch).startswith("L") for ch in decomposed)
+
 # 1. Project allowlist (fail-closed: empty/unknown = blocked).
 ALLOWED_PROJECTS = {"mikrob"}
 if not project.strip() or norm(project) not in ALLOWED_PROJECTS:
@@ -187,6 +201,9 @@ for tag in tags_csv.split(","):
 # "Permission model for the export" or "Szemelyes adat maszkolasa a naploban" passed through
 # unblocked despite being exactly the authz/PII categories named in Petis standing rule
 # (Telegram 11131). Added below.
+if has_unmapped_letter(title) or has_unmapped_letter(desc):
+    sys.exit(0)  # blocked (F2: unmapped homoglyph/script, fail-closed)
+
 title_n = norm(title)
 desc_n = norm(desc)
 SENS_RE = re.compile(
@@ -203,8 +220,15 @@ SENS_RE = re.compile(
 # stem alone is too broad (also a literal building tenant), only sensitive when it co-occurs
 # with a separation/isolation verb within 40 chars, either order. Already NFKD+ASCII-stripped
 # above, so only the ASCII stems are needed here (no accented variants to match).
+# F4 (WhiteHat NO-GO, komment 17848, card e87e7520): two gaps measured. (a) "." does not match
+# a newline, so "berlok adatainak<newline>elkulonitese" bypassed (a multi-line description is
+# the common case, not an edge case) -- fixed with re.DOTALL. (b) the verb list only had the
+# two RedHat-named stems; the natural "izolacio"/"szeparalas"/"elvalasztas" phrasing (the exact
+# gap N6 was meant to close) still bypassed -- widened to the stems a WhiteHat measured through.
 TENANT_ISOLATION_RE = re.compile(
-    r"berlo.{0,40}(elkulonit|szetvalaszt)|(elkulonit|szetvalaszt).{0,40}berlo"
+    r"berlo.{0,40}(elkulonit|szetvalaszt|izol|szepara|elvalaszt|kulonvalaszt|kulonit)"
+    r"|(elkulonit|szetvalaszt|izol|szepara|elvalaszt|kulonvalaszt|kulonit).{0,40}berlo",
+    re.DOTALL,
 )
 if (SENS_RE.search(title_n) or SENS_RE.search(desc_n)
         or TENANT_ISOLATION_RE.search(title_n) or TENANT_ISOLATION_RE.search(desc_n)):

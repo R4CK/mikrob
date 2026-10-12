@@ -136,6 +136,18 @@ function runIsGeminiBlocked(project: string, tags: string, title = '', desc = ''
   return result.trim() as 'BLOCKED' | 'ALLOWED'
 }
 
+// F4 (WhiteHat NO-GO, komment 17848, card e87e7520): a real embedded newline cannot survive
+// runIsGeminiBlocked above -- JSON.stringify() escapes "\n" into the two literal characters
+// backslash+n before the text ever reaches bash, so a test built on it can never exercise the
+// re.DOTALL fix either way. This variant passes title/desc as real argv elements (positional
+// params after the inline script), so an actual LF byte reaches the Python side unescaped.
+function runIsGeminiBlockedRaw(project: string, tags: string, title: string, desc: string): 'BLOCKED' | 'ALLOWED' {
+  const fnDef = extractFn(src(DISPATCH), 'is_gemini_blocked')
+  const script = `${fnDef}\nis_gemini_blocked "$1" "$2" "$3" "$4" && echo BLOCKED || echo ALLOWED`
+  const result = execFileSync('bash', ['-c', script, 'bash', project, tags, title, desc], { encoding: 'utf-8' })
+  return result.trim() as 'BLOCKED' | 'ALLOWED'
+}
+
 describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (card a92e9913)', () => {
   it('is_gemini_blocked function is defined', () => {
     expect(src(DISPATCH)).toContain('is_gemini_blocked()')
@@ -431,6 +443,74 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
 
   it('allows a bare "berlo" mention with no isolation verb nearby (N6, no over-blocking)', () => {
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'A berlo szerzodese februarban lejar', '')).toBe('ALLOWED')
+  })
+
+  // F2 (WhiteHat NO-GO, komment 17848, card e87e7520): the homoglyph table is open-ended and
+  // norm() silently dropped any unmapped non-ASCII letter -- fail-closed instead on a script
+  // the table doesn't cover (Greek, Armenian, small-caps, struck-through Latin all qualify;
+  // using Greek iota below since it's distinct from every mapped Cyrillic row).
+  it('blocks a sensitive word spelled with an unmapped (non-table) homoglyph letter (F2, fail-closed)', () => {
+    // Greek small iota (U+03B9) in place of Latin "i" in "privacy" -- not in _HOMOGLYPH_MAP.
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'prιvacy review', '')).toBe('BLOCKED')
+  })
+
+  it('still allows genuine Hungarian accented text after the F2 fail-closed fix (no over-blocking)', () => {
+    // NFKD decomposes accented Hungarian letters into base-ASCII + a combining mark (category
+    // Mn, not a Letter) -- has_unmapped_letter() must NOT trip on this.
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Frissítsd a riportok oszlopait', 'Törd le a hónap végi összesítést.')).toBe('ALLOWED')
+  })
+
+  // F4 (WhiteHat NO-GO, komment 17848, card e87e7520): TENANT_ISOLATION_RE gaps. (a) "." does
+  // not span a newline, so a multi-line description bypassed the co-occurrence check.
+  it('blocks "berlo" + isolation verb co-occurring across a REAL newline (F4, re.DOTALL)', () => {
+    expect(runIsGeminiBlockedRaw('mikrob', 'BE,NORMAL', 'Clean title', 'A berlok adatainak\nelkulonitese kotelezo')).toBe('BLOCKED')
+  })
+
+  // F4 (b): the verb list only had "elkulonit"/"szetvalaszt" -- natural phrasings using
+  // izolacio/szeparalas/elvalasztas/kulonvalasztas/kulonites still bypassed.
+  it('blocks "berlo" co-occurring with each newly-added isolation verb stem (F4)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'A berlok izolacioja a riportokban', '')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'A berlok szeparalasa fontos', '')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'A berlok elvalasztasa a riportban', '')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'A berlok kulonvalasztasa kotelezo', '')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'A berlok adatainak kulonitese', '')).toBe('BLOCKED')
+  })
+
+  // F5 (WhiteHat NO-GO, komment 17848, card e87e7520): the homoglyph table had 13 rows but only
+  // 2 (Cyrillic е, ѕ) were covered by a test -- deleting any OTHER row stayed 134/134 green.
+  // One explicit, distinct-stem test per remaining row so each row's removal goes RED on its own.
+  it('blocks Cyrillic homoglyph "а" (U+0430) in "password" (F5, table row а)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'pаssword reset', '')).toBe('BLOCKED')
+  })
+  it('blocks Cyrillic homoglyph "о" (U+043E) in "token" (F5, table row о)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'tоken rotation', '')).toBe('BLOCKED')
+  })
+  it('blocks Cyrillic homoglyph "р" (U+0440) in "superadmin" (F5, table row р)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'suрeradmin access', '')).toBe('BLOCKED')
+  })
+  it('blocks Cyrillic homoglyph "с" (U+0441) in "access" (F5, table row с)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'aсcess review', '')).toBe('BLOCKED')
+  })
+  it('blocks Cyrillic homoglyph "у" (U+0443) in "payment" (F5, table row у)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'paуment flow', '')).toBe('BLOCKED')
+  })
+  it('blocks Cyrillic homoglyph "х" (U+0445) in "xss" (F5, table row х)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'хss filter', '')).toBe('BLOCKED')
+  })
+  it('blocks Cyrillic homoglyph "і" (U+0456) in "pii" (F5, table row і)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'pіi masking', '')).toBe('BLOCKED')
+  })
+  it('blocks Cyrillic homoglyph "һ" (U+04BB) in "hacker" (F5, table row һ)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'һacker report', '')).toBe('BLOCKED')
+  })
+  it('blocks Cyrillic homoglyph "ԃ" (U+0503) in "gdpr" (F5, table row ԃ)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'gԃpr audit', '')).toBe('BLOCKED')
+  })
+  it('blocks Latin small letter script "ɡ" (U+0261) in "gdpr" (F5, table row ɡ)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'ɡdpr audit v2', '')).toBe('BLOCKED')
+  })
+  it('blocks Roman numeral "ⅰ" (U+2170) in "privacy" (F5, table row ⅰ)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'prⅰvacy notice', '')).toBe('BLOCKED')
   })
 
   // T1: CALL-SITE GUARD -- is_gemini_blocked must be called at both Gemini call sites.
@@ -961,6 +1041,53 @@ describe('gemini-offload-call.sh detects secrets fail-closed (F2, card a92e9913)
 
   it('still allows a clean word that merely contains "secret" as a mid-word substring (no over-blocking, M1)', () => {
     const r = redactInput('the ultrasecretrecipe card title mentions nothing sensitive here')
+    expect(r.exitCode).toBe(0)
+  })
+
+  // F3 (WhiteHat NO-GO, komment 17848, card e87e7520): the "cred" pattern's lookbehind did not
+  // recognize a camelCase key-name boundary (lowercase-then-uppercase transition), so
+  // apiToken:/dbPassword: style keys let their values through unredacted.
+  it('blocks (exit 2, no output) on a camelCase "apiToken:" key (F3)', () => {
+    const r = redactInput('apiToken: ' + 'A'.repeat(16))
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a camelCase "dbPassword:" key (F3)', () => {
+    const r = redactInput('dbPassword: ' + 'B'.repeat(16))
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  // F1 (WhiteHat NO-GO, komment 17848, card e87e7520): layer 1 (is_gemini_blocked) normalized
+  // title/desc, but this layer (the actual outbound-prompt scanner) did not -- an obfuscated
+  // KEY NAME let the real VALUE through, because the keyword alternation never matched the
+  // obfuscated spelling. Fullwidth "token" (compat chars -> plain ASCII under NFKD) in front of
+  // a real-looking value must now block.
+  it('blocks (exit 2, no output) on a fullwidth-obfuscated key name with a real value (F1)', () => {
+    const r = redactInput('ｔｏｋｅｎ: ' + 'C'.repeat(16))
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a Cyrillic-homoglyph-obfuscated key name with a real value (F1)', () => {
+    // "ѕеcrеt" -- Cyrillic ѕ/е in place of Latin s/e, Latin c/r/t unchanged.
+    const r = redactInput('ѕеcrеt: ' + 'D'.repeat(16))
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  // F2 (same komment): the outbound-prompt scanner must also fail-closed on an unmapped
+  // non-ASCII letter (a script/homoglyph the table doesn't cover), same as layer 1.
+  it('blocks (exit 2, no output) on an unmapped (non-table) homoglyph letter anywhere in the prompt (F2)', () => {
+    // Greek small iota (U+03B9), not in the homoglyph table.
+    const r = redactInput('a note about prιvacy settings, nothing else')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('still allows genuine Hungarian accented prose with no secret/PII shape (F2, no over-blocking)', () => {
+    const r = redactInput('Frissítsd a riportok oszlopait a hónap végén.')
     expect(r.exitCode).toBe(0)
   })
 
