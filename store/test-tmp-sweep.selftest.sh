@@ -197,9 +197,10 @@ fi
 # pins that has_live_process() uses awk exit status (no pipe) and fires correctly when a
 # process holds many distinct fds inside the tree (old awk|grep -q silently failed at 25+).
 reset_target
-B6_ENTRY="$FAKE_TARGET/known-leak-b6fd"
+B6_ENTRY="$FAKE_TARGET/known-leak-b6fd01"
 touch_old "$B6_ENTRY"
 for i in $(seq 1 60); do touch -d '2 hours ago' "$B6_ENTRY/f$i"; done
+touch -d '2 hours ago' "$B6_ENTRY"   # reset mtime: the touch loop above refreshes it
 (
   for i in $(seq 1 60); do exec {_}<"$B6_ENTRY/f$i"; done
   sleep 30
@@ -216,7 +217,7 @@ fi
 
 # --- case 13 (B6 cwd): process cwd inside old tree -- has_live_process fires correctly ----
 reset_target
-CWD_ENTRY="$FAKE_TARGET/known-leak-cwdtest"
+CWD_ENTRY="$FAKE_TARGET/known-leak-cwdt01"
 touch_old "$CWD_ENTRY"
 (cd "$CWD_ENTRY" && sleep 30) &
 CWD_PID=$!
