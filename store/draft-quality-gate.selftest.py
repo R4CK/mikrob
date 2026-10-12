@@ -117,6 +117,21 @@ describe('x', () => {})
         None,
     )
 
+# --- check_secret_leak: key=value, JSON-form, Bearer header, URL credentials ---------------
+# These tests go RED when check_secret_leak is removed (mutation-testable, B3 fix d39fc5e7).
+check_eq("check_secret_leak: JS key=value is rejected",
+    mod.check_secret_leak('const apiKey = "zzzfixture-not-a-real-key-value-xxxxxxxxxxxxxxxx"'), "secret-shaped value in draft (key-name + long opaque string)")
+check_eq("check_secret_leak: JSON key: value form is rejected",
+    mod.check_secret_leak('  "apiKey": "zzzfixture-json-key-value-xxxxxxxxxxxxxxxxxxxxxxxx"'), "secret-shaped value in draft (key-name + long opaque string)")
+check_eq("check_secret_leak: Authorization: Bearer header is rejected",
+    mod.check_secret_leak("  const h = 'Authorization: Bearer zzzfixture-bearer-token-xxxxxxxxxxxxxxxx'"), "secret-shaped value in draft (Authorization header or URL with credentials)")
+check_eq("check_secret_leak: key=value in a comment is still rejected (B3 fix)",
+    mod.check_secret_leak('// apiKey = "zzzfixture-not-a-real-key-value-xxxxxxxxxxxxxxxx"'), "secret-shaped value in draft (key-name + long opaque string)")
+check_eq("check_secret_leak: Bearer in a comment is allowed (documentation example)",
+    mod.check_secret_leak('// Authorization: Bearer zzzfixture-bearer-token-xxxxxxxxxxxxxxxx'), None)
+check_eq("check_secret_leak: clean code returns None",
+    mod.check_secret_leak('export function foo() { return 42; }'), None)
+
 # --- builtins never require a repo lookup -------------------------------------------------
 draft_builtin = """```ts
 import fs from 'node:fs'

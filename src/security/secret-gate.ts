@@ -170,6 +170,11 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   // tripped this (an `sk-ant-api03-...` fixture, pre-existing, untouched by this card) is one of
   // many such literals already in the file.
   { path: 'scripts/hooks/activity-memory-capture.selftest.py', reason: 'activity-memory-capture redaction selftest: synthetic secret-shaped fixtures are the subject under test' },
+  // Card d39fc5e7 B3 fix: the selftest for draft-quality-gate.py exercises check_secret_leak() by
+  // passing synthetic Bearer/key-value shaped fixtures as TEST INPUTS.  The fixtures use the
+  // `zzzfixture-bearer-token-*` naming convention (clearly not credentials) and the file is not
+  // under __tests__/, so FIXTURE_EXCEPTIONS (TEST_PATH-gated) cannot apply.
+  { path: 'store/draft-quality-gate.selftest.py', reason: 'draft-quality-gate B3 selftest: synthetic Bearer/key-value fixtures are the subject under test for check_secret_leak()' },
 ];
 
 /**

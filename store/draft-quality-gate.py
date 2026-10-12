@@ -112,10 +112,26 @@ def import_check(code: str, repo: str) -> str | None:
     return None
 
 
-# Secret-shaped assignment in generated code: key-name word + '=' or ':' + long opaque value.
-# Same pattern as decompose-sample-context.py; duplicated here so both gates are independent.
-_SECRET_LINE_RE = re.compile(
-    r"""(?i)(password|secret|token|key|auth|credential|private|bearer)\s*[=:]\s*['""]?[A-Za-z0-9+/._\-]{20,}['""]?""",
+# Secret-shaped value in generated code.  Two patterns, kept separate so the comment rule below
+# can apply them independently (key=value is rejected even in comments; Bearer/URL is not):
+#
+#  1. key=value / key: value -- catches JSON ("apiKey": "..."), JS (apiKey = "..."), YAML, etc.
+#     The ['"]? before and after [=:] lets the JSON-form quote sit between the name and the colon
+#     without breaking the match.
+#  2. Authorization: Bearer <token> -- HTTP header literal in generated code.
+#  3. URL with embedded credentials -- postgresql://user:pass@host or https://u:p@...
+#
+# Same patterns as decompose-sample-context.py; duplicated here so both gates are independent.
+_SECRET_KEY_VALUE_RE = re.compile(
+    r"""(?i)(password|secret|token|key|auth|credential|private)['"]?\s*[=:]\s*['"]?[A-Za-z0-9+/._\-]{20,}['"]?""",
+)
+_SECRET_OTHER_RE = re.compile(
+    r"""(?ix)
+    (?:
+      Authorization \s* : \s* Bearer \s+ [A-Za-z0-9+/._\-]{20,}   # HTTP header
+    | [a-z][a-z0-9+\-.]*:// [^:@\s]+ : [A-Za-z0-9+/._\-@%]{20,} @  # URL with credentials
+    )
+    """,
 )
 
 
@@ -126,16 +142,18 @@ def check_secret_leak(code: str) -> str | None:
     excerpt.  Even though the excerpt is already filtered by decompose-sample-
     context.py, a residual value may survive if the excerpt filtering was
     bypassed, or if the model invented one from the card text itself.
-    (F2 fix, card d39fc5e7, WhiteHat finding.)
+    (F2 fix + B3 fix, card d39fc5e7, WhiteHat+RedHat findings.)
     """
     for line in code.splitlines():
-        # skip comment lines -- a test that asserts the pattern is NOT present
-        # would legitimately contain the keyword without being a real secret
         stripped = line.lstrip()
-        if stripped.startswith(("//", "#", "*", "/*")):
-            continue
-        if _SECRET_LINE_RE.search(line):
-            return "secret-shaped value in draft (key-name + long opaque string outside a comment)"
+        is_comment = stripped.startswith(("//", "#", "*", "/*"))
+        # key=value shapes are rejected even inside comments -- a hardcoded credential
+        # in a comment is still a credential leak (B3 RedHat fix, card d39fc5e7)
+        if _SECRET_KEY_VALUE_RE.search(line):
+            return "secret-shaped value in draft (key-name + long opaque string)"
+        # Bearer / URL credential shapes are skipped in comments (likely documentation examples)
+        if not is_comment and _SECRET_OTHER_RE.search(line):
+            return "secret-shaped value in draft (Authorization header or URL with credentials)"
     return None
 
 
