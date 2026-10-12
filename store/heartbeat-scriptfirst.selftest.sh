@@ -374,9 +374,9 @@ check "flag-off: disabled marker" "disabled (HEARTBEAT_SCRIPTFIRST=off)" "$OUT"
 unset HEARTBEAT_SCRIPTFIRST
 
 if [ "$fail" -eq 0 ]; then
-  echo "PASS"
+  echo "selftest: PASS"
   exit 0
 else
-  echo "FAIL"
+  echo "selftest: FAIL"
   exit 1
 fi
