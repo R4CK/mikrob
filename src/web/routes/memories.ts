@@ -466,8 +466,8 @@ Respond ONLY with JSON, nothing else:
         try {
           const jsonMatch = (catData.response || '').match(/\{[\s\S]*\}/)
           if (jsonMatch) {
-            const parsed = JSON.parse(jsonMatch[0])
-            tier = ['hot', 'warm', 'cold', 'shared'].includes(parsed.tier) ? parsed.tier : 'warm'
+            const parsed = JSON.parse(jsonMatch[0]) as { tier?: string; keywords?: string }
+            tier = ['hot', 'warm', 'cold', 'shared'].includes(parsed.tier ?? '') ? (parsed.tier ?? 'warm') : 'warm'
             keywords = parsed.keywords || ''
           }
         } catch {

@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeAll } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { initDatabase, saveAgentMemory, saveFailedEpisode, getDb } from '../db.js'
 import { tryHandleMemories } from '../web/routes/memories.js'
+import type { RouteContext } from '../web/routes/types.js'
 import { mintAgentDeviceKey, resolveDeviceKey } from '../web/auth-device-keys.js'
 
 vi.mock('../config.js', async () => {
@@ -22,7 +23,7 @@ function call(pathWithQuery: string, method: string, auth: any, body?: unknown) 
   const req: any = new EventEmitter()
   req.headers = {}
   req.destroy = () => {}
-  const ctx: any = { req, res, path: url.pathname, method, url, auth }
+  const ctx = { req, res, path: url.pathname, method, url, auth } as unknown as RouteContext
   const p = tryHandleMemories(ctx)
   if (body !== undefined) setImmediate(() => { req.emit('data', Buffer.from(JSON.stringify(body))); req.emit('end') })
   else setImmediate(() => req.emit('end'))
@@ -65,7 +66,7 @@ describe('F2 security: attacker device-key cannot access victim data', () => {
 
   it('GET stats does not expose victim in byAgent', async () => {
     const r = await call('/api/memories/stats', 'GET', attackerAuth)
-    expect(Object.keys(r.json?.byAgent ?? {})).not.toContain('victim')
+    expect(Object.keys((r.json as { byAgent?: Record<string, unknown> } | null)?.byAgent ?? {})).not.toContain('victim')
   })
 
   it('PUT /:id cannot overwrite victim row', async () => {
@@ -112,8 +113,9 @@ describe('F2 owner: victim device-key can read and write own data', () => {
 
   it('GET stats returns only victim own counts', async () => {
     const r = await call('/api/memories/stats', 'GET', victimAuth)
-    expect(Object.keys(r.json?.byAgent ?? {})).toContain('victim')
-    expect(Object.keys(r.json?.byAgent ?? {})).not.toContain('attacker')
+    const byAgent = (r.json as { byAgent?: Record<string, unknown> } | null)?.byAgent ?? {}
+    expect(Object.keys(byAgent)).toContain('victim')
+    expect(Object.keys(byAgent)).not.toContain('attacker')
   })
 
   it('PUT /:id victim can update own row', async () => {
