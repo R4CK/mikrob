@@ -178,6 +178,14 @@ export async function tryHandleCosts(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/costs/weekly-thresholds' && method === 'POST') {
+    // F3 (card a92e9913, RedHat 17116): device keys (fleet agents, phone app) must NOT be able to
+    // externally switch the weekly-stop flags and thereby force-engage the Gemini fallback.
+    // This is a dashboard-operator action only: token (main Bearer) and session are allowed;
+    // device keys get 403 fail-closed.
+    if (ctx.auth?.kind === 'device') {
+      json(res, { error: 'A heti küszöb módosítása eszköz-kulccsal nem engedélyezett.' }, 403)
+      return true
+    }
     try {
       let body: Record<string, unknown>
       try {

@@ -62,6 +62,67 @@ DASH="${DASHBOARD_URL:-http://localhost:3420}"
 TOK="$(cat "$HERE/.dashboard-token" 2>/dev/null || true)"
 RAG="$HERE/local-llm-rag.sh"
 RESOLVE="$HERE/graphify-resolve.py"
+GEMINI_OFFLOAD="$HERE/gemini-offload-call.sh"
+
+# GEMINI ROUTE (card a92e9913): read the current route from the fallback state file.
+# Defaults to "claude" when the file is absent or malformed -- fail-safe toward the local path.
+get_gemini_route() {
+  local state="$HERE/gemini-fallback-state.json"
+  [[ -f "$state" ]] || { echo "claude"; return; }
+  python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('route','claude'))" "$state" 2>/dev/null || echo "claude"
+}
+GEMINI_ROUTE="$(get_gemini_route)"
+
+# is_gemini_blocked PROJECT TAGS: returns 0 (true/blocked) when a leaf must NOT go to Gemini.
+# Two classes:
+#   1. mopsion / CleanCore: private-codebase project -- no external API call ever.
+#   2. BLOKKOLT-Peti-stop tag: card explicitly blocked from any automated action.
+# Returns 1 (false/allowed) for everything else.
+is_gemini_blocked() {
+  local project="$1" tags="$2"
+  case "$project" in mopsion|CleanCore) return 0 ;; esac
+  [[ "$tags" == *"BLOKKOLT-Peti-stop"* ]] && return 0
+  return 1
+}
+
+# gemini_draft_comment_body: same contract as draft_comment_body but for a Gemini-sourced draft.
+# $1=leaf_title, $2=content, $3=synthetic ("true"/"false", optional)
+gemini_draft_comment_body() {
+  local leaf_title="$1" content="$2" synthetic="${3:-false}"
+  local review_header=""
+  if [[ "$synthetic" == "true" ]]; then
+    review_header="MECHANIKUS RESZFELADAT (card 501c489f) -- KOTELEZO A TELJES, FUGGETLEN ONLINE FELULVIZSGALAT.
+
+"
+  fi
+  printf '%s[GEMINI DRAFT | dispatch-offload] Gemini (kvota-stop alatti draft, card a92e9913). DRAFT-ONLY: kvota-reset utan a felelos agent reviewlje es integralja -- ne irja ujra Claude-dal. AMIKOR VEGEZTEL VELE, tegyel a kartyara egy sort (sor elejen): '"'"'Draft-Review: ELFOGADVA'"'"' / '"'"'RESZBEN'"'"' / '"'"'ELUTASITVA'"'"' / '"'"'FELESLEGES'"'"' -- e nelkul a kartya nem mehet waiting-be (card 1338e68b).
+
+#### %s
+%s
+' "$review_header" "$leaf_title" "$content"
+}
+
+# try_gemini_for_leaf: call Gemini API for a leaf and post the draft comment.
+# Returns 0 on success, 1 on failure. Does NOT modify attempt counters (caller's job).
+try_gemini_for_leaf() {
+  local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}"
+
+  [[ -x "$GEMINI_OFFLOAD" ]] || return 1
+
+  local out rc=0
+  out="$(printf '%s' "$task" | bash "$GEMINI_OFFLOAD" 2>/dev/null)" || rc=$?
+
+  if [[ $rc -eq 0 && -n "${out// }" ]]; then
+    attempts_op success "$leaf_id" >/dev/null
+    local body; body="$(gemini_draft_comment_body "$leaf_title" "$out" "$synthetic")"
+    curl -s -X POST "$DASH/api/kanban/$post_id/comments" -H "Content-Type: application/json" -H @"$hdr_file" \
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$body")" >/dev/null 2>&1
+    echo "offload-dispatch: leaf $leaf_id -> posted GEMINI DRAFT" >&2
+    return 0
+  fi
+  echo "offload-dispatch: leaf $leaf_id -> Gemini call failed (rc=$rc)" >&2
+  return 1
+}
 
 # Max number of leaves given an ACTUAL local-model call in one invocation (GPU is single-slot, `-np 1`,
 # no request batching -- card a717d8b5 history). This caps CALLS, not raw enumeration: leaves already
@@ -540,11 +601,16 @@ CARD="${1:-}"
 
 # MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01, Peti Telegram 10951), checked before even the
 # INSTALLED gate below -- same ordering principle (cheapest, most authoritative gate first).
+# EXCEPTION (card a92e9913): when route=gemini the fleet is in quota-stop and needs drafts -- the
+# local-first-draft master switch only controls the LOCAL model path, not the Gemini path.
 # shellcheck source=./local-first-draft-check.sh
 . "$HERE/local-first-draft-check.sh"
 if ! local_first_draft_enabled; then
-  echo "offload-dispatch: SKIPPED -- local-first-draft is OFF (dashboard switch). Nothing was drafted; the card is untouched and goes online as usual." >&2
-  exit 0
+  if [[ "$GEMINI_ROUTE" != "gemini" ]]; then
+    echo "offload-dispatch: SKIPPED -- local-first-draft is OFF (dashboard switch). Nothing was drafted; the card is untouched and goes online as usual." >&2
+    exit 0
+  fi
+  echo "offload-dispatch: local-first-draft is OFF, but route=gemini -- continuing for Gemini path." >&2
 fi
 
 # INSTALLED GATE (Peti Telegram 8928, 2026-09-19): "ha nincs telepitve local-llm akkor ez az ag el se
@@ -552,10 +618,16 @@ fi
 # step 0 -- a host with no local runtime at all should never take the per-card lock below, resolve
 # leaves, or touch offload-attempts.json for a call that can only end in "nothing drafted". Exits 0,
 # same as every other best-effort skip in this script (VRAM-busy included).
+# EXCEPTION (card a92e9913): when route=gemini and local LLM is not installed, Gemini still runs.
 INSTALLED="${OFFLOAD_INSTALLED:-$HERE/local-llm-installed.sh}"
+LOCAL_LLM_AVAILABLE=1
 if ! bash "$INSTALLED" >/dev/null 2>&1; then
-  echo "offload-dispatch: SKIPPED -- local-llm: not installed, branch skipped. Nothing was drafted; the card is untouched and goes online as usual." >&2
-  exit 0
+  if [[ "$GEMINI_ROUTE" != "gemini" ]]; then
+    echo "offload-dispatch: SKIPPED -- local-llm: not installed, branch skipped. Nothing was drafted; the card is untouched and goes online as usual." >&2
+    exit 0
+  fi
+  LOCAL_LLM_AVAILABLE=0
+  echo "offload-dispatch: local-llm not installed, but route=gemini -- local path skipped, Gemini path continues." >&2
 fi
 
 # PER-CARD IN-FLIGHT LOCK (2026-08-07). Prevents a duplicate concurrent run for the SAME $CARD argument
@@ -640,6 +712,16 @@ try_leaf() {
 
 $leaf_desc"
 
+  # GEMINI ROUTE, LOCAL LLM NOT AVAILABLE (card a92e9913): skip the RAG call entirely.
+  if [[ "$GEMINI_ROUTE" == "gemini" && "${LOCAL_LLM_AVAILABLE:-1}" -eq 0 ]]; then
+    if ! is_gemini_blocked "$leaf_project" "$leaf_tags"; then
+      try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
+    else
+      echo "offload-dispatch: leaf $leaf_id -> gemini blocked (project=$leaf_project)" >&2
+    fi
+    return 1
+  fi
+
   local repo; repo="$(graph_repo_for "$leaf_project")"
   local graph=(); mapfile -t graph < <(graph_args_for "$task" "$repo")
 
@@ -673,12 +755,20 @@ $leaf_desc"
     fi
     attempts_op categorical-online "$leaf_id" >/dev/null
     echo "offload-dispatch: leaf $leaf_id -> categorical online (router decision), no retry" >&2
+    # GEMINI FALLBACK for ONLINE-category leaves (card a92e9913).
+    if [[ "$GEMINI_ROUTE" == "gemini" ]] && ! is_gemini_blocked "$leaf_project" "$leaf_tags"; then
+      try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
+    fi
     return 1
   else
     entry="$(attempts_op transient-fail "$leaf_id")"
     local n; n="$(printf '%s' "$entry" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("attempts",0))' 2>/dev/null)"
     echo "offload-dispatch: leaf $leaf_id -> local attempt failed (rc=$rc), attempt ${n:-?}/$OFFLOAD_LEAF_MAX_ATTEMPTS" >&2
     if [[ "${n:-0}" -ge "$OFFLOAD_LEAF_MAX_ATTEMPTS" ]]; then
+      # GEMINI FALLBACK when local LLM is exhausted (card a92e9913): try Gemini before giving up.
+      if [[ "$GEMINI_ROUTE" == "gemini" ]] && ! is_gemini_blocked "$leaf_project" "$leaf_tags"; then
+        try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
+      fi
       post_exhausted_notice "$post_id"
       nudge_leaf_owner "$post_id" "$leaf_assignee_raw" exhausted || true
     fi
