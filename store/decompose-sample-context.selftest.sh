@@ -213,24 +213,39 @@ out_b1_untracked="$(echo '{"type":"test-scaffold","text":"write test for src/unt
   | python3 "$HERE/decompose-sample-context.py")"
 check "B1.4: untracked file -> no sample" "$out_b1_untracked" ""
 
-# F2: secret-shaped content in a tracked file should be stripped from the excerpt
-# The file must contain a 'type' declaration so sample_for_type_def returns it.
-# The value is deliberately NOT a real key pattern (no sk-proj / sk_ prefixes)
-# to avoid triggering the repo's own secret-gate on this test fixture.
+# F2: secret-shaped content in a tracked file should be stripped from the excerpt.
+# Three fixture shapes: JS assignment, JSON key-value, and a comment with a key=value.
+# The test searches for the FIXTURE VALUE itself (not 'sk-proj' which was never present),
+# so it goes red when the filter is removed -- mutation-testable (B3 fix, card d39fc5e7).
 cat > "$SECREPO/src/config.ts" <<'EOF'
 export const APP_NAME = "MyApp"
 const apiKey = "zzzfixture-not-a-real-key-value-xxxxxxxxxxxxxxxx"
 export const VERSION = "1.0.0"
 export type AppConfig = { name: string; version: string }
 EOF
-git -C "$SECREPO" add "$SECREPO/src/config.ts" 2>/dev/null
+cat > "$SECREPO/src/config.json" <<'EOF'
+{
+  "appName": "MyApp",
+  "apiKey": "zzzfixture-json-key-value-xxxxxxxxxxxxxxxxxxxxxxxx",
+  "version": "1.0.0"
+}
+EOF
+git -C "$SECREPO" add "$SECREPO/src/config.ts" "$SECREPO/src/config.json" 2>/dev/null
 git -C "$SECREPO" commit -qm "add config with secret" 2>/dev/null
 out_f2="$(echo '{"type":"type-def","text":"add type for src/config.ts","repo":"'"$SECREPO"'"}' \
   | python3 "$HERE/decompose-sample-context.py")"
-check "F2: secret-shaped line is stripped from excerpt" \
-  "$(printf '%s' "$out_f2" | grep -c 'sk-proj')" "0"
+# The fixture VALUES must not appear in the excerpt (the filter must have removed the lines)
+check "F2: JS assignment secret-shaped line is stripped from excerpt" \
+  "$(printf '%s' "$out_f2" | grep -c 'zzzfixture-not-a-real-key-value-xxxxxxxxxxxxxxxx')" "0"
 check "F2: non-secret lines survive in excerpt" \
   "$(printf '%s' "$out_f2" | grep -c 'APP_NAME')" "1"
+# JSON-alak: the i18n-keys finder returns .json files
+out_f2_json="$(echo '{"type":"i18n-keys","text":"update i18n keys in src/config.json","repo":"'"$SECREPO"'"}' \
+  | python3 "$HERE/decompose-sample-context.py")"
+check "F2: JSON-form key: value secret-shaped line is stripped from excerpt" \
+  "$(printf '%s' "$out_f2_json" | grep -c 'zzzfixture-json-key-value-xxxxxxxxxxxxxxxxxxxxxxxx')" "0"
+check "F2: non-secret JSON key survives (appName is not a secret shape)" \
+  "$(printf '%s' "$out_f2_json" | grep -c 'appName')" "1"
 
 # Mutation-pin for B1.2: if we re-enable dotfiles the test must go red
 # (verified by inspection: without the "if f.startswith('.'): continue" guard,

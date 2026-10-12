@@ -36,12 +36,20 @@ import sys
 TOKEN_CAP = 1500
 SKIP_DIRS = {"node_modules", ".git", "dist", "build", ".next", "coverage", ".turbo", "out"}
 
-# Secret-shaped line: a word that looks like a key name followed by a long opaque value
-# (e.g. apiKey = "abc123...", refreshToken: "eyJ...", password = "Xz9...").
-# Catches both = and : assignment forms, single or double quotes, and unquoted long values.
-_SECRET_LINE_RE = re.compile(
-    r"""(?i)(password|secret|token|key|auth|credential|private|bearer)\s*[=:]\s*['""]?[A-Za-z0-9+/._\-]{20,}['""]?""",
-    re.IGNORECASE,
+# Secret-shaped value patterns.  Two regexes, kept separate so _strip_secret_lines can apply the
+# key=value one unconditionally (even if the line is a comment) while the Bearer/URL pattern only
+# fires on non-comment lines.  The key=value form now accepts an optional quote between the name
+# and the [=:] separator, which is the JSON form: "apiKey": "..." (B3 fix, card d39fc5e7).
+_SECRET_KEY_VALUE_RE = re.compile(
+    r"""(?i)(password|secret|token|key|auth|credential|private)['"]?\s*[=:]\s*['"]?[A-Za-z0-9+/._\-]{20,}['"]?""",
+)
+_SECRET_OTHER_RE = re.compile(
+    r"""(?ix)
+    (?:
+      Authorization \s* : \s* Bearer \s+ [A-Za-z0-9+/._\-]{20,}   # HTTP header
+    | [a-z][a-z0-9+\-.]*:// [^:@\s]+ : [A-Za-z0-9+/._\-@%]{20,} @  # URL with credentials
+    )
+    """,
 )
 
 # A file-looking token in the card's own title+description: the ONE concrete anchor this script has
@@ -242,12 +250,20 @@ SAMPLE_FINDERS = {
 def _strip_secret_lines(content: str) -> str:
     """Remove lines that look like hardcoded credentials from an excerpt.
 
-    A secret-shaped line is a key-name word followed by '=' or ':' and a long
-    opaque value (20+ chars).  These lines must never reach the local-LLM prompt
-    (F2 fix, card d39fc5e7).
+    Applies both secret patterns unconditionally -- key=value shapes are
+    stripped even from comment lines so that a commented-out credential does
+    not reach the local-LLM prompt (B3 fix, card d39fc5e7, RedHat finding).
     """
-    filtered = [line for line in content.splitlines() if not _SECRET_LINE_RE.search(line)]
-    return "\n".join(filtered)
+    result = []
+    for line in content.splitlines():
+        stripped = line.lstrip()
+        is_comment = stripped.startswith(("#", "//", "*", "/*"))
+        if _SECRET_KEY_VALUE_RE.search(line):
+            continue
+        if not is_comment and _SECRET_OTHER_RE.search(line):
+            continue
+        result.append(line)
+    return "\n".join(result)
 
 
 def excerpt(path: str, type_: str, cap: int = TOKEN_CAP) -> str | None:

@@ -207,6 +207,59 @@ DECOMPOSE_STOP_STATE_FILE="$STATE_FILE" \
 disabled_ts_after="$(python3 -c "import json; print(json.load(open('$STATE_FILE'))['test-scaffold']['disabled'])")"
 check "MUTATION: a later run with a recovered 100% rate RE-ENABLES test-scaffold (full recompute, not sticky)" "$disabled_ts_after" "False"
 
+# --- B2 fix: dashboard returning 401 JSON must NOT overwrite the state file ---------------
+# Scenario: a previously-written state file has test-scaffold DISABLED.  The dashboard
+# then returns a 401 JSON error on every card's comments endpoint.  The state file must
+# be left untouched (md5 before == md5 after).  Before the B2 fix the file was reset with
+# all types enabled because 0 judged / 0 accepted / API_FETCH_OK=0 still wrote the file.
+kill "$SERVER_PID" 2>/dev/null || true
+PORT3="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+# Stub: /api/kanban returns a valid list; /api/kanban/<id>/comments returns a 401 JSON object
+cat > "$TMPDIR/server3.py" <<'PY'
+import http.server, json, sys
+CARDS = [{"id": "cardA"}]
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def do_GET(self):
+        if self.path == "/api/kanban":
+            self._send(200, CARDS)
+        else:
+            # 401 JSON error -- valid JSON, but NOT a list
+            self._send(401, {"error": "Unauthorized", "message": "Token expired"})
+if __name__ == "__main__":
+    srv = http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
+    srv.serve_forever()
+PY
+# Write a state file with test-scaffold DISABLED
+python3 -c "
+import json, time
+state = {t: {'judged':6,'accepted':1,'disabled': t=='test-scaffold','updated_at':int(time.time())}
+         for t in ['test-scaffold','i18n-keys','doc-update','type-def']}
+with open('$STATE_FILE', 'w') as f: json.dump(state, f)
+"
+MD5_BEFORE="$(md5sum "$STATE_FILE" | cut -d' ' -f1)"
+python3 "$TMPDIR/server3.py" "$PORT3" &
+SERVER_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  curl -s "http://127.0.0.1:$PORT3/api/kanban" >/dev/null 2>&1 && break
+  sleep 0.2
+done
+DASHBOARD_URL="http://127.0.0.1:$PORT3" \
+DECOMPOSE_STOP_TOKEN_FILE="$TOKEN_FILE" \
+DECOMPOSE_STOP_STATE_FILE="$STATE_FILE" \
+  bash "$SCRIPT" --days 3 >/dev/null 2>&1
+MD5_AFTER="$(md5sum "$STATE_FILE" | cut -d' ' -f1)"
+check "B2: 401-on-comments does not overwrite the state file (md5 unchanged)" "$MD5_BEFORE" "$MD5_AFTER"
+disabled_ts_401="$(python3 -c "import json; print(json.load(open('$STATE_FILE'))['test-scaffold']['disabled'])")"
+check "B2: test-scaffold stays DISABLED after the 401-stub run" "$disabled_ts_401" "True"
+
 echo
 echo "decompose-type-stop.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

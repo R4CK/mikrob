@@ -101,8 +101,10 @@ while IFS= read -r cid; do
     API_FETCH_ERRORS=$(( API_FETCH_ERRORS + 1 ))
     continue
   fi
-  # Only count as "ok" if comments is valid JSON (not an HTML error page etc.)
-  if ! printf '%s' "$comments" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+  # Only count as "ok" if comments is a valid JSON ARRAY -- a 401 JSON object or HTML error page
+  # is valid JSON but not a list, and its content would produce 0 judged/accepted, silently
+  # resetting all disabled flags to false (B2 fix, card d39fc5e7, RedHat finding).
+  if ! printf '%s' "$comments" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if isinstance(d,list) else 1)' 2>/dev/null; then
     API_FETCH_ERRORS=$(( API_FETCH_ERRORS + 1 ))
     continue
   fi
@@ -157,7 +159,13 @@ for dtype, draft_at in drafts:
   done <<< "$result"
 done <<< "$CARD_IDS"
 
-# F4: log when API was entirely unreachable so operators can notice
+# F4: if no card's comments could be fetched as a valid list, leave the state file untouched
+# (rather than resetting all types to enabled with 0 judged/0 accepted).
+if [ "$API_FETCH_OK" -eq 0 ]; then
+  printf '[decompose-type-stop] 0 cards reachable (errors=%d) -- state file left untouched\n' \
+    "$API_FETCH_ERRORS" >&2
+  exit 0
+fi
 if [ "$API_FETCH_ERRORS" -gt 0 ]; then
   printf '[decompose-type-stop] API fetch errors: %d/%d cards unreachable (ok=%d); stop decision uses only ok cards\n' \
     "$API_FETCH_ERRORS" "$(( API_FETCH_ERRORS + API_FETCH_OK ))" "$API_FETCH_OK" >&2
