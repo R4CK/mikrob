@@ -24,7 +24,7 @@
 // senderId.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,6 +36,32 @@ import { MAIN_AGENT_ID } from '../config.js'
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }))
+
+// Card 25aaada5 delta, RedHat NO-GO (17101) B1': a one-shot hook fired from inside realpathSync
+// itself, so a test can simulate "the directory is swapped for a symlink in the exact instant
+// AFTER the fd-pinned open already resolved it but the realpath confirmation call runs" --
+// vi.spyOn can't intercept a live ESM named export directly (Node's module namespace isn't
+// configurable), so the override goes through vi.mock instead. Every other fs function keeps its
+// real implementation; only realpathSync gains this optional one-shot side effect.
+let realpathSyncHook: (() => void) | null = null
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return {
+    ...actual,
+    realpathSync: Object.assign(
+      (...args: Parameters<typeof actual.realpathSync>) => {
+        const result = (actual.realpathSync as (...a: typeof args) => ReturnType<typeof actual.realpathSync>)(...args)
+        if (realpathSyncHook) {
+          const hook = realpathSyncHook
+          realpathSyncHook = null
+          hook()
+        }
+        return result
+      },
+      actual.realpathSync,
+    ),
+  }
+})
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -236,6 +262,119 @@ describe('POST /api/agents/:name/channels/telegram/approve -- senderId traversal
     await tryHandleAgents(ctx, webDir)
     expect(out.status).toBe(200)
   })
+
+  // Card 25aaada5 delta, RedHat NO-GO (17101) B1': the previous fix (realpathSync(dirname) THEN
+  // openSync(path) by path) was two separate syscalls with a window between them -- RedHat
+  // measured ~7% of 120000 racing calls landing outside the sandbox when approvedDir was swapped
+  // for a symlink in that window. The fix opens the PARENT DIRECTORY once (O_NOFOLLOW) and does
+  // every subsequent check/write through THAT fd (/proc/self/fd/<fd>/...), so a later swap of the
+  // path 'approved' cannot redirect the already-open fd. This test simulates the race
+  // deterministically: the realpathSync call (which runs strictly AFTER the directory fd was
+  // already opened) swaps the real path out from under it before returning.
+  it("B1': swapping approvedDir for an external symlink right after it was opened by fd does not escape (RedHat 17101 TOCTOU)", async () => {
+    const approvedDir = join(stateDir, 'approved')
+    mkdirSync(approvedDir, { recursive: true })
+    const externalDir = mkdtempSync(join(tmpdir(), 'approved-toctou-'))
+    const movedAsideDir = `${approvedDir}.orig-during-race`
+    // The dirFd was already opened (by the caller, inside writeFileNoFollowSync) against the
+    // REAL approvedDir before this hook fires on the realpathSync confirmation call. Swap the
+    // path out from under it now, simulating the attacker's race window.
+    realpathSyncHook = () => {
+      renameSync(approvedDir, movedAsideDir)
+      symlinkSync(externalDir, approvedDir)
+    }
+    writeAccessWithPending('victim', 'CHAT-RACE')
+    const { ctx, out } = fakeCtx({ code: 'abc123' })
+    expect(await tryHandleAgents(ctx, webDir)).toBe(true)
+    // The write must land in the ORIGINAL directory (now renamed aside, but still the same
+    // fd/inode the dirFd pinned) -- never in externalDir, which the path 'approved' now points
+    // to after the swap.
+    expect(out.status).toBe(200)
+    expect(existsSync(join(externalDir, 'victim'))).toBe(false)
+    expect(readFileSync(join(movedAsideDir, 'victim'), 'utf-8')).toBe('CHAT-RACE')
+  })
+
+  // Card 25aaada5 delta, RedHat NO-GO (17101) N1: the marker write must happen BEFORE the
+  // allowFrom/pending/dmPolicy mutation -- the previous ordering wrote the marker last, so a
+  // symlink at the final path component threw only AFTER the sender had already been
+  // half-approved (allowFrom pushed and persisted, pending consumed).
+  it('N1: a symlink at the marker path is rejected BEFORE access.json is mutated at all (half-approval closed)', async () => {
+    const approvedDir = join(stateDir, 'approved')
+    mkdirSync(approvedDir, { recursive: true })
+    const externalFile = join(tmpdir(), `n1-escape-target-${Date.now()}.txt`)
+    writeFileSync(externalFile, 'ORIG')
+    symlinkSync(externalFile, join(approvedDir, 'lnk'))
+    writeAccessWithPending('lnk', 'CHAT9')
+    const before = readFileSync(join(stateDir, 'access.json'), 'utf-8')
+    const { ctx, out } = fakeCtx({ code: 'abc123' })
+    expect(await tryHandleAgents(ctx, webDir)).toBe(true)
+    expect(out.status).toBe(500)
+    expect(readFileSync(join(stateDir, 'access.json'), 'utf-8')).toBe(before)
+    const access = JSON.parse(before)
+    expect(access.allowFrom ?? []).not.toContain('lnk')
+    expect(access.pending).toHaveProperty('abc123')
+  })
+
+  // Card 25aaada5 delta, RedHat NO-GO (17101) N4/M6 test gap: removing ONLY the backslash check
+  // from isPlausibleChannelSenderId left the repo's tests 100% green (no test used a
+  // backslash-only senderId; the existing tests only covered '/'). Pins the backslash case.
+  it('M6: a backslash-containing senderId ("a\\\\b") is rejected (400) BEFORE any access.json mutation', async () => {
+    writeAccessWithPending('a\\b')
+    const before = readFileSync(join(stateDir, 'access.json'), 'utf-8')
+    const { ctx, out } = fakeCtx({ code: 'abc123' })
+    expect(await tryHandleAgents(ctx, webDir)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(readFileSync(join(stateDir, 'access.json'), 'utf-8')).toBe(before)
+  })
+
+  // Card 25aaada5 delta, RedHat NO-GO (17101) N2: the length cap was 200 UTF-16 code units, not
+  // the filesystem's real 255-BYTE limit -- a multi-byte-character id could be under 200 code
+  // units yet over 255 bytes, passing this check and failing deeper (ENAMETOOLONG) after the
+  // allowFrom mutation.
+  it('N2: an id that is under 200 UTF-16 units but over 255 UTF-8 bytes is rejected (400) BEFORE mutation', async () => {
+    const senderId = 'é'.repeat(130) // 130 code units, 260 bytes (each is 2 bytes in UTF-8)
+    expect(senderId.length).toBeLessThan(200)
+    expect(Buffer.byteLength(senderId, 'utf8')).toBeGreaterThan(255)
+    writeAccessWithPending(senderId)
+    const before = readFileSync(join(stateDir, 'access.json'), 'utf-8')
+    const { ctx, out } = fakeCtx({ code: 'abc123' })
+    expect(await tryHandleAgents(ctx, webDir)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(readFileSync(join(stateDir, 'access.json'), 'utf-8')).toBe(before)
+  })
+
+  // Card 25aaada5 delta, RedHat NO-GO (17101) N2: a non-NUL control character (tab) must also be
+  // rejected -- the previous denylist only checked for NUL specifically.
+  it('N2: a control character (tab) in the senderId is rejected (400) BEFORE mutation', async () => {
+    writeAccessWithPending('victim\twith-tab')
+    const before = readFileSync(join(stateDir, 'access.json'), 'utf-8')
+    const { ctx, out } = fakeCtx({ code: 'abc123' })
+    expect(await tryHandleAgents(ctx, webDir)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(readFileSync(join(stateDir, 'access.json'), 'utf-8')).toBe(before)
+  })
+
+  // Card 25aaada5 delta, RedHat NO-GO (17101) N4/M12 test gap: removing ONLY the `typeof`
+  // check from isPlausibleChannelSenderId left the repo's tests 100% green -- no test exercised
+  // the real route with a non-string pending.senderId (a shape that is impossible to construct
+  // through the typed `writeAccessWithPending` helper, so this writes access.json's raw JSON
+  // directly, the same way a malformed/compromised plugin response could).
+  it.each([
+    ['a number', 12345],
+    ['null', null],
+    ['an object', { x: 1 }],
+    ['an array', ['a', 'b']],
+  ] as const)('M12: a non-string senderId (%s) is rejected (400) BEFORE any access.json mutation', async (_label, senderId) => {
+    writeFileSync(
+      join(stateDir, 'access.json'),
+      JSON.stringify({ pending: { abc123: { senderId, chatId: '555', createdAt: Date.now(), expiresAt: Date.now() + 60000 } } }),
+    )
+    const before = readFileSync(join(stateDir, 'access.json'), 'utf-8')
+    const { ctx, out } = fakeCtx({ code: 'abc123' })
+    expect(await tryHandleAgents(ctx, webDir)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(readFileSync(join(stateDir, 'access.json'), 'utf-8')).toBe(before)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -380,6 +519,77 @@ describe('runInviteMonitorTick -- senderId traversal on auto-approve (card 3d186
     setup('12345')
     runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)
     expect(existsSync(join(chDir, 'approved', '12345'))).toBe(true)
+  })
+
+  // Card 25aaada5 delta, RedHat NO-GO (17101) B1': same fd-pinned-open TOCTOU closure as
+  // routes/agents.ts, exercised on the unattended sweep -- more severe here since there is no
+  // human seeing a failed response.
+  it("B1': swapping approvedDir for an external symlink right after it was opened by fd does not escape (RedHat 17101 TOCTOU)", () => {
+    const approvedDir = join(chDir, 'approved')
+    mkdirSync(approvedDir, { recursive: true })
+    const externalDir = mkdtempSync(join(tmpdir(), 'invite-approved-toctou-'))
+    const movedAsideDir = `${approvedDir}.orig-during-race`
+    realpathSyncHook = () => {
+      renameSync(approvedDir, movedAsideDir)
+      symlinkSync(externalDir, approvedDir)
+    }
+    setup('victim')
+    expect(() => runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)).not.toThrow()
+    expect(existsSync(join(externalDir, 'victim'))).toBe(false)
+    expect(existsSync(join(movedAsideDir, 'victim'))).toBe(true)
+  })
+
+  // Card 25aaada5 delta, RedHat NO-GO (17101) N1: on the unattended sweep, a marker-write failure
+  // (symlink at the final path component) must skip the entry entirely -- not leave it
+  // half-approved (allowFrom populated, invite spent, marker missing).
+  it('N1: a symlink at the marker path is skipped entirely -- allowFrom/invites untouched (half-approval closed)', () => {
+    const approvedDir = join(chDir, 'approved')
+    mkdirSync(approvedDir, { recursive: true })
+    const externalFile = join(tmpdir(), `invite-n1-escape-target-${Date.now()}.txt`)
+    writeFileSync(externalFile, 'ORIG')
+    symlinkSync(externalFile, join(approvedDir, 'tgt'))
+    setup('tgt')
+    const accessBefore = readFileSync(join(chDir, 'access.json'), 'utf-8')
+    const invitesBefore = readFileSync(join(chDir, 'invites.json'), 'utf-8')
+    expect(() => runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)).not.toThrow()
+    expect(readFileSync(join(chDir, 'access.json'), 'utf-8')).toBe(accessBefore)
+    expect(readFileSync(join(chDir, 'invites.json'), 'utf-8')).toBe(invitesBefore)
+    expect(readFileSync(externalFile, 'utf-8')).toBe('ORIG')
+  })
+
+  // Card 25aaada5 delta, RedHat NO-GO (17101) N4/M6 test gap: same backslash-only shape as
+  // routes/agents.ts, on the sweep.
+  it('M6: a backslash-containing senderId ("a\\\\b") is skipped, allowFrom/invites untouched', () => {
+    setup('a\\b')
+    const accessBefore = readFileSync(join(chDir, 'access.json'), 'utf-8')
+    const invitesBefore = readFileSync(join(chDir, 'invites.json'), 'utf-8')
+    expect(() => runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)).not.toThrow()
+    expect(readFileSync(join(chDir, 'access.json'), 'utf-8')).toBe(accessBefore)
+    expect(readFileSync(join(chDir, 'invites.json'), 'utf-8')).toBe(invitesBefore)
+  })
+
+  // Card 25aaada5 delta, RedHat NO-GO (17101) N2: same byte-length-over-char-length gap, on the
+  // sweep.
+  it('N2: an id that is under 200 UTF-16 units but over 255 UTF-8 bytes is skipped, allowFrom/invites untouched', () => {
+    const senderId = 'é'.repeat(130)
+    setup(senderId)
+    const accessBefore = readFileSync(join(chDir, 'access.json'), 'utf-8')
+    const invitesBefore = readFileSync(join(chDir, 'invites.json'), 'utf-8')
+    expect(() => runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)).not.toThrow()
+    expect(readFileSync(join(chDir, 'access.json'), 'utf-8')).toBe(accessBefore)
+    expect(readFileSync(join(chDir, 'invites.json'), 'utf-8')).toBe(invitesBefore)
+  })
+
+  // Card 25aaada5 delta, RedHat NO-GO (17101) N2: a tab is a VALID filename character on Linux
+  // (unlike an overlong name, nothing downstream throws), so this is the case that actually pins
+  // the control-character check itself on the sweep -- not just overlapping N1 ordering defense.
+  it('N2: a control character (tab) in the senderId is skipped, allowFrom/invites untouched', () => {
+    setup('victim\twith-tab')
+    const accessBefore = readFileSync(join(chDir, 'access.json'), 'utf-8')
+    const invitesBefore = readFileSync(join(chDir, 'invites.json'), 'utf-8')
+    expect(() => runInviteMonitorTick('nonexistent-main-agent-for-test', agentsRoot)).not.toThrow()
+    expect(readFileSync(join(chDir, 'access.json'), 'utf-8')).toBe(accessBefore)
+    expect(readFileSync(join(chDir, 'invites.json'), 'utf-8')).toBe(invitesBefore)
   })
 })
 

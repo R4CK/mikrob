@@ -1,5 +1,5 @@
-import { readdirSync, lstatSync, statSync, openSync, writeSync, closeSync, constants, realpathSync } from 'node:fs'
-import { join, resolve, sep, dirname } from 'node:path'
+import { readdirSync, lstatSync, statSync, existsSync, openSync, writeSync, closeSync, constants, realpathSync } from 'node:fs'
+import { join, resolve, sep, dirname, basename } from 'node:path'
 
 // NFD + combining-mark strip so Hungarian input like "etrendiro" decays
 // to "etrendiro" instead of silently losing every accented character
@@ -51,20 +51,55 @@ export function safeJoin(base: string, ...parts: string[]): string {
 // `approved/` ITSELF, or an intermediate component (the `sub` in `sub/id`), is a symlink, the
 // open() still walks through it to resolve the parent directory before ever looking at the
 // final NOFOLLOW check -- measured: approved/ as a symlink to an external directory let a
-// write land there, unattended auto-approve included. realpathSync(dirname(path)) resolves
-// every symlink in the PARENT chain; comparing it against the literal resolved dirname catches
-// any of them being a symlink, not just the final element.
+// write land there, unattended auto-approve included.
+//
+// Delta #2 (RedHat NO-GO 17101, B1'): a plain realpathSync(dirname)-then-open is two separate
+// syscalls with a window between them -- if the directory is swapped (real dir -> symlink) in
+// that window, the check passes against the OLD (real) directory but the open() walks the NEW
+// (symlinked) one. Measured by RedHat with a child process toggling `approved/` in a tight loop:
+// ~7% of 120000 calls landed outside the sandbox. Fix (RedHat's own "stronger form"): open the
+// PARENT DIRECTORY itself with O_NOFOLLOW (which atomically refuses if the last component is a
+// symlink), confirm via /proc/self/fd/<fd> that the fd really is the directory we expect, then
+// open the marker file BY PATH THROUGH THAT SAME FD (/proc/self/fd/<fd>/<name>) -- an fd, once
+// obtained, keeps referring to the same directory inode no matter what happens to the path
+// afterward, closing the TOCTOU window entirely (0/120000 in RedHat's repro). Falls back to the
+// single-syscall realpath check on a platform without /proc/self/fd (stated explicitly, per
+// RedHat's note, rather than silently losing the hardening there).
+const HAS_PROC_SELF_FD = existsSync('/proc/self/fd')
+
 export function writeFileNoFollowSync(path: string, content: string): void {
   const dir = dirname(path)
-  const realDir = realpathSync(dir)
-  if (realDir !== resolve(dir)) {
-    throw new Error(`writeFileNoFollowSync: refusing to write through a symlinked directory (${dir} -> ${realDir})`)
+  const name = basename(path)
+  const writeFlags = constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW
+
+  if (!HAS_PROC_SELF_FD) {
+    const realDir = realpathSync(dir)
+    if (realDir !== resolve(dir)) {
+      throw new Error(`writeFileNoFollowSync: refusing to write through a symlinked directory (${dir} -> ${realDir})`)
+    }
+    const fd = openSync(path, writeFlags, 0o666)
+    try {
+      writeSync(fd, content)
+    } finally {
+      closeSync(fd)
+    }
+    return
   }
-  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o666)
+
+  const dirFd = openSync(dir, constants.O_DIRECTORY | constants.O_NOFOLLOW)
   try {
-    writeSync(fd, content)
+    const realDir = realpathSync(`/proc/self/fd/${dirFd}`)
+    if (realDir !== resolve(dir)) {
+      throw new Error(`writeFileNoFollowSync: refusing to write through a symlinked directory (${dir} -> ${realDir})`)
+    }
+    const fd = openSync(`/proc/self/fd/${dirFd}/${name}`, writeFlags, 0o666)
+    try {
+      writeSync(fd, content)
+    } finally {
+      closeSync(fd)
+    }
   } finally {
-    closeSync(fd)
+    closeSync(dirFd)
   }
 }
 
@@ -80,11 +115,20 @@ export function writeFileNoFollowSync(path: string, content: string): void {
 // anywhere in this codebase, so this is deliberately a denylist of the specific pathological
 // shapes measured, not a guessed positive format that could reject some other provider's
 // legitimate id.
+//
+// Delta (RedHat NO-GO 17101, N2): the length cap was 200 UTF-16 code units, but the filesystem's
+// own name-length limit is 255 BYTES -- a string of 86 three-byte characters is 258 bytes (over
+// the real limit) while reading as only 86 code units (well under 200), so it passed this check
+// and then failed deeper (ENAMETOOLONG), after the mutation, the exact pattern this whole
+// denylist exists to avoid. Checking Buffer.byteLength against the real 255-byte limit closes
+// that gap. The denylist also only rejected NUL, not any other control character (tab, newline,
+// leading space) -- widened to the full C0 control range plus DEL.
 export function isPlausibleChannelSenderId(senderId: string): boolean {
-  if (typeof senderId !== 'string' || senderId.length === 0 || senderId.length > 200) return false
-  if (senderId.includes('\0')) return false
+  if (typeof senderId !== 'string' || senderId.length === 0) return false
+  if (Buffer.byteLength(senderId, 'utf8') > 255) return false
   if (senderId === '.' || senderId === '..') return false
   if (senderId.includes('/') || senderId.includes('\\')) return false
+  if (/[\x00-\x1f\x7f]/.test(senderId)) return false
   return true
 }
 
