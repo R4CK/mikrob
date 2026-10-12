@@ -185,7 +185,9 @@ echo "=== A. THE HARD INVARIANT: pickup always happens, whatever step 1-4 decide
 STUB_ROUTE="$TMP/route-online.sh" run >/dev/null 2>&1; rc=$?
 assert_exit "$rc" 0 "ONLINE verdict -> still picks up"
 assert_moved "ONLINE verdict"
-assert_offload_called no "ONLINE verdict never drafts"
+# card 2be7e3e5 (Peti 11175): VERDICT no longer gates the draft attempt, only the measurement log --
+# offload-dispatch.sh's own per-leaf classification decides local-draft vs advisory-draft vs nothing.
+assert_offload_called yes "ONLINE verdict still drafts (advisory, card 2be7e3e5)"
 assert_dispatcher_seen self-advance "card-build-route.sh sees the attribution env var"
 
 STUB_ROUTE="$TMP/route-local.sh" run >/dev/null 2>&1; rc=$?

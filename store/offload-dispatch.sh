@@ -439,6 +439,37 @@ def ancestor_context(node_id, depth=3):
         cur, depth = p, depth - 1
     return "\n---\n".join(parts)
 
+# PREDECESSOR + PAIR CONTEXT (card 2be7e3e5, requirement 2: "kartya + szulo + Pair/predecessor +
+# erintett fajlok kivonata, meretkorlattal"). ancestor_context above already gives parent-chain
+# context; this adds the two other linked-card kinds a leaf can carry: predecessor cards (the
+# `blockedBy` edge from rule 1c, a REAL dependency, not parent_id) and a Pair-FE/Pair-BE sibling
+# (the `Pair-FE: <id>` / `Pair-BE: <id>` line from CLAUDE.md rule 8a, lives in the leaf own
+# description, not an ancestor). Capped at 2 predecessors + 1 pair, same 400-char-per-card truncation as the
+# ancestor chain, so the context package stays size-bounded.
+PAIR_RE = re.compile(r"Pair-(?:FE|BE)\s*:\s*([0-9a-f]{6,12})", re.IGNORECASE)
+
+def related_context(node_id):
+    node = by_id.get(node_id)
+    if not node:
+        return ""
+    parts = []
+    for pid in list(node.get("blockedBy") or [])[:2]:
+        p = by_id.get(str(pid))
+        if not p:
+            continue
+        title = (p.get("title") or "").strip()
+        desc = (p.get("description") or "").strip()[:400]
+        parts.append(f"ELOZMENY (predecessor {pid}): {title}\n{desc}")
+    m = PAIR_RE.search(node.get("description") or "")
+    if m:
+        pair_id = m.group(1)
+        p = by_id.get(pair_id)
+        if p:
+            title = (p.get("title") or "").strip()
+            desc = (p.get("description") or "").strip()[:400]
+            parts.append(f"PAROSITOTT (pair {pair_id}): {title}\n{desc}")
+    return "\n---\n".join(parts)
+
 out = []
 for l in leaves:
     out.append({
@@ -453,7 +484,7 @@ for l in leaves:
         "assignee_raw": (l.get("assignee") or "").strip(),
         "tags": tags_for(l),
         "project": l.get("project") or "",
-        "parent_context": ancestor_context(str(l["id"])),
+        "parent_context": "\n---\n".join(p for p in [ancestor_context(str(l["id"])), related_context(str(l["id"]))] if p),
         "synthetic": False,
     })
 print(json.dumps(out))
