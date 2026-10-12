@@ -371,7 +371,9 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const agentId = agent_id || MAIN_AGENT_ID
+    // Card 9655494c F2: device-key identity overrides body agent_id (same as POST /api/memories).
+    const authenticatedAgentIdImp = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
+    const agentId = authenticatedAgentIdImp || agent_id || MAIN_AGENT_ID
     const stats = { hot: 0, warm: 0, cold: 0, shared: 0 }
     let imported = 0
 
@@ -513,7 +515,11 @@ Respond ONLY with JSON, nothing else:
       json(res, { error: 'Content rejected by security filter' }, 400)
       return true
     }
-    const agentId = data.agent_id?.trim() || MAIN_AGENT_ID
+    // Card 9655494c F2 (RedHat NO-GO 17305): device-key identity is authoritative over body
+    // agent_id -- same precedent as POST /api/memories (card 84dcc5d4). A shared-token caller
+    // keeps the old behaviour (body agent_id trusted).
+    const authenticatedAgentIdFep = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
+    const agentId = authenticatedAgentIdFep || data.agent_id?.trim() || MAIN_AGENT_ID
     const result = saveFailedEpisode({
       agentId,
       task: data.task.trim(),
@@ -528,7 +534,9 @@ Respond ONLY with JSON, nothing else:
   }
 
   if (path === '/api/memories/failed-episodes' && method === 'GET') {
-    const agentId = url.searchParams.get('agent') || MAIN_AGENT_ID
+    // Card 9655494c F2: device-key identity overrides ?agent= (same precedent as GET list).
+    const authenticatedAgentIdFe = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
+    const agentId = authenticatedAgentIdFe || url.searchParams.get('agent') || MAIN_AGENT_ID
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '20', 10), 100)
     const results = listFailedEpisodes(agentId, limit)
     json(res, results.map(m => ({ ...m, embedding: undefined })))
@@ -536,7 +544,9 @@ Respond ONLY with JSON, nothing else:
   }
 
   if (path === '/api/memories/recall-audit' && method === 'GET') {
-    const agentId = url.searchParams.get('agent') || MAIN_AGENT_ID
+    // Card 9655494c F2: device-key identity overrides ?agent= (same precedent as GET list).
+    const authenticatedAgentIdRa = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
+    const agentId = authenticatedAgentIdRa || url.searchParams.get('agent') || MAIN_AGENT_ID
     const sampleSize = Math.min(parseInt(url.searchParams.get('sample') || '50', 10), 200)
     const audit = auditMemoryRecall(agentId, sampleSize)
     json(res, audit)
@@ -555,6 +565,21 @@ Respond ONLY with JSON, nothing else:
   }
 
   if (path === '/api/memories/stats' && method === 'GET') {
+    // Card 9655494c F2: a device-key caller must not see other agents' byAgent counts.
+    // Scoped response returns only the caller's own rows; shared-token callers get the
+    // full global stats unchanged.
+    const authenticatedAgentIdSt = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
+    if (authenticatedAgentIdSt) {
+      const db2 = getDb()
+      const rows = db2.prepare(
+        'SELECT category, COUNT(*) as count FROM memories WHERE agent_id = ? GROUP BY category'
+      ).all(authenticatedAgentIdSt) as { category: string; count: number }[]
+      const total = rows.reduce((s, r) => s + r.count, 0)
+      const byCategory: Record<string, number> = {}
+      for (const r of rows) byCategory[r.category] = r.count
+      json(res, { total, byAgent: { [authenticatedAgentIdSt]: total }, byCategory })
+      return true
+    }
     json(res, getMemoryStats())
     return true
   }
@@ -567,12 +592,27 @@ Respond ONLY with JSON, nothing else:
 
   if (memUpdateMatch && (method === 'PUT' || method === 'PATCH')) {
     const id = parseInt(memUpdateMatch[1], 10)
+    // Card 9655494c F2 (RedHat NO-GO 17305): a device-key caller may only update its OWN rows.
+    // An attempt to update another agent's row answers the same 404 as a missing id (no oracle).
+    // The body agent_id (ownership transfer) is also blocked for device-key callers: a key binds
+    // to exactly one agent identity and cannot reassign rows to another agent.
+    const authenticatedAgentIdUp = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
+    if (authenticatedAgentIdUp) {
+      const existing = getDb().prepare('SELECT agent_id FROM memories WHERE id = ?').get(id) as { agent_id: string } | undefined
+      if (!existing || existing.agent_id !== authenticatedAgentIdUp) {
+        json(res, { error: 'Memory not found' }, 404); return true
+      }
+    }
     const body = await readBody(req)
     // MEMIRASNYOM915: updated_by is the writer's self-reported identity for
     // the write-trace. It is distinct from agent_id, which means "reassign
     // the row to this agent" -- an editor updating someone else's memory
     // attributes the WRITE without changing the OWNER.
     const { content, category, tier, agent_id, keywords, updated_by } = JSON.parse(body.toString()) as { content?: string; category?: string; tier?: string; agent_id?: string; keywords?: string; updated_by?: string }
+    // Card 9655494c F2: a device-key caller cannot transfer ownership via body agent_id.
+    if (authenticatedAgentIdUp && agent_id && agent_id !== authenticatedAgentIdUp) {
+      json(res, { error: 'Cannot transfer memory ownership with a device key' }, 403); return true
+    }
     const newCategory = (tier || category || '').toLowerCase() || undefined
     if (newCategory && !MEMORY_CATEGORIES.has(newCategory)) {
       json(res, { error: `Invalid category "${newCategory}". Allowed: ${[...MEMORY_CATEGORIES].join(', ')}` }, 400)
@@ -600,6 +640,15 @@ Respond ONLY with JSON, nothing else:
   if (memUpdateMatch && method === 'DELETE') {
     const id = parseInt(memUpdateMatch[1], 10)
     const db2 = getDb()
+    // Card 9655494c F2 (RedHat NO-GO 17305): a device-key caller may only delete its OWN rows.
+    // Same 404-as-missing-id pattern as PUT and GET /:id -- no oracle for row existence.
+    const authenticatedAgentIdDel = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
+    if (authenticatedAgentIdDel) {
+      const existing = db2.prepare('SELECT agent_id FROM memories WHERE id = ?').get(id) as { agent_id: string } | undefined
+      if (!existing || existing.agent_id !== authenticatedAgentIdDel) {
+        json(res, { error: 'Memory not found' }, 404); return true
+      }
+    }
     const changes = db2.prepare('DELETE FROM memories WHERE id = ?').run(id).changes
     // Invalidate the in-process TTL cache so a deleted memory does not
     // resurface in the agent-filtered list for the cache lifetime.
