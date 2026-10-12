@@ -58,22 +58,21 @@ function read(agentName: string) {
 // ensureAutonomySection(MAIN_AGENT_ID) must use that path, verified here.
 const MAIN_CLAUDE_MD = join(tmpRoot, 'CLAUDE.md')
 
-describe('ensureAutonomySection -- main agent (PROJECT_ROOT/CLAUDE.md)', () => {
-  it('writes the autonomy block to PROJECT_ROOT/CLAUDE.md for MAIN_AGENT_ID', () => {
+describe('ensureAutonomySection -- main agent is a no-op (card 81f202bd)', () => {
+  // Card 81f202bd (WhiteHat2 Q1 on 8a3a1e84): PROJECT_ROOT/CLAUDE.md is git-tracked, and a
+  // runtime write there fights the --ff-only pull -- same dc09da2f/965b0b2b class as the sibling
+  // no-op writers. The content for MAIN is committed statically instead (verified by
+  // agent-scaffold-main-claude-md-zero-diff.test.ts's zero-diff check against the real file).
+  it('does NOT write to PROJECT_ROOT/CLAUDE.md for MAIN_AGENT_ID', () => {
     writeFileSync(MAIN_CLAUDE_MD, '# Main Agent\n\nPersona content.\n', 'utf-8')
     ensureAutonomySection('agent-a') // agent-a is the mocked MAIN_AGENT_ID
     const result = readFileSync(MAIN_CLAUDE_MD, 'utf-8')
-    expect(result).toContain(MARKER_BEGIN)
-    expect(result).toContain(MARKER_END)
-    expect(result).toContain('## Autonómia és jóváhagyás')
-    expect(result).toContain('/api/approvals')
-    // Persona content must be preserved
-    expect(result).toContain('# Main Agent')
-    expect(result).toContain('Persona content.')
+    expect(result).not.toContain(MARKER_BEGIN)
+    expect(result).toBe('# Main Agent\n\nPersona content.\n')
   })
 
-  it('does NOT write to agents/agent-a/CLAUDE.md for MAIN_AGENT_ID', () => {
-    // Ensure sub-agent dir also has a CLAUDE.md to prove it is NOT the target
+  it('does NOT write to agents/agent-a/CLAUDE.md for MAIN_AGENT_ID either', () => {
+    // Ensure sub-agent dir also has a CLAUDE.md to prove it is NOT touched.
     const subDir = join(tmpRoot, 'agents', 'agent-a')
     mkdirSync(subDir, { recursive: true })
     writeFileSync(join(subDir, 'CLAUDE.md'), '# Sub\n', 'utf-8')
@@ -81,10 +80,8 @@ describe('ensureAutonomySection -- main agent (PROJECT_ROOT/CLAUDE.md)', () => {
 
     ensureAutonomySection('agent-a')
 
-    // Main CLAUDE.md gets the block
     const main = readFileSync(MAIN_CLAUDE_MD, 'utf-8')
-    expect(main).toContain(MARKER_BEGIN)
-    // Sub-agent file must be untouched
+    expect(main).not.toContain(MARKER_BEGIN)
     const sub = readFileSync(join(subDir, 'CLAUDE.md'), 'utf-8')
     expect(sub).not.toContain(MARKER_BEGIN)
   })

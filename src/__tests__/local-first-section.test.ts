@@ -119,4 +119,15 @@ describe('the local-first block reaches every agent (card 3828a2b6)', () => {
   it('does nothing when the agent has no CLAUDE.md', () => {
     expect(() => ensureLocalFirstSection('nonexistent')).not.toThrow()
   })
+
+  // Card 81f202bd (WhiteHat2 Q1 on 8a3a1e84): no production call site currently passes
+  // MAIN_AGENT_ID here, but the pre-guard source still resolved to the git-tracked
+  // PROJECT_ROOT/CLAUDE.md for it -- same dc09da2f/965b0b2b class as the sibling writers.
+  // Guarded defensively so a future call site cannot reopen the bug.
+  it('is a no-op for MAIN_AGENT_ID, even though PROJECT_ROOT/CLAUDE.md exists', () => {
+    const mainClaudeMd = join(tmpRoot, 'CLAUDE.md')
+    writeFileSync(mainClaudeMd, '# Main\n\nPersona content.\n', 'utf-8')
+    ensureLocalFirstSection('main-agent') // main-agent is the mocked MAIN_AGENT_ID
+    expect(readFileSync(mainClaudeMd, 'utf-8')).toBe('# Main\n\nPersona content.\n')
+  })
 })
