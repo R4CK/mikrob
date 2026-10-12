@@ -106,7 +106,11 @@ function sanitizeFutureTimestamp(v: number | null, now: number): number | null {
 function readState(): GeminiFallbackState {
   const now = Date.now()
   try {
-    const raw = JSON.parse(readFileSync(STATE_PATH, 'utf-8'))
+    // Typed as Record<string, unknown>, not the implicit `any` JSON.parse() returns: `unknown`
+    // narrows correctly under `typeof`, so the ternaries below are genuinely `number | null`
+    // rather than `any` -- lint's no-unsafe-argument rule (the function-argument form of the
+    // no-unsafe-assignment family) only objects to the latter.
+    const raw = JSON.parse(readFileSync(STATE_PATH, 'utf-8')) as Record<string, unknown>
     return {
       route: raw.route === 'gemini' ? 'gemini' : 'claude',
       engagedAt: sanitizeFutureTimestamp(typeof raw.engagedAt === 'number' ? raw.engagedAt : null, now),
