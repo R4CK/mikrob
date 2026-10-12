@@ -89,13 +89,36 @@ GEMINI_ROUTE="$(get_gemini_route)"
 #      sensitive-domain vocabulary as the router's prefilter (card-build-route).
 #      A card like 6a4e34c1 (SSE ?token= leak, no sensitive tag, no sensitive title) is blocked
 #      because the description reveals the sensitive nature.
+#      NORMALIZED + STEM MATCH (RedHat 17510 finding 1): title/desc are casefold+accent-stripped
+#      the same way as tags before matching, and each stem only needs a LEADING word boundary (no
+#      trailing \b) because Hungarian glues suffixes onto the stem ("jogosult" + "sag" ->
+#      "jogosultsag", "biztons" + "ag" -> "biztonsag" inside a bracket label like "[Biztonság]").
+#      Previously \b...\b required a boundary AFTER the stem too, which Unicode letters like "á"
+#      never produce, so "Számla", "Jogosultság" and "[Biztonság]"/"[FIN]" all passed through
+#      unblocked (measured: 3 of 6 tag-less sensitive cards). Dropping the trailing boundary is a
+#      deliberate false-positive-tolerant choice: a blocked card merely gets no Gemini draft
+#      (routes online as usual), which is the acceptable side of this card's fail-closed design.
 #   4. CATEGORICAL-ONLINE leaves NEVER go to Gemini (WhiteHat2 F1d): the router already classified
 #      the card as security/authz/multi-file; sending it to an external API discards that verdict.
 #      Enforcement: the categorical-online branch no longer contains a try_gemini_for_leaf call.
 #
-# Returns 1 (false/allowed) only when all four gates pass.
+# FAIL-CLOSED ON INTERPRETER FAILURE (RedHat 17510 finding 2): the Python classifier can itself
+# fail before reaching an explicit sys.exit -- missing python3 (rc=127), an oversized argv for a
+# very long description (E2BIG, rc=126), or any other interpreter crash. The OLD code returned
+# that raw exit code straight to the caller, and the call sites do `! is_gemini_blocked ...` --
+# in bash, "! " of ANY non-zero code is true, so rc=126/127 were silently treated exactly like
+# the real "allowed" (rc=1) outcome. Fixed by checking the exit code explicitly: ONLY rc=1 (the
+# interpreter actually reached the final "allowed" line) returns allowed; every other outcome,
+# including an interpreter crash, returns blocked. Title/desc are also length-capped before being
+# passed as argv so a legitimately long description does not hit the OS arg-length limit at all.
+#
+# Returns 1 (false/allowed) only when all four gates pass AND the classifier ran to completion.
 is_gemini_blocked() {
   local project="$1" tags="$2" title="${3:-}" desc="${4:-}"
+  # Defensive cap (RedHat 17510 finding 2): avoid E2BIG on an oversized argv in the first place.
+  title="${title:0:1000}"
+  desc="${desc:0:8000}"
+  local rc
   python3 -c '
 import sys, unicodedata, re
 
@@ -126,20 +149,27 @@ for tag in tags_csv.split(","):
     if t in BLOCKED_TAGS:
         sys.exit(0)  # blocked
 
-# 3. Content gate on title AND description (sensitive keyword -> blocked, fail-closed).
+# 3. Content gate on NORMALIZED title AND description (sensitive stem -> blocked, fail-closed).
+# Leading-boundary-only stems (RedHat 17510 finding 1): matches a stem at the start of a word,
+# but also matches it as the start of a longer word ("jogosultsag", "biztonsag", "finance").
+title_n = norm(title)
+desc_n = norm(desc)
 SENS_RE = re.compile(
     r"\b(biztons|security|auth|authz|rbac|tenant|superadmin"
-    r"|penz|penzugy|fizet|szamla|jelszo|password"
+    r"|penz|penzugy|fizet|szamla|afa|payroll|berszamfejtes|jelszo|password"
     r"|token|secret|titok|jogosult|gdpr|privacy|kulcs"
-    r"|kripto|crypto|pii|billing|payment|legal|jogi|cybersec"
-    r"|hacker|exploit|pentest|inject|sqli|xss)\b",
+    r"|kripto|crypto|pii|billing|payment|legal|jogi|cybersec|fin"
+    r"|hacker|exploit|pentest|inject|sqli|xss)",
     re.IGNORECASE
 )
-if SENS_RE.search(title) or SENS_RE.search(desc):
+if SENS_RE.search(title_n) or SENS_RE.search(desc_n):
     sys.exit(0)  # blocked
 
 sys.exit(1)  # allowed
 ' "$project" "$tags" "$title" "$desc"
+  rc=$?
+  [[ "$rc" -eq 1 ]] && return 1
+  return 0
 }
 
 # gemini_route_enabled: returns 0 (true) when the Gemini route is active.

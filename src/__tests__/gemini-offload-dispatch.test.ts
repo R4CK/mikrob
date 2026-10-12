@@ -47,6 +47,24 @@ function curlCalls(rel: string): string[] {
   return body.split('\n').filter((l) => /\bcurl\b/.test(l))
 }
 
+// Extract a bash function's full source (name through matching closing brace), by name.
+function extractFn(fullSrc: string, name: string): string {
+  const idx = fullSrc.indexOf(`\n${name}()`)
+  let depth = 0
+  let end = idx
+  for (let i = idx; i < fullSrc.length; i++) {
+    if (fullSrc[i] === '{') depth++
+    if (fullSrc[i] === '}') {
+      depth--
+      if (depth === 0) {
+        end = i + 1
+        break
+      }
+    }
+  }
+  return fullSrc.slice(idx, end)
+}
+
 // ── 1. Files exist ──────────────────────────────────────────────────────────────────────
 describe('gemini offload files exist', () => {
   it('offload-dispatch.sh exists', () => {
@@ -252,8 +270,178 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Add CSV export', 'Export the monthly report as a downloadable CSV file.')).toBe('ALLOWED')
   })
 
+  // RedHat 17510 finding 1: the content gate matched only whole ASCII words, with no
+  // normalization and no stemming -- 3 of 6 tag-less sensitive cards passed through
+  // (payroll, Számla/ÁFA, Jogosultság), as did bracket labels like [Biztonság]/[FIN].
+  // These are the exact measured bypass cases; each must now BLOCK.
+  it('blocks tag-less payroll card (RedHat 17510 finding 1)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Payroll export javitas', '')).toBe('BLOCKED')
+  })
+
+  it('blocks tag-less Számla/ÁFA card, accented (RedHat 17510 finding 1)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Számla/ÁFA export finomítás', '')).toBe('BLOCKED')
+  })
+
+  it('blocks tag-less Jogosultság card, accented suffix extension (RedHat 17510 finding 1)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Jogosultság kezelés', '')).toBe('BLOCKED')
+  })
+
+  it('blocks bracket label [Biztonság] (accented, trailing boundary previously never matched)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', '[Biztonság] heti audit', '')).toBe('BLOCKED')
+  })
+
+  it('blocks bracket label [FIN]', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', '[FIN] heti riport', '')).toBe('BLOCKED')
+  })
+
+  it('still allows a genuinely clean card after normalization (no over-blocking regression)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Add logging to the dashboard API endpoint', '')).toBe('ALLOWED')
+  })
+
+  // RedHat 17510 finding 2: is_gemini_blocked returned the raw python3 exit code, and the
+  // call sites do `! is_gemini_blocked ...` -- in bash, "!" of ANY nonzero code is true, so an
+  // interpreter crash (missing python3 rc=127, oversized argv rc=126) was silently treated as
+  // "allowed" instead of blocked. Behavioral test: force the exit code and verify only rc=1
+  // is ever treated as allowed.
+  function runIsGeminiBlockedWithFakeRc(rc: number): 'BLOCKED' | 'ALLOWED' {
+    const fnDef = extractFn(src(DISPATCH), 'is_gemini_blocked')
+    const result = execFileSync('bash', ['-c',
+      `python3() { return ${rc}; }\n${fnDef}\nis_gemini_blocked mikrob "BE,NORMAL" "clean title" "clean desc" && echo BLOCKED || echo ALLOWED`,
+    ], { encoding: 'utf-8' })
+    return result.trim() as 'BLOCKED' | 'ALLOWED'
+  }
+
+  it('fail-closed on interpreter crash: python3 missing (rc=127) -> BLOCKED, not allowed', () => {
+    expect(runIsGeminiBlockedWithFakeRc(127)).toBe('BLOCKED')
+  })
+
+  it('fail-closed on interpreter crash: oversized argv (rc=126) -> BLOCKED, not allowed', () => {
+    expect(runIsGeminiBlockedWithFakeRc(126)).toBe('BLOCKED')
+  })
+
+  it('fail-closed on any other unexpected nonzero rc -> BLOCKED, not allowed', () => {
+    expect(runIsGeminiBlockedWithFakeRc(42)).toBe('BLOCKED')
+  })
+
+  it('an explicit rc=1 ("allowed") still passes through (fail-closed fix does not break the real path)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'clean title', 'clean desc')).toBe('ALLOWED')
+  })
+
   // T1: CALL-SITE GUARD -- is_gemini_blocked must be called at both Gemini call sites.
   // These tests go RED if the guard is removed from either call site.
+})
+
+// ── T1 (true behavioral, RedHat 17510 finding 3) ─────────────────────────────────────────
+// MikroB 11363 / RedHat 17510: the previous T1 tests only grepped SOURCE TEXT POSITIONS
+// (does "is_gemini_blocked" appear textually before "try_gemini_for_leaf" in a window?).
+// That stays green if a call site drops the title/desc ARGUMENTS (so the content-gate never
+// actually runs) or if the categorical-online branch regains an unguarded Gemini call outside
+// the windows those tests scan. This block instead SOURCES the real try_leaf() function with
+// stubbed dependencies (no real kanban/API/network calls) and actually EXECUTES both call
+// sites end-to-end, asserting on whether the (recording) try_gemini_for_leaf stub was invoked.
+describe('try_leaf() end-to-end behavioral guard (T1, RedHat 17510 finding 3)', () => {
+  type TryLeafOpts = {
+    fastPath: boolean // true = LOCAL_LLM_AVAILABLE=0 call site; false = exhausted-attempts call site
+    project: string
+    tags: string
+    title: string
+    desc: string
+  }
+
+  function runTryLeaf(opts: TryLeafOpts): { geminiCalled: boolean; geminiArgs: string } {
+    const dispatchSrc = src(DISPATCH)
+    const isBlockedFn = extractFn(dispatchSrc, 'is_gemini_blocked')
+    const routeEnabledFn = extractFn(dispatchSrc, 'gemini_route_enabled')
+    const tryLeafFn = extractFn(dispatchSrc, 'try_leaf')
+
+    const script = `
+set -uo pipefail
+HERE="$(mktemp -d)"
+touch "$HERE/gemini-offload-enabled"   # route enabled for this test
+GEMINI_ROUTE="gemini"
+LOCAL_LLM_AVAILABLE=${opts.fastPath ? '0' : '1'}
+OFFLOAD_LEAF_MAX_ATTEMPTS=2
+RECORD="$(mktemp)"
+
+# Stub RAG as a real executable (try_leaf calls "$RAG" ... as a command, not a function):
+# rc=5 = transient failure (not 0, not 9), so the exhausted-attempts branch is reached.
+RAG="$(mktemp)"
+printf '#!/usr/bin/env bash\\nexit 5\\n' > "$RAG"
+chmod +x "$RAG"
+
+${isBlockedFn}
+${routeEnabledFn}
+
+# Stubs for everything else try_leaf touches -- no real kanban/API/network I/O.
+attempts_op() { echo '{"attempts":2}'; }
+graph_repo_for() { echo ""; }
+graph_args_for() { :; }
+decompose_sample_context() { :; }
+draft_quality_ok() { echo "OK"; }
+post_draft_comment() { :; }
+advisory_draft() { cat >/dev/null; }
+post_exhausted_notice() { :; }
+nudge_leaf_owner() { :; }
+try_gemini_for_leaf() { echo "CALLED:$*" >> "$RECORD"; return 0; }
+
+${tryLeafFn}
+
+try_leaf "test-leaf-1" "$TEST_TITLE" "$TEST_DESC" "backend2" "$TEST_TAGS" "$TEST_PROJECT" "" "" "test-leaf-1" "false" >/dev/null 2>&1
+
+cat "$RECORD" 2>/dev/null
+rm -rf "$HERE" "$RAG" "$RECORD"
+`
+    const out = execFileSync('bash', ['-c', script], {
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        TEST_TITLE: opts.title,
+        TEST_DESC: opts.desc,
+        TEST_TAGS: opts.tags,
+        TEST_PROJECT: opts.project,
+      },
+    })
+    const called = out.includes('CALLED:')
+    return { geminiCalled: called, geminiArgs: out.trim() }
+  }
+
+  // Call site 1 (fast path, LOCAL_LLM_AVAILABLE=0): allowed leaf -> Gemini actually invoked.
+  it('call site 1 (fast path): allowed leaf really reaches try_gemini_for_leaf', () => {
+    const r = runTryLeaf({ fastPath: true, project: 'mikrob', tags: 'BE,NORMAL', title: 'Add CSV export', desc: 'Export the monthly report.' })
+    expect(r.geminiCalled).toBe(true)
+  })
+
+  // Call site 1: blocked leaf (sensitive tag) -> Gemini must NOT be invoked, end-to-end.
+  it('call site 1 (fast path): blocked leaf (SEC tag) never reaches try_gemini_for_leaf', () => {
+    const r = runTryLeaf({ fastPath: true, project: 'mikrob', tags: 'SEC,NORMAL', title: 'Add CSV export', desc: 'Export the monthly report.' })
+    expect(r.geminiCalled).toBe(false)
+  })
+
+  // Call site 1: blocked leaf via CONTENT (desc), no sensitive tag/title -- proves the
+  // title/desc arguments actually reach is_gemini_blocked at THIS call site, not just in
+  // the standalone is_gemini_blocked unit tests above.
+  it('call site 1 (fast path): blocked leaf via description content-gate never reaches try_gemini_for_leaf', () => {
+    const r = runTryLeaf({ fastPath: true, project: 'mikrob', tags: 'BE,NORMAL', title: 'Heti audit eredménye', desc: 'Az SSE végpont ?token= query paramétert küld -- biztonsági lelet.' })
+    expect(r.geminiCalled).toBe(false)
+  })
+
+  // Call site 2 (exhausted attempts): allowed leaf -> Gemini actually invoked.
+  it('call site 2 (exhausted attempts): allowed leaf really reaches try_gemini_for_leaf', () => {
+    const r = runTryLeaf({ fastPath: false, project: 'mikrob', tags: 'BE,NORMAL', title: 'Add CSV export', desc: 'Export the monthly report.' })
+    expect(r.geminiCalled).toBe(true)
+  })
+
+  // Call site 2: blocked leaf (wrong project) -> Gemini must NOT be invoked, end-to-end.
+  it('call site 2 (exhausted attempts): blocked leaf (non-allowlisted project) never reaches try_gemini_for_leaf', () => {
+    const r = runTryLeaf({ fastPath: false, project: 'mopsion', tags: 'BE,NORMAL', title: 'Add CSV export', desc: 'Export the monthly report.' })
+    expect(r.geminiCalled).toBe(false)
+  })
+
+  // Call site 2: blocked leaf via CONTENT (desc) -- same argument-wiring proof as call site 1.
+  it('call site 2 (exhausted attempts): blocked leaf via description content-gate never reaches try_gemini_for_leaf', () => {
+    const r = runTryLeaf({ fastPath: false, project: 'mikrob', tags: 'BE,NORMAL', title: 'API endpoint cleanup', desc: 'The auth middleware leaks the JWT token in the response.' })
+    expect(r.geminiCalled).toBe(false)
+  })
 })
 
 describe('is_gemini_blocked guard present at every Gemini call site (T1, card a92e9913)', () => {
@@ -516,6 +704,64 @@ describe('gemini-offload-call.sh detects secrets fail-closed (F2, card a92e9913)
   it('blocks (exit 2, no output) on long hex secret (32+ chars)', () => {
     const hex = 'a'.repeat(40)
     const r = redactInput('hash: ' + hex)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  // RedHat 17510 finding 4: 19 of 39 tested secret shapes were not detected. Extended
+  // coverage with provider formats that were previously entirely missing.
+  it('blocks (exit 2, no output) on Anthropic API key (sk-ant-)', () => {
+    const key = 'sk-ant-api03-' + 'a'.repeat(30)
+    const r = redactInput('key: ' + key)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on npm access token (npm_)', () => {
+    const tok = 'npm_' + 'a'.repeat(36)
+    const r = redactInput(tok)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on Docker Hub personal access token (dckr_pat_)', () => {
+    const tok = 'dckr_pat_' + 'a'.repeat(22)
+    const r = redactInput(tok)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on AWS secret access key assignment', () => {
+    const line = 'aws_secret_access_key=' + 'A'.repeat(40)
+    const r = redactInput(line)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on uppercase/mixed-case long hex (hex32 widened to mixed case)', () => {
+    const hex = 'AbCdEf0123456789'.repeat(3)
+    const r = redactInput('hash: ' + hex)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  // PII DECISION (RedHat 17510 finding 4: "the PII decision is missing"). Explicit scope:
+  // email, Hungarian phone number, Hungarian tax number -- same fail-closed response as a
+  // secret (exit 2, nothing sent).
+  it('blocks (exit 2, no output) on an email address (PII)', () => {
+    const r = redactInput('contact the user at john.doe@example.com for details')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a Hungarian phone number (PII)', () => {
+    const r = redactInput('call them at +36 20 123 4567')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a Hungarian tax number / adószám (PII)', () => {
+    const r = redactInput('adoszam: 12345678-1-02')
     expect(r.exitCode).toBe(2)
     expect(r.output).toBe('')
   })

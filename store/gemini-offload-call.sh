@@ -68,13 +68,23 @@ text = sys.stdin.read()
 
 # Secret-detection patterns (mirrors src/security/secret-gate.ts SECRET_PATTERNS).
 # First: DETECT (fail-closed) -- if any pattern fires, exit 2 without printing.
+# EXTENDED (RedHat 17510 finding 4): the previous 18-pattern list missed 19 of 39 tested
+# secret-shaped tokens -- mostly provider formats that were never covered (Anthropic, OpenAI
+# session keys, Azure, Twilio, SendGrid, npm, Docker Hub, DigitalOcean, Firebase, Cloudflare,
+# PayPal/Stripe publishable keys, Discord bot tokens, SSH key fingerprints) and generic
+# high-entropy long-token shapes. Each addition is its own line so a future miss is one
+# line to add, not a rewrite.
 SECRET_PATTERNS = [
-    # PEM private key blocks
-    (r'-----BEGIN [A-Z ]*PRIVATE KEY-----', 'privkey'),
+    # PEM private key blocks (any kind, not just "PRIVATE KEY" -- also OPENSSH, RSA, EC, DSA)
+    (r'-----BEGIN [A-Z0-9 ]*(PRIVATE KEY|OPENSSH PRIVATE KEY)-----', 'privkey'),
+    # SSH public key fingerprint-bearing lines (still identifies a specific keypair/host)
+    (r'\bssh-(rsa|ed25519|dss) [A-Za-z0-9+/]{40,}={0,2}', 'ssh_pubkey'),
     # Stripe / generic sk_live / sk_test / sk- / sk_
-    (r'\b(sk|rk)_(live|test)_[A-Za-z0-9]{16,}', 'sk_live'),
+    (r'\b(sk|rk|pk)_(live|test)_[A-Za-z0-9]{16,}', 'sk_live'),
     (r'\bsk[-_][A-Za-z0-9_-]{24,}', 'sk_generic'),
     (r'\bsk-proj-[A-Za-z0-9_-]{20,}', 'sk_proj'),
+    # Anthropic API key
+    (r'\bsk-ant-[A-Za-z0-9_-]{20,}', 'anthropic'),
     # ElevenLabs
     (r'(?i)xi-api-key["\'\s:=]+[A-Za-z0-9_-]{16,}', 'elevenlabs'),
     # Bearer token (>= 8 chars)
@@ -85,14 +95,33 @@ SECRET_PATTERNS = [
     (r'\bgh[pousr]_[A-Za-z0-9]{30,}', 'github'),
     # Slack tokens
     (r'\bxox[baprs]-[A-Za-z0-9-]{10,}', 'slack'),
-    # AWS access key
+    # AWS access key + secret key assignment
     (r'\bAKIA[0-9A-Z]{16}\b', 'aws'),
+    (r'(?i)aws_secret_access_key["\'\s:=]+[A-Za-z0-9/+=]{30,}', 'aws_secret'),
     # Supabase
     (r'\bsbp_[0-9a-f]{40}\b', 'supabase'),
-    # Google API key
+    # Google API key / OAuth
     (r'\bAIza[0-9A-Za-z_-]{20,}', 'google'),
+    (r'\b[0-9]+-[0-9A-Za-z_-]{32}\.apps\.googleusercontent\.com\b', 'google_oauth'),
     # Telegram bot token
     (r'\b\d{8,12}:[A-Za-z0-9_-]{35,}\b', 'telegram'),
+    # Twilio
+    (r'\bSK[0-9a-f]{32}\b', 'twilio'),
+    (r'\bAC[0-9a-f]{32}\b', 'twilio_sid'),
+    # SendGrid
+    (r'\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}', 'sendgrid'),
+    # npm access token
+    (r'\bnpm_[A-Za-z0-9]{36}\b', 'npm'),
+    # Docker Hub personal access token
+    (r'\bdckr_pat_[A-Za-z0-9_-]{20,}\b', 'dockerhub'),
+    # DigitalOcean
+    (r'\bdop_v1_[a-f0-9]{64}\b', 'digitalocean'),
+    # Discord bot token
+    (r'\b[MN][A-Za-z0-9_-]{23,25}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b', 'discord'),
+    # Cloudflare API token
+    (r'(?i)cloudflare[_-]?(api[_-]?)?token["\'\s:=]+[A-Za-z0-9_-]{30,}', 'cloudflare'),
+    # Azure connection string / key
+    (r'(?i)AccountKey=[A-Za-z0-9+/]{40,}={0,2}', 'azure'),
     # .env KEY=value (indented, export, or plain; value >= 8 non-space chars)
     (r'(?m)^[ \t]*(export[ \t]+)?[A-Za-z_][A-Za-z0-9_]+=\S{8,}', 'env'),
     # inline credential assignments (password=, secret=, api_key= ...)
@@ -101,13 +130,38 @@ SECRET_PATTERNS = [
     (r'(?i)(postgres|mysql|mongodb|redis)://[^:]+:[^@]{4,}@', 'dburl'),
     # Basic auth header
     (r'(?i)\bBasic\s+[A-Za-z0-9+/=]{8,}', 'basic'),
-    # Long hex secrets (32+ consecutive lowercase hex chars)
-    (r'(?<![0-9a-f])[0-9a-f]{32,}(?![0-9a-f])', 'hex32'),
+    # Long hex secrets (32+ consecutive hex chars, either case)
+    (r'(?<![0-9a-fA-F])[0-9a-fA-F]{32,}(?![0-9a-fA-F])', 'hex32'),
+    # Long base64-shaped opaque blob (40+ chars, mixed case + digits, no spaces -- generic
+    # high-entropy token shape not covered by a provider-specific pattern above)
+    (r'(?<![A-Za-z0-9+/=])(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[0-9])[A-Za-z0-9+/]{40,}={0,2}(?![A-Za-z0-9+/=])', 'opaque_token'),
 ]
 
 for pattern, label in SECRET_PATTERNS:
     if re.search(pattern, text, re.DOTALL):
         sys.stderr.write(f'gemini-offload-call: secret-shaped token ({label}) in prompt, not sending\n')
+        sys.exit(2)  # fail-closed: no output, no send
+
+# PII DECISION (RedHat 17510 finding 4: "a PII-dontes hianyzik"). Explicit scope, fail-closed
+# the same way as a secret: a leaf's title/description is kanban metadata, never the right place
+# for a person's email, phone number, or a Hungarian national ID -- if one is present, the card
+# itself needs the PII tag (which already blocks it upstream in is_gemini_blocked), so finding
+# one HERE means the upstream tag/content gate was bypassed or missed it. Same fail-closed
+# response as a secret: exit 2, nothing sent.
+PII_PATTERNS = [
+    (r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', 'email'),
+    (r'(?<!\d)(\+36|06)[ -]?\d{1,2}[ -]?\d{3}[ -]?\d{4}\b', 'hu_phone'),
+    # Hungarian TAJ (social security) number: 9 digits, grouped 3-3-3
+    (r'\b\d{3}[ -]?\d{3}[ -]?\d{3}\b(?=.{0,20}(?i:taj))|(?i:taj)[^\n]{0,20}?\b\d{3}[ -]?\d{3}[ -]?\d{3}\b', 'hu_taj'),
+    # Hungarian tax number (adoszam): 8 digits - 1 - 2 digits
+    (r'\b\d{8}-\d-\d{2}\b', 'hu_adoszam'),
+    # Credit card number shape (13-19 digits, optionally grouped in 4s)
+    (r'\b(?:\d[ -]?){13,19}\b', 'cc_number'),
+]
+
+for pattern, label in PII_PATTERNS:
+    if re.search(pattern, text, re.DOTALL):
+        sys.stderr.write(f'gemini-offload-call: PII-shaped content ({label}) in prompt, not sending\n')
         sys.exit(2)  # fail-closed: no output, no send
 
 # Clean: print the text unchanged (no redaction needed -- it passed all detectors).
