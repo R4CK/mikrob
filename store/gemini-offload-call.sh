@@ -43,15 +43,22 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
+# ---- temp files + trap (F4: trap before mktemp, card a92e9913) -----------------
+# All temp-file variables are initialised to empty so the trap is safe even if a
+# mktemp call below never runs (e.g. early exit on missing vault key).
+_REDACT_PY="" TMPOUT="" TMPERR="" API_HDR="" REQ_FILE=""
+trap 'rm -f "$_REDACT_PY" "$TMPOUT" "$TMPERR" "$API_HDR" "$REQ_FILE"' EXIT
+
 # ---- prompt redaction ----------------------------------------------------------
-# Strip patterns that look like secrets before sending to an external API.
-# Pattern set mirrors src/security/secret-gate.ts SECRET_PATTERNS (card a92e9913 B2).
-# Prompt arrives on stdin to avoid appearing in /proc/<pid>/cmdline.
+# FAIL-CLOSED (F2, WhiteHat2, card a92e9913): if the prompt contains ANY secret-shaped
+# token the script exits 2 ("no draft") WITHOUT sending anything to the external API.
+# Redaction error also exits 2.  This is intentionally strict: a false positive means
+# one leaf gets no Gemini draft, a false negative leaks a secret.
 #
-# The Python script is written to a temp file so that redact_prompt() can call
+# The Python script is written to a 0600 temp file so redact_prompt() can call
 # `python3 "$file"` with the text on stdin.  The heredoc approach (python3 - <<'EOF')
-# cannot work here: the heredoc overrides stdin inside the function body, so
-# sys.stdin.read() always returns empty string when text is piped in.
+# cannot work inside a function: the heredoc overrides stdin, so sys.stdin.read()
+# always returns empty string when text is piped in.
 _REDACT_PY="$(mktemp)"
 chmod 0600 "$_REDACT_PY"
 cat > "$_REDACT_PY" << 'PYEOF'
@@ -59,47 +66,51 @@ import re, sys
 
 text = sys.stdin.read()
 
-# PEM private key blocks
-text = re.sub(r'-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----',
-              '[REDACTED_PRIVKEY]', text, flags=re.DOTALL)
-# Stripe / generic sk_live / sk_test
-text = re.sub(r'\b(sk|rk)_(live|test)_[A-Za-z0-9]{16,}', '[REDACTED_KEY]', text)
-# Generic vendor secret keys (sk- or sk_)
-text = re.sub(r'\bsk[-_][A-Za-z0-9_-]{24,}', '[REDACTED_KEY]', text)
-# OpenAI project key (sk-proj-)
-text = re.sub(r'\bsk-proj-[A-Za-z0-9_-]{20,}', '[REDACTED_KEY]', text)
-# ElevenLabs (xi-api-key header)
-text = re.sub(r'xi-api-key["\'\s:=]+[A-Za-z0-9_-]{16,}', '[REDACTED_KEY]', text, flags=re.IGNORECASE)
-# Bearer token (any length >= 8)
-text = re.sub(r'\bBearer\s+[A-Za-z0-9_\-\.=+/]{8,}', '[REDACTED_TOKEN]', text, flags=re.IGNORECASE)
-# JWT: eyJ...eyJ...sig
-text = re.sub(r'\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}',
-              '[REDACTED_JWT]', text)
-# GitHub tokens (ghp_ gho_ ghu_ ghr_ ghs_)
-text = re.sub(r'\bgh[pousr]_[A-Za-z0-9]{30,}', '[REDACTED_TOKEN]', text)
-# Slack tokens (xoxb- xoxa- xoxp- xoxr- xoxs-)
-text = re.sub(r'\bxox[baprs]-[A-Za-z0-9-]{10,}', '[REDACTED_TOKEN]', text)
-# AWS access key ID
-text = re.sub(r'\bAKIA[0-9A-Z]{16}\b', '[REDACTED_KEY]', text)
-# Supabase personal access token
-text = re.sub(r'\bsbp_[0-9a-f]{40}\b', '[REDACTED_KEY]', text)
-# Google API keys (AIza)
-text = re.sub(r'\bAIza[0-9A-Za-z_-]{20,}', '[REDACTED_KEY]', text)
-# Telegram bot token (numeric:alphanum)
-text = re.sub(r'\b\d{8,12}:[A-Za-z0-9_-]{35,}\b', '[REDACTED_TOKEN]', text)
-# .env-style: KEY=value (ALL_CAPS, mixed, export prefix, indented; >= 8 char value)
-text = re.sub(r'(?m)^[ \t]*(export[ \t]+)?[A-Za-z_][A-Za-z0-9_]+=\S{8,}', '[REDACTED_ENV]', text)
-# password/secret/token/api_key assignments (inline)
-text = re.sub(
-    r'\b(password|passwd|secret|token|api[_-]?key|auth[_-]?key|access[_-]?key)[=:\s]+["\']?[A-Za-z0-9_\-\.=+/]{8,}["\']?',
-    '[REDACTED_CRED]', text, flags=re.IGNORECASE)
-# Database URLs with embedded password (postgres/mysql/mongodb/redis://user:pass@host)
-text = re.sub(r'(postgres|mysql|mongodb|redis)://[^:]+:[^@]{4,}@', r'\1://[REDACTED]@', text)
-# Basic auth header
-text = re.sub(r'\bBasic\s+[A-Za-z0-9+/=]{8,}', '[REDACTED_BASIC]', text, flags=re.IGNORECASE)
-# Long hex secrets (32+ consecutive hex chars)
-text = re.sub(r'(?<![0-9a-f])[0-9a-f]{32,}(?![0-9a-f])', '[REDACTED_HEX]', text)
+# Secret-detection patterns (mirrors src/security/secret-gate.ts SECRET_PATTERNS).
+# First: DETECT (fail-closed) -- if any pattern fires, exit 2 without printing.
+SECRET_PATTERNS = [
+    # PEM private key blocks
+    (r'-----BEGIN [A-Z ]*PRIVATE KEY-----', 'privkey'),
+    # Stripe / generic sk_live / sk_test / sk- / sk_
+    (r'\b(sk|rk)_(live|test)_[A-Za-z0-9]{16,}', 'sk_live'),
+    (r'\bsk[-_][A-Za-z0-9_-]{24,}', 'sk_generic'),
+    (r'\bsk-proj-[A-Za-z0-9_-]{20,}', 'sk_proj'),
+    # ElevenLabs
+    (r'(?i)xi-api-key["\'\s:=]+[A-Za-z0-9_-]{16,}', 'elevenlabs'),
+    # Bearer token (>= 8 chars)
+    (r'(?i)\bBearer\s+[A-Za-z0-9_\-.=+/]{8,}', 'bearer'),
+    # JWT
+    (r'\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}', 'jwt'),
+    # GitHub tokens
+    (r'\bgh[pousr]_[A-Za-z0-9]{30,}', 'github'),
+    # Slack tokens
+    (r'\bxox[baprs]-[A-Za-z0-9-]{10,}', 'slack'),
+    # AWS access key
+    (r'\bAKIA[0-9A-Z]{16}\b', 'aws'),
+    # Supabase
+    (r'\bsbp_[0-9a-f]{40}\b', 'supabase'),
+    # Google API key
+    (r'\bAIza[0-9A-Za-z_-]{20,}', 'google'),
+    # Telegram bot token
+    (r'\b\d{8,12}:[A-Za-z0-9_-]{35,}\b', 'telegram'),
+    # .env KEY=value (indented, export, or plain; value >= 8 non-space chars)
+    (r'(?m)^[ \t]*(export[ \t]+)?[A-Za-z_][A-Za-z0-9_]+=\S{8,}', 'env'),
+    # inline credential assignments (password=, secret=, api_key= ...)
+    (r'(?i)\b(password|passwd|secret|token|api[_-]?key|auth[_-]?key|access[_-]?key)[=:\s]+["\']?[A-Za-z0-9_\-.=+/]{8,}["\']?', 'cred'),
+    # Database URLs with embedded password
+    (r'(?i)(postgres|mysql|mongodb|redis)://[^:]+:[^@]{4,}@', 'dburl'),
+    # Basic auth header
+    (r'(?i)\bBasic\s+[A-Za-z0-9+/=]{8,}', 'basic'),
+    # Long hex secrets (32+ consecutive lowercase hex chars)
+    (r'(?<![0-9a-f])[0-9a-f]{32,}(?![0-9a-f])', 'hex32'),
+]
 
+for pattern, label in SECRET_PATTERNS:
+    if re.search(pattern, text, re.DOTALL):
+        sys.stderr.write(f'gemini-offload-call: secret-shaped token ({label}) in prompt, not sending\n')
+        sys.exit(2)  # fail-closed: no output, no send
+
+# Clean: print the text unchanged (no redaction needed -- it passed all detectors).
 print(text, end='')
 PYEOF
 
@@ -108,11 +119,12 @@ redact_prompt() {
 }
 
 # redact-test: run redact_prompt on stdin/arg and exit WITHOUT touching vault (test hook, card a92e9913 B2)
+# Exit code is propagated: 0=clean, 2=secret found (fail-closed), 1=other error.
 if [[ "${1:-}" == "--redact-test" ]]; then
   shift
   PROMPT="${*:-$(cat)}"
-  printf '%s' "$PROMPT" | redact_prompt
-  exit 0
+  printf '%s' "$PROMPT" | redact_prompt; _rc="${PIPESTATUS[1]}"
+  exit "$_rc"
 fi
 
 # ---- vault key -----------------------------------------------------------------
@@ -163,10 +175,25 @@ if [[ -z "${PROMPT// }" ]]; then
 fi
 
 CLEAN_PROMPT="$(printf '%s' "$PROMPT" | redact_prompt)"
+# F2 (fail-closed): redact_prompt exits 2 when a secret-shaped token is found.
+# Redaction error (non-zero, non-2) also aborts -- we never send on uncertainty.
+if [[ $? -ne 0 ]]; then
+  echo "gemini-offload-call: prompt blocked by secret detector (fail-closed), no draft" >&2
+  exit 2
+fi
 
 # ---- build request body --------------------------------------------------------
-# Prompt arrives via stdin to keep it out of /proc/<pid>/cmdline (card a92e9913 B3).
-REQUEST_BODY="$(printf '%s' "$CLEAN_PROMPT" | python3 -c '
+# F3 (WhiteHat2, card a92e9913): write the request body to a 0600 temp file and
+# pass it to curl with --data-binary @file so it never appears in /proc/<pid>/cmdline.
+TMPOUT="$(mktemp)"
+TMPERR="$(mktemp)"
+# Write API key to a 0600 header file so it never appears in /proc/<pid>/cmdline (card a92e9913 B3).
+API_HDR="$(mktemp)"
+chmod 0600 "$API_HDR"
+printf 'x-goog-api-key: %s\r\n' "$API_KEY" > "$API_HDR"
+REQ_FILE="$(mktemp)"
+chmod 0600 "$REQ_FILE"
+printf '%s' "$CLEAN_PROMPT" | python3 -c '
 import json, sys
 prompt = sys.stdin.read()
 body = {
@@ -177,24 +204,16 @@ body = {
   }
 }
 print(json.dumps(body))
-')"
+' > "$REQ_FILE"
 
 # ---- call Gemini ---------------------------------------------------------------
-TMPOUT="$(mktemp)"
-TMPERR="$(mktemp)"
-# Write API key to a 0600 header file so it never appears in /proc/<pid>/cmdline (card a92e9913 B3).
-API_HDR="$(mktemp)"
-chmod 0600 "$API_HDR"
-printf 'x-goog-api-key: %s\r\n' "$API_KEY" > "$API_HDR"
-trap 'rm -f "$TMPOUT" "$TMPERR" "$API_HDR" "$_REDACT_PY"' EXIT
-
 http_status="$(curl -s -o "$TMPOUT" -w '%{http_code}' \
   --max-time "$TIMEOUT" \
   -X POST \
   -H "Content-Type: application/json" \
   -H @"$API_HDR" \
   "$GEMINI_API_BASE/models/$GEMINI_MODEL:generateContent" \
-  -d "$REQUEST_BODY" 2>"$TMPERR")"
+  --data-binary @"$REQ_FILE" 2>"$TMPERR")"
 
 if [[ "$http_status" == "200" ]]; then
   # Extract text from the response

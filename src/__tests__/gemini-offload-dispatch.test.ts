@@ -94,7 +94,8 @@ describe('get_gemini_route() reads gemini-fallback-state.json (card a92e9913)', 
 // ── 3. Project filter ────────────────────────────────────────────────────────────────────
 // Behavioral helper: extract is_gemini_blocked() from the script and call it in bash.
 // tags_for() UPPERCASES all tags; tests must pass uppercased values (card a92e9913 B1).
-function runIsGeminiBlocked(project: string, tags: string): 'BLOCKED' | 'ALLOWED' {
+// title is optional (3rd arg), desc is optional (4th arg) for content-gate tests.
+function runIsGeminiBlocked(project: string, tags: string, title = '', desc = ''): 'BLOCKED' | 'ALLOWED' {
   const dispatchSrc = src(DISPATCH)
   const fnIdx = dispatchSrc.indexOf('\nis_gemini_blocked()')
   // Walk to matching closing brace
@@ -112,67 +113,234 @@ function runIsGeminiBlocked(project: string, tags: string): 'BLOCKED' | 'ALLOWED
   }
   const fnDef = dispatchSrc.slice(fnIdx, end)
   const result = execFileSync('bash', ['-c',
-    `${fnDef}\nis_gemini_blocked ${JSON.stringify(project)} ${JSON.stringify(tags)} && echo BLOCKED || echo ALLOWED`,
+    `${fnDef}\nis_gemini_blocked ${JSON.stringify(project)} ${JSON.stringify(tags)} ${JSON.stringify(title)} ${JSON.stringify(desc)} && echo BLOCKED || echo ALLOWED`,
   ], { encoding: 'utf-8' })
   return result.trim() as 'BLOCKED' | 'ALLOWED'
 }
 
-describe('is_gemini_blocked() blocks mopsion and BLOKKOLT-Peti-stop cards (card a92e9913)', () => {
+describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (card a92e9913)', () => {
   it('is_gemini_blocked function is defined', () => {
     expect(src(DISPATCH)).toContain('is_gemini_blocked()')
   })
 
-  it('blocks mopsion project (case-insensitive)', () => {
+  // F1a: PROJECT ALLOWLIST -- only "mikrob" (casefold) is allowed
+  it('blocks mopsion project (not in allowlist)', () => {
     expect(runIsGeminiBlocked('mopsion', 'BE')).toBe('BLOCKED')
     expect(runIsGeminiBlocked('MOPSION', 'BE')).toBe('BLOCKED')
   })
 
-  it('blocks CleanCore project (case-insensitive)', () => {
+  it('blocks CleanCore project (not in allowlist)', () => {
     expect(runIsGeminiBlocked('CleanCore', 'BE')).toBe('BLOCKED')
     expect(runIsGeminiBlocked('CLEANCORE', 'BE')).toBe('BLOCKED')
   })
 
-  it('blocks uppercased BLOKKOLT-PETI-STOP tag (as returned by tags_for)', () => {
-    // tags_for() uppercases tags; the old code checked "BLOKKOLT-Peti-stop" (wrong case)
-    expect(runIsGeminiBlocked('fleet', 'BLOKKOLT-PETI-STOP,BE')).toBe('BLOCKED')
+  it('blocks unknown/other projects (WhiteHat2 F1a -- allowlist, not blocklist)', () => {
+    expect(runIsGeminiBlocked('Ingatlan', 'BE,NORMAL')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('fleet', 'QA,NORMAL')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('SomeOtherProject', 'BE')).toBe('BLOCKED')
   })
 
-  it('blocks MOPSION tag (catches [mopsion] in title with empty project field)', () => {
-    expect(runIsGeminiBlocked('', 'MOPSION,BE,HIGH')).toBe('BLOCKED')
-  })
-
-  it('blocks SEC tag (sensitive security/authz/money cards must not leave fleet, F4)', () => {
-    expect(runIsGeminiBlocked('fleet', 'SEC,BE,HIGH')).toBe('BLOCKED')
-  })
-
-  // Peti permanent rule (Telegram 11131): auth/RBAC/tenant/financial/PII tags blocked
-  it('blocks AUTH tag (Peti rule Telegram 11131)', () => {
-    expect(runIsGeminiBlocked('fleet', 'AUTH,BE,HIGH')).toBe('BLOCKED')
-  })
-
-  it('blocks RBAC tag (Peti rule Telegram 11131)', () => {
-    expect(runIsGeminiBlocked('fleet', 'RBAC,BE,NORMAL')).toBe('BLOCKED')
-  })
-
-  it('blocks TENANT tag (Peti rule Telegram 11131)', () => {
-    expect(runIsGeminiBlocked('fleet', 'TENANT,BE,NORMAL')).toBe('BLOCKED')
-  })
-
-  it('blocks PII tag (Peti rule Telegram 11131)', () => {
-    expect(runIsGeminiBlocked('fleet', 'PII,BE,NORMAL')).toBe('BLOCKED')
-  })
-
-  it('blocks PENZ tag (Peti rule Telegram 11131)', () => {
-    expect(runIsGeminiBlocked('fleet', 'PENZ,BE,NORMAL')).toBe('BLOCKED')
-  })
-
-  it('fail-closed: empty project is blocked (could be unmapped mopsion card)', () => {
+  it('fail-closed: empty project is blocked', () => {
     expect(runIsGeminiBlocked('', 'BE,NORMAL')).toBe('BLOCKED')
   })
 
-  it('allows a plain fleet card with known non-mopsion project', () => {
+  it('allows only the mikrob/MikroB project (case-insensitive)', () => {
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL')).toBe('ALLOWED')
-    expect(runIsGeminiBlocked('fleet', 'QA,NORMAL')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('MikroB', 'BE,NORMAL')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('MIKROB', 'BE,NORMAL')).toBe('ALLOWED')
+  })
+
+  // F1b: TAG BLOCKS -- casefold + accent-strip + expanded blocklist
+  it('blocks BLOKKOLT-PETI-STOP tag (uppercase, as returned by tags_for)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BLOKKOLT-PETI-STOP,BE')).toBe('BLOCKED')
+  })
+
+  it('blocks any BLOKKOLT-* variant (generalised, WhiteHat2 F1b)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BLOKKOLT-PETI-DONTES,BE')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BLOKKOLT-ANYTHING,BE')).toBe('BLOCKED')
+  })
+
+  it('blocks MOPSION tag (catches [mopsion] in title with empty project)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'MOPSION,BE,HIGH')).toBe('BLOCKED')
+  })
+
+  it('blocks SEC tag', () => {
+    expect(runIsGeminiBlocked('mikrob', 'SEC,BE,HIGH')).toBe('BLOCKED')
+  })
+
+  // Peti permanent rule (Telegram 11131)
+  it('blocks AUTH tag', () => {
+    expect(runIsGeminiBlocked('mikrob', 'AUTH,BE,HIGH')).toBe('BLOCKED')
+  })
+
+  it('blocks RBAC tag', () => {
+    expect(runIsGeminiBlocked('mikrob', 'RBAC,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks TENANT tag', () => {
+    expect(runIsGeminiBlocked('mikrob', 'TENANT,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks PII tag', () => {
+    expect(runIsGeminiBlocked('mikrob', 'PII,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks PENZ tag', () => {
+    expect(runIsGeminiBlocked('mikrob', 'PENZ,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  // F1b accent/casefold variants (WhiteHat2 finding -- these passed through before)
+  it('blocks PÉNZ tag (accented uppercase, WhiteHat2 F1b)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'PÉNZ,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks PENZUGY tag', () => {
+    expect(runIsGeminiBlocked('mikrob', 'PENZUGY,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks SECURITY tag (WhiteHat2 F1b)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'SECURITY,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks AUTHZ tag (WhiteHat2 F1b)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'AUTHZ,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks SUPERADMIN tag (WhiteHat2 F1b)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'SUPERADMIN,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks FINANCE, BILLING, PAYMENT tags (WhiteHat2 F1b)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'FINANCE,BE,NORMAL')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BILLING,BE,NORMAL')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'PAYMENT,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks SECRET, CRYPTO, GDPR, PRIVACY, LEGAL, CYBERSEC tags (WhiteHat2 F1b)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'SECRET,BE,NORMAL')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'CRYPTO,BE,NORMAL')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'GDPR,BE,NORMAL')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'PRIVACY,BE,NORMAL')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'LEGAL,BE,NORMAL')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'CYBERSEC,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  // F1c: CONTENT GATE on card title (WhiteHat2 finding -- tag-less security audit cards)
+  it('blocks by title content-gate (security keyword, WhiteHat2 F1c)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', '[MikroB][LOW] Heti önaudit: SSE ?token= query param biztonsági lelet')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Auth middleware security review')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'RBAC jogosultsági ellenőrzés')).toBe('BLOCKED')
+  })
+
+  it('allows a plain mikrob fleet card (no sensitive tags or title keywords)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Add logging to the dashboard API endpoint')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'QA,NORMAL', 'Write unit tests for the date formatter')).toBe('ALLOWED')
+  })
+
+  // F1c extension: CONTENT GATE on description (card a92e9913 MikroB 11335)
+  // A card like 6a4e34c1 has no sensitive tag, no sensitive title, but sensitive description.
+  it('blocks by description content-gate (security keyword in desc, no title keyword)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Heti audit eredménye', 'Az SSE végpont ?token= query paramétert küld -- biztonsági lelet.')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'API endpoint cleanup', 'The auth middleware leaks the JWT token in the response.')).toBe('BLOCKED')
+  })
+
+  it('blocks by description with password keyword (no title match)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'User onboarding flow', 'Admin password reset uses a hardcoded default secret.')).toBe('BLOCKED')
+  })
+
+  it('allows card with clean title AND clean description', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Add CSV export', 'Export the monthly report as a downloadable CSV file.')).toBe('ALLOWED')
+  })
+
+  // T1: CALL-SITE GUARD -- is_gemini_blocked must be called at both Gemini call sites.
+  // These tests go RED if the guard is removed from either call site.
+})
+
+describe('is_gemini_blocked guard present at every Gemini call site (T1, card a92e9913)', () => {
+  // Call site 1: fast-path when LOCAL_LLM_AVAILABLE=0
+  it('call site 1 (LOCAL_LLM_AVAILABLE=0): is_gemini_blocked called before try_gemini_for_leaf', () => {
+    const codeStr = code(DISPATCH)
+    // Anchor: the fast-path block is identified by LOCAL_LLM_AVAILABLE:-1
+    const anchorIdx = codeStr.indexOf('LOCAL_LLM_AVAILABLE:-1')
+    expect(anchorIdx).toBeGreaterThan(-1)
+    // Window: from anchor to the closing "return 1" of that if-block (~300 chars)
+    const window = codeStr.slice(anchorIdx, anchorIdx + 500)
+    // Guard must appear BEFORE try_gemini_for_leaf in this window
+    const guardPos = window.indexOf('is_gemini_blocked')
+    const geminiPos = window.indexOf('try_gemini_for_leaf')
+    expect(guardPos).toBeGreaterThan(-1)
+    expect(geminiPos).toBeGreaterThan(-1)
+    expect(guardPos).toBeLessThan(geminiPos)
+  })
+
+  // Call site 2: exhausted-attempts fallback.
+  // Anchor: the comparison `${n:-0}" -ge "$OFFLOAD_LEAF_MAX_ATTEMPTS"` is unique in executable code.
+  it('call site 2 (exhausted attempts): is_gemini_blocked called before try_gemini_for_leaf', () => {
+    const codeStr = code(DISPATCH)
+    const anchorStr = '${n:-0}" -ge "$OFFLOAD_LEAF_MAX_ATTEMPTS"'
+    const anchorIdx = codeStr.indexOf(anchorStr)
+    expect(anchorIdx).toBeGreaterThan(-1)
+    const window = codeStr.slice(anchorIdx, anchorIdx + 500)
+    const guardPos = window.indexOf('is_gemini_blocked')
+    const geminiPos = window.indexOf('try_gemini_for_leaf')
+    expect(guardPos).toBeGreaterThan(-1)
+    expect(geminiPos).toBeGreaterThan(-1)
+    expect(guardPos).toBeLessThan(geminiPos)
+  })
+
+  // Call site 1: gemini_route_enabled must also be checked before try_gemini_for_leaf
+  it('call site 1: gemini_route_enabled checked before try_gemini_for_leaf', () => {
+    const codeStr = code(DISPATCH)
+    const anchorIdx = codeStr.indexOf('LOCAL_LLM_AVAILABLE:-1')
+    const window = codeStr.slice(anchorIdx, anchorIdx + 500)
+    const enabledPos = window.indexOf('gemini_route_enabled')
+    const geminiPos = window.indexOf('try_gemini_for_leaf')
+    expect(enabledPos).toBeGreaterThan(-1)
+    expect(enabledPos).toBeLessThan(geminiPos)
+  })
+
+  // Call site 2: gemini_route_enabled must also be checked before try_gemini_for_leaf
+  it('call site 2: gemini_route_enabled checked before try_gemini_for_leaf', () => {
+    const codeStr = code(DISPATCH)
+    const anchorStr = '${n:-0}" -ge "$OFFLOAD_LEAF_MAX_ATTEMPTS"'
+    const anchorIdx = codeStr.indexOf(anchorStr)
+    const window = codeStr.slice(anchorIdx, anchorIdx + 500)
+    const enabledPos = window.indexOf('gemini_route_enabled')
+    const geminiPos = window.indexOf('try_gemini_for_leaf')
+    expect(enabledPos).toBeGreaterThan(-1)
+    expect(enabledPos).toBeLessThan(geminiPos)
+  })
+})
+
+// ── O1: gemini_route_enabled fail-closed switch ──────────────────────────────────────────
+describe('gemini_route_enabled() fail-closed switch (O1, card a92e9913)', () => {
+  it('gemini_route_enabled function is defined in offload-dispatch.sh', () => {
+    expect(src(DISPATCH)).toContain('gemini_route_enabled()')
+  })
+
+  it('gemini_route_enabled returns false (disabled) when flag file does not exist', () => {
+    const dispatchSrc = src(DISPATCH)
+    const fnIdx = dispatchSrc.indexOf('\ngemini_route_enabled()')
+    let depth = 0; let end = fnIdx
+    for (let i = fnIdx; i < dispatchSrc.length; i++) {
+      if (dispatchSrc[i] === '{') depth++
+      if (dispatchSrc[i] === '}') { depth--; if (depth === 0) { end = i + 1; break } }
+    }
+    const fnDef = dispatchSrc.slice(fnIdx, end)
+    // Extract HERE from the script (it's set before this function)
+    const hereMatch = dispatchSrc.match(/^HERE="\$\(cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)" && pwd\)"$/m)
+    const hereSetup = hereMatch ? hereMatch[0] : 'HERE=/nonexistent'
+    const result = execFileSync('bash', ['-c',
+      `${hereSetup}\n${fnDef}\ngemini_route_enabled && echo ENABLED || echo DISABLED`,
+    ], { encoding: 'utf-8' })
+    expect(result.trim()).toBe('DISABLED')
+  })
+
+  it('flag file reference uses HERE variable (stays in store/)', () => {
+    const fnIdx = src(DISPATCH).indexOf('gemini_route_enabled()')
+    const fnChunk = src(DISPATCH).slice(fnIdx, fnIdx + 300)
+    expect(fnChunk).toContain('gemini-offload-enabled')
+    expect(fnChunk).toContain('HERE')
   })
 })
 
@@ -198,15 +366,23 @@ describe('gemini_draft_comment_body() uses GEMINI DRAFT header (card a92e9913)',
 })
 
 // ── 5. try_leaf Gemini fallback paths ───────────────────────────────────────────────────
-describe('try_leaf() contains Gemini fallback paths (card a92e9913)', () => {
-  it('calls try_gemini_for_leaf on ONLINE route=gemini', () => {
+describe('try_leaf() Gemini fallback paths (card a92e9913)', () => {
+  // F1d (WhiteHat2): categorical-online leaves NEVER go to Gemini -- the router already
+  // classified them as sensitive.  The old "GEMINI FALLBACK for ONLINE-category leaves"
+  // marker + try_gemini_for_leaf call has been removed from that branch.
+  it('categorical-online branch does NOT call try_gemini_for_leaf (F1d, WhiteHat2)', () => {
     const dispatchSrc = src(DISPATCH)
-    // The unique comment added by card a92e9913 marks the exact fallback site
-    const onlineSectionIdx = dispatchSrc.indexOf('GEMINI FALLBACK for ONLINE-category leaves')
-    expect(onlineSectionIdx).toBeGreaterThan(-1)
-    // Within 400 chars after that marker we should find the Gemini call
-    const nearOnline = dispatchSrc.slice(onlineSectionIdx, onlineSectionIdx + 400)
-    expect(nearOnline).toContain('try_gemini_for_leaf')
+    // Find the categorical-online handling section
+    const catOnlineIdx = dispatchSrc.indexOf('categorical-online')
+    expect(catOnlineIdx).toBeGreaterThan(-1)
+    // Extract the block up to the next rc= assignment or return (conservative 600 char window)
+    const catOnlineBlock = dispatchSrc.slice(catOnlineIdx, catOnlineIdx + 600)
+    // Must NOT contain a try_gemini_for_leaf call inside this block
+    expect(catOnlineBlock).not.toContain('try_gemini_for_leaf')
+  })
+
+  it('categorical-online branch does NOT have the old GEMINI FALLBACK marker (F1d cleanup)', () => {
+    expect(src(DISPATCH)).not.toContain('GEMINI FALLBACK for ONLINE-category leaves')
   })
 
   it('calls try_gemini_for_leaf when exhausted attempts', () => {
@@ -251,94 +427,104 @@ describe('Gemini call sites write only comments or messages (extends card 8b9253
   })
 })
 
-// ── 7. Prompt redaction in gemini-offload-call.sh ────────────────────────────────────────
-// Behavioral tests via --redact-test mode (card a92e9913 B2).
+// ── 7. Secret detection in gemini-offload-call.sh ────────────────────────────────────────
+// FAIL-CLOSED (F2, WhiteHat2, card a92e9913): ANY secret-shaped token in prompt -> exit 2,
+// no output, no send to Gemini.  The old "best-effort redaction" (replacing with [REDACTED])
+// is removed: a false-negative in redaction leaks secrets; fail-closed is the only safe default.
+//
 // Token literals are constructed programmatically so the secret-write-guard does not
 // flag the test source itself (the guard scans the file content, not runtime values).
-function redactInput(input: string): string {
-  return execFileSync('bash', [join(ROOT, GEMINI_CALL), '--redact-test', input], {
-    encoding: 'utf-8',
-  })
+function redactInput(input: string): { exitCode: number; output: string } {
+  try {
+    const output = execFileSync('bash', [join(ROOT, GEMINI_CALL), '--redact-test', input], {
+      encoding: 'utf-8',
+    })
+    return { exitCode: 0, output }
+  } catch (e: any) {
+    return { exitCode: e.status ?? 1, output: e.stdout ?? '' }
+  }
 }
 
-describe('gemini-offload-call.sh redacts secrets from prompt (card a92e9913)', () => {
+describe('gemini-offload-call.sh detects secrets fail-closed (F2, card a92e9913)', () => {
   it('redact_prompt function is defined', () => {
     expect(src(GEMINI_CALL)).toContain('redact_prompt()')
   })
 
-  it('redacts Bearer token', () => {
+  it('blocks (exit 2, no output) on Bearer token', () => {
     const tok = 'Bearer ' + 'A'.repeat(30)
-    const out = redactInput('Authorization: ' + tok)
-    expect(out).not.toContain(tok)
-    expect(out).toContain('[REDACTED')
+    const r = redactInput('Authorization: ' + tok)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
   })
 
-  it('redacts Google API key (AIza)', () => {
+  it('blocks (exit 2, no output) on Google API key (AIza)', () => {
     const key = 'AIzaSy' + 'A'.repeat(30)
-    const out = redactInput('key=' + key)
-    expect(out).not.toContain('AIzaSy')
-    expect(out).toContain('[REDACTED')
+    const r = redactInput('key=' + key)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
   })
 
-  it('redacts Stripe-style key (sk_live_)', () => {
+  it('blocks (exit 2, no output) on Stripe-style key (sk_live_)', () => {
     const key = 'sk_live_' + 'A'.repeat(20)
-    const out = redactInput(key)
-    expect(out).not.toContain('sk_live_')
-    expect(out).toContain('[REDACTED')
+    const r = redactInput(key)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
   })
 
-  it('redacts Telegram bot token (numeric:alphanum)', () => {
+  it('blocks (exit 2, no output) on Telegram bot token (numeric:alphanum)', () => {
     const tok = '123456789' + ':' + 'A'.repeat(36)
-    const out = redactInput('bot token: ' + tok)
-    expect(out).not.toContain('123456789' + ':')
-    expect(out).toContain('[REDACTED')
+    const r = redactInput('bot token: ' + tok)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
   })
 
-  it('redacts .env-style ALL_CAPS KEY=value line', () => {
+  it('blocks (exit 2, no output) on .env-style ALL_CAPS KEY=value line', () => {
     const line = 'DATABASE_PASSWORD' + '=' + 'supersecret1234'
-    const out = redactInput(line)
-    expect(out).not.toContain('supersecret1234')
-    expect(out).toContain('[REDACTED')
+    const r = redactInput(line)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
   })
 
-  it('redacts export FOO=value line', () => {
+  it('blocks (exit 2, no output) on export FOO=value line', () => {
     const line = 'export API_SECRET' + '=' + 'supersecret1234'
-    const out = redactInput(line)
-    expect(out).not.toContain('supersecret1234')
-    expect(out).toContain('[REDACTED')
+    const r = redactInput(line)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
   })
 
-  it('redacts GitHub-style token (ghp_)', () => {
+  it('blocks (exit 2, no output) on GitHub-style token (ghp_)', () => {
     const tok = 'ghp_' + 'A'.repeat(36)
-    const out = redactInput(tok)
-    expect(out).not.toContain('ghp_')
-    expect(out).toContain('[REDACTED')
+    const r = redactInput(tok)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
   })
 
-  it('redacts AWS-style access key (AKIA)', () => {
+  it('blocks (exit 2, no output) on AWS-style access key (AKIA)', () => {
     const key = 'AKIA' + 'IOSFODNN7EXAMPLE'
-    const out = redactInput('aws key: ' + key)
-    expect(out).not.toContain(key)
-    expect(out).toContain('[REDACTED')
+    const r = redactInput('aws key: ' + key)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
   })
 
-  it('redacts JWT (eyJ header.eyJ payload.sig)', () => {
+  it('blocks (exit 2, no output) on JWT (eyJ header.eyJ payload.sig)', () => {
     const jwt = 'eyJhbGci' + 'OiJIUzI1NiJ9.eyJzdWIiOiJ4eHh4eHh4In0.' + 'SflKxwRJSMeKKF2QT4fw'
-    const out = redactInput(jwt)
-    expect(out).not.toContain('eyJhbGci')
-    expect(out).toContain('[REDACTED')
+    const r = redactInput(jwt)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
   })
 
-  it('redacts long hex secret (32+ chars)', () => {
+  it('blocks (exit 2, no output) on long hex secret (32+ chars)', () => {
     const hex = 'a'.repeat(40)
-    const out = redactInput('hash: ' + hex)
-    expect(out).not.toContain(hex)
-    expect(out).toContain('[REDACTED')
+    const r = redactInput('hash: ' + hex)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
   })
 
-  it('keeps normal non-secret text intact', () => {
-    const out = redactInput('fix the bug in the payment service')
-    expect(out.trim()).toBe('fix the bug in the payment service')
+  it('passes through (exit 0, output intact) normal non-secret text', () => {
+    const text = 'fix the bug in the payment service'
+    const r = redactInput(text)
+    expect(r.exitCode).toBe(0)
+    expect(r.output.trim()).toBe(text)
   })
 })
 
