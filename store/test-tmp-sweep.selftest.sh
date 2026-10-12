@@ -193,16 +193,16 @@ else
   echo "  FAIL 50-entry sweep took ${ELAPSED}s (>= 10s) -- has_live_process may still be O(pids*fds)"; fail=1
 fi
 
-# --- case 12 (B6): 60 open fds inside an old tree -- no SIGPIPE under pipefail ------------
+# --- case 12 (B6): 200 open fds inside an old tree -- no SIGPIPE under pipefail -----------
 # pins that has_live_process() uses awk exit status (no pipe) and fires correctly when a
 # process holds many distinct fds inside the tree (old awk|grep -q silently failed at 25+).
 reset_target
 B6_ENTRY="$FAKE_TARGET/known-leak-b6fd01"
 touch_old "$B6_ENTRY"
-for i in $(seq 1 60); do touch -d '2 hours ago' "$B6_ENTRY/f$i"; done
+for i in $(seq 1 200); do touch -d '2 hours ago' "$B6_ENTRY/f$i"; done
 touch -d '2 hours ago' "$B6_ENTRY"   # reset mtime: the touch loop above refreshes it
 (
-  for i in $(seq 1 60); do exec {_}<"$B6_ENTRY/f$i"; done
+  for i in $(seq 1 200); do exec {_}<"$B6_ENTRY/f$i"; done
   sleep 30
 ) &
 B6_PID=$!
@@ -210,9 +210,9 @@ sleep 0.3
 run_sweep > /dev/null 2>&1
 kill "$B6_PID" 2>/dev/null; wait "$B6_PID" 2>/dev/null || true
 if [ -e "$B6_ENTRY" ]; then
-  echo "  ok   60 open fds inside an old tree prevent removal (no SIGPIPE under pipefail)"
+  echo "  ok   200 open fds inside an old tree prevent removal (no SIGPIPE under pipefail)"
 else
-  echo "  FAIL tree removed despite 60 open fds -- has_live_process SIGPIPE bug"; fail=1
+  echo "  FAIL tree removed despite 200 open fds -- has_live_process SIGPIPE bug"; fail=1
 fi
 
 # --- case 13 (B6 cwd): process cwd inside old tree -- has_live_process fires correctly ----
