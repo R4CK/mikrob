@@ -31,10 +31,18 @@
 #   3. card-build-route.sh <cardId>, with CARD_BUILD_ROUTE_DISPATCHER=self-advance exported so the log
 #      (and card-build-route-24h-measure.sh's dispatcher breakdown) can tell this call apart from the
 #      heartbeat's own orchestrator-dispatch calls -- the actual measurement gap this card was opened to close.
-#   4. LOCAL verdict -> offload-dispatch.sh <cardId> <agent>. That script already resolves the card's
-#      open leaves, posts the "LOCAL-LLM DRAFT" comment itself, and nudges the owner -- nothing here
-#      duplicates that. A non-LOCAL verdict (or offload-dispatch finding nothing local-eligible) simply
-#      leaves the card undrafted, exactly like today.
+#   4. offload-dispatch.sh <cardId> <agent> -- called REGARDLESS of VERDICT (card 2be7e3e5, Peti
+#      Telegram 11175: "minden feladat menjen oda a kello kontextussal eloszor"). Before this card, a
+#      non-LOCAL verdict skipped the call entirely, so the categorical-online leaves never reached
+#      offload-dispatch.sh's own advisory-draft path (card ee43a6ac, already handles rc=9 by drafting
+#      anyway and marking it "KOTELEZO A TELJES, FUGGETLEN ONLINE FELULVIZSGALAT") -- measured via
+#      card-build-route.log: the large majority of verdicts are deterministic ONLINE, so the local
+#      model got almost nothing through this entry point. VERDICT now only feeds the measurement log
+#      (card-build-route-24h-measure.sh), not whether a draft is attempted; offload-dispatch.sh's own
+#      per-leaf classification (inside local-llm-rag.sh) decides LOCAL-draft vs advisory-draft vs
+#      nothing, same as it already does for the offload-batch-run.sh sweep. That script already
+#      resolves the card's open leaves, posts its own draft comment, and nudges the owner -- nothing
+#      here duplicates that.
 #   4b. CARD-WORKTREE (card cd3e577b, F1 of the b8ac0ef1 "software factory" phase), independent of
 #      steps 0-4 above (local-llm) -- gated by its OWN flag, MARVEEN_CARD_WORKTREE, default OFF
 #      (plan-grilling change 4: "kapcsolo OFF -> a mai ut"). ON means: if this card looks like a
@@ -146,13 +154,12 @@ else
     echo "self-advance-pickup: $CARD_ID -> ollama down, skipping local draft (never blocks pickup)" >&2
     log_skip ollama-down
   else
-    # --- 3. CLASSIFY, ATTRIBUTED TO self-advance ----------------------------------------------------
+    # --- 3. CLASSIFY, ATTRIBUTED TO self-advance (measurement only, see step 4 comment above) --------
     VERDICT="$(CARD_BUILD_ROUTE_DISPATCHER=self-advance bash "$ROUTE" "$CARD_ID" 2>/dev/null | tr -d '[:space:]')"
-    if [ "$VERDICT" = "LOCAL" ]; then
-      # --- 4. DRAFT. offload-dispatch.sh posts its own "LOCAL-LLM DRAFT" comment and nudge; nothing
-      # here duplicates that. Its own output goes to stderr so it never corrupts this script's stdout.
-      bash "$OFFLOAD" "$CARD_ID" "$AGENT" >&2 || true
-    fi
+    # --- 4. DRAFT, REGARDLESS OF VERDICT (card 2be7e3e5). offload-dispatch.sh posts its own draft
+    # comment and nudge (LOCAL-LLM DRAFT, or an advisory draft for a categorical-online leaf); nothing
+    # here duplicates that. Its own output goes to stderr so it never corrupts this script's stdout.
+    bash "$OFFLOAD" "$CARD_ID" "$AGENT" >&2 || true
   fi
 fi
 
