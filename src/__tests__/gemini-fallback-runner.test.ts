@@ -312,21 +312,29 @@ describe('CYBERED NO-GO fixes (comment 17031)', () => {
   })
 
   it('S7: a 15-minute-interval flap sequence around the threshold does not flip the route every run (F2)', async () => {
-    // Simulate 4 consecutive 15-min-apart runs with weekly usage oscillating around the
-    // threshold (exhausted, clear, exhausted, clear). Before the F2 fix (10 min anti-flap on a
-    // 15 min schedule) this flapped on every run; after it (45 min anti-flap), it should not
-    // revert on the FIRST clear run that follows an engage.
-    weeklyActive = true
-    await runGeminiFallbackCheck()  // run 1: engage
-    expect(writtenState?.route).toBe('gemini')
-    fakeState.route = writtenState!.route
-    fakeState.engagedAt = writtenState!.engagedAt
-    fakeState.keyValid = writtenState!.keyValid
-    fakeState.lastKeyCheck = writtenState!.lastKeyCheck
-    fakeState.keyFingerprint = writtenState!.keyFingerprint
+    // Simulate 2 consecutive runs 15 real minutes apart (the runner's own schedule) with weekly
+    // usage oscillating around the threshold (exhausted, then clear). Before the F2 fix (10 min
+    // anti-flap on a 15 min schedule) this flapped on every run; after it (45 min anti-flap), it
+    // should not revert on the FIRST clear run that follows an engage. Must use fake timers:
+    // without advancing simulated time, both real calls land within the same millisecond and
+    // the anti-flap window binds regardless of MIN_ENGAGEMENT_MS, making the test vacuous.
+    vi.useFakeTimers()
+    try {
+      weeklyActive = true
+      await runGeminiFallbackCheck()  // run 1: engage
+      expect(writtenState?.route).toBe('gemini')
+      fakeState.route = writtenState!.route
+      fakeState.engagedAt = writtenState!.engagedAt
+      fakeState.keyValid = writtenState!.keyValid
+      fakeState.lastKeyCheck = writtenState!.lastKeyCheck
+      fakeState.keyFingerprint = writtenState!.keyFingerprint
 
-    weeklyActive = false  // run 2, 15 min later: briefly clear -- must NOT revert yet
-    await runGeminiFallbackCheck()
-    expect(writtenState?.route).toBe('gemini')
+      vi.advanceTimersByTime(15 * 60 * 1000)  // 15 min later, the runner's own schedule
+      weeklyActive = false  // briefly clear -- must NOT revert yet
+      await runGeminiFallbackCheck()
+      expect(writtenState?.route).toBe('gemini')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
