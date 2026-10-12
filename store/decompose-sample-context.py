@@ -19,14 +19,30 @@ script exists to prevent, and finding nothing is strictly better than drafting o
 Reads {"type": str, "text": str, "repo": str} as JSON on stdin. Prints "SAMPLE FILE (<relative
 path>):\\n<excerpt>" on a hit, nothing on a miss. Exit 0 on a hit, 1 on a miss. No network calls;
 only reads files already on disk under `repo`.
+
+SECURITY (card d39fc5e7, WhiteHat B1, re-gate on cybersec2/cybered): three path-escape vectors were
+fixed here -- path traversal (../), dotfile-first in sorted listings, and symlink follow-out. Every
+candidate path is checked with _safe_path() before use. git ls-files membership is checked before
+reading (only tracked files, no dotfiles/gitignored secrets). Directory listings skip dotfiles.
+Secret-shaped content (key + long opaque value) is stripped from excerpts before they reach the
+prompt (F2 fix).
 """
 import json
 import os
 import re
+import subprocess
 import sys
 
 TOKEN_CAP = 1500
 SKIP_DIRS = {"node_modules", ".git", "dist", "build", ".next", "coverage", ".turbo", "out"}
+
+# Secret-shaped line: a word that looks like a key name followed by a long opaque value
+# (e.g. apiKey = "abc123...", refreshToken: "eyJ...", password = "Xz9...").
+# Catches both = and : assignment forms, single or double quotes, and unquoted long values.
+_SECRET_LINE_RE = re.compile(
+    r"""(?i)(password|secret|token|key|auth|credential|private|bearer)\s*[=:]\s*['""]?[A-Za-z0-9+/._\-]{20,}['""]?""",
+    re.IGNORECASE,
+)
 
 # A file-looking token in the card's own title+description: the ONE concrete anchor this script has
 # to work with. Deliberately narrow (a real extension, a real-looking path) -- a bare word match
@@ -46,19 +62,95 @@ def find_target_token(text: str) -> str | None:
 
 def walk_skip(repo: str):
     for root, dirs, files in os.walk(repo):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-        yield root, dirs, files
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+        # skip dotfiles in file listing
+        yield root, dirs, [f for f in files if not f.startswith(".")]
+
+
+# ---------------------------------------------------------------------------
+# Security: _safe_path + _is_tracked
+# ---------------------------------------------------------------------------
+
+def _safe_path(repo: str, path: str) -> str | None:
+    """Return realpath of `path` only when it sits strictly inside `repo`.
+
+    Prevents path-traversal (../), symlink-escape, and any other attempt to
+    reach files outside the repo root.  Returns None on any violation.
+    """
+    try:
+        real_repo = os.path.realpath(repo)
+        # resolve WITHOUT following the final symlink so we can reject symlinks
+        # that point outside the repo even before stat-ing them.
+        real_path = os.path.realpath(path)
+        # commonpath raises ValueError when the paths are on different drives
+        if os.path.commonpath([real_repo, real_path]) != real_repo:
+            return None
+        return real_path
+    except (ValueError, OSError):
+        return None
+
+
+_TRACKED_CACHE: dict[str, set[str]] | None = None
+
+
+def _tracked_files(repo: str) -> set[str]:
+    """Return the set of absolute paths tracked by git in `repo`."""
+    global _TRACKED_CACHE
+    if _TRACKED_CACHE is not None:
+        return _TRACKED_CACHE
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "ls-files", "--full-name", "-z"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            _TRACKED_CACHE = set()
+            return _TRACKED_CACHE
+        real_repo = os.path.realpath(repo)
+        _TRACKED_CACHE = {
+            os.path.join(real_repo, p)
+            for p in result.stdout.split("\0")
+            if p
+        }
+    except Exception:
+        _TRACKED_CACHE = set()
+    return _TRACKED_CACHE
+
+
+def _is_tracked(repo: str, path: str) -> bool:
+    """True iff `path` is tracked by git and inside `repo`."""
+    safe = _safe_path(repo, path)
+    if safe is None:
+        return False
+    return safe in _tracked_files(repo)
+
+
+# ---------------------------------------------------------------------------
 
 
 def resolve_in_repo(repo: str, token: str) -> str | None:
-    rel = token.lstrip("./")
-    direct = os.path.join(repo, rel)
-    if os.path.isfile(direct):
+    """Resolve a file token from the card text to an absolute path.
+
+    Only returns a path that is (a) inside `repo`, (b) not a symlink escape,
+    and (c) tracked by git.  Strips leading ./ from token but does NOT strip
+    ../  -- those are caught by _safe_path.
+    """
+    # strip only a leading "./", never "../"
+    if token.startswith("./"):
+        token = token[2:]
+    direct = os.path.join(repo, token)
+    if _is_tracked(repo, direct) and os.path.isfile(direct):
         return direct
-    base = os.path.basename(rel)
+    base = os.path.basename(token)
+    if not base:
+        return None
     for root, _dirs, files in walk_skip(repo):
         if base in files:
-            return os.path.join(root, base)
+            candidate = os.path.join(root, base)
+            if _is_tracked(repo, candidate):
+                return candidate
     return None
 
 
@@ -69,12 +161,16 @@ def sample_for_test_scaffold(repo: str, target: str | None) -> str | None:
     stem = re.sub(r"\.(ts|tsx)$", "", os.path.basename(target))
     for suffix in TEST_SUFFIXES:
         p = os.path.join(d, stem + suffix)
-        if os.path.isfile(p):
+        if _is_tracked(repo, p) and os.path.isfile(p):
             return p
     try:
         for f in sorted(os.listdir(d)):
+            if f.startswith("."):
+                continue
             if f.endswith(TEST_SUFFIXES):
-                return os.path.join(d, f)
+                candidate = os.path.join(d, f)
+                if _is_tracked(repo, candidate):
+                    return candidate
     except OSError:
         pass
     return None
@@ -86,11 +182,15 @@ def sample_for_type_def(repo: str, target: str | None) -> str | None:
     candidates = [target]
     d = os.path.dirname(target)
     try:
-        candidates += [os.path.join(d, f) for f in sorted(os.listdir(d)) if f.endswith((".ts", ".tsx"))]
+        for f in sorted(os.listdir(d)):
+            if f.startswith("."):
+                continue
+            if f.endswith((".ts", ".tsx")):
+                candidates.append(os.path.join(d, f))
     except OSError:
         pass
     for p in candidates:
-        if not os.path.isfile(p):
+        if not _is_tracked(repo, p) or not os.path.isfile(p):
             continue
         try:
             with open(p, encoding="utf-8", errors="ignore") as fh:
@@ -112,8 +212,13 @@ def sample_for_i18n_keys(repo: str, target: str | None) -> str | None:
     for d in search_dirs:
         try:
             for f in sorted(os.listdir(d)):
+                # skip dotfiles: .secrets.json would appear first alphabetically
+                if f.startswith("."):
+                    continue
                 if f.endswith(".json"):
-                    return os.path.join(d, f)
+                    candidate = os.path.join(d, f)
+                    if _is_tracked(repo, candidate):
+                        return candidate
         except OSError:
             continue
     return None
@@ -121,7 +226,9 @@ def sample_for_i18n_keys(repo: str, target: str | None) -> str | None:
 
 def sample_for_doc_update(repo: str, _target: str | None) -> str | None:
     p = os.path.join(repo, "README.md")
-    return p if os.path.isfile(p) else None
+    if _is_tracked(repo, p) and os.path.isfile(p):
+        return p
+    return None
 
 
 SAMPLE_FINDERS = {
@@ -130,6 +237,17 @@ SAMPLE_FINDERS = {
     "i18n-keys": sample_for_i18n_keys,
     "doc-update": sample_for_doc_update,
 }
+
+
+def _strip_secret_lines(content: str) -> str:
+    """Remove lines that look like hardcoded credentials from an excerpt.
+
+    A secret-shaped line is a key-name word followed by '=' or ':' and a long
+    opaque value (20+ chars).  These lines must never reach the local-LLM prompt
+    (F2 fix, card d39fc5e7).
+    """
+    filtered = [line for line in content.splitlines() if not _SECRET_LINE_RE.search(line)]
+    return "\n".join(filtered)
 
 
 def excerpt(path: str, type_: str, cap: int = TOKEN_CAP) -> str | None:
@@ -142,7 +260,7 @@ def excerpt(path: str, type_: str, cap: int = TOKEN_CAP) -> str | None:
         m = re.search(r"## Egyedi fork-fejleszt[eé]sek.*", content, re.DOTALL)
         if m:
             content = m.group(0)
-    content = content.strip()
+    content = _strip_secret_lines(content).strip()
     if not content:
         return None
     return content[:cap]
@@ -159,6 +277,10 @@ def main() -> int:
 
     finder = SAMPLE_FINDERS.get(type_)
     if finder is None or not repo or not os.path.isdir(repo):
+        return 1
+
+    # Verify repo itself is not a path-escape attempt
+    if _safe_path(repo, repo) is None:
         return 1
 
     target_token = find_target_token(text)

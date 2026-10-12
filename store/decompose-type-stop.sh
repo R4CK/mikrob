@@ -88,11 +88,25 @@ for c in cards:
 
 declare -A JUDGED ACCEPTED
 for t in "${TYPES[@]}"; do JUDGED[$t]=0; ACCEPTED[$t]=0; done
+# F4 fix: count fetch errors so we can detect total API unavailability; the
+# stop decision stays fail-open (no type disabled) when ALL cards are unreachable,
+# but we log it so operators can investigate rather than silently proceeding.
+API_FETCH_ERRORS=0
+API_FETCH_OK=0
 
 while IFS= read -r cid; do
   [ -n "$cid" ] || continue
   comments="$(printf 'Authorization: Bearer %s\n' "$TOKEN" | timeout 10 curl -H @- -s "$DASH/api/kanban/$cid/comments" 2>/dev/null)"
-  [ -n "$comments" ] || continue
+  if [ -z "$comments" ]; then
+    API_FETCH_ERRORS=$(( API_FETCH_ERRORS + 1 ))
+    continue
+  fi
+  # Only count as "ok" if comments is valid JSON (not an HTML error page etc.)
+  if ! printf '%s' "$comments" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+    API_FETCH_ERRORS=$(( API_FETCH_ERRORS + 1 ))
+    continue
+  fi
+  API_FETCH_OK=$(( API_FETCH_OK + 1 ))
   result="$(printf '%s' "$comments" | CUTOFF="$CUTOFF" python3 -c '
 import json, os, re, sys
 cutoff = int(os.environ["CUTOFF"])
@@ -142,6 +156,12 @@ for dtype, draft_at in drafts:
     [ "$outcome" = "ACCEPT" ] && ACCEPTED[$dtype]=$(( ${ACCEPTED[$dtype]:-0} + 1 ))
   done <<< "$result"
 done <<< "$CARD_IDS"
+
+# F4: log when API was entirely unreachable so operators can notice
+if [ "$API_FETCH_ERRORS" -gt 0 ]; then
+  printf '[decompose-type-stop] API fetch errors: %d/%d cards unreachable (ok=%d); stop decision uses only ok cards\n' \
+    "$API_FETCH_ERRORS" "$(( API_FETCH_ERRORS + API_FETCH_OK ))" "$API_FETCH_OK" >&2
+fi
 
 ROWS_FILE="$(mktemp)"
 trap 'rm -f "$ROWS_FILE"' EXIT

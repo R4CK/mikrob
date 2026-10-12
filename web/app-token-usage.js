@@ -39,7 +39,13 @@ const TU_SONNET5_PRICE = { in: 2.0, out: 10.0, cw: 2.50, cr: 0.20 }
 // existing fallback already priced them correctly (prefix match to 'claude-opus-4' /
 // coincidentally-equal `default`), so every row in this table is a confirmed key, not an
 // accidental fallthrough.
+// Confirmed against platform.claude.com/docs/en/about-claude/pricing 2026-10-12.
 const TU_MODEL_PRICING = {
+  'claude-fable-5-1':    { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 }, // same price as fable-5; explicit row for prefix-match correctness
+  'claude-fable-5':      { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
+  'claude-mythos-5':     { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
+  // Opus 5.5 is priced LOWER than opus-5 (4/20 vs 5/25); separate row required.
+  'claude-opus-5-5':     { in: 4.0,   out: 20.0,  cw: 5.00,  cr: 0.40 },
   // Confirmed against the official pricing page 2026-08-17: same tier as 4.6/4.7/4.8 (5 / 25).
   'claude-opus-5':       { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
   'claude-opus-4-8':     { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
@@ -50,12 +56,15 @@ const TU_MODEL_PRICING = {
   // on Bedrock/Google Cloud).
   'claude-opus-4-1':     { in: 15.0,  out: 75.0,  cw: 18.75, cr: 1.50 },
   'claude-opus-4':       { in: 15.0,  out: 75.0,  cw: 18.75, cr: 1.50 },
+  // Sonnet 5.5 same price as sonnet-5; explicit row for prefix-match correctness.
+  'claude-sonnet-5-5':   TU_SONNET5_PRICE,
   'claude-sonnet-5':     TU_SONNET5_PRICE,
   'claude-sonnet-4-6':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-sonnet-4-5':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-sonnet-4':     { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 }, // retired, still billable on Bedrock/Google Cloud
-  'claude-fable-5':      { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
-  'claude-mythos-5':     { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
+  // Haiku 5.5 has two price tiers by prompt length: 0.10/0.50 (<=100k) and 0.50/2.50 (>100k).
+  // Using the upper (>100k) tier as a conservative overestimate; no per-request tier detection.
+  'claude-haiku-5-5':    { in: 0.50,  out: 2.50,  cw: 0.625, cr: 0.05 },
   'claude-haiku-4-5':    { in: 1.0,   out: 5.0,   cw: 1.25,  cr: 0.10 },
   'claude-haiku-3-5':    { in: 0.80,  out: 4.0,   cw: 1.00,  cr: 0.08 }, // retired, still billable on Bedrock/Google Cloud
   default:               { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },

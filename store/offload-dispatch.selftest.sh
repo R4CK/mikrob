@@ -118,6 +118,14 @@ invalid_env_out="$(CARD=freshCard OFFLOAD_STALE_IN_PROGRESS_SECONDS=10m bash "$D
 check "a non-integer OFFLOAD_STALE_IN_PROGRESS_SECONDS falls back to the 600s default instead of silently zeroing every leaf" "$invalid_env_out" "freshCard"
 
 # --- decompose wrapper (card 501c489f, MikroB verdikt komment 6007) -------------------------------
+# ISOLATION (d39fc5e7 QA finding): card_decompose_candidates() reads DECOMPOSE_STOP_STATE_FILE to
+# check which types are currently disabled. If the live store/decompose-type-disabled.json has all
+# four types disabled (e.g. from a MikroB mitigation), the decompose tests all fail because
+# card_decompose_candidates() returns nothing. Fix: point to a clean temp file for the whole block
+# so the test is independent of live operational state.
+export DECOMPOSE_STOP_STATE_FILE="$TMPDIR/decompose-type-disabled-test.json"
+printf '{}' > "$DECOMPOSE_STOP_STATE_FILE"
+
 decompose_ids() { CARD="$1" bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c 'import json,sys; print(",".join(sorted(l["id"] for l in json.load(sys.stdin))))'; }
 decompose_field() { CARD="$1" bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c "import json,sys; print(json.load(sys.stdin)[0].get('$2',''))"; }
 
@@ -242,6 +250,9 @@ check "offload-dispatch.sh calls the VRAM guard, ahead of the sweep loop" "$vram
 # duplicated logic is exactly how this class of miss (a case arm added in one place, not the other)
 # happens in the first place.
 graph_repo_pin="$(
+  # Set HERE explicitly so graph_repo_for's MikroB arm (which calls git -C "$HERE") resolves
+  # the repo root correctly regardless of the caller's cwd (d39fc5e7 QA isolation finding).
+  HERE="$(dirname "$(realpath "$DISPATCH")")"
   source <(sed -n '/^graph_repo_for() {/,/^}/p' "$DISPATCH")
   cc="$(graph_repo_for CleanCore)"
   mo="$(graph_repo_for mopsion)"

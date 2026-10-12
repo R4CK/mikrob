@@ -112,6 +112,33 @@ def import_check(code: str, repo: str) -> str | None:
     return None
 
 
+# Secret-shaped assignment in generated code: key-name word + '=' or ':' + long opaque value.
+# Same pattern as decompose-sample-context.py; duplicated here so both gates are independent.
+_SECRET_LINE_RE = re.compile(
+    r"""(?i)(password|secret|token|key|auth|credential|private|bearer)\s*[=:]\s*['""]?[A-Za-z0-9+/._\-]{20,}['""]?""",
+)
+
+
+def check_secret_leak(code: str) -> str | None:
+    """Reject drafts that contain a secret-shaped hardcoded value.
+
+    A local-LLM sometimes copies a value verbatim from the sample-context
+    excerpt.  Even though the excerpt is already filtered by decompose-sample-
+    context.py, a residual value may survive if the excerpt filtering was
+    bypassed, or if the model invented one from the card text itself.
+    (F2 fix, card d39fc5e7, WhiteHat finding.)
+    """
+    for line in code.splitlines():
+        # skip comment lines -- a test that asserts the pattern is NOT present
+        # would legitimately contain the keyword without being a real secret
+        stripped = line.lstrip()
+        if stripped.startswith(("//", "#", "*", "/*")):
+            continue
+        if _SECRET_LINE_RE.search(line):
+            return "secret-shaped value in draft (key-name + long opaque string outside a comment)"
+    return None
+
+
 def check(draft: str, task: str, repo: str) -> str | None:
     code = strip_fences(draft)
     stripped_len = len(re.sub(r"\s+", "", code))
@@ -123,6 +150,10 @@ def check(draft: str, task: str, repo: str) -> str | None:
         return f"repeats-card-text (similarity {ratio:.2f} to the card's own title+description, threshold {MAX_REPETITION_RATIO})"
 
     reason = import_check(code, repo)
+    if reason:
+        return reason
+
+    reason = check_secret_leak(code)
     if reason:
         return reason
 
