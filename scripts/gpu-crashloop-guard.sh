@@ -133,8 +133,28 @@ to_epoch() {
   date -d "$1" +%s 2>/dev/null
 }
 
+# Does the given completed-boot's SERVICE MANAGER journal end with a clean poweroff?
+# A voluntary shutdown (systemd-poweroff finishing normally, "Reached target poweroff")
+# means the VM was asked to stop -- it must NOT count as a crash-boot (card 970a90c3).
+is_clean_shutdown() {
+  local idx="$1" text
+  if [ -n "${GPU_GUARD_JOURNAL_LOG_OVERRIDE:-}" ]; then
+    text="$(cat "$GPU_GUARD_JOURNAL_LOG_OVERRIDE" 2>/dev/null)"
+  else
+    text="$(journalctl -b "$idx" 2>/dev/null)"
+  fi
+  echo "$text" | grep -qE \
+    'systemd-poweroff\.service: (Deactivated successfully|Succeeded\.|Finished\.?)|Reached target (\.?Poweroff|poweroff)\.target'
+}
+
 # Does the given completed-boot index's kernel log carry the dxg GPU-fault
 # signature? idx is negative-offset form as printed by --list-boots (e.g. -1).
+#
+# FALSE POSITIVE fixed (card 970a90c3): the old pattern "misc dxg: dxgk" matched
+# "misc dxg: dxgk: dxgkio_is_feature_enabled: Ioctl failed: -22" -- a feature-
+# discovery noise line present on EVERY boot; it is NOT a fault. Removed. Real faults
+# appear as dxgk_ioctl/dxgadapter_release_lock symbols (hardware-layer fault path) or
+# a BUG/Oops/call-trace line that co-occurs with a dxgk symbol.
 boot_has_dxg_oops() {
   local idx="$1" text
   if [ -n "${GPU_GUARD_KERNEL_LOG_OVERRIDE:-}" ]; then
@@ -142,7 +162,8 @@ boot_has_dxg_oops() {
   else
     text="$(journalctl -k -b "$idx" 2>/dev/null)"
   fi
-  echo "$text" | grep -qE 'dxgk_ioctl|dxgadapter_release_lock|misc dxg: dxgk'
+  echo "$text" | grep -qE \
+    'dxgk_ioctl|dxgadapter_release_lock|(BUG:|Oops:|call trace).{0,200}dxgk|dxgk.{0,200}(BUG:|Oops:)'
 }
 
 # Detect the crash-loop pattern: >= MIN_SHORT_BOOTS boots, each shorter than
@@ -174,6 +195,10 @@ detect_crashloop() {
     dur=$((end_s - start_s))
     [ $((now - end_s)) -gt "$RECENT_WINDOW_SEC" ] && break   # too old, stop scanning
     if [ "$dur" -lt "$SHORT_BOOT_MAX_SEC" ] && [ "$dur" -ge 0 ]; then
+      # A clean voluntary shutdown (poweroff/reboot requested by the user or MikroB)
+      # ends quickly without a kernel fault -- skip it; counting it as a crash-boot
+      # causes the false positive described in card 970a90c3.
+      if is_clean_shutdown "$idx"; then continue; fi
       short_count=$((short_count + 1))
       if boot_has_dxg_oops "$idx"; then dxg_seen=1; fi
     else
