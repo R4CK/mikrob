@@ -165,6 +165,12 @@ for tag in tags_csv.split(","):
 # 3. Content gate on NORMALIZED title AND description (sensitive stem -> blocked, fail-closed).
 # Leading-boundary-only stems (RedHat 17510 finding 1): matches a stem at the start of a word,
 # but also matches it as the start of a longer word ("jogosultsag", "biztonsag", "finance").
+# VOCABULARY PARITY WITH THE ROUTER (RedHat 17567 B2, card a92e9913): the routers own authz/PII
+# prefilter (card-build-route.sh) blocks on "permission", "access control", "szemelyes adat" and
+# "hozzaferes" (Hungarian for "access") -- this gates vocabulary did not have them, so e.g.
+# "Permission model for the export" or "Szemelyes adat maszkolasa a naploban" passed through
+# unblocked despite being exactly the authz/PII categories named in Petis standing rule
+# (Telegram 11131). Added below.
 title_n = norm(title)
 desc_n = norm(desc)
 SENS_RE = re.compile(
@@ -172,7 +178,8 @@ SENS_RE = re.compile(
     r"|penz|penzugy|fizet|szamla|afa|payroll|berszamfejtes|jelszo|password"
     r"|token|secret|titok|jogosult|gdpr|privacy|kulcs"
     r"|kripto|crypto|pii|billing|payment|legal|jogi|cybersec|fin"
-    r"|hacker|exploit|pentest|inject|sqli|xss)",
+    r"|hacker|exploit|pentest|inject|sqli|xss"
+    r"|permission|access|szemelyes|hozzaferes)",
     re.IGNORECASE
 )
 if SENS_RE.search(title_n) or SENS_RE.search(desc_n):

@@ -312,6 +312,45 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'clean title', `${pad} nothing sensitive here`)).toBe('ALLOWED')
   })
 
+  // RedHat 17567 B2 (card a92e9913 delta-gate NO-GO): vocabulary parity with the router's own
+  // authz/PII prefilter -- "permission", "access control" and the Hungarian "szemelyes adat" /
+  // "hozzaferes" were measured to pass through this gate unblocked.
+  it('blocks a permission-model card with no sensitive tag (RedHat 17567 B2)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Permission model for the export', '')).toBe('BLOCKED')
+  })
+
+  it('blocks an access-control-list card with no sensitive tag (RedHat 17567 B2)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Access control list for exports', '')).toBe('BLOCKED')
+  })
+
+  it('blocks a Hungarian personal-data (szemelyes adat) card, accented (RedHat 17567 B2)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Személyes adat maszkolás a naplóban', '')).toBe('BLOCKED')
+  })
+
+  it('blocks a Hungarian access-rights (hozzaferes) card, accented (RedHat 17567 B2)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Hozzáférés-vezérlés finomhangolása', '')).toBe('BLOCKED')
+  })
+
+  // RedHat 17567 B4(a) (card a92e9913 delta-gate NO-GO): the existing accented test cases above
+  // (Számla/ÁFA, Jogosultság, Biztonság) happen to have their ENTIRE matched stem in plain ASCII
+  // -- the accent sits only after the matched portion ("jogosult" matches inside "Jogosultság"
+  // even without any accent-stripping at all), so a mutant that disables normalization() still
+  // passes them. These three instead have the accented character INSIDE the matched stem itself
+  // ("pénz" vs stem "penz": the é is the stem's 2nd letter; "jelszó" vs stem "jelszo": the ó is
+  // the stem's 6th/last letter; "számla" vs stem "szamla": the á is the stem's 3rd letter), so
+  // they only match AFTER casefold+accent-stripping -- a disabled-normalization mutant goes red.
+  it('blocks "Pénzügyi riport" -- accent sits INSIDE the matched stem (RedHat 17567 B4a)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Pénzügyi riport', '')).toBe('BLOCKED')
+  })
+
+  it('blocks "Jelszó csere" -- accent sits INSIDE the matched stem (RedHat 17567 B4a)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Jelszó csere', '')).toBe('BLOCKED')
+  })
+
+  it('blocks "Számla" alone -- accent sits INSIDE the matched stem (RedHat 17567 B4a)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Számla', '')).toBe('BLOCKED')
+  })
+
   // RedHat 17510 finding 2, sharpened by WhiteHat2 H2 (card 40d2a253): is_gemini_blocked used
   // to treat rc=1 as "allowed" -- but rc=1 is ALSO what a bare, uncaught Python exception exits
   // with by default, so a genuine classifier bug was silently indistinguishable from "allowed".
@@ -368,6 +407,7 @@ describe('try_leaf() end-to-end behavioral guard (T1, RedHat 17510 finding 3)', 
     tags: string
     title: string
     desc: string
+    ragRc?: number // which branch of try_leaf's local-RAG result to exercise (default 5 = transient)
   }
 
   function runTryLeaf(opts: TryLeafOpts): { geminiCalled: boolean; geminiArgs: string } {
@@ -375,6 +415,7 @@ describe('try_leaf() end-to-end behavioral guard (T1, RedHat 17510 finding 3)', 
     const isBlockedFn = extractFn(dispatchSrc, 'is_gemini_blocked')
     const routeEnabledFn = extractFn(dispatchSrc, 'gemini_route_enabled')
     const tryLeafFn = extractFn(dispatchSrc, 'try_leaf')
+    const ragRc = opts.ragRc ?? 5
 
     const script = `
 set -uo pipefail
@@ -386,9 +427,10 @@ OFFLOAD_LEAF_MAX_ATTEMPTS=2
 RECORD="$(mktemp)"
 
 # Stub RAG as a real executable (try_leaf calls "$RAG" ... as a command, not a function):
-# rc=5 = transient failure (not 0, not 9), so the exhausted-attempts branch is reached.
+# rc=5 = transient failure (not 0, not 9); rc=9 = categorical-online (router decision, RedHat
+# 17567 B3) -- this branch must NEVER call try_gemini_for_leaf, regardless of content.
 RAG="$(mktemp)"
-printf '#!/usr/bin/env bash\\nexit 5\\n' > "$RAG"
+printf '#!/usr/bin/env bash\\nexit ${ragRc}\\n' > "$RAG"
 chmod +x "$RAG"
 
 ${isBlockedFn}
@@ -462,6 +504,23 @@ rm -rf "$HERE" "$RAG" "$RECORD"
   // Call site 2: blocked leaf via CONTENT (desc) -- same argument-wiring proof as call site 1.
   it('call site 2 (exhausted attempts): blocked leaf via description content-gate never reaches try_gemini_for_leaf', () => {
     const r = runTryLeaf({ fastPath: false, project: 'mikrob', tags: 'BE,NORMAL', title: 'API endpoint cleanup', desc: 'The auth middleware leaks the JWT token in the response.' })
+    expect(r.geminiCalled).toBe(false)
+  })
+
+  // RedHat 17567 B3 (card a92e9913 delta-gate NO-GO): the router's categorical-online verdict
+  // (local RAG exits 9) must NEVER fall back to Gemini -- F1d exists precisely because the
+  // router already classified the leaf as auth/security/multi-file, so sending it to an
+  // external API discards that verdict. No targeted test exercised this branch before (the
+  // existing 96/96-green suite would stay green even if an unguarded try_gemini_for_leaf call
+  // were reintroduced at the bottom of the rc=9 branch). These two cover it, content-gate
+  // outcome notwithstanding -- categorical-online bypasses Gemini regardless of content.
+  it('categorical-online (RAG rc=9) never reaches try_gemini_for_leaf, even for an allowed-by-content leaf', () => {
+    const r = runTryLeaf({ fastPath: false, ragRc: 9, project: 'mikrob', tags: 'BE,NORMAL', title: 'Add CSV export', desc: 'Export the monthly report.' })
+    expect(r.geminiCalled).toBe(false)
+  })
+
+  it('categorical-online (RAG rc=9) never reaches try_gemini_for_leaf for a sensitive leaf either', () => {
+    const r = runTryLeaf({ fastPath: false, ragRc: 9, project: 'mikrob', tags: 'BE,NORMAL', title: 'Auth middleware review', desc: 'Tenant-scoped authorization check.' })
     expect(r.geminiCalled).toBe(false)
   })
 })
