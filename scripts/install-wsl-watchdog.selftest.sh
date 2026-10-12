@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
 # install-wsl-watchdog.selftest.sh -- controls for install-wsl-watchdog.sh (card 58badae1).
 #
-# The generated unit is Windows PowerShell -- this host cannot execute it, so
-# the controls assert on the GENERATED TEXT instead, pinning the exact
-# regression the card's NO-GO measured: the restart command must never be
-# '--exec /bin/true' again, and the fresh-boot grace window must be present.
-# Needles use declaration/call-site keywords, not bare substrings (CLAUDE.md
-# kódminőségi elv 12) so a comment mentioning the old command can't fake a
-# pass.
+# INCIDENT (2026-10-12 20:17, MikroB komment 17738): an earlier version of this
+# selftest faked powershell.exe on PATH but left TASK_NAME and the schtasks.exe
+# path as the real production values -- install-wsl-watchdog.sh calls
+# schtasks.exe by its HARDCODED ABSOLUTE PATH, which a PATH-based stub can never
+# intercept. The "fake" run registered a REAL Windows Scheduled Task named
+# MikroB-WSL-Watchdog, overwriting a deliberate Disable, and the task restarted
+# the real WSL distro ~15 minutes later.
 #
-# Faked powershell.exe / schtasks.exe / wsl.exe stubs let this run WITHOUT a
-# real WSL/Windows host: install-wsl-watchdog.sh only needs them to resolve
-# LOCALAPPDATA, the distro name, and to "register" the task -- none of that
-# requires a live distro.
+# This selftest now uses ONLY the script's own INSTALL_WSL_WATCHDOG_DRY_RUN=1
+# seam, which the installer script itself guarantees never calls powershell.exe
+# or schtasks.exe at all (see install-wsl-watchdog.sh's own DRY_RUN branches) --
+# there is no PATH stub to bypass, because the real-binary call sites are
+# skipped in the script's own source, not shadowed from outside.
+#
+# The generated unit is Windows PowerShell -- this host cannot execute it, so
+# the controls assert on the GENERATED TEXT, pinning the exact regression the
+# card's NO-GO measured: the restart command must never be an immediately-
+# exiting wsl.exe call again, and the fresh-boot grace window must be present.
+# Needles use declaration/call-site keywords, not bare substrings (CLAUDE.md
+# kódminőségi elv 12) so a comment mentioning the old command can't fake a pass.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,42 +32,30 @@ fail=0
 check() { case "$3" in *"$2"*) echo "  ok   $1" ;; *) echo "  FAIL $1 -> needle '$2' not in '$3'"; fail=1 ;; esac; }
 check_absent() { case "$3" in *"$2"*) echo "  FAIL $1 -> needle '$2' unexpectedly present"; fail=1 ;; *) echo "  ok   $1" ;; esac; }
 
-mkdir -p "$TMP/fakebin" "$TMP/localappdata"
-cat > "$TMP/fakebin/powershell.exe" <<'EOF'
-#!/usr/bin/env bash
-# Only -Command '$env:LOCALAPPDATA' is used by install-wsl-watchdog.sh.
-for a in "$@"; do
-  case "$a" in
-    *LOCALAPPDATA*) echo "$FAKE_LOCALAPPDATA"; exit 0 ;;
-  esac
-done
-exit 0
-EOF
-cat > "$TMP/fakebin/schtasks.exe" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-cat > "$TMP/fakebin/wsl.exe" <<'EOF'
-#!/usr/bin/env bash
-echo "  NAME"
-echo "* Ubuntu    Running  2"
-EOF
-chmod +x "$TMP"/fakebin/*.exe
-
-# install-wsl-watchdog.sh resolves /proc/version for the WSL guard and
-# wslpath for the LOCALAPPDATA path -- both are real on this (WSL) host, so
-# the selftest only needs to stub powershell.exe/schtasks.exe/wsl.exe on PATH
-# and point LOCALAPPDATA at a scratch dir.
-export FAKE_LOCALAPPDATA="C:\\fake\\localappdata"
-export PATH="$TMP/fakebin:$PATH"
-export WSL_DISTRO_NAME="Ubuntu"
-
-OUT="$(cd "$TMP" && PATH="$TMP/fakebin:$PATH" bash "$BIN" 2>&1)"
-RC=$?
-WSL_DIR="$(wslpath -u "$(cat "$TMP/fakebin/powershell.exe" >/dev/null; echo "C:\\fake\\localappdata")" 2>/dev/null)/MikroB"
-PS1_PATH="$WSL_DIR/mikrob-wsl-watchdog.ps1"
+run_dry() { # $1 = scratch WSL_DIR, remaining args = extra env already exported by caller
+  INSTALL_WSL_WATCHDOG_DRY_RUN=1 \
+  INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR="$1" \
+  WSL_DISTRO_NAME="Ubuntu" \
+  bash "$BIN" 2>&1
+}
 
 echo "install-wsl-watchdog controls"
+
+# --- 0. safety: dry-run must require the scratch-dir seam, not silently
+#        fall through to a real-looking default -------------------------------
+OUT0="$(INSTALL_WSL_WATCHDOG_DRY_RUN=1 WSL_DISTRO_NAME=Ubuntu bash "$BIN" 2>&1)"; RC0=$?
+if [ "$RC0" -ne 0 ]; then
+  echo "  ok   dry-run without scratch dir refuses (exit $RC0)"
+else
+  echo "  FAIL dry-run without INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR did not refuse"
+  fail=1
+fi
+
+# --- 1. basic dry-run render ---------------------------------------------
+mkdir -p "$TMP/run1"
+OUT="$(run_dry "$TMP/run1")"
+RC=$?
+PS1_PATH="$TMP/run1/MikroB/mikrob-wsl-watchdog.ps1"
 
 if [ "$RC" -ne 0 ]; then
   echo "  FAIL install-wsl-watchdog.sh exited $RC (output: $OUT)"
@@ -68,6 +64,9 @@ elif [ ! -f "$PS1_PATH" ]; then
   echo "  FAIL rendered PS1 not found at $PS1_PATH (output: $OUT)"
   fail=1
 else
+  check "dry-run never calls the real scheduler" "DRY-RUN: would register" "$OUT"
+  check_absent "dry-run never claims real registration" "registered (every 5 min" "$OUT"
+
   PS1_CONTENT="$(cat "$PS1_PATH")"
 
   # --- F1 regression pin: the old fail mode must never reappear ------------
@@ -89,14 +88,21 @@ else
 fi
 
 # --- configurability: default vs overridden grace window -------------------
-rm -rf "$TMP/fakebin2"; mkdir -p "$TMP/run2"
-OUT2="$(cd "$TMP" && PATH="$TMP/fakebin:$PATH" WSL_WATCHDOG_FRESH_BOOT_GRACE_SEC=777 bash "$BIN" 2>&1)"
-if [ -f "$PS1_PATH" ]; then
-  check "fresh-boot grace: custom value honored" '$FreshBootGraceSec = 777' "$(cat "$PS1_PATH")"
+mkdir -p "$TMP/run2"
+INSTALL_WSL_WATCHDOG_DRY_RUN=1 INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR="$TMP/run2" \
+  WSL_DISTRO_NAME="Ubuntu" WSL_WATCHDOG_FRESH_BOOT_GRACE_SEC=777 bash "$BIN" >/dev/null 2>&1
+PS1_PATH2="$TMP/run2/MikroB/mikrob-wsl-watchdog.ps1"
+if [ -f "$PS1_PATH2" ]; then
+  check "fresh-boot grace: custom value honored" '$FreshBootGraceSec = 777' "$(cat "$PS1_PATH2")"
 else
-  echo "  FAIL custom-grace run did not render a PS1 (output: $OUT2)"
+  echo "  FAIL custom-grace run did not render a PS1"
   fail=1
 fi
+
+# --- idempotency: a second dry-run on the same scratch dir re-renders, does
+#     not error (mirrors the script's documented idempotent re-run contract) -
+OUT3="$(run_dry "$TMP/run1" 2>&1)"; RC3=$?
+[ "$RC3" -eq 0 ] && echo "  ok   dry-run is idempotent (second run exit 0)" || { echo "  FAIL second dry-run exited $RC3"; fail=1; }
 
 if [ "$fail" -eq 0 ]; then
   echo "PASS"

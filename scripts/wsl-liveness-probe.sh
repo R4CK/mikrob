@@ -83,25 +83,57 @@ channel_pipe_alive_by_process_tree() {
 
 code="$("$CURL_BIN" -s -o /dev/null -w '%{http_code}' --max-time 8 "http://localhost:${PORT}/" 2>/dev/null || echo 000)"
 
-now=$(date +%s)
-ka=$(stat -c %Y "$KEEPALIVE" 2>/dev/null || echo 0)
-age=$(( now - ka ))
-keepalive_fresh=0
-[ "$age" -lt "$STALE_SECONDS" ] && keepalive_fresh=1
+# Card 58badae1 incident (MikroB komment 17738, requirement 2): a missing or
+# unreadable keepalive file is UNKNOWN, never UNHEALTHY-by-default -- the
+# previous version computed `age` from a fallback epoch of 0 when `stat`
+# failed, which looks exactly like a multi-decade-stale file and forced
+# keepalive_state to "stale" unconditionally. Measured live: this produced
+# keepalive_age=1791828061s (the current Unix time itself) on a host where the
+# file legitimately did not exist yet, feeding straight into the Windows
+# watchdog's 3x-UNHEALTHY restart counter.
+keepalive_state="missing"
+age=""
+if ka="$(stat -c %Y "$KEEPALIVE" 2>/dev/null)"; then
+  now=$(date +%s)
+  age=$(( now - ka ))
+  if [ "$age" -lt "$STALE_SECONDS" ]; then
+    keepalive_state="fresh"
+  else
+    keepalive_state="stale"
+  fi
+fi
 
 channel_ok=0
 reason=""
-if [ "$keepalive_fresh" = "1" ]; then
-  channel_ok=1
-elif channel_pipe_alive_by_process_tree; then
-  channel_ok=1
-  reason=" (keepalive stale, confirmed alive via process tree)"
-fi
+case "$keepalive_state" in
+  fresh)
+    channel_ok=1
+    ;;
+  stale)
+    if channel_pipe_alive_by_process_tree; then
+      channel_ok=1
+      reason=" (keepalive stale, confirmed alive via process tree)"
+    fi
+    ;;
+  missing)
+    # UNKNOWN channel state is not proof of a dead channel -- try to confirm
+    # liveness directly; if that too is inconclusive, do NOT treat the
+    # indeterminate state as UNHEALTHY (this probe's job is total-VM-wedge
+    # detection, and a missing keepalive file alone says nothing about that).
+    if channel_pipe_alive_by_process_tree; then
+      channel_ok=1
+      reason=" (keepalive missing, confirmed alive via process tree)"
+    else
+      channel_ok=1
+      reason=" (keepalive missing/unreadable -- UNKNOWN channel state, not treated as unhealthy)"
+    fi
+    ;;
+esac
 
 if [ "$code" = "200" ] && [ "$channel_ok" = "1" ]; then
   echo "OK${reason}"
   exit 0
 fi
 
-echo "UNHEALTHY dashboard_http=${code} keepalive_age=${age}s channel_ok=${channel_ok}"
+echo "UNHEALTHY dashboard_http=${code} keepalive_state=${keepalive_state} keepalive_age=${age:-n/a}s channel_ok=${channel_ok}"
 exit 1

@@ -20,33 +20,67 @@ if ! grep -qi microsoft /proc/version 2>/dev/null; then
   echo "not WSL -- Windows watchdog not applicable; no-op."
   exit 0
 fi
-PS="$(command -v powershell.exe || true)"
-[ -z "$PS" ] && PS="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
-if [ ! -x "$PS" ]; then
-  echo "powershell.exe not reachable -- cannot install Windows watchdog; no-op."
+# Card 58badae1 incident (2026-10-12 20:17, MikroB komment 17738): a prior
+# selftest for this script faked LOCALAPPDATA but left TASK_NAME and the
+# schtasks.exe path as the real, hardcoded production values -- so the "fake"
+# run still registered a REAL Windows Scheduled Task under the REAL
+# MikroB-WSL-Watchdog name (overwriting a deliberate Disable), and `/mnt/c`
+# means even a "fake" LOCALAPPDATA path is still real storage on the C: drive.
+# INSTALL_WSL_WATCHDOG_DRY_RUN=1 renders every file (PS1, launcher vbs) and
+# prints the registration command it WOULD run, but calls neither
+# powershell.exe nor schtasks.exe -- this is the ONLY mode a selftest may use.
+DRY_RUN="${INSTALL_WSL_WATCHDOG_DRY_RUN:-0}"
+
+WSLEXE="/mnt/c/Windows/System32/wsl.exe"
+WSL_USER="$(id -un)"
+
+if [ "$DRY_RUN" = "1" ]; then
+  PS="(dry-run: powershell.exe not invoked)"
+else
+  PS="$(command -v powershell.exe || true)"
+  [ -z "$PS" ] && PS="/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+  if [ ! -x "$PS" ]; then
+    echo "powershell.exe not reachable -- cannot install Windows watchdog; no-op."
+    exit 0
+  fi
+fi
+
+# --- guard: WSL only --- (checked after the dry-run PS resolve above so a
+# dry-run on a non-WSL CI box still exercises the render path; the guard
+# below still applies to a REAL install)
+if [ "$DRY_RUN" != "1" ] && ! grep -qi microsoft /proc/version 2>/dev/null; then
+  echo "not WSL -- Windows watchdog not applicable; no-op."
   exit 0
 fi
-WSLEXE="/mnt/c/Windows/System32/wsl.exe"
-
-WSL_USER="$(id -un)"
 
 # --- resolve the distro name (this VM) ---
 DISTRO="${WSL_DISTRO_NAME:-}"
-if [ -z "$DISTRO" ]; then
+if [ -z "$DISTRO" ] && [ "$DRY_RUN" != "1" ]; then
   # Parse `wsl.exe -l -v`: prefer the default (*) row, else the first Running row.
   DISTRO="$("$WSLEXE" -l -v 2>/dev/null | tr -d '\0\r' | awk '/\*/{print $2; found=1} END{if(!found) print ""}')"
 fi
 [ -z "$DISTRO" ] && DISTRO="Ubuntu"
 
 # --- Windows target dir (LOCALAPPDATA\MikroB), both Windows + WSL views ---
-WIN_LOCALAPPDATA="$("$PS" -NoProfile -Command '$env:LOCALAPPDATA' 2>/dev/null | tr -d '\r')"
-[ -z "$WIN_LOCALAPPDATA" ] && { echo "could not resolve LOCALAPPDATA; abort"; exit 1; }
+if [ "$DRY_RUN" = "1" ]; then
+  # Entirely bypasses powershell.exe AND wslpath -- a dry-run must never
+  # resolve to a real path under /mnt/c, real or "fake"-looking.
+  WIN_LOCALAPPDATA="${INSTALL_WSL_WATCHDOG_DRYRUN_WIN_LOCALAPPDATA:-C:\\DRYRUN-NOT-REAL}"
+  WSL_DIR="${INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR:?dry-run requires INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR (a scratch dir, never under /mnt/c)}/MikroB"
+else
+  WIN_LOCALAPPDATA="$("$PS" -NoProfile -Command '$env:LOCALAPPDATA' 2>/dev/null | tr -d '\r')"
+  [ -z "$WIN_LOCALAPPDATA" ] && { echo "could not resolve LOCALAPPDATA; abort"; exit 1; }
+  WSL_DIR="$(wslpath -u "$WIN_LOCALAPPDATA")/MikroB"
+fi
 WIN_DIR="${WIN_LOCALAPPDATA}\\MikroB"
-WSL_DIR="$(wslpath -u "$WIN_LOCALAPPDATA")/MikroB"
 mkdir -p "$WSL_DIR"
 
 WATCHDOG_WIN="${WIN_DIR}\\mikrob-wsl-watchdog.ps1"
 WATCHDOG_WSL="${WSL_DIR}/mikrob-wsl-watchdog.ps1"
+# Card 58badae1 incident: TASK_NAME is deliberately NOT overridable by a plain
+# env var with no other guard -- a dry-run never reaches the registration
+# call at all (see section 2 below), so there is no name to isolate; a REAL
+# install must always use the real production name.
 TASK_NAME="MikroB-WSL-Watchdog"
 SCHTASKS="/mnt/c/Windows/System32/schtasks.exe"
 
@@ -183,7 +217,12 @@ echo "Rendered hidden VBS launcher -> $LAUNCHER_WIN"
 #    so /TR needs no inner quotes. /F overwrites, so re-running is idempotent.
 # ----------------------------------------------------------------------------
 TR="wscript.exe //B //Nologo ${LAUNCHER_WIN}"
-if "$SCHTASKS" /Create /TN "$TASK_NAME" /TR "$TR" /SC MINUTE /MO 5 /F >/dev/null 2>&1; then
+if [ "$DRY_RUN" = "1" ]; then
+  # Card 58badae1 incident: schtasks.exe is NEVER invoked in dry-run, not even
+  # a stubbed one on PATH -- the real binary is called by its hardcoded
+  # absolute path below, so faking PATH alone cannot intercept it.
+  echo "DRY-RUN: would register Scheduled Task '$TASK_NAME': schtasks /Create /TN \"$TASK_NAME\" /TR \"$TR\" /SC MINUTE /MO 5 /F"
+elif "$SCHTASKS" /Create /TN "$TASK_NAME" /TR "$TR" /SC MINUTE /MO 5 /F >/dev/null 2>&1; then
   echo "Scheduled Task '$TASK_NAME' registered (every 5 min, as $WSL_USER)."
 else
   echo "warn: schtasks registration failed. Register manually in a cmd/PowerShell:"

@@ -11,6 +11,7 @@ trap 'rm -rf "$TMP"' EXIT
 fail=0
 
 check() { case "$3" in *"$2"*) echo "  ok   $1" ;; *) echo "  FAIL $1 -> needle '$2' not in '$3'"; fail=1 ;; esac; }
+check_absent() { case "$3" in *"$2"*) echo "  FAIL $1 -> needle '$2' unexpectedly present"; fail=1 ;; *) echo "  ok   $1" ;; esac; }
 
 mkdir -p "$TMP/store"
 
@@ -120,6 +121,33 @@ write_tmux_ps healthy_session
 check "stale-but-alive: OK output" "OK" "$(cat "$TMP/out3.txt")"
 check "stale-but-alive: mentions process-tree confirmation" "process tree" "$(cat "$TMP/out3.txt")"
 [ "$(cat "$TMP/rc3.txt")" = "0" ] && echo "  ok   stale-but-alive: exit 0" || { echo "  FAIL stale-but-alive: exit $(cat "$TMP/rc3.txt")"; fail=1; }
+
+# --- 4b. keepalive file MISSING + no live poller -> still OK, not UNHEALTHY
+#         (card 58badae1 incident fix: UNKNOWN channel state != unhealthy) ---
+write_curl 200
+write_tmux_ps no_poller
+( cd "$TMP" && rm -f store/.channel-keepalive
+  OUT="$(bash scripts/wsl-liveness-probe.sh 2>&1)"; RC=$?
+  echo "$OUT" > "$TMP/out4b.txt"; echo "$RC" > "$TMP/rc4b.txt"
+)
+check "missing-keepalive: OK output" "OK" "$(cat "$TMP/out4b.txt")"
+check "missing-keepalive: UNKNOWN noted" "UNKNOWN" "$(cat "$TMP/out4b.txt")"
+[ "$(cat "$TMP/rc4b.txt")" = "0" ] && echo "  ok   missing-keepalive: exit 0" || { echo "  FAIL missing-keepalive: exit $(cat "$TMP/rc4b.txt")"; fail=1; }
+
+# --- 4c. dashboard DOWN + keepalive file MISSING -> UNHEALTHY line must show
+#         keepalive_state=missing and age=n/a, NEVER an epoch-sized number
+#         (regression pin for the live incident: keepalive_age=1791828061s,
+#         computed from a stat-failure fallback of 0) ------------------------
+write_curl 000
+write_tmux_ps no_poller
+( cd "$TMP" && rm -f store/.channel-keepalive
+  OUT="$(bash scripts/wsl-liveness-probe.sh 2>&1)"; RC=$?
+  echo "$OUT" > "$TMP/out4c.txt"; echo "$RC" > "$TMP/rc4c.txt"
+)
+check "down+missing: keepalive_state=missing" "keepalive_state=missing" "$(cat "$TMP/out4c.txt")"
+check "down+missing: age reported as n/a" "keepalive_age=n/as" "$(cat "$TMP/out4c.txt")"
+check_absent "down+missing: no epoch-sized age (regression pin)" "keepalive_age=17" "$(cat "$TMP/out4c.txt")"
+[ "$(cat "$TMP/rc4c.txt")" = "1" ] && echo "  ok   down+missing: exit 1" || { echo "  FAIL down+missing: exit $(cat "$TMP/rc4c.txt")"; fail=1; }
 
 # --- 4. dashboard DOWN (non-200), regardless of channel state -> UNHEALTHY --
 write_curl 000
