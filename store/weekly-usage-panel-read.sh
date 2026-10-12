@@ -55,7 +55,12 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # to /login when the refresh token itself is dead (~monthly), which the relogin flow handles.
 revive_pane() {
   echo "revive: panel '$PANE' dead, recreating from isolated config (refresh-token auto-renew, no Peti login)..." >&2
-  tmux new-session -d -s "$PANE" -x "$PANE_COLS" -y "$PANE_ROWS" -c /home/neon 2>/dev/null || return 1
+  # 700, matching ~/.claude: the dir holds .credentials.json (card 90424157 F2).
+  mkdir -p -m 700 "$PROBE_CONFIG_DIR" 2>/dev/null || true
+  chmod 700 "$PROBE_CONFIG_DIR" 2>/dev/null || true
+  # tmux itself refusing to create the pane is not an auth signal either way -- UNKNOWN (card
+  # 90424157 F1), not EXPIRED (rc 1 is reserved for a POSITIVELY confirmed dead refresh token).
+  tmux new-session -d -s "$PANE" -x "$PANE_COLS" -y "$PANE_ROWS" -c /home/neon 2>/dev/null || return 2
   sleep 1
   # env option flags (-u) MUST precede VAR=VALUE assignments (else env treats the assignment
   # as end-of-options). Isolated config dir pins the probe to its own credential lineage.
@@ -109,8 +114,27 @@ revive_pane() {
   cap="$(tmux capture-pane -t "$PANE" -p 2>/dev/null || true)"
   while ! printf '%s' "$cap" | grep -qiE 'Welcome back|manual mode on|for shortcuts|Claude (Max|Pro|Team|Enterprise)|mode on'; do
     if [ "$waited" -ge 90 ]; then
-      echo "revive: panel up but not authed after ${waited}s (refresh token likely expired) -> Peti /login needed." >&2
-      return 1
+      # THREE STATES, NOT TWO (card 90424157 F1). A plain timeout here used to be reported as
+      # "refresh token likely expired" -- a CONCLUSION the timeout alone does not support. Four
+      # documented false-expired cases (cold-boot network delay 08-16/17, CLI banner drift 08-19,
+      # wrong key on the trust prompt 09-17, and the 09-16 case) all took THIS exact path with no
+      # real auth failure, each one paging Peti for a needless browser OAuth (consent-phishing
+      # habituation risk). A timeout alone is "I could not confirm either way", not "expired".
+      #
+      # POSITIVE expiry check instead of inferring it from absence: the Claude Code CLI only
+      # documents the dead-refresh-token signal as REQUEST-TIME text (`/status`'s "Login" row
+      # reading "Expired - log in again", per code.claude.com/docs/en/authentication.md) -- it is
+      # not a startup banner, which is exactly why the ready-banner wait above can never see it.
+      # So actively ask: send /status and look for that row before concluding anything.
+      tmux send-keys -t "$PANE" '/status' Enter 2>/dev/null
+      sleep 5
+      local status_cap; status_cap="$(tmux capture-pane -t "$PANE" -p 2>/dev/null || true)"
+      if printf '%s' "$status_cap" | grep -qiE 'Expired.{0,3}log in again'; then
+        echo "revive: panel up, /status confirms login expired after ${waited}s -> Peti /login needed." >&2
+        return 1
+      fi
+      echo "revive: panel up but not confirmed authed after ${waited}s, and /status did not confirm expiry either -- UNKNOWN, not expired. Check the panel manually." >&2
+      return 2
     fi
     sleep 10; waited=$((waited + 10))
     cap="$(tmux capture-pane -t "$PANE" -p 2>/dev/null || true)"
@@ -121,7 +145,16 @@ revive_pane() {
 
 # 1) Panel must exist (dedicated Max-authed /usage panel). Auto-revive after reboot before failing.
 if ! tmux has-session -t "$PANE" 2>/dev/null; then
-  revive_pane || fail "panel '$PANE' not running and refresh-token revive failed (needs claude /login Max). Manual fallback stays."
+  revive_rc=0
+  revive_pane || revive_rc=$?
+  if [ "$revive_rc" -eq 1 ]; then
+    # EXPIRED (confirmed via /status, card 90424157 F1): real relogin is needed.
+    fail "EXPIRED: panel '$PANE' /status confirms login expired -- claude /login Max needed. Manual fallback stays."
+  elif [ "$revive_rc" -ne 0 ]; then
+    # UNKNOWN (rc 2, or anything else revive_pane might return): could not confirm either way --
+    # NOT a confirmed expiry, so callers must not auto-relogin/page Peti on this alone.
+    fail "UNKNOWN: panel '$PANE' revive did not confirm auth either way -- check the panel manually before assuming expiry."
+  fi
 fi
 
 # 2) Drive /usage in the dedicated panel, then capture.
