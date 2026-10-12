@@ -38,7 +38,9 @@ PROBE_CONFIG_DIR="/home/neon/.claude-usage-probe"
 
 ensure_pane() {
   tmux has-session -t "$PANE" 2>/dev/null && return 0
-  mkdir -p "$PROBE_CONFIG_DIR" 2>/dev/null || true
+  # 700, matching ~/.claude: the dir holds .credentials.json (card 90424157 F2).
+  mkdir -p -m 700 "$PROBE_CONFIG_DIR" 2>/dev/null || true
+  chmod 700 "$PROBE_CONFIG_DIR" 2>/dev/null || true
   # Recreate the panel with a clean interactive claude (subscription login, no API token env),
   # pinned to the ISOLATED config dir so shared-credential contention can't log it out.
   tmux new-session -d -s "$PANE" -x 200 -y 60 -c /home/neon 2>/dev/null || return 1
