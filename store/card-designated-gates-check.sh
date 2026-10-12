@@ -43,6 +43,17 @@ card_designated_gates_agree() {
   local card="$1" sha="$2" h="${GATE_CHECK_TOKEN_FILE:-/home/neon/marveen/store/.dashboard-token}"
   local api="${GATE_CHECK_API:-http://127.0.0.1:3420}"
 
+  # Card 3731c807 (RedHat 16620/MikroB follow-up): CARD_DESIGNATED_GATES_CSV is deliberately global
+  # (see the header above), which means an early `return 1` below -- unreadable token, unreadable
+  # board -- used to leave it holding whatever a PREVIOUS call in the same process last set it to.
+  # A caller that only checks "${CARD_DESIGNATED_GATES_CSV:-nincs kijelolve}" (land_one's own
+  # Designated: comment) would then post an unrelated card's real designation, or a stale earlier
+  # value for THIS card, as if it had been freshly read -- never "nincs kijelolve" and never
+  # anything that looks unresolved, because the variable is simply never unset. Reset to an
+  # unmistakable sentinel on every call, before any early exit can happen, so a caller that reads
+  # it after a failed call sees "could not be determined", not a leftover value from elsewhere.
+  CARD_DESIGNATED_GATES_CSV="(ismeretlen -- a kijeloles nem lett kiolvasva ebben a hivasban)"
+
   if [ ! -r "$h" ]; then
     echo "REFUSED: cannot read $h, so card $card's designated gates are unverifiable." >&2
     echo "         Fails CLOSED on purpose. Override with --allow-ungated." >&2

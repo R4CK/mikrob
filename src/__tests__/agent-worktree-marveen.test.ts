@@ -356,8 +356,14 @@ describe('marveen-land.sh (card dc185b52)', () => {
     expect(r.out).toContain('agent/fullstack/work has unlanded commit(s), not landed automatically')
 
     gitOk(main, 'fetch', '-q', 'origin', 'develop')
-    const files = git(main, 'ls-tree', '-r', '--name-only', 'origin/develop')
-    expect(files.split('\n')).not.toEqual(expect.arrayContaining(['backend-new.txt', 'fullstack-new.txt']))
+    // Per-file (card 3731c807, RedHat 16619 N1): arrayContaining(['a', 'b']) only fails the
+    // containing toEqual when BOTH are present, so a PARTIAL landing bug (one branch's file leaks
+    // onto develop, the other correctly stays off) left this assertion green -- only a landing that
+    // leaked NEITHER or BOTH files was ever caught. Measured directly: mutating the sweep to land
+    // just agent/backend/work left backend-new.txt on develop and this test still passed.
+    const files = git(main, 'ls-tree', '-r', '--name-only', 'origin/develop').split('\n')
+    expect(files).not.toContain('backend-new.txt')
+    expect(files).not.toContain('fullstack-new.txt')
   }, LAND_TIMEOUT_MS)
 
   it('landing again after a clean land is a no-op, not an error', async () => {
