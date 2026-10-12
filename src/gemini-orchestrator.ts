@@ -15,18 +15,22 @@
 // state). It never drafts, never reviews, never writes to a card. Drafting (2/4), Gemini review
 // (3/4) and the post-reset draft-review/cleanup (4/4) are separate, later cards.
 //
-// DEDUP NOTE (condition 6): the full is_gemini_blocked vocabulary lives INLINE inside
-// store/offload-dispatch.sh, which card c7abdf57 is actively building on right now -- extracting
-// it to a shared module this session risks a collision with that in-flight work. This module
-// therefore PORTS the same project-allowlist + tag-block + content-stem vocabulary rather than
-// importing it live; flagged in the REVIEW as a follow-up dedup once c7abdf57 lands.
+// CONDITION 6 / WHITEHAT F1 FIX (comment 17666, card 23a14c4b re-gate): an earlier version of this
+// module PORTED the is_gemini_blocked vocabulary into TypeScript by hand. WhiteHat's NO-GO showed
+// the port had already drifted from the landed filter (a92e9913) the moment it shipped -- missing
+// the permission/access/szemelyes/hozzaferes stems and the non-ASCII strip, both of which the
+// landed filter already covers. This module now calls the LANDED shell filter itself
+// (store/offload-dispatch.sh --check-blocked, added for exactly this purpose) as the single
+// source of truth, instead of keeping a second copy of the sensitive-word list that can silently
+// diverge again on the next edit to either side.
 
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 import { geminiGenerate, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
 import { getSecret } from './web/vault.js'
-import { listKanbanCards, getLabelsForAllCards } from './db.js'
+import { initDatabase, listKanbanCards, getLabelsForAllCards } from './db.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
@@ -62,55 +66,32 @@ export interface OrchestratorCardMeta {
   labels: string[]
 }
 
-function normalize(s: string): string {
-  return s
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-}
+const OFFLOAD_DISPATCH_SCRIPT = join(STORE, 'offload-dispatch.sh')
 
-// Ported 1:1 from store/offload-dispatch.sh is_gemini_blocked's BLOCKED_TAGS set (card a92e9913).
-const BLOCKED_TAG_WORDS = new Set([
-  'mopsion', 'cleancore', 'sec', 'security', 'auth', 'authz', 'rbac', 'tenant', 'superadmin',
-  'pii', 'penz', 'penzugy', 'finance', 'billing', 'payment', 'secret', 'crypto',
-  'gdpr', 'privacy', 'legal', 'cybersec',
-])
-
-// Ported 1:1 from the same function's SENS_RE (leading-boundary-only stem match).
-const SENSITIVE_STEM_RE = new RegExp(
-  '\\b(biztons|security|auth|authz|rbac|tenant|superadmin' +
-    '|penz|penzugy|fizet|szamla|afa|payroll|berszamfejtes|jelszo|password' +
-    '|token|secret|titok|jogosult|gdpr|privacy|kulcs' +
-    '|kripto|crypto|pii|billing|payment|legal|jogi|cybersec|fin' +
-    '|hacker|exploit|pentest|inject|sqli|xss)',
-  'i',
-)
-
-function isSensitiveText(s: string): boolean {
-  return SENSITIVE_STEM_RE.test(normalize(s))
+/**
+ * Calls the landed, already-gated is_gemini_blocked (card a92e9913, store/offload-dispatch.sh) via
+ * its --check-blocked entry point, instead of keeping a second copy of its vocabulary. Matches the
+ * function's own return convention (status 0 = blocked, 1 = allowed) and fails CLOSED (treated as
+ * blocked) on anything else -- a missing interpreter, a crashed subprocess, a killed-by-signal run
+ * (status null) -- because "could not confirm this is safe" must never be read as "safe".
+ */
+function isBlockedByLandedFilter(project: string, tags: string, title: string, desc: string): boolean {
+  const result = spawnSync('bash', [OFFLOAD_DISPATCH_SCRIPT, '--check-blocked', project, tags, title, desc], {
+    encoding: 'utf-8',
+  })
+  return result.status !== 1
 }
 
 /**
- * Conditions 5+6: a card must never be offered to Gemini -- not even its title+labels -- if it is
- * a mopsion-project card, carries a BLOKKOLT-* label, or its title/labels match the a92e9913
- * sensitive-domain vocabulary. Mirrors is_gemini_blocked's project ALLOWLIST (only "MikroB",
- * case/accent-insensitive; empty/unknown/mopsion are all excluded, fail-closed) rather than a
- * blocklist.
+ * Conditions 5+6: a card must never be offered to Gemini -- not even its title+labels -- if the
+ * landed filter (a92e9913) would block it: mopsion/unknown project, a BLOKKOLT-* or sensitive-
+ * domain label, or a sensitive-domain title. The "@agent" label prefix is stripped before joining,
+ * matching offload-dispatch.sh's own tags_for() input shaping; the actual classification
+ * (normalization, stems, project allowlist) all happens inside the landed filter itself.
  */
 export function isEligibleForGeminiOrdering(card: OrchestratorCard): boolean {
-  if (normalize(card.project ?? '') !== 'mikrob') return false
-
-  for (const label of card.labels) {
-    const l = normalize(label).replace(/^@/, '')
-    if (l.startsWith('blokkolt')) return false
-    if (BLOCKED_TAG_WORDS.has(l)) return false
-    if (isSensitiveText(label)) return false
-  }
-
-  if (isSensitiveText(card.title)) return false
-
-  return true
+  const tags = card.labels.map((l) => l.replace(/^@/, '')).join(',')
+  return !isBlockedByLandedFilter(card.project ?? '', tags, card.title, '')
 }
 
 /** Condition 2, enforced structurally: strips every card down to id+title+labels. */
@@ -261,7 +242,10 @@ export function loadOrchestratorCardsFromDb(): OrchestratorCard[] {
 }
 
 // Entry point when run directly: node dist/gemini-orchestrator.js
+// WhiteHat F2 (comment 17666): loadOrchestratorCardsFromDb() calls into db.ts, which requires
+// initDatabase() to have run first -- a direct run crashed immediately without it.
 if (process.argv[1] && fileURLToPath(import.meta.url).endsWith(process.argv[1].replace(/^.*[/\\]/, '/'))) {
+  initDatabase()
   runGeminiOrchestratorSweep(loadOrchestratorCardsFromDb)
     .then(() => process.exit(0))
     .catch((err) => { console.error('[gemini-orchestrator] Fatal:', err); process.exit(1) })
