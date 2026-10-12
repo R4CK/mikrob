@@ -4471,7 +4471,7 @@ async function clearStaleParkedInputInLane(
       const preview = parked.slice(0, 80).replace(/[<>&]/g, ' ')
       notifyChannel(
         `⚠️ Egy sub-agent (${session}) input-mezojebe beragadt egy parkolt sor, ` +
-        `az auto-tisztitas ${fails}x sikertelen -- lehet kezi beavatkozas kell. Reszlet: "${preview}"`,
+        `az auto-tisztitas ${fails}x sikertelen -- lehet kezi beavatkozas kell. Reszlet: "${alertIsRedirected() ? '' : preview}"`,
       ).catch(() => { /* notify is best-effort */ })
       escalated = true
       logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: sub-agent parked input resisted clearing -- escalated to operator')

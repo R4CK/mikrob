@@ -87,10 +87,13 @@ describe('ALERT_CHAT_ID edge cases (review follow-up)', () => {
     expect(src).not.toMatch(/notifyChannel\(/)
   })
 
-  it('parked-line alerts drop the conversation preview when the alert is redirected', () => {
+  it('parked-line alerts drop the conversation preview when the alert is redirected (main + saved-text + sub-agent paths)', () => {
     const src = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
     const uses = src.match(/alertIsRedirected\(\) \? '' :/g) || []
-    expect(uses.length).toBe(2)
+    // RedHat finding (card 8a3a1e84, 1f3dbba0): the sub-agent SUBAGENT_PARKED_ESCALATE_AFTER
+    // escalation path was missing this guard -- only the main-agent parked-line and rescued-text
+    // paths had it, so a crafted parked input could still leak into the redirected alert chat.
+    expect(uses.length).toBe(3)
   })
 })
 
