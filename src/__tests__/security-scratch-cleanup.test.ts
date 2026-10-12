@@ -5,7 +5,6 @@
 // never fires; it still validates the target and prefers `git worktree remove` internally.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -31,7 +30,9 @@ function git(cwd: string, ...args: string[]): void {
 }
 
 let root: string
-beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'sec-scratch-')) })
+// Use /tmp explicitly: fleet-test.sh overrides TMPDIR to a path under $HOME, and
+// security-scratch-cleanup.sh only accepts paths under its default SECURITY_SCRATCH_ROOTS=/tmp.
+beforeEach(() => { root = mkdtempSync(join('/tmp', 'sec-scratch-')) })
 afterEach(() => rmSync(root, { recursive: true, force: true }))
 
 describe('security-scratch-cleanup.sh', () => {

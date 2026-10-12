@@ -2,7 +2,6 @@ import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, mkdirSync, symlinkSync, existsSync, lstatSync, copyFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
 
 // EXCLUSION924 (card fd0b2180, Cybersec F1 on 728179d1): vendor-skill.sh had no memory of a
 // deliberate exclusion decision (e.g. Peti removing a paid-feature file after the first
@@ -24,7 +23,10 @@ const ROOT = join(__dirname, '..', '..')
 let scriptSandbox: string
 let SCRIPT: string
 beforeAll(() => {
-  scriptSandbox = mkdtempSync(join(tmpdir(), 'vendor-skill-sanctioned-script-'))
+  // Use /tmp explicitly: fleet-test.sh overrides TMPDIR to a path under $HOME, and vendor-skill.sh
+  // normalises dest keys with ${dest/#"$HOME"/\~} -- a dest under $HOME would be stored as ~/...
+  // in the JSON but the test writes /home/... as the key, causing a lookup miss and silent bypass.
+  scriptSandbox = mkdtempSync(join('/tmp', 'vendor-skill-sanctioned-script-'))
   SCRIPT = join(scriptSandbox, 'vendor-skill.sh')
   copyFileSync(join(ROOT, 'store', 'vendor-skill.sh'), SCRIPT)
 })
@@ -34,7 +36,7 @@ afterAll(() => {
 
 const dirs: string[] = []
 function mkdtemp(prefix: string): string {
-  const d = mkdtempSync(join(tmpdir(), prefix))
+  const d = mkdtempSync(join('/tmp', prefix))
   dirs.push(d)
   return d
 }
