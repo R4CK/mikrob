@@ -71,9 +71,9 @@ RC=0
 check "bad --driver-type: exit 2" "2" "$RC"
 
 if [ "$fail" -eq 0 ]; then
-  echo "PASS"
+  echo "selftest: PASS"
   exit 0
 else
-  echo "FAIL"
+  echo "selftest: FAIL"
   exit 1
 fi
