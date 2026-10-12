@@ -143,9 +143,9 @@ check "fetch-fail: FAILED marker" "FAILED to fetch" "$OUT"
 if [ "$RC" -eq 1 ]; then echo "  ok   fetch-fail: exit 1"; else echo "  FAIL fetch-fail: exit $RC, expected 1"; fail=1; fi
 
 if [ "$fail" -eq 0 ]; then
-  echo "PASS"
+  echo "selftest: PASS"
   exit 0
 else
-  echo "FAIL"
+  echo "selftest: FAIL"
   exit 1
 fi

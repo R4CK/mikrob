@@ -63,7 +63,10 @@ _send_resume() {
     bash "$MESSAGE_RECORDER" "$1" "$2"
     return
   fi
-  payload="$(AGENT="$1" TEXT="$2" python3 -c 'import json,os; print(json.dumps({"from":"fullstack","to":os.environ["AGENT"],"content":os.environ["TEXT"]}))')"
+  # "from" is mikrob, not fullstack: this script runs as a boot-time guard-timer (same convention
+  # as offload-dispatch.sh's NUDGE_FROM=mikrob), not as the fullstack agent -- which may itself be
+  # one of the agents this script is starting, i.e. not yet running when this fires.
+  payload="$(AGENT="$1" TEXT="$2" python3 -c 'import json,os; print(json.dumps({"from":"mikrob","to":os.environ["AGENT"],"content":os.environ["TEXT"]}))')"
   curl -s --max-time 15 -H @"$hf" -X POST "${DASH}/api/messages" -H 'Content-Type: application/json' --data-binary "$payload" >/dev/null 2>&1
 }
 
