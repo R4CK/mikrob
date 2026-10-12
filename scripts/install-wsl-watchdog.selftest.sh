@@ -68,12 +68,21 @@ CALL_LOG="$TMP/real-bin-calls.log"
 cat > "$FAKEBIN/schtasks.sh" <<EOF
 #!/usr/bin/env bash
 echo "schtasks \$*" >> "$CALL_LOG"
-exit 0
+case "\$1" in
+  /Query)
+    case "\${FAKE_TASK_MODE:-notfound}" in
+      enabled) echo '<Task><Settings><Enabled>true</Enabled></Settings></Task>'; exit 0 ;;
+      disabled) echo '<Task><Settings><Enabled>false</Enabled></Settings></Task>'; exit 0 ;;
+      *) exit 1 ;;  # notfound: no stdout, non-zero rc -- the real schtasks shape for a missing task
+    esac
+    ;;
+  /Create) exit 0 ;;
+esac
 EOF
 cat > "$FAKEBIN/powershell.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "powershell $*" >> "__CALL_LOG__"
-echo 'C:\FAKE-ISOLATED-LOCALAPPDATA'
+echo "${FAKE_PS_LOCALAPPDATA:-C:\\FAKE-ISOLATED-LOCALAPPDATA}"
 exit 0
 EOF
 sed -i "s#__CALL_LOG__#$CALL_LOG#" "$FAKEBIN/powershell.sh"
@@ -83,12 +92,18 @@ echo "wsl \$*" >> "$CALL_LOG"
 echo "*  Ubuntu  Running  2"
 exit 0
 EOF
-chmod +x "$FAKEBIN/schtasks.sh" "$FAKEBIN/powershell.sh" "$FAKEBIN/wsl.sh"
+cat > "$FAKEBIN/wslpath.sh" <<EOF
+#!/usr/bin/env bash
+echo "wslpath \$*" >> "$CALL_LOG"
+echo "\${FAKE_WSLPATH_OUT:-$TMP/winroot-view}"
+EOF
+chmod +x "$FAKEBIN/schtasks.sh" "$FAKEBIN/powershell.sh" "$FAKEBIN/wsl.sh" "$FAKEBIN/wslpath.sh"
 
 run_isolated() { # runs $BIN with the fake-bin overrides ALWAYS set, regardless of DRY_RUN
   INSTALL_WSL_WATCHDOG_SCHTASKS_BIN="$FAKEBIN/schtasks.sh" \
   INSTALL_WSL_WATCHDOG_POWERSHELL_BIN="$FAKEBIN/powershell.sh" \
   INSTALL_WSL_WATCHDOG_WSLEXE_BIN="$FAKEBIN/wsl.sh" \
+  INSTALL_WSL_WATCHDOG_WSLPATH_BIN="$FAKEBIN/wslpath.sh" \
   bash "$BIN" "$@" 2>&1
 }
 
@@ -318,11 +333,79 @@ OUT_H2MNT="$(INSTALL_WSL_WATCHDOG_DRY_RUN=1 INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR=
   WSL_DISTRO_NAME="Ubuntu" run_isolated)"; RC_H2MNT=$?
 [ "$RC_H2MNT" -ne 0 ] && echo "  ok   H2: /mnt/ scratch dir refuses (exit $RC_H2MNT)" || { echo "  FAIL H2: /mnt/ scratch dir did not refuse"; fail=1; }
 assert_no_real_calls "H2: /mnt/ scratch dir refusal never touches a real binary"
+# cybered N9 (comment 17806): pin the actual REFUSAL MESSAGE, not just the
+# exit code + absent-directory -- on this host a mutant that deletes the
+# realpath guard still exits non-zero because mkdir fails under the
+# root-owned real /mnt, which made the OLD assertion pass for the wrong
+# reason (the exact trap the H2bad fix already closed once).
+check "H2: /mnt/ refusal names the real path, not a coincidental mkdir failure" "resolves under /mnt/" "$OUT_H2MNT"
 
 OUT_H2MNT2="$(INSTALL_WSL_WATCHDOG_DRY_RUN=1 INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR="/tmp/../mnt/n9-escape-probe" \
   WSL_DISTRO_NAME="Ubuntu" run_isolated)"; RC_H2MNT2=$?
 [ "$RC_H2MNT2" -ne 0 ] && echo "  ok   N9: lexical /mnt/ escape ('/tmp/../mnt/...') refuses (exit $RC_H2MNT2)" || { echo "  FAIL N9: lexical /mnt/ escape was not caught"; fail=1; }
 [ ! -e "/mnt/n9-escape-probe" ] && echo "  ok   N9: escape probe directory was never created under real /mnt" || { echo "  FAIL N9: /mnt/n9-escape-probe exists -- the escape was not caught in time"; fail=1; }
+check "N9: escape refusal names the real path too" "resolves under /mnt/" "$OUT_H2MNT2"
+
+# --- F1 (cybered NO-GO, comment 17806, BLOCKING): under `set -e`, a failing
+#     query (task does not exist, rc!=0) used to abort the WHOLE installer at
+#     the `TASK_QUERY_OUT="$(...)"` assignment, before classify_task_state()
+#     or the registration decision ever ran -- a fresh install, or
+#     re-registering a deleted task, could never succeed. These three cases
+#     exercise the REAL query->classify->register wiring end to end (not
+#     just the DRYRUN_TASK_STATE shortcut used above), with a fake schtasks
+#     standing in for the three real states. ---------------------------------
+: > "$CALL_LOG"
+OUT_F1_NOTFOUND="$(FAKE_TASK_MODE=notfound WSL_DISTRO_NAME="Ubuntu" run_isolated)"; RC_F1_NOTFOUND=$?
+[ "$RC_F1_NOTFOUND" -eq 0 ] && echo "  ok   F1: non-existent task (rc!=0, empty query) no longer aborts the installer" \
+  || { echo "  FAIL F1: non-existent-task case exited $RC_F1_NOTFOUND (set -e abort regression?) -- $OUT_F1_NOTFOUND"; fail=1; }
+check "F1: non-existent task DOES register (self-heal/fresh-install path works)" "registered (every 5 min" "$OUT_F1_NOTFOUND"
+CREATE_CALLS_NOTFOUND="$(grep -c '^schtasks /Create' "$CALL_LOG")"
+[ "$CREATE_CALLS_NOTFOUND" = "1" ] && echo "  ok   F1: exactly one /Create call for a non-existent task" \
+  || { echo "  FAIL F1: expected exactly 1 /Create call for a non-existent task, got $CREATE_CALLS_NOTFOUND"; fail=1; }
+
+: > "$CALL_LOG"
+OUT_F1_ENABLED="$(FAKE_TASK_MODE=enabled WSL_DISTRO_NAME="Ubuntu" run_isolated)"
+check "F1: an existing, enabled task still re-registers (idempotent refresh)" "registered (every 5 min" "$OUT_F1_ENABLED"
+[ "$(grep -c '^schtasks /Create' "$CALL_LOG")" = "1" ] && echo "  ok   F1: exactly one /Create call for an enabled task" \
+  || { echo "  FAIL F1: enabled-task case did not call /Create exactly once"; fail=1; }
+
+: > "$CALL_LOG"
+OUT_F1_DISABLED="$(FAKE_TASK_MODE=disabled WSL_DISTRO_NAME="Ubuntu" run_isolated)"
+check "F1: an existing, disabled task still skips /Create (H1 unaffected by the F1 fix)" "skipping /Create" "$OUT_F1_DISABLED"
+[ "$(grep -c '^schtasks /Create' "$CALL_LOG")" = "0" ] && echo "  ok   F1: zero /Create calls for a disabled task" \
+  || { echo "  FAIL F1: disabled-task case called /Create (should be 0)"; fail=1; }
+
+# --- N-iso (cybered NO-GO, comment 17806, incident 21:01:13): the real
+#     wslpath + mkdir path must ALSO refuse a /mnt/-resolving target when
+#     test-mode overrides are active, even though DRY_RUN correctly selected
+#     the real branch here (this guards the case where a fake
+#     powershell/DRY_RUN-selector defect, not this test, is the thing that is
+#     broken). ------------------------------------------------------------
+: > "$CALL_LOG"
+OUT_NISO="$(FAKE_TASK_MODE=notfound FAKE_WSLPATH_OUT="/mnt/n-iso-escape-probe" \
+  WSL_DISTRO_NAME="Ubuntu" run_isolated)"; RC_NISO=$?
+[ "$RC_NISO" -ne 0 ] && echo "  ok   N-iso: real wslpath resolving under /mnt/ is refused (exit $RC_NISO)" \
+  || { echo "  FAIL N-iso: a /mnt/-resolving wslpath output was NOT refused"; fail=1; }
+check "N-iso: refusal names the test-mode override and the real path" "test-mode binary override" "$OUT_NISO"
+[ ! -e "/mnt/n-iso-escape-probe" ] && echo "  ok   N-iso: escape probe directory was never created under real /mnt" \
+  || { echo "  FAIL N-iso: /mnt/n-iso-escape-probe exists -- the real-path escape was not caught"; fail=1; }
+# powershell/wslpath ARE expected to be called here (hermetically, via the
+# fakes) to reach the point where the /mnt/ resolution is discovered; the
+# guarantee this case is actually proving is that schtasks is NEVER reached.
+[ "$(grep -c '^schtasks ' "$CALL_LOG")" = "0" ] && echo "  ok   N-iso: refusal happens before any schtasks call" \
+  || { echo "  FAIL N-iso: a schtasks call happened before the /mnt/ refusal"; fail=1; }
+
+# --- X1-X5 (cybered NO-GO, comment 17806, scope: not blocking but pinned so
+#     a future change notices): the PS1's OTHER decision comparators, beyond
+#     the grace window (B1) already pinned above. ---------------------------
+if [ -f "$PS1_PATH" ]; then
+  PS1_CODE_X="$(strip_ps1_comments < "$PS1_PATH")"
+  check_line "X1: restart threshold uses -ge (not -gt)" 'if ($fails -ge $MaxFails) {' "$PS1_CODE_X"
+  check_line "X2: restart-attempt bound uses -le (not -lt)" '  if ($restarts -le $MaxRestarts) {' "$PS1_CODE_X"
+  check_line "X3: healthy requires BOTH exit-0 AND OK-match (-and, not -or)" '$healthy = ($probeExit -eq 0) -and ($out -match "OK")' "$PS1_CODE_X"
+  check_line "X4: the wedged distro is actually terminated before relaunch" '    & wsl.exe --terminate $Distro 2>$null' "$PS1_CODE_X"
+  check_line "X5: a healthy read resets the restart-count state" '  Set-Content -Path $RestartCountFile -Value "0"' "$PS1_CODE_X"
+fi
 
 if [ "$fail" -eq 0 ]; then
   echo "PASS"

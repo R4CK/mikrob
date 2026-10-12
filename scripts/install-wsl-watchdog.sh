@@ -136,15 +136,36 @@ if [ "$DRY_RUN" = "1" ]; then
   WSL_DIR_REAL="$(realpath -m "$WSL_DIR")"
   case "$WSL_DIR_REAL" in
     /mnt/*)
-      echo "INSTALL_WSL_WATCHDOG_DRYRUN_WSL_DIR resolves under /mnt/ ($WSL_DIR_REAL) -- refusing: dry-run must never touch real Windows-backed storage; abort." >&2
+      echo "resolves under /mnt/ ($WSL_DIR_REAL) -- refusing: dry-run must never touch real Windows-backed storage; abort." >&2
       exit 1
       ;;
   esac
 else
   WIN_LOCALAPPDATA="$("$PS" -NoProfile -Command '$env:LOCALAPPDATA' 2>/dev/null | tr -d '\r')"
   [ -z "$WIN_LOCALAPPDATA" ] && { echo "could not resolve LOCALAPPDATA; abort"; exit 1; }
-  WSL_DIR="$(wslpath -u "$WIN_LOCALAPPDATA")/MikroB"
+  WSLPATH_BIN="${INSTALL_WSL_WATCHDOG_WSLPATH_BIN:-wslpath}"
+  WSL_DIR="$("$WSLPATH_BIN" -u "$WIN_LOCALAPPDATA")/MikroB"
 fi
+
+# cybered NO-GO N-iso (card 58badae1, comment 17806, incident 21:01:13): if
+# the DRY_RUN selector itself is broken (bug or mutation), a fake
+# powershell's made-up LOCALAPPDATA value still passes through the REAL
+# wslpath -u and resolves to a real /mnt/c path, and mkdir -p below then
+# creates it for real -- measured live, twice, by two different gate runs.
+# Whenever ANY of the real-binary test overrides are set (the unambiguous
+# signal that this is a test run), refuse a WSL_DIR under /mnt/ in BOTH
+# branches, not only the dry-run one -- this does not depend on DRY_RUN
+# having been selected correctly.
+if [ -n "${INSTALL_WSL_WATCHDOG_SCHTASKS_BIN:-}${INSTALL_WSL_WATCHDOG_POWERSHELL_BIN:-}${INSTALL_WSL_WATCHDOG_WSLEXE_BIN:-}${INSTALL_WSL_WATCHDOG_WSLPATH_BIN:-}" ]; then
+  WSL_DIR_TESTMODE_REAL="$(realpath -m "$WSL_DIR")"
+  case "$WSL_DIR_TESTMODE_REAL" in
+    /mnt/*)
+      echo "test-mode binary override(s) detected (INSTALL_WSL_WATCHDOG_*_BIN) but WSL_DIR resolves under /mnt/ ($WSL_DIR_TESTMODE_REAL) -- refusing to touch real Windows-backed storage during a test run; abort." >&2
+      exit 1
+      ;;
+  esac
+fi
+
 WIN_DIR="${WIN_LOCALAPPDATA}\\MikroB"
 mkdir -p "$WSL_DIR"
 
@@ -241,7 +262,13 @@ if (\$uptimeSec -gt 0 -and \$uptimeSec -lt \$FreshBootGraceSec) {
     exit 0
   }
   Log "probe unhealthy (out='\$out' exit=\$probeExit) -- fresh-boot grace EXCEEDED MaxFreshSkips (\$MaxFreshSkips): treating as a boot-loop, counting toward failure threshold"
-  Set-Content -Path \$FreshSkipCountFile -Value "0"
+  # cybered N2 (card 58badae1, comment 17806): resetting to 0 here meant only
+  # 1 read in every MaxFreshSkips actually counted toward \$fails during a
+  # sustained boot-loop (MaxFails=3 would need 30 reads, not 3). Saturating
+  # at \$MaxFreshSkips instead of resetting means every read from this point
+  # on falls through to the normal \$fails++ below -- a healthy read is still
+  # the only thing that resets this counter (see the \$healthy block above).
+  Set-Content -Path \$FreshSkipCountFile -Value "\$MaxFreshSkips"
 }
 
 \$fails = 0
@@ -331,7 +358,15 @@ TR="wscript.exe //B //Nologo ${LAUNCHER_WIN}"
 if [ "$DRY_RUN" = "1" ]; then
   TASK_STATE="${INSTALL_WSL_WATCHDOG_DRYRUN_TASK_STATE:-not-found}"
 else
-  TASK_QUERY_OUT="$("$SCHTASKS" /Query /TN "$TASK_NAME" /XML 2>/dev/null)"; QUERY_RC=$?
+  # cybered NO-GO F1 (card 58badae1, comment 17806): under `set -e`, a failing
+  # command substitution INSIDE an assignment (`VAR="$(cmd)"`) aborts the
+  # whole script right there -- the following `; QUERY_RC=$?` never runs.
+  # Measured: a non-existent task (the exact state this fix exists to make
+  # re-registerable) made the installer exit before classify_task_state ever
+  # ran, so a fresh install or a re-enable after deletion could never
+  # register the task again. `&&`/`||` keeps the exit status captured
+  # without ever letting `set -e` see a bare failing assignment.
+  TASK_QUERY_OUT="$("$SCHTASKS" /Query /TN "$TASK_NAME" /XML 2>/dev/null)" && QUERY_RC=0 || QUERY_RC=$?
   TASK_STATE="$(printf '%s' "$TASK_QUERY_OUT" | classify_task_state "$QUERY_RC")"
 fi
 
