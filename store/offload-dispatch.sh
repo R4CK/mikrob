@@ -74,14 +74,34 @@ get_gemini_route() {
 GEMINI_ROUTE="$(get_gemini_route)"
 
 # is_gemini_blocked PROJECT TAGS: returns 0 (true/blocked) when a leaf must NOT go to Gemini.
-# Two classes:
-#   1. mopsion / CleanCore: private-codebase project -- no external API call ever.
-#   2. BLOKKOLT-Peti-stop tag: card explicitly blocked from any automated action.
-# Returns 1 (false/allowed) for everything else.
+# Fail-closed: the allowed set is narrow; anything outside it is blocked.
+#   1. Empty/unknown project: could be an unmapped mopsion card -- block it (card a92e9913 B1).
+#   2. mopsion / CleanCore project (case-insensitive): private-codebase, no external API call.
+#   3. BLOKKOLT-PETI-STOP tag: card explicitly blocked from any automated action.
+#      tags_for() UPPERCASES all tags, so the comparison must use the uppercase form.
+#   4. MOPSION tag: catches [mopsion] in title when the project field is empty/unset.
+#   5. SEC tag: sensitive security/authz/money cards must not leave the fleet (card a92e9913 F4).
+#   6. AUTH / RBAC / TENANT / PII / PENZ tags: Peti permanent rule (Telegram 11131) --
+#      security, authorization, and financial cards NEVER go through the Gemini route.
+# Returns 1 (false/allowed) only when none of the above conditions match.
 is_gemini_blocked() {
   local project="$1" tags="$2"
-  case "$project" in mopsion|CleanCore) return 0 ;; esac
-  [[ "$tags" == *"BLOKKOLT-Peti-stop"* ]] && return 0
+  # 1. Fail-closed on empty project.
+  [[ -z "${project// }" ]] && return 0
+  # 2. Project-level block (case-insensitive).
+  local proj_upper="${project^^}"
+  case "$proj_upper" in MOPSION|CLEANCORE) return 0 ;; esac
+  # 3-8. Tag-level blocks. Wrap in commas to prevent partial substring matches.
+  local tag_csv=",$tags,"
+  [[ "$tag_csv" == *",BLOKKOLT-PETI-STOP,"* ]] && return 0
+  [[ "$tag_csv" == *",MOPSION,"* ]] && return 0
+  [[ "$tag_csv" == *",SEC,"* ]] && return 0
+  # Auth/RBAC/tenant/financial/PII -- Peti permanent rule (Telegram 11131)
+  [[ "$tag_csv" == *",AUTH,"* ]] && return 0
+  [[ "$tag_csv" == *",RBAC,"* ]] && return 0
+  [[ "$tag_csv" == *",TENANT,"* ]] && return 0
+  [[ "$tag_csv" == *",PII,"* ]] && return 0
+  [[ "$tag_csv" == *",PENZ,"* ]] && return 0
   return 1
 }
 
@@ -103,7 +123,7 @@ gemini_draft_comment_body() {
 }
 
 # try_gemini_for_leaf: call Gemini API for a leaf and post the draft comment.
-# Returns 0 on success, 1 on failure. Does NOT modify attempt counters (caller's job).
+# Records a transient attempt on API failure so the dispatcher can track retries.
 try_gemini_for_leaf() {
   local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}"
 
@@ -121,6 +141,7 @@ try_gemini_for_leaf() {
     return 0
   fi
   echo "offload-dispatch: leaf $leaf_id -> Gemini call failed (rc=$rc)" >&2
+  attempts_op transient "$leaf_id" >/dev/null
   return 1
 }
 

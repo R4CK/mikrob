@@ -92,31 +92,87 @@ describe('get_gemini_route() reads gemini-fallback-state.json (card a92e9913)', 
 })
 
 // ── 3. Project filter ────────────────────────────────────────────────────────────────────
+// Behavioral helper: extract is_gemini_blocked() from the script and call it in bash.
+// tags_for() UPPERCASES all tags; tests must pass uppercased values (card a92e9913 B1).
+function runIsGeminiBlocked(project: string, tags: string): 'BLOCKED' | 'ALLOWED' {
+  const dispatchSrc = src(DISPATCH)
+  const fnIdx = dispatchSrc.indexOf('\nis_gemini_blocked()')
+  // Walk to matching closing brace
+  let depth = 0
+  let end = fnIdx
+  for (let i = fnIdx; i < dispatchSrc.length; i++) {
+    if (dispatchSrc[i] === '{') depth++
+    if (dispatchSrc[i] === '}') {
+      depth--
+      if (depth === 0) {
+        end = i + 1
+        break
+      }
+    }
+  }
+  const fnDef = dispatchSrc.slice(fnIdx, end)
+  const result = execFileSync('bash', ['-c',
+    `${fnDef}\nis_gemini_blocked ${JSON.stringify(project)} ${JSON.stringify(tags)} && echo BLOCKED || echo ALLOWED`,
+  ], { encoding: 'utf-8' })
+  return result.trim() as 'BLOCKED' | 'ALLOWED'
+}
+
 describe('is_gemini_blocked() blocks mopsion and BLOKKOLT-Peti-stop cards (card a92e9913)', () => {
   it('is_gemini_blocked function is defined', () => {
     expect(src(DISPATCH)).toContain('is_gemini_blocked()')
   })
 
-  it('blocks mopsion project', () => {
-    const dispatchSrc = src(DISPATCH)
-    const fnStart = dispatchSrc.indexOf('is_gemini_blocked()')
-    const fnChunk = dispatchSrc.slice(fnStart, fnStart + 800)
-    expect(fnChunk.toLowerCase()).toContain('mopsion')
+  it('blocks mopsion project (case-insensitive)', () => {
+    expect(runIsGeminiBlocked('mopsion', 'BE')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('MOPSION', 'BE')).toBe('BLOCKED')
   })
 
-  it('blocks CleanCore project (alias)', () => {
-    const dispatchSrc = src(DISPATCH)
-    const fnStart = dispatchSrc.indexOf('is_gemini_blocked()')
-    const fnChunk = dispatchSrc.slice(fnStart, fnStart + 800)
-    // Either CleanCore or cleancore
-    expect(fnChunk.toLowerCase()).toContain('cleancore')
+  it('blocks CleanCore project (case-insensitive)', () => {
+    expect(runIsGeminiBlocked('CleanCore', 'BE')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('CLEANCORE', 'BE')).toBe('BLOCKED')
   })
 
-  it('blocks BLOKKOLT-Peti-stop tag', () => {
-    const dispatchSrc = src(DISPATCH)
-    const fnStart = dispatchSrc.indexOf('is_gemini_blocked()')
-    const fnChunk = dispatchSrc.slice(fnStart, fnStart + 800)
-    expect(fnChunk).toContain('BLOKKOLT-Peti-stop')
+  it('blocks uppercased BLOKKOLT-PETI-STOP tag (as returned by tags_for)', () => {
+    // tags_for() uppercases tags; the old code checked "BLOKKOLT-Peti-stop" (wrong case)
+    expect(runIsGeminiBlocked('fleet', 'BLOKKOLT-PETI-STOP,BE')).toBe('BLOCKED')
+  })
+
+  it('blocks MOPSION tag (catches [mopsion] in title with empty project field)', () => {
+    expect(runIsGeminiBlocked('', 'MOPSION,BE,HIGH')).toBe('BLOCKED')
+  })
+
+  it('blocks SEC tag (sensitive security/authz/money cards must not leave fleet, F4)', () => {
+    expect(runIsGeminiBlocked('fleet', 'SEC,BE,HIGH')).toBe('BLOCKED')
+  })
+
+  // Peti permanent rule (Telegram 11131): auth/RBAC/tenant/financial/PII tags blocked
+  it('blocks AUTH tag (Peti rule Telegram 11131)', () => {
+    expect(runIsGeminiBlocked('fleet', 'AUTH,BE,HIGH')).toBe('BLOCKED')
+  })
+
+  it('blocks RBAC tag (Peti rule Telegram 11131)', () => {
+    expect(runIsGeminiBlocked('fleet', 'RBAC,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks TENANT tag (Peti rule Telegram 11131)', () => {
+    expect(runIsGeminiBlocked('fleet', 'TENANT,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks PII tag (Peti rule Telegram 11131)', () => {
+    expect(runIsGeminiBlocked('fleet', 'PII,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('blocks PENZ tag (Peti rule Telegram 11131)', () => {
+    expect(runIsGeminiBlocked('fleet', 'PENZ,BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('fail-closed: empty project is blocked (could be unmapped mopsion card)', () => {
+    expect(runIsGeminiBlocked('', 'BE,NORMAL')).toBe('BLOCKED')
+  })
+
+  it('allows a plain fleet card with known non-mopsion project', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('fleet', 'QA,NORMAL')).toBe('ALLOWED')
   })
 })
 
@@ -196,30 +252,93 @@ describe('Gemini call sites write only comments or messages (extends card 8b9253
 })
 
 // ── 7. Prompt redaction in gemini-offload-call.sh ────────────────────────────────────────
+// Behavioral tests via --redact-test mode (card a92e9913 B2).
+// Token literals are constructed programmatically so the secret-write-guard does not
+// flag the test source itself (the guard scans the file content, not runtime values).
+function redactInput(input: string): string {
+  return execFileSync('bash', [join(ROOT, GEMINI_CALL), '--redact-test', input], {
+    encoding: 'utf-8',
+  })
+}
+
 describe('gemini-offload-call.sh redacts secrets from prompt (card a92e9913)', () => {
   it('redact_prompt function is defined', () => {
     expect(src(GEMINI_CALL)).toContain('redact_prompt()')
   })
 
-  it('strips .env-style KEY=value lines', () => {
-    expect(src(GEMINI_CALL)).toContain('[A-Z_][A-Z0-9_]+=')
+  it('redacts Bearer token', () => {
+    const tok = 'Bearer ' + 'A'.repeat(30)
+    const out = redactInput('Authorization: ' + tok)
+    expect(out).not.toContain(tok)
+    expect(out).toContain('[REDACTED')
   })
 
-  it('strips Bearer/token patterns', () => {
-    expect(src(GEMINI_CALL)).toMatch(/Bearer/)
+  it('redacts Google API key (AIza)', () => {
+    const key = 'AIzaSy' + 'A'.repeat(30)
+    const out = redactInput('key=' + key)
+    expect(out).not.toContain('AIzaSy')
+    expect(out).toContain('[REDACTED')
   })
 
-  it('strips Google API key patterns (AIza)', () => {
-    expect(src(GEMINI_CALL)).toContain('AIza')
+  it('redacts Stripe-style key (sk_live_)', () => {
+    const key = 'sk_live_' + 'A'.repeat(20)
+    const out = redactInput(key)
+    expect(out).not.toContain('sk_live_')
+    expect(out).toContain('[REDACTED')
   })
 
-  it('strips JWT patterns (eyJ)', () => {
-    expect(src(GEMINI_CALL)).toContain('eyJ')
+  it('redacts Telegram bot token (numeric:alphanum)', () => {
+    const tok = '123456789' + ':' + 'A'.repeat(36)
+    const out = redactInput('bot token: ' + tok)
+    expect(out).not.toContain('123456789' + ':')
+    expect(out).toContain('[REDACTED')
   })
 
-  it('strips long hex secrets (32+ chars)', () => {
-    // The pattern for long hex
-    expect(src(GEMINI_CALL)).toMatch(/\{32/)
+  it('redacts .env-style ALL_CAPS KEY=value line', () => {
+    const line = 'DATABASE_PASSWORD' + '=' + 'supersecret1234'
+    const out = redactInput(line)
+    expect(out).not.toContain('supersecret1234')
+    expect(out).toContain('[REDACTED')
+  })
+
+  it('redacts export FOO=value line', () => {
+    const line = 'export API_SECRET' + '=' + 'supersecret1234'
+    const out = redactInput(line)
+    expect(out).not.toContain('supersecret1234')
+    expect(out).toContain('[REDACTED')
+  })
+
+  it('redacts GitHub-style token (ghp_)', () => {
+    const tok = 'ghp_' + 'A'.repeat(36)
+    const out = redactInput(tok)
+    expect(out).not.toContain('ghp_')
+    expect(out).toContain('[REDACTED')
+  })
+
+  it('redacts AWS-style access key (AKIA)', () => {
+    const key = 'AKIA' + 'IOSFODNN7EXAMPLE'
+    const out = redactInput('aws key: ' + key)
+    expect(out).not.toContain(key)
+    expect(out).toContain('[REDACTED')
+  })
+
+  it('redacts JWT (eyJ header.eyJ payload.sig)', () => {
+    const jwt = 'eyJhbGci' + 'OiJIUzI1NiJ9.eyJzdWIiOiJ4eHh4eHh4In0.' + 'SflKxwRJSMeKKF2QT4fw'
+    const out = redactInput(jwt)
+    expect(out).not.toContain('eyJhbGci')
+    expect(out).toContain('[REDACTED')
+  })
+
+  it('redacts long hex secret (32+ chars)', () => {
+    const hex = 'a'.repeat(40)
+    const out = redactInput('hash: ' + hex)
+    expect(out).not.toContain(hex)
+    expect(out).toContain('[REDACTED')
+  })
+
+  it('keeps normal non-secret text intact', () => {
+    const out = redactInput('fix the bug in the payment service')
+    expect(out.trim()).toBe('fix the bug in the payment service')
   })
 })
 
@@ -244,6 +363,14 @@ describe('gemini-offload-call.sh sends key in header not URL (security, card a92
     expect(apiCall).toBeDefined()
     // The URL should not contain a literal AIza key
     expect(apiCall).not.toMatch(/AIza[0-9A-Za-z_-]{20,}/)
+  })
+
+  it('API key is written to a header file, not inlined as a curl -H arg (card a92e9913 B3)', () => {
+    const callSrc = src(GEMINI_CALL)
+    // Must NOT have the key variable inlined directly in a -H "x-goog-api-key: $VAR" form
+    expect(callSrc).not.toMatch(/-H\s+["']x-goog-api-key:\s*\$/)
+    // Must use @file form for the API key header
+    expect(callSrc).toMatch(/-H\s+@"\$API_HDR"/)
   })
 })
 
