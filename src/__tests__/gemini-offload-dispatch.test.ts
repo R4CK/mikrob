@@ -145,11 +145,11 @@ describe('gemini_draft_comment_body() uses GEMINI DRAFT header (card a92e9913)',
 describe('try_leaf() contains Gemini fallback paths (card a92e9913)', () => {
   it('calls try_gemini_for_leaf on ONLINE route=gemini', () => {
     const dispatchSrc = src(DISPATCH)
-    // Find the attempts_op categorical-online call site (not the comment near the top)
-    const onlineSectionIdx = dispatchSrc.indexOf('attempts_op categorical-online')
+    // The unique comment added by card a92e9913 marks the exact fallback site
+    const onlineSectionIdx = dispatchSrc.indexOf('GEMINI FALLBACK for ONLINE-category leaves')
     expect(onlineSectionIdx).toBeGreaterThan(-1)
-    // Within 600 chars after that marker we should find the Gemini call
-    const nearOnline = dispatchSrc.slice(onlineSectionIdx, onlineSectionIdx + 600)
+    // Within 400 chars after that marker we should find the Gemini call
+    const nearOnline = dispatchSrc.slice(onlineSectionIdx, onlineSectionIdx + 400)
     expect(nearOnline).toContain('try_gemini_for_leaf')
   })
 
