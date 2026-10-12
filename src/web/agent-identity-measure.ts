@@ -18,6 +18,16 @@ export function isAgentIdentityMeasureEnabled(): boolean {
   return process.env.AGENT_IDENTITY_MEASURE !== 'off'
 }
 
+// L2 (WhiteHat2 16476): an unbounded claimed value in a log line is itself a cost (a 2MB claim
+// becomes a 2MB log line) and the legacy-token line previously omitted it entirely, so the
+// measurement could not say WHO still uses the shared token. Truncated here, in the one place
+// every call site funnels through, rather than at each caller.
+const CLAIMED_LOG_MAX_CHARS = 64
+
+function truncateClaimed(claimed: string): string {
+  return claimed.length > CLAIMED_LOG_MAX_CHARS ? `${claimed.slice(0, CLAIMED_LOG_MAX_CHARS)}…` : claimed
+}
+
 /** `claimedValue` is whatever the request body put in the author/actor/from field for this
  *  endpoint -- may be absent, non-string, or empty; all are treated as "nothing to compare". */
 export function measureAgentIdentityClaim(ctx: RouteContext, endpoint: string, claimedValue: unknown): void {
@@ -25,20 +35,27 @@ export function measureAgentIdentityClaim(ctx: RouteContext, endpoint: string, c
   try {
     const auth = ctx.auth
     if (!auth) return
+    // Comparison (below) runs on the untruncated value so a pathologically long claim can never
+    // produce a false match/mismatch; only the LOGGED copy is bounded.
+    const claimed = typeof claimedValue === 'string' ? claimedValue.trim() : ''
+    const loggedClaim = truncateClaimed(claimed)
     if (auth.kind === 'token') {
-      logger.info({ endpoint, authKind: 'legacy-token' }, 'agent-identity-measure: legacy shared dashboard token')
+      if (claimed) {
+        logger.info({ endpoint, authKind: 'legacy-token', claimed: loggedClaim }, 'agent-identity-measure: legacy shared dashboard token')
+      } else {
+        logger.info({ endpoint, authKind: 'legacy-token' }, 'agent-identity-measure: legacy shared dashboard token')
+      }
       return
     }
     if (auth.kind !== 'device') return
     const agentId = agentKeyToAgentId(auth.device)
     if (!agentId) return // a non-agent device key (phone/Bridge) is out of scope for this measurement
-    const claimed = typeof claimedValue === 'string' ? claimedValue.trim() : ''
     if (!claimed) {
       logger.info({ endpoint, authKind: 'agent-key', agentId }, 'agent-identity-measure: per-agent key, no claim to compare')
       return
     }
     if (claimed.toLowerCase() !== agentId.toLowerCase()) {
-      logger.warn({ endpoint, authKind: 'agent-key', agentId, claimed }, 'agent-identity-measure: claim mismatches authenticated agent key')
+      logger.warn({ endpoint, authKind: 'agent-key', agentId, claimed: loggedClaim }, 'agent-identity-measure: claim mismatches authenticated agent key')
       return
     }
     logger.info({ endpoint, authKind: 'agent-key', agentId }, 'agent-identity-measure: per-agent key, claim matches')
