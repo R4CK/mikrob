@@ -327,6 +327,33 @@ fi
 forward_pin="$(grep -c 'body="\$(draft_comment_body "\$leaf_title" "\$content" "\$synthetic")"' "$DISPATCH")"
 check "post_draft_comment forwards its synthetic argument to draft_comment_body" "$forward_pin" "1"
 
+# --- E. QUALITY GATE (card d39fc5e7, requirement 2) -----------------------------------------------
+# --test-quality-gate is the exact function try_leaf() calls before posting any draft -- real
+# behaviour coverage lives in draft-quality-gate.selftest.py; this pins the shell-level wiring
+# (stdin/argv plumbing into the python helper) so a change to either side cannot silently drift.
+qg_fail="$(bash "$DISPATCH" --test-quality-gate "x" "write a vitest test for parseWindow" "")"
+check "quality gate: a too-short draft fails through the shell wiring" "${qg_fail%%$'\t'*}" "FAIL"
+
+qg_ok="$(bash "$DISPATCH" --test-quality-gate "import { describe, it, expect } from 'vitest'
+describe('x', () => { it('y', () => { expect(1).toBe(1) }) })" "write a vitest test for parseWindow" "")"
+check "quality gate: a real, sufficiently-long, non-repeating draft passes through the shell wiring" "$qg_ok" "OK"
+
+# try_leaf() must call BOTH new gates before a draft can be posted -- source pins, same pattern as
+# forward_pin above (a missing call here is a silent regression no behaviour test on this file can
+# catch, since both gates default to "real" paths that only misbehave when actually wired wrong).
+sample_pin="$(grep -c 'sample="\$(decompose_sample_context "\$dtype" "\$task" "\$repo")"' "$DISPATCH")"
+check "try_leaf calls decompose_sample_context for synthetic leaves" "$sample_pin" "1"
+quality_pin_1="$(grep -c 'qverdict="\$(draft_quality_ok "\$out" "\$task" "\$repo")"' "$DISPATCH")"
+check "try_leaf calls draft_quality_ok on the success path" "$quality_pin_1" "1"
+quality_pin_2="$(grep -c 'qverdict2="\$(draft_quality_ok "\$adv_draft" "\$task" "\$repo")"' "$DISPATCH")"
+check "try_leaf calls draft_quality_ok on the advisory path" "$quality_pin_2" "1"
+
+# a NO-SAMPLE leaf must be marked exhausted via the new "no-sample" attempts_op case, not retried
+# forever on a repo tree that will not change between sweep ticks.
+no_sample_entry="$(bash "$DISPATCH" --test-attempts-op no-sample noSampleLeaf --file "$TMPDIR/attempts-nosample.json")"
+check "attempts_op no-sample marks the leaf exhausted" "$(printf '%s' "$no_sample_entry" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')" "exhausted"
+check "attempts_op no-sample records the reason" "$(printf '%s' "$no_sample_entry" | python3 -c 'import json,sys; print(json.load(sys.stdin)["reason"])')" "no-sample"
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

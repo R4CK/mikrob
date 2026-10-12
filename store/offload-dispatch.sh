@@ -79,6 +79,8 @@ OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-15}"
 OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-3}"
 # shellcheck source=./card-decompose-templates.sh
 . "$HERE/card-decompose-templates.sh"
+# shellcheck source=./decompose-sample-context.sh
+. "$HERE/decompose-sample-context.sh"
 
 ATTEMPTS_FILE="$HERE/offload-attempts.json"
 ATTEMPTS_LOCK="$HERE/.offload-attempts.lock"
@@ -124,6 +126,12 @@ elif op == "success":
     data[leaf] = entry
 elif op == "categorical-online":
     entry = {"attempts": max_attempts, "status": "exhausted", "updated_at": now, "reason": "router-online"}
+    data[leaf] = entry
+elif op == "no-sample":
+    # card d39fc5e7 requirement 1: a decomposed leaf whose type has no real sample file to anchor
+    # on. Marked exhausted (no retry) for the SAME reason categorical-online is: a GPU call would
+    # not change the answer, since the repo's file tree does not change between sweep ticks.
+    entry = {"attempts": max_attempts, "status": "exhausted", "updated_at": now, "reason": "no-sample"}
     data[leaf] = entry
 elif op == "transient-fail":
     n = int(entry.get("attempts", 0)) + 1
@@ -447,6 +455,19 @@ nudge_leaf_owner() {
   return 0
 }
 
+# draft_quality_ok: deterministic pre-post quality gate (card d39fc5e7, requirement 2) -- NO model
+# call, every check is mechanical (length, repeats-the-card-text, import existence) so a bad draft
+# never costs an online Draft-Review adjudication (the measured baseline: 14/17 drafts rejected,
+# three recurring MECHANICAL defect shapes per card-build-route-24h-measure.sh, 2026-09-30). Prints
+# "OK" or "FAIL\t<reason>" (the actual logic lives in draft-quality-gate.py, kept out of this shell
+# file so it is unit-testable without a shell). ----------------------------------------------------
+draft_quality_ok() { # $1 draft  $2 task(title+description)  $3 repo root (may be empty)
+  local draft="$1" task="$2" repo="$3"
+  python3 -c 'import json,sys; print(json.dumps({"draft":sys.argv[1],"task":sys.argv[2],"repo":sys.argv[3]}))' \
+      "$draft" "$task" "$repo" \
+    | python3 "$HERE/draft-quality-gate.py"
+}
+
 # advisory_draft: stdin = local-llm-rag.sh stdout from an exit-9 run. Prints the draft comment body
 # (ONLINE-review header + draft) when stdout is an advisory envelope with a non-empty draft, else
 # nothing. Pure, so --test-advisory-draft exercises the exact code try_leaf uses.
@@ -490,6 +511,12 @@ draft_comment_body() { # $1 = leaf_title, $2 = content, $3 = synthetic ("true"/"
 # --- test hooks (no network/token/lock needed) ---------------------------------------------------
 # --test-resolve: feed a kanban-list JSON fixture on stdin, CARD via env; prints the resolved leaves.
 # --test-attempts-op OP LEAF [--file PATH]: exercises the attempts state machine against a scratch file.
+# --test-quality-gate DRAFT TASK [REPO]: the exact wiring try_leaf() uses before posting a draft
+# (card d39fc5e7, requirement 2), no network/token/lock needed.
+if [[ "${1:-}" == "--test-quality-gate" ]]; then
+  draft_quality_ok "${2-}" "${3-}" "${4-}"
+  exit 0
+fi
 if [[ "${1:-}" == "--test-advisory-draft" ]]; then
   advisory_draft
   exit 0
@@ -634,6 +661,29 @@ $leaf_desc"
   local repo; repo="$(graph_repo_for "$leaf_project")"
   local graph=(); mapfile -t graph < <(graph_args_for "$task" "$repo")
 
+  # SAMPLE-CONTEXT REQUIREMENT (card d39fc5e7, requirement 1): a synthetic (decomposed) leaf's own
+  # text is a GENERIC templated sentence (card-decompose-templates.sh), not a real spec -- the
+  # measured failure mode is a BLIND draft with nothing real to copy a house style from (e.g. an
+  # Express/supertest test scaffold on a repo that uses raw handlers, card 825d7657). So for the
+  # four typed fragments, find ONE real, nearest sample file and fold it in as extra context; if
+  # none exists, do not call the model at all -- a template sentence with no anchor is exactly the
+  # blind-draft shape this exists to prevent. A REAL (non-synthetic) leaf already carries its own
+  # full card text and ancestor context, so this only applies when a type is recoverable from the
+  # leaf id's "$realCardId~$type" suffix (synthetic leaves only, card 501c489f's own id shape).
+  local dtype=""
+  [[ "$synthetic" == "true" && "$leaf_id" == *"~"* ]] && dtype="${leaf_id##*~}"
+  if [[ -n "$dtype" ]]; then
+    local sample; sample="$(decompose_sample_context "$dtype" "$task" "$repo")"
+    if [[ -z "${sample// }" ]]; then
+      echo "offload-dispatch: leaf $leaf_id -> NO-SAMPLE for type '$dtype' (no real file in '$repo' to anchor the draft on), skipping" >&2
+      attempts_op no-sample "$leaf_id" >/dev/null
+      return 1
+    fi
+    parent_ctx="${parent_ctx:+$parent_ctx
+
+}$sample"
+  fi
+
   local out rc
   out="$("$RAG" --auto --agent "$leaf_assignee" --source dispatch-offload --log-task subtask-draft \
     --tags "$leaf_tags" --context "$parent_ctx" \
@@ -641,6 +691,16 @@ $leaf_desc"
   rc=$?
 
   if [[ $rc -eq 0 && -n "${out// }" ]]; then
+    # QUALITY GATE (card d39fc5e7, requirement 2): deterministic, no model call. A failing draft
+    # posts NOTHING -- the whole point is that a bad draft must not cost anyone an online
+    # Draft-Review adjudication -- and counts as a transient failure so it still counts toward the
+    # existing 2-strikes ceiling instead of being retried forever on an unchanging verdict.
+    local qverdict; qverdict="$(draft_quality_ok "$out" "$task" "$repo")"
+    if [[ "$qverdict" != OK* ]]; then
+      echo "offload-dispatch: leaf $leaf_id -> draft FAILED the quality gate (${qverdict#FAIL$'\t'}), no comment posted" >&2
+      attempts_op transient-fail "$leaf_id" >/dev/null
+      return 1
+    fi
     attempts_op success "$leaf_id" >/dev/null
     post_draft_comment "$post_id" "$leaf_title" "$out" "$synthetic"
     nudge_leaf_owner "$post_id" "$leaf_assignee_raw" draft || true
@@ -656,6 +716,12 @@ $leaf_desc"
     local adv_draft
     adv_draft="$(printf '%s' "$out" | advisory_draft)"
     if [[ -n "${adv_draft// }" ]]; then
+      local qverdict2; qverdict2="$(draft_quality_ok "$adv_draft" "$task" "$repo")"
+      if [[ "$qverdict2" != OK* ]]; then
+        echo "offload-dispatch: leaf $leaf_id -> advisory draft FAILED the quality gate (${qverdict2#FAIL$'\t'}), no comment posted" >&2
+        attempts_op categorical-online "$leaf_id" >/dev/null
+        return 1
+      fi
       attempts_op success "$leaf_id" >/dev/null
       post_draft_comment "$post_id" "$leaf_title" "$adv_draft" "$synthetic"
       nudge_leaf_owner "$post_id" "$leaf_assignee_raw" draft || true
