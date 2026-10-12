@@ -62,9 +62,46 @@ trap 'rm -f "$_REDACT_PY" "$TMPOUT" "$TMPERR" "$API_HDR" "$REQ_FILE"' EXIT
 _REDACT_PY="$(mktemp)"
 chmod 0600 "$_REDACT_PY"
 cat > "$_REDACT_PY" << 'PYEOF'
-import re, sys
+import re, sys, unicodedata
 
 text = sys.stdin.read()
+
+# F1 (WhiteHat NO-GO, komment 17848, card e87e7520): the N1 fix normalized title/desc in
+# offload-dispatch.sh's is_gemini_blocked() (layer 1, the content gate), but THIS layer (the
+# scanner that sees the raw text actually sent to Gemini) never normalized at all -- an
+# obfuscated KEY NAME (fullwidth, zero-width-interspersed, or homoglyph letters) stopped the
+# SECRET_PATTERNS keyword alternation (password|secret|token|...) from matching, letting the
+# real VALUE through unredacted. Mirrors the homoglyph table + fold logic in
+# offload-dispatch.sh is_gemini_blocked (kept as a second copy, not a shared import, to avoid
+# new cross-script path plumbing for one small function -- same tradeoff the SECRET_PATTERNS
+# comment above already documents against src/security/secret-gate.ts).
+_HOMOGLYPH_MAP = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x",
+    "і": "i", "ѕ": "s", "һ": "h", "ԃ": "d", "ɡ": "g", "ⅰ": "i",
+})
+
+def _fold(s):
+    """NFKD-decompose (fullwidth/compat chars -> plain ASCII) + homoglyph-map, then strip
+    combining marks and invisible formatting chars (zero-width space/joiner etc, category
+    Mn/Cf). Case is preserved so case-sensitive patterns (AKIA..., sk-ant-...) still work.
+    Matching runs on this folded text; the ORIGINAL text is what gets sent to Gemini if clean
+    -- normalization only widens what we catch, it never changes what we send."""
+    s = s.translate(_HOMOGLYPH_MAP)
+    s = unicodedata.normalize("NFKD", s)
+    return "".join(ch for ch in s if unicodedata.category(ch) not in ("Mn", "Cf"))
+
+# F2 (same komment): fail-closed if a script/homoglyph our table does not cover remains after
+# folding -- the table is a convenience, not the guarantee. Mirrors has_unmapped_letter() in
+# offload-dispatch.sh is_gemini_blocked.
+def _has_unmapped_letter(s):
+    decomposed = unicodedata.normalize("NFKD", s.translate(_HOMOGLYPH_MAP))
+    return any(ord(ch) > 127 and unicodedata.category(ch).startswith("L") for ch in decomposed)
+
+if _has_unmapped_letter(text):
+    sys.stderr.write('gemini-offload-call: unmapped non-ASCII letter in prompt (fail-closed), not sending\n')
+    sys.exit(2)
+
+scan_text = _fold(text)
 
 # Secret-detection patterns (mirrors src/security/secret-gate.ts SECRET_PATTERNS).
 # First: DETECT (fail-closed) -- if any pattern fires, exit 2 without printing.
@@ -137,7 +174,14 @@ SECRET_PATTERNS = [
     # matched the "secret" inside APP_SECRET or auth_token (no boundary between "_" and the next
     # letter). Fixed with a negative lookbehind that excludes only letters/digits -- "_" now acts
     # as a boundary while "mysecretsauce" (a letter right before "secret") still does not match.
-    (r'(?i)(?<![A-Za-z0-9])(password|passwd|secret|token|api[_-]?key|auth[_-]?key|access[_-]?key)["\']?[=:\s]+'
+    # F3 (WhiteHat NO-GO, komment 17848, card e87e7520): the (c) lookbehind still missed a
+    # camelCase key name (apiToken:, dbPassword:) -- no "_" and no non-alnum char precedes the
+    # keyword there, only a lowercase letter immediately followed by the keyword's uppercase
+    # first letter. Added a second boundary alternative for exactly that transition; the
+    # keyword alternation itself stays scoped case-insensitive ((?i:...)) so the boundary's
+    # own case-sensitive lookahead ((?=[A-Z])) keeps working. "mysecretsauce" still does not
+    # match: lowercase "s" follows lowercase "y", neither boundary alternative is satisfied.
+    (r'((?<![A-Za-z0-9])|(?<=[a-z0-9])(?=[A-Z]))(?i:password|passwd|secret|token|api[_-]?key|auth[_-]?key|access[_-]?key)["\']?[=:\s]+'
      r'(?:"[^"\n]{8,}"|\'[^\'\n]{8,}\'|[A-Za-z0-9_\-.=+/]{8,})', 'cred'),
     # Database URLs with embedded password
     (r'(?i)(postgres|mysql|mongodb|redis)://[^:]+:[^@]{4,}@', 'dburl'),
@@ -168,7 +212,7 @@ SECRET_PATTERNS = [
 ]
 
 for pattern, label in SECRET_PATTERNS:
-    if re.search(pattern, text, re.DOTALL):
+    if re.search(pattern, scan_text, re.DOTALL):
         sys.stderr.write(f'gemini-offload-call: secret-shaped token ({label}) in prompt, not sending\n')
         sys.exit(2)  # fail-closed: no output, no send
 
@@ -194,7 +238,7 @@ PII_PATTERNS = [
 ]
 
 for pattern, label in PII_PATTERNS:
-    if re.search(pattern, text, re.DOTALL):
+    if re.search(pattern, scan_text, re.DOTALL):
         sys.stderr.write(f'gemini-offload-call: PII-shaped content ({label}) in prompt, not sending\n')
         sys.exit(2)  # fail-closed: no output, no send
 
