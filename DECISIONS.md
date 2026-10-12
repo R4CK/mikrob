@@ -20139,3 +20139,19 @@ Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
 **Nem ebben a körben:** a bootstrap/break-glass maga (X1 első fele, X3) MikroB döntése szerint külön kártyán (6eca461e mellett) megy, nem itt -- ez a kör kizárólag azt zárja, hogy egy ÍGY megszerzett session agent-kulcsot tudjon kiváltani. A `CLAUDE_ROTATION_*` kapcsolók és az élő kulcskiadás a kártya lezárásáig tilos, változatlanul.
 
 **Ki döntött:** backend (RedHat harmadik NO-GO 17005 a 9655494c F1-re, MikroB döntése a visszaadáskor, komment 17006, msg_id 11085). Re-gate: QA + RedHat (a kártya saját gate-kijelölése, "Gate: qa, cybered").
+
+## 2026-10-12 -- Kártya 9655494c F2: a memória-szűrés kulcs-identitásra szűkítése MÁR LANDOLT (517fdcc5), end-to-end megerősítve F1 valódi kibocsátásával
+
+A kártya F2 követelménye ("a memória-olvasás agent-kulccsal a KULCS identitásán szűrjön, ne a hívó állította ?agent= paraméteren") szó szerint már megépült és landolt a 517fdcc5 kártya alatt (`c20eba3d`: `/:id` kezelő egységesítve, holt másolat törölve; `16743ab4`: a lista és a q-keresés ág is a device-kulcs identitást részesíti előnyben a `?agent=` felett), amíg a 9655494c saját F1-je (agent-kulcs kiosztás/rotáció/visszavonás, `56fc5391`) ezzel párhuzamosan készült. A kártya saját szövege ezt a 517fdcc5 landolása utáni delta-ellenőrzésként várta.
+
+Kód-olvasással ellenőrizve: `mintAgentDeviceKey(agentId)` (`auth-device-keys.ts:175`) `createDeviceKey(AGENT_KEY_PREFIX + agentId)`-t hív, tehát a kulcs neve `agent:<id>` -- pontosan az `agentKeyToAgentId()` (ugyanaz a fájl, 48. sor) által elvárt alak. A `memories.ts` mindhárom olvasó ága (POST-identitás, lista+keresés, `/:id`) ugyanazt az `agentKeyToAgentId(auth.device)` hívást futtatja. Nincs kód-rés F1 és F2 között: ugyanaz a konstans (`AGENT_KEY_PREFIX`), ugyanaz a függvénypár mindkét oldalon.
+
+A meglévő 517fdcc5-tesztek ezt kézzel összerakott `auth.device` stringgel pinelték (`{ kind: 'device', device: 'agent:attacker' }`), sosem a valódi F1 kibocsátó úton át -- ez vakfolt maradt volna egy prefix/casing-eltérésre F1 és F2 között. Új teszt (`memories-get-by-id.test.ts`, +2 teszt, MUTÁCIÓVAL ellenőrizve): `mintAgentDeviceKey('attacker')` + `resolveDeviceKey(minted.key)` -- a VALÓDI kibocsátási és feloldási úton át kapott `device` string a listán nem látja a victim sorát forgatott `?agent=victim` mellett; `mintAgentDeviceKey('victim')` + `resolveDeviceKey` a `/:id`-n forgatott `?agent=attacker` mellett is a saját sorát látja. Mutáció: mindhárom `memories.ts`-beli `authenticatedAgentId` kiszámítás `null`-ra cserélve -- a 2 új teszt + a meglévő 4, egy teszt-fájlban, PONTOSAN 6 bukott (semmi más), bizonyítva hogy a teszt a VALÓDI kapcsot méri, nem egy tautológiát. Visszaállítva: 14/14 zöld, a fájl byte-pontosan egyezik az eredetivel.
+
+Célzott kör (6 fájl: memories-get-by-id, auth-agent-keys, auth-device-keys, auth-gate, auth-recovery, bridge-enroll): 111/111 zöld. `tsc --noEmit` tiszta.
+
+A kártya ezzel F1 + F2 mindkét részét zárja; L1/L2 nem ennek a kártyának a köre (a 2520b85a measurement-only szelete, 83416786, már done -- lásd a kártya saját korábbi bejegyzését).
+
+Teljes fleet-test.sh: a landoló körben, az eredménnyel.
+
+**Ki döntött:** backend. Gate: QA + RedHat (a kártya saját kijelölése, "Gate: qa, cybered").

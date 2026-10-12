@@ -14,6 +14,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
 import { initDatabase, saveAgentMemory } from '../db.js'
 import { tryHandleMemories } from '../web/routes/memories.js'
+import { mintAgentDeviceKey, resolveDeviceKey } from '../web/auth-device-keys.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 vi.mock('../config.js', async () => {
@@ -186,5 +187,35 @@ describe('GET /api/memories (list + search) -- agent-boundary check (card 517fdc
     expect(handled).toBe(true)
     const row = getBody().find((m: any) => m.id === victimLongId)
     expect(row.content).toContain(`GET /api/memories/${victimLongId}?agent=victim`)
+  })
+})
+
+// Card 9655494c F2: the tests above all construct `ctx.auth.device` by hand
+// (`{ kind: 'device', device: 'agent:attacker' }`), which pins the FILTER's behaviour but never
+// exercises the ISSUANCE side this card adds (`mintAgentDeviceKey`, card 9655494c F1) against it.
+// A key minted through the real route and resolved through the real `resolveDeviceKey` could in
+// principle produce a `device` string the filter does not recognise (e.g. a prefix/casing drift
+// between F1's mint and F2's agentKeyToAgentId) -- that gap would be invisible to every test above.
+describe('GET /api/memories -- a REAL F1-minted agent key resolves through the F2 filter end-to-end (card 9655494c)', () => {
+  it('a key minted for "attacker" via mintAgentDeviceKey, resolved via resolveDeviceKey, does not see the victim row', async () => {
+    const minted = mintAgentDeviceKey('attacker')
+    const principal = resolveDeviceKey(minted.key)
+    expect(principal).not.toBeNull()
+    const { ctx, getBody } = makeCtx(`/api/memories?agent=victim`)
+    ;(ctx as any).auth = { kind: 'device', device: principal!.name, deviceId: principal!.id }
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(getBody().find((m: any) => m.id === victimPrivateId)).toBeUndefined()
+  })
+
+  it('a key minted for "victim" via mintAgentDeviceKey, resolved via resolveDeviceKey, sees its own row via /:id even with a forged `?agent=`', async () => {
+    const minted = mintAgentDeviceKey('victim')
+    const principal = resolveDeviceKey(minted.key)
+    expect(principal).not.toBeNull()
+    const { ctx, getBody } = makeCtx(`/api/memories/${victimPrivateId}?agent=attacker`)
+    ;(ctx as any).auth = { kind: 'device', device: principal!.name, deviceId: principal!.id }
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(getBody().content).toBe('victim private hot-tier content')
   })
 })
