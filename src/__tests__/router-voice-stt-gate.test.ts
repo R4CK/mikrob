@@ -48,6 +48,7 @@ vi.mock('../db.js', () => ({
   setMessageResult: () => true,
   createAgentMessage: () => ({ id: 999 }),
   countNewerMessagesFromSameSender: () => 0,
+  getKanbanCardStateByIdPrefix: () => null,
   stampMessageTrace: () => false,
   upsertOtelSpan: () => undefined,
   closeOtelSpan: () => false,

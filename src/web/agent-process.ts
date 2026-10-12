@@ -66,14 +66,14 @@ import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInher
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureLocalFirstSection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureProjectRootAnchor } from './agent-scaffold.js'
+import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureAutonomySection, ensureLocalFirstSection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureProjectRootAnchor, ensureMessageCloseSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { notifyChannel } from '../notify.js'
+import { notifyChannel, alertIsRedirected } from '../notify.js'
 
 // Lazy so a transient PATH gap at import time (e.g. the 04:00 auto-update
 // restart, where the finalizer omits the bin dir from PATH) cannot hard-crash
@@ -2339,6 +2339,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     ensureFleetAuthSection(name)
     ensureEvidenceSection(name)
     ensureMcpListChannelSection(name)
+    ensureMessageCloseSection(name)
     ensureProjectRootAnchor(name)
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
@@ -4397,7 +4398,7 @@ async function clearStaleParkedInputInLane(
         `🚨 A fo agens (${session}) input-mezojeben ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce all egy parkolt sor, ` +
         `es emiatt a csatorna nem dolgoz fel bejovo uzenetet. KEZI FELOLDAS (par masodperc): ` +
         `tmux attach -t ${session}, majd Ctrl-C es utana Ctrl-U (a sor torlese), vegul kilepes: Ctrl-B d. ` +
-        `A parkolt sor eleje: "${preview}"`,
+        `A parkolt sor eleje: "${alertIsRedirected() ? '' : preview}"`,
       ).catch(() => { /* notify is best-effort */ })
       escalated = true
       logger.warn({ session, parked: parked.slice(0, 60), fails }, 'message-router: main-agent parked input -- owner notified with manual fix (box untouched)')
@@ -4424,7 +4425,7 @@ async function clearStaleParkedInputInLane(
       notifyChannel(
         `🧹 A fo agens (${session}) input-mezojeben ~${Math.round((fails * UNWEDGE_COOLDOWN_MS) / 60000)} perce allt egy parkolt sor, ` +
         `es emiatt minden utemezett feladat varakozott. A sort KIMENTETTUK es a mezot kitisztitottuk, ` +
-        `hogy a csatorna ujra dolgozzon. A szoveg itt van: ${rescuedPath}`,
+        `hogy a csatorna ujra dolgozzon. A szoveg itt van: ${alertIsRedirected() ? '' : rescuedPath}`,
       ).catch(() => { /* notify is best-effort */ })
       logger.warn(
         { session, parked: parked.slice(0, 60), fails, rescuedPath },

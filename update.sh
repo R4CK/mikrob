@@ -523,8 +523,19 @@ else
   # mean the histories have parted, and reconciling them is a human's call by
   # DEFAULT -- see the UPDATE_AUTO_REBASE block below, which is off unless the
   # operator of this install turns it on.
-  AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-  BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+  # UPSTREAMSRC927: measure divergence against the FRESH remote, not the stale
+  # remote-tracking ref that nothing in the product refreshes between updates.
+  # If the fetch fails (network or repo issue) we fall back to @{u} with a note.
+  DIVERGENCE_REF="FETCH_HEAD"
+  if git fetch origin "$CURRENT_BRANCH" --quiet 2>>"$INSTALL_DIR/store/update.log"; then
+    BEHIND=$(git rev-list --count "HEAD..$DIVERGENCE_REF" 2>/dev/null || echo 0)
+    AHEAD=$(git rev-list --count "$DIVERGENCE_REF..HEAD" 2>/dev/null || echo 0)
+  else
+    echo -e "  ${ORANGE}Megjegyzes:${NC} a 'git fetch origin ${CURRENT_BRANCH}' elbukott; az utolso ismert origin-refre visszateres."
+    DIVERGENCE_REF="@{u}"
+    BEHIND=$(git rev-list --count "HEAD..$DIVERGENCE_REF" 2>/dev/null || echo 0)
+    AHEAD=$(git rev-list --count "$DIVERGENCE_REF..HEAD" 2>/dev/null || echo 0)
+  fi
   if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
     # Diverged history: ahead AND behind. #1112 made this refuse ON PURPOSE -- a
     # human has to reconcile it -- and that stays the DEFAULT here. What this adds

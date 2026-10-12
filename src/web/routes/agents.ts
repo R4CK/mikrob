@@ -1098,6 +1098,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // for claude-fable-5-1/claude-opus-5-5 -- the agent comes up and is silently deaf).
     const cliRefusal = await refuseIfCliCannotLaunch(model)
     if (cliRefusal) { json(res, { error: cliRefusal.message, code: cliRefusal.code, params: cliRefusal.params }, 400); return true }
+    if (name === MAIN_AGENT_ID) { json(res, { error: 'Name is reserved for the main agent' }, 409); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
     scaffoldAgentDir(name)
