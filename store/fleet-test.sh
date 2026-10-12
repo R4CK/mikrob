@@ -54,6 +54,22 @@ LOCK_WAIT_SECONDS="${FLEET_TEST_LOCK_WAIT:-900}"
 # started after it still contend on one file.
 LOCK_FILE="${ROOT}-test.lock"
 
+# RUN-SCOPED TMPDIR ON THE MAIN DISK, NOT THE SHARED /tmp TMPFS (card a4a6a5e5). Node's
+# os.tmpdir() (what mkdtempSync(tmpdir(), ...) in test files resolves to) is TMPDIR if set, else
+# /tmp -- a fixed-size 12G tmpfs shared by the WHOLE fleet, so every concurrent agent's full suite
+# run piles its scratch dirs into the same pool. Measured 2026-10-11 ~21:25: /tmp hit 100%, every
+# agent's Bash call failed with ENOSPC, backend3's fleet-test run alone left 282 test files
+# failing on "mktemp: No space left". $ROOT's disk (/dev/sdd, 889G avail) has no such ceiling.
+# Each run gets its OWN subdirectory (mktemp -d) so concurrent runs on different refs cannot
+# collide or race each other's cleanup. This is a short-lived run scratch dir, removed on exit
+# regardless of outcome -- NOT the marveen-test-llm-state-* kind, which card 4c5c540c's setup file
+# deliberately leaves behind as a post-mortem record and is out of scope here.
+FLEET_TEST_TMPDIR_ROOT="${FLEET_TEST_TMPDIR_ROOT:-${ROOT}-tmp}"
+mkdir -p "$FLEET_TEST_TMPDIR_ROOT" 2>/dev/null || true
+TMPDIR="$(mktemp -d "${FLEET_TEST_TMPDIR_ROOT}/run-XXXXXX" 2>/dev/null || mktemp -d)"
+export TMPDIR
+trap 'rm -rf "$TMPDIR"' EXIT
+
 # THE SHARED CPU-CAPACITY POOL (card 492a6d5c, backend3's measurement on card 779cd6a7). This is a
 # SEPARATE question from LOCK_FILE above: that lock says "is it safe to touch the tree" (correctness,
 # capped at 1); this says "is there room to run" (CPU, capped at CLEANCORE_SUITE_SLOTS). A fleet-test
@@ -499,7 +515,7 @@ else
 fi
 
 run_log="$(mktemp)"
-trap 'rm -f "$run_log"' EXIT
+trap 'rm -f "$run_log"; rm -rf "$TMPDIR"' EXIT
 if [ ${#ARGS[@]} -gt 0 ]; then
   npx vitest run ${WORKER_ARGS[@]+"${WORKER_ARGS[@]}"} "${ARGS[@]}" 2>&1 | tee "$run_log"
 else
