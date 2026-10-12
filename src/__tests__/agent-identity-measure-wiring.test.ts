@@ -14,7 +14,8 @@ import type { RouteContext } from '../web/routes/types.js'
 
 function call(router: (ctx: RouteContext) => Promise<boolean>, pathWithQuery: string, method: string, auth: RouteContext['auth'], body: unknown) {
   const url = new URL(`http://localhost:3420${pathWithQuery}`)
-  const req = Readable.from([Buffer.from(JSON.stringify(body))]) as unknown as RouteContext['req']
+  const bodyStr = body === undefined ? '' : JSON.stringify(body)
+  const req = Readable.from([Buffer.from(bodyStr)]) as unknown as RouteContext['req']
   const res = { writeHead: () => res, end: () => {}, setHeader: () => {} } as unknown as RouteContext['res']
   const ctx = { req, res, path: url.pathname, method, url, auth } as unknown as RouteContext
   return router(ctx)
