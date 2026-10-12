@@ -29,6 +29,16 @@
 # files inside it), so its age stays under MIN_AGE_MIN for the whole run. $FLEET_TEST_LOCK_WAIT
 # (fleet-test.sh) caps a single run at 900s = 15 minutes; MIN_AGE_MIN defaults well past that.
 #
+# CYBERED NO-GO on 6e71b5f5 (comment 17221, B5) fixed here:
+#
+# B5 (HIGH, availability + B3 re-check invalidation): has_live_process() iterated all of /proc,
+# forking a readlink per fd -- measured at 38s per candidate (280 procs, 11119 fds), 2807
+# candidates on the real /tmp = ~30 hours per run, no lock => hourly instances would pile up.
+# Also the original is_fresh_inside() ran BEFORE the long live-scan, so a file written during the
+# scan (measured L5) could still be deleted. Fixed: (1) one /proc snapshot per sweep run (find
+# -printf '%l\n' into a temp file, candidates grep'd via awk); (2) flock -n exits immediately if
+# another instance is already running; (3) is_fresh_inside() runs again right before rm.
+#
 # CYBERSEC NO-GO on 877766dc (comment 17088) + QA2 FAIL (comment 17090), both fixed here:
 #
 # B1 (HIGH): the removal path was `run() { eval "$@"; }` feeding a single-quoted path built from
@@ -64,6 +74,14 @@
 # instead of the real /tmp).
 set -uo pipefail
 
+# B5: flock -n -- a second instance exits immediately rather than piling up behind the first.
+LOCK_FILE="${TEST_TMP_SWEEP_LOCKFILE:-/tmp/test-tmp-sweep.lock}"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "test-tmp-sweep: another instance is already running (lock: $LOCK_FILE) -- exiting"
+  exit 0
+fi
+
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
@@ -77,6 +95,18 @@ MIN_PREFIX_LEN=6
 EXCLUDE_PREFIXES='^(claude-|tmux-|systemd-|\.X11)'
 
 say() { echo "test-tmp-sweep: $*"; }
+
+# B5: one /proc snapshot per run -- collect all live cwd+fd symlink targets into a temp file
+# once, then check candidates with awk (O(snapshot)) instead of re-forking readlink per pid*fd.
+LIVE_SNAPSHOT=""
+_cleanup_snapshot() { [ -z "$LIVE_SNAPSHOT" ] || rm -f "$LIVE_SNAPSHOT"; }
+trap _cleanup_snapshot EXIT
+
+init_live_proc_snapshot() {
+  LIVE_SNAPSHOT="$(mktemp)"
+  find /proc/[0-9]*/cwd /proc/[0-9]*/fd -printf '%l\n' 2>/dev/null \
+    | sort -u > "$LIVE_SNAPSHOT"
+}
 
 # Pull every literal prefix passed to mkdtempSync(join(tmpdir(), 'PREFIX')) or
 # mkdtempSync(join(os.tmpdir(), 'PREFIX')) (single or double quoted) out of the test source. The
@@ -121,27 +151,19 @@ owned_by_us() {
   [ "$(stat -c %U -- "$1" 2>/dev/null)" = "$(id -un)" ]
 }
 
-# Best-effort: is any live process's cwd, or an open file descriptor, pointing inside $1? Only
-# called on entries that already passed the age+owner checks, so the candidate set here is small.
+# B5: snapshot-based live-process check -- O(snapshot) per candidate via awk, not O(pids*fds).
+# Best-effort: documented limitation (N1 from comment 17221): a path-based socket held open by a
+# process whose cwd is '/' (not inside the entry) is not caught; that is acceptable for this
+# sweep's use-case (test scratch dirs, not server sockets).
 has_live_process() {
-  local target="" pid cwd fd fdt
+  [ -n "$LIVE_SNAPSHOT" ] && [ -f "$LIVE_SNAPSHOT" ] || return 1
+  local target
   target="$(readlink -f -- "$1" 2>/dev/null)" || return 1
   [ -n "$target" ] || return 1
-  for pid in /proc/[0-9]*; do
-    [ -d "$pid" ] || continue
-    cwd="$(readlink -f -- "$pid/cwd" 2>/dev/null)" || cwd=""
-    case "$cwd" in
-      "$target"|"$target"/*) return 0 ;;
-    esac
-    for fd in "$pid"/fd/*; do
-      [ -e "$fd" ] || continue
-      fdt="$(readlink -f -- "$fd" 2>/dev/null)" || continue
-      case "$fdt" in
-        "$target"|"$target"/*) return 0 ;;
-      esac
-    done
-  done
-  return 1
+  # match: snapshot line IS $target, OR starts with $target/ (a path inside the tree)
+  awk -v t="$target" \
+    'index($0,t)==1 && (length($0)==length(t) || substr($0,length(t)+1,1)=="/")'  \
+    "$LIVE_SNAPSHOT" | grep -q .
 }
 
 removed=0
@@ -149,6 +171,9 @@ checked=0
 skipped_fresh=0
 skipped_owner=0
 skipped_live=0
+# B5: build the /proc snapshot ONCE before the removal loop, so has_live_process() is O(snapshot)
+# per candidate rather than O(pids*fds).
+init_live_proc_snapshot
 # ONE find, NUL-delimited throughout (B2), newest-mtime-filtered already (so an active run's dir,
 # touched seconds ago, never reaches this list), THEN filtered down to known prefixes in one grep
 # pass. The age/owner/live-process checks below are re-verified per candidate, right before
@@ -173,6 +198,12 @@ while IFS= read -r -d '' name; do
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] rm -rf -- %q\n' "$entry"
   else
+    # B5/L5: re-check freshness right before rm -- a file written DURING the live-process scan
+    # (which now runs once upfront) could have made the tree fresh after the first check above.
+    if is_fresh_inside "$entry"; then
+      skipped_fresh=$((skipped_fresh + 1))
+      continue
+    fi
     say "removing: $entry"
     rm -rf -- "$entry"
   fi

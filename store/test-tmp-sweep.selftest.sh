@@ -5,6 +5,8 @@
 # Cases 6-10 were added after CYBERSEC NO-GO (comment 17088, B1-B4) and QA2 FAIL (comment 17090,
 # reversed-base prefix leak) on Gate-SHA 877766dc -- each pins one of those findings red-then-green
 # against the fixed script.
+# Case 11 was added after CYBERED NO-GO (comment 17221, B5) on Gate-SHA 6e71b5f5: pins that
+# 50 candidates complete in under 10 seconds (snapshot-based scan, not per-pid*fd fork loop).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -163,8 +165,35 @@ else
   echo "  FAIL the tree was removed despite a freshly-written file deep inside it"; fail=1
 fi
 
+# --- case 11 (B5): 50 old candidates swept in under 10 seconds ----------------------------
+# pins that has_live_process() uses the O(snapshot) path, not the old O(pids*fds) fork loop.
+PERF_SRC="$FAKE_ROOT/src_perf"
+mkdir -p "$PERF_SRC"
+{
+  for i in $(seq 1 50); do
+    printf "const d%d = mkdtempSync(join(tmpdir(), 'perf-t%02d-'))\n" "$i" "$i"
+  done
+} > "$PERF_SRC/perf.test.ts"
+reset_target
+for i in $(seq 1 50); do
+  touch_old "$FAKE_TARGET/$(printf 'perf-t%02d-abcdef' "$i")"
+done
+START_T=$SECONDS
+env \
+  "TEST_TMP_SWEEP_SRC=$PERF_SRC" \
+  "TEST_TMP_SWEEP_TARGET_DIR=$FAKE_TARGET" \
+  "TEST_TMP_SWEEP_MIN_AGE_MIN=60" \
+  "TEST_TMP_SWEEP_LOCKFILE=$FAKE_ROOT/perf-lock" \
+  bash "$SWEEP" > /dev/null 2>&1
+ELAPSED=$((SECONDS - START_T))
+if [ "$ELAPSED" -lt 10 ]; then
+  echo "  ok   50 old entries swept in ${ELAPSED}s (< 10s, live-process scan is O(snapshot))"
+else
+  echo "  FAIL 50-entry sweep took ${ELAPSED}s (>= 10s) -- has_live_process may still be O(pids*fds)"; fail=1
+fi
+
 if [ "$fail" -eq 0 ]; then
-  echo "selftest: 10 passed, 0 failed"
+  echo "selftest: 11 passed, 0 failed"
   exit 0
 else
   echo "selftest: FAILED"
