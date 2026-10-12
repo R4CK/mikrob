@@ -50,6 +50,11 @@ WATCHDOG_WSL="${WSL_DIR}/mikrob-wsl-watchdog.ps1"
 TASK_NAME="MikroB-WSL-Watchdog"
 SCHTASKS="/mnt/c/Windows/System32/schtasks.exe"
 
+# Fresh-boot grace (card 58badae1 original requirement + F1 follow-up): skip
+# UNHEALTHY counting for the first N seconds of WSL distro uptime, default 25
+# minutes, configurable, behavior beyond the window unchanged.
+FRESH_BOOT_GRACE_SEC="${WSL_WATCHDOG_FRESH_BOOT_GRACE_SEC:-1500}"
+
 # ----------------------------------------------------------------------------
 # 1) The watchdog PS1. Probes liveness via the in-WSL probe script; on a
 #    sustained wedge (MAX_FAILS consecutive) restarts the distro.
@@ -69,6 +74,11 @@ cat > "$WATCHDOG_WSL" <<PS1EOF
 # instead of retrying forever (the prior behavior: unbounded restarts every
 # ~15min for hours during the 2026-08-05 ollama/dxg VM crash-loop incident).
 \$MaxRestarts = 3
+# Card 58badae1 (fresh-boot grace): a just-booted distro legitimately needs a
+# few minutes before the dashboard/channels come up. Without this, every boot
+# read 3x UNHEALTHY and triggered an unnecessary restart cycle. Skipped reads
+# during the window are logged but never advance \$fails.
+\$FreshBootGraceSec = $FRESH_BOOT_GRACE_SEC
 \$StateDir    = "\$env:LOCALAPPDATA\\MikroB"
 \$StateFile   = "\$StateDir\\wsl-watchdog-fails.txt"
 \$RestartCountFile = "\$StateDir\\wsl-watchdog-restart-count.txt"
@@ -87,6 +97,19 @@ if (\$healthy) {
   exit 0
 }
 
+# Fresh-boot grace: read /proc/uptime INSIDE wsl (a separate call -- the
+# liveness probe's own exit code/output must stay UNHEALTHY-or-OK only, this
+# is a second, independent signal). A failed uptime read (wedged VM) falls
+# through as "not fresh" so a genuine total wedge is never masked by the grace
+# window.
+\$uptimeOut = & wsl.exe -d \$Distro -u \$WslUser -- cat /proc/uptime 2>\$null
+\$uptimeSec = 0
+if (\$LASTEXITCODE -eq 0 -and \$uptimeOut -match '^([0-9.]+)') { \$uptimeSec = [double]\$matches[1] }
+if (\$uptimeSec -gt 0 -and \$uptimeSec -lt \$FreshBootGraceSec) {
+  Log "probe unhealthy (out='\$out' exit=\$LASTEXITCODE) -- SKIPPED, fresh boot (uptime=\${uptimeSec}s < grace=\${FreshBootGraceSec}s)"
+  exit 0
+}
+
 \$fails = 0
 if (Test-Path \$StateFile) { \$fails = [int](Get-Content \$StateFile -ErrorAction SilentlyContinue) }
 \$fails++
@@ -102,10 +125,20 @@ if (\$fails -ge \$MaxFails) {
     Log "RESTARTING WSL distro \$Distro (sustained wedge, attempt \$restarts/\$MaxRestarts)"
     & wsl.exe --terminate \$Distro 2>\$null
     Start-Sleep -Seconds 5
-    & wsl.exe -d \$Distro --exec /bin/true 2>\$null   # re-launch; systemd+linger revive MikroB
+    # Card 58badae1 F1 (root cause): relaunching via a wsl.exe call that runs
+    # an immediately-exiting command used to be the restart step, but that
+    # command exits right away, and with it the ONLY wsl.exe client holding
+    # the VM open -- the distro powers off again ~30s later
+    # (measured: 20+ times in one night). Start-Process spawns wsl.exe as an
+    # INDEPENDENT Windows process, detached from this watchdog run (which
+    # itself exits after this script returns), running 'sleep infinity'
+    # inside the distro -- the same holding-client pattern as the
+    # Startup-folder MikroB-WSL-Keepalive.vbs launcher, just issued here too
+    # so the distro survives even if that separate launcher is not running.
+    Start-Process -WindowStyle Hidden -FilePath "wsl.exe" -ArgumentList @("-d", \$Distro, "--exec", "/bin/sleep", "infinity")
     Set-Content -Path \$RestartCountFile -Value "\$restarts"
     Set-Content -Path \$StateFile -Value "0"
-    Log "WSL restart issued"
+    Log "WSL restart issued (holding process launched via Start-Process)"
   } else {
     Log "GIVING UP after \$MaxRestarts restart attempts -- triggering in-WSL auto-rollback"
     & wsl.exe -d \$Distro -u \$WslUser -e bash -lc \$RollbackCmd 2>\$null
