@@ -9,8 +9,12 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import type { GeminiFallbackState } from '../gemini-fallback-runner.js'
 import type { GeminiKeyValidation } from '../gemini-client.js'
+
+/** Mirrors the runner's own fingerprintKey() -- node:crypto is NOT mocked here. */
+const sha256 = (key: string): string => createHash('sha256').update(key).digest('hex')
 
 // --- Fakes ---------------------------------------------------------------
 
@@ -20,6 +24,7 @@ const fakeState: GeminiFallbackState = {
   lastKeyCheck: null,
   keyValid: false,
   lastRun: null,
+  keyFingerprint: null,
 }
 let writtenState: GeminiFallbackState | null = null
 let telegramMessages: string[] = []
@@ -91,6 +96,7 @@ beforeEach(() => {
   fakeState.lastKeyCheck = null
   fakeState.keyValid = false
   fakeState.lastRun = null
+  fakeState.keyFingerprint = null
   globalThis.fetch = vi.fn(async (url: string, opts: RequestInit) => {
     if (String(url).includes('api.telegram.org')) {
       const body = JSON.parse(String(opts.body))
@@ -138,7 +144,7 @@ describe('runGeminiFallbackCheck -- engage path', () => {
 describe('runGeminiFallbackCheck -- revert path', () => {
   it('reverts when on Gemini but Claude has recovered', async () => {
     fakeState.route = 'gemini'
-    fakeState.engagedAt = Date.now() - 20 * 60 * 1000  // 20 min ago > 10 min anti-flap
+    fakeState.engagedAt = Date.now() - 50 * 60 * 1000  // 50 min ago > 45 min anti-flap (F2)
     weeklyActive = false
     await runGeminiFallbackCheck()
     expect(writtenState?.route).toBe('claude')
@@ -147,7 +153,7 @@ describe('runGeminiFallbackCheck -- revert path', () => {
 
   it('sends exactly ONE Telegram message on revert', async () => {
     fakeState.route = 'gemini'
-    fakeState.engagedAt = Date.now() - 20 * 60 * 1000
+    fakeState.engagedAt = Date.now() - 50 * 60 * 1000
     weeklyActive = false
     await runGeminiFallbackCheck()
     expect(telegramMessages).toHaveLength(1)
@@ -155,7 +161,7 @@ describe('runGeminiFallbackCheck -- revert path', () => {
 
   it('respects the anti-flap window: does NOT revert too quickly', async () => {
     fakeState.route = 'gemini'
-    fakeState.engagedAt = Date.now() - 2 * 60 * 1000  // only 2 min ago < 10 min
+    fakeState.engagedAt = Date.now() - 20 * 60 * 1000  // 20 min ago < 45 min (F2)
     weeklyActive = false
     await runGeminiFallbackCheck()
     expect(writtenState?.route).toBe('gemini')
@@ -179,10 +185,11 @@ describe('runGeminiFallbackCheck -- no-op path', () => {
 })
 
 describe('key validation caching', () => {
-  it('skips re-validation when lastKeyCheck is recent', async () => {
+  it('skips re-validation when lastKeyCheck is recent AND the key is unchanged', async () => {
     const { validateGeminiKey } = await import('../gemini-client.js')
     fakeState.keyValid = true
     fakeState.lastKeyCheck = Date.now() - 5 * 60 * 1000  // 5 min ago < 1h TTL
+    fakeState.keyFingerprint = sha256(apiKey)  // same key as this run will read -- cache applies
     weeklyActive = false
     vi.clearAllMocks()  // reset call count
     await runGeminiFallbackCheck()
@@ -243,10 +250,83 @@ describe('newDevStop engagement (card 3de7d530)', () => {
 
   it('reverts once both thresholds clear, same as the existing revert path', async () => {
     fakeState.route = 'gemini'
-    fakeState.engagedAt = Date.now() - 20 * 60 * 1000
+    fakeState.engagedAt = Date.now() - 50 * 60 * 1000  // > 45 min anti-flap (F2)
     weeklyActive = false
     weeklyNewDevStopActive = false
     await runGeminiFallbackCheck()
     expect(writtenState?.route).toBe('claude')
+  })
+})
+
+// CYBERED NO-GO on card 3de7d530 (comment 17031): F1 (key-validity cache not bound to which
+// key was checked, future-dated timestamps never re-checked) and F2 (anti-flap window shorter
+// than the run schedule) fixed in gemini-fallback-runner.ts. These tests pin the fix.
+describe('CYBERED NO-GO fixes (comment 17031)', () => {
+  it('S4: an EMPTY key (deleted from the vault) is invalid immediately, even though the 1h cache would otherwise still trust it', async () => {
+    fakeState.keyValid = true
+    fakeState.lastKeyCheck = Date.now() - 1 * 60 * 1000  // 1 min ago, well within the 1h TTL
+    fakeState.keyFingerprint = 'fingerprint-of-a-key-that-is-now-gone'
+    apiKey = ''  // the key was deleted from the vault
+    weeklyActive = true  // Claude exhausted -- would otherwise engage
+    await runGeminiFallbackCheck()
+    expect(writtenState?.keyValid).toBe(false)
+    expect(writtenState?.route).toBe('claude')
+  })
+
+  it('S4b: a ROTATED key (different fingerprint) is re-validated immediately, not trusted via the old key\'s cached verdict', async () => {
+    const { validateGeminiKey } = await import('../gemini-client.js')
+    fakeState.keyValid = true
+    fakeState.lastKeyCheck = Date.now() - 1 * 60 * 1000  // 1 min ago, well within the 1h TTL
+    fakeState.keyFingerprint = 'fingerprint-of-the-OLD-key'
+    apiKey = 'a-brand-new-rotated-key-value'  // different key -> different fingerprint
+    keyValidResult = { valid: false as const, reason: 'auth' as const, detail: 'PERMISSION_DENIED' }
+    weeklyActive = true
+    vi.clearAllMocks()
+    await runGeminiFallbackCheck()
+    expect(validateGeminiKey).toHaveBeenCalledOnce()
+    expect(writtenState?.keyValid).toBe(false)
+    expect(writtenState?.route).toBe('claude')
+  })
+
+  it('S6a: a FUTURE-dated lastKeyCheck (tampered state) does not suppress re-validation, even for the SAME key (isolates the timestamp fix from the fingerprint fix)', async () => {
+    const { validateGeminiKey } = await import('../gemini-client.js')
+    apiKey = 'currently-invalid-key'
+    fakeState.keyValid = true
+    fakeState.lastKeyCheck = Date.now() + 365 * 24 * 60 * 60 * 1000  // 1 year in the future
+    fakeState.keyFingerprint = sha256(apiKey)  // SAME key -- a fingerprint mismatch would mask this
+    keyValidResult = { valid: false as const, reason: 'auth' as const, detail: 'PERMISSION_DENIED' }
+    weeklyActive = true
+    vi.clearAllMocks()
+    await runGeminiFallbackCheck()
+    expect(validateGeminiKey).toHaveBeenCalledOnce()
+    expect(writtenState?.keyValid).toBe(false)
+    expect(writtenState?.route).toBe('claude')
+  })
+
+  it('S6b: a FUTURE-dated engagedAt (tampered state) does not block an otherwise-eligible revert', async () => {
+    fakeState.route = 'gemini'
+    fakeState.engagedAt = Date.now() + 365 * 24 * 60 * 60 * 1000  // 1 year in the future
+    weeklyActive = false  // Claude has recovered
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('claude')
+  })
+
+  it('S7: a 15-minute-interval flap sequence around the threshold does not flip the route every run (F2)', async () => {
+    // Simulate 4 consecutive 15-min-apart runs with weekly usage oscillating around the
+    // threshold (exhausted, clear, exhausted, clear). Before the F2 fix (10 min anti-flap on a
+    // 15 min schedule) this flapped on every run; after it (45 min anti-flap), it should not
+    // revert on the FIRST clear run that follows an engage.
+    weeklyActive = true
+    await runGeminiFallbackCheck()  // run 1: engage
+    expect(writtenState?.route).toBe('gemini')
+    fakeState.route = writtenState!.route
+    fakeState.engagedAt = writtenState!.engagedAt
+    fakeState.keyValid = writtenState!.keyValid
+    fakeState.lastKeyCheck = writtenState!.lastKeyCheck
+    fakeState.keyFingerprint = writtenState!.keyFingerprint
+
+    weeklyActive = false  // run 2, 15 min later: briefly clear -- must NOT revert yet
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('gemini')
   })
 })
