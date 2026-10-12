@@ -43,6 +43,78 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
+# ---- prompt redaction ----------------------------------------------------------
+# Strip patterns that look like secrets before sending to an external API.
+# Pattern set mirrors src/security/secret-gate.ts SECRET_PATTERNS (card a92e9913 B2).
+# Prompt arrives on stdin to avoid appearing in /proc/<pid>/cmdline.
+#
+# The Python script is written to a temp file so that redact_prompt() can call
+# `python3 "$file"` with the text on stdin.  The heredoc approach (python3 - <<'EOF')
+# cannot work here: the heredoc overrides stdin inside the function body, so
+# sys.stdin.read() always returns empty string when text is piped in.
+_REDACT_PY="$(mktemp)"
+chmod 0600 "$_REDACT_PY"
+cat > "$_REDACT_PY" << 'PYEOF'
+import re, sys
+
+text = sys.stdin.read()
+
+# PEM private key blocks
+text = re.sub(r'-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----',
+              '[REDACTED_PRIVKEY]', text, flags=re.DOTALL)
+# Stripe / generic sk_live / sk_test
+text = re.sub(r'\b(sk|rk)_(live|test)_[A-Za-z0-9]{16,}', '[REDACTED_KEY]', text)
+# Generic vendor secret keys (sk- or sk_)
+text = re.sub(r'\bsk[-_][A-Za-z0-9_-]{24,}', '[REDACTED_KEY]', text)
+# OpenAI project key (sk-proj-)
+text = re.sub(r'\bsk-proj-[A-Za-z0-9_-]{20,}', '[REDACTED_KEY]', text)
+# ElevenLabs (xi-api-key header)
+text = re.sub(r'xi-api-key["\'\s:=]+[A-Za-z0-9_-]{16,}', '[REDACTED_KEY]', text, flags=re.IGNORECASE)
+# Bearer token (any length >= 8)
+text = re.sub(r'\bBearer\s+[A-Za-z0-9_\-\.=+/]{8,}', '[REDACTED_TOKEN]', text, flags=re.IGNORECASE)
+# JWT: eyJ...eyJ...sig
+text = re.sub(r'\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}',
+              '[REDACTED_JWT]', text)
+# GitHub tokens (ghp_ gho_ ghu_ ghr_ ghs_)
+text = re.sub(r'\bgh[pousr]_[A-Za-z0-9]{30,}', '[REDACTED_TOKEN]', text)
+# Slack tokens (xoxb- xoxa- xoxp- xoxr- xoxs-)
+text = re.sub(r'\bxox[baprs]-[A-Za-z0-9-]{10,}', '[REDACTED_TOKEN]', text)
+# AWS access key ID
+text = re.sub(r'\bAKIA[0-9A-Z]{16}\b', '[REDACTED_KEY]', text)
+# Supabase personal access token
+text = re.sub(r'\bsbp_[0-9a-f]{40}\b', '[REDACTED_KEY]', text)
+# Google API keys (AIza)
+text = re.sub(r'\bAIza[0-9A-Za-z_-]{20,}', '[REDACTED_KEY]', text)
+# Telegram bot token (numeric:alphanum)
+text = re.sub(r'\b\d{8,12}:[A-Za-z0-9_-]{35,}\b', '[REDACTED_TOKEN]', text)
+# .env-style: KEY=value (ALL_CAPS, mixed, export prefix, indented; >= 8 char value)
+text = re.sub(r'(?m)^[ \t]*(export[ \t]+)?[A-Za-z_][A-Za-z0-9_]+=\S{8,}', '[REDACTED_ENV]', text)
+# password/secret/token/api_key assignments (inline)
+text = re.sub(
+    r'\b(password|passwd|secret|token|api[_-]?key|auth[_-]?key|access[_-]?key)[=:\s]+["\']?[A-Za-z0-9_\-\.=+/]{8,}["\']?',
+    '[REDACTED_CRED]', text, flags=re.IGNORECASE)
+# Database URLs with embedded password (postgres/mysql/mongodb/redis://user:pass@host)
+text = re.sub(r'(postgres|mysql|mongodb|redis)://[^:]+:[^@]{4,}@', r'\1://[REDACTED]@', text)
+# Basic auth header
+text = re.sub(r'\bBasic\s+[A-Za-z0-9+/=]{8,}', '[REDACTED_BASIC]', text, flags=re.IGNORECASE)
+# Long hex secrets (32+ consecutive hex chars)
+text = re.sub(r'(?<![0-9a-f])[0-9a-f]{32,}(?![0-9a-f])', '[REDACTED_HEX]', text)
+
+print(text, end='')
+PYEOF
+
+redact_prompt() {
+  python3 "$_REDACT_PY"
+}
+
+# redact-test: run redact_prompt on stdin/arg and exit WITHOUT touching vault (test hook, card a92e9913 B2)
+if [[ "${1:-}" == "--redact-test" ]]; then
+  shift
+  PROMPT="${*:-$(cat)}"
+  printf '%s' "$PROMPT" | redact_prompt
+  exit 0
+fi
+
 # ---- vault key -----------------------------------------------------------------
 resolve_gemini_key() {
   node "$ROOT/scripts/vault-resolve.mjs" 2>/dev/null <<'EOF'
@@ -60,10 +132,15 @@ if [[ -z "${API_KEY// }" ]]; then
 fi
 
 if [[ "$VALIDATE_ONLY" -eq 1 ]]; then
-  # Lightweight probe: list models (no token cost)
+  # Lightweight probe: list models (no token cost).
+  # Key goes in a 0600 header file to keep it out of /proc/<pid>/cmdline (card a92e9913 B3).
+  VAL_HDR="$(mktemp)"
+  chmod 0600 "$VAL_HDR"
+  printf 'x-goog-api-key: %s\r\n' "$API_KEY" > "$VAL_HDR"
   http_status="$(curl -s -o /dev/null -w '%{http_code}' \
-    -H "x-goog-api-key: $API_KEY" \
+    -H @"$VAL_HDR" \
     "$GEMINI_API_BASE/models" 2>/dev/null)"
+  rm -f "$VAL_HDR"
   if [[ "$http_status" == "200" ]]; then
     echo "gemini-offload-call: key valid (HTTP 200)"
     exit 0
@@ -85,38 +162,13 @@ if [[ -z "${PROMPT// }" ]]; then
   exit 1
 fi
 
-# ---- prompt redaction ----------------------------------------------------------
-# Strip patterns that look like secrets before sending to an external API.
-# This is a defence-in-depth layer; the primary defence is project-level filtering
-# in offload-dispatch.sh (mopsion cards never reach this script).
-redact_prompt() {
-  python3 - "$1" <<'PYEOF'
-import re, sys
-
-text = sys.argv[1]
-
-# .env-style: KEY=value lines (may carry tokens)
-text = re.sub(r'(?m)^[A-Z_][A-Z0-9_]+=\S+', '[REDACTED_ENV]', text)
-# Bearer/token patterns
-text = re.sub(r'\b(Bearer|token)[=:\s]+[A-Za-z0-9_.+/=-]{20,}', '[REDACTED_TOKEN]', text, flags=re.IGNORECASE)
-# Google API keys (AIza...)
-text = re.sub(r'\bAIza[0-9A-Za-z_-]{20,}', '[REDACTED_KEY]', text)
-text = re.sub(r'\bAQ\.[0-9A-Za-z_.-]{20,}', '[REDACTED_KEY]', text)
-# JWT (eyJ...)
-text = re.sub(r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+', '[REDACTED_JWT]', text)
-# Generic long hex secrets (32+ hex chars that look like API keys or hashes in isolation)
-text = re.sub(r'(?<![0-9a-f])[0-9a-f]{32,}(?![0-9a-f])', '[REDACTED_HEX]', text)
-
-print(text, end='')
-PYEOF
-}
-
-CLEAN_PROMPT="$(redact_prompt "$PROMPT")"
+CLEAN_PROMPT="$(printf '%s' "$PROMPT" | redact_prompt)"
 
 # ---- build request body --------------------------------------------------------
-REQUEST_BODY="$(python3 -c '
+# Prompt arrives via stdin to keep it out of /proc/<pid>/cmdline (card a92e9913 B3).
+REQUEST_BODY="$(printf '%s' "$CLEAN_PROMPT" | python3 -c '
 import json, sys
-prompt = sys.argv[1]
+prompt = sys.stdin.read()
 body = {
   "contents": [{"role": "user", "parts": [{"text": prompt}]}],
   "generationConfig": {
@@ -125,18 +177,22 @@ body = {
   }
 }
 print(json.dumps(body))
-' "$CLEAN_PROMPT")"
+')"
 
 # ---- call Gemini ---------------------------------------------------------------
 TMPOUT="$(mktemp)"
 TMPERR="$(mktemp)"
-trap 'rm -f "$TMPOUT" "$TMPERR"' EXIT
+# Write API key to a 0600 header file so it never appears in /proc/<pid>/cmdline (card a92e9913 B3).
+API_HDR="$(mktemp)"
+chmod 0600 "$API_HDR"
+printf 'x-goog-api-key: %s\r\n' "$API_KEY" > "$API_HDR"
+trap 'rm -f "$TMPOUT" "$TMPERR" "$API_HDR" "$_REDACT_PY"' EXIT
 
 http_status="$(curl -s -o "$TMPOUT" -w '%{http_code}' \
   --max-time "$TIMEOUT" \
   -X POST \
   -H "Content-Type: application/json" \
-  -H "x-goog-api-key: $API_KEY" \
+  -H @"$API_HDR" \
   "$GEMINI_API_BASE/models/$GEMINI_MODEL:generateContent" \
   -d "$REQUEST_BODY" 2>"$TMPERR")"
 
@@ -153,7 +209,9 @@ except Exception as e:
     sys.exit(1)
 ' "$TMPOUT" 2>"$TMPERR")"
   if [[ -n "${text// }" ]]; then
-    printf '%s' "$text"
+    # Redact the response before emitting (card a92e9913 B4): the model may echo
+    # fragments from the prompt that slipped through input redaction.
+    printf '%s' "$text" | redact_prompt
     exit 0
   else
     echo "gemini-offload-call: empty response from API" >&2
