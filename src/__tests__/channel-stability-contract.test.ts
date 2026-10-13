@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { buildMainSessionRespawnCmd } from '../web/channel-monitor.js'
+import { mainConfigDecisionForTest } from '../web/main-config-decision.js'
 
 // Contract tests for the durable Telegram-channel stabilization (source-fix +
 // contract-test per Bug-Discipline). These lock the shell/systemd invariants
@@ -183,6 +185,26 @@ describe('P1#5 — CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 on every agent spawn pa
     expect(line).toMatch(/MCP_SERVER_CONNECTION_BATCH_SIZE=10/)
     expect(line).toMatch(/MCP_CONNECTION_NONBLOCKING=1/)
     expect(line).toMatch(/MCP_TIMEOUT=60000/)
+  })
+
+  // Card d95f71c9 F1 (WhiteHat2 NO-GO 17930, measured): a FOURTH main-agent
+  // launcher exists -- channel-monitor.ts's buildMainSessionRespawnCmd, the
+  // dashboard's in-process recovery respawn -- and it was missing BOTH vars
+  // entirely while carrying the MCP_*/AGENT_VIEW set. A real call, not a text
+  // grep, so a refactor that keeps the string shape but drops an export is
+  // still caught.
+  it('channel-monitor.ts buildMainSessionRespawnCmd (dashboard recovery respawn) carries the survey vars too', () => {
+    const cmd = buildMainSessionRespawnCmd({
+      claudePath: '/usr/local/bin/claude',
+      pluginId: 'telegram@claude-plugins-official',
+      model: 'claude-opus-4-8[1m]',
+      config: mainConfigDecisionForTest(),
+      channelStateEnv: { name: 'TELEGRAM_STATE_DIR', dir: '/opt/marveen/.claude/channels/telegram' },
+      continueSession: false,
+    })
+    expect(cmd).toContain('CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1')
+    expect(cmd).toContain('CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false')
+    expect(cmd.indexOf('CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1')).toBeLessThan(cmd.indexOf('/usr/local/bin/claude'))
   })
 })
 

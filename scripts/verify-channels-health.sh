@@ -164,9 +164,18 @@ fi
 # PATH is read by (c) above since it is not sensitive, but these three are
 # plain presence flags and there is no reason to read their contents either way.
 if [ -n "$CLAUDE_PID" ] && [ -r "/proc/$CLAUDE_PID/environ" ]; then
-  _keys="$(tr '\0' '\n' < "/proc/$CLAUDE_PID/environ" | cut -d= -f1)"
+  # L2 (WhiteHat2 NO-GO 17930): cut on the NUL record FIRST, THEN convert to
+  # newlines for grep -- the reverse order (tr then cut on '=') let a newline
+  # embedded in some OTHER var's VALUE forge a fake key line. cut -z keeps each
+  # record's key/value split anchored to the real NUL boundary, so an embedded
+  # newline in a value can never leak out as its own "line".
+  _keys="$(cut -z -d= -f1 < "/proc/$CLAUDE_PID/environ" | tr '\0' '\n')"
   _missing=""
-  for _v in CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION CLAUDE_CODE_DISABLE_AGENT_VIEW; do
+  # F2 (WhiteHat2 NO-GO 17930, measured live on pid 855): these are the MCP_*
+  # tuning vars whose ABSENCE is the card's original symptom -- the three
+  # CLAUDE_CODE_* vars alone would read "OK" on a process missing exactly the
+  # thing d95f71c9 was about.
+  for _v in CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION CLAUDE_CODE_DISABLE_AGENT_VIEW MCP_SERVER_CONNECTION_BATCH_SIZE MCP_CONNECTION_NONBLOCKING MCP_TIMEOUT; do
     echo "$_keys" | grep -qx "$_v" || _missing="$_missing $_v"
   done
   if [ -z "$_missing" ]; then
