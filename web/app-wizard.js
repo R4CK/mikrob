@@ -26,9 +26,20 @@ function populateProfileSelect(selectEl, descEl, selected) {
       if (p.id === selected) opt.selected = true
       selectEl.appendChild(opt)
     }
+    // A requested profile that does not exist (deleted, renamed, corrupt file) used to fall back
+    // to `default` SILENTLY: the agent runs under the most permissive profile, but the dropdown
+    // showed the requested name with no sign anything had changed. Named here instead, so a
+    // permission WIDENING the operator did not ask for is visible, not just logged.
+    if (selected && !profiles.some(p => p.id === selected)) {
+      const missing = document.createElement('option')
+      missing.value = selected
+      missing.textContent = `⚠ ${selected} (${t('agents.profile_missing_option')})`
+      missing.selected = true
+      selectEl.prepend(missing)
+    }
     const updateDesc = () => {
       const p = profiles.find(x => x.id === selectEl.value)
-      descEl.textContent = p ? p.description : ''
+      descEl.textContent = p ? p.description : (selectEl.value ? t('agents.profile_missing_desc', { id: selectEl.value }) : '')
     }
     selectEl.onchange = updateDesc
     updateDesc()

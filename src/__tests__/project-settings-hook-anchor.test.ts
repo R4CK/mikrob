@@ -36,11 +36,13 @@ const EXPECTED: Record<string, string[]> = {
   ],
   PostToolUse: [
     'ledger-outbound.py', 'tool-log-capture.py',
-    'telegram_progress_reply_clear.py', 'skill-usage-capture.py',
+    'telegram_progress_reply_clear.py', 'slack_progress_reply_clear.py',
+    'skill-usage-capture.py', 'memory-frontmatter-bash-gate.py',
   ],
   // A failed tool call fires PostToolUseFailure, never PostToolUse
   // (TOOLLOGVAKSIKER921): without this entry tool_call_log cannot hold a 0.
-  PostToolUseFailure: ['tool-log-capture.py'],
+  // KAPUEGYUT918: a failed Bash call can still have written a memory file.
+  PostToolUseFailure: ['tool-log-capture.py', 'memory-frontmatter-bash-gate.py'],
   PreToolUse: [
     'outgoing-copy-gate.py', 'email-approval-gate.py',
     'channel-image-resize.sh', 'egress-gate.mjs',
@@ -53,6 +55,7 @@ const EXPECTED: Record<string, string[]> = {
     // Card b5b7eb6b child 971f7d4f (upstream 4a4eba39 #1398, MEMFMGATE918): a memory write must
     // parse back in the same PreToolUse step, or the harness never sees `description` for recall.
     'memory-frontmatter-gate.py',
+    'memory-frontmatter-bash-gate.py',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py'],
   SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py', 'marveen-commands.py'],
@@ -122,6 +125,7 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'noisy-command-guard.py', matcher: 'Bash' },
   { script: 'pentest-tool-install-guard.py', matcher: 'Bash' },
   { script: 'memory-frontmatter-gate.py', matcher: 'Write|Edit|MultiEdit' },
+  { script: 'memory-frontmatter-bash-gate.py', matcher: 'Bash' },
 ]
 
 describe('tracked .claude/settings.json hook anchor (#1305)', () => {

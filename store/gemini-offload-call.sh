@@ -80,15 +80,26 @@ _HOMOGLYPH_MAP = str.maketrans({
     "і": "i", "ѕ": "s", "һ": "h", "ԃ": "d", "ɡ": "g", "ⅰ": "i",
 })
 
+# C2 (card 33047d3f): U+2800 BRAILLE PATTERN BLANK is visually invisible but its category
+# (So, Symbol-other) is too broad to strip wholesale (it also covers visible symbols like
+# dingbats/chess pieces) -- stripped by exact codepoint instead.
+_INVISIBLE_CODEPOINTS = {"⠀"}
+
 def _fold(s):
     """NFKD-decompose (fullwidth/compat chars -> plain ASCII) + homoglyph-map, then strip
-    combining marks and invisible formatting chars (zero-width space/joiner etc, category
-    Mn/Cf). Case is preserved so case-sensitive patterns (AKIA..., sk-ant-...) still work.
+    combining marks, invisible formatting chars (zero-width space/joiner etc, category Mn/Cf),
+    control chars (Cc -- C1, card 33047d3f: an ASCII control byte spliced into a keyword is
+    already ascii and survives untouched otherwise, splitting the word), and line/paragraph
+    separators (Zl/Zp -- C2, card 33047d3f: U+2028/U+2029) plus the braille-blank invisible
+    char above. Case is preserved so case-sensitive patterns (AKIA..., sk-ant-...) still work.
     Matching runs on this folded text; the ORIGINAL text is what gets sent to Gemini if clean
     -- normalization only widens what we catch, it never changes what we send."""
     s = s.translate(_HOMOGLYPH_MAP)
     s = unicodedata.normalize("NFKD", s)
-    return "".join(ch for ch in s if unicodedata.category(ch) not in ("Mn", "Cf"))
+    return "".join(
+        ch for ch in s
+        if unicodedata.category(ch) not in ("Mn", "Cf", "Cc", "Zl", "Zp") and ch not in _INVISIBLE_CODEPOINTS
+    )
 
 # F2 (same komment): fail-closed if a script/homoglyph our table does not cover remains after
 # folding -- the table is a convenience, not the guarantee. Mirrors has_unmapped_letter() in

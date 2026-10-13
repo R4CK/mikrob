@@ -23,6 +23,15 @@
 // (store/offload-dispatch.sh --check-blocked, added for exactly this purpose) as the single
 // source of truth, instead of keeping a second copy of the sensitive-word list that can silently
 // diverge again on the next edit to either side.
+//
+// WHITEHAT2 F1' DELTA FIX (comment 17828/17831, same re-gate): --check-blocked now extracts the
+// title-prefix "[SEC]"/"[BLOKKOLT-*]" bracket tags ITSELF (store/offload-dispatch.sh, same regex
+// tags_for() uses), instead of relying on this module's caller to have already folded them into
+// `tags`. isEligibleForGeminiOrdering below still only sends `card.labels` as tags -- that is now
+// sufficient, because the wrapper reconstructs the title-prefix half of the tag set on its own
+// side. RedHat N1/N2 in the same delta: the exit-code contract moved to the sentinel RC documented
+// on isBlockedByLandedFilter below, and offload-dispatch.sh's content gate now also runs on tag
+// text, not just title/desc.
 
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -68,18 +77,33 @@ export interface OrchestratorCardMeta {
 
 const OFFLOAD_DISPATCH_SCRIPT = join(STORE, 'offload-dispatch.sh')
 
+/** Only this exact exit code means a deliberate, completed "allowed" verdict (N1 below). */
+const CHECK_BLOCKED_ALLOWED_RC = 42
+/** Fail-closed ceiling on the subprocess itself (N4, RedHat 17825): an unbounded spawnSync could
+ *  hang the whole sweep forever on a wedged bash/python; a timeout turns that into a (fail-closed)
+ *  blocked verdict instead, same as any other abnormal exit below. */
+const CHECK_BLOCKED_TIMEOUT_MS = 10_000
+
 /**
  * Calls the landed, already-gated is_gemini_blocked (card a92e9913, store/offload-dispatch.sh) via
- * its --check-blocked entry point, instead of keeping a second copy of its vocabulary. Matches the
- * function's own return convention (status 0 = blocked, 1 = allowed) and fails CLOSED (treated as
- * blocked) on anything else -- a missing interpreter, a crashed subprocess, a killed-by-signal run
- * (status null) -- because "could not confirm this is safe" must never be read as "safe".
+ * its --check-blocked entry point, instead of keeping a second copy of its vocabulary.
+ *
+ * N1 (RedHat 17825/17831): checks for the EXACT sentinel exit code 42, not "anything other than
+ * blocked's 0". A plain `status !== 1` reading (the previous shape here) collapses the moment the
+ * wrapper's own exit code collides with bash's generic failure code -- which is also 1 -- so a
+ * stray BASH_ENV, an unset-variable trip, or any other accidental shell failure on the far side
+ * would read as "allowed". The wrapper itself now emits 42 for a deliberate allow and 0 for every
+ * other outcome (blocked, or any failure at all) -- this function fails CLOSED (treated as
+ * blocked) on anything that is not exactly 42: a missing interpreter, a crashed subprocess, a
+ * killed-by-signal or timed-out run (status null) -- because "could not confirm this is safe"
+ * must never be read as "safe".
  */
 function isBlockedByLandedFilter(project: string, tags: string, title: string, desc: string): boolean {
   const result = spawnSync('bash', [OFFLOAD_DISPATCH_SCRIPT, '--check-blocked', project, tags, title, desc], {
     encoding: 'utf-8',
+    timeout: CHECK_BLOCKED_TIMEOUT_MS,
   })
-  return result.status !== 1
+  return result.status !== CHECK_BLOCKED_ALLOWED_RC
 }
 
 /**
@@ -241,12 +265,20 @@ export function loadOrchestratorCardsFromDb(): OrchestratorCard[] {
     }))
 }
 
-// Entry point when run directly: node dist/gemini-orchestrator.js
-// WhiteHat F2 (comment 17666): loadOrchestratorCardsFromDb() calls into db.ts, which requires
-// initDatabase() to have run first -- a direct run crashed immediately without it.
-if (process.argv[1] && fileURLToPath(import.meta.url).endsWith(process.argv[1].replace(/^.*[/\\]/, '/'))) {
+/**
+ * Entry-point body, extracted (RedHat N3, comment 17825) so F2 (initDatabase before the DB read)
+ * is directly testable -- the guard below is gated on `process.argv[1]` at module-load time, so
+ * a test that merely imports this module can never reach it, and removing initDatabase() here
+ * stayed GREEN on every existing test for exactly that reason.
+ */
+export function runAsEntryPoint(): void {
   initDatabase()
   runGeminiOrchestratorSweep(loadOrchestratorCardsFromDb)
     .then(() => process.exit(0))
     .catch((err) => { console.error('[gemini-orchestrator] Fatal:', err); process.exit(1) })
+}
+
+// Entry point when run directly: node dist/gemini-orchestrator.js
+if (process.argv[1] && fileURLToPath(import.meta.url).endsWith(process.argv[1].replace(/^.*[/\\]/, '/'))) {
+  runAsEntryPoint()
 }

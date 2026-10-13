@@ -523,8 +523,19 @@ else
   # mean the histories have parted, and reconciling them is a human's call by
   # DEFAULT -- see the UPDATE_AUTO_REBASE block below, which is off unless the
   # operator of this install turns it on.
-  AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-  BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+  # UPSTREAMSRC927: measure divergence against the FRESH remote, not the stale
+  # remote-tracking ref that nothing in the product refreshes between updates.
+  # If the fetch fails (network or repo issue) we fall back to @{u} with a note.
+  DIVERGENCE_REF="FETCH_HEAD"
+  if git fetch origin "$CURRENT_BRANCH" --quiet 2>>"$INSTALL_DIR/store/update.log"; then
+    BEHIND=$(git rev-list --count "HEAD..$DIVERGENCE_REF" 2>/dev/null || echo 0)
+    AHEAD=$(git rev-list --count "$DIVERGENCE_REF..HEAD" 2>/dev/null || echo 0)
+  else
+    echo -e "  ${ORANGE}Megjegyzes:${NC} a 'git fetch origin ${CURRENT_BRANCH}' elbukott; az utolso ismert origin-refre visszateres."
+    DIVERGENCE_REF="@{u}"
+    BEHIND=$(git rev-list --count "HEAD..$DIVERGENCE_REF" 2>/dev/null || echo 0)
+    AHEAD=$(git rev-list --count "$DIVERGENCE_REF..HEAD" 2>/dev/null || echo 0)
+  fi
   if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
     # Diverged history: ahead AND behind. #1112 made this refuse ON PURPOSE -- a
     # human has to reconcile it -- and that stays the DEFAULT here. What this adds
@@ -680,9 +691,50 @@ migrate_channels_restart() {
 # timer and stopped the morning briefing timer without being asked. Removed
 # here; adopting either is Peti's call, on its own card.
 
+# UPDUNITTGENV930: #1450 took `Environment=TELEGRAM_ENV=<home>/.claude/channels/telegram/.env`
+# out of the two notifier units install-linux.sh writes (<slug>-host-watchdog.service and
+# <slug>-notify@.service), but only for NEW installs: an existing host keeps the line,
+# and on a MIGRATED install (install-scoped channel dir) it points at the empty legacy
+# path and overrides the notifier's own resolution, so the failure notifier never sends.
+# Only that exact legacy value goes (<the unit's own HOME>/.claude/channels/telegram/.env):
+# an operator's deliberate TELEGRAM_ENV pointing anywhere else stays. On an
+# unmigrated install removing it is harmless, the notifier falls back to the same path.
+strip_legacy_notifier_telegram_env() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  _patched=0
+  for _unit in "$units_dir/"*-host-watchdog.service "$units_dir/"*-notify@.service; do
+    [ -f "$_unit" ] || continue
+    # The legacy value is the SHARED dir under the unit's own HOME: the installer writes
+    # both lines from the same $HOME, and the shipped template carried both as the same
+    # /home/<user> placeholder, so one form covers both. Matched as whole
+    # fixed strings: the install-scoped <install>/.claude/channels/telegram/.env, the
+    # correct path on a migrated install, must never match.
+    _uhome="$(sed -n 's/^Environment=HOME=//p' "$_unit" | head -1)"
+    [ -n "$_uhome" ] || _uhome="$HOME"
+    _legacy1="Environment=TELEGRAM_ENV=${_uhome}/.claude/channels/telegram/.env"
+    if grep -qxF -e "$_legacy1" "$_unit"; then
+      if grep -vxF -e "$_legacy1" "$_unit" >"${_unit}.marveen-new" 2>/dev/null \
+         && cat "${_unit}.marveen-new" >"$_unit" 2>/dev/null; then
+        rm -f "${_unit}.marveen-new"
+        _patched=1
+        echo -e "  Hiba-ertesito unit javitva (regi TELEGRAM_ENV sor ki): $(basename "$_unit")"
+      else
+        rm -f "${_unit}.marveen-new"
+        echo -e "  FIGYELEM: a hiba-ertesito unit nem volt irhato: $_unit"
+      fi
+    fi
+  done
+  if [ "$_patched" = "1" ]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
+  strip_legacy_notifier_telegram_env "$@"
   return 0
 }
 run_unit_maintenance

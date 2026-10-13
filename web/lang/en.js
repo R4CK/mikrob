@@ -1479,7 +1479,8 @@ window._i18n.en = {
   'agents.model.cliUnmeasured':  'The installed Claude Code version could not be measured ({err}); the list is unfiltered: on an older CLI not every model launches.',
   'agents.model.opus5':          'Opus 5',
   'agents.model.opus48':         'Opus 4.8 (1M context, default)',
-  'agents.model.sonnet5':        'Sonnet 5 (newest Sonnet, near-Opus)',
+  'agents.model.sonnet55':       'Sonnet 5.5 (newest Sonnet, fast and cheaper)',
+  'agents.model.sonnet5':        'Sonnet 5 (near-Opus)',
   'agents.model.sonnet46':       'Sonnet 4.6 (fast and smart)',
   'agents.model.haiku45':        'Haiku 4.5 (fastest)',
   'agents.model.cliUnsupported': 'The installed Claude Code CLI (version: {version}) cannot launch "{model}" -- it needs at least version {minCli}. Update the CLI, or choose a different model.',
@@ -1871,6 +1872,8 @@ window._i18n.en = {
   'agents.channel.connected':    'Connected',
   'agents.channel.disconnected': 'Not connected',
   'agents.strict_mode':          ' (strict)',
+  'agents.profile_missing_option': 'does not exist',
+  'agents.profile_missing_desc':   'The requested profile ({id}) is missing or unreadable, so the agent runs under the Default profile, which denies less. Pick an existing profile and save.',
   'agents.marveen_boss':         '{bot} Boss',
   'agents.btn.login':            'Login',
 

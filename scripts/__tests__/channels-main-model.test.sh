@@ -176,11 +176,12 @@ else
 fi
 
 # (3) The real shipped constant (the single source of truth). DEVIATION (card 4f15966e,
-# backend, 2026-09-07): upstream widened the distribution default to the 1M-context
-# variant ('claude-opus-5[1m]'); this is a real cost/context product tradeoff, not a
-# merge-conflict-resolution call, so it stays 'claude-opus-5' (the current fork default)
-# until Peti decides. MikroB is escalating separately. Re-adopt this test's original
-# expectation if/when that decision lands.
+# backend, 2026-09-07; reaffirmed Köteg 12, upstream 0bea3cd7/e1a54005, 2026-10-13): upstream
+# widened the distribution default to the 1M-context variant, most recently 'claude-opus-5-5[1m]'
+# (MODELSUGGEST923); this is a real cost/context product tradeoff, not a merge-conflict-resolution
+# call, so it stays 'claude-opus-5' (the current fork default) until Peti decides -- see DECISIONS.md
+# 2026-09-25 (14284837/model-suggest.test.ts) for the most recent reaffirmation. MikroB is
+# escalating separately. Re-adopt this test's upstream expectation if/when that decision lands.
 registry_default="$(grep -oE "DISTRIBUTION_DEFAULT_AGENT_MODEL = '[^']+'" "$INSTALL_DIR/src/config-registry.ts" | head -1 | sed "s/.*'\(.*\)'/\1/")"
 if [ "$registry_default" = "claude-opus-5" ]; then
   pass "DISTRIBUTION_DEFAULT_AGENT_MODEL is claude-opus-5 (real src constant, fork default pending Peti's 1M-variant decision)"

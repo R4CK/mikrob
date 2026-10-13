@@ -66,7 +66,7 @@ function stripShellComments(src: string): string {
 // from) wired into run_unit_maintenance passed the denylist 48/48 green. MikroB's acceptance
 // criterion (comment 11277) was an ALLOWLIST from the start: run_unit_maintenance may call ONLY
 // the functions explicitly adopted today, and ANY other name -- known or not -- is red.
-const ADOPTED_UNIT_FUNCTIONS = new Set(['repair_morning_timer', 'migrate_channels_restart'])
+const ADOPTED_UNIT_FUNCTIONS = new Set(['repair_morning_timer', 'migrate_channels_restart', 'strip_legacy_notifier_telegram_env'])
 
 // Cybered NO-GO (card e47dc04a, comment 11485, delta-gate on the second attempt): the FIRST
 // allowlist extractor matched only the exact `name`/`name "$@"` shape and SKIPPED every other
@@ -160,6 +160,7 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
     const wrapper = sliceShellFn(UPDATE, 'run_unit_maintenance')
     expect(wrapper).toMatch(/repair_morning_timer "\$@"/)
     expect(wrapper).toMatch(/migrate_channels_restart "\$@"/)
+    expect(wrapper).toMatch(/strip_legacy_notifier_telegram_env "\$@"/)
     expect(UPDATE).toMatch(/^run_unit_maintenance$/m)
   })
 

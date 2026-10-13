@@ -20179,3 +20179,64 @@ A kártya ezzel F1 + F2 mindkét részét zárja; L1/L2 nem ennek a kártyának 
 Teljes fleet-test.sh: a landoló körben, az eredménnyel.
 
 **Ki döntött:** backend. Gate: QA + RedHat (a kártya saját kijelölése, "Gate: qa, cybered").
+
+## 2026-10-12 -- Kártya 21abfe0b delta (komment 16360, RedHat GO, Gate-SHA 9ddfc449): WhiteHat2/cybersec2 bekötve a gate-eszközökbe, a visszamaradt tesztlyukak a 31e70128 testvér-paritás őr kártyán zárva
+
+A 21abfe0b (a WhiteHat testvérpárjának, cybersec2/WhiteHat2-nek a bekötése a gate-eszközökbe: `gate-role.sh`, `kanban-gate-completeness-guard.ts`, `gate_designation.py`, `cybersec-gate-scan.py`, `fleet-nudger.sh`, seed-fleet-agents/cybersec2) RedHat GO-val lezárt a 16225-ös NO-GO B1/B2/B3 leleteinek javítása után (Gate-SHA `9ddfc449f218a6d28e7bd2859be94d610f938790`): a szerver-oldali gate-lezáró őr felismeri a cybersec2-t, a seedben nincs `/home/neon` abszolút út, a `fleet-nudger.selftest.sh` zöld. A GO nem blokkolt, de három LOW tesztlyukat nevezett meg (RedHat 16360 mutáns-mérése, M12/M13/M14/M16: nem nyitnak támadási utat, de egy regresszió csendben visszajöhetne), a 31e70128 testvér-paritás őr kártyára utalva.
+
+A 31e70128 ezeket zárta: (1) a literál "CYBERSEC2 GO"/"WHITEHAT2 GO" verdikt-TOKEN (nem csak a cybersec2-AUTHOR bare szóval) felismerését `landing-gate-verdict-parse.py`-ban most a NOQA/NONE megkülönböztetés rögzíti (M14 -- az OK verdikt csak `qa_passes`-től függ, ezért egy QA PASS mellé párosított teszt vakfolt lett volna, lásd a selftest saját megjegyzését); (2) a `2?` testvér-tolerancia HIÁNYÁT a CYBERED/REDHAT FAIL-ágon ("CYBERED2 NO-GO", "REDHAT2 GO/NO-GO" NEM ismerhető fel verdiktként) mind `landing-gate-verdict-parse.py`-ban, mind a vonatkozó selftestben (M12/M13) -- mindkét irányú mutáció (2? levéve a CYBERSEC PASS-ágról, 2? visszatéve a CYBERED FAIL-ágra) egyenként lefuttatva, PONTOSAN az érintett új teszt bukik, a restaurált fájl byte-pontosan egyezik az eredetivel. A seed abszolút-út tesztlyuk (M16) és a nem ebbe a kártyába tartozó skill-drift sibling-pair guard (skill-NEV/SKILL.md-hash/Core-lista) a 31e70128 fő tétele -- lásd a kártya saját REVIEW-ját.
+
+**Ki döntött:** cybered (21abfe0b GO), backend (31e70128 tesztlyuk-zárás). Gate: QA + RedHat (21abfe0b); QA + Cybersec (31e70128, a kártya saját kijelölése).
+---
+
+**2026-10-12 -- Upstream Köteg 11 (60aaaef9..59e85ead, 28 commit, 2026-09-27..2026-09-29) konfliktus-feloldások**
+
+Döntések fájlonként (fork-oldal az alapértelmezés, eltérések felsorolva):
+
+- **package.json, package-lock.json**: fork-oldal tartva (verzió, fork-specifikus package konfig megmarad).
+- **scripts/hooks/bash-egress-parser.mjs, src/__tests__/bash-egress-parser.test.ts, src/__tests__/command-task-run-binding.test.ts, src/__tests__/picker-cli-gate.test.ts**: törölt marad (DU -- fork törölte, upstream módosította; a törlés szándékos fork-eltérés).
+- **src/web/agent-process.ts**: fork-oldal tartva. Upstream `ensureProjectRootInClaudeMd` és `ensureMessageCloseSection` helyett fork `ensureProjectRootAnchor` (fleet-anchor logika) és `ensureLocalFirstSection` marad. A két upstream funkció a fork saját megoldásait váltja le -- nem portolható vak ours nélkül, de a fork-logika lefedi a szükséges viselkedést.
+- **src/__tests__/command-task-async.test.ts, src/__tests__/vault-export-key-resolution.test.ts**: fork-oldal tartva (AA ütközés -- mindkét oldal hozzáadott, fork verziója fleet-specifikus tesztfedettséggel).
+- **Többi UU fájl** (agent-msg.sh, outgoing-copy-gate.py, limit-monitor-signals.test.sh, stb.): fork-oldal tartva.
+
+**Ki döntött:** backend3 (8a3a1e84 kártya alapján, MikroB utasítása).
+
+---
+
+**2026-10-13 -- 8a3a1e84 landolás: `store/lint-baseline.json` ütközés + ratchet-bővítés indoklással**
+
+A `store/lint-baseline.json` is ütközött a merge-ben (HEAD: `no-unsafe-argument`=132/`no-unused-vars`=168, card/8a3a1e84: 133/170). A HEAD-oldalt vettem át (a ratchet csak szigorodhat, a card oldala elavult volt), majd a `lint-ratchet.sh` a teljes merge-eredményen 2 ÚJ `no-unused-vars` leletet talált: `src/__tests__/router-voice-stt-gate.test.ts:25-26`, két `(..._a: unknown[])` rest-paraméter, amit a kódbázis `no-unused-vars` szabálya (nincs `argsIgnorePattern`) jelent, ugyanúgy, mint a már meglévő 168 közül sok tucat azonos `_a`-mintájú esetet (pl. `router-batch-inject.test.ts`, `message-router-tick-cap.test.ts`). Ez a fájl az upstream Köteg 11 szinkron tartalma, a mintát nem én vezettem be -- a kódbázisban már bevett (nem javított) konvenció. A sebészi-változtatás elv (3. kódminőségi elv) szerint NEM ezt a 2 sort javítottam ki külön stílussal, hanem a `store/lint-ratchet.sh --update`-tel a baseline-t a tényleges, mért értékre (170) emeltem, dokumentálva itt az okot -- konzisztensen a már ott lévő, el nem hárított azonos hibaosztállyal.
+
+**Ki döntött:** backend3 (8a3a1e84 landolás, 2026-10-13).
+
+---
+
+**2026-10-13 -- Köteg 12 (upstream 360e2e26..0bea3cd7, 24 commit): 21 ütköző fájl + 4 csendes merge-drop feloldása**
+
+Kártya 95b62f66, MikroB kötegterve szerint, fork-oldal alapértelmezéssel. 21 ütköző fájl, mindegyik feloldva és indokolva (a legfontosabbak):
+
+**Modell-alapértelmezés (deferred decision, folytatva):** a `config-registry.ts` `DISTRIBUTION_DEFAULT_AGENT_MODEL` upstream `claude-opus-5-5[1m]`-re bővítené (MODELSUGGEST923), ez marad `claude-opus-5` -- ugyanaz a card d041760b invariáns (2026-08-06, Peti), reaffirmed 2026-09-25 (14284837) és most ismét. Az invariáns: egyeznie kell `DEFAULT_MODEL_CHAIN[0]`-lal (`model-fallback.ts`), különben egy kvóta-visszaállás csendes downgrade lenne. A DEFAULTCLIGUARD927 (CLI-verzió-tudatos fallback, `DISTRIBUTION_DEFAULT_FALLBACK_MODEL='claude-opus-5[1m]'`) viszont ADOPTÁLVA -- additív biztonsági infrastruktúra, ma no-op (a fork alapértelmezésének nincs CLI-korlátja), de kész a jövőre. Három teszt (`default-model-guard.test.ts`, `model-suggest.test.ts`, `channels-main-model.test.sh`) ennek megfelelően igazítva, a FORK DIVERGENCE indoklással dokumentálva.
+
+**`channels.sh` TMUX_AUTH_ENV -> AUTH_PANE_ENV (biztonsági javítás, TOKENARGV929):** a merge CSENDBEN (konfliktus nélkül) eldobta a fork saját `TMUX_AUTH_ENV` tömbjét (tmux `-e` flag, a token a tmux szerver argv-jában/`ps`-ben látszott) -- ez pont a sebezhetőség, amit upstream saját commitja (3a59f423, SZINTÉN ebben a kötegben) fájl-alapú `AUTH_PANE_ENV`-re cserélt. Adoptálva upstream alakja, a `CUSTOM_PROVIDER_ENV` NEM (lásd lent, korábbi döntés).
+
+**Custom-provider klaszter (folytatott NEM-adoptálás):** `scripts/main-agent-custom-provider.mjs`, `buildCustomProviderLaunchEnv`, a `channels.sh` `CUSTOM_PROVIDER_ENV` wiringje -- mind hiányzik a fából (korábbi, dokumentált törlés, lásd a 8a3a1e84-es bejegyzés 18967. sora: inkompatibilis a fork saját, WhiteHat-hardened `custom-providers.ts`-ével). `agent-worker.ts`-ben a merge ÚJRA becsempészte volna ezt (`buildCustomProviderLaunchEnv` hívás egy nem létező importra) -- a DEFAULTCLIGUARD927 fallback-ot KÜLÖN, a fork saját `WORKER_MODEL`/`MARVEEN_WORKER_MODEL` override-ja köré szőve adoptáltam, `fromCustomProvider` fixen `false`.
+
+**`update.sh` nem-adoptált unit-karbantartó klaszter (folytatva):** `install_keepalive_probe_timer`, `install_keepalive_probe_launchd` (új ez a kör, macOS-twin), `install_main_inbox_observer_unit`, `park_morning_timer` -- MIND NEM adoptálva, ugyanaz a már dokumentált ok (2026-10-02, ef6a8031 Cybersec NO-GO: élő installon kérdés nélkül indítanának egy új timert / állítanának le egy működő funkciót, a kódminőségi 5. elv sértése). `UPDOOMNPMCI926` (retry() exit-kód + npm_ci_failed() OOM-tudatos rollback) szintén NEM adoptálva -- korábbi dokumentált ok (upstream diffje törölné a Peti-mandátumos checkpoint/rollback-guard mechanizmusokat). ÚJONNAN adoptálva: `strip_legacy_notifier_telegram_env` (önálló, biztonságos retroaktív takarítás), BRANCHHEAL925 (`git switch` a `git checkout` helyett) és UPSTREAMSRC927 (friss fetch-re mért divergencia-ellenőrzés) -- mindkettő tisztán merge-elt, nincs ütközés a fork mechanizmusaival. `src/fork-upstream/acknowledged-conflicts.ts` blob-pin frissítve, a teljes indoklás ott.
+
+**`kanban.ts` POST /api/kanban: UNION, nem csere.** A fork saját védelmei (newDevStop-blokk, assignee-alak/tiltólista, `normalizeProjectName`, tipizált id-kinyerés `isInvalidKanbanIdShape`-pel, szülő-kör-ellenőrzés, dedup-prefilter) MIND megmaradtak, upstream `agent`->`assignee` alias-felbontása (card b5344b62) és az ismeretlen-mező WARN (`KANBAN_CREATE_FIELDS`) BELEFONVA a meglévő folyamatba, a helyes sorrendben (alias előbb, hogy az assignee-ellenőrzések már a feloldott értéket lássák). `kanbanAssigneeExists()` (db.ts, szintén csendben kiesett a merge-ből) pótolva és bekötve a GET /api/kanban `assignee=` szűrő `isKnownAgent()`-ellenőrzésébe (korábban egy külső, nem-konfigurált assignee-re szűrés hamisan 400-at adott volna).
+
+**`web/app.js`:** a hatalmas (4500+ soros) konfliktus a MÁR DOKUMENTÁLT "upstream batch 8 (94765127) újra behozza a modularizálatlan kanban-szekciót" eset megismétlődése -- a `STUB -- content removed` marker változatlan marad, a tartalom eldobva (a fork saját `app-kanban.js` modulja áll).
+
+**Lint-ratchet bővítés:** `no-unsafe-argument` 132->140 (egy új teszt-fájl, `kanban-post-agent-alias.test.ts`, 7 lelettel -- laza JSON-tipizálású teszt-body-k, ugyanaz a már elfogadott konvenció, mint a többi teszt-fájl; + 1 a `kanban.ts` saját POST-kezelőjében). `store/lint-ratchet.sh --update`-tel emelve, nem surgikus séma-erőltetéssel egy új teszt-fájlra.
+
+**A teljes fleet-test első futása 15 teszt-hibát mutatott -- mind a "csendes merge-drop" vagy FORK DIVERGENCE osztályba tartozott, egyenként kivizsgálva és javítva (nem tömegesen elfogadva):**
+- `scripts/install-prod-tree-guard-hook.sh`: a GUARDFROM924 (MAIN_AGENT_ID kiolvasása a telepítés `.env`-jéből a branch-váltás riasztáshoz) csendben kiesett -- a fork saját, már keményített JSON-encoding+token-fájl védelme köré szőve pótolva.
+- `src/__tests__/channel-poller-reap-integration.test.ts`: a TMUXSERVERREAP929 (ne öld meg a tmux szervert magát) tisztán bekerült, de a teszt mockja nem ágazott a `tmux display-message` hívásra -- minden eset a fail-safe-be futott (`reaped: []`). Mock-ág pótolva.
+- `web/app-wizard.js` `populateProfileSelect`: egy hiányzó profil eddig csendben esett vissza `default`-ra, a UI-n a kért nevet mutatva -- most `⚠ <név> (nem létezik)` jelöléssel + a kapcsolódó i18n-szöveggel látható (upstream új, valódi UX-javítás, nem csak modularizációs eltérés; a teszt is app.js helyett app-wizard.js-t olvas, mert itt él a fork saját moduljában).
+- `src/__tests__/main-model-resolution-parity.test.ts` + a `default-model-guard.test.ts` korábban nem commitolt javítása: ugyanaz a FORK DIVERGENCE (`claude-opus-5` nem CLI-korlátos), a `registryOverride` fixture-hook-kal a log-sor teszt is valós, korlátos modellpárral fut.
+- `src/__tests__/scheduler-tick-nonblocking.test.ts`: az új `sleep-wake-detector.ts` (schedule-runner.ts importálja) bekerült a tick-path levezetésbe; az egyetlen szinkron hívása (`execFileSync sysctl`, 2s timeout, csak macOS, csak tényleges alvás-rés esetén) gate-reviewed kivételként pinnelve, a meglévő `agent-process.ts` mintájával azonos indoklással.
+- `scripts/__tests__/update-npm-ci-include-dev.test.sh`: a MIN_HIVAS=5 küszöb feltételezte a NEM adoptált `npm_ci_failed()` 2 saját hívását -- 3-ra igazítva, a tényleges (és helyes) fork-állapotra.
+
+Teljes fleet-test (2. kör, a fenti javításokkal): 995+ fájl zöld, lásd a landoló kör saját kimenetét a kártya REVIEW-jában.
+
+**Ki döntött:** backend3 (Köteg 12, 2026-10-13).

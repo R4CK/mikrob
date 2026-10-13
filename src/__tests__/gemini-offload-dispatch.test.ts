@@ -363,6 +363,57 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Számla', '')).toBe('BLOCKED')
   })
 
+  // N3 (RedHat 17653, card e87e7520 -> deferred to 15398b82): the WhiteHat2 H1 cap-reinsert
+  // guard above (line ~317) only pads the DESCRIPTION -- a mutant that reintroduces a
+  // title[:1000] cap specifically would stay green forever, because no existing test puts the
+  // sensitive word past a 1000-char TITLE. Mirrors the desc guard, for the title field.
+  it('blocks a sensitive word placed past a 1000-char title cap (N3, mirrors WhiteHat2 H1 for title)', () => {
+    const pad = 'x'.repeat(1200)
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', `${pad} biztonsagi resz`, 'clean desc')).toBe('BLOCKED')
+  })
+
+  it('still allows a long but genuinely clean title past a 1000-char cap (N3, no over-blocking)', () => {
+    const pad = 'x'.repeat(1200)
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', `${pad} nothing sensitive here`, 'clean desc')).toBe('ALLOWED')
+  })
+
+  // N3 (same source): the three B4a "accent inside the matched stem" cases right above are all
+  // TITLE-only (desc=''). A mutant that disables normalization on the DESCRIPTION specifically
+  // (e.g. a copy-paste bug that normalizes title_n but not desc_n) would stay green forever,
+  // since nothing exercises an accent-inside-stem word in the description field.
+  it('blocks "Jelszó módosítás szükséges" in the DESCRIPTION -- accent inside stem (N3, mirrors B4a for desc)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'clean title', 'Jelszó módosítás szükséges')).toBe('BLOCKED')
+  })
+
+  // N3 (same source): "hozzaferes", "afa" and "berszamfejtes" stem-deletion mutants stayed
+  // green against the EXISTING B2 test strings above, because those strings also contain a
+  // SIBLING stem ("Hozzáférés-vezérlés finomhangolása" also matches "fin" via "finomhangolasa";
+  // "Számla/ÁFA" also matches "szamla") -- deleting either stem alone left the other one
+  // blocking, so the mutation went undetected. These three are standalone strings containing
+  // ONLY the named stem (verified: no other SENS_RE/TENANT_ISOLATION_RE/BLOCKED_TAGS stem fires
+  // on them), so deleting that one stem from SENS_RE now DOES flip the matching test to ALLOWED.
+  it('blocks "AFA kalkulacio hiba a riportban" -- isolated stem, no sibling overlap (N3)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'AFA kalkulacio hiba a riportban', '')).toBe('BLOCKED')
+  })
+
+  it('blocks "Hozzaferes lista a modulhoz" -- isolated stem, no "fin" sibling (N3)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Hozzaferes lista a modulhoz', '')).toBe('BLOCKED')
+  })
+
+  it('blocks "Berszamfejtes exportja hianyos" -- previously untested stem, no sibling overlap (N3)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Berszamfejtes exportja hianyos', '')).toBe('BLOCKED')
+  })
+
+  // N3 (same source): "penz" törlése is only an EQUIVALENT mutant against a string that ALSO
+  // contains "penzugy" ("penz" is a strict prefix of "penzugy" and is listed first in the
+  // alternation, so Python's leftmost-alternative matching always resolves via "penz" first --
+  // deleting "penzugy" would never be caught by ANY test, that part IS a true equivalent mutant
+  // and is not worth chasing). Deleting "penz" itself is NOT equivalent: a string containing
+  // "penz" but NOT "penzugy" isolates it cleanly, as below.
+  it('blocks "Penz atutalas naplozasa" -- isolated "penz" stem, no "penzugy" substring (N3)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Penz atutalas naplozasa', '')).toBe('BLOCKED')
+  })
+
   // RedHat 17510 finding 2, sharpened by WhiteHat2 H2 (card 40d2a253): is_gemini_blocked used
   // to treat rc=1 as "allowed" -- but rc=1 is ALSO what a bare, uncaught Python exception exits
   // with by default, so a genuine classifier bug was silently indistinguishable from "allowed".
@@ -511,6 +562,35 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
   })
   it('blocks Roman numeral "ⅰ" (U+2170) in "privacy" (F5, table row ⅰ)', () => {
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'prⅰvacy notice', '')).toBe('BLOCKED')
+  })
+
+  // C1 (WhiteHat2 GO 17900, card e87e7520 -> deferred to 33047d3f): an ASCII control byte
+  // (DEL/BS/US/...) spliced into a sensitive stem is already ascii, so it survived
+  // encode("ascii","ignore") in norm() unchanged and split the word, bypassing SENS_RE.
+  // runIsGeminiBlockedRaw (not the JSON.stringify-based helper) is required: JSON.stringify
+  // would \u00XX-escape a C0 control byte as six literal text characters, which bash's
+  // double-quote parsing does not expand back -- only a real argv element carries the byte.
+  it('blocks a DEL (0x7F) control char spliced into "secret" in the title (C1)', () => {
+    expect(runIsGeminiBlockedRaw('mikrob', 'BE,NORMAL', 'se\x7Fcret feature', '')).toBe('BLOCKED')
+  })
+  it('blocks a BS (0x08) control char spliced into "jelszo" in the description (C1)', () => {
+    expect(runIsGeminiBlockedRaw('mikrob', 'BE,NORMAL', 'clean title', 'jel\x08szo csere')).toBe('BLOCKED')
+  })
+  it('blocks a US (0x1F) control char spliced into "tenant" in the title (C1)', () => {
+    expect(runIsGeminiBlockedRaw('mikrob', 'BE,NORMAL', 'ten\x1Fant scope fix', '')).toBe('BLOCKED')
+  })
+
+  // C3 (WhiteHat2 GO 17900, card e87e7520 -> deferred to 33047d3f): the F2 fail-closed check
+  // (has_unmapped_letter) only ran on title/desc, never on tags -- a tag with an unmapped
+  // homoglyph normalized via norm()'s silent ascii-drop into something that no longer matched
+  // BLOCKED_TAGS, instead of being blocked outright.
+  it('blocks a tag containing an unmapped Greek-epsilon homoglyph for "sec" (C3)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'sεc,BE,NORMAL')).toBe('BLOCKED')
+  })
+  it('still allows a genuinely accented Hungarian tag after the C3 fix (no over-blocking)', () => {
+    // "é" NFKD-decomposes to base-ASCII "e" + a combining mark (category Mn, not a Letter) --
+    // has_unmapped_letter() must not trip on this, same invariant as the title/desc check.
+    expect(runIsGeminiBlocked('mikrob', 'BE,FELÉPÍTÉS,NORMAL')).toBe('ALLOWED')
   })
 
   // T1: CALL-SITE GUARD -- is_gemini_blocked must be called at both Gemini call sites.
@@ -870,6 +950,40 @@ function redactInput(input: string): { exitCode: number; output: string } {
   }
 }
 
+// N4 (RedHat 17653, card e87e7520 -> deferred to 15398b82): 6 of the card's 19 named patterns
+// (anthropic, aws_secret, twilio, twilio_sid, digitalocean, cloudflare) CANNOT be isolated
+// end-to-end via redactInput() -- their realistic value shape structurally also satisfies a
+// different, legitimate pattern (e.g. a real AWS secret key literally contains the substring
+// "access_key=", which the broader "cred" rule is deliberately built to catch; a real Twilio
+// key is 32 hex chars, which "hex32" is deliberately built to catch). This is DEFENSE IN DEPTH,
+// not a test gap -- RedHat's own framing for these: "a viselkedes jo a valos alaku tablakon".
+// To still satisfy "deleting this pattern tuple flips a test red" for these 6, this helper
+// extracts the pattern array by LABEL and tests that ONE regex alone (not the combined
+// SECRET_PATTERNS/PII_PATTERNS list) against a value -- so the test is sensitive to deleting
+// that exact tuple, independent of sibling-pattern overlap. If the label no longer exists in
+// the array (deleted), this returns false.
+function patternAloneMatches(label: string, text: string): boolean {
+  const callSrc = src(GEMINI_CALL)
+  const s1 = callSrc.indexOf('SECRET_PATTERNS = [')
+  const e1 = callSrc.indexOf('\nfor pattern, label in SECRET_PATTERNS:')
+  const s2 = callSrc.indexOf('PII_PATTERNS = [')
+  const e2 = callSrc.indexOf('\nfor pattern, label in PII_PATTERNS:')
+  const arrays = callSrc.slice(s1, e1) + '\n' + callSrc.slice(s2, e2)
+  const driver = `
+import sys, re
+target = sys.argv[1]
+text = sys.argv[2]
+for pattern, lbl in SECRET_PATTERNS + PII_PATTERNS:
+    if lbl == target:
+        print('1' if re.search(pattern, text, re.DOTALL) else '0')
+        sys.exit(0)
+print('0')
+`
+  const code = arrays + '\n' + driver
+  const result = execFileSync('python3', ['-c', code, label, text], { encoding: 'utf-8' })
+  return result.trim() === '1'
+}
+
 describe('gemini-offload-call.sh detects secrets fail-closed (F2, card a92e9913)', () => {
   it('redact_prompt function is defined', () => {
     expect(src(GEMINI_CALL)).toContain('redact_prompt()')
@@ -896,9 +1010,13 @@ describe('gemini-offload-call.sh detects secrets fail-closed (F2, card a92e9913)
     expect(r.output).toBe('')
   })
 
-  it('blocks (exit 2, no output) on Telegram bot token (numeric:alphanum)', () => {
-    const tok = '123456789' + ':' + 'A'.repeat(36)
-    const r = redactInput('bot token: ' + tok)
+  // N4 (RedHat 17653, card e87e7520 -> deferred to 15398b82): the original 'A'.repeat(36)
+  // padding is all valid hex digits, so hex32 ALSO matches it -- deleting the 'telegram'
+  // pattern alone left this test green (hex32 still caught it). Non-hex padding (g-z, no
+  // a-f) isolates it: only 'telegram' matches now.
+  it('blocks (exit 2, no output) on Telegram bot token (numeric:alphanum) (N4, isolated from hex32)', () => {
+    const tok = '123456789' + ':' + 'ghijklmnopqrstuvwxyzghijklmnopqrstuv'
+    const r = redactInput('see this bot id: ' + tok)
     expect(r.exitCode).toBe(2)
     expect(r.output).toBe('')
   })
@@ -917,8 +1035,10 @@ describe('gemini-offload-call.sh detects secrets fail-closed (F2, card a92e9913)
     expect(r.output).toBe('')
   })
 
-  it('blocks (exit 2, no output) on GitHub-style token (ghp_)', () => {
-    const tok = 'ghp_' + 'A'.repeat(36)
+  // N4 (same source): 'A'.repeat(36) is all valid hex, so hex32 also matched -- deleting
+  // 'github' alone left this green. Non-hex padding isolates it.
+  it('blocks (exit 2, no output) on GitHub-style token (ghp_) (N4, isolated from hex32)', () => {
+    const tok = 'ghp_' + 'ghijklmnopqrstuvwxyzghijklmnopqrstuv'
     const r = redactInput(tok)
     expect(r.exitCode).toBe(2)
     expect(r.output).toBe('')
@@ -954,8 +1074,10 @@ describe('gemini-offload-call.sh detects secrets fail-closed (F2, card a92e9913)
     expect(r.output).toBe('')
   })
 
-  it('blocks (exit 2, no output) on npm access token (npm_)', () => {
-    const tok = 'npm_' + 'a'.repeat(36)
+  // N4 (same source): 'a'.repeat(36) is all valid hex, so hex32 also matched -- deleting
+  // 'npm' alone left this green. Non-hex padding isolates it.
+  it('blocks (exit 2, no output) on npm access token (npm_) (N4, isolated from hex32)', () => {
+    const tok = 'npm_' + 'ghijklmnopqrstuvwxyzghijklmnopqrstuv'
     const r = redactInput(tok)
     expect(r.exitCode).toBe(2)
     expect(r.output).toBe('')
@@ -968,11 +1090,117 @@ describe('gemini-offload-call.sh detects secrets fail-closed (F2, card a92e9913)
     expect(r.output).toBe('')
   })
 
+  // N4 (RedHat 17653, card e87e7520 -> deferred to 15398b82): 10 of the card's 19 named
+  // patterns had NO dedicated test at all (they were only covered, if at all, by generic
+  // text that also matched a different detector). Each value below is constructed to match
+  // ONLY its own pattern -- verified against the extracted SECRET_PATTERNS/PII_PATTERNS list
+  // before writing these, and each was mutation-tested (delete the pattern tuple -> this
+  // exact test goes red; restore -> green).
+  it('blocks (exit 2, no output) on a PEM private key header (N4, privkey)', () => {
+    // Built via concatenation so the secret-write-guard pre-commit hook does not flag this
+    // test file as containing a literal key header (same convention as the Bearer/JWT
+    // literals above).
+    const r = redactInput('-----BEGIN ' + 'RSA PRIVATE KEY' + '-----')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on an SSH public key fingerprint line (N4, ssh_pubkey)', () => {
+    const r = redactInput('ssh-ed25519 ' + 'ghijklmnopqrstuvwxyz'.repeat(3))
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a Google OAuth client id (N4, google_oauth)', () => {
+    const id = '123456789012-' + 'ghijklmnopqrstuvwxyzghijklmnopqr' + '.apps.googleusercontent.com'
+    const r = redactInput(id)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a SendGrid API key (N4, sendgrid)', () => {
+    const key = 'SG.' + 'ghijklmnopqrstuvwxyzgh' + '.' + 'ghijklmnopqrstuvwxyzghijklmnopqrstuvwxyzghi'
+    const r = redactInput(key)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a Discord bot token (N4, discord)', () => {
+    const tok = 'M' + 'ghijklmnopqrstuvwxyzghij' + '.' + 'ghijkl' + '.' + 'ghijklmnopqrstuvwxyzghijklm'
+    const r = redactInput(tok)
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on an Azure AccountKey, not at line-start (N4, azure)', () => {
+    const r = redactInput('see this: AccountKey=' + 'ghijklmnopqrstuvwxyzghijklmnopqrstuvwxyz==')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a Hungarian TAJ number (N4, hu_taj)', () => {
+    const r = redactInput('taj: 123 456 789')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a credit-card-shaped number (N4, cc_number)', () => {
+    const r = redactInput('4111 1111 1111 1111')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a bare sk- prefixed generic key (N4, sk_generic)', () => {
+    const r = redactInput('sk-' + 'ghijklmnopqrstuvwxyzghijk')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  it('blocks (exit 2, no output) on a context-free high-entropy token with a "+" (N4, opaque_token, isolated from opaque_b64url)', () => {
+    const r = redactInput('G1h2I3j4K5l6M7n8O9p0Q1r2S3t4U5v6+7x8Y9z0A1')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
   it('blocks (exit 2, no output) on AWS secret access key assignment', () => {
     const line = 'aws_secret_access_key=' + 'A'.repeat(40)
     const r = redactInput(line)
     expect(r.exitCode).toBe(2)
     expect(r.output).toBe('')
+  })
+
+  // N4 (same source): the remaining 6 of the 19 named patterns -- anthropic, aws_secret,
+  // twilio, twilio_sid, digitalocean, cloudflare -- cannot be isolated end-to-end (see the
+  // patternAloneMatches() comment above for why: their realistic value shape structurally
+  // also satisfies sk_generic/cred/hex32). These assert the pattern's OWN regex, by label,
+  // against a realistic value -- mutation-proof regardless of sibling overlap. A negative
+  // control (a clean string) confirms the helper itself isn't vacuously true.
+  it('patternAloneMatches returns false for a clean string (helper negative control)', () => {
+    expect(patternAloneMatches('anthropic', 'nothing sensitive here')).toBe(false)
+  })
+
+  it('"anthropic" pattern alone matches a real-shaped Anthropic key (N4, equivalent-mutant w.r.t. sk_generic)', () => {
+    expect(patternAloneMatches('anthropic', 'sk-ant-api03-' + 'a'.repeat(30))).toBe(true)
+  })
+
+  it('"aws_secret" pattern alone matches a real-shaped AWS secret key assignment (N4, equivalent-mutant w.r.t. cred)', () => {
+    expect(patternAloneMatches('aws_secret', 'aws_secret_access_key=' + 'A'.repeat(40))).toBe(true)
+  })
+
+  it('"twilio" pattern alone matches a real-shaped Twilio key (N4, equivalent-mutant w.r.t. hex32)', () => {
+    expect(patternAloneMatches('twilio', 'SK' + 'a'.repeat(32))).toBe(true)
+  })
+
+  it('"twilio_sid" pattern alone matches a real-shaped Twilio SID (N4, equivalent-mutant w.r.t. hex32)', () => {
+    expect(patternAloneMatches('twilio_sid', 'AC' + 'a'.repeat(32))).toBe(true)
+  })
+
+  it('"digitalocean" pattern alone matches a real-shaped DigitalOcean token (N4, equivalent-mutant w.r.t. hex32)', () => {
+    expect(patternAloneMatches('digitalocean', 'dop_v1_' + 'a'.repeat(64))).toBe(true)
+  })
+
+  it('"cloudflare" pattern alone matches a real-shaped Cloudflare token (N4, equivalent-mutant w.r.t. cred)', () => {
+    expect(patternAloneMatches('cloudflare', 'cloudflare_token=' + 'a'.repeat(30))).toBe(true)
   })
 
   it('blocks (exit 2, no output) on uppercase/mixed-case long hex (hex32 widened to mixed case)', () => {
@@ -1153,6 +1381,37 @@ describe('gemini-offload-call.sh detects secrets fail-closed (F2, card a92e9913)
     const r = redactInput(text)
     expect(r.exitCode).toBe(0)
     expect(r.output.trim()).toBe(text)
+  })
+
+  // C1 (WhiteHat2 GO 17900, card e87e7520 -> deferred to 33047d3f): an ASCII control byte
+  // spliced into the "cred" pattern's keyword itself (inside "token", not just before it --
+  // a char right before an already-alnum-adjacent keyword can accidentally satisfy the
+  // boundary lookbehind instead of breaking the match) is already ascii and survived _fold()
+  // untouched, splitting the literal keyword text the alternation needs to match.
+  it('blocks (exit 2, no output) when a DEL control char splits the "token" keyword itself (C1)', () => {
+    const r = redactInput('tok\x7Fen: ' + 'abcdefgh12345678')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+  it('blocks (exit 2, no output) when a US control char splits the "password" keyword itself (C1)', () => {
+    const r = redactInput('pass\x1Fword: ' + '"my secret value"')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  // C2 (WhiteHat2 GO 17900, card e87e7520 -> deferred to 33047d3f): U+2028 (LINE SEPARATOR)
+  // and U+2800 (BRAILLE PATTERN BLANK) are invisible but neither decomposes under NFKD nor
+  // falls into the Mn/Cf categories _fold() stripped before this fix, so either one spliced
+  // into a keyword broke the SECRET_PATTERNS alternation the same way a control char did.
+  it('blocks (exit 2, no output) when U+2028 (LINE SEPARATOR) splits the "token" keyword (C2)', () => {
+    const r = redactInput('tok en: ' + 'abcdefgh12345678')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+  it('blocks (exit 2, no output) when U+2800 (BRAILLE PATTERN BLANK) splits the "token" keyword (C2)', () => {
+    const r = redactInput('tok⠀en: ' + 'abcdefgh12345678')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
   })
 })
 

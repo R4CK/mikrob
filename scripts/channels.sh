@@ -222,12 +222,65 @@ resolve_main_model() {
     echo "resolve_main_model: dist/config-registry.js missing (build not present yet?); main-agent model left UNSET" >>"$_fail_log" 2>/dev/null || true
     return 0
   fi
-  local _def
-  _def="$("$_node" -e 'try { process.stdout.write(String(require(process.argv[1]).DISTRIBUTION_DEFAULT_AGENT_MODEL || "")) } catch (e) { process.exit(3) }' "$INSTALL_DIR/dist/config-registry.js" 2>/dev/null)"
+  # DEFAULTCLIGUARD927: the shipped default is guarded against the INSTALLED
+  # CLI, through the same table and decision the dashboard uses
+  # (dist/claude-cli-support.js launchableDefaultModel; the TS twin is
+  # readConfiguredMainModel, and main-model-resolution-parity.test.ts keeps the
+  # two equal). An AVX-less host is pinned to CLI 2.1.110 (CLAUDE_PIN below)
+  # and DISABLE_AUTOUPDATER keeps any older CLI in place, so a default that
+  # CLI cannot run would bring the session up and 400 every prompt -- a silent
+  # bot. On a CLI measured too old, the previous tier
+  # (DISTRIBUTION_DEFAULT_FALLBACK_MODEL) launches instead, with a named line.
+  # Fail-open: an unmeasurable version, or a dist without the guard, keeps the
+  # default (the latter is named too). MARVEEN_CLAUDE_CLI_VERSION overrides the
+  # probe exactly as on the TS side (empty = unmeasured).
+  # The probe needs the SAME binary the launch runs. The watchdogs call this
+  # seam under a narrow launchd PATH, so after PATH try the dirs the TS side
+  # probes (platform.ts KNOWN_BIN_DIRS); a miss is unmeasured = fail-open.
+  local _claude="${CLAUDE:-}"
+  [ -z "$_claude" ] && _claude="$(command -v claude 2>/dev/null || true)"
+  if [ -z "$_claude" ]; then
+    for _c in "$HOME/.local/bin/claude" "$HOME/.bun/bin/claude" /opt/homebrew/bin/claude /usr/local/bin/claude /usr/bin/claude /bin/claude; do
+      [ -x "$_c" ] && { _claude="$_c"; break; }
+    done
+  fi
+  local _res _def _note=""
+  _res="$("$_node" -e '
+    let reg
+    try { reg = require(process.argv[1]) } catch (e) { process.exit(3) }
+    const def = String(reg.DISTRIBUTION_DEFAULT_AGENT_MODEL || "")
+    if (!def) process.exit(0)
+    let model = def, note = ""
+    try {
+      const sup = require(process.argv[2])
+      const fallback = String(reg.DISTRIBUTION_DEFAULT_FALLBACK_MODEL || "")
+      if (!fallback || typeof sup.launchableDefaultModel !== "function") throw new Error("no guard")
+      let ver = null
+      if (process.env.MARVEEN_CLAUDE_CLI_VERSION !== undefined) {
+        ver = sup.parseClaudeVersion(process.env.MARVEEN_CLAUDE_CLI_VERSION)
+      } else if (process.argv[3]) {
+        try {
+          ver = sup.parseClaudeVersion(require("node:child_process").execFileSync(process.argv[3], ["--version"],
+            { encoding: "utf-8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"] }))
+        } catch (e) { ver = null }
+      }
+      const d = sup.launchableDefaultModel(def, fallback, ver)
+      model = d.model
+      if (d.replaced) note = "DEFAULTCLIGUARD927: installed Claude Code " + ver + " cannot launch the distribution default " + d.replaced + " (needs >= " + d.minCli + "); main agent launches " + d.model
+    } catch (e) {
+      note = "DEFAULTCLIGUARD927: guard unavailable (stale dist/claude-cli-support.js or config-registry.js); distribution default " + def + " used unguarded"
+    }
+    process.stdout.write(model + "\n" + note)
+  ' "$INSTALL_DIR/dist/config-registry.js" "$INSTALL_DIR/dist/claude-cli-support.js" "$_claude" 2>/dev/null)"
+  _def="${_res%%$'\n'*}"
+  case "$_res" in *$'\n'*) _note="${_res#*$'\n'}" ;; esac
   if [ -z "$_def" ]; then
     echo "resolve_main_model: read of DISTRIBUTION_DEFAULT_AGENT_MODEL was empty (stale or broken dist/config-registry.js); main-agent model left UNSET" >>"$_fail_log" 2>/dev/null || true
     return 0
   fi
+  # The group's own 2>/dev/null: a >> into a missing store/ fails BEFORE an
+  # inner 2>/dev/null takes effect, and would print into the caller's stderr.
+  [ -n "$_note" ] && { { echo "resolve_main_model: $_note" >>"$_fail_log"; } 2>/dev/null || true; }
   printf '%s' "$_def"
 }
 
@@ -557,6 +610,20 @@ unset TMUX
 
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
+# FLEETVENV923: the fleet Python venv's bin/ goes FIRST, when it is set and
+# exists, so the main session's `python3` (and markitdown & co.) come from the
+# venv -- parity with startAgentProcess (sub-agents) and the channel-monitor
+# recovery relaunch. Resolved by scripts/fleet-venv-prefix.mjs through the SAME
+# functions those launchers use (dist/fleet-venv.js: Settings-page override >
+# .env > off). A grep/cut parse here disagreed with them on a quoted value, an
+# empty value and a Settings-page override (#1626 review). No node or no dist
+# yet = no prefix, and the reason is named in channels-failures.log.
+mkdir -p "$INSTALL_DIR/store" 2>/dev/null || true
+. "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
+FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$INSTALL_DIR/store/channels-failures.log")"
+[ -n "$FLEET_VENV_PREFIX" ] && export PATH="$FLEET_VENV_PREFIX$PATH"
+# /FLEETVENV923
+
 # Root VPS / container: Claude Code refuses --dangerously-skip-permissions when
 # running as uid 0 ("cannot be used with root/sudo privileges"), so the tmux
 # claude session below dies instantly and the bot never comes online. On a
@@ -656,8 +723,114 @@ claude_install() {
   fi
 }
 
+# NATIVE-INSTALL HOSTS: never touch npm.
+#
+# A host that moved to Anthropic's native installer runs
+# ~/.local/bin/claude -> ~/.local/share/claude/versions/<v>. The daily check
+# below used to run `npm install -g` unconditionally, which RE-CREATES a
+# second, independent claude under the npm global prefix on a host that had
+# already migrated away from it. Measured 2026-09-17: the daily check
+# reinstalled the npm copy (2.1.274) while the fleet ran native 2.1.265, and
+# the main session then came up on the npm copy -- two versions of claude on
+# one machine, the same second-install vector that broke the install four
+# times in one day in July.
+#
+# Auto-updating the native install from here is ALSO off, on purpose:
+# `claude update` on a native install can misdetect itself as npm-global and
+# reinstall the npm package, re-creating the very second install this block
+# prevents. Upgrading a native build is a deliberate step (`claude install
+# stable`), not a side effect of a boot.
+CLAUDE_NATIVE_ROOT="$HOME/.local/share/claude/versions"
+claude_realpath() {
+  python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null \
+    || readlink -f "$1" 2>/dev/null
+}
+claude_is_native() {
+  local b t root
+  b="$(command -v claude 2>/dev/null)" || return 1
+  [ -n "$b" ] || return 1
+  t="$(claude_realpath "$b")" || return 1
+  # Resolve the root too: HOME itself may sit behind a symlink (macOS /var ->
+  # /private/var), and a resolved target never matches an unresolved prefix.
+  root="$(claude_realpath "$CLAUDE_NATIVE_ROOT")" || return 1
+  [ -n "$t" ] && [ -n "$root" ] || return 1
+  case "$t" in
+    "$root"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Self-heal for a native host whose LAUNCHER broke while the versioned
+# binaries are still on disk: re-link to the newest one instead of falling
+# back to npm, which would reintroduce the second install.
+#
+# A versions dir alone is NOT proof that the host is native today: a host that
+# tried the native installer once and went back to npm keeps a stale
+# versions/<old> behind. Relinking that would pin the host to an old CLI and,
+# because claude_is_native is then true, skip every later update. So relink
+# only on evidence that the host is native NOW:
+#   - the launcher is still there as a symlink into the versions dir, and only
+#     its target is gone (dangling), or
+#   - there is no launcher, AND no npm global package for
+#     @anthropic-ai/claude-code either, so npm is not the install this host was
+#     running. (The package NAME, not $CLAUDE_PKG: that may carry an @<pin>.)
+#     EXCEPT when the npm update stamp is newer than the newest native build:
+#     claude_install writes $CLAUDE_UPDATE_STAMP only after a successful
+#     `npm install -g`, so a newer stamp proves npm was the live install after
+#     that build. That is the documented npm race aftermath ("no package dir AND
+#     no claude binary"), where a missing package is evidence of the crash, not
+#     of a native host (review #1613, round 2).
+#     Trade-off: a native host whose stamp was refreshed by the pre-fix daily
+#     check AND whose launcher is gone entirely (not dangling) falls through to
+#     npm. A dangling launcher still wins, and after this change a native host
+#     no longer refreshes the stamp, so the window only covers hosts hit before.
+# Anything else falls through to the npm self-heal, exactly as before.
+claude_host_is_native_now() {
+  local launcher="$HOME/.local/bin/claude" target root npm_root newest
+  if [ -L "$launcher" ]; then
+    target="$(readlink "$launcher" 2>/dev/null)"
+    # The target may be written with the resolved HOME (/private/var/...) or
+    # the literal one; accept either spelling of the versions root.
+    root="$(claude_realpath "$CLAUDE_NATIVE_ROOT")"
+    case "$target" in
+      "$CLAUDE_NATIVE_ROOT"/*) return 0 ;;
+    esac
+    [ -n "$root" ] && case "$target" in "$root"/*) return 0 ;; esac
+    return 1
+  fi
+  # `-nt` compares whole seconds on macOS bash 3.2; a stamp and a build written
+  # in the same second count as "not newer", which keeps the native reading.
+  newest="$(ls -1 "$CLAUDE_NATIVE_ROOT" 2>/dev/null | sort -V | tail -1)"
+  if [ -e "$CLAUDE_UPDATE_STAMP" ] && [ -n "$newest" ] \
+     && [ "$CLAUDE_UPDATE_STAMP" -nt "$CLAUDE_NATIVE_ROOT/$newest" ]; then
+    return 1
+  fi
+  if command -v npm >/dev/null 2>&1; then
+    npm_root="$(npm root -g 2>/dev/null)"
+    [ -n "$npm_root" ] && [ -d "$npm_root/@anthropic-ai/claude-code" ] && return 1
+  fi
+  return 0
+}
+claude_relink_native() {
+  local newest
+  claude_host_is_native_now || return 1
+  newest="$(ls -1 "$CLAUDE_NATIVE_ROOT" 2>/dev/null | sort -V | tail -1)"
+  [ -n "$newest" ] || return 1
+  [ -x "$CLAUDE_NATIVE_ROOT/$newest" ] || return 1
+  mkdir -p "$HOME/.local/bin" || return 1
+  # macOS: an operator may have locked the symlink with `chflags -h uchg`.
+  command -v chflags >/dev/null 2>&1 && chflags -h nouchg "$HOME/.local/bin/claude" 2>/dev/null
+  ln -sfn "$CLAUDE_NATIVE_ROOT/$newest" "$HOME/.local/bin/claude" || return 1
+  echo "$(date '+%F %T') claude relinked to native $newest" >&2
+  command -v claude >/dev/null 2>&1
+}
+
 if ! command -v claude >/dev/null 2>&1; then
-  claude_install "binary missing -- self-heal"
+  if ! claude_relink_native; then
+    claude_install "binary missing -- self-heal"
+  fi
+elif claude_is_native; then
+  echo "$(date '+%F %T') claude update SKIPPED: native install, npm path disabled" >&2
 elif [ "$AVX_LESS" = "0" ] && [ -z "$(find "$CLAUDE_UPDATE_STAMP" -mtime -1 2>/dev/null)" ]; then
   # AVX-less hosts are excluded on purpose: their claude is pinned, and
   # "keep it current" is exactly what breaks them.
@@ -1081,8 +1254,10 @@ STATE_DIR_ENV="export ${STATE_ENV_VAR}='${MAIN_CHAN_DIR}' && "
 # lost. When the dashboard's worker session then created the server, our
 # new-session inherited its token-less global env: the channels claude came up
 # "Not logged in", --channels ignored, Telegram dead, silently. Two layers now:
-#   1. the token rides on OUR new-session itself (`-e`, tmux >= 3.2), so this
-#      session has it whoever created the server;
+#   1. OUR pane sources the token from a 0600 file before anything else runs
+#      (TOKENARGV929; it used to ride on new-session `-e`, which left it in the
+#      tmux server's command line), so this session has it whoever created
+#      the server;
 #   2. the globals are set again right AFTER new-session, when a server
 #      certainly exists, so a later pane relaunch (auto-restart runner) and
 #      every sub-agent session inherit them too.
@@ -1107,14 +1282,45 @@ _tmux_set_auth_globals() {
 $TMUX start-server 2>/dev/null || true
 _tmux_set_auth_globals
 
-# new-session -e needs tmux >= 3.2; older tmux keeps the global-env path only.
-TMUX_AUTH_ENV=()
-_tmux_ver="$($TMUX -V 2>/dev/null | grep -oE '[0-9]+\.[0-9]+' | head -1)"
-if [ -n "$_tmux_ver" ] && awk -v v="$_tmux_ver" 'BEGIN { split(v, p, "."); exit !((p[1] > 3) || (p[1] == 3 && p[2] >= 2)) }'; then
-  [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && TMUX_AUTH_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN")
-  [ -n "${ANTHROPIC_API_KEY:-}" ] && TMUX_AUTH_ENV+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
+# Layer 1 of CHANNELSAUTHRACE923, WITHOUT the secret in any argv (TOKENARGV929).
+# It used to be `new-session -e CLAUDE_CODE_OAUTH_TOKEN=<value>`: when that
+# new-session is what creates the tmux server (after a reboot it usually is),
+# the server process KEEPS that command line for its whole life, so the fleet
+# token sat in plain `ps -axo command` output for every local process to read
+# (measured 2026-09-29 on the main host). Now the values go into a 0600 file
+# and the pane's own shell sources it before anything else runs, the same
+# "evaluated in the launched shell, never in argv" rule as the $(cat) in
+# CFG_ENV above. CFG_ENV still comes AFTER it in the pane command, so a mode
+# that exports its own token keeps overriding this one, as it did with -e.
+# The file is rewritten on every launch; store/ is gitignored.
+AUTH_PANE_ENV=""
+_auth_file="$INSTALL_DIR/store/.channels-pane-auth"
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+  _q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+  # Written to a NEW file (mktemp: 0600, O_EXCL, never follows a symlink) and
+  # renamed over the final name, so the value never lands in a pre-existing
+  # wider-mode file or through a symlink planted at that path (Geri, #1647
+  # review: `umask 077; : >` only applies to a file it CREATES, and `>` follows
+  # a symlink). mv replaces the name itself, not a symlink's target.
+  _auth_tmp="$(mktemp "$_auth_file.XXXXXX")" || _auth_tmp=""
+  if [ -n "$_auth_tmp" ]; then
+    {
+      [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$(_q "$CLAUDE_CODE_OAUTH_TOKEN")"
+      [ -n "${ANTHROPIC_API_KEY:-}" ] && printf 'export ANTHROPIC_API_KEY=%s\n' "$(_q "$ANTHROPIC_API_KEY")"
+      true
+    } > "$_auth_tmp"
+    if mv -f "$_auth_tmp" "$_auth_file"; then
+      AUTH_PANE_ENV=". '$_auth_file' && "
+    else
+      rm -f "$_auth_tmp" 2>/dev/null || true
+    fi
+  fi
+  unset -f _q
+  unset _auth_tmp
+else
+  rm -f "$_auth_file" 2>/dev/null || true
 fi
-unset _tmux_ver
+unset _auth_file
 
 # Owner commands (ELSOKOR922 spec D-4): the Telegram plugin answers /status
 # and /help itself, so those two never reach the session's command hook. Take
@@ -1153,8 +1359,20 @@ fi
 # just THIS session first -- never the server, never another agent's session --
 # otherwise new-session below fails with "duplicate session".
 $TMUX kill-session -t "$SESSION" 2>/dev/null || true
-$TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" ${TMUX_AUTH_ENV[@]+"${TMUX_AUTH_ENV[@]}"} \
-  "${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+# TMUXSERVERREAP929: create the session WITHOUT this shell's state-dir var in
+# the tmux client's environment. The export above is meant for THIS session's
+# claude/poller, and the command below re-exports it for the pane anyway. But
+# when this new-session is what creates the shared tmux server (after a host
+# reboot it usually is -- `start-server` alone does not keep a server alive,
+# see CHANNELSAUTHRACE923), the server inherits the client's environment:
+# (1) the pre-respawn poller reap's env scan then matched the tmux server
+# process itself and killed it, taking every agent session on the host with it
+# (measured on a live host three times in 17 hours), and (2) the var landed in
+# the server's global environment, so every sub-agent session inherited the
+# MAIN session's channel state dir. The -g -u after the launch cleans a server
+# polluted earlier.
+env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
+  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
 # The server certainly exists now: see CHANNELSAUTHRACE923 above.
 _tmux_set_auth_globals
 # remain-on-exit: without this, if the pane's claude process dies for ANY
@@ -1172,6 +1390,7 @@ _tmux_set_auth_globals
 # find and reuse it. (Also fixed at the reap itself, see channel-poller-reap.ts;
 # this is the defense-in-depth layer, not the only fix.)
 $TMUX set-option -t "$SESSION" remain-on-exit on 2>/dev/null || true
+$TMUX set-environment -g -u "$STATE_ENV_VAR" 2>/dev/null || true
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
 # kulonben a headless session orokre parkolna a prompton es a Telegram plugin
@@ -1244,8 +1463,8 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
         # invasive change (a stable fallback dir + a seeded ~/.claude.json project
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
-        $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" ${TMUX_AUTH_ENV[@]+"${TMUX_AUTH_ENV[@]}"} \
-          "${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+        env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
+          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
         # See the primary new-session above: remain-on-exit keeps the pane
         # (and session) alive if claude dies early, so the scheduled relaunch
         # can always find it. This is the /tmp-fallback launch path, same fix.

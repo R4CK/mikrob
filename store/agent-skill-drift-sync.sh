@@ -300,20 +300,14 @@ _agent_running_state() {
 }
 
 # --- clone-family MISSING-skill detection (card a6abb230) -------------------------------------
-# Known sibling groups. Not derived from anything live (no naming convention reliably implies
-# "same family" -- qa2 does, cybersec2 would not), so this is a short, explicit list, same spirit as
-# the root CLAUDE.md's own hardcoded "ma: backend<->backend2, qa<->qa2, fron-ted<->fron-teddy,
-# cybersec<->cybersec2" note. An agent not listed here returns nothing and is simply never part of
-# a missing-skill comparison. cybersec/cybersec2 added card 21abfe0b (WhiteHat2 stood up).
-_family_members() {
-  case "$1" in
-    backend|backend2|backend3) echo "backend backend2 backend3" ;;
-    qa|qa2)                    echo "qa qa2" ;;
-    fron-ted|fron-teddy)       echo "fron-ted fron-teddy" ;;
-    cybersec|cybersec2)        echo "cybersec cybersec2" ;;
-    *) echo "" ;;
-  esac
-}
+# Known sibling groups. Card 31e70128: this list used to live here AND, separately, hardcoded a
+# second time inside sibling-skill-drift-check.sh -- the two had already drifted (that copy never
+# got the cybersec/cybersec2 family this one gained under card 21abfe0b). Centralized into
+# store/sibling-family-list.sh; both scripts source it now, so there is exactly one place left to
+# edit when a new sibling (e.g. a future RedHat2) is stood up.
+# shellcheck source=./sibling-family-list.sh
+source "$HERE/sibling-family-list.sh"
+_family_members() { sibling_family_members "$1"; }
 
 # Card a9ab4a62 (Cybersec F1 on 85521c7e's own GO): "TRACKED seed-fleet-agents copy" above was
 # only ever checked with `-d` -- a plain on-disk existence test. seed-fleet-agents is the MAIN
@@ -481,6 +475,26 @@ scan_missing_skills() {
   done
 }
 
+# --- sibling-pair drift (card 31e70128) --------------------------------------------------------
+# Card 31e70128's own mandate: extend the EXISTING sync tool, do not build a fourth drift tool.
+# sibling-skill-drift-check.sh (card c40385b1) already does the actual checking -- skill-NAME set,
+# SKILL.md CONTENT hash, and the CLAUDE.md "## Core skilljeid" skill-name set, per clone family, on
+# BOTH the live and the seed tree -- and already has its own selftest. This function's only job is
+# to call that reporter (never re-implement its hashing) and fold its FINDING lines into this
+# script's own report + change-baseline, the same way scan_missing_skills' MISSING set already
+# does for the clone-family gap check above. Report-only: this NEVER fixes a content-diff or a
+# Core-list mismatch (a content mismatch is routinely NOT simple staleness -- see
+# sibling-skill-drift-check.sh's own header for why that stays a human/agent judgment call).
+scan_sibling_pair_drift() {
+  SIBLING_FINDINGS=0
+  SIBLING_FINDINGS_LIST=""
+  local out
+  out="$(MARVEEN_MAIN="$ROOT" LIVE_AGENTS_DIR="$AGENTS_DIR" SEED_DIR="$SEED_FLEET_DIR" \
+         bash "$HERE/sibling-skill-drift-check.sh" 2>/dev/null)"
+  SIBLING_FINDINGS_LIST="$(printf '%s\n' "$out" | grep '^FINDING ')"
+  SIBLING_FINDINGS="$(printf '%s\n' "$SIBLING_FINDINGS_LIST" | sed '/^$/d' | wc -l | tr -d ' ')"
+}
+
 run_scan() {
   CUR=0; STALE=0; STALE_SYNCED=0; DIVERGED=0; SKIPPED=0; SKIPPED_CONCURRENT=0; SKIPPED_RUNNING=0; SKIPPED_UNDETERMINED=0
   STALE_LIST=""; STALE_SYNCED_LIST=""; STALE_SKIPPED_LIST=""; DIVERGED_LIST=""
@@ -598,9 +612,10 @@ run_scan() {
   done
 
   scan_missing_skills
+  scan_sibling_pair_drift
 
   if [ "$TELEGRAM" -eq 1 ]; then
-    echo "Agent skill drift: current=${CUR} stale=${STALE} diverged=${DIVERGED} skipped(no-canonical)=${SKIPPED} missing=${MISSING}"
+    echo "Agent skill drift: current=${CUR} stale=${STALE} diverged=${DIVERGED} skipped(no-canonical)=${SKIPPED} missing=${MISSING} sibling-pair-findings=${SIBLING_FINDINGS}"
     if [ "$APPLY" -eq 1 ]; then
       # Card 2fc54ae7: a stale copy found is not the same as a stale copy WRITTEN -- an entry
       # skipped because its agent is running/undetermined/concurrently-written must never appear
@@ -626,13 +641,21 @@ run_scan() {
       echo "Missing (clone-family sibling has it, this member does not):"
       printf '%b' "$MISSING_LIST" | sed 's/^/  /'
     fi
+    if [ "$SIBLING_FINDINGS" -gt 0 ]; then
+      echo "Sibling-pair drift (name/content-hash/Core-list mismatch within a clone family):"
+      printf '%s\n' "$SIBLING_FINDINGS_LIST" | sed '/^$/d;s/^/  /'
+    fi
   else
     if [ "$MISSING" -gt 0 ]; then
       echo "== clone-family missing skills =="
       printf '%b' "$MISSING_LIST" | sed 's/^/  MISSING   /'
     fi
+    if [ "$SIBLING_FINDINGS" -gt 0 ]; then
+      echo "== sibling-pair drift =="
+      printf '%s\n' "$SIBLING_FINDINGS_LIST" | sed '/^$/d;s/^/  /'
+    fi
     echo "---"
-    echo "SUMMARY: current=${CUR} stale=${STALE}$([ "$APPLY" -eq 1 ] && echo "(synced=${STALE_SYNCED})" || echo '(would-sync, dry-run)') diverged=${DIVERGED}(flagged-only) skipped=${SKIPPED}(no-canonical) missing=${MISSING}$([ "$APPLY" -eq 1 ] && [ "$MISSING_SYNC_APPLY_ENABLED" -eq 1 ] && echo '(synced-where-possible)' || echo '(would-sync, dry-run)')"
+    echo "SUMMARY: current=${CUR} stale=${STALE}$([ "$APPLY" -eq 1 ] && echo "(synced=${STALE_SYNCED})" || echo '(would-sync, dry-run)') diverged=${DIVERGED}(flagged-only) skipped=${SKIPPED}(no-canonical) missing=${MISSING}$([ "$APPLY" -eq 1 ] && [ "$MISSING_SYNC_APPLY_ENABLED" -eq 1 ] && echo '(synced-where-possible)' || echo '(would-sync, dry-run)') sibling-pair-findings=${SIBLING_FINDINGS}(report-only, never auto-fixed)"
   fi
 
   emit_alert_verdict
@@ -673,9 +696,17 @@ run_scan() {
 # which is exactly the layer whose rule failed here in the first place.
 emit_alert_verdict() {
   local now diverged_now diverged_sha prev_sha prev_list prev_changed reasons
+  local sibling_now sibling_sha prev_sibling_sha prev_sibling_list
   now="$(date +%s)"
   diverged_now="$(printf '%b' "$DIVERGED_LIST" | sed '/^$/d' | LC_ALL=C sort | paste -sd, -)"
   diverged_sha="$(printf '%s' "$diverged_now" | _hash)"
+  # Same change-baseline treatment as the diverged set above (card 222fdc5e's own reasoning
+  # applies unchanged here): a clone family can carry a legitimate, accepted, PERMANENT content
+  # divergence (e.g. qa/qa2 own-incident narration that is deliberately agent-specific) just like
+  # the stale/diverged pass can -- alerting on raw count would re-announce that same accepted
+  # drift every six hours forever. Alert on a CHANGE of the finding SET instead.
+  sibling_now="$(printf '%s\n' "${SIBLING_FINDINGS_LIST:-}" | sed '/^$/d' | LC_ALL=C sort | paste -sd, -)"
+  sibling_sha="$(printf '%s' "$sibling_now" | _hash)"
 
   reasons=""
   # Card 2fc54ae7: this used to fire on STALE (found) rather than STALE_SYNCED (actually written),
@@ -700,10 +731,13 @@ emit_alert_verdict() {
   if [ ! -f "$STATE" ]; then
     reasons="${reasons}no-baseline,"
     prev_list=""; prev_changed="$now"
+    prev_sibling_list=""
   else
     prev_sha="$(sed -n 's/.*"divergedSha"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p' "$STATE" | head -1)"
     prev_list="$(sed -n 's/.*"divergedList"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$STATE" | head -1)"
     prev_changed="$(sed -n 's/.*"changedAt"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p' "$STATE" | head -1)"
+    prev_sibling_sha="$(sed -n 's/.*"siblingFindingsSha"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p' "$STATE" | head -1)"
+    prev_sibling_list="$(sed -n 's/.*"siblingFindingsList"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$STATE" | head -1)"
     if [ -z "$prev_sha" ]; then
       # Present but unparseable. Not "no baseline" -- we say so, and we say we could not read it.
       reasons="${reasons}baseline-unreadable,"
@@ -712,15 +746,27 @@ emit_alert_verdict() {
       reasons="${reasons}diverged-set-changed,"
       prev_changed="$now"
     fi
+    # Sibling dimension is tracked separately from the above (a STATE file that pre-dates this
+    # field reads as "no baseline for this dimension only", distinct from "no STATE file at all").
+    if [ -z "$prev_sibling_sha" ]; then
+      reasons="${reasons}sibling-no-baseline,"
+    elif [ "$prev_sibling_sha" != "$sibling_sha" ]; then
+      reasons="${reasons}sibling-pair-drift-changed,"
+    fi
   fi
 
   if [ -n "$reasons" ]; then
-    echo "ALERT:yes reasons=${reasons%,} diverged=${DIVERGED} stale=${STALE} synced=${STALE_SYNCED} skipped-concurrent=${SKIPPED_CONCURRENT} skipped-running=${SKIPPED_RUNNING} skipped-undetermined=${SKIPPED_UNDETERMINED} missing=${MISSING} missing-skipped-running=${MISSING_SKIPPED_RUNNING} missing-skipped-undetermined=${MISSING_SKIPPED_UNDETERMINED}"
+    echo "ALERT:yes reasons=${reasons%,} diverged=${DIVERGED} stale=${STALE} synced=${STALE_SYNCED} skipped-concurrent=${SKIPPED_CONCURRENT} skipped-running=${SKIPPED_RUNNING} skipped-undetermined=${SKIPPED_UNDETERMINED} missing=${MISSING} missing-skipped-running=${MISSING_SKIPPED_RUNNING} missing-skipped-undetermined=${MISSING_SKIPPED_UNDETERMINED} sibling-pair-findings=${SIBLING_FINDINGS}"
     [ -n "$prev_list" ] && [ "$prev_list" != "$diverged_now" ] && echo "  diverged set was: ${prev_list:-(empty)}"
     [ -n "$reasons" ] && echo "  diverged set now: ${diverged_now:-(empty)}"
     [ "$MISSING" -gt 0 ] && { echo "  missing set:"; printf '%b' "$MISSING_LIST" | sed '/^$/d;s/^/    /'; }
+    if [ "$SIBLING_FINDINGS" -gt 0 ]; then
+      [ -n "$prev_sibling_list" ] && [ "$prev_sibling_list" != "$sibling_now" ] && echo "  sibling-pair findings set was: ${prev_sibling_list:-(empty)}"
+      echo "  sibling-pair findings set now:"
+      printf '%s\n' "$SIBLING_FINDINGS_LIST" | sed '/^$/d;s/^/    /'
+    fi
   else
-    echo "ALERT:no (diverged set unchanged since $(date -d "@$prev_changed" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$prev_changed"), ${DIVERGED} entr$([ "$DIVERGED" -eq 1 ] && echo y || echo ies); stale=0, missing=0, no concurrent-write skips)"
+    echo "ALERT:no (diverged set unchanged since $(date -d "@$prev_changed" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$prev_changed"), ${DIVERGED} entr$([ "$DIVERGED" -eq 1 ] && echo y || echo ies); stale=0, missing=0, sibling-pair-findings=${SIBLING_FINDINGS} unchanged, no concurrent-write skips)"
   fi
 
   # Only a real run moves the baseline -- see the comment above.
@@ -733,6 +779,9 @@ emit_alert_verdict() {
   "divergedCount": $DIVERGED,
   "previousList": "$prev_list",
   "changedAt": $prev_changed,
+  "siblingFindingsSha": "$sibling_sha",
+  "siblingFindingsList": "$sibling_now",
+  "siblingFindingsCount": $SIBLING_FINDINGS,
   "measuredAt": $now
 }
 EOF
@@ -1304,6 +1353,44 @@ agent-someone-else" bash "${BASH_SOURCE[0]}" --apply --telegram --agent agentG)"
   echo "$outF5" | grep -qE 'missing=0([^0-9]|$)' \
     && echo "  ok   an agent outside every declared family reports missing=0" \
     || { echo "  FAIL an undeclared-family agent was scanned for missing skills:"; echo "$outF5"; fail=1; }
+
+  # --- sibling-pair drift (card 31e70128): dedicated, isolated fixture ------------------------
+  # A fresh root, separate from family-root above, so these assertions do not depend on the exact
+  # surviving state of a tree ten other tests have already mutated.
+  mkdir -p "$tmp/sibling-root/agents/backend/.claude/skills/greeter" \
+           "$tmp/sibling-root/agents/backend2/.claude/skills/greeter"
+  printf 'GREETER V1\n' > "$tmp/sibling-root/agents/backend/.claude/skills/greeter/SKILL.md"
+  printf 'GREETER V2 -- DIFFERENT CONTENT\n' > "$tmp/sibling-root/agents/backend2/.claude/skills/greeter/SKILL.md"
+  sib_state="$tmp/sibling-root/store/agent-skill-drift-state.json"
+
+  outS1="$(AGENT_SKILL_DRIFT_ROOT="$tmp/sibling-root" AGENT_SKILL_DRIFT_STATE="$sib_state" \
+           bash "${BASH_SOURCE[0]}" --apply)"
+  echo "$outS1" | grep -q 'FINDING content-diff.*greeter' \
+    && echo "  ok   sibling-pair content-hash mismatch (greeter) is reported" \
+    || { echo "  FAIL content-diff finding for greeter is missing:"; echo "$outS1"; fail=1; }
+  echo "$outS1" | grep -q 'ALERT:yes reasons=no-baseline' \
+    && echo "  ok   first look (no STATE file at all) -> ALERT:yes (no-baseline covers both dimensions)" \
+    || { echo "  FAIL first sibling look did not alert:"; echo "$outS1"; fail=1; }
+
+  outS2="$(AGENT_SKILL_DRIFT_ROOT="$tmp/sibling-root" AGENT_SKILL_DRIFT_STATE="$sib_state" \
+           bash "${BASH_SOURCE[0]}" --apply)"
+  echo "$outS2" | grep -q 'ALERT:no' \
+    && echo "  ok   UNCHANGED sibling-pair finding set -> ALERT:no (the routine run stays quiet)" \
+    || { echo "  FAIL an unchanged sibling-pair finding set still alerted:"; echo "$outS2"; fail=1; }
+
+  # A SECOND, independently-authored skill on backend2 only: the finding SET changes (one entry
+  # added) while greeter's own mismatch is untouched -- same "set, not count" principle the
+  # diverged-list baseline above already relies on.
+  mkdir -p "$tmp/sibling-root/agents/backend2/.claude/skills/only-on-backend2"
+  printf 'NEVER SEEDED, BACKEND2 ONLY\n' > "$tmp/sibling-root/agents/backend2/.claude/skills/only-on-backend2/SKILL.md"
+  outS3="$(AGENT_SKILL_DRIFT_ROOT="$tmp/sibling-root" AGENT_SKILL_DRIFT_STATE="$sib_state" \
+           bash "${BASH_SOURCE[0]}" --apply)"
+  echo "$outS3" | grep -q 'reasons=.*sibling-pair-drift-changed' \
+    && echo "  ok   a NEW sibling-pair finding (set change) alerts -- sibling-pair-drift-changed" \
+    || { echo "  FAIL the new sibling-pair finding did not trigger sibling-pair-drift-changed:"; echo "$outS3"; fail=1; }
+  echo "$outS3" | grep -q 'FINDING missing-skill-name.*only-on-backend2' \
+    && echo "  ok   the new missing-skill-name finding (only-on-backend2) is named in the report" \
+    || { echo "  FAIL only-on-backend2 missing-skill-name finding not reported:"; echo "$outS3"; fail=1; }
 
   # Non-vacuity on the fixtures themselves: every alert case above ran against the throwaway root
   # and the throwaway state path, so none of them can have touched the live install's state file.

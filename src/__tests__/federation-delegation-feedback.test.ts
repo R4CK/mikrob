@@ -93,7 +93,7 @@ describe('POST /api/messages to-authentication (card 523a1426)', () => {
   it('rejects an unknown LOCAL recipient with 400 -- a forged to_agent can never open a fair-batch bucket', async () => {
     const r = await postMessage({ from: 'localboss', to: 'totally-made-up-agent-42', content: 'hi' })
     expect(r.statusCode).toBe(400)
-    expect(r.json.error).toMatch(/unknown agent/i)
+    expect(r.json.error).toMatch(/unknown recipient/i)
   })
 
   it('accepts the special MAIN_AGENT_ID recipient (not a fixture directory, but always known)', async () => {

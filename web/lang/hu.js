@@ -511,7 +511,8 @@ window._i18n.hu = {
   'agents.model.cliUnmeasured':  'A telepített Claude Code verziója nem mérhető ({err}), a lista nem szűrt: egy régebbi CLI-n nem minden modell indul el.',
   'agents.model.opus5':          'Opus 5',
   'agents.model.opus48':         'Opus 4.8 (1M kontextus, alapértelmezett)',
-  'agents.model.sonnet5':        'Sonnet 5 (legújabb Sonnet, Opus-közeli)',
+  'agents.model.sonnet55':       'Sonnet 5.5 (legújabb Sonnet, gyors és olcsóbb)',
+  'agents.model.sonnet5':        'Sonnet 5 (Opus-közeli)',
   'agents.model.sonnet46':       'Sonnet 4.6 (gyors és okos)',
   'agents.model.haiku45':        'Haiku 4.5 (leggyorsabb)',
   'agents.model.cliUnsupported': 'A telepített Claude Code CLI (verzió: {version}) nem tudja elindítani a(z) "{model}" modellt -- ehhez legalább {minCli} verzió kell. Frissítsd a CLI-t, vagy válassz egy másik modellt.',
@@ -1874,6 +1875,8 @@ window._i18n.hu = {
   'agents.channel.connected':    'Csatlakozva',
   'agents.channel.disconnected': 'Nincs bekötve',
   'agents.strict_mode':          ' (szigorú)',
+  'agents.profile_missing_option': 'nem létezik',
+  'agents.profile_missing_desc':   'A kért profil ({id}) nem található vagy olvashatatlan, ezért az ágens az Alapértelmezett profillal fut, ami kevesebbet tilt. Válassz egy létező profilt, és mentsd.',
   'agents.marveen_boss':         '{bot} Főnök',
   'agents.btn.login':            'Bejelentkezés',
 
