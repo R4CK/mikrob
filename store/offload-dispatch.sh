@@ -214,7 +214,8 @@ if not project.strip() or norm(project) not in ALLOWED_PROJECTS:
 # with the EXACT SAME regex tags_for() uses -- so the caller cannot forget it, and there is only
 # one place this extraction is written. Measured on the live board (WhiteHat2, 528 cards): 45/108
 # cards the label-only check would have allowed through to Gemini carry exactly this shape.
-_lead = re.match(r"^(?:\s*\[[^\]]*\])+", title)
+_title_folded = _fold(title)
+_lead = re.match(r"^(?:\s*\[[^\]]*\])+", _title_folded)
 _lead_tags = re.findall(r"\[([^\]]*)\]", _lead.group(0)) if _lead else []
 all_tags = [t for t in tags_csv.split(",") if t] + _lead_tags
 
