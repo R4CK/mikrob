@@ -812,6 +812,61 @@ draft_comment_body() { # $1 = leaf_title, $2 = content, $3 = synthetic ("true"/"
 ' "$review_header" "$leaf_title" "$content"
 }
 
+# DRAFT FILE SINK (card 21fbc293, Gemini-orch 2/4 of cf757409, decision B): while the Gemini
+# orchestrator drives this card-by-card (OFFLOAD_DRAFT_SINK=file), the draft text never lands in a
+# kanban comment -- it goes to disk under DRAFTS_DIR/<cardId>/, and the card gets only a short
+# referencing comment. Default (unset/anything else) keeps the existing full-comment behavior
+# unchanged -- this is purely additive, not a replacement of post_draft_comment's normal path.
+DRAFTS_DIR="${OFFLOAD_DRAFTS_DIR:-$HERE/drafts}"
+
+# sanitize_path_component: a card id or leaf id becomes a directory/file NAME under DRAFTS_DIR when
+# the file sink is active -- never trust it as a literal path segment. Keeps [A-Za-z0-9_-] only;
+# everything else (including "." and "/", which together make ".." traversal and absolute-path
+# escapes impossible) becomes "_".
+sanitize_path_component() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '_'
+}
+
+# write_draft_to_file: writes $3 (the full comment body text, same shape draft_comment_body would
+# have produced) under DRAFTS_DIR/<safe cardId>/, named by timestamp + safe leaf id so multiple
+# leaves/decompose-fragments of the same card never collide. Prints the path RELATIVE to $HERE (so
+# the referencing comment never leaks an absolute filesystem path). $1=post_id (real card id,
+# directory) $2=leaf_id (true leaf, for filename uniqueness) $3=body.
+write_draft_to_file() {
+  local post_id="$1" leaf_id="$2" body="$3"
+  local safe_card; safe_card="$(sanitize_path_component "$post_id")"
+  local safe_leaf; safe_leaf="$(sanitize_path_component "$leaf_id")"
+  local dir="$DRAFTS_DIR/$safe_card"
+  mkdir -p "$dir"
+  local path="$dir/$(date +%s)-$safe_leaf.md"
+  printf '%s' "$body" > "$path"
+  chmod 600 "$path"
+  # Relative to DRAFTS_DIR's OWN parent (not hardcoded to $HERE): in production DRAFTS_DIR is
+  # $HERE/drafts, so this prints "drafts/<card>/<file>" exactly as before -- but a test (or a
+  # future config) pointing OFFLOAD_DRAFTS_DIR somewhere else still gets a correctly-relative,
+  # never-absolute path instead of silently falling back to the full filesystem path.
+  local drafts_parent; drafts_parent="$(dirname "$DRAFTS_DIR")"
+  printf '%s' "${path#"$drafts_parent"/}"
+}
+
+# draft_file_ref_comment_body: same Draft-Review instruction contract as draft_comment_body (card
+# 1338e68b) -- the review marker is still mandatory before the card can move to waiting -- but
+# points at the file instead of embedding the draft text on the card. Pure (no network), so
+# --test-draft-file-ref-comment-body can exercise the exact text a real file-sink run posts.
+draft_file_ref_comment_body() { # $1=leaf_title $2=relative draft path $3=synthetic
+  local leaf_title="$1" draft_path="$2" synthetic="${3:-false}"
+  local review_header=""
+  if [[ "$synthetic" == "true" ]]; then
+    review_header="MECHANIKUS RESZFELADAT (card 501c489f) egy olyan kartyabol, aminek a DONTESI resze online marad -- KOTELEZO A TELJES, FUGGETLEN ONLINE FELULVIZSGALAT, ne csak a draft belsejet nezd, hanem azt is, mi HIANYZIK belole a kartya teljes specifikaciojahoz kepest.
+
+"
+  fi
+  printf '%s[LOCAL-LLM DRAFT | dispatch-offload, Gemini-orch] Helyi (7B) draft keszult, de a szovege NEM a kartyan van -- a Gemini-orchestrator mod alatt (kartya 21fbc293, cf757409 dontes B) a draft fajlban marad: %s. DRAFT-ONLY: a kvota visszaterese utan a felelos agent olvassa el a fajlt es integralja, ne irja ujra Claude-dal. AMIKOR VEGEZTEL VELE, tegyel a kartyara egy sort (sor elejen): '"'"'Draft-Review: ELFOGADVA'"'"' / '"'"'RESZBEN'"'"' / '"'"'ELUTASITVA'"'"' / '"'"'FELESLEGES'"'"' -- e nelkul a kartya nem mehet waiting-be (card 1338e68b).
+
+#### %s
+' "$review_header" "$draft_path" "$leaf_title"
+}
+
 # --- test hooks (no network/token/lock needed) ---------------------------------------------------
 # --test-resolve: feed a kanban-list JSON fixture on stdin, CARD via env; prints the resolved leaves.
 # --test-attempts-op OP LEAF [--file PATH]: exercises the attempts state machine against a scratch file.
@@ -829,6 +884,25 @@ fi
 # no network (card 501c489f).
 if [[ "${1:-}" == "--test-draft-comment-body" ]]; then
   draft_comment_body "${2-}" "${3-}" "${4-false}"
+  exit 0
+fi
+# --test-draft-file-ref-comment-body TITLE PATH [SYNTHETIC]: the exact referencing-comment text a
+# real file-sink draft posts, no network (card 21fbc293).
+if [[ "${1:-}" == "--test-draft-file-ref-comment-body" ]]; then
+  draft_file_ref_comment_body "${2-}" "${3-}" "${4-false}"
+  exit 0
+fi
+# --test-write-draft-to-file POST_ID LEAF_ID BODY: exercises the exact file-write+sanitize code the
+# real file-sink path uses, no network (card 21fbc293). Honors OFFLOAD_DRAFTS_DIR so a test can
+# point this at a scratch directory instead of the real store/drafts/.
+if [[ "${1:-}" == "--test-write-draft-to-file" ]]; then
+  write_draft_to_file "${2-}" "${3-}" "${4-}"
+  exit 0
+fi
+# --test-sanitize-path-component INPUT: the exact sanitizer the file-sink path uses to turn a card
+# id or leaf id into a filesystem-safe name (card 21fbc293).
+if [[ "${1:-}" == "--test-sanitize-path-component" ]]; then
+  sanitize_path_component "${2-}"
   exit 0
 fi
 if [[ "${1:-}" == "--test-resolve" ]]; then
@@ -970,8 +1044,20 @@ graph_args_for() {
 
 post_draft_comment() {
   # $4 = synthetic ("true"/"false", optional), forwarded to draft_comment_body.
-  local leaf_id="$1" leaf_title="$2" content="$3" synthetic="${4:-false}"
+  # $5 = the TRUE leaf id (card 21fbc293): for a synthetic (decomposed) leaf, $1/post_id is always
+  # the real card id (see the "TWO IDS, DELIBERATELY SEPARATE" comment on try_leaf above), so the
+  # file sink below needs this separately to keep multiple fragments' files from colliding. Falls
+  # back to $1 for any caller that does not pass it (none inside this file currently, but a future
+  # one should not silently break).
+  local leaf_id="$1" leaf_title="$2" content="$3" synthetic="${4:-false}" orig_leaf_id="${5:-$1}"
   local body; body="$(draft_comment_body "$leaf_title" "$content" "$synthetic")"
+  # FILE SINK (card 21fbc293, Gemini-orch 2/4, decision B): while the Gemini orchestrator drives
+  # this card-by-card, the draft never lands in the comment itself -- only a short reference to
+  # where it landed on disk.
+  if [[ "${OFFLOAD_DRAFT_SINK:-comment}" == "file" ]]; then
+    local rel_path; rel_path="$(write_draft_to_file "$leaf_id" "$orig_leaf_id" "$body")"
+    body="$(draft_file_ref_comment_body "$leaf_title" "$rel_path" "$synthetic")"
+  fi
   curl -s -X POST "$DASH/api/kanban/$leaf_id/comments" -H "Content-Type: application/json" -H @"$hdr_file" \
     -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$body")" >/dev/null 2>&1
 }
@@ -1051,7 +1137,7 @@ $leaf_desc"
       return 1
     fi
     attempts_op success "$leaf_id" >/dev/null
-    post_draft_comment "$post_id" "$leaf_title" "$out" "$synthetic"
+    post_draft_comment "$post_id" "$leaf_title" "$out" "$synthetic" "$leaf_id"
     nudge_leaf_owner "$post_id" "$leaf_assignee_raw" draft || true
     echo "offload-dispatch: leaf $leaf_id -> posted local draft"
     return 0
@@ -1072,7 +1158,7 @@ $leaf_desc"
         return 1
       fi
       attempts_op success "$leaf_id" >/dev/null
-      post_draft_comment "$post_id" "$leaf_title" "$adv_draft" "$synthetic"
+      post_draft_comment "$post_id" "$leaf_title" "$adv_draft" "$synthetic" "$leaf_id"
       nudge_leaf_owner "$post_id" "$leaf_assignee_raw" draft || true
       echo "offload-dispatch: leaf $leaf_id -> posted local draft (advisory, route stays online)"
       return 0
