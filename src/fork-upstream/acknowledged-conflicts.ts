@@ -2434,7 +2434,24 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/__tests__/session-send-lock.test.ts': 'e0564f101fed813785acbb161c6c019acf9fae52',
   // Card c2aeefa5 (2026-09-25, backend) re-decided update.sh and install-linux.sh this round --
   // pins here are the c2aeefa5 values, newer than the ones these two carried at 09d54e88's base.
-  'update.sh': '9a91cfef7d76ee3824581029385ff2fff6a8789d',
+  // Re-decided Köteg 12, 2026-10-13 (backend3, card 95b62f66, 9a91cfef7d76..411dd132ee5d): grouped
+  // new content, none touching the two decided points. (a) BRANCHHEAL925 (git switch over checkout)
+  // and UPSTREAMSRC927 (DIVERGENCE_REF measured against a fresh fetch, not stale @{u}) are genuine
+  // fixes with no fork-side equivalent -- adopted (auto-merged clean, verified present). (b)
+  // UPDOOMNPMCI926 (retry()'s exit-code-preserving return + npm_ci_failed() OOM-aware rollback) is
+  // NOT adopted -- per DECISIONS.md 2026-??(prior round): upstream's surrounding diff deletes
+  // multiple Peti-mandated fork safety mechanisms (the mandatory pre-update checkpoint, card
+  // ae071239; rollback-guard.sh distance-check, card 980454f7), so wholesale adoption is refused;
+  // the useful retry-exit-code half still needs its own surgical card, not taken here either.
+  // Verified both mechanisms remain intact in the merged tree (checkpoint call + rollback_guard_check
+  // present, untouched). (c) install_keepalive_probe_launchd (macOS twin) joins the existing
+  // not-adopted cluster (install_keepalive_probe_timer / install_main_inbox_observer_unit /
+  // park_morning_timer) -- same live-install-UX-change deferral, same structural guard
+  // (update-unit-maintenance-order.test.ts's ADOPTED_UNIT_FUNCTIONS allowlist) keeps all four out.
+  // (d) strip_legacy_notifier_telegram_env (new this round, UPDUNITTGENV930) is a narrowly-scoped,
+  // safe retroactive cleanup with no fork safety overlap -- ADOPTED, wired into run_unit_maintenance
+  // and added to the allowlist.
+  'update.sh': '411dd132ee5dffa3c4f9def487a9aee12c7d5068',
   'install-linux.sh': '66db4ab4d010e84684cc3a5e1ad15660c654d30b',
   // scripts/install-prod-tree-guard-hook.sh: card b5b7eb6b child 09d54e88 (2026-09-25, backend3)
   // re-measured this one FORWARD of c2aeefa5's base (9abea4ee -> 68232de630af) -- their pin wins.

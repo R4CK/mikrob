@@ -6,6 +6,7 @@ import { homedir, userInfo } from 'node:os'
 import { createHash } from 'node:crypto'
 import { makeLazyBinResolver, resolveFromPath, tryResolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
+import { launchableInstallDefaultSync } from './default-model-guard.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL } from '../config.js'
 import {
   capturePane,
@@ -511,6 +512,19 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // every agent-create fails with "worker session not ready" (observed: agent-create
   // failed 4x after a cold start). Mirror the agent-process.ts launcher,
   // which already disables the suggestion for the same scrape-misread reason.
+  // DEFAULTCLIGUARD927 (Köteg 12, upstream 0bea3cd7): a CLI that cannot run the shipped
+  // distribution default gets the previous tier instead of a deaf worker. Only applies when
+  // the operator has not pinned MARVEEN_WORKER_MODEL -- that escape hatch still wins outright.
+  // fromCustomProvider is always false here: upstream's own custom-provider launch-env builder
+  // (buildCustomProviderLaunchEnv) is NOT adopted (see agent-process.ts's matching NOT ADOPTED
+  // notes on stampCustomApiKeyApproval/resolveProviderEnv) -- wiring a custom provider into the
+  // worker's own launch is its own card, not a merge-conflict-resolution call.
+  let workerModel = WORKER_MODEL
+  const fromCustomProvider = false
+  if (!process.env.MARVEEN_WORKER_MODEL) {
+    if (!fromCustomProvider) workerModel = launchableInstallDefaultSync('worker')
+  }
+
   const claudeLaunchBin = tryResolveFromPath('claude') ?? 'claude'
   const launch =
     (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
@@ -519,13 +533,13 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     // CHANSPARE925: no Agent view (Left would background the worker into the daemon).
     `export CLAUDE_CODE_DISABLE_AGENT_VIEW=1; ` +
     `cd ${shArg(ctx.home)} && ` +
-    `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(WORKER_MODEL)}`
+    `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(workerModel)}`
   execFileSync(tmuxBin(), ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
   logger.info({ session: ctx.session, cwd: ctx.home }, 'agent-worker: launched interactive worker session')
   // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --
   // which config-chain element supplied the --model value.
   logger.info(
-    { session: ctx.session, model: WORKER_MODEL, source: workerModelSource() },
+    { session: ctx.session, model: workerModel, source: workerModelSource() },
     'agent-worker: launch model resolved',
   )
   logWorkerClaudeVersion(ctx)

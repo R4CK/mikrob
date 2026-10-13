@@ -3680,6 +3680,13 @@ export function listKanbanCards(includeArchived = false): KanbanCard[] {
     .all() as KanbanCard[]
 }
 
+// Whether any card -- archived included -- is assigned to `name`, case-insensitively.
+// The kanban `agent=` filter accepts such a name even when it is not a configured agent:
+// external contributors get cards too, and they must be filterable.
+export function kanbanAssigneeExists(name: string): boolean {
+  return db.prepare('SELECT 1 FROM kanban_cards WHERE assignee = ? COLLATE NOCASE LIMIT 1').get(name) !== undefined
+}
+
 export function getKanbanCard(id: string): KanbanCard | undefined {
   return db.prepare('SELECT rowid AS seq, * FROM kanban_cards WHERE id = ?').get(id) as KanbanCard | undefined
 }
@@ -3774,6 +3781,20 @@ function assertValidAssignee(assignee: unknown): void {
   if (isInvalidAssigneeShape(assignee)) throw new Error(INVALID_ASSIGNEE_TYPE_MESSAGE)
   if (isForbiddenAssignee(assignee)) throw new Error(FORBIDDEN_ASSIGNEE_MESSAGE)
 }
+
+// The fields createKanbanCard actually reads off its argument. Deliberately a
+// SUBSET of KANBAN_WRITABLE_FIELDS (the PUT/update set), not the same list:
+// creation computes its own `sort_order` (see below) and never accepts
+// `archived_at` (a new card is never pre-archived), so a caller that POSTs
+// either is silently ignored no matter what the row ends up looking like.
+// Exported so the HTTP boundary (POST /api/kanban) can build its "known
+// field" warn-set from what this function actually writes instead of
+// borrowing PUT's set and silently under-warning on these two (Szotasz's
+// review on #1501: `POST {title, archived_at: 12345, sort_order: 99}`
+// returned 200, stored `archived_at=null` and `sort_order=0`, logged nothing).
+export const KANBAN_CREATE_FIELDS = [
+  'title', 'description', 'status', 'assignee', 'priority', 'project', 'parent_id', 'due_date',
+] as const
 
 export function createKanbanCard(card: {
   id: string

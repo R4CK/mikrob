@@ -59,8 +59,23 @@ import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction } from './channel-continue-policy.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
+import { launchableInstallDefault } from './default-model-guard.js'
 import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
-import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE } from '../config.js'
+import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE, FLEET_PYTHON_VENV } from '../config.js'
+import { fleetVenvBin } from '../fleet-venv.js'
+
+// FLEETVENV923: the `<venv>/bin:` prefix for a launch PATH, or '' when the venv
+// has no bin/ directory or its path cannot sit safely inside the double-quoted
+// `export PATH="..."` of the launch command (a `"`, `$` or backtick in the
+// path would be re-interpreted by the shell; a relative path would resolve
+// against each launch's own `cd` -- skipped rather than escaped or guessed,
+// with a warning, because a fleet venv at such a path is a config mistake).
+// Exported for unit tests; `exists` is the seam.
+export function fleetVenvPathPrefix(venvDir: string = FLEET_PYTHON_VENV, exists: (p: string) => boolean = existsSync): string {
+  const { prefix, refused } = fleetVenvBin(venvDir, exists)
+  if (refused) logger.warn({ venvDir }, 'fleetVenvPathPrefix: venv path is not absolute or contains a shell-active character; PATH prefix skipped')
+  return prefix
+}
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited, toDeniedMcpServerEntries } from './mcp-inheritance.js'
 import { readEnvFile } from '../env.js'
@@ -2255,9 +2270,17 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
       logger.warn({ err, name }, 'pre-launch detached-claude reap failed (continuing)')
     }
 
+    // DEFAULTCLIGUARD927 (Köteg 12, upstream 0bea3cd7): an agent that resolved no model of its
+    // own launches the install default, guarded against a CLI that cannot run it.
+    // customProviderId is already resolved at the top of this function (line ~2124); the
+    // missing-definition abort upstream pairs with this is NOT duplicated here -- resolveProviderEnv
+    // below already fail-closes via getCustomProviderOrThrow (throws on a missing/corrupt entry),
+    // so a second explicit check here would just be redundant dead code.
+    const resolvedModel = resolveAgentModelDetailed(name)
+    const rawModel = resolvedModel.source === 'default' ? await launchableInstallDefault(`agent:${name}`) : resolvedModel.model
     // `openrouter-auto:<tier>` resolves to the tier's current recommended model
     // (weekly-refreshed); a concrete OpenRouter id (contains '/') passes through.
-    const model = resolveOpenRouterModel(readAgentModel(name))
+    const model = resolveOpenRouterModel(rawModel)
     const authMode = readAgentAuthMode(name)
     // !customProviderId (WhiteHat NO-GO, comment 15852, card 617d136d): upstream's own version of
     // this line (00140c57, src/web/agent-process.ts:1882) is `!isCustom && model.startsWith('claude-')`
@@ -2879,7 +2902,11 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // inherited by every session on the shared server) before its own provider credential is
     // exported, or the CLI prefers the inherited fleet token over it -> 401 against the
     // third-party endpoint. Depends on `needsFleetOauth` above.
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    // FLEETVENV923 (Köteg 12, upstream 0bea3cd7): the fleet venv's bin/ goes FIRST so its python3
+    // beats the Homebrew one that carries no packages -- same mechanism already adopted in
+    // scripts/watchdog.sh this round.
+    const venvPathPrefix = fleetVenvPathPrefix()
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
