@@ -42,6 +42,27 @@ LOG="$BASE/store/agent-msg-failures.log"
 
 FROM="${1:?from required}"; TO="${2:?to required}"; C="${3:?content required (or - for STDIN)}"
 [ "$C" = "-" ] && C="$(cat)"
+
+# MSGGATE924: homoglyph guard -- contaminated inter-agent messages break
+# every later search for the word. Gate sits on the raw text, before json.dumps.
+HOMOGLYPH_BIN="${MARVEEN_HOMOGLYPH_BIN:-$BASE/scripts/lib/homoglyph.py}"
+if [ ! -r "$HOMOGLYPH_BIN" ]; then
+  printf 'UNCHECKED: homoglyph checker missing (%s), sending anyway\n' "$HOMOGLYPH_BIN" >&2
+else
+  HCHECK_RC=0
+  printf '%s' "$C" | python3 "$HOMOGLYPH_BIN" >/dev/null 2>"${TMPDIR:-/tmp}/agent-msg-hcheck-$$.err" || HCHECK_RC=$?
+  if [ "$HCHECK_RC" = "3" ]; then
+    cat "${TMPDIR:-/tmp}/agent-msg-hcheck-$$.err" >&2
+    rm -f "${TMPDIR:-/tmp}/agent-msg-hcheck-$$.err"
+    exit 3
+  elif [ "$HCHECK_RC" != "0" ]; then
+    printf 'CRASHED: homoglyph checker exited %s -- not sending\n' "$HCHECK_RC" >&2
+    rm -f "${TMPDIR:-/tmp}/agent-msg-hcheck-$$.err"
+    exit 4
+  fi
+  rm -f "${TMPDIR:-/tmp}/agent-msg-hcheck-$$.err"
+fi
+
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: no token file at $TOKEN_FILE"; exit 1; }
 TOKEN="$(cat "$TOKEN_FILE")"
 

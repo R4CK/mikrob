@@ -20187,3 +20187,24 @@ A 21abfe0b (a WhiteHat testvérpárjának, cybersec2/WhiteHat2-nek a bekötése 
 A 31e70128 ezeket zárta: (1) a literál "CYBERSEC2 GO"/"WHITEHAT2 GO" verdikt-TOKEN (nem csak a cybersec2-AUTHOR bare szóval) felismerését `landing-gate-verdict-parse.py`-ban most a NOQA/NONE megkülönböztetés rögzíti (M14 -- az OK verdikt csak `qa_passes`-től függ, ezért egy QA PASS mellé párosított teszt vakfolt lett volna, lásd a selftest saját megjegyzését); (2) a `2?` testvér-tolerancia HIÁNYÁT a CYBERED/REDHAT FAIL-ágon ("CYBERED2 NO-GO", "REDHAT2 GO/NO-GO" NEM ismerhető fel verdiktként) mind `landing-gate-verdict-parse.py`-ban, mind a vonatkozó selftestben (M12/M13) -- mindkét irányú mutáció (2? levéve a CYBERSEC PASS-ágról, 2? visszatéve a CYBERED FAIL-ágra) egyenként lefuttatva, PONTOSAN az érintett új teszt bukik, a restaurált fájl byte-pontosan egyezik az eredetivel. A seed abszolút-út tesztlyuk (M16) és a nem ebbe a kártyába tartozó skill-drift sibling-pair guard (skill-NEV/SKILL.md-hash/Core-lista) a 31e70128 fő tétele -- lásd a kártya saját REVIEW-ját.
 
 **Ki döntött:** cybered (21abfe0b GO), backend (31e70128 tesztlyuk-zárás). Gate: QA + RedHat (21abfe0b); QA + Cybersec (31e70128, a kártya saját kijelölése).
+---
+
+**2026-10-12 -- Upstream Köteg 11 (60aaaef9..59e85ead, 28 commit, 2026-09-27..2026-09-29) konfliktus-feloldások**
+
+Döntések fájlonként (fork-oldal az alapértelmezés, eltérések felsorolva):
+
+- **package.json, package-lock.json**: fork-oldal tartva (verzió, fork-specifikus package konfig megmarad).
+- **scripts/hooks/bash-egress-parser.mjs, src/__tests__/bash-egress-parser.test.ts, src/__tests__/command-task-run-binding.test.ts, src/__tests__/picker-cli-gate.test.ts**: törölt marad (DU -- fork törölte, upstream módosította; a törlés szándékos fork-eltérés).
+- **src/web/agent-process.ts**: fork-oldal tartva. Upstream `ensureProjectRootInClaudeMd` és `ensureMessageCloseSection` helyett fork `ensureProjectRootAnchor` (fleet-anchor logika) és `ensureLocalFirstSection` marad. A két upstream funkció a fork saját megoldásait váltja le -- nem portolható vak ours nélkül, de a fork-logika lefedi a szükséges viselkedést.
+- **src/__tests__/command-task-async.test.ts, src/__tests__/vault-export-key-resolution.test.ts**: fork-oldal tartva (AA ütközés -- mindkét oldal hozzáadott, fork verziója fleet-specifikus tesztfedettséggel).
+- **Többi UU fájl** (agent-msg.sh, outgoing-copy-gate.py, limit-monitor-signals.test.sh, stb.): fork-oldal tartva.
+
+**Ki döntött:** backend3 (8a3a1e84 kártya alapján, MikroB utasítása).
+
+---
+
+**2026-10-13 -- 8a3a1e84 landolás: `store/lint-baseline.json` ütközés + ratchet-bővítés indoklással**
+
+A `store/lint-baseline.json` is ütközött a merge-ben (HEAD: `no-unsafe-argument`=132/`no-unused-vars`=168, card/8a3a1e84: 133/170). A HEAD-oldalt vettem át (a ratchet csak szigorodhat, a card oldala elavult volt), majd a `lint-ratchet.sh` a teljes merge-eredményen 2 ÚJ `no-unused-vars` leletet talált: `src/__tests__/router-voice-stt-gate.test.ts:25-26`, két `(..._a: unknown[])` rest-paraméter, amit a kódbázis `no-unused-vars` szabálya (nincs `argsIgnorePattern`) jelent, ugyanúgy, mint a már meglévő 168 közül sok tucat azonos `_a`-mintájú esetet (pl. `router-batch-inject.test.ts`, `message-router-tick-cap.test.ts`). Ez a fájl az upstream Köteg 11 szinkron tartalma, a mintát nem én vezettem be -- a kódbázisban már bevett (nem javított) konvenció. A sebészi-változtatás elv (3. kódminőségi elv) szerint NEM ezt a 2 sort javítottam ki külön stílussal, hanem a `store/lint-ratchet.sh --update`-tel a baseline-t a tényleges, mért értékre (170) emeltem, dokumentálva itt az okot -- konzisztensen a már ott lévő, el nem hárított azonos hibaosztállyal.
+
+**Ki döntött:** backend3 (8a3a1e84 landolás, 2026-10-13).

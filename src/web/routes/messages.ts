@@ -330,7 +330,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // check, for the same router-parity reason) means a forged bucket is never created at all.
       const sanitized = sanitizeAgentIdent(storedTo)
       if (!isKnownAgent(sanitized)) {
-        json(res, { error: `unknown agent '${storedTo}' -- to must be a registered fleet agent id, or "<system>/<agent>" for a federated address` }, 400)
+        json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id, or "<system>/<agent>" for a federated address` }, 400)
         return true
       }
       // Cybered NO-GO on the first version of this check (card 523a1426): validating the

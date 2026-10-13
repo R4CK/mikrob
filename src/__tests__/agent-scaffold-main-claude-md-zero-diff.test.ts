@@ -43,7 +43,8 @@
 // ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection,
 // ensureEvidenceSection, ensureMcpListChannelSection), PLUS three more that no production call site
 // currently passes MAIN_AGENT_ID to but whose source still resolves a MAIN path if one ever did
-// (ensureLocalFirstSection, ensureFleetRosterSection, ensureProjectRootAnchor) -- ten total.
+// (ensureLocalFirstSection, ensureFleetRosterSection, ensureProjectRootAnchor), PLUS
+// ensureMessageCloseSection (card 8a3a1e84, WhiteHat NO-GO B1) -- eleven total.
 // Deliberately EXCLUDES ensureFederationClaudeMdSection: that writer's main-agent behaviour is NOT
 // static -- it adds or REMOVES a block depending on live store/ federation state (WhiteHat INFO I1
 // on card 5a15cd5a), a separate, as yet undecided question, not a static-drift bug this collector
@@ -97,6 +98,7 @@ const {
   ensureLocalFirstSection,
   ensureFleetRosterSection,
   ensureProjectRootAnchor,
+  ensureMessageCloseSection,
 } = await import('../web/agent-scaffold.js')
 
 const SCAFFOLD_SOURCE = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
@@ -109,7 +111,9 @@ const SCAFFOLD_SOURCE = readFileSync(join(__dirname, '..', 'web', 'agent-scaffol
 // WHICH functions check A was actually verifying. ensureProjectRootAnchor (card 8c6f30fb,
 // HOSTMOVE923) is included too: it already guards MAIN, just via a different mechanism (re-anchors
 // baked PROJECT_ROOT paths rather than writing a marker block) -- the guard-presence assertion
-// still applies to it word-for-word.
+// still applies to it word-for-word. ensureMessageCloseSection (card 8a3a1e84, WhiteHat NO-GO B1)
+// is included too: the guard is the fix for that NO-GO, the message-close section was writing to
+// the tracked main-agent CLAUDE.md before it.
 //
 // ensureSkillsPathTrapSection remains the ONLY function that legitimately still writes for MAIN via
 // content-match idempotency (ternary to PROJECT_ROOT/CLAUDE.md, no guard) -- it IS called with
@@ -123,9 +127,10 @@ const MAIN_EXEMPT_FUNCTIONS = [
   'ensureAutonomySection',
   'ensureLocalFirstSection',
   'ensureProjectRootAnchor',
+  'ensureMessageCloseSection',
 ]
 
-describe('the no-op-for-MAIN guard is present in source, on all eight exempt writers (card 81f202bd)', () => {
+describe('the no-op-for-MAIN guard is present in source, on all nine exempt writers (cards 81f202bd + 8a3a1e84)', () => {
   for (const fnName of MAIN_EXEMPT_FUNCTIONS) {
     it(`${fnName}'s first statement is the MAIN_AGENT_ID no-op guard`, () => {
       const start = SCAFFOLD_SOURCE.indexOf(`export function ${fnName}(`)
@@ -146,8 +151,8 @@ describe('the no-op-for-MAIN guard is present in source, on all eight exempt wri
 const TOKEN_PATH_RE = /cat [^)]+\/store\/\.dashboard-token/g
 const normalize = (s: string) => s.replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
 
-describe('every static main-agent CLAUDE.md writer stays in sync with its committed block (card 81f202bd)', () => {
-  it('produces a zero-diff (modulo PROJECT_ROOT) after all ten writers run against MAIN', async () => {
+describe('every static main-agent CLAUDE.md writer stays in sync with its committed block (cards 81f202bd + 8a3a1e84)', () => {
+  it('produces a zero-diff (modulo PROJECT_ROOT) after all eleven writers run against MAIN', async () => {
     const { REPO_ROOT } = await import('./helpers/repo-location.js')
     const original = readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8')
 
@@ -172,6 +177,7 @@ describe('every static main-agent CLAUDE.md writer stays in sync with its commit
       ensureLocalFirstSection('mikrob')
       ensureFleetRosterSection('mikrob')
       ensureProjectRootAnchor('mikrob')
+      ensureMessageCloseSection('mikrob')
 
       const after = readFileSync(copyPath, 'utf-8')
       expect(normalize(after), 'a main-agent section writer changed the committed CLAUDE.md -- its generator text drifted from the statically committed block').toBe(normalize(original))
