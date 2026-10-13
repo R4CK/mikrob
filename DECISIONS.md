@@ -20179,3 +20179,11 @@ A kártya ezzel F1 + F2 mindkét részét zárja; L1/L2 nem ennek a kártyának 
 Teljes fleet-test.sh: a landoló körben, az eredménnyel.
 
 **Ki döntött:** backend. Gate: QA + RedHat (a kártya saját kijelölése, "Gate: qa, cybered").
+
+## 2026-10-12 -- Kártya 21abfe0b delta (komment 16360, RedHat GO, Gate-SHA 9ddfc449): WhiteHat2/cybersec2 bekötve a gate-eszközökbe, a visszamaradt tesztlyukak a 31e70128 testvér-paritás őr kártyán zárva
+
+A 21abfe0b (a WhiteHat testvérpárjának, cybersec2/WhiteHat2-nek a bekötése a gate-eszközökbe: `gate-role.sh`, `kanban-gate-completeness-guard.ts`, `gate_designation.py`, `cybersec-gate-scan.py`, `fleet-nudger.sh`, seed-fleet-agents/cybersec2) RedHat GO-val lezárt a 16225-ös NO-GO B1/B2/B3 leleteinek javítása után (Gate-SHA `9ddfc449f218a6d28e7bd2859be94d610f938790`): a szerver-oldali gate-lezáró őr felismeri a cybersec2-t, a seedben nincs `/home/neon` abszolút út, a `fleet-nudger.selftest.sh` zöld. A GO nem blokkolt, de három LOW tesztlyukat nevezett meg (RedHat 16360 mutáns-mérése, M12/M13/M14/M16: nem nyitnak támadási utat, de egy regresszió csendben visszajöhetne), a 31e70128 testvér-paritás őr kártyára utalva.
+
+A 31e70128 ezeket zárta: (1) a literál "CYBERSEC2 GO"/"WHITEHAT2 GO" verdikt-TOKEN (nem csak a cybersec2-AUTHOR bare szóval) felismerését `landing-gate-verdict-parse.py`-ban most a NOQA/NONE megkülönböztetés rögzíti (M14 -- az OK verdikt csak `qa_passes`-től függ, ezért egy QA PASS mellé párosított teszt vakfolt lett volna, lásd a selftest saját megjegyzését); (2) a `2?` testvér-tolerancia HIÁNYÁT a CYBERED/REDHAT FAIL-ágon ("CYBERED2 NO-GO", "REDHAT2 GO/NO-GO" NEM ismerhető fel verdiktként) mind `landing-gate-verdict-parse.py`-ban, mind a vonatkozó selftestben (M12/M13) -- mindkét irányú mutáció (2? levéve a CYBERSEC PASS-ágról, 2? visszatéve a CYBERED FAIL-ágra) egyenként lefuttatva, PONTOSAN az érintett új teszt bukik, a restaurált fájl byte-pontosan egyezik az eredetivel. A seed abszolút-út tesztlyuk (M16) és a nem ebbe a kártyába tartozó skill-drift sibling-pair guard (skill-NEV/SKILL.md-hash/Core-lista) a 31e70128 fő tétele -- lásd a kártya saját REVIEW-ját.
+
+**Ki döntött:** cybered (21abfe0b GO), backend (31e70128 tesztlyuk-zárás). Gate: QA + RedHat (21abfe0b); QA + Cybersec (31e70128, a kártya saját kijelölése).

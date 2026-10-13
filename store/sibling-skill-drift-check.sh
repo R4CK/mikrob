@@ -50,11 +50,16 @@ MARVEEN_MAIN="${MARVEEN_MAIN:-/home/neon/marveen}"
 LIVE_AGENTS_DIR="${LIVE_AGENTS_DIR:-$MARVEEN_MAIN/agents}"
 SEED_DIR="${SEED_DIR:-$SELF_DIR/../seed-fleet-agents}"
 
-declare -A FAMILIES=(
-  [backend]="backend backend2 backend3"
-  [qa]="qa qa2"
-  [fron-ted]="fron-ted fron-teddy"
-)
+# Card 31e70128: this used to be its own hardcoded copy of the sibling-family list, separate
+# from (and already drifted from -- missing the cybersec/cybersec2 family) agent-skill-drift-sync.sh's
+# own copy. Both now source store/sibling-family-list.sh, the one place this list is declared.
+# shellcheck source=./sibling-family-list.sh
+source "$SELF_DIR/sibling-family-list.sh"
+declare -A FAMILIES=()
+for _k in "${SIBLING_FAMILY_KEYS[@]}"; do
+  FAMILIES["$_k"]="$(sibling_family_members "$_k")"
+done
+unset _k
 
 ONLY_FAMILIES=()
 DO_LIVE=1

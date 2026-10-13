@@ -61,6 +61,7 @@ import {
   parseOrderingResponse,
   decideGeminiOrder,
   runGeminiOrchestratorSweep,
+  runAsEntryPoint,
   type OrchestratorCard,
 } from '../gemini-orchestrator.js'
 
@@ -133,13 +134,30 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
     expect(isEligibleForGeminiOrdering(card({ title: 'Szemelyes adat maszkolasa a naploban' }))).toBe(false)
     expect(isEligibleForGeminiOrdering(card({ title: 'Hozzaferes-kezeles atirasa' }))).toBe(false)
   })
-  it('a label matches the blocked set only by EXACT value, not by content-stem (mirrors is_gemini_blocked: tags are never stem-matched)', () => {
+  it('a label matches the blocked exact-tag set (e.g. finance): excluded', () => {
     expect(isEligibleForGeminiOrdering(card({ labels: ['finance'] }))).toBe(false)
-    // "[Biztonsag]" and "biztonsag" are not literal BLOCKED_TAGS members (that set has "security",
-    // not the Hungarian word) and are not a blokkolt-* prefix, so a benign-titled card carrying
-    // them is NOT excluded by the tag check alone -- this is the landed filter's real behavior,
-    // not a gap introduced by this module.
-    expect(isEligibleForGeminiOrdering(card({ labels: ['[Biztonsag]'] }))).toBe(true)
+  })
+  // RedHat N2 (comment 17825, same re-gate as WhiteHat2 F1' above): a label that is NOT a literal
+  // BLOCKED_TAGS member still needs the same stem check title/desc already get. "[Biztonsag]" is
+  // not an exact match (that set has "security", not the Hungarian word) and is not a blokkolt-*
+  // prefix -- the earlier, now-fixed behavior let a benign-titled card carrying it through
+  // unblocked, which is exactly the kind of label-vs-title asymmetry Peti 11131 forbids.
+  it('a tag/label that is not an exact blocked-tag match but DOES contain a sensitive stem: excluded (N2 fix)', () => {
+    expect(isEligibleForGeminiOrdering(card({ labels: ['[Biztonsag]'] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ labels: ['jelszo-rotacio'] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ labels: ['szamla'] }))).toBe(false)
+  })
+  // WhiteHat2 F1' (comment 17828/17831, same re-gate): the SEC/BLOKKOLT-* marker often lives as a
+  // "[TAG]" prefix in the TITLE, not as a kanban label -- isEligibleForGeminiOrdering only ever
+  // sends `card.labels` as tags, so a title-only marker with NO matching label used to sail
+  // through this gate entirely. The fix lives in offload-dispatch.sh's --check-blocked entry
+  // point itself (it now extracts title-prefix bracket tags the same way tags_for() does), so
+  // these pass through the REAL subprocess, not a mock, to exercise the actual fix end to end.
+  it('a title-prefix [SEC]/[BLOKKOLT-*] tag with NO matching label: excluded (F1 prime fix)', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: '[SEC] Benign title', labels: [] }))).toBe(false)
+    expect(
+      isEligibleForGeminiOrdering(card({ title: '[BLOKKOLT-Peti-stop] [MikroB][INFRA] Benign title', labels: [] })),
+    ).toBe(false)
   })
   it('a benign label alongside a benign title: still eligible', () => {
     expect(isEligibleForGeminiOrdering(card({ labels: ['@frontend', 'ui'] }))).toBe(true)
@@ -148,9 +166,45 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
     forcedSpawnResult = { status: null, error: new Error('spawn bash ENOENT') }
     expect(isEligibleForGeminiOrdering(card())).toBe(false)
   })
-  it('fail-closed: an unexpected exit code (neither 0 nor 1) is treated as blocked', () => {
+  it('fail-closed: an unexpected exit code (not the 42 allowed-sentinel) is treated as blocked', () => {
     forcedSpawnResult = { status: 2 }
     expect(isEligibleForGeminiOrdering(card())).toBe(false)
+  })
+  // N1 (RedHat 17825/17831): bash's own generic failure code (1) must NOT be read as "allowed" --
+  // that collision is exactly what the sentinel-42 contract (not plain exit 1) exists to prevent.
+  it('fail-closed: exit code 1 (the OLD "allowed" meaning, also bash\'s generic failure code) is treated as blocked, not allowed', () => {
+    forcedSpawnResult = { status: 1 }
+    expect(isEligibleForGeminiOrdering(card())).toBe(false)
+  })
+  it('CONTROL: exit code 42 (the actual allowed sentinel) is treated as allowed', () => {
+    forcedSpawnResult = { status: 42 }
+    expect(isEligibleForGeminiOrdering(card())).toBe(true)
+  })
+  // N4 (RedHat 17825): an unbounded spawnSync could hang the whole sweep forever on a wedged
+  // subprocess -- a timeout option must actually be passed, not just assumed from the fail-closed
+  // status-null handling above (that only covers what happens AFTER a timeout fires).
+  it('N4: spawnSync is called with a bounded timeout, not unbounded', async () => {
+    const { spawnSync } = await import('node:child_process')
+    isEligibleForGeminiOrdering(card())
+    const lastCall = vi.mocked(spawnSync).mock.calls.at(-1)
+    const opts = lastCall?.[2] as { timeout?: number } | undefined
+    expect(opts?.timeout).toBeGreaterThan(0)
+  })
+})
+
+describe('runAsEntryPoint (F2 / RedHat N3, comment 17825): initDatabase before the DB read', () => {
+  it('calls initDatabase before runGeminiOrchestratorSweep would read from the DB', async () => {
+    const { initDatabase, listKanbanCards } = await import('../db.js')
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never)
+    runAsEntryPoint()
+    expect(initDatabase).toHaveBeenCalled()
+    // The kill switch defaults OFF in this suite (no gemini-orchestrator-enabled.json fixture is
+    // set up), so the sweep itself no-ops without ever reaching listKanbanCards -- this assertion
+    // exists only so a future change that makes the sweep run unconditionally does not silently
+    // start reading the DB before this test would notice.
+    await new Promise((r) => setTimeout(r, 0))
+    expect(listKanbanCards).not.toHaveBeenCalled()
+    exitSpy.mockRestore()
   })
 })
 
