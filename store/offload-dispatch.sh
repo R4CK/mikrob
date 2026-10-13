@@ -152,9 +152,15 @@ _HOMOGLYPH_MAP = str.maketrans({
 })
 
 def norm(s):
-    """casefold + homoglyph map + NFKD-normalize (handles fullwidth/compat chars) -> ASCII."""
+    """casefold + homoglyph map + NFKD-normalize (handles fullwidth/compat chars) -> ASCII.
+    C1 (card 33047d3f): strips Cc (control) chars before the final ascii-encode -- an ASCII
+    control byte (DEL/BS/US/...) spliced into a sensitive word IS already ascii, so it survives
+    encode("ascii","ignore") unchanged and splits the word, bypassing SENS_RE. Stripping it here
+    reunites the word before matching."""
     s = s.strip().casefold().translate(_HOMOGLYPH_MAP)
-    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+    decomposed = unicodedata.normalize("NFKD", s)
+    decomposed = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Cc")
+    return decomposed.encode("ascii", "ignore").decode()
 
 # F2 (WhiteHat NO-GO, komment 17848, card e87e7520): the homoglyph table is open-ended and
 # norm() silently DROPS any non-ASCII letter it does not know (encode("ascii","ignore")) --
@@ -201,6 +207,12 @@ BLOCKED_TAGS = {
 }
 tags_n = []
 for tag in all_tags:
+    # C3 (card 33047d3f): the F2 fail-closed check (has_unmapped_letter) only ran on title/desc
+    # below, never on tags -- a tag with an unmapped homoglyph (e.g. "s" + Greek epsilon + "c")
+    # fell through norm()s silent ascii-drop into something that no longer matched
+    # BLOCKED_TAGS, instead of being blocked outright. Extend F2 to tags too.
+    if has_unmapped_letter(tag):
+        sys.exit(0)  # blocked (F2 extended to labels)
     t = norm(tag)
     tags_n.append(t)
     if t.startswith("blokkolt-"):   # ANY BLOKKOLT-* suffix
