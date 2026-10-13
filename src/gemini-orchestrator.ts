@@ -99,10 +99,22 @@ const CHECK_BLOCKED_TIMEOUT_MS = 10_000
  * must never be read as "safe".
  */
 function isBlockedByLandedFilter(project: string, tags: string, title: string, desc: string): boolean {
-  const result = spawnSync('bash', [OFFLOAD_DISPATCH_SCRIPT, '--check-blocked', project, tags, title, desc], {
-    encoding: 'utf-8',
-    timeout: CHECK_BLOCKED_TIMEOUT_MS,
-  })
+  // H2 (WhiteHat2, card 82a81c45 comment 17986): spawnSync THROWS synchronously (not a result.error)
+  // when any argv string contains an embedded NUL byte -- a title/tag with a literal NUL crashed this
+  // whole function, and because this is called from inside a .filter() callback with no try/catch
+  // around it, the throw propagated out and aborted the ENTIRE sweep (every other candidate card too),
+  // not just the one with the bad title. Caught here and treated as blocked (fail-closed), same as any
+  // other abnormal outcome this function already returns true for -- one card loses its Gemini slot,
+  // the sweep keeps going for the rest.
+  let result: ReturnType<typeof spawnSync>
+  try {
+    result = spawnSync('bash', [OFFLOAD_DISPATCH_SCRIPT, '--check-blocked', project, tags, title, desc], {
+      encoding: 'utf-8',
+      timeout: CHECK_BLOCKED_TIMEOUT_MS,
+    })
+  } catch {
+    return true
+  }
   return result.status !== CHECK_BLOCKED_ALLOWED_RC
 }
 

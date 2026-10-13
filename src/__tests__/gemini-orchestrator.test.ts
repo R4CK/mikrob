@@ -159,8 +159,38 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
       isEligibleForGeminiOrdering(card({ title: '[BLOKKOLT-Peti-stop] [MikroB][INFRA] Benign title', labels: [] })),
     ).toBe(false)
   })
+  // N5 (RedHat GO 23a14c4b comment 17975, card 82a81c45): the title-prefix bracket extraction
+  // used to run on the RAW title -- an invisible char, a fullwidth bracket, or (per WhiteHat2
+  // 17986 H1) a BOM ahead of the tag all desync the `^(?:\s*\[...\])+` regex, so the [SEC] tag
+  // was never seen as a lead tag and (having no matching label and no sensitive stem in the
+  // benign title text) sailed through unblocked. Fixed by folding the title (shared _fold(),
+  // offload-dispatch.sh) before running the bracket regex. Real subprocess, not mocked.
+  it('a zero-width-space before/inside a [SEC] title-prefix tag: still excluded (N5)', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: '​[SEC] Benign title', labels: [] }))).toBe(false)
+  })
+  it('a fullwidth bracket [SEC] title-prefix tag: still excluded (N5)', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: '［SEC］ Benign title', labels: [] }))).toBe(false)
+  })
+  // H1 (WhiteHat2 comment 17986): same root as N5 -- a BOM ahead of the tag makes it "not at the
+  // start" of the raw string from the regex's point of view, even though it IS the title-prefix.
+  it('a BOM before a [SEC] title-prefix tag: still excluded (H1)', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: '﻿[SEC] Benign title', labels: [] }))).toBe(false)
+  })
+  it('an invisible char splitting an EARLIER bracket group does not hide a LATER [SEC] tag: still excluded (N5)', () => {
+    expect(
+      isEligibleForGeminiOrdering(card({ title: '[MikroB]​[INFRA][SEC] Benign', labels: [] })),
+    ).toBe(false)
+  })
   it('a benign label alongside a benign title: still eligible', () => {
     expect(isEligibleForGeminiOrdering(card({ labels: ['@frontend', 'ui'] }))).toBe(true)
+  })
+  // H2 (WhiteHat2 comment 17986): a title containing a literal NUL byte makes spawnSync THROW
+  // synchronously (Node refuses a NUL-containing argv string) -- uncaught, this crashed the
+  // ENTIRE sweep via the unguarded .filter() callback, not just this one card. Real subprocess
+  // path (no forcedSpawnResult), so the real throw is exercised, not a mocked return value.
+  it('a NUL byte in the title does not throw and is treated as blocked, fail-closed per card (H2)', () => {
+    expect(() => isEligibleForGeminiOrdering(card({ title: 'Benign\x00title', labels: [] }))).not.toThrow()
+    expect(isEligibleForGeminiOrdering(card({ title: 'Benign\x00title', labels: [] }))).toBe(false)
   })
   it('fail-closed: a crashed/killed subprocess (status null) is treated as blocked, never allowed', () => {
     forcedSpawnResult = { status: null, error: new Error('spawn bash ENOENT') }
@@ -293,6 +323,18 @@ describe('decideGeminiOrder (condition 3: fail-closed end to end)', () => {
     expect(result).toEqual({ ok: true, order: ['ok1'] })
     expect(seenPrompt).not.toContain('Jelszo')
     expect(seenPrompt).not.toContain('sec1')
+  })
+
+  // H2 regression (card 82a81c45, comment 17986): before the fix, a NUL byte in ONE card's title
+  // made spawnSync throw synchronously inside the eligibility .filter() callback, which aborted
+  // decideGeminiOrder for EVERY candidate card in the batch, not just the offending one -- the
+  // whole sweep got nothing, not a degraded sweep missing one card. This pins the fail-closed-
+  // per-card behavior: the NUL-titled card is excluded, everything else still orders normally.
+  it('a NUL byte in one card title does not abort ordering for the other cards (H2)', async () => {
+    const cards = [card({ id: 'ok1', title: 'Add dark mode' }), card({ id: 'nul1', title: 'Benign\x00title' })]
+    const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: '["ok1"]' }))
+    const result = await decideGeminiOrder(cards, 'key', callGemini)
+    expect(result).toEqual({ ok: true, order: ['ok1'] })
   })
 })
 
