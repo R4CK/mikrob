@@ -564,6 +564,35 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'prⅰvacy notice', '')).toBe('BLOCKED')
   })
 
+  // C1 (WhiteHat2 GO 17900, card e87e7520 -> deferred to 33047d3f): an ASCII control byte
+  // (DEL/BS/US/...) spliced into a sensitive stem is already ascii, so it survived
+  // encode("ascii","ignore") in norm() unchanged and split the word, bypassing SENS_RE.
+  // runIsGeminiBlockedRaw (not the JSON.stringify-based helper) is required: JSON.stringify
+  // would \u00XX-escape a C0 control byte as six literal text characters, which bash's
+  // double-quote parsing does not expand back -- only a real argv element carries the byte.
+  it('blocks a DEL (0x7F) control char spliced into "secret" in the title (C1)', () => {
+    expect(runIsGeminiBlockedRaw('mikrob', 'BE,NORMAL', 'se\x7Fcret feature', '')).toBe('BLOCKED')
+  })
+  it('blocks a BS (0x08) control char spliced into "jelszo" in the description (C1)', () => {
+    expect(runIsGeminiBlockedRaw('mikrob', 'BE,NORMAL', 'clean title', 'jel\x08szo csere')).toBe('BLOCKED')
+  })
+  it('blocks a US (0x1F) control char spliced into "tenant" in the title (C1)', () => {
+    expect(runIsGeminiBlockedRaw('mikrob', 'BE,NORMAL', 'ten\x1Fant scope fix', '')).toBe('BLOCKED')
+  })
+
+  // C3 (WhiteHat2 GO 17900, card e87e7520 -> deferred to 33047d3f): the F2 fail-closed check
+  // (has_unmapped_letter) only ran on title/desc, never on tags -- a tag with an unmapped
+  // homoglyph normalized via norm()'s silent ascii-drop into something that no longer matched
+  // BLOCKED_TAGS, instead of being blocked outright.
+  it('blocks a tag containing an unmapped Greek-epsilon homoglyph for "sec" (C3)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'sεc,BE,NORMAL')).toBe('BLOCKED')
+  })
+  it('still allows a genuinely accented Hungarian tag after the C3 fix (no over-blocking)', () => {
+    // "é" NFKD-decomposes to base-ASCII "e" + a combining mark (category Mn, not a Letter) --
+    // has_unmapped_letter() must not trip on this, same invariant as the title/desc check.
+    expect(runIsGeminiBlocked('mikrob', 'BE,FELÉPÍTÉS,NORMAL')).toBe('ALLOWED')
+  })
+
   // T1: CALL-SITE GUARD -- is_gemini_blocked must be called at both Gemini call sites.
   // These tests go RED if the guard is removed from either call site.
 })
@@ -1352,6 +1381,37 @@ describe('gemini-offload-call.sh detects secrets fail-closed (F2, card a92e9913)
     const r = redactInput(text)
     expect(r.exitCode).toBe(0)
     expect(r.output.trim()).toBe(text)
+  })
+
+  // C1 (WhiteHat2 GO 17900, card e87e7520 -> deferred to 33047d3f): an ASCII control byte
+  // spliced into the "cred" pattern's keyword itself (inside "token", not just before it --
+  // a char right before an already-alnum-adjacent keyword can accidentally satisfy the
+  // boundary lookbehind instead of breaking the match) is already ascii and survived _fold()
+  // untouched, splitting the literal keyword text the alternation needs to match.
+  it('blocks (exit 2, no output) when a DEL control char splits the "token" keyword itself (C1)', () => {
+    const r = redactInput('tok\x7Fen: ' + 'abcdefgh12345678')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+  it('blocks (exit 2, no output) when a US control char splits the "password" keyword itself (C1)', () => {
+    const r = redactInput('pass\x1Fword: ' + '"my secret value"')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+
+  // C2 (WhiteHat2 GO 17900, card e87e7520 -> deferred to 33047d3f): U+2028 (LINE SEPARATOR)
+  // and U+2800 (BRAILLE PATTERN BLANK) are invisible but neither decomposes under NFKD nor
+  // falls into the Mn/Cf categories _fold() stripped before this fix, so either one spliced
+  // into a keyword broke the SECRET_PATTERNS alternation the same way a control char did.
+  it('blocks (exit 2, no output) when U+2028 (LINE SEPARATOR) splits the "token" keyword (C2)', () => {
+    const r = redactInput('tok en: ' + 'abcdefgh12345678')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
+  })
+  it('blocks (exit 2, no output) when U+2800 (BRAILLE PATTERN BLANK) splits the "token" keyword (C2)', () => {
+    const r = redactInput('tok⠀en: ' + 'abcdefgh12345678')
+    expect(r.exitCode).toBe(2)
+    expect(r.output).toBe('')
   })
 })
 
