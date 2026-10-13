@@ -181,7 +181,21 @@ ALLOWED_PROJECTS = {"mikrob"}
 if not project.strip() or norm(project) not in ALLOWED_PROJECTS:
     sys.exit(0)  # blocked
 
-# 2. Tag blocks: casefold + accent-strip each tag.
+# 1b. Title-prefix bracket tags (WhiteHat2 F1 prime, card 23a14c4b delta-gate comment 17828/17831):
+# the fleet convention routinely writes SEC/BLOKKOLT-* as a leading "[TAG]" in the TITLE, not as
+# a kanban label. tags_for() (this same file, used by this script own dispatch path) already
+# folds these in; a caller that only passes real labels as tags (the gemini-orchestrator
+# isEligibleForGeminiOrdering sends card.labels only, no title-prefix parsing of its own) would
+# otherwise bypass this entire gate for a [SEC] Benign title or [BLOKKOLT-Peti-stop] ... card
+# that carries no matching LABEL. Extracted HERE, from the title this function already received,
+# with the EXACT SAME regex tags_for() uses -- so the caller cannot forget it, and there is only
+# one place this extraction is written. Measured on the live board (WhiteHat2, 528 cards): 45/108
+# cards the label-only check would have allowed through to Gemini carry exactly this shape.
+_lead = re.match(r"^(?:\s*\[[^\]]*\])+", title)
+_lead_tags = re.findall(r"\[([^\]]*)\]", _lead.group(0)) if _lead else []
+all_tags = [t for t in tags_csv.split(",") if t] + _lead_tags
+
+# 2. Tag blocks: casefold + accent-strip each tag (label tags AND title-prefix tags from 1b).
 BLOCKED_TAGS = {
     "mopsion","cleancore","sec","security","auth","authz","rbac","tenant","superadmin",
     "pii","penz","penzugy","finance","billing","payment","secret","crypto",
@@ -191,7 +205,8 @@ BLOCKED_TAGS = {
     # "fin" or "biztonsag" fell through here because this set never had them.
     "fin","biztonsag",
 }
-for tag in tags_csv.split(","):
+tags_n = []
+for tag in all_tags:
     # C3 (card 33047d3f): the F2 fail-closed check (has_unmapped_letter) only ran on title/desc
     # below, never on tags -- a tag with an unmapped homoglyph (e.g. "s" + Greek epsilon + "c")
     # fell through norm()s silent ascii-drop into something that no longer matched
@@ -199,6 +214,7 @@ for tag in tags_csv.split(","):
     if has_unmapped_letter(tag):
         sys.exit(0)  # blocked (F2 extended to labels)
     t = norm(tag)
+    tags_n.append(t)
     if t.startswith("blokkolt-"):   # ANY BLOKKOLT-* suffix
         sys.exit(0)  # blocked
     if t in BLOCKED_TAGS:
@@ -244,6 +260,14 @@ TENANT_ISOLATION_RE = re.compile(
 )
 if (SENS_RE.search(title_n) or SENS_RE.search(desc_n)
         or TENANT_ISOLATION_RE.search(title_n) or TENANT_ISOLATION_RE.search(desc_n)):
+    sys.exit(0)  # blocked
+
+# N2 (RedHat 17510/17825): a TAG that is not an EXACT match on BLOCKED_TAGS above still needs the
+# same stem check title/desc already get -- a label literally named "jelszo-rotacio" or
+# "[Biztonsag]" (the bracket-tag case from 1b) would otherwise sail through on tag-exact-match
+# alone, even though its own text names a sensitive stem. Measured: a neutral-titled card tagged
+# "jelszo-rotacio"/"szamla"/"[Biztonsag]" was previously ALLOWED through this gate.
+if any(SENS_RE.search(t) for t in tags_n):
     sys.exit(0)  # blocked
 
 sys.exit(ALLOWED_RC)  # allowed -- the ONE code that means a deliberate, completed "allowed" verdict
@@ -831,6 +855,30 @@ if [[ "${1:-}" == "--test-attempts-op" ]]; then
   [[ -z "$op" || -z "$leaf" ]] && { echo "usage: --test-attempts-op OP LEAF [--file PATH]" >&2; exit 2; }
   attempts_op "$op" "$leaf"
   exit 0
+fi
+
+# --check-blocked PROJECT TAGS [TITLE [DESC]]: exposes is_gemini_blocked to external callers (card
+# 23a14c4b, WhiteHat F1 NO-GO comment 17666) so a single vocabulary/normalization serves both this
+# script's own dispatch path and any other caller -- no second copy of the sensitive-word list to
+# drift out of sync, which is exactly how F1 happened (the TS port missed the permission/access/
+# szemelyes/hozzaferes stems and the non-ASCII strip).
+#
+# N1 (RedHat 17825/17831): exit code is a DISTINCT sentinel (42), not plain 1. is_gemini_blocked's
+# OWN return convention (0=blocked, 1=allowed) exists only because `return` is capped to 0-255 and
+# `[[ rc -eq 42 ]]` inside the function already re-derives it from the Python ALLOWED_RC sentinel --
+# but re-exposing that as a bare "exit 1" here recreates the exact bug ALLOWED_RC was invented to
+# fix one layer up: bash's own generic error code is ALSO 1 (a BASH_ENV picked up from the caller's
+# environment, an unset-variable trip under `set -u`, any uncaught shell failure), so a caller that
+# reads "exit 1 = allowed" cannot tell a deliberate allow from an accidental crash. Measured (RedHat
+# PoC): a BASH_ENV file that merely runs `exit 1` turns a BLOCKED title into an apparent ALLOWED
+# through this exact wrapper. Exit 42 for allowed, exit 0 for every other outcome (blocked OR any
+# failure) closes that -- the caller must check for EXACTLY 42, not "not blocked".
+if [[ "${1:-}" == "--check-blocked" ]]; then
+  shift
+  if is_gemini_blocked "${1:-}" "${2:-}" "${3:-}" "${4:-}"; then
+    exit 0  # is_gemini_blocked returned 0 (bash-true) -- BLOCKED
+  fi
+  exit 42  # is_gemini_blocked returned 1 (bash-false) -- the ONE deliberate ALLOWED outcome
 fi
 
 CARD="${1:-}"

@@ -2684,12 +2684,13 @@ export function ensureEvidenceSection(name: string): void {
 // automatically on respawn without manual migration.
 //
 // Idempotency contract mirrors ensureFleetRosterSection (five rules apply).
+// No-op for MAIN (card 81f202bd, WhiteHat2 Q1 on 8a3a1e84): same dc09da2f/965b0b2b pattern as
+// ensureFleetAuthSection/ensureEvidenceSection/etc -- the main agent's target is the git-tracked
+// PROJECT_ROOT/CLAUDE.md, and a runtime write there fights the --ff-only pull. The content this
+// writer would produce for MAIN is committed statically instead.
 export function ensureAutonomySection(name: string): void {
-  // The main agent's CLAUDE.md lives at PROJECT_ROOT, not inside agents/<name>/.
-  // Sub-agents use agentDir(name)/CLAUDE.md as usual.
-  const claudeMdPath = name === MAIN_AGENT_ID
-    ? join(PROJECT_ROOT, 'CLAUDE.md')
-    : join(agentDir(name), 'CLAUDE.md')
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
   const body = buildAutonomyBody(name)
@@ -2801,11 +2802,15 @@ function buildLocalFirstBody(): string {
 // Called on every startAgentProcess(), same as the roster and autonomy blocks, so existing agents
 // pick it up on respawn with no manual migration. Idempotency contract mirrors
 // ensureFleetRosterSection (five rules apply).
+//
+// No-op for MAIN (card 81f202bd, WhiteHat2 Q1 on 8a3a1e84): no production call site currently
+// passes MAIN_AGENT_ID here (web.ts's boot sequence and the scaffold-section-sweeper both omit
+// it), so this was a LATENT bug, not an active one -- but the PROJECT_ROOT ternary below would
+// write to the git-tracked CLAUDE.md the moment anything called it with MAIN, same
+// dc09da2f/965b0b2b class as the sibling writers. Guarded defensively, matching them.
 export function ensureLocalFirstSection(name: string): void {
-  const claudeMdPath =
-    name === MAIN_AGENT_ID
-      ? join(PROJECT_ROOT, 'CLAUDE.md')
-      : join(agentDir(name), 'CLAUDE.md')
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
   const block = `${LOCAL_FIRST_BEGIN}\n${buildLocalFirstBody()}\n${LOCAL_FIRST_END}`
@@ -3584,4 +3589,59 @@ Output ONLY the markdown content, no code fences.`
     cleaned = cleaned.replace(/^```\w*\n?/, '').replace(/\n?```$/, '')
   }
   return cleaned
+}
+
+// ACKONCLOSE927: message-close section injected into every agent's CLAUDE.md.
+// Ported from upstream 59e85ead (lost during Köteg 11 fork-side conflict resolution).
+const MSGCLOSE_BEGIN = '<!-- BEGIN GENERATED: message-close (auto-generated, do not edit by hand) -->'
+const MSGCLOSE_END = '<!-- END GENERATED: message-close -->'
+const MSGCLOSE_BLOCK_RE = new RegExp(
+  `${MSGCLOSE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MSGCLOSE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+export function buildMessageCloseBody(): string {
+  return [
+    '## Üzenet lezárása: bejövő riportnál `notify:false`',
+    '',
+    'Egy neked jött inter-agent üzenetet a `PUT /api/messages/<id>` zár le (`"status":"done"` vagy',
+    '`"failed"`). A lezárás ALAPBÓL egy `[Eredmény] msg_id:<id>` nyugtát küld vissza az eredeti feladónak.',
+    '',
+    '- DELEGÁLT FELADAT (a feladó az eredményre vár): zárd a szokásos módon, a nyugta maga az',
+    '  eredmény -- a `result` mezőbe írd, mit csináltál.',
+    '- BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): zárd `"notify":false`-szal. Itt a nyugta',
+    '  csak a feladó sorát növeli, és nála egy ágens-kört visz el (mérve 2026-09-27: három lezárás a',
+    '  feladó várakozó sorát 1-ről 4-re vitte).',
+    '',
+    '```bash',
+    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" \\`,
+    `| curl -H @- -s -X PUT ${dashboardOrigin}/api/messages/<id> -H "Content-Type: application/json" \\`,
+    `  --data-binary '{"status":"done","notify":false}'`,
+    '```',
+    'A `notify` csak valódi JSON boolean lehet: a `"false"` string 400-at kap, és ilyenkor a lezárás sem',
+    'történik meg. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
+  ].join('\n')
+}
+
+// Idempotently ensures the message-close block is present and current in the
+// agent's CLAUDE.md; same contract as ensureMcpListChannelSection.
+export function ensureMessageCloseSection(name: string): void {
+  if (name === MAIN_AGENT_ID) return
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody()}\n${MSGCLOSE_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = MSGCLOSE_BLOCK_RE.test(existing)
+    ? existing.replace(MSGCLOSE_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
 }

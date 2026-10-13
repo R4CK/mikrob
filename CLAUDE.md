@@ -777,3 +777,24 @@ download_attachment) elérhetetlenné válnak. A parancs kimenete közben `Conne
 MCP-szerver életben marad, és a session újraindítása visszahozza a plugint.
 Máshol a parancs hasznos diagnosztika: a korlát a csatornát birtokló session, nem a parancs.
 <!-- END GENERATED: mcp-list-channel-warning -->
+
+<!-- BEGIN GENERATED: message-close (auto-generated, do not edit by hand) -->
+## Üzenet lezárása: bejövő riportnál `notify:false`
+
+Egy neked jött inter-agent üzenetet a `PUT /api/messages/<id>` zár le (`"status":"done"` vagy
+`"failed"`). A lezárás ALAPBÓL egy `[Eredmény] msg_id:<id>` nyugtát küld vissza az eredeti feladónak.
+
+- DELEGÁLT FELADAT (a feladó az eredményre vár): zárd a szokásos módon, a nyugta maga az
+  eredmény -- a `result` mezőbe írd, mit csináltál.
+- BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): zárd `"notify":false`-szal. Itt a nyugta
+  csak a feladó sorát növeli, és nála egy ágens-kört visz el (mérve 2026-09-27: három lezárás a
+  feladó várakozó sorát 1-ről 4-re vitte).
+
+```bash
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" \
+| curl -H @- -s -X PUT http://localhost:3420/api/messages/<id> -H "Content-Type: application/json" \
+  --data-binary '{"status":"done","notify":false}'
+```
+A `notify` csak valódi JSON boolean lehet: a `"false"` string 400-at kap, és ilyenkor a lezárás sem
+történik meg. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.
+<!-- END GENERATED: message-close -->

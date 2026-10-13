@@ -252,7 +252,22 @@ else
   "$INSTALL_DIR/scripts/stop.sh"; "$INSTALL_DIR/scripts/start.sh"
 fi
 
-log "rollback DONE now at $TARGET_FULL"
-echo
-echo -e "${GREEN}✓ Visszaállítva: ${CUR_SHORT} -> ${TARGET_SHORT}${NC}"
-echo -e "${DIM}Előre lépés újra: git checkout ${BRANCH} && ./update.sh${NC}"
+# Card 58badae1 F4: verify HEAD actually sits at the target before claiming
+# success. Measured incident: an auto-rollback logged "DONE" at a09246f6 while
+# the reflog showed HEAD back on develop in the same second (something else
+# re-checked it out concurrently) -- the log said success on a no-op.
+ACTUAL_FULL="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+if [ "$ACTUAL_FULL" = "$TARGET_FULL" ]; then
+  log "rollback DONE now at $TARGET_FULL"
+  echo
+  echo -e "${GREEN}✓ Visszaállítva: ${CUR_SHORT} -> ${TARGET_SHORT}${NC}"
+  echo -e "${DIM}Előre lépés újra: git checkout ${BRANCH} && ./update.sh${NC}"
+else
+  log "rollback MISMATCH: expected HEAD $TARGET_FULL after restart, actually at $ACTUAL_FULL -- something else moved HEAD during the rollback"
+  echo
+  echo -e "${RED}FIGYELEM: a visszaállítás NEM biztos, hogy tartott.${NC}"
+  echo -e "  Elvárt HEAD: $TARGET_SHORT"
+  echo -e "  Tényleges HEAD: $(git rev-parse --short "$ACTUAL_FULL" 2>/dev/null || echo "$ACTUAL_FULL")"
+  echo -e "  Ellenőrizd kézzel (git log, reflog) -- a napló ezt NEM 'sikerként' rögzítette."
+  exit 1
+fi

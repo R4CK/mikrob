@@ -38,13 +38,17 @@
 //      is NOT the guard-detection mechanism (that is (A)); its job is content drift, which it
 //      correctly caught for the original H1 bug.
 //
-// Scope: the seven STATIC, deterministic section-writers web.ts calls for MAIN_AGENT_ID
-// (ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection,
-// ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection,
-// ensureMcpListChannelSection). Deliberately EXCLUDES ensureFederationClaudeMdSection: that
-// writer's main-agent behaviour is NOT static -- it adds or REMOVES a block depending on live
-// store/ federation state (WhiteHat INFO I1 on this same card), a separate, as yet undecided
-// question, not a static-drift bug this collector is built to catch.
+// Scope (extended by card 81f202bd, WhiteHat2 Q1/Q2 on 8a3a1e84): the seven STATIC, deterministic
+// section-writers web.ts calls for MAIN_AGENT_ID (ensureAutonomySection, ensureSkillsPathTrapSection,
+// ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection,
+// ensureEvidenceSection, ensureMcpListChannelSection), PLUS three more that no production call site
+// currently passes MAIN_AGENT_ID to but whose source still resolves a MAIN path if one ever did
+// (ensureLocalFirstSection, ensureFleetRosterSection, ensureProjectRootAnchor), PLUS
+// ensureMessageCloseSection (card 8a3a1e84, WhiteHat NO-GO B1) -- eleven total.
+// Deliberately EXCLUDES ensureFederationClaudeMdSection: that writer's main-agent behaviour is NOT
+// static -- it adds or REMOVES a block depending on live store/ federation state (WhiteHat INFO I1
+// on card 5a15cd5a), a separate, as yet undecided question, not a static-drift bug this collector
+// is built to catch.
 //
 // Runs against a TEMP COPY of the real file, never the real one.
 import { describe, it, expect, vi } from 'vitest'
@@ -91,22 +95,42 @@ const {
   ensureFleetAuthSection,
   ensureEvidenceSection,
   ensureMcpListChannelSection,
+  ensureLocalFirstSection,
+  ensureFleetRosterSection,
+  ensureProjectRootAnchor,
+  ensureMessageCloseSection,
 } = await import('../web/agent-scaffold.js')
 
 const SCAFFOLD_SOURCE = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
 
-// The four functions WhiteHat/965b0b2b established the no-op-for-MAIN pattern for, in web.ts's
-// call order. ensureAutonomySection/ensureSkillsPathTrapSection/ensureSystemDirectiveAuthSection
-// are NOT in this list -- they still write for MAIN, relying on content-match idempotency, which
-// check B below still exercises correctly.
+// Card 81f202bd (WhiteHat2 Q1/Q2 on 8a3a1e84) added ensureAutonomySection + ensureLocalFirstSection
+// to this list, and ALSO corrected it: ensureSystemDirectiveAuthSection already carried the guard
+// (added some point after this file's original card 5a15cd5a comment was written) but was never
+// moved out of the "writes for MAIN via content-match" bucket in that comment -- a stale docstring,
+// not a live bug (check B below would still have caught a real regression there), but a gap in
+// WHICH functions check A was actually verifying. ensureProjectRootAnchor (card 8c6f30fb,
+// HOSTMOVE923) is included too: it already guards MAIN, just via a different mechanism (re-anchors
+// baked PROJECT_ROOT paths rather than writing a marker block) -- the guard-presence assertion
+// still applies to it word-for-word. ensureMessageCloseSection (card 8a3a1e84, WhiteHat NO-GO B1)
+// is included too: the guard is the fix for that NO-GO, the message-close section was writing to
+// the tracked main-agent CLAUDE.md before it.
+//
+// ensureSkillsPathTrapSection remains the ONLY function that legitimately still writes for MAIN via
+// content-match idempotency (ternary to PROJECT_ROOT/CLAUDE.md, no guard) -- it IS called with
+// MAIN_AGENT_ID in web.ts/the sweeper, and check B below exercises it correctly.
 const MAIN_EXEMPT_FUNCTIONS = [
   'ensureMemorySearchLabelSection',
   'ensureFleetAuthSection',
   'ensureEvidenceSection',
   'ensureMcpListChannelSection',
+  'ensureSystemDirectiveAuthSection',
+  'ensureAutonomySection',
+  'ensureLocalFirstSection',
+  'ensureProjectRootAnchor',
+  'ensureMessageCloseSection',
 ]
 
-describe('the no-op-for-MAIN guard is present in source, on all four exempt writers (card 5a15cd5a QA FAIL fix)', () => {
+describe('the no-op-for-MAIN guard is present in source, on all nine exempt writers (cards 81f202bd + 8a3a1e84)', () => {
   for (const fnName of MAIN_EXEMPT_FUNCTIONS) {
     it(`${fnName}'s first statement is the MAIN_AGENT_ID no-op guard`, () => {
       const start = SCAFFOLD_SOURCE.indexOf(`export function ${fnName}(`)
@@ -127,8 +151,8 @@ describe('the no-op-for-MAIN guard is present in source, on all four exempt writ
 const TOKEN_PATH_RE = /cat [^)]+\/store\/\.dashboard-token/g
 const normalize = (s: string) => s.replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
 
-describe('every static main-agent CLAUDE.md writer stays in sync with its committed block (card 5a15cd5a)', () => {
-  it('produces a zero-diff (modulo PROJECT_ROOT) after all seven writers run, in the same order web.ts calls them', async () => {
+describe('every static main-agent CLAUDE.md writer stays in sync with its committed block (cards 81f202bd + 8a3a1e84)', () => {
+  it('produces a zero-diff (modulo PROJECT_ROOT) after all eleven writers run against MAIN', async () => {
     const { REPO_ROOT } = await import('./helpers/repo-location.js')
     const original = readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8')
 
@@ -136,8 +160,13 @@ describe('every static main-agent CLAUDE.md writer stays in sync with its commit
     writeFileSync(copyPath, original, 'utf-8')
 
     try {
-      // Exact order from src/web.ts's `if (!webOnly) { ... }` block (MAIN_AGENT_ID calls),
-      // minus ensureFederationClaudeMdSection (see the file header for why).
+      // First seven: exact order from src/web.ts's `if (!webOnly) { ... }` block (MAIN_AGENT_ID
+      // calls), minus ensureFederationClaudeMdSection (see the file header for why). Last three
+      // (ensureLocalFirstSection, ensureFleetRosterSection, ensureProjectRootAnchor) are NOT
+      // actually called with MAIN_AGENT_ID anywhere in production today (web.ts and
+      // scaffold-section-sweeper.ts both omit MAIN for all three) -- included defensively, so a
+      // future call site that starts passing MAIN would be proven harmless here FIRST, not found
+      // live. Card 81f202bd's whole point: don't wait for a production call site to find out.
       ensureAutonomySection('mikrob')
       ensureSkillsPathTrapSection('mikrob')
       ensureSystemDirectiveAuthSection('mikrob')
@@ -145,6 +174,10 @@ describe('every static main-agent CLAUDE.md writer stays in sync with its commit
       ensureFleetAuthSection('mikrob')
       ensureEvidenceSection('mikrob')
       ensureMcpListChannelSection('mikrob')
+      ensureLocalFirstSection('mikrob')
+      ensureFleetRosterSection('mikrob')
+      ensureProjectRootAnchor('mikrob')
+      ensureMessageCloseSection('mikrob')
 
       const after = readFileSync(copyPath, 'utf-8')
       expect(normalize(after), 'a main-agent section writer changed the committed CLAUDE.md -- its generator text drifted from the statically committed block').toBe(normalize(original))
