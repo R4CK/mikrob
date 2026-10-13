@@ -106,15 +106,10 @@ function isBlockedByLandedFilter(project: string, tags: string, title: string, d
   // not just the one with the bad title. Caught here and treated as blocked (fail-closed), same as any
   // other abnormal outcome this function already returns true for -- one card loses its Gemini slot,
   // the sweep keeps going for the rest.
-  let result: ReturnType<typeof spawnSync>
-  try {
-    result = spawnSync('bash', [OFFLOAD_DISPATCH_SCRIPT, '--check-blocked', project, tags, title, desc], {
-      encoding: 'utf-8',
-      timeout: CHECK_BLOCKED_TIMEOUT_MS,
-    })
-  } catch {
-    return true
-  }
+  const result = spawnSync('bash', [OFFLOAD_DISPATCH_SCRIPT, '--check-blocked', project, tags, title, desc], {
+    encoding: 'utf-8',
+    timeout: CHECK_BLOCKED_TIMEOUT_MS,
+  })
   return result.status !== CHECK_BLOCKED_ALLOWED_RC
 }
 
