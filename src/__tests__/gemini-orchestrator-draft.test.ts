@@ -87,6 +87,7 @@ describe('readQueueOrder() (card 21fbc293)', () => {
 // ── runDraftForCard: drives offload-dispatch.sh with the file-sink env var, fail-closed ─────
 describe('runDraftForCard() (card 21fbc293, decision B)', () => {
   it('calls bash on offload-dispatch.sh with the card id as the sole argument', () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- rest-arg implementation needed so vi.fn infers a 3-tuple call shape for spawnSync
     const spawn = vi.fn((..._args: any[]) => ({ status: 0, error: undefined }) as any)
     runDraftForCard('cardXYZ', spawn)
     expect(spawn).toHaveBeenCalledTimes(1)
@@ -97,6 +98,7 @@ describe('runDraftForCard() (card 21fbc293, decision B)', () => {
   })
 
   it('sets OFFLOAD_DRAFT_SINK=file in the subprocess env (decision B)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- rest-arg implementation needed so vi.fn infers a 3-tuple call shape for spawnSync
     const spawn = vi.fn((..._args: any[]) => ({ status: 0, error: undefined }) as any)
     runDraftForCard('cardXYZ', spawn)
     const [, , opts] = spawn.mock.calls[0] as [string, string[], { env?: Record<string, string> }]
@@ -104,6 +106,7 @@ describe('runDraftForCard() (card 21fbc293, decision B)', () => {
   })
 
   it('sets a bounded timeout (fail-closed on a wedged subprocess)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- rest-arg implementation needed so vi.fn infers a 3-tuple call shape for spawnSync
     const spawn = vi.fn((..._args: any[]) => ({ status: 0, error: undefined }) as any)
     runDraftForCard('cardXYZ', spawn)
     const [, , opts] = spawn.mock.calls[0] as [string, string[], { timeout?: number }]
