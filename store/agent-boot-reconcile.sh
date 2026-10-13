@@ -18,11 +18,20 @@
 # prior round (Gate-SHA 2e4c9bd1, then dbbd8a15) found this script OVERRIDES parking, not respects
 # it. Fixed here:
 #   F1 (HIGH, blocking): the 5-min backstop would restart agents the fleet deliberately parked --
-#   during a weekly hard-stop, on a [BLOKKOLT-*]-titled card, or on a card outside the currently
-#   active project-dispatch-priority project. Fixed: (a) weekly-hard-stop.json active=true ->
-#   nothing started, log only; (b) a BLOKKOLT-titled card never counts as qualifying work; (c) when
-#   project-dispatch-priority.json names a non-empty priority list, a card outside it never counts
-#   as qualifying work either (same exclusivity the self-advance rule already enforces for new pickup).
+#   during a weekly hard-stop, or on a [BLOKKOLT-*]-titled card. Fixed: (a) weekly-hard-stop.json
+#   active=true -> nothing started, log only; (b) a BLOKKOLT-titled card never counts as qualifying
+#   work.
+#   F1c (card 43d98136, QA FAIL 17906 + MikroB 17915): an EARLIER version of this fix also applied
+#   project-dispatch-priority.json exclusivity here, excluding any card outside the active priority
+#   project. That is wrong for THIS script: root CLAUDE.md rule 11a's project-exclusivity applies
+#   only to NEW card pickup ("az ÚJ kártyafelvételre vonatkozik... a már folyamatban lévő munkát nem
+#   szakítja meg") -- and every card this script ever looks at (in_progress, or waiting+REVIEW) is
+#   already-started work, never a new pickup. A live measurement (2026-10-12, priority=["MikroB"])
+#   showed 2 of 3 affected agents (backend, backend2) had project=None in_progress cards that would
+#   have been skipped on resume -- directly violating the card's own acceptance criterion that an
+#   in_progress agent's work resumes within 5 minutes of boot, unconditionally. Removed entirely
+#   (no project/priority filtering anywhere in this script); the title-label-based classification
+#   MikroB floated in 17901 is therefore unnecessary and was not built.
 #   F2 (MEDIUM, blocking): the assignee field was free text, passed straight into the start/message
 #   URL and body. Fixed: assignee must both match ^[a-z][a-z0-9-]{0,31}$ AND be an exact, known name
 #   from the SAME /api/agents fetch this run already has -- anything else is skipped, not guessed.
@@ -54,7 +63,6 @@ START_RECORDER="${AGENT_BOOT_RECONCILE_START_BIN:-}"
 MESSAGE_RECORDER="${AGENT_BOOT_RECONCILE_MESSAGE_BIN:-}"
 TELEGRAM_RECORDER="${AGENT_BOOT_RECONCILE_TELEGRAM_BIN:-}"
 HARDSTOP_FILE="${AGENT_BOOT_RECONCILE_HARDSTOP_FILE:-$ROOT/store/weekly-hard-stop.json}"
-PRIORITY_CONFIG="${AGENT_BOOT_RECONCILE_PRIORITY_CONFIG:-$ROOT/store/project-dispatch-priority.json}"
 
 hf="$(mktemp)"; chmod 600 "$hf"
 cards_f="$(mktemp)"; agents_f="$(mktemp)"
@@ -170,27 +178,15 @@ names = sorted(set((a.get("name") or a.get("agent_id") or "") for a in agents))
 print(",".join(n for n in names if n))
 ' 2>/dev/null)"
 
-# F1c: project-dispatch-priority.json exclusivity (same file + semantics the self-advance pickup
-# rule already uses) -- while a priority project list is set, a card outside it is not "work" for
-# this script either.
-PRIORITY_PROJECTS="$(python3 -c "
-import json
-try:
-    d = json.load(open('$PRIORITY_CONFIG'))
-    p = d.get('priority') or []
-    print(','.join(x for x in p if isinstance(x, str)))
-except Exception:
-    print('')
-" 2>/dev/null)"
-
 # Selector logic (acceptance criteria: in_progress / waiting+REVIEW / empty case), now filtering
-# out BLOKKOLT-*, outside-priority-project and non-allowlisted/malshaped assignees (F1b, F1c, F2)
-# BEFORE a card is ever counted as work. Prints "<agent>|<in_progress ids>|<waiting ids>" per agent.
-WORK="$(CARDS_FILE="$cards_f" VALID_AGENTS="$VALID_AGENTS_LIST" PRIORITY_PROJECTS="$PRIORITY_PROJECTS" python3 -c '
+# out BLOKKOLT-* and non-allowlisted/malshaped assignees (F1b, F2) BEFORE a card is ever counted as
+# work. No project/priority filtering here -- see the F1c note in the header comment: every card
+# this script looks at is already-started work, never new pickup, so rule 11a's exclusivity does
+# not apply. Prints "<agent>|<in_progress ids>|<waiting ids>" per agent.
+WORK="$(CARDS_FILE="$cards_f" VALID_AGENTS="$VALID_AGENTS_LIST" python3 -c '
 import json, os, re
 
 VALID = set(x for x in os.environ.get("VALID_AGENTS", "").split(",") if x)
-PRIORITY = [p for p in os.environ.get("PRIORITY_PROJECTS", "").split(",") if p]
 NAME_RX = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 
 try:
@@ -207,8 +203,6 @@ for c in cards:
         continue
     title = c.get("title") or ""
     if "BLOKKOLT" in title:
-        continue
-    if PRIORITY and c.get("project") not in PRIORITY:
         continue
     status = c.get("status")
     if status in ("in_progress", "waiting"):

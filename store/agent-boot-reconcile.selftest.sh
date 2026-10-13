@@ -218,7 +218,9 @@ check_absent "hard-stop: no start call" "START" "$(cat "$START_CALLS")"
 check_absent "hard-stop: no telegram" "TELEGRAM" "$(cat "$TELEGRAM_CALLS")"
 unset AGENT_BOOT_RECONCILE_HARDSTOP_FILE
 
-# --- 11. project-dispatch-priority exclusivity: a card outside the active project is not work ------
+# --- 11. card 43d98136 QA FAIL (17906) + MikroB (17915): project-dispatch-priority exclusivity
+#         must NOT apply here -- an in_progress card outside the active priority project is still
+#         resumed. A prior version of this fix wrongly skipped it (reverted; see header comment).
 common_env priorityexclusion
 echo '{"priority": ["MikroB"]}' > "$TMP/fixtures/priority.json"
 export AGENT_BOOT_RECONCILE_PRIORITY_CONFIG="$TMP/fixtures/priority.json"
@@ -229,11 +231,12 @@ json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
 json.dump([{'name':'backend3','running': False}], open('$TMP/fixtures/agents.json','w'))
 "
 OUT="$(bash "$BIN" 2>&1)"
-check "priority-exclusion: nothing-to-do marker" "no agent had qualifying work" "$OUT"
-check_absent "priority-exclusion: no start call" "START" "$(cat "$START_CALLS")"
+check "priority-exclusion-removed: started marker" "started:" "$OUT"
+check "priority-exclusion-removed: card id in resume message" "cardIII" "$(cat "$MESSAGE_CALLS")"
 unset AGENT_BOOT_RECONCILE_PRIORITY_CONFIG
 
-# --- 11b. same priority list, but the card's project IS in it -> starts normally -------------------
+# --- 11b. same priority list, card's project IS in it -> also starts (project is irrelevant either
+#          way, kept as a second data point against any accidental re-introduction of filtering) ----
 common_env priorityincluded
 echo '{"priority": ["MikroB"]}' > "$TMP/fixtures/priority2.json"
 export AGENT_BOOT_RECONCILE_PRIORITY_CONFIG="$TMP/fixtures/priority2.json"
@@ -245,6 +248,23 @@ json.dump([{'name':'backend3','running': False}], open('$TMP/fixtures/agents.jso
 "
 OUT="$(bash "$BIN" 2>&1)"
 check "priority-included: started marker" "started:" "$OUT"
+unset AGENT_BOOT_RECONCILE_PRIORITY_CONFIG
+
+# --- 11c. project=None in_progress card (the exact live shape measured 2026-10-12 on 43d98136:
+#          backend/backend2 in_progress cards with no project field at all, under an active
+#          priority=["MikroB"] list) -> still resumed, not skipped --------------------------------
+common_env priorityprojectnone
+echo '{"priority": ["MikroB"]}' > "$TMP/fixtures/priority3.json"
+export AGENT_BOOT_RECONCILE_PRIORITY_CONFIG="$TMP/fixtures/priority3.json"
+python3 -c "
+import json
+cards = [{'id':'cardPPP','status':'in_progress','assignee':'backend'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "priority-project-none: started marker" "started:" "$OUT"
+check "priority-project-none: card id in resume message" "cardPPP" "$(cat "$MESSAGE_CALLS")"
 unset AGENT_BOOT_RECONCILE_PRIORITY_CONFIG
 
 # --- 12. F2: assignee not present in the SAME /api/agents fetch -> not started (no guessing) -------
