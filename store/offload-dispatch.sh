@@ -151,16 +151,39 @@ _HOMOGLYPH_MAP = str.maketrans({
     "і": "i", "ѕ": "s", "һ": "h", "ԃ": "d", "ɡ": "g", "ⅰ": "i",
 })
 
+# U+2800 BRAILLE PATTERN BLANK is visually invisible but its category (So, Symbol-other) is too
+# broad to strip wholesale -- stripped by exact codepoint instead (C2, card 33047d3f).
+_INVISIBLE_CODEPOINTS = {"⠀"}
+
+def _fold(s):
+    """Structural fold (card 33047d3f C1/C2, same layers as gemini-offload-call.sh _fold):
+    homoglyph-map + NFKD-decompose (fullwidth/compat chars -> plain ASCII equivalents, including
+    fullwidth brackets), then strip combining marks, invisible format chars (Cf: zero-width
+    space/joiner, BOM), control chars (Cc), line/paragraph separators (Zl/Zp), and the braille-
+    blank invisible char. Case is PRESERVED -- this is the structural layer (bracket/invisible-
+    char normalization), not casefold+ascii-drop (that is norm(), below, which calls this).
+
+    N5 (card 82a81c45, RedHat GO 23a14c4b comment 17975): the title-prefix bracket regex used to
+    run on the RAW title. An invisible char (zero-width space, BOM) spliced between/before bracket
+    groups breaks the `\\s*\\[...\\]` repetition (the invisible char is not in \\s and is not `[`),
+    and a fullwidth bracket never matches the literal ASCII `[`/`]` at all -- either way the
+    extraction silently stops seeing the tag. Folding the title with this function BEFORE running
+    the regex removes the invisible chars and resolves fullwidth brackets to ASCII ones, so the
+    extraction sees the same prefix a human reads."""
+    s = s.translate(_HOMOGLYPH_MAP)
+    s = unicodedata.normalize("NFKD", s)
+    return "".join(
+        ch for ch in s
+        if unicodedata.category(ch) not in ("Mn", "Cf", "Cc", "Zl", "Zp") and ch not in _INVISIBLE_CODEPOINTS
+    )
+
 def norm(s):
-    """casefold + homoglyph map + NFKD-normalize (handles fullwidth/compat chars) -> ASCII.
-    C1 (card 33047d3f): strips Cc (control) chars before the final ascii-encode -- an ASCII
-    control byte (DEL/BS/US/...) spliced into a sensitive word IS already ascii, so it survives
-    encode("ascii","ignore") unchanged and splits the word, bypassing SENS_RE. Stripping it here
-    reunites the word before matching."""
-    s = s.strip().casefold().translate(_HOMOGLYPH_MAP)
-    decomposed = unicodedata.normalize("NFKD", s)
-    decomposed = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Cc")
-    return decomposed.encode("ascii", "ignore").decode()
+    """casefold + _fold() -> ASCII. C1 (card 33047d3f): strips Cc (control) chars before the
+    final ascii-encode -- an ASCII control byte (DEL/BS/US/...) spliced into a sensitive word IS
+    already ascii, so it survives encode("ascii","ignore") unchanged and splits the word,
+    bypassing SENS_RE. Folding (via _fold, shared with the title-prefix extraction below) reunites
+    the word before matching."""
+    return _fold(s.strip().casefold()).encode("ascii", "ignore").decode()
 
 # F2 (WhiteHat NO-GO, komment 17848, card e87e7520): the homoglyph table is open-ended and
 # norm() silently DROPS any non-ASCII letter it does not know (encode("ascii","ignore")) --
@@ -191,7 +214,8 @@ if not project.strip() or norm(project) not in ALLOWED_PROJECTS:
 # with the EXACT SAME regex tags_for() uses -- so the caller cannot forget it, and there is only
 # one place this extraction is written. Measured on the live board (WhiteHat2, 528 cards): 45/108
 # cards the label-only check would have allowed through to Gemini carry exactly this shape.
-_lead = re.match(r"^(?:\s*\[[^\]]*\])+", title)
+_title_folded = _fold(title)
+_lead = re.match(r"^(?:\s*\[[^\]]*\])+", _title_folded)
 _lead_tags = re.findall(r"\[([^\]]*)\]", _lead.group(0)) if _lead else []
 all_tags = [t for t in tags_csv.split(",") if t] + _lead_tags
 
