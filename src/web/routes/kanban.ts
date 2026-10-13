@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { appendCardStateStampForDispatch } from '../kanban-state-stamp.js'
 import { join } from 'node:path'
 import {
-  listKanbanCards, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS,
+  listKanbanCards, kanbanAssigneeExists, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS, KANBAN_CREATE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, getKanbanCardFieldEvents, listKanbanProjects,
   getKanbanLineComments, addKanbanLineComment,
@@ -710,7 +710,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       // Set-membership check 400'd `assignee=mikrob`. isKnownAgent() already
       // carries the MAIN_AGENT_ID special case other callers (isKnownAgent's own
       // router use) rely on -- reuse it instead of re-deriving the same rule here.
-      const unknownAgents = [...assignees].filter((a) => !isKnownAgent(a))
+      // Köteg 12 (upstream 0bea3cd7): isKnownAgent alone only covers CONFIGURED agents --
+      // external contributors get cards too (card-assignee, not a fleet agent), and must stay
+      // filterable. kanbanAssigneeExists checks whether the name already appears on the board.
+      const unknownAgents = [...assignees].filter((a) => !isKnownAgent(a) && !kanbanAssigneeExists(a))
       if (unknownAgents.length > 0) {
         json(res, { error: `Ismeretlen agent: ${unknownAgents.join(', ')}` }, 400)
         return true
@@ -909,6 +912,27 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/kanban' && method === 'POST') {
     const body = await readBody(req)
     const { force, actor, ...data } = JSON.parse(body.toString())
+    // `agent` -> `assignee` alias (#1023-adjacent, card b5344b62, Köteg 12 upstream 0bea3cd7):
+    // createKanbanCard reads named fields off this object, so a key it does not recognise is
+    // silently absent from the row -- no error, no warning, {ok:true,id} either way. Observed on
+    // this install, 2026-09-22: a POST body carrying `agent` instead of `assignee` produced a
+    // gazdatlan (ownerless) card five separate times before anyone noticed (c99f3c05, 3f17b3f4,
+    // 7abb8d8f, 85eb1c90, b75f9946) -- exactly the kind of card the anchor mechanism itself
+    // depends on. Only applied when `assignee` itself is absent, so an explicit assignee always
+    // wins, including an explicit `assignee: null` (the `=== undefined` check is load-bearing, a
+    // falsy check would not do this). Runs BEFORE the assignee-shape/forbidden checks below, so
+    // the aliased value is validated exactly like an explicit one.
+    let agentAliasApplied = false
+    if (data.assignee === undefined && typeof data.agent === 'string') {
+      data.assignee = data.agent
+      agentAliasApplied = true
+    }
+    // Only delete `agent` when the alias actually fired. An `agent` that was IGNORED (assignee
+    // already set explicitly, or a non-string value like `["newton"]`) must fall through to the
+    // unknown-key warn loop below instead of vanishing unlogged -- Szotasz's review on #1501: a
+    // non-string `agent` used to be deleted before that loop ran, so it was dropped with no alias
+    // and no warning.
+    if (agentAliasApplied) delete data.agent
     // Card 8c4a6d9c/cf068369/89fba8e4 investigation (2026-08-02): the two status-write routes
     // (PUT, POST /move) block a fresh planned->in_progress start above the weekly threshold, but a
     // card CREATED already in_progress (or straight to waiting -- see adaa5217, same day) skipped
@@ -964,6 +988,24 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (typeof rawParentId === 'string' && rawParentId && parentWouldCycle(id, rawParentId)) {
       json(res, { error: `A(z) "${rawParentId}" szülővé tétele kört zárna be a szülő-láncban.` }, 409)
       return true
+    }
+    // Unknown keys are WARNED, not rejected (Köteg 12, upstream 0bea3cd7): unlike PUT (whose
+    // callers are internal and already measured), POST's caller population is NOT measured, and a
+    // fail-closed 400 here would trade a silent data-loss bug for a loud outage in card CREATION --
+    // the one path every horgony-mechanizmus depends on. Warn now, with the key names, so a future
+    // tightening pass has real traffic to measure instead of guessing.
+    //
+    // The known-field set is KANBAN_CREATE_FIELDS (what createKanbanCard itself writes), NOT
+    // KANBAN_WRITABLE_FIELDS (the PUT/update set) -- creation computes its own `sort_order` and
+    // never accepts `archived_at`, so treating those two as "known" here silently drops them with
+    // no warning (Szotasz's review on #1501, measured on that head: POST {title, archived_at:
+    // 12345, sort_order: 99} returned 200, stored archived_at=null and sort_order=0, logged
+    // nothing). `id` is handled separately above (and may be absent -- generated), so it joins the
+    // known set here too.
+    const knownPostFields = new Set<string>([...KANBAN_CREATE_FIELDS, 'id'])
+    const unknownKeys = Object.keys(normalized).filter((key) => !knownPostFields.has(key))
+    if (unknownKeys.length > 0) {
+      logger.warn({ id, keys: unknownKeys }, 'POST /api/kanban: ismeretlen mező(k), csendben eldobva')
     }
     createKanbanCard({ ...normalized, id })
     // Card 4bade960: run the dedup pre-filter on EVERY new card (rule 6b was previously enforced

@@ -209,7 +209,13 @@ describe('scheduler tick stays off the blocking path (card 92e2bb1b)', () => {
  * offender on the tick still fails, and so the debt is visible in the test rather than in nobody's
  * memory. Needs its own card.
  */
-const KNOWN_SYNC_TICK_FILES = ['agent-process.ts'] as const
+// sleep-wake-detector.ts (Köteg 12, upstream 0bea3cd7): schedule-runner.ts now imports it
+// (systemSleptBetween, startSleepWakeDetector), pulling it into the tick-path derivation above.
+// Its one sync call (execFileSync('/usr/sbin/sysctl', ...), 2s timeout) runs on the detector's OWN
+// independent setInterval, not inside schedule-runner's tick handler itself, is darwin-only, and
+// only fires on an actual detected clock-gap (rare, not every tick) -- gate-reviewed as local and
+// bounded, same stance as the route/runner exceptions above.
+const KNOWN_SYNC_TICK_FILES = ['agent-process.ts', 'sleep-wake-detector.ts'] as const
 
   it.each(tickPathFiles().filter((f) => !(KNOWN_SYNC_TICK_FILES as readonly string[]).includes(f)))('%s uses no synchronous child_process API', (file) => {
     const code = codeOf(file)
@@ -284,11 +290,12 @@ const KNOWN_SYNC_TICK_FILES = ['agent-process.ts'] as const
     expect(SYNC_CHILD_APIS.length).toBeGreaterThanOrEqual(3)
   })
 
-  it('the tick exemption list stays honest -- exactly one entry, and it is really on the tick', () => {
-    expect(KNOWN_SYNC_TICK_FILES).toEqual(['agent-process.ts'])
-    // If it ever leaves the tick path the pin is stale and must go, or it silently exempts a file
-    // the guard no longer needs to care about.
+  it('the tick exemption list stays honest -- exactly these entries, and each is really on the tick', () => {
+    expect(KNOWN_SYNC_TICK_FILES).toEqual(['agent-process.ts', 'sleep-wake-detector.ts'])
+    // If an entry ever leaves the tick path the pin is stale and must go, or it silently exempts a
+    // file the guard no longer needs to care about.
     expect(tickPathFiles()).toContain('agent-process.ts')
+    expect(tickPathFiles()).toContain('sleep-wake-detector.ts')
   })
 
   // schedule-mcp-precheck.ts ran `/bin/ps` synchronously from attemptFireTask. This card converted it,
