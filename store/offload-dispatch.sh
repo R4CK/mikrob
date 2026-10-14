@@ -1010,6 +1010,11 @@ write_draft_to_file() {
   local safe_leaf; safe_leaf="$(sanitize_path_component "$leaf_id")"
   local dir="$DRAFTS_DIR/$safe_card"
   mkdir -p "$dir"
+  # WhiteHat2 F3 (21fbc293, comment 18065): mkdir -p leaves the umask-default mode (0755 under the
+  # common 022 umask) on both DRAFTS_DIR and the per-card dir -- draft bodies can carry card
+  # title/description text, so the directories carrying them get the same 700 the file itself
+  # already gets below, closing the window where another local user could list/read them.
+  chmod 700 "$DRAFTS_DIR" "$dir" 2>/dev/null || true
   local path="$dir/$(date +%s)-$safe_leaf.md"
   printf '%s' "$body" > "$path"
   chmod 600 "$path"

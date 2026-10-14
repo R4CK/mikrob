@@ -148,13 +148,15 @@ describe('runDraftForCard() (card 21fbc293, decision B)', () => {
   // QA FAIL (Gate-SHA 8af958a2): node spawnSync throws SYNCHRONOUSLY (a TypeError, not a
   // returned error) when any argv string contains an embedded NUL byte -- the same Node
   // behaviour 82a81c45 H2 already documented at a different call site. The documented "never
-  // throws" contract was false until this was wrapped in try/catch.
-  it('never throws, even when the spawn call itself throws synchronously (NUL-byte card id)', () => {
+  // throws" contract was false until this was wrapped in try/catch. (The NUL-byte case itself is
+  // now caught earlier by the card-id shape guard below, so this uses a shape-valid id to keep
+  // exercising the try/catch for any OTHER reason spawn might throw synchronously.)
+  it('never throws, even when the spawn call itself throws synchronously', () => {
     const spawn = vi.fn(() => {
-      throw new TypeError('The argument args[1] must be a string without null bytes.')
+      throw new TypeError('boom')
     })
-    expect(() => runDraftForCard('bad\u0000card', spawn)).not.toThrow()
-    const r = runDraftForCard('bad\u0000card', spawn)
+    expect(() => runDraftForCard('cardXYZ', spawn)).not.toThrow()
+    const r = runDraftForCard('cardXYZ', spawn)
     expect(r.ok).toBe(false)
     expect(r.reason).toContain('spawn_threw')
   })
@@ -165,6 +167,42 @@ describe('runDraftForCard() (card 21fbc293, decision B)', () => {
     runDraftForCard('cardXYZ', spawn)
     const [, , opts] = spawn.mock.calls[0] as [string, string[], { env?: Record<string, string> }]
     expect(opts.env?.OFFLOAD_NO_GEMINI).toBe('1')
+  })
+})
+
+// ── runDraftForCard: card-id shape guard (WhiteHat2 F4, 21fbc293 comment 18065) ─────────────────
+// Kanban ids allow "-", so an id starting with "--" (e.g. "--test-sanitize-path-component") would
+// be handed to offload-dispatch.sh as argv[1] and hit one of the script's OWN test hooks instead
+// of the real dispatch path -- which exits 0 and would be reported back as ok:true even though
+// nothing was actually drafted.
+describe('runDraftForCard() card-id shape guard (WhiteHat2 F4)', () => {
+  it('rejects an id starting with "--" without ever calling spawn', () => {
+    const spawn = vi.fn()
+    const r = runDraftForCard('--test-sanitize-path-component', spawn)
+    expect(spawn).not.toHaveBeenCalled()
+    expect(r).toEqual({ id: '--test-sanitize-path-component', ok: false, reason: 'invalid_card_id_shape' })
+  })
+
+  it('rejects an id containing an embedded NUL byte without ever calling spawn', () => {
+    const spawn = vi.fn()
+    const r = runDraftForCard('bad\u0000card', spawn)
+    expect(spawn).not.toHaveBeenCalled()
+    expect(r.ok).toBe(false)
+    expect(r.reason).toBe('invalid_card_id_shape')
+  })
+
+  it('rejects an id over 64 characters', () => {
+    const spawn = vi.fn()
+    const r = runDraftForCard('a'.repeat(65), spawn)
+    expect(spawn).not.toHaveBeenCalled()
+    expect(r.reason).toBe('invalid_card_id_shape')
+  })
+
+  it('accepts a normal kanban id shape (lowercase hex with dashes)', () => {
+    const spawn = vi.fn(() => ({ status: 0, error: undefined }) as any)
+    const r = runDraftForCard('21fbc293', spawn)
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(r.ok).toBe(true)
   })
 })
 
