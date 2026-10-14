@@ -2466,6 +2466,18 @@ export function gateDecision(toolName, toolInput, opts = {}) {
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     const naiveSegs = splitSegments(safeCommand)
+    // Computed ONCE and reused below (also by the scheduler-in-heredoc-body check
+    // further down) -- same text, same answer, one call.
+    const heredocBodies = extractHeredocBodies(safeCommand)
+    // Heredoc bodies owned by a pure data sink (cat/tee writing to an UNRELATED file)
+    // are never executed, so splitSegments' newline split must not treat their lines
+    // as commands either -- see the egress-allowlist exemption below. Narrow on purpose:
+    // an INTERPRETER's heredoc (python3/node/bash/sh/...) still runs its body, so it is
+    // NOT in this set and stays fully scanned (measured: `python3 - <<PY` running
+    // `open('store/egress-allowlist.json','w').write(...)` must still be denied).
+    const dataSinkHeredocBodies = heredocOwnerRecords(safeCommand)
+      .filter((r) => /(?:^|[;&|(`]|\s)(?:cat|tee)(?:\s|$)/.test(r.ownerSpan))
+      .map((r) => r.body)
     for (const seg of naiveSegs) {
       // Match the self-pace bash patterns against the shell-normalised segment so a
       // `\/loop` / `$IFS/loop` evasion (which bash resolves to `/loop` at exec) is
@@ -2481,8 +2493,17 @@ export function gateDecision(toolName, toolInput, opts = {}) {
       if (SCHEDULE_STORE_RX.test(seg) && WRITE_INTENT_RX.test(seg)) return { deny: true }
       // dashboard schedule API: block WRITE methods only (GET list/pending is legit)
       if (SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
-      // the egress allowlist: a plain read only (EGRESSSELFEDIT824)
-      if (!allowlistBashSegmentAllowed(seg)) return { deny: true, reason: 'egress-allowlist' }
+      // the egress allowlist: a plain read only (EGRESSSELFEDIT824). splitSegments
+      // also splits on NEWLINES, so a heredoc BODY line (prose, e.g. a doc explaining
+      // this very gate) becomes its own "segment" here, and its first word is never a
+      // real command -- `cat > /tmp/note.md <<'EOF' / sub-agents may not edit
+      // store/egress-allowlist.json / EOF` denied on the middle line alone (measured).
+      // Exempted ONLY when the line is purely inside a data-sink heredoc body (see above);
+      // an interpreter's heredoc body is a real command and stays scanned exactly as before.
+      if (!allowlistBashSegmentAllowed(seg)) {
+        const inertHeredocProse = dataSinkHeredocBodies.some((body) => body.includes(seg))
+        if (!inertHeredocProse) return { deny: true, reason: 'egress-allowlist' }
+      }
     }
     // The scheduler check is the ANCHORED one -- it fires on what sits at a
     // segment START -- so it is the one a fake segment boundary can mislead, and
@@ -2562,7 +2583,7 @@ export function gateDecision(toolName, toolInput, opts = {}) {
     // non-invocation look like one. A genuine multi-command line inside a heredoc body (e.g.
     // `crontab -r; echo done`) is still caught: the guard only cares that a flag/end-shape
     // follows "crontab", not that nothing else follows it on the line.
-    for (const body of extractHeredocBodies(safeCommand)) {
+    for (const body of heredocBodies) {
       for (const line of body.split(/\r?\n/)) {
         const seg = line.trim()
         // SUBTRACT the read forms, then ask whether a scheduler WRITE is still there (card

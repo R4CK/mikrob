@@ -1,14 +1,17 @@
 // Token Monitor per-agent colours (#1646). The colour code lives in the
-// classic-script web/app.js, so the block is lifted out of the file and
-// evaluated in isolation: a fresh instance per test, the way a page load
-// starts with an empty assignment map.
+// classic-script web/app-token-usage.js (this fork's modularised extraction
+// of the Token Usage Monitor page, card 8d7550a8 -- upstream's own version of
+// this test reads it from the un-modularised web/app.js, which has only a
+// STUB here), so the block is lifted out of the file and evaluated in
+// isolation: a fresh instance per test, the way a page load starts with an
+// empty assignment map.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+const APP = readFileSync(join(__dirname, '../../web/app-token-usage.js'), 'utf-8')
 
 const COLORS_SRC = APP.match(/const TU_COLORS = \{[\s\S]*?\n\}\n/)![0]
 const BLOCK_START = APP.indexOf('const TU_RESERVED_COLORS = [')
@@ -36,7 +39,7 @@ function collisions(colourOf: (a: string) => string, agents: string[]) {
 }
 
 describe('token monitor agent colours', () => {
-  it('extracts the colour block from web/app.js', () => {
+  it('extracts the colour block from web/app-token-usage.js', () => {
     expect(BLOCK_START).toBeGreaterThan(0)
     expect(BLOCK_END).toBeGreaterThan(BLOCK_START)
     expect(Object.keys(load().TU_COLORS).length).toBeGreaterThan(0)

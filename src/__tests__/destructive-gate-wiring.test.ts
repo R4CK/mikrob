@@ -31,12 +31,15 @@ const settingsFor = (n: string) => agentSettingsPath(n)
 // checked by the pure predicate plus a source-level pin, never by rendering.
 const agentRoot = (n: string) => join(AGENTS_BASE_DIR, n)
 
-// The four gates a plain sub-agent already carried before this card. If a fifth
+// The gates a plain sub-agent already carried before this card. If a new
 // injector shifts one of them out, this list is what goes red.
+// NOT included: outgoing-copy-gate.py -- this fork wires it behind a
+// default-OFF kill switch (OUTGOING_COPY_GATE_TELEGRAM_BASH, card 74181db2),
+// so a fresh render in a bare test env never carries it; that is this fork's
+// deliberate posture, not a gap this card's gate could have displaced.
 const EXISTING_GATES = [
   'email-send-gate.mjs',
   'self-pace-gate.mjs',
-  'outgoing-copy-gate.py',
   'egress-gate.mjs',
 ]
 

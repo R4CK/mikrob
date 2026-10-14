@@ -891,7 +891,6 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     injectKanbanWriteGate(existing)
     injectDigestProvenanceGate(existing)
   }
-  if (agentGetsTelegramCopyGate(name)) injectTelegramCopyGate(existing)
   if (agentGetsDestructiveGate(name, profile)) injectDestructiveGate(existing)
   injectEgressGate(existing)
   injectGitProtectGuard(existing)
@@ -1721,7 +1720,7 @@ export function injectDestructiveGate(existing: Record<string, unknown>): void {
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   // Drop EVERY prior destructive-gate entry, whatever its matcher, then re-add
-  // the canonical one. This deliberately differs from injectTelegramCopyGate,
+  // the canonical one. This deliberately differs from injectOutgoingCopyGate,
   // which KEEPS its script under a foreign matcher because the main agent
   // legitimately runs that one on Bash and on the email tools too. There is no
   // such case here -- the main agent gets no destructive gate at all -- so a
@@ -1843,84 +1842,6 @@ export function ensureTaskstateReplayMatcher(name: string): boolean {
     changed = true
   }
   if (!changed) return false
-  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
-  return true
-}
-
-// Which Telegram tools carry copyable text out of the install. `reply` is the
-// send route; `edit_message` rewrites a message already on the phone and can
-// just as easily replace a working code block with a broken one.
-export const TELEGRAM_COPY_GATE_MATCHER =
-  'mcp__plugin_telegram_telegram__reply|mcp__plugin_telegram_telegram__edit_message'
-
-// Which agents get the outgoing-copy gate on their Telegram send tools: every
-// sub-agent. The MAIN agent is exempt HERE only because it already carries the
-// same hook in its own committed project settings (.claude/settings.json);
-// injecting a second copy from the scaffold would duplicate it.
-//
-// GATECOPY828, 2026-08-28. The gate script has checked "code block without
-// format=markdownv2" since 2026-08-27, and the memory plus the mandatory
-// telegram-copy-gomb skill both describe it as done. It was not done for the
-// sub-agents: NONE of them had a PreToolUse matcher binding a Telegram tool to
-// this script, so the check never ran outside the main agent. The social agent
-// sent yet another unusable code block that day and the owner had to notice it
-// again. A gate that exists only in the main agent's settings is not a gate,
-// it is a habit that happens to be enforced in one place.
-export function agentGetsTelegramCopyGate(name: string): boolean {
-  return name !== MAIN_AGENT_ID
-}
-
-// Idempotently wire the outgoing-copy-gate PreToolUse hook onto the Telegram
-// send tools. Same shape + dedupe discipline as injectEmailSendGate, with one
-// deliberate difference: the dedupe filter is scoped to entries that carry BOTH
-// this script AND this matcher. The same script is legitimately wired under
-// other matchers (Bash, the email tools) in the main agent's settings, and a
-// basename-only filter would silently delete those on any future pass.
-export function injectTelegramCopyGate(existing: Record<string, unknown>): void {
-  const hooks = (existing.hooks && typeof existing.hooks === 'object'
-    ? existing.hooks
-    : (existing.hooks = {})) as Record<string, unknown>
-  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
-  // Registration guard: a /tmp or missing path must never enter shared settings.
-  if (isUnsafeHookCommand(command)) return
-  const entry = {
-    matcher: TELEGRAM_COPY_GATE_MATCHER,
-    hooks: [{ type: 'command', command, timeout: 10 }],
-  }
-  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [
-    ...prev.filter((e) => {
-      const j = JSON.stringify(e)
-      if (!j.includes('outgoing-copy-gate.py')) return true
-      return (e as { matcher?: unknown })?.matcher !== TELEGRAM_COPY_GATE_MATCHER
-    }),
-    entry,
-  ]
-}
-
-// Idempotent migration for the EXISTING fleet: the scaffold only rewrites a
-// sub-agent's settings on spawn, so without this the gate would reach the three
-// running agents no sooner than their next respawn. Returns true if written.
-export function ensureTelegramCopyGate(name: string): boolean {
-  if (!agentGetsTelegramCopyGate(name)) return false
-  const settingsPath = agentSettingsPath(name)
-  if (!existsSync(settingsPath)) return false
-  let settings: Record<string, unknown> = {}
-  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
-  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'outgoing-copy-gate.py'))
-  const hooks = (settings.hooks && typeof settings.hooks === 'object')
-    ? settings.hooks as Record<string, unknown>
-    : {}
-  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []
-  // Two failure modes, same as the email gate: not wired at all, or wired under
-  // a matcher that no longer names the Telegram tools.
-  const wiredHere = ptu.some((e) => {
-    const j = JSON.stringify(e)
-    return j.includes('outgoing-copy-gate.py')
-      && (e as { matcher?: unknown })?.matcher === TELEGRAM_COPY_GATE_MATCHER
-  })
-  if (wiredHere && hookCommandWired(JSON.stringify(ptu), command)) return false
-  injectTelegramCopyGate(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }
