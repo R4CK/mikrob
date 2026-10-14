@@ -51,6 +51,36 @@ describe('gate: native file tools on the allowlist', () => {
   })
 })
 
+describe('gate: native file tools also cover the history dir and the Bash-side allowlist (card 86c1372a)', () => {
+  // RedHat GO on 1f4c046b (F-RH1/F-RH3): the Bash-side check already fail-closes on these two
+  // objects by name, but the native file-tool check above compared only against
+  // egress-allowlist.json itself -- a Write/Edit/MultiEdit/NotebookEdit call naming a file UNDER
+  // the history dir, or naming store/bash-egress-allowlist.json, was allowed (deny:false). A
+  // decoy dropped into the history dir by this route poisons what a later comparison treats as
+  // "previous" (the history-decoy bypass); the Bash-side allowlist is the enforcement file for a
+  // sibling gate (bash-egress-guard.py) and needs the same protection.
+  it.each(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])(
+    '%s on a file under the history directory is denied',
+    (tool) => {
+      const decoy = join(store, 'egress-allowlist.history', '20990101T000000000Z-decoy.json')
+      expect(decide(tool, { file_path: decoy, content: '{}' })).toEqual({ deny: true, reason: 'egress-allowlist' })
+    },
+  )
+  it('a relative path into the history dir is denied too', () => {
+    expect(decide('Write', { file_path: 'store/egress-allowlist.history/x.json', content: '{}' }).deny).toBe(true)
+  })
+  it.each(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])(
+    '%s on store/bash-egress-allowlist.json is denied',
+    (tool) => {
+      const target = join(store, 'bash-egress-allowlist.json')
+      expect(decide(tool, { file_path: target, content: '{}' })).toEqual({ deny: true, reason: 'egress-allowlist' })
+    },
+  )
+  it('another file in store/ is still not affected', () => {
+    expect(decide('Write', { file_path: join(store, 'other.json'), content: '{}' }).deny).toBe(false)
+  })
+})
+
 describe('gate: Bash is fail-closed on the allowlist', () => {
   const denied = [
     "echo '{}' > store/egress-allowlist.json",
@@ -264,6 +294,41 @@ describe('baseline: every change is recorded and reported, whatever the route', 
     } finally { stop() }
     expect(reports).toHaveLength(1)
     expect(reports[0]).toContain('+live.example')
+  })
+
+  it('a decoy entry planted in the history dir does not silence a real later change (card 86c1372a, F-RH1 history-decoy bypass)', () => {
+    checkEgressAllowlistBaseline(store, notify, new Date('2026-10-03T08:00:00.000Z'))
+    // Planted directly on disk (the file-tool/Bash routes that would normally do this are
+    // denied by the companion fix in self-pace-gate.mjs; this proves the COMPARISON itself no
+    // longer trusts the history dir, independent of that route being closed) -- a later
+    // filename, holding the bytes the next real edit will produce, as if to make a future
+    // check believe that content was already the approved baseline.
+    const decoyBytes = JSON.stringify({ domains: ['a.example', 'b.example', 'evil.example'] })
+    mkdirSync(join(store, HISTORY_DIRNAME), { recursive: true })
+    writeFileSync(join(store, HISTORY_DIRNAME, '20991231T235959000Z-decoy.json'), decoyBytes)
+    writeFileSync(allowlist, decoyBytes)
+    const r = checkEgressAllowlistBaseline(store, notify, new Date('2026-10-03T08:00:01.000Z'))
+    expect(r.recorded).toBe(true)
+    expect(reports).toHaveLength(1)
+    expect(reports[0]).toContain('+evil.example')
+  })
+
+  it('a value written and reverted well inside one second is still detected, not silenced by the poll tick (card 86c1372a, 1s pickup-putback bypass)', async () => {
+    const stop = watchEgressAllowlistBaseline(store, notify, 5000)
+    try {
+      await new Promise((r) => setTimeout(r, 30))
+      writeFileSync(allowlist, JSON.stringify({ domains: ['a.example', 'b.example', 'evil.example'] }))
+      const deadline1 = Date.now() + 700
+      while (reports.length < 1 && Date.now() < deadline1) await new Promise((r) => setTimeout(r, 10))
+      expect(reports).toHaveLength(1)
+      expect(reports[0]).toContain('+evil.example')
+
+      writeFileSync(allowlist, JSON.stringify({ domains: ['a.example', 'b.example'] }))
+      const deadline2 = Date.now() + 700
+      while (reports.length < 2 && Date.now() < deadline2) await new Promise((r) => setTimeout(r, 10))
+      expect(reports).toHaveLength(2)
+      expect(reports[1]).toContain('-evil.example')
+    } finally { stop() }
   })
 
   it('describes non-list keys and invalid JSON', () => {

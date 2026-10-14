@@ -575,6 +575,16 @@ describe('loadRuntimeAllowlist', () => {
     expect(src).toContain('egress-allowlist.json')
   })
 
+  it('logs the sha of every allowlist read (card 86c1372a F-RH1 (c))', () => {
+    const readLog = join(REPO_ROOT, 'store', 'egress-allowlist-read.log')
+    const before = (() => { try { return readFileSync(readLog, 'utf-8') } catch { return '' } })()
+    loadRuntimeAllowlist()
+    const after = readFileSync(readLog, 'utf-8')
+    expect(after.length).toBeGreaterThan(before.length)
+    const newLines = after.slice(before.length)
+    expect(newLines).toMatch(/sha=(missing|[0-9a-f]{12})\n$/)
+  })
+
   it('store/egress-allowlist.json is NOT committed (store/ is gitignored)', () => {
     // This file must never be committed upstream -- it is operator-managed at runtime.
     // Verify it's in .gitignore (or absent from the git index).
