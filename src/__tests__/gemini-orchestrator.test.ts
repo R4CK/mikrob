@@ -184,6 +184,41 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
   it('a benign label alongside a benign title: still eligible', () => {
     expect(isEligibleForGeminiOrdering(card({ labels: ['@frontend', 'ui'] }))).toBe(true)
   })
+  // N5-follow (card b3ce0a88, WhiteHat GO 82a81c45 comment 18031 F1): the fix above only ever
+  // looked at a LEADING run of square-bracket tags. A [SEC]/[BLOKKOLT-*] tag written mid-title,
+  // after a hyphen/serial number, behind another tag, in round/curly brackets, as a bare "SEC:"
+  // prefix, or inside a non-fullwidth bracket look-alike (CJK/math, which NFKD does not resolve
+  // to ASCII unlike fullwidth brackets) all still passed through unblocked. Real subprocess.
+  it('a [SEC] tag in the MIDDLE of the title (not a leading run): still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix [SEC] something here', labels: [] }))).toBe(false)
+  })
+  it('a [SEC] tag at the END of the title: still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix something [SEC]', labels: [] }))).toBe(false)
+  })
+  it('a [BLOKKOLT-*] tag in the middle of the title: still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix [BLOKKOLT-stop] something', labels: [] }))).toBe(false)
+  })
+  it('a SEC tag in ROUND brackets: still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix (SEC) something', labels: [] }))).toBe(false)
+  })
+  it('a SEC tag in CURLY brackets: still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix {SEC} something', labels: [] }))).toBe(false)
+  })
+  it('a bare "SEC:" prefix with no brackets at all: still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'SEC: fix something', labels: [] }))).toBe(false)
+  })
+  it('a benign "Note:" prefix (not a blocked tag word): still eligible', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Note: fix something benign', labels: [] }))).toBe(true)
+  })
+  it('a SEC tag in CJK lenticular brackets 【】 (does not NFKD-decompose): still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix 【SEC】 something', labels: [] }))).toBe(false)
+  })
+  it('a SEC tag in CJK corner brackets: still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix 「SEC」 something', labels: [] }))).toBe(false)
+  })
+  it('a SEC tag in mathematical white square brackets: still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix ⟦SEC⟧ something', labels: [] }))).toBe(false)
+  })
   // H2 (WhiteHat2 comment 17986): a title containing a literal NUL byte makes spawnSync THROW
   // synchronously (Node refuses a NUL-containing argv string) -- uncaught, this crashed the
   // ENTIRE sweep via the unguarded .filter() callback, not just this one card. Real subprocess
