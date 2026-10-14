@@ -155,26 +155,13 @@ _HOMOGLYPH_MAP = str.maketrans({
 # broad to strip wholesale -- stripped by exact codepoint instead (C2, card 33047d3f).
 _INVISIBLE_CODEPOINTS = {"⠀"}
 
-# N5-follow (card b3ce0a88, WhiteHat GO 82a81c45 comment 18031 F1): these bracket look-alikes are
-# NOT fullwidth/compatibility forms, so NFKD does not resolve them to ASCII [ ] the way it already
-# resolves U+FF3B/FF3D -- they decompose to themselves. Mapped explicitly here, in the same fold
-# layer, so the tag-extraction regex below (which only knows ASCII brackets) still sees them.
-_BRACKET_HOMOGLYPH_MAP = str.maketrans({
-    "【": "[", "】": "]",  # CJK lenticular brackets
-    "「": "[", "」": "]",  # CJK corner brackets
-    "〔": "[", "〕": "]",  # CJK tortoise-shell brackets
-    "〈": "[", "〉": "]",  # CJK angle brackets
-    "⟦": "[", "⟧": "]",  # mathematical white square brackets
-    "⦅": "[", "⦆": "]",  # white parentheses
-})
-
 def _fold(s):
     """Structural fold (card 33047d3f C1/C2, same layers as gemini-offload-call.sh _fold):
-    homoglyph-map + bracket-homoglyph-map + NFKD-decompose (fullwidth/compat chars -> plain ASCII
-    equivalents, including fullwidth brackets), then strip combining marks, invisible format chars
-    (Cf: zero-width space/joiner, BOM), control chars (Cc), line/paragraph separators (Zl/Zp), and
-    the braille-blank invisible char. Case is PRESERVED -- this is the structural layer (bracket/
-    invisible-char normalization), not casefold+ascii-drop (that is norm(), below, which calls this).
+    homoglyph-map + NFKD-decompose (fullwidth/compat chars -> plain ASCII equivalents, including
+    fullwidth brackets), then strip combining marks, invisible format chars (Cf: zero-width
+    space/joiner, BOM), control chars (Cc), line/paragraph separators (Zl/Zp), and the braille-
+    blank invisible char. Case is PRESERVED -- this is the structural layer (bracket/invisible-
+    char normalization), not casefold+ascii-drop (that is norm(), below, which calls this).
 
     N5 (card 82a81c45, RedHat GO 23a14c4b comment 17975): the title-prefix bracket regex used to
     run on the RAW title. An invisible char (zero-width space, BOM) spliced between/before bracket
@@ -184,7 +171,6 @@ def _fold(s):
     the regex removes the invisible chars and resolves fullwidth brackets to ASCII ones, so the
     extraction sees the same prefix a human reads."""
     s = s.translate(_HOMOGLYPH_MAP)
-    s = s.translate(_BRACKET_HOMOGLYPH_MAP)
     s = unicodedata.normalize("NFKD", s)
     return "".join(
         ch for ch in s
@@ -229,14 +215,8 @@ if not project.strip() or norm(project) not in ALLOWED_PROJECTS:
 # one place this extraction is written. Measured on the live board (WhiteHat2, 528 cards): 45/108
 # cards the label-only check would have allowed through to Gemini carry exactly this shape.
 _title_folded = _fold(title)
-# N5-follow (card b3ce0a88, WhiteHat GO 82a81c45 comment 18031 F1): the ^-anchored, square-
-# bracket-only extraction above only ever saw a LEADING run of "[TAG]" groups -- a tag written
-# mid-title, after a hyphen/serial number, behind another tag text, or in round/curly brackets
-# (all live conventions WhiteHat found still open) was simply never looked at. This searches the
-# WHOLE folded title for a bracket group with ANY of the three bracket pairs (not anchored, not
-# consecutive), plus the bare "TAG:" prefix form with no brackets at all.
-_lead_tags = re.findall(r"[\[(\x7b]([^\])\x7d]*)[\])\x7d]", _title_folded)
-_lead_tags += re.findall(r"(?<!\w)([A-Za-z]+):", _title_folded)
+_lead = re.match(r"^(?:\s*\[[^\]]*\])+", _title_folded)
+_lead_tags = re.findall(r"\[([^\]]*)\]", _lead.group(0)) if _lead else []
 all_tags = [t for t in tags_csv.split(",") if t] + _lead_tags
 
 # 2. Tag blocks: casefold + accent-strip each tag (label tags AND title-prefix tags from 1b).
