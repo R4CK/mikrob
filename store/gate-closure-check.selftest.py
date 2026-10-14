@@ -101,6 +101,16 @@ case("an open NO-GO outranks the sha question",
 case("a latest verdict with no Gate-SHA cannot be compared, and says so",
      [c("qa", "QA PASS"), c("cybersec", S % "bbbb2222")], "NOSHA")
 
+# Card 1d0dda52: config-only work (a VPS env-file change, no commit) has nothing a Gate-SHA could
+# name. The documented convention (CLAUDE.md rule 4e) is the explicit `n/a (config-only)` spelling,
+# never a borrowed sha from an unrelated card (the f72ee333 incident this card is named for: both
+# gates cited the SAME sha, which was actually a merge of a different card entirely -- a
+# structurally-complete but content-empty AGREE). This pins that the spelling reads as NOSHA (human
+# decides) rather than crashing or, worse, being swallowed as a sha-free empty match that still AGREEs.
+case("config-only convention spelling ('n/a') carries no hex run and reads as NOSHA",
+     [c("qa", "QA PASS\nGate-SHA: n/a (config-only)"),
+      c("cybersec", "CYBERSEC GO\nGate-SHA: n/a (config-only)")], "NOSHA")
+
 # --- --expect: AGREEING ON THE WRONG COMMIT ----------------------------------------------------
 # Measured in production (c458ba0e/acab6155/f8b52ff2, 2026-09-04). After a card's work is rebuilt,
 # rebased or cherry-picked, BOTH old verdicts still name the same OLD sha -- so they agree perfectly
