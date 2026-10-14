@@ -49,7 +49,16 @@ describe('titok-kapu.py --onteszt runs in CI (card 09117e0a M2/N6)', () => {
         rmSync(dir, { recursive: true, force: true })
       }
     } finally {
-      if (createdDashToken) unlinkSync(DASH_TOKEN)
+      // missing_ok semantics (matches seged-hivo.py's _ensure_real_dashboard_token()): two
+      // fleet-test.sh runs can share this checkout (CLAUDE.md rule 17, up to 2 concurrent slots),
+      // so another run's own create/cleanup of this same untracked fixture can delete it first.
+      if (createdDashToken) {
+        try {
+          unlinkSync(DASH_TOKEN)
+        } catch (err) {
+          if ((err as { code?: string }).code !== 'ENOENT') throw err
+        }
+      }
     }
   })
 })
