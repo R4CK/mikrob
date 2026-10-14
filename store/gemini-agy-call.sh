@@ -81,6 +81,37 @@ if [ "$kategoria" != safe ]; then
   exit 3
 fi
 
+# F1 (card 09117e0a, WhiteHat F1 on 64788453 CYBERSEC GO komment 18210): a declared --kategoria
+# 'safe' was trusted as-is -- the gate never looked at what the CARD ITSELF says, so a security/
+# auth/finance/mopsion card mislabelled 'safe' (buggy or malicious caller) sailed through. The
+# card's own title/description/labels are now checked server-side via the same stem/tag
+# vocabulary store/offload-dispatch.sh's sensitive-content gate already uses. Fail-closed: if the
+# card cannot be fetched/parsed, this is "cannot verify safe", not "assume safe".
+CATEGORY_CHECK="${GEMINI_AGY_CATEGORY_CHECK:-$STORE/gemini-agy-category-check.py}"
+if [ ! -f "$DASHBOARD_TOKEN_FILE" ]; then
+  echo "gemini-agy-call: no dashboard token at $DASHBOARD_TOKEN_FILE -- cannot verify card" \
+       "'$kartya' against its own content, refusing a declared-safe call fail-closed" >&2
+  exit 3
+fi
+hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
+printf 'Authorization: Bearer %s\n' "$(cat "$DASHBOARD_TOKEN_FILE")" > "$hdr_file"
+card_json="$(curl -s -m 10 -H @"$hdr_file" "$DASHBOARD_URL/api/kanban/$kartya" 2>/dev/null || true)"
+rm -f "$hdr_file"
+set +e
+detected_cat="$(printf '%s' "$card_json" | python3 "$CATEGORY_CHECK")"
+check_rc=$?
+set -e
+if [ "$check_rc" -ne 0 ]; then
+  echo "gemini-agy-call: could not verify card '$kartya' against its own content" \
+       "(fetch/parse failed, rc=$check_rc) -- refusing a declared-safe call fail-closed" >&2
+  exit 3
+fi
+if [ -n "$detected_cat" ]; then
+  echo "gemini-agy-call: --kategoria 'safe' declared for card '$kartya', but the card's own" \
+       "title/description/labels signal '$detected_cat' -- refusing before anything is sent" >&2
+  exit 3
+fi
+
 # Hourly, FLEET-WIDE rolling cap. Reuses seged-hivo.py's own read_log()/calls_of() (same file it
 # loads below has been imported only, nothing is re-executed: it guards its __main__ block).
 #
