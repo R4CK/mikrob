@@ -7,9 +7,9 @@ change it upstream, or fork it and re-point this entry.
 | --------------- | -------------------------------------------------------------------------------------- |
 | source repo     | https://github.com/Leonxlnx/taste-skill                                                |
 | subdir          | skills/taste-skill                                                                     |
-| vendored commit | `ccbc15639c97057cbfcf32ecebc38ef716e4bb37`                                             |
-| commit date     | 2026-08-24T23:23:56+08:00                                                              |
-| vendored at     | 2026-08-24 (adopted into the fleet; backfilled into this seed-fleet-agents copy 2026-09-25, card a6abb230) |
+| vendored commit | `d237dd399d57524945c0c81327da5da19f7a468d`                                             |
+| commit date     | 2026-10-11T23:56:48+02:00                                                              |
+| vendored at     | 2026-08-24 (adopted into the fleet; backfilled into this seed-fleet-agents copy 2026-09-25, card a6abb230); content re-synced to d237dd39 2026-10-14 (card d243ab7c) -- HAND-PATCHED to this exact upstream delta (GSAP StickyStack/HorizontalPan hardening + `transition: all` fix), not re-run via vendor-skill.sh, because this copy carries the fleet's own frontmatter + code-style wrapper (card e47ead7b) that a raw re-vendor would discard |
 | licence         | MIT -- see UPSTREAM-LICENSE next to this file (Leonxlnx, 2026)                         |
 | watch clone     | /home/neon/marveen/store/adopted/Leonxlnx__taste-skill                               |
 
