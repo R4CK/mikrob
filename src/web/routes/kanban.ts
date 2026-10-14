@@ -112,8 +112,11 @@ function newDevStopWouldBlock(id: string, nextStatus: unknown, force: boolean, a
   // CLAUDE.md rule 1e (card b73722e1): only worth the extra DB walk when every other reason to
   // block is already true -- a card not even targeting in_progress/waiting from planned, or one an
   // exempt actor's force already covers, never needs the linkage check.
+  // WhiteHat2 NO-GO (gate comment 19003, F1): the true activation moment, not the routinely
+  // rewritten `updatedAt` -- see isLinkedToInProgressCard's own doc comment for why.
   const linkedToInProgress =
-    prevStatus === 'planned' && isLinkedToInProgressCard(id, flag.updatedAt)
+    prevStatus === 'planned' &&
+    isLinkedToInProgressCard(id, flag.newDevStopActivatedAt, flag.inProgressAtActivation)
   return isNewDevStartBlocked(prevStatus, nextStatus, force, flag, actor, linkedToInProgress)
 }
 
