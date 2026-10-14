@@ -2469,16 +2469,52 @@ export function gateDecision(toolName, toolInput, opts = {}) {
     // Computed ONCE and reused below (also by the scheduler-in-heredoc-body check
     // further down) -- same text, same answer, one call.
     const heredocBodies = extractHeredocBodies(safeCommand)
-    // Heredoc bodies owned by a pure data sink (cat/tee writing to an UNRELATED file)
-    // are never executed, so splitSegments' newline split must not treat their lines
-    // as commands either -- see the egress-allowlist exemption below. Narrow on purpose:
-    // an INTERPRETER's heredoc (python3/node/bash/sh/...) still runs its body, so it is
-    // NOT in this set and stays fully scanned (measured: `python3 - <<PY` running
-    // `open('store/egress-allowlist.json','w').write(...)` must still be denied).
-    const dataSinkHeredocBodies = heredocOwnerRecords(safeCommand)
-      .filter((r) => /(?:^|[;&|(`]|\s)(?:cat|tee)(?:\s|$)/.test(r.ownerSpan))
-      .map((r) => r.body)
-    for (const seg of naiveSegs) {
+    // Heredoc body RANGES owned by a pure, unpiped cat/tee writing to an unrelated file
+    // (WhiteHat2 NO-GO fix, Gate-SHA 64cbec54, F1 HIGH). THREE conditions, all required,
+    // each closing one measured bypass of the original (text-containment-only) version:
+    //   - quotedTag (`<<'EOF'`/`<<"EOF"`/`<<\EOF`) AND !substitutable: an UNQUOTED tag's body
+    //     undergoes $()/backtick expansion -- `cat > f <<EOF` / `$(cp x store/...)` / `EOF`
+    //     ran the substitution despite being "heredoc body text" (PoC C8).
+    //   - the owner is BARE `cat`/`tee`, nothing piping its output onward: `cat <<'EOF' |
+    //     bash`/`| python3`/`| sh` all hand the "quoted, non-substitutable" body straight to
+    //     an interpreter (PoC C3/C4/C9) -- checked on the text between the heredoc operator
+    //     and the end of its own announcement line, not the ownerSpan alone (ownerSpan ends
+    //     AT the operator, before any pipe that follows it).
+    //   - every body is matched by its ACTUAL POSITION in safeCommand (heredocOwnerRecords'
+    //     atIndex is the operator's position, body is searched forward from there), not by
+    //     substring equality -- a decoy line whose TEXT matches a real line elsewhere no
+    //     longer borrows the real line's exemption (PoC C2).
+    let heredocSearchFrom = 0
+    const dataSinkHeredocRanges = []
+    for (const r of heredocOwnerRecords(safeCommand)) {
+      const ownerTrimmed = r.ownerSpan.trim()
+      if (!/^(?:cat|tee)(?:\s|$)/.test(ownerTrimmed)) continue
+      if (!r.quotedTag || r.substitutable) continue
+      const headerEnd = safeCommand.indexOf('\n', r.atIndex)
+      const announceTail = safeCommand.slice(r.atIndex, headerEnd === -1 ? safeCommand.length : headerEnd)
+      if (/\|/.test(announceTail)) continue // piped onward -- not a terminal data sink
+      const bodyStart = safeCommand.indexOf(r.body, Math.max(r.atIndex, heredocSearchFrom))
+      if (bodyStart === -1) continue
+      const bodyEnd = bodyStart + r.body.length
+      dataSinkHeredocRanges.push({ start: bodyStart, end: bodyEnd })
+      heredocSearchFrom = bodyEnd
+    }
+    // Position-aware re-derivation of naiveSegs, same separators (`splitSegments`' own regex),
+    // so each segment's RANGE in safeCommand is known -- needed for the containment check above.
+    const SEG_SEP_RX = /&&|\|\||[;&|]|\r?\n/g
+    const segRanges = []
+    {
+      const flat = safeCommand.replace(/\\\r?\n/g, ' ')
+      let segStart = 0
+      let sm
+      SEG_SEP_RX.lastIndex = 0
+      while ((sm = SEG_SEP_RX.exec(flat)) !== null) {
+        segRanges.push([segStart, sm.index])
+        segStart = sm.index + sm[0].length
+      }
+      segRanges.push([segStart, flat.length])
+    }
+    for (const [i, seg] of naiveSegs.entries()) {
       // Match the self-pace bash patterns against the shell-normalised segment so a
       // `\/loop` / `$IFS/loop` evasion (which bash resolves to `/loop` at exec) is
       // still caught; the scheduler/store/API checks below use the RAW seg (scoped).
@@ -2498,10 +2534,13 @@ export function gateDecision(toolName, toolInput, opts = {}) {
       // this very gate) becomes its own "segment" here, and its first word is never a
       // real command -- `cat > /tmp/note.md <<'EOF' / sub-agents may not edit
       // store/egress-allowlist.json / EOF` denied on the middle line alone (measured).
-      // Exempted ONLY when the line is purely inside a data-sink heredoc body (see above);
-      // an interpreter's heredoc body is a real command and stays scanned exactly as before.
+      // Exempted ONLY when the segment's own RANGE falls inside a qualifying data-sink
+      // heredoc body (see above); an interpreter's heredoc, a piped one, an unquoted-tag
+      // one, or a decoy occurring OUTSIDE any such body all stay fully scanned.
       if (!allowlistBashSegmentAllowed(seg)) {
-        const inertHeredocProse = dataSinkHeredocBodies.some((body) => body.includes(seg))
+        const [rStart, rEnd] = segRanges[i] ?? [-1, -1]
+        const inertHeredocProse = rStart >= 0 &&
+          dataSinkHeredocRanges.some((h) => rStart >= h.start && rEnd <= h.end)
         if (!inertHeredocProse) return { deny: true, reason: 'egress-allowlist' }
       }
     }

@@ -74,6 +74,19 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
     'cp /tmp/x store/egress-allowlist.*',
     'rm -rf store/egress-allowlist.history',
     'echo x > store/egress-allowlist.history/history.log',
+    // WhiteHat2 NO-GO (Gate-SHA 64cbec54, F1 HIGH): the first cat/tee heredoc exemption was
+    // text-containment-only, with no position check, no quoted-tag requirement and no check
+    // for a pipe past the heredoc operator -- all four cases below bypassed it before the fix.
+    // C8: unquoted tag -- the body is NOT inert, $(...) runs even though it looks like heredoc text.
+    'cat > /tmp/n.txt <<EOF\n$(cp /tmp/evil store/egress-allowlist.json)\nEOF',
+    // C2: a decoy -- the SAME line sits once (harmlessly) inside a quoted cat heredoc body and
+    // once as a real top-level command; text-containment exempted BOTH because the text matched.
+    "cat > /tmp/n.txt <<'EOF'\ncp /tmp/evil store/egress-allowlist.json\nEOF\ncp /tmp/evil store/egress-allowlist.json",
+    // C3/C4/C9: the heredoc is quoted and non-substitutable (genuinely inert AS TEXT), but its
+    // owner pipes that text into an interpreter, which then executes it as code.
+    "cat <<'EOF' | bash\ncp /tmp/evil store/egress-allowlist.json\nEOF",
+    "cat <<'EOF' | python3\nopen('store/egress-allowlist.json','w').write('{}')\nEOF",
+    "cat <<'EOF' | sh\ncp /tmp/evil store/egress-allowlist.json\nEOF",
   ]
   it.each(denied)('denies: %s', (command) => {
     expect(decide('Bash', { command })).toEqual({ deny: true, reason: 'egress-allowlist' })
