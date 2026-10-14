@@ -112,6 +112,18 @@ function toEpochMs(iso: string | undefined): number | null {
   return Number.isFinite(ms) ? ms : null
 }
 
+/** Card 13671607 RedHat LOW follow-up (comment 18465): the same class as N1/N2 -- `ido`,
+ *  `modell` and `feladattipus` are typed as `string` but the ledger is a plain JSONL file any
+ *  same-uid fleet process can write, so nothing enforces that at runtime. An object value
+ *  throws downstream: `Date.parse(obj)` (toEpochMs) and `Object.fromEntries` on a Map keyed by
+ *  a non-string (buildSummary) both coerce via ToPrimitive, which propagates a TypeError when
+ *  the value's own `toString` isn't callable. Normalizing at the point of read -- never
+ *  stringifying, just rejecting non-strings -- means those coercions never see a non-string to
+ *  begin with. */
+function coerceString(v: unknown): string | undefined {
+  return typeof v === 'string' ? v : undefined
+}
+
 /** N1 (card 13671607, WhiteHat2 non-blocking finding on 57da740c): `Number(pont)` throws when
  *  `pont` is an object whose own `toString` is not callable (e.g. `{toString: 1}`) -- Number's
  *  ToNumeric coercion calls `ToPrimitive`, which invokes `valueOf`/`toString` and propagates a
@@ -132,32 +144,40 @@ export function buildCallRows(allRows: RawRow[]): GeminiCallRow[] {
   const calls = dedupeCalls(allRows).filter((r) => r.seged === ENGINE)
   const shaped: GeminiCallRow[] = []
   for (const call of calls) {
-    const ts = toEpochMs(call.ido)
-    if (ts === null) continue
-    const rating = call.ido ? ratings.get(call.ido) : undefined
-    shaped.push({
-      ts,
-      model: call.modell ?? '',
-      caller: call.hivo ?? '',
-      cardId: call.kartya ?? '',
-      taskType: call.feladattipus ?? '',
-      status: call.status ?? 'ismeretlen',
-      durationS: typeof call.duracio_s === 'number' ? call.duracio_s : null,
-      tokens: typeof call.tokens_total === 'number' ? call.tokens_total : null,
-      // WhiteHat2 F1 (MEDIUM, card 57da740c): the ledger is a plain JSONL file any same-uid
-      // fleet process can write -- `rating.pont` is NOT guaranteed to be the number the type
-      // declares (scripts/seged-hivo.py's own --ertekel writer validates 1-10, but that is the
-      // one sanctioned writer, not an enforced schema). Coerced the same way durationS/tokens
-      // above already are, so a non-numeric value becomes null, not a string the FE would
-      // otherwise have to treat as safe-to-interpolate.
-      rating: rating
-        ? {
-            result: rating.eredmeny ?? '',
-            score: coerceScore(rating.pont),
-            opinion: rating.velemeny ?? '',
-          }
-        : null,
-    })
+    // Row-level protection (RedHat, card 13671607 comment 18465): a single malformed row must
+    // not take down the whole panel -- skip just this row, the rest still render. The
+    // coerceString() calls below already remove the specific known throw sites (ido/modell/
+    // feladattipus), this try/catch is the backstop for anything not foreseen.
+    try {
+      const ts = toEpochMs(coerceString(call.ido))
+      if (ts === null) continue
+      const rating = call.ido ? ratings.get(call.ido) : undefined
+      shaped.push({
+        ts,
+        model: coerceString(call.modell) ?? '',
+        caller: coerceString(call.hivo) ?? '',
+        cardId: coerceString(call.kartya) ?? '',
+        taskType: coerceString(call.feladattipus) ?? '',
+        status: coerceString(call.status) ?? 'ismeretlen',
+        durationS: typeof call.duracio_s === 'number' ? call.duracio_s : null,
+        tokens: typeof call.tokens_total === 'number' ? call.tokens_total : null,
+        // WhiteHat2 F1 (MEDIUM, card 57da740c): the ledger is a plain JSONL file any same-uid
+        // fleet process can write -- `rating.pont` is NOT guaranteed to be the number the type
+        // declares (scripts/seged-hivo.py's own --ertekel writer validates 1-10, but that is the
+        // one sanctioned writer, not an enforced schema). Coerced the same way durationS/tokens
+        // above already are, so a non-numeric value becomes null, not a string the FE would
+        // otherwise have to treat as safe-to-interpolate.
+        rating: rating
+          ? {
+              result: coerceString(rating.eredmeny) ?? '',
+              score: coerceScore(rating.pont),
+              opinion: coerceString(rating.velemeny) ?? '',
+            }
+          : null,
+      })
+    } catch (err) {
+      logger.warn({ err }, 'gemini-calls: skipping a malformed ledger row')
+    }
   }
   shaped.sort((a, b) => b.ts - a.ts)
   return shaped
@@ -202,8 +222,12 @@ export function buildSummary(
   const byModel = new Map<string, GeminiCallsSummaryBucket>()
   const byTaskType = new Map<string, GeminiCallsSummaryBucket>()
   for (const c of calls) {
-    bump(byModel, c.model || 'ismeretlen', c.status)
-    bump(byTaskType, c.taskType || 'ismeretlen', c.status)
+    // Row-level protection (RedHat, card 13671607 comment 18465): buildCallRows already
+    // guarantees c.model/c.taskType are strings when called through the real route, but this
+    // function is exported and callable directly (as the tests do) -- coerceString() here means
+    // a non-string key can never reach Object.fromEntries below, whichever caller it came from.
+    bump(byModel, coerceString(c.model) ?? 'ismeretlen', c.status)
+    bump(byTaskType, coerceString(c.taskType) ?? 'ismeretlen', c.status)
   }
   // Object.fromEntries defines OWN data properties (CreateDataPropertyOrThrow), never going
   // through [[Set]] / the inherited __proto__ accessor -- safe even if a key is '__proto__'.

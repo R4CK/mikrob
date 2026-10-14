@@ -284,6 +284,65 @@ describe('gemini-calls: non-blocking hardening (card 13671607, WhiteHat2 finding
   })
 })
 
+describe('gemini-calls: protection on ido/modell/feladattipus (card 13671607, RedHat LOW, comment 18465)', () => {
+  const BAD_TOSTRING = { toString: 1 } // Date.parse(obj) / Object.fromEntries on a Map keyed by
+  // this throws TypeError: non-callable toString -- the exact shape RedHat's probe used.
+  const GOOD_IDO = '2026-10-14T06:00:00.000Z'
+
+  function rowFor(overrides: Partial<RawRow>): RawRow[] {
+    return [{ tipus: 'hivas', ido: GOOD_IDO, seged: 'agy', modell: 'gemini-pro', feladattipus: 'code', ...overrides }]
+  }
+
+  it('a bad ido on one row is skipped, a good row elsewhere still renders', () => {
+    const rows = [
+      ...rowFor({ ido: BAD_TOSTRING as unknown as string }),
+      { tipus: 'hivas', ido: '2026-10-14T07:00:00.000Z', seged: 'agy', modell: 'gemini-pro', feladattipus: 'code' },
+    ]
+    expect(() => buildCallRows(rows)).not.toThrow()
+    const result = buildCallRows(rows)
+    expect(result).toHaveLength(1)
+    expect(result[0].ts).toBe(Date.parse('2026-10-14T07:00:00.000Z'))
+  })
+
+  it('a bad modell is normalized to empty, the row still renders (not dropped)', () => {
+    // coerceString() means this never reaches the throw site at all -- normalization
+    // (RedHat's other sanctioned option, "normalizálása") rather than row-skipping, which is
+    // the better outcome here: the call still shows up, just without a model label.
+    const rows = [
+      ...rowFor({ modell: BAD_TOSTRING as unknown as string }),
+      { tipus: 'hivas', ido: '2026-10-14T07:00:00.000Z', seged: 'agy', modell: 'gemini-pro', feladattipus: 'code' },
+    ]
+    expect(() => buildCallRows(rows)).not.toThrow()
+    const result = buildCallRows(rows)
+    expect(result).toHaveLength(2)
+    const badRow = result.find((r) => r.ts === Date.parse(GOOD_IDO))!
+    expect(badRow.model).toBe('')
+    // The normalized row must not throw when fed into buildSummary either.
+    expect(() => buildSummary(result)).not.toThrow()
+  })
+
+  it('a bad feladattipus is normalized to empty, the row still renders (not dropped)', () => {
+    const rows = [
+      ...rowFor({ feladattipus: BAD_TOSTRING as unknown as string }),
+      { tipus: 'hivas', ido: '2026-10-14T07:00:00.000Z', seged: 'agy', modell: 'gemini-pro', feladattipus: 'code' },
+    ]
+    expect(() => buildCallRows(rows)).not.toThrow()
+    const result = buildCallRows(rows)
+    expect(result).toHaveLength(2)
+    const badRow = result.find((r) => r.ts === Date.parse(GOOD_IDO))!
+    expect(badRow.taskType).toBe('')
+    expect(() => buildSummary(result)).not.toThrow()
+  })
+
+  it('buildSummary itself never throws on a non-string model/taskType, even called directly', () => {
+    expect(() =>
+      buildSummary([{ model: BAD_TOSTRING as unknown as string, taskType: BAD_TOSTRING as unknown as string, status: 'ok' }]),
+    ).not.toThrow()
+    const summary = buildSummary([{ model: BAD_TOSTRING as unknown as string, taskType: 'code', status: 'ok' }])
+    expect(summary.byModel['ismeretlen']).toEqual({ calls: 1, ok: 1, error: 0, blocked: 0 })
+  })
+})
+
 describe('gemini-calls: HTML wiring', () => {
   it('sidebar nav has a geminiCalls link', () => {
     expect(HTML).toContain('data-page="geminiCalls"')
