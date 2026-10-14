@@ -111,6 +111,7 @@ window._i18n.en = {
   'overview.quota.llm.error':       'Could not load local-LLM stats.',
   'overview.error':                 'Error: {msg}',
   'overview.updates_subtitle':      'version check',
+  'overview.version_rebuild_pending': 'A newer build is on disk than what this running process loaded -- restart the service to pick it up.',
   'common.error_save':        'Error saving',
   'common.error_delete':      'Error deleting',
   'common.error_network':     'Network error: {msg}',

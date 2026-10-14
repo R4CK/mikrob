@@ -208,6 +208,8 @@ rebuild_live_install() {
 . "$(dirname "$0")/decisions-tail-append-guard.sh"
 # shellcheck source=./bump-fork-version.sh
 . "$(dirname "$0")/bump-fork-version.sh"
+# shellcheck source=./bump-upstream-version.sh
+. "$(dirname "$0")/bump-upstream-version.sh"
 # downward_check (card dfff9b37): what ELSE rides along in origin/develop..<branch>. Shared verbatim
 # with cleancore-land.sh. REPORTS here by default and refuses only under --card <id> -- the reason
 # is measured and written out in landing-downward-check.sh's header (marveen lands whole agent
@@ -766,6 +768,22 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     3) say "$agent: npm lockfile check skipped (harness fault, not a verdict): $(printf '%s' "$NPM_LF_OUT" | head -1)" ;;
     *) : ;;
   esac
+
+  # Main-version catch-up (card 165350f1), BEFORE the fork-own +mikrob.N bump below, same commit:
+  # bump-fork-version.sh only ever touches +mikrob.N and documents X.Y.Z as "a SEPARATE flow this
+  # script never touches" -- that flow never existed, so an upstream-sync merge (Köteg N cards,
+  # landed by a separate ad hoc flow, not this script) left X.Y.Z frozen even once a higher
+  # upstream vX.Y.Z tag became an ancestor of develop. Hooking the check in HERE, on every
+  # fork-own landing, means X.Y.Z self-corrects on the next landing after ANY upstream-sync merge
+  # lands, without relying on that separate flow to remember to call it. No-op (prints
+  # "unchanged:...") on the overwhelming majority of landings, where no newer tag is an ancestor.
+  if [ "$dry" != "1" ]; then
+    if ! upstream_ver="$(bump_upstream_version "$wt" 2>&1)"; then
+      say "$agent: upstream main-version check skipped ($upstream_ver) -- landing continues unbumped"
+    elif [[ "$upstream_ver" != unchanged:* ]]; then
+      say "$agent: main version caught up to $upstream_ver (upstream-sync ancestor tag)"
+    fi
+  fi
 
   # Fork-own version bump (DECISIONS.md 2026-08-20/25, automated 2026-08-26 per Peti request):
   # every fork-own landing bumps package.json's +mikrob.N build-metadata, keeping package-lock.json's

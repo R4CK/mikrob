@@ -1394,7 +1394,16 @@ async function initSidebarVersion() {
     const v = await res.json()
     const el = document.getElementById('sidebarVersion')
     if (!el || !v.version) return
-    el.textContent = v.commitHash ? `v${v.version} (${v.commitHash})` : `v${v.version}`
+    let text = v.commitHash ? `v${v.version} (${v.commitHash})` : `v${v.version}`
+    // newerBuildOnDisk (card 165350f1): dist on disk was rebuilt after this process started, so
+    // what is actually answering requests is one landing behind what a restart would pick up.
+    if (v.newerBuildOnDisk) {
+      text += ' ⚠'
+      el.title = t('overview.version_rebuild_pending')
+    } else {
+      el.title = ''
+    }
+    el.textContent = text
     el.hidden = false
   } catch {}
 }

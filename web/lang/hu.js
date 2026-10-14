@@ -111,6 +111,7 @@ window._i18n.hu = {
   'overview.quota.llm.error':       'Nem sikerült betölteni a helyi-LLM statisztikát.',
   'overview.error':                 'Hiba: {msg}',
   'overview.updates_subtitle':      'verzió ellenőrzés',
+  'overview.version_rebuild_pending': 'Újabb build van a lemezen, mint amit ez a futó folyamat betöltött -- szolgáltatás-újraindítás szükséges a frissítéshez.',
   'common.error_save':        'Hiba a mentés során',
   'common.error_delete':      'Hiba a törlés során',
   'common.error_network':     'Hálózati hiba: {msg}',
