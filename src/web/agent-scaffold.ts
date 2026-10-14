@@ -689,6 +689,22 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // allow), so this is a fail-closed layer; the self-pace-gate hook below covers
   // the Bash escape routes a name-deny cannot reach. (2026-06-26 autonom-kor fix.)
   if (agentGetsGovernanceGates(name)) denyList.push(...SELF_PACE_TOOL_DENY)
+  // AskUserQuestion tool-name deny (card 91cec070): a headless role-agent has no
+  // one at the panel to answer a structured question, and a stuck AskUserQuestion
+  // prompt is exactly what beached QA for 10 minutes until context-guard force-
+  // restarted it (store/context-guard-last-pane-qa.txt). Card 5c6fe8df tried a
+  // skill-level `disallowed-tools` frontmatter field first; WhiteHat2 (msg 11835)
+  // found it inert for gate-agents (they load their OWN project-scoped skill
+  // instance, and the field is turn-scoped, not session-scoped, regardless). A
+  // whole-tool-name deny survives --dangerously-skip-permissions the same way
+  // SELF_PACE_TOOL_DENY above does (deny is checked before the bypass allow) --
+  // measured live 2026-10-14 with a control pair (WebSearch denied vs not, under
+  // --dangerously-skip-permissions + -p): the denied tool disappeared from both
+  // the top-level AND deferred-tools list, the control tool did not. No PreToolUse
+  // hook is needed here, unlike the self-pace gate: AskUserQuestion is a native
+  // tool invocation with no Bash-escape-route equivalent to the self-pace hook's
+  // tmux-send-keys/scheduled_tasks.json/dashboard-POST routes.
+  if (agentGetsGovernanceGates(name)) denyList.push(...ASK_USER_QUESTION_DENY)
 
   // Egress deny: EVERY profile, not just the gated ones. This function replaces permissions
   // wholesale on each spawn, so without it a respawn would silently drop what ensureBashEgressDeny()
@@ -1104,6 +1120,10 @@ export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | 
 }
 
 const SELF_PACE_TOOL_DENY = ['ScheduleWakeup', 'CronCreate', 'CronDelete', 'CronList', 'RemoteTrigger']
+
+// Card 91cec070: structural, session-level AskUserQuestion denial for every
+// headless role-agent (gated identically to SELF_PACE_TOOL_DENY above).
+const ASK_USER_QUESTION_DENY = ['AskUserQuestion']
 
 // Which agents are subject to the self-pace gate: every agent EXCEPT the main
 // agent (same name-agnostic main-exempt rule as the email gate). Pure + exported
