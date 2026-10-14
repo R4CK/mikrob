@@ -244,6 +244,35 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
   it('a SEC tag nested behind other text inside the same bracket ([x (SEC)]): still excluded', () => {
     expect(isEligibleForGeminiOrdering(card({ title: 'Fix [x (SEC)] something', labels: [] }))).toBe(false)
   })
+  // H3/H3b (card b3ce0a88 delta-gate, WhiteHat2 NO-GO comment 18235): the nesting-aware lookahead
+  // above (H2) isolates the INNERMOST bracketed candidate at every position, but its own inner
+  // class excludes every bracket type -- so an OUTER tag whose text contains an embedded bracket
+  // is never isolated as a whole, because the embedded bracket cuts the candidate short before
+  // the blocked word. H3 was a REGRESSION versus the pre-H2 greedy regex for this exact shape
+  // (d76a64dc blocked it by accident); H3b is a pre-existing gap for the same root. Fixed by also
+  // treating every bracket-delimited SEGMENT of the title as a tag candidate.
+  it('a BLOKKOLT-* tag whose text contains an embedded bracket ([BLOKKOLT-Peti (stop)]): still excluded (H3, regression)', () => {
+    expect(
+      isEligibleForGeminiOrdering(card({ title: '[BLOKKOLT-Peti (stop)] Benign title', labels: [] })),
+    ).toBe(false)
+  })
+  it('a SEC tag whose text contains an embedded round-bracket qualifier ([SEC (high)]): still excluded (H3b)', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: '[SEC (high)] x', labels: [] }))).toBe(false)
+  })
+  it('a SEC tag whose text contains an embedded square bracket ([SEC [x]]): still excluded (H3b)', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: '[SEC [x]] x', labels: [] }))).toBe(false)
+  })
+  it('a SEC tag in round brackets containing an embedded square bracket ((SEC [x])): still excluded (H3b)', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: '(SEC [x]) x', labels: [] }))).toBe(false)
+  })
+  it('a SEC tag directly preceded by another closed tag ([MikroB][SEC (LOW)]): still excluded (H3b)', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: '[MikroB][SEC (LOW)] x', labels: [] }))).toBe(false)
+  })
+  it('CONTROL: benign bracketed tags with an embedded qualifier stay eligible ([MikroB][INFRA] ...)', () => {
+    expect(
+      isEligibleForGeminiOrdering(card({ title: '[MikroB][INFRA] Benign title', labels: [] })),
+    ).toBe(true)
+  })
   // H2 (WhiteHat2 comment 17986): a title containing a literal NUL byte makes spawnSync THROW
   // synchronously (Node refuses a NUL-containing argv string) -- uncaught, this crashed the
   // ENTIRE sweep via the unguarded .filter() callback, not just this one card. Real subprocess

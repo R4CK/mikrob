@@ -255,6 +255,17 @@ _title_folded = _fold(title)
 # change on the unnested cases this was already catching).
 _lead_tags = [m.group(1) for m in re.finditer(r"(?=[\[(\x7b]([^\[\](){}]*)[\])\x7d])", _title_folded)]
 _lead_tags += re.findall(r"(?<!\w)([A-Za-z]+):", _title_folded)
+# H3/H3b (card b3ce0a88 delta-gate, WhiteHat2 NO-GO comment 18235): the lookahead above isolates
+# the INNERMOST bracketed candidate at every position, but its own inner class excludes every
+# bracket type -- so an OUTER tag whose text contains an embedded bracket ("[BLOKKOLT-Peti (stop)]",
+# "[SEC (high)]", "[SEC [x]]", "(SEC [x])", "[MikroB][SEC (LOW)]") is never isolated as a whole: the
+# embedded bracket cuts the candidate short before the blocked word. This was a REGRESSION versus
+# the previous greedy regex for the H3 case (which matched too much, but by accident caught these),
+# and a pre-existing gap for H3b. Measured by WhiteHat2: every bracket-delimited segment of the
+# title (splitting on ANY bracket character) also needs to be a tag candidate, not just the
+# innermost-bracket matches the lookahead above finds -- 0 live false-positive delta on 3168 cards.
+if re.search(r"[\[\](){}]", _title_folded):
+    _lead_tags += [x.strip() for x in re.split(r"[\[\](){}]", _title_folded) if x.strip()]
 all_tags = [t for t in tags_csv.split(",") if t] + _lead_tags
 
 # 2. Tag blocks: casefold + accent-strip each tag (label tags AND title-prefix tags from 1b).

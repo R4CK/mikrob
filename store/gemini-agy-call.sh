@@ -83,6 +83,16 @@ fi
 
 # Hourly, FLEET-WIDE rolling cap. Reuses seged-hivo.py's own read_log()/calls_of() (same file it
 # loads below has been imported only, nothing is re-executed: it guards its __main__ block).
+#
+# The count-check and the actual call+log-append must be ONE atomic unit, or two concurrent
+# invocations can both read the same sent_count and both pass (QA FAIL, comment 18226, measured:
+# 4 seeded + 2 concurrent callers both went through -> 6/5). A dedicated flock, held from here
+# through the end of the script, serializes the whole quota-sensitive region -- consistent with
+# the card's own "flock egy hivas egyszerre" requirement, and cheap at a 5/hour cap.
+HOURLY_LOCK="${GEMINI_AGY_HOURLY_LOCK:-$STORE/gemini-agy-call.hourly.lock}"
+exec 9>"$HOURLY_LOCK"
+flock -x 9
+
 now_epoch=$(date +%s)
 window_start=$((now_epoch - 3600))
 sent_count=$(python3 - "$SEGED_HIVO_HELPERS" "$window_start" <<'PY'
