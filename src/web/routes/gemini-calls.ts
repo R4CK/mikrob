@@ -112,6 +112,20 @@ function toEpochMs(iso: string | undefined): number | null {
   return Number.isFinite(ms) ? ms : null
 }
 
+/** N1 (card 13671607, WhiteHat2 non-blocking finding on 57da740c): `Number(pont)` throws when
+ *  `pont` is an object whose own `toString` is not callable (e.g. `{toString: 1}`) -- Number's
+ *  ToNumeric coercion calls `ToPrimitive`, which invokes `valueOf`/`toString` and propagates a
+ *  TypeError if the resolved property isn't a function, instead of returning NaN. A single such
+ *  ledger row would 500 the whole route. Never coerces anything but number/string primitives. */
+function coerceScore(pont: unknown): number | null {
+  if (typeof pont === 'number') return Number.isFinite(pont) ? pont : null
+  if (typeof pont === 'string') {
+    const n = Number(pont)
+    return Number.isFinite(n) ? n : null
+  }
+  return null
+}
+
 /** Agy-only call rows, newest first, shaped for the FE contract. */
 export function buildCallRows(allRows: RawRow[]): GeminiCallRow[] {
   const ratings = latestRatings(allRows)
@@ -139,7 +153,7 @@ export function buildCallRows(allRows: RawRow[]): GeminiCallRow[] {
       rating: rating
         ? {
             result: rating.eredmeny ?? '',
-            score: Number.isFinite(Number(rating.pont)) ? Number(rating.pont) : null,
+            score: coerceScore(rating.pont),
             opinion: rating.velemeny ?? '',
           }
         : null,
@@ -163,8 +177,19 @@ export function computeQuota(
   return { used, limit: HOURLY_LIMIT, windowStart, nextFreeAt }
 }
 
-function bump(bucket: Record<string, GeminiCallsSummaryBucket>, key: string, status: string): void {
-  const b = (bucket[key] ??= { calls: 0, ok: 0, error: 0, blocked: 0 })
+// N2 (card 13671607, WhiteHat2 non-blocking finding on 57da740c): a model/taskType string of
+// '__proto__', used as a `Record<string, ...>` bracket-assignment key (`bucket[key] ??= ...`),
+// resolves against the inherited `Object.prototype.__proto__` accessor instead of creating an
+// own property -- the read side of `??=` returns the object's current prototype (itself
+// Object.prototype, truthy), so the assignment never fires and every later field write
+// (`b.calls += 1`, ...) lands directly on Object.prototype, polluting every plain object in the
+// process until restart. A Map has no such inherited accessor, so this key is just a key.
+function bump(bucket: Map<string, GeminiCallsSummaryBucket>, key: string, status: string): void {
+  let b = bucket.get(key)
+  if (!b) {
+    b = { calls: 0, ok: 0, error: 0, blocked: 0 }
+    bucket.set(key, b)
+  }
   b.calls += 1
   if (status === 'ok') b.ok += 1
   else if (status === 'blocked') b.blocked += 1
@@ -174,13 +199,15 @@ function bump(bucket: Record<string, GeminiCallsSummaryBucket>, key: string, sta
 export function buildSummary(
   calls: Pick<GeminiCallRow, 'model' | 'taskType' | 'status'>[],
 ): { byModel: Record<string, GeminiCallsSummaryBucket>; byTaskType: Record<string, GeminiCallsSummaryBucket> } {
-  const byModel: Record<string, GeminiCallsSummaryBucket> = {}
-  const byTaskType: Record<string, GeminiCallsSummaryBucket> = {}
+  const byModel = new Map<string, GeminiCallsSummaryBucket>()
+  const byTaskType = new Map<string, GeminiCallsSummaryBucket>()
   for (const c of calls) {
     bump(byModel, c.model || 'ismeretlen', c.status)
     bump(byTaskType, c.taskType || 'ismeretlen', c.status)
   }
-  return { byModel, byTaskType }
+  // Object.fromEntries defines OWN data properties (CreateDataPropertyOrThrow), never going
+  // through [[Set]] / the inherited __proto__ accessor -- safe even if a key is '__proto__'.
+  return { byModel: Object.fromEntries(byModel), byTaskType: Object.fromEntries(byTaskType) }
 }
 
 /** store/gemini-agy-call.sh's own STOP file (shared with scripts/seged-hivo.py: a 403/429 answer
