@@ -174,7 +174,9 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 
 ### Frissítés, verziózás, rollback
 
-- **Fork-saját verziójelzés SemVer build-metadatával**: a verzió `X.Y.Z+mikrob.N` alakú, ahol `X.Y.Z` a változatlan upstream verzió és `N` a fork saját számlálója. A `+` szándékos: a kötőjeles pre-release SemVer szerint kisebb lenne az upstream verziónál.
+- **Fork-saját verziójelzés SemVer build-metadatával**: a verzió `X.Y.Z+mikrob.N` alakú, ahol `X.Y.Z` a legmagasabb már beolvasztott upstream verzió és `N` a fork saját számlálója. A `+` szándékos: a kötőjeles pre-release SemVer szerint kisebb lenne az upstream verziónál.
+- **Fő verziószám automatikus követése upstream-szinkronnál**: az upstream-szinkron landolás a legmagasabb, már ősként beolvasztott upstream `vX.Y.Z` tag-re állítja a fő verziót, a fork saját `+mikrob.N` számlálóját érintetlenül hagyva.
+- **`/api/version` konzisztens verzió+commit pár**: a futó folyamat induláskor egyszer, együtt olvassa be a verziót és a commit-hash-t, hogy a kettő sosem keveredhessen; külön jelzi, ha a lemezen újabb build van, mint amit a folyamat valójában betöltött.
 - **Auto-healing update pipeline**: frissítés után health-check futtat a dashboardon, és ha az nem válaszol, magától visszaáll az előző működő verzióra. Upstream nem ismeri.
 - **Update-biztonság + recovery**: ff-only pull auto-stash-sel, rollback-pont minden frissítésnél, és egy visszaállító script korábbi ismert-jó verzióra, a `store/` adat érintetlenül hagyásával.
 - **Rollback distance-guard**: az automatikus visszaállás megtagadja a célt, ha az nem őse a HEAD-nek, túl messze van, vagy nem tartalmazza a padló-commitot; ilyenkor a jelenlegi verzión marad és értesít.

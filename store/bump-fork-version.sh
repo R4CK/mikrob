@@ -3,12 +3,15 @@
 # landing (DECISIONS.md 2026-08-20 "Fork-sajat verziojelzes: SemVer build-metadata (+mikrob.N)",
 # reconfirmed 2026-08-25, automated per Peti request 2026-08-26).
 #
-# Format: X.Y.Z+mikrob.N -- X.Y.Z is the upstream Szotasz/marveen version (bumped only by an
-# upstream-sync merge, a SEPARATE flow this script never touches), N is the fork's own counter
-# WITHIN that X.Y.Z, incrementing by 1 on every fork-own landing. marveen-land.sh lands ONLY
-# fork-own agent/*/work branches (upstream syncs are a different, manual flow) -- so every call
-# into this script from there is by definition a fork-own landing; no upstream-vs-fork detection
-# needed here.
+# Format: X.Y.Z+mikrob.N -- X.Y.Z is the upstream Szotasz/marveen version, N is the fork's own
+# counter, incrementing by 1 on every fork-own landing (this script never resets N on an X.Y.Z
+# bump -- see bump-upstream-version.sh). marveen-land.sh lands ONLY fork-own agent/*/work branches
+# (upstream syncs are a different, manual flow) -- so every call into this script from there is by
+# definition a fork-own landing; no upstream-vs-fork detection needed here.
+#
+# X.Y.Z itself is bumped by store/bump-upstream-version.sh, called from the (still manual, card
+# 165350f1) upstream-sync landing flow once a newer upstream vX.Y.Z tag becomes an ancestor of the
+# branch being landed -- NOT by this script, and not on every landing.
 #
 # package-lock.json (lockfileVersion 3) carries its OWN "version" fields (top-level + the root
 # entry at packages[""].version) that npm expects to match package.json's X.Y.Z -- WITHOUT the

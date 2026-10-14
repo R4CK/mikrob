@@ -28,22 +28,59 @@ export interface VersionInfo {
   readonly commitHash: string | null
   /** ISO timestamp of the build-marker's mtime, or null alongside a null commitHash. */
   readonly buildTime: string | null
+  /** True when dist/.built-commit ON DISK right now names a DIFFERENT commit than the one this
+   *  process actually loaded at startup (card 165350f1) -- i.e. a landing rebuilt dist after this
+   *  process started, so a restart would pick up a different build than the one answering this
+   *  request. False (never null) when there is nothing to compare, including when neither marker
+   *  has a commit at all. */
+  readonly newerBuildOnDisk: boolean
 }
 
-export function readVersionInfo(): VersionInfo {
-  let commitHash: string | null = null
-  let buildTime: string | null = null
+interface BuiltCommitMarker {
+  readonly commitHash: string | null
+  readonly buildTime: string | null
+}
+
+function readBuiltCommitMarker(): BuiltCommitMarker {
   try {
     if (existsSync(BUILT_COMMIT_FILE)) {
       const full = readFileSync(BUILT_COMMIT_FILE, 'utf-8').trim()
-      commitHash = full.length > 0 ? full.slice(0, 7) : null
-      buildTime = statSync(BUILT_COMMIT_FILE).mtime.toISOString()
+      return {
+        commitHash: full.length > 0 ? full.slice(0, 7) : null,
+        buildTime: statSync(BUILT_COMMIT_FILE).mtime.toISOString(),
+      }
     }
   } catch {
     // Fail-closed: an unreadable/missing marker degrades to nulls, never a 500 -- the version
     // number alone is still worth showing.
   }
-  return { version: readVersion(), commitHash, buildTime }
+  return { commitHash: null, buildTime: null }
+}
+
+/** Pure comparison, exported separately so the staleness logic is testable without touching the
+ *  real filesystem (card 165350f1). */
+export function hasNewerBuildOnDisk(running: BuiltCommitMarker, onDisk: BuiltCommitMarker): boolean {
+  return running.commitHash !== null && onDisk.commitHash !== null && onDisk.commitHash !== running.commitHash
+}
+
+// Captured ONCE, at module load (i.e. process startup) -- version AND commit/build-time read
+// TOGETHER, as one snapshot of what this process actually loaded. Before this fix, `version` came
+// from readVersion()'s own cache (effectively frozen at first call) while commitHash/buildTime were
+// re-read from disk on every request -- a landing that rebuilds dist without restarting the
+// service made /api/version report a commit hash that never belonged to the running version string.
+// Freezing both together here removes that mismatch by construction; readVersionInfo() below does
+// a SEPARATE fresh read purely to detect (not to report as current) that disk has moved on.
+const RUNNING_VERSION = readVersion()
+const RUNNING_BUILT = readBuiltCommitMarker()
+
+export function readVersionInfo(): VersionInfo {
+  const onDisk = readBuiltCommitMarker()
+  return {
+    version: RUNNING_VERSION,
+    commitHash: RUNNING_BUILT.commitHash,
+    buildTime: RUNNING_BUILT.buildTime,
+    newerBuildOnDisk: hasNewerBuildOnDisk(RUNNING_BUILT, onDisk),
+  }
 }
 
 export async function tryHandleVersion(ctx: RouteContext): Promise<boolean> {
