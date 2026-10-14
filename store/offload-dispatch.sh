@@ -235,7 +235,7 @@ _title_folded = _fold(title)
 # (all live conventions WhiteHat found still open) was simply never looked at. This searches the
 # WHOLE folded title for a bracket group with ANY of the three bracket pairs (not anchored, not
 # consecutive), plus the bare "TAG:" prefix form with no brackets at all.
-_lead_tags = re.findall(r"[\[({]([^\])}]*)[\])}]", _title_folded)
+_lead_tags = re.findall(r"[\[(\x7b]([^\])\x7d]*)[\])\x7d]", _title_folded)
 _lead_tags += re.findall(r"(?<!\w)([A-Za-z]+):", _title_folded)
 all_tags = [t for t in tags_csv.split(",") if t] + _lead_tags
 
