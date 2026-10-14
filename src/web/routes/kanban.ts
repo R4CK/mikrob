@@ -19,7 +19,7 @@ import {
   getHeartbeatKanbanSummary,
   addKanbanDependency, removeKanbanDependency,
   getKanbanPredecessors, getKanbanSuccessors, dependencyBlockers,
-  getUnmetPredecessorsForAllCards, getUnmetKanbanPredecessors,
+  getUnmetPredecessorsForAllCards, getUnmetKanbanPredecessors, isLinkedToInProgressCard,
   countNewHotMemories,
   countPlannedKanbanCards,
   getDbFileSizeMb,
@@ -108,7 +108,13 @@ function newDevStopWouldBlock(id: string, nextStatus: unknown, force: boolean, a
   if (nextStatus !== 'in_progress' && nextStatus !== 'waiting') return false // cheap early-out avoids the flag + DB read
   const flag = readHardStop()
   if (!flag.newDevStopActive) return false
-  return isNewDevStartBlocked(getKanbanCard(id)?.status, nextStatus, force, flag, actor)
+  const prevStatus = getKanbanCard(id)?.status
+  // CLAUDE.md rule 1e (card b73722e1): only worth the extra DB walk when every other reason to
+  // block is already true -- a card not even targeting in_progress/waiting from planned, or one an
+  // exempt actor's force already covers, never needs the linkage check.
+  const linkedToInProgress =
+    prevStatus === 'planned' && isLinkedToInProgressCard(id, flag.updatedAt)
+  return isNewDevStartBlocked(prevStatus, nextStatus, force, flag, actor, linkedToInProgress)
 }
 
 /**

@@ -108,6 +108,12 @@ export function isParkedByHardStop(agentId: string, flag: WeeklyHardStop = readH
  * `force` is meant as MikroB's deliberate override for a critical-infra exception (kanban.ts:27) --
  * it only overrides when the caller is one of `flag.exemptAgents` (mikrob); everyone else's force is
  * ignored. Pure so the status-write endpoints can test the decision without a file/DB.
+ *
+ * `linkedToInProgress` (CLAUDE.md rule 1e, card b73722e1): true when the caller has already
+ * determined that this card is a child/predecessor/successor of an in_progress card (via
+ * `isLinkedToInProgressCard` in db.ts, which also carries the anti-bypass edge-age check) -- such a
+ * card is a subtask of work already underway, not new development, and must not be refused. Defaults
+ * to `false` so every existing caller/test keeps its current behaviour unless it opts in.
  */
 export function isNewDevStartBlocked(
   prevStatus: string | undefined,
@@ -115,8 +121,15 @@ export function isNewDevStartBlocked(
   force: boolean,
   flag: WeeklyHardStop,
   actor?: string,
+  linkedToInProgress = false,
 ): boolean {
   const exemptOverride = force && !!actor && flag.exemptAgents.includes(actor.trim().toLowerCase())
   const isNewDevTarget = nextStatus === 'in_progress' || nextStatus === 'waiting'
-  return !exemptOverride && flag.newDevStopActive === true && isNewDevTarget && prevStatus === 'planned'
+  return (
+    !exemptOverride &&
+    !linkedToInProgress &&
+    flag.newDevStopActive === true &&
+    isNewDevTarget &&
+    prevStatus === 'planned'
+  )
 }
