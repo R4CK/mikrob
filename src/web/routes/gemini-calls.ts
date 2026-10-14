@@ -47,7 +47,7 @@ export interface GeminiCallRow {
   status: string
   durationS: number | null
   tokens: number | null
-  rating: { result: string; score: number; opinion: string } | null
+  rating: { result: string; score: number | null; opinion: string } | null
 }
 
 export interface GeminiCallsSummaryBucket {
@@ -130,8 +130,18 @@ export function buildCallRows(allRows: RawRow[]): GeminiCallRow[] {
       status: call.status ?? 'ismeretlen',
       durationS: typeof call.duracio_s === 'number' ? call.duracio_s : null,
       tokens: typeof call.tokens_total === 'number' ? call.tokens_total : null,
+      // WhiteHat2 F1 (MEDIUM, card 57da740c): the ledger is a plain JSONL file any same-uid
+      // fleet process can write -- `rating.pont` is NOT guaranteed to be the number the type
+      // declares (scripts/seged-hivo.py's own --ertekel writer validates 1-10, but that is the
+      // one sanctioned writer, not an enforced schema). Coerced the same way durationS/tokens
+      // above already are, so a non-numeric value becomes null, not a string the FE would
+      // otherwise have to treat as safe-to-interpolate.
       rating: rating
-        ? { result: rating.eredmeny ?? '', score: rating.pont ?? 0, opinion: rating.velemeny ?? '' }
+        ? {
+            result: rating.eredmeny ?? '',
+            score: Number.isFinite(Number(rating.pont)) ? Number(rating.pont) : null,
+            opinion: rating.velemeny ?? '',
+          }
         : null,
     })
   }
