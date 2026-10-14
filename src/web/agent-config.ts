@@ -298,6 +298,16 @@ function hasParentTraversal(raw: string): boolean {
 // whitelist/traversal/tilde gauntlet -- there is only one place that decides
 // what is safe to inline into the launch command. Returns the absolute path,
 // or null when the value is blank/malformed/unsafe.
+//
+// DELIBERATELY NOT SCOPED to existing agent-config roots (Cybersec LOW, card
+// 2b0bd3ae): a claude-plans entry's whole purpose is registering a NEW login
+// directory that may not correspond to any agent yet (the operator runs
+// `claude setup-token` into a fresh dir, then registers it) -- narrowing this
+// would break that legitimate flow for no security gain, since plan
+// CREATE/PUT/DELETE/rotate are now human-only (card 93ed929a's
+// rejectIfNotHumanAuth in routes/claude-plans.ts), closing the actual
+// privilege-escalation path the LOW finding was about (any fleet agent could
+// register an arbitrary configDir). Decision: keep shell-safety-only here.
 export function expandAndValidateConfigDir(
   rawValue: string,
   homeDir: string,

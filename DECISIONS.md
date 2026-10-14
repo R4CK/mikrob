@@ -20240,3 +20240,19 @@ Kártya 95b62f66, MikroB kötegterve szerint, fork-oldal alapértelmezéssel. 21
 Teljes fleet-test (2. kör, a fenti javításokkal): 995+ fájl zöld, lásd a landoló kör saját kimenetét a kártya REVIEW-jában.
 
 **Ki döntött:** backend3 (Köteg 12, 2026-10-13).
+
+---
+
+**2026-10-14 -- 2b0bd3ae: /api/claude-plans configDir-validáció NEM szűkítve -- döntés, kódváltozás nélkül**
+
+Cybersec LOW lelete (ef6a8031 komment 11223, 2026-10-02): `expandAndValidateConfigDir` (`src/web/agent-config.ts`) csak shell-biztonságot (whitelist/traversal/tilde) ellenőriz, nem azt, hogy a megadott configDir egy meglévő agent-konfig-gyökér alatt van-e. Döntés kell: szűkítendő-e, és kell-e explicit megerősítés a `/rotate`-ra.
+
+**Megerősítés kell NEM szükséges már:** a kártya nyitása (2026-08-15) UTÁN landolt a 93ed929a (2026-10-09, HIGH, DONE) -- `rejectIfNotHumanAuth` MOST MINDEN claude-plans write/rotate útra kötelező (POST, PUT, DELETE, POST /rotate, `routes/claude-plans.ts:151,213,405,464`): böngésző-session vagy nem-agent eszközkulcs kell, a megosztott flotta-token nem elég. Ez pontosan az eredeti LOW lelet valós kockázatát zárta le (bármely flotta-ágens tetszőleges configDir-t regisztrálhatott volna).
+
+**configDir-validáció szűkítése NEM kell:** a claude-plans regisztráció pont azért létezik, hogy egy ÚJ, friss `claude setup-token`-nel feltöltött könyvtárat vegyen fel -- ez NEM feltétlenül egy már létező agent-konfig-gyökér. A szűkítés a legitim új-plan-regisztrációs folyamatot törné el, biztonsági haszon nélkül, mert a regisztráció (a valódi kockázatos lépés) már ember-kapuzott. A kártya által is megemlített "agent-PUT flag nélkül hozzárendelhet" (`routes/agents.ts` `PUT /api/agents/:id`, `claudePlan` mező) külön, alacsonyabb kockázatú művelet: csak egy MÁR LÉTEZŐ (ember által létrehozott, validált) plan-id-re mutathat rá, nem hozhat létre újat -- ugyanaz a nyitottsági szint, mint minden más agent-mező (model, authMode, mcpJson), nem egy új rés.
+
+**Kódváltozás:** egyetlen dokumentáló komment `src/web/agent-config.ts`-ben `expandAndValidateConfigDir` felett, a döntés + indoklás rögzítésére, hogy egy jövőbeli olvasó ne nyissa vissza vizsgálat nélkül. Funkcionális változás nincs.
+
+Local-LLM draft (card 18039) a kártyán: a draft csak a kártya szövegét parafrazálta, konkrét kódot/döntést nem adott -- Draft-Review: ELUTASITVA.
+
+**Ki döntött:** backend3 (kártya 2b0bd3ae, 2026-10-14).
