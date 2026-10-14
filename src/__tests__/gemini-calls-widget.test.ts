@@ -1,5 +1,6 @@
 // String-contract guard for card 57da740c: Gemini (agy) calls page + Overview tile
-// (pair-BE 64788453, contract proposed in kanban card 57da740c description).
+// (pair-BE 64788453, contract CONFIRMED by backend, inter-agent msg_id 11816 --
+// src/web/routes/gemini-calls.ts tryHandleGeminiCalls).
 // House idiom (see local-llm-distribution-widget.test.ts): source files read as strings,
 // asserted against short, formatting-proof fragments -- no DOM/runtime needed.
 //
@@ -8,6 +9,12 @@
 //     (loadGeminiCalls) and the Overview tile (loadGeminiOverviewTile)
 //   - 404 hides the Overview tile (pair-BE 64788453 not yet landed) and renders an honest
 //     "not available yet" status on the dedicated page -- never invented data
+//   - summary.byModel/byTaskType are OBJECTS keyed by name ({[key]: {calls,ok,error,blocked}}),
+//     with no avgScore/unrated field -- geminiSummaryEntries() derives both from the calls
+//     array itself, so the backend cannot ship a summary table that disagrees with the log
+//   - status is one of 'ok'|'error'|'blocked'|'timeout'|'started' (5 states, not a simple
+//     ok/error binary) and rating.result is the backend's raw 'elfogadva'|'javitva'|'eldobva'
+//     used directly as the i18n key suffix
 //   - Dedicated page renders: quota bar, STOP-flag banner, summary-by-model table,
 //     summary-by-taskType table, call-log table with 9 columns incl. rating
 //   - An unrated call renders a distinct "unrated" marker, not a blank cell
@@ -69,7 +76,7 @@ describe('gemini-calls: dedicated page loader (loadGeminiCalls)', () => {
     const body = fnBody(APP_GEMINI, FN)
     expect(body).toContain('geminiRenderQuota(d.quota)')
     expect(body).toContain('geminiRenderStop(d.stop)')
-    expect(body).toContain('geminiSummaryTableHtml(d.summary')
+    expect(body).toContain('geminiSummaryEntries(d.summary')
     expect(body).toContain('geminiRenderCallsTable(d.calls)')
   })
 })
@@ -101,6 +108,44 @@ describe('gemini-calls: Overview tile loader (loadGeminiOverviewTile)', () => {
   it('wires the detail link to switchPage, same pattern as the cost widget', () => {
     expect(APP_OVERVIEW).toContain('wireGeminiDetailLink')
     expect(APP_OVERVIEW).toContain('.ovw-gemini-detail-link[data-page]')
+  })
+})
+
+describe('gemini-calls: geminiSummaryEntries (real execution, not string-match)', () => {
+  const body = fnBody(APP_GEMINI, 'function geminiSummaryEntries(')
+  const geminiSummaryEntries = new Function(body + '\nreturn geminiSummaryEntries')() as (
+    bucket: Record<string, { calls: number; ok: number; error: number; blocked: number }> | undefined,
+    calls: Array<{ model?: string; taskType?: string; rating: { score: number } | null }>,
+    field: 'model' | 'taskType',
+  ) => Array<{ key: string; total: number; ok: number; avgScore: number | null; unrated: number }>
+
+  it('derives avgScore and unrated from the calls array, not from the bucket', () => {
+    const bucket = { 'gemini-3.8-flash-medium': { calls: 3, ok: 2, error: 1, blocked: 0 } }
+    const calls = [
+      { model: 'gemini-3.8-flash-medium', rating: { score: 8 } },
+      { model: 'gemini-3.8-flash-medium', rating: { score: 4 } },
+      { model: 'gemini-3.8-flash-medium', rating: null },
+      { model: 'other-model', rating: { score: 10 } }, // must not leak into the row below
+    ]
+    const rows = geminiSummaryEntries(bucket, calls, 'model')
+    expect(rows).toEqual([
+      { key: 'gemini-3.8-flash-medium', total: 3, ok: 2, avgScore: 6, unrated: 1 },
+    ])
+  })
+
+  it('avgScore is null when every call in the bucket is unrated, not 0 (0 is a valid score)', () => {
+    const bucket = { code: { calls: 2, ok: 2, error: 0, blocked: 0 } }
+    const calls = [
+      { taskType: 'code', rating: null },
+      { taskType: 'code', rating: null },
+    ]
+    const rows = geminiSummaryEntries(bucket, calls, 'taskType')
+    expect(rows[0].avgScore).toBeNull()
+    expect(rows[0].unrated).toBe(2)
+  })
+
+  it('returns an empty array for a missing/undefined bucket (summary not yet populated)', () => {
+    expect(geminiSummaryEntries(undefined, [], 'model')).toEqual([])
   })
 })
 
@@ -213,12 +258,15 @@ describe('gemini-calls: i18n parity (hu.js / en.js)', () => {
     'geminiCalls.list.col_rating',
     'geminiCalls.status.ok',
     'geminiCalls.status.error',
+    'geminiCalls.status.blocked',
+    'geminiCalls.status.timeout',
+    'geminiCalls.status.started',
     'geminiCalls.status.unknown',
     'geminiCalls.rating.unrated',
     'geminiCalls.rating.unrated_title',
-    'geminiCalls.rating.result.accepted',
-    'geminiCalls.rating.result.fixed',
-    'geminiCalls.rating.result.discarded',
+    'geminiCalls.rating.result.elfogadva',
+    'geminiCalls.rating.result.javitva',
+    'geminiCalls.rating.result.eldobva',
     'geminiCalls.rating.result.unknown',
   ]
 
@@ -239,6 +287,14 @@ describe('gemini-calls: CSS', () => {
     expect(CSS).toContain('.gemini-calls-table')
     expect(CSS).toContain('.gemini-rating')
     expect(CSS).toContain('.gemini-unrated')
+  })
+
+  it('all 5 status states have a distinct class rule (not just ok/error)', () => {
+    expect(CSS).toContain('.gemini-status--ok')
+    expect(CSS).toContain('.gemini-status--error')
+    expect(CSS).toContain('.gemini-status--blocked')
+    expect(CSS).toContain('.gemini-status--timeout')
+    expect(CSS).toContain('.gemini-status--started')
   })
 
   it('overview tile classes are defined', () => {
