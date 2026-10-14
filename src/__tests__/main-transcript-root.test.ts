@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir as realTmpdir, homedir as realHomedir } from 'node:os'
+import { tmpdir as realTmpdir } from 'node:os'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 
 // FAKE homedir, so "the shared root" in this test is a sandboxed tmp dir, never the real
