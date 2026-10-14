@@ -24,15 +24,12 @@
 #
 # Usage: gemini-agy-call.sh --hivo AGENT --kartya ID --feladattipus TYPE --kategoria CAT
 #                            --prompt FILE --mappa DIR [--timeout SEC] [--model NAME]
-#                            [--root DIR] [--seged-script PATH] [--dashboard-token-file PATH]
-#                            [--dashboard-url URL] [--category-check PATH]
 #   CAT: safe | security | auth | finance | mopsion  (anything but "safe" refuses, exit 3)
-#   The --root/--seged-script/--dashboard-token-file/--dashboard-url/--category-check flags are
-#   test-only (gemini-agy-call.selftest.sh): the real dispatch path never passes them, so it
-#   always resolves the real gate-script locations from this file's own path (M1, card 09117e0a).
-#   They additionally require GEMINI_AGY_CALL_TEST_MODE=1 to be honored at all (F-B, card
-#   09117e0a, WhiteHat2 NO-GO komment 18851): without it, passing any of them is a plain usage
-#   error (exit 2), so a live caller handing one by mistake cannot disable a gate.
+#   This script always resolves the real gate-script locations from its own path (M1, card
+#   09117e0a) -- there is no --root/--seged-script/--dashboard-token-file/--dashboard-url/
+#   --category-check override on the live CLI at all any more (F-B, card f6f67dff): any of those
+#   is simply an unknown argument (exit 2). gemini-agy-call.selftest.sh keeps its own copy of that
+#   parsing, purely for its own sandboxed fixtures; nothing shipped here understands them.
 # Exit codes mirror seged-hivo.py: 0 ok | 1 helper failed | 2 bad usage | 3 blocked (gate/category)
 #                                   | 4 timeout | 5 quota/lock
 set -euo pipefail
@@ -73,24 +70,13 @@ while [ $# -gt 0 ]; do
     --mappa) mappa="$2"; shift 2 ;;
     --timeout) timeout_s="$2"; shift 2 ;;
     --model) MODEL="$2"; shift 2 ;;
-    # Test-only (selftest): never used by the real dispatch path (see M1 comment above). Gated
-    # behind GEMINI_AGY_CALL_TEST_MODE=1 (WhiteHat2 F-B, komment 18851, MikroB 18854 pont 1): a
-    # caller on the live CLI handing one of these flags must not silently disable the category
-    # gate or the secret filter -- the flag is simply rejected as unknown, same as a typo would be.
-    --root|--seged-script|--dashboard-token-file|--dashboard-url|--category-check)
-      if [ "${GEMINI_AGY_CALL_TEST_MODE:-}" != 1 ]; then
-        echo "gemini-agy-call: $1 is test-only (requires GEMINI_AGY_CALL_TEST_MODE=1), refusing" >&2
-        exit 2
-      fi
-      case "$1" in
-        --root) ROOT="$2"; STORE="$ROOT/store"; SEGED_HIVO_HELPERS="$ROOT/scripts/seged-hivo.py"
-                SEGED_HIVO="$ROOT/scripts/seged-hivo.py"; DASHBOARD_TOKEN_FILE="$STORE/.dashboard-token" ;;
-        --seged-script) SEGED_HIVO="$2" ;;
-        --dashboard-token-file) DASHBOARD_TOKEN_FILE="$2" ;;
-        --dashboard-url) DASHBOARD_URL="$2" ;;
-        --category-check) CATEGORY_CHECK_OVERRIDE="$2" ;;
-      esac
-      shift 2 ;;
+    # F-B (card f6f67dff, WhiteHat2): --root/--seged-script/--dashboard-token-file/--dashboard-url/
+    # --category-check used to exist here as test-only CLI flags, gated behind an env var
+    # (GEMINI_AGY_CALL_TEST_MODE=1). A live caller simply exporting that env var could still
+    # re-enable them, so the live script now has NO knowledge of these flags at all: they fall
+    # through to the same "unknown argument" refusal as any other mistyped flag, unconditionally,
+    # with nothing to flip. gemini-agy-call.selftest.sh carries its own copy of this parsing (built
+    # once, at the top of that file) purely for its own sandboxed test fixtures -- it never ships.
     *) echo "gemini-agy-call: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -157,7 +143,10 @@ if [ "$http_code" != "200" ]; then
   exit 3
 fi
 set +e
-detected_cat="$(printf '%s' "$card_json" | python3 "$CATEGORY_CHECK" "$kartya")"
+# F-E (card f6f67dff, WhiteHat2): -I on every python3 invocation here, so an ambient PYTHONPATH
+# (inherited from whatever spawned this script) cannot shadow a stdlib module and quietly change
+# what these helpers actually do.
+detected_cat="$(printf '%s' "$card_json" | python3 -I "$CATEGORY_CHECK" "$kartya")"
 check_rc=$?
 set -e
 if [ "$check_rc" -ne 0 ]; then
@@ -190,7 +179,7 @@ window_start=$((now_epoch - 3600))
 # 18851): it resolves from wherever $SEGED_HIVO_HELPERS itself lives, no env var needed or
 # honored any more. The test harness points this at its own COPY of the real script (a symlink
 # would resolve straight back to the real repo root and defeat the sandbox).
-sent_count=$(python3 - "$SEGED_HIVO_HELPERS" "$window_start" <<'PY'
+sent_count=$(python3 -I - "$SEGED_HIVO_HELPERS" "$window_start" <<'PY'
 import datetime, importlib.util, sys
 spec = importlib.util.spec_from_file_location('seged_hivo', sys.argv[1])
 sh = importlib.util.module_from_spec(spec)
@@ -227,7 +216,7 @@ set +e
 # when $SEGED_HIVO is the test harness's STUB (--seged-script, test-only) standing in for it, which
 # the stub itself reads to find the sandbox root -- irrelevant to anything this env-security fix
 # protects, since the stub never touches the secret gate.
-out=$(MARVEEN_ROOT="$ROOT" python3 "$SEGED_HIVO" --seged "agy:$MODEL" --mappa "$mappa" --prompt "$prompt_file" \
+out=$(MARVEEN_ROOT="$ROOT" python3 -I "$SEGED_HIVO" --seged "agy:$MODEL" --mappa "$mappa" --prompt "$prompt_file" \
       --hivo "$hivo" --kartya "$kartya" --feladattipus "$feladattipus" --timeout "$timeout_s")
 rc=$?
 set -e
@@ -238,7 +227,7 @@ call_status="ok"
 [ "$rc" -ne 0 ] && call_status="hiba(rc=$rc)"
 if [ -f "$DASHBOARD_TOKEN_FILE" ]; then
   content="Gemini-hivas (agy): modell=$MODEL hivo=$hivo kartya=$kartya feladattipus=$feladattipus status=$call_status ido=${duration_s}s ora-keret=$((sent_count + 1))/$HOURLY_LIMIT"
-  payload=$(python3 -c 'import json,sys; print(json.dumps({"agent_id": sys.argv[1], "content": sys.argv[2]}))' "$hivo" "$content")
+  payload=$(python3 -I -c 'import json,sys; print(json.dumps({"agent_id": sys.argv[1], "content": sys.argv[2]}))' "$hivo" "$content")
   # Token goes through a 0600 temp header file, never argv (a Bearer token in argv is readable
   # from /proc/<pid>/cmdline by any local process -- same pattern as offload-dispatch.sh).
   hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
