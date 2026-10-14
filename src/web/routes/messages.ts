@@ -18,7 +18,7 @@ import { isAllowedVoiceChannelDevice } from '../voice-channel-device-allowlist.j
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
 import { isReservedSenderId } from '../system-directive-id.js'
-import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -54,6 +54,9 @@ export function shouldNotifyDelegator(fromAgent: string, toAgent: string, conten
   if (content.startsWith(COMPLETION_REPORT_PREFIX)) return false
   return true
 }
+
+/** The result a voice-channel answer is closed with: it is read by the relay, never delivered. */
+export const VOICE_MAILBOX_RESULT = 'voice-channel mailbox: no session delivery; the voice relay reads it'
 
 // Frozen at module load, like the config constant it derives from.
 //
@@ -129,6 +132,25 @@ export function attachFreshness(messages: AgentMessage[]): AgentMessageWithFresh
   }))
 }
 
+// HBFABRIC1003 follow-up: a refused heartbeat digest is reported to the main
+// agent as an informational system note (no action is requested of it), at
+// most once per HEARTBEAT_REFUSAL_NOTE_GAP_MS. Exported for the test.
+export const HEARTBEAT_REFUSAL_NOTE_GAP_MS = 10 * 60 * 1000
+let lastHeartbeatRefusalNoteMs = 0
+export function resetHeartbeatRefusalNoteForTest(): void { lastHeartbeatRefusalNoteMs = 0 }
+function noteHeartbeatRefusal(problems: string[], nowMs: number = Date.now()): void {
+  if (nowMs - lastHeartbeatRefusalNoteMs < HEARTBEAT_REFUSAL_NOTE_GAP_MS) return
+  lastHeartbeatRefusalNoteMs = nowMs
+  try {
+    createAgentMessage('system', MAIN_AGENT_ID,
+      '[HB-KAPU] A heartbeat digestjét a szerver elutasította (422, HBFABRIC1003): a Kanban-sorai nem egyeztek az élő táblával, '
+      + 'ezért ebben a körben NEM érkezik digest. Eltérések: ' + problems.join('; ')
+      + '. Tájékoztatás, teendőt nem kér; ha a digest kell, a GET /api/kanban/heartbeat-summary adja az élő számokat.')
+  } catch (err) {
+    logger.warn({ err }, 'HBFABRIC1003: could not queue the heartbeat refusal note')
+  }
+}
+
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -167,6 +189,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     const kanbanVerdict = verifyHeartbeatKanban(content, () => getHeartbeatKanbanLive(HEARTBEAT_KANBAN_WINDOW_SEC))
     if (!kanbanVerdict.ok) {
       logger.warn({ from: from.trim(), to: to.trim(), problems: kanbanVerdict.problems }, 'Rejected /api/messages POST: heartbeat Kanban lines do not match the live board')
+      // The heartbeat agent does not read the POST's status (its task ends at
+      // "send, stop"), so a refusal would otherwise be an hour with NO digest
+      // that only the dashboard log knows about (Geri's #1684 verify). The
+      // main agent is told instead -- server-side, not by the sender's
+      // discipline -- at most once per window, so a retrying sender cannot
+      // flood its box.
+      if (sanitizeAgentIdent(from) === HEARTBEAT_AGENT_ID) noteHeartbeatRefusal(kanbanVerdict.problems)
       json(res, {
         error: 'heartbeat_kanban_mismatch: the Kanban lines do not match the live board. Re-read the metrics block (GET /api/kanban/heartbeat-summary) and copy it, do not retype it.',
         problems: kanbanVerdict.problems,
@@ -307,6 +336,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // gets an actionable error NOW instead of a silent 1h abandon. Local
     // (slash-free) recipients are validated too, below (card 523a1426).
     let storedTo = to.trim()
+    // VOICEREPLY1005: set only in the local (non-federated, non-colon) branch below, where the
+    // voice-mailbox exact-match check actually applies -- a federated or colon-form 'to' can
+    // never be the voice mailbox, so this stays false for those.
+    let isVoiceMailbox = false
     if (storedTo.includes('/')) {
       const target = parseQualifiedId(storedTo)
       if (!target) {
@@ -355,8 +388,18 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // agent, reachable here with nothing but message volume from any token holder. Rejecting an
       // unknown local recipient at creation time (same sanitizeAgentIdent normalization as the from
       // check, for the same router-parity reason) means a forged bucket is never created at all.
+      //
+      // VOICEREPLY1005 (upstream, review #1697): the voice channel id is a PULL MAILBOX, not an
+      // agent -- the voice relay sends the owner's dictation in as VOICE_CHANNEL_AGENT_ID, and an
+      // answer goes back to the same id, read by the relay from the sender's own conversation. No
+      // session owns it, so it must be accepted here even though it is not a registered agent.
+      // EXACT match on the RAW stored id (not the sanitized form): a near-miss (the voice id plus a
+      // stray character) must NOT silently fall back to the voice mailbox and get lost there -- it
+      // gets the same 400 as any other unknown recipient.
+      isVoiceMailbox = storedTo === VOICE_CHANNEL_AGENT_ID
       const sanitized = sanitizeAgentIdent(storedTo)
-      if (!isKnownAgent(sanitized)) {
+      if (!isVoiceMailbox && !isKnownAgent(sanitized)) {
+        logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
         json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id, or "<system>/<agent>" for a federated address` }, 400)
         return true
       }
@@ -365,7 +408,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // selectFairBatch buckets by the STORED to_agent, so "cybered." / ".cybered" / "cybered!"
       // all sanitize to a real, known name (validation passes) yet each stored RAW would still
       // open its own distinct bucket. Store what was validated, same as the federated branch
-      // above already canonicalizes to formatQualifiedId(...) rather than the raw input.
+      // above already canonicalizes to formatQualifiedId(...) rather than the raw input. The voice
+      // mailbox id is already its own sanitized form, so this is a no-op for that case.
       storedTo = sanitized
     }
     // Code-side enforcement of the kanban-ref convention: rewrite any
@@ -384,6 +428,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, stampedContent, trimmedOriginNote)
+    if (isVoiceMailbox) {
+      markMessageDone(msg.id, VOICE_MAILBOX_RESULT)
+      logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Voice-channel answer stored in the mailbox (no session delivery)')
+      json(res, { ...(getAgentMessage(msg.id) ?? msg), mailbox: true })
+      return true
+    }
     // Backpressure, returned WITH the id rather than behind a second call:
     // `{"id":N,"status":"pending"}` alone reads as "sent", and on a busy
     // recipient it can be 80 minutes from true. See getRecipientQueueState for
