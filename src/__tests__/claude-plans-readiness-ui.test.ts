@@ -2,6 +2,18 @@
 // claudePlansReadinessLines() from web/app.js (not a copy) against the shape
 // GET /api/claude-plans/readiness returns, and pins that every code the
 // server can emit has localized banner text in both languages.
+//
+// SKIPPED 2026-10-14 (backend3, card d7e1d611, Köteg 14, upstream 8887523d/ROTAUTOWIRE926): this
+// test file arrived with the backend half of the rotation feature (src/web/claude-rotation-heartbeat.ts,
+// which DID merge), but its subject -- renderClaudePlansPanel/claudePlansReadinessLines/
+// switchToClaudePlan in web/app.js -- is the Claude Plans settings tab PORT this fork has deferred
+// across multiple previous rounds as its own decision, tracked under the ALREADY-OPEN card 1c810029
+// (see src/fork-upstream/acknowledged-conflicts.ts, 'web/app.js' entry, 2026-09-15/2026-09-26 notes).
+// A brand-new test file has no merge conflict to lose a 3-way resolution to, so it landed even though
+// the UI it tests was correctly not adopted -- fork-side-default for a NEW file still means "the fork
+// doesn't have this yet", the same as for an edited one. Re-enable (drop .skip) when 1c810029 ports
+// the panel; do not quick-port only the banner piece here, since the panel itself does not exist to
+// host it (rule 3, surgical changes -- this would grow scope into the deferred decision, not shrink it).
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -27,12 +39,17 @@ const known: Record<string, string> = {
   'settings.claude_plans.readiness.main_agent_not_isolated': 'NOT ISOLATED',
 }
 const tStub = (key: string) => known[key] ?? key
-// eslint-disable-next-line @typescript-eslint/no-implied-eval
-const lines = new Function('t', `${extractFn('claudePlansReadinessLines')}; return claudePlansReadinessLines`)(tStub) as (
-  r: unknown,
-) => string[] | null
+// Lazy on purpose: extractFn throws while claudePlansReadinessLines does not exist in web/app.js
+// (see the SKIPPED note above). Computing it eagerly at module scope would throw on import and
+// crash the whole file before describe.skip ever gets a chance to not-run anything.
+function lines(r: unknown): string[] | null {
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  return (new Function('t', `${extractFn('claudePlansReadinessLines')}; return claudePlansReadinessLines`)(tStub) as (
+    r: unknown,
+  ) => string[] | null)(r)
+}
 
-describe('claudePlansReadinessLines', () => {
+describe.skip('claudePlansReadinessLines', () => {
   it('rotation on but blocked: one line per blocker, localized when known', () => {
     expect(lines({
       ready: false,
@@ -48,7 +65,7 @@ describe('claudePlansReadinessLines', () => {
   })
 })
 
-describe('readiness i18n coverage', () => {
+describe.skip('readiness i18n coverage', () => {
   const codes = [...SERVER.matchAll(/code: '([a-z_]+)'/g)].map((m) => m[1]).filter((c) => c !== 'rotation_disabled')
   const en = readFileSync(join(__dirname, '../../web/lang/en.js'), 'utf-8')
   const hu = readFileSync(join(__dirname, '../../web/lang/hu.js'), 'utf-8')
@@ -64,7 +81,7 @@ describe('readiness i18n coverage', () => {
   })
 })
 
-describe('switchToClaudePlan (manual switch / first assignment)', () => {
+describe.skip('switchToClaudePlan (manual switch / first assignment)', () => {
   function load(confirmAnswer: boolean) {
     const calls: Array<{ url: string; init: any }> = []
     const toasts: string[] = []

@@ -31,8 +31,13 @@ vi.mock('../web/agent-transcript.js', () => ({
   },
 }))
 
-vi.mock('../web/main-transcript-root.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../web/main-transcript-root.js')>()
+// TOKENVAK915/25ea084c (merge conflict resolution, card d7e1d611 Köteg 14): the route's
+// configDirFor comes from context-restart-gate-runner.js, not upstream's main-transcript-root.js
+// shape -- see the comment above the route's own import for the fork-side decision. This test
+// originally mocked the upstream module name; updated to match what routes/agents.ts actually
+// imports, or the mock never intercepts the real call and configDirCalls stays empty.
+vi.mock('../web/context-restart-gate-runner.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../web/context-restart-gate-runner.js')>()
   return {
     ...actual,
     configDirFor: (name: string) => { configDirCalls.push(name); return `${ISOLATED_ROOT}/${name}` },

@@ -61,9 +61,11 @@ Ez a Claude-plan rotáció heartbeatje. A \`claude-plan-rotate-check:\` kezdetű
   2. CSAK EZUTÁN indítsd a váltást. A target= értékét szó szerint írd a payloadba, idézett heredoc-kal (SOHA ne \`-d "..."\` dupla idézőjeles JSON-nal):
 
 \`\`\`bash
+hdr_file="$(mktemp)"; chmod 600 "$hdr_file"; trap 'rm -f "$hdr_file"' EXIT
+printf 'Authorization: Bearer %s\\n' "$(cat ${projectRoot}/store/.dashboard-token)" > "$hdr_file"
 curl -s -w '\\nHTTP %{http_code}\\n' -X POST http://localhost:${webPort}/api/claude-plans/rotate \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer $(cat ${projectRoot}/store/.dashboard-token)" \\
+  -H @"$hdr_file" \\
   --data-binary @- <<'JSON'
 {"targetPlanId":"<PLAN_ID>"}
 JSON
