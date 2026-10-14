@@ -7,6 +7,7 @@ import { mkdirSync, rmSync, existsSync } from 'node:fs'
 import {
   initDatabase, createKanbanCard, getKanbanCard, archiveKanbanCard,
   listKanbanCards, parentWouldCycle, addKanbanComment, getKanbanComments,
+  kanbanAssigneeExists,
 } from '../db.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
 import { agentDir } from '../web/agent-config.js'
@@ -146,6 +147,60 @@ describe('GET /api/kanban -- item 3: agent=/assignee= alias + unknown-agent 400'
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(400)
     expect(out.body.error).toContain('definitely-not-a-real-agent-xyz')
+  })
+
+  // Card 640ae983 (95b62f66 CYBERSEC GO F1): kanbanAssigneeExists() -- the Köteg 12 addition that
+  // lets a name 400 ONLY when it is neither a configured agent NOR already a real card's assignee
+  // -- had zero tests of its own. Without this, the "external contributor" path (a card assigned to
+  // someone with no agents/ directory) is indistinguishable from the "typo" path the 400 above
+  // exists to catch, and a regression here would either wrongly 400 every external-contributor
+  // card or (worse) silently stop 400ing real typos.
+  it('an UNCONFIGURED name that already owns a card is accepted, not 400d (external contributor)', async () => {
+    createKanbanCard({ id: 'c9', title: 'Card nine', status: 'planned', assignee: 'external-contributor-xyz' })
+    createKanbanCard({ id: 'c9b', title: 'Card nine-b', status: 'planned', assignee: KNOWN_TEST_AGENT })
+    const { ctx, out } = getCtx('/api/kanban?assignee=external-contributor-xyz')
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    const ids = out.body.map((c: any) => c.id)
+    expect(ids).toContain('c9')
+    expect(ids).not.toContain('c9b')
+  })
+
+  it('the SAME unconfigured name is still a 400 BEFORE any card uses it as an assignee (control -- proves the exemption is card-existence-gated, not name-shape-gated)', async () => {
+    const { ctx, out } = getCtx('/api/kanban?assignee=nobody-has-this-yet-abc')
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(400)
+    expect(out.body.error).toContain('nobody-has-this-yet-abc')
+  })
+})
+
+describe('kanbanAssigneeExists (db.ts unit, card 640ae983)', () => {
+  it('true once a card is assigned to that exact name', () => {
+    expect(kanbanAssigneeExists('ext-contrib-1')).toBe(false)
+    createKanbanCard({ id: 'ae1', title: 'AE1', status: 'planned', assignee: 'ext-contrib-1' })
+    expect(kanbanAssigneeExists('ext-contrib-1')).toBe(true)
+  })
+
+  it('is case-insensitive (COLLATE NOCASE)', () => {
+    createKanbanCard({ id: 'ae2', title: 'AE2', status: 'planned', assignee: 'ExtContrib2' })
+    expect(kanbanAssigneeExists('extcontrib2')).toBe(true)
+    expect(kanbanAssigneeExists('EXTCONTRIB2')).toBe(true)
+  })
+
+  it('false for a name no card has ever used', () => {
+    expect(kanbanAssigneeExists('truly-nobody-xyz')).toBe(false)
+  })
+
+  it('true even for an ARCHIVED card (the function\'s own documented contract)', () => {
+    createKanbanCard({ id: 'ae3', title: 'AE3', status: 'done', assignee: 'ext-contrib-archived' })
+    archiveKanbanCard('ae3', { force: true })
+    expect(kanbanAssigneeExists('ext-contrib-archived')).toBe(true)
+  })
+
+  it('does not match a different name, however similar (negative control)', () => {
+    createKanbanCard({ id: 'ae4', title: 'AE4', status: 'planned', assignee: 'ext-contrib-four' })
+    expect(kanbanAssigneeExists('ext-contrib-fourx')).toBe(false)
+    expect(kanbanAssigneeExists('ext-contrib-fou')).toBe(false)
   })
 })
 
