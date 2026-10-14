@@ -132,6 +132,14 @@ dxg_seen_this_boot() {
   if [ "$status" -ne 0 ]; then
     return 0
   fi
+  # RedHat NO-GO F-RH1 (card 39b958a4, comment 19024): exit 0 with nothing useful in it -- empty
+  # output, "-- No entries --", or only a stderr permission hint that `2>/dev/null` already discarded
+  # -- is just as unreadable as a nonzero exit, and must defer the same way. Every real
+  # `journalctl -k` line carries a "kernel:" field; its absence means the log was not actually read.
+  case "$text" in
+    *kernel:*) ;;
+    *) return 0 ;;
+  esac
   echo "$text" | grep -qE 'dxgk_ioctl|dxgadapter_release_lock|misc dxg: dxgk'
 }
 

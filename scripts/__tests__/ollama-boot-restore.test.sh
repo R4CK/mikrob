@@ -143,10 +143,130 @@ else
   fail "all-clear case did not reach the restart step: $out"
 fi
 
+# --- Guard 4, REAL journalctl code path (RedHat F-RH2, card 39b958a4, comment 19024) -------------
+# Everything above drives dxg_seen_this_boot() through the OLLAMA_RESTORE_DMESG_OVERRIDE seam, which
+# never executes the script's actual `journalctl -k -b 0 2>/dev/null` branch -- that production
+# branch had ZERO coverage. These cases PATH-shim a fake `journalctl` (no override env var set) so
+# the real branch runs, against a script copy (mutation-pinning needs an editable copy).
+JBIN_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_BASE" "$JBIN_DIR"' EXIT
+write_fake_journalctl() {
+  # $1 = exit code, $2 = stdout text (may be empty)
+  cat > "$JBIN_DIR/journalctl" <<EOF
+#!/bin/bash
+printf '%s' "$2"
+exit $1
+EOF
+  chmod +x "$JBIN_DIR/journalctl"
+}
+
+run_real_journalctl() {
+  # Same as run(), but with NO dmesg override -- journalctl comes from PATH ($JBIN_DIR first).
+  local state="$1" script="${2:-$SCRIPT}"
+  shift 2
+  PATH="$JBIN_DIR:$PATH" \
+  OLLAMA_HOST="$DEAD_HOST" \
+  OLLAMA_RESTORE_STATE_DIR="$state" \
+  OLLAMA_RESTORE_PORT_CHECK_OVERRIDE=down \
+  OLLAMA_RESTORE_UPTIME_OVERRIDE="$state/uptime" \
+  "$@" bash "$script" 2>&1
+}
+
+d="$(fresh_case real-journalctl-exit1-empty)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 1 ""
+out="$(run_real_journalctl "$d" "$SCRIPT")"
+if echo "$out" | grep -q 'or the log could not be read'; then
+  pass "real journalctl: nonzero exit, empty stdout -> defers"
+else
+  fail "real journalctl nonzero exit did not defer: $out"
+fi
+
+d="$(fresh_case real-journalctl-exit0-empty)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 0 ""
+out="$(run_real_journalctl "$d" "$SCRIPT")"
+if echo "$out" | grep -q 'or the log could not be read'; then
+  pass "real journalctl: exit 0, EMPTY stdout -> defers (F-RH1)"
+else
+  fail "real journalctl exit 0 + empty stdout did not defer: $out"
+fi
+
+d="$(fresh_case real-journalctl-no-entries)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 0 "-- No entries --\n"
+out="$(run_real_journalctl "$d" "$SCRIPT")"
+if echo "$out" | grep -q 'or the log could not be read'; then
+  pass "real journalctl: exit 0, '-- No entries --' -> defers (F-RH1)"
+else
+  fail "real journalctl '-- No entries --' did not defer: $out"
+fi
+
+d="$(fresh_case real-journalctl-stderr-hint-only)"
+echo "600.0 1200.0" > "$d/uptime"
+# The script's own `2>/dev/null` discards stderr -- a permission-hint-only run looks like exit 0 with
+# empty stdout to dxg_seen_this_boot(), same as the case above. Modeled explicitly so the intent is
+# on record, not just coincidentally covered by the empty-stdout case.
+write_fake_journalctl 0 ""
+out="$(run_real_journalctl "$d" "$SCRIPT")"
+if echo "$out" | grep -q 'or the log could not be read'; then
+  pass "real journalctl: exit 0, only a stderr permission hint -> defers (F-RH1)"
+else
+  fail "real journalctl stderr-hint-only did not defer: $out"
+fi
+
+d="$(fresh_case real-journalctl-dxg-signature)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 0 "Oct 14 20:00:00 host kernel: misc dxg: dxgk something bad happened\n"
+out="$(run_real_journalctl "$d" "$SCRIPT")"
+if echo "$out" | grep -q 'dxgkrnl fault signature already present'; then
+  pass "real journalctl: readable log WITH dxg signature -> defers"
+else
+  fail "real journalctl dxg signature did not defer: $out"
+fi
+
+d="$(fresh_case real-journalctl-clean)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 0 "Oct 14 20:00:00 host kernel: nothing interesting here\n"
+out="$(run_real_journalctl "$d" "$SCRIPT" env OLLAMA_RESTORE_DRYRUN=1)"
+if echo "$out" | grep -q 'DRYRUN: would run'; then
+  pass "real journalctl: readable log, no dxg signature -> reaches restart step"
+else
+  fail "real journalctl clean log did not reach restart: $out"
+fi
+
+# --- Mutation pin: swallowing journalctl's exit status must turn this suite RED (RedHat's J1) -----
+# RedHat (19024, item 4): `text="$(journalctl -k -b 0 2>/dev/null || true)"` always reports status=0,
+# even when journalctl itself failed. Fixture: journalctl exits 1 (a real failure) but still manages
+# to print ONE readable-looking kernel line first (e.g. a read that fails partway through) -- the
+# F-RH1 empty-output check alone would NOT catch this (the text is non-empty and contains "kernel:"),
+# so this is the one case that isolates "did we honor the exit code" from "did we check the content".
+MUTANT_SCRIPT="$TMPDIR_BASE/ollama-boot-restore.mutant-j1.sh"
+sed 's#text="\$(journalctl -k -b 0 2>/dev/null)"#text="$(journalctl -k -b 0 2>/dev/null || true)"#' \
+  "$SCRIPT" > "$MUTANT_SCRIPT"
+if diff -q "$SCRIPT" "$MUTANT_SCRIPT" >/dev/null 2>&1; then
+  fail "J1 mutant sed did not match anything -- the mutation was not actually applied, this pin is dead"
+else
+  pass "J1 mutant script differs from the original (the sed substitution matched)"
+fi
+d="$(fresh_case real-journalctl-j1-mutant)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 1 "Oct 14 20:00:00 host kernel: partial read before the failure\n"
+# DRYRUN=1: if the mutant wrongly clears guard 4, this must only PRINT what it would run, never
+# actually spawn `ollama serve` -- the mutation-pin's job is to detect the bug, not to act on it.
+out="$(run_real_journalctl "$d" "$MUTANT_SCRIPT" env OLLAMA_RESTORE_DRYRUN=1)"
+if echo "$out" | grep -q 'or the log could not be read'; then
+  fail "J1 mutant (swallows journalctl's exit status) was NOT caught -- it still deferred correctly, this pin does not detect the regression"
+elif echo "$out" | grep -q 'DRYRUN: would run'; then
+  pass "J1 mutant (swallows journalctl's exit status) is caught: the mutated script wrongly proceeds past guard 4 instead of deferring"
+else
+  fail "J1 mutant produced neither the defer message nor DRYRUN -- unexpected output, investigate: $out"
+fi
+
 # --- Full restart+probe path, with a fake start command -------------------------------------------
 d="$(fresh_case restart-fails-to-come-up)"
 echo "600.0 1200.0" > "$d/uptime"
-echo "clean" > "$d/dmesg"
+echo "kernel: clean, nothing interesting here" > "$d/dmesg"
 out="$(OLLAMA_HOST="$DEAD_HOST" OLLAMA_RESTORE_STATE_DIR="$d" OLLAMA_RESTORE_PORT_CHECK_OVERRIDE=down \
   OLLAMA_RESTORE_UPTIME_OVERRIDE="$d/uptime" OLLAMA_RESTORE_DMESG_OVERRIDE="$d/dmesg" \
   OLLAMA_RESTORE_START_CMD_OVERRIDE=true bash "$SCRIPT" 2>&1)"
