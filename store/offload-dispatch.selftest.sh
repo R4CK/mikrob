@@ -374,6 +374,65 @@ no_sample_entry="$(bash "$DISPATCH" --test-attempts-op no-sample noSampleLeaf --
 check "attempts_op no-sample marks the leaf exhausted" "$(printf '%s' "$no_sample_entry" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')" "exhausted"
 check "attempts_op no-sample records the reason" "$(printf '%s' "$no_sample_entry" | python3 -c 'import json,sys; print(json.load(sys.stdin)["reason"])')" "no-sample"
 
+# --- E. DRAFT FILE SINK (card 21fbc293, Gemini-orch 2/4): OFFLOAD_DRAFT_SINK=file redirects the
+# draft body to disk instead of the kanban comment ----------------------------------------------
+DRAFTS_TMPDIR="$TMPDIR/drafts"
+
+check "sanitize_path_component keeps a plain hex-like id unchanged" \
+  "$(bash "$DISPATCH" --test-sanitize-path-component "21fbc293")" "21fbc293"
+check "sanitize_path_component neutralizes a path-traversal attempt (../../etc/passwd)" \
+  "$(bash "$DISPATCH" --test-sanitize-path-component "../../etc/passwd")" "______etc_passwd"
+check "sanitize_path_component neutralizes an absolute path" \
+  "$(bash "$DISPATCH" --test-sanitize-path-component "/etc/passwd")" "_etc_passwd"
+check "sanitize_path_component keeps the synthetic leaf '~type' suffix shape readable (only '~' folds)" \
+  "$(bash "$DISPATCH" --test-sanitize-path-component "realCard~test-scaffold")" "realCard_test-scaffold"
+
+write_out="$(OFFLOAD_DRAFTS_DIR="$DRAFTS_TMPDIR" bash "$DISPATCH" --test-write-draft-to-file "cardAbc" "cardAbc" "the draft body text")"
+check "write_draft_to_file's printed path is relative, not absolute" "${write_out:0:1}" "d"
+# The printed path is relative to DRAFTS_DIR's OWN parent (dirname "$DRAFTS_TMPDIR" == "$TMPDIR"
+# here), not to $HERE -- this is what makes the path correct regardless of where
+# OFFLOAD_DRAFTS_DIR actually points (see write_draft_to_file's own comment).
+written_abs="$(dirname "$DRAFTS_TMPDIR")/${write_out}"
+check "write_draft_to_file actually wrote the file at the path it printed" "$([[ -f "$written_abs" ]] && echo yes || echo no)" "yes"
+check "the written file's content is exactly the body passed in" "$(cat "$written_abs" 2>/dev/null)" "the draft body text"
+check "the written file lands under drafts/<sanitized cardId>/, not loose in drafts/" "$(dirname "$written_abs")" "$DRAFTS_TMPDIR/cardAbc"
+rm -rf "$DRAFTS_TMPDIR"
+
+# PATH-TRAVERSAL: a malicious card id must not escape DRAFTS_TMPDIR, even though write_draft_to_file
+# itself never validates emptiness of the sanitized result.
+evil_out="$(OFFLOAD_DRAFTS_DIR="$DRAFTS_TMPDIR" bash "$DISPATCH" --test-write-draft-to-file "../../../tmp/evil" "../../../tmp/evil" "pwned")"
+evil_abs="$(dirname "$DRAFTS_TMPDIR")/${evil_out}"
+check "a path-traversal card id cannot escape DRAFTS_DIR (file lands inside it, sanitized)" \
+  "$(python3 -c "import os,sys; p=sys.argv[1]; d=sys.argv[2]; print('inside' if os.path.commonpath([os.path.abspath(p), os.path.abspath(d)]) == os.path.abspath(d) else 'escaped')" "$evil_abs" "$DRAFTS_TMPDIR")" "inside"
+check "/tmp/evil was NOT created outside the sandbox by the traversal attempt" "$([[ -e /tmp/evil ]] && echo exists || echo absent)" "absent"
+rm -rf "$DRAFTS_TMPDIR"
+
+# REFERENCING COMMENT: carries the path and the same mandatory Draft-Review marker requirement
+# (card 1338e68b) as the normal full-content draft comment, but never the draft text itself.
+ref_body="$(bash "$DISPATCH" --test-draft-file-ref-comment-body "Parent title" "drafts/cardAbc/123-cardAbc.md" false)"
+check "the file-ref comment names the draft path" "$(printf '%s' "$ref_body" | grep -c 'drafts/cardAbc/123-cardAbc.md')" "1"
+check "the file-ref comment still carries the mandatory Draft-Review marker instruction" \
+  "$(printf '%s' "$ref_body" | grep -c "Draft-Review:")" "1"
+check "the file-ref comment does NOT embed a literal draft body (only the path)" \
+  "$(printf '%s' "$ref_body" | grep -c 'the draft body text')" "0"
+ref_body_synth="$(bash "$DISPATCH" --test-draft-file-ref-comment-body "Parent title" "drafts/cardAbc/123-cardAbc.md" true)"
+check "the file-ref comment also carries the mandatory-full-review wording when synthetic=true" \
+  "$(printf '%s' "$ref_body_synth" | grep -c 'KOTELEZO A TELJES, FUGGETLEN ONLINE FELULVIZSGALAT')" "1"
+
+# WIRING: post_draft_comment must actually branch on OFFLOAD_DRAFT_SINK, not just have the helper
+# functions exist unused (a source pin, same pattern as forward_pin above).
+sink_branch_pin="$(grep -c 'if \[\[ "\${OFFLOAD_DRAFT_SINK:-comment}" == "file" \]\]; then' "$DISPATCH")"
+check "post_draft_comment branches on OFFLOAD_DRAFT_SINK" "$sink_branch_pin" "1"
+
+# DEFAULT-UNCHANGED REGRESSION (MUTATION-RELEVANT CONTROL): with the sink unset, post_draft_comment
+# must still produce the EXACT same body draft_comment_body alone would -- i.e. the file-sink branch
+# must be opt-in, not accidentally always-on. We cannot call post_draft_comment directly (it needs a
+# live $hdr_file/$DASH), so this pins the two text constructors agree when the sink is not "file":
+# draft_comment_body's own contract (tested in section D above) is what post_draft_comment falls
+# back to, and this is exactly what the "OFFLOAD_DRAFT_SINK:-comment" default (not "file") encodes.
+check "the OFFLOAD_DRAFT_SINK default literal is 'comment' (file sink is opt-in only)" \
+  "$(grep -c 'OFFLOAD_DRAFT_SINK:-comment' "$DISPATCH")" "1"
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

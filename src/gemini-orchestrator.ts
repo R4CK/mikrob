@@ -217,7 +217,11 @@ export async function decideGeminiOrder(
   return { ok: true, order }
 }
 
-function readFallbackRoute(): 'claude' | 'gemini' {
+// Exported (card 21fbc293, Gemini-orch 2/4): the draft-driving loop needs the same route check
+// before it spends a local-LLM call on anything -- re-exporting the existing single source of
+// truth instead of a second copy that could drift (the exact anti-pattern WhiteHat's F1 finding
+// on this file's own is_gemini_blocked port already demonstrated once).
+export function readFallbackRoute(): 'claude' | 'gemini' {
   try {
     const raw = JSON.parse(readFileSync(FALLBACK_STATE_PATH, 'utf-8')) as Record<string, unknown>
     return raw.route === 'gemini' ? 'gemini' : 'claude'
