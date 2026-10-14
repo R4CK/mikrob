@@ -80,10 +80,16 @@
 #                                before escalating to SIGKILL. For the selftest; production suites
 #                                should not need to change this.
 #   CLEANCORE_SUITE_MEMINFO      /proc/meminfo override, for the selftest only.
+#   CLEANCORE_SUITE_ALLOW_NO_CARD (card c0408a1c) set to 1 to skip the live-mopsion-card
+#                                precondition below and take a slot anyway. Logged to stderr
+#                                whenever used -- this is an explicit, auditable override, not a
+#                                silent bypass.
 #
 # Exit: the suite's own exit code | 2 usage or an unusable lock directory | 3 no slot within the
-#       cap | 4 memory pressure arrived WHILE running and the suite was stopped in a controlled way
-#       (card e498502e) -- this is NOT a test result, pass or fail
+#       cap, OR (card c0408a1c) the calling agent has no in_progress/gated-waiting mopsion card
+#       right now and CLEANCORE_SUITE_ALLOW_NO_CARD was not set | 4 memory pressure arrived WHILE
+#       running and the suite was stopped in a controlled way (card e498502e) -- this is NOT a test
+#       result, pass or fail
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -238,6 +244,121 @@ import json,sys; print(json.dumps({"card_id":sys.argv[1],"author":sys.argv[2],"c
     -X POST "$API/api/kanban/$card/comments" -H 'Content-Type: application/json' \
     --data-binary "$payload" 2>/dev/null || true
 }
+
+# --- live-mopsion-card precondition (card c0408a1c) -------------------------------------------
+# A full suite run is useless CPU when mopsion itself is stopped and the calling agent has no live
+# card to justify running it anyway. Measured 2026-10-12: two full runs (40-50 min each) held BOTH
+# shared slots while mopsion was in Peti's stop and no mopsion card was in_progress anywhere,
+# blocking 5 marveen landings/gates behind this script's own semaphore.
+#
+# Checked BEFORE acquire(): a slot is already spent the moment a run starts WAITING on it (that is
+# what blocked the 5 landings above), so this belongs ahead of the wait loop, not after.
+#
+# WHAT COUNTS, per the requirement: an in_progress card assigned to AGENT, OR a waiting card AGENT
+# is gating (has commented on it) -- either way tagged project="mopsion" (the one semi-reliable
+# mopsion/marveen signal this fleet has -- see self-advance-pickup.sh's own measurement) and NOT
+# itself tagged BLOKKOLT-Peti-stop in the title (that tag IS the stop; a card carrying it cannot
+# justify running during it).
+#
+# Prints the matching card id and returns 0 when found; returns 1 when the dashboard answered but
+# named no such card (a real "no"); returns 2 when the dashboard could not be reached or parsed (an
+# "unknown", not a "no" -- the caller below decides how to treat that, same fail-open stance as the
+# memory precondition and the comment helpers above: a dashboard hiccup must not block every suite
+# run fleet-wide).
+_has_live_mopsion_card() {
+  local h; h="$(_hdr)" || return 2
+  local body
+  body="$(curl -s --max-time 10 -H @"$h" "$API/api/kanban" 2>/dev/null)" || return 2
+
+  local hit
+  hit="$(python3 -c '
+import json, sys
+try:
+    rows = json.loads(sys.argv[2])
+except Exception:
+    sys.exit(2)
+if not isinstance(rows, list):
+    sys.exit(2)
+agent = sys.argv[1]
+for r in rows:
+    if not isinstance(r, dict):
+        continue
+    if (r.get("project") or "").strip().casefold() != "mopsion":
+        continue
+    if "blokkolt-peti-stop" in (r.get("title") or "").casefold():
+        continue
+    if r.get("status") == "in_progress" and r.get("assignee") == agent:
+        print(r.get("id", ""))
+        sys.exit(0)
+sys.exit(1)
+' "$AGENT" "$body")"
+  local rc=$?
+  if [ "$rc" -eq 0 ]; then echo "$hit"; return 0; fi
+  [ "$rc" -eq 2 ] && return 2
+
+  # No in_progress card of ours -- look for a waiting mopsion card we are actively GATING (a
+  # comment from us on it), the "altala gate-elt waiting" half of the requirement.
+  local waiting_ids
+  waiting_ids="$(python3 -c '
+import json, sys
+try:
+    rows = json.loads(sys.argv[1])
+except Exception:
+    sys.exit(2)
+if not isinstance(rows, list):
+    sys.exit(2)
+for r in rows:
+    if not isinstance(r, dict):
+        continue
+    if (r.get("project") or "").strip().casefold() != "mopsion":
+        continue
+    if "blokkolt-peti-stop" in (r.get("title") or "").casefold():
+        continue
+    if r.get("status") == "waiting":
+        print(r.get("id", ""))
+' "$body")"
+  [ $? -eq 2 ] && return 2
+
+  local cid comments_body
+  while IFS= read -r cid; do
+    [ -n "$cid" ] || continue
+    comments_body="$(curl -s --max-time 10 -H @"$h" "$API/api/kanban/$cid/comments" 2>/dev/null)" || continue
+    if python3 -c '
+import json, sys
+try:
+    rows = json.loads(sys.argv[2])
+except Exception:
+    sys.exit(1)
+agent = sys.argv[1]
+sys.exit(0 if any(isinstance(r, dict) and r.get("author") == agent for r in rows) else 1)
+' "$AGENT" "$comments_body"; then
+      echo "$cid"; return 0
+    fi
+  done <<<"$waiting_ids"
+  return 1
+}
+
+# Markers (NO-CARD-REFUSED / NO-CARD-OVERRIDE-USED / NO-CARD-CHECK-UNKNOWN) are deliberately
+# grep-able, the same convention as PAUSED-SEMAPHORE/RESUMED-SEMAPHORE above: this script keeps no
+# log file of its own (the usage note above has every caller redirect stderr to one), so a stable
+# word is what lets a reader -- or card-build-route-24h-measure.sh's family of measurement scripts
+# -- COUNT refusals across whatever log captured them, which is the card's own second requirement.
+NO_CARD_OVERRIDE="${CLEANCORE_SUITE_ALLOW_NO_CARD:-0}"
+if [ "$NO_CARD_OVERRIDE" = "1" ]; then
+  echo "mopsion-suite-run: NO-CARD-OVERRIDE-USED -- CLEANCORE_SUITE_ALLOW_NO_CARD=1, skipping the live-mopsion-card check (card c0408a1c)" >&2
+else
+  live_card_id="$(_has_live_mopsion_card)"; live_card_rc=$?
+  case "$live_card_rc" in
+    0) : ;;  # a live card justifies this run -- the routine case stays quiet, same rule as the slot wait below
+    1)
+      echo "mopsion-suite-run: NO-CARD-REFUSED -- '$AGENT' has no in_progress or gated-waiting mopsion card right now, refusing to take a CPU slot for it (card c0408a1c). Set CLEANCORE_SUITE_ALLOW_NO_CARD=1 if this is deliberate." >&2
+      exit 3
+      ;;
+    *)
+      echo "mopsion-suite-run: NO-CARD-CHECK-UNKNOWN -- could not check for a live mopsion card (dashboard unreachable or unparsable), starting WITHOUT the card precondition (card c0408a1c)." >&2
+      ;;
+  esac
+fi
 
 # --- acquire one of SLOTS ----------------------------------------------------------------------
 acquire() { # sets FD and SLOT on success
