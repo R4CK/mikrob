@@ -66,6 +66,16 @@ for req_name in hivo kartya feladattipus kategoria prompt_file mappa; do
   fi
 done
 
+# N3 (card 09117e0a, RedHat NO-GO komment 18498): --kartya's format must be validated BEFORE it
+# is ever inserted into a URL -- a fleet card id is always an 8-char lowercase hex string (see
+# src/web/kanban-ref-normalize.ts's HEX8_REF_RE). A malformed value here would otherwise reach
+# curl's URL construction unchecked.
+if ! [[ "$kartya" =~ ^[A-Fa-f0-9]{8}$ ]]; then
+  echo "gemini-agy-call: --kartya '$kartya' is not a valid 8-char hex card id, refusing" \
+       "fail-closed before it is used to build a URL" >&2
+  exit 3
+fi
+
 # Fail-closed category gate.
 case " safe $FORBIDDEN_CATEGORIES " in
   *" $kategoria "*) ;;
@@ -95,15 +105,29 @@ if [ ! -f "$DASHBOARD_TOKEN_FILE" ]; then
 fi
 hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
 printf 'Authorization: Bearer %s\n' "$(cat "$DASHBOARD_TOKEN_FILE")" > "$hdr_file"
-card_json="$(curl -s -m 10 -H @"$hdr_file" "$DASHBOARD_URL/api/kanban/$kartya" 2>/dev/null || true)"
+resp_file="$(mktemp)"
+http_code="$(curl -s -m 10 -H @"$hdr_file" -o "$resp_file" -w '%{http_code}' \
+             "$DASHBOARD_URL/api/kanban/$kartya" 2>/dev/null || true)"
 rm -f "$hdr_file"
+card_json="$(cat "$resp_file" 2>/dev/null || true)"
+rm -f "$resp_file"
+# N3 (card 09117e0a, RedHat NO-GO komment 18498): a dashboard 404/401/500 valasza is ERVENYES
+# JSON-objektum ("error": ...), de nincs benne a kartya tartalma -- korabban ez "nincs jel" ->
+# exit 0 -> a hivo szabadon megadhatott egy nem letezo vagy lejart kartya-azonositot, es a
+# deklart 'safe' kategoria minden tartalom-ellenorzes nelkul atment. HTTP 200 kotelezo.
+if [ "$http_code" != "200" ]; then
+  echo "gemini-agy-call: dashboard returned HTTP $http_code for card '$kartya' -- cannot" \
+       "verify it against its own content, refusing a declared-safe call fail-closed" >&2
+  exit 3
+fi
 set +e
-detected_cat="$(printf '%s' "$card_json" | python3 "$CATEGORY_CHECK")"
+detected_cat="$(printf '%s' "$card_json" | python3 "$CATEGORY_CHECK" "$kartya")"
 check_rc=$?
 set -e
 if [ "$check_rc" -ne 0 ]; then
   echo "gemini-agy-call: could not verify card '$kartya' against its own content" \
-       "(fetch/parse failed, rc=$check_rc) -- refusing a declared-safe call fail-closed" >&2
+       "(id/title mismatch or parse failed, rc=$check_rc) -- refusing a declared-safe call" \
+       "fail-closed" >&2
   exit 3
 fi
 if [ -n "$detected_cat" ]; then
