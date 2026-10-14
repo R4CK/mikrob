@@ -64,6 +64,38 @@ for r in (d if isinstance(d,list) else []):
     print("\t".join([safe(raw_name), safe(r.get("repo","")), safe(r.get("branch","")), safe(r.get("local","")), safe(r.get("type","")), safe(r.get("enabled","")), safe(last_sha)]))
 ' "$CFG" "$STATE")
 
+# Card eedb2871: a NOCHANGE/CHANGED:code result is a genuine daily look, but until now nothing
+# persisted that fact -- only a text auto-merge (via external-repos-sync.sh's own write_back, a
+# different script) or a manual review (watched-repos-record-review.sh) ever touched
+# last_checked_at. An enabled=true entry could be fetched and compared every single day and still
+# show a last_checked_at from weeks ago, because this script only ever PRINTED its findings; it
+# never wrote them back. Mode "checked" stamps ONLY last_checked_at (the reviewed last_sha pin for
+# a "code" adoption must stay untouched until a human reviews the drift -- see
+# watched-repos-record-review.sh); mode "text" also advances last_sha to the sha just
+# fast-forwarded to, same as external-repos-sync.sh's write_back does for its own (always-text)
+# covered list.
+write_back() { # $1=name $2=mode(checked|text) $3=new_sha (only used for mode=text)
+  python3 - "$STATE" "$1" "$2" "${3:-}" <<'PY'
+import json, sys
+from datetime import date
+
+state_path, name, mode, new_sha = sys.argv[1:5]
+try:
+    with open(state_path, encoding="utf-8") as f:
+        state = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    state = {}
+entry = state.get(name, {})
+entry["last_checked_at"] = date.today().isoformat()
+if mode == "text" and new_sha:
+    entry["last_sha"] = new_sha
+state[name] = entry
+with open(state_path, "w", encoding="utf-8") as f:
+    json.dump(state, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+PY
+}
+
 for row in "${ROWS[@]}"; do
   IFS=$'\t' read -r name repo branch local type enabled last_sha <<<"$row"
   [[ "$name" == "ERRCFG" ]] && { echo "ERROR:config-parse"; continue; }
@@ -114,20 +146,27 @@ for row in "${ROWS[@]}"; do
   # matches a short cur_sha even when nothing changed, flagging a false CHANGED
   # every single run. Prefix-match instead: real divergence still trips this
   # (a colliding prefix on an unrelated new commit is not a realistic risk).
-  if [[ "$new_sha" == "$cur_sha"* ]]; then echo "NOCHANGE:$name @ ${new_sha:0:8}"; continue; fi
+  if [[ "$new_sha" == "$cur_sha"* ]]; then
+    write_back "$name" checked
+    echo "NOCHANGE:$name @ ${new_sha:0:8}"
+    continue
+  fi
 
   if [[ "$type" == "text" ]]; then
     # text-only adoption: safe to fast-forward immediately
     if git -C "$local" merge --ff-only -q "origin/$branch" 2>/dev/null; then
+      write_back "$name" text "$new_sha"
       echo "CHANGED:text:$name:${cur_sha:0:8}..${new_sha:0:8}"
       changed=$((changed+1))
     else
+      write_back "$name" checked
       echo "ERROR:ff-merge:$name (diverged -- manual)"
     fi
   else
     # executable third-party code: DO NOT auto-run a new upstream commit.
     # Leave the working tree on the reviewed sha; the fetch already staged the
     # objects. Flag for a quick supply-chain check before we update+run it.
+    write_back "$name" checked
     echo "CHANGED:code:$name:${cur_sha:0:8}..${new_sha:0:8} FLAGGED-review-before-update"
     flagged=$((flagged+1))
   fi
