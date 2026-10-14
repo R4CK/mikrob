@@ -30,6 +30,10 @@ export const AGENT_MESSAGES_DDL: readonly string[] = [
   // status predicate -- the status index above does not cover these and causes full table scans
   // at scale.
   `CREATE INDEX IF NOT EXISTS idx_agent_messages_thread ON agent_messages(from_agent, to_agent, created_at)`,
+  // getRecipientQueueState runs RECIPIENT_LATENCY_SQL on every POST /api/messages, synchronously.
+  // Without this index it is a full scan plus a temp B-tree for the ORDER BY (measured upstream:
+  // ~15-18 ms at 33k rows); with it, an index lookup read newest-first.
+  `CREATE INDEX IF NOT EXISTS idx_agent_messages_delivered ON agent_messages(to_agent, delivered_at)`,
 ]
 
 // Columns added after the original CREATE TABLE. Each caller must wrap these in try/catch (see

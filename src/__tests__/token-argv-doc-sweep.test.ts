@@ -45,8 +45,9 @@ const AUTH_ARGV_PATTERN = '-H[[:space:]]*["\']Authorization:[[:space:]]*Bearer'
 // path -> allowed line numbers (git grep -nE output, 1-indexed)
 const ALLOWLIST: Record<string, number[]> = {
   'DECISIONS.md': [1164, 4931, 14889, 15034, 15076, 15747], // historical decision entries about this exact fix
+  'docs/memoria-szuro-hamis-pozitiv-negativ-meres.md': [223], // doc table example row with a placeholder "X" token, not an invocation
   'scripts/agent-msg-get.sh': [25], // comment naming the anti-pattern, not an invocation
-  'scripts/install-prod-tree-guard-hook.sh': [204], // comment naming the anti-pattern, not an invocation
+  'scripts/install-prod-tree-guard-hook.sh': [204, 269], // comment naming the anti-pattern, not an invocation
   'store/kanban-comment-lib.sh': [45], // comment naming the anti-pattern, not an invocation
   'store/mopsion-suite-run.sh': [202], // comment naming the anti-pattern, not an invocation
   'store/sync-agent-templates.sh': [112, 131, 140, 215, 406, 416, 444, 465, 480, 488, 519], // the rewriter's own docstring + test fixtures

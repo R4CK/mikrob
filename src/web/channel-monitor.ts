@@ -68,6 +68,7 @@ import {
 import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness, classifyRespawnStampAdvance } from '../channel-coordinator/liveness.js'
 import { getDesiredAgents } from './agent-desired-state.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
+import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 
 // LAZY, not module-level consts (card 272361eb, B-wave: upstream's shape, adopted). An eager
 // `resolveFromPath(...)` const throws at IMPORT time, so a transient PATH gap -- or a CI box with
@@ -938,6 +939,9 @@ export function buildMainSessionRespawnCmd(opts: {
     // exactly the condition the 23h feedback-survey freeze needs to recur.
     // Parity with channels.sh MCP_BATCH_ENV (line 695) / 610 / 620.
     '&& export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1',
+    // ROOTRESPAWN1001: the recovery respawn on a root host died with "cannot be used
+    // with root/sudo privileges" whenever the tmux server lacked IS_SANDBOX.
+    `&& ${ROOT_SANDBOX_ENV}`,
     // macOS main-agent config isolation -- parity with channels.sh CFG_ENV. The
     // token is read at launch via $(cat) so the secret never lands in argv/`ps`.
     // An own-credential dir (explicit or a rotated claude-plans entry) gets NO

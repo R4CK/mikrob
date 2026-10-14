@@ -677,6 +677,14 @@ A SYMLINK NEM AZ EGYETLEN AJTÓ, és a legtöbb ügynöknél nem is az a nyitva
 symlink nélkül. A flotta-ügynököknél a `.claude-config/skills` út tipikusan
 nem is létezik, tehát rád nézve a közvetlen írás a valódi óvintézkedés
 tárgya. Bármelyik úton írsz oda, a TELJES flotta megkapja.
+
+Ugyanez a csapda a MEMÓRIÁRA is áll (2026-09-07-én megmérve, leanarchivist):
+a `.claude-config/projects` szintén symlink a `~/.claude/projects`-re, tehát a
+`.claude-config/projects/.../memory/MEMORY.md` NEM a te memóriád, hanem a Lean
+Chiefé -- az ő session-je tölti be, a tiéd soha. A te memóriád a dashboard API,
+`agent_id`-vel címezve (`POST /api/memories`). Általános szabály: a `.claude`
+vagy `.claude-config` alatti útvonal soha nem a sajátod, akkor sem, ha a
+munkakönyvtáradban látszik. Írás előtt nézd meg, hova mutat: `ls -la`.
 <!-- END GENERATED: skills-path-trap -->
 
 <!-- BEGIN GENERATED: system-directive-auth (auto-generated, do not edit by hand) -->
