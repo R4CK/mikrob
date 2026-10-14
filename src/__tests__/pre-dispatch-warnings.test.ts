@@ -119,13 +119,45 @@ describe('a flag that disagrees with our own verdict is reported (finding 1)', (
   })
 })
 
-describe('the warnings above do not depend on the live fleet tmux state (card 55b622b7)', () => {
+const hasTmux = spawnSync('tmux', ['-V']).status === 0
+
+describe('the warnings above do not depend on the live fleet tmux state (card 55b622b7, F1 fix 366ebbb2)', () => {
   // Card 17905a6d's comment assumed tmux is absent in the test env. It is not: this fleet's
   // agents run in real tmux panes on the ambient server, and the script's step 1 (limit-banner
   // check) reads THAT server unless isolated. Measured on origin/develop @ 2952e71b: 4/6 tests in
   // this file went red whenever any live agent pane carried a limit banner, because step 1's
   // DISPATCH:HOLD:limit-banner(...) exits before step 2 (the warnings under test) ever runs.
+  //
+  // Card 366ebbb2 (55b622b7 WhiteHat2 F1): the original fix for the above created its fake-banner
+  // session on the REAL live fleet tmux server, briefly visible there (~1-30s) to six other fleet
+  // consumers that scan `^agent-` sessions (pre-dispatch HOLD, quota-limit-monitor, quota-check
+  // restart probe). This version never touches the real server: it points THIS TEST PROCESS's own
+  // ambient tmux env (not just the env handed to the script under test) at a private decoy
+  // directory, then creates the fake-banner session there. That preserves the mutation property
+  // (requirement 2 below) without ever creating a session the real fleet can see: if run()'s own
+  // isolation (its explicit TMUX_TMPDIR override) were removed, spawnSync would fall back to
+  // inheriting this process's env -- which is now the decoy, so the test still turns red for the
+  // right reason, never by touching the live server.
   const sessionName = `agent-pdwtest-${process.pid}`
+  let decoyTmuxTmpDir: string
+  let origTmuxTmpDir: string | undefined
+  let origTmux: string | undefined
+
+  beforeEach(() => {
+    decoyTmuxTmpDir = mkdtempSync(join(tmpdir(), 'pre-dispatch-decoy-ambient-'))
+    origTmuxTmpDir = process.env.TMUX_TMPDIR
+    origTmux = process.env.TMUX
+    process.env.TMUX_TMPDIR = decoyTmuxTmpDir
+    delete process.env.TMUX
+  })
+
+  afterEach(() => {
+    spawnSync('tmux', ['kill-session', '-t', sessionName])
+    if (origTmuxTmpDir === undefined) delete process.env.TMUX_TMPDIR
+    else process.env.TMUX_TMPDIR = origTmuxTmpDir
+    if (origTmux !== undefined) process.env.TMUX = origTmux
+    rmSync(decoyTmuxTmpDir, { recursive: true, force: true })
+  })
 
   function waitForPaneText(text: string, timeoutMs = 2000): boolean {
     const deadline = Date.now() + timeoutMs
@@ -139,25 +171,24 @@ describe('the warnings above do not depend on the live fleet tmux state (card 55
     return false
   }
 
-  afterEach(() => {
-    spawnSync('tmux', ['kill-session', '-t', sessionName])
-  })
+  // F2 (card 366ebbb2): a machine without tmux installed must skip, not fail.
+  ;(hasTmux ? it : it.skip)(
+    'still surfaces the stage-2 warning with a fake limit banner on a private decoy ambient server',
+    () => {
+      writeState({ thresholds: { newDevStop: 99, testStop: 10 }, percent: 50, flagActive: false })
+      // Named "agent-..." (matches the script's own `^agent-|^mikrob-channels$` filter), created on
+      // THIS process's now-decoy ambient server (see beforeEach) -- never the real fleet server.
+      const started = spawnSync('tmux', [
+        'new-session', '-d', '-s', sessionName, 'bash', '-c',
+        'printf "Session limit reached. Upgrade your plan.\\n"; sleep 30',
+      ])
+      expect(started.status).toBe(0)
+      expect(waitForPaneText('Session limit reached')).toBe(true)
 
-  it('still surfaces the stage-2 warning with a REAL live tmux session carrying a fake limit banner', () => {
-    writeState({ thresholds: { newDevStop: 99, testStop: 10 }, percent: 50, flagActive: false })
-    // Named "agent-..." (matches the script's own `^agent-|^mikrob-channels$` filter) and created
-    // on the AMBIENT tmux server -- the same one the real fleet's agent panes live on -- not under
-    // the isolated tmuxTmpDir, so this is a faithful stand-in for a real live limit banner.
-    const started = spawnSync('tmux', [
-      'new-session', '-d', '-s', sessionName, 'bash', '-c',
-      'printf "Session limit reached. Upgrade your plan.\\n"; sleep 30',
-    ])
-    expect(started.status).toBe(0)
-    expect(waitForPaneText('Session limit reached')).toBe(true)
-
-    const { stdout, stderr } = run()
-    // If run()'s tmux isolation failed, step 1 would hit this session and exit here instead.
-    expect(stdout).not.toContain('DISPATCH:HOLD:limit-banner')
-    expect(stderr).toContain('REJECTED as non-monotonic')
-  })
+      const { stdout, stderr } = run()
+      // If run()'s tmux isolation failed, step 1 would hit this session and exit here instead.
+      expect(stdout).not.toContain('DISPATCH:HOLD:limit-banner')
+      expect(stderr).toContain('REJECTED as non-monotonic')
+    },
+  )
 })
