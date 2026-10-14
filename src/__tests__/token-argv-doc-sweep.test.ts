@@ -21,7 +21,7 @@ const ALLOWLIST: Record<string, number[]> = {
   'DECISIONS.md': [1164, 4931, 15034, 15076], // historical decision entries about this exact fix
   'scripts/supabase-q.sh': [50], // comment naming the anti-pattern, not an invocation
   'store/kanban-comment-lib.sh': [45], // comment naming the anti-pattern, not an invocation
-  'store/mopsion-suite-run.sh': [202], // comment naming the anti-pattern, not an invocation
+  'store/mopsion-suite-run.sh': [208], // comment naming the anti-pattern, not an invocation (line shifted by card c0408a1c's insertion)
   'store/sync-agent-templates.sh': [112, 406, 416, 480, 488, 519, 536], // the rewriter's own docstring + test fixtures
 }
 
