@@ -145,6 +145,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="12" height="6" rx="1"/><line x1="17" y1="17" x2="21" y2="17"/></svg>
             <span class="sb-label">LLM monitor</span>
           </a>
+          <a href="#" class="sb-link" data-page="geminiCalls">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+            <span class="sb-label" data-i18n="nav.geminiCalls">Gemini hívások</span>
+          </a>
         </div>
       </div>
       <div class="sb-group" data-group="system">
@@ -580,6 +584,24 @@
         </div>
         <p class="ovw-cost-note" id="ovwCostNote" hidden></p>
       </div>
+
+      <!-- Gemini (agy) calls overview tile (card 57da740c, Peti 11282/11285). Hidden until
+           loadGeminiOverviewTile() confirms GET /api/gemini-calls exists (pair-BE 64788453,
+           contract-first). Nothing existing on this page is removed by adding this card. -->
+      <div class="overview-card ovw-gemini-card" id="ovwGeminiCard" hidden>
+        <div class="overview-card-head">
+          <h3 data-i18n="overview.gemini.title">Gemini-hívások</h3>
+          <span class="overview-card-meta gemini-stop-badge" id="ovwGeminiStopBadge" hidden data-i18n="geminiCalls.stop.badge">STOP</span>
+        </div>
+        <div class="ovw-gemini-quota-row">
+          <span class="ovw-gemini-bar-track"><span class="ovw-gemini-bar-fill" id="ovwGeminiBarFill"></span></span>
+          <span class="ovw-gemini-quota-label" id="ovwGeminiQuotaLabel">—</span>
+        </div>
+        <div class="ovw-gemini-footer">
+          <span class="ovw-gemini-today" id="ovwGeminiToday">—</span>
+          <a href="#" class="ovw-gemini-detail-link" data-page="geminiCalls" data-i18n="overview.gemini.detail_link">Részletek →</a>
+        </div>
+      </div>
     </div>
 
     <!-- === LLM monitor page (card 87be1810, pair-BE a5bbfb98, phase aecd9a12) ===
@@ -641,6 +663,48 @@
       <!-- Task detail panel (design: TASK DETAILS popup). Anchored next to the clicked block on
            wide screens, a bottom sheet on narrow ones; Escape / × / outside click closes. -->
       <div class="llm-mon-detail" id="llmMonDetail" role="dialog" aria-label="Task details" hidden></div>
+    </div>
+
+    <!-- === Gemini calls page (card 57da740c, pair-BE 64788453, contract-first) ===
+         GET /api/gemini-calls not landed yet -- #geminiPageStatus shows loading/not-available/
+         error, #geminiPageBody (quota, STOP banner, summaries, call list) only populated on a
+         real 200 response, never invented data (kódminőségi 12. elv). -->
+    <div class="page" id="geminiCallsPage" hidden>
+      <h1 data-i18n="geminiCalls.title">Gemini-hívások</h1>
+      <p class="gemini-page-sub" data-i18n="geminiCalls.subtitle">Óránkénti keret, hívásnapló és értékelés -- a prompt tartalma soha nem kerül ide, csak sha256.</p>
+
+      <p class="gemini-page-status" id="geminiPageStatus" role="status" aria-live="polite"></p>
+
+      <div id="geminiPageBody" hidden>
+        <div class="gemini-stop-banner" id="geminiStopBanner" role="alert" hidden>
+          <strong data-i18n="geminiCalls.stop.title">STOP-flag aktív</strong>
+          <span id="geminiStopReason"></span>
+        </div>
+
+        <section class="llm-section gemini-quota-section">
+          <h2 class="llm-section-title" data-i18n="geminiCalls.quota.title">Óránkénti keret</h2>
+          <div class="gemini-quota-row">
+            <span class="gemini-quota-bar" id="geminiQuotaBar"><span class="gemini-quota-bar-fill" id="geminiQuotaBarFill"></span></span>
+            <span class="gemini-quota-label" id="geminiQuotaLabel">—</span>
+          </div>
+          <p class="gemini-quota-next-free" id="geminiQuotaNextFree"></p>
+        </section>
+
+        <section class="llm-section">
+          <h2 class="llm-section-title" data-i18n="geminiCalls.summary.by_model_title">Összesítő modellenként</h2>
+          <div id="geminiSummaryByModel"></div>
+        </section>
+
+        <section class="llm-section">
+          <h2 class="llm-section-title" data-i18n="geminiCalls.summary.by_task_title">Összesítő feladattípusonként</h2>
+          <div id="geminiSummaryByTaskType"></div>
+        </section>
+
+        <section class="llm-section">
+          <h2 class="llm-section-title" data-i18n="geminiCalls.list.title">Hívás-napló</h2>
+          <div class="gemini-calls-table-wrap llm-activity-scroll" id="geminiCallsTableWrap"></div>
+        </section>
+      </div>
     </div>
 
     <!-- === Kanban Page === -->
@@ -4182,6 +4246,7 @@
   <script src="/app-docs.js"></script>
   <script src="/app-archive-timeline.js"></script>
   <script src="/app-overview.js"></script>
+  <script src="/app-gemini-calls.js"></script>  <!-- card 57da740c: Gemini-calls page + overview tile; after app-overview.js so loadGeminiOverviewTile() can be called from loadOverview() -->
   <script src="/app-llm-monitor.js"></script>   <!-- card 87be1810: LLM monitor page (task-events swimlane); after app-overview.js for the shared ovw-llmdist CSS/idiom -->
   <script src="/app-autonomy.js"></script>
   <script src="/app-terminal.js"></script>

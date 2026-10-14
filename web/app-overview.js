@@ -123,6 +123,7 @@ async function loadOverview() {
     void loadModelTierConfig()
     void loadLocalLlmInfo()
     void loadCostEstimatesWidget()
+    void loadGeminiOverviewTile()
     startOvwLlmDist()
     startOvwSpectrum()
     const banner = document.getElementById('updateBanner')
@@ -1330,6 +1331,17 @@ async function loadLlmDistWidget() {
 // the generic nav-link handler -- wire it explicitly here.
 ;(function wireCostDetailLink() {
   const link = document.querySelector('.ovw-cost-detail-link[data-page]')
+  if (!link) return
+  link.addEventListener('click', (e) => {
+    e.preventDefault()
+    const pageId = link.dataset.page
+    if (pageId && typeof switchPage === 'function') switchPage(pageId)
+  })
+})()
+
+// Same reasoning as wireCostDetailLink above, for the Gemini-calls overview tile (card 57da740c).
+;(function wireGeminiDetailLink() {
+  const link = document.querySelector('.ovw-gemini-detail-link[data-page]')
   if (!link) return
   link.addEventListener('click', (e) => {
     e.preventDefault()
