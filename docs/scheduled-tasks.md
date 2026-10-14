@@ -195,22 +195,17 @@ A prompt injektálás előtt egy "untrusted" preamble kerül eléje, hogy az ese
 
 A dashboard Bearer tokennel védett (token: `store/.dashboard-token`).
 
-```bash
-TOKEN=$(cat /Users/jonasgergo/Documents/marveen/store/.dashboard-token)
-```
-
 ### Lista
 
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3420/api/schedules
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- http://localhost:3420/api/schedules
 ```
 
 ### Létrehozás
 
 ```bash
-curl -s -X POST http://localhost:3420/api/schedules \
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:3420/api/schedules \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "name": "feladat-neve",
     "description": "Rövid leírás",
@@ -225,9 +220,8 @@ curl -s -X POST http://localhost:3420/api/schedules \
 ### Frissítés
 
 ```bash
-curl -s -X PUT http://localhost:3420/api/schedules/feladat-neve \
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X PUT http://localhost:3420/api/schedules/feladat-neve \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $TOKEN" \
   -d '{"schedule": "0 9 * * *", "enabled": true}'
 ```
 
@@ -236,33 +230,29 @@ Csak a megadott mezők frissülnek -- a többi változatlan marad.
 ### Törlés
 
 ```bash
-curl -s -X DELETE http://localhost:3420/api/schedules/feladat-neve \
-  -H "Authorization: Bearer $TOKEN"
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X DELETE http://localhost:3420/api/schedules/feladat-neve
 ```
 
 ### Enable / disable
 
 ```bash
-curl -s -X POST http://localhost:3420/api/schedules/feladat-neve/toggle \
-  -H "Authorization: Bearer $TOKEN"
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:3420/api/schedules/feladat-neve/toggle
 ```
 
 ### Azonnali futtatás (Run Now)
 
 ```bash
-curl -s -X POST http://localhost:3420/api/schedules/feladat-neve/run \
-  -H "Authorization: Bearer $TOKEN"
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X POST http://localhost:3420/api/schedules/feladat-neve/run
 ```
 
 ### Pending retry lista és törlés
 
 ```bash
 # lista
-curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3420/api/schedules/pending
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- http://localhost:3420/api/schedules/pending
 
 # egy pending retry törlése (id a lista válaszából)
-curl -s -X DELETE http://localhost:3420/api/schedules/pending/42 \
-  -H "Authorization: Bearer $TOKEN"
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- -X DELETE http://localhost:3420/api/schedules/pending/42
 ```
 
 ---
@@ -291,8 +281,7 @@ Az előzmények az utolsó 30 napot tartalmazzák; régebbi sorok automatikusan 
 Az állapotok lekérdezhetők az API-n is:
 
 ```bash
-TOKEN=$(cat store/.dashboard-token)
-curl -s -H "Authorization: Bearer $TOKEN" \
+printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" | curl -s -H @- \
   "http://localhost:3420/api/schedules/reggeli-napindito/runs" | jq .
 ```
 
