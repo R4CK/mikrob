@@ -117,8 +117,10 @@ const EXPECTED: Record<string, Census & { why: string }> = {
     // Card d79a69b5 (upstream 26ac8c83): ctrlOnlySites 1 -> 2, the new sendInterrupt (owner's
     // Escape-into-the-pane, shares the same send lane as the gate's /clear and the owner's
     // /model /context clear).
-    textSites: 1, ctrlOnlySites: 2, lane: true,
-    why: 'the restart-gate /clear + the owner interrupt (sendInterrupt)',
+    // Card d7e1d611 (Köteg 14, upstream MODELCONFIRM1005): ctrlOnlySites 2 -> 3, the new sendKey
+    // (answers the CLI's "Switch model?" confirmation after a /model), also on the same send lane.
+    textSites: 1, ctrlOnlySites: 3, lane: true,
+    why: 'the restart-gate /clear + the owner interrupt (sendInterrupt) + the model-confirm key send (sendKey)',
   },
   'web/tmux-keys.ts': {
     textSites: 1, ctrlOnlySites: 1, lane: false,
