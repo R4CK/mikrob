@@ -388,8 +388,13 @@ set -e
 grep -qi 'SUCCESS\|STUB RESPONSE' "$TD/out" && fails+=("WR1: the underlying engine must NOT have run")
 
 # WR4: SEGED_HIVO (the script actually invoked) from SEGED_HIVO_SCRIPT -- --seged-script is the
-# only switch that moves it today; --root is passed normally here (not under test), so this isolates
-# the one flag.
+# only switch that moves it today, but passing --root ALONGSIDE omitting --seged-script does NOT
+# isolate it: gemini-agy-call.sh's own --root branch directly reassigns SEGED_HIVO
+# ("$ROOT/scripts/seged-hivo.py") after the initial-default line runs, so a hypothetical env
+# fallback written only into that first default assignment would stay masked whenever --root is
+# given at all (WhiteHat2 komment 18982, MikroB 18983: measured 32/0 green on exactly that
+# mutation). Like WR1, this one must also omit --root and run from the GOOD_SUT copy, so there is
+# no --root branch left to overwrite the poisoned default.
 : > "$LOG"
 EVIL_SCRIPT_WR4="$TD/evil-seged-wr4.py"
 printf "import sys\nprint('EVIL-NOOP-RAN')\nsys.exit(0)\n" > "$EVIL_SCRIPT_WR4"
@@ -398,8 +403,9 @@ WR4_PORT="$DASH_STUB_PORT"
 EXTRA_DASH_PIDS+=("$DASH_STUB_PID")
 n=$((n + 1))
 set +e
-SEGED_HIVO_SCRIPT="$EVIL_SCRIPT_WR4" SEGED_BASE="$WR_SEGED_BASE" SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
-  "$GOOD_SUT" --root "$GOOD_ROOT" --dashboard-url "http://127.0.0.1:$WR4_PORT" \
+SEGED_HIVO_SCRIPT="$EVIL_SCRIPT_WR4" SEGED_BASE="$WR_SEGED_BASE" BWRAP_BIN="$WR_BWRAP_STUB" \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+  "$GOOD_SUT" --dashboard-url "http://127.0.0.1:$WR4_PORT" --dashboard-token-file "$GOOD_ROOT/store/.dashboard-token" \
   --hivo teszt --kartya c1ea0005 --feladattipus kod --kategoria safe \
   --prompt "$WR_SECRET_PROMPT" --mappa "$WR_SEGED_BASE/w" > "$TD/out" 2> "$TD/err"
 got=$?
@@ -451,8 +457,10 @@ set -e
 grep -q 'STUB RESPONSE' "$TD/out" && fails+=("WR5: the underlying helper must NOT have run")
 
 # WR6: DASHBOARD_TOKEN_FILE from DASHBOARD_TOKEN_FILE -- a validating dashboard stub (the earlier
-# F1 stubs never check the header at all) makes the actual token VALUE sent observable: baseline
-# must use the real token at $TD/store/.dashboard-token (already there, teszt-token) and go
+# F1 stubs never check the header at all) makes the actual token VALUE sent observable. Same
+# masking RedHat/WhiteHat2 found for WR4 applies here (--root's branch also reassigns
+# DASHBOARD_TOKEN_FILE), so this one also drops --root and runs the GOOD_SUT copy; baseline must
+# use the real token at $GOOD_ROOT/store/.dashboard-token (teszt-token, set up above) and go
 # through; a poisoned env pointing at a file with a different value would get 401'd.
 : > "$LOG"
 start_validating_dashboard_stub "$CLEAN_CARD" "teszt-token"
@@ -463,12 +471,12 @@ echo 'wrong-token-value' > "$WRONG_TOKEN_FILE"
 n=$((n + 1))
 set +e
 DASHBOARD_TOKEN_FILE="$WRONG_TOKEN_FILE" SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
-  "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$WR6_PORT" \
+  "$GOOD_SUT" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$WR6_PORT" \
   --hivo teszt --kartya c1ea0006 --feladattipus kod --kategoria safe \
   --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
 got=$?
 set -e
-[ "$got" = 0 ] || fails+=("WR6: ambient DASHBOARD_TOKEN_FILE must not pick which token is sent when --dashboard-token-file is omitted (want rc=0, the real token at \$TD/store/.dashboard-token must be used), got rc=$got, err=$(cat "$TD/err")")
+[ "$got" = 0 ] || fails+=("WR6: ambient DASHBOARD_TOKEN_FILE must not pick which token is sent when --dashboard-token-file is omitted (want rc=0, the real token at \$GOOD_ROOT/store/.dashboard-token must be used), got rc=$got, err=$(cat "$TD/err")")
 
 : > "$LOG"
 n=$((n + 1))
