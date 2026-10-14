@@ -144,6 +144,28 @@ describe('runDraftForCard() (card 21fbc293, decision B)', () => {
     const spawn = vi.fn(() => ({ status: null, error: new Error('boom') }) as any)
     expect(() => runDraftForCard('cardXYZ', spawn)).not.toThrow()
   })
+
+  // QA FAIL (Gate-SHA 8af958a2): node spawnSync throws SYNCHRONOUSLY (a TypeError, not a
+  // returned error) when any argv string contains an embedded NUL byte -- the same Node
+  // behaviour 82a81c45 H2 already documented at a different call site. The documented "never
+  // throws" contract was false until this was wrapped in try/catch.
+  it('never throws, even when the spawn call itself throws synchronously (NUL-byte card id)', () => {
+    const spawn = vi.fn(() => {
+      throw new TypeError('The argument args[1] must be a string without null bytes.')
+    }) as any
+    expect(() => runDraftForCard('bad\u0000card', spawn)).not.toThrow()
+    const r = runDraftForCard('bad\u0000card', spawn)
+    expect(r.ok).toBe(false)
+    expect(r.reason).toContain('spawn_threw')
+  })
+
+  it('sets OFFLOAD_NO_GEMINI=1 in the subprocess env (card 21fbc293, WhiteHat2 F1 -- the draft loop stays local-only)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- rest-arg implementation needed so vi.fn infers a 3-tuple call shape for spawnSync
+    const spawn = vi.fn((..._args: any[]) => ({ status: 0, error: undefined }) as any)
+    runDraftForCard('cardXYZ', spawn)
+    const [, , opts] = spawn.mock.calls[0] as [string, string[], { env?: Record<string, string> }]
+    expect(opts.env?.OFFLOAD_NO_GEMINI).toBe('1')
+  })
 })
 
 // ── runGeminiOrchestratorDraftSweep: kill switch + route gated, drives the queue IN ORDER ───

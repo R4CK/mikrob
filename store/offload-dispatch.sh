@@ -283,7 +283,15 @@ sys.exit(ALLOWED_RC)  # allowed -- the ONE code that means a deliberate, complet
 # Enables without a tracked-file chmod: create/remove the flag file at runtime.
 # MikroB restores gemini-offload-call.sh chmod +x after all gates GO, then creates
 # store/gemini-offload-enabled to re-enable the route (card a92e9913 O1).
+#
+# OFFLOAD_NO_GEMINI (card 21fbc293, WhiteHat2 F1, Gate-SHA 8af958a2): the per-card draft loop
+# (gemini-orchestrator-draft.ts) drives this script to produce a LOCAL-only draft (decision B,
+# file sink) -- try_gemini_for_leaf bypasses the file sink entirely and sends the card
+# title+description to the Gemini CLI, which decision B forbids. The draft loop sets this env
+# var so the Gemini branch stays fail-closed OFF for its invocations, regardless of the flag
+# file above.
 gemini_route_enabled() {
+  [[ "${OFFLOAD_NO_GEMINI:-0}" == "1" ]] && return 1
   [[ -f "${HERE}/gemini-offload-enabled" ]]
 }
 

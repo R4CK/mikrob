@@ -79,11 +79,16 @@ export function runDraftForCard(
   cardId: string,
   spawn: typeof spawnSync = spawnSync,
 ): DraftCardResult {
-  const result = spawn('bash', [OFFLOAD_DISPATCH_SCRIPT, cardId], {
-    encoding: 'utf-8',
-    timeout: DRAFT_TIMEOUT_MS,
-    env: { ...process.env, OFFLOAD_DRAFT_SINK: 'file' },
-  })
+  let result: ReturnType<typeof spawnSync>
+  try {
+    result = spawn('bash', [OFFLOAD_DISPATCH_SCRIPT, cardId], {
+      encoding: 'utf-8',
+      timeout: DRAFT_TIMEOUT_MS,
+      env: { ...process.env, OFFLOAD_DRAFT_SINK: 'file', OFFLOAD_NO_GEMINI: '1' },
+    })
+  } catch (err) {
+    return { id: cardId, ok: false, reason: `spawn_threw: ${String(err)}` }
+  }
   if (result.error) return { id: cardId, ok: false, reason: String(result.error) }
   if (result.status !== 0) return { id: cardId, ok: false, reason: `exit_${result.status ?? 'null'}` }
   return { id: cardId, ok: true }
