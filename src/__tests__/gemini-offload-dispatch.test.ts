@@ -613,6 +613,7 @@ describe('try_leaf() end-to-end behavioral guard (T1, RedHat 17510 finding 3)', 
     title: string
     desc: string
     ragRc?: number // which branch of try_leaf's local-RAG result to exercise (default 5 = transient)
+    offloadNoGemini?: boolean // card 21fbc293, WhiteHat2 F1: the draft loop's fail-closed env var
   }
 
   function runTryLeaf(
@@ -633,6 +634,7 @@ touch "$HERE/gemini-offload-enabled"   # route enabled for this test
 GEMINI_ROUTE="gemini"
 LOCAL_LLM_AVAILABLE=${opts.fastPath ? '0' : '1'}
 OFFLOAD_LEAF_MAX_ATTEMPTS=2
+${opts.offloadNoGemini ? 'OFFLOAD_NO_GEMINI=1' : ''}
 RECORD="$(mktemp)"
 
 # Stub RAG as a real executable (try_leaf calls "$RAG" ... as a command, not a function):
@@ -756,6 +758,29 @@ rm -rf "$HERE" "$RAG" "$RECORD"
       fastPath: false, ragRc: 9, project: 'mikrob', tags: 'BE,NORMAL',
       title: 'Auth middleware review', desc: 'Tenant-scoped authorization check.',
       advisoryDraftStub: CS3A_ADVISORY_STUB, qualityGateStub: CS3A_QUALITY_FAIL_STUB,
+    })
+    expect(r.geminiCalled).toBe(false)
+  })
+
+  // Card 21fbc293, WhiteHat2 F1 (Gate-SHA 8af958a2): the per-card draft loop
+  // (gemini-orchestrator-draft.ts) sets OFFLOAD_NO_GEMINI=1 so its invocations of this script
+  // stay LOCAL-only (decision B, file sink) even when route=gemini and the flag file is
+  // present. Both call sites must honor it -- without it, an otherwise-allowed leaf reaches
+  // try_gemini_for_leaf (asserted above), so this is the real fail-closed contrast case.
+  it('OFFLOAD_NO_GEMINI=1 blocks call site 1 (fast path) even for an otherwise-allowed leaf', () => {
+    const r = runTryLeaf({
+      fastPath: true, project: 'mikrob', tags: 'BE,NORMAL',
+      title: 'Add CSV export', desc: 'Export the monthly report.',
+      offloadNoGemini: true,
+    })
+    expect(r.geminiCalled).toBe(false)
+  })
+
+  it('OFFLOAD_NO_GEMINI=1 blocks call site 2 (exhausted attempts) even for an otherwise-allowed leaf', () => {
+    const r = runTryLeaf({
+      fastPath: false, project: 'mikrob', tags: 'BE,NORMAL',
+      title: 'Add CSV export', desc: 'Export the monthly report.',
+      offloadNoGemini: true,
     })
     expect(r.geminiCalled).toBe(false)
   })
