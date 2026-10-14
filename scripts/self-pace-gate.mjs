@@ -2501,10 +2501,20 @@ export function gateDecision(toolName, toolInput, opts = {}) {
     }
     // Position-aware re-derivation of naiveSegs, same separators (`splitSegments`' own regex),
     // so each segment's RANGE in safeCommand is known -- needed for the containment check above.
+    // LENGTH-PRESERVING continuation substitution (WhiteHat2 F1 second round, Gate-SHA dc02a347):
+    // splitSegments (and naiveSegs) collapse a `\`+newline continuation to a SINGLE space, which
+    // shrinks the text relative to safeCommand by (match.length - 1) per continuation. dataSinkHeredocRanges
+    // above is computed in safeCommand's own coordinates, so comparing it against segRanges computed on
+    // a SHRUNK flat text drifts the ranges apart once continuations sit before the heredoc -- enough of
+    // them (~40-60, PoC measured) slides a REAL post-heredoc command's segment range back INTO the
+    // heredoc body's range, so the gate reads it as inert heredoc prose. Replacing each continuation
+    // with spaces of the SAME length keeps flat the same length and position-aligned with safeCommand,
+    // so segRanges and dataSinkHeredocRanges share one coordinate system. naiveSegs' own single-space
+    // collapse is unaffected (segment content, not position, matters there) and needs no change.
     const SEG_SEP_RX = /&&|\|\||[;&|]|\r?\n/g
     const segRanges = []
     {
-      const flat = safeCommand.replace(/\\\r?\n/g, ' ')
+      const flat = safeCommand.replace(/\\\r?\n/g, (m) => ' '.repeat(m.length))
       let segStart = 0
       let sm
       SEG_SEP_RX.lastIndex = 0

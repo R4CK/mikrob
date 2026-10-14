@@ -87,9 +87,33 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
     "cat <<'EOF' | bash\ncp /tmp/evil store/egress-allowlist.json\nEOF",
     "cat <<'EOF' | python3\nopen('store/egress-allowlist.json','w').write('{}')\nEOF",
     "cat <<'EOF' | sh\ncp /tmp/evil store/egress-allowlist.json\nEOF",
+    // WhiteHat2 F1 second round (Gate-SHA dc02a347): the dataSinkHeredocRanges exemption's
+    // byte-range containment check used segRanges computed on a SHORTENED copy of safeCommand
+    // (every `\`+newline continuation collapsed to a single space) while the heredoc ranges
+    // themselves stay in safeCommand's own (unshortened) coordinates. Enough continuations
+    // BEFORE the heredoc (~40-60) slide every segment range after it back by the same amount,
+    // until a REAL post-heredoc command's range reads as falling INSIDE the heredoc body's
+    // range -- the gate then treats it as inert heredoc prose.
+    `echo a${' \\\n'.repeat(80)}b\ncat > /tmp/n <<'EOF'\n${'x'.repeat(300)}\nEOF\ncp evil.json store/egress-allowlist.json`,
+    // same shift, CRLF continuations
+    `echo a${' \\\r\n'.repeat(80)}b\r\ncat > /tmp/n <<'EOF'\r\n${'x'.repeat(300)}\r\nEOF\r\ncp evil.json store/egress-allowlist.json`,
   ]
   it.each(denied)('denies: %s', (command) => {
     expect(decide('Bash', { command })).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+
+  it('FUZZ (WhiteHat2 F1 second round): continuation count k=0..200 x heredoc body length 10..800, both LF and CRLF, the real post-heredoc write is always denied', () => {
+    for (const crlf of [false, true]) {
+      const nl = crlf ? '\r\n' : '\n'
+      for (let k = 0; k <= 200; k += 10) {
+        for (let bodyLen = 10; bodyLen <= 800; bodyLen += 50) {
+          const cont = (' \\' + nl).repeat(k) + 'b'
+          const body = 'x'.repeat(bodyLen)
+          const command = `echo a${cont}${nl}cat > /tmp/n <<'EOF'${nl}${body}${nl}EOF${nl}cp evil.json store/egress-allowlist.json`
+          expect(decide('Bash', { command })).toEqual({ deny: true, reason: 'egress-allowlist' })
+        }
+      }
+    }
   })
 
   const allowed = [
