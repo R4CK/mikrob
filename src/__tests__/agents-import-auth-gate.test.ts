@@ -158,7 +158,7 @@ describe('POST /api/agents/import -- the route forwards the REAL allowRiskyField
     const { ctx } = fakeCtx('', { kind: 'token' })
     expect(await handle(ctx, webDir)).toBe(true)
     expect(importAgentBundle).toHaveBeenCalledTimes(1)
-    expect(importAgentBundle.mock.calls[0][1]).toMatchObject({ allowRiskyFields: false })
+    expect(importAgentBundle.mock.calls[0][1]).toMatchObject({ allowRiskyFields: false, overwrite: false })
     vi.doUnmock('../web/agent-bundle.js')
   })
 
@@ -172,7 +172,7 @@ describe('POST /api/agents/import -- the route forwards the REAL allowRiskyField
     const { ctx } = fakeCtx('', { kind: 'token' })
     expect(await handle(ctx, webDir)).toBe(true)
     expect(importAllAgentsBundle).toHaveBeenCalledTimes(1)
-    expect(importAllAgentsBundle.mock.calls[0][1]).toMatchObject({ allowRiskyFields: false })
+    expect(importAllAgentsBundle.mock.calls[0][1]).toMatchObject({ allowRiskyFields: false, overwrite: false })
     vi.doUnmock('../web/agent-bundle.js')
   })
 })

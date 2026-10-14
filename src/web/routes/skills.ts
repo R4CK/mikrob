@@ -355,6 +355,18 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/skills' && method === 'POST') {
+    // Card 54e6f4c8 (RedHat delta-gate 4f4cb0df R2): same fleet-wide ~/.claude/skills blast
+    // radius as the skills/import route below, no auth-kind check at all. Same fix: hard
+    // fail-closed (a literal constant, no bespoke approval mechanism) until card 3fb0ef97
+    // (non-forgeable approval channel) ships.
+    const SKILLS_CREATE_FAIL_CLOSED = true
+    if (SKILLS_CREATE_FAIL_CLOSED) {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Skill create: hard-refused (fail-closed pending card 3fb0ef97)')
+      json(res, {
+        error: 'Creating a global skill is disabled until a non-forgeable approval channel ships (card 3fb0ef97). Add the skill directory manually for now.',
+      }, 403)
+      return true
+    }
     const body = await readBody(req)
     const { name: rawSkillName, description } = JSON.parse(body.toString()) as { name: string; description: string }
     const skillName = sanitizeSkillName(rawSkillName || '')
@@ -476,6 +488,18 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
 
   const globalSkillAssignMatch = path.match(/^\/api\/skills\/([^/]+)\/assign$/)
   if (globalSkillAssignMatch && method === 'POST') {
+    // Card 54e6f4c8 (RedHat delta-gate 4f4cb0df R2): copies a global skill into EVERY targeted
+    // agent's own .claude/skills dir (and removes it from untargeted agents) -- same fleet-wide
+    // blast radius as the skills/import route above, no auth-kind check at all. Same fix: hard
+    // fail-closed until card 3fb0ef97 (non-forgeable approval channel) ships.
+    const SKILLS_ASSIGN_FAIL_CLOSED = true
+    if (SKILLS_ASSIGN_FAIL_CLOSED) {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Skill assign: hard-refused (fail-closed pending card 3fb0ef97)')
+      json(res, {
+        error: 'Assigning a global skill to agents is disabled until a non-forgeable approval channel ships (card 3fb0ef97). Copy the skill directory manually for now.',
+      }, 403)
+      return true
+    }
     const skillName = decodeURIComponent(globalSkillAssignMatch[1])
     const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
     const globalSkillDir = join(GLOBAL_SKILLS_DIR, skillName)
@@ -548,6 +572,19 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // Card 54e6f4c8 (RedHat delta-gate 4f4cb0df R2): writes arbitrary SKILL.md content into the
+    // FLEET-WIDE ~/.claude/skills directory -- every agent picks up what lands here, same blast
+    // radius as the skills/import route above, no auth-kind check at all. Same fix: hard
+    // fail-closed until card 3fb0ef97 (non-forgeable approval channel) ships. (The ?agent=
+    // branch above writes only into that one agent's own skill dir, narrower scope, not gated.)
+    const SKILLS_EDIT_FAIL_CLOSED = true
+    if (SKILLS_EDIT_FAIL_CLOSED) {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none' }, 'Skill edit: hard-refused (fail-closed pending card 3fb0ef97)')
+      json(res, {
+        error: 'Editing a global skill is disabled until a non-forgeable approval channel ships (card 3fb0ef97). Edit the SKILL.md file manually for now.',
+      }, 403)
+      return true
+    }
     const GLOBAL_SKILLS_DIR = join(homedir(), '.claude', 'skills')
     const skillDir = join(GLOBAL_SKILLS_DIR, skillName)
     if (!skillDir.startsWith(GLOBAL_SKILLS_DIR + sep)) {
