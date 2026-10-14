@@ -75,6 +75,15 @@ const MEMORY_CATEGORIES = new Set(['hot', 'warm', 'cold', 'shared'])
 // them would mean matching every imperative a colleague writes. This filter
 // covers injection IDIOMS, not embedded instructions in general -- say so
 // before anyone assumes the memory store is injection-proof.
+//
+// FORK CORRECTION (WhiteHat2 N1, card 1f4c046b, 2026-10-14): the "REMOVED" claim three
+// paragraphs up is upstream's decision, not this fork's. This fork made the OPPOSITE call --
+// the command-syntax patterns (curl, bash -c, eval(, exec(, import subprocess, rm -rf) are
+// KEPT below, after multiple red-team hardening rounds (card f8599516) -- see DECISIONS.md's
+// 2026-10-14 entry and memory-content-filter.test.py for the recorded reasoning. The paragraphs
+// above are left as upstream wrote them (their own measurement, not ported or re-verified here)
+// so the "why NOT to remove" context is not lost; this note is the one that governs this fork's
+// actual code below.
 const SUSPICIOUS_PATTERNS = [
   // A curl INVOCATION against a remote URL (card f8599516).
   //
@@ -778,6 +787,17 @@ Respond ONLY with JSON, nothing else:
   const memVersionsMatch = path.match(/^\/api\/memories\/(\d+)\/versions$/)
   if (memVersionsMatch && method === 'GET') {
     const id = parseInt(memVersionsMatch[1], 10)
+    // WhiteHat2 F2 (Gate-SHA 64cbec54): every sibling route (GET /:id, PUT/PATCH, DELETE) scopes
+    // a device-key caller to its OWN rows and answers the same 404 as a missing id for anyone
+    // else's (card 9655494c/3d186397) -- this one did not, so a pre-image's full content (the
+    // very thing a plain delete is supposed to make unreadable) was fetchable by id alone.
+    const authenticatedAgentIdVer = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
+    if (authenticatedAgentIdVer) {
+      const row = getMemoryById(id)
+      if (!row || row.agent_id !== authenticatedAgentIdVer) {
+        json(res, { error: 'Memory not found' }, 404); return true
+      }
+    }
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '20', 10), 100)
     json(res, getMemoryVersions(id, limit).map(v => ({
       ...v,
