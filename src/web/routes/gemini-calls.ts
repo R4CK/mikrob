@@ -147,7 +147,7 @@ export function computeQuota(
   nowMs: number,
 ): { used: number; limit: number; windowStart: number; nextFreeAt: number | null } {
   const windowStart = nowMs - WINDOW_MS
-  const inWindow = calls.filter((c) => c.ts >= windowStart).sort((a, b) => a.ts - b.ts)
+  const inWindow = calls.filter((c) => c.status !== 'blocked' && c.ts >= windowStart).sort((a, b) => a.ts - b.ts)
   const used = inWindow.length
   const nextFreeAt = used >= HOURLY_LIMIT ? inWindow[0]!.ts + WINDOW_MS : null
   return { used, limit: HOURLY_LIMIT, windowStart, nextFreeAt }
