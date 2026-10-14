@@ -152,7 +152,7 @@ describe('runDraftForCard() (card 21fbc293, decision B)', () => {
   it('never throws, even when the spawn call itself throws synchronously (NUL-byte card id)', () => {
     const spawn = vi.fn(() => {
       throw new TypeError('The argument args[1] must be a string without null bytes.')
-    }) as any
+    })
     expect(() => runDraftForCard('bad\u0000card', spawn)).not.toThrow()
     const r = runDraftForCard('bad\u0000card', spawn)
     expect(r.ok).toBe(false)
