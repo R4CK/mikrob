@@ -205,5 +205,5 @@ fi
 for f in "${fails[@]}"; do
   echo "FAIL: $f"
 done
-echo "gemini-agy-call.selftest: $n cases, ${#fails[@]} failed"
+echo "gemini-agy-call.selftest: $n passed, ${#fails[@]} failed"
 [ "${#fails[@]}" -eq 0 ]

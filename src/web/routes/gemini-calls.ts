@@ -20,7 +20,7 @@ const ENGINE = 'agy'
 export const HOURLY_LIMIT = 5
 const WINDOW_MS = 60 * 60 * 1000
 
-interface RawRow {
+export interface RawRow {
   tipus?: string
   ido?: string
   hivas_id?: string
@@ -112,8 +112,8 @@ function toEpochMs(iso: string | undefined): number | null {
   return Number.isFinite(ms) ? ms : null
 }
 
-/** Agy-only call rows, newest first, shaped for the FE contract. `nowMs` is injectable for tests. */
-export function buildCallRows(allRows: RawRow[], nowMs: number): GeminiCallRow[] {
+/** Agy-only call rows, newest first, shaped for the FE contract. */
+export function buildCallRows(allRows: RawRow[]): GeminiCallRow[] {
   const ratings = latestRatings(allRows)
   const calls = dedupeCalls(allRows).filter((r) => r.seged === ENGINE)
   const shaped: GeminiCallRow[] = []
@@ -143,7 +143,7 @@ export function buildCallRows(allRows: RawRow[], nowMs: number): GeminiCallRow[]
  *  gone out, and when the OLDEST one in the window ages out (the next free slot), mirroring
  *  store/gemini-agy-call.sh's own count exactly (status!=='blocked', engine==='agy'). */
 export function computeQuota(
-  calls: GeminiCallRow[],
+  calls: Pick<GeminiCallRow, 'ts' | 'status'>[],
   nowMs: number,
 ): { used: number; limit: number; windowStart: number; nextFreeAt: number | null } {
   const windowStart = nowMs - WINDOW_MS
@@ -162,7 +162,7 @@ function bump(bucket: Record<string, GeminiCallsSummaryBucket>, key: string, sta
 }
 
 export function buildSummary(
-  calls: GeminiCallRow[],
+  calls: Pick<GeminiCallRow, 'model' | 'taskType' | 'status'>[],
 ): { byModel: Record<string, GeminiCallsSummaryBucket>; byTaskType: Record<string, GeminiCallsSummaryBucket> } {
   const byModel: Record<string, GeminiCallsSummaryBucket> = {}
   const byTaskType: Record<string, GeminiCallsSummaryBucket> = {}
@@ -209,7 +209,7 @@ export async function tryHandleGeminiCalls(ctx: RouteContext): Promise<boolean> 
 
   const nowMs = Date.now()
   const allRows = readLedgerRows()
-  const calls = buildCallRows(allRows, nowMs)
+  const calls = buildCallRows(allRows)
   const response: GeminiCallsResponse = {
     quota: computeQuota(calls, nowMs),
     stop: readStopState(),

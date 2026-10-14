@@ -126,12 +126,16 @@ duration_s=$(awk "BEGIN{printf \"%.1f\", $t1-$t0}")
 call_status="ok"
 [ "$rc" -ne 0 ] && call_status="hiba(rc=$rc)"
 if [ -f "$DASHBOARD_TOKEN_FILE" ]; then
-  token=$(cat "$DASHBOARD_TOKEN_FILE")
   content="Gemini-hivas (agy): modell=$MODEL hivo=$hivo kartya=$kartya feladattipus=$feladattipus status=$call_status ido=${duration_s}s ora-keret=$((sent_count + 1))/$HOURLY_LIMIT"
   payload=$(python3 -c 'import json,sys; print(json.dumps({"agent_id": sys.argv[1], "content": sys.argv[2]}))' "$hivo" "$content")
+  # Token goes through a 0600 temp header file, never argv (a Bearer token in argv is readable
+  # from /proc/<pid>/cmdline by any local process -- same pattern as offload-dispatch.sh).
+  hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
+  printf 'Authorization: Bearer %s\n' "$(cat "$DASHBOARD_TOKEN_FILE")" > "$hdr_file"
   curl -s -o /dev/null -X POST "$DASHBOARD_URL/api/daily-log" \
-    -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+    -H @"$hdr_file" -H 'Content-Type: application/json' \
     --data-binary "$payload" || true
+  rm -f "$hdr_file"
 fi
 
 echo "$out"
