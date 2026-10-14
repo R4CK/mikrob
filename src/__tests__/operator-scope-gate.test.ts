@@ -146,7 +146,13 @@ function fakeCtx(method: string, path: string, body: unknown, auth: RouteContext
 }
 
 describe('POST /api/auth/device-keys with a scope', () => {
-  const owner = { kind: 'token' } as RouteContext['auth']
+  // 'session', not 'token': this fork's own CREDENTIAL_MINT_KINDS=['session'] gate (card 68254bd7,
+  // WhiteHat NO-GO 14284, F1 HIGH) deliberately refuses the shared bearer the ability to mint a
+  // NEW credential at all, to close a self-escalation path -- a restriction upstream (where this
+  // test file came from, Köteg 14/DASHOPERATOR1005) does not carry. A 'token' auth here is not the
+  // scenario under test (operator-scope defaulting/ceilings/validation on a mint that is ALLOWED
+  // to happen); it is a different, already-decided-and-fixed security question.
+  const owner = { kind: 'session', user: 'owner' } as RouteContext['auth']
 
   it('an operator key defaults to 90 days', async () => {
     const { ctx, out } = fakeCtx('POST', '/api/auth/device-keys', { name: 'it-op', scope: 'operator' }, owner)
