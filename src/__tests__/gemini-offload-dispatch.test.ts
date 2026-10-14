@@ -1571,3 +1571,125 @@ describe('F3: POST /api/costs/weekly-thresholds blocked for device keys (card a9
     expect(getChunk).not.toContain("ctx.auth?.kind === 'device'")
   })
 })
+
+// ── 11. Card c8a6e1da: Unicode separators (F1) + remaining 25 probe shapes (F2) ───────────
+// Regression corpus is the literal probe list RedHat (b3ce0a88 komment 18336, 35 shapes, 22
+// left open after e45945a2) and WhiteHat (b3ce0a88 komment 18322, 9 shapes, 3 left open after
+// e45945a2) wrote out -- the 25 that remained ALLOWED after e45945a2's tokenize-on-any-
+// non-alnum fix. e45945a2's own 13-shape closure (comma/hyphen/space-inside-a-bracket forms) is
+// covered by the earlier N5(c) describe block above and is NOT repeated here.
+describe('card c8a6e1da F1: non-ASCII separator between a blocked tag word and trailing text', () => {
+  const unicodeSeparators: Array<[string, string]> = [
+    ['em dash U+2014', '—'],
+    ['en dash U+2013', '–'],
+    ['non-breaking hyphen U+2010', '‐'],
+    ['figure dash U+2011', '‑'],
+    ['minus sign U+2212', '−'],
+    ['middle dot U+00B7', '·'],
+    ['bullet U+2022', '•'],
+    ['ideographic comma U+3001', '、'],
+    ['rightwards arrow U+2192', '→'],
+    ['division slash U+2215', '∕'],
+    ['zero-width space U+200B', '​'],
+    ['zero-width joiner U+200D', '‍'],
+  ]
+  it.each(unicodeSeparators)('blocks "[SEC<sep>x]" with a %s separator', (_label, sep) => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', `Valami [SEC${sep}x] cim`)).toBe('BLOCKED')
+  })
+  it('blocks a non-hyphen BLOKKOLT suffix joined by an em dash', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Valami [BLOKKOLT—Peti] cim')).toBe('BLOCKED')
+  })
+})
+
+describe('card c8a6e1da F2: RedHat 22 + WhiteHat 3 remaining open probe shapes', () => {
+  const redHat22: Array<[string, string]> = [
+    ['bare "SEC : x"', 'SEC : x'],
+    ['bare "BLOKKOLT-Peti: x"', 'BLOKKOLT-Peti: x'],
+    ['bare "SEC x"', 'SEC x'],
+    ['bare "x SEC"', 'x SEC'],
+    ['bare "SEC"', 'SEC'],
+    ['bare "SEC | x"', 'SEC | x'],
+    ['bare "SEC - x"', 'SEC - x'],
+    ['bare "-SEC- x"', '-SEC- x'],
+    ['bare "_SEC_ x"', '_SEC_ x'],
+    ['angle-bracket "<SEC> x"', '<SEC> x'],
+    ['fullwidth angle bracket "＜SEC＞ x"', '＜SEC＞ x'],
+    ['pipe "|SEC| x"', '|SEC| x'],
+    ['slash "/SEC/ x"', '/SEC/ x'],
+    ['asterisk "*SEC* x"', '*SEC* x'],
+    ['hash "#SEC x"', '#SEC x'],
+    ['double quote \'"SEC" x\'', '"SEC" x'],
+    ["single quote \"'SEC' x\"", "'SEC' x"],
+    ['tilde "~SEC~ x"', '~SEC~ x'],
+    ['split "[S E C] x"', '[S E C] x'],
+    ['split "[S.E.C] x"', '[S.E.C] x'],
+    ['split "[S-E-C] x"', '[S-E-C] x'],
+  ]
+  it.each(redHat22)('blocks RedHat open shape: %s', (_label, title) => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', title)).toBe('BLOCKED')
+  })
+
+  const whiteHat3: Array<[string, string]> = [
+    ['split "[S EC]"', '[S EC]'],
+    ['split "[S.E.C]" (bracketed)', '[S.E.C]'],
+    ['digit suffix "[SEC2]"', '[SEC2]'],
+  ]
+  it.each(whiteHat3)('blocks WhiteHat open shape: %s', (_label, title) => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', title)).toBe('BLOCKED')
+  })
+
+  // Backtick triggers bash command substitution inside runIsGeminiBlocked's inline -c script
+  // (a test-harness quoting limit, not a production one) -- runIsGeminiBlockedRaw passes it as
+  // a real argv element instead, which is what the production call path (printf | python3)
+  // already does for title/desc.
+  it('blocks backtick delimiter "`SEC` x" (argv form, avoids bash command substitution in the harness)', () => {
+    expect(runIsGeminiBlockedRaw('mikrob', 'BE', '`SEC` x', '')).toBe('BLOCKED')
+  })
+
+  it('digit-suffix also closes BLOKKOLT2 and MOPSION2', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', '[BLOKKOLT2] x')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE', '[MOPSION2] x')).toBe('BLOCKED')
+  })
+})
+
+describe('card c8a6e1da: negative controls (no new over-blocking)', () => {
+  it('does not block the "N sec" seconds idiom (digit-prefixed, not a tag)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Fix the ui, wait 5 sec')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Retry after 10 sec delay')).toBe('ALLOWED')
+  })
+
+  it('still does not over-block substring matches inside brackets (e45945a2 parity)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', '[Resection of X] title')).toBe('ALLOWED')
+  })
+
+  it('does not block ordinary short-word prose that is not a split tag', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Sector map')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Seconds')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Secondary')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Sect')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'A clean benign title about nothing sensitive')).toBe('ALLOWED')
+  })
+})
+
+// ── 12. F3: mutation coverage for the 3 previously-green probe gaps ──────────────────────
+// WhiteHat (b3ce0a88 komment 18322) measured 3 mutants that stayed green at 194/194 before this
+// card: comma/hyphen/space-only separator, first-token-only inspection, and digit-as-separator.
+// These tests exist to KILL those specific mutants, not to re-prove the already-covered shapes.
+describe('card c8a6e1da F3: kill the 3 previously-green mutants', () => {
+  it('kills "only comma/hyphen/space are separators" (an exotic Unicode separator alone must still block)', () => {
+    // If someone narrowed tag_tokens_of() back to ASCII-only separators, this would go ALLOWED.
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Valami [SEC•x] cim')).toBe('BLOCKED')
+  })
+
+  it('kills "only the FIRST token in a segment is checked" (the blocked word as the LAST token)', () => {
+    // If someone only checked tag_tokens[0], "x SEC" (SEC last) would go ALLOWED.
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'x SEC')).toBe('BLOCKED')
+  })
+
+  it('kills "a digit always separates tokens" (digit-suffix must still require exact stripped match)', () => {
+    // If someone stripped trailing digits unconditionally without checking membership, this
+    // would ALSO block e.g. "x9" -- assert the suffix-strip path is exact-match-gated, not blanket.
+    expect(runIsGeminiBlocked('mikrob', 'BE', '[SEC2] x')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE', '[x9] harmless')).toBe('ALLOWED')
+  })
+})

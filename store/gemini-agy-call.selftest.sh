@@ -56,22 +56,29 @@ n=0
 # if given. One process per test-section, killed via its own PID -- `run()`'s default points here
 # so the many pre-existing tests below (hourly cap, race, error propagation) don't all need their
 # own dashboard stub just to get past the new F1 check.
+#
+# N3-javitas (card 09117e0a, RedHat NO-GO komment 18498): the category-check now requires
+# card.id == the requested --kartya, so the GET handler stamps the trailing path segment (the
+# requested card id) into the returned JSON as "id" -- the same static card_json template then
+# works for every --kartya value the tests use, instead of needing one stub per id.
 start_dashboard_stub() {  # start_dashboard_stub CARD_JSON [CAPTURE_FILE] -- sets DASH_STUB_PORT/DASH_STUB_PID
   # (NOT via command substitution: a `$(...)` call runs in a subshell, and the PID assigned to
   # DASH_STUB_PID below would then be lost the instant that subshell exits.)
   local card_json="$1" capture_file="${2:-}"
   cat <<'PYEOF' > "$TD/dash-stub.py"
-import sys
+import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 card_json = sys.argv[1]
 capture_file = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
 
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
+        card = json.loads(card_json)
+        card['id'] = self.path.rstrip('/').rsplit('/', 1)[-1]
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        self.wfile.write(card_json.encode())
+        self.wfile.write(json.dumps(card).encode())
 
     def do_POST(self):
         length = int(self.headers.get('Content-Length', 0) or 0)
@@ -92,6 +99,38 @@ srv.serve_forever()
 PYEOF
   rm -f "$TD/dash-stub-port"
   python3 "$TD/dash-stub.py" "$card_json" "$capture_file" > "$TD/dash-stub-port" 2>/dev/null &
+  DASH_STUB_PID=$!
+  for _ in $(seq 1 50); do
+    [ -s "$TD/dash-stub-port" ] && break
+    sleep 0.1
+  done
+  DASH_STUB_PORT="$(cat "$TD/dash-stub-port" 2>/dev/null || true)"
+}
+
+# N3-javitas: a dashboard egy ismeretlen/lejart kartyara is ERVENYES JSON-hibatestet ad vissza
+# (404 "Kartya nem talalhato", 401 "Unauthorized"), csak NEM 200-as HTTP-statusszal. Ezt
+# utanozza, sets DASH_STUB_PORT/DASH_STUB_PID like start_dashboard_stub.
+start_error_dashboard_stub() {  # start_error_dashboard_stub HTTP_STATUS JSON_BODY
+  local status="$1" body="$2"
+  cat <<PYEOF > "$TD/dash-error-stub.py"
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response($status)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(b'''$body''')
+
+    def log_message(self, *a):
+        pass
+
+srv = HTTPServer(('127.0.0.1', 0), H)
+print(srv.server_port, flush=True)
+srv.serve_forever()
+PYEOF
+  rm -f "$TD/dash-stub-port"
+  python3 "$TD/dash-error-stub.py" > "$TD/dash-stub-port" 2>/dev/null &
   DASH_STUB_PID=$!
   for _ in $(seq 1 50); do
     [ -s "$TD/dash-stub-port" ] && break
@@ -165,14 +204,14 @@ case_() {  # case_ NAME WANT_RC -- args...
 # --- argument validation --------------------------------------------------
 : > "$LOG"
 case_ 'missing --kategoria -> usage error' 2 \
-  --hivo teszt --kartya x --feladattipus kod --prompt "$PROMPT" --mappa "$TD/base/w"
+  --hivo teszt --kartya aaaaaaaa --feladattipus kod --prompt "$PROMPT" --mappa "$TD/base/w"
 
 case_ 'unknown category -> refused, fail-closed' 3 \
-  --hivo teszt --kartya x --feladattipus kod --kategoria nemletezo --prompt "$PROMPT" --mappa "$TD/base/w"
+  --hivo teszt --kartya aaaaaaaa --feladattipus kod --kategoria nemletezo --prompt "$PROMPT" --mappa "$TD/base/w"
 
 for cat in security auth finance mopsion; do
   case_ "forbidden category '$cat' -> refused" 3 \
-    --hivo teszt --kartya x --feladattipus kod --kategoria "$cat" --prompt "$PROMPT" --mappa "$TD/base/w"
+    --hivo teszt --kartya aaaaaaaa --feladattipus kod --kategoria "$cat" --prompt "$PROMPT" --mappa "$TD/base/w"
 done
 if [ -s "$LOG" ]; then
   fails+=("forbidden/unknown category must not write any log row, but $LOG is non-empty")
@@ -190,7 +229,7 @@ else
   set +e
   MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
     SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$SEC_PORT" \
-    "$SUT" --hivo teszt --kartya sec-card --feladattipus kod --kategoria safe \
+    "$SUT" --hivo teszt --kartya 5ec00001 --feladattipus kod --kategoria safe \
     --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
   got=$?
   set -e
@@ -204,7 +243,7 @@ fi
 # negative control: a clean card declared safe must still go through (uses the DEFAULT clean stub)
 : > "$LOG"
 case_ "F1 negative control: clean card + kategoria=safe -> goes" 0 \
-  --hivo teszt --kartya clean-card --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
+  --hivo teszt --kartya c1ea0001 --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
 grep -q 'STUB RESPONSE' "$TD/out" || fails+=("F1 negative control: the underlying helper should have run for a clean card")
 
 : > "$LOG"
@@ -213,31 +252,98 @@ n=$((n + 1))
 set +e
 MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
   SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:1" \
-  "$SUT" --hivo teszt --kartya unreachable --feladattipus kod --kategoria safe \
+  "$SUT" --hivo teszt --kartya 11111111 --feladattipus kod --kategoria safe \
   --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
 got=$?
 set -e
 [ "$got" = 3 ] || fails+=("F1 fail-closed: an unreachable dashboard must refuse (rc=3), got rc=$got, err=$(cat "$TD/err")")
 grep -q 'STUB RESPONSE' "$TD/out" && fails+=("F1 fail-closed: the underlying helper must NOT have run when the card could not be verified")
 
+# --- N3: a non-200 JSON error body (unknown/expired card id) must refuse, not "no signal" -------
+: > "$LOG"
+for spec in "404:{\"error\":\"Kartya nem talalhato\"}" "401:{\"error\":\"Unauthorized\"}" "500:{\"error\":\"internal\"}"; do
+  status="${spec%%:*}" body="${spec#*:}"
+  start_error_dashboard_stub "$status" "$body"
+  ERR_PORT="$DASH_STUB_PORT"
+  EXTRA_DASH_PIDS+=("$DASH_STUB_PID")
+  n=$((n + 1))
+  if [ -z "$ERR_PORT" ]; then
+    fails+=("N3 HTTP $status stub: never printed a port")
+    continue
+  fi
+  set +e
+  MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
+    SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$ERR_PORT" \
+    "$SUT" --hivo teszt --kartya deadbeef --feladattipus kod --kategoria safe \
+    --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
+  got=$?
+  set -e
+  [ "$got" = 3 ] || fails+=("N3 HTTP $status: a non-200 JSON error body must refuse (rc=3), got rc=$got, err=$(cat "$TD/err")")
+  grep -q 'STUB RESPONSE' "$TD/out" && fails+=("N3 HTTP $status: the underlying helper must NOT have run")
+done
+if [ -s "$LOG" ]; then
+  fails+=("N3 HTTP-error refusal must not write any log row, but $LOG is non-empty")
+fi
+
+# --- N3: gemini-agy-category-check.py unit-level id-mismatch / empty-title checks ---------------
+# Direct unit coverage of the category-check script itself (card.id must equal the caller-
+# supplied expected id, and title must be non-empty) -- the full wrapper-level test above already
+# covers the HTTP-status half of N3.
+n=$((n + 1))
+mismatch_rc=0
+echo '{"id":"other0001","title":"Clean","description":"x","labels":[]}' \
+  | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef > /dev/null 2>&1 || mismatch_rc=$?
+[ "$mismatch_rc" = 2 ] || fails+=("category-check: card.id != expected id must return 2 (cannot verify), got $mismatch_rc")
+
+n=$((n + 1))
+empty_title_rc=0
+echo '{"id":"deadbeef","title":"","description":"x","labels":[]}' \
+  | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef > /dev/null 2>&1 || empty_title_rc=$?
+[ "$empty_title_rc" = 2 ] || fails+=("category-check: empty title must return 2 (cannot verify), got $empty_title_rc")
+
+n=$((n + 1))
+match_rc=0
+match_out="$(echo '{"id":"deadbeef","title":"Clean","description":"x","labels":[]}' \
+  | python3 "$SELF_DIR/gemini-agy-category-check.py" deadbeef)" || match_rc=$?
+[ "$match_rc" = 0 ] && [ -z "$match_out" ] || fails+=("category-check: matching id + non-empty clean title must return 0 with no signal, got rc=$match_rc out='$match_out'")
+
+# --- N3: a malformed --kartya must be refused BEFORE any URL/HTTP use ---------------------------
+: > "$LOG"
+for bad in "not-hex!" "../../etc/passwd" "ab" "" "deadbeef; rm -rf /"; do
+  [ -z "$bad" ] && continue  # empty is covered by the existing required-args test
+  n=$((n + 1))
+  set +e
+  MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
+    SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$DEFAULT_DASH_PORT" \
+    "$SUT" --hivo teszt --kartya "$bad" --feladattipus kod --kategoria safe \
+    --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
+  got=$?
+  set -e
+  [ "$got" = 3 ] || fails+=("malformed --kartya '$bad' must refuse (rc=3), got rc=$got, err=$(cat "$TD/err")")
+  grep -q 'STUB RESPONSE' "$TD/out" && fails+=("malformed --kartya '$bad': the underlying helper must NOT have run")
+done
+if [ -s "$LOG" ]; then
+  fails+=("malformed --kartya refusal must not write any log row, but $LOG is non-empty")
+fi
+
 # --- hourly fleet-wide quota -----------------------------------------------
 seed_recent 4
 case_ 'hourly: 4 recent agy calls -> 5th goes (control)' 0 \
-  --hivo teszt --kartya x --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
+  --hivo teszt --kartya aaaaaaaa --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
 if ! grep -q 'STUB RESPONSE' "$TD/out"; then
   fails+=("hourly control: expected the stub to actually run, stdout was: $(cat "$TD/out")")
 fi
 
 seed_recent 5
 case_ 'hourly: 5 recent agy calls -> 6th blocked, exit 5' 5 \
-  --hivo teszt --kartya x --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
+  --hivo teszt --kartya aaaaaaaa --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
 if grep -q 'STUB RESPONSE' "$TD/out"; then
   fails+=("hourly block: the stub must NOT have run when the fleet is already at 5/5")
 fi
 
 seed_old 5
 case_ 'hourly: 5 calls 2h ago (outside window) -> goes (control)' 0 \
-  --hivo teszt --kartya x --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
+  --hivo teszt --kartya aaaaaaaa --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
 
 # a call blocked by seged-hivo.py's OWN gates (status=blocked) must not count toward the hourly cap
 : > "$LOG"
@@ -252,7 +358,7 @@ with open('$LOG', 'w') as f:
         f.write(json.dumps(r) + chr(10))
 "
 case_ 'hourly: 5 BLOCKED agy rows do not count -> still goes' 0 \
-  --hivo teszt --kartya x --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
+  --hivo teszt --kartya aaaaaaaa --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
 
 # --- concurrent callers must not exceed the hourly cap (QA FAIL, comment 18226) -----------------
 # Repro of QA's exact scenario: 4 recent agy rows seeded (sent_count=4 < 5 limit), two wrapper
@@ -264,13 +370,13 @@ n=$((n + 1))
 MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
   SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$DEFAULT_DASH_PORT" \
   STUB_CALL_DELAY_S=0.3 GEMINI_AGY_HOURLY_LOCK="$TD/store/hourly.lock" \
-  "$SUT" --hivo teszt --kartya a --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w" \
+  "$SUT" --hivo teszt --kartya a0000001 --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w" \
   > "$TD/race-a.out" 2> "$TD/race-a.err" &
 PID_A=$!
 MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
   SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$DEFAULT_DASH_PORT" \
   STUB_CALL_DELAY_S=0.3 GEMINI_AGY_HOURLY_LOCK="$TD/store/hourly.lock" \
-  "$SUT" --hivo teszt --kartya b --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w" \
+  "$SUT" --hivo teszt --kartya b0000001 --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w" \
   > "$TD/race-b.out" 2> "$TD/race-b.err" &
 PID_B=$!
 set +e
@@ -295,7 +401,7 @@ fi
 : > "$LOG"
 touch "$TD/FORCE_ERROR"
 case_ 'underlying call failing propagates its exit code' 1 \
-  --hivo teszt --kartya x --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
+  --hivo teszt --kartya aaaaaaaa --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
 rm -f "$TD/FORCE_ERROR"
 
 # --- daily-log posting: status reaches the log, prompt text never does ----
@@ -310,13 +416,13 @@ else
   n=$((n + 1))
   MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
     SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$PORT" \
-    "$SUT" --hivo teszt --kartya kartya-123 --feladattipus kod --kategoria safe \
+    "$SUT" --hivo teszt --kartya cafe0123 --feladattipus kod --kategoria safe \
     --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err" || true
   if [ ! -s "$CAPTURE" ]; then
     fails+=("daily-log capture: no POST body was captured")
   else
     body="$(cat "$CAPTURE")"
-    if ! echo "$body" | grep -q 'kartya-123'; then
+    if ! echo "$body" | grep -q 'cafe0123'; then
       fails+=("daily-log capture: card id missing from the logged content: $body")
     fi
     if echo "$body" | grep -qi 'hello.txt'; then
