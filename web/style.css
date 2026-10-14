@@ -10193,7 +10193,10 @@ body {
 }
 .gemini-status--ok { color: var(--success); background: var(--success-soft); }
 .gemini-status--error,
-.gemini-status--err { color: var(--danger); background: var(--danger-soft, rgba(220, 60, 60, 0.14)); }
+.gemini-status--err,
+.gemini-status--timeout { color: var(--danger); background: var(--danger-soft, rgba(220, 60, 60, 0.14)); }
+.gemini-status--blocked { color: var(--danger); background: var(--danger-soft, rgba(220, 60, 60, 0.14)); font-weight: 700; }
+.gemini-status--started { color: var(--accent); background: var(--accent-soft); }
 .gemini-status--unknown { color: var(--text-muted); background: rgba(148, 163, 184, 0.14); }
 
 .gemini-unrated { font-size: 11px; color: var(--text-muted); font-style: italic; }

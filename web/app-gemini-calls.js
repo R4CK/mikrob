@@ -2,18 +2,21 @@
 // Loaded AFTER app-overview.js in index.html. Globals used: t, escapeHtml, switchPage.
 //
 // CONTRACT-FIRST (contract-first-codev skill): GET /api/gemini-calls is Pair-BE 64788453, not
-// landed yet at the time this file was written. Contract as recorded on the card:
-//   { quota: { used, limit:5, windowStart, nextFreeAt },
-//     stop:  { active, reason },
-//     calls: [{ ts, model, caller, cardId, taskType, status, durationS, tokens,
-//               rating: { result, score, opinion } | null }],
-//     summary: { byModel, byTaskType } }
-// The card only names byModel/byTaskType as "ok/hiba arány, átlagpont" without a field-level
-// shape -- this file ASSUMES each is an array of
-//   { key, total, ok, err, avgScore, unrated } (avgScore null when every row in the bucket is
-//   unrated). Flagged on the card as an assumption for backend to confirm/adjust, not silently
-//   guessed (kódminőségi 1. elv). The prompt's content never reaches this endpoint (sha256 only,
-//   per the card) -- nothing here reads or displays prompt text.
+// landed yet at the time this file was written. Contract confirmed by backend (inter-agent
+// msg_id 11816, src/web/routes/gemini-calls.ts tryHandleGeminiCalls):
+//   { quota: { used, limit:5, windowStart, nextFreeAt: number|null },
+//     stop:  { active, reason: string|null },
+//     calls: [{ ts, model, caller, cardId, taskType,
+//               status: 'ok'|'error'|'blocked'|'timeout'|'started',
+//               durationS, tokens,
+//               rating: { result: 'elfogadva'|'javitva'|'eldobva', score, opinion } | null }],
+//       -- calls sorted newest-first by the backend, rendered as given.
+//     summary: { byModel: { [model]: {calls,ok,error,blocked} },
+//                byTaskType: { [taskType]: {calls,ok,error,blocked} } } }
+// summary does NOT carry avgScore/unrated (the card wants both in the "összesítő" table) --
+// geminiSummaryEntries() below derives them per bucket from the calls array itself, so the two
+// tables can never disagree with the call log underneath them. The prompt's content never
+// reaches this endpoint (sha256 only, per the card) -- nothing here reads or displays prompt text.
 //
 // 404 (endpoint not landed yet) renders an honest "not available yet" state on the dedicated
 // page (rule 12: no invented data) and hides the Overview tile gracefully, same convention as
@@ -44,12 +47,33 @@ function geminiRatingHtml(rating) {
   if (!rating) {
     return `<span class="gemini-unrated" title="${escapeHtml(t('geminiCalls.rating.unrated_title'))}">${escapeHtml(t('geminiCalls.rating.unrated'))}</span>`
   }
-  const resultLabel = t('geminiCalls.rating.result.' + (rating.result || 'unknown'))
+  // rating.result is the backend's own raw enum value ('elfogadva'/'javitva'/'eldobva', per
+  // backend msg 11816) -- used directly as the i18n key suffix, with a translation-miss fallback
+  // to the raw value so an unexpected future enum member still shows something, not a blank.
+  const resultKey = 'geminiCalls.rating.result.' + (rating.result || 'unknown')
+  const resultLabel = t(resultKey) === resultKey ? (rating.result || '—') : t(resultKey)
   const scoreCls = (rating.score || 0) >= 7 ? 'good' : (rating.score || 0) >= 4 ? 'mid' : 'bad'
   return `<span class="gemini-rating">
     <span class="gemini-rating-result">${escapeHtml(resultLabel)}</span>
     <span class="gemini-rating-score gemini-rating-score--${scoreCls}">${rating.score ?? '—'}/10</span>
   </span>${rating.opinion ? `<span class="gemini-rating-opinion" title="${escapeHtml(rating.opinion)}">${escapeHtml(rating.opinion)}</span>` : ''}`
+}
+
+// Converts the backend's object-keyed bucket (e.g. summary.byModel) into the row shape
+// geminiSummaryTableHtml renders, deriving avgScore/unrated from the calls array itself
+// (field = 'model' or 'taskType') rather than trusting a second, potentially-stale count.
+function geminiSummaryEntries(bucket, calls, field) {
+  if (!bucket || typeof bucket !== 'object') return []
+  const callList = Array.isArray(calls) ? calls : []
+  return Object.keys(bucket).map((key) => {
+    const b = bucket[key] || {}
+    const rated = callList.filter((c) => c[field] === key && c.rating)
+    const unrated = callList.filter((c) => c[field] === key && !c.rating).length
+    const avgScore = rated.length
+      ? rated.reduce((sum, c) => sum + (c.rating.score || 0), 0) / rated.length
+      : null
+    return { key, total: b.calls || 0, ok: b.ok || 0, avgScore, unrated }
+  })
 }
 
 function geminiSummaryTableHtml(rows, keyLabelPrefix) {
@@ -171,9 +195,15 @@ async function loadGeminiCalls() {
     geminiRenderStop(d.stop)
 
     const byModelEl = document.getElementById('geminiSummaryByModel')
-    if (byModelEl) byModelEl.innerHTML = geminiSummaryTableHtml(d.summary && d.summary.byModel, 'geminiCalls.model')
+    if (byModelEl) {
+      const rows = geminiSummaryEntries(d.summary && d.summary.byModel, d.calls, 'model')
+      byModelEl.innerHTML = geminiSummaryTableHtml(rows, 'geminiCalls.model')
+    }
     const byTaskEl = document.getElementById('geminiSummaryByTaskType')
-    if (byTaskEl) byTaskEl.innerHTML = geminiSummaryTableHtml(d.summary && d.summary.byTaskType, 'geminiCalls.taskType')
+    if (byTaskEl) {
+      const rows = geminiSummaryEntries(d.summary && d.summary.byTaskType, d.calls, 'taskType')
+      byTaskEl.innerHTML = geminiSummaryTableHtml(rows, 'geminiCalls.taskType')
+    }
 
     geminiRenderCallsTable(d.calls)
   } catch (err) {
