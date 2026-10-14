@@ -23,12 +23,13 @@
 // clause-scoping: only the text BEFORE the first `.`/`(`/`!`/`?` is the actual designation clause.
 // Ported here verbatim rather than re-derived, so this guard inherits that hardening instead of
 // re-introducing the bug it fixed.
-import { getKanbanCard, getKanbanComments, listKanbanCards } from '../db.js'
+import { getKanbanCard, getKanbanComments, listKanbanCards, getKanbanVerdictsForGate, type GateVerdictGate, type GateVerdictWord, type KanbanVerdict } from '../db.js'
 import { isForceActor } from '../kanban-force-actors.js'
 import { logger } from '../logger.js'
-import type { LandedVerdict } from './kanban-landed-guard.js'
+import { isAgentVerdictRecordEnabled, GATE_ROLE_AGENTS } from './kanban-verdicts.js'
+import { GENERATED_COMMENT_AUTHORS, type LandedVerdict } from './kanban-landed-guard.js'
 
-export type GateAgent = 'qa' | 'qa2' | 'cybersec' | 'cybered'
+export type GateAgent = 'qa' | 'qa2' | 'cybersec' | 'cybersec2' | 'cybered'
 
 /** Only agents allowed to close a card despite a missing gate verdict -- same actor set as the
  *  landing guard, same reasoning: MikroB is the orchestrator with final call. */
@@ -55,6 +56,18 @@ function widenQa(names: Set<GateAgent>): Set<GateAgent> {
   return names
 }
 
+// WhiteHat2/cybersec2 (card 21abfe0b, RedHat NO-GO B1): the SAME sibling-widening shape as
+// widenQa above, ported from the shell side's widen_cybersec() (store/gate_designation.py) so the
+// two stay in agreement rather than drifting the way this file already drifted from
+// gate_designation.py once (B2/F2 history on the same card).
+function widenCybersec(names: Set<GateAgent>): Set<GateAgent> {
+  if (names.has('cybersec') || names.has('cybersec2')) {
+    names.add('cybersec')
+    names.add('cybersec2')
+  }
+  return names
+}
+
 /** Which gate agents a Gate: line actually designates -- `null` if it names none (an unparseable or
  *  free-text line makes no verifiable claim, so this guard has nothing to check, same silent-vs-
  *  verified split as the landing guard's `allowUnverified`). */
@@ -73,9 +86,16 @@ export function parseGateDesignation(gateLine: string): Set<GateAgent> | null {
   // security gate's verdict, force-free. Measured live on the real function: "QA + WhiteHat" ->
   // {qa, qa2}, "WhiteHat" alone -> null.
   if (/\bcybersec\b/.test(low) || /\bwhitehat\b/.test(low)) names.add('cybersec')
+  // WhiteHat2/cybersec2 (card 21abfe0b, RedHat NO-GO B1): bare `\bcybersec\b`/`\bwhitehat\b` above
+  // never matched "cybersec2"/"whitehat2" at all -- the trailing digit is a word character, so the
+  // `\b` after the base word never found a boundary there. Measured on the real function before
+  // this fix: "QA + WhiteHat2" -> {qa, qa2} (Cybersec silently dropped), "WhiteHat2" ALONE -> null
+  // (no gate recognised at all, so the guard allowed ANY close, force-free -- the fail-open this
+  // NO-GO is about). Added as its own clause, same shape as the qa2 clause above.
+  if (/\bcybersec2\b/.test(low) || /\bwhitehat2\b/.test(low)) names.add('cybersec2')
   if (/\bcybered\b/.test(low) || /\bredhat\b/.test(low)) names.add('cybered')
   if (names.size === 0) return null
-  return widenQa(names)
+  return widenQa(widenCybersec(names))
 }
 
 // PASS/GO/SKIP only -- the card's own wording (243de9b9): a gate must have APPROVED or explicitly
@@ -96,7 +116,7 @@ const REVIEW_RX = /^\s*REVIEW\b/im
  *  Cybered's GO landed before QA's "REVIEW: QA PASS", so QA's own comment "started a new round" a
  *  moment after Cybered had already verdicted the SAME commit -- Cybered's real, fresh GO was
  *  discarded as pre-round). Only a non-gate author (the builder, MikroB, ...) can open a new round. */
-const GATE_AGENT_NAMES: ReadonlySet<string> = new Set<GateAgent>(['qa', 'qa2', 'cybersec', 'cybered'])
+const GATE_AGENT_NAMES: ReadonlySet<string> = new Set<GateAgent>(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered'])
 
 interface Comment {
   readonly author: string
@@ -119,7 +139,15 @@ interface Comment {
  *  convention at all (the field stays optional, CLAUDE.md 4b). */
 function latestReviewAt(comments: readonly Comment[]): number | null {
   const stamps = comments
-    .filter((c) => REVIEW_RX.test(c.content ?? '') && !GATE_AGENT_NAMES.has((c.author ?? '').toLowerCase()))
+    .filter((c) => {
+      const author = (c.author ?? '').toLowerCase()
+      // GENERATED_COMMENT_AUTHORS (card e7f91eb9, WhiteHat2 L1 on 1aeae282's own gate): the same
+      // unescaped-model-output risk as kanban-landed-guard.ts and gate-dispatch-check.sh already
+      // guard against, applied to THIS boundary -- a local-llm draft comment opening with "REVIEW"
+      // must never move the round boundary, any more than a real gate agent's own verdict can
+      // (the GATE_AGENT_NAMES check right beside this one).
+      return REVIEW_RX.test(c.content ?? '') && !GATE_AGENT_NAMES.has(author) && !GENERATED_COMMENT_AUTHORS.has(author)
+    })
     .map((c) => c.created_at)
   return stamps.length ? Math.max(...stamps) : null
 }
@@ -127,6 +155,39 @@ function latestReviewAt(comments: readonly Comment[]): number | null {
 // `m`: a Gate-SHA line can sit on any line of a comment (CLAUDE.md 4b: "line-initial", not
 // necessarily comment-initial), same reasoning as REVIEW_RX above.
 const GATE_SHA_LINE_RX = /^\s*Gate-SHA\s*:\s*(.+)$/gim
+
+/** The single sha the most recent builder hand-off (a non-gate, non-generated REVIEW comment)
+ *  declared on its OWN "Gate-SHA: ..." line -- card 2bfa4c67 round 2 (WhiteHat2 N1/W2): a verdict
+ *  or fix-proposal record is only trustworthy as "about the current round" if its own `sha` field
+ *  is bound to this value (kanban-verdicts.ts enforces the match; this function only looks it up).
+ *  Deliberately simpler than {@link currentRoundStartTs}'s whole-card sha-citation sweep: that
+ *  function answers "which round is CURRENTLY open" from every citation on the card, including
+ *  gate replies; this one answers a narrower question -- "what did the LATEST hand-off itself
+ *  declare" -- so a gate's own Gate-SHA line (restating the same commit back) never counts, and
+ *  wrong-sha confusion from an older, superseded hand-off cannot leak in either. Null when no
+ *  qualifying REVIEW ever used the Gate-SHA convention (the same permissive default every other
+ *  guard in this file applies to an unverifiable claim). */
+export function latestReviewGateSha(comments: readonly Comment[]): string | null {
+  let best: { ts: number; content: string } | null = null
+  for (const c of comments) {
+    const author = (c.author ?? '').toLowerCase()
+    if (GATE_AGENT_NAMES.has(author) || GENERATED_COMMENT_AUTHORS.has(author)) continue
+    if (!REVIEW_RX.test(c.content ?? '')) continue
+    // `>=`, not `>`: comments come in ascending (ties: insertion) order, and two REVIEW hand-offs
+    // written within the same second (common in tests, and possible live) must resolve to the
+    // LATER one, not whichever happened to be seen first.
+    if (!best || c.created_at >= best.ts) best = { ts: c.created_at, content: c.content ?? '' }
+  }
+  if (!best) return null
+  GATE_SHA_LINE_RX.lastIndex = 0
+  let shaLine: string | null = null
+  let m: RegExpExecArray | null
+  // Last Gate-SHA line in the comment wins, same convention as extractGateLine's own "last wins".
+  while ((m = GATE_SHA_LINE_RX.exec(best.content)) !== null) shaLine = m[1] ?? null
+  if (shaLine === null) return null
+  const tok = /\b[0-9a-f]{6,40}\b/i.exec(shaLine)
+  return tok ? tok[0].toLowerCase() : null
+}
 
 // Card 367c23a9, real incident on d0b4f003: three gate agents cited the SAME round's Gate-SHA in
 // three different shapes on one line -- "bc7ceddc (a sajat munka merge-je: f3380837, alap
@@ -338,34 +399,190 @@ function extractGateShas(content: string, knownOtherCardIds: ReadonlySet<string>
 // prefix-containment, NOT by fixed truncation (which would collapse genuinely different commits
 // that happen to share the first N chars -- the CONTROL test in the test suite covers exactly that
 // failure mode).
+// ROUND-5 CORRECTION (card 9ce3181c, real incident 29609ec6): a GATE's OWN Gate-SHA citation used
+// to be able to OPEN a brand-new entry in `entries`, exactly like a builder hand-off could. QA's
+// verdict cited the fleet's "both commits" idiom ("Gate-SHA: 7132429b..., ad85d4cb" -- merge plus
+// the work-commit); ad85d4cb had never been cited by anyone else on the card, so QA's OWN comment
+// became that sha's first-ever introduction, and `Math.max` pulled the round boundary forward to
+// QA's verdict timestamp -- past Cybersec's genuinely fresh GO for the very same round, 94 seconds
+// earlier. The REVIEW_RX branch (latestReviewAt, above) already excludes GATE_AGENT_NAMES from
+// opening a round for exactly this reason ("Only a non-gate author can open a new round"); this
+// primary, sha-anchored mechanism never had the same author-based exclusion, because nothing about
+// citing a sha distinguishes "the builder is telling everyone the round changed" from "a gate is
+// restating which commit it looked at" -- until now.
+//
+// FIRST FIX ATTEMPT (rejected by the card's own mandatory pre-fix measurement): a strict two-pass
+// split -- entries built ONLY from non-gate comments, gate comments allowed to widen but never
+// introduce -- looked right but moved 11 verdicts from fresh to stale on the live board (0 is the
+// card's own go/no-go bar). The live case that broke it (card 0ded9d1e): the BUILDER's own REVIEW
+// never used the literal "Gate-SHA:" line at all (non-compliant with CLAUDE.md 4b, but real), so
+// QA's verdict comment was the FIRST ever properly-formatted citation of that commit -- under the
+// strict two-pass split, QA (a gate) could not "introduce" it, so the entry's start time fell
+// through to a LATER, purely-restating "Gate-SHA: <same sha>" line in a subsequent landing comment,
+// pushing the boundary past QA's own still-valid verdict for the unchanged commit.
+//
+// ACTUAL FIX: single pass, same entry-building as before (any comment, gate or not, can extend an
+// existing entry's ts/canonical-sha), but each entry also tracks whether ANY non-gate,
+// non-generated comment ever contributed to it. An entry with NO non-gate confirmation at all is
+// dropped before taking the max -- this is exactly "a gate citation alone cannot open a round" (the
+// ad85d4cb case: only QA ever cited it, so it is dropped entirely and never reaches Math.max), while
+// an entry a non-gate author DOES confirm keeps its true earliest ts regardless of which comment
+// (gate or not) happened to state it first (the 0ded9d1e case: QA's earlier citation and the
+// builder's later restatement are the SAME sha, so the entry survives with its original, earlier ts
+// -- no flip).
 function currentRoundStartTs(comments: readonly Comment[], knownOtherCardIds: ReadonlySet<string>): number | null {
-  // Pairs of (canonical sha, earliest introduction timestamp). "Canonical" prefers the longer
-  // (more specific) form; earlier timestamp wins.
-  const entries: Array<{ sha: string; ts: number }> = []
+  // Pairs of (canonical sha, earliest introduction timestamp, whether a non-gate author ever
+  // contributed). "Canonical" prefers the longer (more specific) form; earlier timestamp wins.
+  const entries: Array<{ sha: string; ts: number; nonGateConfirmed: boolean }> = []
 
   for (const c of comments) {
+    // GENERATED_COMMENT_AUTHORS (card e7f91eb9): a local-llm draft's unescaped output can contain a
+    // line that LOOKS like "Gate-SHA: <sha>" even though nobody declared that commit for this round
+    // -- the same risk latestReviewAt() above guards against, applied to this (PRIMARY) boundary
+    // mechanism, since it reads Gate-SHA lines from every comment with no author filter at all.
+    const author = (c.author ?? '').toLowerCase()
+    if (GENERATED_COMMENT_AUTHORS.has(author)) continue
+    const isNonGate = !GATE_AGENT_NAMES.has(author)
     for (const s of extractGateShas(c.content ?? '', knownOtherCardIds)) {
       const idx = entries.findIndex((e) => s.startsWith(e.sha) || e.sha.startsWith(s))
       if (idx === -1) {
-        entries.push({ sha: s, ts: c.created_at })
+        entries.push({ sha: s, ts: c.created_at, nonGateConfirmed: isNonGate })
       } else {
         if (s.length > entries[idx].sha.length) entries[idx].sha = s
         if (c.created_at < entries[idx].ts) entries[idx].ts = c.created_at
+        if (isNonGate) entries[idx].nonGateConfirmed = true
       }
     }
   }
-  if (entries.length === 0) return null
-  return Math.max(...entries.map((e) => e.ts))
+
+  const confirmed = entries.filter((e) => e.nonGateConfirmed)
+  if (confirmed.length === 0) return null
+  return Math.max(...confirmed.map((e) => e.ts))
 }
 
-/** Does `agent` have a fresh (post-latest-REVIEW) verdict-shaped comment on this card? */
-function hasFreshVerdict(comments: readonly Comment[], agent: GateAgent, sinceTs: number | null): boolean {
+// Card 2bfa4c67 (F2): the structured kanban_verdicts table is an ADDITIVE second source -- a gate
+// counts as having verdicted if EITHER this comment-parse says so OR a fresh structured PASS/GO
+// row exists, never a replacement for the comment-parse itself (that machinery stays exactly as
+// it was, see the long regex history above). Flag-gated: when AGENT_VERDICT_RECORD is off, this
+// always returns false and the OR below degrades to a no-op, byte-identical to before this card.
+const GATE_AGENT_TO_CANONICAL: Readonly<Record<GateAgent, GateVerdictGate>> = {
+  qa: 'QA', qa2: 'QA', cybersec: 'CYBERSEC', cybersec2: 'CYBERSEC', cybered: 'CYBERED',
+}
+
+const NEGATIVE_WORDS: ReadonlySet<GateVerdictWord> = new Set(['FAIL', 'NO-GO'])
+
+/** Card 2bfa4c67 round 2 (WhiteHat2 N2, HIGH): "the latest row wins" let an UNVERIFIED PASS/GO
+ *  record silently override an earlier, AUTHENTICATED FAIL/NO-GO for the same gate -- author_verified
+ *  was stored but nothing ever compared it across rows. Precedence, scanning oldest to newest: a
+ *  negative row always becomes the new effective row (fail-closed bias -- a gate saying "no" is
+ *  never the side that is safe to drop silently); a positive row overrides UNLESS the current
+ *  effective row is a VERIFIED negative and the positive row is itself unverified -- an unverified
+ *  claim must not be the thing that clears an authenticated "no". Two unverified rows, or a
+ *  verified positive answering a verified negative, still behave exactly as before (latest wins). */
+function effectiveStructuredRow(rows: readonly KanbanVerdict[]): KanbanVerdict | null {
+  let effective: KanbanVerdict | null = null
+  for (const row of rows) {
+    if (NEGATIVE_WORDS.has(row.verdict)) {
+      effective = row
+      continue
+    }
+    const blockedByVerifiedNegative =
+      effective !== null && NEGATIVE_WORDS.has(effective.verdict) && effective.author_verified === 1 && row.author_verified !== 1
+    if (blockedByVerifiedNegative) continue
+    effective = row
+  }
+  return effective
+}
+
+/** The EFFECTIVE structured verdict row for `agent`'s canonical gate (see
+ *  {@link effectiveStructuredRow}), or null if there is none, the flag is off, or the read failed.
+ *  B1 (b), defense in depth: re-checks the SAME role-allowlist the POST route (kanban-verdicts.ts)
+ *  already enforces -- a row from a non-gate-role author is dropped from the sequence entirely,
+ *  never trusted here either, even if that route-level check is ever bypassed or regresses. */
+function freshStructuredRow(cardId: string, agent: GateAgent, sinceTs: number | null): KanbanVerdict | null {
+  if (!isAgentVerdictRecordEnabled()) return null
+  try {
+    const canonical = GATE_AGENT_TO_CANONICAL[agent]
+    // B1' (RedHat NO-GO, 2bfa4c67 comment 16824, HIGH), defense in depth: an UNVERIFIED row must
+    // never count towards closing a card, even if it somehow reached the table (the POST route in
+    // kanban-verdicts.ts now refuses to write one at all; this re-checks the same invariant here
+    // rather than trusting that route alone, same posture as the role-allowlist check beside it).
+    const rows = getKanbanVerdictsForGate(cardId, canonical, sinceTs).filter((row) =>
+      (GATE_ROLE_AGENTS[canonical] as readonly string[]).includes(row.author.toLowerCase()) && row.author_verified === 1,
+    )
+    return effectiveStructuredRow(rows)
+  } catch (err) {
+    // Same fail-open rule as the rest of this guard: a read failure here must never BLOCK a close
+    // that the comment-parse path would otherwise allow.
+    logger.warn({ err, cardId, agent }, 'gate-completeness-guard: structured verdict read failed, ignored')
+    return null
+  }
+}
+
+function commentOnlyFresh(comments: readonly Comment[], agent: GateAgent, sinceTs: number | null): boolean {
   return comments.some(
     (c) =>
       (c.author ?? '').toLowerCase() === agent &&
       VERDICT_RX.test(c.content ?? '') &&
       (sinceTs === null || c.created_at >= sinceTs),
   )
+}
+
+// A NO-GO/FAIL-shaped comment, same word-boundary discipline as VERDICT_RX above.
+const NEGATIVE_VERDICT_RX = /\bFAIL\b|\bNO[- ]GO\b/i
+
+/** The comment's own first line, trimmed -- the slice a gate's verdict word actually lives on by
+ *  convention (CLAUDE.md 4c: "CYBERED NO-GO" etc. is the comment's first line). */
+function firstLine(content: string): string {
+  const idx = content.indexOf('\n')
+  return (idx === -1 ? content : content.slice(0, idx)).trim()
+}
+
+// B3' (RedHat NO-GO, 2bfa4c67 comment 16824, MEDIUM): the old check matched FAIL/NO-GO ANYWHERE in
+// the comment body, not just the verdict line -- measured false positives (G10, G5): a fresh
+// CYBERED GO whose BODY TEXT cites an earlier "NO-GO 16623" it fixed, or merely mentions
+// "fail-closed", both read as a fresh disagreement and blocked a legitimate close (and, reversed,
+// let the shared token write a bogus "FAIL" comment under a gate's name to block ANY close, a
+// DoS). Only the FIRST LINE carries the gate's actual verdict by convention, so only it is tested.
+function commentHasFreshNegative(comments: readonly Comment[], agent: GateAgent, afterTs: number): boolean {
+  return comments.some(
+    (c) => (c.author ?? '').toLowerCase() === agent && NEGATIVE_VERDICT_RX.test(firstLine(c.content ?? '')) && c.created_at >= afterTs,
+  )
+}
+
+type VerdictStatus = 'ok' | 'missing' | 'disagree'
+
+/** Card 2bfa4c67 delta (RedHat B3 + QA FAIL, comment 16564): a fresh structured record is now
+ *  AUTHORITATIVE when one exists, not a one-way OR falling back into the comment-parse path. The
+ *  old OR let a structured FAIL/NO-GO be silently bypassed by a forgeable "PASS" comment (QA's
+ *  measured repro: an authenticated FAIL record sat next to a comment-only PASS, and the close
+ *  was allowed) -- a structured FAIL/NO-GO now NEVER falls back to the comment-parse path. A
+ *  structured GO/PASS that a LATER comment from the SAME gate contradicts is `disagree`, not a
+ *  silent `ok` either: the two sources disagree and the guard must not pick a side. */
+function freshVerdictStatus(cardId: string, comments: readonly Comment[], agent: GateAgent, sinceTs: number | null): VerdictStatus {
+  const row = freshStructuredRow(cardId, agent, sinceTs)
+  if (!row) return commentOnlyFresh(comments, agent, sinceTs) ? 'ok' : 'missing'
+  const structuredPositive = row.verdict === 'PASS' || row.verdict === 'GO'
+  if (!structuredPositive) return 'missing'
+  // N3 (WhiteHat2, card 2bfa4c67 round 2): checked ONLY for a negative comment at-or-after the
+  // structured row's own timestamp, so a genuine FAIL comment written FIRST, with a (forgeable)
+  // structured PASS arriving LATER, was invisible to this check -- the comment-order, not the
+  // round, decided whether the disagreement was caught. Any negative comment anywhere in the
+  // CURRENT round (since sinceTs) now counts, regardless of which side came first.
+  if (commentHasFreshNegative(comments, agent, sinceTs ?? 0)) return 'disagree'
+  // B1' fix: freshStructuredRow (above) now only ever returns a VERIFIED row, so there is nothing
+  // left to log here -- an unverified record no longer reaches this point at all.
+  return 'ok'
+}
+
+/** QA/QA2 (and Cybersec/Cybersec2) are ONE requirement -- a `disagree` on either sibling blocks
+ *  the whole family, even if the other sibling reads `ok`: the disagreement itself is the unsafe
+ *  signal, and the guard must not quietly prefer whichever sibling happens to agree with it. */
+function familyStatus(cardId: string, comments: readonly Comment[], agents: readonly GateAgent[], sinceTs: number | null): VerdictStatus {
+  const statuses = agents.map((a) => freshVerdictStatus(cardId, comments, a, sinceTs))
+  if (statuses.includes('disagree')) return 'disagree'
+  if (statuses.includes('ok')) return 'ok'
+  return 'missing'
 }
 
 function allowUnverified(cardId: string, reason: string, extra: Record<string, unknown> = {}): LandedVerdict {
@@ -422,20 +639,56 @@ export function gateCompletenessGuardVerdict(cardId: string, nextStatus: unknown
   const designated = parseGateDesignation(gateLine)
   if (designated === null) return allowUnverified(cardId, 'gate-line-names-no-known-agent', { gateLine })
 
-  // SHA-anchored round boundary first (closes the Cybersec NO-GO bypass); only when NOT ONE comment
-  // on the card ever cited a Gate-SHA does this fall back to the word/author-based heuristic.
-  const sinceTs = currentRoundStartTs(comments, knownOtherCardIds) ?? latestReviewAt(comments)
+  // SHA-anchored round boundary (closes the Cybersec NO-GO bypass) is the PRIMARY signal, but it is
+  // not the only one a builder hand-off can move: a second REVIEW that forgets the (optional,
+  // CLAUDE.md 4b) Gate-SHA line still ends the round in spirit -- it is a new hand-off asking for a
+  // re-check -- yet introduces no sha for currentRoundStartTs to anchor on, so the old `??` fallback
+  // (only consult latestReviewAt when currentRoundStartTs is null) left the boundary stuck at the
+  // FIRST round's sha, and an old PASS from before the second hand-off kept reading as fresh for it
+  // (WhiteHat2 F1 on 9ce3181c). The boundary is the LATER of the two signals, not an either/or: a
+  // round can only end later than whichever of "a new sha was cited" / "a new hand-off happened"
+  // came last, never earlier than either.
+  const roundStartTs = currentRoundStartTs(comments, knownOtherCardIds)
+  const reviewStartTs = latestReviewAt(comments)
+  const sinceTs =
+    roundStartTs === null ? reviewStartTs : reviewStartTs === null ? roundStartTs : Math.max(roundStartTs, reviewStartTs)
   // QA/QA2 are ONE requirement, not two (widenQa above is about not falsely EXCLUDING qa2 from
   // acting, not about requiring both). A Gate line naming only "QA" must not demand a qa2 verdict
   // that nothing ever asked for -- either one satisfies the QA-family requirement.
   const missing: string[] = []
+  const disagree: string[] = []
   if (designated.has('qa') || designated.has('qa2')) {
-    const qaFamilyOk = hasFreshVerdict(comments, 'qa', sinceTs) || hasFreshVerdict(comments, 'qa2', sinceTs)
-    if (!qaFamilyOk) missing.push('QA')
+    const s = familyStatus(cardId, comments, ['qa', 'qa2'], sinceTs)
+    if (s === 'disagree') disagree.push('QA')
+    else if (s === 'missing') missing.push('QA')
   }
-  if (designated.has('cybersec') && !hasFreshVerdict(comments, 'cybersec', sinceTs)) missing.push('Cybersec')
-  if (designated.has('cybered') && !hasFreshVerdict(comments, 'cybered', sinceTs)) missing.push('Cybered')
-  if (missing.length === 0) return { blocked: false }
+  // Cybersec/Cybersec2 are ONE requirement, same reasoning as the QA/QA2 family check above --
+  // card 21abfe0b, RedHat NO-GO B1.
+  if (designated.has('cybersec') || designated.has('cybersec2')) {
+    const s = familyStatus(cardId, comments, ['cybersec', 'cybersec2'], sinceTs)
+    if (s === 'disagree') disagree.push('Cybersec')
+    else if (s === 'missing') missing.push('Cybersec')
+  }
+  if (designated.has('cybered')) {
+    const s = familyStatus(cardId, comments, ['cybered'], sinceTs)
+    if (s === 'disagree') disagree.push('Cybered')
+    else if (s === 'missing') missing.push('Cybered')
+  }
+  if (missing.length === 0 && disagree.length === 0) return { blocked: false }
+
+  // B3: a disagreement between the structured record and the comment-parse path is its own
+  // blocking reason -- distinct wording from "missing", so MikroB (or whoever force:true's past
+  // it) can tell the two apart instead of re-dispatching a gate that already DID verdict.
+  if (disagree.length > 0) {
+    const disagreeNames = disagree.join(', ')
+    return {
+      blocked: true,
+      message:
+        `DISAGREE-SOURCE: ez a kártya nem zárható: ${disagreeNames} esetén a strukturált verdikt-rekord és a ` +
+        `komment-alapú verdikt ELLENTMOND egymásnak a jelenlegi körre (RedHat B3 / QA 16564) -- a guard a két ` +
+        `forrás közül nem választ csendben. MikroB döntse el, melyik hiteles, és ha szükséges, force:true-val zárja.`,
+    }
+  }
 
   const names = missing.join(', ')
   return {

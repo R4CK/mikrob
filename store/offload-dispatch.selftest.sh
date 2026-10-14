@@ -108,7 +108,24 @@ check "OFFLOAD_STALE_IN_PROGRESS_SECONDS is CONFIGURABLE: lowering it to 50s exc
 mutation_off="$(CARD=staleCard OFFLOAD_STALE_IN_PROGRESS_SECONDS=99999999 bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
 check "MUTATION: an absurdly high threshold un-skips staleCard, proving the exclusion is threshold-driven" "$mutation_off" "staleCard"
 
+# NON-INTEGER ENV GUARD (card f8e7f7cb, Cybersec F1 LOW on eeebd2b5, Gate-SHA bdb35dfa). Before the
+# fix, a non-integer value crashed resolve_leaves()'s python with an uncaught ValueError before any
+# leaf resolved, and the caller's stderr redirect hid it -- so a card with NO staleness at all
+# (freshCard) ALSO resolved to zero leaves. Checking freshCard (not staleCard) is the point: it
+# proves the fallback restores normal resolution, not just that staleCard stays excluded (which an
+# "everything resolves to []" crash would also show).
+invalid_env_out="$(CARD=freshCard OFFLOAD_STALE_IN_PROGRESS_SECONDS=10m bash "$DISPATCH" --test-resolve < "$TMPDIR/fixture-stale.json" | python3 -c 'import json,sys; print(",".join(l["id"] for l in json.load(sys.stdin)))')"
+check "a non-integer OFFLOAD_STALE_IN_PROGRESS_SECONDS falls back to the 600s default instead of silently zeroing every leaf" "$invalid_env_out" "freshCard"
+
 # --- decompose wrapper (card 501c489f, MikroB verdikt komment 6007) -------------------------------
+# ISOLATION (d39fc5e7 QA finding): card_decompose_candidates() reads DECOMPOSE_STOP_STATE_FILE to
+# check which types are currently disabled. If the live store/decompose-type-disabled.json has all
+# four types disabled (e.g. from a MikroB mitigation), the decompose tests all fail because
+# card_decompose_candidates() returns nothing. Fix: point to a clean temp file for the whole block
+# so the test is independent of live operational state.
+export DECOMPOSE_STOP_STATE_FILE="$TMPDIR/decompose-type-disabled-test.json"
+printf '{}' > "$DECOMPOSE_STOP_STATE_FILE"
+
 decompose_ids() { CARD="$1" bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c 'import json,sys; print(",".join(sorted(l["id"] for l in json.load(sys.stdin))))'; }
 decompose_field() { CARD="$1" bash "$DISPATCH" --test-resolve-decompose < "$TMPDIR/fixture.json" | python3 -c "import json,sys; print(json.load(sys.stdin)[0].get('$2',''))"; }
 
@@ -233,6 +250,9 @@ check "offload-dispatch.sh calls the VRAM guard, ahead of the sweep loop" "$vram
 # duplicated logic is exactly how this class of miss (a case arm added in one place, not the other)
 # happens in the first place.
 graph_repo_pin="$(
+  # Set HERE explicitly so graph_repo_for's MikroB arm (which calls git -C "$HERE") resolves
+  # the repo root correctly regardless of the caller's cwd (d39fc5e7 QA isolation finding).
+  HERE="$(dirname "$(realpath "$DISPATCH")")"
   source <(sed -n '/^graph_repo_for() {/,/^}/p' "$DISPATCH")
   cc="$(graph_repo_for CleanCore)"
   mo="$(graph_repo_for mopsion)"
@@ -326,6 +346,92 @@ fi
 # test (the behaviour is pinned above): proves the wiring cannot silently drop the 4th argument.
 forward_pin="$(grep -c 'body="\$(draft_comment_body "\$leaf_title" "\$content" "\$synthetic")"' "$DISPATCH")"
 check "post_draft_comment forwards its synthetic argument to draft_comment_body" "$forward_pin" "1"
+
+# --- E. QUALITY GATE (card d39fc5e7, requirement 2) -----------------------------------------------
+# --test-quality-gate is the exact function try_leaf() calls before posting any draft -- real
+# behaviour coverage lives in draft-quality-gate.selftest.py; this pins the shell-level wiring
+# (stdin/argv plumbing into the python helper) so a change to either side cannot silently drift.
+qg_fail="$(bash "$DISPATCH" --test-quality-gate "x" "write a vitest test for parseWindow" "")"
+check "quality gate: a too-short draft fails through the shell wiring" "${qg_fail%%$'\t'*}" "FAIL"
+
+qg_ok="$(bash "$DISPATCH" --test-quality-gate "import { describe, it, expect } from 'vitest'
+describe('x', () => { it('y', () => { expect(1).toBe(1) }) })" "write a vitest test for parseWindow" "")"
+check "quality gate: a real, sufficiently-long, non-repeating draft passes through the shell wiring" "$qg_ok" "OK"
+
+# try_leaf() must call BOTH new gates before a draft can be posted -- source pins, same pattern as
+# forward_pin above (a missing call here is a silent regression no behaviour test on this file can
+# catch, since both gates default to "real" paths that only misbehave when actually wired wrong).
+sample_pin="$(grep -c 'sample="\$(decompose_sample_context "\$dtype" "\$task" "\$repo")"' "$DISPATCH")"
+check "try_leaf calls decompose_sample_context for synthetic leaves" "$sample_pin" "1"
+quality_pin_1="$(grep -c 'qverdict="\$(draft_quality_ok "\$out" "\$task" "\$repo")"' "$DISPATCH")"
+check "try_leaf calls draft_quality_ok on the success path" "$quality_pin_1" "1"
+quality_pin_2="$(grep -c 'qverdict2="\$(draft_quality_ok "\$adv_draft" "\$task" "\$repo")"' "$DISPATCH")"
+check "try_leaf calls draft_quality_ok on the advisory path" "$quality_pin_2" "1"
+
+# a NO-SAMPLE leaf must be marked exhausted via the new "no-sample" attempts_op case, not retried
+# forever on a repo tree that will not change between sweep ticks.
+no_sample_entry="$(bash "$DISPATCH" --test-attempts-op no-sample noSampleLeaf --file "$TMPDIR/attempts-nosample.json")"
+check "attempts_op no-sample marks the leaf exhausted" "$(printf '%s' "$no_sample_entry" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')" "exhausted"
+check "attempts_op no-sample records the reason" "$(printf '%s' "$no_sample_entry" | python3 -c 'import json,sys; print(json.load(sys.stdin)["reason"])')" "no-sample"
+
+# --- E. DRAFT FILE SINK (card 21fbc293, Gemini-orch 2/4): OFFLOAD_DRAFT_SINK=file redirects the
+# draft body to disk instead of the kanban comment ----------------------------------------------
+DRAFTS_TMPDIR="$TMPDIR/drafts"
+
+check "sanitize_path_component keeps a plain hex-like id unchanged" \
+  "$(bash "$DISPATCH" --test-sanitize-path-component "21fbc293")" "21fbc293"
+check "sanitize_path_component neutralizes a path-traversal attempt (../../etc/passwd)" \
+  "$(bash "$DISPATCH" --test-sanitize-path-component "../../etc/passwd")" "______etc_passwd"
+check "sanitize_path_component neutralizes an absolute path" \
+  "$(bash "$DISPATCH" --test-sanitize-path-component "/etc/passwd")" "_etc_passwd"
+check "sanitize_path_component keeps the synthetic leaf '~type' suffix shape readable (only '~' folds)" \
+  "$(bash "$DISPATCH" --test-sanitize-path-component "realCard~test-scaffold")" "realCard_test-scaffold"
+
+write_out="$(OFFLOAD_DRAFTS_DIR="$DRAFTS_TMPDIR" bash "$DISPATCH" --test-write-draft-to-file "cardAbc" "cardAbc" "the draft body text")"
+check "write_draft_to_file's printed path is relative, not absolute" "${write_out:0:1}" "d"
+# The printed path is relative to DRAFTS_DIR's OWN parent (dirname "$DRAFTS_TMPDIR" == "$TMPDIR"
+# here), not to $HERE -- this is what makes the path correct regardless of where
+# OFFLOAD_DRAFTS_DIR actually points (see write_draft_to_file's own comment).
+written_abs="$(dirname "$DRAFTS_TMPDIR")/${write_out}"
+check "write_draft_to_file actually wrote the file at the path it printed" "$([[ -f "$written_abs" ]] && echo yes || echo no)" "yes"
+check "the written file's content is exactly the body passed in" "$(cat "$written_abs" 2>/dev/null)" "the draft body text"
+check "the written file lands under drafts/<sanitized cardId>/, not loose in drafts/" "$(dirname "$written_abs")" "$DRAFTS_TMPDIR/cardAbc"
+rm -rf "$DRAFTS_TMPDIR"
+
+# PATH-TRAVERSAL: a malicious card id must not escape DRAFTS_TMPDIR, even though write_draft_to_file
+# itself never validates emptiness of the sanitized result.
+evil_out="$(OFFLOAD_DRAFTS_DIR="$DRAFTS_TMPDIR" bash "$DISPATCH" --test-write-draft-to-file "../../../tmp/evil" "../../../tmp/evil" "pwned")"
+evil_abs="$(dirname "$DRAFTS_TMPDIR")/${evil_out}"
+check "a path-traversal card id cannot escape DRAFTS_DIR (file lands inside it, sanitized)" \
+  "$(python3 -c "import os,sys; p=sys.argv[1]; d=sys.argv[2]; print('inside' if os.path.commonpath([os.path.abspath(p), os.path.abspath(d)]) == os.path.abspath(d) else 'escaped')" "$evil_abs" "$DRAFTS_TMPDIR")" "inside"
+check "/tmp/evil was NOT created outside the sandbox by the traversal attempt" "$([[ -e /tmp/evil ]] && echo exists || echo absent)" "absent"
+rm -rf "$DRAFTS_TMPDIR"
+
+# REFERENCING COMMENT: carries the path and the same mandatory Draft-Review marker requirement
+# (card 1338e68b) as the normal full-content draft comment, but never the draft text itself.
+ref_body="$(bash "$DISPATCH" --test-draft-file-ref-comment-body "Parent title" "drafts/cardAbc/123-cardAbc.md" false)"
+check "the file-ref comment names the draft path" "$(printf '%s' "$ref_body" | grep -c 'drafts/cardAbc/123-cardAbc.md')" "1"
+check "the file-ref comment still carries the mandatory Draft-Review marker instruction" \
+  "$(printf '%s' "$ref_body" | grep -c "Draft-Review:")" "1"
+check "the file-ref comment does NOT embed a literal draft body (only the path)" \
+  "$(printf '%s' "$ref_body" | grep -c 'the draft body text')" "0"
+ref_body_synth="$(bash "$DISPATCH" --test-draft-file-ref-comment-body "Parent title" "drafts/cardAbc/123-cardAbc.md" true)"
+check "the file-ref comment also carries the mandatory-full-review wording when synthetic=true" \
+  "$(printf '%s' "$ref_body_synth" | grep -c 'KOTELEZO A TELJES, FUGGETLEN ONLINE FELULVIZSGALAT')" "1"
+
+# WIRING: post_draft_comment must actually branch on OFFLOAD_DRAFT_SINK, not just have the helper
+# functions exist unused (a source pin, same pattern as forward_pin above).
+sink_branch_pin="$(grep -c 'if \[\[ "\${OFFLOAD_DRAFT_SINK:-comment}" == "file" \]\]; then' "$DISPATCH")"
+check "post_draft_comment branches on OFFLOAD_DRAFT_SINK" "$sink_branch_pin" "1"
+
+# DEFAULT-UNCHANGED REGRESSION (MUTATION-RELEVANT CONTROL): with the sink unset, post_draft_comment
+# must still produce the EXACT same body draft_comment_body alone would -- i.e. the file-sink branch
+# must be opt-in, not accidentally always-on. We cannot call post_draft_comment directly (it needs a
+# live $hdr_file/$DASH), so this pins the two text constructors agree when the sink is not "file":
+# draft_comment_body's own contract (tested in section D above) is what post_draft_comment falls
+# back to, and this is exactly what the "OFFLOAD_DRAFT_SINK:-comment" default (not "file") encodes.
+check "the OFFLOAD_DRAFT_SINK default literal is 'comment' (file sink is opt-in only)" \
+  "$(grep -c 'OFFLOAD_DRAFT_SINK:-comment' "$DISPATCH")" "1"
 
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"

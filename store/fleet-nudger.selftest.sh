@@ -290,14 +290,12 @@ run_case designated "qa qa2"    # designation: Gate: QA. excludes cybersec/cyber
 # NOTE (card 21abfe0b): fleet-nudger.sh hardcodes CHECK="$ROOT/store/gate-dispatch-check.sh" with
 # ROOT="/home/neon/marveen" literally (by design: it runs from cron against the live install, not
 # from a worktree) -- so THIS specific end-to-end case always exercises the LIVE $MAIN copy of
-# gate-dispatch-check.sh/gate_designation.py, never the branch's own. The widen_cybersec fold this
-# card adds there (so a "Gate: Cybersec" designation also arms cybersec2, exactly like QA/QA2) is
-# proven directly against the branch's own files by gate-dispatch-check.sh's OWN selftest and a
-# plain `python3 -c "from gate_designation import designated_gates; ..."` import -- both exercise
-# the worktree copy, unlike this case. This expectation stays pinned to today's $MAIN behaviour
-# (cybersec alone) until that landed-copy gap is itself closed; it will need updating once
-# gate_designation.py's cybersec2 fold is live at $MAIN.
-run_case out-of-scope "cybersec"
+# gate-dispatch-check.sh/gate_designation.py, never the branch's own. QA caught (card 21abfe0b,
+# comment 16214, F1) that this expectation was still written for the PRE-widen_cybersec $MAIN
+# state: $MAIN now runs the folded gate_designation.py (landed with c2329dc2), so a bare
+# "cybersec" designation widens to "cybersec cybersec2" there too, exactly like "qa" -> "qa qa2"
+# two lines up. Updated to match; it was never stale by design, only by a missed second edit.
+run_case out-of-scope "cybersec cybersec2"
 
 # MISSING TIER DECISION -> LOUD (card 50d75b47). Rule 4 makes the gate set a per-card DECISION; a
 # card with neither a label nor a Gate: line never had one made, and the pipeline used to be unable

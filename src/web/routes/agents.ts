@@ -17,6 +17,7 @@ import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { measureClaudeCliVersion } from '../claude-cli-version.js'
 import { claudeSupportForCli, baseModelId } from '../../claude-cli-support.js'
+import { launchableInstallDefault } from '../default-model-guard.js'
 import { CHANNEL_PLUGIN_IDS } from '../plugin-ids.js'
 import { getSecret, setSecret, deleteSecret, listSecrets } from '../vault.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
@@ -24,7 +25,6 @@ import { loadOpenRouterCatalog, fetchAllOpenRouterModels, loadCuratedManual, add
 import {
   agentDir,
   agentConfigRoot,
-  DEFAULT_MODEL,
   readFileOr,
   extractDescriptionFromClaudeMd,
   findAvatarForAgent,
@@ -60,6 +60,7 @@ import {
   writeAgentVoiceConfig,
   KNOWN_VOICE_MODELS,
   type AuthMode,
+  readJsonObjectForWrite,
 } from '../agent-config.js'
 import { readClaudePlans, resolveAgentConfigDir } from '../claude-plans.js'
 import {
@@ -140,9 +141,10 @@ import { attemptChannelMcpReconnect } from '../channel-mcp-reconnect.js'
 import { getChannelHealth } from '../channel-health-monitor.js'
 import {
   loadProfileTemplate,
+  resolveProfileTemplate,
   resolveProfilePlaceholders,
 } from '../profiles.js'
-import { sanitizeAgentName, safeJoin } from '../sanitize.js'
+import { sanitizeAgentName, safeJoin, writeFileNoFollowSync, isPlausibleChannelSenderId } from '../sanitize.js'
 import { isReservedSenderId } from '../system-directive-id.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
@@ -403,10 +405,9 @@ export function setAgentEnabledPlugins(name: string, provider: ChannelProviderTy
   const settingsDir = join(agentDir(name), '.claude')
   const settingsPath = join(settingsDir, 'settings.json')
   mkdirSync(settingsDir, { recursive: true })
-  let existing: Record<string, unknown> = {}
-  if (existsSync(settingsPath)) {
-    try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
-  }
+  // JSONCLOBBER926: an existing but unreadable settings.json is refused, not
+  // overwritten -- see readJsonObjectForWrite.
+  const existing: Record<string, unknown> = readJsonObjectForWrite(settingsPath)
   const plugins = (existing.enabledPlugins ?? {}) as Record<string, boolean>
   for (const [p, pluginKey] of Object.entries(CHANNEL_PLUGIN_IDS)) {
     plugins[pluginKey] = p === provider
@@ -1066,7 +1067,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const { description, model: rawModel, profile: rawProfile } = data as { name: string; description: string; model?: string; profile?: string }
     const rawName = typeof data.name === 'string' ? data.name.trim() : ''
     const name = sanitizeAgentName(rawName)
-    const model = resolveModelId(rawModel || DEFAULT_MODEL)
+    // DEFAULTCLIGUARD927: no model in the request = the install default,
+    // guarded (fresh probe, like the gate below) so a create on a CLI that
+    // cannot run the shipped default gets the previous tier, not a 422 for a
+    // model the caller never picked.
+    const model = resolveModelId(rawModel || await launchableInstallDefault('agent-create', { fresh: true }))
     const profileId = (rawProfile || 'default').trim() || 'default'
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
@@ -1098,6 +1103,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // for claude-fable-5-1/claude-opus-5-5 -- the agent comes up and is silently deaf).
     const cliRefusal = await refuseIfCliCannotLaunch(model)
     if (cliRefusal) { json(res, { error: cliRefusal.message, code: cliRefusal.code, params: cliRefusal.params }, 400); return true }
+    if (name === MAIN_AGENT_ID) { json(res, { error: 'Name is reserved for the main agent' }, 409); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
     scaffoldAgentDir(name)
@@ -1540,10 +1546,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const name = decodeURIComponent(secGetMatch[1])
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
     const profileId = readAgentSecurityProfile(name)
-    const profile = loadProfileTemplate(profileId)
+    // Resolved, not loaded: this is read on every dashboard view, and the WARN
+    // belongs to the spawn that applies the profile, not to a page load.
+    const resolution = resolveProfileTemplate(profileId)
+    const profile = resolution.profile
     const placeholders = { HOME: homedir(), AGENT_DIR: agentDir(name) }
     json(res, {
       profile: profileId,
+      // What the agent actually runs under, and why it differs.
+      effectiveProfile: resolution.effective,
+      fallbackReason: resolution.fallbackReason,
       label: profile.label,
       description: profile.description,
       permissionMode: profile.permissionMode,
@@ -1788,6 +1800,50 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
       if (!entry) { json(res, { error: 'Invalid or expired code' }, 404); return true }
 
+      // Card 3d186397 QA FAIL delta (10812, MikroB decision): entry.senderId is whatever the
+      // EXTERNAL channel plugin wrote into access.json's `pending` map for an unrecognized
+      // inbound sender -- this server trusts it as a path segment with no validation of its own.
+      // safeJoin must be resolved BEFORE any side effect (allowFrom/pending/access.json), not
+      // after: the first cut of this fix ran safeJoin last, so an invalid senderId still got
+      // pushed into allowFrom (and the pending code consumed) before the marker write failed --
+      // the caller saw a misleading 500 "could not approve" while the sender had, in fact,
+      // already been approved. Rejecting the WHOLE request up front keeps approval atomic: either
+      // every effect (allowFrom, pending removal, dmPolicy, marker file) happens, or none does.
+      const approvedDir = join(chDir, 'approved')
+      // Card 25aaada5 B2: safeJoin alone lets through shapes that resolve inside approvedDir
+      // but are unusable as a filename ('.', 'x/..' -> approvedDir itself, 'sub/id', an embedded
+      // NUL, an unreasonable length) -- each failed at some OTHER layer, always after the
+      // mutation below had already run. Checked before safeJoin so the reason surfaced is the
+      // real one.
+      if (!isPlausibleChannelSenderId(entry.senderId as string)) {
+        logger.warn({ name, provider, senderId: entry.senderId, code }, 'Channel pairing rejected: implausible senderId shape')
+        json(res, { error: 'Invalid sender identifier' }, 400)
+        return true
+      }
+      let markerPath: string
+      try {
+        markerPath = safeJoin(approvedDir, entry.senderId)
+      } catch (err) {
+        logger.warn({ err, name, provider, senderId: entry.senderId, code }, 'Channel pairing rejected: invalid senderId')
+        json(res, { error: 'Invalid sender identifier' }, 400)
+        return true
+      }
+
+      // Card 25aaada5 N1 (RedHat 16934/17101): the symlink-safe marker write must happen BEFORE
+      // the allowFrom/pending/dmPolicy mutation, not after -- the first cut of this fix wrote the
+      // marker last, so a symlink at the final path component threw only once the sender had
+      // already been half-approved (allowFrom pushed and persisted, pending consumed, marker
+      // write failed). Same "every effect or none" ordering as the safeJoin/isPlausibleChannelSenderId
+      // checks above, now extended to cover the symlink check too.
+      mkdirSync(approvedDir, { recursive: true })
+      // Marker contents = chatId, per the plugin's /telegram:access pair
+      // contract (the channel server polls approved/ to send the "Paired!"
+      // confirmation; current server keys off the filename, the chatId
+      // contents keep us aligned with the documented format).
+      // Card 25aaada5: writeFileNoFollowSync refuses to follow a symlink already sitting at
+      // markerPath instead of silently writing through it (see sanitize.ts's own comment).
+      writeFileNoFollowSync(markerPath, String(entry.chatId ?? ''))
+
       if (!access.allowFrom) access.allowFrom = []
       if (!access.allowFrom.includes(entry.senderId)) {
         access.allowFrom.push(entry.senderId)
@@ -1798,14 +1854,6 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       access.dmPolicy = 'allowlist'
 
       atomicWriteFileSync(accessPath, JSON.stringify(access, null, 2))
-
-      const approvedDir = join(chDir, 'approved')
-      mkdirSync(approvedDir, { recursive: true })
-      // Marker contents = chatId, per the plugin's /telegram:access pair
-      // contract (the channel server polls approved/ to send the "Paired!"
-      // confirmation; current server keys off the filename, the chatId
-      // contents keep us aligned with the documented format).
-      writeFileSync(join(approvedDir, entry.senderId), String(entry.chatId ?? ''))
 
       logger.info({ name, provider, senderId: entry.senderId, code }, 'Channel pairing approved')
       json(res, { ok: true, senderId: entry.senderId })

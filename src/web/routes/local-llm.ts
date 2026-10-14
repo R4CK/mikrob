@@ -8,6 +8,7 @@ import { STORE_DIR, MAIN_AGENT_ID } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import { decideModelTrust, relabelCatalogueTrust } from '../../local-llm-model-trust.js'
 import { readBenchState, benchInfoFor } from '../../local-llm-bench-state.js'
 import {
@@ -125,6 +126,15 @@ const OLLAMA_UNIT = 'ollama'
 // Proactive-offload control (card 48f3b675): the aggressiveness slider persists into the SAME config
 // the fleet agents + the local-llm-offload skill read. 0 = never offload, 100 = offload maximally.
 const OFFLOAD_CONFIG_FILE = join(STORE_DIR, 'local-llm-offload-active.json')
+// Master kill-switch (card d57d8a01, Peti Telegram 10951): the ONE file every local-first-draft
+// entry point (store/self-advance-pickup.sh, card-build-route.sh, offload-dispatch.sh,
+// route-classify.sh, gate-pretriage.sh, i18n-draft.sh, local-llm-rag.sh, local-llm.sh) reads as its
+// FIRST step, via the shared store/local-first-draft-check.sh helper -- same shape as
+// local-llm-installed.sh's "el se induljon" gate. Deliberately a SEPARATE file from
+// OFFLOAD_CONFIG_FILE above: that one's `active`/`disabledCategories` fields govern HOW AGGRESSIVELY
+// an already-enabled local-first path offloads; this one is the single ON/OFF switch for whether the
+// path runs AT ALL, and it is read by shell scripts that have no business parsing the larger config.
+const FIRST_DRAFT_FLAG_FILE = join(STORE_DIR, 'local-first-draft.json')
 // GPU-filtered, trust-labelled HuggingFace model catalogue (card 61a4a85f, EPIC ebc7b4dd T4).
 // The script owns cache/staleness/fallback itself (store/llm-catalog.py: envelope()/fallback()) --
 // this route only decides WHEN to pay for a live refresh, never reimplements those semantics.
@@ -1962,6 +1972,103 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       offloadableThresholds: OFFLOADABLE_THRESHOLDS,
       reliableCeiling: RELIABLE_CEILING,
     })
+    return true
+  }
+
+  // GET /api/local-llm/first-draft-enabled -> the master kill-switch state (card d57d8a01). Absence
+  // of the file, or any unreadable/unparseable content, means ENABLED -- same fail-open default
+  // store/local-first-draft-check.sh's shell side uses (plan-grilling point 2: "absence = ON"), so
+  // the API and the shell side can never disagree about what "no file" means. MikroB decision
+  // 16743 (B1) considered flipping this to fail-closed for a missing file specifically; measured
+  // and NOT applied -- see local-first-draft-check.sh's header comment for why (29 unrelated,
+  // pre-existing tests broke).
+  if (path === '/api/local-llm/first-draft-enabled' && method === 'GET') {
+    let enabled = true
+    let note = ''
+    if (existsSync(FIRST_DRAFT_FLAG_FILE)) {
+      try {
+        const parsed = JSON.parse(readFileSync(FIRST_DRAFT_FLAG_FILE, 'utf-8'))
+        enabled = parsed?.enabled !== false
+        note = typeof parsed?.note === 'string' ? parsed.note : ''
+      } catch {
+        // Unparseable file: fail open (enabled stays true), same as every shell reader's `except -> on`.
+      }
+    }
+    json(res, { enabled, note })
+    return true
+  }
+
+  // POST /api/local-llm/first-draft-enabled { enabled: boolean, note?: string } -> persist the master
+  // kill-switch. Bearer-gated by src/web.ts. Deliberately does NOT touch ollama/the bridge service in
+  // any way -- flipping the switch only ever writes this one JSON file; every entry point decides for
+  // itself, on its OWN next invocation, whether to run locally. Turning the switch back on is
+  // therefore never the trigger that starts anything (card d57d8a01's own acceptance test).
+  if (path === '/api/local-llm/first-draft-enabled' && method === 'POST') {
+    const body = (await readBody(req)).toString()
+    let parsed: { enabled?: unknown; note?: unknown }
+    try {
+      parsed = JSON.parse(body || '{}')
+    } catch {
+      json(res, { error: 'invalid_json', message: 'A kérés törzse érvénytelen JSON.' }, 400)
+      return true
+    }
+    if (typeof parsed.enabled !== 'boolean') {
+      json(res, { error: 'missing_field', message: 'Adj meg egy enabled mezőt (true/false).' }, 400)
+      return true
+    }
+    // WhiteHat2 (comment 16810, point 5): the note is the only on-disk audit trail for who flipped
+    // the switch, so a default note must name the caller's auth kind, not just the timestamp.
+    const callerLabel =
+      ctx.auth?.kind === 'session'
+        ? `session:${ctx.auth.user ?? 'unknown'}`
+        : ctx.auth?.kind === 'device'
+          ? `device:${ctx.auth.device ?? 'unknown'}`
+          : ctx.auth?.kind ?? 'none'
+    const note =
+      typeof parsed.note === 'string' && parsed.note.trim()
+        ? parsed.note.trim().slice(0, 500)
+        : `${new Date().toISOString()}: dashboard toggle -> ${parsed.enabled ? 'enabled' : 'disabled'} (${callerLabel})`
+
+    // B2 (card d57d8a01, QA FAIL 16742 secondary finding, MikroB decision 16743 -- BLOCKING per
+    // Peti's own card text: re-enabling is "Peti jóváhagyása alapján", not any token-holder's).
+    // Turning the switch OFF stays open to any authenticated caller -- that is the fail-safe
+    // direction (forces ONLINE) and restricting it too would make an emergency kill harder to
+    // pull. Turning it back ON reopens the GPU-overload risk the switch exists for, so it is
+    // restricted to a human credential -- an owner browser session, or a device key that is NOT
+    // one of the `agent:<id>` keys issued to fleet agents (card 2bfa4c67/9655494c) -- with NO
+    // approval-opening fallback.
+    //
+    // MikroB's own decision text said "tulajdonosi session VAGY level-2 jóváhagyás". The level-2
+    // (POST /api/approvals + PATCH /api/approvals/:id) half is deliberately NOT offered here:
+    // card 657b32f2 (RedHat delta-gate 14953, MikroB decision 14957, see fleet.ts's
+    // FLEET_IMPORT_APPLY_FAIL_CLOSED and its own comment) measured that PATCH /api/approvals/:id
+    // has NO auth-kind check at all -- only a self-reported "resolved_by != requesting agent_id"
+    // guard, which the shared bearer token defeats trivially by naming a different resolved_by on
+    // the same token. Wiring this switch to that channel would not add a second control, it would
+    // let the shared token approve its own re-enable through a different door. Until a real
+    // non-forgeable approval channel ships (card 3fb0ef97), this stays human-credential-only, the
+    // same `kind === 'session' || kind === 'device'` posture as POST /api/fleet/import?apply=true
+    // (fleet.ts:119) -- EXCEPT fleet.ts:119 itself does not yet exclude an `agent:<id>` device key
+    // (WhiteHat2, comment 16810, measured against b8c5d0fe): a key issued to a fleet agent is not
+    // a human credential just because its `kind` is 'device', so it is excluded here explicitly via
+    // the existing agentKeyToAgentId() convention check rather than copying that gap forward.
+    const isHumanDevice = ctx.auth?.kind === 'device' && agentKeyToAgentId(ctx.auth.device) === null
+    if (parsed.enabled === true && ctx.auth?.kind !== 'session' && !isHumanDevice) {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none', device: ctx.auth?.kind === 'device' ? ctx.auth.device : undefined }, 'first-draft-enabled: re-enable rejected for non-human credential')
+      json(res, {
+        error: 'A helyi LLM visszakapcsolása csak a tulajdonos munkamenetéből vagy saját eszközkulcsával lehetséges, a megosztott flotta-tokennel nem.',
+      }, 403)
+      return true
+    }
+
+    try {
+      atomicWriteFileSync(FIRST_DRAFT_FLAG_FILE, JSON.stringify({ enabled: parsed.enabled, note }, null, 2) + '\n')
+    } catch (err) {
+      logger.error({ err }, 'first-draft-enabled: write failed')
+      json(res, { error: 'write_failed', message: 'A beállítás mentése nem sikerült, próbáld újra.' }, 500)
+      return true
+    }
+    json(res, { enabled: parsed.enabled, note })
     return true
   }
 

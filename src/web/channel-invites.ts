@@ -23,13 +23,14 @@
 //
 // The invite-token is a "shared secret" that grants exactly one auto-approve.
 // Tokens are 16 random bytes (base64url, ~22 chars), unguessable in practice.
-import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomBytes, createHash } from 'node:crypto'
 import { logger } from '../logger.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { agentDir } from './agent-config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { safeJoin, writeFileNoFollowSync, isPlausibleChannelSenderId } from './sanitize.js'
 
 interface InviteEntry {
   createdAt: number
@@ -231,6 +232,49 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
       const [pCode, pEntry] = pendingEntries[0]
       const [tToken, tEntry] = live[0]
 
+      // Card 3d186397 QA FAIL delta (10812, MikroB decision): pEntry.senderId is plugin-written,
+      // unvalidated external channel content (same class as routes/agents.ts's pairing-approval
+      // write). The first cut of this fix only guarded the MARKER file write (wrapped in its own
+      // try/catch, warn-only) -- an invalid senderId still got pushed into allowFrom, the pending
+      // code consumed, and the invite token spent, all BEFORE the marker write was ever
+      // attempted. Unlike the human-approval route this sweep runs with NO human review at all,
+      // so a rejected senderId silently becoming a real allowlist entry is worse here, not
+      // better. The senderId must be validated BEFORE any of those effects; on rejection, this
+      // entry is skipped entirely (not approved, not consumed) so the next tick can retry it --
+      // the actual auto-approval logic for OTHER valid entries, in other providers/agents, is
+      // unaffected (this is a `continue` of the inner loop, not the whole sweep).
+      const approvedDir = join(accessPath, '..', 'approved')
+      // Card 25aaada5 B2: see routes/agents.ts's own comment on isPlausibleChannelSenderId --
+      // same shapes, same "check before any mutation" requirement, checked first here too.
+      if (!isPlausibleChannelSenderId(pEntry.senderId)) {
+        logger.warn({ name, provider, senderId: pEntry.senderId }, 'invite-monitor: rejected implausible senderId shape, not auto-approving')
+        continue
+      }
+      let markerPath: string
+      try {
+        markerPath = safeJoin(approvedDir, pEntry.senderId)
+      } catch (err) {
+        logger.warn({ err, name, provider, senderId: pEntry.senderId }, 'invite-monitor: rejected invalid senderId, not auto-approving')
+        continue
+      }
+
+      // Card 25aaada5 N1 (RedHat 16934/17101): the symlink-safe marker write must happen BEFORE
+      // the allowFrom/pending/invite mutation, not after -- this sweep runs with NO human review
+      // at all (see the 3d186397 comment above), so a symlink-at-the-marker failure silently
+      // leaving a half-approved sender (allowFrom populated, invite spent, marker missing) is
+      // worse here than on the human-approval route. On write failure, skip this entry entirely
+      // (not approved, not consumed) so a later tick can retry it -- same "every effect or none"
+      // ordering as the isPlausibleChannelSenderId/safeJoin checks above.
+      try {
+        mkdirSync(approvedDir, { recursive: true })
+        // Card 25aaada5: writeFileNoFollowSync refuses to follow a symlink already sitting at
+        // markerPath instead of silently writing through it (see sanitize.ts's own comment).
+        writeFileNoFollowSync(markerPath, '')
+      } catch (err) {
+        logger.warn({ err, name, senderId: pEntry.senderId }, 'invite-monitor: rejected (symlink or write failure), not auto-approving')
+        continue
+      }
+
       if (!access.allowFrom) access.allowFrom = []
       if (!access.allowFrom.includes(pEntry.senderId)) access.allowFrom.push(pEntry.senderId)
       if (access.pending) delete access.pending[pCode]
@@ -240,14 +284,6 @@ export function runInviteMonitorTick(mainAgentId: string, agentsRoot: string): v
       tEntry.usedAt = now
 
       if (activeInviteCount(store, now) === 0) access.dmPolicy = 'allowlist'
-
-      try {
-        const approvedDir = join(accessPath, '..', 'approved')
-        mkdirSync(approvedDir, { recursive: true })
-        writeFileSync(join(approvedDir, pEntry.senderId), '')
-      } catch (err) {
-        logger.warn({ err, name, senderId: pEntry.senderId }, 'invite-monitor: failed to write approved marker')
-      }
 
       writeAccess(accessPath, access)
       writeInvites(invitesPath, store)

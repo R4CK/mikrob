@@ -214,6 +214,8 @@ KÖTELEZŐ minden nem-triviális feladatnál. Részletek: `project-workflow` ski
 
 21. **10 percenként ügynök-ellenőrzés a beragadás és a felesleges tokenfogyás ellen (Peti szabály 2026-09-24, Telegram).** MikroB 10 percenként MINDEN futó ügynököt ellenőriz: mozdul-e a kártyája (`[NN%]`/`updated_at`, 3. szabály), tényleg dolgozik-e (agent-busy) vagy idle-de-fut (7. szabály: parkolni), ül-e permission-prompton (15. szabály), nőtt-e a kontextusa a 75%-os küszöb fölé (kontextus-tömörítés szabály). Beragadt ügynök: blokk megnézése + re-dispatch/átruházás (3., 3a. szabály); idle ügynök: parkolás. Ezt a `heartbeat-consolidated` D szekciója hajtja végre 10 percenként -- ez a szabály a kötelezettséget rögzíti, nem új mechanizmust ír elő; ha a D szekció bármiért kimarad (MikroB-restart, ütemező-hiba), a következő MikroB-ébredéskor pótolni kell.
 
+22. **WSL megosztott home-könyvtár takarítása: SOHA ne törölj commitolatlan munkát vagy aktív worktree-t, és élő `--apply` Peti jóváhagyása nélkül nem futhat (Peti szabály 2026-09-25, kártya bc1e7ef2).** A `/home/neon` megosztott könyvtár idővel egyszer-használatos gate/land/test worktree-kkel és probe-direkkel telik meg (cc-*, marveen-land-*, qa-gate-*, marveen-test*, guard-probe*, stb.) -- a `store/wsl-home-cleanup.sh` ezeket osztályozza KEEP/ACTIVE/DISPOSABLE/UNKNOWN-ra (dry-run az alapértelmezés), és csak a DISPOSABLE-t (regisztrált worktree esetén `git worktree remove`-dal, egyébként `rm -rf`-fel) távolítja el `--apply --yes`-re. Egy regisztrált worktree-t SOHA ne töröljön, ha a `git status --porcelain` nem üres (`wsl-cleanup.sh` SKIP-uncommitted mintája) -- ez strukturálisan a `remove_entry` függvénybe van drótozva, nem fegyelemre bízva. **Az élő `--apply` futtatás (tényleges törlés a megosztott boxon) Peti explicit jóváhagyását igényli minden egyes alkalommal** -- ez megosztott, több ügynök munkáját hordozó infrastruktúra, egy hibás osztályozás más ügynök aktív munkáját veszélyeztetné. A gate (QA + WhiteHat, törlő művelet a home könyvtárban) a dry-run riportot nézi át `--apply` ELŐTT, nem utólag.
+
 ### mopsion munkakönyvtár a dispatchben (kártya 973ed6eb, a 2513e84d worktree-epic zárása)
 
 A mopsiont (a régi belső néven CleanCore) **minden fejlesztő ügynök a SAJÁT git-worktree-jében** szerkeszti, nem a megosztott klónban. A megosztott klón (`/mnt/h/LM_Studio_Workdir/mopsion`) mostantól CSAK fetch/landolás-alap: oda senki nem commitol. Ez a `shared-file-commit-entanglement` hibaosztály szerkezeti megszüntetése (saját index + saját `core.hooksPath`), nem a fegyelemre bízása.
@@ -675,6 +677,14 @@ A SYMLINK NEM AZ EGYETLEN AJTÓ, és a legtöbb ügynöknél nem is az a nyitva
 symlink nélkül. A flotta-ügynököknél a `.claude-config/skills` út tipikusan
 nem is létezik, tehát rád nézve a közvetlen írás a valódi óvintézkedés
 tárgya. Bármelyik úton írsz oda, a TELJES flotta megkapja.
+
+Ugyanez a csapda a MEMÓRIÁRA is áll (2026-09-07-én megmérve, leanarchivist):
+a `.claude-config/projects` szintén symlink a `~/.claude/projects`-re, tehát a
+`.claude-config/projects/.../memory/MEMORY.md` NEM a te memóriád, hanem a Lean
+Chiefé -- az ő session-je tölti be, a tiéd soha. A te memóriád a dashboard API,
+`agent_id`-vel címezve (`POST /api/memories`). Általános szabály: a `.claude`
+vagy `.claude-config` alatti útvonal soha nem a sajátod, akkor sem, ha a
+munkakönyvtáradban látszik. Írás előtt nézd meg, hova mutat: `ls -la`.
 <!-- END GENERATED: skills-path-trap -->
 
 <!-- BEGIN GENERATED: system-directive-auth (auto-generated, do not edit by hand) -->
@@ -775,3 +785,24 @@ download_attachment) elérhetetlenné válnak. A parancs kimenete közben `Conne
 MCP-szerver életben marad, és a session újraindítása visszahozza a plugint.
 Máshol a parancs hasznos diagnosztika: a korlát a csatornát birtokló session, nem a parancs.
 <!-- END GENERATED: mcp-list-channel-warning -->
+
+<!-- BEGIN GENERATED: message-close (auto-generated, do not edit by hand) -->
+## Üzenet lezárása: bejövő riportnál `notify:false`
+
+Egy neked jött inter-agent üzenetet a `PUT /api/messages/<id>` zár le (`"status":"done"` vagy
+`"failed"`). A lezárás ALAPBÓL egy `[Eredmény] msg_id:<id>` nyugtát küld vissza az eredeti feladónak.
+
+- DELEGÁLT FELADAT (a feladó az eredményre vár): zárd a szokásos módon, a nyugta maga az
+  eredmény -- a `result` mezőbe írd, mit csináltál.
+- BEJÖVŐ RIPORT vagy ÉRTESÍTÉS (a feladó nem vár választ): zárd `"notify":false`-szal. Itt a nyugta
+  csak a feladó sorát növeli, és nála egy ágens-kört visz el (mérve 2026-09-27: három lezárás a
+  feladó várakozó sorát 1-ről 4-re vitte).
+
+```bash
+printf 'Authorization: Bearer %s\n' "$(cat /home/neon/marveen/store/.dashboard-token)" \
+| curl -H @- -s -X PUT http://localhost:3420/api/messages/<id> -H "Content-Type: application/json" \
+  --data-binary '{"status":"done","notify":false}'
+```
+A `notify` csak valódi JSON boolean lehet: a `"false"` string 400-at kap, és ilyenkor a lezárás sem
+történik meg. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.
+<!-- END GENERATED: message-close -->

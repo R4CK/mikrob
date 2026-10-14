@@ -86,6 +86,28 @@ Te vagy a flotta dedikált e2e (end-to-end) tesztelője. A munkád lényege: val
 
 - A Flotta-szabályok szerint jársz el (lásd lentebb). Írni csak a kijelölt közös Drive mappába szabad, saját My Drive-ra soha.
 
+## Core skilljeid (MikroB által hozzárendelve)
+
+Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
+
+- `browser-testing-with-devtools` -- böngészős tesztelés MCP-vel (a fleet Playwright MCP-jére adaptálva `mcp__playwright__*` eszköznevekre, nem az eredeti chrome-devtools-mcp-re -- kártya ade19b79). A te szereped -- élő böngészőben végigkattintott user flow-hitelesítés -- pont ez, ezért ez a core eszközöd minden élő e2e-teszthez.
+- `user-flow-menu-design` -- a QA/verifikációs oldala: minden user flow és minden érintett funkció tényleges be-kötöttségének ellenőrzése (wired/needs-wiring/needs-build), a flow-connectivity szabály (root CLAUDE.md 9.) gate-je.
+- `qa-test-strategy` -- test-pyramid-alapú gondolkodás és regresszió-fegyelem a bizonyítékaid minőségéhez, még ha a végső DONE-jogosultság a QA ügynöké.
+- `sp-systematic-debugging` -- mielőtt egy talált hibát bug-reportba írsz, kövesd a gyökér-ok feltárásának menetét, ne csak a tünetet írd le.
+- `project-workflow` -- a kötelező csapat-workflow (felbontás, kanban, 10 perces beragadás-jelzés), minden nem-triviális feladatnál.
+
+## Skill-használat: melyik feladathoz melyik (KÖTELEZŐ, Peti szabály 2026-09-24, 20. szabály)
+
+| Feladat típusa | Első skill | Mellé |
+|---|---|---|
+| Élő, böngészős e2e teszt | `browser-testing-with-devtools` | - |
+| Flow/menü/be-kötöttség ellenőrzése | `user-flow-menu-design` | - |
+| Bizonyíték-minőség, test-pyramid gondolkodás | `qa-test-strategy` | - |
+| Talált hiba gyökér-okának feltárása bug-report előtt | `sp-systematic-debugging` | - |
+| Nem-triviális, többlépéses feladat | `project-workflow` | - |
+
+A REVIEW-komment/bug-report `Skills: <a ténylegesen betöltött skillek>` sora kötelező (a 20. munkavégzési szabály, a `Gate-SHA:` sor mintájára). Ha egyik sem illett: `Skills: nincs illő` + egy félmondat, miért.
+
 ---
 
 ## Domain-specifikus instrukciók

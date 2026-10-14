@@ -17,7 +17,34 @@
 // Must stay equal to DEFAULT_MODEL_CHAIN[0] in model-fallback.ts: chain[0] is what the fallback
 // reverts UP to, so a default above the chain primary would make a new agent's first quota-revert
 // a silent DOWNGRADE. Moving one means moving both (card d041760b, Peti 2026-08-06).
+//
+// DEVIATION (Köteg 12, upstream 0bea3cd7/e1a54005, 2026-10-13): upstream bumps this to
+// 'claude-opus-5-5[1m]' (MODELSUGGEST923, so model-suggest.ts's ceiling tracks the newest tier).
+// Kept at 'claude-opus-5' again -- same still-open deferral as card 4f15966e (2026-09-07),
+// reaffirmed as recently as 2026-09-25 (DECISIONS.md, 14284837/model-suggest.test.ts: "a
+// Peti-pinnelt disztribucio-alapertelmezes invarianst (kartya d041760b) csendben felulirna").
+// This is a real cost/context product tradeoff Peti has to make, not a routine merge-conflict
+// call; re-adopt when that decision lands.
 export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-5'
+
+// DEFAULTCLIGUARD927: the tier a MODEL-LESS launch falls back to when the
+// installed Claude Code CLI is measured (claude-cli-support.ts) not to launch
+// DISTRIBUTION_DEFAULT_AGENT_MODEL. The default above reaches every existing
+// model-less install on a plain code update, and nothing else on that launch
+// path checks the CLI: an AVX-less host is pinned to CLI 2.1.110 (CLAUDE_PIN
+// in channels.sh / install-linux.sh / fix-avx.sh), DISABLE_AUTOUPDATER keeps
+// any older CLI where it is, and on such a CLI claude-opus-5-5 answers every
+// prompt with 400 unrecognized_model -- the session comes up and goes silent.
+// This must be a model the OLDEST pinned CLI launches (a test pins that), and
+// it moves one tier up whenever the default does. Explicit operator values
+// (MAIN_AGENT_MODEL, a settings.json model, an agent's own model, a configured
+// DEFAULT_AGENT_MODEL) are never replaced by it.
+// Adopted unmodified from upstream: this is additive safety infrastructure, independent of the
+// deferred DISTRIBUTION_DEFAULT_AGENT_MODEL bump above -- 'claude-opus-5' (our current default,
+// base form of this fallback) has no entry in claude-cli-support.ts's CLAUDE_MODEL_MIN_CLI, so it
+// is already CLI-version-safe today and this fallback is presently a no-op, kept for when the
+// default does eventually move.
+export const DISTRIBUTION_DEFAULT_FALLBACK_MODEL = 'claude-opus-5[1m]'
 
 export type SettingType = 'int' | 'string' | 'color' | 'boolean'
 
@@ -260,6 +287,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: 'string',
     default: '',
     description: 'Az a cím, amin az ÜGYNÖKÖK érik el a dashboard API-ját onnan, ahol futnak (pl. http://localhost:3420 egy gépes telepítésnél, vagy egy belső szolgáltatás-név k8s-en). Üres = a régi viselkedés: DASHBOARD_PUBLIC_URL, annak hiányában localhost. Ez NEM a böngészőnek szóló publikus cím.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'FLEET_PYTHON_VENV',
+    type: 'string',
+    default: '',
+    description: 'A flotta közös Python venv mappája, abszolút útvonal (kezdő ~ = home; relatív útvonal nem érvényes). Ha a <mappa>/bin létezik, minden ügynök indítási PATH-jának elejére kerül, így a skillek sima python3 hívása és a venv CLI-jei (markitdown stb.) a venv-ből jönnek. Nincs beállítva (alapértelmezés) vagy nem létező mappa = kikapcsolva. Az itt üresen hagyott mező NEM kapcsolja ki a .env-ben megadott értéket: kikapcsoláshoz a .env-ből kell törölni, vagy itt nem létező mappát megadni (pl. /nonexistent).',
     module: 'system',
     secret: false,
     requiresRestart: true,
@@ -523,6 +559,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
       'claude-opus-5-5[1m]',
       'claude-opus-5',
       'claude-opus-5[1m]',
+      'claude-sonnet-5-5',
       'claude-sonnet-5',
       'claude-fable-5',
       'claude-fable-5-1',
@@ -542,6 +579,33 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: 'boolean',
     default: '0',
     description: 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan a claude-plans.json-ban. A váltás a fő agent session-jének újraindításával jár.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+  },
+  // Opt-in: the shared fleet token (store/.claude-oauth-token) follows the
+  // main agent's rotation. Default OFF -- with it off, a rotation touches the
+  // main agent only, exactly as before. Read at rotation time by
+  // POST /api/claude-plans/rotate (src/web/claude-plan-fleet-wiring.ts).
+  {
+    key: 'CLAUDE_ROTATION_FLEET',
+    type: 'boolean',
+    default: '0',
+    description: 'A flotta is kövesse a rotációt: amikor a fő agent egy token-módú planre vált, a közös flotta-token (store/.claude-oauth-token) is erre a plan tokenjére cserélődik (mentéssel), és minden olyan sub-agent újraindul, amely ezt a közös tokent használja. Saját tokenes / saját configDir-os agenteket nem érint. configDir-módú célplannél a flotta-lépés kimarad. Előfeltétel: CLAUDE_ROTATION_ENABLED=1.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+  },
+  // Opt-in background refresh of IDLE plans' 5h/7d usage by the rotation
+  // heartbeat (scripts/claude-plan-rotate-check.ts -> refreshIdlePlans). Each
+  // probe is a real Messages API call that spends the probed plan's own quota,
+  // so it is off by default and independent of CLAUDE_ROTATION_ENABLED: an
+  // operator can keep the Settings bars fresh without automatic rotation.
+  {
+    key: 'CLAUDE_PLAN_USAGE_REFRESH',
+    type: 'boolean',
+    default: '0',
+    description: 'A tétlen (épp nem használt) token-módú planek 5 órás és heti keretét a rotációs heartbeat a háttérben is lekérdezi, planenként legfeljebb 30 percenként. Minden lekérdezés egy valódi, minimális API-hívás, ami az adott plan saját keretéből fogy, ezért alapból KI. A rotációtól (CLAUDE_ROTATION_ENABLED) függetlenül bekapcsolható, ha csak a Beállítások sávjait akarod frissen tartani.',
     module: 'claude-plans',
     secret: false,
     requiresRestart: false,

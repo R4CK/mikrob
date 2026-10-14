@@ -38,6 +38,13 @@ A short verdict: (a) the plan's load-bearing assumptions + which are verified,
 (d) the single most-likely failure and its mitigation. If it's GO-WITH-CHANGES,
 list the exact changes. Don't soften — the value is in the hole you find.
 
+## Spec template for non-trivial cards (kártya 81452ce2)
+For FÁZIS/FELADAT, HIGH/URGENT or SEC-tagged cards, the grilling verdict (axes 1-9 above) feeds
+straight into the mandatory spec template (Kontextus, Követelmények, Ellenőrizhető elfogadási
+kritériumok, Nincs benne, Feltételezések incl. `Termékdöntés: igen/nem`) that `project-workflow`
+defines in full -- grilling produces the content, that skill owns the format and the (currently
+warn-only) guard that checks for it.
+
 ## Pitfalls
 - Don't grill trivial work — it wastes effort and reads as obstruction.
 - Don't accept "should be fine" — convert every one into a concrete "when X, then Y".

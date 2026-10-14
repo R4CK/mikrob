@@ -117,6 +117,10 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'blast-radius-guard.py',
   'symlinked-node-modules-guard.py',
   'pentest-tool-install-guard.py',
+  // Köteg 12 (upstream 0bea3cd7, KAPUEGYUT918 PR2): the memory frontmatter check also runs after
+  // Bash writes -- same fileExists safety as the gates above, scripts/hooks/memory-frontmatter-bash-gate.py
+  // exists in this checkout (ported this same round).
+  'memory-frontmatter-bash-gate.py',
   // The /clear continuity pair: SessionEnd capture + SessionStart replay (upstream, unioned in
   // with this merge -- scripts/hooks/clear-capture.py and clear-replay.py arrive as part of it).
   'clear-capture.py',

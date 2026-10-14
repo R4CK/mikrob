@@ -61,11 +61,20 @@ describe('suggestForAgent -- base (no signals)', () => {
     expect(result.suggestedModel).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
   })
 
+  // FORK DIVERGENCE (Köteg 12, upstream 0bea3cd7, 2026-10-13): upstream's version of this fixture
+  // compares a plain 'claude-opus-5-5' against the ceiling, because upstream's
+  // DISTRIBUTION_DEFAULT_AGENT_MODEL is 'claude-opus-5-5[1m]' -- same family, different suffix.
+  // This fork's ceiling stays 'claude-opus-5' (card d041760b invariant, see the fork-invariant
+  // test above), a different model family entirely, so 'claude-opus-5-5' vs 'claude-opus-5'
+  // correctly DOES advise a change -- that is not what this fixture means to test. Rewritten
+  // against the fork's own same-family pair (bracket suffix on/off of its actual ceiling) so the
+  // normalize()-suffix behaviour is still exercised, accurately.
   it('normalises [1m] suffix for comparison', () => {
     const text = 'IT architekt. Komplex elosztott rendszerterv, mikroszolgáltatás, stratégiai döntések.'
-    // Plain opus-5 vs the suggested opus-5[1m]: same family after normalize(),
-    // so no change is advised -- the suffix alone must not trigger churn.
-    const result = suggestForAgent('rick', 'claude-opus-5', text)
+    // Plain opus-5 vs the suggested opus-5[1m] (DISTRIBUTION_DEFAULT_AGENT_MODEL has no suffix,
+    // but DEFAULT_MODEL_CHAIN[0]/the ceiling comparison normalizes it away): same family after
+    // normalize(), so no change is advised -- the suffix alone must not trigger churn.
+    const result = suggestForAgent('rick', 'claude-opus-5[1m]', text)
     expect(result.changeAdvised).toBe(false)
   })
 
@@ -218,14 +227,26 @@ describe('suggestForAgent -- reason structure (6 sections)', () => {
 // suggester kept recommending claude-opus-4-8[1m] (measured on the live
 // endpoint before the fix: 8 of 10 agents were suggested 4.8, 7 of them with
 // changeAdvised, 5 of those running Opus 5; after: 0 of 10).
+// MODELSUGGEST923 (measured 2026-09-26): the same drift recurred one tier up.
+// OPUS55SELECTOR922 (#1492, 2026-09-23) added claude-opus-5-5[1m] to the
+// picker's valueSet but never bumped DISTRIBUTION_DEFAULT_AGENT_MODEL, so
+// this suite's own "locks to" pin below was still asserting the OLD ceiling
+// (claude-opus-5[1m]) while the picker already offered the newer tier
+// (claude-opus-5-5[1m]) -- live effect: the advisor told 5 of 5 fleet agents
+// to move to the older tier, including two agents already correctly running
+// 5.5. Bumped the constant in
+// config-registry.ts; this pin now locks to the new value so the NEXT tier
+// bump fails here too, on purpose, instead of shipping silently.
 describe('MODELSUGGEST807 -- top tier is the shipped distribution default', () => {
-  // FORK DIVERGENCE, deliberate. Upstream ships `claude-opus-5[1m]`; this fork ships
-  // `claude-opus-5`. Both sides documented a reason, and ours is an invariant our own code
-  // enforces: the distribution default must EQUAL DEFAULT_MODEL_CHAIN[0], because chain[0] is
-  // what a quota revert climbs back UP to -- a default above the chain primary makes a new
-  // agent's first revert a silent DOWNGRADE (card d041760b, Peti 2026-08-06). Our chain[0] is
-  // `claude-opus-5`; upstream's is still `claude-opus-4-8[1m]`, a rung Peti removed from our
-  // ladder. Adopting upstream's literal would break our invariant AND reintroduce 4.8.
+  // FORK DIVERGENCE, deliberate. Upstream ships `claude-opus-5-5[1m]` as of Köteg 12 (upstream
+  // 0bea3cd7/e1a54005, 2026-10-13; was `claude-opus-5[1m]` at the time this note was first
+  // written); this fork ships `claude-opus-5`. Both sides documented a reason, and ours is an
+  // invariant our own code enforces: the distribution default must EQUAL DEFAULT_MODEL_CHAIN[0],
+  // because chain[0] is what a quota revert climbs back UP to -- a default above the chain
+  // primary makes a new agent's first revert a silent DOWNGRADE (card d041760b, Peti 2026-08-06).
+  // Our chain[0] is `claude-opus-5`; upstream's ceiling keeps moving with every new tier.
+  // Adopting upstream's literal would break our invariant. Reaffirmed as recently as 2026-09-25
+  // (DECISIONS.md, 14284837/model-suggest.test.ts).
   // Asserted against the constant's neighbour rather than a literal, so the pair cannot drift.
   it('the distribution default equals the fallback chain primary (fork invariant)', () => {
     expect(DISTRIBUTION_DEFAULT_AGENT_MODEL).toBe('claude-opus-5')

@@ -25,12 +25,33 @@ collect_bash_body / collect_mcp_body moved here VERBATIM from
 outgoing-copy-gate.py (behavior-neutral; parity proven byte-for-byte against a
 golden captured from the pre-move code -- scripts/__tests__/email-extract-parity.test.py).
 """
+import hashlib
 import os
 import re
 
 
+# WhiteHat2 NO-GO F2 (card e4eb72c9, komment 16134): the Bash extraction branch
+# never populates `attachments` at all (collect_mcp_attachments is only called
+# on the MCP/connector branch), so a Bash sender that DOES carry a file
+# attachment -- swaks's `--attach <file>` / `--attach @<file>` -- goes out with
+# an anchor that is identical with and without the attachment, and identical
+# across two DIFFERENT attached files (measured: 9ac71cacbd for all three).
+# Hashing the referenced file here would face the same TOCTOU exposure as the
+# `<`/@file body forms above (the attach happens in a LATER process, after
+# this hook reads), so this takes the same fail-closed route as those: a
+# swaks/relative --attach flag makes the call unreadable rather than silently
+# anchoring a letter with no attachment information in it.
+_BASH_ATTACH_RE = re.compile(r"(?:^|\s)--attach(?:-body)?(?:=|\s+)['\"]?@?([^\s'\"|;&<>]+)")
+
+
 def collect_bash_body(cmd: str):
     """Return (text, unreadable_reason). text is '' when nothing was recovered."""
+    attach_m = _BASH_ATTACH_RE.search(cmd)
+    if attach_m:
+        return ("", f"a parancs mellekletet csatol (--attach {attach_m.group(1)}) -- a Bash-agon "
+                "ez nem hashelheto (a csatolas egy kesobbi folyamatban tortenik, ugyanaz a "
+                "TOCTOU-kitettseg, mint a fajl-torzsnel) -- hasznalj MCP send_email-t "
+                "melleklettel, vagy tavolitsd el a mellekletet")
     parts = []
     for m in re.finditer(r"--(?:body|subject)[= ]+(\"([^\"]*)\"|'([^']*)'|(\S+))", cmd):
         val = m.group(2) or m.group(3) or m.group(4) or ""
@@ -165,6 +186,91 @@ def collect_mcp_recipients(tool_input: dict):
             norm(tool_input.get("bcc")), None)
 
 
+# --- attachments (card e4eb72c9) ---------------------------------------------
+# The gmail MCP send tool's `attachments[].content` field accepts EITHER a
+# base64 string OR an ABSOLUTE local file path in the SAME key (measured
+# against gmail-mcp-server@1.0.30 dist/index.js:198: "Base64 encoded content
+# ... OR ABSOLUTE file path to read from disk"). Before this, the approval
+# anchor (content_anchor in email-approval-gate.py) covered to/cc/bcc/text
+# only -- an approved letter could be re-sent with ANY local file attached
+# and the hash would not change. Both shapes get hashed so the anchor pins
+# WHAT was actually attached, not just the envelope text.
+#
+# WhiteHat2 NO-GO F1 (card e4eb72c9, komment 16134): this hook's own idea of
+# "file" (_ABS_PATH_RE, absolute path only) and the MCP server's idea of
+# "file" (gmail-mcp-server@1.0.30 dist/utils/gmail-operations.js:425-444
+# isFilePath) disagree -- the server treats a RELATIVE path (`./x`, `../x`,
+# a bare filename with an extension like `report.pdf` or `.env`, or any
+# string containing `/`/`\` that is not base64-shaped) as a file too, and
+# reads it relative to its own cwd at send time. This hook used to hash
+# every such string as INLINE TEXT (the plain sha256 of the literal
+# characters), so an approval anchored on that string never matched the
+# bytes the server actually attached -- the content-pin the card exists to
+# add was bypassed by the simplest possible relative path. Fix: an
+# allow-list, not a copy of the server's regex (which drifts across
+# versions) -- only an ABSOLUTE path (read + hash the real bytes) or a
+# STRICT base64 string (hash the literal string, as today) are accepted;
+# everything else is unreadable_reason, fail-closed (a new approval is
+# required rather than silently anchoring the wrong thing).
+# WhiteHat2 NO-GO F1' (card e4eb72c9, komment 16365/16368, delta on the allow-list above):
+# Python's `re.match`/`$` anchors at the end of the string OR right before a TRAILING newline --
+# "abc/def\n" matches _STRICT_B64_RE (the JS side has no such exception: a trailing "\n" makes
+# isFilePath's own `/^[A-Za-z0-9+\/]+=*$/` fail, so the MCP server reads the string as a relative
+# FILE instead, same bypass class as the one this allow-list exists to close). `fullmatch` has no
+# such exception -- `$` inside it still means "end of string", but `fullmatch` additionally
+# requires the WHOLE string to be consumed, so a trailing "\n" (or anything else after the base64
+# body) fails. Measured: a full 1-5 char / 15-symbol-alphabet search for hook=inline vs MCP=file
+# pairs found 40 matches, all of the "<alnum with at least one `/`> + trailing \n" shape; 0 after
+# this fix.
+_ABS_PATH_RE = re.compile(r"^(?:/|[A-Za-z]:[\\/])")
+_STRICT_B64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
+
+
+def collect_mcp_attachments(tool_input: dict):
+    """Return (attachments, unreadable_reason). attachments: list of
+    {"filename", "sha256"} (plus "path" when the content was a file
+    reference), sorted for a deterministic hash order. A missing/empty list
+    is not an error (most letters have none)."""
+    raw = tool_input.get("attachments")
+    if not raw:
+        return [], None
+    if not isinstance(raw, list):
+        return [], "a melleklet-lista alakja nem lista"
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return [], "egy melleklet-bejegyzes alakja nem objektum"
+        filename = str(item.get("filename") or "")
+        content = item.get("content")
+        if not isinstance(content, str) or not content:
+            return [], f"a '{filename}' melleklet tartalma hianyzik vagy nem szoveg"
+        if _ABS_PATH_RE.match(content):
+            # L1 (WhiteHat2 komment 16365, LOW): a NUL byte or a lone surrogate in `content`
+            # raises ValueError/UnicodeEncodeError from open()/the OS call, not OSError -- an
+            # uncaught one would crash this function with a traceback, and main()'s own net
+            # (card e4eb72c9) does not wrap collect_email_envelope, so the hook would exit 1,
+            # which PreToolUse treats as NON-blocking. Caught here, same fail-closed outcome
+            # as an unreadable file.
+            try:
+                with open(content, "rb") as fh:
+                    data = fh.read()
+            except (OSError, ValueError) as exc:
+                return [], f"a '{filename}' melleklet fajlja nem olvashato ({content}): {exc!r}"
+            out.append({"filename": filename, "path": content,
+                        "sha256": hashlib.sha256(data).hexdigest()})
+        elif _STRICT_B64_RE.fullmatch(content) and len(content) % 4 == 0:
+            out.append({"filename": filename,
+                        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()})
+        else:
+            return [], (f"a '{filename}' melleklet tartalma se nem abszolut utvonal, se nem "
+                        "szigoru base64 (pl. relativ utvonal: './x', '../x', 'nev.ext') -- "
+                        "az MCP-szerver ezt megis FAJLNAK olvashatja, es ezt a hook nem tudja "
+                        "hashelni a bytejai szerint -- fail-closed, uj jovahagyas kell "
+                        f"({content[:60]!r})")
+    out.sort(key=lambda a: (a.get("path", ""), a["filename"], a["sha256"]))
+    return out, None
+
+
 # The claude.ai Gmail connector's send-shaped tools (mcp__claude_ai_Gmail__*):
 # no "send_email" in the name, so the name-based test above never saw them.
 CONNECTOR_SEND_RE = re.compile(r"gmail__(reply|reply_all|send_message|forward)$", re.I)
@@ -176,6 +282,7 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
     Returns {"to", "cc", "bcc", "text", "unreadable_reason"}; text is the combined
     subject+body exactly as the copy gate audits it. The CALLER decides policy
     (e.g. an empty recipient list on a send is itself grounds to deny)."""
+    attachments = []
     if re.search(r"send_email", tool_name or "", re.I) or CONNECTOR_SEND_RE.search(tool_name or ""):
         ti = tool_input if isinstance(tool_input, dict) else {}
         text = collect_mcp_body(ti)
@@ -186,6 +293,9 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
         # the addresses: an approval for one message cannot answer another.
         if not to and ti.get("messageId"):
             to = [f"messageId:{ti['messageId']}"]
+        attachments, att_reason = collect_mcp_attachments(ti)
+        if att_reason and not reason:
+            reason = att_reason
     elif tool_name == "Bash":
         cmd = str((tool_input or {}).get("command") or "") if isinstance(tool_input, dict) else ""
         text, reason = collect_bash_body(cmd)
@@ -194,6 +304,7 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
         else:
             to, cc, bcc = [], [], []
     else:
-        return {"to": [], "cc": [], "bcc": [], "text": "",
+        return {"to": [], "cc": [], "bcc": [], "text": "", "attachments": [],
                 "unreadable_reason": f"nem email-kuldo tool ({tool_name!r})"}
-    return {"to": to, "cc": cc, "bcc": bcc, "text": text, "unreadable_reason": reason}
+    return {"to": to, "cc": cc, "bcc": bcc, "text": text, "attachments": attachments,
+            "unreadable_reason": reason}

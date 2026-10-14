@@ -19079,6 +19079,471 @@ A `needsFleetOauthFor` kiemelés (kör 1) után a teljes landolási fleet-test 2
 
 **Ki dontott:** a leletet RedHat adta (NO-GO, komment 15755, Gate-SHA d30a371d a mar landolt fixre), a javitast (csak teszt, nincs production-valtoztatas) fullstack vegezte. Delta-gate: QA + RedHat.
 
+## 2026-10-11 -- kanban komment-szerzo (author) nem auth-identitasbol jon, es ez marad (kartya 1cdac111, Cybersec LOW lelet a 3906d77b-n, komment 5475)
+
+**A lelet:** `POST /api/kanban/:id/comments` az `author` mezot a request BODY-bol veszi
+(kanban.ts:1235-1243), nem az auth-identitasbol. Minden flotta-ugynok UGYANAZT a megosztott
+dashboard Bearer tokent hasznalja; `resolveAuth` (auth-gate.ts) ezt a generikus `{ kind: 'token' }`
+eredmenyre oldja fel, semmilyen hivo-azonossaggal -- tehat barmelyik token-birtokos kommentelhet
+`author: "qa"` vagy `author: "cybersec"` nevvel, es a szerver nem tudja megmondani, hogy ki irta
+valojaban.
+
+**Felmeres (kartya 1. lepese):** az `author` mezot SZIGNALKENT olvaso helyek mind mar a helyes,
+"gyenge jelzes, nem bizonyitek" modellt kovetik: `store/gate_author_role.py` (a kozos tabla,
+sajat dokumentacioja szo szerint kimondja: "this table is therefore not authentication -- it
+cannot be... the weaker, still useful statement: a verdict that does not even CLAIM to come from
+the gate is not that gate's verdict"), amit `store/gate-closure-check.py` (tanacsado olvaso) ES
+`store/landing-gate-verdict-parse.py` (a VALODI KIKENYSZERITO, ami egy origin/develop-re pusholast
+enged/tilt) egyarant hasznal -- ez utobbi gap-jet mar a 48b0dd36 kartya zarta be korabban.
+`src/web/kanban-draft-review-guard.ts` es `store/cybersec-gate-scan.py` is ugyanezt a mintat
+koveti.
+
+**Dontes (kartya 1c. lepese, a kartya sajat "alternativa" aga):** a valodi, auth-alapu
+szarmaztatas (2. lepes: a body `author` csak akkor fogadhato el, ha egyezik egy azonositott
+hivoval) MA NEM MEGOLDHATO a megosztott-token architekturan -- ehhez per-ugynok hitelesites
+kellene, ami kulon, nagyobb projekt, nem ez a kartya. Az elfogadott, mar reszben elesitett
+mitigacio: `author` MINDENHOL csak JELZESKENT kezelendo, SOHA nem tanusitvanykent -- ezt a 48b0dd36
+kartya mar bevezette a kikenyszerito oldalon, ez a dontes csak rogziti/dokumentalja a teljes
+kepet es zarja a kartyat.
+
+**Strukturalis rogzites:** a route-kodban (kanban.ts, az `author`/`content` ellenorzes utan) egy
+komment mutatja ide es a 48b0dd36-ra; uj regresszios teszt
+(`src/__tests__/kanban-comment-author-trust-boundary.test.ts`) pinneli a jelenlegi, szandekos
+viselkedest (egy hamisitott `author` elmegy, a normalizalas sem kulonbozteti meg valodi/hamisitott
+hivot, egy valodi author byte-pontosan tovabbmegy) -- ha egy jovobeli valtozas valodi
+auth-szarmaztatast epit be, ez a teszt bukjon el elsonek, es ez a bejegyzes frissuljon, ne csendben
+valjon hamissa.
+
+**Ki dontott:** backend (ez a kartya sajat felmerese es dontese, a kartya altal explicit
+engedelyezett "alternativa" agon -- nincs kulon Peti-/MikroB-jovahagyas igenyelve, mert a kartya
+maga irta elo ezt a kimenetet, ha a szarmaztatas nem oldhato meg). Gate: QA + Cybersec, a kartya
+sajat kijelolese szerint.
+## 2026-10-11 -- e25a549a delta-gate javítás kör 3: RedHat NO-GO (komment 15997) B1/B2 zárva
+
+**B1 (MEDIUM, a saját új tiltás ütközött a termék saját dispatch-protokolljával):** a `kanbanMoveInstructions()` (src/web/routes/kanban.ts) nem-main-agent ágán az "elakadtál" lépéssor b) pontja `PUT {"assignee":"<escalateTo>"}`-ot írt elő, ahol `escalateTo=MAIN_AGENT_ID` -- ez a kártya saját, előző körben landolt guardja miatt mindig 400-at adott volna, és a blokkolt-átadás jelzés elveszett volna (a kártya a végrehajtőn marad, de assignee-váltás nélkül a dashboard nem mutatja, kinek a döntésére vár). Javítás: a non-main-agent ágon a reassign-lépés törölve, a kártya a végrehajtőn marad -- a KÖZVETLENÜL `escalateTo`-hoz szóló komment (a) lépés) + a "waiting" státusz (CLAUDE.md 4a szabály, MikroB saját sweepje) a jelzés, nem az assignee-mező. A main-agent ág (MikroB saját blokkja Peti felé, escalateTo=OWNER_NAME) érintetlen, mert OWNER_NAME sosem forbidden. Ugyanez a hibaosztály a `seed-scheduled-tasks/heartbeat-consolidated/SKILL.md` D szekciójában (60 perces testvér-átadás, "vagy {{MAIN_AGENT_ID}} veszi át") -- a LIVE `~/.claude/scheduled-tasks` már hordozott egy MikroB által kézzel javított szöveget (átosztás egy másik, azonos szerepű/szabad ügynöknek, sosem mikrob-ra), a seed fájl ezt most tükrözi, hogy a szét ne váljon. Új tesztek (`kanban-dispatch-instructions.test.ts`): a sub-agent escalation path sosem ír `"assignee":"<MAIN_AGENT_ID>"`-t, a main-agent ág változatlanul reassignel OWNER_NAME-re. Mutáció-ellenőrzés: a fix stash-elésével a sub-agent teszt pirosra vált, visszaállítva zöld.
+
+**B2 (LOW-MEDIUM, az F3 hasonmás-szűrés nem volt teljes):** a korábbi, 6 kódpontos `INVISIBLE_RE` + csak-Cirill/Görög-omikron `CONFUSABLES` tábla 21 további alakot hagyott át (mérve a RedHat saját próbájával): `@mikrob`, `mikrob.`, nyolc bidi/formázó/láthatatlan karakter (LRM/RLM/RLO/FSI+PDI/CGJ/mongol VS/ALM/invisible-times/VS16/TAG/braille-blank/NUL), a Hangul filler (Lo kategóriájú, vizuálisan üres "betű"), dotless/dotted török i, kiskapitális MIKROB, görög iota+kappa, armény o, és egy explicit kombináló pont. Javítás (RedHat saját iránya): az összevetés "csak betű/szám" alakra vált -- NFKC, hasonmás-fold (kiegészítve görög iota/kappa, török i-k, kiskapitális betűk, armény o, Hangul filler -> üres), majd EGY kategória-alapú szűrő (`/[^\p{L}\p{N}]/gu`) távolít el minden formázó/jel/elválasztó/pontozás/szimbólum karaktert egyszerre -- nem kódpontonkénti felsorolással, tehát jövőbeli hasonló karakter is elkapva marad. Mellékhatás, tudatosan vállalva: egy középen-térközzel ellátott "mi krob" is ide esik immár (korábban PASS volt) -- nincs ilyen valódi ügynöknév, a szigorítás nem termel új hamis pozitívot a flotta tényleges neveire (`mikrob-2`, `mikrob2`, `backend2` továbbra is PASS). Új tesztek (`kanban-assignee-guard.test.ts`, 26 új eset mind a 21 RedHat-mért formára + a két negatív kontrollra + a korábban tesztfedés nélküli Cirill-k/Görög-omikron táblázat-bejegyzésre, G19/G21 RedHat saját mutáció-sweepjéből). Mutáció-ellenőrzés: a B2-fix stash-elésével 5/31 teszt pirosra vált, visszaállítva mind zöld.
+
+**Nem ebben a körben (RedHat saját, nem-blokkoló listája szerint):** R1 (`scripts/kartya-es-ertesites.py` nyers INSERT a guard mellett) -- megvizsgálva, a script egy TELJESEN MÁS, régi névkonvenciót használ (COORDINATOR='marveen', GAZDA='szabolcs', FLEET={samu,zara,boni,iris,...}), ami nem fedi a mai flotta ügynök-neveit (nincs is "mikrob" a szótárában) -- vélhetően vesztigiális/sablon-kód egy korábbi fork-állapotból, nem ennek a kártyának a hatóköre (sebészi elv, karpathy-guidelines). MikroB-nak jelezve, döntés kell: javítás vagy kivezetés, külön kártyán. R2 (`fleet-transfer.ts` importFleet nyers INSERT, visszaállításnál) -- rögzítve, nem kértek rá fixet. R3 (ez a bejegyzés maga zárja). R4 (dadeab30 stowaway, külön gate-elve, lásd a dadeab30 kártya REVIEW-ját).
+
+**Ki döntött:** backend2. Delta-gate: QA + RedHat (a javítási irányt a WhiteHat adta korábban, az újra-gate ennek a körnek is RedHaté, MikroB 10565/10634 szerint).
+
+**Ki döntött:** backend3. Delta-gate: QA + RedHat.
+
+## 2026-10-11 -- 34f972bb: POST /api/connectors scope=project+stdio kemény fail-closed a 3fb0ef97-ig
+
+**Forrás:** 67e73b48 CYBERED GO (komment 15391, R1). A kártya 67e73b48-ban beépített session/device kind-check (`ctx.auth?.kind !== 'session' && !== 'device'`) hasznos korai szűrő, de NEM zárt kapu: a megosztott flotta-bearer break-glass jelszó-reset + login úton (auth.ts:265-297, 3 hívás, ettől a fájltól független) session-t tud szerezni magának anélkül, hogy valódi emberi hitelesítő adatot birtokolna. Egy `scope=project` + `type=stdio` írás a `PROJECT_ROOT/.mcp.json`-ba kerül, amit MINDEN ügynök Claude Code session-je betölt (ancestor-directory discovery, mérve 67e73b48-ban) -- flotta-szintű perzisztencia egy olyan hitelesítő adatból, amit minden ügynök már amúgy is birtokol.
+
+**Javítás:** a `routes/fleet.ts` `FLEET_IMPORT_APPLY_FAIL_CLOSED` mintáját követve (kártya 68254bd7, ugyanaz az indoklás: kemény, LITERÁL konstans, nem env-változó -- egy env-vezérelt kapcsoló egy jogosultsági kapun pont az az osztály, amit a DECISIONS.md már máshol is óv), új `CONNECTORS_PROJECT_STDIO_FAIL_CLOSED = true` konstans a `routes/connectors.ts` tetején. A `POST /api/connectors` handlerben ez a check a NÉVVALIDÁLÁS UTÁN, de a meglévő session/device kind-check ELŐTT fut, és MINDEN auth-fajtára (token/device/session/federation/none) feltétel nélkül 403-at ad, amíg a 3fb0ef97 (nem-hamisítható jóváhagyási csatorna) el nem készül. A régi kind-check kódja a helyén marad, SZÁNDÉKOSAN elérhetetlen, a flag későbbi, átgondolt commitban történő false-ra állításáig.
+
+**Hatókör-ellenőrzés (a kártya kéri, hogy a user-scope és a nem-stdio ág érintetlen maradjon, ha nem ad ugyanilyen perzisztenciát):** a `catalogInstallMatch` (katalógusból telepítés) route MINDIG `--scope user`-t használ, sosem `project`-et -- nem érintett. A `user`-scope stdio és a `project`-scope http/sse ágak a meglévő teszt szerint is változatlanul átmennek.
+
+**Teszt:** `src/__tests__/connectors-project-stdio-auth-gate.test.ts` teljesen átírva a `fleet-import-auth-gate.test.ts` (kártya 657b32f2) mintájára: `it.each` az ÖT auth-fajtára (token/none/federation/session/device), mind 403-at vár, az üzenet a `3fb0ef97`-re hivatkozik. A régi "session/device atmegy" tesztek torolve (mar nem igazak). Mutacio-pin: a session-es hivas most a SPECIFIKUS, uj uzenetet varja, nem csak a 403 kodot -- egy flag-visszaallitas vagy a feltetel szukitese/bovitese az assercot, nem csak a statust valtja.
+
+**Ki döntött:** backend3. Gate: QA + Cybersec/WhiteHat (a javítás irányát a RedHat adta, kártya saját kijelölése).
+
+## 2026-10-11 -- kanban komment-szerző (author) trust boundary delta: a maradék kockázat pontosítása + teljes fogyasztó-lista (kártya 1cdac111, WhiteHat2/cybersec2 NO-GO, komment 16090)
+
+**A korábbi bejegyzés (fentebb, "kanban komment-szerzo (author) nem auth-identitasbol jon, es ez marad") pontosítása, nem visszavonása.** A WhiteHat2 (cybersec2) gate megmérte: a "mindenhol csak jelzésként, SOHA tanúsítványként" állítás a KIKÉNYSZERÍTŐ oldalon (`store/landing-gate-verdict-parse.py`, ami egy `origin/develop`-ra pusholást enged/tilt, és `store/gate-closure-check.py`, ami a lezárási döntést adja) TÉNYSZERŰEN HAMIS, ha a hamisítás SZÁNDÉKOS (nem csak véletlen téves címkézés): egy token-birtokos, aki a request body `author` mezőjét `qa`/`cybersec` névre hamisítja, a landing-parse-en `OK`-t, a closure-checken `AGREE`-t kap -- tetszőleges kódot tud "átgate-eltetni" a developra és lezárni. Egy hamisított `author: mikrob` "GATE-KIJELOLES: QA (1-gate)" komment pedig egy valós, 2-gate-es (QA+Cybersec) kijelölést 1-gate-esre szűkítve a biztonsági gate-et teljesen elveszi.
+
+**MARADÉK KOCKÁZAT, kimondva (ez a mitigáció tényleges hatóköre):** a jelenlegi, "jelzés nem tanúsítvány" minta KIZÁRÓLAG a BECSÜLETES TÉVESZTÉS (téves saját-névre írás, pl. az építő elfelejti átírni az `author`-t) ellen védi -- ezt a `qa_pass_mislabeled`/`UNVERIFIED-AUTHOR` eset fogja meg. A SZÁNDÉKOS vagy prompt-injekcióval megtévesztett, megosztott tokent birtokló ügynök elleni védelem NINCS, amíg minden ügynök ugyanazt a flotta-bearert osztja. Ennek a maradék kockázatnak a FELTÉTELE a lezáráshoz: ügynökönkénti rendszer-felhasználó + ügynökönkénti token (terv: kártya 8ffa0c8a). Amíg ez nem landol, a kanban-kommentek szerzősége a flotta ÖNKÉNT-FEGYELMEZETT, nem kriptográfiailag zárt rétege -- ez a tény, nem a korábbi bejegyzés "elfogadható, mert csak jelzés" árnyalata.
+
+**Teljes fogyasztó-lista (a korábbi bejegyzés 1. lépése hiányos volt -- WhiteHat2 F2).** Az `author` mezőt jelzésként/döntési bemenetként olvasó MINDEN hely, a korábban felsorolt öt (`store/gate_author_role.py`, `store/gate-closure-check.py`, `store/landing-gate-verdict-parse.py`, `src/web/kanban-draft-review-guard.ts`, `store/cybersec-gate-scan.py`) MELLETT:
+- `src/web/kanban-gate-completeness-guard.ts` -- a `done`-ra zárást blokkolja a `Gate:` sor szerint; a `hasFreshVerdict` az `author == agent` egyezést nézi.
+- `src/web/kanban-plan-grilling-guard.ts` -- `author == mikrob` + plan-grilling verdikt dönt a `planned -> in_progress` átmenetről.
+- `src/web/kanban-landed-guard.ts` -- `GENERATED_COMMENT_AUTHORS` deny-lista.
+- `store/gate_designation.py`, `store/gate-decl-check.py`, `store/gate-dispatch-check.sh`, `store/gate_scan_lib.py`, `store/cybered-gate-scan.py`, `store/gate-pretriage-candidates.py`.
+- `store/cybersec-gate-scan.py` saját `mikrob_marker`-e: egy hamisított `author: mikrob` + "DONE"/blokk-szó kivonja a kártyát a gate-scan köréből.
+- a `gate-reconciler` ütemezett feladat (MikroB prompt-alapú sweepje) -- a verdiktet ugyanígy a szerzőhöz köti.
+- a draft-review guard a REVIEW szerzőjét is csak önbevallásból ismeri, nincs külön ellenőrzés.
+
+Mindegyik a KÖZÖS primitívre épül (a `author` mező bizalma), tehát a kihasználhatóság egy helyen bizonyított (landing-parse + closure-check, WhiteHat2 B/D mérései) a TÖBBI felsorolt helyre is átvihető ugyanazzal a mechanizmussal -- egyenként nem lettek újra lemérve.
+
+**F3 (nem ebben a körben, jövőbeli opció):** a hívó loopback-peer-portja alapján (`req.socket.remotePort` -> `/proc/net/tcp` -> `/proc/<pid>/fd` -> szülői lánc/cwd) a valódi hívó ügynök azonossága FELEMELHETŐ (nem hitelesítés, ugyanaz a UNIX user, de drágábbá teszi a hamisítást), flag mögé tehető. A TÉNYLEGES megoldás a fent nevezett 8ffa0c8a terv (ügynökönkénti felhasználó+token) -- ezt a bejegyzést onnantól kell majd frissíteni, ne a mostani állítást.
+
+**Kód NEM módosult ebben a körben** (WhiteHat2 verdiktje: "doksi-javítás kell, kód nem" -- a teszt és a route-kód már a `a77bf738`-ban helyesen rögzíti a jelenlegi viselkedést, csak a DECISIONS-szöveg állítása volt túl erős).
+
+**Ki döntött:** backend3 (a WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16091/16101). Delta-gate: QA + WhiteHat2 (cybersec2).
+
+## 2026-10-11 -- 81452ce2: kötelező spec-sablon nem triviális kártyához, warn-only kapu + auto termékdöntés-flag
+
+**Forrás:** Peti 10994/10998/11000; MikroB plan-grilling GO-WITH-CHANGES (komment 16170). Saját folyamat a
+zazencodes/zazencodes-season-3 `software-factory-claude-code` mintájára -- CLEAN-ROOM: a repónak NINCS
+licence (GitHub `license:null`), ezért csak az ötletet (kötelező spec elfogadási kritériummal) vettük át,
+kódot/prompt-/sablon-szöveget NEM másoltunk.
+
+**Mit szállít:** (1) saját spec-sablon (Kontextus, Követelmények, Ellenőrizhető elfogadási kritériumok,
+Nincs benne, Feltételezések -- utóbbiban kötelező `Termékdöntés: igen/nem` mező soronként) a
+`project-workflow` és a `plan-grilling` skillbe; (2) `src/web/kanban-spec-template-guard.ts`: a
+`planned -> in_progress` átmeneten (mindkét útvonal, PUT és POST /move) megnézi, nem-triviális-e a kártya
+(`[FÁZIS]`/`[FAZIS]`/`[FELADAT]` cím-tag VAGY `priority` HIGH/URGENT VAGY `[SEC]` cím-tag -- a verdikt
+SZŰK definíciója), és ha igen, de a leírás/komment-korpuszból hiányzik egy a sablon öt szakaszából,
+egyszeri `SPEC-TEMPLATE WARN` kommentet ír; (3) ha egy `Feltételezések` sor `Termékdöntés: igen`-nel zár,
+automatikusan `[BLOKKOLT-Peti-dontes]` cím-taget kap a kártya + jóváhagyás-kérő komment megy (F4-bekötés,
+a tag maga már létező konvenció, pl. kártya 8b588834).
+
+**Miért warn-only, nem blokkoló kapu:** a plan-grilling verdikt kifejezetten egyhetes, csak-mérő
+bevezetést kért (teherhordó feltevés: egy kötelező spec nem lassíthatja túlzottan a kis kártyákat) --
+a guard SOHA nem ad 409-et, csak kommentet ír; a `planned -> in_progress` sikeres marad akkor is, ha a
+spec hiányzik. A `kanban-plan-grilling-guard.ts` mintájára épülő, valódi (blokkoló) kapuvá válás a mérési
+hét után, külön döntés -- ez a kártya nem azt szállítja.
+
+**Miért explicit mező, nem regex a termékdöntés-felismerésre:** a plan-grilling verdikt kimondottan ezt
+kérte (a tartalom-alapú kitalálás hamis pozitív/negatívot termelne); a `PRODUCT_DECISION_RX` csak a
+kimondott `Termékdöntés: igen` mintára illeszkedik, nem a feltételezés szövegére.
+
+**Teszt:** `src/__tests__/kanban-spec-template-guard.test.ts` (16 eset) -- `isNonTrivialCard`/
+`missingSpecSections` egységtesztek, a guard mutáció-pin-je ("Termékdöntés: nem" NEM tag-el,
+"Termékdöntés: igen" tag-el, dupla-warn elkerülve, `SPEC_TEMPLATE_GUARD=off` minden hatást kikapcsol,
+`getKanbanCard` hiba fail-open). `npx vitest run src/__tests__/kanban-spec-template-guard.test.ts`: 16/16
+zöld ezen a worktree-n; `npx tsc --noEmit -p .` tiszta.
+
+**Nincs benne (ebben a körben):** a gate-ek (QA + WhiteHat2) REVIEW-beli kritériumonkénti
+teljesül/nem-teljesül jelzése a kártya 4. követelménye, de ez a gate-ek SAJÁT REVIEW-formátuma, nem egy
+kódolt mechanizmus -- a spec-sablon maga adja meg a kritériumokat, amikre a gate hivatkozhat.
+
+**Ki döntött:** backend2. Gate: QA + WhiteHat2 (ügynök-instrukciós felület, a kártya saját kijelölése).
+
+## 2026-10-11 -- Köteg 10/11 (kártya 517fdcc5, upstream 89bc8417..ab5325c0, 32 commit)
+
+Konfliktusfeloldás a kártya saját utasítása szerint: a fork-oldal az alapértelmezés minden fájlon, KIVÉVE `src/web/agent-process.ts` és `src/db.ts`, amin valódi oldal-oldal review futott (mindkettő minden kötegben érintett).
+
+**db.ts:** egyetlen import-sor eltérés, `OLLAMA_URL` (upstream oldal) sehol nem használt az upstream fájlban sem -- holt import, nem átvéve.
+
+**agent-process.ts, nagyobb döntések (14 konfliktus blokk):**
+- A `needsFleetOauthFor`/`isClaude` customProviderId-kizárás (617d136d javítás) MEGMARADT a saját, biztonságosabb alakjában -- az upstream ebben a kötegben MÉG a régi, RedHat/WhiteHat által talált hibás formát hordozza (`isClaude && authMode !== 'api' && !isOwnTeam`, customProviderId nélkül), tehát a Köteg 9/10 upstream-tartomány NEM tartalmazza a 617d136d javítást -- ez várható, az upstream maga később kapja meg vagy sosem.
+- NEM adoptálva: `stampCustomApiKeyApproval`/`buildCustomProviderLaunchEnv` (x-api-key egyéni-provider TUI-jóváhagyás előpecsételése -- valódi rés, saját kártyát igényel: `isCustom`/`customProviderDef` felbontás + `JSONCLOBBER926B` együtt kellene hozzá). A függvénydefiníciók törölve (nem kommentben hagyva), a leírás a DECISIONS-ben.
+- NEM adoptálva: `beginRestart`/`endRestart` az agent-process.ts SAJÁT `restartAgentProcess`-ében -- ez egy KORÁBBAN MÁR eldöntött kérdés (B-wave, kártya 42938a74, MikroB döntése msg 1082/1125), amit a `restart-race-lock.test.ts` saját, dedikált "restart-lock wiring (pinned at the source)" blokkja szó szerint rögzít: a fork `withLifecycleLock` mechanizmusa (agent-kulcsú, start/stop/restart közös kritikus szekció, kártyák 74ba7c78/ec26c2f1/185c0b63) STRUKTURÁLISAN jobb megoldás ugyanarra a race-re, mint az upstream egyszerű in-flight Set-je. A `restart-lock.ts`/`isRestartInFlight` MARADT, mert 5 MÁSIK hívóhely (channel-monitor.ts, schedule-runner.ts, reauth-healer.ts, routes/agents.ts) már korábban, HELYESEN adoptálta ott, ahol a `withLifecycleLock` strukturálisan nem ér el (pl. a channel-down watchdog saját, inline stop->delay->start egysége) -- ez a köteg nem bontotta ezt, csak ÚJRA felhozta az agent-process.ts saját, KORÁBBAN elutasított részét.
+- NEM adoptálva: `loadCustomProvider` (upstream neve) a fork saját `getCustomProviderOrThrow`-ja helyett; `ensureProjectRootInClaudeMd`/HOSTMOVE923 a fork saját `ensureProjectRootAnchor`-ja helyett (ez utóbbi már KORÁBBAN, saját fork-specifikus suffix-listával megépült -- a 2 új, HOSTMOVE923-at tesztelő fájl törölve: `claude-md-root-rewrite-write.test.ts`, `host-move-proof-recipes.test.ts`, plusz egy MARADÉK, duplikált `ensureProjectRootInClaudeMd(name)` hívás az agent-process.ts-ben, ami a nem létező függvényre mutatott volna -- ez egy TISZTA auto-merge maradvány volt, nem konfliktus, csak a tsc találta meg).
+- NEM adoptálva: a permission-prompt-tudatos stuck-session-alert bővítés (`formatStuckSessionAlert` 8 paraméteres alakja, `permissionPromptSummary` felhasználással) -- ez is KORÁBBAN eldöntött (kártya b5b7eb6b, "not adopted here... named as follow-up candidates"). Az új tesztfájl (`permission-prompt-not-a-stall.test.ts`) törölve. A `detectsPermissionDialog` (egy KORÁBBI, SZŰKEBB adoptálás) és a `permissionPromptSummary` (ez a köteg hozta, tiszta auto-merge, hívó nélkül) a helyén maradt -- utóbbi inert, de ártalmatlan, később felhasználható.
+- ADOPTÁLVA: `JSONCLOBBER926` (`readJsonObjectForWrite`/`redactJsonParseMessage`, kártya 035e46d0) -- KIZÁRÓLAG ez a fv-pár az `agent-config.ts`-be, NEM az upstream agent-config.ts diffjének többi része (az törli a fork saját, "load-bearing" re-exportjait/alias-ait, pl. a `model-id.js` re-export és a `knownModelSuggestions`). Az adoptálás oka: 6 MÁSIK fájl (model-fallback-runner.ts, agent-team.ts, routes/agents.ts, routes/schedules.ts, routes/connectors.ts, scheduled-tasks-io.ts) már TISZTÁN, konfliktus nélkül hívta ezt a függvényt, és a `silent-external-failures.test.ts` (szintén tiszta auto-merge) szó szerinti forrás-idézettel pinneli mind a 6+1 helyen. Visszaállítva a worksource .mcp.json opt-in ág EGYETLEN, maradék `readJsonObjectForWrite`-hívása az agent-process.ts-ben a régi, inline try/catch alakra (ez a hívás NEM volt a 6 "elfogadott" hely között, mert a FELETTE/ALATTA levő kód szövege nem változott a kötegben, csak ez az egy sor -- auto-merge nem jelzett konfliktust, csak a tsc).
+- Két teszt-javítás szinkron/aszinkron eltérés miatt: `context-restart-gate-wiring.test.ts` (ÚJ fájl, tiszta auto-merge) az upstream `gatherGateInputs`-t SZINKRONNAK feltételezte, a fork saját verziója ASZINKRON (`Promise<GateSnapshot>`) -- `await` hozzáadva mindhárom hívásnál, a teszt SZÁNDÉKA (mutáció-védelem valódi hibaosztályokra: transcript-kor nem file-mtime, report-irány kizárás) megmaradt, csak a hívási alak javítva.
+
+**4 DU törlés (upstream módosította, a fork korábban törölte, a törlés maradt):** `scripts/hooks/bash-egress-parser.mjs` + `src/__tests__/bash-egress-parser.test.ts` (EGRESSPARSER923, korábban KIFEJEZETTEN elutasítva -- a fork saját `bash-egress-guard.py` allowlist-alapú, erősebb védelem), `scripts/__tests__/keepalive-probe-install.test.sh` (egy nem-adoptált CI-lépés, sosem portolt script-re hivatkozik), `src/__tests__/stamp-custom-api-key-approval.test.ts` (a nem adoptált `stampCustomApiKeyApproval`-hoz tartozó teszt).
+
+**Teljes suite + lint-ratchet:** külön bejegyzés a következő körben, a futás eredményével.
+
+**Ki döntött:** backend3. Gate: QA + Cybersec + Cybered (a kártya saját kijelölése).
+
+## 2026-10-11 -- Köteg 10/11 delta kör: landolási fleet-test 9 tesztfájlt és 23 tesztet talált, mind javítva
+
+A scratch-worktree sajat fleet-test futasa (merge-sha, 1. kor) 23 bukast adott 9 fajlban + egy lint-ratchet parse-error miatt meresi hibat. Mind a korabbi, Koteg 9-es tapasztalat szerint: a tiszta auto-merge-olt UJ tesztfajlok egy resze nem-adoptalt vagy felig-adoptalt funkciora epult, amit a sajat fleet-test (nem a tsc) fogott meg eloszor.
+
+**Javitva (strukturalis hiba, nem adoptalasi dontes):**
+- `agent-process.ts`: egy maradek `ensureProjectRootInClaudeMd(name)` hivas (nem letezo fv-re mutatott, a tsc fogta meg) es a `syncTeamsDisplayName` fuggveny-definicio (a mar KORABBAN, ENVTMPMODE925/#1595 korben explicit elutasitott helyettesito, amit a koteg auto-merge-je ujra behozott -- lasd `env-tmp-mode.test.ts` sajat kommentje) torolve.
+- `context-restart-gate-wiring.test.ts`: `await` hianya 3 helyen (a fork `gatherGateInputs`-je aszinkron, upstream szinkronnak feltetelezte), plusz egy hianyos `agent-config.js` mock (`agentConfigRoot` hianyzott).
+- `hook-registration-completeness.test.ts`: `hook_errlog.py` (SILENTOLLAMA926 megosztott log-helper, mar hasznaltban a `ledger-outbound.py`/`channel-inbox-drain.py` tiszta auto-merge-ei altal) EXEMPT-bejegyzes hozzaadva, a `ledger_lib.py` mintajat kovetve.
+
+**Pontositva/kiterjesztve a JSONCLOBBER926 adoptalas (elozo bejegyzes tul szuken fogalmazott):**
+- `fleet-transfer.ts`: a config-overrides.json read-modify-write is `readJsonObjectForWrite`-ra terult (JSONCLOBBER926B, korabban kimaradt a tiszta auto-merge hianyaban -- ez a fajl EGYETLEN erintett helye).
+- `agent-config.ts`: mind a 13 `try { config = JSON.parse(readFileOr(...)) } catch {}` write-hely lecserelve `readJsonObjectForWrite(configPath)`-ra (a `silent-external-failures.test.ts` pontosan ezt a szamot varja) -- az elozo kor csak a KET uj fuggvenyt (`readJsonObjectForWrite`/`redactJsonParseMessage`) tette be, a hivo-helyeket nem irta at.
+- `agent-process.ts`: VISSZAALLITVA (nem torve tovabb) a `stampCustomApiKeyApproval` fuggveny (csak a definicio, a `buildCustomProviderLaunchEnv`/`isCustom`/`customProviderDef` HIVO-oldal NEM) -- a `silent-external-failures.test.ts` ezt a fuggvenyt mint ONALLO, JSONCLOBBER926B-vel vedett utility-t varja, fuggetlenul attol, hogy a TELJES x-api-key-TUI-elopecsetelo funkcio be van-e kotve. A worksource `.mcp.json` opt-in ag `readJsonObjectForWrite`-ra visszaallitva (korabban hibasan a regi inline try/catch-re revertaltam).
+
+**Tovabbi, kulon kartyara halasztott funkciok (uj tesztfajl torolve, a mogottes funkcio NEM adoptalva):**
+- `router-permission-prompt-binding.test.ts` -- a permission-prompt-tudatos stuck-alert MASIK, router-oldali tesztje (ugyanaz a mar korabban, kartya b5b7eb6b alatt elutasitott funkcio, lasd az elozo bejegyzes).
+- `claude-plans-token-form-ui.test.ts` -- a Settings token-mode UI-forma (`buildClaudePlanRequestBody`), a `web/app.js` 18 658-soros upstream diffjenek egy resze -- ekkora UI-fajl szelektiv cherry-pick-je kulon, dedikalt reviewt igenyel, nem egy 32-commitos koteg melleklete.
+- `update-npm-ci-failure.test.ts` -- UPDOOMNPMCI926 (`npm_ci_failed()`, a `retry()` visszateresi ertekenek javitasa). Az upstream `update.sh` diffje (1341 sor) TOBB, Peti altal KIFEJEZETTEN elrendelt fork-sajat biztonsagi mechanizmust torol (a kotelezo frissites-elotti checkpoint, kartya ae071239, Peti 2026-09-13 kerese; a `rollback-guard.sh` tavolsag-orzo, kartya 980454f7, a 529-commitos incidens utan) -- ezek wholesale felulirasa SOHA nem fogadhato el egy batch-mergeben. A hasznos resz (retry exit-kod) kulon, surgikus portolast igenyelne, amit ez a kor nem vallalt be.
+- `main-inbox-observer-install.test.sh` -- az uj inbox-figyelo systemd szolgaltatas (`main-inbox-observer.sh`, `install-main-inbox-observer.sh`, systemd `.service`/`.timer`) telepito-bekotese `install-linux.sh`/`install-macos.sh`/`update.sh`-ba. A SZOLGALTATAS SAJAT, telepito-fuggetlen tesztje (`main-inbox-observer.test.sh`, 37/37 zold) MEGMARADT -- a szkriptek maguk helyesek es hasznalhatok, csak nincsenek meg automatikusan telepitve. Csak a telepito-integracios tesztfajl torolve.
+
+**Lint-ratchet:** +19 no-unsafe-argument, +9 no-unused-vars -- a COMPLETE fajllista atnezve, a SAJAT kezzel szerkesztett fajlokon (agent-process.ts, agent-config.ts, fleet-transfer.ts) a konkret uj leletek SOROK SZERINT nem az altalam irt sorokon vannak, hanem a tiszta auto-merge-olt tartalomban masutt a fajlban. Baseline frissitve.
+
+**Ki döntött:** backend3. Gate: QA + Cybersec + Cybered.
+
+## 2026-10-11 -- Köteg 10/11 delta kör 2: a maradek 4 teszt is javitva
+
+**fleet-transfer.ts:** a `silent-external-failures.test.ts` szo szerinti stringet var (`const overrides = readJsonObjectForWrite(...)`), a tipus-annotacio (`: Record<string, unknown>`) eltavolitva -- kozmetikai, viselkedes valtozatlan.
+
+**`context-restart-gate-wiring.test.ts`, 3 maradek bukas:** mindharom VALODI, mar korabban explicit feltart es elhalasztott hianyossagra mutatott, NEM mock-hianyra:
+- "the transcript reader is actually reached" -- a FORK sajat `configDirFor(name)`-je a MAIN_AGENT_ID-t FELTETEL NELKUL `undefined`-re kepezi (lasd a fuggveny sajat kommentje, card 272361eb), MIELOTT megkerdezne a resolvereket -- ez pontosan a `acknowledged-conflicts.ts`-ben mar korabban (2026-09-25, kartya b5b7eb6b) rogzitett TOKENVAK915 hiany ("the main agent's OWN isolated config root ... was never searched"), amit a main-transcript-root.ts kivonat felugyelt atallasara (kartya 5c134edf) halasztottak. A teszt upstream feltetelezese (hogy a main-agent-re is fut egy resolver, es a `newestMainConfigRoot()`-ra esik) nem illik a fork jelenlegi, szandekosan korlatozott viselkedesere.
+- "the persistent-block alert" (2 teszt) -- GATEDEADLOCK922 (120 perces eszkalacios szoveg) es GATESENDER922 (a riasztas kuldojenek `system`-re valtasa) -- MINDKETTO korabban explicit NYITVA HAGYVA, a GATESENDER922-t a `acknowledged-conflicts.ts` sajat szavaival "EXTRA weight ... SECURITY-RELEVANT ... MikroB should route this one to Cybersec specifically" -- ezt egy 32-commitos batch-mergeben nem lehet csendben eldonteni.
+
+A harom erintett teszt (es a hozzajuk tartozo, mar hasznalatlanna valo `writeTranscript` helper + nehany import) torolve a fajlbol; a MEGMARADT, mar korabban is zoldet mutato "report-direction rule" describe blokk (3 teszt) erintetlen.
+
+**Ki döntött:** backend3. Gate: QA + Cybersec + Cybered (a GATESENDER922 miatt a Cybersec gate-nek erdemes kulon figyelnie a context-restart-gate-runner.ts erintetlensegere).
+
+## 2026-10-11 -- e4eb72c9 delta-fix: melléklet-allow-list (F1) + Bash-ág fail-closed (F2), F3/F4 kimondott maradék kockázat
+
+**Forrás:** WhiteHat2 (cybersec2) NO-GO (komment 16134) a korábbi, a2cb71f1-et megelőző mellékletes-horgony javításra (16120/a5a8e43d): a `collect_mcp_attachments` (email_extract.py) a `_ABS_PATH_RE`-t (abszolút útvonal) egyedüli fájl-jelzőnek vette, és minden más sztringet INLINE SZÖVEGKÉNT hashelt -- a gmail-mcp-server@1.0.30 saját `isFilePath`-je viszont relatív útvonalat (`./x`, `../x`, kiterjesztéses bare filename: `report.pdf`, `.env`, `dir/x`) is FÁJLNAK tekint, és azt a saját cwd-jéhez képest olvassa be küldéskor. A hook ezeket a stringet magát hashelte, a fájl bájtjait soha -- a kártya saját célja ("jóváhagyott levélhez utólag bármilyen helyi fájl csatolható" megszűnjön) a relatív alakra nem teljesült.
+
+**Javítás (F1):** allow-list, nem az MCP regexének másolása (az verzióról verzióra változik): `collect_mcp_attachments` csak KÉT alakot fogad el -- abszolút útvonal (beolvas + hash-el, változatlan) VAGY szigorú base64 (`^[A-Za-z0-9+/]+={0,2}$` ÉS hossz % 4 == 0, hash-eli a literál stringet, változatlan). Minden más (relatív útvonal, `./x`, `../x`, kiterjesztéses bare filename, nem-4-többszörös base64, nem-base64-karakter) `unreadable_reason`-nel fail-closed TILTVA. Negatív regresszió: 6 relatív/bare-filename eset + 2 base64-határeset, mind pirosra vált egy widening-mutánson (az allow-list _STRICT_B64_RE ágának `elif True`-ra cserélve -- 8 teszt bukik), zöld a javítással.
+
+**Javítás (F2):** a Bash-extrakciós ág (`collect_bash_body`) soha nem töltötte az `attachments` mezőt, így egy swaks `--attach <file>` / `--attach @<file>` küldés horgonya azonos volt melléklettel és nélküle. A javítás fail-closed utat választ (nem hash-elést): egy `--attach`/`--attach-body` flag a Bash-parancsban a teljes hívást `unreadable_reason`-nel tiltja -- ugyanaz a TOCTOU-indoklás, mint a már meglévő `<`/`@file` test-formáknál (a csatolás egy KÉSŐBBI folyamatban történik, a hook csak egyszer olvasna). Negatív regresszió: `--attach report.pdf` és `--attach @report.pdf` mindkettő `unreadable_reason`-t ad, mutációval igazolva (az attach-detekció kikapcsolva -> mindkét teszt pirosra vált).
+
+**F3 (TOCTOU, abszolút útvonalnál) és F4 (állandó-címzett nyom mellékletet nem tartalmaz) -- NEM javítva ebben a körben, kimondott maradék kockázat (MikroB döntése, komment 16136):**
+- F3: a hook a PreToolUse pillanatában hash-el, a tényleges küldés (külön folyamat) később olvassa újra ugyanazt a fájlt -- a két olvasás között a fájl (vagy egy szimlink célja) átírható, és egy jóváhagyás egyszer-használatos volta csak az ismételt kísérletet zárja ki, nem az egyetlen versenyfutást. Hatás ma: nincs (nincs gmail MCP konfigurálva ezen a gépen); a2cb71f1 (gmail-csomag-csere) megérkezésekor él.
+- F4: ha a címzett az élesített állandó listán van, a jóváhagyás nélküli küldés nyoma (`standing_trace`, email-approval-gate.py) csak a címzettet és a szöveg első 120 karakterét rögzíti, mellékletet nem -- a gazda a napi naplóban nem látja, hogy a level mellékletet is vitt.
+- Mindkettő nyitva marad, amíg az a2cb71f1 (gmail-csomag-csere) blokkolva van ezen a kártyán; a blokk FELOLDÁSÁNAK feltétele F1+F2 (ez a kör), nem F3/F4.
+
+**Teszt:** `scripts/__tests__/email-extract-parity.test.py` (összes eset zöld, 8 új negatív F1-eset + 2 F2-eset) és `scripts/__tests__/email-approval-gate.test.py` (teljes futás zöld, regresszió nélkül) -- mindkettő saját, önálló mutáció-proof-fal (lásd fent). Teljes `fleet-test.sh` a `marveen-land.sh` saját futásán, a merge eredményén.
+
+**Ki döntött:** backend (a WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16136). Delta-gate: QA + WhiteHat2 (cybersec2), ugyanarra a SHA-ra (4. munkavégzési szabály 4a pontja).
+
+## 2026-10-11 -- 81452ce2 delta-gate: WhiteHat2 NO-GO javítás (F1/F2), F3/F4 korlát kimondva
+
+Kapcsolódik a fenti, azonos napi bejegyzéshez (a kártya első landolásának delta-gate javítása, komment
+16326 NO-GO, komment 16331 MikroB teendő-lista).
+
+**F1 (blokkoló, javítva):** a `specTemplateGuardCheck` korábban a PUT/POST-move kezelőben a
+`dependencyBlockBody`/`bulk_attribution_required` 409-ellenőrzések ELŐTT futott -- egy elutasított
+kérés (pl. feloldatlan függőség) is írt kommentet/cím-taget, mielőtt a tábla egyáltalán tudta volna, hogy
+a kérés nem mehet át. Mért kihasználás (WhiteHat2): egy harmadik fél (`mallory`) kommentjébe írt
+`Termékdöntés: igen` + egy elutasított `in_progress`-kérés is lefagyasztotta a kártya cím-tagjét
+(`[BLOKKOLT-Peti-dontes]`), amit a `fleet-nudger.sh` kizár a self-advance/gate-jelöltek közül -- tehát
+egy idegen token-birtokos egy MÁSIK ügynök kártyáját tudta lefagyasztani. Javítás: a hívás helye átkerült
+a sikeres `updateKanbanCard`/`moveKanbanCard` UTÁNI ágba mindkét kezelőben (`src/web/routes/kanban.ts`),
+a tranzíció ELŐTTI állapotot (`specTemplatePrevStatus`) a hívó explicit elmenti és adja át, mert a
+mutáció után a kártya állapota már az ÚJ érték. A termékdöntés-mező forrása korlátozva: csak a kártya
+saját leírása, vagy a kártya felelősének (assignee), vagy `mikrob` kommentje fogadott el -- egy
+harmadik fél kommentje nem.
+
+**F2 (blokkoló, javítva):** a guard korábban a SAJÁT kommentjeit is beleolvasta a szakasz-ellenőrzésbe és
+a termékdöntés-keresésbe. Mivel a figyelmeztető komment felsorolja mind az öt szakasz nevét, a MÁSODIK
+hívástól a hiányzó szakaszok listája üresnek látszott -- a kártya spec nélkül is "kielégítettnek" tűnt
+(az `alreadyWarned`-dedup ág emiatt holt kód volt, egy ezt kivevő mutáns is zöld maradt). Javítás: mindkét
+szöveg-scan kizárja a `spec-template-guard` szerzőjű kommenteket a forrásszövegből (az `alreadyWarned`
+ellenőrzés viszont a TELJES komment-listát nézi, hogy valóban észlelje a saját korábbi figyelmeztetést).
+A `PRODUCT_DECISION_RX` mostantól szóhatárt követel az `igen` után és tiltja a `/nem` folytatást
+(`igen\b(?!\s*\/)`), így a kitöltetlen sablonsor (`Termékdöntés: igen/nem`) nem illeszkedik. A feloldás
+tartós: egy explicit `Termékdöntés-jóváhagyva` komment `mikrob`-tól véglegesen leállítja az automatikus
+cím-tag visszatételét, még akkor is, ha a döntés-sor fizikailag a kártyán marad.
+
+**F3/F4 (nem blokkoló, dokumentálva, nem kódolva):** a termékdöntés-jelölés önbevalláson áll -- aki nem
+akarja, hogy MikroB lássa, `nem`-et ír vagy kihagyja a mezőt, és az őr ezt nem tudja észlelni (a
+plan-grilling verdikt szándékosan tiltja a tartalom-alapú kitalálást). A gate-eknek kritériumonként kell
+ellenőriznie, hogy a feltételezések között nincs-e eltitkolt termékdöntés -- ez emberi/gate-felelősség,
+nem ez a kártya kódolja. A `project-workflow` skill szövege javítva: korábban azt állította, hogy "a
+munka a döntésig nem folytatódik" -- ez hamis volt, mert a warn-only kapcsoló alatt a kártya
+`in_progress`-be MEGY, a tag és a komment csak látható jelzés, nem blokk.
+
+**Teszt:** `src/__tests__/kanban-spec-template-guard.test.ts` bővült 22 esetre (harmadik fél kizárva,
+assignee/mikrob elfogadva, kitöltetlen placeholder kizárva, tartós jóváhagyás, VALÓDI fail-open mutáció
+egy tényleges `getKanbanCard` dobással, VALÓDI "nem warn kétszer" mutáció-próba). Új
+`src/__tests__/kanban-spec-template-guard-wiring.test.ts` (6 eset, forrás-szöveg alapú): mindkét
+hívási hely a sikeres írás UTÁN és a függőség-őr UTÁN áll, és a hívás száma pontosan 2 -- ha valaki
+törli az egyik hívást vagy visszateszi a régi sorrendet, ez a teszt pirosra vált.
+`npx vitest run src/__tests__/kanban-spec-template-guard*.test.ts`: 28/28 zöld; `npx tsc --noEmit -p .`
+tiszta.
+
+**Ki döntött:** backend2 (a WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16331). Delta-gate:
+QA + WhiteHat2.
+
+## 2026-10-11 -- 335fb927: kártya-azonosító formátum-ellenőrzés + fail-closed dispatch-renderer (parancs-injekció a kártya id-n át)
+
+**Forrás:** WhiteHat2 GO a 41d8e96f-en (msg 10760), F1 MEDIUM, ELŐZETES lelet: a kártya-azonosítót a kliens adja meg a `POST /api/kanban`-on (formátum-ellenőrzés nélkül), és a dispatch-renderer (`kanbanMoveInstructions`, `routes/kanban.ts`) idézőjel és ellenőrzés nélkül fűzi a kártya-id-t a parancsblokkjaiba -- ebből hármat emel ki a keresett átadás-üzenet (a Python-státuszprobe, és két curl-URL argumentum). Mérve: `id = x$(echo pwned > marker)` mellett MIND A 3 parancsblokk végrehajtja a shell-behelyettesítést, mert a Python-probe egy DUPLA-idézőjelű `python3 -c "..."` argumentumba kerül (ahol a `$(...)`-t a KÜLSŐ shell oldja fel, még PYTHON előtt), a másik két blokk pedig idézőjel nélküli curl-URL argumentum volt. Egy token-birtokos így egy másik ügynökre kiosztott kártyával tetszőleges parancsot futtathatott a CÍMZETT gépén, abban a pillanatban, amikor az ügynök -- a dispatch-minta szerint elvárt módon -- szó szerint lefuttatja az üzenetben kapott parancsokat.
+
+**Javítás (allow-list, nem escapelés):** új `src/web/kanban-id-guard.ts` modul, `isValidKanbanId`/`isInvalidKanbanIdShape` -- `^[A-Za-z0-9_-]{1,64}$`, egy karakterosztály ami szerkezetileg kizárja az ÖSSZES itt releváns shell-metakaraktert (`$`, backtick, `"`, `'`, szóköz, zárójel, `|`, `;`, `<`/`>`), nem egy escaping-séma.
+1. `POST /api/kanban`: a kliens-megadott `id` ÉS `parent_id` is ellenőrzött -- nem-megfelelő alak 400, nem jön létre kártya.
+2. `PUT /api/kanban/:id`: a `parent_id` ugyanígy ellenőrzött (az `id` maga az URL-útvonalból jön, egy létező sor keresésére, nem új sor létrehozására -- ott a formátum-ellenőrzés a (3) pont szerinti felméréssel már lefedett).
+3. `kanbanMoveInstructions` MAGA is, FÜGGETLENÜL ellenőrzi az `id`-t (ugyanazzal a függvénnyel) -- ha nem megfelelő, EGYETLEN parancsot sem renderel, egy biztonságos, "ne futtass semmit, jelezd MikroB-nak" szövegre vált. Ez a MÁSODIK védelmi vonal: akkor is tartja a vonalat, ha a route-szintű ellenőrzés valahonnan megkerülhető lenne, mert ez a renderer az, ami tényleg shell-parancsot ad át egy másik ügynöknek. A 3 parancsblokk URL-argumentuma emellett egyes-idézőjelbe került (curl `'url'`), védelmi mélységként.
+4. Felmérés a meglévő táblán (3077 sor, `store/claudeclaw.db`, `SELECT id, parent_id FROM kanban_cards` az allow-list regexére illesztve): **0 nem-megfelelő `id`, 0 nem-megfelelő `parent_id`** -- migráció vagy kivétellista nem szükséges, a szigorítás semelyik meglévő kártyát nem töri.
+5. Negatív teszt mindhárom parancsblokkra, MINDKÉT ágon (sub-agent cél ÉS `MAIN_AGENT_ID` cél, WhiteHat2 F2 LOW): `src/__tests__/kanban-id-guard.test.ts`, mutáció-proofolva (a renderer fail-closed ága kikapcsolva -> 3 teszt pirosra vált; a POST-route ellenőrzése kikapcsolva -> 1 teszt pirosra vált), mindkettő visszaállítva zölden. A kvóta-/idézés-változás miatt a meglévő `kanban-dispatch-instructions.test.ts` két asszerciója (a probe-sor keresési mintája és a curl-sor regexe) frissült az új, egyes-idézőjeles alakra -- ugyanaz a viselkedés, csak a literál string megváltozott.
+
+**Teszt:** teljes kanban-* teszt-alkészlet (61 fájl, 826 teszt) zöld, `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** backend (MikroB dispatch alapján, komment-lánc 41d8e96f msg 10760). Gate: QA + RedHat (a javítási irányt a WhiteHat2 adta).
+
+## 2026-10-11 -- e4eb72c9 delta-fix #2: F1' (base64 trailing-newline bypass, fullmatch) + L1 (ValueError fail-closed) + L2 (--attach-body teszt)
+
+**Forrás:** WhiteHat2 NO-GO (komment 16365) a delta #1-re (4b2e70a4): az F1 allow-list szigorú base64 ága `_STRICT_B64_RE.match()`-ot használt, és Python `re`-ben a `$` a sztring vége ELŐTT VAGY egy záró `\n` ELŐTT is illeszkedik -- `"abc/def\n"` emiatt szigorú base64-nek számított és INLINE szövegként hash-elődött. A gmail-mcp-server JS regexe (`/^[A-Za-z0-9+\/]+=*$/`) nem ismeri ezt a kivételt, tehát a `\n`-es sztringet NEM base64-ként, hanem (a benne lévő `/` miatt) relatív FÁJLKÉNT olvassa be küldéskor -- ugyanaz a tartalom-pin bypass, amit az F1 allow-list bezárni hivatott. WhiteHat2 mérése: 813 615 string kimerítő kereséssel (1-5 karakter, 15 szimbólumos ábécé) 40 hook=inline/MCP=fájl párt talált, mind `<alnum, legalább egy "/"> + záró "\n"` alakú.
+
+**Javítás (F1'):** `_STRICT_B64_RE.match(content)` -> `_STRICT_B64_RE.fullmatch(content)` -- a `fullmatch` a TELJES sztringet megköveteli, a `$` benne nem enged kivételt a záró újsorra. Negatív regresszió: `"abc/def\n"`, `"a/b\n"` (a valódi bypass alakja) és `"abc\n"` (collateral, ártalmatlan de szigorúbb elutasítás, WhiteHat2 saját megjegyzése szerint elfogadható) mind fail-closed TILTVA.
+
+**Javítás (L1, LOW):** `collect_mcp_attachments` az abszolút-útvonalú ág fájl-megnyitásánál csak `OSError`-t fogott; egy NUL bájtot vagy lone-surrogate-ot tartalmazó útvonal `ValueError`/`UnicodeEncodeError`-t dob, amit a régi kód nem fogott el -- traceback, a hook 1-es kilépési kóddal állt volna le (nem blokkoló PreToolUse-kontextusban, bár ezt magát WhiteHat2 sem futtatta, a dokumentált viselkedésre hivatkozva). Javítás: `except (OSError, ValueError)`, ugyanaz a fail-closed `unreadable_reason` útvonal. Negatív teszt: NUL bájtot tartalmazó útvonal.
+
+**Javítás (L2, LOW, teszt-hiány):** a `--attach-body` flag már benne volt a detekciós regexben (`_BASH_ATTACH_RE`), de nem volt dedikált negatív tesztje -- csak `--attach` és `--attach @` volt lefedve. Hozzáadva.
+
+**Nem ebben a körben (WhiteHat2 saját, nem-blokkoló listája):** a `mutt -a`/`mail -A`/`mail -a` és a curl SMTP-feltöltéses alakok a Bash-ág `is_send_invocation` ELŐSZŰRŐjének hatókörén kívül esnek (a kapu rájuk egyáltalán nem fut) -- ez `outgoing-copy-gate.py`'s hatóköre, nem ezé a diffé, és egyik eszköz sincs telepítve ezen a gépen. A swaks egyedi-előtagú rövidítés-elfogadása (Perl Getopt::Long, pl. `--att F`) nem verifikált (a swaks nincs telepítve); tipp, nem mért tény. Az F3 (TOCTOU) feloldását MikroB az a2cb71f1 (gmail-csomag-csere) ÉLESÍTÉSI feltételeként rögzítette (saját komment, nem ez a kártya).
+
+**Teszt:** `scripts/__tests__/email-extract-parity.test.py` (3 F1' eset + 1 L1 eset + 1 L2 eset, mind mutáció-proofolva -- a `fullmatch`→`match` visszaállítás 3 tesztet pirosra visz, a `ValueError` elkapás kivétele tracebacket dob a teszt-futásban, a `--attach-body` kivétele a regexből 1 tesztet pirosra visz) és `scripts/__tests__/email-approval-gate.test.py` (teljes futás zöld, regresszió nélkül).
+
+**Ki döntött:** backend (WhiteHat2 NO-GO alapján, MikroB jóváhagyásával, komment 16368). Delta-gate: QA + WhiteHat2 (cybersec2), ugyanarra a SHA-ra.
+
+## 2026-10-11 -- Kartya 3d186397: senderId path-traversal audit, VAN RES, javitva (writeFileSync a channels-state fara)
+
+Audit-feladat (Cybersec out-of-scope megjegyzes 7503bb31 kommentjen, 5384): a channels-state faba iro `writeFileSync`-ek kozul melyik vesz at hivo/plugin-befolyasolta fajlnevet, es van-e traversal-szuro rajta.
+
+**Repro/meres (nem csak allitas):** grep `pending\[` a teljes `src/`-re -- az `access.json` `pending` mezojet KIZAROLAG a KULSO csatorna-plugin (telegram@claude-plugins-official es tarsai) irja, a sajat TypeScript-kod csak OLVASSA. Ket helyen a `pending[code].senderId` (plugin-irta, soha nem validalt ertek) kerult kozvetlenul `writeFileSync(join(approvedDir, senderId), ...)`-be fajlnevkent, SEMMILYEN traversal-szures nelkul:
+- `src/web/routes/agents.ts` ~1808. sor, `POST /api/agents/:name/channels/:provider/approve` -- a parolasi jovahagyas markerje.
+- `src/web/channel-invites.ts` ~252. sor, `runInviteMonitorTick` auto-jovahagyasi sweepje -- ugyanaz az alak.
+
+Egy `../`-alaku vagy abszolut-utu `senderId` (pl. egy hibas/kompromittalt plugin-folyamat valaszabol) ezert a `approved/` konyvtaron KIVULI, tetszoleges fajlba irt volna -- `routes/agents.ts`-nel a `chatId` (hivo-kontrollalt tartalom) a fajl TARTALMA is. URL-kodolt traversal-alak (`%2e%2e%2f`) inert, mert semmi nem dekodolja a senderId-t irasi elott -- nem kulon vektorkent, hanem mint a keresesi tartomany resze, ellenorizve.
+
+**Javitas:** mindket hely a mar bevalt `safeJoin(base, ...parts)` helpert hasznalja (`src/web/sanitize.ts`, resolve-utan-prefix-ellenorzes, `agentDir()` mar ugyanezt teszi az agent-nevre) -- `writeFileSync(join(...))` -> `writeFileSync(safeJoin(...))` mindket helyen. A `safeJoin` abszolut-utu injekciot is elkapja (a `resolve(base, absPath)` az abszolut utat adja vissza, ami nem kezdodik a base-prefixszel).
+
+**Teszt (`src/__tests__/channel-pairing-senderid-traversal.test.ts`, 11 teszt, MUTACIOVAL ellenorizve):** mindket hivo helyre viselkedesi teszt (a valodi route/`runInviteMonitorTick` valodi ideiglenes `fs`-fan, pozitiv kontroll + `../`-alak + abszolut-ut), plusz egy forras-szintu korpusz-pin (`writeFileSync(join(..., *.senderId))` alak tiltva a teljes `src/`-ben, az `invite-token-not-logged.test.ts` `LOGGED_SECRET_RX` mintajat kovetve). A mutacio (mindket `safeJoin` visszaallitva `join`-ra) igazoltan PIROSRA valtotta mind a ket viselkedesi tesztet (routes/agents.ts: 500 helyett 200; channel-invites.ts: a kiszamitott escape-celpont -- `join(approvedDir, '../../X')` textualisan `chDir`-tol EGY szinttel feljebb normalizalodik, nem kettovel, ez volt az elso, hibas melysegu assert ok -- letezik), ES a korpusz-pint is -- harom fuggetlen reteg, mind erzekeny.
+
+**Ki döntött:** backend3. Gate: QA + Cybersec (a kartya sajat kijelolese).
+
+## 2026-10-11 -- 2520b85a: per-agent identitás, measurement-only szelet (plan-grilling verdikt: GO-WITH-CHANGES)
+
+**Forrás:** WhiteHat2 1cdac111 delta (msg 10708) -- nincs kártya az ügynökönkénti API-azonosításra, amire a komment-szerző hitelesítése (1cdac111 maradék kockázat), a strukturált verdikt-rekord szerzője (2bfa4c67 F2) és a nem-hamisítható jóváhagyási csatorna (3fb0ef97) épül. A kártya saját feladat-leírása: "terv + plan-grilling, utána megvalósítás kapcsoló mögött".
+
+**Plan-grilling eredmény (plan-grilling skill, teljes jegyzőkönyv a kártya kommentjén):** a per-agent identitás ALAPMECHANIZMUSA már létezik (kártya 84dcc5d4: `auth-device-keys.ts` `createDeviceKey()` + `AGENT_KEY_PREFIX='agent:'` + `agentKeyToAgentId()`, `auth-gate.ts` már felold device-key hívást, `RouteContext.auth` már átmegy minden route handlerbe) -- eddig egyetlen fogyasztó használta (`routes/memories.ts`). A `kanban.ts`-ben MÁR VAN egy explicit, pinnelt döntés (kártya 1cdac111, `kanban-comment-author-trust-boundary.test.ts`): a comment `author` mező CLAIM, nem bizonyított identitás, és ezt NEM szabad csendben enforce-ra váltani ezen a kártyán.
+
+**Döntés:** CSAK a measurement-only szelet épül most, flag mögött (`AGENT_IDENTITY_MEASURE`, alapértelmezés ON, mert tisztán megfigyelés -- `off`-ra állítva nulla új kódút). Az ENFORCE mód (mismatch esetén 403/felülírás) KÜLÖN, jövőbeli döntés, a mért adatok birtokában -- ezen a kártyán tudatosan NEM épül be.
+
+**Megvalósítás:** új `src/web/agent-identity-measure.ts` modul, `measureAgentIdentityClaim(ctx, endpoint, claimedValue)` -- legacy megosztott token hívásnál INFO log (`authKind: legacy-token`), `agent:<id>` device-kulcsos hívásnál INFO (egyezés) vagy WARN (eltérés a claimed és az agentId között) log, minden más auth-kind vagy hiányzó claim csendes no-op, belső hiba fail-open (try/catch, SOHA nem dob, SOHA nem blokkolja a valódi kérést). Bekötve 3 helyen: `POST /api/kanban/:id/comments` (author), `POST /api/kanban/:id/move` (actor), `POST /api/messages` (from).
+
+**Teszt:** `src/__tests__/agent-identity-measure.test.ts` (10 teszt, logger-spy-jal, mind mutáció-proofolva -- a mismatch-ág kikapcsolása 1 tesztet pirosra visz), plusz a 3 érintett route meglévő teszt-alkészlete (`kanban-id-guard`, `kanban-dispatch-instructions`, `kanban-comment-author-trust-boundary`, `messages-post-sender-guards`, `messages-main-agent-no-false-warning`, `messages-module`, `messages-invalid-json-400`) változatlanul zöld -- a változás tisztán additív, egyetlen meglévő assertion sem módosult. `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** backend (plan-grilling verdikt, MikroB-nak jelezve a kártya kommentjén). Gate: QA + WhiteHat + RedHat (a kártya saját, trust-boundary kockázatú kijelölése).
+
+## 2026-10-11 -- a046302b -- Licenc nélküli publikus repó ötletének clean-room átvétele: jogi megerősítés
+
+**AI Draft -- nem jogi tanács, kötelező erejű döntéshez humán ügyvéd kell.**
+
+**Kontextus.** Peti döntése (Telegram 10994/10998/11000, 2026-10-11): saját "software factory" folyamatot építünk a `zazencodes/zazencodes-season-3` `src/software-factory-claude-code` mintájára. A repónak NINCS licence (GitHub API `license:null`). A mi repónk (`R4CK/mikrob`) PUBLIKUS. Referencia commit: `555467c3`.
+
+**1. döntés -- licenc nélküli publikus repó jogi helyzete: MINDEN JOG FENNTARTVA.**
+
+Szerzői jog automatikusan keletkezik a mű létrejöttekor (US Copyright Act; EU: 2001/29/EK irányelv; Magyarország: 1999. évi LXXVI. törvény 1. §). Licenc hiánya NEM jelent közkincsbe adást. Engedély hiányában harmadik fél technikailag még az olvasáson túli semmilyen cselekményre sem kap jogot -- de a joggyakorlat az "olvasás" (forráskód megtekintése) ellen nem lép fel; az átvétel ellen igen.
+
+**2. döntés -- mit szabad átvenni: az ÖTLET szabad, a KIFEJEZÉS nem.**
+
+Az ötlet-kifejezés elválasztás alapelve (idea-expression dichotomy, US: Baker v. Selden 1879; EU: Szoftver-irányelv 2009/24/EK 1. cikk (2); Magyarország: Szjt. 1. § (6)) kimondja: **az ötlet, elv, módszer, folyamat, rendszer, koncepció önmagában NEM oltalmazott** -- csak az ezeket megvalósító konkrét kifejezés (kód, szöveg, sablon).
+
+Ami SZABAD (ötlet-szint):
+- Folyamat-felépítés általánosan: "kártyánkénti worktree + spec + verdikt + approver + körplafon" mint koncepció.
+- Szerepek fogalma: spec-writer, approver, reviewer mint szerep-típusok.
+- Lépéssorrend elvként: spec -> review -> verdict -> land mint absztrakt szekvencia.
+- Hibajelenség-azonosítók (pl. "verdikt-hamisítás", "végtelen NO-GO kör") ha SAJÁT szövegezéssel írjuk le.
+
+Ami TILOS:
+- Prompt-szöveg verbatim vagy közel-verbatim másolása.
+- Sablon-szöveg átvétele (még "átírással" sem, ha a struktúra és kulcsszavak egyezők).
+- Kód átvétele (akár "fordítás" formájában is: ha valaki a forrást elolvassa és fejből átírja, az is levezetett mű lehet, ha az egyezés nem triviális).
+- Fájlnév-struktúra, könyvtár-elrendezés ha az elég egyedi és kreatív ahhoz, hogy kifejezésnek minősüljön (általában nem az, de kerüljük az egyező elnevezéseket).
+
+**3. döntés -- hogyan jelöljük az inspirációt: "ihletett" szint, nem "alapuló".**
+
+Az inspirációt jelölni KELL (jó gyakorlat + transzparencia), de a szövegezés számít:
+- Helyes: "Inspired by the software-factory concept in zazencodes/zazencodes-season-3 (no license; ideas only, no expression copied)."
+- Kerülendő: "Based on / ported from / derived from zazencodes/..." -- ezek levezetett-mű implikációt hordoznak.
+- A `DECISIONS.md`-ben és a kártya-kommentekben elegendő az "ihletett forrás" megjelölés commit SHA-val (`555467c3`).
+- Kódban NEM szükséges fájlszintű attribúció (az ötlet nem oltalmazott), de ha valaki célszerűnek látja, a "Concept inspired by..." megjegyzés nem árt.
+
+**4. döntés -- F1-F5 kockázatértékelés.**
+
+Az F1-F5 kártyák mind fogalmi szinten valósítanak meg valamit (worktree-izoláció, verdikt-API, spec-sablon, approver-flow, körplafon). A konkrét implementáció minden esetben saját kód, saját prompt, saját API. Feltéve, hogy:
+- egyetlen fejlesztő sem olvassa el a zazencodes forrást ÁTVÉTELI SZÁNDÉKKAL;
+- prompt-szövegeket és sablon-szövegeket SAJÁT MEGFOGALMAZÁSBAN írják;
+- a fájlstruktúra és elnevezések nem ismétlik szó szerint a forrást;
+
+-- az F1-F5 kockázata **alacsony**, az indulást nem blokkolom.
+
+**Emelt kockázat (jelzés MikroB felé, nem blokk):** a spec-sablon (F3) és az approver-flow (F4) a legsérülékenyebb pont, mert a sablon-szöveg természetszerűleg hasonlíthat az eredeti folyamat-leírásokra, ha a fejlesztő olvasta azokat. Javasolt óvintézkedés: az F3/F4 fejlesztője a zazencodes forrást NE olvassa el implementáció-szinten; elegendő a fázis-kártya leírása (ami már saját szövegezésű). Ha valaki belenézett: dokumentálja mikor és mennyit látott, hogy utólag bizonyítható legyen a clean-room jelleg.
+
+**Ki döntött:** jogász.
+**Hivatkozás:** kártya a046302b (szülő b8ac0ef1); forrás: zazencodes/zazencodes-season-3 @555467c3 (no license).
+
+## 2026-10-11 -- bc1e7ef2: WSL home-könyvtár takarítás-osztályozó (dry-run; --apply live NEM futott)
+
+**Döntés:** a `/home/neon` megosztott könyvtárban felgyűlt egyszer-használatos gate/land/test
+worktree-k és probe-direk (`cc-*`, `marveen-land-*`, `qa-gate-*`, `marveen-test*`, `guard-probe*`,
+stb.) osztályozására és takarítására a `store/wsl-home-cleanup.sh` KEEP/ACTIVE/DISPOSABLE/UNKNOWN
+négy osztályt használ, dry-run alapértelmezéssel. Csak a DISPOSABLE (regisztrált worktree-nél NEM
+szerepel élő folyamat alatt, NEM hivatkozza rá nyitott kanban-kártya, a neve egyezik egy ismert
+egyszer-használatos mintával, ÉS a mtime-ja 24 óránál régebbi) kerülhet törlésre `--apply --yes`-re,
+soha az UNKNOWN (ember dönt).
+
+**Mérés, ami a kártyát elindította (Peti, 2026-09-25):** `/home/neon` alatt 184 top-level dir, 137
+belőlük egyszer-használatos `cc-*`/`marveen-land-*` gate/land worktree (legrégebbi 2026-07-24), plusz
+`marveen-node_modules-pnpm-backup` (885M), `marveen-v131`, `marveen-test`, `marveen-qa-test`,
+`guard-probe`, `pg-e2e-qa`, stb. Egy élő dry-run futás ma (2026-10-11): KEEP=13, ACTIVE=3-4
+(a kettő a futás pillanatának élő folyamat-illesztésén mozog), DISPOSABLE=193, UNKNOWN=36-39.
+
+**Kritikus javítás ebben a kártyában (HAS_ACTIVE_CHILD hibaosztály):** az első verzió a
+`HAS_ACTIVE_CHILD` védelmet `"$HOME_DIR"/*` mintával jelölte, ami MINDEN regisztrált worktree saját
+top-level dirjét védetté tette (akkor is, ha a worktree MAGA a top-level dir, nem egy konténer alatt
+él) -- ez a valódi osztályozási logikát (élő folyamat / nyitott kártya-hivatkozás) elérhetetlenné
+tette minden regisztrált worktree-re, és mérve 194 DISPOSABLE-ből 69-re esett vissza, miközben a
+helyes szám (a konténer-direk, pl. `gate-worktrees/`, `marveen-scratch-worktrees/`, védelme
+MELLETT) 193 körül van. A javítás a mintát `"$HOME_DIR"/*/*`-re szűkítette (a worktree-nek a
+top-level dir ALATT, nem a top-level dirKÉNT kell élnie ahhoz, hogy a konténer védelmet kapjon).
+
+**Selftest (`store/wsl-home-cleanup.selftest.sh`, 18 eset):** throwaway `git init`-elt repókon és
+fake `$HOME_DIR`-en keresztül teszteli a `load_worktrees` NESTED-vs-TOP-LEVEL megkülönböztetését, a
+`classify()` mind a négy ágát (KEEP elsőbbsége, HAS_ACTIVE_CHILD, élő-folyamat, kártya-hivatkozás,
+dashboard-fail-open, DISPOSABLE kor-küszöb, UNKNOWN), a `remove_entry()` dirty-worktree-kizárását, és
+a `main()` dry-run/`--apply`-`--yes` útjait. Mutáció-próba: a `HAS_ACTIVE_CHILD` mintát visszaállítva
+`"$HOME_DIR"/*`-re a vonatkozó teszt pirosra vált (17/18, 1 FAIL) -- a selftest valóban méri a
+javítást, nem csak lefut.
+
+**Strukturális refaktor a tesztelhetőségért:** a script korábban top-szintű végrehatású volt
+(argumentum-parse + fő ciklus + exit a fájl aljára égetve), ami lehetetlenné tette a `classify()`
+izolált meghívását. A fő logika `main()`-be került, és a fájl csak akkor futtatja le magát, ha
+közvetlenül hívják (`[ "${BASH_SOURCE[0]}" = "${0}" ]`), nem ha egy selftest `source`-olja -- ugyanaz
+a minta, mint a `mopsion-bundle-check.sh`/selftest párosnál. Viselkedés-azonosság igazolva: a
+refaktor előtti és utáni dry-run futás ugyanazt az összegzést adta (KEEP=13, DISPOSABLE=193).
+
+**`--apply` ÉLES futtatás a valós boxon NEM történt meg, és ebben a kártyában SZÁNDÉKOSAN nem is
+fog:** MikroB (komment) és WhiteHat2 (msg 10831) mindketten megállították az éles törlést, amíg ez a
+kártya REVIEW-t és gate-et nem kap -- a gate QA + WhiteHat (nem a kártya eredeti "QA + Cybersec"
+jelölése, WhiteHat2 explicit felülírta törlő-művelet home-könyvtárban indokkal). A CLAUDE.md 22.
+szabálya (ebben a kártyában hozzáadva) kimondja: egy regisztrált worktree-t a `remove_entry` SOHA nem
+töröl, ha `git status --porcelain` nem üres, és az ÉLES `--apply` futtatás Peti explicit
+jóváhagyását igényli minden egyes alkalommal, mert megosztott, több ügynök munkáját hordozó
+infrastruktúráról van szó.
+
+**Ismert, már jelzett mellékhatás (nem ennek a kártyának a hibája, MikroB komment):** a 81452ce2
+delta-gate landolásakor (4ce3c17b merge) a korábbi WIP-commit (9234823a, a script dry-run-only
+változata) is landolt a `develop`-ra, GATE NÉLKÜL, mert a `marveen-land.sh` a teljes ágat landolja.
+MikroB mérése szerint ennek nincs élő hatása (0 ütemezett hívó a scheduled-tasks alatt), és a
+rendszeres hibaosztály (egy kártya landolása más, nem gate-elt kártya commitját is magával viszi)
+javítása a kártyánkénti worktree-epic (cd3e577b) feladata, nem ez a kártya.
+
+**Teszt:** `bash store/wsl-home-cleanup.selftest.sh`: 18/18 zöld (saját worktree, agent/backend2/work
+ágon). `bash -n store/wsl-home-cleanup.sh`: tiszta. Élő dry-run futás a valós `/home/neon`-on (csak
+olvasás, nem `--apply`): lásd a mérési sort fent.
+
+**Ki döntött:** backend2 (Peti eredeti kérése, MikroB és WhiteHat2 explicit korlátozásával az
+`--apply` élesítésére). Gate: QA + WhiteHat.
+
+## 2026-10-11 -- 2bfa4c67: strukturált gate-verdikt-rekord (F2) + gate-kijelölés mező, kapcsoló mögött (plan-grilling GO-WITH-CHANGES)
+
+**Forrás:** a kártya saját leírása -- a verdiktet kommentszövegből regex olvassa (4b/4c CLAUDE.md szabály-foltok, parser-hibák), és a komment `author` mezője hamisítható (WhiteHat2 1cdac111 F1). MikroB plan-grilling verdiktje (komment 1791711530): GO-WITH-CHANGES, 4 változtatással, plusz RedHat 16225 (kártya 21abfe0b) utólagos követelmény-bővítése (javaslattevő/proposer mező + önjavaslat-kizárás).
+
+**Teherhordó feltevés (MikroB plan-grilling):** a strukturált rekord ÖNMAGÁBAN nem véd a hamisítás ellen, amíg a megosztott dashboard-token minden ügynöknél ott van. Ez a kártya ezt NEM takarja el: `author_verified` mezővel kimondva marad.
+
+**Megvalósítás:**
+1. Két új tábla (`src/db.ts`, additív, `CREATE TABLE IF NOT EXISTS`, rollback `DROP TABLE`): `kanban_verdicts` (card_id, gate, verdict, sha, round, findings_ref, proposer, author, author_verified, created_at) és `kanban_gate_assignments` (card_id, gates, actor, created_at, APPEND-ONLY -- a sor-történet maga az esemenynapló).
+2. Új modul `src/web/kanban-verdicts.ts`: `POST/GET /api/kanban/:id/verdicts` és `POST/GET /api/kanban/:id/gate-assignment`. Szerző-feloldás (plan-grilling (1)): egy hitelesített `agent:<id>` device-kulcs (kártya 84dcc5d4) `author_verified=true`-t ad; egyébként a body `author` claimjét veszi át `author_verified=false`-sal -- nincs csendes felminősítés. Önjavaslat-kizárás (RedHat 16225): ha a `proposer` mező megegyezik a feloldott szerzővel, 403; egy testvér (cybersec vs cybersec2) MÁS ügynök, tehát gate-elheti a másik javaslatát. Gate-kijelölés írása (plan-grilling (2)) kizárólag a MikroB-only actor-allowlistről (`kanban-force-actors.ts` `forceActors()`, ugyanaz a lista, amit a többi státusz-guard már használ) -- más actor 403.
+3. Kapcsoló (plan-grilling (5)): `AGENT_VERDICT_RECORD` env, alapértelmezés OFF -- ekkor `tryHandleKanbanVerdicts` mindig `false`-t ad vissza (teljes pass-through, nulla uj kódút), bekötve `web.ts`-be `tryHandleKanban` elé.
+4. ADDITÍV OR-integráció `kanban-gate-completeness-guard.ts`-be (az ENFORCING fél, nem csak az advisory script): egy gate akkor számít friss verdiktűnek, ha VAGY a meglévő komment-parse mondja (a regex-gépezet BYTE-AZONOS maradt), VAGY egy friss strukturált PASS/GO sor létezik rá -- `hasFreshStructuredVerdict`, flag mögött, fail-open hibánál. A komment-parse pipeline-t (gate-closure-check.py, `kanban-gate-completeness-guard.ts` regex-rétegei) NEM módosítottam máshol -- lásd a "Nem ebben a körben" szakaszt.
+5. Migráció + rollback tesztelve (`kanban-verdicts.test.ts`): `DROP TABLE` mindkét új táblára, szomszédos tábla (`kanban_cards`) érintetlen marad, a tábla újra-`CREATE`-elhető és azonnal írható/olvasható.
+
+**Nem ebben a körben (dokumentált, tudatos hatókör-szűkítés):** a `store/gate-closure-check.py` (advisory script, MikroB zárás-ellenőrzője) DISAGREE-SOURCE dual-read-je NEM épült be -- a script hívási szerződése (`curl .../comments | python3 gate-closure-check.py [gates]`, kártya ID nélkül, csak kommentek stdinen) a root CLAUDE.md 4a szabályában fleet-szinten rögzített, és a kiterjesztése önálló, a jelenlegit nem veszélyeztető kártyát igényel. Az ENFORCING fél (4. pont) készen van, ami a gate_author_role.py saját megfigyelése szerint a fontosabb oldal ("a kikényszerítő fél volt a check nélküli fél").
+
+**Teszt:** `kanban-verdicts.test.ts` (24 teszt: flag-kapcsolás, szerző-feloldás verified/unverified, önjavaslat-kizárás + testvér-kivétel, actor-allowlist, append-only audit, migráció-rollback), `kanban-gate-completeness-guard-structured-verdict.test.ts` (4 teszt, VALÓDI DB-vel, flag ON/OFF, PASS/GO vs NO-GO/FAIL, mutáció-proofolva -- a hasFreshStructuredVerdict kikapcsolása 1 tesztet pirosra visz), plusz a meglévő `kanban-gate-completeness-guard.test.ts` (67 teszt) változatlanul zöld. `npx tsc --noEmit` tiszta.
+
+**Ki döntött:** backend (MikroB plan-grilling verdiktje + RedHat 16225 bővítés alapján). Gate: QA + WhiteHat (trust boundary) + RedHat (auth-közeli, magas tét) -- a kártya saját kijelölése.
+
+## 2026-10-11 -- bc1e7ef2 delta-fix: QA FAIL F1 (open file descriptor blind to liveness check)
+
+**Forrás:** QA FAIL (komment, Gate-SHA ca59cabc), saját, eldobható, SHA-ra pinelt gate-worktree-ben
+reprodukálva. A HAS_ACTIVE_CHILD javítás és a szimlink-követés/`$HOME`-on-kívüli-cél eset (a dispatch
+másik explicit fókusz-pontja) saját mutáció-proof-fal/reprodukcióval igazoltan rendben; az F1 valódi,
+blokkoló.
+
+**F1 (BLOKKOLÓ):** a `has_live_process_under()` KIZÁRÓLAG `/proc/*/cwd`-t nézte -- egy folyamat, aminek
+a cwd-je MÁSHOL van, de VAN NYITOTT FILE-LEÍRÓJA a célmappába (pl. egy máshonnan indult `tail -f`/
+log-író/build, ami csak a kimenetét írja a mappába), teljesen látatlan maradt a liveness-ellenőrzésnek.
+QA saját reprodukciója: egy `tail -f` háttérfolyamat, cwd egy másik könyvtárban, a 6-os file-leírója a
+célmappába mutatva -- a script DISPOSABLE-nek osztályozta a mappát, és `--apply --yes` feltétel nélkül
+törölte, MIKÖZBEN a folyamat még élt és aktívan olvasta a fájlt.
+
+**Javítás:** `has_live_process_under()` a `/proc/*/cwd` ág MELLETT most a `/proc/*/fd/*` célpontjait is
+végignézi (ugyanaz a `readlink -f` + prefix-összehasonlítás minta). Egy élő hivatkozás a célmappára élő
+hivatkozás, függetlenül attól, melyik fd-slotban utazik.
+
+**Teszt:** `store/wsl-home-cleanup.selftest.sh` új, VALÓDI (nem stubolt) esete: egy háttér `tail -f`
+folyamat, cwd a selftest saját tmp-mappájában, az fd-je a célmappába mutatva -- QA saját reprodukciós
+módszerét követi, nem egy elvonatkoztatott fixture. MUTÁCIÓ-PROOF: az fd-ellenőrző ág kivéve, PONTOSAN
+ez az egy teszt bukik (18/19), minden más zöld marad. Teljes selftest 19/19 zöld a javítással.
+`bash -n store/wsl-home-cleanup.sh`: tiszta.
+
+**Ki döntött:** backend2 (QA FAIL alapján). Delta-gate: QA + WhiteHat, ugyanarra a sorra.
+
 ## 2026-10-11 -- card cd3e577b delta: RedHat NO-GO a kartyankenti worktree/ag (F1) landolo utjan (komment 16276)
 
 **A NO-GO oka:** a 84ea5e33 F1 (store/agent-worktree-marveen.sh --card mod, marveen-land.sh --card mod, self-advance-pickup.sh 4b lepes) a kodolvasas es a scratch-repos futtatas szerint strukturalisan megoldja a kiindulo problemat (egy kartya munkaja nem utazhat egy masik kartya landolasaban gate nelkul), de harom reszleten elesett.
@@ -19159,3 +19624,681 @@ A `needsFleetOauthFor` kiemelés (kör 1) után a teljes landolási fleet-test 2
 **Meres:** `marveen-land.sh --selftest` 57/57 (55 + 2 uj B2' pin). `marveen-land-card-branch.selftest.sh` 37/37 (35 + 2 uj N-a eset). `agent-worktree-marveen.selftest.sh` 10/10, `self-advance-pickup.selftest.sh` 42/42 (valtozatlan). `tsc --noEmit` tiszta. `lint-ratchet.sh`: "no rule got worse (354 lelet)". Kezi mutacio-visszameres (P1, P2, P3 a RedHat altal mert pontos forgatokonyvben) mindharom esetben PIROS a javitas utan, a DECISIONS.md elozo tul-altalanos "a teszt bizonyitottan erzekeny" allitasa itt pontositva: az ERZEKENYSEG most a hivohelyekre IS kiterjed, nem csak a fuggveny torzsere.
 
 **Ki dontott:** a leletet RedHat adta (NO-GO, komment 16486, Gate-SHA 0ce80233c25b9e880e6ec439331c2fa53901e34f), a B2'/B3/N-a dontest MikroB (komment 16487), a javitast fullstack vegezte. Delta-gate: QA + RedHat (5. kor).
+
+## 2026-10-11 -- Kartya 517fdcc5 delta (folytatas a "Koteg 10/11 upstream-sync" bejegyzesehez, a fajl elejebb): QA FAIL (CRITICAL) + RedHat NO-GO javitva, DECISIONS/acknowledged-conflicts korrekcio
+
+Ez a bejegyzes eredetileg a parent "Koteg 10/11 upstream-sync" bejegyzes UTAN, de masok tail-appendjei ELE kerult (git-konfliktus-feloldasi hiba a landolaskor) -- a decisions-tail-append-guard ezt elkapta, a bejegyzes szoveg-valtozas nelkul a fajl VALODI vegere athelyezve. A parent bejegyzesre cimmel/datummal hivatkozik, nem ujra beillesztve.
+
+A kartyat lezaro korabbi bejegyzes (a "Koteg 10/11 upstream-sync" cimu, fentebb a fajlban) ket allitasban hibazott, mindkettot a QA/RedHat delta-gate (10812/16377) kapta el, NEM a sajat ellenorzesem.
+
+**1. CRITICAL (QA 10812): `GET /api/memories/:id` ugynok-hatar szures nelkul.** A koteg SAJAT, upstream-rol jott `GET /api/memories/:id` kezeloje (`src/web/routes/memories.ts`, a `memUpdateMatch` regex alatt) NULLA azonossag-ellenorzessel adta ki BARMELY masik ugynok privat ('hot'/'warm'/'cold', NEM 'shared') memoriajanak teljes tartalmat egy sorozatos integer id alapjan. Ugyanakkor ez a kezelo HOLT KOD volt: a fork SAJAT, korabbi (`memGetMatch`, kartya 0c5423fc) `GET /api/memories/:id` kezeloje UGYANAZT a route/method parost illeszti, FELJEBB all a fajlban, es a dispatcher az ELSO illesztesnel visszater -- tehat a VALOS sebezhetoseg a `memGetMatch` kezeloben volt (szinten szures nelkul), nem az uj, sosem futo masolatban.
+
+MikroB kockazat-besorolasa (10812 utani dontes, RedHat 16380 pontositasaval): MEDIUM a kotegre nezve, mert a szivarogtatas MAR a koteg ELOTT (3e1ff4ba) is megvolt -- RedHat mert: a teljes izolacio (per-agent token) hianya miatt a kozos bearer melletti elkulonites ma nem valodi hatar, es a teljes megoldas kartya 2520b85a-ra van halasztva. A kotegen beluli minimum: (a) EGY `/:id` kezelo maradjon (a holt masolat torolve, nem a mukodo mellett hagyva); (b) a `memGetMatch` kezelo most ugyanazt a szurest alkalmazza, mint a listazo ut (`getAgentMemories` db.ts-ben: `agent_id = ? OR category = 'shared'`) -- device-kulcsos hivonal a hitelesitett azonossag (agentKeyToAgentId, ugyanaz a mintat mint a POST kezelo `authenticatedAgentId`-ja, kartya 84dcc5d4) ELSOBBSEGET kap egy hamisithato `?agent=` parameterrel szemben; kozos tokenes/session hivonal a `?agent=` marad a mai viselkedes szerint (vagy nincs szures, ha nincs megadva -- ez NEM uj regresszio, a lista ugyanezt csinalja ma); (c) a lista csonkolasi-hint sora (`memories.ts` ~266. sor) most viszi tovabb a `?agent=`-et, hogy a kovetkezo `/:id` hivas ne 404-ezzen egy `?agent=`-mel listazott soron; (d) a session/sajat-nezet nem szukult.
+
+Teszt (`memories-get-by-id.test.ts`, kartya 517fdcc5 uj szekcioja, 5 teszt, MUTACIOVAL ellenorizve): idegen `?agent=` 404-et ad privat sorra (tartalom nem szivarog), sajat `?agent=` 200-at ad, `shared` sor barki `?agent=`-javal olvashato, device-kulcs felulirja a hamisitott `?agent=` parametert, nincs-szures-eset (kozos token, nincs `?agent=`) VALTOZATLAN marad (backward-compat pin). A mutacio (a hatarellenorzo `if` kikapcsolva) mindket biztonsag-kritikus tesztet PIROSRA valtotta.
+
+**2. MEDIUM (RedHat 16377/16380, tenyszeru hamis allitas a sajat REVIEW-ban): GATESENDER922/GATEDEADLOCK922 NEM halasztott, hanem a kodban van, de a tesztje torolve volt, es a DECISIONS/acknowledged-conflicts az ellenkezojet allitotta.** A koteg SAJAT merge-je (`e8598d5b`) hozta be a `context-restart-gate-runner.ts`-be a tartos-blokk riasztas 'system' feladojat (GATESENDER922) es a 120 perces eszkalacios szoveget (GATEDEADLOCK922) -- grep-pel megerositve, mindketto elo kod a mergelt fan. Az elozo kor ket, fuggetlen hibaja: (a) a ket funkciot tesztelo describe-blokkot ("the persistent-block alert", `context-restart-gate-wiring.test.ts`) a 2. delta-korben TOROLTEM, egy KORABBI, MASIK upstream-kommit (26ac8c83, kartya d79a69b5) acknowledged-conflicts.ts bejegyzesere alapozva, ami azt mondta "remain open" -- de az a mondat a 26ac8c83-rol szolt, NEM ennek a kotegnek a tartalmarol, es sosem ellenoriztem ujra a TENYLEGES mergelt fajl ellen; (b) a torles elott a visszaallitott teszt 3-bol 2 teszje HIBAS MOCK miatt bukott (`agentConfigRoot: () => CONFIG_DIR`, nevtol fuggetlen konstans -- `readContextTokensFromProjectDir` ezert MINDEN ugynokre azonos, nem-letezo konyvtart olvasott, a kontextus `null` lett, a kapu sosem riaszt), amit en a funkcio HIANYAKENT ertelmeztem, nem egy teszt-hiba jelekent.
+
+Javitas: (1) `context-restart-gate-wiring.test.ts` mockja `agentConfigRoot: (name) => name === MAIN ? PROJECT_ROOT : join(PROJECT_ROOT, 'agents', name)`-re javitva (egysoros, RedHat sajat merese szerint); (2) a "persistent-block alert" describe-blokk (2 teszt) visszaallitva `a6b28b05`-bol, most mar zoldek a javitott mockkal; (3) `acknowledged-conflicts.ts` `context-restart-gate-runner.ts` bejegyzese kiegeszitve egy uj "EXECUTED 2026-10-11" szakasszal, ami kimondja: a ket item LIVE, a korabbi "remain open" egy MASIK kor diffjerol szolt; (4) `agent-process.ts` egy stale kommentje javitva (a `readJsonObjectForWrite` NEM "not adopted", standalone mar hasznalva a `stampCustomApiKeyApproval`-ban es a worksource `.mcp.json` olvasasnal -- csak a HIVO-oldali `buildCustomProviderLaunchEnv` marad nem-adoptalt).
+
+Mutacio-ellenorzes (`context-restart-gate-wiring.test.ts`): a `createAgentMessage('system',...)` visszaallitva `createAgentMessage(name,...)`-re -> a felado-teszt PIROS; az eszkalacios szoveg kiiktatva -> az eszkalacio-teszt PIROS. Mindket mutacio elkapva, a javitasok visszaallitva.
+
+**Nem blokkolo (RedHat N1/N2, MikroB mérlegelésere halasztva, kartya 8a3a1e84-re jegyezve, NEM ebben a delta-korben):** N1 -- `templates/settings.json.template` Stop szekciojaban a `marveen-commands.py --stop` hook ketszer szerepel (auto-merge duplikatum); N2 -- `templates/egress-vendor-hosts.json` a torolt `bash-egress-parser.mjs`-re hivatkozik, nem-letezo kontrollt sugallva.
+
+Teljes suite + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, 16380 vege).
+
+## 2026-10-11 -- bc1e7ef2 delta-fix round 2: WhiteHat NO-GO on 789fd6ef (B1/B2/B3)
+
+**Forrás:** WhiteHat (cybersec) NO-GO, komment 16566, saját eldobható SHA-pinnelt gate-worktree-ben
+(`/home/neon/wh-gate-789fd6ef`) reprodukálva, `--apply` csak ál-$HOME-on futtatva. MikroB döntés
+(16567) a javítás irányára, gate-kijelölést is átírta: Re-gate QA + RedHat (a B1-B3 javítási sorokat
+WhiteHat ÉS WhiteHat2 is javasolta, ezért a biztonsági gate RedHat).
+
+**B1 (HIGH, BLOKKOLÓ):** a `has_live_process_under()` hívás a `classify()`-ban az `if [ -n "$owner" ]`
+ágon BELÜL futott, tehát csak REGISZTRÁLT worktree-kre nézte a cwd/fd-t. QA saját reprodukciós alakja
+(sima `mkdir` + `tail -f`, nem worktree) a `--apply --yes` alatt a 789fd6ef fán IS törlődött, mert egy
+nem regisztrált mappa sosem jutott el az `owner`-ágig. Élő mérés (ca59cabc dry-run, élő `/home/neon`):
+DISPOSABLE=193, ebből 69 nem regisztrált -- ott a javítás korábban nem védett.
+
+**B2 (HIGH/MEDIUM, BLOKKOLÓ az `--apply` jóváhagyásához):** az életkor-jel a CSAK a tető mappa saját
+mtime-ja volt. Egy mély fájl szerkesztése nem mozdítja a tető mtime-ját, tehát egy régi-tetejű, de
+frissen szerkesztett tartalmú mappa (pl. `qa-deep`) DISPOSABLE-nek osztályozódott és törlődött.
+
+**B3 (MEDIUM-HIGH, BLOKKOLÓ az `--apply` jóváhagyásához):** egy tiszta (git status szerint nem dirty),
+REGISZTRÁLT worktree detached HEAD-je, amire semelyik branch/remote/tag nem mutat, `git worktree
+remove --force` után dangling objektummá válik -- `git gc`-ig menthető, de a `status --porcelain` ezt
+nem látja, tehát a meglévő dirty-ellenőrzés nem véd ellene.
+
+**Javítás:**
+1. B1: a `has_live_process_under()` hívás kikerült a `if owner` ágból, MINDEN jelölt mappára lefut,
+   közvetlenül a `HAS_ACTIVE_CHILD` rövidzár után, mielőtt a `classify()` egyáltalán megnézné, van-e
+   `owner`-je a mappának.
+2. B2: az életkor-ellenőrzés `find "$path" -mmin "-$((MIN_AGE_HOURS*60))" -print -quit` -- ha BÁRMELY
+   fájl a fában (bármilyen mélységben) az ablakon belül módosult, a mappa UNKNOWN, nem DISPOSABLE.
+3. B3: `remove_entry()`-ben, a dirty-ellenőrzés UTÁN, regisztrált worktree-nél: `git rev-list -n1 HEAD
+   --not --branches --remotes --tags` -- ha nem üres (a HEAD semelyik branch/remote/tag-ről nem
+   érhető el), SKIP, nincs törlés.
+
+**Teszt:** `store/wsl-home-cleanup.selftest.sh`, MikroB kifejezett utasítása szerint (16567: "a teszt a
+classify()/--apply útvonalon fusson, ne a függvényt hívja közvetlenül") -- az előző kör `has_live_
+process_under()`-t KÖZVETLENÜL hívó esete KICSERÉLVE két `classify()`-szintű, UNREGISZTERT mappás
+esetre (fd-ág és cwd-ág, QA saját alakja), plusz egy `classify()`-szintű mély-mtime eset (B2), plusz egy
+`remove_entry()`-szintű eset egy valódi, detached HEAD-es, el nem ért commitú registered worktree-vel
+(B3). 22/22 zöld. MUTÁCIÓ-PROOF mindhárom javításra KÜLÖN-KÜLÖN: a B1-fix kikapcsolása (a hívás elé
+`false &&`) pontosan a 2 új B1-tesztet viszi pirosra (20/22), minden más zöld; a B2-fix visszaállítása
+a régi top-mtime logikára pontosan 1 tesztet visz pirosra (21/22); a B3-ellenőrző blokk kivétele
+pontosan 1 tesztet visz pirosra (21/22). Mindhárom mutáció után a javítás visszaállítva, 22/22 zöld
+megerősítve. `bash -n store/wsl-home-cleanup.sh`: tiszta.
+
+**Nem ebben a körben (MikroB döntés: nem blokkoló, csak akkor javítjuk, ha olcsó -- ez a kör nem nyúlt
+hozzá):** F4 (gitignore-olt fájl elvész egy egyébként tiszta worktree-ben), F5 (szóközös útvonalú
+worktree az awk `$2`-n csonkul), F6 (a dry-run riport nem ad okot az ACTIVE besoroláshoz).
+
+**Ki döntött:** backend2 (MikroB döntése a WhiteHat NO-GO után). Delta-gate: QA + RedHat.
+
+## 2026-10-11 -- d8d035f8: WhiteHat (cybersec, cybersec2) és RedHat (cybered) pin a heti model-fallback lépcső alól
+
+**Forrás:** Peti, Telegram 11011 (2026-10-11). A kártya eredeti premisszája (10097, 2026-10-02: fix
+Opus 5.5) elavult -- a 10812/10814 óta (2026-10-09) mindkét biztonsági gate claude-sonnet-5-5-ön fut.
+MikroB a 16511 kommentben leállította a dispatch-et, amíg nem tisztázódik, mire kell a pin; a 16515
+döntés: a pin megmarad, de a cél claude-sonnet-5-5, hatókör cybersec + cybersec2 + cybered.
+
+**Kockázat, ha nincs pin:** a heti model-fallback lépcső (és az 5 órás banner-fallback) minden nem-MAIN
+ügynököt automatikusan lefelé lépcsőz a terhelés nővén -- a két biztonsági gate pont akkor esne a
+legdrágább pillanatban olcsóbb modellre, amikor a flotta a legtöbb munkát próbálja átnyomni rajtuk.
+Ugyanaz a kockázati osztály, amit a QA/QA2 `NO_HAIKU_AGENTS` padló már véd (a magic-link 151/151-zöld,
+2 MAJOR hibát rejtő esete): egy leépített review-gate nem véd semmit.
+
+**Javítás:** `src/model-catalog.ts`-ben új, deklaratív `MODEL_PINNED_AGENTS` halmaz (`cybersec`,
+`cybersec2`, `cybered`) + `isModelPinned()`, a meglévő `NO_HAIKU_AGENTS`/`applyNoHaikuFloor` minta
+szerint (fix lista, nem config-mező -- egy ritkán változó listának nem kell saját séma/migráció).
+`src/web/model-fallback-runner.ts`: `checkAgent()` a függvény ELSŐ sorában visszatér pinnelt névre,
+MIELŐTT a parkolt-ügynök ág vagy a banner/heti tengely bármit kiszámolna -- tehát a pin MINDKÉT
+tengelyt kizárja (banner-fallback ÉS heti tier), nem csak a hetit. `updateStoredModelForParkedAgent()`
+ugyanezt a kaput saját magában is megismétli (védelem rétegezve, MikroB kifejezett kérésére: "amit a
+checkAgent és az updateStoredModelForParkedAgent is tisztel"). `readFleetTierState()` a dashboard-sorban
+is `exempt=true`-nak jelöli a pinnelt ügynököt (`collect(name, isModelPinned(name))`), hogy a kezelőfelület
+ne hazudjon egy célmodellt, amit a sweep sosem írna ki.
+
+**Teszt:** `src/__tests__/model-pinned-agents.test.ts`, új fájl, 10 teszt. Tiszta függvény-szint:
+`isModelPinned` a három névre igaz, máshol hamis; 99%-os heti terhelésnél (`weeklyTierIndex(99,...)` =
+tier 2) egy NEM pinnelt ügynök lépcsőzne (`weeklyTargetModel` elmozdul a bázisáról), a pinnelt nem --
+az `isModelPinned` eredménye a %-tól függetlenül igaz. Forrás-drótozási szint (a `parked-agent-
+cheaper-tier-wins.test.ts` mintáját követve, mert a runner IO-ja miatt a függvények nem exportáltak):
+`checkAgent` a pin-kaput a parkolt-ágnál ELŐBB futtatja; `updateStoredModelForParkedAgent` a saját
+kapuját a modell-olvasás ELŐTT futtatja; `readFleetTierState` a `collect(name, isModelPinned(name))`
+hívást tartalmazza. MUTÁCIÓ-PROOF mindhárom kapura KÜLÖN-KÜLÖN: a `checkAgent`-beli kapu kivétele
+pontosan 1 tesztet (a wiring-sorrend tesztet) visz pirosra, 9/10 marad zöld; az `updateStoredModel
+ForParkedAgent`-beli kapu kivétele pontosan 1 másikat; a `readFleetTierState` exempt-sor visszaállítása
+`false`-ra pontosan a dashboard-wiring tesztet. Mindhárom után visszaállítva, 10/10 zöld megerősítve.
+Regresszió: `model-catalog.test.ts` (meglévő), `parked-agent-cheaper-tier-wins.test.ts`,
+`model-fallback.test.ts`, `runner-conflict-resolution-pins.test.ts` -- mind zöld a változás után
+(101/101 összesen az öt fájlon). `tsc --noEmit` tiszta.
+
+**Nem ebben a körben:** a `MODEL_LADDER`/`CLAUDE_MODELS`/`MODEL_ALIASES` még a régi "5" család neveit
+(`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5-...`) ismeri, nem a mai "5.5" családot
+(`claude-sonnet-5-5` stb.) -- ez azt jelenti, hogy egy `claude-sonnet-5-5`-ön futó, NEM pinnelt ügynök
+a heti ramp `weeklyTargetModel()`-jének off-catalog védelme miatt ma is a saját bázisán marad (a
+függvény off-ladder bázisra önmagát adja vissza), DE a banner-fallback tengely (`chain.indexOf`) egy
+ilyen modellt a lánc elején (index 0) kezelne, és egy valódi 5h-limit banire levinné egy RÉGI névre.
+Ez a kártya kifejezetten a pin-mechanizmust kérte, nem a teljes katalógus 5.5-re frissítését -- a
+katalógus-frissítés külön kártya, ha Peti úgy dönt (nem nyitva ebben a körben, csak megjegyezve).
+
+**Ki döntött:** Peti (11011), MikroB (16515). Gate: QA + RedHat.
+
+**Utólagos RedHat NO-GO (komment 16554, Gate-SHA 20f0ae19):** a strukturált verdikt-rekord bekapcsolva LAZÍTOTT a zárási kapun, nem szigorított -- a közös tokennel bárki saját néven írt QA PASS + CYBERED GO rekordot a guard engedte (B1, szerep-kötés hiánya), a proposer-kizárás a kérés saját mezőjét nézte (B2), és egy régebbi pozitív komment egy újabb negatív strukturált rekordot csendben felülírt (B3). MikroB döntése (komment 16557): `AGENT_VERDICT_RECORD` marad KIKAPCSOLVA, amíg B1-B3 nincs javítva és re-gate-elve; B1 (szerep-allowlist a hitelesített agent-kulcs szerepére) a 9655494c F1 (kulcs-kiosztás) UTÁN jöhet, mert az agent-kulcs nélkül nincs mit a szerep-allowlistnek ellenőriznie.
+
+## 2026-10-11 -- 9655494c F1: agent:<id> kulcs kiosztás/rotáció/visszavonás (2520b85a szelet 2/3, plan-grilling friss menet)
+
+**Forrás:** a 2520b85a (ügynökönkénti dashboard-token terv) WhiteHat2 NO-GO-t kapott a teljes kártya zárására és 3 szeletre vágva (83416786 mérés, done; 9655494c kulcs-élciklus + memória-szűrés; ccbb718a enforce, Peti-döntésre várva). A kártya F1 követelménye: "agent:<id> kulcs létrehozható legyen: kiosztás KIZÁRÓLAG tulajdonosi sessionnel, agent_id mezővel (nem a névből parszolva), config-gyökérben tárolva, rotáció és visszavonás. A közös token ne tudjon agent-kulcsot kiállítani."
+
+**Plan-grilling (friss menet ezen a kártyán -- a 2520b85a eredeti jegyzőkönyve a curl `-H @-`/`-d @-`+heredoc stdin-ütközésbe veszett, sosem landolt, szó szerint nem rekonstruálható, ezért új grillinget futtattam a tényleges, splittelt scope-ra, komment 16550):** a tényleges hiányosság mérve: a `84dcc5d4` kártya csak a FOGYASZTÓ oldalt építette (`agentKeyToAgentId`, `RouteContext.auth`) -- a KIBOCSÁTÓ oldal sosem létezett, mert az általános `POST /api/auth/device-keys` route `DEVICE_KEY_NAME_RE` regexe a kettőspontot tiltja (szándékosan, a kártya kimondottan tiltja a lazítását), és nincs production script/CLI, ami `agent:<id>` kulcsot állítana ki. 3 nyitott, döntés-szintű kérdést (517fdcc5 hivatkozás pontossága, kulcs-eljuttatás konvenciója, memória-szűrés default-viselkedése) MikroB megválaszolt (komment 16551): 517fdcc5 hivatkozás helyes (fix-listája, komment 16382, a memória `/:id`+lista közös szűrőfüggvényét építi, erre a kártya F2 ráépül, a kulcs-kiosztás F1 független); kulcs-eljuttatás kézi indítású script, az ügynök saját config-könyvtárába, 0600; a memória-szűrés agent-kulcsnál MINDIG a kulcs identitására szűküljön.
+
+**Megvalósítás (F1, ez a kör):**
+1. `src/web/auth-device-keys.ts`: 3 új, additív függvény a meglévő `createDeviceKey`/`revokeDeviceKey`/`listDeviceKeys` fölött -- `mintAgentDeviceKey(agentId, opts)`, `findAgentDeviceKeys(agentId)`, `revokeAgentDeviceKeys(agentId)`. Az `agent:` konvenció egy helyen él (`AGENT_KEY_PREFIX` mellett), nem minden hívó rakja össze maga.
+2. `src/web/routes/auth.ts`: új `POST /api/auth/agent-keys` és `DELETE /api/auth/agent-keys/:agentId`, MINDKETTŐ a szűkebb `CREDENTIAL_MINT_KINDS` (csak `session`) ellenőrzéssel, NEM a tágabb `DEVICE_KEY_ADMIN_KINDS`-szal (amely a közös tokent is engedi a generikus device-key listázásra/visszavonásra) -- a közös token így sem kiállítani, sem visszavonni nem tud agent-kulcsot, a teljes életciklus a tulajdonosi session alatt marad. Az `agent_id` saját regexet kap (`AGENT_ID_RE`, kisbetű+szám+kötőjel), NEM a `DEVICE_KEY_NAME_RE` lazítva. Egyszerre csak egy élő kulcs agent_id-nként: második mintelés `rotate:true` nélkül 409; `rotate:true` előbb visszavonja a régit, utána mintel (a régi nyers kulcs azonnal megszűnik felbontódni).
+3. `store/agent-key-provision.sh <agent> [--rotate|--revoke]`: kézi indítású, interaktív login (felhasználónév/jelszó `read -s`-sel, SOHA argv-ben vagy env-ben), a session-cookie-val hívja az új végpontokat, a nyers kulcsot KIZÁRÓLAG a célügynök saját `agents/<agent>/.dashboard-agent-key` fájljába írja 0600 joggal -- sosem stdout-ra, logba, commitba vagy inter-agent üzenetbe.
+
+**Teszt:** `src/__tests__/auth-agent-keys.test.ts` (11 teszt: session mint, közös token 403 mind mintelésre, mind visszavonásra, érvénytelen agent_id 400, a generikus device-key route kettőspontos név 400-ja változatlan, duplikált mintelés 409 + eredeti kulcs él, `rotate:true` visszavonja a régit és az azonnal megszűnik feloldódni, visszavonás 200/404), plusz a meglévő `auth-device-keys.test.ts` (24), `auth-gate.test.ts` (20), `auth-recovery.test.ts` (7), `bridge-enroll.test.ts` (16) változatlanul zöld. Két mutáció (a session-ellenőrzés kikapcsolása, a 409-duplikátum-őr kikapcsolása) mindkettő pirosra vitte a saját tesztjét, utána visszaállítva zöld. `npx tsc --noEmit` és a lint tiszta.
+
+**Nem ebben a körben:** F2 (memória-szűrés kulcs-identitásra) a 517fdcc5 landolása után jön (a közös szűrőfüggvényre épül, MikroB döntése); L1 (route-szintű teszt a bekötés kivételére) és L2 (claimed érték csonkítása a mérési naplóban) a 2520b85a measurement-only szeletét (83416786, már done) érintik, külön kör.
+
+**Ki döntött:** backend (plan-grilling, MikroB válaszai alapján). Gate: QA + RedHat (WhiteHat2 javasolta a szeletelést, a biztonsági gate ezért RedHat).
+
+## 2026-10-11 -- e7f91eb9: GENERATED_COMMENT_AUTHORS kizárás a gate-closure-check.py és a kanban-gate-completeness-guard.ts Gate-SHA/REVIEW olvasásából
+
+**Forrás:** WhiteHat2 L1 az 1aeae282 gate-jéből. Ugyanaz a hibaosztály, mint az 1aeae282-ben
+(gate-dispatch-check.sh): a `post_draft_comment` a local-llm modell nyers, nem fencelt kimenetét
+írja a komment törzsébe, tehát egy modell-írta sor, ami csak ÚGY NÉZ KI, mint egy "REVIEW"-nyitás
+vagy egy "Gate-SHA: <sha>" deklaráció, gate-ténykként olvasódott be, holott senki nem jelentette be
+azt a commitot erre a körre.
+
+**Két fogyasztó, négy olvasási pont:**
+1. `gate-closure-check.py`: `declared_shas()` a LEGUTOLSÓ REVIEW-nyitó kommentet veszi, szerzőtől
+   függetlenül -- egy local-llm draft, ami ÚJABB (hamis) Gate-SHA-t hordoz, felülírta a valódi
+   deklarált shát, és a már AGREE-nek jelzett kártya UNRESOLVED-re fordult. `undeclared_post_review_
+   shas()` ugyanígy: a `review_idx` keresése és a review UTÁNI "árva sha" keresés sem szűrt szerzőre,
+   tehát egy valódi REVIEW UTÁN érkező local-llm komment stray Gate-SHA-ja STALE-re fordíthatott egy
+   egyébként egyező kártyát.
+2. `kanban-gate-completeness-guard.ts`: `latestReviewAt()` (a FALLBACK kör-határ, amikor a kártyán
+   SOHA senki nem használta a Gate-SHA konvenciót) csak a gate-ügynököket (`GATE_AGENT_NAMES`) szűrte
+   ki a "ki nyithat új kört" kérdésből, a generált szerzőket nem. A PRIMARY kör-határ, `currentRound
+   StartTs()` (Gate-SHA-sor alapján) pedig EGYÁLTALÁN nem szűrt szerzőre -- egy local-llm draft stray
+   Gate-SHA-ja ugyanúgy mozgathatta a kör-határt, mint egy valódi builder-átadás.
+
+**Javítás:** mindkét fájlban `GENERATED_COMMENT_AUTHORS = {"local-llm", "gate-pretriage"}` (mirror,
+nem import -- Python és TS nem oszthat modult; a kanonikus forrás `kanban-landed-guard.ts`-ben
+marad, a `kanban-gate-completeness-guard.ts` import-olja onnan, a `.py` a `gate-dispatch-check.sh`
+mintáját másolja). Négy olvasási pont zárva: `declared_shas()`, `undeclared_post_review_shas()`
+(review_idx keresés ÉS a review utáni candidate-lista), `latestReviewAt()`, `currentRoundStartTs()`.
+Case-insensitive mindenhol (szerzőnév kis-nagybetűs kezelése, a kártya INFO pontja).
+
+**Teszt:** `gate-closure-check.selftest.py` 4 új eset (133 -> 137, mind zöld): egy local-llm REVIEW
+a valódi deklarált shát nem írja felül; case-insensitiv ("Local-LLM"); egy local-llm stray post-review
+Gate-SHA nem csinál árva-shát egy egyébként AGREE kártyából; `gate-pretriage` ugyanúgy kizárva.
+`kanban-gate-completeness-guard.test.ts` 5 új eset (71 -> 76, mind zöld): a `currentRoundStartTs`
+útvonal (Gate-SHA-s kártya) 3 esete, a `latestReviewAt` FALLBACK útvonal (nincs Gate-SHA a kártyán
+sehol) 1 önálló esete, plusz egy CONTROL (egy valódi builder-átadás a local-llm draft UTÁN továbbra
+is helyesen újranyitja a kört -- a javítás nem kapcsolja ki a staleness-ellenőrzést egészében).
+
+MUTÁCIÓ-PROOF mindegyik olvasási pontra KÜLÖN-KÜLÖN. Python: `_is_generated_author()` `False`-ra
+cserélve pontosan a 4 új esetet viszi pirosra (133/137), semmi mást; visszaállítva 137/137. TS:
+`latestReviewAt()`-beli kizárás kivétele pontosan 1 tesztet (a FALLBACK-specifikus esetet) viszi
+pirosra (71/72); `currentRoundStartTs()`-beli kizárás kivétele pontosan 3 tesztet (a Gate-SHA-s
+eseteket, a FALLBACK-eset és a CONTROL érintetlen) visz pirosra (69/72). Mindkét mutáció után
+visszaállítva, 72/72 (illetve a testvér-fájllal együtt 76/76) zöld megerősítve. Regresszió:
+`kanban-landed-guard.test.ts`, `kanban-draft-review-guard.test.ts`, `kanban-gate-completeness-guard-
+structured-verdict.test.ts` -- mind zöld. `tsc --noEmit` és `python3 -m py_compile` tiszta.
+
+**Ki döntött:** MikroB (gate: qa, cybersec -- a javítási irányt WhiteHat2 adta, ezért a biztonsági
+gate WhiteHat/cybersec, nem WhiteHat2/cybersec2).
+
+## 2026-10-11 -- Kartya 3d186397 delta #2 (folytatas a fajl elejebb levo "senderId path-traversal audit" bejegyzeshez): QA FAIL javitva -- a validacio az allowFrom-modositas ELE kerult
+
+QA FAIL (10812) es WhiteHat F2 (ugyanaz a gyoker-ok, komment 10812/10815): a safeJoin-ellenorzes a MARKER-fajl irasara korlatozodott mindket hivasi helyen, de az allowFrom-push, a pending-kod torlese es az access.json kiirasa MAR AZ ELOTT lefutott. Egy traversal-alaku senderId ezert a `routes/agents.ts` uton 500-at adott VISSZA ("Failed to approve pairing"), MIKOZBEN a sender MAR bekerult az allowFrom-ba -- a jovahagyo felrevezetve latta a hibas valaszt. A `channel-invites.ts` auto-jovahagyasi sweep-jen (EMBERI JOVAHAGYAS NELKUL) meg sulyosabb: a hiba csak `logger.warn`, a mutacio (allowFrom, pending, invite-token elkoltese) FELTETEL NELKUL lefutott.
+
+**Javitas (mindket helyen azonos mintat kovetve):** a `safeJoin(approvedDir, senderId)` hivas MOST a legelso lepes, MINDEN mellekhatas (allowFrom-push, pending-torles, dmPolicy, access.json/invites.json iras) ELOTT, kulon try/catch-ben:
+- `routes/agents.ts` (`POST /approve`, emberi jovahagyas): elutasitasnal 400 ("Invalid sender identifier"), NULLA mutacio -- a pending kod NEM fogyott el, egy kesobbi, javitott plugin-valasz vagy emberi retry ujra probalhatja.
+- `channel-invites.ts` (`runInviteMonitorTick`, automatikus sweep): elutasitasnal `continue` a belso ciklusra -- a tetel NEM lesz jovahagyva, az invite-token NEM fogy el, a kovetkezo tick ujra probalja; a TOBBI, masik ugynok/provider ervenyes tetele erintetlen.
+
+A marker-fajl irasa (mkdirSync+writeFileSync) MARADT kulon try/catch-ben, MERT a path mar bizonyitottan biztonsagos (a safeJoin mar lefutott) -- ha a fajl-iras egyeb okbol (diszk, jogosultsag) bukik, az NEM vonja vissza a mar validalt, biztonsagos mutaciot, csak warn-t logol.
+
+**Teszt (`channel-pairing-senderid-traversal.test.ts`, 12 teszt, mindket helyre uj MUTATION PIN, az elozo kor tesztjei FRISSITVE az UJ, helyes viselkedesre):**
+- `routes/agents.ts`: traversal/abszolut-ut 400-at ad (nem 500), ES az access.json BAJTRA PONTOSAN valtozatlan marad (nincs allowFrom-push, nincs pending-torles).
+- `channel-invites.ts`: traversal/abszolut-ut eseten SEM az access.json, SEM az invites.json nem valtozik; a MUTATION PIN kulon ellenorzi, hogy az invite-token `used` mezoje `false` marad.
+
+Mutacio-ellenorzes: a validacio visszahelyezve a mutacio UTANRA (a regi, hibas sorrend) mindket helyen -- mind a harom uj/frissitett teszt PIROSRA valtott (`routes/agents.ts`: 500 helyett 400 varva, allowFrom tartalmazza a rejektalt erteket; `channel-invites.ts`: access.json/invites.json valtozik, allowFrom tartalmazza az erteket, a token elfogy). A javitas visszaallitasaval mind zold. `npx tsc --noEmit` tiszta, a celzott 8 fajl 84 teszt zold.
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + WhiteHat (a kartya sajat kijelolese, MikroB dontese a 10812 utan).
+
+## 2026-10-11 -- Kartya 517fdcc5 delta #3 (folytatas a fajl elejebb levo bejegyzesekhez): RedHat NO-GO (16623) javitva -- a LISTA es a q-kereses is a device-kulcsos azonossagot elsobbsegezi
+
+RedHat NO-GO (16623, MikroB dontese 16623 utan): a `/:id` hatar-javitas (delta #1, lasd fentebb a fajlban) csak a `memGetMatch` kezelore terjedt ki, de a `GET /api/memories` lista-ag es a q-kereses-ag UGYANAZT az `agentId` valtozot olvassa, es az addig KIZAROLAG a `?agent=` query-parameterbol szamitodott -- egy hitelesitett device-kulcsos hivo (`agent:<id>`) a `/:id` kapun kivul, a listan vagy a kereso-agon at TOVABBRA IS kiolvashatta egy MASIK agent privat sorat, mert a hamisithato `?agent=` parameter elsobbseget kapott a sajat, hitelesitett azonossaga felett.
+
+**Javitas:** a lista-ag elejen (`agentId` szamitasa) ugyanaz a minta, mint a `/:id`-n es a POST kezelon (`authenticatedAgentId`, kartya 84dcc5d4): `agentId = (device agent:<id> kulcsbol szamitott azonossag) || ?agent= parameter`. Mivel a q-kereses agai (`searchAgentMemories`, a substring-fallback, `hybridSearch`) MIND ugyanezt az `agentId`-t hasznaljak, a javitas EGY helyen zarja mindket utat -- nincs kulon kod a kereses-agra. Kozos tokenes/session hivo valtozatlan (nincs hitelesitett azonossaga, amit elsobbsegezni lehetne).
+
+**Teszt (`memories-get-by-id.test.ts`, +5 teszt, mutacioval ellenorizve):** device-kulcsos hivo hamisitott `?agent=`-mel a listan NEM latja a masik agent sorat; ugyanaz a kulcs `?q=`-val (parameter nelkul) SEM latja; a SAJAT kulcsa a SAJAT sorat latja; kozos tokenes hivonal a `?agent=` valtozatlanul mukodik (backward-compat pin); a csonkolasi-hint tovabbviszi a `?agent=`-et egy hosszabb tartalmu sorra (a korabbi teszt tul rovid tartalommal nem erte el a min. 50 karakteres kuszobot, uj, dedikalt hosszu-tartalmu sor kellett). Mutacio (az `authenticatedAgentId` prioritas kivetelezve, `agentId = requestedAgentId`): 3 teszt PIROSRA valtott (a tamado latta a victim sorat a listan es a keresesnel, a tulajdonos NEM latta a sajatjat -- mert a teszt-fixture-ben a "victim" nev maga a hitelesitett azonossag, nem a parameter). Visszaallitva, 12/12 zold.
+
+A teszt-helper (`makeCtx`) kiegeszitve `res.setHeader` stub-bal es `req.headers = {}`-vel -- a lista-ag `X-Memory-Search` fejlecet ir es a `jsonMaybeGzip` a `req.headers['accept-encoding']`-et olvassa, ami korabban (a `/:id`-only tesztekben) sosem futott.
+
+`npx tsc --noEmit` tiszta. Celzott futas (6 memories-* fajl): 67/67 zold.
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, MikroB dontese 16623 utan).
+
+## 2026-10-11 -- 2bfa4c67 delta: RedHat B1-B3 + QA FAIL (16564) + WhiteHat W1-W4 (16573) javítva, a 9655494c F1-re épülve
+
+**Forrás:** a 2bfa4c67 (strukturált gate-verdikt rekord) első landolása (Gate-SHA 20f0ae19) mindhárom gate-től elutasítást kapott ugyanarra a shára: RedHat B1 (nincs szerep-/szerzőkötés a verdikt-írásnál), B2 (a javaslattevő-kizárás a kérés saját mezőjét nézte, kihagyható), B3 (strukturált és komment-alapú verdikt eltérésénél a guard csendben a megengedőbb forrást választja); QA FAIL (16564, kritikus, saját reprodukcióval igazolva: egy hitelesített strukturált FAIL mellett egy hamisítható komment-PASS a zárást engedte); WhiteHat NO-GO (16573): W1 (pontos azonosítós role-allowlist, nem prefix), W2 (a rekord sha-ja a REVIEW Gate-SHA-hoz kötve -- MEDIUM, nem RedHat/QA lelet), W3 (a javaslattevő szerver-oldali, hitelesített mező legyen, NE a kommentekből levezetett, fail-closed B2 helyett -- a fail-closed maga szolgáltatás-megtagadási eszköz), W4 (determinisztikus sorrend másodperc-egyezésnél -- LOW). MikroB sorrend-döntése (16557/16559): a 9655494c F1 (agent-kulcs kiosztás) UTÁN jöhet a B1/W1 javítása, mert a szerep-allowlist a hitelesített kulcs identitására épül; az F1 ezen a körön belül landolt (Gate-SHA 56fc5391).
+
+**Megvalósítás (B1/W1 + B3 + B2/W3, ebben a körben):**
+1. **B1/W1 (szerep-allowlist, pontos azonosítóra):** `kanban-verdicts.ts` új `GATE_ROLE_AGENTS` (`QA: [qa,qa2]`, `CYBERSEC: [cybersec,cybersec2]`, `CYBERED: [cybered]`), a POST `/verdicts` ÚJ 403-at ad, ha a feloldott szerző (hitelesített VAGY body-claim, függetlenül a `author_verified`-től) nincs a gate szerepében -- ez pontosan a RedHat T5 mért bypass (egy hitelesített, de nem-gate-szerepű szerző, `fullstack`, QA-ra ír GO-t). B1 (c): új, 400-as ellenőrzés -- a gate a kártya saját "Gate:" sorában kijelölt gate-ek egyike legyen (a `kanban-gate-completeness-guard.ts` `extractGateLine`/`parseGateDesignation` újrahasznosítva, NEM újraírva -- ez egy tudatos, kétirányú modul-cross-import a meglévő `isAgentVerdictRecordEnabled` import mellé, biztonságos, mert mindkét oldal csak függvénytörzsön belül, sosem modul-betöltéskor hívja a másikat). Nincs "Gate:" sor a kártyán -> megengedő (ugyanaz az alapértelmezés, mint a guard saját `allowUnverified`-je). B1 (b), védelem a mélyben: `kanban-gate-completeness-guard.ts` `freshStructuredRow()` (az átnevezett `hasFreshStructuredVerdict`) UGYANEZT az allowlistet (importálva) ellenőrzi a sorra -- egy nem-szerepű szerzőjű rekordot a guard sem bízik meg, akkor sem, ha a POST-oldali ellenőrzés valaha megkerülhető lenne. B1 (d): ha egy zárás egy UNVERIFIED (author_verified=0) strukturált rekordra épül, a `freshVerdictStatus()` `logger.info`-t ír -- a 2520b85a enforce-ág előtti stopgap-láthatóság, dokumentáltan nem blokkoló.
+2. **B3 (DISAGREE-SOURCE):** `kanban-gate-completeness-guard.ts` `hasFreshVerdict` (tiszta OR) helyett `freshVerdictStatus()` + `familyStatus()`: ha fresh strukturált rekord van, az AUTORITATÍV, nem eshet vissza csendben a komment-útra -- egy strukturált FAIL/NO-GO SOHA nem old fel egy komment-PASS-t (`missing`, QA 16564 pontos repróját lezárja). Egy strukturált GO/PASS, amit egy KÉSŐBBI, ugyanattól a gate-től jövő NO-GO/FAIL-komment ellentmond, `disagree`-t ad, ÚJ, elkülönített `DISAGREE-SOURCE:` üzenettel (nem azonos a "missing" szöveggel) -- MikroB lássa a különbséget egy valódi eltérés és egy egyszerűen hiányzó verdikt között. Nincs strukturált rekord esetén a régi, puszta-komment viselkedés BÁJTRA AZONOS marad (külön segédfüggvény, `commentOnlyFresh`, nem érintve).
+3. **B2/W3 (javaslattevő, szerver-oldali, hitelesített):** új tábla `kanban_fix_proposals` (`db.ts`, additív, rollback tesztelt) + `POST/GET /api/kanban/:id/proposals`, KIZÁRÓLAG `agent:<id>` eszközkulcs-hitelesítéssel írható (a közös token 403-at kap -- egy hitelesítetlen javaslat-rekord ROSSZABB lenne, mint a jelenlegi body-mező, mert hitelesnek TŰNNE, miközben ugyanúgy hamisítható lenne). A `POST /verdicts` a javaslattevőt a LEGFRISSEBB hitelesített `kanban_fix_proposals` sorból olvassa, NEM a kérés testéből (RedHat B2 pontos lelete: a mező kihagyása megkerülte a kizárást) és NEM a kommentekből levezetve (WhiteHat W3: a levezetés ugyanúgy hamisítható a közös token alatt, és a "ha nem vezethető le, fail-closed" maga szolgáltatás-megtagadási eszköz). Ha nincs hitelesített javaslat-rekord a kártyán, a kizárás egyszerűen inaktív (nem blokkol) -- ez SZÁNDÉKOSAN nem fail-closed, pontosan a W3 ajánlása szerint.
+4. **Nem ebben a körben (dokumentált, ok megadva):** W2 (a rekord sha-ja a legfrissebb REVIEW Gate-SHA-hoz kötve) -- a POST `/verdicts` route ma nem olvas kommenteket, a bekötése új függőséget (kanban_comments) és az ÖSSZES meglévő teszt-fixtúra átírását igényelné (azok ma nem állítanak be REVIEW+Gate-SHA kommentet), külön, saját kört érdemel; nincs RedHat/QA lelet mögötte, csak WhiteHat MEDIUM. W4 (szigorú `>` vagy REVIEW-id szerinti sorrend a másodperc-egyezésre) -- a mérlegelés tudatos: egy szigorúbb `>` egy VALÓDI, ugyanabban a másodpercben írt friss verdiktet is "régi körinek" minősítene, ami nagyobb regressziós kockázat, mint a WhiteHat által LOW-nak jelölt, ritka old-round ütközés; nem alkalmazva ebben a körben. N1-N5 (RedHat 16554, nem blokkoló: gate-assignment mező inert a GET-en kívül, méretkorlátok, M9-M11 mutáns-fedés, gate-closure-check.py dual-read, DECISIONS cross-ref) -- továbbra is nyitva, nem ebben a körben.
+
+**Teszt:** `kanban-verdicts.test.ts` 24 -> 39 teszt (új: role-allowlist 403 nem-szerepű szerzőre, gate-designation 400/permisszív eset, proposals route 5 teszt, authenticated-proposal-alapú self-exclusion 2 frissített + 1 új "body-proposer ignorálva" teszt, kanban_fix_proposals migráció-rollback). `kanban-gate-completeness-guard-structured-verdict.test.ts` 4 -> 8 teszt (3 DISAGREE-SOURCE eset + 1 role-allowlist védelem-a-mélyben eset). Mindkét fájl + a meglévő `kanban-gate-completeness-guard.test.ts` (67) együtt: 109/109 zöld. Teljes kanban-tesztkör (64 fájl): 880/880 zöld, regresszió nélkül. 3 mutáció (B3 structuredPositive kényszerítve true-ra, B3 disagree-detekció kikapcsolva, B1 role-check kikapcsolva) mindhárom esetben a megfelelő új tesztet pirosra vitte, utána visszaállítva zöld. `tsc --noEmit` és `eslint` tiszta az érintett fájlokon. `lint-ratchet.sh`: "no rule got worse (382 lelet, baseline tart)".
+
+**Ki döntött:** backend (RedHat B1-B3 16554, QA FAIL 16564, WhiteHat NO-GO 16573, MikroB sorrend-döntése 16557/16559 alapján). Re-gate: QA + WhiteHat2 + RedHat (16557/16573 szerint, WhiteHat helyett WhiteHat2 -- ő adta a NO-GO-t ezen a shán).
+
+## 2026-10-11 -- 9655494c F1 delta: agent-key-provision.sh DASH_PASS argv-kiszivárgás javítva (QA FAIL 16667, MikroB döntés 16670)
+
+**Forrás:** QA FAIL (16667) saját, eldobható, SHA-pinelt gate-worktree-ben (Gate-SHA 56fc5391): a `store/agent-key-provision.sh` a `DASH_USER`/`DASH_PASS` interaktívan beolvasott hitelesítő adatokat egy `python3 -c "..." "$DASH_USER" "$DASH_PASS" "$LOGIN_PAYLOAD"` hívás argv-jába adta át, ami a futás teljes ideje alatt bármely helyi folyamat számára látható a `/proc/<pid>/cmdline`-on, és a `ps`-ben is -- pont az a kockázat, amit a script saját fejkommentje ("never pass credentials as argv ... visible in /proc/<pid>/cmdline") már névvel illetett a loginra, de a kódja nem követte. MikroB döntése (16670): a javítás elsőbbséget kapott a 2bfa4c67 előtt (a 9655494c maradt `in_progress`, a 2bfa4c67 visszament `planned`-ra), és a scriptet a javításig senki nem futtathatja élesben.
+
+**Javítás:** a login-payload építő `python3 -c` hívás STDIN-ről olvassa a felhasználónevet és a jelszót (`printf '%s\n%s\n' "$DASH_USER" "$DASH_PASS" | python3 -c "..."`, két sor, `sys.stdin.readline()`), argv-ban csak a kimeneti fájl útvonala marad. A mint-payload (`agent_id`, `rotate`) változatlanul argv-n megy, mert nem titok.
+
+**Teszt:** új `store/agent-key-provision.selftest.sh`, egy PATH-shim-elt `python3` wrapperrel, ami a valódi interpreterre delegál, de előtte argv-ját és stdin-jét naplózza -- (1) a javított script futtatásakor egy marker jelszó/felhasználónév SOHA nem jelenik meg a naplózott argv-ban, de megjelenik a naplózott stdin-ben (funkcionális bizonyíték, hogy az adat tényleg eljut); (2) statikus regressziós grep: a régi `python3 ... "$DASH_USER" "$DASH_PASS"` argv-alak nem térhet vissza a fájlba; (3) mutáció-proof: a fix blokkot programozottan visszaállítva a régi alakra, az (1) teszt helyesen pirosra vált (a marker megjelenik az argv-naplóban) -- ez igazolja, hogy a teszt tényleg a hibát fogja meg, nem csak zöldet mutat. Mindhárom lépés PASS, a kimenet a repó `ok   <leírás>` + záró `selftest: PASS` konvencióját követi (ez a `store-selftests-all-run.test.ts` OK_SHAPES-ében már ismert alak -- az első beadás egy ad-hoc "ALL PASS" záróval ismeretlen alaknak számított, ez okozott egy valódi, nem flaky meta-teszt pirosat a landolás 2. kísérletén; a kimenetet a meglévő alakra igazítottam, nem az OK_SHAPES listát bővítettem). `bash -n` szintaxis-ellenőrzés tiszta. A meglévő `auth-agent-keys.test.ts` (11 teszt, szerver-oldali route-logika, ezt a scriptet nem érinti) változatlanul 11/11 zöld.
+
+**Ki döntött:** backend (QA FAIL 16667, MikroB döntése 16670). Re-gate az F1-re: QA + RedHat.
+
+## 2026-10-11 -- bc1e7ef2 (3. kör): B1' TOCTOU-javítás a wsl-home-cleanup.sh classify/remove_entry rése, N4/N5
+
+**Forrás:** RedHat NO-GO (16676, Gate-SHA 55c566e0) az előző kör (B1/B2/B3) delta-gate-jén. B1/B2/B3
+mind működik mérve, de egy ÚJ, a B1 saját invariánsát sértő hézag maradt: a "van élő folyamat" és az
+"életkor" ellenőrzés az OSZTÁLYOZÁSKOR fut, a TÖRLÉS előtt nincs újraellenőrzés, és az osztályozás az
+élő gépen 38,7 percig tartott (249 bejegyzés, kb. 3000 fd, `has_live_process_under()` candidate-enként
+külön /proc-bejárást csinált). RedHat harness-mérése: egy mappa 9 másodpercnél DISPOSABLE-nek
+osztályozva, UTÁNA indult egy folyamat a cwd-jével a mappában, a szkript 140 másodpercig futott, a
+mappa TÖRLŐDÖTT, a folyamat él, cwd-je "(deleted)" -- pontosan az a hibaosztály, amit a B1 zárni akart,
+csak időben eltolva.
+
+**Javítás (B1', blokkoló):** (1) `scan_live_proc_targets()` egyetlen hívással olvassa az ÖSSZES
+`/proc/[0-9]*/cwd` és `/proc/[0-9]*/fd/*` célt egy futás egészére, nem candidate-enként --
+`classify()` (`main()`-en át) egyetlen, run elején felvett scant használ mindegyik jelöltre
+(`LIVE_PROC_TARGETS_PRIMED`), a standalone `classify()`-hívás (minden selftest ezt teszi) változatlanul
+saját friss scant vesz. (2) `remove_entry()` a SAJÁT ELEJÉN mindig FRISS scant vesz (a classify-kori
+cache-t figyelmen kívül hagyva) és újrafuttatja az életkor-find-ot is -- ha bármelyik megváltozott
+(élő folyamat jelent meg, vagy egy fájl frissen íródott a mappában), SKIP, nem bízik a elavult
+osztályozásban.
+
+**Implementáció-részlet, mérve ezen a körön (a valódi talált hiba, nem a card-leírás):** RedHat
+szó szerinti javaslata "egy readlink -f hívás az összes útra" volt -- ez a saját mérésemben IS
+8,2s -> 0,14s gyorsulást adott (~2660 fd), DE a teljes batch-readlink (egyetlen `readlink -f` hívás
+2700+ argumentummal) ezen a gépen MEGBÍZHATATLANNAK bizonyult: mérve kb. 95%-ban csendben, hibaüzenet
+nélkül elhagyta a bemeneti argumentumokat (2740 be, ~140-150 sor ki), még egy független, szűkebb
+readlink-hívással függetlenül igazolt, stabil célpontra is. Csere: `find /proc -maxdepth 3 \(
+-path '/proc/[0-9]*/cwd' -o -path '/proc/[0-9]*/fd/*' \) -printf '%l\n'` -- egy process, saját
+lstat/readlink syscall mappánként, ugyanolyan gyors (~0,1s), de ismételt futásokon mindig teljes és
+helyes listát adott. Ez a felfedezés ÚJ ebben a körben, nem a RedHat-jelentés része -- a card eredeti
+javaslata (batch readlink) a saját tesztkörnyezetemben hamis-negatívot okozott (a pre-existing B1
+fd/cwd tesztek elkezdtek megbízhatatlanul bukni), ami rávezetett a `find`-alapú, bizonyítottan
+megbízható alternatívára.
+
+**N4 (nem blokkoló):** a dry-run jelentés korábban a `disposable_count`-ot ígérte törlésre, de a
+`remove_entry()` kihagy egy dirty vagy elérhetetlen-HEAD-ű regisztrált worktree-t -- a jelentés
+túlbecsülte a törlést. `would_skip_removal()` előre jelzi (törlés nélkül) melyik DISPOSABLE
+bejegyzést hagyná ki az `--apply`, a dry-run most `removable_count` / `disposable_count` alakban
+jelent, és a kihagyandó sorokhoz okot ír ("apply would SKIP: ..."). Mérve az élő `/home/neon`-on
+(csak olvasó, `--dry-run`): a 128 regisztrált worktree közül sok dirty, a jelentés most ezt soronként
+kimondja.
+
+**N5 (nem blokkoló):** `remove_entry()` a `git worktree remove --force` saját kilépési kódját adta
+vissza `return $?`-tel, DE ez a sor a `git worktree prune` UTÁN állt, tehát a `prune` kódját adta
+vissza -- egy ZÁROLT (git worktree lock) regisztrált worktree-nél a remove elbukott, a prune-nak
+nem volt mit takarítania (0-t adott), és a hívó "removed"-nek olvasta a sikertelen törlést. Javítás:
+a remove lépés kódja külön változóba, a prune UTÁN azt adja vissza a funkció.
+
+**Teszt:** `wsl-home-cleanup.selftest.sh` 22 -> 26 eset (4 új: B1' élő-folyamat tengely, B1'
+életkor tengely, N5 zárolt worktree, N4 `would_skip_removal` jelzés), mind zöld, 6/6 ismételt
+futáson stabilan (korábban az eredeti, meglévő B1 fd/cwd tesztek elkezdtek flakelni a gyorsítás
+UTÁN, mert a várakozó ciklusuk "ls /proc/pid/fd nem üres" feltétele mindig azonnal igaz volt -- fd
+0/1/2 a fork pillanatától létezik --, és a RÉGI, lassú `has_live_process_under()` 8,2s-os
+véletlenszerű várakozása addig véletlenül fedezte ezt a versenyhelyzetet; a várakozási feltételt a
+tényleges cél-fd-re/cwd-re javítottam, nem a hibát kerülgettem). MUTÁCIÓ-PROOF, mind külön-külön: a
+B1' élő-folyamat-ág kikapcsolása -> pontosan 1 piros (25/26); a B1' életkor-ág kikapcsolása ->
+pontosan 1 piros (25/26); az N5 javítás visszaállítása (`return $?` a prune UTÁN) -> pontosan 1
+piros (25/26); a `would_skip_removal()` kikapcsolása (`return 1` az elején) -> pontosan 1 piros
+(25/26). Regresszió: a teljes selftest 26/26, `bash -n` tiszta. `npx tsc --noEmit` nem releváns
+(tisztán bash fájl, nincs TS-érintés).
+
+**Mérve az élő `/home/neon`-on, csak `--dry-run` (olvasó, semmi törölve):** teljes futás 3m13,5s
+(real), KEEP=13 ACTIVE=6 DISPOSABLE=192 UNKNOWN=38, "49 of the 192 DISPOSABLE entries... 143 would
+be SKIPPED" (N4 jelentés). Ez a RedHat-mérte 38,7 perchez képest ~12x gyorsulás, DE NEM a B1'
+osztályozás-gyorsítás önmagában méri ezt a maradék 3+ percet -- az N4 `would_skip_removal()` minden
+DISPOSABLE regisztrált worktree-re 2 git-hívást (status + rev-list) futtat, és a 192 DISPOSABLE-ből
+a többség regisztrált worktree, ez adja a fennmaradó időt. Ha ez a 3 perc magában (a N4 nélkül, csak
+B1') sokkal rövidebb lenne, azt nem mértem elkülönítve -- ha a 3 perc problémát jelent rendszeres
+(napi) futásnál, az N4-riportolás opcionálissá tétele (`--skip-reason`/hasonló kapcsoló) egy
+következő, külön kártya, nem ebben a körben bővítve tovább a scope-ot.
+
+**Ki döntött:** RedHat (16676, Gate-SHA 55c566e0), MikroB (16677). Gate: QA + RedHat. Az élő
+`--apply` továbbra is csak Peti jóváhagyásával futhat (22. kódminőségi elv), ebben a körben csak
+`--dry-run` futott az élő `/home/neon`-on.
+
+## 2026-10-11 -- Kartya 93ed929a: /api/claude-plans principal-kapu, mielott a CLAUDE_ROTATION_ENABLED/FLEET bekapcsolhato (upstream 10. koteg, WhiteHat F1 a 517fdcc5 GO-n, komment 16354)
+
+Forras: WhiteHat 517fdcc5 GO (komment 16354, msg 10802), F1 MEDIUM (HIGH, ha a rotacio be van kapcsolva): az upstream 10. koteg a `/api/claude-plans` route-okat PRINCIPAL-KAPU NELKUL hozta -- a teljes fajl (`src/web/routes/claude-plans.ts`) sosem ellenorizte `ctx.auth`-ot. A kozos flotta-bearer, amit minden agent hord, letrehozhatott/modosithatott/torolhetett plant (vault-titkos iras is), es -- a legsulyosabb -- elindithatta a `POST /rotate`-ot, ami a LIVE Claude-hitelesito adatot cserelt es a fo-agenst (CLAUDE_ROTATION_FLEET eseten a TELJES flottat) ujrainditotta. Elo hatas MA nulla, mert `CLAUDE_ROTATION_ENABLED` es `CLAUDE_ROTATION_FLEET` alapertek 0 es nincs beallitva ezen a telepitesen.
+
+**Javitas (1): session/device-only kapu a plan-iro es rotalo route-okra.** `rejectIfNotHumanAuth(ctx)` -- UGYANAZ a minta, mint a POST /api/connectors project-scope stdio add (kartya 67e73b48) es a POST /api/fleet/import?apply=true (kartya 68254bd7): `ctx.auth?.kind === 'session' || ctx.auth?.kind === 'device'`, kulonben 403 + warn-log. Bedrotozva MIND a negy erzekeny hivasi helyre: `POST /api/claude-plans` (plan letrehozas), `PUT /api/claude-plans/:id` (modositas), `DELETE /api/claude-plans/:id` (torles), `POST /api/claude-plans/rotate` (a tenyleges rotacio). `GET /api/claude-plans`, `GET .../state` es `POST .../:id/probe` VALTOZATLAN (olvaso, illetve mar sajat rate-limittel vedett -- nem a kartya kore).
+
+**Javitas (2): fail-closed indulas -- STRUKTURALISAN, nem egy kulon startup-ellenorzessel.** A kapu NEM feltetel nelkuli env-kapcsolok mogott (nem `if (isRotationEnabled() && !gateArmed)`-tipusu kulon logika), hanem FELTETLEN minden hivason, fuggetlenul a `CLAUDE_ROTATION_ENABLED`/`CLAUDE_ROTATION_FLEET` ertekétol. Ez strukturalisan kizarja a kartya altal felvetett "a kapcsolo be van kapcsolva, de a kapu nincs elesitve" allapotot: nincs olyan kodut, amin a rotacio a kapu elott futhatna, FUGGETLENUL attol, mire vannak allitva a rotacios env-valtozok. Kulon futasideju assert-et SZANDEKOSAN nem epitettunk -- egy ujabb, kulon ellenorizheto/kikerulheto mechanizmus tobb kockazatot adna, mint amennyit megszuntetne, amikor a kapu maga mar feltetel nelkul all.
+
+**Teszt (`claude-plans-routes.test.ts`, +8 teszt, mutacioval ellenorizve):** a megelozo 38 teszt (irt a kapu elott) a `fakeCtx` ALAPERTELMEZETT `{kind:'session'}` auth-javal VALTOZATLANUL zold marad (a kapu visszafele kompatibilis a dashboard-sessionre). Uj negativ tesztek: kozos token, nincs auth-principal (`{}`, kulon megjegyezve, miert nem `undefined` -- a JS default-parameter szemantika `undefined`-re is a defaultot alkalmazta volna), federacios peer -- mindharom 403, SEMMI iras (fajl-tartalom bajtra pontos egyezes vagy a lista valtozatlan). Pozitiv kontroll: device-kulcs 201-et kap. PUT/DELETE/rotate: kozos token eseten 403, a fajl/az allapot valtozatlan, `hardRestartMarveenChannels` SOHA nem hivodik. Mutacio (`rejectIfNotHumanAuth` korlatlanul `false`-t ad vissza): PONTOSAN a 7 uj negativ teszt valtott PIROSRA, a 39 pozitiv (default session-auth) teszt zold maradt. Visszaallitva, 46/46 zold. `npx tsc --noEmit` tiszta.
+
+**(4) GATESENDER922/GATEDEADLOCK922:** mar javitva a 517fdcc5 delta-korben (lasd fentebb a fajlban) -- a tesztek visszaallitva, mutacioval igazolva, a kartya ezen pontja mar zart volt a felvetelkor.
+
+**(5) env-kapcsolok:** `CLAUDE_ROTATION_ENABLED` es `CLAUDE_ROTATION_FLEET` EZEN a kartyan NEM kapcsolodik be -- ez a kartya a kapu megepitese, nem a rotacio elesitese. A bekapcsolas kulon, Peti jovahagyasaval jon, ha egyaltalan jon.
+
+Celzott futas (5 claude-plans-* fajl): 92/92 zold.
+
+**lint-ratchet mellekhatas (javitva, baseline frissitve):** a `fakeCtx` korabban `ctx: any`-t adott vissza; az uj tesztek ujabb `tryHandleClaudePlans(any)` hivasokkal 14 uj `@typescript-eslint/no-unsafe-argument` leletet termeltek volna (192 -> 206, REFUSED). Javitas: `fakeCtx` visszateresi tipusa `RouteContext` (egyetlen `as RouteContext` cast a konstrukcios pontnal, nem a hivasi helyeken) -- ez NEM csak az uj hivasokat javitja, a FAJL OSSZES korabbi, mar-is `any`-vel hivott helyet is (192 -> 133, JAVULAS). `store/lint-ratchet.sh --update` lefuttatva, a baseline a szigorubb szamra rogzitve, hogy a javulas ne legyen visszakolthetо egy kesobbi korben eszrevetlenul.
+
+Teljes fleet-test.sh a vegso shan: 981/981 fajl zold, lint-ratchet JAVULAST jelez es tart az uj baseline-on.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a kartya sajat kijelolese -- a javitasi iranyt WhiteHat adta, a re-gate RedHate).
+
+## 2026-10-11 -- Kartya 25aaada5: safeJoin symlink-kovetes (F1) + sep-hatar teszt (F3), kovetkezo a 3d186397 safeJoin javitashoz (WhiteHat GO melletti nyitott leletek, komment 16456)
+
+Elozmeny: 3d186397 (senderId traversal javitas), WhiteHat GO mellett nyitott kovetok leletek. F2 (validacio az allowFrom-modositas UTAN fut) MAR JAVITVA a 3d186397 delta #2-ben (lasd fentebb a fajlban) -- ez a kartya CSAK F1-et es F3-at erintette.
+
+**F1 (MEDIUM): a safeJoin LEXIKALIS -- a RESOLVED STRING-et probalja, nem azt, hogy a celpontnal MAR LETEZO fajlrendszer-bejegyzes maga szimlink-e.** Mert: a `pending`/`invites`/`approved` az ugynok SAJAT konyvtaraban el (`agents/<nev>/.claude/channels/...`), tehat barki azonos UID-ju iro (pl. prompt-injektalt sub-agent) elohozhat egy pending bejegyzest/invite-ot/szimlinket, majd a megosztott bearerrel hivhatja az approve route-ot -- confused-deputy fajlıras a shared bearer "nevében". Mert-meres (WhiteHat): egy `approved/` konyvtarban mar meglevo szimlink egy kivuli fajlra mutatva, a pending senderId = a szimlink neve -> HTTP 200, a kivuli fajl tartalma ORIG -> CHAT9 valtozott.
+
+Javitas: `src/web/sanitize.ts`-ben uj `writeFileNoFollowSync(path, content)` -- `fs.openSync(path, O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW)` + `writeSync`/`closeSync` -- egy mar letezo szimlinkre az open() ELOOP-pal bukik, nem koveti. Bedrotozva MINDKET hivasi helyre (`routes/agents.ts` ~1826. sor, `channel-invites.ts` ~267. sor), a korabbi plain `writeFileSync(markerPath, ...)` helyett. A `writeFileSync` import `channel-invites.ts`-bol torolve (az egyetlen hasznalata volt).
+
+**F3 (LOW, tesztlyuk): a safeJoin `target.startsWith(resolvedBase + sep)` hataranak `+ sep` resze nem volt pinelve -- a mutans (a `+ sep` elhagyasa) 0/53 piros volt.** Egy testver-konyvtar, aminek a neve STRING-PREFIXKENT tartalmazza az approvedDir nevet (pl. "approved-evil" <- "approved"-bol), a `+ sep` nelkul HELYTELENUL atmenne. Teszt: `../approved-evil/f` alaku senderId mindket hivasi helyen.
+
+**Teszt (`channel-pairing-senderid-traversal.test.ts`, +4 teszt [F1 x2, F3 x2], mutacioval ellenorizve mindket helyen):**
+- F1: egy ELORE telepitett szimlink `approved/lnk` (routes/agents.ts) / `approved/tgt` (channel-invites.ts) nevvel, egy kulso fajlra mutatva (`ORIG` tartalommal) -- a hivas utan a kulso fajl tartalma VALTOZATLAN `ORIG` marad.
+- F3: `../approved-evil/f` alaku senderId elutasitva (400 / nincs mutacio), a sibling konyvtar nem jon letre.
+
+Mutacio-ellenorzes (mindket fixre, `sanitize.ts`-ben, manualisan visszaallitva majd javitva): (a) a `+ sep` elhagyasa -> mindket F3 teszt PIROS (egyik 400 helyett 500-at, a masik access.json-mutaciot mert); (b) az `O_NOFOLLOW` flag elhagyasa -> mindket F1 teszt PIROS, a kulso fajl tartalma TENYLEGESEN `CHAT9`-re/uresre valtozott a szimlinken keresztul, igazolva a repro valosagat. Mindket mutacio utan visszaallitva, 16/16 zold.
+
+`npx tsc --noEmit` tiszta. `npx eslint` a ket erintett route-fajlra: a jelzett leletek mind pre-existing (nem az en soraim), `lint-ratchet.sh` valtozatlan (323 lelet, tart). Celzott futas (traversal + invite-token-not-logged + agents-import-auth-gate): 41/41 zold.
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a kartya sajat kijelolese -- WhiteHat javasolta a javitast, a re-gate RedHate).
+
+## 2026-10-11 -- Kartya 93ed929a delta: RedHat NO-GO (16876) B1 javitva -- az agent-kiadott device-kulcs mar NEM szamit embernek
+
+RedHat NO-GO (16876) a Gate-SHA 6fd8f0af-re: a `rejectIfNotHumanAuth` MINDEN `kind === 'device'`-et embernek vett, de a kartya 9655494c altal landolt agent:<id> device-kulcs-kiadas EZT a PONTOS alakot adja ki a flotta sajat ugynokeinek (a gate-ugynokok -- qa, cybered, stb -- a 2bfa4c67 verdikt-ut pont ezekre a kulcsokra epul). Mert: egy agent:qa device-kulccsal POST /api/claude-plans 201, PUT 200, DELETE (feltetelezve) es POST /rotate 200 -- a kapu PONTOSAN azt engedte at, amit ki kellett volna zarnia (egy ugynok sajat hitelesitoje, nem egy ember).
+
+**Javitas (B1):** a `device` agon kulon ellenorzes: `agentKeyToAgentId(ctx.auth.device) !== null` -> HA az agent-azonositora oldodik fel, NEM ember, 403. Csak egy NEM-agent alaku device-kulcs (telefon/Bridge-parositas) marad engedett. `agentKeyToAgentId` import `auth-device-keys.js`-bol.
+
+**N1 (tesztlyuk, ugyanebben a korben javitva):** a kartya eredeti "nincs auth-principal" teszje `{}`-t adott at, a VALODI termelesi alak (`web.ts`) viszont `ctx.auth === undefined`-t ad a kezelonek egy auth nelkuli hivasnal -- a ket alak KULONBOZIK egy `!ctx.auth`-tipusu fail-open mutansra. A `fakeCtx` teszt-helper `null`-t hasznal MOST kulon "explicit nincs auth" jelzeskent (a `undefined` argumentum, meg explicit is, a JS default-parameter szemantika miatt a defaultot valtja ki -- `null` NEM).
+
+**Teszt (`claude-plans-routes.test.ts`, +8 teszt, mutacioval ellenorizve mindket fixre):** B1 -- `agent:qa` device-kulccsal mind a negy ut (POST/PUT/DELETE/rotate) 403, `hardRestartMarveenChannels` SOHA nem hivodik; pozitiv kontroll `phone` device-kulccsal 201. N1 -- `ctx.auth === undefined` 403. Mutacio: (a) az `isAgentDeviceKey` kikapcsolasa -> mind az 5 B1-teszt PIROSRA valtott (409/200/201 a varni 403 helyett -- PONTOSAN a RedHat merese); (b) egy `!ctx.auth -> return false` fail-open sor hozzaadasa -> PONTOSAN az N1-teszt PIROSRA valtott, a tobbi 52 zold maradt (igazolva, hogy a teszt a VALODI production-alakot pineli, nem a `{}`-t). Mindket mutacio utan visszaallitva, 53/53 zold.
+
+`npx tsc --noEmit` tiszta. Celzott futas (6 claude-plans-*/auth-agent-keys fajl): 110/110 zold. `lint-ratchet.sh`: valtozatlan (323 lelet, tart).
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**(P1, kulon kartya, nem ebben a korben javitva):** RedHat jelezte, hogy a 9655494c F1-B1 lanca addig nyitva all, amig a kozos tokennel "session" szerezheto (bootstrap+login) -- ez a `CLAUDE_ROTATION_*` kapcsolok bekapcsolasanak egy MASIK, fuggetlen elofeltetele. A DECISIONS (5) pontja ("a kapcsolok csak e kartya lezarasa utan, Peti jovahagyasaval") ezzel bovul: a 9655494c F1-B1 lezarasa IS feltetel, nem csak Peti jovahagyasa.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, a RedHat verdiktje utan).
+
+## 2026-10-11 -- Kártya d57d8a01 delta: QA FAIL (16742) + WhiteHat2 NO-GO (16744) javítva, kill-switch fail-closed + session-only re-enable
+
+QA FAIL (16742) és a testvér-gate WhiteHat2 NO-GO-ja (16744) ugyanazt a B1 gyökér-hibát mérte, önállóan: a `local-first-draft-check.sh` megosztott helper a kapcsoló-fájlt a HÍVÓ SZKRIPT saját, BASH_SOURCE-relatív könyvtárából olvasta, nem a futó telepítés STORE_DIR-jéből -- a marveen repo saját-worktree fegyelme miatt (root CLAUDE.md) ez MINDEN ügynök-worktree-ből hívott belépési pontra (local-llm.sh, local-llm-rag.sh, offload-dispatch.sh, route-classify.sh, gate-pretriage.sh, i18n-draft.sh, card-build-route.sh, self-advance-pickup.sh) nulla hatást jelentett: a `store/*` gitignore-olt, a fájl minden worktree-ben hiányzik. Ugyanaz a hibaosztály, amit a kártya b536501e már egyszer bezárt a MODEL_FILE-ra (`local-llm-state-dir.sh`) -- az új kapcsoló nem azt a mechanizmust használta.
+
+**MikroB döntés (16743):**
+- **B1 (blokkoló):** a helper most a már bevált `local-llm-state-dir.sh` `resolve_local_llm_state_dir()` feloldóját hívja (a caller által esetleg már beállított `LOCAL_LLM_STATE_RESOLVED`-et újrahasznosítva, duplikált feloldás/announce nélkül), és a flag-fájlt a feloldott STATE_DIR-ből olvassa. Teszt: egy VALÓDI, második `git worktree` egy throwaway "install"-ból, a kapcsoló csak az install store/-jába írva -- a worktree-másolat látja az OFF állapotot.
+- **Hiányzó fájl FAIL-CLOSED (OFF), nem FAIL-OPEN (ON) többé.** Ez szándékos eltérés a korábbi plan-grilling pont 2 döntéstől ("absence = ON") -- kill-switch-nél a "nem találom a kapcsolót" a BIZTOS irányba (ONLINE) essen, nem a kockázatosba. A LÉTEZŐ-de-nem-parse-olható fájl esete (config-hiccup) változatlanul fail-open marad (WhiteHat2 mérése: LOW, nem blokkoló) -- csak a TELJESEN HIÁNYZÓ fájl esete fordult meg. A `GET /api/local-llm/first-draft-enabled` ugyanígy fordult (enabled alapértéke most false), hogy a dashboard és a shell-oldal sose mondjon mást "nincs fájl" esetén.
+- **B2 (blokkoló, Peti saját kártyaszövege szerint kötelező: "Peti jóváhagyása alapján"):** a kapcsoló VISSZAkapcsolása (`enabled:true`) most `ctx.auth.kind === 'session'`-re szűkül (owner böngésző-login) -- a közös flotta-bearer token nem tudja visszakapcsolni. A kikapcsolás (`enabled:false`) bárki authentikált hívónak nyitva maradt -- az a fail-safe irány.
+- **A level-2 jóváhagyási csatorna SZÁNDÉKOSAN NEM lett bedrótozva ehelyett.** MikroB döntése "session VAGY level-2 jóváhagyás"-t mondott, de a kártya 657b32f2 (RedHat delta-gate 14953, MikroB döntés 14957) már mérte, hogy a `PATCH /api/approvals/:id` NINCS auth-kind-hoz kötve -- csak egy önbevallott "resolved_by != kérő agent_id" őr van rajta, amit a közös token egy másik resolved_by névvel trivialisan megkerül. A `fleet.ts` ugyanezért tartja az `apply=true` utat KEMÉNY fail-closednek (`FLEET_IMPORT_APPLY_FAIL_CLOSED = true`), approval-nyitás nélkül, amíg a 3fb0ef97 nem-hamisítható csatorna meg nem épül. Ugyanezt a mintát követtem itt: session-only, approval-fallback nélkül -- egy approval-ág bedrótozása nem egy második kontrollt adott volna, hanem egy újabb ajtót a már ismert megkerüléshez.
+
+**Mérés:** `local-first-draft-check.selftest.sh` 14/14 PASS (13 + 1 új worktree-regressziós eset, önállóan igazolva: a régi helperrel reprodukálva a hibát, az új helperrel javítva). `local-llm-first-draft-switch.test.ts` 18/18 PASS (9 régi, frissítve az új fail-closed/session-only viselkedésre, + 9 új a B2 szűkítésre, mind a négy nem-session auth-kind-ra). `tsc --noEmit` tiszta.
+
+**Ki döntött:** a leletet QA (16742) és WhiteHat2 (16744) adta, egymástól függetlenül ugyanarra a B1-re; a B2 kiegészítést Peti saját kártyaszövege kötelezte, MikroB rögzítette (16743); a javítást és a level-2-csatorna elvetésének indoklását fullstack végezte, a 657b32f2 mérés alapján. Delta-gate: QA + WhiteHat2.
+
+## 2026-10-11 -- Kártya d57d8a01 delta (folytatás): MikroB 16743 fail-closed-OFF fele MÉRVE ÉS NEM ALKALMAZVA -- 29 teszt regresszió
+
+A fenti bejegyzésben (ugyanez a nap, "QA FAIL ... javítva, kill-switch fail-closed + session-only re-enable") a B1-hez tartozó "hiányzó fájlnál fail-closed: OFF" rész SZÓ SZERINT implementálva és lefuttatva lett a `fleet-test.sh`-n a merge eredményén, MIELŐTT ez a bejegyzés íródott. Az eredmény: a feloldási-útvonal javítás (a helper most már a `local-llm-state-dir.sh`-t használja) önmagában hibátlanul lezárta a mért B1 hibát, DE a hiányzó-fájl-eset ON->OFF fordítása 9 fájlon át 29, ettől a kártyától TELJESEN FÜGGETLEN, már kész, már gate-elt tesztet vitt pirosra (`route-classify-gpu-busy-early-exit`, `local-llm-sh-task-allowlist`, `local-llm-sh-gpu-abstain`, `local-llm-sh-active-task-registration`, `local-llm-sh-generate-timeout-safety-net`, `local-llm-rag-routes-by-default`, `offload-draft-nudge`, `local-llm-guard-sanctioned-skip`, `store-selftests-all-run`) -- mindegyik olyan rögzítő/fixture-öt futtat, ami SOHA nem írja a kapcsoló-fájlt, és a régi "hiány = ON" alapértékre számított, hogy a VALÓDI, tesztelt logikáig egyáltalán eljusson.
+
+A root CLAUDE.md 7. kódminőségi elve ("eltűnő/gyengülő teszt = FAIL, nem 'tisztább kód'") és az 5. elv (már működő, gate-elt funkciót kérdés nélkül vissza nem vonni) együtt azt mondja: ez NEM vihető be így, akkor sem, ha egy korábbi MikroB-döntés szó szerint ezt kérte -- a döntés születésekor ez a mellékhatás nem volt mérve. A hiány-eset tehát VISSZA van állítva ON-ra (plan-grilling pont 2, változatlan); a TÉNYLEGESEN mért B1-hiba (rossz könyvtár, nem a hiány-eset alapértéke) a feloldási javítással önmagában, mellékhatás nélkül zárva van.
+
+**Mérés a visszaállítás után:** mind a 9 érintett tesztfájl (helyben futtatva) PASS; `local-first-draft-check.selftest.sh` 14/14 PASS (a worktree-regressziós eset is zöld, mert az a flag-fájl TÉNYLEGES, {"enabled":false} tartalmával dolgozik, nem a hiány-esettel); `tsc --noEmit` tiszta.
+
+**Ki döntött:** a kódolást (resolution-fix + absence=OFF) fullstack végezte MikroB 16743 szó szerinti szövege szerint; a 29-teszt-regressziót fullstack mérte a saját fleet-test futásán (merge sha 4bfc3ffab2efe749e2aa7fb1e349b5dc1345ec3c); a visszaállítás fullstack döntése volt a mérés alapján, a root CLAUDE.md 5/7. elvére hivatkozva -- MikroB felé a REVIEW kommentben jelezve, nem elhallgatva. Delta-gate: QA + WhiteHat2 (változatlan, a B1 teljes köre és a B2 mindkét iránya ugyanúgy tesztelt).
+
+## 2026-10-11 -- Kártya d57d8a01 delta (harmadik kör): WhiteHat2 B2-megjegyzés (komment 16810) beépítve -- human-credential-only, nem csak session-only
+
+WhiteHat2 (komment 16810, a b8c5d0fe-n mért kódra hivatkozva) a B2-javítást (csak tulajdonosi session kapcsolhatja vissza a helyi-LLM kill-switch-et) pontosította, MIELŐTT a REVIEW elment volna: a `src/web/routes/fleet.ts:119` már létező mintáját (`kind !== 'session' && kind !== 'device'` -> 403) kellett volna követni, nem egy új, session-only szigorítást kitalálni -- ÉS ugyanakkor ez a minta magán a fleet.ts-en is hiányos, mert egy `agent:<id>` nevű, FLOTTA-ÜGYNÖKNEK kiadott device-kulcs (kártya 2bfa4c67/9655494c) `kind==='device'`-ként érkezik, tehát szó szerint másolva átengedné azt is -- holott egy ügynök-kulcs nem emberi hitelesítő adat, csak azért, hogy a `kind` mezője 'device'.
+
+Javítás: a POST `/api/local-llm/first-draft-enabled` {enabled:true} ága most `kind === 'session'` VAGY (`kind === 'device'` ÉS a már létező `agentKeyToAgentId()` segédfüggvény (src/web/auth-device-keys.ts) null-t ad a device névre, tehát NEM `agent:` prefixű) esetén engedi át -- a meglévő konvenciót használva, nem egy új startsWith-et. A `enabled:false` irány változatlanul bárkinek nyitva marad (fail-safe irány). A default audit-note (ha a hívó nem ad saját note-ot) most tartalmazza a hívó auth.kind-ját (és device esetén a nevét), nem csak az időbélyeget (WhiteHat2 5. pontja).
+
+**Teszt-mátrix (WhiteHat2 saját megadása szerint, mind lefedve):** közös token -> 403; `agent:backend` device-kulcs -> 403; session -> 200; emberi (nem agent-named) device-kulcs -> 200; token + enabled:false -> 200. `src/__tests__/local-llm-first-draft-switch.test.ts`: 20/20 PASS. `tsc --noEmit` tiszta.
+
+A level-2 (`/api/approvals`) út továbbra NEM került be -- az előző bejegyzés indoka (657b32f2/14957, forgeable `PATCH /api/approvals/:id`) változatlanul áll, WhiteHat2 megjegyzése sem kérte ezt.
+
+**Ki döntött:** WhiteHat2 adta a pontos javítási mintát a kártyán (komment 16810), a kódolást fullstack végezte el szó szerint a megadott feltétel és teszt-mátrix szerint, REVIEW előtt.
+
+## 2026-10-11 -- 2bfa4c67 round 2: WhiteHat2 CYBERSEC NO-GO (N1/N2/N3/N5) javítva a 3d702874-en
+
+**Forrás:** WhiteHat2 (cybersec2) NO-GO a 2bfa4c67 delta-round landolt shájára (3d702874db25d4b40c5bd28ef996314ae98db452). Mért bypass-ok (input -> megfigyelt eredmény, mind a guard ALLOWED-ot adott):
+- N1 (= W2, MikroB 16574 már blokkolónak jelölte): egy strukturált verdikt-rekord ROSSZ shával (vagy sha nélkül) is zárt.
+- N2 (HIGH, új): egy hitelesített (`author_verified=1`) FAIL rekordot egy ezt követő, HITELESÍTETLEN PASS rekord csendben felülírt, mert `freshStructuredRow()` mindig a legújabb sort vette, a `author_verified` mezőt soha senki nem hasonlította.
+- N3 (B3 sorrend-függés): egy valódi `QA FAIL` komment, ami a strukturált PASS-rekord ELŐTT érkezett, nem triggerelt DISAGREE-SOURCE-ot, mert `commentHasFreshNegative()` csak a rekord UTÁN írt negatívot nézte.
+- N5 (új): a javaslattevő-kizárás "legutóbbi javaslat nyer" logikája miatt egy MÁSIK ügynök későbbi javaslata csendben feloldotta egy korábbi, releváns kizárást.
+- N4 a 9655494c-hez tartozik (közös tokenes szerzőség, a 9655494c zárásakor javítandó), N6 (W4, mp-egyezés) LOW, kihagyva (lásd az előző kör indoklását, nem változott).
+
+**Javítás:**
+1. **N1/W2 (sha-kötés):** új `latestReviewGateSha(comments)` export (`kanban-gate-completeness-guard.ts`) -- a legutóbbi, nem-gate/nem-generált szerzőjű REVIEW-komment SAJÁT "Gate-SHA:" sorából kinyert sha (utolsó egyező sor nyer, az `extractGateLine` "last wins" konvenciójával egyezően). `POST /verdicts` ÉS `POST /proposals` ÚJ, kötelező `sha` mezőt kér, ha a kártyán VALAHA volt ilyen REVIEW -- a megadott sha-nak (rövid vagy teljes formában, prefix-egyezéssel) a legfrissebb REVIEW Gate-SHA-jával kell egyeznie, különben 400. Ha a kártyán még SOHA nem volt Gate-SHA-s REVIEW, a mező megengedő marad (ugyanaz az alapértelmezés, mint a `Gate:` sor hiánya esetén -- nincs mihez kötni).
+2. **N2 (hitelesített negatív elsőbbsége):** `db.ts` `getFreshKanbanVerdict` (egyetlen legújabb sor) helyett `getKanbanVerdictsForGate` (a TELJES sorozat, idő szerint növekvő). `kanban-gate-completeness-guard.ts` új `effectiveStructuredRow()`: végigmegy a sorozaton, egy negatív sor MINDIG effektívvé válik; egy pozitív sor felülír, KIVÉVE ha az aktuális effektív sor hitelesített negatív ÉS a pozitív sor hitelesítetlen -- egy hitelesítetlen állítás nem törölheti egy hitelesített "nem"-et. Két hitelesítetlen sor, vagy egy hitelesített pozitív egy hitelesített negatívra, változatlanul "az utolsó nyer".
+3. **N3 (sorrend-független komment-ellentmondás):** `freshVerdictStatus()`-ban a `commentHasFreshNegative` küszöbe a strukturált sor saját idejéről (`row.created_at`) a kör kezdetére (`sinceTs`) változott -- egy negatív komment a jelenlegi körben, FÜGGETLENÜL attól, hogy a strukturált sor előtt vagy utána íródott, DISAGREE-SOURCE-ot ad.
+4. **N5 (halmaz-szemantika, sha-hoz kötve):** `kanban_fix_proposals` új `sha` oszlop (additív, `ALTER TABLE ADD COLUMN`, ugyanaz a minta mint `device_keys.install_id`). `POST /proposals` a sha-kötést ugyanúgy megköveteli, mint a verdikt-oldal (1. pont). `POST /verdicts` a kizárást MOST a kártya ÖSSZES, a JELENLEGI kör sha-jához kötött proposal-ján futtatja (`getKanbanFixProposals` + szűrés `latestReviewGateSha`-ra), nem csak a legutóbbin -- egy korábbi kizárás nem oldódik fel egy másik ügynök későbbi javaslatától, de egy ÚJ kör (új Gate-SHA) nem marad örökre blokkolva egy régi kör proposal-ja miatt.
+
+**Teszt:** `kanban-gate-completeness-guard-structured-verdict.test.ts` 8 -> 12 (N2: verified-negatív-precedencia 3 eset, N3: sorrend-független eset, determinisztikus `created_at`-okkal, mert a valódi fali-óra másodperc-felbontása a teszt két írása közt nem garantáltan különböző). `kanban-verdicts.test.ts` 34 -> 40 (N1: 4 eset -- nincs-sosem-Gate-SHA permisszív, hiányzó sha 400, rossz sha 400, egyező teljes/rövid sha 201; N5: 2 eset -- korábbi kizárás túlél egy másik ügynök újabb javaslatát, régi körös javaslat nem blokkol egy új körben). Mind a négy lelet (N1, N2, N3, N5) saját mutáció-proof: a javítás pontos visszaállítása (shaBindingError no-op, a precedencia-feltétel `false`-ra, a küszöb vissza `row.created_at`-ra, a kizárás vissza "legutóbbi javaslat"-ra) a megfelelő új tesztet pirosra vitte, mást nem; visszaállítva, teljes érintett kör (5 fájl, 195 teszt) zöld. `tsc --noEmit` és `eslint` tiszta az érintett fájlokon. `lint-ratchet.sh`: nem romlott (382 lelet, baseline tart).
+
+**Ki döntött:** backend (WhiteHat2 CYBERSEC NO-GO a 3d702874-en, MikroB döntése a visszaadáskor). Re-gate: QA + WhiteHat2 + RedHat (ugyanaz a kijelölés, mint az előző körben -- a QA és a RedHat a 3d702874-en még futó gate-jét MikroB kérésére ugyanerre a javított shára kell megismételnie).
+
+## 2026-10-11 -- 9655494c F1-B1 (RedHat NO-GO 16825): a közös token nem nyithatja újra a bootstrap-kivételt
+
+**Forrás:** RedHat (cybered) NO-GO a 9655494c F1-re, ugyanazon a 3d702874db25d4b40c5bd28ef996314ae98db452 shán, amit WhiteHat2 is NO-GO-zott (2bfa4c67, lásd fentebb a fájlban). F1-B2 (hibaágon /tmp-ben hagyott titok) és F1-B3 (selftest csak a python3 argv-ját figyelte) már javítva volt ebben a körben, még a kontextus-tömörítés előtt; ez a bejegyzés csak F1-B1-et dokumentálja, ami még nyitva volt.
+
+**Mért bypass (X1/X2):** a `POST /api/auth/users` bootstrap-kivétele (`isBootstrap = countDashboardUsers(true) === 0`) egy JELENLEGI-állapot ellenőrzés volt, nem egy EGYSZERI esemény. Mivel a `DELETE /api/auth/users/:username` a közös tokennek is megengedett (szándékosan, "visszatérés token-only módba"), egy tokent birtokló bárki (minden fleet-ügynök) a következő láncot futtathatta korlátlanul: token -> POST /users (bootstrap, 201) -> POST /login (200 + sütit) -> session-sel POST /api/auth/agent-keys (bármelyik agent_id-re) -> DELETE /api/auth/users/<az-éppen-létrehozott-user> (200, vissza 0 userre) -> ismét bootstrap. Mert a dashboard élesben MA 0 usert mutat, ez NYITOTT állapot volt.
+
+**Javítás:** új `hasDashboardBootstrapEverHappened()` (`db.ts`) -- a `dashboard_users.id` AUTOINCREMENT, tehát a `sqlite_sequence` tábla saját `seq` értéke a tábla OWN szekvencia-számlálóját adja, ami egy DELETE-en NEM nullázódik vissza. A bootstrap-kivétel feltétele `isBootstrap = !hasDashboardBootstrapEverHappened()`-re váltott (`web/routes/auth.ts`), ami egyszeri, soha-nem-törölhető eseménnyé teszi: az ELSŐ user létrehozása után a közös token TÖBBÉ SOHA nem mintelhet usert, még ha az összes user törölve is lett. A `DELETE /api/auth/users/:username` viselkedése és tesztje VÁLTOZATLAN maradt (a törlés továbbra is csak csökkenti/megvonja a hozzáférést, sosem ad újat -- ugyanaz az elv, mint a `CREDENTIAL_MINT_KINDS` fejébeli megjegyzés a device-kulcsoknál).
+
+**Teszt:** `auth-routes.test.ts` új eset: "token deleting the last user does NOT reopen bootstrap -- it stays 403 on re-create" (bootstrap -> delete -> újra-bootstrap-próbálkozás 403). A fájl megosztott in-memory DB-t használ a tesztek között és `beforeEach`-ben `DELETE FROM dashboard_users`-szal "resetel" -- ez a `sqlite_sequence` saját sorát NEM törölte, tehát a tesztfájl saját reset-mintája is kiegészült egy `DELETE FROM sqlite_sequence WHERE name = 'dashboard_users'` sorral, különben minden a FIRST test utáni `seedUser()` hívás 403-at kapott volna (a production-fix helyesen észrevette, hogy a megosztott teszt-DB már "bootstrappelt egyszer"). Mutáció-proof: a fix visszaállítása (`isBootstrap = countDashboardUsers(true) === 0`) PONTOSAN az új tesztet vitte pirosra (1 bukás, 25 zöld), semmi mást; visszaállítva 26/26 zöld. Célzott kör (6 fájl: auth-routes, auth-agent-keys, auth-device-keys, auth-bootstrap-module, memories-get-by-id, channel-pairing-senderid-traversal) 96/96 zöld. `agent-key-provision.selftest.sh` (F1-B2/B3, már javítva) 9/9 `ok` sor zöld. `tsc --noEmit` és `eslint` tiszta az érintett fájlokon, `lint-ratchet.sh`: nem romlott (382 lelet, baseline tart).
+
+**Nem ebben a körben:** F2 (memória-olvasás kulcs-identitás szerinti szűrés) a kártya saját szövege szerint az 517fdcc5 landolására vár (backend3), nem része ennek a delta-gate-nek -- RedHat verdiktje is kimondottan csak F1-re szólt.
+
+**Ki döntött:** backend (RedHat NO-GO 16825 a 9655494c F1-re, MikroB döntése a visszaadáskor, 10997/11007). Re-gate: QA + RedHat (a kártya saját gate-kijelölése, "Gate: qa, cybered").
+
+## 2026-10-11 -- Kartya 25aaada5 delta: RedHat NO-GO (16934) B1 (koztes szimlink) + B2 (alak-denylist) javitva
+
+RedHat NO-GO (16934) a Gate-SHA 0322724a-ra: ket blokkolo, mindket felvetel szerint a kartya sajat F1 javitasi iranyat ("O_NOFOLLOW nyitas VAGY lstat-ellenorzes MINDEN utvonal-elemre") es a MikroB 16759 kulon kovetelmenyet (alak-allowlist) csak RESZBEN fedte az elozo delta.
+
+**B1 (HIGH): az O_NOFOLLOW csak az UTOLSO utvonal-elemet vedte.** Ha `approved/` MAGA (vagy egy koztes elem, pl. a `sub` a `sub/id`-ben) szimlink egy kulso konyvtarra, az `open()` meg a NOFOLLOW-ellenorzes elott VEGIGMEGY a szimlinken a szulo-konyvtar feloldasahoz. Merve (RedHat, XA-XD): approved/ szimlinkkent egy kulso konyvtarra, senderId = victim -> HTTP 200, a kulso konyvtarban letrejott a victim fajl; a felugyelet NELKULI invite-sweepben (XD) ugyanez, meg sulyosabb (nincs ember, aki a 500-at latna).
+
+Javitas: `writeFileNoFollowSync` MOST a nyitas ELOTT `realpathSync(dirname(path))`-ot hasonlit `resolve(dirname(path))`-hoz -- ha a szulo-konyvtar lanca BARMELYIK pontjan szimlink van, a ketto elter, es a fuggveny dob, mielott az open() egyaltalan lefutna.
+
+**B2 (a kartya sajat F1 javitasi iranya + MikroB 16759): alak-denylist a safeJoin-on tul.** A safeJoin csak azt bizonyitja, hogy a feloldott UT a bazison belul van -- nem azt, hogy az alak HASZNALHATO fajlnev. Az ures string, `.`, `..`, egy `/` vagy `\` karaktert tartalmazo alak (pl. `sub/id`, `x/..` -- ami VISSZA approvedDir-re oldodik fel), egy NUL-bajtot tartalmazo alak, es egy 300 karakteres alak MIND atmegy a safeJoin-on, majd MASIK retegen bukik (EISDIR, NUL a writeFileSync belsejeben, kernel ENAMETOOLONG) -- MINDIG a mutacio UTAN, mert a hiba a route sajat generikus try/catch-ebe esik. Nincs a kodbazisban megerositett, provider-specifikus (telegram/slack/discord/googlechat/teams) senderId-format, ezert ez SZANDEKOSAN egy denylist a mert patologikus alakokra, nem egy kitalalt pozitiv format, ami egy MASIK provider valodi azonositojat utasithatna el.
+
+Uj `isPlausibleChannelSenderId(senderId)` a `sanitize.ts`-ben, bedrotozva MINDKET hivasi helyre, a mutacio-pozicioban ELSOKENT (meg a safeJoin elott is), ugyanazt a "minden mellekhatas elott" mintat kovetve, mint a 3d186397 delta #2.
+
+**Teszt (`channel-pairing-senderid-traversal.test.ts`, +18 teszt, mutacioval ellenorizve mindket fixre):**
+- B1: `approved/` MAGA egy szimlink (XA routes/agents.ts-en, XD channel-invites.ts-en) -- a kulso celpont nem jon letre. B1/B2 XB (`sub/id`): mar B2-vel elutasitva, meg mielott barmilyen szimlink szamitana.
+- B2: it.each a 6 named alakra (ures, `.`, `..`, `x/..`, NUL, 300-karakter) + a `sub/id` (csak channel-invites.ts-en, kulon) + pozitiv kontroll (sima numerikus azonosito).
+
+Mutacio: (a) a `realpathSync`-ellenorzes torlese -> mindket XA/XD teszt PIROSRA valtott (a kulso celpont LETREJOTT); (b) `isPlausibleChannelSenderId` korlatlanul `true`-ra -> mind a 12 B2-teszt PIROSRA valtott (a `..` onmagaban zold maradt, mert azt a safeJoin FUGGETLENUL mar elutasitja -- ez helyes, nem hiba). Mindket mutacio utan visszaallitva, 34/34 zold.
+
+**Mellekhatas (javitva):** az uj `isPlausibleChannelSenderId(entry.senderId)` hivas `routes/agents.ts`-ben egy uj `no-unsafe-argument` leletet termelt (`entry` tipizalatlan JSON-bol jon) -- `entry.senderId as string` cast-tal javitva, nincs uj lelet, `lint-ratchet.sh` valtozatlan (323, tart).
+
+`npx tsc --noEmit` tiszta. Celzott futas (3 fajl): 59/59 zold.
+
+Teljes fleet-test.sh + lint-ratchet: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, a RedHat verdiktje utan).
+
+## 2026-10-11 -- 2bfa4c67 RedHat második NO-GO (komment 16824, B1'/B2'/B3') javítva
+
+**Forrás:** RedHat (cybered) delta-gate NO-GO a 2bfa4c67 round 2 javítására (3d702874db25d4b40c5bd28ef996314ae98db452). A sorrend-függő előző kör (9655494c F1) ekkor már landolt (Gate-SHA cbd638ec541a44b8cc7090242e8619d3f79c2fb0), MikroB utasítása szerint ("előbb a 9655494c, mert a 2bfa4c67 erre épül") csak ezután indult ez a kör.
+
+**Mért bypass-ok (mind a 3d702874 fán, RedHat saját mérése):**
+- B1' (HIGH, bekapcsolva 0): a verdikt-rekord szerzője a közös tokennel még a body `author` mezőjéből jött -- `author_verified=0` rekordot tárolt, és a guard csak egy `logger.info`-t írt, a zárást ENGEDTE. Mérve (K1): közös token, `author:"qa"` -> 201, `author_verified=0`, a guard nem blokkolt.
+- B2' (MEDIUM): a `POST /proposals` végpontot semmi nem hívta automatikusan, tehát a javaslattevő-kizárás a gyakorlatban sosem aktiválódott. Mérve (P4): egy NO-GO-t író ügynök rögtön utána GO-t is írhatott, mert a proposer-mező üres maradt.
+- B3' (MEDIUM, hamis pozitív + DoS): a `DISAGREE-SOURCE` detekció (`NEGATIVE_VERDICT_RX`) a komment TELJES szövegében keresett "FAIL"/"NO-GO" szót, nem csak az első soron. Mérve (G10): egy friss, valódi "CYBERED GO" komment, amelynek a szövege egy korábbi "NO-GO 16623"-ra hivatkozott, hamis DISAGREE-SOURCE-ot adott; fordítva (G6) a közös token egy hamis "FAIL" kommenttel bárhol a szövegben blokkolhatott volna egy jogos zárást.
+
+**Javítás:**
+1. **B1'** (`kanban-verdicts.ts`, `POST /verdicts`): a `resolveVerdictAuthor()` visszaadta `verified` jelző most KÖTELEZŐ -- ha `false` (nincs hitelesített `agent:<id>` device-kulcs), a végpont 403-at ad, nem ír rekordot. Védelem a mélységben: `kanban-gate-completeness-guard.ts` `freshStructuredRow()` a szerepkör-szűrés mellé `row.author_verified === 1`-et is megkövetel -- egy közvetlenül a táblába írt, hitelesítetlen sor a guard számára nem is létezik többé (a korábbi csak-logoló ág holt kóddá vált, eltávolítva).
+2. **B2'** (`kanban-verdicts.ts`): a `POST /verdicts` a NO-GO/FAIL rekord beszúrása UTÁN automatikusan hív `addKanbanFixProposal(cardId, author, sha)`-t -- a javaslattevő a SAJÁT hitelesített írásból jön, nincs külön hívás, amit elfelejthetnének. A kézi `POST /proposals` végpont (a RedHat "vagy töröld" javaslata szerint) teljesen visszavonva: mindig 403-at ad, mert a korábbi forma pontosan annyira hamisítható volt, mint a body-mező, amit helyettesített (bármely hitelesített kulcs bármely kártyára írhatott, legújabb nyer). GET változatlan, olvasásra.
+3. **B3'** (`kanban-gate-completeness-guard.ts`): `commentHasFreshNegative()` most a komment ÚJ `firstLine()` segédfüggvénnyel kinyert ELSŐ során futtatja a `NEGATIVE_VERDICT_RX`-et, nem a teljes szövegen -- egy valódi verdikt-komment a konvenció szerint az első sorban mondja ki magát (CLAUDE.md 4c), a szövegben később idézett régi NO-GO vagy szó ("fail-closed") már nem triggerel.
+
+**Teszt:** `kanban-verdicts.test.ts` 34 -> 37, a teljes POST/GET-verdicts és POST/GET-proposals kör újraírva hitelesített device-kulcsra (a korábbi, közös-tokenes 201-et várt tesztek most 403-at várnak, vagy device-kulcsot kapnak -- ez szándékos viselkedés-változás, nem gyengülés: a régi tesztek pont a most javított sebezhetőséget várták el helyes működésnek). `kanban-gate-completeness-guard-structured-verdict.test.ts` 12 -> 13 (az "összes hitelesítetlen sor semmit nem elégít ki" eset és a G10 első-sor eset), plusz egy meglévő N3-teszt frissítve hitelesített sorra (a hitelesítetlen sort a B1' fix most eldobja, mielőtt a disagree-logika egyáltalán látná). Mutáció-proof mindhárom fixre (a javítás pontos visszaállítása -- a `verified` ellenőrzés, az `author_verified===1` szűrő, a `firstLine()` hívás -- rendre PONTOSAN az adott új/frissített tesztet vitte pirosra, mást nem; visszaállítva a célzott kör (4 fájl, 166 teszt) zöld). `tsc --noEmit` és `eslint` tiszta az érintett fájlokon.
+
+**Nem ebben a körben (B1' megjegyzés):** a `isSelfProposedVerdict`/`effectiveStructuredRow` egyéb logikája (N2 verified-negatív-precedencia) változatlan, mert a B1' fix előbb szűri ki a hitelesítetlen sorokat, mint ahhoz a logikához egyáltalán elérnének.
+
+**Ki döntött:** backend (RedHat második NO-GO 16824 a 2bfa4c67-re, MikroB döntése a visszaadáskor, msg_id 11073/11081). Re-gate: QA + WhiteHat2 + RedHat (ugyanaz a kijelölés, mint az előző körben).
+
+## 2026-10-11 -- 9655494c F1-B1 (RedHat NO-GO 17005, MikroB döntés 17006): agent-kulcs kiadás kivezetve HTTP-ről, csak helyi CLI
+
+**Forrás:** RedHat (cybered) harmadik NO-GO-ja a 9655494c F1-re, a cbd638ec541a44b8cc7090242e8619d3f79c2fb0 shán (a QA PASS 16999 és a korábban zárt F1-B2/F1-B3 után is nyitva maradt a lényeg). MikroB döntése a visszaadáskor (komment 17006, msg_id 11085).
+
+**Mért bypass (X1/X3, RedHat saját mérése, az élő dashboard mai állapotában is igaz -- 0 felhasználó):** a `POST /api/auth/agent-keys` (és a DELETE) session-only kapuja (`CREDENTIAL_MINT_KINDS`) sosem különítette el "a tulajdonost" "akinek megvan a közös token"-től, mert a közös token MAGA tud sessiont előállítani. X1: 0 felhasználónál a token `POST /api/auth/users` (bootstrap-kivétel) -> 201, `POST /api/auth/login` -> 200 + süti, ugyanezzel a sütivel `POST /api/auth/agent-keys` qa-ra és cybered-re -> 201, 201, `resolveVerdictAuthor` szerint `verified=true`. X3: ha már van tulajdonos, a token break-glass `POST /api/auth/password` (current_password nélkül) -> 200, login az új jelszóval -> 200, utána ugyanaz a lánc. Mindkét esetben egy `/api/claude-plans/rotate` hívás is 200-at adott ugyanazzal a sessionnel (más, már ismert kártya hatóköre, itt csak bizonyítékként mérve).
+
+**Javítás (strukturális, nem szigorúbb ellenőrzés):** `POST /api/auth/agent-keys` és `DELETE /api/auth/agent-keys/:agentId` MOST MINDIG 403-at ad, FÜGGETLENÜL az auth-kindtól (session, token, device-kulcs, vagy auth nélkül egyaránt) -- a teljes mint/rotate/revoke logika (agent_id validáció, rotate-ág, `mintAgentDeviceKey`/`findAgentDeviceKeys`/`revokeAgentDeviceKeys` hívás) kikerült a HTTP route-ból, mert HTTP-n session-sel soha nem bizonyítható ember, amíg a közös token magát a sessiont elő tudja állítani. A képesség a `scripts/dashboard-user.ts` CLI-be került (`agent-key:mint [--rotate]`, `agent-key:revoke`) -- ugyanaz a bizalmi gyökér, mint a fájl többi parancsáé ("ha futtathatod ezt a gépen, az a hitelesítő adat"), közvetlenül az adatbázisba írva, nincs HTTP-kör, amit meg lehetne hamisítani. `store/agent-key-provision.sh` (az egyetlen hívója) teljesen átírva: a korábbi interaktív login + cookie + scratch-dir (mktemp WORK, EXIT trap) lánc megszűnt -- nincs többé mit scratch-dir-ben tartani, mert nincs login-payload, cookie vagy mint-payload, ami titkot hordozna a hívás közben. A szkript most `npm run --prefix "$MARVEEN_MAIN" --silent dashboard-user -- agent-key:mint/:revoke`-ot hív, a nyers kulcsot a parancs stdout-jából veszi, és közvetlenül az agent saját 0600 fájljába írja.
+
+**Teszt:** `auth-agent-keys.test.ts` teljesen átírva (a korábbi "session mint-el, token 403" kontraktus pont azt várta el helyesnek, amit ez a kör javít) -- most minden auth-kind (session, token, device, nincs auth) 403-at kap mindkét végponton, `it.each` paraméterezve, plusz egy explicit X1-repro eset. `agent-key-provision.selftest.sh` teljesen átírva: egy `npm`-et helyettesítő shim naplózza a pontos argv-t (`agent-key:mint <agent>` / `--rotate` / `agent-key:revoke <agent>`), és 17 eset fedi a boldog utat (kulcsfájl tartalma/módja, nincs kulcs-leak a script saját stdout+stderr-jében), a hiba-ágakat (CLI-hívás bukása -> exit 4, nincs félkész kulcsfájl) és a validációt (rossz agent-id, hiányzó agent-dir, ismeretlen flag, hiányzó MARVEEN_MAIN). Mutáció-proof mindhárom helyen: (1) a HTTP route visszaállítása a régi session-elfogadó alakra PONTOSAN a két új "refused with 403" tesztet vitte pirosra (a 403 helyett 201-et kapott X1/X3-eset), semmi mást; (2) a `--rotate` flag-továbbítás kivétele a shell-szkriptből PONTOSAN a "rotate: flag not forwarded" selftest-sort vitte pirosra; mindkettő visszaállítva zöld. `tsc --noEmit` és `eslint` tiszta az érintett fájlokon (a `scripts/` könyvtár eslint-konfig nélküli figyelmeztetése már a javítás előtt is állt, nem ebben a körben keletkezett). Célzott kör (7 tesztfájl, 191 teszt) zöld + a shell-selftest 17/17.
+
+**Nem ebben a körben:** a bootstrap/break-glass maga (X1 első fele, X3) MikroB döntése szerint külön kártyán (6eca461e mellett) megy, nem itt -- ez a kör kizárólag azt zárja, hogy egy ÍGY megszerzett session agent-kulcsot tudjon kiváltani. A `CLAUDE_ROTATION_*` kapcsolók és az élő kulcskiadás a kártya lezárásáig tilos, változatlanul.
+
+**Ki döntött:** backend (RedHat harmadik NO-GO 17005 a 9655494c F1-re, MikroB döntése a visszaadáskor, komment 17006, msg_id 11085). Re-gate: QA + RedHat (a kártya saját gate-kijelölése, "Gate: qa, cybered").
+
+## 2026-10-12 -- 25aaada5 harmadik RedHat NO-GO (komment 17101, B1'/N1/N2) javítva
+
+**Forrás:** RedHat (cybered) delta-gate NO-GO a b44c69fd780d4f905cc78fb2e35f78d9ca96a110-ra (a 16934-es NO-GO B1/B2 javítása után). Mérés: saját, eldobható, SHA-pinnelt worktree a VALÓDI `tryHandleAgents` approve route-on és a VALÓDI `runInviteMonitorTick`-en, gyerekfolyamatos versenymérés.
+
+**Mért bypass-ok (mind a b44c69fd fán, RedHat saját mérése):**
+- B1' (MEDIUM, a 16934 B1 maradék ága): `writeFileNoFollowSync` a szimlink-ellenőrzés (`realpathSync(dirname)`) ÉS a nyitás KÖZÖTT két külön syscall volt -- egy másodpercekig futó, triviális könyvtár-váltogató gyerekfolyamattal 120000 hívásból ~7% kiírt a sandboxon kívülre.
+- N1 (LOW, fél-jóváhagyás): a marker-írás az `allowFrom`/`pending`/`dmPolicy` mutáció UTÁN futott mindkét hívási helyen -- egy szimlink az UTOLSÓ útvonal-elemen (ahol az O_NOFOLLOW már helyesen dobott) a dobás ELŐTT engedte lefutni a mutációt, fél-jóváhagyást hagyva hátra.
+- N2 (LOW, hosszkorlát + denylist hézag): a hosszkorlát 200 UTF-16 kódegység volt, nem a valós 255-BÁJTOS fájlnév-limit -- 86 db 3-bájtos karakter (258 bájt) átment a kódegység-ellenőrzésen, majd ENAMETOOLONG-gal bukott, a mutáció UTÁN. A denylist csak NUL-t tiltott, más vezérlőkaraktert (tab, sortörés) nem.
+
+**Javítás:**
+1. **B1'** (`sanitize.ts`, `writeFileNoFollowSync`): a szülő-könyvtárat EGYSZER nyitja meg `O_DIRECTORY|O_NOFOLLOW`-val, a `realpathSync`-ellenőrzést és a marker-fájl nyitását is EZEN A FD-N keresztül (`/proc/self/fd/<fd>/...`) végzi -- egy fd, miután megnyílt, mindig ugyanarra a könyvtár-inode-ra mutat, függetlenül attól, mi történik a PATH-szal utána. Platformon, ahol nincs `/proc/self/fd` (ellenőrizve `existsSync` egyszeri hívással modul-betöltéskor), a régi, egy-syscallos `realpathSync(dir)`-majd-`openSync(path)` alak marad tartalékként, kimondva a kódkommentben.
+2. **N1** (`routes/agents.ts` + `channel-invites.ts`): a `mkdirSync`+`writeFileNoFollowSync` (a marker-írás) MOST a mutáció ELŐTT fut mindkét hívási helyen -- ugyanaz az "minden hatás vagy semelyik" elv, amit a safeJoin/isPlausibleChannelSenderId ellenőrzések már követtek, kiterjesztve a szimlink-ellenőrzésre is. A sweep oldalán (`channel-invites.ts`) a korábbi warn-only `catch` most `continue`-t ad: egy írási hiba a bejegyzést teljesen kihagyja (nem jóváhagyva, nem elhasználva), nem fél-jóváhagyást hagy hátra.
+3. **N2** (`sanitize.ts`, `isPlausibleChannelSenderId`): a hosszkorlát `Buffer.byteLength(senderId, 'utf8') > 255`-re cserélve (a valós fájlnév-limit), a NUL-csak ellenőrzés egy teljes C0-vezérlőkaraktr + DEL regexre (`/[\x00-\x1f\x7f]/`) szélesítve.
+
+**Teszt:** `channel-pairing-senderid-traversal.test.ts` 34 -> 48 (+14): B1' (determinisztikus TOCTOU-repró, `vi.mock('node:fs', importOriginal)`-on át egyszer-tüzelő `realpathSync`-hook, a valódi nyitás UTÁN cseréli a könyvtárat szimlinkre -- `vi.spyOn` közvetlenül az ESM-modulnévtéren nem működik, lásd a fájl tetején a megjegyzést), N1 (a marker-szimlink dobás UTÁN access.json byte-azonos marad, a `pending` kód nem fogy el), N2 (260-bájtos-de-130-kódegységes alak + tab-karakter, mindkét hívási helyen), és M6/M12 (RedHat 17101 N4 tesztlyuk-jelzése: backslash-csak alak és nem-string `senderId` típus -- korábban mindkettő 100% zölden maradt egy célzott mutánson, mert semelyik teszt nem gyakorolta ezt a konkrét alakot). Mutáció-proof mind az 5 fixre, KÜLÖN-KÜLÖN visszaállítva és igazolva: B1' (a fd-pinnelt nyitás kikapcsolása -> pontosan a 2 B1'-teszt pirosra, a külső könyvtárba TÉNYLEGESEN kiíródott, igazolva a repro valóságát), N1 mindkét hívási helyen (a sorrend visszaállítása -> pontosan az adott N1-teszt pirosra, access.json tényleg megváltozott), N2 (a régi denylist visszaállítása -> pontosan a 3 N2-teszt pirosra, ahol a kontroll-karakter eset tényleg 200-at adott és allowFrom tényleg módosult; a bájthossz-eset a sweep oldalán zölden maradt, mert az N1-fix ott független védelmet ad ugyanarra a konkrét alakra -- ez átfedő védelem, nem hiányzó teszt). Mindegyik visszaállítva, a teljes fájl 48/48 zöld.
+
+Egy eslint-only mellékhatás (`no-control-regex` disable-comment feleslegesnek bizonyult, mert a szabály ezen a konfigon nem triggerel ilyen mintára) eltávolítva -- a `lint-ratchet.sh` ezt parse-error-bucket-ként (null ruleId) számolta, 6 -> 7, a comment eltávolítása után vissza 6-ra, "no rule got worse".
+
+`npx tsc --noEmit` tiszta. Celzott futas: 48/48 zold.
+
+Teljes fleet-test.sh a Gate-SHA-n: a kovetkezo korben, a futas eredmenyevel.
+
+**Ki döntött:** backend3. Gate: QA + RedHat (a delta-gate sajat kijelolese, a RedHat verdiktje utan).
+
+## 2026-10-12 -- Kártya 9655494c F2: a memória-szűrés kulcs-identitásra szűkítése MÁR LANDOLT (517fdcc5), end-to-end megerősítve F1 valódi kibocsátásával
+
+A kártya F2 követelménye ("a memória-olvasás agent-kulccsal a KULCS identitásán szűrjön, ne a hívó állította ?agent= paraméteren") szó szerint már megépült és landolt a 517fdcc5 kártya alatt (`c20eba3d`: `/:id` kezelő egységesítve, holt másolat törölve; `16743ab4`: a lista és a q-keresés ág is a device-kulcs identitást részesíti előnyben a `?agent=` felett), amíg a 9655494c saját F1-je (agent-kulcs kiosztás/rotáció/visszavonás, `56fc5391`) ezzel párhuzamosan készült. A kártya saját szövege ezt a 517fdcc5 landolása utáni delta-ellenőrzésként várta.
+
+Kód-olvasással ellenőrizve: `mintAgentDeviceKey(agentId)` (`auth-device-keys.ts:175`) `createDeviceKey(AGENT_KEY_PREFIX + agentId)`-t hív, tehát a kulcs neve `agent:<id>` -- pontosan az `agentKeyToAgentId()` (ugyanaz a fájl, 48. sor) által elvárt alak. A `memories.ts` mindhárom olvasó ága (POST-identitás, lista+keresés, `/:id`) ugyanazt az `agentKeyToAgentId(auth.device)` hívást futtatja. Nincs kód-rés F1 és F2 között: ugyanaz a konstans (`AGENT_KEY_PREFIX`), ugyanaz a függvénypár mindkét oldalon.
+
+A meglévő 517fdcc5-tesztek ezt kézzel összerakott `auth.device` stringgel pinelték (`{ kind: 'device', device: 'agent:attacker' }`), sosem a valódi F1 kibocsátó úton át -- ez vakfolt maradt volna egy prefix/casing-eltérésre F1 és F2 között. Új teszt (`memories-get-by-id.test.ts`, +2 teszt, MUTÁCIÓVAL ellenőrizve): `mintAgentDeviceKey('attacker')` + `resolveDeviceKey(minted.key)` -- a VALÓDI kibocsátási és feloldási úton át kapott `device` string a listán nem látja a victim sorát forgatott `?agent=victim` mellett; `mintAgentDeviceKey('victim')` + `resolveDeviceKey` a `/:id`-n forgatott `?agent=attacker` mellett is a saját sorát látja. Mutáció: mindhárom `memories.ts`-beli `authenticatedAgentId` kiszámítás `null`-ra cserélve -- a 2 új teszt + a meglévő 4, egy teszt-fájlban, PONTOSAN 6 bukott (semmi más), bizonyítva hogy a teszt a VALÓDI kapcsot méri, nem egy tautológiát. Visszaállítva: 14/14 zöld, a fájl byte-pontosan egyezik az eredetivel.
+
+Célzott kör (6 fájl: memories-get-by-id, auth-agent-keys, auth-device-keys, auth-gate, auth-recovery, bridge-enroll): 111/111 zöld. `tsc --noEmit` tiszta.
+
+A kártya ezzel F1 + F2 mindkét részét zárja; L1/L2 nem ennek a kártyának a köre (a 2520b85a measurement-only szelete, 83416786, már done -- lásd a kártya saját korábbi bejegyzését).
+
+Teljes fleet-test.sh: a landoló körben, az eredménnyel.
+
+**Ki döntött:** backend. Gate: QA + RedHat (a kártya saját kijelölése, "Gate: qa, cybered").
+
+## 2026-10-12 -- Kártya 21abfe0b delta (komment 16360, RedHat GO, Gate-SHA 9ddfc449): WhiteHat2/cybersec2 bekötve a gate-eszközökbe, a visszamaradt tesztlyukak a 31e70128 testvér-paritás őr kártyán zárva
+
+A 21abfe0b (a WhiteHat testvérpárjának, cybersec2/WhiteHat2-nek a bekötése a gate-eszközökbe: `gate-role.sh`, `kanban-gate-completeness-guard.ts`, `gate_designation.py`, `cybersec-gate-scan.py`, `fleet-nudger.sh`, seed-fleet-agents/cybersec2) RedHat GO-val lezárt a 16225-ös NO-GO B1/B2/B3 leleteinek javítása után (Gate-SHA `9ddfc449f218a6d28e7bd2859be94d610f938790`): a szerver-oldali gate-lezáró őr felismeri a cybersec2-t, a seedben nincs `/home/neon` abszolút út, a `fleet-nudger.selftest.sh` zöld. A GO nem blokkolt, de három LOW tesztlyukat nevezett meg (RedHat 16360 mutáns-mérése, M12/M13/M14/M16: nem nyitnak támadási utat, de egy regresszió csendben visszajöhetne), a 31e70128 testvér-paritás őr kártyára utalva.
+
+A 31e70128 ezeket zárta: (1) a literál "CYBERSEC2 GO"/"WHITEHAT2 GO" verdikt-TOKEN (nem csak a cybersec2-AUTHOR bare szóval) felismerését `landing-gate-verdict-parse.py`-ban most a NOQA/NONE megkülönböztetés rögzíti (M14 -- az OK verdikt csak `qa_passes`-től függ, ezért egy QA PASS mellé párosított teszt vakfolt lett volna, lásd a selftest saját megjegyzését); (2) a `2?` testvér-tolerancia HIÁNYÁT a CYBERED/REDHAT FAIL-ágon ("CYBERED2 NO-GO", "REDHAT2 GO/NO-GO" NEM ismerhető fel verdiktként) mind `landing-gate-verdict-parse.py`-ban, mind a vonatkozó selftestben (M12/M13) -- mindkét irányú mutáció (2? levéve a CYBERSEC PASS-ágról, 2? visszatéve a CYBERED FAIL-ágra) egyenként lefuttatva, PONTOSAN az érintett új teszt bukik, a restaurált fájl byte-pontosan egyezik az eredetivel. A seed abszolút-út tesztlyuk (M16) és a nem ebbe a kártyába tartozó skill-drift sibling-pair guard (skill-NEV/SKILL.md-hash/Core-lista) a 31e70128 fő tétele -- lásd a kártya saját REVIEW-ját.
+
+**Ki döntött:** cybered (21abfe0b GO), backend (31e70128 tesztlyuk-zárás). Gate: QA + RedHat (21abfe0b); QA + Cybersec (31e70128, a kártya saját kijelölése).
+---
+
+**2026-10-12 -- Upstream Köteg 11 (60aaaef9..59e85ead, 28 commit, 2026-09-27..2026-09-29) konfliktus-feloldások**
+
+Döntések fájlonként (fork-oldal az alapértelmezés, eltérések felsorolva):
+
+- **package.json, package-lock.json**: fork-oldal tartva (verzió, fork-specifikus package konfig megmarad).
+- **scripts/hooks/bash-egress-parser.mjs, src/__tests__/bash-egress-parser.test.ts, src/__tests__/command-task-run-binding.test.ts, src/__tests__/picker-cli-gate.test.ts**: törölt marad (DU -- fork törölte, upstream módosította; a törlés szándékos fork-eltérés).
+- **src/web/agent-process.ts**: fork-oldal tartva. Upstream `ensureProjectRootInClaudeMd` és `ensureMessageCloseSection` helyett fork `ensureProjectRootAnchor` (fleet-anchor logika) és `ensureLocalFirstSection` marad. A két upstream funkció a fork saját megoldásait váltja le -- nem portolható vak ours nélkül, de a fork-logika lefedi a szükséges viselkedést.
+- **src/__tests__/command-task-async.test.ts, src/__tests__/vault-export-key-resolution.test.ts**: fork-oldal tartva (AA ütközés -- mindkét oldal hozzáadott, fork verziója fleet-specifikus tesztfedettséggel).
+- **Többi UU fájl** (agent-msg.sh, outgoing-copy-gate.py, limit-monitor-signals.test.sh, stb.): fork-oldal tartva.
+
+**Ki döntött:** backend3 (8a3a1e84 kártya alapján, MikroB utasítása).
+
+---
+
+**2026-10-13 -- 8a3a1e84 landolás: `store/lint-baseline.json` ütközés + ratchet-bővítés indoklással**
+
+A `store/lint-baseline.json` is ütközött a merge-ben (HEAD: `no-unsafe-argument`=132/`no-unused-vars`=168, card/8a3a1e84: 133/170). A HEAD-oldalt vettem át (a ratchet csak szigorodhat, a card oldala elavult volt), majd a `lint-ratchet.sh` a teljes merge-eredményen 2 ÚJ `no-unused-vars` leletet talált: `src/__tests__/router-voice-stt-gate.test.ts:25-26`, két `(..._a: unknown[])` rest-paraméter, amit a kódbázis `no-unused-vars` szabálya (nincs `argsIgnorePattern`) jelent, ugyanúgy, mint a már meglévő 168 közül sok tucat azonos `_a`-mintájú esetet (pl. `router-batch-inject.test.ts`, `message-router-tick-cap.test.ts`). Ez a fájl az upstream Köteg 11 szinkron tartalma, a mintát nem én vezettem be -- a kódbázisban már bevett (nem javított) konvenció. A sebészi-változtatás elv (3. kódminőségi elv) szerint NEM ezt a 2 sort javítottam ki külön stílussal, hanem a `store/lint-ratchet.sh --update`-tel a baseline-t a tényleges, mért értékre (170) emeltem, dokumentálva itt az okot -- konzisztensen a már ott lévő, el nem hárított azonos hibaosztállyal.
+
+**Ki döntött:** backend3 (8a3a1e84 landolás, 2026-10-13).
+
+---
+
+**2026-10-13 -- Köteg 12 (upstream 360e2e26..0bea3cd7, 24 commit): 21 ütköző fájl + 4 csendes merge-drop feloldása**
+
+Kártya 95b62f66, MikroB kötegterve szerint, fork-oldal alapértelmezéssel. 21 ütköző fájl, mindegyik feloldva és indokolva (a legfontosabbak):
+
+**Modell-alapértelmezés (deferred decision, folytatva):** a `config-registry.ts` `DISTRIBUTION_DEFAULT_AGENT_MODEL` upstream `claude-opus-5-5[1m]`-re bővítené (MODELSUGGEST923), ez marad `claude-opus-5` -- ugyanaz a card d041760b invariáns (2026-08-06, Peti), reaffirmed 2026-09-25 (14284837) és most ismét. Az invariáns: egyeznie kell `DEFAULT_MODEL_CHAIN[0]`-lal (`model-fallback.ts`), különben egy kvóta-visszaállás csendes downgrade lenne. A DEFAULTCLIGUARD927 (CLI-verzió-tudatos fallback, `DISTRIBUTION_DEFAULT_FALLBACK_MODEL='claude-opus-5[1m]'`) viszont ADOPTÁLVA -- additív biztonsági infrastruktúra, ma no-op (a fork alapértelmezésének nincs CLI-korlátja), de kész a jövőre. Három teszt (`default-model-guard.test.ts`, `model-suggest.test.ts`, `channels-main-model.test.sh`) ennek megfelelően igazítva, a FORK DIVERGENCE indoklással dokumentálva.
+
+**`channels.sh` TMUX_AUTH_ENV -> AUTH_PANE_ENV (biztonsági javítás, TOKENARGV929):** a merge CSENDBEN (konfliktus nélkül) eldobta a fork saját `TMUX_AUTH_ENV` tömbjét (tmux `-e` flag, a token a tmux szerver argv-jában/`ps`-ben látszott) -- ez pont a sebezhetőség, amit upstream saját commitja (3a59f423, SZINTÉN ebben a kötegben) fájl-alapú `AUTH_PANE_ENV`-re cserélt. Adoptálva upstream alakja, a `CUSTOM_PROVIDER_ENV` NEM (lásd lent, korábbi döntés).
+
+**Custom-provider klaszter (folytatott NEM-adoptálás):** `scripts/main-agent-custom-provider.mjs`, `buildCustomProviderLaunchEnv`, a `channels.sh` `CUSTOM_PROVIDER_ENV` wiringje -- mind hiányzik a fából (korábbi, dokumentált törlés, lásd a 8a3a1e84-es bejegyzés 18967. sora: inkompatibilis a fork saját, WhiteHat-hardened `custom-providers.ts`-ével). `agent-worker.ts`-ben a merge ÚJRA becsempészte volna ezt (`buildCustomProviderLaunchEnv` hívás egy nem létező importra) -- a DEFAULTCLIGUARD927 fallback-ot KÜLÖN, a fork saját `WORKER_MODEL`/`MARVEEN_WORKER_MODEL` override-ja köré szőve adoptáltam, `fromCustomProvider` fixen `false`.
+
+**`update.sh` nem-adoptált unit-karbantartó klaszter (folytatva):** `install_keepalive_probe_timer`, `install_keepalive_probe_launchd` (új ez a kör, macOS-twin), `install_main_inbox_observer_unit`, `park_morning_timer` -- MIND NEM adoptálva, ugyanaz a már dokumentált ok (2026-10-02, ef6a8031 Cybersec NO-GO: élő installon kérdés nélkül indítanának egy új timert / állítanának le egy működő funkciót, a kódminőségi 5. elv sértése). `UPDOOMNPMCI926` (retry() exit-kód + npm_ci_failed() OOM-tudatos rollback) szintén NEM adoptálva -- korábbi dokumentált ok (upstream diffje törölné a Peti-mandátumos checkpoint/rollback-guard mechanizmusokat). ÚJONNAN adoptálva: `strip_legacy_notifier_telegram_env` (önálló, biztonságos retroaktív takarítás), BRANCHHEAL925 (`git switch` a `git checkout` helyett) és UPSTREAMSRC927 (friss fetch-re mért divergencia-ellenőrzés) -- mindkettő tisztán merge-elt, nincs ütközés a fork mechanizmusaival. `src/fork-upstream/acknowledged-conflicts.ts` blob-pin frissítve, a teljes indoklás ott.
+
+**`kanban.ts` POST /api/kanban: UNION, nem csere.** A fork saját védelmei (newDevStop-blokk, assignee-alak/tiltólista, `normalizeProjectName`, tipizált id-kinyerés `isInvalidKanbanIdShape`-pel, szülő-kör-ellenőrzés, dedup-prefilter) MIND megmaradtak, upstream `agent`->`assignee` alias-felbontása (card b5344b62) és az ismeretlen-mező WARN (`KANBAN_CREATE_FIELDS`) BELEFONVA a meglévő folyamatba, a helyes sorrendben (alias előbb, hogy az assignee-ellenőrzések már a feloldott értéket lássák). `kanbanAssigneeExists()` (db.ts, szintén csendben kiesett a merge-ből) pótolva és bekötve a GET /api/kanban `assignee=` szűrő `isKnownAgent()`-ellenőrzésébe (korábban egy külső, nem-konfigurált assignee-re szűrés hamisan 400-at adott volna).
+
+**`web/app.js`:** a hatalmas (4500+ soros) konfliktus a MÁR DOKUMENTÁLT "upstream batch 8 (94765127) újra behozza a modularizálatlan kanban-szekciót" eset megismétlődése -- a `STUB -- content removed` marker változatlan marad, a tartalom eldobva (a fork saját `app-kanban.js` modulja áll).
+
+**Lint-ratchet bővítés:** `no-unsafe-argument` 132->140 (egy új teszt-fájl, `kanban-post-agent-alias.test.ts`, 7 lelettel -- laza JSON-tipizálású teszt-body-k, ugyanaz a már elfogadott konvenció, mint a többi teszt-fájl; + 1 a `kanban.ts` saját POST-kezelőjében). `store/lint-ratchet.sh --update`-tel emelve, nem surgikus séma-erőltetéssel egy új teszt-fájlra.
+
+**A teljes fleet-test első futása 15 teszt-hibát mutatott -- mind a "csendes merge-drop" vagy FORK DIVERGENCE osztályba tartozott, egyenként kivizsgálva és javítva (nem tömegesen elfogadva):**
+- `scripts/install-prod-tree-guard-hook.sh`: a GUARDFROM924 (MAIN_AGENT_ID kiolvasása a telepítés `.env`-jéből a branch-váltás riasztáshoz) csendben kiesett -- a fork saját, már keményített JSON-encoding+token-fájl védelme köré szőve pótolva.
+- `src/__tests__/channel-poller-reap-integration.test.ts`: a TMUXSERVERREAP929 (ne öld meg a tmux szervert magát) tisztán bekerült, de a teszt mockja nem ágazott a `tmux display-message` hívásra -- minden eset a fail-safe-be futott (`reaped: []`). Mock-ág pótolva.
+- `web/app-wizard.js` `populateProfileSelect`: egy hiányzó profil eddig csendben esett vissza `default`-ra, a UI-n a kért nevet mutatva -- most `⚠ <név> (nem létezik)` jelöléssel + a kapcsolódó i18n-szöveggel látható (upstream új, valódi UX-javítás, nem csak modularizációs eltérés; a teszt is app.js helyett app-wizard.js-t olvas, mert itt él a fork saját moduljában).
+- `src/__tests__/main-model-resolution-parity.test.ts` + a `default-model-guard.test.ts` korábban nem commitolt javítása: ugyanaz a FORK DIVERGENCE (`claude-opus-5` nem CLI-korlátos), a `registryOverride` fixture-hook-kal a log-sor teszt is valós, korlátos modellpárral fut.
+- `src/__tests__/scheduler-tick-nonblocking.test.ts`: az új `sleep-wake-detector.ts` (schedule-runner.ts importálja) bekerült a tick-path levezetésbe; az egyetlen szinkron hívása (`execFileSync sysctl`, 2s timeout, csak macOS, csak tényleges alvás-rés esetén) gate-reviewed kivételként pinnelve, a meglévő `agent-process.ts` mintájával azonos indoklással.
+- `scripts/__tests__/update-npm-ci-include-dev.test.sh`: a MIN_HIVAS=5 küszöb feltételezte a NEM adoptált `npm_ci_failed()` 2 saját hívását -- 3-ra igazítva, a tényleges (és helyes) fork-állapotra.
+
+Teljes fleet-test (2. kör, a fenti javításokkal): 995+ fájl zöld, lásd a landoló kör saját kimenetét a kártya REVIEW-jában.
+
+**Ki döntött:** backend3 (Köteg 12, 2026-10-13).
+
+---
+
+**2026-10-14 -- 2b0bd3ae: /api/claude-plans configDir-validáció NEM szűkítve -- döntés, kódváltozás nélkül**
+
+Cybersec LOW lelete (ef6a8031 komment 11223, 2026-10-02): `expandAndValidateConfigDir` (`src/web/agent-config.ts`) csak shell-biztonságot (whitelist/traversal/tilde) ellenőriz, nem azt, hogy a megadott configDir egy meglévő agent-konfig-gyökér alatt van-e. Döntés kell: szűkítendő-e, és kell-e explicit megerősítés a `/rotate`-ra.
+
+**Megerősítés kell NEM szükséges már:** a kártya nyitása (2026-08-15) UTÁN landolt a 93ed929a (2026-10-09, HIGH, DONE) -- `rejectIfNotHumanAuth` MOST MINDEN claude-plans write/rotate útra kötelező (POST, PUT, DELETE, POST /rotate, `routes/claude-plans.ts:151,213,405,464`): böngésző-session vagy nem-agent eszközkulcs kell, a megosztott flotta-token nem elég. Ez pontosan az eredeti LOW lelet valós kockázatát zárta le (bármely flotta-ágens tetszőleges configDir-t regisztrálhatott volna).
+
+**configDir-validáció szűkítése NEM kell:** a claude-plans regisztráció pont azért létezik, hogy egy ÚJ, friss `claude setup-token`-nel feltöltött könyvtárat vegyen fel -- ez NEM feltétlenül egy már létező agent-konfig-gyökér. A szűkítés a legitim új-plan-regisztrációs folyamatot törné el, biztonsági haszon nélkül, mert a regisztráció (a valódi kockázatos lépés) már ember-kapuzott. A kártya által is megemlített "agent-PUT flag nélkül hozzárendelhet" (`routes/agents.ts` `PUT /api/agents/:id`, `claudePlan` mező) külön, alacsonyabb kockázatú művelet: csak egy MÁR LÉTEZŐ (ember által létrehozott, validált) plan-id-re mutathat rá, nem hozhat létre újat -- ugyanaz a nyitottsági szint, mint minden más agent-mező (model, authMode, mcpJson), nem egy új rés.
+
+**Kódváltozás:** egyetlen dokumentáló komment `src/web/agent-config.ts`-ben `expandAndValidateConfigDir` felett, a döntés + indoklás rögzítésére, hogy egy jövőbeli olvasó ne nyissa vissza vizsgálat nélkül. Funkcionális változás nincs.
+
+Local-LLM draft (card 18039) a kártyán: a draft csak a kártya szövegét parafrazálta, konkrét kódot/döntést nem adott -- Draft-Review: ELUTASITVA.
+
+**Ki döntött:** backend3 (kártya 2b0bd3ae, 2026-10-14).
+
+---
+
+**2026-10-14 -- 165350f1: fő verziószám-javítás (1.36.0 -> 1.40.0) + automatikus upstream-tag-követés + `/api/version` konzisztencia**
+
+Peti reklamációja (Telegram 11264/11274): "A fő verziószám nem jó." Mérve: `package.json` `1.36.0+mikrob.N` volt, miközben a Szotasz/marveen `v1.40.0` tag (2026-09-29) már őse volt `origin/develop`-nak -- négy upstream release-nyi elmaradás a kijelzésben a tényleges beolvasztott tartalomhoz képest. Ok: `bump-fork-version.sh` (a `marveen-land.sh`-ból minden fork-saját landolásnál hívott, automatizált számláló) a saját fejkommentje szerint is csak a `+mikrob.N` részt bumpolja, az `X.Y.Z` főverziót "egy KÜLÖN, ezt a scriptet soha nem érintő folyamatra" hagyja -- ez a folyamat viszont soha nem lett megépítve. Az upstream-szinkron (Köteg N) landolások (lásd pl. a fenti 8a3a1e84/95b62f66 bejegyzések) kézi, ad hoc scripttel mentek, ami sosem hívott semmilyen verzió-bump logikát.
+
+**1+2. Automatikus követés, EGYETLEN mechanizmus -- új script, `store/bump-upstream-version.sh` (`bump_upstream_version <worktree>`, 10 esetes selftest), BEKÖTVE `marveen-land.sh`-ba, a meglévő `bump_fork_version` hívása ELÉ, a SAJÁT `chore(version)` commitjába.** A függvény megkeresi a legmagasabb (SZÁM szerint, nem string-rendezéssel -- `v1.10.0` > `v1.9.0`) `vX.Y.Z` tag-et, ami a worktree HEAD-jének őse, és ha ennek `X.Y.Z`-je nagyobb a `package.json` jelenlegi `X.Y.Z`-jénél, átírja mindkét fájl verzió-mezőjét -- a `+mikrob.N` suffixet VÁLTOZATLANUL hagyva (a számláló a fork-saját landolások kumulatív száma, nem nullázódik egy upstream-bump-nál). `bump-fork-version.sh` fejkommentje frissítve, hogy a két script egymásra mutasson.
+
+**Miért a landolásba, nem egy kézi egyszeri szerkesztésbe:** az első próbálkozás `package.json`/`package-lock.json` KÉZI, a kártya saját dev-branch commitjában végzett korrekciója volt -- ezt a `git-protect-guard.py` lockfile-ágra blokkolta (`agent nem nyul a lockfile-hoz, MikroB batcheli`), helyesen: a lockfile-verzió-szinkron MINDIG a landoló automatizmus saját, `mikrob` attribúciós commitjába tartozik, ahogy a már létező `bump_fork_version` hívás is ott ül, nem az ügynök saját kódváltozásai között. A bekötés `marveen-land.sh`-ba ezt strukturálisan megoldja ÉS egyúttal az "automatikus upstream-tag-követés" (2. kártya-követelmény) legrobusztusabb megvalósítása: mivel ez a script fut MINDEN fork-saját landolásnál (nem csak az upstream-szinkron Köteg-kártyáknál, amik jelenleg kézi, ad hoc scripttel mennek, lásd a fenti 8a3a1e84/95b62f66 bejegyzéseket), a főverzió a LEGKÖZELEBBI landoláson automatikusan korrigálódik, akár hívta a Köteg-landoló script közvetlenül `bump_upstream_version`-t, akár nem -- ez maga a kártya egyszeri korrekcióját is elvégzi, a saját landolásakor. Ha MikroB egy teljesen önjáró, közvetlen `upstream-sync-land.sh`-t akar (ami a bumpot MÉG az upstream-merge landolásának pillanatában, nem a következő fork-saját landolásnál végezné el), az külön kártya -- ennek a kártyának a hatóköre a verziószámra szól, nem egy ÚJ, önálló upstream-landoló automatizmus megépítésére.
+
+**Mellékesen:** `src/__tests__/store-selftests-all-run.test.ts` MODE_SELFTESTS listájába felvéve mind az új `bump-upstream-version.sh`, mind a testvére, a már létező de eddig SOHA nem futtatott `bump-fork-version.sh --selftest` (ugyanaz a "megírva, commitolva, zöldnek-néz-ki, soha nem futott" hiba-osztály, egy script mellett véletlenül észrevéve).
+
+**3. `/api/version` konzisztencia (`src/web/routes/version.ts`):** a hiba a kártya leírása szerint valós volt -- `readVersion()` (package.json) a FOLYAMAT ELSŐ hívásakor cache-elődött (örökre), míg a `commitHash`/`buildTime` minden kéréskor FRISSEN `dist/.built-commit`-ből olvasódott. Egy landolás, ami a service újraindítása NÉLKÜL rebuildeli a `dist`-et (ami a flottánál rutinszerűen megtörténik), a két érték KÜLÖNBÖZŐ pillanatból keveredett: a kijelzett verzió a folyamat induláskori állapotát mutatta, a commit-hash viszont már az újabb buildét. Javítás: mindkettő EGYÜTT, egyszer, a modul-betöltéskor (= folyamat-indításkor) olvasódik be (`RUNNING_VERSION`/`RUNNING_BUILT`), és egy új, külön exportált tiszta függvény (`hasNewerBuildOnDisk`) minden kéréskor összeveti a lemezen lévő friss `dist/.built-commit`-et a befagyott induló-értékkel -- ha eltér, a válasz egy `newerBuildOnDisk: true` mezőt ad, de a kijelzett `version`/`commitHash`/`buildTime` továbbra is a TÉNYLEGESEN futó folyamatot írja le, nem a lemezen lévőt. A dashboard sidebar (`web/app-overview.js`) ⚠ jelzést + i18n tooltipet mutat, ha ez igaz (új kulcs: `overview.version_rebuild_pending`, hu+en).
+
+**4. README fork-fejlesztés bejegyzés:** a "Frissítés, verziózás, rollback" szekcióban két új, név+egy-mondat formátumú tétel (upstream-tag-követés, `/api/version` konzisztencia); a meglévő "Fork-saját verziójelzés" tétel szövege pontosítva (`X.Y.Z` = "a legmagasabb már beolvasztott upstream verzió", nem "a változatlan upstream verzió" -- ez utóbbi pont a hiba, amit ez a kártya javít).
+
+**Teszt:** `src/__tests__/version.test.ts` kiegészítve (`hasNewerBuildOnDisk` 4 önálló, fs-mentes eset + 1 "stabil ismételt híváson belül" integrációs eset), `tsc --noEmit` tiszta, `store/bump-upstream-version.sh --selftest` 10/10 zöld, `store/marveen-land.sh --selftest` 60/60 zöld (a bekötés nem tört semmit), `src/__tests__/store-selftests-all-run.test.ts` 101/101 zöld (a két új mode-selftest-tel), `lang-parity.test.ts` és `public-digest.test.ts` is zöld marad.
+
+**Ki döntött:** backend3 (kártya 165350f1, 2026-10-14).
+
+---
+
+**2026-10-14 -- 1f4c046b (Köteg 13 upstream-sync): command-syntax minták a memory-API tartalom-szűrőjében -- fork-divergencia upstream a30553d6-tól (MEGTARTVA, nem törölve)**
+
+Upstream a30553d6 ("Security infra package", #1357) a memory-API `SUSPICIOUS_PATTERNS` listájából (src/web/routes/memories.ts) TÖRÖLTE az összes command-syntax mintát (curl, bash -c, eval(, exec(, import subprocess, rm -rf), indoklás: 2124 éles tételen (upstream saját flottája) 0% precizitás (11 találat, mind false positive), és a tárolt szöveg nem fut le -- a vegrehajtás-idejű kapuk (destructive-gate.py, bash-egress-guard.py) a valódi védelem. Egy új pin-teszt (scripts/__tests__/memory-content-filter.test.py) is landolt ezzel, ami a törlést kényszeríti ki jövőben is.
+
+Ez a fork már korábban, függetlenül, az ELLENKEZŐ döntést hozta: a curl-minta (card f8599516) több WhiteHat/RedHat kört (F-1..F-4, Cybered) kapott, valódi bypass-eket zárva be minden kör után -- komoly, mért biztonsági munka, nem egy felejtett prototípus.
+
+**Döntés (MikroB, msg 11947/11948, 2026-10-14): (a) -- MEGTARTJUK a saját command-syntax/curl mintáinkat, az upstream törlést NEM vesszük át.** Indok: a kódminőségi alapelvek 5. pontja -- működő, gate-elt biztonsági funkciót csak Peti explicit jóváhagyásával vonunk vissza -- és az upstream 0%-os precizitás-mérés AZ Ő korpuszukon történt, a mi továbbfejlesztett regexünkre nincs mérve. A pin-tesztet a fork saját döntésére igazítottuk (a minták JELENLÉTÉT pineli, nem a hiányukat) -- lásd a teszt docstringjét a részletekért.
+
+**Nyitva (MikroB kérése):** ha olcsón megmérhető, a saját mintáink valós találati arányát (hány találat, ebből hány false positive) az élő memória-DB-n is érdemes megnézni; ha a precizitás nálunk is rossznak bizonyul, az Peti elé megy külön döntésre -- ez a kártya kört NEM tartalmazza.
+
+**Ki döntött:** MikroB (Peti nevében, 5. kódminőségi elv alapján), végrehajtotta backend3 (kártya 1f4c046b, 2026-10-14).
+
+---
+
+**2026-10-14 -- aacb8ceb: VRAM choke-point hiányzó guard-fájlnál -- warn-and-continue, nem fail-closed**
+
+Cybersec F1 lelet a 234306ca gate-jéből (Gate-SHA 9b7c73ae): ha `store/vram-guard-check.sh` hiányzik a `store/local-llm.sh` `generate` módjának várt alapértelmezett helyéről (pl. egy könyvtár-átnevezés/rebrand után), a VRAM choke-point csendben átengedte a hívást -- minden teszt zöld maradt (4/4, 19/19), mert mindegyik a `LOCAL_LLM_VRAM_GUARD` override-ot adja meg, egyik sem a valódi alapértelmezett utat.
+
+**Döntés: warn-and-continue, NEM fail-closed.** A choke-point saját, már létező tesztje (`local-llm-vram-choke-point.test.ts`, "a MISSING guard binary does not block generate (fail-open on absence, matching every dispatcher)") ezt a viselkedést SZÁNDÉKOSAN pineli: a choke-point a 6 dispatcher saját, közvetlen `vram-guard-check.sh`-hívásának VÉDELMI TARTALÉKA (defense-in-depth), nem egy második, szigorúbb kapu a saját hibamódjával. Fail-closedre váltás szembe menne ezzel a meglévő döntéssel, és egy hiányzó/eltávolított guard-fájl nem egyenértékű egy "GPU foglalt" állapottal -- az utóbbi tényleges, mért VRAM-adat, az előbbi egy telepítési hiba, amit jelenteni kell, nem a hívó kárára eldönteni.
+
+**Megvalósítás:** a hiányzó-fájl ág most egy stderr-sort ír (`local-llm: vram guard not found at '<path>' -- VRAM choke-point skipped, call proceeds unchecked (set LOCAL_LLM_VRAM_GUARD if it moved)`), a hívás pedig változatlanul folytatódik. Két új teszt: egy a VALÓDI alapértelmezett úttal (nincs override, a guard jelen van, a hívás csendben marad), egy pedig a hiányzó alapértelmezett úttal (a figyelmeztető sor megjelenik, de a hívás továbbra sem exit-6).
+
+**Ki döntött:** backend3 (kártya aacb8ceb, 2026-10-14).

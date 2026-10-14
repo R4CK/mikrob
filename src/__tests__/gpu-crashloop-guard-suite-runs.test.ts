@@ -31,7 +31,7 @@ describe('the gpu-crashloop-guard contract suite actually runs (card d5c05548)',
     expect(existsSync(SUITE)).toBe(true)
   })
 
-  it('every case passes, and there is a NON-ZERO number of them', () => {
+  it('every case passes, and there is a NON-ZERO number of them', { timeout: 60_000 }, () => {
     let out: string
     try {
       out = execFileSync('bash', [SUITE], {

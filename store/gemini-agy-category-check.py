@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""gemini-agy-category-check.py -- server-side forbidden-category signal detector for the Gemini
+agy wrapper's category gate (card 09117e0a F1, WhiteHat finding on 64788453 CYBERSEC GO komment
+18210: the gate only trusted the CALLER's declared --kategoria, so a security/auth/finance/mopsion
+card mislabelled 'safe' by a buggy or malicious caller went straight through to the external
+helper).
+
+Reads the kanban card JSON (the exact /api/kanban/<id> response shape) on stdin, normalizes the
+title+description (NFKD-fold accents away, casefold, ASCII-encode) and runs the SAME stem regex
+store/offload-dispatch.sh's SENS_RE already uses for its own sensitive-content gate (proven through
+several WhiteHat/RedHat hardening rounds on that script) plus a mopsion/cleancore stem SENS_RE does
+not carry (that gate only needs it as an exact TAG, this one needs it in free text too, since a
+caller could write "mopsion kod" straight into the description). Labels are checked separately with
+exact per-token matching against the fleet's BLOCKED_TAGS vocabulary (labels are short, controlled
+strings -- tag-exact-match is the right tool there, stem-matching free text is the right tool for
+title/description; offload-dispatch.sh makes the same split for the same reason).
+
+This is deliberately proportionate: it reuses SENS_RE's stem coverage rather than inventing a
+weaker new one, but does not port offload-dispatch.sh's homoglyph table -- that hardening defends a
+materially different, larger threat surface (routing untrusted-looking content to a local, less-
+trusted model); here the threat is a caller's plain-text mismatch against its own declared "safe".
+
+Prints the first matched category name (security|auth|finance|mopsion) on stdout, or nothing if
+clean. Exit 0 = parsed fine (stdout is authoritative; empty stdout = no signal found). Exit 2 = the
+input was not valid card JSON (unreadable/empty/malformed) -- the caller MUST treat this as "cannot
+verify" and fail closed, not as "no signal found".
+"""
+import json
+import re
+import sys
+import unicodedata
+
+# Mirrors store/offload-dispatch.sh SENS_RE (title/description stem gate) plus mopsion/cleancore,
+# which that script only needs as an exact TAG (BLOCKED_TAGS) because mopsion work is dispatched
+# with a controlled project/tag, not free text -- here the card's own prose is in scope too.
+STEM_CATEGORY = [
+    (re.compile(r"\b(biztons|security|superadmin|gdpr|privacy|kulcs|kripto|crypto|pii|legal|jogi"
+                r"|cybersec|hacker|exploit|pentest|inject|sqli|xss|permission|access"
+                r"|szemelyes|hozzaferes|titok|secret|token|jelszo|password|jogosult)", re.I),
+     "security"),
+    (re.compile(r"\b(auth|authz|rbac|tenant)", re.I), "auth"),
+    (re.compile(r"\b(penz|penzugy|fizet|szamla|afa|payroll|berszamfejtes|billing|payment|fin)", re.I),
+     "finance"),
+    (re.compile(r"\b(mopsion|cleancore)", re.I), "mopsion"),
+]
+
+# Labels are short, controlled strings (kanban label vocabulary): exact per-token match, same as
+# offload-dispatch.sh's BLOCKED_TAGS, not stem-matching (a label literally named "resection" must
+# not false-positive the way free text could tolerate).
+BLOCKED_LABEL_TOKENS = {
+    "mopsion": "mopsion", "cleancore": "mopsion",
+    "sec": "security", "security": "security", "biztonsag": "security", "cybersec": "security",
+    "pii": "security", "gdpr": "security", "privacy": "security", "secret": "security",
+    "crypto": "security", "superadmin": "security",
+    "auth": "auth", "authz": "auth", "rbac": "auth", "tenant": "auth",
+    "penz": "finance", "penzugy": "finance", "finance": "finance", "billing": "finance",
+    "payment": "finance", "fin": "finance",
+}
+
+
+def norm(s: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", s)
+    stripped = "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
+    return stripped.casefold().encode("ascii", "ignore").decode()
+
+
+def label_tokens_of(text: str):
+    return [t for t in re.split(r"[^a-z0-9]+", norm(text)) if t]
+
+
+def main() -> int:
+    raw = sys.stdin.read()
+    # N3-javitas (card 09117e0a, RedHat NO-GO komment 18498): a hivo most a kert kartya-ID-t
+    # ADJA ide argvban. Egy dashboard-hibatest (404 "Kartya nem talalhato", 401 "Unauthorized",
+    # 500) ERVENYES JSON-objektum, de nincs benne sem "id", sem "title" -- korabban ez
+    # "nincs jel" -> exit 0 -> a deklart 'safe' kategoria atment, pedig a kartya tartalmat
+    # SOHA nem is lattuk. Most: ha a hivo megadta a kartya-ID-t, a valasznak PONTOSAN arra a
+    # kartyara kell vonatkoznia (card.id == expected_id) ES kell lennie nem-ures cimnek --
+    # kulonben "nem tudjuk ellenorizni", nem "nincs jel".
+    expected_id = sys.argv[1] if len(sys.argv) > 1 else None
+    try:
+        card = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return 2
+    if not isinstance(card, dict):
+        return 2
+
+    title_raw = card.get("title")
+    if expected_id is not None:
+        if card.get("id") != expected_id:
+            return 2
+        if not isinstance(title_raw, str) or not title_raw.strip():
+            return 2
+
+    title_n = norm(str(title_raw or ""))
+    desc_n = norm(str(card.get("description") or ""))
+    for rx, cat in STEM_CATEGORY:
+        if rx.search(title_n) or rx.search(desc_n):
+            print(cat)
+            return 0
+
+    # Title-bracket tags ("[SEC]", "[MikroB][SEC][HIGH] ..."): the fleet convention writes these
+    # as a short, controlled bracket segment, not free prose -- "sec" alone is deliberately NOT a
+    # STEM_CATEGORY stem above (it would match "section"/"second" in real prose), so bracket
+    # segments get the same exact-token BLOCKED_LABEL_TOKENS check the labels array gets below.
+    bracket_segments = re.split(r"[\[\](){}]", title_n)
+    for seg in bracket_segments:
+        for tok in label_tokens_of(seg):
+            cat = BLOCKED_LABEL_TOKENS.get(tok)
+            if cat:
+                print(cat)
+                return 0
+
+    for lab in card.get("labels") or []:
+        for tok in label_tokens_of(str(lab)):
+            cat = BLOCKED_LABEL_TOKENS.get(tok)
+            if cat:
+                print(cat)
+                return 0
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -43,14 +43,14 @@ describe.each([
   ['cleancore-land.sh', 42],
   ['marveen-land.sh', 29],
 ])('%s --selftest', (script, floor) => {
-  it('passes', () => {
+  it('passes', { timeout: 30_000 }, () => {
     const r = selftest(script)
     expect(r.out).toContain('PASS')
     expect(r.out).not.toContain('FAIL')
     expect(r.status).toBe(0)
   })
 
-  it(`still runs at least ${floor} cases -- deleting cases is a failure, not a cleanup`, () => {
+  it(`still runs at least ${floor} cases -- deleting cases is a failure, not a cleanup`, { timeout: 30_000 }, () => {
     expect(caseCount(selftest(script).out)).toBeGreaterThanOrEqual(floor)
   })
 })
@@ -60,7 +60,12 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
   // end up testing different things about the same code. If one lander stops sourcing the lib, its
   // count drops back to its own cases and this notices -- the count floors above would not, on
   // their own, prove the SHARED block ran in each.
-  it('both counts include the shared block', () => {
+  it('both counts include the shared block', { timeout: 30_000 }, () => {
+    // Card 3731c807, RedHat 16619 N2: runs BOTH landers' full --selftest in sequence, and under
+    // concurrent-suite load that measured 5988ms once -- over vitest's 5000ms default -- while
+    // logically still green (the --selftest runs themselves exited 0 well under 60s). A timing
+    // flake on a correctness assertion is strictly worse than a slow test: it looks like a real
+    // regression under exactly the CPU-contention conditions rule 17 already documents.
     const cc = caseCount(selftest('cleancore-land.sh').out)
     const mv = caseCount(selftest('marveen-land.sh').out)
     // 41 since card d8207630 added 4 new selftest cases (vacuum + mopsion-land.sh own-block);
@@ -74,10 +79,12 @@ describe('the shared downward-check cases run from BOTH landers, not just one', 
     // in both, and lowering it to make an edit fit would delete exactly that guarantee.
     //
     // marveen-land.sh's own-case constant moved 3 -> 7 with card cd3e577b (F1 per-card
-    // worktree/branch: card_designated_gates_agree + --card/--all gate-requirement cases), which
-    // only touches marveen-land.sh, not the shared lib or cleancore-land.sh's own block.
+    // worktree/branch: card_designated_gates_agree + --card/--all gate-requirement cases), then
+    // 7 -> 10 with card 3731c807 (cd3e577b follow-up: the acquire_land_lock call-site pin, the
+    // behavioral flock-release case, and the Designated: unknown-sentinel case) -- all three only
+    // touch marveen-land.sh's own --selftest block, not the shared lib or cleancore-land.sh's own.
     expect(cc).toBeGreaterThan(41) // 41 = cleancore-land.sh's own cases
-    expect(mv).toBeGreaterThan(7) //  7 = marveen-land.sh's own cases
-    expect(cc - 41).toBe(mv - 7) // the same shared block, in both
+    expect(mv).toBeGreaterThan(10) // 10 = marveen-land.sh's own cases
+    expect(cc - 41).toBe(mv - 10) // the same shared block, in both
   })
 })

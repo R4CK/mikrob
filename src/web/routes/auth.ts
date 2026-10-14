@@ -52,6 +52,7 @@ import {
   getDashboardUser,
   listDashboardUsers,
   countDashboardUsers,
+  hasDashboardBootstrapEverHappened,
   updateDashboardUserPassword,
   deleteDashboardUser,
   logConfigChange,
@@ -317,8 +318,11 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     // can no longer mint a new one -- card 68254bd7 F1 (WhiteHat NO-GO 14284): that path, plus
     // POST /api/auth/device-keys below, let the shared token self-escalate to a 'session'/'device'
     // credential and bypass any kind-gated endpoint that excludes 'token' on purpose (e.g.
-    // POST /api/fleet/import?apply=true).
-    const isBootstrap = countDashboardUsers(true) === 0
+    // POST /api/fleet/import?apply=true). Card 9655494c F1-B1 (RedHat NO-GO): this must be
+    // "bootstrap has EVER happened", not "0 users RIGHT NOW" -- the shared token is also allowed
+    // to delete the last user (see DELETE below), and a current-state check would let it reopen
+    // this exception by deleting then re-creating, forever.
+    const isBootstrap = !hasDashboardBootstrapEverHappened()
     if (!kindAllowed(auth, CREDENTIAL_MINT_KINDS) && !(isBootstrap && auth?.kind === 'token')) {
       json(res, FORBIDDEN_KIND, 403)
       return true
@@ -424,6 +428,27 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     }
     logger.info({ id, name: key.name, installId: key.installId ?? undefined, sshRemoved }, 'device key revoked')
     json(res, { ok: true, ...(key.installId ? { ssh_removed: sshRemoved } : {}) })
+    return true
+  }
+
+  // Card 9655494c F1-B1 (RedHat NO-GO 17005, MikroB decision 17006): mint/rotate/revoke for an
+  // agent:<id> identity key is no longer reachable over HTTP AT ALL, under any auth kind --
+  // including a real session. The measured bypass: a session proves nothing about a human,
+  // because the shared dashboard token can itself produce one, either by creating the FIRST user
+  // (bootstrap, X1) or by break-glass-resetting an existing owner's password (X3), then logging in
+  // as that user. A session-only gate (the previous CREDENTIAL_MINT_KINDS check) therefore never
+  // separated "the owner" from "anyone holding the one token every fleet script already has".
+  // The fix is structural, not a stronger check: this capability is retired from HTTP entirely, and
+  // moved to a local-only CLI (`npm run dashboard-user -- agent-key:mint/:revoke`, called by
+  // store/agent-key-provision.sh) that talks to the database directly -- the same trust root as
+  // the rest of break-glass tooling (scripts/dashboard-user.ts: "I can run this CLI IS the root
+  // credential"), which has no HTTP round-trip and therefore no session to forge in the first place.
+  if (path === '/api/auth/agent-keys' && method === 'POST') {
+    json(res, { error: 'agent-kulcs kiadása csak helyi CLI-ből lehetséges (npm run dashboard-user -- agent-key:mint), HTTP-n nem' }, 403)
+    return true
+  }
+  if (/^\/api\/auth\/agent-keys\/[^/]+$/.test(path) && method === 'DELETE') {
+    json(res, { error: 'agent-kulcs visszavonása csak helyi CLI-ből lehetséges (npm run dashboard-user -- agent-key:revoke), HTTP-n nem' }, 403)
     return true
   }
 

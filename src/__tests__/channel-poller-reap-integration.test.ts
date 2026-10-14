@@ -33,7 +33,17 @@ vi.mock('node:child_process', async (orig) => {
     // the tmux branch returns one pid that never collides with a test
     // fixture pid, which keeps `live` non-empty (no fail-safe) and empty of
     // overlap (nothing here is protected by the live-pane guard).
-    execSync: vi.fn((cmd: string) => (String(cmd).includes('list-panes') ? '99999\n' : psState.out)),
+    // Köteg 12 (upstream 0bea3cd7, TMUXSERVERREAP929): reapChannelOrphans also resolves the tmux
+    // SERVER's own pid (`tmux display-message -p '#{pid}'`) so it is never a reap candidate --
+    // without its own branch this fell through to the `ps` fixture text, which parsed as an
+    // unresolvable pid and tripped the new fail-safe refusal (every case in this file reaped
+    // nothing). TMUX_SERVER's pid, distinct from every candidate fixture pid, exercises the real
+    // "server resolved, not a candidate" path rather than another synthetic failure mode.
+    execSync: vi.fn((cmd: string) => (
+      String(cmd).includes('list-panes') ? '99999\n' :
+      String(cmd).includes('display-message') ? `${TMUX_SERVER}\n` :
+      psState.out
+    )),
     execFileSync: vi.fn(() => ''),
   }
 })

@@ -123,6 +123,7 @@ async function loadOverview() {
     void loadModelTierConfig()
     void loadLocalLlmInfo()
     void loadCostEstimatesWidget()
+    void loadGeminiOverviewTile()
     startOvwLlmDist()
     startOvwSpectrum()
     const banner = document.getElementById('updateBanner')
@@ -1338,6 +1339,17 @@ async function loadLlmDistWidget() {
   })
 })()
 
+// Same reasoning as wireCostDetailLink above, for the Gemini-calls overview tile (card 57da740c).
+;(function wireGeminiDetailLink() {
+  const link = document.querySelector('.ovw-gemini-detail-link[data-page]')
+  if (!link) return
+  link.addEventListener('click', (e) => {
+    e.preventDefault()
+    const pageId = link.dataset.page
+    if (pageId && typeof switchPage === 'function') switchPage(pageId)
+  })
+})()
+
 // Brand mark + product-brand chrome: pull the configured brand from
 // /api/marveen and apply it to the dashboard chrome (tab title, mobile topbar,
 // sidebar name, updates subtitle). brandName is the product/system name and is
@@ -1394,7 +1406,16 @@ async function initSidebarVersion() {
     const v = await res.json()
     const el = document.getElementById('sidebarVersion')
     if (!el || !v.version) return
-    el.textContent = v.commitHash ? `v${v.version} (${v.commitHash})` : `v${v.version}`
+    let text = v.commitHash ? `v${v.version} (${v.commitHash})` : `v${v.version}`
+    // newerBuildOnDisk (card 165350f1): dist on disk was rebuilt after this process started, so
+    // what is actually answering requests is one landing behind what a restart would pick up.
+    if (v.newerBuildOnDisk) {
+      text += ' ⚠'
+      el.title = t('overview.version_rebuild_pending')
+    } else {
+      el.title = ''
+    }
+    el.textContent = text
     el.hidden = false
   } catch {}
 }

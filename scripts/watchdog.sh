@@ -191,6 +191,7 @@ fi
 
 
 export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+. "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
 
 TOKEN=""
 HDR_FILE=""
@@ -338,7 +339,19 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
       ;;
   esac
 
-  CMD="${ISO_ENV}export PATH=\"/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
+  # FLEETVENV923: the fleet venv's bin/ first, as in startAgentProcess -- a
+  # watchdog restart must not hand the agent a different python3 (#1626 review).
+  FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$LOG")"
+
+  # card 00499708 (WhiteHat2 O1 off d95f71c9): this sub-agent restarter carried only
+  # CLAUDE_CODE_DISABLE_AGENT_VIEW=1 -- missing the feedback-survey/prompt-suggestion flags and the
+  # MCP_* tuning set that channels.sh's MCP_BATCH_ENV (channels.sh:868) already carries on the
+  # agent-process.ts normal sub-agent launch and on the three main-agent respawn paths fixed by
+  # d95f71c9 (86cdfe04/bf39d8a2). A watchdog-triggered sub-agent restart reopened exactly the 23h
+  # feedback-survey freeze and the MCP-registration-timeout outage those vars exist to prevent.
+  # ROOTRESPAWN1001 (upstream #1665, batch 13): every claude launch on a root host must carry
+  # IS_SANDBOX=1 too, same reasoning -- a watchdog restart is still a claude launch.
+  CMD="${ISO_ENV}export PATH=\"${FLEET_VENV_PREFIX}/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 MCP_SERVER_CONNECTION_BATCH_SIZE=10 MCP_CONNECTION_NONBLOCKING=1 MCP_TIMEOUT=60000 && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2

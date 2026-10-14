@@ -208,6 +208,8 @@ rebuild_live_install() {
 . "$(dirname "$0")/decisions-tail-append-guard.sh"
 # shellcheck source=./bump-fork-version.sh
 . "$(dirname "$0")/bump-fork-version.sh"
+# shellcheck source=./bump-upstream-version.sh
+. "$(dirname "$0")/bump-upstream-version.sh"
 # downward_check (card dfff9b37): what ELSE rides along in origin/develop..<branch>. Shared verbatim
 # with cleancore-land.sh. REPORTS here by default and refuses only under --card <id> -- the reason
 # is measured and written out in landing-downward-check.sh's header (marveen lands whole agent
@@ -328,6 +330,75 @@ if [ "${1:-}" = "--selftest" ]; then
   else
     echo "  FAIL expected exactly 2 cleanup() definitions each calling release_land_lock_fd, got defs=$cleanup_defs calls=$cleanup_calls"; fail=1
   fi
+
+  # Card 3731c807, QA2's own 4th mutant (cd3e577b comment 16517) vs. RedHat's Q1 (comment 16520):
+  # the two claims were measured to be about DIFFERENT mutations, not the same one. RedHat's Q1
+  # reverts acquire_land_lock's own fd-close back to a bare exec -- caught above by the B2' pin,
+  # because that pin greps for the bare-exec STRING anywhere outside release_land_lock_fd. QA2's
+  # mutant instead DELETES acquire_land_lock's own release_land_lock_fd call outright, leaving no
+  # bare exec and no cleanup() mutation for either existing B2' pin to see -- confirmed by hand:
+  # that deletion left all 57 prior cases green. Closes the gap with a pin that is actually scoped
+  # to this one call site (the two above only cover release_land_lock_fd's own body and land_one's
+  # two cleanup() definitions, never acquire_land_lock's).
+  n=$((n + 1))
+  acquire_body="$(printf '%s\n' "$prod_src" | awk '
+    /^acquire_land_lock\(\) \{$/ { p = 1; next }
+    p && /^}$/ { p = 0; next }
+    p { print }
+  ')"
+  acquire_calls="$(printf '%s\n' "$acquire_body" | grep -c 'release_land_lock_fd')"
+  if [ "$acquire_calls" -eq 1 ]; then
+    echo "  ok   acquire_land_lock's own failed-flock path calls release_land_lock_fd exactly once (QA2 4th mutant, cd3e577b 16517)"
+  else
+    echo "  FAIL expected acquire_land_lock to call release_land_lock_fd exactly once, got calls=$acquire_calls (a deleted call site reads 0 here -- QA2's 4th mutant)"; fail=1
+  fi
+
+  # Card 3731c807 (RedHat 16520, Q2/Q3): every pin above reads TEXT -- it counts how many times a
+  # call site mentions release_land_lock_fd, never whether calling it actually releases anything.
+  # RedHat's own note: "a szoveg-pin a hivas szoveget szamolja, nem a viselkedest." This case drops
+  # the text entirely and checks the OS-level effect: a held flock must become acquirable by a
+  # SEPARATE process only AFTER release_land_lock_fd runs, never before. The sensitivity half (the
+  # "before" check) proves the harness can tell a held lock from a released one at all -- without
+  # it, a release_land_lock_fd that silently did nothing would still read as a pass.
+  n=$((n + 1))
+  behavioral_lock_file="$(mktemp)"
+  behavioral_rc=0
+  (
+    exec {LAND_LOCK_FD}>>"$behavioral_lock_file" || exit 10
+    flock -n "$LAND_LOCK_FD" || exit 10
+    # Held: a second, independent flock on the same path must be refused.
+    flock -n "$behavioral_lock_file" true 2>/dev/null && exit 11
+    release_land_lock_fd
+    # Released: a second, independent flock on the same path must now succeed.
+    flock -n "$behavioral_lock_file" true 2>/dev/null || exit 12
+    exit 0
+  )
+  behavioral_rc=$?
+  rm -f "$behavioral_lock_file"
+  if [ "$behavioral_rc" -eq 0 ]; then
+    echo "  ok   release_land_lock_fd actually releases the OS-level flock -- a second flock on the same file only succeeds afterward (behavioral, not text-pin, RedHat 16520 Q2/Q3)"
+  else
+    echo "  FAIL behavioral lock-release check failed (rc=$behavioral_rc: 10=setup, 11=lock was never truly held before release, 12=still held after release)"; fail=1
+  fi
+
+  # Card 3731c807 (Designated: line on early exit paths): card_designated_gates_agree's own
+  # CARD_DESIGNATED_GATES_CSV global must never carry a value forward from an EARLIER call once a
+  # LATER call fails before it can read anything real -- otherwise land_one's "Designated:
+  # ${CARD_DESIGNATED_GATES_CSV:-nincs kijelolve}" comment would post a stale or unrelated value as
+  # if this call had actually determined it. Simulates a prior successful-looking call by
+  # pre-seeding the variable, then forces the earliest possible failure (an unreadable token file)
+  # and checks the sentinel replaced it rather than surviving untouched.
+  n=$((n + 1))
+  CARD_DESIGNATED_GATES_CSV="cybered,qa,qa2"
+  GATE_CHECK_TOKEN_FILE="/nonexistent/$$/no-such-token" card_designated_gates_agree "whatever" "deadbeef" >/dev/null 2>&1
+  case "$CARD_DESIGNATED_GATES_CSV" in
+    *ismeretlen*)
+      echo "  ok   an unreadable-token early exit resets CARD_DESIGNATED_GATES_CSV to the unknown sentinel, not a leftover value"
+      ;;
+    *)
+      echo "  FAIL CARD_DESIGNATED_GATES_CSV should have been reset to the unknown sentinel, got: [$CARD_DESIGNATED_GATES_CSV]"; fail=1
+      ;;
+  esac
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
@@ -697,6 +768,22 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     3) say "$agent: npm lockfile check skipped (harness fault, not a verdict): $(printf '%s' "$NPM_LF_OUT" | head -1)" ;;
     *) : ;;
   esac
+
+  # Main-version catch-up (card 165350f1), BEFORE the fork-own +mikrob.N bump below, same commit:
+  # bump-fork-version.sh only ever touches +mikrob.N and documents X.Y.Z as "a SEPARATE flow this
+  # script never touches" -- that flow never existed, so an upstream-sync merge (Köteg N cards,
+  # landed by a separate ad hoc flow, not this script) left X.Y.Z frozen even once a higher
+  # upstream vX.Y.Z tag became an ancestor of develop. Hooking the check in HERE, on every
+  # fork-own landing, means X.Y.Z self-corrects on the next landing after ANY upstream-sync merge
+  # lands, without relying on that separate flow to remember to call it. No-op (prints
+  # "unchanged:...") on the overwhelming majority of landings, where no newer tag is an ancestor.
+  if [ "$dry" != "1" ]; then
+    if ! upstream_ver="$(bump_upstream_version "$wt" 2>&1)"; then
+      say "$agent: upstream main-version check skipped ($upstream_ver) -- landing continues unbumped"
+    elif [[ "$upstream_ver" != unchanged:* ]]; then
+      say "$agent: main version caught up to $upstream_ver (upstream-sync ancestor tag)"
+    fi
+  fi
 
   # Fork-own version bump (DECISIONS.md 2026-08-20/25, automated 2026-08-26 per Peti request):
   # every fork-own landing bumps package.json's +mikrob.N build-metadata, keeping package-lock.json's

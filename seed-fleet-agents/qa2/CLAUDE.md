@@ -160,6 +160,14 @@ Ezeket a tulajdonos adta, a flotta minden kolléga-asszisztensére kötelezőek.
 6. **Eredmény-fájlok a közös Drive mappába.** Az elkészült eredmény-fájlokat külön kérés nélkül is a közösen használt Drive mappába tedd (lásd 1. szabály).
 7. **Login-automatizálás / külső credential / futtatható szkript -> ELŐBB szólj a Főnöknek.** Mielőtt bármilyen külső szolgáltatásba automatikus bejelentkezést, jelszó-/credential-kezelést, vagy futtatható szkriptet (pl. Playwright/böngésző-automatizálás, scraper, login-szkript) írsz vagy futtatsz, jelezd a MikroB Főnöknek (mikrob) inter-agent üzenettel - ő koordinálja és a tulajdonossal egyezteti (a 4. szabály szellemében). Credential-t SOHA ne égess nyersen kódba; ha titok kell, kérd a Főnöktől a biztonságos tárolás módját.
 
+## Gate-verdikt formátum (KÖTELEZŐ, MikroB döntés, kártya 517094c4 F2, 2026-10-11)
+
+A saját QA2 PASS/QA2 FAIL verdiktkommented SZIGORÚ sorrendben:
+1. SOR: a verdikt szava, a komment ELSŐ soraként (`QA2 PASS` vagy `QA2 FAIL`, nem máshol a szövegben -- a root CLAUDE.md 4c. pontja szerint ezt nézi a `kanban-gate-scan` és a `cybersec-gate-scan.py`; egy többsoros preambulum után álló verdikt maga a szabálysértés, nem egy felismerési hiba).
+2. SOR: `Gate-SHA: <sha>` (4b. pont).
+3. SOR: `Skills: <a review során használt skill(ek) neve>` (a 20. munkavégzési szabály minden ügynökre vonatkozó kötelezettsége, itt a gate-verdikt saját sorába kimondva).
+Utánuk jöhet a tényleges indoklás/leletlista, szabad hosszban.
+
 ## Core skilljeid (MikroB által hozzárendelve)
 
 Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető, de ezek a te core eszközeid -- ha a feladat beléjük vág, HASZNÁLD őket (a `Skill` toollal, vagy a triggerük alapján aktiválódnak):
@@ -172,8 +180,7 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `engineering-standards` -- a baseline, amihez mérsz
 - `project-workflow` -- csapat-workflow, gate-ek
 - `ci-cd-and-automation` -- CI/CD minőségi kapuk (kártya ade19b79, Peti döntés 3)
-- `browser-testing-with-devtools` -- böngészős tesztelés MCP-vel (a fleet Playwright MCP-jére adaptálva `mcp__playwright__*` eszköznevekre, nem az eredeti chrome-devtools-mcp-re -- kártya ade19b79)
-- `example-skills:webapp-testing` -- Playwright-alapú éles böngésző-teszt egy futó webapp ellen (screenshot, DOM-vizsgálat, console-hiba-felderítés); HASZNÁLD, ha egy kártya kész-jelentése user-facing frontendet érint -- ne csak a kódot olvasd, tényleges böngészőben kattints végig rajta (kártya 3c9e22b1/f5eda0be, 2026-08-24: backend2 valós próbafuttatása a CleanCore landing oldalán ~20 CSP-inline-style hibát talált, amit kód-olvasással nem vettünk volna észre)
+- `browser-testing-with-devtools` -- Playwright MCP-alapú éles böngésző-teszt egy futó webapp ellen (screenshot, DOM-vizsgálat, console/network-hiba-felderítés); HASZNÁLD, ha egy kártya kész-jelentése user-facing frontendet érint -- ne csak a kódot olvasd, tényleges böngészőben kattints végig rajta (kártya 3c9e22b1/f5eda0be, 2026-08-24: backend2 valós próbafuttatása a CleanCore landing oldalán ~20 CSP-inline-style hibát talált, amit kód-olvasással nem vettünk volna észre; a korábban itt szereplő `example-skills:webapp-testing` sosem volt telepítve -- kártya 793268fa HIÁNY 3 -- lecserélve a tényleg létező, Playwright-ra adaptált skillre, kártya ade19b79)
 - `unlazy` -- teljesítés-fegyelem hosszú/többrészes gate-vizsgálatra, acceptance-gate + Depth Tree (a Stop-hook NINCS bekötve, csak a skill-hivatkozás, kártya 200d2969)
 - `doubt-driven-development` -- minden nem-triviális gate-döntés friss-kontextusú adverzariális átvizsgálása (kártya 200d2969)
 

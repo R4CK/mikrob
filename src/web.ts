@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process'
 import { runLsof } from './lsof.js'
 import { PROJECT_ROOT, STORE_DIR, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID } from './config.js'
 import { renderBootstrapNotice } from './web/bootstrap-notice.js'
+import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
 import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
 import { sweepExpiredSessions } from './web/auth-sessions.js'
@@ -15,7 +16,7 @@ import { CONTENT_SECURITY_POLICY } from './web/csp.js'
 import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
-import { ensureAgentHooks, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureCdChainGuard, ensureBashEgressGuard, ensureOutgoingCopyGate, outgoingCopyGateEnabled, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureCdChainGuard, ensureBashEgressGuard, ensureOutgoingCopyGate, outgoingCopyGateEnabled, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureDestructiveGate, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -71,6 +72,7 @@ import { tryHandlePrLedger } from './web/routes/pr-ledger.js'
 import { tryHandleHomoglyphs } from './web/routes/homoglyphs.js'
 import { tryHandleMemories } from './web/routes/memories.js'
 import { tryHandleMigrate } from './web/routes/migrate.js'
+import { tryHandleKanbanVerdicts } from './web/kanban-verdicts.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
 import { tryHandleHeartbeat } from './web/routes/heartbeat.js'
 import { tryHandleSchedules } from './web/routes/schedules.js'
@@ -96,8 +98,10 @@ import { tryHandleProjectPriority } from './web/routes/project-priority.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
+import { tryHandleGeminiCalls } from './web/routes/gemini-calls.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
+import { tryHandleVideoReview } from './web/routes/video-review.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
 import { tryHandleSpans } from './web/routes/spans.js'
 import { tryHandleSkillUsage } from './web/routes/skill-usage.js'
@@ -193,7 +197,7 @@ export function startWebServer(port = 3420): http.Server {
     }
     const fedPeerForCtx: string | null = auth.kind === 'federation' ? auth.peer : null
     const ctxAuth =
-      auth.kind === 'token' ? { kind: 'token' as const }
+      auth.kind === 'token' ? { kind: 'token' as const, agent: auth.agent }
       : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device, deviceId: auth.deviceId }
       : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user }
       : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer }
@@ -224,6 +228,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleHomoglyphs(routeCtx)) return
       if (await tryHandleMemories(routeCtx)) return
       if (await tryHandleMigrate(routeCtx)) return
+      if (await tryHandleKanbanVerdicts(routeCtx)) return
       if (await tryHandleKanban(routeCtx)) return
       if (await tryHandleHeartbeat(routeCtx)) return
       if (await tryHandleSchedules(routeCtx)) return
@@ -256,8 +261,10 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleApprovals(routeCtx)) return
       if (await tryHandleDesktopLock(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
+      if (await tryHandleGeminiCalls(routeCtx)) return
       if (await tryHandleCosts(routeCtx)) return
       if (await tryHandleIdeas(routeCtx)) return
+      if (await tryHandleVideoReview(routeCtx, WEB_DIR)) return
       if (await tryHandleSpans(routeCtx)) return
       if (await tryHandleToolLog(routeCtx)) return
       if (await tryHandleSkillUsage(routeCtx)) return
@@ -639,10 +646,12 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     // section. Adopted from upstream with the sibling section-writers it belongs next to (card
     // f27c999b, B-wave).
     ensureSystemDirectiveAuthSection(MAIN_AGENT_ID)
+    ensureAgentIdHeaderSection(MAIN_AGENT_ID)
     ensureMemorySearchLabelSection(MAIN_AGENT_ID)
     ensureFleetAuthSection(MAIN_AGENT_ID)
     ensureEvidenceSection(MAIN_AGENT_ID)
     ensureMcpListChannelSection(MAIN_AGENT_ID)
+    ensureMessageCloseSection(MAIN_AGENT_ID)
   }
 
   // Owner slash commands (CMD920, spec D-4): the registry the main session's
@@ -689,6 +698,8 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       const noisyGuardPatched: string[] = []
       const gitGuardPatched: string[] = []
       const taskstateMatcherPatched: string[] = []
+      const rootPatched: string[] = []
+      const destructiveGatePatched: string[] = []
       const pruned: string[] = []
       // Include the main agent (MAIN_AGENT_ID) so the voice hook is also seeded
       // into ~/.claude/settings.json alongside existing hooks (e.g. telegram_progress.py).
@@ -705,6 +716,9 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         // the re-registration below lands on a clean, unblocked settings file.
         pruned.push(...pruneStaleHooksFromSettingsFile(agentSettingsPath(agentName)))
         if (ensureAgentHooks(agentName)) patched.push(agentName)
+        // HOSTMOVE923: same guard as the hook writes -- a worktree instance must
+        // not re-anchor the live fleet's CLAUDE.md onto ITS root.
+        if (ensureProjectRootInClaudeMd(agentName)) rootPatched.push(agentName)
         if (ensureAgentStalenessHook(agentName)) stalePatched.push(agentName)
         if (ensureAgentProvenanceHook(agentName)) provPatched.push(agentName)
         if (ensureEgressGate(agentName)) egressPatched.push(agentName)
@@ -729,6 +743,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         // is not adopted here either --
         // same reasoning as agent-scaffold.ts's injection call site.
         if (ensureGovernanceGateCommands(agentName)) govPatched.push(agentName)
+        if (ensureDestructiveGate(agentName)) destructiveGatePatched.push(agentName)
         ensureQuarantineReader(agentName)
       }
       // EGRESSRENDER824: a grant added to store/egress-allowlist.json must
@@ -740,7 +755,12 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       // rule that guards the settings writes above guards this watcher.
       watchEgressAllowlistForReaderRender(listAgentNames, (agents) =>
         logger.info({ agents }, 'quarantine-reader definitions re-rendered after egress-allowlist.json change'))
+      // EGRESSSELFEDIT824: hash baseline + a report of every change to the allowlist, by any
+      // route. Same placement as the re-render watcher: only the instance that owns the hooks
+      // watches the shared store, a worktree / sandbox instance does not.
+      watchEgressAllowlistBaseline(STORE_DIR, queueAllowlistReport)
       if (pruned.length) logger.info({ pruned }, 'Stale hook entries pruned from agent settings.json')
+      if (rootPatched.length) logger.info({ patched: rootPatched }, 'CLAUDE.md install-anchored paths re-anchored on the current PROJECT_ROOT (HOSTMOVE923)')
       if (npmGuardPatched.length) logger.info({ patched: npmGuardPatched }, 'npm-protect guard backfilled into agent settings.json')
       if (blastGuardPatched.length) logger.info({ patched: blastGuardPatched }, 'blast-radius guard backfilled into agent settings.json')
       if (pentestGuardPatched.length) logger.info({ patched: pentestGuardPatched }, 'pentest-tool-install guard backfilled into agent settings.json')
@@ -762,6 +782,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       if (bashEgressUncovered.length) logger.warn({ agents: bashEgressUncovered },
         'Bash egress deny NOT applied to the main agent: it runs on the shared user config root, which is also the operator\'s own shell. Give it a config dir of its own (MAIN_AGENT_ISOLATED_CONFIG / MAIN_AGENT_CONFIG_DIR) to cover it without covering the operator.')
       if (govPatched.length) logger.info({ patched: govPatched }, 'governance gate hook commands upgraded to absolute node path in agent settings.json')
+      if (destructiveGatePatched.length) logger.info({ patched: destructiveGatePatched }, 'destructive gate backfilled into agent settings.json')
     } catch (err) {
       logger.warn({ err }, 'Agent hook backfill skipped')
     }

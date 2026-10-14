@@ -64,6 +64,67 @@ describe('isForbiddenAssignee (pure check)', () => {
   it('does not fold an unrelated real agent name into a false positive', () => {
     expect(isForbiddenAssignee('bаckend2')).toBe(false) // Cyrillic а folded to "a" -> "backend2", still not mikrob
   })
+
+  // RedHat NO-GO delta B2 (komment 15997, kartya e25a549a): a korabbi, hatarolt INVISIBLE_RE
+  // (6 kodpont) + Cirill/Gorog-only tablazat 21 tovabbi alakot hagyott at -- mert a tombositett
+  // formazo/jel/elvalaszto karakterek es tovabbi hasonmas betuk (gorog iota/kappa, armeny o,
+  // kiskapitalis, torok dotless/dotted i, Hangul filler) nem voltak lefedve. A javitas
+  // kategoria-alapu (csak betu/szam marad), nem kodpontonkent felsorolt -- ez minden mert alakot
+  // egyszerre viszi.
+  it('catches punctuation-padded forms (RedHat delta B2: "@mikrob", "mikrob.")', () => {
+    expect(isForbiddenAssignee('@mikrob')).toBe(true)
+    expect(isForbiddenAssignee('mikrob.')).toBe(true)
+  })
+
+  it('catches bidi/format/invisible characters beyond the original 6-codepoint list (RedHat delta B2)', () => {
+    expect(isForbiddenAssignee('mikrob‎')).toBe(true) // LRM
+    expect(isForbiddenAssignee('mikrob‏')).toBe(true) // RLM
+    expect(isForbiddenAssignee('mikrob‮')).toBe(true) // RLO
+    expect(isForbiddenAssignee('mi⁨krob⁩')).toBe(true) // FSI+PDI
+    expect(isForbiddenAssignee('mi͏krob')).toBe(true) // CGJ
+    expect(isForbiddenAssignee('mi᠎krob')).toBe(true) // Mongolian vowel separator
+    expect(isForbiddenAssignee('mikrob؜')).toBe(true) // ALM
+    expect(isForbiddenAssignee('mi⁢krob')).toBe(true) // invisible times
+    expect(isForbiddenAssignee('mikrob️')).toBe(true) // VS16
+    expect(isForbiddenAssignee('mikrob\u{E0041}')).toBe(true) // TAG
+    expect(isForbiddenAssignee('mikrob⠀')).toBe(true) // braille pattern blank
+    expect(isForbiddenAssignee('mikrob\u0000')).toBe(true) // NUL suffix
+  })
+
+  it('catches the Hangul filler, a Lo-category "letter" that looks blank (RedHat delta B2)', () => {
+    // NFKC rewrites the plain Hangul Filler (U+3164) to the Jungseong Filler (U+1160) before the
+    // confusable-fold runs -- the guard must map the POST-normalize codepoint.
+    expect(isForbiddenAssignee('miㅤkrob')).toBe(true)
+  })
+
+  it('catches dotless/dotted Turkish i, small-caps, Greek iota/kappa, and Armenian o (RedHat delta B2)', () => {
+    expect(isForbiddenAssignee('mıkrob')).toBe(true) // dotless i
+    expect(isForbiddenAssignee('MİKROB')).toBe(true) // Turkish capital dotted I
+    expect(isForbiddenAssignee('ᴍɪᴋʀᴏʙ')).toBe(true) // small-caps MIKROB
+    expect(isForbiddenAssignee('mικrob')).toBe(true) // Greek iota + kappa
+    expect(isForbiddenAssignee('mikrօb')).toBe(true) // Armenian o
+  })
+
+  it('catches a combining mark NFKC leaves attached (RedHat delta B2)', () => {
+    expect(isForbiddenAssignee('mi̇krob')).toBe(true) // explicit combining dot above
+  })
+
+  it('still does not false-positive on a mid-string space or a different real value (negative controls, RedHat delta B2)', () => {
+    expect(isForbiddenAssignee('mikrob-2')).toBe(false)
+    expect(isForbiddenAssignee('mikrob2')).toBe(false)
+    expect(isForbiddenAssignee('backend2')).toBe(false)
+  })
+
+  // Cyrillic k (U+043A) and Greek omicron (U+03BF) were already in the confusable table but had
+  // no dedicated test (RedHat's own mutation sweep found these mutants survive, G19/G21 in komment
+  // 15997). Cyrillic р (U+0440, G20) maps to Latin "p" in the table -- "mikrob" has no "p", so that
+  // entry can never affect THIS comparison's true-branch; RedHat's own note agrees ("a 'k' hasonmás
+  // pedig része a 'mikrob'-nak", implying р is not). It stays in the table for general-purpose
+  // confusable defense, untestable against this specific target word -- not a real gap to close.
+  it('catches the previously-untested confusable table entries (RedHat delta B2, G19/G21)', () => {
+    expect(isForbiddenAssignee('miкrob')).toBe(true) // Cyrillic k
+    expect(isForbiddenAssignee('mikrοb')).toBe(true) // Greek omicron
+  })
 })
 
 describe('isInvalidAssigneeShape (pure check, WhiteHat F1)', () => {

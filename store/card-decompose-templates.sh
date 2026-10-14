@@ -25,28 +25,57 @@
 # returns every match; the per-card ceiling is a dispatch-time policy, not a classification one).
 set -uo pipefail
 
+CARD_DECOMPOSE_TEMPLATES_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# decompose_type_disabled (card d39fc5e7, requirement 3): true when decompose-type-stop.sh's
+# measured acceptance rate for this type is under its stop-criterion. Reads
+# decompose-type-disabled.json fresh on every call (no caching) -- a full recompute by that script
+# can re-enable a type, and a cached read here would miss it until the next process restart.
+# Missing/unreadable state file -> NOT disabled (fail-open, same direction as every other "the
+# control has not spoken yet" default in this fleet; a stop-criterion that cannot be READ must not
+# silently stop everything).
+decompose_type_disabled() {
+  local type="$1"
+  local state_file="${DECOMPOSE_STOP_STATE_FILE:-$CARD_DECOMPOSE_TEMPLATES_HERE/decompose-type-disabled.json}"
+  [ -f "$state_file" ] || return 1
+  TYPE="$type" STATE_FILE="$state_file" python3 -c '
+import json, os, sys
+try:
+    with open(os.environ["STATE_FILE"]) as f:
+        state = json.load(f)
+except Exception:
+    sys.exit(1)
+entry = state.get(os.environ["TYPE"], {})
+sys.exit(0 if entry.get("disabled") else 1)
+' 2>/dev/null
+}
+
 card_decompose_candidates() {
   local text="${1:-}"
   # test-scaffold: the card names tests. Deliberately narrow to the word itself, not "coverage" or
   # "CI" (those name the test-RUNNING machinery, which is multi-decision territory on its own).
-  if printf '%s' "$text" | grep -Eqi '\btest(ek|s)?\b|teszt(ek|vaz)?\b|unit test'; then
+  if ! decompose_type_disabled test-scaffold \
+     && printf '%s' "$text" | grep -Eqi '\btest(ek|s)?\b|teszt(ek|vaz)?\b|unit test'; then
     printf 'test-scaffold\tWrite the unit test scaffolding this card names (the test cases themselves, not the fix under test).\n'
   fi
   # i18n-keys: draft translated strings for an ALREADY-NAMED key list -- the decision (which keys,
   # which flow) is not this; the mechanical part is filling in wording for languages already spoken
   # elsewhere in the same file.
-  if printf '%s' "$text" | grep -Eqi 'i18n|forditas|fordítás|lokaliz|translation|locale string'; then
+  if ! decompose_type_disabled i18n-keys \
+     && printf '%s' "$text" | grep -Eqi 'i18n|forditas|fordítás|lokaliz|translation|locale string'; then
     printf 'i18n-keys\tDraft the i18n key strings this card names, matching the existing wording style for the other locales.\n'
   fi
   # doc-update: a README / fork-development-section entry, per the README-maintenance rule's own
   # format (name + one tight sentence) -- mechanical once the feature/behaviour itself is decided.
-  if printf '%s' "$text" | grep -Eqi 'readme|fork-fejleszt|dokumentaci|dokumentáci'; then
+  if ! decompose_type_disabled doc-update \
+     && printf '%s' "$text" | grep -Eqi 'readme|fork-fejleszt|dokumentaci|dokumentáci'; then
     printf 'doc-update\tDraft the README / fork-development-section entry this card names, following the repo'"'"'s existing one-line-per-feature format.\n'
   fi
   # type-def: a type/interface shape, no runtime logic. Deliberately does NOT match bare "schema" --
   # that word is already inside card-build-route.sh's OWN multi-decision gate (DB/migration territory),
   # and a type-def candidate must never re-open something the parent gate specifically closed.
-  if printf '%s' "$text" | grep -Eqi '\btipus\b|\btípus\b|type definition|\binterface\b|typescript type'; then
+  if ! decompose_type_disabled type-def \
+     && printf '%s' "$text" | grep -Eqi '\btipus\b|\btípus\b|type definition|\binterface\b|typescript type'; then
     printf 'type-def\tDraft the TypeScript type/interface definition this card names, with no runtime logic attached.\n'
   fi
 }

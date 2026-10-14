@@ -45,6 +45,14 @@ done
 # a usage error -- it is a capacity condition the caller can retry unchanged. A separate code lets a
 # wrapper tell "fix your arguments" from "try again later". Missing guard -> skipped; any non-zero
 # exit from it -> no draft, same direction as every other call site.
+# MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01, Peti Telegram 10951), checked before the VRAM
+# guard below -- cheaper (no nvidia-smi) and more authoritative (an operator-set switch, not a
+# capacity reading). Same exit code (3) and same caller contract: "no draft was written, the
+# source locale is untouched, go online instead".
+# shellcheck source=./local-first-draft-check.sh
+. "$SCRIPT_DIR/local-first-draft-check.sh"
+local_first_draft_enabled || die 3 "local-first-draft is OFF (dashboard switch) -- NO draft was written; translate online instead"
+
 VRAM_GUARD="${I18N_DRAFT_VRAM_GUARD:-$SCRIPT_DIR/vram-guard-check.sh}"
 if [[ -f "$VRAM_GUARD" ]]; then
   # `|| vram_rc=$?` rather than `; vram_rc=$?` -- this script runs under `set -e`, unlike the three

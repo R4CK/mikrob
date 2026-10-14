@@ -39,7 +39,13 @@ const TU_SONNET5_PRICE = { in: 2.0, out: 10.0, cw: 2.50, cr: 0.20 }
 // existing fallback already priced them correctly (prefix match to 'claude-opus-4' /
 // coincidentally-equal `default`), so every row in this table is a confirmed key, not an
 // accidental fallthrough.
+// Confirmed against platform.claude.com/docs/en/about-claude/pricing 2026-10-12.
 const TU_MODEL_PRICING = {
+  'claude-fable-5-1':    { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 }, // same price as fable-5; explicit row for prefix-match correctness
+  'claude-fable-5':      { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
+  'claude-mythos-5':     { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
+  // Opus 5.5 is priced LOWER than opus-5 (4/20 vs 5/25); separate row required.
+  'claude-opus-5-5':     { in: 4.0,   out: 20.0,  cw: 5.00,  cr: 0.40 },
   // Confirmed against the official pricing page 2026-08-17: same tier as 4.6/4.7/4.8 (5 / 25).
   'claude-opus-5':       { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
   'claude-opus-4-8':     { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
@@ -50,12 +56,15 @@ const TU_MODEL_PRICING = {
   // on Bedrock/Google Cloud).
   'claude-opus-4-1':     { in: 15.0,  out: 75.0,  cw: 18.75, cr: 1.50 },
   'claude-opus-4':       { in: 15.0,  out: 75.0,  cw: 18.75, cr: 1.50 },
+  // Sonnet 5.5 same price as sonnet-5; explicit row for prefix-match correctness.
+  'claude-sonnet-5-5':   TU_SONNET5_PRICE,
   'claude-sonnet-5':     TU_SONNET5_PRICE,
   'claude-sonnet-4-6':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-sonnet-4-5':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-sonnet-4':     { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 }, // retired, still billable on Bedrock/Google Cloud
-  'claude-fable-5':      { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
-  'claude-mythos-5':     { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
+  // Haiku 5.5 has two price tiers by prompt length: 0.10/0.50 (<=100k) and 0.50/2.50 (>100k).
+  // Using the upper (>100k) tier as a conservative overestimate; no per-request tier detection.
+  'claude-haiku-5-5':    { in: 0.50,  out: 2.50,  cw: 0.625, cr: 0.05 },
   'claude-haiku-4-5':    { in: 1.0,   out: 5.0,   cw: 1.25,  cr: 0.10 },
   'claude-haiku-3-5':    { in: 0.80,  out: 4.0,   cw: 1.00,  cr: 0.08 }, // retired, still billable on Bedrock/Google Cloud
   default:               { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
@@ -97,8 +106,63 @@ const TU_MODEL_COLORS = ['#6366f1','#06b6d4','#f59e0b','#22c55e','#ef4444','#8b5
 
 function tuGetModelColor(idx) { return TU_MODEL_COLORS[idx % TU_MODEL_COLORS.length] }
 
+// Agents missing from TU_COLORS used to share the '#64748b' fallback, so on a
+// fleet whose agent names are not in the map every agent except the main one
+// rendered in the same grey and the stacked timeline could not show who used
+// what. Unlisted agents now get a distinct colour from this palette (#1646).
+//
+// The palette is disjoint from EVERY TU_COLORS value and from the chart's own
+// line colours, not only from the listed agents present in the current load:
+// the summary depends on the selected period, so a listed agent can appear
+// after a period switch, and a palette colour it shares would then belong to
+// two agents at once (review on #1646: 'geri' got #f59e0b on 1h, 'codi' showed
+// up with the same colour on 7d).
+const TU_RESERVED_COLORS = [
+  '#06b6d4', // 5h window line
+  '#8b5cf6', // weekly window line
+  '#3b82f6', // 5h reset marker
+  '#f59e0b', // day marker
+  '#ef4444', // week marker
+  '#64748b', // legacy grey fallback
+]
+const TU_EXTRA_PALETTE = [
+  '#f97316', '#84cc16', '#0ea5e9', '#d946ef', '#14b8a6', '#eab308',
+  '#78716c', '#be123c', '#a16207', '#15803d', '#1d4ed8', '#c2410c',
+  '#4d7c0f', '#7f1d1d', '#fb7185', '#92400e',
+]
+const tuAssignedColors = {}
+let tuGeneratedCount = 0
+
+// Past the palette, a generated hue instead of the grey: golden-angle steps
+// keep consecutive agents far apart on the wheel. Returned as an hsl() string,
+// which canvas and CSS both accept and which never equals a hex palette entry.
+function tuGeneratedColor(n) {
+  return `hsl(${Math.round((n * 137.508 + 20) % 360)}, 62%, 46%)`
+}
+
+// Called with the agent list of each summary load. Assignment is alphabetical
+// over the agents not yet coloured, so the same fleet gets the same colours on
+// every page load, and an agent keeps its colour for the life of the page even
+// if a later filter hides the others.
+function tuAssignColors(agents) {
+  const used = new Set([
+    ...Object.values(TU_COLORS),
+    ...TU_RESERVED_COLORS,
+    ...Object.values(tuAssignedColors),
+  ])
+  const pending = [...new Set(agents)]
+    .filter((a) => !TU_COLORS[a] && !tuAssignedColors[a])
+    .sort()
+  for (const a of pending) {
+    const free = TU_EXTRA_PALETTE.find((c) => !used.has(c))
+    const colour = free || tuGeneratedColor(tuGeneratedCount++)
+    tuAssignedColors[a] = colour
+    used.add(colour)
+  }
+}
+
 function tuGetColor(agent) {
-  return TU_COLORS[agent] || '#64748b'
+  return TU_COLORS[agent] || tuAssignedColors[agent] || '#64748b'
 }
 
 function tuMcpServerFromTool(toolName) {
@@ -191,6 +255,7 @@ async function loadTokenUsage() {
 }
 
 function renderTuSummary(summary) {
+  tuAssignColors(summary.map((s) => s.agent))
   const el = document.getElementById('tuSummaryCards')
   if (!el) return
   if (!summary.length) {

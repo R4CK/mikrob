@@ -200,6 +200,120 @@ env = mod.collect_email_envelope("Read", {"file_path": "/x"})
 check("envelope/non-send tool: unreadable, never silently hashable",
       env["unreadable_reason"] is not None)
 
+# --- 6. attachments (card e4eb72c9) -------------------------------------------
+check("attachments: missing field -> empty list, no error",
+      mod.collect_mcp_attachments({}) == ([], None))
+
+base64_hash = __import__("hashlib").sha256(b"QQ==").hexdigest()
+check("attachments: inline (base64-looking) content is hashed as given",
+      mod.collect_mcp_attachments(
+          {"attachments": [{"filename": "a.txt", "content": "QQ=="}]})
+      == ([{"filename": "a.txt", "sha256": base64_hash}], None))
+
+with tempfile.TemporaryDirectory() as td:
+    fpath = os.path.join(td, "report.pdf")
+    with open(fpath, "wb") as fh:
+        fh.write(b"%PDF-1.4 fake")
+    file_hash = __import__("hashlib").sha256(b"%PDF-1.4 fake").hexdigest()
+    atts, reason = mod.collect_mcp_attachments(
+        {"attachments": [{"filename": "report.pdf", "content": fpath}]})
+    check("attachments: absolute file path is READ and its bytes hashed",
+          reason is None and atts == [{"filename": "report.pdf", "path": fpath, "sha256": file_hash}],
+          f"got atts={atts!r} reason={reason!r}")
+
+    missing_path = os.path.join(td, "gone.pdf")
+    atts, reason = mod.collect_mcp_attachments(
+        {"attachments": [{"filename": "gone.pdf", "content": missing_path}]})
+    check("attachments: unreadable file path -> unreadable_reason, fail-closed",
+          atts == [] and reason is not None, f"got atts={atts!r} reason={reason!r}")
+
+check("attachments: non-list value -> unreadable_reason",
+      mod.collect_mcp_attachments({"attachments": "oops"})[1] is not None)
+check("attachments: non-dict entry -> unreadable_reason",
+      mod.collect_mcp_attachments({"attachments": ["oops"]})[1] is not None)
+check("attachments: missing/empty content -> unreadable_reason",
+      mod.collect_mcp_attachments({"attachments": [{"filename": "x", "content": ""}]})[1] is not None)
+
+# WhiteHat2 NO-GO F1 (card e4eb72c9, komment 16134): the gmail MCP server's own
+# isFilePath treats every one of these as a FILE (reads it relative to its own
+# cwd at send time), but the OLD code here hashed them as inline TEXT -- the
+# approval anchor pinned the literal string, never the bytes the server
+# actually attached. Each must now be fail-closed unreadable, not hashed.
+for bad_content in ("./report.pdf", "../../.env", "report.pdf", ".env", "data/report.pdf",
+                    "../../../../home/x/.ssh/id_rsa"):
+    atts, reason = mod.collect_mcp_attachments(
+        {"attachments": [{"filename": "f", "content": bad_content}]})
+    check(f"attachments: relative/bare-filename content {bad_content!r} -> "
+          "unreadable_reason, fail-closed (not hashed as inline text)",
+          atts == [] and reason is not None, f"got atts={atts!r} reason={reason!r}")
+
+# M9 (QA/WhiteHat2 mutant): widening _ABS_PATH_RE to also match these relative
+# forms is exactly the regression this allow-list closes -- it must NOT make
+# the above green again. Confirmed by the allow-list design itself: the
+# accepted shapes are absolute-path OR strict-base64, not "matches some
+# path-like regex", so widening the absolute-path side has no effect on the
+# relative forms above (they still fail the base64 check too).
+check("attachments: strict base64 boundary -- not-multiple-of-4 length is rejected",
+      mod.collect_mcp_attachments({"attachments": [{"filename": "f", "content": "QQ="}]})[1] is not None)
+check("attachments: strict base64 boundary -- non-base64 char is rejected",
+      mod.collect_mcp_attachments({"attachments": [{"filename": "f", "content": "QQ==x"}]})[1] is not None)
+
+# WhiteHat2 NO-GO F1' (card e4eb72c9, komment 16365/16368, delta on F1): Python's `re.match`/`$`
+# anchors before a TRAILING newline too, so "abc/def\n" used to pass _STRICT_B64_RE.match -- the
+# gmail-mcp server's JS regex has no such exception, so it reads the SAME string as a relative
+# FILE (it contains "/"), the same content-pin bypass F1 exists to close. `fullmatch` has no such
+# exception: a trailing "\n" (or anything else) makes the whole string fail to match.
+for sneaky_content in ("abc/def\n", "a/b\n", "abc\n"):
+    atts, reason = mod.collect_mcp_attachments(
+        {"attachments": [{"filename": "f", "content": sneaky_content}]})
+    check(f"attachments: trailing-newline base64 bypass {sneaky_content!r} -> "
+          "unreadable_reason, fail-closed (F1', fullmatch not match)",
+          atts == [] and reason is not None, f"got atts={atts!r} reason={reason!r}")
+
+# L1 (WhiteHat2 komment 16365, LOW): a NUL byte in an absolute-path attachment raises ValueError
+# from open(), not OSError -- must be caught the same fail-closed way as an unreadable file.
+nul_path = "/tmp/" + "x" * 3 + "\x00" + "y"
+atts, reason = mod.collect_mcp_attachments(
+    {"attachments": [{"filename": "f", "content": nul_path}]})
+check("attachments: NUL byte in absolute path -> unreadable_reason, fail-closed (L1, ValueError caught)",
+      atts == [] and reason is not None, f"got atts={atts!r} reason={reason!r}")
+
+# L2 (WhiteHat2 komment 16365, LOW): the --attach-body flag was in the detection regex but had no
+# dedicated test -- only --attach and --attach @ were covered.
+env = mod.collect_email_envelope(
+    "Bash", {"command": 'swaks --to a@b.hu --body "b" --attach-body report.pdf'})
+check("envelope/bash: swaks --attach-body <file> -> unreadable_reason, fail-closed (F2/L2)",
+      env["unreadable_reason"] is not None, f"got {env!r}")
+
+# WhiteHat2 NO-GO F2 (card e4eb72c9, komment 16134): the Bash extraction branch
+# never populated `attachments`, so a swaks `--attach <file>` sent an envelope
+# anchored IDENTICALLY with or without the attachment (measured: 9ac71cacbd
+# for all three). Now fail-closed: the attach flag makes the whole call
+# unreadable, same TOCTOU rationale as the `<`/@file body forms.
+env = mod.collect_email_envelope(
+    "Bash", {"command": 'swaks --to a@b.hu --body "b" --attach report.pdf'})
+check("envelope/bash: swaks --attach <file> -> unreadable_reason, fail-closed "
+      "(F2, not silently sent with an un-anchored attachment)",
+      env["unreadable_reason"] is not None, f"got {env!r}")
+
+env = mod.collect_email_envelope(
+    "Bash", {"command": 'swaks --to a@b.hu --body "b" --attach @report.pdf'})
+check("envelope/bash: swaks --attach @<file> -> unreadable_reason, fail-closed (F2)",
+      env["unreadable_reason"] is not None, f"got {env!r}")
+
+env = mod.collect_email_envelope(
+    "mcp__server-gmail-autoauth-mcp__send_email",
+    {"to": ["a@b.hu"], "subject": "t", "body": "b",
+     "attachments": [{"filename": "a.txt", "content": "QQ=="}]})
+check("envelope/mcp: attachments key is populated from tool_input",
+      env["attachments"] == [{"filename": "a.txt", "sha256": base64_hash}]
+      and env["unreadable_reason"] is None, f"got {env!r}")
+
+env = mod.collect_email_envelope(
+    "Bash", {"command": 'send.py --to a@b.hu --subject "t" --body "b"'})
+check("envelope/bash: attachments key present (empty, Bash has none)",
+      env["attachments"] == [], f"got {env!r}")
+
 print()
 if failed:
     print(f"{len(failed)} FAILED: {failed}", file=sys.stderr)

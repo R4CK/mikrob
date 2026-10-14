@@ -294,6 +294,12 @@ online() { # $1 = the reason string the caller would have printed
     *"vram-hold"*)
       echo "local-llm-rag: advisory draft SKIPPED -- the GPU is under pressure, that is what was measured" >&2
       exit 9 ;;
+    # MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01). Same direction as vram-hold above and for
+    # the same reason: this is a fact about whether the machine may run the local model AT ALL,
+    # not about the task -- an advisory draft must not run either while the switch is off.
+    *"local-first-draft is OFF"*)
+      echo "local-llm-rag: advisory draft SKIPPED -- local-first-draft is OFF (dashboard switch)" >&2
+      exit 9 ;;
   esac
   ADVISORY_REASON="$reason"
 }
@@ -306,6 +312,18 @@ else
   TASK="$(cat)"
 fi
 [[ -z "${TASK// }" ]] && die 4 "empty task prompt"
+
+# MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01, Peti Telegram 10951), checked before any routing
+# decision -- cheapest, most authoritative gate, same ordering principle as every other entry
+# point. Goes through online() so the advisory path's own skip logic (vram-hold, unusable-ask)
+# applies here too: the switch being off is a capacity-style fact about the machine, not about the
+# task, so an advisory draft must not run either. Missing helper -> skipped, same direction as every
+# other "missing guard" case in this file (a checkout copied without its siblings, e817817c's own
+# no-dist test fixture, is not doubt about the switch -- it never had one to read).
+if [[ -f "$HERE/local-first-draft-check.sh" ]]; then
+  . "$HERE/local-first-draft-check.sh"
+  local_first_draft_enabled || online "local-first-draft is OFF (dashboard switch)"
+fi
 
 # --- graphify code-graph context (card 3646bde7) ------------------------------------------------
 # Give the LOCAL model real code understanding instead of guesses: pull the deterministic knowledge

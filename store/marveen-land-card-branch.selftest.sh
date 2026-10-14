@@ -560,6 +560,56 @@ else
   echo "  FAIL expected cafe66 to land once both unioned gates agree -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
 fi
 
+# Card 3731c807 (U4, RedHat 16520): fff666 above already pins the EMPTY "Designated: nincs
+# kijelolve" case, but nothing pinned the NON-EMPTY case -- a bug that dropped the real CSV before
+# it reached the comment (e.g. always printing the fallback) would still read "Designated:
+# <something>" and every existing grep for "Designated:" alone would stay green. cafe66 just landed
+# with a real union (QA + RedHat), so its own LANDED comment must carry that exact, non-empty CSV
+# (gate_designation.py sorts it: cybered,qa,qa2), not the "nincs kijelolve" fallback.
+n=$((n + 1))
+if [ -f "$CAPTURE_DIR/cafe66.ndjson" ] && grep -q "Designated: cybered,qa,qa2" "$CAPTURE_DIR/cafe66.ndjson"; then
+  echo "  ok   the landing comment names the actual NON-EMPTY designation it checked (U4): Designated: cybered,qa,qa2"
+else
+  echo "  FAIL expected 'Designated: cybered,qa,qa2' in cafe66's landing comment"; fail=1
+fi
+
+# Card 3731c807 (W2, RedHat 16520): a FAILING verdict on a card's own DESIGNATED security gate
+# must never be overridden by --allow-ungated. Measured here rather than assumed: a CYBERED NO-GO
+# on the sha being landed is ALSO caught by the earlier, broader gate_verdict_check step (it scans
+# every gate's PASS/FAIL on the sha, not only QA's) -- so this scenario refuses there first, before
+# card_designated_gates_agree's OWN designation_rc==2 branch is ever reached. That branch's message
+# ("card ...'s designated gates (...) carry a FAILING verdict") is therefore currently UNREACHABLE
+# through land_one's public interface whenever the failing gate is one gate_verdict_check already
+# recognises (QA/cybersec/cybered) -- a non-blocking observation for MikroB, not a bug: the net
+# effect (refuse, never overridden by --allow-ungated) is correct either way, just via the first
+# of the two checks rather than the second. This case pins that net effect with the ACTUAL message
+# the broader check prints, so a future change that weakens EITHER check's --allow-ungated handling
+# still gets caught by at least one of them.
+git -C "$MAIN" checkout -q -b card/beeffa develop
+echo "beeffa content" > "$MAIN/beeffa.txt"
+git -C "$MAIN" add beeffa.txt
+git -C "$MAIN" -c user.email=s@s -c user.name=s commit -qm "card beeffa: add beeffa.txt"
+git -C "$MAIN" checkout -q develop
+SHA_BEEFFA="$(git -C "$MAIN" rev-parse card/beeffa)"
+set_card_desc beeffa "Gate: RedHat (trust boundary)"
+printf '[{"author":"qa","content":"QA PASS\\nGate-SHA: %s"},{"author":"cybered","content":"CYBERED NO-GO\\nGate-SHA: %s"}]' \
+  "$SHA_BEEFFA" "$SHA_BEEFFA" > "$GET_DIR/beeffa.json"
+
+n=$((n + 1))
+land_card beeffa backend3 --allow-ungated
+if [ "$rc" != 0 ] && grep -q "carries a FAILING gate verdict" "$OUT_FILE"; then
+  echo "  ok   a FAILING verdict on a card's own designated security gate refuses even with --allow-ungated (W2, via gate_verdict_check's broader FAIL scan)"
+else
+  echo "  FAIL expected a FAILING-verdict refusal regardless of --allow-ungated -> rc=$rc:"; tail -15 "$OUT_FILE" | sed 's/^/       /'; fail=1
+fi
+
+n=$((n + 1))
+if ! git -C "$MAIN" merge-base --is-ancestor card/beeffa origin/develop 2>/dev/null; then
+  echo "  ok   the W2-refused landing pushed nothing"
+else
+  echo "  FAIL a W2-refused landing should not have pushed anything"; fail=1
+fi
+
 # N2: the "UNGATED LANDING" note must be posted ONLY after a successful merge+push -- not when the
 # gate-check tolerance was granted but the landing failed for an UNRELATED reason afterwards (here:
 # a forced fleet-test failure). Bypasses land_card() to override MARVEEN_LAND_TEST per-call.

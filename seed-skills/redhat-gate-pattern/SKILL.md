@@ -1,7 +1,8 @@
 ---
 name: redhat-gate-pattern
-description: Full RedHat gate workflow for the CleanCore fleet: board scan for waiting+REVIEW cards in RedHat scope, assume-breach kill-chain evaluation per card, verdict posting, card status update, and MikroB notification. Use this whenever running SELF-ADVANCE (Rule 11) or executing a MikroB-dispatched gate. Complements white-hat-security-testing (per-finding proof) by adding the assume-breach frame, kill-chain chaining, and fleet workflow mechanics.
+description: "Full RedHat gate workflow for the CleanCore fleet: board scan for waiting+REVIEW cards in RedHat scope, assume-breach kill-chain evaluation per card, verdict posting, card status update, and MikroB notification. Use this whenever running SELF-ADVANCE (Rule 11) or executing a MikroB-dispatched gate. Complements white-hat-security-testing (per-finding proof) by adding the assume-breach frame, kill-chain chaining, and fleet workflow mechanics."
 version: "1.0.0"
+disallowed-tools: AskUserQuestion
 ---
 
 # RedHat Gate Pattern

@@ -41,19 +41,25 @@ open(out, "w").write("\n".join(lines) + "\n")
 PYEOF
 }
 
-# Run the guard with an isolated state dir; args: state_dir boots_file kernel_file
+# Run the guard with an isolated state dir.
+# Args: state_dir boots_file kernel_file [journal_log_file]
+# journal_log_file: path given to GPU_GUARD_JOURNAL_LOG_OVERRIDE (is_clean_shutdown).
+# Defaults to /dev/null (empty -> no clean-shutdown marker -> all short boots count
+# as crashes, preserving pre-970a90c3 test semantics).
 run_guard() {
   GPU_GUARD_STATE_DIR="$1" GPU_GUARD_BOOTS_OVERRIDE="$2" GPU_GUARD_KERNEL_LOG_OVERRIDE="$3" \
+    GPU_GUARD_JOURNAL_LOG_OVERRIDE="${4:-/dev/null}" \
     GPU_GUARD_ALERT_DRYRUN=1 GPU_GUARD_MASK_DRYRUN=1 bash "$GUARD" 2>&1
 }
 
 # Run the guard with the mask path REALLY exercised (no MASK_DRYRUN), against a fake systemctl and
 # a fake user-unit directory. This is the seam card d5c05548 added: the fallback it fixes cannot be
 # reached under MASK_DRYRUN, which is why the defect survived twelve passing tests.
-# Args: state_dir boots_file kernel_file fake_systemctl unit_dir [units]
+# Args: state_dir boots_file kernel_file fake_systemctl unit_dir [units] [journal_log_file]
 run_guard_masking() {
   GPU_GUARD_STATE_DIR="$1" GPU_GUARD_BOOTS_OVERRIDE="$2" GPU_GUARD_KERNEL_LOG_OVERRIDE="$3" \
     GPU_GUARD_SYSTEMCTL="$4" GPU_GUARD_USER_UNIT_DIR="$5" GPU_GUARD_UNITS="${6:-ollama.service}" \
+    GPU_GUARD_JOURNAL_LOG_OVERRIDE="${7:-/dev/null}" \
     GPU_GUARD_ALERT_DRYRUN=1 bash "$GUARD" 2>&1
 }
 
@@ -559,6 +565,47 @@ OUT="$(run_guard_masking "$ST" "$ST/boots.txt" "$ST/kernel.txt" "$SCTL" "$UNITS_
 [ -f "$ST/.gpu-crashloop-guard-masked.json" ] \
   && pass "unknown-state: an empty answer with exit 0 keeps the flag" \
   || fail "unknown-state: an empty-but-successful answer deleted the flag ($OUT)"
+
+# ---------------------------------------------------------------------------
+# (w) CLEAN POWEROFF SOROZAT NEM CRASH-LOOP (card 970a90c3, false-positive 1).
+#     5 short (35s) boot, mind systemd-poweroff.service: Finished. zárul --
+#     Peti manuális leállások sorozata. A guard NE detektáljon crash-loopot.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(w) clean poweroff series -> no crash-loop detected"
+ST="$(fresh_case w)"
+BOOTS="$ST/boots.txt"; KERN="$ST/kernel_clean.txt"; JOURNAL="$ST/journal_clean.txt"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 5 60
+# Kernel log contains the ioctl noise but no real fault -- would match the OLD regex,
+# must NOT match the fixed one.
+echo "misc dxg: dxgk: dxgkio_is_feature_enabled: Ioctl failed: -22" > "$KERN"
+# Journal shows a clean voluntary poweroff for each boot.
+echo "systemd-poweroff.service: Finished." > "$JOURNAL"
+OUT="$(run_guard "$ST" "$BOOTS" "$KERN" "$JOURNAL")"
+if printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
+  fail "clean-poweroff: guard triggered on a clean poweroff series (false positive)"; else
+  pass "clean-poweroff: a series of clean voluntary poweroffs is not a crash-loop"
+fi
+
+# ---------------------------------------------------------------------------
+# (x) IOCTL ZAJ (-22) EGYEDÜL NEM DXG-OOPS (card 970a90c3, false-positive 2).
+#     A "misc dxg: dxgk: Ioctl failed: -22" sor normál boot-zaj, jelen van
+#     minden WSL2 rendszernél -- ne tegyen valódi GPU-hibának.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(x) ioctl -22 noise alone does not count as a dxg oops"
+ST="$(fresh_case x)"
+BOOTS="$ST/boots.txt"; KERN="$ST/kernel_noise.txt"
+echo "$(($(date +%s) - 3600))" > "$ST/.gpu-crashloop-guard-baseline"
+write_short_dxg_boots "$BOOTS" 4 60
+echo "misc dxg: dxgk: dxgkio_is_feature_enabled: Ioctl failed: -22" > "$KERN"
+# Journal log not given -> /dev/null -> no clean shutdown -> boots count as short, but...
+OUT="$(run_guard "$ST" "$BOOTS" "$KERN")"
+if printf '%s' "$OUT" | grep -q "MASK_DRYRUN\|ALERT_DRYRUN"; then
+  fail "ioctl-noise: guard triggered on ioctl -22 noise that appears on every boot"; else
+  pass "ioctl-noise: ioctl -22 noise is not a dxg-oops, guard stays silent"
+fi
 
 echo "========================="
 TOTAL=$((PASS + FAIL))

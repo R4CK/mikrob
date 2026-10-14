@@ -382,6 +382,8 @@ nav { display: flex; gap: 4px; }
   vertical-align: middle;
 }
 .updates-badge[hidden] { display: none; }
+/* VIDEOREVIEW1002: .sb-link is display:flex, which wins over the UA [hidden] rule. */
+.sb-link[hidden] { display: none; }
 
 .updates-summary {
   padding: 16px 18px;
@@ -7965,6 +7967,22 @@ button.graph-rel-jump:focus-visible { outline: 2px solid var(--accent); outline-
   flex-shrink: 0;
 }
 .claude-plan-delete:hover { opacity: 0.7; }
+.claude-plan-usage { margin-top: 10px; }
+.claude-plan-usage .quota-bar { grid-template-columns: 56px minmax(60px, 1fr) auto; }
+.claude-plan-usage-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.claude-plan-usage-error { color: var(--danger); }
+.claude-plan-status-ok { color: var(--success); border-color: var(--success); }
+.claude-plan-status-warn { color: var(--accent); border-color: var(--accent); }
+.claude-plan-status-exhausted { color: var(--danger); border-color: var(--danger); }
 .claude-plans-add-form {
   margin-top: 16px;
   padding-top: 16px;
@@ -7979,6 +7997,41 @@ button.graph-rel-jump:focus-visible { outline: 2px solid var(--accent); outline-
   cursor: pointer;
 }
 .claude-plans-checkbox-row input { width: auto; }
+.claude-plans-form-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+.claude-plans-add-form .input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.claude-plans-form-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+.claude-plans-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.claude-plan-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.claude-plan-edit {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+}
+.claude-plan-edit:hover { color: var(--text); }
 
 /* === connectors.hu cross-promo banner === */
 .cxhu-banner {
@@ -10071,6 +10124,131 @@ body {
 }
 .llm-usage-status.ok { color: var(--success); background: var(--success-soft); }
 .llm-usage-status.err { color: var(--danger); background: var(--danger-soft, rgba(220, 60, 60, 0.14)); }
+
+/* Gemini (agy) calls page + overview tile (card 57da740c) -- same table/badge idiom as
+   .llm-usage-table/.llm-queue-status above, own namespace so the two pages stay independently
+   editable without risk of an unrelated .llm-* rule drifting one when the other changes. */
+.gemini-page-sub { color: var(--text-muted); font-size: 13px; margin: 0 0 14px; }
+.gemini-page-status { font-size: 13px; color: var(--text-muted); margin: 0 0 14px; }
+.gemini-page-status[hidden] { display: none; }
+.gemini-page-status--error { color: var(--danger); }
+.gemini-page-status--muted { color: var(--text-muted); }
+.gemini-empty { font-size: 13px; color: var(--text-muted); margin: 0; padding: 8px 0; }
+
+.gemini-stop-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft, rgba(220, 60, 60, 0.14));
+  color: var(--danger);
+  font-size: 13px;
+}
+.gemini-stop-banner[hidden] { display: none; }
+
+.gemini-quota-section { margin-bottom: 20px; }
+.gemini-quota-row { display: flex; align-items: center; gap: 10px; }
+.gemini-quota-bar {
+  flex: 1;
+  height: 10px;
+  background: var(--border, #333);
+  border-radius: 5px;
+  overflow: hidden;
+  display: inline-block;
+}
+.gemini-quota-bar-fill { display: block; height: 100%; border-radius: 5px; background: var(--success); transition: width 0.3s ease; }
+.gemini-quota-label { font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.gemini-quota-next-free { font-size: 12px; color: var(--text-muted); margin: 6px 0 0; }
+
+.gemini-summary-table,
+.gemini-calls-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 460px;
+}
+.gemini-summary-table th, .gemini-summary-table td,
+.gemini-calls-table th, .gemini-calls-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.gemini-summary-table th, .gemini-calls-table th {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.gemini-num { text-align: right; }
+.gemini-calls-table-wrap { overflow-x: auto; }
+
+.gemini-status {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.gemini-status--ok { color: var(--success); background: var(--success-soft); }
+.gemini-status--error,
+.gemini-status--err,
+.gemini-status--timeout { color: var(--danger); background: var(--danger-soft, rgba(220, 60, 60, 0.14)); }
+.gemini-status--blocked { color: var(--danger); background: var(--danger-soft, rgba(220, 60, 60, 0.14)); font-weight: 700; }
+.gemini-status--started { color: var(--accent); background: var(--accent-soft); }
+.gemini-status--unknown { color: var(--text-muted); background: rgba(148, 163, 184, 0.14); }
+
+.gemini-unrated { font-size: 11px; color: var(--text-muted); font-style: italic; }
+.gemini-rating { display: inline-flex; align-items: center; gap: 6px; }
+.gemini-rating-result { font-size: 12px; }
+.gemini-rating-score { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 8px; }
+.gemini-rating-score--good { color: var(--success); background: var(--success-soft); }
+.gemini-rating-score--mid { color: var(--accent); background: var(--accent-soft); }
+.gemini-rating-score--bad { color: var(--danger); background: var(--danger-soft, rgba(220, 60, 60, 0.14)); }
+.gemini-rating-opinion {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Overview tile (mirrors .ovw-cost-* layout, own namespace per card 01b51197's own precedent) */
+.ovw-gemini-card { margin-top: 14px; margin-bottom: 20px; }
+.ovw-gemini-quota-row { display: flex; align-items: center; gap: 10px; }
+.ovw-gemini-bar-track {
+  flex: 1;
+  height: 8px;
+  background: var(--border, #333);
+  border-radius: 4px;
+  overflow: hidden;
+  display: inline-block;
+}
+.ovw-gemini-bar-fill { display: block; height: 100%; border-radius: 4px; background: var(--success); transition: width 0.3s ease; }
+.ovw-gemini-quota-label { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ovw-gemini-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border, #333); }
+.ovw-gemini-today { font-size: 12px; color: var(--text-muted); }
+.ovw-gemini-detail-link { font-size: 12px; color: var(--accent, #4a9eff); text-decoration: none; white-space: nowrap; }
+.ovw-gemini-detail-link:hover { text-decoration: underline; }
+.gemini-stop-badge {
+  color: var(--danger);
+  background: var(--danger-soft, rgba(220, 60, 60, 0.14));
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.gemini-stop-badge[hidden] { display: none; }
+
+@media (max-width: 640px) {
+  .gemini-summary-table, .gemini-calls-table { font-size: 12px; }
+  .gemini-rating-opinion { max-width: 120px; }
+}
 
 /* Async work queue (card 48aacf56 item 5) */
 .llm-queue-filter {

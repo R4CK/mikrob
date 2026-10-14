@@ -112,4 +112,36 @@ describe('costops estimateCostUsd', () => {
     })
     expect(cost).toBe(5.0)
   })
+
+  // Weekly pricing-reconciliation check (card 270e3ef4), 2026-10-12 run: four new model IDs
+  // appeared in token_usage (claude-fable-5-1, claude-haiku-5-5, claude-opus-5-5,
+  // claude-sonnet-5-5). None had an explicit row; strict-equality lookup returned null for all.
+  // Source: platform.claude.com/docs/en/about-claude/pricing fetched 2026-10-12.
+  it('resolves the models added in the 2026-10-12 reconciliation pass', () => {
+    const added = ['claude-fable-5-1', 'claude-haiku-5-5', 'claude-opus-5-5', 'claude-sonnet-5-5']
+    for (const model of added) {
+      const cost = estimateCostUsd(model, { input_tokens: 1000, output_tokens: 1000, cache_read_tokens: 0, cache_creation_tokens: 0, thinking_tokens: 0 })
+      expect(cost, `${model} should resolve to a known rate`).not.toBeNull()
+    }
+  })
+
+  it('Opus 5.5 is priced at 4/20, not at the Opus 5 rate (5/25)', () => {
+    const cost = estimateCostUsd('claude-opus-5-5', {
+      input_tokens: 1_000_000, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, thinking_tokens: 0,
+    })
+    expect(cost).toBe(4.0)
+  })
+
+  it('covers the newly recorded models as of 2026-10-12 DB sweep', () => {
+    // From store/claudeclaw.db distinct model list 2026-10-12: all must price to non-null.
+    const recorded = [
+      'claude-fable-5-1', 'claude-haiku-4-5-20251001', 'claude-haiku-5-5',
+      'claude-opus-4-8', 'claude-opus-5', 'claude-opus-5-5',
+      'claude-sonnet-4-6', 'claude-sonnet-5', 'claude-sonnet-5-5',
+    ]
+    for (const model of recorded) {
+      const cost = estimateCostUsd(model, { input_tokens: 1000, output_tokens: 1000, cache_read_tokens: 0, cache_creation_tokens: 0, thinking_tokens: 0 })
+      expect(cost, `${model} should resolve to a known rate`).not.toBeNull()
+    }
+  })
 })

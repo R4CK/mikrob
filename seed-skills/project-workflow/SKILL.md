@@ -38,6 +38,47 @@ Bármilyen nem-triviális feladatnál/projektnél, amit a felhasználó ad. Ezek
 6. **Frontend-pairing (csapat-szabály 2026-07-05).** Minden USER-FACING feature/funkció (új feature, pl. versenytárs-elemzésből; VAGY user-facing viselkedést változtató bugfix) mellé MikroB AUTOMATIKUSAN létrehoz egy párosított **Fron Ted** frontend-kártyát (`@fron-ted`, a feature gyereke/testvére, backend kártyára hivatkozva). Két lépés: (1) user flow / IA a `user-flow-menu-design` skillel (hol él a navigációban, teljes journey, minden állapot); (2) frontend UI a `frontend-design-research` skillel, a backendhez drótozva + bekötve az app menü/navigációjába. A user flow-t Fron Ted maga generálja. QA a flow-teljességet + elérhetőséget is gate-eli. Tisztán belső/infra munkánál (adapter, migráció, type-fix -- nincs UI) NINCS pairing. Minden feature-dispatchnél és lezárásnál ellenőrizd: van-e a feature-nek Fron Ted frontend-kártyája; ha nincs, hozd létre.
 6a. **A párosítás kimondott, lekérdezhető sor, nem próza (kártya d03b3eea mérése, 2026-08-16).** Mért adat: amikor a BE+FE pár EGYÜTT jön létre, a két oldal ténylegesen párhuzamosan épül (3/3 eset, 0,2-0,5 órás dispatch-átfedéssel) -- az időzítés tehát nem hibás. Ami hiányzik: 11/14 friss FE-kártyán a hivatkozás csak a leírás prózájában él, csak 10/29-nél van `parent_id` -- a szabály betartása NEM lekérdezhető, csak grep-elhető. A `Produces:`/`Consumes:` mintájára (lásd alább) a párosított kártyák leírásának elején kötelező: a backend kártyán `Pair-FE: <fron-ted kártya ID>`, a Fron Ted kártyán `Pair-BE: <backend kártya ID>`. MikroB tölti ki mindkettőt a kártyák LÉTREHOZÁSAKOR, egymásra mutatva -- nem utólag, nem az építő ügynökre bízva.
 
+## Spec-sablon nem triviális kártyához (KÖTELEZŐ, Peti 10994/10998/11000, kártya 81452ce2, 2026-10-11)
+
+Saját folyamat a zazencodes/zazencodes-season-3 `software-factory-claude-code` mintájára -- az ötletet
+(kötelező spec elfogadási kritériummal, mielőtt épül) vettük át, a repónak NINCS licence (GitHub
+`license:null`), ezért Peti döntése "csak saját": kódot, prompt-szöveget, sablon-szöveget a forrásból
+NEM másolunk, csak olvasásra hivatkozunk rá (@555467c3, `src/software-factory-claude-code`).
+
+**Melyik kártya "nem triviális" (plan-grilling verdikt, szándékosan SZŰK, hogy a kis kártyák ne lassuljanak):**
+`[FÁZIS]`/`[FAZIS]`/`[FELADAT]` cím-tag, VAGY `priority` HIGH/URGENT, VAGY `[SEC]` cím-tag.
+
+Egy ilyen kártya `in_progress`-be kerülés ELŐTT viselje a leírásában (vagy egy dedikált kommentben) ezt
+az öt szakaszt:
+
+- **Kontextus** -- valós fájl-/útvonal-hivatkozással (pl. `src/web/x.ts:42`, nem "a modul"), mi a
+  jelenlegi állapot és miért kell a változás.
+- **Követelmények** -- számozott lista, mit kell szállítani.
+- **Ellenőrizhető elfogadási kritériumok** -- minden követelményhez EGY olyan parancs/oldal/fájl, amit
+  a gate meg tud ismételni és egyértelmű igen/nem választ ad (pl. "`npx vitest run <fájl>` zöld", "a
+  `/api/y` 200-at ad 404 helyett").
+- **Nincs benne** -- amit a kártya SZÁNDÉKOSAN nem fed le.
+- **Feltételezések** -- minden feltételezés saját sorban, a sor VÉGÉN kötelező mezővel:
+  `(Termékdöntés: igen/nem)`. Ez a mező szándékosan EXPLICIT (nem egy a szövegen futó regex találja
+  ki, hogy egy feltételezés termékdöntés-jellegű-e) -- a plan-grilling verdikt kifejezetten ezt kérte.
+
+**Termékdöntés automatikus jelölése (F4-bekötés).** Ha a kártya leírásában, vagy a kártya felelősének
+(assignee) vagy MikroB-nak egy kommentjében egy feltételezés sora `Termékdöntés: igen`-nel zárul (a
+kitöltetlen `igen/nem` sablon-placeholder nem illeszkedik, és a mezőt más, harmadik fél kommentjéből a
+gép nem fogadja el), a kártya automatikusan `[BLOKKOLT-Peti-dontes]` cím-taget kap és egy jóváhagyás-kérő
+komment megy MikroB-nak. **A DÖNTÉSIG NEM SZABAD folytatni a kártyán megnevezett termékdöntés pontján --
+de a rendszer ma ezt csak JELZI, nem ÁLLÍTJA MEG: a warn-only kapcsoló alatt a kártya `in_progress`-be
+MEGY, a tag és a komment csak látható figyelmeztetés (WhiteHat2 NO-GO, komment 16326, F3/F4).** A
+feloldás tartós: egy `Termékdöntés-jóváhagyva` komment MikroB-tól, ami a tagot a döntés-sor törlése
+nélkül is véglegesen leállítja. A gép: `src/web/kanban-spec-template-guard.ts`.
+
+**A kapcsoló MOST warn-only (plan-grilling GO-WITH-CHANGES, mérési időszak egy hétig).** A hiányzó
+sablon ma csak egy figyelmeztető kommentet kap (`SPEC-TEMPLATE WARN`), a `planned -> in_progress`
+átmenetet NEM blokkolja -- a `kanban-plan-grilling-guard.ts` mintájára épülő valódi kapuvá válás a mérés
+után, külön döntés. Kikapcsolás: `SPEC_TEMPLATE_GUARD=off`.
+
+A gate-ek (QA + WhiteHat2) a REVIEW-ban kritériumonként jelzik: teljesül / nem.
+
 ## Alfeladat-kártyák közötti szerződés (obra/superpowers `writing-plans` mintája, ADAPT 4/10)
 Amikor egy Feladatot alfeladat-kártyákra bontasz, és a B alfeladat a A alfeladat kimenetére épül (függvény, típus, mezőnév), az A kártya leírásába/REVIEW-jébe kerüljön egy rövid **"Produces:"** sor a pontos szignatúrával (függvény/típusnév, paraméter- és visszatérési típus), a B kártya leírásába pedig egy **"Consumes:"** sor, ami erre hivatkozik. Enélkül a downstream kártya nem tudja, mire épít, és pont az a fajta csendes-drift alakulhat ki, ami a 33527dcd kártyán (spread-lauderolt kulcsok, deklarálva-de-nem-forwardolva) történt. Ez NEM külön dokumentum, csak egy-két sor a meglévő kártya-leírásban.
 

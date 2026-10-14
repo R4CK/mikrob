@@ -20,7 +20,7 @@ import { channelStateDir, type ChannelProviderType } from '../channel-provider.j
 import { atomicWriteFileSync } from './atomic-write.js'
 import { isReservedSenderId } from './system-directive-id.js'
 import { updateEnvFile } from '../env.js'
-import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
+import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
 import {
   MACHINE_SPECIFIC_CONFIG_KEYS, SAFE_CONFIG_IMPORT_KEYS,
   stripRiskyConfigFields, stripRiskyMcpCommands, stripRiskySettings, hasMcpCommand,
@@ -1389,12 +1389,11 @@ export function importFleet(
     const sourceAgentId = sourceIdentity?.MAIN_AGENT_ID ?? fleet.mainAgent?.agentId
     if (sourceAgentId && typeof sourceAgentId === 'string') {
       const overridesPath = join(STORE_DIR, 'config-overrides.json')
-      let overrides: Record<string, unknown> = {}
-      try {
-        if (existsSync(overridesPath)) {
-          overrides = JSON.parse(readFileSync(overridesPath, 'utf-8')) as Record<string, unknown>
-        }
-      } catch { /* start fresh if file is corrupt */ }
+      // JSONCLOBBER926B: a corrupt config-overrides.json carries the main agent's identity
+      // takeover keys -- the old "start fresh if corrupt" silently replaced ALL of them with
+      // just the ones this import sets. readJsonObjectForWrite throws instead, taking this
+      // call's own failure path: the import fails, nothing is written (overrides or .env).
+      const overrides = readJsonObjectForWrite(overridesPath)
       if (sourceIdentity && typeof sourceIdentity === 'object') {
         // Full identity takeover: iterate all keys generically (no hardcoded names)
         for (const [key, val] of Object.entries(sourceIdentity)) {

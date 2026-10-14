@@ -8,17 +8,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mkdtempSync, rmSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import type { RouteContext } from '../web/routes/types.js'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-routes-test-'))
 
 vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5' }))
 
 let rotationEnabled = '0'
+let fleetEnabled = false
 let mainIsolated = '0'
 vi.mock('../settings-store.js', () => ({
   getEffectiveSettingValue: (key: string) => {
     if (key === 'CLAUDE_ROTATION_ENABLED') return rotationEnabled
     if (key === 'MAIN_AGENT_ISOLATED_CONFIG') return mainIsolated
+    if (key === 'CLAUDE_ROTATION_FLEET') return fleetEnabled ? '1' : '0'
     return ''
   },
 }))
@@ -41,11 +44,38 @@ const setSecret = vi.fn((id: string, _label: string, value: string) => { vaultSe
 const deleteSecret = vi.fn((id: string) => vaultSecrets.delete(id))
 vi.mock('../web/vault.js', () => ({ setSecret, deleteSecret }))
 
+// Fleet leg (CLAUDE_ROTATION_FLEET): its logic is tested in
+// claude-plan-fleet-rotation.test.ts; here only "does the route start it, and
+// only when the opt-in is on".
+const runFleetLeg = vi.fn(async (_plan: { id: string }) => null)
+vi.mock('../web/claude-plan-fleet-wiring.js', () => ({
+  runFleetLeg: (p: { id: string }) => runFleetLeg(p),
+}))
+
 const { tryHandleClaudePlans } = await import('../web/routes/claude-plans.js')
 const { CLAUDE_PLANS_PATH } = await import('../web/claude-plans.js')
 const { CLAUDE_PLANS_STATE_PATH } = await import('../web/claude-plans-state.js')
 
-function fakeCtx(method: string, path: string, body?: unknown): { ctx: any; out: { status: number; body: any } } {
+// Card 93ed929a: write/rotate now require a human credential (session or device key) --
+// `auth` defaults to a session caller so every PRE-EXISTING test in this file (written before
+// that gate existed) keeps exercising the actual CRUD/rotation logic unchanged. The negative
+// tests for the gate itself pass `auth` explicitly.
+//
+// A default parameter substitutes on an explicit `undefined` argument JUST AS MUCH as on an
+// omitted one -- `fakeCtx(a, b, c, undefined)` and `fakeCtx(a, b, c)` are indistinguishable to
+// JS, both landing on the default. That makes a plain `= {kind:'session'}` default unable to
+// express "no auth at all" (the PRODUCTION shape RedHat's N1 finding named -- web.ts hands the
+// handler `ctx.auth === undefined` for a request with no principal, not `{}`). `null` is NOT
+// substituted by a default parameter (only `undefined` is), so it is used here as the distinct
+// "explicitly no auth" marker: omit the argument for the session default, pass `null` for a
+// genuine `ctx.auth === undefined`.
+function fakeCtx(
+  method: string,
+  path: string,
+  body?: unknown,
+  auth: { kind?: string; device?: string } | null = { kind: 'session' },
+): { ctx: RouteContext; out: { status: number; body: any } } {
+  const resolvedAuth = auth === null ? undefined : auth
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -59,7 +89,7 @@ function fakeCtx(method: string, path: string, body?: unknown): { ctx: any; out:
       if (event === 'end') cb()
     },
   }
-  return { ctx: { req, res, path: url.pathname, method, url }, out }
+  return { ctx: { req, res, path: url.pathname, method, url, auth: resolvedAuth } as RouteContext, out }
 }
 
 function plan(over: Record<string, unknown> = {}): Record<string, unknown> {
@@ -341,6 +371,8 @@ describe('POST /api/claude-plans/rotate (PR2c)', () => {
     mainIsolated = '1'
     hardRestartMarveenChannels.mockClear().mockReturnValue({ ok: true })
     restartAgentProcess.mockClear().mockResolvedValue({ ok: true, pid: 123 })
+    fleetEnabled = false
+    runFleetLeg.mockClear()
   })
 
   async function seedTwoPlans() {
@@ -402,12 +434,36 @@ describe('POST /api/claude-plans/rotate (PR2c)', () => {
     const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' })
     await tryHandleClaudePlans(ctx)
     expect(out.status).toBe(200)
-    expect(out.body).toEqual({ ok: true, agentId: 'agent-a', activePlanId: 'team' })
+    expect(out.body).toEqual({ ok: true, agentId: 'agent-a', activePlanId: 'team', fleet: 'off' })
     expect(hardRestartMarveenChannels).toHaveBeenCalledTimes(1)
+    // CLAUDE_ROTATION_FLEET off (default): the fleet is not touched at all.
+    expect(runFleetLeg).not.toHaveBeenCalled()
 
     const state = fakeCtx('GET', '/api/claude-plans/state')
     await tryHandleClaudePlans(state.ctx)
     expect(state.out.body.activePlanByAgent).toEqual({ 'agent-a': 'team' })
+  })
+
+  it('CLAUDE_ROTATION_FLEET on: a main-agent rotation starts the fleet leg for the target plan', async () => {
+    await seedTwoPlans()
+    fleetEnabled = true
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(200)
+    expect(out.body.fleet).toBe('started')
+    await vi.waitFor(() => expect(runFleetLeg).toHaveBeenCalledTimes(1))
+    expect(runFleetLeg.mock.calls[0][0].id).toBe('team')
+  })
+
+  it('CLAUDE_ROTATION_FLEET on: no fleet leg when the main restart itself failed', async () => {
+    await seedTwoPlans()
+    fleetEnabled = true
+    hardRestartMarveenChannels.mockReturnValue({ ok: false, error: 'boom' })
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(500)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(runFleetLeg).not.toHaveBeenCalled()
   })
 
   it('this is also how a first-ever assignment happens -- no separate bootstrap path', async () => {
@@ -462,5 +518,141 @@ describe('POST /api/claude-plans/rotate (PR2c)', () => {
     const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { agentId: 'devy', targetPlanId: 'pro' })
     await tryHandleClaudePlans(ctx)
     expect(out.status).toBe(200)
+  })
+})
+
+// Card 93ed929a (WhiteHat F1 on 517fdcc5, comment 16354): the plan-write routes (POST/PUT/DELETE
+// /api/claude-plans) and the rotation trigger (POST .../rotate) had NO principal gate at all --
+// the shared fleet dashboard bearer every agent holds could create/edit/delete plans (including
+// vault-secret writes) and trigger a real credential rotation + agent restart. Same human-only
+// posture as POST /api/connectors's project-scope stdio add (card 67e73b48). GET /api/claude-plans,
+// GET .../state and POST .../:id/probe are UNCHANGED (read-only / already rate-limited, not the
+// card's concern).
+describe('tryHandleClaudePlans -- write/rotate require a human credential (card 93ed929a)', () => {
+  beforeEach(() => {
+    if (existsSync(CLAUDE_PLANS_PATH)) rmSync(CLAUDE_PLANS_PATH)
+    if (existsSync(CLAUDE_PLANS_STATE_PATH)) rmSync(CLAUDE_PLANS_STATE_PATH)
+    vaultSecrets.clear()
+  })
+
+  it.each([
+    ['the shared agent bearer (kind: token)', { kind: 'token' }],
+    // {} rather than `undefined`: fakeCtx's default parameter would silently substitute its
+    // own session-auth default for an `undefined` argument (JS default-parameter semantics
+    // apply on an explicit `undefined`, not just a missing one) -- {} genuinely carries no
+    // `kind`, which is what "no auth principal at all" means.
+    ['no auth principal at all', {}],
+    ['a federation peer credential', { kind: 'federation' }],
+  ] as const)('POST /api/claude-plans is rejected (403) for %s, nothing written', async (_label, auth) => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan(), auth)
+    expect(await tryHandleClaudePlans(ctx)).toBe(true)
+    expect(out.status).toBe(403)
+    expect(existsSync(CLAUDE_PLANS_PATH)).toBe(false)
+  })
+
+  it('POST /api/claude-plans succeeds for a device key (kind: device)', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan(), { kind: 'device' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(201)
+  })
+
+  it('PUT /api/claude-plans/:id is rejected (403) for the shared agent bearer, nothing changed', async () => {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan()).ctx)
+    const before = readFileSync(CLAUDE_PLANS_PATH, 'utf8')
+    const { ctx, out } = fakeCtx('PUT', '/api/claude-plans/pro', plan({ label: 'Renamed' }), { kind: 'token' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(403)
+    expect(readFileSync(CLAUDE_PLANS_PATH, 'utf8')).toBe(before)
+  })
+
+  it('DELETE /api/claude-plans/:id is rejected (403) for the shared agent bearer, plan survives', async () => {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan()).ctx)
+    const { ctx, out } = fakeCtx('DELETE', '/api/claude-plans/pro', undefined, { kind: 'token' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(403)
+    const list = fakeCtx('GET', '/api/claude-plans')
+    await tryHandleClaudePlans(list.ctx)
+    expect(list.out.body.map((p: any) => p.id)).toEqual(['pro'])
+  })
+
+  it('POST /api/claude-plans/rotate is rejected (403) for the shared agent bearer, no restart, no state change', async () => {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'pro' })).ctx)
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Team Seat' })).ctx)
+    rotationEnabled = '1'
+    mainIsolated = '1'
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' }, { kind: 'token' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(403)
+    expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+    const state = fakeCtx('GET', '/api/claude-plans/state')
+    await tryHandleClaudePlans(state.ctx)
+    expect(state.out.body.activePlanByAgent).toEqual({})
+  })
+
+  // MUTATION PIN: with rejectIfNotHumanAuth removed from the rotate handler, this same request
+  // (shared bearer, rotation enabled) would instead succeed and restart the main agent -- this
+  // assertion distinguishes "the gate rejected it" from "it failed for an unrelated reason".
+  it('MUTATION PIN: the rotate rejection is specifically the auth gate, not a missing-plan 400/404', async () => {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'pro' })).ctx)
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Team Seat' })).ctx)
+    rotationEnabled = '1'
+    mainIsolated = '1'
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans/rotate', { targetPlanId: 'team' }, { kind: 'token' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body.error).toContain('browser session or a device key')
+  })
+
+  // N1 (RedHat 16876): the fail-open check for "no principal at all" must pin the ACTUAL
+  // production shape -- ctx.auth === undefined -- not the earlier `{}` stand-in, which an M6
+  // mutant (the gate accepting a falsy ctx.auth) passed vacuously because `{}.kind` and
+  // `undefined`'s own `?.kind` both read as undefined through optional chaining, but a mutant
+  // checking `!ctx.auth` specifically only sees the REAL undefined case.
+  it('N1: a request with no auth object at all (ctx.auth === undefined) is rejected (403)', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan(), null)
+    expect(await tryHandleClaudePlans(ctx)).toBe(true)
+    expect(out.status).toBe(403)
+    expect(existsSync(CLAUDE_PLANS_PATH)).toBe(false)
+  })
+
+  // B1 (RedHat NO-GO 16876, HIGH if rotation is ever enabled): `kind === 'device'` alone is NOT
+  // a human credential. Card 9655494c issues agent:<id> device keys to fleet agents (including
+  // the gate agents the 2bfa4c67 verdict path is built on) -- every one of those resolves to
+  // exactly this `{kind:'device', device:'agent:<id>'}` shape, which the first cut of this gate
+  // let straight through. Measured by RedHat: an 'agent:qa' device key passed POST/PUT/DELETE
+  // and /rotate. Only a non-agent device key (phone/Bridge pairing) is actually human.
+  it.each([
+    ['POST', '/api/claude-plans', plan()],
+    ['PUT', '/api/claude-plans/pro', plan({ label: 'Renamed' })],
+    ['DELETE', '/api/claude-plans/pro', undefined],
+    ['POST', '/api/claude-plans/rotate', { targetPlanId: 'team' }],
+  ] as const)('B1: an agent-issued device key (agent:qa) is rejected (403) on %s %s', async (method, path, body) => {
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'pro' })).ctx)
+    await tryHandleClaudePlans(fakeCtx('POST', '/api/claude-plans', plan({ id: 'team', label: 'Team Seat' })).ctx)
+    rotationEnabled = '1'
+    mainIsolated = '1'
+    const { ctx, out } = fakeCtx(method, path, body, { kind: 'device', device: 'agent:qa' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(403)
+    expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
+  })
+
+  // Positive control for B1: a non-agent device key (the Bridge/phone pairing shape) is still
+  // treated as human -- the fix must not collapse the whole device branch to session-only.
+  it('B1 positive control: a non-agent device key (phone pairing) still succeeds', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan(), { kind: 'device', device: 'phone' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(201)
+  })
+
+  // MUTATION PIN: with the agentKeyToAgentId exclusion removed (device alone treated as
+  // human again), this exact agent:qa request would instead succeed (201) and, on the rotate
+  // route with rotation enabled, actually restart the main agent.
+  it('MUTATION PIN: B1 -- the agent-device rejection is specifically the agentKeyToAgentId check', async () => {
+    const { ctx, out } = fakeCtx('POST', '/api/claude-plans', plan(), { kind: 'device', device: 'agent:qa' })
+    await tryHandleClaudePlans(ctx)
+    expect(out.status).toBe(403)
+    expect(out.body.error).toContain('browser session or a device key')
+    expect(existsSync(CLAUDE_PLANS_PATH)).toBe(false)
   })
 })

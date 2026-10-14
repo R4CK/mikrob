@@ -64,6 +64,7 @@ function switchPage(pageId) {
   if (pageId === 'costs') loadCosts()
   if (pageId === 'llmMonitor') loadLlmMonitor()
   if (pageId === 'llmMonitor') loadLlmMonitor()
+  if (pageId === 'geminiCalls') loadGeminiCalls()
   if (pageId === 'ideas') loadIdeasPage()
   if (pageId === 'archived') loadArchivedPage()
   if (pageId === 'naplo') loadNaplo()

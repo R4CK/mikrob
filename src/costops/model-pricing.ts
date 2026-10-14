@@ -37,8 +37,10 @@ export const CACHE_WRITE_MULTIPLIER = 1.25 // 5-minute TTL, Claude Code's defaul
 // appeared. Added here too so a future estimateCostUsd() call resolves instead of returning null
 // (unpriced) the moment one of these shows up in real usage.
 export const MODEL_PRICING: Readonly<Record<string, ModelRate>> = {
+  'claude-fable-5-1': { inputPerMTok: 10.0, outputPerMTok: 50.0 }, // same price as fable-5; explicit entry needed because lookup is strict-equality
   'claude-fable-5': { inputPerMTok: 10.0, outputPerMTok: 50.0 },
   'claude-mythos-5': { inputPerMTok: 10.0, outputPerMTok: 50.0 },
+  'claude-opus-5-5': { inputPerMTok: 4.0, outputPerMTok: 20.0 }, // lower than opus-5 (5/25); source: platform.claude.com/docs 2026-10-12
   'claude-opus-5': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
   'claude-opus-4-8': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
   'claude-opus-4-7': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
@@ -46,10 +48,14 @@ export const MODEL_PRICING: Readonly<Record<string, ModelRate>> = {
   'claude-opus-4-5': { inputPerMTok: 5.0, outputPerMTok: 25.0 },
   'claude-opus-4-1': { inputPerMTok: 15.0, outputPerMTok: 75.0 }, // retired, still billable on Bedrock/Google Cloud
   'claude-opus-4': { inputPerMTok: 15.0, outputPerMTok: 75.0 }, // retired, still billable on Google Cloud
+  'claude-sonnet-5-5': { inputPerMTok: 2.0, outputPerMTok: 10.0 }, // same price as sonnet-5; explicit entry needed because lookup is strict-equality
   'claude-sonnet-5': { inputPerMTok: 2.0, outputPerMTok: 10.0 }, // standing rate, not a temporary intro price
   'claude-sonnet-4-6': { inputPerMTok: 3.0, outputPerMTok: 15.0 },
   'claude-sonnet-4-5': { inputPerMTok: 3.0, outputPerMTok: 15.0 },
   'claude-sonnet-4': { inputPerMTok: 3.0, outputPerMTok: 15.0 }, // retired, still billable on Bedrock/Google Cloud
+  // haiku-5-5 has a two-tier price based on prompt length: $0.10/$0.50 (<=100k) and $0.50/$2.50 (>100k).
+  // The code does not model prompt-length tiers; using the upper (>100k) rate as a conservative overestimate.
+  'claude-haiku-5-5': { inputPerMTok: 0.50, outputPerMTok: 2.50 },
   'claude-haiku-4-5': { inputPerMTok: 1.0, outputPerMTok: 5.0 },
   'claude-haiku-3-5': { inputPerMTok: 0.80, outputPerMTok: 4.0 }, // retired, still billable on Bedrock/Google Cloud
 }

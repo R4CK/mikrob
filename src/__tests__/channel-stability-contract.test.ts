@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { buildMainSessionRespawnCmd } from '../web/channel-monitor.js'
+import { mainConfigDecisionForTest } from '../web/main-config-decision.js'
 
 // Contract tests for the durable Telegram-channel stabilization (source-fix +
 // contract-test per Bug-Discipline). These lock the shell/systemd invariants
@@ -155,6 +157,54 @@ describe('P1#5 — CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 on every agent spawn pa
     for (const l of launches) {
       expect(l, 'a launch command does not carry the env prefix').toContain('${MCP_BATCH_ENV}')
     }
+  })
+
+  // Card d95f71c9: channels.sh was only ONE of three paths that (re)spawn the main
+  // agent. channel-watchdog.sh's and stuck-modal-guard.sh's own respawn commands
+  // were measured missing the survey/prompt-suggestion/MCP-tuning vars entirely
+  // (channel-watchdog.sh had the two CLAUDE_CODE_* ones but not the MCP_* tuning
+  // set; stuck-modal-guard.sh had neither) -- comments stripped first for the same
+  // reason as above (both files' own fix-comments name the variables).
+  it('channel-watchdog.sh respawn command carries the survey/MCP-tuning vars too', () => {
+    const sh = stripBashComments(read('scripts/channel-watchdog.sh'))
+    const line = sh.split('\n').find((l) => l.startsWith('RESPAWN_CMD='))
+    expect(line, 'RESPAWN_CMD assignment is gone or renamed').toBeDefined()
+    expect(line).toMatch(/CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1/)
+    expect(line).toMatch(/CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false/)
+    expect(line).toMatch(/MCP_SERVER_CONNECTION_BATCH_SIZE=10/)
+    expect(line).toMatch(/MCP_CONNECTION_NONBLOCKING=1/)
+    expect(line).toMatch(/MCP_TIMEOUT=60000/)
+  })
+
+  it('stuck-modal-guard.sh respawn command carries the survey/MCP-tuning vars too', () => {
+    const sh = stripBashComments(read('scripts/stuck-modal-guard.sh'))
+    const line = sh.split('\n').find((l) => l.includes('local RESPAWN_CMD='))
+    expect(line, 'RESPAWN_CMD assignment is gone or renamed').toBeDefined()
+    expect(line).toMatch(/CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1/)
+    expect(line).toMatch(/CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false/)
+    expect(line).toMatch(/MCP_SERVER_CONNECTION_BATCH_SIZE=10/)
+    expect(line).toMatch(/MCP_CONNECTION_NONBLOCKING=1/)
+    expect(line).toMatch(/MCP_TIMEOUT=60000/)
+  })
+
+  // Card d95f71c9 F1 (WhiteHat2 NO-GO 17930, measured): a FOURTH main-agent
+  // launcher exists -- channel-monitor.ts's buildMainSessionRespawnCmd, the
+  // dashboard's in-process recovery respawn -- and it was missing BOTH vars
+  // entirely while carrying the MCP_*/AGENT_VIEW set. A real call, not a text
+  // grep, so a refactor that keeps the string shape but drops an export is
+  // still caught.
+  it('channel-monitor.ts buildMainSessionRespawnCmd (dashboard recovery respawn) carries the survey vars too', () => {
+    const cmd = buildMainSessionRespawnCmd({
+      claudePath: '/usr/local/bin/claude',
+      pluginId: 'telegram@claude-plugins-official',
+      model: 'claude-opus-4-8[1m]',
+      config: mainConfigDecisionForTest(),
+      channelStateEnv: { name: 'TELEGRAM_STATE_DIR', dir: '/opt/marveen/.claude/channels/telegram' },
+      continueSession: false,
+    })
+    expect(cmd).toContain('CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1')
+    expect(cmd).toContain('CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false')
+    expect(cmd.indexOf('CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1')).toBeLessThan(cmd.indexOf('/usr/local/bin/claude'))
   })
 })
 

@@ -121,6 +121,14 @@ const MODE_SELFTESTS: ReadonlyArray<{ file: string; args: readonly string[] }> =
   // exactly this registration, but nothing ever added the file -- the identical "written, committed,
   // green-looking, never run" class this whole discovery mechanism exists to close, one script over.
   { file: 'vendored-skill-integrity.py', args: ['--selftest'] },
+  // Added by card 165350f1, new this card: carries its selftest as an argument (like its sibling
+  // bump-fork-version.sh), so the filename-suffix discovery above is structurally blind to it --
+  // wiring it here at birth is exactly what this file exists to make unnecessary to remember.
+  { file: 'bump-upstream-version.sh', args: ['--selftest'] },
+  // bump-fork-version.sh's OWN --selftest was never wired here either -- found while adding its
+  // new sibling above, the identical "written, committed, green-looking, never run" class this
+  // file exists for, one script over.
+  { file: 'bump-fork-version.sh', args: ['--selftest'] },
 ]
 
 /** True iff `file` is a same-directory SYMLINK ALIAS of another file already in `files` -- e.g. the

@@ -37,12 +37,24 @@ from gate_author_role import author_role, canonical_gate
 # digit), now also on CYBERSEC/WHITEHAT (card 21abfe0b, the cybersec2/WhiteHat2 sibling): the
 # measured incident that forced `QA2?` applies identically if a sibling ever writes "CYBERSEC2 GO"
 # literally.
-PASS = re.compile(r"^(QA2?\s+PASS|(?:CYBERSEC|WHITEHAT)2?\s+GO|(?:CYBERED|REDHAT)2?\s+GO)\b", re.I)
-FAIL = re.compile(r"^(QA2?\s+FAIL|(?:CYBERSEC|WHITEHAT)2?\s+NO-GO|(?:CYBERED|REDHAT)2?\s+NO-GO)\b", re.I)
+#
+# CYBERED/REDHAT deliberately does NOT get the same `2?` (QA caught this, card 21abfe0b comment
+# 16214, F2): cybered2/RedHat2 does not exist. store/gate-role.sh has no "redhat2" role, and
+# store/gate_scan_lib.py's own CLAIMS-equivalent already stayed narrow for exactly this reason --
+# this file drifted from it in the same commit that added the cybersec2 fold. Letting `2?` match
+# here meant a forged `{"author":"cybered2","content":"CYBERED2 GO\nGate-SHA: ..."}` comment both
+# PASS-matched and claimed_role()=="CYBERED", and author_role("cybered2") (an EARLIER, unrelated
+# digit-stripping rule in gate_author_role.py, card cf0a8c0b) already answered "CYBERED" too -- so
+# the two agreed and the forged line slipped past the UNVERIFIED-AUTHOR branch into `other_passes`
+# as if a real sibling had spoken. Measured NOT to change main()'s push/no-push decision (OK only
+# ever depends on qa_passes), so this was a misleading-text risk, not a landing-bypass -- fixed
+# anyway, narrowly, rather than left for the day cybered2 is invented for real.
+PASS = re.compile(r"^(QA2?\s+PASS|(?:CYBERSEC|WHITEHAT)2?\s+GO|(?:CYBERED|REDHAT)\s+GO)\b", re.I)
+FAIL = re.compile(r"^(QA2?\s+FAIL|(?:CYBERSEC|WHITEHAT)2?\s+NO-GO|(?:CYBERED|REDHAT)\s+NO-GO)\b", re.I)
 QA = re.compile(r"^QA2?\s+PASS\b", re.I)
 # Which gate the verdict WORD claims to be. Same fold as the author side: the sibling digit is
 # not a separate gate. claimed_role() below folds a captured WHITEHAT/REDHAT to its canonical name.
-CLAIMS = re.compile(r"^(QA)2?\b|^(CYBERSEC|WHITEHAT)2?\b|^(CYBERED|REDHAT)2?\b", re.I)
+CLAIMS = re.compile(r"^(QA)2?\b|^(CYBERSEC|WHITEHAT)2?\b|^(CYBERED|REDHAT)\b", re.I)
 GATE_SHA_LINE = re.compile(r"^\s*Gate-SHA:\s*(.+)", re.I)
 HEX = re.compile(r"[0-9a-f]{7,40}", re.I)
 

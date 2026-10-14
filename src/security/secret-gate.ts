@@ -137,6 +137,7 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   { path: 'src/__tests__/channel-inbound-framing.test.ts', reason: 'channel framing test: synthetic wrapper frames with sample ids are the subject under test' },
   { path: 'scripts/__tests__/conversation-ledger.test.sh', reason: 'ledger test: synthetic wrapper frames with sample ids' },
   { path: 'src/__tests__/agent-terminal-mask-keys.test.ts', reason: 'terminal masking test: a hand-written sk-ant- shaped fixture IS the input under test -- the assertion is that no fragment of it reaches the audit line, so a different shape would stop measuring the thing' },
+  { path: 'scripts/muszertar/titok-kapu.py', reason: 'card 64788453 (seged-hivo ADOPT, unmodified upstream): a secret scanner carries its own self-test fixtures (POZITIV/NEGATIV lists, each marked TITOK-KAPU-KIVETEL in the file) -- fake credential SHAPES are the subject under test, never real secrets.' },
   // Card da47b612: a VENDORED upstream skill (mukul975/Anthropic-Cybersecurity-Skills @ 54a79883),
   // copied verbatim per agent. Its BOLA example carries two JWT-shaped PLACEHOLDERS: decoded they are a
   // bare {"alg":"RS256","typ":"JWT"} header followed by "..." -- documentation, not a credential. The
@@ -146,6 +147,7 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   // upstream commit, so any local edit -- including a real secret added later -- shows up there.
   { path: 'seed-fleet-agents/cybersec/.claude/skills/testing-api-for-broken-object-level-authorization/SKILL.md', reason: 'vendored upstream skill (card da47b612): JWT-shaped doc placeholders (bare header + "..."), content pinned by vendored-skill-integrity.py' },
   { path: 'seed-fleet-agents/cybered/.claude/skills/testing-api-for-broken-object-level-authorization/SKILL.md', reason: 'vendored upstream skill (card da47b612): JWT-shaped doc placeholders (bare header + "..."), content pinned by vendored-skill-integrity.py' },
+  { path: 'seed-fleet-agents/cybersec2/.claude/skills/testing-api-for-broken-object-level-authorization/SKILL.md', reason: 'vendored upstream skill (card da47b612, carried into cybersec2 seed by card 376ed33e sibling-parity sync): JWT-shaped doc placeholders (bare header + "..."), content pinned by vendored-skill-integrity.py' },
   // MIOCLISKILL831 -- a `marveen skill` szkennerenek fixture-jei. A fajl
   // TARGYA egy kulcs-alaku string: a mio-scan `api-key-shaped` szabalyanak
   // kell valamin tuznie, es az aranyfajl ugyanazt a szoveget tartalmazza,
@@ -170,6 +172,11 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   // tripped this (an `sk-ant-api03-...` fixture, pre-existing, untouched by this card) is one of
   // many such literals already in the file.
   { path: 'scripts/hooks/activity-memory-capture.selftest.py', reason: 'activity-memory-capture redaction selftest: synthetic secret-shaped fixtures are the subject under test' },
+  // Card d39fc5e7 B3 fix: the selftest for draft-quality-gate.py exercises check_secret_leak() by
+  // passing synthetic Bearer/key-value shaped fixtures as TEST INPUTS.  The fixtures use the
+  // `zzzfixture-bearer-token-*` naming convention (clearly not credentials) and the file is not
+  // under __tests__/, so FIXTURE_EXCEPTIONS (TEST_PATH-gated) cannot apply.
+  { path: 'store/draft-quality-gate.selftest.py', reason: 'draft-quality-gate B3 selftest: synthetic Bearer/key-value fixtures are the subject under test for check_secret_leak()' },
 ];
 
 /**

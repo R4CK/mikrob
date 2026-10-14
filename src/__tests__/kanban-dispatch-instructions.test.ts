@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { kanbanMoveInstructions } from '../web/routes/kanban.js'
+import { MAIN_AGENT_ID, OWNER_NAME } from '../config.js'
 
-// The one line of the dispatch that is a COMMAND rather than prose.
-const probeLine = (out: string): string | undefined =>
-  out.split('\n').find((l) => l.includes('/api/kanban |'))
+// The status probe is now TWO lines (card 41d8e96f: the token-read printf must
+// be piped into curl, never embedded mid-line as an argv element) -- the printf
+// line immediately followed by the `| curl ... | python3 -c ...` line.
+const probeLine = (out: string): string | undefined => {
+  const lines = out.split('\n')
+  // Card 335fb927: the status-probe URL is now single-quoted (parancs-injekció elleni
+  // védelem, lásd kanban-id-guard.test.ts), so the literal substring is "/api/kanban' |".
+  const idx = lines.findIndex((l) => l.includes("/api/kanban' |"))
+  return idx === -1 ? undefined : `${lines[idx - 1]}\n${lines[idx]}`
+}
 
 // A card dispatched to an agent used to just say "drag it to done" -- but a
 // headless agent cannot drag, and the run left no record on the card. The
@@ -96,6 +104,26 @@ describe('kanbanMoveInstructions', () => {
     expect(err).not.toContain('Traceback')
   })
 
+  // Card 41d8e96f (Cybersec F1 MEDIUM, live): the status probe used to splice the
+  // printf-auth command literally into curl's OWN argv (`curl -s ${auth} ${base}/...`),
+  // because `auth` is a shell line-continuation ending in `\` meant to sit at the END of a
+  // line -- mid-line it just escapes the following space. Rendered, curl tried to resolve
+  // "printf" as a hostname and the token sat in /proc/<pid>/cmdline. The fix makes the
+  // printf line and the piped curl line two ACTUAL lines, same shape as the REVIEW/move
+  // commands below. Pinned two ways: the auth line must stand alone (not embedded inside a
+  // `curl ... ${auth} ...` single line), and the curl line must read the header from stdin.
+  it('the status probe pipes the auth line into curl -H @-, never splices it into curl argv', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    const probe = probeLine(out)!
+    const [authLine, curlLine] = probe.split('\n')
+    expect(authLine).toMatch(/^\s*printf 'Authorization: Bearer %s\\n' "\$\(cat .*\)" \\$/)
+    // Card 335fb927: the URL argument is now single-quoted (parancs-injekció elleni védelem).
+    expect(curlLine).toMatch(/^\s*\|\s*curl -s -H @- 'http:\/\//)
+    // The regression shape: curl's own command-line carrying "printf" as if it were a
+    // hostname/argument, which is what a mid-line splice produced.
+    expect(curlLine).not.toMatch(/curl\s+-s\s+printf\b/)
+  })
+
   it('puts the warning BEFORE the completion steps -- it is a pre-flight check', () => {
     const out = kanbanMoveInstructions('abc123', 'cody')
     expect(out.indexOf('MIELŐTT NEKIKEZDESZ')).toBeLessThan(out.indexOf('Amikor VÉGEZTÉL'))
@@ -137,5 +165,25 @@ describe('kanbanMoveInstructions', () => {
     // defaults is still present, so this is not a vacuous "the feature was deleted" pass.
     expect(out).toContain('description')
     expect(out).toContain('nincs éles restart')
+  })
+
+  // Card e25a549a / RedHat NO-GO (komment 15997, B1): a kanban-assignee-guard strukturálisan
+  // tiltja az assignee=MAIN_AGENT_ID írást (Peti 10943), de ez a sablon a nem-main-agent ágon
+  // pontosan EZT a PUT-ot írta elő elakadás esetén ("told át <escalateTo>-re"), ahol
+  // escalateTo=MAIN_AGENT_ID -- a tanácsolt lépés a guard miatt mindig 400-at adott volna. A
+  // kártya a végrehajtón marad, a közvetlenül MAIN_AGENT_ID-hez szóló komment + a "waiting"
+  // státusz a jelzés (MikroB saját waiting-sweepje olvassa ki, CLAUDE.md 4a szabály).
+  it('a sub-agent escalation path never instructs reassigning the card to MAIN_AGENT_ID', () => {
+    const out = kanbanMoveInstructions('abc123', 'cody')
+    expect(out).not.toContain(`"assignee":"${MAIN_AGENT_ID}"`)
+    expect(out).toContain(`a TE NEVEDEN marad`)
+  })
+
+  // Positive control: the main-agent's OWN escalation (to the human operator) is a different
+  // value (OWNER_NAME, never the forbidden "mikrob"), so the old reassignment step is untouched
+  // there -- this guards against the fix accidentally deleting the main-agent branch too.
+  it('the main agent escalating to the operator still reassigns the card (unaffected branch)', () => {
+    const out = kanbanMoveInstructions('abc123', MAIN_AGENT_ID)
+    expect(out).toContain(`"assignee":"${OWNER_NAME}"`)
   })
 })

@@ -20,15 +20,24 @@ import { logger } from '../../logger.js'
 import { MAIN_AGENT_ID } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { readClaudePlans, writeClaudePlans, validatePlan, PLAN_ID_ALLOWED, tokenSecretIdFor } from '../claude-plans.js'
-import { setSecret, deleteSecret } from '../vault.js'
-import { readClaudePlansState, writeClaudePlansState, applyRotation } from '../claude-plans-state.js'
+import { setSecret, deleteSecret, getSecret } from '../vault.js'
+import { readClaudePlansState, writeClaudePlansState, applyRotation, recordPlanObservation } from '../claude-plans-state.js'
+import { probePlanUsage, observationFromProbe, usageFromProbe } from '../../claude-plan-usage-probe.js'
 import { agentDir, writeAgentClaudePlan } from '../agent-config.js'
 import { restartAgentProcess } from '../agent-process.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
+
+/** Minimum gap between two manual probes of the same plan (POST .../probe). */
+export const MANUAL_PROBE_MIN_INTERVAL_MS = 60_000
 
 function isRotationEnabled(): boolean {
   try { return String(getEffectiveSettingValue('CLAUDE_ROTATION_ENABLED')) === '1' } catch { return false }
+}
+
+function isFleetRotationEnabled(): boolean {
+  try { return String(getEffectiveSettingValue('CLAUDE_ROTATION_FLEET')) === '1' } catch { return false }
 }
 
 function isMainAgentIsolated(): boolean {
@@ -101,6 +110,32 @@ export function deleteOwnTokenSecret(planId: string, secretId: string | null | u
   if (secretId && secretId === tokenSecretIdFor(planId)) deleteSecret(secretId)
 }
 
+// Card 93ed929a (WhiteHat F1 on 517fdcc5, comment 16354): this whole file had no principal gate
+// at all -- the shared agent bearer every fleet agent holds could create/edit/delete plans
+// (including vault-secret writes) and, worse, trigger POST /rotate, which swaps the live
+// Claude credential and restarts agents (CLAUDE_ROTATION_FLEET even restarts the whole fleet).
+// Same human-only posture as POST /api/connectors's project-scope stdio add (card 67e73b48) and
+// POST /api/fleet/import?apply=true (card 68254bd7): a browser session or a device key, never
+// the shared 'token' credential. Unconditional (not behind CLAUDE_ROTATION_ENABLED/FLEET or any
+// other flag) -- this is what makes the fail-closed-at-startup requirement trivially true: there
+// is no code path where rotation can run without this check already having passed, independent
+// of whatever the rotation env vars are set to.
+//
+// Delta (RedHat NO-GO 16876, B1): `kind === 'device'` alone is NOT a human credential -- card
+// 9655494c's agent:<id> device-key issuance means a fleet agent (e.g. the gate agents the
+// 2bfa4c67 verdict path is built on) can hold its OWN device key, which resolves to this exact
+// `kind: 'device'` shape. Measured: a device key for 'agent:qa' passed every write/rotate route
+// this gate exists to close. The device branch must exclude any key that agentKeyToAgentId
+// resolves to an agent id -- only a non-agent device key (phone/Bridge pairing) stays human.
+function rejectIfNotHumanAuth(ctx: RouteContext): boolean {
+  const isAgentDeviceKey = ctx.auth?.kind === 'device' && agentKeyToAgentId(ctx.auth.device) !== null
+  if (!isAgentDeviceKey && (ctx.auth?.kind === 'session' || ctx.auth?.kind === 'device')) return false
+  logger.warn({ authKind: ctx.auth?.kind ?? 'none', path: ctx.path, method: ctx.method },
+    'Claude plans: write/rotate rejected for non-human credential')
+  json(ctx.res, { error: 'This operation requires a browser session or a device key, not the shared agent token.' }, 403)
+  return true
+}
+
 export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -113,6 +148,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
 
   // Create a new plan.
   if (path === '/api/claude-plans' && method === 'POST') {
+    if (rejectIfNotHumanAuth(ctx)) return true
     let body: unknown
     try {
       body = JSON.parse((await readBody(req)).toString())
@@ -174,6 +210,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   // way because a first assignment and a later rotation are the same
   // operation: "agentId is now on targetPlanId").
   if (path === '/api/claude-plans/rotate' && method === 'POST') {
+    if (rejectIfNotHumanAuth(ctx)) return true
     let body: unknown
     try {
       body = JSON.parse((await readBody(req)).toString())
@@ -234,7 +271,23 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
         return true
       }
       logger.info({ agentId, targetPlanId }, 'Claude plan rotation: main agent restarted')
-      json(res, { ok: true, agentId, activePlanId: targetPlanId })
+
+      // Fleet leg (opt-in, CLAUDE_ROTATION_FLEET): the shared fleet token and
+      // the sub-agents on it follow the main agent. Deliberately NOT awaited:
+      // the restarts are sequential with a gap (a minute or more on a big
+      // fleet), and the usual caller -- the main agent's own heartbeat turn --
+      // is being restarted by this very request. runFleetLeg never throws; it
+      // records its outcome in the state side-car (fleet), and the next
+      // heartbeat tick prints that once for the Telegram report.
+      // Imported lazily: the wiring pulls in the agent registry/launcher
+      // helpers, which installs with the opt-in off never need to load here.
+      const fleetOn = isFleetRotationEnabled()
+      if (fleetOn) {
+        void import('../claude-plan-fleet-wiring.js')
+          .then(({ runFleetLeg }) => runFleetLeg(target))
+          .catch((err) => logger.error({ err: err instanceof Error ? err.name : 'error' }, 'Claude plan rotation: fleet leg failed to load'))
+      }
+      json(res, { ok: true, agentId, activePlanId: targetPlanId, fleet: fleetOn ? 'started' : 'off' })
       return true
     }
 
@@ -245,8 +298,10 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       json(res, { error: `Agent not found: ${agentId}` }, 404)
       return true
     }
-    writeClaudePlansState(applyRotation(readClaudePlansState(), agentId, targetPlanId))
+    // Agent config first: if it refuses (corrupt file, JSONCLOBBER926) the
+    // rotation side-car must not already claim the switch happened.
     writeAgentClaudePlan(agentId, targetPlanId)
+    writeClaudePlansState(applyRotation(readClaudePlansState(), agentId, targetPlanId))
     const result = await restartAgentProcess(agentId)
     if (!result.ok) {
       json(res, { error: result.error || `Restart failed for agent ${agentId}` }, 500)
@@ -257,12 +312,97 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
     return true
   }
 
+  // Live usage probe for one plan ("Check now" in Settings -> Claude plans).
+  // Reads the plan's own token from the vault, makes one minimal Messages API
+  // call with it (src/claude-plan-usage-probe.ts), records the unified
+  // rate-limit headers into the state side-car as that plan's observation,
+  // and returns the parsed usage. The token itself never leaves this handler:
+  // not in the response, not in a log line, not in an error.
+  //
+  // Token-mode plans only. A configDir-mode plan's credential lives in that
+  // dir's .credentials.json (Linux) or the host Keychain (macOS, keyed per
+  // host login, not per dir) -- the codebase deliberately never reads the
+  // former (claude-credentials-guard.ts only ever renames it out of the way),
+  // and the latter would report the HOST login's usage, not this plan's. So
+  // there is no honest way to probe one: 422 rather than a wrong answer.
+  const probeMatch = path.match(/^\/api\/claude-plans\/([^/]+)\/probe$/)
+  if (probeMatch && method === 'POST') {
+    const planId = decodeURIComponent(probeMatch[1])
+    const target = readClaudePlans().find((p) => p.id === planId)
+    if (!target) {
+      json(res, { error: 'Not found' }, 404)
+      return true
+    }
+    if (!target.tokenSecretId) {
+      json(res, { error: 'probe needs a token-mode plan' }, 422)
+      return true
+    }
+    // Every probe is a real Messages API call on this plan's own subscription,
+    // so it spends that quota. A stuck client loop or a double click must not
+    // burn it: at most one probe per plan per MANUAL_PROBE_MIN_INTERVAL_MS, measured
+    // from the last recorded probe (ok or not). Inside the window: 429 with
+    // the observation we already have, and no network call.
+    const priorObserved = readClaudePlansState().plans[planId]
+    const lastProbeAt = priorObserved?.lastProbe?.at
+    if (typeof lastProbeAt === 'number') {
+      const waitMs = lastProbeAt + MANUAL_PROBE_MIN_INTERVAL_MS - Date.now()
+      if (waitMs > 0) {
+        json(res, {
+          planId,
+          error: 'probe_throttled',
+          retryAfterSec: Math.ceil(waitMs / 1000),
+          observed: priorObserved,
+        }, 429)
+        return true
+      }
+    }
+    let token: string | null = null
+    try { token = getSecret(target.tokenSecretId) } catch { token = null }
+    if (!token) {
+      // Deliberately NO fleet-token fallback (unlike resolve-plan-token-env's
+      // launch path): probing the fleet token would report someone else's
+      // usage under this plan's name.
+      json(res, { error: 'Token for this plan is missing from the vault' }, 409)
+      return true
+    }
+
+    const result = await probePlanUsage(token)
+    token = null
+    const nowMs = Date.now()
+    // Re-read the state AFTER the (network-bound) probe, right before the
+    // write, to keep the read-modify-write window as short as possible.
+    const state = readClaudePlansState()
+    const observed = observationFromProbe(result, state.plans[planId], nowMs)
+    writeClaudePlansState(recordPlanObservation(state, planId, observed))
+
+    const usage = usageFromProbe(result)
+    logger.info(
+      { id: planId, ok: result.ok, error: result.ok ? undefined : result.error, httpStatus: result.httpStatus },
+      'Claude plan usage probed',
+    )
+    const payload = {
+      planId,
+      checkedAt: nowMs,
+      ok: result.ok,
+      ...(result.ok ? {} : { error: result.error, message: result.message }),
+      ...(result.httpStatus !== undefined ? { httpStatus: result.httpStatus } : {}),
+      usage,
+      observed,
+    }
+    // Upstream failures that yielded no usage at all are a 502 (the dashboard
+    // itself is fine; the thing it asked is not). A 429 that still carried
+    // the headers IS a successful measurement ("exhausted until X") -> 200.
+    json(res, payload, usage ? 200 : 502)
+    return true
+  }
+
   const idMatch = path.match(/^\/api\/claude-plans\/([^/]+)$/)
 
   // Replace an existing plan's fields. The id in the URL is authoritative --
   // a differing id in the body is discarded, so this can never rename a plan
   // into colliding with a different existing entry.
   if (idMatch && method === 'PUT') {
+    if (rejectIfNotHumanAuth(ctx)) return true
     let body: unknown
     try {
       body = JSON.parse((await readBody(req)).toString())
@@ -321,6 +461,7 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
   // simply starts reporting planUnresolved afterwards (resolveAgentConfigDir
   // already handles that) -- deleting here does not touch any agent config.
   if (idMatch && method === 'DELETE') {
+    if (rejectIfNotHumanAuth(ctx)) return true
     const current = readClaudePlans()
     const removed = current.find((p) => p.id === idMatch[1])
     const next = current.filter((p) => p.id !== idMatch[1])

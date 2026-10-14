@@ -31,6 +31,15 @@
 #                                      nothing but a human's own live retest to catch it.
 #                                      Never rebuilds or restarts anything itself; that
 #                                      stays ./update.sh's confirmed gate.
+#   mikrob-boot-reconcile    (5 min) : after a VM reboot, the role-agent tmux sessions do NOT
+#                                      auto-start (nothing calls POST /api/agents/<agent>/start
+#                                      for them) -- only mikrob-channels/mikrob-dashboard come
+#                                      back via their own units. Card 43d98136: ~1.5h of a fully
+#                                      stalled fleet (8 in_progress cards, nobody working them)
+#                                      after a 2026-10-12 17:38 reboot. Starts (idempotent) any
+#                                      agent with a real in_progress card or a waiting+REVIEW
+#                                      card, and sends it a resume message naming the card id(s);
+#                                      never starts a work-less agent (parking rule 7 intact).
 #
 # Surgical by design: recovery respawns only the affected component. Restarting
 # the WSL VM is deliberately NOT done here -- it would SIGKILL all fleet agents
@@ -122,6 +131,11 @@ write_timer   build-freshness-guard "Run the MikroB build-freshness guard every 
 write_service load-guard "MikroB load-guard tick (PSI/loadavg admission-brake state machine)" "../store/load-guard-daemon.sh --cgroup --sigstop --bookkeeping" journal
 write_timer   load-guard "Run the MikroB load-guard tick every 7 seconds"                      15s  7s
 
+# Card 43d98136: lives in store/ (kanban/agents wiring, not a system probe), same "../store/..."
+# hop as load-guard above -- write_service hardcodes an scripts/$script ExecStart.
+write_service boot-reconcile "MikroB agent boot-reconcile (restart role-agents with real work after a VM reboot)" "../store/agent-boot-reconcile.sh" log
+write_timer   boot-reconcile "Run the MikroB agent boot-reconcile 90s after boot, then every 5 minutes as a backstop" 90s 5min
+
 echo "Rendered guard-timer units for MAIN_AGENT_ID=$MAIN_AGENT_ID into $UNIT_DIR"
 
 # Enable only if a working user systemd is present. During a fresh headless /
@@ -130,7 +144,7 @@ echo "Rendered guard-timer units for MAIN_AGENT_ID=$MAIN_AGENT_ID into $UNIT_DIR
 # user session exists. Never hard-fail the caller (install-linux.sh) over this.
 if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
   systemctl --user daemon-reload || true
-  for t in channel-watchdog stuck-modal-guard disk-space-guard token-health-guard load-guard ollama-down-guard build-freshness-guard; do
+  for t in channel-watchdog stuck-modal-guard disk-space-guard token-health-guard load-guard ollama-down-guard build-freshness-guard boot-reconcile; do
     systemctl --user enable --now "${MAIN_AGENT_ID}-${t}.timer" || echo "  warn: could not enable ${MAIN_AGENT_ID}-${t}.timer"
   done
   echo "Enabled guard timers:"

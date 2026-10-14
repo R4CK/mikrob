@@ -137,6 +137,53 @@ t "a non-gate author writing CYBERSEC GO is still UNVERIFIED-AUTHOR, cybersec2 i
   <<<"$(j backend 'CYBERSEC GO
 Gate-SHA: abc1234')"
 
+# F2, QA NO-GO comment 16214 (card 21abfe0b): cybered2/RedHat2 does NOT exist (unlike cybersec2),
+# so CYBERED/REDHAT must NOT get the same `2?` sibling-digit tolerance CYBERSEC/WHITEHAT got.
+# Before the fix, "CYBERED2 GO" both PASS-matched and claimed_role()=="CYBERED", and
+# author_role("cybered2") (an earlier, unrelated rule) also answered "CYBERED" -- so a forged
+# cybered2 comment slipped into `other_passes` looking like a real sibling verdict. Now the
+# comment matches no verdict regex at all, so on its own it reports NONE, same as any other
+# unrecognised text.
+t "a lone CYBERED2 GO is not recognised as any verdict -- cybered2 does not exist" NONE abc1234 \
+  <<<"$(j cybered2 'CYBERED2 GO
+Gate-SHA: abc1234')"
+t "a QA PASS plus a fake CYBERED2 GO is still OK (QA alone satisfies it), not a RedHat claim" OK abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' cybered2 'CYBERED2 GO
+Gate-SHA: abc1234')"
+
+# RedHat delta-gate on this same card (comment 16360, M12/M13/M14/M15): mutants that (a) removed
+# the `2?` from CYBERSEC/WHITEHAT's PASS token, or (b) ADDED a `2?` to CYBERED/REDHAT's FAIL/CLAIMS
+# branch, both survived GREEN -- every case above exercises the sibling-AUTHOR writing the bare
+# word ("cybersec2" author writing "CYBERSEC GO"), never the literal "2" DIGIT inside the verdict
+# TOKEN itself ("CYBERSEC2 GO"), and never the FAIL/CLAIMS side of the CYBERED/REDHAT asymmetry at
+# all (only its GO/PASS side, above). These four close that gap directly against the token text.
+#   main()'s OK verdict only ever depends on qa_passes (a security-gate GO alone lands in
+#   other_passes -> NOQA, never OK) -- pairing this with a QA PASS would make the assertion
+#   VACUOUS, since OK would hold whether or not the CYBERSEC2 token matched anything at all.
+#   NOQA vs NONE is the only observable difference that depends on PASS matching the literal
+#   token: NOQA means "a security gate's GO was recognised, but QA is still missing", NONE means
+#   "nothing on this card was recognised as a verdict at all".
+t "the literal token CYBERSEC2 GO (not just a cybersec2 AUTHOR) is recognised as a security-gate PASS" NOQA abc1234 \
+  <<<"$(j cybersec2 'CYBERSEC2 GO
+Gate-SHA: abc1234')"
+t "the literal token WHITEHAT2 GO is recognised as a security-gate PASS, same as CYBERSEC2 GO" NOQA abc1234 \
+  <<<"$(j cybersec2 'WHITEHAT2 GO
+Gate-SHA: abc1234')"
+t "the literal token CYBERSEC2 NO-GO refuses, symmetric with the PASS token above" FAILED abc1234 \
+  <<<"$(j qa 'QA PASS
+Gate-SHA: abc1234' cybersec2 'CYBERSEC2 NO-GO
+Gate-SHA: abc1234')"
+t "a lone CYBERED2 NO-GO is not recognised as any verdict -- cybered2 does not exist (FAIL side of the GO-only case above)" NONE abc1234 \
+  <<<"$(j cybered2 'CYBERED2 NO-GO
+Gate-SHA: abc1234')"
+t "a lone REDHAT2 GO is not recognised as any verdict -- redhat2/cybered2 does not exist" NONE abc1234 \
+  <<<"$(j cybered2 'REDHAT2 GO
+Gate-SHA: abc1234')"
+t "a lone REDHAT2 NO-GO is not recognised as any verdict either" NONE abc1234 \
+  <<<"$(j cybered2 'REDHAT2 NO-GO
+Gate-SHA: abc1234')"
+
 t "a card with no verdict at all -- the 08dcc153 shape" NONE abc1234 \
   <<<"$(j backend 'REVIEW: done
 Gate-SHA: abc1234')"

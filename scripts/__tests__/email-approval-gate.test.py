@@ -427,6 +427,82 @@ with tempfile.TemporaryDirectory() as td:
     check("bcc/Bash: the bcc-less command itself still sends on that approval",
           code == 0, f"exit={code}")
 
+    # --- card e4eb72c9: attachments are part of the anchor ------------------
+    # The gap: an approved letter (to/cc/bcc/text matched) could be re-sent
+    # with ANY local file attached, because the anchor never covered the
+    # attachments field at all. Fixed the same conditional way as bcc.
+    # Each variant gets its OWN store+approval so a check cannot pass merely
+    # because the one-shot approval was already consumed by an earlier call
+    # in this block -- the approval below stays UNCONSUMED while the wrong
+    # variant is tried, so a DENY here can only come from the anchor itself.
+    store = make_store(os.path.join(td, "att-mcp"))
+    attachment_payload = mcp_send(subject="Melleklet")
+    attachment_payload["tool_input"]["attachments"] = [{"filename": "a.txt", "content": "QQ=="}]
+    _, _, err = run_gate(store, attachment_payload)
+    att_anchor = anchor_from_stderr(err)
+    approve(store, att_anchor)
+
+    swapped = mcp_send(subject="Melleklet")
+    swapped["tool_input"]["attachments"] = [{"filename": "a.txt", "content": "Qg=="}]
+    code, _, _ = run_gate(store, swapped)
+    check("attachments/MCP: SAME letter but a DIFFERENT attachment content -> DENIED "
+          "(approval for the ORIGINAL attachment is still unconsumed)",
+          code == 2, f"exit={code}")
+
+    no_attachment = mcp_send(subject="Melleklet")
+    code, _, _ = run_gate(store, no_attachment)
+    check("attachments/MCP: SAME letter with the attachment REMOVED -> DENIED "
+          "(anchor covers attachments; approval still unconsumed)",
+          code == 2, f"exit={code}")
+
+    code, _, _ = run_gate(store, attachment_payload)
+    check("attachments/MCP: the ORIGINAL approved letter with its exact attachment still sends",
+          code == 0, f"exit={code}")
+
+    # A file-path attachment: the hook reads the file now and hashes its
+    # bytes, so swapping the file's CONTENT (same path) also changes the anchor.
+    store_path = make_store(os.path.join(td, "att-path"))
+    att_dir = os.path.join(td, "att-files")
+    os.makedirs(att_dir, exist_ok=True)
+    att_path = os.path.join(att_dir, "report.pdf")
+    with open(att_path, "wb") as fh:
+        fh.write(b"version-1")
+    path_payload = mcp_send(subject="Fajl-melleklet")
+    path_payload["tool_input"]["attachments"] = [{"filename": "report.pdf", "content": att_path}]
+    _, _, err = run_gate(store_path, path_payload)
+    path_anchor = anchor_from_stderr(err)
+    approve(store_path, path_anchor)
+    code, _, _ = run_gate(store_path, path_payload)
+    check("attachments/path: approved letter with the file UNCHANGED sends",
+          code == 0, f"exit={code}")
+
+    with open(att_path, "wb") as fh:
+        fh.write(b"version-2-swapped")
+    # Fresh approval against the (still path_payload-shaped) call: the anchor is
+    # computed from the file's CURRENT bytes, so re-approving now anchors v2.
+    _, _, err = run_gate(store_path, path_payload)
+    swapped_anchor = anchor_from_stderr(err)
+    check("attachments/path: swapping the file's bytes changes the anchor",
+          swapped_anchor is not None and swapped_anchor != path_anchor,
+          f"anchors: {path_anchor!r} vs {swapped_anchor!r}")
+
+    # An unreadable attachment file fails closed, same as every other
+    # unreadable-letter branch (no anchor to even approve).
+    store_bad = make_store(os.path.join(td, "att-missing"))
+    bad_payload = mcp_send(subject="Hianyzo melleklet")
+    bad_payload["tool_input"]["attachments"] = [
+        {"filename": "gone.pdf", "content": os.path.join(att_dir, "does-not-exist.pdf")}]
+    code, _, err = run_gate(store_bad, bad_payload)
+    check("attachments/path: unreadable attachment file -> DENIED, unreadable (no anchor)",
+          code == 2 and anchor_from_stderr(err) is None, f"exit={code} err={err[:200]!r}")
+
+    # Backward-compat golden: an attachment-less anchor stays byte-identical
+    # to the pre-attachments value -- open approvals recorded before this fix
+    # must still match the letters they approved.
+    _, _, err = run_gate(store, mcp_send())
+    check("attachments/golden: an attachment-less anchor is unchanged by this fix",
+          anchor_from_stderr(err) == bccless_anchor, f"got {anchor_from_stderr(err)!r}")
+
     # Backward-compat golden: the bcc-less canon is BYTE-STABLE across the bcc
     # fix (bcc joins the hash ONLY when non-empty), so approvals recorded
     # before the change stay valid for the letters they approved. If this hash

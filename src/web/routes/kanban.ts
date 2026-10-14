@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { appendCardStateStampForDispatch } from '../kanban-state-stamp.js'
 import { join } from 'node:path'
 import {
-  listKanbanCards, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS,
+  listKanbanCards, kanbanAssigneeExists, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS, KANBAN_CREATE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, getKanbanCardFieldEvents, listKanbanProjects,
   getKanbanLineComments, addKanbanLineComment,
@@ -30,6 +30,7 @@ import {
 } from '../../db.js'
 import { isForceActor } from '../../kanban-force-actors.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
+import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
 import { listAgentNames, readAgentDisplayName, isKnownAgent } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
@@ -39,7 +40,9 @@ import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.
 import { planGrillingGuardVerdict } from '../kanban-plan-grilling-guard.js'
 import { draftReviewGuardVerdict } from '../kanban-draft-review-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
+import { specTemplateGuardCheck } from '../kanban-spec-template-guard.js'
 import { isForbiddenAssignee, FORBIDDEN_ASSIGNEE_MESSAGE, isInvalidAssigneeShape, INVALID_ASSIGNEE_TYPE_MESSAGE } from '../kanban-assignee-guard.js'
+import { isInvalidKanbanIdShape, isValidKanbanId, KANBAN_ID_PATTERN_DESC, INVALID_KANBAN_ID_MESSAGE } from '../kanban-id-guard.js'
 
 // Card project-name drift (Peti 2026-08-08): `project` was free-text with no case-folding, so
 // "CleanCore" / "cleancore" / "MikroB" / "mikrob-infra" / "fleet-infra" / "marveen" / "Infra" all
@@ -156,7 +159,25 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
 // alternative to spawning a separate per-session card for every agent run: the
 // result goes where the work was asked for, with zero extra board clutter. The
 // token is read from the store at call time (never embedded in the message).
+// WhiteHat2 GO (card 335fb927, F1 from 41d8e96f msg 10760): `id` used to flow into this
+// renderer's 3 command blocks with no format check and no quoting -- one sits inside a
+// DOUBLE-quoted `python3 -c "..."` argument, where `$(...)` is expanded by the OUTER shell
+// before python ever runs, and the other two are bare (unquoted) curl URL arguments. Measured:
+// id = `x$(echo pwned > marker)` ran its substitution in all 3 blocks. POST/PUT /api/kanban now
+// reject a non-conforming id/parent_id at creation time (kanban-id-guard.ts), so a legitimately
+// created card can never reach here with a bad id -- but this renderer is the thing that actually
+// hands shell commands to another agent to paste, so it checks AGAIN, independently, and renders
+// nothing at all rather than trust an upstream guard it cannot see from here.
 export function kanbanMoveInstructions(id: string, target: string): string {
+  if (!isValidKanbanId(id)) {
+    return [
+      `HIBA: a kártya-azonosító ("${JSON.stringify(id)}") nem felel meg a várt formátumnak ` +
+      `(${KANBAN_ID_PATTERN_DESC}) -- parancsot FAIL-CLOSED nem renderelünk (parancs-injekció ` +
+      'elleni védelem, kártya 335fb927).',
+      'NE futtass semmit ebből az üzenetből, és ne illeszd be sehova. Jelezd MikroB-nak a kártya ' +
+      'azonosítóját, hogy ellenőrizhesse, mielőtt bárki hozzányúlna.',
+    ].join('\n')
+  }
   const tokenPath = join(STORE_DIR, '.dashboard-token')
   const base = `http://${WEB_HOST}:${WEB_PORT}`
   // The token is read from STDIN (`-H @-`), never as an argv element: /proc/<pid>/cmdline
@@ -207,8 +228,17 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   // gives the reader no reason to ever read it. Two agent incidents on one card
   // (2026-09-15, 7ed56208) confirmed the failure mode -- the reader ran exactly
   // this probe, saw a status, and never saw the override sitting one field over.
+  // The auth line ends in a shell line-continuation backslash, meant to be the
+  // LAST character before an actual newline -- embedding it mid-line (as a
+  // previous version of this probe did, `curl -s ${auth} ${base}/api/kanban`)
+  // put the whole printf command into curl's OWN argv (the backslash merely
+  // escaped the following space), so the token ended up readable in
+  // /proc/<pid>/cmdline and curl tried to resolve "printf" as a hostname --
+  // the probe never ran. Same two-line printf-piped-into-curl shape as the
+  // REVIEW/move commands below, with `-H @-` reading the header from stdin.
   const statusProbe =
-    `  curl -s ${auth} ${base}/api/kanban | python3 -c "import sys,json;d=json.load(sys.stdin);c=(next((x for x in d if x.get('id')=='${id}'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120]))"`
+    `  ${auth}\n` +
+    `  | curl -s -H @- '${base}/api/kanban' | python3 -c "import sys,json;d=json.load(sys.stdin);c=(next((x for x in d if x.get('id')=='${id}'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120]))"`
   return [
     'MIELŐTT NEKIKEZDESZ: nézd meg a kártya AKTUÁLIS státuszát ÉS leírását. Ez az üzenet egy foglalt session sorában KÉSHET, és közben a munka elkészülhetett -- a leírás pedig a kártya saját, ennél a sablonnál erősebb szabályait hordozhatja (lásd lent):',
     statusProbe,
@@ -226,13 +256,13 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     '',
     '1) Írj egy "REVIEW" kezdetű rövid eredmény-összefoglalót kommentként (1-2 mondat: mi lett a vége):',
     `  ${auth}`,
-    `  | curl -s -H @- -X POST ${commentUrl} \\`,
+    `  | curl -s -H @- -X POST '${commentUrl}' \\`,
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"author":"${target}","content":"REVIEW -- AZ EREDMENY ROVIDEN"}'`,
     '',
     `2) Állítsd a kártyát waiting-re -- a kész terméket SOHA nem teszed magad done-ba, a lezárás ${escalateTo} (vagy a kijelölt gate) lépése a REVIEW komment után:`,
     `  ${auth}`,
-    `  | curl -s -H @- -X POST ${moveUrl} \\`,
+    `  | curl -s -H @- -X POST '${moveUrl}' \\`,
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"status":"waiting"}'`,
     '',
@@ -249,17 +279,30 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     // `actor` field itself is real and already used elsewhere in this file's API
     // handlers; a correctly-scoped mention of it belongs in its own card, not folded
     // into a closing-status sentence that does not apply to this fork's model.
-    `Ha elakadtál / ${escalateTo} döntésére/lépésére vársz (a fenti "waiting"-be tétel MÁS eset -- az a KÉSZ munkára szól): HÁROM lépés kell EGYÜTT, a fenti 1-2 helyett:`,
+    `Ha elakadtál / ${escalateTo} döntésére/lépésére vársz (a fenti "waiting"-be tétel MÁS eset -- az a KÉSZ munkára szól): ${isMainAgent ? 'HÁROM' : 'KÉT'} lépés kell EGYÜTT, a fenti 1-2 helyett:`,
     `  a) Írj egy kommentet ami KÖZVETLENÜL ${escalateTo}-hez szól, egyértelműen megfogalmazva mit kell eldöntenie/megtennie (NE a saját belső elemzésedet írd oda, NE "REVIEW" előtaggal -- ez nem kész munka) -- ugyanaz a comments hívás mint fent, "content" mezőben.`,
-    `  b) Told át a kártyát ${escalateTo}-re, hogy egyértelmű legyen a felelősség (a te neved NE maradjon rajta, ha nem te vagy a blokkoló):`,
-    `     ${auth}`,
-    `     | curl -s -H @- -X PUT ${cardUrl} \\`,
-    `       -H 'Content-Type: application/json' \\`,
-    `       -d '{"assignee":"${escalateTo}"}'`,
-    `  c) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással).`,
+    // Card e25a549a / RedHat NO-GO (komment 15997, B1): escalateTo itt MAIN_AGENT_ID, és a
+    // kanban-assignee-guard STRUKTURÁLISAN tiltja az assignee=MAIN_AGENT_ID-t (Peti 10943: MikroB
+    // kiosztó, nem tulajdonos) -- a korábbi "told át ${escalateTo}-re" lépés mindig 400-at adna.
+    // A kártya marad a végrehajtőn: a fenti a) komment már KÖZVETLENÜL escalateTo-hoz szól, ez maga
+    // a blokkolt-átadás jele (MikroB saját waiting-sweepje, CLAUDE.md 4a szabály, ezt olvassa ki),
+    // nem az assignee-mező. A main-agent ág (escalateTo=OWNER_NAME) nem forbidden érték, ott a régi
+    // reassign-lépés érintetlen marad.
+    ...(isMainAgent
+      ? [
+          `  b) Told át a kártyát ${escalateTo}-re, hogy egyértelmű legyen a felelősség (a te neved NE maradjon rajta, ha nem te vagy a blokkoló):`,
+          `     ${auth}`,
+          `     | curl -s -H @- -X PUT '${cardUrl}' \\`,
+          `       -H 'Content-Type: application/json' \\`,
+          `       -d '{"assignee":"${escalateTo}"}'`,
+          `  c) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással).`,
+        ]
+      : [
+          `  b) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással) -- a kártya a TE NEVEDEN marad, NE próbáld ${escalateTo}-re áttolni (az assignee mező strukturálisan tiltja, 400-at ad).`,
+        ]),
     isMainAgent
       ? `Ez azért kritikus, mert ${OWNER_NAME} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű, homályos kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`
-      : `FONTOS: ${OWNER_NAME}-hez (az operátorhoz) EGYENESEN NE told át a kártyát, még ha a blokk végül tőle igényel is döntést -- ${MAIN_AGENT_ID} a delegálód, ő triázsol és ő dönti el, hogy tovább kell-e ${OWNER_NAME}-hez eszkalálnia. Ez azért kritikus, mert ${MAIN_AGENT_ID} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`,
+      : `FONTOS: ${OWNER_NAME}-hez (az operátorhoz) EGYENESEN NE told át a kártyát, még ha a blokk végül tőle igényel is döntést -- ${MAIN_AGENT_ID} a delegálód, ő triázsol és ő dönti el, hogy tovább kell-e ${OWNER_NAME}-hez eszkalálnia. ${MAIN_AGENT_ID} a "waiting" + a KÖZVETLENÜL hozzá szóló komment alapján látja a blokkot a saját sweepjében -- nem kell (és strukturálisan nem is lehet) átadni neki a kártyát.`,
     'A kártyát SOHA nem teszed magad done-ba -- a lezárás mindig MikroB vagy a kijelölt gate lépése, a te dolgod a "waiting" + REVIEW-komment. Az eredmény-kommentet (1) ne hagyd ki: az a kártyán a látható eredmény.',
   ].join('\n')
 }
@@ -667,7 +710,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       // Set-membership check 400'd `assignee=mikrob`. isKnownAgent() already
       // carries the MAIN_AGENT_ID special case other callers (isKnownAgent's own
       // router use) rely on -- reuse it instead of re-deriving the same rule here.
-      const unknownAgents = [...assignees].filter((a) => !isKnownAgent(a))
+      // Köteg 12 (upstream 0bea3cd7): isKnownAgent alone only covers CONFIGURED agents --
+      // external contributors get cards too (card-assignee, not a fleet agent), and must stay
+      // filterable. kanbanAssigneeExists checks whether the name already appears on the board.
+      const unknownAgents = [...assignees].filter((a) => !isKnownAgent(a) && !kanbanAssigneeExists(a))
       if (unknownAgents.length > 0) {
         json(res, { error: `Ismeretlen agent: ${unknownAgents.join(', ')}` }, 400)
         return true
@@ -866,6 +912,27 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/kanban' && method === 'POST') {
     const body = await readBody(req)
     const { force, actor, ...data } = JSON.parse(body.toString())
+    // `agent` -> `assignee` alias (#1023-adjacent, card b5344b62, Köteg 12 upstream 0bea3cd7):
+    // createKanbanCard reads named fields off this object, so a key it does not recognise is
+    // silently absent from the row -- no error, no warning, {ok:true,id} either way. Observed on
+    // this install, 2026-09-22: a POST body carrying `agent` instead of `assignee` produced a
+    // gazdatlan (ownerless) card five separate times before anyone noticed (c99f3c05, 3f17b3f4,
+    // 7abb8d8f, 85eb1c90, b75f9946) -- exactly the kind of card the anchor mechanism itself
+    // depends on. Only applied when `assignee` itself is absent, so an explicit assignee always
+    // wins, including an explicit `assignee: null` (the `=== undefined` check is load-bearing, a
+    // falsy check would not do this). Runs BEFORE the assignee-shape/forbidden checks below, so
+    // the aliased value is validated exactly like an explicit one.
+    let agentAliasApplied = false
+    if (data.assignee === undefined && typeof data.agent === 'string') {
+      data.assignee = data.agent
+      agentAliasApplied = true
+    }
+    // Only delete `agent` when the alias actually fired. An `agent` that was IGNORED (assignee
+    // already set explicitly, or a non-string value like `["newton"]`) must fall through to the
+    // unknown-key warn loop below instead of vanishing unlogged -- Szotasz's review on #1501: a
+    // non-string `agent` used to be deleted before that loop ran, so it was dropped with no alias
+    // and no warning.
+    if (agentAliasApplied) delete data.agent
     // Card 8c4a6d9c/cf068369/89fba8e4 investigation (2026-08-02): the two status-write routes
     // (PUT, POST /move) block a fresh planned->in_progress start above the weekly threshold, but a
     // card CREATED already in_progress (or straight to waiting -- see adaa5217, same day) skipped
@@ -899,6 +966,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // A test-only cast would have hidden that; naming the type is the actual fix.
     const rawId: unknown = (normalized as Record<string, unknown>).id
     const suppliedId: string | null = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : null
+    // Card 335fb927 (WhiteHat2 F1): a caller-supplied id with no format check flowed, unquoted,
+    // into the dispatch renderer's shell command blocks -- checked BEFORE it can ever become a
+    // row, same reason the assignee shape/forbidden checks above run before createKanbanCard.
+    if (isInvalidKanbanIdShape(suppliedId)) {
+      json(res, { error: INVALID_KANBAN_ID_MESSAGE }, 400)
+      return true
+    }
     const id: string = suppliedId ?? randomUUID().slice(0, 8)
     // Card 514a9fb3 L1: PUT already refuses a parent_id that would close a loop
     // (parentWouldCycle above), but POST let a client-supplied id through
@@ -907,9 +981,31 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Checked here, before createKanbanCard, for the same reason PUT checks it
     // before updateKanbanCard: the row must not exist yet in the refused shape.
     const rawParentId: unknown = (normalized as Record<string, unknown>).parent_id
+    if (isInvalidKanbanIdShape(rawParentId)) {
+      json(res, { error: INVALID_KANBAN_ID_MESSAGE }, 400)
+      return true
+    }
     if (typeof rawParentId === 'string' && rawParentId && parentWouldCycle(id, rawParentId)) {
       json(res, { error: `A(z) "${rawParentId}" szülővé tétele kört zárna be a szülő-láncban.` }, 409)
       return true
+    }
+    // Unknown keys are WARNED, not rejected (Köteg 12, upstream 0bea3cd7): unlike PUT (whose
+    // callers are internal and already measured), POST's caller population is NOT measured, and a
+    // fail-closed 400 here would trade a silent data-loss bug for a loud outage in card CREATION --
+    // the one path every horgony-mechanizmus depends on. Warn now, with the key names, so a future
+    // tightening pass has real traffic to measure instead of guessing.
+    //
+    // The known-field set is KANBAN_CREATE_FIELDS (what createKanbanCard itself writes), NOT
+    // KANBAN_WRITABLE_FIELDS (the PUT/update set) -- creation computes its own `sort_order` and
+    // never accepts `archived_at`, so treating those two as "known" here silently drops them with
+    // no warning (Szotasz's review on #1501, measured on that head: POST {title, archived_at:
+    // 12345, sort_order: 99} returned 200, stored archived_at=null and sort_order=0, logged
+    // nothing). `id` is handled separately above (and may be absent -- generated), so it joins the
+    // known set here too.
+    const knownPostFields = new Set<string>([...KANBAN_CREATE_FIELDS, 'id'])
+    const unknownKeys = Object.keys(normalized).filter((key) => !knownPostFields.has(key))
+    if (unknownKeys.length > 0) {
+      logger.warn({ id, keys: unknownKeys }, 'POST /api/kanban: ismeretlen mező(k), csendben eldobva')
     }
     createKanbanCard({ ...normalized, id })
     // Card 4bade960: run the dedup pre-filter on EVERY new card (rule 6b was previously enforced
@@ -1011,6 +1107,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = draftReviewGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { code: 'draft_review_required', error: v.message }, 409); return true }
     }
+    // Captured BEFORE any mutation -- card 81452ce2 delta-gate F1 (WhiteHat2 komment 16326):
+    // specTemplateGuardCheck must fire only AFTER the transition actually succeeds, past every
+    // remaining 409 guard below, never on a request one of them rejects. By the time we could
+    // call getKanbanCard again after a successful write, its status is already the new one, so
+    // the pre-transition status is captured here and carried to the call site.
+    const specTemplatePrevStatus = getKanbanCard(id)?.status
     {
       const v = dependencyBlockBody(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, v.body!, 409); return true }
@@ -1033,6 +1135,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Two refinements folded in from upstream batch 8 (94765127): the parent must actually EXIST
     // (404, not a silent dangling reference), and the error message distinguishes "own parent"
     // from a longer cycle -- both genuine improvements with no overlap with this fork's own guards.
+    if (isInvalidKanbanIdShape((data as Record<string, unknown>).parent_id)) {
+      json(res, { error: INVALID_KANBAN_ID_MESSAGE }, 400)
+      return true
+    }
     if (typeof data.parent_id === 'string' && data.parent_id) {
       if (!getKanbanCard(data.parent_id)) {
         json(res, { error: 'A szülő kártya nem található' }, 404)
@@ -1048,6 +1154,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       }
     }
     if (updateKanbanCard(id, normalizeProjectName(data), { actor: typeof actor === 'string' ? actor : undefined, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
+      specTemplateGuardCheck(id, specTemplatePrevStatus, data.status, typeof actor === 'string' ? actor : undefined)
       json(res, { ok: true }); return true
     }
     // Card c4f2de32: distinguish "no such card" from "refused to re-open reviewed work", so the
@@ -1088,6 +1195,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
     const { status, sort_order, actor, force, reason } = JSON.parse(body.toString())
+    // Card 2520b85a (measurement-only slice): see agent-identity-measure.ts.
+    measureAgentIdentityClaim(ctx, 'POST /api/kanban/:id/move', actor)
     if (newDevStopWouldBlock(id, status, force === true, typeof actor === 'string' ? actor : undefined)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
       return true
@@ -1108,6 +1217,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = draftReviewGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, { code: 'draft_review_required', error: v.message }, 409); return true }
     }
+    // See the sibling comment in the PUT handler (card 81452ce2 delta-gate F1): captured BEFORE
+    // any mutation, the guard itself fires only AFTER moveKanbanCard actually succeeds below.
+    const specTemplatePrevStatus = getKanbanCard(id)?.status
     {
       const v = dependencyBlockBody(id, status, force === true, typeof actor === 'string' ? actor : undefined)
       if (v.blocked) { json(res, v.body!, 409); return true }
@@ -1122,6 +1234,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true, typeof reason === 'string' ? reason : undefined)) {
+      specTemplateGuardCheck(id, specTemplatePrevStatus, status, typeof actor === 'string' ? actor : undefined)
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
       // Fire-and-forget: fireKanbanDispatch's own try/catch means this never rejects, and
@@ -1274,6 +1387,22 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { author, content, automated } = JSON.parse(body.toString())
     if (!author || !content) { json(res, { error: 'Szerző és tartalom kötelező' }, 400); return true }
+    // `author` is a self-reported body field, not derived from auth identity (card 1cdac111,
+    // Cybersec LOW finding on 3906d77b): every fleet agent authenticates with the same shared
+    // dashboard Bearer token, which resolveAuth (auth-gate.ts) resolves to the generic
+    // { kind: 'token' } with no caller identity at all -- so any token holder can claim to be
+    // "qa", "cybersec" or any other agent, and the server has no way to check. DECISION (card
+    // 1cdac111): building real per-caller identity is a distinct, larger authentication
+    // project, not done here; the accepted mitigation is that every CONSUMER of this field
+    // (store/gate_author_role.py -> gate-closure-check.py and the enforcing
+    // landing-gate-verdict-parse.py, fixed by card 48b0dd36; kanban-draft-review-guard.ts)
+    // treats `author` as a claim, never as proof. Do not "fix" this here by rejecting or
+    // silently rewriting an unverified author -- see
+    // src/__tests__/kanban-comment-author-trust-boundary.test.ts, which pins the current,
+    // deliberate behavior as a regression.
+    // Card 2520b85a (measurement-only slice): observe legacy-token vs per-agent-key usage and
+    // claim/identity mismatches, without enforcing anything -- see agent-identity-measure.ts.
+    measureAgentIdentityClaim(ctx, 'POST /api/kanban/:id/comments', author)
     // Code-side kanban-ref enforcement: rewrite `#<hex8>` references that map
     // to a real card into the human-facing `#<seq>` form before persistence
     // (#75 Cuzcoo dispatch). Random hex / non-matching tokens pass through.

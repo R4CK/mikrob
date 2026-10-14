@@ -62,6 +62,429 @@ DASH="${DASHBOARD_URL:-http://localhost:3420}"
 TOK="$(cat "$HERE/.dashboard-token" 2>/dev/null || true)"
 RAG="$HERE/local-llm-rag.sh"
 RESOLVE="$HERE/graphify-resolve.py"
+GEMINI_OFFLOAD="$HERE/gemini-offload-call.sh"
+
+# GEMINI ROUTE (card a92e9913): read the current route from the fallback state file.
+# Defaults to "claude" when the file is absent or malformed -- fail-safe toward the local path.
+get_gemini_route() {
+  local state="$HERE/gemini-fallback-state.json"
+  [[ -f "$state" ]] || { echo "claude"; return; }
+  python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('route','claude'))" "$state" 2>/dev/null || echo "claude"
+}
+GEMINI_ROUTE="$(get_gemini_route)"
+
+# is_gemini_blocked PROJECT TAGS [TITLE [DESC]]: returns 0 (true/blocked) when a leaf must NOT
+# go to Gemini.  Fail-closed by design (WhiteHat2 F1, card a92e9913):
+#
+#   1. PROJECT ALLOWLIST (not a blocklist): only the fleet's own project ("mikrob", casefold) may
+#      reach the external Gemini API.  Every other project -- including unknown / empty ones --
+#      is blocked.  Empty project is blocked (unknown = unsafe).
+#   2. TAG BLOCKS: casefold + Unicode-accent-strip so PÉNZ, Penz, penz all map to "penz".
+#      ALL BLOKKOLT-* patterns are blocked regardless of suffix.
+#      Extended blocklist (WhiteHat2 F1b, Peti Telegram 11131): mopsion, cleancore, sec, security,
+#      auth, authz, rbac, tenant, superadmin, pii, penz, penzugy, finance, billing, payment,
+#      secret, crypto, gdpr, privacy, legal, cybersec.
+#   3. CONTENT GATE on the card title AND description (card a92e9913, MikroB 11335): if either
+#      contains a sensitive keyword the card is blocked regardless of tags.  Reuses the same
+#      sensitive-domain vocabulary as the router's prefilter (card-build-route).
+#      A card like 6a4e34c1 (SSE ?token= leak, no sensitive tag, no sensitive title) is blocked
+#      because the description reveals the sensitive nature.
+#      NORMALIZED + STEM MATCH (RedHat 17510 finding 1): title/desc are casefold+accent-stripped
+#      the same way as tags before matching, and each stem only needs a LEADING word boundary (no
+#      trailing \b) because Hungarian glues suffixes onto the stem ("jogosult" + "sag" ->
+#      "jogosultsag", "biztons" + "ag" -> "biztonsag" inside a bracket label like "[Biztonság]").
+#      Previously \b...\b required a boundary AFTER the stem too, which Unicode letters like "á"
+#      never produce, so "Számla", "Jogosultság" and "[Biztonság]"/"[FIN]" all passed through
+#      unblocked (measured: 3 of 6 tag-less sensitive cards). Dropping the trailing boundary is a
+#      deliberate false-positive-tolerant choice: a blocked card merely gets no Gemini draft
+#      (routes online as usual), which is the acceptable side of this card's fail-closed design.
+#      FULL TEXT, NOT A PREFIX (WhiteHat2 H1, card 40d2a253): title/desc are inspected in full,
+#      because try_leaf() sends the SAME full leaf_title+leaf_desc to Gemini as "$task" (line
+#      ~836) -- a cap here that the outbound call does not share would let a sensitive word past
+#      the cut point through unblocked. To inspect the full text without risking an oversized
+#      python3 argv (the previous fix's concern, see below), title/desc are passed over STDIN, not
+#      as command-line arguments -- argv has an OS-level length ceiling, stdin does not.
+#   4. CATEGORICAL-ONLINE leaves NEVER go to Gemini (WhiteHat2 F1d): the router already classified
+#      the card as security/authz/multi-file; sending it to an external API discards that verdict.
+#      Enforcement: the categorical-online branch no longer contains a try_gemini_for_leaf call.
+#
+# FAIL-CLOSED ON INTERPRETER FAILURE (RedHat 17510 finding 2, sharpened by WhiteHat2 H2): the
+# Python classifier can fail before reaching an explicit sys.exit -- missing python3 (rc=127), or
+# any other interpreter crash, INCLUDING an uncaught Python exception, which exits with code 1 by
+# default. The old "allowed" signal was ALSO exit code 1 -- so a genuine classifier bug (regex
+# error, bad encoding, anything raising) was silently indistinguishable from "allowed", the exact
+# opposite of fail-closed. Fixed by giving "allowed" its own code that nothing else can produce:
+# $ALLOWED_RC (42, below). ONLY that exact code returns allowed; every other outcome -- 0 (explicit
+# blocked), 1 (uncaught exception), 126/127 (interpreter crash), anything else -- returns blocked.
+#
+# Returns 1 (false/allowed) only when all four gates pass AND the classifier ran to completion.
+is_gemini_blocked() {
+  local project="$1" tags="$2" title="${3:-}" desc="${4:-}"
+  local rc
+  # Distinct "allowed" exit code (WhiteHat2 H2, matches the Python ALLOWED_RC constant below):
+  # cannot collide with a bare Python exception (1) or any shell/OS failure code, so only a
+  # deliberate, successful "allowed" verdict matches. A literal, not an env var, to sidestep a
+  # bash quirk: a `VAR=val command` prefix assignment on a `local -r` variable is itself an
+  # assignment and bash refuses it as a readonly violation, even though it's command-scoped.
+  printf '%s\0%s' "$title" "$desc" | python3 -c '
+import sys, unicodedata, re
+
+project  = sys.argv[1]
+tags_csv = sys.argv[2] if len(sys.argv) > 2 else ""
+ALLOWED_RC = 42  # must match the bash-side check below
+
+# title/desc come over stdin (WhiteHat2 H1): NUL-separated, no argv length ceiling, no cap needed
+# -- this is the exact same full text try_leaf() sends to Gemini as "$task".
+_stdin = sys.stdin.buffer.read()
+_parts = _stdin.split(b"\x00", 1)
+title = _parts[0].decode("utf-8", "replace")
+desc  = _parts[1].decode("utf-8", "replace") if len(_parts) > 1 else ""
+
+
+# N1 (RedHat 17653, card e87e7520): fullwidth/compatibility obfuscation ("ｓｅｃｒｅｔ",
+# mathematical bold/italic letters) passed norm() unblocked because NFD only decomposes
+# COMBINING ACCENTS, not compatibility characters -- NFKD is required for those. Separately,
+# Cyrillic homoglyphs (visually identical to Latin but a distinct codepoint: а/е/о/р/с/у/х/...)
+# have NO NFKD decomposition to Latin at all, so they need an explicit substitution table.
+_HOMOGLYPH_MAP = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "х": "x",
+    "і": "i", "ѕ": "s", "һ": "h", "ԃ": "d", "ɡ": "g", "ⅰ": "i",
+})
+
+# U+2800 BRAILLE PATTERN BLANK is visually invisible but its category (So, Symbol-other) is too
+# broad to strip wholesale -- stripped by exact codepoint instead (C2, card 33047d3f).
+_INVISIBLE_CODEPOINTS = {"⠀"}
+
+# H1 (card b3ce0a88 delta-gate, RedHat NO-GO comment 18124): a fixed six-pair bracket-homoglyph
+# dict, translated BEFORE NFKD, is not fail-closed in two ways -- (a) any of the other ~70+
+# Unicode Ps/Pe (open/close punctuation) bracket pairs the dict does not name (<>, {}-lookalikes,
+# CJK corner/tortoise-shell/angle variants beyond the six picked, French-style quote brackets,
+# ...) passes through untouched; (b) a character that NFKD-decomposes INTO one of the six mapped
+# forms (half-width corner brackets U+FF62/63, the small/vertical CJK compatibility forms
+# U+FE3B/3C, FE39/3A, FE41/42, FE3F/40, FE5D/5E, and U+2329/232A) is still in its UNDECOMPOSED form
+# when the fixed-dict translate runs, so the dict exact-codepoint match misses it; NFKD runs
+# AFTER and decomposes it into a bracket the extraction regex (ASCII-only) still cannot see. Fixed
+# by mapping by Unicode CATEGORY, AFTER NFKD: every Ps (open) or Pi (initial quote) character folds
+# to "[", every Pe (close) or Pf (final quote) character folds to "]" -- closed only by category,
+# not by an enumerable list, so it is fail-closed by construction (measured: 79/79 Ps/Pe pairs on
+# the Unicode punctuation-bracket block, including all 7 NFKD-decomposing forms above).
+def _fold(s, zero_width_as_separator=False):
+    """Structural fold (card 33047d3f C1/C2, same layers as gemini-offload-call.sh _fold):
+    homoglyph-map + NFKD-decompose (fullwidth/compat chars -> plain ASCII equivalents, including
+    fullwidth brackets) + bracket-CATEGORY-fold (see H1 above, card b3ce0a88 delta-gate), then
+    strip combining marks, invisible format chars (Cf: zero-width space/joiner, BOM), control
+    chars (Cc), line/paragraph separators (Zl/Zp), and the braille-blank invisible char. Case is
+    PRESERVED -- this is the structural layer (bracket/invisible-char normalization), not
+    casefold+ascii-drop (that is norm(), below, which calls this).
+
+    N5 (card 82a81c45, RedHat GO 23a14c4b comment 17975): the title-prefix bracket regex used to
+    run on the RAW title. An invisible char (zero-width space, BOM) spliced between/before bracket
+    groups breaks the `\\s*\\[...\\]` repetition (the invisible char is not in \\s and is not `[`),
+    and a fullwidth bracket never matches the literal ASCII `[`/`]` at all -- either way the
+    extraction silently stops seeing the tag. Folding the title with this function BEFORE running
+    the regex removes the invisible chars and resolves fullwidth brackets to ASCII ones, so the
+    extraction sees the same prefix a human reads.
+
+    zero_width_as_separator (card c8a6e1da F1): the default (False) DROPS a zero-width/control/
+    line-separator char entirely, which is correct for SENS_RE content matching -- it reunites a
+    sensitive WORD an attacker split with an invisible char ("s<ZWSP>ecurity" -> "security", still
+    matches the "security" stem). The BLOCKED_TAGS tag-tokenizer (tag_tokens_of(), below) needs the
+    OPPOSITE of that exact same character: "[SEC<ZWSP>x]" must split into tokens "sec","x", not
+    merge into "secx" -- passing True turns the invisible char into an explicit space (a token
+    boundary) instead of erasing it."""
+    s = s.translate(_HOMOGLYPH_MAP)
+    s = unicodedata.normalize("NFKD", s)
+    out = []
+    for ch in s:
+        cat = unicodedata.category(ch)
+        if cat in ("Mn", "Cf", "Cc", "Zl", "Zp") or ch in _INVISIBLE_CODEPOINTS:
+            if zero_width_as_separator and cat != "Mn":
+                out.append(" ")
+            continue
+        if cat in ("Ps", "Pi"):
+            out.append("[")
+        elif cat in ("Pe", "Pf"):
+            out.append("]")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+# F1 (card c8a6e1da, WhiteHat MEDIUM finding, komment 18429): BLOCKED_TAGS tokenization used to go
+# through norm() -- casefold + _fold() (above, zero_width_as_separator=False) + a final
+# .encode("ascii","ignore") that SILENTLY DROPS any remaining non-ASCII char, including a visible
+# but non-ASCII separator (em dash, en dash, U+2010/2011 hyphen, U+2212 minus, middle dot, bullet,
+# ideographic comma/period, arrow, emoji, U+2215 division slash) that sits BETWEEN the tag word and
+# trailing text. "[SEC—x]" -> casefold+_fold keeps the em dash (it is not Mn/Cf/Cc/Zl/Zp and
+# not a bracket category) -> norm()s ascii-drop erases it -> "secx", ONE token, no longer equal to
+# "sec" -- the tokenizer never saw a reason to split. Fixed by tokenizing on a string that is NEVER
+# ascii-dropped: any character that is not literally a-z/0-9 is already outside Pythons `[a-z0-9]`
+# character class regardless of being ASCII or not, so re.split treats it as a separator on its own
+# -- the only characters that need SPECIAL handling here are the ones _fold() would otherwise erase
+# to NOTHING (zero-width/control/line-separator), which is why this calls _fold(zero_width_as_separator=True).
+def tag_tokens_of(tag):
+    folded = _fold(tag.strip().casefold(), zero_width_as_separator=True)
+    return [tok for tok in re.split(r"[^a-z0-9]+", folded) if tok]
+
+def norm(s):
+    """casefold + _fold() -> ASCII. C1 (card 33047d3f): strips Cc (control) chars before the
+    final ascii-encode -- an ASCII control byte (DEL/BS/US/...) spliced into a sensitive word IS
+    already ascii, so it survives encode("ascii","ignore") unchanged and splits the word,
+    bypassing SENS_RE. Folding (via _fold, shared with the title-prefix extraction below) reunites
+    the word before matching."""
+    return _fold(s.strip().casefold()).encode("ascii", "ignore").decode()
+
+# F2 (WhiteHat NO-GO, komment 17848, card e87e7520): the homoglyph table is open-ended and
+# norm() silently DROPS any non-ASCII letter it does not know (encode("ascii","ignore")) --
+# measured: 226 (stem, position, char) combinations across 18 sensitive stems bypassed the
+# gate with a single untabled homoglyph (Greek, Armenian, small-caps, struck-through Latin).
+# Fail-closed instead: after homoglyph-map + NFKD decomposition, if a non-ASCII LETTER
+# (unicodedata category L*) remains, treat it as blocked. Genuine Hungarian text is NOT
+# affected -- NFKD decomposes a/e/i/o/u-with-accent into base-ASCII-letter + a COMBINING
+# MARK (category Mn, not L*), so ordinary Hungarian title/desc text passes through clean.
+# The homoglyph table stays a convenience (lets a KNOWN homoglyph normalize to its real
+# word for SENS_RE matching); this check is the actual guarantee, not the table.
+def has_unmapped_letter(s):
+    decomposed = unicodedata.normalize("NFKD", s.translate(_HOMOGLYPH_MAP))
+    return any(ord(ch) > 127 and unicodedata.category(ch).startswith("L") for ch in decomposed)
+
+# 1. Project allowlist (fail-closed: empty/unknown = blocked).
+ALLOWED_PROJECTS = {"mikrob"}
+if not project.strip() or norm(project) not in ALLOWED_PROJECTS:
+    sys.exit(0)  # blocked
+
+# 1b. Title-prefix bracket tags (WhiteHat2 F1 prime, card 23a14c4b delta-gate comment 17828/17831):
+# the fleet convention routinely writes SEC/BLOKKOLT-* as a leading "[TAG]" in the TITLE, not as
+# a kanban label. tags_for() (this same file, used by this script own dispatch path) already
+# folds these in; a caller that only passes real labels as tags (the gemini-orchestrator
+# isEligibleForGeminiOrdering sends card.labels only, no title-prefix parsing of its own) would
+# otherwise bypass this entire gate for a [SEC] Benign title or [BLOKKOLT-Peti-stop] ... card
+# that carries no matching LABEL. Extracted HERE, from the title this function already received,
+# with the EXACT SAME regex tags_for() uses -- so the caller cannot forget it, and there is only
+# one place this extraction is written. Measured on the live board (WhiteHat2, 528 cards): 45/108
+# cards the label-only check would have allowed through to Gemini carry exactly this shape.
+_title_folded = _fold(title)
+# N5-follow (card b3ce0a88, WhiteHat GO 82a81c45 comment 18031 F1): the ^-anchored, square-
+# bracket-only extraction above only ever saw a LEADING run of "[TAG]" groups -- a tag written
+# mid-title, after a hyphen/serial number, behind another tag text, or in round/curly brackets
+# (all live conventions WhiteHat found still open) was simply never looked at. This searches the
+# WHOLE folded title for a bracket group with ANY of the three bracket pairs (not anchored, not
+# consecutive), plus the bare "TAG:" prefix form with no brackets at all.
+# H2 (card b3ce0a88 delta-gate, RedHat NO-GO comment 18124): the previous non-anchored regex still
+# only matched from the FIRST opening bracket to the FIRST closing bracket -- a tag nested inside
+# another bracket group ("[[SEC]]", "([SEC])", "[x (SEC)]", "(a [SEC] ...)") was swallowed whole
+# ("[SEC" or "x (SEC") by the outer pair and never isolated, so it never equalled a BLOCKED_TAGS
+# entry. A zero-width lookahead tried at EVERY position (via finditer, which advances one
+# character at a time on a zero-width match) finds the tag starting from its OWN innermost
+# opening bracket, regardless of what wraps it -- the inner character class excludes every
+# bracket type (not just the matching closer), so each attempt stops at the first bracket of any
+# kind, isolating exactly one candidate per real tag (measured: 13/13 nesting shapes caught, 0
+# change on the unnested cases this was already catching).
+_lead_tags = [m.group(1) for m in re.finditer(r"(?=[\[(\x7b]([^\[\](){}]*)[\])\x7d])", _title_folded)]
+_lead_tags += re.findall(r"(?<!\w)([A-Za-z]+):", _title_folded)
+# H3/H3b (card b3ce0a88 delta-gate, WhiteHat2 NO-GO comment 18235): the lookahead above isolates
+# the INNERMOST bracketed candidate at every position, but its own inner class excludes every
+# bracket type -- so an OUTER tag whose text contains an embedded bracket ("[BLOKKOLT-Peti (stop)]",
+# "[SEC (high)]", "[SEC [x]]", "(SEC [x])", "[MikroB][SEC (LOW)]") is never isolated as a whole: the
+# embedded bracket cuts the candidate short before the blocked word. This was a REGRESSION versus
+# the previous greedy regex for the H3 case (which matched too much, but by accident caught these),
+# and a pre-existing gap for H3b. Measured by WhiteHat2: every bracket-delimited segment of the
+# title (splitting on ANY bracket character) also needs to be a tag candidate, not just the
+# innermost-bracket matches the lookahead above finds -- 0 live false-positive delta on 3168 cards.
+if re.search(r"[\[\](){}]", _title_folded):
+    _lead_tags += [x.strip() for x in re.split(r"[\[\](){}]", _title_folded) if x.strip()]
+all_tags = [t for t in tags_csv.split(",") if t] + _lead_tags
+
+# 2. Tag blocks: casefold + accent-strip each tag (label tags AND title-prefix tags from 1b).
+BLOCKED_TAGS = {
+    "mopsion","cleancore","sec","security","auth","authz","rbac","tenant","superadmin",
+    "pii","penz","penzugy","finance","billing","payment","secret","crypto",
+    "gdpr","privacy","legal","cybersec",
+    # N6 (RedHat 17653, card e87e7520): exact-match tags missing from the set -- "fin" and
+    # "biztonsag" are already stems in SENS_RE (title/desc text), but a TAG literally named
+    # "fin" or "biztonsag" fell through here because this set never had them.
+    "fin","biztonsag",
+}
+tags_n = []
+for tag in all_tags:
+    # C3 (card 33047d3f): the F2 fail-closed check (has_unmapped_letter) only ran on title/desc
+    # below, never on tags -- a tag with an unmapped homoglyph (e.g. "s" + Greek epsilon + "c")
+    # fell through norm()s silent ascii-drop into something that no longer matched
+    # BLOCKED_TAGS, instead of being blocked outright. Extend F2 to tags too.
+    if has_unmapped_letter(tag):
+        sys.exit(0)  # blocked (F2 extended to labels)
+    t = norm(tag)
+    tags_n.append(t)
+    # N5(c) (RedHat NO-GO, b3ce0a88 komment 18124, card e45945a2): exact-string comparison let
+    # a punctuation-decorated tag form bypass both the "blokkolt-" prefix check and the
+    # BLOCKED_TAGS exact-match set, because neither test splits the tag on its OWN internal
+    # punctuation first -- "SEC,x" (comma), "SEC-hardening" (hyphen-suffix), "BLOKKOLT,x" or
+    # "BLOKKOLT x" (a non-hyphen BLOKKOLT suffix the old startswith("blokkolt-") never covered)
+    # all compared unequal to "sec"/"blokkolt-*" and sailed through. Tokenizing on any run of
+    # non-alphanumeric characters and testing each token subsumes the old prefix check (now also
+    # catches comma/space BLOKKOLT suffixes) while keeping exact per-token matching, so a tag that
+    # merely CONTAINS "sec" as a substring ("resection", "insecure") is still NOT blocked.
+    # F1 (card c8a6e1da): tag_tokens_of() replaces the old norm()-based split here -- a non-ASCII
+    # separator (em dash, ZWSP, middle dot, ...) between the tag word and trailing text used to be
+    # silently ascii-dropped by norm(), merging "SEC<sep>x" into one token "secx" that no longer
+    # equalled "sec". See tag_tokens_of()s own comment above for the mechanism.
+    tag_tokens = tag_tokens_of(tag)
+    if "blokkolt" in tag_tokens:
+        sys.exit(0)  # blocked
+    if any(tok in BLOCKED_TAGS for tok in tag_tokens):
+        sys.exit(0)  # blocked
+    # F2(c) (card c8a6e1da): split-letter form ("[S E C]", "[S.E.C]", "[S-E-C]", "[S EC]") writes
+    # a blocked word one letter (or short fragment) at a time, with a delimiter between every
+    # piece, inside this one already-delimited tag segment -- joining every token in the segment
+    # catches it. The all-short-tokens guard keeps an ordinary tag ("[Resection of X]", tokens
+    # resection/of/x) out: "resection" alone is longer than the guard allows, so the e45945a2
+    # negative control (a tag that merely CONTAINS "sec"/"insecure" as a substring must stay
+    # unblocked) still holds -- this only fires when EVERY piece in the segment is tag-letter-short.
+    if len(tag_tokens) >= 2 and all(len(tok) <= 3 for tok in tag_tokens):
+        joined = "".join(tag_tokens)
+        if joined == "blokkolt" or joined in BLOCKED_TAGS:
+            sys.exit(0)  # blocked
+    # F2(d) (card c8a6e1da): digit-suffix form ("[SEC2]", "BLOKKOLT2", "MOPSION2") appends a bare
+    # digit directly after the blocked word with no delimiter at all, so it never split into its
+    # own token above in the first place -- strip a trailing digit run and re-check.
+    for tok in tag_tokens:
+        stripped = re.sub(r"[0-9]+$", "", tok)
+        if stripped and stripped != tok and (stripped == "blokkolt" or stripped in BLOCKED_TAGS):
+            sys.exit(0)  # blocked
+
+# 3. Content gate on NORMALIZED title AND description (sensitive stem -> blocked, fail-closed).
+# Leading-boundary-only stems (RedHat 17510 finding 1): matches a stem at the start of a word,
+# but also matches it as the start of a longer word ("jogosultsag", "biztonsag", "finance").
+# VOCABULARY PARITY WITH THE ROUTER (RedHat 17567 B2, card a92e9913): the routers own authz/PII
+# prefilter (card-build-route.sh) blocks on "permission", "access control", "szemelyes adat" and
+# "hozzaferes" (Hungarian for "access") -- this gates vocabulary did not have them, so e.g.
+# "Permission model for the export" or "Szemelyes adat maszkolasa a naploban" passed through
+# unblocked despite being exactly the authz/PII categories named in Petis standing rule
+# (Telegram 11131). Added below.
+if has_unmapped_letter(title) or has_unmapped_letter(desc):
+    sys.exit(0)  # blocked (F2: unmapped homoglyph/script, fail-closed)
+
+# F2(a)/(b) (card c8a6e1da): bare form ("SEC : x", "SEC x", "x SEC", "SEC", "SEC | x", "SEC - x",
+# "-SEC- x", "_SEC_ x") and alternate delimiters ("<SEC> x", "|SEC| x", "/SEC/ x", "*SEC* x",
+# "#SEC x", quote/backtick/tilde forms) have no [](){} bracket and no immediately-adjacent "TAG:"
+# colon for 1bs extraction above to find, so the tag word was never a candidate at all. Every one
+# of those delimiter characters is already outside Pythons literal `[a-z0-9]` class, so tokenizing
+# the WHOLE title the same way tag_tokens_of() tokenizes one extracted tag segment -- exact match
+# only, no join/digit-suffix widening, since this runs over free-form prose rather than an
+# already-delimited tag segment -- closes all of them without a dedicated regex per delimiter.
+_whole_title_tokens = tag_tokens_of(title)
+for _i, _tok in enumerate(_whole_title_tokens):
+    if _tok != "blokkolt" and _tok not in BLOCKED_TAGS:
+        continue
+    # "N sec"/"5 sec" is the ordinary English "N seconds" idiom, not a tag -- none of the 44
+    # required probe shapes (card c8a6e1da) put a digit immediately before the blocked word, so
+    # exempting it closes a real foreseeable false positive without reopening anything the card
+    # requires closed. Measured against the live board (3180 cards): 0 new blocks either way.
+    if _i > 0 and _whole_title_tokens[_i - 1].isdigit():
+        continue
+    sys.exit(0)  # blocked
+
+title_n = norm(title)
+desc_n = norm(desc)
+SENS_RE = re.compile(
+    r"\b(biztons|security|auth|authz|rbac|tenant|superadmin"
+    r"|penz|penzugy|fizet|szamla|afa|payroll|berszamfejtes|jelszo|password"
+    r"|token|secret|titok|jogosult|gdpr|privacy|kulcs"
+    r"|kripto|crypto|pii|billing|payment|legal|jogi|cybersec|fin"
+    r"|hacker|exploit|pentest|inject|sqli|xss"
+    r"|permission|access|szemelyes|hozzaferes)",
+    re.IGNORECASE
+)
+# N6 second half (RedHat 17653, card e87e7520): Hungarian tenant-isolation co-occurrence,
+# ported from the routers own prefilter (card-build-route.sh) -- a bare "berlo" (tenant)
+# stem alone is too broad (also a literal building tenant), only sensitive when it co-occurs
+# with a separation/isolation verb within 40 chars, either order. Already NFKD+ASCII-stripped
+# above, so only the ASCII stems are needed here (no accented variants to match).
+# F4 (WhiteHat NO-GO, komment 17848, card e87e7520): two gaps measured. (a) "." does not match
+# a newline, so "berlok adatainak<newline>elkulonitese" bypassed (a multi-line description is
+# the common case, not an edge case) -- fixed with re.DOTALL. (b) the verb list only had the
+# two RedHat-named stems; the natural "izolacio"/"szeparalas"/"elvalasztas" phrasing (the exact
+# gap N6 was meant to close) still bypassed -- widened to the stems a WhiteHat measured through.
+TENANT_ISOLATION_RE = re.compile(
+    r"berlo.{0,40}(elkulonit|szetvalaszt|izol|szepara|elvalaszt|kulonvalaszt|kulonit)"
+    r"|(elkulonit|szetvalaszt|izol|szepara|elvalaszt|kulonvalaszt|kulonit).{0,40}berlo",
+    re.DOTALL,
+)
+if (SENS_RE.search(title_n) or SENS_RE.search(desc_n)
+        or TENANT_ISOLATION_RE.search(title_n) or TENANT_ISOLATION_RE.search(desc_n)):
+    sys.exit(0)  # blocked
+
+# N2 (RedHat 17510/17825): a TAG that is not an EXACT match on BLOCKED_TAGS above still needs the
+# same stem check title/desc already get -- a label literally named "jelszo-rotacio" or
+# "[Biztonsag]" (the bracket-tag case from 1b) would otherwise sail through on tag-exact-match
+# alone, even though its own text names a sensitive stem. Measured: a neutral-titled card tagged
+# "jelszo-rotacio"/"szamla"/"[Biztonsag]" was previously ALLOWED through this gate.
+if any(SENS_RE.search(t) for t in tags_n):
+    sys.exit(0)  # blocked
+
+sys.exit(ALLOWED_RC)  # allowed -- the ONE code that means a deliberate, completed "allowed" verdict
+' "$project" "$tags"
+  rc=$?
+  [[ "$rc" -eq 42 ]] && return 1  # must match the Python-side ALLOWED_RC constant above
+  return 0
+}
+
+# gemini_route_enabled: returns 0 (true) when the Gemini route is active.
+# Fail-closed: the flag file must EXPLICITLY exist; absence = disabled.
+# Default ship state: disabled (store/gemini-offload-enabled does not exist).
+# Enables without a tracked-file chmod: create/remove the flag file at runtime.
+# MikroB restores gemini-offload-call.sh chmod +x after all gates GO, then creates
+# store/gemini-offload-enabled to re-enable the route (card a92e9913 O1).
+#
+# OFFLOAD_NO_GEMINI (card 21fbc293, WhiteHat2 F1, Gate-SHA 8af958a2): the per-card draft loop
+# (gemini-orchestrator-draft.ts) drives this script to produce a LOCAL-only draft (decision B,
+# file sink) -- try_gemini_for_leaf bypasses the file sink entirely and sends the card
+# title+description to the Gemini CLI, which decision B forbids. The draft loop sets this env
+# var so the Gemini branch stays fail-closed OFF for its invocations, regardless of the flag
+# file above.
+gemini_route_enabled() {
+  [[ "${OFFLOAD_NO_GEMINI:-0}" == "1" ]] && return 1
+  [[ -f "${HERE}/gemini-offload-enabled" ]]
+}
+
+# gemini_draft_comment_body: same contract as draft_comment_body but for a Gemini-sourced draft.
+# $1=leaf_title, $2=content, $3=synthetic ("true"/"false", optional)
+gemini_draft_comment_body() {
+  local leaf_title="$1" content="$2" synthetic="${3:-false}"
+  local review_header=""
+  if [[ "$synthetic" == "true" ]]; then
+    review_header="MECHANIKUS RESZFELADAT (card 501c489f) -- KOTELEZO A TELJES, FUGGETLEN ONLINE FELULVIZSGALAT.
+
+"
+  fi
+  printf '%s[GEMINI DRAFT | dispatch-offload] Gemini (kvota-stop alatti draft, card a92e9913). DRAFT-ONLY: kvota-reset utan a felelos agent reviewlje es integralja -- ne irja ujra Claude-dal. AMIKOR VEGEZTEL VELE, tegyel a kartyara egy sort (sor elejen): '"'"'Draft-Review: ELFOGADVA'"'"' / '"'"'RESZBEN'"'"' / '"'"'ELUTASITVA'"'"' / '"'"'FELESLEGES'"'"' -- e nelkul a kartya nem mehet waiting-be (card 1338e68b).
+
+#### %s
+%s
+' "$review_header" "$leaf_title" "$content"
+}
+
+# try_gemini_for_leaf: call Gemini API for a leaf and post the draft comment.
+# Records a transient attempt on API failure so the dispatcher can track retries.
+try_gemini_for_leaf() {
+  local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4" synthetic="${5:-false}"
+
+  [[ -x "$GEMINI_OFFLOAD" ]] || return 1
+
+  local out rc=0
+  out="$(printf '%s' "$task" | bash "$GEMINI_OFFLOAD" 2>/dev/null)" || rc=$?
+
+  if [[ $rc -eq 0 && -n "${out// }" ]]; then
+    attempts_op success "$leaf_id" >/dev/null
+    local body; body="$(gemini_draft_comment_body "$leaf_title" "$out" "$synthetic")"
+    curl -s -X POST "$DASH/api/kanban/$post_id/comments" -H "Content-Type: application/json" -H @"$hdr_file" \
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$body")" >/dev/null 2>&1
+    echo "offload-dispatch: leaf $leaf_id -> posted GEMINI DRAFT" >&2
+    return 0
+  fi
+  echo "offload-dispatch: leaf $leaf_id -> Gemini call failed (rc=$rc)" >&2
+  attempts_op transient "$leaf_id" >/dev/null
+  return 1
+}
 
 # Max number of leaves given an ACTUAL local-model call in one invocation (GPU is single-slot, `-np 1`,
 # no request batching -- card a717d8b5 history). This caps CALLS, not raw enumeration: leaves already
@@ -79,6 +502,8 @@ OFFLOAD_MAX_SUBTASKS="${OFFLOAD_MAX_SUBTASKS:-15}"
 OFFLOAD_DECOMPOSE_MAX_PER_CARD="${OFFLOAD_DECOMPOSE_MAX_PER_CARD:-3}"
 # shellcheck source=./card-decompose-templates.sh
 . "$HERE/card-decompose-templates.sh"
+# shellcheck source=./decompose-sample-context.sh
+. "$HERE/decompose-sample-context.sh"
 
 ATTEMPTS_FILE="$HERE/offload-attempts.json"
 ATTEMPTS_LOCK="$HERE/.offload-attempts.lock"
@@ -94,6 +519,15 @@ OFFLOAD_LEAF_MAX_ATTEMPTS="${OFFLOAD_LEAF_MAX_ATTEMPTS:-2}"
 # only costs a Draft-Review adjudication. Default 600s (10 min) matches rule 3's own stuck-card
 # threshold, per the card's own suggestion. See resolve_leaves()'s is_stale_in_progress() below.
 OFFLOAD_STALE_IN_PROGRESS_SECONDS="${OFFLOAD_STALE_IN_PROGRESS_SECONDS:-600}"
+# NON-INTEGER GUARD (card f8e7f7cb, Cybersec F1 LOW on eeebd2b5, Gate-SHA bdb35dfa). A value like
+# "10m" used to reach resolve_leaves()'s python as-is, where int(...) raises ValueError before any
+# leaf is resolved -- the uncaught exception aborts that python process with no stdout, and because
+# resolve_leaves()'s caller redirects stderr to /dev/null, the whole function silently returns empty,
+# so EVERY leaf (including a fresh "planned" one) resolves to zero, with no trace of why.
+if ! [[ "$OFFLOAD_STALE_IN_PROGRESS_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "offload-dispatch: OFFLOAD_STALE_IN_PROGRESS_SECONDS='$OFFLOAD_STALE_IN_PROGRESS_SECONDS' is not an integer -- falling back to the documented default (600s)" >&2
+  OFFLOAD_STALE_IN_PROGRESS_SECONDS=600
+fi
 export ATTEMPTS_FILE EXHAUSTED_TTL_SECONDS OFFLOAD_LEAF_MAX_ATTEMPTS OFFLOAD_STALE_IN_PROGRESS_SECONDS
 
 # --- attempts-file helper: every call is flock-serialized on its OWN lock file (not the per-$CARD one
@@ -124,6 +558,12 @@ elif op == "success":
     data[leaf] = entry
 elif op == "categorical-online":
     entry = {"attempts": max_attempts, "status": "exhausted", "updated_at": now, "reason": "router-online"}
+    data[leaf] = entry
+elif op == "no-sample":
+    # card d39fc5e7 requirement 1: a decomposed leaf whose type has no real sample file to anchor
+    # on. Marked exhausted (no retry) for the SAME reason categorical-online is: a GPU call would
+    # not change the answer, since the repo's file tree does not change between sweep ticks.
+    entry = {"attempts": max_attempts, "status": "exhausted", "updated_at": now, "reason": "no-sample"}
     data[leaf] = entry
 elif op == "transient-fail":
     n = int(entry.get("attempts", 0)) + 1
@@ -243,6 +683,37 @@ def ancestor_context(node_id, depth=3):
         cur, depth = p, depth - 1
     return "\n---\n".join(parts)
 
+# PREDECESSOR + PAIR CONTEXT (card 2be7e3e5, requirement 2: "kartya + szulo + Pair/predecessor +
+# erintett fajlok kivonata, meretkorlattal"). ancestor_context above already gives parent-chain
+# context; this adds the two other linked-card kinds a leaf can carry: predecessor cards (the
+# `blockedBy` edge from rule 1c, a REAL dependency, not parent_id) and a Pair-FE/Pair-BE sibling
+# (the `Pair-FE: <id>` / `Pair-BE: <id>` line from CLAUDE.md rule 8a, lives in the leaf own
+# description, not an ancestor). Capped at 2 predecessors + 1 pair, same 400-char-per-card truncation as the
+# ancestor chain, so the context package stays size-bounded.
+PAIR_RE = re.compile(r"Pair-(?:FE|BE)\s*:\s*([0-9a-f]{6,12})", re.IGNORECASE)
+
+def related_context(node_id):
+    node = by_id.get(node_id)
+    if not node:
+        return ""
+    parts = []
+    for pid in list(node.get("blockedBy") or [])[:2]:
+        p = by_id.get(str(pid))
+        if not p:
+            continue
+        title = (p.get("title") or "").strip()
+        desc = (p.get("description") or "").strip()[:400]
+        parts.append(f"ELOZMENY (predecessor {pid}): {title}\n{desc}")
+    m = PAIR_RE.search(node.get("description") or "")
+    if m:
+        pair_id = m.group(1)
+        p = by_id.get(pair_id)
+        if p:
+            title = (p.get("title") or "").strip()
+            desc = (p.get("description") or "").strip()[:400]
+            parts.append(f"PAROSITOTT (pair {pair_id}): {title}\n{desc}")
+    return "\n---\n".join(parts)
+
 out = []
 for l in leaves:
     out.append({
@@ -257,7 +728,7 @@ for l in leaves:
         "assignee_raw": (l.get("assignee") or "").strip(),
         "tags": tags_for(l),
         "project": l.get("project") or "",
-        "parent_context": ancestor_context(str(l["id"])),
+        "parent_context": "\n---\n".join(p for p in [ancestor_context(str(l["id"])), related_context(str(l["id"]))] if p),
         "synthetic": False,
     })
 print(json.dumps(out))
@@ -447,6 +918,19 @@ nudge_leaf_owner() {
   return 0
 }
 
+# draft_quality_ok: deterministic pre-post quality gate (card d39fc5e7, requirement 2) -- NO model
+# call, every check is mechanical (length, repeats-the-card-text, import existence) so a bad draft
+# never costs an online Draft-Review adjudication (the measured baseline: 14/17 drafts rejected,
+# three recurring MECHANICAL defect shapes per card-build-route-24h-measure.sh, 2026-09-30). Prints
+# "OK" or "FAIL\t<reason>" (the actual logic lives in draft-quality-gate.py, kept out of this shell
+# file so it is unit-testable without a shell). ----------------------------------------------------
+draft_quality_ok() { # $1 draft  $2 task(title+description)  $3 repo root (may be empty)
+  local draft="$1" task="$2" repo="$3"
+  python3 -c 'import json,sys; print(json.dumps({"draft":sys.argv[1],"task":sys.argv[2],"repo":sys.argv[3]}))' \
+      "$draft" "$task" "$repo" \
+    | python3 "$HERE/draft-quality-gate.py"
+}
+
 # advisory_draft: stdin = local-llm-rag.sh stdout from an exit-9 run. Prints the draft comment body
 # (ONLINE-review header + draft) when stdout is an advisory envelope with a non-empty draft, else
 # nothing. Pure, so --test-advisory-draft exercises the exact code try_leaf uses.
@@ -487,9 +971,70 @@ draft_comment_body() { # $1 = leaf_title, $2 = content, $3 = synthetic ("true"/"
 ' "$review_header" "$leaf_title" "$content"
 }
 
+# DRAFT FILE SINK (card 21fbc293, Gemini-orch 2/4 of cf757409, decision B): while the Gemini
+# orchestrator drives this card-by-card (OFFLOAD_DRAFT_SINK=file), the draft text never lands in a
+# kanban comment -- it goes to disk under DRAFTS_DIR/<cardId>/, and the card gets only a short
+# referencing comment. Default (unset/anything else) keeps the existing full-comment behavior
+# unchanged -- this is purely additive, not a replacement of post_draft_comment's normal path.
+DRAFTS_DIR="${OFFLOAD_DRAFTS_DIR:-$HERE/drafts}"
+
+# sanitize_path_component: a card id or leaf id becomes a directory/file NAME under DRAFTS_DIR when
+# the file sink is active -- never trust it as a literal path segment. Keeps [A-Za-z0-9_-] only;
+# everything else (including "." and "/", which together make ".." traversal and absolute-path
+# escapes impossible) becomes "_".
+sanitize_path_component() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '_'
+}
+
+# write_draft_to_file: writes $3 (the full comment body text, same shape draft_comment_body would
+# have produced) under DRAFTS_DIR/<safe cardId>/, named by timestamp + safe leaf id so multiple
+# leaves/decompose-fragments of the same card never collide. Prints the path RELATIVE to $HERE (so
+# the referencing comment never leaks an absolute filesystem path). $1=post_id (real card id,
+# directory) $2=leaf_id (true leaf, for filename uniqueness) $3=body.
+write_draft_to_file() {
+  local post_id="$1" leaf_id="$2" body="$3"
+  local safe_card; safe_card="$(sanitize_path_component "$post_id")"
+  local safe_leaf; safe_leaf="$(sanitize_path_component "$leaf_id")"
+  local dir="$DRAFTS_DIR/$safe_card"
+  mkdir -p "$dir"
+  local path="$dir/$(date +%s)-$safe_leaf.md"
+  printf '%s' "$body" > "$path"
+  chmod 600 "$path"
+  # Relative to DRAFTS_DIR's OWN parent (not hardcoded to $HERE): in production DRAFTS_DIR is
+  # $HERE/drafts, so this prints "drafts/<card>/<file>" exactly as before -- but a test (or a
+  # future config) pointing OFFLOAD_DRAFTS_DIR somewhere else still gets a correctly-relative,
+  # never-absolute path instead of silently falling back to the full filesystem path.
+  local drafts_parent; drafts_parent="$(dirname "$DRAFTS_DIR")"
+  printf '%s' "${path#"$drafts_parent"/}"
+}
+
+# draft_file_ref_comment_body: same Draft-Review instruction contract as draft_comment_body (card
+# 1338e68b) -- the review marker is still mandatory before the card can move to waiting -- but
+# points at the file instead of embedding the draft text on the card. Pure (no network), so
+# --test-draft-file-ref-comment-body can exercise the exact text a real file-sink run posts.
+draft_file_ref_comment_body() { # $1=leaf_title $2=relative draft path $3=synthetic
+  local leaf_title="$1" draft_path="$2" synthetic="${3:-false}"
+  local review_header=""
+  if [[ "$synthetic" == "true" ]]; then
+    review_header="MECHANIKUS RESZFELADAT (card 501c489f) egy olyan kartyabol, aminek a DONTESI resze online marad -- KOTELEZO A TELJES, FUGGETLEN ONLINE FELULVIZSGALAT, ne csak a draft belsejet nezd, hanem azt is, mi HIANYZIK belole a kartya teljes specifikaciojahoz kepest.
+
+"
+  fi
+  printf '%s[LOCAL-LLM DRAFT | dispatch-offload, Gemini-orch] Helyi (7B) draft keszult, de a szovege NEM a kartyan van -- a Gemini-orchestrator mod alatt (kartya 21fbc293, cf757409 dontes B) a draft fajlban marad: %s. DRAFT-ONLY: a kvota visszaterese utan a felelos agent olvassa el a fajlt es integralja, ne irja ujra Claude-dal. AMIKOR VEGEZTEL VELE, tegyel a kartyara egy sort (sor elejen): '"'"'Draft-Review: ELFOGADVA'"'"' / '"'"'RESZBEN'"'"' / '"'"'ELUTASITVA'"'"' / '"'"'FELESLEGES'"'"' -- e nelkul a kartya nem mehet waiting-be (card 1338e68b).
+
+#### %s
+' "$review_header" "$draft_path" "$leaf_title"
+}
+
 # --- test hooks (no network/token/lock needed) ---------------------------------------------------
 # --test-resolve: feed a kanban-list JSON fixture on stdin, CARD via env; prints the resolved leaves.
 # --test-attempts-op OP LEAF [--file PATH]: exercises the attempts state machine against a scratch file.
+# --test-quality-gate DRAFT TASK [REPO]: the exact wiring try_leaf() uses before posting a draft
+# (card d39fc5e7, requirement 2), no network/token/lock needed.
+if [[ "${1:-}" == "--test-quality-gate" ]]; then
+  draft_quality_ok "${2-}" "${3-}" "${4-}"
+  exit 0
+fi
 if [[ "${1:-}" == "--test-advisory-draft" ]]; then
   advisory_draft
   exit 0
@@ -498,6 +1043,25 @@ fi
 # no network (card 501c489f).
 if [[ "${1:-}" == "--test-draft-comment-body" ]]; then
   draft_comment_body "${2-}" "${3-}" "${4-false}"
+  exit 0
+fi
+# --test-draft-file-ref-comment-body TITLE PATH [SYNTHETIC]: the exact referencing-comment text a
+# real file-sink draft posts, no network (card 21fbc293).
+if [[ "${1:-}" == "--test-draft-file-ref-comment-body" ]]; then
+  draft_file_ref_comment_body "${2-}" "${3-}" "${4-false}"
+  exit 0
+fi
+# --test-write-draft-to-file POST_ID LEAF_ID BODY: exercises the exact file-write+sanitize code the
+# real file-sink path uses, no network (card 21fbc293). Honors OFFLOAD_DRAFTS_DIR so a test can
+# point this at a scratch directory instead of the real store/drafts/.
+if [[ "${1:-}" == "--test-write-draft-to-file" ]]; then
+  write_draft_to_file "${2-}" "${3-}" "${4-}"
+  exit 0
+fi
+# --test-sanitize-path-component INPUT: the exact sanitizer the file-sink path uses to turn a card
+# id or leaf id into a filesystem-safe name (card 21fbc293).
+if [[ "${1:-}" == "--test-sanitize-path-component" ]]; then
+  sanitize_path_component "${2-}"
   exit 0
 fi
 if [[ "${1:-}" == "--test-resolve" ]]; then
@@ -526,18 +1090,62 @@ if [[ "${1:-}" == "--test-attempts-op" ]]; then
   exit 0
 fi
 
+# --check-blocked PROJECT TAGS [TITLE [DESC]]: exposes is_gemini_blocked to external callers (card
+# 23a14c4b, WhiteHat F1 NO-GO comment 17666) so a single vocabulary/normalization serves both this
+# script's own dispatch path and any other caller -- no second copy of the sensitive-word list to
+# drift out of sync, which is exactly how F1 happened (the TS port missed the permission/access/
+# szemelyes/hozzaferes stems and the non-ASCII strip).
+#
+# N1 (RedHat 17825/17831): exit code is a DISTINCT sentinel (42), not plain 1. is_gemini_blocked's
+# OWN return convention (0=blocked, 1=allowed) exists only because `return` is capped to 0-255 and
+# `[[ rc -eq 42 ]]` inside the function already re-derives it from the Python ALLOWED_RC sentinel --
+# but re-exposing that as a bare "exit 1" here recreates the exact bug ALLOWED_RC was invented to
+# fix one layer up: bash's own generic error code is ALSO 1 (a BASH_ENV picked up from the caller's
+# environment, an unset-variable trip under `set -u`, any uncaught shell failure), so a caller that
+# reads "exit 1 = allowed" cannot tell a deliberate allow from an accidental crash. Measured (RedHat
+# PoC): a BASH_ENV file that merely runs `exit 1` turns a BLOCKED title into an apparent ALLOWED
+# through this exact wrapper. Exit 42 for allowed, exit 0 for every other outcome (blocked OR any
+# failure) closes that -- the caller must check for EXACTLY 42, not "not blocked".
+if [[ "${1:-}" == "--check-blocked" ]]; then
+  shift
+  if is_gemini_blocked "${1:-}" "${2:-}" "${3:-}" "${4:-}"; then
+    exit 0  # is_gemini_blocked returned 0 (bash-true) -- BLOCKED
+  fi
+  exit 42  # is_gemini_blocked returned 1 (bash-false) -- the ONE deliberate ALLOWED outcome
+fi
+
 CARD="${1:-}"
 [[ -z "$CARD" ]] && { echo "usage: offload-dispatch.sh <cardId> [assignee]" >&2; exit 2; }
+
+# MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01, Peti Telegram 10951), checked before even the
+# INSTALLED gate below -- same ordering principle (cheapest, most authoritative gate first).
+# EXCEPTION (card a92e9913): when route=gemini the fleet is in quota-stop and needs drafts -- the
+# local-first-draft master switch only controls the LOCAL model path, not the Gemini path.
+# shellcheck source=./local-first-draft-check.sh
+. "$HERE/local-first-draft-check.sh"
+if ! local_first_draft_enabled; then
+  if [[ "$GEMINI_ROUTE" != "gemini" ]]; then
+    echo "offload-dispatch: SKIPPED -- local-first-draft is OFF (dashboard switch). Nothing was drafted; the card is untouched and goes online as usual." >&2
+    exit 0
+  fi
+  echo "offload-dispatch: local-first-draft is OFF, but route=gemini -- continuing for Gemini path." >&2
+fi
 
 # INSTALLED GATE (Peti Telegram 8928, 2026-09-19): "ha nincs telepitve local-llm akkor ez az ag el se
 # induljon". Same network-free precheck as card-build-route.sh's 0a and self-advance-pickup.sh's
 # step 0 -- a host with no local runtime at all should never take the per-card lock below, resolve
 # leaves, or touch offload-attempts.json for a call that can only end in "nothing drafted". Exits 0,
 # same as every other best-effort skip in this script (VRAM-busy included).
+# EXCEPTION (card a92e9913): when route=gemini and local LLM is not installed, Gemini still runs.
 INSTALLED="${OFFLOAD_INSTALLED:-$HERE/local-llm-installed.sh}"
+LOCAL_LLM_AVAILABLE=1
 if ! bash "$INSTALLED" >/dev/null 2>&1; then
-  echo "offload-dispatch: SKIPPED -- local-llm: not installed, branch skipped. Nothing was drafted; the card is untouched and goes online as usual." >&2
-  exit 0
+  if [[ "$GEMINI_ROUTE" != "gemini" ]]; then
+    echo "offload-dispatch: SKIPPED -- local-llm: not installed, branch skipped. Nothing was drafted; the card is untouched and goes online as usual." >&2
+    exit 0
+  fi
+  LOCAL_LLM_AVAILABLE=0
+  echo "offload-dispatch: local-llm not installed, but route=gemini -- local path skipped, Gemini path continues." >&2
 fi
 
 # PER-CARD IN-FLIGHT LOCK (2026-08-07). Prevents a duplicate concurrent run for the SAME $CARD argument
@@ -595,8 +1203,20 @@ graph_args_for() {
 
 post_draft_comment() {
   # $4 = synthetic ("true"/"false", optional), forwarded to draft_comment_body.
-  local leaf_id="$1" leaf_title="$2" content="$3" synthetic="${4:-false}"
+  # $5 = the TRUE leaf id (card 21fbc293): for a synthetic (decomposed) leaf, $1/post_id is always
+  # the real card id (see the "TWO IDS, DELIBERATELY SEPARATE" comment on try_leaf above), so the
+  # file sink below needs this separately to keep multiple fragments' files from colliding. Falls
+  # back to $1 for any caller that does not pass it (none inside this file currently, but a future
+  # one should not silently break).
+  local leaf_id="$1" leaf_title="$2" content="$3" synthetic="${4:-false}" orig_leaf_id="${5:-$1}"
   local body; body="$(draft_comment_body "$leaf_title" "$content" "$synthetic")"
+  # FILE SINK (card 21fbc293, Gemini-orch 2/4, decision B): while the Gemini orchestrator drives
+  # this card-by-card, the draft never lands in the comment itself -- only a short reference to
+  # where it landed on disk.
+  if [[ "${OFFLOAD_DRAFT_SINK:-comment}" == "file" ]]; then
+    local rel_path; rel_path="$(write_draft_to_file "$leaf_id" "$orig_leaf_id" "$body")"
+    body="$(draft_file_ref_comment_body "$leaf_title" "$rel_path" "$synthetic")"
+  fi
   curl -s -X POST "$DASH/api/kanban/$leaf_id/comments" -H "Content-Type: application/json" -H @"$hdr_file" \
     -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$body")" >/dev/null 2>&1
 }
@@ -622,8 +1242,41 @@ try_leaf() {
 
 $leaf_desc"
 
+  # GEMINI ROUTE, LOCAL LLM NOT AVAILABLE (card a92e9913): skip the RAG call entirely.
+  if [[ "$GEMINI_ROUTE" == "gemini" && "${LOCAL_LLM_AVAILABLE:-1}" -eq 0 ]]; then
+    if gemini_route_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc"; then
+      try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
+    else
+      echo "offload-dispatch: leaf $leaf_id -> gemini blocked (project=$leaf_project)" >&2
+    fi
+    return 1
+  fi
+
   local repo; repo="$(graph_repo_for "$leaf_project")"
   local graph=(); mapfile -t graph < <(graph_args_for "$task" "$repo")
+
+  # SAMPLE-CONTEXT REQUIREMENT (card d39fc5e7, requirement 1): a synthetic (decomposed) leaf's own
+  # text is a GENERIC templated sentence (card-decompose-templates.sh), not a real spec -- the
+  # measured failure mode is a BLIND draft with nothing real to copy a house style from (e.g. an
+  # Express/supertest test scaffold on a repo that uses raw handlers, card 825d7657). So for the
+  # four typed fragments, find ONE real, nearest sample file and fold it in as extra context; if
+  # none exists, do not call the model at all -- a template sentence with no anchor is exactly the
+  # blind-draft shape this exists to prevent. A REAL (non-synthetic) leaf already carries its own
+  # full card text and ancestor context, so this only applies when a type is recoverable from the
+  # leaf id's "$realCardId~$type" suffix (synthetic leaves only, card 501c489f's own id shape).
+  local dtype=""
+  [[ "$synthetic" == "true" && "$leaf_id" == *"~"* ]] && dtype="${leaf_id##*~}"
+  if [[ -n "$dtype" ]]; then
+    local sample; sample="$(decompose_sample_context "$dtype" "$task" "$repo")"
+    if [[ -z "${sample// }" ]]; then
+      echo "offload-dispatch: leaf $leaf_id -> NO-SAMPLE for type '$dtype' (no real file in '$repo' to anchor the draft on), skipping" >&2
+      attempts_op no-sample "$leaf_id" >/dev/null
+      return 1
+    fi
+    parent_ctx="${parent_ctx:+$parent_ctx
+
+}$sample"
+  fi
 
   local out rc
   out="$("$RAG" --auto --agent "$leaf_assignee" --source dispatch-offload --log-task subtask-draft \
@@ -632,8 +1285,18 @@ $leaf_desc"
   rc=$?
 
   if [[ $rc -eq 0 && -n "${out// }" ]]; then
+    # QUALITY GATE (card d39fc5e7, requirement 2): deterministic, no model call. A failing draft
+    # posts NOTHING -- the whole point is that a bad draft must not cost anyone an online
+    # Draft-Review adjudication -- and counts as a transient failure so it still counts toward the
+    # existing 2-strikes ceiling instead of being retried forever on an unchanging verdict.
+    local qverdict; qverdict="$(draft_quality_ok "$out" "$task" "$repo")"
+    if [[ "$qverdict" != OK* ]]; then
+      echo "offload-dispatch: leaf $leaf_id -> draft FAILED the quality gate (${qverdict#FAIL$'\t'}), no comment posted" >&2
+      attempts_op transient-fail "$leaf_id" >/dev/null
+      return 1
+    fi
     attempts_op success "$leaf_id" >/dev/null
-    post_draft_comment "$post_id" "$leaf_title" "$out" "$synthetic"
+    post_draft_comment "$post_id" "$leaf_title" "$out" "$synthetic" "$leaf_id"
     nudge_leaf_owner "$post_id" "$leaf_assignee_raw" draft || true
     echo "offload-dispatch: leaf $leaf_id -> posted local draft"
     return 0
@@ -647,20 +1310,33 @@ $leaf_desc"
     local adv_draft
     adv_draft="$(printf '%s' "$out" | advisory_draft)"
     if [[ -n "${adv_draft// }" ]]; then
+      local qverdict2; qverdict2="$(draft_quality_ok "$adv_draft" "$task" "$repo")"
+      if [[ "$qverdict2" != OK* ]]; then
+        echo "offload-dispatch: leaf $leaf_id -> advisory draft FAILED the quality gate (${qverdict2#FAIL$'\t'}), no comment posted" >&2
+        attempts_op categorical-online "$leaf_id" >/dev/null
+        return 1
+      fi
       attempts_op success "$leaf_id" >/dev/null
-      post_draft_comment "$post_id" "$leaf_title" "$adv_draft" "$synthetic"
+      post_draft_comment "$post_id" "$leaf_title" "$adv_draft" "$synthetic" "$leaf_id"
       nudge_leaf_owner "$post_id" "$leaf_assignee_raw" draft || true
       echo "offload-dispatch: leaf $leaf_id -> posted local draft (advisory, route stays online)"
       return 0
     fi
     attempts_op categorical-online "$leaf_id" >/dev/null
     echo "offload-dispatch: leaf $leaf_id -> categorical online (router decision), no retry" >&2
+    # F1d (WhiteHat2, card a92e9913): categorical-online leaves NEVER go to Gemini.
+    # The router already classified this card as auth/security/multi-file -- sending it to an
+    # external API would discard that verdict.  No Gemini fallback here.
     return 1
   else
     entry="$(attempts_op transient-fail "$leaf_id")"
     local n; n="$(printf '%s' "$entry" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("attempts",0))' 2>/dev/null)"
     echo "offload-dispatch: leaf $leaf_id -> local attempt failed (rc=$rc), attempt ${n:-?}/$OFFLOAD_LEAF_MAX_ATTEMPTS" >&2
     if [[ "${n:-0}" -ge "$OFFLOAD_LEAF_MAX_ATTEMPTS" ]]; then
+      # GEMINI FALLBACK when local LLM is exhausted (card a92e9913): try Gemini before giving up.
+      if [[ "$GEMINI_ROUTE" == "gemini" ]] && gemini_route_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc"; then
+        try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
+      fi
       post_exhausted_notice "$post_id"
       nudge_leaf_owner "$post_id" "$leaf_assignee_raw" exhausted || true
     fi

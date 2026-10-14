@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { hardRestartMarveenChannels } from './channel-monitor.js'
@@ -13,6 +13,7 @@ import {
   isValidModelId,
   InvalidModelIdError,
   DEFAULT_MODEL,
+  readJsonObjectForWrite,
 } from './agent-config.js'
 import {
   agentRunState,
@@ -29,6 +30,7 @@ import {
   buildAgentTierRows,
   decideParkedModelUpdate,
   applyNoHaikuFloor,
+  isModelPinned,
   type AgentTierRow,
 } from '../model-catalog.js'
 import {
@@ -71,8 +73,61 @@ const downgradedAt = new Map<string, number>()
 let weeklyTier = 0
 
 const MAIN_SETTINGS_PATH = join(PROJECT_ROOT, '.claude', 'settings.json')
+const MAIN_ENV_PATH = join(PROJECT_ROOT, '.env')
+
+// The main agent's model does NOT live in one place, and writing the wrong one
+// is silent. scripts/channels.sh resolves it as: MAIN_AGENT_MODEL from .env
+// (per-install, gitignored) WINS over .claude/settings.json (tracked). That
+// precedence exists on purpose -- editing the tracked file dirties the tree,
+// blocks the update preflight's clean-tree check, and gets reverted by the next
+// update.
+//
+// This runner used to write settings.json unconditionally. Measured 2026-09-11
+// 13:17: it logged a downgrade of the main agent, wrote "model":"claude-sonnet-5"
+// into the tracked settings.json, restarted -- and the process came back on
+// claude-opus-5[1m], because .env won. So the main agent was NOT protected at
+// all (a real limit would have left it deaf rather than downgraded), the tracked
+// file was left dirty, and every status surface still named the old model.
+//
+// Both accessors below now follow the launch path's precedence, so what we read
+// and write is what the next launch will actually use.
+function mainEnvModel(): string | null {
+  try {
+    const line = readFileSync(MAIN_ENV_PATH, 'utf-8')
+      .split('\n')
+      .reverse()
+      .find((l) => /^\s*MAIN_AGENT_MODEL\s*=/.test(l))
+    if (!line) return null
+    const v = line.slice(line.indexOf('=') + 1).trim().replace(/^["']|["']$/g, '')
+    // An EMPTY MAIN_AGENT_MODEL deliberately does not shadow settings.json --
+    // channels.sh has the same rule (scripts/__tests__/channels-main-model.test.sh).
+    return v.length > 0 ? v : null
+  } catch {
+    return null
+  }
+}
+
+function writeMainEnvModel(model: string): boolean {
+  let raw: string
+  try { raw = readFileSync(MAIN_ENV_PATH, 'utf-8') } catch { return false }
+  const lines = raw.split('\n')
+  let idx = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^\s*MAIN_AGENT_MODEL\s*=/.test(lines[i] as string)) { idx = i; break }
+  }
+  if (idx < 0) return false
+  lines[idx] = `MAIN_AGENT_MODEL=${model}`
+  // .env holds secrets: keep its current mode. The atomic write creates a new
+  // file, which would otherwise come out at the umask default (0644).
+  let mode = 0o600
+  try { mode = statSync(MAIN_ENV_PATH).mode & 0o777 } catch { /* keep 0600 */ }
+  atomicWriteFileSync(MAIN_ENV_PATH, lines.join('\n'), { mode })
+  return true
+}
 
 function readMainModel(): string {
+  const fromEnv = mainEnvModel()
+  if (fromEnv) return resolveModelId(fromEnv)
   try {
     const cfg = JSON.parse(readFileSync(MAIN_SETTINGS_PATH, 'utf-8'))
     return resolveModelId((cfg && typeof cfg.model === 'string' && cfg.model) || DEFAULT_MODEL)
@@ -86,8 +141,15 @@ function writeMainModel(model: string): void {
   // code path to a persisted model id may bypass the allowlist, even though this one only reaches
   // .claude/settings.json (not a shell sink) and today only receives already-validated ramp values.
   if (!isValidModelId(model)) throw new InvalidModelIdError(model)
-  let cfg: Record<string, unknown> = {}
-  try { cfg = JSON.parse(readFileSync(MAIN_SETTINGS_PATH, 'utf-8')) } catch {}
+  // Write where the launch will read. Only fall through to the tracked
+  // settings.json when .env has no MAIN_AGENT_MODEL to honour -- otherwise the
+  // write is a no-op the next launch ignores.
+  if (mainEnvModel() && writeMainEnvModel(model)) return
+  // JSONCLOBBER926: the main agent's settings.json is the most valuable file
+  // in the install; an existing but corrupt copy is refused, not reset to
+  // {model}. The refusal lands in the runner's catch as a warn and the
+  // switch is skipped, which is the right outcome.
+  const cfg: Record<string, unknown> = readJsonObjectForWrite(MAIN_SETTINGS_PATH)
   cfg.model = model
   atomicWriteFileSync(MAIN_SETTINGS_PATH, JSON.stringify(cfg, null, 2))
 }
@@ -95,6 +157,9 @@ function writeMainModel(model: string): void {
 function readModelFor(name: string): string {
   return name === MAIN_AGENT_ID ? readMainModel() : readAgentModel(name)
 }
+
+// Test seam (review follow-up): the .env precedence must be measurable.
+export const _mainModelIoForTest = { readMainModel, writeMainModel }
 
 function writeModelFor(name: string, model: string): void {
   if (name === MAIN_AGENT_ID) writeMainModel(model)
@@ -155,6 +220,9 @@ export async function restartFor(name: string, opts: { fresh: boolean }): Promis
  * no banner axis, and a write instead of a write+restart.
  */
 function updateStoredModelForParkedAgent(name: string, weeklyIdx: number): void {
+  // Pinned agents (card d8d035f8, Peti 11011): hold whatever model they are on, park/start cycle
+  // included -- the weekly ramp must never touch them, not even via the no-live-session path.
+  if (isModelPinned(name)) return
   const currentModel = readModelFor(name)
   const agentTier = Math.max(0, weeklyIdx)
   // The model-CHOICE decision is a pure function (model-catalog.ts, card a115cd7f): it also enforces
@@ -210,6 +278,11 @@ export function resolveTargetModel(agentName: string, bannerModel: string, weekl
 }
 
 async function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig, weeklyIdx: number): Promise<void> {
+  // Pinned agents (card d8d035f8, Peti 11011, Telegram): exempt from BOTH axes -- the banner-fallback
+  // (5h-limit downgrade/revert) and the weekly tier. Checked before anything else so neither axis ever
+  // computes a target for them, running or parked.
+  if (isModelPinned(name)) return
+
   // A PARKED sub-agent has no live pane, so the banner axis (which needs to read a usage-limit
   // banner and restart a running session) cannot apply -- but the WEEKLY tier still must update its
   // STORED model, or a park/start cycle silently exempts it from the whole ramp: it would start back
@@ -324,7 +397,8 @@ async function checkAgent(name: string, nowMs: number, cfg: ModelFallbackConfig,
  * The read-only per-agent tier state the dashboard renders (card 5d2002b5 redesign, point 4).
  * Recomputes the fleet tier from the live weekly % (seeded with the in-memory tier so the hysteresis
  * matches what the sweep will do), then, for every agent, reports its DURABLE base, its actual current
- * model, and where the ramp targets it from its OWN base. mikrob-channels (MAIN) is exempt.
+ * model, and where the ramp targets it from its OWN base. mikrob-channels (MAIN) is exempt, and so is
+ * any MODEL_PINNED_AGENTS member (card d8d035f8).
  *
  * The base shown is the durable baseline when the agent has been stepped down, else its current model
  * (never stepped => it IS its own base). No IO beyond reading the same files the sweep reads.
@@ -347,7 +421,7 @@ export function readFleetTierState(): {
     rows.push({ name, baseModel, currentModel, exempt })
   }
   collect(MAIN_AGENT_ID, true)
-  for (const name of listAgentNames()) collect(name, false)
+  for (const name of listAgentNames()) collect(name, isModelPinned(name))
 
   return {
     weeklyTierEnabled: cfg.weeklyTierEnabled,

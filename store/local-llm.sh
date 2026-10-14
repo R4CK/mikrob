@@ -265,6 +265,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# MASTER LOCAL-FIRST-DRAFT SWITCH (card d57d8a01, Peti Telegram 10951) -- the card's own acceptance
+# criterion is that every local-first entry point reads this flag AS ITS FIRST STEP. Checked here,
+# before ANY model resolution (route_model_for_task/read_model below), not just before the VRAM
+# guard: read_model() dies loudly on a missing model config (by design, see its own comment), and on
+# a host where no model has ever been configured yet that die would fire BEFORE the switch was ever
+# consulted -- the caller would see "no model configured" instead of "this call belongs online",
+# which is the wrong answer when the switch is simply off. Only gates `generate` (the mode that
+# actually dispatches to the local model); --health/--list are diagnostics, not drafts, and stay
+# unaffected. Missing helper -> skipped, same direction as every other "missing guard" case in this
+# file.
+if [[ "$MODE" == "generate" ]] && [[ -f "$HERE/local-first-draft-check.sh" ]]; then
+  . "$HERE/local-first-draft-check.sh"
+  if ! local_first_draft_enabled; then
+    echo "local-llm: local-first-draft is OFF (dashboard switch) -- this call belongs online" >&2
+    exit 9
+  fi
+fi
 
 # PER-TASK MODEL ROUTING (card baf1b1b0, Peti kerese 2026-09-02): explicit --model always wins
 # (checked first, below); otherwise, if --task names a template with an entry in
@@ -359,6 +376,18 @@ if [[ "$MODE" == "generate" ]]; then
       echo "local-llm: ${vram_line:-no output from the vram guard} (rc=$vram_rc) -- this call belongs online" >&2
       exit 6
     fi
+  else
+    # Card 234306ca Cybersec F1 (Gate-SHA 9b7c73ae): a MISSING guard at the default path (e.g. after
+    # a rename/rebrand of vram-guard-check.sh or its directory) used to fall straight through here
+    # with no trace at all -- every test still went green (4/4, 19/19) because they all pass their
+    # own LOCAL_LLM_VRAM_GUARD override, so none of them ever exercised the real default path.
+    # DECISION (recorded in DECISIONS.md, this card): warn-and-continue, not fail-closed. Flipping
+    # this to fail-closed would contradict local-llm-vram-choke-point.test.ts's own, deliberately
+    # pinned "a MISSING guard binary does not block generate (fail-open on absence, matching every
+    # dispatcher)" case -- the choke point's whole purpose is a defense-in-depth BACKSTOP behind each
+    # dispatcher's own direct vram-guard-check.sh call, not a second, stricter gate with its own
+    # failure mode. The fix is making the silence visible, not changing what it decides.
+    echo "local-llm: vram guard not found at '$VRAM_GUARD' -- VRAM choke-point skipped, call proceeds unchecked (set LOCAL_LLM_VRAM_GUARD if it moved)" >&2
   fi
   case "$(model_switch_state "$MODEL")" in
     DISABLED)

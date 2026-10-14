@@ -87,15 +87,11 @@ describe('a display name can sanitize straight INTO the reserved id', () => {
     expect(isReservedSenderId('System-Directive')).toBe(true)
   })
 
-  // MEASURED, and it surprised the author of this file: sanitizeAgentName DELETES a space
-  // (`[^a-z0-9-]` is removed, not replaced), so a space-separated display name does not reach the
-  // reserved id at all -- `System Directive` becomes `systemdirective`. Recorded rather than
-  // assumed, because the natural assumption is the opposite. It is also why the guard belongs on
-  // the sanitized value: should anyone ever change spaces to map to hyphens, this spelling starts
-  // reaching the reserved id and the guard catches it with no further change.
-  it('a SPACE-separated form does not reach the reserved id today', () => {
-    expect(sanitizeAgentName('System Directive')).toBe('systemdirective')
-    expect(isReservedSenderId('systemdirective')).toBe(false)
+  // Card 39b36369 changed sanitizeAgentName to map spaces to hyphens, so a space-separated
+  // display name now reaches the reserved id. The guard on the sanitized value catches it.
+  it('a SPACE-separated form now sanitizes to the reserved id (guard catches it)', () => {
+    expect(sanitizeAgentName('System Directive')).toBe('system-directive')
+    expect(isReservedSenderId('system-directive')).toBe(true)
   })
 
   it('does not swallow ordinary agent names', () => {
