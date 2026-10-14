@@ -147,6 +147,7 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   // upstream commit, so any local edit -- including a real secret added later -- shows up there.
   { path: 'seed-fleet-agents/cybersec/.claude/skills/testing-api-for-broken-object-level-authorization/SKILL.md', reason: 'vendored upstream skill (card da47b612): JWT-shaped doc placeholders (bare header + "..."), content pinned by vendored-skill-integrity.py' },
   { path: 'seed-fleet-agents/cybered/.claude/skills/testing-api-for-broken-object-level-authorization/SKILL.md', reason: 'vendored upstream skill (card da47b612): JWT-shaped doc placeholders (bare header + "..."), content pinned by vendored-skill-integrity.py' },
+  { path: 'seed-fleet-agents/cybersec2/.claude/skills/testing-api-for-broken-object-level-authorization/SKILL.md', reason: 'vendored upstream skill (card da47b612, carried into cybersec2 seed by card 376ed33e sibling-parity sync): JWT-shaped doc placeholders (bare header + "..."), content pinned by vendored-skill-integrity.py' },
   // MIOCLISKILL831 -- a `marveen skill` szkennerenek fixture-jei. A fajl
   // TARGYA egy kulcs-alaku string: a mio-scan `api-key-shaped` szabalyanak
   // kell valamin tuznie, es az aranyfajl ugyanazt a szoveget tartalmazza,
