@@ -1101,4 +1101,118 @@ describe('gateCompletenessGuardVerdict', () => {
     })
   })
 
+  // Card e20066df (WhiteHat2 F1, non-blocking finding on 9ce3181c's own CYBERSEC GO): the round
+  // boundary used `currentRoundStartTs(...) ?? latestReviewAt(...)` -- latestReviewAt was ONLY ever
+  // consulted when currentRoundStartTs returned null. A SECOND builder hand-off that forgets the
+  // (optional) Gate-SHA line introduces no new sha for currentRoundStartTs to anchor on, so the
+  // boundary stayed stuck at the FIRST round's sha and an old verdict from before the second
+  // hand-off kept reading as fresh. Fix: the boundary is the LATER of the two signals.
+  describe('F1 (card e20066df): a second hand-off with no Gate-SHA line must still move the boundary past an old verdict', () => {
+    it('reproduces the finding: QA PASS predates a later Gate-SHA-less REVIEW asking for a re-check -- must go stale', () => {
+      card.description = 'Gate: QA'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: aaa111', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: aaa111', created_at: 150 },
+        // Non-compliant with CLAUDE.md 4b (no Gate-SHA line) but real: a second hand-off asking for
+        // another look. currentRoundStartTs alone never moves (no new sha cited) -- before the fix
+        // this left sinceTs stuck at t=100, and QA's t=150 PASS kept reading as fresh forever.
+        { author: 'backend2', content: 'REVIEW -- meg egy apro fix, nezzetek at ujra', created_at: 200 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA')
+    })
+
+    it('CONTROL: a fresh QA PASS AFTER the Gate-SHA-less second hand-off still satisfies the requirement', () => {
+      card.description = 'Gate: QA'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: aaa111', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: aaa111', created_at: 150 },
+        { author: 'backend2', content: 'REVIEW -- meg egy apro fix, nezzetek at ujra', created_at: 200 },
+        { author: 'qa', content: 'REVIEW: QA PASS @ ujranezve', created_at: 250 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+  })
+
+  // Card e20066df (WhiteHat2 F2, non-blocking): GATE_AGENT_NAMES must list EVERY gate-role author,
+  // not just the canonical qa/cybersec/cybered spellings -- the ROUND-5 protection ("a gate's own
+  // Gate-SHA citation must not open a new round", tested above for qa/cybersec) is keyed entirely
+  // off this set. Dropping qa2, cybersec2 or cybered from it individually left the suite green
+  // because no existing test exercised THOSE three specific authors in the gate-only-citer role.
+  describe('F2 (card e20066df): GATE_AGENT_NAMES completeness -- qa2/cybersec2/cybered must each individually trip the gate-only-citer protection', () => {
+    it('qa2 citing a sha ALONE (no non-gate confirmation) must not open/confirm a round', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: 7132429b', created_at: 100 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 7132429b', created_at: 200 },
+        // qa2's own verdict restates the round sha AND introduces a second one nobody else ever
+        // cites -- if 'qa2' were missing from GATE_AGENT_NAMES, this citation would be treated as
+        // non-gate and wrongly open a new round at t=210.
+        { author: 'qa2', content: 'QA2 PASS\nGate-SHA: 7132429b, ad85d4cb', created_at: 210 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('cybersec2 citing a sha ALONE (no non-gate confirmation) must not open/confirm a round', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: 7132429b', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 7132429b', created_at: 200 },
+        { author: 'cybersec2', content: 'CYBERSEC2 GO\nGate-SHA: 7132429b, ad85d4cb', created_at: 210 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('cybered citing a sha ALONE (no non-gate confirmation) must not open/confirm a round', () => {
+      card.description = 'Gate: QA + Cybered'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: 7132429b', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 7132429b', created_at: 200 },
+        { author: 'cybered', content: 'CYBERED GO\nGate-SHA: 7132429b, ad85d4cb', created_at: 210 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+  })
+
+  // Card e20066df (WhiteHat2 F3, non-blocking): an entry FIRST introduced by a gate-only citation
+  // must still become confirmed once a LATER, non-gate comment restates the same (or a prefix-
+  // matching) sha -- the "widening" step (`if (isNonGate) entries[idx].nonGateConfirmed = true` on
+  // an existing entry, not just at creation). Dropping just that widening step left the suite green
+  // because no existing test built an entry gate-first-then-non-gate-confirmed while ALSO having an
+  // older, genuinely-stale verdict for the suite to wrongly un-stale.
+  describe('F3 (card e20066df): an entry opened by a gate-only citation must still confirm once a non-gate comment later restates it', () => {
+    it('a stale QA PASS from an earlier round must not be rescued by losing the later round\'s confirmation', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        // Round 1 (old, fully confirmed): establishes a floor entry so sinceTs is never null.
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: aaaaaaa9', created_at: 10 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: aaaaaaa9', created_at: 50 },
+        // Round 2 (the real current round): cybersec cites the NEW sha FIRST, alone (gate-only,
+        // unconfirmed at creation) -- then backend2 (non-gate) restates the SAME sha later. Without
+        // the widening step, this entry never becomes confirmed, so it is dropped from the Math.max
+        // entirely and the boundary falls back to round 1's older t=10, wrongly un-staling QA's PASS.
+        { author: 'cybersec', content: 'CYBERSEC GO (korai nezes)\nGate-SHA: ccccccc9', created_at: 100 },
+        { author: 'backend2', content: 'meg egyszer megneztem, uj build\nGate-SHA: ccccccc9', created_at: 150 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      // QA's t=50 PASS belongs to round 1 and must read as stale once round 2 (t=100, confirmed by
+      // the t=150 widening) exists -- Cybersec's t=100 GO is fresh for round 2, QA's is not.
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA')
+    })
+
+    it('CONTROL: the same shape, but QA ALSO verdicts after round 2 starts -> correctly unblocked', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: aaaaaaa9', created_at: 10 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: aaaaaaa9', created_at: 50 },
+        { author: 'cybersec', content: 'CYBERSEC GO (korai nezes)\nGate-SHA: ccccccc9', created_at: 100 },
+        { author: 'backend2', content: 'meg egyszer megneztem, uj build\nGate-SHA: ccccccc9', created_at: 150 },
+        { author: 'qa', content: 'REVIEW: QA PASS @ ujranezve\nGate-SHA: ccccccc9', created_at: 200 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+  })
+
 })
