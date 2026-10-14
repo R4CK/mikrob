@@ -157,6 +157,37 @@ else
   unset _p _missing CLAUDE_ARGV
 fi
 
+# (e) running main-agent carries the respawn-protective env vars (card d95f71c9
+# H3/point-4). Three respawn paths (channels.sh, channel-watchdog.sh,
+# stuck-modal-guard.sh) set these; a path that regresses leaves the running
+# process missing the key. Only the KEY NAMES are checked, never a value --
+# PATH is read by (c) above since it is not sensitive, but these three are
+# plain presence flags and there is no reason to read their contents either way.
+if [ -n "$CLAUDE_PID" ] && [ -r "/proc/$CLAUDE_PID/environ" ]; then
+  # L2 (WhiteHat2 NO-GO 17930): cut on the NUL record FIRST, THEN convert to
+  # newlines for grep -- the reverse order (tr then cut on '=') let a newline
+  # embedded in some OTHER var's VALUE forge a fake key line. cut -z keeps each
+  # record's key/value split anchored to the real NUL boundary, so an embedded
+  # newline in a value can never leak out as its own "line".
+  _keys="$(cut -z -d= -f1 < "/proc/$CLAUDE_PID/environ" | tr '\0' '\n')"
+  _missing=""
+  # F2 (WhiteHat2 NO-GO 17930, measured live on pid 855): these are the MCP_*
+  # tuning vars whose ABSENCE is the card's original symptom -- the three
+  # CLAUDE_CODE_* vars alone would read "OK" on a process missing exactly the
+  # thing d95f71c9 was about.
+  for _v in CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION CLAUDE_CODE_DISABLE_AGENT_VIEW MCP_SERVER_CONNECTION_BATCH_SIZE MCP_CONNECTION_NONBLOCKING MCP_TIMEOUT; do
+    echo "$_keys" | grep -qx "$_v" || _missing="$_missing $_v"
+  done
+  if [ -z "$_missing" ]; then
+    note "(e) OK: respawn-protective env vars present"
+  else
+    note "(e) FAIL: missing env var(s):$_missing -- a respawn path regressed"; fail=1
+  fi
+  unset _keys _missing _v
+else
+  note "(e) SKIP: cannot read /proc/$CLAUDE_PID/environ"
+fi
+
 if [ "$fail" -eq 0 ]; then
   echo "verify-channels-health: HEALTHY"
 else
