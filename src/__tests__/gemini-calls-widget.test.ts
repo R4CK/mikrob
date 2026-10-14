@@ -23,11 +23,11 @@
 //   - i18n parity: all geminiCalls.* and the two overview.gemini.* keys exist in both hu.js
 //     and en.js
 //   - CSS: page section classes, overview tile classes, responsive breakpoint
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildCallRows, type RawRow } from '../web/routes/gemini-calls.js'
+import { buildCallRows, buildSummary, type RawRow } from '../web/routes/gemini-calls.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const APP_GEMINI   = readFileSync(join(__dirname, '../../web/app-gemini-calls.js'), 'utf-8')
@@ -216,6 +216,70 @@ describe('gemini-calls: rating.score XSS regression (WhiteHat2 F1, card 57da740c
         new Function('escapeHtml', 't', 'rating', fnSrc + '\nreturn geminiRatingHtml(rating)')(escapeHtml, t, rating) as string
       const html = call({ result: 'elfogadva', score: 8, opinion: 'ok' })
       expect(html).toContain('8/10')
+    })
+  })
+})
+
+describe('gemini-calls: non-blocking hardening (card 13671607, WhiteHat2 findings on 57da740c)', () => {
+  describe('N1: buildCallRows does not throw on a non-callable-toString pont', () => {
+    const CALL_IDO = '2026-10-14T06:00:00.000Z'
+    function rowsFor(pont: unknown): ReturnType<typeof buildCallRows> {
+      const rows: RawRow[] = [
+        { tipus: 'hivas', ido: CALL_IDO, seged: 'agy' },
+        { tipus: 'ertekeles', hivas: CALL_IDO, eredmeny: 'elfogadva', pont: pont as unknown as number, velemeny: 'ok' },
+      ]
+      return buildCallRows(rows)
+    }
+
+    it('an object whose own toString is not a function does not throw -- score becomes null', () => {
+      // Number({toString: 1}) throws TypeError: coerceScore must never call Number() on a
+      // non-primitive, not just filter the result afterwards.
+      expect(() => rowsFor({ toString: 1 })).not.toThrow()
+      const rows = rowsFor({ toString: 1 })
+      expect(rows[0].rating!.score).toBeNull()
+    })
+
+    it('a genuine numeric pont still passes through unchanged', () => {
+      const rows = rowsFor(8)
+      expect(rows[0].rating!.score).toBe(8)
+    })
+  })
+
+  describe('N2: buildSummary does not pollute Object.prototype on a __proto__ model/taskType', () => {
+    afterEach(() => {
+      // Belt-and-suspenders: if a future regression reintroduces the pollution, fail loudly
+      // instead of leaking corrupted state into every other test in this process.
+      expect((Object.prototype as unknown as { calls?: unknown }).calls).toBeUndefined()
+    })
+
+    it('a __proto__ model key does not become reachable via Object.prototype', () => {
+      const protoBefore = (Object.prototype as unknown as { calls?: unknown }).calls
+      expect(protoBefore).toBeUndefined()
+
+      const summary = buildSummary([{ model: '__proto__', taskType: 'x', status: 'ok' }])
+
+      // Object.prototype itself must be untouched.
+      expect((Object.prototype as unknown as { calls?: unknown }).calls).toBeUndefined()
+      // The bucket is an OWN property on the returned plain object, not the object's prototype.
+      expect(Object.prototype.hasOwnProperty.call(summary.byModel, '__proto__')).toBe(true)
+      expect(summary.byModel['__proto__']).toEqual({ calls: 1, ok: 1, error: 0, blocked: 0 })
+    })
+
+    it('a __proto__ taskType key behaves the same way', () => {
+      const summary = buildSummary([{ model: 'm', taskType: '__proto__', status: 'error' }])
+      expect((Object.prototype as unknown as { ok?: unknown }).ok).toBeUndefined()
+      expect(summary.byTaskType['__proto__']).toEqual({ calls: 1, ok: 0, error: 1, blocked: 0 })
+    })
+
+    it('ordinary keys still aggregate correctly across multiple calls', () => {
+      const summary = buildSummary([
+        { model: 'gemini-pro', taskType: 'code', status: 'ok' },
+        { model: 'gemini-pro', taskType: 'code', status: 'error' },
+        { model: 'gemini-pro', taskType: 'review', status: 'blocked' },
+      ])
+      expect(summary.byModel['gemini-pro']).toEqual({ calls: 3, ok: 1, error: 1, blocked: 1 })
+      expect(summary.byTaskType['code']).toEqual({ calls: 2, ok: 1, error: 1, blocked: 0 })
+      expect(summary.byTaskType['review']).toEqual({ calls: 1, ok: 0, error: 0, blocked: 1 })
     })
   })
 })
