@@ -399,29 +399,65 @@ function extractGateShas(content: string, knownOtherCardIds: ReadonlySet<string>
 // prefix-containment, NOT by fixed truncation (which would collapse genuinely different commits
 // that happen to share the first N chars -- the CONTROL test in the test suite covers exactly that
 // failure mode).
+// ROUND-5 CORRECTION (card 9ce3181c, real incident 29609ec6): a GATE's OWN Gate-SHA citation used
+// to be able to OPEN a brand-new entry in `entries`, exactly like a builder hand-off could. QA's
+// verdict cited the fleet's "both commits" idiom ("Gate-SHA: 7132429b..., ad85d4cb" -- merge plus
+// the work-commit); ad85d4cb had never been cited by anyone else on the card, so QA's OWN comment
+// became that sha's first-ever introduction, and `Math.max` pulled the round boundary forward to
+// QA's verdict timestamp -- past Cybersec's genuinely fresh GO for the very same round, 94 seconds
+// earlier. The REVIEW_RX branch (latestReviewAt, above) already excludes GATE_AGENT_NAMES from
+// opening a round for exactly this reason ("Only a non-gate author can open a new round"); this
+// primary, sha-anchored mechanism never had the same author-based exclusion, because nothing about
+// citing a sha distinguishes "the builder is telling everyone the round changed" from "a gate is
+// restating which commit it looked at" -- until now.
+//
+// FIRST FIX ATTEMPT (rejected by the card's own mandatory pre-fix measurement): a strict two-pass
+// split -- entries built ONLY from non-gate comments, gate comments allowed to widen but never
+// introduce -- looked right but moved 11 verdicts from fresh to stale on the live board (0 is the
+// card's own go/no-go bar). The live case that broke it (card 0ded9d1e): the BUILDER's own REVIEW
+// never used the literal "Gate-SHA:" line at all (non-compliant with CLAUDE.md 4b, but real), so
+// QA's verdict comment was the FIRST ever properly-formatted citation of that commit -- under the
+// strict two-pass split, QA (a gate) could not "introduce" it, so the entry's start time fell
+// through to a LATER, purely-restating "Gate-SHA: <same sha>" line in a subsequent landing comment,
+// pushing the boundary past QA's own still-valid verdict for the unchanged commit.
+//
+// ACTUAL FIX: single pass, same entry-building as before (any comment, gate or not, can extend an
+// existing entry's ts/canonical-sha), but each entry also tracks whether ANY non-gate,
+// non-generated comment ever contributed to it. An entry with NO non-gate confirmation at all is
+// dropped before taking the max -- this is exactly "a gate citation alone cannot open a round" (the
+// ad85d4cb case: only QA ever cited it, so it is dropped entirely and never reaches Math.max), while
+// an entry a non-gate author DOES confirm keeps its true earliest ts regardless of which comment
+// (gate or not) happened to state it first (the 0ded9d1e case: QA's earlier citation and the
+// builder's later restatement are the SAME sha, so the entry survives with its original, earlier ts
+// -- no flip).
 function currentRoundStartTs(comments: readonly Comment[], knownOtherCardIds: ReadonlySet<string>): number | null {
-  // Pairs of (canonical sha, earliest introduction timestamp). "Canonical" prefers the longer
-  // (more specific) form; earlier timestamp wins.
-  const entries: Array<{ sha: string; ts: number }> = []
+  // Pairs of (canonical sha, earliest introduction timestamp, whether a non-gate author ever
+  // contributed). "Canonical" prefers the longer (more specific) form; earlier timestamp wins.
+  const entries: Array<{ sha: string; ts: number; nonGateConfirmed: boolean }> = []
 
   for (const c of comments) {
     // GENERATED_COMMENT_AUTHORS (card e7f91eb9): a local-llm draft's unescaped output can contain a
     // line that LOOKS like "Gate-SHA: <sha>" even though nobody declared that commit for this round
     // -- the same risk latestReviewAt() above guards against, applied to this (PRIMARY) boundary
     // mechanism, since it reads Gate-SHA lines from every comment with no author filter at all.
-    if (GENERATED_COMMENT_AUTHORS.has((c.author ?? '').toLowerCase())) continue
+    const author = (c.author ?? '').toLowerCase()
+    if (GENERATED_COMMENT_AUTHORS.has(author)) continue
+    const isNonGate = !GATE_AGENT_NAMES.has(author)
     for (const s of extractGateShas(c.content ?? '', knownOtherCardIds)) {
       const idx = entries.findIndex((e) => s.startsWith(e.sha) || e.sha.startsWith(s))
       if (idx === -1) {
-        entries.push({ sha: s, ts: c.created_at })
+        entries.push({ sha: s, ts: c.created_at, nonGateConfirmed: isNonGate })
       } else {
         if (s.length > entries[idx].sha.length) entries[idx].sha = s
         if (c.created_at < entries[idx].ts) entries[idx].ts = c.created_at
+        if (isNonGate) entries[idx].nonGateConfirmed = true
       }
     }
   }
-  if (entries.length === 0) return null
-  return Math.max(...entries.map((e) => e.ts))
+
+  const confirmed = entries.filter((e) => e.nonGateConfirmed)
+  if (confirmed.length === 0) return null
+  return Math.max(...confirmed.map((e) => e.ts))
 }
 
 // Card 2bfa4c67 (F2): the structured kanban_verdicts table is an ADDITIVE second source -- a gate

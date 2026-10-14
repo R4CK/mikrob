@@ -625,17 +625,23 @@ describe('gateCompletenessGuardVerdict', () => {
       }
     })
 
-    it('CONTROL: an UNMARKED sha in the same parenthetical shape STILL moves the boundary', () => {
+    it('CONTROL: an UNMARKED sha in the same parenthetical shape STILL moves the boundary (cited by a non-gate author)', () => {
       // Without this control, the blunt repair the card first suggested -- ignore everything after
       // the "(" -- would also pass, and that one reopens card 367c23a9's incident wholesale
       // ("landolt <sha>" and "alap <sha>" are genuine co-citations and must keep counting).
+      //
+      // Card 9ce3181c (round-5 correction): the citing author here is now 'backend2', not
+      // 'cybersec' as in the original shape -- a GATE's own citation can no longer open a new round
+      // by itself (that asymmetry was the 29609ec6 incident this round-5 fix closes), so this
+      // control's "still moves the boundary" claim can only hold for a non-gate introduction. The
+      // parenthetical shape and the extraction/blanking regex exercised are unchanged.
       card.description = 'Gate: QA + Cybersec'
       comments = [
         { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
         { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
         {
-          author: 'cybersec',
-          content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c (landolt 9f0f75ef)',
+          author: 'backend2',
+          content: 'REVIEW: meg egy valtozas\nGate-SHA: 5f7abb6c (landolt 9f0f75ef)',
           created_at: 300,
         },
       ]
@@ -937,61 +943,77 @@ describe('gateCompletenessGuardVerdict', () => {
       expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
     })
 
-    it('CONTROL: a BACKTICKED sha is a real citation and still moves the boundary', () => {
+    it('CONTROL: a BACKTICKED sha is a real citation and still moves the boundary (cited by a non-gate author)', () => {
       // The first cut of this rule keyed on the character adjacent to the hex run, which dropped
       // this shape (measured live on card ca38deac: "bb27c07b (ag `agent/backend2/work`, pusholva;
       // a harness `3dcbbefc`)"). A backtick is quoting, not a path.
+      //
+      // Card 9ce3181c (round-5 correction): author changed from 'cybersec' to 'backend2' -- see the
+      // matching note on the 'UNMARKED sha' control above; a gate's own citation can no longer open
+      // a new round by itself.
       card.description = 'Gate: QA + Cybersec'
       comments = [
         { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
         { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
-        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c (a harness `3dcbbefc`)', created_at: 300 },
+        { author: 'backend2', content: 'REVIEW: info\nGate-SHA: 5f7abb6c (a harness `3dcbbefc`)', created_at: 300 },
       ]
       const v = gateCompletenessGuardVerdict('c1', 'done', false)
       expect(v.blocked).toBe(true)
       expect(v.message).toContain('QA')
     })
 
-    it('CONTROL: a HUNGARIAN-SUFFIXED sha is a real citation and still moves the boundary', () => {
+    it('CONTROL: a HUNGARIAN-SUFFIXED sha is a real citation and still moves the boundary (cited by a non-gate author)', () => {
       // Same rejected first cut: "a21e5528-on", "9f0a8639-ben" are how this fleet writes about a
       // commit in prose. A hyphen before a suffix is not a path separator.
+      //
+      // Card 9ce3181c (round-5 correction): author changed from 'cybersec' to 'backend2', same
+      // reasoning as the control above.
       card.description = 'Gate: QA + Cybersec'
       comments = [
         { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
         { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
-        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c (megfigyeles a21e5528-on)', created_at: 300 },
+        { author: 'backend2', content: 'REVIEW: info\nGate-SHA: 5f7abb6c (megfigyeles a21e5528-on)', created_at: 300 },
       ]
       const v = gateCompletenessGuardVerdict('c1', 'done', false)
       expect(v.blocked).toBe(true)
       expect(v.message).toContain('QA')
     })
 
-    it('CONTROL: the slash-joined "both commits" idiom A/B is NOT a path and still counts', () => {
+    it('CONTROL: the slash-joined "both commits" idiom A/B is NOT a path and still counts (cited by a non-gate author)', () => {
       // The SECOND rejected cut ("any token containing a slash is a path") swallowed this and
       // invalidated a genuine QA2 verdict on card 67807f6f, where the line read
       // "aa40afef (a 89665d8a/06200298 tetejen ...)". Every segment here is itself a bare sha, so
       // the token is a citation pair, not a branch name.
+      //
+      // Card 9ce3181c (round-5 correction): author changed from 'cybersec' to 'backend2', same
+      // reasoning as the two controls above. This is also the exact incident shape (29609ec6): a
+      // "both commits" idiom citing a second, previously-uncited sha -- the difference is this one
+      // is now attributed to a non-gate author, so it legitimately opens a round, where the real
+      // incident had it attributed to QA (a gate), which must NOT.
       card.description = 'Gate: QA + Cybersec'
       comments = [
         { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
         { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
-        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c (89665d8a/06200298 tetejen)', created_at: 300 },
+        { author: 'backend2', content: 'REVIEW: info\nGate-SHA: 5f7abb6c (89665d8a/06200298 tetejen)', created_at: 300 },
       ]
       const v = gateCompletenessGuardVerdict('c1', 'done', false)
       expect(v.blocked).toBe(true)
       expect(v.message).toContain('QA')
     })
 
-    it('CONTROL: `alap <sha>` and `landolt <sha>` stay INCLUDED -- card 367c23a9 does not regress', () => {
+    it('CONTROL: `alap <sha>` and `landolt <sha>` stay INCLUDED -- card 367c23a9 does not regress (cited by a non-gate author)', () => {
       // The blunt repair proposed twice for this incident -- drop the parenthetical, or add
       // alap/base to the parent-marker list -- reopens 367c23a9, where these ARE the round's own
       // co-citations. Only `merge-base` was added, and only it.
+      //
+      // Card 9ce3181c (round-5 correction): author changed from 'cybersec' to 'backend2', same
+      // reasoning as the controls above.
       for (const shape of ['(alap 9f0f75ef)', '(landolt 9f0f75ef)']) {
         card.description = 'Gate: QA + Cybersec'
         comments = [
           { author: 'backend', content: 'REVIEW: kesz\nGate-SHA: 5f7abb6c', created_at: 100 },
           { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 5f7abb6c', created_at: 200 },
-          { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 5f7abb6c ' + shape, created_at: 300 },
+          { author: 'backend2', content: 'REVIEW: info\nGate-SHA: 5f7abb6c ' + shape, created_at: 300 },
         ]
         const v = gateCompletenessGuardVerdict('c1', 'done', false)
         expect(v.blocked).toBe(true)
@@ -1014,6 +1036,68 @@ describe('gateCompletenessGuardVerdict', () => {
       const v = gateCompletenessGuardVerdict('c1', 'done', false)
       expect(v.blocked).toBe(true)
       expect(v.message).toContain('QA')
+    })
+  })
+
+  describe("a GATE's own Gate-SHA citation must not open a new round (card 9ce3181c, real incident 29609ec6)", () => {
+    // THE INCIDENT, reproduced: both designated gates verdicted FRESH on the SAME commit
+    // (7132429b). QA's own verdict happened to use the fleet's "both commits" idiom, citing the
+    // merge sha AND the underlying work-commit (ad85d4cb) together -- ad85d4cb had never been cited
+    // by anyone else on the card. Before this fix, QA's own comment became ad85d4cb's first-ever
+    // introduction, pulling the round boundary to QA's own timestamp and making Cybersec's
+    // genuinely fresh GO (94s earlier, for the very same round) read as stale/pre-round. The real
+    // card had to be force:true-closed by MikroB.
+    it('POSITIVE: two gates cite the same merge-sha, the second also cites the work-commit ("both commits" idiom) -> both stay fresh', () => {
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: 7132429b', created_at: 100 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: 7132429b', created_at: 200 },
+        // QA's own verdict restates the merge sha AND adds the work-commit via the "both commits"
+        // idiom -- ad85d4cb is cited here for the first time on the whole card, and ONLY by a gate.
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 7132429b, ad85d4cb', created_at: 210 },
+      ]
+      // Before the fix: ad85d4cb's first mention (t=210, QA's own comment) became the round
+      // boundary, and Cybersec's t=200 GO -- for the SAME round -- read as stale ("missing").
+      // After the fix: a gate-only citation cannot open a round, so the boundary stays at
+      // 7132429b's real introduction (t=100, backend2's REVIEW), and both verdicts are fresh.
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('NEGATIVE CONTROL: a builder REVIEW with a genuinely new sha AFTER both old verdicts still makes them stale (round-4 correction must not regress)', () => {
+      // Same shape as the existing round-4 tests above (aaaaaaa1/bbbbbbb2): this is not a new
+      // mechanism, just confirming the gate-author exclusion in pass 1 did not accidentally weaken
+      // the existing "a real new round still invalidates old verdicts" behaviour.
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: aaaaaaa1', created_at: 100 },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: aaaaaaa1', created_at: 110 },
+        { author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: aaaaaaa1', created_at: 120 },
+        // A REAL new round from a non-gate author.
+        { author: 'backend2', content: 'REVIEW -- kesz, uj commit\nGate-SHA: bbbbbbb2', created_at: 200 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      // Neither gate has verdicted bbbbbbb2 yet -- both old verdicts (for aaaaaaa1) are stale.
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA')
+      expect(v.message).toContain('Cybersec')
+    })
+
+    it('a GATE citation can still WIDEN an already-introduced entry to a longer/shorter prefix, without opening a new one', () => {
+      // Pass 2 lets a gate's own citation merge with an existing entry by prefix-containment (same
+      // short-vs-full-format grouping d4a2130d already covers) -- it just cannot CREATE one. Here
+      // Cybersec cites the full 40-char form of the SAME commit backend2 introduced as a short sha;
+      // this must still be recognised as the same round, not two separate entries.
+      card.description = 'Gate: QA + Cybersec'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: 7132429b', created_at: 100 },
+        {
+          author: 'cybersec',
+          content: 'CYBERSEC GO\nGate-SHA: 7132429b0000000000000000000000000000ab',
+          created_at: 200,
+        },
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: 7132429b', created_at: 210 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
     })
   })
 
