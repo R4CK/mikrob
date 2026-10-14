@@ -20290,3 +20290,15 @@ Ez a fork már korábban, függetlenül, az ELLENKEZŐ döntést hozta: a curl-m
 **Nyitva (MikroB kérése):** ha olcsón megmérhető, a saját mintáink valós találati arányát (hány találat, ebből hány false positive) az élő memória-DB-n is érdemes megnézni; ha a precizitás nálunk is rossznak bizonyul, az Peti elé megy külön döntésre -- ez a kártya kört NEM tartalmazza.
 
 **Ki döntött:** MikroB (Peti nevében, 5. kódminőségi elv alapján), végrehajtotta backend3 (kártya 1f4c046b, 2026-10-14).
+
+---
+
+**2026-10-14 -- aacb8ceb: VRAM choke-point hiányzó guard-fájlnál -- warn-and-continue, nem fail-closed**
+
+Cybersec F1 lelet a 234306ca gate-jéből (Gate-SHA 9b7c73ae): ha `store/vram-guard-check.sh` hiányzik a `store/local-llm.sh` `generate` módjának várt alapértelmezett helyéről (pl. egy könyvtár-átnevezés/rebrand után), a VRAM choke-point csendben átengedte a hívást -- minden teszt zöld maradt (4/4, 19/19), mert mindegyik a `LOCAL_LLM_VRAM_GUARD` override-ot adja meg, egyik sem a valódi alapértelmezett utat.
+
+**Döntés: warn-and-continue, NEM fail-closed.** A choke-point saját, már létező tesztje (`local-llm-vram-choke-point.test.ts`, "a MISSING guard binary does not block generate (fail-open on absence, matching every dispatcher)") ezt a viselkedést SZÁNDÉKOSAN pineli: a choke-point a 6 dispatcher saját, közvetlen `vram-guard-check.sh`-hívásának VÉDELMI TARTALÉKA (defense-in-depth), nem egy második, szigorúbb kapu a saját hibamódjával. Fail-closedre váltás szembe menne ezzel a meglévő döntéssel, és egy hiányzó/eltávolított guard-fájl nem egyenértékű egy "GPU foglalt" állapottal -- az utóbbi tényleges, mért VRAM-adat, az előbbi egy telepítési hiba, amit jelenteni kell, nem a hívó kárára eldönteni.
+
+**Megvalósítás:** a hiányzó-fájl ág most egy stderr-sort ír (`local-llm: vram guard not found at '<path>' -- VRAM choke-point skipped, call proceeds unchecked (set LOCAL_LLM_VRAM_GUARD if it moved)`), a hívás pedig változatlanul folytatódik. Két új teszt: egy a VALÓDI alapértelmezett úttal (nincs override, a guard jelen van, a hívás csendben marad), egy pedig a hiányzó alapértelmezett úttal (a figyelmeztető sor megjelenik, de a hívás továbbra sem exit-6).
+
+**Ki döntött:** backend3 (kártya aacb8ceb, 2026-10-14).

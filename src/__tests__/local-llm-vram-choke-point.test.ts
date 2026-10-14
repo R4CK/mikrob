@@ -88,4 +88,44 @@ describe('local-llm.sh: VRAM choke-point ahead of generate (card 234306ca)', () 
     const r = run(missing)
     expect(r.status).not.toBe(6)
   })
+
+  // Card aacb8ceb (Cybersec F1 on 234306ca, Gate-SHA 9b7c73ae): the test above ALWAYS passes an
+  // explicit LOCAL_LLM_VRAM_GUARD override, so it never exercises the REAL default path
+  // ($HERE/vram-guard-check.sh) -- a rename/rebrand that moves the guard out from under that
+  // default would still show 4/4, 19/19 green. These two use the real default path instead.
+  it('the REAL default path (no override) is used when present, and stays silent', () => {
+    copyFileSync(join(ROOT, 'store', 'vram-guard-check.sh'), join(sandbox, 'vram-guard-check.sh'))
+    // Deliberately NO LOCAL_LLM_VRAM_GUARD here -- exercises the real default
+    // ($HERE/vram-guard-check.sh), which the override-based tests above never touch.
+    // delete, not just omit: an ambient LOCAL_LLM_VRAM_GUARD from the surrounding process
+    // env (e.g. another suite in the same worker) must not leak into this one spawn.
+    const env: NodeJS.ProcessEnv = { ...process.env, OLLAMA_HOST: 'http://127.0.0.1:1' }
+    delete env.LOCAL_LLM_VRAM_GUARD
+    const r = spawnSync(
+      'bash',
+      [join(sandbox, 'local-llm.sh'), '--caller', 'backend3', '--source', 'test', 'draft this'],
+      { encoding: 'utf-8', timeout: 15_000, env },
+    )
+    expect(r.stderr).not.toContain('vram guard not found')
+  })
+
+  it('a MISSING guard at the REAL default path (e.g. after a rename) is now reported on stderr, not silent', () => {
+    // Simulates exactly the measured defect: the default path the generate step looks at has no
+    // file behind it any more, and nothing says so.
+    const r = spawnSync(
+      'bash',
+      [join(sandbox, 'local-llm.sh'), '--caller', 'backend3', '--source', 'test', 'draft this'],
+      {
+        encoding: 'utf-8',
+        timeout: 15_000,
+        env: {
+          ...process.env,
+          OLLAMA_HOST: 'http://127.0.0.1:1',
+          LOCAL_LLM_VRAM_GUARD: join(sandbox, 'renamed-away-vram-guard-check.sh'),
+        },
+      },
+    )
+    expect(r.status).not.toBe(6) // still fail-OPEN (see store/local-llm.sh's own comment)
+    expect(r.stderr).toContain('vram guard not found')
+  })
 })
