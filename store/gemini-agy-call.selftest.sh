@@ -13,6 +13,7 @@ TD="$(mktemp -d)"
 trap 'rm -rf "$TD"' EXIT
 mkdir -p "$TD/store" "$TD/scripts" "$TD/base/w"
 ln -s "$(cd "$(dirname "$REAL_SEGED_HIVO")" && pwd)/$(basename "$REAL_SEGED_HIVO")" "$TD/scripts/seged-hivo.py"
+ln -s "$SELF_DIR/gemini-agy-category-check.py" "$TD/store/gemini-agy-category-check.py"
 echo 'teszt-token' > "$TD/store/.dashboard-token"
 PROMPT="$TD/prompt.md"
 echo 'Hozz letre egy hello.txt fajlt.' > "$PROMPT"
@@ -50,6 +51,70 @@ LOG="$TD/store/seged-hivo-naplo.jsonl"
 fails=()
 n=0
 
+# A persistent fake fleet-dashboard: serves GET /api/kanban/<id> with a fixed card JSON (F1's
+# server-side category check) and captures any POST body (the daily-log append) to CAPTURE_FILE
+# if given. One process per test-section, killed via its own PID -- `run()`'s default points here
+# so the many pre-existing tests below (hourly cap, race, error propagation) don't all need their
+# own dashboard stub just to get past the new F1 check.
+start_dashboard_stub() {  # start_dashboard_stub CARD_JSON [CAPTURE_FILE] -- sets DASH_STUB_PORT/DASH_STUB_PID
+  # (NOT via command substitution: a `$(...)` call runs in a subshell, and the PID assigned to
+  # DASH_STUB_PID below would then be lost the instant that subshell exits.)
+  local card_json="$1" capture_file="${2:-}"
+  cat <<'PYEOF' > "$TD/dash-stub.py"
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+card_json = sys.argv[1]
+capture_file = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
+
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(card_json.encode())
+
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0) or 0)
+        body = self.rfile.read(length)
+        if capture_file:
+            with open(capture_file, 'wb') as f:
+                f.write(body)
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'{}')
+
+    def log_message(self, *a):
+        pass
+
+srv = HTTPServer(('127.0.0.1', 0), H)
+print(srv.server_port, flush=True)
+srv.serve_forever()
+PYEOF
+  rm -f "$TD/dash-stub-port"
+  python3 "$TD/dash-stub.py" "$card_json" "$capture_file" > "$TD/dash-stub-port" 2>/dev/null &
+  DASH_STUB_PID=$!
+  for _ in $(seq 1 50); do
+    [ -s "$TD/dash-stub-port" ] && break
+    sleep 0.1
+  done
+  DASH_STUB_PORT="$(cat "$TD/dash-stub-port" 2>/dev/null || true)"
+}
+
+CLEAN_CARD='{"title":"Clean boilerplate card","description":"normal work","labels":["@backend"]}'
+start_dashboard_stub "$CLEAN_CARD"
+DEFAULT_DASH_PORT="$DASH_STUB_PORT"
+DEFAULT_DASH_PID="$DASH_STUB_PID"
+if [ -z "$DEFAULT_DASH_PORT" ]; then
+  echo "FATAL: default dashboard stub never printed a port" >&2
+  exit 2
+fi
+EXTRA_DASH_PIDS=()
+cleanup_dashboard_stubs() {
+  kill "$DEFAULT_DASH_PID" 2>/dev/null || true
+  for p in "${EXTRA_DASH_PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
+}
+trap 'cleanup_dashboard_stubs; rm -rf "$TD"' EXIT
+
 seed_recent() {  # seed_recent COUNT -- COUNT agy rows, "now"
   local count="$1" i
   : > "$LOG"
@@ -80,7 +145,8 @@ print(json.dumps({'ido': ts, 'hivas_id': 'old-$i', 'hivo': 'teszt', 'kartya': 'x
 
 run() {
   MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
-    SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="${GEMINI_DASHBOARD_URL:-http://127.0.0.1:1}" \
+    SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+    GEMINI_DASHBOARD_URL="${GEMINI_DASHBOARD_URL:-http://127.0.0.1:$DEFAULT_DASH_PORT}" \
     "$SUT" "$@" > "$TD/out" 2> "$TD/err"
 }
 
@@ -111,6 +177,48 @@ done
 if [ -s "$LOG" ]; then
   fails+=("forbidden/unknown category must not write any log row, but $LOG is non-empty")
 fi
+
+# --- F1: server-side category check on declared 'safe' (card 09117e0a) ---------------------
+: > "$LOG"
+start_dashboard_stub '{"title":"[MikroB][INFRA][SEC][HIGH] valami","description":"x","labels":[]}'
+SEC_PORT="$DASH_STUB_PORT"
+EXTRA_DASH_PIDS+=("$DASH_STUB_PID")
+n=$((n + 1))
+if [ -z "$SEC_PORT" ]; then
+  fails+=("F1 security-titled card stub: never printed a port")
+else
+  set +e
+  MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
+    SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$SEC_PORT" \
+    "$SUT" --hivo teszt --kartya sec-card --feladattipus kod --kategoria safe \
+    --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
+  got=$?
+  set -e
+  [ "$got" = 3 ] || fails+=("F1: a card titled [SEC] declared kategoria=safe must be refused (rc=3), got rc=$got, err=$(cat "$TD/err")")
+  grep -q 'STUB RESPONSE' "$TD/out" && fails+=("F1: the underlying helper must NOT have run for a refused security-signalled card")
+fi
+if [ -s "$LOG" ]; then
+  fails+=("F1 refusal must not write any log row, but $LOG is non-empty")
+fi
+
+# negative control: a clean card declared safe must still go through (uses the DEFAULT clean stub)
+: > "$LOG"
+case_ "F1 negative control: clean card + kategoria=safe -> goes" 0 \
+  --hivo teszt --kartya clean-card --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
+grep -q 'STUB RESPONSE' "$TD/out" || fails+=("F1 negative control: the underlying helper should have run for a clean card")
+
+: > "$LOG"
+n=$((n + 1))
+# Port 1 on loopback refuses connections at once -- stands in for an unreachable dashboard.
+set +e
+MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:1" \
+  "$SUT" --hivo teszt --kartya unreachable --feladattipus kod --kategoria safe \
+  --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
+got=$?
+set -e
+[ "$got" = 3 ] || fails+=("F1 fail-closed: an unreachable dashboard must refuse (rc=3), got rc=$got, err=$(cat "$TD/err")")
+grep -q 'STUB RESPONSE' "$TD/out" && fails+=("F1 fail-closed: the underlying helper must NOT have run when the card could not be verified")
 
 # --- hourly fleet-wide quota -----------------------------------------------
 seed_recent 4
@@ -154,13 +262,13 @@ case_ 'hourly: 5 BLOCKED agy rows do not count -> still goes' 0 \
 seed_recent 4
 n=$((n + 1))
 MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
-  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="${GEMINI_DASHBOARD_URL:-http://127.0.0.1:1}" \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$DEFAULT_DASH_PORT" \
   STUB_CALL_DELAY_S=0.3 GEMINI_AGY_HOURLY_LOCK="$TD/store/hourly.lock" \
   "$SUT" --hivo teszt --kartya a --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w" \
   > "$TD/race-a.out" 2> "$TD/race-a.err" &
 PID_A=$!
 MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
-  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="${GEMINI_DASHBOARD_URL:-http://127.0.0.1:1}" \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$DEFAULT_DASH_PORT" \
   STUB_CALL_DELAY_S=0.3 GEMINI_AGY_HOURLY_LOCK="$TD/store/hourly.lock" \
   "$SUT" --hivo teszt --kartya b --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w" \
   > "$TD/race-b.out" 2> "$TD/race-b.err" &
@@ -193,33 +301,9 @@ rm -f "$TD/FORCE_ERROR"
 # --- daily-log posting: status reaches the log, prompt text never does ----
 : > "$LOG"
 CAPTURE="$TD/capture.json"
-python3 - "$CAPTURE" > "$TD/stub-server-port" 2>/dev/null <<'PYEOF' &
-import json, sys, threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-capture_path = sys.argv[1]
-
-class H(BaseHTTPRequestHandler):
-    def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-        with open(capture_path, 'w') as f:
-            json.dump(body, f)
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b'{}')
-    def log_message(self, *a):
-        pass
-
-srv = HTTPServer(('127.0.0.1', 0), H)
-print(srv.server_port, flush=True)
-srv.handle_request()
-PYEOF
-SRV_PID=$!
-# wait for the stub server to print its port (bounded: this stub serves exactly one request)
-for _ in $(seq 1 50); do
-  [ -s "$TD/stub-server-port" ] && break
-  sleep 0.1
-done
-PORT="$(cat "$TD/stub-server-port" 2>/dev/null || echo '')"
+start_dashboard_stub "$CLEAN_CARD" "$CAPTURE"
+PORT="$DASH_STUB_PORT"
+EXTRA_DASH_PIDS+=("$DASH_STUB_PID")
 if [ -z "$PORT" ]; then
   fails+=("daily-log capture: stub HTTP server never printed a port")
 else
@@ -228,7 +312,6 @@ else
     SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$PORT" \
     "$SUT" --hivo teszt --kartya kartya-123 --feladattipus kod --kategoria safe \
     --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err" || true
-  wait "$SRV_PID" 2>/dev/null || true
   if [ ! -s "$CAPTURE" ]; then
     fails+=("daily-log capture: no POST body was captured")
   else
