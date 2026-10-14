@@ -183,7 +183,10 @@ describe('the wiring', () => {
   })
 
   it('the strip uses the source-aware stale text, the per-window agent and the "just now" wording', () => {
-    const APP = readFileSync(join(__dirname, '../../web/app.js'), 'utf-8')
+    // renderQuotaStrip lives in web/app-overview.js on this fork, not web/app.js -- the fork split
+    // the Overview page into its own file before this feature (Köteg 14, card d7e1d611) landed;
+    // upstream's own single-file app.js layout does not apply here.
+    const APP = readFileSync(join(__dirname, '../../web/app-overview.js'), 'utf-8')
     const fn = APP.slice(APP.indexOf('function renderQuotaStrip('), APP.indexOf('async function loadOverview('))
     expect(fn).toMatch(/q\.source === 'mod'\s*\?\s*t\(typeof q\.ageSec === 'number' \? 'overview\.quota\.stale_mod' : 'overview\.quota\.stale_mod_unknown'\)/)
     expect(fn).toMatch(/q\.source === 'mod' && w\.sourceAgent/)
