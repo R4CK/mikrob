@@ -72,6 +72,13 @@ const DIAGNOSE_MARKER = join(PROJECT_ROOT, 'store', 'update-diagnose.last')
 export function buildUpdateScriptEnv(extraEnv: Record<string, string>): NodeJS.ProcessEnv {
   const env = { ...process.env, ...extraEnv }
   delete env.NODE_ENV
+  // Card 758e06dd (Cybersec hardening finding, ae071239 GO comment 4934): POST_MERGE_MODE=1
+  // tells update.sh to skip its mandatory pre-update checkpoint, because the post-merge caller
+  // (below, ~line 674) already took one before spawning. If this process's own environment ever
+  // carries POST_MERGE_MODE (inherited from whatever launched it), the normal fork-pull path would
+  // silently inherit it too and skip the checkpoint it actually needs. Strip the INHERITED value,
+  // but keep it when extraEnv itself set it -- that's the one legitimate call site.
+  if (!('POST_MERGE_MODE' in extraEnv)) delete env.POST_MERGE_MODE
   return env
 }
 
