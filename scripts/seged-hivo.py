@@ -72,7 +72,7 @@ Quota (runs BEFORE the gate): when many agents call helpers, a subscription used
 
 Exit: 0 ok | 1 helper failed | 2 bad usage | 3 blocked by the gate | 4 timeout | 5 quota or lock: try later
 """
-import argparse, fcntl, hashlib, html, json, os, random, re, stat, subprocess, sys, tempfile, time, unicodedata
+import argparse, contextlib, fcntl, hashlib, html, json, os, random, re, stat, subprocess, sys, tempfile, time, unicodedata
 import urllib.request, uuid
 from datetime import datetime
 from pathlib import Path
@@ -250,6 +250,27 @@ def selftest():
     return 1 if bad or quota_selftest() else 0
 
 
+@contextlib.contextmanager
+def _ensure_real_dashboard_token():
+    """M1 follow-on (card 09117e0a, RedHat NO-GO 2. kor): titok-kapu.py's root is no longer
+    env-redirectable (M1-javitas -- it resolves root ONLY from its own __file__ location now),
+    so quota_selftest()'s sandboxed MARVEEN_ROOT can no longer point run_gate()'s secret-scan
+    step at a throw-away store/.dashboard-token the way it used to -- the scan always resolves
+    the REAL repo root. Ensures a throw-away token file exists there for the test's duration,
+    ONLY if this checkout doesn't already have a real one, and removes it again afterward. An
+    existing file is never touched."""
+    real = ROOT / 'store' / '.dashboard-token'
+    created = not real.exists()
+    if created:
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_text('x' * 64 + '\n')
+    try:
+        yield
+    finally:
+        if created:
+            real.unlink(missing_ok=True)
+
+
 def quota_selftest():
     """End-to-end through main() in a throw-away root. A stub stands in for bwrap (BWRAP_BIN): it prints an
     agy-style SUCCESS JSON, so a call that passes quota and gate "runs" in no time and sends nothing. Each case has its control pair:
@@ -270,7 +291,7 @@ def quota_selftest():
             pass
     srv = HTTPServer(('127.0.0.1', 0), Catch)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    with tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory() as td, _ensure_real_dashboard_token():
         td = Path(td)
         root, base = td / 'root', td / 'base'
         (root / 'scripts/muszertar').mkdir(parents=True)

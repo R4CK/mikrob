@@ -24,22 +24,37 @@
 #
 # Usage: gemini-agy-call.sh --hivo AGENT --kartya ID --feladattipus TYPE --kategoria CAT
 #                            --prompt FILE --mappa DIR [--timeout SEC] [--model NAME]
+#                            [--root DIR] [--seged-script PATH] [--dashboard-token-file PATH]
+#                            [--dashboard-url URL] [--category-check PATH]
 #   CAT: safe | security | auth | finance | mopsion  (anything but "safe" refuses, exit 3)
+#   The --root/--seged-script/--dashboard-token-file/--dashboard-url/--category-check flags are
+#   test-only (gemini-agy-call.selftest.sh): the real dispatch path never passes them, so it
+#   always resolves the real gate-script locations from this file's own path (M1, card 09117e0a).
 # Exit codes mirror seged-hivo.py: 0 ok | 1 helper failed | 2 bad usage | 3 blocked (gate/category)
 #                                   | 4 timeout | 5 quota/lock
 set -euo pipefail
 
-ROOT="${MARVEEN_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+# M1 (card 09117e0a, RedHat NO-GO 2. kor, komment 18611): a kapu-szkriptek helyet (hova mutat a
+# gyoker, melyik seged-hivo/kategoria-kapu/dashboard-token/dashboard-url) korabban a hivo
+# AKARMELY env-valtozoval lecserelhette, akkor is, amikor ez a script a VALODI, eles
+# hivasban futott -- egy a folyamatfa felett allo, nem a kapu altal irt env csendben
+# atiranyithatta a kategoria-kaput es a titok-szurot tartalmazo szkriptet magat. Most ezek
+# KIZAROLAG CLI-kapcsolok, amiket csak a SAJAT selftest adja at kezzel (lasd
+# gemini-agy-call.selftest.sh) -- a VALODI hivas (MikroB/agent dispatch) ezeket soha nem adja
+# meg, tehat mindig a __file__ helyebol szamolt valodi gyokeret es alapertelmezett fajlokat
+# hasznalja, es az environmentnek erre SEMMI hatasa nincs.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STORE="$ROOT/store"
 # The REAL seged-hivo.py, always: only used to borrow its read_log()/calls_of() for the hourly
-# count, so that logic reads the SAME log path the real script writes (derived from MARVEEN_ROOT).
-# Kept separate from SEGED_HIVO_SCRIPT below, which a test harness may point at a stub instead.
+# count, so that logic reads the SAME log path the real script writes (derived from --root).
+# Kept separate from SEGED_HIVO below, which the selftest may point at a stub instead.
 SEGED_HIVO_HELPERS="$ROOT/scripts/seged-hivo.py"
-# The script actually invoked for the call -- overridable so a test can stub out the real engine
-# (bwrap/agy) without touching the hourly-count logic above.
-SEGED_HIVO="${SEGED_HIVO_SCRIPT:-$ROOT/scripts/seged-hivo.py}"
-DASHBOARD_URL="${GEMINI_DASHBOARD_URL:-http://localhost:3420}"
-DASHBOARD_TOKEN_FILE="${DASHBOARD_TOKEN_FILE:-$STORE/.dashboard-token}"
+# The script actually invoked for the call -- overridable (via --seged-script) so the selftest
+# can stub out the real engine (bwrap/agy) without touching the hourly-count logic above.
+SEGED_HIVO="$ROOT/scripts/seged-hivo.py"
+DASHBOARD_URL="http://localhost:3420"
+DASHBOARD_TOKEN_FILE="$STORE/.dashboard-token"
+CATEGORY_CHECK_OVERRIDE=""
 MODEL="${GEMINI_AGY_MODEL:-gemini-3.8-flash-medium}"
 HOURLY_LIMIT="${GEMINI_AGY_HOURLY_LIMIT:-5}"
 FORBIDDEN_CATEGORIES="security auth finance mopsion"
@@ -55,6 +70,14 @@ while [ $# -gt 0 ]; do
     --mappa) mappa="$2"; shift 2 ;;
     --timeout) timeout_s="$2"; shift 2 ;;
     --model) MODEL="$2"; shift 2 ;;
+    # Test-only (selftest): never used by the real dispatch path (see M1 comment above).
+    --root) ROOT="$2"; STORE="$ROOT/store"; SEGED_HIVO_HELPERS="$ROOT/scripts/seged-hivo.py"
+            SEGED_HIVO="$ROOT/scripts/seged-hivo.py"; DASHBOARD_TOKEN_FILE="$STORE/.dashboard-token"
+            shift 2 ;;
+    --seged-script) SEGED_HIVO="$2"; shift 2 ;;
+    --dashboard-token-file) DASHBOARD_TOKEN_FILE="$2"; shift 2 ;;
+    --dashboard-url) DASHBOARD_URL="$2"; shift 2 ;;
+    --category-check) CATEGORY_CHECK_OVERRIDE="$2"; shift 2 ;;
     *) echo "gemini-agy-call: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -97,7 +120,7 @@ fi
 # card's own title/description/labels are now checked server-side via the same stem/tag
 # vocabulary store/offload-dispatch.sh's sensitive-content gate already uses. Fail-closed: if the
 # card cannot be fetched/parsed, this is "cannot verify safe", not "assume safe".
-CATEGORY_CHECK="${GEMINI_AGY_CATEGORY_CHECK:-$STORE/gemini-agy-category-check.py}"
+CATEGORY_CHECK="${CATEGORY_CHECK_OVERRIDE:-$STORE/gemini-agy-category-check.py}"
 if [ ! -f "$DASHBOARD_TOKEN_FILE" ]; then
   echo "gemini-agy-call: no dashboard token at $DASHBOARD_TOKEN_FILE -- cannot verify card" \
        "'$kartya' against its own content, refusing a declared-safe call fail-closed" >&2
@@ -150,7 +173,10 @@ flock -x 9
 
 now_epoch=$(date +%s)
 window_start=$((now_epoch - 3600))
-sent_count=$(python3 - "$SEGED_HIVO_HELPERS" "$window_start" <<'PY'
+# MARVEEN_ROOT forwarded from $ROOT, same reasoning as below: seged-hivo.py's module-level ROOT
+# reads it at import time too, and this must stay consistent with $ROOT, not an unrelated
+# inherited value.
+sent_count=$(MARVEEN_ROOT="$ROOT" python3 - "$SEGED_HIVO_HELPERS" "$window_start" <<'PY'
 import datetime, importlib.util, sys
 spec = importlib.util.spec_from_file_location('seged_hivo', sys.argv[1])
 sh = importlib.util.module_from_spec(spec)
@@ -181,7 +207,11 @@ export SEGED_SZUNET_MAX_S="${SEGED_SZUNET_MAX_S:-720}"
 
 t0=$(date +%s.%N)
 set +e
-out=$(python3 "$SEGED_HIVO" --seged "agy:$MODEL" --mappa "$mappa" --prompt "$prompt_file" \
+# MARVEEN_ROOT is forwarded here EXPLICITLY, from $ROOT (resolved above from this script's own
+# path, or from the test-only --root flag) -- not read back from this script's own inherited
+# environment, so an unrelated MARVEEN_ROOT sitting in the caller's shell has no effect (M1,
+# card 09117e0a).
+out=$(MARVEEN_ROOT="$ROOT" python3 "$SEGED_HIVO" --seged "agy:$MODEL" --mappa "$mappa" --prompt "$prompt_file" \
       --hivo "$hivo" --kartya "$kartya" --feladattipus "$feladattipus" --timeout "$timeout_s")
 rc=$?
 set -e
