@@ -259,7 +259,10 @@ export function resumePrompt(
   )
 }
 
-function configDirFor(name: string): string | undefined {
+// Exported for src/__tests__/main-config-dir-wiring.test.ts (QA2 L1, 25ea084c): the delegation to
+// mainAgentConfigDir() must be pinned on the REAL function, not a fully-mocked module, or a silent
+// revert to the pre-TOKENVAK915 unconditional `undefined` passes every existing test unnoticed.
+export function configDirFor(name: string): string | undefined {
   // resolveAgentConfigDirForRead, not readAgentClaudeConfigDir (card 272361eb, B-wave): an agent
   // whose config dir was auto-provisioned by the launcher has no field to read, so the old call
   // returned null and this runner then measured the HOST default -- another agent's absence read
