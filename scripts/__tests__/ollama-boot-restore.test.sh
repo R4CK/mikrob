@@ -121,6 +121,18 @@ else
   fail "dxgkrnl signature did not defer: $out"
 fi
 
+d="$(fresh_case dxg-unreadable)"
+echo "600.0 1200.0" > "$d/uptime"
+# No dmesg file created at this path -- the override's own `cat` fails (status != 0), the same
+# shape a real `journalctl -k -b 0` failure would take. Card 39b958a4 (Cybersec F1): this must
+# defer, not fall through to "no dxg signature found" and restart on an unreadable kernel log.
+out="$(run "$d" down "$d/uptime" "$d/no-such-dmesg-file")"
+if echo "$out" | grep -q 'or the log could not be read'; then
+  pass "unreadable kernel log defers (fail-closed), same stance as the uptime guard"
+else
+  fail "unreadable kernel log did not defer: $out"
+fi
+
 d="$(fresh_case dxg-clean)"
 echo "600.0 1200.0" > "$d/uptime"
 echo "kernel: nothing interesting here" > "$d/dmesg"

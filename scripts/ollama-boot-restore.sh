@@ -117,11 +117,20 @@ get_uptime_sec() {
 # boot (`-b 0`) rather than a completed one -- this script cares about "is the running kernel
 # already showing the fault", not "did a past boot show it".
 dxg_seen_this_boot() {
-  local text
+  local text status
   if [ -n "${OLLAMA_RESTORE_DMESG_OVERRIDE:-}" ]; then
     text="$(cat "$OLLAMA_RESTORE_DMESG_OVERRIDE" 2>/dev/null)"
+    status=$?
   else
     text="$(journalctl -k -b 0 2>/dev/null)"
+    status=$?
+  fi
+  # Card 39b958a4 (Cybersec F1, GO b9a657e6 comment 5821): a command failure is NOT the same as "a
+  # successfully-read log with no dxgkrnl lines" -- the old `2>/dev/null` swallowed that distinction,
+  # so an unreadable kernel log fell through to "no match" and started Ollama anyway, while
+  # get_uptime_sec()'s own unreadable case fails closed. Mirror that stance here.
+  if [ "$status" -ne 0 ]; then
+    return 0
   fi
   echo "$text" | grep -qE 'dxgk_ioctl|dxgadapter_release_lock|misc dxg: dxgk'
 }
@@ -191,7 +200,7 @@ main() {
   fi
 
   if dxg_seen_this_boot; then
-    log "dxgkrnl fault signature already present in this boot's kernel log -- deferring, letting gpu-crashloop-guard.sh's own timer classify/mask it rather than racing a restart against a live crash-loop"
+    log "dxgkrnl fault signature already present in this boot's kernel log, or the log could not be read -- deferring, letting gpu-crashloop-guard.sh's own timer classify/mask it rather than racing a restart against a live crash-loop"
     return 0
   fi
 
