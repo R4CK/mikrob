@@ -84,8 +84,13 @@
 #                                precondition below and take a slot anyway. Logged to stderr
 #                                whenever used -- this is an explicit, auditable override, not a
 #                                silent bypass.
+#   CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR (card c0408a1c, D1) overrides the marveen-worktrees
+#                                path the cwd/argument check (below) refuses against, for the
+#                                selftest only. Default /home/neon/marveen-agent-worktrees.
 #
-# Exit: the suite's own exit code | 2 usage or an unusable lock directory | 3 no slot within the
+# Exit: the suite's own exit code | 2 usage, an unusable lock directory, OR (card c0408a1c, D1) the
+#       caller's cwd or a vitest argument names a marveen-repo file -- use fleet-test.sh instead |
+#       3 no slot within the
 #       cap, OR (card c0408a1c) the calling agent has no in_progress/gated-waiting mopsion card
 #       right now and CLEANCORE_SUITE_ALLOW_NO_CARD was not set | 4 memory pressure arrived WHILE
 #       running and the suite was stopped in a controlled way (card e498502e) -- this is NOT a test
@@ -195,6 +200,48 @@ AGENT="${1:-}"; [ -n "$AGENT" ] || usage
 shift || true
 [ "${1:-}" = "--" ] && shift || true
 
+# --- D1: refuse a marveen test run outright (card c0408a1c, MikroB 18681, 2nd acceptance criterion
+# of comment 17448) --------------------------------------------------------------------------
+# Measured 2026-10-12/13: qa2 and backend2 ran a MARVEEN file (src/__tests__/gemini-offload-dispatch
+# .test.ts) through this script, and backend3's cwd was a marveen worktree -- four agents, six runs
+# in one day, all of them meant for marveen's own fleet-test.sh instead. This check runs before
+# anything else below (even before the live-mopsion-card precondition, and NOT skippable by
+# CLEANCORE_SUITE_ALLOW_NO_CARD -- that override is for "no live mopsion card", a different
+# precondition; a marveen test never belongs in this script's lock regardless of override).
+MARVEEN_MAIN_DIR="${MARVEEN_MAIN:-/home/neon/marveen}"
+MARVEEN_WORKTREES_DIR="${CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR:-/home/neon/marveen-agent-worktrees}"
+CALLER_PWD="$(pwd -P)"
+# The cwd half is skipped for --worktree callers: that flag already names an explicit, pinned
+# mopsion worktree for a specific prepared commit (card 08eb6402's prepare/suite/land design,
+# e.g. mopsion-preland.sh) -- the caller's own shell cwd is irrelevant there, and was never the
+# failure mode (qa2/backend2 called this script directly, with no --worktree).
+if [ -z "$WORKTREE_OVERRIDE" ]; then
+  case "$CALLER_PWD" in
+    "$MARVEEN_MAIN_DIR"|"$MARVEEN_MAIN_DIR"/*|"$MARVEEN_WORKTREES_DIR"|"$MARVEEN_WORKTREES_DIR"/*)
+      echo "mopsion-suite-run: REFUSED -- the caller's cwd ('$CALLER_PWD') is a marveen checkout, not a mopsion worktree. Use 'bash store/fleet-test.sh --ref <sha> <fajl>' for marveen tests instead (card c0408a1c)." >&2
+      exit 2
+      ;;
+  esac
+fi
+for _d1_arg in ${1+"$@"}; do
+  case "$_d1_arg" in
+    -*) continue ;;  # a flag (e.g. --maxWorkers=4) is never a file path
+  esac
+  case "$_d1_arg" in
+    /*) _d1_path="$_d1_arg" ;;
+    *) _d1_path="$CALLER_PWD/$_d1_arg" ;;
+  esac
+  case "$_d1_path" in
+    "$MARVEEN_MAIN_DIR"/*|"$MARVEEN_WORKTREES_DIR"/*)
+      if [ -e "$_d1_path" ]; then
+        echo "mopsion-suite-run: REFUSED -- vitest argument '$_d1_arg' names a marveen-repo file, not a mopsion one. Use 'bash store/fleet-test.sh --ref <sha> $_d1_arg' for marveen tests instead (card c0408a1c)." >&2
+        exit 2
+      fi
+      ;;
+  esac
+done
+unset _d1_arg _d1_path
+
 # --- kanban comment, best-effort ---------------------------------------------------------------
 # NEVER fails the run. A suite must not depend on the dashboard being up; the comment is a courtesy
 # to the stuck-monitor and to whoever is reading the board, not a precondition for testing.
@@ -209,20 +256,39 @@ _token_file() {
 # for as long as the curl runs. A 0600 header file, removed on EXIT, is the house pattern
 # (offload-dispatch.sh, weekly-usage-panel-read.sh). Caught here by token-in-argv-guard.test.ts on
 # this script's first full-suite run -- the guard names the fix and the files to copy it from.
+#
+# M1 (card c0408a1c, RedHat NO-GO 18680): _hdr() used to be called as `h="$(_hdr)"` at every call
+# site, inside functions (_card_id, _comment, _has_live_mopsion_card) that are themselves invoked
+# via command substitution by THEIR callers. MEASURED (a tiny isolated repro, not a guess): a bash
+# EXIT trap set in the main script never fires when a `$(...)` subshell forked from it terminates --
+# only the real top-level process exit runs it. So a mktemp created anywhere inside such a subshell
+# is simply never cleaned up; moving the `mktemp` call to a non-command-substitution call site (an
+# earlier attempt here) does not help, because the ENCLOSING function call is still inside a
+# subshell either way. Measured before the fix: 27 leftover 0600 Authorization-bearing files in
+# TMPDIR after 25 precondition checks, none of them cleaned up.
+# FIX: create the header file ONCE, here, eagerly, in the MAIN script process -- before any
+# subshell that could hide the mktemp from the real EXIT trap ever forks. Every later `_hdr` call
+# (even from deep inside a `$(_card_id)`/`$(_has_live_mopsion_card)` subshell) then just sees
+# `_hdr_file` already non-empty -- forked subshells inherit the parent's variable VALUES at fork
+# time, so this is a read, not a new mktemp -- and the file is removed exactly once, by the main
+# process's own EXIT trap (this one, or the `_kill_orphaned_vitest` one further down which also
+# does `rm -f "$_hdr_file"`), when the real process actually exits.
 _hdr_file=""
-_hdr() { # echoes a 0600 header file path, or returns 1
-  [ -n "$_hdr_file" ] && { echo "$_hdr_file"; return 0; }
+_hdr() { # sets global _hdr_file to a 0600 header file path; returns 1 if unavailable
+  [ -n "$_hdr_file" ] && return 0
   local tf; tf="$(_token_file)" || return 1
   [ -f "$tf" ] || return 1
   _hdr_file="$(mktemp)" || return 1
   chmod 600 "$_hdr_file"
   printf 'Authorization: Bearer %s\n' "$(cat "$tf")" > "$_hdr_file"
-  echo "$_hdr_file"
+  return 0
 }
 trap 'rm -f "$_hdr_file"' EXIT
+_hdr || true  # eager, in THIS (main) process -- see the comment above
 
 _card_id() { # the agent's current in_progress card, or empty
-  local h; h="$(_hdr)" || return 0
+  _hdr || return 0
+  local h="$_hdr_file"
   curl -s --max-time 10 -H @"$h" "$API/api/kanban" 2>/dev/null \
     | python3 -c '
 import json,sys
@@ -235,8 +301,9 @@ for r in rows if isinstance(rows, list) else []:
 }
 
 _comment() { # $1 = body
-  local card h; card="$(_card_id)"; [ -n "$card" ] || return 0
-  h="$(_hdr)" || return 0
+  local card; card="$(_card_id)"; [ -n "$card" ] || return 0
+  _hdr || return 0
+  local h="$_hdr_file"
   local payload; payload="$(python3 -c '
 import json,sys; print(json.dumps({"card_id":sys.argv[1],"author":sys.argv[2],"content":sys.argv[3]}))' \
     "$card" "$AGENT" "$1")" || return 0
@@ -266,7 +333,8 @@ import json,sys; print(json.dumps({"card_id":sys.argv[1],"author":sys.argv[2],"c
 # memory precondition and the comment helpers above: a dashboard hiccup must not block every suite
 # run fleet-wide).
 _has_live_mopsion_card() {
-  local h; h="$(_hdr)" || return 2
+  _hdr || return 2
+  local h="$_hdr_file"
   local body
   body="$(curl -s --max-time 10 -H @"$h" "$API/api/kanban" 2>/dev/null)" || return 2
 
@@ -298,6 +366,14 @@ sys.exit(1)
 
   # No in_progress card of ours -- look for a waiting mopsion card we are actively GATING (a
   # comment from us on it), the "altala gate-elt waiting" half of the requirement.
+  #
+  # D2 (card c0408a1c, MikroB 18681): a GATE AGENT's first run on a card has, by definition, no
+  # comment of its own yet -- it tests the suite BEFORE posting a verdict. Requiring "already
+  # commented" would refuse exactly the run the gate needs to produce that verdict. So a gate agent
+  # (qa/qa2/cybersec/cybersec2/cybered) is accepted on any non-stop-tagged waiting mopsion card that
+  # already carries a builder's REVIEW comment, even without a comment of its own. A BUILDER agent
+  # keeps the original rule unchanged: its own in_progress card, or a waiting card it has itself
+  # commented on.
   local waiting_ids
   waiting_ids="$(python3 -c '
 import json, sys
@@ -319,6 +395,11 @@ for r in rows:
 ' "$body")"
   [ $? -eq 2 ] && return 2
 
+  local is_gate=0
+  case " qa qa2 cybersec cybersec2 cybered " in
+    *" $AGENT "*) is_gate=1 ;;
+  esac
+
   local cid comments_body
   while IFS= read -r cid; do
     [ -n "$cid" ] || continue
@@ -326,12 +407,21 @@ for r in rows:
     if python3 -c '
 import json, sys
 try:
-    rows = json.loads(sys.argv[2])
+    rows = json.loads(sys.argv[3])
 except Exception:
     sys.exit(1)
-agent = sys.argv[1]
-sys.exit(0 if any(isinstance(r, dict) and r.get("author") == agent for r in rows) else 1)
-' "$AGENT" "$comments_body"; then
+if not isinstance(rows, list):
+    sys.exit(1)
+agent, is_gate = sys.argv[1], sys.argv[2] == "1"
+for r in rows:
+    if not isinstance(r, dict):
+        continue
+    if r.get("author") == agent:
+        sys.exit(0)
+    if is_gate and (r.get("content") or "").lstrip().upper().startswith("REVIEW"):
+        sys.exit(0)
+sys.exit(1)
+' "$AGENT" "$is_gate" "$comments_body"; then
       echo "$cid"; return 0
     fi
   done <<<"$waiting_ids"
