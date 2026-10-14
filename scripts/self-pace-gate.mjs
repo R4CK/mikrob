@@ -31,7 +31,7 @@
 import { readFileSync, appendFileSync, statSync, realpathSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
-import { basename, resolve } from 'node:path'
+import { basename, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { allow, deny, isInvokedDirectly } from './hook-lib.mjs'
@@ -732,6 +732,15 @@ const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH
 // (src/egress-allowlist-baseline.ts). This gate narrows the casual route; that one
 // catches the rest after the fact.
 const ALLOWLIST_BASENAME = 'egress-allowlist.json'
+// Card 86c1372a (RedHat GO F-RH1/F-RH3, 1f4c046b follow-up): the Bash-side check below already
+// fail-closes on the history dir and this second file by NAME (ALLOWLIST_MENTION_RX), but the
+// NATIVE file-tool check further down used to compare only against ALLOWLIST_BASENAME --
+// Write/Edit/MultiEdit/NotebookEdit on a file under the history dir, or on this file, were
+// allowed (measured: "a fajl-eszkoz kapu nem fedi az elozmeny-konyvtarat ... es a
+// store/bash-egress-allowlist.json-t"). Both are now covered below.
+const BASH_ALLOWLIST_BASENAME = 'bash-egress-allowlist.json'
+// Keep in step with HISTORY_DIRNAME in src/web/egress-allowlist-baseline.ts.
+const HISTORY_DIRNAME = 'egress-allowlist.history'
 // The STORE objects, not the concept: the file and its history directory, or a glob that
 // starts on the name (egress-allow*, egress-allowlist.*). A plain /egress[-_]?allow/ also
 // matched this gate's own source and test names (egress-allowlist-baseline.ts), so no
@@ -767,14 +776,21 @@ function realOrSelf(p) {
   try { return realpathSync(p) } catch { return p }
 }
 
-// Does a native file-tool call target the allowlist? `allowlistPath` is the real file
-// this install's egress-gate reads; tests pass a tmp one.
+// Does a native file-tool call target the allowlist, its history dir, or the Bash-side
+// allowlist? `allowlistPath` is the real egress-allowlist.json this install's egress-gate
+// reads (tests pass a tmp one); the other two objects live next to it in the same store dir.
 export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLOWLIST_PATH, cwd = process.cwd()) {
   const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
   if (!raw) return false
-  if (basename(raw).toLowerCase() === ALLOWLIST_BASENAME) return true
+  const base = basename(raw).toLowerCase()
+  if (base === ALLOWLIST_BASENAME || base === BASH_ALLOWLIST_BASENAME) return true
   const abs = resolve(cwd, expandHome(raw))
-  return realOrSelf(abs) === realOrSelf(allowlistPath)
+  const realAbs = realOrSelf(abs)
+  if (realAbs === realOrSelf(allowlistPath)) return true
+  const storeDir = dirname(allowlistPath)
+  if (realAbs === realOrSelf(join(storeDir, BASH_ALLOWLIST_BASENAME))) return true
+  const historyDir = realOrSelf(join(storeDir, HISTORY_DIRNAME))
+  return realAbs === historyDir || realAbs.startsWith(historyDir + sep)
 }
 
 // Split a compound command into individual simple commands, so a token in one
