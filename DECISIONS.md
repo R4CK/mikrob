@@ -20276,3 +20276,17 @@ Peti reklamációja (Telegram 11264/11274): "A fő verziószám nem jó." Mérve
 **Teszt:** `src/__tests__/version.test.ts` kiegészítve (`hasNewerBuildOnDisk` 4 önálló, fs-mentes eset + 1 "stabil ismételt híváson belül" integrációs eset), `tsc --noEmit` tiszta, `store/bump-upstream-version.sh --selftest` 10/10 zöld, `store/marveen-land.sh --selftest` 60/60 zöld (a bekötés nem tört semmit), `src/__tests__/store-selftests-all-run.test.ts` 101/101 zöld (a két új mode-selftest-tel), `lang-parity.test.ts` és `public-digest.test.ts` is zöld marad.
 
 **Ki döntött:** backend3 (kártya 165350f1, 2026-10-14).
+
+---
+
+**2026-10-14 -- 1f4c046b (Köteg 13 upstream-sync): command-syntax minták a memory-API tartalom-szűrőjében -- fork-divergencia upstream a30553d6-tól (MEGTARTVA, nem törölve)**
+
+Upstream a30553d6 ("Security infra package", #1357) a memory-API `SUSPICIOUS_PATTERNS` listájából (src/web/routes/memories.ts) TÖRÖLTE az összes command-syntax mintát (curl, bash -c, eval(, exec(, import subprocess, rm -rf), indoklás: 2124 éles tételen (upstream saját flottája) 0% precizitás (11 találat, mind false positive), és a tárolt szöveg nem fut le -- a vegrehajtás-idejű kapuk (destructive-gate.py, bash-egress-guard.py) a valódi védelem. Egy új pin-teszt (scripts/__tests__/memory-content-filter.test.py) is landolt ezzel, ami a törlést kényszeríti ki jövőben is.
+
+Ez a fork már korábban, függetlenül, az ELLENKEZŐ döntést hozta: a curl-minta (card f8599516) több WhiteHat/RedHat kört (F-1..F-4, Cybered) kapott, valódi bypass-eket zárva be minden kör után -- komoly, mért biztonsági munka, nem egy felejtett prototípus.
+
+**Döntés (MikroB, msg 11947/11948, 2026-10-14): (a) -- MEGTARTJUK a saját command-syntax/curl mintáinkat, az upstream törlést NEM vesszük át.** Indok: a kódminőségi alapelvek 5. pontja -- működő, gate-elt biztonsági funkciót csak Peti explicit jóváhagyásával vonunk vissza -- és az upstream 0%-os precizitás-mérés AZ Ő korpuszukon történt, a mi továbbfejlesztett regexünkre nincs mérve. A pin-tesztet a fork saját döntésére igazítottuk (a minták JELENLÉTÉT pineli, nem a hiányukat) -- lásd a teszt docstringjét a részletekért.
+
+**Nyitva (MikroB kérése):** ha olcsón megmérhető, a saját mintáink valós találati arányát (hány találat, ebből hány false positive) az élő memória-DB-n is érdemes megnézni; ha a precizitás nálunk is rossznak bizonyul, az Peti elé megy külön döntésre -- ez a kártya kört NEM tartalmazza.
+
+**Ki döntött:** MikroB (Peti nevében, 5. kódminőségi elv alapján), végrehajtotta backend3 (kártya 1f4c046b, 2026-10-14).
