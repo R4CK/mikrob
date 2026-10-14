@@ -19,7 +19,7 @@ echo 'Hozz letre egy hello.txt fajlt.' > "$PROMPT"
 
 STUB="$TD/stub-seged-hivo.py"
 cat > "$STUB" <<'PYEOF'
-import argparse, json, os, sys
+import argparse, json, os, sys, time
 from datetime import datetime
 from pathlib import Path
 ap = argparse.ArgumentParser()
@@ -32,6 +32,9 @@ store = root / 'store'
 store.mkdir(exist_ok=True)
 log = store / 'seged-hivo-naplo.jsonl'
 engine, _, model = a.seged.partition(':')
+delay = float(os.environ.get('STUB_CALL_DELAY_S', '0'))
+if delay:
+    time.sleep(delay)
 now = datetime.now().astimezone().isoformat(timespec='milliseconds')
 status = 'error' if (root / 'FORCE_ERROR').exists() else 'ok'
 row = {'ido': now, 'hivas_id': os.urandom(8).hex(), 'hivo': a.hivo, 'kartya': a.kartya,
@@ -142,6 +145,43 @@ with open('$LOG', 'w') as f:
 "
 case_ 'hourly: 5 BLOCKED agy rows do not count -> still goes' 0 \
   --hivo teszt --kartya x --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
+
+# --- concurrent callers must not exceed the hourly cap (QA FAIL, comment 18226) -----------------
+# Repro of QA's exact scenario: 4 recent agy rows seeded (sent_count=4 < 5 limit), two wrapper
+# invocations launched at the SAME instant with a delay in the underlying call to widen the race
+# window. Before the fix both passed (6/5 final count); after the fix exactly one must go through
+# and the other must be blocked with exit 5.
+seed_recent 4
+n=$((n + 1))
+MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="${GEMINI_DASHBOARD_URL:-http://127.0.0.1:1}" \
+  STUB_CALL_DELAY_S=0.3 GEMINI_AGY_HOURLY_LOCK="$TD/store/hourly.lock" \
+  "$SUT" --hivo teszt --kartya a --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w" \
+  > "$TD/race-a.out" 2> "$TD/race-a.err" &
+PID_A=$!
+MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="${GEMINI_DASHBOARD_URL:-http://127.0.0.1:1}" \
+  STUB_CALL_DELAY_S=0.3 GEMINI_AGY_HOURLY_LOCK="$TD/store/hourly.lock" \
+  "$SUT" --hivo teszt --kartya b --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w" \
+  > "$TD/race-b.out" 2> "$TD/race-b.err" &
+PID_B=$!
+set +e
+wait "$PID_A"; RC_A=$?
+wait "$PID_B"; RC_B=$?
+set -e
+ok_count=0
+[ "$RC_A" -eq 0 ] && ok_count=$((ok_count + 1))
+[ "$RC_B" -eq 0 ] && ok_count=$((ok_count + 1))
+blocked_count=0
+[ "$RC_A" -eq 5 ] && blocked_count=$((blocked_count + 1))
+[ "$RC_B" -eq 5 ] && blocked_count=$((blocked_count + 1))
+if [ "$ok_count" -ne 1 ] || [ "$blocked_count" -ne 1 ]; then
+  fails+=("concurrent race: want exactly 1 ok (rc=0) + 1 blocked (rc=5), got rc_a=$RC_A rc_b=$RC_B")
+fi
+final_sent=$(grep -c '"status": "ok"' "$LOG" 2>/dev/null || true)
+if [ "$final_sent" != "5" ]; then
+  fails+=("concurrent race: want final sent count 5 (4 seed + 1 winner), got $final_sent in $LOG")
+fi
 
 # --- error propagation from the underlying call ----------------------------
 : > "$LOG"
