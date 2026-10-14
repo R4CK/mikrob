@@ -219,6 +219,31 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
   it('a SEC tag in mathematical white square brackets: still excluded', () => {
     expect(isEligibleForGeminiOrdering(card({ title: 'Fix ⟦SEC⟧ something', labels: [] }))).toBe(false)
   })
+  // H1 (card b3ce0a88 delta-gate, RedHat NO-GO comment 18124): a fixed bracket-homoglyph dict,
+  // translated BEFORE NFKD, missed any form that NFKD-decomposes INTO one of the mapped brackets
+  // (still undecomposed when the dict's exact-codepoint translate ran) -- fixed by mapping by
+  // Unicode category (Ps/Pi -> "[", Pe/Pf -> "]") AFTER NFKD, fail-closed by construction.
+  it('a SEC tag in half-width corner brackets (NFKD-decomposes into 「」): still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix ｢SEC｣ something', labels: [] }))).toBe(false)
+  })
+  it('a SEC tag in the left-pointing angle bracket (NFKD-decomposes into 〈〉): still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix 〈SEC〉 something', labels: [] }))).toBe(false)
+  })
+  it('a SEC tag in a Ps/Pe bracket pair with NO dedicated mapping (medium parenthesis ornament): still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix ❨SEC❩ something', labels: [] }))).toBe(false)
+  })
+  // H2 (card b3ce0a88 delta-gate, RedHat NO-GO comment 18124): the previous non-anchored regex
+  // matched from the first opening bracket to the first closing bracket only, so a tag NESTED
+  // inside another bracket group was swallowed whole by the outer pair and never isolated.
+  it('a SEC tag doubly-nested in square brackets ([[SEC]]): still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix [[SEC]] something', labels: [] }))).toBe(false)
+  })
+  it('a SEC tag nested inside round brackets (([SEC])): still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix ([SEC]) something', labels: [] }))).toBe(false)
+  })
+  it('a SEC tag nested behind other text inside the same bracket ([x (SEC)]): still excluded', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix [x (SEC)] something', labels: [] }))).toBe(false)
+  })
   // H2 (WhiteHat2 comment 17986): a title containing a literal NUL byte makes spawnSync THROW
   // synchronously (Node refuses a NUL-containing argv string) -- uncaught, this crashed the
   // ENTIRE sweep via the unguarded .filter() callback, not just this one card. Real subprocess
