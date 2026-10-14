@@ -376,6 +376,18 @@ if [[ "$MODE" == "generate" ]]; then
       echo "local-llm: ${vram_line:-no output from the vram guard} (rc=$vram_rc) -- this call belongs online" >&2
       exit 6
     fi
+  else
+    # Card 234306ca Cybersec F1 (Gate-SHA 9b7c73ae): a MISSING guard at the default path (e.g. after
+    # a rename/rebrand of vram-guard-check.sh or its directory) used to fall straight through here
+    # with no trace at all -- every test still went green (4/4, 19/19) because they all pass their
+    # own LOCAL_LLM_VRAM_GUARD override, so none of them ever exercised the real default path.
+    # DECISION (recorded in DECISIONS.md, this card): warn-and-continue, not fail-closed. Flipping
+    # this to fail-closed would contradict local-llm-vram-choke-point.test.ts's own, deliberately
+    # pinned "a MISSING guard binary does not block generate (fail-open on absence, matching every
+    # dispatcher)" case -- the choke point's whole purpose is a defense-in-depth BACKSTOP behind each
+    # dispatcher's own direct vram-guard-check.sh call, not a second, stricter gate with its own
+    # failure mode. The fix is making the silence visible, not changing what it decides.
+    echo "local-llm: vram guard not found at '$VRAM_GUARD' -- VRAM choke-point skipped, call proceeds unchecked (set LOCAL_LLM_VRAM_GUARD if it moved)" >&2
   fi
   case "$(model_switch_state "$MODEL")" in
     DISABLED)
