@@ -226,8 +226,14 @@ export function buildSummary(
     // guarantees c.model/c.taskType are strings when called through the real route, but this
     // function is exported and callable directly (as the tests do) -- coerceString() here means
     // a non-string key can never reach Object.fromEntries below, whichever caller it came from.
-    bump(byModel, coerceString(c.model) ?? 'ismeretlen', c.status)
-    bump(byTaskType, coerceString(c.taskType) ?? 'ismeretlen', c.status)
+    // WhiteHat2 L1 (card f5dfe9ee): `?? 'ismeretlen'` only falls back on null/undefined, but an
+    // empty string ('', the normalized value for a missing/non-string modell|feladattipus) is
+    // neither -- it would key its own '' bucket instead of joining 'ismeretlen', changing
+    // behaviour from the pre-coerceString `c.model || 'ismeretlen'`. `||` after coerceString()
+    // keeps the object-safety (coerceString already stripped non-strings) while restoring the
+    // original empty-string fallback.
+    bump(byModel, coerceString(c.model) || 'ismeretlen', c.status)
+    bump(byTaskType, coerceString(c.taskType) || 'ismeretlen', c.status)
   }
   // Object.fromEntries defines OWN data properties (CreateDataPropertyOrThrow), never going
   // through [[Set]] / the inherited __proto__ accessor -- safe even if a key is '__proto__'.

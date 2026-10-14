@@ -20303,6 +20303,22 @@ Cybersec F1 lelet a 234306ca gate-jéből (Gate-SHA 9b7c73ae): ha `store/vram-gu
 
 **Ki döntött:** backend3 (kártya aacb8ceb, 2026-10-14).
 
+## 2026-10-14 -- Kártya 25ea084c (TOKENVAK915): a fő ügynök saját izolált config-gyökere, ADAPT nem ADOPT
+
+**Hiba:** a fő ügynök (channels-session, saját `CLAUDE_CONFIG_DIR`-rel, ha `MAIN_AGENT_ISOLATED_CONFIG=1` vagy `MAIN_AGENT_CONFIG_DIR` be van állítva) izolált config-gyökerét a token/kontextus-olvasók (`context-guard-runner.ts`, `context-restart-gate-runner.ts`) nem keresték -- mindkét fájl saját `configDirFor()` másolata feltétel nélkül `undefined`-et adott vissza `MAIN_AGENT_ID`-ra, tehát a mérés mindig a megosztott `~/.claude`-ot nézte, akkor is, ha a session ténylegesen izoláltan futott.
+
+**Döntés: ADAPT, nem ADOPT (10. szabály).** Az upstream saját megoldása egy új, közös modul (`src/web/main-transcript-root.ts`), ami `configDirFor`-t és `newestMainConfigRoot`-ot exportálja, és mindkét korábbi helyi másolatot kiváltja. Ez a modul egy NAGYOBB, több fájlra kiterjedő, "felügyelt átállásként" (card 5c134edf) halasztott upstream-szinkron RÉSZE (érinti: `active-model.ts`, `agent-process.ts`, `agent-scaffold.ts`, `routes/agent-terminal.ts` -- titok-kezelés, custom-provider, tool-deny-lista változásokkal együtt), és a `5c134edf` kártya SOHA nem létezett a táblán (`acknowledged-conflicts.ts` már korábban, 2026-10-09-én, backend/6b10a6b8 kártyán ezt dokumentálta "dangling reference"-ként).
+
+Mivel a TOKENVAK915 hiba önmagában szűk és jól körülhatárolt, NEM vártam meg a teljes (soha nem ütemezett) felügyelt átállást: saját, fork-tulajdonú `src/web/main-transcript-root.ts`-t írtam, `mainAgentConfigDir(workingDir)` export-tal (SZÁNDÉKOSAN más néven, mint upstream `configDirFor`-ja, hogy ne ütközzön a már eldöntött, exportált `configDirFor`-ral, ami `context-restart-gate-runner.ts`-ben marad, 6 command-surface fájl importálja onnan, kártya d79a69b5). A logika a már meglévő fork-infrastruktúrát hasznosítja újra: `mainConfigRoots()` (`inbound-probe.ts`, a 2026-09-11 CONFIG-DIR BLIND SPOT javításból) + `readTranscriptMtimeFromProjectDir` (`active-model.ts`) -- minden jelölt gyökeret megnéz, és a LEGFRISSEBB transzkripttel rendelkezőt választja, ugyanaz az elv, mint amit `mainTranscriptDirs()` már használ a bejövő-üzenet időbélyegekre.
+
+**Mindkét érintett fájl `configDirFor()`-ja** most erre delegál `MAIN_AGENT_ID`-ra: `mainAgentConfigDir(agentConfigRoot(name))`. Más ügynökre a viselkedés VÁLTOZATLAN (`resolveAgentConfigDirForRead`). A 8 external call site (`session-control.ts`, `queue-view.ts`, `system-status.ts`, `builtin-commands.ts`, `midturn-commands.ts`, `main-model.ts`, `routes/marveen.ts`), ami a `context-restart-gate-runner.ts`-ből importált `configDirFor`-t hívja `MAIN_AGENT_ID`-val, UGYANEZT a javítást kapja, mellékhatásként -- ugyanaz a hiba volt mindegyikben.
+
+**Mérés:** `tsc --noEmit` tiszta. Új tesztfájl (`main-transcript-root.test.ts`, 6 eset, köztük 2 MUTATION PIN: melyik gyökér nyer, ha mindkettőnek van transzkriptje, különböző frissességgel). A meglévő `context-restart-gate-wiring.test.ts` mock-ja (`vi.mock('../web/main-transcript-root.js', ...)`) KIEGÉSZÍTVE a `mainAgentConfigDir` exporttal (a mock korábban "halott kód" volt, semmi nem importálta a modult -- most importálja). Célzott regresszió: 19+15+6+10 fájl (291+335+99+265 teszt) zöld, beleértve az `acknowledged-conflicts.ts`-t olvasó guard-teszteket (`fork-upstream-conflict-guard.test.ts`, `fork-upstream-drift-check.test.ts`).
+
+**`acknowledged-conflicts.ts` frissítve** (`src/web/context-guard-runner.ts` bejegyzés, egy záró mondat hozzáfűzve): a blob-pin SZÁNDÉKOSAN VÁLTOZATLAN marad (nem upstream aktuális diffjét fogadtam el, saját megoldást építettem) -- csak a TOKENVAK915 rész zárva, a fájl többi, upstream-oldali (saturation-banner) változása továbbra is nyitott.
+
+**Ki döntött:** backend3 (kártya 25ea084c, 2026-10-14).
+
 ---
 
 **2026-10-14 -- b73722e1: newDevStop kapcsolt-kártya kivétel -- aktiválási-pillanatkép az élő státusz helyett (WhiteHat2 NO-GO javítás)**

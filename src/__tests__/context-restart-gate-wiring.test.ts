@@ -38,6 +38,10 @@ vi.mock('../web/context-guard-runner.js', () => ({ getHardGuardPhase: () => null
 vi.mock('../web/main-transcript-root.js', () => ({
   configDirFor: () => CONFIG_DIR,
   newestMainConfigRoot: () => CONFIG_DIR,
+  // card 25ea084c (TOKENVAK915): the fork's own module adapts the deferred upstream extraction
+  // with this name instead of reusing `configDirFor` (which stays decided-and-exported from
+  // context-restart-gate-runner.ts itself, per the acknowledged-conflicts entries above).
+  mainAgentConfigDir: () => CONFIG_DIR,
 }))
 vi.mock('../web/claude-plans.js', () => ({ resolveAgentConfigDirForRead: () => CONFIG_DIR }))
 // agentConfigRoot is NAME-dependent in production (main -> PROJECT_ROOT, sub-agent ->

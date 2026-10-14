@@ -219,3 +219,41 @@ describe('GET /api/memories -- a REAL F1-minted agent key resolves through the F
     expect(getBody().content).toBe('victim private hot-tier content')
   })
 })
+
+// WhiteHat2 F2 (Gate-SHA 64cbec54, 1f4c046b delta): every sibling id-addressed route (GET /:id,
+// PUT/PATCH, DELETE) scopes a device-key caller to its own rows and 404s on anyone else's
+// (card 9655494c/3d186397) -- /versions did not, so a pre-image's full content (the thing a plain
+// delete is supposed to make unreadable) was fetchable by id alone, with the id itself a
+// sequential integer an attacker could walk.
+describe('GET /api/memories/:id/versions -- agent-boundary check (WhiteHat2 F2)', () => {
+  it('a device key for a DIFFERENT agent 404s, same as GET /:id does for this row', async () => {
+    const getById = makeCtx(`/api/memories/${victimPrivateId}`)
+    ;(getById.ctx as any).auth = { kind: 'device', device: 'agent:attacker' }
+    expect(await tryHandleMemories(getById.ctx)).toBe(true)
+    expect(getById.status()).toBe(404)
+
+    const { ctx, getBody, status } = makeCtx(`/api/memories/${victimPrivateId}/versions`)
+    ;(ctx as any).auth = { kind: 'device', device: 'agent:attacker' }
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(status()).toBe(404)
+    expect(JSON.stringify(getBody())).not.toContain('victim private hot-tier content')
+  })
+
+  it('the owning device key still gets its own versions', async () => {
+    const { ctx, status } = makeCtx(`/api/memories/${victimPrivateId}/versions`)
+    ;(ctx as any).auth = { kind: 'device', device: 'agent:victim' }
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(status()).toBe(200)
+  })
+
+  // Backward-compat pin: no device key at all (shared-token caller) is unchanged -- full
+  // isolation for the shared token stays out of scope here, same as GET /:id (card 2520b85a).
+  it('no device key at all (shared-token caller) is UNCHANGED -- still answers 200', async () => {
+    const { ctx, status } = makeCtx(`/api/memories/${victimPrivateId}/versions`)
+    const handled = await tryHandleMemories(ctx)
+    expect(handled).toBe(true)
+    expect(status()).toBe(200)
+  })
+})

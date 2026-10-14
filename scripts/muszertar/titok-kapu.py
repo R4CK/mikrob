@@ -114,8 +114,14 @@ KIVETEL_SOR = re.compile(r"TITOK-KAPU-KIVETEL")
 # altalanos minta (64 veletlen hex karakter ugyanugy nez ki, mint egy sha256 -- lasd lejjebb).
 # Minden hivasnal FRISSEN olvasva (nem cache-elve): a token rotal, egy regi ertek hamis
 # negativot adna.
-def _marveen_root() -> str:
-    return os.environ.get("MARVEEN_ROOT", str(Path(__file__).resolve().parents[2]))
+def _marveen_root(root_override: str = None) -> str:
+    """A valodi flotta-gyoker, KIZAROLAG a fajl sajat helyebol szamolva. `root_override` csak a
+    SAJAT --onteszt kodjanak explicit parametere (M1-javitas, card 09117e0a, RedHat NO-GO 2.
+    kor, komment 18611) -- SOHA nem env-bol: a korabbi MARVEEN_ROOT env-felulirast a folyamatfa
+    felett allo, a kapu altal nem irt barmely folyamat beallithatta, es azzal a kategoria-kapu
+    helyett egy masik gyokeret (igy masik dashboard-token-fajlt) adhatott at a VALODI
+    run_gate()/CLI utnak is -- nema bypass."""
+    return root_override or str(Path(__file__).resolve().parents[2])
 
 
 class TitokKapuHiba(Exception):
@@ -123,42 +129,40 @@ class TitokKapuHiba(Exception):
     a hivo ezt hibaval (exit 2) allja meg, nem csendes 'nincs talalat'-tal."""
 
 
-# F2-javitas (card 09117e0a, RedHat NO-GO N4, komment 18498): a path-override env-valtozok
-# korabban FELTETEL NELKUL hattak -- a folyamatfa felett allo, a kapu altal nem irt env egy
-# nemletezo utra allithatta oket, es ez nema bypasst adott (a valodi alapertelmezett token
-# sosem kerult beolvasasra). Most csak explicit teszt-modban (ez az env) ertik el hatasukat;
-# eles futason (run_gate, --staged, --kovetett) ez sosincs beallitva, tehat mindig a valodi
-# alapertelmezett ut szamit.
-_TESZT_MOD_ENV = "TITOK_KAPU_TESZT_MODE"
-
-
-def elo_titkok():
+def elo_titkok(dash_override: str = None, oauth_override: str = None, root: str = None,
+                fail_closed: bool = True):
     """[(nev, ertek)] a flotta sajat, MOST elo titkaira.
 
+    M1-javitas (card 09117e0a, RedHat NO-GO 2. kor, komment 18611): a korabbi
+    TITOK_KAPU_TESZT_MODE/TITOK_KAPU_DASHBOARD_TOKEN_FILE/TITOK_KAPU_AGY_OAUTH_FILE/MARVEEN_ROOT
+    env-valtozok mind a HIVO altal beallithatok voltak akkor is, amikor a titok-kapu a VALODI
+    gate-folyamatban (run_gate, --staged, --kovetett, fajl-argumentum) futott: egy a folyamatfa
+    felett allo, a kapu altal nem irt env csendben masik dashboard-token-fajlra vagy masik
+    gyokerre iranyithatta a live-titok-egyezest, es azzal a valodi tokent sosem vetette ossze
+    semmivel. Most `dash_override`/`oauth_override`/`root` KIZAROLAG explicit fuggveny-
+    parameterek, amiket a folyamaton BELUL csak a sajat --onteszt kodja ad at kezzel (lasd
+    elo_titkok_onteszt/elo_titkok_fail_closed_onteszt) -- a VALODI run_gate()/CLI ut (es a
+    normal onteszt() POZITIV/NEGATIV kore is) semmit nem ad at, tehat mindig a VALODI,
+    __file__-bol szamolt gyokeret es alapertelmezett fajlokat nezi, es az environmentnek erre
+    SEMMI hatasa nincs.
+
     A dashboard-token fajl MINDIG letezik egy eles flotta-checkoutban (lasd a root CLAUDE.md
-    -t) -- ha a feloldott ut nem olvashato ES nem vagyunk explicit teszt-modban, ez HIBA
-    (TitokKapuHiba, a hivo exit 2-vel all meg), nem csendes kihagyas: a korabbi "hianyzo fajl
-    csendben kimarad" viselkedes pont ezt tette lehetove (MARVEEN_ROOT egy nemletezo gyokerre
-    allitva -> a valodi token soha nem kerult osszevetesre -> PASS). Az agy OAuth-fajl viszont
-    TOVABBRA IS csendben kimaradhat: nem minden gep futtatott meg 'agy'-t, ez normalis allapot,
-    nem egy manipulalhato ellenorzesi pont."""
+    -t) -- ha a feloldott ut nem olvashato ES `fail_closed` igaz, ez HIBA (TitokKapuHiba, a
+    hivo exit 2-vel all meg), nem csendes kihagyas. Az agy OAuth-fajl viszont TOVABBRA IS
+    csendben kimaradhat: nem minden gep futtatott meg 'agy'-t, ez normalis allapot, nem egy
+    manipulalhato ellenorzesi pont."""
     out = []
-    teszt_mod = os.environ.get(_TESZT_MOD_ENV) == "1"
-    dash_override = os.environ.get("TITOK_KAPU_DASHBOARD_TOKEN_FILE")
-    dash_path = dash_override if (teszt_mod and dash_override) else os.path.join(
-        _marveen_root(), "store", ".dashboard-token"
-    )
+    dash_path = dash_override or os.path.join(_marveen_root(root), "store", ".dashboard-token")
     try:
         v = open(dash_path, "r", encoding="utf-8").read().strip()
         if len(v) >= 16:
             out.append(("fleet-dashboard-token", v))
     except OSError as e:
-        if not teszt_mod:
+        if fail_closed:
             raise TitokKapuHiba(
                 f"a flotta sajat dashboard-token fajlja nem olvashato ({dash_path}): {e}"
             ) from e
-    oauth_override = os.environ.get("TITOK_KAPU_AGY_OAUTH_FILE")
-    oauth_path = oauth_override if (teszt_mod and oauth_override) else os.path.join(
+    oauth_path = oauth_override or os.path.join(
         str(Path.home()), ".gemini", "antigravity-cli", "antigravity-oauth-token"
     )
     try:
@@ -216,9 +220,11 @@ def _kodolt_alakok(ertek: str):
 _ZAJ_RE = re.compile(r"[\s'\"+]+")
 
 
-def vizsgal_szoveg(szoveg: str, cimke: str, kivetel_aktiv: bool = True):
+def vizsgal_szoveg(szoveg: str, cimke: str, kivetel_aktiv: bool = True, fail_closed: bool = True,
+                    dash_override: str = None, oauth_override: str = None, root: str = None):
     talalatok = []
-    elo = elo_titkok()
+    elo = elo_titkok(dash_override=dash_override, oauth_override=oauth_override, root=root,
+                      fail_closed=fail_closed)
     elo_alakok = [(nev, forma) for nev, ertek in elo for forma in _kodolt_alakok(ertek)]
     sorok = szoveg.splitlines()
     aktiv_sorok = [s for s in sorok if not KIVETEL_SOR.search(s)] if kivetel_aktiv else sorok
@@ -321,56 +327,54 @@ NEGATIV = [
 
 def onteszt() -> int:
     hiba = 0
-    # A teljes onteszt futtatas TESZT-MODBAN zajlik: a POZITIV/NEGATIV korok es az
-    # elo_titkok_onteszt() SAJAT fixturei ezert hosttol fuggetlenul, determinisztikusan futnak
-    # (nem akad el, ha EZEN a gepen/worktree-ben nincs valodi store/.dashboard-token -- a
-    # hianyzo alapertelmezett fajl miatti uj, fail-closed HIBA, lasd N4-javitas, csak az azt
-    # kifejezetten tesztelo elo_titkok_fail_closed_onteszt()-ben varhato, ami ezert kivul all
-    # ezen a blokkon es maga kapcsolja ki/vissza a teszt-modot.
-    os.environ[_TESZT_MOD_ENV] = "1"
-    try:
-        print("== POZITIV KONTROLL (a muszernek LATNIA kell) ==")
-        for vart, minta in POZITIV:
-            t = vizsgal_szoveg(minta, "<onteszt>")
-            nevek = {x[2] for x in t}
-            ok = vart in nevek
-            print(f"  [{'OK ' if ok else 'BUKO'}] {vart:<18} -> {sorted(nevek) or 'NINCS TALALAT'}")
-            if not ok: hiba += 1
-        print("== SZETVALASZTAS (publikus kulcs: lat, de nem blokkol) ==")
-        t = vizsgal_szoveg(PUBLIKUS_MINTA, "<onteszt>")
-        lat = bool(t)
-        nem_blokkol = all(not x[4] for x in t)
-        print(f"  [{'OK ' if lat else 'BUKO'}] a publikus (anon) JWT-t megtalalja       -> {[x[2] for x in t] or 'NINCS'}")
-        print(f"  [{'OK ' if (lat and nem_blokkol) else 'BUKO'}] es NEM blokkolja a commitot")
-        if not (lat and nem_blokkol): hiba += 1
-        t = vizsgal_szoveg("SUPA_SERVICE=" + [m for n,m in POZITIV if n=="jwt"][-1].split("=")[-1], "<onteszt>")
-        blokkol = any(x[4] for x in t)
-        print(f"  [{'OK ' if blokkol else 'BUKO'}] a service_role JWT-t viszont BLOKKOLJA -> {[x[2] for x in t] or 'NINCS'}")
-        if not blokkol: hiba += 1
-        print("== NEGATIV KONTROLL (a muszer NE szoljon) ==")
-        for minta in NEGATIV:
-            t = vizsgal_szoveg(minta, "<onteszt>")
-            ok = not t
-            print(f"  [{'OK ' if ok else 'BUKO'}] {minta[:52]:<52} -> {[x[2] for x in t] or 'tiszta'}")
-            if not ok: hiba += 1
-        print("== MASZK-ELLENORZES (a titok nem szivaroghat ki) ==")
-        m = maszk("sk-ant-api03-" + "Z"*40)
-        ok = "Z"*10 not in m and m.startswith("sk-a")
-        print(f"  [{'OK ' if ok else 'BUKO'}] a maszkolt alak: {m}")
+    # A POZITIV/NEGATIV korok es a kozvetlen vizsgal_szoveg()-hivasok ide lejjebb a MINTAK
+    # regexeit vizsgaljak, nem a live-titok-egyezest -- ezert fail_closed=False: a kor hosttol
+    # fuggetlenul, determinisztikusan fut (nem akad el, ha EZEN a gepen/worktree-ben nincs
+    # valodi store/.dashboard-token). M1-javitas (card 09117e0a, RedHat NO-GO 2. kor): korabban
+    # ezt egy env-alapu "teszt-mod" kapcsolo adta, amit a VALODI run_gate()/CLI ut hivoja is
+    # beallithatott -- most ez pusztan a jelen fuggvenyen BELULI, kezzel atadott parameter,
+    # a live uton semmi nem allithatja at. A hianyzo alapertelmezett fajl miatti fail-closed
+    # HIBA-t (N4-javitas) kulon, dedikaltan elo_titkok_fail_closed_onteszt() teszteli.
+    print("== POZITIV KONTROLL (a muszernek LATNIA kell) ==")
+    for vart, minta in POZITIV:
+        t = vizsgal_szoveg(minta, "<onteszt>", fail_closed=False)
+        nevek = {x[2] for x in t}
+        ok = vart in nevek
+        print(f"  [{'OK ' if ok else 'BUKO'}] {vart:<18} -> {sorted(nevek) or 'NINCS TALALAT'}")
         if not ok: hiba += 1
-        print("== N1-JAVITAS: a TITOK-KAPU-KIVETEL jelolo a fajl-argumentum (run_gate) agon NEM szamit ==")
-        pelda = "kulcs = \"sk-ant-api03-" + "A"*30 + "9zQ\"  # TITOK-KAPU-KIVETEL"
-        t_jelolt = vizsgal_szoveg(pelda, "<onteszt>")  # alapertek: --staged/--kovetett/onteszt mod
-        t_fajl = vizsgal_szoveg(pelda, "<onteszt>", kivetel_aktiv=False)  # run_gate mod
-        ok1 = not any(x[4] for x in t_jelolt)
-        ok2 = any(x[4] for x in t_fajl)
-        print(f"  [{'OK ' if ok1 else 'BUKO'}] --staged/--kovetett/onteszt agon a jelolo tovabbra is kimenti")
-        print(f"  [{'OK ' if ok2 else 'BUKO'}] fajl-argumentum (run_gate) agon a jelolo NEM menti ki -> BLOKK")
-        if not ok1: hiba += 1
-        if not ok2: hiba += 1
-        hiba += elo_titkok_onteszt()
-    finally:
-        del os.environ[_TESZT_MOD_ENV]
+    print("== SZETVALASZTAS (publikus kulcs: lat, de nem blokkol) ==")
+    t = vizsgal_szoveg(PUBLIKUS_MINTA, "<onteszt>", fail_closed=False)
+    lat = bool(t)
+    nem_blokkol = all(not x[4] for x in t)
+    print(f"  [{'OK ' if lat else 'BUKO'}] a publikus (anon) JWT-t megtalalja       -> {[x[2] for x in t] or 'NINCS'}")
+    print(f"  [{'OK ' if (lat and nem_blokkol) else 'BUKO'}] es NEM blokkolja a commitot")
+    if not (lat and nem_blokkol): hiba += 1
+    t = vizsgal_szoveg("SUPA_SERVICE=" + [m for n,m in POZITIV if n=="jwt"][-1].split("=")[-1], "<onteszt>", fail_closed=False)
+    blokkol = any(x[4] for x in t)
+    print(f"  [{'OK ' if blokkol else 'BUKO'}] a service_role JWT-t viszont BLOKKOLJA -> {[x[2] for x in t] or 'NINCS'}")
+    if not blokkol: hiba += 1
+    print("== NEGATIV KONTROLL (a muszer NE szoljon) ==")
+    for minta in NEGATIV:
+        t = vizsgal_szoveg(minta, "<onteszt>", fail_closed=False)
+        ok = not t
+        print(f"  [{'OK ' if ok else 'BUKO'}] {minta[:52]:<52} -> {[x[2] for x in t] or 'tiszta'}")
+        if not ok: hiba += 1
+    print("== MASZK-ELLENORZES (a titok nem szivaroghat ki) ==")
+    m = maszk("sk-ant-api03-" + "Z"*40)
+    ok = "Z"*10 not in m and m.startswith("sk-a")
+    print(f"  [{'OK ' if ok else 'BUKO'}] a maszkolt alak: {m}")
+    if not ok: hiba += 1
+    print("== N1-JAVITAS: a TITOK-KAPU-KIVETEL jelolo a fajl-argumentum (run_gate) agon NEM szamit ==")
+    pelda = "kulcs = \"sk-ant-api03-" + "A"*30 + "9zQ\"  # TITOK-KAPU-KIVETEL"
+    t_jelolt = vizsgal_szoveg(pelda, "<onteszt>", fail_closed=False)  # alapertek: --staged/--kovetett/onteszt mod
+    t_fajl = vizsgal_szoveg(pelda, "<onteszt>", kivetel_aktiv=False, fail_closed=False)  # run_gate mod
+    ok1 = not any(x[4] for x in t_jelolt)
+    ok2 = any(x[4] for x in t_fajl)
+    print(f"  [{'OK ' if ok1 else 'BUKO'}] --staged/--kovetett/onteszt agon a jelolo tovabbra is kimenti")
+    print(f"  [{'OK ' if ok2 else 'BUKO'}] fajl-argumentum (run_gate) agon a jelolo NEM menti ki -> BLOKK")
+    if not ok1: hiba += 1
+    if not ok2: hiba += 1
+    hiba += elo_titkok_onteszt()
     hiba += elo_titkok_fail_closed_onteszt()
     print(f"\nOSSZESEN: {hiba} bukas.")
     return 0 if hiba == 0 else 2
@@ -378,9 +382,12 @@ def onteszt() -> int:
 
 def elo_titkok_onteszt() -> int:
     """F2 (card 09117e0a, Peti dontes komment 18309 pont 2): a LIVE-titok literal-egyezes
-    onellenorzese, SAJAT, HAMIS fixture-fajlokkal (env-override-dal) -- SOHA nem a valodi
-    store/.dashboard-token-t vagy a valodi ~/.gemini oauth-tokent hasznalja, es host-fuggetlen
-    (mukodik olyan gepen is, ahol ezek nem leteznek)."""
+    onellenorzese, SAJAT, HAMIS fixture-fajlokkal -- SOHA nem a valodi store/.dashboard-token-t
+    vagy a valodi ~/.gemini oauth-tokent hasznalja, es host-fuggetlen (mukodik olyan gepen is,
+    ahol ezek nem leteznek). M1-javitas (card 09117e0a, RedHat NO-GO 2. kor): a fixture-fajlokat
+    kozvetlen fuggveny-parameterrel (dash_override/oauth_override) adja at vizsgal_szoveg()-nek,
+    nem env-valtozoval -- igy ez a teszt magat a VALODI, parameter-alapu mechanizmust gyakorolja,
+    nem egy kulon env-plumbingot."""
     import tempfile
 
     hiba = 0
@@ -397,123 +404,119 @@ def elo_titkok_onteszt() -> int:
             json.dump({"token": {"access_token": fake_access, "refresh_token": fake_refresh},
                        "id_token": "I" * 30}, f)
 
-        elozo_teszt_mod = os.environ.get(_TESZT_MOD_ENV)
-        os.environ[_TESZT_MOD_ENV] = "1"
-        os.environ["TITOK_KAPU_DASHBOARD_TOKEN_FILE"] = dash_file
-        os.environ["TITOK_KAPU_AGY_OAUTH_FILE"] = oauth_file
-        try:
-            print("== LIVE-TITOK LITERAL EGYEZES (sajat fixture, nem a valodi titok) ==")
+        def vizsgal(szoveg: str):
+            return vizsgal_szoveg(szoveg, "<onteszt>", dash_override=dash_file, oauth_override=oauth_file)
 
-            cases = [
-                ("raw dashboard token egyezik",       fake_dash, True),
-                ("raw access token egyezik",          fake_access, True),
-                ("raw refresh token egyezik",         fake_refresh, True),
-                ("base64-kodolt dashboard token",     base64.b64encode(fake_dash.encode()).decode(), True),
-                ("hex-kodolt dashboard token",        binascii.hexlify(fake_dash.encode()).decode(), True),
-                ("URL-kodolt access token",           _urlquote(fake_access, safe=""), True),
-                # F2-javitas (RedHat N2): az eddiginel szelesebb, korabban at nem fogott alakok.
-                ("nagybetus/kisbetus vegyes alak",    fake_dash.lower(), True),
-                ("dashboard token sortoressel szetvagva (tobb soron)",
-                 fake_dash[:10] + "\n" + fake_dash[10:30] + "\n" + fake_dash[30:], True),
-                ("dashboard token idezojellel/+ -szal szetvagva",
-                 f'"{fake_dash[:20]}" + "{fake_dash[20:]}"', True),
-                ("base64 dashboard token NEM 3-bajt-hataron (1-bajt elotag)",
-                 base64.b64encode(("x" + fake_dash).encode()).decode(), True),
-                ("base64 dashboard token NEM 3-bajt-hataron (2-bajt elotag)",
-                 base64.b64encode(("xy" + fake_dash).encode()).decode(), True),
-                ("base64url access token eltolva",
-                 base64.urlsafe_b64encode(("xy" + fake_access).encode()).decode(), True),
-                ("dupla URL-kodolt refresh token",
-                 _urlquote(_urlquote(fake_refresh, safe=""), safe=""), True),
-            ]
-            for nev, szoveg, vart_blokkol in cases:
-                t = vizsgal_szoveg(szoveg, "<onteszt>")
-                blokkol = any(x[4] for x in t)
-                ok = blokkol == vart_blokkol
-                print(f"  [{'OK ' if ok else 'BUKO'}] {nev:<34} -> {[x[2] for x in t] or 'NINCS'}")
-                if not ok: hiba += 1
+        print("== LIVE-TITOK LITERAL EGYEZES (sajat fixture, nem a valodi titok) ==")
 
-            # szokozzel szetszabdalt alak (ugyanazon a soron): a sor-szintu whitespace-tomorites
-            # ujra egybeolvasztja a kodolatlan erteket
-            szetszabdalt = fake_dash[:10] + " " + fake_dash[10:30] + " " + fake_dash[30:]
-            t = vizsgal_szoveg(szetszabdalt, "<onteszt>")
-            ok = any(x[4] for x in t)
-            print(f"  [{'OK ' if ok else 'BUKO'}] {'szokozzel szetszabdalt dashboard token':<34} -> {[x[2] for x in t] or 'NINCS'}")
+        cases = [
+            ("raw dashboard token egyezik",       fake_dash, True),
+            ("raw access token egyezik",          fake_access, True),
+            ("raw refresh token egyezik",         fake_refresh, True),
+            ("base64-kodolt dashboard token",     base64.b64encode(fake_dash.encode()).decode(), True),
+            ("hex-kodolt dashboard token",        binascii.hexlify(fake_dash.encode()).decode(), True),
+            ("URL-kodolt access token",           _urlquote(fake_access, safe=""), True),
+            # F2-javitas (RedHat N2): az eddiginel szelesebb, korabban at nem fogott alakok.
+            ("nagybetus/kisbetus vegyes alak",    fake_dash.lower(), True),
+            ("dashboard token sortoressel szetvagva (tobb soron)",
+             fake_dash[:10] + "\n" + fake_dash[10:30] + "\n" + fake_dash[30:], True),
+            ("dashboard token idezojellel/+ -szal szetvagva",
+             f'"{fake_dash[:20]}" + "{fake_dash[20:]}"', True),
+            ("base64 dashboard token NEM 3-bajt-hataron (1-bajt elotag)",
+             base64.b64encode(("x" + fake_dash).encode()).decode(), True),
+            ("base64 dashboard token NEM 3-bajt-hataron (2-bajt elotag)",
+             base64.b64encode(("xy" + fake_dash).encode()).decode(), True),
+            ("base64url access token eltolva",
+             base64.urlsafe_b64encode(("xy" + fake_access).encode()).decode(), True),
+            ("dupla URL-kodolt refresh token",
+             _urlquote(_urlquote(fake_refresh, safe=""), safe=""), True),
+        ]
+        for nev, szoveg, vart_blokkol in cases:
+            t = vizsgal(szoveg)
+            blokkol = any(x[4] for x in t)
+            ok = blokkol == vart_blokkol
+            print(f"  [{'OK ' if ok else 'BUKO'}] {nev:<34} -> {[x[2] for x in t] or 'NINCS'}")
             if not ok: hiba += 1
 
-            # NEGATIV: egy MASIK, veletlen 64-hex ertek (nem a fixture tokenunk) nem blokkol --
-            # ez bizonyitja, hogy a literal-egyezes NEM egy altalanos "64 hex" minta.
-            mas_hex = "a1" * 32
-            t = vizsgal_szoveg(mas_hex, "<onteszt>")
-            ok = not any(x[4] for x in t)
-            print(f"  [{'OK ' if ok else 'BUKO'}] {'mas 64-hex ertek NEM blokkol (nem minta-alapu)':<34} -> {[x[2] for x in t] or 'tiszta'}")
-            if not ok: hiba += 1
-        finally:
-            del os.environ["TITOK_KAPU_DASHBOARD_TOKEN_FILE"]
-            del os.environ["TITOK_KAPU_AGY_OAUTH_FILE"]
-            if elozo_teszt_mod is None:
-                del os.environ[_TESZT_MOD_ENV]
-            else:
-                os.environ[_TESZT_MOD_ENV] = elozo_teszt_mod
+        # szokozzel szetszabdalt alak (ugyanazon a soron): a sor-szintu whitespace-tomorites
+        # ujra egybeolvasztja a kodolatlan erteket
+        szetszabdalt = fake_dash[:10] + " " + fake_dash[10:30] + " " + fake_dash[30:]
+        t = vizsgal(szetszabdalt)
+        ok = any(x[4] for x in t)
+        print(f"  [{'OK ' if ok else 'BUKO'}] {'szokozzel szetszabdalt dashboard token':<34} -> {[x[2] for x in t] or 'NINCS'}")
+        if not ok: hiba += 1
+
+        # NEGATIV: egy MASIK, veletlen 64-hex ertek (nem a fixture tokenunk) nem blokkol --
+        # ez bizonyitja, hogy a literal-egyezes NEM egy altalanos "64 hex" minta.
+        mas_hex = "a1" * 32
+        t = vizsgal(mas_hex)
+        ok = not any(x[4] for x in t)
+        print(f"  [{'OK ' if ok else 'BUKO'}] {'mas 64-hex ertek NEM blokkol (nem minta-alapu)':<34} -> {[x[2] for x in t] or 'tiszta'}")
+        if not ok: hiba += 1
     return hiba
 
 
 def elo_titkok_fail_closed_onteszt() -> int:
-    """N4-javitas (card 09117e0a, RedHat NO-GO, komment 18498): (1) a path-override
-    env-valtozok TESZT-MOD NELKUL nem erhetnek el semmit -- egy a folyamatfa felett allo,
-    a kapu altal nem irt env nem tudja nemletezo/hamis fajlra iranyitani a live-titok-keresest
-    es azzal nema bypasst adni; (2) a hianyzo ALAPERTELMEZETT dashboard-token fajl (eles
+    """N4-javitas (card 09117e0a, RedHat NO-GO 1. kor, komment 18498) + M1-javitas (2. kor,
+    komment 18611): (1) a RedHat altal pontosan megnevezett env-valtozok (a korabbi
+    TITOK_KAPU_TESZT_MODE/TITOK_KAPU_DASHBOARD_TOKEN_FILE/TITOK_KAPU_AGY_OAUTH_FILE,
+    MARVEEN_ROOT) MOST mar a kodban EGYALTALAN nem leteznek elo_titkok() belsejeben -- ez a
+    teszt poszonozott ertekkel allitja be mindet, majd a VALODI hivasi alakot (parameter
+    nelkul) futtatja, es igazolja, hogy a poszonozott fajlok tartalma SOHA nem jelenik meg a
+    visszaadott titkok kozott; (2) a hianyzo ALAPERTELMEZETT dashboard-token fajl (eles
     futason ez mindig letezik, lasd a root CLAUDE.md-t) HIBAVAL (TitokKapuHiba) all meg, nem
-    csendes kihagyassal. Host-fuggetlen: nem tesz fel semmit a VALODI alapertelmezett fajl
-    letezeserol/tartalmarol, csak azt, hogy a FAKE fixture-ertek soha nem kerul elo belole."""
+    csendes kihagyassal -- most kozvetlenul a `root` parameterrel, env nelkul. Host-fuggetlen:
+    nem tesz fel semmit a VALODI alapertelmezett fajl letezeserol/tartalmarol, csak azt, hogy a
+    FAKE fixture-ertekek soha nem kerulnek elo."""
     import tempfile
 
     hiba = 0
-    elozo_teszt_mod = os.environ.pop(_TESZT_MOD_ENV, None)
-    try:
-        print("== N4-JAVITAS: path-override csak teszt-modban hat, hianyzo alap-fajl HIBA ==")
+    print("== M1-JAVITAS: a poszonozott env-valtozok nem erintik a valodi (parameter nelkuli) hivast ==")
+    with tempfile.TemporaryDirectory() as td:
+        poisoned_dash = os.path.join(td, "poisoned-dashboard-token")
+        poisoned_val = "J" * 64
+        with open(poisoned_dash, "w") as f:
+            f.write(poisoned_val + "\n")
+        poisoned_root = os.path.join(td, "poisoned-root")
+        os.makedirs(os.path.join(poisoned_root, "store"), exist_ok=True)
+        poisoned_root_val = "K" * 64
+        with open(os.path.join(poisoned_root, "store", ".dashboard-token"), "w") as f:
+            f.write(poisoned_root_val + "\n")
 
-        with tempfile.TemporaryDirectory() as td:
-            fake_file = os.path.join(td, "fake-dashboard-token")
-            fake_val = "J" * 64
-            with open(fake_file, "w") as f:
-                f.write(fake_val + "\n")
-            os.environ["TITOK_KAPU_DASHBOARD_TOKEN_FILE"] = fake_file
-            # TITOK_KAPU_TESZT_MODE szandekosan NINCS beallitva: az override-nak itt nem
-            # szabadna hatnia, fuggetlenul attol, hogy a VALODI alap-fajl ezen a gepen letezik-e.
-            try:
-                try:
-                    titkok = elo_titkok()
-                except TitokKapuHiba:
-                    titkok = []  # a hianyzo alap-fajl is fail-closed -- ez maga rendben van
-                fake_erintett = any(v == fake_val for _, v in titkok)
-                ok = not fake_erintett
-            finally:
-                del os.environ["TITOK_KAPU_DASHBOARD_TOKEN_FILE"]
-            print(f"  [{'OK ' if ok else 'BUKO'}] env-override TESZT_MODE nelkul nem hat (a fake ertek soha nem kerult elo)")
-            if not ok: hiba += 1
-
-        # (2) hianyzo alapertelmezett fajl: MARVEEN_ROOT egy ures ideiglenes gyokerre allitva,
-        # ahol nincs store/.dashboard-token -> HIBA, nem csendes kihagyas.
-        elozo_root = os.environ.pop("MARVEEN_ROOT", None)
-        with tempfile.TemporaryDirectory() as td2:
-            os.environ["MARVEEN_ROOT"] = td2
-            try:
-                raised = False
-                try:
-                    elo_titkok()
-                except TitokKapuHiba:
-                    raised = True
-            finally:
-                if elozo_root is None:
-                    del os.environ["MARVEEN_ROOT"]
+        poison = {
+            "TITOK_KAPU_TESZT_MODE": "1",
+            "TITOK_KAPU_DASHBOARD_TOKEN_FILE": poisoned_dash,
+            "TITOK_KAPU_AGY_OAUTH_FILE": poisoned_dash,
+            "MARVEEN_ROOT": poisoned_root,
+        }
+        elozo = {k: os.environ.get(k) for k in poison}
+        os.environ.update(poison)
+        try:
+            # a VALODI hivasi alak: nulla parameter, pontosan ugy, ahogy vizsgal_szoveg() a
+            # run_gate()/CLI utrol hivja.
+            titkok = elo_titkok(fail_closed=False)
+            erintett = {v for _, v in titkok}
+            ok = poisoned_val not in erintett and poisoned_root_val not in erintett
+        finally:
+            for k, v in elozo.items():
+                if v is None:
+                    os.environ.pop(k, None)
                 else:
-                    os.environ["MARVEEN_ROOT"] = elozo_root
-            print(f"  [{'OK ' if raised else 'BUKO'}] hianyzo alapertelmezett dashboard-token fajl -> HIBA (fail-closed), nem csendes kihagyas")
-            if not raised: hiba += 1
-    finally:
-        if elozo_teszt_mod is not None:
-            os.environ[_TESZT_MOD_ENV] = elozo_teszt_mod
+                    os.environ[k] = v
+        print(f"  [{'OK ' if ok else 'BUKO'}] a poszonozott env ({', '.join(poison)}) nem erinti a valodi hivast")
+        if not ok: hiba += 1
+
+    # (2) hianyzo alapertelmezett fajl: a `root` parameter kozvetlenul egy ures ideiglenes
+    # gyokerre mutat, ahol nincs store/.dashboard-token -> HIBA, nem csendes kihagyas.
+    print("== N4-JAVITAS: hianyzo alapertelmezett fajl -> HIBA (fail-closed), nem csendes kihagyas ==")
+    with tempfile.TemporaryDirectory() as td2:
+        raised = False
+        try:
+            elo_titkok(root=td2, fail_closed=True)
+        except TitokKapuHiba:
+            raised = True
+        print(f"  [{'OK ' if raised else 'BUKO'}] hianyzo alapertelmezett dashboard-token fajl -> HIBA (fail-closed), nem csendes kihagyas")
+        if not raised: hiba += 1
     return hiba
 
 # --- fo ag -----------------------------------------------------------------

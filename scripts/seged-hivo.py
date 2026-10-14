@@ -72,12 +72,18 @@ Quota (runs BEFORE the gate): when many agents call helpers, a subscription used
 
 Exit: 0 ok | 1 helper failed | 2 bad usage | 3 blocked by the gate | 4 timeout | 5 quota or lock: try later
 """
-import argparse, fcntl, hashlib, html, json, os, random, re, stat, subprocess, sys, tempfile, time, unicodedata
+import argparse, contextlib, fcntl, hashlib, html, json, os, random, re, stat, subprocess, sys, tempfile, time, unicodedata
 import urllib.request, uuid
 from datetime import datetime
 from pathlib import Path
 
-ROOT = Path(os.environ.get('MARVEEN_ROOT', Path(__file__).resolve().parent.parent))
+# F-A (card 09117e0a, WhiteHat2 NO-GO komment 18851): ROOT used to be MARVEEN_ROOT-overridable,
+# so a caller invoking this script directly (docs/seged-hivo-utmutato.md's own example does) could
+# point run_gate()'s titok-kapu.py lookup at an attacker-controlled tree with a no-op gate script,
+# silently defeating the secret filter one level above titok-kapu.py's own M1 fix. ROOT now comes
+# ONLY from this file's own location, like titok-kapu.py's root -- quota_selftest() below sandboxes
+# itself by running a COPY of this script (not this one), not by overriding an env var.
+ROOT = Path(__file__).resolve().parent.parent
 STORE = ROOT / 'store'
 LOG = STORE / 'seged-hivo-naplo.jsonl'
 RAW_DIR = STORE / 'seged-hivo'
@@ -250,6 +256,27 @@ def selftest():
     return 1 if bad or quota_selftest() else 0
 
 
+@contextlib.contextmanager
+def _ensure_real_dashboard_token():
+    """M1 follow-on (card 09117e0a, RedHat NO-GO 2. kor): titok-kapu.py's root is no longer
+    env-redirectable (M1-javitas -- it resolves root ONLY from its own __file__ location now),
+    so quota_selftest()'s sandboxed MARVEEN_ROOT can no longer point run_gate()'s secret-scan
+    step at a throw-away store/.dashboard-token the way it used to -- the scan always resolves
+    the REAL repo root. Ensures a throw-away token file exists there for the test's duration,
+    ONLY if this checkout doesn't already have a real one, and removes it again afterward. An
+    existing file is never touched."""
+    real = ROOT / 'store' / '.dashboard-token'
+    created = not real.exists()
+    if created:
+        real.parent.mkdir(parents=True, exist_ok=True)
+        real.write_text('x' * 64 + '\n')
+    try:
+        yield
+    finally:
+        if created:
+            real.unlink(missing_ok=True)
+
+
 def quota_selftest():
     """End-to-end through main() in a throw-away root. A stub stands in for bwrap (BWRAP_BIN): it prints an
     agy-style SUCCESS JSON, so a call that passes quota and gate "runs" in no time and sends nothing. Each case has its control pair:
@@ -270,11 +297,17 @@ def quota_selftest():
             pass
     srv = HTTPServer(('127.0.0.1', 0), Catch)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    with tempfile.TemporaryDirectory() as td:
+    with tempfile.TemporaryDirectory() as td, _ensure_real_dashboard_token():
         td = Path(td)
         root, base = td / 'root', td / 'base'
         (root / 'scripts/muszertar').mkdir(parents=True)
         (root / 'scripts/muszertar/titok-kapu.py').symlink_to(ROOT / 'scripts/muszertar/titok-kapu.py')
+        # F-A: this script's own ROOT no longer honors MARVEEN_ROOT (it is __file__-based now), so
+        # the sandbox needs a COPY of this script under root/scripts -- a symlink would resolve
+        # Path(__file__).resolve() straight back to the real repo root, same reasoning as
+        # titok-kapu-onteszt.test.ts's P1-pin (a symlink does not isolate it, confirmed there).
+        seged_hivo_copy = root / 'scripts/seged-hivo.py'
+        shutil.copy2(__file__, seged_hivo_copy)
         (base / 'w').mkdir(parents=True)
         (td / 'p.md').write_text('Hozz letre egy hello.txt fajlt.\n')
         stub = td / 'bwrap-stub.sh'
@@ -288,13 +321,13 @@ def quota_selftest():
         stub.chmod(0o700)
         log, lock = root / 'store/seged-hivo-naplo.jsonl', root / 'store/seged-hivo.lock'
         today = datetime.now().astimezone().isoformat(timespec='milliseconds')
-        env0 = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(HOME), 'MARVEEN_ROOT': str(root),
+        env0 = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(HOME),
                 'SEGED_BASE': str(base), 'BWRAP_BIN': str(stub), 'SEGED_KVOTA_FAJL': str(td / 'kvota.json'),
                 'SEGED_SZUNET_MIN_S': '0', 'SEGED_SZUNET_MAX_S': '0',
                 'SEGED_RIASZT_URL': f'http://127.0.0.1:{srv.server_port}/api/messages'}
 
         cmd = lambda caller, engine='codex': [
-            sys.executable, __file__, '--seged', f'{engine}:m', '--mappa', str(base / 'w'), '--prompt',
+            sys.executable, str(seged_hivo_copy), '--seged', f'{engine}:m', '--mappa', str(base / 'w'), '--prompt',
             str(td / 'p.md'), '--hivo', caller, '--kartya', 'onteszt', '--feladattipus', 'egyeb']
 
         def case(name, want, seed=(), engine='codex', caller='teszt-a', env=None, conf=None, holder=None,
@@ -358,6 +391,25 @@ def quota_selftest():
             if got != want:
                 fails.append(f'{name}: want {want}, got {got} after {time.monotonic() - t0:.1f}s; {r.stderr.strip()[-300:]}')
             return time.monotonic() - t0
+
+        # F-A regression pin (card 09117e0a, WhiteHat2 NO-GO komment 18851): a MARVEEN_ROOT set by
+        # the CALLER must have zero effect on which titok-kapu.py run_gate() scans against. Build
+        # an "evil" root with a no-op titok-kapu.py (always exits 0, finds nothing) and point
+        # MARVEEN_ROOT at it while a real-shaped secret sits in the prompt -- the REAL titok-kapu.py
+        # (reached via the sandbox's own ROOT, not the env) must still catch it and block (exit 3,
+        # blokk='kapu'). Before the fix this went through (0, None): the env redirected ROOT to the
+        # evil tree, the no-op gate found nothing, and the stubbed helper call "succeeded".
+        evil_root = td / 'evil-root'
+        (evil_root / 'scripts/muszertar').mkdir(parents=True)
+        (evil_root / 'scripts/muszertar/titok-kapu.py').write_text('import sys\nsys.exit(0)\n')
+        prompt_path = td / 'p.md'
+        clean_prompt = prompt_path.read_text()
+        prompt_path.write_text('sk-ant-api03-' + 'A' * 30 + '9zQ\n')
+        try:
+            case('MARVEEN_ROOT no longer redirects the secret gate', (3, 'kapu'),
+                 env={'MARVEEN_ROOT': str(evil_root)})
+        finally:
+            prompt_path.write_text(clean_prompt)
 
         seq = iter(range(10 ** 6))  # one call = one ido; rows of the same ido are one call
         sent = lambda k, who='teszt-a', eng='codex', st='ok', ido=today: [

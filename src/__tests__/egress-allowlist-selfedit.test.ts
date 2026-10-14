@@ -74,9 +74,59 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
     'cp /tmp/x store/egress-allowlist.*',
     'rm -rf store/egress-allowlist.history',
     'echo x > store/egress-allowlist.history/history.log',
+    // WhiteHat2 NO-GO (Gate-SHA 64cbec54, F1 HIGH): the first cat/tee heredoc exemption was
+    // text-containment-only, with no position check, no quoted-tag requirement and no check
+    // for a pipe past the heredoc operator -- all four cases below bypassed it before the fix.
+    // C8: unquoted tag -- the body is NOT inert, $(...) runs even though it looks like heredoc text.
+    'cat > /tmp/n.txt <<EOF\n$(cp /tmp/evil store/egress-allowlist.json)\nEOF',
+    // C2: a decoy -- the SAME line sits once (harmlessly) inside a quoted cat heredoc body and
+    // once as a real top-level command; text-containment exempted BOTH because the text matched.
+    "cat > /tmp/n.txt <<'EOF'\ncp /tmp/evil store/egress-allowlist.json\nEOF\ncp /tmp/evil store/egress-allowlist.json",
+    // C3/C4/C9: the heredoc is quoted and non-substitutable (genuinely inert AS TEXT), but its
+    // owner pipes that text into an interpreter, which then executes it as code.
+    "cat <<'EOF' | bash\ncp /tmp/evil store/egress-allowlist.json\nEOF",
+    "cat <<'EOF' | python3\nopen('store/egress-allowlist.json','w').write('{}')\nEOF",
+    "cat <<'EOF' | sh\ncp /tmp/evil store/egress-allowlist.json\nEOF",
+    // WhiteHat2 F1 second round (Gate-SHA dc02a347): the dataSinkHeredocRanges exemption's
+    // byte-range containment check used segRanges computed on a SHORTENED copy of safeCommand
+    // (every `\`+newline continuation collapsed to a single space) while the heredoc ranges
+    // themselves stay in safeCommand's own (unshortened) coordinates. Enough continuations
+    // BEFORE the heredoc (~40-60) slide every segment range after it back by the same amount,
+    // until a REAL post-heredoc command's range reads as falling INSIDE the heredoc body's
+    // range -- the gate then treats it as inert heredoc prose.
+    `echo a${' \\\n'.repeat(80)}b\ncat > /tmp/n <<'EOF'\n${'x'.repeat(300)}\nEOF\ncp evil.json store/egress-allowlist.json`,
+    // same shift, CRLF continuations
+    `echo a${' \\\r\n'.repeat(80)}b\r\ncat > /tmp/n <<'EOF'\r\n${'x'.repeat(300)}\r\nEOF\r\ncp evil.json store/egress-allowlist.json`,
+    // WhiteHat2 F1c (Gate-SHA a6fd07cf): heredocOwnerRecords' scan is not bash-syntax-aware, so it
+    // mints an exemption for text that ISN'T actually a heredoc.
+    // D9: `<<<` is bash's here-string (stdin from a literal string, no body lines consumed) -- the
+    // scanner's retry-one-position-later behaviour reads the trailing two `<` of the three as a
+    // fresh `<<'EOF'` operator, so every real line after it was wrongly treated as inert prose.
+    "cat > /tmp/n <<< 'EOF'\ncp evil.json store/egress-allowlist.json\nEOF",
+    "tee /tmp/n <<< 'EOF'\ncp evil.json store/egress-allowlist.json\nEOF",
+    // D1: the `<<'EOF'` sits after an unquoted `#` on its own line -- bash treats the rest of that
+    // line as a COMMENT, never as a redirect, so again every following line is a real command.
+    "cat > /tmp/n  # <<'EOF'\ncp evil.json store/egress-allowlist.json\nEOF",
+    "cat > /tmp/n #<<'EOF'\ncp evil.json store/egress-allowlist.json\nEOF",
+    "tee /tmp/n # <<'EOF'\ncp evil.json store/egress-allowlist.json\nEOF",
+    "echo hi; cat > /tmp/n # <<'EOF'\ncp evil.json store/egress-allowlist.json\nEOF",
   ]
   it.each(denied)('denies: %s', (command) => {
     expect(decide('Bash', { command })).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+
+  it('FUZZ (WhiteHat2 F1 second round): continuation count k=0..200 x heredoc body length 10..800, both LF and CRLF, the real post-heredoc write is always denied', () => {
+    for (const crlf of [false, true]) {
+      const nl = crlf ? '\r\n' : '\n'
+      for (let k = 0; k <= 200; k += 10) {
+        for (let bodyLen = 10; bodyLen <= 800; bodyLen += 50) {
+          const cont = (' \\' + nl).repeat(k) + 'b'
+          const body = 'x'.repeat(bodyLen)
+          const command = `echo a${cont}${nl}cat > /tmp/n <<'EOF'${nl}${body}${nl}EOF${nl}cp evil.json store/egress-allowlist.json`
+          expect(decide('Bash', { command })).toEqual({ deny: true, reason: 'egress-allowlist' })
+        }
+      }
+    }
   })
 
   const allowed = [
@@ -98,6 +148,9 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
     'git diff develop -- src/web/egress-allowlist-baseline.ts',
     'npx tsc --noEmit -p . && npx vitest run src/__tests__/egress-allowlist-selfedit.test.ts',
     'cat store/egress-allowlist.history/history.log',
+    // WhiteHat2 F1c control: a real tag-trailing comment (`<<'EOF' # note`) is a genuine, quoted,
+    // non-piped heredoc -- the fix must not turn this into a false deny.
+    "cat > /tmp/note.md <<'EOF' # note\nsub-agents may not edit store/egress-allowlist.json\nEOF",
   ]
   it.each(allowed)('allows: %s', (command) => {
     expect(decide('Bash', { command }).deny).toBe(false)

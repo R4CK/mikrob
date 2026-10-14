@@ -341,6 +341,20 @@ describe('gemini-calls: protection on ido/modell/feladattipus (card 13671607, Re
     const summary = buildSummary([{ model: BAD_TOSTRING as unknown as string, taskType: 'code', status: 'ok' }])
     expect(summary.byModel['ismeretlen']).toEqual({ calls: 1, ok: 1, error: 0, blocked: 0 })
   })
+
+  it('WhiteHat2 L1 (card f5dfe9ee): an empty-string model/taskType joins "ismeretlen", not its own "" bucket', () => {
+    // coerceString('') returns '' (a valid string), so `?? 'ismeretlen'` would NOT fall back
+    // (only null/undefined trigger ??) -- this pins the `||` fallback that restores the
+    // pre-coerceString behaviour (`c.model || 'ismeretlen'`) for the empty-string case.
+    const summary = buildSummary([
+      { model: '', taskType: 'code', status: 'ok' },
+      { model: 'gemini-pro', taskType: '', status: 'error' },
+    ])
+    expect(summary.byModel['']).toBeUndefined()
+    expect(summary.byModel['ismeretlen']).toEqual({ calls: 1, ok: 1, error: 0, blocked: 0 })
+    expect(summary.byTaskType['']).toBeUndefined()
+    expect(summary.byTaskType['ismeretlen']).toEqual({ calls: 1, ok: 0, error: 1, blocked: 0 })
+  })
 })
 
 describe('gemini-calls: HTML wiring', () => {
