@@ -406,8 +406,11 @@ export function hookScriptAlreadyEffectiveInOtherScope(
 //
 // Every install path the scaffold or the templates write into a CLAUDE.md or a
 // hook prompt must be listed here, or it keeps the old root after a move: the
-// recipient-ledger recipe and the skill-lint line were missing (HOSTMOVE1003,
-// found 2026-10-03 against the live fleet's CLAUDE.md files).
+// skill-lint line was missing (HOSTMOVE1003, found 2026-10-03 against the live
+// fleet's CLAUDE.md files). Upstream's own list also carries a recipient-ledger
+// recipe suffix -- NOT included here, because this fork never adopted that
+// feature (card 5a15cd5a, upstream-sync batch 7): there is no such recipe in
+// our templates for a foreign root to hide in.
 // host-move-proof-recipes.test.ts pins the list against the source and the
 // templates. Exact file suffixes on purpose: a bare `/scripts/` or `/agents/`
 // would also match paths of other projects (or ~/.claude/agents/).
@@ -415,7 +418,6 @@ export const INSTALL_ANCHORED_SUFFIXES = [
   '/store/.dashboard-token',
   '/scripts/hooks/',
   '/scripts/skill-index.sh',
-  '/scripts/recipient-ledger.mjs',
   '/scripts/skill-lint.mjs',
 ] as const
 // An absolute path prefix: starts with a `/` that is not the tail of something
@@ -541,6 +543,9 @@ export function ensureAgentHooks(
     //   3. Sync the timeout of any command hook whose command matches but timeout differs.
     const existingHooks = existing.hooks as Record<string, unknown>
     let changed = upgradeLegacyHookCommands(existingHooks, tplHooks)
+    // HOSTMOVE923: an existing PreCompact prompt inherited from another
+    // install/host names a dead root; the add pass below would never see it.
+    if (upgradeForeignRootInHookPrompts(existingHooks, PROJECT_ROOT)) changed = true
     // Matcher pass: a widened template matcher (e.g. SessionStart gaining
     // `clear`) must reach agents whose command string is unchanged.
     if (syncHookMatchers(existingHooks, tplHooks)) changed = true
@@ -1727,6 +1732,37 @@ export function injectDestructiveGate(existing: Record<string, unknown>): void {
     ...prev.filter((e) => !JSON.stringify(e).includes('destructive-gate.py')),
     entry,
   ]
+}
+
+// Boot-time backfill for the destructive gate, same reasoning as ensureNpmProtectGuard:
+// injectDestructiveGate alone reaches an agent only when its settings.json is regenerated, so a
+// dashboard restart arms the whole fleet. A stale MATCHER counts as not-wired, same as
+// ensureBlastRadiusGuard below -- the opt-in flag (agentGetsDestructiveGate) decides whether this
+// agent gets the gate at all, same gate the generation path uses.
+export function ensureDestructiveGate(name: string): boolean {
+  if (!agentGetsDestructiveGate(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'destructive-gate.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const matcherCurrent = ptu.some(
+    (e) => JSON.stringify(e).includes('destructive-gate.py') &&
+      (e as { matcher?: unknown })?.matcher === DESTRUCTIVE_GATE_MATCHER,
+  )
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('destructive-gate.py') && hookCommandWired(ptuJson, command) && matcherCurrent)
+    return false
+  if (isUnsafeHookCommand(command)) return false
+  injectDestructiveGate(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Boot-time backfill for the blast-radius guard, same reasoning as

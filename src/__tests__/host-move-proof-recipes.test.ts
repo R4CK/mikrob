@@ -84,10 +84,13 @@ describe('rewriteForeignProjectRoot', () => {
     expect(r.foreignRoots).toEqual(['/Users/pcha0s/claw-test-kigyo'])
   })
 
-  it('re-anchors the recipient-ledger recipe and the skill-lint line (HOSTMOVE1003)', () => {
+  it('re-anchors the skill-lint and skill-index lines (HOSTMOVE1003)', () => {
+    // Upstream's own version of this case also covers a recipient-ledger recipe --
+    // not included here, because this fork never adopted that feature (card
+    // 5a15cd5a, upstream-sync batch 7; see INSTALL_ANCHORED_SUFFIXES' own comment).
     const text = [
-      `node ${OLD}/scripts/recipient-ledger.mjs add <cim> --source owner`,
       `node ${OLD}/scripts/skill-lint.mjs <a-skill-mappája>`,
+      `bash ${OLD}/scripts/skill-index.sh`,
     ].join('\n')
     const r = rewriteForeignProjectRoot(text, NEW)
     expect(r.text).toBe(text.replaceAll(OLD, NEW))
@@ -193,12 +196,13 @@ describe('HOSTMOVE923 wiring (source-level)', () => {
   })
 })
 
-// HOSTMOVE1003: the suffix list was hand-kept, and two recipe paths slipped
-// past it (the recipient-ledger line the scaffold writes into every CLAUDE.md,
-// and the skill-lint line of the CLAUDE.md template), so after a move they would
-// have kept naming the old root. This pin collects every install path the
-// scaffold source and the templates write into a CLAUDE.md or a hook prompt,
-// and requires each to be re-anchorable.
+// HOSTMOVE1003: the suffix list was hand-kept, and the skill-lint line of the
+// CLAUDE.md template slipped past it, so after a move it would have kept
+// naming the old root. (Upstream's own version of this pin also names a
+// recipient-ledger recipe -- not adopted here, see INSTALL_ANCHORED_SUFFIXES'
+// own comment.) This pin collects every install path the scaffold source and
+// the templates write into a CLAUDE.md or a hook prompt, and requires each to
+// be re-anchorable.
 describe('every install path written into a CLAUDE.md or a hook prompt is re-anchored on a host move', () => {
   const joinSuffix = (args: string) => '/' + [...args.matchAll(/'([^']+)'/g)].map((m) => m[1]).join('/')
   // `${join(PROJECT_ROOT, 'a', 'b')}` interpolated straight into text
@@ -222,7 +226,7 @@ describe('every install path written into a CLAUDE.md or a hook prompt is re-anc
     INSTALL_ANCHORED_SUFFIXES.some((s) => (s.endsWith('/') ? suffix.startsWith(s) : suffix === s))
 
   it('the scanner finds the known recipe paths (not a vacuous pass)', () => {
-    expect(all).toEqual(expect.arrayContaining(['/store/.dashboard-token', '/scripts/recipient-ledger.mjs', '/scripts/skill-lint.mjs', '/scripts/skill-index.sh']))
+    expect(all).toEqual(expect.arrayContaining(['/store/.dashboard-token', '/scripts/skill-lint.mjs', '/scripts/skill-index.sh']))
   })
 
   it.each(all)('%s is covered by INSTALL_ANCHORED_SUFFIXES or exempted with a reason', (suffix) => {
