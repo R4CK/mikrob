@@ -6,6 +6,7 @@ import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRA
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
 import { listAgentNames, listAllAgentNames, agentConfigRoot, readAgentModel, readAgentRemoteHost } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
+import { mainAgentConfigDir } from './main-transcript-root.js'
 import {
   agentRunState,
   agentSessionName,
@@ -264,7 +265,9 @@ function configDirFor(name: string): string | undefined {
   // whose config dir was auto-provisioned by the launcher has no field to read, so the old call
   // returned null and this runner then measured the HOST default -- another agent's absence read
   // as this one's context size.
-  return name === MAIN_AGENT_ID ? undefined : (resolveAgentConfigDirForRead(name) ?? undefined)
+  // TOKENVAK915: the main agent's OWN isolated config root used to be skipped entirely
+  // (unconditional `undefined`) -- see main-transcript-root.ts for why and the fix.
+  return name === MAIN_AGENT_ID ? mainAgentConfigDir(agentConfigRoot(name)) : (resolveAgentConfigDirForRead(name) ?? undefined)
 }
 
 /** Raw observed context size (tokens) for the idle-flush tier's absolute threshold. */
