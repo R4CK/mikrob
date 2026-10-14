@@ -175,6 +175,49 @@ for c in cards:
 '
 }
 
+# Card b2f71cdc: which worktree dir(s) does this agent actually have? `--path` on both scripts is
+# read-only (prints the computed path and exits before any fetch/create), so calling it here is
+# cheap and never creates a worktree that doesn't already exist. The path is asked FROM the scripts,
+# never hardcoded, same rule as everywhere else this repo resolves an agent's worktree.
+_agent_worktree_paths() { # $1=agent -> prints each existing worktree dir for this agent, one per line
+  local agent="$1" p
+  p="$(/home/neon/marveen/store/agent-worktree.sh "$agent" --path 2>/dev/null)" || p=""
+  [ -n "$p" ] && [ -d "$p" ] && echo "$p"
+  p="$(/home/neon/marveen/store/agent-worktree-marveen.sh "$agent" --path 2>/dev/null)" || p=""
+  [ -n "$p" ] && [ -d "$p" ] && echo "$p"
+}
+
+# Card b2f71cdc (two independent occurrences of the same root, 6c118f45 then b37eaa5a): the
+# tmux-frame check above answers "is the pane rendering", not "is the agent's work still running".
+# A foreground command the agent is blocked on (a full mopsion-suite-run.sh, conflict resolution in
+# a disposable landing worktree) can sit with zero new frames for minutes -- that looked identical
+# to a genuinely dead agent, and the 60-minute sibling-handover rule (3a) fired on it, handing the
+# card to a sibling who then independently rebuilt the SAME fix. This asks a question the
+# subagent-ownership check (active-subagents.json) cannot answer for a plain foreground bash
+# command: is there a live, non-shell process whose cwd sits inside the agent's own worktree right
+# now? A bare shell/tmux-server process there is NOT evidence of work -- that is exactly the corpse a
+# finished background job leaves behind, and counting it would make this permanently "busy" for any
+# agent that ever cd'd into its own worktree.
+_agent_background_busy() { # $1=agent ; exit 0 = a live non-shell process has its cwd in the
+                            # agent's own worktree (exit 1 = none found)
+  local agent="$1" wt d cwd comm
+  while IFS= read -r wt; do
+    [ -n "$wt" ] || continue
+    for d in /proc/[0-9]*; do
+      [ -e "$d/cwd" ] || continue
+      cwd="$(readlink "$d/cwd" 2>/dev/null)" || continue
+      case "$cwd" in
+        "$wt"|"$wt"/*) ;;
+        *) continue ;;
+      esac
+      comm="$(tr -d '\0' < "$d/comm" 2>/dev/null)" || continue
+      case "$comm" in bash|sh|dash|zsh|tmux|"tmux: server") continue ;; esac
+      return 0
+    done
+  done < <(_agent_worktree_paths "$agent")
+  return 1
+}
+
 # Is the agent tmux panel actively working? Two 1.2s samples; change => busy. Also treat
 # an explicit "queued messages" hint or a live spinner/token-counter line as busy.
 _agent_busy() { # $1 = agent short name ; exit 0 = busy, 1 = idle/absent
@@ -188,6 +231,8 @@ _agent_busy() { # $1 = agent short name ; exit 0 = busy, 1 = idle/absent
   sleep 1.2
   s2="$(tmux capture-pane -t "$sess" -p 2>/dev/null)"
   [ "$s1" != "$s2" ] && return 0   # frame changed => actively rendering => busy
+  # Card b2f71cdc: a static frame for 1.2s is not proof of idleness -- see _agent_background_busy.
+  _agent_background_busy "$1" && return 0
   return 1
 }
 
@@ -888,6 +933,37 @@ PY
     # write above (still 1000, not 1700) -- the discriminating assertion for the fix itself.
     IFS=$'\t' read -r cc2 clt2 clu2 <<<"$(_ledger_get "$CARDD" cybersec)"
     [ "$clt2" = "1000" ] || { echo "FAIL dual-agent-ledger: cybersec's last_ts was clobbered (now $clt2, expected 1000 unchanged)"; fails=$((fails+1)); }
+
+    # 16) Card b2f71cdc: a live non-shell process whose cwd sits inside the agent's own worktree
+    # counts as busy, and a bare shell process alone does not. Override _agent_worktree_paths so
+    # the test is hermetic (no live agent-worktree.sh/agent-worktree-marveen.sh calls). Every
+    # spawned process is killed and reaped right after its assertion, pass or fail -- this test must
+    # never leave a live process behind.
+    bg_wt="$tmpdir/bg-worktree"; mkdir -p "$bg_wt"
+    _agent_worktree_paths() { [ "$1" = "bgtest" ] && echo "$bg_wt"; }
+    bg_cleanup() { [ -n "${bg_pid:-}" ] && kill "$bg_pid" 2>/dev/null; [ -n "${bg_pid:-}" ] && wait "$bg_pid" 2>/dev/null; bg_pid=""; }
+    # (a) nothing running there -> not busy
+    _agent_background_busy bgtest && { echo "FAIL bg-busy-empty: reported busy with nothing running"; fails=$((fails+1)); }
+    # (b) a real non-shell process with cwd in that dir -> busy
+    ( cd "$bg_wt" && exec sleep 5 ) &
+    bg_pid=$!
+    sleep 0.3
+    _agent_background_busy bgtest || { echo "FAIL bg-busy-detect: did not detect a live non-shell process in the worktree"; fails=$((fails+1)); }
+    bg_cleanup
+    # (c) CONTROL: a bare shell process alone (no non-shell descendant) must NOT count as busy --
+    # that is exactly the corpse a finished background job leaves behind.
+    ( cd "$bg_wt" && exec bash -c 'while :; do :; done' ) &
+    bg_pid=$!
+    sleep 0.3
+    _agent_background_busy bgtest && { echo "FAIL bg-busy-shell-only: a bare shell process must not count as busy"; fails=$((fails+1)); }
+    bg_cleanup
+
+    # 17) WIRING: _agent_busy must actually call _agent_background_busy -- a source assertion
+    # (code-quality rule 12 posture), because the stub _agent_busy used by the `check)` tests above
+    # is a complete replacement of the real function, not evidence the REAL one calls the new check.
+    agent_busy_src="$(sed -n '/^_agent_busy()/,/^}/p' "$0" | sed -E 's/(^|[[:space:]])#.*$//')"
+    printf '%s\n' "$agent_busy_src" | grep -q '_agent_background_busy' || {
+      echo "FAIL agent-busy-wiring: _agent_busy does not call _agent_background_busy"; fails=$((fails+1)); }
 
     rm -rf "$tmpdir"
     if [ "$fails" -eq 0 ]; then echo "SELFTEST: PASS"; exit 0; else echo "SELFTEST: FAIL ($fails)"; exit 1; fi

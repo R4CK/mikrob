@@ -33,15 +33,23 @@ function selftest(): { status: number; out: string } {
 }
 
 describe('redispatch-guard.sh selftest actually runs (card 09a3d52a)', () => {
-  it('passes, and the VERDICT is what says so -- not a printed line', () => {
-    const r = selftest()
-    // Both, deliberately. A selftest that prints FAIL lines while still exiting 0 is a real
-    // failure mode this fleet has hit (a case incrementing a variable nothing reads), so the exit
-    // code alone is not enough evidence -- and neither is the text alone.
-    expect(r.out).toContain('SELFTEST: PASS')
-    expect(r.out).not.toContain('SELFTEST: FAIL')
-    expect(r.status).toBe(0)
-  })
+  it(
+    'passes, and the VERDICT is what says so -- not a printed line',
+    () => {
+      const r = selftest()
+      // Both, deliberately. A selftest that prints FAIL lines while still exiting 0 is a real
+      // failure mode this fleet has hit (a case incrementing a variable nothing reads), so the
+      // exit code alone is not enough evidence -- and neither is the text alone.
+      expect(r.out).toContain('SELFTEST: PASS')
+      expect(r.out).not.toContain('SELFTEST: FAIL')
+      expect(r.status).toBe(0)
+    },
+    // Card b2f71cdc added a background-process busy check (two short-lived spawned processes,
+    // measured ~5.4s total under load) that pushed the script's own selftest past vitest's
+    // default 5000ms timeout -- bumped, not shortened, because the new cases are real coverage,
+    // not padding.
+    15000,
+  )
 
   it('the concurrency case is present, so a future edit cannot quietly drop it', () => {
     // The ledger lock is the point of card 09a3d52a: without it two concurrent guard runs drop
