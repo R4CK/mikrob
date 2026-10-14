@@ -97,6 +97,7 @@ import { tryHandleProjectPriority } from './web/routes/project-priority.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
+import { tryHandleGeminiCalls } from './web/routes/gemini-calls.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
 import { tryHandleIdeas } from './web/routes/ideas.js'
 import { tryHandleToolLog } from './web/routes/tool-log.js'
@@ -258,6 +259,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleApprovals(routeCtx)) return
       if (await tryHandleDesktopLock(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
+      if (await tryHandleGeminiCalls(routeCtx)) return
       if (await tryHandleCosts(routeCtx)) return
       if (await tryHandleIdeas(routeCtx)) return
       if (await tryHandleSpans(routeCtx)) return
