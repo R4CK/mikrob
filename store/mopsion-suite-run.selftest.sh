@@ -823,5 +823,135 @@ else
   bad "a matching HEAD was wrongly flagged, or the line is missing" "$out"
 fi
 
+# --- 17. LIVE-MOPSION-CARD PRECONDITION (card c0408a1c) -----------------------------------------
+# A tiny python http.server stands in for the dashboard, same convention as card-build-route.selftest.sh
+# (section B4b): no node/vitest dependency, and it answers GET /api/kanban and
+# GET /api/kanban/<id>/comments from a fixed JSON file the case below controls, so each case is a
+# known, self-contained board rather than a guess about the real one.
+cat > "$TMP/card-fake-dashboard.py" <<'PYEOF'
+import http.server, json, sys
+cards_path, comments_path = sys.argv[2], sys.argv[3]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        if self.path == '/api/kanban':
+            body = open(cards_path, 'rb').read()
+        elif self.path.startswith('/api/kanban/') and self.path.endswith('/comments'):
+            cid = self.path[len('/api/kanban/'):-len('/comments')]
+            try:
+                allc = json.load(open(comments_path))
+            except Exception:
+                allc = {}
+            body = json.dumps(allc.get(cid, [])).encode()
+        else:
+            body = b'[]'
+        self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+        self.wfile.write(body)
+port = int(sys.argv[1])
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PYEOF
+
+card_fake_dashboard_start() { # $1 = cards JSON (file content), $2 = comments JSON ({cardId: [...]})
+  local cards_f="$TMP/card-fake-cards.json" comments_f="$TMP/card-fake-comments.json"
+  printf '%s' "$1" > "$cards_f"
+  printf '%s' "$2" > "$comments_f"
+  local port=$((20000 + RANDOM % 20000))
+  # stdout/stderr MUST NOT inherit this function's own stdout: this is invoked via $(...), and a
+  # backgrounded child that keeps that pipe's write end open (even after the function returns)
+  # blocks the capture forever waiting for EOF that never comes (measured hang, case 17a).
+  python3 "$TMP/card-fake-dashboard.py" "$port" "$cards_f" "$comments_f" >/dev/null 2>&1 &
+  # $! inside a $(...) subshell doesn't survive into the caller's shell, so the PID goes to a
+  # file (a side-channel), not a variable -- card_fake_dashboard_stop reads it back from there.
+  echo $! > "$TMP/card-fake-pid"
+  sleep 0.3
+  echo "http://127.0.0.1:$port"
+}
+card_fake_dashboard_stop() {
+  local pid; pid="$(cat "$TMP/card-fake-pid" 2>/dev/null)"
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null
+  [ -n "$pid" ] && wait "$pid" 2>/dev/null
+  true
+}
+
+# 17a. NO live mopsion card anywhere -- refused BEFORE the worktree step (proven the same way case
+# 2's acquisition is proven: "no CleanCore worktree" would appear if it got that far, and must NOT
+# here since no-such-agent-xyz has none).
+fake_api="$(card_fake_dashboard_start '[
+  {"id":"other1","project":"mopsion","status":"in_progress","assignee":"someone-else","title":"x"},
+  {"id":"other2","project":"marveen","status":"in_progress","assignee":"no-such-agent-xyz","title":"x"}
+]' '{}')"
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_API="$fake_api" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+card_fake_dashboard_stop
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'NO-CARD-REFUSED' && ! echo "$out" | grep -q 'no CleanCore worktree'; then
+  ok "no live mopsion card -> refused before a slot/worktree is ever touched"
+else
+  bad "expected an early NO-CARD-REFUSED refusal" "rc=$rc out=$out"
+fi
+
+# 17b. a live in_progress mopsion card assigned to the caller -> the precondition passes, and the
+# run proceeds exactly as before (reaches the worktree step, same proof case 2 uses).
+fake_api="$(card_fake_dashboard_start '[
+  {"id":"mine1","project":"mopsion","status":"in_progress","assignee":"no-such-agent-xyz","title":"x"}
+]' '{}')"
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_API="$fake_api" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+card_fake_dashboard_stop
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree' && ! echo "$out" | grep -q 'NO-CARD-REFUSED'; then
+  ok "a live in_progress mopsion card lets the run proceed unchanged"
+else
+  bad "a live in_progress mopsion card should not have been refused" "rc=$rc out=$out"
+fi
+
+# 17c. no in_progress card, but a WAITING mopsion card the caller has commented on (gating it) ->
+# also passes, per the requirement's "altala gate-elt waiting" half.
+fake_api="$(card_fake_dashboard_start '[
+  {"id":"gate1","project":"mopsion","status":"waiting","assignee":"the-builder","title":"x"}
+]' '{"gate1":[{"author":"no-such-agent-xyz","content":"QA reviewing"}]}')"
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_API="$fake_api" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+card_fake_dashboard_stop
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree' && ! echo "$out" | grep -q 'NO-CARD-REFUSED'; then
+  ok "a waiting mopsion card the caller is gating (commented on it) also lets the run proceed"
+else
+  bad "a gated-waiting mopsion card should not have been refused" "rc=$rc out=$out"
+fi
+
+# 17d. a mopsion card tagged BLOKKOLT-Peti-stop does not count, even if assigned/in_progress --
+# that tag IS the stop this precondition exists to respect.
+fake_api="$(card_fake_dashboard_start '[
+  {"id":"stopped1","project":"mopsion","status":"in_progress","assignee":"no-such-agent-xyz","title":"[BLOKKOLT-Peti-stop] x"}
+]' '{}')"
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_API="$fake_api" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+card_fake_dashboard_stop
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'NO-CARD-REFUSED'; then
+  ok "a BLOKKOLT-Peti-stop-tagged card does not count as a live card"
+else
+  bad "a stop-tagged card should not have justified the run" "rc=$rc out=$out"
+fi
+
+# 17e. the explicit override bypasses the check, and the usage is logged (not silent).
+fake_api="$(card_fake_dashboard_start '[]' '{}')"
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_API="$fake_api" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       CLEANCORE_SUITE_ALLOW_NO_CARD=1 bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+card_fake_dashboard_stop
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree' && echo "$out" | grep -q 'NO-CARD-OVERRIDE-USED'; then
+  ok "CLEANCORE_SUITE_ALLOW_NO_CARD=1 bypasses the check, and logs that it did"
+else
+  bad "the override should have proceeded and logged its own use" "rc=$rc out=$out"
+fi
+
+# 17f. CONTROL: dashboard unreachable (the house default, 127.0.0.1:9) fails OPEN, same stance as
+# the memory precondition -- a transient dashboard outage must not block every suite run fleet-wide.
+# This is exactly what cases 1-16 above already exercised throughout (API unreachable in all of
+# them); this case only additionally asserts the specific NO-CARD-CHECK-UNKNOWN marker appears.
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=5 bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree' && echo "$out" | grep -q 'NO-CARD-CHECK-UNKNOWN'; then
+  ok "an unreachable dashboard fails OPEN on the card check, same as the memory precondition"
+else
+  bad "an unreachable dashboard should fail open, not block the run" "rc=$rc out=$out"
+fi
+
 echo "mopsion-suite-run.selftest: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
