@@ -168,7 +168,7 @@ _INVISIBLE_CODEPOINTS = {"⠀"}
 # to "[", every Pe (close) or Pf (final quote) character folds to "]" -- closed only by category,
 # not by an enumerable list, so it is fail-closed by construction (measured: 79/79 Ps/Pe pairs on
 # the Unicode punctuation-bracket block, including all 7 NFKD-decomposing forms above).
-def _fold(s):
+def _fold(s, zero_width_as_separator=False):
     """Structural fold (card 33047d3f C1/C2, same layers as gemini-offload-call.sh _fold):
     homoglyph-map + NFKD-decompose (fullwidth/compat chars -> plain ASCII equivalents, including
     fullwidth brackets) + bracket-CATEGORY-fold (see H1 above, card b3ce0a88 delta-gate), then
@@ -183,13 +183,23 @@ def _fold(s):
     and a fullwidth bracket never matches the literal ASCII `[`/`]` at all -- either way the
     extraction silently stops seeing the tag. Folding the title with this function BEFORE running
     the regex removes the invisible chars and resolves fullwidth brackets to ASCII ones, so the
-    extraction sees the same prefix a human reads."""
+    extraction sees the same prefix a human reads.
+
+    zero_width_as_separator (card c8a6e1da F1): the default (False) DROPS a zero-width/control/
+    line-separator char entirely, which is correct for SENS_RE content matching -- it reunites a
+    sensitive WORD an attacker split with an invisible char ("s<ZWSP>ecurity" -> "security", still
+    matches the "security" stem). The BLOCKED_TAGS tag-tokenizer (tag_tokens_of(), below) needs the
+    OPPOSITE of that exact same character: "[SEC<ZWSP>x]" must split into tokens "sec","x", not
+    merge into "secx" -- passing True turns the invisible char into an explicit space (a token
+    boundary) instead of erasing it."""
     s = s.translate(_HOMOGLYPH_MAP)
     s = unicodedata.normalize("NFKD", s)
     out = []
     for ch in s:
         cat = unicodedata.category(ch)
         if cat in ("Mn", "Cf", "Cc", "Zl", "Zp") or ch in _INVISIBLE_CODEPOINTS:
+            if zero_width_as_separator and cat != "Mn":
+                out.append(" ")
             continue
         if cat in ("Ps", "Pi"):
             out.append("[")
@@ -198,6 +208,22 @@ def _fold(s):
         else:
             out.append(ch)
     return "".join(out)
+
+# F1 (card c8a6e1da, WhiteHat MEDIUM finding, komment 18429): BLOCKED_TAGS tokenization used to go
+# through norm() -- casefold + _fold() (above, zero_width_as_separator=False) + a final
+# .encode("ascii","ignore") that SILENTLY DROPS any remaining non-ASCII char, including a visible
+# but non-ASCII separator (em dash, en dash, U+2010/2011 hyphen, U+2212 minus, middle dot, bullet,
+# ideographic comma/period, arrow, emoji, U+2215 division slash) that sits BETWEEN the tag word and
+# trailing text. "[SEC—x]" -> casefold+_fold keeps the em dash (it is not Mn/Cf/Cc/Zl/Zp and
+# not a bracket category) -> norm()s ascii-drop erases it -> "secx", ONE token, no longer equal to
+# "sec" -- the tokenizer never saw a reason to split. Fixed by tokenizing on a string that is NEVER
+# ascii-dropped: any character that is not literally a-z/0-9 is already outside Pythons `[a-z0-9]`
+# character class regardless of being ASCII or not, so re.split treats it as a separator on its own
+# -- the only characters that need SPECIAL handling here are the ones _fold() would otherwise erase
+# to NOTHING (zero-width/control/line-separator), which is why this calls _fold(zero_width_as_separator=True).
+def tag_tokens_of(tag):
+    folded = _fold(tag.strip().casefold(), zero_width_as_separator=True)
+    return [tok for tok in re.split(r"[^a-z0-9]+", folded) if tok]
 
 def norm(s):
     """casefold + _fold() -> ASCII. C1 (card 33047d3f): strips Cc (control) chars before the
@@ -297,11 +323,33 @@ for tag in all_tags:
     # non-alphanumeric characters and testing each token subsumes the old prefix check (now also
     # catches comma/space BLOKKOLT suffixes) while keeping exact per-token matching, so a tag that
     # merely CONTAINS "sec" as a substring ("resection", "insecure") is still NOT blocked.
-    tag_tokens = [tok for tok in re.split(r"[^a-z0-9]+", t) if tok]
+    # F1 (card c8a6e1da): tag_tokens_of() replaces the old norm()-based split here -- a non-ASCII
+    # separator (em dash, ZWSP, middle dot, ...) between the tag word and trailing text used to be
+    # silently ascii-dropped by norm(), merging "SEC<sep>x" into one token "secx" that no longer
+    # equalled "sec". See tag_tokens_of()s own comment above for the mechanism.
+    tag_tokens = tag_tokens_of(tag)
     if "blokkolt" in tag_tokens:
         sys.exit(0)  # blocked
     if any(tok in BLOCKED_TAGS for tok in tag_tokens):
         sys.exit(0)  # blocked
+    # F2(c) (card c8a6e1da): split-letter form ("[S E C]", "[S.E.C]", "[S-E-C]", "[S EC]") writes
+    # a blocked word one letter (or short fragment) at a time, with a delimiter between every
+    # piece, inside this one already-delimited tag segment -- joining every token in the segment
+    # catches it. The all-short-tokens guard keeps an ordinary tag ("[Resection of X]", tokens
+    # resection/of/x) out: "resection" alone is longer than the guard allows, so the e45945a2
+    # negative control (a tag that merely CONTAINS "sec"/"insecure" as a substring must stay
+    # unblocked) still holds -- this only fires when EVERY piece in the segment is tag-letter-short.
+    if len(tag_tokens) >= 2 and all(len(tok) <= 3 for tok in tag_tokens):
+        joined = "".join(tag_tokens)
+        if joined == "blokkolt" or joined in BLOCKED_TAGS:
+            sys.exit(0)  # blocked
+    # F2(d) (card c8a6e1da): digit-suffix form ("[SEC2]", "BLOKKOLT2", "MOPSION2") appends a bare
+    # digit directly after the blocked word with no delimiter at all, so it never split into its
+    # own token above in the first place -- strip a trailing digit run and re-check.
+    for tok in tag_tokens:
+        stripped = re.sub(r"[0-9]+$", "", tok)
+        if stripped and stripped != tok and (stripped == "blokkolt" or stripped in BLOCKED_TAGS):
+            sys.exit(0)  # blocked
 
 # 3. Content gate on NORMALIZED title AND description (sensitive stem -> blocked, fail-closed).
 # Leading-boundary-only stems (RedHat 17510 finding 1): matches a stem at the start of a word,
@@ -314,6 +362,26 @@ for tag in all_tags:
 # (Telegram 11131). Added below.
 if has_unmapped_letter(title) or has_unmapped_letter(desc):
     sys.exit(0)  # blocked (F2: unmapped homoglyph/script, fail-closed)
+
+# F2(a)/(b) (card c8a6e1da): bare form ("SEC : x", "SEC x", "x SEC", "SEC", "SEC | x", "SEC - x",
+# "-SEC- x", "_SEC_ x") and alternate delimiters ("<SEC> x", "|SEC| x", "/SEC/ x", "*SEC* x",
+# "#SEC x", quote/backtick/tilde forms) have no [](){} bracket and no immediately-adjacent "TAG:"
+# colon for 1bs extraction above to find, so the tag word was never a candidate at all. Every one
+# of those delimiter characters is already outside Pythons literal `[a-z0-9]` class, so tokenizing
+# the WHOLE title the same way tag_tokens_of() tokenizes one extracted tag segment -- exact match
+# only, no join/digit-suffix widening, since this runs over free-form prose rather than an
+# already-delimited tag segment -- closes all of them without a dedicated regex per delimiter.
+_whole_title_tokens = tag_tokens_of(title)
+for _i, _tok in enumerate(_whole_title_tokens):
+    if _tok != "blokkolt" and _tok not in BLOCKED_TAGS:
+        continue
+    # "N sec"/"5 sec" is the ordinary English "N seconds" idiom, not a tag -- none of the 44
+    # required probe shapes (card c8a6e1da) put a digit immediately before the blocked word, so
+    # exempting it closes a real foreseeable false positive without reopening anything the card
+    # requires closed. Measured against the live board (3180 cards): 0 new blocks either way.
+    if _i > 0 and _whole_title_tokens[_i - 1].isdigit():
+        continue
+    sys.exit(0)  # blocked
 
 title_n = norm(title)
 desc_n = norm(desc)

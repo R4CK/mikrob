@@ -70,6 +70,14 @@ def label_tokens_of(text: str):
 
 def main() -> int:
     raw = sys.stdin.read()
+    # N3-javitas (card 09117e0a, RedHat NO-GO komment 18498): a hivo most a kert kartya-ID-t
+    # ADJA ide argvban. Egy dashboard-hibatest (404 "Kartya nem talalhato", 401 "Unauthorized",
+    # 500) ERVENYES JSON-objektum, de nincs benne sem "id", sem "title" -- korabban ez
+    # "nincs jel" -> exit 0 -> a deklart 'safe' kategoria atment, pedig a kartya tartalmat
+    # SOHA nem is lattuk. Most: ha a hivo megadta a kartya-ID-t, a valasznak PONTOSAN arra a
+    # kartyara kell vonatkoznia (card.id == expected_id) ES kell lennie nem-ures cimnek --
+    # kulonben "nem tudjuk ellenorizni", nem "nincs jel".
+    expected_id = sys.argv[1] if len(sys.argv) > 1 else None
     try:
         card = json.loads(raw)
     except (json.JSONDecodeError, TypeError):
@@ -77,7 +85,14 @@ def main() -> int:
     if not isinstance(card, dict):
         return 2
 
-    title_n = norm(str(card.get("title") or ""))
+    title_raw = card.get("title")
+    if expected_id is not None:
+        if card.get("id") != expected_id:
+            return 2
+        if not isinstance(title_raw, str) or not title_raw.strip():
+            return 2
+
+    title_n = norm(str(title_raw or ""))
     desc_n = norm(str(card.get("description") or ""))
     for rx, cat in STEM_CATEGORY:
         if rx.search(title_n) or rx.search(desc_n):
