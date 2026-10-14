@@ -128,8 +128,8 @@ Tsc/lint/teszt exit-code ellenőrzésnél MINDIG pipe nélkül futtass, vagy PIP
 - [ ] Nem saját munkát ellenőrzöm (Rule 4)
 - [ ] A REVIEW hivatkozott sha-ja == a legújabb commit (nem stale)
 - [ ] tsc clean (vitest nem type-check-el, zöld teszt mellé mindig tsc)
-
 - [ ] Nem-kikényszerített doc-comment invariáns (WhiteHat javaslat, 2026-08-21): ha egy komment, docstring vagy migrációs fejléc GARANCIÁT állít egy adatmezőre ("ide csak redaktált szöveg kerül", "csak valódi állapotváltásnál íródik", "csak szerver-oldali logoláshoz"), van-e a kód-útvonalon MELLETTE VAGY kikényszerítő hívás, VAGY teszt, ami pont ezt az invariánst állítja? Ha egyik sincs: FINDING, függetlenül attól, hogy a mai viselkedés helyes-e -- a komment ilyenkor a jövőbeli olvasót téveszti meg. Nyomon követés: sorold fel a mezőt ÍRÓ összes hívót (nem csak a nevesítettet), és mindegyikre kérdezd meg, hogy azon az ágon lefut-e a kikényszerítés.
+
 - [ ] **CleanCore kártyákon: kód-duplikáció ellenőrzés** (card 4bade960, GitHub-first: jscpd, MIT, github.com/kucherenko/jscpd) -- `bash {{INSTALL_DIR}}/store/jscpd-duplication-check.sh <CleanCore path> [threshold%, default 5]`. Exit 0 = OK; exit 1 = a duplikáció a küszöb felett -- a konzol-riport megmondja melyik fájlpár, azt nézd meg FINDING-ként. Marveen (fleet) kódon nem kötelező (belső, nem CleanCore).
 
 ### Merge-base delta izoláció (git diff tanulság)
