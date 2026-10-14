@@ -218,10 +218,16 @@ def _kodolt_alakok(ertek: str):
 
 
 _ZAJ_RE = re.compile(r"[\s'\"+]+")
+# F-D (card f6f67dff, WhiteHat2): zero-width/invisible kodpontok (ugyanaz a keszlet, amit
+# seged-hivo.py scan_text()/normalize() mar hasznal az email/telefon-szuresnel) egy token
+# kozepebe ekelve atmegy a _ZAJ_RE-n (az \s nem illeszkedik rajuk), es szettorik a MINTAK
+# regexeket, VALAMINT a live-titok egesz-szoveg egyezest is -- reszleges szivargas, nem talalat.
+_LATHATATLAN_RE = re.compile("[­​-‏⁠﻿]")
 
 
 def vizsgal_szoveg(szoveg: str, cimke: str, kivetel_aktiv: bool = True, fail_closed: bool = True,
                     dash_override: str = None, oauth_override: str = None, root: str = None):
+    szoveg = _LATHATATLAN_RE.sub("", szoveg)
     talalatok = []
     elo = elo_titkok(dash_override=dash_override, oauth_override=oauth_override, root=root,
                       fail_closed=fail_closed)
@@ -305,6 +311,9 @@ POZITIV = [
     ("jelszo-titok-hozzarendeles", "client_secret=" + "K"*24),  # TITOK-KAPU-KIVETEL
     ("jelszo-titok-hozzarendeles", '"access_token": "' + "L"*24 + '"'),  # TITOK-KAPU-KIVETEL
     ("google-client-secret", "GOCSPX-" + "M"*28),  # TITOK-KAPU-KIVETEL
+    # F-D (card f6f67dff): zero-width space (U+200B) ekelve a kulcs kozepebe -- a normalizalas
+    # elotti kod ezt nem ismerte volna fel.
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "​" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
 ]
 # kliensbe szant kulcs: a muszernek LATNIA kell, de NEM blokkolhatja a commitot
 PUBLIKUS_MINTA = "SUPA_ANON=eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiZGVtby1wcm9qZWN0IiwgInJvbGUiOiAiYW5vbiIsICJpYXQiOiAxNTAwMDAwMDAwfQ.WvLorMePmqUDUR3a2oDuLtHGV6zaWQjXEpDNoia0xOM"  # TITOK-KAPU-KIVETEL
@@ -323,6 +332,9 @@ NEGATIV = [
     'eredmeny = a // 2  # whole division',
     'lasd a Bearer tokenrol: docs/api-referencia.md',               # tul rovid "token" szo a Bearer utan
     'a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5',  # 64 hex, de NEM a sajat tokenunk
+    # F-D (card f6f67dff) negativ kontroll: zero-width karakter normal szovegben, nem token
+    # kozepen -- a normalizalas nem csinalhat belole hamis talalatot.
+    'ez egy​ norm​al mondat, semmi titkos benne',
 ]
 
 def onteszt() -> int:
@@ -430,6 +442,9 @@ def elo_titkok_onteszt() -> int:
              base64.urlsafe_b64encode(("xy" + fake_access).encode()).decode(), True),
             ("dupla URL-kodolt refresh token",
              _urlquote(_urlquote(fake_refresh, safe=""), safe=""), True),
+            # F-D (card f6f67dff): zero-width space (U+200B) a raw token kozepebe ekelve.
+            ("dashboard token zero-width karakterrel szetszabdalva",
+             fake_dash[:30] + "​" + fake_dash[30:], True),
         ]
         for nev, szoveg, vart_blokkol in cases:
             t = vizsgal(szoveg)

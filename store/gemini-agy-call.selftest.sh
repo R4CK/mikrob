@@ -5,18 +5,41 @@
 # are exercised for real, not reimplemented a second time just for the test.
 set -euo pipefail
 
-# F-B (card 09117e0a, WhiteHat2 NO-GO komment 18851): --root/--seged-script/--dashboard-token-file/
-# --dashboard-url/--category-check now require this flag to be honored at all -- this whole file IS
-# the test harness, so it is on for its entire run; a plain live caller never sets it.
-export GEMINI_AGY_CALL_TEST_MODE=1
-
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SUT="$SELF_DIR/gemini-agy-call.sh"
+REAL_SUT="$SELF_DIR/gemini-agy-call.sh"
 REAL_SEGED_HIVO="$SELF_DIR/../scripts/seged-hivo.py"
 
 TD="$(mktemp -d)"
 trap 'rm -rf "$TD"' EXIT
 mkdir -p "$TD/store" "$TD/scripts" "$TD/base/w"
+
+# F-B (card f6f67dff, WhiteHat2): the live script no longer understands --root/--seged-script/
+# --dashboard-token-file/--dashboard-url/--category-check at all (no env flag can re-enable them
+# any more). This whole file is the only place that still needs them, so it builds its OWN copy
+# with that parsing re-inserted, once, here -- every "$SUT" call below runs against that copy, not
+# the real, shipped script. $REAL_SUT (above) stays untouched, for the handful of tests that
+# specifically check the live file's behavior.
+SUT="$TD/test-sut-gemini-agy-call.sh"
+python3 - "$REAL_SUT" "$SUT" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+s = open(src).read()
+anchor = '    *) echo "gemini-agy-call: unknown argument: $1" >&2; exit 2 ;;'
+assert s.count(anchor) == 1, 'anchor not found exactly once -- gemini-agy-call.sh parsing changed shape'
+override_arm = '''    --root|--seged-script|--dashboard-token-file|--dashboard-url|--category-check)
+      case "$1" in
+        --root) ROOT="$2"; STORE="$ROOT/store"; SEGED_HIVO_HELPERS="$ROOT/scripts/seged-hivo.py"
+                SEGED_HIVO="$ROOT/scripts/seged-hivo.py"; DASHBOARD_TOKEN_FILE="$STORE/.dashboard-token" ;;
+        --seged-script) SEGED_HIVO="$2" ;;
+        --dashboard-token-file) DASHBOARD_TOKEN_FILE="$2" ;;
+        --dashboard-url) DASHBOARD_URL="$2" ;;
+        --category-check) CATEGORY_CHECK_OVERRIDE="$2" ;;
+      esac
+      shift 2 ;;
+'''
+open(dst, 'w').write(s.replace(anchor, override_arm + anchor, 1))
+PY
+chmod +x "$SUT"
 # A COPY, not a symlink (F-A follow-on): seged-hivo.py's own ROOT is __file__-based now, and
 # Path(__file__).resolve() follows a symlink straight back to the real repo root, which would
 # defeat this sandbox's isolation for the hourly-count import below (same reasoning as
@@ -256,22 +279,25 @@ case_ "F1 negative control: clean card + kategoria=safe -> goes" 0 \
   --hivo teszt --kartya c1ea0001 --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
 grep -q 'STUB RESPONSE' "$TD/out" || fails+=("F1 negative control: the underlying helper should have run for a clean card")
 
-# --- F-B: test-only flags must not work without GEMINI_AGY_CALL_TEST_MODE=1 (card 09117e0a,
-# WhiteHat2 NO-GO komment 18851, MikroB 18854 pont 1) ----------------------------------------
+# --- F-B: the LIVE, shipped script must refuse --root/--seged-script/--dashboard-url
+# unconditionally -- no env var can ever re-enable them (card f6f67dff, WhiteHat2). Runs against
+# $REAL_SUT, not the test harness's own patched $SUT copy above, so this is the actual production
+# file's behavior being checked.
 : > "$LOG"
 n=$((n + 1))
 set +e
-GEMINI_AGY_CALL_TEST_MODE=0 SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
-  "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$DEFAULT_DASH_PORT" \
+SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+  "$REAL_SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$DEFAULT_DASH_PORT" \
   --hivo teszt --kartya c1ea0002 --feladattipus kod --kategoria safe \
   --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
 got=$?
 set -e
-[ "$got" = 2 ] || fails+=("F-B: --root/--seged-script/--dashboard-url without GEMINI_AGY_CALL_TEST_MODE=1 must be a usage error (rc=2), got rc=$got, err=$(cat "$TD/err")")
+[ "$got" = 2 ] || fails+=("F-B: the live gemini-agy-call.sh must refuse --root/--seged-script/--dashboard-url unconditionally (rc=2), got rc=$got, err=$(cat "$TD/err")")
+grep -qi 'unknown argument' "$TD/err" || fails+=("F-B: the refusal should read as a plain unknown-argument error, not a special test-mode message, err=$(cat "$TD/err")")
 
-# --- F-C: ambient env poisoning must have no effect -- only the CLI flags above (gated by
-# GEMINI_AGY_CALL_TEST_MODE) can redirect anything; a plain env var sitting in the caller's shell
-# must not (card 09117e0a, WhiteHat2 NO-GO komment 18851, MikroB 18854 pont 2). Regression target:
+# --- F-C: ambient env poisoning must have no effect -- only the CLI flags on the test harness's
+# own $SUT copy can redirect anything; a plain env var sitting in the caller's shell must not
+# (card 09117e0a, WhiteHat2 NO-GO komment 18851, MikroB 18854 pont 2). Regression target:
 # line "CATEGORY_CHECK=...". A [SEC]-titled card declared safe must still be refused even with a
 # no-op category-check path and other bogus values sitting in the environment -- this does NOT
 # use the CLI overrides for them, only ambient env, which the script never reads for these names.
@@ -477,6 +503,58 @@ DASHBOARD_TOKEN_FILE="$WRONG_TOKEN_FILE" SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S
 got=$?
 set -e
 [ "$got" = 0 ] || fails+=("WR6: ambient DASHBOARD_TOKEN_FILE must not pick which token is sent when --dashboard-token-file is omitted (want rc=0, the real token at \$GOOD_ROOT/store/.dashboard-token must be used), got rc=$got, err=$(cat "$TD/err")")
+
+# F-E: a PYTHONPATH-shadowed base64 module must not disable titok-kapu's live-secret check two
+# hops down (card f6f67dff, WhiteHat2). run_gate() (scripts/seged-hivo.py) spawns titok-kapu.py
+# via a plain subprocess.run() that inherits the caller's ambient PYTHONPATH -- a directory ahead
+# of the stdlib on PYTHONPATH can ship its own no-op base64.py, and since titok-kapu.py's
+# live-secret detector (_kodolt_alakok) generates the base64-encoded forms of the real dashboard
+# token through that exact module, the shadow makes every base64-encoded live secret invisible to
+# the filter (exit 3 silently becomes exit 0, engine called). A fresh, dedicated root (own copies
+# of the wrapper/seged-hivo.py/titok-kapu.py/category-check, own dashboard-token value) keeps this
+# independent of $GOOD_ROOT's fixtures.
+: > "$LOG"
+FE_ROOT="$TD/fe-root"
+mkdir -p "$FE_ROOT/store" "$FE_ROOT/scripts/muszertar"
+cp "$SUT" "$FE_ROOT/store/gemini-agy-call.sh"
+chmod +x "$FE_ROOT/store/gemini-agy-call.sh"
+cp "$REAL_SEGED_HIVO" "$FE_ROOT/scripts/seged-hivo.py"
+cp "$SELF_DIR/../scripts/muszertar/titok-kapu.py" "$FE_ROOT/scripts/muszertar/titok-kapu.py"
+cp "$SELF_DIR/gemini-agy-category-check.py" "$FE_ROOT/store/gemini-agy-category-check.py"
+printf '%s\n' "$(python3 -c "print('x' * 64)")" > "$FE_ROOT/store/.dashboard-token"
+FE_SUT="$FE_ROOT/store/gemini-agy-call.sh"
+
+# A directory ahead of the stdlib with a no-op base64.py: b64encode()/urlsafe_b64encode() return
+# b'' so _kodolt_alakok() can never produce a matching base64 form for the real token below.
+FE_SHADOW_DIR="$TD/fe-shadow"
+mkdir -p "$FE_SHADOW_DIR"
+cat > "$FE_SHADOW_DIR/base64.py" <<'PYEOF'
+def b64encode(b): return b''
+def b64decode(s): return b''
+def urlsafe_b64encode(b): return b''
+def urlsafe_b64decode(s): return b''
+PYEOF
+
+FE_SECRET_PROMPT="$TD/fe-secret.md"
+python3 -c "
+import base64
+tok = open('$FE_ROOT/store/.dashboard-token').read().strip()
+print(base64.b64encode(tok.encode()).decode())
+" > "$FE_SECRET_PROMPT"
+
+start_dashboard_stub "$CLEAN_CARD"
+FE_PORT="$DASH_STUB_PORT"
+EXTRA_DASH_PIDS+=("$DASH_STUB_PID")
+n=$((n + 1))
+set +e
+PYTHONPATH="$FE_SHADOW_DIR" SEGED_BASE="$WR_SEGED_BASE" SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 BWRAP_BIN="$WR_BWRAP_STUB" \
+  "$FE_SUT" --dashboard-url "http://127.0.0.1:$FE_PORT" \
+  --hivo teszt --kartya fe000001 --feladattipus kod --kategoria safe \
+  --prompt "$FE_SECRET_PROMPT" --mappa "$WR_SEGED_BASE/w" > "$TD/out" 2> "$TD/err"
+got=$?
+set -e
+[ "$got" = 3 ] || fails+=("F-E: a PYTHONPATH-shadowed base64 module must not hide a base64-encoded live secret from titok-kapu.py (want rc=3, blocked), got rc=$got, err=$(cat "$TD/err")")
+grep -q 'STUB RESPONSE' "$TD/out" && fails+=("F-E: the underlying call must NOT have run when the secret should have been caught")
 
 : > "$LOG"
 n=$((n + 1))

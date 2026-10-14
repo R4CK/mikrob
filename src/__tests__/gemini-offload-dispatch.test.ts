@@ -1788,3 +1788,27 @@ describe('card c8a6e1da M3 (RedHat NO-GO 2. kor): split-letter sliding window, n
     expect(runIsGeminiBlocked('mikrob', 'BE', '[sec urity] y')).toBe('BLOCKED')
   })
 })
+
+// ── 14. Card f6f67dff F-F: the sliding window must be linear, not cubic, in token count ─────
+// RedHat D1 finding (card c8a6e1da, komment 18860): the M3 sliding window above builds EVERY
+// contiguous run of 2+ tokens (an O(n^2) pair count) and re-joins each one from scratch (an
+// O(run length) string build), i.e. cubic total work -- measured 30+ s on a real ~4.5 KB tag of
+// mostly single-char tokens (2250 tokens) BEFORE this fix, same shape reproduced here.
+describe('card f6f67dff F-F: BLOCKED_TAGS tag-tokenizer stays fast on a long, token-heavy tag', () => {
+  it('a ~4.5 KB tag of 2250 single-char tokens resolves in well under 1s (was 30+ s)', () => {
+    const adversarial = 'x.'.repeat(2250) // tag_tokens_of -> 2250 "x" tokens, never matches
+    const t0 = Date.now()
+    const result = runIsGeminiBlocked('mikrob', adversarial, '')
+    const elapsedMs = Date.now() - t0
+    expect(result).toBe('ALLOWED') // no real match in this tag -- it must not be blocked either
+    expect(elapsedMs).toBeLessThan(1000)
+  })
+
+  it('a long tag that DOES contain a split-letter match is still caught (window cap did not break M3)', () => {
+    // Padding before AND after the split letters: the cap must not silently stop scanning once
+    // it has passed the first _MAX_RUN_CHARS characters of the WHOLE tag -- every start position
+    // still gets its own bounded window.
+    const padded = 'x.'.repeat(500) + 'S.E.C' + '.y'.repeat(500)
+    expect(runIsGeminiBlocked('mikrob', padded, '')).toBe('BLOCKED')
+  })
+})

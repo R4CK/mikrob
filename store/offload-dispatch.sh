@@ -347,10 +347,26 @@ for tag in all_tags:
     # EXACT-join requirement alone already keeps an ordinary long word out (e45945a2
     # "[Resection of X]" negative control: no contiguous run of resection/of/x joins to a
     # BLOCKED_TAGS entry).
+    # F-F (card f6f67dff, RedHat D1 finding on c8a6e1da, komment 18860): this was O(n^2) windows
+    # times an O(window length) join, i.e. cubic in the token count -- measured 30+ s on a ~4.5 KB
+    # tag of mostly single-char tokens (2250 tokens), a synchronous hang on every leaf dispatch
+    # check that touches it. No real match needs a window longer than the longest BLOCKED_TAGS
+    # word (10 chars: "superadmin") plus generous slack for a trailing digit suffix the strip
+    # regex removes -- once the growing join already exceeds that, every longer window starting
+    # at the same _start is guaranteed to fail too (joining only ever adds characters), so the
+    # inner loop stops there instead of running to the end. This changes no matching OUTCOME
+    # (same two candidates checked at every window length that is still reachable), only how many
+    # windows get built: O(n * _MAX_RUN_CHARS) now, linear in the token count.
+    _MAX_RUN_CHARS = 32  # 10 (longest word) + 22 chars of slack for a trailing digit run
     _n_tag_tokens = len(tag_tokens)
     for _start in range(_n_tag_tokens):
-        for _end in range(_start + 2, _n_tag_tokens + 1):
-            _run_joined = "".join(tag_tokens[_start:_end])
+        _run_joined = ""
+        for _end in range(_start + 1, _n_tag_tokens + 1):
+            _run_joined += tag_tokens[_end - 1]
+            if len(_run_joined) > _MAX_RUN_CHARS:
+                break
+            if _end - _start < 2:
+                continue
             _run_stripped = re.sub(r"[0-9]+$", "", _run_joined)
             for _candidate in (_run_joined, _run_stripped):
                 if _candidate and (_candidate == "blokkolt" or _candidate in BLOCKED_TAGS):
