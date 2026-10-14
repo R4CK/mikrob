@@ -28,8 +28,10 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
 
-import { readFileSync, appendFileSync, statSync } from 'node:fs'
+import { readFileSync, appendFileSync, statSync, realpathSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { homedir } from 'node:os'
+import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { allow, deny, isInvokedDirectly } from './hook-lib.mjs'
@@ -124,6 +126,9 @@ function recordAstDivergence(src, walkerSpan, astSpan, walkerSays, astSays) {
     // A logging failure must never change a gate decision, and must never wedge a Bash call.
   }
 }
+
+// The allowlist this install's egress-gate.mjs reads (scripts/ -> repo root -> store/).
+const DEFAULT_ALLOWLIST_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'egress-allowlist.json')
 
 // Claude Code runtime self-pace / scheduling tools. A sub-agent has no
 // legitimate need to schedule its own future turns -- it is input-driven.
@@ -706,6 +711,71 @@ const WRITE_INTENT_RX = /(>>?|\btee\b|\bsed\b[\s\S]*\s-i|\bdd\b|\bcp\b|\bmv\b)/i
 // self-paced cron; a GET (list / pending / agents) is legit diagnostics -> allowed.
 const SCHEDULE_API_RX = /\/api\/schedules\b/i
 const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH|DELETE)|(^|\s)(--data\b|--data-\w+\b|-d\b))/i
+
+// THE EGRESS ALLOWLIST IS A GATE ON THE SUB-AGENT ITSELF (EGRESSSELFEDIT824).
+// store/egress-allowlist.json decides which hosts egress-gate.mjs lets through, and it
+// was a plain writable file in the sub-agent's own tree: on 2026-08-24 a nested
+// sub-agent added a domain to reach it and removed it afterwards. Its legitimate
+// writers are the MAIN agent (on the owner's go) and the owner by hand -- neither runs
+// this gate (it is wired for sub-agents only), so neither is affected.
+//
+// Native file tools: denied on the file name AND on the resolved real path, so a
+// relative path or a symlink created earlier does not walk past the name check.
+// Bash: FAIL-CLOSED. A segment that mentions the file may only be a plain READ
+// (cat/grep/jq/...), and an output redirect in it may not point at the file. An
+// interpreter (python/node/...), cp/mv/tee/sed/ln/... or anything else that names the
+// file is denied, because whether it writes cannot be read off the command string.
+//
+// What this gate CANNOT see -- a script that builds the path at runtime, a glob that
+// does not spell the name -- is written down, not hidden: the dashboard keeps a hash
+// baseline of the file and reports every change, whoever made it, by whatever route
+// (src/egress-allowlist-baseline.ts). This gate narrows the casual route; that one
+// catches the rest after the fact.
+const ALLOWLIST_BASENAME = 'egress-allowlist.json'
+// The STORE objects, not the concept: the file and its history directory, or a glob that
+// starts on the name (egress-allow*, egress-allowlist.*). A plain /egress[-_]?allow/ also
+// matched this gate's own source and test names (egress-allowlist-baseline.ts), so no
+// sub-agent could run, stage or diff them -- review on #1678.
+const ALLOWLIST_MENTION_RX = /egress[-_]?allowlist(?:\.json|\.history)|egress[-_]?allow[\w.]*[*?[]/i
+const ALLOWLIST_READERS = new Set([
+  'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'wc', 'ls', 'stat',
+  'file', 'shasum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf',
+])
+// Output redirects: `>`, `>>`, `>|`, `&>`, `&>>`, `N>`. The target is the next word.
+const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
+
+export function allowlistBashSegmentAllowed(seg) {
+  const s = String(seg ?? '').trim()
+  if (!ALLOWLIST_MENTION_RX.test(s)) return true
+  const words = s.split(/\s+/)
+  let i = 0
+  while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
+  const cmd = (words[i] ?? '').replace(/^.*\//, '')
+  if (!ALLOWLIST_READERS.has(cmd)) return false
+  for (const m of s.matchAll(OUTPUT_REDIRECT_RX)) {
+    const target = m[1]
+    if (/^&?\d+$/.test(target) || target === '/dev/null') continue // 2>&1, >/dev/null
+    if (ALLOWLIST_MENTION_RX.test(target) || /[$`]/.test(target)) return false
+  }
+  return true
+}
+
+function expandHome(p) {
+  return p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
+}
+function realOrSelf(p) {
+  try { return realpathSync(p) } catch { return p }
+}
+
+// Does a native file-tool call target the allowlist? `allowlistPath` is the real file
+// this install's egress-gate reads; tests pass a tmp one.
+export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLOWLIST_PATH, cwd = process.cwd()) {
+  const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
+  if (!raw) return false
+  if (basename(raw).toLowerCase() === ALLOWLIST_BASENAME) return true
+  const abs = resolve(cwd, expandHome(raw))
+  return realOrSelf(abs) === realOrSelf(allowlistPath)
+}
 
 // Split a compound command into individual simple commands, so a token in one
 // segment cannot trip a check anchored in another (e.g. `cat store && cp a b`).
@@ -2353,7 +2423,7 @@ export function executableStrings(command) {
 // redirection and stdin.
 const MAX_COMMAND_BYTES = 1048576
 
-export function gateDecision(toolName, toolInput) {
+export function gateDecision(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
   if (SELF_PACE_TOOLS.has(name)) return { deny: true }
   // Measured on the BYTE length, not String.length: a non-ASCII command can be up to three times
@@ -2363,9 +2433,10 @@ export function gateDecision(toolName, toolInput) {
     return { deny: true, reason: 'oversized' }
   }
   // Native file tools writing the self-schedule store would bypass any Bash regex.
-  if (name === 'Write' || name === 'Edit' || name === 'NotebookEdit') {
+  if (name === 'Write' || name === 'Edit' || name === 'MultiEdit' || name === 'NotebookEdit') {
     const fp = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
     if (SCHEDULE_STORE_RX.test(fp)) return { deny: true }
+    if (fileToolTargetsAllowlist(toolInput, opts.allowlistPath, opts.cwd)) return { deny: true, reason: 'egress-allowlist' }
   }
   if (name === 'Bash') {
     // Card ec20dd23: whatever a shell would execute out of a `-c` string, an `eval`, or a pipe into
@@ -2410,6 +2481,8 @@ export function gateDecision(toolName, toolInput) {
       if (SCHEDULE_STORE_RX.test(seg) && WRITE_INTENT_RX.test(seg)) return { deny: true }
       // dashboard schedule API: block WRITE methods only (GET list/pending is legit)
       if (SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
+      // the egress allowlist: a plain read only (EGRESSSELFEDIT824)
+      if (!allowlistBashSegmentAllowed(seg)) return { deny: true, reason: 'egress-allowlist' }
     }
     // The scheduler check is the ANCHORED one -- it fires on what sits at a
     // segment START -- so it is the one a fake segment boundary can mislead, and
@@ -2540,6 +2613,11 @@ const OVERSIZE_MSG =
   'Mit tegyel: ne a parancssorban vidd az adatot. Ird fajlba es hivatkozz ra (`< fajl`, ' +
   '`-d @fajl`, heredoc), vagy bontsd tobb hivasra. Ha tenyleg egyetlen, egy megabajtnal nagyobb ' +
   'parancsra van szukseged, az operator dontese -- szolj neki, ne kerulgesd.'
+const ALLOWLIST_GATE_MSG =
+  'Egress-engedelylista TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
+  'store/egress-allowlist.json-t: ez a kapu RAD vonatkozik. Ha egy domain kell, kerd a fo ' +
+  'agenst (inter-agent uzenet: domain + miert); o a gazda jovahagyasaval veszi fel. ' +
+  'Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem).'
 
 // allow()/deny()/isInvokedDirectly() are shared with the other PreToolUse
 // gates -- see hook-lib.mjs.
@@ -2550,10 +2628,13 @@ if (isInvokedDirectly(import.meta.url)) {
   } catch {
     allow() // malformed/empty input must never break the agent's tool calls
   }
-  const { deny: shouldDeny, reason } = gateDecision(payload?.tool_name, payload?.tool_input)
+  const { deny: shouldDeny, reason } = gateDecision(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd })
   // A refusal has to say what actually happened. The self-pace message would be baffling here --
-  // the command was never examined for scheduling at all, it was refused for its size -- and a
-  // message that misdescribes the cause sends the reader looking for the wrong bug.
-  if (shouldDeny) deny(reason === 'oversized' ? OVERSIZE_MSG : GATE_MSG)
+  // the command was never examined for scheduling at all, it was refused for its size (or for
+  // touching the egress allowlist) -- and a message that misdescribes the cause sends the reader
+  // looking for the wrong bug.
+  if (shouldDeny) {
+    deny(reason === 'oversized' ? OVERSIZE_MSG : reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : GATE_MSG)
+  }
   allow()
 }
