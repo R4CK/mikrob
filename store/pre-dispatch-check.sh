@@ -166,7 +166,7 @@ HARD_STOP_FLAG="$STORE/weekly-hard-stop.json"
 # (the testStop level) are unaffected.
 write_hard_stop() { # $1=active(1|0) $2=percent $3=testStop $4=newDevStop $5=newDevActive(1|0)
   python3 - "$HARD_STOP_FLAG" "$1" "$2" "$3" "$4" "$5" <<'PYHS' 2>/dev/null || true
-import json, os, sys, tempfile, time
+import json, os, sqlite3, sys, tempfile, time
 path = sys.argv[1]
 active = sys.argv[2] == '1'
 pct = int(sys.argv[3])
@@ -178,6 +178,52 @@ if active:
     reason = 'weekly usage %d%% >= test-stop %d%%: gate work stops, park every role agent' % (pct, thr)
 elif nd_active:
     reason = 'weekly usage %d%% >= new-dev-stop %d%%: no new development, in-flight + gates continue' % (pct, nd)
+
+# Card b73722e1 (WhiteHat2 NO-GO, gate comment 19003, F1+F2): this function used to stamp
+# 'updatedAt' as the ONLY timestamp, and the newDevStop linked-card exception anchored its
+# anti-bypass check on it -- but this function runs on EVERY pre-dispatch tick, including while
+# newDevStopActive stays continuously true, so that anchor drifted forward every few minutes and
+# the bypass window reopened after each write (measured: two runs 2s apart, updatedAt moved both
+# times, newDevStopActive True both times). The TRUE activation moment must be stamped ONCE, at
+# the actual false->true transition, and held steady for as long as the stop stays active -- read
+# the flag we are about to overwrite and carry its activation fields forward when nothing changed.
+try:
+    with open(path, encoding='utf-8') as f:
+        prev = json.load(f)
+except Exception:
+    prev = {}
+prev_nd_active = prev.get('newDevStopActive') is True
+
+if nd_active and prev_nd_active:
+    # Still the SAME activation episode -- never restamp.
+    activated_at = prev.get('newDevStopActivatedAt')
+    if not isinstance(activated_at, (int, float)):
+        activated_at = int(time.time())  # a prior flag predates this field entirely; start tracking now
+    snapshot = prev.get('inProgressAtActivation')
+    snapshot = sorted(s for s in snapshot if isinstance(s, str)) if isinstance(snapshot, list) else []
+elif nd_active:
+    # false -> true (or the very first write ever): a FRESH activation. Snapshot which cards are
+    # in_progress RIGHT NOW, before any new planned card can start -- F2's fix: a card reopened to
+    # in_progress AFTER this moment can never enter this set, no matter how it got reopened.
+    activated_at = int(time.time())
+    snapshot = []
+    try:
+        db_path = os.path.join(os.path.dirname(path) or '.', 'claudeclaw.db')
+        conn = sqlite3.connect('file:%s?mode=ro' % db_path, uri=True, timeout=2)
+        try:
+            rows = conn.execute(
+                "SELECT id FROM kanban_cards WHERE status = 'in_progress' AND archived_at IS NULL"
+            ).fetchall()
+            snapshot = sorted(r[0] for r in rows)
+        finally:
+            conn.close()
+    except Exception:
+        snapshot = []  # fail-safe: an unreadable DB just means no exemptions this activation, not a crash
+else:
+    # Not active: nothing is exempted, so nothing to remember until the next activation.
+    activated_at = None
+    snapshot = []
+
 payload = {
     'active': active,
     'percent': pct,
@@ -185,6 +231,8 @@ payload = {
     'newDevStop': nd,
     'newDevStopActive': nd_active,
     'updatedAt': int(time.time()),
+    'newDevStopActivatedAt': activated_at,
+    'inProgressAtActivation': snapshot,
     'exemptAgents': ['mikrob'],
     'reason': reason,
 }
