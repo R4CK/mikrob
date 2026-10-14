@@ -137,6 +137,7 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   { path: 'src/__tests__/channel-inbound-framing.test.ts', reason: 'channel framing test: synthetic wrapper frames with sample ids are the subject under test' },
   { path: 'scripts/__tests__/conversation-ledger.test.sh', reason: 'ledger test: synthetic wrapper frames with sample ids' },
   { path: 'src/__tests__/agent-terminal-mask-keys.test.ts', reason: 'terminal masking test: a hand-written sk-ant- shaped fixture IS the input under test -- the assertion is that no fragment of it reaches the audit line, so a different shape would stop measuring the thing' },
+  { path: 'scripts/muszertar/titok-kapu.py', reason: 'card 64788453 (seged-hivo ADOPT, unmodified upstream): a secret scanner carries its own self-test fixtures (POZITIV/NEGATIV lists, each marked TITOK-KAPU-KIVETEL in the file) -- fake credential SHAPES are the subject under test, never real secrets.' },
   // Card da47b612: a VENDORED upstream skill (mukul975/Anthropic-Cybersecurity-Skills @ 54a79883),
   // copied verbatim per agent. Its BOLA example carries two JWT-shaped PLACEHOLDERS: decoded they are a
   // bare {"alg":"RS256","typ":"JWT"} header followed by "..." -- documentation, not a credential. The
