@@ -8,6 +8,7 @@ import { makeLazyBinResolver } from '../platform.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { listAgentNames, agentConfigRoot } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
+import { mainAgentConfigDir } from './main-transcript-root.js'
 import { agentSessionName, capturePane } from './agent-process.js'
 import { sendSystemDirective } from './system-directive.js'
 import { detectPaneState } from '../pane-state.js'
@@ -186,7 +187,9 @@ export function configDirFor(name: string): string | undefined {
   // whose config dir was auto-provisioned by the launcher has no field to read, so the old call
   // returned null and this gate then measured the HOST default -- another agent's absence read as
   // this one's context size, which is the input the gate decides on.
-  return name === MAIN_AGENT_ID ? undefined : (resolveAgentConfigDirForRead(name) ?? undefined)
+  // TOKENVAK915: the main agent's OWN isolated config root used to be skipped entirely
+  // (unconditional `undefined`) -- see main-transcript-root.ts for why and the fix.
+  return name === MAIN_AGENT_ID ? mainAgentConfigDir(agentConfigRoot(name)) : (resolveAgentConfigDirForRead(name) ?? undefined)
 }
 
 function agentIdForLedger(name: string): string {
