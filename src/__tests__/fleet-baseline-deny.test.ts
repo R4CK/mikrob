@@ -146,7 +146,11 @@ describe('(B) the main agent gets the baseline from the repo project settings', 
   // The scaffold refuses to write the main agent's settings (#1305), so the
   // main agent's floor cannot come from (A). It ships in the repo instead.
   const settingsPath = join(PROJECT_ROOT, '.claude', 'settings.json')
-  const settings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+  const settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as {
+    permissions?: { deny?: string[] }
+    enabledPlugins?: unknown
+    hooks?: Record<string, unknown>
+  }
 
   it('carries every baseline rule in its home-relative (~) form', () => {
     const deny: string[] = settings.permissions?.deny ?? []
@@ -191,7 +195,7 @@ describe('(B) the main agent gets the baseline from the repo project settings', 
   it('adds permissions ALONGSIDE the existing keys, it does not replace them', () => {
     expect(settings.enabledPlugins).toBeTruthy()
     expect(settings.hooks).toBeTruthy()
-    expect(Object.keys(settings.hooks).length).toBeGreaterThan(0)
+    expect(Object.keys(settings.hooks ?? {}).length).toBeGreaterThan(0)
   })
 })
 

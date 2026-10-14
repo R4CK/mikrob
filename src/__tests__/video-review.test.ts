@@ -7,6 +7,7 @@ import http from 'node:http'
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, existsSync, readFileSync, rmSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import type { RouteContext } from '../web/routes/types.js'
 
 const base = realpathSync(mkdtempSync(join(tmpdir(), 'marveen-video-review-test-')))
 const root = join(base, 'deliverables')
@@ -53,10 +54,12 @@ writeFileSync(join(webDir, 'video-review.js'), '//js')
 let server: http.Server
 let origin = ''
 beforeAll(async () => {
-  server = http.createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    const ctx: any = { req, res, path: url.pathname, method: req.method ?? 'GET', url }
-    if (!(await tryHandleVideoReview(ctx, webDir))) { res.writeHead(404); res.end() }
+  server = http.createServer((req, res) => {
+    void (async () => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const ctx: RouteContext = { req, res, path: url.pathname, method: req.method ?? 'GET', url }
+      if (!(await tryHandleVideoReview(ctx, webDir))) { res.writeHead(404); res.end() }
+    })()
   })
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
   origin = `http://127.0.0.1:${(server.address() as any).port}`

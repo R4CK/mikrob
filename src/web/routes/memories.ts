@@ -153,6 +153,7 @@ const SUSPICIOUS_PATTERNS = [
   /\b(ird\s+felul|lepd\s+at|szegd\s+meg|hagyd\s+el)\s+(az?\s+)?(sajat\s+)?(utasitas|szabaly|eloiras|iranyelv|korlat|biztonsagi)/i,
   /\b(mostantol|ezentul|a\s+tovabbiakban)\b[^.!?\n]{0,30}\buj\s+(persona|szemelyiseg|szerep|karakter)/i,
   /\buj\s+(persona|szemelyiseg|szerep|karakter)(t|et|ot)?\s+(veszel|vegyel|vesz|kapsz|kapod|olts)/i,
+  /\brm\s+-rf\b/i,
 ]
 
 // MEMVERSION930: a content-derived version for optimistic concurrency. The
@@ -541,6 +542,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       embedding: undefined,
       created_label: new Date(row.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(row.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
+      // PR #1357: `length` lets a caller see the size before a guarded write; `version`
+      // (MEMVERSION930) is what the PUT/PATCH if_version flow reads back on a GET.
+      version: memoryVersion(row.content),
+      length: String(row.content ?? '').length,
     })
     return true
   }

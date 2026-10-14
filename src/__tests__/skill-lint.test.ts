@@ -17,6 +17,10 @@ import {
 
 const SCRIPT = join(__dirname, '..', '..', 'scripts', 'skill-lint.mjs')
 const FM = '---\nname: demo\ndescription: A demo skill.\n---\n'
+// The .mjs import above is @ts-expect-error'd (plain script, no types), so these two
+// constants come through as `any` -- cast once here instead of at every call site.
+const MAX_BODY_LINES = SKILL_MD_MAX_BODY_LINES as number
+const TOC_THRESHOLD = REFERENCE_TOC_THRESHOLD as number
 
 /** A skill folder from a { relativePath: content } map. */
 function skill(files: Record<string, string>, root = mkdtempSync(join(tmpdir(), 'skill-lint-'))) {
@@ -31,12 +35,12 @@ const rules = (dir: string) => (lintSkill(dir) as Array<{ rule: string; file: st
 
 describe('skill-md-too-long', () => {
   it('a body of 500 lines passes; 501 is flagged', () => {
-    expect(rules(skill({ 'SKILL.md': FM + lines(SKILL_MD_MAX_BODY_LINES) }))).toEqual([])
-    expect(rules(skill({ 'SKILL.md': FM + lines(SKILL_MD_MAX_BODY_LINES + 1) }))).toEqual(['skill-md-too-long:SKILL.md'])
+    expect(rules(skill({ 'SKILL.md': FM + lines(MAX_BODY_LINES) }))).toEqual([])
+    expect(rules(skill({ 'SKILL.md': FM + lines(MAX_BODY_LINES + 1) }))).toEqual(['skill-md-too-long:SKILL.md'])
   })
   it('the frontmatter does not count toward the body', () => {
     const longFm = '---\nname: demo\ndescription: |\n' + lines(30, '  d') + '---\n'
-    expect(rules(skill({ 'SKILL.md': longFm + lines(SKILL_MD_MAX_BODY_LINES) }))).toEqual([])
+    expect(rules(skill({ 'SKILL.md': longFm + lines(MAX_BODY_LINES) }))).toEqual([])
     expect(lineCount(skillBody(FM + 'a\nb\n'))).toBe(2)
     expect(lineCount(skillBody('no frontmatter\n'))).toBe(1)
   })
@@ -45,8 +49,8 @@ describe('skill-md-too-long', () => {
 describe('reference-missing-toc', () => {
   const ref = (body: string) => skill({ 'SKILL.md': FM + 'See [ref](references/guide.md).\n', 'references/guide.md': body })
   it('101 lines without a table of contents is flagged; 100 is not', () => {
-    expect(rules(ref('# Guide\n' + lines(REFERENCE_TOC_THRESHOLD)))).toEqual(['reference-missing-toc:references/guide.md'])
-    expect(rules(ref('# Guide\n' + lines(REFERENCE_TOC_THRESHOLD - 1)))).toEqual([])
+    expect(rules(ref('# Guide\n' + lines(TOC_THRESHOLD)))).toEqual(['reference-missing-toc:references/guide.md'])
+    expect(rules(ref('# Guide\n' + lines(TOC_THRESHOLD - 1)))).toEqual([])
   })
   it('a "Contents" heading or three in-file anchor links near the top is a table of contents', () => {
     expect(rules(ref('# Guide\n\n## Contents\n- Setup\n- Usage\n' + lines(120)))).toEqual([])
