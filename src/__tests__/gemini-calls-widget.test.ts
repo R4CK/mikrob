@@ -114,7 +114,7 @@ describe('gemini-calls: Overview tile loader (loadGeminiOverviewTile)', () => {
 describe('gemini-calls: geminiSummaryEntries (real execution, not string-match)', () => {
   const body = fnBody(APP_GEMINI, 'function geminiSummaryEntries(')
   const geminiSummaryEntries = new Function(body + '\nreturn geminiSummaryEntries')() as (
-    bucket: Record<string, { calls: number; ok: number; error: number; blocked: number }>,
+    bucket: Record<string, { calls: number; ok: number; error: number; blocked: number }> | undefined,
     calls: Array<{ model?: string; taskType?: string; rating: { score: number } | null }>,
     field: 'model' | 'taskType',
   ) => Array<{ key: string; total: number; ok: number; avgScore: number | null; unrated: number }>
@@ -145,7 +145,7 @@ describe('gemini-calls: geminiSummaryEntries (real execution, not string-match)'
   })
 
   it('returns an empty array for a missing/undefined bucket (summary not yet populated)', () => {
-    expect(geminiSummaryEntries(undefined as any, [], 'model')).toEqual([])
+    expect(geminiSummaryEntries(undefined, [], 'model')).toEqual([])
   })
 })
 
