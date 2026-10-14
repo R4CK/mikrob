@@ -190,6 +190,29 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BLOKKOLT-ANYTHING,BE')).toBe('BLOCKED')
   })
 
+  // N5(c) (RedHat NO-GO, b3ce0a88 komment 18124, card e45945a2): exact-match-only tag
+  // comparison let a punctuation-decorated title-bracket tag bypass both the BLOCKED_TAGS
+  // exact-match set and the old startswith("blokkolt-") check. Confirmed on pre-fix code
+  // (git show of this same card) that all three shapes below returned ALLOWED.
+  it('blocks a comma-suffixed "[SEC,x]" title-bracket tag (N5(c))', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Valami [SEC,x] cim')).toBe('BLOCKED')
+  })
+
+  it('blocks a hyphen-suffixed "[SEC-hardening]" title-bracket tag (N5(c))', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Valami [SEC-hardening] cim')).toBe('BLOCKED')
+  })
+
+  it('blocks a non-hyphen BLOKKOLT suffix: "[BLOKKOLT,x]" and "[BLOKKOLT x]" (N5(c))', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Valami [BLOKKOLT,x] cim')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Valami [BLOKKOLT x] cim')).toBe('BLOCKED')
+  })
+
+  it('does not over-block a tag that merely CONTAINS "sec" as a substring (N5(c), no over-blocking)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'RESECTION,BE,NORMAL')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'INSECURE,BE,NORMAL')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'NORMAL-PRIORITY,BE')).toBe('ALLOWED')
+  })
+
   it('blocks MOPSION tag (catches [mopsion] in title with empty project)', () => {
     expect(runIsGeminiBlocked('mikrob', 'MOPSION,BE,HIGH')).toBe('BLOCKED')
   })

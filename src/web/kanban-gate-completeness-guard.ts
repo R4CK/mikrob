@@ -639,9 +639,19 @@ export function gateCompletenessGuardVerdict(cardId: string, nextStatus: unknown
   const designated = parseGateDesignation(gateLine)
   if (designated === null) return allowUnverified(cardId, 'gate-line-names-no-known-agent', { gateLine })
 
-  // SHA-anchored round boundary first (closes the Cybersec NO-GO bypass); only when NOT ONE comment
-  // on the card ever cited a Gate-SHA does this fall back to the word/author-based heuristic.
-  const sinceTs = currentRoundStartTs(comments, knownOtherCardIds) ?? latestReviewAt(comments)
+  // SHA-anchored round boundary (closes the Cybersec NO-GO bypass) is the PRIMARY signal, but it is
+  // not the only one a builder hand-off can move: a second REVIEW that forgets the (optional,
+  // CLAUDE.md 4b) Gate-SHA line still ends the round in spirit -- it is a new hand-off asking for a
+  // re-check -- yet introduces no sha for currentRoundStartTs to anchor on, so the old `??` fallback
+  // (only consult latestReviewAt when currentRoundStartTs is null) left the boundary stuck at the
+  // FIRST round's sha, and an old PASS from before the second hand-off kept reading as fresh for it
+  // (WhiteHat2 F1 on 9ce3181c). The boundary is the LATER of the two signals, not an either/or: a
+  // round can only end later than whichever of "a new sha was cited" / "a new hand-off happened"
+  // came last, never earlier than either.
+  const roundStartTs = currentRoundStartTs(comments, knownOtherCardIds)
+  const reviewStartTs = latestReviewAt(comments)
+  const sinceTs =
+    roundStartTs === null ? reviewStartTs : reviewStartTs === null ? roundStartTs : Math.max(roundStartTs, reviewStartTs)
   // QA/QA2 are ONE requirement, not two (widenQa above is about not falsely EXCLUDING qa2 from
   // acting, not about requiring both). A Gate line naming only "QA" must not demand a qa2 verdict
   // that nothing ever asked for -- either one satisfies the QA-family requirement.

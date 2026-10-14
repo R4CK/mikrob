@@ -52,10 +52,18 @@ function geminiRatingHtml(rating) {
   // to the raw value so an unexpected future enum member still shows something, not a blank.
   const resultKey = 'geminiCalls.rating.result.' + (rating.result || 'unknown')
   const resultLabel = t(resultKey) === resultKey ? (rating.result || '—') : t(resultKey)
-  const scoreCls = (rating.score || 0) >= 7 ? 'good' : (rating.score || 0) >= 4 ? 'mid' : 'bad'
+  // WhiteHat2 F1 (MEDIUM, card 57da740c): the ledger is a plain JSONL file any same-uid fleet
+  // process can write, so rating.score is NOT guaranteed to be the number the contract declares
+  // even after the backend's own coercion (defense-in-depth, not "trust the BE now") -- a raw,
+  // un-escaped interpolation here was a stored-XSS vector (an HTML-shaped string in the score
+  // field rendered as a live element in the dashboard origin). Coerce to a finite number first,
+  // THEN escapeHtml the display string, same as every other field in this function already does.
+  const safeScore = typeof rating.score === 'number' && Number.isFinite(rating.score) ? rating.score : null
+  const scoreCls = (safeScore || 0) >= 7 ? 'good' : (safeScore || 0) >= 4 ? 'mid' : 'bad'
+  const scoreText = escapeHtml(String(safeScore ?? '—'))
   return `<span class="gemini-rating">
     <span class="gemini-rating-result">${escapeHtml(resultLabel)}</span>
-    <span class="gemini-rating-score gemini-rating-score--${scoreCls}">${rating.score ?? '—'}/10</span>
+    <span class="gemini-rating-score gemini-rating-score--${scoreCls}">${scoreText}/10</span>
   </span>${rating.opinion ? `<span class="gemini-rating-opinion" title="${escapeHtml(rating.opinion)}">${escapeHtml(rating.opinion)}</span>` : ''}`
 }
 
@@ -69,8 +77,15 @@ function geminiSummaryEntries(bucket, calls, field) {
     const b = bucket[key] || {}
     const rated = callList.filter((c) => c[field] === key && c.rating)
     const unrated = callList.filter((c) => c[field] === key && !c.rating).length
-    const avgScore = rated.length
-      ? rated.reduce((sum, c) => sum + (c.rating.score || 0), 0) / rated.length
+    // WhiteHat2 F3 (same root as F1): a rating object can carry a non-numeric score (ledger is a
+    // plain JSONL file, not an enforced schema) -- summing it unchecked turns avgScore into a
+    // STRING (via JS `+` concatenation), and the later `.toFixed()` call throws, taking down the
+    // whole summary render on one bad row. Only finite numeric scores contribute to the average.
+    const numericScores = rated
+      .map((c) => c.rating.score)
+      .filter((s) => typeof s === 'number' && Number.isFinite(s))
+    const avgScore = numericScores.length
+      ? numericScores.reduce((sum, s) => sum + s, 0) / numericScores.length
       : null
     return { key, total: b.calls || 0, ok: b.ok || 0, avgScore, unrated }
   })
