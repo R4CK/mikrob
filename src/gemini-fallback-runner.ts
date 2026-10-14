@@ -57,6 +57,7 @@ import {
 } from './gemini-client.js'
 import { readEnvFile } from './env.js'
 import { getSecret } from './web/vault.js'
+import { runDraftCleanupSweep } from './gemini-orchestrator-draft-cleanup.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
@@ -175,7 +176,9 @@ async function sendTelegram(text: string): Promise<void> {
   }
 }
 
-export async function runGeminiFallbackCheck(): Promise<void> {
+export async function runGeminiFallbackCheck(
+  cleanupSweep: () => void = runDraftCleanupSweep
+): Promise<void> {
   const now = Date.now()
   const state = readState()
   const engageOn = readEngageOn()
@@ -256,6 +259,20 @@ export async function runGeminiFallbackCheck(): Promise<void> {
     console.log(`[gemini-runner] Reverted to Claude (reason: ${action.reason}).`)
   } else {
     writeState(newState)
+  }
+
+  // Gemini-orch 4/4 (card b8da509b, decision B): "a kvota visszatereserkor... a draft/temp
+  // adatokat torlik" -- gated on route==='claude' (post-reset), not just the instant of the
+  // revert action, because a role agent's Draft-Review is async and may lag past this exact
+  // tick; running every check while we're on the claude route keeps retrying until each draft
+  // has actually been adjudicated. Best-effort housekeeping, never allowed to break the real
+  // fallback decision above.
+  if (newState.route === 'claude') {
+    try {
+      cleanupSweep()
+    } catch (err) {
+      console.warn(`[gemini-runner] draft cleanup sweep failed: ${err instanceof Error ? err.message : err}`)
+    }
   }
 }
 
