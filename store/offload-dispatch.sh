@@ -155,27 +155,26 @@ _HOMOGLYPH_MAP = str.maketrans({
 # broad to strip wholesale -- stripped by exact codepoint instead (C2, card 33047d3f).
 _INVISIBLE_CODEPOINTS = {"⠀"}
 
-# H1 (card b3ce0a88 delta-gate, RedHat NO-GO comment 18124): a fixed six-pair bracket-homoglyph
-# dict, translated BEFORE NFKD, is not fail-closed in two ways -- (a) any of the other ~70+
-# Unicode Ps/Pe (open/close punctuation) bracket pairs the dict does not name (<>, {}-lookalikes,
-# CJK corner/tortoise-shell/angle variants beyond the six picked, French-style quote brackets,
-# ...) passes through untouched; (b) a character that NFKD-decomposes INTO one of the six mapped
-# forms (half-width corner brackets U+FF62/63, the small/vertical CJK compatibility forms
-# U+FE3B/3C, FE39/3A, FE41/42, FE3F/40, FE5D/5E, and U+2329/232A) is still in its UNDECOMPOSED form
-# when the fixed-dict translate runs, so the dict exact-codepoint match misses it; NFKD runs
-# AFTER and decomposes it into a bracket the extraction regex (ASCII-only) still cannot see. Fixed
-# by mapping by Unicode CATEGORY, AFTER NFKD: every Ps (open) or Pi (initial quote) character folds
-# to "[", every Pe (close) or Pf (final quote) character folds to "]" -- closed only by category,
-# not by an enumerable list, so it is fail-closed by construction (measured: 79/79 Ps/Pe pairs on
-# the Unicode punctuation-bracket block, including all 7 NFKD-decomposing forms above).
+# N5-follow (card b3ce0a88, WhiteHat GO 82a81c45 comment 18031 F1): these bracket look-alikes are
+# NOT fullwidth/compatibility forms, so NFKD does not resolve them to ASCII [ ] the way it already
+# resolves U+FF3B/FF3D -- they decompose to themselves. Mapped explicitly here, in the same fold
+# layer, so the tag-extraction regex below (which only knows ASCII brackets) still sees them.
+_BRACKET_HOMOGLYPH_MAP = str.maketrans({
+    "【": "[", "】": "]",  # CJK lenticular brackets
+    "「": "[", "」": "]",  # CJK corner brackets
+    "〔": "[", "〕": "]",  # CJK tortoise-shell brackets
+    "〈": "[", "〉": "]",  # CJK angle brackets
+    "⟦": "[", "⟧": "]",  # mathematical white square brackets
+    "⦅": "[", "⦆": "]",  # white parentheses
+})
+
 def _fold(s):
     """Structural fold (card 33047d3f C1/C2, same layers as gemini-offload-call.sh _fold):
-    homoglyph-map + NFKD-decompose (fullwidth/compat chars -> plain ASCII equivalents, including
-    fullwidth brackets) + bracket-CATEGORY-fold (see H1 above, card b3ce0a88 delta-gate), then
-    strip combining marks, invisible format chars (Cf: zero-width space/joiner, BOM), control
-    chars (Cc), line/paragraph separators (Zl/Zp), and the braille-blank invisible char. Case is
-    PRESERVED -- this is the structural layer (bracket/invisible-char normalization), not
-    casefold+ascii-drop (that is norm(), below, which calls this).
+    homoglyph-map + bracket-homoglyph-map + NFKD-decompose (fullwidth/compat chars -> plain ASCII
+    equivalents, including fullwidth brackets), then strip combining marks, invisible format chars
+    (Cf: zero-width space/joiner, BOM), control chars (Cc), line/paragraph separators (Zl/Zp), and
+    the braille-blank invisible char. Case is PRESERVED -- this is the structural layer (bracket/
+    invisible-char normalization), not casefold+ascii-drop (that is norm(), below, which calls this).
 
     N5 (card 82a81c45, RedHat GO 23a14c4b comment 17975): the title-prefix bracket regex used to
     run on the RAW title. An invisible char (zero-width space, BOM) spliced between/before bracket
@@ -185,19 +184,12 @@ def _fold(s):
     the regex removes the invisible chars and resolves fullwidth brackets to ASCII ones, so the
     extraction sees the same prefix a human reads."""
     s = s.translate(_HOMOGLYPH_MAP)
+    s = s.translate(_BRACKET_HOMOGLYPH_MAP)
     s = unicodedata.normalize("NFKD", s)
-    out = []
-    for ch in s:
-        cat = unicodedata.category(ch)
-        if cat in ("Mn", "Cf", "Cc", "Zl", "Zp") or ch in _INVISIBLE_CODEPOINTS:
-            continue
-        if cat in ("Ps", "Pi"):
-            out.append("[")
-        elif cat in ("Pe", "Pf"):
-            out.append("]")
-        else:
-            out.append(ch)
-    return "".join(out)
+    return "".join(
+        ch for ch in s
+        if unicodedata.category(ch) not in ("Mn", "Cf", "Cc", "Zl", "Zp") and ch not in _INVISIBLE_CODEPOINTS
+    )
 
 def norm(s):
     """casefold + _fold() -> ASCII. C1 (card 33047d3f): strips Cc (control) chars before the
@@ -243,17 +235,7 @@ _title_folded = _fold(title)
 # (all live conventions WhiteHat found still open) was simply never looked at. This searches the
 # WHOLE folded title for a bracket group with ANY of the three bracket pairs (not anchored, not
 # consecutive), plus the bare "TAG:" prefix form with no brackets at all.
-# H2 (card b3ce0a88 delta-gate, RedHat NO-GO comment 18124): the previous non-anchored regex still
-# only matched from the FIRST opening bracket to the FIRST closing bracket -- a tag nested inside
-# another bracket group ("[[SEC]]", "([SEC])", "[x (SEC)]", "(a [SEC] ...)") was swallowed whole
-# ("[SEC" or "x (SEC") by the outer pair and never isolated, so it never equalled a BLOCKED_TAGS
-# entry. A zero-width lookahead tried at EVERY position (via finditer, which advances one
-# character at a time on a zero-width match) finds the tag starting from its OWN innermost
-# opening bracket, regardless of what wraps it -- the inner character class excludes every
-# bracket type (not just the matching closer), so each attempt stops at the first bracket of any
-# kind, isolating exactly one candidate per real tag (measured: 13/13 nesting shapes caught, 0
-# change on the unnested cases this was already catching).
-_lead_tags = [m.group(1) for m in re.finditer(r"(?=[\[(\x7b]([^\[\](){}]*)[\])\x7d])", _title_folded)]
+_lead_tags = re.findall(r"[\[(\x7b]([^\])\x7d]*)[\])\x7d]", _title_folded)
 _lead_tags += re.findall(r"(?<!\w)([A-Za-z]+):", _title_folded)
 all_tags = [t for t in tags_csv.split(",") if t] + _lead_tags
 
