@@ -27,6 +27,12 @@ HOLDERS=()
 cleanup() { for p in "${HOLDERS[@]:-}"; do [ -n "$p" ] && kill -9 "$p" 2>/dev/null; done; rm -rf "$TMP"; }
 trap cleanup EXIT
 
+# D1 (card c0408a1c): mopsion-suite-run.sh now refuses outright when the caller's cwd is a marveen
+# checkout (this selftest script itself lives in one). None of the cases below are testing D1
+# specifically -- those get their own cases further down, using explicit subshell `cd`s -- so the
+# WHOLE file runs from $TMP (never under marveen) to keep every existing case's cwd legitimate.
+cd "$TMP" || exit 1
+
 # Common env: temp slots, a closed port for the API, no waiting to speak of.
 env_common=(
   "CLEANCORE_SUITE_LOCK_PREFIX=$PREFIX"
@@ -951,6 +957,187 @@ if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree' && echo "$ou
   ok "an unreachable dashboard fails OPEN on the card check, same as the memory precondition"
 else
   bad "an unreachable dashboard should fail open, not block the run" "rc=$rc out=$out"
+fi
+
+# --- 18. M1 TOKEN-TMP LEAK FIX (card c0408a1c, RedHat NO-GO 18680) ------------------------------
+# _hdr() used to leak a fresh 0600 Authorization-bearing mktemp file on every call: `h="$(_hdr)"`
+# ran it in a forked subshell, whose own EXIT trap cleaned up a copy the parent script's _hdr_file
+# never saw. Point TMPDIR at a private, empty directory and count what is left in it after several
+# runs that each exercise _hdr at least once (the live-card check always calls it, REFUSED or not).
+HDRLEAK="$TMP/hdr-leak"
+mkdir -p "$HDRLEAK"
+for _ in 1 2 3 4 5; do
+  env "${env_common[@]}" TMPDIR="$HDRLEAK" CLEANCORE_SUITE_WAIT_MAX_S=2 \
+      bash "$RUN" no-such-agent-xyz >/dev/null 2>&1
+done
+leftover="$(find "$HDRLEAK" -type f | wc -l)"
+if [[ "$leftover" -eq 0 ]]; then
+  ok "M1: 5 runs through the live-card precondition leave 0 leftover header files in TMPDIR"
+else
+  bad "M1: header-file leak still present" "leftover=$leftover files: $(find "$HDRLEAK" -type f)"
+fi
+
+# --- 19. D1: REFUSE A MARVEEN TEST RUN OUTRIGHT (card c0408a1c, MikroB 18681) -------------------
+# Measured 2026-10-12/13: qa2 and backend2 ran a marveen file through this script while sitting in
+# a marveen checkout. Both halves (cwd, and a vitest argument naming a marveen file) are exercised
+# with fake, hermetic marveen/worktrees roots -- never the real /home/neon/marveen tree.
+FAKE_MARVEEN_MAIN="$TMP/fake-marveen-main"
+FAKE_MARVEEN_WORKTREES="$TMP/fake-marveen-worktrees"
+mkdir -p "$FAKE_MARVEEN_MAIN/src/__tests__" "$FAKE_MARVEEN_WORKTREES/someagent"
+touch "$FAKE_MARVEEN_MAIN/src/__tests__/gemini-offload-dispatch.test.ts"
+
+# 19a. cwd is the (fake) marveen main checkout -> REFUSED, names fleet-test.sh.
+out="$(cd "$FAKE_MARVEEN_MAIN" && env "${env_common[@]}" MARVEEN_MAIN="$FAKE_MARVEEN_MAIN" \
+       CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR="$FAKE_MARVEEN_WORKTREES" \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED -- the caller's cwd" && echo "$out" | grep -q 'fleet-test.sh'; then
+  ok "D1: cwd under the marveen main checkout is refused, naming fleet-test.sh"
+else
+  bad "D1: a marveen-main cwd should have been refused" "rc=$rc out=$out"
+fi
+
+# 19b. cwd is a (fake) marveen agent worktree -> REFUSED, same as the main checkout.
+out="$(cd "$FAKE_MARVEEN_WORKTREES/someagent" && env "${env_common[@]}" MARVEEN_MAIN="$FAKE_MARVEEN_MAIN" \
+       CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR="$FAKE_MARVEEN_WORKTREES" \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED -- the caller's cwd"; then
+  ok "D1: cwd under a marveen agent worktree is refused"
+else
+  bad "D1: a marveen-worktree cwd should have been refused" "rc=$rc out=$out"
+fi
+
+# 19c. cwd is clean (this selftest's own $TMP), but a vitest argument names an existing marveen
+# file by absolute path -> REFUSED, and the suggested fix quotes that same argument.
+out="$(env "${env_common[@]}" MARVEEN_MAIN="$FAKE_MARVEEN_MAIN" \
+       CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR="$FAKE_MARVEEN_WORKTREES" \
+       bash "$RUN" no-such-agent-xyz -- "$FAKE_MARVEEN_MAIN/src/__tests__/gemini-offload-dispatch.test.ts" 2>&1)"; rc=$?
+if [[ $rc -eq 2 ]] && echo "$out" | grep -q "REFUSED -- vitest argument" && echo "$out" | grep -q 'gemini-offload-dispatch.test.ts'; then
+  ok "D1: a vitest argument naming a marveen file is refused, quoting the argument"
+else
+  bad "D1: a marveen-file vitest argument should have been refused" "rc=$rc out=$out"
+fi
+
+# 19d. CONTROL: a non-existent path that merely LOOKS like a marveen path is not refused by the
+# argument check (only a file that actually exists there counts) -- proven by reaching past D1 into
+# the ordinary "no CleanCore worktree" failure.
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=5 MARVEEN_MAIN="$FAKE_MARVEEN_MAIN" \
+       CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR="$FAKE_MARVEEN_WORKTREES" \
+       bash "$RUN" no-such-agent-xyz -- "$FAKE_MARVEEN_MAIN/src/__tests__/no-such-file.test.ts" 2>&1)"; rc=$?
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree'; then
+  ok "D1 CONTROL: a non-existent marveen-shaped path is not refused -- only real files are"
+else
+  bad "D1 CONTROL: a non-existent path should not trip the argument check" "rc=$rc out=$out"
+fi
+
+# 19e. --worktree exempts the cwd check (card 08eb6402's prepare/suite/land callers, e.g.
+# mopsion-preland.sh, pin an explicit worktree and never cd out of their own process first).
+FAKE_WT="$TMP/fake-pinned-worktree"
+mkdir -p "$FAKE_WT"
+out="$(cd "$FAKE_MARVEEN_MAIN" && env "${env_common[@]}" CLEANCORE_SUITE_WAIT_MAX_S=2 \
+       MARVEEN_MAIN="$FAKE_MARVEEN_MAIN" CLEANCORE_SUITE_MARVEEN_WORKTREES_DIR="$FAKE_MARVEEN_WORKTREES" \
+       bash "$RUN" --worktree "$FAKE_WT" no-such-agent-xyz 2>&1)"; rc=$?
+if ! echo "$out" | grep -q "REFUSED -- the caller's cwd"; then
+  ok "D1: --worktree exempts the cwd check (an explicitly pinned worktree, cwd is irrelevant)"
+else
+  bad "D1: --worktree should have exempted the cwd check" "rc=$rc out=$out"
+fi
+
+# --- 20. D2: A GATE AGENT'S FIRST RUN ON A WAITING CARD (card c0408a1c, MikroB 18681) -----------
+# A gate agent (qa/qa2/cybersec/cybersec2/cybered) tests the suite BEFORE posting its own verdict,
+# so it never has a comment of its own yet on its first run -- accepted instead on a non-stop-tagged
+# waiting mopsion card that already carries a builder's REVIEW comment. A BUILDER keeps the old
+# rule: its own comment is still required.
+# NOTE: the caller here MUST be a real gate-list name ("qa") to exercise the is_gate branch, but
+# calling mopsion-suite-run.sh with a bare agent name (no --worktree) resolves agent-worktree.sh
+# qa --path -- qa's REAL, live worktree -- and would run the REAL full suite under qa's identity
+# (measured: a first attempt without --worktree ran a genuine 1038-file vitest suite for 25+
+# minutes before being killed). --worktree with a path that does NOT exist makes the worktree
+# step fail in milliseconds, deterministically, without ever touching agent-worktree.sh.
+FAKE_WT_NOEXIST="$TMP/fake-worktree-does-not-exist"
+fake_api="$(card_fake_dashboard_start '[
+  {"id":"gate2","project":"mopsion","status":"waiting","assignee":"the-builder","title":"x"}
+]' '{"gate2":[{"author":"the-builder","content":"REVIEW: kesz, ime az eredmeny..."}]}')"
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_API="$fake_api" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       bash "$RUN" --worktree "$FAKE_WT_NOEXIST" qa 2>&1)"; rc=$?
+card_fake_dashboard_stop
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q -- "--worktree '$FAKE_WT_NOEXIST' does not exist" && ! echo "$out" | grep -q 'NO-CARD-REFUSED'; then
+  ok "D2: a gate agent's first run is accepted on a waiting card with a builder REVIEW comment"
+else
+  bad "D2: a gate agent's first run should have been accepted" "rc=$rc out=$out"
+fi
+
+# 20b. CONTROL: the same card/comments, but the caller is a BUILDER (not in the gate list) -- the
+# old rule still applies, and with no comment of its own it is refused.
+fake_api="$(card_fake_dashboard_start '[
+  {"id":"gate2","project":"mopsion","status":"waiting","assignee":"the-builder","title":"x"}
+]' '{"gate2":[{"author":"the-builder","content":"REVIEW: kesz, ime az eredmeny..."}]}')"
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_API="$fake_api" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+card_fake_dashboard_stop
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'NO-CARD-REFUSED'; then
+  ok "D2 CONTROL: a non-gate caller with no comment of its own is still refused"
+else
+  bad "D2 CONTROL: a non-gate, non-commenting caller should still be refused" "rc=$rc out=$out"
+fi
+
+# --- 21. M2: NEGATIVE CASES FOR THE WAITING/GATE BRANCH (card c0408a1c, RedHat NO-GO 18680) -----
+# RedHat's mutation testing found these three conditions unpinned: removing any of them left the
+# selftest at 50/50 green. Each case below is the one a removed check would wrongly accept.
+
+# 21a. a waiting card tagged BLOKKOLT-Peti-stop, even with the caller's OWN comment on it, must
+# still be REFUSED -- the stop tag wins over a real gating comment.
+fake_api="$(card_fake_dashboard_start '[
+  {"id":"stopped-waiting","project":"mopsion","status":"waiting","assignee":"the-builder","title":"[BLOKKOLT-Peti-stop] x"}
+]' '{"stopped-waiting":[{"author":"no-such-agent-xyz","content":"QA reviewing"}]}')"
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_API="$fake_api" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+card_fake_dashboard_stop
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'NO-CARD-REFUSED'; then
+  ok "M2: a stop-tagged waiting card is refused even with the caller's own comment on it"
+else
+  bad "M2: a stop-tagged waiting card should not have justified the run" "rc=$rc out=$out"
+fi
+
+# 21b. a waiting card tagged project=marveen (not mopsion), with the caller's own comment, must
+# still be REFUSED -- the project filter applies to the waiting branch too.
+fake_api="$(card_fake_dashboard_start '[
+  {"id":"wrong-project-waiting","project":"marveen","status":"waiting","assignee":"the-builder","title":"x"}
+]' '{"wrong-project-waiting":[{"author":"no-such-agent-xyz","content":"QA reviewing"}]}')"
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_API="$fake_api" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+card_fake_dashboard_stop
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'NO-CARD-REFUSED'; then
+  ok "M2: a non-mopsion-project waiting card is refused even with the caller's own comment"
+else
+  bad "M2: a marveen-project waiting card should not have justified the run" "rc=$rc out=$out"
+fi
+
+# 21c. a waiting mopsion card with a REVIEW comment from someone else, where the caller is neither
+# its author NOR a gate agent, must be REFUSED -- a non-gate caller may not ride a stranger's REVIEW.
+fake_api="$(card_fake_dashboard_start '[
+  {"id":"strangers-review","project":"mopsion","status":"waiting","assignee":"the-builder","title":"x"}
+]' '{"strangers-review":[{"author":"the-builder","content":"REVIEW: kesz"}]}')"
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_API="$fake_api" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+card_fake_dashboard_stop
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'NO-CARD-REFUSED'; then
+  ok "M2: a non-gate, non-author caller is refused even when a REVIEW comment exists from someone else"
+else
+  bad "M2: a non-gate, non-author caller should not ride a stranger's REVIEW comment" "rc=$rc out=$out"
+fi
+
+# 21d. the project casefold ("Mopsion") is honoured in the waiting/gate branch too, not only the
+# in_progress branch (case 17's positive cases only ever used the lowercase spelling).
+fake_api="$(card_fake_dashboard_start '[
+  {"id":"casefold-waiting","project":"Mopsion","status":"waiting","assignee":"the-builder","title":"x"}
+]' '{"casefold-waiting":[{"author":"no-such-agent-xyz","content":"QA reviewing"}]}')"
+out="$(env "${env_common[@]}" CLEANCORE_SUITE_API="$fake_api" CLEANCORE_SUITE_WAIT_MAX_S=5 \
+       bash "$RUN" no-such-agent-xyz 2>&1)"; rc=$?
+card_fake_dashboard_stop
+if [[ $rc -eq 3 ]] && echo "$out" | grep -q 'no CleanCore worktree' && ! echo "$out" | grep -q 'NO-CARD-REFUSED'; then
+  ok "M2: project casefold ('Mopsion') is honoured in the waiting/gate branch"
+else
+  bad "M2: a casefold-variant project spelling should not have been refused" "rc=$rc out=$out"
 fi
 
 echo "mopsion-suite-run.selftest: $pass passed, $fail failed"

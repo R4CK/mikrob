@@ -49,7 +49,7 @@ const ALLOWLIST: Record<string, number[]> = {
   'scripts/agent-msg-get.sh': [25], // comment naming the anti-pattern, not an invocation
   'scripts/install-prod-tree-guard-hook.sh': [204, 269], // comment naming the anti-pattern, not an invocation
   'store/kanban-comment-lib.sh': [45], // comment naming the anti-pattern, not an invocation
-  'store/mopsion-suite-run.sh': [208], // comment naming the anti-pattern, not an invocation (line shifted by card c0408a1c's insertion)
+  'store/mopsion-suite-run.sh': [255], // comment naming the anti-pattern, not an invocation (line shifted again by card c0408a1c's M1/M2/D1/D2 fix)
   'store/sync-agent-templates.sh': [112, 131, 140, 215, 406, 416, 444, 465, 480, 488, 519], // the rewriter's own docstring + test fixtures
   'store/szotasz-marveen-daily-check.sh': [24], // comment naming the anti-pattern, not an invocation
 }
