@@ -288,9 +288,19 @@ for tag in all_tags:
         sys.exit(0)  # blocked (F2 extended to labels)
     t = norm(tag)
     tags_n.append(t)
-    if t.startswith("blokkolt-"):   # ANY BLOKKOLT-* suffix
+    # N5(c) (RedHat NO-GO, b3ce0a88 komment 18124, card e45945a2): exact-string comparison let
+    # a punctuation-decorated tag form bypass both the "blokkolt-" prefix check and the
+    # BLOCKED_TAGS exact-match set, because neither test splits the tag on its OWN internal
+    # punctuation first -- "SEC,x" (comma), "SEC-hardening" (hyphen-suffix), "BLOKKOLT,x" or
+    # "BLOKKOLT x" (a non-hyphen BLOKKOLT suffix the old startswith("blokkolt-") never covered)
+    # all compared unequal to "sec"/"blokkolt-*" and sailed through. Tokenizing on any run of
+    # non-alphanumeric characters and testing each token subsumes the old prefix check (now also
+    # catches comma/space BLOKKOLT suffixes) while keeping exact per-token matching, so a tag that
+    # merely CONTAINS "sec" as a substring ("resection", "insecure") is still NOT blocked.
+    tag_tokens = [tok for tok in re.split(r"[^a-z0-9]+", t) if tok]
+    if "blokkolt" in tag_tokens:
         sys.exit(0)  # blocked
-    if t in BLOCKED_TAGS:
+    if any(tok in BLOCKED_TAGS for tok in tag_tokens):
         sys.exit(0)  # blocked
 
 # 3. Content gate on NORMALIZED title AND description (sensitive stem -> blocked, fail-closed).
