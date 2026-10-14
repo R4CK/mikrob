@@ -1653,9 +1653,14 @@ describe('card c8a6e1da F2: RedHat 22 + WhiteHat 3 remaining open probe shapes',
 })
 
 describe('card c8a6e1da: negative controls (no new over-blocking)', () => {
-  it('does not block the "N sec" seconds idiom (digit-prefixed, not a tag)', () => {
-    expect(runIsGeminiBlocked('mikrob', 'BE', 'Fix the ui, wait 5 sec')).toBe('ALLOWED')
-    expect(runIsGeminiBlocked('mikrob', 'BE', 'Retry after 10 sec delay')).toBe('ALLOWED')
+  // M2 (RedHat NO-GO 2. kor, komment 18638): the digit-precedes-"sec" exception this test used
+  // to pin was REMOVED -- RedHat measured it has 0 live-board impact (3181 cards) and that it
+  // was simultaneously exempting "1 SEC x"/"3 BLOKKOLT-Peti x"/"7 MOPSION x" (mandatory to
+  // close), so both now correctly BLOCK rather than ALLOW. This intentionally narrows what used
+  // to be an accepted "N sec" idiom exemption; see the REVIEW on card 09117e0a for the decision.
+  it('now blocks the former "N sec" exemption too, since the exception shielded blokkolt/mopsion the same way (M2)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Fix the ui, wait 5 sec')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE', 'Retry after 10 sec delay')).toBe('BLOCKED')
   })
 
   it('still does not over-block substring matches inside brackets (e45945a2 parity)', () => {
@@ -1691,5 +1696,95 @@ describe('card c8a6e1da F3: kill the 3 previously-green mutants', () => {
     // would ALSO block e.g. "x9" -- assert the suffix-strip path is exact-match-gated, not blanket.
     expect(runIsGeminiBlocked('mikrob', 'BE', '[SEC2] x')).toBe('BLOCKED')
     expect(runIsGeminiBlocked('mikrob', 'BE', '[x9] harmless')).toBe('ALLOWED')
+  })
+})
+
+// ── 13. Card 09117e0a/c8a6e1da: RedHat's 2nd NO-GO delta (komment 18638) ─────────────────
+// M1: the LABEL side of the per-tag loop had no test independent of the title-side whole-title
+// loop's own redundant coverage -- a "first token only" regression there would have stayed green
+// forever. M2: the blanket digit-precedes-word exception is now REMOVED (see the updated
+// negative-control test above). M3: the split-letter join is now a sliding window with no
+// per-token length guard.
+describe('card c8a6e1da M1 (RedHat NO-GO 2. kor): pin the tag-cycle "first token only" mutant on the LABEL side', () => {
+  it('blocks a LABEL "x SEC" (SEC as the LAST token of the label, not the title)', () => {
+    // The title-side whole-title loop would ALSO catch a title "x SEC" even under the MB mutant
+    // (first-token-only on the per-tag loop), masking a regression there. Passing this as a
+    // LABEL (tags_csv) exercises ONLY the per-tag loop's any(), with nothing else to fall back on.
+    expect(runIsGeminiBlocked('mikrob', 'x SEC', '')).toBe('BLOCKED')
+  })
+
+  it('blocks a LABEL "x-SEC" (SEC as the LAST token, hyphen delimiter)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'x-SEC', '')).toBe('BLOCKED')
+  })
+
+  it('blocks title "[5 SEC] y" (SEC as the LAST token inside the bracket segment)', () => {
+    // The whole-title loop's digit-precedes-word carve-out was removed (M2), but this still
+    // independently proves the per-TAG loop (which the bracket-extracted "5 SEC" segment also
+    // goes through) checks every token, not just the first.
+    expect(runIsGeminiBlocked('mikrob', 'BE', '[5 SEC] y')).toBe('BLOCKED')
+  })
+
+  it('blocks title "[5,SEC] y" (SEC as the LAST token, comma delimiter)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', '[5,SEC] y')).toBe('BLOCKED')
+  })
+})
+
+describe('card c8a6e1da M2 (RedHat NO-GO 2. kor): the digit-precedes-word exception no longer shields blokkolt/mopsion', () => {
+  const noLongerExempt: Array<[string, string]> = [
+    ['"1 SEC x"', '1 SEC x'],
+    ['"2. SEC cleanup"', '2. SEC cleanup'],
+    ['"3 BLOKKOLT-Peti x"', '3 BLOKKOLT-Peti x'],
+    ['"7 MOPSION x"', '7 MOPSION x'],
+  ]
+  it.each(noLongerExempt)('blocks %s (previously exempted by the digit-precedes carve-out)', (_label, title) => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', title)).toBe('BLOCKED')
+  })
+
+  it('blocks "2 [SEC<ZWSP>x]" (digit before a bracketed, zero-width-split tag)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', '2 [SEC​x]')).toBe('BLOCKED')
+  })
+})
+
+describe('card c8a6e1da M3 (RedHat NO-GO 2. kor): split-letter sliding window, no per-token length guard', () => {
+  const uneven: Array<[string, string]> = [
+    ['"[MOP SION]" (uneven split, "sion" is 4 chars)', '[MOP SION] x'],
+    ['"[SUPER ADMIN]" (uneven split)', '[SUPER ADMIN] x'],
+    ['"[S ECURITY]" (uneven split)', '[S ECURITY] x'],
+    ['"[PEN ZUGY]" (uneven split)', '[PEN ZUGY] x'],
+    ['"[CLEAN CORE]" (uneven split)', '[CLEAN CORE] x'],
+    ['"[BLOK KOLT]" (uneven split)', '[BLOK KOLT] x'],
+    ['label "MOP SION" (bare, no brackets)', ''],
+  ]
+  it.each(uneven)('blocks %s', (_label, title) => {
+    const tagsArg = title === '' ? 'MOP SION' : 'BE'
+    expect(runIsGeminiBlocked('mikrob', tagsArg, title)).toBe('BLOCKED')
+  })
+
+  const leadingTrailingToken: Array<[string, string]> = [
+    ['"[x S E C]" (leading non-blocked token)', '[x S E C] y'],
+    ['"[Foo S E C]" (leading non-blocked token)', '[Foo S E C] y'],
+    ['"[S E C hardening]" (trailing long word)', '[S E C hardening] y'],
+    ['"[S E C-hardening]" (trailing long word, hyphen)', '[S E C-hardening] y'],
+  ]
+  it.each(leadingTrailingToken)('blocks %s', (_label, title) => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', title)).toBe('BLOCKED')
+  })
+
+  const digitSuffixOnJoin: Array<[string, string]> = [
+    ['"[S E C 2]" (digit as its own token)', '[S E C 2] y'],
+    ['"[S E C2]" (digit fused onto the last letter)', '[S E C2] y'],
+  ]
+  it.each(digitSuffixOnJoin)('blocks %s', (_label, title) => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', title)).toBe('BLOCKED')
+  })
+
+  it('still does not over-block "[Resection of X]" (e45945a2 parity, no per-token length guard needed)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE', '[Resection of X] title')).toBe('ALLOWED')
+  })
+
+  it('MJ mutation check: the join must be EXACT, not a substring -- "[sec urity]" over-joining risk', () => {
+    // Sanity: "sec"+"urity" joins to "security", which IS a real blocked word (correctly BLOCKED,
+    // not a false positive) -- this documents the join is exact-equality, not substring search.
+    expect(runIsGeminiBlocked('mikrob', 'BE', '[sec urity] y')).toBe('BLOCKED')
   })
 })
