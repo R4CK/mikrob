@@ -332,17 +332,29 @@ for tag in all_tags:
         sys.exit(0)  # blocked
     if any(tok in BLOCKED_TAGS for tok in tag_tokens):
         sys.exit(0)  # blocked
-    # F2(c) (card c8a6e1da): split-letter form ("[S E C]", "[S.E.C]", "[S-E-C]", "[S EC]") writes
-    # a blocked word one letter (or short fragment) at a time, with a delimiter between every
-    # piece, inside this one already-delimited tag segment -- joining every token in the segment
-    # catches it. The all-short-tokens guard keeps an ordinary tag ("[Resection of X]", tokens
-    # resection/of/x) out: "resection" alone is longer than the guard allows, so the e45945a2
-    # negative control (a tag that merely CONTAINS "sec"/"insecure" as a substring must stay
-    # unblocked) still holds -- this only fires when EVERY piece in the segment is tag-letter-short.
-    if len(tag_tokens) >= 2 and all(len(tok) <= 3 for tok in tag_tokens):
-        joined = "".join(tag_tokens)
-        if joined == "blokkolt" or joined in BLOCKED_TAGS:
-            sys.exit(0)  # blocked
+    # F2(c)/M3 (card c8a6e1da, RedHat NO-GO 2. kor, komment 18638): split-letter form ("[S E C]",
+    # "[S.E.C]", "[S-E-C]", "[S EC]") writes a blocked word one letter (or short fragment) at a
+    # time, with a delimiter between every piece, inside this one already-delimited tag segment.
+    # The OLD check only tried joining the WHOLE segment, and only when EVERY token in it was
+    # <=3 chars -- so an uneven split ("[MOP SION]": mop/sion, "sion" is 4 chars), a leading or
+    # trailing non-blocked token ("[x S E C]": x/s/e/c, joining all FOUR gives "xsec" not "sec"),
+    # or a long trailing word after the split letters ("[S E C hardening]": s/e/c/hardening) all
+    # stayed unblocked. Fixed with a SLIDING WINDOW over every contiguous run of 2+ tokens: any
+    # run whose join -- or whose join with a trailing digit run stripped, for "[S E C2]"/
+    # "[S E C 2]" -- exactly equals a blocked word closes it, regardless of what sits before or
+    # after the run in the same segment. The per-token <=3-char guard is DROPPED entirely (MJ
+    # mutant, RedHat own measurement: 0 live divergence on 3181 cards without it) -- the
+    # EXACT-join requirement alone already keeps an ordinary long word out (e45945a2
+    # "[Resection of X]" negative control: no contiguous run of resection/of/x joins to a
+    # BLOCKED_TAGS entry).
+    _n_tag_tokens = len(tag_tokens)
+    for _start in range(_n_tag_tokens):
+        for _end in range(_start + 2, _n_tag_tokens + 1):
+            _run_joined = "".join(tag_tokens[_start:_end])
+            _run_stripped = re.sub(r"[0-9]+$", "", _run_joined)
+            for _candidate in (_run_joined, _run_stripped):
+                if _candidate and (_candidate == "blokkolt" or _candidate in BLOCKED_TAGS):
+                    sys.exit(0)  # blocked
     # F2(d) (card c8a6e1da): digit-suffix form ("[SEC2]", "BLOKKOLT2", "MOPSION2") appends a bare
     # digit directly after the blocked word with no delimiter at all, so it never split into its
     # own token above in the first place -- strip a trailing digit run and re-check.
@@ -371,17 +383,18 @@ if has_unmapped_letter(title) or has_unmapped_letter(desc):
 # the WHOLE title the same way tag_tokens_of() tokenizes one extracted tag segment -- exact match
 # only, no join/digit-suffix widening, since this runs over free-form prose rather than an
 # already-delimited tag segment -- closes all of them without a dedicated regex per delimiter.
+# M2 (card c8a6e1da, RedHat NO-GO 2. kor, komment 18638): the digit-precedes-word exception that
+# used to sit here ("N sec" idiom) exempted ANY blocked word preceded by a digit token, not just
+# "sec" -- so "1 SEC x", "2. SEC cleanup", "3 BLOKKOLT-Peti x", "7 MOPSION x" and even the
+# bracket-wrapped "2 [SEC<ZWSP>x]" all stayed ALLOWED (measured). RedHat own measurement on the
+# live board (3181 cards): removing the exception entirely changes 0 cards either way -- the
+# idiom it was protecting against essentially never occurs in real card titles, so the exception
+# was free to close with no measured cost. Removed outright, per RedHat instruction that none
+# of the sec/blokkolt/mopsion shapes may be shielded.
 _whole_title_tokens = tag_tokens_of(title)
-for _i, _tok in enumerate(_whole_title_tokens):
-    if _tok != "blokkolt" and _tok not in BLOCKED_TAGS:
-        continue
-    # "N sec"/"5 sec" is the ordinary English "N seconds" idiom, not a tag -- none of the 44
-    # required probe shapes (card c8a6e1da) put a digit immediately before the blocked word, so
-    # exempting it closes a real foreseeable false positive without reopening anything the card
-    # requires closed. Measured against the live board (3180 cards): 0 new blocks either way.
-    if _i > 0 and _whole_title_tokens[_i - 1].isdigit():
-        continue
-    sys.exit(0)  # blocked
+for _tok in _whole_title_tokens:
+    if _tok == "blokkolt" or _tok in BLOCKED_TAGS:
+        sys.exit(0)  # blocked
 
 title_n = norm(title)
 desc_n = norm(desc)

@@ -183,10 +183,11 @@ print(json.dumps({'ido': ts, 'hivas_id': 'old-$i', 'hivo': 'teszt', 'kartya': 'x
 }
 
 run() {
-  MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
-    SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
-    GEMINI_DASHBOARD_URL="${GEMINI_DASHBOARD_URL:-http://127.0.0.1:$DEFAULT_DASH_PORT}" \
-    "$SUT" "$@" > "$TD/out" 2> "$TD/err"
+  # --root/--seged-script/--dashboard-url are CLI flags, not env (M1, card 09117e0a): the real
+  # dispatch path never passes them, only this selftest does.
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+    "$SUT" --root "$TD" --seged-script "$STUB" \
+    --dashboard-url "${GEMINI_DASHBOARD_URL:-http://127.0.0.1:$DEFAULT_DASH_PORT}" "$@" > "$TD/out" 2> "$TD/err"
 }
 
 case_() {  # case_ NAME WANT_RC -- args...
@@ -227,9 +228,9 @@ if [ -z "$SEC_PORT" ]; then
   fails+=("F1 security-titled card stub: never printed a port")
 else
   set +e
-  MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
-    SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$SEC_PORT" \
-    "$SUT" --hivo teszt --kartya 5ec00001 --feladattipus kod --kategoria safe \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+    "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$SEC_PORT" \
+    --hivo teszt --kartya 5ec00001 --feladattipus kod --kategoria safe \
     --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
   got=$?
   set -e
@@ -250,9 +251,9 @@ grep -q 'STUB RESPONSE' "$TD/out" || fails+=("F1 negative control: the underlyin
 n=$((n + 1))
 # Port 1 on loopback refuses connections at once -- stands in for an unreachable dashboard.
 set +e
-MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
-  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:1" \
-  "$SUT" --hivo teszt --kartya 11111111 --feladattipus kod --kategoria safe \
+SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+  "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:1" \
+  --hivo teszt --kartya 11111111 --feladattipus kod --kategoria safe \
   --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
 got=$?
 set -e
@@ -272,9 +273,9 @@ for spec in "404:{\"error\":\"Kartya nem talalhato\"}" "401:{\"error\":\"Unautho
     continue
   fi
   set +e
-  MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
-    SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$ERR_PORT" \
-    "$SUT" --hivo teszt --kartya deadbeef --feladattipus kod --kategoria safe \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+    "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$ERR_PORT" \
+    --hivo teszt --kartya deadbeef --feladattipus kod --kategoria safe \
     --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
   got=$?
   set -e
@@ -313,9 +314,9 @@ for bad in "not-hex!" "../../etc/passwd" "ab" "" "deadbeef; rm -rf /"; do
   [ -z "$bad" ] && continue  # empty is covered by the existing required-args test
   n=$((n + 1))
   set +e
-  MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
-    SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$DEFAULT_DASH_PORT" \
-    "$SUT" --hivo teszt --kartya "$bad" --feladattipus kod --kategoria safe \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+    "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$DEFAULT_DASH_PORT" \
+    --hivo teszt --kartya "$bad" --feladattipus kod --kategoria safe \
     --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
   got=$?
   set -e
@@ -367,16 +368,16 @@ case_ 'hourly: 5 BLOCKED agy rows do not count -> still goes' 0 \
 # and the other must be blocked with exit 5.
 seed_recent 4
 n=$((n + 1))
-MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
-  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$DEFAULT_DASH_PORT" \
+SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
   STUB_CALL_DELAY_S=0.3 GEMINI_AGY_HOURLY_LOCK="$TD/store/hourly.lock" \
-  "$SUT" --hivo teszt --kartya a0000001 --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w" \
+  "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$DEFAULT_DASH_PORT" \
+  --hivo teszt --kartya a0000001 --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w" \
   > "$TD/race-a.out" 2> "$TD/race-a.err" &
 PID_A=$!
-MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
-  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$DEFAULT_DASH_PORT" \
+SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
   STUB_CALL_DELAY_S=0.3 GEMINI_AGY_HOURLY_LOCK="$TD/store/hourly.lock" \
-  "$SUT" --hivo teszt --kartya b0000001 --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w" \
+  "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$DEFAULT_DASH_PORT" \
+  --hivo teszt --kartya b0000001 --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w" \
   > "$TD/race-b.out" 2> "$TD/race-b.err" &
 PID_B=$!
 set +e
@@ -414,9 +415,9 @@ if [ -z "$PORT" ]; then
   fails+=("daily-log capture: stub HTTP server never printed a port")
 else
   n=$((n + 1))
-  MARVEEN_ROOT="$TD" SEGED_HIVO_SCRIPT="$STUB" DASHBOARD_TOKEN_FILE="$TD/store/.dashboard-token" \
-    SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 GEMINI_DASHBOARD_URL="http://127.0.0.1:$PORT" \
-    "$SUT" --hivo teszt --kartya cafe0123 --feladattipus kod --kategoria safe \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+    "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$PORT" \
+    --hivo teszt --kartya cafe0123 --feladattipus kod --kategoria safe \
     --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err" || true
   if [ ! -s "$CAPTURE" ]; then
     fails+=("daily-log capture: no POST body was captured")
