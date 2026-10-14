@@ -2753,9 +2753,22 @@ function memGateAllowsStart(agentName: string): boolean {
 // /api/tags polling plus a 30s generate probe on an actual restart); every other outcome returns in
 // well under a second.
 const OLLAMA_RESTORE_SCRIPT = join(PROJECT_ROOT, 'scripts', 'ollama-boot-restore.sh')
+/** Card 39b958a4 (Cybersec F2, GO b9a657e6 comment 5821): unlike this file's other execFileSync
+ *  calls, this one spawns a DETACHED, long-lived `ollama serve` daemon (via the script's own
+ *  `setsid nohup`), which inherits whatever env this call hands the wrapping bash process. Passing
+ *  the full inherited process.env (this dashboard process's own environment, including
+ *  CLAUDE_CODE_MESSAGING_TOKEN) would put it in that daemon's /proc/<pid>/environ indefinitely. The
+ *  script only needs PATH, HOME (it reads $HOME/.claude/channels/telegram/.env for its own Telegram
+ *  alert) and an optional OLLAMA_HOST override -- everything else is either a hardcoded default or a
+ *  test-only OLLAMA_RESTORE_* seam this production call never sets. */
+function buildOllamaRestoreEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: process.env.HOME }
+  if (process.env.OLLAMA_HOST) env.OLLAMA_HOST = process.env.OLLAMA_HOST
+  return env
+}
 function runOllamaBootRestore(): void {
   try {
-    execFileSync('/bin/bash', [OLLAMA_RESTORE_SCRIPT], { timeout: 55000, stdio: 'ignore' })
+    execFileSync('/bin/bash', [OLLAMA_RESTORE_SCRIPT], { timeout: 55000, stdio: 'ignore', env: buildOllamaRestoreEnv() })
   } catch (err: unknown) {
     logger.debug({ err }, 'ollama-boot-restore.sh errored or timed out -- next sweep will retry')
   }
