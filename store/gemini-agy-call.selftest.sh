@@ -5,6 +5,11 @@
 # are exercised for real, not reimplemented a second time just for the test.
 set -euo pipefail
 
+# F-B (card 09117e0a, WhiteHat2 NO-GO komment 18851): --root/--seged-script/--dashboard-token-file/
+# --dashboard-url/--category-check now require this flag to be honored at all -- this whole file IS
+# the test harness, so it is on for its entire run; a plain live caller never sets it.
+export GEMINI_AGY_CALL_TEST_MODE=1
+
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUT="$SELF_DIR/gemini-agy-call.sh"
 REAL_SEGED_HIVO="$SELF_DIR/../scripts/seged-hivo.py"
@@ -12,7 +17,11 @@ REAL_SEGED_HIVO="$SELF_DIR/../scripts/seged-hivo.py"
 TD="$(mktemp -d)"
 trap 'rm -rf "$TD"' EXIT
 mkdir -p "$TD/store" "$TD/scripts" "$TD/base/w"
-ln -s "$(cd "$(dirname "$REAL_SEGED_HIVO")" && pwd)/$(basename "$REAL_SEGED_HIVO")" "$TD/scripts/seged-hivo.py"
+# A COPY, not a symlink (F-A follow-on): seged-hivo.py's own ROOT is __file__-based now, and
+# Path(__file__).resolve() follows a symlink straight back to the real repo root, which would
+# defeat this sandbox's isolation for the hourly-count import below (same reasoning as
+# titok-kapu-onteszt.test.ts's P1-pin and seged-hivo.py's own quota_selftest()).
+cp "$REAL_SEGED_HIVO" "$TD/scripts/seged-hivo.py"
 ln -s "$SELF_DIR/gemini-agy-category-check.py" "$TD/store/gemini-agy-category-check.py"
 echo 'teszt-token' > "$TD/store/.dashboard-token"
 PROMPT="$TD/prompt.md"
@@ -246,6 +255,41 @@ fi
 case_ "F1 negative control: clean card + kategoria=safe -> goes" 0 \
   --hivo teszt --kartya c1ea0001 --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
 grep -q 'STUB RESPONSE' "$TD/out" || fails+=("F1 negative control: the underlying helper should have run for a clean card")
+
+# --- F-B: test-only flags must not work without GEMINI_AGY_CALL_TEST_MODE=1 (card 09117e0a,
+# WhiteHat2 NO-GO komment 18851, MikroB 18854 pont 1) ----------------------------------------
+: > "$LOG"
+n=$((n + 1))
+set +e
+GEMINI_AGY_CALL_TEST_MODE=0 SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+  "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$DEFAULT_DASH_PORT" \
+  --hivo teszt --kartya c1ea0002 --feladattipus kod --kategoria safe \
+  --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
+got=$?
+set -e
+[ "$got" = 2 ] || fails+=("F-B: --root/--seged-script/--dashboard-url without GEMINI_AGY_CALL_TEST_MODE=1 must be a usage error (rc=2), got rc=$got, err=$(cat "$TD/err")")
+
+# --- F-C: ambient env poisoning must have no effect -- only the CLI flags above (gated by
+# GEMINI_AGY_CALL_TEST_MODE) can redirect anything; a plain env var sitting in the caller's shell
+# must not (card 09117e0a, WhiteHat2 NO-GO komment 18851, MikroB 18854 pont 2). Regression target:
+# line "CATEGORY_CHECK=...". A [SEC]-titled card declared safe must still be refused even with a
+# no-op category-check path and other bogus values sitting in the environment -- this does NOT
+# use the CLI overrides for them, only ambient env, which the script never reads for these names.
+: > "$LOG"
+n=$((n + 1))
+NOOP_CHECK="$TD/noop-category-check.py"
+echo 'pass' > "$NOOP_CHECK"
+set +e
+GEMINI_AGY_CATEGORY_CHECK="$NOOP_CHECK" MARVEEN_ROOT=/nonexistent-poison-root \
+  SEGED_HIVO_SCRIPT=/bin/true DASHBOARD_TOKEN_FILE=/dev/null GEMINI_DASHBOARD_URL="http://127.0.0.1:1" \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+  "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$SEC_PORT" \
+  --hivo teszt --kartya 5ec00002 --feladattipus kod --kategoria safe \
+  --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
+got=$?
+set -e
+[ "$got" = 3 ] || fails+=("F-C: ambient env poisoning (GEMINI_AGY_CATEGORY_CHECK/MARVEEN_ROOT/etc) must not weaken the [SEC]+safe refusal (rc=3), got rc=$got, err=$(cat "$TD/err")")
+grep -q 'STUB RESPONSE' "$TD/out" && fails+=("F-C: the underlying helper must NOT have run when ambient env tried to poison the gate")
 
 : > "$LOG"
 n=$((n + 1))

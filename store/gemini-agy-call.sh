@@ -30,6 +30,9 @@
 #   The --root/--seged-script/--dashboard-token-file/--dashboard-url/--category-check flags are
 #   test-only (gemini-agy-call.selftest.sh): the real dispatch path never passes them, so it
 #   always resolves the real gate-script locations from this file's own path (M1, card 09117e0a).
+#   They additionally require GEMINI_AGY_CALL_TEST_MODE=1 to be honored at all (F-B, card
+#   09117e0a, WhiteHat2 NO-GO komment 18851): without it, passing any of them is a plain usage
+#   error (exit 2), so a live caller handing one by mistake cannot disable a gate.
 # Exit codes mirror seged-hivo.py: 0 ok | 1 helper failed | 2 bad usage | 3 blocked (gate/category)
 #                                   | 4 timeout | 5 quota/lock
 set -euo pipefail
@@ -70,14 +73,24 @@ while [ $# -gt 0 ]; do
     --mappa) mappa="$2"; shift 2 ;;
     --timeout) timeout_s="$2"; shift 2 ;;
     --model) MODEL="$2"; shift 2 ;;
-    # Test-only (selftest): never used by the real dispatch path (see M1 comment above).
-    --root) ROOT="$2"; STORE="$ROOT/store"; SEGED_HIVO_HELPERS="$ROOT/scripts/seged-hivo.py"
-            SEGED_HIVO="$ROOT/scripts/seged-hivo.py"; DASHBOARD_TOKEN_FILE="$STORE/.dashboard-token"
-            shift 2 ;;
-    --seged-script) SEGED_HIVO="$2"; shift 2 ;;
-    --dashboard-token-file) DASHBOARD_TOKEN_FILE="$2"; shift 2 ;;
-    --dashboard-url) DASHBOARD_URL="$2"; shift 2 ;;
-    --category-check) CATEGORY_CHECK_OVERRIDE="$2"; shift 2 ;;
+    # Test-only (selftest): never used by the real dispatch path (see M1 comment above). Gated
+    # behind GEMINI_AGY_CALL_TEST_MODE=1 (WhiteHat2 F-B, komment 18851, MikroB 18854 pont 1): a
+    # caller on the live CLI handing one of these flags must not silently disable the category
+    # gate or the secret filter -- the flag is simply rejected as unknown, same as a typo would be.
+    --root|--seged-script|--dashboard-token-file|--dashboard-url|--category-check)
+      if [ "${GEMINI_AGY_CALL_TEST_MODE:-}" != 1 ]; then
+        echo "gemini-agy-call: $1 is test-only (requires GEMINI_AGY_CALL_TEST_MODE=1), refusing" >&2
+        exit 2
+      fi
+      case "$1" in
+        --root) ROOT="$2"; STORE="$ROOT/store"; SEGED_HIVO_HELPERS="$ROOT/scripts/seged-hivo.py"
+                SEGED_HIVO="$ROOT/scripts/seged-hivo.py"; DASHBOARD_TOKEN_FILE="$STORE/.dashboard-token" ;;
+        --seged-script) SEGED_HIVO="$2" ;;
+        --dashboard-token-file) DASHBOARD_TOKEN_FILE="$2" ;;
+        --dashboard-url) DASHBOARD_URL="$2" ;;
+        --category-check) CATEGORY_CHECK_OVERRIDE="$2" ;;
+      esac
+      shift 2 ;;
     *) echo "gemini-agy-call: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -173,10 +186,11 @@ flock -x 9
 
 now_epoch=$(date +%s)
 window_start=$((now_epoch - 3600))
-# MARVEEN_ROOT forwarded from $ROOT, same reasoning as below: seged-hivo.py's module-level ROOT
-# reads it at import time too, and this must stay consistent with $ROOT, not an unrelated
-# inherited value.
-sent_count=$(MARVEEN_ROOT="$ROOT" python3 - "$SEGED_HIVO_HELPERS" "$window_start" <<'PY'
+# seged-hivo.py's ROOT is __file__-based only now (F-A, card 09117e0a, WhiteHat2 NO-GO komment
+# 18851): it resolves from wherever $SEGED_HIVO_HELPERS itself lives, no env var needed or
+# honored any more. The test harness points this at its own COPY of the real script (a symlink
+# would resolve straight back to the real repo root and defeat the sandbox).
+sent_count=$(python3 - "$SEGED_HIVO_HELPERS" "$window_start" <<'PY'
 import datetime, importlib.util, sys
 spec = importlib.util.spec_from_file_location('seged_hivo', sys.argv[1])
 sh = importlib.util.module_from_spec(spec)
@@ -207,10 +221,12 @@ export SEGED_SZUNET_MAX_S="${SEGED_SZUNET_MAX_S:-720}"
 
 t0=$(date +%s.%N)
 set +e
-# MARVEEN_ROOT is forwarded here EXPLICITLY, from $ROOT (resolved above from this script's own
-# path, or from the test-only --root flag) -- not read back from this script's own inherited
-# environment, so an unrelated MARVEEN_ROOT sitting in the caller's shell has no effect (M1,
-# card 09117e0a).
+# seged-hivo.py itself no longer reads MARVEEN_ROOT (F-A, card 09117e0a, WhiteHat2 NO-GO komment
+# 18851): its ROOT resolves purely from its own __file__ now, so an unrelated MARVEEN_ROOT sitting
+# in the caller's shell has no effect on the REAL script any more. This forward only still matters
+# when $SEGED_HIVO is the test harness's STUB (--seged-script, test-only) standing in for it, which
+# the stub itself reads to find the sandbox root -- irrelevant to anything this env-security fix
+# protects, since the stub never touches the secret gate.
 out=$(MARVEEN_ROOT="$ROOT" python3 "$SEGED_HIVO" --seged "agy:$MODEL" --mappa "$mappa" --prompt "$prompt_file" \
       --hivo "$hivo" --kartya "$kartya" --feladattipus "$feladattipus" --timeout "$timeout_s")
 rc=$?
