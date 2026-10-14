@@ -17,7 +17,7 @@ Hasznalat:
 
 Kilepesi kod: 0 = tiszta, 1 = TALALAT (commit blokkolva), 2 = a muszer hibas.
 """
-import base64, binascii, json, re, sys, os, subprocess, argparse
+import base64, binascii, json, re, sys, os, subprocess, argparse, unicodedata
 from pathlib import Path
 from urllib.parse import quote as _urlquote
 
@@ -218,16 +218,37 @@ def _kodolt_alakok(ertek: str):
 
 
 _ZAJ_RE = re.compile(r"[\s'\"+]+")
-# F-D (card f6f67dff, WhiteHat2): zero-width/invisible kodpontok (ugyanaz a keszlet, amit
-# seged-hivo.py scan_text()/normalize() mar hasznal az email/telefon-szuresnel) egy token
-# kozepebe ekelve atmegy a _ZAJ_RE-n (az \s nem illeszkedik rajuk), es szettorik a MINTAK
-# regexeket, VALAMINT a live-titok egesz-szoveg egyezest is -- reszleges szivargas, nem talalat.
-_LATHATATLAN_RE = re.compile("[­​-‏⁠﻿]")
+# F-D (card f6f67dff, WhiteHat2 + RedHat R2 delta, komment 19135): zero-width/invisible kodpontok
+# egy token kozepebe ekelve atmennek a _ZAJ_RE-n (az \s nem illeszkedik rajuk), es szettorik a
+# MINTAK regexeket, VALAMINT a live-titok egesz-szoveg egyezest is -- reszleges szivargas, nem
+# talalat. Az elso kor egy ZART LISTA volt (7 explicit kodpont-tartomany) -- RedHat merte: 30
+# probalt lathatatlan kodpontbol 24 atment (bidi vezerlok, Hangul-toltok, egyeb Cf/Cc). A javitas
+# KATEGORIA szerint szur (Cf=format, Cc=vezerlo a strukturalis \n/\r/\t kivetelevel, Zl/Zp=sor-
+# es bekezdes-elvalasztó), PLUSZ egy explicit kiegeszito lista azokra a nem-Cf "toltő" karakterekre,
+# amik unicodedata szerint Lo/Mn/Zs kategoriaba esnek, de ugyanugy lathatatlanok (Hangul filler
+# U+115F/1160/3164/FFA0, combining grapheme joiner U+034F, khmer inherent vowel U+17B4/17B5,
+# mongol magan-elvalaszto U+180E, variacio-valaszto U+FE0F).
+_LATHATATLAN_TOVABBI = "ᅟᅠㅤﾠ͏឴឵᠎️"
+_LATHATATLAN_STRUKTURALIS = frozenset("\n\r\t")
+
+
+def _lathatatlan_szuro(szoveg: str) -> str:
+    kiment = []
+    for ch in szoveg:
+        if ch in _LATHATATLAN_STRUKTURALIS:
+            kiment.append(ch)
+            continue
+        if ch in _LATHATATLAN_TOVABBI:
+            continue
+        if unicodedata.category(ch) in ("Cf", "Cc", "Zl", "Zp"):
+            continue
+        kiment.append(ch)
+    return "".join(kiment)
 
 
 def vizsgal_szoveg(szoveg: str, cimke: str, kivetel_aktiv: bool = True, fail_closed: bool = True,
                     dash_override: str = None, oauth_override: str = None, root: str = None):
-    szoveg = _LATHATATLAN_RE.sub("", szoveg)
+    szoveg = _lathatatlan_szuro(szoveg)
     talalatok = []
     elo = elo_titkok(dash_override=dash_override, oauth_override=oauth_override, root=root,
                       fail_closed=fail_closed)
@@ -314,6 +335,14 @@ POZITIV = [
     # F-D (card f6f67dff): zero-width space (U+200B) ekelve a kulcs kozepebe -- a normalizalas
     # elotti kod ezt nem ismerte volna fel.
     ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "​" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
+    # F-D delta (RedHat R2, komment 19135): a zart-lista verzio csak 6/30 probalt lathatatlan
+    # kodpontot kapott el -- parameteres pin a kategoria-szures ALL harom agara: Cf (bidi
+    # override U+202E), Cc (DEL vezerlokarakter U+007F), es a nem-Cf kiegeszito listara
+    # (combining grapheme joiner U+034F, Hangul-toltő U+115F).
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "‮" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "\u007f" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "͏" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "ᅟ" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
 ]
 # kliensbe szant kulcs: a muszernek LATNIA kell, de NEM blokkolhatja a commitot
 PUBLIKUS_MINTA = "SUPA_ANON=eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiZGVtby1wcm9qZWN0IiwgInJvbGUiOiAiYW5vbiIsICJpYXQiOiAxNTAwMDAwMDAwfQ.WvLorMePmqUDUR3a2oDuLtHGV6zaWQjXEpDNoia0xOM"  # TITOK-KAPU-KIVETEL

@@ -556,6 +556,13 @@ set -e
 [ "$got" = 3 ] || fails+=("F-E: a PYTHONPATH-shadowed base64 module must not hide a base64-encoded live secret from titok-kapu.py (want rc=3, blocked), got rc=$got, err=$(cat "$TD/err")")
 grep -q 'STUB RESPONSE' "$TD/out" && fails+=("F-E: the underlying call must NOT have run when the secret should have been caught")
 
+# F-E pin-gap (RedHat R3 LOW, komment 19135): the category-check call (line ~149) and the
+# daily-log payload builder (line ~230) already had -I on them, but no test checked for it --
+# a future edit could silently drop -I from either without any selftest noticing. Static pin
+# on the shipped script's own source, same spirit as the F-B unknown-argument wording check above.
+grep -Eq 'python3 -I "\$CATEGORY_CHECK"' "$REAL_SUT" || fails+=("F-E pin-gap: the category-check python3 call must keep -I")
+grep -Eq "python3 -I -c 'import json,sys; print" "$REAL_SUT" || fails+=("F-E pin-gap: the daily-log payload python3 call must keep -I")
+
 : > "$LOG"
 n=$((n + 1))
 # Port 1 on loopback refuses connections at once -- stands in for an unreachable dashboard.
