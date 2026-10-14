@@ -97,6 +97,19 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
     `echo a${' \\\n'.repeat(80)}b\ncat > /tmp/n <<'EOF'\n${'x'.repeat(300)}\nEOF\ncp evil.json store/egress-allowlist.json`,
     // same shift, CRLF continuations
     `echo a${' \\\r\n'.repeat(80)}b\r\ncat > /tmp/n <<'EOF'\r\n${'x'.repeat(300)}\r\nEOF\r\ncp evil.json store/egress-allowlist.json`,
+    // WhiteHat2 F1c (Gate-SHA a6fd07cf): heredocOwnerRecords' scan is not bash-syntax-aware, so it
+    // mints an exemption for text that ISN'T actually a heredoc.
+    // D9: `<<<` is bash's here-string (stdin from a literal string, no body lines consumed) -- the
+    // scanner's retry-one-position-later behaviour reads the trailing two `<` of the three as a
+    // fresh `<<'EOF'` operator, so every real line after it was wrongly treated as inert prose.
+    "cat > /tmp/n <<< 'EOF'\ncp evil.json store/egress-allowlist.json\nEOF",
+    "tee /tmp/n <<< 'EOF'\ncp evil.json store/egress-allowlist.json\nEOF",
+    // D1: the `<<'EOF'` sits after an unquoted `#` on its own line -- bash treats the rest of that
+    // line as a COMMENT, never as a redirect, so again every following line is a real command.
+    "cat > /tmp/n  # <<'EOF'\ncp evil.json store/egress-allowlist.json\nEOF",
+    "cat > /tmp/n #<<'EOF'\ncp evil.json store/egress-allowlist.json\nEOF",
+    "tee /tmp/n # <<'EOF'\ncp evil.json store/egress-allowlist.json\nEOF",
+    "echo hi; cat > /tmp/n # <<'EOF'\ncp evil.json store/egress-allowlist.json\nEOF",
   ]
   it.each(denied)('denies: %s', (command) => {
     expect(decide('Bash', { command })).toEqual({ deny: true, reason: 'egress-allowlist' })
@@ -135,6 +148,9 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
     'git diff develop -- src/web/egress-allowlist-baseline.ts',
     'npx tsc --noEmit -p . && npx vitest run src/__tests__/egress-allowlist-selfedit.test.ts',
     'cat store/egress-allowlist.history/history.log',
+    // WhiteHat2 F1c control: a real tag-trailing comment (`<<'EOF' # note`) is a genuine, quoted,
+    // non-piped heredoc -- the fix must not turn this into a false deny.
+    "cat > /tmp/note.md <<'EOF' # note\nsub-agents may not edit store/egress-allowlist.json\nEOF",
   ]
   it.each(allowed)('allows: %s', (command) => {
     expect(decide('Bash', { command }).deny).toBe(false)

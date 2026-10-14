@@ -2490,6 +2490,23 @@ export function gateDecision(toolName, toolInput, opts = {}) {
       const ownerTrimmed = r.ownerSpan.trim()
       if (!/^(?:cat|tee)(?:\s|$)/.test(ownerTrimmed)) continue
       if (!r.quotedTag || r.substitutable) continue
+      // WhiteHat2 F1c (Gate-SHA a6fd07cf, 1f4c046b 4th round): heredocOwnerRecords' char-by-char
+      // scan is not bash-syntax-aware, so it can mint a heredoc exemption for text that is NOT
+      // actually a heredoc. (D9) A here-string `<<< 'EOF'` fails the `<<TAG` match at its own first
+      // `<`, but the walker just emits that one char and retries one position later, where the
+      // LAST two `<`'s of the three now read as a fresh, valid `<<'EOF'` operator -- bash runs
+      // `<<<` as a single token (feeds the literal string as stdin, no body lines consumed at all),
+      // so every line after it is a REAL command, not heredoc prose. Caught by checking the
+      // character immediately before the matched operator: a `<` there means the match is really
+      // the tail of a `<<<`, not a standalone `<<`. (D1) `cat > /tmp/n  # <<'EOF'` puts the operator
+      // inside a `#` comment -- bash never sees it as a redirect at all (the whole rest of the line
+      // is commentary), so again every following line is a real command. Caught fail-closed: if an
+      // UNQUOTED `#` appears anywhere between the owner's start and the operator, on the operator's
+      // own line, refuse the exemption (at most a false deny, never a false allow) -- a precise
+      // comment-vs-code split would need full shell tokenizing, not worth it for an exemption path.
+      if (safeCommand[r.atIndex - 1] === '<') continue
+      const lineStart = safeCommand.lastIndexOf('\n', r.atIndex - 1) + 1
+      if (safeCommand.slice(lineStart, r.atIndex).includes('#')) continue
       const headerEnd = safeCommand.indexOf('\n', r.atIndex)
       const announceTail = safeCommand.slice(r.atIndex, headerEnd === -1 ? safeCommand.length : headerEnd)
       if (/\|/.test(announceTail)) continue // piped onward -- not a terminal data sink
