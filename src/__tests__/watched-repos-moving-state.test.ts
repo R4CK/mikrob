@@ -368,6 +368,27 @@ describe('watched-repos-record-review.sh', () => {
     expect(stderr).toContain('corrupt state file')
     expect(readFileSync(statePath, 'utf-8')).toBe(corrupt) // untouched, not reset to {}
   })
+
+  // WhiteHat (cybersec) F2 LOW on card 9710bdfd (gate comment 19504): the registry
+  // (watched-repos.json) --note-append write had no lock and no atomic rename at all -- measured
+  // losing 8/12 concurrent notes on a single entry. Same forced-overlap pattern as the state-file
+  // concurrency test above (WATCHED_REGISTRY_TEST_SLEEP_S, see the matching comment in the script).
+  it('12 concurrent --note-append calls on the SAME entry all keep their note -- none lost under the registry lock', async () => {
+    const calls = Array.from({ length: 12 }, (_, i) =>
+      execFileP(
+        'bash',
+        [RECORD_SH, 'demo', '--sha', 'deadbee0', '--note-append', `note-${i}`, '--registry', registryPath, '--state', statePath],
+        { env: { ...process.env, WATCHED_REGISTRY_TEST_SLEEP_S: '0.2' } },
+      ),
+    )
+    await Promise.all(calls)
+
+    const registry: Array<{ name: string; note?: string }> = JSON.parse(readFileSync(registryPath, 'utf-8'))
+    const demo = registry.find((e) => e.name === 'demo')
+    for (let i = 0; i < 12; i++) {
+      expect(demo?.note).toContain(`note-${i}`)
+    }
+  }, 15000)
 })
 
 describe('git-repo-watcher.sh rejects a non-hex/too-short last_sha instead of using it for the prefix match (card ffca678d)', () => {
