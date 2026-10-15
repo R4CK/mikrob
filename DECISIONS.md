@@ -20366,24 +20366,3 @@ zöld.
 
 **Ki döntött:** WhiteHat2 (NO-GO lelet + a pillanatkép-alapú javítási irány javaslata, gate komment
 19003), végrehajtotta fullstack (kártya b73722e1, 2026-10-14).
-
-## 2026-10-15 05:18 -- Upstream-eltérés: agent-id-header sablon nem viheti argv-ban a Bearer tokent
-
-**Probléma:** egy upstream szinkron (`a30553d6`, "Security infra package #1357") `src/web/agent-scaffold.ts`
-`buildAgentIdHeaderBody()` függvényébe egy `-H "Authorization: Bearer $(cat ...)"` alakú curl-példát
-hozott be, ami a tokent argv-ban viszi (`/proc/<pid>/cmdline` olvasható bárki más helyi folyamatának).
-Ez a sablon minden ügynök CLAUDE.md-jébe (és a fő CLAUDE.md-be) kirendereli magát, ezért a fork saját
-`token-in-argv-guard.test.ts` őre 8 helyen bukott (mind CLAUDE.md-kben), és ez blokkolt MINDEN
-landolást a fleet-test.sh-n keresztül.
-
-**Döntés:** a fork a sablont a saját, mindenhol már bevett stdin-mintájára igazítja
-(`printf 'Authorization: Bearer %s\n' "$(cat ...)" | curl -H @- ...`), eltérve az upstream alakjától.
-Az `ensureAgentIdHeaderSection` már meglévő csere-logikája (BEGIN/END jelölők közötti blokk cseréje)
-változatlan marad -- csak a generált SZÖVEG javult, a már kirenderelt, élő (git-nem-követett,
-futásidőben író) CLAUDE.md-blokkok a javított sablonnak megfelelően frissültek.
-
-**Miért nem upstream-kompatibilis:** a fork saját, szigorúbb token-kezelési szabálya (lásd a fenti,
-2026-08-20-i és korábbi bejegyzések) kizárja az argv-ban utazó titkot; ez strukturális, nem stilisztikai
-eltérés, tehát nem olvasztható vissza upstream irányába kompromisszum nélkül.
-
-**Ki döntött:** MikroB (dispatch, kártya e73b17ef), végrehajtotta fullstack (DevO), 2026-10-15.
