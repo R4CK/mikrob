@@ -96,7 +96,7 @@ describe('the launch path is wired to the policy', () => {
     expect(block).toContain('startAgentProcess(name, { fresh: true })')
   })
   it('the timeout fallback is routed through decideContinueTimeoutAction, not a bare if(v.outcome==="alive") (card 466f21fe F1)', () => {
-    const at = PROCESS_SRC.indexOf('if (continueFlag && hasChannel && name !== MAIN_AGENT_ID) {')
+    const at = PROCESS_SRC.indexOf('if (continueFlag && hasAnyChannel && name !== MAIN_AGENT_ID) {')
     const block = PROCESS_SRC.slice(at, at + 2500)
     expect(block).toContain('decideContinueTimeoutAction(v.outcome, generationChanged)')
     expect(block).toContain("action === 'kept'")
@@ -104,7 +104,7 @@ describe('the launch path is wired to the policy', () => {
   })
   it('every launch bumps its own agentLaunchGeneration entry BEFORE the verify window opens', () => {
     const newSessionAt = PROCESS_SRC.indexOf("runTmux(startTarget, ['new-session', '-d', '-s', session, buildLaunchCmd(dir)]")
-    const continueAt = PROCESS_SRC.indexOf('if (continueFlag && hasChannel && name !== MAIN_AGENT_ID) {')
+    const continueAt = PROCESS_SRC.indexOf('if (continueFlag && hasAnyChannel && name !== MAIN_AGENT_ID) {')
     const between = PROCESS_SRC.slice(newSessionAt, continueAt)
     expect(newSessionAt).toBeGreaterThan(-1)
     expect(continueAt).toBeGreaterThan(newSessionAt)

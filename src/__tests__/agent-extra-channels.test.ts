@@ -176,7 +176,7 @@ describe('isolated config dir keeps the extra plugin enabled (executed)', () => 
 
 describe('launcher binding (agent-process.ts startAgentProcess)', () => {
   const SRC = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
-  const FN = SRC.slice(SRC.indexOf('export async function startAgentProcess('))
+  const FN = SRC.slice(SRC.indexOf('async function startAgentProcessUnlocked('))
 
   it('reads the extras once, from agent-config, against the resolved primary', () => {
     expect(FN).toContain('const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir)')
@@ -195,7 +195,8 @@ describe('launcher binding (agent-process.ts startAgentProcess)', () => {
     expect(scopeAt).toBeGreaterThan(-1)
     // AFTER the scope step, or the scope would switch the extras off again.
     expect(extraAt).toBeGreaterThan(scopeAt)
-    expect(FN.slice(extraAt, extraAt + 400)).toContain('writeFileSync(settingsPath')
+    // writeAgentConfig, not a bare writeFileSync (card dc5b714d): the 0600 mode must survive this write too.
+    expect(FN.slice(extraAt, extraAt + 400)).toContain('writeAgentConfig(settingsPath')
   })
   it('every isolation provisioner call passes the extras', () => {
     const calls = FN.match(/ensureIsolatedChannelConfigDir\([^)]*\)/g) ?? []

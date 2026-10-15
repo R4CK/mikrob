@@ -4247,7 +4247,7 @@ export function updateKanbanCard(
         maybeResolveStuckIncident(id, 'kanban_card_events', Number(r.lastInsertRowid), now)
       }
     }
-    if (changed) recordKanbanFieldChanges(id, card, f, opts?.actor, now)
+    if (changed) recordKanbanFieldChanges(id, card, opts?.actor, now)
     // Card 6cd61430: an edit can ADD a Pair-* line or a parent. It can also REMOVE one, and this
     // insert-only path cannot see that -- reconcileKanbanRelations() is what deletes the stale edge,
     // which is why the sweep is a reconcile and not a backfill.
@@ -4257,16 +4257,16 @@ export function updateKanbanCard(
 }
 
 /** The fields whose changes are audited here. `status` is excluded because kanban_card_events
- *  already owns it, and `updated_at` because it changes on every write and would say nothing. */
+ *  already owns it, and `updated_at` because it changes on every write and would say nothing.
+ *  KANBAN_AUDITED_FIELDS first and in ITS order (card f6fba9ec): a write that changes several of
+ *  them at once inserts in that order, which kanban-field-events.test.ts pins -- getKanbanCardFieldEvents
+ *  filters its own result to that public subset, but the insert order is one shared sequence. */
 const AUDITED_CARD_FIELDS = [
+  ...KANBAN_AUDITED_FIELDS,
   'title',
   'description',
-  'assignee',
-  'priority',
   'project',
   'parent_id',
-  'due_date',
-  'archived_at',
 ] as const
 
 /** `sort_order` is deliberately NOT audited: a drag inside a column rewrites it on every card that
@@ -4295,16 +4295,22 @@ function clipAuditValue(v: unknown): string | null {
 function recordKanbanFieldChanges(
   id: string,
   before: KanbanCard,
-  after: KanbanCard,
   actor: string | undefined,
   nowMs: number,
 ): void {
+  // Card f6fba9ec: compared against the row as STORED after the write, not the caller's in-memory
+  // `after` -- a value sent back in a shape the column stores the same way (a due date as the
+  // string "1790000000" for a stored 1790000000) is then correctly not a change.
+  const stored = getKanbanCard(id)
+  if (!stored) return
   const stmt = db.prepare(
     'INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)',
   )
   for (const field of AUDITED_CARD_FIELDS) {
-    const a = (before as unknown as Record<string, unknown>)[field]
-    const b = (after as unknown as Record<string, unknown>)[field]
+    const rawA = (before as unknown as Record<string, unknown>)[field]
+    const rawB = (stored as unknown as Record<string, unknown>)[field]
+    const a = rawA == null ? null : String(rawA)
+    const b = rawB == null ? null : String(rawB)
     if (a === b) continue
     const r = stmt.run(id, field, clipAuditValue(a), clipAuditValue(b), actor ?? null, nowMs)
     // Card d05d72b3: title ([NN%] progress) or assignee changing is the OTHER qualifying signal --
@@ -5426,7 +5432,7 @@ export function getKanbanCardEvents(cardId: string): KanbanCardEvent[] {
 export interface KanbanCardFieldEvent {
   readonly id: number
   readonly card_id: string
-  readonly field: (typeof KANBAN_AUDITED_FIELDS)[number]
+  readonly field: (typeof AUDITED_CARD_FIELDS)[number]
   readonly old_value: string | null
   readonly new_value: string | null
   readonly actor: string | null
@@ -5434,6 +5440,10 @@ export interface KanbanCardFieldEvent {
 }
 
 export function getKanbanCardFieldEvents(cardId: string): KanbanCardFieldEvent[] {
+  // Unfiltered: this table also carries title/description/project/parent_id rows for the fork's
+  // own, pre-existing stuck-incident-resolution trail (card d05d72b3, kanban-field-audit.test.ts
+  // reads them through this exact function). A caller that wants only the card f6fba9ec public
+  // subset (due_date/assignee/priority/archived_at) filters on `field` itself.
   return db.prepare('SELECT * FROM kanban_card_field_events WHERE card_id = ? ORDER BY created_at ASC, id ASC').all(cardId) as KanbanCardFieldEvent[]
 }
 

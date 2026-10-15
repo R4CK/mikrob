@@ -1074,7 +1074,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanCardMatch && method === 'PUT') {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const body = await readBody(req)
-    const { actor, force, reason, ...data } = JSON.parse(body.toString()) as Record<string, unknown>
+    const { actor: rawActor, force, reason, ...data } = JSON.parse(body.toString()) as Record<string, unknown>
+    // X7 (card f6fba9ec): an actor that is neither a string nor null is refused BEFORE any write.
+    const writeActor = kanbanWriteActor(rawActor, ctx.auth)
+    if ('error' in writeActor) { json(res, { error: writeActor.error }, 400); return true }
+    const actor = writeActor.actor
     // #1023 (adopted from upstream, B-wave card 42938a74): reject an unknown field LOUDLY instead
     // of dropping it silently. updateKanbanCard writes only KANBAN_WRITABLE_FIELDS, so anything
     // outside the accepted set was discarded while the write still reported success and bumped
@@ -1096,7 +1100,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       }, 400)
       return true
     }
-    if (newDevStopWouldBlock(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)) {
+    if (newDevStopWouldBlock(id, data.status, force === true, actor)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
       return true
     }
@@ -1112,19 +1116,19 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // (card 9cc72f2c). Applies to BOTH close paths -- PUT with a status and POST /move -- because
     // guarding one of two doors guards neither.
     {
-      const v = await landedGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
+      const v = await landedGuardVerdict(id, data.status, force === true, actor)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     {
-      const v = gateCompletenessGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
+      const v = gateCompletenessGuardVerdict(id, data.status, force === true, actor)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     {
-      const v = planGrillingGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
+      const v = planGrillingGuardVerdict(id, data.status, force === true, actor)
       if (v.blocked) { json(res, { code: 'plan_grilling_required', error: v.message }, 409); return true }
     }
     {
-      const v = draftReviewGuardVerdict(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
+      const v = draftReviewGuardVerdict(id, data.status, force === true, actor)
       if (v.blocked) { json(res, { code: 'draft_review_required', error: v.message }, 409); return true }
     }
     // Captured BEFORE any mutation -- card 81452ce2 delta-gate F1 (WhiteHat2 komment 16326):
@@ -1134,7 +1138,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // the pre-transition status is captured here and carried to the call site.
     const specTemplatePrevStatus = getKanbanCard(id)?.status
     {
-      const v = dependencyBlockBody(id, data.status, force === true, typeof actor === 'string' ? actor : undefined)
+      const v = dependencyBlockBody(id, data.status, force === true, actor)
       if (v.blocked) { json(res, v.body!, 409); return true }
     }
     // Card 4bbb5167. The writer refuses this case on its own -- the check is repeated here only to
@@ -1142,7 +1146,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // with the reviewed-card message, which names the wrong problem and the wrong fix.
     if (statusWouldChange(id, data.status) &&
         bulkAttributionRequired(Math.floor(Date.now() / 1000),
-          typeof actor === 'string' ? actor : undefined,
+          actor,
           typeof reason === 'string' ? reason : undefined,
           id)) {
       json(res, { code: 'bulk_attribution_required', error: BULK_ATTRIBUTION_MESSAGE }, 409)
@@ -1173,8 +1177,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    if (updateKanbanCard(id, normalizeProjectName(data), { actor: typeof actor === 'string' ? actor : undefined, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
-      specTemplateGuardCheck(id, specTemplatePrevStatus, data.status, typeof actor === 'string' ? actor : undefined)
+    if (updateKanbanCard(id, normalizeProjectName(data), { actor, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
+      specTemplateGuardCheck(id, specTemplatePrevStatus, data.status, actor)
       json(res, { ok: true }); return true
     }
     // Card c4f2de32: distinguish "no such card" from "refused to re-open reviewed work", so the
@@ -1214,47 +1218,51 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanMoveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
-    const { status, sort_order, actor, force, reason } = JSON.parse(body.toString())
+    const { status, sort_order, actor: rawActor, force, reason } = JSON.parse(body.toString())
     // Card 2520b85a (measurement-only slice): see agent-identity-measure.ts.
-    measureAgentIdentityClaim(ctx, 'POST /api/kanban/:id/move', actor)
-    if (newDevStopWouldBlock(id, status, force === true, typeof actor === 'string' ? actor : undefined)) {
+    measureAgentIdentityClaim(ctx, 'POST /api/kanban/:id/move', rawActor)
+    // X16 (card f6fba9ec): the move follows the PUT's actor rule -- refused before any write.
+    const writeActor = kanbanWriteActor(rawActor, ctx.auth)
+    if ('error' in writeActor) { json(res, { error: writeActor.error }, 400); return true }
+    const actor = writeActor.actor
+    if (newDevStopWouldBlock(id, status, force === true, actor)) {
       json(res, { error: NEW_DEV_STOP_MESSAGE }, 409)
       return true
     }
     {
-      const v = await landedGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
+      const v = await landedGuardVerdict(id, status, force === true, actor)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     {
-      const v = gateCompletenessGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
+      const v = gateCompletenessGuardVerdict(id, status, force === true, actor)
       if (v.blocked) { json(res, { error: v.message }, 409); return true }
     }
     {
-      const v = planGrillingGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
+      const v = planGrillingGuardVerdict(id, status, force === true, actor)
       if (v.blocked) { json(res, { code: 'plan_grilling_required', error: v.message }, 409); return true }
     }
     {
-      const v = draftReviewGuardVerdict(id, status, force === true, typeof actor === 'string' ? actor : undefined)
+      const v = draftReviewGuardVerdict(id, status, force === true, actor)
       if (v.blocked) { json(res, { code: 'draft_review_required', error: v.message }, 409); return true }
     }
     // See the sibling comment in the PUT handler (card 81452ce2 delta-gate F1): captured BEFORE
     // any mutation, the guard itself fires only AFTER moveKanbanCard actually succeeds below.
     const specTemplatePrevStatus = getKanbanCard(id)?.status
     {
-      const v = dependencyBlockBody(id, status, force === true, typeof actor === 'string' ? actor : undefined)
+      const v = dependencyBlockBody(id, status, force === true, actor)
       if (v.blocked) { json(res, v.body!, 409); return true }
     }
     // Card 4bbb5167 -- see the sibling block in the PUT handler for why the check is repeated here.
     if (statusWouldChange(id, status) &&
         bulkAttributionRequired(Math.floor(Date.now() / 1000),
-          typeof actor === 'string' ? actor : undefined,
+          actor,
           typeof reason === 'string' ? reason : undefined,
           id)) {
       json(res, { code: 'bulk_attribution_required', error: BULK_ATTRIBUTION_MESSAGE }, 409)
       return true
     }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true, typeof reason === 'string' ? reason : undefined)) {
-      specTemplateGuardCheck(id, specTemplatePrevStatus, status, typeof actor === 'string' ? actor : undefined)
+      specTemplateGuardCheck(id, specTemplatePrevStatus, status, actor)
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
       // Fire-and-forget: fireKanbanDispatch's own try/catch means this never rejects, and

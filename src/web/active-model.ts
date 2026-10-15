@@ -1,5 +1,6 @@
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { open, readdir, stat } from 'node:fs/promises'
+import type { FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
@@ -135,6 +136,13 @@ const modelInFlight = new Map<string, Promise<string | null>>()
 // 536 870 888 on Node 22) the old whole-file decode threw inside the readers' try, after reading every byte, and they
 // answered null; the scan answers there too.
 const SCAN_CHUNK_BYTES = 256 * 1024
+// Card d3dc35bf's invariant: cost must not scale with file size. A fresh (non-incremental) backward
+// scan stops after this many bytes and answers null rather than walking all the way to byte zero of
+// a huge transcript -- the same bound active-model-tail-bounded.test.ts measures (its filler puts the
+// only turn ~3 MB back, outside this window, while a single ~700 KB line must still be found whole).
+// An incremental "just appended" scan (from prev.lastLineStart) is always far smaller than this and
+// never hits it in practice.
+const MAX_BACKWARD_SCAN_BYTES = 1024 * 1024
 const MAX_REMEMBERED_SCANS = 512
 type ScanState = {
   dev: number; ino: number; size: number; mtimeMs: number; lastLineStart: number; found: unknown; foundAt: number
@@ -148,7 +156,10 @@ let scanBytesRead = 0
 // The lines of [from, to) from the last to the first, each with the offset of its first byte. Split on the byte 0x0A
 // (a multibyte UTF-8 character never contains it), so a line is decoded whole; the segment after the last newline is
 // a line too, as in content.split('\n').
-function* linesBackward(fd: number, from: number, to: number): Generator<{ start: number; text: string }> {
+//
+// ASYNC (card 9a2fd3f7's invariant extended here): readSync/openSync on this path would reintroduce the exact
+// whole-event-loop stall that card fixed for the bounded tail read (fs/promises offloads to libuv's thread pool).
+async function* linesBackward(handle: FileHandle, from: number, to: number): AsyncGenerator<{ start: number; text: string }> {
   let pos = to
   let tail: Buffer[] = []
   let tailStart = to
@@ -158,9 +169,9 @@ function* linesBackward(fd: number, from: number, to: number): Generator<{ start
     const buf = Buffer.alloc(len)
     let got = 0
     while (got < len) {
-      const n = readSync(fd, buf, got, len - got, pos + got)
-      if (n === 0) break
-      got += n
+      const { bytesRead } = await handle.read(buf, got, len - got, pos + got)
+      if (bytesRead === 0) break
+      got += bytesRead
     }
     scanBytesRead += got
     let end = got
@@ -179,18 +190,21 @@ function* linesBackward(fd: number, from: number, to: number): Generator<{ start
 
 // The answer of `pick` on the last line of the transcript that has one, or null. `key` names the reader and its
 // parameters; the remembered scan is per key and file.
-function lastAnswerInTranscript<T>(key: string, file: string, pick: (entry: any) => T | undefined): T | null {
-  const st = statSync(file)
+async function lastAnswerInTranscript<T>(key: string, file: string, pick: (entry: any) => T | undefined): Promise<T | null> {
+  const st = await stat(file)
   const memoKey = `${key}\u0000${file}`
   const prev = scans.get(memoKey)
-  let from = 0
+  // Card d3dc35bf: a fresh (non-incremental) scan is bounded to the last MAX_BACKWARD_SCAN_BYTES,
+  // never the whole file -- the incremental path below (from = prev.lastLineStart) overrides this
+  // with a far smaller range and is unaffected.
+  let from = Math.max(0, st.size - MAX_BACKWARD_SCAN_BYTES)
   let base: { found: unknown; foundAt: number } = { found: null, foundAt: -1 }
   if (prev && prev.dev === st.dev && prev.ino === st.ino) {
     if (st.size === prev.size && st.mtimeMs === prev.mtimeMs) return prev.found as T | null
     // Grown since: only the last (maybe unfinished) line and the appended bytes need reading, unless the answer
     // stood in that last line itself (then it may have changed with it). Same size with another mtime, or a shorter
     // file, is read whole.
-    if (st.size > prev.size && prev.foundAt < prev.lastLineStart && sameBytes(file, prev.lastLineStart - prev.anchor.length, prev.anchor)) {
+    if (st.size > prev.size && prev.foundAt < prev.lastLineStart && await sameBytes(file, prev.lastLineStart - prev.anchor.length, prev.anchor)) {
       from = prev.lastLineStart
       base = { found: prev.found, foundAt: prev.foundAt }
     }
@@ -199,10 +213,10 @@ function lastAnswerInTranscript<T>(key: string, file: string, pick: (entry: any)
   let foundAt = base.foundAt
   let lastLineStart = from
   let anchor: Buffer = Buffer.alloc(0)
-  const fd = openSync(file, 'r')
+  const handle = await open(file, 'r')
   try {
     let first = true
-    for (const { start, text } of linesBackward(fd, from, st.size)) {
+    for await (const { start, text } of linesBackward(handle, from, st.size)) {
       if (first) { lastLineStart = start; first = false }
       const line = text.trim()
       if (!line) continue
@@ -213,20 +227,24 @@ function lastAnswerInTranscript<T>(key: string, file: string, pick: (entry: any)
     // the anchor of the next call: the bytes before the last line's start
     const anchorLen = Math.min(ANCHOR_BYTES, lastLineStart)
     anchor = Buffer.alloc(anchorLen)
-    if (anchorLen > 0) scanBytesRead += readSync(fd, anchor, 0, anchorLen, lastLineStart - anchorLen)
-  } finally { closeSync(fd) }
+    if (anchorLen > 0) {
+      const { bytesRead } = await handle.read(anchor, 0, anchorLen, lastLineStart - anchorLen)
+      scanBytesRead += bytesRead
+    }
+  } finally { await handle.close() }
   if (scans.size >= MAX_REMEMBERED_SCANS && !scans.has(memoKey)) scans.clear()
   scans.set(memoKey, { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, lastLineStart, found, foundAt, anchor })
   return found as T | null
 }
 
-function sameBytes(file: string, at: number, want: Buffer): boolean {
+async function sameBytes(file: string, at: number, want: Buffer): Promise<boolean> {
   if (want.length === 0) return true
   const got = Buffer.alloc(want.length)
-  const fd = openSync(file, 'r')
+  const handle = await open(file, 'r')
   try {
-    if (readSync(fd, got, 0, want.length, at) !== want.length) return false
-  } finally { closeSync(fd) }
+    const { bytesRead } = await handle.read(got, 0, want.length, at)
+    if (bytesRead !== want.length) return false
+  } finally { await handle.close() }
   scanBytesRead += want.length
   return got.equals(want)
 }
@@ -255,25 +273,17 @@ export function readActiveModelFromProjectDir(workingDir: string, sinceUnixSec?:
       if (!existsSync(dir)) return null
       const newest = await newestJsonl(dir)
       if (newest === null) return null
-      const lines = await tailLinesFor(join(dir, newest))
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i].trim()
-        if (!line) continue
-        try {
-          const entry = JSON.parse(line)
-          const msg = entry?.message
-          const model = msg?.model
-          if (typeof model !== 'string' || model.startsWith('<')) continue
-          if (sinceUnixSec !== undefined) {
-            const ts = entry?.timestamp
-            if (typeof ts !== 'string') continue
-            const lineUnix = Math.floor(new Date(ts).getTime() / 1000)
-            if (!Number.isFinite(lineUnix) || lineUnix < sinceUnixSec) continue
-          }
-          return model
-        } catch { /* skip malformed JSON line */ }
-      }
-      return null
+      return lastAnswerInTranscript<string>(`active-model:${sinceUnixSec ?? ''}`, join(dir, newest), (entry) => {
+        const model = entry?.message?.model
+        if (typeof model !== 'string' || model.startsWith('<')) return undefined
+        if (sinceUnixSec !== undefined) {
+          const ts = entry?.timestamp
+          if (typeof ts !== 'string') return undefined
+          const lineUnix = Math.floor(new Date(ts).getTime() / 1000)
+          if (!Number.isFinite(lineUnix) || lineUnix < sinceUnixSec) return undefined
+        }
+        return model
+      })
     } catch {
       return null // fall through, same as the old try/catch's outer swallow
     }
@@ -392,22 +402,17 @@ export function readContextTokensFromProjectDir(workingDir: string, configDir?: 
       if (!existsSync(dir)) return null
       const newest = await newestJsonl(dir)
       if (newest === null) return null
-      const lines = await tailLinesFor(join(dir, newest))
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i].trim()
-        if (!line) continue
-        try {
-          const u = JSON.parse(line)?.message?.usage
-          if (u && typeof u === 'object') {
-            const inp = Number(u.input_tokens) || 0
-            const cr = Number(u.cache_read_input_tokens) || 0
-            const cc = Number(u.cache_creation_input_tokens) || 0
-            const total = inp + cr + cc
-            if (total > 0) return total
-          }
-        } catch { /* skip malformed JSON line */ }
-      }
-      return null
+      return lastAnswerInTranscript<number>('context-tokens', join(dir, newest), (entry) => {
+        const u = entry?.message?.usage
+        if (u && typeof u === 'object') {
+          const inp = Number(u.input_tokens) || 0
+          const cr = Number(u.cache_read_input_tokens) || 0
+          const cc = Number(u.cache_creation_input_tokens) || 0
+          const total = inp + cr + cc
+          if (total > 0) return total
+        }
+        return undefined
+      })
     } catch {
       return null // fall through, same as the old try/catch's outer swallow
     }

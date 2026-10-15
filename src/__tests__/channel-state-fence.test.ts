@@ -41,7 +41,7 @@ describe('buildChannelStateFence', () => {
 
 describe('launcher binding (agent-process.ts startAgentProcess)', () => {
   const SRC = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
-  const FN = SRC.slice(SRC.indexOf('export async function startAgentProcess('))
+  const FN = SRC.slice(SRC.indexOf('async function startAgentProcessUnlocked('))
 
   it('the fence is computed from the providers this launch exports itself', () => {
     expect(FN).toContain('const stateFence = buildChannelStateFence([...(hasChannel ? [agentProvider] : []), ...extraLaunch.providers], dir)')

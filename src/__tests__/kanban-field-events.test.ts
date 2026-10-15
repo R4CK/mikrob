@@ -36,8 +36,14 @@ const LATER = DUE + 86400
 function statusEventRows(): number {
   return (getDb().prepare('SELECT COUNT(*) AS n FROM kanban_card_events').get() as { n: number }).n
 }
+// The table also carries title/description/project/parent_id rows for the fork's own,
+// pre-existing stuck-incident-resolution trail (card d05d72b3, kanban-field-audit.test.ts) --
+// this card's own public subset is due_date/assignee/priority/archived_at only.
+const PUBLIC_FIELDS: readonly string[] = KANBAN_AUDITED_FIELDS
 function fieldRows(cardId: string) {
-  return getKanbanCardFieldEvents(cardId).map(({ field, old_value, new_value, actor }) => ({ field, old_value, new_value, actor }))
+  return getKanbanCardFieldEvents(cardId)
+    .filter((r) => PUBLIC_FIELDS.includes(r.field))
+    .map(({ field, old_value, new_value, actor }) => ({ field, old_value, new_value, actor }))
 }
 
 beforeEach(() => {
@@ -90,7 +96,7 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
     expect(updateKanbanCard('echo', { title: 'Edited', assignee: 'a', priority: 'high', due_date: DUE }, { actor: 'x' })).toBe(true)
 
     expect(getKanbanCard('echo')!.title).toBe('Edited')
-    expect(getKanbanCardFieldEvents('echo')).toHaveLength(0)
+    expect(fieldRows('echo')).toHaveLength(0)
   })
 
   it('a due date sent in a shape the INTEGER column stores as the same value is not a change: the STORED row decides', () => {
@@ -132,7 +138,7 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
 
     updateKanbanCard('txt', { title: 'New', description: 'body' }, { actor: 'x' })
 
-    expect(getKanbanCardFieldEvents('txt')).toHaveLength(0)
+    expect(fieldRows('txt')).toHaveLength(0)
   })
 
   it('no actor: the row is still written, with a null actor', () => {
@@ -214,9 +220,12 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
     expect(getKanbanCardEvents('mchild').map((e) => [e.from_status, e.to_status, e.actor])).toEqual([['planned', 'done', 'x']])
   })
 
-  it('kanban_card_events keeps its columns: the status table was not extended', () => {
+  it('kanban_card_events keeps its columns: the status table was not extended by THIS card', () => {
+    // `forced` and `reason` are this fork's own, pre-existing columns (cards a8aa9ae5 / 4bbb5167:
+    // the dependency-blocker bypass flag and the bulk-attribution reason) -- card f6fba9ec adds no
+    // column to this table at all, which is the actual property worth pinning here.
     const cols = (getDb().prepare('PRAGMA table_info(kanban_card_events)').all() as Array<{ name: string }>).map((c) => c.name)
-    expect(cols).toEqual(['id', 'card_id', 'from_status', 'to_status', 'actor', 'created_at'])
+    expect(cols).toEqual(['id', 'card_id', 'from_status', 'to_status', 'actor', 'created_at', 'forced', 'reason'])
   })
 })
 

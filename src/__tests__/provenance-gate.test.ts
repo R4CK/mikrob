@@ -641,7 +641,7 @@ describe('provenance-gate: system directive row verification (CTXBORITEK919)', (
     ].join('\n')
 
     it('directive + an own background-task notice: trailer-self-task, agent and task id in the one log line, no message', () => {
-      const db = makeDb([[65, 'system', 'testagent', BODY, 'delivered']])
+      const db = makeDb([[65, 'system-directive', 'testagent', BODY, 'delivered']])
       const dir = mkdtempSync(join(tmpdir(), 'prov-dir-'))
       const { out, log } = runDirective(`${HEADER(65)}\n${BODY}\n\n${OWN_TASK}`, AGENT_CWD, db, dir)
       expect(out).toContain('SAJAT HATTER-TASK EREDMENYE')
@@ -655,7 +655,7 @@ describe('provenance-gate: system directive row verification (CTXBORITEK919)', (
     })
 
     it('directive + an own background-task notice with an unwritable log: the lead notice comes back here too', () => {
-      const db = makeDb([[66, 'system', 'testagent', BODY, 'delivered']])
+      const db = makeDb([[66, 'system-directive', 'testagent', BODY, 'delivered']])
       const { out } = runDirective(`${HEADER(66)}\n${BODY}\n\n${OWN_TASK}`, AGENT_CWD, db, join(tmpdir(), 'no-such-dir-c515trailer'))
       expect(out).toContain('SAJAT HATTER-TASK EREDMENYE')
       expect(out).toContain('most NEM irhato')

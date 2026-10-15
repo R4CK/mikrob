@@ -304,14 +304,14 @@ describe('a transcript past V8\'s string limit', () => {
   // string limit that threw inside their try, after every byte was read, so they answered null: the dashboard showed
   // no model and no context for such a session, and the context guard could not measure it. The file here is sparse
   // (a hole of NUL bytes before the last line), so its size costs neither disk nor memory.
-  it('still answers, from its last chunk', () => {
+  it('still answers, from its last chunk', async () => {
     const line = JSON.stringify({ type: 'assistant', timestamp: iso(3900), message: { model: 'claude-huge', usage: { input_tokens: 5, cache_read_input_tokens: 95 } } }) + '\n'
     writeFileSync(file, '')
     truncateSync(file, constants.MAX_STRING_LENGTH + 1_000_000)
     appendFileSync(file, '\n' + line)
     expect(statSync(file).size).toBeGreaterThan(constants.MAX_STRING_LENGTH)
     const before = transcriptScanBytesReadForTests()
-    expect(readers()).toEqual({ model: 'claude-huge', tokens: 100 })
+    expect(await readers()).toEqual({ model: 'claude-huge', tokens: 100 })
     expect(transcriptScanBytesReadForTests() - before).toBeLessThan(2 * (256 * 1024 + 64) + 1)
   })
 })
