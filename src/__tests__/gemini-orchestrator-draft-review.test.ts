@@ -33,7 +33,7 @@ import {
 } from '../gemini-orchestrator-draft-review.js'
 import { DRAFTS_DIR } from '../gemini-orchestrator-draft-cleanup.js'
 import { GENERATED_COMMENT_AUTHORS } from '../web/kanban-landed-guard.js'
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, symlinkSync, linkSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { GeminiResult } from '../gemini-client.js'
@@ -173,6 +173,23 @@ describe('resolveDraftPathSafely() (card 626df838)', () => {
     writeFileSync(`${scratchAbs}/huge.md`, 'x'.repeat(200_001))
     expect(resolveDraftPathSafely(`${scratchRel}/huge.md`)).toBeNull()
   })
+
+  // RedHat A10 (GO @4e29bf23, R6-A fix on 626df838): a hardlink inside THIS card's own drafts
+  // directory, pointing at a file that is really another card's draft content. A realpath check
+  // cannot see this -- a hardlink has no "target" to resolve through, it genuinely lives at this
+  // path with this content. nlink > 1 is the only signal: a legitimate draft is a brand-new file
+  // offload-dispatch.sh just wrote, so it has exactly one directory entry.
+  it('refuses a hardlinked file (nlink > 1) even though it is a real, in-bounds, ordinary file (A10, R6-A)', () => {
+    // Same directory on purpose: a hardlink needs the same filesystem as its target, and the
+    // attack this pins is exactly "a second directory entry for another card's inode shows up
+    // inside THIS card's own drafts directory" -- the original's location does not matter, only
+    // that the file this card's ref names has more than one directory entry pointing at it.
+    const original = `${scratchAbs}/victim-content.md`
+    writeFileSync(original, 'victim content')
+    const hardlinkPath = `${scratchAbs}/hardlinked.md`
+    linkSync(original, hardlinkPath)
+    expect(resolveDraftPathSafely(`${scratchRel}/hardlinked.md`)).toBeNull()
+  })
 })
 
 // ── draftRefBelongsToCard: WhiteHat2/RedHat P3 (626df838) -- the ref's directory must be THIS card
@@ -194,18 +211,93 @@ describe('draftRefBelongsToCard() (card 626df838, P3 fix)', () => {
 // string, so "drafts/c1/../otherCard/f.md" has parts[1] === 'c1' and passes it, even though the
 // RESOLVED absolute path lands inside otherCard's own directory. This second check compares the
 // already-resolved path's parent directory against the card's real drafts directory instead.
-describe('draftRefResolvesToCardDir() (card 626df838, F-P3 fix)', () => {
+//
+// realpathSync needs the directories to actually exist on disk (unlike the old lexical-only
+// check), so every case here works against real scratch subdirectories of the real DRAFTS_DIR,
+// same pattern as resolveDraftPathSafely()'s own tests above.
+describe('draftRefResolvesToCardDir() (card 626df838, F-P3 fix; card bbe99069, R6-A/R6-B fix)', () => {
+  const mk = (name: string) => {
+    const abs = join(DRAFTS_DIR, name)
+    rmSync(abs, { recursive: true, force: true })
+    mkdirSync(abs, { recursive: true })
+    return abs
+  }
+  const cleanup = (...names: string[]) => names.forEach((n) => rmSync(join(DRAFTS_DIR, n), { recursive: true, force: true }))
+
   it('true when the resolved path\'s parent directory is this card\'s own drafts directory', () => {
-    expect(draftRefResolvesToCardDir(join(DRAFTS_DIR, 'c1', '1-leaf.md'), 'c1')).toBe(true)
+    mk('c1')
+    try {
+      expect(draftRefResolvesToCardDir(join(DRAFTS_DIR, 'c1', '1-leaf.md'), 'c1')).toBe(true)
+    } finally {
+      cleanup('c1')
+    }
   })
 
   it('false when a ".." segment resolves the path into a DIFFERENT card\'s drafts directory', () => {
-    const traversed = join(DRAFTS_DIR, 'c1', '..', 'otherCard', '9-x.md')
-    expect(draftRefResolvesToCardDir(traversed, 'c1')).toBe(false)
+    mk('c1')
+    mk('otherCard')
+    try {
+      const traversed = join(DRAFTS_DIR, 'c1', '..', 'otherCard', '9-x.md')
+      expect(draftRefResolvesToCardDir(traversed, 'c1')).toBe(false)
+    } finally {
+      cleanup('c1', 'otherCard')
+    }
   })
 
   it('false when the resolved path is simply under a different card id', () => {
-    expect(draftRefResolvesToCardDir(join(DRAFTS_DIR, 'otherCard', '9-x.md'), 'c1')).toBe(false)
+    mk('otherCard')
+    try {
+      expect(draftRefResolvesToCardDir(join(DRAFTS_DIR, 'otherCard', '9-x.md'), 'c1')).toBe(false)
+    } finally {
+      cleanup('otherCard')
+    }
+  })
+
+  // RedHat A8 (GO @4e29bf23, R6-A fix): "drafts/ATTK" is itself a directory SYMLINK pointing at
+  // "drafts/VICTIM". A realpath-vs-realpath comparison would resolve both sides through the same
+  // symlink and still agree -- this pins that the fix instead catches the mismatch between the
+  // resolved parent and the LITERAL expected path.
+  it('false when the card\'s own drafts directory is a SYMLINK to another card\'s directory (A8, R6-A)', () => {
+    const victimDir = mk('VICTIM')
+    writeFileSync(join(victimDir, '9-v.md'), 'victim content')
+    rmSync(join(DRAFTS_DIR, 'ATTK'), { recursive: true, force: true })
+    symlinkSync(victimDir, join(DRAFTS_DIR, 'ATTK'))
+    try {
+      expect(draftRefResolvesToCardDir(join(DRAFTS_DIR, 'ATTK', '9-v.md'), 'ATTK')).toBe(false)
+    } finally {
+      rmSync(join(DRAFTS_DIR, 'ATTK'), { force: true })
+      cleanup('VICTIM')
+    }
+  })
+
+  // R6-B pin (RedHat GO @4e29bf23): two weaker implementations stayed green at 64/64 -- (Mb) a
+  // startsWith() check, which a sibling-prefix directory name defeats, and (Mc) comparing only the
+  // final path segment, which a nested same-named subdirectory defeats. Exact equality against the
+  // real parent closes both; these pin the two shapes so a future "simplification" back to either
+  // weaker form goes red here instead of silently reopening A8's class.
+  it('false for a sibling directory whose name is a PREFIX of the card id (Mb pin, R6-B)', () => {
+    mk('ATTK')
+    mk('ATTKX')
+    try {
+      expect(draftRefResolvesToCardDir(join(DRAFTS_DIR, 'ATTKX', '9-x.md'), 'ATTK')).toBe(false)
+    } finally {
+      cleanup('ATTK', 'ATTKX')
+    }
+  })
+
+  it('false for a nested subdirectory that only shares the card id as its FINAL segment (Mc pin, R6-B)', () => {
+    const nested = join(DRAFTS_DIR, 'otherParent', 'ATTK')
+    rmSync(join(DRAFTS_DIR, 'otherParent'), { recursive: true, force: true })
+    mkdirSync(nested, { recursive: true })
+    try {
+      expect(draftRefResolvesToCardDir(join(nested, '9-x.md'), 'ATTK')).toBe(false)
+    } finally {
+      rmSync(join(DRAFTS_DIR, 'otherParent'), { recursive: true, force: true })
+    }
+  })
+
+  it('false (fail-closed) when the resolved parent directory does not exist on disk', () => {
+    expect(draftRefResolvesToCardDir(join(DRAFTS_DIR, 'never-created-c1', '1-leaf.md'), 'never-created-c1')).toBe(false)
   })
 })
 
@@ -324,6 +416,20 @@ describe('sanitizeReason() (card 626df838, F1 fix)', () => {
 
 // ── reviewOneCard: the full per-card decision, injected deps, never throws ──────────────────
 describe('reviewOneCard() (card 626df838)', () => {
+  // draftRefResolvesToCardDir() now realpath-resolves the parent directory (R6-A fix, card
+  // bbe99069), so it needs a real directory to resolve -- these tests use 'c1' and 'otherCard' as
+  // their card ids, so both must exist on disk under the real DRAFTS_DIR for the "lines up"/
+  // mismatch cases to exercise the actual logic rather than always fail-closing on ENOENT.
+  beforeEach(() => {
+    for (const name of ['c1', 'otherCard']) {
+      rmSync(join(DRAFTS_DIR, name), { recursive: true, force: true })
+      mkdirSync(join(DRAFTS_DIR, name), { recursive: true })
+    }
+  })
+  afterAll(() => {
+    for (const name of ['c1', 'otherCard']) rmSync(join(DRAFTS_DIR, name), { recursive: true, force: true })
+  })
+
   const baseDeps = () => ({
     readCard: vi.fn(() => ({ title: 'Boring infra fix', description: 'nothing sensitive', project: 'MikroB' })),
     readComments: vi.fn(() => [{ author: 'local-llm', content: 'draft ref: a draft fajlban marad: drafts/c1/1-leaf.md. DRAFT-ONLY:', created_at: 100 }]),
