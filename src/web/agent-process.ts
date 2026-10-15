@@ -3313,18 +3313,53 @@ export async function clearFeedbackModalAndRecheck(session: string, host: string
   }
 }
 
+// Card 813eeee9 (backend3, 2026-09-19 09:20-09:36): the '0' sent below does not always land on
+// the modal -- measured live, it went into the prompt INPUT instead, and the old code logged
+// "Dismissed" unconditionally and never re-checked. The not-ready caller (clearFeedbackModalAndRecheck)
+// re-ran this every second for 11+ minutes, each pass adding another '0' to the input box (it grew
+// to 40+ characters) while the log kept repeating a false "Dismissed" next to it. Fixed by actually
+// VERIFYING the modal is gone before claiming success, and bounding the retries: each failed
+// attempt clears the stray digit(s) with clearInputBuffer (same retry+verify C-u this file already
+// uses for a parked preamble) before trying again, with backoff between attempts. After
+// FEEDBACK_DISMISS_MAX_ATTEMPTS the function gives up loudly (logger.error, 'wedged') instead of
+// looping forever -- the pane then genuinely stays non-idle, which the EXISTING session-stuck /
+// stuck-input watchers already alert and restart on; this function does not need to invent a
+// second alerting path.
+const FEEDBACK_DISMISS_MAX_ATTEMPTS = 3
+const FEEDBACK_DISMISS_BACKOFF_MS = [300, 600, 1200]
+
 export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
     if (!detectsFeedbackDraftModal(pane)) return
-    runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
-    await delay(300)
-    const after = captureTmux(host, ['capture-pane', '-t', session, '-p'])
-    if (detectsFeedbackOptOutPrompt(after)) {
-      runTmux(host, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
-      await delay(300)
+
+    for (let attempt = 1; attempt <= FEEDBACK_DISMISS_MAX_ATTEMPTS; attempt++) {
+      runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
+      await delay(FEEDBACK_DISMISS_BACKOFF_MS[attempt - 1])
+      const after = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+
+      if (detectsFeedbackOptOutPrompt(after)) {
+        runTmux(host, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
+        await delay(300)
+        logger.info({ session, attempt }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
+        return
+      }
+      if (!detectsFeedbackDraftModal(after)) {
+        logger.info({ session, attempt }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
+        return
+      }
+
+      logger.warn(
+        { session, attempt, max: FEEDBACK_DISMISS_MAX_ATTEMPTS },
+        'Feedback-draft modal still present after the dismiss key -- it likely landed in the prompt input instead; clearing stray input before retrying',
+      )
+      await clearInputBuffer(session, host)
     }
-    logger.info({ session }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
+
+    logger.error(
+      { session },
+      'Feedback-draft modal could not be dismissed after retries -- pane is wedged; not retrying further (existing session-stuck/stuck-input watchers will surface and restart it)',
+    )
   } catch (err) {
     logger.warn({ err, session }, 'Failed to probe/dismiss feedback-draft modal')
   }
