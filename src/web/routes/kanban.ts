@@ -340,19 +340,53 @@ function kanbanWriteActor(actor: unknown, auth: RouteContext['auth']): { error: 
 // 1. This is NOT authentication. `actor` is self-declared, same as kanbanWriteActor above; a
 //    caller that already holds the shared fleet Bearer token can simply claim to be a privileged
 //    actor. It protects against a forgotten/mistaken marker, not an adversarial token-holder.
-// 2. The substring match below is a plain, case-insensitive, NFKD-normalized check -- it does
-//    NOT reproduce offload-dispatch.sh's full fold (homoglyph-map, bracket-category fold,
-//    invisible-char strip). A sufficiently obfuscated label/title that still normalizes to
-//    "gemini-ok" on the CONSUMING side (store/offload-dispatch.sh's own norm()) could slip past
-//    this gate while still functioning as a valid marker there. Closing that fully would mean
-//    sharing one normalization routine between this TS route and the bash classifier, which this
-//    MEDIUM/advisory finding did not judge proportionate (see --check-blocked's own comment on
-//    why a second copy of logic is avoided elsewhere in this file: it drifts).
+// 2. (Card b7114793 X2, closed) the normalization below now mirrors store/offload-dispatch.sh's
+//    norm()/_fold() for the specific obfuscation classes that can still produce a WORKING marker
+//    on the consuming side without tripping that script's own has_unmapped_letter() fail-closed
+//    block (which rejects the whole card outright on any OTHER non-ASCII letter) -- homoglyph-map,
+//    NFKD decompose, strip combining marks / invisible format chars / control chars / line-
+//    paragraph separators. Bracket-CATEGORY folding is not ported: this gate matches "gemini-ok"
+//    as a plain substring anywhere in the text, it does not extract discrete bracket-delimited
+//    tags the way offload-dispatch.sh's tags_for()/_lead_tags does, so bracket normalization has
+//    no effect on whether the substring is found. Not a byte-for-byte reimplementation (that would
+//    still drift, per the --check-blocked comment this entry used to cite) -- a shared, pinned
+//    OBFUSCATION-VECTOR TEST CORPUS (kanban-gemini-ok-marker-guard.test.ts) runs the SAME inputs
+//    through this function and through the real `is_gemini_blocked` (execFileSync'd, not
+//    reimplemented) to keep the two independently-evolving normalizers in proven agreement.
 const GEMINI_OK_MARKER_RE = /gemini-ok/i
+
+// Same 13-pair table as store/offload-dispatch.sh's _HOMOGLYPH_MAP (N1, card e87e7520):
+// visually-identical Cyrillic/other codepoints with no NFKD decomposition to their Latin look-
+// alike, so NFKD alone cannot fold them.
+const GEMINI_OK_HOMOGLYPH_MAP: ReadonlyMap<string, string> = new Map(Object.entries({
+  'а': 'a', 'е': 'e', 'о': 'o', 'р': 'p', 'с': 'c', 'у': 'y', 'х': 'x',
+  'і': 'i', 'ѕ': 's', 'һ': 'h', 'ԃ': 'd', 'ɡ': 'g', 'ⅰ': 'i',
+}))
+
+// U+2800 BRAILLE PATTERN BLANK: visually invisible, category So (Symbol-other) is too broad to
+// strip wholesale, stripped by exact codepoint instead -- same as _fold()'s _INVISIBLE_CODEPOINTS.
+const GEMINI_OK_INVISIBLE_CODEPOINTS: ReadonlySet<string> = new Set(['⠀'])
+
+// Mirrors _fold()'s strip set (Mn combining marks, Cf invisible/format incl. ZWSP/soft-hyphen/BOM,
+// Cc control chars, Zl/Zp line/paragraph separators) via native Unicode property escapes -- no
+// userland category table to drift out of sync with Unicode itself.
+const GEMINI_OK_STRIP_RE = /[\p{Mn}\p{Cf}\p{Cc}\p{Zl}\p{Zp}]/u
+
+function foldGeminiOkMarkerText(text: string): string {
+  let folded = ''
+  for (const ch of text) folded += GEMINI_OK_HOMOGLYPH_MAP.get(ch) ?? ch
+  folded = folded.normalize('NFKD')
+  let out = ''
+  for (const ch of folded) {
+    if (GEMINI_OK_STRIP_RE.test(ch) || GEMINI_OK_INVISIBLE_CODEPOINTS.has(ch)) continue
+    out += ch
+  }
+  return out
+}
 
 function hasGeminiOkMarker(text: string | null | undefined): boolean {
   if (!text) return false
-  return GEMINI_OK_MARKER_RE.test(text.normalize('NFKD'))
+  return GEMINI_OK_MARKER_RE.test(foldGeminiOkMarkerText(text))
 }
 
 function isPrivilegedForGeminiOkMarker(actor: unknown): boolean {
@@ -1612,11 +1646,21 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const parent = getKanbanCard(parentId)
     if (!parent) { json(res, { error: 'Szülő kártya nem található' }, 404); return true }
     const body = await readBody(req)
-    const { subtasks } = JSON.parse(body.toString()) as {
+    const { subtasks, actor } = JSON.parse(body.toString()) as {
       subtasks: Array<{ title: string; description: string; assignee: string | null; priority: string }>
+      actor?: unknown
     }
     if (!Array.isArray(subtasks) || subtasks.length === 0) {
       json(res, { error: 'Subtask lista kötelező' }, 400)
+      return true
+    }
+    // Card b7114793 X1: this route was the one creation path that never checked the gemini-ok
+    // marker gate (POST /api/kanban and PUT /api/kanban/:id both do) -- a breakdown/accept subtask
+    // title could carry "[GEMINI-OK]" and reach the board 200, un-gated, un-privileged. Checked
+    // BEFORE the transaction opens: a 403 on any one marked, non-privileged subtask refuses the
+    // whole batch rather than partially creating cards and rolling back mid-way.
+    if (subtasks.some((st) => hasGeminiOkMarker(st.title)) && !isPrivilegedForGeminiOkMarker(actor)) {
+      json(res, { error: GEMINI_OK_MARKER_FORBIDDEN_MESSAGE }, 403)
       return true
     }
     const db = getDb()
