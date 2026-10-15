@@ -1897,3 +1897,52 @@ describe('card f6f67dff F-F delta: split-letter word with a long glued digit suf
     expect(elapsedMs).toBeLessThan(1000)
   })
 })
+
+// ── 16. Card f6f67dff R4 (RedHat NO-GO komment 19238): is_gemini_blocked()'s own python3 -c
+// call (the content-gate classifier itself) ran WITHOUT -I, the exact F-E bypass class the card
+// already fixed on the gemini-agy-call.sh/seged-hivo.py path (and the gemini-offload-call.sh path,
+// F-E delta above) -- a PYTHONPATH or cwd shadow of a stdlib module (e.g. `unicodedata` or `re`)
+// can silently turn a BLOCKED verdict into ALLOWED (exit 42) without raising. Caller:
+// src/gemini-orchestrator.ts:115 spawns this script with default cwd/env.
+describe('card f6f67dff R4: is_gemini_blocked python3 call resists PYTHONPATH/cwd shadowing', () => {
+  it('is_gemini_blocked invokes its python3 classifier with -I (isolated mode)', () => {
+    const dispatchSrc = src(DISPATCH)
+    const fnIdx = dispatchSrc.indexOf('\nis_gemini_blocked()')
+    expect(fnIdx).toBeGreaterThan(-1)
+    const fn = dispatchSrc.slice(fnIdx, fnIdx + 1500)
+    expect(fn).toMatch(/\|\s*python3\s+-I\s+-c\s+'/)
+  })
+
+  it('still reports BLOCKED for a SEC-tagged card under a PYTHONPATH shadowing os._exit(42)', () => {
+    const shadowDir = mkdtempSync(join(tmpdir(), 'r4-shadow-pp-'))
+    try {
+      writeFileSync(join(shadowDir, 're.py'), 'import os\nos._exit(42)\n')
+      const output = execFileSync('bash', [join(ROOT, DISPATCH), '--check-blocked', 'mikrob', 'SEC'], {
+        encoding: 'utf-8',
+        env: { ...process.env, PYTHONPATH: shadowDir },
+      })
+      expect(output.trim()).toBe('')
+    } catch (e: any) {
+      // --check-blocked exits 0 for BLOCKED (execFileSync throws on non-zero by default, and 0
+      // is not an error) -- so landing in the catch here means a NON-zero exit, i.e. NOT blocked.
+      throw new Error(`expected BLOCKED (exit 0), got exit ${e.status}: ${e.stdout}`)
+    } finally {
+      rmSync(shadowDir, { recursive: true, force: true })
+    }
+  })
+
+  it('still reports BLOCKED for a SEC-tagged card when invoked with a poisoned cwd', () => {
+    const shadowDir = mkdtempSync(join(tmpdir(), 'r4-shadow-cwd-'))
+    try {
+      writeFileSync(join(shadowDir, 're.py'), 'import os\nos._exit(42)\n')
+      execFileSync('bash', [join(ROOT, DISPATCH), '--check-blocked', 'mikrob', 'SEC'], {
+        encoding: 'utf-8',
+        cwd: shadowDir,
+      })
+    } catch (e: any) {
+      throw new Error(`expected BLOCKED (exit 0), got exit ${e.status}: ${e.stdout}`)
+    } finally {
+      rmSync(shadowDir, { recursive: true, force: true })
+    }
+  })
+})

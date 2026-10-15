@@ -126,7 +126,7 @@ is_gemini_blocked() {
   # deliberate, successful "allowed" verdict matches. A literal, not an env var, to sidestep a
   # bash quirk: a `VAR=val command` prefix assignment on a `local -r` variable is itself an
   # assignment and bash refuses it as a readonly violation, even though it's command-scoped.
-  printf '%s\0%s' "$title" "$desc" | python3 -c '
+  printf '%s\0%s' "$title" "$desc" | python3 -I -c '
 import sys, unicodedata, re
 
 project  = sys.argv[1]
