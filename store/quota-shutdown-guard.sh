@@ -13,20 +13,10 @@
 set -uo pipefail
 
 STORE="/home/neon/marveen/store"
-TOKEN_FILE="${_QSG_TOKEN_FILE_OVERRIDE:-$STORE/.dashboard-token}"
-# Card 1b08cf10 F1/F2 (WhiteHat 19791): overridable for selftest subprocess cases only --
-# production cron never sets this, so it always resolves to the real dashboard.
-API="${_QSG_API_OVERRIDE:-http://localhost:3420}"
-HARDSTOP="${_QSG_HARDSTOP_OVERRIDE:-$STORE/weekly-hard-stop.json}"
-# Env-overrides for selftest subprocess cases only -- production cron never sets these.
-STATE="${_QSG_STATE_OVERRIDE:-$STORE/quota-shutdown-guard-state.json}"
-LOG="${_QSG_LOG_OVERRIDE:-$STORE/quota-shutdown-guard.log}"
-# Env-override only for the selftest (a FAKE binary, never the real path) -- the production
-# cron config never sets this, so it always resolves to the real shutdown.exe.
-SHUTDOWN_EXE="${SHUTDOWN_EXE:-/mnt/c/Windows/System32/shutdown.exe}"
 SELFTEST=0
 DRY_RUN=0
 FORCE_REASON=""
+ISOLATED=0
 
 usage() { printf 'Usage: %s [--dry-run] [--force-reason "reason"]\n       %s --selftest\n' "$0" "$0" >&2; }
 
@@ -34,6 +24,16 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)      DRY_RUN=1; shift ;;
     --selftest)     SELFTEST=1; shift ;;
+    --selftest-subprocess)
+      # Card 1b08cf10 F3 (RedHat ccbfece8 19944d / MikroB 19945): the _QSG_*_OVERRIDE env vars
+      # (and SHUTDOWN_EXE) used to take effect on ANY invocation, selftest or not -- RedHat
+      # reached a real TRIGGER on the live path with no --selftest flag at all, just a missing
+      # token-file override, a 99% hardstop override, and a fake binary. This internal flag,
+      # set ONLY by the selftest's own subprocess helper (never documented in usage(), never
+      # set by production cron), is now the SOLE gate for honoring those overrides below --
+      # an attacker who can set env vars but not the version-controlled crontab invocation
+      # line gains nothing from them.
+      ISOLATED=1; shift ;;
     --force-reason)
       shift
       if [ $# -eq 0 ]; then
@@ -49,6 +49,22 @@ while [ $# -gt 0 ]; do
       echo "error: unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
+
+if [ "$SELFTEST" = "1" ] || [ "$ISOLATED" = "1" ]; then
+  TOKEN_FILE="${_QSG_TOKEN_FILE_OVERRIDE:-$STORE/.dashboard-token}"
+  API="${_QSG_API_OVERRIDE:-http://localhost:3420}"
+  HARDSTOP="${_QSG_HARDSTOP_OVERRIDE:-$STORE/weekly-hard-stop.json}"
+  STATE="${_QSG_STATE_OVERRIDE:-$STORE/quota-shutdown-guard-state.json}"
+  LOG="${_QSG_LOG_OVERRIDE:-$STORE/quota-shutdown-guard.log}"
+  SHUTDOWN_EXE="${SHUTDOWN_EXE:-/mnt/c/Windows/System32/shutdown.exe}"
+else
+  TOKEN_FILE="$STORE/.dashboard-token"
+  API="http://localhost:3420"
+  HARDSTOP="$STORE/weekly-hard-stop.json"
+  STATE="$STORE/quota-shutdown-guard-state.json"
+  LOG="$STORE/quota-shutdown-guard.log"
+  SHUTDOWN_EXE="/mnt/c/Windows/System32/shutdown.exe"
+fi
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S %Z') $*" >> "$LOG"; }
 
@@ -67,7 +83,9 @@ send_telegram() {
   # sets this. Card 1b08cf10 F1 (WhiteHat 19791): the suppression now leaves a positive trace in
   # LOG, so a regression that silently stops honoring this override is pinned, not just assumed
   # absent -- a pure "nothing happened" check can't tell suppressed-correctly from broken-silently.
-  if [ "${_QSG_NO_TELEGRAM:-0}" = "1" ]; then
+  # Card 1b08cf10 F3 (RedHat ccbfece8 19944d): same gate as the other _QSG_* overrides below --
+  # only honored under --selftest/--selftest-subprocess, never on a live invocation.
+  if { [ "$SELFTEST" = "1" ] || [ "$ISOLATED" = "1" ]; } && [ "${_QSG_NO_TELEGRAM:-0}" = "1" ]; then
     log "TELEGRAM-SUPPRESSED (_QSG_NO_TELEGRAM=1): $text"
     return 0
   fi
@@ -211,7 +229,7 @@ if [ "$SELFTEST" = "1" ]; then
     : > "$SUBPROC_LOG"
     timeout 3 env SHUTDOWN_EXE="$fake_exe" _QSG_NO_TELEGRAM=1 \
       _QSG_STATE_OVERRIDE="$SUBPROC_STATE" _QSG_LOG_OVERRIDE="$SUBPROC_LOG" \
-      bash "$0" "$@" 2>/dev/null
+      bash "$0" "$@" --selftest-subprocess 2>/dev/null
   }
 
   _arg_test() {
@@ -275,7 +293,7 @@ if [ "$SELFTEST" = "1" ]; then
   timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_TOKEN" _QSG_NO_TELEGRAM=1 \
     _QSG_STATE_OVERRIDE="$SUBPROC_STATE3" _QSG_LOG_OVERRIDE="$SUBPROC_LOG3" \
     _QSG_TOKEN_FILE_OVERRIDE="$MISSING_TOKEN_FILE" _QSG_HARDSTOP_OVERRIDE="$HARDSTOP_99" \
-    bash "$0" 2>/dev/null
+    bash "$0" --selftest-subprocess 2>/dev/null
   t "missing token-file + percent=99: shutdown marker NOT created (fail-closed)" \
     "$([ -f "$FAKE_MARKER3" ] && echo YES || echo NO)" "NO"
   t "missing token-file + percent=99: isolated STATE NOT written" \
@@ -306,7 +324,7 @@ if [ "$SELFTEST" = "1" ]; then
   : > "$SUBPROC_LOG4"
   timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_POSITIVE" _QSG_NO_TELEGRAM=1 \
     _QSG_STATE_OVERRIDE="$SUBPROC_STATE4" _QSG_LOG_OVERRIDE="$SUBPROC_LOG4" \
-    bash "$0" --force-reason "positive-control" 2>/dev/null
+    bash "$0" --force-reason "positive-control" --selftest-subprocess 2>/dev/null
   rc=$?
   t "F1 positive-control: trigger_shutdown returns 0" "$rc" "0"
   t "F1 positive-control: shutdown marker IS created (the fake exe was actually invoked)" \
@@ -355,7 +373,7 @@ PYEOF
   timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_POSITIVE" _QSG_NO_TELEGRAM=1 \
     _QSG_STATE_OVERRIDE="$SUBPROC_STATE5" _QSG_LOG_OVERRIDE="$SUBPROC_LOG5" \
     _QSG_API_OVERRIDE="http://127.0.0.1:$SLOW_API_PORT" \
-    bash "$0" --dry-run --force-reason "f2-positive-control" 2>/dev/null
+    bash "$0" --dry-run --force-reason "f2-positive-control" --selftest-subprocess 2>/dev/null
   rc=$?
   t "F2 positive-control: force path finishes within the timeout (skips running_flotta)" "$rc" "0"
 
