@@ -80,6 +80,28 @@ except Exception as e:
 PYEOF
 }
 
+# Card ccbfece8 (RedHat F-RH-T2, 548a92ee komment 19867): a running_flotta szamitast kulon
+# fuggvenybe emelve, hogy a selftest a VALODI curl-hivas nelkul tudja injektalni a malformed
+# API-valaszokat (lasd _QSG_AGENTS_JSON_OVERRIDE lejjebb) ugyanazzal a parse-logikaval, amit
+# az eles kod hasznal -- nincs kulon, driftelhet masolat.
+# Fail-closed: nem-lista, ures lista, vagy "running" kulcsot nelkulozo bejegyzes -> -1
+# (ISMERETLEN), nem 0 (="minden agens leallt"). A {} es a hiányzó-"running"-sémahiba a sum()-ot
+# máskülönben csendben 0-ra vinné, ami 99%-nál élesen leállítana a gépet egy puszta
+# séma-elcsúszás miatt.
+_qsg_parse_agents() {
+  python3 -c '
+import json,sys
+try:
+    agents=json.load(sys.stdin)
+except Exception:
+    print(-1); raise SystemExit
+if not isinstance(agents, list) or len(agents) == 0 or any(not isinstance(a, dict) or "running" not in a for a in agents):
+    print(-1); raise SystemExit
+n=sum(1 for a in agents if a.get("running") and a.get("name") != "mikrob")
+print(n)
+'
+}
+
 trigger_shutdown() {
   local reason="$1"
   log "TRIGGER: $reason"
@@ -267,12 +289,75 @@ if [ "$SELFTEST" = "1" ]; then
     _QSG_STATE_OVERRIDE="$SUBPROC_STATE3" _QSG_LOG_OVERRIDE="$SUBPROC_LOG3" \
     _QSG_TOKEN_FILE_OVERRIDE="$MISSING_TOKEN_FILE" _QSG_HARDSTOP_OVERRIDE="$HARDSTOP_99" \
     bash "$0" 2>/dev/null
+  rc=$?
   t "missing token-file + percent=99: shutdown marker NOT created (fail-closed)" \
     "$([ -f "$FAKE_MARKER3" ] && echo YES || echo NO)" "NO"
   t "missing token-file + percent=99: isolated STATE NOT written" \
     "$([ -f "$SUBPROC_STATE3" ] && echo YES || echo NO)" "NO"
   t "missing token-file + percent=99: isolated LOG names the SKIP reason" \
     "$(grep -q 'token-fajl hianyzik' "$SUBPROC_LOG3" 2>/dev/null && echo YES || echo NO)" "YES"
+  # Card ccbfece8 F-RH-T1: nemzero exit a degradalt (token-nelkuli) agban, hogy a
+  # scheduled-task failThreshold erzekelje, amikor a Telegram-riasztas maga nem tudott kimenni.
+  t "missing token-file + percent=99: exit 1 (degraded, observable even if the Telegram alert itself silently failed)" "$rc" "1"
+
+  # Case 15 (card ccbfece8 F-RH-T3): a TOKEN_FILE LETEZIK, de NEM OLVASHATO -- ez a `[ -r ]`
+  # feltetelt pinneli kulon a `[ -f ]`-tol (Case 14 nemletezo fajllal mar a `-f`-en elbukik,
+  # tehat egy `[ -r ]`-et kivevo mutans ott nem valna pirossa; itt a fajl LETEZIK).
+  UNREADABLE_TOKEN_FILE="$TMPD/unreadable-token"
+  printf 'sometoken\n' > "$UNREADABLE_TOKEN_FILE"
+  chmod 000 "$UNREADABLE_TOKEN_FILE"
+  FAKE_MARKER4="$TMPD/token-unreadable-marker.txt"
+  FAKE_SHUTDOWN_UNREADABLE="$TMPD/fake-shutdown-unreadable.sh"
+  printf '#!/bin/bash\ntouch "%s"\nexit 0\n' "$FAKE_MARKER4" > "$FAKE_SHUTDOWN_UNREADABLE"
+  chmod +x "$FAKE_SHUTDOWN_UNREADABLE"
+  SUBPROC_STATE4="$TMPD/subproc-state4.json"
+  SUBPROC_LOG4="$TMPD/subproc-log4.txt"
+  rm -f "$FAKE_MARKER4" "$SUBPROC_STATE4"
+  : > "$SUBPROC_LOG4"
+  timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_UNREADABLE" _QSG_NO_TELEGRAM=1 \
+    _QSG_STATE_OVERRIDE="$SUBPROC_STATE4" _QSG_LOG_OVERRIDE="$SUBPROC_LOG4" \
+    _QSG_TOKEN_FILE_OVERRIDE="$UNREADABLE_TOKEN_FILE" _QSG_HARDSTOP_OVERRIDE="$HARDSTOP_99" \
+    bash "$0" 2>/dev/null
+  rc=$?
+  t "unreadable token-file (exists, chmod 000) + percent=99: shutdown marker NOT created (pins [ -r ])" \
+    "$([ -f "$FAKE_MARKER4" ] && echo YES || echo NO)" "NO"
+  t "unreadable token-file: isolated STATE NOT written" "$([ -f "$SUBPROC_STATE4" ] && echo YES || echo NO)" "NO"
+  t "unreadable token-file: exit 1 (same degraded path as missing-file)" "$rc" "1"
+  chmod 644 "$UNREADABLE_TOKEN_FILE" 2>/dev/null || true
+
+  # Cases 16-18 (card ccbfece8 F-RH-T2): az /api/agents valasz ALAKJA fail-closed legyen --
+  # {}, [], vagy "running" kulcsot nelkulozo bejegyzes 99%-nal NE indítson leallitast
+  # (running_flotta=-1, nem 0). A valodi tokent/curl-t az _QSG_AGENTS_JSON_OVERRIDE-dal
+  # kerulik ki (lasd a fo script running_flotta-agat).
+  FAKE_MARKER5="$TMPD/malformed-shape-marker.txt"
+  FAKE_SHUTDOWN_SHAPE="$TMPD/fake-shutdown-shape.sh"
+  printf '#!/bin/bash\ntouch "%s"\nexit 0\n' "$FAKE_MARKER5" > "$FAKE_SHUTDOWN_SHAPE"
+  chmod +x "$FAKE_SHUTDOWN_SHAPE"
+  SUBPROC_STATE5="$TMPD/subproc-state5.json"
+  SUBPROC_LOG5="$TMPD/subproc-log5.txt"
+  READABLE_TOKEN_FILE="$TMPD/readable-token"
+  printf 'sometoken\n' > "$READABLE_TOKEN_FILE"
+
+  _shape_test() {
+    local label="$1" json="$2" want_marker="$3"
+    rm -f "$FAKE_MARKER5" "$SUBPROC_STATE5"
+    : > "$SUBPROC_LOG5"
+    timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_SHAPE" _QSG_NO_TELEGRAM=1 \
+      _QSG_STATE_OVERRIDE="$SUBPROC_STATE5" _QSG_LOG_OVERRIDE="$SUBPROC_LOG5" \
+      _QSG_TOKEN_FILE_OVERRIDE="$READABLE_TOKEN_FILE" _QSG_HARDSTOP_OVERRIDE="$HARDSTOP_99" \
+      _QSG_AGENTS_JSON_OVERRIDE="$json" \
+      bash "$0" >/dev/null 2>&1
+    t "${label}: shutdown marker $([ "$want_marker" = YES ] && echo CREATED || echo NOT-created)" \
+      "$([ -f "$FAKE_MARKER5" ] && echo YES || echo NO)" "$want_marker"
+  }
+
+  _shape_test "malformed shape {} at 99%% (not a list)" '{}' "NO"
+  _shape_test "malformed shape [] at 99%% (empty list, schema drift)" '[]' "NO"
+  _shape_test "malformed shape, entry missing 'running' key, at 99%%" '[{"name":"backend"}]' "NO"
+  # Positive control: a LEGITIMATE all-stopped shape must still shut down -- the F-RH-T2 fix
+  # must stay fail-closed for malformed input, not become fail-open for every input.
+  _shape_test "legitimate shape, mikrob excluded + backend stopped, at 99%% -- MUST still trigger" \
+    '[{"name":"mikrob","running":true},{"name":"backend","running":false}]' "YES"
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
@@ -285,17 +370,18 @@ percent="$(python3 -c 'import json;print(json.load(open("'"$HARDSTOP"'")).get("p
 # Hianyzo/olvashatatlan token-fajl vagy sikertelen API-lekerdezes SOHA nem egyezik a "0"-val
 # lejjebb, tehat nem ertelmezodik "minden agens leallt"-kent.
 running_flotta=-1
-if [ -f "$TOKEN_FILE" ] && [ -r "$TOKEN_FILE" ]; then
-  running_flotta="$(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" | curl -H @- -s --max-time 10 "$API/api/agents" | python3 -c '
-import json,sys
-try:
-    agents=json.load(sys.stdin)
-except Exception:
-    print(-1); raise SystemExit
-n=sum(1 for a in agents if a.get("running") and a.get("name") != "mikrob")
-print(n)
-' 2>/dev/null || echo -1)"
+# Card ccbfece8 F-RH-T1: token_unreadable jelzi, hogy a ISMERETLEN allapot oka a token hianya
+# volt (nem pl. egy sikertelen curl) -- a riasztas ugyanerrol a tokenrol probal kimenni, tehat
+# pont ebben az esetben nemasan elmaradhat (lasd lejjebb a fuggo "exit 1"-et).
+token_unreadable=0
+if [ -n "${_QSG_AGENTS_JSON_OVERRIDE:-}" ]; then
+  # Selftest-only injekcios pont F-RH-T2 (malformed API-alak) tesztelesere -- a production cron
+  # ezt SOHA nem allitja, mindig a valodi curl-agon megy at.
+  running_flotta="$(printf '%s' "$_QSG_AGENTS_JSON_OVERRIDE" | _qsg_parse_agents 2>/dev/null || echo -1)"
+elif [ -f "$TOKEN_FILE" ] && [ -r "$TOKEN_FILE" ]; then
+  running_flotta="$(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" | curl -H @- -s --max-time 10 "$API/api/agents" | _qsg_parse_agents 2>/dev/null || echo -1)"
 else
+  token_unreadable=1
   log "WARN: token-fajl hianyzik vagy olvashatatlan ($TOKEN_FILE) -- flotta-allapot ISMERETLEN, a kvota-alapu automatikus leallitas (FELTETEL 1) ebben a korben SKIP."
   send_telegram "Flotta: quota-shutdown-guard nem tudja leolvasni a token-fajlt ($TOKEN_FILE) -- a flotta-allapot ISMERETLEN, a kvota-alapu automatikus leallitas ezert kimaradt ebben a korben. Kezi ellenorzes ajanlott."
 fi
@@ -327,6 +413,16 @@ fi
 # A napi 20:00-as, kvotatol fuggetlen hatarido-szabaly TOROLVE (Peti 2026-09-02, Telegram --
 # visszavonta a 2026-08-27-i keresset, mert aktiv munka kozben zavaro volt). A 99%-os
 # heti-kvota-alapu leallitas fentebb valtozatlanul all.
+
+# Card ccbfece8 F-RH-T1 (RedHat javitasi iranya, 548a92ee komment 19867): ha a token hianya
+# miatt nem tudtuk megallapitani a flotta-allapotot, ez NEM "OK, nincs feltetel teljesitve" --
+# nemzero kilepessel jelezzuk (a scheduled-task failThreshold mintaja, 0daf0033), mert a
+# Telegram-riasztas pont ebben az esetben nemasan elmaradhat (send_telegram ugyanarrol a
+# tokenrol olvas, amit itt nem tudtunk beolvasni).
+if [ "$token_unreadable" = "1" ]; then
+  log "SKIP (degradalt): token-fajl hianyzik/olvashatatlan, a kvota-allapot ISMERETLEN marad -- ez nem OK, kezi ellenorzes ajanlott."
+  exit 1
+fi
 
 log "OK: nincs feltetel teljesitve (percent=$percent running_flotta=$running_flotta hour=$hour)."
 exit 0
