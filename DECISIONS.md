@@ -20431,3 +20431,37 @@ netns-ében), a `127.0.0.1:11434` felvétele a JAIL_NET_ALLOWLIST-be helyesen a 
 Ollama-portjára kapcsol -- a két kártya emiatt NEM ütközik, csak a merge igényelt egy sor
 kiegészítést az allowlistben. `jail_cmd()` mindkét kártya bind-jait megtartja (`agy_subtask_binds()`
 + a net-jail extra_binds), sorrend: agy_subtask_binds előbb, majd a net-jail UDS-bind.
+
+## 2026-10-15 -- WSL-interop socket felderítő (kártya 73b500f9)
+
+**Mi történt:** a gpu-driver-check napi körében (2026-10-15 07:45) a `WSL_INTEROP` üres volt, és
+minden `/mnt/c/...` `.exe` hívás ("Invalid argument"-tel halt meg -- `cmd.exe` is, `nvidia-smi.exe`
+is), ami `installedHost=null`-t írt volna, hamis "törött driver" riasztást okozva. A
+`/run/WSL/1_interop` (szimlink a `2_interop`-ra) és a `2_interop` (a 04:55-ös bootból maradt, stale)
+sem működött, a `742_interop` viszont igen -- ezzel `installedHost=617.42` helyesen olvasható lett
+volna.
+
+**Döntés:** közös helper (`store/wsl-interop-resolve.sh`), ami üres vagy halott `WSL_INTEROP` esetén
+végigpróbálja a `/run/WSL/*_interop` socketeket egy olcsó `cmd.exe /c ver` próbával, és az elsőt
+használja, ami válaszol; ha egyik sem, a hívó marad a korábbi fail-closed viselkedésen (üres/null
+mező, nem crash). Bekötve `store/gpu-driver-check.sh` (`read_host_version()`, lazy, csak ha
+tényleg az smi-t hívja) és `store/quota-shutdown-guard.sh` (`trigger_shutdown()`, a
+`shutdown.exe` hívás előtt) `.exe`-hívásai elé. A `scripts/install-wsl-watchdog.sh` SZÁNDÉKOSAN
+nincs bekötve: a kártya csak a `store/` szkriptekre szól, és a watchdog-installer root/Windows-host
+telepítő lépéseit fullstack nem futtathatja/módosíthatja a sajat jóváhagyása nélkül (fullstack
+agents/CLAUDE.md "Infra-munka korlátai").
+
+**Mért bizonyíték:** a mai élő hoston (`/run/WSL/` tartalma 2026-10-15-kor) a resolver helyesen
+`/run/WSL/742_interop`-ot találja meg élesen futtatva, pontosan a card leírása szerint (1_interop és
+2_interop "Invalid argument", 742_interop sikeres). Dedikált selftest
+(`store/wsl-interop-resolve.selftest.sh`, 7 eset: üres+élő-van, halott+élő-van, már-működő-marad,
+mind-halott, hiányzó-könyvtár) és a két hívó selftestje bővült a wiring saját eseteivel
+(`gpu-driver-check.selftest.sh` 2 új eset, `quota-shutdown-guard.sh --selftest` 2 új eset) --
+mindegyik fake binárisokkal, a valós hosztot nem érinti. A meglévő eseteket egy no-op resolver-stub
+tartja byte-for-byte változatlanul (nincs valós `cmd.exe`-hívás a régi, wiring előtti eseteknél).
+`store/gpu-driver-check.selftest.sh`: 26/26 zöld. `quota-shutdown-guard.sh --selftest`: 13/13 zöld.
+`store/wsl-interop-resolve.selftest.sh`: 7/7 zöld. A `store-selftests-all-run.test.ts` glob-alapú
+felfedezés a selftest-neveket nem igényel kézi bekötést -- a vitest-futás (`Test Files 1 passed (1)`,
+`Tests 281 passed (281)`) ezt is lefedte.
+
+**Ki döntött:** fullstack (önálló mérés + implementáció, kártya 73b500f9), gate: QA.

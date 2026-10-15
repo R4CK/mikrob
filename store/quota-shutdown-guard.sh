@@ -21,6 +21,10 @@ LOG="$STORE/quota-shutdown-guard.log"
 # Env-override only for the selftest (a FAKE binary, never the real path) -- the production
 # cron config never sets this, so it always resolves to the real shutdown.exe.
 SHUTDOWN_EXE="${SHUTDOWN_EXE:-/mnt/c/Windows/System32/shutdown.exe}"
+# Card 73b500f9: WSL_INTEROP can be empty or point at a dead socket while another live
+# socket under /run/WSL/ still works -- resolved lazily in trigger_shutdown(), right before
+# calling $SHUTDOWN_EXE, same reasoning and script as gpu-driver-check.sh.
+WSL_INTEROP_RESOLVE_SH="${QUOTA_SHUTDOWN_GUARD_WSL_INTEROP_RESOLVE:-$STORE/wsl-interop-resolve.sh}"
 DRY_RUN=0
 FORCE_REASON=""
 
@@ -79,6 +83,11 @@ trigger_shutdown() {
     send_telegram "Flotta: quota-shutdown-guard HIBA -- $SHUTDOWN_EXE nem futtathato (WSL interop hianyzik?). A gep NEM allt le, STATE nem irodott, ujraprobal a kovetkezo korben. Kezi beavatkozas ajanlott."
     return 1
   fi
+  if [ -x "$WSL_INTEROP_RESOLVE_SH" ]; then
+    local _resolved_interop
+    _resolved_interop="$("$WSL_INTEROP_RESOLVE_SH" 2>/dev/null)" || _resolved_interop=""
+    [ -n "$_resolved_interop" ] && export WSL_INTEROP="$_resolved_interop"
+  fi
   # 5 perces elore-jelzes, Windows-oldalrol megszakithato: shutdown.exe /a
   # NEM pipe-olva tee-be: a `cmd | tee` mintanal a pipe utolso tagjanak (tee) sikeres exit
   # code-ja elfedi a cmd sajat hibajat pipefail NELKUL is olvashatatlanna tenne a hivo szamara
@@ -107,6 +116,15 @@ if [ "${1:-}" = "--selftest" ]; then
 
   TMPD="$(mktemp -d)"
   trap 'rm -rf "$TMPD"' EXIT
+
+  # Card 73b500f9: a 1-4. eset mind a wiring ELOTTI viselkedest rogziti -- egy no-op resolver
+  # (mindig "nem talaltam" valaszol) tartja oket byte-for-byte valtozatlanul, nincs valodi
+  # cmd.exe-hivas ezen a host-on. A wiring sajat, 5. esetet kap lejjebb.
+  NOOP_RESOLVE="$TMPD/noop-resolve.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$NOOP_RESOLVE"
+  chmod +x "$NOOP_RESOLVE"
+  QUOTA_SHUTDOWN_GUARD_WSL_INTEROP_RESOLVE="$NOOP_RESOLVE"
+  WSL_INTEROP_RESOLVE_SH="$NOOP_RESOLVE"
 
   # Case 1: shutdown.exe sikeresen lefut (exit 0) -> STATE irodik, trigger_shutdown 0-val ter vissza.
   FAKE_OK="$TMPD/fake-ok.sh"
@@ -159,6 +177,37 @@ if [ "${1:-}" = "--selftest" ]; then
   t "dry-run: trigger_shutdown returns 0 without calling the binary" "$rc" "0"
   t "dry-run: STATE file NOT written (dry-run never commits)" "$([ -f "$STATE" ] && echo YES || echo NO)" "NO"
   DRY_RUN=0
+
+  # Case 5 (card 73b500f9): WSL-interop-resolve wiring. A fake shutdown.exe that only
+  # succeeds for ONE specific WSL_INTEROP value, mirroring the real measured shape (empty/
+  # dead WSL_INTEROP, but a live socket exists) -- no real cmd.exe or /run/WSL touched.
+  FAKE_NEEDS_INTEROP="$TMPD/fake-needs-interop.sh"
+  printf '#!/usr/bin/env bash\n[ "$WSL_INTEROP" = "/run/WSL/742_interop" ] || { echo "shutdown.exe: Invalid argument" >&2; exit 1; }\nexit 0\n' > "$FAKE_NEEDS_INTEROP"
+  chmod +x "$FAKE_NEEDS_INTEROP"
+  RESOLVE_FINDS="$TMPD/resolve-finds.sh"
+  printf '#!/usr/bin/env bash\nprintf %%s "/run/WSL/742_interop"\n' > "$RESOLVE_FINDS"
+  chmod +x "$RESOLVE_FINDS"
+
+  WSL_INTEROP=""
+  WSL_INTEROP_RESOLVE_SH="$RESOLVE_FINDS"
+  STATE="$TMPD/state-resolve-ok.json"
+  LOG="$TMPD/log-resolve-ok.txt"
+  SHUTDOWN_EXE="$FAKE_NEEDS_INTEROP"
+  : > "$LOG"
+  trigger_shutdown "selftest-resolve-ok"
+  rc=$?
+  t "resolver finds a live socket: trigger_shutdown returns 0 despite empty WSL_INTEROP" "$rc" "0"
+  t "resolver finds a live socket: STATE file IS written" "$([ -f "$STATE" ] && echo YES || echo NO)" "YES"
+
+  WSL_INTEROP=""
+  WSL_INTEROP_RESOLVE_SH="$NOOP_RESOLVE"
+  STATE="$TMPD/state-resolve-none.json"
+  LOG="$TMPD/log-resolve-none.txt"
+  : > "$LOG"
+  trigger_shutdown "selftest-resolve-none"
+  rc=$?
+  t "resolver finds nothing: stays fail-closed, trigger_shutdown returns non-zero" "$([ "$rc" -ne 0 ] && echo NONZERO || echo ZERO)" "NONZERO"
+  t "resolver finds nothing: STATE file NOT written" "$([ -f "$STATE" ] && echo YES || echo NO)" "NO"
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
