@@ -8,7 +8,7 @@
 // by reading the source.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, chmodSync, copyFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync, copyFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
