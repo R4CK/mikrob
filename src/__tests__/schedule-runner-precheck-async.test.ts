@@ -9,15 +9,14 @@ import {
   resetPreCheckAnswersForTests,
   retryPreCheck,
   runPreCheck,
-  runPreCheckAsync,
   type PreCheckResult,
 } from '../web/schedule-runner.js'
 import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
 
 // df2e0d97 2a: the pending-retry loop re-ran a task's preCheck on every 15 s
 // tick through spawnSync, holding the dashboard's event loop for the whole
-// script run. The retry path now runs it off the loop (runPreCheckAsync, the
-// same answers and limits as runPreCheck) and at most once a minute per task
+// script run. The retry path now runs it off the loop (runPreCheck, the
+// single async entry point) and at most once a minute per task
 // (retryPreCheck); the cron loop's fresh answer refreshes the remembered one.
 
 const SRC = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
@@ -43,16 +42,6 @@ function withScript(content: string): { dir: string; file: string } {
   return { dir, file }
 }
 
-async function both(content: string): Promise<{ sync: PreCheckResult; async: PreCheckResult }> {
-  const { dir, file } = withScript(content)
-  try {
-    const task = makeTask({ preCheck: file })
-    return { sync: runPreCheck(task), async: await runPreCheckAsync(task) }
-  } finally {
-    rmSync(dir, { recursive: true })
-  }
-}
-
 // How late a timer due in 50 ms fires while `work` runs.
 async function timerLateness(work: () => unknown): Promise<{ lateMs: number; value: unknown }> {
   const t0 = performance.now()
@@ -61,52 +50,67 @@ async function timerLateness(work: () => unknown): Promise<{ lateMs: number; val
   return { lateMs: await fired, value }
 }
 
-describe('runPreCheckAsync gives the answers runPreCheck gives', () => {
+describe('runPreCheck answers', () => {
   it('SKIP', async () => {
-    const r = await both('#!/usr/bin/env bash\necho "SKIP"\n')
-    expect(r.async).toEqual({ skip: true })
-    expect(r.async).toEqual(r.sync)
+    const { dir, file } = withScript('#!/usr/bin/env bash\necho "SKIP"\n')
+    try {
+      expect(await runPreCheck(makeTask({ preCheck: file }))).toEqual({ skip: true })
+    } finally {
+      rmSync(dir, { recursive: true })
+    }
   })
 
   it('actionable text becomes the prefix, trimmed', async () => {
-    const r = await both('#!/usr/bin/env bash\necho "  3 actionable cards found  "\n')
-    expect(r.async).toEqual({ skip: false, prefix: '3 actionable cards found' })
-    expect(r.async).toEqual(r.sync)
+    const { dir, file } = withScript('#!/usr/bin/env bash\necho "  3 actionable cards found  "\n')
+    try {
+      expect(await runPreCheck(makeTask({ preCheck: file }))).toEqual({ skip: false, prefix: '3 actionable cards found' })
+    } finally {
+      rmSync(dir, { recursive: true })
+    }
   })
 
   it('no output: no prefix', async () => {
-    const r = await both('#!/usr/bin/env bash\nexit 0\n')
-    expect(r.async).toEqual({ skip: false })
-    expect(r.async).toEqual(r.sync)
+    const { dir, file } = withScript('#!/usr/bin/env bash\nexit 0\n')
+    try {
+      expect(await runPreCheck(makeTask({ preCheck: file }))).toEqual({ skip: false })
+    } finally {
+      rmSync(dir, { recursive: true })
+    }
   })
 
   it('a non-zero exit fails open, even after printing SKIP', async () => {
-    const r = await both('#!/usr/bin/env bash\necho "SKIP"\nexit 3\n')
-    expect(r.async).toEqual({ skip: false })
-    expect(r.async).toEqual(r.sync)
+    const { dir, file } = withScript('#!/usr/bin/env bash\necho "SKIP"\nexit 3\n')
+    try {
+      expect(await runPreCheck(makeTask({ preCheck: file }))).toEqual({ skip: false })
+    } finally {
+      rmSync(dir, { recursive: true })
+    }
   })
 
   it('accented text survives the chunked read', async () => {
-    const r = await both('#!/usr/bin/env bash\nfor i in $(seq 1 3000); do printf "árvíztűrő tükörfúrógép "; done\necho\n')
-    expect(r.async.skip).toBe(false)
-    expect(r.async.prefix?.startsWith('árvíztűrő tükörfúrógép árvíztűrő')).toBe(true)
-    expect(r.async).toEqual(r.sync)
+    const { dir, file } = withScript('#!/usr/bin/env bash\nfor i in $(seq 1 3000); do printf "árvíztűrő tükörfúrógép "; done\necho\n')
+    try {
+      const r = await runPreCheck(makeTask({ preCheck: file }))
+      expect(r.skip).toBe(false)
+      expect(r.prefix?.startsWith('árvíztűrő tükörfúrógép árvíztűrő')).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true })
+    }
   })
 
   it('a missing script and a task without a preCheck fail open', async () => {
     const missing = makeTask({ preCheck: '/nonexistent/path/pre-check.sh' })
-    expect(await runPreCheckAsync(missing)).toEqual({ skip: false })
-    expect(runPreCheck(missing)).toEqual({ skip: false })
-    expect(await runPreCheckAsync(makeTask())).toEqual({ skip: false })
+    expect(await runPreCheck(missing)).toEqual({ skip: false })
+    expect(await runPreCheck(makeTask())).toEqual({ skip: false })
   })
 })
 
-describe('runPreCheckAsync limits', () => {
+describe('runPreCheck limits', () => {
   it('over the time limit the LLM runs anyway, and the answer comes at the limit, not at the end of the script', async () => {
     const { dir, file } = withScript('#!/usr/bin/env bash\nsleep 5\necho "SKIP"\n')
     try {
       const t0 = performance.now()
-      const r = await runPreCheckAsync(makeTask({ preCheck: file }), { timeoutMs: 300 })
+      const r = await runPreCheck(makeTask({ preCheck: file }), { timeoutMs: 300 })
       expect(r).toEqual({ skip: false })
       expect(performance.now() - t0).toBeLessThan(2500)
     } finally {
@@ -118,8 +122,8 @@ describe('runPreCheckAsync limits', () => {
     const { dir, file } = withScript('#!/usr/bin/env bash\nhead -c 3000 /dev/zero | tr "\\0" a\necho\n')
     try {
       const task = makeTask({ preCheck: file })
-      expect(await runPreCheckAsync(task, { maxStdoutBytes: 1000 })).toEqual({ skip: false })
-      const under = await runPreCheckAsync(task, { maxStdoutBytes: 4000 })
+      expect(await runPreCheck(task, { maxStdoutBytes: 1000 })).toEqual({ skip: false })
+      const under = await runPreCheck(task, { maxStdoutBytes: 4000 })
       expect(under.skip).toBe(false)
       expect(under.prefix).toBe('a'.repeat(3000))
     } finally {
@@ -129,17 +133,13 @@ describe('runPreCheckAsync limits', () => {
 })
 
 describe('the event loop while a pre-check runs (the reason for 2a)', () => {
-  it('a timer due in 50 ms fires during a 1.5 s async pre-check; the synchronous form holds it to the end', async () => {
+  it('a timer due in 50 ms fires during a 1.5 s pre-check without being held to the end', async () => {
     const { dir, file } = withScript('#!/usr/bin/env bash\nsleep 1.5\necho "SKIP"\n')
     try {
       const task = makeTask({ preCheck: file })
-      const off = await timerLateness(() => runPreCheckAsync(task))
+      const off = await timerLateness(() => runPreCheck(task))
       expect(off.value).toEqual({ skip: true })
       expect(off.lateMs).toBeLessThan(500)
-      // negative control: the synchronous form, the same script
-      const on = await timerLateness(() => runPreCheck(task))
-      expect(on.value).toEqual({ skip: true })
-      expect(on.lateMs).toBeGreaterThan(1200)
     } finally {
       rmSync(dir, { recursive: true })
     }
@@ -232,17 +232,15 @@ describe('wiring (source-level)', () => {
     expect(retryLoop.indexOf('retryPreCheck(taskDef')).toBeLessThan(retryLoop.indexOf('attemptFireTask(current,'))
   })
 
-  // CRONPRECHECKSYNC1007: the cron loop awaits the async form now (was
-  // `runPreCheck(task)`); the answer is still recorded right after it.
+  // CRONPRECHECKSYNC1007: the cron loop awaits the async form; the answer is
+  // still recorded right after it.
   it('the cron loop awaits the async pre-check and records its fresh answer right after it', () => {
-    expect(SRC).toMatch(/const cronPc = await runPreCheckAsync\(task\)\n\s+rememberPreCheckAnswer\(task, now, cronPc\)/)
-    const cronLoop = SRC.slice(SRC.indexOf('for (const task of tasks)'))
-    expect(cronLoop).not.toMatch(/runPreCheck\(task\)/)
+    expect(SRC).toMatch(/const cronPc = await runPreCheck\(task\)\n\s+rememberPreCheckAnswer\(task, now, cronPc\)/)
   })
 
-  it('runPreCheckAsync spawns without the synchronous call', () => {
-    const fn = SRC.slice(SRC.indexOf('export function runPreCheckAsync'), SRC.indexOf('export const RETRY_PRECHECK_MIN_INTERVAL_MS'))
+  it('runPreCheck spawns without a synchronous call, anywhere in the file', () => {
+    expect(SRC).not.toMatch(/\b(spawnSync|execSync|execFileSync)\(/)
+    const fn = SRC.slice(SRC.indexOf('export async function runPreCheck'), SRC.indexOf('export const RETRY_PRECHECK_MIN_INTERVAL_MS'))
     expect(fn).toMatch(/spawn\('bash', \[scriptPath\]/)
-    expect(fn).not.toMatch(/spawnSync|execSync|execFileSync/)
   })
 })

@@ -108,7 +108,7 @@ vi.mock('../web/agent-process.js', () => ({
   resolveAgentProvider: () => 'telegram',
 }))
 
-// The pre-check needs a script that EXISTS (runPreCheckAsync checks before it
+// The pre-check needs a script that EXISTS (runPreCheck checks before it
 // spawns); its content never runs, the fake spawn above stands in for it.
 const scriptDir = mkdtempSync(join(tmpdir(), 'retry-recheck-'))
 const scriptPath = join(scriptDir, 'pre-check.sh')

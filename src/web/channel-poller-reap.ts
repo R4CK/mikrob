@@ -128,7 +128,7 @@ export function filterPollerPids(pids: number[], argvOf: (pid: number) => string
 function listPollerPidsByStateDir(envVar: string, chanDir: string): number[] {
   try {
     const out = execSync(PS_ENV_SCAN_CMD, { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
-    return parsePollerPidsFromPs(out, envVar, chanDir)
+    return filterPollerPids(parsePollerPidsFromPs(out, envVar, chanDir))
   } catch (err) {
     logger.warn({ err, chanDir }, 'channel-poller-reap: ps scan failed')
     return []

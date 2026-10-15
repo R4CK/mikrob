@@ -118,7 +118,10 @@ export function mainSlackStateDir(read: (p: string) => string | null = defaultDe
   return has(legacy) && !has(installScoped) ? legacy : installScoped
 }
 
+const AGENT_NAME_RE = /^[a-z0-9_-]+$/
+
 export function agentSlackStateDir(agent: string): string {
+  if (!AGENT_NAME_RE.test(agent)) throw new Error(`invalid agent name: "${agent.slice(0, 60)}"`)
   return join(PROJECT_ROOT, 'agents', agent, '.claude', 'channels', 'slack')
 }
 

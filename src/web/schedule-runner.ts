@@ -10,7 +10,7 @@ import {
 } from './heartbeat-direct-digest.js'
 import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from './heartbeat-kanban-verify.js'
 import { existsSync, readFileSync } from 'node:fs'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
 import { decideDesktopGate, readDesktopLock, recordDesktopSkip } from './desktop-lock.js'
@@ -1092,43 +1092,6 @@ export const PRECHECK_TIMEOUT_MS = 10_000
 // spawnSync's default maxBuffer: a longer stdout fails the run the same way in both forms.
 const PRECHECK_MAX_STDOUT_BYTES = 1024 * 1024
 
-// The synchronous form. Since CRONPRECHECKSYNC1007 the runner calls it from
-// nowhere: both loops use runPreCheckAsync. Kept only as the reference the
-// async form's contract tests compare against; do not call it from the runner
-// (it holds the event loop, and its timeout ends only the direct child).
-// UPSTREAM-SYNC BATCH 15: fork had this async (card 955f014e) but the upstream
-// correctly satisfies the async requirement via runPreCheckAsync; the sync form
-// is reference-only and never called by either loop.
-export function runPreCheck(task: ScheduledTask): PreCheckResult {
-  if (!task.preCheck) return { skip: false }
-  const scriptPath = resolvePreCheckPath(task.name, task.preCheck)
-  if (!existsSync(scriptPath)) {
-    logger.warn({ task: task.name, scriptPath }, 'pre-check script not found, running LLM anyway')
-    return { skip: false }
-  }
-  try {
-    const r = spawnSync('bash', [scriptPath], { timeout: PRECHECK_TIMEOUT_MS, encoding: 'utf-8' })
-    if (r.error) {
-      logger.warn({ task: task.name, error: r.error.message }, 'pre-check script spawn error, running LLM anyway')
-      return { skip: false }
-    }
-    if (r.status !== 0) {
-      logger.warn({ task: task.name, status: r.status, stderr: (r.stderr || '').trim().slice(0, 200) }, 'pre-check script exited non-zero, running LLM anyway')
-      return { skip: false }
-    }
-    const out = (r.stdout || '').trim()
-    if (out === 'SKIP') {
-      logger.info({ task: task.name }, 'pre-check: nothing actionable, skipping LLM')
-      return { skip: true }
-    }
-    if (out) return { skip: false, prefix: out }
-    return { skip: false }
-  } catch (err) {
-    logger.warn({ err, task: task.name }, 'pre-check script threw, running LLM anyway')
-    return { skip: false }
-  }
-}
-
 // runPreCheck's contract without holding the event loop (df2e0d97 2a). The
 // pending-retry loop re-runs a task's preCheck on every tick, and spawnSync
 // kept the dashboard's main thread for the whole script run, up to the 10 s
@@ -1164,7 +1127,7 @@ function endPreCheckGroup(child: ReturnType<typeof spawn>, task: ScheduledTask):
   setTimeout(() => signalGroup('SIGKILL'), PRECHECK_KILL_GRACE_MS).unref()
 }
 
-export function runPreCheckAsync(
+export async function runPreCheck(
   task: ScheduledTask,
   opts: { timeoutMs?: number; maxStdoutBytes?: number } = {},
 ): Promise<PreCheckResult> {
@@ -1258,7 +1221,7 @@ export function rememberPreCheckAnswer(task: ScheduledTask, nowMs: number, resul
 export async function retryPreCheck(
   task: ScheduledTask,
   nowMs: number,
-  run: (task: ScheduledTask) => Promise<PreCheckResult> = runPreCheckAsync,
+  run: (task: ScheduledTask) => Promise<PreCheckResult> = runPreCheck,
 ): Promise<PreCheckResult> {
   if (!task.preCheck) return { skip: false }
   const last = preCheckAnswers.get(preCheckAnswerKey(task))
@@ -2975,7 +2938,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // CRONPRECHECKSYNC1007: off the event loop, like the retry loop's, so a
       // pre-check that calls the dashboard's own API gets its answer. The
       // tickRunning guard holds the next tick while this one awaits.
-      const cronPc = await runPreCheckAsync(task)
+      const cronPc = await runPreCheck(task)
       rememberPreCheckAnswer(task, now, cronPc)
       // The await is new here, so a task disabled or deleted while its
       // pre-check ran is left alone: no fire (the per-target re-read below
