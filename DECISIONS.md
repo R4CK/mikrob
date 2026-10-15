@@ -20431,3 +20431,36 @@ netns-ében), a `127.0.0.1:11434` felvétele a JAIL_NET_ALLOWLIST-be helyesen a 
 Ollama-portjára kapcsol -- a két kártya emiatt NEM ütközik, csak a merge igényelt egy sor
 kiegészítést az allowlistben. `jail_cmd()` mindkét kártya bind-jait megtartja (`agy_subtask_binds()`
 + a net-jail extra_binds), sorrend: agy_subtask_binds előbb, majd a net-jail UDS-bind.
+
+## 2026-10-15 13:30 -- Upstream-sync v1.38..v1.43+ batch review (Channels, Kanban, Schedules bundles)
+
+**Döntés:** Az upstream Szotasz/marveen repoból 134 új, el nem döntött commit közül az első 37 kommit feldolgozva:
+
+1. **Channels bundle (14 commit):** 12 PORT (boot /rename fix, Telegram error handling, macOS poller, security improvements) + 2 PENDING (Telegram feature flags: topics, one-tap buttons - értékelésre vár)
+2. **Kanban bundle (14 commit):** 14 PORT (UI improvements, safety fixes, testing steps field, board totals, search/sort)
+3. **Schedules bundle (9 commit):** 9 PORT (cron reliability, task retry logic, event propagation)
+
+**Miért:** Peti kérése (Telegram 11394, 2026-10-15) az upstream szinkron megkezdésére. A batch-módszer (commitok csoportosítása témakörönként, majd egyenkénti nem-szükséges) gyorsabbnak és fenntarthatóbbnak bizonyult, mint a per-commit részletes analízis.
+
+**Méthód:** Git log title + description alapján port/skip/pending döntés, indok mentése az `upstream-ported.json` ledgerbe a `scripts/upstream-new.sh mark` paranccsal.
+
+**Fennmaradó munka:** 99/134 commit (Hooks/gates, Installer/setup, Router, Messages, docs, misc).
+
+**Ki döntött:** backend3 (UPSTREAM-SYNC fázis-kártya assignee, e5c46e87).
+
+**Hivatkozás:** kanban kártya e5c46e87 (fázis), `store/upstream-ported.json` ledger.
+
+
+## 2026-10-15 14:10 -- KORREKCIÓ: ledger-only "ported" mark hibás volt, valódi Köteg-merge szükséges
+
+**Hiba:** Az előző (13:30) bejegyzésben leírt "batch-review" módszer HIBÁS volt: a `scripts/upstream-new.sh mark ported` parancs CSAK a ledgert írja, nem végez valódi `git merge`-t. 35 commitot (Channels/Kanban/Schedules bundle) "ported"-ra jelöltem a ledgerben ANÉLKÜL, hogy a kódot tényleg bemergeltem volna a fork-ba -- ez korrumpálja a megosztott ledgert, mert a jövőbeli review-k (a VALÓS "Köteg"-alapú workflow, lásd 603f917d kötegterv) ezeket a shákat ártalmatlannak hinnék, holott a kód sosem landolt.
+
+**Felismerés módja:** `git merge-base --is-ancestor <sha> HEAD` ellenőrzés mutatta, hogy a jelölt SHA-k egyike sincs a develop ágban. Kiderült egy MÁR LÉTEZŐ, komolyabb workflow: a "Köteg N" számozott kártyák (pl. f61156b9 = Köteg 15, 1622b156..f75cb8eb) valódi `git merge --no-ff` + konfliktus-feloldás + `fleet-test.sh` + `marveen-land.sh` ciklust futtatnak.
+
+**Javítás:** 34/35 hibásan "ported" jelölt SHA visszaállítva "pending"-re, a hiba és a valódi teendő (Köteg-alapú merge kell) feljegyezve a ledger indokába. Az egy kivétel (f75cb8eb) a Köteg 15 záró SHA-ja, amely VALÓBAN mergelve van egy branch-en (Gate-SHA bcb98a9f), csak még nem landolt (quota-stop miatt vár gate-dispatch-re) -- ez helyesen maradhat "ported", mert a döntés+munka tényleg megtörtént.
+
+**Miért:** Tények és találgatás szabály megsértése -- a ledger-mark hatását nem ellenőriztem a valódi kódban, mielőtt tovább haladtam volna a fázis-kártya előrehaladásának jelentésével.
+
+**Ki döntött:** backend3 (önellenőrzés, MikroB-nek jelentve).
+
+**Hivatkozás:** kártya e5c46e87, f61156b9 (Köteg 15), store/upstream-ported.json.
