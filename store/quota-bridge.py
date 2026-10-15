@@ -360,11 +360,30 @@ def ask_local(query):
 def mark_session_outage():
     """Card 612058c2: tells gemini-fallback-runner.ts's readClaudeExhausted() that a SESSION-level
     (not just weekly) outage is active. Best-effort -- a write failure must never break Ghost's own
-    Telegram loop, which is the thing this bridge exists for."""
+    Telegram loop, which is the thing this bridge exists for.
+
+    H2 (WhiteHat2 NO-GO, delta-gate @c5e5ec28): outage_loop()'s own `finally` clause is the ONLY
+    thing that ever clears this marker -- a SIGKILL/OOM/host-restart mid-outage leaves `active:
+    true` on disk forever, with nothing left alive to clear it, and a Restart=always unit comes
+    back healthy while gemini-fallback-runner.ts still reads "outage" and never returns to Claude.
+    Fix: every call refreshes a `heartbeat` (preserving the ORIGINAL `since` once set), and the
+    reader (readSessionOutageActive) now rejects a heartbeat older than its staleness window --
+    the same fail-safe-toward-Claude direction as a missing file. Called once at outage_loop()
+    entry AND once per loop iteration (see outage_loop below) so the heartbeat tracks liveness at
+    roughly the long-poll cadence, not just outage start."""
+    now = time.time()
+    since = now
+    try:
+        with open(SESSION_OUTAGE_FILE) as f:
+            existing = json.load(f)
+        if isinstance(existing, dict) and isinstance(existing.get("since"), (int, float)):
+            since = existing["since"]
+    except (OSError, ValueError, json.JSONDecodeError, TypeError):
+        pass
     tmp = SESSION_OUTAGE_FILE + ".tmp"
     try:
         with open(tmp, "w") as f:
-            json.dump({"active": True, "since": time.time()}, f)
+            json.dump({"active": True, "since": since, "heartbeat": now}, f)
         os.replace(tmp, SESSION_OUTAGE_FILE)
     except OSError as e:
         log(f"could not write session-outage marker: {e}")
@@ -382,23 +401,42 @@ def start_ghost_runner():
     Gemini-fallback pipeline (route decision -> card ordering -> local-LLM draft -> Gemini
     first-pass review) on a timer for as long as it lives -- nothing else does this while MikroB
     itself is frozen (see that script's own header). Best-effort: a failure to start it must never
-    break Ghost's own Telegram-serving loop, same posture as every other function here."""
+    break Ghost's own Telegram-serving loop, same posture as every other function here.
+
+    M1 (WhiteHat2 NO-GO, delta-gate @c5e5ec28): start_new_session=True puts the runner in its OWN
+    process group, so stop_ghost_runner() below can signal the whole tree it spawned (the bash
+    script's own `node dist/gemini-orchestrator-draft*.js` children), not just the bash PID
+    itself."""
     try:
         return subprocess.Popen([GHOST_RUNNER_SCRIPT], cwd=MARVEEN,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
     except OSError as e:
         log(f"could not start gemini-ghost-runner: {e}")
         return None
 
 
 def stop_ghost_runner(proc):
+    """M1 (WhiteHat2 NO-GO, delta-gate @c5e5ec28): terminate()/kill() on the Popen handle only ever
+    reach the bash PID itself -- a SIGTERM to just that PID lets bash exit while its CURRENT child
+    step (the tick's running `node dist/gemini-orchestrator-draft*.js`) keeps running orphaned,
+    still making real Gemini calls after Claude has already come back and Ghost has relinquished
+    the channel. Signaling the whole process GROUP (negative pid) reaches every descendant the
+    runner spawned, not just its own top-level process."""
     if proc is None:
         return
     try:
-        proc.terminate()
+        pgid = os.getpgid(proc.pid)
+    except (OSError, ProcessLookupError):
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
     except OSError:
         pass
 
@@ -457,6 +495,9 @@ def outage_loop(token, state):
                     ans = ask_local(text)
                     send(token, chat_id, f"👻 MikroB Ghost (lokális Qwen2.5-Coder-7B):\n{ans}")
             save_state(state)
+            # H2: refresh the heartbeat once per loop iteration (roughly the long-poll cadence)
+            # so a live Ghost keeps the marker fresh; see mark_session_outage()'s own docstring.
+            mark_session_outage()
     finally:
         # Card 612058c2 acceptance: "kilépéskor a runner leáll" -- runs on the recovery return path
         # AND on any unexpected exception, so the runner never outlives Ghost's own outage handling.
@@ -476,6 +517,14 @@ def main():
 
     state = load_state()
     log(f"quota-bridge started (phase={state['phase']})")
+    # H2 (WhiteHat2 NO-GO, delta-gate @c5e5ec28): a leftover session-outage marker from a
+    # SIGKILL/OOM/host-restart that never reached outage_loop()'s `finally` clause must not survive
+    # a fresh start where we are NOT re-entering outage phase. readSessionOutageActive()'s own
+    # staleness check is the primary defense (bounded blast radius even if this is skipped), but
+    # clearing proactively here means a restart right after a crash does not even need to wait out
+    # the staleness window.
+    if state.get("phase") != "outage":
+        clear_session_outage()
     while True:
         if force or mikrob_down():
             state["banner_streak"] = state.get("banner_streak", 0) + 1

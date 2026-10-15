@@ -246,10 +246,29 @@ def main() -> int:
         m.SESSION_OUTAGE_FILE = str(marker)
         try:
             m.mark_session_outage()
-            if marker.exists() and json.loads(marker.read_text()).get("active") is True:
+            first_doc = json.loads(marker.read_text()) if marker.exists() else {}
+            if marker.exists() and first_doc.get("active") is True:
                 ok("mark_session_outage() writes an active:true marker")
             else:
                 bad("mark_session_outage() should write active:true", marker.read_text() if marker.exists() else "<missing>")
+
+            # H2 (WhiteHat2 NO-GO, delta-gate @c5e5ec28): a heartbeat field must be present and
+            # fresh -- this is what readSessionOutageActive() now checks for staleness.
+            if isinstance(first_doc.get("heartbeat"), (int, float)) and abs(first_doc["heartbeat"] - time.time()) < 5:
+                ok("mark_session_outage() writes a fresh heartbeat field")
+            else:
+                bad("mark_session_outage() should write a fresh numeric heartbeat", repr(first_doc.get("heartbeat")))
+
+            # H2: a REFRESH (second call) must advance heartbeat but preserve the ORIGINAL `since`
+            # -- the acceptance criterion is "stays fresh while alive", not "restarts the clock".
+            time.sleep(0.05)
+            m.mark_session_outage()
+            second_doc = json.loads(marker.read_text())
+            if second_doc.get("since") == first_doc.get("since") and second_doc.get("heartbeat", 0) > first_doc.get("heartbeat", 0):
+                ok("mark_session_outage() refresh advances heartbeat but preserves the original since")
+            else:
+                bad("mark_session_outage() refresh should preserve since and advance heartbeat",
+                    f"first={first_doc}, second={second_doc}")
 
             m.clear_session_outage()
             if not marker.exists():
@@ -317,6 +336,40 @@ def main() -> int:
                 ok("stop_ghost_runner(None) is a safe no-op")
             except Exception as exc:  # noqa: BLE001
                 bad("stop_ghost_runner(None) must not raise", f"{type(exc).__name__}: {exc}")
+
+            # M1 (WhiteHat2 NO-GO, delta-gate @c5e5ec28): a fake runner that spawns a CHILD
+            # process (mirrors the real script's `node dist/gemini-orchestrator-draft*.js` step,
+            # still running when the runner itself is asked to stop) -- stop_ghost_runner() must
+            # reach that orphaned child too, not just the runner's own top-level PID.
+            orphan_marker = td / "orphan.pid"
+            child_runner = td / "spawns-child.sh"
+            child_runner.write_text(
+                "#!/bin/bash\n"
+                "sleep 60 &\n"
+                f"echo $! > {orphan_marker}\n"
+                "trap 'exit 0' TERM\n"
+                "while true; do sleep 0.05; done\n"
+            )
+            child_runner.chmod(0o755)
+            m.GHOST_RUNNER_SCRIPT = str(child_runner)
+            proc = m.start_ghost_runner()
+            child_pid = None
+            if proc is not None:
+                for _ in range(50):  # wait for the child to actually spawn and record its pid
+                    if orphan_marker.exists() and orphan_marker.read_text().strip():
+                        child_pid = int(orphan_marker.read_text().strip())
+                        break
+                    time.sleep(0.05)
+            if child_pid is None:
+                bad("M1 setup: the fake runner never recorded its spawned child's pid")
+            else:
+                m.stop_ghost_runner(proc)
+                time.sleep(0.3)
+                try:
+                    os.kill(child_pid, 0)  # raises ProcessLookupError if the pid is gone
+                    bad("stop_ghost_runner() left an orphaned child process running (M1)")
+                except ProcessLookupError:
+                    ok("stop_ghost_runner() also reaps a child the runner spawned (M1, process-group kill)")
         finally:
             m.GHOST_RUNNER_SCRIPT = old_runner
 

@@ -67,6 +67,12 @@ const STATE_PATH = join(STORE, 'gemini-fallback-state.json')
 const WEEKLY_HARD_STOP_PATH = join(STORE, 'weekly-hard-stop.json')
 const ENGAGE_CONFIG_PATH = join(STORE, 'gemini-fallback-config.json')
 const SESSION_OUTAGE_PATH = join(STORE, 'mikrob-session-outage.json')
+// H2 (WhiteHat2 NO-GO, card 612058c2 delta-gate @c5e5ec28): how stale a heartbeat may be before
+// the marker is no longer trusted. Generous relative to quota-bridge.py's outage_loop refresh
+// cadence (roughly once per Telegram long-poll cycle, tens of seconds), but far short of
+// "forever" -- the failure mode this closes is a SIGKILL/OOM/host-restart that leaves the file
+// behind with nothing left alive to clear it.
+const SESSION_OUTAGE_STALE_MS = 15 * 60 * 1000
 
 export type GeminiEngageOn = 'newDevStop' | 'hardStopOnly'
 
@@ -148,10 +154,24 @@ function readEngageOn(): GeminiEngageOn {
  * default, healthy state) reads as false, biasing toward Claude exactly like every other read in
  * this module.
  */
+/**
+ * H2 (WhiteHat2 NO-GO, card 612058c2 delta-gate @c5e5ec28): the marker alone (`active === true`)
+ * is not enough -- quota-bridge.py's outage_loop() only clears it in a `finally` block, so a
+ * SIGKILL/OOM/host-restart mid-outage leaves `active: true` on disk with no process left alive to
+ * ever clear it, and a `Restart=always` unit comes back healthy while this file still says
+ * "outage". Before this fix that meant `readClaudeExhausted` stayed permanently true and the
+ * fallback route never returned to Claude post-recovery. The marker now also carries a
+ * `heartbeat` (unix seconds, refreshed every outage_loop iteration) -- stale beyond
+ * {@link SESSION_OUTAGE_STALE_MS} reads as false, the same fail-safe-toward-Claude direction as a
+ * missing/corrupt file.
+ */
 export function readSessionOutageActive(): boolean {
   try {
     const raw = JSON.parse(readFileSync(SESSION_OUTAGE_PATH, 'utf-8')) as Record<string, unknown>
-    return raw.active === true
+    if (raw.active !== true) return false
+    const heartbeat = raw.heartbeat
+    if (typeof heartbeat !== 'number' || !Number.isFinite(heartbeat)) return false
+    return Date.now() - heartbeat * 1000 <= SESSION_OUTAGE_STALE_MS
   } catch {
     return false
   }
