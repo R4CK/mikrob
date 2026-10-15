@@ -43,7 +43,7 @@ const tStub = (key: string) => known[key] ?? key
 // (see the SKIPPED note above). Computing it eagerly at module scope would throw on import and
 // crash the whole file before describe.skip ever gets a chance to not-run anything.
 function lines(r: unknown): string[] | null {
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+   
   return (new Function('t', `${extractFn('claudePlansReadinessLines')}; return claudePlansReadinessLines`)(tStub) as (
     r: unknown,
   ) => string[] | null)(r)
@@ -90,7 +90,7 @@ describe.skip('switchToClaudePlan (manual switch / first assignment)', () => {
       calls.push({ url, init })
       return { ok: true, json: async () => ({ ok: true }) }
     }
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+     
     const fn = new Function(
       't', 'confirm', 'fetch', 'showToast', 'loadClaudePlansList',
       `${extractFn('switchToClaudePlan')}; return switchToClaudePlan`,
@@ -110,7 +110,7 @@ describe.skip('switchToClaudePlan (manual switch / first assignment)', () => {
     expect(h.calls).toHaveLength(1)
     expect(h.calls[0].url).toBe('/api/claude-plans/rotate')
     expect(h.calls[0].init.method).toBe('POST')
-    expect(JSON.parse(h.calls[0].init.body)).toEqual({ targetPlanId: 'claude7' })
+    expect(JSON.parse(h.calls[0].init.body as string)).toEqual({ targetPlanId: 'claude7' })
     expect(h.reloaded()).toBe(1)
   })
 

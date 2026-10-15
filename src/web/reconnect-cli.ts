@@ -16,7 +16,7 @@ import { logger } from '../logger.js'
 
 const agentName = process.argv[2]
 if (!agentName) {
-  // eslint-disable-next-line no-console
+   
   console.error('reconnect-cli: missing agentName argument')
   process.exit(2)
 }

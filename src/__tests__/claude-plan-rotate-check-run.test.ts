@@ -33,7 +33,7 @@ vi.mock('../web/claude-plans-state.js', async (importOriginal) => {
   }
 })
 
-const probeMock = vi.fn(async (_token: string) => ({ ok: false as const, error: 'network' as const, message: 'mocked' }))
+const probeMock = vi.fn(async (token: string) => { void token; return { ok: false as const, error: 'network' as const, message: 'mocked' } })
 vi.mock('../claude-plan-usage-probe.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../claude-plan-usage-probe.js')>()
   return { ...actual, probePlanUsage: (token: string) => probeMock(token) }

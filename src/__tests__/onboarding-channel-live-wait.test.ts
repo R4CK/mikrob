@@ -37,7 +37,7 @@ function extractWaitForChannelLive(): (
   expect(e, `anchor missing: ${END}`).toBeGreaterThan(b)
   const src = APP.slice(b + BEGIN.length, e)
   expect(src).toContain('async function waitForChannelLive')
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+   
   return new Function(`${src}; return waitForChannelLive;`)() as ReturnType<typeof extractWaitForChannelLive>
 }
 

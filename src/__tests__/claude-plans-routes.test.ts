@@ -30,7 +30,7 @@ const hardRestartMarveenChannels = vi.fn((): { ok: boolean; error?: string } => 
 vi.mock('../web/channel-monitor.js', () => ({ hardRestartMarveenChannels: () => hardRestartMarveenChannels() }))
 
 const restartAgentProcess = vi.fn(
-  async (_name: string): Promise<{ ok: boolean; pid?: number; error?: string }> => ({ ok: true, pid: 123 }),
+  async (name: string): Promise<{ ok: boolean; pid?: number; error?: string }> => { void name; return { ok: true, pid: 123 } },
 )
 vi.mock('../web/agent-process.js', () => ({ restartAgentProcess: (name: string) => restartAgentProcess(name) }))
 
@@ -48,7 +48,7 @@ vi.mock('../web/vault.js', () => ({ setSecret, deleteSecret, getSecret }))
 // Fleet leg (CLAUDE_ROTATION_FLEET): its logic is tested in
 // claude-plan-fleet-rotation.test.ts; here only "does the route start it, and
 // only when the opt-in is on".
-const runFleetLeg = vi.fn(async (_plan: { id: string }) => null)
+const runFleetLeg = vi.fn(async (plan: { id: string }) => { void plan; return null })
 vi.mock('../web/claude-plan-fleet-wiring.js', () => ({
   runFleetLeg: (p: { id: string }) => runFleetLeg(p),
 }))

@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
+import type { IncomingMessage } from 'node:http'
 // The owner-switch file goes to a scratch path, never the checkout's store/.
 const ACCESS_FILE = vi.hoisted(() => {
   const { mkdtempSync } = require('node:fs') as typeof import('node:fs')
@@ -18,7 +19,7 @@ vi.mock('../web/operator-access.js', async (orig) => {
   return {
     ...real,
     readOperatorAccess: (p?: string) => real.readOperatorAccess(p ?? ACCESS_FILE),
-    writeOperatorAccess: (a: any, p?: string) => real.writeOperatorAccess(a, p ?? ACCESS_FILE),
+    writeOperatorAccess: (a: OperatorAccess, p?: string) => real.writeOperatorAccess(a, p ?? ACCESS_FILE),
   }
 })
 
@@ -125,7 +126,7 @@ describe('operator device keys', () => {
     const k = createDeviceKey('it-op', { scope: 'operator', expiresInDays: 30 })
     _clearDeviceKeyCacheForTest() // force the DB path
     expect(resolveDeviceKey(k.key)?.scope).toBe('operator')
-    const req: any = { headers: { authorization: `Bearer ${k.key}` } }
+    const req = { headers: { authorization: `Bearer ${k.key}` } } as unknown as IncomingMessage
     const auth = resolveAuth(req, new URL('http://x/api/vault'), '/api/vault', 'GET', 'a'.repeat(64))
     expect(auth).toMatchObject({ kind: 'device', scope: 'operator' })
   })

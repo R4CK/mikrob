@@ -2113,7 +2113,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
     const accessPath = resolveAccessPath(name, provider)
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       let access: any = { dmPolicy: 'allowlist', allowFrom: [], groups: {} }
       if (existsSync(accessPath)) {
         try {

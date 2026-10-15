@@ -34,7 +34,7 @@ function loadTuPriceForModel(): (model: string | null) => { in: number; out: num
   const pricing = extractBlock(/const TU_MODEL_PRICING\s*=\s*\{/)
   const fn = extractBlock(/function tuPriceForModel\s*\([^)]*\)\s*\{/)
   const body = `${sonnet5}\n${pricing}\n${fn}\nreturn tuPriceForModel`
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+   
   return new Function(body)()
 }
 

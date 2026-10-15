@@ -14,7 +14,6 @@ import { fileURLToPath } from 'node:url'
 import { egressDecision, firecrawlDisallowedParams, isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
 import {
   injectEgressGate,
-  ensureEgressGate,
   EGRESS_GATE_MATCHER,
 } from '../web/agent-scaffold.js'
 import {

@@ -19,7 +19,7 @@ const LOGIC = join(ROOT, 'scripts', 'prechecks', 'memoria_heartbeat_precheck.py'
 
 describe('memoria-heartbeat preCheck seed', () => {
   it('the seed gates the round on the shipped preCheck, through the placeholder the seeder resolves', () => {
-    const cfg = JSON.parse(readFileSync(join(TASK_DIR, 'task-config.json'), 'utf-8'))
+    const cfg = JSON.parse(readFileSync(join(TASK_DIR, 'task-config.json'), 'utf-8')) as { preCheck: string }
     expect(cfg.preCheck).toBe('{{PROJECT_ROOT}}/scripts/prechecks/memoria-heartbeat-precheck.sh')
     expect(resolvePreCheckPath('memoria-heartbeat', cfg.preCheck)).toBe(join(PROJECT_ROOT, 'scripts', 'prechecks', 'memoria-heartbeat-precheck.sh'))
     expect(existsSync(WRAPPER)).toBe(true)

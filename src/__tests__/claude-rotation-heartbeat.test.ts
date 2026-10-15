@@ -11,6 +11,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ClaudePlan } from '../web/claude-plans.js'
+import type { RouteContext } from '../web/routes/types.js'
 
 const tmpHome = mkdtempSync(join(tmpdir(), 'rotation-heartbeat-home-'))
 const tmpRoot = mkdtempSync(join(tmpdir(), 'rotation-heartbeat-root-'))
@@ -53,7 +54,7 @@ function plan(id: string, channelsAllowed = true): ClaudePlan {
   return { id, label: id, tokenSecretId: `claude-plan-token-${id}`, planType: 'personal', channelsAllowed }
 }
 
-function fakePost(path: string, body: unknown): { ctx: any; out: { status: number; body: any } } {
+function fakePost(path: string, body: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
   const out: { status: number; body: any } = { status: 0, body: null }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -66,7 +67,7 @@ function fakePost(path: string, body: unknown): { ctx: any; out: { status: numbe
       if (event === 'end') cb()
     },
   }
-  return { ctx: { req, res, path, method: 'POST', url: new URL(`http://localhost${path}`) }, out }
+  return { ctx: { req, res, path, method: 'POST', url: new URL(`http://localhost${path}`) } as RouteContext, out }
 }
 
 beforeEach(() => {

@@ -7,6 +7,7 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
+import type { IncomingMessage } from 'node:http'
 
 const h = vi.hoisted(() => ({
   access: null as any,
@@ -40,7 +41,7 @@ vi.mock('../notify.js', () => ({ notifySecurityEvent: async (t: string) => { h.n
 
 async function recordForward(handler: string, ctx: any): Promise<boolean> {
   const chunks: Buffer[] = []
-  for await (const c of ctx.req) chunks.push(Buffer.from(c))
+  for await (const c of ctx.req as AsyncIterable<Buffer>) chunks.push(Buffer.from(c))
   h.forwarded.push({ handler, path: ctx.path, body: Buffer.concat(chunks).toString() })
   ctx.res.writeHead(200); ctx.res.end(JSON.stringify({ ok: true }))
   return true
@@ -310,7 +311,7 @@ describe('status: a projection with no content field', () => {
     expect(r.status).toBe(200)
     const keys = keysDeep(r.body)
     for (const k of CONTENT) expect(keys.has(k), k).toBe(false)
-    expect(Object.keys(r.body.agents[0]).sort()).toEqual([...OPERATOR_AGENT_FIELDS, 'isMain'].sort())
+    expect(Object.keys(r.body.agents[0] as object).sort()).toEqual([...OPERATOR_AGENT_FIELDS, 'isMain'].sort())
     for (const s of ['SECRET-AGENT', 'SECRET-DESCRIPTION', 'SECRET-CLAUDEMD', 'secret_bot', 'SECRET-COMMIT', 'tok@', '12345', 'secret-task', 'unlisted']) {
       expect(r.raw, s).not.toContain(s)
     }
@@ -414,7 +415,7 @@ describe('operator login: key in, HttpOnly cookie out', () => {
     expect(r.raw).not.toContain(k.key)
     expect(r.headers['set-cookie']).not.toContain(k.key)
     // the cookie resolves to the operator key, so the gate fences it like the key itself
-    const req: any = { headers: { cookie: cookieOf(r) } }
+    const req = { headers: { cookie: cookieOf(r) } } as unknown as IncomingMessage
     expect(resolveAuth(req, new URL('http://x/api/vault'), '/api/vault', 'GET', 'a'.repeat(64)))
       .toMatchObject({ kind: 'device', scope: 'operator', device: 'it-op', deviceId: k.id })
   })
@@ -423,7 +424,7 @@ describe('operator login: key in, HttpOnly cookie out', () => {
     const k = createDeviceKey('it-op2', { scope: 'operator', expiresInDays: 30 })
     const r = await call('POST', '/api/operator/login', { body: { key: k.key }, auth: undefined })
     revokeDeviceKey(k.id)
-    const req: any = { headers: { cookie: cookieOf(r) } }
+    const req = { headers: { cookie: cookieOf(r) } } as unknown as IncomingMessage
     expect(resolveAuth(req, new URL('http://x/api/operator/me'), '/api/operator/me', 'GET', 'a'.repeat(64)).kind).toBe('none')
   })
 
