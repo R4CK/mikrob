@@ -79,7 +79,16 @@ describe('name-patterns panel wiring', () => {
   it('escapes every stored pattern before putting it in innerHTML', () => {
     // Patterns are operator input rendered into innerHTML on the page that manages a
     // security control; an unescaped one is self-inflicted XSS.
-    const row = JS.slice(JS.indexOf('listEl.innerHTML = pats.map'), JS.indexOf(".join('')"))
+    //
+    // Köteg 14 (card d7e1d611, DASHOPERATOR1005) inserted renderOperatorAccessSection's own
+    // `.join('')` call earlier in the file, before this one -- a bare `JS.indexOf(".join('')")`
+    // found THAT one instead, which sits before `pats.map`'s own start index, so slice(start, end)
+    // with end < start silently returned '' (an empty string "contains" nothing, which is how this
+    // turned into a false failure rather than a false pass: the `not.toMatch` half would have gone
+    // uncaught the same way if the real bug had been present). Scoped to the FIRST `.join('')`
+    // AFTER the start index instead of the file's first occurrence.
+    const start = JS.indexOf('listEl.innerHTML = pats.map')
+    const row = JS.slice(start, JS.indexOf(".join('')", start))
     expect(row).toContain('escapeHtml(p)')
     expect(row).not.toMatch(/\$\{p\}/)
   })

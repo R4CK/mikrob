@@ -14,7 +14,6 @@ import { fileURLToPath } from 'node:url'
 import { egressDecision, firecrawlDisallowedParams, isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
 import {
   injectEgressGate,
-  ensureEgressGate,
   EGRESS_GATE_MATCHER,
 } from '../web/agent-scaffold.js'
 import {
@@ -772,7 +771,12 @@ describe('/api/messages to-authentication (card 523a1426)', () => {
 
   it('calls isKnownAgent with the sanitized LOCAL to field', () => {
     expect(src).toMatch(/const sanitized = sanitizeAgentIdent\(storedTo\)/)
-    expect(src).toMatch(/if \(!isKnownAgent\(sanitized\)\)/)
+    // Köteg 14 (card d7e1d611, upstream VOICEREPLY1005, afa68d8b) added a `!isVoiceMailbox &&`
+    // clause ahead of the isKnownAgent check in the same `if` -- the voice-channel id is a pull
+    // mailbox exempt from local-recipient authentication, landing in the SAME merge as this test.
+    // The guard itself is unweakened (isKnownAgent still gates every non-exempt local recipient);
+    // only the exact substring this regex requires changed shape.
+    expect(src).toMatch(/if \((!isVoiceMailbox && )?!isKnownAgent\(sanitized\)\)/)
   })
 
   it('rejects an unknown local recipient with 400', () => {

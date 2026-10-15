@@ -69,7 +69,7 @@ let formatDurationShort: (sec: number) => string
 let quotaLevelClass: (pct: number) => string
 
 beforeAll(() => {
-  const body = `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n` +
+  const body = `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n${extract('quotaMeasuredText')}\n` +
     'return { formatDurationShort, quotaLevelClass }'
   const factory = new Function('document', 't', 'escapeHtml', 'formatRelative', body) as (
     document: unknown, t: unknown, escapeHtml: unknown, formatRelative: unknown,
@@ -108,7 +108,7 @@ describe('renderQuotaStrip: missing snapshot', () => {
   it('shows the strip with a reason-specific note, converting dashes to underscores for the key', () => {
     const dom = makeDom(['quotaStrip', 'quotaBars', 'quotaStripNote', 'quotaStripAge'])
     const { renderQuotaStrip: render } = new Function('document', 't', 'escapeHtml', 'formatRelative',
-      `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n${extract('renderQuotaStrip')}\nreturn { renderQuotaStrip }`,
+      `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n${extract('quotaMeasuredText')}\n${extract('renderQuotaStrip')}\nreturn { renderQuotaStrip }`,
     )(dom.document, fakeT, fakeEscapeHtml, fakeFormatRelative)
     render({ status: 'missing', reason: 'no-rate-limits' })
     const strip = dom.els.get('quotaStrip')!
@@ -121,7 +121,7 @@ describe('renderQuotaStrip: missing snapshot', () => {
   it('null input renders the no-file reason', () => {
     const dom = makeDom(['quotaStrip', 'quotaBars', 'quotaStripNote', 'quotaStripAge'])
     const { renderQuotaStrip: render } = new Function('document', 't', 'escapeHtml', 'formatRelative',
-      `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n${extract('renderQuotaStrip')}\nreturn { renderQuotaStrip }`,
+      `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n${extract('quotaMeasuredText')}\n${extract('renderQuotaStrip')}\nreturn { renderQuotaStrip }`,
     )(dom.document, fakeT, fakeEscapeHtml, fakeFormatRelative)
     render(null)
     expect(dom.els.get('quotaStripNote')!.textContent).toBe('overview.quota.none.no_file')
@@ -132,7 +132,7 @@ describe('renderQuotaStrip: healthy snapshot', () => {
   it('renders one bar per present window, with the correct pct and level class', () => {
     const dom = makeDom(['quotaStrip', 'quotaBars', 'quotaStripNote', 'quotaStripAge'])
     const { renderQuotaStrip: render } = new Function('document', 't', 'escapeHtml', 'formatRelative',
-      `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n${extract('renderQuotaStrip')}\nreturn { renderQuotaStrip }`,
+      `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n${extract('quotaMeasuredText')}\n${extract('renderQuotaStrip')}\nreturn { renderQuotaStrip }`,
     )(dom.document, fakeT, fakeEscapeHtml, fakeFormatRelative)
     const nowSec = Math.floor(Date.now() / 1000)
     render({
@@ -156,7 +156,7 @@ describe('renderQuotaStrip: healthy snapshot', () => {
   it('an expired window is muted and shows the expired tail, not the countdown', () => {
     const dom = makeDom(['quotaStrip', 'quotaBars', 'quotaStripNote', 'quotaStripAge'])
     const { renderQuotaStrip: render } = new Function('document', 't', 'escapeHtml', 'formatRelative',
-      `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n${extract('renderQuotaStrip')}\nreturn { renderQuotaStrip }`,
+      `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n${extract('quotaMeasuredText')}\n${extract('renderQuotaStrip')}\nreturn { renderQuotaStrip }`,
     )(dom.document, fakeT, fakeEscapeHtml, fakeFormatRelative)
     render({
       status: 'ok',
@@ -174,7 +174,7 @@ describe('renderQuotaStrip: healthy snapshot', () => {
   it('a stale snapshot mutes every bar and shows the stale note, even though numbers are healthy', () => {
     const dom = makeDom(['quotaStrip', 'quotaBars', 'quotaStripNote', 'quotaStripAge'])
     const { renderQuotaStrip: render } = new Function('document', 't', 'escapeHtml', 'formatRelative',
-      `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n${extract('renderQuotaStrip')}\nreturn { renderQuotaStrip }`,
+      `${extract('formatDurationShort')}\n${extract('quotaLevelClass')}\n${extract('quotaMeasuredText')}\n${extract('renderQuotaStrip')}\nreturn { renderQuotaStrip }`,
     )(dom.document, fakeT, fakeEscapeHtml, fakeFormatRelative)
     render({
       status: 'stale',

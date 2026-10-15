@@ -690,6 +690,17 @@ migrate_channels_restart() {
 # the next ./update.sh on an existing host would have started a new keepalive
 # timer and stopped the morning briefing timer without being asked. Removed
 # here; adopting either is Peti's call, on its own card.
+#
+# Koteg 14 (d7e1d611): this upstream merge also carries install_main_inbox_observer_unit
+# (named in the SAME not-adopted cluster, acknowledged-conflicts.ts line ~2449-2451,
+# enforced by update-unit-maintenance-order.test.ts's ADOPTED_UNIT_FUNCTIONS allowlist --
+# only repair_morning_timer/migrate_channels_restart/strip_legacy_notifier_telegram_env
+# may be called from run_unit_maintenance), install_keepalive_probe_launchd (the macOS
+# twin, same entry), and NEW this round install_stuck_modal_guard_launchd -- a fourth
+# live-install systemd/launchd maintenance function with no prior decision on record.
+# Same deferral reasoning applies (installs/enables a background watcher on every
+# existing host without being asked); not wired into run_unit_maintenance here. All
+# four left out, consistent with the already-recorded cluster.
 
 # UPDUNITTGENV930: #1450 took `Environment=TELEGRAM_ENV=<home>/.claude/channels/telegram/.env`
 # out of the two notifier units install-linux.sh writes (<slug>-host-watchdog.service and

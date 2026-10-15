@@ -20366,3 +20366,11 @@ zöld.
 
 **Ki döntött:** WhiteHat2 (NO-GO lelet + a pillanatkép-alapú javítási irány javaslata, gate komment
 19003), végrehajtotta fullstack (kártya b73722e1, 2026-10-14).
+
+## 2026-10-15: agent-id-header generátor argv-token-szivárgás javítva (kártya e73b17ef)
+
+**Mi történt:** upstream `a30553d6` ("Security infra package #1357") a `buildAgentIdHeaderBody()` generátorba (`src/web/agent-scaffold.ts`) olyan curl-mintát hozott, ami a Bearer tokent közvetlenül a `-H "Authorization: Bearer $(cat <token>)"` argumentumba teszi -- ez a `/proc/<pid>/cmdline`-on keresztül kiszivárog, és a `token-in-argv-guard.test.ts` ezt a mintát MINDEN agensre tiltja. A hiba a Köteg 14 upstream-szinkron ELŐTT landolt (már a merge-bázison, `23b49496`-on is megvolt), de csak most buktatta a fleet-testet, mert az élő `agents/*/CLAUDE.md` fájlok csak most kapták meg a generált blokkot egy scaffold-sweep során -- ez blokkolt MINDEN ügynök landolását (backend, backend2, backend3, cybered, cybersec2, fullstack, qa, qa2 mind megkapta a hibás blokkot).
+
+**Döntés:** eltérünk az upstream mintától -- a generált bash-blokk a fork saját, mindenhol használt idiómáját követi: `printf 'Authorization: Bearer %s\n' "$(cat <token>)" | curl -H @- ...` (token stdin-en, sosem argv-ban). Nem a tiltó tesztet lazítottuk, a generátort igazítottuk hozzá.
+
+**Ki döntött:** backend3 (önállóan találta meg és javította a generátort, commit `efc9f4f2`, kártya `d7e1d611` saját fleet-test futása közben), MikroB jóváhagyta és az élő 8 fájlt kézzel újraregenerálta, miután fullstack (kártya `e73b17ef`) párhuzamos javítását emiatt backend3-ra kiosztotta (nincs ütköző második commit).

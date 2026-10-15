@@ -1951,6 +1951,9 @@ export function initDatabase(dbPathOverride?: string): void {
   // marveen-remote:<uuid> so revoking the key can drop the authorized_keys
   // line in the same step. Null for keys minted outside the pairing flow.
   try { db.exec(`ALTER TABLE device_keys ADD COLUMN install_id TEXT`) } catch { /* column already exists */ }
+  // DASHOPERATOR1005: what a key may reach. 'full' = every existing key and the
+  // default, so this column changes nothing until an 'operator' key is minted.
+  try { db.exec(`ALTER TABLE device_keys ADD COLUMN scope TEXT NOT NULL DEFAULT 'full'`) } catch { /* column already exists */ }
 
   // Structured gate-verdict records (card 2bfa4c67, F2): a verdict comment's TEXT is parsed by
   // gate-closure-check.py and kanban-gate-completeness-guard.ts with a long, hard-won regex
@@ -6739,6 +6742,25 @@ const TASK_RUN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 // and the authentication path that proves a wrapper-less prompt really came from
 // the scheduler (see docs + the boritek-nelkuli skill) looks for an OPEN run.
 export const OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set(['fired', 'fired_late', 'fired_busy'])
+
+// HBFABRIC1003 gap guard: did a heartbeat digest (first line "## Heartbeat ")
+// from `fromAgent` reach `toAgent` at or after `sinceMs`? created_at is seconds.
+export function hasHeartbeatDigestSince(fromAgent: string, toAgent: string, sinceMs: number): boolean {
+  const row = db.prepare(
+    "SELECT 1 FROM agent_messages WHERE from_agent = ? AND to_agent = ? AND created_at >= ? AND substr(content, 1, 13) = '## Heartbeat ' LIMIT 1",
+  ).get(fromAgent, toAgent, Math.floor(sinceMs / 1000))
+  return row !== undefined
+}
+
+// HBFABRIC1003 gap guard: has a message starting with `prefix` already been
+// queued from `fromAgent` to `toAgent`? Keeps the one-note-per-slot rule across
+// a dashboard restart (the in-memory state would not).
+export function hasAgentMessageStartingWith(fromAgent: string, toAgent: string, prefix: string): boolean {
+  const row = db.prepare(
+    'SELECT 1 FROM agent_messages WHERE from_agent = ? AND to_agent = ? AND substr(content, 1, ?) = ? LIMIT 1',
+  ).get(fromAgent, toAgent, prefix.length, prefix)
+  return row !== undefined
+}
 
 /**
  * Record that a run was dispatched. Returns the row id so the caller can close
