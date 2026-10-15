@@ -116,10 +116,15 @@ SEGED_BASE = os.environ.get('SEGED_BASE', str(HOME / 'seged-munka'))
 # listening on :11434), which this host's HTTP_PROXY env var now routes through this proxy.
 JAIL_NET_ISOLATION = os.environ.get('SEGED_HIVO_NET_JAIL', '1') not in ('0', 'off', 'false')
 JAIL_NET_RELAY_PORT = int(os.environ.get('SEGED_HIVO_NET_JAIL_PORT', '18443'))
-JAIL_NET_ALLOWLIST = os.environ.get('SEGED_HIVO_NET_JAIL_ALLOWLIST',
+# 127.0.0.1:11434 removed from the default (card 5229ea1e delta, RedHat F-RH-J1): the base allowlist
+# opened the full Ollama surface to the jail, not just the wrapper call. Add it back once a020247b
+# ships path+method filtering in the proxy layer.  Until then, gemini-local-subtask.sh callers that
+# genuinely need the Ollama port can set SEGED_HIVO_NET_JAIL_ALLOWLIST explicitly.
+_JAIL_NET_ALLOWLIST_DEFAULT = (
     'antigravity-unleash.goog:443,oauth2.googleapis.com:443,www.googleapis.com:443,'
     'daily-cloudcode-pa.googleapis.com:443,cloudcode-pa.googleapis.com:443,'
-    'play.googleapis.com:443,lh3.googleusercontent.com:443,127.0.0.1:11434')
+    'play.googleapis.com:443,lh3.googleusercontent.com:443')
+JAIL_NET_ALLOWLIST = os.environ.get('SEGED_HIVO_NET_JAIL_ALLOWLIST', _JAIL_NET_ALLOWLIST_DEFAULT)
 JAIL_NET_PROXY_SH = Path(__file__).resolve().parent / 'jail-net-proxy.py'
 JAIL_NET_RELAY_SH = Path(__file__).resolve().parent / 'jail-net-relay.py'
 
@@ -297,6 +302,12 @@ def selftest():
     bad = [s for s in pos if not scan_text(s)] + [s for s in neg if scan_text(s)]
     for s in bad:
         print('FAIL:', s, scan_text(s))
+    # Pin (card 5229ea1e delta, RedHat F-RH-J1): 127.0.0.1:11434 must not be in the compiled-in
+    # default until a020247b ships path+method filtering. Checks the literal default, not the
+    # runtime value, so a deliberate env override for testing does not trigger a false failure.
+    if '127.0.0.1:11434' in _JAIL_NET_ALLOWLIST_DEFAULT:
+        print('FAIL: _JAIL_NET_ALLOWLIST_DEFAULT contains 127.0.0.1:11434 (blocked until a020247b)')
+        bad.append('allowlist-default-11434')
     print(f'onteszt: {len(pos)} positive, {len(neg)} negative, {len(bad)} failed')
     return 1 if bad or quota_selftest() or jail_net_selftest() else 0
 
@@ -738,6 +749,21 @@ def jail_net_selftest():
                 if '403' not in r.stdout:
                     fails.append(f'denied host via relay+proxy was NOT rejected with 403: {r.stdout!r}')
 
+                # Case 4 (card 5229ea1e delta, RedHat pin-hiány): absolute-form plain HTTP request
+                # to a denied host must also be rejected with 403 -- the allowlist check in
+                # jail-net-proxy.py covers both CONNECT and GET/POST/... absolute-form, but the
+                # original selftest only sent CONNECT, so a mutant stripping the check for
+                # non-CONNECT requests survived.
+                r = run_probe(
+                    "import socket;"
+                    "s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);"
+                    f"s.connect(('127.0.0.1',{JAIL_NET_RELAY_PORT}));"
+                    f"req=b'GET http://127.0.0.1:{denied_port}/ HTTP/1.1\\r\\nHost: 127.0.0.1:{denied_port}\\r\\n\\r\\n';"
+                    "s.sendall(req);"
+                    "print('STATUS', s.recv(200))")
+                if '403' not in r.stdout:
+                    fails.append(f'denied host via relay+proxy absolute-form GET was NOT rejected with 403: {r.stdout!r}')
+
                 r = run_probe(
                     "import socket\n"
                     "s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)\n"
@@ -762,7 +788,7 @@ def jail_net_selftest():
 
     for f in fails:
         print('FAIL:', f)
-    print(f'jail_net_selftest: {3 - len(fails)}/3 cases passed')
+    print(f'jail_net_selftest: {4 - len(fails)}/4 cases passed')
     return 1 if fails else 0
 
 
