@@ -149,5 +149,5 @@ case_eq "argv-ignored: response" "MOCKED-LOCAL-RESPONSE" "$out"
 for f in "${fails[@]}"; do
   echo "FAIL gemini-local-subtask: $f"
 done
-echo "onteszt gemini-local-subtask: $n cases, ${#fails[@]} failed"
+echo "selftest: $n passed, ${#fails[@]} failed"
 exit "${#fails[@]}"
