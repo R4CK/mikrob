@@ -76,6 +76,12 @@ GEMINI_ROUTE="$(get_gemini_route)"
 # is_gemini_blocked PROJECT TAGS [TITLE [DESC]]: returns 0 (true/blocked) when a leaf must NOT
 # go to Gemini.  Fail-closed by design (WhiteHat2 F1, card a92e9913):
 #
+#   0. POSITIVE MARKER REQUIRED (card c23ea72f): a card only reaches Gemini if it carries an
+#      explicit "gemini-ok" label or "[GEMINI-OK]" title-prefix tag. This is checked LAST in the
+#      function body (after all the checks below, see "5. POSITIVE MARKER REQUIRED") but is
+#      listed first here because it is now the PRIMARY gate -- allowlist, not denylist. Every
+#      check below still applies in full as defense in depth; the marker is an ADDITIONAL
+#      requirement, not a replacement for any of them.
 #   1. PROJECT ALLOWLIST (not a blocklist): only the fleet's own project ("mikrob", casefold) may
 #      reach the external Gemini API.  Every other project -- including unknown / empty ones --
 #      is blocked.  Empty project is blocked (unknown = unsafe).
@@ -471,6 +477,22 @@ if (SENS_RE.search(title_n) or SENS_RE.search(desc_n)
 # "jelszo-rotacio"/"szamla"/"[Biztonsag]" was previously ALLOWED through this gate.
 if any(SENS_RE.search(t) for t in tags_n):
     sys.exit(0)  # blocked
+
+# 5. POSITIVE MARKER REQUIRED (card c23ea72f, RedHat structural recommendation komment 18638 on
+# c8a6e1da): REVERSED MODEL -- allowlist, not denylist. Every check above is UNCHANGED and still
+# blocks on its own (defense in depth, since the denylist vocabulary above is already heavily
+# gated); this is an ADDITIONAL, independent requirement layered on top: a card only reaches
+# Gemini if it ALSO carries an explicit, deliberate positive marker -- a "gemini-ok" label, or the
+# equivalent "[GEMINI-OK]" title-prefix tag (both already folded into all_tags by the 1b
+# extraction above, so no new extraction path is needed). Absence of the marker blocks regardless
+# of everything else passing -- a new/untagged/forgotten card is BLOCKED by default, not allowed
+# by default, which is the whole point of a RedHat-grade allowlist: the failure mode of forgetting
+# to mark a card is "no Gemini draft" (safe), not "silently exploitable via a new tag/content
+# obfuscation nobody thought to add to BLOCKED_TAGS/SENS_RE yet" (the denylist open-ended
+# weakness this card exists to close).
+GEMINI_OK_TAG = "gemini-ok"
+if not any(norm(tag) == GEMINI_OK_TAG for tag in all_tags):
+    sys.exit(0)  # blocked -- no explicit positive marker
 
 sys.exit(ALLOWED_RC)  # allowed -- the ONE code that means a deliberate, completed "allowed" verdict
 ' "$project" "$tags"

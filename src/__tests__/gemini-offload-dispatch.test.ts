@@ -175,10 +175,10 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('', 'BE,NORMAL')).toBe('BLOCKED')
   })
 
-  it('allows only the mikrob/MikroB project (case-insensitive)', () => {
-    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL')).toBe('ALLOWED')
-    expect(runIsGeminiBlocked('MikroB', 'BE,NORMAL')).toBe('ALLOWED')
-    expect(runIsGeminiBlocked('MIKROB', 'BE,NORMAL')).toBe('ALLOWED')
+  it('allows only the mikrob/MikroB project (case-insensitive), with the positive marker present', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI-OK')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('MikroB', 'BE,NORMAL,GEMINI-OK')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('MIKROB', 'BE,NORMAL,GEMINI-OK')).toBe('ALLOWED')
   })
 
   // F1b: TAG BLOCKS -- casefold + accent-strip + expanded blocklist
@@ -209,9 +209,9 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
   })
 
   it('does not over-block a tag that merely CONTAINS "sec" as a substring (N5(c), no over-blocking)', () => {
-    expect(runIsGeminiBlocked('mikrob', 'RESECTION,BE,NORMAL')).toBe('ALLOWED')
-    expect(runIsGeminiBlocked('mikrob', 'INSECURE,BE,NORMAL')).toBe('ALLOWED')
-    expect(runIsGeminiBlocked('mikrob', 'NORMAL-PRIORITY,BE')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'RESECTION,BE,NORMAL,GEMINI-OK')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'INSECURE,BE,NORMAL,GEMINI-OK')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'NORMAL-PRIORITY,BE,GEMINI-OK')).toBe('ALLOWED')
   })
 
   it('blocks MOPSION tag (catches [mopsion] in title with empty project)', () => {
@@ -286,9 +286,9 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'RBAC jogosultsági ellenőrzés')).toBe('BLOCKED')
   })
 
-  it('allows a plain mikrob fleet card (no sensitive tags or title keywords)', () => {
-    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Add logging to the dashboard API endpoint')).toBe('ALLOWED')
-    expect(runIsGeminiBlocked('mikrob', 'QA,NORMAL', 'Write unit tests for the date formatter')).toBe('ALLOWED')
+  it('allows a plain mikrob fleet card (no sensitive tags or title keywords), with the positive marker present', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI-OK', 'Add logging to the dashboard API endpoint')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'QA,NORMAL,GEMINI-OK', 'Write unit tests for the date formatter')).toBe('ALLOWED')
   })
 
   // F1c extension: CONTENT GATE on description (card a92e9913 MikroB 11335)
@@ -302,8 +302,8 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'User onboarding flow', 'Admin password reset uses a hardcoded default secret.')).toBe('BLOCKED')
   })
 
-  it('allows card with clean title AND clean description', () => {
-    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Add CSV export', 'Export the monthly report as a downloadable CSV file.')).toBe('ALLOWED')
+  it('allows card with clean title AND clean description, with the positive marker present', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI-OK', 'Add CSV export', 'Export the monthly report as a downloadable CSV file.')).toBe('ALLOWED')
   })
 
   // RedHat 17510 finding 1: the content gate matched only whole ASCII words, with no
@@ -330,8 +330,8 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', '[FIN] heti riport', '')).toBe('BLOCKED')
   })
 
-  it('still allows a genuinely clean card after normalization (no over-blocking regression)', () => {
-    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Add logging to the dashboard API endpoint', '')).toBe('ALLOWED')
+  it('still allows a genuinely clean card after normalization (no over-blocking regression), with the positive marker present', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI-OK', 'Add logging to the dashboard API endpoint', '')).toBe('ALLOWED')
   })
 
   // WhiteHat2 H1 (card 40d2a253, non-blocking GO finding on a92e9913): the content gate used
@@ -343,9 +343,9 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'clean title', `${pad} biztonsagi resz`)).toBe('BLOCKED')
   })
 
-  it('still allows a long but genuinely clean description past the old cap (no over-blocking)', () => {
+  it('still allows a long but genuinely clean description past the old cap (no over-blocking), with the positive marker present', () => {
     const pad = 'x'.repeat(9000)
-    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'clean title', `${pad} nothing sensitive here`)).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI-OK', 'clean title', `${pad} nothing sensitive here`)).toBe('ALLOWED')
   })
 
   // RedHat 17567 B2 (card a92e9913 delta-gate NO-GO): vocabulary parity with the router's own
@@ -396,9 +396,9 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', `${pad} biztonsagi resz`, 'clean desc')).toBe('BLOCKED')
   })
 
-  it('still allows a long but genuinely clean title past a 1000-char cap (N3, no over-blocking)', () => {
+  it('still allows a long but genuinely clean title past a 1000-char cap (N3, no over-blocking), with the positive marker present', () => {
     const pad = 'x'.repeat(1200)
-    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', `${pad} nothing sensitive here`, 'clean desc')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI-OK', `${pad} nothing sensitive here`, 'clean desc')).toBe('ALLOWED')
   })
 
   // N3 (same source): the three B4a "accent inside the matched stem" cases right above are all
@@ -471,8 +471,8 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlockedWithFakeRc(42)).toBe('ALLOWED')
   })
 
-  it('the real classifier still returns ALLOWED end-to-end for a genuinely clean card (fail-closed fix does not break the real path)', () => {
-    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'clean title', 'clean desc')).toBe('ALLOWED')
+  it('the real classifier still returns ALLOWED end-to-end for a genuinely clean card (fail-closed fix does not break the real path), with the positive marker present', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI-OK', 'clean title', 'clean desc')).toBe('ALLOWED')
   })
 
   // N1 (RedHat 17653, card e87e7520): fullwidth-Latin obfuscation ("ｓｅｃｒｅｔ") bypassed the
@@ -493,8 +493,8 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'ѕеcrеt handling', '')).toBe('BLOCKED')
   })
 
-  it('still allows a genuinely clean card after the N1 fix (no over-blocking regression)', () => {
-    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Add logging to the dashboard API endpoint', 'Export the monthly report.')).toBe('ALLOWED')
+  it('still allows a genuinely clean card after the N1 fix (no over-blocking regression), with the positive marker present', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI-OK', 'Add logging to the dashboard API endpoint', 'Export the monthly report.')).toBe('ALLOWED')
   })
 
   // N6 first half (RedHat 17653, card e87e7520): BLOCKED_TAGS was missing exact-match entries
@@ -516,8 +516,8 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
     expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'A berlok adatainak szetvalasztasa fontos', '')).toBe('BLOCKED')
   })
 
-  it('allows a bare "berlo" mention with no isolation verb nearby (N6, no over-blocking)', () => {
-    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'A berlo szerzodese februarban lejar', '')).toBe('ALLOWED')
+  it('allows a bare "berlo" mention with no isolation verb nearby (N6, no over-blocking), with the positive marker present', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI-OK', 'A berlo szerzodese februarban lejar', '')).toBe('ALLOWED')
   })
 
   // F2 (WhiteHat NO-GO, komment 17848, card e87e7520): the homoglyph table is open-ended and
@@ -532,7 +532,7 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
   it('still allows genuine Hungarian accented text after the F2 fail-closed fix (no over-blocking)', () => {
     // NFKD decomposes accented Hungarian letters into base-ASCII + a combining mark (category
     // Mn, not a Letter) -- has_unmapped_letter() must NOT trip on this.
-    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Frissítsd a riportok oszlopait', 'Törd le a hónap végi összesítést.')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI-OK', 'Frissítsd a riportok oszlopait', 'Törd le a hónap végi összesítést.')).toBe('ALLOWED')
   })
 
   // F4 (WhiteHat NO-GO, komment 17848, card e87e7520): TENANT_ISOLATION_RE gaps. (a) "." does
@@ -614,11 +614,56 @@ describe('is_gemini_blocked() -- project allowlist + tag blocks + content-gate (
   it('still allows a genuinely accented Hungarian tag after the C3 fix (no over-blocking)', () => {
     // "é" NFKD-decomposes to base-ASCII "e" + a combining mark (category Mn, not a Letter) --
     // has_unmapped_letter() must not trip on this, same invariant as the title/desc check.
-    expect(runIsGeminiBlocked('mikrob', 'BE,FELÉPÍTÉS,NORMAL')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,FELÉPÍTÉS,NORMAL,GEMINI-OK')).toBe('ALLOWED')
   })
 
   // T1: CALL-SITE GUARD -- is_gemini_blocked must be called at both Gemini call sites.
   // These tests go RED if the guard is removed from either call site.
+})
+
+// ── Card c23ea72f: REVERSED MODEL -- allowlist, not denylist (RedHat structural recommendation,
+// c8a6e1da komment 18638). A card only reaches Gemini if it carries an explicit "gemini-ok" label
+// or "[GEMINI-OK]" title-prefix tag, IN ADDITION to passing every existing check above (project
+// allowlist, BLOCKED_TAGS, content-gate) -- the marker is additive, it narrows what the denylist
+// alone already allowed, it never widens it.
+describe('card c23ea72f: positive-marker allowlist, additive to the existing denylist', () => {
+  it('blocks a genuinely clean mikrob card with NO marker (default is now BLOCKED, not ALLOWED)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL', 'Add logging to the dashboard API endpoint', 'Export the monthly report.')).toBe('BLOCKED')
+  })
+
+  it('allows a clean mikrob card with the "gemini-ok" label marker', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI-OK', 'Add logging to the dashboard API endpoint', 'Export the monthly report.')).toBe('ALLOWED')
+  })
+
+  it('allows a clean mikrob card with the "[GEMINI-OK]" title-prefix marker and no label at all', () => {
+    expect(runIsGeminiBlocked('mikrob', '', '[GEMINI-OK] Add logging to the dashboard API endpoint', 'Export the monthly report.')).toBe('ALLOWED')
+  })
+
+  it('the marker alone does not override the project allowlist (mopsion still BLOCKED)', () => {
+    expect(runIsGeminiBlocked('mopsion', 'BE,NORMAL,GEMINI-OK', 'Add logging to the dashboard API endpoint', '')).toBe('BLOCKED')
+  })
+
+  it('the marker alone does not override a BLOCKED_TAGS tag (SEC + marker still BLOCKED, defense in depth)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'SEC,NORMAL,GEMINI-OK', 'Add logging to the dashboard API endpoint', '')).toBe('BLOCKED')
+  })
+
+  it('the marker alone does not override the content-gate (sensitive title + marker still BLOCKED)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI-OK', 'Auth middleware security review', '')).toBe('BLOCKED')
+  })
+
+  it('the marker alone does not override BLOKKOLT-* (BLOKKOLT-Peti-stop + marker still BLOCKED)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BLOKKOLT-PETI-STOP,GEMINI-OK', 'Add logging to the dashboard API endpoint', '')).toBe('BLOCKED')
+  })
+
+  it('the marker match is case-insensitive and accent-stripped, same normalization as every other tag ("Gemini-Ok" allows)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,Gemini-Ok', 'Add logging to the dashboard API endpoint', '')).toBe('ALLOWED')
+  })
+
+  it('a near-miss marker ("gemini-okay", "gemini", "ok" alone) does NOT satisfy the requirement (exact match only, fail-closed)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI-OKAY', 'Add logging to the dashboard API endpoint', '')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,GEMINI', 'Add logging to the dashboard API endpoint', '')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,NORMAL,OK', 'Add logging to the dashboard API endpoint', '')).toBe('BLOCKED')
+  })
 })
 
 // ── T1 (true behavioral, RedHat 17510 finding 3) ─────────────────────────────────────────
@@ -706,7 +751,7 @@ rm -rf "$HERE" "$RAG" "$RECORD"
 
   // Call site 1 (fast path, LOCAL_LLM_AVAILABLE=0): allowed leaf -> Gemini actually invoked.
   it('call site 1 (fast path): allowed leaf really reaches try_gemini_for_leaf', () => {
-    const r = runTryLeaf({ fastPath: true, project: 'mikrob', tags: 'BE,NORMAL', title: 'Add CSV export', desc: 'Export the monthly report.' })
+    const r = runTryLeaf({ fastPath: true, project: 'mikrob', tags: 'BE,NORMAL,GEMINI-OK', title: 'Add CSV export', desc: 'Export the monthly report.' })
     expect(r.geminiCalled).toBe(true)
   })
 
@@ -726,7 +771,7 @@ rm -rf "$HERE" "$RAG" "$RECORD"
 
   // Call site 2 (exhausted attempts): allowed leaf -> Gemini actually invoked.
   it('call site 2 (exhausted attempts): allowed leaf really reaches try_gemini_for_leaf', () => {
-    const r = runTryLeaf({ fastPath: false, project: 'mikrob', tags: 'BE,NORMAL', title: 'Add CSV export', desc: 'Export the monthly report.' })
+    const r = runTryLeaf({ fastPath: false, project: 'mikrob', tags: 'BE,NORMAL,GEMINI-OK', title: 'Add CSV export', desc: 'Export the monthly report.' })
     expect(r.geminiCalled).toBe(true)
   })
 
@@ -1744,16 +1789,16 @@ describe('card c8a6e1da: negative controls (no new over-blocking)', () => {
     expect(runIsGeminiBlocked('mikrob', 'BE', 'Retry after 10 sec delay')).toBe('BLOCKED')
   })
 
-  it('still does not over-block substring matches inside brackets (e45945a2 parity)', () => {
-    expect(runIsGeminiBlocked('mikrob', 'BE', '[Resection of X] title')).toBe('ALLOWED')
+  it('still does not over-block substring matches inside brackets (e45945a2 parity), with the positive marker present', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,GEMINI-OK', '[Resection of X] title')).toBe('ALLOWED')
   })
 
-  it('does not block ordinary short-word prose that is not a split tag', () => {
-    expect(runIsGeminiBlocked('mikrob', 'BE', 'Sector map')).toBe('ALLOWED')
-    expect(runIsGeminiBlocked('mikrob', 'BE', 'Seconds')).toBe('ALLOWED')
-    expect(runIsGeminiBlocked('mikrob', 'BE', 'Secondary')).toBe('ALLOWED')
-    expect(runIsGeminiBlocked('mikrob', 'BE', 'Sect')).toBe('ALLOWED')
-    expect(runIsGeminiBlocked('mikrob', 'BE', 'A clean benign title about nothing sensitive')).toBe('ALLOWED')
+  it('does not block ordinary short-word prose that is not a split tag, with the positive marker present', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,GEMINI-OK', 'Sector map')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,GEMINI-OK', 'Seconds')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,GEMINI-OK', 'Secondary')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,GEMINI-OK', 'Sect')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,GEMINI-OK', 'A clean benign title about nothing sensitive')).toBe('ALLOWED')
   })
 })
 
@@ -1775,8 +1820,8 @@ describe('card c8a6e1da F3: kill the 3 previously-green mutants', () => {
   it('kills "a digit always separates tokens" (digit-suffix must still require exact stripped match)', () => {
     // If someone stripped trailing digits unconditionally without checking membership, this
     // would ALSO block e.g. "x9" -- assert the suffix-strip path is exact-match-gated, not blanket.
-    expect(runIsGeminiBlocked('mikrob', 'BE', '[SEC2] x')).toBe('BLOCKED')
-    expect(runIsGeminiBlocked('mikrob', 'BE', '[x9] harmless')).toBe('ALLOWED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,GEMINI-OK', '[SEC2] x')).toBe('BLOCKED')
+    expect(runIsGeminiBlocked('mikrob', 'BE,GEMINI-OK', '[x9] harmless')).toBe('ALLOWED')
   })
 })
 
@@ -1859,8 +1904,8 @@ describe('card c8a6e1da M3 (RedHat NO-GO 2. kor): split-letter sliding window, n
     expect(runIsGeminiBlocked('mikrob', 'BE', title)).toBe('BLOCKED')
   })
 
-  it('still does not over-block "[Resection of X]" (e45945a2 parity, no per-token length guard needed)', () => {
-    expect(runIsGeminiBlocked('mikrob', 'BE', '[Resection of X] title')).toBe('ALLOWED')
+  it('still does not over-block "[Resection of X]" (e45945a2 parity, no per-token length guard needed), with the positive marker present', () => {
+    expect(runIsGeminiBlocked('mikrob', 'BE,GEMINI-OK', '[Resection of X] title')).toBe('ALLOWED')
   })
 
   it('MJ mutation check: the join must be EXACT, not a substring -- "[sec urity]" over-joining risk', () => {
@@ -1877,7 +1922,7 @@ describe('card c8a6e1da M3 (RedHat NO-GO 2. kor): split-letter sliding window, n
 // mostly single-char tokens (2250 tokens) BEFORE this fix, same shape reproduced here.
 describe('card f6f67dff F-F: BLOCKED_TAGS tag-tokenizer stays fast on a long, token-heavy tag', () => {
   it('a ~4.5 KB tag of 2250 single-char tokens resolves in well under 1s (was 30+ s)', () => {
-    const adversarial = 'x.'.repeat(2250) // tag_tokens_of -> 2250 "x" tokens, never matches
+    const adversarial = 'x.'.repeat(2250) + ',GEMINI-OK' // tag_tokens_of -> 2250 "x" tokens, never matches
     const t0 = Date.now()
     const result = runIsGeminiBlocked('mikrob', adversarial, '')
     const elapsedMs = Date.now() - t0
@@ -1909,8 +1954,8 @@ describe('card f6f67dff F-F delta: split-letter word with a long glued digit suf
     expect(runIsGeminiBlocked('mikrob', 'S E C' + '1'.repeat(40), '')).toBe('BLOCKED')
   })
 
-  it('"build" + 40 glued digits stays ALLOWED (negative control, not a blocked word)', () => {
-    expect(runIsGeminiBlocked('mikrob', 'build' + '1'.repeat(40), '')).toBe('ALLOWED')
+  it('"build" + 40 glued digits stays ALLOWED (negative control, not a blocked word), with the positive marker present', () => {
+    expect(runIsGeminiBlocked('mikrob', 'build' + '1'.repeat(40) + ',GEMINI-OK', '')).toBe('ALLOWED')
   })
 
   it('a ~4.5 KB tag of 2250 single-digit tokens (no matching word) resolves in well under 1s', () => {
@@ -1918,7 +1963,7 @@ describe('card f6f67dff F-F delta: split-letter word with a long glued digit suf
     // an all-digit token run makes the digit-stripped length stay 0 for every window, which
     // (without the digit-starting-token skip) never trips the cap and scans to the end for
     // every start -- O(n^2) on this shape alone. The skip keeps it fast.
-    const adversarialDigits = '1.'.repeat(2250)
+    const adversarialDigits = '1.'.repeat(2250) + ',GEMINI-OK'
     const t0 = Date.now()
     const result = runIsGeminiBlocked('mikrob', adversarialDigits, '')
     const elapsedMs = Date.now() - t0
