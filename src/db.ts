@@ -5246,6 +5246,89 @@ export function getUnmetKanbanPredecessors(cardId: string): KanbanCard[] {
 }
 
 /**
+ * The newDevStop exception (CLAUDE.md rule 1e, card b73722e1): is `cardId` a child (via the
+ * `parent_id` chain), predecessor, or successor of a card that was ALREADY `in_progress` at the
+ * moment the stop activated? If so, it is a subtask of work already underway, not new development,
+ * and the weekly newDevStop should not refuse it.
+ *
+ * `stopActivatedAt` must be the stop's own ACTIVATION moment (`flag.newDevStopActivatedAt`), not a
+ * routine re-write timestamp -- WhiteHat2's NO-GO (gate comment 19003, F1) measured that
+ * store/pre-dispatch-check.sh's old `updatedAt` field is rewritten on EVERY run, including while
+ * the stop stays continuously active, so an "edge older than updatedAt" check drifted forward with
+ * it and the bypass window reopened after every write (PoC: reparent onto an in_progress card,
+ * wait for the next flag write, retry -- 409 then 200). EVERY edge used to reach the snapshotted
+ * card must predate the TRUE activation moment -- an edge written after that point is not trusted,
+ * and the walk stops there rather than climbing past it.
+ *
+ * `inProgressAtActivation` is the FROZEN set of card ids that were `in_progress` at that exact
+ * moment (F2, same gate comment): checking the ancestor/predecessor/successor's CURRENT status
+ * instead would let a `done` parent that gets reopened to `in_progress` AFTER the stop started
+ * retroactively exempt its pre-stop children too -- a live status is something anyone can flip,
+ * the frozen snapshot is not. Membership in this set, not a live status lookup, is the actual
+ * exemption condition; an archived snapshotted card still counts (it genuinely was in-progress
+ * work at activation), closing WhiteHat2's L1 as a side effect of dropping the live-status read.
+ *
+ * `stopActivatedAt === null` or an empty snapshot (an old-format flag, or a snapshot that could not
+ * be taken) means there is no safe reference point, so the exception never applies -- the stop
+ * stays fully in force, same as before this function existed.
+ */
+export function isLinkedToInProgressCard(
+  cardId: string,
+  stopActivatedAt: number | null,
+  inProgressAtActivation: readonly string[],
+): boolean {
+  if (stopActivatedAt === null || inProgressAtActivation.length === 0) return false
+  const snapshot = new Set(inProgressAtActivation)
+
+  // (a) ancestor chain via parent_id -- same cycle/depth guard shape as parentWouldCycle above.
+  const cardStmt = db.prepare('SELECT parent_id, created_at FROM kanban_cards WHERE id = ?')
+  const edgeStmt = db.prepare(
+    `SELECT created_at FROM kanban_card_field_events
+      WHERE card_id = ? AND field = 'parent_id' AND new_value = ?
+      ORDER BY created_at DESC LIMIT 1`,
+  )
+  const seen = new Set<string>([cardId])
+  let current = cardId
+  let depth = 0
+  for (;;) {
+    const row = cardStmt.get(current) as { parent_id: string | null; created_at: number } | undefined
+    const parentId = row?.parent_id ?? null
+    if (!parentId || seen.has(parentId) || ++depth > ANCESTOR_DEPTH_LIMIT) break
+    seen.add(parentId)
+    // When this child's parent_id was last set to exactly this parent: the most recent audited
+    // change, or (no such row) the child's own created_at -- parent_id set at creation is never
+    // itself an audited "change".
+    const edgeRow = edgeStmt.get(current, parentId) as { created_at: number } | undefined
+    const edgeAt = edgeRow?.created_at ?? row!.created_at
+    if (edgeAt >= stopActivatedAt) break // too recent to trust -- do not climb past it either
+    if (snapshot.has(parentId)) return true
+    current = parentId
+  }
+
+  // (b) dependency edges: cardId is a predecessor of a snapshotted successor, or a successor of a
+  // snapshotted predecessor. kanban_dependencies rows are insert/delete only (never updated), so the
+  // row's own created_at is the edge's age -- no field-event lookup needed here.
+  const linkedViaDeps = (sql: string) =>
+    (db.prepare(sql).all(cardId) as { id: string; edge_at: number }[]).some(
+      (r) => snapshot.has(r.id) && r.edge_at < stopActivatedAt,
+    )
+  if (
+    linkedViaDeps(
+      `SELECT c.id AS id, d.created_at AS edge_at FROM kanban_dependencies d
+         JOIN kanban_cards c ON c.id = d.from_card_id WHERE d.to_card_id = ?`,
+    )
+  ) return true
+  if (
+    linkedViaDeps(
+      `SELECT c.id AS id, d.created_at AS edge_at FROM kanban_dependencies d
+         JOIN kanban_cards c ON c.id = d.to_card_id WHERE d.from_card_id = ?`,
+    )
+  ) return true
+
+  return false
+}
+
+/**
  * Every card's UNMET predecessors, in ONE query (card 38788337).
  *
  * The board list returns the whole board, so asking per card would be an N+1 over a few hundred

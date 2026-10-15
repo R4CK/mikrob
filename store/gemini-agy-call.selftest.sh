@@ -5,18 +5,41 @@
 # are exercised for real, not reimplemented a second time just for the test.
 set -euo pipefail
 
-# F-B (card 09117e0a, WhiteHat2 NO-GO komment 18851): --root/--seged-script/--dashboard-token-file/
-# --dashboard-url/--category-check now require this flag to be honored at all -- this whole file IS
-# the test harness, so it is on for its entire run; a plain live caller never sets it.
-export GEMINI_AGY_CALL_TEST_MODE=1
-
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SUT="$SELF_DIR/gemini-agy-call.sh"
+REAL_SUT="$SELF_DIR/gemini-agy-call.sh"
 REAL_SEGED_HIVO="$SELF_DIR/../scripts/seged-hivo.py"
 
 TD="$(mktemp -d)"
 trap 'rm -rf "$TD"' EXIT
 mkdir -p "$TD/store" "$TD/scripts" "$TD/base/w"
+
+# F-B (card f6f67dff, WhiteHat2): the live script no longer understands --root/--seged-script/
+# --dashboard-token-file/--dashboard-url/--category-check at all (no env flag can re-enable them
+# any more). This whole file is the only place that still needs them, so it builds its OWN copy
+# with that parsing re-inserted, once, here -- every "$SUT" call below runs against that copy, not
+# the real, shipped script. $REAL_SUT (above) stays untouched, for the handful of tests that
+# specifically check the live file's behavior.
+SUT="$TD/test-sut-gemini-agy-call.sh"
+python3 - "$REAL_SUT" "$SUT" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+s = open(src).read()
+anchor = '    *) echo "gemini-agy-call: unknown argument: $1" >&2; exit 2 ;;'
+assert s.count(anchor) == 1, 'anchor not found exactly once -- gemini-agy-call.sh parsing changed shape'
+override_arm = '''    --root|--seged-script|--dashboard-token-file|--dashboard-url|--category-check)
+      case "$1" in
+        --root) ROOT="$2"; STORE="$ROOT/store"; SEGED_HIVO_HELPERS="$ROOT/scripts/seged-hivo.py"
+                SEGED_HIVO="$ROOT/scripts/seged-hivo.py"; DASHBOARD_TOKEN_FILE="$STORE/.dashboard-token" ;;
+        --seged-script) SEGED_HIVO="$2" ;;
+        --dashboard-token-file) DASHBOARD_TOKEN_FILE="$2" ;;
+        --dashboard-url) DASHBOARD_URL="$2" ;;
+        --category-check) CATEGORY_CHECK_OVERRIDE="$2" ;;
+      esac
+      shift 2 ;;
+'''
+open(dst, 'w').write(s.replace(anchor, override_arm + anchor, 1))
+PY
+chmod +x "$SUT"
 # A COPY, not a symlink (F-A follow-on): seged-hivo.py's own ROOT is __file__-based now, and
 # Path(__file__).resolve() follows a symlink straight back to the real repo root, which would
 # defeat this sandbox's isolation for the hourly-count import below (same reasoning as
@@ -256,22 +279,25 @@ case_ "F1 negative control: clean card + kategoria=safe -> goes" 0 \
   --hivo teszt --kartya c1ea0001 --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
 grep -q 'STUB RESPONSE' "$TD/out" || fails+=("F1 negative control: the underlying helper should have run for a clean card")
 
-# --- F-B: test-only flags must not work without GEMINI_AGY_CALL_TEST_MODE=1 (card 09117e0a,
-# WhiteHat2 NO-GO komment 18851, MikroB 18854 pont 1) ----------------------------------------
+# --- F-B: the LIVE, shipped script must refuse --root/--seged-script/--dashboard-url
+# unconditionally -- no env var can ever re-enable them (card f6f67dff, WhiteHat2). Runs against
+# $REAL_SUT, not the test harness's own patched $SUT copy above, so this is the actual production
+# file's behavior being checked.
 : > "$LOG"
 n=$((n + 1))
 set +e
-GEMINI_AGY_CALL_TEST_MODE=0 SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
-  "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$DEFAULT_DASH_PORT" \
+SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+  "$REAL_SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$DEFAULT_DASH_PORT" \
   --hivo teszt --kartya c1ea0002 --feladattipus kod --kategoria safe \
   --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
 got=$?
 set -e
-[ "$got" = 2 ] || fails+=("F-B: --root/--seged-script/--dashboard-url without GEMINI_AGY_CALL_TEST_MODE=1 must be a usage error (rc=2), got rc=$got, err=$(cat "$TD/err")")
+[ "$got" = 2 ] || fails+=("F-B: the live gemini-agy-call.sh must refuse --root/--seged-script/--dashboard-url unconditionally (rc=2), got rc=$got, err=$(cat "$TD/err")")
+grep -qi 'unknown argument' "$TD/err" || fails+=("F-B: the refusal should read as a plain unknown-argument error, not a special test-mode message, err=$(cat "$TD/err")")
 
-# --- F-C: ambient env poisoning must have no effect -- only the CLI flags above (gated by
-# GEMINI_AGY_CALL_TEST_MODE) can redirect anything; a plain env var sitting in the caller's shell
-# must not (card 09117e0a, WhiteHat2 NO-GO komment 18851, MikroB 18854 pont 2). Regression target:
+# --- F-C: ambient env poisoning must have no effect -- only the CLI flags on the test harness's
+# own $SUT copy can redirect anything; a plain env var sitting in the caller's shell must not
+# (card 09117e0a, WhiteHat2 NO-GO komment 18851, MikroB 18854 pont 2). Regression target:
 # line "CATEGORY_CHECK=...". A [SEC]-titled card declared safe must still be refused even with a
 # no-op category-check path and other bogus values sitting in the environment -- this does NOT
 # use the CLI overrides for them, only ambient env, which the script never reads for these names.
@@ -290,6 +316,252 @@ got=$?
 set -e
 [ "$got" = 3 ] || fails+=("F-C: ambient env poisoning (GEMINI_AGY_CATEGORY_CHECK/MARVEEN_ROOT/etc) must not weaken the [SEC]+safe refusal (rc=3), got rc=$got, err=$(cat "$TD/err")")
 grep -q 'STUB RESPONSE' "$TD/out" && fails+=("F-C: the underlying helper must NOT have run when ambient env tried to poison the gate")
+
+# --- WR1/WR4/WR5/WR6 (RedHat NO-GO komment 18915, M1p'): the F-C case above always supplies ALL
+# five CLI overrides, so a hypothetical env-fallback added to any ONE of them stays invisible
+# (the CLI value wins regardless of what the mutant's fallback would have picked). Each case below
+# withholds exactly the ONE flag whose env name it targets, with a WORKING attacker substitute (not
+# a broken/unreachable path), so a future regression is caught as a real bypass, not masked by an
+# unrelated override or hidden behind an accidental fail-closed on a bad path. -----------------
+GOOD_ROOT="$TD/good-root"
+mkdir -p "$GOOD_ROOT/store" "$GOOD_ROOT/scripts/muszertar"
+cp "$SUT" "$GOOD_ROOT/store/gemini-agy-call.sh"
+chmod +x "$GOOD_ROOT/store/gemini-agy-call.sh"
+cp "$REAL_SEGED_HIVO" "$GOOD_ROOT/scripts/seged-hivo.py"
+cp "$SELF_DIR/../scripts/muszertar/titok-kapu.py" "$GOOD_ROOT/scripts/muszertar/titok-kapu.py"
+cp "$SELF_DIR/gemini-agy-category-check.py" "$GOOD_ROOT/store/gemini-agy-category-check.py"
+echo 'teszt-token' > "$GOOD_ROOT/store/.dashboard-token"
+GOOD_SUT="$GOOD_ROOT/store/gemini-agy-call.sh"
+WR_SEGED_BASE="$TD/wr-seged-munka"
+mkdir -p "$WR_SEGED_BASE/w"
+WR_SECRET_PROMPT="$TD/wr-secret.md"
+printf 'sk-ant-api03-%s9zQ\n' "$(python3 -c "print('A' * 30)")" > "$WR_SECRET_PROMPT"
+# WR1/WR4 invoke a REAL (unstubbed) seged-hivo.py, so if either regresses, run_helper() would try
+# to really spawn bwrap+agy -- BWRAP_BIN here stands in so even a caught mutant never reaches a
+# real, paid Gemini call (same stand-in shape as seged-hivo.py's own quota_selftest bwrap-stub).
+WR_BWRAP_STUB="$TD/wr-bwrap-stub.sh"
+printf '#!/bin/sh\necho '"'"'{"status": "SUCCESS", "response": "", "usage": {"total_tokens": 1}}'"'"'\n' > "$WR_BWRAP_STUB"
+chmod +x "$WR_BWRAP_STUB"
+
+start_validating_dashboard_stub() {  # start_validating_dashboard_stub CARD_JSON EXPECTED_TOKEN
+  local card_json="$1" expected="$2"
+  cat <<PYEOF > "$TD/dash-validate-stub.py"
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+card_json = sys.argv[1]
+expected = 'Bearer ' + sys.argv[2]
+
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.headers.get('Authorization') != expected:
+            self.send_response(401)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(b'{"error":"Unauthorized"}')
+            return
+        card = json.loads(card_json)
+        card['id'] = self.path.rstrip('/').rsplit('/', 1)[-1]
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps(card).encode())
+
+    def log_message(self, *a):
+        pass
+
+srv = HTTPServer(('127.0.0.1', 0), H)
+print(srv.server_port, flush=True)
+srv.serve_forever()
+PYEOF
+  rm -f "$TD/dash-stub-port"
+  python3 "$TD/dash-validate-stub.py" "$card_json" "$expected" > "$TD/dash-stub-port" 2>/dev/null &
+  DASH_STUB_PID=$!
+  for _ in $(seq 1 50); do
+    [ -s "$TD/dash-stub-port" ] && break
+    sleep 0.1
+  done
+  DASH_STUB_PORT="$(cat "$TD/dash-stub-port" 2>/dev/null || true)"
+}
+
+# WR1: ROOT from MARVEEN_ROOT -- --root is the only switch that moves it today (F-A), so a future
+# fallback would only fire when --root is omitted. The SUT runs from a COPY placed at the same
+# store/ depth as the real file (a symlink would defeat the isolation the same way it would have
+# defeated seged-hivo.py's own ROOT, per the F-A follow-on): with --root omitted, this copy's own
+# BASH_SOURCE makes $GOOD_ROOT play "the real repo" for today's unmutated line 49, so the baseline
+# check below exercises the real code path, not a stand-in.
+: > "$LOG"
+EVIL_ROOT_WR1="$TD/evil-root-wr1"
+mkdir -p "$EVIL_ROOT_WR1/scripts/muszertar" "$EVIL_ROOT_WR1/store"
+cp "$REAL_SEGED_HIVO" "$EVIL_ROOT_WR1/scripts/seged-hivo.py"
+printf 'import sys\nsys.exit(0)\n' > "$EVIL_ROOT_WR1/scripts/muszertar/titok-kapu.py"
+# The mutant under test only redirects ROOT -- CATEGORY_CHECK ("$STORE/gemini-agy-category-check.py")
+# would otherwise also resolve into this evil root and fail to open (a DIFFERENT fail-closed path,
+# card id/title check) for a reason unrelated to the one this case targets, masking it either way.
+cp "$SELF_DIR/gemini-agy-category-check.py" "$EVIL_ROOT_WR1/store/gemini-agy-category-check.py"
+start_dashboard_stub "$CLEAN_CARD"
+WR1_PORT="$DASH_STUB_PORT"
+EXTRA_DASH_PIDS+=("$DASH_STUB_PID")
+n=$((n + 1))
+set +e
+MARVEEN_ROOT="$EVIL_ROOT_WR1" SEGED_BASE="$WR_SEGED_BASE" BWRAP_BIN="$WR_BWRAP_STUB" \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+  "$GOOD_SUT" --dashboard-url "http://127.0.0.1:$WR1_PORT" --dashboard-token-file "$GOOD_ROOT/store/.dashboard-token" \
+  --hivo teszt --kartya c1ea0004 --feladattipus kod --kategoria safe \
+  --prompt "$WR_SECRET_PROMPT" --mappa "$WR_SEGED_BASE/w" > "$TD/out" 2> "$TD/err"
+got=$?
+set -e
+[ "$got" = 3 ] || fails+=("WR1: ambient MARVEEN_ROOT must not pick which seged-hivo.py/titok-kapu.py run when --root is omitted (want rc=3), got rc=$got, err=$(cat "$TD/err")")
+grep -qi 'SUCCESS\|STUB RESPONSE' "$TD/out" && fails+=("WR1: the underlying engine must NOT have run")
+
+# WR4: SEGED_HIVO (the script actually invoked) from SEGED_HIVO_SCRIPT -- --seged-script is the
+# only switch that moves it today, but passing --root ALONGSIDE omitting --seged-script does NOT
+# isolate it: gemini-agy-call.sh's own --root branch directly reassigns SEGED_HIVO
+# ("$ROOT/scripts/seged-hivo.py") after the initial-default line runs, so a hypothetical env
+# fallback written only into that first default assignment would stay masked whenever --root is
+# given at all (WhiteHat2 komment 18982, MikroB 18983: measured 32/0 green on exactly that
+# mutation). Like WR1, this one must also omit --root and run from the GOOD_SUT copy, so there is
+# no --root branch left to overwrite the poisoned default.
+: > "$LOG"
+EVIL_SCRIPT_WR4="$TD/evil-seged-wr4.py"
+printf "import sys\nprint('EVIL-NOOP-RAN')\nsys.exit(0)\n" > "$EVIL_SCRIPT_WR4"
+start_dashboard_stub "$CLEAN_CARD"
+WR4_PORT="$DASH_STUB_PORT"
+EXTRA_DASH_PIDS+=("$DASH_STUB_PID")
+n=$((n + 1))
+set +e
+SEGED_HIVO_SCRIPT="$EVIL_SCRIPT_WR4" SEGED_BASE="$WR_SEGED_BASE" BWRAP_BIN="$WR_BWRAP_STUB" \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+  "$GOOD_SUT" --dashboard-url "http://127.0.0.1:$WR4_PORT" --dashboard-token-file "$GOOD_ROOT/store/.dashboard-token" \
+  --hivo teszt --kartya c1ea0005 --feladattipus kod --kategoria safe \
+  --prompt "$WR_SECRET_PROMPT" --mappa "$WR_SEGED_BASE/w" > "$TD/out" 2> "$TD/err"
+got=$?
+set -e
+[ "$got" = 3 ] || fails+=("WR4: ambient SEGED_HIVO_SCRIPT must not pick which script runs when --seged-script is omitted (want rc=3), got rc=$got, err=$(cat "$TD/err")")
+grep -q 'EVIL-NOOP-RAN' "$TD/out" && fails+=("WR4: the underlying call must NOT have run the attacker's substitute script")
+
+# WR5: DASHBOARD_URL from GEMINI_DASHBOARD_URL -- this one flag has its own flat literal default
+# ("http://localhost:3420", card 64788453) independent of --root, so omitting it necessarily
+# exercises that real default: the check below depends on the fleet's own dashboard actually
+# running, queried read-only against THIS card (09117e0a, a real, permanently [SEC][HIGH]-titled
+# card) so the baseline has real ground truth to refuse on.
+: > "$LOG"
+ATTACKER_DASH="$TD/attacker-dash.py"
+cat <<'PYEOF' > "$ATTACKER_DASH"
+import json, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({'id': self.path.rstrip('/').rsplit('/', 1)[-1],
+                                      'title': 'Clean attacker-forged card', 'description': 'x', 'labels': []}).encode())
+    def log_message(self, *a):
+        pass
+srv = HTTPServer(('127.0.0.1', 0), H)
+print(srv.server_port, flush=True)
+srv.serve_forever()
+PYEOF
+rm -f "$TD/dash-stub-port"
+python3 "$ATTACKER_DASH" > "$TD/dash-stub-port" 2>/dev/null &
+ATTACKER_DASH_PID=$!
+EXTRA_DASH_PIDS+=("$ATTACKER_DASH_PID")
+for _ in $(seq 1 50); do
+  [ -s "$TD/dash-stub-port" ] && break
+  sleep 0.1
+done
+ATTACKER_PORT="$(cat "$TD/dash-stub-port" 2>/dev/null || true)"
+n=$((n + 1))
+set +e
+GEMINI_DASHBOARD_URL="http://127.0.0.1:$ATTACKER_PORT" SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+  "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-token-file /home/neon/marveen/store/.dashboard-token \
+  --hivo teszt --kartya 09117e0a --feladattipus kod --kategoria safe \
+  --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
+got=$?
+set -e
+[ "$got" = 3 ] || fails+=("WR5: ambient GEMINI_DASHBOARD_URL must not pick which dashboard answers when --dashboard-url is omitted (want rc=3, the real dashboard must see the real [SEC] card), got rc=$got, err=$(cat "$TD/err")")
+grep -q 'STUB RESPONSE' "$TD/out" && fails+=("WR5: the underlying helper must NOT have run")
+
+# WR6: DASHBOARD_TOKEN_FILE from DASHBOARD_TOKEN_FILE -- a validating dashboard stub (the earlier
+# F1 stubs never check the header at all) makes the actual token VALUE sent observable. Same
+# masking RedHat/WhiteHat2 found for WR4 applies here (--root's branch also reassigns
+# DASHBOARD_TOKEN_FILE), so this one also drops --root and runs the GOOD_SUT copy; baseline must
+# use the real token at $GOOD_ROOT/store/.dashboard-token (teszt-token, set up above) and go
+# through; a poisoned env pointing at a file with a different value would get 401'd.
+: > "$LOG"
+start_validating_dashboard_stub "$CLEAN_CARD" "teszt-token"
+WR6_PORT="$DASH_STUB_PORT"
+EXTRA_DASH_PIDS+=("$DASH_STUB_PID")
+WRONG_TOKEN_FILE="$TD/wr6-wrong-token"
+echo 'wrong-token-value' > "$WRONG_TOKEN_FILE"
+n=$((n + 1))
+set +e
+DASHBOARD_TOKEN_FILE="$WRONG_TOKEN_FILE" SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+  "$GOOD_SUT" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$WR6_PORT" \
+  --hivo teszt --kartya c1ea0006 --feladattipus kod --kategoria safe \
+  --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
+got=$?
+set -e
+[ "$got" = 0 ] || fails+=("WR6: ambient DASHBOARD_TOKEN_FILE must not pick which token is sent when --dashboard-token-file is omitted (want rc=0, the real token at \$GOOD_ROOT/store/.dashboard-token must be used), got rc=$got, err=$(cat "$TD/err")")
+
+# F-E: a PYTHONPATH-shadowed base64 module must not disable titok-kapu's live-secret check two
+# hops down (card f6f67dff, WhiteHat2). run_gate() (scripts/seged-hivo.py) spawns titok-kapu.py
+# via a plain subprocess.run() that inherits the caller's ambient PYTHONPATH -- a directory ahead
+# of the stdlib on PYTHONPATH can ship its own no-op base64.py, and since titok-kapu.py's
+# live-secret detector (_kodolt_alakok) generates the base64-encoded forms of the real dashboard
+# token through that exact module, the shadow makes every base64-encoded live secret invisible to
+# the filter (exit 3 silently becomes exit 0, engine called). A fresh, dedicated root (own copies
+# of the wrapper/seged-hivo.py/titok-kapu.py/category-check, own dashboard-token value) keeps this
+# independent of $GOOD_ROOT's fixtures.
+: > "$LOG"
+FE_ROOT="$TD/fe-root"
+mkdir -p "$FE_ROOT/store" "$FE_ROOT/scripts/muszertar"
+cp "$SUT" "$FE_ROOT/store/gemini-agy-call.sh"
+chmod +x "$FE_ROOT/store/gemini-agy-call.sh"
+cp "$REAL_SEGED_HIVO" "$FE_ROOT/scripts/seged-hivo.py"
+cp "$SELF_DIR/../scripts/muszertar/titok-kapu.py" "$FE_ROOT/scripts/muszertar/titok-kapu.py"
+cp "$SELF_DIR/gemini-agy-category-check.py" "$FE_ROOT/store/gemini-agy-category-check.py"
+printf '%s\n' "$(python3 -c "print('x' * 64)")" > "$FE_ROOT/store/.dashboard-token"
+FE_SUT="$FE_ROOT/store/gemini-agy-call.sh"
+
+# A directory ahead of the stdlib with a no-op base64.py: b64encode()/urlsafe_b64encode() return
+# b'' so _kodolt_alakok() can never produce a matching base64 form for the real token below.
+FE_SHADOW_DIR="$TD/fe-shadow"
+mkdir -p "$FE_SHADOW_DIR"
+cat > "$FE_SHADOW_DIR/base64.py" <<'PYEOF'
+def b64encode(b): return b''
+def b64decode(s): return b''
+def urlsafe_b64encode(b): return b''
+def urlsafe_b64decode(s): return b''
+PYEOF
+
+FE_SECRET_PROMPT="$TD/fe-secret.md"
+python3 -c "
+import base64
+tok = open('$FE_ROOT/store/.dashboard-token').read().strip()
+print(base64.b64encode(tok.encode()).decode())
+" > "$FE_SECRET_PROMPT"
+
+start_dashboard_stub "$CLEAN_CARD"
+FE_PORT="$DASH_STUB_PORT"
+EXTRA_DASH_PIDS+=("$DASH_STUB_PID")
+n=$((n + 1))
+set +e
+PYTHONPATH="$FE_SHADOW_DIR" SEGED_BASE="$WR_SEGED_BASE" SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 BWRAP_BIN="$WR_BWRAP_STUB" \
+  "$FE_SUT" --dashboard-url "http://127.0.0.1:$FE_PORT" \
+  --hivo teszt --kartya fe000001 --feladattipus kod --kategoria safe \
+  --prompt "$FE_SECRET_PROMPT" --mappa "$WR_SEGED_BASE/w" > "$TD/out" 2> "$TD/err"
+got=$?
+set -e
+[ "$got" = 3 ] || fails+=("F-E: a PYTHONPATH-shadowed base64 module must not hide a base64-encoded live secret from titok-kapu.py (want rc=3, blocked), got rc=$got, err=$(cat "$TD/err")")
+grep -q 'STUB RESPONSE' "$TD/out" && fails+=("F-E: the underlying call must NOT have run when the secret should have been caught")
+
+# F-E pin-gap (RedHat R3 LOW, komment 19135): the category-check call (line ~149) and the
+# daily-log payload builder (line ~230) already had -I on them, but no test checked for it --
+# a future edit could silently drop -I from either without any selftest noticing. Static pin
+# on the shipped script's own source, same spirit as the F-B unknown-argument wording check above.
+grep -Eq 'python3 -I "\$CATEGORY_CHECK"' "$REAL_SUT" || fails+=("F-E pin-gap: the category-check python3 call must keep -I")
+grep -Eq "python3 -I -c 'import json,sys; print" "$REAL_SUT" || fails+=("F-E pin-gap: the daily-log payload python3 call must keep -I")
 
 : > "$LOG"
 n=$((n + 1))

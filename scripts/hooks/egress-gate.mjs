@@ -123,6 +123,7 @@
 // open only for quarantine-reader.
 
 import { readFileSync, appendFileSync, mkdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { allow, deny, isInvokedDirectly } from '../hook-lib.mjs'
@@ -131,6 +132,18 @@ import { allow, deny, isInvokedDirectly } from '../hook-lib.mjs'
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const EGRESS_BLOCK_LOG = join(REPO_ROOT, 'store', 'egress-blocked.log')
 const RUNTIME_ALLOWLIST_PATH = join(REPO_ROOT, 'store', 'egress-allowlist.json')
+// Card 86c1372a (RedHat GO F-RH1 (c)): this gate re-reads the runtime allowlist on every call, so
+// a malicious value live for only a short window (the "1s pickup-putback" bypass) would decide a
+// real call without leaving any trace of WHICH content was in force at that moment. Logging the
+// sha of every read makes that window auditable after the fact, even though the dashboard's own
+// hash-baseline watcher (egress-allowlist-baseline.ts) might not have caught the same instant.
+const EGRESS_ALLOWLIST_READ_LOG = join(REPO_ROOT, 'store', 'egress-allowlist-read.log')
+function logAllowlistRead(sha12) {
+  try {
+    mkdirSync(join(REPO_ROOT, 'store'), { recursive: true })
+    appendFileSync(EGRESS_ALLOWLIST_READ_LOG, `${new Date().toISOString()} sha=${sha12}\n`, 'utf-8')
+  } catch { /* logging must never block or fail the actual decision */ }
+}
 
 // Dashboard port: env WEB_PORT, else the install .env, else the 3420 default.
 // A fixed 3420 in the allowlist below blocked the agent's own dashboard as soon
@@ -398,8 +411,15 @@ export function firecrawlDisallowedParams(toolName, toolInput) {
 // FAIL-OPEN on the file: missing or malformed -> empty lists, NOT an error.
 // The caller must still apply the built-in ALLOWED_PREFIXES.
 export function loadRuntimeAllowlist() {
+  let raw
   try {
-    const raw = readFileSync(RUNTIME_ALLOWLIST_PATH, 'utf-8')
+    raw = readFileSync(RUNTIME_ALLOWLIST_PATH, 'utf-8')
+  } catch {
+    logAllowlistRead('missing')
+    return { domains: [], prefixes: [], quarantineDomains: [], quarantinePosture: 'allowlist' }
+  }
+  logAllowlistRead(createHash('sha256').update(raw, 'utf-8').digest('hex').slice(0, 12))
+  try {
     const parsed = JSON.parse(raw)
     return {
       domains: Array.isArray(parsed.domains) ? parsed.domains.filter((d) => typeof d === 'string') : [],
@@ -416,7 +436,7 @@ export function loadRuntimeAllowlist() {
       quarantinePosture: parsed.quarantine_reader_posture === 'denylist' ? 'denylist' : 'allowlist',
     }
   } catch {
-    // Missing file or JSON parse error: treat as empty, never propagate.
+    // JSON parse error on an otherwise-readable file: the sha was already logged above.
     return { domains: [], prefixes: [], quarantineDomains: [], quarantinePosture: 'allowlist' }
   }
 }

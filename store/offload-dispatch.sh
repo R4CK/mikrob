@@ -126,7 +126,7 @@ is_gemini_blocked() {
   # deliberate, successful "allowed" verdict matches. A literal, not an env var, to sidestep a
   # bash quirk: a `VAR=val command` prefix assignment on a `local -r` variable is itself an
   # assignment and bash refuses it as a readonly violation, even though it's command-scoped.
-  printf '%s\0%s' "$title" "$desc" | python3 -c '
+  printf '%s\0%s' "$title" "$desc" | python3 -I -c '
 import sys, unicodedata, re
 
 project  = sys.argv[1]
@@ -347,11 +347,49 @@ for tag in all_tags:
     # EXACT-join requirement alone already keeps an ordinary long word out (e45945a2
     # "[Resection of X]" negative control: no contiguous run of resection/of/x joins to a
     # BLOCKED_TAGS entry).
+    # F-F (card f6f67dff, RedHat D1 finding on c8a6e1da, komment 18860): this was O(n^2) windows
+    # times an O(window length) join, i.e. cubic in the token count -- measured 30+ s on a ~4.5 KB
+    # tag of mostly single-char tokens (2250 tokens), a synchronous hang on every leaf dispatch
+    # check that touches it.
+    # F-F delta (RedHat R1, komment 19135, regression on the first cap attempt): capping the RAW
+    # joined length at 32 chars broke the "[S E C <30+ glued digits>]" shape -- a trailing digit
+    # run the strip regex removes can legitimately be arbitrarily long (the old, pre-F-F code had
+    # no cap at all), so bounding the raw length instead of the match-relevant (stripped) length
+    # cut the window off before the digit suffix was ever stripped. Fix: cap the STRIPPED length
+    # (the only thing that must stay <= the longest BLOCKED_TAGS word, 10 chars, to ever match),
+    # tracked incrementally as the running total length minus a running trailing-digit-run length
+    # (updated per appended token in O(1)/O(token length), never by re-scanning the whole growing
+    # string) -- the trailing digit run can grow without bound, only the non-digit part is capped.
+    # Growing the window only ever appends characters, so the stripped length is monotonically
+    # non-decreasing: once it exceeds the cap, every longer window from the same _start is
+    # guaranteed to fail too, so the inner loop can still stop there.
+    _BLOKKOLT_MAX_SZO_HOSSZ = max(len(w) for w in BLOCKED_TAGS | {"blokkolt"})  # 10 ("superadmin")
     _n_tag_tokens = len(tag_tokens)
     for _start in range(_n_tag_tokens):
-        for _end in range(_start + 2, _n_tag_tokens + 1):
-            _run_joined = "".join(tag_tokens[_start:_end])
-            _run_stripped = re.sub(r"[0-9]+$", "", _run_joined)
+        # A BLOCKED_TAGS/"blokkolt" szavak tisztan betusek, szam nelkul -- egy LEADING szamjegy
+        # a windowban SOHA nem lehet egyezes resze, mert a farok-level-vonas csak a VEGET
+        # csipi, a kezdetet nem. Egy pusztan-szamjegy-tokenekbol allo hosszu futas (adverzarialis
+        # bemenet, pl. 2250 kulon pontokkal elvalasztott egyjegyu token) emiatt minden _start-rol
+        # vegig futna anelkul hogy esellye lenne egyezni -- a kihagyas ezt nullazza, a korabbi
+        # kobos regresszio masik alakjat (nem a RedHat merte, de ugyanabbol az osztalybol).
+        if tag_tokens[_start][:1].isdigit():
+            continue
+        _run_joined = ""
+        _trailing_digit_len = 0
+        for _end in range(_start + 1, _n_tag_tokens + 1):
+            _tok = tag_tokens[_end - 1]
+            _run_joined += _tok
+            if _tok.isdigit():
+                _trailing_digit_len += len(_tok)
+            else:
+                _tok_farok = re.search(r"[0-9]+$", _tok)
+                _trailing_digit_len = len(_tok_farok.group(0)) if _tok_farok else 0
+            _stripped_len = len(_run_joined) - _trailing_digit_len
+            if _stripped_len > _BLOKKOLT_MAX_SZO_HOSSZ:
+                break
+            if _end - _start < 2:
+                continue
+            _run_stripped = _run_joined[:_stripped_len]
             for _candidate in (_run_joined, _run_stripped):
                 if _candidate and (_candidate == "blokkolt" or _candidate in BLOCKED_TAGS):
                     sys.exit(0)  # blocked
@@ -1010,6 +1048,11 @@ write_draft_to_file() {
   local safe_leaf; safe_leaf="$(sanitize_path_component "$leaf_id")"
   local dir="$DRAFTS_DIR/$safe_card"
   mkdir -p "$dir"
+  # WhiteHat2 F3 (21fbc293, comment 18065): mkdir -p leaves the umask-default mode (0755 under the
+  # common 022 umask) on both DRAFTS_DIR and the per-card dir -- draft bodies can carry card
+  # title/description text, so the directories carrying them get the same 700 the file itself
+  # already gets below, closing the window where another local user could list/read them.
+  chmod 700 "$DRAFTS_DIR" "$dir" 2>/dev/null || true
   local path="$dir/$(date +%s)-$safe_leaf.md"
   printf '%s' "$body" > "$path"
   chmod 600 "$path"

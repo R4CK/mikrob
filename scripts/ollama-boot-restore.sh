@@ -117,12 +117,29 @@ get_uptime_sec() {
 # boot (`-b 0`) rather than a completed one -- this script cares about "is the running kernel
 # already showing the fault", not "did a past boot show it".
 dxg_seen_this_boot() {
-  local text
+  local text status
   if [ -n "${OLLAMA_RESTORE_DMESG_OVERRIDE:-}" ]; then
     text="$(cat "$OLLAMA_RESTORE_DMESG_OVERRIDE" 2>/dev/null)"
+    status=$?
   else
     text="$(journalctl -k -b 0 2>/dev/null)"
+    status=$?
   fi
+  # Card 39b958a4 (Cybersec F1, GO b9a657e6 comment 5821): a command failure is NOT the same as "a
+  # successfully-read log with no dxgkrnl lines" -- the old `2>/dev/null` swallowed that distinction,
+  # so an unreadable kernel log fell through to "no match" and started Ollama anyway, while
+  # get_uptime_sec()'s own unreadable case fails closed. Mirror that stance here.
+  if [ "$status" -ne 0 ]; then
+    return 0
+  fi
+  # RedHat NO-GO F-RH1 (card 39b958a4, comment 19024): exit 0 with nothing useful in it -- empty
+  # output, "-- No entries --", or only a stderr permission hint that `2>/dev/null` already discarded
+  # -- is just as unreadable as a nonzero exit, and must defer the same way. Every real
+  # `journalctl -k` line carries a "kernel:" field; its absence means the log was not actually read.
+  case "$text" in
+    *kernel:*) ;;
+    *) return 0 ;;
+  esac
   echo "$text" | grep -qE 'dxgk_ioctl|dxgadapter_release_lock|misc dxg: dxgk'
 }
 
@@ -191,7 +208,7 @@ main() {
   fi
 
   if dxg_seen_this_boot; then
-    log "dxgkrnl fault signature already present in this boot's kernel log -- deferring, letting gpu-crashloop-guard.sh's own timer classify/mask it rather than racing a restart against a live crash-loop"
+    log "dxgkrnl fault signature already present in this boot's kernel log, or the log could not be read -- deferring, letting gpu-crashloop-guard.sh's own timer classify/mask it rather than racing a restart against a live crash-loop"
     return 0
   fi
 

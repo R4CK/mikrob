@@ -116,6 +116,76 @@ describe('git-repo-watcher.sh reads last_sha from the state file, not the tracke
   })
 })
 
+// Card eedb2871: before this, a NOCHANGE/CHANGED:code result was only ever PRINTED, never
+// persisted -- an enabled=true entry could be fetched and compared every single day and still
+// show a last_checked_at from weeks ago, because nothing wrote it down. These pin that every
+// genuine look (NOCHANGE, a "code" flag, a diverged ff-merge) now stamps last_checked_at in the
+// state file, while the reviewed last_sha pin for a "code"/diverged entry stays untouched until a
+// human reviews the drift via watched-repos-record-review.sh -- only an auto-applied "text"
+// fast-forward is allowed to move last_sha on its own.
+describe('git-repo-watcher.sh stamps last_checked_at on every genuine look (card eedb2871)', () => {
+  it('NOCHANGE stamps last_checked_at with today, leaving last_sha exactly as it was', () => {
+    const head = git(upstream, 'rev-parse', 'HEAD')
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true, note: 'x' },
+    ])
+    writeFileSync(statePath, JSON.stringify({ demo: { last_sha: head, last_checked_at: '2026-10-09' } }))
+    const out = runWatcherAt(dir)
+    expect(out).toContain('NOCHANGE:demo')
+    const state = JSON.parse(readFileSync(statePath, 'utf-8'))
+    expect(state.demo.last_checked_at).not.toBe('2026-10-09')
+    expect(state.demo.last_checked_at).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(state.demo.last_sha).toBe(head) // untouched -- nothing changed
+  })
+
+  it('a "code" adoption flagged for review stamps last_checked_at but does NOT advance last_sha past the reviewed pin', () => {
+    const before = git(upstream, 'rev-parse', 'HEAD')
+    writeFileSync(join(upstream, 'b.txt'), 'two\n')
+    gitOk(upstream, 'add', 'b.txt')
+    gitOk(upstream, 'commit', '-q', '-m', 'second')
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: 'main', local: clone, type: 'code', enabled: true, note: 'x' },
+    ])
+    writeFileSync(statePath, JSON.stringify({ demo: { last_sha: before, last_checked_at: '2026-10-09' } }))
+    const out = runWatcherAt(dir)
+    expect(out).toContain('CHANGED:code:demo')
+    expect(out).toContain('FLAGGED-review-before-update')
+    const state = JSON.parse(readFileSync(statePath, 'utf-8'))
+    expect(state.demo.last_checked_at).not.toBe('2026-10-09')
+    // the reviewed pin must NOT silently advance past an unreviewed upstream commit
+    expect(state.demo.last_sha).toBe(before)
+  })
+
+  it('a "text" auto-fast-forward stamps BOTH last_checked_at and the new last_sha', () => {
+    const before = git(upstream, 'rev-parse', 'HEAD')
+    writeFileSync(join(upstream, 'b.txt'), 'two\n')
+    gitOk(upstream, 'add', 'b.txt')
+    gitOk(upstream, 'commit', '-q', '-m', 'second')
+    const after = git(upstream, 'rev-parse', 'HEAD')
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true, note: 'x' },
+    ])
+    writeFileSync(statePath, JSON.stringify({ demo: { last_sha: before, last_checked_at: '2026-10-09' } }))
+    const out = runWatcherAt(dir)
+    expect(out).toContain('CHANGED:text:demo')
+    const state = JSON.parse(readFileSync(statePath, 'utf-8'))
+    expect(state.demo.last_checked_at).not.toBe('2026-10-09')
+    expect(state.demo.last_sha).toBe(after) // a text adoption IS allowed to advance its own pin
+  })
+
+  it('a disabled entry is never written to the state file at all -- no check happened', () => {
+    const head = git(upstream, 'rev-parse', 'HEAD')
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: 'main', local: clone, type: 'text', enabled: false, note: 'x' },
+    ])
+    writeFileSync(statePath, JSON.stringify({ demo: { last_sha: head, last_checked_at: '2026-10-09' } }))
+    const out = runWatcherAt(dir)
+    expect(out).toContain('DISABLED:demo')
+    const state = JSON.parse(readFileSync(statePath, 'utf-8'))
+    expect(state.demo.last_checked_at).toBe('2026-10-09') // untouched -- a disabled entry is not a look
+  })
+})
+
 describe('watched-repos-record-review.sh', () => {
   beforeEach(() => {
     writeRegistry([

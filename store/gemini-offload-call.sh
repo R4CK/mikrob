@@ -258,7 +258,10 @@ print(text, end='')
 PYEOF
 
 redact_prompt() {
-  python3 "$_REDACT_PY"
+  # F-E delta (card f6f67dff, RedHat R3, komment 19135): -I (isolated mode) ignores PYTHONPATH,
+  # so an ambient shadow module (e.g. a fake re.py) cannot silently defeat the redactor -- the
+  # same fix the card already applied to seged-hivo.py/gemini-agy-call.sh, closed here too.
+  python3 -I "$_REDACT_PY"
 }
 
 # redact-test: run redact_prompt on stdin/arg and exit WITHOUT touching vault (test hook, card a92e9913 B2)
@@ -336,7 +339,7 @@ chmod 0600 "$API_HDR"
 printf 'x-goog-api-key: %s\r\n' "$API_KEY" > "$API_HDR"
 REQ_FILE="$(mktemp)"
 chmod 0600 "$REQ_FILE"
-printf '%s' "$CLEAN_PROMPT" | python3 -c '
+printf '%s' "$CLEAN_PROMPT" | python3 -I -c '
 import json, sys
 prompt = sys.stdin.read()
 body = {
@@ -360,7 +363,7 @@ http_status="$(curl -s -o "$TMPOUT" -w '%{http_code}' \
 
 if [[ "$http_status" == "200" ]]; then
   # Extract text from the response
-  text="$(python3 -c '
+  text="$(python3 -I -c '
 import json, sys
 try:
     d = json.load(open(sys.argv[1]))

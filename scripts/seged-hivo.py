@@ -217,7 +217,11 @@ def run_gate(prompt, workdir):
             q = Path(td) / f'{i}.txt'
             q.write_bytes(p.read_bytes())
             paths.append(str(q))
-        r = subprocess.run([sys.executable, str(tk), *paths], capture_output=True, text=True)
+        # F-E (card f6f67dff, WhiteHat2): -I (isolated mode) makes titok-kapu.py ignore the
+        # caller's PYTHONPATH -- without it, a directory ahead of the stdlib on PYTHONPATH can
+        # ship its own base64.py and make _kodolt_alakok() generate no matching base64 form for a
+        # live secret, so a base64-encoded token silently stops being caught.
+        r = subprocess.run([sys.executable, '-I', str(tk), *paths], capture_output=True, text=True)
         report = r.stdout + r.stderr
         for q, p in sorted(zip(paths, texts), key=lambda x: -len(x[0])):  # 10.txt before 1.txt
             report = report.replace(q, str(p))

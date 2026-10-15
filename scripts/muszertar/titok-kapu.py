@@ -17,7 +17,7 @@ Hasznalat:
 
 Kilepesi kod: 0 = tiszta, 1 = TALALAT (commit blokkolva), 2 = a muszer hibas.
 """
-import base64, binascii, json, re, sys, os, subprocess, argparse
+import base64, binascii, json, re, sys, os, subprocess, argparse, unicodedata
 from pathlib import Path
 from urllib.parse import quote as _urlquote
 
@@ -218,10 +218,64 @@ def _kodolt_alakok(ertek: str):
 
 
 _ZAJ_RE = re.compile(r"[\s'\"+]+")
+# F-D (card f6f67dff, WhiteHat2 + RedHat R2 delta, komment 19135 majd 19238): zero-width/invisible
+# kodpontok egy token kozepebe ekelve atmennek a _ZAJ_RE-n (az \s nem illeszkedik rajuk), es
+# szettorik a MINTAK regexeket, VALAMINT a live-titok egesz-szoveg egyezest is -- reszleges
+# szivargas, nem talalat. Az elso kor egy ZART LISTA volt (7 explicit kodpont-tartomany) -- RedHat
+# merte: 30 probalt lathatatlan kodpontbol 24 atment (bidi vezerlok, Hangul-toltok, egyeb Cf/Cc). A
+# masodik kor KATEGORIA szerint szurt (Cf/Cc a strukturalis \n/\r/\t kivetelevel, Zl/Zp), PLUSZ egy
+# explicit kiegeszito lista -- de RedHat (19238) ujra mert: a variation selectorok (VS1-16,
+# U+FE00-FE0F, 15/15 atment; VS17-256, U+E0100-E01EF, 240/240 atment) es a kiosztatlan
+# Default_Ignorable kodpontok (mongol szabad VS1-4 U+180B-180D/180F, U+2065, U+FFF0-FFF8,
+# U+E0000, U+E0002-E001F, U+E0080-E00FF) nem Cf/Cc/Zl/Zp kategoriaju (a VS-ek Mn, a kiosztatlanok
+# Cn), tehat a kategoria-szuro nem fogta meg oket. A javitas a teljes Unicode
+# Default_Ignorable_Code_Point derivalt tulajdonsag lefedesere all at: a fenti tartomanyok MINDEGYIKE
+# ebbe a derivalt halmazba esik (a Cf/Cc/Zl/Zp kategoriak is resze ennek, azokat a kategoria-szuro
+# mar fedte). Tartomany-alapu, nem kategoria-alapu, mert a VS-ek es a kiosztatlan pontok kategoriaja
+# (Mn illetve Cn) tul tag lenne altalanosan szurni (Mn=ekezet-kombinalo jel, pl. magyar szoveg NFD
+# alakja; Cn=minden meg ki nem osztott kodpont, ami idovel kiosztott betuve valhat).
+_LATHATATLAN_TOVABBI = "ᅟᅠㅤﾠ͏឴឵᠎️"
+_LATHATATLAN_STRUKTURALIS = frozenset("\n\r\t")
+_DEFAULT_IGNORABLE_TARTOMANYOK = (
+    (0x180B, 0x180D),  # mongol szabad variation selector 1-3
+    (0x180F, 0x180F),  # mongol szabad variation selector 4
+    (0x2065, 0x2065),  # kiosztatlan (Default_Ignorable)
+    (0xFE00, 0xFE0F),  # variation selector 1-16
+    (0xFFF0, 0xFFF8),  # kiosztatlan (Default_Ignorable)
+    (0xE0000, 0xE0000),  # kiosztatlan (Default_Ignorable)
+    (0xE0002, 0xE001F),  # kiosztatlan (Default_Ignorable)
+    (0xE0080, 0xE00FF),  # kiosztatlan (Default_Ignorable)
+    (0xE0100, 0xE01EF),  # variation selector 17-256
+)
+
+
+def _default_ignorable(ch: str) -> bool:
+    cp = ord(ch)
+    for lo, hi in _DEFAULT_IGNORABLE_TARTOMANYOK:
+        if lo <= cp <= hi:
+            return True
+    return False
+
+
+def _lathatatlan_szuro(szoveg: str) -> str:
+    kiment = []
+    for ch in szoveg:
+        if ch in _LATHATATLAN_STRUKTURALIS:
+            kiment.append(ch)
+            continue
+        if ch in _LATHATATLAN_TOVABBI:
+            continue
+        if unicodedata.category(ch) in ("Cf", "Cc", "Zl", "Zp"):
+            continue
+        if _default_ignorable(ch):
+            continue
+        kiment.append(ch)
+    return "".join(kiment)
 
 
 def vizsgal_szoveg(szoveg: str, cimke: str, kivetel_aktiv: bool = True, fail_closed: bool = True,
                     dash_override: str = None, oauth_override: str = None, root: str = None):
+    szoveg = _lathatatlan_szuro(szoveg)
     talalatok = []
     elo = elo_titkok(dash_override=dash_override, oauth_override=oauth_override, root=root,
                       fail_closed=fail_closed)
@@ -305,6 +359,39 @@ POZITIV = [
     ("jelszo-titok-hozzarendeles", "client_secret=" + "K"*24),  # TITOK-KAPU-KIVETEL
     ("jelszo-titok-hozzarendeles", '"access_token": "' + "L"*24 + '"'),  # TITOK-KAPU-KIVETEL
     ("google-client-secret", "GOCSPX-" + "M"*28),  # TITOK-KAPU-KIVETEL
+    # F-D (card f6f67dff): zero-width space (U+200B) ekelve a kulcs kozepebe -- a normalizalas
+    # elotti kod ezt nem ismerte volna fel.
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "​" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
+    # F-D delta (RedHat R2, komment 19135): a zart-lista verzio csak 6/30 probalt lathatatlan
+    # kodpontot kapott el -- parameteres pin a kategoria-szures ALL harom agara: Cf (bidi
+    # override U+202E), Cc (DEL vezerlokarakter U+007F), es a nem-Cf kiegeszito listara
+    # (combining grapheme joiner U+034F, Hangul-toltő U+115F).
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "‮" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "\u007f" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "͏" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "ᅟ" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
+    # F-D delta2 (RedHat R2 reszleges, komment 19238): a kategoria-szures (Cf/Cc/Zl/Zp) nem fogta
+    # meg a variation selectorokat (kategoria Mn, nem Cf) es a kiosztatlan Default_Ignorable
+    # kodpontokat (kategoria Cn) -- parameteres pin a _DEFAULT_IGNORABLE_TARTOMANYOK MINDEGYIK
+    # tartomanyara (egy-egy mintaval a tartomany elejebol), PLUSZ a VS16+VS1 kombinacio, PLUSZ a 7
+    # korabban pin nelkuli, mar _LATHATATLAN_TOVABBI-ban levo kodpont (U+1160, U+3164, U+FFA0,
+    # U+17B4, U+17B5, U+180E, U+FE0F).
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "᠋" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (mongol szabad VS1)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "⁥" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (kiosztatlan)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "︀" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (variation selector 1)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "￰" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (kiosztatlan)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "\U000e0000" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (kiosztatlan)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "\U000e0002" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (kiosztatlan)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "\U000e0080" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (kiosztatlan)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "\U000e0100" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (variation selector 17)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "️︀" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (VS16+VS1 kombinacio)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "ᅠ" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (Hangul-tolto, korabban pin nelkul)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "ㅤ" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (Hangul-tolto, korabban pin nelkul)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "ﾠ" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (Hangul-tolto, korabban pin nelkul)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "឴" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (khmer maganhangzo, korabban pin nelkul)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "឵" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (khmer maganhangzo, korabban pin nelkul)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "᠎" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (mongol elvalaszto, korabban pin nelkul)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "️" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (variation selector-16, korabban pin nelkul)
 ]
 # kliensbe szant kulcs: a muszernek LATNIA kell, de NEM blokkolhatja a commitot
 PUBLIKUS_MINTA = "SUPA_ANON=eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiZGVtby1wcm9qZWN0IiwgInJvbGUiOiAiYW5vbiIsICJpYXQiOiAxNTAwMDAwMDAwfQ.WvLorMePmqUDUR3a2oDuLtHGV6zaWQjXEpDNoia0xOM"  # TITOK-KAPU-KIVETEL
@@ -323,6 +410,9 @@ NEGATIV = [
     'eredmeny = a // 2  # whole division',
     'lasd a Bearer tokenrol: docs/api-referencia.md',               # tul rovid "token" szo a Bearer utan
     'a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5',  # 64 hex, de NEM a sajat tokenunk
+    # F-D (card f6f67dff) negativ kontroll: zero-width karakter normal szovegben, nem token
+    # kozepen -- a normalizalas nem csinalhat belole hamis talalatot.
+    'ez egy​ norm​al mondat, semmi titkos benne',
 ]
 
 def onteszt() -> int:
@@ -430,6 +520,9 @@ def elo_titkok_onteszt() -> int:
              base64.urlsafe_b64encode(("xy" + fake_access).encode()).decode(), True),
             ("dupla URL-kodolt refresh token",
              _urlquote(_urlquote(fake_refresh, safe=""), safe=""), True),
+            # F-D (card f6f67dff): zero-width space (U+200B) a raw token kozepebe ekelve.
+            ("dashboard token zero-width karakterrel szetszabdalva",
+             fake_dash[:30] + "​" + fake_dash[30:], True),
         ]
         for nev, szoveg, vart_blokkol in cases:
             t = vizsgal(szoveg)

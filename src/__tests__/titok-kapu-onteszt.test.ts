@@ -57,4 +57,40 @@ describe('titok-kapu.py --onteszt runs in CI (card 09117e0a M2/N6)', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('M2p pin: a missing dashboard-token file is a HARD ERROR (exit 2) in file-argument mode, not a silent skip', () => {
+    // RedHat NO-GO M2p (card 09117e0a, komment 18915): vizsgal_szoveg()'s fail_closed=True
+    // default is what makes main()'s file-args branch (the one run_gate() actually calls) abort
+    // with TITOK-KAPU HIBA when the fleet's own dashboard-token is unreadable, instead of quietly
+    // running the regex checks alone as if nothing were missing (fail-open). Same isolated-copy
+    // sandbox as the P1 pin above, deliberately WITHOUT a store/.dashboard-token this time.
+    const dir = mkdtempSync(join(tmpdir(), 'titok-kapu-m2p-'))
+    try {
+      const scriptDir = join(dir, 'scripts', 'muszertar')
+      mkdirSync(scriptDir, { recursive: true })
+      const sandboxScript = join(scriptDir, 'titok-kapu.py')
+      copyFileSync(SCRIPT, sandboxScript)
+      // store/ is deliberately NOT created: no .dashboard-token anywhere under this sandbox root.
+
+      const file = join(dir, 'clean.txt')
+      writeFileSync(file, 'hello world, nothing secret here\n')
+      let status = 0
+      let stderr = ''
+      try {
+        execFileSync('python3', [sandboxScript, file], { encoding: 'utf-8', timeout: 30_000 })
+      } catch (err) {
+        const e = err as { status?: number; stderr?: string }
+        status = e.status ?? -1
+        stderr = e.stderr ?? ''
+      }
+      expect(
+        status,
+        'a missing fleet dashboard-token must stop the call (exit 2), not fall through as if the ' +
+          'live-token check never existed -- if this is 0, vizsgal_szoveg()\'s fail_closed default flipped to False',
+      ).toBe(2)
+      expect(stderr).toMatch(/TITOK-KAPU HIBA/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

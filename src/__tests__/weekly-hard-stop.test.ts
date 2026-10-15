@@ -21,7 +21,10 @@ const write = (o: Record<string, unknown>) => writeFileSync(p(), JSON.stringify(
 
 describe('readHardStop', () => {
   it('reads an active flag with its numbers and reason', () => {
-    write({ active: true, percent: 98, testStop: 97, exemptAgents: ['mikrob'], reason: 'over', updatedAt: 5 })
+    write({
+      active: true, percent: 98, testStop: 97, exemptAgents: ['mikrob'], reason: 'over', updatedAt: 5,
+      newDevStopActivatedAt: 3, inProgressAtActivation: ['a', 'b'],
+    })
     expect(readHardStop(p())).toEqual({
       active: true,
       percent: 98,
@@ -31,7 +34,16 @@ describe('readHardStop', () => {
       exemptAgents: ['mikrob'],
       reason: 'over',
       updatedAt: 5,
+      newDevStopActivatedAt: 3,
+      inProgressAtActivation: ['a', 'b'],
     })
+  })
+
+  it('an old-format flag with no activation fields reads them as null/empty, never a guess', () => {
+    write({ active: true, percent: 98, testStop: 97, exemptAgents: ['mikrob'], reason: 'over', updatedAt: 5 })
+    const flag = readHardStop(p())
+    expect(flag.newDevStopActivatedAt).toBeNull()
+    expect(flag.inProgressAtActivation).toEqual([])
   })
 
   it('a MISSING flag is not a stop (fail-open: a stop signal, not a permission)', () => {
@@ -125,5 +137,19 @@ describe('isNewDevStartBlocked (weekly NEW-DEV stop enforcement, Peti 2026-08-01
 
   it('only guards in_progress/waiting targets -- a planned -> done move is never blocked by this predicate', () => {
     expect(isNewDevStartBlocked('planned', 'done', false, softStop())).toBe(false)
+  })
+
+  // CLAUDE.md rule 1e / card b73722e1: a child/predecessor/successor of an in_progress card is a
+  // subtask of work already underway, not new development.
+  it('ALLOWS planned -> in_progress when linkedToInProgress is true (child/predecessor/successor of in-progress work)', () => {
+    expect(isNewDevStartBlocked('planned', 'in_progress', false, softStop(), undefined, true)).toBe(false)
+  })
+
+  it('ALLOWS the direct planned -> waiting skip too when linked', () => {
+    expect(isNewDevStartBlocked('planned', 'waiting', false, softStop(), undefined, true)).toBe(false)
+  })
+
+  it('defaults linkedToInProgress to false -- existing callers that do not pass it keep the old behaviour', () => {
+    expect(isNewDevStartBlocked('planned', 'in_progress', false, softStop())).toBe(true)
   })
 })

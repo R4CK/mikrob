@@ -20319,6 +20319,54 @@ Mivel a TOKENVAK915 hiba önmagában szűk és jól körülhatárolt, NEM várta
 
 **Ki döntött:** backend3 (kártya 25ea084c, 2026-10-14).
 
+---
+
+**2026-10-14 -- b73722e1: newDevStop kapcsolt-kártya kivétel -- aktiválási-pillanatkép az élő státusz helyett (WhiteHat2 NO-GO javítás)**
+
+WhiteHat2 NO-GO-t adott (gate komment 19003) a kártya első verziójára: F1 (HIGH) -- az anti-bypass
+viszonyítási pontja a flag `updatedAt` mezője volt, amit `store/pre-dispatch-check.sh` MINDEN
+futáskor újraír, akkor is, ha a stop folyamatosan aktív -- mérve: két futás 2 másodperc
+különbséggel, mindkétszer újraírt `updatedAt`, a stop végig aktív. Ez azt jelentette, hogy "az él a
+stop aktiválása előtti" ellenőrzés valójában "az él a legutóbbi flag-írás előtti" volt, és a
+megkerülés egyetlen flag-írásnyi várakozással visszajött (PoC a valódi routeren: reparentelés egy
+in_progress kártyára, 409 azonnal, 200 a következő flag-írás után). F2 (MEDIUM) -- az ellenőrzés a
+szomszéd kártya ÉLŐ státuszát nézte, ezért egy `done` szülő `in_progress`-re visszanyitása (agentként,
+force nélkül) utólag kivételt adott a szülő STOP ELŐTTI gyerekeinek is, holott a visszanyitás maga a
+stop ALATT történt.
+
+**Döntés: a kivétel mostantól egy, az AKTIVÁLÁS PILLANATÁBAN rögzített, FAGYASZTOTT állapotra épül, nem
+élő adatra.** `store/pre-dispatch-check.sh` `write_hard_stop()`-ja két új mezőt ír a flag-be:
+`newDevStopActivatedAt` (a valódi false->true átmenet időpontja, a stop aktív maradása alatt
+VÁLTOZATLAN -- csak a már meglévő `updatedAt` mozog tovább minden futással) és
+`inProgressAtActivation` (a PONTOSAN akkor `in_progress` státuszú, nem archivált kártyák
+azonosítóinak listája, egyetlen sqlite3 read-only lekérdezéssel). A `src/db.ts`
+`isLinkedToInProgressCard()` mostantól EZT a fagyasztott halmazt nézi (nem egy élő
+`SELECT status`-t), és az anti-bypass él-kor ellenőrzés is ehhez a rögzített időponthoz viszonyít, nem
+az újraírt `updatedAt`-hoz. Mellékhatásként ez zárja WhiteHat2 L1 (LOW) lelet is: egy archivált, de
+`in_progress` STÁTUSZÚ kártya élő-lekérdezés hiányában már nem számíthat "kapcsoltnak".
+
+**Miért nem egyszerűbb javítás (pl. csak egy külön `activatedAt` mező, pillanatkép nélkül):**
+WhiteHat2 saját javaslata volt az erősebb forma ("ez F2-t is zárja") -- egy puszta időpont-mező
+F1-et bezárta volna, de F2-t nem: egy visszanyitott `done` szülő MOSTANI élő státusza továbbra is
+`in_progress` lenne, tehát egy pusztán-időpont-alapú ellenőrzés még mindig kivételt adna neki. A
+pillanatkép-halmaz strukturálisan zárja ki ezt: egy kártya, ami az aktiváláskor NEM volt
+`in_progress`, soha nem kerülhet bele a halmazba, bármikor nyitják is vissza utána.
+
+**Teszt:** `src/__tests__/pre-dispatch-check-newdevstop-activation.test.ts` (6 eset, a VALÓDI
+scripten, saját sqlite3-fixture-rel: friss aktiválás pillanatképpel, archivált kártya kizárva,
+folyamatos aktivitás alatt a pillanatkép és az aktiválási idő VÁLTOZATLAN marad két futáson át,
+leállás törli a mezőket, újraaktiválás friss pillanatképet vesz, hiányzó DB fail-safe üres
+pillanatképet ad). `src/__tests__/kanban-new-dev-stop-route-wiring.test.ts` (4 eset) a TELJES routeren
+(`tryHandleKanban`) át reprodukálja mind az F1, mind az F2 kiskaput regressziós tesztként, mock-olt
+flag-állapottal, két egymást követő "flag-írás" szimulációjával. A `src/__tests__/kanban-new-dev-stop-
+linked-card.test.ts` és `src/__tests__/weekly-hard-stop.test.ts` a pillanatkép-alapú szemantikára
+frissítve. Minden mutáció-pin (F1 visszaállítás `updatedAt`-re, F2 visszaállítás élő-státusz
+ellenőrzésre, a flag-megőrzés kikapcsolása) a megfelelő tesztet pirosra váltotta, majd helyreállítva
+zöld.
+
+**Ki döntött:** WhiteHat2 (NO-GO lelet + a pillanatkép-alapú javítási irány javaslata, gate komment
+19003), végrehajtotta fullstack (kártya b73722e1, 2026-10-14).
+
 ## 2026-10-15: agent-id-header generátor argv-token-szivárgás javítva (kártya e73b17ef)
 
 **Mi történt:** upstream `a30553d6` ("Security infra package #1357") a `buildAgentIdHeaderBody()` generátorba (`src/web/agent-scaffold.ts`) olyan curl-mintát hozott, ami a Bearer tokent közvetlenül a `-H "Authorization: Bearer $(cat <token>)"` argumentumba teszi -- ez a `/proc/<pid>/cmdline`-on keresztül kiszivárog, és a `token-in-argv-guard.test.ts` ezt a mintát MINDEN agensre tiltja. A hiba a Köteg 14 upstream-szinkron ELŐTT landolt (már a merge-bázison, `23b49496`-on is megvolt), de csak most buktatta a fleet-testet, mert az élő `agents/*/CLAUDE.md` fájlok csak most kapták meg a generált blokkot egy scaffold-sweep során -- ez blokkolt MINDEN ügynök landolását (backend, backend2, backend3, cybered, cybersec2, fullstack, qa, qa2 mind megkapta a hibás blokkot).

@@ -39,6 +39,29 @@ export interface WeeklyHardStop {
   /** Human-readable reason, empty when not active. */
   readonly reason: string
   readonly updatedAt: number | null
+  /**
+   * The moment newDevStopActive last flipped false->true, held STEADY while it stays active
+   * (card b73722e1, WhiteHat2 NO-GO F1). `updatedAt` above is rewritten by store/pre-dispatch-
+   * check.sh on EVERY run, including while the stop is continuously active -- a value that keeps
+   * drifting forward cannot anchor "was this edge written before the stop started", because the
+   * answer changes on its own a few minutes later with no action from anyone. This field is the
+   * one store/pre-dispatch-check.sh's write_hard_stop() only stamps fresh at the actual false->
+   * true transition, carrying the old value forward on every subsequent write while active stays
+   * true. `null` means an old-format flag that never recorded it -- never a safe reference point,
+   * so no exemption can be granted against it (same stance as the rest of this module: missing
+   * data never grants a permission).
+   */
+  readonly newDevStopActivatedAt: number | null
+  /**
+   * The ids of cards that were ALREADY `in_progress` at the exact moment newDevStopActivatedAt was
+   * stamped (card b73722e1, WhiteHat2 NO-GO F2). A card's CURRENT status is live and anyone can
+   * flip it -- reopening a `done` parent to `in_progress` after the stop started would otherwise
+   * make its pre-stop children "linked to an in_progress card" too, even though that reopening
+   * itself happened during the stop. Membership in this frozen set, not the ancestor's live
+   * status, is what the newDevStop exception checks against. Empty when the stop is not active or
+   * the snapshot could not be taken (fail-safe: an empty set exempts nothing).
+   */
+  readonly inProgressAtActivation: readonly string[]
 }
 
 const INACTIVE: WeeklyHardStop = {
@@ -50,6 +73,8 @@ const INACTIVE: WeeklyHardStop = {
   exemptAgents: ['mikrob'],
   reason: '',
   updatedAt: null,
+  newDevStopActivatedAt: null,
+  inProgressAtActivation: [],
 }
 
 const intOr = (v: unknown, fallback: number): number => {
@@ -81,6 +106,12 @@ export function readHardStop(path: string = FLAG_PATH): WeeklyHardStop {
       exemptAgents: exempt.includes('mikrob') ? exempt : [...exempt, 'mikrob'],
       reason: typeof raw['reason'] === 'string' ? raw['reason'] : '',
       updatedAt: Number.isFinite(Number(raw['updatedAt'])) ? Number(raw['updatedAt']) : null,
+      newDevStopActivatedAt: Number.isFinite(Number(raw['newDevStopActivatedAt']))
+        ? Number(raw['newDevStopActivatedAt'])
+        : null,
+      inProgressAtActivation: Array.isArray(raw['inProgressAtActivation'])
+        ? (raw['inProgressAtActivation'] as unknown[]).filter((v): v is string => typeof v === 'string')
+        : [],
     }
   } catch {
     return INACTIVE
@@ -108,6 +139,12 @@ export function isParkedByHardStop(agentId: string, flag: WeeklyHardStop = readH
  * `force` is meant as MikroB's deliberate override for a critical-infra exception (kanban.ts:27) --
  * it only overrides when the caller is one of `flag.exemptAgents` (mikrob); everyone else's force is
  * ignored. Pure so the status-write endpoints can test the decision without a file/DB.
+ *
+ * `linkedToInProgress` (CLAUDE.md rule 1e, card b73722e1): true when the caller has already
+ * determined that this card is a child/predecessor/successor of an in_progress card (via
+ * `isLinkedToInProgressCard` in db.ts, which also carries the anti-bypass edge-age check) -- such a
+ * card is a subtask of work already underway, not new development, and must not be refused. Defaults
+ * to `false` so every existing caller/test keeps its current behaviour unless it opts in.
  */
 export function isNewDevStartBlocked(
   prevStatus: string | undefined,
@@ -115,8 +152,15 @@ export function isNewDevStartBlocked(
   force: boolean,
   flag: WeeklyHardStop,
   actor?: string,
+  linkedToInProgress = false,
 ): boolean {
   const exemptOverride = force && !!actor && flag.exemptAgents.includes(actor.trim().toLowerCase())
   const isNewDevTarget = nextStatus === 'in_progress' || nextStatus === 'waiting'
-  return !exemptOverride && flag.newDevStopActive === true && isNewDevTarget && prevStatus === 'planned'
+  return (
+    !exemptOverride &&
+    !linkedToInProgress &&
+    flag.newDevStopActive === true &&
+    isNewDevTarget &&
+    prevStatus === 'planned'
+  )
 }
