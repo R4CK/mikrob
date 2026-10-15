@@ -162,6 +162,16 @@ export function draftRefBelongsToCard(relPath: string, cardId: string): boolean 
   return parts.length >= 3 && parts[0] === 'drafts' && parts[1] === cardId
 }
 
+/** WhiteHat2 delta-finding F-P3 (626df838, NO-GO @4e012e28): draftRefBelongsToCard() above splits
+ *  the RAW ref string on "/", so "drafts/<cardId>/../<otherCard>/f.md" has parts[1] === cardId and
+ *  passes, while resolveDraftPathSafely() resolves/normalizes the SAME ref and ends up inside
+ *  <otherCard>'s own directory -- both checks individually pass, but on two different paths.
+ *  This compares the already-resolved absolute path's PARENT directory against the card's real
+ *  drafts directory, so a ".."-segment traversal can no longer disagree with the raw-string check. */
+export function draftRefResolvesToCardDir(absPath: string, cardId: string): boolean {
+  return dirname(absPath) === join(DRAFTS_DIR, cardId)
+}
+
 /** True when the card already has an adjudication at or after the given draft timestamp -- either
  *  a real human/role-agent Draft-Review verdict, or a prior first-pass opinion from this module.
  *  Either one means this sweep has nothing new to do for this card. */
@@ -289,6 +299,7 @@ export async function reviewOneCard(
   const absPath = resolveDraftPath(ref.path)
   if (!absPath) return { id: cardId, reviewed: false, reason: 'unsafe_draft_path' }
   if (!draftRefBelongsToCard(ref.path, cardId)) return { id: cardId, reviewed: false, reason: 'draft_ref_card_mismatch' }
+  if (!draftRefResolvesToCardDir(absPath, cardId)) return { id: cardId, reviewed: false, reason: 'draft_ref_card_mismatch' }
 
   let card: { title: string; description: string | null; project: string | null } | undefined
   try {
