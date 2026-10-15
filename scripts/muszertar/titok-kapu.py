@@ -218,18 +218,43 @@ def _kodolt_alakok(ertek: str):
 
 
 _ZAJ_RE = re.compile(r"[\s'\"+]+")
-# F-D (card f6f67dff, WhiteHat2 + RedHat R2 delta, komment 19135): zero-width/invisible kodpontok
-# egy token kozepebe ekelve atmennek a _ZAJ_RE-n (az \s nem illeszkedik rajuk), es szettorik a
-# MINTAK regexeket, VALAMINT a live-titok egesz-szoveg egyezest is -- reszleges szivargas, nem
-# talalat. Az elso kor egy ZART LISTA volt (7 explicit kodpont-tartomany) -- RedHat merte: 30
-# probalt lathatatlan kodpontbol 24 atment (bidi vezerlok, Hangul-toltok, egyeb Cf/Cc). A javitas
-# KATEGORIA szerint szur (Cf=format, Cc=vezerlo a strukturalis \n/\r/\t kivetelevel, Zl/Zp=sor-
-# es bekezdes-elvalasztó), PLUSZ egy explicit kiegeszito lista azokra a nem-Cf "toltő" karakterekre,
-# amik unicodedata szerint Lo/Mn/Zs kategoriaba esnek, de ugyanugy lathatatlanok (Hangul filler
-# U+115F/1160/3164/FFA0, combining grapheme joiner U+034F, khmer inherent vowel U+17B4/17B5,
-# mongol magan-elvalaszto U+180E, variacio-valaszto U+FE0F).
+# F-D (card f6f67dff, WhiteHat2 + RedHat R2 delta, komment 19135 majd 19238): zero-width/invisible
+# kodpontok egy token kozepebe ekelve atmennek a _ZAJ_RE-n (az \s nem illeszkedik rajuk), es
+# szettorik a MINTAK regexeket, VALAMINT a live-titok egesz-szoveg egyezest is -- reszleges
+# szivargas, nem talalat. Az elso kor egy ZART LISTA volt (7 explicit kodpont-tartomany) -- RedHat
+# merte: 30 probalt lathatatlan kodpontbol 24 atment (bidi vezerlok, Hangul-toltok, egyeb Cf/Cc). A
+# masodik kor KATEGORIA szerint szurt (Cf/Cc a strukturalis \n/\r/\t kivetelevel, Zl/Zp), PLUSZ egy
+# explicit kiegeszito lista -- de RedHat (19238) ujra mert: a variation selectorok (VS1-16,
+# U+FE00-FE0F, 15/15 atment; VS17-256, U+E0100-E01EF, 240/240 atment) es a kiosztatlan
+# Default_Ignorable kodpontok (mongol szabad VS1-4 U+180B-180D/180F, U+2065, U+FFF0-FFF8,
+# U+E0000, U+E0002-E001F, U+E0080-E00FF) nem Cf/Cc/Zl/Zp kategoriaju (a VS-ek Mn, a kiosztatlanok
+# Cn), tehat a kategoria-szuro nem fogta meg oket. A javitas a teljes Unicode
+# Default_Ignorable_Code_Point derivalt tulajdonsag lefedesere all at: a fenti tartomanyok MINDEGYIKE
+# ebbe a derivalt halmazba esik (a Cf/Cc/Zl/Zp kategoriak is resze ennek, azokat a kategoria-szuro
+# mar fedte). Tartomany-alapu, nem kategoria-alapu, mert a VS-ek es a kiosztatlan pontok kategoriaja
+# (Mn illetve Cn) tul tag lenne altalanosan szurni (Mn=ekezet-kombinalo jel, pl. magyar szoveg NFD
+# alakja; Cn=minden meg ki nem osztott kodpont, ami idovel kiosztott betuve valhat).
 _LATHATATLAN_TOVABBI = "ᅟᅠㅤﾠ͏឴឵᠎️"
 _LATHATATLAN_STRUKTURALIS = frozenset("\n\r\t")
+_DEFAULT_IGNORABLE_TARTOMANYOK = (
+    (0x180B, 0x180D),  # mongol szabad variation selector 1-3
+    (0x180F, 0x180F),  # mongol szabad variation selector 4
+    (0x2065, 0x2065),  # kiosztatlan (Default_Ignorable)
+    (0xFE00, 0xFE0F),  # variation selector 1-16
+    (0xFFF0, 0xFFF8),  # kiosztatlan (Default_Ignorable)
+    (0xE0000, 0xE0000),  # kiosztatlan (Default_Ignorable)
+    (0xE0002, 0xE001F),  # kiosztatlan (Default_Ignorable)
+    (0xE0080, 0xE00FF),  # kiosztatlan (Default_Ignorable)
+    (0xE0100, 0xE01EF),  # variation selector 17-256
+)
+
+
+def _default_ignorable(ch: str) -> bool:
+    cp = ord(ch)
+    for lo, hi in _DEFAULT_IGNORABLE_TARTOMANYOK:
+        if lo <= cp <= hi:
+            return True
+    return False
 
 
 def _lathatatlan_szuro(szoveg: str) -> str:
@@ -241,6 +266,8 @@ def _lathatatlan_szuro(szoveg: str) -> str:
         if ch in _LATHATATLAN_TOVABBI:
             continue
         if unicodedata.category(ch) in ("Cf", "Cc", "Zl", "Zp"):
+            continue
+        if _default_ignorable(ch):
             continue
         kiment.append(ch)
     return "".join(kiment)
@@ -343,6 +370,28 @@ POZITIV = [
     ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "\u007f" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
     ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "͏" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
     ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "ᅟ" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL
+    # F-D delta2 (RedHat R2 reszleges, komment 19238): a kategoria-szures (Cf/Cc/Zl/Zp) nem fogta
+    # meg a variation selectorokat (kategoria Mn, nem Cf) es a kiosztatlan Default_Ignorable
+    # kodpontokat (kategoria Cn) -- parameteres pin a _DEFAULT_IGNORABLE_TARTOMANYOK MINDEGYIK
+    # tartomanyara (egy-egy mintaval a tartomany elejebol), PLUSZ a VS16+VS1 kombinacio, PLUSZ a 7
+    # korabban pin nelkuli, mar _LATHATATLAN_TOVABBI-ban levo kodpont (U+1160, U+3164, U+FFA0,
+    # U+17B4, U+17B5, U+180E, U+FE0F).
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "᠋" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (mongol szabad VS1)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "⁥" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (kiosztatlan)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "︀" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (variation selector 1)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "￰" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (kiosztatlan)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "\U000e0000" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (kiosztatlan)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "\U000e0002" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (kiosztatlan)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "\U000e0080" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (kiosztatlan)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "\U000e0100" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (variation selector 17)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "️︀" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (VS16+VS1 kombinacio)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "ᅠ" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (Hangul-tolto, korabban pin nelkul)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "ㅤ" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (Hangul-tolto, korabban pin nelkul)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "ﾠ" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (Hangul-tolto, korabban pin nelkul)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "឴" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (khmer maganhangzo, korabban pin nelkul)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "឵" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (khmer maganhangzo, korabban pin nelkul)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "᠎" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (mongol elvalaszto, korabban pin nelkul)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "️" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (variation selector-16, korabban pin nelkul)
 ]
 # kliensbe szant kulcs: a muszernek LATNIA kell, de NEM blokkolhatja a commitot
 PUBLIKUS_MINTA = "SUPA_ANON=eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiZGVtby1wcm9qZWN0IiwgInJvbGUiOiAiYW5vbiIsICJpYXQiOiAxNTAwMDAwMDAwfQ.WvLorMePmqUDUR3a2oDuLtHGV6zaWQjXEpDNoia0xOM"  # TITOK-KAPU-KIVETEL
