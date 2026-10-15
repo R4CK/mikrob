@@ -331,7 +331,7 @@ describe('watched-repos-record-review.sh', () => {
       }),
     )
 
-    const state = JSON.parse(readFileSync(statePath, 'utf-8'))
+    const state: Record<string, { last_sha?: string }> = JSON.parse(readFileSync(statePath, 'utf-8'))
     expect(Object.keys(state)).toHaveLength(8)
     for (const name of names) {
       expect(state[name]?.last_sha).toBe('deadbee2') // last round's value, no entry lost
