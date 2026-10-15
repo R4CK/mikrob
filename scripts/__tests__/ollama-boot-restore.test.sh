@@ -182,6 +182,23 @@ else
   fail "real journalctl nonzero exit did not defer: $out"
 fi
 
+# Card 39b958a4, WhiteHat2 NO-GO (19141, F1): the new `*kernel:*` content guard masks the
+# ORIGINAL F1 fix (the `status != 0 -> defer` branch) on a readable-partial-log shape -- every
+# exit-1 fixture above this point used EMPTY stdout, which the kernel: guard alone already
+# catches, so the status-check branch had no fixture that isolates it. The one fixture that does
+# (exit 1 + one readable "kernel:" line) was previously run ONLY against the J1 mutant copy
+# below, never against the real $SCRIPT -- so the "guard is ON" side of that proof was missing,
+# only the "guard is OFF" (mutant) side existed. This closes that gap directly against $SCRIPT.
+d="$(fresh_case real-journalctl-exit1-partial-kernel-line)"
+echo "600.0 1200.0" > "$d/uptime"
+write_fake_journalctl 1 "Oct 14 20:00:00 host kernel: partial read before the failure\n"
+out="$(run_real_journalctl "$d" "$SCRIPT")"
+if echo "$out" | grep -q 'or the log could not be read'; then
+  pass "real journalctl: nonzero exit WITH a readable partial kernel: line -> still defers on exit status alone"
+else
+  fail "real journalctl nonzero exit with a readable kernel line did not defer: $out"
+fi
+
 d="$(fresh_case real-journalctl-exit0-empty)"
 echo "600.0 1200.0" > "$d/uptime"
 write_fake_journalctl 0 ""
