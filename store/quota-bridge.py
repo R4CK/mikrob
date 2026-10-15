@@ -63,6 +63,14 @@ ACCESS_JSON = f"{TG_DIR}/access.json"
 BOT_PID_FILE = f"{TG_DIR}/bot.pid"
 STATE_FILE = f"{STORE}/quota-bridge-state.json"
 LOCAL_LLM = f"{STORE}/local-llm.sh"
+# Card 612058c2: while MikroB is frozen on the session quota, nothing else alive drives the
+# cf757409 Gemini-fallback pipeline (it is only ever invoked from MikroB's own heartbeat/scheduled-
+# task prompts). SESSION_OUTAGE_FILE tells gemini-fallback-runner.ts's readClaudeExhausted() that a
+# SESSION-level outage (not just the weekly newDevStop/hard-stop threshold) is active, and
+# GHOST_RUNNER_SCRIPT is the background driver started for the outage's duration -- see both
+# functions' own comments below.
+SESSION_OUTAGE_FILE = f"{STORE}/mikrob-session-outage.json"
+GHOST_RUNNER_SCRIPT = f"{STORE}/gemini-ghost-runner.sh"
 # Single local model (Peti 2026-07-19: one LLM only, coding-focused). Also used by
 # Ghost for degraded comms. Read from the shared config so a model swap is one place.
 def _read_model():
@@ -349,56 +357,111 @@ def ask_local(query):
         return "Ghost mód: a lokális modell épp nem elérhető. A valódi MikroB a kvóta-reset után visszatér."
 
 
+def mark_session_outage():
+    """Card 612058c2: tells gemini-fallback-runner.ts's readClaudeExhausted() that a SESSION-level
+    (not just weekly) outage is active. Best-effort -- a write failure must never break Ghost's own
+    Telegram loop, which is the thing this bridge exists for."""
+    tmp = SESSION_OUTAGE_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump({"active": True, "since": time.time()}, f)
+        os.replace(tmp, SESSION_OUTAGE_FILE)
+    except OSError as e:
+        log(f"could not write session-outage marker: {e}")
+
+
+def clear_session_outage():
+    try:
+        os.remove(SESSION_OUTAGE_FILE)
+    except OSError:
+        pass
+
+
+def start_ghost_runner():
+    """Card 612058c2: starts store/gemini-ghost-runner.sh, which drives the EXISTING cf757409
+    Gemini-fallback pipeline (route decision -> card ordering -> local-LLM draft -> Gemini
+    first-pass review) on a timer for as long as it lives -- nothing else does this while MikroB
+    itself is frozen (see that script's own header). Best-effort: a failure to start it must never
+    break Ghost's own Telegram-serving loop, same posture as every other function here."""
+    try:
+        return subprocess.Popen([GHOST_RUNNER_SCRIPT], cwd=MARVEEN,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        log(f"could not start gemini-ghost-runner: {e}")
+        return None
+
+
+def stop_ghost_runner(proc):
+    if proc is None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    except OSError:
+        pass
+
+
 def outage_loop(token, state):
     """Own getUpdates and answer with the local model until MikroB recovers."""
     chats = allowed_chats()
-    if not state.get("notified_outage"):
-        send(token, PETI_CHAT_ID,
-             "👻 MikroB Ghost jelentkezik. A valódi MikroB elérte a Claude kvótát és nem "
-             "tud válaszolni, ezért ÁTÁLLTAM vészmódba: egy lokális modell (Qwen2.5-Coder-7B) "
-             "válaszol korlátozottan, a memóriád releváns kontextusával. A valódi MikroB a "
-             "kvóta-reset után automatikusan visszaveszi a vonalat, és MINDENT ellenőriz, "
-             "amit Ghost módban csináltam.")
-        state["notified_outage"] = True
-        save_state(state)
-    probe_suppressed = False
-    while True:
-        # recovery check: MikroB alive again (banner gone or heartbeat fresh) -> hand back.
-        # Skipped entirely while a known reset deadline is still far off (card cd7376ed): the probe
-        # can only flap there, and each flap sends Peti a handover and a recovery message. Message
-        # serving below is untouched -- the Ghost stays fully useful, it just stops announcing.
-        if not recovery_probe_due():
-            if not probe_suppressed:
-                log("known reset deadline still far off -> suppressing recovery probe (no flapping)")
-                probe_suppressed = True
-        elif not mikrob_down():
-            log("MikroB recovered -> relinquishing channel")
+    mark_session_outage()
+    ghost_runner = start_ghost_runner()
+    try:
+        if not state.get("notified_outage"):
             send(token, PETI_CHAT_ID,
-                 "✅ A valódi MikroB visszatért (kvóta feloldva), MikroB Ghost visszavonul. "
-                 "Most átnézem, amit Ghost módban megoldottunk, és a normál gate-eken átvezetem.")
-            state["phase"] = "healthy"; state["banner_streak"] = 0; state["notified_outage"] = False
+                 "👻 MikroB Ghost jelentkezik. A valódi MikroB elérte a Claude kvótát és nem "
+                 "tud válaszolni, ezért ÁTÁLLTAM vészmódba: egy lokális modell (Qwen2.5-Coder-7B) "
+                 "válaszol korlátozottan, a memóriád releváns kontextusával. A valódi MikroB a "
+                 "kvóta-reset után automatikusan visszaveszi a vonalat, és MINDENT ellenőriz, "
+                 "amit Ghost módban csináltam.")
+            state["notified_outage"] = True
             save_state(state)
-            return
-        res = tg_api(token, "getUpdates",
-                     {"offset": state["offset"], "timeout": GETUPDATES_TIMEOUT,
-                      "allowed_updates": json.dumps(["message"])},
-                     timeout=GETUPDATES_TIMEOUT + 10)
-        if not res.get("ok"):
-            if res.get("error_code") == 409:
-                log("409 conflict -> re-claiming getUpdates slot"); kill_pid_holder(); time.sleep(2)
-            else:
-                time.sleep(3)
-            continue
-        for upd in res.get("result", []):
-            state["offset"] = upd["update_id"] + 1
-            msg = upd.get("message") or {}
-            chat_id = str((msg.get("chat") or {}).get("id", ""))
-            text = msg.get("text") or msg.get("caption") or ""
-            if chat_id in chats and text.strip():
-                log(f"answering degraded msg from {chat_id}: {text[:60]!r}")
-                ans = ask_local(text)
-                send(token, chat_id, f"👻 MikroB Ghost (lokális Qwen2.5-Coder-7B):\n{ans}")
-        save_state(state)
+        probe_suppressed = False
+        while True:
+            # recovery check: MikroB alive again (banner gone or heartbeat fresh) -> hand back.
+            # Skipped entirely while a known reset deadline is still far off (card cd7376ed): the
+            # probe can only flap there, and each flap sends Peti a handover and a recovery
+            # message. Message serving below is untouched -- the Ghost stays fully useful, it just
+            # stops announcing.
+            if not recovery_probe_due():
+                if not probe_suppressed:
+                    log("known reset deadline still far off -> suppressing recovery probe (no flapping)")
+                    probe_suppressed = True
+            elif not mikrob_down():
+                log("MikroB recovered -> relinquishing channel")
+                send(token, PETI_CHAT_ID,
+                     "✅ A valódi MikroB visszatért (kvóta feloldva), MikroB Ghost visszavonul. "
+                     "Most átnézem, amit Ghost módban megoldottunk, és a normál gate-eken átvezetem.")
+                state["phase"] = "healthy"; state["banner_streak"] = 0; state["notified_outage"] = False
+                save_state(state)
+                return
+            res = tg_api(token, "getUpdates",
+                         {"offset": state["offset"], "timeout": GETUPDATES_TIMEOUT,
+                          "allowed_updates": json.dumps(["message"])},
+                         timeout=GETUPDATES_TIMEOUT + 10)
+            if not res.get("ok"):
+                if res.get("error_code") == 409:
+                    log("409 conflict -> re-claiming getUpdates slot"); kill_pid_holder(); time.sleep(2)
+                else:
+                    time.sleep(3)
+                continue
+            for upd in res.get("result", []):
+                state["offset"] = upd["update_id"] + 1
+                msg = upd.get("message") or {}
+                chat_id = str((msg.get("chat") or {}).get("id", ""))
+                text = msg.get("text") or msg.get("caption") or ""
+                if chat_id in chats and text.strip():
+                    log(f"answering degraded msg from {chat_id}: {text[:60]!r}")
+                    ans = ask_local(text)
+                    send(token, chat_id, f"👻 MikroB Ghost (lokális Qwen2.5-Coder-7B):\n{ans}")
+            save_state(state)
+    finally:
+        # Card 612058c2 acceptance: "kilépéskor a runner leáll" -- runs on the recovery return path
+        # AND on any unexpected exception, so the runner never outlives Ghost's own outage handling.
+        stop_ghost_runner(ghost_runner)
+        clear_session_outage()
 
 
 def main():

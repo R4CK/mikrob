@@ -30,6 +30,7 @@ let writtenState: GeminiFallbackState | null = null
 let telegramMessages: string[] = []
 let weeklyActive = false
 let weeklyNewDevStopActive = false
+let sessionOutageActive = false
 /** null = no config file on disk (real.readFileSync throws ENOENT) -> exercises the default. */
 let engageConfigJson: string | null = null
 let apiKey = 'fake-api-key-that-is-long-enough'
@@ -46,6 +47,10 @@ vi.mock('node:fs', async (orig) => {
       }
       if (p.endsWith('weekly-hard-stop.json')) {
         return JSON.stringify({ active: weeklyActive, newDevStopActive: weeklyNewDevStopActive })
+      }
+      if (p.endsWith('mikrob-session-outage.json')) {
+        if (!sessionOutageActive) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        return JSON.stringify({ active: true, since: Date.now() })
       }
       if (p.endsWith('gemini-fallback-config.json')) {
         if (engageConfigJson === null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
@@ -88,6 +93,7 @@ beforeEach(() => {
   writtenState = null
   weeklyActive = false
   weeklyNewDevStopActive = false
+  sessionOutageActive = false
   engageConfigJson = null
   keyValidResult = { valid: true, modelCount: 50 }
   apiKey = 'fake-api-key-that-is-long-enough'
@@ -253,6 +259,53 @@ describe('newDevStop engagement (card 3de7d530)', () => {
     fakeState.engagedAt = Date.now() - 50 * 60 * 1000  // > 45 min anti-flap (F2)
     weeklyActive = false
     weeklyNewDevStopActive = false
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('claude')
+  })
+})
+
+// Card 612058c2: a Claude SESSION-level quota outage (quota-bridge.py's Ghost mode) is a harder
+// signal than newDevStop and must engage Gemini regardless of the engageOn config -- unlike
+// newDevStopActive, there is no "Claude can still finish in-flight work" case here.
+describe('session-outage engagement (card 612058c2)', () => {
+  it('engages on sessionOutageActive alone, both weekly flags false, default config', async () => {
+    weeklyActive = false
+    weeklyNewDevStopActive = false
+    sessionOutageActive = true
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('gemini')
+  })
+
+  it('engages on sessionOutageActive even with engageOn: "hardStopOnly"', async () => {
+    engageConfigJson = JSON.stringify({ engageOn: 'hardStopOnly' })
+    weeklyActive = false
+    weeklyNewDevStopActive = false
+    sessionOutageActive = true
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('gemini')
+  })
+
+  it('does NOT engage when the session-outage marker is absent (default/healthy state)', async () => {
+    weeklyActive = false
+    weeklyNewDevStopActive = false
+    sessionOutageActive = false
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('claude')
+  })
+
+  it('reverts once the session-outage marker clears, same as the existing revert path', async () => {
+    fakeState.route = 'gemini'
+    fakeState.engagedAt = Date.now() - 50 * 60 * 1000  // > 45 min anti-flap (F2)
+    weeklyActive = false
+    weeklyNewDevStopActive = false
+    sessionOutageActive = false
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('claude')
+  })
+
+  it('does NOT engage when key is invalid, even during a session outage (fail-safe bias unchanged)', async () => {
+    sessionOutageActive = true
+    keyValidResult = { valid: false as const, reason: 'auth' as const, detail: 'PERMISSION_DENIED' }
     await runGeminiFallbackCheck()
     expect(writtenState?.route).toBe('claude')
   })
