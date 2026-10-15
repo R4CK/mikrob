@@ -98,8 +98,13 @@ describe('isGeminiOrchestratorEnabled (condition 1: OFF by default)', () => {
 })
 
 describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitive excluded)', () => {
-  it('MikroB-project card, no labels, benign title: eligible', () => {
-    expect(isEligibleForGeminiOrdering(card())).toBe(true)
+  it('MikroB-project card, benign title, with the positive marker label: eligible', () => {
+    expect(isEligibleForGeminiOrdering(card({ labels: ['gemini-ok'] }))).toBe(true)
+  })
+  // Card c23ea72f: REVERSED MODEL -- allowlist, not denylist. Without the marker, a card is now
+  // BLOCKED BY DEFAULT even if nothing else above would have blocked it.
+  it('MikroB-project card, no labels, benign title, NO positive marker: excluded (card c23ea72f)', () => {
+    expect(isEligibleForGeminiOrdering(card())).toBe(false)
   })
   it('mopsion project: excluded', () => {
     expect(isEligibleForGeminiOrdering(card({ project: 'mopsion' }))).toBe(false)
@@ -181,8 +186,8 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
       isEligibleForGeminiOrdering(card({ title: '[MikroB]​[INFRA][SEC] Benign', labels: [] })),
     ).toBe(false)
   })
-  it('a benign label alongside a benign title: still eligible', () => {
-    expect(isEligibleForGeminiOrdering(card({ labels: ['@frontend', 'ui'] }))).toBe(true)
+  it('a benign label alongside a benign title, with the positive marker label: still eligible', () => {
+    expect(isEligibleForGeminiOrdering(card({ labels: ['@frontend', 'ui', 'gemini-ok'] }))).toBe(true)
   })
   // N5-follow (card b3ce0a88, WhiteHat GO 82a81c45 comment 18031 F1): the fix above only ever
   // looked at a LEADING run of square-bracket tags. A [SEC]/[BLOKKOLT-*] tag written mid-title,
@@ -207,8 +212,8 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
   it('a bare "SEC:" prefix with no brackets at all: still excluded', () => {
     expect(isEligibleForGeminiOrdering(card({ title: 'SEC: fix something', labels: [] }))).toBe(false)
   })
-  it('a benign "Note:" prefix (not a blocked tag word): still eligible', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Note: fix something benign', labels: [] }))).toBe(true)
+  it('a benign "Note:" prefix (not a blocked tag word), with the positive marker label: still eligible', () => {
+    expect(isEligibleForGeminiOrdering(card({ title: 'Note: fix something benign', labels: ['gemini-ok'] }))).toBe(true)
   })
   it('a SEC tag in CJK lenticular brackets 【】 (does not NFKD-decompose): still excluded', () => {
     expect(isEligibleForGeminiOrdering(card({ title: 'Fix 【SEC】 something', labels: [] }))).toBe(false)
@@ -268,9 +273,9 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
   it('a SEC tag directly preceded by another closed tag ([MikroB][SEC (LOW)]): still excluded (H3b)', () => {
     expect(isEligibleForGeminiOrdering(card({ title: '[MikroB][SEC (LOW)] x', labels: [] }))).toBe(false)
   })
-  it('CONTROL: benign bracketed tags with an embedded qualifier stay eligible ([MikroB][INFRA] ...)', () => {
+  it('CONTROL: benign bracketed tags with an embedded qualifier stay eligible ([MikroB][INFRA] ...), with the positive marker label', () => {
     expect(
-      isEligibleForGeminiOrdering(card({ title: '[MikroB][INFRA] Benign title', labels: [] })),
+      isEligibleForGeminiOrdering(card({ title: '[MikroB][INFRA] Benign title', labels: ['gemini-ok'] })),
     ).toBe(true)
   })
   // H2 (WhiteHat2 comment 17986): a title containing a literal NUL byte makes spawnSync THROW
@@ -382,19 +387,19 @@ describe('decideGeminiOrder (condition 3: fail-closed end to end)', () => {
 
   it('Gemini call fails (network/timeout/quota): fails closed, reason passed through, never throws', async () => {
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'network', detail: 'boom' }))
-    const result = await decideGeminiOrder([card()], 'key', callGemini)
+    const result = await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini)
     expect(result.ok).toBe(false)
     expect(result.reason).toBe('network')
   })
 
   it('Gemini returns garbage text: fails closed with invalid_response_schema, never throws', async () => {
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: 'not json' }))
-    const result = await decideGeminiOrder([card()], 'key', callGemini)
+    const result = await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini)
     expect(result).toEqual({ ok: false, reason: 'invalid_response_schema' })
   })
 
   it('Gemini returns a valid order: ok:true with that order', async () => {
-    const cards = [card({ id: 'a' }), card({ id: 'b' })]
+    const cards = [card({ id: 'a', labels: ['gemini-ok'] }), card({ id: 'b', labels: ['gemini-ok'] })]
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: '["b","a"]' }))
     const result = await decideGeminiOrder(cards, 'key', callGemini)
     expect(result).toEqual({ ok: true, order: ['b', 'a'] })
@@ -402,7 +407,7 @@ describe('decideGeminiOrder (condition 3: fail-closed end to end)', () => {
 
   // Condition 2, end to end: the excluded card's title must never appear in what Gemini receives.
   it('an excluded (sensitive) card never appears in the prompt sent to Gemini', async () => {
-    const cards = [card({ id: 'ok1', title: 'Add dark mode' }), card({ id: 'sec1', title: 'Jelszo bug fix', labels: ['@security'] })]
+    const cards = [card({ id: 'ok1', title: 'Add dark mode', labels: ['gemini-ok'] }), card({ id: 'sec1', title: 'Jelszo bug fix', labels: ['@security'] })]
     let seenPrompt = ''
     const callGemini = vi.fn(async (opts: { prompt: string }): Promise<GeminiResult> => {
       seenPrompt = opts.prompt
@@ -420,7 +425,7 @@ describe('decideGeminiOrder (condition 3: fail-closed end to end)', () => {
   // whole sweep got nothing, not a degraded sweep missing one card. This pins the fail-closed-
   // per-card behavior: the NUL-titled card is excluded, everything else still orders normally.
   it('a NUL byte in one card title does not abort ordering for the other cards (H2)', async () => {
-    const cards = [card({ id: 'ok1', title: 'Add dark mode' }), card({ id: 'nul1', title: 'Benign\x00title' })]
+    const cards = [card({ id: 'ok1', title: 'Add dark mode', labels: ['gemini-ok'] }), card({ id: 'nul1', title: 'Benign\x00title' })]
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: '["ok1"]' }))
     const result = await decideGeminiOrder(cards, 'key', callGemini)
     expect(result).toEqual({ ok: true, order: ['ok1'] })
@@ -449,7 +454,7 @@ describe('runGeminiOrchestratorSweep (conditions 1+4+7: kill switch, route gate,
   it('kill switch ON + route gemini + a valid decision: writes the queue file, never a kanban call', async () => {
     killSwitchJson = JSON.stringify({ enabled: true })
     fallbackStateJson = JSON.stringify({ route: 'gemini' })
-    const loadCards = vi.fn(() => [card({ id: 'only1' })])
+    const loadCards = vi.fn(() => [card({ id: 'only1', labels: ['gemini-ok'] })])
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: '["only1"]' }))
     await runGeminiOrchestratorSweep(loadCards, callGemini)
     expect(writtenQueue).toMatchObject({ order: ['only1'] })
@@ -458,7 +463,7 @@ describe('runGeminiOrchestratorSweep (conditions 1+4+7: kill switch, route gate,
   it('kill switch ON + route gemini + Gemini fails: fail-closed, nothing written', async () => {
     killSwitchJson = JSON.stringify({ enabled: true })
     fallbackStateJson = JSON.stringify({ route: 'gemini' })
-    const loadCards = vi.fn(() => [card({ id: 'only1' })])
+    const loadCards = vi.fn(() => [card({ id: 'only1', labels: ['gemini-ok'] })])
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'quota' }))
     await runGeminiOrchestratorSweep(loadCards, callGemini)
     expect(writtenQueue).toBeNull()
