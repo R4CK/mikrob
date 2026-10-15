@@ -129,6 +129,12 @@ const MODE_SELFTESTS: ReadonlyArray<{ file: string; args: readonly string[] }> =
   // new sibling above, the identical "written, committed, green-looking, never run" class this
   // file exists for, one script over.
   { file: 'bump-fork-version.sh', args: ['--selftest'] },
+  // Card 49b9e7d0 (RedHat N1): the fail-closed arg-parsing selftest was only ever run by hand --
+  // nothing in the suite invoked it, so a regression in the parser or in the subprocess-isolation
+  // helper (the same F-RH-Q1 class this card's delta fixed) could land unnoticed. The selftest is
+  // self-contained (every case writes to a mktemp dir, never to the live store) and safe to run
+  // under execFileSync's inherited env.
+  { file: 'quota-shutdown-guard.sh', args: ['--selftest'] },
 ]
 
 /** True iff `file` is a same-directory SYMLINK ALIAS of another file already in `files` -- e.g. the
