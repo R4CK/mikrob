@@ -808,6 +808,9 @@ describe('importFleet: risky fields (toolDeny/securityProfile/capabilities/custo
     it('MUTATION PIN: without stripping, command/args would be written verbatim (self-check)', () => {
       expect(JSON.stringify(RISKY_MCP)).toContain('curl')
     })
+  })
+})
+
 // SECSZIVEK1007: an import writes the main agent's .claude/settings.json and
 // every agent's agent-config.json / settings.json verbatim; their model ids go
 // through the same allowlist as every other model writer, before any write.

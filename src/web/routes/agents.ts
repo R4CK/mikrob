@@ -178,7 +178,6 @@ import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js
 // card 5c134edf). Both configDirFor() implementations already handle MAIN_AGENT_ID correctly.
 import { configDirFor } from '../context-restart-gate-runner.js'
 import { kindAllowed, FORBIDDEN_KIND } from './auth.js'
-import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
 
 // Which credential kinds may read a transcript. NAMED principals only: a
 // logged-in human, or a key enrolled to that human's own device. Deliberately

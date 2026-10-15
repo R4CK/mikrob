@@ -34,7 +34,7 @@ import { MAIN_AGENT_ID } from '../config.js'
 import { readEnvFile } from '../env.js'
 import { createAgentMessage } from '../db.js'
 import { agentDir } from './agent-config.js'
-import { configDirFor } from './main-transcript-root.js'
+import { configDirFor } from './context-restart-gate-runner.js'
 import { projectsDirFor } from './active-model.js'
 
 export type TurnEvidence = 'seen' | 'blocked-by-hook' | 'absent'
