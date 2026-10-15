@@ -107,40 +107,40 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
     expect(isEligibleForGeminiOrdering(card())).toBe(false)
   })
   it('mopsion project: excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ project: 'mopsion' }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ project: 'mopsion', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('no project (null): excluded (fail-closed allowlist, mirrors is_gemini_blocked)', () => {
-    expect(isEligibleForGeminiOrdering(card({ project: null }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ project: null, labels: ['gemini-ok'] }))).toBe(false)
   })
   it('unrelated project string: excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ project: 'SomeOtherThing' }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ project: 'SomeOtherThing', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('BLOKKOLT-* label: excluded regardless of suffix', () => {
-    expect(isEligibleForGeminiOrdering(card({ labels: ['BLOKKOLT-Peti-dontes'] }))).toBe(false)
-    expect(isEligibleForGeminiOrdering(card({ labels: ['blokkolt-tisztazas'] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ labels: ['BLOKKOLT-Peti-dontes', 'gemini-ok'] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ labels: ['blokkolt-tisztazas', 'gemini-ok'] }))).toBe(false)
   })
   it('an exact blocked-tag label (e.g. @security): excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ labels: ['@security'] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ labels: ['@security', 'gemini-ok'] }))).toBe(false)
   })
   it('sensitive-stem title (plain ASCII stem): excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Jelszo reset flow' }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Jelszo reset flow', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('accent-dependent sensitive stem (stem sits INSIDE the accented char): excluded', () => {
     // "Szamla" / "Számla" -- the accented á is part of the matched stem itself, same class of
     // case the a92e9913 RedHat 17567 B4a tests pinned for is_gemini_blocked.
-    expect(isEligibleForGeminiOrdering(card({ title: 'Uj Szamla export' }))).toBe(false)
-    expect(isEligibleForGeminiOrdering(card({ title: 'Új Számla export' }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Uj Szamla export', labels: ['gemini-ok'] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Új Számla export', labels: ['gemini-ok'] }))).toBe(false)
   })
   // WhiteHat F1 (comment 17666) regression corpus: words the earlier hand-ported vocabulary
   // missed, now covered because the landed filter's own SENS_RE already includes them.
   it('authz/PII title stems missing from the earlier port (permission/access/szemelyes/hozzaferes): excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Permission model for the export' }))).toBe(false)
-    expect(isEligibleForGeminiOrdering(card({ title: 'Access review of the export job' }))).toBe(false)
-    expect(isEligibleForGeminiOrdering(card({ title: 'Szemelyes adat maszkolasa a naploban' }))).toBe(false)
-    expect(isEligibleForGeminiOrdering(card({ title: 'Hozzaferes-kezeles atirasa' }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Permission model for the export', labels: ['gemini-ok'] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Access review of the export job', labels: ['gemini-ok'] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Szemelyes adat maszkolasa a naploban', labels: ['gemini-ok'] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Hozzaferes-kezeles atirasa', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a label matches the blocked exact-tag set (e.g. finance): excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ labels: ['finance'] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ labels: ['finance', 'gemini-ok'] }))).toBe(false)
   })
   // RedHat N2 (comment 17825, same re-gate as WhiteHat2 F1' above): a label that is NOT a literal
   // BLOCKED_TAGS member still needs the same stem check title/desc already get. "[Biztonsag]" is
@@ -148,9 +148,9 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
   // prefix -- the earlier, now-fixed behavior let a benign-titled card carrying it through
   // unblocked, which is exactly the kind of label-vs-title asymmetry Peti 11131 forbids.
   it('a tag/label that is not an exact blocked-tag match but DOES contain a sensitive stem: excluded (N2 fix)', () => {
-    expect(isEligibleForGeminiOrdering(card({ labels: ['[Biztonsag]'] }))).toBe(false)
-    expect(isEligibleForGeminiOrdering(card({ labels: ['jelszo-rotacio'] }))).toBe(false)
-    expect(isEligibleForGeminiOrdering(card({ labels: ['szamla'] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ labels: ['[Biztonsag]', 'gemini-ok'] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ labels: ['jelszo-rotacio', 'gemini-ok'] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ labels: ['szamla', 'gemini-ok'] }))).toBe(false)
   })
   // WhiteHat2 F1' (comment 17828/17831, same re-gate): the SEC/BLOKKOLT-* marker often lives as a
   // "[TAG]" prefix in the TITLE, not as a kanban label -- isEligibleForGeminiOrdering only ever
@@ -159,9 +159,9 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
   // point itself (it now extracts title-prefix bracket tags the same way tags_for() does), so
   // these pass through the REAL subprocess, not a mock, to exercise the actual fix end to end.
   it('a title-prefix [SEC]/[BLOKKOLT-*] tag with NO matching label: excluded (F1 prime fix)', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: '[SEC] Benign title', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: '[SEC] Benign title', labels: ['gemini-ok'] }))).toBe(false)
     expect(
-      isEligibleForGeminiOrdering(card({ title: '[BLOKKOLT-Peti-stop] [MikroB][INFRA] Benign title', labels: [] })),
+      isEligibleForGeminiOrdering(card({ title: '[BLOKKOLT-Peti-stop] [MikroB][INFRA] Benign title', labels: ['gemini-ok'] })),
     ).toBe(false)
   })
   // N5 (RedHat GO 23a14c4b comment 17975, card 82a81c45): the title-prefix bracket extraction
@@ -171,19 +171,19 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
   // benign title text) sailed through unblocked. Fixed by folding the title (shared _fold(),
   // offload-dispatch.sh) before running the bracket regex. Real subprocess, not mocked.
   it('a zero-width-space before/inside a [SEC] title-prefix tag: still excluded (N5)', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: '​[SEC] Benign title', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: '​[SEC] Benign title', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a fullwidth bracket [SEC] title-prefix tag: still excluded (N5)', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: '［SEC］ Benign title', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: '［SEC］ Benign title', labels: ['gemini-ok'] }))).toBe(false)
   })
   // H1 (WhiteHat2 comment 17986): same root as N5 -- a BOM ahead of the tag makes it "not at the
   // start" of the raw string from the regex's point of view, even though it IS the title-prefix.
   it('a BOM before a [SEC] title-prefix tag: still excluded (H1)', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: '﻿[SEC] Benign title', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: '﻿[SEC] Benign title', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('an invisible char splitting an EARLIER bracket group does not hide a LATER [SEC] tag: still excluded (N5)', () => {
     expect(
-      isEligibleForGeminiOrdering(card({ title: '[MikroB]​[INFRA][SEC] Benign', labels: [] })),
+      isEligibleForGeminiOrdering(card({ title: '[MikroB]​[INFRA][SEC] Benign', labels: ['gemini-ok'] })),
     ).toBe(false)
   })
   it('a benign label alongside a benign title, with the positive marker label: still eligible', () => {
@@ -195,59 +195,59 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
   // prefix, or inside a non-fullwidth bracket look-alike (CJK/math, which NFKD does not resolve
   // to ASCII unlike fullwidth brackets) all still passed through unblocked. Real subprocess.
   it('a [SEC] tag in the MIDDLE of the title (not a leading run): still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix [SEC] something here', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix [SEC] something here', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a [SEC] tag at the END of the title: still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix something [SEC]', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix something [SEC]', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a [BLOKKOLT-*] tag in the middle of the title: still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix [BLOKKOLT-stop] something', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix [BLOKKOLT-stop] something', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a SEC tag in ROUND brackets: still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix (SEC) something', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix (SEC) something', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a SEC tag in CURLY brackets: still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix {SEC} something', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix {SEC} something', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a bare "SEC:" prefix with no brackets at all: still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'SEC: fix something', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'SEC: fix something', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a benign "Note:" prefix (not a blocked tag word), with the positive marker label: still eligible', () => {
     expect(isEligibleForGeminiOrdering(card({ title: 'Note: fix something benign', labels: ['gemini-ok'] }))).toBe(true)
   })
   it('a SEC tag in CJK lenticular brackets 【】 (does not NFKD-decompose): still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix 【SEC】 something', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix 【SEC】 something', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a SEC tag in CJK corner brackets: still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix 「SEC」 something', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix 「SEC」 something', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a SEC tag in mathematical white square brackets: still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix ⟦SEC⟧ something', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix ⟦SEC⟧ something', labels: ['gemini-ok'] }))).toBe(false)
   })
   // H1 (card b3ce0a88 delta-gate, RedHat NO-GO comment 18124): a fixed bracket-homoglyph dict,
   // translated BEFORE NFKD, missed any form that NFKD-decomposes INTO one of the mapped brackets
   // (still undecomposed when the dict's exact-codepoint translate ran) -- fixed by mapping by
   // Unicode category (Ps/Pi -> "[", Pe/Pf -> "]") AFTER NFKD, fail-closed by construction.
   it('a SEC tag in half-width corner brackets (NFKD-decomposes into 「」): still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix ｢SEC｣ something', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix ｢SEC｣ something', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a SEC tag in the left-pointing angle bracket (NFKD-decomposes into 〈〉): still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix 〈SEC〉 something', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix 〈SEC〉 something', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a SEC tag in a Ps/Pe bracket pair with NO dedicated mapping (medium parenthesis ornament): still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix ❨SEC❩ something', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix ❨SEC❩ something', labels: ['gemini-ok'] }))).toBe(false)
   })
   // H2 (card b3ce0a88 delta-gate, RedHat NO-GO comment 18124): the previous non-anchored regex
   // matched from the first opening bracket to the first closing bracket only, so a tag NESTED
   // inside another bracket group was swallowed whole by the outer pair and never isolated.
   it('a SEC tag doubly-nested in square brackets ([[SEC]]): still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix [[SEC]] something', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix [[SEC]] something', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a SEC tag nested inside round brackets (([SEC])): still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix ([SEC]) something', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix ([SEC]) something', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a SEC tag nested behind other text inside the same bracket ([x (SEC)]): still excluded', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: 'Fix [x (SEC)] something', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: 'Fix [x (SEC)] something', labels: ['gemini-ok'] }))).toBe(false)
   })
   // H3/H3b (card b3ce0a88 delta-gate, WhiteHat2 NO-GO comment 18235): the nesting-aware lookahead
   // above (H2) isolates the INNERMOST bracketed candidate at every position, but its own inner
@@ -258,20 +258,20 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
   // treating every bracket-delimited SEGMENT of the title as a tag candidate.
   it('a BLOKKOLT-* tag whose text contains an embedded bracket ([BLOKKOLT-Peti (stop)]): still excluded (H3, regression)', () => {
     expect(
-      isEligibleForGeminiOrdering(card({ title: '[BLOKKOLT-Peti (stop)] Benign title', labels: [] })),
+      isEligibleForGeminiOrdering(card({ title: '[BLOKKOLT-Peti (stop)] Benign title', labels: ['gemini-ok'] })),
     ).toBe(false)
   })
   it('a SEC tag whose text contains an embedded round-bracket qualifier ([SEC (high)]): still excluded (H3b)', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: '[SEC (high)] x', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: '[SEC (high)] x', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a SEC tag whose text contains an embedded square bracket ([SEC [x]]): still excluded (H3b)', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: '[SEC [x]] x', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: '[SEC [x]] x', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a SEC tag in round brackets containing an embedded square bracket ((SEC [x])): still excluded (H3b)', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: '(SEC [x]) x', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: '(SEC [x]) x', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('a SEC tag directly preceded by another closed tag ([MikroB][SEC (LOW)]): still excluded (H3b)', () => {
-    expect(isEligibleForGeminiOrdering(card({ title: '[MikroB][SEC (LOW)] x', labels: [] }))).toBe(false)
+    expect(isEligibleForGeminiOrdering(card({ title: '[MikroB][SEC (LOW)] x', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('CONTROL: benign bracketed tags with an embedded qualifier stay eligible ([MikroB][INFRA] ...), with the positive marker label', () => {
     expect(
@@ -283,8 +283,8 @@ describe('isEligibleForGeminiOrdering (conditions 5+6: mopsion/BLOKKOLT/sensitiv
   // ENTIRE sweep via the unguarded .filter() callback, not just this one card. Real subprocess
   // path (no forcedSpawnResult), so the real throw is exercised, not a mocked return value.
   it('a NUL byte in the title does not throw and is treated as blocked, fail-closed per card (H2)', () => {
-    expect(() => isEligibleForGeminiOrdering(card({ title: 'Benign\x00title', labels: [] }))).not.toThrow()
-    expect(isEligibleForGeminiOrdering(card({ title: 'Benign\x00title', labels: [] }))).toBe(false)
+    expect(() => isEligibleForGeminiOrdering(card({ title: 'Benign\x00title', labels: ['gemini-ok'] }))).not.toThrow()
+    expect(isEligibleForGeminiOrdering(card({ title: 'Benign\x00title', labels: ['gemini-ok'] }))).toBe(false)
   })
   it('fail-closed: a crashed/killed subprocess (status null) is treated as blocked, never allowed', () => {
     forcedSpawnResult = { status: null, error: new Error('spawn bash ENOENT') }
@@ -380,7 +380,7 @@ describe('parseOrderingResponse (condition 3: fail-closed on anything but an exa
 describe('decideGeminiOrder (condition 3: fail-closed end to end)', () => {
   it('no eligible cards: fails closed without ever calling Gemini', async () => {
     const callGemini = vi.fn()
-    const result = await decideGeminiOrder([card({ project: 'mopsion' })], 'key', callGemini)
+    const result = await decideGeminiOrder([card({ project: 'mopsion', labels: ['gemini-ok'] })], 'key', callGemini)
     expect(result).toEqual({ ok: false, reason: 'no_eligible_cards' })
     expect(callGemini).not.toHaveBeenCalled()
   })
