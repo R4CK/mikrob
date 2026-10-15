@@ -4179,7 +4179,7 @@ export const KANBAN_WRITABLE_FIELDS = [
 // (card f6fba9ec). An audit asking "when did the deadline move, and who moved
 // it" could not be answered: kanban_card_events holds status transitions only,
 // and updated_at moves on any write. Status keeps its own table.
-export const KANBAN_AUDITED_FIELDS = ['due_date', 'assignee', 'priority'] as const
+export const KANBAN_AUDITED_FIELDS = ['due_date', 'assignee', 'priority', 'archived_at'] as const
 
 export function updateKanbanCard(
   id: string,
