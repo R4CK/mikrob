@@ -21,6 +21,7 @@ import {
   containsSecretShape,
   resolveDraftPathSafely,
   draftRefBelongsToCard,
+  draftRefResolvesToCardDir,
   alreadyAdjudicated,
   parseReviewResponse,
   formatReviewComment,
@@ -189,6 +190,25 @@ describe('draftRefBelongsToCard() (card 626df838, P3 fix)', () => {
   })
 })
 
+// WhiteHat2 F-P3 (626df838, NO-GO @4e012e28): draftRefBelongsToCard() above splits the RAW ref
+// string, so "drafts/c1/../otherCard/f.md" has parts[1] === 'c1' and passes it, even though the
+// RESOLVED absolute path lands inside otherCard's own directory. This second check compares the
+// already-resolved path's parent directory against the card's real drafts directory instead.
+describe('draftRefResolvesToCardDir() (card 626df838, F-P3 fix)', () => {
+  it('true when the resolved path\'s parent directory is this card\'s own drafts directory', () => {
+    expect(draftRefResolvesToCardDir(join(DRAFTS_DIR, 'c1', '1-leaf.md'), 'c1')).toBe(true)
+  })
+
+  it('false when a ".." segment resolves the path into a DIFFERENT card\'s drafts directory', () => {
+    const traversed = join(DRAFTS_DIR, 'c1', '..', 'otherCard', '9-x.md')
+    expect(draftRefResolvesToCardDir(traversed, 'c1')).toBe(false)
+  })
+
+  it('false when the resolved path is simply under a different card id', () => {
+    expect(draftRefResolvesToCardDir(join(DRAFTS_DIR, 'otherCard', '9-x.md'), 'c1')).toBe(false)
+  })
+})
+
 // ── alreadyAdjudicated: idempotency against both a real verdict and a prior Gemini opinion ──
 // WhiteHat2/RedHat/QA F1 (626df838): the module's own header claims REVIEW_AUTHOR is listed in
 // GENERATED_COMMENT_AUTHORS -- pinned against the REAL imported set, not just the claim, so a
@@ -311,7 +331,10 @@ describe('reviewOneCard() (card 626df838)', () => {
     readDraft: vi.fn(() => 'draft body text'),
     postComment: vi.fn(),
     callGemini: vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: '{"verdict":"USABLE","reason":"fine"}' })),
-    resolveDraftPath: vi.fn((relPath: string): string | null => `/fake-drafts-root/${relPath}`),
+    // Mirrors resolveDraftPathSafely's own normalization (relPath is "drafts/<cardId>/<file>",
+    // DRAFTS_DIR already ends in ".../drafts") so a ".."-segment ref resolves the same way here
+    // as it does against the real filesystem (F-P3 regression below needs this to be faithful).
+    resolveDraftPath: vi.fn((relPath: string): string | null => join(DRAFTS_DIR, relPath.slice('drafts/'.length))),
   })
 
   it('posts a review when everything lines up', async () => {
@@ -353,6 +376,15 @@ describe('reviewOneCard() (card 626df838)', () => {
   it('skips with draft_ref_card_mismatch when the ref names a DIFFERENT card\'s drafts directory (P3, 626df838)', async () => {
     const deps = baseDeps()
     deps.readComments = vi.fn(() => [{ author: 'local-llm', content: 'a draft fajlban marad: drafts/otherCard/9-x.md. DRAFT-ONLY:', created_at: 100 }])
+    const result = await reviewOneCard('c1', 'key', deps)
+    expect(result).toEqual({ id: 'c1', reviewed: false, reason: 'draft_ref_card_mismatch' })
+    expect(deps.readDraft).not.toHaveBeenCalled()
+    expect(deps.callGemini).not.toHaveBeenCalled()
+  })
+
+  it('skips with draft_ref_card_mismatch when a ".." segment makes the raw ref look like THIS card but resolve into ANOTHER card\'s directory (WhiteHat2 F-P3, 626df838 NO-GO @4e012e28)', async () => {
+    const deps = baseDeps()
+    deps.readComments = vi.fn(() => [{ author: 'local-llm', content: 'a draft fajlban marad: drafts/c1/../otherCard/9-x.md. DRAFT-ONLY:', created_at: 100 }])
     const result = await reviewOneCard('c1', 'key', deps)
     expect(result).toEqual({ id: 'c1', reviewed: false, reason: 'draft_ref_card_mismatch' })
     expect(deps.readDraft).not.toHaveBeenCalled()
