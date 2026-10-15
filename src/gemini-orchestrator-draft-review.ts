@@ -43,6 +43,15 @@
 // "gemini". Per-card: any failure (ineligible, secret-shaped, unreadable draft file, outside the
 // drafts directory, unparsable Gemini response) skips that one card and the sweep continues --
 // one bad card must never stall the rest.
+//
+// R6-A/R6-B (card bbe99069, RedHat GO @4e29bf23 on 626df838, forward invariant for wiring this
+// module in): the ".." traversal class was closed, but RedHat measured a narrower remaining pair
+// that the same raw-string + bounds-only checks could not see -- a directory SYMLINK at
+// "drafts/<cardId>" (A8) or a HARDLINK planted inside a card's own drafts directory (A10), either
+// of which lets this card's Gemini review read and send ANOTHER card's draft content while every
+// existing check still reports a clean match on its own terms. Closed in resolveDraftPathSafely()
+// (nlink check, A10) and draftRefResolvesToCardDir() (realpath-vs-literal comparison, A8); see
+// each function's own comment for why a naive realpath-vs-realpath comparison does not work.
 
 import { readFileSync, lstatSync, realpathSync } from 'node:fs'
 import { join, dirname, resolve, sep } from 'node:path'
@@ -120,12 +129,17 @@ export function containsSecretShape(text: string): boolean {
 /** Resolves a ref.path (relative to STORE, e.g. "drafts/<card>/<file>.md") to an absolute path, or
  *  null if it's unsafe to read: outside DRAFTS_DIR, not a plain file (WhiteHat2 F3, 626df838: lstat
  *  rejects a symlink at that path outright -- lstat never follows it, so isFile() is false even
- *  when the symlink's target is itself an ordinary file), the resolved realpath still escaping
- *  DRAFTS_DIR (an intermediate symlinked directory), or over MAX_DRAFT_BYTES. The writer
- *  (store/offload-dispatch.sh) already sanitizes the card/leaf id into [A-Za-z0-9_-] before
- *  building this path, so a *traversal* escape should be impossible by construction -- this is a
- *  second, independent check on the READ side, same defense-in-depth posture as the rest of this
- *  pipeline, and the one layer that actually covers a symlink planted directly in the drafts tree. */
+ *  when the symlink's target is itself an ordinary file), a HARDLINK (RedHat A10, GO @4e29bf23: a
+ *  legitimate draft is a brand-new file store/offload-dispatch.sh just wrote, so it only ever has
+ *  one directory entry -- nlink > 1 means some OTHER path also names this same inode, e.g. a second
+ *  hardlink planted inside this card's own drafts directory pointing at another card's draft file.
+ *  A realpath check cannot catch this: a hardlink has no "target" to resolve, it genuinely lives at
+ *  this path with this content), the resolved realpath still escaping DRAFTS_DIR (an intermediate
+ *  symlinked directory), or over MAX_DRAFT_BYTES. The writer (store/offload-dispatch.sh) already
+ *  sanitizes the card/leaf id into [A-Za-z0-9_-] before building this path, so a *traversal* escape
+ *  should be impossible by construction -- this is a second, independent check on the READ side,
+ *  same defense-in-depth posture as the rest of this pipeline, and the one layer that actually
+ *  covers a symlink or hardlink planted directly in the drafts tree. */
 export function resolveDraftPathSafely(relPath: string): string | null {
   const abs = resolve(STORE, relPath)
   if (abs !== DRAFTS_DIR && !abs.startsWith(DRAFTS_DIR + sep)) return null
@@ -137,6 +151,7 @@ export function resolveDraftPathSafely(relPath: string): string | null {
     return null
   }
   if (!st.isFile()) return null
+  if (st.nlink > 1) return null
   if (st.size > MAX_DRAFT_BYTES) return null
 
   let real: string
@@ -167,9 +182,31 @@ export function draftRefBelongsToCard(relPath: string, cardId: string): boolean 
  *  passes, while resolveDraftPathSafely() resolves/normalizes the SAME ref and ends up inside
  *  <otherCard>'s own directory -- both checks individually pass, but on two different paths.
  *  This compares the already-resolved absolute path's PARENT directory against the card's real
- *  drafts directory, so a ".."-segment traversal can no longer disagree with the raw-string check. */
+ *  drafts directory, so a ".."-segment traversal can no longer disagree with the raw-string check.
+ *
+ *  R6-A (RedHat GO @4e29bf23, delta-gate on 626df838, A8): the ORIGINAL version here compared
+ *  dirname(absPath) LEXICALLY against join(DRAFTS_DIR, cardId) -- a plain string equality that
+ *  says nothing about whether "drafts/<cardId>" is a real directory or a SYMLINK pointing at
+ *  another card's directory. Resolving BOTH sides through realpath() does NOT fix this: both
+ *  sides would follow the identical symlink and still match. The fix instead resolves ONLY the
+ *  actual on-disk parent directory of the file we are about to read, and compares that against
+ *  the LITERAL (unresolved) expected path built from the real drafts root -- if "drafts/<cardId>"
+ *  is itself a directory symlink, its realpath lands somewhere else and the literal expected path
+ *  no longer matches, where a resolved-vs-resolved comparison would have silently agreed. */
 export function draftRefResolvesToCardDir(absPath: string, cardId: string): boolean {
-  return dirname(absPath) === join(DRAFTS_DIR, cardId)
+  let realDraftsDir: string
+  try {
+    realDraftsDir = realpathSync(DRAFTS_DIR)
+  } catch {
+    return false
+  }
+  let realParentDir: string
+  try {
+    realParentDir = realpathSync(dirname(absPath))
+  } catch {
+    return false
+  }
+  return realParentDir === join(realDraftsDir, cardId)
 }
 
 /** True when the card already has an adjudication at or after the given draft timestamp -- either
