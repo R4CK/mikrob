@@ -105,4 +105,31 @@ describe('classifyTokenPruneLag: the verdict', () => {
     expect(classifyTokenPruneLag(oldest, 90, NOW, TOLERANCE_H).state).toBe('stale')
     expect(classifyTokenPruneLag(oldest, 365, NOW, TOLERANCE_H).state).toBe('ok')
   })
+
+  // card 63b9e332 / RedHat (a04769a6 komment 5875): a NaN retention makes
+  // `lagHours > toleranceHours` false for every input, which used to read as
+  // 'ok' while the same NaN silently stops the prune elsewhere (db.ts
+  // pruneTokenUsage). A stale row must not disappear behind that NaN.
+  it('a non-finite retention is its OWN state, not a silent ok', () => {
+    const r = classifyTokenPruneLag(cutoff(TOLERANCE_H + 1), Number.NaN, NOW, TOLERANCE_H)
+    expect(r.state).toBe('invalid')
+    expect(r.state).not.toBe('ok')
+    expect(r.state).not.toBe('empty')
+    expect(r.lag_hours).toBeNull()
+  })
+
+  it('CONTROL -- the same oldest row with a real retention is stale', () => {
+    // Without this, 'always invalid' would pass the test above too.
+    expect(classifyTokenPruneLag(cutoff(TOLERANCE_H + 1), RETENTION, NOW, TOLERANCE_H).state).toBe('stale')
+  })
+
+  it('a non-finite tolerance is also invalid, not ok', () => {
+    const r = classifyTokenPruneLag(cutoff(TOLERANCE_H + 1), RETENTION, NOW, Number.NaN)
+    expect(r.state).toBe('invalid')
+    expect(r.lag_hours).toBeNull()
+  })
+
+  it('CONTROL -- the same oldest row with a real tolerance is stale', () => {
+    expect(classifyTokenPruneLag(cutoff(TOLERANCE_H + 1), RETENTION, NOW, TOLERANCE_H).state).toBe('stale')
+  })
 })
