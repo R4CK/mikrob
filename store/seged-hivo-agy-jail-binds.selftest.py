@@ -76,6 +76,17 @@ if Path('/usr/bin/bwrap').exists() and Path('/mnt/wslg').is_dir():
     with_jail = seged_hivo.jail_cmd('agy', Path('/tmp')) + ['/bin/sh', '-c', f'ls -a {uid_dir} 2>&1; echo RC:$?']
     proc = subprocess.run(with_jail, capture_output=True, text=True, timeout=15)
     jailed_listing = proc.stdout
+    # QA finding on card 0c086979: a broken/swapped-out bwrap binary (e.g. BWRAP_BIN=/bin/false)
+    # makes subprocess.run exit immediately with EMPTY stdout, and the sockets-absent check below
+    # passes VACUOUSLY on that empty string (no host socket name can appear in ''), giving a false
+    # security guarantee that the jail was never actually exercised. The real, working jail always
+    # prints the "RC:$?" marker from the shell command (observed RC:2 here, because the tmpfs mount
+    # makes /mnt/wslg/run/user/<uid> not exist at all inside the jail -- that is a legitimate pass,
+    # not RC:0) -- so the marker's mere presence, not its value, is the positive control that the
+    # shell command actually ran inside the jail.
+    case("the jailed shell actually ran (an 'RC:' exit-code marker must be present in the output -- "
+         "a vacuous/broken bwrap invocation must not silently pass the sockets-absent check below)",
+         'RC:' in jailed_listing)
     case("agy jail's /mnt/wslg/run/user/<uid> is measurably empty of host sockets from a REAL bwrap "
          f"run (host has {host_entries or 'nothing'!r}; jailed ls said: {jailed_listing.strip()!r})",
          host_entries == [] or not any(name in jailed_listing for name in host_entries))
