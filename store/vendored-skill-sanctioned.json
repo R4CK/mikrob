@@ -190,6 +190,60 @@
     "~/marveen/agents/cybersec/.claude/skills/testing-oauth2-implementation-flaws": [
       "changed:SKILL.md@98311862f39fca6a652be285a40fdde63ec5e882427b6d9263c6aae9976046a5"
     ],
+    "~/marveen/agents/cybersec2/.claude/skills/analyzing-supply-chain-malware-artifacts": [
+      "changed:SKILL.md@e6ff40ea37f62898d0817f1f6dc15b17cdfc9064e2f669d4d180c15238a0ab88"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/dependency-auditor": [],
+    "~/marveen/agents/cybersec2/.claude/skills/detecting-indirect-prompt-injection": [
+      "changed:SKILL.md@7987c760107c9eff38e246cf2a2f5ac5373c029040532612fcc811fc63afed56"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/detecting-typosquatting-packages-in-npm-pypi": [
+      "changed:SKILL.md@b95693ebed46bca6bfad93c187e8fb8b65c7e09fa358044889f28e8e9fe6f7e8"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/env-secrets-manager": [
+      "changed:references/validation-detection-rotation.md@987d10efb44c09a631a8017ec14092fa57992fafbb60acb6d6d8ded359283b2a",
+      "missing:scripts/env_auditor.py"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/exploiting-broken-function-level-authorization": [
+      "changed:SKILL.md@bffaa27f8274f83cbcd6f6048ac0e6fbaf3cc2f45b4c247d123bcf436dbd8030"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/implementing-dmarc-dkim-spf-email-security": [
+      "changed:SKILL.md@9dd0efea6c95606374ef665f62a6aecb6f61d4ccd38c02de1ee6b5c4c245bab3"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/iso27001-audit-prep": [
+      "changed:SKILL.md@aca2e8a6d69bad404424f272624499d7fd7a0d782c1c7593ee4ea63dd346bc25"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/performing-api-rate-limiting-bypass": [
+      "changed:SKILL.md@b244d765f60d6b61bd235c990efb52ffd150044691e8c72a795d1f883fe7e847"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/performing-security-headers-audit": [
+      "changed:SKILL.md@580181368f912dc8ef5c4ea3fbb7656dbc575b9261d3c3735a703985ca76b773"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/performing-ssrf-vulnerability-exploitation": [
+      "changed:SKILL.md@3a50b10d6889ad8e7813f91322f840bb3706667a6b9b53e49bceb76d6973cf39"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/secrets-vault-manager": [],
+    "~/marveen/agents/cybersec2/.claude/skills/soc2-audit-prep": [
+      "changed:SKILL.md@0f2f2540d3cf3575d29696cbe25082a8915c5b769cb19090c2b84e703859ffca"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/testing-api-for-broken-object-level-authorization": [
+      "changed:SKILL.md@f8c8719e8253cf538fb6eb44bccfbb227909e5c81ece55e24a41006b2886cd23"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/testing-api-for-mass-assignment-vulnerability": [
+      "changed:SKILL.md@d0510d71476059e4f09d7cfd3710441c9a8cfe7f08b449d6f0707835828fad0c"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/testing-cors-misconfiguration": [
+      "changed:SKILL.md@19755b18fbd1edb98d0e1be18fe0f9b85248f15308fb42f6e41d4b72baa3920d"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/testing-for-host-header-injection": [
+      "changed:SKILL.md@d522df3475f47c6bd42582f66b4d70b22618c80b30dfd49d713717d4c7e27535"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/testing-for-json-web-token-vulnerabilities": [
+      "changed:SKILL.md@c935904b5a15d5713291da9ec67679995f9bffaba21760a510febc2dd12b4390"
+    ],
+    "~/marveen/agents/cybersec2/.claude/skills/testing-oauth2-implementation-flaws": [
+      "changed:SKILL.md@98311862f39fca6a652be285a40fdde63ec5e882427b6d9263c6aae9976046a5"
+    ],
     "~/marveen/agents/fron-ted/.claude/skills/a11y-audit": [],
     "~/marveen/agents/fron-ted/.claude/skills/animate": [],
     "~/marveen/agents/fron-ted/.claude/skills/animation-vocabulary": [],
@@ -221,7 +275,9 @@
     "~/marveen/agents/fron-teddy/.claude/skills/pick-ui-library": [],
     "~/marveen/agents/fron-teddy/.claude/skills/prototype": [],
     "~/marveen/agents/fron-teddy/.claude/skills/review-animations": [],
-    "~/marveen/agents/fron-teddy/.claude/skills/webapp-testing": [],
+    "~/marveen/agents/fron-teddy/.claude/skills/webapp-testing": [
+      "changed:SKILL.md@dc20ea4388d3fd33a315d1fe885d55134cc83c198eb2bda4fa7d28a4b9f45b86"
+    ],
     "~/marveen/agents/fullstack/.claude/skills/mcp-builder": [],
     "~/marveen/agents/fullstack/.claude/skills/observability-and-instrumentation": [
       "changed:SKILL.md@8e71d0b45376deac9850aed899aa52ebb4f537f0d29408b3fdfaeadad044168c",
@@ -341,6 +397,48 @@
     "~/marveen/seed-fleet-agents/cybersec/.claude/skills/testing-oauth2-implementation-flaws": [
       "changed:SKILL.md@98311862f39fca6a652be285a40fdde63ec5e882427b6d9263c6aae9976046a5"
     ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/analyzing-supply-chain-malware-artifacts": [
+      "changed:SKILL.md@e6ff40ea37f62898d0817f1f6dc15b17cdfc9064e2f669d4d180c15238a0ab88"
+    ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/detecting-indirect-prompt-injection": [
+      "changed:SKILL.md@7987c760107c9eff38e246cf2a2f5ac5373c029040532612fcc811fc63afed56"
+    ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/detecting-typosquatting-packages-in-npm-pypi": [
+      "changed:SKILL.md@b95693ebed46bca6bfad93c187e8fb8b65c7e09fa358044889f28e8e9fe6f7e8"
+    ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/exploiting-broken-function-level-authorization": [
+      "changed:SKILL.md@bffaa27f8274f83cbcd6f6048ac0e6fbaf3cc2f45b4c247d123bcf436dbd8030"
+    ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/implementing-dmarc-dkim-spf-email-security": [
+      "changed:SKILL.md@9dd0efea6c95606374ef665f62a6aecb6f61d4ccd38c02de1ee6b5c4c245bab3"
+    ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/performing-api-rate-limiting-bypass": [
+      "changed:SKILL.md@b244d765f60d6b61bd235c990efb52ffd150044691e8c72a795d1f883fe7e847"
+    ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/performing-security-headers-audit": [
+      "changed:SKILL.md@580181368f912dc8ef5c4ea3fbb7656dbc575b9261d3c3735a703985ca76b773"
+    ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/performing-ssrf-vulnerability-exploitation": [
+      "changed:SKILL.md@3a50b10d6889ad8e7813f91322f840bb3706667a6b9b53e49bceb76d6973cf39"
+    ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/testing-api-for-broken-object-level-authorization": [
+      "changed:SKILL.md@f8c8719e8253cf538fb6eb44bccfbb227909e5c81ece55e24a41006b2886cd23"
+    ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/testing-api-for-mass-assignment-vulnerability": [
+      "changed:SKILL.md@d0510d71476059e4f09d7cfd3710441c9a8cfe7f08b449d6f0707835828fad0c"
+    ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/testing-cors-misconfiguration": [
+      "changed:SKILL.md@19755b18fbd1edb98d0e1be18fe0f9b85248f15308fb42f6e41d4b72baa3920d"
+    ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/testing-for-host-header-injection": [
+      "changed:SKILL.md@d522df3475f47c6bd42582f66b4d70b22618c80b30dfd49d713717d4c7e27535"
+    ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/testing-for-json-web-token-vulnerabilities": [
+      "changed:SKILL.md@c935904b5a15d5713291da9ec67679995f9bffaba21760a510febc2dd12b4390"
+    ],
+    "~/marveen/seed-fleet-agents/cybersec2/.claude/skills/testing-oauth2-implementation-flaws": [
+      "changed:SKILL.md@98311862f39fca6a652be285a40fdde63ec5e882427b6d9263c6aae9976046a5"
+    ],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/animate": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/animation-vocabulary": [],
     "~/marveen/seed-fleet-agents/fron-ted/.claude/skills/apple-design": [],
@@ -366,6 +464,8 @@
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/break-ui": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/emil-design-eng": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/find-animation-opportunities": [],
+    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/fixing-accessibility": [],
+    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/fixing-motion-performance": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/improve-animations": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/mobile-native": [],
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/pick-ui-library": [],
@@ -374,7 +474,9 @@
     "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/taste-skill": [
       "changed:SKILL.md@66c9827b9997e537417a643ee9a0bd3edbfdb084014e895e6a34e14281452029"
     ],
-    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/webapp-testing": [],
+    "~/marveen/seed-fleet-agents/fron-teddy/.claude/skills/webapp-testing": [
+      "changed:SKILL.md@dc20ea4388d3fd33a315d1fe885d55134cc83c198eb2bda4fa7d28a4b9f45b86"
+    ],
     "~/marveen/seed-fleet-agents/qa/.claude/skills/webapp-testing": [],
     "~/marveen/seed-fleet-agents/qa2/.claude/skills/webapp-testing": []
   }
