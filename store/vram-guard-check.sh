@@ -79,6 +79,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$SCRIPT_DIR/vram-guard-config.json"
 STATE="$SCRIPT_DIR/vram-guard-state.json"
+# Card a020247b F1 delta-gate (WhiteHat2 NO-GO, komment 19540): a best-effort MIRROR of the final
+# verdict, written on every real (non-test-mode) call. Exists so the jailed agy "gpu-gate" read-
+# only directory bind always has a reasonably fresh ADMIT/HOLD snapshot without the jail ever
+# running nvidia-smi or touching /dev/dxg itself -- the AMBIENT, already-frequent host-side callers
+# of this script (card-build-route.sh, offload-dispatch.sh, local-llm.sh, ...) refresh it for free,
+# no new always-on daemon needed. Lives in its own dedicated dir (not alongside CONFIG/STATE in
+# $SCRIPT_DIR, which is `store/` and holds unrelated/secret files) so a directory-level RO bind of
+# ONLY that dir, never of $SCRIPT_DIR itself, is enough for the jail side. Default ON, like
+# CONFIG/STATE -- the selftest overrides it with --mirror the same way it already overrides
+# --config/--state, so no existing hermetic test case starts touching real files on disk.
+GATE_MIRROR="${VRAM_GUARD_GATE_MIRROR:-$SCRIPT_DIR/.gemini-local-subtask-gpu-gate/gpu-gate-mirror.json}"
 METRICS_JSON=""
 NOW=""
 # The one knob that flips case (b) above. "hold" = on doubt go online (default, see the block
@@ -119,6 +130,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --config) CONFIG="$2"; shift 2 ;;
     --state) STATE="$2"; shift 2 ;;
+    --mirror) GATE_MIRROR="$2"; shift 2 ;;
     --metrics-json) METRICS_JSON="$2"; shift 2 ;;
     --util-samples-json) UTIL_SAMPLES_JSON="$2"; shift 2 ;;
     --own-vram-mib) OWN_VRAM_MIB="$2"; shift 2 ;;
@@ -336,14 +348,14 @@ probe_gpu_lock() {
 [ -n "$LOCK_HELD" ] || LOCK_HELD="$(probe_gpu_lock)"
 
 # ---- decision ---------------------------------------------------------------------------------
-python3 - "$CONFIG" "$STATE" "$METRICS_JSON" "$NOW" "$VRAM_GUARD_UNREADABLE" "$OWN_VRAM_MIB" "$LOCK_HELD" "$UTIL_SAMPLES_JSON" "$GPU_UTIL_HOLD_PCT" <<'PYEOF'
+python3 - "$CONFIG" "$STATE" "$METRICS_JSON" "$NOW" "$VRAM_GUARD_UNREADABLE" "$OWN_VRAM_MIB" "$LOCK_HELD" "$UTIL_SAMPLES_JSON" "$GPU_UTIL_HOLD_PCT" "$GATE_MIRROR" <<'PYEOF'
 import json
 import os
 import sys
 import tempfile
 
 (config_path, state_path, metrics_json, now_s, unreadable_policy, own_vram_s, lock_held_s,
- util_samples_json, gpu_util_hold_pct_env) = sys.argv[1:10]
+ util_samples_json, gpu_util_hold_pct_env, gate_mirror_path) = sys.argv[1:11]
 now = int(now_s)
 try:
     own_vram_mib = max(0, int(own_vram_s))
@@ -403,14 +415,42 @@ def _persist(state_obj):
         return e
 
 
+def _write_gate_mirror(verdict, reason):
+    # Card a020247b F1: best-effort only. A failure here (missing dir, race, read-only fs) must
+    # NEVER change this script's own exit code or stdout -- the seven existing host callers (card-
+    # build-route.sh, offload-dispatch.sh, local-llm.sh, route-classify.sh, i18n-draft.sh, gate-
+    # pretriage.sh, local-llm-rag.sh) have a reviewed contract that does not include this file.
+    if not gate_mirror_path:
+        return
+    try:
+        d = os.path.dirname(os.path.abspath(gate_mirror_path)) or "."
+        os.makedirs(d, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix=".gpu-gate-mirror-", dir=d)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({"admit": verdict == "ADMIT", "reason": reason, "at": now}, f)
+                f.write("\n")
+            os.replace(tmp_path, gate_mirror_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 # ---- the two fail-safe branches for VRAM (see the header block) ----
 if "error" in metrics:
     if metrics.get("present"):
         if unreadable_policy == "admit":
+            _write_gate_mirror("ADMIT", "unreadable-admit-override")
             print("ADMIT unreadable (%s) [VRAM_GUARD_UNREADABLE=admit]" % metrics["error"])
             sys.exit(0)
+        _write_gate_mirror("HOLD", "unreadable")
         print("HOLD unreadable (%s)" % metrics["error"])
         sys.exit(1)
+    _write_gate_mirror("ADMIT", "no-gpu")
     print("ADMIT no-gpu (%s)" % metrics["error"])
     sys.exit(0)
 
@@ -496,8 +536,10 @@ if lock_held:
     else:
         util_hold_now = util_doubt or (util_current == "hold")
     if util_hold_now:
+        _write_gate_mirror("HOLD", "gpu-util-hold own-busy")
         print("HOLD gpu-util-hold own-busy %d/%d MiB (%.1f%%) %s%s" % (used, total, pct, detail, util_suffix))
         sys.exit(1)
+    _write_gate_mirror("ADMIT", "own-busy")
     print("ADMIT own-busy %d/%d MiB (%.1f%%) %s%s" % (used, total, pct, detail, util_suffix))
     sys.exit(0)
 
@@ -559,6 +601,7 @@ else:
     reason = tier_label
 
 verdict = "HOLD" if (vram_hold_now or util_hold_now) else "ADMIT"
+_write_gate_mirror(verdict, reason)
 print("%s %s %d/%d MiB (%.1f%%) %s%s" % (verdict, reason, used, total, pct, detail, util_suffix))
 sys.exit(0 if verdict == "ADMIT" else 1)
 PYEOF

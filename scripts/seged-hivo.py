@@ -587,21 +587,29 @@ def agy_subtask_binds():
     if not placeholder.exists():
         placeholder.parent.mkdir(parents=True, exist_ok=True)
         placeholder.touch(mode=0o700, exist_ok=True)
-    return [# bwrap's own --dev /dev above is a fresh, minimal devtmpfs with no GPU node at all, so
-            # nvidia-smi fails NVML init ("GPU access blocked by the operating system") and
-            # vram-guard-check.sh reads that as HOLD unreadable -- a SAFE failure direction (card
-            # 108c7b10: present-but-failing is conservative-HOLD, unlike absent-entirely which is
-            # ADMIT), but it means the gate would ALWAYS refuse, never actually admitting when the
-            # GPU is idle. Measured directly: this host's WSL2 GPU passthrough is exactly one node,
-            # /dev/dxg (no /dev/nvidia* files exist at all here) -- binding that one node back in is
-            # what nvidia-smi itself needs, nothing broader.
-            '--dev-bind-try', '/dev/dxg', '/dev/dxg',
-            '--ro-bind-try', str(SUBTASK_TOOL_SRC), str(HOME / '.local' / 'bin' / 'gemini-local-subtask'),
+    # Card a020247b F1 delta-gate (WhiteHat2 CYBERSEC NO-GO, komment 19540, @48cb0100): the EARLIER
+    # shape of this function bound /dev/dxg (rw) into every agy jail so nvidia-smi could run INSIDE
+    # it for the GPU-util gate. Measured by WhiteHat2: that is direct, unrestricted ioctl access to
+    # the WSL2 GPU kernel driver for a prompt-injectable process -- a real kernel-driver attack
+    # surface (this host's own dxgkrnl crash-loop class is live/documented), not "two new bind-
+    # mounts into our own sandbox" as the original STRIDE claimed. Removed entirely: the jail no
+    # longer runs nvidia-smi or touches any GPU device node at all. Instead it reads a small,
+    # dedicated, read-only DIRECTORY the HOST keeps fresh: store/vram-guard-check.sh writes
+    # gpu-gate-mirror.json there on every real (non-test) call it already makes for the rest of the
+    # fleet's dispatch points (card-build-route.sh, offload-dispatch.sh, ...) -- ambient refresh,
+    # no new always-on daemon -- and the dashboard's kill-switch route mirrors killswitch-mirror.json
+    # there the same way (see src/web/routes/local-llm.ts). A DIRECTORY bind, not a bind of each
+    # file: a bwrap single-FILE bind pins that path to the host inode AT JAIL START, so a later
+    # host-side atomic rename (both writers use tmp+rename) is invisible to an already-running jail
+    # (WhiteHat2's F2); binding the directory keeps the mount boundary one level up, so a rename of
+    # an entry INSIDE it stays visible for the jail's whole lifetime -- verified directly with bwrap
+    # (file-bind: os.replace -> EBUSY; dir-bind: os.replace succeeds and a second, separate jailed
+    # read sees the new content).
+    GATE_DIR = STORE / '.gemini-local-subtask-gpu-gate'
+    GATE_DIR.mkdir(parents=True, exist_ok=True)
+    return ['--ro-bind-try', str(SUBTASK_TOOL_SRC), str(HOME / '.local' / 'bin' / 'gemini-local-subtask'),
             '--bind', str(SUBTASK_LOG_SRC), f'{SUBTASK_JAIL_DIR}/calls.log',
-            '--ro-bind-try', str(STORE / 'vram-guard-check.sh'), f'{SUBTASK_JAIL_DIR}/vram-guard-check.sh',
-            '--ro-bind-try', str(STORE / 'vram-guard-config.json'), f'{SUBTASK_JAIL_DIR}/vram-guard-config.json',
-            '--ro-bind-try', str(STORE / 'vram-guard-state.json'), f'{SUBTASK_JAIL_DIR}/vram-guard-state.json',
-            '--ro-bind-try', str(STORE / 'local-first-draft.json'), f'{SUBTASK_JAIL_DIR}/local-first-draft.json']
+            '--ro-bind-try', str(GATE_DIR), f'{SUBTASK_JAIL_DIR}/gate']
 
 
 def run_helper(engine, model, workdir, prompt_text, timeout):
