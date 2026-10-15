@@ -43,27 +43,29 @@ for _ in $(seq 1 30); do
   sleep 0.1
 done
 
-fake_guard() {  # $1 = exit code, $2 = stdout/stderr text
-  local f="$TD/guard-$1-$RANDOM.sh"
-  printf '#!/usr/bin/env bash\necho %q\nexit %s\n' "$2" "$1" > "$f"
-  chmod +x "$f"
-  echo "$f"
-}
-
 run() {  # $1 = stdin text, remaining = env KEY=VALUE pairs already exported by caller
   printf '%s' "$1"
 }
 
+# Card a020247b F1/F2 delta-gate (WhiteHat2 NO-GO 19540): the GPU gate is now a host-written
+# {"admit":bool,"reason":str,"at":epoch} mirror file, not a fake vram-guard-check.sh binary.
+gate_mirror() {  # $1 = admit(true/false), $2 = reason, $3 = age in seconds before "now" (default 0)
+  local f="$TD/gate-mirror-$RANDOM.json"
+  local at
+  at=$(python3 -c "import time; print(time.time() - ${3:-0})")
+  printf '{"admit": %s, "reason": "%s", "at": %s}\n' "$1" "$2" "$at" > "$f"
+  echo "$f"
+}
+
 base_env() {
   GEMINI_LOCAL_SUBTASK_KILLSWITCH="$TD/no-such-killswitch.json"
-  GEMINI_LOCAL_SUBTASK_VRAM_GUARD="$TD/no-such-guard.sh"
-  GEMINI_LOCAL_SUBTASK_VRAM_GUARD_CONFIG="$TD/vg-config.json"
-  GEMINI_LOCAL_SUBTASK_VRAM_GUARD_STATE="$TD/vg-state.json"
+  GEMINI_LOCAL_SUBTASK_GPU_GATE="$(gate_mirror true ok 0)"
+  GEMINI_LOCAL_SUBTASK_GPU_GATE_STALE_S=600
   GEMINI_LOCAL_SUBTASK_LOG="$TD/calls-$n.log"
   GEMINI_LOCAL_SUBTASK_OLLAMA_HOST="http://127.0.0.1:$PORT"
   GEMINI_LOCAL_SUBTASK_TIMEOUT=5
-  export GEMINI_LOCAL_SUBTASK_KILLSWITCH GEMINI_LOCAL_SUBTASK_VRAM_GUARD \
-    GEMINI_LOCAL_SUBTASK_VRAM_GUARD_CONFIG GEMINI_LOCAL_SUBTASK_VRAM_GUARD_STATE \
+  export GEMINI_LOCAL_SUBTASK_KILLSWITCH GEMINI_LOCAL_SUBTASK_GPU_GATE \
+    GEMINI_LOCAL_SUBTASK_GPU_GATE_STALE_S \
     GEMINI_LOCAL_SUBTASK_LOG GEMINI_LOCAL_SUBTASK_OLLAMA_HOST GEMINI_LOCAL_SUBTASK_TIMEOUT
 }
 
@@ -100,20 +102,52 @@ echo 'not json{{{' > "$GEMINI_LOCAL_SUBTASK_KILLSWITCH"
 out="$(echo 'hello' | bash "$SCRIPT" 2>/dev/null)"; rc=$?
 case_eq "kill-switch-corrupt: exit 0" "0" "$rc"
 
-# 5. GPU-util-hold: guard script present and refuses (exit 1) -> script refuses, never calls Ollama
+# 5. Mirror reports HOLD -> script refuses, never calls Ollama (card a020247b F1)
 base_env
-GEMINI_LOCAL_SUBTASK_VRAM_GUARD="$(fake_guard 1 'HOLD gpu-util-hold 71% over 60%')"
+GEMINI_LOCAL_SUBTASK_GPU_GATE="$(gate_mirror false gpu-util-hold 0)"
 echo 'hello' | bash "$SCRIPT" >"$TD/out5" 2>"$TD/err5"; rc=$?
 case_eq "gpu-hold: exit 1" "1" "$rc"
 grep -q 'gpu-util-hold' "$TD/err5" || fails+=("gpu-hold: stderr missing gpu-util-hold reason")
 grep -q $'\tgpu-util-hold\t' "$GEMINI_LOCAL_SUBTASK_LOG" || fails+=("gpu-hold: log missing gpu-util-hold row")
 
-# 6. GPU guard admits (exit 0) -> proceeds to the real call
+# 6. Mirror reports ADMIT and is fresh -> proceeds to the real call
 base_env
-GEMINI_LOCAL_SUBTASK_VRAM_GUARD="$(fake_guard 0 'ADMIT ok')"
+GEMINI_LOCAL_SUBTASK_GPU_GATE="$(gate_mirror true ok 0)"
 out="$(echo 'hello' | bash "$SCRIPT" 2>/dev/null)"; rc=$?
 case_eq "gpu-admit: exit 0" "0" "$rc"
 case_eq "gpu-admit: response" "MOCKED-LOCAL-RESPONSE" "$out"
+
+# 6a. Mirror is ADMIT but STALE (older than the stale threshold) -> doubt -> HOLD (card a020247b F1)
+base_env
+GEMINI_LOCAL_SUBTASK_GPU_GATE="$(gate_mirror true ok 9999)"
+GEMINI_LOCAL_SUBTASK_GPU_GATE_STALE_S=600
+echo 'hello' | bash "$SCRIPT" >"$TD/out6a" 2>"$TD/err6a"; rc=$?
+case_eq "gpu-stale: exit 1" "1" "$rc"
+grep -q 'stale' "$GEMINI_LOCAL_SUBTASK_LOG" || fails+=("gpu-stale: log missing stale detail")
+
+# 6b. Mirror file does not exist at all (fresh host, nothing has reported in yet) -> HOLD, not ADMIT
+base_env
+GEMINI_LOCAL_SUBTASK_GPU_GATE="$TD/no-such-mirror-$RANDOM.json"
+echo 'hello' | bash "$SCRIPT" >"$TD/out6b" 2>"$TD/err6b"; rc=$?
+case_eq "gpu-no-mirror: exit 1" "1" "$rc"
+grep -q 'no-gate-mirror-yet' "$GEMINI_LOCAL_SUBTASK_LOG" || fails+=("gpu-no-mirror: log missing no-gate-mirror-yet detail")
+
+# 6c. Mirror file is present but corrupt/unparseable -> doubt -> HOLD
+base_env
+GEMINI_LOCAL_SUBTASK_GPU_GATE="$TD/corrupt-mirror-$RANDOM.json"
+echo 'not json{{{' > "$GEMINI_LOCAL_SUBTASK_GPU_GATE"
+echo 'hello' | bash "$SCRIPT" >"$TD/out6c" 2>"$TD/err6c"; rc=$?
+case_eq "gpu-corrupt-mirror: exit 1" "1" "$rc"
+grep -q 'unreadable' "$GEMINI_LOCAL_SUBTASK_LOG" || fails+=("gpu-corrupt-mirror: log missing unreadable detail")
+
+# 6d. A prompt over the kernel's ARG_MAX (card a020247b F4 regression pin, WhiteHat2 19540:
+#     previously "python3 -c ... \"\$prompt\"" hit "Argument list too long" silently past ~128 KB).
+#     200 KB, well past the measured failure point, must still reach Ollama via stdin and succeed.
+base_env
+big_prompt="$(python3 -c "print('x' * 200000)")"
+out="$(printf '%s' "$big_prompt" | bash "$SCRIPT" 2>"$TD/err6d")"; rc=$?
+case_eq "big-prompt: exit 0" "0" "$rc"
+case_eq "big-prompt: response" "MOCKED-LOCAL-RESPONSE" "$out"
 
 # 7. Empty prompt (blank stdin) -> refuses before ever touching Ollama
 base_env

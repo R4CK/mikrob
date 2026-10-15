@@ -15,6 +15,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD="$SCRIPT_DIR/vram-guard-check.sh"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+# Card a020247b F1: the guard now writes a best-effort gate-verdict mirror by default (for the
+# jailed agy's read-only directory bind). Override it into the scratch dir so this hermetic
+# selftest never touches the real store/.gemini-local-subtask-gpu-gate/gpu-gate-mirror.json.
+export VRAM_GUARD_GATE_MIRROR="$tmpdir/gate-mirror-unused.json"
 
 passed=0
 failed=0

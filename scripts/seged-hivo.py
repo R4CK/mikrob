@@ -116,10 +116,15 @@ SEGED_BASE = os.environ.get('SEGED_BASE', str(HOME / 'seged-munka'))
 # listening on :11434), which this host's HTTP_PROXY env var now routes through this proxy.
 JAIL_NET_ISOLATION = os.environ.get('SEGED_HIVO_NET_JAIL', '1') not in ('0', 'off', 'false')
 JAIL_NET_RELAY_PORT = int(os.environ.get('SEGED_HIVO_NET_JAIL_PORT', '18443'))
-JAIL_NET_ALLOWLIST = os.environ.get('SEGED_HIVO_NET_JAIL_ALLOWLIST',
+# 127.0.0.1:11434 removed from the default (card 5229ea1e delta, RedHat F-RH-J1): the base allowlist
+# opened the full Ollama surface to the jail, not just the wrapper call. Add it back once a020247b
+# ships path+method filtering in the proxy layer.  Until then, gemini-local-subtask.sh callers that
+# genuinely need the Ollama port can set SEGED_HIVO_NET_JAIL_ALLOWLIST explicitly.
+_JAIL_NET_ALLOWLIST_DEFAULT = (
     'antigravity-unleash.goog:443,oauth2.googleapis.com:443,www.googleapis.com:443,'
     'daily-cloudcode-pa.googleapis.com:443,cloudcode-pa.googleapis.com:443,'
-    'play.googleapis.com:443,lh3.googleusercontent.com:443,127.0.0.1:11434')
+    'play.googleapis.com:443,lh3.googleusercontent.com:443')
+JAIL_NET_ALLOWLIST = os.environ.get('SEGED_HIVO_NET_JAIL_ALLOWLIST', _JAIL_NET_ALLOWLIST_DEFAULT)
 JAIL_NET_PROXY_SH = Path(__file__).resolve().parent / 'jail-net-proxy.py'
 JAIL_NET_RELAY_SH = Path(__file__).resolve().parent / 'jail-net-relay.py'
 
@@ -297,6 +302,12 @@ def selftest():
     bad = [s for s in pos if not scan_text(s)] + [s for s in neg if scan_text(s)]
     for s in bad:
         print('FAIL:', s, scan_text(s))
+    # Pin (card 5229ea1e delta, RedHat F-RH-J1): 127.0.0.1:11434 must not be in the compiled-in
+    # default until a020247b ships path+method filtering. Checks the literal default, not the
+    # runtime value, so a deliberate env override for testing does not trigger a false failure.
+    if '127.0.0.1:11434' in _JAIL_NET_ALLOWLIST_DEFAULT:
+        print('FAIL: _JAIL_NET_ALLOWLIST_DEFAULT contains 127.0.0.1:11434 (blocked until a020247b)')
+        bad.append('allowlist-default-11434')
     print(f'onteszt: {len(pos)} positive, {len(neg)} negative, {len(bad)} failed')
     return 1 if bad or quota_selftest() or jail_net_selftest() else 0
 
@@ -586,7 +597,15 @@ def jail_cmd(engine, workdir, net_jail_dir=None):
     # interop sockets that run Windows .exe files outside it. The environment is cleared (it carried the
     # messaging token, SSH/GPG agent sockets, TMUX), bwrap's own too (run_helper); a separate PID
     # namespace makes --die-with-parent take every descendant down with it, setsid'd ones included.
-    drives = [p for p in Path('/mnt').glob('?') if p.is_dir() and not workdir.is_relative_to(p)]
+    # Card 0c086979 (RedHat 19671 + WhiteHat F1): the line above used glob('?'), which only matches
+    # SINGLE-character names (/mnt/c, /mnt/f) -- /mnt/wsl and /mnt/wslg are multi-character and never
+    # matched it, so /mnt/wslg was never tmpfs'd. /mnt/wslg/run/user/1000 carries the host session
+    # D-Bus, ssh/gpg-agent, systemd user, snapd, 14 cc-socks sockets, and X11/Wayland/Pulse -- all
+    # visible to the jailed process (same uid as the host user, so the 0600 mode on several of them
+    # does not help). iterdir() matches every entry regardless of name length; /mnt/wsl is the one
+    # deliberate exception kept visible (DNS, see above).
+    drives = [p for p in Path('/mnt').iterdir()
+              if p.is_dir() and p.name != 'wsl' and not workdir.is_relative_to(p)]
     state = HOME / ('.codex' if engine == 'codex' else '.gemini')
     env = {'HOME': str(HOME), 'USER': os.environ.get('USER', HOME.name), 'LANG': 'C.UTF-8',
            'PATH': f'{HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin', 'TERM': 'dumb',
@@ -738,6 +757,21 @@ def jail_net_selftest():
                 if '403' not in r.stdout:
                     fails.append(f'denied host via relay+proxy was NOT rejected with 403: {r.stdout!r}')
 
+                # Case 4 (card 5229ea1e delta, RedHat pin-hiány): absolute-form plain HTTP request
+                # to a denied host must also be rejected with 403 -- the allowlist check in
+                # jail-net-proxy.py covers both CONNECT and GET/POST/... absolute-form, but the
+                # original selftest only sent CONNECT, so a mutant stripping the check for
+                # non-CONNECT requests survived.
+                r = run_probe(
+                    "import socket;"
+                    "s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);"
+                    f"s.connect(('127.0.0.1',{JAIL_NET_RELAY_PORT}));"
+                    f"req=b'GET http://127.0.0.1:{denied_port}/ HTTP/1.1\\r\\nHost: 127.0.0.1:{denied_port}\\r\\n\\r\\n';"
+                    "s.sendall(req);"
+                    "print('STATUS', s.recv(200))")
+                if '403' not in r.stdout:
+                    fails.append(f'denied host via relay+proxy absolute-form GET was NOT rejected with 403: {r.stdout!r}')
+
                 r = run_probe(
                     "import socket\n"
                     "s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)\n"
@@ -762,7 +796,7 @@ def jail_net_selftest():
 
     for f in fails:
         print('FAIL:', f)
-    print(f'jail_net_selftest: {3 - len(fails)}/3 cases passed')
+    print(f'jail_net_selftest: {4 - len(fails)}/4 cases passed')
     return 1 if fails else 0
 
 
@@ -791,21 +825,29 @@ def agy_subtask_binds():
     if not placeholder.exists():
         placeholder.parent.mkdir(parents=True, exist_ok=True)
         placeholder.touch(mode=0o700, exist_ok=True)
-    return [# bwrap's own --dev /dev above is a fresh, minimal devtmpfs with no GPU node at all, so
-            # nvidia-smi fails NVML init ("GPU access blocked by the operating system") and
-            # vram-guard-check.sh reads that as HOLD unreadable -- a SAFE failure direction (card
-            # 108c7b10: present-but-failing is conservative-HOLD, unlike absent-entirely which is
-            # ADMIT), but it means the gate would ALWAYS refuse, never actually admitting when the
-            # GPU is idle. Measured directly: this host's WSL2 GPU passthrough is exactly one node,
-            # /dev/dxg (no /dev/nvidia* files exist at all here) -- binding that one node back in is
-            # what nvidia-smi itself needs, nothing broader.
-            '--dev-bind-try', '/dev/dxg', '/dev/dxg',
-            '--ro-bind-try', str(SUBTASK_TOOL_SRC), str(HOME / '.local' / 'bin' / 'gemini-local-subtask'),
+    # Card a020247b F1 delta-gate (WhiteHat2 CYBERSEC NO-GO, komment 19540, @48cb0100): the EARLIER
+    # shape of this function bound /dev/dxg (rw) into every agy jail so nvidia-smi could run INSIDE
+    # it for the GPU-util gate. Measured by WhiteHat2: that is direct, unrestricted ioctl access to
+    # the WSL2 GPU kernel driver for a prompt-injectable process -- a real kernel-driver attack
+    # surface (this host's own dxgkrnl crash-loop class is live/documented), not "two new bind-
+    # mounts into our own sandbox" as the original STRIDE claimed. Removed entirely: the jail no
+    # longer runs nvidia-smi or touches any GPU device node at all. Instead it reads a small,
+    # dedicated, read-only DIRECTORY the HOST keeps fresh: store/vram-guard-check.sh writes
+    # gpu-gate-mirror.json there on every real (non-test) call it already makes for the rest of the
+    # fleet's dispatch points (card-build-route.sh, offload-dispatch.sh, ...) -- ambient refresh,
+    # no new always-on daemon -- and the dashboard's kill-switch route mirrors killswitch-mirror.json
+    # there the same way (see src/web/routes/local-llm.ts). A DIRECTORY bind, not a bind of each
+    # file: a bwrap single-FILE bind pins that path to the host inode AT JAIL START, so a later
+    # host-side atomic rename (both writers use tmp+rename) is invisible to an already-running jail
+    # (WhiteHat2's F2); binding the directory keeps the mount boundary one level up, so a rename of
+    # an entry INSIDE it stays visible for the jail's whole lifetime -- verified directly with bwrap
+    # (file-bind: os.replace -> EBUSY; dir-bind: os.replace succeeds and a second, separate jailed
+    # read sees the new content).
+    GATE_DIR = STORE / '.gemini-local-subtask-gpu-gate'
+    GATE_DIR.mkdir(parents=True, exist_ok=True)
+    return ['--ro-bind-try', str(SUBTASK_TOOL_SRC), str(HOME / '.local' / 'bin' / 'gemini-local-subtask'),
             '--bind', str(SUBTASK_LOG_SRC), f'{SUBTASK_JAIL_DIR}/calls.log',
-            '--ro-bind-try', str(STORE / 'vram-guard-check.sh'), f'{SUBTASK_JAIL_DIR}/vram-guard-check.sh',
-            '--ro-bind-try', str(STORE / 'vram-guard-config.json'), f'{SUBTASK_JAIL_DIR}/vram-guard-config.json',
-            '--ro-bind-try', str(STORE / 'vram-guard-state.json'), f'{SUBTASK_JAIL_DIR}/vram-guard-state.json',
-            '--ro-bind-try', str(STORE / 'local-first-draft.json'), f'{SUBTASK_JAIL_DIR}/local-first-draft.json']
+            '--ro-bind-try', str(GATE_DIR), f'{SUBTASK_JAIL_DIR}/gate']
 
 
 def run_helper(engine, model, workdir, prompt_text, timeout):

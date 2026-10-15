@@ -16,19 +16,35 @@ STORE="/home/neon/marveen/store"
 TOKEN_FILE="$STORE/.dashboard-token"
 API="http://localhost:3420"
 HARDSTOP="$STORE/weekly-hard-stop.json"
-STATE="$STORE/quota-shutdown-guard-state.json"
-LOG="$STORE/quota-shutdown-guard.log"
+# Env-overrides for selftest subprocess cases only -- production cron never sets these.
+STATE="${_QSG_STATE_OVERRIDE:-$STORE/quota-shutdown-guard-state.json}"
+LOG="${_QSG_LOG_OVERRIDE:-$STORE/quota-shutdown-guard.log}"
 # Env-override only for the selftest (a FAKE binary, never the real path) -- the production
 # cron config never sets this, so it always resolves to the real shutdown.exe.
 SHUTDOWN_EXE="${SHUTDOWN_EXE:-/mnt/c/Windows/System32/shutdown.exe}"
+SELFTEST=0
 DRY_RUN=0
 FORCE_REASON=""
 
-for a in "$@"; do
-  case "$a" in
-    --dry-run) DRY_RUN=1 ;;
-    --force-reason) shift ;;
-    *) FORCE_REASON="${FORCE_REASON:-}$a " ;;
+usage() { printf 'Usage: %s [--dry-run] [--force-reason "reason"]\n       %s --selftest\n' "$0" "$0" >&2; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run)      DRY_RUN=1; shift ;;
+    --selftest)     SELFTEST=1; shift ;;
+    --force-reason)
+      shift
+      if [ $# -eq 0 ]; then
+        echo "error: --force-reason requires a non-empty value (not a flag)" >&2; usage; exit 2
+      fi
+      _fr="${1#"${1%%[![:space:]]*}"}"     # strip leading whitespace
+      _fr="${_fr%"${_fr##*[![:space:]]}"}" # strip trailing whitespace
+      if [ -z "$_fr" ] || [[ "$_fr" == -* ]]; then
+        echo "error: --force-reason requires a non-empty value (not a flag)" >&2; usage; exit 2
+      fi
+      FORCE_REASON="$_fr"; shift ;;
+    *)
+      echo "error: unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
 
@@ -45,6 +61,8 @@ fi
 
 send_telegram() {
   local text="$1"
+  # _QSG_NO_TELEGRAM=1 suppresses Telegram sends in selftest subprocess cases -- production never sets this.
+  [ "${_QSG_NO_TELEGRAM:-0}" = "1" ] && return 0
   python3 - "$text" <<'PYEOF'
 import sys, json, urllib.request
 text = sys.argv[1]
@@ -96,7 +114,7 @@ trigger_shutdown() {
   return 0
 }
 
-if [ "${1:-}" = "--selftest" ]; then
+if [ "$SELFTEST" = "1" ]; then
   # Card 0daf0033: izolalt STATE/LOG/SHUTDOWN_EXE minden esethez, SOHA nem a valodi gep leallitasa
   # vagy az eles STATE/LOG. send_telegram no-op-ra cserelve, hogy a selftest ne kuldjon valodi
   # Telegram uzenetet minden futtataskor.
@@ -159,6 +177,76 @@ if [ "${1:-}" = "--selftest" ]; then
   t "dry-run: trigger_shutdown returns 0 without calling the binary" "$rc" "0"
   t "dry-run: STATE file NOT written (dry-run never commits)" "$([ -f "$STATE" ] && echo YES || echo NO)" "NO"
   DRY_RUN=0
+
+  # Cases 5-13: argument-feldolgozas fail-closed -- ismeretlen argumentum = exit 2, nincs leallitas.
+  # Subprocess-kent futnak, hogy a top-level arg-parsing ag legyen tesztelve; a FAKE_SHUTDOWN_MARKER
+  # touch()-ot hivna, ha a trigger_shutdown tenyleg elerhetove valna.
+  #
+  # Card 49b9e7d0 RedHat F-RH-Q1: korabban CSAK a --dry-run-parser-effect esetek (12-13, a regi
+  # _dryrun_test) kaptak STATE/LOG/Telegram izolaciot -- az 5-11. esetek (_arg_test) csak a
+  # SHUTDOWN_EXE-t irtak felul. Ha a parser regresszal (vagy egy mutans futtatja), az az ag az ELO
+  # STATE/LOG-ba irt es valodi Telegram-uzenetet kuldott -- ez tenylegesen megtortent ketszer
+  # (2026-10-15 11:52 es 16:03). Minden subprocess-eset egy kozos helperen fut, ami MINDIG izolal.
+  FAKE_MARKER="$TMPD/arg-test-marker.txt"
+  FAKE_SHUTDOWN_MARKER="$TMPD/fake-shutdown-marker.sh"
+  printf '#!/bin/bash\ntouch "%s"\nexit 0\n' "$FAKE_MARKER" > "$FAKE_SHUTDOWN_MARKER"
+  chmod +x "$FAKE_SHUTDOWN_MARKER"
+  SUBPROC_STATE="$TMPD/subproc-state.json"
+  SUBPROC_LOG="$TMPD/subproc-log.txt"
+
+  _subproc_run() {
+    # timeout 3: a helyes eset azonnal exit 2-vel/0-val ter vissza; ha a mutacio miatt a script
+    # tovabb fut (pl. curl --max-time 10 miatt blokkolna), a timeout 124-gyel ter vissza.
+    local fake_exe="$1"; shift
+    rm -f "$SUBPROC_STATE"
+    : > "$SUBPROC_LOG"
+    timeout 3 env SHUTDOWN_EXE="$fake_exe" _QSG_NO_TELEGRAM=1 \
+      _QSG_STATE_OVERRIDE="$SUBPROC_STATE" _QSG_LOG_OVERRIDE="$SUBPROC_LOG" \
+      bash "$0" "$@" 2>/dev/null
+  }
+
+  _arg_test() {
+    local label="$1"; shift
+    rm -f "$FAKE_MARKER"
+    _subproc_run "$FAKE_SHUTDOWN_MARKER" "$@"
+    local rc=$?
+    t "${label}: exit 2" "$rc" "2"
+    t "${label}: shutdown marker NOT created" "$([ -f "$FAKE_MARKER" ] && echo YES || echo NO)" "NO"
+    t "${label}: isolated STATE NOT written (not the live store)" "$([ -f "$SUBPROC_STATE" ] && echo YES || echo NO)" "NO"
+  }
+
+  _arg_test "unknown-arg 'selftest'" selftest
+  _arg_test "unknown-arg '--self-test'" --self-test
+  _arg_test "--force-reason without value" --force-reason
+  _arg_test "--dry-run then unknown 'selftest'" --dry-run selftest
+  _arg_test "--force-reason followed by a flag (--dry-run)" --force-reason --dry-run
+  _arg_test "--force-reason followed by a flag (--selftest)" --force-reason --selftest
+  _arg_test "--force-reason followed by a short flag (-n)" --force-reason -n
+  # L1: whitespace-padded values -- exit 2 after trim (whitespace-only or space-prefixed flag).
+  _arg_test "--force-reason with all-space value" --force-reason " "
+  _arg_test "--force-reason with space-prefixed flag (' --dry-run')" --force-reason " --dry-run"
+
+  # Cases 12-13: --dry-run parser-effect pinned (M3 mutant: DRY_RUN=1 removed from --dry-run branch).
+  # Without DRY_RUN=1 in the parser, trigger_shutdown would call SHUTDOWN_EXE, creating the marker.
+  # With the correct parser, DRY_RUN=1 causes trigger_shutdown to no-op -- marker stays absent.
+  FAKE_MARKER2="$TMPD/dryrun-parse-marker.txt"
+  FAKE_SHUTDOWN_DRY="$TMPD/fake-shutdown-dry.sh"
+  printf '#!/bin/bash\ntouch "%s"\nexit 0\n' "$FAKE_MARKER2" > "$FAKE_SHUTDOWN_DRY"
+  chmod +x "$FAKE_SHUTDOWN_DRY"
+
+  _dryrun_test() {
+    local label="$1"; shift
+    rm -f "$FAKE_MARKER2"
+    _subproc_run "$FAKE_SHUTDOWN_DRY" "$@"
+    local rc=$?
+    t "${label}: exit 0 (dry-run is not an error)" "$rc" "0"
+    t "${label}: shutdown marker NOT created (--dry-run honored by parser)" \
+      "$([ -f "$FAKE_MARKER2" ] && echo YES || echo NO)" "NO"
+    t "${label}: isolated STATE NOT written (dry-run never commits)" "$([ -f "$SUBPROC_STATE" ] && echo YES || echo NO)" "NO"
+  }
+
+  _dryrun_test "--dry-run --force-reason ok" --dry-run --force-reason ok
+  _dryrun_test "--force-reason ok --dry-run" --force-reason ok --dry-run
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail

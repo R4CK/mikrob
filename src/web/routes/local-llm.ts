@@ -1,6 +1,6 @@
 import type * as http from 'node:http'
 import { spawn, execFile } from 'node:child_process'
-import { readFileSync, existsSync, openSync, fstatSync, readSync, closeSync, readdirSync } from 'node:fs'
+import { readFileSync, existsSync, openSync, fstatSync, readSync, closeSync, readdirSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
@@ -135,6 +135,15 @@ const OFFLOAD_CONFIG_FILE = join(STORE_DIR, 'local-llm-offload-active.json')
 // an already-enabled local-first path offloads; this one is the single ON/OFF switch for whether the
 // path runs AT ALL, and it is read by shell scripts that have no business parsing the larger config.
 const FIRST_DRAFT_FLAG_FILE = join(STORE_DIR, 'local-first-draft.json')
+// Card a020247b F1/F2 delta-gate (WhiteHat2 NO-GO, kártya 19540): the jailed agy engine's
+// gemini-local-subtask.sh reads a MIRROR of this switch, never the real file above directly --
+// bwrap's single-FILE ro-bind pins the inode at jail-start, so a host-side atomicWriteFileSync
+// rename (this function) is invisible to an already-running jail (measured up to the jail's own
+// 1800s timeout). Mirrored into the SAME dedicated, single-purpose dir vram-guard-check.sh already
+// self-heals (store/vram-guard-check.sh's GATE_MIRROR default) and binds read-only as a DIRECTORY
+// (not a file) in scripts/seged-hivo.py's agy_subtask_binds() -- a directory-level bind lets a
+// rename inside it stay visible to a long-running jail, unlike a single-file bind.
+const FIRST_DRAFT_MIRROR_FILE = join(STORE_DIR, '.gemini-local-subtask-gpu-gate', 'killswitch-mirror.json')
 // GPU-filtered, trust-labelled HuggingFace model catalogue (card 61a4a85f, EPIC ebc7b4dd T4).
 // The script owns cache/staleness/fallback itself (store/llm-catalog.py: envelope()/fallback()) --
 // this route only decides WHEN to pay for a live refresh, never reimplements those semantics.
@@ -2067,6 +2076,14 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       logger.error({ err }, 'first-draft-enabled: write failed')
       json(res, { error: 'write_failed', message: 'A beállítás mentése nem sikerült, próbáld újra.' }, 500)
       return true
+    }
+    // Best-effort mirror for the jailed agy path (see FIRST_DRAFT_MIRROR_FILE above). Never fails
+    // the request: the real switch above already landed, which is the contract this route promises.
+    try {
+      mkdirSync(join(STORE_DIR, '.gemini-local-subtask-gpu-gate'), { recursive: true })
+      atomicWriteFileSync(FIRST_DRAFT_MIRROR_FILE, JSON.stringify({ enabled: parsed.enabled }, null, 2) + '\n')
+    } catch (err) {
+      logger.warn({ err }, 'first-draft-enabled: killswitch mirror write failed (agy jail path degraded, main switch unaffected)')
     }
     json(res, { enabled: parsed.enabled, note })
     return true
