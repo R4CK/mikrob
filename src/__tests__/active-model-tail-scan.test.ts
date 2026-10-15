@@ -86,13 +86,13 @@ let configDir: string
 let file: string
 let clock = BASE_MS
 
-function readers(since?: number): { model: string | null; tokens: number | null } {
+async function readers(since?: number): Promise<{ model: string | null; tokens: number | null }> {
   // past the readers' 3 s result cache, so every call reaches the scan
   clock += 10_000
   vi.setSystemTime(clock)
   return {
-    model: readActiveModelFromProjectDir(workingDir, since, configDir),
-    tokens: readContextTokensFromProjectDir(workingDir, configDir),
+    model: await readActiveModelFromProjectDir(workingDir, since, configDir),
+    tokens: await readContextTokensFromProjectDir(workingDir, configDir),
   }
 }
 
@@ -113,7 +113,7 @@ afterEach(() => {
 })
 
 describe('the answers are the whole-file scan\'s', () => {
-  it('on 300 random transcripts (long lines across the 256 KiB chunks, accents, blank, padded and broken lines, with and without a final newline)', () => {
+  it('on 300 random transcripts (long lines across the 256 KiB chunks, accents, blank, padded and broken lines, with and without a final newline)', async () => {
     for (let seed = 1; seed <= 300; seed++) {
       const r = rng(seed)
       const lines = Array.from({ length: 1 + r(40) }, () => randomLine(r))
@@ -121,13 +121,13 @@ describe('the answers are the whole-file scan\'s', () => {
       writeFileSync(file, content)
       resetTranscriptScansForTests()
       const since = r(3) === 0 ? undefined : Math.floor(BASE_MS / 1000) + r(4000)
-      const got = readers(since)
+      const got = await readers(since)
       expect(got.model, `seed ${seed}`).toBe(oldActiveModel(content, since))
       expect(got.tokens, `seed ${seed}`).toBe(oldContextTokens(content))
     }
   })
 
-  it('and after random appends, read incrementally, on the same transcript', () => {
+  it('and after random appends, read incrementally, on the same transcript', async () => {
     for (let seed = 1001; seed <= 1060; seed++) {
       const r = rng(seed)
       let content = ''
@@ -139,7 +139,7 @@ describe('the answers are the whole-file scan\'s', () => {
         const add = Array.from({ length: r(6) }, () => randomLine(r)).join('\n') + (r(3) ? '\n' : '')
         appendFileSync(file, add)
         content += add
-        const got = readers(since)
+        const got = await readers(since)
         expect(got.model, `seed ${seed} step ${step}`).toBe(oldActiveModel(content, since))
         expect(got.tokens, `seed ${seed} step ${step}`).toBe(oldContextTokens(content))
       }
@@ -153,45 +153,45 @@ describe('what is read', () => {
   const modelLine = (model: string, sec: number): string =>
     JSON.stringify({ type: 'assistant', timestamp: iso(sec), message: { model, usage: { input_tokens: 10, cache_read_input_tokens: 990 } } }) + '\n'
 
-  it('an answer near the end of an 8 MB transcript reads its last chunk only; an unchanged transcript is not read again; an append reads the new bytes', () => {
+  it('an answer near the end of an 8 MB transcript reads its last chunk only; an unchanged transcript is not read again; an append reads the new bytes', async () => {
     const big = filler(36_000) + modelLine('claude-old', 3500) + filler(5)
     writeFileSync(file, big)
     expect(big.length).toBeGreaterThan(8_000_000)
     let before = transcriptScanBytesReadForTests()
-    expect(readers()).toEqual({ model: 'claude-old', tokens: 1000 })
+    expect(await readers()).toEqual({ model: 'claude-old', tokens: 1000 })
     // two readers, each one 256 KiB chunk (and a 64-byte anchor) at most
     expect(transcriptScanBytesReadForTests() - before).toBeLessThan(2 * (256 * 1024 + 64) + 1)
 
     before = transcriptScanBytesReadForTests()
-    expect(readers()).toEqual({ model: 'claude-old', tokens: 1000 })
+    expect(await readers()).toEqual({ model: 'claude-old', tokens: 1000 })
     expect(transcriptScanBytesReadForTests() - before).toBe(0)
 
     const add = filler(3) + modelLine('claude-new', 3600)
     appendFileSync(file, add)
     before = transcriptScanBytesReadForTests()
-    expect(readers()).toEqual({ model: 'claude-new', tokens: 1000 })
+    expect(await readers()).toEqual({ model: 'claude-new', tokens: 1000 })
     expect(transcriptScanBytesReadForTests() - before).toBeLessThan(2 * (add.length + 64 + 64) + 1)
   })
 
-  it('a fresh session after a restart (all model lines older than since): the first call reads the file, the next ones only what was appended', () => {
+  it('a fresh session after a restart (all model lines older than since): the first call reads the file, the next ones only what was appended', async () => {
     const since = Math.floor(BASE_MS / 1000) + 3900
     writeFileSync(file, filler(20_000) + modelLine('claude-before-restart', 3000))
-    expect(readers(since).model).toBeNull()
+    expect((await readers(since)).model).toBeNull()
 
     let before = transcriptScanBytesReadForTests()
-    expect(readers(since).model).toBeNull()
+    expect((await readers(since)).model).toBeNull()
     expect(transcriptScanBytesReadForTests() - before).toBe(0)
 
     const bookkeeping = JSON.stringify({ type: 'system', timestamp: iso(3950), content: 'hook' }) + '\n'
     appendFileSync(file, bookkeeping)
     before = transcriptScanBytesReadForTests()
-    expect(readers(since).model).toBeNull()
+    expect((await readers(since)).model).toBeNull()
     expect(transcriptScanBytesReadForTests() - before).toBeLessThan(2 * (bookkeeping.length + 64 + 64) + 1)
 
     const turn = modelLine('claude-after-restart', 3960)
     appendFileSync(file, turn)
     before = transcriptScanBytesReadForTests()
-    expect(readers(since).model).toBe('claude-after-restart')
+    expect((await readers(since)).model).toBe('claude-after-restart')
     expect(transcriptScanBytesReadForTests() - before).toBeLessThan(2 * (turn.length + 64 + 64) + 1)
   })
 

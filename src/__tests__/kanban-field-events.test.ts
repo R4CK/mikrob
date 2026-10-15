@@ -54,7 +54,7 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
     getDb().prepare('UPDATE kanban_cards SET updated_at = 1 WHERE id = ?').run('due')
     const before = statusEventRows()
 
-    expect(updateKanbanCard('due', { due_date: LATER }, 'dev-a')).toBe(true)
+    expect(updateKanbanCard('due', { due_date: LATER }, { actor: 'dev-a' })).toBe(true)
 
     expect(fieldRows('due')).toEqual([{ field: 'due_date', old_value: String(DUE), new_value: String(LATER), actor: 'dev-a' }])
     expect(getKanbanCardFieldEvents('due')[0].card_id).toBe('due')
@@ -67,8 +67,8 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
   it('an assignee change and a priority change: one row each', () => {
     createKanbanCard({ id: 'who', title: 'Reassigned', assignee: 'dev-a', priority: 'normal' })
 
-    updateKanbanCard('who', { assignee: 'dev-b' }, 'lead')
-    updateKanbanCard('who', { priority: 'high' }, 'lead')
+    updateKanbanCard('who', { assignee: 'dev-b' }, { actor: 'lead' })
+    updateKanbanCard('who', { priority: 'high' }, { actor: 'lead' })
 
     expect(fieldRows('who')).toEqual([
       { field: 'assignee', old_value: 'dev-a', new_value: 'dev-b', actor: 'lead' },
@@ -79,7 +79,7 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
   it('all three in one write: three rows, one per field', () => {
     createKanbanCard({ id: 'all', title: 'Three at once', assignee: 'a', priority: 'low', due_date: DUE })
 
-    updateKanbanCard('all', { due_date: LATER, assignee: 'b', priority: 'urgent' }, 'x')
+    updateKanbanCard('all', { due_date: LATER, assignee: 'b', priority: 'urgent' }, { actor: 'x' })
 
     expect(fieldRows('all').map((r) => r.field)).toEqual(['due_date', 'assignee', 'priority'])
   })
@@ -87,7 +87,7 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
   it('values sent back unchanged write no row, even when another field really changes', () => {
     createKanbanCard({ id: 'echo', title: 'Whole-card PUT', assignee: 'a', priority: 'high', due_date: DUE })
 
-    expect(updateKanbanCard('echo', { title: 'Edited', assignee: 'a', priority: 'high', due_date: DUE }, 'x')).toBe(true)
+    expect(updateKanbanCard('echo', { title: 'Edited', assignee: 'a', priority: 'high', due_date: DUE }, { actor: 'x' })).toBe(true)
 
     expect(getKanbanCard('echo')!.title).toBe('Edited')
     expect(getKanbanCardFieldEvents('echo')).toHaveLength(0)
@@ -99,7 +99,7 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
     // "1790000000.0" is stored as the integer 1790000000 (SQLite affinity), so the stored row is unchanged
     // although the request's text differs from it; compared with the request, this would be a false row.
     for (const sent of [String(DUE), `${DUE}.0`]) {
-      updateKanbanCard('str', { due_date: sent as unknown as number }, 'x')
+      updateKanbanCard('str', { due_date: sent as unknown as number }, { actor: 'x' })
       expect(getKanbanCard('str')!.due_date).toBe(DUE)
     }
     expect(getKanbanCardFieldEvents('str')).toHaveLength(0)
@@ -108,8 +108,8 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
   it('clearing a field and setting an empty one: null on the empty side', () => {
     createKanbanCard({ id: 'nul', title: 'Emptied', assignee: 'a', due_date: DUE })
 
-    updateKanbanCard('nul', { due_date: null as unknown as number, assignee: null as unknown as string }, 'x')
-    updateKanbanCard('nul', { due_date: LATER }, 'x')
+    updateKanbanCard('nul', { due_date: null as unknown as number, assignee: null as unknown as string }, { actor: 'x' })
+    updateKanbanCard('nul', { due_date: LATER }, { actor: 'x' })
 
     expect(fieldRows('nul')).toEqual([
       { field: 'due_date', old_value: String(DUE), new_value: null, actor: 'x' },
@@ -121,7 +121,7 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
   it('a status change is a status event and no field row: the two tables stay apart', () => {
     createKanbanCard({ id: 'st', title: 'Moved' })
 
-    updateKanbanCard('st', { status: 'in_progress' }, 'x')
+    updateKanbanCard('st', { status: 'in_progress' }, { actor: 'x' })
 
     expect(getKanbanCardEvents('st')).toHaveLength(1)
     expect(getKanbanCardFieldEvents('st')).toHaveLength(0)
@@ -130,7 +130,7 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
   it('title or description only: no field row', () => {
     createKanbanCard({ id: 'txt', title: 'Text' })
 
-    updateKanbanCard('txt', { title: 'New', description: 'body' }, 'x')
+    updateKanbanCard('txt', { title: 'New', description: 'body' }, { actor: 'x' })
 
     expect(getKanbanCardFieldEvents('txt')).toHaveLength(0)
   })
@@ -144,7 +144,7 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
   })
 
   it('a card that does not exist: false, and no row anywhere', () => {
-    expect(updateKanbanCard('nincs', { due_date: DUE }, 'x')).toBe(false)
+    expect(updateKanbanCard('nincs', { due_date: DUE }, { actor: 'x' })).toBe(false)
     expect(getKanbanCardFieldEvents('nincs')).toHaveLength(0)
     expect(statusEventRows()).toBe(0)
   })
@@ -154,7 +154,7 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
     getDb().prepare('UPDATE kanban_cards SET updated_at = 1 WHERE id = ?').run('tx')
     getDb().exec(`CREATE TRIGGER fail_field BEFORE INSERT ON kanban_card_field_events BEGIN SELECT RAISE(ABORT, 'forced field-row failure'); END`)
 
-    expect(() => updateKanbanCard('tx', { due_date: LATER }, 'x')).toThrow(/forced field-row failure/)
+    expect(() => updateKanbanCard('tx', { due_date: LATER }, { actor: 'x' })).toThrow(/forced field-row failure/)
 
     expect(getKanbanCard('tx')!.due_date).toBe(DUE)
     expect(getKanbanCard('tx')!.updated_at).toBe(1)
@@ -165,7 +165,7 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
     createKanbanCard({ id: 'txs', title: 'Status rolled back', priority: 'normal' })
     getDb().exec(`CREATE TRIGGER fail_status BEFORE INSERT ON kanban_card_events BEGIN SELECT RAISE(ABORT, 'forced status-row failure'); END`)
 
-    expect(() => updateKanbanCard('txs', { status: 'in_progress', priority: 'high' }, 'x')).toThrow(/forced status-row failure/)
+    expect(() => updateKanbanCard('txs', { status: 'in_progress', priority: 'high' }, { actor: 'x' })).toThrow(/forced status-row failure/)
 
     expect(getKanbanCard('txs')!.status).toBe('planned')
     expect(getKanbanCard('txs')!.priority).toBe('normal')
