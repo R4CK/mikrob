@@ -234,6 +234,10 @@ _ZAJ_RE = re.compile(r"[\s'\"+]+")
 # mar fedte). Tartomany-alapu, nem kategoria-alapu, mert a VS-ek es a kiosztatlan pontok kategoriaja
 # (Mn illetve Cn) tul tag lenne altalanosan szurni (Mn=ekezet-kombinalo jel, pl. magyar szoveg NFD
 # alakja; Cn=minden meg ki nem osztott kodpont, ami idovel kiosztott betuve valhat).
+# R2c-javitas (RedHat 3. kor, komment 19300): az elozo kor a VS17-256 tartomanyt E01EF-nel zarta
+# le, de a valodi Default_Ignorable_Code_Point halmaz a tag-sik vegeig (E0FFF) tart -- a kozbeeso
+# 3600 kiosztatlan kodpont (E01F0-E0FFF) atment, es a valodi redaktoron (gemini-offload-call.sh)
+# egy kulcs kozepere ekelve kiszivargott. A tartomany most E0FFF-ig zarodik.
 _LATHATATLAN_TOVABBI = "ᅟᅠㅤﾠ͏឴឵᠎️"
 _LATHATATLAN_STRUKTURALIS = frozenset("\n\r\t")
 _DEFAULT_IGNORABLE_TARTOMANYOK = (
@@ -245,7 +249,7 @@ _DEFAULT_IGNORABLE_TARTOMANYOK = (
     (0xE0000, 0xE0000),  # kiosztatlan (Default_Ignorable)
     (0xE0002, 0xE001F),  # kiosztatlan (Default_Ignorable)
     (0xE0080, 0xE00FF),  # kiosztatlan (Default_Ignorable)
-    (0xE0100, 0xE01EF),  # variation selector 17-256
+    (0xE0100, 0xE0FFF),  # variation selector 17-256 (E0100-E01EF) + kiosztatlan tag-sik vege (E01F0-E0FFF)
 )
 
 
@@ -392,6 +396,12 @@ POZITIV = [
     ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "឵" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (khmer maganhangzo, korabban pin nelkul)
     ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "᠎" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (mongol elvalaszto, korabban pin nelkul)
     ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "️" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (variation selector-16, korabban pin nelkul)
+    # R2c (card f6f67dff, RedHat 3. kor, komment 19300): a _DEFAULT_IGNORABLE_TARTOMANYOK utolso
+    # tartomanya E01EF-nel vegzodott, de a valodi Default_Ignorable_Code_Point halmaz E0FFF-ig tart
+    # (3600 kiosztatlan kodpont, U+E01F0-E0FFF) -- ezek atmentek. Pin a tartomany VEGERE (E0FFF) es
+    # a korabban leszivargott szakasz ELEJERE (E01F0).
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "\U000e01f0" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (kiosztatlan, korabban pin nelkul, LEAK)
+    ("anthropic-kulcs",  "kulcs = \"sk-ant-api03-" + "A"*15 + "\U000e0fff" + "A"*15 + "9zQ\""),  # TITOK-KAPU-KIVETEL (kiosztatlan, tartomany vege, LEAK)
 ]
 # kliensbe szant kulcs: a muszernek LATNIA kell, de NEM blokkolhatja a commitot
 PUBLIKUS_MINTA = "SUPA_ANON=eyJhbGciOiAiSFMyNTYiLCAidHlwIjogIkpXVCJ9.eyJpc3MiOiAiZGVtby1wcm9qZWN0IiwgInJvbGUiOiAiYW5vbiIsICJpYXQiOiAxNTAwMDAwMDAwfQ.WvLorMePmqUDUR3a2oDuLtHGV6zaWQjXEpDNoia0xOM"  # TITOK-KAPU-KIVETEL
