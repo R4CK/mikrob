@@ -66,6 +66,7 @@ const STORE = join(ROOT, 'store')
 const STATE_PATH = join(STORE, 'gemini-fallback-state.json')
 const WEEKLY_HARD_STOP_PATH = join(STORE, 'weekly-hard-stop.json')
 const ENGAGE_CONFIG_PATH = join(STORE, 'gemini-fallback-config.json')
+const SESSION_OUTAGE_PATH = join(STORE, 'mikrob-session-outage.json')
 
 export type GeminiEngageOn = 'newDevStop' | 'hardStopOnly'
 
@@ -138,6 +139,24 @@ function readEngageOn(): GeminiEngageOn {
   }
 }
 
+/**
+ * Card 612058c2: true when quota-bridge.py's Ghost mode has confirmed a Claude SESSION-level
+ * quota outage (the 5h usage limit, not the weekly newDevStop/hard-stop threshold this runner
+ * otherwise watches). This is a harder signal than newDevStop -- MikroB cannot run AT ALL right
+ * now, there is no "in-flight work can still finish on Claude" case -- so it engages regardless
+ * of the `engageOn` config, unlike newDevStopActive below. Fail-safe: a missing/corrupt file (the
+ * default, healthy state) reads as false, biasing toward Claude exactly like every other read in
+ * this module.
+ */
+export function readSessionOutageActive(): boolean {
+  try {
+    const raw = JSON.parse(readFileSync(SESSION_OUTAGE_PATH, 'utf-8')) as Record<string, unknown>
+    return raw.active === true
+  } catch {
+    return false
+  }
+}
+
 /** claudeExhausted fact for decideGeminiFallback, per the engageOn config (see header comment). */
 function readClaudeExhausted(engageOn: GeminiEngageOn): boolean {
   let hardStopActive = false
@@ -149,7 +168,7 @@ function readClaudeExhausted(engageOn: GeminiEngageOn): boolean {
   } catch {
     // missing/corrupt file -> treat as not exhausted (fail toward Claude)
   }
-  return hardStopActive || (engageOn === 'newDevStop' && newDevStopActive)
+  return hardStopActive || readSessionOutageActive() || (engageOn === 'newDevStop' && newDevStopActive)
 }
 
 async function sendTelegram(text: string): Promise<void> {

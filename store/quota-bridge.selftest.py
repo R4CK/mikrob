@@ -238,6 +238,88 @@ def main() -> int:
             else:
                 os.environ["TELEGRAM_STATE_DIR"] = old_env
 
+    # --- card 612058c2: session-outage marker + Ghost runner start/stop -----------------------
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        marker = td / "mikrob-session-outage.json"
+        old_marker = m.SESSION_OUTAGE_FILE
+        m.SESSION_OUTAGE_FILE = str(marker)
+        try:
+            m.mark_session_outage()
+            if marker.exists() and json.loads(marker.read_text()).get("active") is True:
+                ok("mark_session_outage() writes an active:true marker")
+            else:
+                bad("mark_session_outage() should write active:true", marker.read_text() if marker.exists() else "<missing>")
+
+            m.clear_session_outage()
+            if not marker.exists():
+                ok("clear_session_outage() removes the marker")
+            else:
+                bad("clear_session_outage() should remove the marker")
+
+            # Must not raise when the marker is already gone (recovery can race a manual cleanup).
+            try:
+                m.clear_session_outage()
+                ok("clear_session_outage() is a no-op (not a crash) when already absent")
+            except Exception as exc:  # noqa: BLE001
+                bad("clear_session_outage() must not raise on a missing marker", f"{type(exc).__name__}: {exc}")
+
+            # Write failures (e.g. an unwritable directory) must not raise either -- this runs
+            # inside outage_loop, same fail-safe posture as recovery_probe_due above.
+            m.SESSION_OUTAGE_FILE = str(td / "no" / "such" / "dir" / "marker.json")
+            try:
+                m.mark_session_outage()
+                ok("mark_session_outage() does not raise when the path is unwritable")
+            except Exception as exc:  # noqa: BLE001
+                bad("mark_session_outage() must not raise on a write failure", f"{type(exc).__name__}: {exc}")
+        finally:
+            m.SESSION_OUTAGE_FILE = old_marker
+
+        old_runner = m.GHOST_RUNNER_SCRIPT
+        try:
+            # A real, short-lived script: confirms start_ghost_runner() returns a live Popen handle
+            # and stop_ghost_runner() actually terminates it rather than leaking the process.
+            runner = td / "fake-runner.sh"
+            runner.write_text("#!/bin/bash\ntrap 'exit 0' TERM\nwhile true; do sleep 0.05; done\n")
+            runner.chmod(0o755)
+            m.GHOST_RUNNER_SCRIPT = str(runner)
+            proc = m.start_ghost_runner()
+            if proc is not None and proc.poll() is None:
+                ok("start_ghost_runner() returns a live process handle")
+            else:
+                bad("start_ghost_runner() should return a live process", repr(proc))
+            if proc is not None:
+                m.stop_ghost_runner(proc)
+                try:
+                    proc.wait(timeout=5)
+                    if proc.poll() is not None:
+                        ok("stop_ghost_runner() actually terminates the process (acceptance: exit stops the runner)")
+                    else:
+                        bad("stop_ghost_runner() should terminate the process")
+                except Exception as exc:  # noqa: BLE001
+                    bad("stop_ghost_runner() left the process unreaped", f"{type(exc).__name__}: {exc}")
+
+            # A missing/non-executable script must not raise -- best-effort, Ghost's own Telegram
+            # loop must survive it.
+            m.GHOST_RUNNER_SCRIPT = str(td / "does-not-exist.sh")
+            try:
+                got = m.start_ghost_runner()
+                if got is None:
+                    ok("start_ghost_runner() fails soft (returns None) when the script is missing")
+                else:
+                    bad("start_ghost_runner() should return None on a missing script", repr(got))
+            except Exception as exc:  # noqa: BLE001
+                bad("start_ghost_runner() must not raise on a missing script", f"{type(exc).__name__}: {exc}")
+
+            # stop_ghost_runner(None) -- the no-start-happened case -- must be a safe no-op.
+            try:
+                m.stop_ghost_runner(None)
+                ok("stop_ghost_runner(None) is a safe no-op")
+            except Exception as exc:  # noqa: BLE001
+                bad("stop_ghost_runner(None) must not raise", f"{type(exc).__name__}: {exc}")
+        finally:
+            m.GHOST_RUNNER_SCRIPT = old_runner
+
     print(f"\nselftest: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1
 
