@@ -546,7 +546,15 @@ def jail_cmd(engine, workdir):
     # interop sockets that run Windows .exe files outside it. The environment is cleared (it carried the
     # messaging token, SSH/GPG agent sockets, TMUX), bwrap's own too (run_helper); a separate PID
     # namespace makes --die-with-parent take every descendant down with it, setsid'd ones included.
-    drives = [p for p in Path('/mnt').glob('?') if p.is_dir() and not workdir.is_relative_to(p)]
+    # Card 0c086979 (RedHat 19671 + WhiteHat F1): the line above used glob('?'), which only matches
+    # SINGLE-character names (/mnt/c, /mnt/f) -- /mnt/wsl and /mnt/wslg are multi-character and never
+    # matched it, so /mnt/wslg was never tmpfs'd. /mnt/wslg/run/user/1000 carries the host session
+    # D-Bus, ssh/gpg-agent, systemd user, snapd, 14 cc-socks sockets, and X11/Wayland/Pulse -- all
+    # visible to the jailed process (same uid as the host user, so the 0600 mode on several of them
+    # does not help). iterdir() matches every entry regardless of name length; /mnt/wsl is the one
+    # deliberate exception kept visible (DNS, see above).
+    drives = [p for p in Path('/mnt').iterdir()
+              if p.is_dir() and p.name != 'wsl' and not workdir.is_relative_to(p)]
     state = HOME / ('.codex' if engine == 'codex' else '.gemini')
     env = {'HOME': str(HOME), 'USER': os.environ.get('USER', HOME.name), 'LANG': 'C.UTF-8',
            'PATH': f'{HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin', 'TERM': 'dumb',
