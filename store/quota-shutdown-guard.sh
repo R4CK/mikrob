@@ -224,12 +224,19 @@ if [ "$SELFTEST" = "1" ]; then
   _subproc_run() {
     # timeout 3: a helyes eset azonnal exit 2-vel/0-val ter vissza; ha a mutacio miatt a script
     # tovabb fut (pl. curl --max-time 10 miatt blokkolna), a timeout 124-gyel ter vissza.
+    #
+    # Card 1b08cf10 F-RH-A3 (RedHat delta-lelet): --selftest-subprocess korabban "$@" UTAN allt,
+    # tehat a "--force-reason without value" eset ("$@" = --force-reason) a hivott script szamara
+    # valojaban "--force-reason --selftest-subprocess"-kent latszott -- nem az "ertek nelkul" agat
+    # probalta, hanem a "jelzo koveti" agat (ugyanaz a vegeredmeny-exit-kod, de mas pin gyengult
+    # el). A jelzo MOST "$@" ELE kerul, hogy minden _arg_test pontosan azt az argumentum-sorrendet
+    # kapja, amit a label allit.
     local fake_exe="$1"; shift
     rm -f "$SUBPROC_STATE"
     : > "$SUBPROC_LOG"
     timeout 3 env SHUTDOWN_EXE="$fake_exe" _QSG_NO_TELEGRAM=1 \
       _QSG_STATE_OVERRIDE="$SUBPROC_STATE" _QSG_LOG_OVERRIDE="$SUBPROC_LOG" \
-      bash "$0" "$@" --selftest-subprocess 2>/dev/null
+      bash "$0" --selftest-subprocess "$@" 2>/dev/null
   }
 
   _arg_test() {
@@ -301,6 +308,13 @@ if [ "$SELFTEST" = "1" ]; then
   t "missing token-file + percent=99: isolated LOG names the SKIP reason" \
     "$(grep -q 'token-fajl hianyzik' "$SUBPROC_LOG3" 2>/dev/null && echo YES || echo NO)" "YES"
 
+  # F-RH-A4 (RedHat delta-lelet, 1b08cf10): a case 15/16 subprocessei nem irtak felul a
+  # token-fajlt. Ha az F2 (FORCE_REASON alatt nincs API-hivas) visszaesne, ezek a subprocessek
+  # az ELO dashboard-tokent olvasnak es az ELO /api/agents-et hivnak -- egy biztonsagos, letezo
+  # hamis token-fajl ezt kizarja meg regresszio eseten is.
+  FAKE_TOKEN_FILE="$TMPD/fake-token-for-force-cases.txt"
+  printf 'fake-token-not-a-real-credential\n' > "$FAKE_TOKEN_FILE"
+
   # Case 15: F1 pozitiv kontroll (card 1b08cf10, WhiteHat 19791 a 49b9e7d0 4. deltajan). A
   # korabbi izolacios pinek CSAK negativak voltak ("az izolalt STATE NEM irodott") -- egyik sem
   # bizonyitotta, hogy maga az izolacio ERVENYESUL. Ha egy regresszio csendben eldobja a
@@ -324,6 +338,7 @@ if [ "$SELFTEST" = "1" ]; then
   : > "$SUBPROC_LOG4"
   timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_POSITIVE" _QSG_NO_TELEGRAM=1 \
     _QSG_STATE_OVERRIDE="$SUBPROC_STATE4" _QSG_LOG_OVERRIDE="$SUBPROC_LOG4" \
+    _QSG_TOKEN_FILE_OVERRIDE="$FAKE_TOKEN_FILE" _QSG_API_OVERRIDE="http://127.0.0.1:1" \
     bash "$0" --force-reason "positive-control" --selftest-subprocess 2>/dev/null
   rc=$?
   t "F1 positive-control: trigger_shutdown returns 0" "$rc" "0"
@@ -372,6 +387,7 @@ PYEOF
   : > "$SUBPROC_LOG5"
   timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_POSITIVE" _QSG_NO_TELEGRAM=1 \
     _QSG_STATE_OVERRIDE="$SUBPROC_STATE5" _QSG_LOG_OVERRIDE="$SUBPROC_LOG5" \
+    _QSG_TOKEN_FILE_OVERRIDE="$FAKE_TOKEN_FILE" \
     _QSG_API_OVERRIDE="http://127.0.0.1:$SLOW_API_PORT" \
     bash "$0" --dry-run --force-reason "f2-positive-control" --selftest-subprocess 2>/dev/null
   rc=$?
@@ -380,6 +396,109 @@ PYEOF
   kill "$SLOW_API_PID" 2>/dev/null
   wait "$SLOW_API_PID" 2>/dev/null
   SLOW_API_PID=""
+
+  # Local stand-in returning zero running agents, instant response -- shared by Case 17 (F-RH-A1)
+  # and Case 18 (F-RH-A2 control), both of which need FELTETEL 1 to actually fire under override.
+  EMPTY_API_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+  python3 - "$EMPTY_API_PORT" <<'PYEOF' &
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+port = int(sys.argv[1])
+class EmptyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b"[]")
+    def log_message(self, *a):
+        pass
+HTTPServer(("127.0.0.1", port), EmptyHandler).serve_forever()
+PYEOF
+  EMPTY_API_PID=$!
+
+  # Case 17: F-RH-A1 positive control (RedHat ccbfece8/1b08cf10 delta). Case 15's positive control
+  # never drove FELTETEL 1 (the non-force path) through the overrides, so losing EITHER
+  # _QSG_API_OVERRIDE or _QSG_HARDSTOP_OVERRIDE alone still passed 53/53 -- without them, a
+  # real-looking percent/running-flotta reading (from the real files/API) just as plausibly fails
+  # the condition and stays green for the wrong reason. This drives HARDSTOP=99% + a stand-in
+  # reporting zero running agents through to an actual (safely faked) trigger: losing either
+  # override breaks the match and the trigger silently stops firing.
+  FAKE_MARKER6="$TMPD/a1-positive-control-marker.txt"
+  FAKE_SHUTDOWN_A1="$TMPD/fake-shutdown-a1.sh"
+  printf '#!/bin/bash\ntouch "%s"\nexit 0\n' "$FAKE_MARKER6" > "$FAKE_SHUTDOWN_A1"
+  chmod +x "$FAKE_SHUTDOWN_A1"
+  SUBPROC_STATE6="$TMPD/subproc-state6.json"
+  SUBPROC_LOG6="$TMPD/subproc-log6.txt"
+  rm -f "$FAKE_MARKER6" "$SUBPROC_STATE6"
+  : > "$SUBPROC_LOG6"
+  timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_A1" _QSG_NO_TELEGRAM=1 \
+    _QSG_STATE_OVERRIDE="$SUBPROC_STATE6" _QSG_LOG_OVERRIDE="$SUBPROC_LOG6" \
+    _QSG_TOKEN_FILE_OVERRIDE="$FAKE_TOKEN_FILE" _QSG_HARDSTOP_OVERRIDE="$HARDSTOP_99" \
+    _QSG_API_OVERRIDE="http://127.0.0.1:$EMPTY_API_PORT" \
+    bash "$0" --selftest-subprocess 2>/dev/null
+  t "F-RH-A1 positive-control: shutdown marker IS created (hardstop+API overrides both took effect)" \
+    "$([ -f "$FAKE_MARKER6" ] && echo YES || echo NO)" "YES"
+  t "F-RH-A1 positive-control: isolated STATE IS written" "$([ -f "$SUBPROC_STATE6" ] && echo YES || echo NO)" "YES"
+  t "F-RH-A1 positive-control: isolated LOG shows the HARDSTOP override's 99% drove the trigger" \
+    "$(grep -q 'TRIGGER: heti kvota 99%, minden flotta-ugynok leallt' "$SUBPROC_LOG6" && echo YES || echo NO)" "YES"
+
+  # Case 18: F-RH-A2 (RedHat finding, 1b08cf10 delta). Every case above runs FROM WITHIN this
+  # already-isolated selftest, so a bug in the SELFTEST||ISOLATED gate itself could write to this
+  # run's own TMPD-backed defaults instead of anything real and still read as green -- it can't
+  # prove the gate holds on a flag-less, "looks like production" invocation. This builds an actual
+  # STANDALONE COPY of the script with its own defaults (STORE and the hardcoded shutdown.exe path)
+  # rewritten to scratch locations, and runs THAT without any --selftest/--selftest-subprocess flag
+  # at all -- proving the _QSG_*_OVERRIDE vars, AND a direct environment-variable spoof of
+  # ISOLATED=1/SELFTEST=1 (RedHat's own second mutant), have NO effect without the flag, with a
+  # same-overrides control run WITH the flag proving the test is sensitive.
+  NEUTRAL_COPY="$TMPD/neutral-copy.sh"
+  NEUTRAL_STORE="$TMPD/neutral-store"
+  mkdir -p "$NEUTRAL_STORE"
+  NEUTRAL_STUB="$TMPD/neutral-stub-shutdown.sh"
+  printf '#!/bin/bash\nexit 0\n' > "$NEUTRAL_STUB"
+  chmod +x "$NEUTRAL_STUB"
+  cp "$0" "$NEUTRAL_COPY"
+  sed -i "s#/home/neon/marveen/store#$NEUTRAL_STORE#g; s#/mnt/c/Windows/System32/shutdown.exe#$NEUTRAL_STUB#g" "$NEUTRAL_COPY"
+  chmod +x "$NEUTRAL_COPY"
+
+  NEUTRAL_OVERRIDE_HARDSTOP="$TMPD/neutral-override-hardstop.json"
+  printf '{"percent":99}\n' > "$NEUTRAL_OVERRIDE_HARDSTOP"
+  NEUTRAL_OVERRIDE_TOKEN="$TMPD/neutral-override-token.txt"
+  printf 'neutral-fake-token\n' > "$NEUTRAL_OVERRIDE_TOKEN"
+  NEUTRAL_OVERRIDE_STATE="$TMPD/neutral-override-state.json"
+  NEUTRAL_OVERRIDE_LOG="$TMPD/neutral-override-log.txt"
+  rm -f "$NEUTRAL_OVERRIDE_STATE" "$NEUTRAL_OVERRIDE_LOG" \
+        "$NEUTRAL_STORE/quota-shutdown-guard-state.json" "$NEUTRAL_STORE/quota-shutdown-guard.log"
+
+  timeout 3 env _QSG_STATE_OVERRIDE="$NEUTRAL_OVERRIDE_STATE" _QSG_LOG_OVERRIDE="$NEUTRAL_OVERRIDE_LOG" \
+    _QSG_HARDSTOP_OVERRIDE="$NEUTRAL_OVERRIDE_HARDSTOP" _QSG_TOKEN_FILE_OVERRIDE="$NEUTRAL_OVERRIDE_TOKEN" \
+    _QSG_API_OVERRIDE="http://127.0.0.1:$EMPTY_API_PORT" ISOLATED=1 SELFTEST=1 \
+    bash "$NEUTRAL_COPY" >/dev/null 2>&1
+  t "F-RH-A2 no-flag: hardstop override IGNORED without the flag (neutral default log shows percent=0, not 99)" \
+    "$(grep -q 'percent=0' "$NEUTRAL_STORE/quota-shutdown-guard.log" 2>/dev/null && echo YES || echo NO)" "YES"
+  t "F-RH-A2 no-flag: override STATE file NOT created (the override path was never used)" \
+    "$([ -f "$NEUTRAL_OVERRIDE_STATE" ] && echo YES || echo NO)" "NO"
+  t "F-RH-A2 no-flag: override LOG file NOT created (log went to the neutral default path instead)" \
+    "$([ -f "$NEUTRAL_OVERRIDE_LOG" ] && echo YES || echo NO)" "NO"
+
+  NEUTRAL_CTRL_STATE="$TMPD/neutral-ctrl-state.json"
+  NEUTRAL_CTRL_LOG="$TMPD/neutral-ctrl-log.txt"
+  NEUTRAL_CTRL_MARKER="$TMPD/neutral-ctrl-marker.txt"
+  NEUTRAL_CTRL_SHUTDOWN="$TMPD/neutral-ctrl-shutdown.sh"
+  printf '#!/bin/bash\ntouch "%s"\nexit 0\n' "$NEUTRAL_CTRL_MARKER" > "$NEUTRAL_CTRL_SHUTDOWN"
+  chmod +x "$NEUTRAL_CTRL_SHUTDOWN"
+  rm -f "$NEUTRAL_CTRL_STATE" "$NEUTRAL_CTRL_LOG" "$NEUTRAL_CTRL_MARKER"
+  timeout 3 env SHUTDOWN_EXE="$NEUTRAL_CTRL_SHUTDOWN" _QSG_NO_TELEGRAM=1 \
+    _QSG_STATE_OVERRIDE="$NEUTRAL_CTRL_STATE" _QSG_LOG_OVERRIDE="$NEUTRAL_CTRL_LOG" \
+    _QSG_HARDSTOP_OVERRIDE="$NEUTRAL_OVERRIDE_HARDSTOP" _QSG_TOKEN_FILE_OVERRIDE="$NEUTRAL_OVERRIDE_TOKEN" \
+    _QSG_API_OVERRIDE="http://127.0.0.1:$EMPTY_API_PORT" \
+    bash "$NEUTRAL_COPY" --selftest-subprocess 2>/dev/null
+  t "F-RH-A2 control: the SAME overrides DO take effect WITH --selftest-subprocess (test is sensitive)" \
+    "$([ -f "$NEUTRAL_CTRL_MARKER" ] && echo YES || echo NO)" "YES"
+  t "F-RH-A2 control: isolated STATE IS written" "$([ -f "$NEUTRAL_CTRL_STATE" ] && echo YES || echo NO)" "YES"
+
+  kill "$EMPTY_API_PID" 2>/dev/null
+  wait "$EMPTY_API_PID" 2>/dev/null
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
