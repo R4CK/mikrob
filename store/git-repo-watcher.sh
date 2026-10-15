@@ -74,26 +74,54 @@ for r in (d if isinstance(d,list) else []):
 # watched-repos-record-review.sh); mode "text" also advances last_sha to the sha just
 # fast-forwarded to, same as external-repos-sync.sh's write_back does for its own (always-text)
 # covered list.
+# Card eedb2871 L2 (WhiteHat2 gate, comment 19039): the read-modify-write below used to be
+# neither locked nor atomic, and silently treated a corrupt state file as "empty" -- then wrote
+# that empty state straight back, which measurably dropped OTHER entries' approved last_sha pins
+# under concurrent writers (measured on the sibling pipx script: 15/25 rounds lost a pin, worst
+# round 0/40 survived). Both callers of this file (this script and pipx-version-check.sh) share
+# one flock'd lock file, write through a tempfile + os.replace (atomic rename, never a partial
+# write visible to a concurrent reader), and FAIL CLOSED (nonzero exit, no write at all) on a
+# state file that fails to parse as JSON instead of quietly resetting it to {}.
 write_back() { # $1=name $2=mode(checked|text) $3=new_sha (only used for mode=text)
-  python3 - "$STATE" "$1" "$2" "${3:-}" <<'PY'
-import json, sys
+  local name="$1" mode="$2" new_sha="${3:-}" out rc
+  out="$( (
+    flock -x -w 10 200 || { echo "lock timeout waiting for $STATE.lock"; exit 1; }
+    python3 - "$STATE" "$name" "$mode" "$new_sha" <<'PY'
+import json, os, sys
 from datetime import date
 
 state_path, name, mode, new_sha = sys.argv[1:5]
-try:
+if os.path.exists(state_path):
     with open(state_path, encoding="utf-8") as f:
-        state = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
+        raw = f.read()
+    if raw.strip():
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print("corrupt state file, refusing to overwrite: " + str(e))
+            sys.exit(1)
+    else:
+        state = {}
+else:
     state = {}
 entry = state.get(name, {})
 entry["last_checked_at"] = date.today().isoformat()
 if mode == "text" and new_sha:
     entry["last_sha"] = new_sha
 state[name] = entry
-with open(state_path, "w", encoding="utf-8") as f:
+tmp_path = state_path + ".tmp"
+with open(tmp_path, "w", encoding="utf-8") as f:
     json.dump(state, f, indent=2, ensure_ascii=False)
     f.write("\n")
+os.replace(tmp_path, state_path)
 PY
+  ) 200>"$STATE.lock" 2>&1 )"
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    local safe_out
+    safe_out="$(printf '%s' "$out" | tr -cd '[:print:]' | cut -c1-200)"
+    echo "ERROR:statewrite:$name ($safe_out)"
+  fi
 }
 
 for row in "${ROWS[@]}"; do
@@ -173,3 +201,17 @@ for row in "${ROWS[@]}"; do
 done
 
 echo "SUMMARY:changed=$changed:flagged=$flagged"
+
+# Card eedb2871 F-1/L3 (QA FAIL 19034, WhiteHat2 L3): store/pipx-version-check.sh existed but
+# nothing periodic ever called it, so the pipx-adopted entries (code-review-graph, graphify)
+# stayed stuck at a last_checked_at from weeks ago while every git-watched entry stayed fresh.
+# This script's own scheduled task (every 6h) is already the one periodic hook the dashboard
+# reads -- running the pipx check right after the git check gives it the same cadence without a
+# second scheduled task. Its output lines are already shaped compatibly (NOCHANGE:/ERROR:/
+# SUMMARY:) -- see pipx-version-check.sh's own header. Guarded by -x so a copy of just this
+# script (e.g. a test harness) that doesn't also carry pipx-version-check.sh degrades to a no-op.
+PIPX_CHECK="$HERE/pipx-version-check.sh"
+if [[ -x "$PIPX_CHECK" ]]; then
+  bash "$PIPX_CHECK"
+fi
+exit 0

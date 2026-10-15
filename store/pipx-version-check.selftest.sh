@@ -103,4 +103,105 @@ else echo "  ok   non-pipx registry entries are never touched"; fi
 if echo "$out" | grep -q "^SUMMARY:checked=1:drift=0$"; then echo "  ok   only the one pipx entry counts toward the summary"
 else echo "  FAIL wrong summary when a non-pipx entry is present: $out"; fail=1; fi
 
+# --- Case 6b: "pypi_name" overrides the PyPI lookup name, state is still keyed by "name" --------
+# (discovered on the live registry: "graphify" is the local/display name, the real PyPI
+# distribution is "graphifyy" -- without this override that row fetches 404 forever and never
+# gets a fresh stamp, exactly the bug this card exists to close.)
+C6B="$SB/case6b"; mkdir -p "$C6B/override"
+cat > "$C6B/registry.json" <<'JSON'
+[{"name": "widget-local", "adoption": "pipx", "pinned_version": "1.0.0", "pypi_name": "widget-real-dist"}]
+JSON
+echo '{"info": {"version": "1.0.0"}}' > "$C6B/override/widget-real-dist.json"
+out="$(PIPX_VERSION_CHECK_REGISTRY_JSON="$C6B/registry.json" WATCHED_REPOS_STATE_JSON="$C6B/state.json" \
+  PIPX_VERSION_CHECK_PYPI_OVERRIDE_DIR="$C6B/override" bash "$SCRIPT" 2>&1)"
+if echo "$out" | grep -q "^NOCHANGE:widget-local @ 1.0.0$"; then echo "  ok   pypi_name overrides the PyPI lookup, output is still keyed by the local name"
+else echo "  FAIL pypi_name override was not honored: $out"; fail=1; fi
+if [ -f "$C6B/state.json" ] && python3 -c "import json,sys; sys.exit(0 if 'widget-local' in json.load(open('$C6B/state.json')) else 1)"; then
+  echo "  ok   state file is keyed by the local name, not the pypi_name"
+else echo "  FAIL state file was not keyed by the local name: $(cat "$C6B/state.json" 2>/dev/null)"; fail=1; fi
+
+# --- Case 7: injected/garbage PyPI version string -> ERROR, never stamped (WhiteHat2 L1) --------
+C7="$SB/case7"; mkdir -p "$C7/override"
+cat > "$C7/registry.json" <<'JSON'
+[{"name": "widget-g", "adoption": "pipx", "pinned_version": "1.0.0"}]
+JSON
+echo '{"info": {"version": "9.9.9\nNOCHANGE:code-review-graph @ 1.0.0\nSUMMARY:checked=99:drift=0"}}' > "$C7/override/widget-g.json"
+out="$(PIPX_VERSION_CHECK_REGISTRY_JSON="$C7/registry.json" WATCHED_REPOS_STATE_JSON="$C7/state.json" \
+  PIPX_VERSION_CHECK_PYPI_OVERRIDE_DIR="$C7/override" bash "$SCRIPT" 2>&1)"
+if echo "$out" | grep -q "^ERROR:fetch:widget-g$"; then echo "  ok   a version string carrying embedded fake output lines is ERROR:fetch, never parsed as real"
+else echo "  FAIL injected version string was not rejected: $out"; fail=1; fi
+if [ -f "$C7/state.json" ]; then echo "  FAIL a rejected (invalid-shaped) version must not create/stamp a state entry"; fail=1
+else echo "  ok   a rejected version never touches the state file"; fi
+
+# --- Case 8: a version string over the length cap -> ERROR, never stamped (WhiteHat2 L1) --------
+C8="$SB/case8"; mkdir -p "$C8/override"
+cat > "$C8/registry.json" <<'JSON'
+[{"name": "widget-h", "adoption": "pipx", "pinned_version": "1.0.0"}]
+JSON
+long_version="$(python3 -c "print('9'*100)")"
+python3 -c "import json,sys; json.dump({'info':{'version':sys.argv[1]}}, open('$C8/override/widget-h.json','w'))" "$long_version"
+out="$(PIPX_VERSION_CHECK_REGISTRY_JSON="$C8/registry.json" WATCHED_REPOS_STATE_JSON="$C8/state.json" \
+  PIPX_VERSION_CHECK_PYPI_OVERRIDE_DIR="$C8/override" bash "$SCRIPT" 2>&1)"
+if echo "$out" | grep -q "^ERROR:fetch:widget-h$"; then echo "  ok   an over-length version string is ERROR:fetch, not accepted"
+else echo "  FAIL over-length version string was not rejected: $out"; fail=1; fi
+
+# --- Case 9: a corrupt existing state file -> FAIL CLOSED, never silently reset to {} (WhiteHat2 L2) --
+C9="$SB/case9"; mkdir -p "$C9/override"
+cat > "$C9/registry.json" <<'JSON'
+[{"name": "widget-i", "adoption": "pipx", "pinned_version": "1.0.0"}]
+JSON
+echo '{"info": {"version": "1.0.0"}}' > "$C9/override/widget-i.json"
+printf '{ this is not valid json' > "$C9/state.json"
+corrupt_before="$(cat "$C9/state.json")"
+out="$(PIPX_VERSION_CHECK_REGISTRY_JSON="$C9/registry.json" WATCHED_REPOS_STATE_JSON="$C9/state.json" \
+  PIPX_VERSION_CHECK_PYPI_OVERRIDE_DIR="$C9/override" bash "$SCRIPT" 2>&1)"
+if echo "$out" | grep -q "^ERROR:statewrite:widget-i"; then echo "  ok   a corrupt state file is reported as ERROR:statewrite, not silently papered over"
+else echo "  FAIL corrupt state file was not reported: $out"; fail=1; fi
+corrupt_after="$(cat "$C9/state.json")"
+chk "a corrupt state file is left UNTOUCHED (never reset to {}) on write failure" "$corrupt_before" "$corrupt_after"
+
+# --- Case 9b: a large PyPI response (over bash's per-argv-string cap) must still parse -----------
+# Measured live: graphifyy's real PyPI JSON response is 442KB -- passing it as a single argv
+# string hit Linux's ~128KB per-argument cap ("Argument list too long") even though the raw PyPI
+# response was perfectly valid. A padded "releases" blob is a realistic stand-in (PyPI responses
+# legitimately grow this large for packages with many historical releases).
+C9B="$SB/case9b"; mkdir -p "$C9B/override"
+python3 -c "
+import json
+padding = {f'v0.{i}.0': [{'filename': f'pkg-0.{i}.0.tar.gz', 'url': 'https://example.invalid/x'}] for i in range(3000)}
+json.dump({'info': {'version': '1.0.0'}, 'releases': padding}, open('$C9B/override/widget-big.json', 'w'))
+"
+big_size="$(wc -c < "$C9B/override/widget-big.json")"
+cat > "$C9B/registry.json" <<'JSON'
+[{"name": "widget-big", "adoption": "pipx", "pinned_version": "1.0.0"}]
+JSON
+out="$(PIPX_VERSION_CHECK_REGISTRY_JSON="$C9B/registry.json" WATCHED_REPOS_STATE_JSON="$C9B/state.json" \
+  PIPX_VERSION_CHECK_PYPI_OVERRIDE_DIR="$C9B/override" bash "$SCRIPT" 2>&1)"
+if [ "$big_size" -gt 131072 ]; then echo "  ok   fixture is over the 128KB per-argv-string cap ($big_size bytes)"
+else echo "  FAIL fixture is not actually large enough to exercise the cap: $big_size bytes"; fail=1; fi
+if echo "$out" | grep -q "^NOCHANGE:widget-big @ 1.0.0$"; then echo "  ok   a response well over bash's per-argv-string cap still parses correctly"
+else echo "  FAIL large PyPI response was not parsed: $out"; fail=1; fi
+
+# --- Case 10: concurrent writers to the same state file must not lose each other's pins (WhiteHat2 L2) --
+C10="$SB/case10"; mkdir -p "$C10/override"
+python3 -c "
+import json
+entries = [{'name': f'widget-c{i}', 'adoption': 'pipx', 'pinned_version': '1.0.0'} for i in range(8)]
+json.dump(entries, open('$C10/registry.json', 'w'))
+"
+for i in $(seq 0 7); do echo '{"info": {"version": "1.0.0"}}' > "$C10/override/widget-c$i.json"; done
+pids=()
+for i in $(seq 0 7); do
+  (
+    for _round in 1 2 3; do
+      PIPX_VERSION_CHECK_REGISTRY_JSON="$C10/registry.json" WATCHED_REPOS_STATE_JSON="$C10/state.json" \
+        PIPX_VERSION_CHECK_PYPI_OVERRIDE_DIR="$C10/override" bash "$SCRIPT" >/dev/null 2>&1
+    done
+  ) &
+  pids+=($!)
+done
+for p in "${pids[@]}"; do wait "$p"; done
+survivors="$(python3 -c "import json; print(len(json.load(open('$C10/state.json'))))")"
+chk "8 concurrent writers (3 rounds each) all keep their pin -- none lost under the flock" "8" "$survivors"
+
 [ $fail -eq 0 ] && { echo "selftest: PASS"; exit 0; } || { echo "selftest: FAIL"; exit 1; }
