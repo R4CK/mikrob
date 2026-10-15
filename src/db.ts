@@ -4331,24 +4331,6 @@ function recordKanbanFieldEvent(
   ).run(cardId, field, clipAuditValue(oldValue), clipAuditValue(newValue), actor ?? null, nowMs)
 }
 
-export interface KanbanCardFieldEvent {
-  readonly id: number
-  readonly card_id: string
-  readonly field: string
-  readonly old_value: string | null
-  readonly new_value: string | null
-  readonly actor: string | null
-  readonly created_at: number
-}
-
-/** Who changed what on this card, oldest first. The consumer is whoever has to answer "where did
- *  this come from" after the fact -- the question nobody could answer on 8d673233. */
-export function getKanbanCardFieldEvents(cardId: string): KanbanCardFieldEvent[] {
-  return db
-    .prepare('SELECT * FROM kanban_card_field_events WHERE card_id = ? ORDER BY created_at ASC, id ASC')
-    .all(cardId) as KanbanCardFieldEvent[]
-}
-
 // --- Structured gate-verdict records (card 2bfa4c67) -- see the CREATE TABLE comment above for
 // the full rationale (additive, author_verified, proposer). ---
 
@@ -5439,14 +5421,16 @@ export function getKanbanCardEvents(cardId: string): KanbanCardEvent[] {
   return db.prepare('SELECT * FROM kanban_card_events WHERE card_id = ? ORDER BY created_at ASC, id ASC').all(cardId) as KanbanCardEvent[]
 }
 
+/** Who changed what on this card, oldest first. The consumer is whoever has to answer "where did
+ *  this come from" after the fact -- the question nobody could answer on 8d673233. */
 export interface KanbanCardFieldEvent {
-  id: number
-  card_id: string
-  field: (typeof KANBAN_AUDITED_FIELDS)[number]
-  old_value: string | null
-  new_value: string | null
-  actor: string | null
-  created_at: number
+  readonly id: number
+  readonly card_id: string
+  readonly field: (typeof KANBAN_AUDITED_FIELDS)[number]
+  readonly old_value: string | null
+  readonly new_value: string | null
+  readonly actor: string | null
+  readonly created_at: number
 }
 
 export function getKanbanCardFieldEvents(cardId: string): KanbanCardFieldEvent[] {

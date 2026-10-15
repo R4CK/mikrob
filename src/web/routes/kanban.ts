@@ -1479,15 +1479,6 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // The due_date / assignee / priority changes (card f6fba9ec). A route of its
-  // own, so the /events array above keeps its shape for every existing reader.
-  const kanbanFieldEventsMatch = path.match(/^\/api\/kanban\/([^/]+)\/field-events$/)
-  if (kanbanFieldEventsMatch && method === 'GET') {
-    const cardId = decodeURIComponent(kanbanFieldEventsMatch[1])
-    json(res, getKanbanCardFieldEvents(cardId))
-    return true
-  }
-
   const breakdownMatch = path.match(/^\/api\/kanban\/([^/]+)\/breakdown$/)
   if (breakdownMatch && method === 'POST') {
     const cardId = decodeURIComponent(breakdownMatch[1])

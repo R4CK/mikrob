@@ -179,7 +179,7 @@ describe('updateKanbanCard: one kanban_card_field_events row per REAL change of 
     getDb().prepare('UPDATE kanban_cards SET updated_at = 1 WHERE id = ?').run('parent')
     getDb().exec(`CREATE TRIGGER fail_field2 BEFORE INSERT ON kanban_card_field_events BEGIN SELECT RAISE(ABORT, 'forced'); END`)
 
-    expect(() => updateKanbanCard('child', { due_date: LATER }, 'x')).toThrow()
+    expect(() => updateKanbanCard('child', { due_date: LATER }, { actor: 'x' })).toThrow()
 
     expect(getKanbanCard('parent')!.updated_at).toBe(1)
   })

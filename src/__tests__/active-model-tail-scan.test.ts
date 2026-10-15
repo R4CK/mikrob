@@ -195,82 +195,82 @@ describe('what is read', () => {
     expect(transcriptScanBytesReadForTests() - before).toBeLessThan(2 * (turn.length + 64 + 64) + 1)
   })
 
-  it('two callers with different since values on one transcript keep their own answers', () => {
+  it('two callers with different since values on one transcript keep their own answers', async () => {
     writeFileSync(file, modelLine('claude-early', 1000) + modelLine('claude-late', 2000) + filler(3))
     const s1 = Math.floor(BASE_MS / 1000) + 500
     const s2 = Math.floor(BASE_MS / 1000) + 2500
-    expect(readers(s1).model).toBe('claude-late')
-    expect(readers(s2).model).toBeNull()
-    expect(readers(s1).model).toBe('claude-late')
-    expect(readers(undefined).model).toBe('claude-late')
-    expect(readers(s2).model).toBeNull()
+    expect((await readers(s1)).model).toBe('claude-late')
+    expect((await readers(s2)).model).toBeNull()
+    expect((await readers(s1)).model).toBe('claude-late')
+    expect((await readers(undefined)).model).toBe('claude-late')
+    expect((await readers(s2)).model).toBeNull()
   })
 
-  it('an answer line longer than two chunks (it spans three 256 KiB reads) is read whole', () => {
+  it('an answer line longer than two chunks (it spans three 256 KiB reads) is read whole', async () => {
     const long = JSON.stringify({ type: 'assistant', timestamp: iso(3700), message: { model: 'claude-long', usage: { input_tokens: 7 }, content: 'ű'.repeat(400_000) } }) + '\n'
     expect(Buffer.byteLength(long)).toBeGreaterThan(3 * 256 * 1024)
     writeFileSync(file, filler(5) + long + filler(2))
-    expect(readers()).toEqual({ model: 'claude-long', tokens: 7 })
+    expect(await readers()).toEqual({ model: 'claude-long', tokens: 7 })
   })
 
-  it('a line cut by an unfinished write is read whole once it is finished', () => {
+  it('a line cut by an unfinished write is read whole once it is finished', async () => {
     const line = modelLine('claude-split', 3800)
     writeFileSync(file, filler(10) + line.slice(0, 40))
-    expect(readers().model).toBeNull()
+    expect((await readers()).model).toBeNull()
     appendFileSync(file, line.slice(40))
-    expect(readers().model).toBe('claude-split')
+    expect((await readers()).model).toBe('claude-split')
   })
 })
 
 describe('a transcript that is not only appended to is read whole', () => {
   const modelLine = (model: string): string => JSON.stringify({ type: 'assistant', timestamp: iso(100), message: { model } }) + '\n'
 
-  it('replaced by another file (rename over it)', () => {
+  it('replaced by another file (rename over it)', async () => {
     writeFileSync(file, modelLine('claude-a'))
-    expect(readers().model).toBe('claude-a')
+    expect((await readers()).model).toBe('claude-a')
     const other = file + '.uj'
     writeFileSync(other, modelLine('claude-b') + modelLine('claude-c') + '{"x":1}\n')
     renameSync(other, file)
-    expect(readers().model).toBe('claude-c')
+    expect((await readers()).model).toBe('claude-c')
   })
 
-  it('truncated', () => {
+  it('truncated', async () => {
     writeFileSync(file, modelLine('claude-a') + modelLine('claude-b'))
-    expect(readers().model).toBe('claude-b')
+    expect((await readers()).model).toBe('claude-b')
     truncateSync(file, modelLine('claude-a').length)
-    expect(readers().model).toBe('claude-a')
+    expect((await readers()).model).toBe('claude-a')
   })
 
-  it('rewritten in place to the SAME size (another mtime) with the end untouched: read whole, not from the last line', () => {
+  it('rewritten in place to the SAME size (another mtime) with the end untouched: read whole, not from the last line', async () => {
     const tail = '{"type":"system","note":"' + 'w'.repeat(100) + '"}\n'
     writeFileSync(file, modelLine('claude-a') + tail)
-    expect(readers().model).toBe('claude-a')
+    expect((await readers()).model).toBe('claude-a')
     writeFileSync(file, modelLine('claude-b') + tail)
     // the file system's mtime clock is coarse: two writes inside one tick may share it, so the test sets it apart
     const later = new Date(Date.now() + 5_000)
     utimesSync(file, later, later)
-    expect(readers().model).toBe('claude-b')
+    expect((await readers()).model).toBe('claude-b')
   })
 
   // TESTFOLLOWUP1007D: the two mutants the #1724 review left green. Each case is built so that ONLY the guard under
   // test decides it: the other checks (size, mtime, the anchor) all point to "unchanged".
 
-  it('shorter, cut behind the anchor (the last line is unfinished): read whole, not from the last line', () => {
+  it('shorter, cut behind the anchor (the last line is unfinished): read whole, not from the last line', async () => {
     // No final newline, so the last line starts before the end and its 64-byte anchor sits inside the filler line,
     // which the rewrite keeps byte for byte. Only `size > prev.size` sends a shorter file to the whole read.
     const filler = '{"type":"system","note":"' + 'w'.repeat(100) + '"}\n'
     const unfinished = '{"type":"system","note":"' + 'x'.repeat(200)
     writeFileSync(file, modelLine('claude-b') + filler + unfinished)
-    expect(readers().model).toBe('claude-b')
+    expect((await readers()).model).toBe('claude-b')
     // same length answer line (b -> c), the filler and the anchor unchanged, the unfinished line cut short
     writeFileSync(file, modelLine('claude-c') + filler + unfinished.slice(0, 100))
     const later = new Date(Date.now() + 5_000)
     utimesSync(file, later, later)
     expect(statSync(file).size).toBeLessThan(Buffer.byteLength(modelLine('claude-b') + filler + unfinished))
-    expect(readers().model).toBe('claude-c')
+    expect((await readers()).model).toBe('claude-c')
   })
 
-  it('replaced by another file of the SAME size and mtime (rename over it): the new inode is read, not remembered', () => {
+  it('replaced by another file of the SAME size and mtime (rename over it): the new inode is read, not remembered', async () => {
     // Size and mtime are equal on purpose, so only the identity check (dev + ino) tells the files apart.
     const tail = '{"type":"system","note":"' + 'w'.repeat(100) + '"}\n'
     // One whole-second timestamp for both files: a Date copied from statSync drops the sub-millisecond part, and the
@@ -278,7 +278,7 @@ describe('a transcript that is not only appended to is read whole', () => {
     const stamp = new Date(Math.floor(Date.now() / 1000) * 1000 - 60_000)
     writeFileSync(file, modelLine('claude-a') + tail)
     utimesSync(file, stamp, stamp)
-    expect(readers().model).toBe('claude-a')
+    expect((await readers()).model).toBe('claude-a')
     const was = statSync(file)
     const other = file + '.uj'
     writeFileSync(other, modelLine('claude-z') + tail)
@@ -288,14 +288,14 @@ describe('a transcript that is not only appended to is read whole', () => {
     expect(now.size).toBe(was.size)
     expect(now.mtimeMs).toBe(was.mtimeMs)
     expect(now.ino).not.toBe(was.ino)
-    expect(readers().model).toBe('claude-z')
+    expect((await readers()).model).toBe('claude-z')
   })
 
-  it('rewritten in place to a larger size (the same inode): the anchor before the last line no longer matches', () => {
+  it('rewritten in place to a larger size (the same inode): the anchor before the last line no longer matches', async () => {
     writeFileSync(file, modelLine('claude-a') + '{"type":"system"}\n')
-    expect(readers().model).toBe('claude-a')
+    expect((await readers()).model).toBe('claude-a')
     writeFileSync(file, '{"type":"system","x":"' + 'z'.repeat(40) + '"}\n' + modelLine('claude-b').replace('claude-b', 'claude-b-longer') + '{"type":"system"}\n')
-    expect(readers().model).toBe('claude-b-longer')
+    expect((await readers()).model).toBe('claude-b-longer')
   })
 })
 
