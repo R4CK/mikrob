@@ -387,21 +387,21 @@ describe('decideGeminiOrder (condition 3: fail-closed end to end)', () => {
 
   it('Gemini call fails (network/timeout/quota): fails closed, reason passed through, never throws', async () => {
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'network', detail: 'boom' }))
-    const result = await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini)
+    const result = await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini, () => true)
     expect(result.ok).toBe(false)
     expect(result.reason).toBe('network')
   })
 
   it('Gemini returns garbage text: fails closed with invalid_response_schema, never throws', async () => {
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: 'not json' }))
-    const result = await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini)
+    const result = await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini, () => true)
     expect(result).toEqual({ ok: false, reason: 'invalid_response_schema' })
   })
 
   it('Gemini returns a valid order: ok:true with that order', async () => {
     const cards = [card({ id: 'a', labels: ['gemini-ok'] }), card({ id: 'b', labels: ['gemini-ok'] })]
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: '["b","a"]' }))
-    const result = await decideGeminiOrder(cards, 'key', callGemini)
+    const result = await decideGeminiOrder(cards, 'key', callGemini, () => true)
     expect(result).toEqual({ ok: true, order: ['b', 'a'] })
   })
 
@@ -413,7 +413,7 @@ describe('decideGeminiOrder (condition 3: fail-closed end to end)', () => {
       seenPrompt = opts.prompt
       return { ok: true, text: '["ok1"]' }
     })
-    const result = await decideGeminiOrder(cards, 'key', callGemini)
+    const result = await decideGeminiOrder(cards, 'key', callGemini, () => true)
     expect(result).toEqual({ ok: true, order: ['ok1'] })
     expect(seenPrompt).not.toContain('Jelszo')
     expect(seenPrompt).not.toContain('sec1')
@@ -427,8 +427,25 @@ describe('decideGeminiOrder (condition 3: fail-closed end to end)', () => {
   it('a NUL byte in one card title does not abort ordering for the other cards (H2)', async () => {
     const cards = [card({ id: 'ok1', title: 'Add dark mode', labels: ['gemini-ok'] }), card({ id: 'nul1', title: 'Benign\x00title' })]
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: '["ok1"]' }))
-    const result = await decideGeminiOrder(cards, 'key', callGemini)
+    const result = await decideGeminiOrder(cards, 'key', callGemini, () => true)
     expect(result).toEqual({ ok: true, order: ['ok1'] })
+  })
+
+  // H1 regression (WhiteHat2 NO-GO, card 612058c2 delta-gate @c5e5ec28): the ordering call must
+  // check the shared hourly budget and never reach Gemini when no slot remains.
+  it('no budget slot left: fails closed with hourly_cap_reached, never calls Gemini (H1)', async () => {
+    const callGemini = vi.fn()
+    const result = await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini, () => false)
+    expect(result).toEqual({ ok: false, reason: 'hourly_cap_reached' })
+    expect(callGemini).not.toHaveBeenCalled()
+  })
+
+  it('a budget slot is reserved before Gemini is called, not after (H1)', async () => {
+    const order: string[] = []
+    const reserveSlot = vi.fn(() => { order.push('reserve'); return true })
+    const callGemini = vi.fn(async (): Promise<GeminiResult> => { order.push('call'); return { ok: true, text: '["c1"]' } })
+    await decideGeminiOrder([card({ labels: ['gemini-ok'] })], 'key', callGemini, reserveSlot)
+    expect(order).toEqual(['reserve', 'call'])
   })
 })
 
@@ -456,7 +473,7 @@ describe('runGeminiOrchestratorSweep (conditions 1+4+7: kill switch, route gate,
     fallbackStateJson = JSON.stringify({ route: 'gemini' })
     const loadCards = vi.fn(() => [card({ id: 'only1', labels: ['gemini-ok'] })])
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: '["only1"]' }))
-    await runGeminiOrchestratorSweep(loadCards, callGemini)
+    await runGeminiOrchestratorSweep(loadCards, callGemini, () => true)
     expect(writtenQueue).toMatchObject({ order: ['only1'] })
   })
 
@@ -465,7 +482,7 @@ describe('runGeminiOrchestratorSweep (conditions 1+4+7: kill switch, route gate,
     fallbackStateJson = JSON.stringify({ route: 'gemini' })
     const loadCards = vi.fn(() => [card({ id: 'only1', labels: ['gemini-ok'] })])
     const callGemini = vi.fn(async (): Promise<GeminiResult> => ({ ok: false, reason: 'quota' }))
-    await runGeminiOrchestratorSweep(loadCards, callGemini)
+    await runGeminiOrchestratorSweep(loadCards, callGemini, () => true)
     expect(writtenQueue).toBeNull()
   })
 })
