@@ -21,14 +21,24 @@ LOG="$STORE/quota-shutdown-guard.log"
 # Env-override only for the selftest (a FAKE binary, never the real path) -- the production
 # cron config never sets this, so it always resolves to the real shutdown.exe.
 SHUTDOWN_EXE="${SHUTDOWN_EXE:-/mnt/c/Windows/System32/shutdown.exe}"
+SELFTEST=0
 DRY_RUN=0
 FORCE_REASON=""
 
-for a in "$@"; do
-  case "$a" in
-    --dry-run) DRY_RUN=1 ;;
-    --force-reason) shift ;;
-    *) FORCE_REASON="${FORCE_REASON:-}$a " ;;
+usage() { printf 'Usage: %s [--dry-run] [--force-reason "reason"]\n       %s --selftest\n' "$0" "$0" >&2; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run)      DRY_RUN=1; shift ;;
+    --selftest)     SELFTEST=1; shift ;;
+    --force-reason)
+      shift
+      if [ $# -eq 0 ] || [ -z "$1" ]; then
+        echo "error: --force-reason requires a non-empty value" >&2; usage; exit 2
+      fi
+      FORCE_REASON="$1"; shift ;;
+    *)
+      echo "error: unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
 
@@ -96,7 +106,7 @@ trigger_shutdown() {
   return 0
 }
 
-if [ "${1:-}" = "--selftest" ]; then
+if [ "$SELFTEST" = "1" ]; then
   # Card 0daf0033: izolalt STATE/LOG/SHUTDOWN_EXE minden esethez, SOHA nem a valodi gep leallitasa
   # vagy az eles STATE/LOG. send_telegram no-op-ra cserelve, hogy a selftest ne kuldjon valodi
   # Telegram uzenetet minden futtataskor.
@@ -159,6 +169,30 @@ if [ "${1:-}" = "--selftest" ]; then
   t "dry-run: trigger_shutdown returns 0 without calling the binary" "$rc" "0"
   t "dry-run: STATE file NOT written (dry-run never commits)" "$([ -f "$STATE" ] && echo YES || echo NO)" "NO"
   DRY_RUN=0
+
+  # Cases 5-8: argument-feldolgozas fail-closed -- ismeretlen argumentum = exit 2, nincs leallitas.
+  # Subprocess-kent futnak, hogy a top-level arg-parsing ag legyen tesztelve; a FAKE_SHUTDOWN_MARKER
+  # touch()-ot hivna, ha a trigger_shutdown tenyleg elerhetove valna.
+  FAKE_MARKER="$TMPD/arg-test-marker.txt"
+  FAKE_SHUTDOWN_MARKER="$TMPD/fake-shutdown-marker.sh"
+  printf '#!/bin/bash\ntouch "%s"\nexit 0\n' "$FAKE_MARKER" > "$FAKE_SHUTDOWN_MARKER"
+  chmod +x "$FAKE_SHUTDOWN_MARKER"
+
+  _arg_test() {
+    # timeout 3: a helyes eset azonnal exit 2-vel ter vissza; ha a mutacio miatt a script tovabb fut
+    # (pl. curl --max-time 10 miatt blokkolna), a timeout 124-gyel ter vissza -- ez is != 2 = FAIL.
+    local label="$1"; shift
+    rm -f "$FAKE_MARKER"
+    timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_MARKER" bash "$0" "$@" 2>/dev/null
+    local rc=$?
+    t "${label}: exit 2" "$rc" "2"
+    t "${label}: shutdown marker NOT created" "$([ -f "$FAKE_MARKER" ] && echo YES || echo NO)" "NO"
+  }
+
+  _arg_test "unknown-arg 'selftest'" selftest
+  _arg_test "unknown-arg '--self-test'" --self-test
+  _arg_test "--force-reason without value" --force-reason
+  _arg_test "--dry-run then unknown 'selftest'" --dry-run selftest
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
