@@ -1670,7 +1670,15 @@ _EMAIL_SERVER_RE = re.compile(r"__[a-z0-9_-]*(?:gmail|resend)[a-z0-9_-]*__", re.
 # "draft" ADDED as a safe VERB prefix (draft_email, draft_message): distinct from the noun usage
 # in send_draft/update_draft, where the verb (send/update) decides safety, not the word "draft"
 # appearing in the name at all.
-_EMAIL_SAFE_TOOL_RE = re.compile(r"^(?:search|get|list|read|draft)[-_]|^create[-_]draft$", re.I)
+#
+# Card bf7a7335 (Cybersec GO on 45b33b2b @bee4940b, msg 6253, LOW): the prefix match above only
+# looked at the name up to its FIRST separator, so draft_and_send / read_then_forward /
+# search_and_send_email all matched a "safe" verb at position 0 and passed, even though the rest
+# of the name names the actual send/reply/forward. Negative lookahead added: a safe-prefix match
+# is only safe if NOTHING later in the name is send/reply/forward.
+_EMAIL_SAFE_TOOL_RE = re.compile(
+    r"^(?:search|get|list|read|draft)[-_](?!.*(?:send|reply|forward))|^create[-_]draft$", re.I
+)
 
 
 def _bare_tool_name(name):
