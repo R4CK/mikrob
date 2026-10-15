@@ -93,8 +93,22 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
     expect(rows.length).toBe(1)
     const parsed = JSON.parse(rows[0]!)
     expect(parsed.hivo).toBe('quota-bridge-ghost')
-    expect(parsed.seged).toBe('agy')
+    expect(parsed.seged).toBe('agy-ghost')
     expect(parsed.kartya).toBe('card1')
+  }, 20_000)
+
+  // F-RH-V1 regression (RedHat NO-GO/GO @c5e5ec28, comment 19880): scripts/seged-hivo.py's OWN
+  // daily fleet-wide quota (quota_problem(), lim['agy_nap']) counts rows where seged==='agy'
+  // literally -- a ghost row tagged 'agy' would silently consume MikroB's unrelated daily
+  // jailed-CLI budget (20/day) even though it never goes through that engine at all. Reservation
+  // rows must therefore NEVER be seged==='agy'.
+  it('reserved rows are never tagged seged==="agy" -- must not pollute the unrelated daily agy_nap quota (F-RH-V1)', async () => {
+    const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+    for (let i = 0; i < 3; i++) reserveGhostCallSlot(`card${i}`)
+    const rows = readFileSync(ledgerPath(), 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    expect(rows.length).toBe(3)
+    expect(rows.every((r) => r.seged === 'agy-ghost')).toBe(true)
+    expect(rows.some((r) => r.seged === 'agy')).toBe(false)
   }, 20_000)
 
   it('the 6th reservation within the hour (default limit 5) is refused -- no new row appended', async () => {

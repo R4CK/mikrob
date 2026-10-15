@@ -27,6 +27,7 @@ window, within the trusted horizon). Everything else probes.
 import importlib.util
 import json
 import os
+import signal
 import sys
 import tempfile
 import time
@@ -372,6 +373,107 @@ def main() -> int:
                     ok("stop_ghost_runner() also reaps a child the runner spawned (M1, process-group kill)")
         finally:
             m.GHOST_RUNNER_SCRIPT = old_runner
+
+    # --- F-RH-V4 (RedHat NO-GO/GO @c5e5ec28): pin outage_loop()'s try/finally on BOTH exit paths -
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        old = {
+            "allowed_chats": m.allowed_chats, "mark_session_outage": m.mark_session_outage,
+            "start_ghost_runner": m.start_ghost_runner, "stop_ghost_runner": m.stop_ghost_runner,
+            "clear_session_outage": m.clear_session_outage, "send": m.send,
+            "save_state": m.save_state, "recovery_probe_due": m.recovery_probe_due,
+            "mikrob_down": m.mikrob_down,
+        }
+        calls = {"start": 0, "stop": 0, "clear": 0}
+        m.allowed_chats = lambda: {"1"}
+        m.mark_session_outage = lambda: None
+        m.start_ghost_runner = lambda: (calls.__setitem__("start", calls["start"] + 1), "FAKE_PROC")[1]
+        m.stop_ghost_runner = lambda proc: calls.__setitem__("stop", calls["stop"] + 1)
+        m.clear_session_outage = lambda: calls.__setitem__("clear", calls["clear"] + 1)
+        m.send = lambda token, chat_id, text: None
+        m.save_state = lambda s: None
+        try:
+            # Path A: the normal "MikroB recovered" return. recovery_probe_due=True (probe not
+            # suppressed) + mikrob_down=False (healthy) takes the `elif not mikrob_down(): ...
+            # return` branch on the FIRST loop iteration, before ever reaching tg_api.
+            m.recovery_probe_due = lambda now=None: True
+            m.mikrob_down = lambda: False
+            m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
+            if calls["start"] == 1 and calls["stop"] == 1 and calls["clear"] == 1:
+                ok("outage_loop()'s return path calls start/stop/clear exactly once each (F-RH-V4)")
+            else:
+                bad("outage_loop()'s return path should call start/stop/clear exactly once each", calls)
+
+            # Path B: an exception INSIDE the loop (recovery_probe_due raises) must still run the
+            # finally -- this is the acceptance criterion ("kilepeskor a runner leall") on its
+            # OTHER exit path, which nothing exercised before this case.
+            calls["start"] = calls["stop"] = calls["clear"] = 0
+
+            def _boom(now=None):
+                raise RuntimeError("boom")
+
+            m.recovery_probe_due = _boom
+            m.mikrob_down = lambda: False
+            raised = None
+            try:
+                m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
+            except RuntimeError as exc:
+                raised = exc
+            if raised is not None and calls["start"] == 1 and calls["stop"] == 1 and calls["clear"] == 1:
+                ok("outage_loop()'s exception path ALSO calls start/stop/clear via finally (F-RH-V4)")
+            else:
+                bad("outage_loop()'s exception path should still call start/stop/clear via finally",
+                    f"raised={raised!r}, calls={calls}")
+        finally:
+            for name, fn in old.items():
+                setattr(m, name, fn)
+
+    # --- F-RH-V3 (RedHat NO-GO/GO @c5e5ec28): the SIGTERM handler itself, directly -----------
+    old_stop, old_clear, old_exit = m.stop_ghost_runner, m.clear_session_outage, m.sys.exit
+    sigterm_calls = {"stop_arg": "unset", "clear": 0, "exit_code": None}
+    m.stop_ghost_runner = lambda proc: sigterm_calls.__setitem__("stop_arg", proc)
+    m.clear_session_outage = lambda: sigterm_calls.__setitem__("clear", sigterm_calls["clear"] + 1)
+
+    class _FakeExit(BaseException):
+        pass
+
+    def _fake_exit(code=0):
+        sigterm_calls["exit_code"] = code
+        raise _FakeExit()
+
+    m.sys.exit = _fake_exit
+    m._active_ghost_runner = "SOME_PROC"
+    try:
+        try:
+            m._handle_sigterm(signal.SIGTERM, None)
+        except _FakeExit:
+            pass
+        if sigterm_calls["stop_arg"] == "SOME_PROC" and sigterm_calls["clear"] == 1 and sigterm_calls["exit_code"] == 0:
+            ok("_handle_sigterm() stops the active runner, clears the marker, exits 0 (F-RH-V3)")
+        else:
+            bad("_handle_sigterm() should stop the active runner, clear the marker, exit 0", sigterm_calls)
+
+        # A stop_ghost_runner that THROWS must not prevent clear_session_outage from still running
+        # -- the marker is the more important half to clean up (H2's own staleness check is only a
+        # backstop, this handler is the fast path).
+        sigterm_calls["clear"] = 0
+        sigterm_calls["exit_code"] = None
+
+        def _stop_throws(proc):
+            raise RuntimeError("stop failed")
+
+        m.stop_ghost_runner = _stop_throws
+        try:
+            m._handle_sigterm(signal.SIGTERM, None)
+        except _FakeExit:
+            pass
+        if sigterm_calls["clear"] == 1 and sigterm_calls["exit_code"] == 0:
+            ok("_handle_sigterm() still clears the marker and exits even if stop_ghost_runner raises")
+        else:
+            bad("_handle_sigterm() should still clear the marker and exit if stop_ghost_runner raises", sigterm_calls)
+    finally:
+        m.stop_ghost_runner, m.clear_session_outage, m.sys.exit = old_stop, old_clear, old_exit
+        m._active_ghost_runner = None
 
     print(f"\nselftest: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1

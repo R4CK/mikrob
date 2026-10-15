@@ -416,6 +416,30 @@ def start_ghost_runner():
         return None
 
 
+# F-RH-V3 (RedHat NO-GO/GO @c5e5ec28, comment 19880): Python's DEFAULT disposition for SIGTERM
+# terminates the process immediately without ever unwinding a `try/finally` -- unlike an
+# in-process exception, an external `kill -TERM` (what `systemctl stop`/`restart` sends by
+# default) means outage_loop()'s finally clause NEVER RUNS, so stop_ghost_runner()/
+# clear_session_outage() are skipped entirely on that path. The 15-minute heartbeat staleness
+# check (gemini-fallback-runner.ts's readSessionOutageActive, H2) is the fail-safe BACKSTOP for
+# this, but a real handler means the runner and the marker are cleaned up within the signal's own
+# grace period, not after up to 15 minutes of staying on the wrong route. Tracks the live Popen
+# handle in a module-level var (set at outage_loop() entry, cleared in its finally) so the
+# handler -- which fires asynchronously, with no access to outage_loop()'s own locals -- can still
+# reach it.
+_active_ghost_runner = None
+
+
+def _handle_sigterm(signum, frame):  # noqa: ARG001 -- signal handler signature is fixed
+    log("SIGTERM received -> cleaning up (stop ghost runner, clear outage marker) before exit")
+    try:
+        stop_ghost_runner(_active_ghost_runner)
+    except Exception as e:  # noqa: BLE001 -- must still clear the marker even if this throws
+        log(f"SIGTERM cleanup: stop_ghost_runner failed: {e}")
+    clear_session_outage()
+    sys.exit(0)
+
+
 def stop_ghost_runner(proc):
     """M1 (WhiteHat2 NO-GO, delta-gate @c5e5ec28): terminate()/kill() on the Popen handle only ever
     reach the bash PID itself -- a SIGTERM to just that PID lets bash exit while its CURRENT child
@@ -443,9 +467,11 @@ def stop_ghost_runner(proc):
 
 def outage_loop(token, state):
     """Own getUpdates and answer with the local model until MikroB recovers."""
+    global _active_ghost_runner
     chats = allowed_chats()
     mark_session_outage()
     ghost_runner = start_ghost_runner()
+    _active_ghost_runner = ghost_runner
     try:
         if not state.get("notified_outage"):
             send(token, PETI_CHAT_ID,
@@ -503,9 +529,14 @@ def outage_loop(token, state):
         # AND on any unexpected exception, so the runner never outlives Ghost's own outage handling.
         stop_ghost_runner(ghost_runner)
         clear_session_outage()
+        _active_ghost_runner = None
 
 
 def main():
+    # F-RH-V3: registered here, not at module import, so merely importing this module (the
+    # selftest, or any future reuse) never silently installs a process-wide signal handler --
+    # only actually running it as the service does.
+    signal.signal(signal.SIGTERM, _handle_sigterm)
     force = "--force-outage" in sys.argv
     test = "--test" in sys.argv
     token = read_token()

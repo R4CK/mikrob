@@ -9,15 +9,35 @@
 // live), each review a real Gemini network call, while the log only grew by one row per tick.
 // "At most 5 real calls per hour" was true of tick count, false of actual outbound calls.
 //
-// WHY THIS IS THE SAME COUNTER AS gemini-agy-call.sh, NOT A NEW ONE (card 612058c2 Teendo 3: "az
+// WHY THIS SHARES gemini-agy-call.sh's HOURLY WINDOW, NOT A NEW ONE (card 612058c2 Teendo 3: "az
 // oranyi plafon a gemini-agy-call.sh meglevo flotta-szintu szamlaloja, nem uj szamlalo"): the
-// fleet-wide cap is "how many real Gemini calls go out in an hour", not "how many of them this one
-// caller made" -- the pre-delta version counted only hivo==='quota-bridge-ghost' rows, which let
-// Ghost calls and MikroB's own gemini-agy-call.sh calls add up past the real ceiling (5 Ghost + 5
-// agy = 10/hour instead of a shared 5). This counts every seged==='agy', status!=='blocked' row
-// regardless of hivo -- identically to gemini-agy-call.sh's own count -- and takes the SAME flock
-// (gemini-agy-call.hourly.lock) so the check-then-append is atomic against a concurrent
-// gemini-agy-call.sh invocation too, not just against another Ghost call.
+// fleet-wide hourly cap is "how many real Gemini calls go out in an hour", not "how many of them
+// this one caller made" -- the pre-delta version counted only hivo==='quota-bridge-ghost' rows,
+// which let Ghost calls and MikroB's own gemini-agy-call.sh calls add up past the real ceiling (5
+// Ghost + 5 agy = 10/hour instead of a shared 5). This counts both seged==='agy' rows (real
+// jailed-CLI "agy" calls) AND this module's own seged==='agy-ghost' rows toward the SAME hourly
+// window, and takes the SAME flock (gemini-agy-call.hourly.lock) so the check-then-append is
+// atomic against a concurrent gemini-agy-call.sh invocation too, not just against another Ghost
+// call.
+//
+// WHY A DIFFERENT `seged` VALUE, NOT A LITERAL seged==='agy' ROW (RedHat F-RH-V1, card 612058c2
+// delta-gate @c5e5ec28): scripts/seged-hivo.py's OWN daily quota (quota_problem(), lim['agy_nap'],
+// fleet-wide 20/day) ALSO counts rows by `row.get('seged') == 'agy'` -- a first version of this
+// module tagged its rows 'agy' to share gemini-agy-call.sh's hourly count, and that same tag
+// silently fed the UNRELATED daily cap too: 4 hours of Ghost ticks (5/hour) would exhaust the
+// entire day's fleet-wide "agy" jailed-CLI budget meant for MikroB's own direct usage, a resource
+// a REST-API pipeline has no business consuming. 'agy-ghost' is invisible to quota_problem()'s
+// `seged == engine` check (engine is always exactly 'agy') while still sharing THIS module's own
+// hourly accounting with real 'agy' rows below.
+//
+// RESIDUAL ASYMMETRY (documented, not fixed here -- out of scope per this card's own earlier
+// commit message): gemini-agy-call.sh's OWN hourly check only counts seged==='agy' rows, so it
+// cannot see 'agy-ghost' rows and will keep admitting direct agy calls even while Ghost is near
+// its own hourly ceiling. This module counts BOTH tags, so Ghost always yields to combined usage;
+// the gap is one-directional (a direct agy call can still exceed the SHARED ceiling Ghost itself
+// respects), bounded by the fact that direct agy calls are a conscious MikroB action, not an
+// unattended loop -- unifying the two fully would mean editing the already-gated, flock-protected
+// gemini-agy-call.sh itself, judged too risky for this card's blast radius.
 //
 // RESERVE, NOT "CHECK THEN THE CALLER APPENDS LATER": the budget is consumed (the log row
 // appended) INSIDE the same locked critical section as the count, before the caller ever reaches
@@ -61,7 +81,7 @@ status = sys.argv[4]
 window_start = time.time() - 3600
 used = 0
 for row in sh.calls_of(sh.read_log()):
-    if row.get('seged') != 'agy' or row.get('status') == 'blocked':
+    if row.get('seged') not in ('agy', 'agy-ghost') or row.get('status') == 'blocked':
         continue
     try:
         ts = datetime.datetime.fromisoformat(str(row.get('ido', ''))).timestamp()
@@ -75,7 +95,7 @@ if used >= limit:
 sh.append_log({
     'ido': datetime.datetime.now().isoformat(),
     'hivas_id': os.urandom(8).hex(),
-    'seged': 'agy',
+    'seged': 'agy-ghost',
     'hivo': 'quota-bridge-ghost',
     'kartya': card_id,
     'feladattipus': 'kod',
