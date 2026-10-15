@@ -3566,7 +3566,7 @@ const AGENT_ID_HEADER_BLOCK_RE = new RegExp(
   `${AGENT_ID_HEADER_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${AGENT_ID_HEADER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-function buildAgentIdHeaderBody(name: string): string {
+export function buildAgentIdHeaderBody(name: string): string {
   return [
     '## Ki hívta az API-t: az `X-Agent-Id` fejléc',
     '',
@@ -3575,9 +3575,9 @@ function buildAgentIdHeaderBody(name: string): string {
     'nevedet, hogy a szerver meg tudja nevezni, ki írt felül egy idegen bejegyzést:',
     '',
     '```bash',
-    `curl -s -X PUT ${dashboardOrigin}/api/memories/<id> \\`,
+    `printf 'Authorization: Bearer %s\\n' "$(cat ${tokenPath})" \\`,
+    `| curl -s -X PUT ${dashboardOrigin}/api/memories/<id> -H @- \\`,
     '  -H "Content-Type: application/json" \\',
-    `  -H "Authorization: Bearer $(cat ${tokenPath})" \\`,
     `  -H "X-Agent-Id: ${name}" \\`,
     `  -d '{"content":"..."}'`,
     '```',

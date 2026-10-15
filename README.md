@@ -100,6 +100,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **Email-küldő MCP-szerverek deny-by-default kapuja**: a Gmail-connector és a Resend MCP szerver TELJES tool-készlete tiltott alapból, kivéve egy szűk, explicit olvasás/draft-allowlistet; egy tool-név lista helyett a szerver egésze van gate-elve, hogy egy új vagy máshogy elnevezett küldő-tool ne csúszhasson át néven.
 - **Zajos parancsok transzparens átírása**: egy install/build/teszt-futtatás alakú parancsot a hook opt-in módban nem blokkol, hanem csendben egy szűrt kimenetű wrapperen keresztül futtat, extra kör-utazás nélkül; alapértelmezésben a korábbi blokkoló javaslat marad. A wrapper maga kis kimenetnél érintetlenül továbbadja az eredményt, és a `git log`/`git diff --stat` kimenetét a legújabb bejegyzésektől tartja meg, nem az utolsó pár sort.
 - **Memória-API tartalom-szűrő parancsszintaxis-mintákkal**: a mentett memória-tartalom egy gyanús-minta szűrőn megy át, ami a prompt-injection idiómák mellett parancs-szintaxist (curl-hívás, `bash -c`, `eval(`, `exec(`, `import subprocess`, `rm -rf`) is elutasít -- szándékosan szigorúbb, mint az upstream saját változata, ami ezeket a mintákat gyenge precizitás miatt törölte.
+- **Token-in-argv őr a generátorokra is**: a Bearer-tokent curl argv-ba tevő minta elleni őr nemcsak a kiadott scripteket és sablonokat nézi, hanem magukat a generátor-fájlokat is, amik ezeket a dokumentumokat előállítják -- upstream csak a kimenetet védte, nem a forrását.
 
 ### Helyi-LLM / offload rendszer
 
