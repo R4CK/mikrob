@@ -437,6 +437,7 @@ describe('reviewOneCard() (card 626df838)', () => {
     readDraft: vi.fn(() => 'draft body text'),
     postComment: vi.fn(),
     callGemini: vi.fn(async (): Promise<GeminiResult> => ({ ok: true, text: '{"verdict":"USABLE","reason":"fine"}' })),
+    reserveSlot: vi.fn(() => true),
     // Mirrors resolveDraftPathSafely's own normalization (relPath is "drafts/<cardId>/<file>",
     // DRAFTS_DIR already ends in ".../drafts") so a ".."-segment ref resolves the same way here
     // as it does against the real filesystem (F-P3 regression below needs this to be faithful).
@@ -564,6 +565,34 @@ describe('reviewOneCard() (card 626df838)', () => {
     const result = await reviewOneCard('c1', 'key', deps)
     expect(result.reviewed).toBe(false)
     expect(result.reason).toContain('comments_unreadable')
+  })
+
+  // H1 regression (WhiteHat2 NO-GO, card 612058c2 delta-gate @c5e5ec28): the per-card review must
+  // check the shared hourly budget and never reach Gemini when no slot remains.
+  it('no budget slot left: fails closed with hourly_cap_reached, never calls Gemini (H1)', async () => {
+    const deps = baseDeps()
+    deps.reserveSlot = vi.fn(() => false)
+    const result = await reviewOneCard('c1', 'key', deps)
+    expect(result).toEqual({ id: 'c1', reviewed: false, reason: 'hourly_cap_reached' })
+    expect(deps.callGemini).not.toHaveBeenCalled()
+    expect(deps.postComment).not.toHaveBeenCalled()
+  })
+
+  it('a budget slot is reserved before Gemini is called, not after (H1)', async () => {
+    const deps = baseDeps()
+    const order: string[] = []
+    deps.reserveSlot = vi.fn(() => { order.push('reserve'); return true })
+    deps.callGemini = vi.fn(async (): Promise<GeminiResult> => { order.push('call'); return { ok: true, text: '{"verdict":"USABLE","reason":"fine"}' } })
+    await reviewOneCard('c1', 'key', deps)
+    expect(order).toEqual(['reserve', 'call'])
+  })
+
+  it('budget is checked per card, only after every other gate passes (never spent on an ineligible card)', async () => {
+    const deps = baseDeps()
+    deps.readCard = vi.fn(() => ({ title: 'x', description: 'y', project: 'mopsion' })) // ineligible project
+    const result = await reviewOneCard('c1', 'key', deps)
+    expect(result.reason).toBe('not_eligible')
+    expect(deps.reserveSlot).not.toHaveBeenCalled()
   })
 })
 

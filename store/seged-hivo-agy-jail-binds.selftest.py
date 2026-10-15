@@ -12,6 +12,7 @@
 # lists /mnt/wslg from inside the jail -- the whole point of RedHat's finding was that the earlier
 # fix attempt ASSUMED the mount was gone instead of measuring it, so this selftest measures too.
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +35,48 @@ def case(label, cond):
     if not cond:
         failures.append(label)
 
+
+def classify_jailed_listing(jailed_listing, host_entries):
+    """True iff a jailed `ls -a <uid_dir>; echo RC:$?` run proves BOTH that the shell actually
+    ran inside the jail AND that no host socket name is visible in the result. F-RH-S1 (RedHat,
+    card deab5615, source 0c086979 comment 19823): the earlier check only asserted an 'RC:'
+    marker was PRESENT, not which RC it carried -- a broken ls (permission error, wrong path,
+    anything that is neither "directory hidden" nor "directory visible") would still print an
+    'RC:' marker and pass the sockets-absent check vacuously, because its own error text
+    contains none of the host socket names either. Only two RC values are a legitimate
+    assertion that the LISTING itself (not just the shell) ran as intended:
+      - RC:2 with "No such file or directory": the tmpfs mount hides the directory entirely
+        (the expected, secure state measured on this host).
+      - RC:0: the directory is visible, and the sockets-absent check examines its contents.
+    Any other RC (permission denied, a crashed ls) or a missing marker must fail here, before
+    the sockets-absent check ever runs."""
+    m = re.search(r'RC:(-?\d+)\s*$', jailed_listing.strip())
+    if m is None:
+        return False
+    rc = int(m.group(1))
+    if rc == 2:
+        return 'No such file or directory' in jailed_listing
+    if rc == 0:
+        return host_entries == [] or not any(name in jailed_listing for name in host_entries)
+    return False
+
+
+case("classify_jailed_listing: RC:2 'No such file or directory' (mount hides the dir) is accepted",
+     classify_jailed_listing("ls: cannot access '/x': No such file or directory\nRC:2\n", ['bus']))
+case("classify_jailed_listing: RC:2 WITHOUT the 'No such file or directory' text is rejected -- "
+     "an RC:2 alone is not proof the directory is hidden, some other ls error can also exit 2",
+     not classify_jailed_listing("ls: some other unrelated error\nRC:2\n", ['bus']))
+case("classify_jailed_listing: RC:0 with no host socket name present is accepted",
+     classify_jailed_listing(".\n..\nRC:0\n", ['bus', 'wayland-0']))
+case("classify_jailed_listing: RC:0 WITH a host socket name present is rejected",
+     not classify_jailed_listing(".\n..\nbus\nRC:0\n", ['bus']))
+case("classify_jailed_listing: any OTHER exit code (e.g. permission denied) is rejected even "
+     "with no host socket name visible -- F-RH-S1's actual bug: a non-2/non-0 RC must not pass "
+     "vacuously just because the error text happens to contain no host socket name",
+     not classify_jailed_listing("ls: cannot open directory '/x': Permission denied\nRC:13\n", ['bus']))
+case("classify_jailed_listing: a missing 'RC:' marker entirely is rejected (the original "
+     "BWRAP_BIN=/bin/false vacuous-invocation bug class)",
+     not classify_jailed_listing("", ['bus']))
 
 workdir = Path('/tmp')
 agy_jail = seged_hivo.jail_cmd('agy', workdir)
@@ -84,12 +127,71 @@ if Path('/usr/bin/bwrap').exists() and Path('/mnt/wslg').is_dir():
     # makes /mnt/wslg/run/user/<uid> not exist at all inside the jail -- that is a legitimate pass,
     # not RC:0) -- so the marker's mere presence, not its value, is the positive control that the
     # shell command actually ran inside the jail.
-    case("the jailed shell actually ran (an 'RC:' exit-code marker must be present in the output -- "
-         "a vacuous/broken bwrap invocation must not silently pass the sockets-absent check below)",
-         'RC:' in jailed_listing)
+    case("F-RH-S1: the jailed ls produced a recognized, non-vacuous result for /mnt/wslg/run/"
+         "user/<uid> -- RC:2 'No such file or directory' (mount hides it) or RC:0 with the "
+         "sockets-absent check satisfied below; any other exit code must not pass "
+         f"(jailed ls said: {jailed_listing.strip()!r})",
+         classify_jailed_listing(jailed_listing, host_entries))
     case("agy jail's /mnt/wslg/run/user/<uid> is measurably empty of host sockets from a REAL bwrap "
          f"run (host has {host_entries or 'nothing'!r}; jailed ls said: {jailed_listing.strip()!r})",
          host_entries == [] or not any(name in jailed_listing for name in host_entries))
+
+    # F-RH-S2 (RedHat, card deab5615, source 0c086979 comment 19823): the check above only lists
+    # ONE directory. RedHat measured, by hand, that a host socket reachable through a DIFFERENT
+    # bind path sails through unseen: "a selftest PASS (10/10), miközben a jailben 12 host-socket
+    # név látszik." A full-tree sweep (mirrors WhiteHat2's own manual verification, 0c086979
+    # comment 19786: "find / -type s ... /proc /sys /snap és a drvfs meghajtók kivételével") with
+    # its own positive control (a real socket bound INTO the jail) catches any bind path, not
+    # just the one this selftest already knows about by name.
+    import shutil
+    import socket as socket_module
+    import tempfile as tempfile_module
+
+    # dir='/tmp' is load-bearing, not cosmetic: jail_cmd()'s --tmpfs $HOME + --remount-ro $HOME
+    # happen BEFORE our extra --ro-bind below runs, so a sweep_dir created under $TMPDIR (which
+    # fleet-test.sh deliberately points at a path under $HOME, card a4a6a5e5) can no longer have
+    # its missing parent directories created inside the jail -- bwrap's own mount setup fails
+    # silently (empty stdout, nonzero exit), which this selftest then misreads as a real
+    # vacuous-sweep finding. /tmp is the one directory jail_cmd already re-binds regardless of
+    # TMPDIR, so anchoring here keeps the control reachable under any caller's environment.
+    sweep_dir = Path(tempfile_module.mkdtemp(prefix='seged-hivo-sweep-', dir='/tmp'))
+    control_sock_path = sweep_dir / 'control.sock'
+    control_sock = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+    try:
+        control_sock.bind(str(control_sock_path))
+        sweep_cmd = (
+            seged_hivo.jail_cmd('agy', Path('/tmp'))
+            + ['--ro-bind', str(sweep_dir), str(sweep_dir)]
+            + ['/bin/sh', '-c',
+               "find / -type s -not -path '/proc/*' -not -path '/sys/*' 2>/dev/null"]
+        )
+        sweep_proc = subprocess.run(sweep_cmd, capture_output=True, text=True, timeout=20)
+        sweep_listing = sweep_proc.stdout
+        case("F-RH-S2: the jail-wide socket sweep's own positive control (a real socket bound "
+             "INTO the jail) IS found -- proves the sweep is not vacuously blind",
+             str(control_sock_path) in sweep_listing)
+        case("F-RH-S2: no HOST socket name appears ANYWHERE in the jail's full socket sweep, not "
+             f"just in /mnt/wslg/run/user/<uid> (sweep saw: {sweep_listing.strip()!r})",
+             host_entries == [] or not any(name in sweep_listing for name in host_entries))
+
+        # Self-check that the sweep machinery above actually catches the exact leak class RedHat
+        # measured: bind the SAME host sockets into the jail through an ALTERNATE path (not
+        # /mnt/wslg/run/user/<uid>), which the single-directory check has no way to see.
+        if host_entries:
+            leaked_cmd = (
+                seged_hivo.jail_cmd('agy', Path('/tmp'))
+                + ['--ro-bind', str(uid_dir), '/tmp/leaked-host-sockets']
+                + ['/bin/sh', '-c',
+                   "find / -type s -not -path '/proc/*' -not -path '/sys/*' 2>/dev/null"]
+            )
+            leaked_proc = subprocess.run(leaked_cmd, capture_output=True, text=True, timeout=20)
+            case("F-RH-S2 self-check: the full-tree sweep DOES catch a host socket leaked "
+                 "through a path OTHER than /mnt/wslg/run/user/<uid> (proves the sweep, not just "
+                 "the single-directory check above, is what closes RedHat's finding)",
+                 any(name in leaked_proc.stdout for name in host_entries))
+    finally:
+        control_sock.close()
+        shutil.rmtree(sweep_dir, ignore_errors=True)
 else:
     case("SKIPPED (no bwrap or no /mnt/wslg on this host) -- real-jail socket-listing check",
          True)

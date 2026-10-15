@@ -30,6 +30,11 @@ let writtenState: GeminiFallbackState | null = null
 let telegramMessages: string[] = []
 let weeklyActive = false
 let weeklyNewDevStopActive = false
+let sessionOutageActive = false
+/** How old (ms) the marker's `heartbeat` field is, relative to "now" -- 0 by default (fresh). */
+let sessionOutageHeartbeatAgoMs = 0
+/** When set, overrides the entire marker body written to disk (H2: malformed/legacy shapes). */
+let sessionOutageRawOverride: Record<string, unknown> | null = null
 /** null = no config file on disk (real.readFileSync throws ENOENT) -> exercises the default. */
 let engageConfigJson: string | null = null
 let apiKey = 'fake-api-key-that-is-long-enough'
@@ -46,6 +51,12 @@ vi.mock('node:fs', async (orig) => {
       }
       if (p.endsWith('weekly-hard-stop.json')) {
         return JSON.stringify({ active: weeklyActive, newDevStopActive: weeklyNewDevStopActive })
+      }
+      if (p.endsWith('mikrob-session-outage.json')) {
+        if (!sessionOutageActive) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        if (sessionOutageRawOverride !== null) return JSON.stringify(sessionOutageRawOverride)
+        const heartbeat = (Date.now() - sessionOutageHeartbeatAgoMs) / 1000
+        return JSON.stringify({ active: true, since: Date.now(), heartbeat })
       }
       if (p.endsWith('gemini-fallback-config.json')) {
         if (engageConfigJson === null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
@@ -88,6 +99,9 @@ beforeEach(() => {
   writtenState = null
   weeklyActive = false
   weeklyNewDevStopActive = false
+  sessionOutageActive = false
+  sessionOutageHeartbeatAgoMs = 0
+  sessionOutageRawOverride = null
   engageConfigJson = null
   keyValidResult = { valid: true, modelCount: 50 }
   apiKey = 'fake-api-key-that-is-long-enough'
@@ -255,6 +269,102 @@ describe('newDevStop engagement (card 3de7d530)', () => {
     weeklyNewDevStopActive = false
     await runGeminiFallbackCheck()
     expect(writtenState?.route).toBe('claude')
+  })
+})
+
+// Card 612058c2: a Claude SESSION-level quota outage (quota-bridge.py's Ghost mode) is a harder
+// signal than newDevStop and must engage Gemini regardless of the engageOn config -- unlike
+// newDevStopActive, there is no "Claude can still finish in-flight work" case here.
+describe('session-outage engagement (card 612058c2)', () => {
+  it('engages on sessionOutageActive alone, both weekly flags false, default config', async () => {
+    weeklyActive = false
+    weeklyNewDevStopActive = false
+    sessionOutageActive = true
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('gemini')
+  })
+
+  it('engages on sessionOutageActive even with engageOn: "hardStopOnly"', async () => {
+    engageConfigJson = JSON.stringify({ engageOn: 'hardStopOnly' })
+    weeklyActive = false
+    weeklyNewDevStopActive = false
+    sessionOutageActive = true
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('gemini')
+  })
+
+  it('does NOT engage when the session-outage marker is absent (default/healthy state)', async () => {
+    weeklyActive = false
+    weeklyNewDevStopActive = false
+    sessionOutageActive = false
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('claude')
+  })
+
+  it('reverts once the session-outage marker clears, same as the existing revert path', async () => {
+    fakeState.route = 'gemini'
+    fakeState.engagedAt = Date.now() - 50 * 60 * 1000  // > 45 min anti-flap (F2)
+    weeklyActive = false
+    weeklyNewDevStopActive = false
+    sessionOutageActive = false
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('claude')
+  })
+
+  it('does NOT engage when key is invalid, even during a session outage (fail-safe bias unchanged)', async () => {
+    sessionOutageActive = true
+    keyValidResult = { valid: false as const, reason: 'auth' as const, detail: 'PERMISSION_DENIED' }
+    await runGeminiFallbackCheck()
+    expect(writtenState?.route).toBe('claude')
+  })
+
+  // H2 regression (WhiteHat2 NO-GO, card 612058c2 delta-gate @c5e5ec28): quota-bridge.py's
+  // outage_loop() only clears the marker in a `finally` block -- a SIGKILL/OOM/host-restart mid-
+  // outage leaves `active: true` behind forever, with nothing left alive to clear it. A stale
+  // heartbeat must therefore read as NOT outage, same fail-safe-toward-Claude direction as a
+  // missing file.
+  describe('H2: stale marker fail-safe', () => {
+    it('a fresh heartbeat (a moment ago) still engages', async () => {
+      sessionOutageActive = true
+      sessionOutageHeartbeatAgoMs = 5_000 // 5s old
+      await runGeminiFallbackCheck()
+      expect(writtenState?.route).toBe('gemini')
+    })
+
+    it('a heartbeat exactly at the staleness boundary (15 min) still engages', async () => {
+      sessionOutageActive = true
+      sessionOutageHeartbeatAgoMs = 15 * 60 * 1000
+      await runGeminiFallbackCheck()
+      expect(writtenState?.route).toBe('gemini')
+    })
+
+    it('a heartbeat just past the staleness boundary (15 min + 1s) does NOT engage', async () => {
+      sessionOutageActive = true
+      sessionOutageHeartbeatAgoMs = 15 * 60 * 1000 + 1_000
+      await runGeminiFallbackCheck()
+      expect(writtenState?.route).toBe('claude')
+    })
+
+    it('a 3-day-old marker (the exact SIGKILL scenario measured in the NO-GO) does NOT engage', async () => {
+      sessionOutageActive = true
+      sessionOutageHeartbeatAgoMs = 3 * 24 * 60 * 60 * 1000
+      await runGeminiFallbackCheck()
+      expect(writtenState?.route).toBe('claude')
+    })
+
+    it('a legacy marker with no heartbeat field at all does NOT engage (fail-safe, not fail-open)', async () => {
+      sessionOutageActive = true
+      sessionOutageRawOverride = { active: true, since: Date.now() }
+      await runGeminiFallbackCheck()
+      expect(writtenState?.route).toBe('claude')
+    })
+
+    it('a non-numeric heartbeat does NOT engage', async () => {
+      sessionOutageActive = true
+      sessionOutageRawOverride = { active: true, since: Date.now(), heartbeat: 'yesterday' }
+      await runGeminiFallbackCheck()
+      expect(writtenState?.route).toBe('claude')
+    })
   })
 })
 

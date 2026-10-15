@@ -33,6 +33,8 @@ vi.mock('../config.js', async (orig) => {
 const { tryHandleLocalLlm } = await import('../web/routes/local-llm.js')
 
 const FLAG_FILE = join(SANDBOX_STORE, 'local-first-draft.json')
+const MIRROR_DIR = join(SANDBOX_STORE, '.gemini-local-subtask-gpu-gate')
+const MIRROR_FILE = join(MIRROR_DIR, 'killswitch-mirror.json')
 
 function ctx(
   path: string,
@@ -66,6 +68,7 @@ async function post(body: unknown, auth: RouteContext['auth']): Promise<{ status
 
 beforeEach(() => {
   rmSync(FLAG_FILE, { force: true })
+  rmSync(MIRROR_DIR, { recursive: true, force: true })
   spawnSpy.mockClear()
   execFileSpy.mockClear()
 })
@@ -194,5 +197,53 @@ describe('POST /api/local-llm/first-draft-enabled -- re-enabling is human-creden
   it('the default audit note names the caller when enabling', async () => {
     const r = await post({ enabled: true }, { kind: 'session', user: 'peti' })
     expect(r.body.note).toContain('session:peti')
+  })
+})
+
+// Card 784a9325 (RedHat CYBERED GO 19644 on a020247b, K1+K2): the jailed agy engine reads ONLY the
+// mirror file (FIRST_DRAFT_MIRROR_FILE), never the real switch file directly -- bwrap pins the
+// inode at jail-start, so a host-side atomicWriteFileSync rename is invisible to an already-running
+// jail unless it is the mirror's own directory that gets the rename. Before this card, the mirror
+// write had ZERO test coverage: the existing tests above all read the MAIN switch file only, so a
+// regression that stopped writing the mirror, or wrote the wrong value into it, was invisible here.
+describe('POST /api/local-llm/first-draft-enabled -- jailed-agy mirror file (card 784a9325)', () => {
+  it('{enabled:false} writes {enabled:false} into the mirror file alongside the main switch', async () => {
+    const r = await post({ enabled: false }, { kind: 'session', user: 'peti' })
+    expect(r.status).toBe(200)
+    expect(JSON.parse(readFileSync(MIRROR_FILE, 'utf-8'))).toEqual({ enabled: false })
+  })
+
+  it('{enabled:true} writes {enabled:true} into the mirror file alongside the main switch', async () => {
+    const r = await post({ enabled: true }, { kind: 'session', user: 'peti' })
+    expect(r.status).toBe(200)
+    expect(JSON.parse(readFileSync(MIRROR_FILE, 'utf-8'))).toEqual({ enabled: true })
+  })
+
+  // K1: a mirror-write failure on the OFF transition must not come back as 200 -- the main switch
+  // is genuinely off, but the jail only ever sees the mirror, and a 200 here would claim the kill
+  // switch took effect when the jail-visible copy may still read stale/ON. Forcing the failure by
+  // pre-creating a FILE where the route wants a directory (mkdirSync(..., {recursive:true}) then
+  // throws ENOTDIR) needs no fs mocking and exercises the real code path end to end.
+  it('{enabled:false}: a mirror-write failure is surfaced, not swallowed (fail-closed, no 200)', async () => {
+    rmSync(MIRROR_DIR, { recursive: true, force: true })
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(MIRROR_DIR, 'not a directory')
+    const r = await post({ enabled: false }, { kind: 'session', user: 'peti' })
+    expect(r.status).not.toBe(200)
+    expect(r.status).toBe(502)
+    expect(r.body.error).toBe('mirror_write_failed')
+    // The main switch write already landed -- this is a mirror-only failure, not a full rollback.
+    expect(JSON.parse(readFileSync(FLAG_FILE, 'utf-8')).enabled).toBe(false)
+  })
+
+  // The reverse direction is the safe one (jail stays OFF/degraded, never silently ON), so it keeps
+  // the old best-effort 200 -- this pins that the two directions are NOT treated symmetrically.
+  it('{enabled:true}: a mirror-write failure still returns 200 (safe direction, logged not surfaced)', async () => {
+    rmSync(MIRROR_DIR, { recursive: true, force: true })
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(MIRROR_DIR, 'not a directory')
+    const r = await post({ enabled: true }, { kind: 'session', user: 'peti' })
+    expect(r.status).toBe(200)
+    expect(r.body.enabled).toBe(true)
   })
 })
