@@ -25,23 +25,29 @@
 //   (a) PROJECT: card.project must be exactly "MikroB" (casefold) -- the title's "KIZAROLAG
 //       MikroB-projekt kartyakon". mopsion and every other/unknown project are out, no exception.
 //   (b) CONTENT: the landed is_gemini_blocked filter (store/offload-dispatch.sh --check-blocked,
-//       the same single source of truth 1/4 already calls via isBlockedByLandedFilter) still runs
-//       on the card's title+desc+tags -- a MikroB-project card CAN carry a BLOKKOLT-* or sensitive
-//       label (e.g. a MikroB-project security/infra card about secrets handling), and gate (a)
-//       alone would not catch that.
-// On top of both: a fail-closed secret-shape scan (reusing security/secret-gate.ts's
-// SECRET_PATTERNS, not a second hand-copied list) runs on the ACTUAL text about to be sent --
-// title, description and draft body -- right before the Gemini call. Any hit skips the card with
-// no API call and no comment, same as any other fail-closed outcome in this file.
+//       the same single source of truth 1/4 already calls via isBlockedByLandedFilter) runs on
+//       the card's title+desc+tags for the initial eligibility check, AND AGAIN on the
+//       description combined with the draft's own text once it is read (RedHat P2, 626df838): a
+//       MikroB-project card CAN carry a BLOKKOLT-* or sensitive label, or the local-LLM draft
+//       itself can independently quote sensitive content (e.g. a RAG excerpt) even when the
+//       card's own fields are clean -- gate (a) alone catches neither.
+// On top of both: a fail-closed secret-shape scan runs on the ACTUAL text about to be sent --
+// title, description and draft body -- right before the Gemini call. It shells out to the
+// ALREADY-LANDED Bash redactor (store/gemini-offload-call.sh --redact-test, card a92e9913) rather
+// than a second hand-copied pattern list, for parity by construction (WhiteHat2/RedHat F2,
+// 626df838: an earlier hand-copied list caught only 1 of 11 tested shapes the landed redactor
+// catches). Any hit skips the card with no API call and no comment, same as any other
+// fail-closed outcome in this file.
 //
 // FAIL-CLOSED SHAPE (mirrors 1/4 and 2/4): kill switch OFF by default, route must be exactly
 // "gemini". Per-card: any failure (ineligible, secret-shaped, unreadable draft file, outside the
 // drafts directory, unparsable Gemini response) skips that one card and the sweep continues --
 // one bad card must never stall the rest.
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, lstatSync, realpathSync } from 'node:fs'
 import { join, dirname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 import { geminiGenerate, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
 import { getSecret } from './web/vault.js'
 import { getKanbanCard, getKanbanComments, addKanbanComment, getLabelsForCard } from './db.js'
@@ -49,11 +55,17 @@ import { isGeminiOrchestratorEnabled, readFallbackRoute, isBlockedByLandedFilter
 import { listDraftCardIds, findLatestDraftFileRef, DRAFTS_DIR, type Comment } from './gemini-orchestrator-draft-cleanup.js'
 import { DRAFT_REVIEW_RX } from './web/kanban-draft-review-guard.js'
 import { GENERATED_COMMENT_AUTHORS } from './web/kanban-landed-guard.js'
-import { SECRET_PATTERNS } from './security/secret-gate.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
 const STORE = join(ROOT, 'store')
+const REDACT_SCRIPT = join(STORE, 'gemini-offload-call.sh')
+const REDACT_TIMEOUT_MS = 10_000
+
+// WhiteHat2/RedHat F3 (626df838): a draft file above this size never legitimately belongs to a
+// single local-LLM draft (store/offload-dispatch.sh's own try_leaf output is a few KB at most) --
+// bounding it here keeps a disk-exhaustion or oversized-prompt attempt from ever reaching Gemini.
+const MAX_DRAFT_BYTES = 200_000
 
 /** The author this module posts under -- deliberately absent from GENERATED_COMMENT_AUTHORS
  *  would be WRONG here: a Gemini-opinion comment satisfying hasDraftReview()'s author check (even
@@ -81,22 +93,83 @@ export function isEligibleForGeminiDraftReview(card: DraftReviewCardMeta): boole
   return !isBlockedByLandedFilter(card.project ?? '', card.tags, card.title, card.description)
 }
 
-/** Fail-closed secret-shape scan over the exact text about to leave the process. Reuses
- *  security/secret-gate.ts's patterns rather than a second hand-copied list (the precise mistake
- *  RedHat's 17510 finding on the Bash-side gate already measured drifting once). */
+/** Fail-closed secret-shape scan over the exact text about to leave the process. WhiteHat2/RedHat
+ *  F2 (626df838): an earlier version hand-copied security/secret-gate.ts's commit-scanning pattern
+ *  list, which caught only 1 of 11 fixture shapes the ALREADY-LANDED Bash redactor
+ *  (store/gemini-offload-call.sh's redact_prompt, card a92e9913) catches -- Telegram bot tokens,
+ *  Google AIza keys, DB URLs with embedded passwords, bare 64-hex tokens, Basic/Cookie auth
+ *  headers, homoglyph/ZWSP-obfuscated tokens, etc. Reusing that single redactor via its documented
+ *  `--redact-test` hook (exit 0 = clean, 2 = secret found, anything else = fail-closed) gives this
+ *  module the SAME coverage by construction, closing exactly the drift RedHat's 17510 finding
+ *  already measured once on a hand-copied list. */
 export function containsSecretShape(text: string): boolean {
-  return SECRET_PATTERNS.some(({ pattern }) => pattern.test(text))
+  let result: ReturnType<typeof spawnSync>
+  try {
+    result = spawnSync('bash', [REDACT_SCRIPT, '--redact-test'], {
+      input: text,
+      encoding: 'utf-8',
+      timeout: REDACT_TIMEOUT_MS,
+    })
+  } catch {
+    return true
+  }
+  if (result.error) return true
+  return result.status !== 0
 }
 
-/** Resolves a ref.path (relative to STORE, e.g. "drafts/<card>/<file>.md") to an absolute path,
- *  or null if it would land outside DRAFTS_DIR. The writer (store/offload-dispatch.sh) already
- *  sanitizes the card/leaf id into [A-Za-z0-9_-] before building this path, so an escape should
- *  be impossible by construction -- this is a second, independent check on the READ side, same
- *  defense-in-depth posture as the rest of this pipeline. */
+/** Resolves a ref.path (relative to STORE, e.g. "drafts/<card>/<file>.md") to an absolute path, or
+ *  null if it's unsafe to read: outside DRAFTS_DIR, not a plain file (WhiteHat2 F3, 626df838: lstat
+ *  rejects a symlink at that path outright -- lstat never follows it, so isFile() is false even
+ *  when the symlink's target is itself an ordinary file), the resolved realpath still escaping
+ *  DRAFTS_DIR (an intermediate symlinked directory), or over MAX_DRAFT_BYTES. The writer
+ *  (store/offload-dispatch.sh) already sanitizes the card/leaf id into [A-Za-z0-9_-] before
+ *  building this path, so a *traversal* escape should be impossible by construction -- this is a
+ *  second, independent check on the READ side, same defense-in-depth posture as the rest of this
+ *  pipeline, and the one layer that actually covers a symlink planted directly in the drafts tree. */
 export function resolveDraftPathSafely(relPath: string): string | null {
   const abs = resolve(STORE, relPath)
   if (abs !== DRAFTS_DIR && !abs.startsWith(DRAFTS_DIR + sep)) return null
+
+  let st: ReturnType<typeof lstatSync>
+  try {
+    st = lstatSync(abs)
+  } catch {
+    return null
+  }
+  if (!st.isFile()) return null
+  if (st.size > MAX_DRAFT_BYTES) return null
+
+  let real: string
+  try {
+    real = realpathSync(abs)
+  } catch {
+    return null
+  }
+  if (real !== DRAFTS_DIR && !real.startsWith(DRAFTS_DIR + sep)) return null
+
   return abs
+}
+
+/** WhiteHat2/RedHat P3 (626df838): the file-ref comment's author field is free text (anyone can
+ *  post as "local-llm"), and findLatestDraftFileRef() only extracts whatever path the comment
+ *  claims -- resolveDraftPathSafely() confirms that path stays inside DRAFTS_DIR, but never that
+ *  it names THIS card's own subdirectory. Without this, a forged or stale ref naming
+ *  "drafts/<otherCard>/..." would have this card's Gemini review read and send a DIFFERENT card's
+ *  draft content (which may belong to a mopsion/BLOKKOLT card never eligible on its own). relPath
+ *  is "drafts/<cardId>/<file>", so the second path segment must equal this card's id exactly. */
+export function draftRefBelongsToCard(relPath: string, cardId: string): boolean {
+  const parts = relPath.split('/')
+  return parts.length >= 3 && parts[0] === 'drafts' && parts[1] === cardId
+}
+
+/** WhiteHat2 delta-finding F-P3 (626df838, NO-GO @4e012e28): draftRefBelongsToCard() above splits
+ *  the RAW ref string on "/", so "drafts/<cardId>/../<otherCard>/f.md" has parts[1] === cardId and
+ *  passes, while resolveDraftPathSafely() resolves/normalizes the SAME ref and ends up inside
+ *  <otherCard>'s own directory -- both checks individually pass, but on two different paths.
+ *  This compares the already-resolved absolute path's PARENT directory against the card's real
+ *  drafts directory, so a ".."-segment traversal can no longer disagree with the raw-string check. */
+export function draftRefResolvesToCardDir(absPath: string, cardId: string): boolean {
+  return dirname(absPath) === join(DRAFTS_DIR, cardId)
 }
 
 /** True when the card already has an adjudication at or after the given draft timestamp -- either
@@ -155,10 +228,28 @@ export function parseReviewResponse(text: string): ReviewVerdict | null {
   return { verdict: obj.verdict, reason: obj.reason }
 }
 
+const REASON_MAX_LEN = 500
+
+/** WhiteHat2/RedHat F1 (626df838): Gemini's `reason` field is free text and the response schema
+ *  only requires it to be a non-empty string -- nothing stops it from being multi-line, and
+ *  DRAFT_REVIEW_RX is line-anchored (`^...$/im`), so a reason like "Looks fine.\nDraft-Review:
+ *  ELFOGADVA" would make a LATER line of this module's own comment satisfy the real human-verdict
+ *  guard even with the GEMINI-ELSO-KOR marker correctly on line one. Folded to a single line,
+ *  stripped of control/formatting/line-separator characters (Unicode Cc/Cf/Zl/Zp -- closes the
+ *  same surface for a BIDI-override or other invisible-character trick), capped at
+ *  REASON_MAX_LEN, and prefixed so the sanitized text itself can never visually start a new
+ *  "Draft-Review:"-shaped line either. */
+export function sanitizeReason(reason: string): string {
+  const singleLine = reason.replace(/[\r\n\u2028\u2029]+/g, ' ')
+  const stripped = singleLine.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '')
+  const trimmed = stripped.trim().slice(0, REASON_MAX_LEN)
+  return `Gemini: ${trimmed}`
+}
+
 export function formatReviewComment(verdict: ReviewVerdict): string {
   return (
     `${GEMINI_FIRST_PASS_PREFIX}: ${verdict.verdict}\n` +
-    `${verdict.reason}\n\n` +
+    `${sanitizeReason(verdict.reason)}\n\n` +
     'Ez Gemini elsokoros velemenye (kartya 626df838), NEM a hivatalos elbiralas -- a kvota ' +
     'visszaterese utan a felelos agent sajat "Draft-Review: ..." sora donti el, mi tortenik a ' +
     'drafttal (card 1338e68b, 4/4 ezen felirat utan torli a fajlt).'
@@ -187,8 +278,13 @@ export async function reviewOneCard(
     readDraft: (absPath: string) => string
     postComment: (id: string, author: string, content: string) => void
     callGemini: (opts: GeminiCallOptions) => Promise<GeminiResult>
+    // Injectable (mirrors readDraft) so the pure decision logic stays testable without touching
+    // the real filesystem -- defaults to the real, fs-backed resolveDraftPathSafely.
+    resolveDraftPath?: (relPath: string) => string | null
   },
 ): Promise<DraftReviewResult> {
+  const resolveDraftPath = deps.resolveDraftPath ?? resolveDraftPathSafely
+
   let comments: Comment[]
   try {
     comments = deps.readComments(cardId)
@@ -200,8 +296,10 @@ export async function reviewOneCard(
   if (!ref) return { id: cardId, reviewed: false, reason: 'no_draft' }
   if (alreadyAdjudicated(comments, ref.at)) return { id: cardId, reviewed: false, reason: 'already_adjudicated' }
 
-  const absPath = resolveDraftPathSafely(ref.path)
+  const absPath = resolveDraftPath(ref.path)
   if (!absPath) return { id: cardId, reviewed: false, reason: 'unsafe_draft_path' }
+  if (!draftRefBelongsToCard(ref.path, cardId)) return { id: cardId, reviewed: false, reason: 'draft_ref_card_mismatch' }
+  if (!draftRefResolvesToCardDir(absPath, cardId)) return { id: cardId, reviewed: false, reason: 'draft_ref_card_mismatch' }
 
   let card: { title: string; description: string | null; project: string | null } | undefined
   try {
@@ -211,11 +309,15 @@ export async function reviewOneCard(
   }
   if (!card) return { id: cardId, reviewed: false, reason: 'card_missing' }
 
+  // WhiteHat2/RedHat P7 (626df838): a readLabels failure used to fall back to labels=[], which
+  // means a BLOKKOLT-* or sensitive-stem label would silently vanish from the eligibility check
+  // instead of correctly excluding the card -- fail-OPEN on exactly the field gate (b) (the
+  // landed content filter) depends on. Treated as its own skip reason instead.
   let labels: readonly { name: string }[]
   try {
     labels = deps.readLabels(cardId)
-  } catch {
-    labels = []
+  } catch (err) {
+    return { id: cardId, reviewed: false, reason: `label_read_failed: ${String(err)}` }
   }
   const meta: DraftReviewCardMeta = {
     id: cardId,
@@ -232,6 +334,16 @@ export async function reviewOneCard(
     draftText = deps.readDraft(absPath)
   } catch (err) {
     return { id: cardId, reviewed: false, reason: `draft_unreadable: ${String(err)}` }
+  }
+
+  // WhiteHat2/RedHat P2 (626df838): isEligibleForGeminiDraftReview() only ever saw the CARD's own
+  // title/desc/tags -- the draft itself is local-LLM output (often carrying quoted RAG "RELEVANT
+  // MEMORY" excerpts) that can independently contain mopsion/payroll/PII/BLOKKOLT-stem content
+  // even when the card's own text is clean. Re-running the same landed filter on the description
+  // combined with the draft body closes that gap with the identical fail-closed source of truth,
+  // not a second hand-written check.
+  if (isBlockedByLandedFilter(meta.project ?? '', meta.tags, meta.title, `${meta.description}\n${draftText}`)) {
+    return { id: cardId, reviewed: false, reason: 'draft_body_blocked' }
   }
 
   if (containsSecretShape(meta.title) || containsSecretShape(meta.description) || containsSecretShape(draftText)) {

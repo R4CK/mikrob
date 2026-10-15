@@ -680,13 +680,18 @@ symlink nélkül. A flotta-ügynököknél a `.claude-config/skills` út tipikus
 nem is létezik, tehát rád nézve a közvetlen írás a valódi óvintézkedés
 tárgya. Bármelyik úton írsz oda, a TELJES flotta megkapja.
 
-Ugyanez a csapda a MEMÓRIÁRA is áll (2026-09-07-én megmérve, leanarchivist):
-a `.claude-config/projects` szintén symlink a `~/.claude/projects`-re, tehát a
-`.claude-config/projects/.../memory/MEMORY.md` NEM a te memóriád, hanem a Lean
-Chiefé -- az ő session-je tölti be, a tiéd soha. A te memóriád a dashboard API,
-`agent_id`-vel címezve (`POST /api/memories`). Általános szabály: a `.claude`
-vagy `.claude-config` alatti útvonal soha nem a sajátod, akkor sem, ha a
-munkakönyvtáradban látszik. Írás előtt nézd meg, hova mutat: `ls -la`.
+Ugyanez a csapda a MEMÓRIÁRA is áll: a `.claude-config/projects` lehet symlink
+a `~/.claude/projects`-re. Hogy melyik memória-könyvtár a tiéd, azt NE a
+munkakönyvtárad nevéből vezesd le: a mérvadó a rendszerprompt memória-szakaszában
+MEGADOTT útvonal, `readlink -f`-fel feloldva. Git-checkout telepítésen (alapeset)
+a Claude Code ezt a REPO GYÖKERE szerint kulcsolja: ha a feloldott útvonal a
+`~/.claude/projects/` alatti, a telepítés gyökerének slugjával kulcsolt könyvtár,
+akkor az a fő ágensé, és ami oda kerül, azt a fő ágens és minden ugyanezt kapó
+ügynök session-je betölti. A tiéd, ha a feloldott útvonal a saját
+`.claude-config`-od valódi könyvtárában van, vagy a saját mappád slugja szerepel
+benne (saját stub git-repó vagy git nélküli telepítés). A saját, csak rád
+tartozó emlék helye ettől függetlenül a dashboard API (`POST /api/memories`,
+`agent_id`-vel).
 <!-- END GENERATED: skills-path-trap -->
 
 <!-- BEGIN GENERATED: system-directive-auth (auto-generated, do not edit by hand) -->

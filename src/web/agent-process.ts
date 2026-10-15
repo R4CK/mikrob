@@ -31,7 +31,7 @@ import {
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentWorksourceChannel, readAgentCustomProvider, readJsonObjectForWrite, type AuthMode } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readJsonObjectForWrite, type AuthMode } from './agent-config.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, readAgentConfigForOauthDecision, reverifyOauthTokenFile, findOauthTokenFileCollision } from './agent-oauth-token-file.js'
 import { getCustomProviderOrThrow } from './custom-providers.js'
 import { worksourceRootFor } from './worksource-queue.js'
@@ -59,6 +59,7 @@ import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction } from './channel-continue-policy.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
+import { decideStateObserver, stateObserverLaunchEnv } from './state-observer.js'
 import { launchableInstallDefault } from './default-model-guard.js'
 import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
 import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE, FLEET_PYTHON_VENV } from '../config.js'
@@ -2466,6 +2467,22 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // writes; it is not applied fleet-wide. (An `allowedChannelPlugins` entry in
     // managed settings is the non-dev route, but it is keyed by plugin +
     // marketplace, which a local plugin has no id in.)
+    // Opt-in agent-state-observer mod (MODSTERMEK1005, default OFF): see
+    // state-observer.ts. The version is measured only for an agent that has it
+    // on, so every other launch is untouched.
+    let stateObserverEnv = ''
+    if (readAgentStateObserver(name)) {
+      const observer = decideStateObserver({
+        enabled: true,
+        isMainAgent: name === MAIN_AGENT_ID,
+        installedCli: (await measureClaudeCliVersion()).version,
+        remote: false, // a remote agent took startRemoteAgentProcess above
+        runAs: !!agentTmuxTarget(name).runAsUser,
+      })
+      stateObserverEnv = stateObserverLaunchEnv(observer.load, name, shSingleQuote)
+      logger.info({ name, load: observer.load, reason: observer.reason }, 'agent-state-observer launch decision')
+    }
+
     let worksourceFlags = ''
     if (readAgentWorksourceChannel(name) && name !== MAIN_AGENT_ID) {
       try {
@@ -2931,7 +2948,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // beats the Homebrew one that carries no packages -- same mechanism already adopted in
     // scripts/watchdog.sh this round.
     const venvPathPrefix = fleetVenvPathPrefix()
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start

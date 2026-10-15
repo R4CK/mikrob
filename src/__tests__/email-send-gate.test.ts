@@ -79,6 +79,15 @@ describe('gateDecision', () => {
     expect(gateDecision('mcp__server-gmail-autoauth-mcp__draft_email', {}).deny).toBe(false)
   })
 
+  // Card bf7a7335 (Cybersec GO on 45b33b2b @bee4940b, msg 6253, LOW): the safe-prefix match only
+  // looked at the name up to its FIRST separator, so a name that STARTS with a safe verb but
+  // later names send/reply/forward slipped past deny-by-default unaudited.
+  it('does NOT let a safe-looking prefix hide a later send/reply/forward verb (canary)', () => {
+    expect(gateDecision('mcp__server-gmail-autoauth-mcp__draft_and_send', {}).deny).toBe(true)
+    expect(gateDecision('mcp__claude_ai_Gmail__read_then_forward', {}).deny).toBe(true)
+    expect(gateDecision('mcp__resend__search-and-send-email', {}).deny).toBe(true)
+  })
+
   // @aaronsb/google-workspace-mcp multiplexes read/draft/send behind one tool,
   // so the gate has to read the operation + draft flag, not just the name.
   // This replaces the server's draft-only-email policy, which blocks drafting too.

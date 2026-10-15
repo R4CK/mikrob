@@ -20367,6 +20367,24 @@ zöld.
 **Ki döntött:** WhiteHat2 (NO-GO lelet + a pillanatkép-alapú javítási irány javaslata, gate komment
 19003), végrehajtotta fullstack (kártya b73722e1, 2026-10-14).
 
+## 2026-10-15: agent-id-header generátor argv-token-szivárgás javítva (kártya e73b17ef)
+
+**Mi történt:** upstream `a30553d6` ("Security infra package #1357") a `buildAgentIdHeaderBody()` generátorba (`src/web/agent-scaffold.ts`) olyan curl-mintát hozott, ami a Bearer tokent közvetlenül a `-H "Authorization: Bearer $(cat <token>)"` argumentumba teszi -- ez a `/proc/<pid>/cmdline`-on keresztül kiszivárog, és a `token-in-argv-guard.test.ts` ezt a mintát MINDEN agensre tiltja. A hiba a Köteg 14 upstream-szinkron ELŐTT landolt (már a merge-bázison, `23b49496`-on is megvolt), de csak most buktatta a fleet-testet, mert az élő `agents/*/CLAUDE.md` fájlok csak most kapták meg a generált blokkot egy scaffold-sweep során -- ez blokkolt MINDEN ügynök landolását (backend, backend2, backend3, cybered, cybersec2, fullstack, qa, qa2 mind megkapta a hibás blokkot).
+
+**Döntés:** eltérünk az upstream mintától -- a generált bash-blokk a fork saját, mindenhol használt idiómáját követi: `printf 'Authorization: Bearer %s\n' "$(cat <token>)" | curl -H @- ...` (token stdin-en, sosem argv-ban). Nem a tiltó tesztet lazítottuk, a generátort igazítottuk hozzá.
+
+**Ki döntött:** backend3 (önállóan találta meg és javította a generátort, commit `efc9f4f2`, kártya `d7e1d611` saját fleet-test futása közben), MikroB jóváhagyta és az élő 8 fájlt kézzel újraregenerálta, miután fullstack (kártya `e73b17ef`) párhuzamos javítását emiatt backend3-ra kiosztotta (nincs ütköző második commit).
+
+## 2026-10-15 -- Kártya bf7a7335 (Cybersec GO a 45b33b2b-n @bee4940b, msg 6253): az email-kapuk gmail/resend részsztring-túlfogása SZÁNDÉKOS, és a safe-prefix lyuk zárva
+
+**Kontextus:** a `scripts/email-send-gate.mjs`, `scripts/hooks/email-approval-gate.py` és `scripts/hooks/outgoing-copy-gate.py` mindegyike `EMAIL_SERVER_RE`-vel dönti el, melyik MCP-szerver esik az email-audit alá: a mintázat a "gmail"/"resend" RÉSZSZTRINGET keresi a szervernévben, bárhol. Ez szándékosan szélesebb, mint egy valódi email-szerver neve igényelné -- a hibairány, amit el akar kerülni, az "a kapu lefutott és egy valódi sendet biztonságosnak minősített", nem az, hogy "a kapu soha nem futott le".
+
+**Következmény (szándékos, most dokumentálva):** egy NEM-email szerver, aminek a neve tartalmazza ezt a részsztringet -- pl. egy `presend-queue` nevű, email-lel kapcsolatban nem álló várakozási sor (a "presend" tartalmazza a "resend"-et) -- a nem-olvasó/nem-draft toolja ugyanúgy jóváhagyás alá esik, mint egy valódi Gmail/Resend szerver send-je. Ez LOW kockázat (hamis pozitív, nem hamis negatív), és tudatosan elfogadott: a kapu célja az email-send megakadályozása jóváhagyás nélkül, nem a pontos szervernév-illesztés.
+
+**Safe-prefix lyuk (ugyanaz a Cybersec-komment, LOW, most javítva):** a biztonságos-tool allowlist (`EMAIL_SAFE_TOOL_RE` mindhárom kapuban) régi alakja (`^(?:search|get|list|read|draft)[-_]|^create[-_]draft$`) csak a névnek az ELSŐ elválasztóig tartó előtagját nézte, ezért `draft_and_send`, `read_then_forward` és `search_and_send_email` mindegyike átment biztonságosként, noha a név további része a valódi send/reply/forward igét hordozza. Javítás: negatív előretekintés a safe-prefix minta után, ami a teljes nevet nézi -- `^(?:search|get|list|read|draft)[-_](?!.*(?:send|reply|forward))|^create[-_]draft$` -- mindhárom kapuban (`email-send-gate.mjs`, `email-approval-gate.py`, `outgoing-copy-gate.py`). Canary mindhárom kapu teszt-suite-jában: a három megnevezett alak most denied/audited, a valódi biztonságos nevek (search_threads, get_email, create_draft, draft_email stb.) változatlanul átmennek. Mutáció-ellenőrzés: a lookahead eltávolítása pontosan a 3 új pozitív esetet viszi pirosra mindhárom suite-ban, semmi mást.
+
+**Ki döntött:** backend (kártya bf7a7335, 2026-10-15).
+
 ## 2026-10-15 08:27 -- Gemini-jail halozati szukites: bwrap --unshare-net + UDS-hidalt allowlist-proxy, sudo nelkul
 
 **Dontes:** `scripts/seged-hivo.py` jail_cmd()-je (agy/codex sandbox) most `--unshare-net`-et hasznal
@@ -20403,3 +20421,13 @@ mért megoldás mindkettőt kielégíti ANÉLKÜL, hogy Peti jóváhagyására v
 
 **Ki döntött:** fullstack (önálló mérés + grilling + végrehajtás, kártya 5229ea1e), gate: QA +
 Cybersec + Cybered (a kártya saját, magas-kockázatú 3-gate kijelölése).
+
+**Merge-kiegészítés (ugyanez a kártya, 2026-10-15, a develop-merge közben észlelve):** amíg ez a
+kártya folyamatban volt, backend2 kártyája (a020247b) landolt egy ÚJ, a jailből hívott valós
+loopback hálózati hívást: `store/gemini-local-subtask.sh` a jailen belülről `http://127.0.0.1:11434`
+Ollama API-t hív. A `--unshare-net` ezt törte volna, mert a jail saját, elszigetelt netns-ének
+loopbackje nem azonos a hoszt loopbackjével. Mivel a `jail-net-proxy.py` a HOSZTON fut (nem a jail
+netns-ében), a `127.0.0.1:11434` felvétele a JAIL_NET_ALLOWLIST-be helyesen a hoszt saját, valódi
+Ollama-portjára kapcsol -- a két kártya emiatt NEM ütközik, csak a merge igényelt egy sor
+kiegészítést az allowlistben. `jail_cmd()` mindkét kártya bind-jait megtartja (`agy_subtask_binds()`
++ a net-jail extra_binds), sorrend: agy_subtask_binds előbb, majd a net-jail UDS-bind.

@@ -107,14 +107,32 @@ SEGED_BASE = os.environ.get('SEGED_BASE', str(HOME / 'seged-munka'))
 # a full prompt -> auth -> eligibility-check -> model-list -> real response round trip needs
 # exactly these 7 hosts, nothing else (confirmed: a disallowed host attempt logs and 403s,
 # never silently tunnels). --sha256/--onteszt do not exercise this; see jail_net_selftest().
+# 127.0.0.1:11434 added for card a020247b's gemini-local-subtask.sh (merged into develop while
+# this card was in flight, see agy_subtask_binds() below): that tool makes a REAL loopback HTTP
+# call to the local Ollama server. Since JAIL_NET_PROXY_SH runs on the HOST (outside the jail's
+# netns), "127.0.0.1" there is the host's own real loopback where Ollama actually listens -- the
+# allowlist entry just needs to exist, no special-casing required. Without it, --unshare-net
+# would silently break a020247b's feature (loopback inside the jail's own netns has nothing
+# listening on :11434), which this host's HTTP_PROXY env var now routes through this proxy.
 JAIL_NET_ISOLATION = os.environ.get('SEGED_HIVO_NET_JAIL', '1') not in ('0', 'off', 'false')
 JAIL_NET_RELAY_PORT = int(os.environ.get('SEGED_HIVO_NET_JAIL_PORT', '18443'))
 JAIL_NET_ALLOWLIST = os.environ.get('SEGED_HIVO_NET_JAIL_ALLOWLIST',
     'antigravity-unleash.goog:443,oauth2.googleapis.com:443,www.googleapis.com:443,'
     'daily-cloudcode-pa.googleapis.com:443,cloudcode-pa.googleapis.com:443,'
-    'play.googleapis.com:443,lh3.googleusercontent.com:443')
+    'play.googleapis.com:443,lh3.googleusercontent.com:443,127.0.0.1:11434')
 JAIL_NET_PROXY_SH = Path(__file__).resolve().parent / 'jail-net-proxy.py'
 JAIL_NET_RELAY_SH = Path(__file__).resolve().parent / 'jail-net-relay.py'
+
+# Card a020247b: the ONE narrow tool the agy engine gets for local-model delegation (STRIDE +
+# scoping on that card's kanban comment). Every source is ro-bound except the call log. Lives
+# under HOME (not /opt: that is root-owned and part of the whole-root ro-bind, so a NEW path
+# under it cannot be created inside the jail at all -- measured directly, "Can't mkdir /opt/...:
+# Read-only file system" even behind a --tmpfs). HOME itself is a fresh, writable tmpfs at the
+# point these binds run (jail_cmd adds them before --remount-ro HOME), the same reason state/
+# workdir already bind straight onto it with no extra scaffolding.
+SUBTASK_JAIL_DIR = str(HOME / '.gemini-local-subtask')
+SUBTASK_TOOL_SRC = STORE / 'gemini-local-subtask.sh'
+SUBTASK_LOG_SRC = STORE / 'gemini-local-subtask-calls.log'
 LOCK = STORE / 'seged-hivo.lock'
 QUOTA_FILE = Path(os.environ.get('SEGED_KVOTA_FAJL', STORE / 'seged-hivo-kvota.json'))
 QUOTA_DEFAULTS = {'hivo_nap': 5, 'codex_nap': 40, 'agy_nap': 20, 'zar_var_s': 0, 'szunet_min_s': 5, 'szunet_max_s': 15}
@@ -592,6 +610,7 @@ def jail_cmd(engine, workdir, net_jail_dir=None):
             '--tmpfs', '/run', *[x for p in drives for x in ('--tmpfs', str(p))],
             '--tmpfs', str(HOME), '--ro-bind', str(HOME / '.local'), str(HOME / '.local'),
             '--bind', str(state), str(state), '--bind', str(workdir), str(workdir),
+            *(agy_subtask_binds() if engine == 'agy' else []),
             *extra_binds,
             '--remount-ro', str(HOME), '--chdir', str(workdir),
             '--unshare-pid', '--unshare-ipc', '--new-session', '--clearenv',
@@ -745,6 +764,48 @@ def jail_net_selftest():
         print('FAIL:', f)
     print(f'jail_net_selftest: {3 - len(fails)}/3 cases passed')
     return 1 if fails else 0
+
+
+def agy_subtask_binds():
+    # Card a020247b: the agy engine's narrow local-LLM-delegation tool. The wrapper script itself
+    # (gemini-local-subtask.sh) ro-binds onto ~/.local/bin, which is already on PATH inside the
+    # jail -- Gemini can invoke it by bare name, same as the plain `ollama` binary that already
+    # lives there. Its dependencies (the GPU-utilization guard, the master kill-switch) ro-bind
+    # into a dedicated jail-internal dir with --ro-bind-try: a source that does not exist on THIS
+    # host is skipped outright, which lands on the exact same already-reviewed permissive default
+    # each dependency's own code already applies to "missing on the host" (vram-guard-check.sh:
+    # no nvidia-smi -> ADMIT; the kill-switch file: absent -> ON) -- skipping the bind changes
+    # nothing beyond which of those two defaults the wrapper falls into. The call log is the one
+    # read-write bind: append-only by convention, not OS-enforced (the wrapper script's own header
+    # says why), and is a single file the jailed process cannot use to reach anything else.
+    STORE.mkdir(parents=True, exist_ok=True)
+    if not SUBTASK_LOG_SRC.exists():
+        SUBTASK_LOG_SRC.touch()
+    # ~/.local/bin already exists in the real ~/.local that was ro-bound two lines up, so
+    # gemini-local-subtask only needs a pre-existing node there for the ro-bind-try below to land
+    # on an existing file instead of trying to create one inside that read-only mount. Self-healing
+    # (not a one-time manual setup step, which would be the kind of thing nobody remembers to redo
+    # after a fresh host/agent-worktree checkout): create an empty, harmless placeholder on every
+    # call if it is not there yet. The real content always comes from the ro-bind-try itself.
+    placeholder = HOME / '.local' / 'bin' / 'gemini-local-subtask'
+    if not placeholder.exists():
+        placeholder.parent.mkdir(parents=True, exist_ok=True)
+        placeholder.touch(mode=0o700, exist_ok=True)
+    return [# bwrap's own --dev /dev above is a fresh, minimal devtmpfs with no GPU node at all, so
+            # nvidia-smi fails NVML init ("GPU access blocked by the operating system") and
+            # vram-guard-check.sh reads that as HOLD unreadable -- a SAFE failure direction (card
+            # 108c7b10: present-but-failing is conservative-HOLD, unlike absent-entirely which is
+            # ADMIT), but it means the gate would ALWAYS refuse, never actually admitting when the
+            # GPU is idle. Measured directly: this host's WSL2 GPU passthrough is exactly one node,
+            # /dev/dxg (no /dev/nvidia* files exist at all here) -- binding that one node back in is
+            # what nvidia-smi itself needs, nothing broader.
+            '--dev-bind-try', '/dev/dxg', '/dev/dxg',
+            '--ro-bind-try', str(SUBTASK_TOOL_SRC), str(HOME / '.local' / 'bin' / 'gemini-local-subtask'),
+            '--bind', str(SUBTASK_LOG_SRC), f'{SUBTASK_JAIL_DIR}/calls.log',
+            '--ro-bind-try', str(STORE / 'vram-guard-check.sh'), f'{SUBTASK_JAIL_DIR}/vram-guard-check.sh',
+            '--ro-bind-try', str(STORE / 'vram-guard-config.json'), f'{SUBTASK_JAIL_DIR}/vram-guard-config.json',
+            '--ro-bind-try', str(STORE / 'vram-guard-state.json'), f'{SUBTASK_JAIL_DIR}/vram-guard-state.json',
+            '--ro-bind-try', str(STORE / 'local-first-draft.json'), f'{SUBTASK_JAIL_DIR}/local-first-draft.json']
 
 
 def run_helper(engine, model, workdir, prompt_text, timeout):

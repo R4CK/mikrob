@@ -1453,6 +1453,118 @@ async function renderCardLabelsSection(card) {
   }
 }
 
+// === Card blockers (in the detail modal) ===
+// Renders both directions from one GET: what this card waits on, and what waits
+// on it. The reverse list is read-only on purpose -- a block is removed from the
+// card that carries it, so there is exactly one place to clear each link.
+async function renderCardBlockersSection(card) {
+  const listEl = document.getElementById('cardBlockerList')
+  const addSelect = document.getElementById('cardBlockerAdd')
+  const blockingWrap = document.getElementById('cardBlockingWrap')
+  const blockingListEl = document.getElementById('cardBlockingList')
+  if (!listEl || !addSelect) return
+
+  let blockers = []
+  let blocking = []
+  try {
+    const data = await (await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers`)).json()
+    blockers = Array.isArray(data.blockers) ? data.blockers : []
+    blocking = Array.isArray(data.blocking) ? data.blocking : []
+  } catch { /* leave empty -- the lists just stay blank */ }
+
+  // A blocker whose card is done no longer holds anything up. It stays listed
+  // (the link is history worth seeing) but reads as cleared, so a glance at the
+  // list answers "am I still waiting?" without opening each card.
+  const isCleared = (ref) => ref.status === 'done'
+
+  const refRow = (ref, removable) => {
+    const row = document.createElement('div')
+    row.className = 'blocker-row' + (isCleared(ref) ? ' blocker-cleared' : '')
+    const seq = ref.seq != null ? `#${ref.seq} ` : ''
+    const link = document.createElement('button')
+    link.className = 'blocker-link'
+    link.type = 'button'
+    link.textContent = `${seq}${ref.title}`
+    link.title = t('kanban.blocker.open_hint')
+    link.addEventListener('click', () => {
+      const target = kanbanCards.find((c) => c.id === ref.id)
+      if (target) showCardDetail(target)
+      else showToast(t('kanban.toast.blocker_not_on_board'))
+    })
+    row.appendChild(link)
+    const state = document.createElement('span')
+    state.className = 'blocker-state'
+    state.textContent = t(`kanban.status.${ref.status}`)
+    row.appendChild(state)
+    if (removable) {
+      const rm = document.createElement('button')
+      rm.className = 'blocker-remove'
+      rm.type = 'button'
+      rm.innerHTML = '&times;'
+      rm.title = t('kanban.blocker.remove_btn')
+      rm.setAttribute('aria-label', t('kanban.blocker.remove_btn'))
+      rm.addEventListener('click', async () => {
+        try {
+          await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers/${encodeURIComponent(ref.id)}`, { method: 'DELETE' })
+          renderCardBlockersSection(card)
+          loadKanban()
+        } catch { showToast(t('kanban.toast.blocker_remove_error')) }
+      })
+      row.appendChild(rm)
+    }
+    return row
+  }
+
+  listEl.innerHTML = ''
+  if (blockers.length === 0) {
+    const empty = document.createElement('div')
+    empty.className = 'blocker-empty'
+    empty.textContent = t('kanban.blocker.none')
+    listEl.appendChild(empty)
+  } else {
+    for (const ref of blockers) listEl.appendChild(refRow(ref, true))
+  }
+
+  blockingListEl.innerHTML = ''
+  blockingWrap.style.display = blocking.length > 0 ? '' : 'none'
+  for (const ref of blocking) blockingListEl.appendChild(refRow(ref, false))
+
+  // Candidates: every other open card on the board that is not already linked.
+  // Cards this one blocks are excluded too -- adding one would close a cycle,
+  // and the server refuses it; offering it in the list would only produce an error.
+  const attachedIds = new Set(blockers.map((b) => b.id))
+  const blockingIds = new Set(blocking.map((b) => b.id))
+  addSelect.innerHTML = `<option value="">-- ${t('kanban.blocker.add_placeholder_short')} --</option>`
+  for (const other of kanbanCards) {
+    if (other.id === card.id || attachedIds.has(other.id) || blockingIds.has(other.id)) continue
+    if (other.status === 'done') continue
+    const opt = document.createElement('option')
+    opt.value = other.id
+    opt.textContent = (other.seq != null ? `#${other.seq} ` : '') + other.title.slice(0, 70)
+    addSelect.appendChild(opt)
+  }
+  addSelect.onchange = async () => {
+    const blockerId = addSelect.value
+    if (!blockerId) return
+    try {
+      const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blockerId }),
+      })
+      if (!r.ok) {
+        // The server's message names the actual reason (cycle, missing card);
+        // surfacing it beats a generic failure the operator has to guess at.
+        const err = await r.json().catch(() => ({}))
+        showToast(err.error || t('kanban.toast.blocker_add_error'))
+        addSelect.value = ''
+        return
+      }
+      renderCardBlockersSection(card)
+      loadKanban()
+    } catch { showToast(t('kanban.toast.blocker_add_error')) }
+  }
+}
+
 // === Card detail ===
 async function showCardDetail(card) {
   // Running number (#N) in the title bar, plus the stable hex id in the meta.
@@ -1594,6 +1706,7 @@ async function showCardDetail(card) {
   document.getElementById('cardDetailDesc').textContent = card.description || ''
 
   renderCardLabelsSection(card)
+  renderCardBlockersSection(card)
 
   // #115: Parent meta row — dropdown replaces the old read-only display; shown only when editable
   const parentMetaItem = document.getElementById('parentMetaItem')

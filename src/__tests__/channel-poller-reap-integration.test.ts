@@ -75,8 +75,15 @@ const { channelStateDir, channelStateDirEnvVar } = await import('../channel-prov
 
 const AGENT_DIR = '/tmp/reap-integration-agent'
 
+// Format matches snapshotProcs's actual `ps -axww -o pid=,ppid=,command=` columns (card ee485f5e,
+// REAPSELECT921, upstream 2157aeb6/Köteg 14) -- the old TTY/STAT/TIME layout this helper emitted
+// before never matched snapshotProcs's `^\s*(\d+)\s+(\d+)\s+(.*)$` regex, so every row was dropped,
+// procs stayed empty, and reapChannelOrphans hit the "ps snapshot unavailable" fail-safe (reaped: []
+// on every candidate). ppid 1 is a placeholder: selectReapablePollers only walks pane-ancestor chains
+// from the live-pane pid (99999 here, mocked by the tmux branch above), which never resolves to any
+// row in this fixture, so the actual ppid value does not change which pids end up in `reap`.
 function psRow(pid: number, cmd: string, env: string): string {
-  return `${String(pid).padStart(6)} pts/1    S      0:00 ${cmd} ${env}`
+  return `${pid} 1 ${cmd} ${env}`
 }
 
 const spyOnKill = () => vi.spyOn(process, 'kill').mockImplementation(() => true)

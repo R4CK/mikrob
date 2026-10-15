@@ -400,11 +400,17 @@ rm -rf "$DRAFTS_TMPDIR"
 
 # PATH-TRAVERSAL: a malicious card id must not escape DRAFTS_TMPDIR, even though write_draft_to_file
 # itself never validates emptiness of the sanitized result.
-evil_out="$(OFFLOAD_DRAFTS_DIR="$DRAFTS_TMPDIR" bash "$DISPATCH" --test-write-draft-to-file "../../../tmp/evil" "../../../tmp/evil" "pwned")"
+# WhiteHat2 F2 (21fbc293, comment 18065): a fixed, shared "/tmp/evil" target is not hermetic -- any
+# other concurrent selftest/gate run (or a leftover directory from a prior run) can make this check
+# false either way. The escape target name is unique per invocation ($$ + $RANDOM) instead.
+EVIL_MARKER="evil-selftest-$$-$RANDOM"
+EVIL_TARGET="/tmp/$EVIL_MARKER"
+evil_out="$(OFFLOAD_DRAFTS_DIR="$DRAFTS_TMPDIR" bash "$DISPATCH" --test-write-draft-to-file "../../../tmp/$EVIL_MARKER" "../../../tmp/$EVIL_MARKER" "pwned")"
 evil_abs="$(dirname "$DRAFTS_TMPDIR")/${evil_out}"
 check "a path-traversal card id cannot escape DRAFTS_DIR (file lands inside it, sanitized)" \
   "$(python3 -c "import os,sys; p=sys.argv[1]; d=sys.argv[2]; print('inside' if os.path.commonpath([os.path.abspath(p), os.path.abspath(d)]) == os.path.abspath(d) else 'escaped')" "$evil_abs" "$DRAFTS_TMPDIR")" "inside"
-check "/tmp/evil was NOT created outside the sandbox by the traversal attempt" "$([[ -e /tmp/evil ]] && echo exists || echo absent)" "absent"
+check "$EVIL_TARGET was NOT created outside the sandbox by the traversal attempt" "$([[ -e "$EVIL_TARGET" ]] && echo exists || echo absent)" "absent"
+rm -rf "$EVIL_TARGET" 2>/dev/null || true
 rm -rf "$DRAFTS_TMPDIR"
 
 # REFERENCING COMMENT: carries the path and the same mandatory Draft-Review marker requirement

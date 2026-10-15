@@ -114,8 +114,20 @@ const GIT_TIMEOUT_MS = 8000
  * resolution has a weak bare-hex fallback that has already named the wrong commit once. Measured
  * over all 304 done cards, excluding both authors blocks exactly one more card (f91fcd7e, a true
  * catch) and costs zero false blocks.
+ *
+ * `gemini-orch-review` (card 626df838, Gemini-orch 3/4): a third generated writer, same reasoning
+ * -- its comment is Gemini's own first-pass opinion on a local-LLM draft, not a human/role-agent
+ * claim about a landed commit or a gate verdict. Excluding it here is the SECOND of two independent
+ * layers (the first is the GEMINI-ELSO-KOR marker being structurally distinct from every
+ * DRAFT_REVIEW_RX/gate-verdict pattern) that keep Gemini's opinion from ever satisfying this guard,
+ * kanban-draft-review-guard.ts's hasDraftReview(), or kanban-gate-completeness-guard.ts's
+ * verdict-recognition on its own -- see gemini-orchestrator-draft-review.ts's REVIEW_AUTHOR export.
  */
-export const GENERATED_COMMENT_AUTHORS: ReadonlySet<string> = new Set(['local-llm', 'gate-pretriage'])
+export const GENERATED_COMMENT_AUTHORS: ReadonlySet<string> = new Set([
+  'local-llm',
+  'gate-pretriage',
+  'gemini-orch-review',
+])
 
 export interface LandedVerdict {
   readonly blocked: boolean

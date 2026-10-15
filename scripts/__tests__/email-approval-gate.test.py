@@ -637,6 +637,19 @@ with tempfile.TemporaryDirectory() as td:
     # "draft" as a VERB prefix (draft_email) is safe -- distinct from send_draft/update_draft.
     code, _, _ = run_gate(store_l1, connector("draft_email", to=["a@b.hu"], body="x"))
     check("connector draft_email (verb prefix) is not a send: passes at level 1", code == 0, f"exit={code}")
+
+    # --- Card bf7a7335 (Cybersec GO on 45b33b2b @bee4940b, msg 6253, LOW) ---
+    # The safe-prefix match only looked at the name up to its FIRST separator, so a name that
+    # STARTS with a safe verb but later names send/reply/forward slipped through unaudited.
+    code, _, err = run_gate(store_l1, connector("draft_and_send", to=["a@b.hu"], body="x"))
+    check("connector draft_and_send (safe-prefix bypass): DENIED at level 1",
+          code == 2 and "szint 1" in err, f"exit={code}")
+    code, _, err = run_gate(store_l1, connector("read_then_forward", messageId="m1"))
+    check("connector read_then_forward (safe-prefix bypass): DENIED at level 1",
+          code == 2 and "szint 1" in err, f"exit={code}")
+    code, _, err = run_gate(store_l1, resend("search-and-send-email", to="a@b.hu"))
+    check("resend search-and-send-email (safe-prefix bypass): DENIED at level 1",
+          code == 2 and "szint 1" in err, f"exit={code}")
     # --- EMAILALLANDOCIMZETT926: allando cimzett-lista, CSAK level 2-n --------
     # A funkcio egyetlen dolga, hogy EGY cimre jovahagyas nelkul lehessen kuldeni,
     # ugy, hogy minden mas cimzett a regi uton maradjon. Ezert minden teszt parban

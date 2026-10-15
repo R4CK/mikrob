@@ -147,6 +147,10 @@ function renderTokenPruneLine(p: ParsedMetrics, firstLine: string): string {
       + `(tures ${tp['tolerance_hours']} ora = ket sweep-ciklus). A napi decay-sweep nem fut -- `
       + `a token-naplo ettol korlatlanul no.`
   }
+  if (tp['state'] === 'invalid') {
+    return '- FIGYELEM, token_usage prune allapota NEM MEGHATAROZHATO: '
+      + 'ervenytelen retention/tolerance konfiguracio.'
+  }
   return `- token_usage prune: rendben (${tp['lag_hours']} ora lemaradas, tures ${tp['tolerance_hours']} ora)`
 }
 

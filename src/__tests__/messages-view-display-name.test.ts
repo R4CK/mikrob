@@ -45,7 +45,7 @@ function loadHelpers(win: Record<string, unknown>, mainId: string) {
     ${chatFn}
     return { mainAgentDisplayName, chatDisplayName }
   `
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+   
   return new Function('window', 'MAIN_ID', body)(win, mainId) as {
     mainAgentDisplayName: () => string
     chatDisplayName: (name: string) => string

@@ -39,6 +39,13 @@ const OFFLOAD_DISPATCH_SCRIPT = join(STORE, 'offload-dispatch.sh')
 // the whole sweep on it.
 const DRAFT_TIMEOUT_MS = 180_000
 
+// WhiteHat2 F4 (21fbc293, comment 18065): kanban ids allow "-", so an id that itself starts with
+// "--" (e.g. "--test-sanitize-path-component") would be handed to offload-dispatch.sh as argv[1]
+// and hit one of the script's own test hooks instead of the real dispatch path -- which exits 0
+// and reports back as ok:true even though nothing was actually drafted. Cheap to reject before
+// spawning at all: real card ids never start with "-".
+const CARD_ID_SHAPE_RX = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/
+
 export interface QueueOrder {
   order: string[]
   decidedAt: number
@@ -79,6 +86,9 @@ export function runDraftForCard(
   cardId: string,
   spawn: typeof spawnSync = spawnSync,
 ): DraftCardResult {
+  if (!CARD_ID_SHAPE_RX.test(cardId)) {
+    return { id: cardId, ok: false, reason: 'invalid_card_id_shape' }
+  }
   let result: ReturnType<typeof spawnSync>
   try {
     result = spawn('bash', [OFFLOAD_DISPATCH_SCRIPT, cardId], {

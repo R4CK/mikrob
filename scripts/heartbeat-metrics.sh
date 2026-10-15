@@ -21,7 +21,7 @@
 #   WAITING <id> <title>           (0..n lines)
 #   CALENDAR_EVENTS n=N window=2h  (measured; n=0 is a MEASURED empty calendar)
 #   CAL_EVENT <HH:MM|all-day> <summary> [attendees=N]   (0..n lines)
-#   TOKEN_PRUNE state=ok|stale|empty retention_days=N lag_hours=N tolerance_hours=N
+#   TOKEN_PRUNE state=ok|stale|empty|invalid retention_days=N lag_hours=N tolerance_hours=N
 #   SCHEDULES enabled=N
 #   TASK_RUNS_1H total=N [<status>=N ...]
 #   ERROR <section>: <reason>      (any failed measurement)

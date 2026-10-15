@@ -170,8 +170,18 @@ fi
 # through the end of the script, serializes the whole quota-sensitive region -- consistent with
 # the card's own "flock egy hivas egyszerre" requirement, and cheap at a 5/hour cap.
 HOURLY_LOCK="${GEMINI_AGY_HOURLY_LOCK:-$STORE/gemini-agy-call.hourly.lock}"
+# F1 (card 5177720d, WhiteHat GO on 64788453 @d2dd388a, komment 11880): the wait for this lock used
+# to be unbounded (flock -x 9), so if another caller holds it across seged-hivo.py's own pause()
+# (5-12 min jitter, see SEGED_SZUNET_* below), every other caller could stall for that entire time.
+# Bounded wait + a loud, named refusal instead of a silent hang.
+HOURLY_LOCK_WAIT_S="${GEMINI_AGY_HOURLY_LOCK_WAIT_S:-30}"
 exec 9>"$HOURLY_LOCK"
-flock -x 9
+if ! flock -x -w "$HOURLY_LOCK_WAIT_S" 9; then
+  echo "gemini-agy-call: could not acquire the hourly-quota lock within ${HOURLY_LOCK_WAIT_S}s" \
+       "(another caller is holding it, e.g. inside seged-hivo.py's pause()) -- refusing instead" \
+       "of waiting indefinitely" >&2
+  exit 5
+fi
 
 now_epoch=$(date +%s)
 window_start=$((now_epoch - 3600))

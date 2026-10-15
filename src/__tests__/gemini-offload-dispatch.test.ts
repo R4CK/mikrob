@@ -20,8 +20,9 @@
 //
 // 5. DRY-RUN / NO-KEY: gemini-offload-call.sh --dry-run exits 0 without touching vault.
 import { describe, it, expect } from 'vitest'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 
@@ -1463,6 +1464,86 @@ describe('gemini-offload-call.sh detects secrets fail-closed (F2, card a92e9913)
   })
 })
 
+// ── 7b. Card f6f67dff F-E delta (RedHat R3, komment 19135): gemini-offload-call.sh's own
+// redactor ran its python3 calls without -I, so an ambient PYTHONPATH shadowing a stdlib
+// module (e.g. `re`) could silently defeat the whole detector -- the exact F-E class the card
+// already fixed in seged-hivo.py/gemini-agy-call.sh, but this script's three python3 calls
+// (redact_prompt, the request-body builder, the response-text extractor) were out of scope
+// for the original fix and stayed exposed.
+describe('card f6f67dff F-E delta: gemini-offload-call.sh redactor resists PYTHONPATH shadowing', () => {
+  it('redact_prompt invokes python3 with -I (isolated mode)', () => {
+    const callSrc = src(GEMINI_CALL)
+    const defIdx = callSrc.indexOf('redact_prompt() {')
+    const fn = callSrc.slice(defIdx, defIdx + 400)
+    expect(fn).toMatch(/python3\s+-I\s+"\$_REDACT_PY"/)
+  })
+
+  it('still blocks a secret-shaped token with a no-op `re` module shadowing it via PYTHONPATH', () => {
+    const shadowDir = mkdtempSync(join(tmpdir(), 'fe-r3-shadow-'))
+    try {
+      writeFileSync(
+        join(shadowDir, 're.py'),
+        [
+          'DOTALL = 0',
+          'M = 0',
+          'I = 0',
+          'def search(*a, **k): return None',
+          'def sub(pattern, repl, s, *a, **k): return s',
+          'def compile(*a, **k):',
+          '    class _F:',
+          '        def search(self, *a, **k): return None',
+          '        def sub(self, pattern, s, *a, **k): return s',
+          '    return _F()',
+        ].join('\n'),
+      )
+      const key = 'sk-ant-api03-' + 'A'.repeat(30) + '9zQ'
+      try {
+        const output = execFileSync('bash', [join(ROOT, GEMINI_CALL), '--redact-test', 'secret ' + key], {
+          encoding: 'utf-8',
+          env: { ...process.env, PYTHONPATH: shadowDir },
+        })
+        // If it did not throw, the secret must NOT have reached stdout -- a silent bypass is
+        // exactly the F-E failure mode, worse than a crash.
+        expect(output).not.toContain(key)
+      } catch (e: any) {
+        expect(e.status).toBe(2)
+        expect(e.stdout ?? '').toBe('')
+      }
+    } finally {
+      rmSync(shadowDir, { recursive: true, force: true })
+    }
+  })
+})
+
+// ── 7c. Card f6f67dff R2c (RedHat 3. kor, komment 19300): the REAL outbound redactor
+// (gemini-offload-call.sh's _fold(), separate from titok-kapu.py's git-commit gate) only
+// strips Mn/Cf/Cc/Zl/Zp by category -- every unassigned (Cn) Default_Ignorable codepoint
+// spliced into a key breaks the SECRET_PATTERNS contiguous match without being stripped,
+// which is a real leak on THIS script, not just a theoretical gap in titok-kapu.py. The
+// 8-char padding on each side is deliberate (RedHat's construction): long enough padding on
+// its own would satisfy the regex's {20,} minimum regardless of whether the splice is
+// stripped, silently passing even a broken fold.
+describe('card f6f67dff R2c: gemini-offload-call.sh redactor covers unassigned Default_Ignorable ranges', () => {
+  const splice = (cp: number) => 'sk-ant-api03-' + 'A'.repeat(8) + String.fromCodePoint(cp) + 'B'.repeat(8)
+
+  it('CONTROL -- the unspliced key still blocks', () => {
+    const r = redactInput('sk-ant-api03-' + 'A'.repeat(8) + 'B'.repeat(8))
+    expect(r.exitCode).toBe(2)
+  })
+
+  it.each([
+    ['U+2065 (unassigned)', 0x2065],
+    ['U+FFF0 (unassigned)', 0xfff0],
+    ['U+E0000 (unassigned)', 0xe0000],
+    ['U+E0080 (unassigned)', 0xe0080],
+    ['U+E01F0 (unassigned, previously-leaking tartomany-vege tail)', 0xe01f0],
+    ['U+E0FFF (unassigned, tartomany vege)', 0xe0fff],
+  ])('blocks (exit 2) with %s spliced into the key', (_label, cp) => {
+    const r = redactInput(splice(cp))
+    expect(r.exitCode).toBe(2)
+  })
+})
+
 // ── 8. API key in header, NEVER in URL ───────────────────────────────────────────────────
 describe('gemini-offload-call.sh sends key in header not URL (security, card a92e9913)', () => {
   it('uses x-goog-api-key header', () => {
@@ -1810,5 +1891,87 @@ describe('card f6f67dff F-F: BLOCKED_TAGS tag-tokenizer stays fast on a long, to
     // still gets its own bounded window.
     const padded = 'x.'.repeat(500) + 'S.E.C' + '.y'.repeat(500)
     expect(runIsGeminiBlocked('mikrob', padded, '')).toBe('BLOCKED')
+  })
+})
+
+// ── 15. Card f6f67dff F-F delta (RedHat R1, komment 19135): cap the STRIPPED length, not the
+// raw joined length -- the first cap attempt (32 chars on the raw join) broke a split-letter
+// word followed by a LONG trailing digit run ("[S E C]" + 30+ glued digits), because the old,
+// pre-F-F code had NO cap and matched any digit-suffix length. The regression: "S E C" + 30
+// digits went from blocked to allowed. Capping the digit-stripped length instead (10 chars,
+// the longest BLOCKED_TAGS word) keeps the digit suffix unbounded while staying linear.
+describe('card f6f67dff F-F delta: split-letter word with a long glued digit suffix stays blocked', () => {
+  it('"S E C" + 30 glued digits is still BLOCKED (was the regression: went ALLOWED)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'S E C' + '1'.repeat(30), '')).toBe('BLOCKED')
+  })
+
+  it('"S E C" + 40 glued digits is still BLOCKED (RedHat pin)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'S E C' + '1'.repeat(40), '')).toBe('BLOCKED')
+  })
+
+  it('"build" + 40 glued digits stays ALLOWED (negative control, not a blocked word)', () => {
+    expect(runIsGeminiBlocked('mikrob', 'build' + '1'.repeat(40), '')).toBe('ALLOWED')
+  })
+
+  it('a ~4.5 KB tag of 2250 single-digit tokens (no matching word) resolves in well under 1s', () => {
+    // Second adversarial shape RedHat asked to be measured alongside the all-letters one above:
+    // an all-digit token run makes the digit-stripped length stay 0 for every window, which
+    // (without the digit-starting-token skip) never trips the cap and scans to the end for
+    // every start -- O(n^2) on this shape alone. The skip keeps it fast.
+    const adversarialDigits = '1.'.repeat(2250)
+    const t0 = Date.now()
+    const result = runIsGeminiBlocked('mikrob', adversarialDigits, '')
+    const elapsedMs = Date.now() - t0
+    expect(result).toBe('ALLOWED')
+    expect(elapsedMs).toBeLessThan(1000)
+  })
+})
+
+// ── 16. Card f6f67dff R4 (RedHat NO-GO komment 19238): is_gemini_blocked()'s own python3 -c
+// call (the content-gate classifier itself) ran WITHOUT -I, the exact F-E bypass class the card
+// already fixed on the gemini-agy-call.sh/seged-hivo.py path (and the gemini-offload-call.sh path,
+// F-E delta above) -- a PYTHONPATH or cwd shadow of a stdlib module (e.g. `unicodedata` or `re`)
+// can silently turn a BLOCKED verdict into ALLOWED (exit 42) without raising. Caller:
+// src/gemini-orchestrator.ts:115 spawns this script with default cwd/env.
+describe('card f6f67dff R4: is_gemini_blocked python3 call resists PYTHONPATH/cwd shadowing', () => {
+  it('is_gemini_blocked invokes its python3 classifier with -I (isolated mode)', () => {
+    const dispatchSrc = src(DISPATCH)
+    const fnIdx = dispatchSrc.indexOf('\nis_gemini_blocked()')
+    expect(fnIdx).toBeGreaterThan(-1)
+    const fn = dispatchSrc.slice(fnIdx, fnIdx + 1500)
+    expect(fn).toMatch(/\|\s*python3\s+-I\s+-c\s+'/)
+  })
+
+  it('still reports BLOCKED for a SEC-tagged card under a PYTHONPATH shadowing os._exit(42)', () => {
+    const shadowDir = mkdtempSync(join(tmpdir(), 'r4-shadow-pp-'))
+    try {
+      writeFileSync(join(shadowDir, 're.py'), 'import os\nos._exit(42)\n')
+      const output = execFileSync('bash', [join(ROOT, DISPATCH), '--check-blocked', 'mikrob', 'SEC'], {
+        encoding: 'utf-8',
+        env: { ...process.env, PYTHONPATH: shadowDir },
+      })
+      expect(output.trim()).toBe('')
+    } catch (e: any) {
+      // --check-blocked exits 0 for BLOCKED (execFileSync throws on non-zero by default, and 0
+      // is not an error) -- so landing in the catch here means a NON-zero exit, i.e. NOT blocked.
+      throw new Error(`expected BLOCKED (exit 0), got exit ${e.status}: ${e.stdout}`)
+    } finally {
+      rmSync(shadowDir, { recursive: true, force: true })
+    }
+  })
+
+  it('still reports BLOCKED for a SEC-tagged card when invoked with a poisoned cwd', () => {
+    const shadowDir = mkdtempSync(join(tmpdir(), 'r4-shadow-cwd-'))
+    try {
+      writeFileSync(join(shadowDir, 're.py'), 'import os\nos._exit(42)\n')
+      execFileSync('bash', [join(ROOT, DISPATCH), '--check-blocked', 'mikrob', 'SEC'], {
+        encoding: 'utf-8',
+        cwd: shadowDir,
+      })
+    } catch (e: any) {
+      throw new Error(`expected BLOCKED (exit 0), got exit ${e.status}: ${e.stdout}`)
+    } finally {
+      rmSync(shadowDir, { recursive: true, force: true })
+    }
   })
 })

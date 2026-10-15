@@ -1,6 +1,14 @@
 import { join, isAbsolute } from 'node:path'
 import { checkTaskMcpRequirements } from './schedule-mcp-precheck.js'
 import { collectHeartbeatMetricsBlock } from './heartbeat-metrics-inject.js'
+import {
+  sendHeartbeatDigestDirect,
+  checkHeartbeatDigestGaps,
+  HEARTBEAT_GAP_CHECK_INTERVAL_MS,
+  type DirectDigestDeps,
+  type GapGuardDeps,
+} from './heartbeat-direct-digest.js'
+import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from './heartbeat-kanban-verify.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -11,11 +19,16 @@ import {
   MAIN_AGENT_ID,
   BOT_NAME,
   APP_TZ_INVALID,
+  APP_TZ,
   CHANNEL_PROVIDER,
+  TASK_STALL_TIMEOUT_MS,
 } from '../config.js'
 import { resolveOwnerChatId, configuredOwnerChatFor } from '../owner-chat.js'
 import {
   appendTaskRun,
+  getHeartbeatKanbanLive,
+  hasHeartbeatDigestSince,
+  hasAgentMessageStartingWith,
   markTaskRunCompleted,
   setTaskRunDelivery,
   getTaskRunStatus,
@@ -115,6 +128,9 @@ const RESUBMIT_LANE_BUSY_MAX_SKIPS = 20
 // Maximum tracking age: entries that age past TASK_FIRE_MAX_TRACK_MS are
 // evicted regardless, so a permanently stuck agent does not accumulate entries.
 export const TASK_FIRE_GRACE_MS = 30_000
+// Declared BEFORE TASK_FIRE_TIMEOUT_MS because that one now reads it (a later
+// declaration would be a TDZ error at module load, not a type error).
+const TASK_FIRE_MAX_TRACK_MS = 6 * 60 * 60_000
 // 2026-09-01: raised from 5 minutes to 45. Five minutes measures "the session
 // is still busy", not "the task is wedged", and those two are the same thing
 // only when the agent does nothing else. In practice the owner talks to the
@@ -126,8 +142,17 @@ export const TASK_FIRE_GRACE_MS = 30_000
 // and noise is what makes a real hang invisible. 45 minutes still catches a
 // genuinely wedged tool call well inside the 6-hour tracking window, and a
 // task that legitimately needs longer sets stuckAfterMinutes.
-export const TASK_FIRE_TIMEOUT_MS = 2_700_000
-const TASK_FIRE_MAX_TRACK_MS = 6 * 60 * 60_000
+// 2026-09-23: the 45 minutes above is now the DEFAULT rather than the only value --
+// TASK_STALL_TIMEOUT_MS lets an install say so in .env, which survives updates where a
+// patch to src/ does not. An install that sets nothing keeps behaving exactly as it did.
+// Clamped to the eviction age on purpose. The per-task branch of
+// resolveStuckTimeoutMs already clamps to maxMs, but the DEFAULT branch returns
+// defaultMs untouched -- harmless while this was a fixed 300_000, a silent
+// disable now that .env can set it. Above TASK_FIRE_MAX_TRACK_MS the entry is
+// evicted before the timeout can ever elapse, so the alert would simply never
+// fire and nothing would say so: the exact quiet-disable this file's comment
+// above refuses to allow.
+export const TASK_FIRE_TIMEOUT_MS = Math.min(TASK_STALL_TIMEOUT_MS, TASK_FIRE_MAX_TRACK_MS)
 
 export interface TaskInflightEntry {
   taskName: string
@@ -1652,6 +1677,57 @@ export function taskInjectionRank(t: Pick<ScheduledTask, 'forceSend' | 'type'>):
 // for it). Reuses attemptFireTask, so a stopped agent is auto-started and the
 // prompt is queued for delivery exactly like a real cron fire. Returns a
 // per-target summary string for the API/UI.
+// HBFABRIC1003 (A): the digest family that the runner sends itself.
+export function isDirectDigestTask(task: { type?: string; injectMetrics?: boolean; sendDigestDirect?: boolean; agent: string }): boolean {
+  return task.type === 'heartbeat' && task.injectMetrics === true && task.sendDigestDirect === true && task.agent !== 'all'
+}
+
+const BUDAPEST_LABEL = (ms: number) =>
+  new Date(ms).toLocaleString('sv-SE', { timeZone: APP_TZ }).slice(0, 16)
+
+function directDigestDeps(): DirectDigestDeps {
+  return {
+    collectBlock: collectHeartbeatMetricsBlock,
+    verify: (digest) => verifyHeartbeatKanban(digest, () => getHeartbeatKanbanLive(HEARTBEAT_KANBAN_WINDOW_SEC)),
+    send: (from, to, content) => { createAgentMessage(from, to, content) },
+    appendRun: (task, agent, status) => { appendTaskRun(task, agent, status) },
+    warn: (obj, msg) => logger.warn(obj, msg),
+    tz: APP_TZ,
+    nowLabel: () => BUDAPEST_LABEL(Date.now()),
+    mainAgentId: MAIN_AGENT_ID,
+  }
+}
+
+// HBFABRIC1003 (B): every heartbeat task with injectMetrics is a digest task,
+// direct or not -- the gap guard reports a missing digest whatever the route.
+export function digestGapGuardDeps(): GapGuardDeps {
+  return {
+    prevOccurrence: (schedule, fromMs, toMs) => cronPrevOccurrence(schedule, fromMs, toMs),
+    digestSince: (agent, sinceMs) => hasHeartbeatDigestSince(agent, MAIN_AGENT_ID, sinceMs),
+    noteExists: (marker) => hasAgentMessageStartingWith('system', MAIN_AGENT_ID, marker),
+    sendNote: (content) => { createAgentMessage('system', MAIN_AGENT_ID, content) },
+    slotLabel: BUDAPEST_LABEL,
+  }
+}
+
+// The digest family: enabled heartbeat tasks with injectMetrics, sendDigestDirect
+// or NOT -- the old LLM route's missing digest is reported the same way.
+export function digestGapTasks(tasks: Array<{ name: string; agent: string; schedule: string; enabled: boolean; type?: string; injectMetrics?: boolean }>) {
+  return tasks
+    .filter((t) => t.enabled && t.type === 'heartbeat' && t.injectMetrics === true && t.agent !== 'all')
+    .map((t) => ({ name: t.name, agent: t.agent, schedule: t.schedule }))
+}
+
+export function runHeartbeatGapCheck(nowMs: number = Date.now()): string[] {
+  return checkHeartbeatDigestGaps(digestGapTasks(listScheduledTasks()), nowMs, digestGapGuardDeps())
+}
+
+export function startHeartbeatGapGuard(): ReturnType<typeof setInterval> {
+  return setInterval(() => {
+    try { runHeartbeatGapCheck() } catch (err) { logger.warn({ err }, 'HBFABRIC1003: heartbeat gap check failed') }
+  }, HEARTBEAT_GAP_CHECK_INTERVAL_MS)
+}
+
 export async function runScheduledTaskNow(
   taskName: string,
   opts: { allowDisabled?: boolean } = {},
@@ -1662,6 +1738,11 @@ export async function runScheduledTaskNow(
   // enabled:false so the cron never fires them, but a guarded endpoint can
   // still trigger them (e.g. the post-rollback diagnosis, PR-D).
   if (!task.enabled && !opts.allowDisabled) return { ok: false, error: 'Schedule is disabled' }
+
+  if (isDirectDigestTask(task)) {
+    const sent = await sendHeartbeatDigestDirect(task.name, task.agent, directDigestDeps())
+    return sent ? { ok: true, result: `${task.agent}: sent-direct` } : { ok: false, error: 'direct digest could not be sent' }
+  }
 
   const now = Date.now()
   const targets = task.agent === 'all'
@@ -2572,6 +2653,17 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // no-stacking guarantee) instead of introducing new concurrency.
       if (task.type === 'command') {
         await runCommandTask(task, now)
+        scheduleLastRun.set(task.name, now)
+        persistScheduleLastRun()
+        continue
+      }
+
+      // HBFABRIC1003: a digest task the runner sends itself. No session, so no
+      // quota gate (no LLM spend), no desktop gate and NO skipIfBusy: it has
+      // to go out exactly while the main agent is busy. A failure is recorded
+      // as an 'error' run and reported by the gap guard.
+      if (isDirectDigestTask(task)) {
+        await sendHeartbeatDigestDirect(task.name, task.agent, directDigestDeps())
         scheduleLastRun.set(task.name, now)
         persistScheduleLastRun()
         continue
