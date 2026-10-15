@@ -366,6 +366,24 @@ def main():
                                    "tool_input": {"q": "x — y"}}, rules_file=active)
         check("connector draft_email (verb prefix): on the explicit safe list, passes untouched (exit 0)", code, 0)
 
+        # --- Card bf7a7335 (Cybersec GO on 45b33b2b @bee4940b, msg 6253, LOW) ---
+        # The safe-prefix match only looked at the name up to its FIRST separator, so a name that
+        # STARTS with a safe verb but later names send/reply/forward passed UNTOUCHED (no body
+        # audit at all) instead of being audited as a send. Canary: these now reach the
+        # em-dash audit just like any other send-shaped tool.
+        code, out, err = run_hook({"tool_name": "mcp__claude_ai_Gmail__draft_and_send",
+                                   "tool_input": {"to": ["a@b.hu"], "subject": "Teszt",
+                                                  "body": CLEAN_HU_OK + " — mégis."}}, rules_file=active)
+        check("connector draft_and_send (safe-prefix bypass): em dash now blocks (exit 2)", code, 2)
+        code, out, err = run_hook({"tool_name": "mcp__claude_ai_Gmail__read_then_forward",
+                                   "tool_input": {"to": ["a@b.hu"], "messageId": "m1",
+                                                  "forwardText": CLEAN_HU_OK + " — mégis."}}, rules_file=active)
+        check("connector read_then_forward (safe-prefix bypass): em dash now blocks (exit 2)", code, 2)
+        code, out, err = run_hook({"tool_name": "mcp__resend__search-and-send-email",
+                                   "tool_input": {"to": "a@b.hu", "subject": "Teszt",
+                                                  "text": CLEAN_HU_OK + " — mégis."}}, rules_file=active)
+        check("resend search-and-send-email (safe-prefix bypass): em dash now blocks (exit 2)", code, 2)
+
         # --- COPYGATEENT914: HTML-ENTITAS NEM KERULHETI MEG A GONDOLATJEL-TILTAST ---
         # Marveen merese 2026-09-14, egy VALODI vevo-levelen: a hook a TAGEKET
         # szedte ki, de az entitast sehol nem dekodolta, igy a `&mdash;` atment
