@@ -20,9 +20,12 @@ vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   return {
     ...actual,
-    execFileSync: (file: string, args?: readonly string[], options?: any) => {
-      if (args?.[0] === 'new-session') execFileCallLog.newSessionEnvs.push(options?.env)
-      return actual.execFileSync(file, args as string[], options)
+    execFileSync: (file: string, args?: readonly string[], options?: unknown) => {
+      if (args?.[0] === 'new-session') {
+        const env = (options as { env?: NodeJS.ProcessEnv } | undefined)?.env
+        execFileCallLog.newSessionEnvs.push(env)
+      }
+      return actual.execFileSync(file, args as string[], options as Parameters<typeof actual.execFileSync>[2])
     },
   }
 })
