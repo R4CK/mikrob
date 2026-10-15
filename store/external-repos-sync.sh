@@ -41,7 +41,7 @@ write_back() {
   out="$( (
     flock -x -w 10 200 || { echo "lock timeout waiting for $WATCHED_STATE_JSON.lock"; exit 1; }
     python3 - "$WATCHED_JSON" "$WATCHED_STATE_JSON" "$name" "$sha" <<'PY'
-import json, os, sys
+import json, os, sys, time
 from datetime import date
 
 registry_path, state_path, name, sha = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
@@ -68,6 +68,15 @@ if os.path.exists(state_path):
 else:
     state = {}
 
+# Test-only hook (card 9710bdfd, QA2 FAIL 19491 finding 1): widens the read-then-write window
+# deterministically so a concurrency test does not depend on OS scheduling luck to overlap two
+# writers. Inert unless WATCHED_STATE_TEST_SLEEP_S is set (only the test suite sets it); sleeping
+# INSIDE the flock'd section still serializes correctly when the lock is present -- the race this
+# proves is only reachable with the lock removed, exactly what the mutation test checks.
+_sleep_s = os.environ.get("WATCHED_STATE_TEST_SLEEP_S")
+if _sleep_s:
+    time.sleep(float(_sleep_s))
+
 state[name] = {"last_sha": sha, "last_checked_at": date.today().isoformat()}
 tmp_path = state_path + ".tmp"
 with open(tmp_path, "w", encoding="utf-8") as f:
@@ -80,6 +89,12 @@ PY
   if [[ $rc -ne 0 ]]; then
     echo "ERROR:statewrite:$name ($out)" >&2
   fi
+  # QA2 FAIL 19491 finding 2: without this, write_back()'s own exit status was the `if`
+  # statement's (inverted -- 1 on the happy path where the test is false, 0 on the failure path
+  # where the echo runs), not the real python/flock result. A caller checking "$?" after
+  # write_back would have seen success reported as failure and vice versa. pull() does not check
+  # it today, but the function's contract (and this card's own fail-closed claim) requires it.
+  return "$rc"
 }
 
 pull() {

@@ -92,7 +92,7 @@ set +e
 state_out="$( (
   flock -x -w 10 200 || { echo "lock timeout waiting for $STATE.lock"; exit 1; }
   python3 - "$STATE" "$name" "$sha" "$upstream_sha" <<'PY'
-import json, os, sys
+import json, os, sys, time
 from datetime import date
 
 state_path, name, sha, upstream_sha = sys.argv[1:5]
@@ -110,6 +110,12 @@ if os.path.exists(state_path):
         state = {}
 else:
     state = {}
+
+# Test-only hook (card 9710bdfd, QA2 FAIL 19491 finding 1): see the matching comment in
+# external-repos-sync.sh's write_back() -- same env var, same reasoning, shared state file.
+_sleep_s = os.environ.get("WATCHED_STATE_TEST_SLEEP_S")
+if _sleep_s:
+    time.sleep(float(_sleep_s))
 
 record = {"last_sha": sha, "last_checked_at": date.today().isoformat()}
 if upstream_sha:
