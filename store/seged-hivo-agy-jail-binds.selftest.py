@@ -147,7 +147,14 @@ if Path('/usr/bin/bwrap').exists() and Path('/mnt/wslg').is_dir():
     import socket as socket_module
     import tempfile as tempfile_module
 
-    sweep_dir = Path(tempfile_module.mkdtemp(prefix='seged-hivo-sweep-'))
+    # dir='/tmp' is load-bearing, not cosmetic: jail_cmd()'s --tmpfs $HOME + --remount-ro $HOME
+    # happen BEFORE our extra --ro-bind below runs, so a sweep_dir created under $TMPDIR (which
+    # fleet-test.sh deliberately points at a path under $HOME, card a4a6a5e5) can no longer have
+    # its missing parent directories created inside the jail -- bwrap's own mount setup fails
+    # silently (empty stdout, nonzero exit), which this selftest then misreads as a real
+    # vacuous-sweep finding. /tmp is the one directory jail_cmd already re-binds regardless of
+    # TMPDIR, so anchoring here keeps the control reachable under any caller's environment.
+    sweep_dir = Path(tempfile_module.mkdtemp(prefix='seged-hivo-sweep-', dir='/tmp'))
     control_sock_path = sweep_dir / 'control.sock'
     control_sock = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
     try:
