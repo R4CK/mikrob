@@ -144,5 +144,5 @@ OUT="$(bash "$SCRIPT" 2>&1)"
 t "missing vram guard reports skipped, not a crash" contains "$OUT" "missing, skipped"
 
 echo
-echo "fleet-resume.selftest.sh: $PASS passed, $FAIL failed"
+echo "fleet-resume.selftest: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
