@@ -8,11 +8,14 @@
 //
 // Every test runs against throwaway temp files -- never the live store/watched-repos*.json.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
+import { promisify } from 'node:util'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
+
+const execFileP = promisify(execFile)
 
 // Card eedb2871 F-2 (QA FAIL 19034): a bare `.not.toBe('2026-10-09')` only proves the value
 // changed, not that it changed to the RIGHT thing -- a mutation pin (write_back's date.today()
@@ -308,6 +311,31 @@ describe('watched-repos-record-review.sh', () => {
       ),
     ).toThrow()
     expect(() => readFileSync(statePath, 'utf-8')).toThrow() // never created
+  })
+
+  // Card 9710bdfd (WhiteHat2 follow-up to eedb2871 L2): the state-file write here used to be
+  // read-modify-write with no lock and no atomic rename -- the same bug class eedb2871 fixed
+  // for git-repo-watcher.sh/pipx-version-check.sh's shared writer of this SAME file, measured
+  // there at 15/25 rounds losing a pin under 8 concurrent writers. This runs 8 concurrent
+  // watched-repos-record-review.sh invocations (different names, 3 rounds each), mirroring
+  // store/pipx-version-check.selftest.sh Case 10's shape.
+  it('8 concurrent watched-repos-record-review.sh invocations (different names, 3 rounds each) all keep their pin -- none lost under the flock', async () => {
+    const names = Array.from({ length: 8 }, (_, i) => `concurrent-${i}`)
+    writeRegistry(names.map((n) => ({ name: n, repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true })))
+
+    await Promise.all(
+      names.map(async (name) => {
+        for (let round = 0; round < 3; round++) {
+          await execFileP('bash', [RECORD_SH, name, '--sha', `deadbee${round}`, '--registry', registryPath, '--state', statePath])
+        }
+      }),
+    )
+
+    const state = JSON.parse(readFileSync(statePath, 'utf-8'))
+    expect(Object.keys(state)).toHaveLength(8)
+    for (const name of names) {
+      expect(state[name]?.last_sha).toBe('deadbee2') // last round's value, no entry lost
+    }
   })
 })
 

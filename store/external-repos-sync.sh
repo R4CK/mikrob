@@ -28,11 +28,20 @@ CHANGED=0
 # leaving every other repo's state entry untouched. Only writes when $1 has a registry entry in
 # WATCHED_JSON (read-only check) -- this script's job is to sync clones, not to own the registry's
 # shape, and a name with no registry entry should not grow a phantom state row either.
+#
+# Card 9710bdfd (WhiteHat2 follow-up to eedb2871 L2): this used to read-modify-write
+# WATCHED_STATE_JSON with no lock and no atomic rename, and silently reset a corrupt state file
+# to {} instead of refusing -- the exact bug class eedb2871 already fixed for
+# git-repo-watcher.sh/pipx-version-check.sh's shared writer, but not for this script, which
+# writes the SAME file. Same fix here: flock'd lock file (shared with the other two writers),
+# tempfile + os.replace (atomic rename, no partial write visible to a concurrent reader), and
+# FAIL CLOSED on a state file that fails to parse as JSON.
 write_back() {
-  local name="$1" sha="$2"
-  python3 - "$WATCHED_JSON" "$WATCHED_STATE_JSON" "$name" "$sha" <<'PY'
-import json
-import sys
+  local name="$1" sha="$2" out rc
+  out="$( (
+    flock -x -w 10 200 || { echo "lock timeout waiting for $WATCHED_STATE_JSON.lock"; exit 1; }
+    python3 - "$WATCHED_JSON" "$WATCHED_STATE_JSON" "$name" "$sha" <<'PY'
+import json, os, sys
 from datetime import date
 
 registry_path, state_path, name, sha = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
@@ -45,18 +54,32 @@ except FileNotFoundError:
 if not any(entry.get("name") == name for entry in registry):
     sys.exit(0)
 
-try:
+if os.path.exists(state_path):
     with open(state_path, encoding="utf-8") as f:
-        state = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
+        raw = f.read()
+    if raw.strip():
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print("corrupt state file, refusing to overwrite: " + str(e))
+            sys.exit(1)
+    else:
+        state = {}
+else:
     state = {}
 
 state[name] = {"last_sha": sha, "last_checked_at": date.today().isoformat()}
-
-with open(state_path, "w", encoding="utf-8") as f:
+tmp_path = state_path + ".tmp"
+with open(tmp_path, "w", encoding="utf-8") as f:
     json.dump(state, f, indent=2, ensure_ascii=False)
     f.write("\n")
+os.replace(tmp_path, state_path)
 PY
+  ) 200>"$WATCHED_STATE_JSON.lock" 2>&1 )"
+  rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "ERROR:statewrite:$name ($out)" >&2
+  fi
 }
 
 pull() {
