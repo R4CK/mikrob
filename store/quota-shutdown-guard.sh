@@ -178,23 +178,41 @@ if [ "$SELFTEST" = "1" ]; then
   t "dry-run: STATE file NOT written (dry-run never commits)" "$([ -f "$STATE" ] && echo YES || echo NO)" "NO"
   DRY_RUN=0
 
-  # Cases 5-8: argument-feldolgozas fail-closed -- ismeretlen argumentum = exit 2, nincs leallitas.
+  # Cases 5-13: argument-feldolgozas fail-closed -- ismeretlen argumentum = exit 2, nincs leallitas.
   # Subprocess-kent futnak, hogy a top-level arg-parsing ag legyen tesztelve; a FAKE_SHUTDOWN_MARKER
   # touch()-ot hivna, ha a trigger_shutdown tenyleg elerhetove valna.
+  #
+  # Card 49b9e7d0 RedHat F-RH-Q1: korabban CSAK a --dry-run-parser-effect esetek (12-13, a regi
+  # _dryrun_test) kaptak STATE/LOG/Telegram izolaciot -- az 5-11. esetek (_arg_test) csak a
+  # SHUTDOWN_EXE-t irtak felul. Ha a parser regresszal (vagy egy mutans futtatja), az az ag az ELO
+  # STATE/LOG-ba irt es valodi Telegram-uzenetet kuldott -- ez tenylegesen megtortent ketszer
+  # (2026-10-15 11:52 es 16:03). Minden subprocess-eset egy kozos helperen fut, ami MINDIG izolal.
   FAKE_MARKER="$TMPD/arg-test-marker.txt"
   FAKE_SHUTDOWN_MARKER="$TMPD/fake-shutdown-marker.sh"
   printf '#!/bin/bash\ntouch "%s"\nexit 0\n' "$FAKE_MARKER" > "$FAKE_SHUTDOWN_MARKER"
   chmod +x "$FAKE_SHUTDOWN_MARKER"
+  SUBPROC_STATE="$TMPD/subproc-state.json"
+  SUBPROC_LOG="$TMPD/subproc-log.txt"
+
+  _subproc_run() {
+    # timeout 3: a helyes eset azonnal exit 2-vel/0-val ter vissza; ha a mutacio miatt a script
+    # tovabb fut (pl. curl --max-time 10 miatt blokkolna), a timeout 124-gyel ter vissza.
+    local fake_exe="$1"; shift
+    rm -f "$SUBPROC_STATE"
+    : > "$SUBPROC_LOG"
+    timeout 3 env SHUTDOWN_EXE="$fake_exe" _QSG_NO_TELEGRAM=1 \
+      _QSG_STATE_OVERRIDE="$SUBPROC_STATE" _QSG_LOG_OVERRIDE="$SUBPROC_LOG" \
+      bash "$0" "$@" 2>/dev/null
+  }
 
   _arg_test() {
-    # timeout 3: a helyes eset azonnal exit 2-vel ter vissza; ha a mutacio miatt a script tovabb fut
-    # (pl. curl --max-time 10 miatt blokkolna), a timeout 124-gyel ter vissza -- ez is != 2 = FAIL.
     local label="$1"; shift
     rm -f "$FAKE_MARKER"
-    timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_MARKER" bash "$0" "$@" 2>/dev/null
+    _subproc_run "$FAKE_SHUTDOWN_MARKER" "$@"
     local rc=$?
     t "${label}: exit 2" "$rc" "2"
     t "${label}: shutdown marker NOT created" "$([ -f "$FAKE_MARKER" ] && echo YES || echo NO)" "NO"
+    t "${label}: isolated STATE NOT written (not the live store)" "$([ -f "$SUBPROC_STATE" ] && echo YES || echo NO)" "NO"
   }
 
   _arg_test "unknown-arg 'selftest'" selftest
@@ -219,14 +237,12 @@ if [ "$SELFTEST" = "1" ]; then
   _dryrun_test() {
     local label="$1"; shift
     rm -f "$FAKE_MARKER2"
-    timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_DRY" _QSG_NO_TELEGRAM=1 \
-      _QSG_STATE_OVERRIDE="$TMPD/dryparse-state.json" \
-      _QSG_LOG_OVERRIDE="$TMPD/dryparse-log.txt" \
-      bash "$0" "$@" 2>/dev/null
+    _subproc_run "$FAKE_SHUTDOWN_DRY" "$@"
     local rc=$?
     t "${label}: exit 0 (dry-run is not an error)" "$rc" "0"
     t "${label}: shutdown marker NOT created (--dry-run honored by parser)" \
       "$([ -f "$FAKE_MARKER2" ] && echo YES || echo NO)" "NO"
+    t "${label}: isolated STATE NOT written (dry-run never commits)" "$([ -f "$SUBPROC_STATE" ] && echo YES || echo NO)" "NO"
   }
 
   _dryrun_test "--dry-run --force-reason ok" --dry-run --force-reason ok
