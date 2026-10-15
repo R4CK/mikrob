@@ -20464,3 +20464,19 @@ kiegészítést az allowlistben. `jail_cmd()` mindkét kártya bind-jait megtart
 **Ki döntött:** backend3 (önellenőrzés, MikroB-nek jelentve).
 
 **Hivatkozás:** kártya e5c46e87, f61156b9 (Köteg 15), store/upstream-ported.json.
+
+## 2026-10-15 18:48 -- Gemini-orch allowlist utómunka (F1/F2/F3, kártya 9e83ce97)
+
+**Forrás:** c23ea72f CYBERSEC GO (komment 19825, Gate-SHA c5603f5a) -- a WhiteHat GO melletti 3 megjegyzés (F1/F2 MEDIUM, F3 LOW) feldolgozása, a WhiteHat javaslatai alapján, RedHat biztonsági gate-tel.
+
+**F1 (mért lelet: 7 denylist-mutáns osztály hamis-zölden maradt):** a `src/__tests__/gemini-offload-dispatch.test.ts` (~119) és `gemini-orchestrator.test.ts` (~35) meglévő `BLOCKED`/`excluded` iránylú asszertálásai a c23ea72f pozitív-jelölő bevezetése UTÁN nem viseltek `gemini-ok`/`GEMINI-OK` jelölőt, ezért a jelölő-hiány önmagában blokkolt, elfedve, ha a MÖGÖTTE lévő konkrét denylist/tartalom-kapu mechanizmust (split-letter ablak, nem-leképezett homoglif-betű tag/cím/leírásban, egész-cím bare-token, SENS_RE tartalmi kapu, SENS_RE tag-illesztés, bérlő-izoláció co-occurrence) valaki kimutatná. **Javítás:** minden ilyen BLOCKED-irányú asszertálás jelölőt kapott (a jelölő-követelmény saját, dedikált tesztjei és a project-allowlist/fail-closed-rc tesztek kivételével, ahol a jelölő a mechanizmust nem érintené). Mutáns-teszttel igazolva (SENS_RE+bérlő-izoláció, split-letter ablak, has_unmapped_letter): mindhárom mutáció most pirosra vált, ahol korábban zölden maradt volna.
+
+**F2 (jelölő-hitelesség, tervezési határ):** a jelölő (label VAGY `[GEMINI-OK]` cím-előtag) önbevallott volt -- bármely Bearer-token-birtokos létrehozhatta/átnevezhette/felrakhatta. Javítás: a `kanban-force-actors.ts` meglévő `isForceActor`/`forceActors()` mintáját követve, a jelölő BEVEZETÉSE (label létrehozás `gemini-ok` névre, meglévő label átnevezése arra, meglévő `gemini-ok` label kártyára tétele, vagy kártya-cím szerkesztése úgy, hogy ÚJONNAN kapja a `[GEMINI-OK]` előtagot) fenntartott actor-hoz kötött (`src/web/routes/kanban.ts`, `POST /api/kanban`, `PUT /api/kanban/:id`, `POST /api/kanban/labels`, `PUT /api/kanban/labels/:id`, `POST /api/kanban/:id/labels`). Egy már jelölt kártya egyéb mezőinek szerkesztése nem igényel retroaktív jogosultságot. **Dokumentált, NEM zárt maradék fenyegetés** (WhiteHat kérése szerint, lásd a kódban a kommentet is): (1) ez NEM hitelesítés -- az actor önbevallott, egy már token-birtokos adversary egyszerűen jogosultnak hazudhatja magát, ugyanaz a korlát mint az `isForceActor` saját docstringje; (2) a TS-oldali illesztés egyszerű, case-insensitive + NFKD-normalizált substring-egyezés, NEM reprodukálja a bash-oldali `offload-dispatch.sh` teljes fold-ját (homoglif-tábla, zárójel-kategória-fold) -- egy kellően obfuszkált név, ami a FOGYÓ oldalon még "gemini-ok"-ra normalizálna, elcsúszhat ezen a kapun, miközben a fogyasztó oldalon még érvényes jelölőként működne. A két oldal közös normalizálása külön munkának ítéltetett (aránytalan egy MEDIUM, tanács-szintű leletre).
+
+**F3 (normalizáló illesztés dokumentálatlan + üzemi hiány):** a README "Biztonsági guard-hookok" szekciója kapott egy bekezdést a jelölő normalizáló illesztéséről (teljes szélesség, ZWSP, cirill hasonmás betű elfogadott, de szóhatáron belül, "gemini-okay"/csupasz "ok" nem elég) és a felrakási jogosultságról (F2 fenntartott-actor szabály). Az élő táblán létrehozva a `gemini-ok` label (id `13ace898`, `actor=mikrob`) -- addig minden kártya `BLOKKOLT` volt, mert a label sosem létezett.
+
+**Tesztek:** 24 sor szerkesztve a két meglévő gemini-teszt-fájlban (marker hozzáadás, 361/361 zöld változatlanul); új `src/__tests__/kanban-gemini-ok-marker-guard.test.ts` (17 teszt) a F2 route-szintű kapura.
+
+**Ki döntött:** backend3 (kártya 9e83ce97 assignee).
+
+**Hivatkozás:** kártya 9e83ce97, c23ea72f (komment 19825), c7abdf57 (Gemini-fázis szülő).

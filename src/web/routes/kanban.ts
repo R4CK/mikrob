@@ -28,7 +28,7 @@ import {
   RELATION_FILTER_COLUMNS, type RelationFilterColumn, type RelationQuery,
   getStuckKanbanCards,
 } from '../../db.js'
-import { isForceActor } from '../../kanban-force-actors.js'
+import { isForceActor, forceActors } from '../../kanban-force-actors.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
@@ -326,6 +326,41 @@ function kanbanWriteActor(actor: unknown, auth: RouteContext['auth']): { error: 
   if (typeof actor === 'string' && actor.trim() !== '') return { actor }
   return { actor: auth?.kind === 'session' && auth.user ? auth.user : undefined }
 }
+
+// Card 9e83ce97 (WhiteHat GO c23ea72f, F2 MEDIUM): the Gemini-route positive marker ("gemini-ok"
+// label, or a "[GEMINI-OK]" title-prefix tag -- both read by store/offload-dispatch.sh's
+// is_gemini_blocked()) is otherwise self-asserted: any Bearer-token caller can create/rename a
+// label or edit a card title. Gating its introduction behind the SAME privileged-actor allowlist
+// isForceActor already uses (kanban-force-actors.ts) makes a deliberate marker-add attributable
+// in the audit row and stops the common/accidental path (an ordinary dispatch flow cannot
+// silently bless a card for the external API) -- exactly the same "speed bump, not
+// authentication" limit that module's own docstring already states, not a stronger claim.
+//
+// RESIDUAL THREAT MODEL (documented per WhiteHat's request, intentionally NOT closed here):
+// 1. This is NOT authentication. `actor` is self-declared, same as kanbanWriteActor above; a
+//    caller that already holds the shared fleet Bearer token can simply claim to be a privileged
+//    actor. It protects against a forgotten/mistaken marker, not an adversarial token-holder.
+// 2. The substring match below is a plain, case-insensitive, NFKD-normalized check -- it does
+//    NOT reproduce offload-dispatch.sh's full fold (homoglyph-map, bracket-category fold,
+//    invisible-char strip). A sufficiently obfuscated label/title that still normalizes to
+//    "gemini-ok" on the CONSUMING side (store/offload-dispatch.sh's own norm()) could slip past
+//    this gate while still functioning as a valid marker there. Closing that fully would mean
+//    sharing one normalization routine between this TS route and the bash classifier, which this
+//    MEDIUM/advisory finding did not judge proportionate (see --check-blocked's own comment on
+//    why a second copy of logic is avoided elsewhere in this file: it drifts).
+const GEMINI_OK_MARKER_RE = /gemini-ok/i
+
+function hasGeminiOkMarker(text: string | null | undefined): boolean {
+  if (!text) return false
+  return GEMINI_OK_MARKER_RE.test(text.normalize('NFKD'))
+}
+
+function isPrivilegedForGeminiOkMarker(actor: unknown): boolean {
+  return typeof actor === 'string' && forceActors().includes(actor)
+}
+
+const GEMINI_OK_MARKER_FORBIDDEN_MESSAGE =
+  'A "gemini-ok" jelölő (label vagy [GEMINI-OK] cím-előtag) hozzáadása fenntartott szereplőhöz kötött (card 9e83ce97). Adj meg egy ismert, jogosult actor-t.'
 
 // Option D: kanban -> agent dispatch. When a card moves to in_progress, wake the
 // assigned agent once via the inter-agent message router (createAgentMessage),
@@ -794,8 +829,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/kanban/labels' && method === 'POST') {
     const body = await readBody(req)
-    const { name, color } = JSON.parse(body.toString()) as { name?: string; color?: string }
+    const { name, color, actor } = JSON.parse(body.toString()) as { name?: string; color?: string; actor?: unknown }
     if (!name || !name.trim()) { json(res, { error: 'Címke neve kötelező' }, 400); return true }
+    // Card 9e83ce97 F2: creating a label literally named "gemini-ok" is the same privileged
+    // action as attaching it would be -- gate it here too, not just at the attach step below.
+    if (hasGeminiOkMarker(name) && !isPrivilegedForGeminiOkMarker(actor)) {
+      json(res, { error: GEMINI_OK_MARKER_FORBIDDEN_MESSAGE }, 403)
+      return true
+    }
     // Colour is validated against the configured palette (KANBAN_LABEL_COLORS)
     // rather than accepted as free-text, so every label's colour traces back
     // to the single configurable source instead of an arbitrary per-request value.
@@ -810,10 +851,16 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (labelMatch && method === 'PUT') {
     const id = decodeURIComponent(labelMatch[1])
     const body = await readBody(req)
-    const { name, color } = JSON.parse(body.toString()) as { name?: string; color?: string }
+    const { name, color, actor } = JSON.parse(body.toString()) as { name?: string; color?: string; actor?: unknown }
     const fields: { name?: string; color?: string } = {}
     if (name !== undefined) {
       if (!name.trim()) { json(res, { error: 'Címke neve kötelező' }, 400); return true }
+      // Card 9e83ce97 F2: renaming an EXISTING label TO "gemini-ok" is the same bypass as
+      // creating it with that name would be -- only the new value matters here.
+      if (hasGeminiOkMarker(name) && !isPrivilegedForGeminiOkMarker(actor)) {
+        json(res, { error: GEMINI_OK_MARKER_FORBIDDEN_MESSAGE }, 403)
+        return true
+      }
       fields.name = name.trim()
     }
     if (color !== undefined) {
@@ -842,10 +889,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     // Accept `id` as an alias for `labelId` -- API callers reasonably send either,
     // since GET /api/kanban/labels returns objects keyed by `id`, not `labelId`.
-    const parsed = JSON.parse(body.toString()) as { labelId?: string; id?: string }
+    const parsed = JSON.parse(body.toString()) as { labelId?: string; id?: string; actor?: unknown }
     const labelId = parsed.labelId ?? parsed.id
     if (!labelId) { json(res, { error: 'labelId mező kötelező' }, 400); return true }
-    if (!getLabel(labelId)) {
+    const label = getLabel(labelId)
+    if (!label) {
       // Common mistake: sending the label's `name` where an `id` is expected -- GET
       // /api/kanban/labels lists both, so this is an easy mix-up. Point at the real id
       // instead of a bare "not found" that reads as if the label doesn't exist at all.
@@ -855,6 +903,13 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
       json(res, { error: 'Címke nem található' }, 404)
+      return true
+    }
+    // Card 9e83ce97 F2: attaching an EXISTING "gemini-ok"-named label to a card is the actual
+    // moment a card becomes Gemini-eligible -- gate it here regardless of how the label itself
+    // was created (it may predate this fix, or be a differently-cased/accented variant).
+    if (hasGeminiOkMarker(label.name) && !isPrivilegedForGeminiOkMarker(parsed.actor)) {
+      json(res, { error: GEMINI_OK_MARKER_FORBIDDEN_MESSAGE }, 403)
       return true
     }
     addLabelToCard(cardId, labelId)
@@ -932,6 +987,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/kanban' && method === 'POST') {
     const body = await readBody(req)
     const { force, actor, ...data } = JSON.parse(body.toString())
+    // Card 9e83ce97 F2: the marker must not reach the board via a plain card title either.
+    if (hasGeminiOkMarker(typeof data.title === 'string' ? data.title : undefined) && !isPrivilegedForGeminiOkMarker(actor)) {
+      json(res, { error: GEMINI_OK_MARKER_FORBIDDEN_MESSAGE }, 403)
+      return true
+    }
     // `agent` -> `assignee` alias (#1023-adjacent, card b5344b62, Köteg 12 upstream 0bea3cd7):
     // createKanbanCard reads named fields off this object, so a key it does not recognise is
     // silently absent from the row -- no error, no warning, {ok:true,id} either way. Observed on
@@ -1079,6 +1139,16 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const writeActor = kanbanWriteActor(rawActor, ctx.auth)
     if ('error' in writeActor) { json(res, { error: writeActor.error }, 400); return true }
     const actor = writeActor.actor
+    // Card 9e83ce97 F2: a title edit that NEWLY introduces the marker is gated the same way as
+    // creating it would be. Comparing against the OLD title (not just the new one) means editing
+    // an already-marked card's other fields never retroactively demands privilege.
+    if (typeof data.title === 'string' && hasGeminiOkMarker(data.title) && !isPrivilegedForGeminiOkMarker(actor)) {
+      const existing = getKanbanCard(id)
+      if (!hasGeminiOkMarker(existing?.title)) {
+        json(res, { error: GEMINI_OK_MARKER_FORBIDDEN_MESSAGE }, 403)
+        return true
+      }
+    }
     // #1023 (adopted from upstream, B-wave card 42938a74): reject an unknown field LOUDLY instead
     // of dropping it silently. updateKanbanCard writes only KANBAN_WRITABLE_FIELDS, so anything
     // outside the accepted set was discarded while the write still reported success and bumped
