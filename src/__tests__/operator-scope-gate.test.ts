@@ -235,4 +235,19 @@ describe('the owner switches', () => {
       expect(out.status).toBe(403)
     }
   })
+
+  // Card 0c508c7b, WhiteHat2 F1 on d7e1d611 @4e5aef10: the shared fleet Bearer
+  // token (every agent knows it) used to be accepted here alongside session.
+  // Only session may read or change the owner switches now.
+  it('GET/PUT /api/operator-access rejects the shared fleet token kind, session only', async () => {
+    for (const method of ['GET', 'PUT'] as const) {
+      const { ctx, out } = fakeCtx(method, '/api/operator-access',
+        method === 'PUT' ? { enabled: true } : undefined, { kind: 'token' } as RouteContext['auth'])
+      expect(await tryHandleOperatorAccess(ctx)).toBe(true)
+      expect(out.status).toBe(403)
+    }
+    const { ctx, out } = fakeCtx('GET', '/api/operator-access', undefined, { kind: 'session', user: 'owner' } as RouteContext['auth'])
+    expect(await tryHandleOperatorAccess(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+  })
 })
