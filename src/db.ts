@@ -7953,7 +7953,7 @@ export const TOKEN_PRUNE_OLDEST_SQL = 'SELECT MIN(timestamp) AS oldest FROM toke
 export const TOKEN_PRUNE_TOLERANCE_CYCLES = 2
 
 export interface TokenPruneLag {
-  state: 'ok' | 'stale' | 'empty'
+  state: 'ok' | 'stale' | 'empty' | 'invalid'
   retention_days: number
   tolerance_hours: number
   /** Hours the oldest row overshoots the cutoff = time since the last sweep. */
@@ -7976,6 +7976,18 @@ export function classifyTokenPruneLag(
   if (oldestTimestamp == null) {
     return {
       state: 'empty',
+      retention_days: retentionDays,
+      tolerance_hours: toleranceHours,
+      lag_hours: null,
+      oldest_age_days: null,
+    }
+  }
+  // A non-finite retention/tolerance makes every relational comparison below
+  // false, which would otherwise read as 'ok' (lagHours === NaN) -- see card
+  // 63b9e332. Surface it as its own state instead of a silent false negative.
+  if (!Number.isFinite(retentionDays) || !Number.isFinite(toleranceHours)) {
+    return {
+      state: 'invalid',
       retention_days: retentionDays,
       tolerance_hours: toleranceHours,
       lag_hours: null,
