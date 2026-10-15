@@ -319,14 +319,24 @@ describe('watched-repos-record-review.sh', () => {
   // there at 15/25 rounds losing a pin under 8 concurrent writers. This runs 8 concurrent
   // watched-repos-record-review.sh invocations (different names, 3 rounds each), mirroring
   // store/pipx-version-check.selftest.sh Case 10's shape.
-  it('8 concurrent watched-repos-record-review.sh invocations (different names, 3 rounds each) all keep their pin -- none lost under the flock', async () => {
+  // QA2 FAIL 19491 finding 1: an un-forced race only caught the flock's removal 3/5 runs (60%)
+  // -- too flaky to trust as a regression guard. WATCHED_STATE_TEST_SLEEP_S (same test-only hook
+  // as external-repos-sync.sh's write_back(), shared state file, same reasoning) forces every
+  // one of the 8 round-0 callers to read the SAME pre-write state before any of them writes;
+  // under the flock this still serializes correctly (one writer sleeps at a time, holding the
+  // lock), so the assertion stays meaningful either way.
+  it('8 concurrent watched-repos-record-review.sh invocations (different names, 3 rounds each, forced overlap) all keep their pin -- none lost under the flock', async () => {
     const names = Array.from({ length: 8 }, (_, i) => `concurrent-${i}`)
     writeRegistry(names.map((n) => ({ name: n, repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true })))
 
     await Promise.all(
       names.map(async (name) => {
         for (let round = 0; round < 3; round++) {
-          await execFileP('bash', [RECORD_SH, name, '--sha', `deadbee${round}`, '--registry', registryPath, '--state', statePath])
+          await execFileP(
+            'bash',
+            [RECORD_SH, name, '--sha', `deadbee${round}`, '--registry', registryPath, '--state', statePath],
+            { env: { ...process.env, WATCHED_STATE_TEST_SLEEP_S: '0.3' } },
+          )
         }
       }),
     )
@@ -336,7 +346,49 @@ describe('watched-repos-record-review.sh', () => {
     for (const name of names) {
       expect(state[name]?.last_sha).toBe('deadbee2') // last round's value, no entry lost
     }
+  }, 15000)
+
+  // QA2 FAIL 19491 finding 2: the REVIEW's "FAIL CLOSED on a state file that fails to parse as
+  // JSON" claim had zero test coverage here either -- reverting that branch to the old silent
+  // reset-to-{} behaviour left this whole describe block fully green. Pins the actual CLI
+  // contract (this script's top-level `exit "$state_rc"` already propagates correctly, unlike
+  // write_back()'s bare function return which card 9710bdfd also had to fix).
+  it('a CORRUPT state file makes the CLI fail closed -- non-zero exit, file left untouched, no silent reset to {}', () => {
+    const corrupt = '{ not valid json !!'
+    writeFileSync(statePath, corrupt)
+    let threw = false
+    let stderr = ''
+    try {
+      execFileSync('bash', [RECORD_SH, 'demo', '--sha', 'deadbee0', '--registry', registryPath, '--state', statePath], { stdio: 'pipe' })
+    } catch (err) {
+      threw = true
+      stderr = String((err as { stderr?: Buffer }).stderr ?? '')
+    }
+    expect(threw).toBe(true)
+    expect(stderr).toContain('corrupt state file')
+    expect(readFileSync(statePath, 'utf-8')).toBe(corrupt) // untouched, not reset to {}
   })
+
+  // WhiteHat (cybersec) F2 LOW on card 9710bdfd (gate comment 19504): the registry
+  // (watched-repos.json) --note-append write had no lock and no atomic rename at all -- measured
+  // losing 8/12 concurrent notes on a single entry. Same forced-overlap pattern as the state-file
+  // concurrency test above (WATCHED_REGISTRY_TEST_SLEEP_S, see the matching comment in the script).
+  it('12 concurrent --note-append calls on the SAME entry all keep their note -- none lost under the registry lock', async () => {
+    const calls = Array.from({ length: 12 }, (_, i) =>
+      execFileP(
+        'bash',
+        [RECORD_SH, 'demo', '--sha', 'deadbee0', '--note-append', `note-${i}`, '--registry', registryPath, '--state', statePath],
+        { env: { ...process.env, WATCHED_REGISTRY_TEST_SLEEP_S: '0.2' } },
+      ),
+    )
+    await Promise.all(calls)
+
+    const registry: Array<{ name: string; note?: string }> = JSON.parse(readFileSync(registryPath, 'utf-8'))
+    const demo = registry.find((e) => e.name === 'demo')
+    for (let i = 0; i < 12; i++) {
+      expect(demo?.note).toContain(`note-${i}`)
+    }
+  }, 15000)
 })
 
 describe('git-repo-watcher.sh rejects a non-hex/too-short last_sha instead of using it for the prefix match (card ffca678d)', () => {

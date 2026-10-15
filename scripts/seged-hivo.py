@@ -29,7 +29,9 @@ What it does:
   codex: codex exec -m <model> -s workspace-write -C DIR --skip-git-repo-check --color never -   (prompt on stdin)
   agy:   agy -p <prompt> --model <model> --dangerously-skip-permissions --output-format json      (cwd = DIR)
   Both inside bubblewrap: $HOME, /run (session bus, WSL interop) and the Windows drives hidden; only DIR
-  and the engine's state dir writable; environment cleared; own PID namespace (no process outlives it).
+  and the engine's state dir writable; environment cleared; own PID namespace (no process outlives it);
+  own network namespace, egress allowlisted to the Google API hosts + OAuth the engine actually needs
+  via a per-call proxy (card 5229ea1e; SEGED_HIVO_NET_JAIL=0 reverts to the old shared-network jail).
   DIR must be a subfolder of SEGED_BASE (default ~/seged-munka), never the Marveen repo or a credential dir.
   Raw output -> store/seged-hivo/<ts>-<engine>.log, one JSONL row -> store/seged-hivo-naplo.jsonl
   (time, caller, card, helper, model, tokens, duration, exit, status). The JSONL row holds only the
@@ -92,6 +94,35 @@ BINS = {'codex': os.environ.get('CODEX_BIN', str(HOME / '.local/bin/codex')),
         'agy': os.environ.get('AGY_BIN', str(HOME / '.local/bin/agy'))}
 BWRAP = os.environ.get('BWRAP_BIN', '/usr/bin/bwrap')
 SEGED_BASE = os.environ.get('SEGED_BASE', str(HOME / 'seged-munka'))
+
+# Card 5229ea1e (backend2 measurement a020247b, msg 12421): jail_cmd()'s bwrap never used
+# --unshare-net, so the jailed agy/codex process could reach ANY external host, not just the
+# Google API it needs. Measured fix (no sudo, no new package): --unshare-net for real isolation,
+# plus a per-call allowlisting HTTP(S) proxy bridged into the jail over a UNIX domain socket
+# (filesystem object, not network-namespace-scoped, so it crosses the isolation boundary on
+# purpose while nothing else does) -- scripts/jail-net-proxy.py (host side) and
+# scripts/jail-net-relay.py (jail side, listens on a fixed LOCAL port that only exists inside
+# that one call's own isolated netns, so it can never collide with another call or the host).
+# Allowlist measured live against the real `agy` binary (Go HTTP client, honors HTTP_PROXY):
+# a full prompt -> auth -> eligibility-check -> model-list -> real response round trip needs
+# exactly these 7 hosts, nothing else (confirmed: a disallowed host attempt logs and 403s,
+# never silently tunnels). --sha256/--onteszt do not exercise this; see jail_net_selftest().
+# 127.0.0.1:11434 added for card a020247b's gemini-local-subtask.sh (merged into develop while
+# this card was in flight, see agy_subtask_binds() below): that tool makes a REAL loopback HTTP
+# call to the local Ollama server. Since JAIL_NET_PROXY_SH runs on the HOST (outside the jail's
+# netns), "127.0.0.1" there is the host's own real loopback where Ollama actually listens -- the
+# allowlist entry just needs to exist, no special-casing required. Without it, --unshare-net
+# would silently break a020247b's feature (loopback inside the jail's own netns has nothing
+# listening on :11434), which this host's HTTP_PROXY env var now routes through this proxy.
+JAIL_NET_ISOLATION = os.environ.get('SEGED_HIVO_NET_JAIL', '1') not in ('0', 'off', 'false')
+JAIL_NET_RELAY_PORT = int(os.environ.get('SEGED_HIVO_NET_JAIL_PORT', '18443'))
+JAIL_NET_ALLOWLIST = os.environ.get('SEGED_HIVO_NET_JAIL_ALLOWLIST',
+    'antigravity-unleash.goog:443,oauth2.googleapis.com:443,www.googleapis.com:443,'
+    'daily-cloudcode-pa.googleapis.com:443,cloudcode-pa.googleapis.com:443,'
+    'play.googleapis.com:443,lh3.googleusercontent.com:443,127.0.0.1:11434')
+JAIL_NET_PROXY_SH = Path(__file__).resolve().parent / 'jail-net-proxy.py'
+JAIL_NET_RELAY_SH = Path(__file__).resolve().parent / 'jail-net-relay.py'
+
 # Card a020247b: the ONE narrow tool the agy engine gets for local-model delegation (STRIDE +
 # scoping on that card's kanban comment). Every source is ro-bound except the call log. Lives
 # under HOME (not /opt: that is root-owned and part of the whole-root ro-bind, so a NEW path
@@ -267,7 +298,7 @@ def selftest():
     for s in bad:
         print('FAIL:', s, scan_text(s))
     print(f'onteszt: {len(pos)} positive, {len(neg)} negative, {len(bad)} failed')
-    return 1 if bad or quota_selftest() else 0
+    return 1 if bad or quota_selftest() or jail_net_selftest() else 0
 
 
 @contextlib.contextmanager
@@ -338,7 +369,12 @@ def quota_selftest():
         env0 = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': str(HOME),
                 'SEGED_BASE': str(base), 'BWRAP_BIN': str(stub), 'SEGED_KVOTA_FAJL': str(td / 'kvota.json'),
                 'SEGED_SZUNET_MIN_S': '0', 'SEGED_SZUNET_MAX_S': '0',
-                'SEGED_RIASZT_URL': f'http://127.0.0.1:{srv.server_port}/api/messages'}
+                'SEGED_RIASZT_URL': f'http://127.0.0.1:{srv.server_port}/api/messages',
+                # Card 5229ea1e: this selftest stubs BWRAP_BIN itself (a one-line echo, never a real
+                # bwrap/network call) -- spawning a REAL jail-net-proxy.py subprocess per call here
+                # would only slow the suite down for nothing it is testing. jail_net_selftest() below
+                # is the dedicated test for the net-isolation behavior, against the REAL bwrap.
+                'SEGED_HIVO_NET_JAIL': '0'}
 
         cmd = lambda caller, engine='codex': [
             sys.executable, str(seged_hivo_copy), '--seged', f'{engine}:m', '--mappa', str(base / 'w'), '--prompt',
@@ -537,7 +573,7 @@ def codex_tokens(out):
     return int(m[-1].replace(',', '')) if m else None
 
 
-def jail_cmd(engine, workdir):
+def jail_cmd(engine, workdir, net_jail_dir=None):
     # Both engines run under bubblewrap: the whole $HOME is replaced by an empty read-only tmpfs (so a
     # write outside DIR fails loudly instead of vanishing into a scratch tmpfs), then only
     # ~/.local (the binaries, read-only), the engine's own state dir and DIR are mounted back; the
@@ -555,15 +591,179 @@ def jail_cmd(engine, workdir):
     env = {'HOME': str(HOME), 'USER': os.environ.get('USER', HOME.name), 'LANG': 'C.UTF-8',
            'PATH': f'{HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin', 'TERM': 'dumb',
            'TZ': os.environ.get('TZ', 'Europe/Budapest')}
+    extra_binds = []
+    # Card 5229ea1e: real network isolation + an allowlisting proxy bridged in over a UNIX domain
+    # socket (see the JAIL_NET_* constants above for the measured rationale). net_jail_dir is the
+    # HOST directory holding that call's own proxy.sock; a UNIX socket is a filesystem object, not
+    # network-namespace-scoped, so bind-mounting its directory in is the ONE deliberate hole through
+    # an otherwise fully isolated netns. The relay script's own directory must be re-bound too --
+    # like .local/the state dir, it lives under $HOME, which --tmpfs above just emptied.
+    if net_jail_dir is not None:
+        env.update({'HTTP_PROXY': f'http://127.0.0.1:{JAIL_NET_RELAY_PORT}',
+                    'HTTPS_PROXY': f'http://127.0.0.1:{JAIL_NET_RELAY_PORT}',
+                    'http_proxy': f'http://127.0.0.1:{JAIL_NET_RELAY_PORT}',
+                    'https_proxy': f'http://127.0.0.1:{JAIL_NET_RELAY_PORT}'})
+        relay_dir = str(JAIL_NET_RELAY_SH.parent)
+        extra_binds = ['--ro-bind', str(net_jail_dir), str(net_jail_dir),
+                       '--ro-bind', relay_dir, relay_dir]
     jail = [BWRAP, '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp',
             '--tmpfs', '/run', *[x for p in drives for x in ('--tmpfs', str(p))],
             '--tmpfs', str(HOME), '--ro-bind', str(HOME / '.local'), str(HOME / '.local'),
             '--bind', str(state), str(state), '--bind', str(workdir), str(workdir),
             *(agy_subtask_binds() if engine == 'agy' else []),
+            *extra_binds,
             '--remount-ro', str(HOME), '--chdir', str(workdir),
             '--unshare-pid', '--unshare-ipc', '--new-session', '--clearenv',
             *[x for k, v in env.items() for x in ('--setenv', k, v)], '--die-with-parent']
+    if net_jail_dir is not None:
+        jail.append('--unshare-net')
     return jail
+
+
+def start_jail_net_proxy():
+    """Spawns the host-side allowlisting proxy (scripts/jail-net-proxy.py) on a fresh per-call UNIX
+    domain socket. Returns (proc, socket_dir, socket_path) or (None, None, None) if isolation is off.
+    Caller MUST terminate proc and clean up socket_dir when the helper call finishes (see run_helper)."""
+    if not JAIL_NET_ISOLATION:
+        return None, None, None
+    socket_dir = Path(tempfile.mkdtemp(prefix='seged-net-'))
+    socket_path = socket_dir / 'proxy.sock'
+    proc = subprocess.Popen([sys.executable, str(JAIL_NET_PROXY_SH), str(socket_path), JAIL_NET_ALLOWLIST],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Wait for the proxy to actually bind before handing the socket path to bwrap -- a race here
+    # would make the FIRST call of a cold start fail closed (connection refused), not fail open.
+    deadline = time.monotonic() + 5
+    while not socket_path.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return proc, socket_dir, socket_path
+
+
+def stop_jail_net_proxy(proc, socket_dir):
+    if proc is None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+    if socket_dir is not None:
+        import shutil
+        shutil.rmtree(socket_dir, ignore_errors=True)
+
+
+def jail_net_selftest():
+    """Real bwrap, real jail-net-proxy.py/jail-net-relay.py (card 5229ea1e) -- proves the
+    isolation actually holds under the real sandboxing tool, not merely that the wiring compiles.
+    Skipped (prints a note, returns 0 -- not a failure) when bwrap cannot even create an isolated
+    namespace in this environment (e.g. a locked-down CI container), since that is a host
+    capability this script does not control, not a defect in the logic being tested."""
+    import socket as sk
+    import threading
+    fails = []
+
+    probe = subprocess.run([BWRAP, '--unshare-net', '--unshare-pid', '--dev-bind', '/', '/', 'true'],
+                           capture_output=True)
+    if probe.returncode != 0:
+        print(f'jail_net_selftest: SKIPPED (bwrap --unshare-net not usable here: '
+              f'{probe.stderr.decode(errors="replace").strip()[:200]})')
+        return 0
+
+    def echo_server():
+        srv = sk.socket(sk.AF_INET, sk.SOCK_STREAM)
+        srv.setsockopt(sk.SOL_SOCKET, sk.SO_REUSEADDR, 1)
+        srv.bind(('127.0.0.1', 0))
+        srv.listen(5)
+
+        def serve():
+            while True:
+                try:
+                    conn, _ = srv.accept()
+                except OSError:
+                    return
+                try:
+                    data = conn.recv(4096)
+                    conn.sendall(b'ECHO:' + data)
+                except OSError:
+                    pass
+                finally:
+                    conn.close()
+        threading.Thread(target=serve, daemon=True).start()
+        return srv, srv.getsockname()[1]
+
+    allowed_srv, allowed_port = echo_server()
+    denied_srv, denied_port = echo_server()
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            workdir = Path(td) / 'w'
+            workdir.mkdir()
+            socket_dir = Path(tempfile.mkdtemp(prefix='jail-net-selftest-'))
+            socket_path = socket_dir / 'proxy.sock'
+            proxy_proc = subprocess.Popen(
+                [sys.executable, str(JAIL_NET_PROXY_SH), str(socket_path), f'127.0.0.1:{allowed_port}'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            deadline = time.monotonic() + 5
+            while not socket_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            try:
+                jail = jail_cmd('agy', workdir, net_jail_dir=socket_dir)
+
+                def run_probe(py_snippet):
+                    relay_launch = ('python3 "$1" "$2" "$3" & '
+                           'for i in $(seq 1 100); do (exec 3<>/dev/tcp/127.0.0.1/"$2") 2>/dev/null '
+                           '&& exec 3>&- && break; sleep 0.02; done; '
+                           'shift 3; exec "$@"')
+                    cmd = jail + ['/bin/bash', '-c', relay_launch, 'bash0',
+                                 str(JAIL_NET_RELAY_SH), str(JAIL_NET_RELAY_PORT), str(socket_path),
+                                 '/usr/bin/python3', '-c', py_snippet]
+                    return subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+
+                r = run_probe(
+                    "import socket;"
+                    "s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);"
+                    f"s.connect(('127.0.0.1',{JAIL_NET_RELAY_PORT}));"
+                    f"s.sendall(b'CONNECT 127.0.0.1:{allowed_port} HTTP/1.1\\r\\n\\r\\n');"
+                    "print('STATUS', s.recv(200));"
+                    "s.sendall(b'hello');"
+                    "print('REPLY', s.recv(200))")
+                if '200' not in r.stdout or 'ECHO:hello' not in r.stdout:
+                    fails.append(f'allowed host via relay+proxy did not round-trip: {r.stdout!r} {r.stderr[-300:]!r}')
+
+                r = run_probe(
+                    "import socket;"
+                    "s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);"
+                    f"s.connect(('127.0.0.1',{JAIL_NET_RELAY_PORT}));"
+                    f"s.sendall(b'CONNECT 127.0.0.1:{denied_port} HTTP/1.1\\r\\n\\r\\n');"
+                    "print('STATUS', s.recv(200))")
+                if '403' not in r.stdout:
+                    fails.append(f'denied host via relay+proxy was NOT rejected with 403: {r.stdout!r}')
+
+                r = run_probe(
+                    "import socket\n"
+                    "s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)\n"
+                    "s.settimeout(2)\n"
+                    "try:\n"
+                    f"    s.connect(('127.0.0.1',{allowed_port}));print('REACHED-DIRECT-BAD')\n"
+                    "except OSError as e:\n"
+                    "    print('BLOCKED', e)")
+                if 'REACHED-DIRECT-BAD' in r.stdout or 'BLOCKED' not in r.stdout:
+                    fails.append(f'direct connect bypassing the relay was NOT blocked: {r.stdout!r} {r.stderr[-300:]!r}')
+            finally:
+                proxy_proc.terminate()
+                try:
+                    proxy_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proxy_proc.kill()
+                import shutil
+                shutil.rmtree(socket_dir, ignore_errors=True)
+    finally:
+        allowed_srv.close()
+        denied_srv.close()
+
+    for f in fails:
+        print('FAIL:', f)
+    print(f'jail_net_selftest: {3 - len(fails)}/3 cases passed')
+    return 1 if fails else 0
 
 
 def agy_subtask_binds():
@@ -609,15 +809,31 @@ def agy_subtask_binds():
 
 
 def run_helper(engine, model, workdir, prompt_text, timeout):
-    jail = jail_cmd(engine, workdir)
+    net_proc, net_dir, net_sock = start_jail_net_proxy()
+    jail = jail_cmd(engine, workdir, net_jail_dir=net_dir)
     if engine == 'codex':
-        cmd = jail + [BINS['codex'], 'exec', '-m', model, '-s', 'workspace-write', '-C', str(workdir),
-                      '--skip-git-repo-check', '--color', 'never', '-']
+        engine_argv = [BINS['codex'], 'exec', '-m', model, '-s', 'workspace-write', '-C', str(workdir),
+                       '--skip-git-repo-check', '--color', 'never', '-']
         inp = prompt_text
     else:
-        cmd = jail + [BINS['agy'], '-p', prompt_text, '--model', model, '--dangerously-skip-permissions',
-                      '--output-format', 'json']
+        engine_argv = [BINS['agy'], '-p', prompt_text, '--model', model, '--dangerously-skip-permissions',
+                       '--output-format', 'json']
         inp = None
+    if net_sock is not None:
+        # Starts the in-jail relay (scripts/jail-net-relay.py) in the SAME network namespace as the
+        # real engine command, then execs the real command so it becomes the jail's new pid 1
+        # (bwrap --unshare-pid + --die-with-parent then takes the backgrounded relay down with it
+        # when the engine exits -- no separate cleanup needed for that half). Positional parameters
+        # ($1, $2, ... "$@" after shift), never string-interpolated into the script text, so neither
+        # the prompt nor any engine arg can break out of the shell regardless of its content.
+        relay_launch = ('python3 "$1" "$2" "$3" & '
+                           'for i in $(seq 1 100); do (exec 3<>/dev/tcp/127.0.0.1/"$2") 2>/dev/null '
+                           '&& exec 3>&- && break; sleep 0.02; done; '
+                           'shift 3; exec "$@"')
+        cmd = jail + ['/bin/bash', '-c', relay_launch, 'bash0',
+                      str(JAIL_NET_RELAY_SH), str(JAIL_NET_RELAY_PORT), str(net_sock)] + engine_argv
+    else:
+        cmd = jail + engine_argv
     t0 = time.monotonic()
     try:
         # --clearenv only clears the CHILD's environment; bwrap itself is PID 1 in the jail and its
@@ -629,6 +845,8 @@ def run_helper(engine, model, workdir, prompt_text, timeout):
         rc, status = None, 'timeout'
         out = e.stdout.decode(errors='replace') if isinstance(e.stdout, bytes) else (e.stdout or '')
         err = e.stderr.decode(errors='replace') if isinstance(e.stderr, bytes) else (e.stderr or '')
+    finally:
+        stop_jail_net_proxy(net_proc, net_dir)
     dur = round(time.monotonic() - t0, 1)
     shown_cmd = cmd if engine == 'codex' else [c if c != prompt_text else '<prompt>' for c in cmd]
     res = {'exit': rc, 'status': status, 'duracio_s': dur, 'tokens_total': None, 'usage': None,

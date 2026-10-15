@@ -20384,3 +20384,50 @@ zöld.
 **Safe-prefix lyuk (ugyanaz a Cybersec-komment, LOW, most javítva):** a biztonságos-tool allowlist (`EMAIL_SAFE_TOOL_RE` mindhárom kapuban) régi alakja (`^(?:search|get|list|read|draft)[-_]|^create[-_]draft$`) csak a névnek az ELSŐ elválasztóig tartó előtagját nézte, ezért `draft_and_send`, `read_then_forward` és `search_and_send_email` mindegyike átment biztonságosként, noha a név további része a valódi send/reply/forward igét hordozza. Javítás: negatív előretekintés a safe-prefix minta után, ami a teljes nevet nézi -- `^(?:search|get|list|read|draft)[-_](?!.*(?:send|reply|forward))|^create[-_]draft$` -- mindhárom kapuban (`email-send-gate.mjs`, `email-approval-gate.py`, `outgoing-copy-gate.py`). Canary mindhárom kapu teszt-suite-jában: a három megnevezett alak most denied/audited, a valódi biztonságos nevek (search_threads, get_email, create_draft, draft_email stb.) változatlanul átmennek. Mutáció-ellenőrzés: a lookahead eltávolítása pontosan a 3 új pozitív esetet viszi pirosra mindhárom suite-ban, semmi mást.
 
 **Ki döntött:** backend (kártya bf7a7335, 2026-10-15).
+
+## 2026-10-15 08:27 -- Gemini-jail halozati szukites: bwrap --unshare-net + UDS-hidalt allowlist-proxy, sudo nelkul
+
+**Dontes:** `scripts/seged-hivo.py` jail_cmd()-je (agy/codex sandbox) most `--unshare-net`-et hasznal
+(valodi hálózati izoláció), es a Google API + OAuth eleresét egy per-hívás, host-oldali allowlisting
+HTTP(S) proxy (`scripts/jail-net-proxy.py`) engedi at, a jailbe egy UNIX domain socketen keresztul
+hidalva (`scripts/jail-net-relay.py` a jail oldalán). A kártya két javasolt útja (slirp4netns/pasta
+telepítés sudo-val, vagy egy host-szintű nftables/iptables szabály) helyett EZ a harmadik, mért út:
+**nem igényel sem sudo-t, sem új csomagot** -- élőben mérve ezen a gépen, hogy a rootless
+`unshare --user --net` és a bwrap saját `--unshare-net`-je működik jogosultság nélkül, a loopback
+automatikusan felmegy, és egy host-oldali UNIX socket bind-mountolva ELÉRHETŐ a netns-izolált
+jailből (fájlrendszer-objektum, nem hálózati-névtér-hatókörű). A valós `agy` binárison (Go HTTP
+kliens) élőben megmérve: pontosan 7 host kell egy teljes prompt->auth->eligibility->válasz
+körhöz (antigravity-unleash.goog, oauth2.googleapis.com, www.googleapis.com,
+daily-cloudcode-pa.googleapis.com, cloudcode-pa.googleapis.com, play.googleapis.com,
+lh3.googleusercontent.com), semmi más -- egy nem-engedélyezett host kísérlet naplózva 403-at kap,
+sosem megy át csendben.
+
+**Grilling verdikt (plan-grilling skill, sajat vegrehajtas elott):** GO-WITH-CHANGES. Terhelő
+feltételezések mérve (nem feltételezve): a hálózati izoláció tényleges (mért: "Network is
+unreachable" kívülről), a UDS-hidalás tényleges (mért kerekkör), a valós `agy` binary proxy-t
+használ (mért, 3 iterációban bővítve a sulistát a tényleges szükséges hostokig). Nem-triviális
+maradék kockázat, amit a gate-nek külön kell néznie: domain-fronting / SNI-mögötti-tartalom --
+a proxy a CONNECT célnevet validálja, nem a TLS-en belüli tényleges HTTP Host fejlécet (ez a
+választott megoldás ismert, dokumentált korlátja, nem hiányosság). Visszafordítás: `SEGED_HIVO_NET_
+JAIL=0` env, kódváltozás nélkül visszaállítja a korábbi, megosztott-hálózatú jailt (9. kódminőségi
+elv). Teszt: `jail_net_selftest()` (VALÓS bwrap-pal, nem stub-bal) + a meglévő `quota_selftest()`
+(stub-bwrap, a hálózati réteg explicit kikapcsolva `SEGED_HIVO_NET_JAIL=0`-val, hogy a kvóta-teszt
+ne lassuljon le egy nem-releváns réteg miatt).
+
+**Miért:** backend2 mérése (a020247b, msg 12421) szerint a jail korábban ANY külső hosztot elért --
+egy prompt-injektált brain C2-hosztot hívhatott volna. A kártya saját korlátja: a megoldás csak a
+jailre hasson, a flotta hálózatára ne, és root-lépés (sudo) csak Peti jóváhagyásával mehetne -- a
+mért megoldás mindkettőt kielégíti ANÉLKÜL, hogy Peti jóváhagyására várnia kellene.
+
+**Ki döntött:** fullstack (önálló mérés + grilling + végrehajtás, kártya 5229ea1e), gate: QA +
+Cybersec + Cybered (a kártya saját, magas-kockázatú 3-gate kijelölése).
+
+**Merge-kiegészítés (ugyanez a kártya, 2026-10-15, a develop-merge közben észlelve):** amíg ez a
+kártya folyamatban volt, backend2 kártyája (a020247b) landolt egy ÚJ, a jailből hívott valós
+loopback hálózati hívást: `store/gemini-local-subtask.sh` a jailen belülről `http://127.0.0.1:11434`
+Ollama API-t hív. A `--unshare-net` ezt törte volna, mert a jail saját, elszigetelt netns-ének
+loopbackje nem azonos a hoszt loopbackjével. Mivel a `jail-net-proxy.py` a HOSZTON fut (nem a jail
+netns-ében), a `127.0.0.1:11434` felvétele a JAIL_NET_ALLOWLIST-be helyesen a hoszt saját, valódi
+Ollama-portjára kapcsol -- a két kártya emiatt NEM ütközik, csak a merge igényelt egy sor
+kiegészítést az allowlistben. `jail_cmd()` mindkét kártya bind-jait megtartja (`agy_subtask_binds()`
++ a net-jail extra_binds), sorrend: agy_subtask_binds előbb, majd a net-jail UDS-bind.
