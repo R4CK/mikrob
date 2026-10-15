@@ -52,12 +52,21 @@ HEX_SHA_RE='^[0-9a-f]{7,40}$'
 [[ "$sha" =~ $HEX_SHA_RE ]] || { echo "invalid --sha '$sha': must match $HEX_SHA_RE" >&2; exit 1; }
 [[ -z "$upstream_sha" || "$upstream_sha" =~ $HEX_SHA_RE ]] || { echo "invalid --upstream-sha '$upstream_sha': must match $HEX_SHA_RE" >&2; exit 1; }
 
-python3 - "$REGISTRY" "$STATE" "$name" "$sha" "$upstream_sha" "$note_append" <<'PY'
+# WhiteHat (cybersec) F2 LOW on card 9710bdfd (gate comment 19504): this registry write was the
+# ONE remaining read-modify-write in this script with no lock and no atomic rename -- measured
+# losing 8/12 concurrent --note-append calls' notes. Different file (watched-repos.json, the
+# TRACKED registry) from the state file below, so a dedicated $REGISTRY.lock, not the shared
+# $STATE.lock -- a note-append and a state write never need to exclude each other.
+set +e
+registry_out="$( (
+  flock -x -w 10 200 || { echo "lock timeout waiting for $REGISTRY.lock"; exit 1; }
+  python3 - "$REGISTRY" "$name" "$note_append" <<'PY'
 import json
+import os
 import sys
-from datetime import date
+import time
 
-registry_path, state_path, name, sha, upstream_sha, note_append = sys.argv[1:7]
+registry_path, name, note_append = sys.argv[1:4]
 
 with open(registry_path, encoding="utf-8") as f:
     registry = json.load(f)
@@ -69,24 +78,78 @@ if entry is None:
 if note_append:
     existing = entry.get("note", "")
     entry["note"] = f"{existing} | {note_append}" if existing else note_append
-    with open(registry_path, "w", encoding="utf-8") as f:
+    # Test-only hook (same reasoning as the state-write hooks): forces deterministic overlap for
+    # the concurrency regression test instead of relying on OS-scheduling luck.
+    _sleep_s = os.environ.get("WATCHED_REGISTRY_TEST_SLEEP_S")
+    if _sleep_s:
+        time.sleep(float(_sleep_s))
+    tmp_path = registry_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(registry, f, indent=2, ensure_ascii=False)
         f.write("\n")
+    os.replace(tmp_path, registry_path)
+PY
+) 200>"$REGISTRY.lock" 2>&1 )"
+reg_rc=$?
+set -e
+if [[ $reg_rc -ne 0 ]]; then
+  echo "$registry_out" >&2
+  exit "$reg_rc"
+fi
 
-try:
+# Card 9710bdfd (WhiteHat2 follow-up to eedb2871 L2): this used to read-modify-write
+# $STATE with no lock and no atomic rename, and silently reset a corrupt state file to {}
+# instead of refusing -- the exact bug class eedb2871 already fixed for
+# git-repo-watcher.sh/pipx-version-check.sh's shared writer, and card 9710bdfd just fixed for
+# external-repos-sync.sh's write_back. Same fix here: this script shares the SAME state file
+# and lock file as those two, a tempfile + os.replace atomic write, and FAIL CLOSED on a state
+# file that fails to parse as JSON.
+set +e
+state_out="$( (
+  flock -x -w 10 200 || { echo "lock timeout waiting for $STATE.lock"; exit 1; }
+  python3 - "$STATE" "$name" "$sha" "$upstream_sha" <<'PY'
+import json, os, sys, time
+from datetime import date
+
+state_path, name, sha, upstream_sha = sys.argv[1:5]
+
+if os.path.exists(state_path):
     with open(state_path, encoding="utf-8") as f:
-        state = json.load(f)
-except (FileNotFoundError, json.JSONDecodeError):
+        raw = f.read()
+    if raw.strip():
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError as e:
+            print("corrupt state file, refusing to overwrite: " + str(e))
+            sys.exit(1)
+    else:
+        state = {}
+else:
     state = {}
+
+# Test-only hook (card 9710bdfd, QA2 FAIL 19491 finding 1): see the matching comment in
+# external-repos-sync.sh's write_back() -- same env var, same reasoning, shared state file.
+_sleep_s = os.environ.get("WATCHED_STATE_TEST_SLEEP_S")
+if _sleep_s:
+    time.sleep(float(_sleep_s))
 
 record = {"last_sha": sha, "last_checked_at": date.today().isoformat()}
 if upstream_sha:
     record["last_checked_upstream_sha"] = upstream_sha
 state[name] = record
 
-with open(state_path, "w", encoding="utf-8") as f:
+tmp_path = state_path + ".tmp"
+with open(tmp_path, "w", encoding="utf-8") as f:
     json.dump(state, f, indent=2, ensure_ascii=False)
     f.write("\n")
+os.replace(tmp_path, state_path)
 PY
+) 200>"$STATE.lock" 2>&1 )"
+state_rc=$?
+set -e
+if [[ $state_rc -ne 0 ]]; then
+  echo "$state_out" >&2
+  exit "$state_rc"
+fi
 
 echo "recorded review for '$name': state -> $STATE$([[ -n "$note_append" ]] && echo ", note appended -> $REGISTRY")"

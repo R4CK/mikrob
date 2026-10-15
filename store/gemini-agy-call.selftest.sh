@@ -714,6 +714,41 @@ if [ "$final_sent" != "5" ]; then
   fails+=("concurrent race: want final sent count 5 (4 seed + 1 winner), got $final_sent in $LOG")
 fi
 
+# --- F1 (card 5177720d, WhiteHat GO on 64788453 @d2dd388a, komment 11880): the hourly lock wait
+# must be BOUNDED. A background holder keeps the lock for well longer than the configured wait, so
+# the wrapper must give up and exit 5 at roughly HOLD time, not instantly and not forever.
+: > "$LOG"
+HOLD_LOCK="$TD/store/f1-hold.lock"
+mkdir -p "$TD/store"
+HOLD_SECONDS=3
+WAIT_SECONDS=1
+(
+  exec 9>"$HOLD_LOCK"
+  flock -x 9
+  sleep "$HOLD_SECONDS"
+) &
+HOLD_PID=$!
+# Give the holder a moment to actually acquire the lock before racing it.
+sleep 0.3
+n=$((n + 1))
+t0=$(date +%s.%N)
+set +e
+timeout "$((HOLD_SECONDS + 5))" env GEMINI_AGY_HOURLY_LOCK="$HOLD_LOCK" GEMINI_AGY_HOURLY_LOCK_WAIT_S="$WAIT_SECONDS" \
+  SEGED_SZUNET_MIN_S=0 SEGED_SZUNET_MAX_S=0 \
+  "$SUT" --root "$TD" --seged-script "$STUB" --dashboard-url "http://127.0.0.1:$DEFAULT_DASH_PORT" \
+  --hivo teszt --kartya f1100001 --feladattipus kod --kategoria safe \
+  --prompt "$PROMPT" --mappa "$TD/base/w" > "$TD/out" 2> "$TD/err"
+got=$?
+set -e
+t1=$(date +%s.%N)
+elapsed=$(awk "BEGIN{printf \"%.1f\", $t1-$t0}")
+wait "$HOLD_PID" 2>/dev/null || true
+[ "$got" = 5 ] || fails+=("F1 lock-wait: a lock held for ${HOLD_SECONDS}s with wait=${WAIT_SECONDS}s must time out (rc=5), got rc=$got, err=$(cat "$TD/err")")
+grep -qi "lock" "$TD/err" || fails+=("F1 lock-wait: stderr must name the lock timeout, got: $(cat "$TD/err")")
+grep -q 'STUB RESPONSE' "$TD/out" && fails+=("F1 lock-wait: the underlying helper must NOT have run while the lock timeout fired")
+awk -v e="$elapsed" -v w="$WAIT_SECONDS" 'BEGIN{exit !(e >= w - 0.3 && e < w + 5)}' \
+  || fails+=("F1 lock-wait: elapsed time ${elapsed}s should be close to the configured wait ${WAIT_SECONDS}s, not instant and not the full ${HOLD_SECONDS}s hold")
+
 # --- error propagation from the underlying call ----------------------------
 : > "$LOG"
 touch "$TD/FORCE_ERROR"

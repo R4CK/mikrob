@@ -174,6 +174,21 @@ if ! git diff --quiet "$CUR_FULL" "$TARGET_FULL" -- package.json package-lock.js
 fi
 echo -e "  Lépések: git checkout (detached) $( [ $DEPS_CHANGED = 1 ] && echo '-> npm ci + better-sqlite3 rebuild' ) -> npm run build -> restart"
 
+# F2 (card 0c508c7b, WhiteHat2 on d7e1d611 @4e5aef10): a scope-fogalom nélküli
+# régi kódra visszaállítva egy LÉTEZŐ operator-hatókörű kulcs 'full' device-
+# kulcsként viselkedne. Élőben nulla operator kulcs esetén ez a sor néma;
+# hiba vagy DB-hiány esetén is néma (fail-open NOTE, nem blokkoló kapu --
+# a rollback célja éppen a helyreállítás, ezt nem szabad megakasztania).
+DB_FILE="$INSTALL_DIR/store/claudeclaw.db"
+if command -v sqlite3 >/dev/null 2>&1 && [ -f "$DB_FILE" ]; then
+  OP_KEY_COUNT="$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM device_keys WHERE scope = 'operator'" 2>/dev/null || true)"
+  if [ -n "$OP_KEY_COUNT" ] && [ "$OP_KEY_COUNT" != "0" ]; then
+    echo -e "${RED}FIGYELEM:${NC} $OP_KEY_COUNT élő operator-hatókörű kulcs van. A célverzió kódja" \
+             "nem ismeri a scope-ot, ott minden kulcs 'full'-ként viselkedne -- vond vissza az" \
+             "operator kulcsokat a visszaállítás ELŐTT (DELETE /api/auth/device-keys/<id> vagy a dashboard)."
+  fi
+fi
+
 if [ "$DRY_RUN" = "1" ]; then
   echo -e "${ORANGE}[--dry-run] Nem történik változás.${NC}"
   echo -e "  git -c advice.detachedHead=false checkout $TARGET_SHORT"

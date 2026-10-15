@@ -74,6 +74,12 @@ python3 ~/marveen/scripts/seged-hivo.py --seged codex:gpt-6.1-sol --mappa ~/sege
 - The helper runs in bubblewrap: it sees nothing of `$HOME` except its own folder; writing outside it fails.
   It gets no environment variable of yours (no session token, no API key), only `PATH`, `HOME`, `LANG`, `TZ`.
   A FIFO or an unreadable subfolder in the work folder also stops the call.
+- The `agy` helper (only `agy`, not `codex`) can additionally run `gemini-local-subtask` (a bare command on
+  its `PATH`) to delegate a sub-task to the local Ollama model: pipe a prompt to its stdin, read the model's
+  reply from stdout. No filename parameter, no model choice -- it is deliberately that narrow (card a020247b,
+  STRIDE threat model on that card's kanban comment). It refuses (exit 1, nothing sent to Ollama) if the
+  master local-LLM kill-switch is off or the GPU-utilization guard holds; neither counts against the quota
+  above, since it never touches `store/gemini-agy-call.sh`'s own log.
 - No client data (real name, e-mail, phone, address) in the brief or in the folder: it would go to an outside
   provider (Google / OpenAI). Only with a legal (GDPR) decision behind it, never by default.
   If the gate stops you, remove the data, do not work around the gate.

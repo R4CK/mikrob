@@ -257,4 +257,84 @@ describe('external-repos-sync.sh write-back (card 307abedd, moved off the tracke
     expect(readJson()).toHaveLength(1)
     expect(readState()['claude-code-best-practice']).toBeUndefined()
   })
+
+  // Card 9710bdfd (WhiteHat2 follow-up to eedb2871 L2): write_back() used to read-modify-write
+  // the state file with no lock and no atomic rename -- the same bug class eedb2871 fixed for
+  // git-repo-watcher.sh/pipx-version-check.sh's shared writer of this SAME file, measured there
+  // at 15/25 rounds losing a pin under 8 concurrent writers. This calls the real write_back()
+  // function (extracted from the live script, not reimplemented) from 8 concurrent processes, 3
+  // rounds each, mirroring store/pipx-version-check.selftest.sh Case 10's shape.
+  //
+  // QA2 FAIL 19491 finding 1: without a forced overlap, 8 processes racing to read+write a tiny
+  // JSON file do not reliably overlap on a fast machine (measured: removing the flock only
+  // failed this test 1/5 runs, 20%) -- a flaky regression guard is worse than none, because a
+  // future accidental flock removal would mostly still show green. WATCHED_STATE_TEST_SLEEP_S is
+  // a test-only hook (see write_back()'s own comment) that sleeps INSIDE the read-then-write
+  // window: with the flock present this still serializes correctly (each writer sleeps while
+  // holding the lock, one at a time), but it forces every one of the 8 round-0 callers to read
+  // the SAME pre-write state and only then write -- removing the flock now loses entries on
+  // every run, not just sometimes, because the overlap is no longer up to OS scheduling.
+  it('8 concurrent write_back() callers (different names, 3 rounds each, forced overlap) all keep their pin -- none lost under the flock', async () => {
+    // 8 names * 3 rounds, each round serialized one-at-a-time by the flock while holding a
+    // 0.3s forced-overlap sleep -- worst case well over the 5s default test timeout.
+    const names = Array.from({ length: 8 }, (_, i) => `concurrent-${i}`)
+    writeJson(names.map((n) => ({ name: n })))
+
+    const callWriteBack = (name: string, sha: string) =>
+      execFileP(
+        'bash',
+        [
+          '-c',
+          'WATCHED_JSON="$1"; WATCHED_STATE_JSON="$2"; eval "$(sed -n "/^write_back() {/,/^}/p" "$3")"; write_back "$4" "$5"',
+          '--',
+          jsonPath,
+          statePath,
+          SYNC_SH,
+          name,
+          sha,
+        ],
+        { env: { ...process.env, WATCHED_STATE_TEST_SLEEP_S: '0.3' } },
+      )
+
+    await Promise.all(
+      names.map(async (name) => {
+        for (let round = 0; round < 3; round++) {
+          await callWriteBack(name, `deadbeef${round}`)
+        }
+      }),
+    )
+
+    const state = readState()
+    expect(Object.keys(state)).toHaveLength(8)
+    for (const name of names) {
+      expect(state[name]?.last_sha).toBe('deadbeef2') // last round's value, no entry lost
+    }
+  }, 15000)
+
+  // QA2 FAIL 19491 finding 2: the REVIEW's "FAIL CLOSED on a state file that fails to parse as
+  // JSON" claim had zero test coverage -- reverting that branch back to the old silent
+  // reset-to-{} behaviour left this whole test file fully green (8/8). Pins the actual contract:
+  // a corrupt state file must make write_back() fail (non-zero exit) and must NOT be touched.
+  it('a CORRUPT state file makes write_back() fail closed -- non-zero exit, file left untouched, no silent reset to {}', async () => {
+    writeJson([{ name: 'awesome-claude-skills' }])
+    const corrupt = '{ not valid json !!'
+    writeFileSync(statePath, corrupt)
+
+    const callWriteBack = (name: string, sha: string) =>
+      execFileP('bash', [
+        '-c',
+        'WATCHED_JSON="$1"; WATCHED_STATE_JSON="$2"; eval "$(sed -n "/^write_back() {/,/^}/p" "$3")"; write_back "$4" "$5"',
+        '--',
+        jsonPath,
+        statePath,
+        SYNC_SH,
+        name,
+        sha,
+      ])
+
+    await expect(callWriteBack('awesome-claude-skills', 'deadbeef0')).rejects.toMatchObject({
+      code: 1,
+    })
+    expect(readFileSync(statePath, 'utf-8')).toBe(corrupt) // untouched, not reset to {}
+  })
 })

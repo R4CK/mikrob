@@ -1515,6 +1515,35 @@ describe('card f6f67dff F-E delta: gemini-offload-call.sh redactor resists PYTHO
   })
 })
 
+// ── 7c. Card f6f67dff R2c (RedHat 3. kor, komment 19300): the REAL outbound redactor
+// (gemini-offload-call.sh's _fold(), separate from titok-kapu.py's git-commit gate) only
+// strips Mn/Cf/Cc/Zl/Zp by category -- every unassigned (Cn) Default_Ignorable codepoint
+// spliced into a key breaks the SECRET_PATTERNS contiguous match without being stripped,
+// which is a real leak on THIS script, not just a theoretical gap in titok-kapu.py. The
+// 8-char padding on each side is deliberate (RedHat's construction): long enough padding on
+// its own would satisfy the regex's {20,} minimum regardless of whether the splice is
+// stripped, silently passing even a broken fold.
+describe('card f6f67dff R2c: gemini-offload-call.sh redactor covers unassigned Default_Ignorable ranges', () => {
+  const splice = (cp: number) => 'sk-ant-api03-' + 'A'.repeat(8) + String.fromCodePoint(cp) + 'B'.repeat(8)
+
+  it('CONTROL -- the unspliced key still blocks', () => {
+    const r = redactInput('sk-ant-api03-' + 'A'.repeat(8) + 'B'.repeat(8))
+    expect(r.exitCode).toBe(2)
+  })
+
+  it.each([
+    ['U+2065 (unassigned)', 0x2065],
+    ['U+FFF0 (unassigned)', 0xfff0],
+    ['U+E0000 (unassigned)', 0xe0000],
+    ['U+E0080 (unassigned)', 0xe0080],
+    ['U+E01F0 (unassigned, previously-leaking tartomany-vege tail)', 0xe01f0],
+    ['U+E0FFF (unassigned, tartomany vege)', 0xe0fff],
+  ])('blocks (exit 2) with %s spliced into the key', (_label, cp) => {
+    const r = redactInput(splice(cp))
+    expect(r.exitCode).toBe(2)
+  })
+})
+
 // ── 8. API key in header, NEVER in URL ───────────────────────────────────────────────────
 describe('gemini-offload-call.sh sends key in header not URL (security, card a92e9913)', () => {
   it('uses x-goog-api-key header', () => {

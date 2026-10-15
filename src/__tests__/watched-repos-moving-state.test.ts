@@ -8,14 +8,27 @@
 //
 // Every test runs against throwaway temp files -- never the live store/watched-repos*.json.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs'
+import { execFile, execFileSync } from 'node:child_process'
+import { promisify } from 'node:util'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 
+const execFileP = promisify(execFile)
+
+// Card eedb2871 F-2 (QA FAIL 19034): a bare `.not.toBe('2026-10-09')` only proves the value
+// changed, not that it changed to the RIGHT thing -- a mutation pin (write_back's date.today()
+// swapped for a fixed-but-valid "2020-01-01") left two such assertions green. Matching today's
+// actual date exactly is the tight check already used in pipx-version-check.selftest.sh.
+function todayIso(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const WATCHER_SH = join(ROOT, 'store', 'git-repo-watcher.sh')
+const PIPX_CHECK_SH = join(ROOT, 'store', 'pipx-version-check.sh')
 const RECORD_SH = join(ROOT, 'store', 'watched-repos-record-review.sh')
 
 function git(repo: string, ...args: string[]): string {
@@ -151,7 +164,7 @@ describe('git-repo-watcher.sh stamps last_checked_at on every genuine look (card
     expect(out).toContain('CHANGED:code:demo')
     expect(out).toContain('FLAGGED-review-before-update')
     const state = JSON.parse(readFileSync(statePath, 'utf-8'))
-    expect(state.demo.last_checked_at).not.toBe('2026-10-09')
+    expect(state.demo.last_checked_at).toBe(todayIso())
     // the reviewed pin must NOT silently advance past an unreviewed upstream commit
     expect(state.demo.last_sha).toBe(before)
   })
@@ -169,7 +182,7 @@ describe('git-repo-watcher.sh stamps last_checked_at on every genuine look (card
     const out = runWatcherAt(dir)
     expect(out).toContain('CHANGED:text:demo')
     const state = JSON.parse(readFileSync(statePath, 'utf-8'))
-    expect(state.demo.last_checked_at).not.toBe('2026-10-09')
+    expect(state.demo.last_checked_at).toBe(todayIso())
     expect(state.demo.last_sha).toBe(after) // a text adoption IS allowed to advance its own pin
   })
 
@@ -183,6 +196,47 @@ describe('git-repo-watcher.sh stamps last_checked_at on every genuine look (card
     expect(out).toContain('DISABLED:demo')
     const state = JSON.parse(readFileSync(statePath, 'utf-8'))
     expect(state.demo.last_checked_at).toBe('2026-10-09') // untouched -- a disabled entry is not a look
+  })
+})
+
+// Card eedb2871 F-1/L3 (QA FAIL 19034, WhiteHat2 L3): store/pipx-version-check.sh existed and
+// was correct (its own selftest was green), but NOTHING periodic ever called it -- the live
+// store/watched-repos-state.json still showed the pipx entries stuck at a last_checked_at from
+// 2026-08-26 even on the gated SHA. This proves the actual wiring, not just the standalone
+// script: a real git-repo-watcher.sh run, with a pipx entry in the SAME registry it already
+// reads, must reach pipx-version-check.sh and stamp that entry too.
+describe('git-repo-watcher.sh invokes pipx-version-check.sh when present (card eedb2871 F-1/L3)', () => {
+  function runWatcherWithPipxAt(cfgDir: string, extraEnv: Record<string, string> = {}): string {
+    const watcherCopy = join(cfgDir, 'git-repo-watcher.sh')
+    writeFileSync(watcherCopy, readFileSync(WATCHER_SH))
+    const pipxCopy = join(cfgDir, 'pipx-version-check.sh')
+    writeFileSync(pipxCopy, readFileSync(PIPX_CHECK_SH))
+    chmodSync(pipxCopy, 0o755) // the watcher gates the call on `[[ -x "$PIPX_CHECK" ]]`
+    return execFileSync('bash', [watcherCopy], {
+      encoding: 'utf-8',
+      env: { ...process.env, WATCHED_REPOS_STATE_JSON: statePath, ...extraEnv },
+    })
+  }
+
+  it('a periodic git-repo-watcher.sh run also checks a pipx-adopted entry and stamps its last_checked_at -- before this fix nothing ever called pipx-version-check.sh at all', () => {
+    const overrideDir = join(dir, 'pypi-override')
+    mkdirSync(overrideDir, { recursive: true })
+    writeFileSync(join(overrideDir, 'widget-pipx.json'), JSON.stringify({ info: { version: '1.2.3' } }))
+    writeRegistry([{ name: 'widget-pipx', adoption: 'pipx', pinned_version: '1.2.3' }])
+    writeFileSync(statePath, JSON.stringify({ 'widget-pipx': { last_checked_at: '2026-08-26' } }))
+    const out = runWatcherWithPipxAt(dir, { PIPX_VERSION_CHECK_PYPI_OVERRIDE_DIR: overrideDir })
+    expect(out).toContain('NOCHANGE:widget-pipx @ 1.2.3')
+    const state = JSON.parse(readFileSync(statePath, 'utf-8'))
+    expect(state['widget-pipx'].last_checked_at).toBe(todayIso())
+  })
+
+  it('without pipx-version-check.sh present (e.g. a harness copying only the watcher) the run still succeeds as a no-op -- a missing optional script never crashes the loop', () => {
+    writeRegistry([
+      { name: 'demo', repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true, note: 'x' },
+    ])
+    const out = runWatcherAt(dir) // existing helper copies ONLY git-repo-watcher.sh
+    expect(out).toContain('NOCHANGE:demo')
+    expect(out).not.toContain('widget-pipx')
   })
 })
 
@@ -258,6 +312,83 @@ describe('watched-repos-record-review.sh', () => {
     ).toThrow()
     expect(() => readFileSync(statePath, 'utf-8')).toThrow() // never created
   })
+
+  // Card 9710bdfd (WhiteHat2 follow-up to eedb2871 L2): the state-file write here used to be
+  // read-modify-write with no lock and no atomic rename -- the same bug class eedb2871 fixed
+  // for git-repo-watcher.sh/pipx-version-check.sh's shared writer of this SAME file, measured
+  // there at 15/25 rounds losing a pin under 8 concurrent writers. This runs 8 concurrent
+  // watched-repos-record-review.sh invocations (different names, 3 rounds each), mirroring
+  // store/pipx-version-check.selftest.sh Case 10's shape.
+  // QA2 FAIL 19491 finding 1: an un-forced race only caught the flock's removal 3/5 runs (60%)
+  // -- too flaky to trust as a regression guard. WATCHED_STATE_TEST_SLEEP_S (same test-only hook
+  // as external-repos-sync.sh's write_back(), shared state file, same reasoning) forces every
+  // one of the 8 round-0 callers to read the SAME pre-write state before any of them writes;
+  // under the flock this still serializes correctly (one writer sleeps at a time, holding the
+  // lock), so the assertion stays meaningful either way.
+  it('8 concurrent watched-repos-record-review.sh invocations (different names, 3 rounds each, forced overlap) all keep their pin -- none lost under the flock', async () => {
+    const names = Array.from({ length: 8 }, (_, i) => `concurrent-${i}`)
+    writeRegistry(names.map((n) => ({ name: n, repo: upstream, branch: 'main', local: clone, type: 'text', enabled: true })))
+
+    await Promise.all(
+      names.map(async (name) => {
+        for (let round = 0; round < 3; round++) {
+          await execFileP(
+            'bash',
+            [RECORD_SH, name, '--sha', `deadbee${round}`, '--registry', registryPath, '--state', statePath],
+            { env: { ...process.env, WATCHED_STATE_TEST_SLEEP_S: '0.3' } },
+          )
+        }
+      }),
+    )
+
+    const state: Record<string, { last_sha?: string }> = JSON.parse(readFileSync(statePath, 'utf-8'))
+    expect(Object.keys(state)).toHaveLength(8)
+    for (const name of names) {
+      expect(state[name]?.last_sha).toBe('deadbee2') // last round's value, no entry lost
+    }
+  }, 15000)
+
+  // QA2 FAIL 19491 finding 2: the REVIEW's "FAIL CLOSED on a state file that fails to parse as
+  // JSON" claim had zero test coverage here either -- reverting that branch to the old silent
+  // reset-to-{} behaviour left this whole describe block fully green. Pins the actual CLI
+  // contract (this script's top-level `exit "$state_rc"` already propagates correctly, unlike
+  // write_back()'s bare function return which card 9710bdfd also had to fix).
+  it('a CORRUPT state file makes the CLI fail closed -- non-zero exit, file left untouched, no silent reset to {}', () => {
+    const corrupt = '{ not valid json !!'
+    writeFileSync(statePath, corrupt)
+    let threw = false
+    let stderr = ''
+    try {
+      execFileSync('bash', [RECORD_SH, 'demo', '--sha', 'deadbee0', '--registry', registryPath, '--state', statePath], { stdio: 'pipe' })
+    } catch (err) {
+      threw = true
+      stderr = String((err as { stderr?: Buffer }).stderr ?? '')
+    }
+    expect(threw).toBe(true)
+    expect(stderr).toContain('corrupt state file')
+    expect(readFileSync(statePath, 'utf-8')).toBe(corrupt) // untouched, not reset to {}
+  })
+
+  // WhiteHat (cybersec) F2 LOW on card 9710bdfd (gate comment 19504): the registry
+  // (watched-repos.json) --note-append write had no lock and no atomic rename at all -- measured
+  // losing 8/12 concurrent notes on a single entry. Same forced-overlap pattern as the state-file
+  // concurrency test above (WATCHED_REGISTRY_TEST_SLEEP_S, see the matching comment in the script).
+  it('12 concurrent --note-append calls on the SAME entry all keep their note -- none lost under the registry lock', async () => {
+    const calls = Array.from({ length: 12 }, (_, i) =>
+      execFileP(
+        'bash',
+        [RECORD_SH, 'demo', '--sha', 'deadbee0', '--note-append', `note-${i}`, '--registry', registryPath, '--state', statePath],
+        { env: { ...process.env, WATCHED_REGISTRY_TEST_SLEEP_S: '0.2' } },
+      ),
+    )
+    await Promise.all(calls)
+
+    const registry: Array<{ name: string; note?: string }> = JSON.parse(readFileSync(registryPath, 'utf-8'))
+    const demo = registry.find((e) => e.name === 'demo')
+    for (let i = 0; i < 12; i++) {
+      expect(demo?.note).toContain(`note-${i}`)
+    }
+  }, 15000)
 })
 
 describe('git-repo-watcher.sh rejects a non-hex/too-short last_sha instead of using it for the prefix match (card ffca678d)', () => {

@@ -85,20 +85,45 @@ _HOMOGLYPH_MAP = str.maketrans({
 # dingbats/chess pieces) -- stripped by exact codepoint instead.
 _INVISIBLE_CODEPOINTS = {"⠀"}
 
+# card f6f67dff R2c (RedHat 3. kor, komment 19300): the category strip above (Mn/Cf/Cc/Zl/Zp)
+# misses the Default_Ignorable_Code_Point ranges that are UNASSIGNED (category Cn) -- a Cn
+# codepoint spliced into a key breaks the SECRET_PATTERNS contiguous-charset match without
+# being stripped, which is a real leak on THIS redactor (measured directly via --redact-test,
+# not just titok-kapu.py's git-commit gate). Mirrors titok-kapu.py's
+# _DEFAULT_IGNORABLE_TARTOMANYOK (same ranges, same E0FFF-corrected upper bound).
+_DEFAULT_IGNORABLE_RANGES = (
+    (0x180B, 0x180D),
+    (0x180F, 0x180F),
+    (0x2065, 0x2065),
+    (0xFE00, 0xFE0F),
+    (0xFFF0, 0xFFF8),
+    (0xE0000, 0xE0000),
+    (0xE0002, 0xE001F),
+    (0xE0080, 0xE00FF),
+    (0xE0100, 0xE0FFF),
+)
+
+def _is_default_ignorable(ch):
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in _DEFAULT_IGNORABLE_RANGES)
+
 def _fold(s):
     """NFKD-decompose (fullwidth/compat chars -> plain ASCII) + homoglyph-map, then strip
     combining marks, invisible formatting chars (zero-width space/joiner etc, category Mn/Cf),
     control chars (Cc -- C1, card 33047d3f: an ASCII control byte spliced into a keyword is
-    already ascii and survives untouched otherwise, splitting the word), and line/paragraph
-    separators (Zl/Zp -- C2, card 33047d3f: U+2028/U+2029) plus the braille-blank invisible
-    char above. Case is preserved so case-sensitive patterns (AKIA..., sk-ant-...) still work.
-    Matching runs on this folded text; the ORIGINAL text is what gets sent to Gemini if clean
-    -- normalization only widens what we catch, it never changes what we send."""
+    already ascii and survives untouched otherwise, splitting the word), line/paragraph
+    separators (Zl/Zp -- C2, card 33047d3f: U+2028/U+2029), the braille-blank invisible char
+    above, and the unassigned Default_Ignorable ranges (card f6f67dff R2c). Case is preserved
+    so case-sensitive patterns (AKIA..., sk-ant-...) still work. Matching runs on this folded
+    text; the ORIGINAL text is what gets sent to Gemini if clean -- normalization only widens
+    what we catch, it never changes what we send."""
     s = s.translate(_HOMOGLYPH_MAP)
     s = unicodedata.normalize("NFKD", s)
     return "".join(
         ch for ch in s
-        if unicodedata.category(ch) not in ("Mn", "Cf", "Cc", "Zl", "Zp") and ch not in _INVISIBLE_CODEPOINTS
+        if unicodedata.category(ch) not in ("Mn", "Cf", "Cc", "Zl", "Zp")
+        and ch not in _INVISIBLE_CODEPOINTS
+        and not _is_default_ignorable(ch)
     )
 
 # F2 (same komment): fail-closed if a script/homoglyph our table does not cover remains after
