@@ -13,18 +13,10 @@
 set -uo pipefail
 
 STORE="/home/neon/marveen/store"
-TOKEN_FILE="${_QSG_TOKEN_FILE_OVERRIDE:-$STORE/.dashboard-token}"
-API="http://localhost:3420"
-HARDSTOP="${_QSG_HARDSTOP_OVERRIDE:-$STORE/weekly-hard-stop.json}"
-# Env-overrides for selftest subprocess cases only -- production cron never sets these.
-STATE="${_QSG_STATE_OVERRIDE:-$STORE/quota-shutdown-guard-state.json}"
-LOG="${_QSG_LOG_OVERRIDE:-$STORE/quota-shutdown-guard.log}"
-# Env-override only for the selftest (a FAKE binary, never the real path) -- the production
-# cron config never sets this, so it always resolves to the real shutdown.exe.
-SHUTDOWN_EXE="${SHUTDOWN_EXE:-/mnt/c/Windows/System32/shutdown.exe}"
 SELFTEST=0
 DRY_RUN=0
 FORCE_REASON=""
+ISOLATED=0
 
 usage() { printf 'Usage: %s [--dry-run] [--force-reason "reason"]\n       %s --selftest\n' "$0" "$0" >&2; }
 
@@ -32,6 +24,16 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)      DRY_RUN=1; shift ;;
     --selftest)     SELFTEST=1; shift ;;
+    --selftest-subprocess)
+      # Card 1b08cf10 F3 (RedHat ccbfece8 19944d / MikroB 19945): the _QSG_*_OVERRIDE env vars
+      # (and SHUTDOWN_EXE) used to take effect on ANY invocation, selftest or not -- RedHat
+      # reached a real TRIGGER on the live path with no --selftest flag at all, just a missing
+      # token-file override, a 99% hardstop override, and a fake binary. This internal flag,
+      # set ONLY by the selftest's own subprocess helper (never documented in usage(), never
+      # set by production cron), is now the SOLE gate for honoring those overrides below --
+      # an attacker who can set env vars but not the version-controlled crontab invocation
+      # line gains nothing from them.
+      ISOLATED=1; shift ;;
     --force-reason)
       shift
       if [ $# -eq 0 ]; then
@@ -48,6 +50,22 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ "$SELFTEST" = "1" ] || [ "$ISOLATED" = "1" ]; then
+  TOKEN_FILE="${_QSG_TOKEN_FILE_OVERRIDE:-$STORE/.dashboard-token}"
+  API="${_QSG_API_OVERRIDE:-http://localhost:3420}"
+  HARDSTOP="${_QSG_HARDSTOP_OVERRIDE:-$STORE/weekly-hard-stop.json}"
+  STATE="${_QSG_STATE_OVERRIDE:-$STORE/quota-shutdown-guard-state.json}"
+  LOG="${_QSG_LOG_OVERRIDE:-$STORE/quota-shutdown-guard.log}"
+  SHUTDOWN_EXE="${SHUTDOWN_EXE:-/mnt/c/Windows/System32/shutdown.exe}"
+else
+  TOKEN_FILE="$STORE/.dashboard-token"
+  API="http://localhost:3420"
+  HARDSTOP="$STORE/weekly-hard-stop.json"
+  STATE="$STORE/quota-shutdown-guard-state.json"
+  LOG="$STORE/quota-shutdown-guard.log"
+  SHUTDOWN_EXE="/mnt/c/Windows/System32/shutdown.exe"
+fi
+
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S %Z') $*" >> "$LOG"; }
 
 today="$(date '+%Y-%m-%d')"
@@ -61,15 +79,23 @@ fi
 
 send_telegram() {
   local text="$1"
-  # _QSG_NO_TELEGRAM=1 suppresses Telegram sends in selftest subprocess cases -- production never sets this.
-  [ "${_QSG_NO_TELEGRAM:-0}" = "1" ] && return 0
-  python3 - "$text" <<'PYEOF'
-import sys, json, urllib.request
+  # _QSG_NO_TELEGRAM=1 suppresses Telegram sends in selftest subprocess cases -- production never
+  # sets this. Card 1b08cf10 F1 (WhiteHat 19791): the suppression now leaves a positive trace in
+  # LOG, so a regression that silently stops honoring this override is pinned, not just assumed
+  # absent -- a pure "nothing happened" check can't tell suppressed-correctly from broken-silently.
+  # Card 1b08cf10 F3 (RedHat ccbfece8 19944d): same gate as the other _QSG_* overrides below --
+  # only honored under --selftest/--selftest-subprocess, never on a live invocation.
+  if { [ "$SELFTEST" = "1" ] || [ "$ISOLATED" = "1" ]; } && [ "${_QSG_NO_TELEGRAM:-0}" = "1" ]; then
+    log "TELEGRAM-SUPPRESSED (_QSG_NO_TELEGRAM=1): $text"
+    return 0
+  fi
+  TG_TOKEN_FILE="$TOKEN_FILE" TG_API="$API" python3 - "$text" <<'PYEOF'
+import os, sys, json, urllib.request
 text = sys.argv[1]
 try:
-    token = open("/home/neon/marveen/store/.dashboard-token").read().strip()
+    token = open(os.environ["TG_TOKEN_FILE"]).read().strip()
     req = urllib.request.Request(
-        "http://localhost:3420/api/messages",
+        os.environ["TG_API"] + "/api/messages",
         data=json.dumps({"from": "mikrob", "to": "mikrob", "content": text}).encode(),
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         method="POST",
@@ -124,7 +150,8 @@ if [ "$SELFTEST" = "1" ]; then
   send_telegram() { :; }
 
   TMPD="$(mktemp -d)"
-  trap 'rm -rf "$TMPD"' EXIT
+  SLOW_API_PID=""
+  trap '[ -n "$SLOW_API_PID" ] && kill "$SLOW_API_PID" 2>/dev/null; rm -rf "$TMPD"' EXIT
 
   # Case 1: shutdown.exe sikeresen lefut (exit 0) -> STATE irodik, trigger_shutdown 0-val ter vissza.
   FAKE_OK="$TMPD/fake-ok.sh"
@@ -202,7 +229,7 @@ if [ "$SELFTEST" = "1" ]; then
     : > "$SUBPROC_LOG"
     timeout 3 env SHUTDOWN_EXE="$fake_exe" _QSG_NO_TELEGRAM=1 \
       _QSG_STATE_OVERRIDE="$SUBPROC_STATE" _QSG_LOG_OVERRIDE="$SUBPROC_LOG" \
-      bash "$0" "$@" 2>/dev/null
+      bash "$0" "$@" --selftest-subprocess 2>/dev/null
   }
 
   _arg_test() {
@@ -266,13 +293,93 @@ if [ "$SELFTEST" = "1" ]; then
   timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_TOKEN" _QSG_NO_TELEGRAM=1 \
     _QSG_STATE_OVERRIDE="$SUBPROC_STATE3" _QSG_LOG_OVERRIDE="$SUBPROC_LOG3" \
     _QSG_TOKEN_FILE_OVERRIDE="$MISSING_TOKEN_FILE" _QSG_HARDSTOP_OVERRIDE="$HARDSTOP_99" \
-    bash "$0" 2>/dev/null
+    bash "$0" --selftest-subprocess 2>/dev/null
   t "missing token-file + percent=99: shutdown marker NOT created (fail-closed)" \
     "$([ -f "$FAKE_MARKER3" ] && echo YES || echo NO)" "NO"
   t "missing token-file + percent=99: isolated STATE NOT written" \
     "$([ -f "$SUBPROC_STATE3" ] && echo YES || echo NO)" "NO"
   t "missing token-file + percent=99: isolated LOG names the SKIP reason" \
     "$(grep -q 'token-fajl hianyzik' "$SUBPROC_LOG3" 2>/dev/null && echo YES || echo NO)" "YES"
+
+  # Case 15: F1 pozitiv kontroll (card 1b08cf10, WhiteHat 19791 a 49b9e7d0 4. deltajan). A
+  # korabbi izolacios pinek CSAK negativak voltak ("az izolalt STATE NEM irodott") -- egyik sem
+  # bizonyitotta, hogy maga az izolacio ERVENYESUL. Ha egy regresszio csendben eldobja a
+  # _QSG_STATE_OVERRIDE/_QSG_LOG_OVERRIDE env-sort a _subproc_run-bol, az irast ez nem akadalyozza
+  # meg, csak az ELO utvonalra tereli -- a negativ allitas ("a stand-in NEM irodott") AKKOR IS
+  # igaz marad. Ez az eset egy VALODI (nem --dry-run) force-triggert valt ki, es MINDEGYIK
+  # izolalt celpontra (SUBPROC_STATE, SUBPROC_LOG, a marker) POZITIVAN allitja, hogy odairodott,
+  # plusz hogy az ELO STATE/LOG mtime-ja valtozatlan maradt.
+  LIVE_STATE="$STORE/quota-shutdown-guard-state.json"
+  LIVE_LOG="$STORE/quota-shutdown-guard.log"
+  live_state_mtime_before="$(stat -c %Y "$LIVE_STATE" 2>/dev/null || echo ABSENT)"
+  live_log_mtime_before="$(stat -c %Y "$LIVE_LOG" 2>/dev/null || echo ABSENT)"
+
+  FAKE_MARKER4="$TMPD/positive-control-marker.txt"
+  FAKE_SHUTDOWN_POSITIVE="$TMPD/fake-shutdown-positive.sh"
+  printf '#!/bin/bash\ntouch "%s"\nexit 0\n' "$FAKE_MARKER4" > "$FAKE_SHUTDOWN_POSITIVE"
+  chmod +x "$FAKE_SHUTDOWN_POSITIVE"
+  SUBPROC_STATE4="$TMPD/subproc-state4.json"
+  SUBPROC_LOG4="$TMPD/subproc-log4.txt"
+  rm -f "$FAKE_MARKER4" "$SUBPROC_STATE4"
+  : > "$SUBPROC_LOG4"
+  timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_POSITIVE" _QSG_NO_TELEGRAM=1 \
+    _QSG_STATE_OVERRIDE="$SUBPROC_STATE4" _QSG_LOG_OVERRIDE="$SUBPROC_LOG4" \
+    bash "$0" --force-reason "positive-control" --selftest-subprocess 2>/dev/null
+  rc=$?
+  t "F1 positive-control: trigger_shutdown returns 0" "$rc" "0"
+  t "F1 positive-control: shutdown marker IS created (the fake exe was actually invoked)" \
+    "$([ -f "$FAKE_MARKER4" ] && echo YES || echo NO)" "YES"
+  t "F1 positive-control: isolated STATE IS written (the override took effect)" \
+    "$([ -f "$SUBPROC_STATE4" ] && echo YES || echo NO)" "YES"
+  t "F1 positive-control: isolated LOG contains the TRIGGER line (the override took effect)" \
+    "$(grep -q 'TRIGGER: manualis force: positive-control' "$SUBPROC_LOG4" && echo YES || echo NO)" "YES"
+  t "F1 positive-control: isolated LOG shows Telegram was suppressed, not silently skipped" \
+    "$(grep -q 'TELEGRAM-SUPPRESSED' "$SUBPROC_LOG4" && echo YES || echo NO)" "YES"
+  live_state_mtime_after="$(stat -c %Y "$LIVE_STATE" 2>/dev/null || echo ABSENT)"
+  live_log_mtime_after="$(stat -c %Y "$LIVE_LOG" 2>/dev/null || echo ABSENT)"
+  t "F1 positive-control: the LIVE state file was not touched" "$live_state_mtime_after" "$live_state_mtime_before"
+  t "F1 positive-control: the LIVE log file was not touched" "$live_log_mtime_after" "$live_log_mtime_before"
+
+  # Case 16: F2 pozitiv kontroll (card 1b08cf10, WhiteHat 19791). A force-ut korabban MINDIG
+  # meghivta az elo /api/agents-et is, es egy lassu/elerhetetlen API a selftest 3 mp-es
+  # timeout-jaba futott bele (rc=124, hamis piros -- ez tortent elesben is, lasd a
+  # quota-shutdown-guard-state.json.false-trigger-* fajlokat). Egy valodi, 4 mp-et varakozo
+  # helyi HTTP-szerverre iranyitjuk az _QSG_API_OVERRIDE-ot (ugyanaz a repro, mint amit WhiteHat
+  # mert): ha a javitas helyes, a force-ut SOHA nem er oda, es a subprocess a 3 mp-es timeout-on
+  # belul visszater; ha visszaregresszalna (megint mindig lekerdezne running_flotta-t), a curl
+  # --max-time 10 a 4 mp-es valaszra varva a `timeout 3`-ba futna, rc=124-et adva.
+  SLOW_API_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+  python3 - "$SLOW_API_PORT" <<'PYEOF' &
+import sys, time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+port = int(sys.argv[1])
+class SlowHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        time.sleep(4)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b"[]")
+    def log_message(self, *a):
+        pass
+HTTPServer(("127.0.0.1", port), SlowHandler).serve_forever()
+PYEOF
+  SLOW_API_PID=$!
+
+  SUBPROC_STATE5="$TMPD/subproc-state5.json"
+  SUBPROC_LOG5="$TMPD/subproc-log5.txt"
+  rm -f "$SUBPROC_STATE5"
+  : > "$SUBPROC_LOG5"
+  timeout 3 env SHUTDOWN_EXE="$FAKE_SHUTDOWN_POSITIVE" _QSG_NO_TELEGRAM=1 \
+    _QSG_STATE_OVERRIDE="$SUBPROC_STATE5" _QSG_LOG_OVERRIDE="$SUBPROC_LOG5" \
+    _QSG_API_OVERRIDE="http://127.0.0.1:$SLOW_API_PORT" \
+    bash "$0" --dry-run --force-reason "f2-positive-control" --selftest-subprocess 2>/dev/null
+  rc=$?
+  t "F2 positive-control: force path finishes within the timeout (skips running_flotta)" "$rc" "0"
+
+  kill "$SLOW_API_PID" 2>/dev/null
+  wait "$SLOW_API_PID" 2>/dev/null
+  SLOW_API_PID=""
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
@@ -284,9 +391,16 @@ percent="$(python3 -c 'import json;print(json.load(open("'"$HARDSTOP"'")).get("p
 # Card 548a92ee (RedHat N3, 19814): -1 = ISMERETLEN allapot alapertelmezesben (fail-closed).
 # Hianyzo/olvashatatlan token-fajl vagy sikertelen API-lekerdezes SOHA nem egyezik a "0"-val
 # lejjebb, tehat nem ertelmezodik "minden agens leallt"-kent.
+#
+# Card 1b08cf10 F2 (WhiteHat 19791): a force-ut (FORCE_REASON) nem hasznalja running_flotta-t
+# (FELTETEL 1 ilyenkor ugyis irrelevans, lasd lejjebb az "exit $?" a force-agban), tehat a
+# lekerdezes csak akkor fut, ha nincs FORCE_REASON -- korabban minden force/dry-run eset is
+# meghivta az elo /api/agents-et, es egy lassu API hamis pirosat okozott a selftestben (timeout 3
+# a wrapperben vs. --max-time 10 a curl-ban).
 running_flotta=-1
-if [ -f "$TOKEN_FILE" ] && [ -r "$TOKEN_FILE" ]; then
-  running_flotta="$(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" | curl -H @- -s --max-time 10 "$API/api/agents" | python3 -c '
+if [ -z "$FORCE_REASON" ]; then
+  if [ -f "$TOKEN_FILE" ] && [ -r "$TOKEN_FILE" ]; then
+    running_flotta="$(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" | curl -H @- -s --max-time 10 "$API/api/agents" | python3 -c '
 import json,sys
 try:
     agents=json.load(sys.stdin)
@@ -295,9 +409,10 @@ except Exception:
 n=sum(1 for a in agents if a.get("running") and a.get("name") != "mikrob")
 print(n)
 ' 2>/dev/null || echo -1)"
-else
-  log "WARN: token-fajl hianyzik vagy olvashatatlan ($TOKEN_FILE) -- flotta-allapot ISMERETLEN, a kvota-alapu automatikus leallitas (FELTETEL 1) ebben a korben SKIP."
-  send_telegram "Flotta: quota-shutdown-guard nem tudja leolvasni a token-fajlt ($TOKEN_FILE) -- a flotta-allapot ISMERETLEN, a kvota-alapu automatikus leallitas ezert kimaradt ebben a korben. Kezi ellenorzes ajanlott."
+  else
+    log "WARN: token-fajl hianyzik vagy olvashatatlan ($TOKEN_FILE) -- flotta-allapot ISMERETLEN, a kvota-alapu automatikus leallitas (FELTETEL 1) ebben a korben SKIP."
+    send_telegram "Flotta: quota-shutdown-guard nem tudja leolvasni a token-fajlt ($TOKEN_FILE) -- a flotta-allapot ISMERETLEN, a kvota-alapu automatikus leallitas ezert kimaradt ebben a korben. Kezi ellenorzes ajanlott."
+  fi
 fi
 
 # --- FELTETEL 2: legkesobb ma este 20:00 (Europe/Budapest, ez a rendszer lokal ideje) ---
