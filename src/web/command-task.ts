@@ -8,6 +8,7 @@ import { atomicWriteFileSync } from "./atomic-write.js"
 import { logger } from "../logger.js"
 import { sendTelegramMessage } from "./telegram.js"
 import { appendTaskRun, markTaskRunCompleted } from "../db.js"
+import { trackDetachedGroup } from "./detached-groups.js"
 import type { ScheduledTask } from "./scheduled-tasks-io.js"
 
 // command-type scheduled tasks run a raw shell command directly (no LLM

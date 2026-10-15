@@ -742,6 +742,22 @@ strip_legacy_notifier_telegram_env() {
   return 0
 }
 
+# Shell rc secret scrub (Linux only, SECSZIVEKKIADAS1008). Installers before
+# #1785 wrote the Claude token / API key as `export ...=` lines into ~/.bashrc
+# and ~/.zshrc; nothing on the update path removed them, and a re-run of the
+# installer never reached its own cleanup on an install that already has auth.
+# The functions live in scripts/lib/rc-secrets.sh (identical to the installer's
+# copy, kept equal by a test). Idempotent: no export line, no change. Like every
+# repair here it lands on the update.sh run AFTER the one that pulls it (no
+# re-exec). A failure never stops the update: it is reported, and retried next run.
+scrub_rc_secrets() {
+  [ "$(uname -s 2>/dev/null)" = "Linux" ] || return 0
+  [ -f "$INSTALL_DIR/scripts/lib/rc-secrets.sh" ] || return 0
+  ( . "$INSTALL_DIR/scripts/lib/rc-secrets.sh" && scrub_secret_exports_from_rc ) \
+    || echo -e "  ${ORANGE}FIGYELEM:${NC} a shell rc fajlok titok-takaritasa nem sikerult, a kovetkezo frissites ujraprobalja."
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
@@ -749,6 +765,7 @@ run_unit_maintenance() {
   return 0
 }
 run_unit_maintenance
+scrub_rc_secrets
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SEED REFRESH -- update a shipped skill/task copy ONLY while it is provably

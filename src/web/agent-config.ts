@@ -21,6 +21,7 @@ import {
   type ModelProfileMapState,
   type ModelResolution,
 } from '../model-profiles.js'
+import { expandAndValidateConfigDir, hasParentTraversal } from '../config-dir-path.js'
 
 export const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 
@@ -251,6 +252,11 @@ export function readAgentSecurityProfile(name: string): string {
   } catch { /* fall through */ }
   return 'default'
 }
+
+// expandAndValidateConfigDir and its rules live in ../config-dir-path.ts
+// (dependency-free, shared with the settings registry); re-exported here for
+// the existing callers.
+export { expandAndValidateConfigDir } from '../config-dir-path.js'
 
 // Pure-logic resolver for the optional per-agent claudeConfigDir field.
 // Takes the raw agent-config.json text (or `{}` when no file exists) plus an
