@@ -11,7 +11,8 @@ import { isAgentRunning } from '../agent-process.js'
 import { jsonMaybeGzip } from '../http-helpers.js'
 import { getUpdateStatus, type AggregateUpdateStatus } from '../update-checker.js'
 import { refreshUserTurnIndex, turnsOnDay } from '../user-turn-index.js'
-import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, readFableSnapshot, DEFAULT_FABLE_MAX_AGE_SEC } from '../quota.js'
+import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, readFableSnapshot, DEFAULT_FABLE_MAX_AGE_SEC, readModQuotaSnapshot, chooseQuotaSnapshot, type QuotaSnapshot } from '../quota.js'
+import { STATE_OBSERVER_STATE_DIR } from '../state-observer.js'
 import type { RouteContext } from './types.js'
 
 // The per-day user-turn tallies now come from src/web/user-turn-index.ts (card ba0d218f): the inline
@@ -57,6 +58,21 @@ export function readUpstreamUpdate(
   } catch {
     return null
   }
+}
+
+// The fleet's remaining quota, as the overview strip shows it. Same file and
+// the same staleness threshold the quota monitor uses, so the strip and the
+// alert can never disagree about what the fleet has left. QUOTAMOD1005: on a
+// setup-token install the statusLine block never comes; the
+// agent-state-observer mod's readings do. The fresher of the two wins, and the
+// snapshot says which one it is. Shared with the operator status
+// (DASHOPERATOR1005), so the two surfaces cannot disagree either.
+export function readFleetQuota(nowSec: number): QuotaSnapshot {
+  const maxAgeSec = Number(process.env.QUOTA_MAX_AGE_SEC) || DEFAULT_MAX_AGE_SEC
+  return chooseQuotaSnapshot(
+    readQuotaSnapshot(join(PROJECT_ROOT, 'store', '.claude-rate-limits.json'), nowSec, maxAgeSec),
+    readModQuotaSnapshot(STATE_OBSERVER_STATE_DIR, nowSec, maxAgeSec),
+  )
 }
 
 export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
@@ -151,14 +167,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
         avatarUrl: `/api/agents/${encodeURIComponent(a)}/avatar`,
       })
     }
-    // Same file and the same staleness threshold the quota monitor uses, so the
-    // strip and the alert can never disagree about what the fleet has left.
-    const maxAgeSec = Number(process.env.QUOTA_MAX_AGE_SEC) || DEFAULT_MAX_AGE_SEC
-    const quota = readQuotaSnapshot(
-      join(PROJECT_ROOT, 'store', '.claude-rate-limits.json'),
-      Math.floor(Date.now() / 1000),
-      maxAgeSec,
-    )
+    const quota = readFleetQuota(Math.floor(Date.now() / 1000))
     // Separate source (scripts/usage-collect.py), separate freshness rule --
     // see src/web/quota.ts for why this isn't folded into readQuotaSnapshot.
     const fableMaxAgeSec = Number(process.env.QUOTA_FABLE_MAX_AGE_SEC) || DEFAULT_FABLE_MAX_AGE_SEC

@@ -40,6 +40,13 @@ export default defineConfig({
       // src/. Running a vendor's suite is a separate workflow with the vendor's own install,
       // never this one -- without this line fleet-test.sh would collect all eight.
       'vendor/**',
+      // plugins/*/tests/** (Koteg 14, d7e1d611): a Claude Code mod's own tests import
+      // 'claude-code/testing', which exists only under `claude plugin test` (the engine
+      // supplies it); under vitest they cannot even load. This upstream merge itself adds
+      // plugins/agent-state-observer/tests/observer.test.ts with exactly that import --
+      // without this line fleet-test.sh would collect and fail to load it. Run instead with
+      // `claude plugin test plugins/<mod>` (MODSTERMEK1005).
+      'plugins/*/tests/**',
     ],
     // Runs ONCE, in the main process, before any worker starts -- unlike setupFiles below, which
     // vitest's default per-file isolation re-runs for every test file. assert-not-live-install.ts
@@ -54,7 +61,8 @@ export default defineConfig({
     // motivating problem does not exist on this fork yet, and raising the GLOBAL default has a
     // real cost upstream's comment did not weigh: a genuinely hung/broken test elsewhere in the
     // suite would now wait 60s instead of vitest's shorter default before failing. Revisit if
-    // this fork ever upgrades to vitest 4.
+    // this fork ever upgrades to vitest 4. Still declined in Koteg 14 (d7e1d611): same upstream
+    // hunk reappeared unchanged, reasoning unchanged.
     // Hard gates, run in every worker before any test module is imported:
     //  - assert-not-live-install: refuse to run inside a live install (see that
     //    setup file's header for the 2026-07-27 incident it prevents).

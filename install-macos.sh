@@ -1687,6 +1687,46 @@ else
   echo -e "    ${DIM}Ellenorzes: launchctl print gui/$(id -u)/${CHANNELS_PLIST} | grep -E 'state|pid'${NC}"
 fi
 
+# NOT ADOPTED (card ef6a8031/e47dc04a, re-removed 2026-10-14 after Köteg 14 silently reintroduced
+# it via upstream merge -- see the sibling pinning test's own header, named deliberately NOT here
+# so this comment itself cannot retrip that test's strict zero-occurrences check, and
+# src/fork-upstream/acknowledged-conflicts.ts's update.sh entry, card c2aeefa5): a launchd --load
+# wire-up of the idle-liveness probe script here duplicates the same deferred upstream feature
+# update.sh's unit-maintenance function for it already carries NOT ADOPTED. If this comment is
+# gone again, someone re-decided the feature -- update the pinning test instead of re-deleting.
+
+# Stuck-modal guard, the launchd counterpart of the systemd unit template. A
+# modal left open in the main session (a /mcp dialog after a full disk, the
+# CLI's "Switch model?" after a /model -- measured 2026-10-05, half an hour of
+# queued Telegram messages) blocks every inbound message, and on macOS nothing
+# even noticed it. Installed in its default mode, log-only: detection and a
+# log line; recovery stays opt-in (STUCK_MODAL_MODE=alert|act in .env, see
+# docs/disk-modal-guards.md). Non-fatal, like the probe above.
+if [ -x "$INSTALL_DIR/scripts/install-stuck-modal-guard.sh" ]; then
+  if "$INSTALL_DIR/scripts/install-stuck-modal-guard.sh" --load >/dev/null 2>&1; then
+    ok "Beragadt-ablak or telepitve (percenkent; alapbol csak naploz, beavatkozni a STUCK_MODAL_MODE=act kapcsoloval fog)"
+  else
+    warn "A beragadt-ablak or telepitese nem sikerult -- inditsd kezzel: scripts/install-stuck-modal-guard.sh --load"
+  fi
+fi
+
+# Main-agent inbox observer, installed the same way and for the same reason: a
+# probe nobody schedules is not a probe. Every delivery path except the main
+# agent's queue is watched by something, and the one in-process reader of that
+# queue lives inside the dashboard -- so when the dashboard is down or wedged,
+# the watcher is down with it and mail to the main agent sits pending unseen.
+# The observer runs from launchd instead, on its own 5-minute schedule, and
+# alerts over the direct Bot API rather than /api/*, which dies with the same
+# process. Idempotent, --load starts it at once, and non-fatal: a failed
+# observer install must not fail the whole installation.
+if [ -x "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" ]; then
+  if "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" --load >/dev/null 2>&1; then
+    ok "Fo-agens inbox-figyelo telepitve (5 percenkent, a dashboard folyamaton KIVUL)"
+  else
+    warn "Az inbox-figyelo telepitese nem sikerult -- inditsd kezzel: scripts/install-main-inbox-observer.sh --load"
+  fi
+fi
+
 # Verify channel plugin is working
 sleep 3
 echo ""

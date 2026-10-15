@@ -21,7 +21,10 @@ const write = (o: Record<string, unknown>) => writeFileSync(p(), JSON.stringify(
 
 describe('readHardStop', () => {
   it('reads an active flag with its numbers and reason', () => {
-    write({ active: true, percent: 98, testStop: 97, exemptAgents: ['mikrob'], reason: 'over', updatedAt: 5 })
+    write({
+      active: true, percent: 98, testStop: 97, exemptAgents: ['mikrob'], reason: 'over', updatedAt: 5,
+      newDevStopActivatedAt: 3, inProgressAtActivation: ['a', 'b'],
+    })
     expect(readHardStop(p())).toEqual({
       active: true,
       percent: 98,
@@ -31,7 +34,16 @@ describe('readHardStop', () => {
       exemptAgents: ['mikrob'],
       reason: 'over',
       updatedAt: 5,
+      newDevStopActivatedAt: 3,
+      inProgressAtActivation: ['a', 'b'],
     })
+  })
+
+  it('an old-format flag with no activation fields reads them as null/empty, never a guess', () => {
+    write({ active: true, percent: 98, testStop: 97, exemptAgents: ['mikrob'], reason: 'over', updatedAt: 5 })
+    const flag = readHardStop(p())
+    expect(flag.newDevStopActivatedAt).toBeNull()
+    expect(flag.inProgressAtActivation).toEqual([])
   })
 
   it('a MISSING flag is not a stop (fail-open: a stop signal, not a permission)', () => {

@@ -98,7 +98,11 @@ const CHECK_BLOCKED_TIMEOUT_MS = 10_000
  * killed-by-signal or timed-out run (status null) -- because "could not confirm this is safe"
  * must never be read as "safe".
  */
-function isBlockedByLandedFilter(project: string, tags: string, title: string, desc: string): boolean {
+// Exported (card 626df838, Gemini-orch 3/4): the draft-review sweep needs the exact same
+// project-allowlist + sensitive-tag screening before anything -- including a card's actual
+// title/description, not just title+labels -- reaches Gemini. Re-exporting the single source of
+// truth instead of a second copy, same reasoning as readFallbackRoute's export above.
+export function isBlockedByLandedFilter(project: string, tags: string, title: string, desc: string): boolean {
   // H2 (WhiteHat2, card 82a81c45 comment 17986): spawnSync THROWS synchronously (not a result.error)
   // when any argv string contains an embedded NUL byte -- a title/tag with a literal NUL crashed this
   // whole function, and because this is called from inside a .filter() callback with no try/catch

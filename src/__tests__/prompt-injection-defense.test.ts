@@ -14,7 +14,6 @@ import { fileURLToPath } from 'node:url'
 import { egressDecision, firecrawlDisallowedParams, isEgressBlocked, loadRuntimeAllowlist } from '../../scripts/hooks/egress-gate.mjs'
 import {
   injectEgressGate,
-  ensureEgressGate,
   EGRESS_GATE_MATCHER,
 } from '../web/agent-scaffold.js'
 import {
@@ -575,6 +574,16 @@ describe('loadRuntimeAllowlist', () => {
     expect(src).toContain('egress-allowlist.json')
   })
 
+  it('logs the sha of every allowlist read (card 86c1372a F-RH1 (c))', () => {
+    const readLog = join(REPO_ROOT, 'store', 'egress-allowlist-read.log')
+    const before = (() => { try { return readFileSync(readLog, 'utf-8') } catch { return '' } })()
+    loadRuntimeAllowlist()
+    const after = readFileSync(readLog, 'utf-8')
+    expect(after.length).toBeGreaterThan(before.length)
+    const newLines = after.slice(before.length)
+    expect(newLines).toMatch(/sha=(missing|[0-9a-f]{12})\n$/)
+  })
+
   it('store/egress-allowlist.json is NOT committed (store/ is gitignored)', () => {
     // This file must never be committed upstream -- it is operator-managed at runtime.
     // Verify it's in .gitignore (or absent from the git index).
@@ -762,7 +771,12 @@ describe('/api/messages to-authentication (card 523a1426)', () => {
 
   it('calls isKnownAgent with the sanitized LOCAL to field', () => {
     expect(src).toMatch(/const sanitized = sanitizeAgentIdent\(storedTo\)/)
-    expect(src).toMatch(/if \(!isKnownAgent\(sanitized\)\)/)
+    // Köteg 14 (card d7e1d611, upstream VOICEREPLY1005, afa68d8b) added a `!isVoiceMailbox &&`
+    // clause ahead of the isKnownAgent check in the same `if` -- the voice-channel id is a pull
+    // mailbox exempt from local-recipient authentication, landing in the SAME merge as this test.
+    // The guard itself is unweakened (isKnownAgent still gates every non-exempt local recipient);
+    // only the exact substring this regex requires changed shape.
+    expect(src).toMatch(/if \((!isVoiceMailbox && )?!isKnownAgent\(sanitized\)\)/)
   })
 
   it('rejects an unknown local recipient with 400', () => {

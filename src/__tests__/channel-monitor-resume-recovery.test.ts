@@ -154,7 +154,7 @@ describe('channel-monitor: periodic detached-claude reap (CB6CF755 durable fix)'
     // throttle interval is a sane slow cadence (minutes, not every 60s tick).
     const m = src.match(/const\s+DETACHED_REAP_INTERVAL_MS\s*=\s*([\d*\s_]+)/)
     expect(m, 'DETACHED_REAP_INTERVAL_MS not found').not.toBeNull()
-    // eslint-disable-next-line no-eval
+     
     const ms = Function(`return (${m![1]})`)() as number
     expect(ms).toBeGreaterThanOrEqual(5 * 60 * 1000)
   })

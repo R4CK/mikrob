@@ -2761,12 +2761,12 @@ const OLLAMA_RESTORE_SCRIPT = join(PROJECT_ROOT, 'scripts', 'ollama-boot-restore
  *  script only needs PATH, HOME (it reads $HOME/.claude/channels/telegram/.env for its own Telegram
  *  alert) and an optional OLLAMA_HOST override -- everything else is either a hardcoded default or a
  *  test-only OLLAMA_RESTORE_* seam this production call never sets. */
-function buildOllamaRestoreEnv(): NodeJS.ProcessEnv {
+export function buildOllamaRestoreEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: process.env.HOME }
   if (process.env.OLLAMA_HOST) env.OLLAMA_HOST = process.env.OLLAMA_HOST
   return env
 }
-function runOllamaBootRestore(): void {
+export function runOllamaBootRestore(): void {
   try {
     execFileSync('/bin/bash', [OLLAMA_RESTORE_SCRIPT], { timeout: 55000, stdio: 'ignore', env: buildOllamaRestoreEnv() })
   } catch (err: unknown) {

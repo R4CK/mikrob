@@ -32,7 +32,10 @@ import { GENERATED_COMMENT_AUTHORS } from './web/kanban-landed-guard.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
 const STORE = join(ROOT, 'store')
-const DRAFTS_DIR = join(STORE, 'drafts')
+// Exported (card 626df838, Gemini-orch 3/4): the draft-review sweep resolves the same ref paths
+// this module writes/deletes and needs the directory boundary to confirm a resolved path never
+// escapes it, rather than hardcoding a second copy of this join.
+export const DRAFTS_DIR = join(STORE, 'drafts')
 
 const DRAFT_AUTHOR = 'local-llm'
 const CLEANUP_AUTHOR = 'gemini-orch-cleanup'
@@ -104,6 +107,18 @@ export interface CleanupSweepSummary {
   readonly cleaned: string[]
 }
 
+/** Every card id that currently has a directory under store/drafts/ -- i.e. at least one
+ *  Gemini-orch draft file sitting on disk, reviewed or not. Exported (card 626df838, Gemini-orch
+ *  3/4) so the draft-review sweep can find the same candidate set this cleanup sweep already
+ *  computes, instead of re-reading the drafts tree with a second, possibly-drifting listing. */
+export function listDraftCardIds(): string[] {
+  return existsSync(DRAFTS_DIR)
+    ? readdirSync(DRAFTS_DIR, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name)
+    : []
+}
+
 /**
  * I/O wrapper: for every card id with a directory under store/drafts/, applies planDraftCleanup
  * to that card's live comments, deletes the directory and posts a one-line trace comment when
@@ -112,12 +127,7 @@ export interface CleanupSweepSummary {
  * store/drafts/ tree) simply stops naming it -- no separate "already gone" check is needed.
  */
 export function runDraftCleanupSweep(
-  listCardIds: () => string[] = () =>
-    existsSync(DRAFTS_DIR)
-      ? readdirSync(DRAFTS_DIR, { withFileTypes: true })
-          .filter((d) => d.isDirectory())
-          .map((d) => d.name)
-      : [],
+  listCardIds: () => string[] = listDraftCardIds,
   getComments: (id: string) => Comment[] = (id) => getKanbanComments(id) as unknown as Comment[],
   deleteDir: (absPath: string) => void = (p) => rmSync(p, { recursive: true, force: true }),
   postComment: (id: string, author: string, content: string) => void = (id, author, content) =>
