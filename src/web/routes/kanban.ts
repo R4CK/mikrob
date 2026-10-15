@@ -316,6 +316,17 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   ].join('\n')
 }
 
+// The actor rule of the two kanban writes, PUT /api/kanban/:id and POST /api/kanban/:id/move (card f6fba9ec). The actor
+// is bound into the event rows, which only take a string or NULL: anything else is refused BEFORE any write (X7 on the
+// PUT, X16 on /move). An empty or blank string names nobody, so it counts as no actor (X15). With no actor, a browser
+// session's user made the change (the dashboard's own edits may send none), so the rows name them; a token caller
+// without one stays anonymous (NULL), as before.
+function kanbanWriteActor(actor: unknown, auth: RouteContext['auth']): { error: string } | { actor: string | undefined } {
+  if (actor !== undefined && actor !== null && typeof actor !== 'string') return { error: 'actor must be a string or null' }
+  if (typeof actor === 'string' && actor.trim() !== '') return { actor }
+  return { actor: auth?.kind === 'session' && auth.user ? auth.user : undefined }
+}
+
 // Option D: kanban -> agent dispatch. When a card moves to in_progress, wake the
 // assigned agent once via the inter-agent message router (createAgentMessage),
 // which gives retry / dedup / trust-wrapping / busy-receiver handling for free.
@@ -1465,6 +1476,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanEventsMatch && method === 'GET') {
     const cardId = decodeURIComponent(kanbanEventsMatch[1])
     json(res, getKanbanCardEvents(cardId))
+    return true
+  }
+
+  // The due_date / assignee / priority changes (card f6fba9ec). A route of its
+  // own, so the /events array above keeps its shape for every existing reader.
+  const kanbanFieldEventsMatch = path.match(/^\/api\/kanban\/([^/]+)\/field-events$/)
+  if (kanbanFieldEventsMatch && method === 'GET') {
+    const cardId = decodeURIComponent(kanbanFieldEventsMatch[1])
+    json(res, getKanbanCardFieldEvents(cardId))
     return true
   }
 

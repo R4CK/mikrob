@@ -4175,6 +4175,12 @@ export const KANBAN_WRITABLE_FIELDS = [
   'parent_id', 'due_date', 'sort_order',
 ] as const
 
+// The columns whose changes updateKanbanCard records in kanban_card_field_events
+// (card f6fba9ec). An audit asking "when did the deadline move, and who moved
+// it" could not be answered: kanban_card_events holds status transitions only,
+// and updated_at moves on any write. Status keeps its own table.
+export const KANBAN_AUDITED_FIELDS = ['due_date', 'assignee', 'priority'] as const
+
 export function updateKanbanCard(
   id: string,
   fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
@@ -4214,33 +4220,40 @@ export function updateKanbanCard(
   // (the card exists) but touch nothing.
   const realChange = KANBAN_WRITABLE_FIELDS.some((k) => f[k] !== card[k])
   if (!realChange) return true
-  const changed = db.prepare(
-    `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
-     WHERE id=?`
-  ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
-  if (changed && statusChanges) {
-    const r = db.prepare(
-      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced, reason) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(id, card.status, f.status, opts?.actor ?? null, now, forcedFlag, opts?.reason?.trim() || null)
-    // Card d05d72b3: waiting/done is the qualifying transition -- see maybeResolveStuckIncident's
-    // own comment for why the filter lives here, at the ONE place that knows a status event was
-    // just written, rather than duplicated inside that function.
-    if (f.status === 'waiting' || f.status === 'done') {
-      maybeResolveStuckIncident(id, 'kanban_card_events', Number(r.lastInsertRowid), now)
+  // ONE TRANSACTION for the card write and every row it owes (card f6fba9ec,
+  // a review finding): the UPDATE, the ancestor stamps, the status event and the
+  // field events either all happen or none does. Before, a row insert that
+  // threw (an actor SQLite cannot bind: a PUT with actor true answered 500)
+  // left the card changed with no row saying who changed it.
+  return db.transaction((): boolean => {
+    const changed = db.prepare(
+      `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
+       WHERE id=?`
+    ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+    if (changed) {
+      touchAncestorChain(f.parent_id, now, id)
+      // A re-parent leaves the OLD chain stale too: that subtree just lost a child, which is a change
+      // to it even though no row beneath it was written.
+      if (card.parent_id && card.parent_id !== f.parent_id) touchAncestorChain(card.parent_id, now, id)
     }
-  }
-  if (changed) {
-    touchAncestorChain(f.parent_id, now, id)
-    // A re-parent leaves the OLD chain stale too: that subtree just lost a child, which is a change
-    // to it even though no row beneath it was written.
-    if (card.parent_id && card.parent_id !== f.parent_id) touchAncestorChain(card.parent_id, now, id)
-  }
-  if (changed) recordKanbanFieldChanges(id, card, f, opts?.actor, now)
-  // Card 6cd61430: an edit can ADD a Pair-* line or a parent. It can also REMOVE one, and this
-  // insert-only path cannot see that -- reconcileKanbanRelations() is what deletes the stale edge,
-  // which is why the sweep is a reconcile and not a backfill.
-  if (changed) noteRelations(cardEdges({ id, description: f.description, parent_id: f.parent_id }))
-  return changed
+    if (changed && statusChanges) {
+      const r = db.prepare(
+        'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced, reason) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(id, card.status, f.status, opts?.actor ?? null, now, forcedFlag, opts?.reason?.trim() || null)
+      // Card d05d72b3: waiting/done is the qualifying transition -- see maybeResolveStuckIncident's
+      // own comment for why the filter lives here, at the ONE place that knows a status event was
+      // just written, rather than duplicated inside that function.
+      if (f.status === 'waiting' || f.status === 'done') {
+        maybeResolveStuckIncident(id, 'kanban_card_events', Number(r.lastInsertRowid), now)
+      }
+    }
+    if (changed) recordKanbanFieldChanges(id, card, f, opts?.actor, now)
+    // Card 6cd61430: an edit can ADD a Pair-* line or a parent. It can also REMOVE one, and this
+    // insert-only path cannot see that -- reconcileKanbanRelations() is what deletes the stale edge,
+    // which is why the sweep is a reconcile and not a backfill.
+    if (changed) noteRelations(cardEdges({ id, description: f.description, parent_id: f.parent_id }))
+    return changed
+  })()
 }
 
 /** The fields whose changes are audited here. `status` is excluded because kanban_card_events
@@ -4509,34 +4522,39 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   // Card 4bbb5167: same predicate as updateKanbanCard's, gated on a REAL transition so a
   // sort_order reorder inside one column never trips it.
   if (prev !== undefined && prev !== status && bulkAttributionRequired(now, actor, reason, id)) return false
-  // dispatched_at guards ONE in_progress spell (one activation -> one wake-up message), it is not a
-  // permanent tombstone. Nothing used to clear it, so a card pulled to in_progress and put BACK
-  // (planned/waiting) burned its dispatch forever: the board showed it alive while the next pull
-  // woke nobody. Clearing it on every move that does not land in in_progress re-arms the next
-  // activation -- and heals a row already stuck this way, since the clear does not depend on the
-  // previous status.
-  const changed = db.prepare(
-    status === 'in_progress'
-      ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
-      : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
-  ).run(status, sortOrder, now, id).changes > 0
-  if (changed) touchAncestorChain(row?.parent_id, now, id)
-  if (changed && prev !== undefined && prev !== status) {
-    // `forced` records only whether THIS transition actually needed the reviewed-card-reopen
-    // override -- an ordinary move that happens to carry `force:true` (e.g. an exempt agent's
-    // client always sends it) is not itself a guard override and must not read as one; a caller
-    // that wants the newDevStop route-layer bypass in the audit trail records that separately.
-    const r = db.prepare(
-      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced, reason) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    ).run(id, prev, status, actor ?? null, now, forcedOverride || depBlocked ? 1 : 0, reason?.trim() || null)
-    // Card d05d72b3: the drag/move path is the other live writer of a status transition -- see
-    // updateKanbanCard's sibling hook and maybeResolveStuckIncident's own comment.
-    if (status === 'waiting' || status === 'done') {
-      maybeResolveStuckIncident(id, 'kanban_card_events', Number(r.lastInsertRowid), now)
+  // ONE TRANSACTION for the move and the row it owes, as in updateKanbanCard (card f6fba9ec, X16): the UPDATE, the
+  // ancestor stamps and the status event either all happen or none does, so a row insert that throws cannot leave a
+  // card moved with no row saying who moved it.
+  return db.transaction((): boolean => {
+    // dispatched_at guards ONE in_progress spell (one activation -> one wake-up message), it is not a
+    // permanent tombstone. Nothing used to clear it, so a card pulled to in_progress and put BACK
+    // (planned/waiting) burned its dispatch forever: the board showed it alive while the next pull
+    // woke nobody. Clearing it on every move that does not land in in_progress re-arms the next
+    // activation -- and heals a row already stuck this way, since the clear does not depend on the
+    // previous status.
+    const changed = db.prepare(
+      status === 'in_progress'
+        ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
+        : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
+    ).run(status, sortOrder, now, id).changes > 0
+    if (changed) touchAncestorChain(row?.parent_id, now, id)
+    if (changed && prev !== undefined && prev !== status) {
+      // `forced` records only whether THIS transition actually needed the reviewed-card-reopen
+      // override -- an ordinary move that happens to carry `force:true` (e.g. an exempt agent's
+      // client always sends it) is not itself a guard override and must not read as one; a caller
+      // that wants the newDevStop route-layer bypass in the audit trail records that separately.
+      const r = db.prepare(
+        'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at, forced, reason) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      ).run(id, prev, status, actor ?? null, now, forcedOverride || depBlocked ? 1 : 0, reason?.trim() || null)
+      // Card d05d72b3: the drag/move path is the other live writer of a status transition -- see
+      // updateKanbanCard's sibling hook and maybeResolveStuckIncident's own comment.
+      if (status === 'waiting' || status === 'done') {
+        maybeResolveStuckIncident(id, 'kanban_card_events', Number(r.lastInsertRowid), now)
+      }
     }
-  }
-  if (changed) touchAncestorsOf(id, now)
-  return changed
+    if (changed) touchAncestorsOf(id, now)
+    return changed
+  })()
 }
 
 /**
@@ -5419,6 +5437,20 @@ export interface KanbanCardEvent {
 
 export function getKanbanCardEvents(cardId: string): KanbanCardEvent[] {
   return db.prepare('SELECT * FROM kanban_card_events WHERE card_id = ? ORDER BY created_at ASC, id ASC').all(cardId) as KanbanCardEvent[]
+}
+
+export interface KanbanCardFieldEvent {
+  id: number
+  card_id: string
+  field: (typeof KANBAN_AUDITED_FIELDS)[number]
+  old_value: string | null
+  new_value: string | null
+  actor: string | null
+  created_at: number
+}
+
+export function getKanbanCardFieldEvents(cardId: string): KanbanCardFieldEvent[] {
+  return db.prepare('SELECT * FROM kanban_card_field_events WHERE card_id = ? ORDER BY created_at ASC, id ASC').all(cardId) as KanbanCardFieldEvent[]
 }
 
 // Lookup a kanban card's `seq` (its sqlite rowid) by the 8-char hex id stored
