@@ -19,6 +19,24 @@ const TIMEOUT_MS = 30 * 60 * 1000
 
 const TZ = APP_TZ  // install zone (config.APP_TZ); was hardcoded Europe/Budapest
 
+// CHANBGLEAK1015 (card a5ef4771, follow-up to 9e2039c0): a bg-task never has a channel of its
+// own, so it needs none of these -- but `tmux new-session` spawns a BRAND NEW session, and this
+// call used to hand it `{ ...process.env }` verbatim. If the dashboard process's own env ever
+// carries the main agent's TELEGRAM_STATE_DIR (or a sibling channel var), any claude started
+// inside a marveen checkout picks it up via that checkout's .claude/settings.json enabling the
+// channel plugin, and the plugin SIGTERMs what it sees as a 'stale' poller holding bot.pid --
+// which is the main agent. Same var list as agent-process.ts's unsetTokens (CHANSTATEUNSET930).
+const CHANNEL_ENV_VARS_TO_STRIP = [
+  'TELEGRAM_BOT_TOKEN', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'DISCORD_BOT_TOKEN',
+  'TELEGRAM_STATE_DIR', 'SLACK_STATE_DIR', 'DISCORD_STATE_DIR', 'GOOGLECHAT_STATE_DIR', 'TEAMS_STATE_DIR',
+] as const
+
+function bgTaskEnv(prompt: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, BG_PROMPT: prompt }
+  for (const key of CHANNEL_ENV_VARS_TO_STRIP) delete env[key]
+  return env
+}
+
 function bgSessionName(id: string): string {
   return `bg-${id}`
 }
@@ -78,7 +96,7 @@ export function spawnBackgroundTask(agentId: string, prompt: string): Background
       `${shellCmd}; echo '___BG_DONE___'; sleep 5`,
     ], {
       timeout: 5000,
-      env: { ...process.env, BG_PROMPT: prompt },
+      env: bgTaskEnv(prompt),
     })
   } catch (err) {
     logger.error({ err, id, session }, 'Failed to spawn background task tmux session')

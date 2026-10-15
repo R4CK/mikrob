@@ -10,6 +10,23 @@ import Database from 'better-sqlite3'
 // vi.hoisted: the mock factory below runs before this file's own top-level code, so the flag it
 // reads must be created through vi.hoisted rather than a plain `let`, which would not exist yet.
 const claudeResolveState = vi.hoisted(() => ({ shouldThrow: true }))
+
+// Card a5ef4771: records the `env` passed to every `tmux new-session` call so a test can assert
+// the dangerous channel vars never reach it, WITHOUT changing behaviour for the existing tests in
+// this file -- every call (including non-'new-session' ones, and tmuxBin()'s own `which` lookup
+// via execSync, which this does not touch) still runs the real implementation.
+const execFileCallLog = vi.hoisted(() => ({ newSessionEnvs: [] as (NodeJS.ProcessEnv | undefined)[] }))
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  return {
+    ...actual,
+    execFileSync: (file: string, args?: readonly string[], options?: any) => {
+      if (args?.[0] === 'new-session') execFileCallLog.newSessionEnvs.push(options?.env)
+      return actual.execFileSync(file, args as string[], options)
+    },
+  }
+})
+
 vi.mock('../platform.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../platform.js')>()
   return {
@@ -237,5 +254,67 @@ describe('spawnBackgroundTask: a PATH gap must not leave an orphaned running row
     // already covered by the existing catch-block behavior, not what this test pins. What
     // matters here is that the row EXISTS at all, proving the insert was reached this time.
     expect(getBackgroundTasks('samu', true).length).toBe(1)
+  })
+})
+
+// Card a5ef4771 (follow-up to 9e2039c0, which only fixed the test that reproduced this on the
+// shared tmux server): spawnBackgroundTask used to hand `tmux new-session` `{ ...process.env }`
+// verbatim. A bg-task's cwd is a marveen checkout, whose .claude/settings.json turns the channel
+// plugin on -- if process.env ever carries the main agent's TELEGRAM_STATE_DIR (or a sibling
+// channel var), the plugin inside that bg-task session sees bot.pid pointing at the main agent's
+// poller and SIGTERMs it as 'stale' (measured 2026-09-25: 53 Telegram-plugin deaths in one day).
+describe('spawnBackgroundTask: channel env vars must never reach `tmux new-session` (card a5ef4771)', () => {
+  const plantedVars = {
+    TELEGRAM_BOT_TOKEN: '123456:planted-token',
+    SLACK_BOT_TOKEN: 'xoxb-planted',
+    SLACK_APP_TOKEN: 'xapp-planted',
+    DISCORD_BOT_TOKEN: 'planted-discord-token',
+    TELEGRAM_STATE_DIR: '/home/neon/marveen/.claude/channels/telegram',
+    SLACK_STATE_DIR: '/planted/slack-state',
+    DISCORD_STATE_DIR: '/planted/discord-state',
+    GOOGLECHAT_STATE_DIR: '/planted/googlechat-state',
+    TEAMS_STATE_DIR: '/planted/teams-state',
+  }
+  let savedEnv: Record<string, string | undefined> = {}
+
+  beforeEach(async () => {
+    const { initDatabase } = await import('../db.js')
+    initDatabase(':memory:')
+    claudeResolveState.shouldThrow = false
+    execFileCallLog.newSessionEnvs.length = 0
+    savedEnv = {}
+    for (const key of Object.keys(plantedVars)) {
+      savedEnv[key] = process.env[key]
+      process.env[key] = (plantedVars as Record<string, string>)[key]
+    }
+  })
+
+  afterEach(() => {
+    for (const key of Object.keys(plantedVars)) {
+      if (savedEnv[key] === undefined) delete process.env[key]
+      else process.env[key] = savedEnv[key]
+    }
+  })
+
+  it('strips every channel bot-token and state-dir var, even though the dashboard process has them set', async () => {
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+
+    spawnBackgroundTask('marveen', 'another prompt')
+
+    expect(execFileCallLog.newSessionEnvs.length).toBe(1)
+    const spawnedEnv = execFileCallLog.newSessionEnvs[0]
+    for (const key of Object.keys(plantedVars)) {
+      expect(spawnedEnv?.[key]).toBeUndefined()
+    }
+  })
+
+  it('leaves unrelated env vars (PATH, BG_PROMPT) untouched', async () => {
+    const { spawnBackgroundTask } = await import('../web/routes/background-tasks.js')
+
+    spawnBackgroundTask('marveen', 'yet another prompt')
+
+    const spawnedEnv = execFileCallLog.newSessionEnvs[0]
+    expect(spawnedEnv?.PATH).toBe(process.env.PATH)
+    expect(spawnedEnv?.BG_PROMPT).toBe('yet another prompt')
   })
 })
