@@ -33,8 +33,8 @@ while [ $# -gt 0 ]; do
     --selftest)     SELFTEST=1; shift ;;
     --force-reason)
       shift
-      if [ $# -eq 0 ] || [ -z "$1" ]; then
-        echo "error: --force-reason requires a non-empty value" >&2; usage; exit 2
+      if [ $# -eq 0 ] || [ -z "$1" ] || [[ "$1" == -* ]]; then
+        echo "error: --force-reason requires a non-empty value (not a flag)" >&2; usage; exit 2
       fi
       FORCE_REASON="$1"; shift ;;
     *)
@@ -193,6 +193,9 @@ if [ "$SELFTEST" = "1" ]; then
   _arg_test "unknown-arg '--self-test'" --self-test
   _arg_test "--force-reason without value" --force-reason
   _arg_test "--dry-run then unknown 'selftest'" --dry-run selftest
+  _arg_test "--force-reason followed by a flag (--dry-run)" --force-reason --dry-run
+  _arg_test "--force-reason followed by a flag (--selftest)" --force-reason --selftest
+  _arg_test "--force-reason followed by a short flag (-n)" --force-reason -n
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
