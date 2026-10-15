@@ -69,7 +69,19 @@ describe('command task timeout ends the whole process tree', () => {
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
-  it('a group kill that fails for another reason than "already gone" is logged, and bash itself is still killed', async () => {
+  // SKIPPED 2026-10-15 (backend3, card f3dd0c65, Köteg 16, upstream commit new to this round):
+  // asserts a logger.warn({ task, error }, '...process group...') shape from upstream's own
+  // endCommandGroup() (its EPERM-vs-ESRCH distinction). This fork's command-task.ts does NOT have
+  // its own endCommandGroup -- runCommand delegates to src/web/exec-async.ts's generic, shared
+  // execFileAsync (acknowledged-conflicts.ts, 'src/web/command-task.ts' entry: "KEEP THE FORK'S
+  // SIDE WHOLESALE... the fork's mechanism is different"), whose timeout handler logs a single
+  // generic 'child exceeded its timeout; process group killed' line with no task/error fields and
+  // no success/failure distinction on the kill itself. The OTHER two tests in this file (the actual
+  // CMDTASKKILL1772 behaviour: whole-process-tree kill on timeout) pass unmodified -- exec-async.ts
+  // already does that, just without this specific diagnostic shape. Surfacing the real kill-failure
+  // reason in exec-async.ts's own log line would be a genuine, worthwhile improvement, but is a
+  // separate observability change, not something to fold into a merge-conflict fixup.
+  it.skip('a group kill that fails for another reason than "already gone" is logged, and bash itself is still killed', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cmdtaskkill-'))
     const pidFile = join(dir, 'bash.pid')
     const sleepFile = join(dir, 'sleep.pid')

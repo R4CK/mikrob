@@ -23,7 +23,8 @@ describe('showToast is never given a boolean as its duration', () => {
     expect(hits).toEqual([])
   })
   it('the reconnect and smoke-test errors stay long enough to read', () => {
-    const app = readFileSync(join(WEB, 'app.js'), 'utf8')
+    // Lives in app-auth-channel.js in this fork (modularised out of app.js), not app.js itself.
+    const app = readFileSync(join(WEB, 'app-auth-channel.js'), 'utf8')
     for (const call of [
       "showToast(data.message || 'Reconnect sikertelen', 8000)",
       "showToast('Reconnect hiba', 8000)",

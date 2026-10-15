@@ -1989,7 +1989,7 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
   # grandchild of this pane exists; _bot_hijacked is set above when the
   # ownership check (bd_verdict) found the pid belongs to someone else.
   if [ "$_plugin_alive" != "true" ] && [ "$_bot_hijacked" != "true" ]; then
-    _watchdog_claude_pid="$($TMUX list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+    _watchdog_claude_pid="$($TMUX list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
     if [ -n "$_watchdog_claude_pid" ] && /usr/bin/pgrep -P "$_watchdog_claude_pid" bun >/dev/null 2>&1; then
       _plugin_alive=true
     fi

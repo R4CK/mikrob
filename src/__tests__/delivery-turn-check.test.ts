@@ -24,8 +24,9 @@ vi.mock('../db.js', () => ({
 }))
 vi.mock('../env.js', () => ({ readEnvFile: () => ({}) }))
 // The default transcript resolver, pointed at the temp dir of each test.
-vi.mock('../web/agent-config.js', () => ({ agentDir: (n: string) => `/agents/${n}` }))
-vi.mock('../web/main-transcript-root.js', () => ({ configDirFor: () => undefined }))
+vi.mock('../web/agent-config.js', () => ({ agentDir: (n: string) => `/agents/${n}`, agentConfigRoot: (n: string) => `/agents/${n}` }))
+vi.mock('../web/main-transcript-root.js', () => ({ mainAgentConfigDir: () => undefined }))
+vi.mock('../web/claude-plans.js', () => ({ resolveAgentConfigDirForRead: () => undefined }))
 vi.mock('../web/active-model.js', () => ({ projectsDirFor: () => dir }))
 
 // Real fs work runs on libuv, not on the faked timers: poll with setImmediate

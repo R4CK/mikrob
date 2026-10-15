@@ -104,13 +104,19 @@ describe('the rc secret scrub reaches already installed Linux machines', () => {
     expect(r.stdout).toContain('UPDATE-CONTINUES')
   })
 
-  it('update.sh runs the step in its unit maintenance, ABOVE the up-to-date exit', () => {
-    const maint = fnIn(update, 'run_unit_maintenance')
-    expect(maint).toMatch(/\n {2}scrub_rc_secrets\n/)
+  it('update.sh runs the step right after unit maintenance, ABOVE the up-to-date exit', () => {
+    // NOT inside run_unit_maintenance's own body: that function has its own strict
+    // ADOPTED_UNIT_FUNCTIONS allowlist (update-unit-maintenance-order.test.ts, card ef6a8031) that
+    // scrub_rc_secrets is deliberately not on -- a park_morning_timer-class leak would be exactly
+    // this test insisting on a call site the allowlist test is built to reject. Called immediately
+    // after the run_unit_maintenance call instead, which gives the same "runs every update, before
+    // any up-to-date early exit" guarantee without touching that allowlist.
     const call = update.indexOf('\nrun_unit_maintenance\n')
+    const scrubCall = update.indexOf('\nscrub_rc_secrets\n')
     const upToDate = update.indexOf('RESULT_PHASE="up-to-date"')
     expect(call).toBeGreaterThan(0)
-    expect(upToDate).toBeGreaterThan(call)
+    expect(scrubCall).toBeGreaterThan(call)
+    expect(upToDate).toBeGreaterThan(scrubCall)
   })
 
   it('the installer scrubs on an install that already has auth (the branch a re-run takes)', () => {

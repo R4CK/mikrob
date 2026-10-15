@@ -33,9 +33,17 @@ import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { readEnvFile } from '../env.js'
 import { createAgentMessage } from '../db.js'
-import { agentDir } from './agent-config.js'
-import { configDirFor } from './context-restart-gate-runner.js'
+import { agentDir, agentConfigRoot } from './agent-config.js'
+import { mainAgentConfigDir } from './main-transcript-root.js'
+import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { projectsDirFor } from './active-model.js'
+
+// Same resolver as context-restart-gate-runner.ts's configDirFor (card 272361eb/TOKENVAK915) --
+// duplicated as a 2-line call instead of importing that module, which pulls in its whole
+// channel-monitor/pane-state/session-send-lock import graph for one small helper.
+function configDirFor(name: string): string | undefined {
+  return name === MAIN_AGENT_ID ? mainAgentConfigDir(agentConfigRoot(name)) : (resolveAgentConfigDirForRead(name) ?? undefined)
+}
 
 export type TurnEvidence = 'seen' | 'blocked-by-hook' | 'absent'
 
