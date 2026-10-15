@@ -151,6 +151,13 @@ describe('TOKEN_PRUNE -- the health line that replaced the DB-size threshold (HB
     expect(out).not.toContain('rendben')
   })
 
+  it('invalid (card 63b9e332 WhiteHat2/QA finding) is loud, not silently rendben', () => {
+    const out = withPrune('TOKEN_PRUNE state=invalid retention_days=None lag_hours=None tolerance_hours=48')
+    expect(out).toContain('FIGYELEM')
+    expect(out).toContain('NEM MEGHATAROZHATO')
+    expect(out).not.toContain('rendben')
+  })
+
   it('FAIL-CLOSED: an output with NO TOKEN_PRUNE line renders muszer-hiba, never silence', () => {
     // The shape that matters in practice: an older instrument paired with a
     // newer injector. A health signal that simply vanishes when the contract
