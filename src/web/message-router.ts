@@ -118,6 +118,19 @@ export function formatStuckSessionAlert(
   if (agent === mainAgentId) return null
   const min = Math.round(stuckMs / 60000)
   const queue = `${pendingCount} pending message(s) queued`
+  // An unanswered tool-permission prompt looks EXACTLY like a wedged session
+  // from the queue side, and the not-ready text below tells the reader to
+  // restart. On 2026-09-03 that framing was one step away from throwing out
+  // two running sub-agents (~165k tokens) whose only problem was a question
+  // nobody had answered. A prompt needs an ANSWER, not a restart, so it gets
+  // its own sentence -- and the alert says who has to act.
+  if (awaitingPermission) {
+    // Carry WHAT is being asked. The orchestrator answered two of these by
+    // hand on 2026-09-03 and both times the deciding step was opening the
+    // pane to read the question; an alert that quotes it saves that step.
+    const ask = permissionAsk ? ` It asks: ${permissionAsk.title} -- ${permissionAsk.reason}` : ''
+    return `[session-stuck] Agent '${agent}' (tmux ${session}) is parked on a TOOL-PERMISSION PROMPT for ${min} min with ${queue}.${ask} This is NOT a wedged session: a tool call is waiting for a yes/no answer, and only a person can give it. Do NOT restart (that discards the running work and leaves the question unanswered) and do NOT send a blind Escape (that answers "no" on the asker's behalf). Answer it in the pane: tmux attach -t ${session}`
+  }
   // A busy pane means the session is working, so the alert must not read like
   // "wedged, restart it" -- that framing is what turned the earlier busy-pane
   // alerts into wasted restarts-in-waiting. It says what it is: a long turn,
