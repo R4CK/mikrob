@@ -2077,13 +2077,32 @@ export async function tryHandleLocalLlm(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'write_failed', message: 'A beállítás mentése nem sikerült, próbáld újra.' }, 500)
       return true
     }
-    // Best-effort mirror for the jailed agy path (see FIRST_DRAFT_MIRROR_FILE above). Never fails
-    // the request: the real switch above already landed, which is the contract this route promises.
+    // Mirror for the jailed agy path (see FIRST_DRAFT_MIRROR_FILE above). The real switch above
+    // already landed by this point, which is the contract this route promises -- a mirror failure
+    // never rolls that back.
+    let mirrorWriteFailed = false
     try {
       mkdirSync(join(STORE_DIR, '.gemini-local-subtask-gpu-gate'), { recursive: true })
       atomicWriteFileSync(FIRST_DRAFT_MIRROR_FILE, JSON.stringify({ enabled: parsed.enabled }, null, 2) + '\n')
     } catch (err) {
+      mirrorWriteFailed = true
       logger.warn({ err }, 'first-draft-enabled: killswitch mirror write failed (agy jail path degraded, main switch unaffected)')
+    }
+    // Card 784a9325 K1 (RedHat 19644): the jailed agy path reads ONLY this mirror, never the real
+    // switch file directly (bwrap pins the inode at jail-start -- see FIRST_DRAFT_MIRROR_FILE's own
+    // comment), so a failed mirror write on the OFF transition leaves the jail-visible copy stale
+    // ON while a 200 here would claim the kill switch took effect. Fail-closed: surface the failure
+    // instead of swallowing it, but only in this direction -- a failed mirror write on the ON
+    // transition leaves the jail-visible copy stale OFF, which is already the safe side, so that
+    // case keeps the old best-effort 200 (logged, not surfaced).
+    if (mirrorWriteFailed && parsed.enabled === false) {
+      json(res, {
+        enabled: parsed.enabled,
+        note,
+        error: 'mirror_write_failed',
+        message: 'A fő kapcsoló kikapcsolva, de a jail-tükör írása sikertelen -- az agy-út még a régi állapotot láthatja. Próbáld újra.',
+      }, 502)
+      return true
     }
     json(res, { enabled: parsed.enabled, note })
     return true

@@ -474,6 +474,128 @@ else
   failed=$((failed+1))
 fi
 
+# ---- K2 pin: GATE_MIRROR verdict content (card 784a9325, RedHat 19644 finding K2) -------------
+# Every case above only checks the guard's own stdout/exit code, never the GATE_MIRROR file content
+# -- so a regression in _write_gate_mirror() (wrong value, write skipped, wrong field) was invisible
+# to this whole file. Measured before this addition: 8/8 of RedHat's mutants on the mirror writer
+# survived. These cases read the mirror JSON directly on the five branches RedHat named (ok,
+# util-hold sustained, vram-hard sustained, no-gpu, unreadable) plus the write-failure contract
+# (must never change the guard's own exit code/stdout).
+mirror_field() {
+  python3 -c '
+import json, sys
+path, field = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as f:
+        d = json.load(f)
+except FileNotFoundError:
+    print("<absent>")
+    sys.exit(0)
+print(d.get(field, "<missing>"))
+' "$1" "$2"
+}
+
+check_mirror() {
+  local name="$1" mirror_path="$2" want_admit="$3" want_reason="$4"
+  local got_admit got_reason
+  got_admit="$(mirror_field "$mirror_path" admit)"
+  got_reason="$(mirror_field "$mirror_path" reason)"
+  if [ "$got_admit" = "$want_admit" ] && [ "$got_reason" = "$want_reason" ]; then
+    passed=$((passed+1))
+  else
+    echo "FAIL $name: mirror expected admit=$want_admit reason=$want_reason, got admit=$got_admit reason=$got_reason"
+    failed=$((failed+1))
+  fi
+}
+
+# ok branch -- also pins the `at` field (V5: a mutant that always writes at=0 must fail this).
+m="$tmpdir/mirror-ok.json"
+bash "$GUARD" --config "$cfg" --state "$(st mirror-ok)" --mirror "$m" --now 600000 \
+  --metrics-json '{"used_mib":4000,"total_mib":10000}' >/dev/null 2>&1
+check_mirror "mirror: ok branch" "$m" True ok
+got_at="$(mirror_field "$m" at)"
+if [ "$got_at" = "600000" ]; then
+  passed=$((passed+1))
+else
+  echo "FAIL mirror: ok branch 'at' field: expected 600000, got $got_at"
+  failed=$((failed+1))
+fi
+
+# no-gpu branch
+m="$tmpdir/mirror-no-gpu.json"
+bash "$GUARD" --config "$cfg" --state "$(st mirror-no-gpu)" --mirror "$m" --now 600000 \
+  --metrics-json '{"error":"no tool","present":false}' >/dev/null 2>&1
+check_mirror "mirror: no-gpu branch" "$m" True no-gpu
+
+# unreadable branch
+m="$tmpdir/mirror-unreadable.json"
+bash "$GUARD" --config "$cfg" --state "$(st mirror-unreadable)" --mirror "$m" --now 600000 \
+  --metrics-json '{"error":"smi failed","present":true}' >/dev/null 2>&1
+check_mirror "mirror: unreadable branch" "$m" False unreadable
+
+# vram-hard, sustained (two calls, same shape as the "flips to HOLD once sustained" case above)
+m="$tmpdir/mirror-hard.json"
+s="$(st mirror-hard)"
+bash "$GUARD" --config "$cfg" --state "$s" --mirror "$m" --now 700000 \
+  --metrics-json '{"used_mib":9500,"total_mib":10000}' >/dev/null 2>&1
+bash "$GUARD" --config "$cfg" --state "$s" --mirror "$m" --now 700030 \
+  --metrics-json '{"used_mib":9500,"total_mib":10000}' >/dev/null 2>&1
+check_mirror "mirror: vram hard sustained" "$m" False hard
+
+# gpu-util-hold, sustained (real nvidia-smi path, same stub shape as the "real invocation path" case
+# above -- the mirror must reflect the utilization dimension too, not only the VRAM one)
+stub_util_hold_mirror="$tmpdir/nvidia-smi-mirror-util-hold"
+cat > "$stub_util_hold_mirror" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"utilization.gpu"*) echo "95" ;;
+  *) echo "1000, 10000" ;;
+esac
+EOF
+chmod +x "$stub_util_hold_mirror"
+m="$tmpdir/mirror-util-hold.json"
+s="$(st mirror-util-hold)"
+env VRAM_GUARD_NVIDIA_SMI="$stub_util_hold_mirror" bash "$GUARD" --config "$cfg" --state "$s" --mirror "$m" --now 710000 >/dev/null 2>&1
+env VRAM_GUARD_NVIDIA_SMI="$stub_util_hold_mirror" bash "$GUARD" --config "$cfg" --state "$s" --mirror "$m" --now 710031 >/dev/null 2>&1
+check_mirror "mirror: gpu-util-hold sustained" "$m" False gpu-util-hold
+
+# own-busy ADMIT (lock_held, utilization not holding) -- WhiteHat2 NO-GO on a80d5e11: 3 of the 8
+# _write_gate_mirror call sites (own-busy ADMIT, own-busy HOLD, unreadable-admit-override) had no
+# mirror-content pin, so U1/U2/U3 (verdict-inversion mutants on exactly these sites) left the
+# selftest fully green.
+m="$tmpdir/mirror-own-busy-admit.json"
+bash "$GUARD" --config "$cfg" --state "$(st mirror-own-busy-admit)" --mirror "$m" --now 730000 \
+  --lock-held yes --own-vram-mib 0 --metrics-json '{"used_mib":6115,"total_mib":6144}' >/dev/null 2>&1
+check_mirror "mirror: own-busy admit (lock held, util quiet)" "$m" True own-busy
+
+# own-busy HOLD (lock_held AND sustained gpu-util-hold) -- U1: the host-guard's own HOLD reasoning
+# path is exactly where a jail-side ADMIT would be most dangerous (a locally-busy GPU that the host
+# refuses new work on, but the jailed Gemini subtask caller reads ADMIT from the mirror anyway).
+m="$tmpdir/mirror-own-busy-hold.json"
+s="$(st mirror-own-busy-hold)"
+bash "$GUARD" --config "$cfg" --state "$s" --mirror "$m" --now 740000 \
+  --lock-held yes --own-vram-mib 0 --metrics-json '{"used_mib":6115,"total_mib":6144}' \
+  --util-samples-json '{"samples":[95,96,97]}' >/dev/null 2>&1
+bash "$GUARD" --config "$cfg" --state "$s" --mirror "$m" --now 740031 \
+  --lock-held yes --own-vram-mib 0 --metrics-json '{"used_mib":6115,"total_mib":6144}' \
+  --util-samples-json '{"samples":[95,96,97]}' >/dev/null 2>&1
+check_mirror "mirror: own-busy hold (gpu-util-hold own-busy)" "$m" False "gpu-util-hold own-busy"
+
+# unreadable-admit-override (VRAM_GUARD_UNREADABLE=admit policy flips the unreadable branch to
+# ADMIT) -- U2: a mutant on this site reads HOLD in the mirror while the guard itself prints ADMIT.
+m="$tmpdir/mirror-unreadable-admit-override.json"
+env VRAM_GUARD_UNREADABLE=admit bash "$GUARD" --config "$cfg" --state "$(st mirror-unreadable-admit)" \
+  --mirror "$m" --now 750000 --metrics-json '{"error":"smi failed","present":true}' >/dev/null 2>&1
+check_mirror "mirror: unreadable-admit-override" "$m" True unreadable-admit-override
+
+# write failure must never change the guard's own exit code/stdout (the documented contract in
+# _write_gate_mirror()'s header) -- forcing it by pointing --mirror at an existing DIRECTORY, so
+# os.replace() fails with EISDIR/ENOTDIR and the except OSError: pass branch is actually exercised.
+mkdir -p "$tmpdir/mirror-is-a-dir"
+check "mirror write failure (path is a directory) does not change exit/stdout" 0 "ADMIT ok" \
+  bash "$GUARD" --config "$cfg" --state "$(st mirror-write-fail)" --mirror "$tmpdir/mirror-is-a-dir" --now 720000 \
+    --metrics-json '{"used_mib":4000,"total_mib":10000}'
+
 if [ "$failed" -eq 0 ]; then
   echo "selftest: $passed passed, 0 failed"
   exit 0

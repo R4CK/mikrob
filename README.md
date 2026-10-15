@@ -208,6 +208,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **pipx-adoptálások PyPI verzió-figyelése**: a git-klón nélküli, pipx-szel telepített átvételek (nincs mit fetch-elni) napi PyPI verzió-összevetést kapnak a pinnelt verzióval; eltérésnél jelez, sosem bump-ol automatikusan.
 - **Figyelt-repó frissesség minden napi nézésnél rögzítve**: a watcher korábban csak kiírta a NOCHANGE/CHANGED eredményt, a "mikor néztük utoljára" dátumot nem mentette el egy változatlan vagy felülvizsgálatra jelölt bejegyzésnél -- most minden valódi ellenőrzés (egyezés, felülvizsgálatra jelölt kód, el nem fogadott fast-forward) frissíti ezt a dátumot, a jóváhagyott sha-pin viszont csak az automatikus (szöveges) fast-forwardnál mozdul.
 - **agent-id-header generált CLAUDE.md-példa argv-token-mentesen**: upstream a token olvasását közvetlenül a curl `-H "Authorization: Bearer $(cat ...)"` argumentumába tette, ami a folyamat parancssorán (`/proc/<pid>/cmdline`) kiszivárogtatja -- a fork a saját, mindenhol használt mintáját követi (`printf ... | curl -H @-`, token stdinen).
+- **Háttérfeladat csatorna-env izoláció**: egy háttérfeladat tmux-sessionje sosem kapja meg a csatorna-bot-tokeneket és a csatorna-állapot-könyvtár változókat, még ha a dashboard-folyamat saját környezete valahogy hordozná is őket -- a checkout `.claude/settings.json`-je máskülönben aktiválná a csatorna-plugint a háttérfeladatban, ami a fő ügynök pollerét "elavultnak" nézve leállítaná.
 
 ### Csatorna-integráció (Telegram) és titokkezelés
 
