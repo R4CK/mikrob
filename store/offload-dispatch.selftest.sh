@@ -439,6 +439,75 @@ check "post_draft_comment branches on OFFLOAD_DRAFT_SINK" "$sink_branch_pin" "1"
 check "the OFFLOAD_DRAFT_SINK default literal is 'comment' (file sink is opt-in only)" \
   "$(grep -c 'OFFLOAD_DRAFT_SINK:-comment' "$DISPATCH")" "1"
 
+# --- HEAVY SECOND-OPINION (card f0b3b674, MikroB plan-grilling GO-WITH-CHANGES C1/C2/C3/C6) -------
+HEAVY_FLAG="$HERE/gemini-heavy-second-opinion-enabled"
+rm -f "$HEAVY_FLAG"  # defensive: a leftover from a prior interrupted run must not pollute this run
+
+check "gemini_heavy_second_opinion_enabled() defaults OFF (C1, flag file absent)" \
+  "$(bash "$DISPATCH" --test-heavy-enabled)" "off"
+
+touch "$HEAVY_FLAG"
+check "gemini_heavy_second_opinion_enabled() turns ON when the flag file exists" \
+  "$(bash "$DISPATCH" --test-heavy-enabled)" "on"
+rm -f "$HEAVY_FLAG"
+check "gemini_heavy_second_opinion_enabled() turns back OFF once the flag file is removed" \
+  "$(bash "$DISPATCH" --test-heavy-enabled)" "off"
+
+# reserve_heavy_gemini_slot(): real flock+python3 against a throwaway seged-hivo.py root (same
+# isolation pattern as src/__tests__/gemini-ghost-budget.test.ts -- copied, not symlinked, because
+# scripts/seged-hivo.py's own ROOT is __file__-based and a symlink would resolve back to the real
+# repo and defeat the sandbox).
+HEAVY_TD="$(mktemp -d)"
+mkdir -p "$HEAVY_TD/scripts" "$HEAVY_TD/store"
+cp "$HERE/../scripts/seged-hivo.py" "$HEAVY_TD/scripts/seged-hivo.py"
+: > "$HEAVY_TD/store/seged-hivo-naplo.jsonl"
+export SEGED_HIVO_HELPERS="$HEAVY_TD/scripts/seged-hivo.py"
+export GEMINI_AGY_HOURLY_LOCK="$HEAVY_TD/gemini-agy-call.hourly.lock"
+export GEMINI_AGY_HOURLY_LIMIT=5
+export GEMINI_AGY_HEAVY_HOURLY_LIMIT=3
+
+r1="$(bash "$DISPATCH" --test-heavy-reserve cardA; echo "rc=$?")"
+r2="$(bash "$DISPATCH" --test-heavy-reserve cardB; echo "rc=$?")"
+r3="$(bash "$DISPATCH" --test-heavy-reserve cardC; echo "rc=$?")"
+r4="$(bash "$DISPATCH" --test-heavy-reserve cardD; echo "rc=$?")"
+check "reserve_heavy_gemini_slot: 1st of the sub-cap succeeds" "$r1" "$(printf 'ok\nrc=0')"
+check "reserve_heavy_gemini_slot: 2nd of the sub-cap succeeds" "$r2" "$(printf 'ok\nrc=0')"
+check "reserve_heavy_gemini_slot: 3rd (== GEMINI_AGY_HEAVY_HOURLY_LIMIT) still succeeds" "$r3" "$(printf 'ok\nrc=0')"
+check "reserve_heavy_gemini_slot: C2 sub-cap -- the 4th heavy reservation in the same hour is CAPPED, even though the shared 5/hour total is not exhausted" "$r4" "$(printf 'capped\nrc=1')"
+check "reserve_heavy_gemini_slot appends exactly 3 log rows, all tagged seged=agy-heavy" \
+  "$(grep -c '"seged": "agy-heavy"' "$HEAVY_TD/store/seged-hivo-naplo.jsonl")" "3"
+
+rm -f "$HEAVY_TD/store/seged-hivo-naplo.jsonl"; : > "$HEAVY_TD/store/seged-hivo-naplo.jsonl"
+python3 -c "
+import json, datetime
+with open('$HEAVY_TD/store/seged-hivo-naplo.jsonl', 'w') as f:
+    for i in range(5):
+        f.write(json.dumps({'ido': datetime.datetime.now().isoformat(), 'hivas_id': 'shared%d' % i,
+                             'seged': 'agy', 'hivo': 'agy-call', 'kartya': 'c', 'feladattipus': 'kod',
+                             'status': 'ok'}) + '\n')
+"
+shared_capped="$(bash "$DISPATCH" --test-heavy-reserve cardE; echo "rc=$?")"
+check "reserve_heavy_gemini_slot: C2 shared-window -- capped when 'agy' rows alone already fill the shared 5/hour total (heavy must not add a SEPARATE ceiling)" \
+  "$shared_capped" "$(printf 'capped\nrc=1')"
+
+unset SEGED_HIVO_HELPERS GEMINI_AGY_HOURLY_LOCK GEMINI_AGY_HOURLY_LIMIT GEMINI_AGY_HEAVY_HOURLY_LIMIT
+rm -rf "$HEAVY_TD"
+
+# try_gemini_second_opinion_for_leaf / gemini_second_opinion_comment_body (C6): distinct header from
+# the stop-period draft, carries the mandatory Draft-Review instruction, never implies the online
+# agent's work is replaced. No dedicated CLI test hook exists for this body constructor (no side
+# effects, no network/token dependency) -- pinned at the source level instead, same tier as the
+# "WIRING" source-pins used elsewhere in this file for post_draft_comment's branch.
+header_pin="$(grep -c '\[GEMINI DRAFT | second-opinion\]' "$DISPATCH")"
+check "the second-opinion draft header is wired into the source exactly once" "$header_pin" "1"
+check "gemini_second_opinion_comment_body is defined" "$(grep -c 'gemini_second_opinion_comment_body() {' "$DISPATCH")" "1"
+check "gemini_second_opinion_comment_body is called from try_gemini_second_opinion_for_leaf" \
+  "$(grep -c 'body="\$(gemini_second_opinion_comment_body' "$DISPATCH")" "1"
+never_short_circuits_pin="$(grep -c 'try_gemini_second_opinion_for_leaf "\$leaf_id" "\$leaf_title" "\$task" "\$post_id"$' "$DISPATCH")"
+check "the categorical-online call site never uses the result of try_gemini_second_opinion_for_leaf (routing unaffected)" "$never_short_circuits_pin" "1"
+goal1_elif_pin="$(grep -c 'elif gemini_heavy_second_opinion_enabled && ! is_gemini_blocked' "$DISPATCH")"
+check "GOAL 1 (enable without stop) is wired as an independent elif branch on the fallback-after-exhaustion path" "$goal1_elif_pin" "1"
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
