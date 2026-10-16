@@ -246,6 +246,14 @@ def _is_path_token(tok):
 # 4b/4c allow -- verdict first or `Gate-SHA:` first -- work here too.
 _REVIEW_OPEN = re.compile(r"^\s*REVIEW\b", re.IGNORECASE)
 
+# A machine-readable retraction marker (card 84fed4ee, Cybered's finding on 101f1702): a builder who
+# posts a second REVIEW and then reverts the branch back to the first sha, with only a prose comment
+# explaining it, leaves declared_shas() no way to tell the two REVIEWs apart -- it always takes the
+# LATEST one, so the withdrawn sha becomes the default --expect and three verdicts that correctly
+# judged the ORIGINAL sha read STALE. Line-initial, like Gate-SHA itself (rule 4b's kimondott-ertek
+# principle): the builder says which sha is dead, instead of this file guessing it from prose.
+_RETRACTION_LINE = re.compile(r"^\s*(?:VISSZAVONVA|RETRACTED)\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+
 # Files whose diff between two shas of the SAME work says nothing about the work. Every entry is
 # earned by measurement over the 37 mismatching cards, and is listed with the count it cleared:
 # package.json (5) moves on every landing because marveen-land bumps the version; DECISIONS.md (4)
@@ -307,13 +315,21 @@ def verdict_of(content):
 
 
 def declared_shas(comments):
-    """The shas the LATEST `REVIEW` comment says this card delivers, [] if none says.
+    """The shas the LATEST, NOT-RETRACTED `REVIEW` comment says this card delivers, [] if none says.
 
     Not "the latest Gate-SHA anywhere": measured both ways over the board, sourcing it from any
     non-verdict comment fixes 8 cards and breaks 8 others, so it buys nothing and loosens the rule.
+
+    A REVIEW is skipped if a LATER comment carries a line-initial `VISSZAVONVA:`/`RETRACTED:` marker
+    naming one of its shas (card 84fed4ee): the 101f1702 incident was a second REVIEW followed by a
+    branch revert back to the first REVIEW's sha, described only in prose -- declared_shas() always
+    took the newest REVIEW regardless, so the withdrawn sha became the default --expect and three
+    verdicts that correctly judged the ORIGINAL sha read STALE. "Later" is comment order, the same
+    convention `_gate_state` already documents for this file -- a retraction cannot apply to a REVIEW
+    that has not been posted yet.
     """
     found = []
-    for c in comments:
+    for i, c in enumerate(comments):
         if _is_generated_author(c):
             continue
         content = (c or {}).get("content")
@@ -322,9 +338,27 @@ def declared_shas(comments):
         if not _REVIEW_OPEN.match(content[_LEAD_SKIP.match(content).end():]):
             continue
         shas = _line_shas(content)
-        if shas:
-            found = shas
+        if not shas:
+            continue
+        if sha_sets_agree(shas, _retraction_shas_after(comments, i)):
+            continue
+        found = shas
     return found
+
+
+def _retraction_shas_after(comments, index):
+    """Every hex token named on a `VISSZAVONVA:`/`RETRACTED:` line in any comment AFTER `index`."""
+    out = []
+    for later in comments[index + 1:]:
+        content = (later or {}).get("content")
+        if not isinstance(content, str):
+            continue
+        for m in _RETRACTION_LINE.finditer(content):
+            for sha in _SHA_TOKEN.findall(m.group(1)):
+                sha = sha.lower()
+                if sha not in out:
+                    out.append(sha)
+    return out
 
 
 def stated_designation(comments):
