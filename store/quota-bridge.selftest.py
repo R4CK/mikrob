@@ -27,6 +27,7 @@ window, within the trusted horizon). Everything else probes.
 import importlib.util
 import json
 import os
+import signal
 import sys
 import tempfile
 import time
@@ -246,10 +247,29 @@ def main() -> int:
         m.SESSION_OUTAGE_FILE = str(marker)
         try:
             m.mark_session_outage()
-            if marker.exists() and json.loads(marker.read_text()).get("active") is True:
+            first_doc = json.loads(marker.read_text()) if marker.exists() else {}
+            if marker.exists() and first_doc.get("active") is True:
                 ok("mark_session_outage() writes an active:true marker")
             else:
                 bad("mark_session_outage() should write active:true", marker.read_text() if marker.exists() else "<missing>")
+
+            # H2 (WhiteHat2 NO-GO, delta-gate @c5e5ec28): a heartbeat field must be present and
+            # fresh -- this is what readSessionOutageActive() now checks for staleness.
+            if isinstance(first_doc.get("heartbeat"), (int, float)) and abs(first_doc["heartbeat"] - time.time()) < 5:
+                ok("mark_session_outage() writes a fresh heartbeat field")
+            else:
+                bad("mark_session_outage() should write a fresh numeric heartbeat", repr(first_doc.get("heartbeat")))
+
+            # H2: a REFRESH (second call) must advance heartbeat but preserve the ORIGINAL `since`
+            # -- the acceptance criterion is "stays fresh while alive", not "restarts the clock".
+            time.sleep(0.05)
+            m.mark_session_outage()
+            second_doc = json.loads(marker.read_text())
+            if second_doc.get("since") == first_doc.get("since") and second_doc.get("heartbeat", 0) > first_doc.get("heartbeat", 0):
+                ok("mark_session_outage() refresh advances heartbeat but preserves the original since")
+            else:
+                bad("mark_session_outage() refresh should preserve since and advance heartbeat",
+                    f"first={first_doc}, second={second_doc}")
 
             m.clear_session_outage()
             if not marker.exists():
@@ -317,8 +337,143 @@ def main() -> int:
                 ok("stop_ghost_runner(None) is a safe no-op")
             except Exception as exc:  # noqa: BLE001
                 bad("stop_ghost_runner(None) must not raise", f"{type(exc).__name__}: {exc}")
+
+            # M1 (WhiteHat2 NO-GO, delta-gate @c5e5ec28): a fake runner that spawns a CHILD
+            # process (mirrors the real script's `node dist/gemini-orchestrator-draft*.js` step,
+            # still running when the runner itself is asked to stop) -- stop_ghost_runner() must
+            # reach that orphaned child too, not just the runner's own top-level PID.
+            orphan_marker = td / "orphan.pid"
+            child_runner = td / "spawns-child.sh"
+            child_runner.write_text(
+                "#!/bin/bash\n"
+                "sleep 60 &\n"
+                f"echo $! > {orphan_marker}\n"
+                "trap 'exit 0' TERM\n"
+                "while true; do sleep 0.05; done\n"
+            )
+            child_runner.chmod(0o755)
+            m.GHOST_RUNNER_SCRIPT = str(child_runner)
+            proc = m.start_ghost_runner()
+            child_pid = None
+            if proc is not None:
+                for _ in range(50):  # wait for the child to actually spawn and record its pid
+                    if orphan_marker.exists() and orphan_marker.read_text().strip():
+                        child_pid = int(orphan_marker.read_text().strip())
+                        break
+                    time.sleep(0.05)
+            if child_pid is None:
+                bad("M1 setup: the fake runner never recorded its spawned child's pid")
+            else:
+                m.stop_ghost_runner(proc)
+                time.sleep(0.3)
+                try:
+                    os.kill(child_pid, 0)  # raises ProcessLookupError if the pid is gone
+                    bad("stop_ghost_runner() left an orphaned child process running (M1)")
+                except ProcessLookupError:
+                    ok("stop_ghost_runner() also reaps a child the runner spawned (M1, process-group kill)")
         finally:
             m.GHOST_RUNNER_SCRIPT = old_runner
+
+    # --- F-RH-V4 (RedHat NO-GO/GO @c5e5ec28): pin outage_loop()'s try/finally on BOTH exit paths -
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        old = {
+            "allowed_chats": m.allowed_chats, "mark_session_outage": m.mark_session_outage,
+            "start_ghost_runner": m.start_ghost_runner, "stop_ghost_runner": m.stop_ghost_runner,
+            "clear_session_outage": m.clear_session_outage, "send": m.send,
+            "save_state": m.save_state, "recovery_probe_due": m.recovery_probe_due,
+            "mikrob_down": m.mikrob_down,
+        }
+        calls = {"start": 0, "stop": 0, "clear": 0}
+        m.allowed_chats = lambda: {"1"}
+        m.mark_session_outage = lambda: None
+        m.start_ghost_runner = lambda: (calls.__setitem__("start", calls["start"] + 1), "FAKE_PROC")[1]
+        m.stop_ghost_runner = lambda proc: calls.__setitem__("stop", calls["stop"] + 1)
+        m.clear_session_outage = lambda: calls.__setitem__("clear", calls["clear"] + 1)
+        m.send = lambda token, chat_id, text: None
+        m.save_state = lambda s: None
+        try:
+            # Path A: the normal "MikroB recovered" return. recovery_probe_due=True (probe not
+            # suppressed) + mikrob_down=False (healthy) takes the `elif not mikrob_down(): ...
+            # return` branch on the FIRST loop iteration, before ever reaching tg_api.
+            m.recovery_probe_due = lambda now=None: True
+            m.mikrob_down = lambda: False
+            m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
+            if calls["start"] == 1 and calls["stop"] == 1 and calls["clear"] == 1:
+                ok("outage_loop()'s return path calls start/stop/clear exactly once each (F-RH-V4)")
+            else:
+                bad("outage_loop()'s return path should call start/stop/clear exactly once each", calls)
+
+            # Path B: an exception INSIDE the loop (recovery_probe_due raises) must still run the
+            # finally -- this is the acceptance criterion ("kilepeskor a runner leall") on its
+            # OTHER exit path, which nothing exercised before this case.
+            calls["start"] = calls["stop"] = calls["clear"] = 0
+
+            def _boom(now=None):
+                raise RuntimeError("boom")
+
+            m.recovery_probe_due = _boom
+            m.mikrob_down = lambda: False
+            raised = None
+            try:
+                m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
+            except RuntimeError as exc:
+                raised = exc
+            if raised is not None and calls["start"] == 1 and calls["stop"] == 1 and calls["clear"] == 1:
+                ok("outage_loop()'s exception path ALSO calls start/stop/clear via finally (F-RH-V4)")
+            else:
+                bad("outage_loop()'s exception path should still call start/stop/clear via finally",
+                    f"raised={raised!r}, calls={calls}")
+        finally:
+            for name, fn in old.items():
+                setattr(m, name, fn)
+
+    # --- F-RH-V3 (RedHat NO-GO/GO @c5e5ec28): the SIGTERM handler itself, directly -----------
+    old_stop, old_clear, old_exit = m.stop_ghost_runner, m.clear_session_outage, m.sys.exit
+    sigterm_calls = {"stop_arg": "unset", "clear": 0, "exit_code": None}
+    m.stop_ghost_runner = lambda proc: sigterm_calls.__setitem__("stop_arg", proc)
+    m.clear_session_outage = lambda: sigterm_calls.__setitem__("clear", sigterm_calls["clear"] + 1)
+
+    class _FakeExit(BaseException):
+        pass
+
+    def _fake_exit(code=0):
+        sigterm_calls["exit_code"] = code
+        raise _FakeExit()
+
+    m.sys.exit = _fake_exit
+    m._active_ghost_runner = "SOME_PROC"
+    try:
+        try:
+            m._handle_sigterm(signal.SIGTERM, None)
+        except _FakeExit:
+            pass
+        if sigterm_calls["stop_arg"] == "SOME_PROC" and sigterm_calls["clear"] == 1 and sigterm_calls["exit_code"] == 0:
+            ok("_handle_sigterm() stops the active runner, clears the marker, exits 0 (F-RH-V3)")
+        else:
+            bad("_handle_sigterm() should stop the active runner, clear the marker, exit 0", sigterm_calls)
+
+        # A stop_ghost_runner that THROWS must not prevent clear_session_outage from still running
+        # -- the marker is the more important half to clean up (H2's own staleness check is only a
+        # backstop, this handler is the fast path).
+        sigterm_calls["clear"] = 0
+        sigterm_calls["exit_code"] = None
+
+        def _stop_throws(proc):
+            raise RuntimeError("stop failed")
+
+        m.stop_ghost_runner = _stop_throws
+        try:
+            m._handle_sigterm(signal.SIGTERM, None)
+        except _FakeExit:
+            pass
+        if sigterm_calls["clear"] == 1 and sigterm_calls["exit_code"] == 0:
+            ok("_handle_sigterm() still clears the marker and exits even if stop_ghost_runner raises")
+        else:
+            bad("_handle_sigterm() should still clear the marker and exit if stop_ghost_runner raises", sigterm_calls)
+    finally:
+        m.stop_ghost_runner, m.clear_session_outage, m.sys.exit = old_stop, old_clear, old_exit
+        m._active_ghost_runner = None
 
     print(f"\nselftest: {PASS} passed, {FAIL} failed")
     return 0 if FAIL == 0 else 1

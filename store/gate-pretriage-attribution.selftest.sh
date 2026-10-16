@@ -80,5 +80,20 @@ TITLESCOPE_OTHER="$(mk 'feat(550befbf): something
 follow-up to card 54d4a4a3')"
 t 'a title-scope claim on ANOTHER card overrides even if the body also names this card' skip "$TITLESCOPE_OTHER" 54d4a4a3
 
+# THE 3ab52018 INCIDENT (Cybersec F1 on 47ffe964, msg 3749): the breaking-change `!` form
+# (`fix(<id>)!: ...`) was not recognized as a title-scope claim at all, so it fell through to the
+# body-wide scan -- reproducing the exact 47ffe964 failure shape for this one commit form.
+BANG="$(mk 'fix(28e5a9a7)!: gate-pretriage-card.sh misattributes commits with body-only card refs
+
+Fixes a false "ignored commit(s) belonging to another card" caused by earlier bugs in
+card dd30f6fc and card 249c6c6f, referenced here only as prior-art context.')"
+t 'a breaking-change fix(<id>)!: title-scope claim on THIS card wins over unrelated body cards' keep "$BANG" 28e5a9a7
+t '...and is correctly foreign for a card only mentioned in the body as context' skip "$BANG" dd30f6fc
+
+BANG_OTHER="$(mk 'feat(550befbf)!: something
+
+follow-up to card 54d4a4a3')"
+t 'a breaking-change title-scope claim on ANOTHER card overrides even if the body names this card' skip "$BANG_OTHER" 54d4a4a3
+
 echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
 exit $fail
