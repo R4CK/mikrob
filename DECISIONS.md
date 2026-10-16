@@ -20586,3 +20586,34 @@ felfedezés a selftest-neveket nem igényel kézi bekötést -- a vitest-futás 
 **Ki döntött:** fullstack, önálló mérés + MikroB utasítására (msg 13155), gate: QA + RedHat delta-gate a mergelt shára.
 
 **Hivatkozás:** kártya 73b500f9, ccbfece8 (1b08cf10 F3), komment 20478 (fullstack finding), msg 13155 (MikroB utasítás).
+
+## 2026-10-16 -- MT F0: Megoldás-tár és tudásgráf, GitHub-first due diligence + plan-grilling verdikt (kártya 3f6fc4ce)
+
+**Kontextus:** a c65add5a fázis-kártya MODULTERV kommentje (MikroB, 2026-10-16) alapján, Peti 11527/11530/11533/11535/11537 (Telegram) nyomán. A fájl-partíció kérdése már lezárt Peti 11541-gyel (lásd a fenti "DÖNTÉS (Peti 11541...)" bejegyzést 2026-10-16-ról, ugyanebben a fájlban -- itt nem ismétlem).
+
+**GitHub-first due diligence (10. szabály), öt kész megoldás, forrás: a repók README/LICENSE fájljai közvetlenül lekérve:**
+
+- **getzep/graphiti** -- Apache-2.0. Kötelező külső gráf-DB szerver (Neo4j 5.26 / FalkorDB 1.1.2 / Neptune + OpenSearch Serverless). LLM alapból OpenAI, OpenAI-kompatibilis endpointon (pl. Ollama) keresztül lokális modell is működik. **Kizárva:** a kötelező külön gráf-DB-szerver ellentmond Peti 11535 keretének ("minden adat helyben, online modell és külső szolgáltatás nincs").
+- **topoteretes/cognee** -- MIT. Teljesen lokálisan fut, API-kulcs nélkül; az entitás-kinyerés alapból egy lokális GLiNER modellel és lokális embeddinggel megy, Postgres csak opcionális. Ez az egyetlen vizsgált megoldás, ami tényleg megfelel a "nincs külső szolgáltatás" elvárásnak. **Nem adoptálva, de nem is elvetve:** a teljes keretrendszer átvétele azt jelentené, hogy a ~1000 meglévő, már struktúrált REVIEW-rekordot (kanban_relations, kanban_verdicts) cognee saját ingestion-csővezetékéhez kellene igazítani, ami több súrlódás, mint a modulterv saját, erre a struktúrára szabott SQLite-sémája. A lokális GLiNER-alapú kinyerési technika érdemes egy rövid pillantásra az F2/MT-05-nél (alternatíva a helyi LLM-draft + validátor mintára), de ez implementációs részlet, nem architektúra-döntés.
+- **mem0ai/mem0** -- Apache-2.0. LLM-hívás KÖTELEZŐ minden write-path extrakcióhoz (alapértelmezés OpenAI gpt-5-mini), lokális/nyílt modell támogatása a dokumentáción nincs kimondva. **Kizárva:** online LLM-függés minden egyes felvételnél, ellentmond a kerünek.
+- **HKUDS/LightRAG** -- a README és a LICENSE fájl sem nevez meg licencet/SPDX-et a közvetlen lekérdezésben. **Kizárva a 10. szabály szerint:** "ha ... a due diligence megbukik -> rövid dokumentáció miért, és akkor építs sajátot" -- itt a licenc-ellenőrzés ténylegesen megbukott, ez önmagában kizáró ok, függetlenül attól, hogy a chunk-alapú ingestion egyébként sem illeszkedne a kártya/szimbólum-horgonyos modellünkhöz.
+- **microsoft/graphrag** -- MIT. A README saját szava szerint "largely in maintenance mode, and won't be accepting new PRs or implementing new features" -- nem aktívan karbantartott. Az indexelés a teljes korpuszon fut LLM-extrakcióval, drága, kötegelt, nem illeszkedik a kártyánkénti, inkrementális capture-modellhez. **Kizárva:** karbantartottsági kritérium bukik, és a költség-/architektúra-illeszkedés sem ad okot felülírni.
+- **trailhq/Trail-Code / trailhq/Graft** (az ötlet eredeti forrása, Peti 11527): egy harmadik féltől származó skill-szkenner biztonsági jelzést adott a Trail-Code README-jére (egy, a felolvasás szerint hitelesítő adatot külső végpontra küldő utasítást tartalmazó sor) -- ez FÜGGETLEN megerősítése annak a már meglévő, a software-factory clean-room fázisból (Peti 11000, kártya b8ac0ef1) ismert elvnek, hogy ebből a családból KIZÁRÓLAG az ötletet vesszük át, a kódot soha nem vendoroljuk. A modulterv ezt már így tervezte (csak a "learnings"-formátum mint inspiráció); ez a bejegyzés csak megerősíti, miért helyes ez a határ.
+
+**Döntés: BUILD.** A modulterv saját SQLite-sémája (store/knowledge-graph.db) épül, a meglévő, már adoptált code-review-graph MCP-vel (repónkénti graph.db, ~/.code-review-graph/registry.json, élőben ellenőrizve) együttműködve, egyik vizsgált kész keretrendszer sem kerül adoptálásra/adaptálásra. Ez megerősíti (nem vakon átveszi) a MODULTERV 14. pontjában MikroB által előzetesen leírt véleményt, konkrét, forrásból vett tényekkel alátámasztva.
+
+**Plan-grilling verdikt a modultervre (plan-grilling skill, 9 tengely):** GO-WITH-CHANGES.
+
+- Cél/siker, ellenőrzés: a meglévő EK-MT-1..12 elfogadási kritériumok konkrétak és mérhetők (pl. EK-MT-5: 20 kézzel írt kérdés, 70% top-3 találat, nem szó szerinti szövegegyezés -- nehezen trükközhető teszt). Nincs rajtuk változtatás.
+- Legterhelőbb (load-bearing) feltételezés: a nomic-embed-text elég jól teljesít magyar lekérdezésen. Ez a modulterv saját 11. pontjában MÁR explicit `[?]`-ként jelölve, mitigációval (angol kulcsszó-összefoglaló + kétnyelvű FTS) -- elfogadott, nyitva hagyott kockázat, nem blokkoló.
+- **Új, eddig nem tárgyalt kockázat (grilling axis 3+9, "mi a legvalószínűbb eddig meg nem beszélt hibaforrás"): konkurrens írás a store/knowledge-graph.db SQLite-fájlba** -- több flotta-ügynök zárhat kártyát egyszerre (capture_queue-ba írás) és landolhat egyszerre (MT-09 horgony-ellenőrzés írása), egyetlen közös fájlon. **Változtatás:** az F1/MT-01 kártya kapjon explicit követelményt: WAL mód + busy_timeout + retry SQLITE_BUSY-n, ugyanazt a mintát követve, ami a claudeclaw.db-n már bizonyítottan működik egyidejű kanban-írásoknál.
+- Blast radius: az MT-07 (dispatch-injekció) a flotta MINDEN kártya-felvételét érinti -- ez a legnagyobb kockázatú pont. Mitigálva: alapból OFF kapcsoló, EK-MT-7 byte-pontos paritást követel OFF állapotban, 4 hetes mért bevezetési kapu QA+WhiteHat+RedHat zöld után. Nincs változtatás, a meglévő terv már helyesen kezeli.
+- Visszafordíthatóság: a teljes gráf forrásból újragenerálható (`rm knowledge-graph.db` + rebuild), tesztelt vissza-út. Megfelelő.
+- Nyitott kérdés #2 (modulterv 15. pont) lezárva EBBEN a kártyában: az automatikus `active` állapothoz a gate AGREE + validátor ELÉG, DE az F2/MT-05 elfogadási kritériumai közé bekerül, hogy a QA az első 50 aktivált csomópontot mintavételesen átnézi (a modulterv saját javaslata, most már kötelezővé téve, nem csak "javaslat").
+- Nyitott kérdés #3 (skillek mint csomópont) marad P3-ban elhalasztva, elfogadott, nem blokkoló.
+
+**MT-03/04/07 API-kontraktus (lezárva, az F5 Fron Ted és az F1b erre épül, komment a 3f6fc4ce kártyán a teljes JSON-sémával).**
+
+**Ki döntött:** backend (kártya 3f6fc4ce, F0), gate: QA + WhiteHat.
+
+**Hivatkozás:** kártya 3f6fc4ce, c65add5a (fázis, MODULTERV komment), DECISIONS.md fenti "DÖNTÉS (Peti 11541...)" bejegyzés (fájl-partíció).
