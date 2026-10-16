@@ -23,13 +23,13 @@
     "category": "productivity",
     "icon": "📧",
     "command": "npx",
-    "args": ["-y", "gmail-mcp-server"],
+    "args": ["-y", "@artymclabin/gmail-mcp@1.2.3"],
     "env": {},
     "authType": "oauth",
     "authNote": "Google Cloud OAuth kliens kell hozzá (client ID + secret). UGYANAZ az OAuth-app használható a Naptár összekötőhöz is.",
     "infoUrl": "https://github.com/ArtyMcLabin/Gmail-MCP-Server",
-    "verifiedAt": "2026-08-27",
-    "verifiedNote": "npm-csomag ellenőrizve: gmail-mcp-server v1.0.30 létezik."
+    "verifiedAt": "2026-10-16",
+    "verifiedNote": "AZONOSSAG ellenorizve (c2aeefa5 + a2cb71f1): npm view @artymclabin/gmail-mcp@1.2.3 -> repository.url = github.com/ArtyMcLabin/Gmail-MCP-Server, EGYEZIK az infoUrl-lel; maintainer artymclabin <arty.mclabin@gmail.com>; telepiteskor futo script (postinstall) NINCS. Verzio pinnelve 1.2.3-ra (Cybersec F2, LOW). A csomag 30 eszkoze kozul a kuldo-jellegu (send_email, send_draft, reply_all, update_draft, delete_draft/email, batch_*, create_filter stb.) a scripts/email-send-gate.mjs deny-by-default EMAIL_SERVER_RE+EMAIL_SAFE_TOOL_RE mechanizmusa (kartyak 498d53c1/45b33b2b/bf7a7335, landolva 2026-09-29) altal mar denied, NEM nev-lista alapon -- ez elozi meg ezt a csere-datumot, tehat a c2aeefa5 NO-GO oka (a kaput a kuldo eszkozok nem latjak) mar nem all fenn."
   },
   {
     "id": "google-calendar",

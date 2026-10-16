@@ -56,7 +56,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|send_email",
+        "matcher": "Bash|.*send_email.*|.*manage_email.*|.*__[A-Za-z0-9_-]*[Gg]mail[A-Za-z0-9_-]*__.*|.*__[A-Za-z0-9_-]*resend[A-Za-z0-9_-]*__.*",
         "hooks": [
           {
             "type": "command",
