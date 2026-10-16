@@ -205,6 +205,9 @@ const OK_SHAPES: readonly RegExp[] = [
   // `N passed, 0 failed` entry above, different noun. The captured number keeps the
   // non-vacuous guarantee: `0 checks` does not match.
   /selftest: ([1-9]\d*) checks, 0 failed/,
+  // local-llm-rag.selftest.sh style (card 613a8142): `<script>.sh selftest: all N checks passed`.
+  // Captured number keeps the non-vacuous guarantee: `all 0 checks passed` does not match.
+  /selftest: all ([1-9]\d*) checks passed/,
   // seged-hivo-agy-jail-binds style (card 0f01b9cf F2, RedHat komment 20293): a WSLg-less host's
   // degraded run used to print "PASS, K SKIPPED", which the `case\(s\), PASS` entry above matched
   // by accident (unanchored) -- a skip read as an ordinary pass to this machine consumer. The

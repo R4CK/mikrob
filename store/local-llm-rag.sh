@@ -532,6 +532,12 @@ fi
 
 [[ -f "$TOKEN_FILE" ]] || die 6 "no dashboard token at $TOKEN_FILE"
 TOKEN="$(cat "$TOKEN_FILE")"
+# If a CALLER already exported a variable named TOKEN, bash keeps the export attribute across this
+# reassignment, so the real token would leak into the python3 child's environ below even though it
+# is deliberately passed over stdin instead (card c375238d F1, measured: ENV-TOKEN=REAL). No current
+# caller exports TOKEN, but `declare +x` removes the attribute without touching the value, closing
+# the gap regardless.
+declare +x TOKEN
 
 # --- retrieve relevant memories + assemble context (multi-term recall) ---
 # TOKEN reaches the python retriever over STDIN, not an env var (card c375238d, self-audit
