@@ -519,6 +519,92 @@ gemini_route_enabled() {
   [[ -f "${HERE}/gemini-offload-enabled" ]]
 }
 
+# HEAVY SECOND-OPINION FLAG (card f0b3b674, MikroB plan-grilling GO-WITH-CHANGES C1): a SEPARATE,
+# independent switch from gemini_route_enabled() above -- that one governs the EXISTING quota-stop
+# draft path (card a92e9913), this one governs two NEW, additive behaviors that do not depend on
+# stop state at all: (1) Gemini as a normal-operation fallback after local-LLM exhaustion, within the
+# shared hourly budget, even when the fleet is not under newDevStop/hard-stop; (2) an ADVISORY
+# second-opinion Gemini draft on a categorical-ONLINE (hard) leaf -- the router's online verdict and
+# the online agent's own work/gates are UNCHANGED either way, this never flips routing.
+# Fail-closed by construction: file absence (the shipped default) means OFF, same convention as
+# gemini_route_enabled() above. Enable/disable is a MikroB action (create/remove the file), never a
+# tracked-file chmod -- same operational pattern as store/gemini-offload-enabled.
+# GEMINI_HEAVY_FLAG is overridable (same pattern as HEAVY_HOURLY_LOCK/HEAVY_SEGED_HIVO below) so a
+# selftest can point this at a scratch path instead of the real store/ directory (card 9b224eec:
+# a selftest must never create/remove a file inside the shared checkout, even one it restores
+# before exiting -- every other vitest worker reads that same tree mid-run).
+GEMINI_HEAVY_FLAG="${GEMINI_HEAVY_FLAG:-$HERE/gemini-heavy-second-opinion-enabled}"
+gemini_heavy_second_opinion_enabled() {
+  [[ -f "$GEMINI_HEAVY_FLAG" ]]
+}
+
+# HEAVY BUDGET SUB-RESERVATION (card f0b3b674 C2): "UGYANAZ a kozos 5/ora ablak ... NEM uj, kulon
+# szamlalo" -- shares gemini-agy-call.sh's existing fleet-wide hourly window and flock
+# (gemini-agy-call.hourly.lock), exactly as src/gemini-ghost-budget.ts's reserveGhostCallSlot()
+# already does for the Ghost pipeline. This is a SEPARATE bash-callable reservation rather than a
+# call into that TS module because offload-dispatch.sh is pure bash with no Node runtime in its own
+# call chain; the python reservation logic below is the SAME shape (same log file, same flock, same
+# calls_of()/append_log() from scripts/seged-hivo.py) deliberately mirrored, not reinvented.
+#
+# RESERVED SUB-CAP, NOT A SEPARATE CEILING: out of the shared N/hour (default 5), the heavy path may
+# take AT MOST GEMINI_AGY_HEAVY_HOURLY_LIMIT (default 3) of them -- so at least 2 always remain for
+# the stop-period draft path (gemini-offload-call via try_gemini_for_leaf) and the Ghost ranking/
+# review pipeline, per the card's own requirement 4 ("a nehez-kartya ut oranykent legfeljebb 3
+# slotot vihet el, 2 marad a stop alatti draft-utnak es a Ghostnak"). Tagged seged='agy-heavy' --
+# counted toward the SAME hourly window as 'agy'/'agy-ghost' (so the shared 5/hour ceiling actually
+# shares), but NOT 'agy' itself, so it does not feed scripts/seged-hivo.py's own unrelated daily
+# "agy" jailed-CLI quota (same reasoning gemini-ghost-budget.ts documents for 'agy-ghost').
+#
+# Fail-closed: any inability to run the check (missing flock/python3, timeout, non-zero/non-OK exit)
+# returns false -- "could not confirm a slot is free" must never be read as "a slot is free".
+HEAVY_HOURLY_LOCK="${GEMINI_AGY_HOURLY_LOCK:-$HERE/gemini-agy-call.hourly.lock}"
+HEAVY_SEGED_HIVO="${SEGED_HIVO_HELPERS:-$HERE/../scripts/seged-hivo.py}"
+reserve_heavy_gemini_slot() {
+  local card_id="$1"
+  local total_limit="${GEMINI_AGY_HOURLY_LIMIT:-5}"
+  local heavy_limit="${GEMINI_AGY_HEAVY_HOURLY_LIMIT:-3}"
+  local rc=0
+  flock -x -w 30 "$HEAVY_HOURLY_LOCK" python3 -I - "$HEAVY_SEGED_HIVO" "$total_limit" "$heavy_limit" "$card_id" <<'PY' >/dev/null 2>&1 || rc=$?
+import datetime, importlib.util, os, sys, time
+spec = importlib.util.spec_from_file_location('seged_hivo', sys.argv[1])
+sh = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sh)
+total_limit = int(sys.argv[2])
+heavy_limit = int(sys.argv[3])
+card_id = sys.argv[4]
+window_start = time.time() - 3600
+used = 0
+heavy_used = 0
+for row in sh.calls_of(sh.read_log()):
+    if row.get('seged') not in ('agy', 'agy-ghost', 'agy-heavy') or row.get('status') == 'blocked':
+        continue
+    try:
+        ts = datetime.datetime.fromisoformat(str(row.get('ido', ''))).timestamp()
+    except ValueError:
+        continue
+    if ts < window_start:
+        continue
+    used += 1
+    if row.get('seged') == 'agy-heavy':
+        heavy_used += 1
+if heavy_used >= heavy_limit:
+    sys.exit(3)
+if used >= total_limit:
+    sys.exit(2)
+sh.append_log({
+    'ido': datetime.datetime.now().isoformat(),
+    'hivas_id': os.urandom(8).hex(),
+    'seged': 'agy-heavy',
+    'hivo': 'offload-dispatch-heavy',
+    'kartya': card_id,
+    'feladattipus': 'kod',
+    'status': 'ok',
+})
+sys.exit(0)
+PY
+  [[ "$rc" -eq 0 ]]
+}
+
 # gemini_draft_comment_body: same contract as draft_comment_body but for a Gemini-sourced draft.
 # $1=leaf_title, $2=content, $3=synthetic ("true"/"false", optional)
 gemini_draft_comment_body() {
@@ -557,6 +643,45 @@ try_gemini_for_leaf() {
   echo "offload-dispatch: leaf $leaf_id -> Gemini call failed (rc=$rc)" >&2
   attempts_op transient "$leaf_id" >/dev/null
   return 1
+}
+
+# gemini_second_opinion_comment_body: same contract as gemini_draft_comment_body (card a92e9913),
+# but with a DISTINCT header (card f0b3b674 C6) -- a second-opinion draft on a categorical-ONLINE
+# leaf must never read like the quota-stop draft it is not: the online agent's own work and the
+# gate-pool's verdict remain authoritative regardless of what this draft says.
+# $1=leaf_title, $2=content
+gemini_second_opinion_comment_body() {
+  local leaf_title="$1" content="$2"
+  printf '[GEMINI DRAFT | second-opinion] Gemini masodik velemeny/draft nehez (ONLINE-minositett) kartyahoz (card f0b3b674, MikroB plan-grilling GO-WITH-CHANGES). A VEGSO MUNKA ES A GATE-DONTES VALTOZATLANUL a felelos online ugynoke es a gate-poole -- ez a komment KIZAROLAG tajekoztato masodik velemeny, soha nem helyettesiti az online munkat vagy a gate-verdiktet. AMIKOR VEGEZTEL VELE, tegyel a kartyara egy sort (sor elejen): '"'"'Draft-Review: ELFOGADVA'"'"' / '"'"'RESZBEN'"'"' / '"'"'ELUTASITVA'"'"' / '"'"'FELESLEGES'"'"' -- e nelkul a kartya nem mehet waiting-be (card 1338e68b).
+
+#### %s
+%s
+' "$leaf_title" "$content"
+}
+
+# try_gemini_second_opinion_for_leaf (card f0b3b674 C6): a NON-BLOCKING, ADVISORY call -- this NEVER
+# returns a value the caller acts on and NEVER touches attempts_op (the categorical-online attempts
+# entry is already written by the caller before this runs, and the exhausted-skip at the main
+# dispatch loop's precheck already makes this at-most-once per leaf per EXHAUSTED_TTL_SECONDS window,
+# satisfying C5's "kartyankent egyszer" without a second tracking file). A failed/empty Gemini call
+# here posts nothing and is silently swallowed -- it is advisory, not a retryable obligation.
+try_gemini_second_opinion_for_leaf() {
+  local leaf_id="$1" leaf_title="$2" task="$3" post_id="$4"
+
+  [[ -x "$GEMINI_OFFLOAD" ]] || return 0
+
+  local out rc=0
+  out="$(printf '%s' "$task" | bash "$GEMINI_OFFLOAD" 2>/dev/null)" || rc=$?
+
+  if [[ $rc -eq 0 && -n "${out// }" ]]; then
+    local body; body="$(gemini_second_opinion_comment_body "$leaf_title" "$out")"
+    curl -s -X POST "$DASH/api/kanban/$post_id/comments" -H "Content-Type: application/json" -H @"$hdr_file" \
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"author":sys.argv[1],"content":sys.argv[2]}))' "$DRAFT_AUTHOR" "$body")" >/dev/null 2>&1
+    echo "offload-dispatch: leaf $leaf_id -> posted GEMINI second-opinion draft" >&2
+  else
+    echo "offload-dispatch: leaf $leaf_id -> Gemini second-opinion call failed (rc=$rc), nothing posted" >&2
+  fi
+  return 0
 }
 
 # Max number of leaves given an ACTUAL local-model call in one invocation (GPU is single-slot, `-np 1`,
@@ -1192,6 +1317,21 @@ if [[ "${1:-}" == "--check-blocked" ]]; then
   exit 42  # is_gemini_blocked returned 1 (bash-false) -- the ONE deliberate ALLOWED outcome
 fi
 
+# --test-heavy-enabled: prints "on"/"off" per gemini_heavy_second_opinion_enabled() (card f0b3b674).
+if [[ "${1:-}" == "--test-heavy-enabled" ]]; then
+  if gemini_heavy_second_opinion_enabled; then echo "on"; else echo "off"; fi
+  exit 0
+fi
+
+# --test-heavy-reserve CARDID: exercises reserve_heavy_gemini_slot() against a scratch lock/log
+# (env GEMINI_AGY_HOURLY_LOCK + SEGED_HIVO_HELPERS override the real fleet-wide files, same pattern
+# as gemini-ghost-budget.ts's own env overrides) without touching the real hourly window.
+# Prints "ok"/"capped" and exits 0/1 accordingly.
+if [[ "${1:-}" == "--test-heavy-reserve" ]]; then
+  shift
+  if reserve_heavy_gemini_slot "${1:-}"; then echo "ok"; exit 0; else echo "capped"; exit 1; fi
+fi
+
 CARD="${1:-}"
 [[ -z "$CARD" ]] && { echo "usage: offload-dispatch.sh <cardId> [assignee]" >&2; exit 2; }
 
@@ -1402,9 +1542,16 @@ $leaf_desc"
     fi
     attempts_op categorical-online "$leaf_id" >/dev/null
     echo "offload-dispatch: leaf $leaf_id -> categorical online (router decision), no retry" >&2
-    # F1d (WhiteHat2, card a92e9913): categorical-online leaves NEVER go to Gemini.
-    # The router already classified this card as auth/security/multi-file -- sending it to an
-    # external API would discard that verdict.  No Gemini fallback here.
+    # F1d (WhiteHat2, card a92e9913): categorical-online leaves NEVER go to Gemini AS A
+    # REPLACEMENT for the online agent -- the router's verdict always stands, final work and the
+    # gate verdict stay with the online agent/gate-pool exactly as before.
+    # HEAVY SECOND-OPINION, GOAL 2 (card f0b3b674 C1/C2/C3/C6): under the SAME heavy flag (default
+    # off), a hard (ONLINE-classified) leaf may additionally get an ADVISORY Gemini second-opinion
+    # draft -- try_gemini_second_opinion_for_leaf() never returns a value this branch acts on, so
+    # routing is byte-for-byte unchanged whether or not it runs.
+    if gemini_heavy_second_opinion_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" && reserve_heavy_gemini_slot "$leaf_id"; then
+      try_gemini_second_opinion_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id"
+    fi
     return 1
   else
     entry="$(attempts_op transient-fail "$leaf_id")"
@@ -1413,6 +1560,13 @@ $leaf_desc"
     if [[ "${n:-0}" -ge "$OFFLOAD_LEAF_MAX_ATTEMPTS" ]]; then
       # GEMINI FALLBACK when local LLM is exhausted (card a92e9913): try Gemini before giving up.
       if [[ "$GEMINI_ROUTE" == "gemini" ]] && gemini_route_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc"; then
+        try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
+      # HEAVY SECOND-OPINION, GOAL 1 (card f0b3b674 C1/C2/C3): the SAME fallback-after-local-
+      # exhaustion path, but WITHOUT requiring quota-stop (GEMINI_ROUTE=='gemini') -- "Gemini runs
+      # in normal operation too, within the fleet-wide 5/hour budget". Gated by its OWN flag
+      # (default off) and its OWN shared-budget-with-subcap reservation, independent of the
+      # existing gemini_route_enabled()/stop-state flag above so the two paths never conflate.
+      elif gemini_heavy_second_opinion_enabled && ! is_gemini_blocked "$leaf_project" "$leaf_tags" "$leaf_title" "$leaf_desc" && reserve_heavy_gemini_slot "$leaf_id"; then
         try_gemini_for_leaf "$leaf_id" "$leaf_title" "$task" "$post_id" "$synthetic" && return 0
       fi
       post_exhausted_notice "$post_id"

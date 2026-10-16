@@ -237,15 +237,41 @@ if Path('/usr/bin/bwrap').exists() and Path('/mnt/wslg').is_dir():
         case("F-RH-S2: the jail-wide socket sweep's own positive control (a real socket bound "
              "INTO the jail) IS found -- proves the sweep is not vacuously blind",
              str(control_sock_path) in sweep_listing_paths)
-        # F1 fix, second half: EXACT-SET comparison instead of name/substring matching against
-        # host_entries. A sweep that only rejects entries matching a KNOWN host socket's name
-        # would still wave through a differently-named synthetic socket planted via some other
-        # bind path -- WhiteHat measured exactly this ("egy szintetikus, más nevű socket ... a
-        # jailben /opt alatt látszik, a selftest 19/19 PASS marad"). Requiring the sweep to find
-        # EXACTLY {control.sock} and nothing else catches any unexpected socket, named or not.
+
+        # F1 delta-fix (RedHat NO-GO, card de3fb362 comment 20293): the exact-set comparison
+        # below used to be an inline expression with NO dedicated positive self-check of its
+        # own -- RedHat measured that weakening it to `in`/substring matching STILL left the
+        # whole selftest 25/25 PASS, because nothing in this file ever fed the comparison a
+        # listing that contains the control socket PLUS an extra, differently-named one. Pulled
+        # into its own function so the comparison itself has a name and a testable contract
+        # (F-RH-S1-style exact-set, not membership), with two unit cases right below that do
+        # NOT depend on a live jail run: one gives it an extra foreign-named socket (must be
+        # REJECTED -- this is exactly the case a weakened `in` check would wrongly ACCEPT), one
+        # gives it only the control socket (must be ACCEPTED). A mutation to `in`/membership
+        # flips the first of these two to a false PASS, which is the regression RedHat's
+        # measurement names directly.
+        def sweep_is_exact(paths, control_path):
+            return paths == [str(control_path)]
+
         case("F1/F-RH-S2: the sweep finds EXACTLY the expected control socket and nothing else -- "
              f"exact-set comparison, not name matching (sweep saw: {sweep_listing_paths!r})",
-             sweep_listing_paths == [str(control_sock_path)])
+             sweep_is_exact(sweep_listing_paths, control_sock_path))
+
+        # F1 self-check (RedHat NO-GO 20293): a listing carrying the control socket PLUS an
+        # unrelated, differently-named socket path (never in host_entries, never control.sock)
+        # must be REJECTED by sweep_is_exact -- a membership/`in` check would wrongly accept it,
+        # which is precisely the undetected weakening RedHat demonstrated.
+        case("F1 self-check: sweep_is_exact REJECTS a listing with an extra, differently-named "
+             "socket alongside the control socket (an `in`/membership check would wrongly accept "
+             "this -- this is the exact regression RedHat's NO-GO measured)",
+             not sweep_is_exact(
+                 [str(control_sock_path), '/opt/synthetic-other-name.sock'], control_sock_path))
+
+        # F1 self-check (control, RedHat NO-GO 20293): the control-only listing must still be
+        # ACCEPTED -- without this the rejection case above could be satisfied by a function that
+        # simply always returns False.
+        case("F1 self-check: sweep_is_exact ACCEPTS the control-only listing",
+             sweep_is_exact([str(control_sock_path)], control_sock_path))
 
         # Self-check that the sweep machinery above actually catches the exact leak class RedHat
         # measured: bind the SAME host sockets into the jail through an ALTERNATE path (not
@@ -258,14 +284,6 @@ if Path('/usr/bin/bwrap').exists() and Path('/mnt/wslg').is_dir():
                  "through a path OTHER than /mnt/wslg/run/user/<uid> (proves the sweep, not just "
                  "the single-directory check above, is what closes RedHat's finding)",
                  any(name in leaked_proc.stdout for name in host_entries))
-
-            # F1 self-check: a synthetic socket with a name that matches NONE of host_entries,
-            # bound in through yet another path, must still be caught by the exact-set check
-            # above (not by this leaked_cmd run, which still uses host-name matching for the
-            # RedHat leak class) -- the exact-set check is exercised directly on its own sweep,
-            # so this only needs to prove a differently-named socket is distinguishable from
-            # the single expected control socket; that is already measured by the F1/F-RH-S2
-            # case above whenever sweep_listing_paths picks up more than just control.sock.
 
             # F2 self-check: bind the SAME host sockets directly OVER /sys/fs (overwriting the
             # existing mountpoint, not creating a new path under it -- /sys is read-only bound

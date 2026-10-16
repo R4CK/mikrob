@@ -43,13 +43,29 @@ describe('gemini-calls: ledger parsing (card 64788453)', () => {
 })
 
 describe('gemini-calls: buildCallRows (card 64788453)', () => {
-  it('only includes agy rows, never codex', () => {
+  it('only includes rows from the agy/agy-ghost/agy-heavy family, never codex', () => {
     const rows = buildCallRows([
       { hivas_id: '1', ido: '2026-10-14T05:50:00.000+02:00', seged: 'agy', modell: 'gemini-3.8-flash-medium', hivo: 'backend', kartya: 'c1', feladattipus: 'kod', status: 'ok', duracio_s: 3.6, tokens_total: 11857 },
       { hivas_id: '2', ido: '2026-10-14T05:51:00.000+02:00', seged: 'codex', modell: 'gpt-5', hivo: 'backend', kartya: 'c2', feladattipus: 'kod', status: 'ok' },
     ])
     expect(rows).toHaveLength(1)
-    expect(rows[0]).toMatchObject({ model: 'gemini-3.8-flash-medium', caller: 'backend', cardId: 'c1', taskType: 'kod', status: 'ok', durationS: 3.6, tokens: 11857 })
+    expect(rows[0]).toMatchObject({ model: 'gemini-3.8-flash-medium', caller: 'backend', cardId: 'c1', taskType: 'kod', status: 'ok', durationS: 3.6, tokens: 11857, source: 'agy' })
+  })
+
+  // C7 (card f0b3b674, MikroB plan-grilling GO-WITH-CHANGES): Peti asked twice why a Gemini call
+  // did not show up on this panel -- 'agy-ghost' (the already-shipped Ghost pipeline) and
+  // 'agy-heavy' (this card's new heavy second-opinion path) were silently excluded by the old
+  // exact seged==='agy' filter, even though both share the SAME fleet-wide hourly budget as 'agy'.
+  it('includes agy-ghost and agy-heavy rows too, each labeled with its own source', () => {
+    const rows = buildCallRows([
+      { hivas_id: '1', ido: '2026-10-14T05:50:00.000+02:00', seged: 'agy', hivo: 'backend', kartya: 'c1', status: 'ok' },
+      { hivas_id: '2', ido: '2026-10-14T05:51:00.000+02:00', seged: 'agy-ghost', hivo: 'quota-bridge-ghost', kartya: 'c2', status: 'ok' },
+      { hivas_id: '3', ido: '2026-10-14T05:52:00.000+02:00', seged: 'agy-heavy', hivo: 'offload-dispatch-heavy', kartya: 'c3', status: 'ok' },
+    ])
+    expect(rows).toHaveLength(3)
+    expect(rows.find((r) => r.cardId === 'c1')?.source).toBe('agy')
+    expect(rows.find((r) => r.cardId === 'c2')?.source).toBe('agy-ghost')
+    expect(rows.find((r) => r.cardId === 'c3')?.source).toBe('agy-heavy')
   })
 
   it('attaches the matching rating by ido<->hivas, and null when unrated', () => {
