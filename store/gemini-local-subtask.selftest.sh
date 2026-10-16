@@ -282,6 +282,52 @@ unset SUBTASK_DIR
 case_eq "subtask-dir-env-ignored: exit 1 (real HOLD wins over forged SUBTASK_DIR env)" "1" "$rc"
 grep -q 'gpu-util-hold' "$TD/err13" || fails+=("subtask-dir-env-ignored: stderr missing gpu-util-hold (SUBTASK_DIR env still honored?)")
 
+# 14-16. Card 0f01b9cf (WhiteHat LOW on b30ad7e6's gate @ba2c419b, komment 20428): cases 12/13 only
+#     pin NAMED, DIFFERENT env vars (GPU_GATE_STALE_S, SUBTASK_DIR) against the gate lookup -- they
+#     never set an env var sharing the SCRIPT'S OWN internal variable names (GATE_JAIL_DIR,
+#     KILL_SWITCH_MIRROR, GPU_GATE_MIRROR). Today this is not a live bug: the script assigns these
+#     unconditionally (`GATE_JAIL_DIR="/run/..."`, not `"${GATE_JAIL_DIR:-/run/...}"`), so an
+#     inherited env var of the same name is immediately overwritten -- but no case caught a future
+#     regression that made the assignment conditional. (Mutation check: switching any of the three
+#     assignments in gemini-local-subtask.sh to `"${VAR:-default}"` flips exactly the matching case
+#     below to exit 0, because the forged file the env var points at would then be read instead of
+#     the real one.)
+base_env
+write_gate_mirror "$GPU_GATE_FILE" false gpu-util-hold 0
+forged_gate_jail_dir="$TD/forged-gate-jail-dir-$RANDOM"
+mkdir -p "$forged_gate_jail_dir"
+echo '{"enabled":true}' > "$forged_gate_jail_dir/killswitch-mirror.json"
+write_gate_mirror "$forged_gate_jail_dir/gpu-gate-mirror.json" true ok 0
+GATE_JAIL_DIR="$forged_gate_jail_dir"
+export GATE_JAIL_DIR
+echo 'hello' | bash "$SCRIPT_COPY" >"$TD/out14" 2>"$TD/err14"; rc=$?
+unset GATE_JAIL_DIR
+case_eq "gate-jail-dir-env-ignored: exit 1 (real HOLD wins over forged GATE_JAIL_DIR env)" "1" "$rc"
+grep -q 'gpu-util-hold' "$TD/err14" || fails+=("gate-jail-dir-env-ignored: stderr missing gpu-util-hold (GATE_JAIL_DIR env still honored?)")
+
+base_env
+write_gate_mirror "$GPU_GATE_FILE" true ok 0
+echo '{"enabled":false}' > "$KILLSWITCH_FILE"
+forged_kill_switch="$TD/forged-killswitch-$RANDOM.json"
+echo '{"enabled":true}' > "$forged_kill_switch"
+KILL_SWITCH_MIRROR="$forged_kill_switch"
+export KILL_SWITCH_MIRROR
+echo 'hello' | bash "$SCRIPT_COPY" >"$TD/out15" 2>"$TD/err15"; rc=$?
+unset KILL_SWITCH_MIRROR
+case_eq "kill-switch-mirror-env-ignored: exit 1 (real killswitch-off wins over forged KILL_SWITCH_MIRROR env)" "1" "$rc"
+grep -q 'killswitch-off' "$TD/err15" || fails+=("kill-switch-mirror-env-ignored: stderr missing killswitch-off (KILL_SWITCH_MIRROR env still honored?)")
+
+base_env
+write_gate_mirror "$GPU_GATE_FILE" false gpu-util-hold 0
+forged_gpu_gate="$TD/forged-gpu-gate-$RANDOM.json"
+write_gate_mirror "$forged_gpu_gate" true ok 0
+GPU_GATE_MIRROR="$forged_gpu_gate"
+export GPU_GATE_MIRROR
+echo 'hello' | bash "$SCRIPT_COPY" >"$TD/out16" 2>"$TD/err16"; rc=$?
+unset GPU_GATE_MIRROR
+case_eq "gpu-gate-mirror-env-ignored: exit 1 (real gpu-util-hold wins over forged GPU_GATE_MIRROR env)" "1" "$rc"
+grep -q 'gpu-util-hold' "$TD/err16" || fails+=("gpu-gate-mirror-env-ignored: stderr missing gpu-util-hold (GPU_GATE_MIRROR env still honored?)")
+
 for f in "${fails[@]}"; do
   echo "FAIL gemini-local-subtask: $f"
 done
