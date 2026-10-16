@@ -20617,3 +20617,15 @@ felfedezés a selftest-neveket nem igényel kézi bekötést -- a vitest-futás 
 **Ki döntött:** backend (kártya 3f6fc4ce, F0), gate: QA + WhiteHat.
 
 **Hivatkozás:** kártya 3f6fc4ce, c65add5a (fázis, MODULTERV komment), DECISIONS.md fenti "DÖNTÉS (Peti 11541...)" bejegyzés (fájl-partíció).
+
+## 2026-10-16 -- kártya 669b7f92: shared-tier memória kizárva a gate-ügynökök session-injekciójából (RedHat R3 a 84dcc5d4-en, komment 15755)
+
+**A hiányosság:** a 84dcc5d4-en (memória-írás szerző-hitelesítés) a gate-ügynökök kizárása (`store/session-memory-inject-agents.json`) csak a KURÁLT (own-curated) szakaszt fedte. A `scripts/hooks/shared-memory-inject.py` "KÖZÖS MEMÓRIA (shared tier)" szakasza feltétel nélküli volt: minden gate-ügynök (qa, qa2, cybersec, cybersec2, cybered) is megkapta session-indításkor, és a sorok `agent_id`-bélyege ugyanúgy hamisítható a megosztott tokennel (R2), mint a kurált szakasz volt hitelesítés előtt. RedHat kifejezetten jelezte: "a kártya 'a gate-ügynökök visszakapcsolhatók' mondata ezért félrevezető: a kurált szakasz visszakapcsolása semmit sem ad (üres, mert R1 szerint a hitelesített írás ma élesben elérhetetlen), a tényleges nyitott csatorna a shared tier."
+
+**A döntés:** TELJES kizárás (nem csak szűrés) -- egy gate-ügynöknél (`GATE_AGENT_NAMES` a hook-ban, tükrözve a `src/db.ts` `GATE_AUTHORS` / `src/web/kanban-gate-completeness-guard.ts` `GATE_AGENT_NAMES` kanonikus listájából) a `category=shared` lekérdezés el sem indul. Indoklás a szűréssel (self_authenticated=1) szemben: R1 szerint a hitelesített írás útvonala ma élesben nem elérhető (a kulcs-minting névmintája nem fogadja el a kettőspontot), tehát egy szűrés ma egyenértékű lenne a kizárással, csak bonyolultabb kóddal és egy téves "ez biztonságos, mert szűrve van" benyomással, amint a minting-út megépül. A tisztán szerkezeti kizárás nem függ ettől.
+
+**Mérés:** új teszt (`src/__tests__/shared-memory-inject-gate-exclusion.test.ts`, 6 eset: mind az 5 gate-ügynök + 1 nem-gate kontroll), a hook valódi forrását futtatva egy python3 fixture-szerver ellen, a kérés-naplót is pinelve (nem csak a végeredményt) -- egy mutáns (`GATE_AGENT_NAMES = frozenset([])`) 5/5 pirosra vitte, a visszaállítás után 66/66 zöld (a két érintett meglévő teszt-fájllal együtt, regresszió nincs).
+
+**Ki döntött:** backend (kártya 669b7f92), gate: QA + RedHat (a kártya saját kijelölése szerint).
+
+**Hivatkozás:** kártya 669b7f92, 84dcc5d4 (forrás), komment 15755 (RedHat R3 NO-GO a 84dcc5d4-en), 86d5de34, 8ffa0c8a K2.

@@ -75,6 +75,20 @@ def _agent_id_from_cwd(cwd):
 SESSION_MEMORY_INJECT_TOKEN_BUDGET = 1500  # MikroB plan-grilling decision (b).6, komment 14296
 SESSION_MEMORY_INJECT_MAX_CANDIDATES = 20
 
+# Card 669b7f92 (RedHat R3 on 84dcc5d4, komment 15755): the gate-agent exclusion in
+# store/session-memory-inject-agents.json only ever gated the own-curated section below. The
+# "KOZOS MEMORIA (shared tier)" section further down in main() was unconditional -- every gate
+# agent (qa, qa2, cybersec, cybersec2, cybered) got it injected at every session start too, and
+# its agent_id stamp is exactly as forgeable via the shared-token write path as the curated
+# section's was before self_authenticated=1 (and R1 of the same NO-GO notes that filter is
+# currently non-functional in production anyway, since no device key can mint the "agent:<id>"
+# name today). A gate agent reviewing a submitter's work is the highest-value target for this
+# injection vector, so it is excluded entirely here, not merely filtered. Mirrors the gate
+# roster already canonical in src/db.ts GATE_AUTHORS / src/web/kanban-gate-completeness-guard.ts
+# GATE_AGENT_NAMES -- duplicated here (not imported) because this hook is a standalone Python
+# script with no import path into the TS source.
+GATE_AGENT_NAMES = frozenset(["qa", "qa2", "cybersec", "cybersec2", "cybered"])
+
 
 def _estimate_tokens(text):
     # Same char/4 approximation already used elsewhere in this codebase for estimating tokens
@@ -276,18 +290,24 @@ def main():
         sys.exit(0)  # no token -> no-op (fail-safe)
 
     api = "http://localhost:%s/api" % _web_port()
-    url = "%s/memories?agent=%s&category=shared" % (api, agent)
-    req = urllib.request.Request(url)
-    req.add_header("Authorization", "Bearer " + token)
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            data = json.load(r)
-    except Exception:
-        sys.exit(0)  # dashboard unavailable -> no-op (fail-safe)
-
-    mems = data if isinstance(data, list) else data.get("memories", data.get("data", []))
 
     MAX_CONTENT_CHARS = 400  # mirrors MEMORY_CONTENT_MAX_CHARS in src/memory.ts
+    mems = []
+    # Card 669b7f92: a gate agent never gets the shared-tier fetch at all, not just a filtered
+    # result -- see GATE_AGENT_NAMES above for why. Non-gate agents keep the exact prior
+    # behaviour (including the fail-safe full-exit if the dashboard is unreachable).
+    if agent not in GATE_AGENT_NAMES:
+        url = "%s/memories?agent=%s&category=shared" % (api, agent)
+        req = urllib.request.Request(url)
+        req.add_header("Authorization", "Bearer " + token)
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                data = json.load(r)
+        except Exception:
+            sys.exit(0)  # dashboard unavailable -> no-op (fail-safe)
+
+        mems = data if isinstance(data, list) else data.get("memories", data.get("data", []))
+
     lines = []
     for m in (mems or []):
         c = (m.get("content") or "").strip()
