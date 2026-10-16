@@ -44,7 +44,6 @@ type Week = { starts: number[]; labels: string[]; shortLabels: string[]; narrowL
 // SKIPPED note above). Computing it eagerly at module scope would throw on import and crash the
 // whole file before describe.skip ever gets a chance to not-run anything.
 function weekSegments(resetsAt: unknown, nowSec: unknown, lang: string, timeZone?: string): Week {
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
   return (new Function(`${extractFn('weekSegments')}; return weekSegments`)() as (
     resetsAt: unknown, nowSec: unknown, lang: string, timeZone?: string,
   ) => Week)(resetsAt, nowSec, lang, timeZone)
@@ -116,7 +115,6 @@ function render(quota: Record<string, unknown>, lang = 'hu'): string[] {
     els[id] = el
   }
   const document = { getElementById: (id: string) => els[id], createElement: () => ({ className: '', innerHTML: '' }) }
-  // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const fn = new Function('document', 'window', 't', 'escapeHtml', 'formatDurationShort', 'formatRelative',
     `${extractFn('quotaLevelClass')}; ${extractFn('quotaMeasuredText')}; ${extractFn('weekSegments')}; ${extractFn('renderQuotaStrip')}; return renderQuotaStrip`,
   )(document, { _lang: lang }, (k: string) => k, (s: string) => String(s), () => '1n', () => 'most')
