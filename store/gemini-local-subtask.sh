@@ -46,14 +46,25 @@ SUBTASK_DIR="${HOME:-/root}/.gemini-local-subtask"
 # file is read via nvidia-smi or any GPU device node inside the jail any more (F1): both are
 # snapshots the HOST keeps fresh (store/vram-guard-check.sh's ambient GATE_MIRROR writes,
 # src/web/routes/local-llm.ts's kill-switch mirror write).
-KILL_SWITCH_MIRROR="${GEMINI_LOCAL_SUBTASK_KILLSWITCH:-$SUBTASK_DIR/gate/killswitch-mirror.json}"
-GPU_GATE_MIRROR="${GEMINI_LOCAL_SUBTASK_GPU_GATE:-$SUBTASK_DIR/gate/gpu-gate-mirror.json}"
+#
+# Card 19ef0eca (WhiteHat2 finding on the 67a78f4c gate, komment 20244): these two paths ARE the
+# gate decision itself, so unlike OLLAMA_HOST/MODEL/TIMEOUT/LOG below (mechanical config, already
+# accepted as no-new-capability per the F3 note above), they are FIXED constants, never env-
+# overridable. A bad-faith agy controls the environment of any child process IT spawns (same F3
+# reasoning) -- an env override here would let it point the gate at a file it just wrote itself
+# inside the jail's own writable --tmpfs, forging an ADMIT without ever touching the real,
+# host-written mirror. Measured by WhiteHat2: a forged {"admit":true} file via this env var did
+# pass the gate. Test-fixture injection now goes through $HOME (jail_cmd already fixes HOME via
+# --setenv; the selftest points HOME at its own sandbox instead of overriding these two paths).
+KILL_SWITCH_MIRROR="$SUBTASK_DIR/gate/killswitch-mirror.json"
+GPU_GATE_MIRROR="$SUBTASK_DIR/gate/gpu-gate-mirror.json"
 # A gate verdict older than this is DOUBT, not absence -- same fail-safe direction as every other
 # "tool present but unreadable" branch in this threat model: on doubt, HOLD (route online), never
 # silently ADMIT just because nothing has refreshed the mirror lately. Generous relative to how
 # often the fleet's ambient dispatch activity calls vram-guard-check.sh in practice (card 108c7b10's
-# whole reason to exist is that this happens often), so staleness should be rare.
-GPU_GATE_STALE_S="${GEMINI_LOCAL_SUBTASK_GPU_GATE_STALE_S:-600}"
+# whole reason to exist is that this happens often), so staleness should be rare. Fixed, not env-
+# overridable, same reasoning as the two mirror paths above (card 19ef0eca).
+GPU_GATE_STALE_S=600
 LOG_FILE="${GEMINI_LOCAL_SUBTASK_LOG:-$SUBTASK_DIR/calls.log}"
 OLLAMA_HOST="${GEMINI_LOCAL_SUBTASK_OLLAMA_HOST:-http://127.0.0.1:11434}"
 # Fixed, not caller-suppliable in the good-faith path. Keep in sync with store/local-llm-model (the
