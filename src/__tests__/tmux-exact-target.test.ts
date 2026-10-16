@@ -83,11 +83,26 @@ afterAll(() => {
 
 describe.skipIf(!tmuxBin)('a real caller against an isolated tmux server', () => {
   it('getClaudePidForSession(agent-foo) is null while only agent-foo2 runs a claude', async () => {
-    // A process NAMED claude: a symlink to sleep, so `ps -o comm=` ends in /claude.
-    // (A COPY of /bin/sleep is SIGKILLed by macOS code signing, measured rc 137.)
+    // A process NAMED claude, so `ps -o comm=` ends in /claude: a symlink to
+    // bash, not to `sleep` (`comm` is set by the kernel from the exec path's
+    // own basename, not from argv[0]). A symlink to `sleep` used to be here,
+    // but measured on this box `/bin/sleep` IS uutils-coreutils -- the same
+    // multicall binary as /bin/cat, /bin/ls etc. (one inode, many names).
+    // Invoked through a path ending in "claude", its OWN applet dispatch
+    // (keyed off that exec-path basename, not argv[0] -- verified with
+    // `exec -a` overriding each independently) rejects "claude" as an unknown
+    // program and exits immediately, tearing the whole detached (-d)
+    // session/server down well inside this test's 2s retry window ("no
+    // server running", not a timing flake). bash has no such name-dispatch.
+    // (A COPY of /bin/sleep is SIGKILLed by macOS code signing, measured rc
+    // 137 -- a symlink avoids that too, since it never copies the binary.)
+    // A single simple `-c` command is bash's own tail-call exec-replace,
+    // which would swap comm back to the replaced command's name; `; true`
+    // after it defeats that so bash itself, not a replacement image, stays
+    // the pane's root process.
     const fakeClaude = join(SOCKDIR, 'claude')
-    symlinkSync('/bin/sleep', fakeClaude)
-    isolatedTmux(['new-session', '-d', '-s', 'agent-foo2', `${fakeClaude} 300`])
+    symlinkSync('/bin/bash', fakeClaude)
+    isolatedTmux(['new-session', '-d', '-s', 'agent-foo2', `${fakeClaude} -c 'sleep 300; true'`])
     startedSessions.push('agent-foo2')
     const sock = isolatedTmux(['display-message', '-p', '-t', '=agent-foo2:', '#{socket_path}']).trim()
     expect(sock.includes(SOCKDIR.replace(/^\/private/, ''))).toBe(true) // isolation proven before any caller runs
