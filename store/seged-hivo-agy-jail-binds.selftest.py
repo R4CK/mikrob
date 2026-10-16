@@ -118,11 +118,29 @@ case("agy jail no longer ro-binds vram-guard-check.sh into the jail (nvidia-smi 
 
 # --- card 0c086979: /mnt/wslg host-socket hiding -----------------------------------------------
 pairs = list(zip(agy_jail, agy_jail[1:]))
+triples = list(zip(agy_jail, agy_jail[1:], agy_jail[2:]))
 case("agy jail tmpfs's /mnt/wslg (hides the host session-bus/ssh-agent/gpg-agent/systemd/X11/"
      "Wayland/Pulse/cc-socks sockets that live under /mnt/wslg/run/user/<uid>)",
      ('--tmpfs', '/mnt/wslg') in pairs)
 case("agy jail does NOT tmpfs /mnt/wsl (resolv.conf lives there; hiding it kills DNS)",
      ('--tmpfs', '/mnt/wsl') not in pairs)
+
+# Card b30ad7e6 F1 (RedHat finding on 19ef0eca's edc5bd86 GO): the gate dir used to be bound under
+# $HOME (SUBTASK_JAIL_DIR + '/gate'), which a bad-faith agy could redirect for its own children by
+# exporting a scratch HOME -- see the comment on SUBTASK_GATE_JAIL_DIR in scripts/seged-hivo.py.
+# Pinned here (not just in the bash selftest) because this IS the file whose job is catching a
+# jail_cmd() wiring regression: if a future edit moved the bind target back under HOME, this is
+# where it would be caught before a bash-level fixture test even runs.
+case("agy jail binds the gate dir at the literal /run/gemini-local-subtask-gate path, not under "
+     "$HOME (card b30ad7e6 F1 -- a scratch HOME must not be able to redirect the gate lookup)",
+     ('--ro-bind-try', str(seged_hivo.STORE / '.gemini-local-subtask-gpu-gate'),
+      '/run/gemini-local-subtask-gate') in triples)
+# Only the bind TARGET (inside the jail) matters here -- the bind SOURCE is a legitimate host-side
+# path that lives under $HOME/.../store on this host, same as any other source in this function.
+bind_targets = [t[2] for t in triples if t[0] in ('--ro-bind-try', '--ro-bind', '--bind') and 'gate' in t[2]]
+case("agy jail's gate-dir bind TARGET is NOT anywhere under the real HOME path (mutation-proof: "
+     "a regression back to binding under $HOME would make this fail)",
+     bind_targets != [] and not any(t.startswith(str(seged_hivo.HOME)) for t in bind_targets))
 
 # --- S2 INFO (CYBERED, card e4d38c2b, source de3fb362): jail_cmd()'s own hardening flags were
 # never pinned here, so a future edit could drop one silently -- only the binds/mounts above had
