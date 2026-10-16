@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, copyFileSync, writeFileSync, readFileSync, mkdirSy
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { resolveHourlyLimit } from '../gemini-ghost-budget.js'
+import { resolveHourlyLimit, resolveDailyGhostLimit } from '../gemini-ghost-budget.js'
 
 describe('resolveHourlyLimit() -- M2 regression (card 612058c2 NO-GO): fail-closed on bad env', () => {
   it('a valid positive integer string is used as-is', () => {
@@ -35,6 +35,24 @@ describe('resolveHourlyLimit() -- M2 regression (card 612058c2 NO-GO): fail-clos
   })
 })
 
+// F2 (WhiteHat GO, card 612058c2 Teendo @6b9f61eb, comment 19967): resolveDailyGhostLimit mirrors
+// resolveHourlyLimit's fail-closed parsing, same reasoning, different default (20, matching
+// seged-hivo.py's own documented agy_nap default -- this is a SEPARATE daily cap, not shared).
+describe('resolveDailyGhostLimit() -- F2: fail-closed on bad env', () => {
+  it('a valid positive integer string is used as-is', () => {
+    expect(resolveDailyGhostLimit('7')).toBe(7)
+  })
+  it('undefined (env not set) falls back to the documented default (20)', () => {
+    expect(resolveDailyGhostLimit(undefined)).toBe(20)
+  })
+  it('non-numeric text falls back to 20, not fail-open to unlimited', () => {
+    expect(resolveDailyGhostLimit('abc')).toBe(20)
+  })
+  it('zero falls back to 20 (a zero cap would silently block every call forever)', () => {
+    expect(resolveDailyGhostLimit('0')).toBe(20)
+  })
+})
+
 describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root', () => {
   const __dirname = dirname(fileURLToPath(import.meta.url))
   const REAL_SEGED_HIVO = join(__dirname, '..', '..', 'scripts', 'seged-hivo.py')
@@ -55,6 +73,7 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
       GEMINI_AGY_HOURLY_LOCK: process.env.GEMINI_AGY_HOURLY_LOCK,
       SEGED_HIVO_HELPERS: process.env.SEGED_HIVO_HELPERS,
       GEMINI_AGY_HOURLY_LIMIT: process.env.GEMINI_AGY_HOURLY_LIMIT,
+      GEMINI_AGY_GHOST_DAILY_LIMIT: process.env.GEMINI_AGY_GHOST_DAILY_LIMIT,
     }
     process.env.GEMINI_AGY_HOURLY_LOCK = join(td, 'gemini-agy-call.hourly.lock')
     process.env.SEGED_HIVO_HELPERS = join(td, 'scripts', 'seged-hivo.py')
@@ -155,4 +174,34 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
     for (let i = 0; i < 6; i++) results.push(reserveGhostCallSlot('card1'))
     expect(results).toEqual([true, true, true, true, true, false])
   }, 30_000)
+
+  // F2 (WhiteHat GO, card 612058c2 Teendo @6b9f61eb, comment 19967): a day-wide ghost cap,
+  // separate from and in ADDITION to the hourly one -- rows seeded 2h ago (outside the 1h hourly
+  // window, so the hourly check alone would allow this) but still today's date must still be
+  // blocked once the daily ghost limit is reached.
+  it('the daily ghost cap blocks a reservation even when the HOURLY window is clear', async () => {
+    process.env.GEMINI_AGY_GHOST_DAILY_LIMIT = '3'
+    for (let i = 0; i < 3; i++) appendRow(7200 + i * 10, 'ok', 'quota-bridge-ghost', 'agy-ghost')
+    const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+    const ok = reserveGhostCallSlot('card1')
+    expect(ok).toBe(false)
+    const rows = readFileSync(ledgerPath(), 'utf-8').trim().split('\n').filter(Boolean)
+    expect(rows.length).toBe(3) // no new row appended on a CAPPED_DAILY refusal
+  }, 20_000)
+
+  it('below the daily ghost cap, a reservation outside the hourly window still succeeds (control)', async () => {
+    process.env.GEMINI_AGY_GHOST_DAILY_LIMIT = '3'
+    for (let i = 0; i < 2; i++) appendRow(7200 + i * 10, 'ok', 'quota-bridge-ghost', 'agy-ghost')
+    const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+    const ok = reserveGhostCallSlot('card1')
+    expect(ok).toBe(true)
+  }, 20_000)
+
+  it('a non-numeric GEMINI_AGY_GHOST_DAILY_LIMIT falls back to the default cap of 20, not unlimited (F2)', async () => {
+    process.env.GEMINI_AGY_GHOST_DAILY_LIMIT = 'not-a-number'
+    for (let i = 0; i < 20; i++) appendRow(7200 + i * 5, 'ok', 'quota-bridge-ghost', 'agy-ghost')
+    const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+    const ok = reserveGhostCallSlot('card1')
+    expect(ok).toBe(false)
+  }, 20_000)
 })

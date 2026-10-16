@@ -173,7 +173,8 @@ if [ "$SELFTEST" = "1" ]; then
 
   TMPD="$(mktemp -d)"
   SLOW_API_PID=""
-  trap '[ -n "$SLOW_API_PID" ] && kill "$SLOW_API_PID" 2>/dev/null; rm -rf "$TMPD"' EXIT
+  EMPTY_API_PID=""
+  trap '[ -n "$SLOW_API_PID" ] && kill "$SLOW_API_PID" 2>/dev/null; [ -n "$EMPTY_API_PID" ] && kill "$EMPTY_API_PID" 2>/dev/null; rm -rf "$TMPD"' EXIT
 
   # Case 1: shutdown.exe sikeresen lefut (exit 0) -> STATE irodik, trigger_shutdown 0-val ter vissza.
   FAKE_OK="$TMPD/fake-ok.sh"
@@ -526,10 +527,18 @@ PYEOF
   # not-running entry gives the same "zero running" count (the sum excludes "running":false)
   # without hitting that fail-closed path.
   EMPTY_API_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
-  python3 - "$EMPTY_API_PORT" <<'PYEOF' &
+  # RedHat B1 (1b08cf10 delta, komment 20141): the old version used Case 17/18 right after `&`,
+  # with no readiness wait -- under CPU load, bind()+listen() had not always happened yet, so the
+  # first request raced the server and the case failed for timing, not for the thing it pins.
+  # Fix: the server writes a marker file AFTER bind() succeeds (not a fixed sleep, not a socket
+  # probe), and the shell waits on that file before running the cases that depend on it.
+  EMPTY_API_READY="$TMPD/empty-api-ready"
+  rm -f "$EMPTY_API_READY"
+  python3 - "$EMPTY_API_PORT" "$EMPTY_API_READY" <<'PYEOF' &
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 port = int(sys.argv[1])
+ready_marker = sys.argv[2]
 class EmptyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -538,9 +547,21 @@ class EmptyHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'[{"name":"mikrob","running":false}]')
     def log_message(self, *a):
         pass
-HTTPServer(("127.0.0.1", port), EmptyHandler).serve_forever()
+server = HTTPServer(("127.0.0.1", port), EmptyHandler)
+with open(ready_marker, "w") as fh:
+    fh.write("ready")
+server.serve_forever()
 PYEOF
   EMPTY_API_PID=$!
+  _empty_api_waited=0
+  while [ ! -f "$EMPTY_API_READY" ]; do
+    _empty_api_waited=$((_empty_api_waited + 1))
+    if [ "$_empty_api_waited" -ge 50 ]; then
+      echo "quota-shutdown-guard selftest: empty-api stand-in did not become ready within 5s" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
 
   # Case 17: F-RH-A1 positive control (RedHat ccbfece8/1b08cf10 delta). Case 15's positive control
   # never drove FELTETEL 1 (the non-force path) through the overrides, so losing EITHER
@@ -595,6 +616,14 @@ PYEOF
   cp "$0" "$NEUTRAL_COPY"
   sed -i "s#/home/neon/marveen/store#$NEUTRAL_STORE#g; s#/mnt/c/Windows/System32/shutdown.exe#$NEUTRAL_STUB#g; s#http://localhost:3420#http://127.0.0.1:1#g" "$NEUTRAL_COPY"
   chmod +x "$NEUTRAL_COPY"
+  # RedHat F1 (same hardening as the ccbfece8 F1 finding): if a future rename makes the sed
+  # pattern above stop matching, NEUTRAL_COPY would keep the LIVE store/shutdown.exe paths and
+  # Case 18 would run the real guard (real token, real API, real hard-stop) instead of the
+  # neutralized copy it is meant to be. Assert the live literals are gone before running it.
+  if grep -q '/home/neon/marveen/store\|/mnt/c/Windows/System32/shutdown.exe' "$NEUTRAL_COPY"; then
+    echo "quota-shutdown-guard selftest: neutral-copy sed substitution left a LIVE path in place -- refusing to run it (Case 18 would hit production)" >&2
+    exit 1
+  fi
 
   NEUTRAL_OVERRIDE_HARDSTOP="$TMPD/neutral-override-hardstop.json"
   printf '{"percent":99}\n' > "$NEUTRAL_OVERRIDE_HARDSTOP"

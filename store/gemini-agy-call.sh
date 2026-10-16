@@ -196,8 +196,15 @@ sh = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sh)
 window_start = int(sys.argv[2])
 n = 0
+# F2 (WhiteHat GO, card 612058c2 Teendo @6b9f61eb, comment 19967): this used to count ONLY
+# seged=='agy' rows, so the Ghost pipeline's own 'agy-ghost' rows (gemini-ghost-budget.ts) were
+# invisible here -- a caller could hit this hourly cap while Ghost was ALSO near the shared
+# ceiling, and the two sides never saw each other's usage (measured: 5 ghost reservations left
+# this wrapper's own count at 0, admitting 5 more direct calls -- 10/hour against a stated 5/hour
+# ceiling). gemini-ghost-budget.ts already counts BOTH tags toward ITS side; this makes the
+# wrapper's own count symmetric.
 for row in sh.calls_of(sh.read_log()):
-    if row.get('seged') != 'agy' or row.get('status') == 'blocked':
+    if row.get('seged') not in ('agy', 'agy-ghost') or row.get('status') == 'blocked':
         continue
     try:
         ts = datetime.datetime.fromisoformat(str(row.get('ido', ''))).timestamp()

@@ -792,7 +792,11 @@ _MIN_LANDED_LINES = 3
 # len>=8 filter skipped it, so that deletion was never checked for absence and a still-present
 # bypass read as landed (card eea8a2cb, Cybersec R1 on e21b816b). This matches purely structural
 # bracket/closer noise ("})", "];", "),") instead, which filters out the vacuous case without
-# blinding the check to short-but-real deletions.
+# blinding the check to short-but-real deletions. Known fail-closed cost (RedHat NO-GO F1, card
+# eea8a2cb, 5239502b): a common short deleted line ("else:", "fi") that recurs elsewhere in the same
+# file can now make a genuinely-landed commit read UNLANDED. Accepted on purpose -- a human looks
+# before closing either way, and the alternative (the original len>=8 filter) silently missed real
+# bypass removals instead.
 _BRACKET_NOISE_RE = re.compile(r"^[()\[\]{};,]+$")
 
 
@@ -833,7 +837,12 @@ def _added_lines_present(clone, ref, sha, files):
         added = [l for l in added if len(l) >= 8]
         deleted = [l[1:].strip() for l in patch.split("\n")
                    if l.startswith("-") and not l.startswith("---")]
-        deleted = [l for l in deleted if not _is_bracket_noise(l)]
+        # `l and ...`: a deleted BLANK line strips to "", and the bracket-noise regex requires 1+
+        # chars so it never matches "" -- an empty deleted line slipped through as "substantive"
+        # and could satisfy _MIN_LANDED_LINES on blank-line count alone, with the presence-check
+        # silently vacuous (a blank line is never in _line_set's non-blank set either way, card
+        # eea8a2cb, RedHat NO-GO B1 on 5239502b).
+        deleted = [l for l in deleted if l and not _is_bracket_noise(l)]
         if not added and not deleted:
             continue
         ok, blob = _git(clone, "show", "%s:%s" % (ref, f))

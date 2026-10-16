@@ -136,14 +136,25 @@ ollama_up() { curl -fsS -m 5 "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; }
 GPU_GUARD_MASKED_FLAG="${STATE_DIR}/.gpu-crashloop-guard-masked.json"
 gpu_guard_mask_note() {
   [[ -f "$GPU_GUARD_MASKED_FLAG" ]] || return 0
+  # card 10c3fbeb follow-up (Cybered LOW finding, komment 4327): units/reason/restore come from a
+  # flag file gpu-crashloop-guard.sh writes, but this banner is read by fleet AGENTS, so an ANSI
+  # escape or an embedded newline here could forge a second, fake instruction-looking banner line.
+  # Strip control (Cc, covers ESC/CR/LF) and format (Cf, covers BIDI overrides) chars, coerce
+  # non-string JSON values to their repr first, then cap length -- before any of it is printed.
   python3 -c '
-import json, sys
+import json, sys, unicodedata
+
+def clean(v, limit=200):
+    s = v if isinstance(v, str) else repr(v)
+    s = "".join(ch for ch in s if unicodedata.category(ch) not in ("Cc", "Cf"))
+    return s[:limit]
+
 try:
     with open(sys.argv[1], encoding="utf-8") as fh:
         d = json.load(fh)
-    units = d.get("units", "?")
-    reason = d.get("reason", "?")
-    restore = d.get("restore", "")
+    units = clean(d.get("units", "?"))
+    reason = clean(d.get("reason", "?"))
+    restore = clean(d.get("restore", ""))
     print(f" [gpu-crashloop-guard has MASKED {units!r} ({reason}) -- restore: {restore}]", end="")
 except Exception:
     pass
