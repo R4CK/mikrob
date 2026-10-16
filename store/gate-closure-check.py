@@ -786,6 +786,19 @@ def _content_on_branch(clone, ref, sha):
 # whole file exists to refuse.
 _MIN_LANDED_LINES = 3
 
+# The same "too common to mean anything" reasoning applies to DELETED lines, but a length cutoff is
+# the wrong tool there: a short, substantive deletion -- a one-line bypass/wildcard entry like
+# `"*",` (4 characters) -- is exactly what a bypass-removal commit's deleted line looks like, and a
+# len>=8 filter skipped it, so that deletion was never checked for absence and a still-present
+# bypass read as landed (card eea8a2cb, Cybersec R1 on e21b816b). This matches purely structural
+# bracket/closer noise ("})", "];", "),") instead, which filters out the vacuous case without
+# blinding the check to short-but-real deletions.
+_BRACKET_NOISE_RE = re.compile(r"^[()\[\]{};,]+$")
+
+
+def _is_bracket_noise(l):
+    return bool(_BRACKET_NOISE_RE.match(l))
+
 
 def _line_set(text):
     """Trimmed, non-blank lines of `text` as a set -- exact membership, not a substring test."""
@@ -820,7 +833,7 @@ def _added_lines_present(clone, ref, sha, files):
         added = [l for l in added if len(l) >= 8]
         deleted = [l[1:].strip() for l in patch.split("\n")
                    if l.startswith("-") and not l.startswith("---")]
-        deleted = [l for l in deleted if len(l) >= 8]
+        deleted = [l for l in deleted if not _is_bracket_noise(l)]
         if not added and not deleted:
             continue
         ok, blob = _git(clone, "show", "%s:%s" % (ref, f))
