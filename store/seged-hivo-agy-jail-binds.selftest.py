@@ -27,6 +27,7 @@ _spec.loader.exec_module(seged_hivo)
 
 n = 0
 failures = []
+skipped = []
 
 
 def case(label, cond):
@@ -34,6 +35,15 @@ def case(label, cond):
     n += 1
     if not cond:
         failures.append(label)
+
+
+def skip(label):
+    # S3 INFO (CYBERED, card e4d38c2b, source de3fb362): a bare case(label, True) made a host
+    # without bwrap or /mnt/wslg pass vacuously, counted the same as a real, exercised check --
+    # the final "N case(s) PASS" line could not tell a fully-measured run from one that never ran
+    # the jail at all. skip() is counted separately and printed under its own SKIP: line, so a
+    # WSLg-less host's run is visibly distinguishable from a real pass instead of folding into it.
+    skipped.append(label)
 
 
 def classify_jailed_listing(jailed_listing, host_entries):
@@ -113,6 +123,20 @@ case("agy jail tmpfs's /mnt/wslg (hides the host session-bus/ssh-agent/gpg-agent
      ('--tmpfs', '/mnt/wslg') in pairs)
 case("agy jail does NOT tmpfs /mnt/wsl (resolv.conf lives there; hiding it kills DNS)",
      ('--tmpfs', '/mnt/wsl') not in pairs)
+
+# --- S2 INFO (CYBERED, card e4d38c2b, source de3fb362): jail_cmd()'s own hardening flags were
+# never pinned here, so a future edit could drop one silently -- only the binds/mounts above had
+# regression coverage. These three are argv presence/shape checks, same cheap pattern as the
+# /dev/dxg and --dev-bind checks above; the comment above jail_cmd() explains what each buys.
+case("agy jail unshares its own PID namespace (--unshare-pid) -- --die-with-parent then takes "
+     "every descendant down with it, setsid'd ones included",
+     '--unshare-pid' in agy_jail)
+case("agy jail clears its own environment (--clearenv) before --setenv-ing back only the fixed "
+     "allowlisted vars -- no ambient secret (messaging token, SSH/GPG agent sockets, TMUX) leaks in",
+     '--clearenv' in agy_jail)
+case("agy jail remounts $HOME read-only (--remount-ro) after binding state/workdir back in -- a "
+     "write outside DIR then fails loudly instead of landing in a still-writable tmpfs",
+     ('--remount-ro', str(seged_hivo.HOME)) in pairs)
 
 workdir_on_mnt = Path('/mnt/h/does-not-need-to-exist/workdir')
 agy_jail_mnt_workdir = seged_hivo.jail_cmd('agy', workdir_on_mnt)
@@ -260,11 +284,16 @@ if Path('/usr/bin/bwrap').exists() and Path('/mnt/wslg').is_dir():
         control_sock.close()
         shutil.rmtree(sweep_dir, ignore_errors=True)
 else:
-    case("SKIPPED (no bwrap or no /mnt/wslg on this host) -- real-jail socket-listing check",
-         True)
+    skip("real-jail socket-listing + full-tree sweep checks (F-RH-S1/S2, F1-F3) did not run -- "
+         f"bwrap present: {Path('/usr/bin/bwrap').exists()}, /mnt/wslg a directory: "
+         f"{Path('/mnt/wslg').is_dir()}")
 
 print()
-print("selftest: %d case(s), %s" % (n, "PASS" if not failures else "FAIL"))
+print("selftest: %d case(s), %s%s" % (
+    n, "PASS" if not failures else "FAIL",
+    f", {len(skipped)} SKIPPED (not counted as coverage)" if skipped else ""))
 for f in failures:
     print("  - %s" % f)
+for s in skipped:
+    print("  SKIP: %s" % s)
 sys.exit(1 if failures else 0)
