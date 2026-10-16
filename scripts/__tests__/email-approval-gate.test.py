@@ -459,8 +459,13 @@ with tempfile.TemporaryDirectory() as td:
     check("attachments/MCP: the ORIGINAL approved letter with its exact attachment still sends",
           code == 0, f"exit={code}")
 
-    # A file-path attachment: the hook reads the file now and hashes its
-    # bytes, so swapping the file's CONTENT (same path) also changes the anchor.
+    # F3 (WhiteHat2, card e4eb72c9 go-live condition on a2cb71f1, TOCTOU
+    # closure): a file-path attachment is now REJECTED fail-closed rather than
+    # read-and-hashed -- a second read of the same path after approval would
+    # be a TOCTOU window (approve bytes-A, swap to bytes-B, resend still
+    # anchors because the hash is recomputed from whatever is on disk NOW).
+    # Absolute-path attachments must therefore never reach an approvable
+    # anchor at all; only strict base64 content can be approved and sent.
     store_path = make_store(os.path.join(td, "att-path"))
     att_dir = os.path.join(td, "att-files")
     os.makedirs(att_dir, exist_ok=True)
@@ -469,22 +474,15 @@ with tempfile.TemporaryDirectory() as td:
         fh.write(b"version-1")
     path_payload = mcp_send(subject="Fajl-melleklet")
     path_payload["tool_input"]["attachments"] = [{"filename": "report.pdf", "content": att_path}]
-    _, _, err = run_gate(store_path, path_payload)
-    path_anchor = anchor_from_stderr(err)
-    approve(store_path, path_anchor)
-    code, _, _ = run_gate(store_path, path_payload)
-    check("attachments/path: approved letter with the file UNCHANGED sends",
-          code == 0, f"exit={code}")
+    code, _, err = run_gate(store_path, path_payload)
+    check("attachments/path: absolute-path attachment is DENIED fail-closed, no anchor to approve (F3 TOCTOU closure)",
+          code == 2 and anchor_from_stderr(err) is None, f"exit={code} err={err[:200]!r}")
 
     with open(att_path, "wb") as fh:
         fh.write(b"version-2-swapped")
-    # Fresh approval against the (still path_payload-shaped) call: the anchor is
-    # computed from the file's CURRENT bytes, so re-approving now anchors v2.
-    _, _, err = run_gate(store_path, path_payload)
-    swapped_anchor = anchor_from_stderr(err)
-    check("attachments/path: swapping the file's bytes changes the anchor",
-          swapped_anchor is not None and swapped_anchor != path_anchor,
-          f"anchors: {path_anchor!r} vs {swapped_anchor!r}")
+    code, _, err = run_gate(store_path, path_payload)
+    check("attachments/path: still DENIED after swapping the file's bytes (no TOCTOU window left to exploit)",
+          code == 2 and anchor_from_stderr(err) is None, f"exit={code} err={err[:200]!r}")
 
     # An unreadable attachment file fails closed, same as every other
     # unreadable-letter branch (no anchor to even approve).
