@@ -205,6 +205,9 @@ const OK_SHAPES: readonly RegExp[] = [
   // `N passed, 0 failed` entry above, different noun. The captured number keeps the
   // non-vacuous guarantee: `0 checks` does not match.
   /selftest: ([1-9]\d*) checks, 0 failed/,
+  // local-llm-rag.selftest.sh style (card 613a8142): `<script>.sh selftest: all N checks passed`.
+  // Captured number keeps the non-vacuous guarantee: `all 0 checks passed` does not match.
+  /selftest: all ([1-9]\d*) checks passed/,
 ]
 
 describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b)', () => {
