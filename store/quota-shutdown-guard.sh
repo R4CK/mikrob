@@ -520,6 +520,11 @@ PYEOF
 
   # Local stand-in returning zero running agents, instant response -- shared by Case 17 (F-RH-A1)
   # and Case 18 (F-RH-A2 control), both of which need FELTETEL 1 to actually fire under override.
+  # NOT a literal "[]": _qsg_parse_agents (card ccbfece8 F-RH-T1/T2, merged in alongside this
+  # case) fail-closes an empty list to -1 (UNKNOWN), not 0 -- an empty array is indistinguishable
+  # from a schema glitch, so it must never read as "all agents stopped". A single well-formed
+  # not-running entry gives the same "zero running" count (the sum excludes "running":false)
+  # without hitting that fail-closed path.
   EMPTY_API_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
   python3 - "$EMPTY_API_PORT" <<'PYEOF' &
 import sys
@@ -530,7 +535,7 @@ class EmptyHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(b"[]")
+        self.wfile.write(b'[{"name":"mikrob","running":false}]')
     def log_message(self, *a):
         pass
 HTTPServer(("127.0.0.1", port), EmptyHandler).serve_forever()
@@ -578,8 +583,17 @@ PYEOF
   NEUTRAL_STUB="$TMPD/neutral-stub-shutdown.sh"
   printf '#!/bin/bash\nexit 0\n' > "$NEUTRAL_STUB"
   chmod +x "$NEUTRAL_STUB"
+  # Card ccbfece8 F-RH-T1 (fail-closed exit 1 on a missing/unreadable token-file) now runs
+  # BEFORE the final "OK: nincs feltetel teljesitve (percent=...)" log line below -- without a
+  # default token-file here, the no-flag run exits early on that path and never reaches the
+  # percent=0 line the next assertion checks for, which isn't what this case means to pin (the
+  # override being ignored, not a missing-token short-circuit). A real default token-file lets
+  # the run proceed past that check, same as production would. The live API URL literal is also
+  # neutralized (same pattern as the B1 case above) so a dead default token doesn't result in a
+  # real curl call to the live dashboard.
+  printf 'neutral-default-token-not-a-real-credential\n' > "$NEUTRAL_STORE/.dashboard-token"
   cp "$0" "$NEUTRAL_COPY"
-  sed -i "s#/home/neon/marveen/store#$NEUTRAL_STORE#g; s#/mnt/c/Windows/System32/shutdown.exe#$NEUTRAL_STUB#g" "$NEUTRAL_COPY"
+  sed -i "s#/home/neon/marveen/store#$NEUTRAL_STORE#g; s#/mnt/c/Windows/System32/shutdown.exe#$NEUTRAL_STUB#g; s#http://localhost:3420#http://127.0.0.1:1#g" "$NEUTRAL_COPY"
   chmod +x "$NEUTRAL_COPY"
 
   NEUTRAL_OVERRIDE_HARDSTOP="$TMPD/neutral-override-hardstop.json"
