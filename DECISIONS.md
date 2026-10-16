@@ -20511,3 +20511,78 @@ kiegészítést az allowlistben. `jail_cmd()` mindkét kártya bind-jait megtart
 **Amit ez a kártya NEM tartalmaz:** F4 (állandó-címzett nyom) továbbra is dokumentált maradék kockázat (e4eb72c9), nem ennek a kártyának a hatóköre; a mutt/mail/curl-smtp küldők a Bash-ág előszűrőjének hatókörén kívül esnek (nincsenek telepítve, nem blokkoló).
 
 **Ki döntött:** backend (self-advance pickup, 11. szabály, MikroB delegálása msg 13084). Gate: QA + Cybersec (a kártya saját kijelölése, email-send trust boundary, korábbi NO-GO ugyanerre a területre).
+
+## 2026-10-16 09:42 -- Gemini 5/óra stop nélkül is, nehéz (ONLINE) kártyákhoz második vélemény/draft (kártya f0b3b674)
+
+**Forrás:** Peti, Telegram 11505 + 11507 gomb: "Igen, nyisd meg" -- az óránkénti 5 Gemini-hívás a nehéz feladatokhoz is, új-fejlesztés-stop nélkül fusson.
+
+**MikroB plan-grilling verdiktje (GO-WITH-CHANGES, komment 20260):** C1 -- önálló flag-fájl (`store/gemini-heavy-second-opinion-enabled`), alapból KI, csak MikroB kapcsolja be mindhárom gate GO-ja után. C2 -- UGYANAZ a meglévő 5/óra közös keret (nem új, külön számláló), a nehéz-kártya út legfeljebb 3/5 slotot vihet el óránként, legalább 2 marad a stop-alatti draft-útnak és a Ghostnak. C3 -- a kizárás (biztonsági/auth/tenant, pénzügyi, mopsion kártya) legyen az ÚJ ág ELSŐ lépése is, `is_gemini_blocked` hívással, mutáns-teszttel igazolva. C4 -- kimenő adat csak a kártya cím+leírás, a meglévő titok-detektoron át. C5 -- kártyánkénti egyszeri hívás (a meglévő exhausted-TTL mechanizmusra épülve). C6 -- a Gemini-kimenet mindig DRAFT (`[GEMINI DRAFT | second-opinion]` fejléc), sosem gate-verdikt, sosem routing-döntés. C7 -- a dashboard Gemini-panelje mutassa kártyánként a hívást (korábban Peti kétszer kérdezte, mert nem látta). C8 -- a kártya eredeti 6. pontja (helyi modell bukása után merge-conflict-explain/upstream-batch-digest Gemini-re routolása) KIVÉVE ebből a kártyából, külön kártyára bontva (efe4aa40), mert az e4457f3a kategóriák még nem léteznek.
+
+**Miért plan-grilling-kötelezett:** kifelé menő adat külső szolgáltatásnak (Gemini API) + a korábbi F1d döntés (categorical-online leaf sosem megy Geminihez helyettesítő routing-ként) részleges megfordítása -- a root CLAUDE.md 1b. szabálya szerint kockázatos/architektúra-érintő Feladat-kártya `in_progress` előtt kötelező a plan-grilling.
+
+**Megvalósítás és utólagos javítások:** C1-C8 landolva (Gate-SHA 44931ad6, commit 0f24e53a+39e1eaa0). QA FAIL (komment 20354) a GOAL 2 hívási hely C3-lefedettségének hiányára; WhiteHat GO a kikapcsolt alapállapotra, de F1 (MEDIUM: az új két ág nem vette figyelembe az `OFFLOAD_NO_GEMINI=1` váltót) és F2 (a két új hívóhely 4 mutánsa hamis-zölden maradt) javítását a flag bekapcsolása előfeltételének szabta. Mindhárom lelet egy delta-javításban zárva: `gemini_heavy_second_opinion_enabled()` mostantól figyeli az `OFFLOAD_NO_GEMINI` váltót (F1), a `src/__tests__/gemini-offload-dispatch.test.ts` `runTryLeaf()` harness kiterjesztve a két új hívóhelyre, 12 új viselkedési teszt, a 4 WhiteHat-mutáns + az F1-mutáns elkülönítve igazolva pirosra vált.
+
+**Ki döntött:** MikroB (plan-grilling, GO-WITH-CHANGES), Peti (eredeti jóváhagyás, Telegram 11505/11507).
+
+**Hivatkozás:** kártya f0b3b674, c7abdf57 (Gemini-fázis szülő), 64788453 + a020247b (előfeltétel: 5/óra keret + seged-hivo jail), efe4aa40 (C8 levált követő kártya), 20260/20354/20355 kanban-komment (plan-grilling verdikt, QA FAIL, WhiteHat GO).
+
+## 2026-10-15 23:40 -- Gemini-kapu: breakdown/accept megkerülés (X1) + TS normalizálás paritás (X2), kártya b7114793
+
+**Forrás:** 9e83ce97 CYBERED GO (komment 19987, Gate-SHA 0f9b4a67) -- a fenti F2 bejegyzésben dokumentált, NEM zárt maradék fenyegetés (2. pont) és egy újonnan mért negyedik íróút zárása.
+
+**X1 (MEDIUM, mért lelet):** `POST /api/kanban/:id/breakdown/accept` volt a NEGYEDIK ismert kártya-létrehozási útvonal (az e25a549a-ban már dokumentált `st.assignee` mellett), ami a fenti F2 jelölő-kaput teljesen megkerülte -- a route a bejövő `subtasks[].title`-t a privilegizált-actor ellenőrzés nélkül írta be `createKanbanCard`-dal, és a kérés törzséből `actor`-t sem olvasott ki. Egy `[GEMINI-OK]` előtagú subtask-cím 200-zal létrejött volna, jogosultság nélkül. **Javítás:** a tranzakció megnyitása ELŐTT, az ÖSSZES subtask címét átnézve, ha BÁRMELYIK viseli a jelölőt és az actor nem jogosult, a teljes batch 403-at kap (egy részleges létrehozás-majd-visszagörgetés helyett).
+
+**X2 (MEDIUM/LOW, a fenti F2 dokumentált rés zárása):** a TS-oldali `hasGeminiOkMarker` NFKD-normalizálása nem reprodukálta a bash `offload-dispatch.sh` `norm()`/`_fold()` teljes foldját. **Javítás:** ugyanaz a 13-elemű homoglif-tábla (cirill/egyéb hasonmás betűk NFKD-dekompozíció nélkül) + NFKD + kombináló jel/láthatatlan-formázó/vezérlő/sor-bekezdés-elválasztó karakterek eltávolítása (natív Unicode property escape-ekkel, `\p{Mn}`, `\p{Cf}`, `\p{Cc}`, `\p{Zl}`, `\p{Zp}` -- nincs userland kategória-tábla, ami elavulhatna). Zárójel-kategória-fold SZÁNDÉKOSAN nincs portolva: ez a kapu a "gemini-ok" szót RÉSZSZTRINGKÉNT illeszti, nem diszkrét zárójeles tag-eket von ki úgy, mint `offload-dispatch.sh` `tags_for()`-ja, tehát a zárójel-normalizálásnak itt nincs hatása.
+
+**Közös tesztkorpusz (a kártya saját követelménye):** mindkét javítást egy MEGOSZTOTT obfuszkációs korpusz rögzíti (`kanban-gemini-ok-marker-guard.test.ts`) -- minden korpusz-elemet a VALÓDI `is_gemini_blocked()`-del (élőben kivágva `offload-dispatch.sh`-ból, bash/python3-ban futtatva, NEM újraírva) is leellenőriztem, bizonyítva hogy a FOGYASZTÓ oldalon ténylegesen működő jelölőről van szó, nem csak a teszt feltételezéséről. Mutáns-teszttel igazolva: mindkét javítás visszaállítása a megfelelő új teszteket pirosra viszi.
+
+**Ki döntött:** backend3 (kártya b7114793 assignee, forrás a RedHat irány c23ea72f-en).
+
+**Hivatkozás:** kártya b7114793, 9e83ce97 (komment 19987), e25a549a (a korábbi `st.assignee` íróút-lelet).
+
+## 2026-10-15 -- WSL-interop socket felderítő (kártya 73b500f9)
+
+**Mi történt:** a gpu-driver-check napi körében (2026-10-15 07:45) a `WSL_INTEROP` üres volt, és
+minden `/mnt/c/...` `.exe` hívás ("Invalid argument"-tel halt meg -- `cmd.exe` is, `nvidia-smi.exe`
+is), ami `installedHost=null`-t írt volna, hamis "törött driver" riasztást okozva. A
+`/run/WSL/1_interop` (szimlink a `2_interop`-ra) és a `2_interop` (a 04:55-ös bootból maradt, stale)
+sem működött, a `742_interop` viszont igen -- ezzel `installedHost=617.42` helyesen olvasható lett
+volna.
+
+**Döntés:** közös helper (`store/wsl-interop-resolve.sh`), ami üres vagy halott `WSL_INTEROP` esetén
+végigpróbálja a `/run/WSL/*_interop` socketeket egy olcsó `cmd.exe /c ver` próbával, és az elsőt
+használja, ami válaszol; ha egyik sem, a hívó marad a korábbi fail-closed viselkedésen (üres/null
+mező, nem crash). Bekötve `store/gpu-driver-check.sh` (`read_host_version()`, lazy, csak ha
+tényleg az smi-t hívja) és `store/quota-shutdown-guard.sh` (`trigger_shutdown()`, a
+`shutdown.exe` hívás előtt) `.exe`-hívásai elé. A `scripts/install-wsl-watchdog.sh` SZÁNDÉKOSAN
+nincs bekötve: a kártya csak a `store/` szkriptekre szól, és a watchdog-installer root/Windows-host
+telepítő lépéseit fullstack nem futtathatja/módosíthatja a sajat jóváhagyása nélkül (fullstack
+agents/CLAUDE.md "Infra-munka korlátai").
+
+**Mért bizonyíték:** a mai élő hoston (`/run/WSL/` tartalma 2026-10-15-kor) a resolver helyesen
+`/run/WSL/742_interop`-ot találja meg élesen futtatva, pontosan a card leírása szerint (1_interop és
+2_interop "Invalid argument", 742_interop sikeres). Dedikált selftest
+(`store/wsl-interop-resolve.selftest.sh`, 7 eset: üres+élő-van, halott+élő-van, már-működő-marad,
+mind-halott, hiányzó-könyvtár) és a két hívó selftestje bővült a wiring saját eseteivel
+(`gpu-driver-check.selftest.sh` 2 új eset, `quota-shutdown-guard.sh --selftest` 2 új eset) --
+mindegyik fake binárisokkal, a valós hosztot nem érinti. A meglévő eseteket egy no-op resolver-stub
+tartja byte-for-byte változatlanul (nincs valós `cmd.exe`-hívás a régi, wiring előtti eseteknél).
+`store/gpu-driver-check.selftest.sh`: 26/26 zöld. `quota-shutdown-guard.sh --selftest`: 13/13 zöld.
+`store/wsl-interop-resolve.selftest.sh`: 7/7 zöld. A `store-selftests-all-run.test.ts` glob-alapú
+felfedezés a selftest-neveket nem igényel kézi bekötést -- a vitest-futás (`Test Files 1 passed (1)`,
+`Tests 281 passed (281)`) ezt is lefedte.
+
+**Ki döntött:** fullstack (önálló mérés + implementáció, kártya 73b500f9), gate: QA.
+
+
+## 2026-10-16 -- Delta a "2026-10-15 -- WSL-interop socket felderítő (kártya 73b500f9)" bejegyzéshez: landolás közben észlelt konfliktus feloldása
+
+**Mi történt:** a 73b500f9 landolása közben valódi ütközésbe futott `origin/develop`-pal, mert a ccbfece8/1b08cf10 RedHat-javítás (F3, komment 19944d) közben landolt és ugyanazt a fájlt (`store/quota-shutdown-guard.sh`) érintette: az env-override-okat (`TOKEN_FILE`/`API`/`HARDSTOP`/`STATE`/`LOG`/`SHUTDOWN_EXE`) `ISOLATED`/`SELFTEST` flag mögé zárta, mert korábban ezek BÁRMELY hívásnál érvénybe léptek -- ez volt a sebezhetőség.
+
+**Döntés:** a `WSL_INTEROP_RESOLVE_SH` deklaráció (env-override: `QUOTA_SHUTDOWN_GUARD_WSL_INTEROP_RESOLVE`) ugyanebbe a kategóriába esik, de a 73b500f9 eredeti commitja még a régi, feltétel nélküli stílusban írta -- a merge-feloldás ezt is az `ISOLATED`/`SELFTEST` feltétel alá helyezte (mindkét ágban), konzisztensen a már bevezetett mintával, hogy a naiv merge ne hozza vissza a már lezárt sebezhetőség-osztályt.
+
+**Mért bizonyíték:** új selftest-eset (Case 21) pinneli: flag nélkül az override hatástalan. Mutáns-teszttel igazolva (a gate visszaállítása feltétel nélkülire): a teszt pirosra vált (`got [YES] want [NO]`). Teljes `quota-shutdown-guard.sh --selftest`: 77/77 zöld. `gpu-driver-check.selftest.sh` és `wsl-interop-resolve.selftest.sh` is zöld, érintetlen.
+
+**Ki döntött:** fullstack, önálló mérés + MikroB utasítására (msg 13155), gate: QA + RedHat delta-gate a mergelt shára.
+
+**Hivatkozás:** kártya 73b500f9, ccbfece8 (1b08cf10 F3), komment 20478 (fullstack finding), msg 13155 (MikroB utasítás).

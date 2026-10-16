@@ -11,6 +11,7 @@ import { logger } from '../../logger.js'
 import { fleetVenvPathPrefix } from '../agent-process.js'
 import { readBody, json } from '../http-helpers.js'
 import type { RouteContext } from './types.js'
+import { exactTmuxTarget } from '../../tmux-target.js'
 
 const tmuxBin = makeLazyBinResolver('tmux')
 const claudeBin = makeLazyBinResolver('claude')
@@ -52,7 +53,7 @@ function isBgSessionAlive(session: string): boolean {
 
 function captureSession(session: string): string | null {
   try {
-    return execFileSync(tmuxBin(), ['capture-pane', '-t', session, '-p', '-S', '-500'], { timeout: 5000, encoding: 'utf-8' })
+    return execFileSync(tmuxBin(), ['capture-pane', '-t', exactTmuxTarget(session), '-p', '-S', '-500'], { timeout: 5000, encoding: 'utf-8' })
   } catch {
     return null
   }
@@ -60,7 +61,7 @@ function captureSession(session: string): string | null {
 
 function killSession(session: string): void {
   try {
-    execFileSync(tmuxBin(), ['kill-session', '-t', session], { timeout: 3000 })
+    execFileSync(tmuxBin(), ['kill-session', '-t', exactTmuxTarget(session)], { timeout: 3000 })
   } catch { /* already dead */ }
 }
 

@@ -5,6 +5,7 @@ import { getEffectiveSettingValue, setOverride } from '../../settings-store.js'
 import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { syncRotationHeartbeatTask } from '../claude-rotation-heartbeat.js'
+import { rejectIfNotHumanAuth } from './auth.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
@@ -31,6 +32,10 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/settings' && method === 'POST') {
+    // Card 6eca461e (RedHat N3 on the 93ed929a re-gate): this route rewrites arbitrary platform
+    // config (including CLAUDE_ROTATION_ENABLED, which wires/unwires a heartbeat task) with the
+    // shared fleet bearer token -- same human-only posture as claude-plans/agents above.
+    if (rejectIfNotHumanAuth(ctx)) return true
     try {
       const body = await readBody(req)
       const { key, value, actor } = JSON.parse(body.toString())

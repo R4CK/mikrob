@@ -13,7 +13,14 @@ import type { RouteContext } from './types.js'
 
 const LOG_FILE = join(STORE_DIR, 'seged-hivo-naplo.jsonl')
 const STOP_FILE = join(STORE_DIR, 'seged-hivo-STOP.json')
-const ENGINE = 'agy'
+// C7 (card f0b3b674, MikroB plan-grilling GO-WITH-CHANGES): Peti asked twice why a Gemini call did
+// not show up here -- the panel only ever showed exact seged==='agy' rows, silently excluding the
+// Ghost pipeline's own 'agy-ghost' rows (src/gemini-ghost-budget.ts, already shipped) and this
+// card's new 'agy-heavy' rows (store/offload-dispatch.sh's heavy-second-opinion path). All three
+// share the SAME fleet-wide hourly log and budget (see gemini-ghost-budget.ts's header comment) --
+// a dashboard view of "Gemini calls" that only shows one of the three variants is the visibility
+// gap the card's requirement 5 names directly.
+const ENGINE_FAMILY = new Set(['agy', 'agy-ghost', 'agy-heavy'])
 /** Fleet-wide, rolling-60-minute cap enforced by store/gemini-agy-call.sh -- mirrored here READ-ONLY
  *  so the dashboard can show the SAME number the wrapper gates on, without re-deriving it from a
  *  different rule. */
@@ -48,6 +55,10 @@ export interface GeminiCallRow {
   durationS: number | null
   tokens: number | null
   rating: { result: string; score: number | null; opinion: string } | null
+  /** C7 (card f0b3b674): which of the shared-budget variants wrote this row -- 'agy' (direct
+   *  jailed-CLI), 'agy-ghost' (Ghost pipeline) or 'agy-heavy' (this card's heavy second-opinion
+   *  path). Lets the panel label a row instead of only ever showing the one variant it used to. */
+  source: string
 }
 
 export interface GeminiCallsSummaryBucket {
@@ -141,7 +152,7 @@ function coerceScore(pont: unknown): number | null {
 /** Agy-only call rows, newest first, shaped for the FE contract. */
 export function buildCallRows(allRows: RawRow[]): GeminiCallRow[] {
   const ratings = latestRatings(allRows)
-  const calls = dedupeCalls(allRows).filter((r) => r.seged === ENGINE)
+  const calls = dedupeCalls(allRows).filter((r) => ENGINE_FAMILY.has(r.seged ?? ''))
   const shaped: GeminiCallRow[] = []
   for (const call of calls) {
     // Row-level protection (RedHat, card 13671607 comment 18465): a single malformed row must
@@ -174,6 +185,7 @@ export function buildCallRows(allRows: RawRow[]): GeminiCallRow[] {
               opinion: coerceString(rating.velemeny) ?? '',
             }
           : null,
+        source: coerceString(call.seged) ?? '',
       })
     } catch (err) {
       logger.warn({ err }, 'gemini-calls: skipping a malformed ledger row')

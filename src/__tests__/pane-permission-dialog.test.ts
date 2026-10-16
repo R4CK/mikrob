@@ -201,7 +201,7 @@ describe('channel-monitor wiring (the branch must exist and be ordered)', () => 
   it('sends NO keystroke on that branch', () => {
     const branch = src.slice(
       src.indexOf('detectsPermissionDialog(paneNow)'),
-      src.indexOf("send-keys', '-t', t.session, 'Escape'"),
+      src.indexOf("send-keys', '-t', exactTmuxTarget(t.session), 'Escape'"),
     )
     expect(branch.length).toBeGreaterThan(0)
     expect(branch).not.toMatch(/send-keys/)
@@ -210,7 +210,7 @@ describe('channel-monitor wiring (the branch must exist and be ordered)', () => 
   it('runs AFTER model-consent and BEFORE the blind Escape', () => {
     const consent = src.indexOf('detectsModelConsentDialog(paneNow)')
     const permission = src.indexOf('detectsPermissionDialog(paneNow)')
-    const escape = src.indexOf("send-keys', '-t', t.session, 'Escape'")
+    const escape = src.indexOf("send-keys', '-t', exactTmuxTarget(t.session), 'Escape'")
     expect(consent).toBeGreaterThan(-1)
     expect(permission).toBeGreaterThan(consent)
     expect(escape).toBeGreaterThan(permission)

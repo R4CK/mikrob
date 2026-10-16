@@ -66,9 +66,9 @@ descends_from_pane() {
 
 channel_pipe_alive_by_process_tree() {
   [ -z "$TMUX_BIN" ] && return 1
-  "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null || return 1
+  "$TMUX_BIN" has-session -t "=$SESSION:" 2>/dev/null || return 1
   local pane_pid
-  pane_pid="$("$TMUX_BIN" list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  pane_pid="$("$TMUX_BIN" list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
   [ -z "$pane_pid" ] && return 1
   local RUNTIME_TOKEN_RX='(^|[^A-Za-z0-9_])(bun|node)([^A-Za-z0-9_]|$)'
   local cand

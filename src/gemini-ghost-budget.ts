@@ -97,7 +97,11 @@ today = datetime.datetime.now().astimezone().date().isoformat()
 used = 0
 ghost_today = 0
 for row in sh.calls_of(sh.read_log()):
-    if row.get('seged') not in ('agy', 'agy-ghost') or row.get('status') == 'blocked':
+    # H1 (RedHat NO-GO, card f0b3b674 komment 20369, Gate-SHA 44931ad6): 'agy-heavy' rows (the
+    # heavy-second-opinion path, store/offload-dispatch.sh) must count toward this SAME shared
+    # hourly window too, same reasoning as the 'agy-ghost' symmetry fix above (612058c2 F2) --
+    # without this, 'used' here undercounts and a reservation can be granted past the real cap.
+    if row.get('seged') not in ('agy', 'agy-ghost', 'agy-heavy') or row.get('status') == 'blocked':
         continue
     try:
         ts = datetime.datetime.fromisoformat(str(row.get('ido', ''))).timestamp()

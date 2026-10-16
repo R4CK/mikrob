@@ -136,6 +136,17 @@ JAIL_NET_RELAY_SH = Path(__file__).resolve().parent / 'jail-net-relay.py'
 # point these binds run (jail_cmd adds them before --remount-ro HOME), the same reason state/
 # workdir already bind straight onto it with no extra scaffolding.
 SUBTASK_JAIL_DIR = str(HOME / '.gemini-local-subtask')
+# Card b30ad7e6 (RedHat F1 on 19ef0eca's edc5bd86 GO): the kill-switch/GPU-gate mirror bind target
+# used to live under SUBTASK_JAIL_DIR (i.e. under $HOME). That is fine for WHERE this code binds it
+# (outside the jail, at a fixed host-side HOME path), but gemini-local-subtask.sh itself re-derives
+# that same subdirectory from $HOME at JAIL-INTERNAL RUNTIME -- and a bad-faith agy fully controls
+# the environment of any child process it spawns (same reasoning as the F3 note in that script's
+# header), so it can export a scratch HOME before invoking the wrapper and have the gate-decision
+# lookup resolve into a directory of its own choosing instead of this real bind. Fix: bind the gate
+# directory at a LITERAL, $HOME-independent jail path under /run (already a fresh --tmpfs in
+# jail_cmd, mounted before this bind runs) so the wrapper script can hardcode the same literal
+# string -- no runtime $HOME computation is involved on either side any more.
+SUBTASK_GATE_JAIL_DIR = '/run/gemini-local-subtask-gate'
 SUBTASK_TOOL_SRC = STORE / 'gemini-local-subtask.sh'
 SUBTASK_LOG_SRC = STORE / 'gemini-local-subtask-calls.log'
 LOCK = STORE / 'seged-hivo.lock'
@@ -845,9 +856,11 @@ def agy_subtask_binds():
     # read sees the new content).
     GATE_DIR = STORE / '.gemini-local-subtask-gpu-gate'
     GATE_DIR.mkdir(parents=True, exist_ok=True)
+    # Card b30ad7e6 F1: bound at SUBTASK_GATE_JAIL_DIR (literal, under /run), not under
+    # SUBTASK_JAIL_DIR/gate (which is under $HOME) -- see the comment on SUBTASK_GATE_JAIL_DIR above.
     return ['--ro-bind-try', str(SUBTASK_TOOL_SRC), str(HOME / '.local' / 'bin' / 'gemini-local-subtask'),
             '--bind', str(SUBTASK_LOG_SRC), f'{SUBTASK_JAIL_DIR}/calls.log',
-            '--ro-bind-try', str(GATE_DIR), f'{SUBTASK_JAIL_DIR}/gate']
+            '--ro-bind-try', str(GATE_DIR), SUBTASK_GATE_JAIL_DIR]
 
 
 def run_helper(engine, model, workdir, prompt_text, timeout):

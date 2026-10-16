@@ -48,7 +48,11 @@ telegram_api_call() {
   # which correctly brought in telegram_api_call's method-agnostic shape but, taken literally, also
   # discarded this -K/stdin pattern in favour of upstream's bare argv URL (caught by
   # send-honesty-sweep.test.ts's "bot token NOT in curl argv" case). Restored.
-  response=$(printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$token" "$method" \
+  # TELEGRAM_API_BASE: test seam only (a local Bot API stub), the same variable
+  # telegram_fallback_send.py honours; unset in production. Kept from upstream's
+  # merge (Koteg 16) alongside the -K/stdin security fix -- morning-briefing-slack-delivery.test.sh
+  # already relies on this being honoured here.
+  response=$(printf 'url = "%s/bot%s/%s"\n' "${TELEGRAM_API_BASE:-https://api.telegram.org}" "$token" "$method" \
     | curl -sS -m 15 -K - "$@" 2>&1)
   curl_exit=$?
   # Never let the token reach a log/journal: redact before any echo.

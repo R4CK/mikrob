@@ -214,6 +214,20 @@ print(json.dumps({'ido': datetime.now().astimezone().isoformat(timespec='millise
   done
 }
 
+seed_recent_heavy() {  # seed_recent_heavy COUNT -- COUNT agy-heavy rows, "now" (H1, card f0b3b674)
+  local count="$1" i
+  : > "$LOG"
+  for ((i = 0; i < count; i++)); do
+    python3 -c "
+import json
+from datetime import datetime
+print(json.dumps({'ido': datetime.now().astimezone().isoformat(timespec='milliseconds'),
+                   'hivas_id': 'heavy-$i', 'hivo': 'offload-dispatch-heavy', 'kartya': 'n/a (ordering-sweep)',
+                   'seged': 'agy-heavy', 'feladattipus': 'kod', 'status': 'ok'}))
+" >> "$LOG"
+  done
+}
+
 seed_old() {  # seed_old COUNT -- COUNT agy rows, 2 hours ago (outside the 60-minute window)
   local count="$1" i
   : > "$LOG"
@@ -707,6 +721,23 @@ case_ 'hourly (F2, bidirectional): 4 recent agy-ghost rows -> 5th (direct) still
   --hivo teszt --kartya aaaaaaaa --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
 if ! grep -q 'STUB RESPONSE' "$TD/out"; then
   fails+=("hourly F2 control: expected the stub to actually run with only 4 agy-ghost rows seeded")
+fi
+
+# H1 (RedHat NO-GO, card f0b3b674 komment 20369, Gate-SHA 44931ad6): same hole, same shape, for
+# the heavy-second-opinion path's 'agy-heavy' rows -- before the fix this wrapper did not count
+# them either, so 3 heavy + 5 direct = 8/hour against the stated 5/hour shared ceiling.
+seed_recent_heavy 5
+case_ 'hourly (H1, bidirectional): 5 recent agy-heavy rows ALSO block the direct wrapper, exit 5' 5 \
+  --hivo teszt --kartya aaaaaaaa --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
+if grep -q 'STUB RESPONSE' "$TD/out"; then
+  fails+=("hourly H1: the stub must NOT have run when 5 agy-heavy rows already fill the shared hourly cap")
+fi
+
+seed_recent_heavy 4
+case_ 'hourly (H1, bidirectional): 4 recent agy-heavy rows -> 5th (direct) still goes (control)' 0 \
+  --hivo teszt --kartya aaaaaaaa --feladattipus kod --kategoria safe --prompt "$PROMPT" --mappa "$TD/base/w"
+if ! grep -q 'STUB RESPONSE' "$TD/out"; then
+  fails+=("hourly H1 control: expected the stub to actually run with only 4 agy-heavy rows seeded")
 fi
 
 # --- concurrent callers must not exceed the hourly cap (QA FAIL, comment 18226) -----------------

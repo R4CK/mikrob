@@ -14,6 +14,15 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fail=0
 
+# Card 73b500f9: every EXISTING case below predates the WSL-interop-resolve wiring and must stay
+# hermetic (no real cmd.exe probe against this actual host) -- a no-op stub that always "finds
+# nothing" keeps their behaviour byte-for-byte what it was before the wiring existed. The wiring
+# itself gets its OWN dedicated cases (section 9) with a resolver fixture that actually answers.
+NOOP_RESOLVE="$TMP/noop-resolve.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$NOOP_RESOLVE"
+chmod +x "$NOOP_RESOLVE"
+export GPU_DRIVER_CHECK_WSL_INTEROP_RESOLVE="$NOOP_RESOLVE"
+
 field() { python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get(sys.argv[1]); print("null" if v is None else v)' "$1"; }
 
 check() { # $1 = label, $2 = expected, $3 = actual
@@ -118,6 +127,32 @@ STATE8="$TMP/state8.json"
 SMI_TWOLINE="$(mkfake_smi $'616.92\r\n999.99')"
 out="$(GPU_DRIVER_CHECK_HOST_SMI="$SMI_TWOLINE" GPU_DRIVER_CHECK_WSL_LIB_DIR="$TMP/absent-lib" GPU_DRIVER_CHECK_STATE="$STATE8" bash "$BIN")"
 check "two-line smi output -> only the first line is kept (head -1 pin)" "616.92" "$(echo "$out" | field installedHost)"
+
+# --- 9. WSL-INTEROP-RESOLVE WIRING (card 73b500f9): a fake smi that only answers for ONE
+#     specific WSL_INTEROP value -- mirrors the real measured shape (empty/dead WSL_INTEROP,
+#     but a live socket exists) without touching this host's real /run/WSL or cmd.exe. -----------
+mkfake_smi_needs_interop() { # $1 = the WSL_INTEROP value the fake requires to succeed
+  local p="$TMP/fake-smi-needs-interop.exe" need="$1"
+  { printf '#!/usr/bin/env bash\n'
+    printf 'NEED=%q\n' "$need"
+    printf '[ "$WSL_INTEROP" = "$NEED" ] || { echo "nvidia-smi.exe: Invalid argument" >&2; exit 1; }\n'
+    printf "printf '617.42\\\\r\\\\n'\n"
+  } > "$p"
+  chmod +x "$p"
+  echo "$p"
+}
+
+RESOLVE_FINDS="$TMP/resolve-finds.sh"
+printf '#!/usr/bin/env bash\nprintf %%s "/run/WSL/742_interop"\n' > "$RESOLVE_FINDS"
+chmod +x "$RESOLVE_FINDS"
+SMI9="$(mkfake_smi_needs_interop "/run/WSL/742_interop")"
+STATE9A="$TMP/state9a.json"
+out="$(WSL_INTEROP="" GPU_DRIVER_CHECK_HOST_SMI="$SMI9" GPU_DRIVER_CHECK_WSL_LIB_DIR="$TMP/absent-lib" GPU_DRIVER_CHECK_STATE="$STATE9A" GPU_DRIVER_CHECK_WSL_INTEROP_RESOLVE="$RESOLVE_FINDS" bash "$BIN")"
+check "resolver finds a live socket: installedHost reads correctly despite empty WSL_INTEROP" "617.42" "$(echo "$out" | field installedHost)"
+
+STATE9B="$TMP/state9b.json"
+out="$(WSL_INTEROP="" GPU_DRIVER_CHECK_HOST_SMI="$SMI9" GPU_DRIVER_CHECK_WSL_LIB_DIR="$TMP/absent-lib" GPU_DRIVER_CHECK_STATE="$STATE9B" GPU_DRIVER_CHECK_WSL_INTEROP_RESOLVE="$NOOP_RESOLVE" bash "$BIN")"
+check "resolver finds nothing: stays fail-closed, installedHost null (not a crash)" "null" "$(echo "$out" | field installedHost)"
 
 echo
 if [ "$fail" -eq 0 ]; then

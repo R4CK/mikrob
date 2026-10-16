@@ -30,12 +30,22 @@
 #   store/gpu-driver-check.sh --mark-alerted V    # patch state.lastAlertedAvailable=V (after a real Telegram send)
 #
 # Every path is overridable so the selftest can point at fakes without a real GPU/WSL host:
-#   GPU_DRIVER_CHECK_HOST_SMI, GPU_DRIVER_CHECK_WSL_LIB_DIR, GPU_DRIVER_CHECK_STATE
+#   GPU_DRIVER_CHECK_HOST_SMI, GPU_DRIVER_CHECK_WSL_LIB_DIR, GPU_DRIVER_CHECK_STATE,
+#   GPU_DRIVER_CHECK_WSL_INTEROP_RESOLVE
 set -uo pipefail
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOST_SMI="${GPU_DRIVER_CHECK_HOST_SMI:-/mnt/c/Windows/System32/nvidia-smi.exe}"
 WSL_LIB_DIR="${GPU_DRIVER_CHECK_WSL_LIB_DIR:-/usr/lib/wsl/lib}"
-STATE="${GPU_DRIVER_CHECK_STATE:-$(dirname "$0")/gpu-driver-state.json}"
+STATE="${GPU_DRIVER_CHECK_STATE:-$HERE/gpu-driver-state.json}"
+
+# Card 73b500f9: WSL_INTEROP can be empty or point at a dead socket while another live
+# socket under /run/WSL/ still works (measured 2026-10-15 07:45: WSL_INTEROP empty,
+# installedHost went null and would have fired a false "driver broken" alert, even though
+# /run/WSL/742_interop worked fine). read_host_version() resolves lazily, right before
+# calling $HOST_SMI -- --compare/--set-available/--mark-alerted never touch the smi, so
+# they must not pay for or depend on this probe.
+WSL_INTEROP_RESOLVE_SH="${GPU_DRIVER_CHECK_WSL_INTEROP_RESOLVE:-$HERE/wsl-interop-resolve.sh}"
 
 # --- version compare: dotted numeric, different segment counts allowed (616.92 vs 615.71.08) ----
 # Fails soft to "eq" on anything unparsable rather than crashing a caller mid-comparison -- an
@@ -65,6 +75,11 @@ else:
 
 read_host_version() {
   [ -x "$HOST_SMI" ] || return 0
+  if [ -x "$WSL_INTEROP_RESOLVE_SH" ]; then
+    local _resolved_interop
+    _resolved_interop="$("$WSL_INTEROP_RESOLVE_SH" 2>/dev/null)" || _resolved_interop=""
+    [ -n "$_resolved_interop" ] && export WSL_INTEROP="$_resolved_interop"
+  fi
   local out
   out="$("$HOST_SMI" --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)" || return 0
   out="$(printf '%s' "$out" | tr -d '\r' | sed 's/^ *//;s/ *$//')"

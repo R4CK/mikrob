@@ -118,11 +118,29 @@ case("agy jail no longer ro-binds vram-guard-check.sh into the jail (nvidia-smi 
 
 # --- card 0c086979: /mnt/wslg host-socket hiding -----------------------------------------------
 pairs = list(zip(agy_jail, agy_jail[1:]))
+triples = list(zip(agy_jail, agy_jail[1:], agy_jail[2:]))
 case("agy jail tmpfs's /mnt/wslg (hides the host session-bus/ssh-agent/gpg-agent/systemd/X11/"
      "Wayland/Pulse/cc-socks sockets that live under /mnt/wslg/run/user/<uid>)",
      ('--tmpfs', '/mnt/wslg') in pairs)
 case("agy jail does NOT tmpfs /mnt/wsl (resolv.conf lives there; hiding it kills DNS)",
      ('--tmpfs', '/mnt/wsl') not in pairs)
+
+# Card b30ad7e6 F1 (RedHat finding on 19ef0eca's edc5bd86 GO): the gate dir used to be bound under
+# $HOME (SUBTASK_JAIL_DIR + '/gate'), which a bad-faith agy could redirect for its own children by
+# exporting a scratch HOME -- see the comment on SUBTASK_GATE_JAIL_DIR in scripts/seged-hivo.py.
+# Pinned here (not just in the bash selftest) because this IS the file whose job is catching a
+# jail_cmd() wiring regression: if a future edit moved the bind target back under HOME, this is
+# where it would be caught before a bash-level fixture test even runs.
+case("agy jail binds the gate dir at the literal /run/gemini-local-subtask-gate path, not under "
+     "$HOME (card b30ad7e6 F1 -- a scratch HOME must not be able to redirect the gate lookup)",
+     ('--ro-bind-try', str(seged_hivo.STORE / '.gemini-local-subtask-gpu-gate'),
+      '/run/gemini-local-subtask-gate') in triples)
+# Only the bind TARGET (inside the jail) matters here -- the bind SOURCE is a legitimate host-side
+# path that lives under $HOME/.../store on this host, same as any other source in this function.
+bind_targets = [t[2] for t in triples if t[0] in ('--ro-bind-try', '--ro-bind', '--bind') and 'gate' in t[2]]
+case("agy jail's gate-dir bind TARGET is NOT anywhere under the real HOME path (mutation-proof: "
+     "a regression back to binding under $HOME would make this fail)",
+     bind_targets != [] and not any(t.startswith(str(seged_hivo.HOME)) for t in bind_targets))
 
 # --- S2 INFO (CYBERED, card e4d38c2b, source de3fb362): jail_cmd()'s own hardening flags were
 # never pinned here, so a future edit could drop one silently -- only the binds/mounts above had
@@ -137,6 +155,31 @@ case("agy jail clears its own environment (--clearenv) before --setenv-ing back 
 case("agy jail remounts $HOME read-only (--remount-ro) after binding state/workdir back in -- a "
      "write outside DIR then fails loudly instead of landing in a still-writable tmpfs",
      ('--remount-ro', str(seged_hivo.HOME)) in pairs)
+
+# F3 (RedHat, card de3fb362 komment 20293, routed into 0f01b9cf): the remaining jail_cmd()
+# hardening flags were never pinned here either -- --new-session, --unshare-ipc and
+# --die-with-parent could all be dropped silently, same gap the S2 pins above closed for
+# --unshare-pid/--clearenv/--remount-ro.
+case("agy jail opens a new session (--new-session) -- blocks TIOCSTI terminal-injection into a "
+     "controlling tty it might otherwise inherit",
+     '--new-session' in agy_jail)
+case("agy jail unshares its own IPC namespace (--unshare-ipc) -- no host shared-memory/semaphore "
+     "object is reachable from inside the jail",
+     '--unshare-ipc' in agy_jail)
+case("agy jail dies with its parent (--die-with-parent) -- paired with --unshare-pid, this takes "
+     "every descendant down with it, setsid'd ones included, if the jail launcher itself dies",
+     '--die-with-parent' in agy_jail)
+
+# F3 (RedHat, same comment): --clearenv's argv POSITION matters, not just its presence -- bwrap
+# applies environment operations in argv order, so a --clearenv placed AFTER the --setenv pairs
+# would wipe the fixed allowlisted vars right back out, leaving the jailed process with a
+# silently empty environment instead of the intended allowlist (the existing presence-only pin
+# above stayed green under exactly this reordering).
+_clearenv_idx = agy_jail.index('--clearenv') if '--clearenv' in agy_jail else -1
+_setenv_idxs = [i for i, tok in enumerate(agy_jail) if tok == '--setenv']
+case("agy jail's --clearenv comes BEFORE every --setenv pair, not after (argv order matters to "
+     "bwrap -- a --clearenv after --setenv would wipe the allowlisted vars it just set)",
+     _clearenv_idx != -1 and _setenv_idxs != [] and _clearenv_idx < min(_setenv_idxs))
 
 workdir_on_mnt = Path('/mnt/h/does-not-need-to-exist/workdir')
 agy_jail_mnt_workdir = seged_hivo.jail_cmd('agy', workdir_on_mnt)
@@ -237,15 +280,58 @@ if Path('/usr/bin/bwrap').exists() and Path('/mnt/wslg').is_dir():
         case("F-RH-S2: the jail-wide socket sweep's own positive control (a real socket bound "
              "INTO the jail) IS found -- proves the sweep is not vacuously blind",
              str(control_sock_path) in sweep_listing_paths)
-        # F1 fix, second half: EXACT-SET comparison instead of name/substring matching against
-        # host_entries. A sweep that only rejects entries matching a KNOWN host socket's name
-        # would still wave through a differently-named synthetic socket planted via some other
-        # bind path -- WhiteHat measured exactly this ("egy szintetikus, más nevű socket ... a
-        # jailben /opt alatt látszik, a selftest 19/19 PASS marad"). Requiring the sweep to find
-        # EXACTLY {control.sock} and nothing else catches any unexpected socket, named or not.
+
+        # F1 delta-fix (RedHat NO-GO, card de3fb362 comment 20293): the exact-set comparison
+        # below used to be an inline expression with NO dedicated positive self-check of its
+        # own -- RedHat measured that weakening it to `in`/substring matching STILL left the
+        # whole selftest 25/25 PASS, because nothing in this file ever fed the comparison a
+        # listing that contains the control socket PLUS an extra, differently-named one. Pulled
+        # into its own function so the comparison itself has a name and a testable contract
+        # (F-RH-S1-style exact-set, not membership), with two unit cases right below that do
+        # NOT depend on a live jail run: one gives it an extra foreign-named socket (must be
+        # REJECTED -- this is exactly the case a weakened `in` check would wrongly ACCEPT), one
+        # gives it only the control socket (must be ACCEPTED). A mutation to `in`/membership
+        # flips the first of these two to a false PASS, which is the regression RedHat's
+        # measurement names directly.
+        def sweep_is_exact(paths, control_path):
+            return paths == [str(control_path)]
+
         case("F1/F-RH-S2: the sweep finds EXACTLY the expected control socket and nothing else -- "
              f"exact-set comparison, not name matching (sweep saw: {sweep_listing_paths!r})",
-             sweep_listing_paths == [str(control_sock_path)])
+             sweep_is_exact(sweep_listing_paths, control_sock_path))
+
+        # N1 (RedHat GO, card e4d38c2b komment 20368, routed into 0f01b9cf): the F1 self-check
+        # cases below protect sweep_is_exact() ITSELF, but nothing pinned that the LIVE call site
+        # above still goes THROUGH that function -- RedHat measured that swapping it for a
+        # weakened `in`/membership check leaves the whole selftest green, because no case ever
+        # feeds the live call site a listing containing an extra, differently-named socket. A
+        # comment-stripped source scan pins the literal call-site text instead (identifier-
+        # boundary regex per the comment-defeat class, card a14812e8/e5b7ff19): a revert to `in`
+        # or to a bare equality inline is caught here even though the function-level cases below
+        # would stay green either way.
+        _own_src_no_comments = '\n'.join(
+            line for line in Path(__file__).read_text().splitlines()
+            if not line.strip().startswith('#'))
+        case("N1 source-pin: the live sweep comparison call site still invokes sweep_is_exact(...) "
+             "by name, not a weakened inline membership/`in` check",
+             re.search(r'\bsweep_is_exact\(sweep_listing_paths,\s*control_sock_path\)',
+                       _own_src_no_comments) is not None)
+
+        # F1 self-check (RedHat NO-GO 20293): a listing carrying the control socket PLUS an
+        # unrelated, differently-named socket path (never in host_entries, never control.sock)
+        # must be REJECTED by sweep_is_exact -- a membership/`in` check would wrongly accept it,
+        # which is precisely the undetected weakening RedHat demonstrated.
+        case("F1 self-check: sweep_is_exact REJECTS a listing with an extra, differently-named "
+             "socket alongside the control socket (an `in`/membership check would wrongly accept "
+             "this -- this is the exact regression RedHat's NO-GO measured)",
+             not sweep_is_exact(
+                 [str(control_sock_path), '/opt/synthetic-other-name.sock'], control_sock_path))
+
+        # F1 self-check (control, RedHat NO-GO 20293): the control-only listing must still be
+        # ACCEPTED -- without this the rejection case above could be satisfied by a function that
+        # simply always returns False.
+        case("F1 self-check: sweep_is_exact ACCEPTS the control-only listing",
+             sweep_is_exact([str(control_sock_path)], control_sock_path))
 
         # Self-check that the sweep machinery above actually catches the exact leak class RedHat
         # measured: bind the SAME host sockets into the jail through an ALTERNATE path (not
@@ -258,14 +344,6 @@ if Path('/usr/bin/bwrap').exists() and Path('/mnt/wslg').is_dir():
                  "through a path OTHER than /mnt/wslg/run/user/<uid> (proves the sweep, not just "
                  "the single-directory check above, is what closes RedHat's finding)",
                  any(name in leaked_proc.stdout for name in host_entries))
-
-            # F1 self-check: a synthetic socket with a name that matches NONE of host_entries,
-            # bound in through yet another path, must still be caught by the exact-set check
-            # above (not by this leaked_cmd run, which still uses host-name matching for the
-            # RedHat leak class) -- the exact-set check is exercised directly on its own sweep,
-            # so this only needs to prove a differently-named socket is distinguishable from
-            # the single expected control socket; that is already measured by the F1/F-RH-S2
-            # case above whenever sweep_listing_paths picks up more than just control.sock.
 
             # F2 self-check: bind the SAME host sockets directly OVER /sys/fs (overwriting the
             # existing mountpoint, not creating a new path under it -- /sys is read-only bound
@@ -289,9 +367,20 @@ else:
          f"{Path('/mnt/wslg').is_dir()}")
 
 print()
-print("selftest: %d case(s), %s%s" % (
-    n, "PASS" if not failures else "FAIL",
-    f", {len(skipped)} SKIPPED (not counted as coverage)" if skipped else ""))
+# F2 (RedHat, card de3fb362 komment 20293, routed into 0f01b9cf): the old "PASS, K SKIPPED" tail
+# still contained the literal substring the shared src/__tests__/store-selftests-all-run.test.ts
+# OK_SHAPES regex matches (that regex is not end-anchored), so a WSLg-less host's degraded run
+# read as an ordinary PASS to the machine consumer -- only a human reading the tail noticed the
+# skip. DEGRADED-SKIP uses wholly different wording (no "PASS" substring at all) so it cannot
+# satisfy the PASS pattern by accident; OK_SHAPES gets its own, deliberate entry for this shape
+# instead, so the skip stays a real exit 0 (not a CI break) while remaining machine-distinguishable
+# from a genuine, fully-exercised pass.
+if failures:
+    print("selftest: %d case(s), FAIL" % n)
+elif skipped:
+    print("selftest: %d case(s), DEGRADED-SKIP (%d skipped, not counted as coverage)" % (n, len(skipped)))
+else:
+    print("selftest: %d case(s), PASS" % n)
 for f in failures:
     print("  - %s" % f)
 for s in skipped:
