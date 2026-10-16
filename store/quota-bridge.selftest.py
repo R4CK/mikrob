@@ -428,6 +428,94 @@ def main() -> int:
             for name, fn in old.items():
                 setattr(m, name, fn)
 
+    # --- F1 (WhiteHat GO, card 612058c2 Teendo @6b9f61eb, comment 19967): outage_loop()'s
+    # --- PER-ITERATION heartbeat refresh was never pinned -- every case above either stubbed
+    # --- mark_session_outage() to a no-op (so removing the per-loop call left them all green) or
+    # --- never drove a second iteration at all. Here mikrob_down() answers True once (still down,
+    # --- falls through to the tg_api call and the per-iteration refresh) then False (recovered,
+    # --- returns on the SECOND iteration) -- so a correct implementation calls
+    # --- mark_session_outage() at least twice: once at entry, once in the loop body. -----------
+    old2 = {
+        "allowed_chats": m.allowed_chats, "mark_session_outage": m.mark_session_outage,
+        "start_ghost_runner": m.start_ghost_runner, "stop_ghost_runner": m.stop_ghost_runner,
+        "clear_session_outage": m.clear_session_outage, "send": m.send,
+        "save_state": m.save_state, "recovery_probe_due": m.recovery_probe_due,
+        "mikrob_down": m.mikrob_down, "tg_api": m.tg_api,
+    }
+    mark_calls = {"n": 0}
+    down_calls = {"n": 0}
+    m.allowed_chats = lambda: {"1"}
+    m.mark_session_outage = lambda: mark_calls.__setitem__("n", mark_calls["n"] + 1)
+    m.start_ghost_runner = lambda: "FAKE_PROC"
+    m.stop_ghost_runner = lambda proc: None
+    m.clear_session_outage = lambda: None
+    m.send = lambda token, chat_id, text: None
+    m.save_state = lambda s: None
+    m.recovery_probe_due = lambda now=None: True
+    m.tg_api = lambda *a, **kw: {"ok": True, "result": []}
+
+    def _mikrob_down_once_then_recovered():
+        down_calls["n"] += 1
+        return down_calls["n"] == 1
+
+    m.mikrob_down = _mikrob_down_once_then_recovered
+    try:
+        m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
+        if mark_calls["n"] >= 2:
+            ok("outage_loop() refreshes the heartbeat at entry AND at least once per loop "
+               "iteration (F1)")
+        else:
+            bad("outage_loop() should call mark_session_outage() at entry and per iteration",
+                f"mark_session_outage called {mark_calls['n']} time(s)")
+    finally:
+        for name, fn in old2.items():
+            setattr(m, name, fn)
+
+    # --- F1 (WhiteHat GO, comment 19967): main() must actually REGISTER the SIGTERM handler, not
+    # --- just have a handler that behaves correctly if called directly (the F-RH-V3 cases below
+    # --- test the handler's own body, not whether main() ever wires it up) -- and the startup
+    # --- clear_session_outage() must run when NOT re-entering outage phase, but must NOT run when
+    # --- phase is already "outage" (a live outage marker must survive a restart that re-enters the
+    # --- SAME outage, per H2's own docstring). -------------------------------------------------
+    old3 = {
+        "read_token": m.read_token, "load_state": m.load_state, "kill_pid_holder": m.kill_pid_holder,
+        "save_state": m.save_state, "outage_loop": m.outage_loop,
+        "clear_session_outage": m.clear_session_outage,
+    }
+    orig_sigterm_handler = signal.getsignal(signal.SIGTERM)
+    orig_argv = m.sys.argv
+    clear_calls = {"n": 0}
+    m.read_token = lambda: "fake-token"
+    m.kill_pid_holder = lambda: None
+    m.save_state = lambda s: None
+    m.outage_loop = lambda token, state: None
+    m.clear_session_outage = lambda: clear_calls.__setitem__("n", clear_calls["n"] + 1)
+    m.sys.argv = ["quota-bridge.py", "--force-outage"]
+    try:
+        m.load_state = lambda: {"phase": "healthy", "offset": 0, "notified_outage": False}
+        m.main()
+        registered = signal.getsignal(signal.SIGTERM) is m._handle_sigterm
+        if registered and clear_calls["n"] == 1:
+            ok("main() registers _handle_sigterm for SIGTERM, and clears a stale marker on a "
+               "non-outage startup (F1)")
+        else:
+            bad("main() should register SIGTERM and clear the marker when phase != outage",
+                f"registered={registered}, clear_calls={clear_calls['n']}")
+
+        clear_calls["n"] = 0
+        m.load_state = lambda: {"phase": "outage", "offset": 0, "notified_outage": False}
+        m.main()
+        if clear_calls["n"] == 0:
+            ok("main() does NOT clear the marker on startup when phase is already outage (F1)")
+        else:
+            bad("main() should not clear the marker when re-entering the same outage",
+                f"clear_calls={clear_calls['n']}")
+    finally:
+        signal.signal(signal.SIGTERM, orig_sigterm_handler)
+        m.sys.argv = orig_argv
+        for name, fn in old3.items():
+            setattr(m, name, fn)
+
     # --- F-RH-V3 (RedHat NO-GO/GO @c5e5ec28): the SIGTERM handler itself, directly -----------
     old_stop, old_clear, old_exit = m.stop_ghost_runner, m.clear_session_outage, m.sys.exit
     sigterm_calls = {"stop_arg": "unset", "clear": 0, "exit_code": None}

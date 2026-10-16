@@ -35,6 +35,11 @@ let sessionOutageActive = false
 let sessionOutageHeartbeatAgoMs = 0
 /** When set, overrides the entire marker body written to disk (H2: malformed/legacy shapes). */
 let sessionOutageRawOverride: Record<string, unknown> | null = null
+/** When set, returned VERBATIM instead of JSON.stringify(sessionOutageRawOverride) -- needed for
+ *  shapes JSON.stringify cannot itself produce, like a literal `1e999` heartbeat (F1, card 612058c2
+ *  delta-gate: JSON.stringify(Infinity) emits `null`, so the object-override path above can never
+ *  exercise the Number.isFinite guard against the actual on-disk shape that triggers it). */
+let sessionOutageRawText: string | null = null
 /** null = no config file on disk (real.readFileSync throws ENOENT) -> exercises the default. */
 let engageConfigJson: string | null = null
 let apiKey = 'fake-api-key-that-is-long-enough'
@@ -54,6 +59,7 @@ vi.mock('node:fs', async (orig) => {
       }
       if (p.endsWith('mikrob-session-outage.json')) {
         if (!sessionOutageActive) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+        if (sessionOutageRawText !== null) return sessionOutageRawText
         if (sessionOutageRawOverride !== null) return JSON.stringify(sessionOutageRawOverride)
         const heartbeat = (Date.now() - sessionOutageHeartbeatAgoMs) / 1000
         return JSON.stringify({ active: true, since: Date.now(), heartbeat })
@@ -102,6 +108,7 @@ beforeEach(() => {
   sessionOutageActive = false
   sessionOutageHeartbeatAgoMs = 0
   sessionOutageRawOverride = null
+  sessionOutageRawText = null
   engageConfigJson = null
   keyValidResult = { valid: true, modelCount: 50 }
   apiKey = 'fake-api-key-that-is-long-enough'
@@ -362,6 +369,28 @@ describe('session-outage engagement (card 612058c2)', () => {
     it('a non-numeric heartbeat does NOT engage', async () => {
       sessionOutageActive = true
       sessionOutageRawOverride = { active: true, since: Date.now(), heartbeat: 'yesterday' }
+      await runGeminiFallbackCheck()
+      expect(writtenState?.route).toBe('claude')
+    })
+
+    // F1 (WhiteHat GO, card 612058c2 Teendo @6b9f61eb, comment 19967): removing the
+    // Number.isFinite guard left every OTHER case above green, because none of them can produce a
+    // non-finite number through JSON.stringify (it serializes Infinity as `null`, which the
+    // existing non-numeric-heartbeat case already catches via `typeof !== 'number'`). The actual
+    // on-disk shape that only Number.isFinite catches is a literal oversized exponent (`1e999`),
+    // which JSON.parse turns into the NUMBER Infinity, not into `null` or a string.
+    it('a heartbeat written as a literal 1e999 (parses to Infinity) does NOT engage', async () => {
+      sessionOutageActive = true
+      sessionOutageRawText = '{"active":true,"since":1,"heartbeat":1e999}'
+      await runGeminiFallbackCheck()
+      expect(writtenState?.route).toBe('claude')
+    })
+
+    // F1: pins the `raw.active !== true` guard itself -- without it, a marker with a fresh
+    // heartbeat but active:false would still read as an active outage.
+    it('active:false with an otherwise-fresh heartbeat does NOT engage', async () => {
+      sessionOutageActive = true
+      sessionOutageRawOverride = { active: false, since: Date.now(), heartbeat: Date.now() / 1000 }
       await runGeminiFallbackCheck()
       expect(writtenState?.route).toBe('claude')
     })

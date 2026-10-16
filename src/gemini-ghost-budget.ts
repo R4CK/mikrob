@@ -67,9 +67,22 @@ export function resolveHourlyLimit(raw: string | undefined): number {
 
 const HOURLY_LIMIT = resolveHourlyLimit(process.env.GEMINI_AGY_HOURLY_LIMIT)
 
-// Runs under `flock -x -w <N> <lock> python3 -I - <seged_hivo_path> <limit> <card_id> <status>`:
-// the lock is held for exactly this count-then-append critical section, mirroring
-// gemini-agy-call.sh's own flock (store/gemini-agy-call.sh HOURLY_LOCK).
+/** F2 (WhiteHat GO, card 612058c2 Teendo @6b9f61eb, comment 19967): 'agy-ghost' rows are tagged
+ *  differently ON PURPOSE (see the module header above) so they do NOT feed seged-hivo.py's own
+ *  'agy' daily cap -- but that left them with NO daily cap of their own at all: during an outage,
+ *  Ghost could spend 5/hour around the clock with nothing capping the day's total. Same fail-
+ *  closed parsing as resolveHourlyLimit. */
+export function resolveDailyGhostLimit(raw: string | undefined): number {
+  const n = Number(raw)
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return 20
+  return n
+}
+
+const DAILY_GHOST_LIMIT = resolveDailyGhostLimit(process.env.GEMINI_AGY_GHOST_DAILY_LIMIT)
+
+// Runs under `flock -x -w <N> <lock> python3 -I - <seged_hivo_path> <hourly_limit> <card_id>
+// <status> <daily_ghost_limit>`: the lock is held for exactly this count-then-append critical
+// section, mirroring gemini-agy-call.sh's own flock (store/gemini-agy-call.sh HOURLY_LOCK).
 const RESERVE_SCRIPT = `
 import datetime, importlib.util, os, sys, time
 spec = importlib.util.spec_from_file_location('seged_hivo', sys.argv[1])
@@ -78,8 +91,11 @@ spec.loader.exec_module(sh)
 limit = int(sys.argv[2])
 card_id = sys.argv[3]
 status = sys.argv[4]
+daily_ghost_limit = int(sys.argv[5])
 window_start = time.time() - 3600
+today = datetime.datetime.now().astimezone().date().isoformat()
 used = 0
+ghost_today = 0
 for row in sh.calls_of(sh.read_log()):
     if row.get('seged') not in ('agy', 'agy-ghost') or row.get('status') == 'blocked':
         continue
@@ -89,6 +105,11 @@ for row in sh.calls_of(sh.read_log()):
         continue
     if ts >= window_start:
         used += 1
+    if row.get('seged') == 'agy-ghost' and str(row.get('ido', ''))[:10] == today:
+        ghost_today += 1
+if ghost_today >= daily_ghost_limit:
+    print('CAPPED_DAILY')
+    sys.exit(3)
 if used >= limit:
     print('CAPPED')
     sys.exit(2)
@@ -117,7 +138,8 @@ export function reserveGhostCallSlot(cardId: string, status: 'ok' | 'error' = 'o
   try {
     result = spawnSync(
       'flock',
-      ['-x', '-w', String(LOCK_WAIT_S), HOURLY_LOCK, 'python3', '-I', '-', SEGED_HIVO, String(HOURLY_LIMIT), cardId, status],
+      ['-x', '-w', String(LOCK_WAIT_S), HOURLY_LOCK, 'python3', '-I', '-', SEGED_HIVO,
+       String(HOURLY_LIMIT), cardId, status, String(DAILY_GHOST_LIMIT)],
       { input: RESERVE_SCRIPT, encoding: 'utf-8', timeout: (LOCK_WAIT_S + 10) * 1000 },
     )
   } catch {
