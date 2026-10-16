@@ -128,6 +128,25 @@ describe('newestDraftAt', () => {
     // own text) must still count as a draft -- the anchor is load-bearing, same as DRAFT_REVIEW_RX.
     expect(newestDraftAt([quoting])).toBe(10)
   })
+
+  // Card 5298134d (Cybersec F1 LOW on e50b311f, comment 6394): adding an `/m` flag to
+  // EXHAUSTION_NOTICE_RX stays green on the whole suite as it stood (29/29) -- the test above only
+  // pins that the marker is not satisfied by a QUOTE ON THE SAME LINE, which `^` without `/m` already
+  // refuses regardless of the flag. It says nothing about a LATER LINE of a real, multi-line draft
+  // that happens to start with the exhaustion prefix (e.g. the draft itself quoting an earlier
+  // exhaustion notice verbatim, on its own line). With `/m`, `^` would anchor to that second line
+  // too, and the genuine draft above it would be wrongly classified as an exhaustion notice and
+  // dropped from newestDraftAt() entirely -- exactly the "falls out of the Draft-Review obligation"
+  // hole the card describes, measured with node directly against the two regex variants.
+  it('MUTATION-PROOF (/m flag): a later LINE starting with the exhaustion prefix must not turn a ' +
+      'real, earlier draft in the SAME comment into "nothing to adjudicate"', () => {
+    const multilineDraft = {
+      author: 'local-llm',
+      content: `${DRAFT_BODY}\nINFO-ONLY [local-llm offload]: idezet egy korabbi kimerules-jelzesbol.`,
+      created_at: 10,
+    }
+    expect(newestDraftAt([multilineDraft])).toBe(10)
+  })
 })
 
 describe('hasDraftReview -- author and freshness are both load-bearing', () => {
