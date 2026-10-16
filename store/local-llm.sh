@@ -139,14 +139,17 @@ gpu_guard_mask_note() {
   # card 10c3fbeb follow-up (Cybered LOW finding, komment 4327): units/reason/restore come from a
   # flag file gpu-crashloop-guard.sh writes, but this banner is read by fleet AGENTS, so an ANSI
   # escape or an embedded newline here could forge a second, fake instruction-looking banner line.
-  # Strip control (Cc, covers ESC/CR/LF) and format (Cf, covers BIDI overrides) chars, coerce
-  # non-string JSON values to their repr first, then cap length -- before any of it is printed.
+  # Strip control (Cc, covers ESC/CR/LF), format (Cf, covers BIDI overrides) and line/paragraph
+  # separator (Zl/Zp, covers U+2028/U+2029 -- card dfb1f873, Cybered F2: not Cc/Cf, but Python's
+  # own str.splitlines() treats them as line breaks, so a consumer splitting on that instead of
+  # "\n" could still see a forged second banner line) chars, coerce non-string JSON values to
+  # their repr first, then cap length -- before any of it is printed.
   python3 -c '
 import json, sys, unicodedata
 
 def clean(v, limit=200):
     s = v if isinstance(v, str) else repr(v)
-    s = "".join(ch for ch in s if unicodedata.category(ch) not in ("Cc", "Cf"))
+    s = "".join(ch for ch in s if unicodedata.category(ch) not in ("Cc", "Cf", "Zl", "Zp"))
     return s[:limit]
 
 try:
