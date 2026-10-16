@@ -20,6 +20,7 @@ body's deterministic-or-deny boundary) and the envelope composition.
 
 Run: python3 <thisfile>   Exit 0 = all pass.
 """
+import hashlib
 import importlib.util
 import json
 import os
@@ -329,6 +330,56 @@ env = mod.collect_email_envelope(
     "Bash", {"command": 'send.py --to a@b.hu --subject "t" --body "b"'})
 check("envelope/bash: attachments key present (empty, Bash has none)",
       env["attachments"] == [], f"got {env!r}")
+check("envelope/bash: inline_images key present (empty, Bash has none)",
+      env["inline_images"] == [], f"got {env!r}")
+
+# --- 7. inlineImages (card a2cb71f1 H1, RedHat NO-GO komment 20438) -----------
+# @artymclabin/gmail-mcp@1.2.3's InlineImageSchema (dist/tools.js:6-19): each entry sets exactly
+# one of `path` (absolute file path, read by the server) or `content` (base64, inline bytes).
+check("inlineImages: missing field -> empty list, no error",
+      mod.collect_mcp_inline_images({}) == ([], None))
+
+check("inlineImages: inline content is hashed, keyed by cid",
+      mod.collect_mcp_inline_images(
+          {"inlineImages": [{"cid": "img1", "content": "QQ==", "filename": "a.png"}]})
+      == ([{"cid": "img1", "filename": "a.png",
+            "sha256": hashlib.sha256(b"QQ==").hexdigest()}], None))
+
+imgs, reason = mod.collect_mcp_inline_images(
+    {"inlineImages": [{"cid": "img1", "path": "/etc/passwd"}]})
+check("inlineImages: a `path` entry is REJECTED fail-closed (H1, same TOCTOU rule as attachments F3)",
+      imgs == [] and reason is not None, f"got {(imgs, reason)!r}")
+
+check("inlineImages: non-list value -> unreadable_reason",
+      mod.collect_mcp_inline_images({"inlineImages": "oops"})[1] is not None)
+check("inlineImages: non-dict entry -> unreadable_reason",
+      mod.collect_mcp_inline_images({"inlineImages": ["oops"]})[1] is not None)
+check("inlineImages: neither path nor content -> unreadable_reason",
+      mod.collect_mcp_inline_images({"inlineImages": [{"cid": "img1"}]})[1] is not None)
+check("inlineImages: empty-string content (falsy, not a real path either) -> unreadable_reason",
+      mod.collect_mcp_inline_images({"inlineImages": [{"cid": "img1", "content": ""}]})[1] is not None)
+
+# The actual H1 reproduction: the SAME letter, with and without an inlineImages path, must now
+# anchor DIFFERENTLY (unreadable_reason denies the path variant outright instead of matching the
+# path-less approval).
+env_plain = mod.collect_email_envelope(
+    "send_email", {"to": ["a@b.hu"], "subject": "t", "body": "b"})
+env_with_path = mod.collect_email_envelope(
+    "send_email", {"to": ["a@b.hu"], "subject": "t", "body": "b",
+                   "inlineImages": [{"cid": "img1", "path": "/etc/passwd"}]})
+check("envelope/mcp H1 repro: an inlineImages path makes the envelope unreadable, "
+      "no longer byte-identical-and-silently-accepted next to the path-less letter",
+      env_plain["unreadable_reason"] is None
+      and env_with_path["unreadable_reason"] is not None, f"got {(env_plain, env_with_path)!r}")
+
+env = mod.collect_email_envelope(
+    "mcp__server-gmail-autoauth-mcp__send_email",
+    {"to": ["a@b.hu"], "subject": "t", "body": "b",
+     "inlineImages": [{"cid": "img1", "content": "QQ==", "filename": "a.png"}]})
+check("envelope/mcp: inline_images key is populated from tool_input",
+      env["inline_images"] == [{"cid": "img1", "filename": "a.png",
+                                 "sha256": hashlib.sha256(b"QQ==").hexdigest()}]
+      and env["unreadable_reason"] is None, f"got {env!r}")
 
 print()
 if failed:

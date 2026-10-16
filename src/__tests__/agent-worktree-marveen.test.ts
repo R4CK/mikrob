@@ -775,3 +775,101 @@ describe('marveen-land.sh names the sha that carries the work, not the version b
     expect(r.out).not.toContain('do not put it in the REVIEW')
   }, LAND_TIMEOUT_MS)
 })
+
+// Card 728bd10d (backend's own follow-up from the 3c075d74 landing, msg 2917): touched_fleet_test
+// used to diff "$base_sha..$branch" directly, where $base_sha is develop's CURRENT tip, not the
+// branch's actual fork point. For a long-lived, unrebased agent branch, that two-dot diff ALSO
+// picks up a store/fleet-test.sh change that landed on develop's OWN side after the branch forked
+// -- the branch's copy is simply old, so it differs from base_sha's copy even though the branch
+// itself never touched the file. That false positive did not corrupt the verdict (the dual-judge
+// path still has to agree with the trusted copy), it just forced the costly dual-copy run on a
+// landing that never touched fleet-test.sh, measured at +5-10 extra minutes. The fix anchors the
+// diff at $mb (the real merge-base with $base_sha, already computed for the seam-check above)
+// instead.
+//
+// These run WITHOUT the MARVEEN_LAND_TEST stub override on purpose: that override (used by every
+// other test in this file) takes the `[ -n "$TEST_CMD" ]` branch unconditionally, bypassing the
+// single-vs-dual judge decision entirely. A real store/fleet-test.sh stub is planted inside $MAIN
+// (and, for the dual-judge case, inside the branch itself) so the natural decision path runs.
+describe('marveen-land.sh: touched_fleet_test anchors on the merge-base, not develop\'s current tip (card 728bd10d)', () => {
+  function plantFleetTestStub(repo: string, marker: string): void {
+    mkdirSync(join(repo, 'store'), { recursive: true })
+    writeFileSync(
+      join(repo, 'store', 'fleet-test.sh'),
+      `#!/usr/bin/env bash\necho ran >> ${marker}\nexit 0\n`
+    )
+    chmodSync(join(repo, 'store', 'fleet-test.sh'), 0o755)
+  }
+
+  async function runLandNoOverride(
+    args: string[],
+    extraEnv: Record<string, string> = {}
+  ): Promise<{ status: number; out: string }> {
+    try {
+      const { stdout, stderr } = await execFileP('bash', [LAND_SH, ...args], {
+        encoding: 'utf-8',
+        env: { ...process.env, MARVEEN_MAIN: main, ...extraEnv },
+      })
+      return { status: 0, out: stdout + stderr }
+    } catch (e) {
+      const err = e as { code?: number; stdout?: string; stderr?: string }
+      return { status: err.code ?? -1, out: (err.stdout ?? '') + (err.stderr ?? '') }
+    }
+  }
+
+  it('develop-side-only fleet-test.sh change (branch unrebased, never touched the file itself): single trusted judge, NOT flagged as touched', async () => {
+    const marker = join(dir, 'main-fleet-test-ran.log')
+    plantFleetTestStub(main, marker)
+    gitOk(main, 'add', 'store/fleet-test.sh')
+    gitOk(main, 'commit', '-q', '-m', 'seed fleet-test.sh v1')
+    gitOk(main, 'push', '-q', 'origin', 'develop')
+
+    // Fork the agent branch HERE, at v1 -- its own copy of fleet-test.sh never changes again.
+    await runWorktree('backend')
+    const backendTree = join(worktrees, 'backend')
+    gitOk(backendTree, 'config', 'user.email', 'backend@t.local')
+    gitOk(backendTree, 'config', 'user.name', 'backend')
+    writeFileSync(join(backendTree, 'backend-new.txt'), 'from backend\n')
+    gitOk(backendTree, 'add', 'backend-new.txt')
+    gitOk(backendTree, 'commit', '-q', '-m', 'backend work')
+
+    // Advance develop's OWN tip with an UNRELATED fleet-test.sh edit (the branch has no idea).
+    writeFileSync(
+      join(main, 'store', 'fleet-test.sh'),
+      `#!/usr/bin/env bash\necho ran-v2 >> ${marker}\nexit 0\n`
+    )
+    gitOk(main, 'add', 'store/fleet-test.sh')
+    gitOk(main, 'commit', '-q', '-m', 'develop-side fleet-test.sh edit, unrelated to the branch')
+    gitOk(main, 'push', '-q', 'origin', 'develop')
+
+    const r = await runLandNoOverride(['backend'])
+    expect(r.status).toBe(0)
+    expect(r.out).toContain('does not touch store/fleet-test.sh')
+    expect(r.out).not.toContain('requiring BOTH')
+  }, LAND_TIMEOUT_MS)
+
+  it('a branch that ACTUALLY touches its own store/fleet-test.sh: dual judge, correctly flagged as touched', async () => {
+    const marker = join(dir, 'main-fleet-test-ran-2.log')
+    plantFleetTestStub(main, marker)
+    gitOk(main, 'add', 'store/fleet-test.sh')
+    gitOk(main, 'commit', '-q', '-m', 'seed fleet-test.sh v1')
+    gitOk(main, 'push', '-q', 'origin', 'develop')
+
+    await runWorktree('backend')
+    const tree = join(worktrees, 'backend')
+    gitOk(tree, 'config', 'user.email', 'backend@t.local')
+    gitOk(tree, 'config', 'user.name', 'backend')
+    writeFileSync(
+      join(tree, 'store', 'fleet-test.sh'),
+      `#!/usr/bin/env bash\nchmod +x "$0"\necho ran-branch-own >> ${marker}\nexit 0\n`
+    )
+    chmodSync(join(tree, 'store', 'fleet-test.sh'), 0o755)
+    gitOk(tree, 'add', 'store/fleet-test.sh')
+    gitOk(tree, 'commit', '-q', '-m', 'backend edits its OWN fleet-test.sh')
+
+    const r = await runLandNoOverride(['backend'])
+    expect(r.status).toBe(0)
+    expect(r.out).toContain('requiring BOTH')
+    expect(r.out).not.toContain('does not touch store/fleet-test.sh')
+  }, LAND_TIMEOUT_MS)
+})
