@@ -245,19 +245,19 @@ def collect_mcp_attachments(tool_input: dict):
         if not isinstance(content, str) or not content:
             return [], f"a '{filename}' melleklet tartalma hianyzik vagy nem szoveg"
         if _ABS_PATH_RE.match(content):
-            # L1 (WhiteHat2 komment 16365, LOW): a NUL byte or a lone surrogate in `content`
-            # raises ValueError/UnicodeEncodeError from open()/the OS call, not OSError -- an
-            # uncaught one would crash this function with a traceback, and main()'s own net
-            # (card e4eb72c9) does not wrap collect_email_envelope, so the hook would exit 1,
-            # which PreToolUse treats as NON-blocking. Caught here, same fail-closed outcome
-            # as an unreadable file.
-            try:
-                with open(content, "rb") as fh:
-                    data = fh.read()
-            except (OSError, ValueError) as exc:
-                return [], f"a '{filename}' melleklet fajlja nem olvashato ({content}): {exc!r}"
-            out.append({"filename": filename, "path": content,
-                        "sha256": hashlib.sha256(data).hexdigest()})
+            # F3 (WhiteHat2, card e4eb72c9 komment 16368 -> a2cb71f1 elesitesi feltetel, TOCTOU):
+            # a hook EZEN a ponton olvasta/hashelte a fajlt, de az MCP-szerver a TENYLEGES kuldeskor
+            # UJRA olvassa UGYANAZT az utvonalat -- a ket olvasas kozott a fajl (vagy egy szimlink)
+            # kicserelheto, a jovahagyott horgony a REGI tartalomra pinnel, a kiment a UJ. A hook
+            # PreToolUse-kent nem irja at a tool_input-ot (updatedInput), ez a fleet szandekos
+            # dontese (root CLAUDE.md 14. szabaly: csendes atiras helyett block-and-suggest, az
+            # atirasra valtas kulon kartyat igenyel, fc3a6a39). Ezert az abszolut-utvonalu alak itt
+            # fail-closed TILTVA: a melleklet csak szigoru base64 (inline bajtok, nincs masodik
+            # olvasas, nincs TOCTOU-ablak) formaban fogadhato el.
+            return [], (f"a '{filename}' melleklet abszolut utvonalkent erkezett ({content!r}) -- "
+                        "ezt a hook mar nem fogadja el: a fajlt a hook es az MCP-szerver KULON "
+                        "olvasna, a ketto kozott a tartalom kicserelheto (TOCTOU). Kuldd a "
+                        "melleklet BAJTJAIT szigoru base64-kent a 'content' mezoben.")
         elif _STRICT_B64_RE.fullmatch(content) and len(content) % 4 == 0:
             out.append({"filename": filename,
                         "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()})
