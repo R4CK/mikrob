@@ -20526,17 +20526,19 @@ kiegészítést az allowlistben. `jail_cmd()` mindkét kártya bind-jait megtart
 
 **Hivatkozás:** kártya f0b3b674, c7abdf57 (Gemini-fázis szülő), 64788453 + a020247b (előfeltétel: 5/óra keret + seged-hivo jail), efe4aa40 (C8 levált követő kártya), 20260/20354/20355 kanban-komment (plan-grilling verdikt, QA FAIL, WhiteHat GO).
 
-## 2026-10-16 -- Delta a "2026-10-15 -- WSL-interop socket felderítő (kártya 73b500f9)" bejegyzéshez: landolás közben észlelt konfliktus feloldása
+## 2026-10-15 23:40 -- Gemini-kapu: breakdown/accept megkerülés (X1) + TS normalizálás paritás (X2), kártya b7114793
 
-**Mi történt:** a 73b500f9 landolása közben valódi ütközésbe futott `origin/develop`-pal, mert a ccbfece8/1b08cf10 RedHat-javítás (F3, komment 19944d) közben landolt és ugyanazt a fájlt (`store/quota-shutdown-guard.sh`) érintette: az env-override-okat (`TOKEN_FILE`/`API`/`HARDSTOP`/`STATE`/`LOG`/`SHUTDOWN_EXE`) `ISOLATED`/`SELFTEST` flag mögé zárta, mert korábban ezek BÁRMELY hívásnál érvénybe léptek -- ez volt a sebezhetőség.
+**Forrás:** 9e83ce97 CYBERED GO (komment 19987, Gate-SHA 0f9b4a67) -- a fenti F2 bejegyzésben dokumentált, NEM zárt maradék fenyegetés (2. pont) és egy újonnan mért negyedik íróút zárása.
 
-**Döntés:** a `WSL_INTEROP_RESOLVE_SH` deklaráció (env-override: `QUOTA_SHUTDOWN_GUARD_WSL_INTEROP_RESOLVE`) ugyanebbe a kategóriába esik, de a 73b500f9 eredeti commitja még a régi, feltétel nélküli stílusban írta -- a merge-feloldás ezt is az `ISOLATED`/`SELFTEST` feltétel alá helyezte (mindkét ágban), konzisztensen a már bevezetett mintával, hogy a naiv merge ne hozza vissza a már lezárt sebezhetőség-osztályt.
+**X1 (MEDIUM, mért lelet):** `POST /api/kanban/:id/breakdown/accept` volt a NEGYEDIK ismert kártya-létrehozási útvonal (az e25a549a-ban már dokumentált `st.assignee` mellett), ami a fenti F2 jelölő-kaput teljesen megkerülte -- a route a bejövő `subtasks[].title`-t a privilegizált-actor ellenőrzés nélkül írta be `createKanbanCard`-dal, és a kérés törzséből `actor`-t sem olvasott ki. Egy `[GEMINI-OK]` előtagú subtask-cím 200-zal létrejött volna, jogosultság nélkül. **Javítás:** a tranzakció megnyitása ELŐTT, az ÖSSZES subtask címét átnézve, ha BÁRMELYIK viseli a jelölőt és az actor nem jogosult, a teljes batch 403-at kap (egy részleges létrehozás-majd-visszagörgetés helyett).
 
-**Mért bizonyíték:** új selftest-eset (Case 21) pinneli: flag nélkül az override hatástalan. Mutáns-teszttel igazolva (a gate visszaállítása feltétel nélkülire): a teszt pirosra vált (`got [YES] want [NO]`). Teljes `quota-shutdown-guard.sh --selftest`: 77/77 zöld. `gpu-driver-check.selftest.sh` és `wsl-interop-resolve.selftest.sh` is zöld, érintetlen.
+**X2 (MEDIUM/LOW, a fenti F2 dokumentált rés zárása):** a TS-oldali `hasGeminiOkMarker` NFKD-normalizálása nem reprodukálta a bash `offload-dispatch.sh` `norm()`/`_fold()` teljes foldját. **Javítás:** ugyanaz a 13-elemű homoglif-tábla (cirill/egyéb hasonmás betűk NFKD-dekompozíció nélkül) + NFKD + kombináló jel/láthatatlan-formázó/vezérlő/sor-bekezdés-elválasztó karakterek eltávolítása (natív Unicode property escape-ekkel, `\p{Mn}`, `\p{Cf}`, `\p{Cc}`, `\p{Zl}`, `\p{Zp}` -- nincs userland kategória-tábla, ami elavulhatna). Zárójel-kategória-fold SZÁNDÉKOSAN nincs portolva: ez a kapu a "gemini-ok" szót RÉSZSZTRINGKÉNT illeszti, nem diszkrét zárójeles tag-eket von ki úgy, mint `offload-dispatch.sh` `tags_for()`-ja, tehát a zárójel-normalizálásnak itt nincs hatása.
 
-**Ki döntött:** fullstack, önálló mérés + MikroB utasítására (msg 13155), gate: QA + RedHat delta-gate a mergelt shára.
+**Közös tesztkorpusz (a kártya saját követelménye):** mindkét javítást egy MEGOSZTOTT obfuszkációs korpusz rögzíti (`kanban-gemini-ok-marker-guard.test.ts`) -- minden korpusz-elemet a VALÓDI `is_gemini_blocked()`-del (élőben kivágva `offload-dispatch.sh`-ból, bash/python3-ban futtatva, NEM újraírva) is leellenőriztem, bizonyítva hogy a FOGYASZTÓ oldalon ténylegesen működő jelölőről van szó, nem csak a teszt feltételezéséről. Mutáns-teszttel igazolva: mindkét javítás visszaállítása a megfelelő új teszteket pirosra viszi.
 
-**Hivatkozás:** kártya 73b500f9, ccbfece8 (1b08cf10 F3), komment 20478 (fullstack finding), msg 13155 (MikroB utasítás).
+**Ki döntött:** backend3 (kártya b7114793 assignee, forrás a RedHat irány c23ea72f-en).
+
+**Hivatkozás:** kártya b7114793, 9e83ce97 (komment 19987), e25a549a (a korábbi `st.assignee` íróút-lelet).
 
 ## 2026-10-15 -- WSL-interop socket felderítő (kártya 73b500f9)
 
@@ -20572,3 +20574,15 @@ felfedezés a selftest-neveket nem igényel kézi bekötést -- a vitest-futás 
 
 **Ki döntött:** fullstack (önálló mérés + implementáció, kártya 73b500f9), gate: QA.
 
+
+## 2026-10-16 -- Delta a "2026-10-15 -- WSL-interop socket felderítő (kártya 73b500f9)" bejegyzéshez: landolás közben észlelt konfliktus feloldása
+
+**Mi történt:** a 73b500f9 landolása közben valódi ütközésbe futott `origin/develop`-pal, mert a ccbfece8/1b08cf10 RedHat-javítás (F3, komment 19944d) közben landolt és ugyanazt a fájlt (`store/quota-shutdown-guard.sh`) érintette: az env-override-okat (`TOKEN_FILE`/`API`/`HARDSTOP`/`STATE`/`LOG`/`SHUTDOWN_EXE`) `ISOLATED`/`SELFTEST` flag mögé zárta, mert korábban ezek BÁRMELY hívásnál érvénybe léptek -- ez volt a sebezhetőség.
+
+**Döntés:** a `WSL_INTEROP_RESOLVE_SH` deklaráció (env-override: `QUOTA_SHUTDOWN_GUARD_WSL_INTEROP_RESOLVE`) ugyanebbe a kategóriába esik, de a 73b500f9 eredeti commitja még a régi, feltétel nélküli stílusban írta -- a merge-feloldás ezt is az `ISOLATED`/`SELFTEST` feltétel alá helyezte (mindkét ágban), konzisztensen a már bevezetett mintával, hogy a naiv merge ne hozza vissza a már lezárt sebezhetőség-osztályt.
+
+**Mért bizonyíték:** új selftest-eset (Case 21) pinneli: flag nélkül az override hatástalan. Mutáns-teszttel igazolva (a gate visszaállítása feltétel nélkülire): a teszt pirosra vált (`got [YES] want [NO]`). Teljes `quota-shutdown-guard.sh --selftest`: 77/77 zöld. `gpu-driver-check.selftest.sh` és `wsl-interop-resolve.selftest.sh` is zöld, érintetlen.
+
+**Ki döntött:** fullstack, önálló mérés + MikroB utasítására (msg 13155), gate: QA + RedHat delta-gate a mergelt shára.
+
+**Hivatkozás:** kártya 73b500f9, ccbfece8 (1b08cf10 F3), komment 20478 (fullstack finding), msg 13155 (MikroB utasítás).

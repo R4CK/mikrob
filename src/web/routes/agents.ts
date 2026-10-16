@@ -177,7 +177,7 @@ import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js
 // confused with upstream's own same-path, same-export module (the never-built "supervised cutover",
 // card 5c134edf). Both configDirFor() implementations already handle MAIN_AGENT_ID correctly.
 import { configDirFor } from '../context-restart-gate-runner.js'
-import { kindAllowed, FORBIDDEN_KIND } from './auth.js'
+import { kindAllowed, FORBIDDEN_KIND, rejectIfNotHumanAuth } from './auth.js'
 
 // Which credential kinds may read a transcript. NAMED principals only: a
 // logged-in human, or a key enrolled to that human's own device. Deliberately
@@ -1345,14 +1345,28 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const testMatch = matchChannelRoute(path, '/test')
   if (testMatch && method === 'POST') {
     const [name, provider] = testMatch
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
-    const stateDir = channelStateDir(provider, agentDir(name))
+    // SLACKMAINTEST1007: the main agent lives at the install root, not under
+    // agents/<name>/, and its channel tokens (primary and co-listen alike) are
+    // in the MAIN channel state dir, as the setup route below and the
+    // schedule-runner's resolveBoundChannel read them. Reading agents/<main>/
+    // here answered 404 "not configured", so the dashboard's Teszt button and
+    // its scope warning (SLACKSCOPEJELZ1007) never worked for the main agent.
+    const isMain = name === MAIN_AGENT_ID
+    if (!isMain && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    const stateDir = isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
     const envPath = join(stateDir, '.env')
-    const token = readChannelToken(provider, envPath) || (provider === 'telegram' ? parseTelegramToken(name) : null)
+    const token = readChannelToken(provider, envPath) || (!isMain && provider === 'telegram' ? parseTelegramToken(name) : null)
     if (!token) { json(res, { error: `${provider} not configured for this agent` }, 404); return true }
     const channelProvider = getProvider(provider)
     const result = await channelProvider.validateToken(token)
-    if (result.ok) { json(res, { ok: true, botName: result.botName }); return true }
+    if (result.ok) {
+      json(res, {
+        ok: true,
+        botName: result.botName,
+        ...(result.missingScopes ? { scopes: result.scopes, missingScopes: result.missingScopes } : {}),
+      })
+      return true
+    }
     json(res, { error: result.error }, 400)
     return true
   }
@@ -2725,6 +2739,9 @@ function compactPrompt(): string {
     if (data.authMode !== undefined) {
       writeAgentAuthMode(name, data.authMode)
       if (data.authMode === 'api' && typeof data.apiKey === 'string' && data.apiKey.trim()) {
+        // Card 6eca461e (RedHat N2 on the 93ed929a re-gate): an agent's API key is a credential
+        // takeover vector exactly like the claude-plans write below -- same human-only posture.
+        if (rejectIfNotHumanAuth(ctx)) return true
         setSecret(`agent-${name}-api-key`, `API key for agent ${name}`, data.apiKey.trim())
       }
       if (data.authMode !== 'api') {
@@ -2737,6 +2754,10 @@ function compactPrompt(): string {
     // falls back to a different login (state/launch drift). Reject unknown ids
     // rather than persist them.
     if (data.claudePlan !== undefined) {
+      // Card 6eca461e (RedHat N2 on the 93ed929a re-gate): claudePlan can redirect which Claude
+      // subscription/credential an agent launches with -- same human-only posture as the
+      // claude-plans route itself (card 93ed929a).
+      if (rejectIfNotHumanAuth(ctx)) return true
       // The main agent's Claude login comes up via channels.sh (hardcoded
       // CLAUDE_CONFIG_DIR), not this per-agent path, so a plan set here would be
       // a silent no-op at launch. Reject loudly rather than mislead the UI.

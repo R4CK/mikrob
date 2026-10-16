@@ -85,6 +85,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **README bullet auto-unió a landolásban**: ha két ág egyszerre vesz fel új fork-fejlesztés bulletet ugyanoda, a landoló összefésüli őket kézi feloldás nélkül; minden más README-ütközésnél megáll.
 - **Élő telepítés függőség-frissesség ellenőrzés a teszt-fa symlinkelés előtt**: a tesztfa a live telepítés node_modules-át csak akkor linkeli be változatlanul, ha az tényleg a saját lockfile-jának felel meg, nem csak akkor, ha a két lockfile szövege egyezik -- így egy el nem indított `npm ci` utáni élő telepítés nem adja tovább csendben a régi függőségeket.
 - **WSL megosztott home-könyvtár takarítás-osztályozó**: a `/home/neon` alatt felgyűlő egyszer-használatos gate/land/test worktree-ket és probe-dirkeket KEEP/ACTIVE/DISPOSABLE/UNKNOWN-ra osztályozza (dry-run alapértelmezés), és csak a ténylegesen inaktív DISPOSABLE bejegyzéseket törli `--apply --yes`-re -- regisztrált worktree-nél `git worktree remove`-dal, soha ha commitolatlan munka van rajta.
+- **Globális hook-másolat ellenőrzés csak az élő telepítésen**: egy teszt, ami a projekt-másolatot a globálisan regisztrált `~/.claude/hooks` másolattal veti össze, csak akkor fut, ha a vizsgált fa tényleg az élő telepítés -- a globális másolat landoláskor nem frissül automatikusan (külön lépés), így egy eldobható landolás-előtti worktree-ben ez mindig deterministán eltérne, nem mond semmit a vizsgált változásról.
 
 ### Biztonsági guard-hookok
 

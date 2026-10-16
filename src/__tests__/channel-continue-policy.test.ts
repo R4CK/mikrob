@@ -92,7 +92,7 @@ describe('the launch path is wired to the policy', () => {
     const block = PROCESS_SRC.slice(at, at + 2500)
     expect(block).toContain('verifyContinueLaunch({')
     expect(block).toContain('probeChannelPluginLiveness(pid, agentProvider, name)')
-    expect(block).toContain("['kill-session', '-t', session]")
+    expect(block).toContain("['kill-session', '-t', exactTmuxTarget(session)]")
     expect(block).toContain('startAgentProcess(name, { fresh: true })')
   })
   it('the timeout fallback is routed through decideContinueTimeoutAction, not a bare if(v.outcome==="alive") (card 466f21fe F1)', () => {

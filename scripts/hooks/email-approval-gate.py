@@ -448,12 +448,22 @@ def content_anchor(env: dict) -> str:
     attachment field existed. Without this, an approved letter could be
     re-sent with ANY local file attached and the hash would not change --
     the same gap the bcc fix closed for the hidden-recipient case. Every
-    attachment-less anchor stays byte-identical to the pre-fix value."""
+    attachment-less anchor stays byte-identical to the pre-fix value.
+
+    Card a2cb71f1 H1 (RedHat NO-GO, komment 20438): inline_images joins the canon the SAME
+    conditional way -- the extractor (email_extract.collect_mcp_inline_images) hashes each inline
+    image's actual content bytes (or refuses the call outright if any entry used a local path
+    instead), so this anchor also pins WHAT was embedded inline, not merely that the field existed.
+    Without this, an approved send_email letter could be re-sent with a DIFFERENT inlineImages
+    payload and the hash would not change. Every inline_images-less anchor stays byte-identical to
+    the pre-fix value."""
     fields = {"to": env["to"], "cc": env["cc"], "text": env["text"]}
     if env.get("bcc"):
         fields["bcc"] = env["bcc"]
     if env.get("attachments"):
         fields["attachments"] = env["attachments"]
+    if env.get("inline_images"):
+        fields["inline_images"] = env["inline_images"]
     canon = json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 

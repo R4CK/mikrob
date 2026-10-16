@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision, buildGateMsg } from '../../scripts/email-send-gate.mjs'
 import { injectEmailSendGate, agentGetsEmailGate, EMAIL_GATE_MATCHER } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
+
+const ROOT = join(__dirname, '..', '..')
 
 // The PreToolUse gate decision: which tool calls count as outbound email-send.
 describe('gateDecision', () => {
@@ -207,6 +211,21 @@ describe('gateDecision', () => {
 // stay green across a version bump too -- if it ever goes red, that is itself a signal that the
 // catalog's email package identity changed in a way worth re-reading, not a sign the mechanism
 // broke.
+//
+// Card a2cb71f1 H2 (RedHat NO-GO, komment 20438): the list below used to be 15 of the package's
+// 30 real tool names, hand-copied from memory, and checked NAMES ONLY. That is exactly how H1
+// (inlineImages[].path invisible to content_anchor) went unnoticed by this same test: a
+// field-blind, name-only, incomplete list cannot see a new file-referencing field on a tool it
+// never listed, or on one it listed but never inspected past the name. Two fixes: (1) the pinned
+// identity is read from mcp-catalog.json itself, not duplicated as a separate literal -- a future
+// version bump in the catalog without updating GMAIL_MCP_PINNED fails loudly, telling the next
+// author to regenerate; (2) the fixture is now the COMPLETE 30-tool registry
+// (dist/tools.js:193-408 toolDefinitions), each entry carrying the names of any schema field that
+// can reference a local file by path (an `attachments`-style string array, or an
+// `inlineImages`-style array of {path|content} objects) -- read from the package's actual schema
+// definitions (dist/tools.js:6-19 InlineImageSchema, :21-33 SendEmailSchema, etc.), not
+// reconstructed from memory. Regenerate: `npm pack --ignore-scripts @artymclabin/gmail-mcp@<ver>`,
+// extract, read package/dist/tools.js.
 describe('gateDecision: catalog email packages vs the settings matchers (card a2cb71f1)', () => {
   const CATALOG_EMAIL_SEND_TOOLS: Record<string, string[]> = {
     // gmail-mcp-server@1.0.30 (the package mcp-catalog.json shipped before this card) --
@@ -214,16 +233,69 @@ describe('gateDecision: catalog email packages vs the settings matchers (card a2
     // action:"send" ALSO sends (Cybersec, comment 1790359025), unseen by any matcher before
     // deny-by-default existed.
     'gmail-mcp-server@1.0.30': ['gmail_send_email', 'gmail_draft'],
-    // @artymclabin/gmail-mcp@1.2.3 (this card's swap target, pinned in mcp-catalog.json).
-    'gmail-mcp@1.2.3': [
-      'send_email', 'send_draft', 'reply_all', 'delete_draft', 'update_draft',
-      'modify_email', 'delete_email', 'batch_modify_emails', 'batch_delete_emails',
-      'create_label', 'update_label', 'delete_label',
-      'create_filter', 'delete_filter', 'create_filter_from_template',
-    ],
   }
 
-  it('the matcher reaches the gmail segment and gateDecision denies every send-shaped tool name, for BOTH pinned packages', () => {
+  const GMAIL_MCP_PINNED = '@artymclabin/gmail-mcp@1.2.3'
+
+  // Every tool the package registers, mapped to the names of any schema field that can reference
+  // a local file by path. An empty array means the schema has no such field.
+  const GMAIL_MCP_TOOL_FIELDS: Record<string, string[]> = {
+    read_email: [],
+    search_emails: [],
+    download_attachment: [],
+    get_thread: [],
+    list_inbox_threads: [],
+    get_inbox_with_threads: [],
+    modify_thread: [],
+    download_email: [],
+    send_email: ['attachments', 'inlineImages'],
+    draft_email: ['attachments', 'inlineImages'],
+    send_draft: [],
+    delete_draft: [],
+    update_draft: ['attachments', 'inlineImages'],
+    modify_email: [],
+    delete_email: [],
+    batch_modify_emails: [],
+    report_phishing: [],
+    batch_report_phishing: [],
+    batch_delete_emails: [],
+    list_email_labels: [],
+    create_label: [],
+    update_label: [],
+    delete_label: [],
+    get_or_create_label: [],
+    list_filters: [],
+    get_filter: [],
+    create_filter: [],
+    delete_filter: [],
+    create_filter_from_template: [],
+    reply_all: ['attachments', 'inlineImages'],
+  }
+
+  // The read/list/search/get/label/filter surface -- gateDecision must keep these allowed, or
+  // every other assertion in this describe block would be trivially satisfied by a gate that
+  // denies everything.
+  const GMAIL_MCP_READ_ONLY = new Set([
+    'read_email', 'search_emails', 'get_thread', 'list_inbox_threads', 'get_inbox_with_threads',
+    'list_email_labels', 'get_or_create_label', 'list_filters', 'get_filter', 'draft_email',
+  ])
+
+  it('mcp-catalog.json still pins the version this fixture was read from', () => {
+    const catalog = JSON.parse(readFileSync(join(ROOT, 'mcp-catalog.json'), 'utf-8')) as {
+      mcpServers?: unknown
+      [k: string]: unknown
+    }
+    const flat = JSON.stringify(catalog)
+    expect(flat, 'mcp-catalog.json no longer pins the exact version this H2 fixture describes -- '
+      + 'regenerate GMAIL_MCP_TOOL_FIELDS from the new tarball before touching the count below')
+      .toContain(GMAIL_MCP_PINNED)
+  })
+
+  it('the fixture lists the package\'s COMPLETE tool registry, not a hand-picked subset (H2)', () => {
+    expect(Object.keys(GMAIL_MCP_TOOL_FIELDS)).toHaveLength(30)
+  })
+
+  it('the matcher reaches the gmail segment and gateDecision denies every non-read tool, for BOTH pinned packages', () => {
     const full = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
     for (const [pkg, tools] of Object.entries(CATALOG_EMAIL_SEND_TOOLS)) {
       for (const tool of tools) {
@@ -232,13 +304,62 @@ describe('gateDecision: catalog email packages vs the settings matchers (card a2
         expect(gateDecision(qualified, { action: 'send' }).deny, `${pkg}: ${qualified}`).toBe(true)
       }
     }
+    for (const tool of Object.keys(GMAIL_MCP_TOOL_FIELDS)) {
+      if (GMAIL_MCP_READ_ONLY.has(tool)) continue
+      const qualified = `mcp__gmail__${tool}`
+      expect(full.test(qualified), `gmail-mcp@1.2.3: matcher must fire for ${qualified}`).toBe(true)
+      expect(gateDecision(qualified, { action: 'send' }).deny, `gmail-mcp@1.2.3: ${qualified}`).toBe(true)
+    }
   })
 
-  // Positive control: the read/list/search/get surface of both packages must stay allowed, or
-  // the test above would be trivially satisfied by a gate that denies everything.
+  // Positive control: the read/list/search/get surface of both packages must stay allowed.
   it('positive control: read-only tools from both packages stay allowed', () => {
-    for (const tool of ['read_email', 'search_emails', 'list_email_labels', 'list_filters', 'get_filter', 'get_or_create_label']) {
+    for (const tool of GMAIL_MCP_READ_ONLY) {
       expect(gateDecision(`mcp__gmail__${tool}`, {}).deny, tool).toBe(false)
+    }
+  })
+
+  // H2's actual point: a tool with a path-capable field must be covered somewhere.
+  //
+  // `send_email` is the ONLY tool in this fixture whose fields ever reach content_anchor:
+  // email_extract.collect_email_envelope only builds an envelope (to/cc/bcc/text/attachments/
+  // inline_images) when the tool name matches `send_email` (or the connector's send-shaped
+  // names, a different package) -- every OTHER tool here (reply_all, update_draft, draft_email)
+  // either falls through to collect_email_envelope's "nem email-kuldo tool" unreadable_reason
+  // (fail-closed deny, reply_all/update_draft) or is on the explicit safe/read list
+  // (_EMAIL_SAFE_TOOL_RE, draft_email) and never reaches content_anchor at all -- a deliberate,
+  // pre-existing scope boundary (a draft is not a send), not something this card changes.
+  // gateDecision's own deny flag (the sub-agent/JS path) is NOT a reliable proxy for this split:
+  // it returns deny:true for send_email too (it only flags "needs gating", the main-agent's
+  // python path then applies the nuanced content_anchor flow specifically to send_email) -- using
+  // it here would silently skip the one tool that actually matters.
+  //
+  // send_email's path-capable field names must be a subset of the python extractor's own
+  // HANDLED_FILE_FIELDS constant (email_extract.py), read here by source, not by memory. A future
+  // package version adding a NEW path-capable field to send_email's schema fails this assertion
+  // until a human adds the field to HANDLED_FILE_FIELDS -- exactly the H1 class, caught before
+  // the content_anchor code itself has to be read to notice it.
+  it('send_email\'s path-capable fields are covered by the python extractor (H2, closes the H1 class)', () => {
+    const extractorSrc = readFileSync(join(ROOT, 'scripts', 'hooks', 'email_extract.py'), 'utf-8')
+    const m = /HANDLED_FILE_FIELDS\s*=\s*\(([^)]*)\)/.exec(extractorSrc)
+    expect(m, 'email_extract.py must export a HANDLED_FILE_FIELDS tuple for this test to check against').not.toBeNull()
+    const handled = new Set(
+      (m![1].match(/"([^"]+)"/g) ?? []).map((s) => s.slice(1, -1)),
+    )
+    expect(handled.size, 'HANDLED_FILE_FIELDS must not be empty').toBeGreaterThan(0)
+
+    const uncovered = GMAIL_MCP_TOOL_FIELDS.send_email.filter((f) => !handled.has(f))
+    expect(uncovered, `send_email: path-capable field(s) not in HANDLED_FILE_FIELDS: ${uncovered.join(', ')}`).toEqual([])
+  })
+
+  // Defense in depth: every OTHER tool with a path-capable field (reply_all, update_draft) must
+  // still be denied outright -- their fields never reaching content_anchor only matters because
+  // the call itself never gets through. If gateDecision ever stopped denying one of them, its
+  // fields would need the same HANDLED_FILE_FIELDS treatment as send_email.
+  it('every OTHER tool with a path-capable field stays denied (reply_all, update_draft)', () => {
+    for (const [tool, fields] of Object.entries(GMAIL_MCP_TOOL_FIELDS)) {
+      if (fields.length === 0 || tool === 'send_email' || tool === 'draft_email') continue
+      expect(gateDecision(`mcp__gmail__${tool}`, {}).deny, tool).toBe(true)
     }
   })
 })
