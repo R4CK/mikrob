@@ -385,6 +385,42 @@ if [ "$SELFTEST" = "1" ]; then
   # must stay fail-closed for malformed input, not become fail-open for every input.
   _shape_test "legitimate shape, mikrob excluded + backend stopped, at 99%% -- MUST still trigger" \
     '[{"name":"mikrob","running":true},{"name":"backend","running":false}]' "YES"
+  # CYBERED D4 (delta-gate NO-GO, komment 20091, nem regresszio, LOW/MEDIUM): a korabbi Cases
+  # 16-18 csak ervenyes-JSON-de-rossz-alakot probaltak; a _qsg_parse_agents except-aga (valodi
+  # parse-hiba -> -1) pin nelkul maradt, egy mutans ami ott 0-t adna vissza eszrevetlen maradna.
+  _shape_test "non-JSON API body (parse error) at 99%% -- must stay UNKNOWN, not 0" \
+    'not valid json at all' "NO"
+
+  # CYBERED B1 (delta-gate NO-GO, komment 20091, MEDIUM, F-RH-F3 osztaly): a
+  # _QSG_AGENTS_JSON_OVERRIDE flag nelkul, env-bol is eljutott a TRIGGER-ig, mert nem volt a
+  # tobbi _QSG_*_OVERRIDE-dal azonos ISOLATED/SELFTEST kapu mogott. Ezt --selftest-subprocess
+  # NELKUL kell pinnelni, de a valodi (nem-izolalt) utat hardkodolt eles STORE/SHUTDOWN_EXE/API
+  # ertekekkel futtatni kockazatos lenne -- ezert a RedHat sajat mutacios-tesztelesi mintajat
+  # (semlegesitett MASOLAT) kovetjuk: a script egy ideiglenes masolatan a harom eles-utkent
+  # hardkodolt literalt (STORE, a hardcoded API URL, a hardcoded SHUTDOWN_EXE -- mindharom csak
+  # az ISOLATED=0 agban olvasodik, lasd a fajl elejen) scratch-ertekekre irjuk at sed-del, majd
+  # EZT a masolatot futtatjuk --selftest/--selftest-subprocess NELKUL. Igy sem az elo store,
+  # sem az elo dashboard API, sem a valodi shutdown.exe nincs elerve.
+  B1_NEUTRAL_SRC="$TMPD/b1-neutral-src.sh"
+  B1_NEUTRAL_STORE="$TMPD/b1-neutral-store"
+  mkdir -p "$B1_NEUTRAL_STORE"
+  printf 'sometoken\n' > "$B1_NEUTRAL_STORE/.dashboard-token"
+  printf '{"percent":99}\n' > "$B1_NEUTRAL_STORE/weekly-hard-stop.json"
+  FAKE_MARKER_B1="$TMPD/b1-marker.txt"
+  FAKE_SHUTDOWN_B1="$TMPD/b1-fake-shutdown.sh"
+  printf '#!/bin/bash\ntouch "%s"\nexit 0\n' "$FAKE_MARKER_B1" > "$FAKE_SHUTDOWN_B1"
+  chmod +x "$FAKE_SHUTDOWN_B1"
+  sed \
+    -e "s|^STORE=\"/home/neon/marveen/store\"|STORE=\"$B1_NEUTRAL_STORE\"|" \
+    -e "s|http://localhost:3420|http://127.0.0.1:1|g" \
+    -e "s|/mnt/c/Windows/System32/shutdown.exe|$FAKE_SHUTDOWN_B1|g" \
+    "$0" > "$B1_NEUTRAL_SRC"
+  chmod +x "$B1_NEUTRAL_SRC"
+  rm -f "$FAKE_MARKER_B1"
+  timeout 3 env _QSG_AGENTS_JSON_OVERRIDE='[{"name":"mikrob","running":true},{"name":"backend","running":false}]' \
+    "$B1_NEUTRAL_SRC" >/dev/null 2>&1
+  t "B1: _QSG_AGENTS_JSON_OVERRIDE set but NO --selftest/--selftest-subprocess flag -- shutdown marker NOT created (override must be gated)" \
+    "$([ -f "$FAKE_MARKER_B1" ] && echo YES || echo NO)" "NO"
 
   # Case 15: F1 pozitiv kontroll (card 1b08cf10, WhiteHat 19791 a 49b9e7d0 4. deltajan). A
   # korabbi izolacios pinek CSAK negativak voltak ("az izolalt STATE NEM irodott") -- egyik sem
@@ -490,9 +526,11 @@ token_unreadable=0
 # Card 1b08cf10 F2 (WhiteHat 19791): a force-ut nem hasznalja running_flotta-t, tehat a
 # lekerdezes (es a hozza tartozo token-fajl-ellenorzes) csak akkor fut, ha nincs FORCE_REASON.
 if [ -z "$FORCE_REASON" ]; then
-  if [ -n "${_QSG_AGENTS_JSON_OVERRIDE:-}" ]; then
+  if { [ "$SELFTEST" = "1" ] || [ "$ISOLATED" = "1" ]; } && [ -n "${_QSG_AGENTS_JSON_OVERRIDE:-}" ]; then
     # Selftest-only injekcios pont F-RH-T2 (malformed API-alak) tesztelesere -- a production cron
-    # ezt SOHA nem allitja, mindig a valodi curl-agon megy at.
+    # ezt SOHA nem allitja, mindig a valodi curl-agon megy at. CYBERED B1 (delta-gate NO-GO,
+    # komment 20091): a felulirast magat is a tobbi _QSG_*_OVERRIDE-dal azonos ISOLATED/SELFTEST
+    # kapu moge kell tenni, kulonben flag nelkul, env-bol is eljut a TRIGGER agig.
     running_flotta="$(printf '%s' "$_QSG_AGENTS_JSON_OVERRIDE" | _qsg_parse_agents 2>/dev/null || echo -1)"
   elif [ -f "$TOKEN_FILE" ] && [ -r "$TOKEN_FILE" ]; then
     running_flotta="$(printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" | curl -H @- -s --max-time 10 "$API/api/agents" | _qsg_parse_agents 2>/dev/null || echo -1)"
