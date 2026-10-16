@@ -13,7 +13,6 @@ import type { RouteContext } from './types.js'
 
 const LOG_FILE = join(STORE_DIR, 'seged-hivo-naplo.jsonl')
 const STOP_FILE = join(STORE_DIR, 'seged-hivo-STOP.json')
-const ENGINE = 'agy'
 // C7 (card f0b3b674, MikroB plan-grilling GO-WITH-CHANGES): Peti asked twice why a Gemini call did
 // not show up here -- the panel only ever showed exact seged==='agy' rows, silently excluding the
 // Ghost pipeline's own 'agy-ghost' rows (src/gemini-ghost-budget.ts, already shipped) and this

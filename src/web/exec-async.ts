@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { logger } from '../logger.js'
+import { trackDetachedGroup } from './detached-groups.js'
 
 // Non-blocking child execution for code that runs on the dashboard's event loop.
 //
@@ -51,6 +52,12 @@ export interface ExecAsyncOptions {
   timeoutMs?: number
   env?: NodeJS.ProcessEnv
   maxBuffer?: number
+  /** DETACHEDSHUTDOWN1007: a caller that wants the dashboard's shutdown to be able to end this
+   *  detached group early (not just its own timeout) passes a label here (e.g.
+   *  `command-task:${task.name}`) -- execFileAsync registers it with detached-groups.ts right
+   *  after spawn and untracks it itself once the call settles. Omitted by callers (most of them)
+   *  that are not scheduler entry points; the timeout-kill above still applies either way. */
+  trackLabel?: string
 }
 
 /**
@@ -77,6 +84,7 @@ export function execFileAsync(
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
+    const untrack = opts.trackLabel && child.pid != null ? trackDetachedGroup(child.pid, opts.trackLabel) : undefined
     const cap = (buf: string, chunk: string) => (buf.length >= maxBuffer ? buf : (buf + chunk).slice(0, maxBuffer))
     child.stdout?.setEncoding('utf-8')
     child.stderr?.setEncoding('utf-8')
@@ -103,6 +111,7 @@ export function execFileAsync(
       settled = true
       clearTimeout(timer)
       if (drainTimer) clearTimeout(drainTimer)
+      untrack?.()
       resolve({ stdout, stderr, status, timedOut })
     }
     child.on('error', () => finish(null))

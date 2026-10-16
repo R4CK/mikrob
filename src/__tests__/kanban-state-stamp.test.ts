@@ -283,7 +283,7 @@ describe('supersededDispatch (card 790c962d)', () => {
     // template is ever reworded, this fails instead of the matcher silently going inert -- which is
     // exactly how a suppression can look shipped while never firing.
     const src = readFileSync(join(process.cwd(), 'src', 'web', 'routes', 'kanban.ts'), 'utf8')
-    expect(src).toContain('`[Kanban feladat #${id}]:')
+    expect(src).toContain('`[Kanban feladat #${card.id}] felelős: ${target}, prioritás: ${prio}`')
   })
 })
 

@@ -20525,3 +20525,17 @@ kiegészítést az allowlistben. `jail_cmd()` mindkét kártya bind-jait megtart
 **Ki döntött:** MikroB (plan-grilling, GO-WITH-CHANGES), Peti (eredeti jóváhagyás, Telegram 11505/11507).
 
 **Hivatkozás:** kártya f0b3b674, c7abdf57 (Gemini-fázis szülő), 64788453 + a020247b (előfeltétel: 5/óra keret + seged-hivo jail), efe4aa40 (C8 levált követő kártya), 20260/20354/20355 kanban-komment (plan-grilling verdikt, QA FAIL, WhiteHat GO).
+
+## 2026-10-15 23:40 -- Gemini-kapu: breakdown/accept megkerülés (X1) + TS normalizálás paritás (X2), kártya b7114793
+
+**Forrás:** 9e83ce97 CYBERED GO (komment 19987, Gate-SHA 0f9b4a67) -- a fenti F2 bejegyzésben dokumentált, NEM zárt maradék fenyegetés (2. pont) és egy újonnan mért negyedik íróút zárása.
+
+**X1 (MEDIUM, mért lelet):** `POST /api/kanban/:id/breakdown/accept` volt a NEGYEDIK ismert kártya-létrehozási útvonal (az e25a549a-ban már dokumentált `st.assignee` mellett), ami a fenti F2 jelölő-kaput teljesen megkerülte -- a route a bejövő `subtasks[].title`-t a privilegizált-actor ellenőrzés nélkül írta be `createKanbanCard`-dal, és a kérés törzséből `actor`-t sem olvasott ki. Egy `[GEMINI-OK]` előtagú subtask-cím 200-zal létrejött volna, jogosultság nélkül. **Javítás:** a tranzakció megnyitása ELŐTT, az ÖSSZES subtask címét átnézve, ha BÁRMELYIK viseli a jelölőt és az actor nem jogosult, a teljes batch 403-at kap (egy részleges létrehozás-majd-visszagörgetés helyett).
+
+**X2 (MEDIUM/LOW, a fenti F2 dokumentált rés zárása):** a TS-oldali `hasGeminiOkMarker` NFKD-normalizálása nem reprodukálta a bash `offload-dispatch.sh` `norm()`/`_fold()` teljes foldját. **Javítás:** ugyanaz a 13-elemű homoglif-tábla (cirill/egyéb hasonmás betűk NFKD-dekompozíció nélkül) + NFKD + kombináló jel/láthatatlan-formázó/vezérlő/sor-bekezdés-elválasztó karakterek eltávolítása (natív Unicode property escape-ekkel, `\p{Mn}`, `\p{Cf}`, `\p{Cc}`, `\p{Zl}`, `\p{Zp}` -- nincs userland kategória-tábla, ami elavulhatna). Zárójel-kategória-fold SZÁNDÉKOSAN nincs portolva: ez a kapu a "gemini-ok" szót RÉSZSZTRINGKÉNT illeszti, nem diszkrét zárójeles tag-eket von ki úgy, mint `offload-dispatch.sh` `tags_for()`-ja, tehát a zárójel-normalizálásnak itt nincs hatása.
+
+**Közös tesztkorpusz (a kártya saját követelménye):** mindkét javítást egy MEGOSZTOTT obfuszkációs korpusz rögzíti (`kanban-gemini-ok-marker-guard.test.ts`) -- minden korpusz-elemet a VALÓDI `is_gemini_blocked()`-del (élőben kivágva `offload-dispatch.sh`-ból, bash/python3-ban futtatva, NEM újraírva) is leellenőriztem, bizonyítva hogy a FOGYASZTÓ oldalon ténylegesen működő jelölőről van szó, nem csak a teszt feltételezéséről. Mutáns-teszttel igazolva: mindkét javítás visszaállítása a megfelelő új teszteket pirosra viszi.
+
+**Ki döntött:** backend3 (kártya b7114793 assignee, forrás a RedHat irány c23ea72f-en).
+
+**Hivatkozás:** kártya b7114793, 9e83ce97 (komment 19987), e25a549a (a korábbi `st.assignee` íróút-lelet).

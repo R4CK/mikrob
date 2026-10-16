@@ -211,8 +211,9 @@ const DISPATCH_SUPERSEDED_STATUSES: ReadonlySet<string> = new Set(['done', 'wait
  *  dispatch ("the [Kanban feladat #abc12345] you sent is stale") must never be suppressed. Same
  *  anchoring lesson isUrgentMessage records for verdict words, and c4f2de32 for gate verdicts.
  *
- *  The shape is produced by routes/kanban.ts (`[Kanban feladat #${id}]: ${title}...`), so it is
- *  formulaic rather than hand-written -- which is why dropping one loses no authored text. */
+ *  The shape is produced by routes/kanban.ts's buildKanbanDispatchContent (`[Kanban feladat
+ *  #${card.id}] felelős: ${target}, prioritás: ${prio}` -- no card text, KANBANASSIGNFRAME1008), so
+ *  it is formulaic rather than hand-written -- which is why dropping one loses no authored text. */
 const DISPATCH_HEADER_RE = /^\[Kanban feladat #([a-f0-9]{8})\]/i
 
 /**

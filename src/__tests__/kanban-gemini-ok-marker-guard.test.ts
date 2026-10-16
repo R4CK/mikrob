@@ -9,7 +9,11 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Readable } from 'node:stream'
 import type http from 'node:http'
-import { initDatabase, getKanbanCard, createKanbanCard, getLabelsForCard, listLabels } from '../db.js'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
+import { initDatabase, getKanbanCard, createKanbanCard, getLabelsForCard, listLabels, getChildCards } from '../db.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -175,5 +179,127 @@ describe('Label API: creating/renaming/attaching a "gemini-ok"-named label is ga
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)
     expect(getLabelsForCard('card1')).toHaveLength(1)
+  })
+})
+
+// Card b7114793 X1: POST /api/kanban/:id/breakdown/accept was the one card-creation path that
+// never checked the marker gate at all -- it does not even read `actor` off the body. A subtask
+// title carrying "[GEMINI-OK]" reached the board 200, no privilege required.
+describe('POST /api/kanban/:parentId/breakdown/accept: a subtask title carrying the marker is gated', () => {
+  beforeEach(() => {
+    createKanbanCard({ id: 'parent1', title: 'Parent task', status: 'planned' })
+  })
+
+  it('refuses with 403 and creates NO subtask (not even the clean ones) when no actor is given', async () => {
+    const { ctx, out } = fakeCtx('/api/kanban/parent1/breakdown/accept', 'POST', {
+      subtasks: [
+        { title: 'Ordinary subtask', description: 'd', assignee: null, priority: 'normal' },
+        { title: '[GEMINI-OK] Sneaked in', description: 'd', assignee: null, priority: 'normal' },
+      ],
+    })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(403)
+    expect(getChildCards('parent1')).toHaveLength(0)
+  })
+
+  it('refuses with 403 for a non-privileged actor', async () => {
+    const { ctx, out } = fakeCtx('/api/kanban/parent1/breakdown/accept', 'POST', {
+      subtasks: [{ title: '[GEMINI-OK] Sneaked in', description: 'd', assignee: null, priority: 'normal' }],
+      actor: 'backend3',
+    })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(403)
+    expect(getChildCards('parent1')).toHaveLength(0)
+  })
+
+  it('allows the privileged actor ("mikrob") to create the marked subtask', async () => {
+    const { ctx, out } = fakeCtx('/api/kanban/parent1/breakdown/accept', 'POST', {
+      subtasks: [{ title: '[GEMINI-OK] Clean task', description: 'd', assignee: null, priority: 'normal' }],
+      actor: 'mikrob',
+    })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(getChildCards('parent1')).toHaveLength(1)
+  })
+
+  it('subtasks with no marker at all are unaffected (control)', async () => {
+    const { ctx, out } = fakeCtx('/api/kanban/parent1/breakdown/accept', 'POST', {
+      subtasks: [
+        { title: 'Ordinary subtask one', description: 'd', assignee: null, priority: 'normal' },
+        { title: 'Ordinary subtask two', description: 'd', assignee: null, priority: 'normal' },
+      ],
+    })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(getChildCards('parent1')).toHaveLength(2)
+  })
+})
+
+// Card b7114793 X2: the TS gate's normalization used to be plain NFKD only -- weaker than
+// store/offload-dispatch.sh's full fold (homoglyph-map + NFKD + invisible/control/combining-mark
+// strip). An obfuscated title that still resolves to the real "[GEMINI-OK]" marker on the
+// CONSUMING side (the bash classifier) could slip past this TS gate unprivileged. This is a
+// SHARED CORPUS, not a TS-only assumption: every entry is checked against the REAL
+// is_gemini_blocked() (extracted live from offload-dispatch.sh and run in bash/python3, never
+// reimplemented) to prove it is a genuinely working marker there, not just something this test
+// imagines would work.
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
+const DISPATCH = 'store/offload-dispatch.sh'
+
+// Real argv elements, not JSON.stringify()'d into the script text (gemini-offload-dispatch.test.ts's
+// own F4 finding, card e87e7520: JSON.stringify escapes a control byte like "\x07" into the TWO
+// literal characters backslash+x07-as-text before the string ever reaches bash, so a corpus entry
+// built that way never exercises the real byte either way). Positional params after the inline
+// script carry the actual bytes through untouched.
+function runIsGeminiBlocked(project: string, tags: string, title = '', desc = ''): 'BLOCKED' | 'ALLOWED' {
+  const dispatchSrc = readFileSync(join(ROOT, DISPATCH), 'utf-8')
+  const fnIdx = dispatchSrc.indexOf('\nis_gemini_blocked()')
+  let depth = 0
+  let end = fnIdx
+  for (let i = fnIdx; i < dispatchSrc.length; i++) {
+    if (dispatchSrc[i] === '{') depth++
+    if (dispatchSrc[i] === '}') {
+      depth--
+      if (depth === 0) { end = i + 1; break }
+    }
+  }
+  const fnDef = dispatchSrc.slice(fnIdx, end)
+  const script = `${fnDef}\nis_gemini_blocked "$1" "$2" "$3" "$4" && echo BLOCKED || echo ALLOWED`
+  const result = execFileSync('bash', ['-c', script, 'bash', project, tags, title, desc], { encoding: 'utf-8' })
+  return result.trim() as 'BLOCKED' | 'ALLOWED'
+}
+
+// Each obfuscates "[GEMINI-OK]" with ONE of the classes X2 names, around benign filler text
+// (no BLOCKED_TAGS word, no sensitive content -- isolates the marker-detection question from the
+// classifier's other, unrelated gates).
+const OBFUSCATED_MARKER_TITLES: ReadonlyArray<[label: string, title: string]> = [
+  ['zero-width space inside the tag', '[GEMINI​-OK] Clean task'],
+  ['Cyrillic homoglyph (о U+043E for Latin o)', '[gemini-оk] Clean task'],
+  ['combining acute accent on a base ASCII letter', '[gémini-ok] Clean task'],
+  ['control character (BEL) inside the tag', '[gemini\x07-ok] Clean task'],
+  ['soft hyphen inside the tag', '[ge­mini-ok] Clean task'],
+]
+
+describe('shared obfuscation corpus: TS gate vs. the real bash classifier (card b7114793 X2)', () => {
+  it('CONTROL: every corpus entry is confirmed a genuinely working marker on the bash side', () => {
+    for (const [label, title] of OBFUSCATED_MARKER_TITLES) {
+      expect(runIsGeminiBlocked('mikrob', '', title, 'benign description'), label).toBe('ALLOWED')
+    }
+  })
+
+  it.each(OBFUSCATED_MARKER_TITLES)('TS gate also catches it: %s', async (_label, title) => {
+    const { ctx, out } = fakeCtx('/api/kanban', 'POST', { id: 'x2test', title, status: 'planned' })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(403)
+    expect(getKanbanCard('x2test')).toBeFalsy()
+  })
+
+  it('CONTROL: an ordinary non-marker title with the same obfuscation classes is unaffected', async () => {
+    const { ctx, out } = fakeCtx('/api/kanban', 'POST', {
+      id: 'x2clean', title: 'Ordinary téask with a​n invisible char', status: 'planned',
+    })
+    expect(await tryHandleKanban(ctx)).toBe(true)
+    expect(out.status).toBe(200)
+    expect(getKanbanCard('x2clean')).toBeTruthy()
   })
 })
