@@ -20539,3 +20539,50 @@ kiegészítést az allowlistben. `jail_cmd()` mindkét kártya bind-jait megtart
 **Ki döntött:** backend3 (kártya b7114793 assignee, forrás a RedHat irány c23ea72f-en).
 
 **Hivatkozás:** kártya b7114793, 9e83ce97 (komment 19987), e25a549a (a korábbi `st.assignee` íróút-lelet).
+
+## 2026-10-15 -- WSL-interop socket felderítő (kártya 73b500f9)
+
+**Mi történt:** a gpu-driver-check napi körében (2026-10-15 07:45) a `WSL_INTEROP` üres volt, és
+minden `/mnt/c/...` `.exe` hívás ("Invalid argument"-tel halt meg -- `cmd.exe` is, `nvidia-smi.exe`
+is), ami `installedHost=null`-t írt volna, hamis "törött driver" riasztást okozva. A
+`/run/WSL/1_interop` (szimlink a `2_interop`-ra) és a `2_interop` (a 04:55-ös bootból maradt, stale)
+sem működött, a `742_interop` viszont igen -- ezzel `installedHost=617.42` helyesen olvasható lett
+volna.
+
+**Döntés:** közös helper (`store/wsl-interop-resolve.sh`), ami üres vagy halott `WSL_INTEROP` esetén
+végigpróbálja a `/run/WSL/*_interop` socketeket egy olcsó `cmd.exe /c ver` próbával, és az elsőt
+használja, ami válaszol; ha egyik sem, a hívó marad a korábbi fail-closed viselkedésen (üres/null
+mező, nem crash). Bekötve `store/gpu-driver-check.sh` (`read_host_version()`, lazy, csak ha
+tényleg az smi-t hívja) és `store/quota-shutdown-guard.sh` (`trigger_shutdown()`, a
+`shutdown.exe` hívás előtt) `.exe`-hívásai elé. A `scripts/install-wsl-watchdog.sh` SZÁNDÉKOSAN
+nincs bekötve: a kártya csak a `store/` szkriptekre szól, és a watchdog-installer root/Windows-host
+telepítő lépéseit fullstack nem futtathatja/módosíthatja a sajat jóváhagyása nélkül (fullstack
+agents/CLAUDE.md "Infra-munka korlátai").
+
+**Mért bizonyíték:** a mai élő hoston (`/run/WSL/` tartalma 2026-10-15-kor) a resolver helyesen
+`/run/WSL/742_interop`-ot találja meg élesen futtatva, pontosan a card leírása szerint (1_interop és
+2_interop "Invalid argument", 742_interop sikeres). Dedikált selftest
+(`store/wsl-interop-resolve.selftest.sh`, 7 eset: üres+élő-van, halott+élő-van, már-működő-marad,
+mind-halott, hiányzó-könyvtár) és a két hívó selftestje bővült a wiring saját eseteivel
+(`gpu-driver-check.selftest.sh` 2 új eset, `quota-shutdown-guard.sh --selftest` 2 új eset) --
+mindegyik fake binárisokkal, a valós hosztot nem érinti. A meglévő eseteket egy no-op resolver-stub
+tartja byte-for-byte változatlanul (nincs valós `cmd.exe`-hívás a régi, wiring előtti eseteknél).
+`store/gpu-driver-check.selftest.sh`: 26/26 zöld. `quota-shutdown-guard.sh --selftest`: 13/13 zöld.
+`store/wsl-interop-resolve.selftest.sh`: 7/7 zöld. A `store-selftests-all-run.test.ts` glob-alapú
+felfedezés a selftest-neveket nem igényel kézi bekötést -- a vitest-futás (`Test Files 1 passed (1)`,
+`Tests 281 passed (281)`) ezt is lefedte.
+
+**Ki döntött:** fullstack (önálló mérés + implementáció, kártya 73b500f9), gate: QA.
+
+
+## 2026-10-16 -- Delta a "2026-10-15 -- WSL-interop socket felderítő (kártya 73b500f9)" bejegyzéshez: landolás közben észlelt konfliktus feloldása
+
+**Mi történt:** a 73b500f9 landolása közben valódi ütközésbe futott `origin/develop`-pal, mert a ccbfece8/1b08cf10 RedHat-javítás (F3, komment 19944d) közben landolt és ugyanazt a fájlt (`store/quota-shutdown-guard.sh`) érintette: az env-override-okat (`TOKEN_FILE`/`API`/`HARDSTOP`/`STATE`/`LOG`/`SHUTDOWN_EXE`) `ISOLATED`/`SELFTEST` flag mögé zárta, mert korábban ezek BÁRMELY hívásnál érvénybe léptek -- ez volt a sebezhetőség.
+
+**Döntés:** a `WSL_INTEROP_RESOLVE_SH` deklaráció (env-override: `QUOTA_SHUTDOWN_GUARD_WSL_INTEROP_RESOLVE`) ugyanebbe a kategóriába esik, de a 73b500f9 eredeti commitja még a régi, feltétel nélküli stílusban írta -- a merge-feloldás ezt is az `ISOLATED`/`SELFTEST` feltétel alá helyezte (mindkét ágban), konzisztensen a már bevezetett mintával, hogy a naiv merge ne hozza vissza a már lezárt sebezhetőség-osztályt.
+
+**Mért bizonyíték:** új selftest-eset (Case 21) pinneli: flag nélkül az override hatástalan. Mutáns-teszttel igazolva (a gate visszaállítása feltétel nélkülire): a teszt pirosra vált (`got [YES] want [NO]`). Teljes `quota-shutdown-guard.sh --selftest`: 77/77 zöld. `gpu-driver-check.selftest.sh` és `wsl-interop-resolve.selftest.sh` is zöld, érintetlen.
+
+**Ki döntött:** fullstack, önálló mérés + MikroB utasítására (msg 13155), gate: QA + RedHat delta-gate a mergelt shára.
+
+**Hivatkozás:** kártya 73b500f9, ccbfece8 (1b08cf10 F3), komment 20478 (fullstack finding), msg 13155 (MikroB utasítás).

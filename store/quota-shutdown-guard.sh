@@ -57,6 +57,10 @@ if [ "$SELFTEST" = "1" ] || [ "$ISOLATED" = "1" ]; then
   STATE="${_QSG_STATE_OVERRIDE:-$STORE/quota-shutdown-guard-state.json}"
   LOG="${_QSG_LOG_OVERRIDE:-$STORE/quota-shutdown-guard.log}"
   SHUTDOWN_EXE="${SHUTDOWN_EXE:-/mnt/c/Windows/System32/shutdown.exe}"
+  # Card 73b500f9 delta (merge with ccbfece8/1b08cf10 F3): the resolver path is an override
+  # too, same class as TOKEN_FILE/API/HARDSTOP/STATE/LOG above -- honored only behind the same
+  # ISOLATED/SELFTEST gate, never on a bare production invocation.
+  WSL_INTEROP_RESOLVE_SH="${QUOTA_SHUTDOWN_GUARD_WSL_INTEROP_RESOLVE:-$STORE/wsl-interop-resolve.sh}"
 else
   TOKEN_FILE="$STORE/.dashboard-token"
   API="http://localhost:3420"
@@ -64,6 +68,11 @@ else
   STATE="$STORE/quota-shutdown-guard-state.json"
   LOG="$STORE/quota-shutdown-guard.log"
   SHUTDOWN_EXE="/mnt/c/Windows/System32/shutdown.exe"
+  # Card 73b500f9: WSL_INTEROP can be empty or point at a dead socket while another live
+  # socket under /run/WSL/ still works -- resolved lazily in trigger_shutdown(), right before
+  # calling $SHUTDOWN_EXE, same reasoning and script as gpu-driver-check.sh. No env-override
+  # on the production path, same reasoning as the other overrides above.
+  WSL_INTEROP_RESOLVE_SH="$STORE/wsl-interop-resolve.sh"
 fi
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S %Z') $*" >> "$LOG"; }
@@ -145,6 +154,11 @@ trigger_shutdown() {
     send_telegram "Flotta: quota-shutdown-guard HIBA -- $SHUTDOWN_EXE nem futtathato (WSL interop hianyzik?). A gep NEM allt le, STATE nem irodott, ujraprobal a kovetkezo korben. Kezi beavatkozas ajanlott."
     return 1
   fi
+  if [ -x "$WSL_INTEROP_RESOLVE_SH" ]; then
+    local _resolved_interop
+    _resolved_interop="$("$WSL_INTEROP_RESOLVE_SH" 2>/dev/null)" || _resolved_interop=""
+    [ -n "$_resolved_interop" ] && export WSL_INTEROP="$_resolved_interop"
+  fi
   # 5 perces elore-jelzes, Windows-oldalrol megszakithato: shutdown.exe /a
   # NEM pipe-olva tee-be: a `cmd | tee` mintanal a pipe utolso tagjanak (tee) sikeres exit
   # code-ja elfedi a cmd sajat hibajat pipefail NELKUL is olvashatatlanna tenne a hivo szamara
@@ -175,6 +189,15 @@ if [ "$SELFTEST" = "1" ]; then
   SLOW_API_PID=""
   EMPTY_API_PID=""
   trap '[ -n "$SLOW_API_PID" ] && kill "$SLOW_API_PID" 2>/dev/null; [ -n "$EMPTY_API_PID" ] && kill "$EMPTY_API_PID" 2>/dev/null; rm -rf "$TMPD"' EXIT
+
+  # Card 73b500f9: a 1-4. eset mind a wiring ELOTTI viselkedest rogziti -- egy no-op resolver
+  # (mindig "nem talaltam" valaszol) tartja oket byte-for-byte valtozatlanul, nincs valodi
+  # cmd.exe-hivas ezen a host-on. A wiring sajat, 5. esetet kap lejjebb.
+  NOOP_RESOLVE="$TMPD/noop-resolve.sh"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$NOOP_RESOLVE"
+  chmod +x "$NOOP_RESOLVE"
+  QUOTA_SHUTDOWN_GUARD_WSL_INTEROP_RESOLVE="$NOOP_RESOLVE"
+  WSL_INTEROP_RESOLVE_SH="$NOOP_RESOLVE"
 
   # Case 1: shutdown.exe sikeresen lefut (exit 0) -> STATE irodik, trigger_shutdown 0-val ter vissza.
   FAKE_OK="$TMPD/fake-ok.sh"
@@ -663,6 +686,76 @@ PYEOF
 
   kill "$EMPTY_API_PID" 2>/dev/null
   wait "$EMPTY_API_PID" 2>/dev/null
+
+  # Cases 19-20 (card 73b500f9): WSL-interop-resolve wiring. A fake shutdown.exe that only
+  # succeeds for ONE specific WSL_INTEROP value, mirroring the real measured shape (empty/
+  # dead WSL_INTEROP, but a live socket exists) -- no real cmd.exe or /run/WSL touched.
+  FAKE_NEEDS_INTEROP="$TMPD/fake-needs-interop.sh"
+  printf '#!/usr/bin/env bash\n[ "$WSL_INTEROP" = "/run/WSL/742_interop" ] || { echo "shutdown.exe: Invalid argument" >&2; exit 1; }\nexit 0\n' > "$FAKE_NEEDS_INTEROP"
+  chmod +x "$FAKE_NEEDS_INTEROP"
+  RESOLVE_FINDS="$TMPD/resolve-finds.sh"
+  printf '#!/usr/bin/env bash\nprintf %%s "/run/WSL/742_interop"\n' > "$RESOLVE_FINDS"
+  chmod +x "$RESOLVE_FINDS"
+
+  WSL_INTEROP=""
+  WSL_INTEROP_RESOLVE_SH="$RESOLVE_FINDS"
+  STATE="$TMPD/state-resolve-ok.json"
+  LOG="$TMPD/log-resolve-ok.txt"
+  SHUTDOWN_EXE="$FAKE_NEEDS_INTEROP"
+  : > "$LOG"
+  trigger_shutdown "selftest-resolve-ok"
+  rc=$?
+  t "Case 19: resolver finds a live socket -- trigger_shutdown returns 0 despite empty WSL_INTEROP" "$rc" "0"
+  t "Case 19: resolver finds a live socket -- STATE file IS written" "$([ -f "$STATE" ] && echo YES || echo NO)" "YES"
+
+  WSL_INTEROP=""
+  WSL_INTEROP_RESOLVE_SH="$NOOP_RESOLVE"
+  STATE="$TMPD/state-resolve-none.json"
+  LOG="$TMPD/log-resolve-none.txt"
+  : > "$LOG"
+  trigger_shutdown "selftest-resolve-none"
+  rc=$?
+  t "Case 20: resolver finds nothing -- stays fail-closed, trigger_shutdown returns non-zero" "$([ "$rc" -ne 0 ] && echo NONZERO || echo ZERO)" "NONZERO"
+  t "Case 20: resolver finds nothing -- STATE file NOT written" "$([ -f "$STATE" ] && echo YES || echo NO)" "NO"
+
+  # Case 21 (card 73b500f9 merge delta, MikroB msg 13155): WSL_INTEROP_RESOLVE_SH's own
+  # override (QUOTA_SHUTDOWN_GUARD_WSL_INTEROP_RESOLVE) is the SAME override class as
+  # TOKEN_FILE/API/HARDSTOP/STATE/LOG above (ccbfece8/1b08cf10 F3) -- it must be gated behind
+  # ISOLATED/SELFTEST too, or a bare production invocation could have its resolver swapped.
+  # Same neutralized-copy technique as Case 18/B1: a sed'd copy of this script, with the live
+  # STORE/API/shutdown.exe literals rewritten to scratch locations, run WITHOUT any --selftest
+  # flag. A positive control with --selftest-subprocess proves the test is actually sensitive.
+  RH21_RESOLVE_FINDS="$TMPD/rh21-resolve-finds.sh"
+  printf '#!/usr/bin/env bash\nprintf %%s "/run/WSL/742_interop"\n' > "$RH21_RESOLVE_FINDS"
+  chmod +x "$RH21_RESOLVE_FINDS"
+  RH21_MARKER="$TMPD/rh21-marker.txt"
+  RH21_FAKE_NEEDS_INTEROP="$TMPD/rh21-fake-needs-interop.sh"
+  printf '#!/usr/bin/env bash\n[ "$WSL_INTEROP" = "/run/WSL/742_interop" ] || exit 1\ntouch "%s"\nexit 0\n' "$RH21_MARKER" > "$RH21_FAKE_NEEDS_INTEROP"
+  chmod +x "$RH21_FAKE_NEEDS_INTEROP"
+
+  RH21_NEUTRAL_COPY="$TMPD/rh21-neutral-copy.sh"
+  RH21_NEUTRAL_STORE="$TMPD/rh21-neutral-store"
+  mkdir -p "$RH21_NEUTRAL_STORE"
+  printf 'rh21-neutral-default-token-not-a-real-credential\n' > "$RH21_NEUTRAL_STORE/.dashboard-token"
+  cp "$0" "$RH21_NEUTRAL_COPY"
+  sed -i "s#/home/neon/marveen/store#$RH21_NEUTRAL_STORE#g; s#/mnt/c/Windows/System32/shutdown.exe#$RH21_FAKE_NEEDS_INTEROP#g; s#http://localhost:3420#http://127.0.0.1:1#g" "$RH21_NEUTRAL_COPY"
+  chmod +x "$RH21_NEUTRAL_COPY"
+  if grep -q '/home/neon/marveen/store\|/mnt/c/Windows/System32/shutdown.exe' "$RH21_NEUTRAL_COPY"; then
+    echo "quota-shutdown-guard selftest: Case 21 neutral-copy sed substitution left a LIVE path in place -- refusing to run it" >&2
+    exit 1
+  fi
+
+  rm -f "$RH21_MARKER"
+  timeout 3 env QUOTA_SHUTDOWN_GUARD_WSL_INTEROP_RESOLVE="$RH21_RESOLVE_FINDS" WSL_INTEROP="" \
+    "$RH21_NEUTRAL_COPY" --force-reason "case21-no-flag" >/dev/null 2>&1
+  t "Case 21 no-flag: WSL_INTEROP_RESOLVE_SH override IGNORED without the flag (shutdown marker NOT created)" \
+    "$([ -f "$RH21_MARKER" ] && echo YES || echo NO)" "NO"
+
+  rm -f "$RH21_MARKER"
+  timeout 3 env QUOTA_SHUTDOWN_GUARD_WSL_INTEROP_RESOLVE="$RH21_RESOLVE_FINDS" WSL_INTEROP="" \
+    "$RH21_NEUTRAL_COPY" --selftest-subprocess --force-reason "case21-control" >/dev/null 2>&1
+  t "Case 21 control: the SAME override DOES take effect WITH --selftest-subprocess (test is sensitive, shutdown marker IS created)" \
+    "$([ -f "$RH21_MARKER" ] && echo YES || echo NO)" "YES"
 
   echo "selftest: $n case(s), $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
   exit $fail
