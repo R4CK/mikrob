@@ -20512,6 +20512,20 @@ kiegészítést az allowlistben. `jail_cmd()` mindkét kártya bind-jait megtart
 
 **Ki döntött:** backend (self-advance pickup, 11. szabály, MikroB delegálása msg 13084). Gate: QA + Cybersec (a kártya saját kijelölése, email-send trust boundary, korábbi NO-GO ugyanerre a területre).
 
+## 2026-10-16 09:42 -- Gemini 5/óra stop nélkül is, nehéz (ONLINE) kártyákhoz második vélemény/draft (kártya f0b3b674)
+
+**Forrás:** Peti, Telegram 11505 + 11507 gomb: "Igen, nyisd meg" -- az óránkénti 5 Gemini-hívás a nehéz feladatokhoz is, új-fejlesztés-stop nélkül fusson.
+
+**MikroB plan-grilling verdiktje (GO-WITH-CHANGES, komment 20260):** C1 -- önálló flag-fájl (`store/gemini-heavy-second-opinion-enabled`), alapból KI, csak MikroB kapcsolja be mindhárom gate GO-ja után. C2 -- UGYANAZ a meglévő 5/óra közös keret (nem új, külön számláló), a nehéz-kártya út legfeljebb 3/5 slotot vihet el óránként, legalább 2 marad a stop-alatti draft-útnak és a Ghostnak. C3 -- a kizárás (biztonsági/auth/tenant, pénzügyi, mopsion kártya) legyen az ÚJ ág ELSŐ lépése is, `is_gemini_blocked` hívással, mutáns-teszttel igazolva. C4 -- kimenő adat csak a kártya cím+leírás, a meglévő titok-detektoron át. C5 -- kártyánkénti egyszeri hívás (a meglévő exhausted-TTL mechanizmusra épülve). C6 -- a Gemini-kimenet mindig DRAFT (`[GEMINI DRAFT | second-opinion]` fejléc), sosem gate-verdikt, sosem routing-döntés. C7 -- a dashboard Gemini-panelje mutassa kártyánként a hívást (korábban Peti kétszer kérdezte, mert nem látta). C8 -- a kártya eredeti 6. pontja (helyi modell bukása után merge-conflict-explain/upstream-batch-digest Gemini-re routolása) KIVÉVE ebből a kártyából, külön kártyára bontva (efe4aa40), mert az e4457f3a kategóriák még nem léteznek.
+
+**Miért plan-grilling-kötelezett:** kifelé menő adat külső szolgáltatásnak (Gemini API) + a korábbi F1d döntés (categorical-online leaf sosem megy Geminihez helyettesítő routing-ként) részleges megfordítása -- a root CLAUDE.md 1b. szabálya szerint kockázatos/architektúra-érintő Feladat-kártya `in_progress` előtt kötelező a plan-grilling.
+
+**Megvalósítás és utólagos javítások:** C1-C8 landolva (Gate-SHA 44931ad6, commit 0f24e53a+39e1eaa0). QA FAIL (komment 20354) a GOAL 2 hívási hely C3-lefedettségének hiányára; WhiteHat GO a kikapcsolt alapállapotra, de F1 (MEDIUM: az új két ág nem vette figyelembe az `OFFLOAD_NO_GEMINI=1` váltót) és F2 (a két új hívóhely 4 mutánsa hamis-zölden maradt) javítását a flag bekapcsolása előfeltételének szabta. Mindhárom lelet egy delta-javításban zárva: `gemini_heavy_second_opinion_enabled()` mostantól figyeli az `OFFLOAD_NO_GEMINI` váltót (F1), a `src/__tests__/gemini-offload-dispatch.test.ts` `runTryLeaf()` harness kiterjesztve a két új hívóhelyre, 12 új viselkedési teszt, a 4 WhiteHat-mutáns + az F1-mutáns elkülönítve igazolva pirosra vált.
+
+**Ki döntött:** MikroB (plan-grilling, GO-WITH-CHANGES), Peti (eredeti jóváhagyás, Telegram 11505/11507).
+
+**Hivatkozás:** kártya f0b3b674, c7abdf57 (Gemini-fázis szülő), 64788453 + a020247b (előfeltétel: 5/óra keret + seged-hivo jail), efe4aa40 (C8 levált követő kártya), 20260/20354/20355 kanban-komment (plan-grilling verdikt, QA FAIL, WhiteHat GO).
+
 ## 2026-10-15 23:40 -- Gemini-kapu: breakdown/accept megkerülés (X1) + TS normalizálás paritás (X2), kártya b7114793
 
 **Forrás:** 9e83ce97 CYBERED GO (komment 19987, Gate-SHA 0f9b4a67) -- a fenti F2 bejegyzésben dokumentált, NEM zárt maradék fenyegetés (2. pont) és egy újonnan mért negyedik íróút zárása.
@@ -20525,3 +20539,81 @@ kiegészítést az allowlistben. `jail_cmd()` mindkét kártya bind-jait megtart
 **Ki döntött:** backend3 (kártya b7114793 assignee, forrás a RedHat irány c23ea72f-en).
 
 **Hivatkozás:** kártya b7114793, 9e83ce97 (komment 19987), e25a549a (a korábbi `st.assignee` íróút-lelet).
+
+## 2026-10-15 -- WSL-interop socket felderítő (kártya 73b500f9)
+
+**Mi történt:** a gpu-driver-check napi körében (2026-10-15 07:45) a `WSL_INTEROP` üres volt, és
+minden `/mnt/c/...` `.exe` hívás ("Invalid argument"-tel halt meg -- `cmd.exe` is, `nvidia-smi.exe`
+is), ami `installedHost=null`-t írt volna, hamis "törött driver" riasztást okozva. A
+`/run/WSL/1_interop` (szimlink a `2_interop`-ra) és a `2_interop` (a 04:55-ös bootból maradt, stale)
+sem működött, a `742_interop` viszont igen -- ezzel `installedHost=617.42` helyesen olvasható lett
+volna.
+
+**Döntés:** közös helper (`store/wsl-interop-resolve.sh`), ami üres vagy halott `WSL_INTEROP` esetén
+végigpróbálja a `/run/WSL/*_interop` socketeket egy olcsó `cmd.exe /c ver` próbával, és az elsőt
+használja, ami válaszol; ha egyik sem, a hívó marad a korábbi fail-closed viselkedésen (üres/null
+mező, nem crash). Bekötve `store/gpu-driver-check.sh` (`read_host_version()`, lazy, csak ha
+tényleg az smi-t hívja) és `store/quota-shutdown-guard.sh` (`trigger_shutdown()`, a
+`shutdown.exe` hívás előtt) `.exe`-hívásai elé. A `scripts/install-wsl-watchdog.sh` SZÁNDÉKOSAN
+nincs bekötve: a kártya csak a `store/` szkriptekre szól, és a watchdog-installer root/Windows-host
+telepítő lépéseit fullstack nem futtathatja/módosíthatja a sajat jóváhagyása nélkül (fullstack
+agents/CLAUDE.md "Infra-munka korlátai").
+
+**Mért bizonyíték:** a mai élő hoston (`/run/WSL/` tartalma 2026-10-15-kor) a resolver helyesen
+`/run/WSL/742_interop`-ot találja meg élesen futtatva, pontosan a card leírása szerint (1_interop és
+2_interop "Invalid argument", 742_interop sikeres). Dedikált selftest
+(`store/wsl-interop-resolve.selftest.sh`, 7 eset: üres+élő-van, halott+élő-van, már-működő-marad,
+mind-halott, hiányzó-könyvtár) és a két hívó selftestje bővült a wiring saját eseteivel
+(`gpu-driver-check.selftest.sh` 2 új eset, `quota-shutdown-guard.sh --selftest` 2 új eset) --
+mindegyik fake binárisokkal, a valós hosztot nem érinti. A meglévő eseteket egy no-op resolver-stub
+tartja byte-for-byte változatlanul (nincs valós `cmd.exe`-hívás a régi, wiring előtti eseteknél).
+`store/gpu-driver-check.selftest.sh`: 26/26 zöld. `quota-shutdown-guard.sh --selftest`: 13/13 zöld.
+`store/wsl-interop-resolve.selftest.sh`: 7/7 zöld. A `store-selftests-all-run.test.ts` glob-alapú
+felfedezés a selftest-neveket nem igényel kézi bekötést -- a vitest-futás (`Test Files 1 passed (1)`,
+`Tests 281 passed (281)`) ezt is lefedte.
+
+**Ki döntött:** fullstack (önálló mérés + implementáció, kártya 73b500f9), gate: QA.
+
+
+## 2026-10-16 -- Delta a "2026-10-15 -- WSL-interop socket felderítő (kártya 73b500f9)" bejegyzéshez: landolás közben észlelt konfliktus feloldása
+
+**Mi történt:** a 73b500f9 landolása közben valódi ütközésbe futott `origin/develop`-pal, mert a ccbfece8/1b08cf10 RedHat-javítás (F3, komment 19944d) közben landolt és ugyanazt a fájlt (`store/quota-shutdown-guard.sh`) érintette: az env-override-okat (`TOKEN_FILE`/`API`/`HARDSTOP`/`STATE`/`LOG`/`SHUTDOWN_EXE`) `ISOLATED`/`SELFTEST` flag mögé zárta, mert korábban ezek BÁRMELY hívásnál érvénybe léptek -- ez volt a sebezhetőség.
+
+**Döntés:** a `WSL_INTEROP_RESOLVE_SH` deklaráció (env-override: `QUOTA_SHUTDOWN_GUARD_WSL_INTEROP_RESOLVE`) ugyanebbe a kategóriába esik, de a 73b500f9 eredeti commitja még a régi, feltétel nélküli stílusban írta -- a merge-feloldás ezt is az `ISOLATED`/`SELFTEST` feltétel alá helyezte (mindkét ágban), konzisztensen a már bevezetett mintával, hogy a naiv merge ne hozza vissza a már lezárt sebezhetőség-osztályt.
+
+**Mért bizonyíték:** új selftest-eset (Case 21) pinneli: flag nélkül az override hatástalan. Mutáns-teszttel igazolva (a gate visszaállítása feltétel nélkülire): a teszt pirosra vált (`got [YES] want [NO]`). Teljes `quota-shutdown-guard.sh --selftest`: 77/77 zöld. `gpu-driver-check.selftest.sh` és `wsl-interop-resolve.selftest.sh` is zöld, érintetlen.
+
+**Ki döntött:** fullstack, önálló mérés + MikroB utasítására (msg 13155), gate: QA + RedHat delta-gate a mergelt shára.
+
+**Hivatkozás:** kártya 73b500f9, ccbfece8 (1b08cf10 F3), komment 20478 (fullstack finding), msg 13155 (MikroB utasítás).
+
+## 2026-10-16 -- MT F0: Megoldás-tár és tudásgráf, GitHub-first due diligence + plan-grilling verdikt (kártya 3f6fc4ce)
+
+**Kontextus:** a c65add5a fázis-kártya MODULTERV kommentje (MikroB, 2026-10-16) alapján, Peti 11527/11530/11533/11535/11537 (Telegram) nyomán. A fájl-partíció kérdése már lezárt Peti 11541-gyel (lásd a fenti "DÖNTÉS (Peti 11541...)" bejegyzést 2026-10-16-ról, ugyanebben a fájlban -- itt nem ismétlem).
+
+**GitHub-first due diligence (10. szabály), öt kész megoldás, forrás: a repók README/LICENSE fájljai közvetlenül lekérve:**
+
+- **getzep/graphiti** -- Apache-2.0. Kötelező külső gráf-DB szerver (Neo4j 5.26 / FalkorDB 1.1.2 / Neptune + OpenSearch Serverless). LLM alapból OpenAI, OpenAI-kompatibilis endpointon (pl. Ollama) keresztül lokális modell is működik. **Kizárva:** a kötelező külön gráf-DB-szerver ellentmond Peti 11535 keretének ("minden adat helyben, online modell és külső szolgáltatás nincs").
+- **topoteretes/cognee** -- MIT. Teljesen lokálisan fut, API-kulcs nélkül; az entitás-kinyerés alapból egy lokális GLiNER modellel és lokális embeddinggel megy, Postgres csak opcionális. Ez az egyetlen vizsgált megoldás, ami tényleg megfelel a "nincs külső szolgáltatás" elvárásnak. **Nem adoptálva, de nem is elvetve:** a teljes keretrendszer átvétele azt jelentené, hogy a ~1000 meglévő, már struktúrált REVIEW-rekordot (kanban_relations, kanban_verdicts) cognee saját ingestion-csővezetékéhez kellene igazítani, ami több súrlódás, mint a modulterv saját, erre a struktúrára szabott SQLite-sémája. A lokális GLiNER-alapú kinyerési technika érdemes egy rövid pillantásra az F2/MT-05-nél (alternatíva a helyi LLM-draft + validátor mintára), de ez implementációs részlet, nem architektúra-döntés.
+- **mem0ai/mem0** -- Apache-2.0. LLM-hívás KÖTELEZŐ minden write-path extrakcióhoz (alapértelmezés OpenAI gpt-5-mini), lokális/nyílt modell támogatása a dokumentáción nincs kimondva. **Kizárva:** online LLM-függés minden egyes felvételnél, ellentmond a kerünek.
+- **HKUDS/LightRAG** -- a README és a LICENSE fájl sem nevez meg licencet/SPDX-et a közvetlen lekérdezésben. **Kizárva a 10. szabály szerint:** "ha ... a due diligence megbukik -> rövid dokumentáció miért, és akkor építs sajátot" -- itt a licenc-ellenőrzés ténylegesen megbukott, ez önmagában kizáró ok, függetlenül attól, hogy a chunk-alapú ingestion egyébként sem illeszkedne a kártya/szimbólum-horgonyos modellünkhöz.
+- **microsoft/graphrag** -- MIT. A README saját szava szerint "largely in maintenance mode, and won't be accepting new PRs or implementing new features" -- nem aktívan karbantartott. Az indexelés a teljes korpuszon fut LLM-extrakcióval, drága, kötegelt, nem illeszkedik a kártyánkénti, inkrementális capture-modellhez. **Kizárva:** karbantartottsági kritérium bukik, és a költség-/architektúra-illeszkedés sem ad okot felülírni.
+- **trailhq/Trail-Code / trailhq/Graft** (az ötlet eredeti forrása, Peti 11527): egy harmadik féltől származó skill-szkenner biztonsági jelzést adott a Trail-Code README-jére (egy, a felolvasás szerint hitelesítő adatot külső végpontra küldő utasítást tartalmazó sor) -- ez FÜGGETLEN megerősítése annak a már meglévő, a software-factory clean-room fázisból (Peti 11000, kártya b8ac0ef1) ismert elvnek, hogy ebből a családból KIZÁRÓLAG az ötletet vesszük át, a kódot soha nem vendoroljuk. A modulterv ezt már így tervezte (csak a "learnings"-formátum mint inspiráció); ez a bejegyzés csak megerősíti, miért helyes ez a határ.
+
+**Döntés: BUILD.** A modulterv saját SQLite-sémája (store/knowledge-graph.db) épül, a meglévő, már adoptált code-review-graph MCP-vel (repónkénti graph.db, ~/.code-review-graph/registry.json, élőben ellenőrizve) együttműködve, egyik vizsgált kész keretrendszer sem kerül adoptálásra/adaptálásra. Ez megerősíti (nem vakon átveszi) a MODULTERV 14. pontjában MikroB által előzetesen leírt véleményt, konkrét, forrásból vett tényekkel alátámasztva.
+
+**Plan-grilling verdikt a modultervre (plan-grilling skill, 9 tengely):** GO-WITH-CHANGES.
+
+- Cél/siker, ellenőrzés: a meglévő EK-MT-1..12 elfogadási kritériumok konkrétak és mérhetők (pl. EK-MT-5: 20 kézzel írt kérdés, 70% top-3 találat, nem szó szerinti szövegegyezés -- nehezen trükközhető teszt). Nincs rajtuk változtatás.
+- Legterhelőbb (load-bearing) feltételezés: a nomic-embed-text elég jól teljesít magyar lekérdezésen. Ez a modulterv saját 11. pontjában MÁR explicit `[?]`-ként jelölve, mitigációval (angol kulcsszó-összefoglaló + kétnyelvű FTS) -- elfogadott, nyitva hagyott kockázat, nem blokkoló.
+- **Új, eddig nem tárgyalt kockázat (grilling axis 3+9, "mi a legvalószínűbb eddig meg nem beszélt hibaforrás"): konkurrens írás a store/knowledge-graph.db SQLite-fájlba** -- több flotta-ügynök zárhat kártyát egyszerre (capture_queue-ba írás) és landolhat egyszerre (MT-09 horgony-ellenőrzés írása), egyetlen közös fájlon. **Változtatás:** az F1/MT-01 kártya kapjon explicit követelményt: WAL mód + busy_timeout + retry SQLITE_BUSY-n, ugyanazt a mintát követve, ami a claudeclaw.db-n már bizonyítottan működik egyidejű kanban-írásoknál.
+- Blast radius: az MT-07 (dispatch-injekció) a flotta MINDEN kártya-felvételét érinti -- ez a legnagyobb kockázatú pont. Mitigálva: alapból OFF kapcsoló, EK-MT-7 byte-pontos paritást követel OFF állapotban, 4 hetes mért bevezetési kapu QA+WhiteHat+RedHat zöld után. Nincs változtatás, a meglévő terv már helyesen kezeli.
+- Visszafordíthatóság: a teljes gráf forrásból újragenerálható (`rm knowledge-graph.db` + rebuild), tesztelt vissza-út. Megfelelő.
+- Nyitott kérdés #2 (modulterv 15. pont) lezárva EBBEN a kártyában: az automatikus `active` állapothoz a gate AGREE + validátor ELÉG, DE az F2/MT-05 elfogadási kritériumai közé bekerül, hogy a QA az első 50 aktivált csomópontot mintavételesen átnézi (a modulterv saját javaslata, most már kötelezővé téve, nem csak "javaslat").
+- Nyitott kérdés #3 (skillek mint csomópont) marad P3-ban elhalasztva, elfogadott, nem blokkoló.
+
+**MT-03/04/07 API-kontraktus (lezárva, az F5 Fron Ted és az F1b erre épül, komment a 3f6fc4ce kártyán a teljes JSON-sémával).**
+
+**Ki döntött:** backend (kártya 3f6fc4ce, F0), gate: QA + WhiteHat.
+
+**Hivatkozás:** kártya 3f6fc4ce, c65add5a (fázis, MODULTERV komment), DECISIONS.md fenti "DÖNTÉS (Peti 11541...)" bejegyzés (fájl-partíció).

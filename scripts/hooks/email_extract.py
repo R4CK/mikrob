@@ -280,6 +280,60 @@ def collect_mcp_attachments(tool_input: dict):
 # reviewed answer stays: a Bash --attach makes the call unreadable_reason (fail-closed,
 # forces a fresh approval) instead of silently anchoring on a hashable-but-swappable
 # file. See DECISIONS.md, Köteg 17 merge entry.
+# Card a2cb71f1 H1 (RedHat NO-GO, komment 20438): field names on a gmail-mcp send-shaped tool's
+# schema that can reference a local file -- the hook must either hash their content (and so pin it
+# into content_anchor) or the whole call must be denied outright by gateDecision. Kept as one named
+# constant, not only prose, so a future schema's new field is a conscious addition here, cross-read
+# by src/__tests__/email-send-gate.test.ts (catalog-drift test) against the pinned package's real
+# schema -- the test goes red if the package gains a path-capable field not listed here.
+HANDLED_FILE_FIELDS = ("attachments", "inlineImages")
+
+
+def collect_mcp_inline_images(tool_input: dict):
+    """Return (inline_images, unreadable_reason). inline_images: list of
+    {"cid", "filename", "sha256"}, sorted for a deterministic hash order.
+
+    Card a2cb71f1 H1 (RedHat NO-GO, komment 20438): @artymclabin/gmail-mcp@1.2.3's
+    InlineImageSchema (send_email/draft_email/update_draft/reply_all, dist/tools.js:6-19) adds a
+    SECOND file-attaching field next to `attachments` -- each entry sets exactly one of `path`
+    (absolute file path, read by the server at send time) or `content` (base64, inline bytes), per
+    the server's own zod .refine(). Before this, content_anchor never looked at this field: an
+    approved send_email letter's inlineImages path could be swapped for ANY locally readable file
+    (a key, a token, .env) and the anchor would not change, because collect_email_envelope only
+    ever read to/cc/bcc/text/attachments. Measured (RedHat): the same letter with and without an
+    inlineImages path gave a byte-identical content_anchor, unreadable_reason none.
+
+    `path` is refused outright, not hashed -- same TOCTOU reasoning as the attachments
+    absolute-path rule (F3, e4eb72c9/a2cb71f1): the hook and the MCP server would read the file
+    SEPARATELY, so the content could change between the two reads. An inline image can only be
+    approved as base64 `content` bytes, which this hook hashes directly (no second read, no
+    TOCTOU window)."""
+    raw = tool_input.get("inlineImages")
+    if not raw:
+        return [], None
+    if not isinstance(raw, list):
+        return [], "az inlineImages mezo alakja nem lista"
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return [], "egy inlineImages bejegyzes alakja nem objektum"
+        cid = str(item.get("cid") or "")
+        path = item.get("path")
+        content = item.get("content")
+        if path:
+            return [], (f"a '{cid}' inline kep abszolut utvonalkent erkezett ({path!r}) -- "
+                        "ezt a hook nem fogadja el: a fajlt a hook es az MCP-szerver KULON "
+                        "olvasna, a ketto kozott a tartalom kicserelheto (TOCTOU, az attachments "
+                        "F3-zarasanak mintaja). Kuldd az inline kep BAJTJAIT a 'content' mezoben "
+                        "szigoru base64-kent.")
+        if not isinstance(content, str) or not content:
+            return [], (f"a '{cid}' inline kep tartalma hianyzik vagy nem szoveg "
+                        "(sem path, sem ervenyes content)")
+        filename = str(item.get("filename") or "")
+        out.append({"cid": cid, "filename": filename,
+                    "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()})
+    out.sort(key=lambda a: (a["cid"], a["filename"], a["sha256"]))
+    return out, None
 
 
 # The claude.ai Gmail connector's send-shaped tools (mcp__claude_ai_Gmail__*):
@@ -307,6 +361,9 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
         attachments, att_reason = collect_mcp_attachments(ti)
         if att_reason and not reason:
             reason = att_reason
+        inline_images, img_reason = collect_mcp_inline_images(ti)
+        if img_reason and not reason:
+            reason = img_reason
     elif tool_name == "Bash":
         cmd = str((tool_input or {}).get("command") or "") if isinstance(tool_input, dict) else ""
         text, reason = collect_bash_body(cmd)
@@ -314,8 +371,9 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
             to, cc, bcc, reason = collect_bash_recipients(cmd)
         else:
             to, cc, bcc = [], [], []
+        inline_images = []
     else:
-        return {"to": [], "cc": [], "bcc": [], "text": "", "attachments": [],
+        return {"to": [], "cc": [], "bcc": [], "text": "", "attachments": [], "inline_images": [],
                 "unreadable_reason": f"nem email-kuldo tool ({tool_name!r})"}
     return {"to": to, "cc": cc, "bcc": bcc, "text": text, "attachments": attachments,
-            "unreadable_reason": reason}
+            "inline_images": inline_images, "unreadable_reason": reason}

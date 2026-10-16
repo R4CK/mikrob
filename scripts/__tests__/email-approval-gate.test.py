@@ -505,6 +505,51 @@ with tempfile.TemporaryDirectory() as td:
     check("attachments/golden: an attachment-less anchor is unchanged by this fix",
           anchor_from_stderr(err) == bccless_anchor, f"got {anchor_from_stderr(err)!r}")
 
+    # --- card a2cb71f1 H1 (RedHat NO-GO, komment 20438): inlineImages are part of the anchor ---
+    # The gap: an approved send_email letter could be re-sent with a DIFFERENT inlineImages
+    # payload, because the anchor never covered that field at all (content_anchor only read
+    # to/cc/bcc/text/attachments). Fixed the same conditional way as attachments/bcc.
+    store = make_store(os.path.join(td, "img-mcp"))
+    image_payload = mcp_send(subject="Inline kep")
+    image_payload["tool_input"]["inlineImages"] = [{"cid": "img1", "content": "QQ==", "filename": "a.png"}]
+    _, _, err = run_gate(store, image_payload)
+    img_anchor = anchor_from_stderr(err)
+    approve(store, img_anchor)
+
+    swapped_img = mcp_send(subject="Inline kep")
+    swapped_img["tool_input"]["inlineImages"] = [{"cid": "img1", "content": "Qg==", "filename": "a.png"}]
+    code, _, _ = run_gate(store, swapped_img)
+    check("inlineImages/MCP: SAME letter but a DIFFERENT inline image content -> DENIED "
+          "(approval for the ORIGINAL image is still unconsumed)",
+          code == 2, f"exit={code}")
+
+    no_image = mcp_send(subject="Inline kep")
+    code, _, _ = run_gate(store, no_image)
+    check("inlineImages/MCP: SAME letter with the inline image REMOVED -> DENIED "
+          "(anchor covers inlineImages; approval still unconsumed)",
+          code == 2, f"exit={code}")
+
+    code, _, _ = run_gate(store, image_payload)
+    check("inlineImages/MCP: the ORIGINAL approved letter with its exact inline image still sends",
+          code == 0, f"exit={code}")
+
+    # H1 reproduction: a `path`-shaped inlineImages entry is REJECTED fail-closed, never
+    # read-and-hashed -- same TOCTOU rationale as the attachments F3 closure. Before this fix,
+    # the field was not read AT ALL, so this payload would have anchored identically to the
+    # path-less letter above and sent on that approval.
+    store_path = make_store(os.path.join(td, "img-path"))
+    img_path_payload = mcp_send(subject="Fajl-kep")
+    img_path_payload["tool_input"]["inlineImages"] = [{"cid": "img1", "path": "/etc/passwd"}]
+    code, _, err = run_gate(store_path, img_path_payload)
+    check("inlineImages/path: a `path` entry is DENIED fail-closed, no anchor to approve (H1 TOCTOU closure)",
+          code == 2 and anchor_from_stderr(err) is None, f"exit={code} err={err[:200]!r}")
+
+    # Backward-compat golden: an inline-image-less anchor stays byte-identical to the
+    # pre-inlineImages value -- open approvals recorded before this fix must still match.
+    _, _, err = run_gate(store, mcp_send())
+    check("inlineImages/golden: an inlineImages-less anchor is unchanged by this fix",
+          anchor_from_stderr(err) == bccless_anchor, f"got {anchor_from_stderr(err)!r}")
+
     # Backward-compat golden: the bcc-less canon is BYTE-STABLE across the bcc
     # fix (bcc joins the hash ONLY when non-empty), so approvals recorded
     # before the change stay valid for the letters they approved. If this hash

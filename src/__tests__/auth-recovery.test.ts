@@ -4,6 +4,7 @@ import { Readable } from 'node:stream'
 import { initDatabase, getDb, createDashboardUser } from '../db.js'
 import { tryHandleAuth } from '../web/routes/auth.js'
 import { securityReset } from '../web/security-reset.js'
+import { hashPassword } from '../web/password-hash.js'
 import {
   createDeviceKey,
   resolveDeviceKey,
@@ -20,8 +21,10 @@ import type { RouteContext } from '../web/routes/types.js'
 // AUTHPLAN1 #5 -- recovery paths. Contract under test:
 //   - securityReset revokes every device key AND every browser session in one
 //     step, leaves users/passwords in place, and writes an audit row;
-//   - the HTTP break-glass password reset (token, no current_password) writes
-//     an audit row carrying the target username, never the password;
+//   - the HTTP break-glass paths (token creating a user / token resetting a
+//     password with no current_password) are retired (card 49960046, RedHat
+//     17005 X1/X3) -- the token is refused outright, no audit row is written
+//     for the denied attempt, and the real break-glass path is the local CLI;
 //   - out-of-band revocation (a different process deleting rows, as the CLI
 //     does) is honored by a LIVE process's cache within the 60s debounce:
 //     the debounced write doubles as an existence check.
@@ -85,10 +88,6 @@ beforeEach(() => {
   db.prepare('DELETE FROM device_keys').run()
   db.prepare('DELETE FROM auth_sessions').run()
   db.prepare('DELETE FROM dashboard_users').run()
-  // hasDashboardBootstrapEverHappened() (card 9655494c F1-B1) reads sqlite_sequence, which
-  // survives a plain DELETE -- reset it too or the break-glass tests below lose the token
-  // bootstrap path once an earlier test in this file has created any user.
-  db.prepare("DELETE FROM sqlite_sequence WHERE name = 'dashboard_users'").run()
   db.prepare('DELETE FROM config_change_log').run()
 })
 
@@ -119,23 +118,25 @@ describe('securityReset', () => {
   })
 })
 
-describe('HTTP break-glass password reset audit', () => {
-  it('writes an audit row with the target username on the token path', async () => {
-    const mk = await call('POST', '/api/auth/users', { auth: { kind: 'token' }, body: { username: 'alice', password: GOOD_PW } })
-    expect(mk.statusCode).toBe(201)
+describe('HTTP break-glass paths are retired for the token', () => {
+  it('token cannot create a dashboard user, bootstrap or not', async () => {
+    const r = await call('POST', '/api/auth/users', { auth: { kind: 'token' }, body: { username: 'alice', password: GOOD_PW } })
+    expect(r.statusCode).toBe(403)
+    expect(getDb().prepare('SELECT COUNT(*) AS c FROM dashboard_users').get()).toEqual({ c: 0 })
+  })
+
+  it('token cannot reset a password, and the denied attempt writes no audit row', async () => {
+    createDashboardUser('alice', await hashPassword(GOOD_PW))
     const r = await call('POST', '/api/auth/password', { auth: { kind: 'token' }, body: { username: 'alice', new_password: GOOD_PW + 'x' } })
-    expect(r.statusCode).toBe(200)
-    const rows = auditRows('security.break_glass_password_reset')
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!).toEqual({ key: 'security.break_glass_password_reset', new_value: 'alice', actor: 'token' })
-    // Never credential material in the trail.
+    expect(r.statusCode).toBe(403)
+    expect(auditRows('security.break_glass_password_reset')).toHaveLength(0)
+    // Never credential material in the trail either way.
     const all = JSON.stringify(getDb().prepare('SELECT * FROM config_change_log').all())
     expect(all).not.toContain(GOOD_PW)
   })
 
-  it('does NOT audit a normal session-path password change as break-glass', async () => {
-    await call('POST', '/api/auth/users', { auth: { kind: 'token' }, body: { username: 'bob', password: GOOD_PW } })
-    getDb().prepare('DELETE FROM config_change_log').run()
+  it('a normal session-path password change still works and is not audited as break-glass', async () => {
+    createDashboardUser('bob', await hashPassword(GOOD_PW))
     const r = await call('POST', '/api/auth/password', {
       auth: { kind: 'session', user: 'bob' },
       body: { current_password: GOOD_PW, new_password: GOOD_PW + 'y' },

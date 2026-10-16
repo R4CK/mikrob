@@ -212,6 +212,39 @@ case("--no-expect restores the pre-2003e04b behaviour exactly",
 case("an explicit --expect still outranks the REVIEW's declaration",
      [c("backend", R % "aaaa1111"), c("qa", V % "aaaa1111")], "STALE", expect_sha="cccc3333")
 
+# --- A RETRACTED REVIEW MUST NOT SUPPLY THE DEFAULT EXPECTATION (card 84fed4ee, Cybered's finding
+# --- on 101f1702). fron-teddy posted a second REVIEW, then reverted the branch back to the first
+# --- REVIEW's sha with only a prose comment -- declared_shas() always took the newest REVIEW
+# --- regardless, so the withdrawn sha became --expect's default and three verdicts that correctly
+# --- judged the ORIGINAL sha read STALE instead of AGREE. ---------------------------------------
+case("the 101f1702 shape itself: REVIEW A, REVIEW B, B retracted, 3 verdicts on A -> AGREE on A",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("fron-teddy", "Visszaallitottam az eredeti sha-ra, nem kell a masodik REVIEW.\n"
+                       "VISSZAVONVA: bbbb2222"),
+      c("qa", V % "aaaa1111"), c("cybersec", S % "aaaa1111"), c("cybered", D % "aaaa1111")],
+     "AGREE", gates="qa,cybersec,cybered")
+case("MUTATION CONTROL: without the retraction line, the SAME history does NOT read AGREE -- the "
+     "withdrawn sha B becomes the default expectation and the verdicts (on A) cannot be shown to "
+     "match it with synthetic shas that resolve in no clone",
+     [c("fron-teddy", R % "aaaa1111"), c("fron-teddy", R % "bbbb2222"),
+      c("fron-teddy", "Visszaallitottam az eredeti sha-ra, nem kell a masodik REVIEW."),
+      c("qa", V % "aaaa1111"), c("cybersec", S % "aaaa1111"), c("cybered", D % "aaaa1111")],
+     "UNRESOLVED", gates="qa,cybersec,cybered")
+case("RETRACTED (English spelling) works the same as VISSZAVONVA",
+     [c("backend", R % "aaaa1111"), c("backend", R % "bbbb2222"),
+      c("backend", "Reverted.\nRETRACTED: bbbb2222"),
+      c("qa", V % "aaaa1111")], "AGREE")
+case("a retraction naming a DIFFERENT sha does not touch the REVIEW it does not name",
+     [c("backend", R % "aaaa1111"), c("backend", R % "bbbb2222"),
+      c("backend", "VISSZAVONVA: cccc3333"), c("qa", V % "bbbb2222")], "AGREE")
+case("a retraction line BEFORE the REVIEW it would name cannot retract it (comment order, not sha)",
+     [c("backend", "VISSZAVONVA: bbbb2222"), c("backend", R % "bbbb2222"),
+      c("qa", V % "bbbb2222")], "AGREE")
+case("a retraction mid-prose, not line-initial, is not a marker (anchored like Gate-SHA itself)",
+     [c("backend", R % "aaaa1111"), c("backend", R % "bbbb2222"),
+      c("backend", "a VISSZAVONVA: bbbb2222 szo csak idezve szerepel itt"),
+      c("qa", V % "bbbb2222")], "AGREE")
+
 # --- THE VERDICT WORD MUST END, NOT MERELY HIT A WORD BOUNDARY ---------------------------------
 # `\b` matched between the S of PASS and the hyphen, so a BUILDER's "QA PASS-eligible" parsed as
 # the QA gate's verdict (measured: card 65e0b0d5, author backend2). Four comments in 20121 carry
