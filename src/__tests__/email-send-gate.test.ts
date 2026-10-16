@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision, buildGateMsg } from '../../scripts/email-send-gate.mjs'
-import { injectEmailSendGate, agentGetsEmailGate } from '../web/agent-scaffold.js'
+import { injectEmailSendGate, agentGetsEmailGate, EMAIL_GATE_MATCHER } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { REPO_UNDER_TMP, TMP_SKIP_REASON } from './helpers/repo-location.js'
 
@@ -60,6 +60,40 @@ describe('gateDecision', () => {
     // Resend reads pass -- hyphenated get-*/list-* on the allowlist.
     expect(gateDecision('mcp__resend__get-email', {}).deny).toBe(false)
     expect(gateDecision('mcp__resend__list-domains', {}).deny).toBe(false)
+  })
+
+  // Card a2cb71f1 (catalog swap: mcp-catalog.json "gmail" entry's npm package identity ->
+  // @artymclabin/gmail-mcp@1.2.3). The card's own task item 3 asks literally for these two
+  // assertions against the server-id the catalog entry actually installs as ("gmail", per
+  // src/web/routes/connectors.ts: a catalog id commonly equals the configured server name).
+  // Both tools are the exact pair c2aeefa5's Cybersec NO-GO (comment 6737) named as unseen by
+  // any matcher at the time; deny-by-default (card 498d53c1+) now closes this without a name
+  // list, which is exactly why no new code change was needed to make these pass.
+  it('denies mcp__gmail__send_draft and mcp__gmail__reply_all (card a2cb71f1, the catalog-swap pair)', () => {
+    expect(gateDecision('mcp__gmail__send_draft', { draftId: 'd1' }).deny).toBe(true)
+    expect(gateDecision('mcp__gmail__reply_all', { messageId: 'm1', body: 'hi' }).deny).toBe(true)
+  })
+
+  // Card a2cb71f1, Cybersec second finding (comment 1790359025): the OLD gmail-mcp-server
+  // package's gmail_draft multiplexer tool (action field decides send vs draft/list) was
+  // measured LIVE as an allow before deny-by-default existed, because no matcher recognised the
+  // bare name at all. Deny-by-default denies it unconditionally now -- the bare name "gmail_draft"
+  // never matches EMAIL_SAFE_TOOL_RE's prefix regex regardless of the action field, so an
+  // action-aware classifier (Cybersec's original suggestion) turned out to be unnecessary: the
+  // name-blind, server-wide deny is strictly more conservative and already covers this.
+  it('denies mcp__gmail__gmail_draft regardless of its action field (old package multiplexer tool)', () => {
+    expect(gateDecision('mcp__gmail__gmail_draft', { action: 'send', draftId: 'd1' }).deny).toBe(true)
+    expect(gateDecision('mcp__gmail__gmail_draft', {}).deny).toBe(true)
+    expect(gateDecision('mcp__gmail__gmail_draft', { action: 'list' }).deny).toBe(true)
+  })
+
+  // Card a2cb71f1, Cybersec INFO item 4 + threat-model comment 1790358790: create_filter accepts
+  // a forward action (automatic-forward-to-address), the bare name "create_filter" never matches
+  // the safe-prefix allowlist either way, so it is denied regardless of whether the specific call
+  // sets a forward action or only a label filter -- documenting that here, not changing behavior.
+  it('denies mcp__gmail__create_filter even without a forward action (deny-by-default is name-based, not action-based)', () => {
+    expect(gateDecision('mcp__gmail__create_filter', { action: { forward: 'x@evil.test' } }).deny).toBe(true)
+    expect(gateDecision('mcp__gmail__create_filter', { action: { addLabelIds: ['L'] } }).deny).toBe(true)
   })
 
   // Card 45b33b2b (Cybersec GO on 498d53c1 @4b341e4d, msg 6240, REGRESSION): the server-name
@@ -157,6 +191,55 @@ describe('gateDecision', () => {
     expect(bash('curl -s http://localhost:3420/api/messages').deny).toBe(false)
     // mentioning "resend" without an email/send verb nearby is not gated
     expect(bash('grep resend src/foo.ts').deny).toBe(false)
+  })
+})
+
+// Card a2cb71f1, task item 3 ("a test that compares EVERY email package in the catalog's
+// (pinned-version) sending tool names against the settings matchers, so that the NEXT package
+// swap cannot silently reopen the same gap"). This is a fixture pin, not a live network re-fetch
+// of each package at test time (not hermetic for a vitest unit suite) -- the tool-name lists below
+// were read directly from the pinned packages' own published tarballs (gmail-mcp-server@1.0.30,
+// @artymclabin/gmail-mcp@1.2.3), not reconstructed from memory. Given the architecture is
+// deny-by-default (EMAIL_SERVER_RE + EMAIL_SAFE_TOOL_RE in gateDecision, not a name list), this
+// test's real value is a documentation/regression pin tied to the SPECIFIC pinned versions in
+// mcp-catalog.json today: the deny-by-default mechanism already protects any future name or
+// version drift generically (see the hyphen/prefix canaries above), so this test is expected to
+// stay green across a version bump too -- if it ever goes red, that is itself a signal that the
+// catalog's email package identity changed in a way worth re-reading, not a sign the mechanism
+// broke.
+describe('gateDecision: catalog email packages vs the settings matchers (card a2cb71f1)', () => {
+  const CATALOG_EMAIL_SEND_TOOLS: Record<string, string[]> = {
+    // gmail-mcp-server@1.0.30 (the package mcp-catalog.json shipped before this card) --
+    // gmail_send_email is the obviously-named send tool; gmail_draft is the multiplexer whose
+    // action:"send" ALSO sends (Cybersec, comment 1790359025), unseen by any matcher before
+    // deny-by-default existed.
+    'gmail-mcp-server@1.0.30': ['gmail_send_email', 'gmail_draft'],
+    // @artymclabin/gmail-mcp@1.2.3 (this card's swap target, pinned in mcp-catalog.json).
+    'gmail-mcp@1.2.3': [
+      'send_email', 'send_draft', 'reply_all', 'delete_draft', 'update_draft',
+      'modify_email', 'delete_email', 'batch_modify_emails', 'batch_delete_emails',
+      'create_label', 'update_label', 'delete_label',
+      'create_filter', 'delete_filter', 'create_filter_from_template',
+    ],
+  }
+
+  it('the matcher reaches the gmail segment and gateDecision denies every send-shaped tool name, for BOTH pinned packages', () => {
+    const full = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    for (const [pkg, tools] of Object.entries(CATALOG_EMAIL_SEND_TOOLS)) {
+      for (const tool of tools) {
+        const qualified = `mcp__gmail__${tool}`
+        expect(full.test(qualified), `${pkg}: matcher must fire for ${qualified}`).toBe(true)
+        expect(gateDecision(qualified, { action: 'send' }).deny, `${pkg}: ${qualified}`).toBe(true)
+      }
+    }
+  })
+
+  // Positive control: the read/list/search/get surface of both packages must stay allowed, or
+  // the test above would be trivially satisfied by a gate that denies everything.
+  it('positive control: read-only tools from both packages stay allowed', () => {
+    for (const tool of ['read_email', 'search_emails', 'list_email_labels', 'list_filters', 'get_filter', 'get_or_create_label']) {
+      expect(gateDecision(`mcp__gmail__${tool}`, {}).deny, tool).toBe(false)
+    }
   })
 })
 

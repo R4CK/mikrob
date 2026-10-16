@@ -73,6 +73,9 @@ index_skills_dir() {
     # character itself. Fold any block scalar's lines (joined by spaces, since the
     # index is a single-row markdown table cell either way).
     local desc
+    # `cut -c` is byte-oriented in GNU coreutils even under a UTF-8 locale, so
+    # a 120-byte cut lands mid-character on accented text and writes a broken
+    # byte into the index every agent reads. python3 counts characters (IDXCUT909).
     desc=$(awk '
       state == 0 && /^description:[ \t]*/ {
         val = $0
@@ -96,7 +99,7 @@ index_skills_dir() {
         result = (result == "") ? line : result " " line
       }
       END { print result }
-    ' "$skill_md" | cut -c1-120)
+    ' "$skill_md" | python3 -c 'import sys; sys.stdout.write(sys.stdin.read().rstrip(chr(10))[:120])')
     if [ -z "$desc" ]; then
       desc="(nincs leírás)"
     fi

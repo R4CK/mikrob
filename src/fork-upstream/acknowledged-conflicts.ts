@@ -2886,15 +2886,30 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
   'mcp-catalog.json': {
     needle: '@artymclabin/gmail-mcp',
     file: 'mcp-catalog.json',
-    expect: 'absent',
+    expect: 'present',
     because:
-      "This package identity was reverted OUT of the gmail catalog entry (back to gmail-mcp-server) " +
-      "because its tool set (31 tools incl. send_draft, reply_all) is not recognised by any of the " +
-      "three email-approval matchers (outgoing-copy-gate.py, email-approval-gate.py, " +
-      "email-send-gate.mjs), while the old package's only sending tool (gmail_send_email) already was. " +
-      "If this string reappears in mcp-catalog.json, it must land together with the matcher + " +
-      "gateDecision extension MikroB scoped into a dedicated card (msg 4162) -- never as a bare " +
-      "identity swap again.",
+      "RE-DECIDED 2026-10-16 (card a2cb71f1, backend): the identity swap landed. It was reverted " +
+      "OUT in c2aeefa5 (comment 6737) because the package's 31 tools (incl. send_draft, reply_all) " +
+      "were not recognised by any of the three email-approval matchers (outgoing-copy-gate.py, " +
+      "email-approval-gate.py, email-send-gate.mjs's gateDecision), while the OLD package's apparent " +
+      "single sending tool (gmail_send_email) already was -- but a later Cybersec finding on THIS " +
+      "card (comment 1790359025) showed that claim was itself wrong: the old package's gmail_draft " +
+      "multiplexer tool (action:'send') ALSO sent mail unseen by any gate, measured live as an " +
+      "allow. Neither package was actually safe by name-matching alone. The precondition MikroB set " +
+      "(msg 4162, 'only together with the matcher extension') is now met structurally, not by a " +
+      "name list: cards 498d53c1 (deny-by-default for the whole gmail__/resend__ server segment, " +
+      "landed 2026-09-29), 45b33b2b (hyphen-adjacent server names) and bf7a7335 (verb-prefix-only " +
+      "bypass) together mean EMAIL_SERVER_RE + EMAIL_SAFE_TOOL_RE in gateDecision deny every tool on " +
+      "a gmail/resend-named server that is not on a narrow safe-read/draft allowlist -- send_draft, " +
+      "reply_all, gmail_draft (any action, since the bare name itself never matches the safe-prefix " +
+      "regex), create_filter and any future send-shaped tool name are denied BY DEFAULT, not by " +
+      "being individually named. outgoing-copy-gate.py and email-approval-gate.py carry the " +
+      "identical mechanism (see their own '498d53c1' comments). Version pinned to 1.2.3 (Cybersec " +
+      "F2). The e4eb72c9 attachment-hash predecessor (F1/F1'/F2/L1/L2 all GO) and its F3 TOCTOU " +
+      "closure (absolute-path attachments now rejected fail-closed, this same card) were the " +
+      "remaining go-live condition (WhiteHat2, e4eb72c9 comment 16368, repeated on this card) and " +
+      "are also done. If this needle is ever removed again, re-decide this entry, do not just flip " +
+      "it back -- the guard's own test enforces that.",
   },
   // Round 16 (card a6b5fea3). The updates.ts rule's central factual claim is about a file the
   // conflict does not touch: that upstream's script-side half of AUTOUPDNODEENV905 is still

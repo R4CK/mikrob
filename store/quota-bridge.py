@@ -63,6 +63,14 @@ ACCESS_JSON = f"{TG_DIR}/access.json"
 BOT_PID_FILE = f"{TG_DIR}/bot.pid"
 STATE_FILE = f"{STORE}/quota-bridge-state.json"
 LOCAL_LLM = f"{STORE}/local-llm.sh"
+# Card 612058c2: while MikroB is frozen on the session quota, nothing else alive drives the
+# cf757409 Gemini-fallback pipeline (it is only ever invoked from MikroB's own heartbeat/scheduled-
+# task prompts). SESSION_OUTAGE_FILE tells gemini-fallback-runner.ts's readClaudeExhausted() that a
+# SESSION-level outage (not just the weekly newDevStop/hard-stop threshold) is active, and
+# GHOST_RUNNER_SCRIPT is the background driver started for the outage's duration -- see both
+# functions' own comments below.
+SESSION_OUTAGE_FILE = f"{STORE}/mikrob-session-outage.json"
+GHOST_RUNNER_SCRIPT = f"{STORE}/gemini-ghost-runner.sh"
 # Single local model (Peti 2026-07-19: one LLM only, coding-focused). Also used by
 # Ghost for degraded comms. Read from the shared config so a model swap is one place.
 def _read_model():
@@ -349,59 +357,190 @@ def ask_local(query):
         return "Ghost mód: a lokális modell épp nem elérhető. A valódi MikroB a kvóta-reset után visszatér."
 
 
+def mark_session_outage():
+    """Card 612058c2: tells gemini-fallback-runner.ts's readClaudeExhausted() that a SESSION-level
+    (not just weekly) outage is active. Best-effort -- a write failure must never break Ghost's own
+    Telegram loop, which is the thing this bridge exists for.
+
+    H2 (WhiteHat2 NO-GO, delta-gate @c5e5ec28): outage_loop()'s own `finally` clause is the ONLY
+    thing that ever clears this marker -- a SIGKILL/OOM/host-restart mid-outage leaves `active:
+    true` on disk forever, with nothing left alive to clear it, and a Restart=always unit comes
+    back healthy while gemini-fallback-runner.ts still reads "outage" and never returns to Claude.
+    Fix: every call refreshes a `heartbeat` (preserving the ORIGINAL `since` once set), and the
+    reader (readSessionOutageActive) now rejects a heartbeat older than its staleness window --
+    the same fail-safe-toward-Claude direction as a missing file. Called once at outage_loop()
+    entry AND once per loop iteration (see outage_loop below) so the heartbeat tracks liveness at
+    roughly the long-poll cadence, not just outage start."""
+    now = time.time()
+    since = now
+    try:
+        with open(SESSION_OUTAGE_FILE) as f:
+            existing = json.load(f)
+        if isinstance(existing, dict) and isinstance(existing.get("since"), (int, float)):
+            since = existing["since"]
+    except (OSError, ValueError, json.JSONDecodeError, TypeError):
+        pass
+    tmp = SESSION_OUTAGE_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump({"active": True, "since": since, "heartbeat": now}, f)
+        os.replace(tmp, SESSION_OUTAGE_FILE)
+    except OSError as e:
+        log(f"could not write session-outage marker: {e}")
+
+
+def clear_session_outage():
+    try:
+        os.remove(SESSION_OUTAGE_FILE)
+    except OSError:
+        pass
+
+
+def start_ghost_runner():
+    """Card 612058c2: starts store/gemini-ghost-runner.sh, which drives the EXISTING cf757409
+    Gemini-fallback pipeline (route decision -> card ordering -> local-LLM draft -> Gemini
+    first-pass review) on a timer for as long as it lives -- nothing else does this while MikroB
+    itself is frozen (see that script's own header). Best-effort: a failure to start it must never
+    break Ghost's own Telegram-serving loop, same posture as every other function here.
+
+    M1 (WhiteHat2 NO-GO, delta-gate @c5e5ec28): start_new_session=True puts the runner in its OWN
+    process group, so stop_ghost_runner() below can signal the whole tree it spawned (the bash
+    script's own `node dist/gemini-orchestrator-draft*.js` children), not just the bash PID
+    itself."""
+    try:
+        return subprocess.Popen([GHOST_RUNNER_SCRIPT], cwd=MARVEEN,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+    except OSError as e:
+        log(f"could not start gemini-ghost-runner: {e}")
+        return None
+
+
+# F-RH-V3 (RedHat NO-GO/GO @c5e5ec28, comment 19880): Python's DEFAULT disposition for SIGTERM
+# terminates the process immediately without ever unwinding a `try/finally` -- unlike an
+# in-process exception, an external `kill -TERM` (what `systemctl stop`/`restart` sends by
+# default) means outage_loop()'s finally clause NEVER RUNS, so stop_ghost_runner()/
+# clear_session_outage() are skipped entirely on that path. The 15-minute heartbeat staleness
+# check (gemini-fallback-runner.ts's readSessionOutageActive, H2) is the fail-safe BACKSTOP for
+# this, but a real handler means the runner and the marker are cleaned up within the signal's own
+# grace period, not after up to 15 minutes of staying on the wrong route. Tracks the live Popen
+# handle in a module-level var (set at outage_loop() entry, cleared in its finally) so the
+# handler -- which fires asynchronously, with no access to outage_loop()'s own locals -- can still
+# reach it.
+_active_ghost_runner = None
+
+
+def _handle_sigterm(signum, frame):  # noqa: ARG001 -- signal handler signature is fixed
+    log("SIGTERM received -> cleaning up (stop ghost runner, clear outage marker) before exit")
+    try:
+        stop_ghost_runner(_active_ghost_runner)
+    except Exception as e:  # noqa: BLE001 -- must still clear the marker even if this throws
+        log(f"SIGTERM cleanup: stop_ghost_runner failed: {e}")
+    clear_session_outage()
+    sys.exit(0)
+
+
+def stop_ghost_runner(proc):
+    """M1 (WhiteHat2 NO-GO, delta-gate @c5e5ec28): terminate()/kill() on the Popen handle only ever
+    reach the bash PID itself -- a SIGTERM to just that PID lets bash exit while its CURRENT child
+    step (the tick's running `node dist/gemini-orchestrator-draft*.js`) keeps running orphaned,
+    still making real Gemini calls after Claude has already come back and Ghost has relinquished
+    the channel. Signaling the whole process GROUP (negative pid) reaches every descendant the
+    runner spawned, not just its own top-level process."""
+    if proc is None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (OSError, ProcessLookupError):
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
 def outage_loop(token, state):
     """Own getUpdates and answer with the local model until MikroB recovers."""
+    global _active_ghost_runner
     chats = allowed_chats()
-    if not state.get("notified_outage"):
-        send(token, PETI_CHAT_ID,
-             "👻 MikroB Ghost jelentkezik. A valódi MikroB elérte a Claude kvótát és nem "
-             "tud válaszolni, ezért ÁTÁLLTAM vészmódba: egy lokális modell (Qwen2.5-Coder-7B) "
-             "válaszol korlátozottan, a memóriád releváns kontextusával. A valódi MikroB a "
-             "kvóta-reset után automatikusan visszaveszi a vonalat, és MINDENT ellenőriz, "
-             "amit Ghost módban csináltam.")
-        state["notified_outage"] = True
-        save_state(state)
-    probe_suppressed = False
-    while True:
-        # recovery check: MikroB alive again (banner gone or heartbeat fresh) -> hand back.
-        # Skipped entirely while a known reset deadline is still far off (card cd7376ed): the probe
-        # can only flap there, and each flap sends Peti a handover and a recovery message. Message
-        # serving below is untouched -- the Ghost stays fully useful, it just stops announcing.
-        if not recovery_probe_due():
-            if not probe_suppressed:
-                log("known reset deadline still far off -> suppressing recovery probe (no flapping)")
-                probe_suppressed = True
-        elif not mikrob_down():
-            log("MikroB recovered -> relinquishing channel")
+    mark_session_outage()
+    ghost_runner = start_ghost_runner()
+    _active_ghost_runner = ghost_runner
+    try:
+        if not state.get("notified_outage"):
             send(token, PETI_CHAT_ID,
-                 "✅ A valódi MikroB visszatért (kvóta feloldva), MikroB Ghost visszavonul. "
-                 "Most átnézem, amit Ghost módban megoldottunk, és a normál gate-eken átvezetem.")
-            state["phase"] = "healthy"; state["banner_streak"] = 0; state["notified_outage"] = False
+                 "👻 MikroB Ghost jelentkezik. A valódi MikroB elérte a Claude kvótát és nem "
+                 "tud válaszolni, ezért ÁTÁLLTAM vészmódba: egy lokális modell (Qwen2.5-Coder-7B) "
+                 "válaszol korlátozottan, a memóriád releváns kontextusával. A valódi MikroB a "
+                 "kvóta-reset után automatikusan visszaveszi a vonalat, és MINDENT ellenőriz, "
+                 "amit Ghost módban csináltam.")
+            state["notified_outage"] = True
             save_state(state)
-            return
-        res = tg_api(token, "getUpdates",
-                     {"offset": state["offset"], "timeout": GETUPDATES_TIMEOUT,
-                      "allowed_updates": json.dumps(["message"])},
-                     timeout=GETUPDATES_TIMEOUT + 10)
-        if not res.get("ok"):
-            if res.get("error_code") == 409:
-                log("409 conflict -> re-claiming getUpdates slot"); kill_pid_holder(); time.sleep(2)
-            else:
-                time.sleep(3)
-            continue
-        for upd in res.get("result", []):
-            state["offset"] = upd["update_id"] + 1
-            msg = upd.get("message") or {}
-            chat_id = str((msg.get("chat") or {}).get("id", ""))
-            text = msg.get("text") or msg.get("caption") or ""
-            if chat_id in chats and text.strip():
-                log(f"answering degraded msg from {chat_id}: {text[:60]!r}")
-                ans = ask_local(text)
-                send(token, chat_id, f"👻 MikroB Ghost (lokális Qwen2.5-Coder-7B):\n{ans}")
-        save_state(state)
+        probe_suppressed = False
+        while True:
+            # recovery check: MikroB alive again (banner gone or heartbeat fresh) -> hand back.
+            # Skipped entirely while a known reset deadline is still far off (card cd7376ed): the
+            # probe can only flap there, and each flap sends Peti a handover and a recovery
+            # message. Message serving below is untouched -- the Ghost stays fully useful, it just
+            # stops announcing.
+            if not recovery_probe_due():
+                if not probe_suppressed:
+                    log("known reset deadline still far off -> suppressing recovery probe (no flapping)")
+                    probe_suppressed = True
+            elif not mikrob_down():
+                log("MikroB recovered -> relinquishing channel")
+                send(token, PETI_CHAT_ID,
+                     "✅ A valódi MikroB visszatért (kvóta feloldva), MikroB Ghost visszavonul. "
+                     "Most átnézem, amit Ghost módban megoldottunk, és a normál gate-eken átvezetem.")
+                state["phase"] = "healthy"; state["banner_streak"] = 0; state["notified_outage"] = False
+                save_state(state)
+                return
+            # Y1 (RedHat GO, card 612058c2 Teendo @6b9f61eb, comment 19993): refresh the heartbeat
+            # ONCE PER LOOP ITERATION, unconditionally, BEFORE the getUpdates call -- not only on
+            # the success branch below. The old placement (after the message-processing block) was
+            # skipped by the `continue` on the error/409 branch, so a getUpdates outage (15+ minutes
+            # of 409s/timeouts) let the heartbeat go stale while Ghost was still actively looping,
+            # which can hand the channel back to Claude mid-outage once the staleness window lapses.
+            mark_session_outage()
+            res = tg_api(token, "getUpdates",
+                         {"offset": state["offset"], "timeout": GETUPDATES_TIMEOUT,
+                          "allowed_updates": json.dumps(["message"])},
+                         timeout=GETUPDATES_TIMEOUT + 10)
+            if not res.get("ok"):
+                if res.get("error_code") == 409:
+                    log("409 conflict -> re-claiming getUpdates slot"); kill_pid_holder(); time.sleep(2)
+                else:
+                    time.sleep(3)
+                continue
+            for upd in res.get("result", []):
+                state["offset"] = upd["update_id"] + 1
+                msg = upd.get("message") or {}
+                chat_id = str((msg.get("chat") or {}).get("id", ""))
+                text = msg.get("text") or msg.get("caption") or ""
+                if chat_id in chats and text.strip():
+                    log(f"answering degraded msg from {chat_id}: {text[:60]!r}")
+                    ans = ask_local(text)
+                    send(token, chat_id, f"👻 MikroB Ghost (lokális Qwen2.5-Coder-7B):\n{ans}")
+            save_state(state)
+    finally:
+        # Card 612058c2 acceptance: "kilépéskor a runner leáll" -- runs on the recovery return path
+        # AND on any unexpected exception, so the runner never outlives Ghost's own outage handling.
+        stop_ghost_runner(ghost_runner)
+        clear_session_outage()
+        _active_ghost_runner = None
 
 
 def main():
+    # F-RH-V3: registered here, not at module import, so merely importing this module (the
+    # selftest, or any future reuse) never silently installs a process-wide signal handler --
+    # only actually running it as the service does.
+    signal.signal(signal.SIGTERM, _handle_sigterm)
     force = "--force-outage" in sys.argv
     test = "--test" in sys.argv
     token = read_token()
@@ -413,6 +552,14 @@ def main():
 
     state = load_state()
     log(f"quota-bridge started (phase={state['phase']})")
+    # H2 (WhiteHat2 NO-GO, delta-gate @c5e5ec28): a leftover session-outage marker from a
+    # SIGKILL/OOM/host-restart that never reached outage_loop()'s `finally` clause must not survive
+    # a fresh start where we are NOT re-entering outage phase. readSessionOutageActive()'s own
+    # staleness check is the primary defense (bounded blast radius even if this is skipped), but
+    # clearing proactively here means a restart right after a crash does not even need to wait out
+    # the staleness window.
+    if state.get("phase") != "outage":
+        clear_session_outage()
     while True:
         if force or mikrob_down():
             state["banner_streak"] = state.get("banner_streak", 0) + 1

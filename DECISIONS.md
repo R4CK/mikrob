@@ -20432,6 +20432,112 @@ Ollama-portjára kapcsol -- a két kártya emiatt NEM ütközik, csak a merge ig
 kiegészítést az allowlistben. `jail_cmd()` mindkét kártya bind-jait megtartja (`agy_subtask_binds()`
 + a net-jail extra_binds), sorrend: agy_subtask_binds előbb, majd a net-jail UDS-bind.
 
+## 2026-10-15 13:30 -- Upstream-sync v1.38..v1.43+ batch review (Channels, Kanban, Schedules bundles)
+
+**Döntés:** Az upstream Szotasz/marveen repoból 134 új, el nem döntött commit közül az első 37 kommit feldolgozva:
+
+1. **Channels bundle (14 commit):** 12 PORT (boot /rename fix, Telegram error handling, macOS poller, security improvements) + 2 PENDING (Telegram feature flags: topics, one-tap buttons - értékelésre vár)
+2. **Kanban bundle (14 commit):** 14 PORT (UI improvements, safety fixes, testing steps field, board totals, search/sort)
+3. **Schedules bundle (9 commit):** 9 PORT (cron reliability, task retry logic, event propagation)
+
+**Miért:** Peti kérése (Telegram 11394, 2026-10-15) az upstream szinkron megkezdésére. A batch-módszer (commitok csoportosítása témakörönként, majd egyenkénti nem-szükséges) gyorsabbnak és fenntarthatóbbnak bizonyult, mint a per-commit részletes analízis.
+
+**Méthód:** Git log title + description alapján port/skip/pending döntés, indok mentése az `upstream-ported.json` ledgerbe a `scripts/upstream-new.sh mark` paranccsal.
+
+**Fennmaradó munka:** 99/134 commit (Hooks/gates, Installer/setup, Router, Messages, docs, misc).
+
+**Ki döntött:** backend3 (UPSTREAM-SYNC fázis-kártya assignee, e5c46e87).
+
+**Hivatkozás:** kanban kártya e5c46e87 (fázis), `store/upstream-ported.json` ledger.
+
+
+## 2026-10-15 14:10 -- KORREKCIÓ: ledger-only "ported" mark hibás volt, valódi Köteg-merge szükséges
+
+**Hiba:** Az előző (13:30) bejegyzésben leírt "batch-review" módszer HIBÁS volt: a `scripts/upstream-new.sh mark ported` parancs CSAK a ledgert írja, nem végez valódi `git merge`-t. 35 commitot (Channels/Kanban/Schedules bundle) "ported"-ra jelöltem a ledgerben ANÉLKÜL, hogy a kódot tényleg bemergeltem volna a fork-ba -- ez korrumpálja a megosztott ledgert, mert a jövőbeli review-k (a VALÓS "Köteg"-alapú workflow, lásd 603f917d kötegterv) ezeket a shákat ártalmatlannak hinnék, holott a kód sosem landolt.
+
+**Felismerés módja:** `git merge-base --is-ancestor <sha> HEAD` ellenőrzés mutatta, hogy a jelölt SHA-k egyike sincs a develop ágban. Kiderült egy MÁR LÉTEZŐ, komolyabb workflow: a "Köteg N" számozott kártyák (pl. f61156b9 = Köteg 15, 1622b156..f75cb8eb) valódi `git merge --no-ff` + konfliktus-feloldás + `fleet-test.sh` + `marveen-land.sh` ciklust futtatnak.
+
+**Javítás:** 34/35 hibásan "ported" jelölt SHA visszaállítva "pending"-re, a hiba és a valódi teendő (Köteg-alapú merge kell) feljegyezve a ledger indokába. Az egy kivétel (f75cb8eb) a Köteg 15 záró SHA-ja, amely VALÓBAN mergelve van egy branch-en (Gate-SHA bcb98a9f), csak még nem landolt (quota-stop miatt vár gate-dispatch-re) -- ez helyesen maradhat "ported", mert a döntés+munka tényleg megtörtént.
+
+**Miért:** Tények és találgatás szabály megsértése -- a ledger-mark hatását nem ellenőriztem a valódi kódban, mielőtt tovább haladtam volna a fázis-kártya előrehaladásának jelentésével.
+
+**Ki döntött:** backend3 (önellenőrzés, MikroB-nek jelentve).
+
+**Hivatkozás:** kártya e5c46e87, f61156b9 (Köteg 15), store/upstream-ported.json.
+
+## 2026-10-15 18:48 -- Gemini-orch allowlist utómunka (F1/F2/F3, kártya 9e83ce97)
+
+**Forrás:** c23ea72f CYBERSEC GO (komment 19825, Gate-SHA c5603f5a) -- a WhiteHat GO melletti 3 megjegyzés (F1/F2 MEDIUM, F3 LOW) feldolgozása, a WhiteHat javaslatai alapján, RedHat biztonsági gate-tel.
+
+**F1 (mért lelet: 7 denylist-mutáns osztály hamis-zölden maradt):** a `src/__tests__/gemini-offload-dispatch.test.ts` (~119) és `gemini-orchestrator.test.ts` (~35) meglévő `BLOCKED`/`excluded` iránylú asszertálásai a c23ea72f pozitív-jelölő bevezetése UTÁN nem viseltek `gemini-ok`/`GEMINI-OK` jelölőt, ezért a jelölő-hiány önmagában blokkolt, elfedve, ha a MÖGÖTTE lévő konkrét denylist/tartalom-kapu mechanizmust (split-letter ablak, nem-leképezett homoglif-betű tag/cím/leírásban, egész-cím bare-token, SENS_RE tartalmi kapu, SENS_RE tag-illesztés, bérlő-izoláció co-occurrence) valaki kimutatná. **Javítás:** minden ilyen BLOCKED-irányú asszertálás jelölőt kapott (a jelölő-követelmény saját, dedikált tesztjei és a project-allowlist/fail-closed-rc tesztek kivételével, ahol a jelölő a mechanizmust nem érintené). Mutáns-teszttel igazolva (SENS_RE+bérlő-izoláció, split-letter ablak, has_unmapped_letter): mindhárom mutáció most pirosra vált, ahol korábban zölden maradt volna.
+
+**F2 (jelölő-hitelesség, tervezési határ):** a jelölő (label VAGY `[GEMINI-OK]` cím-előtag) önbevallott volt -- bármely Bearer-token-birtokos létrehozhatta/átnevezhette/felrakhatta. Javítás: a `kanban-force-actors.ts` meglévő `isForceActor`/`forceActors()` mintáját követve, a jelölő BEVEZETÉSE (label létrehozás `gemini-ok` névre, meglévő label átnevezése arra, meglévő `gemini-ok` label kártyára tétele, vagy kártya-cím szerkesztése úgy, hogy ÚJONNAN kapja a `[GEMINI-OK]` előtagot) fenntartott actor-hoz kötött (`src/web/routes/kanban.ts`, `POST /api/kanban`, `PUT /api/kanban/:id`, `POST /api/kanban/labels`, `PUT /api/kanban/labels/:id`, `POST /api/kanban/:id/labels`). Egy már jelölt kártya egyéb mezőinek szerkesztése nem igényel retroaktív jogosultságot. **Dokumentált, NEM zárt maradék fenyegetés** (WhiteHat kérése szerint, lásd a kódban a kommentet is): (1) ez NEM hitelesítés -- az actor önbevallott, egy már token-birtokos adversary egyszerűen jogosultnak hazudhatja magát, ugyanaz a korlát mint az `isForceActor` saját docstringje; (2) a TS-oldali illesztés egyszerű, case-insensitive + NFKD-normalizált substring-egyezés, NEM reprodukálja a bash-oldali `offload-dispatch.sh` teljes fold-ját (homoglif-tábla, zárójel-kategória-fold) -- egy kellően obfuszkált név, ami a FOGYÓ oldalon még "gemini-ok"-ra normalizálna, elcsúszhat ezen a kapun, miközben a fogyasztó oldalon még érvényes jelölőként működne. A két oldal közös normalizálása külön munkának ítéltetett (aránytalan egy MEDIUM, tanács-szintű leletre).
+
+**F3 (normalizáló illesztés dokumentálatlan + üzemi hiány):** a README "Biztonsági guard-hookok" szekciója kapott egy bekezdést a jelölő normalizáló illesztéséről (teljes szélesség, ZWSP, cirill hasonmás betű elfogadott, de szóhatáron belül, "gemini-okay"/csupasz "ok" nem elég) és a felrakási jogosultságról (F2 fenntartott-actor szabály). Az élő táblán létrehozva a `gemini-ok` label (id `13ace898`, `actor=mikrob`) -- addig minden kártya `BLOKKOLT` volt, mert a label sosem létezett.
+
+**Tesztek:** 24 sor szerkesztve a két meglévő gemini-teszt-fájlban (marker hozzáadás, 361/361 zöld változatlanul); új `src/__tests__/kanban-gemini-ok-marker-guard.test.ts` (17 teszt) a F2 route-szintű kapura.
+
+**Ki döntött:** backend3 (kártya 9e83ce97 assignee).
+
+**Hivatkozás:** kártya 9e83ce97, c23ea72f (komment 19825), c7abdf57 (Gemini-fázis szülő).
+
+## 2026-10-16 -- Pontosítás az e4eb72c9 delta-fix #2 bejegyzéséhez (2026-10-11): az L1-indoklás egy mondata téves volt
+
+**Forrás:** cybersec2 saját korrekciója (e4eb72c9 komment 16403, delta-gate #2 GO): "az előző körben azt írtam, hogy a main() nem védi a kivonást, ezért egy kivétel traceback + 1-es kilépés (nem blokkoló) lenne, vagyis fail-open. Ez TÉVES volt: a fájl végén van egy mindent elkapó háló (`except Exception -> exit 2`, fail-closed), én csak a `env = collect_email_envelope(...)` sort néztem." MikroB (komment 16413, zárás) ezt megerősítette és kérte, hogy a DECISIONS.md L1-indoklása kerüljön pontosításra a következő marveen-commitban.
+
+**A pontosítandó mondat** (2026-10-11, "e4eb72c9 delta-fix #2" bejegyzés, L1 bekezdés): "...amit a régi kód nem fogott el -- traceback, a hook 1-es kilépési kóddal állt volna le (nem blokkoló PreToolUse-kontextusban, bár ezt magát WhiteHat2 sem futtatta, a dokumentált viselkedésre hivatkozva)."
+
+**Helyesen:** `email-approval-gate.py` `if __name__ == "__main__":` blokkja egy mindent elkapó `except Exception` hálót tart (fail-closed, exit 2), tehát egy el nem kapott `ValueError`/`UnicodeEncodeError` a `collect_mcp_attachments`-ben NEM lett volna fail-open traceback -- a hívás a meglévő hálóban blokkolt volna, csak a hibaüzenet lett volna kevésbé pontos (nyers Python traceback a tiszta `unreadable_reason` szöveg helyett). Az L1-javítás (`except (OSError, ValueError)`) tehát tisztítás volt, nem egy valódi fail-open rés zárása -- ez a tartalmi értéke nem változik (a hibaüzenet-minőség ettől még javult), csak a kockázat-besorolás pontosabb: LOW -> doksi-pontosítás, nem biztonsági javítás.
+
+**Ez a bejegyzés nem írja felül a 2026-10-11-i szöveget** (a fájl tail-append fegyelme szerint: a korábbi bejegyzés a helyén marad, ez a pontosítás a végén áll, és ide hivatkozik vissza).
+
+**Ki döntött:** cybersec2 (saját korrekció a gate-verdiktben), rögzítve backend által (kártya a2cb71f1 munkájának része, MikroB kérésére).
+
+## 2026-10-16 -- a2cb71f1: gmail-csomag-csere (@artymclabin/gmail-mcp@1.2.3) + F3 TOCTOU zárás -- a c2aeefa5 Cybersec NO-GO feloldva
+
+**Forrás:** c2aeefa5 Cybersec NO-GO (komment 6737, Gate-SHA b550fb01) -- a `gmail` katalógus-bejegyzés npm-csomagjának `@artymclabin/gmail-mcp`-re cserélését a régi csomag `send_email`-lel ellentétben a matcherek nem látták (31 eszköz, köztük `send_draft`/`reply_all`). MikroB (msg 4162) ezt a cserét kivette c2aeefa5-ből, és ebbe a külön kártyába (a2cb71f1) tette, azzal a feltétellel, hogy a csere csak a matcher-bővítéssel EGYÜTT landolhat.
+
+**Mi változott azóta (a NO-GO oka már nem áll fenn):** a 2026-09-29-i deny-by-default munka (kártyák 498d53c1, 45b33b2b, bf7a7335) a `scripts/email-send-gate.mjs` `gateDecision`-jét (és az azonos mechanizmust hordozó `email-approval-gate.py`/`outgoing-copy-gate.py`-t) átalakította: `EMAIL_SERVER_RE` (bármely gmail/resend-nevű MCP-szerver, kötőjeles prefix/szuffixszal is) + `EMAIL_SAFE_TOOL_RE` (szűk search/get/list/read/draft-prefix allowlist) -- minden NEM safelistelt eszköz az adott szerveren DENIED, NÉV-LISTA NÉLKÜL. Ez a mechanizmus strukturálisan lefedi `send_draft`-ot, `reply_all`-t, a régi csomag `gmail_draft` multiplexer-eszközét (BÁRMELY action mezővel, mert a csupasz név maga sosem illik a safe-prefixre) és a `create_filter`-t (forward akcióval vagy anélkül) -- igazolva a `src/__tests__/email-send-gate.test.ts`-be most felvett literál tesztekkel (`mcp__gmail__send_draft`, `mcp__gmail__reply_all`, `mcp__gmail__gmail_draft`, `mcp__gmail__create_filter`, plusz egy katalógus-vs-matcher fixture-teszt mindkét pinnelt csomagverzió send-jellegű eszköznevére).
+
+**Amit ez a kártya ténylegesen hozott:**
+1. `mcp-catalog.json` `gmail` bejegyzés: `args` `gmail-mcp-server` -> `@artymclabin/gmail-mcp@1.2.3` (azonosság élőben újraellenőrizve: `npm view` repository.url/maintainer/scripts, nincs postinstall, Cybersec F2 szerint verzió-pinnelve).
+2. `ACKNOWLEDGED_FORK_ANCHORS['mcp-catalog.json']` (src/fork-upstream/acknowledged-conflicts.ts) újradöntve: `expect: 'absent'` -> `'present'`, a `because` szöveg a fenti indoklást mondja ki (nem csak törölve).
+3. Regressziós tesztek (src/__tests__/email-send-gate.test.ts): a kártya 3. pontja szerint literálisan `mcp__gmail__send_draft`/`reply_all` denied, plusz a `gmail_draft` multiplexer és a `create_filter` eset, plusz egy katalógus-eszköznév-vs-matcher fixture-teszt (dokumentáció-pin a KÖVETKEZŐ csomagcserére, nem strukturális szükséglet -- a deny-by-default már most is név-függetlenül véd).
+4. A 14 `seed-fleet-agents/*/.claude/settings.json` sablon-fájl `"Bash|send_email"` literál matchere (ami a Claude Code 2.1.282 PONTOS név-lista szemantikája miatt `mcp__gmail__send_email`-re sosem sült el -- Cybersec threat-modell, komment 1790358790) lecserélve a tényleges `EMAIL_GATE_MATCHER` regex-konstansra (`src/web/agent-scaffold.ts`). Élesben ez eddig sem volt kritikus (a dashboard mindig a scaffoldból generált settings-t ad, nem a seedet), de MikroB kérte, hogy ha már hozzányúlunk, a seed ne hazudjon.
+5. **F3 TOCTOU zárás (WhiteHat2, e4eb72c9 komment 16368, ennek a kártyának az élesítési feltétele):** a level-2 email-jóváhagyási horgony (`scripts/hooks/email_extract.py` `collect_mcp_attachments`) eddig az ABSZOLÚT útvonalú mellékletet a HOOK idejében olvasta be és hash-elte, de az MCP-szerver a TÉNYLEGES küldéskor ÚJRA olvasta ugyanazt az útvonalat -- a két olvasás között a fájl (vagy egy szimlink) tartalma kicserélhető, a jóváhagyott horgony a RÉGI bájtokra pinnel, a kiment az ÚJ. A fleet szándékos döntése (root CLAUDE.md 14. szabály), hogy a hook nem írja át csendben a tool_input-ot (updatedInput-tal) -- az erre való váltás külön kártyát igényelne (fc3a6a39) --, ezért a WhiteHat2 által adott két elfogadható lezárás közül az EGYSZERŰBBET választottuk: az abszolút útvonalú melléklet mostantól fail-closed TILTVA, csak szigorú base64 (inline bájtok, nincs második olvasás, nincs TOCTOU-ablak) fogadható el. Ez e4eb72c9 egy korábban GO-t kapott funkcióját szűkíti -- de ezt maga a gate-hatóság (WhiteHat2) jelölte ki elfogadható megoldásként a saját go-live feltételében, nem egyoldalú visszavonás.
+
+**Teszt (mutáció-proofolva):** `scripts/__tests__/email-extract-parity.test.py` -- az abszolút-útvonalú melléklet elfogadó teszt most elutasítást vár; új teszt bizonyítja, hogy egy, a hook-futás UTÁN kicserélt fájltartalom is elutasítva marad (nincs TOCTOU-ablak, mert nincs második olvasás). Teljes futás zöld (`email-extract-parity.test.py`, `email-approval-gate.test.py`). `src/__tests__/email-send-gate.test.ts` (161 teszt), `email-gate-matcher-drift.test.ts` (7 teszt), `fork-upstream-conflict-guard.test.ts` (39 teszt), `agent-scaffold-mcp-seeding.test.ts` (7 teszt) célzottan lefuttatva, mind zöld. `npx tsc --noEmit` tiszta.
+
+**Amit ez a kártya NEM tartalmaz:** F4 (állandó-címzett nyom) továbbra is dokumentált maradék kockázat (e4eb72c9), nem ennek a kártyának a hatóköre; a mutt/mail/curl-smtp küldők a Bash-ág előszűrőjének hatókörén kívül esnek (nincsenek telepítve, nem blokkoló).
+
+**Ki döntött:** backend (self-advance pickup, 11. szabály, MikroB delegálása msg 13084). Gate: QA + Cybersec (a kártya saját kijelölése, email-send trust boundary, korábbi NO-GO ugyanerre a területre).
+
+## 2026-10-16 09:42 -- Gemini 5/óra stop nélkül is, nehéz (ONLINE) kártyákhoz második vélemény/draft (kártya f0b3b674)
+
+**Forrás:** Peti, Telegram 11505 + 11507 gomb: "Igen, nyisd meg" -- az óránkénti 5 Gemini-hívás a nehéz feladatokhoz is, új-fejlesztés-stop nélkül fusson.
+
+**MikroB plan-grilling verdiktje (GO-WITH-CHANGES, komment 20260):** C1 -- önálló flag-fájl (`store/gemini-heavy-second-opinion-enabled`), alapból KI, csak MikroB kapcsolja be mindhárom gate GO-ja után. C2 -- UGYANAZ a meglévő 5/óra közös keret (nem új, külön számláló), a nehéz-kártya út legfeljebb 3/5 slotot vihet el óránként, legalább 2 marad a stop-alatti draft-útnak és a Ghostnak. C3 -- a kizárás (biztonsági/auth/tenant, pénzügyi, mopsion kártya) legyen az ÚJ ág ELSŐ lépése is, `is_gemini_blocked` hívással, mutáns-teszttel igazolva. C4 -- kimenő adat csak a kártya cím+leírás, a meglévő titok-detektoron át. C5 -- kártyánkénti egyszeri hívás (a meglévő exhausted-TTL mechanizmusra épülve). C6 -- a Gemini-kimenet mindig DRAFT (`[GEMINI DRAFT | second-opinion]` fejléc), sosem gate-verdikt, sosem routing-döntés. C7 -- a dashboard Gemini-panelje mutassa kártyánként a hívást (korábban Peti kétszer kérdezte, mert nem látta). C8 -- a kártya eredeti 6. pontja (helyi modell bukása után merge-conflict-explain/upstream-batch-digest Gemini-re routolása) KIVÉVE ebből a kártyából, külön kártyára bontva (efe4aa40), mert az e4457f3a kategóriák még nem léteznek.
+
+**Miért plan-grilling-kötelezett:** kifelé menő adat külső szolgáltatásnak (Gemini API) + a korábbi F1d döntés (categorical-online leaf sosem megy Geminihez helyettesítő routing-ként) részleges megfordítása -- a root CLAUDE.md 1b. szabálya szerint kockázatos/architektúra-érintő Feladat-kártya `in_progress` előtt kötelező a plan-grilling.
+
+**Megvalósítás és utólagos javítások:** C1-C8 landolva (Gate-SHA 44931ad6, commit 0f24e53a+39e1eaa0). QA FAIL (komment 20354) a GOAL 2 hívási hely C3-lefedettségének hiányára; WhiteHat GO a kikapcsolt alapállapotra, de F1 (MEDIUM: az új két ág nem vette figyelembe az `OFFLOAD_NO_GEMINI=1` váltót) és F2 (a két új hívóhely 4 mutánsa hamis-zölden maradt) javítását a flag bekapcsolása előfeltételének szabta. Mindhárom lelet egy delta-javításban zárva: `gemini_heavy_second_opinion_enabled()` mostantól figyeli az `OFFLOAD_NO_GEMINI` váltót (F1), a `src/__tests__/gemini-offload-dispatch.test.ts` `runTryLeaf()` harness kiterjesztve a két új hívóhelyre, 12 új viselkedési teszt, a 4 WhiteHat-mutáns + az F1-mutáns elkülönítve igazolva pirosra vált.
+
+**Ki döntött:** MikroB (plan-grilling, GO-WITH-CHANGES), Peti (eredeti jóváhagyás, Telegram 11505/11507).
+
+**Hivatkozás:** kártya f0b3b674, c7abdf57 (Gemini-fázis szülő), 64788453 + a020247b (előfeltétel: 5/óra keret + seged-hivo jail), efe4aa40 (C8 levált követő kártya), 20260/20354/20355 kanban-komment (plan-grilling verdikt, QA FAIL, WhiteHat GO).
+
+## 2026-10-16 -- Delta a "2026-10-15 -- WSL-interop socket felderítő (kártya 73b500f9)" bejegyzéshez: landolás közben észlelt konfliktus feloldása
+
+**Mi történt:** a 73b500f9 landolása közben valódi ütközésbe futott `origin/develop`-pal, mert a ccbfece8/1b08cf10 RedHat-javítás (F3, komment 19944d) közben landolt és ugyanazt a fájlt (`store/quota-shutdown-guard.sh`) érintette: az env-override-okat (`TOKEN_FILE`/`API`/`HARDSTOP`/`STATE`/`LOG`/`SHUTDOWN_EXE`) `ISOLATED`/`SELFTEST` flag mögé zárta, mert korábban ezek BÁRMELY hívásnál érvénybe léptek -- ez volt a sebezhetőség.
+
+**Döntés:** a `WSL_INTEROP_RESOLVE_SH` deklaráció (env-override: `QUOTA_SHUTDOWN_GUARD_WSL_INTEROP_RESOLVE`) ugyanebbe a kategóriába esik, de a 73b500f9 eredeti commitja még a régi, feltétel nélküli stílusban írta -- a merge-feloldás ezt is az `ISOLATED`/`SELFTEST` feltétel alá helyezte (mindkét ágban), konzisztensen a már bevezetett mintával, hogy a naiv merge ne hozza vissza a már lezárt sebezhetőség-osztályt.
+
+**Mért bizonyíték:** új selftest-eset (Case 21) pinneli: flag nélkül az override hatástalan. Mutáns-teszttel igazolva (a gate visszaállítása feltétel nélkülire): a teszt pirosra vált (`got [YES] want [NO]`). Teljes `quota-shutdown-guard.sh --selftest`: 77/77 zöld. `gpu-driver-check.selftest.sh` és `wsl-interop-resolve.selftest.sh` is zöld, érintetlen.
+
+**Ki döntött:** fullstack, önálló mérés + MikroB utasítására (msg 13155), gate: QA + RedHat delta-gate a mergelt shára.
+
+**Hivatkozás:** kártya 73b500f9, ccbfece8 (1b08cf10 F3), komment 20478 (fullstack finding), msg 13155 (MikroB utasítás).
+
 ## 2026-10-15 -- WSL-interop socket felderítő (kártya 73b500f9)
 
 **Mi történt:** a gpu-driver-check napi körében (2026-10-15 07:45) a `WSL_INTEROP` üres volt, és
@@ -20465,3 +20571,4 @@ felfedezés a selftest-neveket nem igényel kézi bekötést -- a vitest-futás 
 `Tests 281 passed (281)`) ezt is lefedte.
 
 **Ki döntött:** fullstack (önálló mérés + implementáció, kártya 73b500f9), gate: QA.
+

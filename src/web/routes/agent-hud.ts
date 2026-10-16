@@ -48,8 +48,8 @@ export async function buildAgentHudRows(names: readonly string[]): Promise<Agent
         return null // a name agentDir() refuses is not an agent we report on
       }
       const configDir = agent === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(agent) ?? undefined)
-      const [signals, contextTokens, activeModel] = await Promise.all([
-        readHudSignalsFromProjectDir(workingDir, configDir),
+      const signals = readHudSignalsFromProjectDir(workingDir, configDir)
+      const [contextTokens, activeModel] = await Promise.all([
         readContextTokensFromProjectDir(workingDir, configDir),
         readActiveModelFromProjectDir(workingDir, undefined, configDir),
       ])

@@ -92,13 +92,17 @@ let killSpy: ReturnType<typeof spyOnKill>
 beforeEach(() => {
   const needle = `${channelStateDirEnvVar('telegram')}=${channelStateDir('telegram', AGENT_DIR)}`
   // Every row carries the needle -- that is the outage: channels.sh exports it before exec claude,
-  // so the tmux server, the main claude and its MCP children all inherit it.
+  // so the tmux server, the main claude and its MCP children all inherit it. Only the POLLER row
+  // also carries CLAUDE_PLUGIN_ROOT (PSEWWMACOSBLIND1007): a channel plugin poller always has it
+  // (measured on the host), an inherited-env sibling does not. MCP_CHILD deliberately lacks it too,
+  // AND would still fail isPollerArgv (server.js, not server.ts) even if it had it -- the env-only
+  // filter and the argv filter are each other's backstop, neither is equivalent protection alone.
   psState.out = [
     '   PID TTY      STAT   TIME COMMAND',
     psRow(TMUX_SERVER, 'tmux new-session -d -s mikrob-channels', needle),
     psRow(MAIN_CLAUDE, 'claude --channels plugin:telegram', needle),
     psRow(MCP_CHILD, 'node /opt/mcp/server.js', needle),
-    psRow(POLLER, 'bun server.ts', needle),
+    psRow(POLLER, 'bun server.ts', `${needle} CLAUDE_PLUGIN_ROOT=/opt/plugins/telegram`),
   ].join('\n')
   fsState.argv = new Map([
     [TMUX_SERVER, ['tmux', 'new-session', '-d', '-s', 'mikrob-channels']],

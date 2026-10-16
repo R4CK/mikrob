@@ -43,12 +43,10 @@ describe('schedule-runner wiring', () => {
   })
 
   it('gates before the pre-check, so a deferred task never spawns its script', () => {
-    // await, not a bare call: runPreCheck is async on this fork (card 955f014e -- a sync
-    // child on the scheduler tick would freeze the event loop, HTTP server included), so
-    // the call site has an await this upstream-authored test did not originally expect.
-    expect(RUNNER_SRC.indexOf("if (quota.action === 'defer')")).toBeLessThan(
-      RUNNER_SRC.indexOf('const cronPc = await runPreCheck(task)'),
-    )
+    // CRONPRECHECKSYNC1007: the cron loop awaits the async form now.
+    const preCheckIdx = RUNNER_SRC.indexOf('const cronPc = await runPreCheck(task)')
+    expect(preCheckIdx).toBeGreaterThan(0)
+    expect(RUNNER_SRC.indexOf("if (quota.action === 'defer')")).toBeLessThan(preCheckIdx)
   })
 })
 

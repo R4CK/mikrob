@@ -1033,6 +1033,166 @@ if _repo_ok:
          [c("backend2", R % F1_G_REMOVED), c("qa", L % F1_G_REMOVED)], "AGREE",
          gates="qa", env=ENV, landed=True)
 
+    # --- R1: A SHORT DELETED LINE MUST NOT BE SKIPPED BY A LENGTH FILTER (card eea8a2cb, Cybersec
+    # --- R1 on e21b816b). F-1 above pins the deletion-blind-spot fix with a long bypass token
+    # --- ("BYPASS_INSECURE_DEFAULT_HERE"), which also happens to satisfy a len>=8 filter -- so F-1
+    # --- alone cannot tell "deleted lines are checked" apart from "deleted lines are checked, as
+    # --- long as they are >=8 characters". The canonical short bypass-removal is a wildcard entry
+    # --- in a list, `"*",` -- 4 characters. ------------------------------------------------------
+    _g("checkout", "-q", "-b", "r1-baseline", "main")
+    with open(os.path.join(_landed_repo, "h.txt"), "w") as fh:
+        fh.write("keeper line one here\n\"*\",\nkeeper line two here\nkeeper line three here\n")
+    _g("add", "-A"); _g("commit", "-qm", "r1 baseline with the short wildcard entry present")
+    _g("checkout", "-q", "main")
+    _g("merge", "--no-ff", "-q", "-m", "merge: r1 baseline", "r1-baseline")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    # A commit that removes the short wildcard line and adds THREE doc lines -- this exact commit
+    # never reaches main (the wildcard stays present there). Three added lines, not two (RedHat
+    # NO-GO B3, card eea8a2cb): with only two, a mutant that restores the old len>=8 filter on
+    # DELETED lines drops the wildcard deletion entirely, leaving added=2 < _MIN_LANDED_LINES --
+    # the case still reads UNLANDED, but for "too few lines", not because the still-present wildcard
+    # was caught, so the mutant goes undetected on this fixture (only R1 CONTROL caught it). With
+    # three added lines the same mutant reaches added=3 >= minimum and (wrongly) returns AGREE,
+    # because the wildcard deletion that would have caught it was silently dropped -- a real pin.
+    _g("checkout", "-q", "-b", "r1-removed-stranded", "main")
+    with open(os.path.join(_landed_repo, "h.txt"), "w") as fh:
+        fh.write("keeper line one here\nkeeper line two here\nkeeper line three here\n"
+                  "wildcard removal documented one\nwildcard removal documented two\n"
+                  "wildcard removal documented three\n")
+    _g("commit", "-qam", "remove the short wildcard entry (this exact commit never lands)")
+    R1_REMOVED = _rev("HEAD")
+    _g("checkout", "-q", "main")
+    with open(os.path.join(_landed_repo, "h.txt"), "a") as fh:
+        fh.write("wildcard removal documented one\nwildcard removal documented two\n"
+                  "wildcard removal documented three\n")
+    _g("add", "-A"); _g("commit", "-qm", "an unrelated commit that happens to add the same doc lines")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    case("R1 THE HAZARD: a commit deleting a SHORT (<8 char) substantive line, like a wildcard "
+         "entry, is NOT landed just because its added doc lines appear elsewhere -- the wildcard "
+         "it deletes is still on the branch",
+         [c("backend2", R % R1_REMOVED), c("qa", L % R1_REMOVED)], "UNLANDED",
+         gates="qa", env=ENV, landed=True)
+
+    # CONTROL, the mirror: a genuinely landed short-line removal must still read AGREE.
+    _g("checkout", "-q", "-b", "r1-g-baseline", "main")
+    with open(os.path.join(_landed_repo, "i.txt"), "w") as fh:
+        fh.write("alpha keep here\n\"*\",\nbeta keep here\ngamma keep here\n")
+    _g("add", "-A"); _g("commit", "-qm", "r1-g baseline with the short wildcard entry present")
+    _g("checkout", "-q", "main")
+    _g("merge", "--no-ff", "-q", "-m", "merge: r1-g baseline", "r1-g-baseline")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    _g("checkout", "-q", "-b", "r1-g-removed", "main")
+    with open(os.path.join(_landed_repo, "i.txt"), "w") as fh:
+        fh.write("alpha keep here\nbeta keep here\ngamma keep here\n"
+                  "wildcard removal note for i one\nwildcard removal note for i two\n")
+    _g("commit", "-qam", "remove the r1-g short wildcard entry, on a branch")
+    R1_G_REMOVED = _rev("HEAD")
+    _g("checkout", "-q", "main")
+    with open(os.path.join(_landed_repo, "i.txt"), "w") as fh:
+        fh.write("alpha keep here\nbeta keep here\ngamma keep here\n"
+                  "wildcard removal note for i one\nwildcard removal note for i two\n"
+                  "delta added later by someone else\n")
+    _g("add", "-A"); _g("commit", "-qm", "the same r1-g removal plus a later edit")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    case("R1 CONTROL: a genuinely landed short-line removal is still AGREE",
+         [c("backend2", R % R1_G_REMOVED), c("qa", L % R1_G_REMOVED)], "AGREE",
+         gates="qa", env=ENV, landed=True)
+
+    # Vacuity guard: pure bracket/closer noise deleted lines must still be filtered out, or a
+    # trivial `})`/`];`-only deletion could buy a false UNLANDED on files that constantly churn
+    # such lines.
+    _g("checkout", "-q", "-b", "r1-noise", "main")
+    with open(os.path.join(_landed_repo, "j.txt"), "w") as fh:
+        fh.write("keeper noise one\n});\nkeeper noise two\nkeeper noise three\n")
+    _g("add", "-A"); _g("commit", "-qm", "r1-noise baseline with a closing-bracket line present")
+    _g("checkout", "-q", "main")
+    _g("merge", "--no-ff", "-q", "-m", "merge: r1-noise baseline", "r1-noise")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    _g("checkout", "-q", "-b", "r1-noise-removed", "main")
+    with open(os.path.join(_landed_repo, "j.txt"), "w") as fh:
+        fh.write("keeper noise one\nkeeper noise two\nkeeper noise three\n"
+                  "noise removal documented one\nnoise removal documented two\n")
+    _g("commit", "-qam", "remove only the closing-bracket noise line (stranded, never lands)")
+    R1_NOISE_REMOVED = _rev("HEAD")
+    _g("checkout", "-q", "main")
+    with open(os.path.join(_landed_repo, "j.txt"), "a") as fh:
+        fh.write("noise removal documented one\nnoise removal documented two\n")
+    _g("add", "-A"); _g("commit", "-qm", "an unrelated commit that happens to add the same doc lines")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    case("R1 NOISE CONTROL: deleting ONLY a pure bracket/closer line (`});`) cannot by itself "
+         "prove anything -- too few substantive lines to conclude from",
+         [c("backend2", R % R1_NOISE_REMOVED), c("qa", L % R1_NOISE_REMOVED)], "UNLANDED",
+         gates="qa", env=ENV, landed=True)
+
+    # --- B1: A DELETED BLANK LINE MUST NOT COUNT TOWARD THE MINIMUM (card eea8a2cb, RedHat NO-GO
+    # --- B1 on 5239502b). The bracket-noise regex requires 1+ chars, so it never matches an empty
+    # --- string -- a deleted blank line slipped through as "substantive", and a commit removing
+    # --- only three blank lines could satisfy _MIN_LANDED_LINES on blank-line count alone, with the
+    # --- deletion-presence check silently vacuous (a blank line is never in _line_set's non-blank
+    # --- set either way). -----------------------------------------------------------------------
+    _g("checkout", "-q", "-b", "r1-blank-baseline", "main")
+    with open(os.path.join(_landed_repo, "k.txt"), "w") as fh:
+        fh.write("keeper blank one\n\n\n\nkeeper blank two\n")
+    _g("add", "-A"); _g("commit", "-qm", "r1-blank baseline with three blank lines present")
+    _g("checkout", "-q", "main")
+    _g("merge", "--no-ff", "-q", "-m", "merge: r1-blank baseline", "r1-blank-baseline")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    _g("checkout", "-q", "-b", "r1-blank-removed", "main")
+    with open(os.path.join(_landed_repo, "k.txt"), "w") as fh:
+        fh.write("keeper blank one\nkeeper blank two\n")
+    _g("commit", "-qam", "remove only three blank lines (this exact commit never lands)")
+    R1_BLANK_REMOVED = _rev("HEAD")
+    _g("checkout", "-q", "main")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    case("R1 B1: deleting ONLY blank lines must not satisfy the minimum -- a vacuous pass must "
+         "stay UNLANDED, not read as landed on blank-line count alone",
+         [c("backend2", R % R1_BLANK_REMOVED), c("qa", L % R1_BLANK_REMOVED)], "UNLANDED",
+         gates="qa", env=ENV, landed=True)
+
+    # --- B2: THE BRACKET-NOISE FILTER ITSELF MUST BE PINNED BY AN OUTCOME THAT DEPENDS ON IT (card
+    # --- eea8a2cb, RedHat NO-GO B2) -- R1 NOISE CONTROL above reads UNLANDED whether the filter
+    # --- runs or not (for a DIFFERENT reason each time: "too few" either way), so toggling it never
+    # --- flipped a verdict and the filter was effectively untested. Here two substantive lines plus
+    # --- one pure bracket-noise line are ALL genuinely removed on main (truly landed): excluding the
+    # --- noise line leaves 2 substantive lines (too few to conclude anything, UNLANDED); counting
+    # --- it as substantive reaches 3 and flips the verdict to AGREE. --------------------------------
+    _g("checkout", "-q", "-b", "r1-noise-landed-baseline", "main")
+    with open(os.path.join(_landed_repo, "m.txt"), "w") as fh:
+        fh.write("substantive keeper one\nsubstantive keeper two\n});\nkeeper line stays here\n")
+    _g("add", "-A"); _g("commit", "-qm", "r1-noise-landed baseline")
+    _g("checkout", "-q", "main")
+    _g("merge", "--no-ff", "-q", "-m", "merge: r1-noise-landed baseline", "r1-noise-landed-baseline")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    _g("checkout", "-q", "-b", "r1-noise-landed-removed", "main")
+    with open(os.path.join(_landed_repo, "m.txt"), "w") as fh:
+        fh.write("keeper line stays here\n")
+    _g("commit", "-qam", "remove both substantive lines and the bracket-noise line, on a branch")
+    R1_NOISE_LANDED_REMOVED = _rev("HEAD")
+    # Landed on main PLUS one later, unrelated edit -- byte-IDENTICAL content would answer "same"
+    # on file-diff alone (_content_on_branch) and never reach the line-count logic this case exists
+    # to pin (card eea8a2cb selftest debugging: an earlier attempt left main byte-identical to the
+    # branch commit's result and got AGREE via that shortcut, not via _added_lines_present at all).
+    _g("checkout", "-q", "main")
+    with open(os.path.join(_landed_repo, "m.txt"), "w") as fh:
+        fh.write("keeper line stays here\nextra line added later by someone else\n")
+    _g("add", "m.txt"); _g("commit", "-qm", "main removes substantive+noise lines, plus a later edit")
+    _g("update-ref", "refs/remotes/origin/develop", "main")
+
+    case("R1 B2: a bracket-noise deletion counted ALONGSIDE two genuinely-landed substantive "
+         "deletions must not push a too-few case over the minimum -- the noise filter's own effect "
+         "is pinned here",
+         [c("backend2", R % R1_NOISE_LANDED_REMOVED), c("qa", L % R1_NOISE_LANDED_REMOVED)], "UNLANDED",
+         gates="qa", env=ENV, landed=True)
+
     # --- F-2: A SKIPPED OR OVERRIDDEN LANDED-CHECK MUST SAY SO IN THE AGREE LINE (card e21b816b,
     # --- Cybersec). Otherwise a reader cannot tell "verified on the branch" from "the question was
     # --- never asked" (--no-landed) or "asked against some other ref than the usual one"
