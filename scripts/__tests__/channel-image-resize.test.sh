@@ -356,17 +356,30 @@ fi
 # The project copy is in .claude/settings.json; ~/.claude/hooks/ is registered
 # in the GLOBAL settings and runs for the whole fleet. Fixing one and not the
 # other looks exactly like a finished fix.
+#
+# Fork divergence (card f3dd0c65, 2026-10-16): this comparison only means
+# anything when INSTALL_DIR IS the live install -- ~/.claude/hooks is updated
+# as a separate step AFTER landing (never by a landing itself), so a disposable
+# worktree/fleet-test --ref copy always differs from the still-old live hook,
+# with no bearing on whether THIS change is correct. That is a deterministic
+# false red on every pre-land run, not a flake. Skip (INFO) unless this really
+# is the live install (MARVEEN_MAIN, default /home/neon/marveen).
 echo
 echo "(8) the second registered copy"
-GLOBAL_HOOK="$HOME_REAL/.claude/hooks/channel-image-resize.sh"
-if [ -f "$GLOBAL_HOOK" ]; then
-  if cmp -s "$HOOK" "$GLOBAL_HOOK"; then
-    pass "~/.claude/hooks copy is byte-identical to the project copy"
+MARVEEN_MAIN_REAL="$(cd "${MARVEEN_MAIN:-/home/neon/marveen}" 2>/dev/null && pwd || true)"
+if [ -n "$MARVEEN_MAIN_REAL" ] && [ "$INSTALL_DIR" = "$MARVEEN_MAIN_REAL" ]; then
+  GLOBAL_HOOK="$HOME_REAL/.claude/hooks/channel-image-resize.sh"
+  if [ -f "$GLOBAL_HOOK" ]; then
+    if cmp -s "$HOOK" "$GLOBAL_HOOK"; then
+      pass "~/.claude/hooks copy is byte-identical to the project copy"
+    else
+      fail "the two registered copies DIFFER -- one of them is still the old one"
+    fi
   else
-    fail "the two registered copies DIFFER -- one of them is still the old one"
+    echo "  INFO  no ~/.claude/hooks copy on this machine; nothing to compare"
   fi
 else
-  echo "  INFO  no ~/.claude/hooks copy on this machine; nothing to compare"
+  echo "  INFO  INSTALL_DIR is not the live install ($INSTALL_DIR != $MARVEEN_MAIN_REAL) -- skipping the global-hook comparison, it would always differ pre-land"
 fi
 
 echo
