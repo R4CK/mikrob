@@ -821,10 +821,20 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
   # THE NARROW CASE THE ORIGINAL BUG WAS ABOUT is real and stays fixed: a branch that ACTUALLY
   # modifies store/fleet-test.sh's own orchestration logic must be verified by running that
   # modification, not a stale reviewed copy that cannot see it. So the choice of judge now turns on
-  # whether THIS branch touches that one file, decided against $base_sha, the same anchor point the
-  # seam-check above already uses.
+  # whether THIS branch touches that one file, decided against $mb (the branch's actual merge-base
+  # with $base_sha, already computed above for the seam-check), not $base_sha itself.
+  #
+  # Card 728bd10d: this used to diff "$base_sha..$branch" directly. For a long-lived agent branch
+  # that has not rebased, $base_sha..$branch is a two-dot diff whose left side is develop's CURRENT
+  # tip, not the branch's actual fork point -- so it ALSO picks up any store/fleet-test.sh change
+  # that landed on develop AFTER the branch forked, purely on develop's own side, unrelated to the
+  # branch. That false positive does not corrupt the verdict (both copies still have to pass
+  # either way), it just forces the costly dual-copy run (both lines 851-860 below) on a landing
+  # that never touched fleet-test.sh itself -- measured at +5-10 minutes. $mb is the correct anchor:
+  # it is the last commit the branch and develop actually share, so diffing $mb..$branch only sees
+  # what the BRANCH changed.
   local touched_fleet_test
-  touched_fleet_test="$(g diff --name-only "$base_sha..$branch" -- store/fleet-test.sh)"
+  touched_fleet_test="$(g diff --name-only "$mb..$branch" -- store/fleet-test.sh)"
   if [ -n "$TEST_CMD" ]; then
     # Env override wins outright (selftest stub) -- exactly the old, single-judge behaviour.
     # shellcheck disable=SC2086 -- TEST_CMD is an intentional word-split command prefix
