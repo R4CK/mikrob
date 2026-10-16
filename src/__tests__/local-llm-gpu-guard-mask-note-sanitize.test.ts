@@ -97,7 +97,6 @@ describe('gpu_guard_mask_note sanitizes before printing into the agent-read DOWN
   it('an ANSI escape in units/reason/restore is stripped entirely (the control byte, not the visible text around it)', () => {
     writeMaskFlag({ units: 'ollama.service', reason: 'boom\x1b[31mred\x1b[0m', restore: 'ok' })
     const { out } = runHealth()
-    // eslint-disable-next-line no-control-regex
     expect(out).not.toMatch(/\x1b/)
     // The ESC bytes (0x1B) are gone, so "[31m"/"[0m" can no longer function as an escape
     // sequence -- but as plain characters they are not redacted, just defanged.
