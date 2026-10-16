@@ -5,10 +5,14 @@
 // (setup_required:true). Login enforcement becomes available -- never required,
 // the bearer token always works -- once the operator creates a user.
 //
-// The bearer token stays the break-glass credential: creating the FIRST user
-// and resetting a password are reachable with a valid bearer, so there is never
-// an unauthenticated first-run setup page (which would be a claim-the-admin race
-// on loopback).
+// Card 49960046 (RedHat 17005 X1/X3): the bearer token used to be the break-glass credential for
+// BOTH creating the first user and resetting a password over HTTP -- but the shared fleet bearer
+// every agent holds could use that path to mint itself a session and self-escalate from there
+// (card 68254bd7/9655494c chain). Both are retired from HTTP now: the actual break-glass path is
+// the local CLI (`npm run dashboard-user -- add` / `reset-password`, scripts/dashboard-user.ts),
+// which talks to the database directly and has no HTTP round-trip, so there is no token to abuse.
+// There is still no unauthenticated first-run setup PAGE (a claim-the-admin race on loopback) --
+// the operator runs the CLI on the machine instead.
 //
 // Principal discipline: every handler that grants or removes access checks the
 // caller's auth kind against an EXPLICIT allowlist. Only 'token' and 'session'
@@ -57,12 +61,10 @@ import {
   getDashboardUser,
   listDashboardUsers,
   countDashboardUsers,
-  hasDashboardBootstrapEverHappened,
   updateDashboardUserPassword,
   deleteDashboardUser,
   logConfigChange,
 } from '../../db.js'
-import { notifySecurityEvent } from '../../notify.js'
 import type { RouteContext } from './types.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
@@ -273,31 +275,26 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     }
     const newPassword = str(body.new_password)
 
-    let user = undefined as ReturnType<typeof getDashboardUser>
-    if (auth?.kind === 'session' && auth.user) {
-      user = getDashboardUser(auth.user)
-      if (!user) {
-        json(res, { error: 'User not found' }, 404)
-        return true
-      }
-      // Session callers must prove knowledge of the current password.
-      const current = str(body.current_password)
-      if (!(await verifyPassword(current, user.password_hash))) {
-        json(res, INVALID_CREDENTIALS, 401)
-        return true
-      }
-    } else if (auth?.kind === 'token') {
-      // Bearer break-glass: may omit current_password but must name the target.
-      // EXPLICITLY token-only -- a reset without the current password is the
-      // strongest action here and must never leak to weaker credential kinds.
-      const username = str(body.username)
-      user = username ? getDashboardUser(username) : undefined
-      if (!user) {
-        json(res, { error: 'User not found' }, 404)
-        return true
-      }
-    } else {
+    if (auth?.kind !== 'session' || !auth.user) {
+      // Card 49960046 (RedHat 17005 X3): the bearer break-glass branch used to let the shared
+      // fleet token reset ANY user's password with no current_password proof, then log in as
+      // them -- the second half of the X1/X3 self-escalation chain. Retired from HTTP: only a
+      // session (which proves current_password below) may reset here now. The actual break-glass
+      // path, for when no session exists or the owner is locked out, is the local CLI
+      // (`npm run dashboard-user -- reset-password`, scripts/dashboard-user.ts) -- same trust
+      // root as the rest of break-glass tooling, no HTTP round-trip, no token to abuse.
       json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    const user = getDashboardUser(auth.user)
+    if (!user) {
+      json(res, { error: 'User not found' }, 404)
+      return true
+    }
+    // Session callers must prove knowledge of the current password.
+    const current = str(body.current_password)
+    if (!(await verifyPassword(current, user.password_hash))) {
+      json(res, INVALID_CREDENTIALS, 401)
       return true
     }
 
@@ -312,16 +309,6 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     // Revoke every other session of this user; keep the caller's own if present.
     const presented = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
     revokeAllForUser(user.id, presented ?? undefined)
-    if (auth?.kind === 'token') {
-      // Break-glass reset (no current_password proven): leave a durable audit
-      // row and ping the operator's channel. Only the username goes into the
-      // trail, never credential material. Fire-and-forget: the reset must
-      // succeed with or without a wired channel (notifySecurityEvent is
-      // silent when none is configured).
-      logConfigChange('security.break_glass_password_reset', null, user.username, 'token')
-      logger.warn({ username: user.username }, 'break-glass password reset via bearer token')
-      void notifySecurityEvent(`🔑 Break-glass jelszó-reset a dashboardon: "${user.username}" jelszavát a hozzáférési tokennel állították át. Ha nem te voltál, futtasd: npm run dashboard-user -- security:reset`)
-    }
     json(res, { ok: true })
     return true
   }
@@ -336,18 +323,14 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/auth/users' && method === 'POST') {
-    // First-user bootstrap is the ONE exception to session-only minting (module header comment:
-    // "creating the FIRST user ... is reachable with a valid bearer, so there is never an
-    // unauthenticated first-run setup page"). Once at least one user exists, the shared bearer
-    // can no longer mint a new one -- card 68254bd7 F1 (WhiteHat NO-GO 14284): that path, plus
-    // POST /api/auth/device-keys below, let the shared token self-escalate to a 'session'/'device'
-    // credential and bypass any kind-gated endpoint that excludes 'token' on purpose (e.g.
-    // POST /api/fleet/import?apply=true). Card 9655494c F1-B1 (RedHat NO-GO): this must be
-    // "bootstrap has EVER happened", not "0 users RIGHT NOW" -- the shared token is also allowed
-    // to delete the last user (see DELETE below), and a current-state check would let it reopen
-    // this exception by deleting then re-creating, forever.
-    const isBootstrap = !hasDashboardBootstrapEverHappened()
-    if (!kindAllowed(auth, CREDENTIAL_MINT_KINDS) && !(isBootstrap && auth?.kind === 'token')) {
+    // Card 49960046 (RedHat 17005 X1): there used to be a first-user bootstrap exception here that
+    // let the shared fleet bearer mint itself a session with zero dashboard_users rows, then
+    // escalate from there (card 68254bd7 F1/9655494c chain). Retired: creating ANY dashboard
+    // user, including the first, requires a session now -- same CREDENTIAL_MINT_KINDS gate as
+    // every other mint path. The actual first-run path is the local CLI
+    // (`npm run dashboard-user -- add`, scripts/dashboard-user.ts): same trust root as the rest of
+    // break-glass tooling, no HTTP round-trip, no token to abuse.
+    if (!kindAllowed(auth, CREDENTIAL_MINT_KINDS)) {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
@@ -470,11 +453,13 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
 
   // Card 9655494c F1-B1 (RedHat NO-GO 17005, MikroB decision 17006): mint/rotate/revoke for an
   // agent:<id> identity key is no longer reachable over HTTP AT ALL, under any auth kind --
-  // including a real session. The measured bypass: a session proves nothing about a human,
-  // because the shared dashboard token can itself produce one, either by creating the FIRST user
-  // (bootstrap, X1) or by break-glass-resetting an existing owner's password (X3), then logging in
-  // as that user. A session-only gate (the previous CREDENTIAL_MINT_KINDS check) therefore never
-  // separated "the owner" from "anyone holding the one token every fleet script already has".
+  // including a real session. The measured bypass (at the time): a session proved nothing about a
+  // human, because the shared dashboard token could itself produce one, either by creating the
+  // FIRST user (bootstrap, X1) or by break-glass-resetting an existing owner's password (X3), then
+  // logging in as that user. Both X1 and X3 are themselves retired now (card 49960046), but this
+  // capability stays CLI-only regardless -- it was never only the X1/X3 bypass that justified it,
+  // a session-only gate (the previous CREDENTIAL_MINT_KINDS check) separated "the owner" from
+  // "anyone holding the one token every fleet script already has" less cleanly than no HTTP at all.
   // The fix is structural, not a stronger check: this capability is retired from HTTP entirely, and
   // moved to a local-only CLI (`npm run dashboard-user -- agent-key:mint/:revoke`, called by
   // store/agent-key-provision.sh) that talks to the database directly -- the same trust root as

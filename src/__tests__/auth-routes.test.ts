@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
-import { initDatabase, getDb, getDashboardUser } from '../db.js'
+import { initDatabase, getDb, getDashboardUser, createDashboardUser } from '../db.js'
 import { tryHandleAuth } from '../web/routes/auth.js'
 import { requiresAuth, parseCookies, SESSION_COOKIE_NAME } from '../web/auth-gate.js'
 import { resolveSession, _clearSessionCacheForTest } from '../web/auth-sessions.js'
 import { _resetThrottleForTest } from '../web/login-throttle.js'
+import { hashPassword } from '../web/password-hash.js'
 import type { RouteContext } from '../web/routes/types.js'
 
 // Break-glass password resets in this suite hit the REAL notifier: auth.ts
@@ -91,9 +92,12 @@ const DEVICE_AUTH = { kind: 'device' } as unknown as RouteContext['auth']
 const FEDERATION_AUTH: RouteContext['auth'] = { kind: 'federation', peer: 'test-peer' }
 const GOOD_PW = 'super-secret-pw'
 
+// Card 49960046: user creation over HTTP is session-only now (no more token bootstrap exception),
+// so test setup seeds the user directly via the DB layer -- the same thing the local CLI
+// (scripts/dashboard-user.ts) does, and exactly what a real operator would run once on the machine.
 async function seedUser(username: string, password = GOOD_PW): Promise<void> {
-  const r = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username, password } })
-  expect(r.res.statusCode).toBe(201)
+  const hash = await hashPassword(password)
+  createDashboardUser(username, hash)
 }
 
 beforeAll(() => {
@@ -102,11 +106,7 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
-  // Card 9655494c F1-B1: dashboard_users.id is AUTOINCREMENT, and hasDashboardBootstrapEverHappened()
-  // (production fix) deliberately reads its sqlite_sequence row so bootstrap eligibility survives a
-  // DELETE. This shared-DB test file resets state between tests via DELETE, so it must also reset
-  // the sequence to get back to a genuine zero-users-ever state for the next test.
-  getDb().exec("DELETE FROM auth_sessions; DELETE FROM dashboard_users; DELETE FROM sqlite_sequence WHERE name = 'dashboard_users'")
+  getDb().exec('DELETE FROM auth_sessions; DELETE FROM dashboard_users')
   _clearSessionCacheForTest()
   _resetThrottleForTest()
 })
@@ -228,14 +228,19 @@ describe('POST /api/auth/password', () => {
     expect(login.res.statusCode).toBe(200)
   })
 
-  it('does NOT require current_password on the token break-glass path', async () => {
+  // Card 49960046 (RedHat 17005 X3): the bearer break-glass reset used to work with no
+  // current_password proof at all -- that is exactly the self-escalation path this card closes.
+  // The shared token must now be refused here unconditionally; the real break-glass path is the
+  // local CLI (`npm run dashboard-user -- reset-password`).
+  it('rejects the token break-glass path -- retired, use the local CLI instead', async () => {
     await seedUser('alice')
-    const ok = await call('POST', '/api/auth/password', {
+    const denied = await call('POST', '/api/auth/password', {
       auth: TOKEN_AUTH,
       body: { username: 'alice', new_password: 'token-reset-pass' },
     })
-    expect(ok.res.statusCode).toBe(200)
-    const login = await call('POST', '/api/auth/login', { body: { username: 'alice', password: 'token-reset-pass' } })
+    expect(denied.res.statusCode).toBe(403)
+    // the old password must still work -- the denied call changed nothing
+    const login = await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })
     expect(login.res.statusCode).toBe(200)
   })
 
@@ -257,8 +262,8 @@ describe('POST /api/auth/password', () => {
   it('enforces the password policy on the new password', async () => {
     await seedUser('alice')
     const short = await call('POST', '/api/auth/password', {
-      auth: TOKEN_AUTH,
-      body: { username: 'alice', new_password: 'short' },
+      auth: { kind: 'session', user: 'alice' },
+      body: { current_password: GOOD_PW, new_password: 'short' },
     })
     expect(short.res.statusCode).toBe(400)
   })
@@ -274,14 +279,13 @@ describe('users CRUD', () => {
 
   it('rejects a duplicate username with 409', async () => {
     await seedUser('alice')
-    // Card 68254bd7 F1: a second create is past the first-user bootstrap exception, so it must
-    // use a session, not the shared token (which would now 403 before reaching the dup check).
     const dup = await call('POST', '/api/auth/users', { auth: { kind: 'session', user: 'alice' }, body: { username: 'alice', password: GOOD_PW } })
     expect(dup.res.statusCode).toBe(409)
   })
 
   it('rejects an invalid username', async () => {
-    const bad = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username: 'has space', password: GOOD_PW } })
+    await seedUser('alice')
+    const bad = await call('POST', '/api/auth/users', { auth: { kind: 'session', user: 'alice' }, body: { username: 'has space', password: GOOD_PW } })
     expect(bad.res.statusCode).toBe(400)
   })
 
@@ -315,29 +319,23 @@ describe('users CRUD', () => {
     expect(del.res.statusCode).toBe(200)
   })
 
-  // Card 68254bd7 F1 (WhiteHat NO-GO 14284): the shared token could mint itself a dashboard user
-  // (then log in for a session) or a device key, and either new credential's kind passes a gate
-  // that deliberately excludes 'token' (e.g. POST /api/fleet/import?apply=true). Fix: token may
-  // only mint the FIRST user (documented bootstrap exception, module header comment) -- once one
-  // exists, minting requires a session.
-  it('token may create the FIRST user (bootstrap) but not a second one', async () => {
-    await seedUser('alice') // zero users beforehand -> bootstrap -> token succeeds (seedUser asserts 201)
-    const second = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username: 'bob', password: GOOD_PW } })
-    expect(second.res.statusCode).toBe(403)
-    expect(getDashboardUser('bob')).toBeUndefined()
+  // Card 49960046 (RedHat 17005 X1): the shared token used to be allowed to mint the FIRST user
+  // (bootstrap exception), then log in for a session -- card 68254bd7 F1's self-escalation path.
+  // The exception is retired: the token can never create a dashboard user now, first or not, with
+  // zero or any number of existing users. The real first-run path is the local CLI.
+  it('token can never create a dashboard user, even with zero users (bootstrap retired)', async () => {
+    const first = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username: 'alice', password: GOOD_PW } })
+    expect(first.res.statusCode).toBe(403)
+    expect(getDashboardUser('alice')).toBeUndefined()
   })
 
-  // Card 9655494c F1-B1 (RedHat NO-GO 16825, X2): deleting the only user brings the count back to
-  // 0, which used to reopen the bootstrap exception for the shared token -- an infinite loop that
-  // lets the token mint itself a session (and from there an agent key) on demand. Bootstrap must be
-  // a one-time-ever event, not a "0 users right now" event.
-  it('token deleting the last user does NOT reopen bootstrap -- it stays 403 on re-create', async () => {
-    await seedUser('alice') // bootstrap
+  it('token stays 403 on create after deleting the last user too', async () => {
+    await seedUser('alice')
     const del = await call('DELETE', '/api/auth/users/alice', { auth: TOKEN_AUTH })
     expect(del.res.statusCode).toBe(200)
     expect(getDashboardUser('alice')).toBeUndefined() // back to 0 users, same as a fresh install
-    const rebootstrap = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username: 'mallory', password: GOOD_PW } })
-    expect(rebootstrap.res.statusCode).toBe(403)
+    const recreate = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username: 'mallory', password: GOOD_PW } })
+    expect(recreate.res.statusCode).toBe(403)
     expect(getDashboardUser('mallory')).toBeUndefined()
   })
 })
@@ -372,9 +370,9 @@ describe('credential-kind allowlists (default-deny for future kinds)', () => {
     })
   }
 
-  it('keeps the token break-glass reset working (allowlist did not over-tighten)', async () => {
+  it('token break-glass reset is retired -- 403 even for a legitimate-looking request', async () => {
     await seedUser('alice')
     const reset = await call('POST', '/api/auth/password', { auth: TOKEN_AUTH, body: { username: 'alice', new_password: 'legit-reset-pw' } })
-    expect(reset.res.statusCode).toBe(200)
+    expect(reset.res.statusCode).toBe(403)
   })
 })
