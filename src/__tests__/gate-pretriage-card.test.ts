@@ -386,6 +386,93 @@ describe('merge-commit diff base (card 5b4cca21)', () => {
   })
 })
 
+// Card 12a2fcfa, Cybered's finding on a624f539's delta-gate (comment 4805 point 5): the base used to
+// be a flat `sha~1`, so a card with MULTIPLE commits since its last review (not a merge) lost
+// everything before the tip commit. Fixed: a delta-gate round diffs from the card's own prior
+// Gate-SHA (passed here via the offline `--prior-gate-sha` flag, which stands in for what card-mode
+// resolves live from the card's earlier REVIEW comments); a first-gate round diffs from
+// merge-base(sha, trunk), covering the WHOLE branch instead of just the tip commit.
+describe('delta-gate vs first-gate diff base (card 12a2fcfa)', () => {
+  it('first gate, two commits on a non-merge branch: reports BOTH commits\' files, not just the tip', () => {
+    git('branch', 'origin/develop', 'HEAD') // trunk at the fork point
+
+    writeFileSync(join(repo, 'router.ts'), 'export const a = 1\n')
+    git('add', 'router.ts')
+    git('commit', '-q', '-m', 'first commit of the delta')
+
+    writeFileSync(join(repo, 'router.write-guard.test.ts'), 'export const b = 1\n')
+    writeFileSync(join(repo, 'RequireAction.test.ts'), 'export const c = 1\n')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'second commit of the delta')
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim()
+
+    const body = execFileSync('bash', [SCRIPT, '--repo', repo, '--sha', sha, '--dry-run'], {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    })
+    expect(body).toContain('router.ts')
+    expect(body).toContain('router.write-guard.test.ts')
+    expect(body).toContain('RequireAction.test.ts')
+  })
+
+  it('one commit (unchanged behaviour): still reports exactly that commit\'s own file', () => {
+    git('branch', 'origin/develop', 'HEAD')
+
+    writeFileSync(join(repo, 'solo.ts'), 'export const a = 1\n')
+    git('add', 'solo.ts')
+    git('commit', '-q', '-m', 'single commit')
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim()
+
+    const body = execFileSync('bash', [SCRIPT, '--repo', repo, '--sha', sha, '--dry-run'], {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    })
+    expect(body).toContain('solo.ts')
+  })
+
+  it('delta-gate: a known prior Gate-SHA is the base, even though a later, unrelated commit also landed on trunk', () => {
+    git('branch', 'origin/develop', 'HEAD')
+
+    writeFileSync(join(repo, 'first-review-file.ts'), 'export const a = 1\n')
+    git('add', 'first-review-file.ts')
+    git('commit', '-q', '-m', 'first reviewed commit')
+    const priorSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim()
+
+    // trunk moves on, unrelated to this card -- merge-base(sha, trunk) would now reach further back
+    // than priorSha if the delta-gate base were (wrongly) recomputed from trunk instead of priorSha.
+    git('branch', '-f', 'origin/develop', 'HEAD')
+
+    writeFileSync(join(repo, 'delta-review-file.ts'), 'export const b = 1\n')
+    git('add', 'delta-review-file.ts')
+    git('commit', '-q', '-m', 'delta commit, reviewed in round 2')
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim()
+
+    const body = execFileSync(
+      'bash',
+      [SCRIPT, '--repo', repo, '--sha', sha, '--prior-gate-sha', priorSha, '--dry-run'],
+      { encoding: 'utf-8', stdio: 'pipe' },
+    )
+    expect(body).toContain('delta-review-file.ts')
+    expect(body).not.toContain('first-review-file.ts')
+    expect(body).toContain(`tartomany: ${priorSha}..${sha}`)
+  })
+
+  it('states the used diff range in the posted body (base..head)', () => {
+    git('branch', 'origin/develop', 'HEAD')
+    writeFileSync(join(repo, 'x.ts'), 'export const a = 1\n')
+    git('add', 'x.ts')
+    git('commit', '-q', '-m', 'commit')
+    const parent = execFileSync('git', ['rev-parse', 'HEAD~1'], { cwd: repo, encoding: 'utf-8' }).trim()
+    const sha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf-8' }).trim()
+
+    const body = execFileSync('bash', [SCRIPT, '--repo', repo, '--sha', sha, '--dry-run'], {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    })
+    expect(body).toContain(`tartomany: ${parent}..${sha}`)
+  })
+})
+
 describe('offline-core guards', () => {
   it('a commit that does not exist is a benign SKIP, not an error', () => {
     const out = execFileSync(
