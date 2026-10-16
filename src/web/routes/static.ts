@@ -165,14 +165,26 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
   // Subagent activity: which agents are currently being run as subagents inside
   // MikroB's session (published to store/active-subagents.json). The dashboard
   // colours those cards blue. Always 200 with a JSON array (empty if none).
+  //
+  // Unauthenticated by design (app-auth-bootstrap.js polls it with no token), so this route must not
+  // trust the file's bytes: the content is written by a prompt, not a schema-checked writer (card
+  // 613a8142, Cybersec INFO on c375238d), and is reachable via DNS rebinding (measured: a request
+  // with `Host: attacker` still returns 200 with the file's raw bytes). Re-serialise a validated,
+  // agent-id-shaped array instead of passing the file through -- the response body is never a direct
+  // copy of whatever the file happens to contain.
   if (path === '/subagent-state.json') {
-    let body = '[]'
+    let agents: string[] = []
     try {
       const p = join(webDir, '..', 'store', 'active-subagents.json')
-      if (existsSync(p)) body = readFileSync(p, 'utf-8') || '[]'
+      if (existsSync(p)) {
+        const parsed: unknown = JSON.parse(readFileSync(p, 'utf-8') || '[]')
+        if (Array.isArray(parsed)) {
+          agents = parsed.filter((a): a is string => typeof a === 'string' && /^[a-zA-Z0-9_-]+$/.test(a))
+        }
+      }
     } catch { /* default empty */ }
     res.writeHead(200, { 'Content-Type': MIME['.json'] ?? 'application/json', 'Cache-Control': 'no-cache' })
-    res.end(body)
+    res.end(JSON.stringify(agents))
     return true
   }
   if (path === '/manifest.json') {
