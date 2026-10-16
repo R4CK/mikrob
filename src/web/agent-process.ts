@@ -31,9 +31,11 @@ import {
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
-import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readJsonObjectForWrite, type AuthMode } from './agent-config.js'
-import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, readAgentConfigForOauthDecision, reverifyOauthTokenFile, findOauthTokenFileCollision } from './agent-oauth-token-file.js'
+import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readJsonObjectForWrite, type AuthMode } from './agent-config.js'
+import { buildExtraChannelLaunch, enableExtraPlugins } from './agent-extra-channels.js'
+import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { getCustomProviderOrThrow } from './custom-providers.js'
+import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict, readAgentConfigForOauthDecision, reverifyOauthTokenFile, findOauthTokenFileCollision } from './agent-oauth-token-file.js'
 import { worksourceRootFor } from './worksource-queue.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
 import { readClaudePlansState } from './claude-plans-state.js'
@@ -58,6 +60,7 @@ import {
 import { parseTelegramToken } from './telegram.js'
 import { getProvider, getProviderType, channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { decideContinueFlag, verifyContinueLaunch, decideContinueTimeoutAction } from './channel-continue-policy.js'
+import { buildChannelStateFence } from './channel-state-fence.js'
 import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { decideStateObserver, stateObserverLaunchEnv } from './state-observer.js'
 import { launchableInstallDefault } from './default-model-guard.js'
@@ -594,8 +597,11 @@ export function ensureIsolatedChannelConfigDir(
   // null = channel-less agent: provision the isolated dir with EVERY channel
   // plugin disabled (scopeChannelPlugins(null)) instead of enabling one.
   providerType: ChannelProviderType | null,
+  // AGENTEXTRACH1006: co-listen plugins that must stay enabled next to the
+  // primary one (the same re-enable the main agent's extras get).
+  extraPluginIds: string[] = [],
 ): string | null {
-  return provisionIsolatedConfigDir(join(agentDir(name), '.claude-config'), agentDir(name), providerType, name)
+  return provisionIsolatedConfigDir(join(agentDir(name), '.claude-config'), agentDir(name), providerType, name, extraPluginIds)
 }
 
 // The main channels agent (started by scripts/channels.sh, cwd = PROJECT_ROOT)
@@ -2218,6 +2224,17 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // Channel-less agents (inter-agent only, no direct Telegram/Slack) are allowed to start
   }
 
+  // AGENTEXTRACH1006: co-listen providers next to the primary one. Only an
+  // extra whose OWN state dir holds a token takes part; a configured but
+  // tokenless one is skipped loudly rather than loading a plugin that could
+  // fall back to another bot's token.
+  const extraLaunch = buildExtraChannelLaunch(readAgentExtraChannels(name), agentProvider, dir)
+  if (extraLaunch.skipped.length > 0) {
+    logger.warn({ name, skipped: extraLaunch.skipped }, 'extraChannels: provider configured but no token in its state dir -- not loaded')
+  }
+  const hasExtraChannels = extraLaunch.providers.length > 0
+  const hasAnyChannel = hasChannel || hasExtraChannels
+
   // Teams name-sync (companion to make-teams-manifest.sh): keep
   // TEAMS_BOT_DISPLAY_NAME in the agent's teams .env equal to the agent's
   // displayName, so the generated Teams manifest names the bot after the agent
@@ -2256,6 +2273,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
       const agentProvider = resolveAgentProvider(name)
       const dir = agentDir(name)
       reapChannelOrphans(agentProvider, dir, { tmuxPath: tmuxBin() })
+      for (const p of extraLaunch.providers) reapChannelOrphans(p, dir, { tmuxPath: tmuxBin() })
     } catch (err) {
       logger.warn({ err, name }, 'pre-launch channel-poller reap failed (continuing)')
     }
@@ -2573,6 +2591,9 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
           scopeProvider,
           s.enabledPlugins as Record<string, boolean> | undefined,
         )
+        // AGENTEXTRACH1006: the co-listen plugins stay on after the
+        // primary-only scope above turned them off.
+        s.enabledPlugins = enableExtraPlugins(s.enabledPlugins as Record<string, boolean>, extraLaunch.pluginIds)
         writeAgentConfig(settingsPath, JSON.stringify(s, null, 2))
       } catch (err) {
         logger.warn({ err, name }, 'Could not scope channel plugins for sub-agent')
@@ -2648,7 +2669,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // 2026-07-25). Only agents that never touch Anthropic OAuth stay on the
     // shared root: local/BYO-endpoint models (Ollama/DeepSeek/OpenRouter) and
     // per-agent API-key (authMode 'api') agents.
-    if (!claudeConfigDir && (hasChannel || needsFleetOauth || isOwnTeam) && name !== MAIN_AGENT_ID) {
+    if (!claudeConfigDir && (hasAnyChannel || needsFleetOauth || isOwnTeam) && name !== MAIN_AGENT_ID) {
       if (isOwnTeam) {
         // own_team isolates WITHOUT the fleet token: the isolated dir is where
         // the agent's own /login credential lives (macOS Keychain scopes the
@@ -2656,7 +2677,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
         // of the dir -- and on Linux the provisioner deliberately never
         // touches .credentials.json, see ISOLATED_CONFIG_SKIP), so the
         // isolation gate must NOT be hasFleetOauthToken() here.
-        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null)
+        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null, extraLaunch.pluginIds)
         if (isolated) {
           claudeConfigDir = isolated
           // Linux keeps the credential as a file, so its absence is reliably
@@ -2673,12 +2694,12 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
           // Falling back to the shared ~/.claude would put the agent on the
           // OWNER's rotating credential -- the opposite of own_team. Loud.
           logger.warn({ name }, 'own_team auth: isolated config dir provisioning failed; agent falls back to the shared ~/.claude and will use the HOST credential, not its own Team login')
-          if (hasChannel) maybeAlertSharedConfigCollision(name)
+          if (hasAnyChannel) maybeAlertSharedConfigCollision(name)
         }
       } else if (ownTokenFile) {
-        // oauthTokenFile: isolated exactly like the fleet branch below; only the
-        // token source differs, so the fleet token's presence is irrelevant here.
-        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null)
+        // 2fb86ef2: isolated exactly like the fleet branch below; only the token
+        // source differs, so the fleet token's presence is irrelevant here.
+        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null, extraLaunch.pluginIds)
         if (isolated) {
           claudeConfigDir = isolated
           oauthTokenEnv = ownOauthTokenExport(ownTokenFile)
@@ -2690,7 +2711,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
         // A channel-less agent provisions with a null provider so its isolated
         // settings.json disables EVERY channel plugin -- it has no bot token,
         // so a loaded plugin could only fight the fleet over poller slots.
-        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null)
+        const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null, extraLaunch.pluginIds)
         if (isolated) {
           claudeConfigDir = isolated
           // Read the token at launch via $(cat) so the literal secret never
@@ -2707,7 +2728,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
         // ~/.claude this is an active plugin-slot collision -> raise a loud
         // alert. Channel-less agents cannot contend for a plugin slot, so they
         // only get the WARN.
-        if (hasChannel) maybeAlertSharedConfigCollision(name)
+        if (hasAnyChannel) maybeAlertSharedConfigCollision(name)
       }
     }
     // oauthTokenFile: a Claude agent with its own token must run isolated. On the
@@ -2800,13 +2821,13 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // bot.pid) with a fresh fallback, see below. Channel-less agents keep
     // --continue as before.
     const usesLaunchSecret = providerEnv !== '' || apiKeyEnv !== ''
-    const installedCli = hasChannel ? (await measureClaudeCliVersion()).version : null
+    const installedCli = hasAnyChannel ? (await measureClaudeCliVersion()).version : null
     const continueDecision = decideContinueFlag({
       hasPriorSession, fresh: !!opts.fresh, hasChannel, isMainAgent: name === MAIN_AGENT_ID,
       provider: agentProvider, usesLaunchSecret, fleetTokenLaunch: oauthTokenEnv !== '',
-      useMcpJsonForChannel, installedCli,
+      useMcpJsonForChannel, installedCli, extraProviders: extraLaunch.providers,
     })
-    if (hasChannel && hasPriorSession && !opts.fresh) {
+    if (hasAnyChannel && hasPriorSession && !opts.fresh) {
       logger.info({ name, useContinue: continueDecision.useContinue, reason: continueDecision.reason, installedCli }, 'channel agent resume decision')
     }
     const continueFlag = continueDecision.useContinue ? '--continue ' : ''
@@ -2834,9 +2855,14 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''
-    const channelSetup = hasChannel
+    const channelSetup = (hasChannel
       ? `export ${stateEnvVar}="${agentChannelDir}"${auditLogEnv} && `
-      : ''
+      : '') + extraLaunch.envExports
+    // SLACKDMVESZT1006: every provider this launch does NOT use points at the
+    // agent's own (token-less) state dir, so a plugin loaded for any other
+    // reason can never fall back to the main agent's token. The extras export
+    // their own real dir (envExports above), so they are excluded from the fence.
+    const stateFence = buildChannelStateFence([...(hasChannel ? [agentProvider] : []), ...extraLaunch.providers], dir)
     // When the per-agent mcp.json+tee path is active (SUBAGENT_INBOX_TEE), the
     // plugin is already loaded as a plain MCP server, so ALSO passing --channels
     // would register the plugin a SECOND way -- a duplicate poller racing the tee
@@ -2844,7 +2870,12 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // rely solely on mcp.json (enabledPlugins is already forced false above for
     // the same reason). Every other agent (non-telegram, main, or flag off) keeps
     // the --channels launch path unchanged.
-    const channelFlag = hasChannel && !useMcpJsonForChannel ? `--channels plugin:${provider.pluginId}` : ''
+    // AGENTEXTRACH1006: the extras ride the SAME --channels list (a plugin that
+    // is loaded but not listed delivers nothing). With the telegram mcp.json
+    // path the primary is absent from the list and only the extras remain.
+    const primaryChannel = hasChannel && !useMcpJsonForChannel ? `plugin:${provider.pluginId}` : ''
+    const channelList = (primaryChannel + extraLaunch.channelArgs).trim()
+    const channelFlag = channelList ? `--channels ${channelList}` : ''
     // Channel-plugin MCP-registration guard (2026-06-23): the telegram/slack/etc.
     // channel plugin registers as a stdio MCP server loaded via --channels. Claude
     // Code connects stdio MCP servers in batches of MCP_SERVER_CONNECTION_BATCH_SIZE
@@ -2857,7 +2888,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // size and per-server timeout, and force non-blocking startup, so a slow local
     // MCP can never crowd the channel plugin out of registration. Only set for
     // channel-having agents (channel-less agents have no plugin to protect).
-    const mcpEnv = hasChannel
+    const mcpEnv = hasAnyChannel
       ? 'export MCP_SERVER_CONNECTION_BATCH_SIZE=10 && export MCP_CONNECTION_NONBLOCKING=1 && export MCP_TIMEOUT=60000 && '
       : ''
     // Disable Claude Code's history-based prompt suggestions -- the DIM (ANSI
@@ -2948,7 +2979,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // beats the Homebrew one that carries no packages -- same mechanism already adopted in
     // scripts/watchdog.sh this round.
     const venvPathPrefix = fleetVenvPathPrefix()
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${feedbackSurveyEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
@@ -2976,11 +3007,19 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // seconds on a healthy resume; a deaf resume never shows it. Async so the
     // start call returns as before; the fallback goes through the normal
     // start path (kill + reap + fresh), which never uses --continue.
-    if (continueFlag && hasChannel && name !== MAIN_AGENT_ID) {
+    // AGENTEXTRACH1006: an agent with co-listen channels resumes too, and the
+    // SAME verification decides: every plugin -- primary and extras -- must
+    // come back, or the agent is relaunched fresh. The extras are probed in the
+    // resumed claude's own process tree only (extra-channel-liveness.ts).
+    if (continueFlag && hasAnyChannel && name !== MAIN_AGENT_ID) {
       void verifyContinueLaunch({
         probe: () => {
           const pid = getClaudePidForSession(session)
-          return pid ? probeChannelPluginLiveness(pid, agentProvider, name) : 'unknown'
+          if (!pid) return 'unknown'
+          return combineLiveness([
+            hasChannel ? probeChannelPluginLiveness(pid, agentProvider, name) : 'alive',
+            probeExtraPluginsInTree(pid, extraLaunch.providers),
+          ])
         },
       }).then(async (v) => {
         const generationChanged = agentLaunchGeneration.get(name) !== myLaunchGeneration
@@ -3016,7 +3055,7 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
     // attaches. Non-blocking setTimeout poller (the dashboard is single-threaded
     // -- a synchronous sleep loop would freeze the whole event loop). Only for
     // channel-having sub-agents; MAIN comes up via channels.sh, not this path.
-    if (hasChannel && name !== MAIN_AGENT_ID) {
+    if (hasAnyChannel && name !== MAIN_AGENT_ID) {
       const epermDeadline = Date.now() + 14_000
       let epermRestarted = false
       const checkEperm = () => {
@@ -3180,6 +3219,10 @@ async function stopAgentProcessUnlocked(name: string): Promise<{ ok: boolean; er
         const agentProvider = resolveAgentProvider(name)
         const dir = agentDir(name)
         reapChannelOrphans(agentProvider, dir, { tmuxPath: tmuxBin() })
+        // AGENTEXTRACH1006: the co-listen pollers are orphaned the same way.
+        for (const p of readAgentExtraChannels(name)) {
+          if (p !== agentProvider) reapChannelOrphans(p, dir, { tmuxPath: tmuxBin() })
+        }
       } catch (err) {
         logger.warn({ err, name }, 'post-stop channel-poller reap failed')
       }
@@ -3313,18 +3356,53 @@ export async function clearFeedbackModalAndRecheck(session: string, host: string
   }
 }
 
+// Card 813eeee9 (backend3, 2026-09-19 09:20-09:36): the '0' sent below does not always land on
+// the modal -- measured live, it went into the prompt INPUT instead, and the old code logged
+// "Dismissed" unconditionally and never re-checked. The not-ready caller (clearFeedbackModalAndRecheck)
+// re-ran this every second for 11+ minutes, each pass adding another '0' to the input box (it grew
+// to 40+ characters) while the log kept repeating a false "Dismissed" next to it. Fixed by actually
+// VERIFYING the modal is gone before claiming success, and bounding the retries: each failed
+// attempt clears the stray digit(s) with clearInputBuffer (same retry+verify C-u this file already
+// uses for a parked preamble) before trying again, with backoff between attempts. After
+// FEEDBACK_DISMISS_MAX_ATTEMPTS the function gives up loudly (logger.error, 'wedged') instead of
+// looping forever -- the pane then genuinely stays non-idle, which the EXISTING session-stuck /
+// stuck-input watchers already alert and restart on; this function does not need to invent a
+// second alerting path.
+const FEEDBACK_DISMISS_MAX_ATTEMPTS = 3
+const FEEDBACK_DISMISS_BACKOFF_MS = [300, 600, 1200]
+
 export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
     if (!detectsFeedbackDraftModal(pane)) return
-    runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
-    await delay(300)
-    const after = captureTmux(host, ['capture-pane', '-t', session, '-p'])
-    if (detectsFeedbackOptOutPrompt(after)) {
-      runTmux(host, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
-      await delay(300)
+
+    for (let attempt = 1; attempt <= FEEDBACK_DISMISS_MAX_ATTEMPTS; attempt++) {
+      runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
+      await delay(FEEDBACK_DISMISS_BACKOFF_MS[attempt - 1])
+      const after = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+
+      if (detectsFeedbackOptOutPrompt(after)) {
+        runTmux(host, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
+        await delay(300)
+        logger.info({ session, attempt }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
+        return
+      }
+      if (!detectsFeedbackDraftModal(after)) {
+        logger.info({ session, attempt }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
+        return
+      }
+
+      logger.warn(
+        { session, attempt, max: FEEDBACK_DISMISS_MAX_ATTEMPTS },
+        'Feedback-draft modal still present after the dismiss key -- it likely landed in the prompt input instead; clearing stray input before retrying',
+      )
+      await clearInputBuffer(session, host)
     }
-    logger.info({ session }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
+
+    logger.error(
+      { session },
+      'Feedback-draft modal could not be dismissed after retries -- pane is wedged; not retrying further (existing session-stuck/stuck-input watchers will surface and restart it)',
+    )
   } catch (err) {
     logger.warn({ err, session }, 'Failed to probe/dismiss feedback-draft modal')
   }

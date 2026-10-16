@@ -137,26 +137,27 @@ describe('schedule-runner pre-check integration (source-level)', () => {
     expect(SRC).toMatch(/export async function runPreCheck/) // async: it runs on the scheduler tick (card 92e2bb1b)
   })
 
-  it('calls runPreCheck in the cron loop before attemptFireTask', () => {
+  // CRONPRECHECKSYNC1007: the cron loop awaits the async form.
+  it('awaits runPreCheck in the cron loop before attemptFireTask', () => {
     const cronLoopIdx = SRC.indexOf('for (const task of tasks)')
     expect(cronLoopIdx).toBeGreaterThan(0)
     const cronLoop = SRC.slice(cronLoopIdx)
     const preCheckIdx = cronLoop.indexOf('await runPreCheck(task)')
-    const fireIdx = cronLoop.indexOf('attemptFireTask(task,')
+    const fireIdx = cronLoop.indexOf('attemptFireTask(current,')
     expect(preCheckIdx).toBeGreaterThan(0)
     expect(preCheckIdx).toBeLessThan(fireIdx)
   })
 
-  it('calls runPreCheck in the pending-retry loop before attemptFireTask', () => {
+  it('runs the pre-check in the pending-retry loop before attemptFireTask (the thinned async form, df2e0d97 2a)', () => {
     const retryLoopIdx = SRC.indexOf('for (const row of pendingRows)')
     expect(retryLoopIdx).toBeGreaterThan(0)
     const retryLoop = SRC.slice(retryLoopIdx, SRC.indexOf('for (const task of tasks)'))
-    expect(retryLoop).toMatch(/await runPreCheck\(taskDef\)/)
-    expect(retryLoop).toMatch(/attemptFireTask\(taskDef,/)
+    expect(retryLoop).toMatch(/await retryPreCheck\(taskDef, now\)/)
+    expect(retryLoop).toMatch(/attemptFireTask\(current,/)
   })
 
   it('passes preCheckPrefix to attemptFireTask in the cron loop', () => {
-    expect(SRC).toMatch(/attemptFireTask\(task, agentName, now, cronPc\.prefix, lateCatchUpMs\)/)
+    expect(SRC).toMatch(/attemptFireTask\(current, agentName, now, cronPc\.prefix, lateCatchUpMs\)/)
   })
 
   it('skips and records the run when pre-check returns skip in cron loop', () => {
@@ -182,7 +183,7 @@ describe('schedule-runner pre-check integration (source-level)', () => {
     const preCheckFn = SRC.slice(start)
     const fnBody = preCheckFn.slice(0, preCheckFn.indexOf('\nexport ', 1))
     // Non-zero exit returns { skip: false }
-    expect(fnBody).toMatch(/r\.status !== 0/)
+    expect(fnBody).toMatch(/status !== 0/)
     expect(fnBody).toMatch(/running LLM anyway/)
     // Missing file returns { skip: false }
     expect(fnBody).toMatch(/not found, running LLM anyway/)

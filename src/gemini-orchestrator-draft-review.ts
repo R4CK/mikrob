@@ -58,6 +58,7 @@ import { join, dirname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { geminiGenerate, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
+import { reserveGhostCallSlot } from './gemini-ghost-budget.js'
 import { getSecret } from './web/vault.js'
 import { getKanbanCard, getKanbanComments, addKanbanComment, getLabelsForCard } from './db.js'
 import { isGeminiOrchestratorEnabled, readFallbackRoute, isBlockedByLandedFilter } from './gemini-orchestrator.js'
@@ -315,6 +316,11 @@ export async function reviewOneCard(
     readDraft: (absPath: string) => string
     postComment: (id: string, author: string, content: string) => void
     callGemini: (opts: GeminiCallOptions) => Promise<GeminiResult>
+    // Shared fleet-wide hourly budget (card 612058c2 delta-gate, WhiteHat2 H1): reserves a slot
+    // on the SAME counter gemini-agy-call.sh uses, atomically, right before the real network
+    // call below -- not once per tick. Required (not optional) so every call site states its
+    // policy explicitly, same as every other deps field here.
+    reserveSlot: (cardId: string) => boolean
     // Injectable (mirrors readDraft) so the pure decision logic stays testable without touching
     // the real filesystem -- defaults to the real, fs-backed resolveDraftPathSafely.
     resolveDraftPath?: (relPath: string) => string | null
@@ -387,6 +393,12 @@ export async function reviewOneCard(
     return { id: cardId, reviewed: false, reason: 'secret_shape_detected' }
   }
 
+  // WhiteHat2 H1 (card 612058c2 NO-GO @c5e5ec28): the hourly cap is checked and SPENT here, right
+  // before the real network call, not once per tick -- a tick carrying many eligible drafts must
+  // stop making real Gemini calls the moment the shared fleet-wide budget is out, not after
+  // exhausting every eligible card in its own queue.
+  if (!deps.reserveSlot(cardId)) return { id: cardId, reviewed: false, reason: 'hourly_cap_reached' }
+
   const prompt = buildReviewPrompt(meta, draftText)
   const result = await deps.callGemini({ apiKey, prompt })
   if (!result.ok || !result.text) return { id: cardId, reviewed: false, reason: result.reason ?? 'no_response' }
@@ -436,6 +448,7 @@ export async function runGeminiOrchestratorDraftReviewSweep(
     readDraft: (absPath: string) => readFileSync(absPath, 'utf-8'),
     postComment: (id: string, author: string, content: string) => addKanbanComment(id, author, content),
     callGemini,
+    reserveSlot: reserveGhostCallSlot,
   }
 
   const results: DraftReviewResult[] = []

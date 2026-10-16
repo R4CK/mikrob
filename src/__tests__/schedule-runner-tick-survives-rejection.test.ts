@@ -42,6 +42,7 @@ vi.mock('../web/telegram.js', () => ({
 }))
 vi.mock('../web/scheduled-tasks-io.js', () => ({
   listScheduledTasks: () => mockListScheduledTasks(),
+  readScheduledTask: (name: string) => mockListScheduledTasks().find((t) => t.name === name) ?? null,
   SCHEDULED_TASKS_DIR: '/tmp/marveen-tick-rejection-no-tasks-dir',
 }))
 vi.mock('../web/agent-process.js', () => ({

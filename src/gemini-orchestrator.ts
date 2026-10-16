@@ -38,6 +38,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 import { geminiGenerate, GEMINI_VAULT_KEY_ID, type GeminiCallOptions, type GeminiResult } from './gemini-client.js'
+import { reserveGhostCallSlot } from './gemini-ghost-budget.js'
 import { getSecret } from './web/vault.js'
 import { initDatabase, listKanbanCards, getLabelsForAllCards } from './db.js'
 
@@ -197,15 +198,25 @@ export interface OrchestratorDecision {
  * validated order or a fail-closed reason. Never throws (condition 3): any error from the Gemini
  * call is already caught inside geminiGenerate and returned as `{ ok: false, reason }`.
  */
+// Synthetic id for the budget ledger (card 612058c2, mirrors gemini-ghost-runner.sh's own
+// "n/a (ghost-sweep tick)" convention): this call ranks the WHOLE eligible set at once, there is
+// no single card id to attribute the spent slot to.
+const ORDERING_BUDGET_CARD_ID = 'n/a (ordering-sweep)'
+
 export async function decideGeminiOrder(
   cards: readonly OrchestratorCard[],
   apiKey: string | null,
   callGemini: (opts: GeminiCallOptions) => Promise<GeminiResult> = geminiGenerate,
+  reserveSlot: (cardId: string) => boolean = reserveGhostCallSlot,
 ): Promise<OrchestratorDecision> {
   const eligible = cards.filter(
     (c) => (c.status === 'planned' || c.status === 'in_progress') && isEligibleForGeminiOrdering(c),
   )
   if (eligible.length === 0) return { ok: false, reason: 'no_eligible_cards' }
+
+  // WhiteHat2 H1 (card 612058c2 NO-GO @c5e5ec28): same shared fleet-wide hourly budget as the
+  // draft-review call below, spent right before the real network call, not once per tick.
+  if (!reserveSlot(ORDERING_BUDGET_CARD_ID)) return { ok: false, reason: 'hourly_cap_reached' }
 
   const metadata = buildOrderingMetadata(eligible)
   const prompt = buildOrderingPrompt(metadata)
@@ -244,6 +255,7 @@ export function readFallbackRoute(): 'claude' | 'gemini' {
 export async function runGeminiOrchestratorSweep(
   loadCards: () => readonly OrchestratorCard[],
   callGemini: (opts: GeminiCallOptions) => Promise<GeminiResult> = geminiGenerate,
+  reserveSlot: (cardId: string) => boolean = reserveGhostCallSlot,
 ): Promise<void> {
   if (!isGeminiOrchestratorEnabled()) {
     console.log('[gemini-orchestrator] kill switch is OFF -- no-op.')
@@ -256,7 +268,7 @@ export async function runGeminiOrchestratorSweep(
 
   const apiKey = getSecret(GEMINI_VAULT_KEY_ID) ?? null
   const cards = loadCards()
-  const decision = await decideGeminiOrder(cards, apiKey, callGemini)
+  const decision = await decideGeminiOrder(cards, apiKey, callGemini, reserveSlot)
 
   if (!decision.ok) {
     console.log(`[gemini-orchestrator] fail-closed, no action (reason=${decision.reason ?? 'unknown'}).`)

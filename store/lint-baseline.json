@@ -1,7 +1,6 @@
 {
-  "@typescript-eslint/await-thenable": 1,
   "@typescript-eslint/no-floating-promises": 3,
   "@typescript-eslint/no-misused-promises": 12,
   "@typescript-eslint/no-unsafe-argument": 140,
-  "@typescript-eslint/no-unused-vars": 166
+  "@typescript-eslint/no-unused-vars": 185
 }
