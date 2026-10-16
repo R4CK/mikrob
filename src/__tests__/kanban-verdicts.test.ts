@@ -403,7 +403,7 @@ describe('kanban-verdicts', () => {
   // used to be "latest proposal wins", so a LATER, unrelated proposal from a DIFFERENT agent
   // silently cleared an earlier, still-relevant exclusion. B2' (RedHat 16824) replaced the manual
   // "propose" call with an automatic one on NO-GO/FAIL -- these tests now drive that path directly.
-  describe('N5 set-semantics proposer exclusion, scoped to the current round', () => {
+  describe('N5 set-semantics proposer exclusion, UNSCOPED from the round (O1, card 9c7ad372)', () => {
     it('an earlier NO-GO from the gate stays blocking even after a later, different proposal', async () => {
       createDeviceKey('agent:cybersec')
       createDeviceKey('agent:cybersec2')
@@ -422,8 +422,15 @@ describe('kanban-verdicts', () => {
       expect(out.status).toBe(403)
     })
 
-    it('a proposal scoped to an OLD round (different Gate-SHA) does not block the gate in the CURRENT round', async () => {
+    // O1 (WhiteHat2 GO comment 17107 on 2bfa4c67, card 9c7ad372): this used to be round-scoped by
+    // sha, and the OLD round's proposal (sha A) would drop out once the REVIEW moved to sha B,
+    // letting the very gate that proposed the fix direction verdict its own fixed sha. That defeated
+    // the proposer-exclusion's purpose at the exact moment it mattered. The exclusion is now
+    // UNSCOPED: a NO-GO/FAIL's recorded proposal keeps excluding that same agent from verdicting
+    // this card, across every later round, not just the one it was written in.
+    it('a NO-GO on an OLD round (sha A) still blocks the SAME gate GOing on the fixed round (sha B)', async () => {
       createDeviceKey('agent:cybersec')
+      createDeviceKey('agent:cybersec2')
       addKanbanComment('c1', 'backend', 'REVIEW: round 1.\nGate-SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
       await tryHandleKanbanVerdicts(
         fakeCtx(
@@ -433,13 +440,22 @@ describe('kanban-verdicts', () => {
         ).ctx,
       )
       addKanbanComment('c1', 'backend', 'REVIEW: round 2.\nGate-SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
-      const { ctx, out } = fakeCtx(
+      // The proposer itself, GOing on the round it proposed the fix for -- BLOCKED.
+      const self = fakeCtx(
         '/api/kanban/c1/verdicts', 'POST',
         { gate: 'CYBERSEC', verdict: 'GO', sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
         { kind: 'device', device: 'agent:cybersec', deviceId: 1 },
       )
-      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
-      expect(out.status).toBe(201)
+      expect(await tryHandleKanbanVerdicts(self.ctx)).toBe(true)
+      expect(self.out.status).toBe(403)
+      // The sibling, on the SAME round -- still allowed (different agent, per CLAUDE.md 16574 W3).
+      const sibling = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST',
+        { gate: 'CYBERSEC', verdict: 'GO', sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' },
+        { kind: 'device', device: 'agent:cybersec2', deviceId: 2 },
+      )
+      expect(await tryHandleKanbanVerdicts(sibling.ctx)).toBe(true)
+      expect(sibling.out.status).toBe(201)
     })
   })
 

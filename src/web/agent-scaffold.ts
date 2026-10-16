@@ -912,6 +912,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectGitProtectGuard(existing)
   injectNpmProtectGuard(existing)
   injectSymlinkedNodeModulesGuard(existing)
+  injectAgentKeySecretGuard(existing)
   injectBlastRadiusGuard(existing)
   injectCdChainGuard(existing)
   injectBashEgressGuard(existing)
@@ -1590,6 +1591,31 @@ export function injectNpmProtectGuard(existing: Record<string, unknown>): void {
   ]
 }
 
+// Idempotently wire the agent-key-secret-guard PreToolUse hook (card 9c7ad372, WhiteHat2 O5 on
+// 2bfa4c67): blocks a Bash command that would mint/read ANOTHER agent's `agent:<id>` dashboard
+// device key (the one the structured gate-verdict record trusts as "this caller IS that gate").
+// Every agent runs under the same UID, so nothing at the OS level stops a compromised builder from
+// reading `agents/qa/.dashboard-agent-key` or running `dashboard-user -- agent-key:mint cybersec`
+// itself -- this is a speed bump on the obvious command shapes, same tier as its git/npm siblings,
+// wired for every agent (including main) for the same reason: hand-copied into N settings.json
+// files protects an arbitrary subset.
+export function injectAgentKeySecretGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'agent-key-secret-guard.py'))
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('agent-key-secret-guard.py')),
+    entry,
+  ]
+}
+
 // Idempotently wire the symlinked-node-modules guard PreToolUse hook (card 9dc0fba8).
 //
 // Its npm sibling above blocks the INSTALLER verbs and `rm -rf node_modules`. The
@@ -1644,6 +1670,30 @@ export function ensureSymlinkedNodeModulesGuard(name: string): boolean {
   if (ptuJson.includes('symlinked-node-modules-guard.py') && hookCommandWired(ptuJson, command)) return false
   if (isUnsafeHookCommand(command)) return false
   injectSymlinkedNodeModulesGuard(settings)
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Boot-time backfill for the agent-key-secret guard (card 9c7ad372): same reasoning as
+// ensureNpmProtectGuard/ensureSymlinkedNodeModulesGuard above -- a freshly injected hook reaches
+// an agent only on its next respawn, so this runs in the startup migration loop to arm every
+// already-running agent at once.
+export function ensureAgentKeySecretGuard(name: string): boolean {
+  const settingsPath = agentSettingsPath(name)
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'agent-key-secret-guard.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const ptuJson = JSON.stringify(ptu)
+  if (ptuJson.includes('agent-key-secret-guard.py') && hookCommandWired(ptuJson, command)) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectAgentKeySecretGuard(settings)
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true

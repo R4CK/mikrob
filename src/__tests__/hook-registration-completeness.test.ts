@@ -87,6 +87,8 @@ const EXEMPT: Record<string, string> = {
     'selftest for noisy-command-guard.py, which is registered; the selftest itself is not a hook',
   'npm-protect-guard.selftest.py':
     'selftest for npm-protect-guard.py, which is registered; the selftest itself is not a hook',
+  'agent-key-secret-guard.selftest.py':
+    'selftest for agent-key-secret-guard.py, which is registered; the selftest itself is not a hook',
   'outgoing-copy-gate.selftest.py':
     'selftest for outgoing-copy-gate.py, which is registered; the selftest itself is not a hook',
   'pentest-tool-install-guard.selftest.py':

@@ -113,7 +113,7 @@ function parseProvidedSha(v: unknown): string | null {
  *  short-sha convention) -- same prefix-containment rule `kanban-gate-completeness-guard.ts`'s
  *  round-boundary logic already uses, so a short-form citation on one side and a full 40-char
  *  citation on the other are not treated as a mismatch. */
-function shasMatch(a: string, b: string): boolean {
+export function shasMatch(a: string, b: string): boolean {
   return a.startsWith(b) || b.startsWith(a)
 }
 
@@ -202,17 +202,23 @@ export async function tryHandleKanbanVerdicts(ctx: RouteContext): Promise<boolea
       return true
     }
     // B2 / W3 + N5 (card 2bfa4c67 round 2, WhiteHat2 NO-GO): the exclusion is SET-semantics over
-    // EVERY authenticated proposal written for the current round's sha, not just the latest row --
-    // "latest wins" let a later, unrelated proposal from a different agent silently clear an
-    // earlier, still-relevant exclusion. A proposal with no sha at all (written before this field
-    // existed) still counts when the card has no current Gate-SHA to scope by, same permissive
-    // fallback as shaBindingError's no-claim case; once a Gate-SHA exists, only proposals bound to
-    // it participate, so an agent excluded in an OLD round is not blocked forever in a new one.
-    const latestSha = latestReviewGateSha(getKanbanComments(cardId))
-    const roundProposals = getKanbanFixProposals(cardId).filter((p) =>
-      latestSha === null ? true : p.sha !== null && shasMatch(p.sha, latestSha),
-    )
-    if (roundProposals.some((p) => isSelfProposedVerdict(author, p.proposer))) {
+    // EVERY authenticated proposal ever written for this card, not just the latest row -- "latest
+    // wins" let a later, unrelated proposal from a different agent silently clear an earlier,
+    // still-relevant exclusion.
+    //
+    // O1 (WhiteHat2 GO comment 17107 on 2bfa4c67, card 9c7ad372): this used to be scoped to the
+    // CURRENT round's sha only (`p.sha !== null && shasMatch(p.sha, latestSha)`), which defeated the
+    // exclusion's own purpose the moment it actually mattered -- measured: cybersec writes an
+    // authenticated NO-GO on sha A (proposal recorded with sha=A); the builder's NEXT REVIEW cites a
+    // new sha B; cybersec then GOes on B and is ALLOWED, because the old round's proposal (sha=A) no
+    // longer matched the new latestSha and dropped out of the filtered set -- exactly the case
+    // RedHat 16225 / WhiteHat W3 meant to forbid (a gate verdicting the fix direction IT proposed).
+    // The fix is to stop scoping by round at all: a proposer is excluded from verdicting THIS CARD
+    // on ITS OWN proposed direction for as long as that proposal stands, across every later round,
+    // not just the one it was written in. A sibling (cybersec vs cybersec2) is unaffected either
+    // way, since isSelfProposedVerdict only matches the IDENTICAL author.
+    const allProposals = getKanbanFixProposals(cardId)
+    if (allProposals.some((p) => isSelfProposedVerdict(author, p.proposer))) {
       json(res, { error: 'a javaslattevő (proposer) ügynök nem adhat verdiktet a saját javaslatára' }, 403)
       return true
     }
