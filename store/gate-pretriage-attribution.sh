@@ -30,6 +30,12 @@
 # decides alone -- the body is not consulted at all in that case (matches this card's own fix
 # proposal: prefer the title over other card-ids found in the body, not just first/last mention).
 #
+# `fix(<id>)!:` BREAKING-CHANGE FORM (card 3ab52018, Cybersec F1 on 47ffe964, msg 3749). The same
+# Conventional-Commits convention allows a `!` right before the colon to flag a breaking change --
+# `fix(<8hex>)!: ...`. The title-scope regex above only matched a bare `):`, so this form fell
+# through to the body-wide scan and reproduced the exact 47ffe964 incident class on this one commit
+# shape. The `!?` makes the mark optional without touching the non-breaking form at all.
+#
 #   names_another_card <repo> <sha> <cardId>   -> 0 = foreign (skip it), 1 = keep
 #
 # Sourced by gate-pretriage-card.sh; its own selftest runs it against real git repos.
@@ -41,7 +47,7 @@ names_another_card() {
   card_lc="$(tr 'A-F' 'a-f' <<< "$card")"
 
   title_id="$(printf '%s' "$subject" \
-    | grep -oiE '^[a-z]+\([0-9a-f]{8}\):' \
+    | grep -oiE '^[a-z]+\([0-9a-f]{8}\)!?:' \
     | grep -oiE '[0-9a-f]{8}' \
     | tr 'A-F' 'a-f')"
   if [[ -n "$title_id" ]]; then
