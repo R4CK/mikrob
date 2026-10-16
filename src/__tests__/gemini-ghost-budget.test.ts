@@ -158,6 +158,19 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
     expect(ok).toBe(true)
   }, 20_000)
 
+  // H1 (RedHat NO-GO, card f0b3b674 komment 20369, Gate-SHA 44931ad6): same hole, same shape, for
+  // the heavy-second-opinion path's 'agy-heavy' rows (store/offload-dispatch.sh's reserve_heavy_
+  // gemini_slot) -- before the fix this reservation script did not count them, so 3 heavy rows
+  // left 'used' undercounted and a 4th+5th direct Ghost reservation would be wrongly granted past
+  // the real shared ceiling.
+  it('3 pre-existing agy-heavy rows + 3 Ghost reservations -> the 6th overall call is refused', async () => {
+    for (let i = 0; i < 3; i++) appendRow(i * 60, 'ok', 'offload-dispatch-heavy', 'agy-heavy')
+    const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+    const results: boolean[] = []
+    for (let i = 0; i < 3; i++) results.push(reserveGhostCallSlot('card1'))
+    expect(results).toEqual([true, true, false])
+  }, 20_000)
+
   it('a row older than the 1h window does not count toward the budget', async () => {
     for (let i = 0; i < 5; i++) appendRow(3600 + i * 60, 'ok', 'backend2')
     const reserveGhostCallSlot = await freshReserveGhostCallSlot()

@@ -203,8 +203,13 @@ n = 0
 # this wrapper's own count at 0, admitting 5 more direct calls -- 10/hour against a stated 5/hour
 # ceiling). gemini-ghost-budget.ts already counts BOTH tags toward ITS side; this makes the
 # wrapper's own count symmetric.
+#
+# H1 (RedHat NO-GO, card f0b3b674 komment 20369, Gate-SHA 44931ad6): same hole, same shape, for
+# the heavy-second-opinion path's 'agy-heavy' rows (store/offload-dispatch.sh's reserve_heavy_
+# gemini_slot already counts all three tags on ITS side -- measured: 3 'agy-heavy' rows left this
+# wrapper's own count at 0, so 3 heavy + 5 direct = 8/hour against the stated shared 5/hour).
 for row in sh.calls_of(sh.read_log()):
-    if row.get('seged') not in ('agy', 'agy-ghost') or row.get('status') == 'blocked':
+    if row.get('seged') not in ('agy', 'agy-ghost', 'agy-heavy') or row.get('status') == 'blocked':
         continue
     try:
         ts = datetime.datetime.fromisoformat(str(row.get('ido', ''))).timestamp()
