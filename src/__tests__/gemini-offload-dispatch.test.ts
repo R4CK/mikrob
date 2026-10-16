@@ -683,24 +683,34 @@ describe('try_leaf() end-to-end behavioral guard (T1, RedHat 17510 finding 3)', 
     desc: string
     ragRc?: number // which branch of try_leaf's local-RAG result to exercise (default 5 = transient)
     offloadNoGemini?: boolean // card 21fbc293, WhiteHat2 F1: the draft loop's fail-closed env var
+    geminiRoute?: string // card f0b3b674 F2: override GEMINI_ROUTE so the OLD if-branch (call site 2)
+    // is naturally false by route mismatch (not by OFFLOAD_NO_GEMINI, which now also gates the
+    // heavy path), letting a GOAL 1 test reach the elif without the two gates fighting each other.
+    heavyFlag?: boolean // card f0b3b674 C1: create/omit the heavy-second-opinion flag file
+    heavyReserveAllow?: boolean // stub for reserve_heavy_gemini_slot()'s result (default true)
   }
 
   function runTryLeaf(
     opts: TryLeafOpts & { advisoryDraftStub?: string; qualityGateStub?: string },
-  ): { geminiCalled: boolean; geminiArgs: string } {
+  ): { geminiCalled: boolean; geminiArgs: string; heavyCalled: boolean } {
     const dispatchSrc = src(DISPATCH)
     const isBlockedFn = extractFn(dispatchSrc, 'is_gemini_blocked')
     const routeEnabledFn = extractFn(dispatchSrc, 'gemini_route_enabled')
+    const heavyEnabledFn = extractFn(dispatchSrc, 'gemini_heavy_second_opinion_enabled')
     const tryLeafFn = extractFn(dispatchSrc, 'try_leaf')
     const ragRc = opts.ragRc ?? 5
     const advisoryDraftStub = opts.advisoryDraftStub ?? 'advisory_draft() { cat >/dev/null; }'
     const qualityGateStub = opts.qualityGateStub ?? 'draft_quality_ok() { echo "OK"; }'
+    const geminiRoute = opts.geminiRoute ?? 'gemini'
+    const heavyReserveAllow = opts.heavyReserveAllow ?? true
 
     const script = `
 set -uo pipefail
 HERE="$(mktemp -d)"
 touch "$HERE/gemini-offload-enabled"   # route enabled for this test
-GEMINI_ROUTE="gemini"
+GEMINI_HEAVY_FLAG="$HERE/gemini-heavy-second-opinion-enabled"
+${opts.heavyFlag ? 'touch "$GEMINI_HEAVY_FLAG"' : ''}
+GEMINI_ROUTE="${geminiRoute}"
 LOCAL_LLM_AVAILABLE=${opts.fastPath ? '0' : '1'}
 OFFLOAD_LEAF_MAX_ATTEMPTS=2
 ${opts.offloadNoGemini ? 'OFFLOAD_NO_GEMINI=1' : ''}
@@ -715,8 +725,12 @@ chmod +x "$RAG"
 
 ${isBlockedFn}
 ${routeEnabledFn}
+${heavyEnabledFn}
 
 # Stubs for everything else try_leaf touches -- no real kanban/API/network I/O.
+# reserve_heavy_gemini_slot is STUBBED (not extracted): its own internals (sub-cap, shared window,
+# fail-open) are covered separately in offload-dispatch.selftest.sh -- here only the CALL-SITE
+# wiring (is_gemini_blocked / flag / reserve, in order) is under test.
 attempts_op() { echo '{"attempts":2}'; }
 graph_repo_for() { echo ""; }
 graph_args_for() { :; }
@@ -726,7 +740,9 @@ post_draft_comment() { :; }
 ${advisoryDraftStub}
 post_exhausted_notice() { :; }
 nudge_leaf_owner() { :; }
-try_gemini_for_leaf() { echo "CALLED:$*" >> "$RECORD"; return 0; }
+reserve_heavy_gemini_slot() { [ "${heavyReserveAllow ? 1 : 0}" = 1 ]; }
+try_gemini_for_leaf() { echo "OLDCALLED:$*" >> "$RECORD"; return 0; }
+try_gemini_second_opinion_for_leaf() { echo "NEWHEAVYCALLED:$*" >> "$RECORD"; return 0; }
 
 ${tryLeafFn}
 
@@ -745,8 +761,9 @@ rm -rf "$HERE" "$RAG" "$RECORD"
         TEST_PROJECT: opts.project,
       },
     })
-    const called = out.includes('CALLED:')
-    return { geminiCalled: called, geminiArgs: out.trim() }
+    const called = out.includes('OLDCALLED:')
+    const heavyCalled = out.includes('NEWHEAVYCALLED:')
+    return { geminiCalled: called, geminiArgs: out.trim(), heavyCalled }
   }
 
   // Call site 1 (fast path, LOCAL_LLM_AVAILABLE=0): allowed leaf -> Gemini actually invoked.
@@ -852,6 +869,96 @@ rm -rf "$HERE" "$RAG" "$RECORD"
       offloadNoGemini: true,
     })
     expect(r.geminiCalled).toBe(false)
+  })
+
+  // Card f0b3b674, QA FAIL (komment 20354) + WhiteHat F1/F2 (komment 20355, Gate-SHA 44931ad6):
+  // the two NEW heavy-second-opinion call sites (GOAL 1: elif in the exhausted-attempts branch;
+  // GOAL 2: unconditional block in the categorical-online branch) had NO behavioral coverage.
+  // WhiteHat measured 4 surviving mutants here (is_gemini_blocked/flag/reserve removed at GOAL 2,
+  // reserve removed at GOAL 1) that stayed green at 81/81 + 290/290 -- these cases are written to
+  // flip red for exactly those four mutations (removing any one guard from the real && chain makes
+  // the matching "never calls" case below start calling).
+  //
+  // GOAL 1 uses geminiRoute: 'local-only-test' so the OLD if (`$GEMINI_ROUTE == "gemini" && ...`)
+  // is false by route mismatch, not by OFFLOAD_NO_GEMINI -- the new gemini_heavy_second_opinion_
+  // enabled() also checks OFFLOAD_NO_GEMINI (F1 fix above), so using that env var here would
+  // conflate "old route off" with "heavy path off" instead of isolating the elif.
+  describe('GOAL 1 (elif, exhausted attempts): heavy second-opinion call-site wiring', () => {
+    const base = {
+      fastPath: false as const, project: 'mikrob', tags: 'BE,NORMAL,GEMINI-OK',
+      title: 'Add CSV export', desc: 'Export the monthly report.',
+      geminiRoute: 'local-only-test',
+    }
+
+    it('flag ON + allowed + reserve ALLOWS -> try_gemini_for_leaf IS called via the elif (positive control)', () => {
+      const r = runTryLeaf({ ...base, heavyFlag: true, heavyReserveAllow: true })
+      expect(r.geminiCalled).toBe(true)
+    })
+
+    it('flag OFF -> never calls, even otherwise-allowed (flag-check mutant)', () => {
+      const r = runTryLeaf({ ...base, heavyFlag: false, heavyReserveAllow: true })
+      expect(r.geminiCalled).toBe(false)
+    })
+
+    it('flag ON + blocked leaf (SEC tag) -> never calls (is_gemini_blocked mutant)', () => {
+      const r = runTryLeaf({ ...base, tags: 'SEC,NORMAL', heavyFlag: true, heavyReserveAllow: true })
+      expect(r.geminiCalled).toBe(false)
+    })
+
+    it('flag ON + allowed + reserve DENIES (capped) -> never calls (reserve mutant -- WhiteHat F2 #4)', () => {
+      const r = runTryLeaf({ ...base, heavyFlag: true, heavyReserveAllow: false })
+      expect(r.geminiCalled).toBe(false)
+    })
+
+    it('OFFLOAD_NO_GEMINI=1 blocks the elif even with flag ON and reserve allowing (F1 fix)', () => {
+      const r = runTryLeaf({ ...base, heavyFlag: true, heavyReserveAllow: true, offloadNoGemini: true })
+      expect(r.geminiCalled).toBe(false)
+    })
+  })
+
+  // GOAL 2 is unconditional (categorical-online, ragRc=9) -- fastPath value is irrelevant there,
+  // kept false/ragRc=9 to match the real call site's own branch.
+  describe('GOAL 2 (categorical-online): heavy second-opinion call-site wiring', () => {
+    const base = {
+      fastPath: false as const, ragRc: 9, project: 'mikrob', tags: 'BE,NORMAL,GEMINI-OK',
+      title: 'Add CSV export', desc: 'Export the monthly report.',
+    }
+
+    it('flag ON + allowed + reserve ALLOWS -> try_gemini_second_opinion_for_leaf IS called (positive control)', () => {
+      const r = runTryLeaf({ ...base, heavyFlag: true, heavyReserveAllow: true })
+      expect(r.heavyCalled).toBe(true)
+      expect(r.geminiCalled).toBe(false) // GOAL 2 is advisory-only, never the routing path
+    })
+
+    it('flag OFF -> never calls (WhiteHat F2 #2, flag-check mutant)', () => {
+      const r = runTryLeaf({ ...base, heavyFlag: false, heavyReserveAllow: true })
+      expect(r.heavyCalled).toBe(false)
+    })
+
+    it('flag ON + blocked leaf (SEC tag) -> never calls (WhiteHat F2 #1 / QA C3, is_gemini_blocked mutant)', () => {
+      const r = runTryLeaf({ ...base, tags: 'SEC,NORMAL', heavyFlag: true, heavyReserveAllow: true })
+      expect(r.heavyCalled).toBe(false)
+    })
+
+    it('flag ON + blocked leaf via mopsion project -> never calls (QA C3: project-allowlist on the GOAL 2 site)', () => {
+      const r = runTryLeaf({ ...base, project: 'mopsion', heavyFlag: true, heavyReserveAllow: true })
+      expect(r.heavyCalled).toBe(false)
+    })
+
+    it('flag ON + allowed + reserve DENIES (capped) -> never calls (WhiteHat F2 #3, reserve mutant)', () => {
+      const r = runTryLeaf({ ...base, heavyFlag: true, heavyReserveAllow: false })
+      expect(r.heavyCalled).toBe(false)
+    })
+
+    it('OFFLOAD_NO_GEMINI=1 blocks GOAL 2 even with flag ON and reserve allowing (F1 fix)', () => {
+      const r = runTryLeaf({ ...base, heavyFlag: true, heavyReserveAllow: true, offloadNoGemini: true })
+      expect(r.heavyCalled).toBe(false)
+    })
+
+    it('categorical-online routing itself is unaffected by the heavy draft (never falls back to try_gemini_for_leaf)', () => {
+      const r = runTryLeaf({ ...base, heavyFlag: true, heavyReserveAllow: true })
+      expect(r.geminiCalled).toBe(false)
+    })
   })
 })
 

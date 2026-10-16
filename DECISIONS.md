@@ -20511,3 +20511,17 @@ kiegészítést az allowlistben. `jail_cmd()` mindkét kártya bind-jait megtart
 **Amit ez a kártya NEM tartalmaz:** F4 (állandó-címzett nyom) továbbra is dokumentált maradék kockázat (e4eb72c9), nem ennek a kártyának a hatóköre; a mutt/mail/curl-smtp küldők a Bash-ág előszűrőjének hatókörén kívül esnek (nincsenek telepítve, nem blokkoló).
 
 **Ki döntött:** backend (self-advance pickup, 11. szabály, MikroB delegálása msg 13084). Gate: QA + Cybersec (a kártya saját kijelölése, email-send trust boundary, korábbi NO-GO ugyanerre a területre).
+
+## 2026-10-16 09:42 -- Gemini 5/óra stop nélkül is, nehéz (ONLINE) kártyákhoz második vélemény/draft (kártya f0b3b674)
+
+**Forrás:** Peti, Telegram 11505 + 11507 gomb: "Igen, nyisd meg" -- az óránkénti 5 Gemini-hívás a nehéz feladatokhoz is, új-fejlesztés-stop nélkül fusson.
+
+**MikroB plan-grilling verdiktje (GO-WITH-CHANGES, komment 20260):** C1 -- önálló flag-fájl (`store/gemini-heavy-second-opinion-enabled`), alapból KI, csak MikroB kapcsolja be mindhárom gate GO-ja után. C2 -- UGYANAZ a meglévő 5/óra közös keret (nem új, külön számláló), a nehéz-kártya út legfeljebb 3/5 slotot vihet el óránként, legalább 2 marad a stop-alatti draft-útnak és a Ghostnak. C3 -- a kizárás (biztonsági/auth/tenant, pénzügyi, mopsion kártya) legyen az ÚJ ág ELSŐ lépése is, `is_gemini_blocked` hívással, mutáns-teszttel igazolva. C4 -- kimenő adat csak a kártya cím+leírás, a meglévő titok-detektoron át. C5 -- kártyánkénti egyszeri hívás (a meglévő exhausted-TTL mechanizmusra épülve). C6 -- a Gemini-kimenet mindig DRAFT (`[GEMINI DRAFT | second-opinion]` fejléc), sosem gate-verdikt, sosem routing-döntés. C7 -- a dashboard Gemini-panelje mutassa kártyánként a hívást (korábban Peti kétszer kérdezte, mert nem látta). C8 -- a kártya eredeti 6. pontja (helyi modell bukása után merge-conflict-explain/upstream-batch-digest Gemini-re routolása) KIVÉVE ebből a kártyából, külön kártyára bontva (efe4aa40), mert az e4457f3a kategóriák még nem léteznek.
+
+**Miért plan-grilling-kötelezett:** kifelé menő adat külső szolgáltatásnak (Gemini API) + a korábbi F1d döntés (categorical-online leaf sosem megy Geminihez helyettesítő routing-ként) részleges megfordítása -- a root CLAUDE.md 1b. szabálya szerint kockázatos/architektúra-érintő Feladat-kártya `in_progress` előtt kötelező a plan-grilling.
+
+**Megvalósítás és utólagos javítások:** C1-C8 landolva (Gate-SHA 44931ad6, commit 0f24e53a+39e1eaa0). QA FAIL (komment 20354) a GOAL 2 hívási hely C3-lefedettségének hiányára; WhiteHat GO a kikapcsolt alapállapotra, de F1 (MEDIUM: az új két ág nem vette figyelembe az `OFFLOAD_NO_GEMINI=1` váltót) és F2 (a két új hívóhely 4 mutánsa hamis-zölden maradt) javítását a flag bekapcsolása előfeltételének szabta. Mindhárom lelet egy delta-javításban zárva: `gemini_heavy_second_opinion_enabled()` mostantól figyeli az `OFFLOAD_NO_GEMINI` váltót (F1), a `src/__tests__/gemini-offload-dispatch.test.ts` `runTryLeaf()` harness kiterjesztve a két új hívóhelyre, 12 új viselkedési teszt, a 4 WhiteHat-mutáns + az F1-mutáns elkülönítve igazolva pirosra vált.
+
+**Ki döntött:** MikroB (plan-grilling, GO-WITH-CHANGES), Peti (eredeti jóváhagyás, Telegram 11505/11507).
+
+**Hivatkozás:** kártya f0b3b674, c7abdf57 (Gemini-fázis szülő), 64788453 + a020247b (előfeltétel: 5/óra keret + seged-hivo jail), efe4aa40 (C8 levált követő kártya), 20260/20354/20355 kanban-komment (plan-grilling verdikt, QA FAIL, WhiteHat GO).

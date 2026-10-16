@@ -533,8 +533,16 @@ gemini_route_enabled() {
 # selftest can point this at a scratch path instead of the real store/ directory (card 9b224eec:
 # a selftest must never create/remove a file inside the shared checkout, even one it restores
 # before exiting -- every other vitest worker reads that same tree mid-run).
+# WhiteHat F1 (MEDIUM, komment 20355, Gate-SHA 44931ad6): gemini_route_enabled() above checks
+# OFFLOAD_NO_GEMINI first -- the per-card draft loop (gemini-orchestrator-draft.ts) sets it so NO
+# Gemini call goes out while that loop is driving a LOCAL-only draft (decision B, card 21fbc293).
+# This function originally did not check it at all, so a flag-ON heavy path would call out even
+# while the draft loop had explicitly asked for local-only. Measured by WhiteHat: with
+# OFFLOAD_NO_GEMINI=1 and the flag ON, both new call sites (GOAL 1, GOAL 2) still fired. Same
+# fail-closed check as gemini_route_enabled(), first line of the function.
 GEMINI_HEAVY_FLAG="${GEMINI_HEAVY_FLAG:-$HERE/gemini-heavy-second-opinion-enabled}"
 gemini_heavy_second_opinion_enabled() {
+  [[ "${OFFLOAD_NO_GEMINI:-0}" == "1" ]] && return 1
   [[ -f "$GEMINI_HEAVY_FLAG" ]]
 }
 
