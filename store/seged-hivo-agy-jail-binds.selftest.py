@@ -156,6 +156,31 @@ case("agy jail remounts $HOME read-only (--remount-ro) after binding state/workd
      "write outside DIR then fails loudly instead of landing in a still-writable tmpfs",
      ('--remount-ro', str(seged_hivo.HOME)) in pairs)
 
+# F3 (RedHat, card de3fb362 komment 20293, routed into 0f01b9cf): the remaining jail_cmd()
+# hardening flags were never pinned here either -- --new-session, --unshare-ipc and
+# --die-with-parent could all be dropped silently, same gap the S2 pins above closed for
+# --unshare-pid/--clearenv/--remount-ro.
+case("agy jail opens a new session (--new-session) -- blocks TIOCSTI terminal-injection into a "
+     "controlling tty it might otherwise inherit",
+     '--new-session' in agy_jail)
+case("agy jail unshares its own IPC namespace (--unshare-ipc) -- no host shared-memory/semaphore "
+     "object is reachable from inside the jail",
+     '--unshare-ipc' in agy_jail)
+case("agy jail dies with its parent (--die-with-parent) -- paired with --unshare-pid, this takes "
+     "every descendant down with it, setsid'd ones included, if the jail launcher itself dies",
+     '--die-with-parent' in agy_jail)
+
+# F3 (RedHat, same comment): --clearenv's argv POSITION matters, not just its presence -- bwrap
+# applies environment operations in argv order, so a --clearenv placed AFTER the --setenv pairs
+# would wipe the fixed allowlisted vars right back out, leaving the jailed process with a
+# silently empty environment instead of the intended allowlist (the existing presence-only pin
+# above stayed green under exactly this reordering).
+_clearenv_idx = agy_jail.index('--clearenv') if '--clearenv' in agy_jail else -1
+_setenv_idxs = [i for i, tok in enumerate(agy_jail) if tok == '--setenv']
+case("agy jail's --clearenv comes BEFORE every --setenv pair, not after (argv order matters to "
+     "bwrap -- a --clearenv after --setenv would wipe the allowlisted vars it just set)",
+     _clearenv_idx != -1 and _setenv_idxs != [] and _clearenv_idx < min(_setenv_idxs))
+
 workdir_on_mnt = Path('/mnt/h/does-not-need-to-exist/workdir')
 agy_jail_mnt_workdir = seged_hivo.jail_cmd('agy', workdir_on_mnt)
 pairs_mnt = list(zip(agy_jail_mnt_workdir, agy_jail_mnt_workdir[1:]))
@@ -275,6 +300,23 @@ if Path('/usr/bin/bwrap').exists() and Path('/mnt/wslg').is_dir():
              f"exact-set comparison, not name matching (sweep saw: {sweep_listing_paths!r})",
              sweep_is_exact(sweep_listing_paths, control_sock_path))
 
+        # N1 (RedHat GO, card e4d38c2b komment 20368, routed into 0f01b9cf): the F1 self-check
+        # cases below protect sweep_is_exact() ITSELF, but nothing pinned that the LIVE call site
+        # above still goes THROUGH that function -- RedHat measured that swapping it for a
+        # weakened `in`/membership check leaves the whole selftest green, because no case ever
+        # feeds the live call site a listing containing an extra, differently-named socket. A
+        # comment-stripped source scan pins the literal call-site text instead (identifier-
+        # boundary regex per the comment-defeat class, card a14812e8/e5b7ff19): a revert to `in`
+        # or to a bare equality inline is caught here even though the function-level cases below
+        # would stay green either way.
+        _own_src_no_comments = '\n'.join(
+            line for line in Path(__file__).read_text().splitlines()
+            if not line.strip().startswith('#'))
+        case("N1 source-pin: the live sweep comparison call site still invokes sweep_is_exact(...) "
+             "by name, not a weakened inline membership/`in` check",
+             re.search(r'\bsweep_is_exact\(sweep_listing_paths,\s*control_sock_path\)',
+                       _own_src_no_comments) is not None)
+
         # F1 self-check (RedHat NO-GO 20293): a listing carrying the control socket PLUS an
         # unrelated, differently-named socket path (never in host_entries, never control.sock)
         # must be REJECTED by sweep_is_exact -- a membership/`in` check would wrongly accept it,
@@ -325,9 +367,20 @@ else:
          f"{Path('/mnt/wslg').is_dir()}")
 
 print()
-print("selftest: %d case(s), %s%s" % (
-    n, "PASS" if not failures else "FAIL",
-    f", {len(skipped)} SKIPPED (not counted as coverage)" if skipped else ""))
+# F2 (RedHat, card de3fb362 komment 20293, routed into 0f01b9cf): the old "PASS, K SKIPPED" tail
+# still contained the literal substring the shared src/__tests__/store-selftests-all-run.test.ts
+# OK_SHAPES regex matches (that regex is not end-anchored), so a WSLg-less host's degraded run
+# read as an ordinary PASS to the machine consumer -- only a human reading the tail noticed the
+# skip. DEGRADED-SKIP uses wholly different wording (no "PASS" substring at all) so it cannot
+# satisfy the PASS pattern by accident; OK_SHAPES gets its own, deliberate entry for this shape
+# instead, so the skip stays a real exit 0 (not a CI break) while remaining machine-distinguishable
+# from a genuine, fully-exercised pass.
+if failures:
+    print("selftest: %d case(s), FAIL" % n)
+elif skipped:
+    print("selftest: %d case(s), DEGRADED-SKIP (%d skipped, not counted as coverage)" % (n, len(skipped)))
+else:
+    print("selftest: %d case(s), PASS" % n)
 for f in failures:
     print("  - %s" % f)
 for s in skipped:
