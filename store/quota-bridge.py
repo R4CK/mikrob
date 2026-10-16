@@ -501,6 +501,13 @@ def outage_loop(token, state):
                 state["phase"] = "healthy"; state["banner_streak"] = 0; state["notified_outage"] = False
                 save_state(state)
                 return
+            # Y1 (RedHat GO, card 612058c2 Teendo @6b9f61eb, comment 19993): refresh the heartbeat
+            # ONCE PER LOOP ITERATION, unconditionally, BEFORE the getUpdates call -- not only on
+            # the success branch below. The old placement (after the message-processing block) was
+            # skipped by the `continue` on the error/409 branch, so a getUpdates outage (15+ minutes
+            # of 409s/timeouts) let the heartbeat go stale while Ghost was still actively looping,
+            # which can hand the channel back to Claude mid-outage once the staleness window lapses.
+            mark_session_outage()
             res = tg_api(token, "getUpdates",
                          {"offset": state["offset"], "timeout": GETUPDATES_TIMEOUT,
                           "allowed_updates": json.dumps(["message"])},
@@ -521,9 +528,6 @@ def outage_loop(token, state):
                     ans = ask_local(text)
                     send(token, chat_id, f"👻 MikroB Ghost (lokális Qwen2.5-Coder-7B):\n{ans}")
             save_state(state)
-            # H2: refresh the heartbeat once per loop iteration (roughly the long-poll cadence)
-            # so a live Ghost keeps the marker fresh; see mark_session_outage()'s own docstring.
-            mark_session_outage()
     finally:
         # Card 612058c2 acceptance: "kilépéskor a runner leáll" -- runs on the recovery return path
         # AND on any unexpected exception, so the runner never outlives Ghost's own outage handling.

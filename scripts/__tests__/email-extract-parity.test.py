@@ -210,21 +210,37 @@ check("attachments: inline (base64-looking) content is hashed as given",
           {"attachments": [{"filename": "a.txt", "content": "QQ=="}]})
       == ([{"filename": "a.txt", "sha256": base64_hash}], None))
 
+# F3 (WhiteHat2, card e4eb72c9 komment 16368 -> a2cb71f1 elesitesi feltetel, TOCTOU): az
+# abszolut-utvonalu melleklet korabban EL LETT FOGADVA (a hook beolvasta es hashelte a fajlt
+# itt), de az MCP-szerver a TENYLEGES kuldeskor UJRA olvasta UGYANAZT az utvonalat -- a ket
+# olvasas kozott a fajl tartalma kicserelheto, a jovahagyott horgony a REGI bajtokra pinnel.
+# A javitas: minden abszolut utvonal fail-closed TILTVA, csak szigoru base64 (inline bajtok,
+# nincs masodik olvasas) fogadhato el.
 with tempfile.TemporaryDirectory() as td:
     fpath = os.path.join(td, "report.pdf")
     with open(fpath, "wb") as fh:
         fh.write(b"%PDF-1.4 fake")
-    file_hash = __import__("hashlib").sha256(b"%PDF-1.4 fake").hexdigest()
     atts, reason = mod.collect_mcp_attachments(
         {"attachments": [{"filename": "report.pdf", "content": fpath}]})
-    check("attachments: absolute file path is READ and its bytes hashed",
-          reason is None and atts == [{"filename": "report.pdf", "path": fpath, "sha256": file_hash}],
-          f"got atts={atts!r} reason={reason!r}")
+    check("attachments: absolute file path is REJECTED fail-closed (F3, TOCTOU closure)",
+          atts == [] and reason is not None, f"got atts={atts!r} reason={reason!r}")
+
+    # M-F3 (mutant): if the absolute-path branch silently kept hashing the file instead of
+    # rejecting it, swapping the file's bytes AFTER the hook ran would change what gets sent
+    # without the approval anchor ever noticing -- that is exactly the TOCTOU this closes.
+    # Proof: write different bytes to the SAME path and confirm the hook still refuses it
+    # outright (there is no hash to compare against a swap, because there is no hash at all).
+    with open(fpath, "wb") as fh:
+        fh.write(b"SWAPPED CONTENT")
+    atts2, reason2 = mod.collect_mcp_attachments(
+        {"attachments": [{"filename": "report.pdf", "content": fpath}]})
+    check("attachments: absolute file path still rejected after a content swap (no TOCTOU window)",
+          atts2 == [] and reason2 is not None, f"got atts={atts2!r} reason={reason2!r}")
 
     missing_path = os.path.join(td, "gone.pdf")
     atts, reason = mod.collect_mcp_attachments(
         {"attachments": [{"filename": "gone.pdf", "content": missing_path}]})
-    check("attachments: unreadable file path -> unreadable_reason, fail-closed",
+    check("attachments: nonexistent absolute path -> unreadable_reason, fail-closed (same as any absolute path)",
           atts == [] and reason is not None, f"got atts={atts!r} reason={reason!r}")
 
 check("attachments: non-list value -> unreadable_reason",

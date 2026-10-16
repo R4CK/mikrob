@@ -175,6 +175,7 @@ A lista **kategóriákba** van rendezve (11, alább), hogy egy új olvasó ne eg
 - **Token-használat napi összesítése**: a token-napló részletes sorai 30 napig maradnak meg, a régebbieket a napi takarítás törlés előtt napi összesítésbe írja (nap, ügynök, modell, projekt szerint), így a hosszú távú fogyasztás visszakereshető marad, az adatbázis pedig nem nő korlátlanul.
 - **Feedback-survey kikapcsolása minden ügynök-induláson**: a CLI saját munkamenet-felmérése mid-session felugorhatott és blokkolt minden bejövő forgalmat, amíg valaki kézzel el nem tüntette; a spawn ezt környezeti változóval kikapcsolja.
 - **Dedikált infra/üzemeltetés ügynök (DevO)**: külön flotta-ügynök (belső azonosító `fullstack`) frissítés/rollback, landolás, futtatókörnyezet, megfigyelhetőség, ellátási lánc és deploy felelőssel -- a korábbi fullstack-fejlesztői szerep DevOps/SRE-re váltott, ugyanazzal a belső azonosítóval.
+- **Flotta-visszaállítás gép-újraindulás után**: egy idempotens, alapból dry-run szkript, ami gép/WSL-újraindulás után felméri az Ollama/GPU állapotot (a GPU crash-loop-maszkot tiszteletben tartva), jelenti a félbeszakadt landolási munkakönyvtárakat, listázza a nem-üres átadási jegyzettel bíró futó ügynököket, és kiírja a terhelés/ügynök-plafon pillanatképét -- egyetlen visszafordítható lépést végez el valóban (`ollama.service` elindítása, ha indokolt és nincs maszkolva), minden mást csak jelent.
 
 ### Frissítés, verziózás, rollback
 

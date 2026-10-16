@@ -40,20 +40,44 @@ set -euo pipefail
 # value (jail_cmd sets it via --setenv), so this resolves the same way every invocation.
 SUBTASK_DIR="${HOME:-/root}/.gemini-local-subtask"
 # Card a020247b F1/F2 (WhiteHat2 NO-GO 19540): both now come from the ONE read-only DIRECTORY bind
-# at $SUBTASK_DIR/gate (scripts/seged-hivo.py's agy_subtask_binds(), `gate` subdir) instead of
+# at the literal jail path below (scripts/seged-hivo.py's agy_subtask_binds()) instead of
 # individual single-file binds -- see that function's comment for why a directory bind is required
 # for the host's atomic rename (tmp+rename) to stay visible for this jail's whole lifetime. Neither
 # file is read via nvidia-smi or any GPU device node inside the jail any more (F1): both are
 # snapshots the HOST keeps fresh (store/vram-guard-check.sh's ambient GATE_MIRROR writes,
 # src/web/routes/local-llm.ts's kill-switch mirror write).
-KILL_SWITCH_MIRROR="${GEMINI_LOCAL_SUBTASK_KILLSWITCH:-$SUBTASK_DIR/gate/killswitch-mirror.json}"
-GPU_GATE_MIRROR="${GEMINI_LOCAL_SUBTASK_GPU_GATE:-$SUBTASK_DIR/gate/gpu-gate-mirror.json}"
+#
+# Card 19ef0eca (WhiteHat2 finding on the 67a78f4c gate, komment 20244): these two paths ARE the
+# gate decision itself, so unlike OLLAMA_HOST/MODEL/TIMEOUT/LOG below (mechanical config, already
+# accepted as no-new-capability per the F3 note above), they are FIXED constants, never env-
+# overridable. A bad-faith agy controls the environment of any child process IT spawns (same F3
+# reasoning) -- an env override here would let it point the gate at a file it just wrote itself
+# inside the jail's own writable --tmpfs, forging an ADMIT without ever touching the real,
+# host-written mirror. Measured by WhiteHat2: a forged {"admit":true} file via this env var did
+# pass the gate.
+#
+# Card b30ad7e6 F1 (RedHat finding on 19ef0eca's edc5bd86 GO): the 19ef0eca fix above stopped the
+# NAMED env-var override, but these two paths were still COMPUTED from $SUBTASK_DIR, which is
+# itself "${HOME:-/root}/..." -- and a bad-faith agy controls $HOME for any child process it spawns
+# (gemini-local-subtask.sh included) just as freely as it controlled the named env vars. Exporting
+# a scratch HOME before invoking this script would move the WHOLE gate-decision lookup into a
+# directory the attacker fully controls, including a forged {"admit":true}/{"enabled":true} pair
+# with a fresh timestamp -- the fixed-name-env-var fix above does not block this, because no env
+# var named GEMINI_LOCAL_SUBTASK_* is involved, only $HOME itself.
+#
+# Fix: these two paths are now a LITERAL absolute jail path, matching exactly what
+# scripts/seged-hivo.py's agy_subtask_binds() binds there (SUBTASK_GATE_JAIL_DIR) -- no $HOME
+# computation on either side any more, so there is nothing left for a scratch HOME to redirect.
+GATE_JAIL_DIR="/run/gemini-local-subtask-gate"
+KILL_SWITCH_MIRROR="$GATE_JAIL_DIR/killswitch-mirror.json"
+GPU_GATE_MIRROR="$GATE_JAIL_DIR/gpu-gate-mirror.json"
 # A gate verdict older than this is DOUBT, not absence -- same fail-safe direction as every other
 # "tool present but unreadable" branch in this threat model: on doubt, HOLD (route online), never
 # silently ADMIT just because nothing has refreshed the mirror lately. Generous relative to how
 # often the fleet's ambient dispatch activity calls vram-guard-check.sh in practice (card 108c7b10's
-# whole reason to exist is that this happens often), so staleness should be rare.
-GPU_GATE_STALE_S="${GEMINI_LOCAL_SUBTASK_GPU_GATE_STALE_S:-600}"
+# whole reason to exist is that this happens often), so staleness should be rare. Fixed, not env-
+# overridable, same reasoning as the two mirror paths above (cards 19ef0eca, b30ad7e6).
+GPU_GATE_STALE_S=600
 LOG_FILE="${GEMINI_LOCAL_SUBTASK_LOG:-$SUBTASK_DIR/calls.log}"
 OLLAMA_HOST="${GEMINI_LOCAL_SUBTASK_OLLAMA_HOST:-http://127.0.0.1:11434}"
 # Fixed, not caller-suppliable in the good-faith path. Keep in sync with store/local-llm-model (the
