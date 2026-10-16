@@ -529,8 +529,13 @@ gemini_route_enabled() {
 # Fail-closed by construction: file absence (the shipped default) means OFF, same convention as
 # gemini_route_enabled() above. Enable/disable is a MikroB action (create/remove the file), never a
 # tracked-file chmod -- same operational pattern as store/gemini-offload-enabled.
+# GEMINI_HEAVY_FLAG is overridable (same pattern as HEAVY_HOURLY_LOCK/HEAVY_SEGED_HIVO below) so a
+# selftest can point this at a scratch path instead of the real store/ directory (card 9b224eec:
+# a selftest must never create/remove a file inside the shared checkout, even one it restores
+# before exiting -- every other vitest worker reads that same tree mid-run).
+GEMINI_HEAVY_FLAG="${GEMINI_HEAVY_FLAG:-$HERE/gemini-heavy-second-opinion-enabled}"
 gemini_heavy_second_opinion_enabled() {
-  [[ -f "${HERE}/gemini-heavy-second-opinion-enabled" ]]
+  [[ -f "$GEMINI_HEAVY_FLAG" ]]
 }
 
 # HEAVY BUDGET SUB-RESERVATION (card f0b3b674 C2): "UGYANAZ a kozos 5/ora ablak ... NEM uj, kulon

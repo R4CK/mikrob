@@ -440,8 +440,12 @@ check "the OFFLOAD_DRAFT_SINK default literal is 'comment' (file sink is opt-in 
   "$(grep -c 'OFFLOAD_DRAFT_SINK:-comment' "$DISPATCH")" "1"
 
 # --- HEAVY SECOND-OPINION (card f0b3b674, MikroB plan-grilling GO-WITH-CHANGES C1/C2/C3/C6) -------
-HEAVY_FLAG="$HERE/gemini-heavy-second-opinion-enabled"
-rm -f "$HEAVY_FLAG"  # defensive: a leftover from a prior interrupted run must not pollute this run
+# GEMINI_HEAVY_FLAG points this at a scratch path, never at $HERE/... (card 9b224eec: a selftest
+# must never create/remove a file inside the shared checkout, even one it restores before exiting --
+# every other vitest worker reads that same tree mid-run; selftests-do-not-mutate-the-shared-tree.
+# test.ts statically flags exactly an `rm`/`touch`-adjacent anchor on a $HERE-derived variable).
+HEAVY_FLAG="$TMPDIR/gemini-heavy-second-opinion-enabled"
+export GEMINI_HEAVY_FLAG="$HEAVY_FLAG"
 
 check "gemini_heavy_second_opinion_enabled() defaults OFF (C1, flag file absent)" \
   "$(bash "$DISPATCH" --test-heavy-enabled)" "off"
@@ -452,6 +456,7 @@ check "gemini_heavy_second_opinion_enabled() turns ON when the flag file exists"
 rm -f "$HEAVY_FLAG"
 check "gemini_heavy_second_opinion_enabled() turns back OFF once the flag file is removed" \
   "$(bash "$DISPATCH" --test-heavy-enabled)" "off"
+unset GEMINI_HEAVY_FLAG
 
 # reserve_heavy_gemini_slot(): real flock+python3 against a throwaway seged-hivo.py root (same
 # isolation pattern as src/__tests__/gemini-ghost-budget.test.ts -- copied, not symlinked, because
