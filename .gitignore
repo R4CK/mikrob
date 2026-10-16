@@ -100,6 +100,10 @@ Ingatlan/token*
 # a prohibition -- same argument as watched-repos.json above. Named, not a blanket *.md rule, so
 # runtime markdown under store/ stays ignored.
 !store/codeburn-usage-policy.md
+# The skill-role map (kártya 527c9584/f0cefd85) is a reference document, not runtime data: it
+# records which of the 188 global skills each fleet agent's CLAUDE.md already cites and which are
+# gaps. Named, not a blanket *.md rule, so runtime markdown under store/ stays ignored.
+!store/skill-role-map.md
 # Local-LLM offload tooling (config + task templates) is operational, not runtime data.
 !store/local-llm-model
 !store/route-classify-validated-model
