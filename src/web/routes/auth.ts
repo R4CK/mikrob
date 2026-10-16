@@ -45,6 +45,7 @@ import {
   listDeviceKeys,
   revokeDeviceKey,
   getDeviceKey,
+  agentKeyToAgentId,
   DEVICE_KEY_SCOPES,
   OPERATOR_KEY_DEFAULT_EXPIRY_DAYS,
   OPERATOR_KEY_MAX_EXPIRY_DAYS,
@@ -111,6 +112,21 @@ export function kindAllowed(auth: RouteContext['auth'], kinds: readonly string[]
 }
 
 export const FORBIDDEN_KIND = { error: 'Forbidden for this credential type' }
+
+// Card 93ed929a (RedHat 16876, B1): `kind === 'device'` alone is NOT a human credential -- card
+// 9655494c's agent:<id> device-key issuance means a fleet agent can hold its OWN device key, which
+// resolves to this exact `kind: 'device'` shape. The device branch must exclude any key that
+// agentKeyToAgentId resolves to an agent id -- only a non-agent device key (phone/Bridge pairing)
+// stays human. Moved here from claude-plans.ts (card 6eca461e, RedHat N2/N3 re-gate) so
+// agents.ts/settings.ts can reuse the same check instead of re-deriving it.
+export function rejectIfNotHumanAuth(ctx: RouteContext): boolean {
+  const isAgentDeviceKey = ctx.auth?.kind === 'device' && agentKeyToAgentId(ctx.auth.device) !== null
+  if (!isAgentDeviceKey && (ctx.auth?.kind === 'session' || ctx.auth?.kind === 'device')) return false
+  logger.warn({ authKind: ctx.auth?.kind ?? 'none', path: ctx.path, method: ctx.method },
+    'Write rejected for non-human credential')
+  json(ctx.res, { error: 'This operation requires a browser session or a device key, not the shared agent token.' }, 403)
+  return true
+}
 
 // Who may manage dashboard users (list/create/delete). 'session' is included
 // deliberately: a logged-in operator managing users is the existing behavior.

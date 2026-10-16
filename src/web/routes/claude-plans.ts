@@ -26,8 +26,8 @@ import { probePlanUsage, observationFromProbe, usageFromProbe } from '../../clau
 import { agentDir, writeAgentClaudePlan } from '../agent-config.js'
 import { restartAgentProcess } from '../agent-process.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
-import { agentKeyToAgentId } from '../auth-device-keys.js'
 import { rotationReadiness } from '../claude-rotation-heartbeat.js'
+import { rejectIfNotHumanAuth } from './auth.js'
 import type { RouteContext } from './types.js'
 
 /** Minimum gap between two manual probes of the same plan (POST .../probe). */
@@ -153,14 +153,8 @@ export function deleteOwnTokenSecret(planId: string, secretId: string | null | u
 // `kind: 'device'` shape. Measured: a device key for 'agent:qa' passed every write/rotate route
 // this gate exists to close. The device branch must exclude any key that agentKeyToAgentId
 // resolves to an agent id -- only a non-agent device key (phone/Bridge pairing) stays human.
-function rejectIfNotHumanAuth(ctx: RouteContext): boolean {
-  const isAgentDeviceKey = ctx.auth?.kind === 'device' && agentKeyToAgentId(ctx.auth.device) !== null
-  if (!isAgentDeviceKey && (ctx.auth?.kind === 'session' || ctx.auth?.kind === 'device')) return false
-  logger.warn({ authKind: ctx.auth?.kind ?? 'none', path: ctx.path, method: ctx.method },
-    'Claude plans: write/rotate rejected for non-human credential')
-  json(ctx.res, { error: 'This operation requires a browser session or a device key, not the shared agent token.' }, 403)
-  return true
-}
+// Moved to auth.ts (card 6eca461e, RedHat N2/N3 re-gate) and imported from there, so
+// agents.ts/settings.ts can gate the same way without re-deriving the check.
 
 export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx

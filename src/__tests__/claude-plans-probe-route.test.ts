@@ -8,7 +8,9 @@ import { tmpdir } from 'node:os'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-probe-test-'))
 
-vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5' }))
+// STORE_DIR: claude-plans.ts now imports ./auth.js (card 6eca461e, rejectIfNotHumanAuth
+// relocation), which imports ../auth-gate.js, which reads STORE_DIR at module scope.
+vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, STORE_DIR: join(tmpRoot, 'store'), MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5' }))
 vi.mock('../settings-store.js', () => ({ getEffectiveSettingValue: () => '' }))
 vi.mock('../web/channel-monitor.js', () => ({ hardRestartMarveenChannels: () => ({ ok: true }) }))
 vi.mock('../web/agent-process.js', () => ({ restartAgentProcess: async () => ({ ok: true }) }))

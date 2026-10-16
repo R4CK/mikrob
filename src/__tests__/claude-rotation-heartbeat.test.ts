@@ -67,7 +67,10 @@ function fakePost(path: string, body: unknown): { ctx: RouteContext; out: { stat
       if (event === 'end') cb()
     },
   }
-  return { ctx: { req, res, path, method: 'POST', url: new URL(`http://localhost${path}`) } as RouteContext, out }
+  // Card 6eca461e (RedHat N3): POST /api/settings now requires a human credential. This file is
+  // about the rotation-task wiring side effect, not the auth gate itself, so the fixture carries a
+  // session like a real operator would -- the gate's own tests live in settings-routes.test.ts.
+  return { ctx: { req, res, path, method: 'POST', url: new URL(`http://localhost${path}`), auth: { kind: 'session' } } as RouteContext, out }
 }
 
 beforeEach(() => {
