@@ -2141,7 +2141,7 @@ function sendCatchUpSummary(
   lastCatchUpSummaryAtMs = nowMs
   suppressedCatchUpSummaries = 0
   const text = lines.join('\n')
-  ;(async () => {
+  void (async () => {
     try {
       await sendSchedulerAlertMessage(token, ownerChat, text)
       logger.info({ caughtUp: caughtUp.length, stale: stale.length, provider: CHANNEL_PROVIDER }, 'catch-up summary alert sent')
@@ -2285,7 +2285,7 @@ function sendPendingRetryAlert(view: PendingRetryView, nowMs: number): void {
   const firstAttempt = new Date(view.firstAttempt).toLocaleString('hu-HU')
   const text = pendingRetryAlertText(view, `[${BOT_NAME} scheduler]`, ageMinutes, firstAttempt) +
     `\n${BOT_NAME} mar ertesitve volt errol, de nem oldodott meg.`
-  ;(async () => {
+  void (async () => {
     try {
       await sendSchedulerAlertMessage(token, ownerChat, text)
       logger.info({ task: view.taskName, agent: view.agentName, ageMinutes, provider: CHANNEL_PROVIDER }, 'Pending-retry alert sent')
@@ -2464,7 +2464,7 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
     `A riasztási küszöb ennél a feladatnál ${thresholdMinutes} perc; ha ez a feladat jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.`,
     'Az ágensben megtekintheted; a dashboard /Ütemezések oldalán visszavonható ha kell.',
   ].join('\n')
-  ;(async () => {
+  void (async () => {
     try {
       await sendSchedulerAlertMessage(token, ownerChat, text)
       logger.info({ task: entry.taskName, agent: entry.agentName, ageMinutes, provider: CHANNEL_PROVIDER }, 'task-timeout alert sent')

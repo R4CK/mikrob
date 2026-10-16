@@ -36,7 +36,7 @@ afterEach(() => {
 })
 
 async function runToTimeout(name: string, cmd: string, timeoutMs: number): Promise<void> {
-  mod.runCommandTask({ name, type: 'command', command: cmd, agent: 'system', timeoutMs } as never, Math.floor(Date.now() / 1000))
+  void mod.runCommandTask({ name, type: 'command', command: cmd, agent: 'system', timeoutMs } as never, Math.floor(Date.now() / 1000))
   await vi.waitFor(() => {
     expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ task: name, ok: false, detail: `timeout ${timeoutMs}ms` }), 'command task ran')
   }, { timeout: timeoutMs + 4000 })

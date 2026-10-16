@@ -46,7 +46,7 @@ const labels = (): string[] => reg.runningDetachedGroups().map((g) => g.label)
 describe('the dashboard shutdown ends the running detached groups', () => {
   it('a running command task: bash and the grandchild it started are gone after endAllDetachedGroups', async () => {
     const d = tmp(); const bashF = join(d, 'bash.pid'); const gF = join(d, 'grand.pid')
-    cmd.runCommandTask({ name: 'ds-cmd', type: 'command', command: `echo $$ > '${bashF}'; sleep 300 & echo $! > '${gF}'; wait`, agent: 'system', timeoutMs: 60_000 } as never, Math.floor(Date.now() / 1000))
+    void cmd.runCommandTask({ name: 'ds-cmd', type: 'command', command: `echo $$ > '${bashF}'; sleep 300 & echo $! > '${gF}'; wait`, agent: 'system', timeoutMs: 60_000 } as never, Math.floor(Date.now() / 1000))
     const bashPid = await readPid(bashF); const grand = await readPid(gF)
     expect(labels()).toContain('command-task:ds-cmd')
     expect(reg.endAllDetachedGroups('test')).toBeGreaterThanOrEqual(1)
@@ -66,7 +66,7 @@ describe('the dashboard shutdown ends the running detached groups', () => {
   })
 
   it('a group that finished on its own leaves the registry (no stale pid to kill later)', async () => {
-    cmd.runCommandTask({ name: 'ds-quick', type: 'command', command: 'true', agent: 'system', timeoutMs: 5000 } as never, Math.floor(Date.now() / 1000))
+    void cmd.runCommandTask({ name: 'ds-quick', type: 'command', command: 'true', agent: 'system', timeoutMs: 5000 } as never, Math.floor(Date.now() / 1000))
     await vi.waitFor(() => { expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ task: 'ds-quick' }), 'command task ran') }, { timeout: 4000 })
     expect(labels()).not.toContain('command-task:ds-quick')
     const d = tmp(); const script = join(d, 'pre.sh'); writeFileSync(script, 'echo SKIP\n', { mode: 0o755 })
@@ -75,7 +75,7 @@ describe('the dashboard shutdown ends the running detached groups', () => {
   })
 
   it('a timed-out command task leaves the registry with its kill', async () => {
-    cmd.runCommandTask({ name: 'ds-timeout', type: 'command', command: 'sleep 300', agent: 'system', timeoutMs: 500 } as never, Math.floor(Date.now() / 1000))
+    void cmd.runCommandTask({ name: 'ds-timeout', type: 'command', command: 'sleep 300', agent: 'system', timeoutMs: 500 } as never, Math.floor(Date.now() / 1000))
     await vi.waitFor(() => { expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ task: 'ds-timeout', detail: 'timeout 500ms' }), 'command task ran') }, { timeout: 4000 })
     expect(labels()).not.toContain('command-task:ds-timeout')
   })
