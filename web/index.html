@@ -109,6 +109,10 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3C7.5 3 4 6.5 4 11v4l-2 3h4v2a3 3 0 0 0 3 3h1a3 3 0 0 0 3-3v0a3 3 0 0 0 3 3h1a3 3 0 0 0 3-3v-2h4l-2-3v-4c0-4.5-3.5-8-8-8z"/></svg>
             <span class="sb-label">Memória</span>
           </a>
+          <a href="#" class="sb-link" data-page="kg">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="18" r="3"/><circle cx="12" cy="12" r="3"/><line x1="8.6" y1="7.6" x2="10" y2="10"/><line x1="15.4" y1="7.6" x2="14" y2="10"/><line x1="8.6" y1="16.4" x2="10" y2="14"/><line x1="15.4" y1="16.4" x2="14" y2="14"/></svg>
+            <span class="sb-label" data-i18n="nav.kg">Megoldás-tár</span>
+          </a>
           <a href="#" class="sb-link" data-page="naplo">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
             <span class="sb-label">Napló</span>
@@ -2693,6 +2697,78 @@
       <div id="costsContent"></div>
     </div>
 
+    <!-- Knowledge graph ("Megoldás-tár") page, card 8bb7cf54 (MT-11) -->
+    <div class="page" id="kgPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1 data-i18n="kg.page_title">Megoldás-tár</h1>
+            <p class="subtitle" data-i18n="kg.page_subtitle">A flotta saját, gate-elt megoldásai, buktatói és döntései -- kereshető, projektenként vagy mindenre</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="kg-banner kg-banner-info" id="kgOllamaBanner" hidden>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span id="kgOllamaBannerText" data-i18n="kg.banner.fts_only">Ollama nem elérhető -- csak szöveges (FTS) keresés fut, a hibrid rangsor kikapcsolva.</span>
+      </div>
+
+      <div class="kg-stats" id="kgStats"></div>
+
+      <div class="kg-toolbar">
+        <div class="kg-search-wrap">
+          <svg class="kg-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input type="text" id="kgSearchInput" class="kg-search" data-i18n-placeholder="kg.search_placeholder" placeholder="Keresés a megoldás-tárban...">
+        </div>
+        <select class="kg-project-select" id="kgProjectSelect">
+          <option value="" data-i18n="kg.filter.default_scope">Saját projekt</option>
+          <option value="*" data-i18n="kg.filter.all_projects">Mind</option>
+        </select>
+        <select class="kg-type-select" id="kgTypeFilter" multiple size="1">
+          <option value="solution" data-i18n="kg.type.solution">Megoldás</option>
+          <option value="anti_pattern" data-i18n="kg.type.anti_pattern">Anti-minta</option>
+          <option value="decision" data-i18n="kg.type.decision">Döntés</option>
+          <option value="finding" data-i18n="kg.type.finding">Gate-lelet</option>
+          <option value="lesson" data-i18n="kg.type.lesson">Tanulság</option>
+        </select>
+        <label class="kg-strict-toggle">
+          <input type="checkbox" id="kgStrictToggle">
+          <span data-i18n="kg.filter.strict">szigorú (nincs engedékeny visszaesés)</span>
+        </label>
+      </div>
+
+      <div class="kg-layout">
+        <div class="kg-results" id="kgResultsPane">
+          <div class="kg-results-meta" id="kgResultsMeta"></div>
+          <div class="kg-results-body" id="kgResultsBody">
+            <p class="kg-empty" data-i18n="kg.empty.type_to_search">Írj be egy keresőszót, vagy válassz típust/projektet.</p>
+          </div>
+        </div>
+
+        <div class="kg-detail" id="kgDetailPanel" hidden>
+          <div class="kg-detail-tabs">
+            <button type="button" class="kg-tab active" id="kgTabDetail" data-i18n="kg.tab.detail">Részletek</button>
+            <button type="button" class="kg-tab" id="kgTabGraph" data-i18n="kg.tab.graph">Gráf-nézet</button>
+          </div>
+          <div class="kg-detail-body" id="kgDetailBody"></div>
+          <div class="kg-graph-view" id="kgGraphView" hidden>
+            <div class="kg-graph-toolbar">
+              <button type="button" class="btn-secondary btn-compact" id="kgGraphDepthBtn" data-depth="1" data-i18n="kg.graph.depth_1">1 ugrás</button>
+              <span class="kg-graph-legend" id="kgGraphLegend"></span>
+            </div>
+            <canvas id="kgGraphCanvas" class="kg-graph-canvas"></canvas>
+            <div class="kg-graph-panel" id="kgGraphPanel" hidden></div>
+          </div>
+        </div>
+
+        <div class="kg-detail-placeholder" id="kgDetailPlaceholder">
+          <p data-i18n="kg.detail.placeholder">Válassz egy találatot a bal oldali listából.</p>
+        </div>
+      </div>
+    </div>
+
     <!-- Naplo page -->
     <div class="page" id="naploPage" hidden>
       <div class="page-header">
@@ -4252,6 +4328,7 @@
   <script src="/app-archive-timeline.js"></script>
   <script src="/app-overview.js"></script>
   <script src="/app-gemini-calls.js"></script>  <!-- card 57da740c: Gemini-calls page + overview tile; after app-overview.js so loadGeminiOverviewTile() can be called from loadOverview() -->
+  <script src="/app-kg.js"></script>  <!-- card 8bb7cf54 (MT-11): Megoldas-tar (knowledge graph) page -->
   <script src="/app-llm-monitor.js"></script>   <!-- card 87be1810: LLM monitor page (task-events swimlane); after app-overview.js for the shared ovw-llmdist CSS/idiom -->
   <script src="/app-autonomy.js"></script>
   <script src="/app-terminal.js"></script>
