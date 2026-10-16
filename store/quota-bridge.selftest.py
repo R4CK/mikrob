@@ -471,6 +471,57 @@ def main() -> int:
         for name, fn in old2.items():
             setattr(m, name, fn)
 
+    # --- Y1 (RedHat GO, card 612058c2 Teendo @6b9f61eb, comment 19993): the F1 case above only
+    # --- drives the SUCCESS branch of tg_api (always {"ok": True}), so it never catches a bug on
+    # --- the error/409 branch -- the pre-fix code's heartbeat refresh sat AFTER the message loop,
+    # --- past the error branch's `continue`, so a getUpdates failure skipped the refresh entirely.
+    # --- Here tg_api always answers {"ok": False, "error_code": 409} and mikrob_down() answers True
+    # --- once then False, so outage_loop() runs exactly one failing iteration before recovering --
+    # --- a correct implementation still calls mark_session_outage() at least twice (entry + that
+    # --- one failing iteration), a buggy one (refresh only after a successful getUpdates) only once.
+    old3 = {
+        "allowed_chats": m.allowed_chats, "mark_session_outage": m.mark_session_outage,
+        "start_ghost_runner": m.start_ghost_runner, "stop_ghost_runner": m.stop_ghost_runner,
+        "clear_session_outage": m.clear_session_outage, "send": m.send,
+        "save_state": m.save_state, "recovery_probe_due": m.recovery_probe_due,
+        "mikrob_down": m.mikrob_down, "tg_api": m.tg_api, "kill_pid_holder": m.kill_pid_holder,
+        "time": m.time,
+    }
+    mark_calls3 = {"n": 0}
+    down_calls3 = {"n": 0}
+    m.allowed_chats = lambda: {"1"}
+    m.mark_session_outage = lambda: mark_calls3.__setitem__("n", mark_calls3["n"] + 1)
+    m.start_ghost_runner = lambda: "FAKE_PROC"
+    m.stop_ghost_runner = lambda proc: None
+    m.clear_session_outage = lambda: None
+    m.send = lambda token, chat_id, text: None
+    m.save_state = lambda s: None
+    m.recovery_probe_due = lambda now=None: True
+    m.tg_api = lambda *a, **kw: {"ok": False, "error_code": 409}
+    m.kill_pid_holder = lambda: None
+
+    class _NoSleepTime:
+        def __getattr__(self, name):
+            return (lambda *a, **kw: None) if name == "sleep" else getattr(time, name)
+
+    m.time = _NoSleepTime()
+
+    def _mikrob_down_once_then_recovered3():
+        down_calls3["n"] += 1
+        return down_calls3["n"] == 1
+
+    m.mikrob_down = _mikrob_down_once_then_recovered3
+    try:
+        m.outage_loop("fake-token", {"offset": 0, "notified_outage": False})
+        if mark_calls3["n"] >= 2:
+            ok("outage_loop() refreshes the heartbeat on the error/409 getUpdates branch too (Y1)")
+        else:
+            bad("outage_loop() should refresh the heartbeat even when getUpdates fails",
+                f"mark_session_outage called {mark_calls3['n']} time(s)")
+    finally:
+        for name, fn in old3.items():
+            setattr(m, name, fn)
+
     # --- F1 (WhiteHat GO, comment 19967): main() must actually REGISTER the SIGTERM handler, not
     # --- just have a handler that behaves correctly if called directly (the F-RH-V3 cases below
     # --- test the handler's own body, not whether main() ever wires it up) -- and the startup
