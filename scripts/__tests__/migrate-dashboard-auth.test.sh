@@ -25,8 +25,8 @@ TOKEN="test-dashboard-token-123"
 LOG="$TMP/requests.log"; : > "$LOG"
 PORT_FILE="$TMP/port"
 cat > "$TMP/server.py" <<'PY'
-import http.server, json, sys
-token, log, port_file = sys.argv[1], sys.argv[2], sys.argv[3]
+import http.server, json, os, sys
+token, log, port_file = os.environ['TOKEN'], sys.argv[1], sys.argv[2]
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_POST(self):
@@ -48,7 +48,7 @@ s = http.server.HTTPServer(('127.0.0.1', 0), H)
 open(port_file, 'w').write(str(s.server_address[1]))
 s.serve_forever()
 PY
-python3 "$TMP/server.py" "$TOKEN" "$LOG" "$PORT_FILE" &
+TOKEN="$TOKEN" python3 "$TMP/server.py" "$LOG" "$PORT_FILE" &
 SERVER_PID=$!
 for _ in $(seq 1 50); do [ -s "$PORT_FILE" ] && break; sleep 0.1; done
 PORT="$(cat "$PORT_FILE")"
