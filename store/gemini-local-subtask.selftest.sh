@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Self-test for store/gemini-local-subtask.sh (card a020247b). No real GPU, no real Ollama, no
-# bwrap jail needed -- every dependency is a fake file or a tiny local HTTP stub, all pointed at
-# via the script's env overrides (production never sets these; the jail bind-mounts the real
-# files at the fixed /opt/gemini-local-subtask/* paths instead).
+# bwrap jail needed -- every dependency is a fake file or a tiny local HTTP stub.
+#
+# Card 19ef0eca (WhiteHat2 finding, komment 20244): the kill-switch and GPU-gate mirror paths are
+# no longer env-overridable in the script (they are the gate decision itself, fixed to
+# $SUBTASK_DIR/gate/*.json under $HOME) -- fixture injection here goes through a per-test sandbox
+# HOME instead of the old GEMINI_LOCAL_SUBTASK_KILLSWITCH/GPU_GATE env vars. LOG/OLLAMA_HOST/
+# TIMEOUT remain plain env overrides (mechanical config, unaffected by that card).
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$HERE/gemini-local-subtask.sh"
@@ -49,24 +53,30 @@ run() {  # $1 = stdin text, remaining = env KEY=VALUE pairs already exported by 
 
 # Card a020247b F1/F2 delta-gate (WhiteHat2 NO-GO 19540): the GPU gate is now a host-written
 # {"admit":bool,"reason":str,"at":epoch} mirror file, not a fake vram-guard-check.sh binary.
-gate_mirror() {  # $1 = admit(true/false), $2 = reason, $3 = age in seconds before "now" (default 0)
-  local f="$TD/gate-mirror-$RANDOM.json"
+# $1 = target path to write, $2 = admit(true/false), $3 = reason, $4 = age in seconds (default 0)
+write_gate_mirror() {
   local at
-  at=$(python3 -c "import time; print(time.time() - ${3:-0})")
-  printf '{"admit": %s, "reason": "%s", "at": %s}\n' "$1" "$2" "$at" > "$f"
-  echo "$f"
+  at=$(python3 -c "import time; print(time.time() - ${4:-0})")
+  printf '{"admit": %s, "reason": "%s", "at": %s}\n' "$2" "$3" "$at" > "$1"
 }
 
+# card 19ef0eca: fixture injection for the kill-switch/GPU-gate mirrors now goes through a
+# sandbox $HOME (matching the script's own $SUBTASK_DIR="$HOME/.gemini-local-subtask" layout),
+# not an env override -- those two paths are fixed in the script now. KILLSWITCH_FILE/GPU_GATE_FILE
+# are set as a side effect for the test cases below to write fixtures into directly.
 base_env() {
-  GEMINI_LOCAL_SUBTASK_KILLSWITCH="$TD/no-such-killswitch.json"
-  GEMINI_LOCAL_SUBTASK_GPU_GATE="$(gate_mirror true ok 0)"
-  GEMINI_LOCAL_SUBTASK_GPU_GATE_STALE_S=600
+  HOME="$TD/home-$n-$RANDOM"
+  GATE_DIR="$HOME/.gemini-local-subtask/gate"
+  mkdir -p "$GATE_DIR"
+  KILLSWITCH_FILE="$GATE_DIR/killswitch-mirror.json"
+  GPU_GATE_FILE="$GATE_DIR/gpu-gate-mirror.json"
+  write_gate_mirror "$GPU_GATE_FILE" true ok 0
   GEMINI_LOCAL_SUBTASK_LOG="$TD/calls-$n.log"
   GEMINI_LOCAL_SUBTASK_OLLAMA_HOST="http://127.0.0.1:$PORT"
   GEMINI_LOCAL_SUBTASK_TIMEOUT=5
-  export GEMINI_LOCAL_SUBTASK_KILLSWITCH GEMINI_LOCAL_SUBTASK_GPU_GATE \
-    GEMINI_LOCAL_SUBTASK_GPU_GATE_STALE_S \
-    GEMINI_LOCAL_SUBTASK_LOG GEMINI_LOCAL_SUBTASK_OLLAMA_HOST GEMINI_LOCAL_SUBTASK_TIMEOUT
+  unset GEMINI_LOCAL_SUBTASK_KILLSWITCH GEMINI_LOCAL_SUBTASK_GPU_GATE \
+    GEMINI_LOCAL_SUBTASK_GPU_GATE_STALE_S
+  export HOME GEMINI_LOCAL_SUBTASK_LOG GEMINI_LOCAL_SUBTASK_OLLAMA_HOST GEMINI_LOCAL_SUBTASK_TIMEOUT
 }
 
 case_eq() {  # $1 = label, $2 = expected, $3 = actual
@@ -84,13 +94,13 @@ case_eq "kill-switch-missing: response" "MOCKED-LOCAL-RESPONSE" "$out"
 
 # 2. Kill-switch explicit enabled:true -> proceeds
 base_env
-echo '{"enabled":true}' > "$GEMINI_LOCAL_SUBTASK_KILLSWITCH"
+echo '{"enabled":true}' > "$KILLSWITCH_FILE"
 out="$(echo 'hello' | bash "$SCRIPT" 2>/dev/null)"; rc=$?
 case_eq "kill-switch-true: exit 0" "0" "$rc"
 
 # 3. Kill-switch explicit enabled:false -> refuses, never reaches the GPU gate or Ollama
 base_env
-echo '{"enabled":false}' > "$GEMINI_LOCAL_SUBTASK_KILLSWITCH"
+echo '{"enabled":false}' > "$KILLSWITCH_FILE"
 echo 'hello' | bash "$SCRIPT" >"$TD/out3" 2>"$TD/err3"; rc=$?
 case_eq "kill-switch-false: exit 1" "1" "$rc"
 grep -q 'killswitch-off' "$TD/err3" || fails+=("kill-switch-false: stderr missing killswitch-off reason")
@@ -98,13 +108,13 @@ grep -q $'\tkillswitch-off\t' "$GEMINI_LOCAL_SUBTASK_LOG" || fails+=("kill-switc
 
 # 4. Kill-switch corrupt JSON -> treated as ON (same fail-open convention), proceeds
 base_env
-echo 'not json{{{' > "$GEMINI_LOCAL_SUBTASK_KILLSWITCH"
+echo 'not json{{{' > "$KILLSWITCH_FILE"
 out="$(echo 'hello' | bash "$SCRIPT" 2>/dev/null)"; rc=$?
 case_eq "kill-switch-corrupt: exit 0" "0" "$rc"
 
 # 5. Mirror reports HOLD -> script refuses, never calls Ollama (card a020247b F1)
 base_env
-GEMINI_LOCAL_SUBTASK_GPU_GATE="$(gate_mirror false gpu-util-hold 0)"
+write_gate_mirror "$GPU_GATE_FILE" false gpu-util-hold 0
 echo 'hello' | bash "$SCRIPT" >"$TD/out5" 2>"$TD/err5"; rc=$?
 case_eq "gpu-hold: exit 1" "1" "$rc"
 grep -q 'gpu-util-hold' "$TD/err5" || fails+=("gpu-hold: stderr missing gpu-util-hold reason")
@@ -112,33 +122,65 @@ grep -q $'\tgpu-util-hold\t' "$GEMINI_LOCAL_SUBTASK_LOG" || fails+=("gpu-hold: l
 
 # 6. Mirror reports ADMIT and is fresh -> proceeds to the real call
 base_env
-GEMINI_LOCAL_SUBTASK_GPU_GATE="$(gate_mirror true ok 0)"
+write_gate_mirror "$GPU_GATE_FILE" true ok 0
 out="$(echo 'hello' | bash "$SCRIPT" 2>/dev/null)"; rc=$?
 case_eq "gpu-admit: exit 0" "0" "$rc"
 case_eq "gpu-admit: response" "MOCKED-LOCAL-RESPONSE" "$out"
 
-# 6a. Mirror is ADMIT but STALE (older than the stale threshold) -> doubt -> HOLD (card a020247b F1)
+# 6a. Mirror is ADMIT but STALE (older than the script's fixed 600s stale threshold) -> doubt ->
+#     HOLD (card a020247b F1). GPU_GATE_STALE_S is no longer overridable (card 19ef0eca); 9999s
+#     is well past the fixed 600s default either way.
 base_env
-GEMINI_LOCAL_SUBTASK_GPU_GATE="$(gate_mirror true ok 9999)"
-GEMINI_LOCAL_SUBTASK_GPU_GATE_STALE_S=600
+write_gate_mirror "$GPU_GATE_FILE" true ok 9999
 echo 'hello' | bash "$SCRIPT" >"$TD/out6a" 2>"$TD/err6a"; rc=$?
 case_eq "gpu-stale: exit 1" "1" "$rc"
 grep -q 'stale' "$GEMINI_LOCAL_SUBTASK_LOG" || fails+=("gpu-stale: log missing stale detail")
 
 # 6b. Mirror file does not exist at all (fresh host, nothing has reported in yet) -> HOLD, not ADMIT
 base_env
-GEMINI_LOCAL_SUBTASK_GPU_GATE="$TD/no-such-mirror-$RANDOM.json"
+rm -f "$GPU_GATE_FILE"
 echo 'hello' | bash "$SCRIPT" >"$TD/out6b" 2>"$TD/err6b"; rc=$?
 case_eq "gpu-no-mirror: exit 1" "1" "$rc"
 grep -q 'no-gate-mirror-yet' "$GEMINI_LOCAL_SUBTASK_LOG" || fails+=("gpu-no-mirror: log missing no-gate-mirror-yet detail")
 
 # 6c. Mirror file is present but corrupt/unparseable -> doubt -> HOLD
 base_env
-GEMINI_LOCAL_SUBTASK_GPU_GATE="$TD/corrupt-mirror-$RANDOM.json"
-echo 'not json{{{' > "$GEMINI_LOCAL_SUBTASK_GPU_GATE"
+echo 'not json{{{' > "$GPU_GATE_FILE"
 echo 'hello' | bash "$SCRIPT" >"$TD/out6c" 2>"$TD/err6c"; rc=$?
 case_eq "gpu-corrupt-mirror: exit 1" "1" "$rc"
 grep -q 'unreadable' "$GEMINI_LOCAL_SUBTASK_LOG" || fails+=("gpu-corrupt-mirror: log missing unreadable detail")
+
+# 6e. Forged GEMINI_LOCAL_SUBTASK_GPU_GATE env override must NOT be honored (card 19ef0eca,
+#     WhiteHat2 finding on the 67a78f4c gate, komment 20244): a bad-faith agy fully controls the
+#     environment of any child process it spawns, so if this script trusted an env-supplied
+#     mirror path, forging {"admit":true} there (in the jail's own writable --tmpfs) would bypass
+#     the real, host-written gate entirely -- WhiteHat2 measured exactly this working pre-fix.
+#     The REAL (sandboxed) mirror says HOLD; a forged env var points at a separately-written
+#     ADMIT file. Must still HOLD, proving the env var is ignored.
+base_env
+write_gate_mirror "$GPU_GATE_FILE" false gpu-util-hold 0
+forged="$TD/forged-admit-$RANDOM.json"
+write_gate_mirror "$forged" true ok 0
+GEMINI_LOCAL_SUBTASK_GPU_GATE="$forged"
+export GEMINI_LOCAL_SUBTASK_GPU_GATE
+echo 'hello' | bash "$SCRIPT" >"$TD/out6e" 2>"$TD/err6e"; rc=$?
+unset GEMINI_LOCAL_SUBTASK_GPU_GATE
+case_eq "forged-gpu-gate-env-ignored: exit 1 (real HOLD wins over forged env ADMIT)" "1" "$rc"
+grep -q 'gpu-util-hold' "$TD/err6e" || fails+=("forged-gpu-gate-env-ignored: stderr missing gpu-util-hold (env override still honored?)")
+
+# 6f. Same class as 6e, for the kill-switch mirror: a forged GEMINI_LOCAL_SUBTASK_KILLSWITCH env
+#     override pointing at an attacker-written enabled:true file must not override the real,
+#     sandboxed enabled:false file.
+base_env
+echo '{"enabled":false}' > "$KILLSWITCH_FILE"
+forged_ks="$TD/forged-killswitch-$RANDOM.json"
+echo '{"enabled":true}' > "$forged_ks"
+GEMINI_LOCAL_SUBTASK_KILLSWITCH="$forged_ks"
+export GEMINI_LOCAL_SUBTASK_KILLSWITCH
+echo 'hello' | bash "$SCRIPT" >"$TD/out6f" 2>"$TD/err6f"; rc=$?
+unset GEMINI_LOCAL_SUBTASK_KILLSWITCH
+case_eq "forged-killswitch-env-ignored: exit 1 (real OFF wins over forged env ON)" "1" "$rc"
+grep -q 'killswitch-off' "$TD/err6f" || fails+=("forged-killswitch-env-ignored: stderr missing killswitch-off (env override still honored?)")
 
 # 6d. A prompt over the kernel's ARG_MAX (card a020247b F4 regression pin, WhiteHat2 19540:
 #     previously "python3 -c ... \"\$prompt\"" hit "Argument list too long" silently past ~128 KB).
