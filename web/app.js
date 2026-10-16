@@ -332,7 +332,6 @@
 // MikroB/Fron Ted rather than guessed at.
 /* STUB -- content removed */
 
-
 // ============================================================
 // === Elements + Modal helpers + Avatar Gallery -- see web/app-elements.js ===
 // ============================================================
