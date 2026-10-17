@@ -20750,3 +20750,22 @@ Mindhárom tételt a kártya "INFO (ugyanitt rendezendő)" szekciója sorolta fe
 **Ki döntött:** fullstack (kártya 9b1ccbca, self-advance, rule 6b aging-override -- a kártya 21,5 napja ült a planned oszlopban). Gate: QA.
 
 **Hivatkozás:** kártya 9b1ccbca, 197947ae/dac2e52b/c2aeefa5/2564e877/f4cd1783/9163495b (a mérési nap QA FAIL-jei), `kanban-draft-review-guard.ts` (a Draft-Review marker-minta forrása), `kanban-landed-guard.ts` és `kanban-spec-template-guard.ts` (a két újrahasznosított minta).
+
+## 2026-10-17 -- kártya d06a325d: upstream-szinkron Köteg 18 (e164e275..f44edf07, 26 upstream commit, v1.43.0)
+
+**Kontextus:** Peti kérése (Telegram 11394, 2026-10-15) az e5c46e87 upstream-szinkron fázis folytatásaként: a Szotasz/marveen upstreamet egy szintre hozni a 14-17. kötegek módszerével (ütközésfeloldás fork-oldal-default-tal, egyedi mérlegeléssel hunkonként, fleet-test a merge eredményén, csak zöld esetén landolás).
+
+**Ütközésfeloldás, a nagyobb döntési pontok:**
+- Upstream ismét hozta a `selectTickWindow`-t (fair tick-window-valasztas a message-router-ben). Az `acknowledged-conflicts.ts` már régóta NOT ADOPTED-ként tartja (kártya b5b7eb6b/577db3a7 óta, és a 2827. soron egy guard-needle is figyeli, ha visszakerülne) -- ez a kötegben is NOT ADOPTED maradt, az upstream import egyszerűen törölve. A fork saját `selectFairBatch`-je (message-router.ts) viszont bővült: felismeri az új, hitelesített `isUrgentDelivery`/`isStopMessage` jelzőket (message-router-window.ts, korábbi fork-saját kártyák: 71263d15, 795d1f48, fc5748f5), hogy az urgens/STOP sorok a saját fair-batch logikán belül is előre kerüljenek, nem csak az upstream mintában. Ez a fork saját megoldásának kiterjesztése, nem az upstream mechanizmus átvétele.
+- Upstream a `restartAgentProcess`-hez egy `wake` opciót ad a model-fallback-runner.ts egyik hívási helyén. NEM ADOPTÁLVA ezen a hívási helyen: a meglévő, incidensből eredő `model-step-down-starts-fresh.test.ts` (kártya 1ce3fd90) szigorúan `{ fresh: opts.fresh }`-re pinned ezt a konkrét hívást, és a `wake` hozzáadása elrontotta volna azt a tesztet. A hívás visszaállítva az eredeti alakra; a `restart-wake.test.ts` megfelelően frissítve.
+- `isSystemRecipient` (routes/messages.ts) csak a `SYSTEM_DIRECTIVE_SENDER` ('system-directive') kizárását tartalmazta, a `LEGACY_SYSTEM_SENDER` ('system') nem volt kizárva -- a köteg egyik új tesztje (`messages-post-system-recipient.test.ts`) ezt hiányként fedte fel; mindkét fenntartott azonosító kizárva.
+- `createKanbanCard` upstream-mintájú nyitó `kanban_card_events` sora átvéve (a kártya-aktívidő mérés alapja); emiatt több meglévő teszt, ami kézzel back-date-elte a `created_at`-ot raw SQL-lel, kiegészült a megfelelő `kanban_card_events` sor back-date-elésével is.
+- `saveMemory()` valódi hibát javítva a merge mellékhatásaként: `agentId` paramétert kapott (`MAIN_AGENT_ID` alapértelmezéssel) -- korábban minden sor 'marveen'-re íródott SQL-szinten, ami ezen a telepítésen a valós fő ágens ('mikrob') nevét soha nem látta.
+- `kanbanWriteClearsDispatch()` új, közös helper -- javítja, hogy egy PUT-alapú státuszváltás nem törölte a `dispatched_at`-ot, csendben akadályozva az újra-dispatchet.
+- `web/app.js` monolitikus upstream-architektúrája helyett a fork modularizált `web/app-kanban.js`/`web/app-i18n-nav.js`-ét frissítettem (`kanbanCardMatchesSearch`, `kanbanCardSorter`, `renderKanbanSearchHint`, `formatActiveTime` portolva) -- több upstream tesztfájl a monolitikus elrendezést feltételezte, a horgonyok átigazítva a modularizált fájlokra.
+
+**Mérés:** a merge eredményén `fleet-test.sh` teljes suite-ja zöld (a 3, függetlenül már ismert `send-invocation-conformance.test.ts` bukás kivételével, ami ettől a kötegtől független, előzőleg is megvolt). `tsc --noEmit` tiszta, `lint-ratchet.sh` baseline tart (egy helyen a `core.fileMode=true` checkout miatt elveszett +x bitet vissza kellett állítani lemezen is, nem csak az indexben, mielőtt a lint-ratchet újra tudta mérni).
+
+**Ki döntött:** backend3 (kártya d06a325d). Gate: QA + Cybersec (a kártya saját leírása szerint, hook-/gate-/email-kapu érintettség miatt).
+
+**Hivatkozás:** kártya d06a325d, e5c46e87 (szülő fázis), b5b7eb6b/577db3a7 (selectTickWindow NOT ADOPTED eredeti döntés), 1ce3fd90 (model-step-down-starts-fresh, a wake-hívás pinje), 71263d15/795d1f48/fc5748f5 (a fork saját urgent/STOP-kiterjesztése, amibe ez a köteg belekötött).
