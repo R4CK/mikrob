@@ -44,7 +44,9 @@
 // ensureEvidenceSection, ensureMcpListChannelSection), PLUS three more that no production call site
 // currently passes MAIN_AGENT_ID to but whose source still resolves a MAIN path if one ever did
 // (ensureLocalFirstSection, ensureFleetRosterSection, ensureProjectRootAnchor), PLUS
-// ensureMessageCloseSection (card 8a3a1e84, WhiteHat NO-GO B1) -- eleven total.
+// ensureMessageCloseSection (card 8a3a1e84, WhiteHat NO-GO B1), PLUS ensureSkillUsageSection
+// (card 27b02677, same defensive reasoning as the "three more": no production call site passes it
+// MAIN_AGENT_ID today, but its guard is proven here anyway) -- twelve total.
 // Deliberately EXCLUDES ensureFederationClaudeMdSection: that writer's main-agent behaviour is NOT
 // static -- it adds or REMOVES a block depending on live store/ federation state (WhiteHat INFO I1
 // on card 5a15cd5a), a separate, as yet undecided question, not a static-drift bug this collector
@@ -99,6 +101,7 @@ const {
   ensureFleetRosterSection,
   ensureProjectRootAnchor,
   ensureMessageCloseSection,
+  ensureSkillUsageSection,
 } = await import('../web/agent-scaffold.js')
 
 const SCAFFOLD_SOURCE = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
@@ -118,6 +121,10 @@ const SCAFFOLD_SOURCE = readFileSync(join(__dirname, '..', 'web', 'agent-scaffol
 // ensureSkillsPathTrapSection remains the ONLY function that legitimately still writes for MAIN via
 // content-match idempotency (ternary to PROJECT_ROOT/CLAUDE.md, no guard) -- it IS called with
 // MAIN_AGENT_ID in web.ts/the sweeper, and check B below exercises it correctly.
+// ensureSkillUsageSection (card 27b02677) added here too: it opens with the same
+// `if (name === MAIN_AGENT_ID) return` guard as the others, and SKILL_USAGE_DATA has no 'mikrob'
+// entry anyway (the main agent's skill catalogue lives in root CLAUDE.md's own static "Core
+// skilljeid" section) -- the guard still needs proving present in source, same as the rest.
 const MAIN_EXEMPT_FUNCTIONS = [
   'ensureMemorySearchLabelSection',
   'ensureFleetAuthSection',
@@ -128,9 +135,10 @@ const MAIN_EXEMPT_FUNCTIONS = [
   'ensureLocalFirstSection',
   'ensureProjectRootAnchor',
   'ensureMessageCloseSection',
+  'ensureSkillUsageSection',
 ]
 
-describe('the no-op-for-MAIN guard is present in source, on all nine exempt writers (cards 81f202bd + 8a3a1e84)', () => {
+describe('the no-op-for-MAIN guard is present in source, on all ten exempt writers (cards 81f202bd + 8a3a1e84 + 27b02677)', () => {
   for (const fnName of MAIN_EXEMPT_FUNCTIONS) {
     it(`${fnName}'s first statement is the MAIN_AGENT_ID no-op guard`, () => {
       const start = SCAFFOLD_SOURCE.indexOf(`export function ${fnName}(`)
@@ -151,8 +159,8 @@ describe('the no-op-for-MAIN guard is present in source, on all nine exempt writ
 const TOKEN_PATH_RE = /cat [^)]+\/store\/\.dashboard-token/g
 const normalize = (s: string) => s.replace(TOKEN_PATH_RE, 'cat <PROJECT_ROOT>/store/.dashboard-token')
 
-describe('every static main-agent CLAUDE.md writer stays in sync with its committed block (cards 81f202bd + 8a3a1e84)', () => {
-  it('produces a zero-diff (modulo PROJECT_ROOT) after all eleven writers run against MAIN', async () => {
+describe('every static main-agent CLAUDE.md writer stays in sync with its committed block (cards 81f202bd + 8a3a1e84 + 27b02677)', () => {
+  it('produces a zero-diff (modulo PROJECT_ROOT) after all twelve writers run against MAIN', async () => {
     const { REPO_ROOT } = await import('./helpers/repo-location.js')
     const original = readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf-8')
 
@@ -178,6 +186,7 @@ describe('every static main-agent CLAUDE.md writer stays in sync with its commit
       ensureFleetRosterSection('mikrob')
       ensureProjectRootAnchor('mikrob')
       ensureMessageCloseSection('mikrob')
+      ensureSkillUsageSection('mikrob')
 
       const after = readFileSync(copyPath, 'utf-8')
       expect(normalize(after), 'a main-agent section writer changed the committed CLAUDE.md -- its generator text drifted from the statically committed block').toBe(normalize(original))

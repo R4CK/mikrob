@@ -67,3 +67,28 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 | Nem-triviális, többlépéses feladat | `project-workflow` | - |
 
 A REVIEW-komment `Skills: <a ténylegesen betöltött skillek>` sora kötelező (a 20. munkavégzési szabály, a `Gate-SHA:` sor mintájára). Ha egyik sem illett: `Skills: nincs illő` + egy félmondat, miért.
+
+<!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
+## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+
+Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
+nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
+szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
+tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
+amikor abban nincs ott a kártyádhoz illő skill.
+**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
+CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+
+| Skill | Feladattípus |
+|---|---|
+| `d3-data-visualization` | Build interactive, accessible data visualizations with D3.js -- bar/line/area/pie/scatter, time series, maps/choropleth, network graphs, with tooltips, zoom/pan/brush, and respo... |
+| `engineering-standards` | The fleet's synthesized engineering standard — 10 categories covering architecture, security, infra, QA, data, resilience, secrets, observability, and code hygiene. |
+| `frontend-design-research` | Research current web design on awwwards.com and dribbble.com and translate it into a modern, production-grade frontend implementation. |
+| `humanize-writing` | AI-generált szöveget emberi hangzásúvá alakít -- AI-kliséket felismer és eltávolít, ritmust variál, specifikusságot injektál, brand-voice-t alkalmaz. |
+| `idea-refine` | Refines raw ideas into sharp, actionable concepts through structured divergent and convergent thinking. |
+| `marketing-gtm` | Positioning, messaging hierarchy, and go-to-market framework for a product or launch. |
+| `project-workflow` | The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify si... |
+| `brand-foundations-strategy` | Build the foundational brand strategy for a product or business -- positioning, target audience, key differentiator, brand promise, personality traits, and a one-line positionin... **(ÚJ -- KÖTELEZŐ-GAP)** |
+| `brand-handbook-compiler` | Compile a completed brand strategy into a practical brand handbook for designers, copywriters and freelancers -- positioning, target audience, logo usage and clear space, color ... **(ÚJ -- KÖTELEZŐ-GAP)** |
+| `brand-tone-of-voice-guide` | Create a brand voice/tone-of-voice guide -- three voice traits with examples, recommended sentence length, vocabulary, punctuation style, phrases to avoid, and how tone shifts a... **(ÚJ -- KÖTELEZŐ-GAP)** |
+<!-- END GENERATED: skill-usage -->

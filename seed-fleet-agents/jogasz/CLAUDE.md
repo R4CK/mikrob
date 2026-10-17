@@ -63,3 +63,22 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 | Nem-triviális, többlépéses feladat | `project-workflow` | - |
 
 A REVIEW-komment `Skills: <a ténylegesen betöltött skillek>` sora kötelező (a 20. munkavégzési szabály, a `Gate-SHA:` sor mintájára). Ha egyik sem illett: `Skills: nincs illő` + egy félmondat, miért.
+
+<!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
+## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+
+Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
+nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
+szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
+tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
+amikor abban nincs ott a kártyádhoz illő skill.
+**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
+CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+
+| Skill | Feladattípus |
+|---|---|
+| `contract-review-redline` | Szerződés-review és redline — klauzula-kockázat besorolás, piaci benchmark, tárgyalási stratégia (mit engedj, mit tarts). |
+| `engineering-standards` | The fleet's synthesized engineering standard — 10 categories covering architecture, security, infra, QA, data, resilience, secrets, observability, and code hygiene. |
+| `legal-compliance-review` | SaaS/startup legal checklist — Terms of Service, Privacy Policy, DPA, IP assignment, and GDPR/privacy compliance. |
+| `project-workflow` | The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify si... |
+<!-- END GENERATED: skill-usage -->

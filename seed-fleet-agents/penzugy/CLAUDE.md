@@ -64,3 +64,24 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 | Nem-triviális, többlépéses feladat | `project-workflow` | - |
 
 A REVIEW-komment `Skills: <a ténylegesen betöltött skillek>` sora kötelező (a 20. munkavégzési szabály, a `Gate-SHA:` sor mintájára). Ha egyik sem illett: `Skills: nincs illő` + egy félmondat, miért.
+
+<!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
+## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+
+Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
+nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
+szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
+tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
+amikor abban nincs ott a kártyádhoz illő skill.
+**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
+CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+
+| Skill | Feladattípus |
+|---|---|
+| `d3-data-visualization` | Build interactive, accessible data visualizations with D3.js -- bar/line/area/pie/scatter, time series, maps/choropleth, network graphs, with tooltips, zoom/pan/brush, and respo... |
+| `engineering-standards` | The fleet's synthesized engineering standard — 10 categories covering architecture, security, infra, QA, data, resilience, secrets, observability, and code hygiene. |
+| `finance-modeling` | SaaS unit-economics and cash modeling — CAC, LTV, payback, NRR, burn rate, runway, and pricing. |
+| `pricing-strategy` | Create a Pricing Strategy Pack (value metric, packaging, price points, conversion mechanics, rollout). |
+| `project-workflow` | The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify si... |
+| `invoicing-bookkeeping` | Operatív könyvelés — kiadás/bevétel/előfizetés követés, AP/AR aging, havi P&L, budget-vs-actual riasztás, HU (NAV Online Számla, ÁFA) és CH (QR-Rechnung) számlázási megfelelőség. **(ÚJ -- KÖTELEZŐ-GAP)** |
+<!-- END GENERATED: skill-usage -->

@@ -192,3 +192,31 @@ Ezek a szerepedhez rendelt alapvető skillek. MINDEN globális skill elérhető,
 - `full-value-audit` -- teljes audit adverzariális rétege
 - `unlazy` -- teljesítés-fegyelem hosszú/többrészes gate-vizsgálatra, acceptance-gate + Depth Tree (a Stop-hook NINCS bekötve, csak a skill-hivatkozás, kártya 200d2969)
 - `doubt-driven-development` -- minden nem-triviális gate-verdikt friss-kontextusú adverzariális átvizsgálása (kártya 200d2969)
+
+<!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
+## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+
+Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
+nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
+szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
+tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
+amikor abban nincs ott a kártyádhoz illő skill.
+**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
+CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+
+| Skill | Feladattípus |
+|---|---|
+| `ai-security-testing` | Security-test AI/LLM/agent systems on AUTHORIZED targets — prompt injection (direct + indirect via retrieved/tool data), jailbreaks, system-prompt & data exfiltration, tool/func... |
+| `cloud-container-security` | Assess cloud + container infrastructure for security misconfigurations on AUTHORIZED accounts — IAM privilege-escalation paths, over-permissive roles/policies, public object sto... |
+| `doubt-driven-development` | Subjects every non-trivial decision to a fresh-context adversarial review before it stands. |
+| `full-value-audit` | Run a FULL-VALUE audit of an app -- inventory EVERY frontend + backend function (every page, button, form, endpoint, module), test every user flow at every RBAC level (positive ... |
+| `incident-response` | Handle a suspected or confirmed security incident on our OWN systems — detect/classify, triage severity, determine escalation path, collect forensic evidence (preserve before yo... |
+| `redteam` | Red team engagement planning and attack path analysis for AUTHORIZED offensive security simulations. |
+| `seniorsecopsengineer` | Complete Security Operations toolkit for vulnerability management, compliance verification, secure coding, and security automation. |
+| `skill-security-auditor` | Vet a SKILL.md (and its helper scripts/deps) BEFORE it enters ~/.claude/skills/. |
+| `supplychainsecurity` | Protects the software supply chain against dependency and artifact tampering with SBOM generation, artifact signing, and SLSA compliance. |
+| `threat-modeling` | Structured threat modeling for a feature or system BEFORE (or alongside) building it — STRIDE per element over a data-flow diagram, DREAD-style risk scoring, attack trees, and t... |
+| `unlazy` | Enforces completion discipline for substantial autonomous work by writing acceptance gates before execution, decomposing work with the Depth Tree, running approved checks, and r... |
+| `white-hat-security-testing` | Offensive white-hat security testing methodology for AUTHORIZED targets (this team's own product). |
+| `redhat-gate-pattern` | Full RedHat gate workflow for the CleanCore fleet: board scan for waiting+REVIEW cards in RedHat scope, assume-breach kill-chain evaluation per card, verdict posting, card statu... **(ÚJ -- KÖTELEZŐ-GAP)** |
+<!-- END GENERATED: skill-usage -->

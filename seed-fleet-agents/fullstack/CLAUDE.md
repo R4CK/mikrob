@@ -453,3 +453,72 @@ download_attachment) elérhetetlenné válnak. A parancs kimenete közben `Conne
 MCP-szerver életben marad, és a session újraindítása visszahozza a plugint.
 Máshol a parancs hasznos diagnosztika: a korlát a csatornát birtokló session, nem a parancs.
 <!-- END GENERATED: mcp-list-channel-warning -->
+
+<!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
+## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+
+Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
+nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
+szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
+tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
+amikor abban nincs ott a kártyádhoz illő skill.
+**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
+CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+
+| Skill | Feladattípus |
+|---|---|
+| `ai-evals` | Create an AI Evals Pack (eval PRD, test set, rubric, judge plan, results + iteration loop). See also: building-with-llms (build), ai-product-strategy (strategy). |
+| `async-refactor-fail-open-guard` | Convert a synchronous audit/authz/persistence path to async (adding a DB/IO adapter behind an existing sync port) WITHOUT opening a silent fail-open hole. |
+| `building-with-llms` | Produce an LLM Build Pack (prompt+tool contract, data/eval plan, architecture+safety, launch checklist). See also: ai-evals (eval only), ai-product-strategy (strategy only). |
+| `channel-plugin-duplicate-socket` | Egy fleet/multi-agent setupban új channel plugin (slack-channel, telegram, stb.) telepítésekor a user-szintű ~/.claude/settings.json enabledPlugins minden agent-nek loadolja a p... |
+| `ci-cd-and-automation` | Automates CI/CD pipeline setup. Use when setting up or modifying build and deployment pipelines. |
+| `cloud-container-security` | Assess cloud + container infrastructure for security misconfigurations on AUTHORIZED accounts — IAM privilege-escalation paths, over-permissive roles/policies, public object sto... |
+| `code-comprehension` | Build an accurate, evidence-based mental model of unfamiliar code at the deepest level — control flow, data flow, invariants, state, side effects, dependencies, and the "why". |
+| `contract-first-codev` | Build a user-facing feature's BACKEND and FRONTEND simultaneously (lockstep), not backend-then-frontend, by defining the API contract FIRST and letting the FE build against a mo... |
+| `defensive-security-analysis` | Analyze code defensively for security weaknesses from the DEFENDER's seat — trust boundaries, input validation, authz/authn, injection sinks, secrets handling, fail-closed behav... |
+| `deprecation-and-migration` | Manages deprecation and migration. Use when removing old systems, APIs, or features. Use when migrating users from one implementation to another. |
+| `documentation-and-adrs` | Records decisions and documentation. Use when you need to document an architecture decision (ADR) or the reasoning behind a design choice, when changing public APIs, shipping fe... |
+| `domain-modeling` | Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a GLOSSARY.md, or recording or editing an ADR. |
+| `embedded-pg-e2e-runner` | Run RLS / PG-dependent e2e tests on WSL2 without Docker using embedded-postgres, and run real-Redis/BullMQ e2e tests without sudo via a user-local redis-server extracted from a ... |
+| `engineering-standards` | The fleet's synthesized engineering standard — 10 categories covering architecture, security, infra, QA, data, resilience, secrets, observability, and code hygiene. |
+| `evaluating-new-technology` | Create a Technology Evaluation Pack (problem framing, options matrix, build vs buy, pilot plan, decision memo). See also: evaluating-trade-offs (general decisions). |
+| `evaluating-trade-offs` | Produce a Trade-off Evaluation Pack (options matrix, cost table, impact ranges, recommendation). See also: evaluating-new-technology (tech-specific). |
+| `feature-orchestrator` | Guide an iterative product and technical discussion, then turn the settled feature into a copy-ready orchestration prompt for a separate implementation session with a user-chose... |
+| `fork-adopt-investigation` | Investigate an upstream/sibling fork (or any community/open-source repo) for a reusable solution BEFORE building your own, and reach an evidence-backed adopt / adapt / build-fro... |
+| `full-value-audit` | Run a FULL-VALUE audit of an app -- inventory EVERY frontend + backend function (every page, button, form, endpoint, module), test every user flow at every RBAC level (positive ... |
+| `gate-worktree-pattern` | Create a disposable, SHA-pinned worktree for a gate or a bug repro without corrupting the shared clone. |
+| `grill-with-docs` | A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go. |
+| `grilling` | Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases. |
+| `guards-that-pin-behaviour` | Write a guard test that pins the OPERATION, not its spelling. |
+| `incident-response` | Handle a suspected or confirmed security incident on our OWN systems — detect/classify, triage severity, determine escalation path, collect forensic evidence (preserve before yo... |
+| `injected-port-adapters` | Implement the app-layer ADAPTER for a pure domain's injected port (SDK/IO/crypto wiring) — the counterpart to tenant-pure-domain. |
+| `interview-me` | Extracts what the user actually wants instead of what they think they should want. |
+| `karpathy-guidelines` | Behavioral guidelines to reduce common LLM coding mistakes. |
+| `karpathycoder` | Active coding discipline that enforces Andrej Karpathy's four anti-pitfall principles for LLM-assisted development — Think Before Coding, Simplicity First, Surgical Changes, and... |
+| `local-llm-offload` | Offload a cheap, well-scoped sub-task -- fuzzy through MEDIUM-stakes -- to the LOCAL GPU-hosted LLM (Ollama on the WSL GTX 1660 Ti) instead of burning online Anthropic tokens. |
+| `loop-engineering` | Design a task as a self-running LOOP (trigger -> execute -> verify -> stop) instead of a one-shot prompt, so agents drive work to a finalized, verified end-state with capped ite... |
+| `managing-tech-debt` | Produce a Tech Debt Management Pack (debt register, scoring, refactor vs rewrite memo, paydown plan). |
+| `module-spec-design` | KÖTELEZŐ sablon és mélység minden modul tervezéséhez (Peti szabály 2026-10-02). |
+| `plan-grilling` | Relentlessly interrogate a plan, design, or decision BEFORE committing to it — surface every unresolved branch, hidden assumption, failure mode, and "what happens when X" until ... |
+| `platform-infrastructure` | Produce a Platform & Infrastructure Pack (capabilities plan, scaling triggers, execution roadmap). |
+| `problem-definition` | Define a product problem: problem statement, JTBD, alternatives, evidence, metrics. See also: writing-prds (solution spec). |
+| `project-decisions-log` | Maintain a per-project, git-tracked, grep-able DECISIONS.md that captures every significant decision/conversation outcome (business decisions, architecture choices, approvals/re... |
+| `project-workflow` | The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify si... |
+| `quota-management` | Kvóta-limit (5 órás session-limit ÉS heti "All models" sáv) kezelésének pontos mechanikája: countdown/auto-resume script-nevek, dinamikus heti küszöb-számítás, lokális-LLM offlo... |
+| `running-design-reviews` | Run high-signal design reviews: brief, feedback log, decision record, follow-up plan. |
+| `scoping-cutting` | Right-size scope for a fixed timebox: minimum lovable slice, cut list, scope-creep guardrails. See also: managing-timelines (deadline plans). |
+| `senior-engineer-modes` | Seven senior-engineer operating modes (build MVP, audit codebase, debug production, optimize performance, refactor to clean architecture, architect backend, build frontend compo... |
+| `shipping-products` | Plan product launch/release: rollout/rollback plan, comms, monitoring, post-launch review. See also: launch-marketing (marketing side). |
+| `sp-systematic-debugging` | Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes |
+| `sp-test-driven-development` | Use when implementing any feature or bugfix, before writing implementation code |
+| `sp-verification-before-completion` | Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any s... |
+| `supplychainsecurity` | Protects the software supply chain against dependency and artifact tampering with SBOM generation, artifact signing, and SLSA compliance. |
+| `technical-roadmaps` | Turn engineering strategy into a Technical Roadmap Pack (diagnosis, roadmap table, initiative briefs). |
+| `update-safety` | MikroB rendszerfrissítés (update.sh) biztonsági szabályai és rollback/ recovery-mechanizmus. |
+| `usability-testing` | Plan, run, and synthesize usability tests: test plan, tasks, script, findings, recommendations. |
+| `working-backwards` | Create an Amazon-style PR/FAQ plus a backcasting launch plan. |
+| `writing-north-star-metrics` | Define or refresh a product North Star metric + driver tree. |
+| `writing-prds` | Write a decision-ready PRD for cross-functional alignment. See also: writing-specs-designs (build-ready spec). |
+| `writing-specs-designs` | Create a build-ready spec + design doc (user flows, prototype brief, acceptance criteria). See also: writing-prds (decision-level PRD). |
+| `wsl-git-push-deploy-key` | Push a WSL repo (often on a /mnt/<drive> Windows mount) to a private GitHub repo using an SSH deploy key, when there is no gh CLI and HTTPS push has no credentials. |
+<!-- END GENERATED: skill-usage -->
