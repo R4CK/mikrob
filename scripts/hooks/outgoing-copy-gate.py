@@ -1157,22 +1157,39 @@ def collect_mcp_body(tool_input: dict):
 MDV2_ESCAPE = re.compile(r"\\([^\w\s])")
 
 
-def collect_telegram_body(tool_input: dict) -> str:
+def collect_channel_body(tool_input: dict, unescape_mdv2: bool) -> str:
+    """Text of a channel reply. GATEDISCORD905: both the Telegram and the
+    Discord reply tool put the prose in `text` (schema-checked, not guessed);
+    `caption`/`message` stay in the list because they cost nothing and a
+    missed field here is a SILENT ZERO -- empty text exits 0, i.e. fail-open.
+    Only Telegram's MarkdownV2 escapes get undone: on Discord a backslash is
+    a literal the author wrote, not gate noise."""
     fields = ("text", "caption", "message")
     got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
-    return MDV2_ESCAPE.sub(r"\1", "\n".join(got))
+    # c67f5f34: the Telegram reply tool's one-tap answer buttons (a Marveen patch
+    # of the plugin, scripts/patch-telegram-plugin.py) are outgoing text too: the
+    # tapped label is what the recipient sees and sends back. A label this gate
+    # did not read would be the silent zero above, so every label joins the body;
+    # a value that is not a list is read as it is (the loud side).
+    buttons = tool_input.get("buttons")
+    if isinstance(buttons, (list, tuple)):
+        got += [str(b) for b in buttons if str(b).strip()]
+    elif buttons:
+        got.append(str(buttons))
+    joined = "\n".join(got)
+    return MDV2_ESCAPE.sub(r"\1", joined) if unescape_mdv2 else joined
 
 
 # --- Telegram sent from a Bash command (card 74181db2) -----------------------
 #
 # WHY THIS EXISTS AT ALL. The gate's telegram branch matches on the TOOL NAME
-# (`telegram.*__reply$`), and a role agent never has that tool: all 15 launch with
-# `telegram@claude-plugins-official: false` and without `--channels`
+# (`telegram.*__(reply|edit_message)$`), and a role agent never has that tool: all 15
+# launch with `telegram@claude-plugins-official: false` and without `--channels`
 # (agent-worker.ts:458, measured on the running processes). So for them that branch
 # is dead code. The route they DO have is the one `telegram-reply-fallback` documents
 # for exactly the case where the MCP tool is absent: a raw Bot API call over curl,
 # from Bash. Nothing ran on it -- the Bash branch is the EMAIL detector, and
-# `collect_telegram_body` only ever read an MCP tool-input.
+# `collect_channel_body` only ever read an MCP tool-input.
 #
 # DEFAULT OFF, AND THAT IS THE POINT (MikroB's decision, card comment 19349). Turning
 # this on costs a python start on EVERY Bash call of EVERY role agent -- measured on
@@ -1322,7 +1339,7 @@ def collect_telegram_bash_body(cmd: str):
 
 
 def telegram_bash_gate(cmd: str) -> None:
-    """Audit a Bot API send written in Bash. FAIL-OPEN, exactly like `telegram_gate`.
+    """Audit a Bot API send written in Bash. FAIL-OPEN, exactly like `channel_gate`.
 
     The reasoning is that branch's, unchanged and deliberately not re-litigated here:
     Telegram is the owner's ONLY supervision channel, so a gate that silences it costs
@@ -1376,14 +1393,15 @@ def telegram_bash_gate(cmd: str) -> None:
     sys.exit(0)
 
 
-def telegram_gate(tool_input: dict) -> None:
-    """Audit a Telegram reply. FAIL-OPEN on any internal error (exit 0 + loud
-    log): email is deferrable, but Telegram is the owner's ONLY supervision
-    channel -- a gate crash that silences it costs more than a slipped accent.
-    A FOUND problem still blocks (exit 2): that is the gate's whole point."""
+def channel_gate(tool_input: dict, label: str, unescape_mdv2: bool) -> None:
+    """Audit a channel reply (Telegram or Discord). FAIL-OPEN on any internal
+    error (exit 0 + loud log): email is deferrable, but these are the owner's
+    ONLY supervision channels -- a gate crash that silences one costs more
+    than a slipped accent. A FOUND problem still blocks (exit 2): that is the
+    gate's whole point."""
     try:
         # A non-dict tool_input (card 4f15966e, backend, 2026-09-07: found via a new
-        # merge-borne test) used to reach collect_telegram_body()'s .get() calls and crash
+        # merge-borne test) used to reach collect_channel_body()'s .get() calls and crash
         # with a bare AttributeError ("'int' object has no attribute 'get'") -- which reads
         # like a bug INSIDE the audit, not what it actually is: a malformed payload. Named
         # explicitly here so the log says the real cause.
@@ -1391,14 +1409,38 @@ def telegram_gate(tool_input: dict) -> None:
             raise TypeError(
                 f"tool_input nem szotar (dict), hanem {type(tool_input).__name__}"
             )
-        text = collect_telegram_body(tool_input)
+        text = collect_channel_body(tool_input, unescape_mdv2)
         if not text.strip():
             sys.exit(0)  # files-only reply or empty text: nothing to audit
+        # GATECOPY827: a masolhato kodblokk CSAK markdownv2 modban lesz kodblokk. A
+        # reply tool `format` parametere alapertelmezesben "text", es plain textben a
+        # Telegram nem parsolja a harom backtickot, tehat nincs copy gomb -- a szoveg
+        # nyersen, a backslash-escape-ekkel egyutt jelenik meg. Ez TOBBSZOR ment ki igy
+        # (lasd a kotelezove tett telegram-copy-gomb konvenciot), es nem tudashiany volt,
+        # hanem kihagyott lepes -- ezert innentol gepi kapu allitja meg, nem emlekezet.
+        # TELEGRAM-SPECIFIKUS: Discord natívan rendereli a harom backtickot plain
+        # uzenetben is, es a reply tool-janak nincs markdownv2 format erteke -- a
+        # feltetel ezert a label-en szur, nem az unescape_mdv2-n (a ketto csak MA
+        # esik egybe).
+        raw = "\n".join(str(tool_input[f]) for f in ("text", "caption", "message")
+                        if tool_input.get(f))
+        if (label == "Telegram" and "```" in raw
+                and str(tool_input.get("format", "")).lower() != "markdownv2"):
+            sys.stderr.write(
+                "KIMENO-SZOVEG KAPU (Telegram): TILTVA, a kodblokk nem lenne masolhato.\n\n"
+                "  - A szoveg harom backtickes kodblokkot tartalmaz, de a hivasban\n"
+                "    format=\"" + str(tool_input.get("format") or "text") + "\". Plain textben a Telegram nem ad copy gombot,\n"
+                "    es a MarkdownV2 escape-ek (\\. \\- \\() nyersen latszanak.\n\n"
+                "Kuldd ujra ugyanezt a szoveget format=\"markdownv2\"-vel. Kodblokkon\n"
+                "belul csak a backtickot es a backslasht kell escapelni, a blokkon\n"
+                "kivuli prozat viszont teljesen (_*[]()~`>#+-=|{}.!).\n"
+            )
+            sys.exit(2)
         problems = audit(text)
     except SystemExit:
         raise
     except Exception as exc:  # noqa: BLE001 -- deliberate blanket: fail-open path
-        warn = _log_stamp() + f"outgoing-copy-gate: TELEGRAM-ag belso hiba, FAIL-OPEN atengedes: {exc}\n"
+        warn = _log_stamp() + f"outgoing-copy-gate: {label.upper()}-ag belso hiba, FAIL-OPEN atengedes: {exc}\n"
         sys.stderr.write(warn)
         try:
             # SAME directory as every other write in this file (_log_broken_pattern/
@@ -1416,7 +1458,7 @@ def telegram_gate(tool_input: dict) -> None:
         sys.exit(0)
     if problems:
         sys.stderr.write(
-            "KIMENO-SZOVEG KAPU (Telegram): TILTVA, az uzenet nem mehet ki igy.\n\n"
+            f"KIMENO-SZOVEG KAPU ({label}): TILTVA, az uzenet nem mehet ki igy.\n\n"
             + "\n".join(f"  - {p}" for p in problems)
             + "\n\nJavitsd a szoveget es kuldd ujra (a MarkdownV2 escape-eket a kapu "
               "az ellenorzes elott feloldja, azok nem szamitanak hibanak).\n"
@@ -1451,7 +1493,7 @@ def telegram_gate(tool_input: dict) -> None:
 #
 # A timeout deliberately RAISES rather than returning "no match". The two existing nets then do the
 # right thing per path, with no new state to model: the email path's fail-closed wrapper turns it
-# into exit 2, and telegram_gate's documented fail-open turns it into exit 0 plus a loud warning.
+# into exit 2, and channel_gate's documented fail-open turns it into exit 0 plus a loud warning.
 # Returning None would have been the one wrong answer -- a silent "the name is fine".
 NAME_MATCH_BUDGET_DEFAULT_S = 2.0
 
@@ -1697,8 +1739,16 @@ def main():
     tool = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input") or {}
 
-    if re.search(r"telegram.*__reply$", tool, re.I):
-        telegram_gate(tool_input)  # exits; never falls through
+    # GATECOPY828: the scaffold wires this hook onto reply AND edit_message (an edit
+    # can replace a working code block with a broken one). The dispatch must recognise
+    # BOTH, or the edit half of the matcher invokes a hook that exits 0 without auditing.
+    if re.search(r"telegram.*__(reply|edit_message)$", tool, re.I):
+        channel_gate(tool_input, "Telegram", unescape_mdv2=True)  # exits; never falls through
+    # GATEDISCORD905: an install whose owner DM and every working thread run on
+    # Discord had no gate on that path at all -- same audit, no MarkdownV2 unescaping
+    # (on Discord a backslash is a literal the author typed).
+    if re.search(r"discord.*__(reply|edit_message)$", tool, re.I):
+        channel_gate(tool_input, "Discord", unescape_mdv2=False)  # exits; never falls through
     # Card 498d53c1 (Cybersec MEDIUM on a4164e95): a tool-NAME list drifts -- send_draft and
     # the hyphenated resend__send-email both slipped past the name-list check below before
     # this existed. Deny-by-default for the whole gmail__/resend__ SERVER: any tool on it that
@@ -1823,7 +1873,7 @@ if __name__ == "__main__":
     # never a hook path, and answering a status question with a "TILTVA" send-refusal would be a
     # lie about what failed.
     #
-    # The telegram path never reaches this net: telegram_gate() catches its own errors and exits 0
+    # The telegram path never reaches this net: channel_gate() catches its own errors and exits 0
     # (fail-open BY DESIGN -- Telegram is the owner's only supervision channel, so silence there
     # costs more than a slipped accent). Verified in this fork, not assumed from upstream's
     # comment. So this only ever catches the email/Bash send paths, where blocking is the safe

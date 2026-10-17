@@ -2773,7 +2773,7 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
   // below therefore names injectTelegramCopyGate and points at the production file, not at the symbol
   // that a test is free to re-declare.
   'src/web/context-restart-gate-runner.ts': {
-    needle: 'openQuestionIgnoringCommands',
+    needle: 'ownerQuestionHolds',
     file: 'src/web/context-restart-gate-runner.ts',
     expect: 'present',
     because:
@@ -2792,7 +2792,18 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "wrapper, which calls openInboundQuestionMessageId internally -- the #1202 feature is still " +
       "live, one hop further away, not reverted. The needle moved to the wrapper because that is what " +
       "this FILE actually calls now; db.ts's own symbol has no anchor of its own here because nothing " +
-      "in db.ts's diff put it at risk.",
+      "in db.ts's diff put it at risk." +
+      " NEEDLE MOVED AGAIN 2026-10-16 (backend3, card 5d9eeaf8, upstream Koteg 17, 0e681c83..9845015f): " +
+      "open-question.ts gained a new export, ownerQuestionHolds(ledgerAgentId, storeDir), which is " +
+      "exactly the openQuestionBlocks(openQuestionIgnoringCommands(id), drainSurfacedMessageId(id, " +
+      "storeDir)) composition this file used to call directly -- verified in open-question.ts line-by-" +
+      "line, the three underlying functions are unchanged. context-restart-gate-runner.ts now imports " +
+      "and calls ownerQuestionHolds(ledgerId) at its one call site instead of composing the three " +
+      "itself; openQuestionIgnoringCommands is no longer named in this file at all, so the old needle " +
+      "would false-negative on a feature that is still fully live, one hop further behind a one-call " +
+      "wrapper. The needle moves to ownerQuestionHolds for the same reason it moved before: that is " +
+      "what this FILE actually calls now. The underlying three-function chain still has no anchor of " +
+      "its own, because nothing in this round's diff put any of them individually at risk.",
   },
   // Card d79a69b5 (backend3, 2026-09-28): the active-model.ts entry above refuses upstream's
   // synchronous whole-file readFileSync (a measured regression this fork already fixed, cards

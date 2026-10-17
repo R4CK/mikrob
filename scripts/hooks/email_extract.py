@@ -271,6 +271,15 @@ def collect_mcp_attachments(tool_input: dict):
     return out, None
 
 
+# Upstream's EMAILHTMLHORGONY929 (collect_bash_attachments / _FILE_FLAG_RE, Köteg 17
+# 0e681c83..9845015f) was NOT ported here: it reads and hashes a --html/--attach file
+# at HOOK time on the Bash path, which is exactly the TOCTOU exposure WhiteHat2's F2
+# finding (card e4eb72c9, see the comment above _BASH_ATTACH_RE below) already closed
+# for Bash --attach -- the actual send reads the same path again in a LATER process,
+# so the file (or a symlink) can be swapped between the two reads. Fork's existing,
+# reviewed answer stays: a Bash --attach makes the call unreadable_reason (fail-closed,
+# forces a fresh approval) instead of silently anchoring on a hashable-but-swappable
+# file. See DECISIONS.md, Köteg 17 merge entry.
 # Card a2cb71f1 H1 (RedHat NO-GO, komment 20438): field names on a gmail-mcp send-shaped tool's
 # schema that can reference a local file -- the hook must either hash their content (and so pin it
 # into content_anchor) or the whole call must be denied outright by gateDecision. Kept as one named

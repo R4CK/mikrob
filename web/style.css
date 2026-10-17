@@ -1691,6 +1691,45 @@ main {
 .overview-activity-time { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 /* === Kanban Board === */
+/* Ongoing tasks strip: one slim row above the board (see KANBAN_ONGOING_LABEL). */
+.kanban-ongoing[hidden] { display: none; }
+.kanban-ongoing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  border-left: 3px solid #64748b;
+}
+.kanban-ongoing-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.kanban-ongoing-body { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.kanban-ongoing-chip {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-card);
+  border: 1px solid var(--border, transparent);
+  border-radius: 14px;
+  padding: 3px 10px;
+  cursor: pointer;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kanban-ongoing-chip:hover { border-color: #64748b; }
+.kanban-ongoing-seq { color: var(--text-muted); font-weight: 600; }
+
 /* Five statuses, four fixed tracks: the board always wrapped "done" onto a
  * second row of its own, at every window size. auto-fit fits as many columns
  * as can hold KANBAN_COL_MIN and collapses the rest, so the count follows the
@@ -2124,10 +2163,8 @@ main {
   position: relative;
   overflow: hidden;
 }
-.kanban-card[data-priority="urgent"] { border-left: 3px solid var(--danger); }
-.kanban-card[data-priority="high"] { border-left: 3px solid var(--accent); }
-.kanban-card[data-priority="normal"] { border-left: 3px solid transparent; }
-.kanban-card[data-priority="low"] { border-left: 3px solid var(--border); }
+/* === Priority: the WHOLE card carries the colour, not a 3px edge ===
+   On a dense board a 3px stripe is not readable at a glance.
 
 /* Priority badge -- card cf3c25ea's sibling (Peti screenshot 2026-08-08): the border-left above is
    the ONLY priority signal a card had, and it MEASURES badly against the dark card background
