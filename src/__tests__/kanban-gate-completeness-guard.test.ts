@@ -1231,4 +1231,33 @@ describe('gateCompletenessGuardVerdict', () => {
     })
   })
 
+  // F-N3 KNOWN GAP (MikroB decision, card c188f357, comment 21553/13555, option A: documented
+  // boundary + this pin test, no code change -- option B, widening agent-key issuance so comment
+  // authorship can also be authenticated, is deferred to card 2e10de7c, blocked on it). This test
+  // is deliberately NOT a regression test for a bug this file introduced: it pins the EXISTING,
+  // by-design forgeability of the comment-parse path (see the top-of-file doc comment this card
+  // added), so a future change that silently narrows or widens it is visible in a diff instead of
+  // going unnoticed.
+  describe('F-N3 KNOWN GAP: the comment-author field is unauthenticated under the shared dashboard token', () => {
+    it('a comment merely CLAIMING to be "qa" with a PASS-shaped first line satisfies the QA requirement -- no device-key or structured verdict ever existed', () => {
+      card.description = 'Gate: QA'
+      comments = [
+        { author: 'backend', content: 'REVIEW -- kesz\nGate-SHA: aaaaaaa9', created_at: 10 },
+        // Nothing here authenticates this author as the real qa agent -- it is a plain string
+        // column any caller with the shared dashboard token can set on POST /comments.
+        { author: 'qa', content: 'REVIEW: QA PASS\nGate-SHA: aaaaaaa9', created_at: 20 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+
+    it('CONTROL: the SAME shape with NO comment at all (missing, not forged) is correctly BLOCKED -- the gap is forgeability, not a guard that never checks', () => {
+      card.description = 'Gate: QA'
+      comments = [
+        { author: 'backend', content: 'REVIEW -- kesz\nGate-SHA: aaaaaaa9', created_at: 10 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      expect(v.blocked).toBe(true)
+    })
+  })
+
 })

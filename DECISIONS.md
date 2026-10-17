@@ -20872,3 +20872,23 @@ A megosztott token/session hívó (emberi operátor) mindkét ágon változatlan
 **Ki döntött:** MikroB (msg 13540, "F2 LOW... húzd ide ugyanebbe a körbe"), végrehajtó backend (kártya debba303).
 
 **Hivatkozás:** kártya debba303, komment 21537 (Cybersec F2), msg 13540 (MikroB utasítás).
+
+## 2026-10-17 -- kártya c188f357 F-N2 + F-N3: proposer-rögzítés Fix-Direction: sorhoz kötve, comment-path trust-boundary dokumentálva
+
+**Kontextus:** card c188f357 (RedHat F-N1..F-N3 az AGENT_VERDICT_RECORD bekapcsolási előfeltételeiként, Gate-SHA 5bb50ebd komment 20936). F-N1 (agent-kulcs-secret-guard a seed sablonokba kötve) már landolt (05c1c8f7). Ez a bejegyzés F-N2 és F-N3-at zárja, MikroB döntése szerint (komment 21553 a kártyán, megerősítve trusted-peer msg 13555).
+
+**F-N2 MEDIUM (O1, kártya 9c7ad372):** a strukturált AGENT_VERDICT_RECORD proposer-kizárása (kanban-verdicts.ts) eddig MINDEN NO-GO-t/FAIL-t adó gate-et élethosszig kizárt a saját újra-gate-jéből is -- ez pont a normál NO-GO -> javítás -> re-gate kört törte el (az a kör a "közvetlen előd" eset, tehát a kizárás ott is megmaradt volna), és egy QA2 FAIL után nem maradt QA, aki gate-elhetett volna ugyanarra a kártyára.
+
+**Megoldás (MikroB döntés, (B) irány, explicit sorral):** a proposer-rögzítés feltétele mostantól: a gate SAJÁT kommentje a kártyán tartalmaz egy `Fix-Direction:` sort, SOR ELEJÉN (idézve, mondat közben nem számít -- ugyanaz a konvenció, mint a `Gate-SHA:` sor, root CLAUDE.md 4b). Egy sima NO-GO/FAIL, Fix-Direction: sor nélkül, nem zárja ki saját magát a kártya jövőbeli re-gate-jéből. `kanban-verdicts.ts`: új `authorStatedFixDirection()` helper + a `addKanbanFixProposal` hívás ettől a feltételtől függ. Root CLAUDE.md: új 4f. szabály a Gate-SHA (4b) melletti szabályként.
+
+**Mérés F-N2:** `kanban-verdicts.test.ts` -- 5 teszt frissítve (Fix-Direction: sor hozzáadva, ahol a self-exclusion szándékos) + 2 új teszt (plain NO-GO nem rögzít proposert; mondat közbeni "Fix-Direction:" mention nem számít). 39/39 zöld. Mutáció-proof: a feltétel eltávolítása (vissza a régi "mindig rögzít" viselkedésre) PONTOSAN a 2 új tesztet buktatja (37/39), visszaállítás byte-azonos (diff ellenőrizve), utána ismét 39/39 zöld. Célzott regresszió (kanban-verdicts + kanban-gate-completeness-guard + structured-verdict + kanban-landed-guard): 187/187 zöld.
+
+**F-N3 MEDIUM:** a rekord védelmének határa a közös tokennel írható komment-út -- a kör-váltás és a sha-kötés kikapcsolását kommenttel el lehet érni, mert `kanban-gate-completeness-guard.ts` minden `comments[].author` mezőt hitelesítetlen, önbevallott stringként olvas (bárki a megosztott dashboard-tokennel írhat `author: "qa"` kommentet "QA PASS" első sorral, és ez pontosan úgy zár, mint egy valódi PASS, amikor nincs a gate-hez tartozó friss strukturált rekord).
+
+**Megoldás (MikroB döntés, (A) irány MOST, (B) a 2e10de7c kártyára halasztva, az a debba303 utáni agent-kulcs-kiadásra vár):** a határ explicit dokumentálva a fájl tetején (kanban-gate-completeness-guard.ts), PLUSZ pin-teszt, ami élőben demonstrálja a rést -- nincs kódváltozás, mert a tényleges javítás (komment-szerzőség hitelesítése) az agent-kulcs kiadás kiterjesztésére épül, ami jelenleg tiltott (MikroB döntés 16764, kártya 9655494c).
+
+**Mérés F-N3:** `kanban-gate-completeness-guard.test.ts` -- új "F-N3 KNOWN GAP" describe blokk, 2 eset: (1) a forgeolt "qa" szerzőjű PASS-komment kielégíti a QA követelményt (blocked=false, a rés demonstrálása); (2) kontroll -- ugyanaz a kártya komment nélkül helyesen BLOKKOLT marad (a rés a hamisíthatóság, nem egy sosem-ellenőrző guard). 87/87 zöld a teljes fájlon.
+
+**Ki döntött:** MikroB (komment 21553 a c188f357-en, megerősítve msg 13555-ben: "F-N2: a (B) irány, explicit sorral... F-N3: (A) most... Fix-Direction: sornév").
+
+**Hivatkozás:** kártya c188f357 (F-N2, F-N3), komment 20936 (RedHat eredeti GO + F-N1..F-N3 lista), komment 21553 (MikroB döntés), msg 13555 (trusted-peer megerősítés), kártya 2e10de7c (F-N3 (B) folytatás, blokkolva), kártya 9655494c (agent-kulcs kiadás tiltása, msg 16764).

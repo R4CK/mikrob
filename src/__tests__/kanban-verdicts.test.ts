@@ -136,8 +136,9 @@ describe('kanban-verdicts', () => {
     // B2' (RedHat NO-GO, 2bfa4c67 comment 16824, MEDIUM): the proposer is now recorded
     // automatically by the SAME authenticated write that states the NO-GO/FAIL -- there is no
     // separate "propose" step to call first any more.
-    it('rejects a self-proposed verdict with 403, no second row created -- the proposer is the agent\'s own prior NO-GO, recorded automatically', async () => {
+    it('rejects a self-proposed verdict with 403, no second row created -- the proposer is the agent\'s own prior NO-GO, recorded automatically (F-N2: only when it states a Fix-Direction: line)', async () => {
       createDeviceKey('agent:qa')
+      addKanbanComment('c1', 'qa', 'QA NO-GO\nFix-Direction: use a 404 for a mismatched caller, not a 403.')
       const noGo = fakeCtx(
         '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'NO-GO' },
         { kind: 'device', device: 'agent:qa', deviceId: 1 },
@@ -156,6 +157,50 @@ describe('kanban-verdicts', () => {
       expect(list.out.body).toHaveLength(1) // only the NO-GO -- the self-proposed PASS never wrote
     })
 
+    // F-N2 (MikroB, card c188f357, comment 21553): the ordinary NO-GO -> fix -> re-gate cycle must
+    // not permanently exclude a gate from its own card. Without a Fix-Direction: line the gate
+    // merely disagreed, it did not propose a direction, so it may freely re-verdict later.
+    it('a plain NO-GO with NO Fix-Direction: line does not record a proposer -- the SAME gate may re-verdict later', async () => {
+      createDeviceKey('agent:qa')
+      const noGo = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'NO-GO' },
+        { kind: 'device', device: 'agent:qa', deviceId: 1 },
+      )
+      expect(await tryHandleKanbanVerdicts(noGo.ctx)).toBe(true)
+      expect(noGo.out.status).toBe(201)
+
+      const { ctx, out } = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS' },
+        { kind: 'device', device: 'agent:qa', deviceId: 1 },
+      )
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(201)
+
+      const get = fakeCtx('/api/kanban/c1/proposals', 'GET')
+      await tryHandleKanbanVerdicts(get.ctx)
+      expect(get.out.body).toBeNull()
+    })
+
+    // Fix-Direction: mirrors Gate-SHA (CLAUDE.md 4b/4f): line-initial only, quoted/mid-sentence
+    // does not count.
+    it('a "Fix-Direction:" mentioned mid-sentence (not line-initial) does NOT count -- no proposer recorded', async () => {
+      createDeviceKey('agent:qa')
+      addKanbanComment('c1', 'qa', 'QA NO-GO -- a Fix-Direction: sort majd a kovetkezo kommentben adom meg.')
+      const noGo = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'NO-GO' },
+        { kind: 'device', device: 'agent:qa', deviceId: 1 },
+      )
+      expect(await tryHandleKanbanVerdicts(noGo.ctx)).toBe(true)
+      expect(noGo.out.status).toBe(201)
+
+      const { ctx, out } = fakeCtx(
+        '/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'PASS' },
+        { kind: 'device', device: 'agent:qa', deviceId: 1 },
+      )
+      expect(await tryHandleKanbanVerdicts(ctx)).toBe(true)
+      expect(out.status).toBe(201)
+    })
+
     it('a request-body proposer claim is IGNORED -- self-proposal is accepted when no authenticated NO-GO/FAIL ever happened', async () => {
       createDeviceKey('agent:qa')
       const { ctx, out } = fakeCtx(
@@ -169,6 +214,7 @@ describe('kanban-verdicts', () => {
     it('a sibling-proposed verdict is accepted (different agent, same role family)', async () => {
       createDeviceKey('agent:cybersec')
       createDeviceKey('agent:cybersec2')
+      addKanbanComment('c1', 'cybersec', 'CYBERSEC NO-GO\nFix-Direction: filter by caller agent id on every messages route.')
       const noGo = fakeCtx(
         '/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'NO-GO' },
         { kind: 'device', device: 'agent:cybersec', deviceId: 1 },
@@ -322,7 +368,7 @@ describe('kanban-verdicts', () => {
       expect(get.out.body).toBeNull()
     })
 
-    it('GET reflects the proposal the verdicts route auto-recorded for a NO-GO/FAIL', async () => {
+    it('GET reflects the proposal the verdicts route auto-recorded for a NO-GO/FAIL that states a Fix-Direction: line', async () => {
       createDeviceKey('agent:backend')
       await tryHandleKanbanVerdicts(
         fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'FAIL' }, { kind: 'device', device: 'agent:backend', deviceId: 1 }).ctx,
@@ -330,6 +376,7 @@ describe('kanban-verdicts', () => {
       // 'backend' is not a QA/CYBERSEC/CYBERED role agent, so the verdict write itself is refused
       // (403, role-allowlist) -- use a real gate agent instead to exercise the auto-record path.
       createDeviceKey('agent:qa')
+      addKanbanComment('c1', 'qa', 'QA FAIL\nFix-Direction: validate the payload size before parsing it.')
       await tryHandleKanbanVerdicts(
         fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'QA', verdict: 'FAIL' }, { kind: 'device', device: 'agent:qa', deviceId: 2 }).ctx,
       )
@@ -407,10 +454,12 @@ describe('kanban-verdicts', () => {
     it('an earlier NO-GO from the gate stays blocking even after a later, different proposal', async () => {
       createDeviceKey('agent:cybersec')
       createDeviceKey('agent:cybersec2')
+      addKanbanComment('c1', 'cybersec', 'CYBERSEC NO-GO\nFix-Direction: add caller-id filtering to the messages routes.')
       await tryHandleKanbanVerdicts(
         fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'NO-GO' }, { kind: 'device', device: 'agent:cybersec', deviceId: 1 }).ctx,
       )
       // A later, different sibling's own NO-GO must not clear cybersec's earlier exclusion.
+      addKanbanComment('c1', 'cybersec2', 'CYBERSEC NO-GO\nFix-Direction: also cover the backlog endpoint.')
       await tryHandleKanbanVerdicts(
         fakeCtx('/api/kanban/c1/verdicts', 'POST', { gate: 'CYBERSEC', verdict: 'NO-GO' }, { kind: 'device', device: 'agent:cybersec2', deviceId: 2 }).ctx,
       )
@@ -432,6 +481,7 @@ describe('kanban-verdicts', () => {
       createDeviceKey('agent:cybersec')
       createDeviceKey('agent:cybersec2')
       addKanbanComment('c1', 'backend', 'REVIEW: round 1.\nGate-SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+      addKanbanComment('c1', 'cybersec', 'CYBERSEC NO-GO\nFix-Direction: rewrite the query to scope by caller agent.')
       await tryHandleKanbanVerdicts(
         fakeCtx(
           '/api/kanban/c1/verdicts', 'POST',
