@@ -164,7 +164,17 @@ describe('a full installer run (keepalive probe, stubbed uname and launchctl)', 
   })
 })
 
-describe("update.sh asks the installer for the label (real functions, stub installers)", () => {
+// UPSTREAM-SYNC Koteg 18 (card d06a325d): the two tests below (and the matching "update.sh reads
+// both labels" assertion in the 'the binding' describe) are SKIPPED, not adapted. They exercise
+// update.sh's install_keepalive_probe_launchd()/install_stuck_modal_guard_launchd() -- exactly the
+// two functions this fork has repeatedly, explicitly decided NOT to wire into run_unit_maintenance
+// (Cybersec ef6a8031, card c2aeefa5, re-confirmed Koteg 14 and again this round): each would start
+// a new macOS launchd job on an EXISTING install without being asked, the same class of bug the
+// decision exists to prevent. The #1873 label-collision FIX itself is real and still worth having
+// -- the installer scripts (install-channel-keepalive-probe.sh, install-stuck-modal-guard.sh,
+// launchd-label.sh) already carry it, see 'the binding' describe below, which still runs. Only the
+// update.sh CALLING functions are absent here, by design, so these two cannot run against this fork.
+describe.skip("update.sh asks the installer for the label (real functions, stub installers) -- NOT adopted, see comment above", () => {
   const UPDATE = readFileSync(join(ROOT, 'update.sh'), 'utf-8')
   const fn = (name: string) => {
     const start = UPDATE.indexOf(`${name}() {`)
@@ -237,7 +247,10 @@ describe('the binding', () => {
       expect(retire, installer).toBeLessThan(src.indexOf('cat > "$PLIST" <<PLIST_EOF'))
     }
   })
-  it('update.sh reads both labels through --print-label, not a fixed-string grep', () => {
+  // SKIPPED, same reason as the describe above: _ka_label/_sm_label only exist inside
+  // install_keepalive_probe_launchd/install_stuck_modal_guard_launchd, which this fork does not
+  // wire into update.sh at all.
+  it.skip('update.sh reads both labels through --print-label, not a fixed-string grep', () => {
     const update = readFileSync(join(ROOT, 'update.sh'), 'utf-8')
     expect(update).toContain('_ka_label="$("$_ka_installer" --print-label 2>/dev/null | head -1)"')
     expect(update).toContain('_sm_label="$("$_sm_installer" --print-label 2>/dev/null | head -1)"')

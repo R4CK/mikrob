@@ -38,20 +38,25 @@ TOKEN_FILE="${ROOT}/store/.dashboard-token"
 # --all (71263d15 K6.12, K6.13): the API lists BOTH directions in one page and caps the page at 200
 # (src/web/routes/messages.ts), so the script asks for a full page and keeps the newest --limit
 # INCOMING rows itself; WANT=-1 is the pending mode, which the API does not cut.
+PORT="$(sed -n 's/^WEB_PORT=//p' "$ROOT/.env" 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
 PAGE=200; WANT=-1
 if [[ -n "$STATUS" ]]; then
-  URL="http://localhost:3420/api/messages?agent=${AGENT}&limit=${LIMIT}&status=${STATUS}"
+  URL="http://localhost:${PORT}/api/messages?agent=${AGENT}&limit=${LIMIT}&status=${STATUS}"
 else
-  URL="http://localhost:3420/api/messages?agent=${AGENT}&limit=${PAGE}"; WANT="$LIMIT"
+  URL="http://localhost:${PORT}/api/messages?agent=${AGENT}&limit=${PAGE}"; WANT="$LIMIT"
 fi
 
 # The HTTP status is checked, not assumed: an error body would otherwise read as an empty inbox.
 # curl's own failure (no dashboard: exit 7) must reach the FAIL line as HTTP 000, not end the
 # script in silence under set -e (71263d15 K6.14).
-OUT="$(mktemp)"; trap 'rm -f "$OUT"' EXIT
-CODE="$(curl -s -o "$OUT" -w '%{http_code}' -H "Authorization: Bearer $(cat "$TOKEN_FILE")" "$URL" || true)"
+# Token in curl argv is world-readable via /proc/<pid>/cmdline -- feed it through a 0600 temp
+# header file (-H @"$hdr_file"), same pattern as every other dashboard caller in this fork.
+OUT="$(mktemp)"; HDR_FILE="$(mktemp)"; chmod 600 "$HDR_FILE"
+trap 'rm -f "$OUT" "$HDR_FILE"' EXIT
+printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$HDR_FILE"
+CODE="$(curl -s -o "$OUT" -w '%{http_code}' -H @"$HDR_FILE" "$URL" || true)"
 if [[ "$CODE" != "200" ]]; then
-  echo "FAIL: GET ${URL#http://localhost:3420} -> HTTP ${CODE}" >&2
+  echo "FAIL: GET ${URL#http://localhost:${PORT}} -> HTTP ${CODE}" >&2
   head -c 400 "$OUT" >&2; echo >&2
   exit 4
 fi

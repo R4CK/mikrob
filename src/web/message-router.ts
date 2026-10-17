@@ -43,7 +43,7 @@ import { composeBatchInjection, batchInjectCapFor } from './batch-inject.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 import { messageWakesReceiver } from './message-wake.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { isStopMessage, isUrgentDelivery, selectTickWindow } from './message-router-window.js'
+import { isStopMessage, isUrgentDelivery } from './message-router-window.js'
 
 // A message that cannot be delivered within this window (target session never
 // exists / stays busy) is marked failed so it stops clogging the pending
@@ -673,6 +673,13 @@ export function selectFairBatch(sorted: readonly AgentMessage[], cap: number): A
     const urgent: AgentMessage[] = []
     const ordinary: AgentMessage[] = []
     for (const m of bucket) {
+      // Card 795d1f48 (a) / 71263d15 (C): an authenticated urgent/STOP row (the `urgent` or
+      // `stop_authorized` column, set only by an in-process writer or a listed device key --
+      // see message-router-window.ts) is promoted unconditionally, same as the content-marker
+      // path below but without needing a trust-category check: the column cannot be set by a
+      // content string, so there is no spoofing surface here the way there is for "URGENT:" in
+      // a message body.
+      if (isUrgentDelivery(m, MAIN_AGENT_ID)) { urgent.push(m); continue }
       const cls = classifyAgentMessage(m.from_agent, m.to_agent)
       const promotable = cls?.category === 'trusted-peer' || cls?.category === 'channel-inbound'
       ;(promotable && isUrgentMessage(m.content) ? urgent : ordinary).push(m)

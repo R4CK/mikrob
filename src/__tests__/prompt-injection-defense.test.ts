@@ -774,9 +774,11 @@ describe('/api/messages to-authentication (card 523a1426)', () => {
     // Köteg 14 (card d7e1d611, upstream VOICEREPLY1005, afa68d8b) added a `!isVoiceMailbox &&`
     // clause ahead of the isKnownAgent check in the same `if` -- the voice-channel id is a pull
     // mailbox exempt from local-recipient authentication, landing in the SAME merge as this test.
-    // The guard itself is unweakened (isKnownAgent still gates every non-exempt local recipient);
-    // only the exact substring this regex requires changed shape.
-    expect(src).toMatch(/if \((!isVoiceMailbox && )?!isKnownAgent\(sanitized\)\)/)
+    // Köteg 18 (card d06a325d, upstream 9fc6dc3e) added a second exemption clause the same way --
+    // `!isSystemRecipient &&`, so a reply to a SYSTEM_SENDER_IDS-listed neighbouring system is not
+    // rejected as an unknown recipient. The guard itself is unweakened (isKnownAgent still gates
+    // every non-exempt local recipient); only the exact substring this regex requires changed shape.
+    expect(src).toMatch(/if \((!isVoiceMailbox && )?(!isSystemRecipient && )?!isKnownAgent\(sanitized\)\)/)
   })
 
   it('rejects an unknown local recipient with 400', () => {
@@ -802,7 +804,11 @@ describe('/api/messages to-authentication (card 523a1426)', () => {
   // validating the sanitized form while STORING the raw one left the actual
   // vulnerability open -- selectFairBatch buckets by the stored value.
   it('STORES the sanitized form, not the raw one (Cybered NO-GO on 6323ec6)', () => {
-    expect(src).toMatch(/storedTo = sanitized/)
+    // Köteg 18 (card d06a325d): the assignment is now conditional on isSystemRecipient -- a
+    // SYSTEM_SENDER_IDS entry stores the RAW, exact-matched id (it already matched the listed
+    // id verbatim, see the isSystemRecipient check above), every other local recipient still
+    // stores the sanitized form, same as before.
+    expect(src).toMatch(/storedTo = isSystemRecipient \? storedTo : sanitized/)
   })
 })
 

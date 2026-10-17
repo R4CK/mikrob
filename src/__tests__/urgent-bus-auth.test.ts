@@ -119,9 +119,12 @@ describe('POST /api/messages: urgent only on a device key the install lists (795
     expect((await post({ from: SENDER, to: MAIN_AGENT_ID, content: 'sima, ugyanazzal a kulccsal' }, UNLISTED_KEY)).statusCode).toBe(200)
   })
 
-  it('(a8) the measured path: the shared token mints a full key, and that key cannot send an urgent row', async () => {
-    // 1. the shared token mints a key through the real route (a 201 with the raw key, scope full by default)
-    const minted = fakeCtx({ name: 'barki-kulcsa' }, TOKEN, '/api/auth/device-keys')
+  it('(a8) the measured path: a browser session mints a full key, and that key cannot send an urgent row', async () => {
+    // 1. a browser session mints a key through the real route (a 201 with the raw key, scope full
+    // by default). NOT the shared token: /api/auth/device-keys's own CREDENTIAL_MINT_KINDS gate
+    // (card 93ed929a's human-only posture) already restricts minting to a session, pre-dating and
+    // unrelated to this card -- the shared token would 403 here before step 2 is even reached.
+    const minted = fakeCtx({ name: 'barki-kulcsa' }, { kind: 'session', user: 'owner' } as Auth, '/api/auth/device-keys')
     expect(await tryHandleAuth(minted.ctx)).toBe(true)
     expect(minted.res.statusCode).toBe(201)
     const key = JSON.parse(minted.res.body) as { id: number; key: string; scope: string }
