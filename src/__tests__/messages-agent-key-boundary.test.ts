@@ -146,3 +146,33 @@ describe('GET /api/messages/:id -- agent-key boundary (Cybersec NO-GO F1, card d
     expect(body.content).toBe('victim private outbound message')
   })
 })
+
+describe('GET /api/messages/backlog -- agent-key boundary (Cybersec F2, card debba303)', () => {
+  it('a device key for a DIFFERENT agent cannot read the victim backlog via ?agent=victim', async () => {
+    const { ctx, getBody } = makeCtx('/api/messages/backlog?agent=victim')
+    ;(ctx as any).auth = { kind: 'device', device: 'agent:attacker' }
+    const handled = await tryHandleMessages(ctx)
+    expect(handled).toBe(true)
+    const body = getBody()
+    expect(Array.isArray(body)).toBe(true)
+    expect(body.find((r: any) => r.agent === 'victim')).toBeUndefined()
+  })
+
+  it('the owning device key sees its OWN backlog, overriding an ?agent=<other> query value', async () => {
+    const { ctx, getBody } = makeCtx('/api/messages/backlog?agent=someone-else')
+    ;(ctx as any).auth = { kind: 'device', device: 'agent:victim' }
+    const handled = await tryHandleMessages(ctx)
+    expect(handled).toBe(true)
+    const body = getBody()
+    expect(body.find((r: any) => r.agent === 'victim')).toBeDefined()
+    expect(body.find((r: any) => r.agent === 'someone-else')).toBeUndefined()
+  })
+
+  it('a shared-token caller (no device key) is UNCHANGED -- ?agent=victim still returns the victim backlog', async () => {
+    const { ctx, getBody } = makeCtx('/api/messages/backlog?agent=victim')
+    const handled = await tryHandleMessages(ctx)
+    expect(handled).toBe(true)
+    const body = getBody()
+    expect(body.find((r: any) => r.agent === 'victim')).toBeDefined()
+  })
+})

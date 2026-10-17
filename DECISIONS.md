@@ -20860,3 +20860,15 @@ A megosztott token/session hívó (emberi operátor) mindkét ágon változatlan
 **Ki döntött:** backend (kártya debba303), Cybersec NO-GO lelete (F1, komment 21537) alapján.
 
 **Hivatkozás:** kártya debba303 (szülő 2520b85a), komment 21537 (Cybersec NO-GO, F1/F2/F3/F4), komment 21529 (az eredeti REVIEW, Gate-SHA a552bffd7a537f9e952594034ce728540a726872), 517fdcc5/84dcc5d4 (a hívó-szűrés eredeti precedense).
+
+## 2026-10-17 -- kártya debba303 delta-gate folytatás: /api/messages/backlog hívó-szűrés (Cybersec F2, MikroB utasítására ugyanebbe a körbe húzva)
+
+**Kontextus:** Cybersec F2 LOW lelete (komment 21537): `GET /api/messages/backlog?agent=victim` agent-kulccsal 53 byte-ot adott vissza -- nincs benne tartalom (leaksVictim=false), csak darabszám és legrégebbi-kor metaadat a victim várakozó sorából. Önmagában nem blokkolta a gate-et, de MikroB (msg 13540) explicit utasította, hogy ugyanebbe a körbe kerüljön, ne külön kártyára.
+
+**Megoldás:** ugyanaz a hívó-azonosítás, mint a többi ágon -- `GET /api/messages/backlog`-ban az `authenticatedAgentId` (ha van agent-kulcs) FELÜLÍRJA a `?agent=`/`?assignee=` paramétert, így egy eszközkulcsos hívó csak a saját backlogját látja, függetlenül attól, mit kér a query-ben. A megosztott token/session hívó változatlan.
+
+**Mérés:** `messages-agent-key-boundary.test.ts` +3 eset (támadó nem látja a victim backlogot `?agent=victim`-mel sem; a tulajdonos a sajátját látja `?agent=someone-else` mellett is, felülírva; megosztott token változatlan) -- 14/14 zöld. Mutáció-proof: a felülírás eltávolítása PONTOSAN ezt a 2 támadó/tulajdonos-esetet buktatta (12/14 zöld marad), visszaállítás byte-azonos (diff ellenőrizve), utána ismét 14/14 zöld. Célzott regresszió (mind a 11 `messages`-kapcsolódó fájl): 89/89 zöld. `tsc --noEmit` és ESLint tiszta.
+
+**Ki döntött:** MikroB (msg 13540, "F2 LOW... húzd ide ugyanebbe a körbe"), végrehajtó backend (kártya debba303).
+
+**Hivatkozás:** kártya debba303, komment 21537 (Cybersec F2), msg 13540 (MikroB utasítás).
