@@ -20710,3 +20710,13 @@ felfedezés a selftest-neveket nem igényel kézi bekötést -- a vitest-futás 
 **Ki döntött:** fullstack (kártya 9b1ccbca, self-advance, rule 6b aging-override -- a kártya 21,5 napja ült a planned oszlopban). Gate: QA.
 
 **Hivatkozás:** kártya 9b1ccbca, 197947ae/dac2e52b/c2aeefa5/2564e877/f4cd1783/9163495b (a mérési nap QA FAIL-jei), `kanban-draft-review-guard.ts` (a Draft-Review marker-minta forrása), `kanban-landed-guard.ts` és `kanban-spec-template-guard.ts` (a két újrahasznosított minta).
+
+## 2026-10-17 -- kártya f480a16a: seed-fleet-agents modell-mezők igazítása az élő konfigurációhoz (Token 5)
+
+**Kontextus:** a szülő 7f35d1b9 (Claude-token takarékosság, Peti Telegram 11178/11180) Token 5 alfeladata a "építő ügynökök Sonneten, Opus csak nehéz döntésre és biztonsági gate-re" cél felmérését és kivezetését kérte. A `seed-fleet-agents/{backend,backend2,cybersec,cybered}/agent-config.json` sablonfájlok még a régi `claude-opus-5`/`claude-opus-5-5` modellt tartalmazták, miközben az ÉLŐ `agents/<név>/agent-config.json` már a célállapoton állt (`claude-sonnet-5` / `claude-sonnet-5-5`) -- MikroB tisztázta (msg 13433), hogy a backend/backend2 sonnet-5-re és a WhiteHat/RedHat (cybersec/cybered) sonnet-5-5-re állítása már megtörtént döntés (Peti Telegram 10812/10814), nem új jóváhagyást igénylő kérdés; a `seed-fleet-agents` csak lemaradt a sablon-oldalon.
+
+**Megoldás:** a 4 seed-fájl `model` mezőjét az élő értékre igazítottam (`claude-opus-5` -> `claude-sonnet-5` a backend/backend2-n, `claude-opus-5-5` -> `claude-sonnet-5-5` a cybersec/cybered-en), semmi mást nem érintve a fájlokban. Visszaállítható: egyetlen mező, git-revert.
+
+**Ki döntött:** Peti (Telegram 10812/10814, a modell-cél), MikroB (msg 13433, a tisztázás hogy ez nem új jóváhagyás-kérés). Végrehajtó: fullstack (kártya f480a16a). Gate: QA.
+
+**Hivatkozás:** kártya f480a16a, szülő 7f35d1b9, msg 13433 (MikroB tisztázása).
