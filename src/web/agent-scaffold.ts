@@ -2021,7 +2021,7 @@ export function ensureGateSharedMemoryInjectAgentArg(name: string): boolean {
     ? settings.hooks as Record<string, unknown>
     : {}
   const entries = Array.isArray(hooks.SessionStart) ? hooks.SessionStart as unknown[] : []
-  const command = `python3 ${join(PROJECT_ROOT, 'scripts', 'hooks', 'shared-memory-inject.py')} --agent ${name}`
+  const command = `python3 ${join(PROJECT_ROOT, 'scripts/hooks/shared-memory-inject.py')} --agent ${name}`
 
   let changed = false
   for (const e of entries) {
