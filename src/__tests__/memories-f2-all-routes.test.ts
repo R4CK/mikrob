@@ -32,6 +32,7 @@ function call(pathWithQuery: string, method: string, auth: any, body?: unknown) 
 
 let victimMem = 0
 let victimMem2 = 0
+let attackerMem = 0
 let attackerAuth: any
 let victimAuth: any
 const MARK = 'VICTIM-PRIVATE-MARKER-F2'
@@ -40,7 +41,7 @@ beforeAll(() => {
   initDatabase(':memory:')
   victimMem = saveAgentMemory('victim', `${MARK} private hot content`, 'hot', 'secret').id
   victimMem2 = saveAgentMemory('victim', `${MARK} second private row`, 'warm', 'secret2').id
-  saveAgentMemory('attacker', 'attacker own row', 'hot', 'own')
+  attackerMem = saveAgentMemory('attacker', 'attacker own row', 'hot', 'own').id
   saveFailedEpisode({ agentId: 'victim', task: `${MARK} task`, attempt: 'a', error: 'e', lesson: 'l', keywords: 'k' })
   const ka = mintAgentDeviceKey('attacker'); const pa = resolveDeviceKey(ka.key)!
   attackerAuth = { kind: 'device', device: pa.name, deviceId: pa.id }
@@ -64,6 +65,20 @@ describe('F2 security: attacker device-key cannot access victim data', () => {
     expect(JSON.stringify(r.json)).not.toContain('"agentId":"victim"')
   })
 
+  // O4 (RedHat 17520 on 9655494c, card ddeb2e17): the absence check above is a VACUUM pin -- an
+  // empty aggregate ({testedCount:0, ...}) satisfies "does not contain MARK" just as well as a
+  // correctly-scoped one would, so a regression that quietly dropped the filter and returned
+  // victim's REAL aggregate under a different shape would also pass it as long as the literal
+  // marker string or that one key happened not to appear. The real assertion RedHat asked for:
+  // the `?agent=victim` response must be byte-for-byte EQUAL to the caller's own (no-param)
+  // aggregate -- proving the override actually substitutes the caller's identity, not just that
+  // this particular victim fixture didn't leak through this particular string check.
+  it('GET recall-audit ?agent=victim returns EXACTLY the attacker\'s own aggregate, not an empty shape that happens to pass the string check', async () => {
+    const own = await call('/api/memories/recall-audit', 'GET', attackerAuth)
+    const overridden = await call('/api/memories/recall-audit?agent=victim', 'GET', attackerAuth)
+    expect(overridden.json).toEqual(own.json)
+  })
+
   it('GET stats does not expose victim in byAgent', async () => {
     const r = await call('/api/memories/stats', 'GET', attackerAuth)
     expect(Object.keys((r.json as { byAgent?: Record<string, unknown> } | null)?.byAgent ?? {})).not.toContain('victim')
@@ -77,6 +92,18 @@ describe('F2 security: attacker device-key cannot access victim data', () => {
   it('PUT /:id cannot reassign victim row ownership', async () => {
     await call(`/api/memories/${victimMem2}`, 'PUT', attackerAuth, { content: `${MARK} second private row`, agent_id: 'attacker' })
     expect(row(victimMem2)?.agent_id).toBe('victim')
+  })
+
+  // O4 (RedHat 17520 on 9655494c, card ddeb2e17): the test above only exercises the 404 branch
+  // (attacker targets VICTIM's row -- existing.agent_id !== authenticatedAgentId, refused before
+  // the 403 ownership-transfer check is ever reached). The 403 branch itself -- attacker PUTs on
+  // its OWN row and asks to reassign it TO victim, i.e. memory poisoning into victim's own future
+  // recall -- was never exercised by any test, measured by RedHat as GREEN even with the 403
+  // check deleted entirely. This pins that specific branch.
+  it('PUT /:id -- attacker cannot reassign its OWN row to victim (memory-poisoning path, the untested 403 branch)', async () => {
+    const r = await call(`/api/memories/${attackerMem}`, 'PUT', attackerAuth, { content: 'still attacker content', agent_id: 'victim' })
+    expect(r.code).toBe(403)
+    expect(row(attackerMem)?.agent_id).toBe('attacker')
   })
 
   it('DELETE /:id cannot delete victim row', async () => {

@@ -751,6 +751,18 @@ Respond ONLY with JSON, nothing else:
   }
 
   if (path === '/api/memories/backfill' && method === 'POST') {
+    // O3 (RedHat 17520 on 9655494c, card ddeb2e17, LOW): not a data leak, a resource-consumption
+    // gap -- backfillEmbeddings() recomputes embeddings for every memory row fleet-wide (RedHat
+    // measured ~11.6s without Ollama for 9 rows, scales with row count). Before this card, any
+    // authenticated caller -- including a future per-agent device key -- could trigger it. Same
+    // human-only posture as the fleet export/import gates: an `agent:<id>` device key is excluded
+    // via the established agentKeyToAgentId() convention.
+    const isHumanDeviceBf = auth?.kind === 'device' && agentKeyToAgentId(auth.device) === null
+    if (auth?.kind !== 'session' && !isHumanDeviceBf) {
+      logger.warn({ authKind: auth?.kind ?? 'none', device: auth?.kind === 'device' ? auth.device : undefined }, 'Memories backfill: rejected for non-human credential')
+      json(res, { error: 'A beágyazás-backfill csak a tulajdonos munkamenetéből vagy saját eszközkulcsával futtatható, a megosztott flotta-tokennel nem.' }, 403)
+      return true
+    }
     try {
       const count = await backfillEmbeddings()
       json(res, { ok: true, count })
