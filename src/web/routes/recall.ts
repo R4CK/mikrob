@@ -1,6 +1,7 @@
 import { recallByDateRange, recallSearch, getDailyLogDates } from '../../db.js'
 import { MAIN_AGENT_ID, APP_TZ } from '../../config.js'
 import { json } from '../http-helpers.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 
 const TZ = APP_TZ  // install zone (config.APP_TZ); was hardcoded Europe/Budapest
@@ -181,12 +182,17 @@ function escapeLike(s: string): string {
 }
 
 export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
-  const { res, path, method, url } = ctx
+  const { res, path, method, url, auth } = ctx
+  // WhiteHat2 X1 (card debba303, same precedent as O1/overview.ts and card 517fdcc5/memories.ts):
+  // a device agent-key caller's authenticated identity, when present, overrides whatever
+  // `?agent=` claims -- a shared-token/session caller is unaffected and keeps reading any `agent`
+  // it names, exactly as before.
+  const authenticatedAgentId = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
 
   if (path === '/api/recall' && method === 'GET') {
     const dateExpr = url.searchParams.get('date') || ''
     const query = url.searchParams.get('q') || ''
-    const agent = url.searchParams.get('agent') || undefined
+    const agent = authenticatedAgentId || url.searchParams.get('agent') || undefined
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
 
     if (query && !dateExpr) {
@@ -216,7 +222,7 @@ export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/recall/dates' && method === 'GET') {
-    const agent = url.searchParams.get('agent') || MAIN_AGENT_ID
+    const agent = authenticatedAgentId || url.searchParams.get('agent') || MAIN_AGENT_ID
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '90', 10), 365)
     json(res, getDailyLogDates(agent, limit))
     return true
