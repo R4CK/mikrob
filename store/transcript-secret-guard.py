@@ -86,14 +86,19 @@ _RAW: list[tuple[str, str]] = [
     ("anthropic-admin-key", r"sk-ant-admin[0-9]{0,2}-[A-Za-z0-9_-]{20,}"),
     ("github-token", r"gh[pousr]_[A-Za-z0-9]{36,}"),
     ("github-fine-grained-pat", r"github_pat_[A-Za-z0-9_]{50,}"),
-    # Also inside an API URL (`/bot<token>/getMe`): "bot" directly before the digits is allowed.
+    # Also inside an API URL (`/bot<token>/getMe`): "bot" directly before the digits is allowed, in
+    # any letter case (`/Bot<token>/`, `/BOT<token>/`).
     (
         "telegram-bot-token",
-        r"(?:(?<![0-9A-Za-z])|(?<=bot))[0-9]{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])",
+        r"(?:(?<![0-9A-Za-z])|(?<=[Bb][Oo][Tt]))[0-9]{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])",
     ),
     ("aws-access-key-id", r"(?<![0-9A-Z])(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])"),
-    # Project keys carry '-' and '_' in the body; the legacy form is alphanumeric only.
-    ("openai-api-key", r"(?<![A-Za-z0-9_-])sk-(?:proj-[A-Za-z0-9_-]{40,}|[A-Za-z0-9]{40,})"),
+    # Project / service-account keys carry '-' and '_' in the body; the legacy form is alphanumeric
+    # only. The `svcacct` and `None` prefixes come from third-party sources, not a vendor doc.
+    (
+        "openai-api-key",
+        r"(?<![A-Za-z0-9_-])sk-(?:(?:proj|svcacct|None)-[A-Za-z0-9_-]{40,}|[A-Za-z0-9]{40,})",
+    ),
     ("slack-token", r"xox[baprs]-[0-9A-Za-z-]{10,}"),
     ("google-api-key", r"AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])"),
     ("stripe-live-secret", r"sk_live_[0-9A-Za-z]{24,}"),
@@ -146,8 +151,15 @@ MAX_CARRY = 1024 * 1024  # a match longer than this is counted now instead of ca
 
 # Which values of our own secret files count as "known secrets" (never printed).
 MAX_KNOWN = 200
-KNOWN_KEY_RX = re.compile(r"TOKEN|SECRET|PASSW(?:OR)?D|KEY|CREDENTIAL|SALT", re.I)
-KNOWN_VALUE_RX = re.compile(rb"[A-Za-z0-9_\-+=.:~@!%$/]{16,512}")
+KNOWN_KEY_RX = re.compile(r"TOKEN|SECRET|PASS(?:W(?:OR)?D)?|KEY|CREDENTIAL|SALT|LINK", re.I)
+# Printable ASCII without a space: a password with '#', '*' or '$' is as much a secret as a hex token.
+# A value is also searched in its JSON-escaped form (up to twice as long), and a match must fit in
+# the OVERLAP kept between chunk passes, so the cap is half of it.
+MAX_KNOWN_LEN = 256
+KNOWN_VALUE_RX = re.compile(rb"[\x21-\x7e]{16,%d}" % MAX_KNOWN_LEN)
+ENV_LINE_RX = re.compile(rb"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
+# The prefixless dashboard token is the reason the exact-value search exists: no token, no search.
+REQUIRED_KNOWN = "known:dashboard-token"
 
 EXIT_OK, EXIT_USAGE, EXIT_BLIND, EXIT_FINDINGS, EXIT_ALERT_FAILED = 0, 2, 3, 4, 5
 
@@ -214,20 +226,26 @@ def _acceptable_secret(value: bytes) -> bool:
     )
 
 
-def load_known_secrets(base: str, home: str) -> tuple[list[tuple[str, bytes]], int]:
-    """Values of the files that are SUPPOSED to hold a credential -> ([(label, value)], problems).
+def load_known_secrets(base: str, home: str) -> tuple[list[tuple[str, bytes]], int, int]:
+    """Values of the files that are SUPPOSED to hold a credential -> ([(label, value)], problems, skipped).
 
     The values stay in memory, inside compiled patterns; only the label (a file or env key NAME)
     ever reaches output. A source that exists but cannot be read is a `problem` (blind spot), a
-    missing one is normal on installs that do not have it.
+    missing one is normal on installs that do not have it. `skipped` counts secret-named entries whose
+    value was not loaded (shorter than 16 characters, non-ASCII, a path or URL): not a blind spot, but
+    never silent either.
     """
     found: list[tuple[str, bytes]] = []
     seen: set[bytes] = set()
     problems = 0
+    skipped = 0
 
     def add(label: str, value: bytes) -> None:
-        nonlocal problems
-        if value in seen or not _acceptable_secret(value):
+        nonlocal problems, skipped
+        if value in seen:
+            return
+        if not _acceptable_secret(value):
+            skipped += 1
             return
         if len(found) >= MAX_KNOWN:
             problems += 1
@@ -246,6 +264,31 @@ def load_known_secrets(base: str, home: str) -> tuple[list[tuple[str, bytes]], i
             problems += 1
             return None
 
+    def read_regular(path: str) -> bytes | None:
+        """For a directory whose content we do not control: never block on a FIFO, never follow a link."""
+        nonlocal problems
+        try:
+            fd = _open_regular(path)
+        except (NotRegularFile, FileNotFoundError):
+            return None
+        except OSError:
+            problems += 1
+            return None
+        try:
+            with os.fdopen(fd, "rb") as fh:
+                return fh.read(1024 * 1024)
+        except OSError:
+            problems += 1
+            return None
+
+    def add_env(data: bytes, prefix: str) -> None:
+        for line in data.splitlines():
+            m = ENV_LINE_RX.match(line)
+            if not m or not KNOWN_KEY_RX.search(m.group(1).decode("ascii", "replace")):
+                continue
+            value = m.group(2).split(b" #", 1)[0].strip().strip(b"\"'")
+            add(prefix + m.group(1).decode("ascii", "replace"), value)
+
     for name in (".dashboard-token", ".claude-oauth-token", ".vault-key"):
         data = read(os.path.join(base, "store", name))
         if data is not None:
@@ -254,14 +297,20 @@ def load_known_secrets(base: str, home: str) -> tuple[list[tuple[str, bytes]], i
     env_files = [os.path.join(base, ".env")] + sorted(glob.glob(os.path.join(base, "agents", "*", ".env")))
     for path in env_files:
         data = read(path)
+        if data is not None:
+            add_env(data, "known:env:")
+
+    # store/secrets/*: files that hold credentials by location. KEY=VALUE files are read like .env
+    # (secret-named keys only); any other file is one raw value.
+    for path in sorted(glob.glob(os.path.join(base, "store", "secrets", "*"))):
+        data = read_regular(path)
         if data is None:
             continue
-        for line in data.splitlines():
-            m = re.match(rb"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$", line)
-            if not m or not KNOWN_KEY_RX.search(m.group(1).decode("ascii", "replace")):
-                continue
-            value = m.group(2).split(b" #", 1)[0].strip().strip(b"\"'")
-            add("known:env:" + m.group(1).decode("ascii", "replace"), value)
+        label = "known:secrets:" + _escape(os.path.basename(path))
+        if any(ENV_LINE_RX.match(line) for line in data.splitlines()):
+            add_env(data, label + ":")
+        else:
+            add(label, data.strip())
 
     cred_files = [os.path.join(home, ".claude", ".credentials.json")]
     cred_files += sorted(glob.glob(os.path.join(base, "agents", "*", ".claude-config", ".credentials.json")))
@@ -285,11 +334,18 @@ def load_known_secrets(base: str, home: str) -> tuple[list[tuple[str, bytes]], i
                         stack.append(val)
             elif isinstance(node, list):
                 stack.extend(v for v in node if isinstance(v, (dict, list)))
-    return found, problems
+    return found, problems, skipped
 
 
 def make_known_patterns(known: list[tuple[str, bytes]]) -> list[tuple[str, "re.Pattern[bytes]"]]:
-    return [(label, re.compile(re.escape(value))) for label, value in known]
+    """One exact-value pattern per secret. Transcripts are JSON, which escapes `"` and `\\` inside a
+    string, so a value that has either is also searched in its escaped form."""
+    out = []
+    for label, value in known:
+        escaped = value.replace(b"\\", b"\\\\").replace(b'"', b'\\"')
+        alts = [re.escape(value)] + ([re.escape(escaped)] if escaped != value else [])
+        out.append((label, re.compile(b"|".join(alts))))
+    return out
 
 
 # --- walking ------------------------------------------------------------------------------------
@@ -534,15 +590,27 @@ def _escape(text: str) -> str:
 def safe_path(path: str, patterns) -> str:
     """Printable, value-free rendering of a path for stdout, the journal and the state file.
 
-    A segment that is itself credential-shaped becomes a short hash; control, format and unpaired
+    A segment that a credential pattern touches becomes a short hash. Two views are searched: the
+    path as it is (a value that contains '/') and the path with its separators dropped (a token cut
+    into directory names assembles itself in the printed path). Control, format and unpaired
     surrogate characters are escaped, so a hostile file name cannot forge an output line."""
+    segs = path.split(os.sep)
+    raws = [os.fsencode(seg) for seg in segs]
+    redact = [False] * len(segs)
+    for sep in (os.fsencode(os.sep), b""):
+        view = sep.join(raws)
+        starts, off = [], 0
+        for raw in raws:
+            starts.append(off)
+            off += len(raw) + len(sep)
+        for _n, rx in patterns:
+            for m in rx.finditer(view):
+                for i, raw in enumerate(raws):
+                    if raw and m.start() < starts[i] + len(raw) and m.end() > starts[i]:
+                        redact[i] = True
     out = []
-    for seg in path.split(os.sep):
-        raw = os.fsencode(seg)
-        if any(rx.search(raw) for _n, rx in patterns):
-            out.append("[SEGMENT-REDACTED:" + hashlib.sha256(raw).hexdigest()[:8] + "]")
-        else:
-            out.append(_escape(seg))
+    for seg, raw, hit in zip(segs, raws, redact):
+        out.append("[SEGMENT-REDACTED:" + hashlib.sha256(raw).hexdigest()[:8] + "]" if hit else _escape(seg))
     return os.sep.join(out)
 
 
@@ -589,7 +657,7 @@ def build_message(new_items: list[tuple[str, str, int]], total_files: int, reaso
     )
 
 
-def incomplete_reasons(stats: dict, known_problems: int) -> list[str]:
+def incomplete_reasons(stats: dict, known_problems: int, known_missing: bool = False) -> list[str]:
     reasons = []
     if stats["files_scanned"] == 0:
         reasons.append("no-files-scanned")
@@ -601,7 +669,77 @@ def incomplete_reasons(stats: dict, known_problems: int) -> list[str]:
         reasons.append("read-errors")
     if known_problems:
         reasons.append("known-secrets-unreadable")
+    if known_missing:
+        reasons.append("known-secrets-missing")
     return reasons
+
+
+def send_notice(notify_cmd: str, msg: str) -> bool:
+    try:
+        return subprocess.run([notify_cmd, msg], capture_output=True, timeout=60).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def blind_notice(args, state_path: str, notify_cmd: str, reasons: list[str]) -> None:
+    """One deduplicated notice for a way of being blind that happens BEFORE the scan (bad config, a
+    pattern that misses its canary, a crash). Same state key as the post-scan blindness: the same
+    cause does not page twice, a new cause does. Never advances `last_complete_at`."""
+    if not (args.alert or args.alert_dryrun):
+        return
+    key = ",".join(reasons)
+    state = load_state(state_path)
+    if key == state["blind"]:
+        return
+    msg = build_message([], 0, reasons)
+    if args.alert_dryrun:
+        print(f"ALERT_DRYRUN\t{msg}")
+        return
+    if not send_notice(notify_cmd, msg):
+        sys.stderr.write("transcript-secret-guard: blindness notice could not be sent; state not advanced\n")
+        return
+    try:
+        save_state(state_path, state["alerted"], key, state["last_complete_at"])
+    except OSError as exc:
+        sys.stderr.write(f"transcript-secret-guard: cannot write state ({errno.errorcode.get(exc.errno or 0, 'OSError')})\n")
+
+
+def check_freshness(args, state_path: str, notify_cmd: str) -> int:
+    """Dead-man's switch: has the daily run completed recently? Reads the state file only.
+
+    A guard that is not run at all (timer off, unit killed by its timeout, host asleep) reports nothing,
+    so its silence has to be noticed from outside. `unarmed` = no state file yet (no real --alert run has
+    completed), which is not an alarm unless --require-state is given."""
+    now = int(time.time())
+    limit = args.max_age_hours * 3600
+    last = 0
+    if not os.path.exists(state_path):
+        status = "missing" if args.require_state else "unarmed"
+    else:
+        last = load_state(state_path)["last_complete_at"]
+        if last <= 0:
+            status = "never"
+        elif now - last > limit:
+            status = "stale"
+        else:
+            status = "fresh"
+    age = "-" if last <= 0 else f"{(now - last) / 3600:.1f}"
+    print(f"FRESHNESS\tstatus={status}\tage_hours={age}\tmax_age_hours={args.max_age_hours}")
+    if status in ("fresh", "unarmed"):
+        return EXIT_OK
+    if args.alert or args.alert_dryrun:
+        when = "még nem fejeződött be" if last <= 0 else f"{(now - last) / 3600:.0f} órája fejeződött be utoljára"
+        msg = (
+            f"Projekt: Flotta: titok-őr: a napi ellenőrzés hiánytalan futása {when} (küszöb: "
+            f"{args.max_age_hours} óra, állapot: {status}). Az őr nem fut, nem ér a végére, vagy nem tud riasztani. "
+            "Teendő: a unit naplója és docs/transcript-secret-guard.md."
+        )
+        if args.alert_dryrun:
+            print(f"ALERT_DRYRUN\t{msg}")
+        elif not send_notice(notify_cmd, msg):
+            sys.stderr.write("transcript-secret-guard: freshness notice could not be sent\n")
+            return EXIT_ALERT_FAILED
+    return EXIT_BLIND
 
 
 def main(argv: list[str]) -> int:
@@ -616,14 +754,33 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--alert-dryrun", action="store_true")
     ap.add_argument("--notify-cmd", default=None)
     ap.add_argument("--quiet", action="store_true", help="print only the summary line")
+    ap.add_argument("--check-freshness", action="store_true",
+                    help="do not scan: exit 3 if the last complete run is older than --max-age-hours")
+    ap.add_argument("--max-age-hours", type=int, default=36)
+    ap.add_argument("--require-state", action="store_true",
+                    help="with --check-freshness: a missing state file is an alarm, not 'unarmed'")
     args = ap.parse_args(argv)
 
     install_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     state_path = args.state or os.path.join(install_dir, "store", ".transcript-secret-guard-state.json")
     notify_cmd = args.notify_cmd or os.path.join(install_dir, "scripts", "notify.sh")
 
+    if args.check_freshness:
+        return check_freshness(args, state_path, notify_cmd)
+    try:
+        return scan_main(args, install_dir, state_path, notify_cmd)
+    except Exception as exc:  # a crash must look like blindness (and page), never like a quiet failure
+        # Type and errno only: an exception message can carry a file name, and a file name can be a token.
+        why = type(exc).__name__ + (f"/{errno.errorcode.get(exc.errno or 0, 'E')}" if isinstance(exc, OSError) else "")
+        sys.stderr.write(f"transcript-secret-guard: BLIND, unexpected error: {why}\n")
+        blind_notice(args, state_path, notify_cmd, ["crash-" + type(exc).__name__])
+        return EXIT_BLIND
+
+
+def scan_main(args, install_dir: str, state_path: str, notify_cmd: str) -> int:
     if CHUNK_ERROR:
         sys.stderr.write(f"transcript-secret-guard: BLIND, {CHUNK_ERROR}\n")
+        blind_notice(args, state_path, notify_cmd, ["chunk-env-invalid"])
         return EXIT_BLIND
 
     patterns = list(PATTERNS)
@@ -632,14 +789,17 @@ def main(argv: list[str]) -> int:
             patterns += load_extra_patterns(args.extra_patterns)
         except (OSError, ValueError) as exc:
             sys.stderr.write(f"transcript-secret-guard: cannot load extra patterns: {exc}\n")
+            blind_notice(args, state_path, notify_cmd, ["extra-patterns-invalid"])
             return EXIT_USAGE
 
     blind = self_check(PATTERNS) + pipeline_check()
     if blind:
         sys.stderr.write(f"transcript-secret-guard: BLIND, built-in checks fail: {', '.join(blind)}\n")
+        blind_notice(args, state_path, notify_cmd, ["builtin-check:" + "+".join(blind)])
         return EXIT_BLIND
 
-    known, known_problems = load_known_secrets(args.secrets_base or install_dir, args.home)
+    known, known_problems, known_skipped = load_known_secrets(args.secrets_base or install_dir, args.home)
+    known_missing = REQUIRED_KNOWN not in {label for label, _v in known}
     patterns += make_known_patterns(known)
 
     if args.only_roots:
@@ -653,7 +813,7 @@ def main(argv: list[str]) -> int:
     t0 = time.time()
     findings, stats = run_scan(roots, scan_install, patterns, required)
     dur = time.time() - t0
-    reasons = incomplete_reasons(stats, known_problems)
+    reasons = incomplete_reasons(stats, known_problems, known_missing)
 
     shown = [(safe_path(p, patterns), n, c) for p, n, c in findings]
     if not args.quiet:
@@ -667,7 +827,7 @@ def main(argv: list[str]) -> int:
         f"skipped={stats['skipped']}\terrors={stats['errors']}\tfiles_with_findings={files_hit}\t"
         f"findings={len(findings)}\tseconds={dur:.1f}\tspecial={stats['special']}\t"
         f"opaque={stats['opaque']}\tvanished={stats['vanished']}\tcredfiles={stats['credfiles']}\t"
-        f"known_secrets={len(known)}\tincomplete={','.join(reasons) or '-'}"
+        f"known_secrets={len(known)}\tknown_skipped={known_skipped}\tincomplete={','.join(reasons) or '-'}"
     )
 
     rc = EXIT_BLIND if reasons else (EXIT_FINDINGS if findings else EXIT_OK)
@@ -692,12 +852,7 @@ def main(argv: list[str]) -> int:
     if args.alert_dryrun:
         print(f"ALERT_DRYRUN\t{msg}")
         return rc
-    try:
-        sent = subprocess.run([notify_cmd, msg], capture_output=True, timeout=60)
-        ok = sent.returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        ok = False
-    if not ok:
+    if not send_notice(notify_cmd, msg):
         sys.stderr.write("transcript-secret-guard: alert could not be sent; state not advanced\n")
         return EXIT_BLIND if reasons else EXIT_ALERT_FAILED
     save_state(state_path, store, reason_key, complete_at)
