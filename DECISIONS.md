@@ -20735,6 +20735,32 @@ Mindhárom tételt a kártya "INFO (ugyanitt rendezendő)" szekciója sorolta fe
 
 **Hivatkozás:** kártya e3d14be9, 01dea2f0 (szülő, Gate-SHA 032ff802, Cybersec F1+INFO), scripts/lib/owner-chat.sh (CHATID0, a shell-oldali tulajdonos-chat-feloldás meglévő, auditált közös helyere).
 
+## 2026-10-17 -- kártya 9b1ccbca: DECISIONS.md-hiány strukturális őre
+
+**Kontextus:** 2026-09-25-én öt kártya bukott QA-n egyetlen nap alatt kizárólag hiányzó DECISIONS.md bejegyzés miatt (197947ae, dac2e52b, c2aeefa5, 2564e877, f4cd1783, 9163495b) -- a kód minden esetben rendben volt, a kör csak gate-időt égetett. A Döntésnapló szabály (root CLAUDE.md) prózaként önmagában nem tartja (kódminőségi 6. elv: egy leírt szabály fegyelemre épül, ami elfelejthető).
+
+**Megoldás:** két belépési pont, két meglévő minta alapján (surgical change, nem új harmadik minta kitalálva):
+- `decisionsGuardCheck` (`src/web/kanban-decisions-guard.ts`) a `kanban-spec-template-guard.ts` warn-only side-effect mintáját követi: a `waiting`-be lépés UTÁN, egy "nem triviális" (FÁZIS/FELADAT/HIGH/URGENT/[SEC]) kártyánál NEM futó, egyszeri informatív kommentet ír, ha a kártya legfrissebb REVIEW-jának Gate-SHA-ja ÉS annak diffje (az első szülő ellen, `<sha>^1..<sha>`) nem tartalmaz a DECISIONS.md-ben ÚJ, kártya-ID-re hivatkozó sort. SOHA nem blokkol.
+- `decisionsGuardVerdict` (ugyanott) a `kanban-landed-guard.ts` 409-blokkoló mintáját követi: a `waiting`-be lépés ELŐTT fut, és KIZÁRÓLAG a `kanban-spec-template-guard.ts`-ből újrahasznosított `isNonTrivialCard()` szerint "nem triviális" kártyánál blokkol, ugyanazzal a feltétellel. Az "architektúra/SEC" kritériumot a kártya szövege prózaként kérte; nem vezettem be ehhez új `[ARCH]` cím-taget, mert a plan-grilling verdikt által már meghatározott "nem triviális" határ (FÁZIS/FELADAT = architektúra-szintű egység ezen a táblán, plusz [SEC] explicit) pontosan ezt a kockázati szintet fedi, egy második, párhuzamos osztályozás kitalálása nélkül.
+- A projekt→repó leképezést (`PROJECT_REPOS`/`NO_REPO_PROJECTS`) és a `git()` segédfüggvényt a `kanban-landed-guard.ts`-ből exportáltam újrahasznosításra (nem duplikáltam), a Gate-SHA kinyerését a már létező, tesztelt `latestReviewGateSha()`-ra (`kanban-gate-completeness-guard.ts`) bíztam.
+- Egy kártya, aminek a legfrissebb REVIEW-ja nem deklarál Gate-SHA-t (pl. `n/a (config-only)`, root CLAUDE.md 4e szabály), vagy aminek a projektje nem térképezett repóra, nem kap figyelmeztetést és nem blokkolódik -- nincs ellenőrizhető állítás.
+
+**Mérés:** mutáció-bizonyíték: a blokkoló ág `state !== 'missing'` feltételét megfordítva (`state === 'missing'`) 6/18 teszt bukott, visszaállítva 18/18 zöld. `tsc --noEmit` tiszta. A meglévő, érintett guard-tesztfájlok (landed-guard, gate-completeness-guard, spec-template-guard, draft-review-guard) együtt 182/182 zöld -- a `kanban-landed-guard.ts`-ben tett export-kiegészítések (PROJECT_REPOS, NO_REPO_PROJECTS, git, RepoTarget) nem változtatták meg a meglévő viselkedést. ESLint tiszta az új/módosított fájlokon (a `routes/kanban.ts`-en jelzett 12 hiba mind a PR előtti, nem érintett sorokon él -- ellenőrizve az `origin/develop` verzióval).
+
+**Ki döntött:** fullstack (kártya 9b1ccbca, self-advance, rule 6b aging-override -- a kártya 21,5 napja ült a planned oszlopban). Gate: QA.
+
+**Hivatkozás:** kártya 9b1ccbca, 197947ae/dac2e52b/c2aeefa5/2564e877/f4cd1783/9163495b (a mérési nap QA FAIL-jei), `kanban-draft-review-guard.ts` (a Draft-Review marker-minta forrása), `kanban-landed-guard.ts` és `kanban-spec-template-guard.ts` (a két újrahasznosított minta).
+
+## 2026-10-17 -- kártya f480a16a: seed-fleet-agents modell-mezők igazítása az élő konfigurációhoz (Token 5)
+
+**Kontextus:** a szülő 7f35d1b9 (Claude-token takarékosság, Peti Telegram 11178/11180) Token 5 alfeladata a "építő ügynökök Sonneten, Opus csak nehéz döntésre és biztonsági gate-re" cél felmérését és kivezetését kérte. A `seed-fleet-agents/{backend,backend2,cybersec,cybered}/agent-config.json` sablonfájlok még a régi `claude-opus-5`/`claude-opus-5-5` modellt tartalmazták, miközben az ÉLŐ `agents/<név>/agent-config.json` már a célállapoton állt (`claude-sonnet-5` / `claude-sonnet-5-5`) -- MikroB tisztázta (msg 13433), hogy a backend/backend2 sonnet-5-re és a WhiteHat/RedHat (cybersec/cybered) sonnet-5-5-re állítása már megtörtént döntés (Peti Telegram 10812/10814), nem új jóváhagyást igénylő kérdés; a `seed-fleet-agents` csak lemaradt a sablon-oldalon.
+
+**Megoldás:** a 4 seed-fájl `model` mezőjét az élő értékre igazítottam (`claude-opus-5` -> `claude-sonnet-5` a backend/backend2-n, `claude-opus-5-5` -> `claude-sonnet-5-5` a cybersec/cybered-en), semmi mást nem érintve a fájlokban. Visszaállítható: egyetlen mező, git-revert.
+
+**Ki döntött:** Peti (Telegram 10812/10814, a modell-cél), MikroB (msg 13433, a tisztázás hogy ez nem új jóváhagyás-kérés). Végrehajtó: fullstack (kártya f480a16a). Gate: QA.
+
+**Hivatkozás:** kártya f480a16a, szülő 7f35d1b9, msg 13433 (MikroB tisztázása).
+
 ## 2026-10-17 -- kártya 8b588834: GPU-driver figyelő (C), silent install opt-in flag + admin-oldali Windows-szkript + WhiteHat2 N1-N3 előfeltétel-javítás (26c07c33 epic, plan-grilling komment 15819, MIKROB DÖNTÉS komment 21106)
 
 **Kontextus:** a GPU-driver figyelő epic (26c07c33) harmadik lépése: a WSL oldal nem tud driver-t telepíteni (nincs host-szintű jogosultsága), ezért egy Peti által 2026-09-28-án kézzel létrehozott, Administrator-csak-írható Windows scheduled task (`MikroB-GPU-Driver-Install`, Run As NEON, Interactive, RunLevel Highest, trigger nélkül, `C:\ProgramData\MikroB` alatt, komment 8258 által élőben mérve) az egyetlen út a tényleges telepítéshez. A kártya plan-grilling verdiktje (komment 15819, GO-WITH-CHANGES) 6 kötelező pontot adott; a 2026-10-17-i MIKROB DÖNTÉS (Peti Telegram 11578, komment 21106) ezek közül a (c)3 és (c)5 előfeltételt feloldottnak nyilvánította (9482a764 kész, WSL-interop marad bekapcsolva) és kötelezővé tette a WhiteHat2 N1-N3 (9482a764 gate, komment 17641) javítását is, mint a (C) rész ELŐFELTÉTELÉT.

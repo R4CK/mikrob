@@ -48,8 +48,12 @@ core() { # the distinctive middle of the planted anthropic fixture, for leak gre
   printf '%s' "Z9Z9Z9Z9Z9Z9Z9Z9Z9"
 }
 
-# --secrets-base points at an empty dir: the self-test never loads this machine's real secrets.
-run() { python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/nobase" "$@"; }
+# --secrets-base points at a fixture dir: the self-test never loads this machine's real secrets. The
+# guard refuses to run without the prefixless dashboard token (known-secrets-missing), so the fixture
+# carries a synthetic one, assembled at run time.
+mkdir -p "$TMP/base0/store"
+python3 -I -c 'import hashlib; print(hashlib.sha256(b"selftest-base0").hexdigest())' > "$TMP/base0/store/.dashboard-token"
+run() { python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/base0" "$@"; }
 
 # --- 1. clean tree: exit 0, zero findings -------------------------------------------------------
 mkdir -p "$TMP/clean"; printf '{"a":"nothing here"}\n' > "$TMP/clean/a.jsonl"
@@ -250,7 +254,7 @@ g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)'
 # --- 14. silent blindness (card 3b5bf8d6 F-N1): every way of seeing nothing exits 3 -------------
 mkdir -p "$TMP/fifo"; mkfifo "$TMP/fifo/pipe.jsonl"
 printf 'plain\n' > "$TMP/fifo/a.jsonl"; printf '{"t":"%s"}\n' "$tok" > "$TMP/fifo/b.jsonl"
-out=$(timeout 30 python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/nobase" --root "$TMP/fifo" 2>&1); rc=$?
+out=$(timeout 30 python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/base0" --root "$TMP/fifo" 2>&1); rc=$?
 check "a FIFO in a root does not stall the run: it ends and still finds the token behind it" "$([ $rc -eq 4 ] && echo "$out" | grep -q 'b\.jsonl' && echo 0 || echo 1)"
 check "...the FIFO is counted as special, not read" "$(echo "$out" | grep -q 'special=1' && echo 0 || echo 1)"
 res=$(python3 -I - "$HERE" "$TMP/fifo/pipe.jsonl" <<PY
@@ -295,7 +299,7 @@ PY
 check "a file that vanishes between listing and open (rotation) is vanished=1, not an error" "$([ "$res" = "1 0" ] && echo 0 || echo 1)"
 
 for bad in 0 abc "" 10; do
-  out=$(env TRANSCRIPT_GUARD_CHUNK="$bad" python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/nobase" --root "$TMP/clean" 2>&1); rc=$?
+  out=$(env TRANSCRIPT_GUARD_CHUNK="$bad" python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/base0" --root "$TMP/clean" 2>&1); rc=$?
   check "TRANSCRIPT_GUARD_CHUNK='$bad' -> exit 3 (blind), no traceback" "$([ $rc -eq 3 ] && ! echo "$out" | grep -q Traceback && echo 0 || echo 1)"
 done
 
@@ -309,13 +313,13 @@ s = open(src).read()
 assert s.count(needle) == 1, (needle, s.count(needle))   # the mutation must apply exactly once
 open(dst, "w").write(s.replace(needle, repl))
 PY
-  local o; o=$(python3 -I "$d/store/transcript-secret-guard.py" --only-roots --secrets-base "$TMP/nobase" --root "$TMP/clean" 2>&1); local r=$?
+  local o; o=$(python3 -I "$d/store/transcript-secret-guard.py" --only-roots --secrets-base "$TMP/base0" --root "$TMP/clean" 2>&1); local r=$?
   check "$1" "$([ $r -eq 3 ] && echo "$o" | grep -q 'BLIND' && echo 0 || echo 1)"
 }
 mutant_blind "regexes fine but the counting path is dead -> exit 3 from the pipeline canary, not a silent zero" \
   'counts[name] = counts.get(name, 0) + 1' 'pass'
 mutant_blind "...the known-secret path is dead -> exit 3" \
-  'return [(label, re.compile(re.escape(value))) for label, value in known]' 'return []'
+  'out.append((label, re.compile(b"|".join(alts))))' 'pass'
 mutant_blind "...the credential-copy rule is dead -> exit 3" \
   'yield full, "credfile"' 'continue'
 mutant_blind "...a pattern that also fires on a foreign canary -> exit 3" \
@@ -510,6 +514,180 @@ if [ "$(id -u)" -ne 0 ]; then
   chmod 700 "$TMP/keep/sub"; krun >/dev/null 2>&1
   check "a run that could not read the finding's directory does not make it 'new' again afterwards (no re-alert)" "$([ $rc -eq 3 ] && [ "$(grep -c 'hitelesít' "$KCALLS")" -eq 1 ] && echo 0 || echo 1)"
 fi
+
+# --- 19. R2 (card 153a2799): the prefixless search cannot be silently off, and skips are counted ---
+mkdir -p "$TMP/nobase"
+out=$(python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/nobase" --root "$TMP/clean" 2>&1); rc=$?
+check "no dashboard token to load (wrong or empty secrets base) -> exit 3, known-secrets-missing, not a quiet zero" "$([ $rc -eq 3 ] && echo "$out" | grep -q 'known_secrets=0' && echo "$out" | grep -q 'incomplete=.*known-secrets-missing' && echo 0 || echo 1)"
+mkdir -p "$TMP/shortbase/store"; printf 'tiny\n' > "$TMP/shortbase/store/.dashboard-token"
+out=$(python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/shortbase" --root "$TMP/clean" 2>&1); rc=$?
+check "a dashboard token that is present but too short to load counts as missing too (exit 3, counted as skipped)" "$([ $rc -eq 3 ] && echo "$out" | grep -q 'known-secrets-missing' && echo "$out" | grep -q 'known_skipped=1' && echo 0 || echo 1)"
+
+python3 -I - "$TMP/sb" "$TMP/sscan" <<'PY'
+import hashlib, json, os, sys
+base, scan = sys.argv[1], sys.argv[2]
+for d in (base + "/store/secrets", scan):
+    os.makedirs(d, exist_ok=True)
+h = lambda t: hashlib.sha256(t.encode()).hexdigest()
+special = "#*$" + h("sb-special")[:20] + "&!"
+quoted = 'q"' + h("sb-quote")[:20] + "\\z"
+svcpass = h("sb-svc")[:24]
+raw = h("sb-raw")[:40]
+badname = h("sb-bad")[:30]
+open(base + "/store/.dashboard-token", "w").write(h("sb-dash") + "\n")
+with open(base + "/.env", "w", encoding="utf-8") as fh:
+    fh.write("SPECIAL_API_KEY=" + special + "\nQUOTED_SECRET='" + quoted + "'\nSHORT_PASSWORD=short1\n")
+    fh.write("LONG_TOKEN=" + "L" * 300 + "\nUTF_SECRET=" + "é" * 20 + "\n")
+open(base + "/store/secrets/svc.env", "w").write(
+    "SVC_EMAIL=someone.long.address@example.org\nSVC_PASS=" + svcpass + "\nSVC_MAGIC_LINK=https://example.org/aaaaaaaaaaaaaaaaaaaa\n")
+open(base + "/store/secrets/raw.txt", "w").write(raw + "\n")
+open(base + "/store/secrets/bad\nSUMMARY\tfiles_scanned=999.txt", "w").write(badname + "\n")
+os.mkfifo(base + "/store/secrets/pipe")
+open(scan + "/s1.jsonl", "w").write("pre " + special + " post\n")
+open(scan + "/s2.jsonl", "w").write(json.dumps({"t": quoted}) + "\nraw line " + quoted + "\n")
+open(scan + "/s3.jsonl", "w").write(svcpass + "\n" + raw + "\n" + badname + "\n")
+open(scan + "/s4.jsonl", "w").write("someone.long.address@example.org\n")
+PY
+out=$(timeout 30 python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/sb" --root "$TMP/sscan" 2>&1); rc=$?
+check "a password with '#', '*', '\$' is found by value (it used to be dropped silently)" "$(echo "$out" | grep -qP 's1\.jsonl\tknown:env:SPECIAL_API_KEY\tcount=1' && echo 0 || echo 1)"
+check "a value with a double quote and a backslash is found raw AND in its JSON-escaped form (count 2)" "$(echo "$out" | grep -qP 's2\.jsonl\tknown:env:QUOTED_SECRET\tcount=2' && echo 0 || echo 1)"
+check "store/secrets/*.env: a secret-named key (PASS) is a known secret, labelled with file and KEY" "$(echo "$out" | grep -qP 's3\.jsonl\tknown:secrets:svc\.env:SVC_PASS\tcount=1' && echo 0 || echo 1)"
+check "store/secrets/*: a file with no KEY=VALUE lines is one raw known secret" "$(echo "$out" | grep -qP 's3\.jsonl\tknown:secrets:raw\.txt\tcount=1' && echo 0 || echo 1)"
+check "...a non-secret key in that file (an e-mail address) is not loaded" "$(echo "$out" | grep -q 's4\.jsonl' && echo 1 || echo 0)"
+check "...a FIFO in store/secrets does not stall the run (it ended, exit 4)" "$([ $rc -eq 4 ] && echo 0 || echo 1)"
+check "...a hostile file name in store/secrets is escaped in the label (1 SUMMARY line)" "$([ "$(echo "$out" | grep -c '^SUMMARY')" -eq 1 ] && echo "$out" | grep -qF 'known:secrets:bad\x0aSUMMARY' && echo 0 || echo 1)"
+check "skipped values are counted, not silent: too short, over the length cap, non-ASCII, a URL (4)" "$(echo "$out" | grep -q 'known_skipped=4' && echo 0 || echo 1)"
+check "the loaded values are exactly 6 (dashboard, 2 env, svc pass, raw, hostile-name file)" "$(echo "$out" | grep -q 'known_secrets=6' && echo 0 || echo 1)"
+check "no known value appears in any output" "$(echo "$out" | grep -qE 'Z9Z9|[0-9a-f]{20}' && echo 1 || echo 0)"
+
+sweep=$(TRANSCRIPT_GUARD_CHUNK=1024 python3 -I - "$HERE" "$TMP" <<PY
+$GPY
+tmp = sys.argv[2]
+val = b'q"' + b"w" * 200 + b"\\\\z"
+esc = val.replace(b"\\\\", b"\\\\\\\\").replace(b'"', b'\\\\"')
+pats = g.make_known_patterns([("known:q", val)])
+bad = []; n = 0
+for form in (val, esc):
+    for off in range(1024 - 270, 1024 + 6):
+        p = os.path.join(tmp, "qsweep.bin")
+        open(p, "wb").write(b"." * off + form + b"." * 2200)
+        counts, _ = g.scan_file(p, pats); n += 1
+        if counts.get("known:q") != 1: bad.append(off)
+print(n, len(bad), 2 * g.MAX_KNOWN_LEN <= g.OVERLAP)
+PY
+)
+check "a long escaped known value is counted exactly once at every chunk-edge placement ($sweep)" "$([ "$(echo "$sweep" | cut -d' ' -f2)" = "0" ] && [ "$(echo "$sweep" | cut -d' ' -f3)" = "True" ] && echo 0 || echo 1)"
+
+# --- 20. R3: a token cut into directory names does not reassemble in the printed path -----------
+python3 -I - "$TMP/split" <<'PY'
+import os, sys
+d = sys.argv[1]
+tok = "sk-ant-" + "oat01-" + "Z9" * 20
+a, b = tok[:20], tok[20:]
+os.makedirs(os.path.join(d, a, b))
+open(os.path.join(d, a, b, ".f.jsonl"), "w").write('{"t":"' + tok + '"}\n')
+PY
+out=$(run --root "$TMP/split" 2>&1)
+check "a token split across two directory names is found in the file" "$(echo "$out" | grep -qP '\tanthropic-setup-token\tcount=1' && echo 0 || echo 1)"
+check "...and neither half reaches the output: both segments are replaced by hashes" "$([ "$(echo "$out" | grep '^FINDING' | grep -o 'SEGMENT-REDACTED' | wc -l)" -eq 2 ] && ! echo "$out" | grep -q "$(core)" && echo 0 || echo 1)"
+check "...the clean parts of the path stay readable (root directory and file name)" "$(echo "$out" | grep -qF "$TMP/split/[SEGMENT-REDACTED:" && echo "$out" | grep -qF '/.f.jsonl' && echo 0 || echo 1)"
+
+# --- 21. LOW patterns: upper-case Bot URL, sk-svcacct / sk-None ----------------------------------
+python3 -I - "$TMP/pat2" <<'PY'
+import os, sys
+d = sys.argv[1]; os.makedirs(d, exist_ok=True)
+tg = "1234567890" + ":" + "T" * 35
+files = {
+  "tg-Bot": "GET https://api.telegram.org/Bot" + tg + "/getMe",
+  "tg-BOT": "GET https://api.telegram.org/BOT" + tg + "/getMe",
+  "svc": "sk-" + "svcacct-" + "Ab_9-" * 12,
+  "none": "sk-" + "None-" + "Ab_9-" * 12,
+}
+for name, val in files.items():
+    open(os.path.join(d, name + ".jsonl"), "w").write('{"t":"x ' + val + ' y"}\n')
+neg = {"svc-short": "sk-" + "svcacct-" + "abc", "tg-Boot": "Boot" + tg, "none-lower": "sk-" + "none-" + "Ab_9-" * 12 + "q"}
+for name, val in neg.items():
+    open(os.path.join(d, "neg-" + name + ".jsonl"), "w").write('{"t":"x ' + val + ' y"}\n')
+PY
+out=$(run --root "$TMP/pat2" 2>&1)
+for pair in tg-Bot:telegram-bot-token tg-BOT:telegram-bot-token svc:openai-api-key none:openai-api-key; do
+  f=${pair%%:*}; p=${pair##*:}
+  check "finds $f as $p" "$(echo "$out" | grep -qP "/$f\.jsonl\t$p\tcount=1$" && echo 0 || echo 1)"
+done
+check "...a short svcacct body, 'Boot' and a lower-case 'none-' are not findings (4 findings in all)" "$([ "$(echo "$out" | grep -c '^FINDING')" -eq 4 ] && echo 0 || echo 1)"
+
+# --- 22. R1: every way of being blind pages once (dry-run channel = a stub notifier) -------------
+R1CALLS="$TMP/r1.calls"; R1ST="$TMP/r1.state"; : > "$R1CALLS"
+printf '#!/bin/bash\nprintf "%%s\\n" "$1" >> "%s"\n' "$R1CALLS" > "$TMP/notify-r1.sh"; chmod +x "$TMP/notify-r1.sh"
+r1run() { env TRANSCRIPT_GUARD_CHUNK=abc python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/base0" --root "$TMP/clean" --state "$R1ST" --alert --notify-cmd "$TMP/notify-r1.sh" 2>&1; }
+out=$(r1run); rc=$?
+check "an invalid CHUNK (config-blind) with --alert: exit 3 and ONE notice naming the cause, no path" "$([ $rc -eq 3 ] && [ "$(wc -l < "$R1CALLS")" -eq 1 ] && grep -q 'chunk-env-invalid' "$R1CALLS" && ! grep -q "$TMP" "$R1CALLS" && echo 0 || echo 1)"
+r1run >/dev/null; rc=$?
+check "...the same cause the next day: still exit 3, no second notice" "$([ $rc -eq 3 ] && [ "$(wc -l < "$R1CALLS")" -eq 1 ] && echo 0 || echo 1)"
+printf '{"alerted":{"keep|x":2},"blind":"","last_complete_at":1234567}' > "$R1ST"
+r1run >/dev/null
+res=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["alerted"], d["last_complete_at"], d["blind"])' "$R1ST")
+check "a blindness notice keeps earlier findings and last_complete_at (it did not see anything new)" "$([ "$res" = "{'keep|x': 2} 1234567 chunk-env-invalid" ] && echo 0 || echo 1)"
+
+: > "$R1CALLS"; rm -f "$R1ST"
+out=$(python3 -I "$TMP/broken-install/store/transcript-secret-guard.py" --only-roots --home "$TMP/home" --secrets-base "$TMP/base0" --root "$TMP/clean" --state "$R1ST" --alert --notify-cmd "$TMP/notify-r1.sh" 2>&1); rc=$?
+check "a regex-blind guard (a pattern misses its canary) with --alert: exit 3 and ONE notice (builtin-check)" "$([ $rc -eq 3 ] && [ "$(wc -l < "$R1CALLS")" -eq 1 ] && grep -q 'builtin-check:anthropic-setup-token' "$R1CALLS" && echo 0 || echo 1)"
+
+: > "$R1CALLS"; rm -f "$R1ST"
+python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/base0" --root "$TMP/ex" --extra-patterns "$TMP/extra-bad.tsv" --state "$R1ST" --alert --notify-cmd "$TMP/notify-r1.sh" >/dev/null 2>&1; rc=$?
+check "an invalid extra-pattern file (config-blind): exit 2 as before, plus ONE notice" "$([ $rc -eq 2 ] && [ "$(wc -l < "$R1CALLS")" -eq 1 ] && grep -q 'extra-patterns-invalid' "$R1CALLS" && echo 0 || echo 1)"
+
+: > "$R1CALLS"; rm -f "$R1ST"
+mkdir -p "$TMP/crash/store"
+python3 -I - "$GUARD" "$TMP/crash/store/transcript-secret-guard.py" <<'PY'
+import sys
+src, dst = sys.argv[1:3]
+s = open(src).read()
+needle = "findings, stats = run_scan(roots, scan_install, patterns, required)"
+assert s.count(needle) == 1, s.count(needle)
+open(dst, "w").write(s.replace(needle, 'raise RuntimeError("boom-" + "sk-ant-" + "oat01-" + "Z9" * 20)'))
+PY
+out=$(python3 -I "$TMP/crash/store/transcript-secret-guard.py" --only-roots --home "$TMP/home" --secrets-base "$TMP/base0" --root "$TMP/clean" --state "$R1ST" --alert --notify-cmd "$TMP/notify-r1.sh" 2>&1); rc=$?
+check "an unexpected crash is blindness too: exit 3 (not a traceback exit 1) and ONE notice" "$([ $rc -eq 3 ] && ! echo "$out" | grep -q Traceback && [ "$(wc -l < "$R1CALLS")" -eq 1 ] && grep -q 'crash-RuntimeError' "$R1CALLS" && echo 0 || echo 1)"
+check "...the exception message (it can carry a file name or a value) is in no output" "$(echo "$out" | grep -q "$(core)" && echo 1 || grep -q "$(core)" "$R1CALLS" && echo 1 || echo 0)"
+
+: > "$R1CALLS"; rm -f "$R1ST"
+env TRANSCRIPT_GUARD_CHUNK=abc python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/base0" --root "$TMP/clean" --state "$R1ST" --alert --notify-cmd "$TMP/notify-fail.sh" >/dev/null 2>&1; rc=$?
+check "blindness notice that cannot be sent: still exit 3, state not advanced" "$([ $rc -eq 3 ] && [ ! -e "$R1ST" ] && echo 0 || echo 1)"
+out=$(env TRANSCRIPT_GUARD_CHUNK=abc python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/base0" --root "$TMP/clean" --state "$R1ST" --alert-dryrun 2>&1)
+check "--alert-dryrun on a config-blind run prints the notice and writes no state" "$(echo "$out" | grep -q '^ALERT_DRYRUN.*chunk-env-invalid' && [ ! -e "$R1ST" ] && echo 0 || echo 1)"
+
+# the freshness check: is the guard still COMPLETING? (reads the state file only; no scan)
+FST="$TMP/fresh.state"; FCALLS="$TMP/fresh.calls"; : > "$FCALLS"
+printf '#!/bin/bash\nprintf "%%s\\n" "$1" >> "%s"\n' "$FCALLS" > "$TMP/notify-fresh.sh"; chmod +x "$TMP/notify-fresh.sh"
+frun() { python3 -I "$GUARD" --check-freshness --state "$FST" --notify-cmd "$TMP/notify-fresh.sh" "$@" 2>&1; }
+out=$(frun --alert); rc=$?
+check "freshness, no state file yet: 'unarmed', exit 0, no notice, no scan" "$([ $rc -eq 0 ] && echo "$out" | grep -q 'status=unarmed' && ! echo "$out" | grep -q '^SUMMARY' && [ ! -s "$FCALLS" ] && echo 0 || echo 1)"
+out=$(frun --alert --require-state); rc=$?
+check "...with --require-state a missing state file is an alarm: exit 3 and ONE notice" "$([ $rc -eq 3 ] && [ "$(wc -l < "$FCALLS")" -eq 1 ] && echo 0 || echo 1)"
+: > "$FCALLS"
+python3 -I -c 'import json,sys,time; json.dump({"alerted":{},"blind":"","last_complete_at":int(time.time())-3600*5}, open(sys.argv[1],"w"))' "$FST"
+out=$(frun --alert); rc=$?
+check "freshness, last complete run 5 h ago: fresh, exit 0, silent" "$([ $rc -eq 0 ] && echo "$out" | grep -q 'status=fresh' && [ ! -s "$FCALLS" ] && echo 0 || echo 1)"
+python3 -I -c 'import json,sys,time; json.dump({"alerted":{},"blind":"","last_complete_at":int(time.time())-3600*40}, open(sys.argv[1],"w"))' "$FST"
+out=$(frun --alert); rc=$?
+check "...40 h ago: stale, exit 3 and ONE notice (a killed or never-started run is heard of)" "$([ $rc -eq 3 ] && echo "$out" | grep -q 'status=stale' && [ "$(wc -l < "$FCALLS")" -eq 1 ] && grep -q '^Projekt: Flotta:' "$FCALLS" && echo 0 || echo 1)"
+out=$(frun --alert --max-age-hours 100); rc=$?
+check "...the same 40 h is fresh under --max-age-hours 100" "$([ $rc -eq 0 ] && echo "$out" | grep -q 'status=fresh' && echo 0 || echo 1)"
+python3 -I -c 'import json,sys; json.dump({"alerted":{},"blind":"root-missing","last_complete_at":0}, open(sys.argv[1],"w"))' "$FST"
+out=$(frun); rc=$?
+check "state present but the guard never completed (last_complete_at=0): 'never', exit 3 even without --alert" "$([ $rc -eq 3 ] && echo "$out" | grep -q 'status=never' && echo 0 || echo 1)"
+printf 'not json{' > "$FST"
+out=$(frun); rc=$?
+check "a corrupt state file is 'never' (exit 3), not a pass" "$([ $rc -eq 3 ] && echo "$out" | grep -q 'status=never' && echo 0 || echo 1)"
+out=$(frun --alert-dryrun); rc=$?
+check "--alert-dryrun prints the stale notice and sends nothing new" "$([ $rc -eq 3 ] && echo "$out" | grep -q '^ALERT_DRYRUN.*Projekt: Flotta:' && [ "$(wc -l < "$FCALLS")" -eq 1 ] && echo 0 || echo 1)"
+python3 -I "$GUARD" --check-freshness --state "$FST" --alert --notify-cmd "$TMP/notify-fail.sh" >/dev/null 2>&1; rc=$?
+check "a stale notice that cannot be sent -> exit 5" "$([ $rc -eq 5 ] && echo 0 || echo 1)"
+
+UNITS="$HERE/../scripts/systemd"
+check "the guard unit pages on failure (OnFailure= names the app-crash notifier template)" "$(grep -q '^OnFailure=marveen-notify@%n.service' "$UNITS/transcript-secret-guard.service" && [ -f "$UNITS/marveen-notify@.service" ] && echo 0 || echo 1)"
+check "the freshness unit runs --check-freshness --alert, and a timer file exists for it" "$(grep -q '^ExecStart=.*--check-freshness --alert' "$UNITS/transcript-secret-guard-freshness.service" && grep -q '^OnCalendar=' "$UNITS/transcript-secret-guard-freshness.timer" && echo 0 || echo 1)"
 
 echo
 echo "transcript-secret-guard selftest: $PASS passed, $FAIL failed"

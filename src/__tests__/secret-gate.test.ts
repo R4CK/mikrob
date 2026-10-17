@@ -30,6 +30,11 @@ const f = (path: string, content: string): ScanInput => ({ path, content });
  * evidence paths, quoted channel material, and formats nobody has listed.
  */
 const STRIPE_FIXTURE = ['sk', 'live', '51ABCDEFGHIJKLMNOPQRSTUV'].join('_');
+// Same assembled-at-runtime convention as STRIPE_FIXTURE above, for the two F3 patterns
+// (card eeb57483): writing these as literals trips the repo's own secret-write guard.
+const GITHUB_PAT_FIXTURE =
+  'github_pat_' + '11ABCDEFGHIJKLMNOPQRST_0123456789abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ';
+const GOOGLE_AIZA_FIXTURE = 'AIza' + 'SyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456'; // AIza + 35 chars
 
 describe('fail-closed', () => {
   it('an EMPTY file set FAILS -- the most common silent fail-open', () => {
@@ -73,6 +78,11 @@ describe('detector 2: content', () => {
     ['jwt', 'token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r'],
     ['github token', 'GH=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'],
     ['aws key id', 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE'],
+    // F3 (card eeb57483, WhiteHat GO condition on ee9ee17b): github_pat_ is a DIFFERENT prefix
+    // from the classic github-token entry above, not a longer form of it -- that pattern does
+    // not match it.
+    ['github fine-grained PAT', `GH=${GITHUB_PAT_FIXTURE}`],
+    ['google AIza key', `GOOGLE_API_KEY=${GOOGLE_AIZA_FIXTURE}`],
   ])('blocks a %s in an ordinary file', (_name, body) => {
     const r = runGate([f('docs/notes.md', body)]);
     expect(r.ok).toBe(false);
