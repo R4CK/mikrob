@@ -127,9 +127,9 @@
       "expected": false
     },
     {
-      "name": "RESENDGETTWIN1010: read-only -G with query data",
+      "name": "RESENDGETTWIN1010: -G with query data stays closed (fbb36b41 round 11 NO-GO)",
       "cmd": "curl -G https://api.resend.com/domains -d 'limit=1'",
-      "expected": false
+      "expected": true
     },
     {
       "name": "RESENDGETTWIN1010: read-only --request=GET",

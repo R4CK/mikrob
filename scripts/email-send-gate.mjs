@@ -158,7 +158,6 @@ function curlResendVerdict(prog, rest) {
   if (HTTPIE.test(prog)) return 'unknown'
   let method = null
   let hasBody = false
-  let getForced = false
   const n = rest.length
   for (let i = 0; i < n; i++) {
     const t = rest[i]
@@ -174,7 +173,14 @@ function curlResendVerdict(prog, rest) {
       method = m.toUpperCase()
       continue
     }
-    if (t === '-G' || t === '--get') { getForced = true; continue }
+    // card d06a325d (Koteg 18): -G/--get is READ here (no effect on the verdict), NOT tracked as
+    // a body-send exemption. Upstream's own port (#1858) added a getForced flag that let `-G -d
+    // 'limit=1'` pass as read -- but this fork's outgoing-copy-gate.py already decided, with a live
+    // repro (Cybersec NO-GO, fbb36b41 round 11), that -G CANNOT downgrade a body-send to read:
+    // curl -G turns -d's payload into a query string on the SAME request to the SAME destination,
+    // so the content still reaches it; only the HTTP method differs. Porting the exemption here
+    // would have reopened exactly that NO-GO on the JS twin. NOT ADOPTED; see DECISIONS.md.
+    if (t === '-G' || t === '--get') continue
     if (t === '-K' || t === '--config') return 'unknown' // a config file can carry a hidden method or body
     if (CURL_BODY_OPTS.has(t) ||
         [...CURL_BODY_OPTS].some((o) => o.startsWith('--') && t.startsWith(o + '='))) {
@@ -196,17 +202,16 @@ function curlResendVerdict(prog, rest) {
         }
       } else if (letters.includes('d') || letters.includes('F') || letters.includes('T')) {
         hasBody = true
-      } else if (letters.includes('G')) {
-        getForced = true
       } else if (letters.includes('K')) {
         return 'unknown'
       }
+      // letters.includes('G') -- -G bundled in a cluster (e.g. -sG): same as the standalone
+      // flag above, no effect on the verdict.
     }
   }
   if (method !== null && !SAFE_METHODS.has(method)) return 'send'
-  // implicit POST (the default of curl -d/-F/--json/-T), or a suspicious
-  // "GET with a body" -- both are treated as a send
-  if (hasBody && !getForced) return 'send'
+  // a body is a send regardless of -G (fbb36b41 round 11 NO-GO -- see the comment above)
+  if (hasBody) return 'send'
   return 'read'
 }
 const CODE_SEND = /\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.send\b/i
@@ -215,6 +220,17 @@ const CODE_SEND = /\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.s
 // see the STATED LIMIT in the header for what it deliberately does not claim.
 const CODE_EXECISH = /\bsubprocess\b|os\.system|\bpopen\b|child_process|\bexec[A-Za-z]*\s*\(|\bspawn[A-Za-z]*\s*\(/i
 const CODE_SENDER_LIT = /sendmail|msmtp|swaks|send\.py/i
+// Card d06a325d (Koteg 18 upstream-sync): a QUOTE-ANCHORED sender-literal, for body text that can
+// be PROSE (a heredoc-fed script's own report/log strings), where CODE_SENDER_LIT above would match
+// the word "sendmail" or a card id like "FIXSENDMAIL1009" anywhere, case-insensitively, including
+// inside an ordinary English sentence. Hoisted here (was defined only near heredocBodySends further
+// down) so heredocScriptSends below can use it too -- it had its OWN, un-narrowed codeStringSends
+// call, which defeated the #1855 narrowing for every heredoc that goes through heredocFeedsSend
+// (card c7401c5f) rather than the newer heredocProgramSends: measured false-positive on both the
+// conformance suite's "FIXSENDMAIL1009 ... the sendmail wrapper is fine" and "SENDMAIL relay check"
+// cases, each a subprocess.run() call with no actual sender invocation. Mirrors
+// _HEREDOC_SENDER_ARGV / _heredoc_body_sends in hooks/outgoing-copy-gate.py.
+const HEREDOC_SENDER_ARGV = /['"](?:[^'"\s]*\/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])/
 // Issue #1853 (stylnet): the support-mail sender LOADED AS A MODULE (`import send`,
 // `from send import main`, runpy, __import__/import_module, a spec built from send.py).
 // Case-sensitive on purpose; `send` must be the whole module name. Mirrors
@@ -237,8 +253,14 @@ const codeStringSends = (code) =>
 // heredoc-fed script's own body).
 const CODE_NETWORK_CALL = /\bfetch\s*\(|\baxios\b[^\n]*\(|\brequests\.(?:post|get)\s*\(|\burlopen\s*\(|\bXMLHttpRequest\b/i
 const CODE_PROVIDER_HOST = /api\.resend\.com/i
+// card d06a325d: was codeStringSends(body) -- its (CODE_EXECISH && CODE_SENDER_LIT) clause is
+// position-blind (see HEREDOC_SENDER_ARGV above), which is fine for a -c/-e inline code string
+// (short, actual code) but wrong for a heredoc BODY (can be long prose). CODE_SEND and
+// CODE_SEND_MODULE stay as-is: both are specific call/import shapes, not prose-prone.
 const heredocScriptSends = (body) =>
-  codeStringSends(body) || (CODE_NETWORK_CALL.test(body) && CODE_PROVIDER_HOST.test(body))
+  CODE_SEND.test(body) || CODE_SEND_MODULE.test(body) ||
+  (CODE_EXECISH.test(body) && HEREDOC_SENDER_ARGV.test(body)) ||
+  (CODE_NETWORK_CALL.test(body) && CODE_PROVIDER_HOST.test(body))
 
 // --- heredoc composition (card c7401c5f) ------------------------------------
 // isSendInvocation's own tokenizer (segmentsTokens, below) strips EVERY heredoc body wholesale via
@@ -570,7 +592,8 @@ export function buildWrapperDepthMsg() {
 // Exact token match; a file run by ANOTHER Bash call stays out of reach.
 // PIPED (#1855): `cat <<'EOF' | bash` or `| python3 -` hands the body over the pipe on the
 // heredoc's opening line; it is judged the same way.
-const HEREDOC_SENDER_ARGV = /['"](?:[^'"\s]*\/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])/
+// card d06a325d: HEREDOC_SENDER_ARGV itself is now hoisted next to CODE_SENDER_LIT, so
+// heredocScriptSends (the older c7401c5f path) can share it too -- see that definition's comment.
 const heredocBodySends = (body) =>
   CODE_SEND.test(body) || CODE_SEND_MODULE.test(body) || (CODE_EXECISH.test(body) && HEREDOC_SENDER_ARGV.test(body))
 const HEREDOC_SHELL = /(?:^|[\s;&|(])(?:\S*\/)?(?:bash|sh|zsh|dash)\b[^\n<]*$/i
