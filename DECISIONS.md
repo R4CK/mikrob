@@ -20844,3 +20844,19 @@ A POST-oldali írás (daily-log append, messages create) NEM változott -- a ká
 **Ki döntött:** backend (kártya c188f357), RedHat F-N1 lelete (9c7ad372 CYBERED GO melléklete, komment 20936) alapján. Gate: QA + RedHat + Cybersec (a kártya saját kijelölése; WhiteHat2/cybersec2 nem gate-el, mert az előd javítást ő tervezte).
 
 **Hivatkozás:** kártya c188f357 (szülő nincs), 9c7ad372 (forrás, CYBERED GO komment 20936 + F-N1..F-N3), 2bfa4c67 (a strukturált gate-verdikt rekord, amelynek bekapcsolása előfeltétele ez), 7b12182a (a seed-sablon-szinkronizálás precedense ugyanerre a hiba-osztályra).
+
+## 2026-10-17 -- kártya debba303 delta-gate: /api/messages/threads és /api/messages/:id hívó-szűrés (Cybersec NO-GO F1)
+
+**Kontextus:** Cybersec NO-GO (komment 21537) a debba303 eredeti REVIEW-jára (Gate-SHA a552bffd7): a daily-log/messages/recall hívó-szűrés fixje (lásd a fenti, 2026-10-17-i debba303 bejegyzés) a `GET /api/messages` listát és a `status=pending` ágat fedte, de a `messages.ts` két testvér-olvasóját nem érintette -- `GET /api/messages/threads` (a fleet-wide oldalsáv-lista, minden peer globálisan-legutóbbi üzenetével) és `GET /api/messages/:id` (egész-szám id szerinti olvasás). Mérve a Gate-SHA kódján: `agent:attacker` kulccsal a `/threads` 645 byte-ban hordozta a victim utolsó üzenetét, a `/api/messages/<victim-üzenet-id>` pedig 331 byte-ban a teljes tartalmát -- mindkettő leaksVictim=true, ugyanaz a hatás, mint az eredeti X1 lelet.
+
+**Megoldás:** ugyanaz a minta, mint az eredeti fixben -- `authenticatedAgentId = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null`, de ezúttal a két testvér-ágra szabva:
+- `src/db.ts`, `getAgentConversationThreads(scopeToAgent?: string)`: új, OPCIONÁLIS paraméter. Ha adott, a peer-halmaz ÉS minden peer count/lastMessage mezője kizárólag a `scopeToAgent`-et érintő sorokra szorítkozik (nem a globálisan-legutóbbi üzenet a peerrel, hanem a scopeToAgent-tel folytatott beszélgetés legutóbbi üzenete) -- paraméter nélkül a régi, flotta-szintű viselkedés változatlan.
+- `src/web/routes/messages.ts`, `GET /api/messages/threads`: `getAgentConversationThreads(authenticatedAgentId || undefined)`.
+- `src/web/routes/messages.ts`, `GET /api/messages/:id`: ha `authenticatedAgentId` adott ÉS a sor `from_agent`/`to_agent` egyike sem egyezik vele, 404 (nem 403) -- ugyanaz a "nincs létezés-orákulum" konvenció, mint az O1/memories.ts precedensben: egy létező, de más ügynöké sor ugyanúgy nézzen ki, mint egy sosem létezett id.
+A megosztott token/session hívó (emberi operátor) mindkét ágon változatlan.
+
+**Mérés:** `messages-agent-key-boundary.test.ts` bővült 8 új esettel (threads: támadó nem látja, tulajdonos látja, megosztott token változatlan; id: támadó 404-et kap a victim sorára, tulajdonos mint feladó és mint címzett is olvashatja, megosztott token változatlan) -- 11/11 zöld. Mutáció-proof: a két fix (a `scopeToAgent` átadás a threads route-ban, és a 404-blokk az id route-ban) egyszerre visszavonva -- PONTOSAN a 2 új, támadó-esetet fedő teszt bukott (9/11 zöld marad), a visszaállítás byte-azonos (diff ellenőrizve), utána ismét 11/11 zöld. Célzott regresszió (a teljes `messages`-kapcsolódó 11 teszt-fájl): 86/86 zöld. `tsc --noEmit` és ESLint tiszta a 3 érintett/módosult fájlon.
+
+**Ki döntött:** backend (kártya debba303), Cybersec NO-GO lelete (F1, komment 21537) alapján.
+
+**Hivatkozás:** kártya debba303 (szülő 2520b85a), komment 21537 (Cybersec NO-GO, F1/F2/F3/F4), komment 21529 (az eredeti REVIEW, Gate-SHA a552bffd7a537f9e952594034ce728540a726872), 517fdcc5/84dcc5d4 (a hívó-szűrés eredeti precedense).

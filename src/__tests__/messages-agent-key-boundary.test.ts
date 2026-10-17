@@ -31,10 +31,13 @@ function makeCtx(pathWithQuery: string): { ctx: RouteContext; getBody: () => any
   }
 }
 
+let victimOutboundId: number
+let victimInboundId: number
+
 beforeAll(() => {
   initDatabase(':memory:')
-  createAgentMessage('victim', 'someone-else', 'victim private outbound message')
-  createAgentMessage('someone-else', 'victim', 'victim private inbound message')
+  victimOutboundId = createAgentMessage('victim', 'someone-else', 'victim private outbound message').id
+  victimInboundId = createAgentMessage('someone-else', 'victim', 'victim private inbound message').id
 })
 
 afterAll(() => { vi.restoreAllMocks() })
@@ -75,5 +78,71 @@ describe('GET /api/messages -- agent-key boundary (card debba303)', () => {
     expect(handled).toBe(true)
     const body = getBody()
     expect(body.find((m: any) => m.content.includes('victim private'))).toBeDefined()
+  })
+})
+
+describe('GET /api/messages/threads -- agent-key boundary (Cybersec NO-GO F1, card debba303)', () => {
+  it('a device key for a DIFFERENT agent does not see the victim thread', async () => {
+    const { ctx, getBody } = makeCtx('/api/messages/threads')
+    ;(ctx as any).auth = { kind: 'device', device: 'agent:attacker' }
+    const handled = await tryHandleMessages(ctx)
+    expect(handled).toBe(true)
+    const body = getBody()
+    expect(Array.isArray(body)).toBe(true)
+    expect(body.find((t: any) => t.agent === 'victim' || t.lastMessage?.content.includes('victim private'))).toBeUndefined()
+  })
+
+  it('the owning device key still sees its own thread', async () => {
+    const { ctx, getBody } = makeCtx('/api/messages/threads')
+    ;(ctx as any).auth = { kind: 'device', device: 'agent:victim' }
+    const handled = await tryHandleMessages(ctx)
+    expect(handled).toBe(true)
+    const body = getBody()
+    expect(body.find((t: any) => t.agent === 'someone-else')).toBeDefined()
+  })
+
+  it('a shared-token caller (no device key) is UNCHANGED -- the fleet-wide thread list still shows victim', async () => {
+    const { ctx, getBody } = makeCtx('/api/messages/threads')
+    const handled = await tryHandleMessages(ctx)
+    expect(handled).toBe(true)
+    const body = getBody()
+    expect(body.find((t: any) => t.agent === 'victim')).toBeDefined()
+  })
+})
+
+describe('GET /api/messages/:id -- agent-key boundary (Cybersec NO-GO F1, card debba303)', () => {
+  it('a device key for a DIFFERENT agent gets 404 (not found) for a victim message id, not the content', async () => {
+    const { ctx, getBody } = makeCtx(`/api/messages/${victimOutboundId}`)
+    ;(ctx as any).auth = { kind: 'device', device: 'agent:attacker' }
+    const handled = await tryHandleMessages(ctx)
+    expect(handled).toBe(true)
+    const body = getBody()
+    expect(body).toEqual({ error: 'Message not found' })
+  })
+
+  it('the owning device key (as sender) can still read its own message by id', async () => {
+    const { ctx, getBody } = makeCtx(`/api/messages/${victimOutboundId}`)
+    ;(ctx as any).auth = { kind: 'device', device: 'agent:victim' }
+    const handled = await tryHandleMessages(ctx)
+    expect(handled).toBe(true)
+    const body = getBody()
+    expect(body.content).toBe('victim private outbound message')
+  })
+
+  it('the owning device key (as recipient) can still read its own message by id', async () => {
+    const { ctx, getBody } = makeCtx(`/api/messages/${victimInboundId}`)
+    ;(ctx as any).auth = { kind: 'device', device: 'agent:victim' }
+    const handled = await tryHandleMessages(ctx)
+    expect(handled).toBe(true)
+    const body = getBody()
+    expect(body.content).toBe('victim private inbound message')
+  })
+
+  it('a shared-token caller (no device key) is UNCHANGED -- can still read the victim message by id', async () => {
+    const { ctx, getBody } = makeCtx(`/api/messages/${victimOutboundId}`)
+    const handled = await tryHandleMessages(ctx)
+    expect(handled).toBe(true)
+    const body = getBody()
+    expect(body.content).toBe('victim private outbound message')
   })
 })
