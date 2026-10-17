@@ -151,56 +151,64 @@ export function importFromRelations(mainDb: Database.Database, kgDb: Database.Da
     if (upsertEdge(kgDb, input) > 0) report.edgesFromRelations += 1
   }
 
-  for (const rel of relations) {
-    const fromCard = ensureCardNode(kgDb, lookup, rel.from_id, report, cardNodesWritten)
-    if (!fromCard) continue
-    const edgeRel = RELATION_TO_EDGE[rel.relation_type]
-    if (!edgeRel) continue // unreachable given the WHERE clause, kept for type safety
+  // F2 (eeb57483, WhiteHat GO condition on ee9ee17b): a single bad row (e.g. a CHECK-constraint
+  // violation upsertNode's own guards did not anticipate) used to abort the run partway, leaving
+  // whatever had already been written in kg_nodes/kg_edges while everything after the failure
+  // point was silently missing. One transaction makes a run atomic: all of it lands, or none of
+  // it does, so a retry after fixing the cause starts from a known-clean state either way.
+  const runImport = kgDb.transaction(() => {
+    for (const rel of relations) {
+      const fromCard = ensureCardNode(kgDb, lookup, rel.from_id, report, cardNodesWritten)
+      if (!fromCard) continue
+      const edgeRel = RELATION_TO_EDGE[rel.relation_type]
+      if (!edgeRel) continue // unreachable given the WHERE clause, kept for type safety
 
-    if (rel.to_type === 'card') {
-      const toCard = ensureCardNode(kgDb, lookup, rel.to_id, report, cardNodesWritten)
-      if (!toCard) continue
-      runUpsertEdge({
-        src: cardNodeId(rel.from_id),
-        dst: cardNodeId(rel.to_id),
-        rel: edgeRel,
-        source: 'import:kanban_relations',
-      })
-    } else if (rel.to_type === 'sha') {
-      ensureCommitNode(
-        kgDb,
-        rel.to_id,
-        mapProjectToPartition(fromCard.project),
-        report,
-        commitNodesWritten,
-      )
-      runUpsertEdge({
-        src: cardNodeId(rel.from_id),
-        dst: commitNodeId(rel.to_id),
-        rel: edgeRel,
-        source: 'import:kanban_relations',
-      })
+      if (rel.to_type === 'card') {
+        const toCard = ensureCardNode(kgDb, lookup, rel.to_id, report, cardNodesWritten)
+        if (!toCard) continue
+        runUpsertEdge({
+          src: cardNodeId(rel.from_id),
+          dst: cardNodeId(rel.to_id),
+          rel: edgeRel,
+          source: 'import:kanban_relations',
+        })
+      } else if (rel.to_type === 'sha') {
+        ensureCommitNode(
+          kgDb,
+          rel.to_id,
+          mapProjectToPartition(fromCard.project),
+          report,
+          commitNodesWritten,
+        )
+        runUpsertEdge({
+          src: cardNodeId(rel.from_id),
+          dst: commitNodeId(rel.to_id),
+          rel: edgeRel,
+          source: 'import:kanban_relations',
+        })
+      }
     }
-  }
 
-  const verdicts = mainDb
-    .prepare(`SELECT card_id, sha FROM kanban_verdicts WHERE sha IS NOT NULL AND sha != ''`)
-    .all() as VerdictRow[]
-  for (const v of verdicts) {
-    const card = ensureCardNode(kgDb, lookup, v.card_id, report, cardNodesWritten)
-    if (!card) continue
-    ensureCommitNode(kgDb, v.sha!, mapProjectToPartition(card.project), report, commitNodesWritten)
-    if (
-      upsertEdge(kgDb, {
-        src: cardNodeId(v.card_id),
-        dst: commitNodeId(v.sha!),
-        rel: 'found_on',
-        source: 'import:kanban_verdicts',
-      }) > 0
-    ) {
-      report.edgesFromVerdicts += 1
+    const verdicts = mainDb
+      .prepare(`SELECT card_id, sha FROM kanban_verdicts WHERE sha IS NOT NULL AND sha != ''`)
+      .all() as VerdictRow[]
+    for (const v of verdicts) {
+      const card = ensureCardNode(kgDb, lookup, v.card_id, report, cardNodesWritten)
+      if (!card) continue
+      ensureCommitNode(kgDb, v.sha!, mapProjectToPartition(card.project), report, commitNodesWritten)
+      if (
+        upsertEdge(kgDb, {
+          src: cardNodeId(v.card_id),
+          dst: commitNodeId(v.sha!),
+          rel: 'found_on',
+          source: 'import:kanban_verdicts',
+        }) > 0
+      ) {
+        report.edgesFromVerdicts += 1
+      }
     }
-  }
+  })
+  runImport()
 
   return report
 }
