@@ -46,7 +46,7 @@ import { logger } from '../logger.js'
  * close-on-unlanded-commit class. The risk is lower -- marveen is not shared across parallel
  * worktrees the way CleanCore is -- but "lower" is not "absent", and the guard costs nothing extra.
  */
-interface RepoTarget {
+export interface RepoTarget {
   readonly root: string
   /** The ref that means "landed" for THIS repo. Not every repo integrates on main. */
   readonly mainRef: string
@@ -64,7 +64,7 @@ const CLEANCORE: RepoTarget = {
 // another git call on a path that was just brought from 7307ms down to 502ms.
 const MARVEEN: RepoTarget = { root: PROJECT_ROOT, mainRef: 'origin/develop' }
 
-const PROJECT_REPOS: Readonly<Record<string, RepoTarget>> = {
+export const PROJECT_REPOS: Readonly<Record<string, RepoTarget>> = {
   cleancore: CLEANCORE,
   // Card 1b02ed3a (rebrand step 1, Cybersec NO-GO, comment 4864): 'mopsion' is the SAME physical
   // repo as 'cleancore' -- without this entry, a mopsion-project card fell through to
@@ -91,7 +91,7 @@ const PROJECT_REPOS: Readonly<Record<string, RepoTarget>> = {
  * Census against the live kanban_cards.project column (2026-10-16), not hand-picked: the only
  * values with no PROJECT_REPOS entry are '' (no project set) and 'ingatlan'.
  */
-const NO_REPO_PROJECTS: ReadonlySet<string> = new Set(['', 'ingatlan'])
+export const NO_REPO_PROJECTS: ReadonlySet<string> = new Set(['', 'ingatlan'])
 
 
 const SHA_RX = /\b[0-9a-f]{7,40}\b/g
@@ -158,7 +158,7 @@ interface Claimed {
   readonly skippedGenerated: number
 }
 
-function git(repo: string, args: string[], stdin?: string): Promise<{ ok: boolean; out: string }> {
+export function git(repo: string, args: string[], stdin?: string): Promise<{ ok: boolean; out: string }> {
   return new Promise((resolve) => {
     const child = execFile(
       'git',
