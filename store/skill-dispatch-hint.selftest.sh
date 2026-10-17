@@ -78,5 +78,5 @@ first="$(hint_for 'Design STRIDE elemzes mielott epitesz, mernoki baseline is ke
 second="$(hint_for 'Design STRIDE elemzes mielott epitesz, mernoki baseline is kell.')"
 check "identical input yields identical output on repeat calls" "$first" "$second"
 
-echo "skill-dispatch-hint.selftest.sh: $PASS passed, $FAIL failed"
+echo "skill-dispatch-hint.selftest: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
