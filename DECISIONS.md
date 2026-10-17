@@ -20956,3 +20956,17 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 
 **Hivatkozás:** kártya c991508f, szülő-fázis c65add5a (MODULTERV komment 20665, döntés-komment
 20673), MikroB msg 13645 (force-nyitás), REVIEW komment 22004 (Gate-SHA, lásd a kártyán).
+
+## 2026-10-17 -- kártya 8b588834 delta: RedHat NO-GO javítások (admin-only mappa, hash-launcher, selftest mutation-proof)
+
+**Kontextus:** A korábbi 8b588834 bejegyzés (2026-10-17, sor 20764) rögzítette az eredeti architekturális döntéseket. Ez a bejegyzés a RedHat NO-GO leleteit (komment ~21471) zárja le: a három required-change kimenete.
+
+**RedHat NO-GO required-change A (admin-only mappa):** `store/gpu-driver-install-setup.ps1` (új): Peti egyszer futtatja admin-joggal. Létrehozza a `C:\ProgramData\MikroB-Drivers\` mappát EXPLICIT, nem-öröklött ACL-lel (SYSTEM Full + Administrators Full, Users/neon eltávolítva), bemásolja a két ps1-t, pinneli a SHA-256-ot, és WSL-ből próbaírással ellenőrzi, hogy a neon-felhasználó valóban nem tud írni. Exit 1, ha az ACL nem érvényesült.
+
+**RedHat NO-GO required-change B (hash-launcher, Bypass helyett):** `store/gpu-driver-install-launcher.ps1` (új): a scheduled task ezt hívja (`-ExecutionPolicy Bypass`), nem a fő ps1-t közvetlenül. Futás előtt SHA-256-ot számol a `gpu-driver-install.ps1`-ről és összeveti a `gpu-driver-install.sha256`-os értékkel. Eltérés esetén exit 1, nincs install. Védelmi réteg: ha az ACL valahogy bypass-olódik, a ps1 cserélhető ugyan, de a hash-fájl nem (admin-only), tehát a launcher blokkolja a tamperelt változatot.
+
+**RedHat NO-GO required-change C (selftest mutation-proof):** `store/gpu-driver-silent-install-trigger.selftest.sh` -- 7 új eset a 7 túlélő mutánshoz: M11 (default flag unset=off), M1 (category param az URL-ben), M2 (status=approved param az URL-ben), M6 (status=in_progress kanban URL-ben), M3 (pending+valid ts: status-check zárja), M8 (nem-lista kanban-válasz: fail-closed exit 1), M13 (üres approvals-válasz: fail-closed exit 1). 39/39 PASS (volt 27). Commit: 897e35d7.
+
+**Ki döntött:** backend (RedHat required-change alapján, MikroB dispatch msg 13705). Gate: QA + WhiteHat + RedHat (a kártya saját 3-gate kijelölése marad, host-szintű telepítés).
+
+**Hivatkozás:** kártya 8b588834, RedHat NO-GO komment ~21471, MikroB dispatch msg 13705, commit 897e35d7.
