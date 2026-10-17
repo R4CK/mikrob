@@ -58,6 +58,23 @@ def _agent_id_from_cwd(cwd):
     return None
 
 
+# Card 44091907 (RedHat GO melleklete, 669b7f92 komment 20820, F-N1): _agent_id_from_cwd above
+# falls back to None whenever the SessionStart payload's cwd is not under an "agents" segment --
+# a gate-worktree, the live clone root, or a missing cwd. main() then falls back further to the
+# literal "fleet" identity, which is NOT in GATE_AGENT_NAMES, so a gate agent (qa/cybersec/...)
+# running from one of those cwds gets the shared-tier injection the 669b7f92 exclusion exists to
+# deny it. An explicit --agent argument in the gate agent's OWN hook command line sidesteps the
+# ambiguity entirely: it names the identity directly, independent of whatever cwd this particular
+# SessionStart source (startup/resume/clear/compact) happens to report.
+def _explicit_agent_arg(argv):
+    for i, a in enumerate(argv):
+        if a == "--agent" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--agent="):
+            return a.split("=", 1)[1]
+    return None
+
+
 # --- Own-curated-memory session-start injection (card 5a4bea2e part A) ---
 #
 # claude-mem ported idea #2 (session-start memory injection with an explicit token budget, built
@@ -278,13 +295,36 @@ def _log_own_curated_measurement(agent, card_id, memories_count, estimated_token
         pass
 
 
+# Card 44091907 F-N1: the live cwd a SessionStart payload carries per source (startup/resume/
+# clear/compact) was never measured, so this appends one row per invocation -- fail-safe, never
+# blocks session start. Going forward this is the data the "first measure, then fix the cwd-
+# ambiguous cases" instruction asked for; it cannot retroactively produce past measurements.
+def _log_agent_resolution(cwd, source, resolved_agent, used_explicit):
+    try:
+        path = os.path.join(_project_root(), "store", "shared-memory-inject-agent-resolution.jsonl")
+        with open(path, "a") as f:
+            f.write(json.dumps({
+                "ts": int(time.time()),
+                "cwd": cwd,
+                "source": source,
+                "resolved_agent": resolved_agent,
+                "used_explicit_agent_arg": used_explicit,
+                "cwd_had_agents_segment": _agent_id_from_cwd(cwd) is not None,
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
     except Exception:
         sys.exit(0)
 
-    agent = _agent_id_from_cwd(payload.get("cwd")) or "fleet"
+    explicit_agent = _explicit_agent_arg(sys.argv[1:])
+    cwd = payload.get("cwd")
+    agent = explicit_agent or _agent_id_from_cwd(cwd) or "fleet"
+    _log_agent_resolution(cwd, payload.get("source"), agent, explicit_agent is not None)
     token = _token()
     if not token:
         sys.exit(0)  # no token -> no-op (fail-safe)
