@@ -582,10 +582,16 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
   //   - web/lang/en.js: the matched phrase is one cosmetic sub-point ("purely cosmetic, zero
   //     functional difference") inside this file's own much larger UNION-everything resolution --
   //     not a standalone refusal with its own fact to watch.
+  //   - src/web/message-router-window.ts (card 4aa87fdf, 2026-10-17): the actual decision (NOT
+  //     adopted selectTickWindow) is already anchored under the 'src/web/message-router.ts' key.
+  //     This path exists only as a drift-watcher placeholder for an upstream file that has NO
+  //     counterpart in this fork at all -- there is no production fact in THIS path to point an
+  //     anchor at (it does not exist), the same shape as installer-ollama-nonfatal.test.ts above.
   const UNANCHORED_BACKLOG: readonly string[] = [
     'src/__tests__/context-guard.test.ts',
     'src/__tests__/installer-ollama-nonfatal.test.ts',
     'src/__tests__/send-honesty-round2.test.ts',
+    'src/web/message-router-window.ts',
     'src/__tests__/system-directive-auth-section.test.ts',
     'src/web/session-send-lock.ts',
     'src/__tests__/api-messages-freshness.test.ts',

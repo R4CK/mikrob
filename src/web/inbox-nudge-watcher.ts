@@ -116,6 +116,14 @@ export type NudgePreflight =
   | { proceed: false; state: NudgeState; staleAlert?: boolean; budgetLog?: boolean }
   | { proceed: true; state: NudgeState }
 
+/** Card ad771121 (upstream, re-applied here): the age of the OLDEST waking row. The pending list
+ *  is in delivery order (high first), so its head is the row the drain claims first but not
+ *  necessarily the oldest; a fresh high row must not make an inbox with old rows look young.
+ *  0 for an empty list. */
+export function oldestWakingAgeMs(waking: ReadonlyArray<{ created_at: number }>, now: number): number {
+  return waking.length > 0 ? now - Math.min(...waking.map((m) => m.created_at)) * 1000 : 0
+}
+
 /** Pure cheap-checks stage: everything decidable from the DB row + clock,
  *  BEFORE any tmux IO. Returns the next state; the shell only touches tmux
  *  when proceed is true. */
@@ -204,7 +212,7 @@ async function tick(): Promise<void> {
     const waking = pending.filter(messageWakesReceiver)
     const oldest = waking[0]
     const pre = decideNudgePreflight(
-      { now, oldestId: oldest ? oldest.id : null, oldestAgeMs: oldest ? now - oldest.created_at * 1000 : 0 },
+      { now, oldestId: oldest ? oldest.id : null, oldestAgeMs: oldestWakingAgeMs(waking, now) },
       state,
     )
     state = pre.state

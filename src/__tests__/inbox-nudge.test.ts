@@ -3,6 +3,7 @@ import {
   decideNudgePreflight,
   recordNudge,
   nudgeText,
+  oldestWakingAgeMs,
   INITIAL_NUDGE_STATE,
   NUDGE_MAX_CHARS,
   MIN_PENDING_AGE_MS,
@@ -18,6 +19,20 @@ const NOW = 1_750_000_000_000
 function st(overrides: Partial<NudgeState> = {}): NudgeState {
   return { ...INITIAL_NUDGE_STATE, ...overrides }
 }
+
+describe('oldestWakingAgeMs (card ad771121, re-applied over the wake-filtered list)', () => {
+  it('empty list is age 0', () => {
+    expect(oldestWakingAgeMs([], NOW)).toBe(0)
+  })
+
+  it('uses the MINIMUM created_at, not the first row -- list is delivery order (high first), not age order', () => {
+    const rows = [
+      { created_at: (NOW - 5_000) / 1000 }, // fresh high-priority row, head of the list
+      { created_at: (NOW - 600_000) / 1000 }, // old row, buried behind it
+    ]
+    expect(oldestWakingAgeMs(rows, NOW)).toBe(600_000)
+  })
+})
 
 describe('nudgeText -- single visual row invariant', () => {
   it('stays within one 80-col input-box row in BOTH languages', () => {
