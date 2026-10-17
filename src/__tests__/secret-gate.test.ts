@@ -100,6 +100,18 @@ describe('detector 2: content', () => {
     expect(runGate([f('docs/b.md', `k = ${kotojel}`)]).ok).toBe(false);
   });
 
+  it('catches an AIza key ending in "-", which the old \\b missed (F3-a, card eeb57483 RedHat / 0deb6893)', () => {
+    // \b treats `-` as a non-word char, so when the 35th (last) payload char of a real-shaped
+    // key is `-` and it is followed by whitespace/EOF (also non-word), there is no word/non-word
+    // TRANSITION at that point -- \b fails to close the match. Measured: ~1/64 of real-shaped
+    // AIza keys end in `-`, so this many slipped through silently. Lookaround against the full
+    // safe-charset (letters, digits, `_`, `-`) fixes it: a non-safe-charset char like a space
+    // satisfies the negative lookahead regardless of whether the preceding char was a "word"
+    // char or not. This fixture was RED against the pre-fix \b pattern.
+    const aizaEndsWithDash = 'AIza' + 'A'.repeat(34) + '-';
+    expect(runGate([f('docs/c.md', `key=${aizaEndsWithDash} end`)]).ok).toBe(false);
+  });
+
   it('catches the Supabase PERSONAL access token, in the shape we actually leak (SBPMINTAHIANY914)', () => {
     // MERT ELOZMENY (2026-09-14): a keszletben mar allt egy Supabase-tetel (a
     // service_role JWT), amitol a Supabase lefedettnek LATSZOTT -- kozben a masik,
