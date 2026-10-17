@@ -3610,20 +3610,11 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "If selectTickWindow (or the './message-router-window.js' import it lives in) ever appears here " +
       "without a fresh decision, that is a silent adoption via history-merge, not a merge resolution.",
   },
-  'src/web/routes/claude-plans.ts': {
-    needle: 'RESTARTWAKE927',
-    file: 'src/web/agent-process.ts',
-    expect: 'present',
-    because:
-      "Card 4aa87fdf (2026-10-17): originally an 'absent' anchor catching silent adoption of " +
-      "upstream's wake-aware-restart option. The anchor fired correctly on landing: backend adopted " +
-      "RESTARTWAKE927 on develop between branch-cut and landing -- restartAgentProcess now takes " +
-      "'wake?: RestartWakeRequest' and routes/claude-plans.ts calls it with { wake: { reason: " +
-      "'plan-switch' } }. Decision logged in the text entry above. Flipped to 'present' so that " +
-      "if the wake option is removed from agent-process.ts (reverting the adoption), this anchor " +
-      "catches it -- the same failure class (mid-turn restart, 165k-token near-miss history) that " +
-      "made the feature a priority in the first place.",
-  },
+  // src/web/routes/claude-plans.ts: anchor retired 2026-10-17 (card 4aa87fdf, DevO). The original
+  // 'absent' sentinel for RESTARTWAKE927 served its purpose: it fired correctly on landing when
+  // backend adopted the wake-aware restart on develop between our branch-cut and landing. Decision
+  // now documented in the ACKNOWLEDGED_CONFLICTS text entry above (RESOLVED note). No ongoing
+  // anchor needed: the adoption is logged and the merge result has the feature from develop.
   'src/web/agent-scaffold.ts': {
     needle: 'hookScriptAlreadyEffectiveInOtherScope',
     file: 'src/web/agent-scaffold.ts',
