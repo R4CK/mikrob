@@ -45,7 +45,7 @@ const AUTH_ARGV_PATTERN = '-H[[:space:]]*["\']Authorization:[[:space:]]*Bearer'
 // path -> allowed line numbers (git grep -nE output, 1-indexed)
 const ALLOWLIST: Record<string, number[]> = {
   'DECISIONS.md': [1164, 4931, 14889, 15034, 15076, 15747, 20372], // historical decision entries about this exact fix
-  'README.md': [215], // fork-fejlesztés bullet NAMING the anti-pattern it fixed, not an invocation (shifted to 215 by card 9906af70's email-approval-gate/outgoing-copy-gate bullet landing above it)
+  'README.md': [216], // fork-fejlesztés bullet NAMING the anti-pattern it fixed, not an invocation (shifted to 216 by card d06a325d's urgent/STOP-delivery bullet landing above it)
   'docs/memoria-szuro-hamis-pozitiv-negativ-meres.md': [223], // doc table example row with a placeholder "X" token, not an invocation
   'scripts/agent-msg-get.sh': [30], // comment naming the anti-pattern, not an invocation (shifted by the PORT chain, card d06a325d/#1869)
   'scripts/install-prod-tree-guard-hook.sh': [204, 269], // comment naming the anti-pattern, not an invocation
