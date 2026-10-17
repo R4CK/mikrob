@@ -2206,6 +2206,116 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "same duplicate-wire hazard GATECOPY828 names for ensureTelegramCopyGate vs. the fork's own " +
     "ensureOutgoingCopyGate -- not an addition. If the fork's own guard is ever retired or proven " +
     "insufficient, that is its own decision, made against THAT guard, not a reason to run both.",
+
+  // Card 1eae1b41 (test/docs group of the 7f0efce3 drift decomposition, DevO, 2026-10-17). The
+  // argv-token pattern: upstream's side of all three template files below puts the dashboard
+  // bearer token directly in curl argv (`-H "Authorization: Bearer $(cat ...)"` or a bare curl
+  // with no auth header at all), which CLAUDE.md's own standing rule forbids (world-readable via
+  // /proc/<pid>/cmdline) -- this fork's side already uses the `printf ... | curl -H @-` stdin-file
+  // form everywhere else (see token-argv-doc-sweep.test.ts, which treats this exact file pair as
+  // already-fixed reference points). KEEP the fork's side on all three; do not adopt upstream's.
+  'scheduled-tasks/memoria-heartbeat/SKILL.md':
+    'keep fork (printf | curl -H @- stdin-header pattern) -- upstream drops the Authorization header entirely and uses a {{WEB_PORT}} template var the fork does not have here; adopting it would be both a security regression and an unrelated templating change, neither asked for',
+  'seed-skills/approval-request-handling/SKILL.md':
+    'keep fork (printf | curl -H @- stdin-header pattern, with the comment naming WHY) -- upstream reads WEB_PORT from .env via argv and has no Authorization header in this hunk at all; same reasoning as memoria-heartbeat/SKILL.md',
+  'seed-skills/retrospective/SKILL.md':
+    'keep fork (printf | curl -H @- stdin-header pattern, both hunks) -- upstream puts the token in curl argv (`-H "Authorization: Bearer $(cat ...)"`), exactly the anti-pattern CLAUDE.md forbids',
+
+  // seed-scheduled-tasks/nap-zaro/task-config.json: upstream changes type task->heartbeat and adds
+  // skipIfBusy:true + catchUpMaxAgeMinutes:180. Per root CLAUDE.md, type:"task" always reports via
+  // Telegram, type:"heartbeat" stays silent unless urgent -- a daily closing summary (napi zárás)
+  // is the kind of report the owner wants to see every day, the same category as the morning
+  // briefing, not a silent check. KEEP fork's type/skipIfBusy. NOT ADOPTED: the catchUpMaxAgeMinutes
+  // catch-up-window idea is reasonable on its own but changes delivery semantics during an outage
+  // and was not asked for here -- flag for a dedicated card if a real missed-nap-zaro incident
+  // shows it is needed, do not fold it into a drift-decision silently.
+  'seed-scheduled-tasks/nap-zaro/task-config.json':
+    'keep fork (type:"task", skipIfBusy:false) -- a daily closing summary belongs in the always-reported category per root CLAUDE.md\'s task/heartbeat distinction; NOT adopting upstream\'s type:"heartbeat"+skipIfBusy:true+catchUpMaxAgeMinutes:180 change, which would silence a report the owner wants daily -- flag as a separate idea (catch-up window) for its own card if ever needed',
+
+  // The deferred three-function cluster (card d7e1d611/Koteg 14, install_main_inbox_observer_unit /
+  // install_keepalive_probe_launchd / install_stuck_modal_guard_launchd): this fork deliberately
+  // does NOT self-install these three launchd/systemd units on an EXISTING host without being
+  // asked, and pinned that absence with tests. Upstream has since gone further and BUILT the
+  // self-install+retry+opt-out mechanism for all three (new launchd bootstrap-gui call, retry on a
+  // half-finished run, STUCK_MODAL_MODE=off env opt-out) -- these three test files are upstream's
+  // side of that build. Run verbatim against this fork: 2/8 and 6/8 assertions fail respectively
+  // (different function names, different systemd unit-writing code, no update.sh function of that
+  // name at all) -- the fork's actual wiring, where it exists, uses a different convention, so the
+  // tests do not apply as-is. NOT ADOPTED as test files; adopting the underlying self-install
+  // feature (touches update.sh/install-linux.sh/install-macos.sh on live hosts) is feature/infra
+  // work outside this drift-decision card's scope -- flagged to MikroB as a real adoption question
+  // for a dedicated card (own-host self-heal vs. deliberate manual-only install), not decided here.
+  'scripts/__tests__/keepalive-probe-install.test.sh':
+    'NOT adopted as-is (2/8 assertions fail against the fork\'s actual update.sh/install-linux.sh naming) -- part of the deferred self-install cluster (card d7e1d611/Koteg 14), the real adoption question (self-install the three launchd/systemd units on existing hosts) is flagged to MikroB for a dedicated card, not decided here',
+  'scripts/__tests__/main-inbox-observer-install.test.sh':
+    'NOT adopted as-is (8/12 assertions fail, no install_main_inbox_observer_unit() in update.sh under that name) -- same deferred self-install cluster as keepalive-probe-install.test.sh, same flag',
+  'scripts/__tests__/stuck-modal-guard-install.test.sh':
+    'NOT adopted -- this is the file whose fork-side explicitly PINS THE ABSENCE of install_stuck_modal_guard_launchd (card d7e1d611/Koteg 14); upstream has now built that self-install function plus retry/opt-out logic. Adopting it is a real feature decision (do we now self-install this unit on existing hosts) that touches update.sh on live hosts -- out of scope for this drift-decision card, flagged to MikroB for a dedicated card together with the other two in this cluster',
+
+  // These three test files exercise code whose SOURCE FILE is itself undecided in the sibling
+  // security/architecture group of the same 7f0efce3 decomposition (card 4aa87fdf): channel-poller-
+  // reap.ts, routes/claude-plans.ts, routes/kanban.ts. Deciding the test in isolation here risks
+  // pinning an acknowledgement against a resolution the source file has not reached yet. DEFERRED:
+  // resolve together with the paired source file when the security group is worked, not here.
+  'src/__tests__/channel-poller-reap-live-pane.test.ts':
+    'DEFERRED to the security/architecture group (card 4aa87fdf) -- the test depends on how src/web/channel-poller-reap.ts (undecided there, same drift round) resolves; upstream adds a plugin-marker precondition (cf075d41) this fork\'s reap logic may or may not already require, not assessable from the test alone',
+  'src/__tests__/claude-plans-routes.test.ts':
+    'DEFERRED to the security/architecture group (card 4aa87fdf) -- paired with src/web/routes/claude-plans.ts, undecided there in the same drift round',
+  'src/__tests__/kanban-card-method-not-allowed.test.ts':
+    'DEFERRED to the security/architecture group (card 4aa87fdf) -- paired with src/web/routes/kanban.ts (upstream\'s GET-routing change, 2dd78397), undecided there in the same drift round',
+  'src/__tests__/router-stuck-alert.test.ts':
+    'DEFERRED to the security/architecture group (card 4aa87fdf) -- paired with src/web/message-router.ts (upstream adds BUSY_TRANSCRIPT_EXEMPT_CAP_MS, not present on this fork\'s side), undecided there in the same drift round',
+  'src/__tests__/schedule-catchup.test.ts':
+    'DEFERRED to the security/architecture group (card 4aa87fdf) -- paired with src/web/schedule-runner.ts (upstream replaces catchUpSummaryDue/CATCH_UP_SUMMARY_COOLDOWN_MS with a cadence-aware isMissedRunReportable/HEARTBEAT_MISS_REPORT_MIN_CADENCE_MS, a real bug fix for daily-cadence heartbeats being muted entirely -- a genuine adoption candidate, but it is a source change to a file undecided in the sibling group, not a test-only call)',
+
+  // src/__tests__/kanban-search-sort.test.ts: upstream's test slices real search/sort JS out of
+  // web/app.js via markers, but THIS fork's web/app.js has none -- grep for kanbanSearchHint/
+  // kanbanSearch in app.js returns zero hits, even though web/index.html already ships the
+  // #kanbanSearch input (marked readonly) and the #kanbanSearchHint span. This is a genuine
+  // feature gap (dead, non-wired UI control, the exact rule-9 flow-connectivity pattern), not a
+  // test-only question -- adopting the test without building the feature would just fail. NOT
+  // ADOPTED here: flagged as a found gap for a dedicated frontend card (Fron Ted), out of scope
+  // for an infra drift-decision card.
+  'src/__tests__/kanban-search-sort.test.ts':
+    'NOT adopted -- requires building the kanban toolbar search/sort feature in web/app.js first (web/index.html already ships the #kanbanSearch input and #kanbanSearchHint span, but they are unwired: readonly input, zero matching JS). Flagged as a found feature gap for a dedicated Fron Ted card, out of scope here',
+
+  // src/__tests__/memory-performance.test.ts: the fork's own version is a DELIBERATE, documented
+  // flakiness fix (card 0677c9ad) for a measured bug (order-dependent row count blew a 5s timeout
+  // in the full suite; the old assertion was vacuous, `>= 0` holds for any return value). Upstream's
+  // side still has the pre-fix shape (calls backfillEmbeddings() on whatever the shared DB happens
+  // to contain). KEEP fork -- it is the fix, not a regression to revert.
+  'src/__tests__/memory-performance.test.ts':
+    'keep fork -- this fork\'s version is a deliberate, documented flakiness fix (card 0677c9ad) for a measured order-dependent-row-count timeout; upstream\'s side still has the pre-fix, order-dependent, vacuous-assertion shape',
+
+  // src/__tests__/message-close-section.test.ts: two independent deltas in one file. (1) the
+  // argv-token-pattern check -- fork asserts the generated doc text shows the secure `-H @-`
+  // stdin form, upstream asserts the insecure argv-Bearer form; KEEP fork, same reasoning as the
+  // SKILL.md entries above. (2) upstream adds a NEW test for a second-close-returns-409 doc
+  // sentence that this fork's buildMessageCloseBody() does not generate at all -- that is a
+  // doc-content feature addition (new guidance text), not a test-only port; NOT adopted here,
+  // flagged as a worthwhile doc enhancement for a dedicated card.
+  'src/__tests__/message-close-section.test.ts':
+    'keep fork for the argv-pattern assertion (secure -H @- form, same reasoning as the SKILL.md entries above); NOT adopting upstream\'s added second-close-409 doc-text test, since the fork\'s buildMessageCloseBody() does not generate that sentence yet -- a doc-content feature addition, flagged for a dedicated card, not decided here',
+
+  // src/__tests__/message-router-fair-window.test.ts: upstream's OWN test for the fair-batch-
+  // selection feature (fc5748f5), but this fork already has its own test for the identical
+  // mechanism (selectFairBatch/MAX_MESSAGES_PER_TICK) under a different filename:
+  // src/__tests__/message-router-fair-batch.test.ts. Verified: grep for selectFairBatch shows that
+  // file already covers it. NOT adopted -- duplicate coverage under a different name, not a gap.
+  'src/__tests__/message-router-fair-window.test.ts':
+    'NOT adopted -- duplicate of this fork\'s own src/__tests__/message-router-fair-batch.test.ts, which already covers selectFairBatch/MAX_MESSAGES_PER_TICK under a different filename',
+
+  // src/__tests__/router-permission-prompt-binding.test.ts: ADOPTED verbatim (card 1eae1b41,
+  // DevO, 2026-10-17). A pure test addition, zero source changes -- the feature it tests
+  // (detectsPermissionDialog -> awaitingPermission/permissionAsk -> notifyOrchestratorOfStuckSession)
+  // is already implemented AND wired in src/web/message-router.ts (line ~1045-1058), just untested
+  // at the router-tick level per upstream's own comment (a mutation study showed two mutants, K1 and
+  // K5, survived against the existing formatter-only tests). The only adaptation needed: this fork's
+  // db.js mock in the test was missing getKanbanCardStateByIdPrefix (a fork-only export the real
+  // runMessageRouterTick calls for its supersededDispatch check) -- added the same `() => null`
+  // no-op stub already used by src/__tests__/message-router-tick-cap.test.ts. Verified: 3/3 green.
+  'src/__tests__/router-permission-prompt-binding.test.ts':
+    'ADOPTED verbatim, plus one mock fix (getKanbanCardStateByIdPrefix: () => null, the fork-only db.js export the ported test\'s mock did not know about) -- pure test addition closing a real, upstream-documented mutation-survival gap on already-implemented, already-wired code. Verified 3/3 green',
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -2555,6 +2665,25 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/midturn-commands.ts': '7fcd1b25e5f3b30ef2330ada780193c1cd1325cc',
   'src/web/queue-view.ts': 'e36011393e28c86e135c59d777133eebe8eb6c3f',
   'src/web/system-status.ts': '0e2778d448b7ba5d761d82ea2b81bcd1e87d4c8b',
+
+  // Card 1eae1b41 (test/docs group of the 7f0efce3 drift decomposition, DevO, 2026-10-17).
+  'scheduled-tasks/memoria-heartbeat/SKILL.md': 'dcdbce3fb10d9e40a89eace476e5f55bbff654dc',
+  'seed-skills/approval-request-handling/SKILL.md': 'd48e815ccc4f39d32f8670b352cb1bcd281ed79e',
+  'seed-skills/retrospective/SKILL.md': '0e0f36f70638ebdd60d5ea7eca4687a7dce2897d',
+  'seed-scheduled-tasks/nap-zaro/task-config.json': 'd672e985510259c40d91bd5787032ca001ec621c',
+  'scripts/__tests__/keepalive-probe-install.test.sh': '4aecd4ae23b59f96a9694d38ba1283eeac8a916a',
+  'scripts/__tests__/main-inbox-observer-install.test.sh': 'd64aebfd74e31d7b737c99d32022637d39c8da3b',
+  'scripts/__tests__/stuck-modal-guard-install.test.sh': '11149842763c86bcb39934d3a68c7f0d1314bb8f',
+  'src/__tests__/channel-poller-reap-live-pane.test.ts': '1b2357b09d88bff40824343c661b58a0e07cc848',
+  'src/__tests__/claude-plans-routes.test.ts': '237339da4a219f6f1d15bcf9c283bb5d4eb86935',
+  'src/__tests__/kanban-card-method-not-allowed.test.ts': '8dd27fba1f017b4b38cc5e2e42bc50dd328be9a1',
+  'src/__tests__/router-stuck-alert.test.ts': 'eab100fa908c539f84e5f9a6693a2513d9dad34b',
+  'src/__tests__/schedule-catchup.test.ts': '8e9df752bc10e17dd49e8a2a9b4c62baeebb8dcb',
+  'src/__tests__/kanban-search-sort.test.ts': 'c8880df20cf738149b87b23f3b36b0a9e8aa3716',
+  'src/__tests__/memory-performance.test.ts': 'e161ce292ac5a345f73ad7d23f70c0953363537f',
+  'src/__tests__/message-close-section.test.ts': 'eaa6e1bd808c4c8a4eac5f31f6dad2bb519c6a30',
+  'src/__tests__/message-router-fair-window.test.ts': 'f2d73fcf6a036a99a0ea33d054ee71e0f93c95f6',
+  'src/__tests__/router-permission-prompt-binding.test.ts': '48cca50dea15450ef28343167a5f5298feaa627d',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
@@ -3421,6 +3550,82 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "fork's own guard stays marker-based (checking that live-only files like store/claudeclaw.db " +
       "exist), not path-based. If isTmpRootedPath appears here, upstream's path-based refusal was " +
       "adopted without re-deciding it -- a real behaviour change (every scratchpad is tmp-rooted).",
+  },
+
+  // Card 1eae1b41 (test/docs group of the 7f0efce3 drift decomposition, DevO, 2026-10-17). Seven
+  // anchors for the NOT-ADOPTED decisions above that name a checkable symbol.
+  'seed-scheduled-tasks/nap-zaro/task-config.json': {
+    needle: '"type": "task"',
+    file: 'seed-scheduled-tasks/nap-zaro/task-config.json',
+    expect: 'present',
+    because:
+      "this entry keeps the daily closing summary in the always-reported 'task' category, " +
+      "declining upstream's type:\"heartbeat\"+skipIfBusy:true+catchUpMaxAgeMinutes:180 change. If " +
+      "the type field ever flips to \"heartbeat\" here, that product decision already happened " +
+      "elsewhere and this entry's reasoning needs revisiting, not silently overridden.",
+  },
+  'scripts/__tests__/keepalive-probe-install.test.sh': {
+    needle: 'install_keepalive_probe_timer(',
+    file: 'update.sh',
+    expect: 'absent',
+    because:
+      "this is the upstream function name the ported test expects and this fork's update.sh does " +
+      "not have (the fork wires the keepalive probe under its own, different convention). If this " +
+      "function ever appears, the self-install-cluster adoption question (flagged to MikroB) was " +
+      "decided elsewhere and this test's 'NOT adopted as-is' verdict needs re-running against the " +
+      "new code, not left stale.",
+  },
+  'scripts/__tests__/main-inbox-observer-install.test.sh': {
+    needle: 'install_main_inbox_observer_unit(',
+    file: 'update.sh',
+    expect: 'absent',
+    because:
+      "same deferred self-install cluster as keepalive-probe-install.test.sh -- this is the " +
+      "upstream function name the ported test expects, absent from this fork's update.sh today. " +
+      "Its appearance means the cluster adoption question was decided elsewhere.",
+  },
+  'scripts/__tests__/stuck-modal-guard-install.test.sh': {
+    needle: 'install_stuck_modal_guard_launchd(',
+    file: 'update.sh',
+    expect: 'absent',
+    because:
+      "this is the function whose ABSENCE the fork's OWN prior resolution (card d7e1d611/Koteg 14) " +
+      "deliberately pins -- the checkable fact IS the refusal. If it ever appears in update.sh, " +
+      "someone adopted the self-install mechanism for this unit, and this test (which exercises " +
+      "exactly that function) needs re-running against the real code, not left refused against a " +
+      "function that no longer matches what the fork does.",
+  },
+  'src/__tests__/kanban-search-sort.test.ts': {
+    needle: 'kanbanSearchHint',
+    file: 'web/app.js',
+    expect: 'absent',
+    because:
+      "the kanban toolbar search/sort feature this test exercises has no JS implementation yet -- " +
+      "web/index.html ships the #kanbanSearch input and #kanbanSearchHint span, but nothing in " +
+      "app.js wires them (readonly input, zero matching code). If kanbanSearchHint ever appears in " +
+      "app.js, the feature was built (presumably by the Fron Ted card this entry flags), and this " +
+      "test should be re-evaluated for adoption against the real implementation, not left refused.",
+  },
+  'src/__tests__/message-close-section.test.ts': {
+    needle: '409-et ad',
+    file: 'src/web/agent-scaffold.ts',
+    expect: 'absent',
+    because:
+      "this is the generated-doc phrase upstream's added second-close-409 test expects " +
+      "buildMessageCloseBody() to produce; it does not today. If this phrase appears, that doc " +
+      "enhancement already landed and the flagged-for-a-dedicated-card test addition should be " +
+      "re-evaluated against the real generated text, not left as an open flag.",
+  },
+  'src/__tests__/message-router-fair-window.test.ts': {
+    needle: 'export function selectFairBatch',
+    file: 'src/web/message-router.ts',
+    expect: 'present',
+    because:
+      "this entry declines to adopt upstream's fair-window test because this fork's own " +
+      "message-router-fair-batch.test.ts already covers the identical selectFairBatch/ " +
+      "MAX_MESSAGES_PER_TICK mechanism, which this production file exports under that name today. " +
+      "If selectFairBatch is ever renamed or removed here, the 'duplicate, not a gap' verdict " +
+      "needs re-checking against whatever replaces it.",
   },
 }
 
