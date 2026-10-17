@@ -31,6 +31,21 @@ WHAT THIS IS NOT: a regex over the command string, like its siblings. No defense
 indirection, a command written to a file and then run, or reading the sqlite `device_keys` table
 directly (that path is covered by the server-side role-allowlist in kanban-verdicts.ts, not by a
 shell-command guard). Any guard error FAILS OPEN.
+
+KNOWN BYPASSES (card c188f357, RedHat F-N1 on 9c7ad372; measured, not hypothetical -- each one
+exits 0 against this guard today): a glob (`cat agents/q*/.dashboard-agent-key`), a `cd`-split path
+(`cd agents/qa && cat .dashboard-agent-key`), and an in-shell quote-split
+(`cat agents/q""a/.dashboard-agent-key`) all defeat the literal path regexes above, because each
+rewrites or fragments the path AT THE SHELL, after this guard has already read the raw, unexpanded
+command string. Self-identification is also spoofable when no MARVEEN_AGENT_ID/CLAUDE_AGENT_ID is
+set: `_self_agent`'s cwd fallback trusts whatever `agents/<name>` the caller happens to be sitting
+in, not a verified identity -- a session whose cwd merely CONTAINS another agent's directory name
+reads as that agent's own, legitimate access to its own key. None of this is fixed here: per this
+file's own "seatbelt, not a kernel-enforced control" framing (matching npm-protect-guard.py/
+git-protect-guard.py), these are documented, accepted rate-limiting gaps against the OBVIOUS
+command shapes, not a claim of complete coverage -- the actual trust boundary for who may write a
+gate-verdict record is the server-side role-allowlist in kanban-verdicts.ts, which these bypasses
+do not touch.
 """
 import json
 import os
