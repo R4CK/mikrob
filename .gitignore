@@ -39,6 +39,11 @@ Ingatlan/token*
 !store/*.py
 # Stitch design-gen tools are operational scripts (tracked except node_modules).
 !store/stitch-tools/gen.mjs
+# The Windows-side admin script for the GPU-driver silent install (card 8b588834). Named
+# explicitly for the same reason gen.mjs is: the `!store/*.sh` / `!store/*.py` lines above only
+# un-ignore those two shapes, and a .ps1 is exactly the shape that would land IGNORED and
+# unbacked-up otherwise -- the d7ac3470 failure, one more file extension over.
+!store/gpu-driver-install.ps1
 # The upstream-drift watcher's I/O half (card a1ce8952). Named explicitly for the same reason
 # gen.mjs is: the `!store/*.sh` / `!store/*.py` lines above un-ignore the two shapes an
 # operational script usually takes, and a .mjs is exactly the shape that lands IGNORED and
