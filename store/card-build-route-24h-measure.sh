@@ -118,6 +118,10 @@ decompose_subtasks_drafted=0  # sum of DISTINCT subtask-type drafts actually pos
 declare -a DECOMPOSE_REPORT_LINES=()
 
 TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null || true)"
+# Drop any inherited export attribute (613a8142 F1 class, follow-up card 2d4c7943 INFO): if a
+# caller already exported a variable named TOKEN, bash would keep that attribute across this
+# reassignment and leak the real token into the python3/curl children spawned below.
+declare +x TOKEN
 for card in "${CONTENT_CARDS[@]:-}"; do
   [ -n "$card" ] || continue
   comments="$(printf 'Authorization: Bearer %s\n' "$TOKEN" \

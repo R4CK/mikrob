@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   migrate, openKgDb, rebuild, upsertNode, upsertEdge, setNodeStatus, getNode, KgSecretError,
+  KgValidationError,
 } from '../kg/store.js'
 
 const dirs: string[] = []
@@ -103,5 +104,99 @@ describe('kg store CRUD', () => {
       upsertNode(db, { id: 'card:y', type: 'card', project: 'marveen', title: 't2', source_ref: 'x', extractor: 'manual' }),
     ).not.toThrow()
     db.close()
+  })
+
+  // F1 (card eeb57483, WhiteHat GO condition on ee9ee17b): a re-import must not silently
+  // reactivate an archived node, and must audit the blocked attempt.
+  it('upsertNode on a re-import preserves an archived node and audits the blocked reactivation', () => {
+    const db = new Database(':memory:')
+    migrate(db)
+    upsertNode(db, { id: 'card:arch1', type: 'card', project: 'marveen', title: 'v1', source_ref: 'x', extractor: 'manual' })
+    setNodeStatus(db, 'card:arch1', 'archived', 'mikrob')
+
+    upsertNode(db, {
+      id: 'card:arch1', type: 'card', project: 'marveen', title: 'v2 (re-imported)',
+      status: 'active', source_ref: 'x', extractor: 'import:kanban_relations',
+    })
+
+    expect(getNode(db, 'card:arch1')?.status).toBe('archived')
+    const audit = db
+      .prepare("SELECT * FROM kg_audit WHERE node_id = ? AND action = 'import_reactivation_blocked'")
+      .all('card:arch1') as { before: string; after: string; actor: string }[]
+    expect(audit).toHaveLength(1)
+    expect(audit[0]).toMatchObject({ before: 'archived', after: 'active', actor: 'import:kanban_relations' })
+    db.close()
+  })
+
+  it('upsertNode on a re-import does NOT audit when the node was never archived', () => {
+    const db = new Database(':memory:')
+    migrate(db)
+    upsertNode(db, { id: 'card:ok1', type: 'card', project: 'marveen', title: 'v1', source_ref: 'x', extractor: 'manual' })
+    upsertNode(db, { id: 'card:ok1', type: 'card', project: 'marveen', title: 'v2', source_ref: 'x', extractor: 'manual' })
+    expect(getNode(db, 'card:ok1')?.status).toBe('active')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM kg_audit').get()).toEqual({ n: 0 })
+    db.close()
+  })
+
+  // F2 (card eeb57483): the schema's title CHECK is <= 200 chars; measured on the live table,
+  // 16/811 card titles exceed it (max 270). Truncate rather than let the CHECK abort the write.
+  it('upsertNode truncates an over-length title instead of hitting the schema CHECK', () => {
+    const db = new Database(':memory:')
+    migrate(db)
+    const longTitle = 'x'.repeat(270)
+    expect(() =>
+      upsertNode(db, { id: 'card:long1', type: 'card', project: 'marveen', title: longTitle, source_ref: 'x', extractor: 'manual' }),
+    ).not.toThrow()
+    const row = getNode(db, 'card:long1') as { title: string }
+    expect(row.title).toHaveLength(200)
+    db.close()
+  })
+
+  // F4 (card eeb57483): id/source_ref/gate_sha are validated at the one place every write
+  // already passes through, so a future untrusted caller (the capture worker) cannot slip an
+  // unsafe shape in.
+  describe('F4: id/source_ref/gate_sha input validation', () => {
+    const base = { type: 'card' as const, project: 'marveen', title: 't', extractor: 'manual' }
+
+    it('rejects an id containing a character outside the safe set', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      expect(() => upsertNode(db, { ...base, id: 'card:a b', source_ref: 'x' })).toThrow(KgValidationError)
+      db.close()
+    })
+
+    it('rejects an empty source_ref', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      expect(() => upsertNode(db, { ...base, id: 'card:a', source_ref: '' })).toThrow(KgValidationError)
+      db.close()
+    })
+
+    it('rejects a gate_sha that is not hex-shaped', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      expect(() =>
+        upsertNode(db, { ...base, id: 'card:a', source_ref: 'x', gate_sha: 'not-a-sha!' }),
+      ).toThrow(KgValidationError)
+      db.close()
+    })
+
+    it('accepts a comma-separated multi-sha gate_sha (the 4b REVIEW convention)', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      expect(() =>
+        upsertNode(db, { ...base, id: 'card:a', source_ref: 'x', gate_sha: '3edbdc38,a158fe03' }),
+      ).not.toThrow()
+      db.close()
+    })
+
+    it('rejects an id over the length cap', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      expect(() =>
+        upsertNode(db, { ...base, id: 'card:' + 'a'.repeat(300), source_ref: 'x' }),
+      ).toThrow(KgValidationError)
+      db.close()
+    })
   })
 })

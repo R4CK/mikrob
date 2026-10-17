@@ -185,6 +185,10 @@ fi
 # --- 1. READ THE CARD --------------------------------------------------------------------------
 if [ -z "$TEXT" ]; then
   TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null)"
+  # Drop any inherited export attribute (613a8142 F1 class, follow-up card 2d4c7943 INFO): if a
+  # caller already exported a variable named TOKEN, bash would keep that attribute across this
+  # reassignment and leak the real token into the python3/curl children spawned below.
+  declare +x TOKEN
   [ -n "$TOKEN" ] || online no-token
   CARD_JSON="$(printf 'Authorization: Bearer %s\n' "$TOKEN" \
     | timeout 10 curl -H @- -s "$API/api/kanban/$CARD_ID" 2>/dev/null)"
