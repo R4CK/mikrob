@@ -2,13 +2,12 @@
 # (card 8b588834, GPU-driver figyelo (C), plan-grilling GO-WITH-CHANGES komment 15819).
 #
 # THIS FILE IS NOT RUN BY THIS REPO. It is copied BY HAND, by Peti, as the final admin-only step
-# (comment 5945/8258 on this card), into C:\ProgramData\MikroB -- a folder only Administrators and
-# SYSTEM can write to (measured: icacls shows "Felhasznalok RX, SYSTEM F, Rendszergazdak F, no
-# inheritance"; WSL-from-neon write attempts into it already measured as "Permission denied",
-# comment 8258). It is invoked ONLY by the pre-registered Windows scheduled task
-# "MikroB-GPU-Driver-Install" (Run As NEON, Interactive, RunLevel Highest, no trigger -- it only
-# runs on `schtasks /run`), which store/gpu-driver-silent-install-trigger.sh fires with NO
-# parameters. This script therefore reads NOTHING from its caller -- every input it needs it
+# (comment 5945/8258 on this card), into C:\ProgramData\MikroB-Drivers -- a folder with an EXPLICIT, non-inherited ACL
+# (SYSTEM Full + Administrators Full, Users/neon removed; verified by gpu-driver-install-setup.ps1).
+# It is invoked ONLY via the hash-checking launcher (gpu-driver-install-launcher.ps1), itself
+# called by the pre-registered Windows scheduled task "MikroB-GPU-Driver-Install" (Run As NEON,
+# Interactive, RunLevel Highest, no trigger -- it only runs on `schtasks /run`), which
+# store/gpu-driver-silent-install-trigger.sh fires with NO parameters. This script therefore reads NOTHING from its caller -- every input it needs it
 # fetches, verifies, and decides for itself, on the Windows side, natively.
 #
 # WHY THE VERSION QUERY RUNS HERE (not reused from the WSL-side gpu-driver-available-parse.sh):
