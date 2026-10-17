@@ -39,6 +39,7 @@ import { landedGuardVerdict } from '../kanban-landed-guard.js'
 import { gateCompletenessGuardVerdict } from '../kanban-gate-completeness-guard.js'
 import { planGrillingGuardVerdict } from '../kanban-plan-grilling-guard.js'
 import { draftReviewGuardVerdict } from '../kanban-draft-review-guard.js'
+import { decisionsGuardVerdict, decisionsGuardCheck } from '../kanban-decisions-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
 import { specTemplateGuardCheck } from '../kanban-spec-template-guard.js'
 import { isForbiddenAssignee, FORBIDDEN_ASSIGNEE_MESSAGE, isInvalidAssigneeShape, INVALID_ASSIGNEE_TYPE_MESSAGE } from '../kanban-assignee-guard.js'
@@ -1273,6 +1274,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = draftReviewGuardVerdict(id, data.status, force === true, actor)
       if (v.blocked) { json(res, { code: 'draft_review_required', error: v.message }, 409); return true }
     }
+    {
+      const v = await decisionsGuardVerdict(id, data.status, force === true, actor)
+      if (v.blocked) { json(res, { code: 'decisions_entry_required', error: v.message }, 409); return true }
+    }
     // Captured BEFORE any mutation -- card 81452ce2 delta-gate F1 (WhiteHat2 komment 16326):
     // specTemplateGuardCheck must fire only AFTER the transition actually succeeds, past every
     // remaining 409 guard below, never on a request one of them rejects. By the time we could
@@ -1321,6 +1326,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     if (updateKanbanCard(id, normalizeProjectName(data), { actor, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
       specTemplateGuardCheck(id, specTemplatePrevStatus, data.status, actor)
+      void decisionsGuardCheck(id, specTemplatePrevStatus, data.status, actor)
       json(res, { ok: true }); return true
     }
     // Card c4f2de32: distinguish "no such card" from "refused to re-open reviewed work", so the
@@ -1403,6 +1409,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const v = draftReviewGuardVerdict(id, status, force === true, actor)
       if (v.blocked) { json(res, { code: 'draft_review_required', error: v.message }, 409); return true }
     }
+    {
+      const v = await decisionsGuardVerdict(id, status, force === true, actor)
+      if (v.blocked) { json(res, { code: 'decisions_entry_required', error: v.message }, 409); return true }
+    }
     // See the sibling comment in the PUT handler (card 81452ce2 delta-gate F1): captured BEFORE
     // any mutation, the guard itself fires only AFTER moveKanbanCard actually succeeds below.
     const specTemplatePrevStatus = getKanbanCard(id)?.status
@@ -1421,6 +1431,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     }
     if (moveKanbanCard(id, status, sort_order ?? 0, actor, force === true, typeof reason === 'string' ? reason : undefined)) {
       specTemplateGuardCheck(id, specTemplatePrevStatus, status, actor)
+      void decisionsGuardCheck(id, specTemplatePrevStatus, status, actor)
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
       // Fire-and-forget: fireKanbanDispatch's own try/catch means this never rejects, and
