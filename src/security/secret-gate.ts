@@ -86,11 +86,21 @@ export const SECRET_PATTERNS: { name: string; pattern: RegExp }[] = [
   // of it -- the existing pattern does not match it at all.
   // F3-a (card eeb57483 RedHat, card 0deb6893): \b treats `_` as a word char and `-` as a
   // non-word char, so a key preceded by `_`/a letter, or ending in `-`, silently slipped
-  // through (measured: ~1/64 of real-shaped AIza keys). Lookaround against the FULL charset
-  // used by both formats (letters, digits, `_`, `-`) closes that, on both ends.
-  { name: 'GitHub fine-grained PAT', pattern: /(?<![0-9A-Za-z_-])github_pat_[A-Za-z0-9_]{20,}(?![0-9A-Za-z_-])/ },
+  // through (measured: ~1/64 of real-shaped AIza keys).
+  // M1 (card 8f7dda8b, WhiteHat2 GO on 0deb6893): the FULL-charset lookaround above (closing on
+  // `[0-9A-Za-z_-]`, hyphen included) overcorrected -- it now treats a hyphen immediately before
+  // or after the secret as part of the "word", so `foo-AIza...`/`AIza...-backup`/
+  // `my-github_pat_...`/`github_pat_...-backup` silently stopped matching (caught -> MISSED).
+  // Hyphen is a separator, not an identifier character; dropping it from the boundary charset
+  // (keeping it only inside the secret's own payload class) restores those 4 forms without
+  // reopening the \b underscore/trailing-dash gap F3-a closed. The two formats are intentionally
+  // asymmetric on the lookahead, matching the old \b asymmetry (`_` is a word char, `-` is not):
+  // AIza's own payload includes `_`, so its lookahead still excludes `_` too; github_pat_'s
+  // lookahead excludes only letters/digits, since its payload-ending `_` is already consumed by
+  // the greedy class before reaching the boundary.
+  { name: 'GitHub fine-grained PAT', pattern: /(?<![0-9A-Za-z_])github_pat_[A-Za-z0-9_]{20,}(?![0-9A-Za-z])/ },
   // F3: Google API key (AIzaSy...). Fixed 39-char total length (AIza + 35), so anchor both ends.
-  { name: 'Google API key (AIza)', pattern: /(?<![0-9A-Za-z_-])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/ },
+  { name: 'Google API key (AIza)', pattern: /(?<![0-9A-Za-z_])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_])/ },
   { name: 'Slack token', pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}/ },
   { name: 'OpenAI project key', pattern: /\bsk-proj-[A-Za-z0-9_-]{20,}/ },
   // BOTH separators, on purpose. Boni's first detector looked for `sk-` only
