@@ -1166,9 +1166,18 @@ for post_id, g in groups.items():
 # emit_card_nudges: sends the ONE grouped message per real card that aggregate_nudge_events
 # computed from NUDGE_EVENTS, routed through the same nudge_recipient() (so the mikrob-never-parks
 # fix above applies here too). No-op when nothing was recorded this run.
+#
+# card 240ee54d (N3): called from an EXIT trap (registered right below), not only from the bottom
+# of the leaf loop -- a run killed by `timeout` or an operator `kill` used to drop every nudge
+# collected up to that point, because the only call site was the LAST line of a normal completion.
+# Idempotent by construction: it snapshots and CLEARS NUDGE_EVENTS before sending, so if bash ever
+# re-enters the EXIT trap (defensive; not expected) a second call is a guaranteed no-op, not a
+# duplicate send.
 emit_card_nudges() {
   [[ ${#NUDGE_EVENTS[@]} -eq 0 ]] && return 0
   local post_id assignee draft_n exh_n leaves_csv running to note text exh_text
+  local -a events_to_send=("${NUDGE_EVENTS[@]}")
+  NUDGE_EVENTS=()
   while IFS=$'\t' read -r post_id assignee draft_n exh_n leaves_csv; do
     [[ -z "$post_id" ]] && continue
     text=""
@@ -1196,9 +1205,15 @@ emit_card_nudges() {
     curl -s -X POST "$DASH/api/messages" -H "Content-Type: application/json" -H @"$hdr_file" \
       -d "$(python3 -c 'import json,sys; print(json.dumps({"from":sys.argv[1],"to":sys.argv[2],"content":sys.argv[3]+chr(10)+chr(10)+sys.argv[4]+sys.argv[5]}))' \
         "$NUDGE_FROM" "$to" "$NUDGE_TAG" "$note" "$text")" >/dev/null 2>&1 || true
-  done < <(printf '%s\n' "${NUDGE_EVENTS[@]}" | aggregate_nudge_events)
+  done < <(printf '%s\n' "${events_to_send[@]}" | aggregate_nudge_events)
   return 0
 }
+# card 240ee54d (N3): registered as an EXIT trap, not just called at the bottom of a normal run --
+# `trap ... EXIT` fires on ordinary completion AND on a terminating signal bash's own shell-level
+# signal handling converts into an exit (e.g. the SIGTERM a `timeout` wrapper sends), so a run cut
+# short still flushes whatever it collected before dying. It cannot catch SIGKILL (nothing can), but
+# SIGKILL was never the failure this card measured -- an interrupted/timed-out run was.
+trap emit_card_nudges EXIT
 
 # draft_quality_ok: deterministic pre-post quality gate (card d39fc5e7, requirement 2) -- NO model
 # call, every check is mechanical (length, repeats-the-card-text, import existence) so a bad draft
@@ -1375,6 +1390,22 @@ if [[ "${1:-}" == "--test-aggregate-nudge-events" ]]; then
   aggregate_nudge_events
   exit 0
 fi
+# --test-emit-card-nudges: stdin = the same "leaf_id<TAB>assignee<TAB>kind" lines as the flag
+# above, loaded into NUDGE_EVENTS and sent through the REAL emit_card_nudges() -- unlike the pure
+# flags elsewhere in this file, this one DOES talk to the dashboard (DASHBOARD_URL), because the
+# property card 240ee54d (N1) asks for is that the function actually posts, not just that it
+# groups correctly in isolation (that part is --test-aggregate-nudge-events's job already).
+if [[ "${1:-}" == "--test-emit-card-nudges" ]]; then
+  hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
+  trap 'rm -f "$hdr_file"' EXIT
+  printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
+  while IFS=$'\t' read -r leaf_id assignee kind; do
+    [[ -z "$leaf_id" ]] && continue
+    NUDGE_EVENTS+=("$leaf_id"$'\t'"$assignee"$'\t'"$kind")
+  done
+  emit_card_nudges
+  exit 0
+fi
 if [[ "${1:-}" == "--test-attempts-op" ]]; then
   shift
   op="${1:-}"; leaf="${2:-}"; shift 2 2>/dev/null || true
@@ -1471,7 +1502,10 @@ fi
 # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card edb7559f): token never in argv, private 0600
 # header file, removed on EXIT.
 hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
-trap 'rm -f "$hdr_file"' EXIT
+# card 240ee54d: bash keeps only ONE handler per signal, so this trap REPLACES the
+# `trap emit_card_nudges EXIT` registered earlier -- a plain `trap '...' EXIT` here would have
+# silently undone the N3 fix the moment this line runs. Both cleanups now run on the same trap.
+trap 'emit_card_nudges; rm -f "$hdr_file"' EXIT
 printf 'Authorization: Bearer %s\n' "$TOK" > "$hdr_file"
 
 LEAVES_JSON="$(curl -s -H @"$hdr_file" "$DASH/api/kanban" | resolve_leaves_with_decompose)"
@@ -1756,8 +1790,10 @@ for l in json.load(sys.stdin):
 ')
 
 # card 52c13499: one grouped message per real card for everything recorded above, regardless of
-# whether this run drafted anything (an all-exhausted run still owes the owner ONE notice).
-emit_card_nudges
+# whether this run drafted anything (an all-exhausted run still owes the owner ONE notice). No
+# explicit call here any more (card 240ee54d N1/N3): the EXIT trap registered next to
+# emit_card_nudges's definition covers this normal-completion path AND an interrupted one, from a
+# single call site that cannot be silently dropped without also dropping the signal-safety fix.
 
 if [[ $drafted -eq 0 ]]; then
   echo "offload-dispatch: $CARD -> no local-eligible parts (routed online)"

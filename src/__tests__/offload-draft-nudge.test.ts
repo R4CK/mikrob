@@ -14,10 +14,12 @@
 // script exposes through --test-nudge-recipient, so it is driven here for real rather than grepped.
 // The pairing invariant -- both posting sites nudge -- is a source property and is checked as one.
 import { describe, it, expect } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { REPO_ROOT } from './helpers/repo-location.js'
 
 const SCRIPT = join(REPO_ROOT, 'store/offload-dispatch.sh')
@@ -207,5 +209,149 @@ describe('the nudge is labelled as automation, not as the orchestrator reading y
   it('the draft nudge points at the Draft-Review line the guard will ask for', () => {
     // Telling someone a draft exists without telling them what closes it just moves the surprise.
     expect(SRC).toMatch(/Draft-Review: ELFOGADVA/)
+  })
+})
+
+// Card 240ee54d (N1/N3, WhiteHat2 follow-up on 52c13499, Gate-SHA b65cd319): emit_card_nudges()
+// had NOTHING pinning it to the top-level script -- deleting the one call at the bottom left
+// selftest (88/88) and every vitest here green, because every existing test exercises either a
+// pure sub-function (nudge_recipient, aggregate_nudge_events) or the pairing invariant between
+// nudge_leaf_owner and its posting sites, never the fact that emit_card_nudges() itself actually
+// runs and actually sends. N3: the only call site was the LAST line of a normal completion, so a
+// run cut short (timeout, operator kill) dropped every nudge collected up to that point.
+function startStubDashboard(): Promise<{
+  url: string
+  posted: Array<{ to: string; content: string }>
+  close: () => Promise<void>
+}> {
+  const posted: Array<{ to: string; content: string }> = []
+  const server = createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/api/agents') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify([{ name: 'dex', running: true }]))
+      return
+    }
+    if (req.method === 'POST' && req.url === '/api/messages') {
+      let body = ''
+      req.on('data', (c) => { body += String(c) })
+      req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body) as { to: string; content: string }
+          posted.push({ to: parsed.to, content: parsed.content })
+        } catch { /* malformed body counts as "nothing posted" for the assertion below */ }
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end('{}')
+      })
+      return
+    }
+    res.writeHead(404); res.end()
+  })
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as AddressInfo).port
+      resolve({
+        url: `http://127.0.0.1:${port}`,
+        posted,
+        // curl's connections are HTTP/1.1 keep-alive by default; server.close() alone waits for
+        // them to go idle-and-close on their own, which can hang the test. Force them shut.
+        close: () => new Promise((ok) => { server.closeAllConnections?.(); server.close(() => ok()) }),
+      })
+    })
+  })
+}
+
+// The stub dashboard above runs IN THIS SAME PROCESS. spawnSync would block Node's event loop
+// until the child exits -- but the child (bash's curl) can't get a response until that same
+// event loop runs the server's request handler, which is a deadlock, not a slow test. spawn()
+// (async) keeps the loop free while the child runs.
+function runScript(
+  args: string[],
+  input: string,
+  env: Record<string, string | undefined>,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('bash', args, { env })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (c) => { stdout += String(c) })
+    child.stderr.on('data', (c) => { stderr += String(c) })
+    child.on('error', reject)
+    child.on('close', (status) => resolve({ status, stdout, stderr }))
+    child.stdin.end(input)
+  })
+}
+
+describe('emit_card_nudges actually runs, and actually sends (card 240ee54d N1/N3)', () => {
+  it('the function is wired to an EXIT trap, not only called bare at the bottom', () => {
+    // A bare call at the end of the file is removable by deleting one line with no other symptom.
+    // Pinning the trap registration means a deletion has to also remove this exact line, and -- the
+    // actual point of N3 -- the trap is what makes an interrupted run still flush.
+    expect(SRC).toMatch(/^trap emit_card_nudges EXIT$/m)
+  })
+
+  it('the LATER hdr_file EXIT trap does not silently replace the nudge trap', () => {
+    // bash keeps exactly one handler per signal: a plain `trap '...' EXIT` registered after the
+    // line above would clobber it with no error, no warning, and no test short of this one would
+    // notice -- the selftest/vitest run fast enough that the race this would open (a dashboard call
+    // mid-flight when the process dies) never fires in CI, only live, under real timing.
+    //
+    // There are two hdr_file EXIT traps in the file: the --test-emit-card-nudges harness (an early,
+    // self-contained CLI branch that calls emit_card_nudges() directly, not via trap, so its own
+    // `trap 'rm -f "$hdr_file"' EXIT` is correct as-is) and the MAIN flow's trap further down, which
+    // is the one this pin is actually about. Take the LAST match, not the first.
+    const hdrTrapLines = CODE_LINES.filter((l) => /trap .*hdr_file.*EXIT/.test(l.trim()))
+    expect(hdrTrapLines.length, 'no later EXIT trap touching hdr_file found').toBeGreaterThan(0)
+    const mainTrapLine = hdrTrapLines[hdrTrapLines.length - 1]
+    expect(mainTrapLine, 'the main flow trap must still call emit_card_nudges').toContain('emit_card_nudges')
+  })
+
+  it('--test-emit-card-nudges actually POSTs to the dashboard for a recorded draft event', async () => {
+    const stub = await startStubDashboard()
+    try {
+      const out = await runScript(
+        [SCRIPT, '--test-emit-card-nudges'],
+        'leaf-1\tdex\tdraft\n',
+        { ...process.env, DASHBOARD_URL: stub.url },
+      )
+      expect(out.status, out.stderr).toBe(0)
+      expect(stub.posted.length, 'no POST /api/messages reached the stub dashboard').toBe(1)
+      expect(stub.posted[0]!.to).toBe('dex')
+      expect(stub.posted[0]!.content).toContain('leaf-1')
+    } finally {
+      await stub.close()
+    }
+  })
+
+  it('an exhausted-only event also posts, with the exhaustion wording', async () => {
+    const stub = await startStubDashboard()
+    try {
+      const out = await runScript(
+        [SCRIPT, '--test-emit-card-nudges'],
+        'leaf-2\tdex\texhausted\n',
+        { ...process.env, DASHBOARD_URL: stub.url },
+      )
+      expect(out.status, out.stderr).toBe(0)
+      expect(stub.posted.length).toBe(1)
+      expect(stub.posted[0]!.content).toMatch(/KIMERULT/)
+    } finally {
+      await stub.close()
+    }
+  })
+
+  it('MUTATION PIN: no recorded event means no POST at all', async () => {
+    // Without this, a stub that always returns success would make the two tests above pass even
+    // if emit_card_nudges posted unconditionally regardless of its input.
+    const stub = await startStubDashboard()
+    try {
+      const out = await runScript(
+        [SCRIPT, '--test-emit-card-nudges'],
+        '',
+        { ...process.env, DASHBOARD_URL: stub.url },
+      )
+      expect(out.status, out.stderr).toBe(0)
+      expect(stub.posted.length).toBe(0)
+    } finally {
+      await stub.close()
+    }
   })
 })
