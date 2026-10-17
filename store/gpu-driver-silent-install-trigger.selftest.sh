@@ -223,6 +223,71 @@ check "lock held: exit 0"            "0" "$RC"
 check "lock held: no schtasks call"  ""  "$SCHTASKS_CALLS"
 exec {HELD_LOCK_FD}>&-
 
+# --- M11. GPU_DRIVER_SILENT_INSTALL unset (no env var at all) -> default is off -> no-op. -------
+# The script uses ${GPU_DRIVER_SILENT_INSTALL:-off}. If the variable is absent from the
+# environment (not just set to "off"), it must still default to off. A mutant changing the
+# default to "on" would fire schtasks here.
+write_fixtures "$FRESH_APPROVED" "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+: > "$TMP/curl-calls-m11.txt"; : > "$TMP/schtasks-calls-m11.txt"
+RC_M11=0
+env -u GPU_DRIVER_SILENT_INSTALL \
+  GPU_DRIVER_INSTALL_CURL_BIN="$FAKE_CURL" CURL_CALL_LOG="$TMP/curl-calls-m11.txt" \
+  CURL_FIXTURE_APPROVALS="$APPROVALS_FIXTURE" CURL_FIXTURE_INPROGRESS="$INPROGRESS_FIXTURE" \
+  GPU_DRIVER_INSTALL_SCHTASKS_BIN="$FAKE_SCHTASKS" SCHTASKS_CALL_LOG="$TMP/schtasks-calls-m11.txt" \
+  GPU_DRIVER_INSTALL_CHECK_BIN="$FAKE_CHECK" GPU_DRIVER_INSTALL_WSL_INTEROP_RESOLVE="$FAKE_INTEROP" \
+  GPU_DRIVER_INSTALL_TOKEN_FILE="$TMP/token" GPU_DRIVER_INSTALL_API="http://fake" \
+  GPU_DRIVER_INSTALL_APPROVAL_CATEGORY="gpu-driver-silent-install" \
+  GPU_DRIVER_INSTALL_APPROVAL_WINDOW_S=3600 \
+  GPU_DRIVER_INSTALL_STATE="$TMP/trigger-state-m11.json" \
+  GPU_DRIVER_INSTALL_DRIVER_STATE="$DRIVER_STATE_FIXTURE" \
+  bash "$BIN" >/dev/null 2>&1 || RC_M11=$?
+check "M11 default flag unset: exit 0 (no-op)" "0" "$RC_M11"
+check "M11 default flag unset: no schtasks call" "" "$(cat "$TMP/schtasks-calls-m11.txt")"
+
+# --- M1/M2/M6: approval URL must carry category+status; kanban URL must use status=in_progress. -
+# Run a positive case with a fresh approval id (replay guard would block reused ids), then assert
+# the recorded curl-call log contains the required query params. A mutant removing category,
+# status=approved, or status=in_progress from the URL passes all existing fixture-based tests
+# (the fake curl ignores params) but fails these param-presence assertions.
+write_fixtures '[{"id":"appr-m1m2m6","status":"approved","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+run
+CURL_LOG_PARAMS="$(cat "$TMP/curl-calls.txt")"
+check "M1 approval URL contains category=gpu-driver-silent-install" "1" \
+  "$(printf '%s' "$CURL_LOG_PARAMS" | grep -c 'category=gpu-driver-silent-install' || echo 0)"
+check "M2 approval URL contains status=approved" "1" \
+  "$(printf '%s' "$CURL_LOG_PARAMS" | grep -c 'status=approved' || echo 0)"
+check "M6 kanban URL contains status=in_progress" "1" \
+  "$(printf '%s' "$CURL_LOG_PARAMS" | grep -c 'status=in_progress' || echo 0)"
+
+# --- M3: pending approval with VALID resolved_at must NOT trigger -- status check catches it. ---
+# Case 3 (pending+null resolved_at) fails BOTH the status AND the resolved_at checks, so it does
+# not isolate which guard saves us. Here resolved_at is a fresh integer, so only the status!=approved
+# check blocks the trigger. A mutant that removes that check would fire schtasks.
+write_fixtures '[{"id":"appr-m3","status":"pending","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+run
+check "M3 pending with valid ts: no schtasks (status guard)" "" "$SCHTASKS_CALLS"
+check "M3 pending with valid ts: exit 0"                     "0" "$RC"
+
+# --- M8: non-list kanban response must be FAIL-CLOSED (exit 1, no schtasks). ----------------
+# A mutant changing `isinstance(items, list) else -1` to `else 0` would treat an error object
+# as "0 in_progress cards" and proceed straight to the schtasks call.
+# Use a fresh approval id -- appr-1/11a/11b/m1m2m6/m3 are all consumed or old; a replayed id
+# exits 0 at precondition 2, masking the kanban-check failure we are testing here.
+write_fixtures '[{"id":"appr-m8","status":"approved","resolved_at":'"$NOW"'}]' '{"error":"unexpected shape"}' "$NEWER_AVAILABLE"
+run
+check "M8 non-list kanban response: exit 1 (fail-closed)" "1" "$RC"
+check "M8 non-list kanban response: no schtasks call"      "" "$SCHTASKS_CALLS"
+
+# --- M13: empty approvals response (API unreachable / empty body) must be FAIL-CLOSED exit 1. --
+# A mutant removing the `-z "$APPROVALS_JSON"` guard would let the empty string reach the python
+# parser, which would exit 0 (empty list -> no approval found -> no-op) rather than exit 1; the
+# distinction matters because exit 0 + no schtasks looks the same as a clean no-op, hiding the
+# unreachable-API condition.
+write_fixtures '' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+run
+check "M13 empty approvals from API: exit 1 (fail-closed)" "1" "$RC"
+check "M13 empty approvals from API: no schtasks call"      "" "$SCHTASKS_CALLS"
+
 if [ "$fail" -eq 0 ]; then
   echo "selftest: PASS"
   exit 0
