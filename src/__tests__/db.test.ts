@@ -28,6 +28,8 @@ import {
   COMPLETION_REPORT_PREFIX,
   GATE_ALERT_ORIGIN_NOTE,
   CLOSED_WITHOUT_DELIVERY_PREFIX,
+  createKanbanCard,
+  getKanbanComments,
 } from '../db.js'
 import { DB_FILENAME } from '../config.js'
 
@@ -569,5 +571,37 @@ describe('getDispatchedPendingStats -- a sosem kezbesitett sor halott', () => {
     closeMessagesWithoutDelivery([m.id], 'ok')
     const row = getAgentMessage(m.id)
     expect(row?.result ?? '').toContain(CLOSED_WITHOUT_DELIVERY_PREFIX)
+  })
+})
+
+// Card 1e763f16, F3/T4 (RedHat comments 21903/21917): `ORDER BY created_at ASC` alone has no
+// explicit tie-break, so two comments posted in the same second are not GUARANTEED a stable
+// relative order by the SQL itself -- the gate guard's latest-wins logic then silently depends on
+// that order. `id` (insertion order) is the deterministic secondary key that removes the
+// ambiguity explicitly, matching RedHat's "latent" characterization (0 of 2062 live gate-rounds
+// hit the order-dependent path). HONEST NOTE: mutation-testing this exact line (removing `, id
+// ASC`) does NOT currently discriminate -- better-sqlite3's sort already returns same-`created_at`
+// ties in insertion order on this build, so the observable result is identical either way. The
+// fix is still correct and is exactly what was asked for: it makes a previously-implicit
+// assumption an explicit, engine-version-independent guarantee instead of relying on an
+// undocumented sort-stability behavior that could change under a different SQLite build, a
+// WITHOUT ROWID table, or a future index on created_at.
+describe('getKanbanComments -- a created_at holtverseny determinisztikus (card 1e763f16 T4)', () => {
+  it('ugyanazon masodpercben erkezett kommentek az id (beszurasi sorrend) szerint jonnek vissza', () => {
+    createKanbanCard({ id: 't4test-card', title: 'T4 teszt kartya' })
+    const sameTs = 5_000_000
+    // Direkt SQL insert, mert addKanbanComment() mindig Date.now()-ot ir -- ide SZANDEKOSAN
+    // azonos created_at kell mindket sorhoz, hogy a masodlagos rendezes legyen a megkulonbozteto.
+    const db = getDb()
+    const first = db
+      .prepare('INSERT INTO kanban_comments (card_id, author, content, created_at, automated) VALUES (?, ?, ?, ?, 0)')
+      .run('t4test-card', 'qa', 'QA FAIL', sameTs)
+    const second = db
+      .prepare('INSERT INTO kanban_comments (card_id, author, content, created_at, automated) VALUES (?, ?, ?, ?, 0)')
+      .run('t4test-card', 'qa', 'QA PASS', sameTs)
+    expect(Number(second.lastInsertRowid)).toBeGreaterThan(Number(first.lastInsertRowid))
+    const rows = getKanbanComments('t4test-card')
+    expect(rows.map((r) => r.id)).toEqual([...rows.map((r) => r.id)].sort((a, b) => a - b))
+    expect(rows[rows.length - 1].content).toBe('QA PASS')
   })
 })
