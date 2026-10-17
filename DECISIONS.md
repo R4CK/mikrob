@@ -20760,3 +20760,13 @@ Mindhárom tételt a kártya "INFO (ugyanitt rendezendő)" szekciója sorolta fe
 **Ki döntött:** Peti (Telegram 10812/10814, a modell-cél), MikroB (msg 13433, a tisztázás hogy ez nem új jóváhagyás-kérés). Végrehajtó: fullstack (kártya f480a16a). Gate: QA.
 
 **Hivatkozás:** kártya f480a16a, szülő 7f35d1b9, msg 13433 (MikroB tisztázása).
+
+## 2026-10-17 -- kártya 7b12182a: shared-memory-inject --agent élő bekötése a gate-ügynökökön
+
+**Kontextus:** a 44091907 kódban kiadta a shared-memory-inject.py --agent argumentumát (QA2 PASS, msg 13395; a lelet RedHat 669b7f92 F-N1-je, komment 20820), de amíg az élő hook-parancsok nem adták át, a lyuk élesben nyitva maradt: ha a SessionStart payload cwd-je nem agents/<név> alá esett (gate-worktree, élő klón gyökere, hiányzó cwd), a kód "fleet" azonosságra esett vissza, amit a GATE_AGENT_NAMES kizárás nem ismer fel gate-ként, tehát a kizárt gate-ügynök (qa, qa2, cybersec, cybersec2, cybered) mégis megkapta a megosztott memória-injekciót.
+
+**Megoldás:** mind az 5 gate-ügynök élő `agents/<név>/.claude/settings.json` hook-parancsa és a megfelelő `seed-fleet-agents/<név>/.claude/settings.json` sablon (cybersec2-nek nincs saját seed .claude mappája) explicit `--agent <név>` argumentumot kapott; cybersec2-nél a hook korábban EGYÁLTALÁN nem volt bekötve, most bekötve --agent cybersec2-vel. Strukturális biztosíték: `src/web/agent-scaffold.ts` új `ensureGateSharedMemoryInjectAgentArg()` idempotens boot-time migrációja (ugyanaz a minta, mint `ensureEgressGate`/`ensureTaskstateReplayMatcher`), bekötve `src/web.ts` startup-ciklusába -- újragenerálás/új telepítés sem veszíti el. Mért ellenőrzés: egy nem-kanonikus cwd-vel hívott élő hook `--agent` nélkül "fleet"-re oldódik (nem kizárt), `--agent qa`-val helyesen "qa"-ra (kizárt, a GATE_AGENT_NAMES-ág a kódban nem futtatja le a megosztott-memória lekérést) -- mindkét eset rögzítve a `store/shared-memory-inject-agent-resolution.jsonl` sorokban. A `hook-registration-completeness.test.ts` `shared-memory-inject.py` EXEMPT bejegyzése törölve, mert a script most már regisztrálva van az `agent-scaffold.ts` seeding-felületen; a teszt (8/8) zölden marad.
+
+**Ki döntött:** QA2 (PASS, msg 13395), RedHat (669b7f92 F-N1, komment 20820, az eredeti lelet). Végrehajtó: fullstack (kártya 7b12182a). Gate: QA + Cybersec (a kártya kijelölése szerint).
+
+**Hivatkozás:** kártya 7b12182a, kapcsolódó 669b7f92, 44091907, 86d5de34; msg 13395.

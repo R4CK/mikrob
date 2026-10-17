@@ -1999,6 +1999,63 @@ export function ensureTaskstateReplayMatcher(name: string): boolean {
   return true
 }
 
+// Card 7b12182a (QA2 PASS on 44091907, msg 13395; the underlying lelet is RedHat's 669b7f92 F-N1,
+// komment 20820): shared-memory-inject.py's own --agent flag (see that script's
+// _explicit_agent_arg) sidesteps the cwd-ambiguity hole its GATE_AGENT_NAMES exclusion exists to
+// close, but landing the flag in the script changed nothing live -- none of the 5 gate agents'
+// hook commands passed it, and cybersec2 had no shared-memory-inject hook wired at all. This is
+// the idempotent migration that backfills --agent <name> onto an existing hook entry, or wires
+// the hook from scratch for a gate agent missing it entirely (cybersec2); same shape as
+// ensureEgressGate/ensureTaskstateReplayMatcher above. Mirrors shared-memory-inject.py's own
+// GATE_AGENT_NAMES set (duplicated here for the same reason that file states: no import path
+// from a standalone script into this TS build, or back).
+const SHARED_MEMORY_GATE_AGENT_NAMES = ['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered'] as const
+
+export function ensureGateSharedMemoryInjectAgentArg(name: string): boolean {
+  if (!(SHARED_MEMORY_GATE_AGENT_NAMES as readonly string[]).includes(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const entries = Array.isArray(hooks.SessionStart) ? hooks.SessionStart as unknown[] : []
+  const command = `python3 ${join(PROJECT_ROOT, 'scripts', 'hooks', 'shared-memory-inject.py')} --agent ${name}`
+
+  let changed = false
+  for (const e of entries) {
+    if (!e || typeof e !== 'object') continue
+    const entryHooks = (e as { hooks?: unknown }).hooks
+    if (!Array.isArray(entryHooks)) continue
+    for (const h of entryHooks) {
+      if (!h || typeof h !== 'object') continue
+      const hh = h as { command?: unknown }
+      if (typeof hh.command !== 'string' || !hh.command.includes('shared-memory-inject.py')) continue
+      if (hh.command.includes('--agent')) continue
+      hh.command = command
+      changed = true
+    }
+  }
+  if (changed) {
+    atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+    return true
+  }
+
+  // Not wired at all (cybersec2 measured, card 7b12182a): add the hook from scratch, matching
+  // the other gate agents' SessionStart entry shape exactly.
+  if (entries.some((e) => JSON.stringify(e).includes('shared-memory-inject.py'))) return false
+  entries.push({
+    matcher: 'startup|resume|compact|clear',
+    hooks: [{ type: 'command', command, timeout: 15 }],
+  })
+  hooks.SessionStart = entries
+  settings.hooks = hooks
+  if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // Idempotent migration: ensure every agent's settings.json carries the egress
 // gate hook. Called at server startup (alongside ensureAgentStalenessHook) so
 // the hook is applied to both existing and newly-created agents without a full
