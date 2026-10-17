@@ -19,6 +19,7 @@ import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 // reserved id the request-path guard enforces, or the recipe sends agents to verify a
 // field nobody rejects. Card 5c5d7bc4.
 import { SYSTEM_DIRECTIVE_SENDER } from './system-directive-id.js'
+import { SKILL_USAGE_DATA } from './skill-usage-data.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
 // DASHBOARD_PUBLIC_URL wins when set (distributed / k3s deployment); falls
@@ -2995,6 +2996,12 @@ const EVIDENCE_BLOCK_RE = new RegExp(
   `${EVIDENCE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${EVIDENCE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
+const SKILL_USAGE_BEGIN = '<!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->'
+const SKILL_USAGE_END = '<!-- END GENERATED: skill-usage -->'
+const SKILL_USAGE_BLOCK_RE = new RegExp(
+  `${SKILL_USAGE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${SKILL_USAGE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
 // Builds the text body that goes between the BEGIN/END markers.
 // Single source of truth -- called by both generateClaudeMd() (initial
 // generation) and ensureFleetRosterSection() (idempotent update on respawn).
@@ -3207,6 +3214,71 @@ export function ensureEvidenceSection(name: string): void {
   let updated: string
   if (EVIDENCE_BLOCK_RE.test(existing)) {
     updated = existing.replace(EVIDENCE_BLOCK_RE, block)
+  } else {
+    updated = existing.trimEnd() + '\n\n' + block + '\n'
+  }
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+// Builds the skill-usage body: task-type -> skill TABLE for this agent, from the static
+// SKILL_USAGE_DATA (card 27b02677, 527c9584 Feladat 2). Table form, not prose, so a dispatch
+// prompt (or MikroB) can quote the fitting skill for a card's task type the way Gate-SHA/Pair-FE
+// made other facts quotable instead of guessable (CLAUDE.md 4b./8a.). Agents absent from
+// SKILL_USAGE_DATA (the main agent, or any role not covered by the f0cefd85 extraction) get no
+// section -- ensureSkillUsageSection() below is a no-op for them.
+function buildSkillUsageBody(name: string): string | null {
+  const entries = SKILL_USAGE_DATA[name]
+  if (!entries || entries.length === 0) return null
+
+  const rows = entries.map((e) => `| \`${e.skill}\` | ${e.taskType}${e.gap ? ' **(ÚJ -- KÖTELEZŐ-GAP)**' : ''} |`)
+
+  return [
+    '## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)',
+    '',
+    'Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --',
+    'nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti',
+    'szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"',
+    'tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,',
+    'amikor abban nincs ott a kártyádhoz illő skill.',
+    '**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a',
+    'CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.',
+    '',
+    '| Skill | Feladattípus |',
+    '|---|---|',
+    ...rows,
+  ].join('\n')
+}
+
+// Idempotently ensures the skill-usage block is present and current in the agent's CLAUDE.md.
+// Called on every startAgentProcess() alongside the other generated sections, and from the
+// scaffold-section-sweeper so an already-running agent picks it up without a restart.
+//
+// Idempotency contract mirrors ensureFleetRosterSection (five rules apply). No-op for MAIN (same
+// dc09da2f/965b0b2b pattern as ensureEvidenceSection/ensureAutonomySection: the main agent's
+// target is the git-tracked PROJECT_ROOT/CLAUDE.md, and a runtime write there fights the
+// --ff-only pull) and no-op for any agent name absent from SKILL_USAGE_DATA.
+export function ensureSkillUsageSection(name: string): void {
+  if (name === MAIN_AGENT_ID) return
+  const body = buildSkillUsageBody(name)
+  if (body === null) return
+
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${SKILL_USAGE_BEGIN}\n${body}\n${SKILL_USAGE_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  let updated: string
+  if (SKILL_USAGE_BLOCK_RE.test(existing)) {
+    updated = existing.replace(SKILL_USAGE_BLOCK_RE, block)
   } else {
     updated = existing.trimEnd() + '\n\n' + block + '\n'
   }

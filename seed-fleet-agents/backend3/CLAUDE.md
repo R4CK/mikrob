@@ -572,3 +572,63 @@ download_attachment) elérhetetlenné válnak. A parancs kimenete közben `Conne
 MCP-szerver életben marad, és a session újraindítása visszahozza a plugint.
 Máshol a parancs hasznos diagnosztika: a korlát a csatornát birtokló session, nem a parancs.
 <!-- END GENERATED: mcp-list-channel-warning -->
+
+<!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
+## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+
+Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
+nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
+szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
+tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
+amikor abban nincs ott a kártyádhoz illő skill.
+**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
+CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+
+| Skill | Feladattípus |
+|---|---|
+| `ai-evals` | Create an AI Evals Pack (eval PRD, test set, rubric, judge plan, results + iteration loop). See also: building-with-llms (build), ai-product-strategy (strategy). |
+| `api-and-interface-design` | Guides stable API and interface design. Use when designing APIs, module boundaries, or any public interface. |
+| `async-refactor-fail-open-guard` | Convert a synchronous audit/authz/persistence path to async (adding a DB/IO adapter behind an existing sync port) WITHOUT opening a silent fail-open hole. |
+| `be-endpoint-param-extension` | Extend an existing REST endpoint with a new optional enum/typed param that routes to a second code path — backward compat, strict allowlist, injection-proof, gated by the same e... |
+| `building-with-llms` | Produce an LLM Build Pack (prompt+tool contract, data/eval plan, architecture+safety, launch checklist). See also: ai-evals (eval only), ai-product-strategy (strategy only). |
+| `ci-cd-and-automation` | Automates CI/CD pipeline setup. Use when setting up or modifying build and deployment pipelines. |
+| `code-comprehension` | Build an accurate, evidence-based mental model of unfamiliar code at the deepest level — control flow, data flow, invariants, state, side effects, dependencies, and the "why". |
+| `coderefactor` | Systematically analyzes and refactors code to improve quality, readability, and structure WITHOUT changing external behavior. |
+| `contract-first-codev` | Build a user-facing feature's BACKEND and FRONTEND simultaneously (lockstep), not backend-then-frontend, by defining the API contract FIRST and letting the FE build against a mo... |
+| `crafter-intent-layer` | Set up hierarchical Intent Layer (AGENTS.md files) for codebases. |
+| `deprecation-and-migration` | Manages deprecation and migration. Use when removing old systems, APIs, or features. Use when migrating users from one implementation to another. |
+| `domain-modeling` | Build and sharpen a project's domain model. Use when discussing codebase terminology, writing or editing a GLOSSARY.md, or recording or editing an ADR. |
+| `doubt-driven-development` | Subjects every non-trivial decision to a fresh-context adversarial review before it stands. |
+| `embedded-pg-e2e-runner` | Run RLS / PG-dependent e2e tests on WSL2 without Docker using embedded-postgres, and run real-Redis/BullMQ e2e tests without sudo via a user-local redis-server extracted from a ... |
+| `engineering-standards` | The fleet's synthesized engineering standard — 10 categories covering architecture, security, infra, QA, data, resilience, secrets, observability, and code hygiene. |
+| `evaluating-new-technology` | Create a Technology Evaluation Pack (problem framing, options matrix, build vs buy, pilot plan, decision memo). See also: evaluating-trade-offs (general decisions). |
+| `evaluating-trade-offs` | Produce a Trade-off Evaluation Pack (options matrix, cost table, impact ranges, recommendation). See also: evaluating-new-technology (tech-specific). |
+| `feature-orchestrator` | Guide an iterative product and technical discussion, then turn the settled feature into a copy-ready orchestration prompt for a separate implementation session with a user-chose... |
+| `full-value-audit` | Run a FULL-VALUE audit of an app -- inventory EVERY frontend + backend function (every page, button, form, endpoint, module), test every user flow at every RBAC level (positive ... |
+| `grill-with-docs` | A relentless interview to sharpen a plan or design, which also creates docs (ADR's and glossary) as we go. |
+| `grilling` | Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases. |
+| `injected-port-adapters` | Implement the app-layer ADAPTER for a pure domain's injected port (SDK/IO/crypto wiring) — the counterpart to tenant-pure-domain. |
+| `interview-me` | Extracts what the user actually wants instead of what they think they should want. |
+| `karpathy-guidelines` | Behavioral guidelines to reduce common LLM coding mistakes. |
+| `karpathycoder` | Active coding discipline that enforces Andrej Karpathy's four anti-pitfall principles for LLM-assisted development — Think Before Coding, Simplicity First, Surgical Changes, and... |
+| `local-llm-offload` | Offload a cheap, well-scoped sub-task -- fuzzy through MEDIUM-stakes -- to the LOCAL GPU-hosted LLM (Ollama on the WSL GTX 1660 Ti) instead of burning online Anthropic tokens. |
+| `managing-tech-debt` | Produce a Tech Debt Management Pack (debt register, scoring, refactor vs rewrite memo, paydown plan). |
+| `module-spec-design` | KÖTELEZŐ sablon és mélység minden modul tervezéséhez (Peti szabály 2026-10-02). |
+| `problem-definition` | Define a product problem: problem statement, JTBD, alternatives, evidence, metrics. See also: writing-prds (solution spec). |
+| `project-workflow` | The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify si... |
+| `running-design-reviews` | Run high-signal design reviews: brief, feedback log, decision record, follow-up plan. |
+| `scoping-cutting` | Right-size scope for a fixed timebox: minimum lovable slice, cut list, scope-creep guardrails. See also: managing-timelines (deadline plans). |
+| `senior-engineer-modes` | Seven senior-engineer operating modes (build MVP, audit codebase, debug production, optimize performance, refactor to clean architecture, architect backend, build frontend compo... |
+| `shipping-products` | Plan product launch/release: rollout/rollback plan, comms, monitoring, post-launch review. See also: launch-marketing (marketing side). |
+| `sp-systematic-debugging` | Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes |
+| `sp-test-driven-development` | Use when implementing any feature or bugfix, before writing implementation code |
+| `technical-roadmaps` | Turn engineering strategy into a Technical Roadmap Pack (diagnosis, roadmap table, initiative briefs). |
+| `tenant-pure-domain` | Build a backend feature as a PURE, dependency-free domain module with injected ports (the IO/crypto/DB seam), a binding tenant-scope invariant, and non-vacuous tests (mutation-p... |
+| `threat-modeling` | Structured threat modeling for a feature or system BEFORE (or alongside) building it — STRIDE per element over a data-flow diagram, DREAD-style risk scoring, attack trees, and t... |
+| `unlazy` | Enforces completion discipline for substantial autonomous work by writing acceptance gates before execution, decomposing work with the Depth Tree, running approved checks, and r... |
+| `usability-testing` | Plan, run, and synthesize usability tests: test plan, tasks, script, findings, recommendations. |
+| `working-backwards` | Create an Amazon-style PR/FAQ plus a backcasting launch plan. |
+| `writing-north-star-metrics` | Define or refresh a product North Star metric + driver tree. |
+| `writing-prds` | Write a decision-ready PRD for cross-functional alignment. See also: writing-specs-designs (build-ready spec). |
+| `writing-specs-designs` | Create a build-ready spec + design doc (user flows, prototype brief, acceptance criteria). See also: writing-prds (decision-level PRD). |
+<!-- END GENERATED: skill-usage -->

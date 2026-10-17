@@ -289,3 +289,23 @@ Ugyanarra az egységre 3 sikertelen lokális próba után állj le, és írd meg
 ONLINE marad, és a router is így dönt: authz, tenant-izoláció, architektúra, több-fájlos wiring,
 biztonsági döntés. Ha `route: online` jön vissza, ne vitatkozz vele -- írd meg magad.
 <!-- END GENERATED: local-llm-first -->
+
+<!-- BEGIN GENERATED: skill-usage (auto-generated, do not edit by hand) -->
+## Skill-használat: teljes skill-katalógus (generált, kártya 27b02677)
+
+Ez a 20. munkavégzési szabály (feladattípus -> skill, nem próza) TELJES, generált lefedése --
+nem kézzel karbantartott (store/skill-role-map.md + a skillek saját leírása). Ha a fenti
+szövegben van egy rövidebb, kézzel válogatott "Skill-használat: melyik feladathoz melyik"
+tábla, azt nézd ELŐSZÖR a gyakori esetekre -- ez itt a teljes katalógus, arra az esetre,
+amikor abban nincs ott a kártyádhoz illő skill.
+**(ÚJ -- KÖTELEZŐ-GAP)** jelölés: a skill saját leírása ezt a szerepet nevezi meg, de a
+CLAUDE.md eddig nem hivatkozta -- a következő ilyen jellegű kártyán kötelezően használd.
+
+| Skill | Feladattípus |
+|---|---|
+| `local-llm-offload` | Offload a cheap, well-scoped sub-task -- fuzzy through MEDIUM-stakes -- to the LOCAL GPU-hosted LLM (Ollama on the WSL GTX 1660 Ti) instead of burning online Anthropic tokens. |
+| `project-workflow` | The mandatory team workflow for any non-trivial project — Phase/Task/Subtask decomposition, Kanban ownership + progress %, 10-minute stuck detection, and author-cannot-verify si... |
+| `skill-factory` | Turn any workflow, conversation, or demonstrated process into a reusable SKILL.md. |
+| `user-flow-menu-design` | Design (Fron Ted) and verify (QA) the COMPLETE user flow and menu/navigation system of a web app from its foundational website structure plus its feature/module set. |
+| `video-production-repurposing` | Videó gyártás/vágás és rövid-formátumú repurposing — jump-cut, felirat, B-roll terv, legjobb-klip azonosítás transzkriptből, YouTube-optimalizálás (cím/thumbnail/hook/retention). **(ÚJ -- KÖTELEZŐ-GAP)** |
+<!-- END GENERATED: skill-usage -->
