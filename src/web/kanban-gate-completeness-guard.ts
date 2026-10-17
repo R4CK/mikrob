@@ -582,8 +582,20 @@ const ANCHORED_LEAD_SKIP_RX = /^(?:[ \t]*Gate-SHA\s*:[^\n]*\n|[ \t]*\n)*/i
 // it (and the F1 bug) as the SAME side effect of being unanchored. The role word must still follow
 // immediately (only whitespace between), so a generic "REVIEW: kesz, ... QA PASS run..." does not
 // match -- only the literal "REVIEW: QA PASS"-shaped shape does.
+// F1 HIGH (WhiteHat comment 21917, re-gate on this card's own first shipment): three adjacent
+// `\s*` groups separated only by optional elements let the regex engine partition the SAME
+// whitespace run across them in exponentially many ways, giving cubic backtracking on a long
+// run of whitespace that is not followed by a verdict character -- measured on the real guard:
+// 503 bytes 26ms, 1003 bytes 205ms, 2003 bytes 1561ms, 3003 bytes 5181ms (doubling ~8x, cubic).
+// This runs synchronously on the dashboard's event loop on every close attempt
+// (gateCompletenessGuardVerdict, routes/kanban.ts), with no length cap, so a single comment POST
+// under the shared token (self-attested author) freezes the whole control plane. Fix: restrict
+// the ambiguous horizontal-whitespace runs to `[ \t]*` (no `\n` repetition to backtrack across)
+// and fold each colon into its own optional group with its trailing space, so there is only ONE
+// way to partition a given run -- removing the ambiguity, not just shrinking it. Measured on the
+// fixed guard: 80 KB of whitespace in <=0.7ms (vs. 25.7s on 5KB pre-fix).
 const ANCHORED_VERDICT_RX =
-  /^\s*(?:REVIEW\s*:?\s*)?(QA|CYBERSEC|WHITEHAT|CYBERED|REDHAT)(\d*)\s*(?:GATE|VERDICT)?\s*:?\s*(PASS|FAIL|GO|NO-GO|SKIP)(?![-\w])/i
+  /^\s*(?:REVIEW[ \t]*(?::[ \t]*)?)?(QA|CYBERSEC|WHITEHAT|CYBERED|REDHAT)(\d*)(?:[ \t]*(?:GATE|VERDICT))?[ \t]*(?::[ \t]*)?(PASS|FAIL|GO|NO-GO|SKIP)(?![-\w])/i
 const ANCHORED_ROLE_BASE: Readonly<Record<string, GateAgent>> = {
   QA: 'qa', CYBERSEC: 'cybersec', WHITEHAT: 'cybersec', CYBERED: 'cybered', REDHAT: 'cybered',
 }

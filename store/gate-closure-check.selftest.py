@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 CHECK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gate-closure-check.py")
 CORPUS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gate-verdict-corpus.json")
@@ -1284,6 +1285,22 @@ for case in _corpus:
     print("%s %-9s <- %-9s %s" % ("OK  " if ok else "FAIL", want_desc, got_desc, "corpus: " + case["id"]))
     if not ok:
         failures.append(("corpus: " + case["id"], want_desc, got_desc))
+
+# --- F2 ReDoS regression (card 1e763f16, WhiteHat comment 21917): same root as the TS guard's
+# --- F1 -- a gate name followed by a long whitespace run with no verdict character after it must
+# --- resolve in well under a second on the pre-fix regex's own measured scale (800 spaces: 2.2s,
+# --- 1600 spaces: 17.3s, cubic). This fixture is 2000 spaces, already in the catastrophic range.
+n += 1
+_redos_start = time.monotonic()
+_redos_got = _gcc.verdict_of("QA" + (" " * 2000) + "x")
+_redos_elapsed = time.monotonic() - _redos_start
+_redos_ok = _redos_got is None and _redos_elapsed < 0.5
+print(
+    "%s %-9s <- %-9s %s (%.3fs)"
+    % ("OK  " if _redos_ok else "FAIL", "None/<0.5s", "None" if _redos_got is None else "%s/%s" % _redos_got, "F2 ReDoS regression", _redos_elapsed)
+)
+if not _redos_ok:
+    failures.append(("F2 ReDoS regression", "None in <0.5s", "%s in %.3fs" % (_redos_got, _redos_elapsed)))
 
 print()
 print("selftest: %d case(s), %s" % (n, "PASS" if not failures else "FAIL"))
