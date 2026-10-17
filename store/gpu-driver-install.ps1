@@ -51,6 +51,33 @@
 # fail-closed, no install attempted. Every refusal and every step is written to
 # $LogPath (C:\ProgramData\MikroB\gpu-driver-install.log) -- Peti/RedHat's gate reads this file,
 # this script never silently succeeds or silently skips a check.
+#
+# F1 (card 78696360, WhiteHat finding): `schtasks /run /TN MikroB-GPU-Driver-Install` can be
+# invoked by ANY local process, bypassing store/gpu-driver-silent-install-trigger.sh entirely --
+# that script's own approval/board-idle checks protect nothing once the task is fired directly.
+# This script therefore now performs its OWN approval check (Test-FreshApproval below) before
+# doing anything else, using the SAME /api/approvals category and the SAME shared dashboard
+# bearer token the WSL side uses. IMPORTANT, STATED EXPLICITLY SO IT IS NOT MISTAKEN FOR A FULL
+# FIX: this closes the "bypass the WSL trigger script" path (an unapproved direct schtasks /run
+# no longer silently proceeds), but it does NOT close the underlying forgeability -- anyone who
+# can reach the dashboard with the shared bearer can still POST a fake approval, same as the WSL
+# side already could. Full closure needs a non-forgeable, per-caller approval channel (card
+# 3fb0ef97, BLOCKED-terv, not done). This is the "do the ps1-side check now regardless" half of
+# MikroB's decision (card comment, F1); the other half stays blocked on 3fb0ef97.
+# This script keeps its OWN used-approval-id marker file ($UsedApprovalsPath, on the Windows
+# side), separate from the WSL trigger's own state -- a direct schtasks bypass never goes through
+# the WSL script, so it cannot share that script's replay-guard state, and must not be able to
+# reuse an approval the WSL side already consumed either (hence the two markers are each
+# independently sufficient to block a replay, not alternatives to pick one of).
+#
+# F3 (card 78696360, WhiteHat finding): the only prior Authenticode check pinned the certificate
+# SUBJECT string alone, with no fingerprint/issuer pin and no pinned expected download host.
+# $ExpectedSignerThumbprint and $ExpectedDownloadHost below add both, each following the EXACT
+# same "unverified placeholder, must be confirmed before first real run" convention this file
+# already uses for $ExpectedSignerSubject (see TODO above) -- no fabricated value is asserted as
+# fact. Test-AuthenticodeIsNvidia now REQUIRES the thumbprint to be non-empty and match, so until
+# a human fills in a real, verified thumbprint, this check can never pass on subject alone (a
+# strengthening, not a loosening, of the previous behaviour).
 
 #Requires -RunAsAdministrator
 
@@ -73,6 +100,34 @@ $WantIsCrd = 0
 # Left here as the single named constant the script checks against, so a future correction (after
 # someone actually runs Get-AuthenticodeSignature on a real installer) is a one-line change.
 $ExpectedSignerSubject = 'CN=NVIDIA Corporation, O=NVIDIA Corporation'
+
+# F3: UNVERIFIED, intentionally empty -- no real NVIDIA installer has been signature-inspected yet
+# (same TODO as $ExpectedSignerSubject above). Left empty rather than guessed, which means
+# Test-AuthenticodeIsNvidia below FAILS CLOSED until a human runs Get-AuthenticodeSignature on a
+# real, genuinely-downloaded installer and fills this in -- a real driver can never install on
+# subject-match alone any more.
+$ExpectedSignerThumbprint = ''
+
+# F3: UNVERIFIED placeholder, same status as the two constants above -- no cited NVIDIA-owned
+# source for the real download host was found (see file header TODO: docs.nvidia.com and
+# forums.developer.nvidia.com are outside quarantine-reader's fetch allowlist). Populate with the
+# real, confirmed host before the (currently unwired, see main block below) download step is ever
+# implemented; Test-DownloadHostIsPinned fails closed while this is empty.
+$ExpectedDownloadHost = ''
+
+# F1: dashboard API the WSL-side trigger script also calls, and the SAME category/window
+# convention it uses (store/gpu-driver-silent-install-trigger.sh) -- the approval is a flotta-wide
+# resource, not scoped to one side of the WSL/Windows boundary.
+$ApprovalApiBase = 'http://localhost:3420'
+$ApprovalCategory = 'gpu-driver-silent-install'
+$ApprovalWindowSeconds = 3600
+# Token file: NOT committed, must be placed by hand alongside this script in C:\ProgramData\MikroB
+# (same shared bearer the WSL trigger script already reads from store/.dashboard-token -- there is
+# no separate Windows-side secret to provision, only to copy once, by hand, like the script itself).
+$DashboardTokenPath = Join-Path $PSScriptRoot '.dashboard-token'
+# F1: this script's OWN used-approval marker, independent of the WSL trigger's state file (see
+# file header) -- a direct schtasks bypass never touches the WSL side's state.
+$UsedApprovalsPath = Join-Path $PSScriptRoot 'gpu-driver-install-used-approvals.json'
 
 function Write-Log {
     param([string]$Message)
@@ -137,8 +192,11 @@ function Compare-VersionParts {
     return 0
 }
 
-# Fail-closed Authenticode check: Valid signature status AND the pinned Subject. A driver package
-# whose signature does not resolve, or resolves to a different signer, is never installed.
+# Fail-closed Authenticode check: Valid signature status, the pinned Subject, AND (F3) the pinned
+# certificate thumbprint. A subject string alone can be present on more than one certificate (a
+# reissued or differently-scoped cert can carry the same Subject); the thumbprint identifies the
+# ONE specific certificate this script trusts. A driver package whose signature does not resolve,
+# resolves to a different signer, or does not match the pinned thumbprint is never installed.
 function Test-AuthenticodeIsNvidia {
     param([Parameter(Mandatory)][string]$Path)
     $sig = Get-AuthenticodeSignature -FilePath $Path
@@ -150,7 +208,90 @@ function Test-AuthenticodeIsNvidia {
         Write-Log "authenticode: signer subject '$($sig.SignerCertificate.Subject)' does not match pinned '$ExpectedSignerSubject' -- refusing $Path"
         return $false
     }
+    if ([string]::IsNullOrEmpty($ExpectedSignerThumbprint)) {
+        Write-Log "authenticode: FAIL-CLOSED -- `$ExpectedSignerThumbprint is not yet populated (see file header TODO), subject-match alone is no longer sufficient -- refusing $Path"
+        return $false
+    }
+    if ($sig.SignerCertificate.Thumbprint -ne $ExpectedSignerThumbprint) {
+        Write-Log "authenticode: signer thumbprint '$($sig.SignerCertificate.Thumbprint)' does not match pinned '$ExpectedSignerThumbprint' -- refusing $Path"
+        return $false
+    }
     return $true
+}
+
+# F3: pins the download URL's host before any download is attempted. Not yet called from the main
+# block below because the download step itself is not wired yet (see file header TODO) -- added
+# now so the card that wires the download finds the guardrail already in place, same philosophy
+# as this file's existing fail-closed-by-default TODOs.
+function Test-DownloadHostIsPinned {
+    param([Parameter(Mandatory)][string]$Url)
+    if ([string]::IsNullOrEmpty($ExpectedDownloadHost)) {
+        Write-Log "download-host: FAIL-CLOSED -- `$ExpectedDownloadHost is not yet populated (see file header TODO) -- refusing $Url"
+        return $false
+    }
+    try {
+        $urlHost = ([Uri]$Url).Host
+    } catch {
+        Write-Log "download-host: could not parse '$Url' as a URL -- refusing"
+        return $false
+    }
+    if ($urlHost -ne $ExpectedDownloadHost) {
+        Write-Log "download-host: '$urlHost' does not match pinned '$ExpectedDownloadHost' -- refusing $Url"
+        return $false
+    }
+    return $true
+}
+
+# F1: the ps1-side approval check (see file header). Returns $true only if a FRESH, approved,
+# not-yet-used-by-THIS-script approval exists for $ApprovalCategory. Fail-closed on every
+# unexpected shape (no token, unreachable API, malformed response) -- same philosophy as every
+# other check in this file and as the WSL-side trigger script's own precondition 2.
+function Test-FreshApproval {
+    if (-not (Test-Path $DashboardTokenPath)) {
+        Write-Log "approval: FAIL-CLOSED -- no dashboard token at $DashboardTokenPath"
+        return $false
+    }
+    $token = (Get-Content -Path $DashboardTokenPath -Raw).Trim()
+    $usedIds = @()
+    if (Test-Path $UsedApprovalsPath) {
+        try {
+            $parsed = Get-Content -Path $UsedApprovalsPath -Raw | ConvertFrom-Json
+            if ($parsed.usedApprovalIds) { $usedIds = @($parsed.usedApprovalIds) }
+        } catch {
+            Write-Log "approval: could not parse $UsedApprovalsPath, treating as empty: $_"
+        }
+    }
+
+    $uri = "$ApprovalApiBase/api/approvals?category=$ApprovalCategory&status=approved&limit=5"
+    try {
+        $approvals = Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 10 -Headers @{ Authorization = "Bearer $token" }
+    } catch {
+        Write-Log "approval: FAIL-CLOSED -- /api/approvals call failed: $_"
+        return $false
+    }
+    if (-not $approvals) {
+        Write-Log "approval: FAIL-CLOSED -- empty/unexpected /api/approvals response"
+        return $false
+    }
+
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    foreach ($a in @($approvals)) {
+        if ($a.status -ne 'approved') { continue }
+        if ($null -eq $a.resolved_at) { continue }
+        if (($now - [int64]$a.resolved_at) -gt $ApprovalWindowSeconds) { continue }
+        if (-not $a.id) { continue }
+        if ($usedIds -contains $a.id) { continue }
+
+        # Fresh, unused approval found -- record it as used BEFORE returning true, so a crash or
+        # failure later in this script never leaves the same approval re-usable.
+        $usedIds += $a.id
+        $out = @{ usedApprovalIds = $usedIds } | ConvertTo-Json
+        Set-Content -Path $UsedApprovalsPath -Value $out
+        Write-Log "approval: fresh approval $($a.id) accepted, recorded as used"
+        return $true
+    }
+    Write-Log "approval: no fresh, unused, approved request for category=$ApprovalCategory within ${ApprovalWindowSeconds}s"
+    return $false
 }
 
 # Checkpoint before any install attempt (recovery-prev-version.sh's own pattern: preserve the
@@ -196,6 +337,11 @@ function Start-SilentInstall {
 try {
     Write-Log "gpu-driver-install.ps1 starting"
 
+    if (-not (Test-FreshApproval)) {
+        Write-Log "FAIL-CLOSED: no fresh approval found by this script's own check -- refusing to proceed (see file header F1)"
+        exit 1
+    }
+
     $installedVersion = Get-InstalledVersion
     if (-not $installedVersion) {
         Write-Log "FAIL-CLOSED: could not determine currently installed version, refusing to proceed"
@@ -233,6 +379,7 @@ try {
     # (Unreachable until the TODO above is resolved -- kept here so the intended flow is visible
     # to the gate reviewing this file, not hidden behind the early exit.)
     # $checkpointDir = New-Checkpoint -InstalledVersion $installedVersion
+    # if (-not (Test-DownloadHostIsPinned -Url $downloadUrl)) { exit 1 }
     # if (-not (Test-AuthenticodeIsNvidia -Path $installerPath)) { exit 1 }
     # if (-not (Start-SilentInstall -InstallerPath $installerPath)) { exit 1 }
     # Write-Log "install succeeded: $installedVersion -> $availableVersion. wsl --shutdown is NOT run by this script (separate, approval-gated step)."

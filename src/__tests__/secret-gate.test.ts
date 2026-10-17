@@ -112,6 +112,29 @@ describe('detector 2: content', () => {
     expect(runGate([f('docs/c.md', `key=${aizaEndsWithDash} end`)]).ok).toBe(false);
   });
 
+  it.each([
+    ['AIza key preceded by a hyphen', `k=foo-${GOOGLE_AIZA_FIXTURE} end`],
+    ['AIza key followed by a hyphen', `k=${GOOGLE_AIZA_FIXTURE}-backup end`],
+    ['github_pat_ key preceded by a hyphen', `k=my-${GITHUB_PAT_FIXTURE} end`],
+    ['github_pat_ key followed by a hyphen', `k=${GITHUB_PAT_FIXTURE}-backup end`],
+  ])(
+    'catches a %s, which the full-charset lookaround (incl. "-") regressed to MISSED (M1, card 8f7dda8b / WhiteHat2 GO on 0deb6893)',
+    (_name, body) => {
+      expect(runGate([f('docs/d.md', body)]).ok).toBe(false);
+    },
+  );
+
+  it('the github_pat_ pattern actually constrains the boundary charset, not just presence (M2 mutation-pin, card 8f7dda8b)', () => {
+    // Guards against silently reverting to the OLD, overcorrected full-charset lookaround
+    // (`(?<![0-9A-Za-z_-])...(?![0-9A-Za-z_-])`), which this test file's own M1 cases above would
+    // have caught too -- this one pins the SPECIFIC pattern object, not just its net effect, so a
+    // future edit that reintroduces the hyphen into the boundary class fails here even if someone
+    // trims the M1 cases. `.source` lets this fail loudly (not vacuously) if the entry disappears.
+    const entry = SECRET_PATTERNS.find((p) => p.name === 'GitHub fine-grained PAT');
+    expect(entry, 'GitHub fine-grained PAT pattern entry must exist').toBeDefined();
+    expect(entry!.pattern.source).toBe('(?<![0-9A-Za-z_])github_pat_[A-Za-z0-9_]{20,}(?![0-9A-Za-z])');
+  });
+
   it('catches the Supabase PERSONAL access token, in the shape we actually leak (SBPMINTAHIANY914)', () => {
     // MERT ELOZMENY (2026-09-14): a keszletben mar allt egy Supabase-tetel (a
     // service_role JWT), amitol a Supabase lefedettnek LATSZOTT -- kozben a masik,

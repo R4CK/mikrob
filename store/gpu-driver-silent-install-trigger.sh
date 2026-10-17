@@ -25,6 +25,16 @@
 #      for arbitrary categories, see this card's REVIEW for why a local once-per-approval-id guard
 #      is proportionate here: a single admin, a rare manual-approved event, not a race-prone
 #      multi-caller path).
+#
+#      REPLAY-GUARD FIX (card 78696360 F2, WhiteHat measurement: 2 approvals inside one window ->
+#      3 schtasks calls): the guard used to remember only the single LAST used approval id, so (a)
+#      two overlapping invocations of this script could both read "not yet used" for the same
+#      approval before either had written its result, firing it twice, and (b) if that race also
+#      lost an update (last writer wins), an EARLIER legitimately-used id could be forgotten and
+#      reused later. Fixed two ways: a non-blocking flock serialises the whole
+#      read-decide-fire-record critical section across concurrent invocations (precondition 2
+#      onward), and the state file now keeps a SET of every used approval id (`usedApprovalIds`),
+#      not just the last one, so losing track of the most recent id never un-forgets an older one.
 #   3. The board is idle: GET /api/kanban?status=in_progress returns an empty list (flotta
 #      "parkolt" per the plan's point 3 -- the operation runs `wsl --shutdown` which kills every
 #      running agent panel, so nothing may be mid-card when it fires).
@@ -44,7 +54,7 @@
 #   GPU_DRIVER_INSTALL_API, GPU_DRIVER_INSTALL_TOKEN_FILE, GPU_DRIVER_INSTALL_CURL_BIN,
 #   GPU_DRIVER_INSTALL_APPROVAL_CATEGORY, GPU_DRIVER_INSTALL_APPROVAL_WINDOW_S,
 #   GPU_DRIVER_INSTALL_STATE, GPU_DRIVER_INSTALL_CHECK_BIN, GPU_DRIVER_INSTALL_DRIVER_STATE,
-#   GPU_DRIVER_INSTALL_WSL_INTEROP_RESOLVE
+#   GPU_DRIVER_INSTALL_WSL_INTEROP_RESOLVE, GPU_DRIVER_INSTALL_LOCK_FILE
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,6 +74,7 @@ APPROVAL_WINDOW_S="${GPU_DRIVER_INSTALL_APPROVAL_WINDOW_S:-3600}"
 STATE="${GPU_DRIVER_INSTALL_STATE:-$HERE/gpu-driver-silent-install-trigger-state.json}"
 CHECK_BIN="${GPU_DRIVER_INSTALL_CHECK_BIN:-$HERE/gpu-driver-check.sh}"
 DRIVER_STATE="${GPU_DRIVER_INSTALL_DRIVER_STATE:-$HERE/gpu-driver-state.json}"
+LOCK_FILE="${GPU_DRIVER_INSTALL_LOCK_FILE:-$STATE.lock}"
 
 log() { printf '[gpu-driver-silent-install-trigger %s] %s\n' "$(date -u +'%H:%M:%S')" "$1"; }
 
@@ -76,6 +87,16 @@ esac
 if [ ! -r "$TOKEN_FILE" ]; then
   log "FAIL-CLOSED: no dashboard token at $TOKEN_FILE -- cannot verify approval/board-idle, refusing"
   exit 1
+fi
+
+# Serialise the whole decide-and-fire section across concurrent invocations (F2 fix, see header).
+# Non-blocking: if another invocation already holds it, this is a plain no-op -- the approval
+# stays unused and a later run will pick it up, which is safe (same shape as every other no-op
+# exit in this script).
+exec {LOCK_FD}>"$LOCK_FILE" || { log "FAIL-CLOSED: cannot open lock file $LOCK_FILE -- refusing"; exit 1; }
+if ! flock -n "$LOCK_FD"; then
+  log "another invocation holds the lock -- no-op, approval stays unused for a later run"
+  exit 0
 fi
 
 hdr_file="$(mktemp)"; chmod 600 "$hdr_file"
@@ -93,16 +114,24 @@ if [ -z "$APPROVALS_JSON" ]; then
   exit 1
 fi
 
-PREV_USED_ID="$(python3 -c "
+USED_IDS_JSON="$(python3 -c "
 import json
 try:
     d = json.load(open('$STATE'))
 except Exception:
     d = {}
-print(d.get('lastTriggeredApprovalId') or '')
+used = d.get('usedApprovalIds')
+if not isinstance(used, list):
+    used = []
+    # migration: an older state file only ever had the single last-used id.
+    legacy = d.get('lastTriggeredApprovalId')
+    if legacy:
+        used = [legacy]
+print(json.dumps(used))
 " 2>/dev/null)"
+[ -z "$USED_IDS_JSON" ] && USED_IDS_JSON='[]'
 
-APPROVAL_ID="$(PREV_USED_ID="$PREV_USED_ID" WINDOW_S="$APPROVAL_WINDOW_S" python3 -c "
+APPROVAL_ID="$(USED_IDS_JSON="$USED_IDS_JSON" WINDOW_S="$APPROVAL_WINDOW_S" python3 -c "
 import json, os, sys, time
 try:
     items = json.loads(sys.stdin.read())
@@ -114,7 +143,10 @@ if not isinstance(items, list):
     sys.exit(0)
 now = int(time.time())
 window = int(os.environ['WINDOW_S'])
-prev_used = os.environ.get('PREV_USED_ID') or None
+try:
+    used = set(json.loads(os.environ['USED_IDS_JSON']))
+except Exception:
+    used = set()
 for a in items:
     if not isinstance(a, dict) or a.get('status') != 'approved':
         continue
@@ -124,7 +156,7 @@ for a in items:
     if now - resolved_at > window:
         continue
     aid = a.get('id')
-    if not aid or aid == prev_used:
+    if not aid or aid in used:
         continue
     print(aid)
     sys.exit(0)
@@ -202,7 +234,16 @@ fi
 
 python3 -c "
 import json, os
-out = {'lastTriggeredApprovalId': '$APPROVAL_ID', 'lastTriggeredAt': $(date -u +%s)}
+try:
+    d = json.load(open('$STATE'))
+except Exception:
+    d = {}
+used = d.get('usedApprovalIds')
+if not isinstance(used, list):
+    used = []
+if '$APPROVAL_ID' not in used:
+    used.append('$APPROVAL_ID')
+out = {'usedApprovalIds': used, 'lastTriggeredApprovalId': '$APPROVAL_ID', 'lastTriggeredAt': $(date -u +%s)}
 tmp = '$STATE.tmp'
 with open(tmp, 'w') as f:
     json.dump(out, f, indent=2)

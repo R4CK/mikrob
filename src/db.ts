@@ -5538,7 +5538,13 @@ export function getUnmetCardBlockersForAllCards(): Map<string, KanbanCard[]> {
 }
 
 export function getKanbanComments(cardId: string): KanbanComment[] {
-  const rows = db.prepare('SELECT * FROM kanban_comments WHERE card_id = ? ORDER BY created_at ASC').all(cardId) as
+  // F3/T4 (card 1e763f16, RedHat comment 21903/21917): `ORDER BY created_at ASC` alone has no
+  // tie-break, so two comments posted in the same second (common under concurrent gate dispatch)
+  // can come back in either order -- the gate guard's latest-wins tie-break (`>=` on the last row
+  // seen) then silently depends on that undefined order: [FAIL, PASS] in one second read as a
+  // fresh PASS, [PASS, FAIL] as FAIL. `id` is the insertion-order primary key, so it is the
+  // deterministic secondary key that matches what actually happened.
+  const rows = db.prepare('SELECT * FROM kanban_comments WHERE card_id = ? ORDER BY created_at ASC, id ASC').all(cardId) as
     Array<KanbanComment & { automated: number | boolean }>
   // SQLite has no boolean type -- the column is INTEGER 0/1. Coerce here so the
   // API/JSON response carries a real boolean, not a number that merely looks truthy.

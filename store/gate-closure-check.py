@@ -179,8 +179,15 @@ _LEAD_SKIP = re.compile(r"^(?:\s*Gate-SHA:[^\n]*\n|\s*\n)*", re.IGNORECASE)
 # WHITEHAT/REDHAT (card cf0a8c0b): display-name aliases for CYBERSEC/CYBERED, folded to the
 # canonical role by canonical_gate() in verdict_of() below -- the regex only needs to CAPTURE the
 # token, not normalise it.
+# F2 MEDIUM (card 1e763f16, WhiteHat comment 21917): same root as the TS guard's F1 -- two
+# adjacent `\s*` groups separated only by an optional element give cubic backtracking on a long
+# whitespace run with no verdict character after it (measured on this fork's regex: "QA" + 800
+# spaces + "x" 2.2s, 1600 spaces 17.3s). Lower blast radius than the TS guard (this runs as a
+# subprocess invoked at closure time, not on the dashboard's event loop), but it is the same
+# shared rule the card asked for, so it gets the identical fix: `[ \t]*` instead of `\s*`, and
+# each colon folded into its own optional group with its trailing space.
 _VERDICT = re.compile(
-    r"^\s*(QA|CYBERSEC|WHITEHAT|CYBERED|REDHAT)(\d*)\s*(?:GATE|VERDICT)?\s*:?\s*(PASS|FAIL|GO|NO-GO)(?![-\w])",
+    r"^\s*(QA|CYBERSEC|WHITEHAT|CYBERED|REDHAT)(\d*)(?:[ \t]*(?:GATE|VERDICT))?[ \t]*(?::[ \t]*)?(PASS|FAIL|GO|NO-GO)(?![-\w])",
     re.IGNORECASE,
 )
 # Trailing sibling digits on a gate NAME, e.g. the "2" of "qa2". Anchored to the end so it cannot

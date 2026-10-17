@@ -29,6 +29,32 @@ import { logger } from '../logger.js'
 import { isAgentVerdictRecordEnabled, GATE_ROLE_AGENTS, shasMatch } from './kanban-verdicts.js'
 import { GENERATED_COMMENT_AUTHORS, type LandedVerdict } from './kanban-landed-guard.js'
 
+// KNOWN TRUST-BOUNDARY LIMIT (F-N3, card c188f357, documented per MikroB decision -- option A:
+// document + pin-test, no code change; option B, widening authenticated agent-key issuance so
+// comment authorship can also be verified, is deferred to card 2e10de7c and is blocked on it).
+//
+// Every `comments[].author` value this whole file reads (via getKanbanComments) is a plain string
+// column, written by whoever called POST /api/kanban/<id>/comments -- under the ONE shared
+// dashboard token, ANY caller can write a comment with `author: "qa"` (or any other gate's name)
+// and a first line like "QA PASS". `freshVerdictStatus` falls back to `commentOnlyFresh` whenever
+// no STRUCTURED (AGENT_VERDICT_RECORD, kanban-verdicts.ts) row exists for that gate -- which is the
+// case whenever AGENT_VERDICT_RECORD is off, or simply whenever nobody happened to call that
+// authenticated endpoint for this particular gate/round. In that (very common) case, this
+// comment-forgery closes a card exactly as completely as a real PASS/GO would: nothing here
+// distinguishes a forged comment from a genuine one, because nothing about a kanban comment's
+// `author` field is itself authenticated.
+//
+// This is NOT a new bug this file introduces -- it is the SAME forgeability the structured verdict
+// record (kanban-verdicts.ts) was built to supersede for the write path it covers (device-key
+// authentication, role-allowlist, proposer-exclusion). The structured path is additive (see the
+// "Card 2bfa4c67 (F2)" comment further down): when it is used, a forged comment cannot FORCE a
+// disagreement past an authenticated row (freshVerdictStatus checks commentHasFreshNegative against
+// the row), but it CAN still satisfy the requirement from scratch when no structured row exists at
+// all for that gate. A round-trip through this file alone cannot close that gap: the fix is
+// authenticating the comment's own author, which is exactly what widening agent-key issuance
+// (deferred to 2e10de7c) is for. See the pin test "F-N3 KNOWN GAP" in
+// kanban-gate-completeness-guard.test.ts for a live, runnable demonstration of this exact shape.
+
 export type GateAgent = 'qa' | 'qa2' | 'cybersec' | 'cybersec2' | 'cybered'
 
 /** Only agents allowed to close a card despite a missing gate verdict -- same actor set as the
@@ -556,8 +582,20 @@ const ANCHORED_LEAD_SKIP_RX = /^(?:[ \t]*Gate-SHA\s*:[^\n]*\n|[ \t]*\n)*/i
 // it (and the F1 bug) as the SAME side effect of being unanchored. The role word must still follow
 // immediately (only whitespace between), so a generic "REVIEW: kesz, ... QA PASS run..." does not
 // match -- only the literal "REVIEW: QA PASS"-shaped shape does.
+// F1 HIGH (WhiteHat comment 21917, re-gate on this card's own first shipment): three adjacent
+// `\s*` groups separated only by optional elements let the regex engine partition the SAME
+// whitespace run across them in exponentially many ways, giving cubic backtracking on a long
+// run of whitespace that is not followed by a verdict character -- measured on the real guard:
+// 503 bytes 26ms, 1003 bytes 205ms, 2003 bytes 1561ms, 3003 bytes 5181ms (doubling ~8x, cubic).
+// This runs synchronously on the dashboard's event loop on every close attempt
+// (gateCompletenessGuardVerdict, routes/kanban.ts), with no length cap, so a single comment POST
+// under the shared token (self-attested author) freezes the whole control plane. Fix: restrict
+// the ambiguous horizontal-whitespace runs to `[ \t]*` (no `\n` repetition to backtrack across)
+// and fold each colon into its own optional group with its trailing space, so there is only ONE
+// way to partition a given run -- removing the ambiguity, not just shrinking it. Measured on the
+// fixed guard: 80 KB of whitespace in <=0.7ms (vs. 25.7s on 5KB pre-fix).
 const ANCHORED_VERDICT_RX =
-  /^\s*(?:REVIEW\s*:?\s*)?(QA|CYBERSEC|WHITEHAT|CYBERED|REDHAT)(\d*)\s*(?:GATE|VERDICT)?\s*:?\s*(PASS|FAIL|GO|NO-GO|SKIP)(?![-\w])/i
+  /^\s*(?:REVIEW[ \t]*(?::[ \t]*)?)?(QA|CYBERSEC|WHITEHAT|CYBERED|REDHAT)(\d*)(?:[ \t]*(?:GATE|VERDICT))?[ \t]*(?::[ \t]*)?(PASS|FAIL|GO|NO-GO|SKIP)(?![-\w])/i
 const ANCHORED_ROLE_BASE: Readonly<Record<string, GateAgent>> = {
   QA: 'qa', CYBERSEC: 'cybersec', WHITEHAT: 'cybersec', CYBERED: 'cybered', REDHAT: 'cybered',
 }

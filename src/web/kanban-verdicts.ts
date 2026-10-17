@@ -98,6 +98,23 @@ export function isSelfProposedVerdict(author: string, proposer: unknown): boolea
   return proposer.trim().toLowerCase() === author.trim().toLowerCase()
 }
 
+// MikroB decision (card c188f357, comment 21553/13555), F-N2: a plain NO-GO/FAIL must not, by
+// itself, exclude the gate from its own re-gate forever -- that broke the ordinary
+// NO-GO -> fix -> re-gate cycle (the fix IS "the direct predecessor" case, so the old exclusion
+// applied there too) and left a card with no QA able to verdict after a single QA2 FAIL. A
+// proposer is now recorded only when the gate's OWN comment on this card states the fix direction
+// it is proposing, via a line-initial `Fix-Direction:` marker -- the same convention as the
+// `Gate-SHA:` line (root CLAUDE.md 4b/4f): quoted or mid-sentence does not count. This is RedHat
+// 16225's original intent (a gate must not verdict the fix direction IT proposed), scoped to the
+// cases where a proposal was actually, explicitly made.
+const FIX_DIRECTION_LINE_RX = /^\s*Fix-Direction\s*:\s*(.+)$/im
+
+function authorStatedFixDirection(comments: readonly { author: string; content: string }[], author: string): boolean {
+  return comments.some(
+    (c) => (c.author ?? '').trim().toLowerCase() === author.trim().toLowerCase() && FIX_DIRECTION_LINE_RX.test(c.content ?? ''),
+  )
+}
+
 const SHA_SHAPE_RX = /^[0-9a-f]{6,40}$/i
 
 /** A well-formed sha token from a request body field, or null -- card 2bfa4c67 round 2 (N1/N5): a
@@ -237,7 +254,10 @@ export async function tryHandleKanbanVerdicts(ctx: RouteContext): Promise<boolea
     // POST /proposals endpoint, so the self-exclusion check never actually had anything to exclude
     // against (measured, P4). The server now records the proposer itself, from the SAME
     // authenticated write that states the NO-GO/FAIL, instead of depending on a separate call.
-    if (verdict === 'FAIL' || verdict === 'NO-GO') {
+    //
+    // F-N2 (MikroB, card c188f357): only when the author's own comment on this card actually
+    // states a Fix-Direction: line -- a plain NO-GO/FAIL does not propose anything by itself.
+    if ((verdict === 'FAIL' || verdict === 'NO-GO') && authorStatedFixDirection(getKanbanComments(cardId), author)) {
       addKanbanFixProposal(cardId, author, providedSha)
     }
     json(res, row, 201)
