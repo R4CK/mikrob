@@ -524,7 +524,11 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       }, 400)
       return true
     }
-    const agent = url.searchParams.get('agent') ?? url.searchParams.get('assignee') ?? undefined
+    // Cybersec F2 (card debba303, same round as F1): metadata-only (count + oldest age, no
+    // content), but still another agent's queue depth -- an agent-key caller must only ever
+    // see its OWN backlog, same override as every other branch in this file.
+    const authenticatedAgentId = ctx.auth?.kind === 'device' ? agentKeyToAgentId(ctx.auth.device) : null
+    const agent = authenticatedAgentId || url.searchParams.get('agent') || url.searchParams.get('assignee') || undefined
     json(res, getPendingBacklogByAgent(agent))
     return true
   }
