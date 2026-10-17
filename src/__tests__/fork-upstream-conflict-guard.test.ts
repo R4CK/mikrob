@@ -587,11 +587,20 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
   //     This path exists only as a drift-watcher placeholder for an upstream file that has NO
   //     counterpart in this fork at all -- there is no production fact in THIS path to point an
   //     anchor at (it does not exist), the same shape as installer-ollama-nonfatal.test.ts above.
+  //   - scripts/supabase-q.sh (card 4aa87fdf, 2026-10-17): the matched phrase is "Not adopted ...
+  //     for consistency" -- both the fork's -H @- stdin-header form and upstream's curl -K -
+  //     config-on-stdin form keep the bearer token out of argv equally safely (verified against
+  //     curl's own -K docs); the entry explicitly says this is NOT a security regression either
+  //     way, just a style preference for this fork's one established convention. There is no
+  //     unsafe state to re-detect if "reversed" -- switching to upstream's form would not reopen
+  //     any vulnerability -- so there is no production fact worth an anchor, the same shape as the
+  //     cosmetic-only test-file entries already in this list.
   const UNANCHORED_BACKLOG: readonly string[] = [
     'src/__tests__/context-guard.test.ts',
     'src/__tests__/installer-ollama-nonfatal.test.ts',
     'src/__tests__/send-honesty-round2.test.ts',
     'src/web/message-router-window.ts',
+    'scripts/supabase-q.sh',
     'src/__tests__/system-directive-auth-section.test.ts',
     'src/web/session-send-lock.ts',
     'src/__tests__/api-messages-freshness.test.ts',

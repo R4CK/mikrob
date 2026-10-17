@@ -2719,6 +2719,191 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "and adding two unit tests. Zero prior coverage existed for the real computation from raw rows -- " +
     "every existing test passed a pre-computed oldestAgeMs. Verified: tsc clean + full fleet-test.sh " +
     "green (1145/1146 files, 32987 tests, exit 0) after the fix.",
+
+  // scripts/agent-msg-get.sh (card 4aa87fdf, 2026-10-17, plan-grilled per K3 -- a security-sensitive
+  // named file). Two independent axes, not a side-pick. (1) TOKEN EXPOSURE: fork pipes the bearer
+  // token through a 0600 temp header file (-H @"$HDR_FILE"), upstream puts it directly in -H argv
+  // ("Authorization: Bearer $(cat ...)"), which is readable by any local user via
+  // /proc/<pid>/cmdline -- the fork's own card 8418b098 comment names exactly this threat, and this
+  // fork's established convention (root CLAUDE.md, the dashboard-token recipe) is the stdin/header-
+  // file form everywhere. KEEP fork's -H @"$HDR_FILE" -- upstream's argv form is NOT adopted, full
+  // stop, same class as the shared memory-save/daily-log recipe's own documented -H @- convention.
+  // (2) PORT CONFIGURABILITY: upstream resolves the dashboard port from MARVEEN_WEB_PORT/WEB_PORT/
+  // .env/3420 (its own comment cites issue #1869, "it was a literal 3420"); the fork had the same
+  // literal-3420 shape. Orthogonal to (1), additive, and the fork's own sibling script
+  // (scripts/agent-msg.sh) already resolves MARVEEN_WEB_PORT the same way -- ADOPTED this round:
+  // ported the port-resolution chain verbatim, substituted into the fork's existing curl call,
+  // security pattern from (1) untouched. Verified: bash -n syntax check green.
+  'scripts/agent-msg-get.sh':
+    "KEEP fork's -H @\"$HDR_FILE\" header-file token delivery (card 8418b098) -- upstream's bare " +
+    "-H \"Authorization: Bearer $(cat ...)\" argv form leaks the token via /proc/<pid>/cmdline to " +
+    "any local user, NOT adopted. ADOPTED, orthogonal: upstream's PORT resolution chain " +
+    "(MARVEEN_WEB_PORT -> WEB_PORT -> .env -> 3420 default, issue #1869) replacing the fork's old " +
+    "literal localhost:3420 -- additive port-configurability, same chain this fork's own sibling " +
+    "scripts/agent-msg.sh already partially uses. Verified: bash -n clean.",
+
+  // scripts/supabase-q.sh (card 4aa87fdf, 2026-10-17, plan-grilled per K3). Both sides solve the
+  // SAME problem (the dashboard bearer token must not reach curl's argv/ps view) with a DIFFERENT
+  // mechanism -- not a security regression either direction, a style choice. Fork: pipes an
+  // `Authorization: Bearer ...` header through stdin via `-H @-` (the fork's own established
+  // convention, same shape as the root CLAUDE.md memory-save recipe). Upstream: `curl -K -` reading
+  // a curl CONFIG block from a heredoc on stdin (`header = "Authorization: Bearer ..."` inside the
+  // `-K -` block) -- also keeps the token out of argv, verified by reading curl's own docs on `-K`:
+  // the config file's contents are read, not exec'd, and never appear in the process's argv either.
+  // KEEP fork's existing -H @- form -- it is this fork's single established convention for every
+  // other token-bearing curl call (root CLAUDE.md spells it out explicitly for the dashboard API),
+  // and switching this one script to a differently-shaped curl invocation for no security gain
+  // would just be a second pattern to remember. NOT a refusal of upstream's technique as unsafe --
+  // it isn't -- just not worth the inconsistency for an equivalent property.
+  'scripts/supabase-q.sh':
+    "KEEP fork's -H @- stdin-header convention -- upstream's curl -K - heredoc-config form is " +
+    "EQUALLY safe (verified against curl's own -K docs: config contents are read, never exec'd or " +
+    "placed in argv), not a security regression either way, just a different mechanism for the same " +
+    "token-out-of-argv property. Not adopted purely for consistency with this fork's one " +
+    "established convention (root CLAUDE.md's own documented recipe), not because upstream's form " +
+    "is unsafe.",
+
+  // src/web/reauth-healer.ts (card 4aa87fdf, 2026-10-17, plan-grilled per K3). TWO independent
+  // points. (1) tmuxBin resolver: fork's makeLazyBinResolver('tmux') (lazy, throws only on first
+  // actual tmux use) vs upstream's eager resolveFromPath('tmux') (throws at import time on a host
+  // without tmux on PATH yet) -- the SAME interim-vs-full tmuxInvocationFor class already decided
+  // repeatedly elsewhere in this card (src/web/agent-worker.ts entry, the context-restart-gate-
+  // runner.ts/context-guard-runner.ts entries' configDirFor discussion): KEEP the fork's lazy
+  // resolver pending the same eventual agent-process.ts tmuxInvocationFor cutover those entries
+  // defer to, for the same reason -- not a fresh call, consistency with precedent. (2) A REAL,
+  // valuable, and currently UNGUARDED gap: upstream adds usesOwnTokenFile awareness to
+  // decideReauthAction/buildEscalationMessage/buildQuietSummaryMessage -- an agent that
+  // authenticates from its own agent-config.json `oauthTokenFile` setting (this fork already HAS
+  // this exact mechanism, src/web/agent-oauth-token-file.ts, live since card f1800242/248d3013's
+  // custom-provider work) must never get an autonomous /login keystroke sequence, because /login
+  // would REPLACE that session's credential with a new interactive one, silently overriding the
+  // token-file-based auth -- exactly the 'working feature overwritten without asking' class
+  // CLAUDE.md's 5th kódminőségi elv exists to prevent. MEASURED, not assumed: grep-verified this
+  // fork's CURRENT decideReauthAction has zero awareness of token-file agents at all (`sendKeys:
+  // fireNow && !isMain && canInteractiveLogin && isFirstRunGate !== true`, no token-file branch) --
+  // and grep across every agents/*/agent-config.json found ZERO agents with oauthTokenFile SET
+  // today, so the gap is latent, not yet biting any live agent. NOT adopted in this card (wiring it
+  // needs tracing decideReauthAction's actual caller to source `usesOwnTokenFile`, which is real
+  // implementation work, not a drift-ledger pick) -- but the DIRECTION is decided: adopt it,
+  // reusing this fork's own agent-oauth-token-file.ts naming rather than upstream's, keeping (1)'s
+  // lazy resolver. Named as a follow-up card, flagged ahead of most other follow-ups in this card
+  // because the first agent anyone configures with oauthTokenFile inherits a live auth-breaking bug
+  // the moment its token reads dead.
+  'src/web/reauth-healer.ts':
+    "KEEP fork's makeLazyBinResolver('tmux') -- same interim-vs-eager tmuxInvocationFor class " +
+    "already decided repeatedly elsewhere in this card, deferred to the same eventual cutover, not " +
+    "re-decided here. SEPARATELY: upstream's usesOwnTokenFile awareness (decideReauthAction/" +
+    "buildEscalationMessage) is a real, currently-latent gap -- this fork's own oauthTokenFile " +
+    "mechanism (agent-oauth-token-file.ts, live since card f1800242/248d3013) is NOT consulted by " +
+    "decideReauthAction at all, so a future token-file-authenticated agent with a dead-reading " +
+    "token would get an autonomous /login that clobbers its working credential. Zero agents " +
+    "currently have oauthTokenFile set (grep-verified across every agent-config.json), so nothing " +
+    "is broken TODAY. NOT adopted here (needs real implementation, tracing the caller's data " +
+    "source) -- direction decided (adopt, fork's own naming, keep the lazy resolver), named as a " +
+    "priority follow-up given the auth-breaking failure mode once the gap is live.",
+
+  // src/web/dashboard-settings.ts + src/web/routes/connectors.ts (card 4aa87fdf, 2026-10-17,
+  // plan-grilled per K3 -- paired decision, same feature, two files). Fork's installGitHubRepo()
+  // deliberately NEVER runs `npm install` on a connector-added GitHub repo (its own doc comment:
+  // "NO npm install here -- see the doc comment. Only DETECT that deps may be pending; never
+  // install."), returning depsChanged for the FE to surface. Upstream adds a full install path:
+  // runConnectorNpmInstall() actually executes npm install (with a 180s timeout, workspace
+  // detection, NpmInstallRefused handling), an opt-in `runScripts` flag threaded from the PUT
+  // request body through to it, and detectSkippedInstallScripts()/installWarning reporting when
+  // scripts were skipped. THE DECISION: a connector "add a GitHub repo" flow accepts a repo URL
+  // from the dashboard operator -- authenticated, not a sub-agent or public input -- but running
+  // ANY package manager's install-time scripts (postinstall/preinstall) against an arbitrary repo's
+  // package.json is executing that repo's chosen code on this host, the textbook npm-supply-chain-
+  // attack surface (malicious or compromised postinstall script). Upstream's own NpmInstallRefused
+  // naming suggests it already has SOME refusal path (not fully read this round), and runScripts
+  // defaulting to false with an explicit opt-in is a real mitigating design -- but a full read of
+  // runConnectorNpmInstall()/NpmInstallRefused/detectSkippedInstallScripts() to confirm what it
+  // actually refuses, and under what conditions `runScripts: true` can be sent, was NOT done this
+  // round. NOT ADOPTED here -- deliberately, not merely deferred by oversight: this is exactly the
+  // class of decision plan-grilling exists for (a dashboard-operator-triggered code-execution
+  // surface), and a connector-add flow executing arbitrary install scripts deserves its own
+  // dedicated WhiteHat-gated card (reviewing NpmInstallRefused's actual refusal conditions, whether
+  // `runScripts` can be forced by anything other than an explicit, authenticated operator action,
+  // and what happens on a malicious package.json with a postinstall that reads this host's secrets)
+  // rather than a solo drift-decision adoption of a code-execution feature. KEEP the fork's current
+  // never-install behavior unchanged in the meantime -- it is the strictly safer default, and
+  // nothing about refusing this round regresses anything the fork already does.
+  'src/web/dashboard-settings.ts':
+    "NOT ADOPTED -- upstream's runConnectorNpmInstall()/runScripts opt-in actually EXECUTES a " +
+    "GitHub-connector repo's npm install (postinstall/preinstall scripts included), where this " +
+    "fork's installGitHubRepo() deliberately never does ('NO npm install here -- see the doc " +
+    "comment', its own words). This is a dashboard-operator-triggered arbitrary-code-execution " +
+    "surface (npm supply-chain class: a malicious or compromised package.json's install script runs " +
+    "on this host) and deserves its own dedicated WhiteHat-gated card -- reviewing exactly what " +
+    "NpmInstallRefused refuses and under what conditions runScripts:true can be sent -- not a solo " +
+    "drift-decision adoption. KEEP the fork's current never-install behavior (strictly safer " +
+    "default) unchanged. Paired with the 'src/web/routes/connectors.ts' entry (same feature, the " +
+    "route-side half of the same runScripts/installWarning/scriptsSkipped plumbing).",
+  'src/web/routes/connectors.ts':
+    "NOT ADOPTED -- the route-side half of the dashboard-settings.ts decision above (same entry, " +
+    "not re-argued here): the PUT handler's runScripts body field and the installWarning/" +
+    "scriptsSkipped response fields exist only to carry the connector npm-install feature that " +
+    "entry refuses pending a dedicated WhiteHat-gated review. KEEP the fork's current depsChanged-" +
+    "only response shape (detect, never install) unchanged.",
+
+  // scripts/hooks/email-approval-gate.py (card 4aa87fdf, 2026-10-17, plan-grilled per K3 -- the
+  // highest-stakes of the six named security-sensitive files, since it gates every outbound email).
+  // THREE independent axes in this diff, not a side-pick.
+  //
+  // (1) REGRESSION, NOT ADOPTABLE: upstream's diff REMOVES the fork's _EMAIL_SERVER_RE/
+  // _EMAIL_SAFE_TOOL_RE deny-by-default-on-the-whole-gmail__/resend__-server logic (built across
+  // THREE Cybersec-reviewed rounds -- cards 498d53c1, 45b33b2b, bf7a7335 -- specifically because a
+  // tool-NAME allowlist/denylist kept drifting and missing new send-shaped names: send_draft,
+  // hyphenated resend__send-email, a prefixed/suffixed server name, a verb-prefix-then-send
+  // compound name) and replaces it with a narrower _SEND_TOOL allowlist regex
+  // (`send_email|manage_email|gmail__(reply|reply_all|send_message|forward)$`). The FAILURE
+  // DIRECTION FLIPS: fork's structure blocks an UNRECOGNIZED tool name on an email server by
+  // default (safe direction); upstream's structure ALLOWS an unrecognized tool name by default
+  // (the exact drift-prone shape the fork's three rounds were built to stop recurring). Grep-
+  // verified fork still has _EMAIL_SERVER_RE/_EMAIL_SAFE_TOOL_RE/_bare_tool_name intact (lines 111/
+  // 131/141/146) -- KEEP wholesale, upstream's simplification is a regression and is NOT adopted,
+  // full stop.
+  //
+  // (2) REGRESSION, NOT ADOPTABLE: the SAME diff drops inline_images from content_anchor() (the
+  // RedHat NO-GO a2cb71f1 H1 fix pinning an approved letter's INLINE image bytes into the approval
+  // hash, so a re-send cannot swap the inline payload without re-triggering approval) in favor of a
+  // new html_sha256 field. Grep-verified fork still has the inline_images handling (lines 483-496)
+  // -- KEEP wholesale. Separately, the diff's attachment-summary line reads `a['name']` where
+  // fork's actual extractor (email_extract.py collect_mcp_attachments) produces `{"filename":
+  // ..., "sha256": ...}` -- verified directly, NOT "name" -- so even setting the regression aside,
+  // adopting that line blind would KeyError on this fork's own data shape.
+  //
+  // (3) GENUINELY NEW, NOT YET ADOPTED: MAILCCGATE1016 -- a mandatory owner-CC check (every
+  // outbound send/draft must carry a configured MAIL_OWNER_CC address in to/cc/bcc, or the call is
+  // denied with an actionable Hungarian message). OPT-IN by construction: owner_cc_address() reads
+  // MAIL_OWNER_CC from the install's own .env ONLY (never the process environment, deliberately, so
+  // a launch-env leak cannot silently disable it) and returns '' (check off) when unset -- a fresh
+  // install, and THIS install today (grep-verified: no MAIL_OWNER_CC in .env), is UNCHANGED by
+  // adopting this feature as written. Genuinely desirable for a single-owner fleet (Peti wants a
+  // copy of every agent-sent email, per upstream's own measured motivation: "at least six letters
+  // left through send_email without it" over four days on THEIR install) -- but NOT a mechanical
+  // port: upstream wires it into ITS restructured main() flow (is_mcp_draft/is_mcp_send computed
+  // ahead of the old gmail/resend-server branch), while this fork's main() keeps the (1)-described
+  // _EMAIL_SERVER_RE-based structure that must NOT be removed. Porting MAILCCGATE1016 correctly
+  // means inserting its check ALONGSIDE this fork's existing structure, not swapping the structure
+  // for upstream's, which is real adaptation work, not a drift pick. NOT adopted in this card;
+  // named as a follow-up candidate, and genuinely worth asking Peti about (it is a product/UX
+  // decision -- does he want every agent-sent email CC'd to him -- not just a security call).
+  'scripts/hooks/email-approval-gate.py':
+    "KEEP fork's _EMAIL_SERVER_RE/_EMAIL_SAFE_TOOL_RE deny-by-default-on-whole-server logic " +
+    "wholesale -- upstream's diff REMOVES this three-Cybersec-round hardening (cards 498d53c1/" +
+    "45b33b2b/bf7a7335) in favor of a narrower _SEND_TOOL allowlist that flips the failure " +
+    "direction (unrecognized tool name defaults to ALLOWED, not denied) -- a regression, NOT " +
+    "adopted. KEEP fork's inline_images content_anchor hardening (RedHat NO-GO a2cb71f1 H1) -- " +
+    "upstream's diff drops it for html_sha256, also a regression (and its companion attachment-" +
+    "summary line reads a['name'] where this fork's own extractor produces 'filename', so it would " +
+    "KeyError on this fork's data even ignoring the regression). NOT adopted, not merely not-yet- " +
+    "adopted, same standing as (1). GENUINELY NEW, worth building correctly later: MAILCCGATE1016 " +
+    "-- an opt-in (MAIL_OWNER_CC unset = off, grep-verified unset on this install) mandatory owner-" +
+    "CC-on-every-outbound-email check. NOT adopted this round -- needs adapting into this fork's " +
+    "own (1)-preserved main() structure rather than upstream's replacement structure, real " +
+    "implementation work; also a product question for Peti (does he want every agent email CC'd to " +
+    "him), not purely a security call. Named as a follow-up candidate.",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -3092,6 +3277,12 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/__tests__/message-close-section.test.ts': 'eaa6e1bd808c4c8a4eac5f31f6dad2bb519c6a30',
   'src/__tests__/message-router-fair-window.test.ts': 'f2d73fcf6a036a99a0ea33d054ee71e0f93c95f6',
   'src/__tests__/router-permission-prompt-binding.test.ts': '48cca50dea15450ef28343167a5f5298feaa627d',
+  'scripts/agent-msg-get.sh': '90d02f9fd6f5b62098c6c3a2bea05da8485264b5',
+  'scripts/supabase-q.sh': '1c169175015268158aece377d05e58ae70351569',
+  'src/web/reauth-healer.ts': 'fd4a76b57bbdbb9e616eea7fe43af077bde7dc0d',
+  'src/web/dashboard-settings.ts': 'ec65baf7f5e78743c74e41776aeaeaf1d92685b4',
+  'src/web/routes/connectors.ts': '02df0b232a6469f4851925499f6785411514a408',
+  'scripts/hooks/email-approval-gate.py': '655ab24bc6da3da1d095b0de879b5dcbd1df6af9',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
@@ -4064,6 +4255,93 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "MAX_MESSAGES_PER_TICK mechanism, which this production file exports under that name today. " +
       "If selectFairBatch is ever renamed or removed here, the 'duplicate, not a gap' verdict " +
       "needs re-checking against whatever replaces it.",
+  },
+
+  // Card 4aa87fdf (2026-10-17), new anchors for entries this round's refusal-widening regex
+  // (mentionsRefusal) catches, each naming a checkable production fact for its own file key.
+
+  'src/web/context-guard-runner.ts': {
+    needle: 'export function restorePendingResumes',
+    file: 'src/web/context-guard-runner.ts',
+    expect: 'absent',
+    because:
+      "this entry's 2026-10-17 round declines to adopt upstream's pending-resume persistence layer " +
+      "(context-guard-resume-store.ts, restorePendingResumes re-arming an 'await-ready' obligation " +
+      "across a dashboard restart) as a follow-up candidate, not built. If restorePendingResumes " +
+      "appears here, that follow-up already happened and the daily-handoff-skip-sweep/saturation- " +
+      "banner items named alongside it need re-checking too.",
+  },
+  'src/config-registry.ts': {
+    needle: "key: 'CONVERSATION_LOG_RETENTION_DAYS'",
+    file: 'src/config-registry.ts',
+    expect: 'absent',
+    because:
+      "this entry's 2026-10-17 round declines to adopt four upstream retention settings " +
+      "(CONVERSATION_LOG_RETENTION_DAYS and three siblings) because each implies its own daily- " +
+      "sweep implementation this fork lacks. If this settings-registry key appears, that port " +
+      "already happened and the sibling settings (OTEL_SPAN/AGENT_MESSAGE/TOOL_CALL_LOG retention) " +
+      "need re-checking too.",
+  },
+  'scripts/dashboard-user.ts': {
+    needle: "from '../src/hidden-prompt.js'",
+    file: 'scripts/dashboard-user.ts',
+    expect: 'absent',
+    because:
+      "this entry keeps promptHidden() inline (next to the fork-only agent-key:mint/:revoke " +
+      "subcommands that call it) rather than taking upstream's extraction to its own module. If " +
+      "this import appears, the extraction was taken and the agent-key subcommands' use of the " +
+      "inline function needs re-checking.",
+  },
+  'scripts/agent-msg-get.sh': {
+    needle: '-H "Authorization: Bearer $(cat',
+    file: 'scripts/agent-msg-get.sh',
+    expect: 'absent',
+    because:
+      "this entry refuses upstream's argv-exposed bearer-token form (-H \"Authorization: Bearer " +
+      "$(cat ...)\", readable via /proc/<pid>/cmdline) in favor of this fork's 0600-header-file " +
+      "delivery. If this literal pattern appears in a -H flag here, the token-argv-exposure " +
+      "regression this entry refuses has arrived.",
+  },
+  'src/web/reauth-healer.ts': {
+    needle: "resolveFromPath('tmux')",
+    file: 'src/web/reauth-healer.ts',
+    expect: 'absent',
+    because:
+      "this entry keeps makeLazyBinResolver('tmux') (throws only on first actual use) over " +
+      "upstream's eager resolveFromPath('tmux') (throws at import time on a host without tmux on " +
+      "PATH yet), the same interim-vs-full tmuxInvocationFor class decided elsewhere in this card. " +
+      "If this eager call appears, that cutover happened here without the coordinated decision " +
+      "this card's other entries describe.",
+  },
+  'src/web/dashboard-settings.ts': {
+    needle: 'function runConnectorNpmInstall',
+    file: 'src/web/dashboard-settings.ts',
+    expect: 'absent',
+    because:
+      "this entry refuses upstream's connector-add npm-install feature (a dashboard-operator- " +
+      "triggered arbitrary-code-execution surface via postinstall/preinstall scripts) pending a " +
+      "dedicated WhiteHat-gated card. If runConnectorNpmInstall appears, that feature was adopted " +
+      "without the review this entry says it needs.",
+  },
+  'src/web/routes/connectors.ts': {
+    needle: 'scriptsSkipped',
+    file: 'src/web/routes/connectors.ts',
+    expect: 'absent',
+    because:
+      "this entry is the route-side half of the dashboard-settings.ts connector-npm-install " +
+      "refusal above -- scriptsSkipped only exists to surface that feature's results. If it " +
+      "appears here, the paired dashboard-settings.ts refusal needs re-checking too.",
+  },
+  'scripts/hooks/email-approval-gate.py': {
+    needle: '_EMAIL_SERVER_RE',
+    file: 'scripts/hooks/email-approval-gate.py',
+    expect: 'present',
+    because:
+      "this entry keeps the fork's deny-by-default whole-gmail__/resend__-server gate (three " +
+      "Cybersec-reviewed rounds: cards 498d53c1/45b33b2b/bf7a7335) over upstream's narrower " +
+      "_SEND_TOOL allowlist, which flips the failure direction on an unrecognized tool name. If " +
+      "_EMAIL_SERVER_RE disappears, that regression has arrived -- the inline_images content- " +
+      "anchor hardening (RedHat NO-GO a2cb71f1 H1) named in the same entry needs re-checking too.",
   },
 }
 
