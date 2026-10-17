@@ -73,6 +73,29 @@ check "unknown agent with no CLAUDE.md returns nothing, does not error" \
   "$(MARVEEN_MAIN="$TMPDIR" skill_dispatch_hint "no-such-agent" "anything" | paste -sd, -)" \
   ""
 
+# --- card 03d48dab (WhiteHat2 N1): path-traversal agent id must be rejected fail-closed, BEFORE
+# _skill_dispatch_claude_md ever builds a path from it. A fixture OUTSIDE agents/ proves the
+# traversal target exists and would have matched had the old, unvalidated code run.
+mkdir -p "$TMPDIR/secret-outside"
+cat > "$TMPDIR/secret-outside/CLAUDE.md" <<'EOF'
+## Core skilljeid
+
+- `tenant-pure-domain` -- pure domain modul injektalt portokkal es tenant-scope invarians
+EOF
+check "traversal agent id '../secret-outside' is rejected, not read" \
+  "$(MARVEEN_MAIN="$TMPDIR" skill_dispatch_hint "../secret-outside" "Uj tenant-scope domain modul kell." | paste -sd, -)" \
+  ""
+mkdir -p "$TMPDIR/agents/foo"
+check "traversal agent id with embedded dotdot segment is rejected" \
+  "$(MARVEEN_MAIN="$TMPDIR" skill_dispatch_hint "foo/../../secret-outside" "Uj tenant-scope domain modul kell." | paste -sd, -)" \
+  ""
+check "uppercase/space/slash agent id is rejected (only [a-z0-9-] accepted)" \
+  "$(MARVEEN_MAIN="$TMPDIR" skill_dispatch_hint "Fixture Agent" "anything" | paste -sd, -)" \
+  ""
+check "legitimate hyphenated agent id is still accepted (regression)" \
+  "$(hint_for 'Uj tenant-scope domain modul kell egy uj endpointhoz.')" \
+  "tenant-pure-domain"
+
 # --- same input twice -> same output (determinism, the whole point of the design) -----------------
 first="$(hint_for 'Design STRIDE elemzes mielott epitesz, mernoki baseline is kell.')"
 second="$(hint_for 'Design STRIDE elemzes mielott epitesz, mernoki baseline is kell.')"

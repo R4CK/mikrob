@@ -35,6 +35,14 @@ _skill_dispatch_claude_md() {
 
 skill_dispatch_hint() {
   local agent="$1" text="$2"
+  # Card 03d48dab (WhiteHat2 CYBERSEC GO N1 LOW, e912f7db follow-up): $agent builds a filesystem
+  # path below (agents/<agent>/CLAUDE.md, or the mikrob special-case) with no validation -- a value
+  # like "../../etc/passwd" or "../other-agent/../secret" would make _skill_dispatch_claude_md
+  # resolve outside the intended agents/ tree and this function would happily scan whatever file
+  # it points to for a "## Core skilljeid" section. Fail-closed: only the charset an agent id can
+  # ever actually be (lowercase alnum + hyphen) is accepted; anything else returns nothing, same
+  # silent-empty result the "no CLAUDE.md for this agent" case already gives.
+  [[ "$agent" =~ ^[a-z0-9-]+$ ]] || return 1
   local claude_md
   claude_md="$(_skill_dispatch_claude_md "$agent")"
   [ -f "$claude_md" ] || return 0
