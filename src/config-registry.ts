@@ -1,4 +1,6 @@
 import { homedir } from 'node:os'
+import { statSync } from 'node:fs'
+import { isAbsolute, join } from 'node:path'
 import { expandAndValidateConfigDir } from './config-dir-path.js'
 // Single source of truth for settings the dashboard's "Beallitasok" page can
 // show and edit. Each entry describes one .env-backed config key: its type
@@ -72,6 +74,40 @@ export interface SettingDefinition {
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
+
+// RedHat F1 (gate ba9a5ca3, card 2bf0d884): FLEET_PYTHON_VENV went through the
+// Settings API with no path validation at all -- a directory an attacker
+// controls (group/other-writable, or owned by another uid) could be set
+// here, and its bin/ then leads EVERY agent's launch PATH (fleetVenvBin() in
+// fleet-venv.ts), so a planted `python3` shim would hijack every skill's
+// plain `python3` call fleet-wide. fleetVenvBin() already refuses a relative
+// path or a shell-active character, but only at USE time (process launch);
+// this is the write-time check RedHat asked for. A not-yet-existing
+// directory is accepted (fleetVenvBin() treats a missing dir as off, nothing
+// to hijack yet) -- the operator creates it afterward and the next write (or
+// restart) re-checks it.
+export function validateFleetPythonVenvDir(raw: string, home: string = homedir()): string | null {
+  const value = raw.trim()
+  if (value === '') return null
+  if (/["$`\\]/.test(value)) return 'Az útvonal nem tartalmazhat shell-aktív karaktert (", $, `, \\).'
+  const expanded = value.startsWith('~') ? join(home, value.slice(1)) : value
+  if (!isAbsolute(expanded)) return 'Az útvonal abszolút kell legyen (kezdő ~ = home).'
+  let st: ReturnType<typeof statSync>
+  try {
+    st = statSync(expanded)
+  } catch {
+    return null
+  }
+  if (!st.isDirectory()) return 'A megadott útvonal nem könyvtár.'
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null
+  if (uid !== null && st.uid !== uid) {
+    return 'A könyvtár nem a flotta-folyamat saját UID-jének tulajdona -- ez PATH-eltérítést engedne.'
+  }
+  if ((st.mode & 0o022) !== 0) {
+    return 'A könyvtár group- vagy other-writable -- bárki beírhatna egy python3 shimet, ami minden ügynök launch-PATH-jének elejére kerülne.'
+  }
+  return null
+}
 
 export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
@@ -307,6 +343,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+    validate: validateFleetPythonVenvDir,
   },
   {
     key: 'OLLAMA_URL',

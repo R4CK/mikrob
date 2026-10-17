@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { serveFile, MIME } from '../http-helpers.js'
 import { PROJECT_ROOT, BRAND_NAME } from '../../config.js'
+import { listAllAgentNames } from '../agent-config.js'
 import type { RouteContext } from './types.js'
 
 // THE RULE FOR THIS FILE (card 6ed41c9d): every prefix rule that takes a PATH PARAMETER validates
@@ -172,6 +173,14 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
   // with `Host: attacker` still returns 200 with the file's raw bytes). Re-serialise a validated,
   // agent-id-shaped array instead of passing the file through -- the response body is never a direct
   // copy of whatever the file happens to contain.
+  //
+  // RedHat F-N1 LOW (card 613a8142 GO, follow-up card 2d4c7943): the shape regex alone admits any
+  // string that merely LOOKS like an agent id -- a 64-char, token-alphabet string (even the real
+  // dashboard token matches it) or a multi-megabyte string both passed through unauthenticated.
+  // Fix: intersect against the set of agent ids that actually exist on disk (listAllAgentNames),
+  // not just their shape. This also closes the length/count exposure as a side effect -- the output
+  // can never exceed the real agent roster, which this install already treats as small and public
+  // (the dashboard's own agent list).
   if (path === '/subagent-state.json') {
     let agents: string[] = []
     try {
@@ -179,7 +188,8 @@ export async function tryHandleStatic(ctx: RouteContext, webDir: string): Promis
       if (existsSync(p)) {
         const parsed: unknown = JSON.parse(readFileSync(p, 'utf-8') || '[]')
         if (Array.isArray(parsed)) {
-          agents = parsed.filter((a): a is string => typeof a === 'string' && /^[a-zA-Z0-9_-]+$/.test(a))
+          const known = new Set(listAllAgentNames())
+          agents = parsed.filter((a): a is string => typeof a === 'string' && /^[a-zA-Z0-9_-]+$/.test(a) && known.has(a))
         }
       }
     } catch { /* default empty */ }

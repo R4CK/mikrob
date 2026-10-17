@@ -97,4 +97,35 @@ describe('importFromRelations (MT-01 alap, deterministic card/sha/child-of/pair 
     const report = importFromRelations(mainDb, kgDb)
     expect(report.edgesFromVerdicts).toBe(1) // only the one with a non-null sha
   })
+
+  // F2 (card eeb57483, WhiteHat GO condition on ee9ee17b): measured on the live table, 16/811
+  // card titles exceed the schema's 200-char CHECK (max 270) -- before this card, that aborted
+  // the run partway through, leaving whatever had already been written. A card title over the
+  // cap is now truncated by upsertNode rather than thrown, and the whole run is one transaction
+  // besides, so any OTHER failure rolls back cleanly instead of leaving a partial import.
+  it('imports a card whose title exceeds the schema CHECK instead of aborting (truncated, not rejected)', () => {
+    const mainDb = makeMainDbFixture()
+    mainDb.prepare(`INSERT INTO kanban_cards VALUES ('long1', ?, 'MikroB')`).run('t'.repeat(270))
+    mainDb.prepare(`INSERT INTO kanban_relations VALUES ('card','long1','card','parent1','child-of','auto',1)`).run()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+
+    expect(() => importFromRelations(mainDb, kgDb)).not.toThrow()
+    const row = kgDb.prepare('SELECT title FROM kg_nodes WHERE id = ?').get('card:long1') as { title: string }
+    expect(row.title).toHaveLength(200)
+  })
+
+  it('a failure partway through the run leaves NOTHING written (atomic, not partial)', () => {
+    const mainDb = makeMainDbFixture()
+    const kgDb = new Database(':memory:')
+    migrateKg(kgDb)
+    // Force a throw after some nodes/edges would already have been upserted: an id outside the
+    // safe charset (F4) on the FIRST relation's target card fails validation mid-run.
+    mainDb.prepare(`UPDATE kanban_cards SET id = 'parent 1' WHERE id = 'parent1'`).run()
+    mainDb.prepare(`UPDATE kanban_relations SET to_id = 'parent 1' WHERE to_id = 'parent1' AND relation_type = 'child-of'`).run()
+
+    expect(() => importFromRelations(mainDb, kgDb)).toThrow()
+    expect(kgDb.prepare('SELECT COUNT(*) AS n FROM kg_nodes').get()).toEqual({ n: 0 })
+    expect(kgDb.prepare('SELECT COUNT(*) AS n FROM kg_edges').get()).toEqual({ n: 0 })
+  })
 })

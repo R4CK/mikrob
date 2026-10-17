@@ -30,6 +30,11 @@ const f = (path: string, content: string): ScanInput => ({ path, content });
  * evidence paths, quoted channel material, and formats nobody has listed.
  */
 const STRIPE_FIXTURE = ['sk', 'live', '51ABCDEFGHIJKLMNOPQRSTUV'].join('_');
+// Same assembled-at-runtime convention as STRIPE_FIXTURE above, for the two F3 patterns
+// (card eeb57483): writing these as literals trips the repo's own secret-write guard.
+const GITHUB_PAT_FIXTURE =
+  'github_pat_' + '11ABCDEFGHIJKLMNOPQRST_0123456789abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ';
+const GOOGLE_AIZA_FIXTURE = 'AIza' + 'SyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456'; // AIza + 35 chars
 
 describe('fail-closed', () => {
   it('an EMPTY file set FAILS -- the most common silent fail-open', () => {
@@ -73,6 +78,11 @@ describe('detector 2: content', () => {
     ['jwt', 'token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r'],
     ['github token', 'GH=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'],
     ['aws key id', 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE'],
+    // F3 (card eeb57483, WhiteHat GO condition on ee9ee17b): github_pat_ is a DIFFERENT prefix
+    // from the classic github-token entry above, not a longer form of it -- that pattern does
+    // not match it.
+    ['github fine-grained PAT', `GH=${GITHUB_PAT_FIXTURE}`],
+    ['google AIza key', `GOOGLE_API_KEY=${GOOGLE_AIZA_FIXTURE}`],
   ])('blocks a %s in an ordinary file', (_name, body) => {
     const r = runGate([f('docs/notes.md', body)]);
     expect(r.ok).toBe(false);
@@ -88,6 +98,18 @@ describe('detector 2: content', () => {
     const kotojel = 'sk-' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6';
     expect(runGate([f('docs/a.md', `k = ${alahuzas}`)]).ok).toBe(false);
     expect(runGate([f('docs/b.md', `k = ${kotojel}`)]).ok).toBe(false);
+  });
+
+  it('catches an AIza key ending in "-", which the old \\b missed (F3-a, card eeb57483 RedHat / 0deb6893)', () => {
+    // \b treats `-` as a non-word char, so when the 35th (last) payload char of a real-shaped
+    // key is `-` and it is followed by whitespace/EOF (also non-word), there is no word/non-word
+    // TRANSITION at that point -- \b fails to close the match. Measured: ~1/64 of real-shaped
+    // AIza keys end in `-`, so this many slipped through silently. Lookaround against the full
+    // safe-charset (letters, digits, `_`, `-`) fixes it: a non-safe-charset char like a space
+    // satisfies the negative lookahead regardless of whether the preceding char was a "word"
+    // char or not. This fixture was RED against the pre-fix \b pattern.
+    const aizaEndsWithDash = 'AIza' + 'A'.repeat(34) + '-';
+    expect(runGate([f('docs/c.md', `key=${aizaEndsWithDash} end`)]).ok).toBe(false);
   });
 
   it('catches the Supabase PERSONAL access token, in the shape we actually leak (SBPMINTAHIANY914)', () => {

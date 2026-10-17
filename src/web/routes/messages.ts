@@ -29,6 +29,7 @@ import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from '../heartbeat
 import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
 import { parseQualifiedId, formatQualifiedId, isQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 
 // Should closing a message produce a reverse "[Eredmény]" notification to its sender?
@@ -534,8 +535,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   // Sidebar threads: one row per conversation peer (system agents excluded),
   // each with its count + most-recent message, recency computed per-peer.
+  //
+  // Cybersec NO-GO F1 (card debba303): an agent-key caller must only see its OWN
+  // threads (same scoping as the GET /api/messages list above), never the
+  // fleet-wide peer list with every peer's globally-last message.
   if (path === '/api/messages/threads' && method === 'GET') {
-    json(res, getAgentConversationThreads())
+    const authenticatedAgentId = ctx.auth?.kind === 'device' ? agentKeyToAgentId(ctx.auth.device) : null
+    json(res, getAgentConversationThreads(authenticatedAgentId || undefined))
     return true
   }
 
@@ -557,7 +563,11 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       }, 400)
       return true
     }
-    const agent = url.searchParams.get('agent') ?? url.searchParams.get('assignee') ?? undefined
+    // Cybersec F2 (card debba303, same round as F1): metadata-only (count + oldest age, no
+    // content), but still another agent's queue depth -- an agent-key caller must only ever
+    // see its OWN backlog, same override as every other branch in this file.
+    const authenticatedAgentId = ctx.auth?.kind === 'device' ? agentKeyToAgentId(ctx.auth.device) : null
+    const agent = authenticatedAgentId || url.searchParams.get('agent') || url.searchParams.get('assignee') || undefined
     json(res, getPendingBacklogByAgent(agent))
     return true
   }
@@ -580,7 +590,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       }, 400)
       return true
     }
-    const agent = url.searchParams.get('agent') || ''
+    // WhiteHat2 X1 (card debba303, same precedent as O1/overview.ts and card 517fdcc5/memories.ts):
+    // a device agent-key caller's authenticated identity, when present, overrides whatever
+    // `?agent=` claims AND forces every branch below off the global list/global pending onto this
+    // agent's own conversation -- a shared-token/session caller is unaffected.
+    const authenticatedAgentId = ctx.auth?.kind === 'device' ? agentKeyToAgentId(ctx.auth.device) : null
+    const agent = authenticatedAgentId || url.searchParams.get('agent') || ''
     const status = url.searchParams.get('status') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const beforeRaw = url.searchParams.get('before')
@@ -616,6 +631,15 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   if (msgUpdateMatch && method === 'GET') {
     const one = getAgentMessage(parseInt(msgUpdateMatch[1], 10))
     if (!one) { json(res, { error: 'Message not found' }, 404); return true }
+    // Cybersec NO-GO F1 (card debba303): an agent-key caller may only read a row it is
+    // actually a party to. 404, not 403 -- same "no existence oracle" convention as the
+    // O1/overview.ts and memories.ts precedents: an id that exists but belongs to someone
+    // else must look identical to an id that was never there.
+    const authenticatedAgentId = ctx.auth?.kind === 'device' ? agentKeyToAgentId(ctx.auth.device) : null
+    if (authenticatedAgentId && one.from_agent !== authenticatedAgentId && one.to_agent !== authenticatedAgentId) {
+      json(res, { error: 'Message not found' }, 404)
+      return true
+    }
     json(res, attachFreshness([one])[0])
     return true
   }

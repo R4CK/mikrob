@@ -3,10 +3,16 @@ import { MAIN_AGENT_ID } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
-  const { req, res, path, method, url } = ctx
+  const { req, res, path, method, url, auth } = ctx
+  // WhiteHat2 X1 (card debba303, same precedent as O1/overview.ts and card 517fdcc5/memories.ts):
+  // a device agent-key caller's authenticated identity, when present, overrides whatever `?agent=`
+  // claims -- a shared-token/session caller (no device identity) is unaffected and keeps reading
+  // any `agent` it names, exactly as before.
+  const authenticatedAgentId = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
 
   if (path === '/api/daily-log' && method === 'POST') {
     const body = await readBody(req)
@@ -26,14 +32,14 @@ export async function tryHandleDailyLog(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/daily-log' && method === 'GET') {
-    const agent = url.searchParams.get('agent') || MAIN_AGENT_ID
+    const agent = authenticatedAgentId || url.searchParams.get('agent') || MAIN_AGENT_ID
     const date = url.searchParams.get('date') || new Date().toISOString().split('T')[0]
     json(res, getDailyLog(agent, date))
     return true
   }
 
   if (path === '/api/daily-log/dates' && method === 'GET') {
-    const agent = url.searchParams.get('agent') || MAIN_AGENT_ID
+    const agent = authenticatedAgentId || url.searchParams.get('agent') || MAIN_AGENT_ID
     json(res, getDailyLogDates(agent))
     return true
   }

@@ -98,13 +98,6 @@ export function parseGateDesignation(gateLine: string): Set<GateAgent> | null {
   return widenQa(widenCybersec(names))
 }
 
-// PASS/GO/SKIP only -- the card's own wording (243de9b9): a gate must have APPROVED or explicitly
-// declined jurisdiction, not merely commented. A NO-GO or FAIL is deliberately NOT a satisfying
-// verdict here: that gate looked and said no, and the guard's whole job is to stop a DONE with an
-// open "no" sitting on the card, not just a DONE with silence. `(?<!NO[- ])\bGO\b` keeps "GO" from
-// matching inside "NO-GO"/"NO GO" -- a later "now fixed, GO" in the SAME comment still counts, only
-// the negated form does not.
-const VERDICT_RX = /\bPASS\b|\bSKIP\b|(?<!NO[- ])\bGO\b/i
 // `m` (multiline): a comment conventionally opens with `Gate-SHA: ...` on its OWN first line (root
 // CLAUDE.md rule 4b) and "REVIEW" on the line after it -- without `m`, `^` anchors to the absolute
 // start of the whole comment, so that (very common) shape never matched at all (card b68ddae8's own
@@ -540,35 +533,88 @@ function freshStructuredRow(
   }
 }
 
+// COMMON VERDICT RECOGNIZER (card 1e763f16, RedHat follow-up F1/F2/F3a on e87eef21 comment 21526):
+// ported from store/gate-closure-check.py's `_LEAD_SKIP` + `_VERDICT`, not re-derived, so the TS
+// guard and the Python closure-check agree on what counts as an opening verdict (a shared corpus
+// fixture, store/gate-verdict-corpus.json, is loaded by both tools' test suites to keep them from
+// drifting apart again).
+//
+// F1 (4 live cases: comments 8753/17906/17941/6821): the OLD `VERDICT_RX.test(firstLine(...))`
+// check matched "PASS"/"SKIP"/"GO" ANYWHERE on the first line, so a retracting "QA FAIL
+// (visszavonom a korabbi PASS-omat)" -- the single most dangerous shape, a gate reversing its own
+// earlier approval -- still read as a fresh POSITIVE, because the word "PASS" appears in the same
+// line even though the line's own verdict is FAIL. A verdict must OPEN the line as ROLE[n]?
+// [GATE|VERDICT]? :? WORD (CLAUDE.md 4c), not merely contain the word anywhere in it.
+// F3a (2 live cases: comments 8478/8481): a `Gate-SHA: <sha>` line (or a blank line) BEFORE the
+// verdict line is legitimate (rule 4b allows either order) -- the Python tool's `_LEAD_SKIP`
+// already strips it before matching; this mirrors that instead of reading only the LITERAL first
+// line of the whole comment.
+const ANCHORED_LEAD_SKIP_RX = /^(?:[ \t]*Gate-SHA\s*:[^\n]*\n|[ \t]*\n)*/i
+// `(?:REVIEW\s*:?\s*)?`: QA's own self-built convention prefixes its verdict with "REVIEW: " (card
+// b68ddae8/1da2367a, the round-marker tests below) -- not one of RedHat's named findings, but a
+// shape this anchor must keep recognising, since the OLD anywhere-on-the-first-line check matched
+// it (and the F1 bug) as the SAME side effect of being unanchored. The role word must still follow
+// immediately (only whitespace between), so a generic "REVIEW: kesz, ... QA PASS run..." does not
+// match -- only the literal "REVIEW: QA PASS"-shaped shape does.
+const ANCHORED_VERDICT_RX =
+  /^\s*(?:REVIEW\s*:?\s*)?(QA|CYBERSEC|WHITEHAT|CYBERED|REDHAT)(\d*)\s*(?:GATE|VERDICT)?\s*:?\s*(PASS|FAIL|GO|NO-GO|SKIP)(?![-\w])/i
+const ANCHORED_ROLE_BASE: Readonly<Record<string, GateAgent>> = {
+  QA: 'qa', CYBERSEC: 'cybersec', WHITEHAT: 'cybersec', CYBERED: 'cybered', REDHAT: 'cybered',
+}
+
+export interface AnchoredVerdict {
+  readonly agent: GateAgent
+  readonly outcome: 'PASS' | 'FAIL' | 'GO' | 'NO-GO' | 'SKIP'
+}
+
+/** The verdict a comment OPENS with (after skipping a leading Gate-SHA/blank line), or `null` if it
+ *  does not open with one -- a non-verdict gate comment (audit note, INFO, a dispatch
+ *  acknowledgement) that merely MENTIONS "GO"/"PASS" mid-sentence does not match, closing F3's
+ *  other half (75 live non-verdict comments that used to read as positive under the old
+ *  anywhere-on-the-first-line check). */
+export function anchoredGateVerdict(content: string): AnchoredVerdict | null {
+  const skip = ANCHORED_LEAD_SKIP_RX.exec(content)
+  const body = skip ? content.slice(skip[0].length) : content
+  const m = ANCHORED_VERDICT_RX.exec(body)
+  if (!m) return null
+  const base = ANCHORED_ROLE_BASE[m[1].toUpperCase()]
+  if (!base) return null
+  const agent = (m[2] === '2' && (base === 'qa' || base === 'cybersec') ? `${base}2` : base) as GateAgent
+  return { agent, outcome: m[3].toUpperCase() as AnchoredVerdict['outcome'] }
+}
+
+// F2 (RedHat, latent on the live board: 0 of 2062 gate-rounds hit this order today, but the gap is
+// real): the OLD checks were independent `.some()` scans -- ANY positive comment anywhere in the
+// round satisfied commentOnlyFresh, and ANY negative anywhere satisfied commentHasFreshNegative,
+// so a GO followed by a later NO-GO from the SAME gate satisfied BOTH checks at once (an open
+// contradiction the guard never noticed) instead of the later verdict overriding the earlier one.
+// `latest_per_gate` in gate-closure-check.py already takes "the LAST verdict each gate gave" --
+// this takes the single most recent anchored-verdict comment from `agent` in the round and lets
+// both callers below derive their answer from that ONE outcome, the same latest-wins semantics.
+function latestCommentVerdict(
+  comments: readonly Comment[],
+  agent: GateAgent,
+  sinceTs: number | null,
+): AnchoredVerdict['outcome'] | null {
+  let best: { ts: number; outcome: AnchoredVerdict['outcome'] } | null = null
+  for (const c of comments) {
+    if ((c.author ?? '').toLowerCase() !== agent) continue
+    if (sinceTs !== null && c.created_at < sinceTs) continue
+    const v = anchoredGateVerdict(c.content ?? '')
+    if (!v) continue
+    if (!best || c.created_at >= best.ts) best = { ts: c.created_at, outcome: v.outcome }
+  }
+  return best ? best.outcome : null
+}
+
 function commentOnlyFresh(comments: readonly Comment[], agent: GateAgent, sinceTs: number | null): boolean {
-  return comments.some(
-    (c) =>
-      (c.author ?? '').toLowerCase() === agent &&
-      VERDICT_RX.test(c.content ?? '') &&
-      (sinceTs === null || c.created_at >= sinceTs),
-  )
+  const outcome = latestCommentVerdict(comments, agent, sinceTs)
+  return outcome === 'PASS' || outcome === 'GO' || outcome === 'SKIP'
 }
 
-// A NO-GO/FAIL-shaped comment, same word-boundary discipline as VERDICT_RX above.
-const NEGATIVE_VERDICT_RX = /\bFAIL\b|\bNO[- ]GO\b/i
-
-/** The comment's own first line, trimmed -- the slice a gate's verdict word actually lives on by
- *  convention (CLAUDE.md 4c: "CYBERED NO-GO" etc. is the comment's first line). */
-function firstLine(content: string): string {
-  const idx = content.indexOf('\n')
-  return (idx === -1 ? content : content.slice(0, idx)).trim()
-}
-
-// B3' (RedHat NO-GO, 2bfa4c67 comment 16824, MEDIUM): the old check matched FAIL/NO-GO ANYWHERE in
-// the comment body, not just the verdict line -- measured false positives (G10, G5): a fresh
-// CYBERED GO whose BODY TEXT cites an earlier "NO-GO 16623" it fixed, or merely mentions
-// "fail-closed", both read as a fresh disagreement and blocked a legitimate close (and, reversed,
-// let the shared token write a bogus "FAIL" comment under a gate's name to block ANY close, a
-// DoS). Only the FIRST LINE carries the gate's actual verdict by convention, so only it is tested.
 function commentHasFreshNegative(comments: readonly Comment[], agent: GateAgent, afterTs: number): boolean {
-  return comments.some(
-    (c) => (c.author ?? '').toLowerCase() === agent && NEGATIVE_VERDICT_RX.test(firstLine(c.content ?? '')) && c.created_at >= afterTs,
-  )
+  const outcome = latestCommentVerdict(comments, agent, afterTs)
+  return outcome === 'FAIL' || outcome === 'NO-GO'
 }
 
 type VerdictStatus = 'ok' | 'missing' | 'disagree'

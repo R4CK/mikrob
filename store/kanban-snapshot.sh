@@ -47,6 +47,10 @@ INSTALL_DIR="$(cd "$STORE/.." && pwd)"
 PORT="$(sed -n 's/^WEB_PORT=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
 PORT="${PORT:-3420}"
 TOKEN="$(cat "$STORE/.dashboard-token")"
+# Drop any inherited export attribute (613a8142 F1 class, follow-up card 2d4c7943 INFO): if a
+# caller already exported a variable named TOKEN, bash would keep that attribute across this
+# reassignment and leak the real token into the curl/python3 children spawned below.
+declare +x TOKEN
 OUT="$INSTALL_DIR/KANBAN-SNAPSHOT.md"
 
 printf 'Authorization: Bearer %s\n' "$TOKEN" \

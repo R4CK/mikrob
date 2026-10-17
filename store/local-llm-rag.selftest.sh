@@ -14,6 +14,13 @@
 # connection refused) so retrieval fails fast and open (card rule 12) -- --show-context then prints
 # the assembled prompt and exits 0 without ever calling the local model.
 #
+# P2 pin-gap (RedHat LOW on 613a8142 GO, follow-up card 2d4c7943): the four checks below only prove
+# the env-leak is closed -- none of them had a POSITIVE control that the real token still arrives at
+# all. Measured: replacing the token with an empty string left all four checks green while the
+# stdin handoff silently degraded to nothing (fail-open, rule 12 -- retrieval would run with no
+# token and no one would notice). The stub now also `tee`s its own stdin to a second capture file,
+# and a fifth check asserts the real token is actually in it.
+#
 # Run:  bash store/local-llm-rag.selftest.sh
 # Exit: 0 = all pass, 1 = at least one case wrong.
 set -uo pipefail
@@ -39,14 +46,15 @@ REAL_TOKEN="REAL-DASHBOARD-TOKEN-xyz789"
 STATE_DIR="$(mktemp -d)"
 FAKEBIN="$(mktemp -d)"
 CAPTURE="$(mktemp)"
-trap 'rm -rf "$STATE_DIR" "$FAKEBIN" "$CAPTURE"' EXIT
+STDIN_CAPTURE="$(mktemp)"
+trap 'rm -rf "$STATE_DIR" "$FAKEBIN" "$CAPTURE" "$STDIN_CAPTURE"' EXIT
 
 printf '%s' "$REAL_TOKEN" >"$STATE_DIR/.dashboard-token"
 
 cat >"$FAKEBIN/python3" <<EOF
 #!/usr/bin/env bash
 env >"$CAPTURE"
-exec "$REAL_PYTHON3" "\$@"
+tee "$STDIN_CAPTURE" | exec "$REAL_PYTHON3" "\$@"
 EOF
 chmod +x "$FAKEBIN/python3"
 
@@ -66,6 +74,8 @@ t "the caller's exported sentinel is ALSO not in the python3 child's environ (ex
   "$(grep -c '^TOKEN=' "$CAPTURE" 2>/dev/null || true)" "0"
 t "the assembled prompt still reached stdout (retrieval degraded, not aborted -- rule 12 fail-open)" \
   "$(printf '%s' "$OUT" | grep -c 'a bounded task')" "1"
+t "P2 positive control: the real token actually arrives on the python3 child's stdin" \
+  "$(grep -c "$REAL_TOKEN" "$STDIN_CAPTURE" 2>/dev/null || true)" "1"
 
 if [ "$fail" -eq 0 ]; then
   echo "local-llm-rag.sh selftest: all $n checks passed"

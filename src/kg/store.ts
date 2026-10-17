@@ -27,6 +27,51 @@ export class KgSecretError extends Error {
   }
 }
 
+export class KgValidationError extends Error {
+  constructor(public readonly field: string, reason: string) {
+    super(`kg write refused: ${field} ${reason}`)
+    this.name = 'KgValidationError'
+  }
+}
+
+// F4 (eeb57483, WhiteHat GO condition on ee9ee17b): id/source_ref/gate_sha are built by this
+// module's own callers today (`card:<id>`, `git:<sha>`, `kanban_cards:<id>`), but a future caller
+// (the capture worker, MT-05) is untrusted input -- validate the shape here, at the one place
+// every write already passes through, rather than trusting every future caller to repeat it.
+const SAFE_ID_PATTERN = /^[A-Za-z0-9:_.-]+$/
+const GATE_SHA_PATTERN = /^[0-9a-f]{7,64}(,[0-9a-f]{7,64})*$/i
+const MAX_ID_LENGTH = 300
+const MAX_SOURCE_REF_LENGTH = 500
+const MAX_GATE_SHA_LENGTH = 200
+
+function assertValidIdentifiers(input: KgNodeInput): void {
+  if (!input.id || input.id.length > MAX_ID_LENGTH || !SAFE_ID_PATTERN.test(input.id)) {
+    throw new KgValidationError('id', `must be 1-${MAX_ID_LENGTH} chars of [A-Za-z0-9:_.-]`)
+  }
+  if (
+    !input.source_ref ||
+    input.source_ref.length > MAX_SOURCE_REF_LENGTH ||
+    !SAFE_ID_PATTERN.test(input.source_ref)
+  ) {
+    throw new KgValidationError('source_ref', `must be 1-${MAX_SOURCE_REF_LENGTH} chars of [A-Za-z0-9:_.-]`)
+  }
+  if (input.gate_sha != null && input.gate_sha !== '') {
+    if (input.gate_sha.length > MAX_GATE_SHA_LENGTH || !GATE_SHA_PATTERN.test(input.gate_sha)) {
+      throw new KgValidationError('gate_sha', 'must be one or more comma-separated 7-64 char hex shas')
+    }
+  }
+}
+
+// F2 (eeb57483): the schema's CHECK constraints (title<=200, body<=8000, snippet<=12000) reject
+// the row outright -- measured on the live table, 16/811 card titles exceed 200 chars (max 270).
+// Truncate rather than reject: a long title is a card someone actually titled that way, not a
+// malformed input, and the MODULTERV calls this cosmetic metadata, not identity (the id column
+// carries identity). Truncation beats silent corruption of "the whole import stops here".
+function capLength(text: string | null | undefined, max: number): string | null | undefined {
+  if (text == null) return text
+  return text.length > max ? text.slice(0, max) : text
+}
+
 /** Reuses the SAME patterns the commit-time secret-gate scans diffs with (src/security/
  *  secret-gate.ts), so a node body is held to the same bar as a commit -- one source of truth
  *  for "what a secret shape looks like", not a second regex list that can drift from the first. */
@@ -149,6 +194,7 @@ export function rebuild(db: Database.Database, dbPath: string): Database.Databas
 }
 
 export function upsertNode(db: Database.Database, input: KgNodeInput): void {
+  assertValidIdentifiers(input)
   assertNoSecretShape({
     title: input.title,
     body: input.body,
@@ -156,35 +202,64 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
     keywords: input.keywords,
   })
   const now = nowSec()
-  db.prepare(
-    `INSERT INTO kg_nodes
-       (id, type, project, title, body, snippet, snippet_lang, keywords, status, source_ref,
-        gate_sha, quality, extractor, embedding, embed_model, created_at, updated_at)
-     VALUES (@id, @type, @project, @title, @body, @snippet, @snippet_lang, @keywords, @status,
-        @source_ref, @gate_sha, 0, @extractor, @embedding, @embed_model, @created_at, @updated_at)
-     ON CONFLICT(id) DO UPDATE SET
-       title=excluded.title, body=excluded.body, snippet=excluded.snippet,
-       snippet_lang=excluded.snippet_lang, keywords=excluded.keywords, status=excluded.status,
-       source_ref=excluded.source_ref, gate_sha=excluded.gate_sha, extractor=excluded.extractor,
-       embedding=excluded.embedding, embed_model=excluded.embed_model, updated_at=excluded.updated_at`,
-  ).run({
-    id: input.id,
-    type: input.type,
-    project: input.project,
-    title: input.title,
-    body: input.body ?? null,
-    snippet: input.snippet ?? null,
-    snippet_lang: input.snippet_lang ?? null,
-    keywords: input.keywords ?? null,
-    status: input.status ?? 'active',
-    source_ref: input.source_ref,
-    gate_sha: input.gate_sha ?? null,
-    extractor: input.extractor,
-    embedding: input.embedding ?? null,
-    embed_model: input.embed_model ?? null,
-    created_at: now,
-    updated_at: now,
+  const title = capLength(input.title, 200) as string
+  const body = capLength(input.body ?? null, 8000)
+  const snippet = capLength(input.snippet ?? null, 12000)
+
+  const tx = db.transaction(() => {
+    // F1 (eeb57483, WhiteHat GO condition on ee9ee17b): a re-import (e.g. importFromRelations
+    // running again after a card was archived) must not silently reactivate an archived node --
+    // the archived state is a deliberate decision (setNodeStatus), not metadata a later import run
+    // should be able to overwrite. Preserve it and audit the blocked attempt instead of applying
+    // the caller's requested status.
+    // F1-a (card eeb57483 RedHat, card 0deb6893): the protection above covered ONLY 'archived' --
+    // 'superseded' is set by the exact same sanctioned, audited path (setNodeStatus) and is just
+    // as deliberate a decision, but a re-import still silently flipped it back to 'active'
+    // with no audit trail at all. Protect both terminal-ish states the same way.
+    const PROTECTED_STATUSES = new Set(['archived', 'superseded'])
+    const existing = db.prepare('SELECT status FROM kg_nodes WHERE id = ?').get(input.id) as
+      | { status: string }
+      | undefined
+    const requestedStatus = input.status ?? 'active'
+    const isProtected = existing?.status !== undefined && PROTECTED_STATUSES.has(existing.status)
+    const finalStatus = isProtected ? existing!.status : requestedStatus
+    if (isProtected && requestedStatus !== existing!.status) {
+      db.prepare(
+        'INSERT INTO kg_audit (node_id, action, actor, before, after, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run(input.id, 'import_reactivation_blocked', input.extractor, existing!.status, requestedStatus, now)
+    }
+
+    db.prepare(
+      `INSERT INTO kg_nodes
+         (id, type, project, title, body, snippet, snippet_lang, keywords, status, source_ref,
+          gate_sha, quality, extractor, embedding, embed_model, created_at, updated_at)
+       VALUES (@id, @type, @project, @title, @body, @snippet, @snippet_lang, @keywords, @status,
+          @source_ref, @gate_sha, 0, @extractor, @embedding, @embed_model, @created_at, @updated_at)
+       ON CONFLICT(id) DO UPDATE SET
+         title=excluded.title, body=excluded.body, snippet=excluded.snippet,
+         snippet_lang=excluded.snippet_lang, keywords=excluded.keywords, status=excluded.status,
+         source_ref=excluded.source_ref, gate_sha=excluded.gate_sha, extractor=excluded.extractor,
+         embedding=excluded.embedding, embed_model=excluded.embed_model, updated_at=excluded.updated_at`,
+    ).run({
+      id: input.id,
+      type: input.type,
+      project: input.project,
+      title,
+      body,
+      snippet,
+      snippet_lang: input.snippet_lang ?? null,
+      keywords: input.keywords ?? null,
+      status: finalStatus,
+      source_ref: input.source_ref,
+      gate_sha: input.gate_sha ?? null,
+      extractor: input.extractor,
+      embedding: input.embedding ?? null,
+      embed_model: input.embed_model ?? null,
+      created_at: now,
+      updated_at: now,
+    })
   })
+  tx()
 }
 
 /** INSERT OR IGNORE: the composite primary key (src,dst,rel) already gives idempotency, same

@@ -65,6 +65,10 @@ done
 NOW="$(date +%s)"
 CUTOFF=$(( NOW - DAYS * 86400 ))
 TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null || true)"
+# Drop any inherited export attribute (613a8142 F1 class, follow-up card 2d4c7943 INFO): if a
+# caller already exported a variable named TOKEN, bash would keep that attribute across this
+# reassignment and leak the real token into the python3/curl children spawned below.
+declare +x TOKEN
 
 CARDS_JSON="$(printf 'Authorization: Bearer %s\n' "$TOKEN" | timeout 15 curl -H @- -s "$DASH/api/kanban" 2>/dev/null)"
 if [ -z "${CARDS_JSON// }" ]; then

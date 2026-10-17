@@ -4,6 +4,7 @@
 // narrow, mirroring kanban-landed-guard.test.ts's own discipline: it must block the one case it
 // claims and stay out of the way everywhere else.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
 
 const card = { id: 'c1', description: null as string | null }
 let comments: Array<{ author: string; content: string; created_at: number }> = []
@@ -28,7 +29,7 @@ vi.mock('../logger.js', () => ({
   logger: { warn: () => {}, info: (o: Record<string, unknown>) => infoLogs.push(o) },
 }))
 
-const { gateCompletenessGuardVerdict, extractGateLine, parseGateDesignation } = await import(
+const { gateCompletenessGuardVerdict, extractGateLine, parseGateDesignation, anchoredGateVerdict } = await import(
   '../web/kanban-gate-completeness-guard.js'
 )
 
@@ -177,6 +178,22 @@ describe('gateCompletenessGuardVerdict', () => {
       { author: 'backend2', content: 'REVIEW -- kesz', created_at: 100 },
       { author: 'qa', content: 'QA PASS', created_at: 200 },
       { author: 'cybersec', content: 'CYBERSEC NO-GO -- one HIGH open', created_at: 201 },
+    ]
+    const v = gateCompletenessGuardVerdict('c1', 'done', false)
+    expect(v.blocked).toBe(true)
+    expect(v.message).toContain('Cybersec')
+  })
+
+  it('card e87eef21 (WhiteHat f5ff1d5a F1): a NO-GO comment that mentions PASS/GO/SKIP elsewhere in its BODY (not the verdict line) still blocks the close', () => {
+    card.description = 'Gate: QA + Cybersec'
+    comments = [
+      { author: 'backend2', content: 'REVIEW -- kesz', created_at: 100 },
+      { author: 'qa', content: 'QA PASS', created_at: 200 },
+      {
+        author: 'cybersec',
+        content: 'CYBERSEC NO-GO -- F1 meg nyitva.\nA korabbi korben ez meg PASS volt, most mar nem.',
+        created_at: 201,
+      },
     ]
     const v = gateCompletenessGuardVerdict('c1', 'done', false)
     expect(v.blocked).toBe(true)
@@ -1212,6 +1229,113 @@ describe('gateCompletenessGuardVerdict', () => {
         { author: 'qa', content: 'REVIEW: QA PASS @ ujranezve\nGate-SHA: ccccccc9', created_at: 200 },
       ]
       expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+  })
+
+  // Card 1e763f16 (RedHat follow-up F0/F1/F3a on e87eef21 comment 21526): the SAME fixture file
+  // (store/gate-verdict-corpus.json) is loaded by store/gate-closure-check.selftest.py's own corpus
+  // block, so a change to either tool's recognizer that disagrees with the other shows up as a
+  // failure there AND here instead of the two drifting apart silently again. The comparison
+  // normalises TS's sibling-numbered agent ('qa2'/'cybersec2') down to its gate FAMILY, because
+  // Python's canonical_gate() deliberately discards the sibling digit (card 1e763f16 investigation:
+  // "group(2) is the sibling number and is deliberately discarded") -- the two tools agree on gate
+  // FAMILY + outcome, not on which specific sibling posted.
+  describe('shared verdict corpus (card 1e763f16): anchoredGateVerdict agrees with gate-closure-check.py\'s verdict_of', () => {
+    const corpusPath = new URL('../../store/gate-verdict-corpus.json', import.meta.url)
+    const corpus: Array<{ id: string; content: string; expected: { gate: string; outcome: string } | null }> =
+      JSON.parse(readFileSync(corpusPath, 'utf-8'))
+    const toFamily = (agent: string) => agent.replace(/2$/, '').toUpperCase()
+
+    for (const c of corpus) {
+      it(`corpus: ${c.id}`, () => {
+        const got = anchoredGateVerdict(c.content)
+        if (c.expected === null) {
+          expect(got).toBeNull()
+        } else {
+          expect(got).not.toBeNull()
+          expect(toFamily(got!.agent)).toBe(c.expected.gate)
+          expect(got!.outcome).toBe(c.expected.outcome)
+        }
+      })
+    }
+  })
+
+  // F1 (RedHat, 4 live cases: comments 8753/17906/17941/6821): the production wiring -- a gate
+  // reversing its own PASS/GO with a FAIL/NO-GO comment that NAMES the word it withdraws must read
+  // as missing, not as a fresh positive. The corpus block above pins the recognizer itself; this
+  // pins gateCompletenessGuardVerdict's end-to-end behaviour on the exact same shape.
+  describe('F1 (card 1e763f16): a retracting FAIL/NO-GO that names the verdict it withdraws stays negative', () => {
+    it('QA FAIL (visszavonom a korabbi PASS-omat) -- blocks, not satisfied by the quoted PASS word', () => {
+      card.description = 'Gate: QA'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz', created_at: 100 },
+        { author: 'qa', content: 'QA PASS', created_at: 150 },
+        { author: 'qa', content: 'QA FAIL (visszavonom a korabbi PASS-omat)', created_at: 200 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA')
+    })
+
+    // Mutation control (karpathy-guidelines, goal-driven execution): take out the anchoring (go
+    // back to matching PASS/SKIP/GO anywhere on the first line) and this same case must turn RED,
+    // proving the test actually exercises the fix and is not a no-op.
+    it('MUTATION CONTROL: the old anywhere-on-the-line check would have read this as a fresh PASS', () => {
+      const OLD_VERDICT_RX = /\bPASS\b|\bSKIP\b|(?<!NO[- ])\bGO\b/i
+      const retracting = 'QA FAIL (visszavonom a korabbi PASS-omat)'
+      expect(OLD_VERDICT_RX.test(retracting)).toBe(true) // the bug this card fixes
+      expect(anchoredGateVerdict(retracting)?.outcome).toBe('FAIL') // the fix
+    })
+  })
+
+  // F2 (RedHat, latent on the live board): the LATEST verdict from a gate wins, not "any positive
+  // anywhere in the round". A GO followed by a later NO-GO from the SAME gate must read as missing.
+  describe('F2 (card 1e763f16): the LATEST comment-only verdict from a gate wins, not any earlier positive', () => {
+    it('CYBERED GO then a later CYBERED NO-GO (same gate, same round) blocks -- the NO-GO wins', () => {
+      card.description = 'Gate: QA + Cybered'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz', created_at: 100 },
+        { author: 'qa', content: 'QA PASS', created_at: 150 },
+        { author: 'cybered', content: 'CYBERED GO', created_at: 200 },
+        { author: 'cybered', content: 'CYBERED NO-GO -- ujra megneztem, egy HIGH nyitva', created_at: 300 },
+      ]
+      const v = gateCompletenessGuardVerdict('c1', 'done', false)
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('Cybered')
+    })
+
+    it('CONTROL: the order reversed (NO-GO then a later GO) is correctly unblocked', () => {
+      card.description = 'Gate: QA + Cybered'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz', created_at: 100 },
+        { author: 'qa', content: 'QA PASS', created_at: 150 },
+        { author: 'cybered', content: 'CYBERED NO-GO -- egy HIGH nyitva', created_at: 200 },
+        { author: 'cybered', content: 'CYBERED GO -- javitva, ujra megneztem', created_at: 300 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+  })
+
+  // F3a (RedHat, 2 live cases: comments 8478/8481): a Gate-SHA line BEFORE the verdict line is a
+  // legitimate order (CLAUDE.md 4b allows either), so it must not read as missing.
+  describe('F3a (card 1e763f16): a Gate-SHA-first comment still carries its verdict', () => {
+    it('Gate-SHA then CYBERED GO on the next line is recognised, not missing', () => {
+      card.description = 'Gate: Cybered'
+      comments = [
+        { author: 'backend2', content: 'REVIEW -- kesz\nGate-SHA: 8675bd80842d00e725e7c701ce9d9a47e76e7fa5', created_at: 100 },
+        { author: 'cybered', content: 'Gate-SHA: 8675bd80842d00e725e7c701ce9d9a47e76e7fa5\nCYBERED GO', created_at: 200 },
+      ]
+      expect(gateCompletenessGuardVerdict('c1', 'done', false).blocked).toBe(false)
+    })
+  })
+
+  // SKIP (TS-only convention, not shared with the Python tool -- see this card's REVIEW: the
+  // Python _VERDICT regex never included the SKIP word at all, a separate, non-blocking gap flagged
+  // as a follow-up rather than fixed here, since it touches gate-closure-check.py's wider PASSING/
+  // content_verdict logic beyond this card's named findings).
+  describe('anchoredGateVerdict recognises SKIP (CLAUDE.md: PASS/GO/SKIP, TS-only convention)', () => {
+    it('CYBERED SKIP: ... is a recognised positive verdict', () => {
+      expect(anchoredGateVerdict('CYBERED SKIP: nem az en hataskorom')).toEqual({ agent: 'cybered', outcome: 'SKIP' })
     })
   })
 

@@ -1,6 +1,6 @@
 # Transcript secret guard
 
-Cards 500f0e3c and 3b5bf8d6. A daily, read-only check for credential shapes in the places where tool output
+Cards 500f0e3c, 3b5bf8d6 and 153a2799. A daily, read-only check for credential shapes in the places where tool output
 ends up, plus the cleanup procedure for what it finds.
 
 ## Why
@@ -32,25 +32,46 @@ reading a byte): none of these roots is a place such a file belongs, so a copy i
 transcript directory is exactly the leak this guard exists for. Symlinks are not followed. Non-regular
 files (FIFO, socket, device) are never opened: a FIFO would block the read forever, and a pipe holds
 nothing at rest to scan; they are counted as `special`. Images, audio, video and fonts are skipped by
-suffix. Compressed archives (`.zip .gz .tgz .bz2 .xz`) cannot be read as bytes and are counted as
-`opaque` in the summary, so the gap is visible; rotated `.gz` logs are the main case. SQLite and
-`.db` files are scanned as raw bytes.
+suffix. Single-stream compressed files (`.gz .tgz .bz2 .xz`, rotated logs are the main case) are
+decompressed and scanned like any other file, up to 256 MiB decompressed each (`ARCHIVE_CAP`, so a
+compression bomb stops there). What cannot be read to its end, a corrupt or truncated stream, one
+over the cap, and every `.zip`, is `opaque`: counted in the summary and it makes the run incomplete
+(`opaque-archives`, exit 3, one notice), because a secret inside it would otherwise be a silent zero.
+A truncated stream still reports what was found in its readable part. SQLite and `.db` files are
+scanned as raw bytes.
 
 Shapes (name only is ever reported): Anthropic setup token (`sk-ant-oat..`), Anthropic API key
-(`sk-ant-api..`), GitHub token and fine-grained PAT, Telegram bot token, AWS access key id, OpenAI
-key, Slack token, Google API key, Stripe live key, PEM private key with a body. A masked
+(`sk-ant-api..`), Anthropic admin key (`sk-ant-admin..`), GitHub token and fine-grained PAT, Telegram
+bot token (also inside an API URL, `/bot<token>/`, in any letter case), AWS access key id, OpenAI key
+(legacy, `sk-proj-`, `sk-svcacct-`, `sk-None-`), Slack token, Google API key, Stripe live key, PEM
+private key with a body. The Anthropic admin prefix is from the vendor Admin API doc; the OpenAI
+`svcacct` and `None` prefixes and the `proj` body alphabet come from third-party sources, not a vendor
+doc. A masked
 placeholder (`sk-ant-oat01-[MASKED-...]`), a truncated display or a vendor example value is **not**
 a finding: every pattern needs a run of real token characters right after the prefix.
 
 Our own secrets carry no prefix (the dashboard token is 64 bare hex characters), so no shape can find
 them. At start the guard loads the **exact values** of `store/.dashboard-token`,
-`store/.claude-oauth-token`, `store/.vault-key`, the secret-named entries of `.env` (key name matches
-TOKEN, SECRET, PASSWORD, KEY, CREDENTIAL or SALT) and the token leaves of `.credentials.json`, and
-searches the scanned files for them byte for byte. A value is loaded only if it is 16+ token-like
-characters and not a path or URL (those would match everywhere). The values live in memory inside
-compiled patterns; a finding is labelled with the **file or key name** (`known:dashboard-token`,
-`known:env:SOME_API_KEY`), never the value. A source that exists but cannot be read makes the run
-incomplete (exit 3).
+`store/.claude-oauth-token`, `store/.vault-key`, the secret-named entries of `.env` and
+`agents/*/.env` (key name contains TOKEN, SECRET, PASS, PASSWORD, KEY, CREDENTIAL, SALT or LINK), the
+files in `store/secrets/` and below it (dotfiles and subdirectories included, up to 4 levels and 500
+files; a `KEY=VALUE` file is read like `.env`, and a single-line file that gave no secret-named value
+is read as one raw value, which is what keeps a raw base64 secret ending in `=` from being taken for
+an empty assignment; a FIFO is passed over and a link is never followed) and the token leaves of `.credentials.json`, and
+searches the scanned files for them byte for byte. A value is loaded only if it is 16 to 256
+printable ASCII characters (so `#`, `*`, `$` are fine) and not a path or URL (those would match
+everywhere). A value that contains `"` or `\` is also searched in its JSON-escaped form, because that
+is how a transcript stores it. The values live in memory inside compiled patterns; a finding is
+labelled with the **file or key name** (`known:dashboard-token`, `known:env:SOME_API_KEY`,
+`known:secrets:<file>:<KEY>`), never the value.
+
+Two things make this search impossible to switch off silently. The dashboard token is **required**:
+if it cannot be loaded (wrong or missing install dir, empty or too-short file) the run is incomplete
+with `known-secrets-missing` (exit 3). And every secret-named entry that was *not* loaded (too short,
+over the cap, non-ASCII, a path or URL) is counted in the summary as `known_skipped=N`; it is not a
+blind spot by itself, but a number that jumps is a reason to look at the source file. A source that
+exists but cannot be read makes the run incomplete as well (`known-secrets-unreadable`), and so does
+a `store/secrets` tree deeper or larger than the bound above.
 
 Vault key prefixes are not built in (they are not known to the guard's author and were not read).
 Add them with `--extra-patterns FILE` (or `TRANSCRIPT_GUARD_EXTRA`), one `name<TAB>regex` per line.
@@ -64,9 +85,11 @@ alert message.
 
 Paths are rendered safely too, because a file name is attacker-controllable text: control, format and
 bidi characters and backslashes are escaped (a newline in a name cannot forge a `SUMMARY` line), and a
-path segment that is itself credential-shaped is replaced by `[SEGMENT-REDACTED:<hash>]`, so a token
-used as a file name does not reach stdout, the journal or the state file. The Telegram notice carries
-no path at all.
+path segment that a credential pattern touches is replaced by `[SEGMENT-REDACTED:<hash>]`, so a token
+used as a file name does not reach stdout, the journal or the state file. The pattern is also tried on
+the path with its separators removed, so a token cut into two directory names is redacted in both
+halves (a following segment that starts with token characters is redacted too: the token class is
+greedy, and a partial token is still a leak). The Telegram notice carries no path at all.
 
 ## It does not report zero when it saw nothing
 
@@ -81,16 +104,48 @@ A guard that reports zero looks the same on a clean tree and on a broken one. Th
    summary's `incomplete=` field, never a path or value) when: nothing was scanned
    (`no-files-scanned`); a required root, `~/.claude/projects` or any `--root`, is missing
    (`root-missing`) or yielded no file (`root-empty`); a directory or file could not be read
-   (`read-errors`, the paths are named on stderr); or a known-secret source exists but cannot be
-   read (`known-secrets-unreadable`). A file that disappears between listing and open (log rotation,
+   (`read-errors`, the paths are named on stderr); a known-secret source exists but cannot be
+   read (`known-secrets-unreadable`); a compressed file could not be read to its end
+   (`opaque-archives`); or the dashboard token could not be loaded
+   (`known-secrets-missing`). A file that disappears between listing and open (log rotation,
    scratchpad cleanup) is `vanished`, not an error.
 
 An unusable `TRANSCRIPT_GUARD_CHUNK` (not a number, below 64) is exit 3 as well, not a clean run.
-With `--alert`, a *new* blindness reason sends one notice (same message path, reason names only) and
-is then deduplicated like a finding; `last_complete_at` in the state file records the last run that
-saw everything, for a freshness check by the heartbeat. Findings from before an incomplete run are
-kept in the state, so a directory that was unreadable for one day does not make old findings alert
-again.
+
+### Blindness pages (R1)
+
+A blind run that nobody hears about is the same as a clean one. Three layers, each independent of
+the others:
+
+1. **In the script (`--alert`).** *Every* way of being blind sends one notice with the reason name
+   and nothing else, deduplicated like a finding (the same cause does not page twice, a new cause
+   does): an invalid `TRANSCRIPT_GUARD_CHUNK` (`chunk-env-invalid`), an extra-pattern file that does
+   not parse (`extra-patterns-invalid`, exit 2 as before), a built-in pattern or the pipeline canary
+   failing (`builtin-check:<names>`), an unexpected exception (`crash-<ExceptionType>`, exit 3 instead
+   of a traceback exit 1; only the type and errno are printed, because an exception message can carry a
+   file name and a file name can be a token), and the incomplete-run reasons above. A blindness notice
+   keeps the earlier findings and `last_complete_at` untouched: the run did not see anything new.
+2. **`OnFailure=` on the unit.** The template names `marveen-notify@%n.service`, the app-crash
+   notifier (`scripts/unit-fail-notify.sh`). It covers what the script cannot report about itself:
+   the start timeout killing the run, `SIGKILL`, the interpreter failing to start. `install-linux.sh`
+   writes the notifier as `<SERVICE_ID>-notify@.service`; **an `OnFailure=` that names a unit which is
+   not installed only logs, it does not page.** Measured on this install (2026-10-17): no `*notify@*`
+   unit was present in `~/.config/systemd/user`, so on this machine layer 2 does nothing until the
+   notifier is installed and the name in the guard unit matches it. Layers 1 and 3 do not depend on it.
+3. **Freshness (dead-man's switch).** `transcript-secret-guard.py --check-freshness --alert` reads the
+   state file only (no scan) and exits 3 with one notice when `last_complete_at` is older than
+   `--max-age-hours` (default 36), or is 0 (`never`), or the state file is unreadable. It catches a
+   guard that is not run at all: timer off, host asleep through `Persistent=`, a unit that is killed
+   before it ever saves state. `scripts/systemd/transcript-secret-guard-freshness.{service,timer}`
+   run it daily at 12:30. The shipped unit passes `--require-state`: a missing state file is an alarm
+   (exit 3, one notice), because "the timer was never enabled" and "no state yet" must not look the
+   same. Without the flag a missing state file is `unarmed` (exit 0), the state a hand run of the
+   check accepts. Consequence for activation: enable the freshness timer only AFTER one real `--alert`
+   run has written the state file, or its first run pages.
+
+`last_complete_at` is stamped only by a run that saw everything. Findings from before an incomplete
+run are kept in the state, so a directory that was unreadable for one day does not make old findings
+alert again.
 
 ## Running it
 
@@ -98,11 +153,13 @@ again.
 python3 store/transcript-secret-guard.py            # report only
 python3 store/transcript-secret-guard.py --alert    # + one Telegram notice for NEW or GROWN findings
 python3 store/transcript-secret-guard.py --alert-dryrun   # print the notice, send nothing
+python3 store/transcript-secret-guard.py --check-freshness --alert-dryrun   # no scan: is the daily run still completing?
 bash store/transcript-secret-guard.selftest.sh      # known-positive controls, mutation-pinned cases
 ```
 
 Exit codes: `0` clean (or nothing new to alert), `4` findings exist, `3` guard blind or run
-incomplete, `2` usage error, `5` alert could not be sent (state not advanced, so the next run retries).
+incomplete (or, with `--check-freshness`, stale), `2` usage error, `5` alert could not be sent (state
+not advanced, so the next run retries).
 
 Alerting uses `scripts/notify.sh`, at most one message per run, only when a (file, pattern) pair is
 new or its count grew since the last alert (`store/.transcript-secret-guard-state.json`). An
@@ -113,9 +170,13 @@ Daily schedule: `scripts/systemd/transcript-secret-guard.{service,timer}` (templ
 install dir and home, copy to `~/.config/systemd/user/`, `systemctl --user enable --now
 transcript-secret-guard.timer`). The service treats exit 4 as success so a standing finding does
 not mark the unit failed; codes 2, 3 and 5 still do. A `Type=oneshot` unit has **no start timeout by
-default**, so the template sets `TimeoutStartSec=1h` (a full pass measured about 250 s). Nothing
-watches a failed user unit by itself: until a heartbeat checks `last_complete_at`, the in-script
-blindness notice above is what makes a failed run visible.
+default**, so the template sets `TimeoutStartSec=1h` (a full pass measured about 250 s). The
+freshness pair (`transcript-secret-guard-freshness.{service,timer}`) is enabled separately and
+independently of the guard timer. Activation order: install the notifier (layer 2 above) and check
+the `OnFailure=` name; first rounds with `--alert-dryrun`; one real `--alert` run; then
+`--check-freshness --require-state` once by hand (must say `fresh`), then enable the guard timer, and
+the freshness timer after it (its unit carries `--require-state`, so it pages until a state exists). The
+activation itself is a separate decision (card c786213d); nothing here enables a timer.
 
 ## Cleanup procedure
 
@@ -155,7 +216,7 @@ reached a transcript as exposed.
    import hashlib, importlib.util, json, os, sys
    spec = importlib.util.spec_from_file_location("g", "/path/to/marveen/store/transcript-secret-guard.py")
    g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
-   known, _ = g.load_known_secrets("/path/to/marveen", os.path.expanduser("~"))   # our own prefixless values
+   known, _problems, _skipped = g.load_known_secrets("/path/to/marveen", os.path.expanduser("~"))   # our own prefixless values
    path = sys.argv[1]
    data = open(path, "rb").read()
    jsonl = path.endswith(".jsonl")
@@ -191,8 +252,14 @@ reached a transcript as exposed.
   value from the shapes.
 - It finds shapes and the values it was given. A secret that is neither prefixed nor in one of the
   loaded files (a vault key whose file is not listed, a password in a URL) is invisible until a
-  pattern or `--extra-patterns` entry is added.
-- Not covered: the journal (`journald`), compressed rotated logs (counted as `opaque`), archives and
+  pattern or `--extra-patterns` entry is added. A URL-valued secret (a magic link) and a value under
+  16 characters are counted in `known_skipped`, not searched. A value that appears escaped twice (JSON
+  inside a JSON string) or in another encoding is not matched.
+- The freshness check run by hand without `--require-state` cannot tell "timer never enabled" from
+  "no state yet"; the shipped unit passes the flag, so a standing `unarmed` is not accepted there.
+- A token cut into pieces by a line break, a tmux window wrap or a tool's own truncation is not
+  reassembled; only the path rendering above treats separators specially.
+- Not covered: the journal (`journald`), `.zip` and unreadable compressed files (counted as `opaque`, they page), archives and
   databases outside the roots, and anything outside the listed roots.
 - It scans files at rest once a day. It does not stop a credential being printed in the first
   place; the write-time hooks (`secret-write-guard`) and not printing credentials are the first

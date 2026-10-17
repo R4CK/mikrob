@@ -1,0 +1,68 @@
+[
+  {
+    "id": "F1-a-retracting-fail-mentions-pass",
+    "note": "Card 1e763f16, RedHat F1 (e87eef21 comment 21526): a retracting FAIL whose own line names the PASS it withdraws must stay negative, not read as fresh positive.",
+    "content": "QA FAIL (visszavonom a korabbi PASS-omat)",
+    "expected": { "gate": "QA", "outcome": "FAIL" }
+  },
+  {
+    "id": "F1-b-retracting-fail-prose",
+    "note": "Same F1 class, prose shape (mirrors comments 17906/17941).",
+    "content": "QA FAIL -- a korabbi korben PASS volt, most megbukott egy regresszion.",
+    "expected": { "gate": "QA", "outcome": "FAIL" }
+  },
+  {
+    "id": "F1-c-nogo-mentions-go",
+    "note": "Same F1 class, NO-GO withdrawing an earlier GO (mirrors comment 6821).",
+    "content": "CYBERSEC NO-GO (korabban GO-t adtam, most visszavonom)",
+    "expected": { "gate": "CYBERSEC", "outcome": "NO-GO" }
+  },
+  {
+    "id": "F1-d-fail-colon-pass",
+    "note": "Same F1 class, colon-after-role shape.",
+    "content": "QA FAIL: visszavonva a korabbi PASS",
+    "expected": { "gate": "QA", "outcome": "FAIL" }
+  },
+  {
+    "id": "F3a-1-gate-sha-first-cybered-go",
+    "note": "Card 1e763f16, RedHat F3a (e87eef21 comment 21526): a Gate-SHA line before the verdict line is a legitimate order (CLAUDE.md 4b).",
+    "content": "Gate-SHA: 8675bd80842d00e725e7c701ce9d9a47e76e7fa5\nCYBERED GO",
+    "expected": { "gate": "CYBERED", "outcome": "GO" }
+  },
+  {
+    "id": "F3a-2-gate-sha-first-qa2-pass",
+    "note": "Same F3a class, sibling-numbered role after a Gate-SHA line.",
+    "content": "Gate-SHA: deadbeefcafe00112233\nQA2 PASS",
+    "expected": { "gate": "QA", "outcome": "PASS" }
+  },
+  {
+    "id": "F3b-1-info-comment-mentions-go",
+    "note": "Card 1e763f16, RedHat F3b: a non-verdict INFO/audit comment that merely mentions GO mid-sentence is not a verdict.",
+    "content": "CYBERED -- zaras utani horgony (nem uj verdikt, a korabbi GO kiegeszitese)",
+    "expected": null
+  },
+  {
+    "id": "F3b-2-info-comment-mentions-pass",
+    "note": "Same F3b class, PASS mentioned mid-sentence in a non-verdict comment.",
+    "content": "QA -- csak egy megjegyzes, a korabbi PASS meg ervenyes",
+    "expected": null
+  },
+  {
+    "id": "control-plain-pass",
+    "note": "Clean positive control, no surrounding text.",
+    "content": "QA PASS",
+    "expected": { "gate": "QA", "outcome": "PASS" }
+  },
+  {
+    "id": "control-plain-nogo",
+    "note": "Clean negative control -- NO-GO must not be read as a bare GO.",
+    "content": "CYBERSEC NO-GO -- one HIGH open",
+    "expected": { "gate": "CYBERSEC", "outcome": "NO-GO" }
+  },
+  {
+    "id": "control-fresh-go-body-cites-old-nogo",
+    "note": "Card e87eef21 / card 2bfa4c67 B3': a fresh GO whose BODY (not its opening line) cites an earlier NO-GO/'fail-closed' stays a fresh GO.",
+    "content": "CYBERSEC GO\nMeasured: a RedHat NO-GO 16623 B1 javitasa zold, es a fail-closed viselkedes is helyes.",
+    "expected": { "gate": "CYBERSEC", "outcome": "GO" }
+  }
+]

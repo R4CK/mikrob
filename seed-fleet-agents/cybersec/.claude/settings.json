@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 __MARVEEN_INSTALL_DIR__/scripts/hooks/shared-memory-inject.py",
+            "command": "python3 __MARVEEN_INSTALL_DIR__/scripts/hooks/shared-memory-inject.py --agent cybersec",
             "timeout": 15
           }
         ]
@@ -105,6 +105,16 @@
           {
             "type": "command",
             "command": "node __MARVEEN_INSTALL_DIR__/scripts/self-pace-gate.mjs",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"__MARVEEN_INSTALL_DIR__/scripts/hooks/agent-key-secret-guard.py\"",
             "timeout": 10
           }
         ]

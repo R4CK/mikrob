@@ -6889,7 +6889,49 @@ export interface AgentThread {
 // message. Drives the dashboard sidebar. Recency is computed per-peer (max
 // created_at) so a rarely-active peer's last message is never hidden behind the
 // global recency window (the bug the JS-filter path had). Sorted newest-first.
-export function getAgentConversationThreads(): AgentThread[] {
+//
+// `scopeToAgent` (Cybersec NO-GO F1, card debba303): an agent-key caller must see
+// only ITS OWN peers and ITS OWN last message with each peer -- not the fleet-wide
+// list with every peer's globally-last message, which can belong to a conversation
+// the caller was never part of. When set, both the peer set and each peer's count/
+// lastMessage are restricted to rows where scopeToAgent is one of the two parties.
+// Omitted (dashboard/session callers): unchanged fleet-wide behavior.
+export function getAgentConversationThreads(scopeToAgent?: string): AgentThread[] {
+  const system = new Set<string>(CHAT_SYSTEM_AGENTS)
+
+  if (scopeToAgent) {
+    const parties = db.prepare(`
+      SELECT DISTINCT CASE WHEN from_agent = ? THEN to_agent ELSE from_agent END AS agent
+      FROM agent_messages
+      WHERE from_agent = ? OR to_agent = ?
+    `).all(scopeToAgent, scopeToAgent, scopeToAgent) as { agent: string }[]
+
+    const countStmt = db.prepare(`
+      SELECT COUNT(*) AS count FROM agent_messages
+      WHERE (from_agent = ? AND to_agent = ?) OR (from_agent = ? AND to_agent = ?)
+    `)
+    const lastStmt = db.prepare(`
+      SELECT * FROM agent_messages
+      WHERE (from_agent = ? AND to_agent = ?) OR (from_agent = ? AND to_agent = ?)
+      ORDER BY created_at DESC, id DESC LIMIT 1
+    `)
+
+    const threads: AgentThread[] = []
+    for (const p of parties) {
+      if (!p.agent || p.agent === scopeToAgent || system.has(p.agent)) continue
+      const count = (countStmt.get(scopeToAgent, p.agent, p.agent, scopeToAgent) as { count: number }).count
+      const lastMessage = (lastStmt.get(scopeToAgent, p.agent, p.agent, scopeToAgent) as AgentMessage | undefined) ?? null
+      threads.push({ agent: p.agent, count, lastMessage })
+    }
+    threads.sort((a, b) => {
+      const ca = a.lastMessage?.created_at ?? 0
+      const cb = b.lastMessage?.created_at ?? 0
+      if (cb !== ca) return cb - ca
+      return (b.lastMessage?.id ?? 0) - (a.lastMessage?.id ?? 0)
+    })
+    return threads
+  }
+
   const parties = db.prepare(`
     WITH parties AS (
       SELECT from_agent AS agent FROM agent_messages
@@ -6905,7 +6947,6 @@ export function getAgentConversationThreads(): AgentThread[] {
     'SELECT * FROM agent_messages WHERE from_agent = ? OR to_agent = ? ORDER BY created_at DESC, id DESC LIMIT 1'
   )
 
-  const system = new Set<string>(CHAT_SYSTEM_AGENTS)
   const threads: AgentThread[] = []
   for (const p of parties) {
     if (!p.agent || system.has(p.agent)) continue

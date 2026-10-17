@@ -3,13 +3,24 @@
 // (Cybersec INFO on c375238d, card 613a8142). Before the fix, the route passed the file's raw bytes
 // straight through -- whatever the file contained, the response was a byte-exact copy. This proves
 // the route now re-serialises a validated, agent-id-shaped array instead.
-import { describe, it, expect, beforeEach } from 'vitest'
+//
+// RedHat F-N1 LOW (613a8142 GO, follow-up card 2d4c7943): the shape regex alone admitted any
+// agent-id-SHAPED string, member or not (a 64-char token-alphabet string, or a multi-megabyte
+// string, both passed through). The fix intersects against the real agent roster
+// (listAllAgentNames), so this file mocks that module rather than relying on whatever agents
+// happen to exist on the machine running the test.
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { tryHandleStatic } from '../web/routes/static.js'
 import type { RouteContext } from '../web/routes/types.js'
+
+vi.mock('../web/agent-config.js', () => ({
+  listAllAgentNames: () => ['mikrob', 'backend', 'backend2'],
+}))
+
+const { tryHandleStatic } = await import('../web/routes/static.js')
 
 let sandbox: string
 let webDir: string
@@ -46,16 +57,42 @@ beforeEach(() => {
 })
 
 describe('/subagent-state.json re-serialises a validated array (card 613a8142)', () => {
-  it('POSITIVE: real agent-id-shaped entries pass through unchanged', async () => {
-    writeFileSync(join(storeDir, 'active-subagents.json'), JSON.stringify(['mikrob', 'backend-2']))
+  it('POSITIVE: real agent-id-shaped entries that are actual agents pass through unchanged', async () => {
+    writeFileSync(join(storeDir, 'active-subagents.json'), JSON.stringify(['mikrob', 'backend2']))
     const { ctx, status, body } = ctxFor('/subagent-state.json')
     expect(await tryHandleStatic(ctx, webDir)).toBe(true)
     expect(status()).toBe(200)
-    expect(JSON.parse(body())).toEqual(['mikrob', 'backend-2'])
+    expect(JSON.parse(body())).toEqual(['mikrob', 'backend2'])
   })
 
   it('a non-agent-id-shaped entry (whitespace/separators) is dropped, not served', async () => {
     writeFileSync(join(storeDir, 'active-subagents.json'), JSON.stringify(['mikrob', '../../etc/passwd', 'a b']))
+    const { ctx, status, body } = ctxFor('/subagent-state.json')
+    expect(await tryHandleStatic(ctx, webDir)).toBe(true)
+    expect(status()).toBe(200)
+    expect(JSON.parse(body())).toEqual(['mikrob'])
+  })
+
+  it('F-N1: a shaped-but-nonexistent agent id is dropped (64-char token-alphabet string)', async () => {
+    const fakeToken = 'a'.repeat(64)
+    writeFileSync(join(storeDir, 'active-subagents.json'), JSON.stringify(['mikrob', fakeToken]))
+    const { ctx, status, body } = ctxFor('/subagent-state.json')
+    expect(await tryHandleStatic(ctx, webDir)).toBe(true)
+    expect(status()).toBe(200)
+    expect(JSON.parse(body())).toEqual(['mikrob'])
+  })
+
+  it('F-N1: a 2 MiB shaped string is dropped the same way (not a size exception)', async () => {
+    const huge = 'a'.repeat(2 * 1024 * 1024)
+    writeFileSync(join(storeDir, 'active-subagents.json'), JSON.stringify(['mikrob', huge]))
+    const { ctx, status, body } = ctxFor('/subagent-state.json')
+    expect(await tryHandleStatic(ctx, webDir)).toBe(true)
+    expect(status()).toBe(200)
+    expect(JSON.parse(body())).toEqual(['mikrob'])
+  })
+
+  it('P1: a mixed-type array (number/null/true/nested array) keeps only the real string member', async () => {
+    writeFileSync(join(storeDir, 'active-subagents.json'), JSON.stringify([123, ['backend'], null, true, 'mikrob']))
     const { ctx, status, body } = ctxFor('/subagent-state.json')
     expect(await tryHandleStatic(ctx, webDir)).toBe(true)
     expect(status()).toBe(200)

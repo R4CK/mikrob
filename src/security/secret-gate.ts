@@ -81,6 +81,16 @@ export const SECRET_PATTERNS: { name: string; pattern: RegExp }[] = [
   { name: 'bearer token literal', pattern: /\bBearer\s+[A-Za-z0-9_-]{24,}\.?[A-Za-z0-9_.-]*/ },
   { name: 'JWT', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/ },
   { name: 'GitHub token', pattern: /\bgh[pousr]_[A-Za-z0-9]{30,}/ },
+  // F3 (card eeb57483, WhiteHat GO condition on ee9ee17b): the fine-grained PAT format
+  // (`github_pat_...`) is a DIFFERENT prefix from the classic `ghp_` above, not a longer version
+  // of it -- the existing pattern does not match it at all.
+  // F3-a (card eeb57483 RedHat, card 0deb6893): \b treats `_` as a word char and `-` as a
+  // non-word char, so a key preceded by `_`/a letter, or ending in `-`, silently slipped
+  // through (measured: ~1/64 of real-shaped AIza keys). Lookaround against the FULL charset
+  // used by both formats (letters, digits, `_`, `-`) closes that, on both ends.
+  { name: 'GitHub fine-grained PAT', pattern: /(?<![0-9A-Za-z_-])github_pat_[A-Za-z0-9_]{20,}(?![0-9A-Za-z_-])/ },
+  // F3: Google API key (AIzaSy...). Fixed 39-char total length (AIza + 35), so anchor both ends.
+  { name: 'Google API key (AIza)', pattern: /(?<![0-9A-Za-z_-])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/ },
   { name: 'Slack token', pattern: /\bxox[baprs]-[A-Za-z0-9-]{10,}/ },
   { name: 'OpenAI project key', pattern: /\bsk-proj-[A-Za-z0-9_-]{20,}/ },
   // BOTH separators, on purpose. Boni's first detector looked for `sk-` only
