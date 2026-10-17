@@ -53,7 +53,10 @@ describe('sumInProgressSeconds / listKanbanCards active_seconds', () => {
     createKanbanCard({ id: 'c', title: 'Two stays' })
     at(100); moveKanbanCard('c', 'in_progress', 0, 'tester')
     at(400); moveKanbanCard('c', 'waiting', 0, 'tester') // stay 1: 300 s
-    at(1000); moveKanbanCard('c', 'in_progress', 0, 'tester')
+    // force: true -- card c4f2de32's reviewed-card-reopen guard would otherwise silently refuse
+    // this 'waiting' -> 'in_progress' move (no gate verdict comment on this test card), making
+    // the move a no-op and leaving only 3 of the 4 intended events.
+    at(1000); moveKanbanCard('c', 'in_progress', 0, 'tester', true)
     at(1500); moveKanbanCard('c', 'done', 0, 'tester') // stay 2: 500 s
     at(9999)
     expect(activeOf('c')).toBe(800)
@@ -103,7 +106,9 @@ describe('sumInProgressSeconds / listKanbanCards active_seconds', () => {
 // ---------- browser: formatActiveTime ----------
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const APP_JS = readFileSync(join(ROOT, 'web', 'app.js'), 'utf-8')
+// This fork's modularisation keeps formatActiveTime/showCardDetail in app-kanban.js (app.js
+// modularisation slice 30) -- upstream keeps the equivalent logic in monolithic app.js.
+const APP_JS = readFileSync(join(ROOT, 'web', 'app-kanban.js'), 'utf-8')
 const LANG = {
   en: readFileSync(join(ROOT, 'web', 'lang', 'en.js'), 'utf-8'),
   hu: readFileSync(join(ROOT, 'web', 'lang', 'hu.js'), 'utf-8'),

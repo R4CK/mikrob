@@ -27,7 +27,10 @@ function slice(from: string, to: string | null): string {
   return MACOS.slice(start, end)
 }
 
-const START_BLOCK = slice('print_services_remedy() {', '# Idle-path keepalive probe')
+// This fork does not adopt the macOS keepalive-probe launchd wiring (card ef6a8031/e47dc04a,
+// same NOT-ADOPTED decision as update.sh's install_keepalive_probe_launchd) -- the comment that
+// documents the exclusion is the end anchor here instead.
+const START_BLOCK = slice('print_services_remedy() {', '# NOT ADOPTED (card ef6a8031/e47dc04a')
 const REMEDY_FN = slice('print_services_remedy() {', '\n}\n') + '\n}\n'
 const TAIL = slice('# Done!', null)
 

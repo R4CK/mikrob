@@ -35,7 +35,7 @@ function setup() {
   vm.runInContext(
     'let kanbanCards = []; let kanbanHiddenColumns = new Set();\n' +
       slice(APP_JS, 'let kanbanSearchQuery', '// Which swimlane keys') +
-      slice(APP_JS, 'function kanbanCardMatchesSearch(card)', '// Project + assignee + label filters') +
+      slice(APP_JS, 'function kanbanCardMatchesSearch(card)', 'function kanbanCardMatchesBaseFilters(card)') +
       slice(APP_JS, 'function renderKanbanSearchHint()', '// Deterministic fallback colour') +
       `globalThis.api = {
         setQuery: (q) => { kanbanSearchQuery = q },
