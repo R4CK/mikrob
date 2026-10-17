@@ -187,4 +187,37 @@ describe('gateCompletenessGuardVerdict + structured kanban_verdicts (additive OR
       expect(v.message).toContain('DISAGREE-SOURCE')
     })
   })
+
+  // Card 9c7ad372 (WhiteHat2 O2 on the 2bfa4c67 GO, comment 17107): the round boundary (`sinceTs`)
+  // is a TIMESTAMP, and a round-1 record written in the SAME SECOND as the round-2 REVIEW still
+  // counted as fresh (`created_at >= sinceTs`) -- the guard now also compares the row's OWN sha
+  // against the latest REVIEW's Gate-SHA, which is a content check, not a timing one.
+  describe('sha-bound freshness, not just timestamp (O2)', () => {
+    it('a round-1 structured PASS (sha A) landing in the SAME SECOND as the round-2 REVIEW (sha B) does not satisfy the guard', () => {
+      process.env.AGENT_VERDICT_RECORD = '1'
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'PASS', sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', author: 'qa', authorVerified: true })
+      addKanbanComment('c1', 'backend', 'REVIEW: round 2.\nGate-SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+      addKanbanVerdict('c1', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2', authorVerified: true })
+      const db = getDb()
+      // Force the SAME second for the round-1 verdict and the round-2 REVIEW comment -- this is
+      // exactly the ambiguity a timestamp-only `sinceTs` check cannot resolve.
+      db.exec(`UPDATE kanban_verdicts SET created_at = 500 WHERE card_id = 'c1' AND gate = 'QA'`)
+      db.exec(`UPDATE kanban_comments SET created_at = 500 WHERE card_id = 'c1' AND content LIKE 'REVIEW:%'`)
+      const v = gateCompletenessGuardVerdict('c1', 'done', false, 'qa')
+      expect(v.blocked).toBe(true)
+      expect(v.message).toContain('QA verdiktjét is megköveteli')
+    })
+
+    it('control: the SAME scenario with the sha matching the current round IS satisfied', () => {
+      process.env.AGENT_VERDICT_RECORD = '1'
+      addKanbanComment('c1', 'backend', 'REVIEW: round 2.\nGate-SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
+      addKanbanVerdict('c1', { gate: 'QA', verdict: 'PASS', sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', author: 'qa', authorVerified: true })
+      addKanbanVerdict('c1', { gate: 'CYBERSEC', verdict: 'GO', author: 'cybersec2', authorVerified: true })
+      const db = getDb()
+      db.exec(`UPDATE kanban_verdicts SET created_at = 500 WHERE card_id = 'c1' AND gate = 'QA'`)
+      db.exec(`UPDATE kanban_comments SET created_at = 500 WHERE card_id = 'c1' AND content LIKE 'REVIEW:%'`)
+      const v = gateCompletenessGuardVerdict('c1', 'done', false, 'qa')
+      expect(v.blocked).toBe(false)
+    })
+  })
 })

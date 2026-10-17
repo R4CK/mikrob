@@ -21,7 +21,7 @@ import { json } from './web/http-helpers.js'
 import { detectLanIp } from './web/network-info.js'
 import { AGENTS_BASE_DIR, listAgentNames, listAllAgentNames } from './web/agent-config.js'
 import { ensureRotationHeartbeatTask } from './web/claude-rotation-heartbeat.js'
-import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureCdChainGuard, ensureBashEgressGuard, ensureOutgoingCopyGate, outgoingCopyGateEnabled, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureDestructiveGate, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './web/agent-scaffold.js'
+import { ensureAgentHooks, ensureProjectRootInClaudeMd, ensureAgentStalenessHook, ensureAgentProvenanceHook, ensureEgressGate, ensureBashEgressDeny, ensureNpmProtectGuard, ensureBlastRadiusGuard, ensurePentestToolInstallGuard, ensureSymlinkedNodeModulesGuard, ensureAgentKeySecretGuard, ensureCdChainGuard, ensureBashEgressGuard, ensureOutgoingCopyGate, outgoingCopyGateEnabled, ensureNoisyCommandGuard, ensureGitProtectGuard, ensureTaskstateReplayMatcher, ensureGovernanceGateCommands, ensureDestructiveGate, ensureQuarantineReader, watchEgressAllowlistForReaderRender, ensureDefaultScheduledTasks, agentSettingsPath, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './web/agent-scaffold.js'
 import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook-registration-guard.js'
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
@@ -712,6 +712,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       const blastGuardPatched: string[] = []
       const pentestGuardPatched: string[] = []
       const symlinkNmGuardPatched: string[] = []
+      const agentKeySecretGuardPatched: string[] = []
       const cdChainGuardPatched: string[] = []
       const bashEgressGuardPatched: string[] = []
       const outgoingCopyGatePatched: string[] = []
@@ -753,6 +754,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
         if (ensureBlastRadiusGuard(agentName)) blastGuardPatched.push(agentName)
         if (ensurePentestToolInstallGuard(agentName)) pentestGuardPatched.push(agentName)
         if (ensureSymlinkedNodeModulesGuard(agentName)) symlinkNmGuardPatched.push(agentName)
+        if (ensureAgentKeySecretGuard(agentName)) agentKeySecretGuardPatched.push(agentName)
         if (ensureCdChainGuard(agentName)) cdChainGuardPatched.push(agentName)
         if (ensureBashEgressGuard(agentName)) bashEgressGuardPatched.push(agentName)
         if (ensureOutgoingCopyGate(agentName)) outgoingCopyGatePatched.push(agentName)
@@ -785,6 +787,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
       if (blastGuardPatched.length) logger.info({ patched: blastGuardPatched }, 'blast-radius guard backfilled into agent settings.json')
       if (pentestGuardPatched.length) logger.info({ patched: pentestGuardPatched }, 'pentest-tool-install guard backfilled into agent settings.json')
       if (symlinkNmGuardPatched.length) logger.info({ patched: symlinkNmGuardPatched }, 'symlinked-node-modules guard backfilled into agent settings.json')
+      if (agentKeySecretGuardPatched.length) logger.info({ patched: agentKeySecretGuardPatched }, 'agent-key-secret guard backfilled into agent settings.json')
       if (cdChainGuardPatched.length) logger.info({ patched: cdChainGuardPatched }, 'cd-chain guard backfilled into agent settings.json')
       if (bashEgressGuardPatched.length) logger.info({ patched: bashEgressGuardPatched }, 'bash-egress guard backfilled into agent settings.json (log-only until BASH_EGRESS_GUARD=enforce)')
       // Card 74181db2: this one logs a CHANGE, not an arming -- the same call removes the

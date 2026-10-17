@@ -26,7 +26,7 @@
 import { getKanbanCard, getKanbanComments, listKanbanCards, getKanbanVerdictsForGate, type GateVerdictGate, type GateVerdictWord, type KanbanVerdict } from '../db.js'
 import { isForceActor } from '../kanban-force-actors.js'
 import { logger } from '../logger.js'
-import { isAgentVerdictRecordEnabled, GATE_ROLE_AGENTS } from './kanban-verdicts.js'
+import { isAgentVerdictRecordEnabled, GATE_ROLE_AGENTS, shasMatch } from './kanban-verdicts.js'
 import { GENERATED_COMMENT_AUTHORS, type LandedVerdict } from './kanban-landed-guard.js'
 
 export type GateAgent = 'qa' | 'qa2' | 'cybersec' | 'cybersec2' | 'cybered'
@@ -499,7 +499,12 @@ function effectiveStructuredRow(rows: readonly KanbanVerdict[]): KanbanVerdict |
  *  B1 (b), defense in depth: re-checks the SAME role-allowlist the POST route (kanban-verdicts.ts)
  *  already enforces -- a row from a non-gate-role author is dropped from the sequence entirely,
  *  never trusted here either, even if that route-level check is ever bypassed or regresses. */
-function freshStructuredRow(cardId: string, agent: GateAgent, sinceTs: number | null): KanbanVerdict | null {
+function freshStructuredRow(
+  cardId: string,
+  agent: GateAgent,
+  sinceTs: number | null,
+  comments: readonly Comment[],
+): KanbanVerdict | null {
   if (!isAgentVerdictRecordEnabled()) return null
   try {
     const canonical = GATE_AGENT_TO_CANONICAL[agent]
@@ -507,9 +512,25 @@ function freshStructuredRow(cardId: string, agent: GateAgent, sinceTs: number | 
     // never count towards closing a card, even if it somehow reached the table (the POST route in
     // kanban-verdicts.ts now refuses to write one at all; this re-checks the same invariant here
     // rather than trusting that route alone, same posture as the role-allowlist check beside it).
-    const rows = getKanbanVerdictsForGate(cardId, canonical, sinceTs).filter((row) =>
-      (GATE_ROLE_AGENTS[canonical] as readonly string[]).includes(row.author.toLowerCase()) && row.author_verified === 1,
-    )
+    //
+    // O2 (WhiteHat2 GO comment 17107 on 2bfa4c67, card 9c7ad372): `sinceTs` alone is a TIMESTAMP
+    // boundary, and a record written in the SAME SECOND as the new round's REVIEW still counted as
+    // fresh (`created_at >= sinceTs`) -- measured: a round-1 PASS and the round-2 REVIEW in the same
+    // second, 1-second apart it correctly blocked, same-second it was wrongly ALLOWED. The POST-side
+    // sha binding (shaBindingError in kanban-verdicts.ts) only checks a record at WRITE time, so it
+    // cannot retroactively cover a record written before the round boundary moved. The guard itself
+    // now also compares the row's OWN sha against the latest REVIEW's Gate-SHA, content not time: a
+    // row whose sha does not match the current Gate-SHA is dropped, regardless of its timestamp. A
+    // row with no sha at all (written before the Gate-SHA convention existed, or on a card with no
+    // Gate-SHA at all) is left to the timestamp filter alone -- same permissive default every sha
+    // check in this codebase applies to an unverifiable claim.
+    const latestSha = latestReviewGateSha(comments)
+    const rows = getKanbanVerdictsForGate(cardId, canonical, sinceTs).filter((row) => {
+      if (!(GATE_ROLE_AGENTS[canonical] as readonly string[]).includes(row.author.toLowerCase())) return false
+      if (row.author_verified !== 1) return false
+      if (latestSha !== null && row.sha !== null && !shasMatch(row.sha, latestSha)) return false
+      return true
+    })
     return effectiveStructuredRow(rows)
   } catch (err) {
     // Same fail-open rule as the rest of this guard: a read failure here must never BLOCK a close
@@ -560,7 +581,7 @@ type VerdictStatus = 'ok' | 'missing' | 'disagree'
  *  structured GO/PASS that a LATER comment from the SAME gate contradicts is `disagree`, not a
  *  silent `ok` either: the two sources disagree and the guard must not pick a side. */
 function freshVerdictStatus(cardId: string, comments: readonly Comment[], agent: GateAgent, sinceTs: number | null): VerdictStatus {
-  const row = freshStructuredRow(cardId, agent, sinceTs)
+  const row = freshStructuredRow(cardId, agent, sinceTs, comments)
   if (!row) return commentOnlyFresh(comments, agent, sinceTs) ? 'ok' : 'missing'
   const structuredPositive = row.verdict === 'PASS' || row.verdict === 'GO'
   if (!structuredPositive) return 'missing'

@@ -56,7 +56,7 @@ const EXPECTED: Record<string, string[]> = {
     // security guards every sub-agent's settings.json already carried (a live
     // `cd /etc && grep -c zzz hostname` ran unblocked here, rc=2 direct from the guard).
     'secret-write-guard.py', 'big-file-guard.py', 'git-protect-guard.py', 'npm-protect-guard.py',
-    'symlinked-node-modules-guard.py', 'blast-radius-guard.py', 'cd-chain-guard.py',
+    'symlinked-node-modules-guard.py', 'agent-key-secret-guard.py', 'blast-radius-guard.py', 'cd-chain-guard.py',
     'bash-egress-guard.py', 'noisy-command-guard.py', 'pentest-tool-install-guard.py',
     // Card b5b7eb6b child 971f7d4f (upstream 4a4eba39 #1398, MEMFMGATE918): a memory write must
     // parse back in the same PreToolUse step, or the harness never sees `description` for recall.
@@ -125,6 +125,7 @@ const EXPECTED_PRETOOLUSE_PAIRS: HookPair[] = [
   { script: 'git-protect-guard.py', matcher: 'Bash' },
   { script: 'npm-protect-guard.py', matcher: 'Bash' },
   { script: 'symlinked-node-modules-guard.py', matcher: 'Bash' },
+  { script: 'agent-key-secret-guard.py', matcher: 'Bash' },
   { script: 'blast-radius-guard.py', matcher: 'Edit|Write|MultiEdit' },
   { script: 'cd-chain-guard.py', matcher: 'Bash' },
   { script: 'bash-egress-guard.py', matcher: 'Bash' },
