@@ -29,6 +29,7 @@ import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from '../heartbeat
 import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
 import { parseQualifiedId, formatQualifiedId, isQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 
 // Should closing a message produce a reverse "[Eredmény]" notification to its sender?
@@ -541,7 +542,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       }, 400)
       return true
     }
-    const agent = url.searchParams.get('agent') || ''
+    // WhiteHat2 X1 (card debba303, same precedent as O1/overview.ts and card 517fdcc5/memories.ts):
+    // a device agent-key caller's authenticated identity, when present, overrides whatever
+    // `?agent=` claims AND forces every branch below off the global list/global pending onto this
+    // agent's own conversation -- a shared-token/session caller is unaffected.
+    const authenticatedAgentId = ctx.auth?.kind === 'device' ? agentKeyToAgentId(ctx.auth.device) : null
+    const agent = authenticatedAgentId || url.searchParams.get('agent') || ''
     const status = url.searchParams.get('status') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
     const beforeRaw = url.searchParams.get('before')

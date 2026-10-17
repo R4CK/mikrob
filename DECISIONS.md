@@ -20801,3 +20801,19 @@ Mindhárom tételt a kártya "INFO (ugyanitt rendezendő)" szekciója sorolta fe
 **Ki döntött:** backend (kártya 2bf0d884), RedHat F1 lelete (ba9a5ca3 gate) alapján. Gate: QA + RedHat (a kártya saját kijelölése -- a javaslat RedHaté, a biztonsági gate ezért WhiteHat, a kártya leírása szerint ez NEM mirror-case).
 
 **Hivatkozás:** kártya 2bf0d884, ba9a5ca3 (RedHat F1 gate, 95b62f66 köteg), 1f4c046b (dedup-hivatkozás, csak a közös köteg-utalás, nem javítás), `src/fleet-venv.ts` (FLEETVENV923, a use-time ellenőrzés mintája, amit a write-time kapu kiegészít, nem helyettesít).
+
+## 2026-10-17 -- kártya debba303: agent-kulcs kiadás ELŐFELTÉTEL 2 -- daily-log/messages/recall hívó-szűrés (WhiteHat2 X1)
+
+**Kontextus:** WhiteHat2 X1 (HIGH) lelete a ddeb2e17-en (msg 13377, Gate-SHA 16b630cc), az O1-fix (`src/web/routes/overview.ts`) mellett mérve: `GET /api/daily-log?agent=<victim>`, `GET /api/messages` (az `agent=` szűrő ÉS a `agent` nélküli globális lista egyaránt) és `GET /api/recall?agent=<victim>` semmilyen hívó-szűrést nem alkalmazott -- egy `agent:<id>` eszközkulccsal bármely ügynök privát napi naplóját, üzenet-forgalmát vagy recall-tartalmát ki lehetett volna olvasni a saját kulccsal. Az agent-kulcsok kiadása (és a ccbb718a enforce mód) erre a javításra várt előfeltételként.
+
+**Megoldás:** ugyanaz a hívó-szűrés minta, mint az O1-fixnél és a memories.ts-en (kártya 517fdcc5/84dcc5d4): `const authenticatedAgentId = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null`, és minden érintett ágban `const agent = authenticatedAgentId || url.searchParams.get('agent') || <alapértelmezés>`. Egy eszközkulcs-azonosított hívó identitása FELÜLÍRJA, amit a `?agent=` állít -- egy dashboard-token/session hívót (az emberi operátor) ez nem érint, ő továbbra is bármelyik ügynököt lekérdezheti. Három fájl:
+- `src/web/routes/daily-log.ts`: `GET /api/daily-log` és `GET /api/daily-log/dates`.
+- `src/web/routes/messages.ts`: `GET /api/messages` -- az `agent` változó felülírása egyetlen helyen fedi mind az explicit `agent=` szűrőt, mind a `status=pending` ágat, mind a szűretlen globális listát (`listAgentMessages`), mert mindhárom ugyanazt az `agent` változót olvassa.
+- `src/web/routes/recall.ts`: `GET /api/recall` és `GET /api/recall/dates`.
+A POST-oldali írás (daily-log append, messages create) NEM változott -- a kártya és az X1 lelet kizárólag az OLVASÁSI oldalt (disclosure) nevezi meg, az írás-forgalmas kérdés nem ennek a kártyának a hatóköre.
+
+**Mérés:** három új teszt-fájl (`daily-log-agent-key-boundary.test.ts` 6/6, `messages-agent-key-boundary.test.ts` 4/4, `recall-agent-key-boundary.test.ts` 5/5), mindhárom a támadó-kulcs esetét (más ügynök adatát NEM látja, explicit `agent=` paraméterrel és anélkül sem), a tulajdonos-kulcs esetét (saját adatát látja) és a megosztott-token visszafelé-kompatibilitási esetét (változatlan viselkedés) fedi. Mutáció-proof mindhárom fájlon külön: az `authenticatedAgentId ||` felülírás eltávolítva -- PONTOSAN a wiring-függő esetek buktak (daily-log: 4/6, messages: 2/4, recall: 3/5), a megosztott-token pin-tesztek zöldek maradtak mindhárom esetben, visszaállítás byte-diff tiszta, teljes zöld ismét. Célzott regressziós kör (mind a 3 új + 13 meglévő, kapcsolódó fájl): 16 teszt-fájl, 153/153 zöld. `tsc --noEmit` tiszta. ESLint tiszta az érintett fájlokon.
+
+**Ki döntött:** backend (kártya debba303), WhiteHat2 X1 lelete (ddeb2e17 gate, msg 13377) alapján. Gate: QA + Cybersec (a kártya saját kijelölése -- a biztonsági gate-et NEM az X1 megtalálója, cybersec2/WhiteHat2 viszi, hanem cybersec/WhiteHat vagy cybered/RedHat).
+
+**Hivatkozás:** kártya debba303 (szülő 2520b85a), ddeb2e17 (WhiteHat2 X1 gate, O1-fix előzmény), msg 13377 (Gate-SHA 16b630cc), 517fdcc5/84dcc5d4 (a `memories.ts` precedens ugyanerre a hívó-szűrés mintára), ccbb718a (enforce mód, ami erre a javításra várt).
