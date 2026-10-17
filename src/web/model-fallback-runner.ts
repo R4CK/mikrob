@@ -209,7 +209,11 @@ export async function restartFor(name: string, opts: { fresh: boolean }): Promis
     const res = hardRestartMarveenChannels()
     if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
-    await restartAgentProcess(name, { fresh: opts.fresh })
+    // RESTARTWAKE927: when this is a non-fresh ('continue') restart, the demotion restarts a pane
+    // whose work stopped at the quota wall -- schedule a wake so that work resumes. A fresh
+    // restart brings its own directive and needs no separate wake (restartAgentProcess already
+    // no-ops the wake request when opts.fresh is true).
+    await restartAgentProcess(name, { fresh: opts.fresh, wake: { reason: 'model-fallback' } })
   }
 }
 

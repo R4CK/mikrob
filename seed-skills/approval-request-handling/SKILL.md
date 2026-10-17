@@ -46,8 +46,9 @@ Az `id` rövid előtagja is elég a válaszhoz, ha egyértelmű -- de a PATCH-he
 ```bash
 # A token in curl argv is world-readable via /proc/<pid>/cmdline -- feed it through a curl
 # stdin-rol olvassuk (`-H @-`). Ugyanez a minta minden dashboard-hivasnal.
+PORT="$(sed -n 's/^WEB_PORT=//p' <install>/.env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
 printf 'Authorization: Bearer %s\n' "$(cat <install>/store/.dashboard-token)" \
-| curl -s -H @- -X PATCH "http://localhost:3420/api/approvals/<id>" \
+| curl -s -H @- -X PATCH "http://localhost:$PORT/api/approvals/<id>" \
   -H "Content-Type: application/json" \
   -d '{"status":"approved","resolved_by":"telegram_text","telegram_message_id":<int|null>}'
 ```

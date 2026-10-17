@@ -56,4 +56,16 @@ export const AGENT_MESSAGES_ALTER_COLUMNS: readonly string[] = [
   // old row reads back as a waking message rather than as NULL, and no reader
   // has to guess what a NULL here would have meant.
   `ALTER TABLE agent_messages ADD COLUMN wake INTEGER NOT NULL DEFAULT 1`,
+  // Card 795d1f48 (a): an URGENT row, which the router types into a BUSY pane with the existing writer (the general form
+  // of the 71263d15 STOP path). Only an in-process writer (createAgentMessage with urgent) or a POST on a device key the
+  // install lists (MESSAGE_URGENT_DEVICE_IDS, routes/messages.ts) can set it; the shared dashboard token cannot, so a 1
+  // here is authenticated by construction. 0 for every older row.
+  `ALTER TABLE agent_messages ADD COLUMN urgent INTEGER NOT NULL DEFAULT 0`,
+  // Card 71263d15 (C), 795d1f48: 1 = a STOP an authenticated writer created. A "[STOP]" row
+  // reaches a BUSY pane (message-router-window.ts isStopMessage), so the privilege cannot rest on
+  // the content prefix plus the self-declared from: the shared dashboard token lets any holder
+  // POST from:"<main agent>". Only an in-process writer (createAgentMessage with stopAuthorized)
+  // sets it; POST /api/messages never does, so a 1 here is authenticated by construction.
+  // 0 for every older row.
+  `ALTER TABLE agent_messages ADD COLUMN stop_authorized INTEGER NOT NULL DEFAULT 0`,
 ]

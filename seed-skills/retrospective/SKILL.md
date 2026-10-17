@@ -43,6 +43,7 @@ Also pull external state:
 
 ```bash
 AGENT_ID="$(echo $BOT_NAME | tr '[:upper:]' '[:lower:]')"
+PORT="$(sed -n 's/^WEB_PORT=//p' .env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
 
 # The dashboard token is read from STDIN (`-H @-`), NEVER built into an argv header:
 # /proc/<pid>/cmdline is world-readable, so an argv header hands the token to any local
@@ -50,11 +51,11 @@ AGENT_ID="$(echo $BOT_NAME | tr '[:upper:]' '[:lower:]')"
 AUTH() { printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)"; }
 
 # Recent memories written this session
-AUTH | curl -s -H @- "http://localhost:3420/api/memories?agent=$AGENT_ID&category=hot&limit=20"
+AUTH | curl -s -H @- "http://localhost:$PORT/api/memories?agent=$AGENT_ID&category=hot&limit=20"
 
 # Today's daily log entries
 DATE=$(date +%Y-%m-%d)
-AUTH | curl -s -H @- "http://localhost:3420/api/daily-log?agent=$AGENT_ID&date=$DATE"
+AUTH | curl -s -H @- "http://localhost:$PORT/api/daily-log?agent=$AGENT_ID&date=$DATE"
 
 # Skills that were referenced or used
 ls ~/.claude/skills/ | head -30
@@ -150,8 +151,9 @@ On user approval:
 
 After execution, log the retrospective to the daily log:
 ```bash
+PORT="$(sed -n 's/^WEB_PORT=//p' .env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
 printf 'Authorization: Bearer %s\n' "$(cat store/.dashboard-token)" \
-| curl -s -H @- -X POST http://localhost:3420/api/daily-log \
+| curl -s -H @- -X POST http://localhost:$PORT/api/daily-log \
   -H "Content-Type: application/json" \
   -d "{\"agent_id\":\"$AGENT_ID\",\"content\":\"## $(date +%H:%M) -- Retrospective\n[count] skill changes, [count] memory updates, [count] workflow changes applied.\"}"
 ```

@@ -17,8 +17,8 @@ import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coor
 import { isAllowedVoiceChannelDevice } from '../voice-channel-device-allowlist.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { isReservedSenderId } from '../system-directive-id.js'
-import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { isReservedSenderId, SYSTEM_DIRECTIVE_SENDER } from '../system-directive-id.js'
+import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
 import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -66,6 +66,16 @@ export const VOICE_MAILBOX_RESULT = 'voice-channel mailbox: no session delivery;
 // sender posting as `casemanager`, which nobody configured. A fail-closed fix
 // must not loosen the exemption it sits next to.
 const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
+// Card 795d1f48 (a): the device keys the install lists for urgent rows (config.ts), frozen the same way.
+const URGENT_DEVICE_KEY_IDS = parseDeviceKeyIds(MESSAGE_URGENT_DEVICE_IDS)
+
+/**
+ * Card 795d1f48 (a): may this request mark a row urgent? Only a FULL device key whose id the install lists. A device
+ * key alone is not enough: the shared dashboard token (the agent API) can mint one. Exported for the unit test.
+ */
+export function mayMarkUrgent(auth: RouteContext['auth'], listedDeviceIds: ReadonlySet<number>): boolean {
+  return auth?.kind === 'device' && auth.scope === 'full' && auth.deviceId !== undefined && listedDeviceIds.has(auth.deviceId)
+}
 
 /**
  * How much of a `result` travels inside the completion notification, and what the recipient
@@ -156,10 +166,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    let from: string, to: string, content: string, origin_note: string | undefined
+    let from: string, to: string, content: string, origin_note: string | undefined, urgent: unknown
     try {
-      ;({ from, to, content, origin_note } = JSON.parse(body.toString()) as
-        { from: string; to: string; content: string; origin_note?: string })
+      ;({ from, to, content, origin_note, urgent } = JSON.parse(body.toString()) as
+        { from: string; to: string; content: string; origin_note?: string; urgent?: unknown })
     } catch {
       json(res, { error: 'Invalid JSON body' }, 400)
       return true
@@ -170,6 +180,21 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     }
     // Card 2520b85a (measurement-only slice): see agent-identity-measure.ts.
     measureAgentIdentityClaim(ctx, 'POST /api/messages', from)
+    // Card 795d1f48 (a): an URGENT row is typed into a BUSY pane by the router (e.g. the save signal a key rotation
+    // sends before it restarts the agents), so a lost or an injected key could interrupt every agent. Who may ask for
+    // one: a FULL device key whose id the install lists in MESSAGE_URGENT_DEVICE_IDS (mayMarkUrgent). Not the shared
+    // dashboard token (the agent API, readable by every sub-agent), and not any device key, since that token can mint
+    // one. The in-process writers set it directly. Checked before anything is written; a non-boolean is a 400, so a
+    // typo does not silently send an ordinary row.
+    if (urgent !== undefined && typeof urgent !== 'boolean') {
+      json(res, { error: 'urgent must be a JSON boolean' }, 400)
+      return true
+    }
+    if (urgent === true && !mayMarkUrgent(ctx.auth, URGENT_DEVICE_KEY_IDS)) {
+      logger.warn({ from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none', deviceId: ctx.auth?.deviceId }, 'Rejected /api/messages POST: urgent without a listed device key')
+      json(res, { error: 'urgent delivery requires a device key listed in MESSAGE_URGENT_DEVICE_IDS; the shared dashboard token (the agent API) cannot send an urgent row' }, 403)
+      return true
+    }
     // HBTEMPLATELEAK1002: a heartbeat report that still carries its template's
     // placeholder header is the instruction text, not a report; queued, it reads
     // as an order in the recipient's box ("Tedd most", a curl recipe). Refuse it
@@ -398,9 +423,21 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // gets the same 400 as any other unknown recipient.
       isVoiceMailbox = storedTo === VOICE_CHANNEL_AGENT_ID
       const sanitized = sanitizeAgentIdent(storedTo)
-      if (!isVoiceMailbox && !isKnownAgent(sanitized)) {
+      // A SYSTEM_SENDER_IDS entry is not unknown either (card 9fc6dc3e): those
+      // ids name the neighbouring systems that talk to the fleet over this API,
+      // and the fleet answers them over the same POST (to=<system id>). Without
+      // this, every reply to such a system would get a 400 since this gate
+      // shipped. Only an id that is neither a registered agent nor a listed
+      // system is rejected. EXACT match on the RAW stored id (review #1827),
+      // like the voice mailbox above: a near-miss ('cort ex') that only
+      // SANITISES to a listed id would be stored under a name its system
+      // never reads. The reserved directive sender stays closed on the
+      // recipient side too, even if an operator lists it in SYSTEM_SENDER_IDS
+      // (SYSRESERVED918 reserves it on the sender side above).
+      const isSystemRecipient = storedTo !== SYSTEM_DIRECTIVE_SENDER && SYSTEM_SENDERS.has(storedTo)
+      if (!isVoiceMailbox && !isSystemRecipient && !isKnownAgent(sanitized)) {
         logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
-        json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id, or "<system>/<agent>" for a federated address` }, 400)
+        json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id, a SYSTEM_SENDER_IDS system id, or "<system>/<agent>" for a federated address` }, 400)
         return true
       }
       // Cybered NO-GO on the first version of this check (card 523a1426): validating the
@@ -409,8 +446,9 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // all sanitize to a real, known name (validation passes) yet each stored RAW would still
       // open its own distinct bucket. Store what was validated, same as the federated branch
       // above already canonicalizes to formatQualifiedId(...) rather than the raw input. The voice
-      // mailbox id is already its own sanitized form, so this is a no-op for that case.
-      storedTo = sanitized
+      // mailbox and system-recipient ids are already their own sanitized form, so this is a no-op
+      // for those two cases.
+      storedTo = isSystemRecipient ? storedTo : sanitized
     }
     // Code-side enforcement of the kanban-ref convention: rewrite any
     // `#<hex8>` token that maps to a real kanban_cards row into its
@@ -427,7 +465,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
-    const msg = createAgentMessage(from.trim(), storedTo, stampedContent, trimmedOriginNote)
+    const msg = createAgentMessage(from.trim(), storedTo, stampedContent, trimmedOriginNote, null, { urgent: urgent === true })
     if (isVoiceMailbox) {
       markMessageDone(msg.id, VOICE_MAILBOX_RESULT)
       logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Voice-channel answer stored in the mailbox (no session delivery)')

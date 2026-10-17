@@ -4,12 +4,13 @@
 // plugin). Adapted from upstream's wording -- the trailing pointer to a dedicated measurement doc
 // is dropped, because that doc was never ported to this fork.
 //
-// DEFERRED (upstream-sync batch 6, docs/mcp-list-channel-plugin.md landed in this batch): the
-// richer body (measurement date, doc pointer, BEJÖVŐ-not-measured caveat) is NOT adopted here --
-// 965b0b2b's gated, statically-committed CLAUDE.md block would need updating in lockstep (the
-// STATIC-block test below requires a byte-exact match), and that is a separate, explicit decision
-// beyond this sync batch's scope. The evidence doc itself lands standalone; its own content is
-// still covered below.
+// UPSTREAM-SYNC Koteg 18 (card d06a325d, CHILDCLAUDEPOLLER1010, re-measured 2026-10-10): the
+// batch-6 deferral above is now resolved -- buildMcpListChannelBody() DOES carry the extended
+// finding (any child `claude`, not only `mcp list`, via the shared bot.pid; the safe
+// CLAUDE_CONFIG_DIR/TELEGRAM_STATE_DIR recipe), and the gated, statically-committed CLAUDE.md
+// block was updated in lockstep (the STATIC-block test below still requires a byte-exact match).
+// The dedicated measurement doc's own pointer is still dropped from the body on purpose (see
+// above); the doc's own content is covered separately below.
 import { describe, it, expect, vi } from 'vitest'
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -44,7 +45,10 @@ vi.mock('../web/atomic-write.js', () => ({
   atomicWriteFileSync: (path: string, content: string) => writeFileSync(path, content, 'utf-8'),
 }))
 
-const { ensureMcpListChannelSection } = await import('../web/agent-scaffold.js')
+const { ensureMcpListChannelSection, buildMcpListChannelBody } = await import('../web/agent-scaffold.js')
+const body = buildMcpListChannelBody()
+const { REPO_ROOT } = await import('./helpers/repo-location.js')
+const DOC = readFileSync(join(REPO_ROOT, 'docs', 'mcp-list-channel-plugin.md'), 'utf-8')
 
 const MARKER_BEGIN = '<!-- BEGIN GENERATED: mcp-list-channel-warning (auto-generated, do not edit by hand) -->'
 const MARKER_END = '<!-- END GENERATED: mcp-list-channel-warning -->'
@@ -105,6 +109,29 @@ describe('ensureMcpListChannelSection', () => {
     const out = readFileSync(join(tmpRoot, 'CLAUDE.md'), 'utf-8')
     expect(out).toBe(before)
   })
+
+  // CHILDCLAUDEPOLLER1010: the cause is not `mcp list` itself but ANY child
+  // `claude` that inherits the channel state dir and loads the plugin, whose
+  // bot.pid logic then SIGTERMs the parent's live poller. Measured 2026-10-10
+  // with three `claude -p` calls from a live sub-agent session.
+  it('extends the warning to any child `claude` (e.g. `claude -p`), not only `mcp list`', () => {
+    expect(body).toMatch(/claude -p/)
+    expect(body).toMatch(/2026-10-10/)
+  })
+
+  it('names the mechanism (shared bot.pid) and the safe way to run a child', () => {
+    expect(body).toMatch(/bot\.pid/)
+    expect(body).toMatch(/CLAUDE_CONFIG_DIR/)
+  })
+
+  // Review on #1851: unsetting TELEGRAM_STATE_DIR makes the plugin fall back to
+  // ~/.claude/channels/telegram, the main agent's state dir, so the safe recipe
+  // points it at an empty dir and names the config dir as what isolates.
+  it('says to point the state dir at an empty dir, not to unset it', () => {
+    expect(body).toMatch(/állítsd egy üres mappára/)
+    expect(body).toMatch(/NE töröld/)
+    expect(body).not.toMatch(/vedd ki a környezetéből/)
+  })
 })
 
 // Card 965b0b2b (WhiteHat NO-GO, H1): the main agent's own PROJECT_ROOT/CLAUDE.md carries a
@@ -141,10 +168,10 @@ describe('wiring contracts', () => {
   })
 })
 
-// Upstream (MCPLISTCSATORNA921): docs/mcp-list-channel-plugin.md landed in this sync batch as a
-// standalone evidence doc, not yet wired into buildMcpListChannelBody() (see the DEFERRED note at
-// the top of this file). Its own content is still worth pinning independently of that wiring
-// decision -- these checks are about the doc's prose, not about ensureMcpListChannelSection.
+// Upstream (MCPLISTCSATORNA921): docs/mcp-list-channel-plugin.md landed as a standalone evidence
+// doc; its extended finding is now wired into buildMcpListChannelBody() too (see the note at the
+// top of this file), but the doc's own prose is still worth pinning independently -- these checks
+// are about the doc's content, not about ensureMcpListChannelSection.
 describe('mcp-list channel warning: the evidence doc', () => {
   it('separates what was measured from what was not', async () => {
     const { REPO_ROOT } = await import('./helpers/repo-location.js')
@@ -158,5 +185,17 @@ describe('mcp-list channel warning: the evidence doc', () => {
     const { REPO_ROOT } = await import('./helpers/repo-location.js')
     const doc = readFileSync(join(REPO_ROOT, 'docs', 'mcp-list-channel-plugin.md'), 'utf-8')
     expect(doc).toMatch(/két külön körben|KÜLÖN körben/)
+  })
+
+  it('documents the mechanism with the verbatim log line, not a guess', () => {
+    expect(DOC).toMatch(/A mechanizmus \(mérve 2026-10-10/)
+    expect(DOC).toMatch(/replacing stale poller pid=/)
+    expect(DOC).toMatch(/bot\.pid/)
+  })
+
+  it('states which plugin version checks what, and the token precondition', () => {
+    expect(DOC).toMatch(/0\.0\.6-os plugin csak azt nézi, hogy a pid él-e/)
+    expect(DOC).toMatch(/token nélkül a `server\.ts` még a `bot\.pid` előtt kilép/)
+    expect(DOC).toMatch(/NE töröld/)
   })
 })

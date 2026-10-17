@@ -59,8 +59,9 @@ jobs:
       # boot-after-reboot path nobody exercises by hand day to day, so its own
       # selftest has to run somewhere other than a human remembering to.
       - run: bash scripts/__tests__/ollama-boot-restore.test.sh
-      # UPSTREAM-SYNC (card 0b550d89, re-confirmed card 1a046537/batch 5 and card 1f4c046b/batch 13;
-      # decision recorded in src/fork-upstream/acknowledged-conflicts.ts ~line 1314, card b992e9aa):
+      # UPSTREAM-SYNC (card 0b550d89, re-confirmed card 1a046537/batch 5, card 1f4c046b/batch 13
+      # and card d06a325d/batch 18; decision recorded in src/fork-upstream/acknowledged-conflicts.ts
+      # ~line 1314, card b992e9aa):
       # NOT adopting upstream's CI steps here (egress-drift-scan, dash-audit-scan, mio-orszem-precheck,
       # memory-link-audit, keepalive-probe-install, morning-stamp-gate, morning-timer-park,
       # userbot-arming-gate, supabase-q-token-hiding, and batch 13's telegram-reply-guard /
@@ -71,3 +72,9 @@ jobs:
       # for some of these merge into the tree anyway via non-conflicting file adds -- left in place,
       # unwired, same shape as the fork's own scripts/memory-link-audit.py already sitting unwired
       # from an earlier round. Available for a future adoption card.
+      # 723bbb70 (3): the hook-load watcher is a DIFFERENT, already-adopted fork feature
+      # (scripts/hook-load-watch.py already shipped before this batch) -- not part of the
+      # NOT-ADOPTED bundle above. Its contract only ran by hand until now, so wiring the
+      # test here closes that gap. Hermetic: a throwaway install root, stand-in python and
+      # node gates, a local stub for the alert POST.
+      - run: python3 scripts/__tests__/hook-load-watch.test.py
