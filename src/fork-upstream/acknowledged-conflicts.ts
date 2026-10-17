@@ -520,12 +520,17 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "candidate alongside (2), flagged as the higher-priority of the two since it is reliability/ " +
     "data-loss-adjacent rather than a missing convenience. Resolution: keep the fork's file as-is " +
     "(the security gate is the only point this entry actually decides); blob pinned." +
-    " RESOLVED 2026-10-17 (card 4aa87fdf, DevO): RESTARTWAKE927 was adopted on develop by backend " +
-    "between our branch cut and landing -- restartAgentProcessUnlocked/restartAgentProcess now " +
-    "both take 'wake?: RestartWakeRequest', scheduleRestartWake/cancelRestartWake wired in " +
-    "(grep-verified on origin/develop). The ACKNOWLEDGED_FORK_ANCHORS 'absent' anchor (below) " +
-    "caught this correctly; updated to 'present' to guard against future removal. Blob bumped to " +
-    "develop's post-adoption sha.",
+    " RESOLVED 2026-10-17 (card 4aa87fdf, DevO): both open items ((2) and (3)) were adopted on " +
+    "develop by backend between our branch cut and landing. (2) mainRotationContinueVerdict: " +
+    "restartMainForRotationContinue/ContinueRestartResult/mainRotationContinueVerdict all now " +
+    "present in develop's routes/claude-plans.ts (grep-verified: lines 31/34, call site line 312). " +
+    "(3) RESTARTWAKE927: restartAgentProcessUnlocked/restartAgentProcess now both take " +
+    "'wake?: RestartWakeRequest', scheduleRestartWake/cancelRestartWake wired in; " +
+    "routes/claude-plans.ts calls restartAgentProcess(agentId, { wake: { reason: 'plan-switch' } }) " +
+    "(grep-verified on origin/develop, line 391). The ACKNOWLEDGED_FORK_ANCHORS 'absent' anchor " +
+    "for (3) caught this correctly on the first land attempt; retired (see comment in anchors " +
+    "section). Both items fully adopted by develop merge; no further NOT ADOPTED decisions remain " +
+    "in this entry. Blob bumped to develop's post-adoption sha.",
   'src/web/routes/updates.ts':
     "Keep the FORK's spawnUpdateScript helper wholesale. The conflict is structural, not a " +
     "disagreement: upstream 31d1e94f (#1189, AUTOUPDNODEENV905) patched the INLINE update.sh spawn " +
