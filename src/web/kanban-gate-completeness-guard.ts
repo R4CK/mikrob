@@ -29,6 +29,32 @@ import { logger } from '../logger.js'
 import { isAgentVerdictRecordEnabled, GATE_ROLE_AGENTS, shasMatch } from './kanban-verdicts.js'
 import { GENERATED_COMMENT_AUTHORS, type LandedVerdict } from './kanban-landed-guard.js'
 
+// KNOWN TRUST-BOUNDARY LIMIT (F-N3, card c188f357, documented per MikroB decision -- option A:
+// document + pin-test, no code change; option B, widening authenticated agent-key issuance so
+// comment authorship can also be verified, is deferred to card 2e10de7c and is blocked on it).
+//
+// Every `comments[].author` value this whole file reads (via getKanbanComments) is a plain string
+// column, written by whoever called POST /api/kanban/<id>/comments -- under the ONE shared
+// dashboard token, ANY caller can write a comment with `author: "qa"` (or any other gate's name)
+// and a first line like "QA PASS". `freshVerdictStatus` falls back to `commentOnlyFresh` whenever
+// no STRUCTURED (AGENT_VERDICT_RECORD, kanban-verdicts.ts) row exists for that gate -- which is the
+// case whenever AGENT_VERDICT_RECORD is off, or simply whenever nobody happened to call that
+// authenticated endpoint for this particular gate/round. In that (very common) case, this
+// comment-forgery closes a card exactly as completely as a real PASS/GO would: nothing here
+// distinguishes a forged comment from a genuine one, because nothing about a kanban comment's
+// `author` field is itself authenticated.
+//
+// This is NOT a new bug this file introduces -- it is the SAME forgeability the structured verdict
+// record (kanban-verdicts.ts) was built to supersede for the write path it covers (device-key
+// authentication, role-allowlist, proposer-exclusion). The structured path is additive (see the
+// "Card 2bfa4c67 (F2)" comment further down): when it is used, a forged comment cannot FORCE a
+// disagreement past an authenticated row (freshVerdictStatus checks commentHasFreshNegative against
+// the row), but it CAN still satisfy the requirement from scratch when no structured row exists at
+// all for that gate. A round-trip through this file alone cannot close that gap: the fix is
+// authenticating the comment's own author, which is exactly what widening agent-key issuance
+// (deferred to 2e10de7c) is for. See the pin test "F-N3 KNOWN GAP" in
+// kanban-gate-completeness-guard.test.ts for a live, runnable demonstration of this exact shape.
+
 export type GateAgent = 'qa' | 'qa2' | 'cybersec' | 'cybersec2' | 'cybered'
 
 /** Only agents allowed to close a card despite a missing gate verdict -- same actor set as the
