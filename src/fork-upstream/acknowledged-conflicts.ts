@@ -2559,7 +2559,7 @@ export const ACKNOWLEDGED_CONFLICTS = {
   // pinning an acknowledgement against a resolution the source file has not reached yet. DEFERRED:
   // resolve together with the paired source file when the security group is worked, not here.
   'src/__tests__/channel-poller-reap-live-pane.test.ts':
-    'DEFERRED to the security/architecture group (card 4aa87fdf) -- the test depends on how src/web/channel-poller-reap.ts (undecided there, same drift round) resolves; upstream adds a plugin-marker precondition (cf075d41) this fork\'s reap logic may or may not already require, not assessable from the test alone',
+    "RESOLVED (card 4aa87fdf, 2026-10-17) -- the parent question (does this fork require CLAUDE_PLUGIN_ROOT?) is answered: YES, the fork's parsePollerPidsFromPs already has PLUGIN_ROOT_ENV_RE (line 72 of channel-poller-reap.ts). Upstream's cf075d41 change also adds CLAUDE_PLUGIN_ROOT to the victim env so the test properly exercises BOTH candidate sources (bot.pid AND the ps-scan path), and switches from /bin/sleep to node for macOS compatibility (ps axeww does not show the env of Apple-signed binaries). NOT ADOPTED: the test change is genuine and worth a follow-up card but it is a SOURCE CHANGE that needs its own planning -- the fork's current victim (no CLAUDE_PLUGIN_ROOT) passes only via the bot.pid path, a latent test-coverage gap rather than a wrong-answer bug (the live-pane sparing behaviour it verifies is real). Flagged as a follow-up: add CLAUDE_PLUGIN_ROOT + pluginRoot to the victim spawn and switch the comment at line 33-39 to reflect that BOTH sources are exercised.",
   'src/__tests__/claude-plans-routes.test.ts':
     'DEFERRED to the security/architecture group (card 4aa87fdf) -- paired with src/web/routes/claude-plans.ts, undecided there in the same drift round',
   'src/__tests__/kanban-card-method-not-allowed.test.ts':
@@ -2801,6 +2801,30 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "is broken TODAY. NOT adopted here (needs real implementation, tracing the caller's data " +
     "source) -- direction decided (adopt, fork's own naming, keep the lazy resolver), named as a " +
     "priority follow-up given the auth-breaking failure mode once the gap is live.",
+
+  // src/web/channel-poller-reap.ts (card 4aa87fdf, 2026-10-17). Upstream (cf075d41) removes the
+  // fork's isPollerArgv(argv)/filterPollerPids() functions (argv-based narrowing: bun/node + any
+  // argv element whose basename is 'server.ts') and relies entirely on CLAUDE_PLUGIN_ROOT in the
+  // ps-scan env for both the ps-scan and bot.pid candidate paths. The fork's ps-scan ALREADY
+  // requires CLAUDE_PLUGIN_ROOT (PLUGIN_ROOT_ENV_RE, line 72 of channel-poller-reap.ts -- verified
+  // against HEAD before writing this entry). The fork's isPollerArgv() is an ADDITIONAL narrowing
+  // applied on the /proc-based argv of bot.pid candidates: a process that somehow carries
+  // CLAUDE_PLUGIN_ROOT but isn't actually a bun/node + server.ts invocation would pass the env
+  // check but fail the argv check. This layered approach is more conservative: a missed orphan
+  // costs a 409 loop until restart, a wrong kill (as measured 2026-09-26: 100+ pids reaped off the
+  // bare env needle, including the fleet-wide tmux server) costs the whole fleet. KEEP the fork's
+  // isPollerArgv implementation as an additional defence layer. Upstream's reorganisation of
+  // stateDirRowPids/pluginRootRegex is a different structural decomposition of the same ps-scan
+  // logic the fork already has; the ps-scan behaviour is equivalent, the bot.pid narrowing
+  // favours the more specific check.
+  'src/web/channel-poller-reap.ts':
+    "KEEP fork's isPollerArgv(argv)/filterPollerPids() as a second, argv-based narrowing layer " +
+    "on top of the CLAUDE_PLUGIN_ROOT env-scan already present on both sides (fork's " +
+    "PLUGIN_ROOT_ENV_RE, upstream's cf075d41 stateDirRowPids/pluginRootRegex). Upstream removed " +
+    "the argv check and unified on the env marker alone; the fork keeps both as defence-in-depth " +
+    "after the 2026-09-26 incident (100+ pids reaped off bare env needle, fleet-wide tmux server " +
+    "among them). The isPollerArgv check is fail-closed (/proc unreadable -> pid dropped, never " +
+    "killed). See ACKNOWLEDGED_FORK_ANCHORS for the tripwire that pins this function.",
 
   // src/web/dashboard-settings.ts + src/web/routes/connectors.ts (card 4aa87fdf, 2026-10-17,
   // plan-grilled per K3 -- paired decision, same feature, two files). Fork's installGitHubRepo()
@@ -3283,6 +3307,7 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/dashboard-settings.ts': 'ec65baf7f5e78743c74e41776aeaeaf1d92685b4',
   'src/web/routes/connectors.ts': '02df0b232a6469f4851925499f6785411514a408',
   'scripts/hooks/email-approval-gate.py': '655ab24bc6da3da1d095b0de879b5dcbd1df6af9',
+  'src/web/channel-poller-reap.ts': '03452582d4a0bcd9fd93b7e42dd684d26d5ea916',
 }
 
 /** A conflict whose written rule was decided against DIFFERENT upstream content than what is
@@ -4342,6 +4367,28 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "_SEND_TOOL allowlist, which flips the failure direction on an unrecognized tool name. If " +
       "_EMAIL_SERVER_RE disappears, that regression has arrived -- the inline_images content- " +
       "anchor hardening (RedHat NO-GO a2cb71f1 H1) named in the same entry needs re-checking too.",
+  },
+  // Card 4aa87fdf (fullstack/DevO, 2026-10-17): the channel-poller-reap.ts entry above keeps
+  // isPollerArgv() as a second, argv-based narrowing layer on top of the CLAUDE_PLUGIN_ROOT env-scan
+  // (upstream's cf075d41 removed it). The 2026-09-26 incident (100+ pids reaped off bare env needle,
+  // fleet-wide tmux server killed) is why both layers are kept. If this function is silently dropped
+  // (e.g. a merge taking upstream's blob), the defence-in-depth reverts to env-only narrowing --
+  // exactly the condition that caused the incident. The needle is the exact export declaration; a
+  // comment reproducing the name does not satisfy the anchor (guards-that-pin-behaviour skill,
+  // karpathy-guidelines comments-strip rule).
+  'src/web/channel-poller-reap.ts': {
+    needle: 'export function isPollerArgv',
+    file: 'src/web/channel-poller-reap.ts',
+    expect: 'present',
+    because:
+      "card 4aa87fdf decided to KEEP the fork's argv-based narrowing layer (isPollerArgv + " +
+      "filterPollerPids) as defence-in-depth over the CLAUDE_PLUGIN_ROOT env-scan that both the " +
+      "fork (PLUGIN_ROOT_ENV_RE, line 72) and upstream (cf075d41) have. Upstream removed this " +
+      "function; keeping it here is the deliberate decision after the 2026-09-26 incident where the " +
+      "env-scan alone matched 100+ pids and killed the fleet-wide tmux server. If isPollerArgv " +
+      "disappears, the defence-in-depth is gone: reap candidates are filtered only by env-var " +
+      "presence, with no argv check confirming the process is actually a bun/node server.ts poller. " +
+      "That is a revert to the pre-incident surface, not a safe merge.",
   },
 }
 
