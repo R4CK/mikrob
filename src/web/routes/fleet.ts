@@ -4,6 +4,7 @@ import { readBody, json } from '../http-helpers.js'
 import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
 import { findConsumableApproval, consumeApproval, findPendingApproval } from '../../db.js'
 import { createAndNotifyApproval } from './approvals.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 
 // Card 68254bd7 (RedHat NO-GO 14837, MikroB decision 14841): the 'session'/'device' kind-check
@@ -65,6 +66,20 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
   const vaultPassword = req.headers['x-vault-password'] as string | undefined
 
   if (path === '/api/fleet/export' && method === 'GET') {
+    // O2 (RedHat 17520 on 9655494c, card ddeb2e17): exportFleet() returns EVERY agent's memories
+    // and daily_logs, plus vault secrets when a password is supplied -- measured unmeasured before
+    // this card, the route had no auth-kind check at all, so the shared fleet bearer (every agent's
+    // curl) or a future per-agent device key could download the whole fleet's data in one request.
+    // Same posture as the import apply=true gate just below (card 68254bd7): human-only, and an
+    // `agent:<id>` device key is excluded via the established agentKeyToAgentId() convention
+    // (local-llm.ts's isHumanDevice, bridge-service-ports.ts) rather than treated as human just
+    // because its auth kind is 'device'.
+    const isHumanDevice = ctx.auth?.kind === 'device' && agentKeyToAgentId(ctx.auth.device) === null
+    if (ctx.auth?.kind !== 'session' && !isHumanDevice) {
+      logger.warn({ authKind: ctx.auth?.kind ?? 'none', device: ctx.auth?.kind === 'device' ? ctx.auth.device : undefined }, 'Fleet export: rejected for non-human credential')
+      json(res, { error: 'A flotta exportja csak a tulajdonos munkamenetéből vagy saját eszközkulcsával lehetséges, a megosztott flotta-tokennel nem.' }, 403)
+      return true
+    }
     if (vaultPassword !== undefined && vaultPassword.length < MIN_VAULT_PASSWORD_LEN) {
       json(res, { error: `X-Vault-Password must be at least ${MIN_VAULT_PASSWORD_LEN} characters.` }, 400)
       return true

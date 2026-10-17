@@ -13,6 +13,7 @@ import { getUpdateStatus, type AggregateUpdateStatus } from '../update-checker.j
 import { refreshUserTurnIndex, turnsOnDay } from '../user-turn-index.js'
 import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, readFableSnapshot, DEFAULT_FABLE_MAX_AGE_SEC, readModQuotaSnapshot, chooseQuotaSnapshot, type QuotaSnapshot } from '../quota.js'
 import { STATE_OBSERVER_STATE_DIR } from '../state-observer.js'
+import { agentKeyToAgentId } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 
 // The per-day user-turn tallies now come from src/web/user-turn-index.ts (card ba0d218f): the inline
@@ -76,7 +77,7 @@ export function readFleetQuota(nowSec: number): QuotaSnapshot {
 }
 
 export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
-  const { req, res, path, method } = ctx
+  const { req, res, path, method, auth } = ctx
 
   if (path === '/api/overview' && method === 'GET') {
     const subAgents = listAgentNames()
@@ -120,9 +121,21 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       }
     }
 
+    // O1 (RedHat 17520 on 9655494c, card ddeb2e17): the handler used to hand back the fleet-wide
+    // activity feed (6 newest memory snippets + 4 newest agent-message bodies) to ANY authenticated
+    // caller, dashboard token or agent device key alike. Once per-agent device keys are actually
+    // issued, that lets agent A read agent B's private memory content and B's/other agents'
+    // inter-agent message bodies through its OWN key -- a cross-agent read the key was never meant
+    // to grant (same identity precedent as memories.ts's authenticatedAgentId, card 84dcc5d4). A
+    // dashboard-token/session caller (the human operator) is unaffected and keeps the fleet-wide
+    // feed, exactly as before.
+    const authenticatedAgentId = auth?.kind === 'device' ? agentKeyToAgentId(auth.device) : null
+
     const activity: Array<{ icon: string; text: string; at: number }> = []
     try {
-      const memRows = db0.prepare("SELECT content, created_at, agent_id FROM memories ORDER BY created_at DESC LIMIT 6").all() as { content: string; created_at: number; agent_id: string }[]
+      const memRows = authenticatedAgentId
+        ? db0.prepare("SELECT content, created_at, agent_id FROM memories WHERE agent_id = ? ORDER BY created_at DESC LIMIT 6").all(authenticatedAgentId) as { content: string; created_at: number; agent_id: string }[]
+        : db0.prepare("SELECT content, created_at, agent_id FROM memories ORDER BY created_at DESC LIMIT 6").all() as { content: string; created_at: number; agent_id: string }[]
       for (const r of memRows) {
         activity.push({
           icon: 'memory',
@@ -132,7 +145,9 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       }
     } catch { /* ignore */ }
     try {
-      const msgRows = db0.prepare("SELECT from_agent, to_agent, content, created_at FROM agent_messages ORDER BY created_at DESC LIMIT 4").all() as { from_agent: string; to_agent: string; content: string; created_at: number }[]
+      const msgRows = authenticatedAgentId
+        ? db0.prepare("SELECT from_agent, to_agent, content, created_at FROM agent_messages WHERE from_agent = ? OR to_agent = ? ORDER BY created_at DESC LIMIT 4").all(authenticatedAgentId, authenticatedAgentId) as { from_agent: string; to_agent: string; content: string; created_at: number }[]
+        : db0.prepare("SELECT from_agent, to_agent, content, created_at FROM agent_messages ORDER BY created_at DESC LIMIT 4").all() as { from_agent: string; to_agent: string; content: string; created_at: number }[]
       for (const r of msgRows) {
         activity.push({
           icon: 'delegate',
