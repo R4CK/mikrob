@@ -91,6 +91,27 @@ see a `[LOCAL-LLM DRAFT]` comment headed "(mechanikus reszfeladat, card 501c489f
 decision you are building online, that draft covers ONLY the named fragment -- review it as such,
 not as a draft of the whole card.
 
+**Draft quality for these fragments (card d39fc5e7), two mechanisms stacked on top of the above:**
+- **Real-sample anchoring.** A fragment's own text is a generic templated sentence, not a real
+  spec -- the measured failure mode was a test scaffold written against a framework (Express/
+  supertest) the repo does not use at all, because the draft had nothing real to copy a house style
+  from. `decompose-sample-context.sh` finds the ONE nearest real file the card's own text names (a
+  sibling `*.test.ts`, a file declaring a `type`/`interface`, a locale JSON, the README's own
+  fork-section) and folds a token-capped excerpt into the prompt. **If no such sample exists, the
+  fragment is NOT drafted at all** -- a blind draft with no anchor is worse than none.
+- **Deterministic quality gate before posting.** Every draft (fragment or not) passes
+  `draft-quality-gate.py` before it is posted: minimum length, not a repeat of the card's own
+  title+description (SequenceMatcher ratio), and every `import`/`require` the draft uses actually
+  resolves somewhere in the target repo (file or `node_modules` package). A failing draft posts
+  NOTHING -- it is cheaper for nobody to look at it than for an online agent to adjudicate a bad
+  one. This is a mechanical check, no model call, so it is mutation-tested like any other guard.
+- **Per-fragment-type stop-criterion.** `decompose-type-stop.sh` measures the Draft-Review
+  acceptance rate (ELFOGADVA+RESZBEN over judged drafts -- FELESLEGES/REDUNDANT excluded, see
+  below) per fragment type over a 3-day window; a type with >= 5 judged drafts and < 30% acceptance
+  is written to `decompose-type-disabled.json`, and `card-decompose-templates.sh` stops proposing
+  that type everywhere (both `offload-dispatch.sh` and `card-build-route.sh` share that one
+  classifier) until a LATER run's full recompute shows the rate recovered. Not a one-way lock.
+
 The result is a DRAFT. Read it, run the typecheck and the tests, and own the correctness. Three
 failed local attempts on the same unit means stop and write it online.
 
@@ -350,6 +371,10 @@ needs the `qwen35` arch; 0.5.13 could not load it — we run 0.32.1).
   (fail-open to the online path, never block the fleet on it).
 - Only one model is resident in VRAM at a time; first call after idle reloads it
   (a few seconds). Default keep-alive is 5m.
+- GPU busy >60% (compute, not VRAM) means go ONLINE, do not queue: the dispatchers'
+  `vram-guard-check.sh` answers `HOLD gpu-util-hold` then (card 79aeaeb1, Peti
+  2026-09-27). Our own running draft counts too, so a second task while one draft
+  runs goes online rather than waiting on the GPU flock.
 - The model is small: for anything requiring judgement, review its output. Never
   let local-model output pass a gate or ship unverified.
 
