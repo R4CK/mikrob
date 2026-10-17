@@ -232,6 +232,34 @@ def main() -> int:
                 ok("a symlink resolving outside the checkout is rejected, not trusted by its raw path")
             else:
                 bad("a symlink escaping the checkout must not be trusted", got)
+
+            # Card e3d14be9 (Cybersec F1 LOW, TOCTOU): an in-checkout symlink is accepted at
+            # validation time (realpath resolves inside), then re-pointed outside BEFORE a later
+            # consumer opens access.json through the returned path. If the function returned the
+            # raw env string, that later open would follow the symlink's NEW target and leak an
+            # attacker-controlled access.json -- measured by Cybersec directly (allowFrom flipped
+            # to ['ATTACKER']). Pinning the invariant the fix establishes: the returned value has
+            # already been resolved, so it carries no symlink component left to retarget.
+            flip_target_inside = fake_marveen / "legit-target"
+            flip_target_inside.mkdir()
+            flip_link = fake_marveen / "flip-link"
+            flip_link.symlink_to(flip_target_inside, target_is_directory=True)
+            os.environ["TELEGRAM_STATE_DIR"] = str(flip_link)
+            accepted = m._telegram_state_dir()
+            if accepted == str(flip_target_inside):
+                ok("an in-checkout symlink is accepted AND returned already-resolved (no symlink component)")
+            else:
+                bad("an in-checkout symlink must be accepted and returned resolved", accepted)
+            # Re-point the SAME link outside the checkout, as if an attacker flipped it after
+            # validation -- the value already returned above must not change retroactively (it is
+            # a plain string, not re-read), and calling the function again must now correctly
+            # reject it (the escape case above already proves the re-validation path).
+            flip_link.unlink()
+            flip_link.symlink_to(escape_target, target_is_directory=True)
+            if accepted == str(flip_target_inside):
+                ok("the already-returned resolved path is unaffected by retargeting the symlink afterwards")
+            else:
+                bad("a previously returned resolved path must stay stable", accepted)
         finally:
             m.MARVEEN = old_marveen
             if old_env is None:
