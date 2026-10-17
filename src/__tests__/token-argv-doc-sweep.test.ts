@@ -45,7 +45,7 @@ const AUTH_ARGV_PATTERN = '-H[[:space:]]*["\']Authorization:[[:space:]]*Bearer'
 // path -> allowed line numbers (git grep -nE output, 1-indexed)
 const ALLOWLIST: Record<string, number[]> = {
   'DECISIONS.md': [1164, 4931, 14889, 15034, 15076, 15747, 20372], // historical decision entries about this exact fix
-  'README.md': [213], // fork-fejlesztés bullet NAMING the anti-pattern it fixed, not an invocation (shifted to 213 by the 73b500f9 merge's own WSL-interop bullet landing above it, +1 on top of the prior shift)
+  'README.md': [215], // fork-fejlesztés bullet NAMING the anti-pattern it fixed, not an invocation (shifted to 215 by card 8b588834's own GPU-driver-silent-install bullet landing above it, +2 on top of the prior shift)
   'docs/memoria-szuro-hamis-pozitiv-negativ-meres.md': [223], // doc table example row with a placeholder "X" token, not an invocation
   'scripts/agent-msg-get.sh': [25], // comment naming the anti-pattern, not an invocation
   'scripts/install-prod-tree-guard-hook.sh': [204, 269], // comment naming the anti-pattern, not an invocation
