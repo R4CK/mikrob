@@ -32,9 +32,13 @@ reading a byte): none of these roots is a place such a file belongs, so a copy i
 transcript directory is exactly the leak this guard exists for. Symlinks are not followed. Non-regular
 files (FIFO, socket, device) are never opened: a FIFO would block the read forever, and a pipe holds
 nothing at rest to scan; they are counted as `special`. Images, audio, video and fonts are skipped by
-suffix. Compressed archives (`.zip .gz .tgz .bz2 .xz`) cannot be read as bytes and are counted as
-`opaque` in the summary, so the gap is visible; rotated `.gz` logs are the main case. SQLite and
-`.db` files are scanned as raw bytes.
+suffix. Single-stream compressed files (`.gz .tgz .bz2 .xz`, rotated logs are the main case) are
+decompressed and scanned like any other file, up to 256 MiB decompressed each (`ARCHIVE_CAP`, so a
+compression bomb stops there). What cannot be read to its end, a corrupt or truncated stream, one
+over the cap, and every `.zip`, is `opaque`: counted in the summary and it makes the run incomplete
+(`opaque-archives`, exit 3, one notice), because a secret inside it would otherwise be a silent zero.
+A truncated stream still reports what was found in its readable part. SQLite and `.db` files are
+scanned as raw bytes.
 
 Shapes (name only is ever reported): Anthropic setup token (`sk-ant-oat..`), Anthropic API key
 (`sk-ant-api..`), Anthropic admin key (`sk-ant-admin..`), GitHub token and fine-grained PAT, Telegram
@@ -50,8 +54,10 @@ Our own secrets carry no prefix (the dashboard token is 64 bare hex characters),
 them. At start the guard loads the **exact values** of `store/.dashboard-token`,
 `store/.claude-oauth-token`, `store/.vault-key`, the secret-named entries of `.env` and
 `agents/*/.env` (key name contains TOKEN, SECRET, PASS, PASSWORD, KEY, CREDENTIAL, SALT or LINK), the
-files in `store/secrets/` (a `KEY=VALUE` file is read like `.env`; a file with no such lines is one
-raw value; a FIFO or link there is never followed) and the token leaves of `.credentials.json`, and
+files in `store/secrets/` and below it (dotfiles and subdirectories included, up to 4 levels and 500
+files; a `KEY=VALUE` file is read like `.env`, and a single-line file that gave no secret-named value
+is read as one raw value, which is what keeps a raw base64 secret ending in `=` from being taken for
+an empty assignment; a FIFO is passed over and a link is never followed) and the token leaves of `.credentials.json`, and
 searches the scanned files for them byte for byte. A value is loaded only if it is 16 to 256
 printable ASCII characters (so `#`, `*`, `$` are fine) and not a path or URL (those would match
 everywhere). A value that contains `"` or `\` is also searched in its JSON-escaped form, because that
@@ -64,7 +70,8 @@ if it cannot be loaded (wrong or missing install dir, empty or too-short file) t
 with `known-secrets-missing` (exit 3). And every secret-named entry that was *not* loaded (too short,
 over the cap, non-ASCII, a path or URL) is counted in the summary as `known_skipped=N`; it is not a
 blind spot by itself, but a number that jumps is a reason to look at the source file. A source that
-exists but cannot be read makes the run incomplete as well (`known-secrets-unreadable`).
+exists but cannot be read makes the run incomplete as well (`known-secrets-unreadable`), and so does
+a `store/secrets` tree deeper or larger than the bound above.
 
 Vault key prefixes are not built in (they are not known to the guard's author and were not read).
 Add them with `--extra-patterns FILE` (or `TRANSCRIPT_GUARD_EXTRA`), one `name<TAB>regex` per line.
@@ -98,7 +105,8 @@ A guard that reports zero looks the same on a clean tree and on a broken one. Th
    (`no-files-scanned`); a required root, `~/.claude/projects` or any `--root`, is missing
    (`root-missing`) or yielded no file (`root-empty`); a directory or file could not be read
    (`read-errors`, the paths are named on stderr); a known-secret source exists but cannot be
-   read (`known-secrets-unreadable`); or the dashboard token could not be loaded
+   read (`known-secrets-unreadable`); a compressed file could not be read to its end
+   (`opaque-archives`); or the dashboard token could not be loaded
    (`known-secrets-missing`). A file that disappears between listing and open (log rotation,
    scratchpad cleanup) is `vanished`, not an error.
 
@@ -129,9 +137,11 @@ the others:
    `--max-age-hours` (default 36), or is 0 (`never`), or the state file is unreadable. It catches a
    guard that is not run at all: timer off, host asleep through `Persistent=`, a unit that is killed
    before it ever saves state. `scripts/systemd/transcript-secret-guard-freshness.{service,timer}`
-   run it daily at 12:30. A missing state file is `unarmed` (exit 0): until one real `--alert` run
-   has completed there is nothing to be stale. Use `--require-state` in the activation checklist to
-   turn that into an alarm.
+   run it daily at 12:30. The shipped unit passes `--require-state`: a missing state file is an alarm
+   (exit 3, one notice), because "the timer was never enabled" and "no state yet" must not look the
+   same. Without the flag a missing state file is `unarmed` (exit 0), the state a hand run of the
+   check accepts. Consequence for activation: enable the freshness timer only AFTER one real `--alert`
+   run has written the state file, or its first run pages.
 
 `last_complete_at` is stamped only by a run that saw everything. Findings from before an incomplete
 run are kept in the state, so a directory that was unreadable for one day does not make old findings
@@ -164,7 +174,8 @@ default**, so the template sets `TimeoutStartSec=1h` (a full pass measured about
 freshness pair (`transcript-secret-guard-freshness.{service,timer}`) is enabled separately and
 independently of the guard timer. Activation order: install the notifier (layer 2 above) and check
 the `OnFailure=` name; first rounds with `--alert-dryrun`; one real `--alert` run; then
-`--check-freshness --require-state` once by hand (must say `fresh`), then enable both timers. The
+`--check-freshness --require-state` once by hand (must say `fresh`), then enable the guard timer, and
+the freshness timer after it (its unit carries `--require-state`, so it pages until a state exists). The
 activation itself is a separate decision (card c786213d); nothing here enables a timer.
 
 ## Cleanup procedure
@@ -244,11 +255,11 @@ reached a transcript as exposed.
   pattern or `--extra-patterns` entry is added. A URL-valued secret (a magic link) and a value under
   16 characters are counted in `known_skipped`, not searched. A value that appears escaped twice (JSON
   inside a JSON string) or in another encoding is not matched.
-- The freshness check cannot tell "timer never enabled" from "no state yet" unless `--require-state`
-  is given; a standing `unarmed` is the one state it accepts silently.
+- The freshness check run by hand without `--require-state` cannot tell "timer never enabled" from
+  "no state yet"; the shipped unit passes the flag, so a standing `unarmed` is not accepted there.
 - A token cut into pieces by a line break, a tmux window wrap or a tool's own truncation is not
   reassembled; only the path rendering above treats separators specially.
-- Not covered: the journal (`journald`), compressed rotated logs (counted as `opaque`), archives and
+- Not covered: the journal (`journald`), `.zip` and unreadable compressed files (counted as `opaque`, they page), archives and
   databases outside the roots, and anything outside the listed roots.
 - It scans files at rest once a day. It does not stop a credential being printed in the first
   place; the write-time hooks (`secret-write-guard`) and not printing credentials are the first

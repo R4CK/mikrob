@@ -20872,3 +20872,15 @@ A megosztott token/session hívó (emberi operátor) mindkét ágon változatlan
 **Ki döntött:** MikroB (msg 13540, "F2 LOW... húzd ide ugyanebbe a körbe"), végrehajtó backend (kártya debba303).
 
 **Hivatkozás:** kártya debba303, komment 21537 (Cybersec F2), msg 13540 (MikroB utasítás).
+
+## 2026-10-17 -- kártya 21df3822: titok-őr, három csendes ág zárása a timer bekapcsolása előtt (A1-A3)
+
+**Kontextus:** a 153a2799 landolt (21e6b937, QA PASS, WhiteHat2 GO), de a WhiteHat2 gate-je (msg 13464) három ágat talált, ahol az őr a timer élesítése után is csendben vak maradna. A c786213d (timer-aktiválás) ezek zárásától függ.
+
+**Megoldás:** (A1) a szállított frissesség-unit `--require-state`-tel fut: hiányzó állapotfájl riasztás (exit 3, egy értesítés), nem `unarmed`. (A2) a `store/secrets` alatt a pontfájlok és az almappák is beolvasódnak (4 szint, 500 fájl, a korlát túllépése `known-secrets-unreadable`), és az egysoros fájl, amiből nem lett titok-nevű érték, egy nyers értékként töltődik be, így a `=`-re végződő base64 titok nem vész el üres értékű hozzárendelésként. (A3) a `.gz .tgz .bz2 .xz` fájlokat az őr kicsomagolva nézi át (256 MiB kicsomagolt plafon fájlonként), ami nem olvasható végig (sérült, csonka, plafon fölötti) vagy `.zip`, az `opaque`, és `opaque-archives` néven vak futás, egy értesítéssel. Miért nem csak számlálás: az élő 72 naplóra egy állandó `opaque-archives` vakság soha nem engedné a futást befejezettnek számolni, így a frissesség-ellenőrzés örökké riasztana; kicsomagolva a 72 mind olvasható.
+
+**Mérés:** a selftest az új fán 157/157, a javítás előtti őrön (develop) ugyanez a selftest 141/157 (16 piros: minden A2 és A3 eset). Az A1 mutánsa a selftestben van (a unit `--require-state` nélkül: exit 0, nincs értesítés, vagyis az ellenőrzésnek foga van). Élő mérés (olvasó, ugyanaz a fa): a régi őr 72 `opaque`-ot ad, az új 0-t; a 72 archívum mind olvasható, 12 983 920 kicsomagolt bájt, 1,1 s, 0 találat. A teljes élő futás idejét nem ez a kártya méri.
+
+**Ki döntött:** cybersec (építő, kártya 21df3822), a javítás irányát a WhiteHat2 adta (msg 13464). Gate: QA + RedHat. A timer továbbra is kikapcsolva, az aktiválás a c786213d dönti.
+
+**Hivatkozás:** kártya 21df3822, szülő 153a2799, c786213d; WhiteHat2 gate msg 13464.

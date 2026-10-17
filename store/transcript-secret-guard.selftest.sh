@@ -687,7 +687,130 @@ check "a stale notice that cannot be sent -> exit 5" "$([ $rc -eq 5 ] && echo 0 
 
 UNITS="$HERE/../scripts/systemd"
 check "the guard unit pages on failure (OnFailure= names the app-crash notifier template)" "$(grep -q '^OnFailure=marveen-notify@%n.service' "$UNITS/transcript-secret-guard.service" && [ -f "$UNITS/marveen-notify@.service" ] && echo 0 || echo 1)"
-check "the freshness unit runs --check-freshness --alert, and a timer file exists for it" "$(grep -q '^ExecStart=.*--check-freshness --alert' "$UNITS/transcript-secret-guard-freshness.service" && grep -q '^OnCalendar=' "$UNITS/transcript-secret-guard-freshness.timer" && echo 0 || echo 1)"
+check "the freshness unit runs --check-freshness --require-state --alert, and a timer file exists for it" "$(grep -q '^ExecStart=.*--check-freshness --require-state --alert' "$UNITS/transcript-secret-guard-freshness.service" && grep -q '^OnCalendar=' "$UNITS/transcript-secret-guard-freshness.timer" && echo 0 || echo 1)"
+
+# --- 23. card 21df3822 (A1-A3): the three silent branches the freshness/secrets/opaque gaps left ---
+# A1: the SHIPPED freshness unit must page when no state exists. Run the unit's own ExecStart args.
+FUNIT="$UNITS/transcript-secret-guard-freshness.service"
+unit_args() { # ExecStart args after the script path, from the unit file given as $1
+  sed -n 's/^ExecStart=.*transcript-secret-guard\.py //p' "$1"
+}
+A1CALLS="$TMP/a1.calls"; : > "$A1CALLS"
+printf '#!/bin/bash\nprintf "%%s\\n" "$1" >> "%s"\n' "$A1CALLS" > "$TMP/notify-a1.sh"; chmod +x "$TMP/notify-a1.sh"
+check "A1: the freshness unit carries --require-state" "$(unit_args "$FUNIT" | grep -q -- '--require-state' && echo 0 || echo 1)"
+# shellcheck disable=SC2046
+python3 -I "$GUARD" $(unit_args "$FUNIT") --state "$TMP/a1-none.state" --notify-cmd "$TMP/notify-a1.sh" >/dev/null 2>&1; rc=$?
+check "A1: ...run with the unit's own args and no state file: exit 3 and ONE notice (it used to be unarmed, exit 0, silent)" "$([ $rc -eq 3 ] && [ "$(wc -l < "$A1CALLS")" -eq 1 ] && echo 0 || echo 1)"
+# mutant: the same unit WITHOUT --require-state must be silent, or the check above proves nothing
+sed 's/ --require-state//' "$FUNIT" > "$TMP/mutant.service"
+: > "$A1CALLS"
+# shellcheck disable=SC2046
+python3 -I "$GUARD" $(unit_args "$TMP/mutant.service") --state "$TMP/a1-none.state" --notify-cmd "$TMP/notify-a1.sh" >/dev/null 2>&1; rc=$?
+check "A1: ...mutation (flag removed) is unarmed, exit 0, no notice, so the check above has teeth" "$([ $rc -eq 0 ] && [ ! -s "$A1CALLS" ] && echo 0 || echo 1)"
+
+# A2: store/secrets/** -- raw base64 ending in '=', dotfiles and subdirectories
+python3 -I - "$TMP/a2b" "$TMP/a2scan" <<'PY'
+import base64, hashlib, os, sys
+base, scan = sys.argv[1:3]
+for d in (base + "/store/secrets/sub/deeper", scan):
+    os.makedirs(d, exist_ok=True)
+h = lambda t: hashlib.sha256(t.encode()).digest()
+b64 = base64.b64encode(h("a2-b64")).decode()          # 44 chars, ends with '='
+b64x2 = base64.b64encode(h("a2-b64b")[:31]).decode()  # ends with '==' or '=' by length
+dot = hashlib.sha256(b"a2-dot").hexdigest()[:40]
+sub = hashlib.sha256(b"a2-sub").hexdigest()[:40]
+deep = hashlib.sha256(b"a2-deep").hexdigest()[:40]
+assert b64.endswith("=")
+open(base + "/store/.dashboard-token", "w").write(hashlib.sha256(b"a2-dash").hexdigest() + "\n")
+open(base + "/store/secrets/rawb64", "w").write(b64 + "\n")
+open(base + "/store/secrets/rawb64b", "w").write(b64x2 + "\n")
+open(base + "/store/secrets/.hidden", "w").write(dot + "\n")
+open(base + "/store/secrets/sub/inner.key", "w").write(sub + "\n")
+open(base + "/store/secrets/sub/deeper/leaf", "w").write(deep + "\n")
+open(scan + "/a.jsonl", "w").write(b64 + "\n" + b64x2 + "\n")
+open(scan + "/b.jsonl", "w").write(dot + "\n" + sub + "\n" + deep + "\n")
+PY
+out=$(timeout 30 python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/a2b" --root "$TMP/a2scan" 2>&1); rc=$?
+check "A2: a raw base64 secret ending in '=' under store/secrets is a known secret (it was dropped as a non-secret key)" "$(echo "$out" | grep -qP 'a\.jsonl\tknown:secrets:rawb64\tcount=1' && echo 0 || echo 1)"
+check "A2: ...also when the base64 ends in '=='-style padding" "$(echo "$out" | grep -qP 'a\.jsonl\tknown:secrets:rawb64b\tcount=1' && echo 0 || echo 1)"
+check "A2: a dotfile under store/secrets is read" "$(echo "$out" | grep -qP 'b\.jsonl\tknown:secrets:\.hidden\tcount=1' && echo 0 || echo 1)"
+check "A2: a file in a subdirectory is read, labelled with its relative path" "$(echo "$out" | grep -qP 'b\.jsonl\tknown:secrets:sub/inner\.key\tcount=1' && echo 0 || echo 1)"
+check "A2: ...and one two levels down" "$(echo "$out" | grep -qP 'b\.jsonl\tknown:secrets:sub/deeper/leaf\tcount=1' && echo 0 || echo 1)"
+check "A2: all six loaded (dashboard token + 5 files) and none skipped" "$(echo "$out" | grep -q 'known_secrets=6' && echo "$out" | grep -q 'known_skipped=0' && echo 0 || echo 1)"
+check "A2: no known value appears in the output" "$(echo "$out" | grep -qE '[0-9a-f]{30}' && echo 1 || echo 0)"
+# a tree deeper than the bound is a blind spot, not a quiet cut-off
+python3 -I - "$TMP/a2deep" <<'PY'
+import hashlib, os, sys
+b = sys.argv[1]
+d = b + "/store/secrets"
+for i in range(7):
+    d += "/d%d" % i
+os.makedirs(d)
+open(d + "/leaf", "w").write(hashlib.sha256(b"a2-toodeep").hexdigest()[:40] + "\n")
+open(b + "/store/.dashboard-token", "w").write(hashlib.sha256(b"a2-dash2").hexdigest() + "\n")
+PY
+out=$(python3 -I "$GUARD" --only-roots --home "$TMP/home" --secrets-base "$TMP/a2deep" --root "$TMP/clean" 2>&1); rc=$?
+check "A2: a store/secrets tree deeper than the bound is INCOMPLETE (exit 3, known-secrets-unreadable)" "$([ $rc -eq 3 ] && echo "$out" | grep -q 'incomplete=.*known-secrets-unreadable' && echo 0 || echo 1)"
+
+# A3: archives -- readable ones are scanned decompressed, unreadable ones are blindness that pages
+python3 -I - "$TMP/a3" <<'PY'
+import bz2, gzip, io, lzma, os, sys, tarfile, zipfile
+d = sys.argv[1]
+os.makedirs(d, exist_ok=True)
+tok = ("sk-ant-" + "oat01-" + "Q7" * 20).encode()
+body = b"line before\n" + tok + b"\nline after\n"
+open(d + "/in.log.1.gz", "wb").write(gzip.compress(body))
+open(d + "/in.log.2.bz2", "wb").write(bz2.compress(body))
+open(d + "/in.log.3.xz", "wb").write(lzma.compress(body))
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode="w:gz") as t:
+    ti = tarfile.TarInfo("x.txt"); ti.size = len(body); t.addfile(ti, io.BytesIO(body))
+open(d + "/in.tgz", "wb").write(buf.getvalue())
+os.makedirs(d + "/clean", exist_ok=True)
+open(d + "/clean/ok.log.gz", "wb").write(gzip.compress(b"nothing to see\n" * 50))
+os.makedirs(d + "/corrupt", exist_ok=True)
+open(d + "/corrupt/bad.log.gz", "wb").write(os.urandom(200))
+os.makedirs(d + "/trunc", exist_ok=True)
+full = gzip.compress(body + os.urandom(4000))
+open(d + "/trunc/cut.log.gz", "wb").write(full[: len(full) // 2])
+os.makedirs(d + "/zip", exist_ok=True)
+with zipfile.ZipFile(d + "/zip/a.zip", "w") as z:
+    z.writestr("m.txt", body)
+PY
+core23="Q7Q7Q7Q7Q7Q7Q7Q7Q7"
+out=$(run --root "$TMP/a3" 2>&1); rc=$?
+for f in in.log.1.gz in.log.2.bz2 in.log.3.xz in.tgz; do
+  check "A3: a token inside $f is FOUND (the archive is scanned decompressed, not just counted)" "$(echo "$out" | grep -qP "$(echo "$f" | sed 's/\./\\./g')\tanthropic-setup-token\tcount=1" && echo 0 || echo 1)"
+done
+check "A3: ...the token value is in no output" "$(echo "$out" | grep -q "$core23" && echo 1 || echo 0)"
+out=$(run --root "$TMP/a3/clean" 2>&1); rc=$?
+check "A3: a clean readable .gz is clean: exit 0, opaque=0" "$([ $rc -eq 0 ] && echo "$out" | grep -q 'opaque=0' && echo 0 || echo 1)"
+out=$(run --root "$TMP/a3/corrupt" 2>&1); rc=$?
+check "A3: a corrupt .gz is blindness: exit 3, opaque=1, incomplete=opaque-archives" "$([ $rc -eq 3 ] && echo "$out" | grep -q 'opaque=1' && echo "$out" | grep -q 'incomplete=.*opaque-archives' && echo 0 || echo 1)"
+out=$(run --root "$TMP/a3/trunc" 2>&1); rc=$?
+check "A3: a truncated .gz is blindness too, and the token in its readable part is still reported" "$([ $rc -eq 3 ] && echo "$out" | grep -q 'opaque=1' && echo "$out" | grep -qP 'cut\.log\.gz\tanthropic-setup-token\tcount=1' && echo 0 || echo 1)"
+out=$(run --root "$TMP/a3/zip" 2>&1); rc=$?
+check "A3: a .zip stays opaque and blind (exit 3)" "$([ $rc -eq 3 ] && echo "$out" | grep -q 'opaque=1' && echo 0 || echo 1)"
+A3CALLS="$TMP/a3.calls"; A3ST="$TMP/a3.state"; : > "$A3CALLS"
+printf '#!/bin/bash\nprintf "%%s\\n" "$1" >> "%s"\n' "$A3CALLS" > "$TMP/notify-a3.sh"; chmod +x "$TMP/notify-a3.sh"
+run --root "$TMP/a3/corrupt" --state "$A3ST" --alert --notify-cmd "$TMP/notify-a3.sh" >/dev/null 2>&1; rc=$?
+check "A3: an unreadable archive with --alert sends ONE notice naming opaque-archives, no path" "$([ $rc -eq 3 ] && [ "$(wc -l < "$A3CALLS")" -eq 1 ] && grep -q 'opaque-archives' "$A3CALLS" && ! grep -q "$TMP" "$A3CALLS" && echo 0 || echo 1)"
+run --root "$TMP/a3/corrupt" --state "$A3ST" --alert --notify-cmd "$TMP/notify-a3.sh" >/dev/null 2>&1
+check "A3: ...the same archive the next day does not page again" "$([ "$(wc -l < "$A3CALLS")" -eq 1 ] && echo 0 || echo 1)"
+last=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["last_complete_at"])' "$A3ST")
+check "A3: ...and it does not count as a completed run (last_complete_at stays 0, so the freshness check keeps paging)" "$([ "$last" = "0" ] && echo 0 || echo 1)"
+res=$(python3 -I - "$HERE" "$TMP/a3" <<PY
+$GPY
+tmp = sys.argv[2]
+g.ARCHIVE_CAP = 100
+try:
+    g.scan_file(tmp + "/clean/ok.log.gz", g.PATTERNS)
+    print("READ")
+except g.OpaqueArchive as e:
+    print("OPAQUE", e.total)
+PY
+)
+check "A3: a decompressed size over ARCHIVE_CAP is opaque (a compression bomb stops at the cap, bytes read stay bounded)" "$(echo "$res" | grep -qP '^OPAQUE \d+$' && [ "$(echo "$res" | cut -d' ' -f2)" -le 101 ] && echo 0 || echo 1)"
 
 echo
 echo "transcript-secret-guard selftest: $PASS passed, $FAIL failed"
