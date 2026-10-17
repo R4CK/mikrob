@@ -513,6 +513,38 @@ check "the categorical-online call site never uses the result of try_gemini_seco
 goal1_elif_pin="$(grep -c 'elif gemini_heavy_second_opinion_enabled && ! is_gemini_blocked' "$DISPATCH")"
 check "GOAL 1 (enable without stop) is wired as an independent elif branch on the fallback-after-exhaustion path" "$goal1_elif_pin" "1"
 
+# --- card 52c13499: mikrob never parks, and one nudge per card not per leaf ------------------------
+# (1) /api/agents never lists the channels-agent itself, so agent_is_running("mikrob") always fell
+# through to false -- nudge_recipient must not read that as "mikrob PARKOLVA" (7. szabaly: mikrob
+# never parks). Simulates the exact buggy running=0 input and checks the PARKOLVA text is gone.
+mikrob_parked_sim="$(bash "$DISPATCH" --test-nudge-recipient mikrob 0)"
+check "nudge_recipient(mikrob, running=0) never says PARKOLVA (mikrob never parks, rule 7)" \
+  "$(printf '%s' "$mikrob_parked_sim" | grep -c PARKOLVA)" "0"
+check "nudge_recipient(mikrob, running=0) still routes to mikrob" \
+  "$(printf '%s' "$mikrob_parked_sim" | cut -f1)" "mikrob"
+# A real agent's parked case must still say so -- the fix is mikrob-specific, not a general relax.
+check "nudge_recipient(backend, running=0) still says PARKOLVA for an ordinary agent" \
+  "$(bash "$DISPATCH" --test-nudge-recipient backend 0 | grep -c PARKOLVA)" "1"
+
+# (2) card 501c489f's decomposition posted 3 near-identical drafts for ONE real card as 3 separate
+# nudges (measured: msg 5131/5133/5134, same card, within a minute). aggregate_nudge_events groups
+# nudge_leaf_owner's recorded events by the real card id (the part of a leaf id before "~" for a
+# synthetic fragment, the whole id for a real leaf) -- 3 synthetic fragments of one card must collapse
+# to exactly 1 group line, carrying the total draft count and every fragment's leaf id.
+synth_group="$(printf '8a80ebdb~unit-test\tbackend\tdraft\n8a80ebdb~i18n\tbackend\tdraft\n8a80ebdb~readme\tbackend\tdraft\n' | bash "$DISPATCH" --test-aggregate-nudge-events)"
+check "3 synthetic fragments of ONE card aggregate into exactly 1 group line" \
+  "$(printf '%s\n' "$synth_group" | wc -l | tr -d ' ')" "1"
+check "the one group line carries the card id, draft count 3, and all 3 fragment ids" \
+  "$synth_group" "$(printf '8a80ebdb\tbackend\t3\t0\t8a80ebdb~unit-test,8a80ebdb~i18n,8a80ebdb~readme')"
+
+# Two genuinely DISTINCT real cards (no "~", never the same post_id) must stay two separate groups --
+# the fix collapses repeats of the SAME card, it must not also merge unrelated cards into one notice.
+distinct_group="$(printf 'cardA\tbackend\tdraft\ncardB\tbackend2\texhausted\n' | bash "$DISPATCH" --test-aggregate-nudge-events)"
+check "two distinct real cards stay as two separate group lines" \
+  "$(printf '%s\n' "$distinct_group" | wc -l | tr -d ' ')" "2"
+check "an exhausted-only card's group line carries exhausted_count 1 and draft_count 0" \
+  "$(printf '%s\n' "$distinct_group" | awk -F'\t' '$1=="cardB"')" "$(printf 'cardB\tbackend2\t0\t1\tcardB')"
+
 echo
 echo "offload-dispatch.selftest: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

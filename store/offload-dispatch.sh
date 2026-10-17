@@ -1065,6 +1065,11 @@ print(json.dumps(out))
 NUDGE_FROM="mikrob"
 NUDGE_TAG="[local-llm offload, automatikus jelzes -- nem MikroB olvasta el a kartyadat]"
 
+# card 52c13499: nudge_leaf_owner() below RECORDS events here instead of sending immediately;
+# emit_card_nudges() (called once after the leaf loop) groups them by real card id and sends one
+# message per card. Declared this early so it exists regardless of which code path runs first.
+NUDGE_EVENTS=()
+
 # True when the fleet agent currently holds a session. A message to a PARKED agent is ACCEPTED by the
 # API (it validates the recipient, not its liveness) and sits pending -- the router delivers it only to
 # a live session and abandons it after the window. So a nudge to a parked agent is not an error, it is
@@ -1096,6 +1101,12 @@ nudge_recipient() {
   local assignee="$1" running="$2"
   if [[ -z "${assignee// }" ]]; then
     printf 'mikrob\tA kartyanak NINCS felelose (6a. szabaly), ezert ez neked szol. '
+  elif [[ "$assignee" == "mikrob" ]]; then
+    # card 52c13499: /api/agents only lists spawned role-agents, never the channels-agent itself,
+    # so agent_is_running("mikrob") always falls through to its "not found" false -- the message
+    # then wrongly announced "mikrob PARKOLVA", even though the 7. szabaly says mikrob never parks
+    # (it monitors/restarts the fleet). Treat mikrob as always reachable regardless of $running.
+    printf '%s\t' "$assignee"
   elif [[ "$running" == "1" ]]; then
     printf '%s\t' "$assignee"
   else
@@ -1105,22 +1116,87 @@ nudge_recipient() {
 
 nudge_leaf_owner() {
   # $1 = leaf id   $2 = the assignee the board carries (may be empty)   $3 = draft|exhausted
-  local leaf_id="$1" assignee="$2" kind="$3" text="" running=0 to="" note=""
-
+  #
+  # card 52c13499: this used to POST one message per CALL, so a card decomposed into several
+  # synthetic subtasks (card 501c489f) sent one near-identical nudge per fragment (measured: 3
+  # drafts on one real card -> 3 messages within a minute, same text). Not a loop, but the same
+  # failure shape a loop would have -- the recipient gets repetitive noise for what is, from their
+  # side, ONE card's progress. This function now only RECORDS the event; emit_card_nudges() (called
+  # once after the leaf loop finishes) groups by the real card id (post_id) and sends exactly one
+  # message per card, however many leaves/fragments of it fired in this run.
+  local leaf_id="$1" assignee="$2" kind="$3"
   case "$kind" in
-    draft)
-      text="Draft erkezett a #$leaf_id kartyara (helyi 7B, offload). Nezd meg, MIELOTT magad megirod -- a draft akkor sporol tokent, ha munka kozben hasznalod, nem ha a vegen biralod el. Amikor vegeztel vele, tegyel a kartyara egy sort (sor elejen): Draft-Review: ELFOGADVA / RESZBEN / ELUTASITVA / FELESLEGES (card 1338e68b; a FELESLEGES azt jelenti, hogy a draft JO volt, csak nem volt ra szukseg -- card 504ec76f)." ;;
-    exhausted)
-      text="A helyi modell KIMERULT a #$leaf_id kartyan ($OFFLOAD_LEAF_MAX_ATTEMPTS sikertelen tranziens kiserlet), draft NEM fog erkezni. A kartya nincs blokkolva: vidd tovabb a szokasos online uton." ;;
+    draft|exhausted) ;;
     *) return 0 ;;
   esac
+  NUDGE_EVENTS+=("$leaf_id"$'\t'"$assignee"$'\t'"$kind")
+}
 
-  agent_is_running "$assignee" && running=1
-  IFS=$'\t' read -r to note < <(nudge_recipient "$assignee" "$running")
+# aggregate_nudge_events: pure (no network). stdin = "leaf_id<TAB>assignee<TAB>kind" lines (the
+# exact shape nudge_leaf_owner's calls above accumulate into NUDGE_EVENTS). Groups by the real
+# card id each leaf_id belongs to (synthetic fragments share one card id before their "~"; a real
+# leaf id has no "~" and is its own group) and prints one "post_id<TAB>assignee<TAB>draft_count<TAB>
+# exhausted_count<TAB>leaf_ids_csv" line per group, in first-seen order. Testable with
+# --test-aggregate-nudge-events.
+aggregate_nudge_events() {
+  python3 -c '
+import sys
+from collections import OrderedDict
+groups = OrderedDict()
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line:
+        continue
+    parts = line.split("\t")
+    if len(parts) != 3:
+        continue
+    leaf_id, assignee, kind = parts
+    post_id = leaf_id.split("~", 1)[0]
+    g = groups.setdefault(post_id, {"assignee": assignee, "draft": 0, "exhausted": 0, "leaves": []})
+    if kind == "draft":
+        g["draft"] += 1
+    elif kind == "exhausted":
+        g["exhausted"] += 1
+    g["leaves"].append(leaf_id)
+for post_id, g in groups.items():
+    print("\t".join([post_id, g["assignee"], str(g["draft"]), str(g["exhausted"]), ",".join(g["leaves"])]))
+'
+}
 
-  curl -s -X POST "$DASH/api/messages" -H "Content-Type: application/json" -H @"$hdr_file" \
-    -d "$(python3 -c 'import json,sys; print(json.dumps({"from":sys.argv[1],"to":sys.argv[2],"content":sys.argv[3]+chr(10)+chr(10)+sys.argv[4]+sys.argv[5]}))' \
-      "$NUDGE_FROM" "$to" "$NUDGE_TAG" "$note" "$text")" >/dev/null 2>&1 || true
+# emit_card_nudges: sends the ONE grouped message per real card that aggregate_nudge_events
+# computed from NUDGE_EVENTS, routed through the same nudge_recipient() (so the mikrob-never-parks
+# fix above applies here too). No-op when nothing was recorded this run.
+emit_card_nudges() {
+  [[ ${#NUDGE_EVENTS[@]} -eq 0 ]] && return 0
+  local post_id assignee draft_n exh_n leaves_csv running to note text exh_text
+  while IFS=$'\t' read -r post_id assignee draft_n exh_n leaves_csv; do
+    [[ -z "$post_id" ]] && continue
+    text=""
+    if [[ "${draft_n:-0}" -gt 0 ]]; then
+      if [[ "$draft_n" == "1" ]]; then
+        text="Draft erkezett a #$post_id kartyara (helyi 7B, offload, resz: $leaves_csv). Nezd meg, MIELOTT magad megirod -- a draft akkor sporol tokent, ha munka kozben hasznalod, nem ha a vegen biralod el. Amikor vegeztel vele, tegyel a kartyara egy sort (sor elejen): Draft-Review: ELFOGADVA / RESZBEN / ELUTASITVA / FELESLEGES (card 1338e68b; a FELESLEGES azt jelenti, hogy a draft JO volt, csak nem volt ra szukseg -- card 504ec76f)."
+      else
+        text="$draft_n draft erkezett a #$post_id kartyara (helyi 7B, offload, reszek: $leaves_csv). Nezd meg, MIELOTT magad megirod -- a draft akkor sporol tokent, ha munka kozben hasznalod, nem ha a vegen biralod el. Amikor vegeztel veluk, tegyel a kartyara egy sort (sor elejen): Draft-Review: ELFOGADVA / RESZBEN / ELUTASITVA / FELESLEGES (card 1338e68b; a FELESLEGES azt jelenti, hogy a draft JO volt, csak nem volt ra szukseg -- card 504ec76f)."
+      fi
+    fi
+    if [[ "${exh_n:-0}" -gt 0 ]]; then
+      if [[ "$exh_n" == "1" ]]; then
+        exh_text="A helyi modell KIMERULT a #$post_id kartyan ($OFFLOAD_LEAF_MAX_ATTEMPTS sikertelen tranziens kiserlet), draft NEM fog erkezni. A kartya nincs blokkolva: vidd tovabb a szokasos online uton."
+      else
+        exh_text="A helyi modell $exh_n reszen KIMERULT a #$post_id kartyan ($OFFLOAD_LEAF_MAX_ATTEMPTS sikertelen tranziens kiserlet reszenkent), draft azokhoz NEM fog erkezni. A kartya nincs blokkolva: vidd tovabb a szokasos online uton."
+      fi
+      text="${text:+$text$'\n\n'}$exh_text"
+    fi
+    [[ -z "$text" ]] && continue
+
+    running=0
+    agent_is_running "$assignee" && running=1
+    IFS=$'\t' read -r to note < <(nudge_recipient "$assignee" "$running")
+
+    curl -s -X POST "$DASH/api/messages" -H "Content-Type: application/json" -H @"$hdr_file" \
+      -d "$(python3 -c 'import json,sys; print(json.dumps({"from":sys.argv[1],"to":sys.argv[2],"content":sys.argv[3]+chr(10)+chr(10)+sys.argv[4]+sys.argv[5]}))' \
+        "$NUDGE_FROM" "$to" "$NUDGE_TAG" "$note" "$text")" >/dev/null 2>&1 || true
+  done < <(printf '%s\n' "${NUDGE_EVENTS[@]}" | aggregate_nudge_events)
   return 0
 }
 
@@ -1290,6 +1366,13 @@ fi
 if [[ "${1:-}" == "--test-nudge-recipient" ]]; then
   nudge_recipient "${2-}" "${3-}"
   echo
+  exit 0
+fi
+# --test-aggregate-nudge-events: stdin = "leaf_id<TAB>assignee<TAB>kind" lines (the shape
+# nudge_leaf_owner's calls feed into NUDGE_EVENTS) -> grouped "post_id<TAB>assignee<TAB>
+# draft_count<TAB>exhausted_count<TAB>leaf_ids_csv" lines, one per real card (card 52c13499), pure.
+if [[ "${1:-}" == "--test-aggregate-nudge-events" ]]; then
+  aggregate_nudge_events
   exit 0
 fi
 if [[ "${1:-}" == "--test-attempts-op" ]]; then
@@ -1671,6 +1754,10 @@ for l in json.load(sys.stdin):
     fields = [l["id"], l["title"], l["description"], l["assignee"], l["tags"], l["project"], l["parent_context"], l["assignee_raw"], str(bool(l.get("synthetic", False))).lower()]
     print("|".join(base64.b64encode(str(x).encode()).decode() for x in fields))
 ')
+
+# card 52c13499: one grouped message per real card for everything recorded above, regardless of
+# whether this run drafted anything (an all-exhausted run still owes the owner ONE notice).
+emit_card_nudges
 
 if [[ $drafted -eq 0 ]]; then
   echo "offload-dispatch: $CARD -> no local-eligible parts (routed online)"
