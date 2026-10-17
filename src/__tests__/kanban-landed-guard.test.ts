@@ -143,8 +143,27 @@ describe('the landed guard stays out of the way', () => {
     expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
   })
 
-  it('does not fire for a project with no repo mapping', async () => {
+  it.each(['', 'ingatlan'])('does not fire for a genuinely repo-less project (%s)', async (project) => {
+    card.project = project
+    comments = [{ content: `REVIEW -- ${SHA_A}` }]
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
+  })
+
+  // Card c5ac73ce (Cybersec's finding on 1b02ed3a delta #3, comment 4913): an UNKNOWN project --
+  // neither mapped to a repo nor explicitly listed as repo-less -- used to take the same silent
+  // allow as a genuinely repo-less one. That is fail-open on exactly the shape that hid the
+  // mopsion-rebrand miss. It must now block instead.
+  it('BLOCKS a close for an unknown project name instead of waving it through', async () => {
     card.project = 'some-other-product'
+    comments = [{ content: `REVIEW -- ${SHA_A}` }]
+    expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(true)
+  })
+
+  // MUTATION-SENSITIVE: removing 'ingatlan' from NO_REPO_PROJECTS makes this test fail (block
+  // would flip to true), proving the allow for a legit repo-less project depends on the explicit
+  // list and is not just "anything unmapped passes".
+  it('MUTATION: dropping a NO_REPO_PROJECTS entry reddens the allow for that project', async () => {
+    card.project = 'ingatlan'
     comments = [{ content: `REVIEW -- ${SHA_A}` }]
     expect((await landedGuardVerdict('c1', 'done', false, 'backend2')).blocked).toBe(false)
   })
@@ -276,11 +295,21 @@ describe('an unverified close is recorded apart from a verified one (card b428f3
     expect(infoLogs[0]).toMatchObject({ reason: 'named-commits-absent-from-mapped-repo', namedTokens: 1 })
   })
 
-  it('logs an unmapped project instead of waving it through in silence', async () => {
-    card.project = 'some-other-product'
+  it('logs a genuinely repo-less project as no-repo-mapping, not as an unknown-project block', async () => {
+    card.project = 'ingatlan'
     comments = [{ content: `REVIEW -- ${SHA_A}` }]
     await landedGuardVerdict('c1', 'done', false, 'backend2')
-    expect(infoLogs[0]).toMatchObject({ reason: 'no-repo-mapping', project: 'some-other-product' })
+    expect(infoLogs[0]).toMatchObject({ reason: 'no-repo-mapping', project: 'ingatlan' })
+  })
+
+  // Card c5ac73ce: an unknown project BLOCKS now (see the dedicated describe block below), so it
+  // must never appear here as an allowUnverified log line.
+  it('does NOT log an unknown project as an allowed-unverified close', async () => {
+    card.project = 'some-other-product'
+    comments = [{ content: `REVIEW -- ${SHA_A}` }]
+    const verdict = await landedGuardVerdict('c1', 'done', false, 'backend2')
+    expect(verdict.blocked).toBe(true)
+    expect(infoLogs).toHaveLength(0)
   })
 
   // Card 1b02ed3a (rebrand step 1), Cybersec NO-GO on comment 4864: PROJECT_REPOS had no 'mopsion'

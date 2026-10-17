@@ -22,7 +22,7 @@ MARKER="GATE PRE-TRIAGE (mechanikus, verdict:null)"
 CLEANCORE_REPO="/mnt/h/LM_Studio_Workdir/mopsion"
 MIKROB_REPO="/home/neon/marveen"
 
-CARD=""; REPO=""; SHA=""; DRYRUN=0; TITLE=""; DESC=""; PEER_SHA=""
+CARD=""; REPO=""; SHA=""; DRYRUN=0; TITLE=""; DESC=""; PEER_SHA=""; PRIOR_SHA=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRYRUN=1; shift ;;
@@ -31,6 +31,7 @@ while [[ $# -gt 0 ]]; do
     --title) TITLE="${2:-}"; shift 2 ;;
     --desc) DESC="${2:-}"; shift 2 ;;
     --peer-gate-sha) PEER_SHA="${2:-}"; shift 2 ;;
+    --prior-gate-sha) PRIOR_SHA="${2:-}"; shift 2 ;;
     --*) echo "gate-pretriage-card: unknown arg '$1'" >&2; exit 2 ;;
     *) CARD="$1"; shift ;;
   esac
@@ -63,23 +64,34 @@ ensure_auth_header() {
 # was Fron Ted's own branch tip, not trunk -- whoever trusted that file list was reviewing someone
 # else's code.
 #
+# Card 12a2fcfa, Cybered's finding on a624f539's delta-gate (comment 4805 point 5): a plain `sha~1`
+# only ever diffs the LATEST commit, so a card that accumulated MULTIPLE commits since its last
+# review (not a merge) loses everything before the last one -- measured live, bd8434d8..bc2e4123
+# (3 files, 2 commits) pre-triaged as a 1-file diff because only the second commit's own parent was
+# looked at. Priority order, resolved by the caller:
+#   1. DELTA-GATE: a prior Gate-SHA is known (the card's own earlier REVIEW) -- diff from THAT commit.
+#      It is the exact boundary of what a gate already reviewed, whatever shape the new commits take.
+#   2. FIRST GATE (no prior Gate-SHA, or it does not resolve in this repo): diff from
+#      `merge-base(sha, origin/<trunk>)` -- the branch's fork point, so the WHOLE branch is seen, not
+#      just the tip commit's own parent.
 # `git merge-base <sha> origin/<trunk>` finds whichever parent already sits on trunk's history, in
 # EITHER parent slot, with no assumption about parent order -- this is the exact method Cybersec used
-# by hand to get the correct 5-file list in that finding. Two things keep it from making the COMMON
-# case worse (the regression [[marveen-gate-shas-are-merges-diff-the-branch-side]] warns about -- an
-# older base sweeps in whatever ELSE landed on trunk between the branch's fork point and its own
+# by hand to get the correct 5-file list in the 5b4cca21 finding, and it degrades to the old `sha~1`
+# behaviour for a single, up-to-date commit (its own parent already IS the fork point), so the common
+# case is unchanged by generalizing it beyond merge commits. Two things keep it from making that
+# common case worse (the regression [[marveen-gate-shas-are-merges-diff-the-branch-side]] warns about
+# -- an older base sweeps in whatever ELSE landed on trunk between the branch's fork point and its own
 # merge):
 #   1. Trunk here only ever fast-forwards (never rebased), so this merge-base is the SAME answer at
 #      merge time and at any later query time -- it is not "whatever trunk happens to be today".
 #   2. A standard land's own merge commit becomes trunk's new tip immediately on push, so for that
 #      case `merge-base(sha, origin/trunk)` degenerates to `sha` itself (an empty diff) the moment it
 #      lands -- caught below and treated as "could not use this method", falling back to the exact
-#      `sha~1` this script always used, so the common case is UNCHANGED by this fix.
-merge_diff_base() {
-  local repo="$1" sha="$2" trunk parents mb full
-  parents="$(git -C "$repo" log -1 --pretty=%P "$sha" 2>/dev/null)"
-  if [ "$(printf '%s' "$parents" | wc -w)" -lt 2 ]; then
-    printf '%s~1\n' "$sha"; return 0
+#      `sha~1` this script always used.
+resolve_diff_base() {
+  local repo="$1" sha="$2" prior="${3:-}" trunk mb full
+  if [ -n "$prior" ] && git -C "$repo" cat-file -e "${prior}^{commit}" 2>/dev/null; then
+    printf '%s\n' "$prior"; return 0
   fi
   case "$repo" in
     "$CLEANCORE_REPO") trunk="origin/main" ;;
@@ -99,12 +111,12 @@ merge_diff_base() {
 # comment, not a second commit-selector -- it runs AFTER selection, on whatever commit was already
 # resolved, and only ever adds a warning LINE; it never blocks or changes SHA/exit code.
 build_body() {
-  local repo="$1" sha="$2" title="${3:-}" desc="${4:-}" peer_sha="${5:-}" json base
+  local repo="$1" sha="$2" title="${3:-}" desc="${4:-}" peer_sha="${5:-}" prior_sha="${6:-}" json base
   [[ -d "$repo/.git" ]] || return 3
   git -C "$repo" cat-file -e "${sha}^{commit}" 2>/dev/null || return 3
-  base="$(merge_diff_base "$repo" "$sha")"
+  base="$(resolve_diff_base "$repo" "$sha" "$prior_sha")"
   json="$(bash "$PRETRIAGE" --repo "$repo" --base "$base" --head "$sha" --json 2>/dev/null)" || return 3
-  MARKER="$MARKER" SHA="$sha" REPO="$repo" PT_JSON="$json" TITLE="$title" DESC="$desc" PEER_GATE_SHA="$peer_sha" python3 <<'PY'
+  MARKER="$MARKER" SHA="$sha" BASE="$base" REPO="$repo" PT_JSON="$json" TITLE="$title" DESC="$desc" PEER_GATE_SHA="$peer_sha" python3 <<'PY'
 import json, os, re
 d = json.loads(os.environ["PT_JSON"])
 repo = os.path.basename(os.environ["REPO"].rstrip("/"))
@@ -115,6 +127,9 @@ out = [
     "hogy a QA/Cybersec ne online tokenert deritse ki ugyanezt. A gate a valos reviewt tovabbra is elvegzi.",
     "",
     f'repo: {repo}   tsc: {d.get("tsc")}   valtozott fajlok: {changed}',
+    # Card 12a2fcfa: state the actual diff range used, so the gate can see what was looked at
+    # instead of trusting a hidden sha~1/merge-base assumption.
+    f'tartomany: {os.environ.get("BASE", "?")}..{os.environ["SHA"]}',
 ]
 
 # SELF-CHECK (card ce159d2b): the title's meaningful words vs. the changed-files paths. Generic
@@ -217,7 +232,7 @@ PY
 # ---- Offline core mode (tests / manual): --repo + --sha + --dry-run, no API. ----
 if [[ -n "$REPO" && -n "$SHA" ]]; then
   [[ $DRYRUN -eq 1 ]] || { echo "gate-pretriage-card: --repo/--sha is offline mode, requires --dry-run" >&2; exit 2; }
-  if body="$(build_body "$REPO" "$SHA" "$TITLE" "$DESC" "$PEER_SHA")"; then printf '%s\n' "$body"; else echo "SKIP: commit $SHA not in $REPO (or pre-triage failed)"; fi
+  if body="$(build_body "$REPO" "$SHA" "$TITLE" "$DESC" "$PEER_SHA" "$PRIOR_SHA")"; then printf '%s\n' "$body"; else echo "SKIP: commit $SHA not in $REPO (or pre-triage failed)"; fi
   exit 0
 fi
 
@@ -335,7 +350,39 @@ print(found)
   fi
 fi
 
-body="$(build_body "$repo" "$sha" "$title" "$description" "$peer_sha")" || { echo "SKIP: pre-triage could not run for $sha"; exit 0; }
+# PRIOR GATE-SHA RESOLUTION (card 12a2fcfa, delta-gate base): the SAME extraction method
+# gate-closure-check.py's --expect default uses (the latest REVIEW-opening comment's Gate-SHA line),
+# but walking ALL REVIEWs in chronological order and taking the last one whose declared sha does NOT
+# match the commit `sha` already resolved above -- i.e. the review BEFORE the one that produced $sha.
+# Empty if this is the card's first REVIEW (no prior to diff from), which build_body/resolve_diff_base
+# both treat as "fall through to the merge-base-with-trunk case" (first gate).
+prior_sha="$(COMMENTS="$comments" SHA="$sha" python3 -c '
+import json, os, re
+d = json.loads(os.environ["COMMENTS"]); rows = d if isinstance(d, list) else d.get("comments", [])
+rows = sorted(rows, key=lambda c: c.get("created_at") or c.get("id") or 0)
+REVIEW_OPEN = re.compile(r"^(?:\s*Gate-SHA:[^\n]*\n|\s*\n)*\s*REVIEW\b", re.IGNORECASE)
+GATE_SHA_LINE = re.compile(r"^\s*Gate-SHA\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+sha = os.environ["SHA"].lower()
+prior = ""
+for c in rows:
+    content = c.get("content") or ""
+    if not REVIEW_OPEN.match(content):
+        continue
+    m = GATE_SHA_LINE.search(content)
+    if not m:
+        continue
+    tokens = re.findall(r"[0-9a-f]{6,40}", m.group(1), re.IGNORECASE)
+    if not tokens:
+        continue
+    first = tokens[0].lower()
+    shortest = min(len(first), len(sha))
+    if first[:shortest] == sha[:shortest]:
+        continue  # this IS the review that produced the current sha, not an earlier one
+    prior = first
+print(prior)
+' 2>/dev/null || true)"
+
+body="$(build_body "$repo" "$sha" "$title" "$description" "$peer_sha" "$prior_sha")" || { echo "SKIP: pre-triage could not run for $sha"; exit 0; }
 if [[ $DRYRUN -eq 1 ]]; then printf '%s\n' "$body"; exit 0; fi
 
 # Post as its own author so the comment is unmistakably pre-triage INPUT, not a gate verdict.

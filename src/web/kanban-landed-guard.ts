@@ -79,6 +79,20 @@ const PROJECT_REPOS: Readonly<Record<string, RepoTarget>> = {
   mikrob: MARVEEN,
 }
 
+/**
+ * Project labels that genuinely have NO git repo to check -- decision/user-story/business cards
+ * whose done-transition makes no landing claim at all. Explicit so that one of these can never
+ * be confused with a project that is simply ABSENT from PROJECT_REPOS because of a typo, a
+ * rename-in-flight, or a new project nobody wired up yet (card c5ac73ce, Cybersec's finding on
+ * card 1b02ed3a delta #3, comment 4913): before this list existed, 'mopsion' -- at the time
+ * genuinely unmapped -- and '' / 'Ingatlan' -- which never had anything to map -- fell into the
+ * exact same allowUnverified('no-repo-mapping') branch, indistinguishable from each other.
+ *
+ * Census against the live kanban_cards.project column (2026-10-16), not hand-picked: the only
+ * values with no PROJECT_REPOS entry are '' (no project set) and 'ingatlan'.
+ */
+const NO_REPO_PROJECTS: ReadonlySet<string> = new Set(['', 'ingatlan'])
+
 
 const SHA_RX = /\b[0-9a-f]{7,40}\b/g
 // Card b7c68890: a card whose comments carry an explicit `Gate-SHA:` line (root CLAUDE.md 4b/4c --
@@ -297,8 +311,27 @@ export async function landedGuardVerdict(
 
   const card = getKanbanCard(cardId)
   const project = card?.project ?? ''
-  const target = PROJECT_REPOS[project.toLowerCase()]
-  if (target === undefined) return allowUnverified(cardId, project, 'no-repo-mapping')
+  const key = project.toLowerCase()
+  const target = PROJECT_REPOS[key]
+  if (target === undefined) {
+    if (NO_REPO_PROJECTS.has(key)) return allowUnverified(cardId, project, 'no-repo-mapping')
+    // Loud, not a silent fail-open (card c5ac73ce): an unknown project name is exactly the shape
+    // of the mopsion-rebrand miss -- it could be a typo, a mid-rename label, or a brand-new
+    // project nobody added to either list yet, and the guard has no way to tell those apart from
+    // "this card never had anything to check" without someone saying so explicitly.
+    logger.warn(
+      { cardId, project },
+      'landed-guard: UNKNOWN project -- neither mapped to a repo nor listed as repo-less, blocking until triaged',
+    )
+    return {
+      blocked: true,
+      message:
+        `Ez a kártya nem zárható: a "${project}" projekt-név ismeretlen a landed-guard számára -- ` +
+        `nincs PROJECT_REPOS bejegyzése ÉS nincs a NO_REPO_PROJECTS listán sem (elírás, átnevezés ` +
+        `közbeni állapot, vagy egy új projekt, amit még nem vezettek be). Vedd fel a megfelelő ` +
+        `listára (src/web/kanban-landed-guard.ts), vagy MikroB force: true-val zárhatja, ha indokolt.`,
+    }
+  }
   if (!existsSync(`${target.root}/.git`)) {
     return allowUnverified(cardId, project, 'mapped-repo-missing', { root: target.root })
   }
