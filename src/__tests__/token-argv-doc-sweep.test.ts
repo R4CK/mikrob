@@ -44,7 +44,7 @@ const AUTH_ARGV_PATTERN = '-H[[:space:]]*["\']Authorization:[[:space:]]*Bearer'
 
 // path -> allowed line numbers (git grep -nE output, 1-indexed)
 const ALLOWLIST: Record<string, number[]> = {
-  'DECISIONS.md': [1164, 4931, 14889, 15034, 15076, 15747, 20372, 20944], // historical decision entries about this exact fix (line 20944 is the post-merge position of the entry origin/develop added at 20893 -- shifted by this branch's own DECISIONS.md appends, resolved via the append-union order)
+  'DECISIONS.md': [1164, 4931, 14889, 15034, 15076, 15747, 20372, 20893], // historical decision entries about this exact fix (this branch's own new entries were moved to the file's true tail, after origin/develop's own appends, per decisions-tail-append-guard)
   'README.md': [219], // fork-fejlesztés bullet NAMING the anti-pattern it fixed, not an invocation (post-merge position after both branches' own README bullets)
   'docs/memoria-szuro-hamis-pozitiv-negativ-meres.md': [223], // doc table example row with a placeholder "X" token, not an invocation
   'scripts/agent-msg-get.sh': [30], // comment naming the anti-pattern, not an invocation (shifted by the PORT chain, card d06a325d/#1869)
