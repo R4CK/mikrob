@@ -930,6 +930,12 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     if git -C "$wt" diff --name-only "$base_sha..$merge_sha" -- src/ | grep -q .; then
       rebuild_live_install
     fi
+    # MT-09 (card 9e2c33c2): re-check knowledge-graph anchors on the files this landing touched.
+    # Behind KG_ENABLED, default off -- a no-op (exits 0, prints nothing) until that switch is on,
+    # so this line changes nothing about today's landing behavior. Non-fatal by construction, same
+    # as the blast-radius/graphify steps above.
+    "$(dirname "$0")/kg-check-landing.sh" --repo marveen --repo-dir "$wt" --base "$base_sha" \
+      --sha "$merge_sha" --actor "marveen-land:$agent" --main-dist "$MAIN/dist" 2>&1 | sed 's/^/  /' || true
     echo "$agent: LANDED $branch -> origin/$DEFAULT_BRANCH (develop tip $(git -C "$wt" rev-parse --short HEAD))"
     # Card 0711c19b, reported three times before it got a card. This line used to print ONLY the
     # develop tip, and on every landing since the version bump was automated (ea8b9b95) that tip is

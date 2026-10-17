@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   migrate, openKgDb, rebuild, upsertNode, upsertEdge, setNodeStatus, getNode, KgSecretError,
-  KgValidationError,
+  KgValidationError, upsertAnchor, getAnchorsForPath, setAnchorState,
 } from '../kg/store.js'
 
 const dirs: string[] = []
@@ -265,6 +265,94 @@ describe('kg store CRUD', () => {
       migrate(db)
       expect(() =>
         upsertNode(db, { ...base, id: 'card:' + 'a'.repeat(300), source_ref: 'x' }),
+      ).toThrow(KgValidationError)
+      db.close()
+    })
+  })
+
+  describe('kg_anchors CRUD (MT-09, card 9e2c33c2)', () => {
+    function seedSolution(db: Database.Database, id = 'sol:1'): void {
+      upsertNode(db, {
+        id, type: 'solution', project: 'marveen', title: 'fix', source_ref: 'kanban_comments:1',
+        extractor: 'manual',
+      })
+    }
+
+    it('upsertAnchor inserts once, updates in place on a second call with the same keys', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      seedSolution(db)
+      const id1 = upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen', path: 'src/f.ts', sha: 'aaa1111' })
+      const id2 = upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen', path: 'src/f.ts', sha: 'bbb2222' })
+      expect(id2).toBe(id1)
+      expect(db.prepare('SELECT COUNT(*) AS n FROM kg_anchors').get()).toEqual({ n: 1 })
+      expect(getAnchorsForPath(db, 'marveen', 'src/f.ts')[0].sha).toBe('bbb2222')
+      db.close()
+    })
+
+    it('two whole-file anchors with no symbol on the same path do not collide (NULL-symbol upsert)', () => {
+      // Regression for the SQLite "NULL != NULL in a UNIQUE index" trap this function's own comment
+      // calls out: naive ON CONFLICT(node_id,repo,path,symbol) would insert a second row here
+      // instead of updating the first, because symbol is NULL on both calls.
+      const db = new Database(':memory:')
+      migrate(db)
+      seedSolution(db)
+      upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen', path: 'src/f.ts', sha: 'aaa1111' })
+      upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen', path: 'src/f.ts', sha: 'ccc3333' })
+      expect(db.prepare('SELECT COUNT(*) AS n FROM kg_anchors').get()).toEqual({ n: 1 })
+      db.close()
+    })
+
+    it('a different symbol on the same path gets its own anchor row', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      seedSolution(db)
+      upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen', path: 'src/f.ts', symbol: 'a', sha: 'aaa1111' })
+      upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen', path: 'src/f.ts', symbol: 'b', sha: 'aaa1111' })
+      expect(db.prepare('SELECT COUNT(*) AS n FROM kg_anchors').get()).toEqual({ n: 2 })
+      db.close()
+    })
+
+    it('setAnchorState audits only an actual state transition, not a same-state refresh', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      seedSolution(db)
+      const id = upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen', path: 'src/f.ts', sha: 'aaa1111', state: 'fresh' })
+      setAnchorState(db, id, 'fresh', 'hash1', 'test')
+      expect(db.prepare("SELECT COUNT(*) AS n FROM kg_audit WHERE action='anchor_state_change'").get())
+        .toEqual({ n: 0 })
+      setAnchorState(db, id, 'drifted', 'hash2', 'test')
+      expect(db.prepare("SELECT COUNT(*) AS n FROM kg_audit WHERE action='anchor_state_change'").get())
+        .toEqual({ n: 1 })
+      db.close()
+    })
+
+    it('rejects a path with a ".." segment', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      seedSolution(db)
+      expect(() =>
+        upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen', path: '../etc/passwd', sha: 'aaa1111' }),
+      ).toThrow(KgValidationError)
+      db.close()
+    })
+
+    it('rejects a repo name outside [A-Za-z0-9_-]', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      seedSolution(db)
+      expect(() =>
+        upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen; rm -rf', path: 'src/f.ts', sha: 'aaa1111' }),
+      ).toThrow(KgValidationError)
+      db.close()
+    })
+
+    it('rejects a non-hex sha', () => {
+      const db = new Database(':memory:')
+      migrate(db)
+      seedSolution(db)
+      expect(() =>
+        upsertAnchor(db, { node_id: 'sol:1', repo: 'marveen', path: 'src/f.ts', sha: 'not-hex!' }),
       ).toThrow(KgValidationError)
       db.close()
     })
