@@ -172,23 +172,33 @@ const src = (rel: string): string => readFileSync(join(SRC, rel), 'utf8')
 
 describe('wiring: the wake is asked for by the decided callers only (b\')', () => {
   it('restartAgentProcess cancels on a fresh restart and schedules only a started --continue restart that asked', () => {
+    // This fork's restartAgentProcess is a thin export wrapping withLifecycleLock (card
+    // dc185b52-class mutex), which calls the actual logic in restartAgentProcessUnlocked --
+    // the cancel/schedule pair lives there, not in the exported wrapper upstream's own version
+    // puts it in directly.
     const ap = src('web/agent-process.ts')
-    const body = ap.slice(ap.indexOf('export async function restartAgentProcess('), ap.indexOf('// Claude Code occasionally pops a'))
+    const body = ap.slice(ap.indexOf('async function restartAgentProcessUnlocked('), ap.indexOf('// Claude Code occasionally pops a'))
     expect(body).toContain('if (opts.fresh) cancelRestartWake(name)')
     expect(body).toContain('if (started.ok && !opts.fresh && opts.wake) scheduleRestartWake(name, agentSessionName(name), opts.wake.reason)')
-    expect(body).toContain('startAgentProcess(name, opts)')
+    expect(body).toContain('startAgentProcessUnlocked(name, opts)')
     expect(body.match(/scheduleRestartWake\(/g)).toHaveLength(1)
   })
-  it('ON: the /restart route, the plan switch, the fleet plan switch, the model-fallback demotion', () => {
+  it('ON: the /restart route, the plan switch, the fleet plan switch', () => {
     expect(src('web/routes/agents.ts')).toContain('restartAgentProcess(name, restartOptsFromBody(restartBody))')
     expect(src('web/routes/claude-plans.ts')).toContain("restartAgentProcess(agentId, { wake: { reason: 'plan-switch' } })")
     expect(src('web/claude-plan-fleet-wiring.ts')).toContain("restartAgentProcess(name, { wake: { reason: 'fleet-plan-switch' } })")
-    expect(src('web/model-fallback-runner.ts')).toContain("restartAgentProcess(name, { fresh: false, wake: { reason: 'model-fallback' } })")
   })
-  it('OFF: the idle-only auto-restart and the context guard\'s fresh restart ask for no wake', () => {
+  it('OFF: the idle-only auto-restart, the context guard\'s fresh restart, and the model-fallback demotion ask for no wake', () => {
     const auto = src('web/auto-restart-runner.ts')
     expect(auto).toContain("restartAgentProcess(name, { fresh: cfg.mode === 'fresh' })")
     expect(auto).not.toMatch(/wake:/)
+    // Card 1ce3fd90: model-fallback-runner.ts's restartAgentProcess call is pinned narrow by
+    // model-step-down-starts-fresh.test.ts (a real-incident regression test) to exactly
+    // { fresh: opts.fresh } -- upstream's RESTARTWAKE927 addition here was deliberately NOT
+    // adopted, see that file's own comment at the call site.
+    const fallback = src('web/model-fallback-runner.ts')
+    expect(fallback).toContain('restartAgentProcess(name, { fresh: opts.fresh })')
+    expect(fallback).not.toMatch(/restartAgentProcess\([^)]*wake/)
     const guard = src('web/context-guard-runner.ts')
     expect(guard).toContain('restartAgentProcess(name, { fresh: true })')
     expect(guard).not.toMatch(/restartAgentProcess\([^)]*wake/)

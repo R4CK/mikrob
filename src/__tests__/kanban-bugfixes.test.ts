@@ -158,7 +158,9 @@ describe('web: static fixes', () => {
   })
 
   it('the data-i18n sweep keeps the space between a label and its inline hint', () => {
-    const sweep = web('app.js')
+    // This fork's modularisation (app.js's own "slice" header comment) moved the data-i18n sweep
+    // into app-i18n-nav.js -- upstream keeps it in the monolithic app.js.
+    const sweep = web('app-i18n-nav.js')
     const at = sweep.indexOf("document.querySelectorAll('[data-i18n]').forEach(el => {")
     const body = sweep.slice(at, sweep.indexOf('\n  })\n', at))
     // Run the real rewrite on a stand-in for <label>Leírás <span class="hint">..</span></label>

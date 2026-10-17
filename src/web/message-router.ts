@@ -680,7 +680,13 @@ export function selectFairBatch(sorted: readonly AgentMessage[], cap: number): A
       // content string, so there is no spoofing surface here the way there is for "URGENT:" in
       // a message body.
       if (isUrgentDelivery(m, MAIN_AGENT_ID)) { urgent.push(m); continue }
-      const cls = classifyAgentMessage(m.from_agent, m.to_agent)
+      // Card 71263d15 (A), (a7): a throwing classifyAgentMessage must not crash the WHOLE batch
+      // selection over one bad row -- the main per-row loop below already has fault isolation
+      // (markMessageFailed + sender/orchestrator notices) for exactly this, but only reaches it
+      // if the row survives selection. Fall back to "not promotable" so the row proceeds to that
+      // loop ordinarily, instead of taking every other queued message down with it.
+      let cls: ReturnType<typeof classifyAgentMessage> | null = null
+      try { cls = classifyAgentMessage(m.from_agent, m.to_agent) } catch { cls = null }
       const promotable = cls?.category === 'trusted-peer' || cls?.category === 'channel-inbound'
       ;(promotable && isUrgentMessage(m.content) ? urgent : ordinary).push(m)
     }

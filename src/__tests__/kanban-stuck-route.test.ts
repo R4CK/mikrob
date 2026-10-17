@@ -23,6 +23,9 @@ describe('GET /api/kanban/stuck (card 7b0b822f)', () => {
   it('returns idle in_progress cards, not a 404 for a card literally named "stuck"', async () => {
     createKanbanCard({ id: 'c1', title: 'a stuck card', status: 'in_progress', assignee: 'backend' })
     getDb().prepare('UPDATE kanban_cards SET created_at = ? WHERE id = ?').run(1_000, 'c1')
+    // Card d06a325d: back-date the opening kanban_card_events row too (see createKanbanCard),
+    // or last_status_at reads "now" instead of the intended-old created_at.
+    getDb().prepare("UPDATE kanban_card_events SET created_at = ? WHERE card_id = 'c1' AND from_status IS NULL").run(1_000)
     const { ctx, out } = fakeCtx('/api/kanban/stuck')
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)

@@ -37,12 +37,14 @@ vi.mock('../db.js', () => ({
   markMessageFailed: (...a: unknown[]) => { liveStatus.set(a[0] as number, 'failed'); return mockMarkFailed(...a) },
   markMessageDone: (..._a: unknown[]) => true,
   markPendingFederatedFailed: (..._a: unknown[]) => true,
+  closeMessagesWithoutDelivery: (..._a: unknown[]) => 0,
   setMessageResult: (..._a: unknown[]) => true,
   createAgentMessage: (...a: unknown[]) => mockCreateMessage(...a),
+  getKanbanCardStateByIdPrefix: (..._a: unknown[]) => null,
   countNewerMessagesFromSameSender: (..._a: unknown[]) => 0,
   stampMessageTrace: (..._a: unknown[]) => false,
   upsertOtelSpan: (..._a: unknown[]) => undefined,
-  closeOtelSpan: (..._a: unknown[]) => false,
+  closeOtelSpanIfOpen: (..._a: unknown[]) => false,
 }))
 vi.mock('../web/voice-directive.js', () => ({ resolveAgentChannelStateDir: () => '/tmp/none' }))
 vi.mock('../web/agent-config.js', () => ({

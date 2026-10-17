@@ -61,7 +61,10 @@ async function call(method: string, path: string, body: unknown): Promise<number
   return status
 }
 
-const move = (id: string, status: string) => call('POST', `/api/kanban/${id}/move`, { status, sort_order: 0, actor: 'orin' })
+// force: true -- card c4f2de32's unrelated reviewed-card-reopen guard (reviewedCardBlocksInProgress)
+// would otherwise refuse a 'waiting' -> 'in_progress' move with no gate verdict comment, which
+// these test cards never carry; this suite is about dispatched_at, not that guard.
+const move = (id: string, status: string) => call('POST', `/api/kanban/${id}/move`, { status, sort_order: 0, actor: 'orin', force: true })
 const put = (id: string, fields: Record<string, unknown>) => call('PUT', `/api/kanban/${id}`, fields)
 
 beforeEach(() => {

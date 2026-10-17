@@ -163,7 +163,11 @@ describe('the HTTP endpoint still does NOT accept a quiet request (7d47ca16 kept
     // name that looks vetted. If that is ever wanted, it is its own card with
     // its own gate, and this test is what has to fail first.
     const src = codeOf('web/routes/messages.ts')
-    expect(src).toContain('createAgentMessage(from.trim(), storedTo, stampedContent, trimmedOriginNote)')
+    // Köteg 18 (card d06a325d, 795d1f48 a): the call now also passes `{ urgent: urgent === true }`
+    // -- a DIFFERENT, already-gated option (mayMarkUrgent + MESSAGE_URGENT_DEVICE_IDS, checked
+    // before this line), not the quietClass/wake allowlist this test pins shut. The pin on THAT
+    // allowlist stays: wake/quietClass are still absent from the HTTP route.
+    expect(src).toContain('createAgentMessage(from.trim(), storedTo, stampedContent, trimmedOriginNote, null, { urgent: urgent === true })')
     expect(src).not.toMatch(/wake\s*:/)
     expect(src).not.toMatch(/quietClass/)
   })

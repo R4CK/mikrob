@@ -144,6 +144,9 @@ describe('quarantineReaderPosture', () => {
     mkdirSync(join(root, 'store'), { recursive: true })
     const copy = join(root, 'scripts', 'hooks', 'egress-gate.mjs')
     copyFileSync(join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs'), copy)
+    // egress-gate.mjs imports '../hook-lib.mjs' (scripts/hook-lib.mjs) -- the scratch root needs
+    // its own copy at the same relative path, or the dynamic import below throws.
+    copyFileSync(join(PROJECT_ROOT, 'scripts', 'hook-lib.mjs'), join(root, 'scripts', 'hook-lib.mjs'))
     const hook = await import(pathToFileURL(copy).href)
     const cases = [
       JSON.stringify({ quarantine_reader_posture: 'denylist' }),

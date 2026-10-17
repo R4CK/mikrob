@@ -17,7 +17,7 @@ import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coor
 import { isAllowedVoiceChannelDevice } from '../voice-channel-device-allowlist.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { isReservedSenderId, SYSTEM_DIRECTIVE_SENDER } from '../system-directive-id.js'
+import { isReservedSenderId, SYSTEM_DIRECTIVE_SENDER, LEGACY_SYSTEM_SENDER } from '../system-directive-id.js'
 import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
 import { measureAgentIdentityClaim } from '../agent-identity-measure.js'
 import { isAgentRunning } from '../agent-process.js'
@@ -431,10 +431,11 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // system is rejected. EXACT match on the RAW stored id (review #1827),
       // like the voice mailbox above: a near-miss ('cort ex') that only
       // SANITISES to a listed id would be stored under a name its system
-      // never reads. The reserved directive sender stays closed on the
-      // recipient side too, even if an operator lists it in SYSTEM_SENDER_IDS
-      // (SYSRESERVED918 reserves it on the sender side above).
-      const isSystemRecipient = storedTo !== SYSTEM_DIRECTIVE_SENDER && SYSTEM_SENDERS.has(storedTo)
+      // never reads. BOTH reserved in-process-only sender ids (card 5c5d7bc4) stay closed on
+      // the recipient side too, even if an operator lists either in SYSTEM_SENDER_IDS
+      // (SYSRESERVED918 reserves them on the sender side above) -- 'system-directive' AND the
+      // legacy bare 'system', not just the former.
+      const isSystemRecipient = storedTo !== SYSTEM_DIRECTIVE_SENDER && storedTo !== LEGACY_SYSTEM_SENDER && SYSTEM_SENDERS.has(storedTo)
       if (!isVoiceMailbox && !isSystemRecipient && !isKnownAgent(sanitized)) {
         logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
         json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id, a SYSTEM_SENDER_IDS system id, or "<system>/<agent>" for a federated address` }, 400)
