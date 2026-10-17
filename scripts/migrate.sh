@@ -19,15 +19,22 @@ API="http://localhost:${WEB_PORT:-3420}/api"
 # when there is no token, so that case gets the same 401 (reported below), not
 # a curl syntax error.
 TOKEN_FILE="$INSTALL_DIR/store/.dashboard-token"
-AUTH_HEADER="X-No-Auth: 1"
-[ -r "$TOKEN_FILE" ] && AUTH_HEADER="Authorization: Bearer $(cat "$TOKEN_FILE")"
+# A token in curl argv is world-readable via /proc/<pid>/cmdline -- feed the auth header through a
+# 0600 temp file (-H @"$HDR_FILE") instead, same pattern as every other dashboard caller in this fork.
+HDR_FILE="$(mktemp)"; chmod 600 "$HDR_FILE"
+trap 'rm -f "$HDR_FILE"' EXIT
+if [ -r "$TOKEN_FILE" ]; then
+  printf 'Authorization: Bearer %s\n' "$(cat "$TOKEN_FILE")" > "$HDR_FILE"
+else
+  printf 'X-No-Auth: 1\n' > "$HDR_FILE"
+fi
 
 # POST one memory; a check mark only on a 2xx, otherwise the HTTP code is named.
 # Never fatal under set -e: one refused file must not stop the rest.
 post_memory() {
   local payload="$1" ok_label="$2" code
   code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/memories" \
-    -H "Content-Type: application/json" -H "$AUTH_HEADER" \
+    -H "Content-Type: application/json" -H @"$HDR_FILE" \
     --data-binary "$payload" 2>/dev/null)" || true
   case "$code" in
     2??) echo -e "  ${GREEN}✓${NC}$ok_label" ;;
@@ -239,7 +246,7 @@ echo -e "  ${BOLD}$CHUNK_COUNT${NC}$(_t migrate.chunks_prefix)"
 
 if [ "$CHUNK_COUNT" -gt 0 ]; then
   curl -s -w '\n%{http_code}' -X POST "$API/memories/import" \
-    -H "Content-Type: application/json" -H "$AUTH_HEADER" \
+    -H "Content-Type: application/json" -H @"$HDR_FILE" \
     -d "{\"agent_id\": \"$AGENT_ID\", \"chunks\": $(cat /tmp/marveen-migrate-chunks.json)}" | python3 -c "
 import json, sys
 raw = sys.stdin.read().rsplit('\\n', 1)

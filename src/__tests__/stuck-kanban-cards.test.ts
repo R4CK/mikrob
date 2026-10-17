@@ -30,6 +30,11 @@ afterEach(() => {
 function insertCardAt(id: string, status: string, createdAt: number, assignee: string | null = 'backend'): void {
   createKanbanCard({ id, title: `card ${id}`, status: status as never, assignee: assignee ?? undefined })
   getDb().prepare('UPDATE kanban_cards SET created_at = ?, updated_at = ? WHERE id = ?').run(createdAt, createdAt, id)
+  // Card 795d1f48-adjacent (d06a325d): a card created straight into a non-'planned' status now
+  // gets its own opening kanban_card_events row (see createKanbanCard), stamped with the REAL
+  // current time -- out of step with this test's synthetic createdAt. Back-date it the same way,
+  // or last_status_at (MAX(kanban_card_events.created_at)) reads "now" instead of the intended past.
+  getDb().prepare("UPDATE kanban_card_events SET created_at = ? WHERE card_id = ? AND from_status IS NULL").run(createdAt, id)
 }
 
 function insertStatusEvent(cardId: string, toStatus: string, createdAt: number): void {

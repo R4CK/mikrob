@@ -20,6 +20,7 @@ import {
   addKanbanDependency, removeKanbanDependency,
   getKanbanPredecessors, getKanbanSuccessors, dependencyBlockers,
   getUnmetPredecessorsForAllCards, getUnmetKanbanPredecessors, isLinkedToInProgressCard,
+  getUnmetCardBlockersForAllCards, getUnmetCardBlockers,
   countNewHotMemories,
   countPlannedKanbanCards,
   getDbFileSizeMb,
@@ -808,8 +809,16 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // DERIVED, never stored -- a stored flag would be a second source of truth that goes stale the
     // moment a predecessor closes, and this board is polled far more often than it is edited.
     const blockersByCard = getUnmetPredecessorsForAllCards()
+    // card d06a325d/58669bf2: kanban_card_blockers is a second, independent predecessor-edge type
+    // (the /blockers route) -- merged into the same derived `blocked`/`blockedBy` field, deduped
+    // by id, so a card blocked only via that route is not shown as free.
+    const cardBlockersByCard = getUnmetCardBlockersForAllCards()
     let cards = listKanbanCards(includeArchived).map((card) => {
-      const blockers = blockersByCard.get(card.id) ?? []
+      const blockers = [...(blockersByCard.get(card.id) ?? [])]
+      const seen = new Set(blockers.map((c) => c.id))
+      for (const b of cardBlockersByCard.get(card.id) ?? []) {
+        if (!seen.has(b.id)) { blockers.push(b); seen.add(b.id) }
+      }
       return {
         ...card,
         labels: labelsByCard.get(card.id) ?? [],
@@ -1325,6 +1334,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    // PUT to in_progress clears but does not dispatch; /move remains the only
+    // dispatch path (KARTYADISPATCH1010). updateKanbanCard applies the shared
+    // dispatched_at clear (kanbanWriteClearsDispatch, db.ts); no fireKanbanDispatch call belongs here.
     if (updateKanbanCard(id, normalizeProjectName(data), { actor, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
       specTemplateGuardCheck(id, specTemplatePrevStatus, data.status, actor)
       void decisionsGuardCheck(id, specTemplatePrevStatus, data.status, actor)
@@ -1528,7 +1540,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const card = getKanbanCard(id)
     if (!card) { json(res, { error: 'Kártya nem található' }, 404); return true }
     // Same derived fields as the list, so a caller that opened one card sees what the board shows.
-    const blockers = getUnmetKanbanPredecessors(id)
+    // card d06a325d/58669bf2: merged with kanban_card_blockers, same reasoning as the list route.
+    const blockers = [...getUnmetKanbanPredecessors(id)]
+    const seenBlockerIds = new Set(blockers.map((c) => c.id))
+    for (const b of getUnmetCardBlockers(id)) {
+      if (!seenBlockerIds.has(b.id)) { blockers.push(b); seenBlockerIds.add(b.id) }
+    }
     json(res, {
       ...card,
       blocked: blockers.length > 0,

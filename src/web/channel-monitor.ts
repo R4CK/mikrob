@@ -37,6 +37,7 @@ import {
 import { sendSystemDirective } from './system-directive.js'
 import { isRestartInFlight, beginRestart, endRestart } from './restart-lock.js'
 import { resolveMainConfigDecision, type MainConfigDecision } from './main-config-decision.js'
+import { runMainContinueRestart, type ContinueRestartResult } from './main-rotation-continue.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes, collectPollerEvidence, reapForeignMainPollers } from './channel-poller-reap.js'
 import { probeTelegramConflict } from './channel-conflict-probe.js'
@@ -1616,6 +1617,18 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   return { ok: false, error: 'hard restart failed: tmux respawn-pane failed' }
 }
 
+// 8c338dc4: the plan rotation's opt-in continue restart (POST /api/claude-plans/rotate with
+// "continue": true): resumeMarveenSession's --continue respawn instead of the fresh one above,
+// with the fresh one as the fallback. The steps and their order live in main-rotation-continue.ts.
+export function restartMainForRotationContinue(): Promise<ContinueRestartResult> {
+  return runMainContinueRestart({
+    stampConsent: stampFableOverageConsentSharedRoots,
+    resume: resumeMarveenSession,
+    fresh: hardRestartMarveenChannels,
+    warn: (message) => logger.warn(message),
+  })
+}
+
 // Escalate a main channel input that survived the full soft recovery to a hard
 // restart (respawn-pane). Driven by the pure decideStuckInputRestart; this
 // wrapper owns the I/O + counters. Called once per monitor tick right after the
@@ -1975,7 +1988,7 @@ function checkMainKeepaliveStaleness(): void {
     if (loop.decision === 'hold-and-alert') {
       keepaliveLoopAlerted = true
       logger.warn({ ageMs, uselessRespawns: loop.uselessRespawns }, 'Keepalive loop breaker: respawns did not advance the keepalive while the poller is alive -- holding further respawns (KEEPALIVELOOP923)')
-      sendAlert(`⚠️ A fő channel keep-alive ${ageMin} perce nem frissül, de a Telegram-poller él, és ${loop.uselessRespawns} újraindítás sem segített. További újraindítást NEM csinálok (csak a beszélgetést vinné el). Valószínűleg a jelző-forrás akadt el: nézd meg a com.marveen.channel-keepalive-probe launchd jobot és a store/channel-keepalive-probe.log-ot. Ha a jelző újra frissül, a figyelő magától visszaáll.`)
+      sendAlert(`⚠️ A fő channel keep-alive ${ageMin} perce nem frissül, de a Telegram-poller él, és ${loop.uselessRespawns} újraindítás sem segített. További újraindítást NEM csinálok (csak a beszélgetést vinné el). Valószínűleg a jelző-forrás akadt el: nézd meg a com.${SERVICE_ID}.channel-keepalive-probe launchd jobot és a store/channel-keepalive-probe.log-ot. Ha a jelző újra frissül, a figyelő magától visszaáll.`)
     }
     return
   }

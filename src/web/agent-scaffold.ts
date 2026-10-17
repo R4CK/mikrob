@@ -3698,6 +3698,12 @@ export function ensureFleetAuthSection(name: string): void {
 // and every other session is unharmed, and restarting the session restores the plugin. Adapted
 // from upstream's wording: the trailing pointer to a dedicated measurement doc is dropped here
 // because that doc was never ported to this fork (nothing to point at yet).
+//
+// UPSTREAM-SYNC Koteg 18 (card d06a325d, MCPLISTCSATORNA921): extended 2026-10-10 -- not just
+// `claude mcp list`, a CHILD `claude` process (e.g. `claude -p`) launched with the inherited
+// environment loads the channel plugin too, and on the shared `bot.pid` it kills this session's
+// poller the same way. Own finding (memory: nested-claude-p-drops-telegram-plugin): never run the
+// claude CLI inside the channel session; reply via telegram_fallback_send.py instead.
 const MCPLIST_BEGIN = '<!-- BEGIN GENERATED: mcp-list-channel-warning (auto-generated, do not edit by hand) -->'
 const MCPLIST_END = '<!-- END GENERATED: mcp-list-channel-warning -->'
 const MCPLIST_BLOCK_RE = new RegExp(
@@ -3706,15 +3712,19 @@ const MCPLIST_BLOCK_RE = new RegExp(
 
 export function buildMcpListChannelBody(): string {
   return [
-    '## `claude mcp list` egy csatornát birtokló ügynökben',
+    '## `claude mcp list` és gyerek-`claude` egy csatornát birtokló ügynökben',
     '',
     'Ha ez az ügynök csatornát birtokol (Telegram/Discord/Slack), a saját sessionjében NE futtasd',
-    'a `claude mcp list`-et: mérve 2026-09-21-én, a parancs leállítja ennek a sessionnek a',
-    'csatorna-plugin szerverét, és a csatorna-eszközök (reply, react, edit_message,',
-    'download_attachment) elérhetetlenné válnak. A parancs kimenete közben `Connected`-et ír, és',
-    '0-val tér vissza, tehát a hibát semmi nem jelzi. Más sessionök nem sérülnek, a többi',
-    'MCP-szerver életben marad, és a session újraindítása visszahozza a plugint.',
-    'Máshol a parancs hasznos diagnosztika: a korlát a csatornát birtokló session, nem a parancs.',
+    'a `claude mcp list`-et, és ne indíts gyerek-`claude`-ot (pl. `claude -p`) az örökölt',
+    'környezettel: mérve 2026-09-21-én és 2026-10-10-én, a gyerek betölti a csatorna-plugint, az a',
+    'közös `bot.pid` alapján leállítja ennek a sessionnek a pollerét, és a csatorna-eszközök',
+    '(reply, react, edit_message, download_attachment) elérhetetlenné válnak. A parancs kimenete',
+    'közben `Connected`-et ír, és 0-val tér vissza, tehát a hibát semmi nem jelzi. Más sessionök',
+    'nem sérülnek, és a session újraindítása visszahozza a plugint. Ha mégis kell gyerek-`claude`:',
+    'adj neki saját, plugin nélküli `CLAUDE_CONFIG_DIR`-t (ez választja le), a `TELEGRAM_STATE_DIR`-t',
+    'pedig állítsd egy üres mappára. NE töröld: a plugin ekkor a fő ügynök `~/.claude/channels/telegram`',
+    'mappájára esik vissza, és a fő bot pollerét lövi le. Máshol a parancs hasznos diagnosztika:',
+    'a korlát a csatornát birtokló session, nem a parancs.',
   ].join('\n')
 }
 
@@ -4478,7 +4488,7 @@ MINDIG az install időzónáját használd: **${APP_TZ}** (a teljes telepítés 
 - **Channel message \`ts\`**: UTC-ben jön (postfix \`Z\`), átkonvertálni ${APP_TZ}-re
 - **Google Calendar list_events \`dateTime\`**: már lokál ISO 8601 offszettel, OK
 - **SQLite \`unixepoch()\`**: UTC, humán-megjelenítéshez \`localtime\` modifier kell
-- **Cron expressions** (scheduled-tasks + fleet-timer): a scheduler ${APP_TZ} időben értelmezi (SCHEDULER_TZ); a fleet-timer \`once --at\` = ${APP_TZ} fali óra
+- **Cron expressions** (scheduled-tasks): a scheduler ${APP_TZ} időben értelmezi (SCHEDULER_TZ). Egy dátumos cron (pl. \`0 5 22 9 *\`) évente ismétlődik; egyszeri futáshoz a task-config \`"once": true\` mezője kell: az első sikeres futás után a runner maga kapcsolja ki
 
 Heartbeat-eknél és minden időpontot kezelő feladatnál kötelező: \`date\` Bash parancs az elemzés ELŐTT.
 

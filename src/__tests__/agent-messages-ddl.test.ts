@@ -39,6 +39,10 @@ describe('agent_messages DDL parity (card 26ad5302)', () => {
         // create the column too, or a message it inserts would be missing the
         // field the router reads.
         'wake',
+        // Card 795d1f48 (a) / 71263d15 (C): urgent, stop_authorized. Same reasoning as wake --
+        // these are authenticated-by-construction columns createAgentMessage writes to, and the
+        // coordinator winning the boot race must create them too.
+        'urgent', 'stop_authorized',
       ].sort(),
     )
     const indexes = handle

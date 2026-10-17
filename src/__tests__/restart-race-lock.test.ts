@@ -175,8 +175,14 @@ describe('restart-lock wiring (pinned at the source)', () => {
     // The start's own result is RETURNED, not rewritten: whatever the start says -- including an
     // early "Agent is already running" -- is what the caller gets. The property upstream buys with
     // a loud log and an explicit !ok, this shape gets by never manufacturing a verdict of its own.
-    expect(inner).toMatch(/return await startAgentProcessUnlocked\(name, opts\)/)
+    // Köteg 18 (card d06a325d, RESTARTWAKE927): an intermediate `started` binding is now needed to
+    // decide whether to schedule a restart-wake on success, so the pin is on the BINDING + a bare
+    // `return started` (nothing between them reassigns `started` or its `.ok`), not on a literal
+    // `return await ...` tail expression.
+    expect(inner).toMatch(/const started = await startAgentProcessUnlocked\(name, opts\)/)
+    expect(inner).toMatch(/return started\n/)
     expect(inner).not.toMatch(/return\s*\{\s*ok:\s*true/)
+    expect(inner).not.toMatch(/started\s*=\s*\{/) // started.ok is never overwritten
     // A failed STOP still short-circuits with ok:false rather than starting anyway.
     expect(inner).toMatch(/if \(!stopResult\.ok\) return \{ ok: false/)
   })

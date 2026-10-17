@@ -209,6 +209,14 @@ export async function restartFor(name: string, opts: { fresh: boolean }): Promis
     const res = hardRestartMarveenChannels()
     if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
+    // Card 1ce3fd90 (Peti): this call's shape -- exactly { fresh: opts.fresh }, nothing else --
+    // is pinned by model-step-down-starts-fresh.test.ts, a real-incident regression test
+    // predating this round (593k uncached tokens re-fed through --continue after a model
+    // step-down). UPSTREAM-SYNC Koteg 18 proposed adding `wake: { reason: 'model-fallback' }`
+    // here (RESTARTWAKE927: resume work stopped at the quota wall) -- NOT adopted at this call
+    // site, deliberately: it would widen an already-incident-scarred call this fork keeps
+    // deliberately narrow. If the quota-wall-resume behaviour is wanted for model-fallback
+    // restarts, it needs its own card that also updates this test, not a rider here.
     await restartAgentProcess(name, { fresh: opts.fresh })
   }
 }
