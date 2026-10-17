@@ -519,7 +519,13 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "a multi-file port, not a single-hunk fix. NOT adopted here either -- named as a follow-up " +
     "candidate alongside (2), flagged as the higher-priority of the two since it is reliability/ " +
     "data-loss-adjacent rather than a missing convenience. Resolution: keep the fork's file as-is " +
-    "(the security gate is the only point this entry actually decides); blob pinned.",
+    "(the security gate is the only point this entry actually decides); blob pinned." +
+    " RESOLVED 2026-10-17 (card 4aa87fdf, DevO): RESTARTWAKE927 was adopted on develop by backend " +
+    "between our branch cut and landing -- restartAgentProcessUnlocked/restartAgentProcess now " +
+    "both take 'wake?: RestartWakeRequest', scheduleRestartWake/cancelRestartWake wired in " +
+    "(grep-verified on origin/develop). The ACKNOWLEDGED_FORK_ANCHORS 'absent' anchor (below) " +
+    "caught this correctly; updated to 'present' to guard against future removal. Blob bumped to " +
+    "develop's post-adoption sha.",
   'src/web/routes/updates.ts':
     "Keep the FORK's spawnUpdateScript helper wholesale. The conflict is structural, not a " +
     "disagreement: upstream 31d1e94f (#1189, AUTOUPDNODEENV905) patched the INLINE update.sh spawn " +
@@ -3030,7 +3036,7 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   //     sentinel path while upstream's merged policy makes the same state loud; that argument is
   //     unchanged and still belongs on a gated card, not here.
   'src/web/routes/updates.ts': '7755cd0e260fe60fc274d1475afd31f9e4503419',
-  'src/web/routes/claude-plans.ts': 'b5625ab7afbe852df36b617efb29b22ba80f4c9e',
+  'src/web/routes/claude-plans.ts': '5d7d740d1df2c196626413acd34b2f4b65ea1a0b',
   'scripts/dashboard-user.ts': '0711c0edd9914dd9192e2810936ea465cdd3dfbb',
   'src/config-registry.ts': '3d07027845c86229efe6d871aad7940c419ed0d2',
   'src/web/inbox-nudge-watcher.ts': '183bf0f988db707e70041119f2078bd311c46269',
@@ -3607,17 +3613,16 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
   'src/web/routes/claude-plans.ts': {
     needle: 'RESTARTWAKE927',
     file: 'src/web/agent-process.ts',
-    expect: 'absent',
+    expect: 'present',
     because:
-      "Card 4aa87fdf (2026-10-17): NOT adopted -- upstream's restartAgentProcess takes a " +
-      "'wake: { reason }' option so a plan-switch restart does not blindly clobber a pane that may " +
-      "be mid-turn; this fork's restartAgentProcess (src/web/agent-process.ts) has no such option " +
-      "(signature is only { fresh?: boolean }). This is the same failure class as the measured " +
-      "165k-token near-miss documented elsewhere in this file's history for a different restart " +
-      "path -- named as the higher-priority follow-up of the two items this entry defers, not built " +
-      "here because it means changing restartAgentProcess's signature at every call site, not a " +
-      "single-hunk fix. If RESTARTWAKE927 (or an equivalent wake-aware restart option) appears on " +
-      "restartAgentProcess without a fresh decision, that is a silent adoption via history-merge.",
+      "Card 4aa87fdf (2026-10-17): originally an 'absent' anchor catching silent adoption of " +
+      "upstream's wake-aware-restart option. The anchor fired correctly on landing: backend adopted " +
+      "RESTARTWAKE927 on develop between branch-cut and landing -- restartAgentProcess now takes " +
+      "'wake?: RestartWakeRequest' and routes/claude-plans.ts calls it with { wake: { reason: " +
+      "'plan-switch' } }. Decision logged in the text entry above. Flipped to 'present' so that " +
+      "if the wake option is removed from agent-process.ts (reverting the adoption), this anchor " +
+      "catches it -- the same failure class (mid-turn restart, 165k-token near-miss history) that " +
+      "made the feature a priority in the first place.",
   },
   'src/web/agent-scaffold.ts': {
     needle: 'hookScriptAlreadyEffectiveInOtherScope',
