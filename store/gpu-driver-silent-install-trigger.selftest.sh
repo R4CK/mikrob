@@ -159,6 +159,7 @@ run
 check "positive: exit 0"            "0" "$RC"
 check "positive: schtasks call, no extra params" "/run /TN MikroB-GPU-Driver-Install" "$SCHTASKS_CALLS"
 check "positive: approval recorded as used" "appr-1" "$(python3 -c "import json; print(json.load(open('$TMP/trigger-state.json')).get('lastTriggeredApprovalId'))" 2>/dev/null)"
+check "positive: approval recorded in usedApprovalIds set" "['appr-1']" "$(python3 -c "import json; print(json.load(open('$TMP/trigger-state.json')).get('usedApprovalIds'))" 2>/dev/null)"
 
 # --- 8. REPLAY GUARD: same approval, run again -> no-op, no second schtasks call. ------------
 run
@@ -191,6 +192,36 @@ check "schtasks failure: exit 2" "2" "$RC"
 check "schtasks failure: state unchanged (appr-10 NOT recorded)" "appr-1" \
   "$(python3 -c "import json; print(json.load(open('$TMP/trigger-state.json')).get('lastTriggeredApprovalId'))" 2>/dev/null)"
 FAKE_SCHTASKS_EXIT=0
+
+# --- 11. F2 regression: TWO distinct fresh approvals both fire across two runs, and once a
+# SECOND id is recorded, the state must still remember every EARLIER one too (not just the
+# latest) -- this is the exact "last-used-only forgets an earlier id" shape the bug report
+# described. Continues on the same $TMP/trigger-state.json used by cases 7-10 above, which
+# already has appr-1 recorded -- that is part of what this case checks (appr-1 must survive).
+write_fixtures '[{"id":"appr-11a","status":"approved","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+run
+check "F2 two-approvals (1st): schtasks fired" "/run /TN MikroB-GPU-Driver-Install" "$SCHTASKS_CALLS"
+write_fixtures '[{"id":"appr-11b","status":"approved","resolved_at":'"$NOW"'},{"id":"appr-11a","status":"approved","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+run
+check "F2 two-approvals (2nd, appr-11a already used): schtasks fired for appr-11b" \
+  "/run /TN MikroB-GPU-Driver-Install" "$SCHTASKS_CALLS"
+USED_SET="$(python3 -c "import json; print(sorted(json.load(open('$TMP/trigger-state.json')).get('usedApprovalIds',[])))" 2>/dev/null)"
+check "F2: every used id remembered, not just the latest" "['appr-1', 'appr-11a', 'appr-11b']" "$USED_SET"
+# A third run with NO new approval must now be a no-op for every old id (not just the last one).
+run
+check "F2: no previously-used id refires" "" "$SCHTASKS_CALLS"
+
+# --- 12. LOCK: a held lock makes a concurrent invocation a clean no-op, no schtasks call. ------
+# Fresh, never-before-seen approval id -- the ONLY reason this must not fire is the held lock,
+# not the replay guard (which would also independently block a reused id, confounding the case).
+write_fixtures '[{"id":"appr-12","status":"approved","resolved_at":'"$NOW"'}]' "$EMPTY_INPROGRESS" "$NEWER_AVAILABLE"
+LOCK12="$TMP/trigger-state12.json.lock"
+exec {HELD_LOCK_FD}>"$LOCK12"
+flock -n "$HELD_LOCK_FD" || echo "  FAIL could not pre-acquire test lock"
+GPU_DRIVER_INSTALL_LOCK_FILE="$LOCK12" run
+check "lock held: exit 0"            "0" "$RC"
+check "lock held: no schtasks call"  ""  "$SCHTASKS_CALLS"
+exec {HELD_LOCK_FD}>&-
 
 if [ "$fail" -eq 0 ]; then
   echo "selftest: PASS"
