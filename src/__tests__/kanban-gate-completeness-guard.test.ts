@@ -183,6 +183,22 @@ describe('gateCompletenessGuardVerdict', () => {
     expect(v.message).toContain('Cybersec')
   })
 
+  it('card e87eef21 (WhiteHat f5ff1d5a F1): a NO-GO comment that mentions PASS/GO/SKIP elsewhere in its BODY (not the verdict line) still blocks the close', () => {
+    card.description = 'Gate: QA + Cybersec'
+    comments = [
+      { author: 'backend2', content: 'REVIEW -- kesz', created_at: 100 },
+      { author: 'qa', content: 'QA PASS', created_at: 200 },
+      {
+        author: 'cybersec',
+        content: 'CYBERSEC NO-GO -- F1 meg nyitva.\nA korabbi korben ez meg PASS volt, most mar nem.',
+        created_at: 201,
+      },
+    ]
+    const v = gateCompletenessGuardVerdict('c1', 'done', false)
+    expect(v.blocked).toBe(true)
+    expect(v.message).toContain('Cybersec')
+  })
+
   it('a SKIP-marker (declared jurisdiction decline) satisfies the requirement', () => {
     card.description = 'Gate: QA + Cybered'
     comments = [
