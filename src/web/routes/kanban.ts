@@ -42,6 +42,7 @@ import { draftReviewGuardVerdict } from '../kanban-draft-review-guard.js'
 import { decisionsGuardVerdict, decisionsGuardCheck } from '../kanban-decisions-guard.js'
 import { dedupPrefilterDescriptionUpdate } from '../kanban-dedup-prefilter-guard.js'
 import { specTemplateGuardCheck } from '../kanban-spec-template-guard.js'
+import { onKanbanCardStatusChanged } from '../kg-capture-hook.js'
 import { isForbiddenAssignee, FORBIDDEN_ASSIGNEE_MESSAGE, isInvalidAssigneeShape, INVALID_ASSIGNEE_TYPE_MESSAGE } from '../kanban-assignee-guard.js'
 import { isInvalidKanbanIdShape, isValidKanbanId, KANBAN_ID_PATTERN_DESC, INVALID_KANBAN_ID_MESSAGE } from '../kanban-id-guard.js'
 
@@ -1327,6 +1328,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (updateKanbanCard(id, normalizeProjectName(data), { actor, force: force === true, reason: typeof reason === 'string' ? reason : undefined })) {
       specTemplateGuardCheck(id, specTemplatePrevStatus, data.status, actor)
       void decisionsGuardCheck(id, specTemplatePrevStatus, data.status, actor)
+      onKanbanCardStatusChanged(id, specTemplatePrevStatus, data.status)
       json(res, { ok: true }); return true
     }
     // Card c4f2de32: distinguish "no such card" from "refused to re-open reviewed work", so the
@@ -1437,6 +1439,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       // Fire-and-forget: fireKanbanDispatch's own try/catch means this never rejects, and
       // awaiting it here would hold the HTTP response on a pane-idle wait (card 900178fa).
       if (status === 'in_progress') void fireKanbanDispatch(id, actor)
+      onKanbanCardStatusChanged(id, specTemplatePrevStatus, status)
       json(res, { ok: true })
       return true
     }

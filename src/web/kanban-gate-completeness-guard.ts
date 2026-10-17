@@ -128,14 +128,18 @@ export function parseGateDesignation(gateLine: string): Set<GateAgent> | null {
 // CLAUDE.md rule 4b) and "REVIEW" on the line after it -- without `m`, `^` anchors to the absolute
 // start of the whole comment, so that (very common) shape never matched at all (card b68ddae8's own
 // completion comment, 13817, is exactly this shape).
-const REVIEW_RX = /^\s*REVIEW\b/im
+// Exported (MT-05, card c991508f) so the knowledge-graph capture pipeline finds "the latest
+// builder REVIEW comment" with the exact same regex this guard already uses -- a second,
+// independently-drifting copy of "what counts as a REVIEW comment" is exactly the parser-fragility
+// class rule 4b/4c were written to stop (see this file's own header).
+export const REVIEW_RX = /^\s*REVIEW\b/im
 /** QA's own verdict convention prefixes with "REVIEW: QA PASS/FAIL" -- the SAME word builders use
  *  to announce a new round. Counting a gate's own verdict comment as a round-marker made every
  *  OTHER gate's verdict posted BEFORE it look stale, even when nothing had changed (card b68ddae8:
  *  Cybered's GO landed before QA's "REVIEW: QA PASS", so QA's own comment "started a new round" a
  *  moment after Cybered had already verdicted the SAME commit -- Cybered's real, fresh GO was
  *  discarded as pre-round). Only a non-gate author (the builder, MikroB, ...) can open a new round. */
-const GATE_AGENT_NAMES: ReadonlySet<string> = new Set<GateAgent>(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered'])
+export const GATE_AGENT_NAMES: ReadonlySet<string> = new Set<GateAgent>(['qa', 'qa2', 'cybersec', 'cybersec2', 'cybered'])
 
 interface Comment {
   readonly author: string

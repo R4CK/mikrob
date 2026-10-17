@@ -278,6 +278,11 @@ export const FIXTURE_EXCEPTIONS: readonly FixtureException[] = Object.freeze([
     sha256: 'db8f43c042cf5bdf36abda27c6fb50a1eac827489a10916a552531b93cb548cd',
     reason: 'collectors config validation: this literal IS the input to "rejects a raw secret in secret_ref (must be vault:)". Its raw-secret shape is the subject under test.',
   },
+  {
+    path: 'src/__tests__/kg-capture-pipeline.test.ts',
+    sha256: '1a5d44a2dca19669d72edf4c4f1c27c4c1ca4b4408fbb17f6ce4ad452d78ddb3',
+    reason: 'MT-05 EK-MT-4: this literal IS the input to "a REVIEW carrying a known secret shape produces no kg node at all" (the standard AWS-docs example access-key placeholder). A neutral string would not trigger findSecretShape and would silently stop testing the thing.',
+  },
 ]);
 
 export type ExceptionProblem = { path: string; reason: string };
