@@ -82,6 +82,10 @@ fi
 
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: no token file at $TOKEN_FILE"; exit 1; }
 TOKEN="$(cat "$TOKEN_FILE")"
+# Drop any inherited export attribute (613a8142 F1 class, follow-up card 2d4c7943 INFO -> 03d48dab):
+# if a caller already exported a variable named TOKEN, bash would keep that attribute across this
+# reassignment and leak the real token into the curl/python3 children spawned below.
+declare +x TOKEN
 
 # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card b267df80): the token must never be a curl
 # argv (/proc/<pid>/cmdline is world-readable). Private 0600 header file instead, -H @"$hdr_file",

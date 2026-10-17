@@ -18,6 +18,10 @@ if [ ! -f "$TOKEN_FILE" ]; then
 fi
 
 DASHBOARD_TOKEN="$(cat "$TOKEN_FILE")"
+# Drop any inherited export attribute (613a8142 F1 class, follow-up card 2d4c7943 INFO -> 03d48dab):
+# if a caller already exported a variable named DASHBOARD_TOKEN, bash would keep that attribute
+# across this reassignment and leak the real token into the curl children spawned below.
+declare +x DASHBOARD_TOKEN
 # Dashboard port: env WEB_PORT, else the install .env, else 3420.
 WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')}"
 WEB_PORT="${WEB_PORT:-3420}"

@@ -14,6 +14,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 TOKEN=$(cat store/.dashboard-token)
+# Drop any inherited export attribute (613a8142 F1 class, follow-up card 2d4c7943 INFO -> 03d48dab):
+# if a caller already exported a variable named TOKEN, bash would keep that attribute across this
+# reassignment and leak the real token into the curl/python3 children spawned below.
+declare +x TOKEN
 BLOCKED_IDS="c0b1f7c4 2cb07372 6c118f45 5c6fe8df d10e3e70 d5d5781a"
 
 printf 'Authorization: Bearer %s\n' "$TOKEN" | curl -H @- -s http://localhost:3420/api/kanban | python3 -c "
