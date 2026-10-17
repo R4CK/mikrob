@@ -540,11 +540,18 @@ function freshStructuredRow(
   }
 }
 
+// WhiteHat f5ff1d5a F1 (card e87eef21): this used to test VERDICT_RX against the WHOLE comment
+// body, so a NO-GO/FAIL comment that merely MENTIONS "PASS"/"SKIP"/"GO" anywhere outside its own
+// verdict line (e.g. "CYBERSEC NO-GO -- F1 nyitva; korabban PASS volt") read as a fresh POSITIVE
+// here -- measured live: 52 of 87 negative gate comments matched. commentHasFreshNegative already
+// anchors to firstLine() for exactly this reason (CLAUDE.md 4c: the verdict word is the comment's
+// first line); this positive check now does the same, closing the asymmetry rather than leaving
+// the positive and negative checks disagreeing about where a verdict word may live.
 function commentOnlyFresh(comments: readonly Comment[], agent: GateAgent, sinceTs: number | null): boolean {
   return comments.some(
     (c) =>
       (c.author ?? '').toLowerCase() === agent &&
-      VERDICT_RX.test(c.content ?? '') &&
+      VERDICT_RX.test(firstLine(c.content ?? '')) &&
       (sinceTs === null || c.created_at >= sinceTs),
   )
 }
