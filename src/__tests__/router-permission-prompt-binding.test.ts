@@ -30,8 +30,14 @@ const SEP = '─'.repeat(80)
 const PLAIN_NOT_READY_PANE = ['Some tool output that is not a prompt', '', SEP, '  loading…', SEP].join('\n')
 
 const mockGetPendingMessages = vi.fn()
-const mockCreateAgentMessage = vi.fn((..._a: unknown[]) => ({ id: 999 }))
-const mockCapturePane = vi.fn((..._a: unknown[]): string | null => null)
+const mockCreateAgentMessage = vi.fn((...args: unknown[]) => {
+  void args
+  return { id: 999 }
+})
+const mockCapturePane = vi.fn((...args: unknown[]): string | null => {
+  void args
+  return null
+})
 
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
@@ -45,17 +51,17 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 vi.mock('../db.js', () => ({
   getPendingMessages: (toAgent?: string) => (toAgent ? [] : mockGetPendingMessages()),
-  getMessageStatus: (..._a: unknown[]) => 'pending',
-  markMessageDelivered: (..._a: unknown[]) => true,
-  markMessageFailed: (..._a: unknown[]) => true,
-  markMessageDone: (..._a: unknown[]) => true,
-  markPendingFederatedFailed: (..._a: unknown[]) => 0,
-  setMessageResult: (..._a: unknown[]) => true,
+  getMessageStatus: () => 'pending',
+  markMessageDelivered: () => true,
+  markMessageFailed: () => true,
+  markMessageDone: () => true,
+  markPendingFederatedFailed: () => 0,
+  setMessageResult: () => true,
   createAgentMessage: (...a: unknown[]) => mockCreateAgentMessage(...a),
-  countNewerMessagesFromSameSender: (..._a: unknown[]) => 0,
-  stampMessageTrace: (..._a: unknown[]) => false,
-  upsertOtelSpan: (..._a: unknown[]) => undefined,
-  closeOtelSpan: (..._a: unknown[]) => false,
+  countNewerMessagesFromSameSender: () => 0,
+  stampMessageTrace: () => false,
+  upsertOtelSpan: () => undefined,
+  closeOtelSpan: () => false,
   // Fork-only surface (supersededDispatch check in runMessageRouterTick); upstream's mock
   // predates it. Established no-op stub, same as message-router-tick-cap.test.ts.
   getKanbanCardStateByIdPrefix: () => null,

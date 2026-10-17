@@ -2209,8 +2209,8 @@ export const ACKNOWLEDGED_CONFLICTS = {
 
   // Card 1eae1b41 (test/docs group of the 7f0efce3 drift decomposition, DevO, 2026-10-17). The
   // argv-token pattern: upstream's side of all three template files below puts the dashboard
-  // bearer token directly in curl argv (`-H "Authorization: Bearer $(cat ...)"` or a bare curl
-  // with no auth header at all), which CLAUDE.md's own standing rule forbids (world-readable via
+  // bearer token directly as an argv flag (`-H "Authorization: Bearer $(cat ...)"`) or omits the
+  // auth header entirely, which CLAUDE.md's own standing rule forbids (world-readable via
   // /proc/<pid>/cmdline) -- this fork's side already uses the `printf ... | curl -H @-` stdin-file
   // form everywhere else (see token-argv-doc-sweep.test.ts, which treats this exact file pair as
   // already-fixed reference points). KEEP the fork's side on all three; do not adopt upstream's.
@@ -2219,7 +2219,7 @@ export const ACKNOWLEDGED_CONFLICTS = {
   'seed-skills/approval-request-handling/SKILL.md':
     'keep fork (printf | curl -H @- stdin-header pattern, with the comment naming WHY) -- upstream reads WEB_PORT from .env via argv and has no Authorization header in this hunk at all; same reasoning as memoria-heartbeat/SKILL.md',
   'seed-skills/retrospective/SKILL.md':
-    'keep fork (printf | curl -H @- stdin-header pattern, both hunks) -- upstream puts the token in curl argv (`-H "Authorization: Bearer $(cat ...)"`), exactly the anti-pattern CLAUDE.md forbids',
+    'keep fork (printf | curl -H @- stdin-header pattern, both hunks) -- upstream puts the token directly into the `-H "Authorization: Bearer $(cat ...)"` argv flag, exactly the anti-pattern CLAUDE.md forbids',
 
   // seed-scheduled-tasks/nap-zaro/task-config.json: upstream changes type task->heartbeat and adds
   // skipIfBusy:true + catchUpMaxAgeMinutes:180. Per root CLAUDE.md, type:"task" always reports via
