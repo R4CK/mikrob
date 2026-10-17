@@ -12,6 +12,7 @@ The synthetic cases below pin the rule; the numbers in the header of gate-closur
 running it over the real board, where 10 cards carry mixed shas across their history and only 4 of
 them are the hazard.
 """
+import importlib.util
 import io
 import json
 import os
@@ -21,6 +22,18 @@ import sys
 import tempfile
 
 CHECK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gate-closure-check.py")
+CORPUS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gate-verdict-corpus.json")
+
+# Imported (not subprocessed) ONLY for the shared-corpus block below, which calls verdict_of()
+# directly -- card 1e763f16, RedHat follow-up on e87eef21 comment 21526: the two tools (this file
+# and src/web/kanban-gate-completeness-guard.ts) must agree on what counts as an opening verdict,
+# and a shared JSON fixture is how that agreement is pinned without duplicating the corpus itself.
+_store_dir = os.path.dirname(CHECK)
+if _store_dir not in sys.path:
+    sys.path.insert(0, _store_dir)  # gate-closure-check.py's own `import gate_author_role` needs this
+_spec = importlib.util.spec_from_file_location("gate_closure_check", CHECK)
+_gcc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_gcc)
 
 failures = []
 n = 0
@@ -1249,6 +1262,28 @@ if _repo_ok:
 
     shutil.rmtree(_landed_repo, ignore_errors=True)
 
+
+# --- SHARED VERDICT CORPUS (card 1e763f16, RedHat follow-up F0/F1/F3a on e87eef21 comment 21526):
+# --- the SAME fixture file is loaded by src/__tests__/kanban-gate-completeness-guard.test.ts, so a
+# --- change to either tool's recognizer that disagrees with the other shows up as a failure here
+# --- AND there, instead of the two drifting apart silently again. ---------------------------------
+with open(CORPUS, encoding="utf-8") as fh:
+    _corpus = json.load(fh)
+for case in _corpus:
+    n += 1
+    got = _gcc.verdict_of(case["content"])
+    want = case["expected"]
+    if want is None:
+        ok = got is None
+        got_desc = "None" if got is None else "%s/%s" % (got[0], got[1])
+        want_desc = "None"
+    else:
+        ok = got is not None and got[0] == want["gate"] and got[1] == want["outcome"]
+        got_desc = "None" if got is None else "%s/%s" % (got[0], got[1])
+        want_desc = "%s/%s" % (want["gate"], want["outcome"])
+    print("%s %-9s <- %-9s %s" % ("OK  " if ok else "FAIL", want_desc, got_desc, "corpus: " + case["id"]))
+    if not ok:
+        failures.append(("corpus: " + case["id"], want_desc, got_desc))
 
 print()
 print("selftest: %d case(s), %s" % (n, "PASS" if not failures else "FAIL"))
