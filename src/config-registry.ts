@@ -354,6 +354,27 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
   },
+  // --- Knowledge graph (MT, card c65add5a / MT-05 card c991508f) ---
+  {
+    key: 'KG_CAPTURE_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Bekapcsolva: egy kártya done-ra zárásakor (MT-05) a tudásgráf capture-sorba kerül, és a helyi LLM draftol belőle megoldás-csomópontot. Kikapcsolva (alapértelmezés) a kártya-zárás viselkedése bájtra azonos a mai állapottal -- a sorba írás meg sem történik.',
+    module: 'knowledge-graph',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'KG_MAX_SOLUTIONS_PER_CARD',
+    type: 'int',
+    default: 3,
+    description: 'Egy kártya capture-je legfeljebb ennyi solution-csomópontot hozhat létre (MODULTERV 4. szakasz korlátja).',
+    module: 'knowledge-graph',
+    secret: false,
+    requiresRestart: false,
+    min: 1,
+    max: 5,
+  },
   {
     key: 'EMBED_URL',
     type: 'string',

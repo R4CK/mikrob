@@ -75,7 +75,7 @@ function capLength(text: string | null | undefined, max: number): string | null 
 /** Reuses the SAME patterns the commit-time secret-gate scans diffs with (src/security/
  *  secret-gate.ts), so a node body is held to the same bar as a commit -- one source of truth
  *  for "what a secret shape looks like", not a second regex list that can drift from the first. */
-function findSecretShape(text: string | null | undefined): string | null {
+export function findSecretShape(text: string | null | undefined): string | null {
   if (!text) return null
   for (const { name, pattern } of SECRET_PATTERNS) {
     // SECRET_PATTERNS entries may carry the `g`/`y` flag from prior use elsewhere; .test() on a
@@ -299,4 +299,53 @@ export function getNode(db: Database.Database, id: string): Record<string, unkno
   return db.prepare('SELECT * FROM kg_nodes WHERE id = ?').get(id) as
     | Record<string, unknown>
     | undefined
+}
+
+export interface KgAnchorInput {
+  node_id: string
+  repo: string
+  path: string
+  symbol?: string | null
+  line_start?: number | null
+  line_end?: number | null
+  sha: string
+  content_hash?: string | null
+  state?: 'fresh' | 'drifted' | 'gone'
+}
+
+/** Upsert-by-lookup rather than ON CONFLICT: the schema's UNIQUE(node_id, repo, path, symbol)
+ *  treats two NULL `symbol` values as DISTINCT (plain SQLite semantics), so a card-level anchor
+ *  (symbol always NULL, MT-02 alap scope) would insert a fresh duplicate row on every re-run
+ *  instead of updating the existing one. IFNULL-equality in the lookup sidesteps that without
+ *  depending on a quirk of the UNIQUE index. */
+export function upsertAnchor(db: Database.Database, input: KgAnchorInput): void {
+  const now = nowSec()
+  const existing = db
+    .prepare(
+      `SELECT id FROM kg_anchors WHERE node_id = ? AND repo = ? AND path = ? AND IFNULL(symbol, '') = IFNULL(?, '')`,
+    )
+    .get(input.node_id, input.repo, input.path, input.symbol ?? null) as { id: number } | undefined
+  const state = input.state ?? 'fresh'
+  if (existing) {
+    db.prepare(
+      `UPDATE kg_anchors SET line_start = ?, line_end = ?, sha = ?, content_hash = ?, state = ?, checked_at = ?
+       WHERE id = ?`,
+    ).run(input.line_start ?? null, input.line_end ?? null, input.sha, input.content_hash ?? null, state, now, existing.id)
+    return
+  }
+  db.prepare(
+    `INSERT INTO kg_anchors (node_id, repo, path, symbol, line_start, line_end, sha, content_hash, state, checked_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    input.node_id,
+    input.repo,
+    input.path,
+    input.symbol ?? null,
+    input.line_start ?? null,
+    input.line_end ?? null,
+    input.sha,
+    input.content_hash ?? null,
+    state,
+    now,
+  )
 }
