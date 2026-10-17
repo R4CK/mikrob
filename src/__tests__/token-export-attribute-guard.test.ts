@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const STORE_DIR = join(__dirname, '..', '..', 'store')
+const REPO_ROOT = join(__dirname, '..', '..')
 
 const SCRIPTS = [
   'local-llm-rag.sh',
@@ -21,23 +22,53 @@ const SCRIPTS = [
   'decompose-type-stop.sh',
   'card-build-route-24h-measure.sh',
   'kanban-snapshot.sh',
+  'idle-shutdown-check.sh',
 ]
+
+function checkGuard(absPath: string, label: string, varName: string): void {
+  const src = readFileSync(absPath, 'utf-8')
+  // Quotes around `$(cat ...)` vary by script (`TOKEN="$(cat x)"` vs `TOKEN=$(cat x)`), so the
+  // assignment match tolerates either, anchored on the variable name actually used.
+  const assignRx = new RegExp(`^[ \\t]*${varName}="?\\$\\(cat .*$`, 'm')
+  const assignMatch = src.match(assignRx)
+  expect(assignMatch, `${label}: no ${varName}=$(cat ...) assignment found`).not.toBeNull()
+  const assignIdx = assignMatch!.index!
+  const assignLineEnd = src.indexOf('\n', assignIdx)
+  // card-build-route.sh indents this assignment inside an `if` block -- the guard follows on
+  // the next NON-COMMENT statement line, skipping the explanatory comment lines in between.
+  const after = src.slice(assignLineEnd + 1, assignLineEnd + 1 + 600)
+  const nextStatementLine = after
+    .split('\n')
+    .find((line) => line.trim().length > 0 && !line.trim().startsWith('#'))
+  expect(nextStatementLine?.trim(), `${label}: next statement after ${varName} assignment is not the export-attribute guard`).toBe(`declare +x ${varName}`)
+}
 
 describe('TOKEN export-attribute guard present right after loading the dashboard token (card 2d4c7943)', () => {
   for (const script of SCRIPTS) {
     it(`${script} drops the export attribute immediately after assigning TOKEN from the token file`, () => {
-      const src = readFileSync(join(STORE_DIR, script), 'utf-8')
-      const assignMatch = src.match(/^[ \t]*TOKEN="\$\(cat .*$/m)
-      expect(assignMatch, `${script}: no TOKEN="$(cat ...)" assignment found`).not.toBeNull()
-      const assignIdx = assignMatch!.index!
-      const assignLineEnd = src.indexOf('\n', assignIdx)
-      // card-build-route.sh indents this assignment inside an `if` block -- the guard follows on
-      // the next NON-COMMENT statement line, skipping the explanatory comment lines in between.
-      const after = src.slice(assignLineEnd + 1, assignLineEnd + 1 + 600)
-      const nextStatementLine = after
-        .split('\n')
-        .find((line) => line.trim().length > 0 && !line.trim().startsWith('#'))
-      expect(nextStatementLine?.trim(), `${script}: next statement after TOKEN assignment is not the export-attribute guard`).toBe('declare +x TOKEN')
+      checkGuard(join(STORE_DIR, script), script, 'TOKEN')
+    })
+  }
+})
+
+// Card 03d48dab (WhiteHat2 CYBERSEC GO N1 LOW, e912f7db follow-up): the same inheritance class
+// also applies to scripts/ -- these spawn curl/mktemp/python3 children after loading the token
+// from a file, same as the store/ scripts above. Measured on scripts/agent-msg.sh: an exported
+// caller TOKEN survived the reassignment and reached the curl/python3 children's environment.
+// store/sync-agent-templates.sh was also named in the N1 finding, but on inspection it never
+// assigns a TOKEN/DASHBOARD_TOKEN variable itself (every "TOKEN=" occurrence in that file is
+// either a comment or a heredoc test fixture for its own unrelated argv-leak scanner) -- there is
+// no assignment to pin, so it is intentionally left out here, not silently dropped.
+describe('TOKEN/DASHBOARD_TOKEN export-attribute guard present in scripts/ (card 03d48dab)', () => {
+  const SCRIPTS_SCRIPTS_DIR: Array<{ file: string; varName: string }> = [
+    { file: 'agent-msg.sh', varName: 'TOKEN' },
+    { file: 'fleet-safe-start.sh', varName: 'TOKEN' },
+    { file: 'pre-pr-review.sh', varName: 'DASHBOARD_TOKEN' },
+    { file: 'watchdog.sh', varName: 'TOKEN' },
+  ]
+  for (const { file, varName } of SCRIPTS_SCRIPTS_DIR) {
+    it(`scripts/${file} drops the export attribute immediately after assigning ${varName} from the token file`, () => {
+      checkGuard(join(REPO_ROOT, 'scripts', file), `scripts/${file}`, varName)
     })
   }
 })

@@ -197,6 +197,10 @@ TOKEN=""
 HDR_FILE=""
 if [ -f "$INSTALL_DIR/store/.dashboard-token" ]; then
   TOKEN=$(cat "$INSTALL_DIR/store/.dashboard-token")
+  # Drop any inherited export attribute (613a8142 F1 class, follow-up card 2d4c7943 INFO -> 03d48dab):
+  # if a caller already exported a variable named TOKEN, bash would keep that attribute across this
+  # reassignment and leak the real token into the curl children spawned below.
+  declare +x TOKEN
   # SECURITY (Cybersec/gate-ops-scripts-token-in-argv, card b267df80): 0600 temp
   # header file instead of a curl argv (/proc/<pid>/cmdline is world-readable).
   HDR_FILE="$(mktemp)"; chmod 600 "$HDR_FILE"
