@@ -212,15 +212,21 @@ export function upsertNode(db: Database.Database, input: KgNodeInput): void {
     // the archived state is a deliberate decision (setNodeStatus), not metadata a later import run
     // should be able to overwrite. Preserve it and audit the blocked attempt instead of applying
     // the caller's requested status.
+    // F1-a (card eeb57483 RedHat, card 0deb6893): the protection above covered ONLY 'archived' --
+    // 'superseded' is set by the exact same sanctioned, audited path (setNodeStatus) and is just
+    // as deliberate a decision, but a re-import still silently flipped it back to 'active'
+    // with no audit trail at all. Protect both terminal-ish states the same way.
+    const PROTECTED_STATUSES = new Set(['archived', 'superseded'])
     const existing = db.prepare('SELECT status FROM kg_nodes WHERE id = ?').get(input.id) as
       | { status: string }
       | undefined
     const requestedStatus = input.status ?? 'active'
-    const finalStatus = existing?.status === 'archived' ? 'archived' : requestedStatus
-    if (existing?.status === 'archived' && requestedStatus !== 'archived') {
+    const isProtected = existing?.status !== undefined && PROTECTED_STATUSES.has(existing.status)
+    const finalStatus = isProtected ? existing!.status : requestedStatus
+    if (isProtected && requestedStatus !== existing!.status) {
       db.prepare(
         'INSERT INTO kg_audit (node_id, action, actor, before, after, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-      ).run(input.id, 'import_reactivation_blocked', input.extractor, 'archived', requestedStatus, now)
+      ).run(input.id, 'import_reactivation_blocked', input.extractor, existing!.status, requestedStatus, now)
     }
 
     db.prepare(
