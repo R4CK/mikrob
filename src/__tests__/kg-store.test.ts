@@ -128,6 +128,30 @@ describe('kg store CRUD', () => {
     db.close()
   })
 
+  // F1-a (card eeb57483 RedHat, card 0deb6893): the archived-protection above covered ONLY
+  // 'archived' -- 'superseded' is set through the exact same sanctioned, audited path
+  // (setNodeStatus) and is just as deliberate, but a re-import silently flipped it back to
+  // 'active' with no audit row at all. This was RED against the pre-fix code.
+  it('upsertNode on a re-import preserves a superseded node and audits the blocked reactivation', () => {
+    const db = new Database(':memory:')
+    migrate(db)
+    upsertNode(db, { id: 'card:sup1', type: 'card', project: 'marveen', title: 'v1', source_ref: 'x', extractor: 'manual' })
+    setNodeStatus(db, 'card:sup1', 'superseded', 'mikrob')
+
+    upsertNode(db, {
+      id: 'card:sup1', type: 'card', project: 'marveen', title: 'v2 (re-imported)',
+      status: 'active', source_ref: 'x', extractor: 'import:kanban_relations',
+    })
+
+    expect(getNode(db, 'card:sup1')?.status).toBe('superseded')
+    const audit = db
+      .prepare("SELECT * FROM kg_audit WHERE node_id = ? AND action = 'import_reactivation_blocked'")
+      .all('card:sup1') as { before: string; after: string; actor: string }[]
+    expect(audit).toHaveLength(1)
+    expect(audit[0]).toMatchObject({ before: 'superseded', after: 'active', actor: 'import:kanban_relations' })
+    db.close()
+  })
+
   it('upsertNode on a re-import does NOT audit when the node was never archived', () => {
     const db = new Database(':memory:')
     migrate(db)
@@ -149,6 +173,52 @@ describe('kg store CRUD', () => {
     ).not.toThrow()
     const row = getNode(db, 'card:long1') as { title: string }
     expect(row.title).toHaveLength(200)
+    db.close()
+  })
+
+  // R3 (card eeb57483 RedHat C2, card 0deb6893): C2 mutated all three ceilings at once (body
+  // 8000->9000, snippet 12000->13000, source_ref 500->5000000) and the suite still passed 60/60
+  // -- nothing actually pinned the exact numbers, so a ceiling could silently drift and nobody
+  // would notice. These were RED against that mutant (asserting the OLD/correct numbers).
+  it('upsertNode truncates an over-length body to exactly 8000 chars (pins the ceiling)', () => {
+    const db = new Database(':memory:')
+    migrate(db)
+    upsertNode(db, {
+      id: 'card:body1', type: 'card', project: 'marveen', title: 't',
+      body: 'x'.repeat(9000), source_ref: 'x', extractor: 'manual',
+    })
+    const row = getNode(db, 'card:body1') as { body: string }
+    expect(row.body).toHaveLength(8000)
+    db.close()
+  })
+
+  it('upsertNode truncates an over-length snippet to exactly 12000 chars (pins the ceiling)', () => {
+    const db = new Database(':memory:')
+    migrate(db)
+    upsertNode(db, {
+      id: 'card:snip1', type: 'card', project: 'marveen', title: 't',
+      snippet: 'x'.repeat(13000), source_ref: 'x', extractor: 'manual',
+    })
+    const row = getNode(db, 'card:snip1') as { snippet: string }
+    expect(row.snippet).toHaveLength(12000)
+    db.close()
+  })
+
+  it('rejects a source_ref over the 500-char ceiling (pins the ceiling)', () => {
+    const db = new Database(':memory:')
+    migrate(db)
+    expect(() =>
+      upsertNode(db, {
+        id: 'card:srlong1', type: 'card', project: 'marveen', title: 't',
+        source_ref: 'x'.repeat(501), extractor: 'manual',
+      }),
+    ).toThrow(KgValidationError)
+    expect(() =>
+      upsertNode(db, {
+        id: 'card:srok1', type: 'card', project: 'marveen', title: 't',
+        source_ref: 'x'.repeat(500), extractor: 'manual',
+      }),
+    ).not.toThrow()
     db.close()
   })
 
