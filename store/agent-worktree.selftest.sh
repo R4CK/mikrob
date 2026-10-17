@@ -33,6 +33,18 @@ pass=0; fail=0
 ok()  { printf '  [ok ] %s\n' "$1"; pass=$((pass+1)); }
 bad() { printf '  [FAIL] %s\n     %s\n' "$1" "${2:-}"; fail=$((fail+1)); }
 
+# F1 (card b846acf3 comment 6715, Cybersec LOW, follow-up 0b5492b7): every assertion below reads
+# SCOPE out of the script, so they correctly re-exercise whatever scope is live today -- but that
+# also means a regression that rewrites SCOPE itself (e.g. back to the old "@cleancore") derives
+# the SAME wrong scope here and stays green (measured: SCOPE="@cleancore" -> 15/15). A single
+# assertion pinned to the scope this repo actually uses today closes that gap. A future legitimate
+# rename needs this one line updated by hand -- deliberately, since the point is that a rename
+# must not pass silently.
+EXPECTED_SCOPE="@mopsion"
+[ "$SCOPE" = "$EXPECTED_SCOPE" ] \
+  && ok "agent-worktree.sh's SCOPE is the expected '$EXPECTED_SCOPE' (not just internally consistent)" \
+  || bad "agent-worktree.sh's SCOPE is '$SCOPE', expected '$EXPECTED_SCOPE'" ""
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -136,6 +148,31 @@ else
   legacy_own="$(readlink -f "$WORKTREES/legacy-agent/packages/foo" 2>/dev/null)"
   [ "$legacy_link" = "$legacy_own" ] && ok "the migrated legacy worktree now resolves $SCOPE/foo to its own copy" \
     || bad "the migrated legacy worktree still resolves elsewhere" "$legacy_link vs $legacy_own"
+fi
+
+# --- 7b. NESTED MIGRATION: a leftover whole-dir $SCOPE symlink (one level under node_modules, not
+# at node_modules itself) also gets healed, not just the top-level case in #7 above (card b846acf3
+# comment 6715, Cybersec LOW F2). THE GAP: an earlier buggy run could leave node_modules/$SCOPE
+# itself as a whole-directory symlink into $MAIN while node_modules (the level above) was already a
+# real directory -- test #7 only plants the symlink at the outer level, so it never exercises the
+# `[ -L "$tree_nm/$SCOPE" ] && rm -f "$tree_nm/$SCOPE"` line inside link_node_modules_for. Without
+# that line, a worktree already in this state stays pointed at $MAIN forever, even after re-running
+# the fixed script (measured by Cybersec: deleting that line keeps this fixture's OTHER 15 cases
+# green -- only a dedicated case here can see it).
+run nested-legacy-agent >/dev/null 2>&1
+NESTED_TREE="$WORKTREES/nested-legacy-agent"
+rm -rf "$NESTED_TREE/apps/api/node_modules/$SCOPE"
+ln -s "$MAIN/apps/api/node_modules/$SCOPE" "$NESTED_TREE/apps/api/node_modules/$SCOPE"
+[ -L "$NESTED_TREE/apps/api/node_modules/$SCOPE" ] || bad "test setup failed: nested legacy symlink not created" ""
+run nested-legacy-agent >/dev/null 2>&1
+if [ -L "$NESTED_TREE/apps/api/node_modules/$SCOPE" ]; then
+  bad "a leftover whole-dir \$SCOPE symlink one level under node_modules was NOT migrated"
+else
+  ok "a leftover whole-dir \$SCOPE symlink one level under node_modules is migrated on the next run"
+  nested_link="$(readlink -f "$NESTED_TREE/apps/api/node_modules/$SCOPE/foo" 2>/dev/null)"
+  nested_own="$(readlink -f "$NESTED_TREE/packages/foo" 2>/dev/null)"
+  [ "$nested_link" = "$nested_own" ] && ok "after the nested migration, $SCOPE/foo resolves to the worktree's own copy" \
+    || bad "after the nested migration, $SCOPE/foo still resolves elsewhere" "$nested_link vs $nested_own"
 fi
 
 # --- 8. IDEMPOTENT RE-RUN: running twice does not error, and a NEW external dep is picked up ----------
