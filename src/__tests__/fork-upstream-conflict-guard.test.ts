@@ -595,6 +595,13 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
   //     unsafe state to re-detect if "reversed" -- switching to upstream's form would not reopen
   //     any vulnerability -- so there is no production fact worth an anchor, the same shape as the
   //     cosmetic-only test-file entries already in this list.
+  //   - src/__tests__/channel-poller-reap-live-pane.test.ts (card 4aa87fdf, 2026-10-17): upstream
+  //     cf075d41 adds CLAUDE_PLUGIN_ROOT to the victim spawn env and switches from /bin/sleep to node
+  //     (macOS compat). The refusal is a test-side-only change with no production file that changes
+  //     when the follow-up adoption happens: the production file (channel-poller-reap.ts) already has
+  //     PLUGIN_ROOT_ENV_RE AND isPollerArgv, both anchored under its own ACKNOWLEDGED_FORK_ANCHORS
+  //     entry. No unsafe state to re-detect on the production side; the follow-up card closes the
+  //     ps-scan test-coverage gap, not a security regression.
   const UNANCHORED_BACKLOG: readonly string[] = [
     'src/__tests__/context-guard.test.ts',
     'src/__tests__/installer-ollama-nonfatal.test.ts',
@@ -610,6 +617,7 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     'src/__tests__/notify-delivery-honesty.test.ts',
     'src/__tests__/session-send-lock.test.ts',
     'web/lang/en.js',
+    'src/__tests__/channel-poller-reap-live-pane.test.ts',
   ]
 
   it('no refusal ships WITHOUT a tripwire -- the unanchored set may shrink, never grow', () => {
