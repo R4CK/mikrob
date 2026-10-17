@@ -44,13 +44,21 @@ def _telegram_state_dir():
     (card 01dea2f0, Cybersec: this dir also gates access.json, the pairing
     allowlist -- whoever sets the service env could otherwise redirect that read
     to an attacker-controlled directory). Outside the checkout, the env value is
-    ignored and the normal candidate search runs instead."""
+    ignored and the normal candidate search runs instead.
+
+    Card e3d14be9 (Cybersec F1 LOW on 01dea2f0, komment TOCTOU): the check above
+    validated realpath(env) but returned the raw env value -- a symlink inside the
+    checkout that passed validation here could be re-pointed outside it before the
+    caller later opens access.json through this same path, since every read follows
+    the symlink at open time, not at this validation time. Returning the already-
+    resolved path closes that window: whatever this function hands back has no
+    symlink component left to flip underneath the caller."""
     env = os.environ.get("TELEGRAM_STATE_DIR")
     if env:
         resolved = os.path.realpath(env)
         marveen_real = os.path.realpath(MARVEEN)
         if resolved == marveen_real or resolved.startswith(marveen_real + os.sep):
-            return env
+            return resolved
     for cand in (f"{MARVEEN}/.claude/channels/telegram", f"{HOME}/.claude/channels/telegram"):
         if os.path.isfile(f"{cand}/.env"):
             return cand
