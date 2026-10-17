@@ -20926,3 +20926,33 @@ Mindegyik NOT ADOPTED döntéshez, ami konkrét ellenőrizhető szimbólumra hiv
 **Ki döntött:** MikroB (komment 21553 a c188f357-en, megerősítve msg 13555-ben: "F-N2: a (B) irány, explicit sorral... F-N3: (A) most... Fix-Direction: sornév").
 
 **Hivatkozás:** kártya c188f357 (F-N2, F-N3), komment 20936 (RedHat eredeti GO + F-N1..F-N3 lista), komment 21553 (MikroB döntés), msg 13555 (trusted-peer megerősítés), kártya 2e10de7c (F-N3 (B) folytatás, blokkolva), kártya 9655494c (agent-kulcs kiadás tiltása, msg 16764).
+
+## 2026-10-17 -- kártya c991508f: MT F2 (MT-05) tudásgráf-capture pipeline
+
+**Kontextus:** MikroB (force, 1e szabály, msg 13645) megnyitotta c991508f-et (MT F2, MT-05:
+automatikus felvétel kártya-záráskor) a futó c65add5a MODULTERV-fázis kapcsolt gyerekeként,
+az új-fejlesztés-stop alatt. A spec a c65add5a kártya MODULTERV-kommentjében (20665) él,
+nem a c991508f saját leírásában: EK-MT-2 (done + gate AGREE + Gate-SHA -> 1..3 active
+solution node, legalább egy a Gate-SHA-ra horgonyozva), EK-MT-3 (NOSHA/DISAGREE -> legfeljebb
+draft, soha active), EK-MT-4 (ismert secret-alak a REVIEW-ban -> nincs node, queue-sor failed).
+
+**Megoldás:** `src/kg/capture.ts` (DB-only queue állapot-réteg, UPSERT-alapú mark* függvények),
+`src/kg/capture-pipeline.ts` (`runCapture` -- a teljes EK-MT-2/3/4 döntési logika, minden
+I/O-határ injektálva: closureCheck/draftFn/now), `src/web/kg-capture-hook.ts` (settings-gated,
+best-effort hook a kanban PUT/move sikeres ágán). `KG_CAPTURE_ENABLED` alapértelmezetten OFF
+(`'0'`), tehát ez a kártya önmagában nem kapcsol be semmit élesben -- csak a queue-réteg és a
+tesztelt pipeline-függvény létezik, a tényleges worker/CLI, ami a queue-t élesben drénálná,
+nincs megépítve (MT-06/07/08/09/10/11/12/14 ezen a kártyán kívül esnek).
+
+**Mérés:** célzott vitest a working tree-n (nem `fleet-test.sh --ref`, mert az egy már
+commitolt refet tesztel, nem a munkakönyvtárat -- ezt a hibaosztályt ebben a kártyában
+fedeztem fel): 49 Test Files / 705 Tests zöld. EK-MT-4 mutáció-proofolva (a secretHit-ellenőrzés
+ideiglenes semlegesítése pontosan 1 tesztet buktat, visszaállítás byte-azonos). A landolás
+(`marveen-land.sh`) a MERGE EREDMÉNYÉN futtatta a `fleet-test.sh`-t: 1148 Test Files (1
+skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály sem romlott
+(348 finding, baseline tartja).
+
+**Ki döntött:** MikroB (force, 1e szabály, msg 13645), a c65add5a MODULTERV spec szerint.
+
+**Hivatkozás:** kártya c991508f, szülő-fázis c65add5a (MODULTERV komment 20665, döntés-komment
+20673), MikroB msg 13645 (force-nyitás), REVIEW komment 22004 (Gate-SHA, lásd a kártyán).
