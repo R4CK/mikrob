@@ -3131,10 +3131,16 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
     because:
       "The /api/kanban/:id/blockers route (kanban.ts) and its cycle guard blockerWouldCycle " +
       "(db.ts) landed via commit 7e9a7362, the same day this entry's 2026-09-06 measurement round " +
-      "said the feature was 'not a gap'. It is present and functional, just unused by the " +
-      "dashboard (web/app-kanban.js calls only the fork's own /dependencies route, verified). If " +
-      "blockerWouldCycle disappears while the route stays, the cycle guard silently stops -- a " +
-      "correctness regression on a route that is live even though the UI does not exercise it.",
+      "said the feature was 'not a gap'. UPDATE 2026-10-17 (card d06a325d/58669bf2, backend3): the " +
+      "2026-09-25 correction's 'unused by the dashboard' half went stale too -- Koteg 14 " +
+      "(2026-10-14, already on develop before that correction was re-checked) wired " +
+      "web/app-kanban.js's card-detail modal to this exact route (renderCardBlockersSection, 3 call " +
+      "sites), so a live, user-facing feature was silently a no-op: kanban_card_blockers had its " +
+      "own cycle guard but nothing in the status gate (dependencyBlockers) ever read it. Fixed on " +
+      "that card: getUnmetCardBlockers()/getUnmetCardBlockersForAllCards() feed the SAME gate " +
+      "kanban_dependencies does, merged by id. The two tables stay separate (own cycle checks, own " +
+      "tests) -- only the ENFORCEMENT is now shared. If blockerWouldCycle disappears while the " +
+      "route stays, the cycle guard silently stops -- still the reason this anchor exists.",
   },
   'src/web/schedule-runner.ts': {
     // Moved 2026-10-14 (card d7e1d611, Köteg 14, upstream 7f521a80 #862) from the now-gone literal

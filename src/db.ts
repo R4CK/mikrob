@@ -4164,7 +4164,15 @@ export function reviewedCardBlocksInProgress(id: string, nextStatus: string): bo
  */
 export function dependencyBlockers(id: string, nextStatus: string): KanbanCard[] {
   if (nextStatus !== 'in_progress' && nextStatus !== 'done') return []
-  return getUnmetKanbanPredecessors(id)
+  // card d06a325d/58669bf2: kanban_card_blockers is a second, independent predecessor-edge type
+  // (the /blockers route) that used to go unenforced here -- see getUnmetCardBlockers's own
+  // comment. Merged in, deduped by id (a predecessor set via BOTH routes counts once).
+  const predecessors = getUnmetKanbanPredecessors(id)
+  const seen = new Set(predecessors.map((c) => c.id))
+  for (const blocker of getUnmetCardBlockers(id)) {
+    if (!seen.has(blocker.id)) { predecessors.push(blocker); seen.add(blocker.id) }
+  }
+  return predecessors
 }
 
 /**
@@ -5372,6 +5380,23 @@ export function getUnmetKanbanPredecessors(cardId: string): KanbanCard[] {
 }
 
 /**
+ * Card d06a325d/58669bf2: kanban_card_blockers (the `/api/kanban/:id/blockers` route, wired into
+ * the UI since Koteg 14, 2026-10-14) stores a second, independent predecessor-edge type -- its own
+ * table, its own cycle guard (blockerWouldCycle), but NOTHING ever read it from the status gate.
+ * A user adding a "blocker" via the live UI got a visible link and a silent no-op: the card closed
+ * anyway, because dependencyBlockers() only ever queried kanban_dependencies. Treated here as a
+ * second source feeding the SAME gate, not folded into kanban_dependencies itself -- the two tables
+ * have independent cycle checks and tests (kanban-blockers.test.ts), and merging them would be a
+ * bigger, riskier change than this LOW card asked for.
+ */
+export function getUnmetCardBlockers(cardId: string): KanbanCard[] {
+  return getBlockersForCard(cardId)
+    .filter((ref) => ref.status !== 'done')
+    .map((ref) => getKanbanCard(ref.id))
+    .filter((c): c is KanbanCard => c !== undefined)
+}
+
+/**
  * The newDevStop exception (CLAUDE.md rule 1e, card b73722e1): is `cardId` a child (via the
  * `parent_id` chain), predecessor, or successor of a card that was ALREADY `in_progress` at the
  * moment the stop activated? If so, it is a subtask of work already underway, not new development,
@@ -5483,6 +5508,28 @@ export function getUnmetPredecessorsForAllCards(): Map<string, KanbanCard[]> {
   for (const row of rows) {
     const { blocked_id: blockedId, dep_id: depId, ...rest } = row
     const card = rest.id === null || rest.id === undefined ? missingPredecessor(depId) : (rest as KanbanCard)
+    const list = out.get(blockedId)
+    if (list) list.push(card)
+    else out.set(blockedId, [card])
+  }
+  return out
+}
+
+/** Bulk variant of getUnmetCardBlockers, same reasoning and shape as getUnmetPredecessorsForAllCards. */
+export function getUnmetCardBlockersForAllCards(): Map<string, KanbanCard[]> {
+  const rows = db
+    .prepare(
+      `SELECT b.card_id AS blocked_id, b.blocker_id AS blocker_id, c.*
+         FROM kanban_card_blockers b
+         LEFT JOIN kanban_cards c ON c.id = b.blocker_id
+        WHERE c.id IS NULL OR c.status <> 'done'
+        ORDER BY c.status, c.sort_order ASC`,
+    )
+    .all() as (Partial<KanbanCard> & { blocked_id: string; blocker_id: string })[]
+  const out = new Map<string, KanbanCard[]>()
+  for (const row of rows) {
+    const { blocked_id: blockedId, blocker_id: blockerId, ...rest } = row
+    const card = rest.id === null || rest.id === undefined ? missingPredecessor(blockerId) : (rest as KanbanCard)
     const list = out.get(blockedId)
     if (list) list.push(card)
     else out.set(blockedId, [card])

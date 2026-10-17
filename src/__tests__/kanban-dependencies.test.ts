@@ -20,6 +20,10 @@ import {
   getUnmetPredecessorsForAllCards,
   getDb,
   MISSING_PREDECESSOR_STATUS,
+  addCardBlocker,
+  getUnmetCardBlockers,
+  getUnmetCardBlockersForAllCards,
+  dependencyBlockers,
 } from '../db.js'
 import { forceActors } from '../kanban-force-actors.js'
 
@@ -418,5 +422,61 @@ describe('a predecessor that cannot be resolved BLOCKS, it does not vanish (card
     expect(deleteKanbanCard('b')).toBe(true)
     expect(getDb().prepare('SELECT COUNT(*) AS n FROM kanban_dependencies').get()).toEqual({ n: 0 })
     expect(getKanbanPredecessors('a')).toEqual([])
+  })
+})
+
+// Card d06a325d/58669bf2: kanban_card_blockers (the /api/kanban/:id/blockers route, wired into the
+// UI since Koteg 14) had its own cycle guard but NOTHING in the status gate ever read it -- a user
+// adding a "blocker" via the live UI got a silent no-op, the card closed anyway. These tests pin
+// the fix: a kanban_card_blockers edge now blocks the SAME transition a kanban_dependencies edge
+// does, through the SAME gate (dependencyBlockers / moveKanbanCard / updateKanbanCard).
+describe('kanban_card_blockers now feeds the SAME status gate as kanban_dependencies (card 58669bf2)', () => {
+  it('an open blocker refuses planned -> in_progress, exactly like a kanban_dependencies edge', () => {
+    addCardBlocker('a', 'b') // b blocks a, b still planned
+    expect(updateKanbanCard('a', { status: 'in_progress' }, { actor: 'someone' })).toBe(false)
+    expect(getKanbanCard('a')!.status).toBe('planned')
+  })
+
+  it('MUTATION PIN: without the merge in dependencyBlockers, the close above would go through', () => {
+    // dependencyBlockers() ignoring kanban_card_blockers entirely is exactly the regression this
+    // card fixes -- assert the LOW-LEVEL predicate directly, not just the end-to-end move, so a
+    // future refactor that drops the merge fails here even if some other guard happens to catch it.
+    addCardBlocker('a', 'b')
+    expect(dependencyBlockers('a', 'done').map((c) => c.id)).toEqual(['b'])
+    expect(getUnmetCardBlockers('a').map((c) => c.id)).toEqual(['b'])
+  })
+
+  it('once the blocker card is done, the transition goes through', () => {
+    addCardBlocker('a', 'b')
+    updateKanbanCard('b', { status: 'done' }, { actor: 'mikrob', force: true })
+    expect(updateKanbanCard('a', { status: 'in_progress' }, { actor: 'someone' })).toBe(true)
+    expect(updateKanbanCard('a', { status: 'done' }, { actor: 'someone' })).toBe(true)
+  })
+
+  it('a dependency edge AND a blocker edge on the same card both have to clear, not just one', () => {
+    addKanbanDependency('a', 'b')
+    addCardBlocker('a', 'c')
+    updateKanbanCard('b', { status: 'done' }, { actor: 'mikrob', force: true })
+    // c (the blocker) is still open, so a is still refused even though its dependency (b) cleared.
+    expect(updateKanbanCard('a', { status: 'in_progress' }, { actor: 'someone' })).toBe(false)
+    updateKanbanCard('c', { status: 'done' }, { actor: 'mikrob', force: true })
+    expect(updateKanbanCard('a', { status: 'in_progress' }, { actor: 'someone' })).toBe(true)
+    expect(updateKanbanCard('a', { status: 'done' }, { actor: 'someone' })).toBe(true)
+  })
+
+  it('the SAME predecessor via both tables counts once, not twice, in the merged list', () => {
+    addKanbanDependency('a', 'b')
+    addCardBlocker('a', 'b')
+    expect(dependencyBlockers('a', 'done').map((c) => c.id)).toEqual(['b'])
+  })
+
+  it('the board-list and single-card derived blocked/blockedBy pick up a blocker-only edge too', () => {
+    addCardBlocker('a', 'b')
+    expect(getUnmetCardBlockersForAllCards().get('a')?.map((c) => c.id)).toEqual(['b'])
+  })
+
+  it('`force: true` still bypasses a blocker edge, same as a dependency edge', () => {
+    addCardBlocker('a', 'b')
+    expect(updateKanbanCard('a', { status: 'done' }, { actor: 'mikrob', force: true })).toBe(true)
   })
 })
