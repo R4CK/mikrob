@@ -60,10 +60,13 @@ Exit: 0 clean (or only already-alerted findings with --alert), 4 findings, 3 gua
 from __future__ import annotations
 
 import argparse
+import bz2
 import errno
 import glob
+import gzip
 import hashlib
 import json
+import lzma
 import os
 import re
 import shutil
@@ -73,6 +76,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+import zlib
 
 # --- patterns -----------------------------------------------------------------------------------
 # Bytes regexes: transcripts are JSON text, but a scratchpad can hold anything and we never want a
@@ -125,8 +129,14 @@ SKIP_SUFFIXES = (
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".mp3", ".mp4", ".mov",
     ".woff", ".woff2", ".ttf",
 )
-# Compressed archives hide their content from a byte scan: counted as `opaque` so the gap is visible.
-OPAQUE_SUFFIXES = (".zip", ".gz", ".tgz", ".bz2", ".xz")
+# Single-stream compressed files (rotated logs) are decompressed and scanned like any other file, up
+# to ARCHIVE_CAP decompressed bytes each (a compression bomb stops there).
+DECOMPRESS_SUFFIXES = (".gz", ".tgz", ".bz2", ".xz")
+ARCHIVE_CAP = 256 * 1024 * 1024
+# What a byte scan cannot read stays `opaque`: counted, and it makes the run INCOMPLETE (blind), so a
+# secret inside it is a page, not a silent zero. A .zip (member index, no single stream), and any
+# archive that is corrupt, truncated or over ARCHIVE_CAP.
+OPAQUE_SUFFIXES = (".zip",)
 
 MIN_CHUNK = 64
 _DEFAULT_CHUNK = 4 * 1024 * 1024
@@ -226,6 +236,41 @@ def _acceptable_secret(value: bytes) -> bool:
     )
 
 
+SECRETS_MAX_DEPTH = 4
+SECRETS_MAX_FILES = 500
+
+
+def _secret_files(top: str, limits: dict | None = None):
+    """(path, path relative to `top`) for every non-directory entry under store/secrets, dotfiles
+    included, links NOT followed (a link is yielded so the caller can count it as a skip). Depth and
+    count are bounded; hitting a bound is recorded in `limits["truncated"]` (the caller turns it into
+    a problem), never silently dropped."""
+    limits = limits if limits is not None else {}
+    count = 0
+    stack = [(top, 0)]
+    while stack:
+        directory, depth = stack.pop()
+        try:
+            entries = sorted(os.scandir(directory), key=lambda e: e.name)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            limits["truncated"] = True
+            continue
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                if depth + 1 > SECRETS_MAX_DEPTH:
+                    limits["truncated"] = True
+                else:
+                    stack.append((entry.path, depth + 1))
+                continue
+            count += 1
+            if count > SECRETS_MAX_FILES:
+                limits["truncated"] = True
+                return
+            yield entry.path, os.path.relpath(entry.path, top)
+
+
 def load_known_secrets(base: str, home: str) -> tuple[list[tuple[str, bytes]], int, int]:
     """Values of the files that are SUPPOSED to hold a credential -> ([(label, value)], problems, skipped).
 
@@ -300,17 +345,25 @@ def load_known_secrets(base: str, home: str) -> tuple[list[tuple[str, bytes]], i
         if data is not None:
             add_env(data, "known:env:")
 
-    # store/secrets/*: files that hold credentials by location. KEY=VALUE files are read like .env
-    # (secret-named keys only); any other file is one raw value.
-    for path in sorted(glob.glob(os.path.join(base, "store", "secrets", "*"))):
+    # store/secrets/**: files that hold credentials by location, dotfiles and subdirectories included.
+    # A KEY=VALUE file is read like .env (secret-named keys only). A single-line file that gave no
+    # secret-named value is read as ONE raw value instead: a raw base64 secret ending in '=' is shaped
+    # like an empty assignment and would otherwise be dropped as a non-secret key. A link is a
+    # problem (read_regular), a FIFO holds no data at rest and is passed over.
+    secret_limits: dict = {}
+    for path, rel in _secret_files(os.path.join(base, "store", "secrets"), secret_limits):
         data = read_regular(path)
         if data is None:
             continue
-        label = "known:secrets:" + _escape(os.path.basename(path))
+        label = "known:secrets:" + _escape(rel)
+        before = len(found)
         if any(ENV_LINE_RX.match(line) for line in data.splitlines()):
             add_env(data, label + ":")
-        else:
-            add(label, data.strip())
+        stripped = data.strip()
+        if len(found) == before and b"\n" not in stripped and b"\r" not in stripped:
+            add(label, stripped)
+    if secret_limits.get("truncated"):
+        problems += 1  # depth/count bound hit or a directory unreadable: some secret files were not seen
 
     cred_files = [os.path.join(home, ".claude", ".credentials.json")]
     cred_files += sorted(glob.glob(os.path.join(base, "agents", "*", ".claude-config", ".credentials.json")))
@@ -473,8 +526,55 @@ def _open_regular(path: str) -> int:
     return fd
 
 
+class OpaqueArchive(Exception):
+    """A compressed file that could not be read to its end (corrupt, truncated, over ARCHIVE_CAP).
+
+    Carries what WAS found before it gave up, so a hit in the readable part is still reported."""
+
+    def __init__(self, counts: dict[str, int], total: int):
+        super().__init__("opaque archive")
+        self.counts = counts
+        self.total = total
+
+
+class _CappedReader:
+    """read(n) over a decompressor, refusing to hand out more than ARCHIVE_CAP bytes in total.
+
+    A broken stream (corrupt, truncated, over the cap) does not raise: it ends the stream and sets
+    `error`, so the chunk already decoded is still scanned and the caller decides it is opaque."""
+
+    def __init__(self, fh):
+        self._fh = fh
+        self._left = ARCHIVE_CAP
+        self.error: BaseException | None = None
+
+    def read(self, n: int) -> bytes:
+        if self.error is not None:
+            return b""
+        try:
+            # read1: one underlying read, so everything decoded before a break is handed over first
+            data = self._fh.read1(min(n, 65536, self._left + 1))
+            if len(data) > self._left:
+                raise ValueError("archive over cap")
+        except (OSError, EOFError, ValueError, zlib.error, lzma.LZMAError) as exc:
+            self.error = exc
+            return b""
+        self._left -= len(data)
+        return data
+
+
+def _decompressor(raw, low: str):
+    if low.endswith((".gz", ".tgz")):
+        return gzip.GzipFile(fileobj=raw, mode="rb")
+    if low.endswith(".bz2"):
+        return bz2.BZ2File(raw, "rb")
+    return lzma.LZMAFile(raw, "rb")
+
+
 def scan_file(path: str, patterns: list[tuple[str, "re.Pattern[bytes]"]]) -> tuple[dict[str, int], int]:
     """Return ({pattern name: count}, bytes read). Matched bytes never leave this function.
+    A .gz/.tgz/.bz2/.xz is scanned decompressed; one that cannot be read to its end raises
+    OpaqueArchive (with the counts found so far).
 
     Chunk edges: each pass re-scans a carried tail of the previous one. A match that touches the end
     of a non-final buffer is DEFERRED (the next chunk may extend it -- the token classes are greedy)
@@ -484,34 +584,51 @@ def scan_file(path: str, patterns: list[tuple[str, "re.Pattern[bytes]"]]) -> tup
     wherever the edge falls.
     """
     counts: dict[str, int] = {}
-    total = 0
+    low = path.lower()
+    with os.fdopen(_open_regular(path), "rb") as raw:
+        if not low.endswith(DECOMPRESS_SUFFIXES):
+            return counts, _scan_stream(raw, patterns, counts, [0])
+        total = [0]
+        reader = None
+        try:
+            with _decompressor(raw, low) as dec:
+                reader = _CappedReader(dec)
+                _scan_stream(reader, patterns, counts, total)
+        except (OSError, EOFError, ValueError, zlib.error, lzma.LZMAError) as exc:
+            raise OpaqueArchive(counts, total[0]) from exc
+        if reader.error is not None:
+            raise OpaqueArchive(counts, total[0]) from reader.error
+        return counts, total[0]
+
+
+def _scan_stream(fh, patterns, counts: dict[str, int], total_box: list[int]) -> int:
+    """Chunked scan of fh into `counts` (filled in place, so a failure part-way keeps what was found)."""
     carry = b""
-    with os.fdopen(_open_regular(path), "rb") as fh:
-        cur = fh.read(CHUNK)
-        while cur:
-            nxt = fh.read(CHUNK)
-            eof = not nxt
-            total += len(cur)
-            buf = carry + cur
-            fresh_from = len(carry)
-            first_open = None
-            for name, rx in patterns:
-                for m in rx.finditer(buf):
-                    if m.end() < fresh_from:
-                        continue  # ended inside the carry: counted in the previous pass
-                    if not eof and m.end() == len(buf) and len(buf) - m.start() <= MAX_CARRY:
-                        # may continue into the next chunk: counted when re-found there
-                        first_open = m.start() if first_open is None else min(first_open, m.start())
-                        continue
-                    if m.group(0) in EXAMPLE_VALUES:
-                        continue
-                    counts[name] = counts.get(name, 0) + 1
-            cut = max(0, len(buf) - OVERLAP)
-            if first_open is not None:
-                cut = min(cut, first_open)
-            carry = buf[cut:]
-            cur = nxt
-    return counts, total
+    cur = fh.read(CHUNK)
+    while cur:
+        nxt = fh.read(CHUNK)
+        eof = not nxt
+        total_box[0] += len(cur)
+        buf = carry + cur
+        fresh_from = len(carry)
+        first_open = None
+        for name, rx in patterns:
+            for m in rx.finditer(buf):
+                if m.end() < fresh_from:
+                    continue  # ended inside the carry: counted in the previous pass
+                if not eof and m.end() == len(buf) and len(buf) - m.start() <= MAX_CARRY:
+                    # may continue into the next chunk: counted when re-found there
+                    first_open = m.start() if first_open is None else min(first_open, m.start())
+                    continue
+                if m.group(0) in EXAMPLE_VALUES:
+                    continue
+                counts[name] = counts.get(name, 0) + 1
+        cut = max(0, len(buf) - OVERLAP)
+        if first_open is not None:
+            cut = min(cut, first_open)
+        carry = buf[cut:]
+        cur = nxt
+    return total_box[0]
 
 
 def run_scan(roots: list[str], install_dir: str, patterns, required=frozenset()):
@@ -524,6 +641,12 @@ def run_scan(roots: list[str], install_dir: str, patterns, required=frozenset())
             continue
         try:
             counts, n = scan_file(path, patterns)
+        except OpaqueArchive as exc:
+            stats["opaque"] += 1
+            stats["bytes"] += exc.total
+            for name, c in sorted(exc.counts.items()):
+                findings.append((path, name, c))
+            continue
         except NotRegularFile:
             stats["special"] += 1
             continue
@@ -667,6 +790,8 @@ def incomplete_reasons(stats: dict, known_problems: int, known_missing: bool = F
         reasons.append("root-empty")
     if stats["errors"]:
         reasons.append("read-errors")
+    if stats["opaque"]:
+        reasons.append("opaque-archives")
     if known_problems:
         reasons.append("known-secrets-unreadable")
     if known_missing:
