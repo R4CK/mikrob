@@ -215,6 +215,9 @@ const OK_SHAPES: readonly RegExp[] = [
   // deliberate entry here, so the skip still exits 0 without silently satisfying the real-pass
   // pattern.
   /selftest: ([1-9]\d*) case\(s\), DEGRADED-SKIP \([1-9]\d* skipped, not counted as coverage\)/,
+  // kg-check-landing.selftest.sh style: `pass=N fail=0`. Captured non-zero N keeps the
+  // non-vacuous guarantee: `pass=0 fail=0` does not match.
+  /pass=([1-9]\d*) fail=0/,
 ]
 
 describe('every store/*.selftest.{sh,py} actually runs (cards 711a7e57, 2003e04b)', () => {
