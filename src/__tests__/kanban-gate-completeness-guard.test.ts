@@ -1260,6 +1260,24 @@ describe('gateCompletenessGuardVerdict', () => {
     }
   })
 
+  // F1 HIGH ReDoS regression (card 1e763f16, WhiteHat comment 21917): a gate-role name followed by
+  // a long run of plain spaces with NO verdict character after it must resolve in well under a
+  // second, not seconds-to-minutes. The pre-fix ANCHORED_VERDICT_RX (three `\s*` groups separated
+  // only by optional elements) measured 5181ms on a 3003-byte comment of this shape on the real
+  // guard; this fixture is 5000 bytes, i.e. in the range that was already catastrophic pre-fix.
+  // `expect(...).toBeNull()` alone would not catch a slow-but-eventually-correct regex -- the
+  // actual defect under test is WALL-CLOCK TIME, so the assertion is on the duration, with the
+  // match outcome checked too so a future change that breaks correctness instead of speed still
+  // fails here.
+  it('F1 ReDoS regression: a gate name + 5000 spaces + no verdict resolves in well under 1s, not seconds', () => {
+    const redosFixture = `QA${' '.repeat(5000)}x`
+    const start = Date.now()
+    const result = anchoredGateVerdict(redosFixture)
+    const elapsedMs = Date.now() - start
+    expect(result).toBeNull()
+    expect(elapsedMs).toBeLessThan(500)
+  })
+
   // F1 (RedHat, 4 live cases: comments 8753/17906/17941/6821): the production wiring -- a gate
   // reversing its own PASS/GO with a FAIL/NO-GO comment that NAMES the word it withdraws must read
   // as missing, not as a fresh positive. The corpus block above pins the recognizer itself; this
