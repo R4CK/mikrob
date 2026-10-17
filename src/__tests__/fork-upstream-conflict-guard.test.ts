@@ -618,6 +618,15 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     'src/__tests__/session-send-lock.test.ts',
     'web/lang/en.js',
     'src/__tests__/channel-poller-reap-live-pane.test.ts',
+    //   - src/web/routes/claude-plans.ts (card 4aa87fdf, 2026-10-17): the two "NOT adopted" items in
+    //     this entry (mainRotationContinueVerdict and RESTARTWAKE927) were BOTH adopted on develop
+    //     between our branch-cut and landing -- grep-verified on origin/develop. Any 'absent' anchor
+    //     would fire on the merge result (the symbol is already present on develop) and refuse the
+    //     land. The RESOLVED note in the text entry documents both adoptions; the original 'absent'
+    //     RESTARTWAKE927 anchor caught the adoption correctly and is retired (see comment there).
+    //     No anchoring is possible for an entry whose "NOT adopted" items are already present on the
+    //     other side of the merge.
+    'src/web/routes/claude-plans.ts',
   ]
 
   it('no refusal ships WITHOUT a tripwire -- the unanchored set may shrink, never grow', () => {
