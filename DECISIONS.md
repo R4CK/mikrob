@@ -21032,3 +21032,12 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 **Ki döntött:** backend3 (a 58669bf2 landolása közben felfedezett saját hiba korrekciója, nem új feature-döntés -- a visszaállítás a MÁR MEGLÉVŐ DevO/1eae1b41 NOT-ADOPTED döntést hajtja végre a kódon, ami korábban csak az anchor-szövegben élt, a tényleges fájlokban nem).
 
 **Hivatkozás:** kártya 58669bf2 (ennek a landolása közben derült ki), d06a325d (a Köteg 18 kártya, ahol a csendes port történt), card a14812e8 (az anchor eredeti kártyája), card 1eae1b41 (DevO re-decision, commit f7d3f4eb), upstream #1179 (a forrás PR, juhasz007-maker, "feat(egress): the reader's posture becomes an operator switch").
+
+---
+
+**Dátum:** 2026-10-18
+**Kártya:** 4aa87fdf (7f0efce3 bontás: biztonsági/architektúra csoport -- upstream-drift döntések)
+**Döntés:** A biztonsági/architektúra csoport 12 fájljára upstream-drift döntések meghozva az `src/fork-upstream/acknowledged-conflicts.ts`-ban. Főbb döntések: (1) `src/web/channel-poller-reap.ts` isPollerArgv KEEP -- argv-alapú szűkítő réteg megtartva a 2026-09-26 incidens (100+ pid reaped) tanulságaként, defence-in-depth az env-scan felett; (2) RESTARTWAKE927 és mainRotationContinueVerdict -- mindkettő develop-on adoptálva volt a branch-cut és a landolás között, a guard-anchor helyesen kapta el és dokumentálta; (3) 6 K3 biztonsági érzékeny fájl döntve (egységes KEEP/ADOPT/DEFERRED).
+**Gate-SHA:** f32040bf0607b33912d05caff071e557e6083a67
+**Ki döntött:** fullstack/DevO (card 4aa87fdf), szülő: 7f0efce3.
+**Hivatkozás:** kártya 4aa87fdf (szülő 7f0efce3 bontás).
