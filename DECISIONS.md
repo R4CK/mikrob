@@ -20926,3 +20926,15 @@ Mindegyik NOT ADOPTED döntéshez, ami konkrét ellenőrizhető szimbólumra hiv
 **Ki döntött:** MikroB (komment 21553 a c188f357-en, megerősítve msg 13555-ben: "F-N2: a (B) irány, explicit sorral... F-N3: (A) most... Fix-Direction: sornév").
 
 **Hivatkozás:** kártya c188f357 (F-N2, F-N3), komment 20936 (RedHat eredeti GO + F-N1..F-N3 lista), komment 21553 (MikroB döntés), msg 13555 (trusted-peer megerősítés), kártya 2e10de7c (F-N3 (B) folytatás, blokkolva), kártya 9655494c (agent-kulcs kiadás tiltása, msg 16764).
+
+---
+
+## 2026-10-18 -- Skill-usage heti összesítő (8a4a8b09): implementáció elfogadva
+
+**Döntés:** `store/skill-coverage-report.sh` és `store/skill-coverage-report.selftest.sh` szállítva a `skill_usage` táblából per-agent heti lefedettség-riporthoz, a Dream Engine Bucket 5-be integrálva.
+
+**Miért:** A CLAUDE.md 20. munkavégzési szabálya (skill-katalógus tényleges használata) és a flotta önfejlesztési képességének mérhető alapja. A 2-hetes visszamérés célja 2026-10-31.
+
+**Governance megjegyzés:** A dream-engine regisztrált prompt Bucket 5 frissítése governance hook (self-pace tiltás) miatt MikroB PUT-ja, nem a szkript landolásával automatikus.
+
+**Hivatkozás:** kártya 8a4a8b09, Gate-SHA: 6e7a182119927a0e6bfa3c3c2b54bd020b8556b2, REVIEW komment 22206.
