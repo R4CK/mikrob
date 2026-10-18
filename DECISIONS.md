@@ -21041,3 +21041,15 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 **Gate-SHA:** f32040bf0607b33912d05caff071e557e6083a67
 **Ki döntött:** fullstack/DevO (card 4aa87fdf), szülő: 7f0efce3.
 **Hivatkozás:** kártya 4aa87fdf (szülő 7f0efce3 bontás).
+
+---
+
+## 2026-10-18 -- Skill-usage heti összesítő (8a4a8b09): implementáció elfogadva
+
+**Döntés:** `store/skill-coverage-report.sh` és `store/skill-coverage-report.selftest.sh` szállítva a `skill_usage` táblából per-agent heti lefedettség-riporthoz, a Dream Engine Bucket 5-be integrálva.
+
+**Miért:** A CLAUDE.md 20. munkavégzési szabálya (skill-katalógus tényleges használata) és a flotta önfejlesztési képességének mérhető alapja. A 2-hetes visszamérés célja 2026-10-31.
+
+**Governance megjegyzés:** A dream-engine regisztrált prompt Bucket 5 frissítése governance hook (self-pace tiltás) miatt MikroB PUT-ja, nem a szkript landolásával automatikus.
+
+**Hivatkozás:** kártya 8a4a8b09, Gate-SHA: 6e7a182119927a0e6bfa3c3c2b54bd020b8556b2, REVIEW komment 22206.
