@@ -388,6 +388,11 @@ function foldGeminiOkMarkerText(text: string): string {
   let out = ''
   for (const ch of folded) {
     if (GEMINI_OK_STRIP_RE.test(ch) || GEMINI_OK_INVISIBLE_CODEPOINTS.has(ch)) continue
+    // F1 (card ed4ffbf7): mirror bash norm()'s .encode("ascii","ignore"): drop any non-ASCII
+    // character that is NOT a Unicode letter (symbols, punctuation, math, etc.).
+    // Non-ASCII letters are intentionally kept: unknown letters already break the substring
+    // match (fail-closed), consistent with bash behaviour for unmapped non-ASCII letters.
+    if (ch.codePointAt(0)! > 0x7f && !/\p{L}/u.test(ch)) continue
     out += ch
   }
   return out
