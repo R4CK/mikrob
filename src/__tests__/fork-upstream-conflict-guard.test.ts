@@ -582,10 +582,32 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
   //   - web/lang/en.js: the matched phrase is one cosmetic sub-point ("purely cosmetic, zero
   //     functional difference") inside this file's own much larger UNION-everything resolution --
   //     not a standalone refusal with its own fact to watch.
+  //   - src/web/message-router-window.ts (card 4aa87fdf, 2026-10-17): the actual decision (NOT
+  //     adopted selectTickWindow) is already anchored under the 'src/web/message-router.ts' key.
+  //     This path exists only as a drift-watcher placeholder for an upstream file that has NO
+  //     counterpart in this fork at all -- there is no production fact in THIS path to point an
+  //     anchor at (it does not exist), the same shape as installer-ollama-nonfatal.test.ts above.
+  //   - scripts/supabase-q.sh (card 4aa87fdf, 2026-10-17): the matched phrase is "Not adopted ...
+  //     for consistency" -- both the fork's -H @- stdin-header form and upstream's curl -K -
+  //     config-on-stdin form keep the bearer token out of argv equally safely (verified against
+  //     curl's own -K docs); the entry explicitly says this is NOT a security regression either
+  //     way, just a style preference for this fork's one established convention. There is no
+  //     unsafe state to re-detect if "reversed" -- switching to upstream's form would not reopen
+  //     any vulnerability -- so there is no production fact worth an anchor, the same shape as the
+  //     cosmetic-only test-file entries already in this list.
+  //   - src/__tests__/channel-poller-reap-live-pane.test.ts (card 4aa87fdf, 2026-10-17): upstream
+  //     cf075d41 adds CLAUDE_PLUGIN_ROOT to the victim spawn env and switches from /bin/sleep to node
+  //     (macOS compat). The refusal is a test-side-only change with no production file that changes
+  //     when the follow-up adoption happens: the production file (channel-poller-reap.ts) already has
+  //     PLUGIN_ROOT_ENV_RE AND isPollerArgv, both anchored under its own ACKNOWLEDGED_FORK_ANCHORS
+  //     entry. No unsafe state to re-detect on the production side; the follow-up card closes the
+  //     ps-scan test-coverage gap, not a security regression.
   const UNANCHORED_BACKLOG: readonly string[] = [
     'src/__tests__/context-guard.test.ts',
     'src/__tests__/installer-ollama-nonfatal.test.ts',
     'src/__tests__/send-honesty-round2.test.ts',
+    'src/web/message-router-window.ts',
+    'scripts/supabase-q.sh',
     'src/__tests__/system-directive-auth-section.test.ts',
     'src/web/session-send-lock.ts',
     'src/__tests__/api-messages-freshness.test.ts',
@@ -595,6 +617,16 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     'src/__tests__/notify-delivery-honesty.test.ts',
     'src/__tests__/session-send-lock.test.ts',
     'web/lang/en.js',
+    'src/__tests__/channel-poller-reap-live-pane.test.ts',
+    //   - src/web/routes/claude-plans.ts (card 4aa87fdf, 2026-10-17): the two "NOT adopted" items in
+    //     this entry (mainRotationContinueVerdict and RESTARTWAKE927) were BOTH adopted on develop
+    //     between our branch-cut and landing -- grep-verified on origin/develop. Any 'absent' anchor
+    //     would fire on the merge result (the symbol is already present on develop) and refuse the
+    //     land. The RESOLVED note in the text entry documents both adoptions; the original 'absent'
+    //     RESTARTWAKE927 anchor caught the adoption correctly and is retired (see comment there).
+    //     No anchoring is possible for an entry whose "NOT adopted" items are already present on the
+    //     other side of the merge.
+    'src/web/routes/claude-plans.ts',
   ]
 
   it('no refusal ships WITHOUT a tripwire -- the unanchored set may shrink, never grow', () => {

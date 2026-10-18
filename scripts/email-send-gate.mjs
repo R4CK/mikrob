@@ -128,7 +128,10 @@ const ENV_ASSIGN = /^[A-Za-z_][A-Za-z_0-9]*=/
 const CMD_POSITION_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '{', '!'])
 const SENDER_PROG = /^(sendmail|msmtp|swaks)$/i
 const SENDPY = /^send\.py$/i
-const PYTHON = /^python3?$/i
+// SUBAGENTMAILGATE1016 (upstream, adopted 2026-10-17): a version-suffixed interpreter
+// (python3.12, python3.13, the free-threaded python3.13t) is the same python; the old
+// /^python3?$/ let it through as "not an interpreter", skipping the send-shape check below.
+const PYTHON = /^python(3(\.\d+t?)?)?$/i
 const NODEISH = /^(node|tsx|ts-node|deno|bun|npx)$/i
 const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
 const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i

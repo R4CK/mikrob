@@ -97,7 +97,10 @@ _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
 _CMD_POSITION_KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "{", "!"))
 _SENDER_PROG = re.compile(r"^(sendmail|msmtp|swaks)$", re.I)
 _SENDPY = re.compile(r"^send\.py$", re.I)
-_PYTHON = re.compile(r"^python3?$", re.I)
+# SUBAGENTMAILGATE1016 (upstream, adopted 2026-10-17): a version-suffixed interpreter
+# (python3.12, python3.13, the free-threaded python3.13t) is the same python; the old
+# ^python3?$ let it through as "not an interpreter", skipping the send-shape check.
+_PYTHON = re.compile(r"^python(3(\.\d+t?)?)?$", re.I)
 # A ket kapu (ez + scripts/email-send-gate.mjs) SZANDEKOSAN azonos
 # felismeres-szemantikat visel, es ezt kozos eset-lista orzi
 # (send-invocation-cases.json + konformancia-teszt): a divergencia
