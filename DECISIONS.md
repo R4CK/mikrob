@@ -21053,3 +21053,16 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 **Governance megjegyzés:** A dream-engine regisztrált prompt Bucket 5 frissítése governance hook (self-pace tiltás) miatt MikroB PUT-ja, nem a szkript landolásával automatikus.
 
 **Hivatkozás:** kártya 8a4a8b09, Gate-SHA: 6e7a182119927a0e6bfa3c3c2b54bd020b8556b2, REVIEW komment 22206.
+
+---
+
+## 2026-10-22 -- Trail-ötlet 1 (átfedés-jelzés): REVIEW-előtti script, nem PostToolUse hook
+
+**Döntés:** `store/overlap-signal-check.sh <agent>` -- az agent saját (nem landolt) branch-ét veti össze minden más unlanded `agent/*/work` és `card/*` branch-csel. A "ugyanazt a függvényt módosították" kérdést a git diff hunk-header kontextus-sorának (git beépített funcname-heurisztikája) sztring-egyezésével dönti el, nem bespoke nyelvi regex-szel. Csak jelez (`OVERLAP file=... symbol=... other_branch=.../other_card=...`), sosem blokkol; `OVERLAP_SIGNAL=off` a kapcsoló.
+
+**Miért ez és nem PostToolUse hook:** a kártya (ca72e5d4) mindkét opciót megengedte. Egy minden Edit/Write-ra futó hook N agent × N fájl mélységben drágább és zajosabb; egy REVIEW-előtti, önjáró script (a self-advance 11a. szabály pontjába illik) ugyanazt a védelmet adja a landolási pillanat előtt, ahol tényleg számít. A teljes flotta-szintű kötelező bekötés (CLAUDE.md-be írás minden ügynöknek) külön, MikroB-döntésű lépés -- ez a kártya csak az ESZKÖZT szállítja, elérhetővé téve.
+
+**Mérés -- amit NEM lehetett megmérni:** a kártya kérte "a múlt heti landolási ütközésekből hányat fogott volna meg". A landolt branch-ek törlődnek landolás után, tehát a múlt heti ütköző branch-ek git-objektumai már nem léteznek -- visszamenőleges mérés nincs. Helyette a `--selftest` egy megkonstruált esettel (azonos függvény két branch-en -> OVERLAP; azonos fájl, másik függvény -> nincs jelzés; landolt branch -> csendes) bizonyítja a logikát élesben; a tényleges találati arányt csak előretekintve, a jövő heti landolásokon lehet majd mérni.
+
+**Ki döntött:** fullstack/DevO (card ca72e5d4), szülő: c65add5a.
+**Hivatkozás:** kártya ca72e5d4 (szülő c65add5a bontás).
