@@ -21242,3 +21242,16 @@ agent/backend2/work, a mutáció-visszaállítás utáni állapoton) -- 5/5 zöl
 **Ki döntött:** backend2 (kártya 33e5e4ff), szülő: 81593084. Forrás-döntés: MikroB (komment 22279).
 **Hivatkozás:** kártya 33e5e4ff (szülő 81593084 bontás), lásd MT-10a/63206155 és MT-10b/bb0cadd9
 fenti bejegyzéseit a testvér-importerekhez.
+
+## 2026-10-23 -- kártya 7857c82c: GPU-driver setup.ps1 X1-X3 javítás (RedHat NO-GO 22570 delta)
+
+**Kontextus:** RedHat (Cybered) NO-GO-t adott a kártya korábbi Gate-SHA-jára (5c95c1c9, komment 22570) a 8b588834 B1-B3 lelet re-gate-jén. A fő javítás zárt, három maradék blokkolt: X1 MEDIUM (a setup.ps1 egy már létező `C:\ProgramData\MikroB-Drivers` mappát szó nélkül átvesz, csak az ACL-t cseréli le; a tulajdonos-eltérés csak NOTE, nem exit 1; Phase 2 csak a gyerekeken keres reparse-pontot, a célmappán és a tartalom-allowlisten nem), X2 LOW-MEDIUM (a neon-írás próba minden nem-"WROTE" kimenetet megerősítésnek vesz, az üreset is), X3 LOW (a REVIEW HKLM-re hivatkozott, a kódban nincs ilyen).
+
+**Döntés:** X1 -- a Phase 1 egy pre-existing TargetDir-t csak akkor fogad el, ha nem reparse-pont, a tulajdonos SID Administrators/SYSTEM, és minden gyereke is; bármely eltérés exit 1. A Get-Acl read-back (1c) tulajdonos-ellenőrzése SID-alapú és fail-closed (a régi NOTE-csak-display-name eltávolítva). A Phase 2 a másolás előtt UGYANEZEKET a feltételeket újra ellenőrzi (nem csak junction-ot a gyerekeken), plusz egy várt fájlnév-allowlistet (setup.log, launcher.log, a két ps1, a .sha256). X2 -- a write-probe csak a PONTOS 'BLOCKED' string-et fogadja el megerősítésként (korábban: bármi, ami nem "WROTE"); előtte egy WSL-oldali `test -d` igazolja, hogy a célmappa a fordított útvonalon tényleg létezik, és a bash hívás stderr-jét `2>/dev/null`-ra váltva nem keveredik a stdout-ba. X3 -- a kód sosem tartalmazott HKLM-hivatkozást (a hash a task parancssorában utazik, a header ezt mindig helyesen írta le); a korábbi REVIEW (22426) HKLM-állítása téves volt, ez a kör pontos REVIEW-val korrigálja, visszamenőleg nem szerkeszthető kommentet nem módosítottunk.
+
+**Teszt:** új `store/gpu-driver-install-setup.selftest.sh` (17 statikus kontroll, pozitív a jelen kódon, negatív a beágyazott, pontos javítás-előtti (5c95c1c9) szövegen -- pwsh nincs a hoston, a tényleges Windows-oldali futást sem WhiteHat, sem RedHat nem tudta mérni, ugyanez a korlát itt is áll). Bekötve a `graph-tooling-selftests.test.ts`-be (floor: 17 ok-sor).
+
+**Elfogadási kritérium:** a selftest minden sora a javítás-előtti szövegen a ROSSZ irányba esik (a régi szöveg hiányolja az új mintákat), a javított szövegen a JÓ irányba -- ez a pozitív+negatív pár, amit a kártya kért.
+
+**Ki döntött:** RedHat adta a javítás irányát (22570, Fix-Direction sort szándékosan nem írt, hogy maga vihesse a re-gate-et), a kódot a backend írta.
+**Hivatkozás:** kártya 7857c82c, szülő 26c07c33, RedHat NO-GO 22570, MikroB dispatch 22572 (msg_id 14054), korábbi GO-k: WhiteHat 22466, QA2 22485.
