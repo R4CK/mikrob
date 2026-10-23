@@ -56,6 +56,15 @@ PATH_ENV="$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
 NAME="${MAIN_AGENT_ID}-mopsion-suite-guard"
 mkdir -p "$UNIT_DIR"
 
+# ISSUE1895: the install zone, not a hardcoded Europe/Budapest -- same detection as install-linux.sh.
+SYSTEM_TZ="$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)"
+SYSTEM_TZ="${SYSTEM_TZ%$'\n'}"
+if [ -n "$SYSTEM_TZ" ] && [ "$SYSTEM_TZ" != "Etc/UTC" ] && [ "$SYSTEM_TZ" != "UTC" ]; then
+  TZ_LINE="Environment=TZ=$SYSTEM_TZ"
+else
+  TZ_LINE="# no explicit TZ detected; inheriting host default"
+fi
+
 # STDERR GOES TO THE SAME LOG AS STDOUT, on purpose. `die` writes its reason to stderr and only the
 # bare "RESULT:SETUP-FAILED" to stdout, so under the old cron the WHY of every refusal was thrown
 # away -- the half of the output that says what broke.
@@ -69,7 +78,7 @@ Type=oneshot
 ExecStart=$GUARD
 Environment=PATH=$PATH_ENV
 Environment=HOME=$HOME
-Environment=TZ=Europe/Budapest
+$TZ_LINE
 StandardOutput=append:$STORE/cleancore-main-suite-guard.log
 StandardError=append:$STORE/cleancore-main-suite-guard.log
 EOF

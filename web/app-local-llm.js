@@ -915,8 +915,11 @@ function llmAnimateBatch(html, key, cls) {
 function llmFmtTime(epochSec) {
   if (!Number.isFinite(epochSec)) return '—'
   try {
+    // ISSUE1895: the install zone (/api/marveen tz); omitting the option falls back to the
+    // browser's own local zone when it has not loaded yet.
+    const tzOpt = (window._marveen && window._marveen.tz) ? { timeZone: window._marveen.tz } : {}
     return new Date(epochSec * 1000).toLocaleString([], {
-      timeZone: 'Europe/Budapest', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+      ...tzOpt, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
     })
   } catch {
     return '—'
@@ -1623,7 +1626,9 @@ async function loadStatus() {
         }
         const div = document.createElement('div')
         div.className = `status-incident ${inc.status}`
-        const date = new Date(inc.pubDate).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
+        // ISSUE1895: the install zone (/api/marveen tz), not a hardcoded literal.
+        const incTzOpt = (window._marveen && window._marveen.tz) ? { timeZone: window._marveen.tz } : {}
+        const date = new Date(inc.pubDate).toLocaleString('hu-HU', incTzOpt)
         div.innerHTML = `
           <div class="status-incident-header">
             <span class="status-incident-title">${escapeHtml(inc.title)}</span>

@@ -59,6 +59,15 @@ MAIN_AGENT_ID="${MAIN_AGENT_ID//[^a-zA-Z0-9_-]/}"
 PATH_ENV="$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
 mkdir -p "$UNIT_DIR"
 
+# ISSUE1895: the install zone, not a hardcoded Europe/Budapest -- same detection as install-linux.sh.
+SYSTEM_TZ="$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)"
+SYSTEM_TZ="${SYSTEM_TZ%$'\n'}"
+if [ -n "$SYSTEM_TZ" ] && [ "$SYSTEM_TZ" != "Etc/UTC" ] && [ "$SYSTEM_TZ" != "UTC" ]; then
+  TZ_LINE="Environment=TZ=$SYSTEM_TZ"
+else
+  TZ_LINE="# no explicit TZ detected; inheriting host default"
+fi
+
 # args: <name> <desc> <script> <output-mode: log|journal>
 write_service() {
   local name="$1" desc="$2" script="$3" outmode="$4"
@@ -80,7 +89,7 @@ Type=oneshot
 ExecStart=$INSTALL_DIR/scripts/$script
 Environment=PATH=$PATH_ENV
 Environment=HOME=$HOME
-Environment=TZ=Europe/Budapest
+$TZ_LINE
 $out
 EOF
 }

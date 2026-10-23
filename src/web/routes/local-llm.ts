@@ -4,7 +4,7 @@ import { readFileSync, existsSync, openSync, fstatSync, readSync, closeSync, rea
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
-import { STORE_DIR, MAIN_AGENT_ID } from '../../config.js'
+import { STORE_DIR, MAIN_AGENT_ID, APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
@@ -1019,9 +1019,10 @@ export function lastGenerationStats(
   return null
 }
 
-// Calendar date (YYYY-MM-DD) of a UTC epoch in Europe/Budapest local time.
+// Calendar date (YYYY-MM-DD) of a UTC epoch in the install's local time (ISSUE1895: APP_TZ, not a
+// hardcoded literal).
 const BUDAPEST_DAY = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Europe/Budapest', year: 'numeric', month: '2-digit', day: '2-digit',
+  timeZone: APP_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
 })
 function budapestDate(epochSec: number): string {
   return BUDAPEST_DAY.format(new Date(epochSec * 1000))

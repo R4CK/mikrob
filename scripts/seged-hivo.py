@@ -618,9 +618,16 @@ def jail_cmd(engine, workdir, net_jail_dir=None):
     drives = [p for p in Path('/mnt').iterdir()
               if p.is_dir() and p.name != 'wsl' and not workdir.is_relative_to(p)]
     state = HOME / ('.codex' if engine == 'codex' else '.gemini')
+    # ISSUE1895: the install zone, not a hardcoded literal -- /etc/timezone first (same source
+    # install-linux.sh's own detection falls back to), then the real TZ env var, then UTC.
+    def _host_tz() -> str:
+        try:
+            return Path('/etc/timezone').read_text().strip() or 'UTC'
+        except OSError:
+            return os.environ.get('TZ', 'UTC')
     env = {'HOME': str(HOME), 'USER': os.environ.get('USER', HOME.name), 'LANG': 'C.UTF-8',
            'PATH': f'{HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin', 'TERM': 'dumb',
-           'TZ': os.environ.get('TZ', 'Europe/Budapest')}
+           'TZ': os.environ.get('TZ') or _host_tz()}
     extra_binds = []
     # Card 5229ea1e: real network isolation + an allowlisting proxy bridged in over a UNIX domain
     # socket (see the JAIL_NET_* constants above for the measured rationale). net_jail_dir is the

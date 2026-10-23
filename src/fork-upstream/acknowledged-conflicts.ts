@@ -1597,7 +1597,14 @@ export const ACKNOWLEDGED_CONFLICTS = {
   'install-linux.sh':
     "GRAFT, not wholesale (updated 2026-09-02, card 9dc0fba8, MikroB approval): the Ollama half is unchanged -- upstream's OLLAMA_URL precedence/probe/embedding-pull rewrite still targets the silent auto-install step Peti's 2026-08-13 directive (EPIC ebc7b4dd) removed, so there is still nothing to graft THERE. But upstream then changed a DIFFERENT part of the same file, and that part applies here: the Telegram-pairing liveness check now asks three ways (user unit / system unit / channels.pid + kill -0) instead of `systemctl --user is-active` alone, because the installer's own no-systemd branch starts the bridge with nohup and the old check then called it 'not started', skipped pairing and left ALLOWED_CHAT_ID=0. Upstream's own comment names our platform: \"WSL is a documented supported platform and has no systemd user session by default, so this is not an exotic shape.\" This fork runs on WSL and has that same nohup fallback, so the fix is adopted (_bridge_is_up + the more precise failure message) while the fork's Ollama removal stays" +
     " Re-measured 2026-09-15 (backend3, card 3602c2ae, fb05a0f72820..066bb24bf8bc): NOT a plain blob bump -- upstream added a new KEEPALIVE_UNIT (channel-keepalive-probe.sh) systemd .service/.timer pair and stopped auto-enabling MORN_UNIT.timer (the morning briefing already ships via the seeded reggeli-napindito scheduled task, so the timer would double-send). Neither point touches the two this rule decides (Ollama removal stays gone; Telegram-pairing liveness stays adopted) -- zero hits on OLLAMA_URL, _bridge_is_up or the three-way liveness check. GENUINELY NEW AND WORTH ADOPTING, NOT decided here: this fork's own scripts/channel-keepalive-probe.sh ALREADY EXISTS on disk (present, unwired, dated 2026-09-12) but nothing installs its systemd units -- matches upstream's own measured failure mode verbatim (13 service restarts one night, ~50min apart, because the dashboard's 45-minute liveness ceiling aged out on a quiet channel and channel-monitor 'recovered' a healthy session). Adopting the KEEPALIVE_UNIT wiring is a real behaviour change to what a re-run of install-linux.sh enables on a live host, so it is not taken here -- raised as its own follow-up card rather than folded into a drift re-decision. Resolution at the two decided points unchanged; blob bumped." +
-    " Re-decided 2026-09-25 (card c2aeefa5, backend, fb05a0f72820..066bb24bf8bc -> 66db4ab4d010, i.e. the ALREADY-corrected pin above to today's upstream): three more changes, none touching the two decided points (verified: zero hits on OLLAMA_URL, _bridge_is_up, the three-way liveness check). (1) INBOX_OBSERVER_UNIT -- the fresh-install systemd wiring for scripts/main-inbox-observer.sh. This is the SAME feature update.sh's entry above already named as a follow-up candidate for EXISTING hosts (install_main_inbox_observer_unit); this is its counterpart for a NEW install. Not adopted here for the same reason -- named together with the update.sh item rather than opening a second card for one feature. (2) CLIRUNSVERZIO923 -- _claude_runs rewritten from a bare `claude --version` probe to an auth-free `-p 'ping'` real-prompt probe (measured on an AVX-less pilot VPS: a 2.1.200+ Bun ELF answers --version with exit 0 and then hangs on a real prompt, so the old probe would pass a host that cannot actually run an agent turn), plus a new _shelve_broken_claude that moves a PATH-shadowing non-launching claude binary aside so the pinned Node fallback is not shadowed by it. This fork's own _claude_runs (line 520, checked directly) is still the OLD `--version`-only probe -- a real, unfixed correctness gap on this fork if it is ever re-run on an AVX-less host, but a substantial rewrite (new helper function, new shelving behaviour) rather than a passive line-swap, so not taken here; named as a follow-up alongside the two items above. (3) Two `Environment=TELEGRAM_ENV=$HOME/.claude/channels/telegram/.env` lines dropped from the host-watchdog.service and unit-fail-notify@.service unit templates -- this fork's own copies of both (checked directly, lines ~2015/2036) still carry the line, and nothing in this file alone says whether the corresponding scripts (host-restart-watchdog.sh, unit-fail-notify.sh) stopped reading TELEGRAM_ENV upstream or whether the line became dead weight for another reason; not investigated further here (out of this round's 8-file scope) and not adopted -- worth a look whenever the KEEPALIVE_UNIT/INBOX_OBSERVER_UNIT follow-up is picked up, since it touches the same systemd-template region. Resolution at the two decided points unchanged; blob bumped.",
+    " Re-decided 2026-09-25 (card c2aeefa5, backend, fb05a0f72820..066bb24bf8bc -> 66db4ab4d010, i.e. the ALREADY-corrected pin above to today's upstream): three more changes, none touching the two decided points (verified: zero hits on OLLAMA_URL, _bridge_is_up, the three-way liveness check). (1) INBOX_OBSERVER_UNIT -- the fresh-install systemd wiring for scripts/main-inbox-observer.sh. This is the SAME feature update.sh's entry above already named as a follow-up candidate for EXISTING hosts (install_main_inbox_observer_unit); this is its counterpart for a NEW install. Not adopted here for the same reason -- named together with the update.sh item rather than opening a second card for one feature. (2) CLIRUNSVERZIO923 -- _claude_runs rewritten from a bare `claude --version` probe to an auth-free `-p 'ping'` real-prompt probe (measured on an AVX-less pilot VPS: a 2.1.200+ Bun ELF answers --version with exit 0 and then hangs on a real prompt, so the old probe would pass a host that cannot actually run an agent turn), plus a new _shelve_broken_claude that moves a PATH-shadowing non-launching claude binary aside so the pinned Node fallback is not shadowed by it. This fork's own _claude_runs (line 520, checked directly) is still the OLD `--version`-only probe -- a real, unfixed correctness gap on this fork if it is ever re-run on an AVX-less host, but a substantial rewrite (new helper function, new shelving behaviour) rather than a passive line-swap, so not taken here; named as a follow-up alongside the two items above. (3) Two `Environment=TELEGRAM_ENV=$HOME/.claude/channels/telegram/.env` lines dropped from the host-watchdog.service and unit-fail-notify@.service unit templates -- this fork's own copies of both (checked directly, lines ~2015/2036) still carry the line, and nothing in this file alone says whether the corresponding scripts (host-restart-watchdog.sh, unit-fail-notify.sh) stopped reading TELEGRAM_ENV upstream or whether the line became dead weight for another reason; not investigated further here (out of this round's 8-file scope) and not adopted -- worth a look whenever the KEEPALIVE_UNIT/INBOX_OBSERVER_UNIT follow-up is picked up, since it touches the same systemd-template region. Resolution at the two decided points unchanged; blob bumped." +
+    " Re-measured 2026-10-23 (card 13b2648e, Köteg 18, commit a2801a9a3, TIMERSTART1011): a clean, " +
+    "non-conflicting insertion added a `systemctl --user start` loop over both " +
+    "KEEPALIVE_UNIT.timer and INBOX_OBSERVER_UNIT.timer. The second variable does not exist on this " +
+    "fork (still not adopted, per the 2026-09-25 decision above) -- an unset-variable bug, not a new " +
+    "feature decision. Fixed in place: the loop starts only KEEPALIVE_UNIT.timer, which this fork " +
+    "does install. INBOX_OBSERVER_UNIT stays not-adopted; the fork-upstream-conflict-guard anchor for " +
+    "it is unaffected (still expects absent, still true).",
   // Card 9dc0fba8, same decision: this is a modify/delete conflict, not content -- the fork DELETED
   // this test file entirely (it asserted behavior of the removed silent-install step), upstream
   // MODIFIED it. Resurrecting a deleted test for a feature this fork intentionally does not have
@@ -2706,7 +2713,13 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "(8) AGENT_INHERITED_MCP_SERVERS default KEPT at fork's 'code-review-graph,context7' allowlist -- " +
     "ALREADY an explicit, in-file-documented MikroB decision (card 67e73b48 N2, WhiteHat NO-GO msg " +
     "10434), not re-decided here. Blob pinned to the upstream content these eight points were " +
-    "measured against.",
+    "measured against. RE-DECIDED 2026-10-23 (card 13b2648e, Köteg 18, commit 849c9cb80): point (5)'s " +
+    "four retention settings are now ADOPTED -- the merge brought in the full, matching daily-sweep " +
+    "implementation this entry said was missing (src/db.ts: pruneConversationLog/pruneOtelSpans/" +
+    "pruneAgentMessages/pruneToolCallLogRetention, each gated by its own registry setting, all " +
+    "default 0 = keep forever, non-destructive on install; agent_messages still carves out pending/" +
+    "delivered rows regardless of age). Grep-verified wired end to end, non-conflicting clean merge. " +
+    "No gap remains; point (5) is closed.",
 
   // src/web/inbox-nudge-watcher.ts (card 4aa87fdf, 2026-10-17): this fork ADOPTED a feature upstream
   // does not have (messageWakesReceiver wake-filtering, card 3bd457ed) -- but that adoption
@@ -3053,7 +3066,7 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   'src/web/routes/updates.ts': '7755cd0e260fe60fc274d1475afd31f9e4503419',
   'src/web/routes/claude-plans.ts': '5d7d740d1df2c196626413acd34b2f4b65ea1a0b',
   'scripts/dashboard-user.ts': '0711c0edd9914dd9192e2810936ea465cdd3dfbb',
-  'src/config-registry.ts': '3d07027845c86229efe6d871aad7940c419ed0d2',
+  'src/config-registry.ts': '4189d07fa872e3ccf8de26c4177d51e6cf8fd561',
   'src/web/inbox-nudge-watcher.ts': '183bf0f988db707e70041119f2078bd311c46269',
   'src/web/routes/kanban.ts': '28c971dadbe0eb40bd5a7423a7711b11acc1d763',
   'scripts/hooks/egress-gate.mjs': '5a74712f1484d6a80fbdf7c4e19b47ae2fae6433',
@@ -3207,7 +3220,7 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   // safe retroactive cleanup with no fork safety overlap -- ADOPTED, wired into run_unit_maintenance
   // and added to the allowlist.
   'update.sh': '7951230660108c5179bb0e89d7b18919321c8d46',
-  'install-linux.sh': '66db4ab4d010e84684cc3a5e1ad15660c654d30b',
+  'install-linux.sh': '73efdc3c8f11332e24295387e22218c93a247fdb',
   // scripts/install-prod-tree-guard-hook.sh: card b5b7eb6b child 09d54e88 (2026-09-25, backend3)
   // re-measured this one FORWARD of c2aeefa5's base (9abea4ee -> 68232de630af) -- their pin wins.
   'scripts/install-prod-tree-guard-hook.sh': '68232de630afff0a82b4dc25b237de06213df687',
@@ -4314,15 +4327,19 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "banner items named alongside it need re-checking too.",
   },
   'src/config-registry.ts': {
-    needle: "key: 'CONVERSATION_LOG_RETENTION_DAYS'",
+    needle: "key: 'WORKER_AUTOUPDATE'",
     file: 'src/config-registry.ts',
     expect: 'absent',
     because:
-      "this entry's 2026-10-17 round declines to adopt four upstream retention settings " +
-      "(CONVERSATION_LOG_RETENTION_DAYS and three siblings) because each implies its own daily- " +
-      "sweep implementation this fork lacks. If this settings-registry key appears, that port " +
-      "already happened and the sibling settings (OTEL_SPAN/AGENT_MESSAGE/TOOL_CALL_LOG retention) " +
-      "need re-checking too.",
+      "this entry's 2026-10-17 round (points 6/7) declines to adopt WORKER_AUTOUPDATE and " +
+      "TELEGRAM_TOPICS_ENABLED (each implies matching channels.sh/plugin-patch wiring this fork " +
+      "lacks) and MEMORY_CONTENT_FILTER_STRICT_COMMANDS (a security-adjacent memory-injection " +
+      "opt-in, flagged for WhiteHat). Point (5)'s four retention settings were RE-DECIDED and " +
+      "ADOPTED 2026-10-23 (card 13b2648e) with their own full daily-sweep wiring, so this anchor " +
+      "moved to the still-open points instead of being deleted outright -- a file-level entry " +
+      "needs SOME anchor watching its remaining refusals, or a later silent adoption goes unnoticed " +
+      "the same way point (5) almost did. If WORKER_AUTOUPDATE appears, re-check TELEGRAM_TOPICS_ENABLED " +
+      "and MEMORY_CONTENT_FILTER_STRICT_COMMANDS too, not just this one key.",
   },
   'scripts/dashboard-user.ts': {
     needle: "from '../src/hidden-prompt.js'",

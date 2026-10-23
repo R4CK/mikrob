@@ -57,12 +57,19 @@ describe('agent-process.ts never spawns a process just to wait (card 873c48df)',
   // 21 external synchronous consumers (isAgentRunning alone has 21). Converting them is an
   // architectural change, not this card, so the count is PINNED: it may not grow silently, and
   // when it shrinks this number has to come down with it.
+  //
+  // FIFTH call, justified (card #1904, Köteg 18/13b2648e): gitToplevelFor()'s bounded (3s
+  // timeout, no shell) `git rev-parse --show-toplevel`, reached only through
+  // installRootTrustKey(), which memoizes by root in installRootTrustCache -- the synchronous
+  // cost is paid AT MOST ONCE per process per root, not per agent start/request, unlike the four
+  // reviewed tmux/ssh calls this pin already covers.
   it('the remaining synchronous children stay at the reviewed count', () => {
     const matches = code().match(/\b(?:spawnSync|execSync|execFileSync)\(/g) ?? []
     expect(
       matches.length,
-      'agent-process.ts changed its number of synchronous child calls. Four are the reviewed tmux/ssh ' +
-        'wrappers and probes; a FIFTH needs justification, and a smaller number means this pin is stale.',
-    ).toBe(4)
+      'agent-process.ts changed its number of synchronous child calls. Five are reviewed (four tmux/ssh ' +
+        'wrappers and probes, plus the once-per-process-per-root memoized git toplevel lookup); a SIXTH ' +
+        'needs justification, and a smaller number means this pin is stale.',
+    ).toBe(5)
   })
 })

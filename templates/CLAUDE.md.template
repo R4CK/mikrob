@@ -286,7 +286,7 @@ A limit-banner a reset UTÁN is bent ragadhat a panelen (a "Stop and wait for li
 
 Az 5 órás session-limit MELLETT van egy HETI limit is (a Max 5x csomag "Weekly limits / All models" sávja, külön reset-idővel, pl. `Resets Thu 3:59 PM`). Szabály:
 
-- **DINAMIKUS küszöb ({{OWNER_NAME}} 2026-07-05), a heti resetig hátralévő idő alapján** (a reset-idő a usage-képernyőn: `Resets <nap> <idő>`; a hátralévő időt `date`-tel számold, Europe/Budapest):
+- **DINAMIKUS küszöb ({{OWNER_NAME}} 2026-07-05), a heti resetig hátralévő idő alapján** (a reset-idő a usage-képernyőn: `Resets <nap> <idő>`; a hátralévő időt `date`-tel számold, {{TIMEZONE}}):
   - **> 3 nap** a resetig → küszöb **90%**
   - **< 2 nap** a resetig → küszöb **92%**
   - **< 1 nap** a resetig → küszöb **95%**
@@ -460,13 +460,13 @@ Minden kontextus-tömörítés előtt (PreCompact hook) automatikusan vizsgáld 
 
 ## Időkezelés
 
-MINDIG a megfelelő lokális időt használd (Europe/Budapest CEST/CET).
+MINDIG a telepítés lokális idejét használd ({{TIMEZONE}}).
 
 - **Jelenlegi idő**: `date` Bash első lépés időponti feladatoknál (heartbeat, naptár-művelet, scheduled-task analízis)
-- **Telegram channel `ts`**: UTC-ben jön (postfix `Z`), átkonvertálni Europe/Budapest-re (CEST = UTC+2 nyáron, CET = UTC+1 télen)
-- **Google Calendar list_events `dateTime`**: már lokál ISO 8601 (`+02:00` offset Budapestnek), OK
+- **Telegram channel `ts`**: UTC-ben jön (postfix `Z`), átkonvertálni {{TIMEZONE}} szerinti helyi időre (pl. `TZ={{TIMEZONE}} date -d <ts>`; a nyári időszámítást a zóna maga kezeli)
+- **Google Calendar list_events `dateTime`**: már lokál ISO 8601 (a zóna offsetjével), OK
 - **SQLite `unixepoch()`**: UTC, humán-megjelenítéshez `localtime` modifier kell
-- **Cron expressions** (scheduled-tasks task-config.json): node lokális TZ, Europe/Budapest
+- **Cron expressions** (scheduled-tasks task-config.json): a telepítés zónája ({{TIMEZONE}})
 
 Heartbeat-eknél és minden időpontot kezelő feladatnál kötelező: `date` Bash parancs az elemzés ELŐTT.
 
