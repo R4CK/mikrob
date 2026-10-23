@@ -176,6 +176,7 @@ except Exception: print(0)
    futas OT `waiting` tetelt jelentett kikuldetlennek, es MIND AZ OT kulso emberhez tartozott
    (zollak, stivi1g-gif, tekt, szuszupaks, zsuzsa). Nulla valodi lelet, ot sor zaj -- pont az a fajta,
    ami mellett a valodi lelet elveszne.
+   Jelentsd: vizsgált=N,találat=K,0→nemmért.
    **A TAGABB TANULSAG: egy leirt szabaly, ami mellett a LEKERDEZES a regi marad, annyit er, mint a le nem
    irt szabaly.** A szoveget es a kodot EGYSZERRE kell javitani, kulonben a skill sajat maganak mond ellent.
    Talalat eseten a kartya NEM keszult el magatol: kuldd ki a gazdajanak, es a kartyara menjen
@@ -413,7 +414,7 @@ Vagy alternatíva (gyorsabb): minden ping előtt query-old a komment-count-ot az
   2. **MEMORIA-API:** a `curl -X POST /api/memories` URES kimenetet adott, en tovabbmentem, es a sor
      NEM keletkezett meg. A DB-bol visszaolvasva derult ki; ujrakuldve HTTP=200, id megvan.
   **A KOZOS MAG:** mindket esetben a parancs LEFUTOTT, hibauzenet nem volt, es a kovetkezo lepesem a
-  sikert felteteleztе. A kulonbseg csak annyi, hogy az egyiket egy kesobbi kor talalta meg, a masikat
+  sikert feltetelezte. A kulonbseg csak annyi, hogy az egyiket egy kesobbi kor talalta meg, a masikat
   en, mert VELETLENUL ranezetem.
   **ELJARAS, ket olcso szokas:** (a) allapot-valtoztato hivasnal (`UPDATE`, memoria-POST, uzenet-POST,
   fajl-iras) MINDIG kerd el a bizonyitekot ugyanabban a korben -- `curl -w "HTTP=%{http_code}"`, a

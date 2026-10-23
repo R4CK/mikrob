@@ -59,9 +59,9 @@ jobs:
       # boot-after-reboot path nobody exercises by hand day to day, so its own
       # selftest has to run somewhere other than a human remembering to.
       - run: bash scripts/__tests__/ollama-boot-restore.test.sh
-      # UPSTREAM-SYNC (card 0b550d89, re-confirmed card 1a046537/batch 5, card 1f4c046b/batch 13
-      # and card d06a325d/batch 18; decision recorded in src/fork-upstream/acknowledged-conflicts.ts
-      # ~line 1314, card b992e9aa):
+      # UPSTREAM-SYNC (card 0b550d89, re-confirmed card 1a046537/batch 5, card 1f4c046b/batch 13,
+      # card d06a325d/batch 18 and card 8d625ccd/batch 17; decision recorded in
+      # src/fork-upstream/acknowledged-conflicts.ts ~line 1314, card b992e9aa):
       # NOT adopting upstream's CI steps here (egress-drift-scan, dash-audit-scan, mio-orszem-precheck,
       # memory-link-audit, keepalive-probe-install, morning-stamp-gate, morning-timer-park,
       # userbot-arming-gate, supabase-q-token-hiding, and batch 13's telegram-reply-guard /

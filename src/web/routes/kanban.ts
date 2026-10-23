@@ -753,7 +753,16 @@ export function buildHeartbeatSummaryResponse(
 // The methods the single-card path actually serves. One source, so the Allow
 // header can never drift from the branches above it -- advertising a method
 // that is not routed would send the caller one step further into the same fog.
-const KANBAN_CARD_METHODS = ['PUT', 'DELETE'] as const
+// 2dd78397: GET is served now (one card, archived ones included).
+const KANBAN_CARD_METHODS = ['GET', 'PUT', 'DELETE'] as const
+
+// 2dd78397: a write that lands on an ARCHIVED card used to answer exactly like one on a live card,
+// so the writer never learned that nobody reads the card any more. The write still happens (a 409
+// would break every existing caller that closes or comments after archiving); the successful
+// response says it, additively. On a live card the response is unchanged: no field at all.
+function archivedNote(card: { archived_at: number | null } | undefined): { archived?: true } {
+  return card && card.archived_at != null ? { archived: true } : {}
+}
 
 /**
  * Parse the `includeArchived` query parameter.
@@ -1346,7 +1355,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       specTemplateGuardCheck(id, specTemplatePrevStatus, data.status, actor)
       void decisionsGuardCheck(id, specTemplatePrevStatus, data.status, actor)
       onKanbanCardStatusChanged(id, specTemplatePrevStatus, data.status)
-      json(res, { ok: true }); return true
+      json(res, { ok: true, ...archivedNote(getKanbanCard(id)) }); return true
     }
     // Card c4f2de32: distinguish "no such card" from "refused to re-open reviewed work", so the
     // caller learns what to do instead of retrying blindly.
@@ -1457,7 +1466,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       // awaiting it here would hold the HTTP response on a pane-idle wait (card 900178fa).
       if (status === 'in_progress') void fireKanbanDispatch(id, actor)
       onKanbanCardStatusChanged(id, specTemplatePrevStatus, status)
-      json(res, { ok: true })
+      json(res, { ok: true, ...archivedNote(getKanbanCard(id)) })
       return true
     }
     if (getKanbanCard(id)) {
@@ -1543,7 +1552,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanCardMatch && method === 'GET') {
     const id = decodeURIComponent(kanbanCardMatch[1])
     const card = getKanbanCard(id)
-    if (!card) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    if (!card) { json(res, { error: `Kártya nem található: ${id}` }, 404); return true }
     // Same derived fields as the list, so a caller that opened one card sees what the board shows.
     // card d06a325d/58669bf2: merged with kanban_card_blockers, same reasoning as the list route.
     const blockers = [...getUnmetKanbanPredecessors(id)]
@@ -1634,7 +1643,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
     // automated (card 5aaf7209 item 5 / 16e60d3c item 5): a bulk/machine writer's self-reported
     // flag, so a stuck-card detector does not read its own comment as human work-trace.
-    json(res, addKanbanComment(cardId, normalizeCommentAuthor(author), normalizedContent, automated === true))
+    const comment = addKanbanComment(cardId, normalizeCommentAuthor(author), normalizedContent, automated === true)
+    json(res, { ...comment, ...archivedNote(card) })
     return true
   }
 
@@ -1802,6 +1812,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (childrenMatch && method === 'GET') {
     const parentId = decodeURIComponent(childrenMatch[1])
     json(res, getChildCards(parentId))
+    return true
+  }
+
+  // 2dd78397: ONE card by id, archived ones included (the list GET leaves those out), with its
+  // description. Here, after every fixed single-segment path (/api/kanban/archived and the rest),
+  // for the same reason as the 405 below: placed earlier, "archived" would be read as a card id.
+  const singleCardGetMatch = path.match(/^\/api\/kanban\/([^/]+)$/)
+  if (singleCardGetMatch && method === 'GET') {
+    const id = decodeURIComponent(singleCardGetMatch[1])
+    const card = getKanbanCard(id)
+    if (!card) { json(res, { error: `Kártya nem található: ${id}` }, 404); return true }
+    json(res, card)
     return true
   }
 

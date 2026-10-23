@@ -1137,6 +1137,66 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+// Env names that decide WHICH account or endpoint Claude Code talks to. The
+// isolated provisioning copies the shared ~/.claude/settings.json `env` into
+// every isolated settings.json, and that copy stays on purpose: some installs
+// route the fleet through it deliberately (an API key or a compatible
+// endpoint). What must not happen is that it does so SILENTLY: one of these
+// names in the shared file moves every isolated agent off its own setup-token
+// onto that key or endpoint (billing, quota), and nothing on the agent says so.
+export const SHARED_ENV_AUTH_KEYS: readonly string[] = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+]
+
+/** The auth-path names an `env` block carries, in SHARED_ENV_AUTH_KEYS order.
+ *  Names only: the values are never read into the result. Own properties only,
+ *  so a prototype name can never count as present. */
+export function authKeysInEnv(env: unknown): string[] {
+  if (!isPlainObject(env)) return []
+  return SHARED_ENV_AUTH_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(env, k))
+}
+
+function readSharedSettingsEnv(): unknown {
+  try {
+    return (JSON.parse(readFileSync(join(homedir(), '.claude', 'settings.json'), 'utf-8')) as { env?: unknown }).env
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Dashboard side of the start-time warning: the auth-path names the shared env
+ * copies into this agent's isolated config dir, or [] when the agent does not
+ * run on one. Read from the files, not from a start-time record, so the
+ * warning survives a dashboard restart and clears itself once the shared file
+ * no longer carries the name. An agent on a configured config dir or plan is
+ * not provisioned from the shared file, so it never gets the warning.
+ */
+export function sharedEnvAuthKeysCopiedTo(name: string): string[] {
+  let cfg: string | null
+  if (name === MAIN_AGENT_ID) {
+    if (resolveMainAgentConfigDir()) return []
+    cfg = mainAgentConfigDirIfSeparate()
+  } else {
+    if (resolveAgentConfigDir(name).configDir) return []
+    cfg = join(agentDir(name), '.claude-config')
+  }
+  if (!cfg) return []
+  const shared = authKeysInEnv(readSharedSettingsEnv())
+  if (!shared.length) return []
+  let own: unknown
+  try {
+    own = (JSON.parse(readFileSync(join(cfg, 'settings.json'), 'utf-8')) as { env?: unknown }).env
+  } catch {
+    return []
+  }
+  const present = new Set(authKeysInEnv(own))
+  return shared.filter((k) => present.has(k))
+}
+
 function provisionIsolatedConfigDir(
   cfg: string,
   cwd: string,
@@ -1200,6 +1260,15 @@ function provisionIsolatedConfigDir(
     // PROVENANCE-KAPU blocks per prompt) and made the global file look load-
     // bearing when it was not.
     delete settings.hooks
+    // The shared env reaches this agent as is (the shared file wins for every
+    // name it defines), so an auth-path name in it changes which account or
+    // endpoint this agent runs on. Said out loud on every start, names only:
+    // a settings.json may hold secrets, so values never land in the log.
+    const copiedAuthKeys = authKeysInEnv(settings.env)
+    if (copiedAuthKeys.length) {
+      logger.warn({ name, path: sharedSettings, keys: copiedAuthKeys },
+        'isolated-config: the shared settings env carries auth keys into this agent; it may run on that key or endpoint instead of its own token')
+    }
     const scopedPlugins = scopeChannelPlugins(
       providerType,
       settings.enabledPlugins as Record<string, boolean> | undefined,
@@ -3175,7 +3244,8 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
             try { runTmux(null, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
           }
         }
-        if (/Listening for channel messages/.test(pane)) return
+        // 2.1.296 renamed the banner to "Listening for messages from <x>".
+        if (/Listening for (?:channel )?messages from/.test(pane)) return
         setTimeout(checkEperm, 1000)
       }
       setTimeout(checkEperm, 1500)

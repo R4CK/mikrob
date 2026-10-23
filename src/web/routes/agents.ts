@@ -122,6 +122,7 @@ import {
   capturePane,
   delay,
   resolveAgentProvider,
+  sharedEnvAuthKeysCopiedTo,
 } from '../agent-process.js'
 import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
@@ -543,6 +544,10 @@ export interface AgentSummary {
    *  drives the dashboard "reauth needed" badge + one-click /login button. */
   needsReauth: boolean
   reauthReason?: string
+  /** Auth-path env names (never values) the shared ~/.claude/settings.json
+   *  copies into this agent's isolated config dir -- drives the dashboard
+   *  warning. Empty when there is nothing to warn about. */
+  sharedEnvAuthKeys: string[]
 }
 
 interface AgentDetail extends AgentSummary {
@@ -685,6 +690,7 @@ async function getAgentSummary(name: string): Promise<AgentSummary> {
     contextTokens,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
+    sharedEnvAuthKeys: sharedEnvAuthKeysCopiedTo(name),
   }
 }
 

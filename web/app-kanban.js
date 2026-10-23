@@ -1404,6 +1404,7 @@ function openNewCardModal(status) {
   document.getElementById('cardModalTitle').textContent = t('kanban.modal.title_new')
   document.getElementById('cardTitle').value = ''
   document.getElementById('cardDesc').value = ''
+  document.getElementById('cardTestSteps').value = ''
   document.getElementById('cardPriority').value = 'normal'
   document.getElementById('cardProject').value = ''
   document.getElementById('cardDue').value = ''
@@ -1435,6 +1436,7 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
   const data = {
     title,
     description: document.getElementById('cardDesc').value.trim() || null,
+    test_steps: document.getElementById('cardTestSteps').value.trim() || null,
     assignee: document.getElementById('cardAssignee').value || null,
     priority: document.getElementById('cardPriority').value,
     project: document.getElementById('cardProject').value.trim() || null,
@@ -1845,6 +1847,13 @@ async function showCardDetail(card) {
 
   document.getElementById('cardDetailDesc').textContent = card.description || ''
 
+  // Card 8fe51afd: the testing-steps block, highlighted while the card is actually in testing --
+  // that is when "what do I have to test" is a live question, not a historical note.
+  const testStepsBlock = document.getElementById('cardDetailTestSteps')
+  testStepsBlock.hidden = !card.test_steps
+  document.getElementById('cardDetailTestStepsBody').textContent = card.test_steps || ''
+  testStepsBlock.classList.toggle('is-testing', card.status === 'testing')
+
   renderCardLabelsSection(card)
   renderCardBlockersSection(card)
 
@@ -1945,6 +1954,7 @@ async function showCardDetail(card) {
     document.getElementById('cardModalTitle').textContent = t('kanban.modal.title_edit')
     document.getElementById('cardTitle').value = card.title
     document.getElementById('cardDesc').value = card.description || ''
+    document.getElementById('cardTestSteps').value = card.test_steps || ''
     document.getElementById('cardPriority').value = card.priority
     document.getElementById('cardProject').value = card.project || ''
     document.getElementById('cardDue').value = card.due_date
