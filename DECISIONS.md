@@ -21242,3 +21242,33 @@ agent/backend2/work, a mutáció-visszaállítás utáni állapoton) -- 5/5 zöl
 **Ki döntött:** backend2 (kártya 33e5e4ff), szülő: 81593084. Forrás-döntés: MikroB (komment 22279).
 **Hivatkozás:** kártya 33e5e4ff (szülő 81593084 bontás), lásd MT-10a/63206155 és MT-10b/bb0cadd9
 fenti bejegyzéseit a testvér-importerekhez.
+
+## 2026-10-23 14:55 -- MT-10c: cold memória -> lesson csomópont + about él (kártya 76c2efb1)
+
+**Döntés:** `src/kg/import-cold-memories.ts` -- determinisztikus importer, a mikrob memória-rendszer
+COLD tier `memories` sorait (minden agentre, nincs agent-szűrés) `lesson` tipusú kg_node-okká
+alakítja (title=a tartalom első nem-üres sora, body=a teljes tartalom, keywords=a memória saját
+keywords mezője, source_ref='memories:<id>'). Ha a sor szövege 8-hex kártya-ID-t vagy 7-40 hex
+commit-sha-t referál, `about` él jön létre a megfelelő csomópontra -- de KIZÁRÓLAG ha az a
+csomópont már létezik a gráfban (sem card, sem commit node nem jön létre csak az él kedvéért,
+mert a memóriák fleet-wide szabad szöveg, nincs hozzájuk kanban-projekt, amit egy fabrikált
+card-node `project` mezőjébe lehetne tenni). A `lesson` node partíciója ezért `_global`
+(project-map.ts GLOBAL_PARTITION).
+
+A kártya-ID-kinyerés az `import-decisions-log.ts` (MT-10b) már exportált `referencedCardIds`
+függvényét hasznosítja újra (8-hex token, csak akkor él, ha a `card:<id>` csomópont létezik). A
+commit-sha-kinyerés egy új, tágabb hex-token regex (7-40 karakter, a store.ts
+ANCHOR_SHA_PATTERN/GATE_SHA_PATTERN mintájára), ugyanazzal a "csak ha már létezik" elvvel.
+
+**Mutáció-ellenőrzés:** két mutáció próbáltatott és mindkettő elbukott a megfelelő teszteken (majd
+visszaállítva): (1) a commit-sha about-él létrehozás teljes kikapcsolása -- a teszt elkapta (2
+él helyett 1); (2) a `category = 'cold'` SQL-szűrő elhagyása -- a teszt elkapta (a hot sor is
+lesson csomóponttá vált volna, 4 helyett 3).
+
+**Ellenőrzés:** `npx vitest run src/__tests__/kg-import-cold-memories.test.ts` (saját ágon,
+agent/backend2/work, mutáció-visszaállítás utáni állapoton) -- 5/5 zöld; `npx tsc --noEmit -p .`
+tiszta. Teljes suite a landoláskor (`marveen-land.sh`) fut, a Gate-SHA onnan jön.
+
+**Ki döntött:** backend2 (kártya 76c2efb1), szülő: 81593084.
+**Hivatkozás:** kártya 76c2efb1 (szülő 81593084 bontás), lásd MT-10a/63206155, MT-10b/bb0cadd9,
+MT-10d/33e5e4ff fenti bejegyzéseit a testvér-importerekhez.
