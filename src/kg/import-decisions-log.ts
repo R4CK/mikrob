@@ -28,7 +28,7 @@ interface CardRow {
   project: string | null
 }
 
-interface ParsedEntry {
+export interface ParsedEntry {
   lineNumber: number
   title: string
   body: string
@@ -43,7 +43,7 @@ const CARD_ID_RX = /\b[0-9a-f]{8}\b/g
 /** Splits the raw markdown on `## ` heading lines. Each entry runs from its heading to the line
  *  before the next heading (or EOF) -- the `---` separators some older entries also use are left
  *  inside the body untouched, since they carry no information this importer needs. */
-function parseEntries(markdown: string): ParsedEntry[] {
+export function parseEntries(markdown: string): ParsedEntry[] {
   const lines = markdown.split('\n')
   const headingIdx: number[] = []
   for (let i = 0; i < lines.length; i++) {
@@ -64,7 +64,7 @@ function parseEntries(markdown: string): ParsedEntry[] {
  *  kanban_cards here -- the caller's lookup is the one and only place that decides real-card vs.
  *  lookalike (e.g. a commit sha mentioned in "Hivatkozás"), so a token that fails the check is
  *  countable (cardRefsSkippedMissing) instead of silently vanishing before the caller ever sees it. */
-function referencedCardIds(text: string): string[] {
+export function referencedCardIds(text: string): string[] {
   const seen = new Set<string>()
   for (const m of text.matchAll(CARD_ID_RX)) seen.add(m[0])
   return [...seen]

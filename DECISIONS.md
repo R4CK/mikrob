@@ -21204,3 +21204,41 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 **Gate-SHA:** 02bd502856f14bcb40b2135ae767e989d6d98de7
 **Ki döntött:** backend (card 28923621).
 **Hivatkozás:** kártya 28923621, előd upstream-kártya 6b10a6b8, forrás-commit 9ce202399, köteg-merge 969bfa85a (ami tudatosan ehhez a kártyához utalta a bekötést).
+
+## 2026-10-23 12:19 -- MT-10d: elvetett alternatívák -> anti_pattern csomópont (kártya 33e5e4ff)
+
+(folytatás a fenti 46ad2933 bejegyzés után, a párhuzamosan landolt ágak tiszta tail-append
+ütközése miatt -- lásd a 375a81c1 szabályt: az új bejegyzés mindig a fájl végére kerül, a
+kapcsolódó korábbi bejegyzésre dátum/cím szerint hivatkozva, nem mellé szúrva.)
+
+**Döntés:** `src/kg/import-anti-patterns.ts` -- determinisztikus importer, két forrásból épít
+`anti_pattern` kg_node-okat `rejected_for` éllel a kártyára: (1) `kanban_comments` sorok, amelyek
+egy `Draft-Review: ELUTASITVA` kezdetű sort tartalmaznak (kártya 1338e68b konvenció); (2)
+DECISIONS.md bejegyzések, amelyek saját `Döntés` mező-sora ELUTASÍTVA/ELUTASITVA/VISSZAVONVA/NO-GO
+szót tartalmaz. A forrás-döntést MikroB adta meg (komment 22279, a kártya saját nyitott kérdésére):
+nincs új strukturált tár, pontosan ez a két meglévő forrás számít. A találat szándékosan csak a
+Döntés mező saját sorára szorítkozik, nem az egész bejegyzés szövegére -- ez a fájl több helyen
+(pl. ezek a sorok fentebb) MAGÁT a konvenciót magyarázza, idézve az "ELUTASITVA" szót anélkül, hogy
+az adott bejegyzés valódi elutasítás lenne; egy teljes-body keresés ezeket hibásan anti_pattern-né
+minősítené (mutáció-próbával igazolva, lásd lejjebb).
+
+A `parseEntries`/`referencedCardIds`/`ParsedEntry` export lett az `import-decisions-log.ts`-ből
+(MT-10b, kártya bb0cadd9), hogy ez az importer a DECISIONS.md bejegyzés-felbontást és
+kártya-hivatkozás-kinyerést újrahasznosítsa, ne duplikálja.
+
+**Mutáció-ellenőrzés:** két mutáció próbáltatott és mindkettő elbukott a megfelelő teszteken (majd
+visszaállítva): (1) a `Draft-Review` sor-eleji + ELUTASITVA-specifikus regexet puszta
+`/Draft-Review/`-ra lazítva, az ELFOGADVA-s és az elméleti-említéses komment is téves
+anti_pattern-né vált -- a teszt elkapta; (2) a Döntés-sor-szűkítést elhagyva (teljes bejegyzés
+szövegén keresve a szót), a 3. fixture-bejegyzés (ami csak PRÓZÁBAN idézi az "ELUTASITVA" szót, nem
+a saját Döntés-sorában) téves anti_pattern-né vált -- a teszt elkapta.
+
+**Ellenőrzés:** `npx vitest run src/__tests__/kg-import-anti-patterns.test.ts` (saját ágon,
+agent/backend2/work, a mutáció-visszaállítás utáni állapoton) -- 5/5 zöld; a teljes célzott kör
+(ezzel + a kg-import-decisions-log.test.ts + kg-import-findings.test.ts) 17/17 zöld; `npx tsc
+--noEmit -p .` tiszta. Teljes suite a landoláskor (`marveen-land.sh`) fut, a Gate-SHA onnan jön.
+
+**Gate-SHA:** 1e8861cf5
+**Ki döntött:** backend2 (kártya 33e5e4ff), szülő: 81593084. Forrás-döntés: MikroB (komment 22279).
+**Hivatkozás:** kártya 33e5e4ff (szülő 81593084 bontás), lásd MT-10a/63206155 és MT-10b/bb0cadd9
+fenti bejegyzéseit a testvér-importerekhez.
