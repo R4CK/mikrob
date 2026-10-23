@@ -52,10 +52,15 @@ const KG_DRAFT_MAX_ATTEMPTS = 2
 // stripped from the INPUT before it reaches the model (globally, via the 'gu' flag below), and
 // rejected outright if they show up in the model's OUTPUT (a stronger signal than an input
 // artifact: it means the framing below did not hold).
+// Finding 2 (card f809b24c, RedHat 2ace4db9 GO, comment 23005): 11 further invisible classes passed
+// through the first list -- variation selectors, combining grapheme joiner, deprecated formatting
+// characters, Hangul fillers, Khmer inherent vowel, halfwidth Hangul filler, interlinear annotation
+// anchor, and a musical-notation format character.
 const UNSAFE_CHARS_RX = new RegExp(
   '[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00ad\\u061c\\u180e' +
     '\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2069\\u3164\\ufeff' +
-    '\\u{E0000}-\\u{E007F}\\u{E0100}-\\u{E01EF}]',
+    '\\u034f\\u115f\\u1160\\u17b4\\u206a-\\u206f\\ufe00-\\ufe0f\\uffa0\\ufff9' +
+    '\\u{E0000}-\\u{E007F}\\u{E0100}-\\u{E01EF}\\u{1D173}]',
   'u',
 )
 const DRAFT_TITLE_MAX = 300
@@ -386,12 +391,6 @@ export function runCapture(
     return { outcome: 'failed', reason: 'draft_parse_error', solutionIds: [] }
   }
 
-  // X2 fix (card 2ace4db9, RedHat NO-GO 22754): `card.status` above was read before the ~2-minute
-  // draftFn call. If the card gets reopened WHILE that call is in flight, the stale `allowedActive`
-  // would still mark the node active once the write finally happens. Re-read the status now, right
-  // before the write, so a mid-flight reopen is caught.
-  const stillDone = getKanbanCard(cardId)?.status === 'done'
-
   // F3 (card 2ace4db9, WhiteHat): a secret shape surfacing only in a LATER draft item (upsertNode's
   // own assertNoSecretShape throws on it) used to leave the EARLIER item's node already committed
   // -- a partial, half-active write, with the exception propagating uncaught past this function and
@@ -402,6 +401,14 @@ export function runCapture(
   let solutionIds: readonly string[]
   try {
     solutionIds = kgDb.transaction((): readonly string[] => {
+      // X2 fix (card 2ace4db9, RedHat NO-GO 22754), moved inside the transaction (finding 3, card
+      // f809b24c, RedHat 2ace4db9 GO, comment 23005): `card.status` was read before the
+      // ~2-minute draftFn call. If the card gets reopened WHILE that call is in flight, the stale
+      // `allowedActive` would still mark the node active once the write finally happens. Re-read
+      // the status at the latest possible point before the write -- inside the same SAVEPOINT the
+      // write itself runs in -- so a mid-flight reopen is caught.
+      const stillDone = getKanbanCard(cardId)?.status === 'done'
+
       if (!kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get(cardNodeId)) {
         upsertNode(kgDb, {
           id: cardNodeId,
