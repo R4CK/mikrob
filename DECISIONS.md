@@ -21428,3 +21428,27 @@ tsc --noEmit -p .` tiszta. Teljes suite a landoláskor (`marveen-land.sh`) fut, 
 **Ki döntött:** backend3 (kártya 13b2648e, upstream-szinkron közbeni felfedezés), MikroB jóváhagyása (F5, komment 22674).
 
 **Hivatkozás:** kártya 13b2648e, card 4aa87fdf (az eredeti NOT-ADOPTED döntés), upstream commit 849c9cb80, komment 22670 (WhiteHat GO + F1 lelet), 22674 (MikroB döntés, F5).
+
+## 2026-10-23 -- kártya 4a769a34: Trail-ötlet 2, döntés-konfliktus jelzés landolás előtt
+
+**Kontextus:** a megoldás-tár/tudásgráf fázis (c65add5a) Trail-ötlet 2 gyereke (Peti 11527/11530):
+a `marveen-land.sh`/`mopsion-land.sh` merge-lépése vesse össze a landoló diff fájljait a
+`DECISIONS.md` bejegyzéseivel, és ha egy korábbi döntés érint egy most módosuló fájlt, idézze azt
+(dátum, ki döntött, miért) a landolási kimenetben -- strukturális segítő az 5. kódminőségi elv
+(működő funkció védelme) mellé.
+
+**Döntés:** új, megosztott `store/decisions-conflict-check.sh` helper (a
+`decisions-tail-append-guard.sh` mintáját követve: sourceolható `decisions_conflict_report()`
+függvény + `--check-ref` CLI + `--selftest`), bekötve mindkét landoló szkriptbe a merge sikeres
+lezárása után, a push előtt. Literal substring-illesztés (nem szimbólum-határ), és MINDIG jelzés,
+soha nem blokkol -- elsőkörös, report-only megvalósítás, ahogy a kártya szövege is mondja.
+
+**Miért:** a cél, hogy egy reviewer a DIFF mellett lássa a hozzá tartozó korábbi döntést, anélkül
+hogy fejből kellene emlékeznie rá vagy kézzel grep-elnie a `DECISIONS.md`-t -- ugyanaz az elv, mint
+a `Gate-SHA:`/`Pair-FE:` kimondott sorok: egy kimondott érték megszünteti a találgatást.
+
+**Ki döntött:** MikroB (kártya-leírás, Peti 11527/11530 nyomán); backend3 (tervezés, implementáció,
+mutáció-ellenőrzött teszt, valódi dry-run landolással igazolva).
+
+**Hivatkozás:** kártya 4a769a34 (szülő c65add5a); `store/decisions-conflict-check.sh`,
+`store/marveen-land.sh`, `store/mopsion-land.sh`.
