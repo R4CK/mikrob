@@ -790,12 +790,16 @@ say "DECISIONS.md: append-only confirmed on both sides of the merge"
 
 # Decision-conflict report (card 4a769a34, Trail-ötlet 2): does this landing's diff touch a file a
 # past DECISIONS.md entry made a call about? Report-only, never refuses -- see
-# decisions-conflict-check.sh's header for why.
+# decisions-conflict-check.sh's header for why. Uses decisions_conflict_diff_paths (not a plain
+# `diff --name-only`) so a renamed file's old path and a non-ASCII path are never silently missed
+# (card 40b5038f, WhiteHat F1a/F1b), and reads DECISIONS.md at BASE, not HEAD -- this landing's OWN
+# freshly-appended entry must never be quoted back as if it were an earlier decision (card 40b5038f,
+# WhiteHat F3).
 DCR_FILES=()
 while IFS= read -r _dcr_f; do [ -n "$_dcr_f" ] && DCR_FILES+=("$_dcr_f"); done \
-  <<<"$(git -C "$WT" diff --name-only "$BASE..HEAD" -- . ':!DECISIONS.md' ':!package.json' ':!package-lock.json')"
+  < <(decisions_conflict_diff_paths "$WT" "$BASE" "HEAD" . ':!DECISIONS.md' ':!package.json' ':!package-lock.json')
 if [ "${#DCR_FILES[@]}" -gt 0 ]; then
-  DCR_OUT="$(git -C "$WT" cat-file blob "HEAD:DECISIONS.md" 2>/dev/null | decisions_conflict_report "${DCR_FILES[@]}")"
+  DCR_OUT="$(git -C "$WT" cat-file blob "$BASE:DECISIONS.md" 2>/dev/null | decisions_conflict_report "${DCR_FILES[@]}")"
   [ -n "$DCR_OUT" ] && { echo "decision-conflict report (earlier DECISIONS.md entries about files in this diff):"; echo "$DCR_OUT" | sed 's/^/    /'; }
 fi
 
