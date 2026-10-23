@@ -21556,3 +21556,15 @@ backend írta.
 
 **Hivatkozás:** kártya 2c54029d, f809b24c (WhiteHat 23015/23016), QA2 FAIL (komment 23115), MikroB
 döntés (komment 23116).
+
+## 2026-10-23 -- kártya 40b5038f: decisions-conflict-check.sh F1a-c + F3 javítva (WhiteHat 22988 kövezője)
+
+**Kontextus:** a 4a769a34 report-only Trail-ötlet 2 helperre WhiteHat GO-ja mellett négy LOW-latens lelet (22988): F1 három csendes kihagyás (nem-ASCII fájlnév git-quotepath miatt, átnevezés régi neve elveszik, nagy fájllista awk `-v` argv-túlcsordulás), F2 korlátlan kimenet, F3 a merge EREDMÉNYÉNEK DECISIONS.md-jét olvasta, így a landolás saját friss bejegyzése "korábbi döntésként" idéződhetett volna vissza.
+
+**Döntés:** új `decisions_conflict_diff_paths()` függvény (`--name-status -M -z`, verifikáltan quotepath-mentes) váltja a `diff --name-only` hívásokat mindkét landoló szkriptben -- F1a/F1b zárva. `decisions_conflict_report()` a fájllistát most ideiglenes fájlon és awk `getline`-on át kapja, nem `-v files_str=...`-ként -- F1c zárva. Mindkét landoló szkript a DECISIONS.md-t a PRE-DIFF (base_sha/BASE) állapotban olvassa, nem a merge eredményén -- F3 zárva. A kimenet `DECISIONS_CONFLICT_MAX_ENTRIES`/`DECISIONS_CONFLICT_MAX_LINES_PER_ENTRY` env-korlátokkal plafonozva, lemaradás-számláló sorral -- F2 zárva.
+
+**Miért:** a helper report-only marad (a 2. kör, ha valaha blokkolóvá válik, ezekre a zárt lyukakra épülhet), de egy report, ami csendben kihagy vagy saját magára hivatkozik vissza, rosszabb mint ha egyáltalán nincs -- hamis biztonságérzetet ad.
+
+**Ki döntött:** WhiteHat (lelet, komment 22988), backend3 (implementáció, 11/11 selftest, mutáció-ellenőrzött: `index(body,f)>0` mutáns 6 esetet pirosít, a `-z` elhagyása a két rename/unicode esetet).
+
+**Hivatkozás:** kártya 40b5038f (szülő 4a769a34, komment 22988); `store/decisions-conflict-check.sh`, `store/marveen-land.sh`, `store/mopsion-land.sh`.
