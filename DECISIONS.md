@@ -21325,3 +21325,55 @@ MT-10d/33e5e4ff fenti bejegyzéseit a testvér-importerekhez.
 
 **Ki döntött:** RedHat adta a javítás irányát (22754, szándékosan nem `Fix-Direction` sorban, hogy maga vihesse a delta re-gate-et), a kódot a backend írta, MikroB rögzítette a javítandó pontokat (22756) és az F5 különválasztását (f809b24c).
 **Hivatkozás:** kártya 2ace4db9, MT-követő a c991508f-hez, WhiteHat F1-F5 (22040), CYBERED NO-GO 22754, MikroB dispatch 22756 (msg_id 14113), F5 külön kártya f809b24c (ebben a körben nem érintve).
+
+## 2026-10-23 -- 9. upstream-köteg utómunka: vault-kapu megerősítve, SCHEDPROMPTREF917 befejezve, retire-script atomi írás (kártya e7cd6365)
+
+Forrás: RedHat 617d136d NO-GO (komment 15850) R2/R4/R5 nem-blokkoló leletei (a B1/B2 blokkolót már
+egy korábbi javítás zárta). Három, egymástól független tétel:
+
+**R2 (claude-plans nyers token -> vault, kapu-ellenőrzés):** a leletkor (617d136d review ideje) a
+route-on nem volt más kapu, mint a megosztott bearer. Ellenőrizve a MOSTANI kódon
+(`src/web/routes/claude-plans.ts`): a POST/PUT/DELETE mindhárom ága már `rejectIfNotHumanAuth`
+mögött van, és ennek implementációja (`src/web/routes/auth.ts:124`) a RedHat 16876 B1 deltát is
+tartalmazza (egy agent-kind device-key sem számít emberinek). Ezt egy korábbi kártya (93ed929a,
+komment 16354) már megépítette és landolta, tesztelve
+(`src/__tests__/claude-plans-routes.test.ts`, `claude-plans-probe-route.test.ts`). **Nincs itt
+kódváltozás** -- a lelet elavult (stale), a döntés a jelenlegi kódon végzett ellenőrzés, nem
+feltételezés (lásd `[[2520b85a-stale-is-artifact]]` memória-tanulság: mindig a mostani kódot, nem
+a régi review szövegét kell hinni).
+
+**R4 (SCHEDPROMPTREF917 félig-átvett reference-delivery): BEFEJEZVE, nem kivezetve.** A döntés
+indoka: a snapshot-írás (`scheduled-run-snapshot.ts`) és a reference-wrapper
+(`prompt-safety.ts:wrapScheduledTaskByReference`) már tesztelt és kész volt, a hívó
+(`buildScheduledTaskBlock`/`maybeSendSizeGuardNotice`, `schedule-runner.ts`) viszont nulla hívással
+állt -- a valódi kézbesítési útvonal (`attemptFireTaskUnguarded`) a nyers `wrapScheduledTask()`-ot
+hívta közvetlenül. A kivezetés eldobta volna a már megírt, célzott problémára (a tmux send-keys
+nagy törzsnél 2026-09-11 óta nyolc feladat-tüzelést korrumpált) épített megoldást; a befejezés
+szerkezetileg biztonságos, mert `buildScheduledTaskBlock` csak akkor vált referenciára, ha MIND a
+három feltétel áll (törzs > `SCHEDULED_TASK_INLINE_MAX_CHARS`, a session LOKÁLIS, a snapshot-írás
+sikeres) -- egyébként ugyanazt az inline blokkot adja, mint korábban, tehát egy normál méretű
+feladat promptja byte-pontosan ugyanaz, mint a drótozás előtt. A `src/__tests__/
+feedback-modal-positive-scheduler.test.ts` mock-kommentje (74-79. sor) már `SCHEDPROMPTREF917`-re
+hivatkozva készítette elő a konstansokat -- ez megerősíti, hogy a befejezés volt a szánt irány, nem
+a kivezetés.
+
+**R5 (retire_progress_hooks.py nem-atomi settings.json-írás):** `scripts/lib/
+retire_progress_hooks.py` `open(path, 'w') + json.dump` helyett temp-fájl + `os.replace` (ugyanaz
+az elv, mint a repó saját `atomicWriteFileSync`-je). Ez a fájl ezen a gépen a PreToolUse őr-hookokat
+is hordozza (12 bejegyzés), tehát egy csonka írás a flotta guard-rendszerét törné.
+
+**Mutáció-ellenőrzés (R4):** a drótozást visszavettem (ideiglenesen a nyers `wrapScheduledTask()`
+hívásra), és az új `schedule-runner-reference-delivery.test.ts` 3 tesztjéből 2 elbukott (a
+referencia- és a fallback-eset), a harmadik (normál méret marad inline) változatlanul zöld maradt --
+pontosan ezt vártam, mert az a teszt a NEM-megváltozó útra ellenőriz. Visszaállítva, mind zöld.
+R5-re nincs értelmes fekete-dobozos mutáció (az atomicitás crash-injekció nélkül nem
+megkülönböztethető kívülről) -- ezt a REVIEW is így mondja ki, nem állítok mutáció-igazolást, amit
+nem végeztem el.
+
+**Ellenőrzés:** `scripts/__tests__/retire-progress-watchdog.test.sh` 34/34 zöld (R5, +1 új teszt: nem
+marad `.tmp-<pid>` fájl egy tiszta futás után); `src/__tests__/schedule-runner-reference-delivery.
+test.ts` + a 10 kapcsolódó schedule-runner/prompt-safety/snapshot teszt-fájl (165 teszt) zöld; `npx
+tsc --noEmit -p .` tiszta. Teljes suite a landoláskor (`marveen-land.sh`) fut, a Gate-SHA onnan jön.
+
+**Ki döntött:** backend2 (kártya e7cd6365).
+**Hivatkozás:** RedHat 617d136d review (komment 15850), kártya 93ed929a (R2 korábbi javítása).

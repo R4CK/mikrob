@@ -1691,10 +1691,18 @@ async function attemptFireTaskUnguarded(
     const taskBody = preCheckPrefix
       ? `[Pre-check eredmeny]\n${preCheckPrefix}\n\n[Feladat]\n${promptWithMetrics}`
       : promptWithMetrics
+    // SCHEDPROMPTREF917 (card e7cd6365 R4): finish the reference-delivery wiring
+    // rather than drop it. buildScheduledTaskBlock falls back to the plain
+    // inline wrapScheduledTask() call this replaced unless the body crosses
+    // SCHEDULED_TASK_INLINE_MAX_CHARS AND the session is LOCAL AND the snapshot
+    // write succeeds -- so a normal-sized task's prompt is byte-for-byte what it
+    // was before this wiring.
+    const { block: taskBlock } = buildScheduledTaskBlock(task.name, taskBody, host, Date.now())
+    maybeSendSizeGuardNotice(task.name, taskBody.length, Date.now())
     const fullPrompt =
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
-      wrapScheduledTask(`scheduled-task:${task.name}`, taskBody)
+      taskBlock
     let typedAt = Date.now() // replaced by onEmitStart; see the note after the call
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a

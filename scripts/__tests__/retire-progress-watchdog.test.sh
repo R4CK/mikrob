@@ -129,6 +129,13 @@ assert_no_grep "telegram_progress hooks removed"     'telegram_progress' "$H/.cl
 assert_grep    "slack_progress hook preserved"       'slack_progress'    "$H/.claude/settings.json"
 assert_grep    "unrelated hook preserved"            'unrelated\.py'     "$H/.claude/settings.json"
 assert_grep    "non-hook settings preserved"         'Bash(ls:\*)'       "$H/.claude/settings.json"
+# R5 (card e7cd6365): the settings.json write is atomic (temp file + rename),
+# so no stray .tmp-<pid> file should survive a clean run.
+if ls "$H/.claude/"settings.json.tmp-* >/dev/null 2>&1; then
+  fail "atomic write: leftover temp file after a clean run"
+else
+  pass "atomic write: no leftover temp file after a clean run"
+fi
 # Stop had ONLY the telegram hook -> the whole event key must be gone, not
 # left as an empty list that later installs would append beside.
 if python3 -c "
