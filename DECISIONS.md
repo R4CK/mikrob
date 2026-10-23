@@ -21510,3 +21510,49 @@ amin ezek a tételek nyíltak).
 **Nem vettük át:** az AgenKit (agenkit.xyz) harnesst -- a referencia-prompt nevezi meg, de nincs due diligence róla (10. szabály); a benne leírt fázisrend a meglévő workflow-val egyezik. A modell-térkép nem rögzít konkrét modell-ID-t, mert az élő forrás az `agents/<név>/agent-config.json`.
 
 **Ki döntött:** Peti (a szintézis kérése), MikroB (mi kerül be és hova).
+
+## 2026-10-23: 2c54029d delta -- WhiteHat F-a/F-b/F-c (QA2 FAIL 23115 után)
+
+**Mi történt:** a 2c54029d kártya első landolása (f73b5e8a) csak a RedHat 3 tételét zárta; a QA2
+(komment 23115) FAIL-t adott, mert a kártya saját címe és a MikroB 23016/23116 döntése szerint a
+WhiteHat 23016 F-a/F-b/F-c tételei IS ide tartoznak, és azok érintetlenek voltak. Ebben a körben
+mindhárom lezárva.
+
+**F-a (teszt-pin hiány az éles úton):** a `defaultClosureCheck` nevet egyetlen korábbi teszt sem
+hivatkozta (minden teszt injektált `closureCheck`-et használt, fix `verdictAt`-tal) -- egy mutáns,
+ami a valódi `earliestGateCommentAt`/`coveredReviewComment` logikáját törte (M2: a Gate-SHA-egyezés
+a covered-szűrőből, M4: a legkorábbi gate-komment legkésőbbire cserélve, M5: `defaultClosureCheck`
+mindig `null`-t ad, M6: a gate-szerzők kizárása a covered-ből), zölden futott volna (WhiteHat saját
+mutációs mérése, 20/20 mindegyiken). Új tesztek: `earliestGateCommentAt`/`coveredReviewComment`
+exportálva és direktben tesztelve (M2, M4, M6), plusz egy `defaultClosureCheck`-et közvetlenül hívó
+teszt-pár (M5 + az F-b eset), a `node:child_process` `execFileSync` mockolásával (a gate-closure-
+check.py valódi subprocess-futása nélkül, mert a teszt-shák nem oldhatók fel valódi klónban).
+
+**F-b (fail-open ismeretlen verdictAt-ra):** a `closure.verdictAt != null` feltétel ugyanúgy kezelte
+a `null`-t (a closureCheck TUDTA volna, de nem talált gate-kommentet, ami a shát idézi -- legális
+állapot a 4b. szabály szerint) és az `undefined`-ot (a closureCheck SOHA nem próbálta levezetni),
+mindkettőt a régi fail-open latest-wins ágra küldve. `src/kg/capture-pipeline.ts`-ben a feltétel
+`closure.verdictAt !== undefined`-re cserélve, és egy új belső elágazás a kettő szétválasztására:
+`null` esetén `allowedActive = false` (fail-closed draft), csak `undefined` esetén marad a régi
+viselkedés. Mutáció-ellenőrzés: a javítás előtti kódon az új F-b teszt PIROS volt (`expected
+'active' to be 'draft'`), utána zöld.
+
+**F-c (recens-ablak újramérés, módszerrel):** a korábbi két szám (szerző: 4/973 teljes történet,
+WhiteHat saját Python-replika: 19/63, 30%) két különböző, nem a valódi TS-kódot futtató becslés
+volt. Ez a mérés a TÉNYLEGES exportált `earliestGateCommentAt`/`coveredReviewComment` függvényeket
+futtatta (nem replikát), a dashboard API-ból (csak GET, nincs írás) lekért, a 80 legutóbb frissített
+`done` kártya valódi kommentjein. Eredmény: 80 kártyából 53-nak volt egyértelmű AGREE+sha+legalább
+egy, a shát idéző gate-komment; ebből 52 fedett (helyesen active-ra mehet), 1 (c991508f) kényszerül
+draftra (nincs fedett REVIEW). A script: `/tmp/.../scratchpad/measure-fc.ts`, egyszeri futás, nem
+landolt kódba.
+
+**Elfogadási kritérium:** F-a: a 4 korábban pin nélküli mutáns (M2, M4, M5, M6) mind pirosra vált a
+javítás eltávolításakor; F-b: `verdictAt === null` fail-closedra megy, mutáció-ellenőrzött teszttel;
+F-c: recens ablakra újramért szám + módszer leírva.
+
+**Ki döntött:** a tételek WhiteHat-tól jönnek (f809b24c feltételes GO, komment 23015/23016), a QA2
+FAIL (23115) jelezte a hiányt, MikroB (23116) döntött úgy, hogy ugyanezen a kártyán zárul, a kódot a
+backend írta.
+
+**Hivatkozás:** kártya 2c54029d, f809b24c (WhiteHat 23015/23016), QA2 FAIL (komment 23115), MikroB
+döntés (komment 23116).
