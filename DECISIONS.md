@@ -21127,3 +21127,21 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 **Gate-SHA:** 8b96551b1
 **Ki döntött:** backend2 (card 6b7c2c25), szülő: c7abdf57.
 **Hivatkozás:** kártya 6b7c2c25.
+
+---
+
+## 2026-10-23 -- MT-10a (63206155): kanban_verdicts NO-GO/FAIL -> finding + error_class csomópont a tudásgráfban
+
+**Döntés:** `src/kg/import-findings.ts` -- determinisztikus importer, ami a `kanban_verdicts` NO-GO/FAIL sorait `finding` kg_node-dá képezi (id: `finding:<verdict.id>`), `found_on` éllel a kártyához kötve, és egy kis, konzervatív kulcsszó-taxonómiával (`error_class` node, `of_class` él) osztályozza. Az osztályozás bemenete `${gate} ${findings_ref}`, mert a `verdict` mező csak GO/NO-GO/PASS/FAIL szó, a próza egyetlen helye a `findings_ref` (kártya 2bfa4c67). Nincs találat esetén `error_class:unclassified`.
+
+**Miért kulcsszó-taxonómia, nem helyi LLM:** MikroB döntése a kártya saját nyitott kérdésére (msg_id:13955) -- determinisztikus kulcsszó-taxonómia + unclassified kosár, lefedettség-méréssel; helyi LLM-klasszifikáció csak akkor, ha az unclassified arány 20% fölött marad, és az külön kártya, nem ennek a scope-bővítése. Ezért nincs plan-grilling sem (MikroB explicit mentessége).
+
+**Mért állapot:** a `kanban_verdicts` tábla az éles adatbázisban 0 sort tartalmaz -- a strukturált gate-verdikt rekord (kártya 2bfa4c67) megépült, de a gate-ek ma is szabadszöveges kanban-kommentben adják a verdiktet (CLAUDE.md 4c. konvenció), nem a strukturált API-n. Az importer ettől függetlenül helyes és fixture-tesztelt (ugyanaz a testpozíció, mint `import-from-relations.ts`-nél, MT-01); a kártya kért lefedettség-mérése élesben 0/0-t ad, amíg a gate-ek nem térnek át a strukturált API-ra -- ez a kártya scope-ján kívüli, külön nyomon követendő tény.
+
+**Elfogadási kritérium (EK-MT-10a-1):** fixture-teszttel igazolva -- két, azonos valódi okra visszavezethető (manuálisan megadott, "env-allowlist" szövegű) finding ugyanarra az `error_class:missing-env-allowlist` node-ra mutat.
+
+**Mutáció-ellenőrzés:** a kulcsszó-illesztő ciklus `return UNCLASSIFIED_CLASS_ID`-ra egyszerűsítésével az EK-MT-10a-1 teszt és két másik teszt elbukott (unclassified jött env-allowlist helyett) -- visszaállítva.
+
+**Gate-SHA:** ab614cded
+**Ki döntött:** backend2 (card 63206155), szülő: 81593084.
+**Hivatkozás:** kártya 63206155 (szülő 81593084 bontás).
