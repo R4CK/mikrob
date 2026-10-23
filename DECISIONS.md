@@ -21217,3 +21217,16 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 
 **Ki döntött:** RedHat adta a javítás irányát (22570, Fix-Direction sort szándékosan nem írt, hogy maga vihesse a re-gate-et), a kódot a backend írta.
 **Hivatkozás:** kártya 7857c82c, szülő 26c07c33, RedHat NO-GO 22570, MikroB dispatch 22572 (msg_id 14054), korábbi GO-k: WhiteHat 22466, QA2 22485.
+
+## 2026-10-23 -- kártya 2ace4db9: kg-capture-pipeline X1/X2 javítás (CYBERED NO-GO 22754 delta)
+
+**Kontextus:** RedHat (Cybered) NO-GO-t adott a kártya korábbi Gate-SHA-jára (2940bdcd0, komment 22754) a WhiteHat F1-F5 feltételek (c991508f, 22040) delta-gate-jén. Két blokkoló: X1 MEDIUM -- a bemenet-tisztítás `UNSAFE_CHARS_RX`-es `.replace()`-e nem globális, csak az ELSŐ veszélyes karaktert törli (12-ből 11 átmegy a modellhez), a regex-osztály 12 láthatatlan/formázó karakterosztályt (ZWSP, BOM, soft hyphen, C1-vezérlők, Unicode tag-karakterek, variáció-szelektorok, stb.) nem is fedett, és a BEGIN/END REVIEW DATA keretjelölő hamisítható a REVIEW szövegéből. X2 MEDIUM-LOW -- az F2 "reopened kártya nem lehet active" ellenőrzés csak a futás ELEJÉN olvassa a kártya státuszát; a ~2 perces modellhívás UTÁN bekövetkező reopen esetén a stale `allowedActive` még aktív csomópontot ír.
+
+**Döntés:** X1 -- a `UNSAFE_CHARS_RX` kiegészítve mind a 12 RedHat által megnevezett karakterosztállyal (SOFT HYPHEN, ARABIC LETTER MARK, MONGOLIAN VOWEL SEPARATOR, ZWSP-ZWJ-ZWNJ-LRM-RLM, LINE/PARA SEPARATOR+BIDI, WORD JOINER-PDI, HANGUL FILLER, BOM, Unicode TAG + VARIATION SELECTOR SUPPLEMENT), és a `frameReviewAsData()` törlése globális (`new RegExp(UNSAFE_CHARS_RX.source, 'gu')`) a korábbi nem-globális `.replace()` helyett. A BEGIN/END marker-szerű alszöveg a bemenetben escape-elve (`split/join`), mielőtt a valódi keret rákerül -- egy hamisított END után nem jöhet egy második, a modell által hitelesnek vélt marker. X2 -- a kártya státusza a draftFn-hívás UTÁN, az írás előtt újra lekérdezve (`stillDone`), és a csomópont csak `allowedActive && stillDone` esetén lehet `active`.
+
+**Teszt:** 3 új regressziós eset a `src/__tests__/kg-capture-pipeline.test.ts`-ben (X1(a): 12 különböző karakterosztály egyszerre, mind törölve; X1(b): hamis END/BEGIN marker a REVIEW-ban, a kimenetben pontosan 1-1 valódi marker; X2: a kártya reopen-je a draftFn hívás KÖZBEN, a csomópont draft marad). Mutáció-ellenőrzés: a 3 teszt a javítás előtti (HEAD-beli, 2940bdcd0-s) kódon mind PIROS (X1(a): a tiltott karakter megmarad a prompt-ban; X1(b): 2 END marker; X2: 'active' lett, nem 'draft'), a javítás után 18/18 ZÖLD. Teljes kg-* teszt-család (11 fájl): 120/120 ZÖLD. `tsc --noEmit -p .` tiszta.
+
+**Elfogadási kritérium:** mindhárom RedHat-próba zöldül (a 22754-es recept alapja), a meglévő 15 teszt nem romlik, a kg-* család regresszió-mentes.
+
+**Ki döntött:** RedHat adta a javítás irányát (22754, szándékosan nem `Fix-Direction` sorban, hogy maga vihesse a delta re-gate-et), a kódot a backend írta, MikroB rögzítette a javítandó pontokat (22756) és az F5 különválasztását (f809b24c).
+**Hivatkozás:** kártya 2ace4db9, MT-követő a c991508f-hez, WhiteHat F1-F5 (22040), CYBERED NO-GO 22754, MikroB dispatch 22756 (msg_id 14113), F5 külön kártya f809b24c (ebben a körben nem érintve).
