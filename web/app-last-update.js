@@ -16,8 +16,12 @@ function renderLastUpdateBadge(lu) {
   }
   let local
   try {
+    // ISSUE1895: the install zone (/api/marveen tz), not a hardcoded literal. Omitting the
+    // option when it has not loaded yet falls back to the browser's own local zone, a better
+    // default than assuming any one install's timezone.
+    const tzOpt = (window._marveen && window._marveen.tz) ? { timeZone: window._marveen.tz } : {}
     local = new Date(lu.timestamp).toLocaleString([], {
-      timeZone: 'Europe/Budapest', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+      ...tzOpt, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
     })
   } catch {
     textEl.textContent = t('lastUpdate.unknown')

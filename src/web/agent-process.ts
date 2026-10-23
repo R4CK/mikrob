@@ -1137,6 +1137,66 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+// Env names that decide WHICH account or endpoint Claude Code talks to. The
+// isolated provisioning copies the shared ~/.claude/settings.json `env` into
+// every isolated settings.json, and that copy stays on purpose: some installs
+// route the fleet through it deliberately (an API key or a compatible
+// endpoint). What must not happen is that it does so SILENTLY: one of these
+// names in the shared file moves every isolated agent off its own setup-token
+// onto that key or endpoint (billing, quota), and nothing on the agent says so.
+export const SHARED_ENV_AUTH_KEYS: readonly string[] = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+]
+
+/** The auth-path names an `env` block carries, in SHARED_ENV_AUTH_KEYS order.
+ *  Names only: the values are never read into the result. Own properties only,
+ *  so a prototype name can never count as present. */
+export function authKeysInEnv(env: unknown): string[] {
+  if (!isPlainObject(env)) return []
+  return SHARED_ENV_AUTH_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(env, k))
+}
+
+function readSharedSettingsEnv(): unknown {
+  try {
+    return (JSON.parse(readFileSync(join(homedir(), '.claude', 'settings.json'), 'utf-8')) as { env?: unknown }).env
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Dashboard side of the start-time warning: the auth-path names the shared env
+ * copies into this agent's isolated config dir, or [] when the agent does not
+ * run on one. Read from the files, not from a start-time record, so the
+ * warning survives a dashboard restart and clears itself once the shared file
+ * no longer carries the name. An agent on a configured config dir or plan is
+ * not provisioned from the shared file, so it never gets the warning.
+ */
+export function sharedEnvAuthKeysCopiedTo(name: string): string[] {
+  let cfg: string | null
+  if (name === MAIN_AGENT_ID) {
+    if (resolveMainAgentConfigDir()) return []
+    cfg = mainAgentConfigDirIfSeparate()
+  } else {
+    if (resolveAgentConfigDir(name).configDir) return []
+    cfg = join(agentDir(name), '.claude-config')
+  }
+  if (!cfg) return []
+  const shared = authKeysInEnv(readSharedSettingsEnv())
+  if (!shared.length) return []
+  let own: unknown
+  try {
+    own = (JSON.parse(readFileSync(join(cfg, 'settings.json'), 'utf-8')) as { env?: unknown }).env
+  } catch {
+    return []
+  }
+  const present = new Set(authKeysInEnv(own))
+  return shared.filter((k) => present.has(k))
+}
+
 function provisionIsolatedConfigDir(
   cfg: string,
   cwd: string,
@@ -1200,6 +1260,15 @@ function provisionIsolatedConfigDir(
     // PROVENANCE-KAPU blocks per prompt) and made the global file look load-
     // bearing when it was not.
     delete settings.hooks
+    // The shared env reaches this agent as is (the shared file wins for every
+    // name it defines), so an auth-path name in it changes which account or
+    // endpoint this agent runs on. Said out loud on every start, names only:
+    // a settings.json may hold secrets, so values never land in the log.
+    const copiedAuthKeys = authKeysInEnv(settings.env)
+    if (copiedAuthKeys.length) {
+      logger.warn({ name, path: sharedSettings, keys: copiedAuthKeys },
+        'isolated-config: the shared settings env carries auth keys into this agent; it may run on that key or endpoint instead of its own token')
+    }
     const scopedPlugins = scopeChannelPlugins(
       providerType,
       settings.enabledPlugins as Record<string, boolean> | undefined,
@@ -1467,6 +1536,57 @@ export function ensureSharedClaudeOnboarded(dotClaudePath: string = join(homedir
   }
 }
 
+// #1904: the git toplevel that contains `dir`, or null when there is none
+// (not a repo, git missing, timeout, any error): the caller then stamps what it
+// stamped before. Runs git directly (no shell), bounded, with the inherited
+// GIT_DIR / GIT_WORK_TREE dropped so a hook-time env cannot point it at another
+// repo. `run` is the seam for tests.
+export function gitToplevelFor(
+  dir: string,
+  run: (dir: string) => string = (d) => {
+    const env = { ...process.env }
+    delete env.GIT_DIR
+    delete env.GIT_WORK_TREE
+    return execFileSync('git', ['-C', d, 'rev-parse', '--show-toplevel'], {
+      timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], env,
+    })
+  },
+): string | null {
+  try {
+    const out = run(dir).trim()
+    return out ? out : null
+  } catch {
+    return null
+  }
+}
+
+// #1904 (review of #1911): the key to stamp beside an agent dir, or null. It is
+// the install root, resolved, and only when the install root IS a git toplevel
+// (a git-checkout install). A tarball install, even one under a home that is a
+// git repo, gets null: git would answer with the home, which is not ours. git
+// prints the toplevel resolved (symlinks followed, measured), so it is compared
+// with realpath(PROJECT_ROOT); a GIT_WORK_TREE or GIT_DIR that leaked through
+// answers another path and simply does not match. Looked up ONCE per process
+// and root: the lookup is a synchronous git call, and per agent start it held
+// the dashboard's event loop for tens of ms, up to the 3 s timeout on a hung git.
+const installRootTrustCache = new Map<string, string | null>()
+export function installRootTrustKey(
+  root: string = PROJECT_ROOT,
+  lookup: (dir: string) => string | null = gitToplevelFor,
+): string | null {
+  const cached = installRootTrustCache.get(root)
+  if (cached !== undefined) return cached
+  let key: string | null = null
+  try {
+    const real = realpathSync(root)
+    key = lookup(root) === real ? real : null
+  } catch {
+    key = null
+  }
+  installRootTrustCache.set(root, key)
+  return key
+}
+
 // Pre-accept the PER-PROJECT first-run consent for an agent's working dir in
 // the config root the session will boot from. Claude Code keys the "Do you
 // trust the files in this folder?" dialog on projects[<cwd>].hasTrustDialogAccepted
@@ -1482,7 +1602,22 @@ export function ensureSharedClaudeOnboarded(dotClaudePath: string = join(homedir
 // symlinked homes) since Claude Code keys trust by the resolved path. Write is
 // atomic and only performed on actual change, so a live Claude Code process
 // racing us never sees a torn file and an already-stamped launch is a no-op.
-export function stampProjectTrustForDir(dotClaudePath: string, projectDir: string): boolean {
+//
+// #1904: on a git-checkout install it also stamps the INSTALL ROOT. Claude Code
+// decides whether to honour a project's .claude/settings.json permissions.allow
+// by the trust of the git root, not of the cwd: with only agents/<name> stamped
+// it prints "Ignoring N permissions.allow entries ... this workspace has not
+// been trusted", so a strict-profile (dontAsk) agent lost its whole allow-list
+// and could only read. Only the install root is ever added (installRootTrustKey),
+// never the git root of the agent dir itself: that can lie outside the install
+// (a tarball install under a dotfiles-repo home, an agents/<name> symlinked into
+// another repository), and stamping it would accept a foreign directory's
+// settings hooks and .mcp.json without the trust question (review of #1911).
+export function stampProjectTrustForDir(
+  dotClaudePath: string,
+  projectDir: string,
+  toplevel: string | null = installRootTrustKey(),
+): boolean {
   try {
     let data: Record<string, unknown> = {}
     if (existsSync(dotClaudePath)) {
@@ -1490,6 +1625,7 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
     }
     const dirs = new Set<string>([projectDir])
     try { dirs.add(realpathSync(projectDir)) } catch { /* dir may not resolve yet */ }
+    if (toplevel) dirs.add(toplevel)
     const projects: Record<string, unknown> =
       (data.projects && typeof data.projects === 'object' && !Array.isArray(data.projects))
         ? data.projects as Record<string, unknown>
@@ -1515,7 +1651,7 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
     if (!changed) return false
     data.projects = projects
     atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
-    logger.info({ dotClaudePath, projectDir }, 'project-trust: stamped folder-trust consent for agent dir')
+    logger.info({ dotClaudePath, projectDir, toplevel }, 'project-trust: stamped folder-trust consent for agent dir')
     return true
   } catch (err) {
     // Unparseable/unwritable file: leave it to Claude Code (same policy as
@@ -3175,7 +3311,8 @@ async function startAgentProcessUnlocked(name: string, opts: { fresh?: boolean }
             try { runTmux(null, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
           }
         }
-        if (/Listening for channel messages/.test(pane)) return
+        // 2.1.296 renamed the banner to "Listening for messages from <x>".
+        if (/Listening for (?:channel )?messages from/.test(pane)) return
         setTimeout(checkEperm, 1000)
       }
       setTimeout(checkEperm, 1500)

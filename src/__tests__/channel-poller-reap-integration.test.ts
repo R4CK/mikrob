@@ -119,9 +119,17 @@ afterEach(() => {
   killSpy.mockRestore()
 })
 
+// Card 35ea0375: the own-uid guard is a separate, later-added layer (seamed and tested on its own
+// real processes in channel-poller-reap-own-uid.test.ts). This file's fixture pids are not real
+// processes, so the unseamed default (processOwnerUid -> statSync('/proc/<pid>') -> ENOENT -> null
+// -> "unknown owner" -> skipped) would spare every candidate regardless of the env-scan/bot.pid
+// logic this file actually pins -- claim ownership so that guard is a no-op here, same as the
+// pure layer in -own-uid.test.ts does by seaming ownerOf directly.
+const ownAll = { ownerOf: () => process.getuid!() }
+
 describe('reapChannelOrphans wiring (06:44 outage pin)', () => {
   it('env scan: only the poller is reaped, never what merely inherited the env needle', () => {
-    const r = reapChannelOrphans('telegram', AGENT_DIR)
+    const r = reapChannelOrphans('telegram', AGENT_DIR, ownAll)
     expect(r.source.fromEnvScan).toEqual([POLLER])
     expect(r.reaped).toEqual([POLLER])
     const killed = new Set(killSpy.mock.calls.map((c) => c[0]))
@@ -132,7 +140,7 @@ describe('reapChannelOrphans wiring (06:44 outage pin)', () => {
 
   it('bot.pid naming an unrelated process after a reboot is not reaped', () => {
     fsState.botPid = STRANGER
-    const r = reapChannelOrphans('telegram', AGENT_DIR)
+    const r = reapChannelOrphans('telegram', AGENT_DIR, ownAll)
     expect(r.source.fromBotPid).toBeNull()
     expect(r.reaped).not.toContain(STRANGER)
     expect(killSpy.mock.calls.some((c) => c[0] === STRANGER)).toBe(false)
@@ -140,14 +148,14 @@ describe('reapChannelOrphans wiring (06:44 outage pin)', () => {
 
   it('bot.pid naming the tmux server is not reaped', () => {
     fsState.botPid = TMUX_SERVER
-    const r = reapChannelOrphans('telegram', AGENT_DIR)
+    const r = reapChannelOrphans('telegram', AGENT_DIR, ownAll)
     expect(r.source.fromBotPid).toBeNull()
     expect(r.reaped).toEqual([POLLER])
   })
 
   it('bot.pid naming the real poller is still reaped (the fix did not switch the reaper off)', () => {
     fsState.botPid = POLLER
-    const r = reapChannelOrphans('telegram', AGENT_DIR)
+    const r = reapChannelOrphans('telegram', AGENT_DIR, ownAll)
     expect(r.source.fromBotPid).toBe(POLLER)
     expect(r.reaped).toEqual([POLLER])
   })

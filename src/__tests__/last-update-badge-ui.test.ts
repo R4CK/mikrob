@@ -62,9 +62,11 @@ describe('last-update sidebar badge UI wiring', () => {
     expect(body).toContain("lastUpdate.build")
   })
 
-  it('formats the timestamp in Europe/Budapest local time', () => {
+  it('formats the timestamp in the install zone, not a hardcoded Europe/Budapest (ISSUE1895)', () => {
     const body = fnBody(APP, 'function renderLastUpdateBadge')
-    expect(body).toContain("timeZone: 'Europe/Budapest'")
+    expect(body).not.toContain("timeZone: 'Europe/Budapest'")
+    expect(body).toContain('window._marveen')
+    expect(body).toContain('window._marveen.tz')
   })
 
   it('refreshLastUpdateBadge is called once on load (no page-scoped gate)', () => {

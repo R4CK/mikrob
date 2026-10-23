@@ -43,6 +43,9 @@ describe('agent_messages DDL parity (card 26ad5302)', () => {
         // these are authenticated-by-construction columns createAgentMessage writes to, and the
         // coordinator winning the boot race must create them too.
         'urgent', 'stop_authorized',
+        // Card ad771121: priority. Same reasoning -- a column createAgentMessage writes to, and
+        // the coordinator winning the boot race must create it too.
+        'priority',
       ].sort(),
     )
     const indexes = handle

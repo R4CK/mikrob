@@ -609,13 +609,15 @@ export function readAgentCustomProvider(name: string): string | null {
   return null
 }
 
-// Set (non-empty string) or clear (empty/whitespace) the per-agent custom
-// provider id.
-export function writeAgentCustomProvider(name: string, providerId: string): void {
+// Set (non-empty string) or clear (empty/whitespace/null/undefined) the per-agent custom
+// provider id. A JSON PUT body can send an explicit `null` to mean "clear it", same as empty
+// string -- a request body is attacker/caller-controlled input, so this stays defensive even
+// though every current caller already checks `!== undefined` first.
+export function writeAgentCustomProvider(name: string, providerId: string | null | undefined): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
   config = readJsonObjectForWrite(configPath)
-  const trimmed = providerId.trim()
+  const trimmed = (providerId ?? '').trim()
   if (trimmed) config.customProvider = trimmed
   else delete config.customProvider
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))

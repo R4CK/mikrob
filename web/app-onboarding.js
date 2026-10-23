@@ -185,7 +185,7 @@ function wireOnboarding(step) {
         // surface the automatic channels restart (same pattern as the
         // claude-auth step) instead of silently advancing.
         if (typeof initSidebarBrand === 'function') initSidebarBrand()
-        if (d.restartError) { idBtn.disabled = false; onbMsg(t('onboarding.identity.saved_restart_failed'), true); setTimeout(refreshOnboarding, 6000); return }
+        if (d.restartError) { idBtn.disabled = false; onbMsg(t('onboarding.identity.saved_restart_failed', { cmd: d.restartCommand || '' }), true); setTimeout(refreshOnboarding, 6000); return }
         if (d.restarted) { onbMsg(t('onboarding.identity.saved_restarted')); setTimeout(refreshOnboarding, 2500); return }
         if (d.restartNeeded) { onbMsg(t('onboarding.identity.saved_restart_needed')); await refreshOnboarding(); return }
         onbMsg(t('onboarding.identity.saved'))
@@ -208,7 +208,7 @@ function wireOnboarding(step) {
         // unauthenticated) channels session right after the first auth save --
         // surface that, and on failure show the manual restart step instead of
         // silently advancing.
-        if (d.restartError) { authBtn.disabled = false; onbMsg(t('onboarding.step1.saved_restart_failed'), true); setTimeout(refreshOnboarding, 6000); return }
+        if (d.restartError) { authBtn.disabled = false; onbMsg(t('onboarding.step1.saved_restart_failed', { cmd: d.restartCommand || '' }), true); setTimeout(refreshOnboarding, 6000); return }
         if (d.restarted) { onbMsg(t('onboarding.step1.saved_restarted')); setTimeout(refreshOnboarding, 2500); return }
         onbMsg(d.verified ? t('onboarding.step1.saved_verified') : t('onboarding.step1.saved_unverified'))
         await refreshOnboarding()
@@ -264,6 +264,8 @@ function wireOnboarding(step) {
           return
         }
         if (!res.ok) { botBtn.disabled = false; onbMsg(d.error || t('onboarding.error'), true); return }
+        // #1878 (6): a failed restart is said at once, not after the ~2 min wait below.
+        if (d.restartError) { botBtn.disabled = false; onbMsg(t('onboarding.step2.saved_restart_failed', { cmd: d.restartCommand || '' }), true); return }
         // The server restarts the channels session so the new bot token goes
         // live. Do NOT advance on a timer: the restart response is a dispatch
         // receipt, and the cold start is ~minutes. Wait for the MEASURED

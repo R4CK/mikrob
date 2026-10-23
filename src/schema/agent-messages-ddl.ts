@@ -56,6 +56,10 @@ export const AGENT_MESSAGES_ALTER_COLUMNS: readonly string[] = [
   // old row reads back as a waking message rather than as NULL, and no reader
   // has to guess what a NULL here would have meant.
   `ALTER TABLE agent_messages ADD COLUMN wake INTEGER NOT NULL DEFAULT 1`,
+  // Card ad771121: delivery priority. 0 = normal: the default, and what every caller that sends no
+  // priority gets, i.e. today's FIFO unchanged. 1 = high: delivered ahead of the recipient's normal
+  // rows, FIFO among the high ones. Existing rows read as 0 (normal).
+  `ALTER TABLE agent_messages ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`,
   // Card 795d1f48 (a): an URGENT row, which the router types into a BUSY pane with the existing writer (the general form
   // of the 71263d15 STOP path). Only an in-process writer (createAgentMessage with urgent) or a POST on a device key the
   // install lists (MESSAGE_URGENT_DEVICE_IDS, routes/messages.ts) can set it; the shared dashboard token cannot, so a 1

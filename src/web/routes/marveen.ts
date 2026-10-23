@@ -3,7 +3,7 @@ import { join, extname } from 'node:path'
 import {
   PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER,
   currentBotName, currentBrandName, currentOwnerName,
-  KANBAN_LABEL_COLORS,
+  KANBAN_LABEL_COLORS, APP_TZ,
 } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackConfig, readMarveenGooglechatConfig, readMarveenTeamsConfig, sendMarveenAvatarChange } from '../telegram.js'
@@ -88,6 +88,9 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       // this to pin/label the owner's own message thread instead of a hardcoded
       // literal, so a renamed install recognizes its real owner.
       ownerName: currentOwnerName(),
+      // ISSUE1895: the install zone (APP_TZ), so client-side human-facing time display can use
+      // it instead of a hardcoded literal.
+      tz: APP_TZ,
       description,
       model,
       tmuxSession: MAIN_CHANNELS_SESSION,

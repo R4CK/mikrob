@@ -167,7 +167,10 @@ describe('the HTTP endpoint still does NOT accept a quiet request (7d47ca16 kept
     // -- a DIFFERENT, already-gated option (mayMarkUrgent + MESSAGE_URGENT_DEVICE_IDS, checked
     // before this line), not the quietClass/wake allowlist this test pins shut. The pin on THAT
     // allowlist stays: wake/quietClass are still absent from the HTTP route.
-    expect(src).toContain('createAgentMessage(from.trim(), storedTo, stampedContent, trimmedOriginNote, null, { urgent: urgent === true })')
+    // Köteg 17 (card ad771121): the call also carries `priority: decided.priority`, the already-
+    // gated delivery priority (parsePriorityField + decidePriority/rankedSenders, checked before
+    // this line). Same reasoning: a new, separately-gated option, not the wake/quietClass allowlist.
+    expect(src).toContain('createAgentMessage(from.trim(), storedTo, stampedContent, trimmedOriginNote, null, { urgent: urgent === true, priority: decided.priority })')
     expect(src).not.toMatch(/wake\s*:/)
     expect(src).not.toMatch(/quietClass/)
   })

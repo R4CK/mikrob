@@ -94,7 +94,7 @@ import {
   agentChannelDir,
 } from '../channel-invites.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
-import { isMainChannelsAgent, MAIN_CHANNELS_SESSION, withoutMainAgent } from '../main-agent.js'
+import { channelsRestartCommand, isMainChannelsAgent, MAIN_CHANNELS_SESSION, withoutMainAgent } from '../main-agent.js'
 import {
   getProvider,
   channelStateDir,
@@ -123,6 +123,7 @@ import {
   capturePane,
   delay,
   resolveAgentProvider,
+  sharedEnvAuthKeysCopiedTo,
 } from '../agent-process.js'
 import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
@@ -338,6 +339,16 @@ function capturePaneCached(name: string, host: string | null): string | null {
 // always 0). Rejects empty, whitespace-only, non-numeric, or wrong-length
 // values before any state write so a typo in the dashboard cannot bounce the
 // live Marveen session through hardRestartMarveenChannels().
+// #1878 item 6: a channel save on the main agent restarts the channels session,
+// and that restart can fail. The failure reason used to be dropped (restarted
+// false, nothing else), so the onboarding step showed a neutral "saved" and only
+// said "still starting" two minutes later. The identity and auth steps already
+// return restartError; the channel save now does the same.
+export function mainChannelsRestartOutcome(r: { ok: boolean; error?: string }): { restarted: boolean; restartError?: string } {
+  if (r.ok) return { restarted: true }
+  return { restarted: false, restartError: r.error || 'restart failed' }
+}
+
 export function validateDiscordChannelId(cid: string | undefined): { ok: boolean; error?: string } {
   const trimmed = cid?.trim()
   if (!trimmed || !/^[0-9]{17,20}$/.test(trimmed)) {
@@ -544,6 +555,10 @@ export interface AgentSummary {
    *  drives the dashboard "reauth needed" badge + one-click /login button. */
   needsReauth: boolean
   reauthReason?: string
+  /** Auth-path env names (never values) the shared ~/.claude/settings.json
+   *  copies into this agent's isolated config dir -- drives the dashboard
+   *  warning. Empty when there is nothing to warn about. */
+  sharedEnvAuthKeys: string[]
 }
 
 interface AgentDetail extends AgentSummary {
@@ -686,6 +701,7 @@ async function getAgentSummary(name: string): Promise<AgentSummary> {
     contextTokens,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
+    sharedEnvAuthKeys: sharedEnvAuthKeysCopiedTo(name),
   }
 }
 
@@ -1475,9 +1491,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }, null, 2))
       let gcRestarted = false
       let gcWasRunning = false
+      let gcRestartError: string | undefined
       if (isMain) {
-        const r = hardRestartMarveenChannels()
-        gcRestarted = r.ok
+        const gcOutcome = mainChannelsRestartOutcome(hardRestartMarveenChannels())
+        gcRestarted = gcOutcome.restarted
+        gcRestartError = gcOutcome.restartError
+        if (gcRestartError) logger.error({ error: gcRestartError }, 'Channel save (googlechat): channels restart FAILED')
         gcWasRunning = true
       } else {
         writeAgentChannelProvider(name, provider)
@@ -1509,7 +1528,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           }
         }
       }
-      json(res, { ok: true, botName: 'Google Chat', restarted: gcRestarted, wasRunning: gcWasRunning })
+      json(res, { ok: true, botName: 'Google Chat', restarted: gcRestarted, wasRunning: gcWasRunning, ...(gcRestartError ? { restartError: gcRestartError, restartCommand: channelsRestartCommand() } : {}) })
       return true
     }
 
@@ -1610,9 +1629,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // marveen-channels helper instead of the agent process lifecycle.
     let restarted = false
     let wasRunning = false
+    let restartError: string | undefined
     if (isMain) {
-      const r = hardRestartMarveenChannels()
-      restarted = r.ok
+      const outcome = mainChannelsRestartOutcome(hardRestartMarveenChannels())
+      restarted = outcome.restarted
+      restartError = outcome.restartError
+      if (restartError) logger.error({ error: restartError }, 'Channel save: channels restart FAILED')
       wasRunning = true
     } else {
       if (asExtra) {
@@ -1646,7 +1668,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
     }
 
-    json(res, { ok: true, botName: validation.botName, restarted, wasRunning, ...(asExtra ? { extra: true } : {}) })
+    json(res, { ok: true, botName: validation.botName, restarted, wasRunning, ...(restartError ? { restartError, restartCommand: channelsRestartCommand() } : {}), ...(asExtra ? { extra: true } : {}) })
     return true
   }
 

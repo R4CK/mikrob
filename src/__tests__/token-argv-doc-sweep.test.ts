@@ -53,6 +53,7 @@ const ALLOWLIST: Record<string, number[]> = {
   'store/mopsion-suite-run.sh': [255], // comment naming the anti-pattern, not an invocation (line shifted again by card c0408a1c's M1/M2/D1/D2 fix)
   'store/sync-agent-templates.sh': [112, 131, 140, 215, 406, 416, 444, 465, 480, 488, 519], // the rewriter's own docstring + test fixtures
   'store/szotasz-marveen-daily-check.sh': [24], // comment naming the anti-pattern, not an invocation
+  'scripts/__tests__/supabase-q-token-hiding.test.sh': [192], // mutation-control fixture: a python one-liner that writes a MUTATED supabase-q.sh putting the token in argv, to prove the suite's own test 1 would catch it -- not an invocation. Line shifted from 189 when the stub grew a -H @- capture branch (card 13b2648e).
 }
 
 describe('token-argv doc sweep (card 0dab76a3)', () => {
