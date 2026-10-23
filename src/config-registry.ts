@@ -376,6 +376,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     max: 5,
   },
   {
+    key: 'KG_BACKFILL_BATCH',
+    type: 'int',
+    default: 20,
+    description: 'MT-06 (card 7c9be2d8) backfill: egy scripts/kg-backfill.ts futás legfeljebb ennyi kártyát dolgoz fel (MODULTERV 6. szakasz).',
+    module: 'knowledge-graph',
+    secret: false,
+    requiresRestart: false,
+    min: 1,
+    max: 100,
+  },
+  {
     key: 'EMBED_URL',
     type: 'string',
     default: '',
