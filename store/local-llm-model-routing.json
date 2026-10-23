@@ -4,6 +4,7 @@
     "board-reconcile": "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M",
     "morning-brief": "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M",
     "daily-log": "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M",
-    "tg-draft": "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M"
+    "tg-draft": "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M",
+    "decisions-entry": "hf.co/empero-ai/Qwen3.8-9B-Distill-GGUF:Q4_K_M"
   }
 }
