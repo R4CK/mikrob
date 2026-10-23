@@ -28,6 +28,7 @@ import {
   sanitizeReason,
   reviewOneCard,
   runGeminiOrchestratorDraftReviewSweep,
+  reviewCardsStoppingOnCapReached,
   REVIEW_AUTHOR,
   type DraftReviewCardMeta,
 } from '../gemini-orchestrator-draft-review.js'
@@ -593,6 +594,41 @@ describe('reviewOneCard() (card 626df838)', () => {
     const result = await reviewOneCard('c1', 'key', deps)
     expect(result.reason).toBe('not_eligible')
     expect(deps.reserveSlot).not.toHaveBeenCalled()
+  })
+})
+
+// ── reviewCardsStoppingOnCapReached: F4 (card 6b7c2c25) ──────────────────────────────────────
+describe('reviewCardsStoppingOnCapReached() (card 6b7c2c25, F4)', () => {
+  it('reviews every card when none hits the hourly cap', async () => {
+    const reviewFn = vi.fn(async (id: string) => ({ id, reviewed: true }))
+    const results = await reviewCardsStoppingOnCapReached(['c1', 'c2', 'c3'], reviewFn)
+    expect(reviewFn).toHaveBeenCalledTimes(3)
+    expect(results).toEqual([{ id: 'c1', reviewed: true }, { id: 'c2', reviewed: true }, { id: 'c3', reviewed: true }])
+  })
+
+  it('stops calling reviewFn after the first hourly_cap_reached, marking the rest skipped', async () => {
+    const reviewFn = vi.fn(async (id: string) => {
+      if (id === 'c2') return { id, reviewed: false, reason: 'hourly_cap_reached' }
+      return { id, reviewed: true }
+    })
+    const results = await reviewCardsStoppingOnCapReached(['c1', 'c2', 'c3', 'c4'], reviewFn)
+    expect(reviewFn).toHaveBeenCalledTimes(2) // c1, c2 -- never called for c3/c4
+    expect(results).toEqual([
+      { id: 'c1', reviewed: true },
+      { id: 'c2', reviewed: false, reason: 'hourly_cap_reached' },
+      { id: 'c3', reviewed: false, reason: 'skipped_hourly_cap_reached' },
+      { id: 'c4', reviewed: false, reason: 'skipped_hourly_cap_reached' },
+    ])
+  })
+
+  it('a skip reason OTHER than hourly_cap_reached does not stop the loop', async () => {
+    const reviewFn = vi.fn(async (id: string) => {
+      if (id === 'c1') return { id, reviewed: false, reason: 'no_draft' }
+      return { id, reviewed: true }
+    })
+    const results = await reviewCardsStoppingOnCapReached(['c1', 'c2'], reviewFn)
+    expect(reviewFn).toHaveBeenCalledTimes(2)
+    expect(results[1]).toEqual({ id: 'c2', reviewed: true })
   })
 })
 

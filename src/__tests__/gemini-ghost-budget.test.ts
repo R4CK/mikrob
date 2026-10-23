@@ -71,12 +71,10 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
     writeFileSync(join(td, 'store', 'seged-hivo-naplo.jsonl'), '')
     savedEnv = {
       GEMINI_AGY_HOURLY_LOCK: process.env.GEMINI_AGY_HOURLY_LOCK,
-      SEGED_HIVO_HELPERS: process.env.SEGED_HIVO_HELPERS,
       GEMINI_AGY_HOURLY_LIMIT: process.env.GEMINI_AGY_HOURLY_LIMIT,
       GEMINI_AGY_GHOST_DAILY_LIMIT: process.env.GEMINI_AGY_GHOST_DAILY_LIMIT,
     }
     process.env.GEMINI_AGY_HOURLY_LOCK = join(td, 'gemini-agy-call.hourly.lock')
-    process.env.SEGED_HIVO_HELPERS = join(td, 'scripts', 'seged-hivo.py')
     vi.resetModules()
   })
 
@@ -91,18 +89,54 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
 
   const ledgerPath = () => join(td, 'store', 'seged-hivo-naplo.jsonl')
 
+  // F-MikroB2 (card 6b7c2c25, WhiteHat GO 612058c2 komment 20243, delta on 19967): the real
+  // writer (RESERVE_SCRIPT's `datetime.datetime.now().isoformat()`) stores a NAIVE LOCAL
+  // timestamp, and the daily cap compares its date PREFIX against `datetime.now().astimezone()
+  // .date()` -- also local. A row built from `Date.prototype.toISOString()` is UTC, so its date
+  // prefix can disagree with the local calendar day whenever the local UTC offset is positive and
+  // the test runs in the first hours of the local day (e.g. CEST/UTC+2, local 00:00-02:00 is
+  // still yesterday in UTC) -- the test would then seed a row dated "yesterday" in UTC that the
+  // production code reads as "today" (or vice versa), independent of the code under test.
+  // localIsoNoOffset mirrors the real writer's format instead of UTC.
+  function localIsoNoOffset(epochMs: number): string {
+    const d = new Date(epochMs)
+    const pad = (n: number, len = 2): string => String(n).padStart(len, '0')
+    return (
+      `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+      `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`
+    )
+  }
+
   function appendRow(agoSeconds: number, status: string, hivo = 'quota-bridge-ghost', seged = 'agy'): void {
-    const ts = new Date(Date.now() - agoSeconds * 1000).toISOString()
+    const ts = localIsoNoOffset(Date.now() - agoSeconds * 1000)
     const row = { ido: ts, hivas_id: Math.random().toString(16).slice(2), seged, hivo, kartya: 'x', feladattipus: 'kod', status }
     const existing = readFileSync(ledgerPath(), 'utf-8')
     writeFileSync(ledgerPath(), existing + JSON.stringify(row) + '\n')
   }
 
+  // F5 (card 6b7c2c25): the sandboxed seged-hivo.py copy is now passed as an explicit parameter,
+  // not via an env-selected (and importlib-executed) path -- see gemini-ghost-budget.ts's own
+  // comment on reserveGhostCallSlot's segedHivoPath parameter.
   async function freshReserveGhostCallSlot() {
     process.env.GEMINI_AGY_HOURLY_LIMIT = process.env.GEMINI_AGY_HOURLY_LIMIT ?? '5'
     const mod = await import('../gemini-ghost-budget.js')
-    return mod.reserveGhostCallSlot
+    const sandboxedSegedHivo = join(td, 'scripts', 'seged-hivo.py')
+    return (cardId: string, status: 'ok' | 'error' = 'ok') =>
+      mod.reserveGhostCallSlot(cardId, status, sandboxedSegedHivo)
   }
+
+  // F5 regression (card 6b7c2c25): with the explicit third parameter supplied (as every call in
+  // this file's other tests does), a poisoned SEGED_HIVO_HELPERS must have no effect -- the
+  // explicit param always wins. The DEFAULT (2-arg, production-shaped) call path is covered
+  // separately below, where spawnSync is mocked so the real ROOT path can be asserted without
+  // actually executing it.
+  it('SEGED_HIVO_HELPERS env var is ignored when an explicit path is passed', async () => {
+    process.env.SEGED_HIVO_HELPERS = '/nonexistent/should-be-ignored.py'
+    const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+    const ok = reserveGhostCallSlot('card1')
+    expect(ok).toBe(true)
+    delete process.env.SEGED_HIVO_HELPERS
+  }, 20_000)
 
   it('a fresh (empty) ledger allows a reservation and appends exactly one new row', async () => {
     const reserveGhostCallSlot = await freshReserveGhostCallSlot()
@@ -210,6 +244,19 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
     expect(ok).toBe(true)
   }, 20_000)
 
+  // F-MikroB1 (card 6b7c2c25, WhiteHat GO 612058c2 komment 20243): pins the "today" condition
+  // itself -- without it, these OLD ghost rows (outside the hourly window AND from a different
+  // calendar day) would still count toward today's daily cap, wrongly blocking the reservation.
+  // A mutant that drops the `str(row.get('ido', ''))[:10] == today` check reads this exact row
+  // set as 3 daily-capped rows and fails this test.
+  it('ghost rows from a PRIOR day (outside hourly window) do not count toward TODAY\'s daily cap', async () => {
+    process.env.GEMINI_AGY_GHOST_DAILY_LIMIT = '3'
+    for (let i = 0; i < 3; i++) appendRow(2 * 24 * 60 * 60 + i * 10, 'ok', 'quota-bridge-ghost', 'agy-ghost')
+    const reserveGhostCallSlot = await freshReserveGhostCallSlot()
+    const ok = reserveGhostCallSlot('card1')
+    expect(ok).toBe(true)
+  }, 20_000)
+
   it('a non-numeric GEMINI_AGY_GHOST_DAILY_LIMIT falls back to the default cap of 20, not unlimited (F2)', async () => {
     process.env.GEMINI_AGY_GHOST_DAILY_LIMIT = 'not-a-number'
     for (let i = 0; i < 20; i++) appendRow(7200 + i * 5, 'ok', 'quota-bridge-ghost', 'agy-ghost')
@@ -217,4 +264,37 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
     const ok = reserveGhostCallSlot('card1')
     expect(ok).toBe(false)
   }, 20_000)
+})
+
+// F5 (card 6b7c2c25, WhiteHat GO 612058c2 komment 19967): the DEFAULT call path (no third
+// argument -- what every real caller in gemini-orchestrator.ts and gemini-orchestrator-draft-
+// review.ts actually uses) must resolve to the fixed ROOT-derived path, never to
+// process.env.SEGED_HIVO_HELPERS. spawnSync is mocked here (not executed) so this can assert the
+// exact path argument without ever touching a real file or the shared fleet log.
+describe('reserveGhostCallSlot() default path (no explicit 3rd arg) ignores SEGED_HIVO_HELPERS (F5)', () => {
+  const __dirname = dirname(fileURLToPath(import.meta.url))
+  const REAL_ROOT = join(__dirname, '..', '..')
+  const spawnSyncMock = vi.fn((_cmd: string, _args: string[]) => ({ status: 0, stdout: 'OK', stderr: '', error: undefined, signal: null, pid: 1, output: [] }))
+
+  beforeEach(() => {
+    vi.resetModules()
+    spawnSyncMock.mockClear()
+  })
+
+  afterEach(() => {
+    delete process.env.SEGED_HIVO_HELPERS
+    vi.doUnmock('node:child_process')
+    vi.resetModules()
+  })
+
+  it('passes the fixed ROOT-derived seged-hivo.py path, not a poisoned env value', async () => {
+    process.env.SEGED_HIVO_HELPERS = '/nonexistent/should-be-ignored.py'
+    vi.doMock('node:child_process', () => ({ spawnSync: spawnSyncMock }))
+    const mod = await import('../gemini-ghost-budget.js')
+    mod.reserveGhostCallSlot('card1')
+    expect(spawnSyncMock).toHaveBeenCalledTimes(1)
+    const args = spawnSyncMock.mock.calls[0]![1]
+    expect(args).toContain(join(REAL_ROOT, 'scripts', 'seged-hivo.py'))
+    expect(args).not.toContain('/nonexistent/should-be-ignored.py')
+  })
 })
