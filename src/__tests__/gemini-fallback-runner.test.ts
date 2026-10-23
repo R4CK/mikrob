@@ -394,6 +394,22 @@ describe('session-outage engagement (card 612058c2)', () => {
       await runGeminiFallbackCheck()
       expect(writtenState?.route).toBe('claude')
     })
+
+    // F3 (card 6b7c2c25, WhiteHat GO 612058c2 komment 19967): a future-dated heartbeat (clock
+    // skew, corrupted/forged marker) used to pass the old "too old?" check unconditionally.
+    it('a heartbeat 30s in the future (small clock skew) still engages', async () => {
+      sessionOutageActive = true
+      sessionOutageHeartbeatAgoMs = -30_000
+      await runGeminiFallbackCheck()
+      expect(writtenState?.route).toBe('gemini')
+    })
+
+    it('a heartbeat 1 day in the future does NOT engage', async () => {
+      sessionOutageActive = true
+      sessionOutageHeartbeatAgoMs = -24 * 60 * 60 * 1000
+      await runGeminiFallbackCheck()
+      expect(writtenState?.route).toBe('claude')
+    })
   })
 })
 

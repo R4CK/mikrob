@@ -21139,3 +21139,15 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 **Ki döntött:** backend (kártya 7857c82c). Gate: QA + RedHat (a NO-GO-t ő adta; WhiteHat már korábban feltételes GO-t adott ugyanerre a Gate-SHA-ra, 8b588834 komment 22146).
 
 **Hivatkozás:** kártyák 7857c82c, 8b588834, WhiteHat verdikt komment 22148, RedHat verdikt komment 22150, MikroB döntés komment 22152.
+
+---
+
+## 2026-10-23 -- Gemini Ghost F3-F5 hardening + daily-cap test fragility (6b7c2c25)
+
+**Döntés:** `src/gemini-fallback-runner.ts` (F3): `readSessionOutageActive()` mostantól elutasítja a jövőbe mutató heartbeatet is (60s tolerancia), nem csak a túl régit. `src/gemini-orchestrator-draft-review.ts` (F4): a draft-review sweep az első `hourly_cap_reached` után leáll az adott ticken belül, a többi kártyát `skipped_hourly_cap_reached` jelzéssel átugorja. `src/gemini-ghost-budget.ts` (F5): a `SEGED_HIVO` útvonal mostantól ROOT-ból számolt fix út, nem `process.env.SEGED_HIVO_HELPERS` (amit korábban `importlib.exec_module` futtatott le) -- a teszt a sandboxolt másolatot a `reserveGhostCallSlot()` új, opcionális `segedHivoPath` parancsán át kapja. Plusz a napi-plafon "csak mai sorok" szűrőjét mutáció-próbás teszttel pinelve, és a napi-plafon tesztek UTC helyett helyi-naptári-nap szerinti időbélyeget írnak (a valódi íróval egyező formátum).
+
+**Miért:** F3-F5 a 612058c2 WhiteHat GO (komment 19967) LOW hardening-leletei; a két extra teszt-javítás a 612058c2 komment 20243 (MikroB/WhiteHat mérés) két LOW lelete, ugyanazon a kártyán zárva, mert mindkettő ugyanezt a fájlt érinti.
+
+**Gate-SHA:** 8b96551b1
+**Ki döntött:** backend2 (card 6b7c2c25), szülő: c7abdf57.
+**Hivatkozás:** kártya 6b7c2c25.
