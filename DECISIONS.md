@@ -21066,3 +21066,15 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 
 **Ki döntött:** fullstack/DevO (card ca72e5d4), szülő: c65add5a.
 **Hivatkozás:** kártya ca72e5d4 (szülő c65add5a bontás).
+
+---
+
+## 2026-10-23 -- MT-10b (bb0cadd9): DECISIONS.md -> decision csomópont + governs él a tudásgráfban
+
+**Döntés:** `src/kg/import-decisions-log.ts` -- determinisztikus importer, ami a `DECISIONS.md` minden `## ` fejléces bejegyzését `decision` kg_node-dá képezi (id: `decision:L<sorszám>`, 1-indexelt), és a bejegyzés szövegében hivatkozott, kanban_cards-ban valóban létező kártyákhoz `governs` élt húz. Nem létező kártya-alakú token (pl. commit sha) nem kap élet, csak számlálva van (`cardRefsSkippedMissing`).
+
+**Miért:** 81593084 (MT P2 Fázis) MT-10 négyes felbontásának 'b' része -- a meglévő `src/kg/schema.ts`/`store.ts` (ee9ee17b, MT-01) node/edge típusai már támogatják ezt, séma-változás nélkül.
+
+**Gate-SHA:** c21ca6edc
+**Ki döntött:** backend2 (card bb0cadd9), szülő: 81593084.
+**Hivatkozás:** kártya bb0cadd9 (szülő 81593084 bontás), REVIEW komment 22291.
