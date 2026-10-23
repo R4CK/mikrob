@@ -3,9 +3,23 @@
 #
 # Isolates the rea-agents MCP server process (Ghidra/JADX/Kuna/Hopper engines)
 # from the flotta's shared environment and filesystem:
-#   - env -i with ONLY the 6 engine env vars rea needs, dropping everything else
-#     the host process would otherwise inherit (SSH_AUTH_SOCK, GPG_AGENT_INFO,
+#   - env -i with ONLY the 7 engine env vars rea needs (6 required +
+#     HOPPER_LAUNCHER_PATH optional), dropping everything else the host
+#     process would otherwise inherit (SSH_AUTH_SOCK, GPG_AGENT_INFO,
 #     CLAUDE_CODE_MESSAGING_TOKEN/SOCKET, CLAUDE_CONFIG_DIR, *_STATE_DIR, ...).
+#     This env -i wraps bwrap ITSELF, not just the process bwrap execs inside
+#     the sandbox (WhiteHat N1 HIGH, card ca1b763c, komment 23023): with
+#     --unshare-pid, the bwrap process becomes pid 1 of the new pid
+#     namespace, and /proc/1/environ is readable from inside the sandbox. An
+#     `env -i ... bwrap ... env -i ... node` shape (env -i only around the
+#     exec'd node) leaves bwrap's OWN process -- pid 1 -- running with the
+#     wrapper's full, unstripped caller environment, so a sandboxed engine
+#     reading /proc/1/environ sees everything the inner env -i was supposed
+#     to hide. --clearenv does not fix this either (bwrap's own already-
+#     inherited environment is unaffected by a flag describing the sandboxed
+#     child's). The fix is structural: strip the environment ONCE, before
+#     bwrap itself starts, so every process in the pid namespace (bwrap as
+#     pid 1, node as pid 2) inherits the same already-minimal 7 names.
 #   - a minimal filesystem view: only the engine install dirs, the npm package
 #     cache (read-only) and rea's own cache dir are visible. No flotta secret
 #     (store/.dashboard-token), no other agent's files, no unrelated /home/neon
@@ -19,11 +33,16 @@
 #     with EACCES reading /proc/<pid>/environ of its own short-lived child
 #     (the exited probe's PID can be reused by an unrelated host process by
 #     the time rea's cleanup check reads it back).
+#   - --new-session, --die-with-parent: cheap additional hardening (WhiteHat
+#     N5 LOW) -- drops the sandboxed process out of the caller's terminal
+#     session, and guarantees it cannot outlive the wrapper if the wrapper is
+#     killed.
 #
 # This wrapper is invoked AS the `command` in the MCP client registration
 # (elemzo's .claude.json `mcpServers.rea`), in place of calling `npx` directly.
-# It expects the SAME env block the registration already carries (6 vars);
-# everything else from the caller's environment is dropped.
+# It expects the SAME env block the registration already carries (6 required
+# vars + optional HOPPER_LAUNCHER_PATH); everything else from the caller's
+# environment is dropped.
 set -euo pipefail
 
 REQUIRED_VARS=(PATH HOME JAVA_HOME GHIDRA_INSTALL_DIR REA_JADX_MCP_JAR REA_KUNA_COMMAND)
@@ -64,18 +83,46 @@ BIND_ARGS=(
   --proc /proc --dev /dev --tmpfs /tmp
 )
 if [ -n "$HOPPER_LAUNCHER_PATH" ] && [ -e "$HOPPER_LAUNCHER_PATH" ]; then
-  BIND_ARGS+=(--ro-bind "$(dirname "$HOPPER_LAUNCHER_PATH")" "$(dirname "$HOPPER_LAUNCHER_PATH")")
+  HOPPER_BIN_DIR="$(dirname "$HOPPER_LAUNCHER_PATH")"
+  BIND_ARGS+=(--ro-bind "$HOPPER_BIN_DIR" "$HOPPER_BIN_DIR")
+  # Hopper's launcher dynamically links libHopperCore.so and five sibling libs out of a `lib/`
+  # directory next to `bin/` (ldd: libHopperCore.so, libdispatch.so, libpthread_workqueue.so,
+  # libkqueue.so, libgnustep-base.so, libobjc.so, libxml2.so, libffi.so, libBlocksRuntime.so, via
+  # an rpath of ../lib) -- QA F1 BLOCKER (card ca1b763c, komment 23032): binding only bin/ left
+  # these unresolved inside the sandbox, breaking Hopper there specifically (every other
+  # dependency resolves from /usr, already ro-bound). Bind that sibling lib/ dir too, read-only.
+  HOPPER_LIB_DIR="$(dirname "$HOPPER_BIN_DIR")/lib"
+  if [ -d "$HOPPER_LIB_DIR" ]; then
+    BIND_ARGS+=(--ro-bind "$HOPPER_LIB_DIR" "$HOPPER_LIB_DIR")
+  fi
 fi
 
 mkdir -p "$HOME/.cache/rea"
 
-exec bwrap "${BIND_ARGS[@]}" \
-  env -i \
-    HOME="$HOME" \
-    PATH="$PATH" \
-    JAVA_HOME="$JAVA_HOME" \
-    GHIDRA_INSTALL_DIR="$GHIDRA_INSTALL_DIR" \
-    REA_JADX_MCP_JAR="$REA_JADX_MCP_JAR" \
-    REA_KUNA_COMMAND="$REA_KUNA_COMMAND" \
-    ${HOPPER_LAUNCHER_PATH:+HOPPER_LAUNCHER_PATH="$HOPPER_LAUNCHER_PATH"} \
-  node "$REA_SCRIPT" mcp "$@"
+# The MCP client registration (elemzo's .claude.json) calls this wrapper with NO arguments, and
+# that case must always start the `mcp` server -- so "mcp" cannot simply be dropped. But a
+# fixed, unconditional "mcp" prefix made the wrapper unable to ever reach rea's top-level
+# `doctor` (per-engine health: ghidra/jadx/kuna/hopper), only `mcp doctor` (the MCP protocol
+# self-check, a different command) -- QA F2 (card ca1b763c, komment 23032): a REVIEW claim about
+# per-engine doctor output measured "through the wrapper" was not actually reproducible through
+# the wrapper as shipped. `doctor` as the first argument now runs rea's top-level command
+# directly (still through the same sandbox/env); anything else still gets the `mcp` prefix.
+if [ "${1:-}" = "doctor" ]; then
+  REA_ARGS=("$@")
+else
+  REA_ARGS=(mcp "$@")
+fi
+
+# env -i wraps bwrap ITSELF (see the N1 fix note in the header comment): bwrap's own process
+# becomes pid 1 of the new pid namespace, so its environment must already be the minimal 7 names
+# before it starts, not stripped only for the node process it execs afterward.
+exec env -i \
+  HOME="$HOME" \
+  PATH="$PATH" \
+  JAVA_HOME="$JAVA_HOME" \
+  GHIDRA_INSTALL_DIR="$GHIDRA_INSTALL_DIR" \
+  REA_JADX_MCP_JAR="$REA_JADX_MCP_JAR" \
+  REA_KUNA_COMMAND="$REA_KUNA_COMMAND" \
+  ${HOPPER_LAUNCHER_PATH:+HOPPER_LAUNCHER_PATH="$HOPPER_LAUNCHER_PATH"} \
+bwrap "${BIND_ARGS[@]}" --new-session --die-with-parent \
+  node "$REA_SCRIPT" "${REA_ARGS[@]}"
