@@ -70,10 +70,28 @@ def main():
         # truncated settings.json, which also carries this machine's PreToolUse
         # guard hooks (R5, card e7cd6365). Temp file + os.replace (same
         # filesystem, same dir) is atomic on POSIX and on Windows (3.3+).
-        tmp_path = f"{settings_path}.tmp-{os.getpid()}"
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            json.dump(cfg, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, settings_path)
+        #
+        # RedHat delta (comment 22921, N1/N2): the naive version wrote the tmp
+        # file through the symlink's own path and let os.replace's default
+        # (umask-derived) mode win -- that silently widened a 0600 settings.json
+        # to 0644, and silently turned a symlinked settings.json into a plain
+        # file (the real target, e.g. a shared config the symlink pointed at,
+        # stopped being updated). Resolve to the real target BEFORE writing so
+        # a symlink is preserved and its target is the one that gets replaced,
+        # and carry over the target's existing mode onto the tmp file before
+        # the replace so the permission bits never move.
+        real_target = os.path.realpath(settings_path)
+        tmp_path = f"{real_target}.tmp-{os.getpid()}"
+        try:
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(cfg, f, indent=2, ensure_ascii=False)
+            if os.path.exists(real_target):
+                os.chmod(tmp_path, os.stat(real_target).st_mode)
+            os.replace(tmp_path, real_target)
+        except BaseException:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
 
     for line in removed:
         print(f"REMOVED {line}")

@@ -136,6 +136,41 @@ if ls "$H/.claude/"settings.json.tmp-* >/dev/null 2>&1; then
 else
   pass "atomic write: no leftover temp file after a clean run"
 fi
+
+mode_of() { python3 -c "import os,sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777))" "$1"; }
+
+# RedHat delta (comment 22921, N1): the naive tmp-file-then-replace lets the
+# tmp file's umask-derived mode win, silently widening settings.json (which
+# can carry a channel-provider token in an env block) from 0600 to 0644.
+H="$TMP/case-mode"; make_home "$H"
+chmod 600 "$H/.claude/settings.json"
+BEFORE_MODE="$(mode_of "$H/.claude/settings.json")"
+# umask forced to 022 (RedHat's measurement, comment 22921): the ambient
+# umask on some hosts (e.g. 0077) would coincidentally produce 0600 for a
+# freshly-created tmp file too, masking the exact regression this guards.
+(umask 022; run_retire "$H" telegram >/dev/null)
+AFTER_MODE="$(mode_of "$H/.claude/settings.json")"
+if [ "$BEFORE_MODE" = "$AFTER_MODE" ]; then
+  pass "mode preserved: settings.json stays $BEFORE_MODE after retire (was $BEFORE_MODE)"
+else
+  fail "mode preserved: settings.json was $BEFORE_MODE before, $AFTER_MODE after"
+fi
+
+# RedHat delta (comment 22921, N2): the naive replace targets the symlink's
+# own path, which os.replace swaps for a plain file -- the real target (what
+# a symlinked settings.json actually points at) silently stops being updated.
+H="$TMP/case-symlink"; make_home "$H"
+REAL_TARGET="$TMP/case-symlink-real-settings.json"
+mv "$H/.claude/settings.json" "$REAL_TARGET"
+ln -s "$REAL_TARGET" "$H/.claude/settings.json"
+run_retire "$H" telegram >/dev/null
+if [ -L "$H/.claude/settings.json" ] && [ "$(readlink "$H/.claude/settings.json")" = "$REAL_TARGET" ]; then
+  pass "symlink preserved: settings.json is still a symlink to $REAL_TARGET"
+else
+  fail "symlink preserved: settings.json is no longer a symlink to the real target"
+fi
+assert_no_grep "symlink target actually updated: telegram_progress removed" 'telegram_progress' "$REAL_TARGET"
+
 # Stop had ONLY the telegram hook -> the whole event key must be gone, not
 # left as an empty list that later installs would append beside.
 if python3 -c "
