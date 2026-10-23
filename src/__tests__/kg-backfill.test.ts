@@ -78,6 +78,7 @@ describe('runBackfillBatch (EK-MT-12)', () => {
 
     const calls: string[] = []
     const deps: BackfillDeps = {
+      captureEnabled: () => true,
       listCandidates: () => ['c1', 'c2', 'c3', 'c4'],
       gpuGate: () => admit,
       runOne: (cardId) => {
@@ -114,6 +115,7 @@ describe('runBackfillBatch (EK-MT-12)', () => {
     const calls: string[] = []
     let gateCalls = 0
     const deps: BackfillDeps = {
+      captureEnabled: () => true,
       listCandidates: () => ['c1', 'c2', 'c3'],
       gpuGate: () => {
         gateCalls++
@@ -143,6 +145,7 @@ describe('runBackfillBatch (EK-MT-12)', () => {
     const kgDb = freshKgDb()
     const calls: string[] = []
     const deps: BackfillDeps = {
+      captureEnabled: () => true,
       listCandidates: () => ['c1', 'c2', 'c3'],
       gpuGate: () => admit,
       runOne: (cardId) => {
@@ -154,5 +157,47 @@ describe('runBackfillBatch (EK-MT-12)', () => {
     const result = runBackfillBatch(kgDb, 10, deps)
     expect(calls).toEqual(['c1', 'c2', 'c3'])
     expect(result.haltedOnGpuHold).toBe(false)
+  })
+
+  it('RedHat 23045 X1: KG_CAPTURE_ENABLED off -> zero reads, zero writes, zero LLM calls', () => {
+    const kgDb = freshKgDb()
+    const calls: string[] = []
+    const deps: BackfillDeps = {
+      captureEnabled: () => false,
+      listCandidates: () => {
+        throw new Error('must not be called when capture is disabled')
+      },
+      gpuGate: () => {
+        throw new Error('must not be called when capture is disabled')
+      },
+      runOne: (cardId) => {
+        calls.push(cardId)
+        return captured(cardId, [])
+      },
+      now: () => 4000,
+    }
+
+    const result = runBackfillBatch(kgDb, 10, deps)
+
+    expect(result.captureDisabled).toBe(true)
+    expect(result.candidates).toBe(0)
+    expect(result.processed).toBe(0)
+    expect(calls).toEqual([])
+    const rows = kgDb.prepare(`SELECT card_id FROM kg_capture_queue`).all()
+    expect(rows).toEqual([])
+  })
+})
+
+describe('defaultListCandidates (RedHat 23045 X2: invalid limit)', () => {
+  it('returns no candidates for NaN, zero, or negative limit instead of the whole corpus', () => {
+    const mainDb = freshMainDb([
+      { id: 'c1', status: 'done', created_at: 1 },
+      { id: 'c2', status: 'done', created_at: 2 },
+    ])
+    const kgDb = freshKgDb()
+    expect(defaultListCandidates(mainDb, kgDb, NaN)).toEqual([])
+    expect(defaultListCandidates(mainDb, kgDb, 0)).toEqual([])
+    expect(defaultListCandidates(mainDb, kgDb, -5)).toEqual([])
+    expect(defaultListCandidates(mainDb, kgDb, 1.5)).toEqual([])
   })
 })

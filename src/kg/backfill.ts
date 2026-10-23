@@ -11,6 +11,7 @@
 
 import type Database from 'better-sqlite3'
 import { execFileSync } from 'node:child_process'
+import { getEffectiveSettingValue } from '../settings-store.js'
 import { enqueueCapture } from './capture.js'
 import type { CaptureRunResult } from './capture-pipeline.js'
 
@@ -23,6 +24,7 @@ export interface GpuGateResult {
 }
 
 export interface BackfillDeps {
+  captureEnabled: () => boolean
   listCandidates: (limit: number) => readonly string[]
   gpuGate: () => GpuGateResult
   runOne: (cardId: string) => CaptureRunResult
@@ -37,17 +39,32 @@ export interface BackfillBatchResult {
   readonly failed: number
   readonly skipped: number
   readonly haltedOnGpuHold: boolean
+  readonly captureDisabled: boolean
   readonly elapsedSec: number
+}
+
+/** Same switch and same fail-closed-on-error reading as kg-capture-hook.ts's captureEnabled --
+ *  the backfill writer must respect KG_CAPTURE_ENABLED exactly like the live close-time hook,
+ *  not bypass it as a third, unguarded writer (RedHat 23045, X1). */
+export function defaultCaptureEnabled(): boolean {
+  try {
+    return String(getEffectiveSettingValue('KG_CAPTURE_ENABLED')) === '1'
+  } catch {
+    return false
+  }
 }
 
 /** 'done' cards not yet in kg_capture_queue, oldest first. Whether a card actually has a REVIEW
  *  comment is left to runCapture to decide (it already marks a card without one 'skipped') --
- *  duplicating that check here would be a second place that has to agree with the first. */
+ *  duplicating that check here would be a second place that has to agree with the first.
+ *  Checks the limit BEFORE pushing (RedHat 23045, X2): an invalid limit (NaN, 0, negative) yields
+ *  zero candidates instead of the unbounded "NaN >= length never breaks" behaviour. */
 export function defaultListCandidates(
   mainDb: Database.Database,
   kgDb: Database.Database,
   limit: number,
 ): readonly string[] {
+  if (!Number.isInteger(limit) || limit <= 0) return []
   const queued = new Set(
     (kgDb.prepare('SELECT card_id FROM kg_capture_queue').all() as { card_id: string }[]).map(
       (r) => r.card_id,
@@ -58,9 +75,9 @@ export function defaultListCandidates(
     .all() as { id: string }[]
   const out: string[] = []
   for (const row of done) {
+    if (out.length >= limit) break
     if (queued.has(row.id)) continue
     out.push(row.id)
-    if (out.length >= limit) break
   }
   return out
 }
@@ -105,6 +122,19 @@ function tallyNodeStatuses(kgDb: Database.Database, ids: readonly string[]): { a
  *  for nothing. The already-processed count in the result is what ran before the hold. */
 export function runBackfillBatch(kgDb: Database.Database, limit: number, deps: BackfillDeps): BackfillBatchResult {
   const started = deps.now()
+  if (!deps.captureEnabled()) {
+    return {
+      candidates: 0,
+      processed: 0,
+      active: 0,
+      draft: 0,
+      failed: 0,
+      skipped: 0,
+      haltedOnGpuHold: false,
+      captureDisabled: true,
+      elapsedSec: deps.now() - started,
+    }
+  }
   const candidates = deps.listCandidates(limit)
   let processed = 0
   let active = 0
@@ -141,6 +171,7 @@ export function runBackfillBatch(kgDb: Database.Database, limit: number, deps: B
     failed,
     skipped,
     haltedOnGpuHold,
+    captureDisabled: false,
     elapsedSec: deps.now() - started,
   }
 }

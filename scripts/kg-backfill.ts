@@ -17,9 +17,15 @@
  */
 import { initDatabase, getDb } from '../src/db.js'
 import { getEffectiveSettingValue } from '../src/settings-store.js'
+import { getSettingDefinition, validateSettingValue } from '../src/config-registry.js'
 import { openKgDb, kgDbPath } from '../src/kg/store.js'
 import { runCapture, defaultDeps as defaultCaptureDeps } from '../src/kg/capture-pipeline.js'
-import { runBackfillBatch, defaultListCandidates, defaultGpuGate } from '../src/kg/backfill.js'
+import {
+  runBackfillBatch,
+  defaultListCandidates,
+  defaultGpuGate,
+  defaultCaptureEnabled,
+} from '../src/kg/backfill.js'
 
 const argv = process.argv.slice(2)
 
@@ -50,24 +56,46 @@ initDatabase(dbPath)
 const mainDb = getDb()
 const kgDb = openKgDb(kgDbPathArg ?? kgDbPath())
 
-const limit = limitArg ? Number(limitArg) : Number(getEffectiveSettingValue('KG_BACKFILL_BATCH'))
+// --limit goes through the SAME validator the /api/settings route uses for KG_BACKFILL_BATCH
+// (min 1, max 100, must be an integer) -- a typo like "--limit abc" or an out-of-range value
+// falls back to the configured default instead of silently opening onto the whole corpus
+// (RedHat 23045, X2).
+const batchDef = getSettingDefinition('KG_BACKFILL_BATCH')
+const defaultLimit = Number(getEffectiveSettingValue('KG_BACKFILL_BATCH'))
+let limit = defaultLimit
+if (limitArg !== undefined && batchDef) {
+  const validated = validateSettingValue(batchDef, limitArg)
+  if (validated.ok && typeof validated.value === 'number') {
+    limit = validated.value
+  } else {
+    console.error(
+      `kg-backfill: --limit "${limitArg}" invalid (${validated.error ?? 'nem ertelmezheto'}) -- a KG_BACKFILL_BATCH alapertelmezes (${defaultLimit}) megy.`,
+    )
+  }
+}
+
 const maxSolutions = Number(getEffectiveSettingValue('KG_MAX_SOLUTIONS_PER_CARD'))
 const captureDeps = defaultCaptureDeps()
 
 const report = runBackfillBatch(kgDb, limit, {
+  captureEnabled: defaultCaptureEnabled,
   listCandidates: (n) => defaultListCandidates(mainDb, kgDb, n),
   gpuGate: defaultGpuGate,
   runOne: (cardId) => runCapture(mainDb, kgDb, cardId, maxSolutions, captureDeps),
   now: () => Math.floor(Date.now() / 1000),
 })
 
-console.log(`candidates:  ${report.candidates} (oldest-first, not yet in kg_capture_queue)`)
-console.log(`processed:   ${report.processed}`)
-console.log(`  active:    ${report.active}`)
-console.log(`  draft:     ${report.draft}`)
-console.log(`  failed:    ${report.failed}`)
-console.log(`  skipped:   ${report.skipped}`)
-console.log(`elapsed:     ${report.elapsedSec}s`)
-if (report.haltedOnGpuHold) {
-  console.log('HALTED: GPU gate on HOLD -- stopped before another local-LLM call. Re-run later for the rest.')
+if (report.captureDisabled) {
+  console.log('SKIPPED -- KG_CAPTURE_ENABLED off. Nothing read or written.')
+} else {
+  console.log(`candidates:  ${report.candidates} (oldest-first, not yet in kg_capture_queue)`)
+  console.log(`processed:   ${report.processed}`)
+  console.log(`  active:    ${report.active}`)
+  console.log(`  draft:     ${report.draft}`)
+  console.log(`  failed:    ${report.failed}`)
+  console.log(`  skipped:   ${report.skipped}`)
+  console.log(`elapsed:     ${report.elapsedSec}s`)
+  if (report.haltedOnGpuHold) {
+    console.log('HALTED: GPU gate on HOLD -- stopped before another local-LLM call. Re-run later for the rest.')
+  }
 }
