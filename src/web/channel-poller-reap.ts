@@ -466,6 +466,9 @@ export interface ReapSeams {
   procs?: () => ProcRow[]
   panePids?: () => Set<number>
   tmuxServerPid?: () => number | null
+  // Card 8d625ccd (2026-10-23, RedHat NO-GO 22524): reapChannelOrphans' own argv read, so a test
+  // with synthetic (non-real) pids can hand it a fixed argv table instead of /proc.
+  argvOf?: (pid: number) => string[] | null
 }
 
 function pauseForFlush(): void {
@@ -661,24 +664,29 @@ export function reapChannelOrphans(
   const envVar = STATE_ENV_VAR[provider]
   const pluginRootNeedle = PLUGIN_ROOT_NEEDLE[provider]
 
-  // Card 4aa87fdf (2026-10-17) proposed layering the fork's own argv-based isPollerArgv/
-  // filterPollerPids check (above) on TOP of upstream's cf075d41 CLAUDE_PLUGIN_ROOT plugin-marker
-  // check below, as defence-in-depth. RE-DECIDED here (card 8d625ccd, 2026-10-23): upstream's own
-  // real-process test suite for this exact function (channel-poller-reap-own-uid.test.ts,
-  // -guards.test.ts, -integration.test.ts -- all landing in this same merge) deliberately spawns
-  // its stand-in poller WITHOUT a 'server.ts' argv element ("the runtime check of the env scan
-  // does not apply -- a node job stands in for the poller"), so isPollerArgv's argv-shape
-  // requirement fails every one of those victims and reapChannelOrphans reaps nothing (8 tests
-  // red, measured). The plugin-marker check alone is what this concrete, adversarially-reasoned
-  // test suite (EPERM/ESRCH/other-uid/tmux-server-sparing) actually validates for this function;
-  // isPollerArgv stays defined and still guards listPollerPidsByStateDir/collectPollerEvidence
-  // (a diagnostic-only path) and the live-pane guard test, which spawns a victim satisfying BOTH
-  // checks on purpose. Layering it here too is an untested extra restriction this round's own
-  // evidence argues against, not a validated defence.
+  // Card 4aa87fdf (2026-10-17): the fork's own argv-based isPollerArgv/filterPollerPids check
+  // (above) is kept layered on TOP of upstream's cf075d41 CLAUDE_PLUGIN_ROOT plugin-marker check
+  // below, as defence-in-depth -- the fork's own 2026-09-26 06:44 outage (a bare env-scan needle
+  // reaping the shared tmux server) is exactly the shape this layer guards against, and the
+  // ACKNOWLEDGED_FORK_ANCHORS tripwire for isPollerArgv and this file's acknowledged-conflicts.ts
+  // entry both still say so.
+  // RE-DECIDED 2026-10-23 (card 8d625ccd): a first attempt at this merge DROPPED the layer here,
+  // because upstream's own real-process test suite (channel-poller-reap-own-uid.test.ts,
+  // -guards.test.ts) spawns its stand-in poller WITHOUT a 'server.ts' argv element, so isPollerArgv
+  // failed every intended-to-be-killed victim. RedHat NO-GO (22524): dropping the layer widens the
+  // killable set (a bot.pid-named, marker-carrying but non-runtime process, e.g. a stale `sh`, is no
+  // longer excluded) for a problem the TEST FIXTURES could fix instead -- those two files' victim
+  // spawns now pass an extra inert 'server.ts' argv element so they satisfy BOTH checks, same as
+  // channel-poller-reap-live-pane.test.ts's victim already does. The layer applies to BOTH the
+  // bot.pid candidate and every env-scan candidate (not just a diagnostic path), via the same
+  // `argvOf` seam channel-poller-reap-integration.test.ts's synthetic pids already resolve through
+  // its /proc mock.
   const psEww = opts.psEww ? opts.psEww() : psEwwSnapshot(chanDir)
+  const argvOf = opts.argvOf ?? readArgv
   const botPid = readBotPid(chanDir)
-  const fromBotPid = botPid !== null && isPluginPollerPid(psEww, botPid, pluginRootNeedle) ? botPid : null
-  const fromEnvScan = parseStateDirPollerPids(psEww, envVar, chanDir, pluginRootNeedle)
+  const fromBotPid = botPid !== null && isPluginPollerPid(psEww, botPid, pluginRootNeedle)
+    && filterPollerPids([botPid], argvOf).includes(botPid) ? botPid : null
+  const fromEnvScan = filterPollerPids(parseStateDirPollerPids(psEww, envVar, chanDir, pluginRootNeedle), argvOf)
   // The spared rows are this state dir's rows WITHOUT the plugin anchor, taken
   // from the rows themselves: parsePollerPidsFromPs drops every row with no
   // CLAUDE_PLUGIN_ROOT (#1746), so it cannot say what was spared.

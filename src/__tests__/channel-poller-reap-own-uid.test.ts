@@ -121,8 +121,11 @@ function spawnWithEnv(cmd: string, args: string[], env: Record<string, string>):
 // bot.pid names it, so the runtime check of the env scan does not apply (a node job stands in for the poller);
 // it carries the plugin marker, as a real poller does, because both candidate sources require it (cf075d41).
 const pluginRoot = join(tmp, 'plugins', 'cache', 'official', 'telegram', '0.0.1')
-// node, not /bin/sleep: see the macOS note in the header.
-const poller = () => spawnWithEnv(process.execPath, ['-e', 'setInterval(() => {}, 1000); setTimeout(() => process.exit(0), 300000)'], { TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
+// node, not /bin/sleep: see the macOS note in the header. 'server.ts' is an inert trailing arg
+// (node ignores it after -e <script>) so this stand-in also satisfies isPollerArgv's argv-shape
+// check (card 8d625ccd, RedHat NO-GO 22524: the fork's own argv layer is layered back on top of
+// the plugin-marker + own-uid checks this file tests).
+const poller = () => spawnWithEnv(process.execPath, ['-e', 'setInterval(() => {}, 1000); setTimeout(() => process.exit(0), 300000)', 'server.ts'], { TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
 function fakeTmuxPrints(body: string): void {
   writeFileSync(fakeTmux, `#!/bin/sh\n${body}\n`)
   chmodSync(fakeTmux, 0o755)

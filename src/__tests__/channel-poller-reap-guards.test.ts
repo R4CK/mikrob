@@ -91,7 +91,10 @@ function spawnWith(cmd: string, args: string[], extra: Record<string, string>): 
   kids.push(p.pid!)
   return p.pid!
 }
-const nodeJob = (extra: Record<string, string>) => spawnWith(process.execPath, ['-e', 'setInterval(() => {}, 1000); setTimeout(() => process.exit(0), 300000)'], extra)
+// 'server.ts' is an inert positional arg here (node ignores it after -e <script>) -- it exists so
+// this stand-in satisfies isPollerArgv's argv-shape check too (card 8d625ccd, RedHat NO-GO 22524:
+// the fork's own argv layer is layered back on top of the plugin-marker check it tests here).
+const nodeJob = (extra: Record<string, string>) => spawnWith(process.execPath, ['-e', 'setInterval(() => {}, 1000); setTimeout(() => process.exit(0), 300000)', 'server.ts'], extra)
 function fakeTmuxPrints(body: string): void {
   writeFileSync(fakeTmux, `#!/bin/sh\n${body}\n`)
   chmodSync(fakeTmux, 0o755)
@@ -142,8 +145,8 @@ describe('cf075d41 reapChannelOrphans on real processes', () => {
   it('(iv) positive control: a real orphan poller (state dir AND plugin root) is still stopped, via the env scan and via bot.pid', async () => {
     clearBotPid()
     const scanned = nodeJob({ TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
-    // node, not /bin/sleep: see the macOS note in the header.
-    const listed = spawnWith(process.execPath, ['-e', 'setInterval(() => {}, 1000); setTimeout(() => process.exit(0), 300000)'], { TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
+    // node, not /bin/sleep: see the macOS note in the header. 'server.ts' trailing arg: see nodeJob.
+    const listed = spawnWith(process.execPath, ['-e', 'setInterval(() => {}, 1000); setTimeout(() => process.exit(0), 300000)', 'server.ts'], { TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot })
     await sleep(300)
     writeFileSync(join(chanDir, 'bot.pid'), String(listed))
     fakeTmuxPrints('echo 4242')
@@ -229,8 +232,20 @@ describe('cf075d41 seams: the reapers read a handed snapshot, not the host', () 
     }
     return { signalled, kill }
   }
+  // Synthetic pids (3_900_00x), never real processes: readArgv's /proc read would ENOENT on all of
+  // them, which would silently fail every candidate closed instead of exercising the plugin-marker/
+  // argv combination this block tests. argvOf hands back the same shape the ps-row command column
+  // already states, per pid (card 8d625ccd, RedHat NO-GO 22524, the seam the fix needed).
+  const argvByPid = new Map<number, string[]>([
+    [POLLER, ['bun', 'server.ts']],
+    [STRANGER, ['sleep', '300']],
+    [JOB, ['node', 'build.js']],
+  ])
   const handed = (kill: (pid: number, signal: NodeJS.Signals | 0) => void) =>
-    ({ psEww, procs, panePids: () => new Set([PANE]), tmuxServerPid: () => SERVER, ownUid: 1000, ownerOf: () => 1000, kill })
+    ({
+      psEww, procs, panePids: () => new Set([PANE]), tmuxServerPid: () => SERVER, ownUid: 1000, ownerOf: () => 1000, kill,
+      argvOf: (pid: number) => argvByPid.get(pid) ?? null,
+    })
 
   it('(s1) the snapshot decides: the orphan plugin poller is signalled; the stale bot.pid and the inherited-env job are not', () => {
     writeFileSync(join(sChan, 'bot.pid'), String(STRANGER))

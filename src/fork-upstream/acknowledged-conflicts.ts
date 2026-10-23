@@ -2835,7 +2835,17 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "the argv check and unified on the env marker alone; the fork keeps both as defence-in-depth " +
     "after the 2026-09-26 incident (100+ pids reaped off bare env needle, fleet-wide tmux server " +
     "among them). The isPollerArgv check is fail-closed (/proc unreadable -> pid dropped, never " +
-    "killed). See ACKNOWLEDGED_FORK_ANCHORS for the tripwire that pins this function.",
+    "killed). See ACKNOWLEDGED_FORK_ANCHORS for the tripwire that pins this function." +
+    " REAFFIRMED 2026-10-23 (card 8d625ccd, Köteg 17, RedHat NO-GO 22524): a first merge pass " +
+    "dropped the argv layer from reapChannelOrphans's own call sites specifically (while leaving " +
+    "isPollerArgv/filterPollerPids themselves intact elsewhere) because upstream's new real-process " +
+    "test suite spawned its stand-in poller without a 'server.ts' argv element. RedHat caught the " +
+    "resulting gap (this entry and its anchor kept saying 'KEEP' while the code no longer did) and " +
+    "the drop itself widens the killable set. Fixed the other way: the two upstream test fixtures " +
+    "now add an inert trailing 'server.ts' argv element (satisfies both checks without weakening " +
+    "either), and reapChannelOrphans gained an argvOf seam (ReapSeams) for the one synthetic-pid " +
+    "test that cannot read real /proc. The layer is back on BOTH candidate sources (fromBotPid and " +
+    "fromEnvScan), not just the diagnostic path. 63/63 on the full channel-poller-reap-* family.",
 
   // src/web/dashboard-settings.ts + src/web/routes/connectors.ts (card 4aa87fdf, 2026-10-17,
   // plan-grilled per K3 -- paired decision, same feature, two files). Fork's installGitHubRepo()
