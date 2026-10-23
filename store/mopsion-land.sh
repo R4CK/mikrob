@@ -125,6 +125,10 @@ migration_number_check() {
 # find_conflict_markers (card 4b4c89eb): shared with marveen-land.sh, same reason as above.
 # shellcheck source=./conflict-marker-check.sh
 . "$(dirname "$0")/conflict-marker-check.sh"
+# decisions_conflict_report (card 4a769a34, Trail-ötlet 2): shared with marveen-land.sh. Report-only
+# -- quotes a past DECISIONS.md entry when this landing's diff touches a file that entry is about.
+# shellcheck source=./decisions-conflict-check.sh
+. "$(dirname "$0")/decisions-conflict-check.sh"
 
 # DESIGNATION SNAPSHOT (card acc197c8): e792cfea landed with a merge-commit message asserting
 # "gate-teljes @ <sha>" from the card's gate designation (which security gates rule 4's risk-tiering
@@ -783,6 +787,17 @@ if ! decisions_append_only_check_merge "$MAIN" "$(git -C "$WT" rev-parse HEAD)" 
   exit 4
 fi
 say "DECISIONS.md: append-only confirmed on both sides of the merge"
+
+# Decision-conflict report (card 4a769a34, Trail-ötlet 2): does this landing's diff touch a file a
+# past DECISIONS.md entry made a call about? Report-only, never refuses -- see
+# decisions-conflict-check.sh's header for why.
+DCR_FILES=()
+while IFS= read -r _dcr_f; do [ -n "$_dcr_f" ] && DCR_FILES+=("$_dcr_f"); done \
+  <<<"$(git -C "$WT" diff --name-only "$BASE..HEAD" -- . ':!DECISIONS.md' ':!package.json' ':!package-lock.json')"
+if [ "${#DCR_FILES[@]}" -gt 0 ]; then
+  DCR_OUT="$(git -C "$WT" cat-file blob "HEAD:DECISIONS.md" 2>/dev/null | decisions_conflict_report "${DCR_FILES[@]}")"
+  [ -n "$DCR_OUT" ] && { echo "decision-conflict report (earlier DECISIONS.md entries about files in this diff):"; echo "$DCR_OUT" | sed 's/^/    /'; }
+fi
 
 # SEAM CHECK on the files BOTH sides touched, in BOTH directions: every line either side ADDED
 # since the merge base must be present in the result. Checking only the branch side is what let the

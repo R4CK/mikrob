@@ -218,6 +218,10 @@ rebuild_live_install() {
 . "$(dirname "$0")/landing-downward-check.sh"
 # shellcheck source=./readme-bullet-union.sh
 . "$(dirname "$0")/readme-bullet-union.sh"
+# decisions_conflict_report (card 4a769a34, Trail-ötlet 2): report-only -- quotes a past
+# DECISIONS.md entry when this landing's diff touches a file that entry is about. Never refuses.
+# shellcheck source=./decisions-conflict-check.sh
+. "$(dirname "$0")/decisions-conflict-check.sh"
 
 # gate_verdict_check (card 9081d02d): shared with cleancore-land.sh, but run here in REPORT mode.
 # Marveen gates AFTER landing -- the root CLAUDE.md says "a visszaadott sha a Gate-SHA", i.e. the
@@ -881,6 +885,18 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
     return 4
   fi
   say "$agent: no merge-conflict markers in the merge result"
+
+  # Decision-conflict report (card 4a769a34, Trail-ötlet 2): does this landing's diff touch a file a
+  # past DECISIONS.md entry made a call about? Report-only, never refuses -- see
+  # decisions-conflict-check.sh's header for why.
+  local -a _dcr_files=()
+  while IFS= read -r _dcr_f; do [ -n "$_dcr_f" ] && _dcr_files+=("$_dcr_f"); done \
+    <<<"$(g diff --name-only "$base_sha..$merge_sha" -- . ':!DECISIONS.md' ':!package.json' ':!package-lock.json')"
+  if [ "${#_dcr_files[@]}" -gt 0 ]; then
+    local _dcr_out
+    _dcr_out="$(git -C "$wt" cat-file blob "$merge_sha:DECISIONS.md" 2>/dev/null | decisions_conflict_report "${_dcr_files[@]}")"
+    [ -n "$_dcr_out" ] && { echo "$agent: decision-conflict report (earlier DECISIONS.md entries about files in this diff):"; echo "$_dcr_out" | sed 's/^/    /'; }
+  fi
 
   if [ "$dry" = "1" ]; then say "$agent: DRY-RUN -- not pushing"; return 0; fi
 
