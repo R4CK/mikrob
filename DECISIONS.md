@@ -21033,6 +21033,65 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 
 **Hivatkozás:** kártya 58669bf2 (ennek a landolása közben derült ki), d06a325d (a Köteg 18 kártya, ahol a csendes port történt), card a14812e8 (az anchor eredeti kártyája), card 1eae1b41 (DevO re-decision, commit f7d3f4eb), upstream #1179 (a forrás PR, juhasz007-maker, "feat(egress): the reader's posture becomes an operator switch").
 
+---
+
+**Dátum:** 2026-10-18
+**Kártya:** 4aa87fdf (7f0efce3 bontás: biztonsági/architektúra csoport -- upstream-drift döntések)
+**Döntés:** A biztonsági/architektúra csoport 12 fájljára upstream-drift döntések meghozva az `src/fork-upstream/acknowledged-conflicts.ts`-ban. Főbb döntések: (1) `src/web/channel-poller-reap.ts` isPollerArgv KEEP -- argv-alapú szűkítő réteg megtartva a 2026-09-26 incidens (100+ pid reaped) tanulságaként, defence-in-depth az env-scan felett; (2) RESTARTWAKE927 és mainRotationContinueVerdict -- mindkettő develop-on adoptálva volt a branch-cut és a landolás között, a guard-anchor helyesen kapta el és dokumentálta; (3) 6 K3 biztonsági érzékeny fájl döntve (egységes KEEP/ADOPT/DEFERRED).
+**Gate-SHA:** f32040bf0607b33912d05caff071e557e6083a67
+**Ki döntött:** fullstack/DevO (card 4aa87fdf), szülő: 7f0efce3.
+**Hivatkozás:** kártya 4aa87fdf (szülő 7f0efce3 bontás).
+
+---
+
+## 2026-10-18 -- Skill-usage heti összesítő (8a4a8b09): implementáció elfogadva
+
+**Döntés:** `store/skill-coverage-report.sh` és `store/skill-coverage-report.selftest.sh` szállítva a `skill_usage` táblából per-agent heti lefedettség-riporthoz, a Dream Engine Bucket 5-be integrálva.
+
+**Miért:** A CLAUDE.md 20. munkavégzési szabálya (skill-katalógus tényleges használata) és a flotta önfejlesztési képességének mérhető alapja. A 2-hetes visszamérés célja 2026-10-31.
+
+**Governance megjegyzés:** A dream-engine regisztrált prompt Bucket 5 frissítése governance hook (self-pace tiltás) miatt MikroB PUT-ja, nem a szkript landolásával automatikus.
+
+**Hivatkozás:** kártya 8a4a8b09, Gate-SHA: 6e7a182119927a0e6bfa3c3c2b54bd020b8556b2, REVIEW komment 22206.
+
+---
+
+## 2026-10-22 -- Trail-ötlet 1 (átfedés-jelzés): REVIEW-előtti script, nem PostToolUse hook
+
+**Döntés:** `store/overlap-signal-check.sh <agent>` -- az agent saját (nem landolt) branch-ét veti össze minden más unlanded `agent/*/work` és `card/*` branch-csel. A "ugyanazt a függvényt módosították" kérdést a git diff hunk-header kontextus-sorának (git beépített funcname-heurisztikája) sztring-egyezésével dönti el, nem bespoke nyelvi regex-szel. Csak jelez (`OVERLAP file=... symbol=... other_branch=.../other_card=...`), sosem blokkol; `OVERLAP_SIGNAL=off` a kapcsoló.
+
+**Miért ez és nem PostToolUse hook:** a kártya (ca72e5d4) mindkét opciót megengedte. Egy minden Edit/Write-ra futó hook N agent × N fájl mélységben drágább és zajosabb; egy REVIEW-előtti, önjáró script (a self-advance 11a. szabály pontjába illik) ugyanazt a védelmet adja a landolási pillanat előtt, ahol tényleg számít. A teljes flotta-szintű kötelező bekötés (CLAUDE.md-be írás minden ügynöknek) külön, MikroB-döntésű lépés -- ez a kártya csak az ESZKÖZT szállítja, elérhetővé téve.
+
+**Mérés -- amit NEM lehetett megmérni:** a kártya kérte "a múlt heti landolási ütközésekből hányat fogott volna meg". A landolt branch-ek törlődnek landolás után, tehát a múlt heti ütköző branch-ek git-objektumai már nem léteznek -- visszamenőleges mérés nincs. Helyette a `--selftest` egy megkonstruált esettel (azonos függvény két branch-en -> OVERLAP; azonos fájl, másik függvény -> nincs jelzés; landolt branch -> csendes) bizonyítja a logikát élesben; a tényleges találati arányt csak előretekintve, a jövő heti landolásokon lehet majd mérni.
+
+**Ki döntött:** fullstack/DevO (card ca72e5d4), szülő: c65add5a.
+**Hivatkozás:** kártya ca72e5d4 (szülő c65add5a bontás).
+
+---
+
+## 2026-10-23 -- agent-boot-reconcile.sh: manual-dispatch-pause tiszteletben tartása (card a4689243)
+
+**Mért hiba:** 2026-10-22 20:26 és 2026-10-23 07:21, a boot-reconcile timer két egymást követő körben elindította a parkolt flottát (fullstack, cybersec, cybered, qa, qa2), miközben az aktív `store/manual-dispatch-pause.json` (Peti 11965, "biztos pont") ezt tiltotta volna. A szkript a pause-fájlt egyáltalán nem olvasta -- `grep pause store/agent-boot-reconcile.sh` 0 találatot adott a javítás előtt.
+
+**Döntés:** a `weekly-hard-stop.json` már meglévő mintáját követve (F1a blokk) egy `PAUSE_ACTIVE` ellenőrzés került a kártya-szelektor és a tényleges start/resume hívás közé. Aktív pause alatt a szkript a WORK-listát továbbra is kiszámítja (ügynök + kártya-azonosító), de minden indítandó ügynököt csak egy `would start:` sorba naplóz, és NEM hívja meg az `/api/agents/<agent>/start`-ot vagy a resume-üzenetet. Fail-closed: ha a pause-fájl létezik, de nem parse-olható (sérült JSON), ugyanúgy aktívnak számít, mint egy explicit `{"active": true}` -- csak egy hiányzó fájl (vagy explicit `{"active": false}`, a feloldás élő mintája a `.lifted-<dátum>` átnevezés szerint) jelenti az inaktív állapotot.
+
+**Miért ez a forma, nem külön pause-specifikus log-ág:** a kártya elfogadási kritériuma kimondottan azt kérte, hogy a pause alatt a szkript "csak naplózza, mit indítana" -- ehhez a WORK-számítást változatlanul futtatni kell, csak a hatást (start/message hívás) kell elhagyni. Ez surgical change: a meglévő ciklus egyetlen ágazási pontján (`is_running` ellenőrzés után) dönt, nem új útvonalat épít a kártya-szelektor köré.
+
+**Mutáció-ellenőrzés:** a selftest (`agent-boot-reconcile.selftest.sh`, 19. eset) egy olyan mutált másolatot futtat, amiből a teljes pause-ellenőrző blokk ki van véve (awk-kal, a blokk saját határjelein, nem fix sorszámon) -- a mutált szkript a pause ellenére elindítja az ügynököt, bizonyítva hogy a 16. eset (pause aktív -> nincs start) valódi, nem vakon zöld ellenőrzés.
+
+**Ki döntött:** fullstack/DevO (card a4689243).
+**Hivatkozás:** kártya a4689243, kapcsolódó: 79d67d31 (ugyanaz a szkript, más hiba).
+
+## 2026-10-23 -- MT-10b (bb0cadd9): DECISIONS.md -> decision csomópont + governs él a tudásgráfban
+
+**Döntés:** `src/kg/import-decisions-log.ts` -- determinisztikus importer, ami a `DECISIONS.md` minden `## ` fejléces bejegyzését `decision` kg_node-dá képezi (id: `decision:L<sorszám>`, 1-indexelt), és a bejegyzés szövegében hivatkozott, kanban_cards-ban valóban létező kártyákhoz `governs` élt húz. Nem létező kártya-alakú token (pl. commit sha) nem kap élet, csak számlálva van (`cardRefsSkippedMissing`).
+
+**Miért:** 81593084 (MT P2 Fázis) MT-10 négyes felbontásának 'b' része -- a meglévő `src/kg/schema.ts`/`store.ts` (ee9ee17b, MT-01) node/edge típusai már támogatják ezt, séma-változás nélkül.
+
+**Gate-SHA:** c21ca6edc
+**Ki döntött:** backend2 (card bb0cadd9), szülő: 81593084.
+**Hivatkozás:** kártya bb0cadd9 (szülő 81593084 bontás), REVIEW komment 22291.
+
 ## 2026-10-18 -- kártya 7857c82c: GPU-driver setup WhiteHat F1-F3 + RedHat B1-B3 javítások
 
 **Kontextus:** A 8b588834 kártyán a WhiteHat (F1-F3) és RedHat (B1-B3) gate NO-GO verdiktet adott a `gpu-driver-install-setup.ps1` és `gpu-driver-install-launcher.ps1` fájlokra. A kártya 7857c82c az összes leletet egyesítve javítja.
@@ -21053,6 +21112,6 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 
 - **PS 5.1 kompatibilitás:** A `-replace '...',{ scriptblock }` alak PS 5.1-en nem működik. Helyette explicit `$str[0].ToLower()` + `$str.Substring(2) -replace '\\','/'` az útvonal-konverzió.
 
-**Ki döntött:** backend (kártya 7857c82c). Gate: QA + WhiteHat + RedHat.
+**Ki döntött:** backend (kártya 7857c82c). Gate: QA + RedHat (a NO-GO-t ő adta; WhiteHat már korábban feltételes GO-t adott ugyanerre a Gate-SHA-ra, 8b588834 komment 22146).
 
 **Hivatkozás:** kártyák 7857c82c, 8b588834, WhiteHat verdikt komment 22148, RedHat verdikt komment 22150, MikroB döntés komment 22152.

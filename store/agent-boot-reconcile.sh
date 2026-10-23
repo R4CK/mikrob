@@ -14,6 +14,14 @@
 # card id(s). Parking rule (7.) stays intact: an agent with NO qualifying work is never started.
 # Idempotent -- safe to run repeatedly (an already-running agent is left alone, not re-messaged).
 #
+# Card a4689243 (HIGH, MikroB dispatch msg_id:13948/13964): measured 2026-10-22 20:26 and
+# 2026-10-23 07:21, this script started the parked fleet TWICE while store/manual-dispatch-pause.json
+# (Peti 11965 "biztos pont") was active, because it never read that file at all (grep "pause": 0
+# hits before this fix). Fixed below (PAUSE_ACTIVE): under an active pause, every agent this run
+# would otherwise have started is logged ("would start: agent(cards)") and left alone -- no
+# /api/agents/*/start, no resume message. Fail-closed: a missing-but-unreadable or corrupt pause
+# file is treated as pause-active, same direction as the file-present case, never the opposite.
+#
 # WhiteHat NO-GO (comment 17673) + WhiteHat2 delta NO-GO (comment 17871) + QA FAIL (17873) on a
 # prior round (Gate-SHA 2e4c9bd1, then dbbd8a15) found this script OVERRIDES parking, not respects
 # it. Fixed here:
@@ -63,6 +71,7 @@ START_RECORDER="${AGENT_BOOT_RECONCILE_START_BIN:-}"
 MESSAGE_RECORDER="${AGENT_BOOT_RECONCILE_MESSAGE_BIN:-}"
 TELEGRAM_RECORDER="${AGENT_BOOT_RECONCILE_TELEGRAM_BIN:-}"
 HARDSTOP_FILE="${AGENT_BOOT_RECONCILE_HARDSTOP_FILE:-$ROOT/store/weekly-hard-stop.json}"
+PAUSE_FILE="${AGENT_BOOT_RECONCILE_PAUSE_FILE:-$ROOT/store/manual-dispatch-pause.json}"
 
 hf="$(mktemp)"; chmod 600 "$hf"
 cards_f="$(mktemp)"; agents_f="$(mktemp)"
@@ -83,6 +92,22 @@ print("1" if d.get("active") else "0")
     echo "agent-boot-reconcile: weekly-hard-stop active -- not starting anyone (parking rule 7 takes precedence)"
     exit 0
   fi
+fi
+
+# --- a4689243: manual-dispatch-pause check. Fail-closed: a missing file means inactive (the
+# normal, no-pause state), but a PRESENT file that fails to parse is treated as active, not
+# inactive -- an unreadable pause file must never silently let the fleet restart. ---
+PAUSE_ACTIVE=0
+if [ -f "$PAUSE_FILE" ]; then
+  PAUSE_STATE="$(python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("corrupt"); sys.exit(0)
+print("active" if d.get("active") else "inactive")
+' "$PAUSE_FILE" 2>/dev/null)"
+  [ "$PAUSE_STATE" = "inactive" ] || PAUSE_ACTIVE=1
 fi
 
 _get() {
@@ -217,6 +242,7 @@ for agent, entries in by_agent.items():
 STARTED=""
 FAILED=""
 STOPPED_RECIPIENTS=""
+WOULD_START=""
 NOTHING_TO_DO=1
 while IFS='|' read -r agent in_progress_ids waiting_ids; do
   [ -z "$agent" ] && continue
@@ -252,6 +278,11 @@ print("1" if any((x.get("name") or x.get("agent_id")) == a and x.get("running") 
     continue
   fi
 
+  if [ "$PAUSE_ACTIVE" = "1" ]; then
+    WOULD_START="$WOULD_START $agent($all_ids)"
+    continue
+  fi
+
   start_code="$(_start_agent "$agent")"
   case "$start_code" in
     2??)
@@ -270,6 +301,15 @@ print("1" if any((x.get("name") or x.get("agent_id")) == a and x.get("running") 
       ;;
   esac
 done <<<"$WORK"
+
+if [ "$PAUSE_ACTIVE" = "1" ]; then
+  if [ -n "$WOULD_START" ]; then
+    echo "agent-boot-reconcile: manual-dispatch-pause active -- would start:$WOULD_START (logged only, nothing started)"
+  else
+    echo "agent-boot-reconcile: manual-dispatch-pause active -- no agent had qualifying work"
+  fi
+  exit 0
+fi
 
 if [ -n "$STARTED" ] || [ -n "$FAILED" ]; then
   SUMMARY="Flotta: boot-reconcile $(date '+%H:%M')-kor -- elinditva:${STARTED:- (semmi)}."
