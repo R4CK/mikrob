@@ -59,11 +59,17 @@ describe('TOKEN export-attribute guard present right after loading the dashboard
 // assigns a TOKEN/DASHBOARD_TOKEN variable itself (every "TOKEN=" occurrence in that file is
 // either a comment or a heredoc test fixture for its own unrelated argv-leak scanner) -- there is
 // no assignment to pin, so it is intentionally left out here, not silently dropped.
+// scripts/pre-pr-review.sh was replaced wholesale (card 647e0b6f, upstream #1965 security
+// hardening) with a version that never assigns DASHBOARD_TOKEN to a shell variable at all: the
+// token file is read straight into a 0600 header file by write_header() (a python3 -I heredoc),
+// so there is no shell variable whose export attribute could leak to a spawned child's
+// environment in the first place -- the leak class this guard checks for cannot occur by
+// construction. Same reasoning as the sync-agent-templates.sh carve-out above: no assignment
+// to pin, so it is intentionally left out here, not silently dropped.
 describe('TOKEN/DASHBOARD_TOKEN export-attribute guard present in scripts/ (card 03d48dab)', () => {
   const SCRIPTS_SCRIPTS_DIR: Array<{ file: string; varName: string }> = [
     { file: 'agent-msg.sh', varName: 'TOKEN' },
     { file: 'fleet-safe-start.sh', varName: 'TOKEN' },
-    { file: 'pre-pr-review.sh', varName: 'DASHBOARD_TOKEN' },
     { file: 'watchdog.sh', varName: 'TOKEN' },
   ]
   for (const { file, varName } of SCRIPTS_SCRIPTS_DIR) {
