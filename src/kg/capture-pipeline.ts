@@ -69,6 +69,14 @@ export type ClosureVerdictWord =
 export interface ClosureResult {
   readonly verdict: ClosureVerdictWord
   readonly sha: string | null
+  /** F5 (card f809b24c, 2ace4db9 follow-up): when known, the created_at of the earliest gate
+   *  comment that produced this verdict for `sha`. The REVIEW used as an ACTIVE node's source must
+   *  have been written at or before this -- a gate cannot have reviewed text that did not exist
+   *  yet. `undefined`/`null` means "timing unknown" (every pre-existing caller/test, and any
+   *  closureCheck that cannot derive it) and falls back to the old, purely-latest selection --
+   *  AGREE + done can still go active, this field only tightens WHICH comment is trusted as the
+   *  content source when the timing is actually known. */
+  readonly verdictAt?: number | null
 }
 
 export interface DraftSolution {
@@ -108,6 +116,45 @@ function latestReviewComment(comments: readonly KanbanComment[]): KanbanComment 
     const author = (c.author ?? '').toLowerCase()
     if (GATE_AGENT_NAMES.has(author) || GENERATED_COMMENT_AUTHORS.has(author)) continue
     if (!REVIEW_RX.test(c.content ?? '')) continue
+    if (!best || c.created_at >= best.created_at) best = c
+  }
+  return best
+}
+
+// F5: a single comment's own "Gate-SHA: ..." line(s) citing `sha` anywhere -- deliberately a plain
+// substring test on the Gate-SHA line only (not the full extractGateShas() parent/card-mention
+// scrubbing below, which answers a different question: "whose round is this sha the SUBJECT of").
+// Here we only need "did this one comment, by itself, declare this sha", for which a line-scoped
+// substring is accurate enough and keeps the F5 logic independent of that scrubbing's edge cases.
+const GATE_SHA_LINE_TEST_RX = /^\s*Gate-SHA\s*:\s*.*$/gim
+function commentCitesSha(content: string, sha: string): boolean {
+  GATE_SHA_LINE_TEST_RX.lastIndex = 0
+  const needle = sha.toLowerCase()
+  let m: RegExpExecArray | null
+  while ((m = GATE_SHA_LINE_TEST_RX.exec(content)) !== null) {
+    if (m[0].toLowerCase().includes(needle)) return true
+  }
+  return false
+}
+
+/** F5 (card f809b24c): the REVIEW a gate verdict actually covers -- a builder-authored REVIEW
+ *  comment (same author/shape filter as {@link latestReviewComment}) that cites `sha` on its own
+ *  Gate-SHA line AND was written at or before `verdictAt`. Among qualifying comments, the LATEST
+ *  one wins (the freshest review the gate could still have read), same latest-wins convention as
+ *  every other picker in this file. Returns null when none qualify -- the caller must then fail
+ *  closed to draft, never silently promote a later, uncovered comment. */
+function coveredReviewComment(
+  comments: readonly KanbanComment[],
+  sha: string,
+  verdictAt: number,
+): KanbanComment | null {
+  let best: KanbanComment | null = null
+  for (const c of comments) {
+    const author = (c.author ?? '').toLowerCase()
+    if (GATE_AGENT_NAMES.has(author) || GENERATED_COMMENT_AUTHORS.has(author)) continue
+    if (!REVIEW_RX.test(c.content ?? '')) continue
+    if (c.created_at > verdictAt) continue
+    if (!commentCitesSha(c.content ?? '', sha)) continue
     if (!best || c.created_at >= best.created_at) best = c
   }
   return best
@@ -197,6 +244,21 @@ function callDraftWithRetry(
   return { error: lastError }
 }
 
+/** F5 (card f809b24c): the earliest gate-authored comment (QA/Cybersec/Cybered and their siblings)
+ *  that cites `sha` on its own Gate-SHA line -- the moment the gate round actually judged this sha,
+ *  used by {@link defaultClosureCheck} to populate `verdictAt`. Null when no such comment exists
+ *  (defensive: gate-closure-check.py said AGREE on this sha, so one normally must). */
+function earliestGateCommentAt(comments: readonly KanbanComment[], sha: string): number | null {
+  let best: number | null = null
+  for (const c of comments) {
+    const author = (c.author ?? '').toLowerCase()
+    if (!GATE_AGENT_NAMES.has(author)) continue
+    if (!commentCitesSha(c.content ?? '', sha)) continue
+    if (best === null || c.created_at < best) best = c.created_at
+  }
+  return best
+}
+
 /** Reuses store/gate-closure-check.py exactly as MikroB's own closure sweep calls it (root
  *  CLAUDE.md rule 4a): the card's comments JSON on stdin, the card's OWN "Gate: ..." line (if any)
  *  as the designated-gates argument. Exit code is always 0 per the script's own contract -- the
@@ -214,9 +276,14 @@ export function defaultClosureCheck(cardId: string, comments: readonly KanbanCom
       encoding: 'utf8',
       timeout: CLOSURE_CHECK_TIMEOUT_MS,
     }).trim()
-    const [word, sha] = out.split('|')
+    const [word, shaRaw] = out.split('|')
     const verdict = (word ?? 'UNREADABLE') as ClosureVerdictWord
-    return { verdict, sha: verdict === 'AGREE' && sha ? sha : null }
+    const sha = verdict === 'AGREE' && shaRaw ? shaRaw : null
+    // F5 (card f809b24c): gate-closure-check.py only answers "do the gates agree on a sha", not
+    // "when". Derive the timing ourselves from the SAME comments it was fed -- the earliest gate
+    // comment that actually cites this sha -- so runCapture can refuse a REVIEW written after it.
+    const verdictAt = sha ? earliestGateCommentAt(comments, sha) : null
+    return { verdict, sha, verdictAt }
   } catch {
     return { verdict: 'UNREADABLE', sha: null }
   }
@@ -262,7 +329,32 @@ export function runCapture(
     return { outcome: 'failed', reason: 'card not found', solutionIds: [] }
   }
   const comments = getKanbanComments(cardId)
-  const review = latestReviewComment(comments)
+
+  const closure = deps.closureCheck(cardId, comments)
+  // F2 (card 2ace4db9, WhiteHat): an AGREE verdict alone is not enough -- it can be sitting in the
+  // comments from BEFORE the card was reopened (e.g. a later non-gate "BLOKKOLT-tisztázás", rule
+  // 19) and the queue row stays pending across the reopen (enqueueCapture only guards entering
+  // 'done', capture.ts's own doc comment). A solution may go active only while the card the gate
+  // actually AGREE'd on is STILL done right now.
+  const allowedActiveCandidate = closure.verdict === 'AGREE' && card.status === 'done'
+
+  // F5 (card f809b24c): when the verdict's timing is known, the review used as the ACTIVE node's
+  // content source must be the one the gate actually covered (same Gate-SHA, written at or before
+  // verdictAt) -- otherwise a REVIEW-UPDATE posted AFTER the gate already AGREE'd becomes the
+  // source, anchored on a sha the gate never reviewed that text against. If no covered REVIEW
+  // exists, fail closed to draft rather than silently promoting the later comment. When the timing
+  // is unknown (verdictAt null/undefined), the old, purely-latest selection applies unchanged.
+  let review: KanbanComment | null
+  let allowedActive: boolean
+  if (allowedActiveCandidate && closure.sha && closure.verdictAt != null) {
+    const covered = coveredReviewComment(comments, closure.sha, closure.verdictAt)
+    review = covered ?? latestReviewComment(comments)
+    allowedActive = covered !== null
+  } else {
+    review = latestReviewComment(comments)
+    allowedActive = allowedActiveCandidate
+  }
+
   if (!review) {
     markCaptureSkipped(kgDb, cardId, 'no REVIEW comment to capture from', now)
     return { outcome: 'skipped', reason: 'no REVIEW comment', solutionIds: [] }
@@ -281,13 +373,6 @@ export function runCapture(
     return { outcome: 'failed', reason: 'secret', solutionIds: [] }
   }
 
-  const closure = deps.closureCheck(cardId, comments)
-  // F2 (card 2ace4db9, WhiteHat): an AGREE verdict alone is not enough -- it can be sitting in the
-  // comments from BEFORE the card was reopened (e.g. a later non-gate "BLOKKOLT-tisztázás", rule
-  // 19) and the queue row stays pending across the reopen (enqueueCapture only guards entering
-  // 'done', capture.ts's own doc comment). A solution may go active only while the card the gate
-  // actually AGREE'd on is STILL done right now.
-  const allowedActive = closure.verdict === 'AGREE' && card.status === 'done'
   const gateSha = allowedActive ? closure.sha : (latestReviewGateSha(comments) ?? null)
 
   const draftResult = callDraftWithRetry(deps.draftFn, frameReviewAsData(review.content), KG_DRAFT_MAX_ATTEMPTS)
