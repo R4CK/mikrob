@@ -77,10 +77,17 @@ export interface ClosureResult {
   /** F5 (card f809b24c, 2ace4db9 follow-up): when known, the created_at of the earliest gate
    *  comment that produced this verdict for `sha`. The REVIEW used as an ACTIVE node's source must
    *  have been written at or before this -- a gate cannot have reviewed text that did not exist
-   *  yet. `undefined`/`null` means "timing unknown" (every pre-existing caller/test, and any
-   *  closureCheck that cannot derive it) and falls back to the old, purely-latest selection --
-   *  AGREE + done can still go active, this field only tightens WHICH comment is trusted as the
-   *  content source when the timing is actually known. */
+   *  yet. `undefined` (the field never set at all) means "this closureCheck cannot derive timing"
+   *  (every pre-existing caller/test) and falls back to the old, purely-latest selection -- AGREE +
+   *  done can still go active, this field only tightens WHICH comment is trusted as the content
+   *  source when the timing is actually known.
+   *  F-b (card 2c54029d, WhiteHat 23016): an explicit `null` is a DIFFERENT, stronger signal than
+   *  `undefined` -- it means a closureCheck that CAN derive timing (defaultClosureCheck) tried and
+   *  found no gate comment citing `sha` at all (legal per rule 4b: the Gate-SHA line is optional on
+   *  a gate verdict too). That is a genuine "don't know", not "didn't try", and must fail CLOSED to
+   *  draft rather than falling back to the old fail-open latest-wins -- the exact hole the F5 fix
+   *  was meant to close, left open for every card whose gate comment omits the line (measured: 177
+   *  of 973 done+REVIEW cards historically, and any future one). */
   readonly verdictAt?: number | null
 }
 
@@ -148,7 +155,7 @@ function commentCitesSha(content: string, sha: string): boolean {
  *  one wins (the freshest review the gate could still have read), same latest-wins convention as
  *  every other picker in this file. Returns null when none qualify -- the caller must then fail
  *  closed to draft, never silently promote a later, uncovered comment. */
-function coveredReviewComment(
+export function coveredReviewComment(
   comments: readonly KanbanComment[],
   sha: string,
   verdictAt: number,
@@ -253,7 +260,7 @@ function callDraftWithRetry(
  *  that cites `sha` on its own Gate-SHA line -- the moment the gate round actually judged this sha,
  *  used by {@link defaultClosureCheck} to populate `verdictAt`. Null when no such comment exists
  *  (defensive: gate-closure-check.py said AGREE on this sha, so one normally must). */
-function earliestGateCommentAt(comments: readonly KanbanComment[], sha: string): number | null {
+export function earliestGateCommentAt(comments: readonly KanbanComment[], sha: string): number | null {
   let best: number | null = null
   for (const c of comments) {
     const author = (c.author ?? '').toLowerCase()
@@ -351,10 +358,19 @@ export function runCapture(
   // is unknown (verdictAt null/undefined), the old, purely-latest selection applies unchanged.
   let review: KanbanComment | null
   let allowedActive: boolean
-  if (allowedActiveCandidate && closure.sha && closure.verdictAt != null) {
-    const covered = coveredReviewComment(comments, closure.sha, closure.verdictAt)
-    review = covered ?? latestReviewComment(comments)
-    allowedActive = covered !== null
+  if (allowedActiveCandidate && closure.sha && closure.verdictAt !== undefined) {
+    // F-b (card 2c54029d, WhiteHat 23016): an explicit null (closureCheck tried, no gate comment
+    // cited this sha) fails CLOSED -- see the ClosureResult.verdictAt doc comment above. Only an
+    // undefined field (closureCheck never attempted to derive timing at all) keeps the old,
+    // purely-latest fallback.
+    if (closure.verdictAt === null) {
+      review = latestReviewComment(comments)
+      allowedActive = false
+    } else {
+      const covered = coveredReviewComment(comments, closure.sha, closure.verdictAt)
+      review = covered ?? latestReviewComment(comments)
+      allowedActive = covered !== null
+    }
   } else {
     review = latestReviewComment(comments)
     allowedActive = allowedActiveCandidate

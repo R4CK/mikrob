@@ -12,9 +12,23 @@ vi.mock('../db.js', () => ({
   getKanbanComments: (id: string) => (id === card.id ? comments : []),
 }))
 
+// F-a (card 2c54029d, WhiteHat 23016): defaultClosureCheck shells out via execFileSync -- mocked
+// here so the "live path" tests below exercise the REAL defaultClosureCheck function (card lookup,
+// gate-designation parsing, verdictAt derivation) without needing an actual gate-closure-check.py
+// subprocess or real git clones to resolve test-fabricated shas.
+vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }))
+
+import { execFileSync } from 'node:child_process'
 import { migrate } from '../kg/store.js'
 import { enqueueCapture } from '../kg/capture.js'
-import { runCapture, type CaptureDeps, type ClosureResult } from '../kg/capture-pipeline.js'
+import {
+  runCapture,
+  defaultClosureCheck,
+  earliestGateCommentAt,
+  coveredReviewComment,
+  type CaptureDeps,
+  type ClosureResult,
+} from '../kg/capture-pipeline.js'
 
 // A real worker always claims a pending kg_capture_queue row (enqueued by the kanban move hook)
 // BEFORE calling runCapture -- the mark*/markCaptureFailed functions UPDATE an existing row and
@@ -420,6 +434,82 @@ describe('runCapture', () => {
       draftFn: (reviewText: string) => { seenPrompt = reviewText; return JSON.stringify([{ title: 'off-by-one fix' }]) },
     }))
     for (const ch of badChars) expect(seenPrompt).not.toContain(ch)
+    kgDb.close()
+  })
+})
+
+// F-a (card 2c54029d, WhiteHat 23016, from f809b24c's conditional GO comment 23015): the F5 tests
+// above all inject a fixed verdictAt directly, so three mutants in the REAL timing-derivation logic
+// survived unpinned (WhiteHat's own mutation run, 20/20 green on each): M2 (the sha-match inside
+// coveredReviewComment), M4 (earliest-vs-latest in earliestGateCommentAt), M6 (gate-author exclusion
+// inside coveredReviewComment). These test the exported pure functions directly -- no DB, no
+// subprocess, same mutation-pin style as every other test in this file.
+describe('earliestGateCommentAt / coveredReviewComment (pins M2, M4, M6)', () => {
+  it('M4: the EARLIEST gate comment citing the sha wins, not the latest', () => {
+    const cs = [
+      { id: 1, card_id: card.id, author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: abc1234', created_at: 500, automated: false },
+      { id: 2, card_id: card.id, author: 'qa', content: 'QA PASS\nGate-SHA: abc1234', created_at: 50, automated: false },
+    ]
+    expect(earliestGateCommentAt(cs, 'abc1234')).toBe(50)
+  })
+
+  it('M2: a candidate must cite the SAME sha to be covered -- arriving in time is not enough', () => {
+    const cs = [
+      { id: 1, card_id: card.id, author: 'backend', content: 'REVIEW: fixed a different thing.\nGate-SHA: zzz9999', created_at: 100, automated: false },
+    ]
+    expect(coveredReviewComment(cs, 'abc1234', 200)).toBeNull()
+  })
+
+  it('M6: a gate-authored comment cannot stand in as the covered builder REVIEW, even if REVIEW-shaped and in time', () => {
+    const cs = [
+      { id: 1, card_id: card.id, author: 'qa', content: 'REVIEW: this looks fine to me.\nGate-SHA: abc1234', created_at: 100, automated: false },
+    ]
+    expect(coveredReviewComment(cs, 'abc1234', 200)).toBeNull()
+  })
+
+  it('sanity: a non-gate REVIEW citing the right sha at or before verdictAt IS covered', () => {
+    const cs = [
+      { id: 1, card_id: card.id, author: 'backend', content: 'REVIEW: fixed it.\nGate-SHA: abc1234', created_at: 100, automated: false },
+    ]
+    expect(coveredReviewComment(cs, 'abc1234', 200)?.id).toBe(1)
+  })
+})
+
+// F-a / F-b (card 2c54029d, WhiteHat 23016): the tests above exercise the pure timing functions in
+// isolation; defaultClosureCheck itself -- the function every real worker actually calls via
+// defaultDeps() -- had NO test naming it (WhiteHat: "a `defaultClosureCheck` nevet semelyik teszt
+// nem hivatkozza"), so a mutant forcing it to always return verdictAt: null (M5) was invisible.
+describe('defaultClosureCheck (the live, non-injected path)', () => {
+  beforeEach(() => {
+    vi.mocked(execFileSync).mockReset()
+  })
+
+  it('M5: derives a non-null verdictAt from the earliest gate comment citing the agreed sha', () => {
+    vi.mocked(execFileSync).mockReturnValue('AGREE|abc1234\n')
+    comments = [
+      { id: 1, author: 'cybersec', content: 'CYBERSEC GO\nGate-SHA: abc1234', created_at: 300, automated: false },
+      { id: 2, author: 'qa', content: 'QA PASS\nGate-SHA: abc1234', created_at: 100, automated: false },
+    ]
+    const result = defaultClosureCheck(card.id, comments as unknown as Parameters<typeof defaultClosureCheck>[1])
+    expect(result.verdict).toBe('AGREE')
+    expect(result.sha).toBe('abc1234')
+    expect(result.verdictAt).toBe(100)
+  })
+
+  it('F-b: AGREE with no gate comment citing the sha -> verdictAt is explicitly null, and runCapture fails closed to draft (not the old fail-open latest-wins)', () => {
+    vi.mocked(execFileSync).mockReturnValue('AGREE|abc1234\n')
+    const kgDb = freshKgDb()
+    comments = [
+      { id: 1, author: 'backend', content: 'REVIEW: fixed the bug.\nGate-SHA: abc1234', created_at: 100, automated: false },
+      // rule 4b: the Gate-SHA line on a gate verdict is OPTIONAL -- this is the real, legal shape
+      // that left 177 of 973 historical done+REVIEW cards fail-open before this fix.
+      { id: 2, author: 'qa', content: 'QA PASS', created_at: 300, automated: false },
+    ]
+    expect(defaultClosureCheck(card.id, comments as unknown as Parameters<typeof defaultClosureCheck>[1]).verdictAt).toBeNull()
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({ closureCheck: defaultClosureCheck }))
+    expect(result.outcome).toBe('captured')
+    const node = kgDb.prepare('SELECT * FROM kg_nodes WHERE id = ?').get(result.solutionIds[0]!) as Record<string, unknown>
+    expect(node.status).toBe('draft')
     kgDb.close()
   })
 })
