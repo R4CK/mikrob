@@ -21205,6 +21205,44 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 **Ki döntött:** backend (card 28923621).
 **Hivatkozás:** kártya 28923621, előd upstream-kártya 6b10a6b8, forrás-commit 9ce202399, köteg-merge 969bfa85a (ami tudatosan ehhez a kártyához utalta a bekötést).
 
+## 2026-10-23 12:19 -- MT-10d: elvetett alternatívák -> anti_pattern csomópont (kártya 33e5e4ff)
+
+(folytatás a fenti 46ad2933 bejegyzés után, a párhuzamosan landolt ágak tiszta tail-append
+ütközése miatt -- lásd a 375a81c1 szabályt: az új bejegyzés mindig a fájl végére kerül, a
+kapcsolódó korábbi bejegyzésre dátum/cím szerint hivatkozva, nem mellé szúrva.)
+
+**Döntés:** `src/kg/import-anti-patterns.ts` -- determinisztikus importer, két forrásból épít
+`anti_pattern` kg_node-okat `rejected_for` éllel a kártyára: (1) `kanban_comments` sorok, amelyek
+egy `Draft-Review: ELUTASITVA` kezdetű sort tartalmaznak (kártya 1338e68b konvenció); (2)
+DECISIONS.md bejegyzések, amelyek saját `Döntés` mező-sora ELUTASÍTVA/ELUTASITVA/VISSZAVONVA/NO-GO
+szót tartalmaz. A forrás-döntést MikroB adta meg (komment 22279, a kártya saját nyitott kérdésére):
+nincs új strukturált tár, pontosan ez a két meglévő forrás számít. A találat szándékosan csak a
+Döntés mező saját sorára szorítkozik, nem az egész bejegyzés szövegére -- ez a fájl több helyen
+(pl. ezek a sorok fentebb) MAGÁT a konvenciót magyarázza, idézve az "ELUTASITVA" szót anélkül, hogy
+az adott bejegyzés valódi elutasítás lenne; egy teljes-body keresés ezeket hibásan anti_pattern-né
+minősítené (mutáció-próbával igazolva, lásd lejjebb).
+
+A `parseEntries`/`referencedCardIds`/`ParsedEntry` export lett az `import-decisions-log.ts`-ből
+(MT-10b, kártya bb0cadd9), hogy ez az importer a DECISIONS.md bejegyzés-felbontást és
+kártya-hivatkozás-kinyerést újrahasznosítsa, ne duplikálja.
+
+**Mutáció-ellenőrzés:** két mutáció próbáltatott és mindkettő elbukott a megfelelő teszteken (majd
+visszaállítva): (1) a `Draft-Review` sor-eleji + ELUTASITVA-specifikus regexet puszta
+`/Draft-Review/`-ra lazítva, az ELFOGADVA-s és az elméleti-említéses komment is téves
+anti_pattern-né vált -- a teszt elkapta; (2) a Döntés-sor-szűkítést elhagyva (teljes bejegyzés
+szövegén keresve a szót), a 3. fixture-bejegyzés (ami csak PRÓZÁBAN idézi az "ELUTASITVA" szót, nem
+a saját Döntés-sorában) téves anti_pattern-né vált -- a teszt elkapta.
+
+**Ellenőrzés:** `npx vitest run src/__tests__/kg-import-anti-patterns.test.ts` (saját ágon,
+agent/backend2/work, a mutáció-visszaállítás utáni állapoton) -- 5/5 zöld; a teljes célzott kör
+(ezzel + a kg-import-decisions-log.test.ts + kg-import-findings.test.ts) 17/17 zöld; `npx tsc
+--noEmit -p .` tiszta. Teljes suite a landoláskor (`marveen-land.sh`) fut, a Gate-SHA onnan jön.
+
+**Gate-SHA:** 1e8861cf5
+**Ki döntött:** backend2 (kártya 33e5e4ff), szülő: 81593084. Forrás-döntés: MikroB (komment 22279).
+**Hivatkozás:** kártya 33e5e4ff (szülő 81593084 bontás), lásd MT-10a/63206155 és MT-10b/bb0cadd9
+fenti bejegyzéseit a testvér-importerekhez.
+
 ## 2026-10-23 -- kártya 7857c82c: GPU-driver setup.ps1 X1-X3 javítás (RedHat NO-GO 22570 delta)
 
 **Kontextus:** RedHat (Cybered) NO-GO-t adott a kártya korábbi Gate-SHA-jára (5c95c1c9, komment 22570) a 8b588834 B1-B3 lelet re-gate-jén. A fő javítás zárt, három maradék blokkolt: X1 MEDIUM (a setup.ps1 egy már létező `C:\ProgramData\MikroB-Drivers` mappát szó nélkül átvesz, csak az ACL-t cseréli le; a tulajdonos-eltérés csak NOTE, nem exit 1; Phase 2 csak a gyerekeken keres reparse-pontot, a célmappán és a tartalom-allowlisten nem), X2 LOW-MEDIUM (a neon-írás próba minden nem-"WROTE" kimenetet megerősítésnek vesz, az üreset is), X3 LOW (a REVIEW HKLM-re hivatkozott, a kódban nincs ilyen).
@@ -21217,6 +21255,63 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 
 **Ki döntött:** RedHat adta a javítás irányát (22570, Fix-Direction sort szándékosan nem írt, hogy maga vihesse a re-gate-et), a kódot a backend írta.
 **Hivatkozás:** kártya 7857c82c, szülő 26c07c33, RedHat NO-GO 22570, MikroB dispatch 22572 (msg_id 14054), korábbi GO-k: WhiteHat 22466, QA2 22485.
+
+## 2026-10-23 14:55 -- MT-10c: cold memória -> lesson csomópont + about él (kártya 76c2efb1)
+
+**Döntés:** `src/kg/import-cold-memories.ts` -- determinisztikus importer, a mikrob memória-rendszer
+COLD tier `memories` sorait (minden agentre, nincs agent-szűrés) `lesson` tipusú kg_node-okká
+alakítja (title=a tartalom első nem-üres sora, body=a teljes tartalom, keywords=a memória saját
+keywords mezője, source_ref='memories:<id>'). Ha a sor szövege 8-hex kártya-ID-t vagy 7-40 hex
+commit-sha-t referál, `about` él jön létre a megfelelő csomópontra -- de KIZÁRÓLAG ha az a
+csomópont már létezik a gráfban (sem card, sem commit node nem jön létre csak az él kedvéért,
+mert a memóriák fleet-wide szabad szöveg, nincs hozzájuk kanban-projekt, amit egy fabrikált
+card-node `project` mezőjébe lehetne tenni). A `lesson` node partíciója ezért `_global`
+(project-map.ts GLOBAL_PARTITION).
+
+A kártya-ID-kinyerés az `import-decisions-log.ts` (MT-10b) már exportált `referencedCardIds`
+függvényét hasznosítja újra (8-hex token, csak akkor él, ha a `card:<id>` csomópont létezik). A
+commit-sha-kinyerés egy új, tágabb hex-token regex (7-40 karakter, a store.ts
+ANCHOR_SHA_PATTERN/GATE_SHA_PATTERN mintájára), ugyanazzal a "csak ha már létezik" elvvel.
+
+**Mutáció-ellenőrzés:** két mutáció próbáltatott és mindkettő elbukott a megfelelő teszteken (majd
+visszaállítva): (1) a commit-sha about-él létrehozás teljes kikapcsolása -- a teszt elkapta (2
+él helyett 1); (2) a `category = 'cold'` SQL-szűrő elhagyása -- a teszt elkapta (a hot sor is
+lesson csomóponttá vált volna, 4 helyett 3).
+
+**Ellenőrzés:** `npx vitest run src/__tests__/kg-import-cold-memories.test.ts` (saját ágon,
+agent/backend2/work, mutáció-visszaállítás utáni állapoton) -- 5/5 zöld; `npx tsc --noEmit -p .`
+tiszta. Teljes suite a landoláskor (`marveen-land.sh`) fut, a Gate-SHA onnan jön.
+
+**Ki döntött:** backend2 (kártya 76c2efb1), szülő: 81593084.
+**Hivatkozás:** kártya 76c2efb1 (szülő 81593084 bontás), lásd MT-10a/63206155, MT-10b/bb0cadd9,
+MT-10d/33e5e4ff fenti bejegyzéseit a testvér-importerekhez.
+
+## 2026-10-23 -- kártya 46ad2933, kiegészítés: a RedHat NO-GO (komment 22579) javítása és az átvételi szabály az 59c4815b fázisra
+
+**Kapcsolat:** a "kártya 46ad2933: morluto/rea és affaan-m/ECC due diligence" bejegyzés (2026-10-23, fentebb) kiegészítése. Ahol a kettő ütközik, EZ a bejegyzés érvényes. Okai: a RedHat CYBERED NO-GO (komment 22579) kimutatta, hogy a korábbi bejegyzés ADAPT-listája legalább két skillt feltétel nélkül átvehetőnek mondott, amelynek SZÖVEGE pinelés nélküli csomagot futtattat. A WhiteHat (a vizsgálat szerzője) a RedHat mind a hat állítását függetlenül újramérte a rögzített SHA-kon (rea `14e745950e1a645b9e79c0b26b951a1309ec5e84`, 5542 fájl; ECC `90606c8315ee09cafc303515c5f33024db6b9882`, 4627 fájl; külön üres könyvtárba, `git fetch --depth 1`, hookok és submodule nélkül, semmi nem futott): mind a hat igaz. Kód nem változott, telepítés nem történt.
+
+**Pontosítás a korábbi bejegyzéshez:** a "0 valódi inline végrehajtás" és a REVIEW "nincs végrehajtási szintaxis" állítás a fájlokra és a `!`-szintaxisra igaz (RedHat is megerősítette az ECC teljes fáján), de NEM fedte azt, amit a skill SZÖVEGE kér az ügynöktől. Egy tiltólista fájlokra és szintaxisra szól, a szöveg által kért végrehajtásra nem.
+
+**Visszavont és szigorított döntések:**
+
+- **rea `reverse-engineer-anything`: a "csak szövegként ADAPT" visszavonva, a skill átvétele REJECT.** A SKILL.md 47., 61., 66., 81., 89. sora `npx -y rea-agents@latest` parancsokat ír elő (`doctor`, `setup --client codex --yes`, `analyze-javascript-application`): pinelés nélküli `@latest`, `-y`, a `setup` MCP-kliens konfigot ír és a csomagolt skillt is telepíti (felülírja). A SKILL.md-ben 22 hivatkozás (a skill-könyvtárban 42 különböző URL, saját mérés) a `github.com/morluto/rea/blob/main` mozgó ágra mutat, vagyis a vizsgálat UTÁN módosítható utasítás-forrás. A skill REA MCP-eszközökre épül, amiket nem telepítünk. Névütközés a flotta saját `reverse-engineering` skilljével. Csak az ÖTLET (módszertan) jöhet át, kézzel megírt szövegként a meglévő `reverse-engineering` skillbe, Setup/doctor/npx szakasz és minden `blob/main` hivatkozás nélkül.
+- **ECC REJECT (az ötlet jöhet, a szöveg nem):** `security-scan` (pinelés nélküli `npx ecc-agentshield`, `npm install -g`, `init`, `scan --fix`, az `--opus` mód `ANTHROPIC_API_KEY`-t kér, a cél a `.claude/` könyvtár); `agent-payment-x402` (négy mozgó `raw.githubusercontent.com/okx/payments/main/.../SELLER.md` fetch-előírás, `EVM_PRIVATE_KEY`/`SVM_PRIVATE_KEY`/`WALLET_PRIVATE_KEY`, pénzmozgás, `origin: community`); `gateguard` (42 350 bájt, egy hook DOKUMENTÁCIÓJA hook nélkül, `pip install gateguard-ai` pinelés nélkül a 690. sorban, az első Edit/Write/Bash elutasítása tmux-pane-ben megállítja az ügynököt); `config-gc` (a megosztott `~/.claude`-ot, vagyis a teljes flotta skilljeit és memóriáját olvassa törlési jelöltként); `safety-guard` (PreToolUse hookot állít, de nem szállít, hamis védettség-érzet, `~/.claude/safety-guard.log`). A "feltétellel" lista megszűnik, a `safety-guard` az ADAPT-listáról is kikerül.
+- **`strategic-compact`: ADAPT csak a "Hook Setup" szakasz nélkül** (a 43-57. sor `~/.claude/settings.json`-ba PreToolUse command hookot ír elő). A flottának saját kontextus-tömörítő monitorja van.
+- **Javított ECC ADAPT-lista (17), forrás `skills/<név>/SKILL.md`, git blob (12 jegy):** security-review `3f26b0df6566`, agent-security-hardening `726cd3e2e01e`, mcp-dependency-review `4b08af8b05d4`, tdd-workflow `ad6517386574`, verification-loop `35cb4b7737ed`, search-first `3d2669e71ba5`, api-design `655d730e6449`, database-migrations `92d6d6930667`, postgres-patterns `12a3a4a05c22`, architecture-decision-records `84f2dd608b45`, hexagonal-architecture `54943754db2e`, context-budget `063e29a464e1`, strategic-compact `134e767151c4` (Hook Setup nélkül), ai-regression-testing `e8dac65b1792`, browser-qa `f6358d6ac8b4`, click-path-audit `ffc469829b6c`, e2e-testing `f9ca797a1bad`.
+
+**Átvételi szabály az 59c4815b backend lépéshez (a korábbi (a)-(d) feltételek mellé, ütközésnél ez nyer):**
+
+1. A forrás kizárólag az ECC `skills/<név>/SKILL.md` útvonal, a fenti git blob azonosítóval pinelve. A commit-SHA nem elég: a fán 5 skill-gyökér van (`skills`, `pi/core/skills`, `.agents/skills`, `.cursor/skills`, `docs/` fordítások), és 7 jelöltnek (security-review, mcp-dependency-review, tdd-workflow, verification-loop, api-design, strategic-compact, e2e-testing) eltérő tartalmú másolata van az `.agents/skills`-ben. Rossz gyökérből másolva más szöveg kerül be.
+2. Frontmatterből csak `name` és `description` maradhat. Mérve a 17-en: mind hordoz `metadata` kulcsot, a tdd-workflow `argument-hint`-et, a verification-loop `license`-et. Az ECC fán 4 skill `allowed-tools`-ban előengedélyezett Bash-t hordoz (videodb, inherit-legacy-style, mle-workflow, eval-harness): jelöltként most nincs köztük, de ha később jelölt lesz, a kulcs törlendő.
+3. HTML-komment és mozgó hivatkozás (`main`/`HEAD` ág URL, `@latest` vagy bármely dist-tag, verziótlan csomag) nem maradhat a másolatban. Mérve: 2 jelöltben van HTML-komment (security-review, ai-regression-testing), mindkettő ártalmatlan.
+4. A landolt másolaton kötelező: `command grep -nE 'npx|pip install|npm (i|install)|curl|wget|settings\.json|hooks|~/\.claude'` (a sima `grep` a `.gitignore`-t követi, ezért `command grep -a`), és minden találathoz írásos indok a kártyán. Mérve a 17 blobon: 9-nél 0 találat, 8-nál 1-8 (security-review 1, tdd-workflow 2, verification-loop 2, mcp-dependency-review 4, search-first 4, e2e-testing 4, database-migrations 8, strategic-compact 8 a Hook Setup törlése előtt). A találat nem tiltás, indoklási kötelezettség.
+5. Névütközés: a `security-review` a flotta bundled `security-review` skilljével, a rea-ötlet a `reverse-engineering` skillel ütközik. A project-szintű precedenciát nem mértem, ezért átnevezés vagy az ötlet beolvasztása a meglévőbe, nem párhuzamos azonos nevű skill.
+6. Proveniencia a nyilvános R4CK/mikrob repóba kerülő szövegnél (README, 10. szabály): `postgres-patterns` a 148. sorban "Based on Supabase Agent Skills (credit: Supabase team) (MIT License)", az upstream licencét nem ellenőriztem; `click-path-audit` `origin: community`, a repó MIT-je a közreműködő jogait nem igazolja.
+
+**Nem vizsgált (korlát, változatlan):** a 17 jelölt törzse soronként (a 4. pont szabálya ezt a backendre bízza), a többi ECC skill, a rea `src/`, az `agentshield` és `rea-agents` csomag kódja (a `security-scan` és rea-skill állításai a skill szövegéből valók, a csomagot nem olvastam).
+
+**Ki döntött:** a javítást a WhiteHat (cybersec) írja a RedHat leletei (X1-X6, komment 22579) alapján; a RedHat a javítási irányt javasolta, a delta re-gate-et ő viszi (WhiteHat a saját vizsgálatát nem gate-elheti), a funkcionális oldalt a QA2. A beépítés Peti 12023 keretén belül komponensenként történik.
+**Hivatkozás:** kártya 46ad2933, szülő 59c4815b, REVIEW 22543, QA2 FAIL 22443, RedHat NO-GO 22579, MikroB komment 22441 és dispatch 14057, előző bejegyzés fentebb.
 
 ## 2026-10-23 -- kártya 2ace4db9: kg-capture-pipeline X1/X2 javítás (CYBERED NO-GO 22754 delta)
 
