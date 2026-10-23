@@ -101,6 +101,21 @@ describe('gpu-driver trigger: selftest actually runs in CI', () => {
   }, 300_000)
 })
 
+// gpu-driver-install-setup.ps1 static selftest (card 7857c82c, RedHat NO-GO comment 22570,
+// X1/X2/X3). No pwsh on this host, so this checks the fixed defects are gone from the source
+// text (positive control) and that the same check correctly flags them in the embedded pre-fix
+// fixture (negative control) -- see the script's own header for why a text check, not execution.
+describe('gpu-driver setup.ps1: X1/X2/X3 static selftest actually runs in CI', () => {
+  it('gpu-driver-install-setup selftest passes (floor: 17 check cases)', () => {
+    const { code, out } = run('bash', [join(ROOT, 'store', 'gpu-driver-install-setup.selftest.sh')])
+    expect(out).not.toMatch(/^\s+FAIL\s+/m)
+    expect(out).toContain('selftest: PASS')
+    const okLines = (out.match(/^\s+ok\s+/gm) ?? []).length
+    expect(okLines, `selftest shrank below floor of 17 check cases:\n${out}`).toBeGreaterThanOrEqual(17)
+    expect(code).toBe(0)
+  }, 60_000)
+})
+
 // The offload path imports the resolver by PATH at dispatch time; a rename or a lost exec bit makes
 // it fail open and silently stop giving the local model any code context -- with nothing to notice.
 describe('the files the offload path resolves at runtime', () => {
