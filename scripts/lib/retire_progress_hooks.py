@@ -21,6 +21,7 @@ why Linux never showed it. Python that lives in its own file cannot break the
 shell parser whatever it contains.
 """
 import json
+import os
 import sys
 
 
@@ -65,8 +66,14 @@ def main():
 
     if removed and not dry_run:
         cfg['hooks'] = hooks
-        with open(settings_path, 'w', encoding='utf-8') as f:
+        # Atomic write: a crash or concurrent read mid-write must never see a
+        # truncated settings.json, which also carries this machine's PreToolUse
+        # guard hooks (R5, card e7cd6365). Temp file + os.replace (same
+        # filesystem, same dir) is atomic on POSIX and on Windows (3.3+).
+        tmp_path = f"{settings_path}.tmp-{os.getpid()}"
+        with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, settings_path)
 
     for line in removed:
         print(f"REMOVED {line}")
