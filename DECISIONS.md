@@ -21556,3 +21556,40 @@ backend írta.
 
 **Hivatkozás:** kártya 2c54029d, f809b24c (WhiteHat 23015/23016), QA2 FAIL (komment 23115), MikroB
 döntés (komment 23116).
+
+## 2026-10-23: 49b96b30 -- DECISIONS importer: stabil decision-azonosító + kártya-partíció + titok-szűrés (bb0cadd9 WhiteHat F1-F3)
+
+**Kontextus:** a bb0cadd9 (MT-10b, DECISIONS.md -> decision csomópont + governs él) landolt, a
+WhiteHat gate (komment 22369, Gate-SHA dbb1f929) három latens leletet adott -- az importert ma
+semmi nem hívja, ezért a bekötés ELŐTT kellett javítani.
+
+**Döntés:** (F1) a `decision:L<sorszám>` azonosító két hibát rejtett: (a) két különböző
+DECISIONS.md fájl azonos sorszámú bejegyzése ugyanarra a csomópontra esett (az egyik felülírta a
+másikat); (b) a 90 napos archiválás a fájl ELEJÉRŐL vágja le a régi bejegyzéseket, ami minden
+later bejegyzés sorszámát eltolja -- a következő import így egy MÁR LÉTEZŐ, de más tartalmú
+csomópontot írt volna át, a régi `governs` élek a rossz tartalmon maradva. Az azonosító most a
+bejegyzés TARTALMÁBÓL (cím+törzs SHA-256, 16 hex karakterre csonkolva) és a project+sourcePath
+párból képződik (`decision:<project>:<sourcePath>:<digest>[.<occurrence>]`); az `occurrence`
+csak akkor lép életbe, ha egy import-futáson belül két bejegyzés hash-e egyezik (pl. véletlen
+duplikáció). Archiválás ezzel SOSEM reassignolja egy létező csomópontot: egy archivált bejegyzés
+egyszerűen nem kap több frissítést, a tartalma és az élei változatlanok maradnak. (F2) a
+`card:<id>` csomópont projektje mostantól `mapProjectToPartition(card.project)`, a hivatkozott
+kártya SAJÁT projektje, nem a hívó DECISIONS.md fájl projektje -- ugyanaz a minta, mint az
+import-from-relations.ts-ben és a MikroB D2 döntésben (3f6fc4ce, komment 20814). (F3) egyetlen
+titokalakú bejegyzés korábban az EGÉSZ importot visszagörgette (a throw kiszökött a megosztott
+tranzakcióból); most bejegyzésenkénti try/catch fogja el a `KgSecretError`-t, számolja
+(`entriesRejectedSecret`) és a sorszámát is jelenti (`secretRejectedLines`), a többi bejegyzés
+importálódik.
+
+**Elfogadási kritérium:** F1a: két fájl azonos sorszámú bejegyzése két külön csomópont (mért,
+teszttel pinelve); F1b: archiválás-szimuláció után a megmaradt csomópont és `governs` éle
+változatlan, a sorszám-eltolás nem reassignolja; F2: a hivatkozott kártya saját projektje szerint
+particionál; F3: egy titkos bejegyzés mellett a másik kettő importálódik, a sorszám jelentve.
+Mutáció-ellenőrzés: a javítás (import-decisions-log.ts) eltávolításával mind a 4 új teszt PIROS
+(F1a: 1 csomópont a vártnál kevesebb; F1b: a régi tartalom felülíródott; F2: rossz partíció; F3:
+`KgSecretError` kiszökik, az egész import elbukik), visszaállítás után 9/9 zöld.
+
+**Ki döntött:** a tételek WhiteHat-tól jönnek (bb0cadd9 GO, komment 22369), MikroB vette fel külön
+kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
+
+**Hivatkozás:** kártya 49b96b30 (szülő 81593084), bb0cadd9 (WhiteHat GO, komment 22369).
