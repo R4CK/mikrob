@@ -274,7 +274,10 @@ describe('reserveGhostCallSlot() -- real flock+python3 against a throwaway root'
 describe('reserveGhostCallSlot() default path (no explicit 3rd arg) ignores SEGED_HIVO_HELPERS (F5)', () => {
   const __dirname = dirname(fileURLToPath(import.meta.url))
   const REAL_ROOT = join(__dirname, '..', '..')
-  const spawnSyncMock = vi.fn((_cmd: string, _args: string[]) => ({ status: 0, stdout: 'OK', stderr: '', error: undefined, signal: null, pid: 1, output: [] }))
+  const spawnSyncMock = vi.fn((...callArgs: [string, string[]]) => {
+    void callArgs
+    return { status: 0, stdout: 'OK', stderr: '', error: undefined, signal: null, pid: 1, output: [] }
+  })
 
   beforeEach(() => {
     vi.resetModules()
