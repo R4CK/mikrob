@@ -78,3 +78,38 @@ describe('TOKEN/DASHBOARD_TOKEN export-attribute guard present in scripts/ (card
     })
   }
 })
+
+// Card 02b5e13b (WhiteHat F1 follow-up on 647e0b6f, komment 22586): the carve-out comment above
+// for pre-pr-review.sh asserts "no assignment to pin" -- true on today's source (verified: zero
+// occurrences of the literal "DASHBOARD_TOKEN" anywhere in the file; the token travels only as a
+// FILE PATH into write_header(), which reads it inside a python3 -I heredoc, never through a
+// shell variable). But an absent assignment pattern is not itself pinned by anything above, so a
+// mutant reintroducing `export DASHBOARD_TOKEN=...` (making the value inheritable by every
+// curl/python3 child pre-pr-review.sh spawns afterward) survived the full suite unnoticed
+// (measured by WhiteHat: 54/54 green). This test pins the ABSENCE, and -- if the absence is ever
+// broken -- requires the same immediate `declare +x DASHBOARD_TOKEN` guard the checkGuard() cases
+// above use, rather than silently allowing any reintroduction.
+describe('pre-pr-review.sh never lets DASHBOARD_TOKEN become an exportable shell variable (card 02b5e13b)', () => {
+  it('scripts/pre-pr-review.sh has no DASHBOARD_TOKEN shell-variable assignment without an immediate export-attribute guard', () => {
+    const absPath = join(REPO_ROOT, 'scripts', 'pre-pr-review.sh')
+    const src = readFileSync(absPath, 'utf-8')
+    const assignRx = /^[ \t]*(export\s+)?DASHBOARD_TOKEN=.*$/m
+    const match = src.match(assignRx)
+    if (match === null) {
+      // Current, intended shape: the token never becomes a shell variable at all, so there is
+      // nothing for the export-attribute guard to apply to.
+      return
+    }
+    const assignLineEnd = src.indexOf('\n', match.index!)
+    const after = src.slice(assignLineEnd + 1, assignLineEnd + 1 + 600)
+    const nextStatementLine = after
+      .split('\n')
+      .find((line) => line.trim().length > 0 && !line.trim().startsWith('#'))
+    expect(
+      nextStatementLine?.trim(),
+      'scripts/pre-pr-review.sh: DASHBOARD_TOKEN was assigned to a shell variable without the ' +
+        'export-attribute guard (`declare +x DASHBOARD_TOKEN`) immediately after it -- this is ' +
+        'exactly the leak class card 02b5e13b/647e0b6f F1 found a surviving mutant for.'
+    ).toBe('declare +x DASHBOARD_TOKEN')
+  })
+})

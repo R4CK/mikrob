@@ -1094,9 +1094,16 @@ export const ACKNOWLEDGED_CONFLICTS = {
     " Re-decided 2026-10-23 (fullstack/DevO, card 647e0b6f, 873217a2ea50..b111c752ab71): 51 " +
     "insertions / 20 deletions, mirroring the same package.json round (version bump + the new " +
     "parse5 devDependency's lockfile entries -- see that entry; both NOT adopted on the " +
-    "package.json side, so their lockfile shadow is moot once regenerated). Same standing " +
-    "resolution: regenerated from package.json via npm ci at merge time, never hand-resolved. Blob " +
-    "bumped.",
+    "package.json side). Same standing resolution: regenerated from package.json via npm ci at " +
+    "merge time, never hand-resolved. Blob bumped." +
+    " CORRECTED 2026-10-23 (fullstack/DevO, card 02b5e13b, WhiteHat F2 follow-up on 647e0b6f): the " +
+    "line above calling the lockfile's parse5 shadow 'moot once regenerated' was wrong -- this " +
+    "file's OWN current content is a checkable fact, not a derivative of package.json's. Measured " +
+    "directly: `grep -c parse5 package-lock.json` is 0 today. That IS something an anchor can " +
+    "watch (present while the refusal holds absent, becomes present the moment parse5 lands in " +
+    "the lockfile), so it was wrong to list this key in UNANCHORED_BACKLOG as having 'no " +
+    "production fact of its own to anchor'. An ACKNOWLEDGED_FORK_ANCHORS entry now watches it " +
+    "(needle 'parse5', expect absent) -- removed from UNANCHORED_BACKLOG accordingly.",
   // Fork changed three curl calls to the `printf | curl -H @-` token-argv-safe pattern (security
   // fix: token never appears in process argv). Upstream replaced the main kanban heartbeat curl
   // command with a Python one-liner (HBHEREDOC819/HBKANBANDRIFT819 incident hardening: no pipe,
@@ -4039,6 +4046,26 @@ export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED
       "vitest.config.ts's testTimeout line (vitest 4 enforces the 5s default that vitest 2 did " +
       "not). If this version ever appears, the pairing decision needs to be made for real, not " +
       "inherited as a side effect of an unrelated dependency bump.",
+  },
+  // Card 02b5e13b (fullstack/DevO, 2026-10-23, WhiteHat F2 follow-up on 647e0b6f): the
+  // 'package.json' key above already carries its own anchor (the vitest-4.1.10 one, a DIFFERENT,
+  // earlier refusal), so this round's package.json round-647e0b6f refusal (the parse5
+  // devDependency + hook-failures/bridge-device-key scripts, NOT adopted) is carried here under
+  // the 'package-lock.json' key instead -- same cross-file-anchor technique as
+  // 'src/web/routes/agents.ts' above (file: 'src/web.ts'). file points at package-lock.json
+  // rather than package.json itself because the lockfile is the more precise tripwire: parse5
+  // only matters as an actually-installed dependency, and the lockfile is what `npm ci` would
+  // populate if the devDependency were ever adopted, independent of whether package.json's prose
+  // keeps up.
+  'package-lock.json': {
+    needle: 'parse5',
+    file: 'package-lock.json',
+    expect: 'absent',
+    because:
+      "Upstream added devDependency parse5@8.0.1 (round 647e0b6f, backing two unported scripts, " +
+      "hook-failures.ts and bridge-device-key.ts) -- NOT adopted, since neither script exists in " +
+      "this fork and nothing in src/ references parse5. If this name appears in the lockfile, " +
+      "parse5 was installed and the package.json refusal needs re-deciding, not just a blob bump.",
   },
   'src/web/agent-process.ts': {
     needle: 'isMinimax',

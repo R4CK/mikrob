@@ -627,16 +627,12 @@ describe('every recorded refusal is watched by an anchor (card 66ad1f95)', () =>
     //     No anchoring is possible for an entry whose "NOT adopted" items are already present on the
     //     other side of the merge.
     'src/web/routes/claude-plans.ts',
-    //   - package-lock.json (card 647e0b6f, 2026-10-23): the entry's "NOT adopted" is entirely
-    //     derivative of package.json's own round-647e0b6f decision (the hook-failures/bridge-
-    //     device-key scripts and the parse5 devDependency they would need) -- package.json already
-    //     has its OWN anchor (the vitest-4.1.10 one) watching a DIFFERENT, earlier refusal on the
-    //     same key. The lockfile itself carries no independent production fact: its standing
-    //     resolution is "regenerated from package.json via npm ci, never hand-resolved", so there is
-    //     nothing in package-lock.json's own content for an anchor to watch that package.json's
-    //     anchor does not already cover one level up. Same shape as the message-router-window.ts
-    //     entry above.
-    'package-lock.json',
+    // package-lock.json REMOVED from this list (card 02b5e13b, WhiteHat F2 follow-up on 647e0b6f):
+    // the reasoning that used to sit here -- "the lockfile itself carries no independent
+    // production fact" -- was wrong. Measured directly: `grep -c parse5 package-lock.json` is 0
+    // today, which is exactly the kind of present/absent fact an anchor watches. It now has one
+    // (ACKNOWLEDGED_FORK_ANCHORS['package-lock.json'], needle 'parse5', expect absent), using the
+    // same cross-file-anchor technique as 'src/web/routes/agents.ts' above.
   ]
 
   it('no refusal ships WITHOUT a tripwire -- the unanchored set may shrink, never grow', () => {
