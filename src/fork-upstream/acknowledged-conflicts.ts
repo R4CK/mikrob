@@ -3362,13 +3362,14 @@ export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLED
   // (d) strip_legacy_notifier_telegram_env (new this round, UPDUNITTGENV930) is a narrowly-scoped,
   // safe retroactive cleanup with no fork safety overlap -- ADOPTED, wired into run_unit_maintenance
   // and added to the allowlist.
-  // Both sides' pins went stale in the same merge (card 13b2648e, 2026-10-23): origin/develop
-  // moved past 55e18a333 via another agent's own, more recent upstream-sync landing while this
-  // branch was in flight. Neither HEAD's nor origin/develop's recorded pin matches either file's
-  // CURRENT content; re-pinned to the actual post-merge blob (git auto-merged both files' content
-  // cleanly -- only these two pin lines conflicted).
-  'update.sh': '53ae23a68649697a4e8537b4ec512147fa85011e',
-  'install-linux.sh': '126ad37965de8f2a5e6b8989e5354445cb51cd01',
+  // Both pins conflicted in the same merge (card 13b2648e, 2026-10-23; WhiteHat correction,
+  // comment 22877/22888, MUST-FIX-BEFORE-LAND): this table's entries must be the UPSTREAM blob,
+  // not the branch's own post-merge file content. Three-way check against the merge-base
+  // (bda30c144): only origin/develop (970ba3d47) moved update.sh's pin (7951230660 -> 0e30f4f893);
+  // only this branch's HEAD (dfd276d29) moved install-linux.sh's pin (66db4ab4d0 -> 73efdc3c8f).
+  // Resolution takes each side's actual change, not a newly-computed post-merge blob.
+  'update.sh': '0e30f4f8939bee64b7b0e1d1816f81896f9acfa9',
+  'install-linux.sh': '73efdc3c8f11332e24295387e22218c93a247fdb',
   // scripts/install-prod-tree-guard-hook.sh: card b5b7eb6b child 09d54e88 (2026-09-25, backend3)
   // re-measured this one FORWARD of c2aeefa5's base (9abea4ee -> 68232de630af) -- their pin wins.
   'scripts/install-prod-tree-guard-hook.sh': '68232de630afff0a82b4dc25b237de06213df687',
