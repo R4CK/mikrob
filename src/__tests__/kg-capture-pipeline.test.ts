@@ -328,4 +328,48 @@ describe('runCapture', () => {
     expect(node.status).toBe('draft')
     kgDb.close()
   })
+
+  // F5 fix (card f809b24c, 2ace4db9 follow-up, RedHat 22754 condition): latestReviewComment() used
+  // to pick whichever REVIEW-shaped comment was newest by timestamp, with zero regard for WHEN the
+  // gate actually looked at the code. A REVIEW-UPDATE posted AFTER an AGREE verdict became the
+  // ACTIVE node's content source, anchored on a Gate-SHA the gate never reviewed that text against
+  // (measured live: 337 of 996 done+REVIEW cards pick a non-first comment). When the injected
+  // closureCheck reports WHEN the verdict happened (verdictAt), the REVIEW actually covered by it
+  // (same Gate-SHA, written at-or-before verdictAt) must be the source, not the later update.
+  it('F5: a REVIEW-UPDATE posted AFTER the gate verdict is ignored -- the covered, pre-verdict REVIEW is the source', () => {
+    const kgDb = freshKgDb()
+    comments = [
+      { id: 20, author: 'backend', created_at: 500, automated: false, content: 'REVIEW: fixed the bug.\nGate-SHA: abc1234' },
+      { id: 21, author: 'backend', created_at: 900, automated: false, content: 'REVIEW-UPDATE: just rewording, same commit.\nGate-SHA: abc1234' },
+    ]
+    let seenPrompt = ''
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      closureCheck: () => ({ verdict: 'AGREE', sha: 'abc1234', verdictAt: 700 }),
+      draftFn: (reviewText: string) => { seenPrompt = reviewText; return JSON.stringify([{ title: 'off-by-one fix' }]) },
+    }))
+    expect(result.outcome).toBe('captured')
+    const node = kgDb.prepare('SELECT * FROM kg_nodes WHERE id = ?').get(result.solutionIds[0]!) as Record<string, unknown>
+    expect(node.status).toBe('active')
+    expect(node.source_ref).toBe('kanban_comments:20')
+    expect(seenPrompt).toContain('fixed the bug')
+    expect(seenPrompt).not.toContain('just rewording')
+    kgDb.close()
+  })
+
+  // F5 fix, same card: when the ONLY REVIEW on the card was written AFTER the verdict (no earlier
+  // REVIEW exists for the gate to have actually reviewed), the capture must fail closed to draft --
+  // never promote a post-verdict comment to active just because it is the only one available.
+  it('F5: only a post-verdict REVIEW-UPDATE exists -> solution created as draft, never active', () => {
+    const kgDb = freshKgDb()
+    comments = [
+      { id: 22, author: 'backend', created_at: 900, automated: false, content: 'REVIEW-UPDATE: oops, after the gate already looked.\nGate-SHA: abc1234' },
+    ]
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      closureCheck: () => ({ verdict: 'AGREE', sha: 'abc1234', verdictAt: 500 }),
+    }))
+    expect(result.outcome).toBe('captured')
+    const node = kgDb.prepare('SELECT * FROM kg_nodes WHERE id = ?').get(result.solutionIds[0]!) as Record<string, unknown>
+    expect(node.status).toBe('draft')
+    kgDb.close()
+  })
 })
