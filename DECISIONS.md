@@ -21467,3 +21467,11 @@ mutáció-ellenőrzött teszt, valódi dry-run landolással igazolva).
 
 **Hivatkozás:** kártya 4a769a34 (szülő c65add5a); `store/decisions-conflict-check.sh`,
 `store/marveen-land.sh`, `store/mopsion-land.sh`.
+
+## 2026-10-17 -- CLAUDE.md: ellenőrizhető munka, önellenőrzés, ügynök-tervrajz, dispatch-forma
+
+**Döntés:** Peti öt referencia-promptot küldött (Telegram 11619-11629: személyes AI-operációs rendszer, AI-ügynökcsapat tervezése, autonóm kereskedő ügynök, alkalmazás-visszafejtés, univerzális feladat-prompt), és kérte, hogy MikroB szintetizálja őket a fő leírásba. A kereskedő-ügynök promptból Peti kérésére (11632) végül semmi nem került be. Csak a még hiányzó elemek kerültek be: „Kész, ha:" blokk minden kártyán, kétkörös önellenőrzés nem-kód kimenetre, ajánlás-forma, ügynök-tervrajz + létjogosultság, modell-feladat elv, 200 szavas négymezős handoff, csendes-de-naplózó heartbeat, egyetlen jóváhagyási vonal, elavult-emlék gondozás, mérés, bizonyíték-alapú alkalmazás-visszafejtés, négyblokkos dispatch-üzenet és megálló lezárás. A kereskedő-ügynök promptból Peti kérésére (Telegram 11632) semmi nem került be, a Tőzsde-szakasz egyelőre nem kell. A „Nem található" szabály a Viselkedés szakaszba, a „3+ elmagyarázás = skill" trigger a skill-táblába került.
+
+**Nem vettük át:** az AgenKit (agenkit.xyz) harnesst -- a referencia-prompt nevezi meg, de nincs due diligence róla (10. szabály); a benne leírt fázisrend a meglévő workflow-val egyezik. A modell-térkép nem rögzít konkrét modell-ID-t, mert az élő forrás az `agents/<név>/agent-config.json`.
+
+**Ki döntött:** Peti (a szintézis kérése), MikroB (mi kerül be és hova).
