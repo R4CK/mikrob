@@ -2939,6 +2939,79 @@ export const ACKNOWLEDGED_CONFLICTS = {
     "own (1)-preserved main() structure rather than upstream's replacement structure, real " +
     "implementation work; also a product question for Peti (does he want every agent email CC'd to " +
     "him), not purely a security call. Named as a follow-up candidate.",
+
+  // Card 647e0b6f (upstream-drift install-script/CI group, parent 7f0efce3). Upstream added macOS
+  // i18n strings (macos.ollama_check/installed/installing/starting/done/skipped/skipped_hint,
+  // macos.nomic_downloading) backing its OWN inline Ollama-install flow in install-macos.sh.
+  'install-lang.sh':
+    "NOT ADOPTED -- the new macos.ollama_* keys only back upstream's inline Ollama-install step in " +
+    "install-macos.sh, which this fork deliberately does not run (Peti directive 2026-08-13, EPIC " +
+    "ebc7b4dd: local-LLM setup is deferred to post-boot store/first-run-llm.sh, not inline during " +
+    "install -- guarded by src/__tests__/installer-no-llm-preinstall.test.ts). No fork code " +
+    "references these keys; adding unused translation strings would be dead weight, not a fix.",
+
+  // Card 647e0b6f, same group. MikroB verdict (msg_id:13972/13973): decide hunk-by-hunk, not the
+  // whole file at once. ADOPTED (safe, additive, no fork-feature conflict): (a) managed_settings_notice()
+  // + its 3 call sites (upstream #1963) -- a one-time sudo-password explainer before the
+  // managed-settings.json writes. (b) ffmpeg install made non-fatal (upstream #2125) -- same
+  // graceful-degradation pattern the Ollama/Whisper blocks already use. (c) SEEDREFDIR1018
+  // (upstream #2059) -- a references/ subdir loop added to BOTH scheduled-task template loops
+  // (templates/scheduled-tasks AND seed-scheduled-tasks), with the fork's own extra placeholders
+  // ({{CHAT_ID}}, {{PROJECT_ROOT}}) preserved, not dropped. NOT ADOPTED, each for a measured reason:
+  // (d) the jq/sqlite3 forced brew-install removal -- 11+ fork scheduled-task scripts call the
+  // sqlite3 CLI directly and at least 2 guard on `command -v jq`/call it unconditionally; dropping
+  // the forced install with no replacement would silently break them on a fresh Mac. (e) the
+  // CLAUDE_VARIANT (fresh vs preconfigured) prompt removal + the new {{TIMEZONE}} substitution --
+  // removing CLAUDE_VARIANT would delete a fork-only feature (install_tailscale sibling decision,
+  // same principle); {{TIMEZONE}} depends on scripts/lib/install-tz.sh and a template placeholder
+  // that do not exist in this fork (upstream's own ISSUE1895 subsystem, not ported). (f)
+  // SEEDSKILLSUB1018 (upstream #2061) -- the fork's existing `git archive HEAD -- seed-skills/...`
+  // approach (card f39dd8fb) already ships git-tracked-only content INCLUDING subdirs via tar, AND
+  // is followed by a placeholder-substitution loop (card 041681b5, a measured live bug: literal
+  // {{INSTALL_DIR}} shipped in a skill command) that upstream's hunk drops entirely -- adopting it
+  // would be a regression on both counts, guarded by seed-skills-untracked-check.test.ts,
+  // skill-archive-no-propagation.test.ts and seed-placeholder-substitution.test.ts. (g) Tailscale
+  // auto-install/login removal and seed-agents/seed-fleet-agents seeding removal -- both are
+  // fork-only features (card 12dc8a5c and the seed-agents/seed-fleet-agents feature), guarded by
+  // install-tailscale-step.test.ts; upstream never had them, so upstream's current lack of them is
+  // not a bug upstream fixed, just a feature this fork built and upstream didn't. (h) the
+  // scheduled-task registry CLI call (dist/web/schedule-registry-cli.js, hash-match gating) --
+  // depends on an entire upstream subsystem (schedule_registry + runner hash-matching) this fork
+  // never ported; out of this card's scope (src/web, a separate Feladat per the card's own "Nincs
+  // benne" section) and would just be a permanently-skipped dead call if added here alone. (i) the
+  // ISSUE1891 keepalive-helper verification block (HELPERS_DOWN/note_helper_down, 3 hunks) -- this
+  // duplicates update.sh's own unit-maintenance function for the SAME idle-liveness probe, already
+  // decided NOT ADOPTED and actively protected by a sibling pinning test (see the NOT-ADOPTED
+  // comment this hunk would have replaced: cards ef6a8031/e47dc04a/c2aeefa5, re-removed 2026-10-14
+  // after a silent reintroduction) -- re-adopting it here would be the exact regression that test
+  // exists to catch. (j) the exit-3/SERVICES_STATE/print_services_remedy refactor (upstream #1881)
+  // and the early-headless-probe text/scope correction (upstream #1883/#1872) are ALREADY present
+  // in the fork (installer-services-state.test.ts, installer-early-probe-scope.test.ts) --
+  // no action needed, not re-decided here.
+  'install-macos.sh':
+    "hunk-by-hunk (MikroB verdict, card 647e0b6f): ADOPTED managed_settings_notice (#1963) + 3 call " +
+    "sites, ffmpeg non-fatal (#2125), SEEDREFDIR1018 refs-subdir loop x2 (#2059, fork placeholders " +
+    "kept). NOT ADOPTED: jq/sqlite3 brew removal (fork scripts depend on both), CLAUDE_VARIANT " +
+    "removal + {{TIMEZONE}} (fork feature + unported install-tz.sh), SEEDSKILLSUB1018 (fork's git-" +
+    "archive approach already superior, dropping it regresses card 041681b5), Tailscale/seed-agents " +
+    "removal (fork-only features upstream never had), schedule-registry-cli call (unported " +
+    "subsystem, out of scope), ISSUE1891 keepalive-helper block (duplicate of a feature already " +
+    "NOT-ADOPTED and pinning-test-protected, cards ef6a8031/e47dc04a/c2aeefa5). exit-3/" +
+    "SERVICES_STATE and the #1872 headless-probe text were already adopted earlier, untouched here.",
+
+  // Card 647e0b6f, same group. Upstream #1965 is a genuine security hardening of the whole file
+  // (diff-size cap, a secret scan BEFORE any network call via a new scripts/pre-pr-review-scan.ts,
+  // 0600 umask work-dir with an EXIT/INT/TERM trap, connect+total curl timeouts, a reply-body
+  // control-char strip, status-code-only error reporting). No fork-specific feature conflicts with
+  // any of it (the fork's own scripts/secret-gate.ts --range already exists and is reused as-is).
+  'scripts/pre-pr-review.sh':
+    "TAKE UPSTREAM WHOLESALE (card 647e0b6f) -- security hardening with no fork-feature conflict: " +
+    "diff-size cap, pre-send secret scan (new scripts/pre-pr-review-scan.ts, ported alongside this " +
+    "file since the hardened script depends on it), 0600 work-dir, curl timeouts, control-char-" +
+    "stripped replies, status-only error reporting. Verified: scripts/pre-pr-review-scan.ts " +
+    "imports SECRET_PATTERNS/DENIED_PATH_PATTERNS from src/security/secret-gate.ts, both already " +
+    "exported there with matching shapes; smoke-tested against a secret-bearing and a clean diff " +
+    "(src/__tests__/pre-pr-review-scan.test.ts, 5 cases, CLI-level).",
 } as const
 
 // THE UPSTREAM CONTENT EACH RULE ABOVE WAS DECIDED AGAINST (card a1d613e3, Cybersec msg 19105).
@@ -2969,6 +3042,10 @@ export const ACKNOWLEDGED_CONFLICTS = {
 
 export const ACKNOWLEDGED_UPSTREAM_BLOBS: Readonly<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, string>> = {
   'src/web/routes/agent-terminal.ts': 'cf57ba1065272a7bde9723865d5709faaf05ed21',
+  // Card 647e0b6f -- see the matching ACKNOWLEDGED_CONFLICTS entries above for the reasoning.
+  'install-lang.sh': '9c640782a4db30c49de0dcb5e07343039fdd04ad',
+  'install-macos.sh': 'e21ff8ec7b2fdc3f90af2bae5b8971469c6146c1',
+  'scripts/pre-pr-review.sh': '4b7926fcb3cd31569820c6d0d61ded08cff6bc98',
   // Card 4f15966e: pinned at the upstream blob whose detectsPermissionDialog this resolution
   // compares against. If upstream edits this file again, the rule above is re-read before the merge
   // rather than assumed to still describe what is there.
