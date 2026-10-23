@@ -888,13 +888,17 @@ Megkaptam a landolasi zart $(( ( $(date +%s) - land_lock_started ) / 60 )) perc 
 
   # Decision-conflict report (card 4a769a34, Trail-ötlet 2): does this landing's diff touch a file a
   # past DECISIONS.md entry made a call about? Report-only, never refuses -- see
-  # decisions-conflict-check.sh's header for why.
+  # decisions-conflict-check.sh's header for why. Uses decisions_conflict_diff_paths (not a plain
+  # `diff --name-only`) so a renamed file's old path and a non-ASCII path are never silently missed
+  # (card 40b5038f, WhiteHat F1a/F1b), and reads DECISIONS.md at base_sha, not merge_sha -- this
+  # landing's OWN freshly-appended entry must never be quoted back as if it were an earlier decision
+  # (card 40b5038f, WhiteHat F3).
   local -a _dcr_files=()
   while IFS= read -r _dcr_f; do [ -n "$_dcr_f" ] && _dcr_files+=("$_dcr_f"); done \
-    <<<"$(g diff --name-only "$base_sha..$merge_sha" -- . ':!DECISIONS.md' ':!package.json' ':!package-lock.json')"
+    < <(decisions_conflict_diff_paths "$MAIN" "$base_sha" "$merge_sha" . ':!DECISIONS.md' ':!package.json' ':!package-lock.json')
   if [ "${#_dcr_files[@]}" -gt 0 ]; then
     local _dcr_out
-    _dcr_out="$(git -C "$wt" cat-file blob "$merge_sha:DECISIONS.md" 2>/dev/null | decisions_conflict_report "${_dcr_files[@]}")"
+    _dcr_out="$(git -C "$wt" cat-file blob "$base_sha:DECISIONS.md" 2>/dev/null | decisions_conflict_report "${_dcr_files[@]}")"
     [ -n "$_dcr_out" ] && { echo "$agent: decision-conflict report (earlier DECISIONS.md entries about files in this diff):"; echo "$_dcr_out" | sed 's/^/    /'; }
   fi
 
