@@ -278,6 +278,11 @@ const OBFUSCATED_MARKER_TITLES: ReadonlyArray<[label: string, title: string]> = 
   ['combining acute accent on a base ASCII letter', '[gémini-ok] Clean task'],
   ['control character (BEL) inside the tag', '[gemini\x07-ok] Clean task'],
   ['soft hyphen inside the tag', '[ge­mini-ok] Clean task'],
+  // F1 (card ed4ffbf7): non-ASCII non-letter symbols dropped by bash .encode("ascii","ignore")
+  // but kept by the old TS fold → gate bypass. Ring operator U+2218 (category Sm).
+  ['non-ASCII symbol ring-operator U+2218 inside the tag (F1)', '[gemini-∘ok] Clean task'],
+  // Bullet U+2022 (category Po): same attack class, different codepoint.
+  ['non-ASCII punctuation bullet U+2022 inside the tag (F1)', '[gemini-•ok] Clean task'],
 ]
 
 describe('shared obfuscation corpus: TS gate vs. the real bash classifier (card b7114793 X2)', () => {
