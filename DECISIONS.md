@@ -21115,3 +21115,27 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 
 **Ki döntött:** MikroB (verdikt hunk-onkénti bontásra, a két Peti-dontést érintő NOT-ADOPTED pontra) + fullstack/DevO (a fennmaradó hunkok besorolása, a ténylegesen fork-funkcióra támaszkodó eseteket mérve, nem találgatva).
 **Hivatkozás:** kártya 647e0b6f (szülő 7f0efce3), kapcsolódó Peti-döntések: EPIC ebc7b4dd (helyi LLM), kártya 12dc8a5c (Tailscale), kártya f39dd8fb + 041681b5 (seed-skills git-archive + placeholder), kártyák ef6a8031/e47dc04a/c2aeefa5 (ISSUE1891 keepalive-helper NOT ADOPTED).
+
+## 2026-10-18 -- kártya 7857c82c: GPU-driver setup WhiteHat F1-F3 + RedHat B1-B3 javítások
+
+**Kontextus:** A 8b588834 kártyán a WhiteHat (F1-F3) és RedHat (B1-B3) gate NO-GO verdiktet adott a `gpu-driver-install-setup.ps1` és `gpu-driver-install-launcher.ps1` fájlokra. A kártya 7857c82c az összes leletet egyesítve javítja.
+
+**Döntések:**
+
+- **F1 (hash helye):** Az elvárt SHA-256 a `schtasks /Change` task-parancssoron kerül átadásra (`$args[0]`), nem a `gpu-driver-install.sha256` fájlban tárolva az ACL-védett könyvtárban. A launcher először az `$args[0]`-t olvassa, fallbackként a fájlt (kézi futtatáshoz). Indok: a parancssor admin-only (schtasks query-n keresztül ellenőrizhető), neon nem tudja olvasni az ACL-védett könyvtárat.
+
+- **B2/F2 (SID-alapú ACL):** A `FileSystemAccessRule`-okban `'SYSTEM'`/`'Administrators'` string helyett SID-objektumokat használunk (`S-1-5-18` = SYSTEM, `S-1-5-32-544` = Administrators), hogy a magyar locale-on is működjön. Tulajdonos: Administrators SID. Get-Acl visszaolvasás: pontosan 2 ACE, 0 örökölt, helyes tulajdonos.
+
+- **B1 (kétfázisú setup, fail-closed, pozitív kontroll):** A setup.ps1 `-Phase 1` (default) csak a könyvtárat + ACL-t + neon-írhatóság tesztjét végzi (payload nélkül). `-Phase 2` másolja a fájlokat és frissíti a taskot. A catch-ág `exit 1`-et ad (nem 0). Pozitív kontroll: először egy ismert temp-elérési úton ellenőrzi, hogy a WSL write-teszt mechanizmus működik, mielőtt a védett könyvtáron tesztelné.
+
+- **B3 (task tényleges frissítése):** A setup.ps1 Phase 2 futtatja a `schtasks /Change`-t, majd `schtasks /Query /FO CSV /V`-vel visszaellenőrzi, hogy a hash megjelent a parancssorban. A régi `C:\ProgramData\MikroB` útvonal-hivatkozások kommentekben `C:\ProgramData\MikroB-Drivers`-re frissítve (`gpu-driver-install.ps1` 3 hely, `gpu-driver-silent-install-trigger.sh` 1 hely).
+
+- **F3 (forrás ellenőrzése copy előtt):** Phase 2 ellenőrzi, hogy a target könyvtárban nincs junction/reparse point az átvitel előtt.
+
+- **N2 (selftest CI-ba kötése):** A `gpu-driver-silent-install-trigger.selftest.sh` (38 ellenőrzés) bekerült a `src/__tests__/graph-tooling-selftests.test.ts`-be. A selftest formátuma "selftest: PASS"/"selftest: FAIL" (nem "N/N passed"), ezért egyedi ellenőrzőfüggvény szükséges; a floor 38 check-eset.
+
+- **PS 5.1 kompatibilitás:** A `-replace '...',{ scriptblock }` alak PS 5.1-en nem működik. Helyette explicit `$str[0].ToLower()` + `$str.Substring(2) -replace '\\','/'` az útvonal-konverzió.
+
+**Ki döntött:** backend (kártya 7857c82c). Gate: QA + RedHat (a NO-GO-t ő adta; WhiteHat már korábban feltételes GO-t adott ugyanerre a Gate-SHA-ra, 8b588834 komment 22146).
+
+**Hivatkozás:** kártyák 7857c82c, 8b588834, WhiteHat verdikt komment 22148, RedHat verdikt komment 22150, MikroB döntés komment 22152.

@@ -80,6 +80,27 @@ describe('graph tooling: the selftests actually run in CI', () => {
   }, 300_000)
 })
 
+// gpu-driver-silent-install-trigger.sh selftest (card 7857c82c, N2: wire to fleet CI).
+//
+// The selftest guards 38 behavioral controls over the WSL-side gate+trigger: every flag state,
+// approval-window edge case, board-busy check, replay guard, lock, and mutation case.  The
+// output format is "selftest: PASS" / "selftest: FAIL" (not "N/N passed") -- a custom check
+// is used.  The floor is the count of `check` calls at the time this test was wired; removing
+// cases is a failure that names itself.
+describe('gpu-driver trigger: selftest actually runs in CI', () => {
+  it('gpu-driver-silent-install-trigger selftest passes (floor: 38 check cases)', () => {
+    const { code, out } = run('bash', [join(ROOT, 'store', 'gpu-driver-silent-install-trigger.selftest.sh')])
+    // No "FAIL " lines (each failing check prints "  FAIL label -> ...")
+    expect(out).not.toMatch(/^\s+FAIL\s+/m)
+    // Summary line must say PASS
+    expect(out).toContain('selftest: PASS')
+    // Floor: count "  ok  " lines to catch silent case removal
+    const okLines = (out.match(/^\s+ok\s+/gm) ?? []).length
+    expect(okLines, `selftest shrank below floor of 38 check cases:\n${out}`).toBeGreaterThanOrEqual(38)
+    expect(code).toBe(0)
+  }, 300_000)
+})
+
 // The offload path imports the resolver by PATH at dispatch time; a rename or a lost exec bit makes
 // it fail open and silently stop giving the local model any code context -- with nothing to notice.
 describe('the files the offload path resolves at runtime', () => {

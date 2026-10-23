@@ -5,7 +5,7 @@
 # scheduled task BY NAME, passing it NO arguments. The actual version-query, download, Authenticode
 # verification, checkpoint and silent install run entirely inside the Windows-side admin script
 # (gpu-driver-install.ps1, store/gpu-driver-install.ps1 in this repo, copied by Peti by hand into
-# C:\ProgramData\MikroB -- an Administrator-only location, see comment 8258 on this card) -- never
+# C:\ProgramData\MikroB-Drivers -- an Administrator-only location, see comment 8258 on this card) -- never
 # here. Plan-grilling verdict (komment 15819) point 1: "A szkript es minden bemenete a
 # Windows-oldalon, csak Administrator altal irhato helyen; a WSL oldal SEMMILYEN parametert nem ad
 # at, csak inditja a taskot." This script enforces exactly that boundary: no parameter ever reaches

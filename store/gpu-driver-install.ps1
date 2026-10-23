@@ -41,14 +41,14 @@
 # www.nvidia.com GeForce forums and forums.developer.nvidia.com render JS-only or are outside the
 # fetch allowlist; one old forum post actually contradicts a DigiCert assumption, mentioning
 # Verisign). It must be confirmed by actually running `Get-AuthenticodeSignature` on a real,
-# genuinely-downloaded NVIDIA installer BEFORE this script is copied to C:\ProgramData\MikroB for
+# genuinely-downloaded NVIDIA installer BEFORE this script is copied to C:\ProgramData\MikroB-Drivers for
 # the first time -- the value below is a common-knowledge placeholder, not a verified fact. The
 # download-URL field name (see the main block below) has the same status: unconfirmed against a
 # live response, fail-closed until then.
 #
 # Exit codes: 0 = installed (or already up to date, nothing to do). Non-zero = refused/failed,
 # fail-closed, no install attempted. Every refusal and every step is written to
-# $LogPath (C:\ProgramData\MikroB\gpu-driver-install.log) -- Peti/RedHat's gate reads this file,
+# $LogPath (C:\ProgramData\MikroB-Drivers\gpu-driver-install.log) -- Peti/RedHat's gate reads this file,
 # this script never silently succeeds or silently skips a check.
 #
 # F1 (card 78696360, WhiteHat finding): `schtasks /run /TN MikroB-GPU-Driver-Install` can be
@@ -120,7 +120,7 @@ $ExpectedDownloadHost = ''
 $ApprovalApiBase = 'http://localhost:3420'
 $ApprovalCategory = 'gpu-driver-silent-install'
 $ApprovalWindowSeconds = 3600
-# Token file: NOT committed, must be placed by hand alongside this script in C:\ProgramData\MikroB
+# Token file: NOT committed, must be placed by hand alongside this script in C:\ProgramData\MikroB-Drivers
 # (same shared bearer the WSL trigger script already reads from store/.dashboard-token -- there is
 # no separate Windows-side secret to provision, only to copy once, by hand, like the script itself).
 $DashboardTokenPath = Join-Path $PSScriptRoot '.dashboard-token'
