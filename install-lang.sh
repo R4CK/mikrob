@@ -207,6 +207,15 @@ _t() {
     hu:macos.ffmpeg_installing) echo "  ffmpeg telepítés..." ;;
     en:macos.ffmpeg_done) echo "  ffmpeg ready" ;;
     hu:macos.ffmpeg_done) echo "  ffmpeg kész" ;;
+    en:macos.ffmpeg_skipped) echo "ffmpeg could not be installed (no Homebrew?) -- audio/video processing is skipped." ;;
+    hu:macos.ffmpeg_skipped) echo "ffmpeg nem telepíthető (nincs Homebrew?) -- a hang/videó feldolgozás kimarad." ;;
+    en:macos.ffmpeg_skipped_hint) echo "Later, by hand: brew install ffmpeg   (or with MacPorts: sudo port install ffmpeg)" ;;
+    hu:macos.ffmpeg_skipped_hint) echo "Később kézzel: brew install ffmpeg   (vagy MacPortsszal: sudo port install ffmpeg)" ;;
+    # ── Managed-settings sudo notice (upstream #1963, card 647e0b6f) ───
+    en:managed.notice_what) echo "Next, the channel switch goes into the machine-wide Claude Code settings (managed-settings.json). Without it, incoming messages stall on a company (Team/Enterprise) Claude account." ;;
+    hu:managed.notice_what) echo "Most a gépszintű Claude Code-beállításba (managed-settings.json) kerül a csatorna-engedély. Enélkül céges (Team/Enterprise) Claude-fióknál elakadnak a bejövő üzenetek." ;;
+    en:managed.notice_sudo) echo "It is a system file, so the next step may ask for this computer's password (sudo)." ;;
+    hu:managed.notice_sudo) echo "Ez rendszerfájl, ezért a következő lépés kérheti a gép jelszavát (sudo)." ;;
     # ── LaunchAgent / services ────────────────────────────────────────
     en:macos.launchagents_created) echo "  LaunchAgents created" ;;
     hu:macos.launchagents_created) echo "  LaunchAgent-ek létrehozva" ;;

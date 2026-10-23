@@ -52,7 +52,15 @@ const ROOT = join(__dirname, '..')
 const STORE = join(ROOT, 'store')
 
 const HOURLY_LOCK = process.env.GEMINI_AGY_HOURLY_LOCK ?? join(STORE, 'gemini-agy-call.hourly.lock')
-const SEGED_HIVO = process.env.SEGED_HIVO_HELPERS ?? join(ROOT, 'scripts', 'seged-hivo.py')
+// F5 (card 6b7c2c25, WhiteHat GO 612058c2 komment 19967): this used to read
+// process.env.SEGED_HIVO_HELPERS, and the RESERVE_SCRIPT below then EXECUTES whatever file that
+// path names via importlib.exec_module(), with this process's own privileges -- any process
+// upstream in the call chain (not just this script's own selftest) could silently redirect a
+// real production call to run arbitrary Python. Same risk class gemini-agy-call.sh's own F-A fix
+// (card 09117e0a) already closed for its shell equivalent: the real path is fixed, derived from
+// ROOT, with no env override; a test needing a sandboxed copy passes it explicitly via
+// reserveGhostCallSlot()'s segedHivoPath parameter instead.
+const SEGED_HIVO = join(ROOT, 'scripts', 'seged-hivo.py')
 const LOCK_WAIT_S = 30
 
 /** M2 regression (WhiteHat2, card 612058c2 NO-GO): a non-numeric/zero/negative
@@ -137,12 +145,16 @@ sys.exit(0)
  * check (missing flock/python3, timeout, non-zero/non-OK exit) returns false -- "could not confirm
  * a slot is free" must never be read as "a slot is free".
  */
-export function reserveGhostCallSlot(cardId: string, status: 'ok' | 'error' = 'ok'): boolean {
+export function reserveGhostCallSlot(
+  cardId: string,
+  status: 'ok' | 'error' = 'ok',
+  segedHivoPath: string = SEGED_HIVO,
+): boolean {
   let result: ReturnType<typeof spawnSync>
   try {
     result = spawnSync(
       'flock',
-      ['-x', '-w', String(LOCK_WAIT_S), HOURLY_LOCK, 'python3', '-I', '-', SEGED_HIVO,
+      ['-x', '-w', String(LOCK_WAIT_S), HOURLY_LOCK, 'python3', '-I', '-', segedHivoPath,
        String(HOURLY_LIMIT), cardId, status, String(DAILY_GHOST_LIMIT)],
       { input: RESERVE_SCRIPT, encoding: 'utf-8', timeout: (LOCK_WAIT_S + 10) * 1000 },
     )

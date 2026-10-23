@@ -21083,3 +21083,283 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 **Ki döntött:** backend3 (kártya 13b2648e, upstream-szinkron közbeni felfedezés), MikroB jóváhagyása (F5, komment 22674).
 
 **Hivatkozás:** kártya 13b2648e, card 4aa87fdf (az eredeti NOT-ADOPTED döntés), upstream commit 849c9cb80, komment 22670 (WhiteHat GO + F1 lelet), 22674 (MikroB döntés, F5).
+
+---
+
+**Dátum:** 2026-10-18
+**Kártya:** 4aa87fdf (7f0efce3 bontás: biztonsági/architektúra csoport -- upstream-drift döntések)
+**Döntés:** A biztonsági/architektúra csoport 12 fájljára upstream-drift döntések meghozva az `src/fork-upstream/acknowledged-conflicts.ts`-ban. Főbb döntések: (1) `src/web/channel-poller-reap.ts` isPollerArgv KEEP -- argv-alapú szűkítő réteg megtartva a 2026-09-26 incidens (100+ pid reaped) tanulságaként, defence-in-depth az env-scan felett; (2) RESTARTWAKE927 és mainRotationContinueVerdict -- mindkettő develop-on adoptálva volt a branch-cut és a landolás között, a guard-anchor helyesen kapta el és dokumentálta; (3) 6 K3 biztonsági érzékeny fájl döntve (egységes KEEP/ADOPT/DEFERRED).
+**Gate-SHA:** f32040bf0607b33912d05caff071e557e6083a67
+**Ki döntött:** fullstack/DevO (card 4aa87fdf), szülő: 7f0efce3.
+**Hivatkozás:** kártya 4aa87fdf (szülő 7f0efce3 bontás).
+
+---
+
+## 2026-10-18 -- Skill-usage heti összesítő (8a4a8b09): implementáció elfogadva
+
+**Döntés:** `store/skill-coverage-report.sh` és `store/skill-coverage-report.selftest.sh` szállítva a `skill_usage` táblából per-agent heti lefedettség-riporthoz, a Dream Engine Bucket 5-be integrálva.
+
+**Miért:** A CLAUDE.md 20. munkavégzési szabálya (skill-katalógus tényleges használata) és a flotta önfejlesztési képességének mérhető alapja. A 2-hetes visszamérés célja 2026-10-31.
+
+**Governance megjegyzés:** A dream-engine regisztrált prompt Bucket 5 frissítése governance hook (self-pace tiltás) miatt MikroB PUT-ja, nem a szkript landolásával automatikus.
+
+**Hivatkozás:** kártya 8a4a8b09, Gate-SHA: 6e7a182119927a0e6bfa3c3c2b54bd020b8556b2, REVIEW komment 22206.
+
+---
+
+## 2026-10-22 -- Trail-ötlet 1 (átfedés-jelzés): REVIEW-előtti script, nem PostToolUse hook
+
+**Döntés:** `store/overlap-signal-check.sh <agent>` -- az agent saját (nem landolt) branch-ét veti össze minden más unlanded `agent/*/work` és `card/*` branch-csel. A "ugyanazt a függvényt módosították" kérdést a git diff hunk-header kontextus-sorának (git beépített funcname-heurisztikája) sztring-egyezésével dönti el, nem bespoke nyelvi regex-szel. Csak jelez (`OVERLAP file=... symbol=... other_branch=.../other_card=...`), sosem blokkol; `OVERLAP_SIGNAL=off` a kapcsoló.
+
+**Miért ez és nem PostToolUse hook:** a kártya (ca72e5d4) mindkét opciót megengedte. Egy minden Edit/Write-ra futó hook N agent × N fájl mélységben drágább és zajosabb; egy REVIEW-előtti, önjáró script (a self-advance 11a. szabály pontjába illik) ugyanazt a védelmet adja a landolási pillanat előtt, ahol tényleg számít. A teljes flotta-szintű kötelező bekötés (CLAUDE.md-be írás minden ügynöknek) külön, MikroB-döntésű lépés -- ez a kártya csak az ESZKÖZT szállítja, elérhetővé téve.
+
+**Mérés -- amit NEM lehetett megmérni:** a kártya kérte "a múlt heti landolási ütközésekből hányat fogott volna meg". A landolt branch-ek törlődnek landolás után, tehát a múlt heti ütköző branch-ek git-objektumai már nem léteznek -- visszamenőleges mérés nincs. Helyette a `--selftest` egy megkonstruált esettel (azonos függvény két branch-en -> OVERLAP; azonos fájl, másik függvény -> nincs jelzés; landolt branch -> csendes) bizonyítja a logikát élesben; a tényleges találati arányt csak előretekintve, a jövő heti landolásokon lehet majd mérni.
+
+**Ki döntött:** fullstack/DevO (card ca72e5d4), szülő: c65add5a.
+**Hivatkozás:** kártya ca72e5d4 (szülő c65add5a bontás).
+
+---
+
+## 2026-10-23 -- agent-boot-reconcile.sh: manual-dispatch-pause tiszteletben tartása (card a4689243)
+
+**Mért hiba:** 2026-10-22 20:26 és 2026-10-23 07:21, a boot-reconcile timer két egymást követő körben elindította a parkolt flottát (fullstack, cybersec, cybered, qa, qa2), miközben az aktív `store/manual-dispatch-pause.json` (Peti 11965, "biztos pont") ezt tiltotta volna. A szkript a pause-fájlt egyáltalán nem olvasta -- `grep pause store/agent-boot-reconcile.sh` 0 találatot adott a javítás előtt.
+
+**Döntés:** a `weekly-hard-stop.json` már meglévő mintáját követve (F1a blokk) egy `PAUSE_ACTIVE` ellenőrzés került a kártya-szelektor és a tényleges start/resume hívás közé. Aktív pause alatt a szkript a WORK-listát továbbra is kiszámítja (ügynök + kártya-azonosító), de minden indítandó ügynököt csak egy `would start:` sorba naplóz, és NEM hívja meg az `/api/agents/<agent>/start`-ot vagy a resume-üzenetet. Fail-closed: ha a pause-fájl létezik, de nem parse-olható (sérült JSON), ugyanúgy aktívnak számít, mint egy explicit `{"active": true}` -- csak egy hiányzó fájl (vagy explicit `{"active": false}`, a feloldás élő mintája a `.lifted-<dátum>` átnevezés szerint) jelenti az inaktív állapotot.
+
+**Miért ez a forma, nem külön pause-specifikus log-ág:** a kártya elfogadási kritériuma kimondottan azt kérte, hogy a pause alatt a szkript "csak naplózza, mit indítana" -- ehhez a WORK-számítást változatlanul futtatni kell, csak a hatást (start/message hívás) kell elhagyni. Ez surgical change: a meglévő ciklus egyetlen ágazási pontján (`is_running` ellenőrzés után) dönt, nem új útvonalat épít a kártya-szelektor köré.
+
+**Mutáció-ellenőrzés:** a selftest (`agent-boot-reconcile.selftest.sh`, 19. eset) egy olyan mutált másolatot futtat, amiből a teljes pause-ellenőrző blokk ki van véve (awk-kal, a blokk saját határjelein, nem fix sorszámon) -- a mutált szkript a pause ellenére elindítja az ügynököt, bizonyítva hogy a 16. eset (pause aktív -> nincs start) valódi, nem vakon zöld ellenőrzés.
+
+**Ki döntött:** fullstack/DevO (card a4689243).
+**Hivatkozás:** kártya a4689243, kapcsolódó: 79d67d31 (ugyanaz a szkript, más hiba).
+
+## 2026-10-23 -- MT-10b (bb0cadd9): DECISIONS.md -> decision csomópont + governs él a tudásgráfban
+
+**Döntés:** `src/kg/import-decisions-log.ts` -- determinisztikus importer, ami a `DECISIONS.md` minden `## ` fejléces bejegyzését `decision` kg_node-dá képezi (id: `decision:L<sorszám>`, 1-indexelt), és a bejegyzés szövegében hivatkozott, kanban_cards-ban valóban létező kártyákhoz `governs` élt húz. Nem létező kártya-alakú token (pl. commit sha) nem kap élet, csak számlálva van (`cardRefsSkippedMissing`).
+
+**Miért:** 81593084 (MT P2 Fázis) MT-10 négyes felbontásának 'b' része -- a meglévő `src/kg/schema.ts`/`store.ts` (ee9ee17b, MT-01) node/edge típusai már támogatják ezt, séma-változás nélkül.
+
+**Gate-SHA:** c21ca6edc
+**Ki döntött:** backend2 (card bb0cadd9), szülő: 81593084.
+**Hivatkozás:** kártya bb0cadd9 (szülő 81593084 bontás), REVIEW komment 22291.
+
+---
+
+## 2026-10-23 -- Upstream-drift install-script/CI csoport (card 647e0b6f, szülő 7f0efce3): hunkonkénti döntés
+
+**Kontextus:** a kártya 6 fájlt sorolt fel (install-macos.sh, scripts/pre-pr-review.sh, .github/workflows/test.yml, package.json, package-lock.json, update.sh), de a friss riport (`node store/fork-upstream-drift-watch.mjs --report`) szerint a package.json/package-lock.json/update.sh/test.yml már nem szerepelt undecided/elavult listán -- valaki más már lezárta őket. install-lang.sh (új, nem szerepelt a kártyán) viszont felkerült. A tényleges munka tehát install-lang.sh, install-macos.sh és scripts/pre-pr-review.sh lett.
+
+**install-lang.sh: NOT ADOPTED.** Az upstream `macos.ollama_*` i18n kulcsok csak az upstream inline-Ollama-telepítő lépéshez tartoznak, amit ez a fork szándékosan nem futtat (Peti direktíva 2026-08-13, EPIC ebc7b4dd). Felesleges holt string lenne.
+
+**install-macos.sh: hunkonkénti döntés, nem egyben.** MikroB döntése (msg_id:13972/13973) a teljes fájl ~700 (majd a helyes worktree-blobbal összevetve ~530) soros diffjét NEM engedte egyben átvenni, mert két rész egy MÁR MEGHOZOTT fork-döntésre esett volna:
+- **NOT ADOPTED** az inline Ollama-telepítés (brew/curl + modell-pull) -- ugyanaz az EPIC ebc7b4dd döntés.
+- **NOT ADOPTED** a Tailscale auto-install/login blokk és a seed-agents/seed-fleet-agents seedelés eltávolítása -- ezek fork-only funkciók (kártya 12dc8a5c és a seed-agents/seed-fleet-agents funkció), amiket upstream SOHA nem is adott nekünk (a git log-ban ezeket a kommiteket maga a fork írta és töltötte fel upstreambe, majd upstream egy későbbi refaktornál levette őket) -- upstream hiánya itt nem a mi hibánkat javítja.
+- **NOT ADOPTED** a jq/sqlite3 kényszerített brew-install törlése -- mérve: 11+ fork-saját ütemezett-feladat script hívja a `sqlite3` CLI-t direktben, legalább 2 a `jq`-t (`command -v jq` védve ugyan, de a sablon-script nem) -- a törlés pótlás nélkül törne egy friss Mac-telepítésen.
+- **NOT ADOPTED** a `CLAUDE_VARIANT` (friss vs. előtelepített CLAUDE.md) prompt eltávolítása + az új `{{TIMEZONE}}` szubsztitúció -- az előbbi fork-only funkció lenne elvéve, az utóbbi egy nem-portolt upstream alrendszertől (`scripts/lib/install-tz.sh`, ISSUE1895) függ, ami nem létezik ebben a forkban.
+- **NOT ADOPTED** a SEEDSKILLSUB1018 (upstream #2061) skill-copy átalakítás -- a fork saját `git archive HEAD -- seed-skills/...` megoldása (kártya f39dd8fb) MÁR megoldja a git-tracked-only + subdir-ok kérdését (tar natívan kiterjeszti a subdirt), ÉS utána egy placeholder-szubsztitúciós kört futtat (kártya 041681b5, mért éles hiba: literális `{{INSTALL_DIR}}` egy skill-parancsban) -- az upstream hunk ezt a kört ELTÁVOLÍTANÁ, tehát a váltás REGRESSZIÓ lenne mindkét szempontból. Védve: `seed-skills-untracked-check.test.ts`, `skill-archive-no-propagation.test.ts`, `seed-placeholder-substitution.test.ts`.
+- **NOT ADOPTED** a scheduled-task registry CLI hívás (`dist/web/schedule-registry-cli.js`) -- egy teljes, nem portolt upstream alrendszertől függ (schedule_registry tábla + futtató hash-match kapu), ami nincs ebben a forkban; a kártya saját "Nincs benne" szakasza is kizárja a `src/web` munkát, külön Feladat.
+- **NOT ADOPTED** az ISSUE1891 keepalive-helper ellenőrzés (`HELPERS_DOWN`/`note_helper_down`, 3 hunk) -- ez pontosan ugyanaz a duplikált idle-liveness-szonda funkció, amit a fork már ELUTASÍTOTT és egy védő pinning-teszt tart a helyén (kártyák ef6a8031/e47dc04a/c2aeefa5, 2026-10-14-én már egyszer csendben visszacsempészve egy upstream-merge-en, majd újra kivéve) -- visszavétele pont azt a regressziót lenne, amit a pinning-teszt meg akar fogni.
+- **ADOPTED**, mert tisztán additív/javító és semmilyen fork-funkcióval nem ütközik: `managed_settings_notice()` + 3 hívási pont (upstream #1963, egyszeri sudo-jelszó-magyarázat a managed-settings.json írások előtt); az ffmpeg-telepítés non-fatallá tétele (upstream #2125, ugyanaz a minta, mint az Ollama/Whisper blokkoknál); SEEDREFDIR1018 (upstream #2059) `references/` alkönyvtár-hurok MINDKÉT ütemezett-feladat-sablon-ciklusban (`templates/scheduled-tasks` ÉS `seed-scheduled-tasks`), a fork saját extra placeholdereinek (`{{CHAT_ID}}`, `{{PROJECT_ROOT}}`) megtartásával.
+- Az exit-3/`SERVICES_STATE`/`print_services_remedy` refaktor (upstream #1881) és a #1872 headless-probe szöveg/scope-javítás MÁR korábban átment -- nem kellett újra dönteni, csak megerősítve (`installer-services-state.test.ts`, `installer-early-probe-scope.test.ts` zöld).
+
+**scripts/pre-pr-review.sh: TAKE UPSTREAM WHOLESALE (bájtra egyező blob).** Upstream #1965 egy valódi biztonsági keményítés az egész fájlon: diff-méret-limit (204800 byte), a diff szkennelése MINDEN hálózati hívás (a vault is) ELŐTT egy új `scripts/pre-pr-review-scan.ts`-sel (a meglévő `secret-gate.ts --range` mellett, amit a fork már ismert), 0600-as `umask`-olt work-dir EXIT/INT/TERM trap-pel, curl connect+total timeout, vezérlőkarakter-szűrés a válasz-szövegen, csak-státuszkód hibajelentés (a válasz-test sosem megy stderr-re). Nem ütközik semmilyen fork-funkcióval. A hiányzó `scripts/pre-pr-review-scan.ts`-t portoltam (importálja `SECRET_PATTERNS`/`DENIED_PATH_PATTERNS`-t `src/security/secret-gate.ts`-ből, mindkettő már exportált, egyező alakkal) és smoke-teszteltem (titkos + tiszta diff, exit-kódok, a titok sosem jelenik meg a kimeneten). Új teszt: `src/__tests__/pre-pr-review-scan.test.ts` (5 eset, CLI-szintű, mert a script `main()`-t importkor hívja, nem lehet könyvtárként betölteni).
+
+**Ki döntött:** MikroB (verdikt hunk-onkénti bontásra, a két Peti-dontést érintő NOT-ADOPTED pontra) + fullstack/DevO (a fennmaradó hunkok besorolása, a ténylegesen fork-funkcióra támaszkodó eseteket mérve, nem találgatva).
+**Hivatkozás:** kártya 647e0b6f (szülő 7f0efce3), kapcsolódó Peti-döntések: EPIC ebc7b4dd (helyi LLM), kártya 12dc8a5c (Tailscale), kártya f39dd8fb + 041681b5 (seed-skills git-archive + placeholder), kártyák ef6a8031/e47dc04a/c2aeefa5 (ISSUE1891 keepalive-helper NOT ADOPTED).
+
+## 2026-10-18 -- kártya 7857c82c: GPU-driver setup WhiteHat F1-F3 + RedHat B1-B3 javítások
+
+**Kontextus:** A 8b588834 kártyán a WhiteHat (F1-F3) és RedHat (B1-B3) gate NO-GO verdiktet adott a `gpu-driver-install-setup.ps1` és `gpu-driver-install-launcher.ps1` fájlokra. A kártya 7857c82c az összes leletet egyesítve javítja.
+
+**Döntések:**
+
+- **F1 (hash helye):** Az elvárt SHA-256 a `schtasks /Change` task-parancssoron kerül átadásra (`$args[0]`), nem a `gpu-driver-install.sha256` fájlban tárolva az ACL-védett könyvtárban. A launcher először az `$args[0]`-t olvassa, fallbackként a fájlt (kézi futtatáshoz). Indok: a parancssor admin-only (schtasks query-n keresztül ellenőrizhető), neon nem tudja olvasni az ACL-védett könyvtárat.
+
+- **B2/F2 (SID-alapú ACL):** A `FileSystemAccessRule`-okban `'SYSTEM'`/`'Administrators'` string helyett SID-objektumokat használunk (`S-1-5-18` = SYSTEM, `S-1-5-32-544` = Administrators), hogy a magyar locale-on is működjön. Tulajdonos: Administrators SID. Get-Acl visszaolvasás: pontosan 2 ACE, 0 örökölt, helyes tulajdonos.
+
+- **B1 (kétfázisú setup, fail-closed, pozitív kontroll):** A setup.ps1 `-Phase 1` (default) csak a könyvtárat + ACL-t + neon-írhatóság tesztjét végzi (payload nélkül). `-Phase 2` másolja a fájlokat és frissíti a taskot. A catch-ág `exit 1`-et ad (nem 0). Pozitív kontroll: először egy ismert temp-elérési úton ellenőrzi, hogy a WSL write-teszt mechanizmus működik, mielőtt a védett könyvtáron tesztelné.
+
+- **B3 (task tényleges frissítése):** A setup.ps1 Phase 2 futtatja a `schtasks /Change`-t, majd `schtasks /Query /FO CSV /V`-vel visszaellenőrzi, hogy a hash megjelent a parancssorban. A régi `C:\ProgramData\MikroB` útvonal-hivatkozások kommentekben `C:\ProgramData\MikroB-Drivers`-re frissítve (`gpu-driver-install.ps1` 3 hely, `gpu-driver-silent-install-trigger.sh` 1 hely).
+
+- **F3 (forrás ellenőrzése copy előtt):** Phase 2 ellenőrzi, hogy a target könyvtárban nincs junction/reparse point az átvitel előtt.
+
+- **N2 (selftest CI-ba kötése):** A `gpu-driver-silent-install-trigger.selftest.sh` (38 ellenőrzés) bekerült a `src/__tests__/graph-tooling-selftests.test.ts`-be. A selftest formátuma "selftest: PASS"/"selftest: FAIL" (nem "N/N passed"), ezért egyedi ellenőrzőfüggvény szükséges; a floor 38 check-eset.
+
+- **PS 5.1 kompatibilitás:** A `-replace '...',{ scriptblock }` alak PS 5.1-en nem működik. Helyette explicit `$str[0].ToLower()` + `$str.Substring(2) -replace '\\','/'` az útvonal-konverzió.
+
+**Ki döntött:** backend (kártya 7857c82c). Gate: QA + RedHat (a NO-GO-t ő adta; WhiteHat már korábban feltételes GO-t adott ugyanerre a Gate-SHA-ra, 8b588834 komment 22146).
+
+**Hivatkozás:** kártyák 7857c82c, 8b588834, WhiteHat verdikt komment 22148, RedHat verdikt komment 22150, MikroB döntés komment 22152.
+
+---
+
+## 2026-10-23 -- Gemini Ghost F3-F5 hardening + daily-cap test fragility (6b7c2c25)
+
+**Döntés:** `src/gemini-fallback-runner.ts` (F3): `readSessionOutageActive()` mostantól elutasítja a jövőbe mutató heartbeatet is (60s tolerancia), nem csak a túl régit. `src/gemini-orchestrator-draft-review.ts` (F4): a draft-review sweep az első `hourly_cap_reached` után leáll az adott ticken belül, a többi kártyát `skipped_hourly_cap_reached` jelzéssel átugorja. `src/gemini-ghost-budget.ts` (F5): a `SEGED_HIVO` útvonal mostantól ROOT-ból számolt fix út, nem `process.env.SEGED_HIVO_HELPERS` (amit korábban `importlib.exec_module` futtatott le) -- a teszt a sandboxolt másolatot a `reserveGhostCallSlot()` új, opcionális `segedHivoPath` parancsán át kapja. Plusz a napi-plafon "csak mai sorok" szűrőjét mutáció-próbás teszttel pinelve, és a napi-plafon tesztek UTC helyett helyi-naptári-nap szerinti időbélyeget írnak (a valódi íróval egyező formátum).
+
+**Miért:** F3-F5 a 612058c2 WhiteHat GO (komment 19967) LOW hardening-leletei; a két extra teszt-javítás a 612058c2 komment 20243 (MikroB/WhiteHat mérés) két LOW lelete, ugyanazon a kártyán zárva, mert mindkettő ugyanezt a fájlt érinti.
+
+**Gate-SHA:** 8b96551b1
+**Ki döntött:** backend2 (card 6b7c2c25), szülő: c7abdf57.
+**Hivatkozás:** kártya 6b7c2c25.
+
+---
+
+## 2026-10-23 -- MT-10a (63206155): kanban_verdicts NO-GO/FAIL -> finding + error_class csomópont a tudásgráfban
+
+**Döntés:** `src/kg/import-findings.ts` -- determinisztikus importer, ami a `kanban_verdicts` NO-GO/FAIL sorait `finding` kg_node-dá képezi (id: `finding:<verdict.id>`), `found_on` éllel a kártyához kötve, és egy kis, konzervatív kulcsszó-taxonómiával (`error_class` node, `of_class` él) osztályozza. Az osztályozás bemenete `${gate} ${findings_ref}`, mert a `verdict` mező csak GO/NO-GO/PASS/FAIL szó, a próza egyetlen helye a `findings_ref` (kártya 2bfa4c67). Nincs találat esetén `error_class:unclassified`.
+
+**Miért kulcsszó-taxonómia, nem helyi LLM:** MikroB döntése a kártya saját nyitott kérdésére (msg_id:13955) -- determinisztikus kulcsszó-taxonómia + unclassified kosár, lefedettség-méréssel; helyi LLM-klasszifikáció csak akkor, ha az unclassified arány 20% fölött marad, és az külön kártya, nem ennek a scope-bővítése. Ezért nincs plan-grilling sem (MikroB explicit mentessége).
+
+**Mért állapot:** a `kanban_verdicts` tábla az éles adatbázisban 0 sort tartalmaz -- a strukturált gate-verdikt rekord (kártya 2bfa4c67) megépült, de a gate-ek ma is szabadszöveges kanban-kommentben adják a verdiktet (CLAUDE.md 4c. konvenció), nem a strukturált API-n. Az importer ettől függetlenül helyes és fixture-tesztelt (ugyanaz a testpozíció, mint `import-from-relations.ts`-nél, MT-01); a kártya kért lefedettség-mérése élesben 0/0-t ad, amíg a gate-ek nem térnek át a strukturált API-ra -- ez a kártya scope-ján kívüli, külön nyomon követendő tény.
+
+**Elfogadási kritérium (EK-MT-10a-1):** fixture-teszttel igazolva -- két, azonos valódi okra visszavezethető (manuálisan megadott, "env-allowlist" szövegű) finding ugyanarra az `error_class:missing-env-allowlist` node-ra mutat.
+
+**Mutáció-ellenőrzés:** a kulcsszó-illesztő ciklus `return UNCLASSIFIED_CLASS_ID`-ra egyszerűsítésével az EK-MT-10a-1 teszt és két másik teszt elbukott (unclassified jött env-allowlist helyett) -- visszaállítva.
+
+**Gate-SHA:** ab614cded
+**Ki döntött:** backend2 (card 63206155), szülő: 81593084.
+**Hivatkozás:** kártya 63206155 (szülő 81593084 bontás).
+
+## 2026-10-23 -- kártya 46ad2933: morluto/rea és affaan-m/ECC due diligence rögzített SHA-n (licenc, adopt/adapt/reject, csillag-mérés)
+
+**Kontextus:** Peti Telegram 12023 (2026-10-23): a két repót be kell építeni a rendszerbe minden ügynöknek, akinek hasznos, de előbb due diligence rögzített SHA-n (WhiteHat), utána ügynökönkénti adaptáció (backend, szülő 59c4815b); wholesale harness-csere nincs, komponensenként vesszük át. Kód nem változott, telepítés nem történt. A vizsgálat a kártya REVIEW-ja (komment 22440), a QA2 FAIL (komment 22443) szerint ez a bejegyzés hiányzott.
+
+**Rögzített SHA-k:** rea `14e745950e1a645b9e79c0b26b951a1309ec5e84` (a vizsgálat alatt ~30 percen belül elmozdult a 6c4d880f-ről), ECC `90606c8315ee09cafc303515c5f33024db6b9882`. Módszer: blobless klón karanténban, hookok és LFS-szűrők kikapcsolva, semmi nem lett telepítve vagy futtatva, saját fájlbejáró (nem a repó .gitignore-ját követő keresés).
+
+**Döntések:**
+
+- **Licenc (10. szabály, rögzített SHA-n újraolvasva):** mindkét repó LICENSE-e standard MIT (rea: Copyright 2026 morluto; ECC: Copyright 2026 Affaan Mustafa). **Vendorolási tilalom a nyilvános R4CK/mikrob repóra:** a rea THIRD_PARTY_NOTICES.md-je GPL-3.0 (GDB), GPL-2.0 (Unicorn), LGPL-2.0 WITH WxWindows (frida) és szabadalmazott (IDA, Hopper, JEB) feltételeket rögzít, az MIT ezekre nem terjed ki: a rea third_party/licenses részét SEMMILYEN formában nem másoljuk be. Az ECC-ben skillenként eltér a licenc: 8 skill Apache-2.0 (logisztika, nekünk irreleváns), 1 skill CC-BY-SA-4.0 (osint-investigation, share-alike) -- ez utóbbi nyilvános repóba nem másolható. A nyilvános repóba csak MIT-kompatibilis, nem share-alike tartalom kerülhet, a proveniencát a README fork-fejlesztések szekciója rögzíti.
+- **ECC, átvehető (ADAPT):** csak másolás, fájlonként, SHA-pinnel, a landolt fájlra `skill-security-auditor`, az érintett ügynök projekt-szintű `.claude/skills` mappájába, SOHA nem a globális `~/.claude/skills`-be. A 311 skillből 288 csak próza (gépi szkennelés: 0 bináris, 0 symlink, 0 rejtett Unicode szövegben, 0 frontmatter hook/jogosultság, 0 valódi inline végrehajtás). Jelöltek szerepenként: biztonság (security-review, security-scan, agent-security-hardening, mcp-dependency-review), mérnöki (tdd-workflow, verification-loop, search-first, api-design, database-migrations, postgres-patterns, architecture-decision-records, hexagonal-architecture, context-budget, strategic-compact), QA (ai-regression-testing, browser-qa, click-path-audit, e2e-testing). Feltétellel: gateguard, safety-guard, config-gc (a `~/.claude`-ot törlési jelöltként olvassa, megosztott flotta-könyvtáron nem futhat), agent-payment-x402 (pénzmozgás, csak külön Peti-jóváhagyással). Ahol a flottának van saját skillje a témára, az ötlet jön át, nem a szöveg.
+- **ECC, REJECT (futtatható és külső hatású részek):** `hooks/hooks.json` (27 regisztráció, köztük observe-runner minden tool-hívásra, a teljes tool I/O egy observations.jsonl-be megy, csak kulcsszó-regex titokszűréssel); beágyazott `claude -p` (`scripts/lib/llm-summary.js`, `observer-loop.sh`: csatornát birtokló sessionben a gyerek-claude leállítja a Telegram-pollert); `scripts/auto-update.js` és `install.sh`/`install-apply.js` (alapértelmezett cél a megosztott `~/.claude`); `mcp-configs/mcp-servers.json` (34 szerver, 18 pinelés nélküli npx/uvx) és `.mcp.json`; `ecc2/`, control-pane/plan-canvas/dashboard, memory-mcp/unified-memory; a külső fiókra ható vagy külső szolgáltatóra küldő skillek (email-ops, social-publisher, google-workspace-ops, lead-intelligence, videodb, taste-*, ito-* stb.); kereskedelmi elemek (ecc.tools felirat, szponzor-hivatkozások).
+- **rea:** reverse-engineering MCP-szerver, a debuggerek, instrumentáció és cél-bináris futtatása maga a termék. **REJECT a szerver telepítése** bármely ügynökhöz vagy a gazdagépre (install.sh `curl | bash`, `npx -y rea-agents@verzió mcp`: 1775 fájl, 28,6 MB, 42 prod függőség, `prepare` életciklus-szkript). Ha valaha kell: izolált VM/konténer, flotta-titkok és TELEGRAM_* környezet nélkül, zárolt lockfile, `--ignore-scripts`, pinelt SHA. **ADAPT csak szövegként:** `.agents/skills/reverse-engineer-anything/` (SKILL.md + 6 referencia) RedHat/WhiteHat módszertani referenciának. REJECT: rea-tool-design, rea-ci-tests-audit, rea-changelog-update, rea-analysis-optimization.
+- **Függőségek (OSV, 2026-10-23):** prod függőségre mindkét repónál 0 találat; dev oldalon ECC: markdown-it@14.3.1 (2 HIGH, 1 LOW), toml@4.3.0 (3 HIGH); rea: vite@8.3.2 (1 HIGH, 4 MODERATE, 1 LOW). Mivel futtatható komponenst nem veszünk át, ezek ma nem érintik a flottát.
+- **Csillag-mérés (MikroB döntése, komment 22441):** a stargazer idősor token nélkül nem mérhető (a GitHub `/stargazers` végpont HTTP 401), WhiteHat nem kért kölcsön tokent. A token nélküli proxy-mérés (fork-idősor, fiókéletkor-kalibráció, npm-letöltés) ELÉG a komponensenkénti, fájlonként auditált átvételhez; teljes stargazer-idősort nem kérünk, mert semmit nem veszünk át vakon, és a futtatható részek mind tiltólistán vannak. Mért eredmény: rea 368 828 csillag, 92 402 fork (25,1%), fork-görbe lecsengő (csúcs ~620/óra okt. 12-13, ~140/óra okt. 23), a 100-as fork-mintákban a 2022-02 előtti fiókok 46-68%, a 2026-08-22 utániak 3-8%; ECC 286 768 csillag, 42 530 fork (14,8%), egyenletes fork-görbe, 35-69% és 0-7%. Friss-fiók-farmra vagy sík bot-blokkra utaló jel nem látszott, de ez NEM bizonyíték az organikusságra, és a népszerűség nem biztonsági jel.
+- **Az átvétel feltételei a backend lépéshez (59c4815b):** (a) csak másolás, fájlonként, SHA-pinnel, `skill-security-auditor` a landolt fájlon, projekt-szintű skill-mappa; (b) ECC hook/installer/auto-update/MCP-konfig/observer nem kerül be, csatornát birtokló ügynökbe semmilyen gyerek-claude; (c) a rea csak szövegként, RedHat/WhiteHat számára; (d) a kijelölt skillek törzsét a backend olvassa végig, a vizsgálat gépi szkennelés és mintaolvasás volt.
+
+**Nem vizsgált (korlát):** a 288 próza-skill és a rea-skillek törzse soronként; a rea `src/` 2759 fájlja csak gépileg; ECC `council-multi-model/review-with-codex.js`, `ecc2/`, `docker/`; rea DISCLAIMER.md, SECURITY.md és az 5 submodule (jadx-headless-mcp, binwalk, unblob, ghidra-nativeaot, wakaru).
+
+**Ki döntött:** a vizsgálat és a javaslat WhiteHat (cybersec) saját deliverable-je, a csillag-mérés elégségességét MikroB döntötte el (komment 22441); a beépítés tényleges jóváhagyása Peti 12023 keretén belül komponensenként történik. Gate: QA2 (komment 22443, FAIL a hiányzó DECISIONS-bejegyzés miatt, ez a javítás) + RedHat.
+**Hivatkozás:** kártya 46ad2933, szülő 59c4815b, REVIEW komment 22440, MikroB komment 22441, QA2 komment 22443, precedens: 3f6fc4ce (MT F0 GitHub-first due diligence).
+
+## 2026-10-23 -- kártya 28923621: persona-write-guard bekötve POST /api/agents-be (PERSONANOCLOBBER923)
+
+**Kontextus:** a 6b10a6b8 (upstream PICKERCLIKAPU923-kötegben, 4 új képességből a 3.) halasztott tétele. A `persona-write-guard.ts` modul (snapshotPersonaFile/writePersonaFileIfUnchanged) egy korábbi upstream merge-ből (9ce202399) már megvolt a fában, de a `969bfa85a` köteg-merge tudatosan NEM kötötte be a POST /api/agents handlerbe -- "left in place, unused, for a future dedicated wiring card" -- ez a kártya az a jövőbeli kártya.
+
+**Döntés:** a 9ce202399 eredeti diffje (routes/agents.ts hunk + két teszt: persona-gen-no-clobber.test.ts, persona-gen-no-clobber-route.test.ts) változtatás nélkül visszahelyezve. A generateClaudeMd/generateSoulMd generálás ELŐTT pillanatkép készül CLAUDE.md/SOUL.md-ről, és mind a siker-, mind a sablon-fallback ág csak akkor ír, ha a fájl azóta változatlan -- ha valaki PUT-tal kézzel módosította generálás közben, a kézi tartalom marad, a generált szöveg *.generated.md-ként mentve (csak a siker-ágon; a sablonnak nincs mit megőrizni), és a main agent system-üzenetben értesül.
+
+**Mutáció-ellenőrzés:** a javítás visszavonásával (a pontos, javítás előtti unconditional atomicWriteFileSync-es kód) a 15 tesztből 5 pirosra váltott (mindkét route-szintű "kézi fájl megmarad" eset, az egy-fájlos fallback eset, és a két forrás-szintű pin); 10 zöld maradt (a tiszta guard-függvény unit-tesztek, amik nem a route-ot futtatják).
+
+**Elfogadási kritérium:** 15/15 teszt zöld a javítással; tsc --noEmit -p . tiszta.
+
+**Gate-SHA:** 02bd502856f14bcb40b2135ae767e989d6d98de7
+**Ki döntött:** backend (card 28923621).
+**Hivatkozás:** kártya 28923621, előd upstream-kártya 6b10a6b8, forrás-commit 9ce202399, köteg-merge 969bfa85a (ami tudatosan ehhez a kártyához utalta a bekötést).
+
+## 2026-10-23 12:19 -- MT-10d: elvetett alternatívák -> anti_pattern csomópont (kártya 33e5e4ff)
+
+(folytatás a fenti 46ad2933 bejegyzés után, a párhuzamosan landolt ágak tiszta tail-append
+ütközése miatt -- lásd a 375a81c1 szabályt: az új bejegyzés mindig a fájl végére kerül, a
+kapcsolódó korábbi bejegyzésre dátum/cím szerint hivatkozva, nem mellé szúrva.)
+
+**Döntés:** `src/kg/import-anti-patterns.ts` -- determinisztikus importer, két forrásból épít
+`anti_pattern` kg_node-okat `rejected_for` éllel a kártyára: (1) `kanban_comments` sorok, amelyek
+egy `Draft-Review: ELUTASITVA` kezdetű sort tartalmaznak (kártya 1338e68b konvenció); (2)
+DECISIONS.md bejegyzések, amelyek saját `Döntés` mező-sora ELUTASÍTVA/ELUTASITVA/VISSZAVONVA/NO-GO
+szót tartalmaz. A forrás-döntést MikroB adta meg (komment 22279, a kártya saját nyitott kérdésére):
+nincs új strukturált tár, pontosan ez a két meglévő forrás számít. A találat szándékosan csak a
+Döntés mező saját sorára szorítkozik, nem az egész bejegyzés szövegére -- ez a fájl több helyen
+(pl. ezek a sorok fentebb) MAGÁT a konvenciót magyarázza, idézve az "ELUTASITVA" szót anélkül, hogy
+az adott bejegyzés valódi elutasítás lenne; egy teljes-body keresés ezeket hibásan anti_pattern-né
+minősítené (mutáció-próbával igazolva, lásd lejjebb).
+
+A `parseEntries`/`referencedCardIds`/`ParsedEntry` export lett az `import-decisions-log.ts`-ből
+(MT-10b, kártya bb0cadd9), hogy ez az importer a DECISIONS.md bejegyzés-felbontást és
+kártya-hivatkozás-kinyerést újrahasznosítsa, ne duplikálja.
+
+**Mutáció-ellenőrzés:** két mutáció próbáltatott és mindkettő elbukott a megfelelő teszteken (majd
+visszaállítva): (1) a `Draft-Review` sor-eleji + ELUTASITVA-specifikus regexet puszta
+`/Draft-Review/`-ra lazítva, az ELFOGADVA-s és az elméleti-említéses komment is téves
+anti_pattern-né vált -- a teszt elkapta; (2) a Döntés-sor-szűkítést elhagyva (teljes bejegyzés
+szövegén keresve a szót), a 3. fixture-bejegyzés (ami csak PRÓZÁBAN idézi az "ELUTASITVA" szót, nem
+a saját Döntés-sorában) téves anti_pattern-né vált -- a teszt elkapta.
+
+**Ellenőrzés:** `npx vitest run src/__tests__/kg-import-anti-patterns.test.ts` (saját ágon,
+agent/backend2/work, a mutáció-visszaállítás utáni állapoton) -- 5/5 zöld; a teljes célzott kör
+(ezzel + a kg-import-decisions-log.test.ts + kg-import-findings.test.ts) 17/17 zöld; `npx tsc
+--noEmit -p .` tiszta. Teljes suite a landoláskor (`marveen-land.sh`) fut, a Gate-SHA onnan jön.
+
+**Gate-SHA:** 1e8861cf5
+**Ki döntött:** backend2 (kártya 33e5e4ff), szülő: 81593084. Forrás-döntés: MikroB (komment 22279).
+**Hivatkozás:** kártya 33e5e4ff (szülő 81593084 bontás), lásd MT-10a/63206155 és MT-10b/bb0cadd9
+fenti bejegyzéseit a testvér-importerekhez.
+
+## 2026-10-23 -- kártya 7857c82c: GPU-driver setup.ps1 X1-X3 javítás (RedHat NO-GO 22570 delta)
+
+**Kontextus:** RedHat (Cybered) NO-GO-t adott a kártya korábbi Gate-SHA-jára (5c95c1c9, komment 22570) a 8b588834 B1-B3 lelet re-gate-jén. A fő javítás zárt, három maradék blokkolt: X1 MEDIUM (a setup.ps1 egy már létező `C:\ProgramData\MikroB-Drivers` mappát szó nélkül átvesz, csak az ACL-t cseréli le; a tulajdonos-eltérés csak NOTE, nem exit 1; Phase 2 csak a gyerekeken keres reparse-pontot, a célmappán és a tartalom-allowlisten nem), X2 LOW-MEDIUM (a neon-írás próba minden nem-"WROTE" kimenetet megerősítésnek vesz, az üreset is), X3 LOW (a REVIEW HKLM-re hivatkozott, a kódban nincs ilyen).
+
+**Döntés:** X1 -- a Phase 1 egy pre-existing TargetDir-t csak akkor fogad el, ha nem reparse-pont, a tulajdonos SID Administrators/SYSTEM, és minden gyereke is; bármely eltérés exit 1. A Get-Acl read-back (1c) tulajdonos-ellenőrzése SID-alapú és fail-closed (a régi NOTE-csak-display-name eltávolítva). A Phase 2 a másolás előtt UGYANEZEKET a feltételeket újra ellenőrzi (nem csak junction-ot a gyerekeken), plusz egy várt fájlnév-allowlistet (setup.log, launcher.log, a két ps1, a .sha256). X2 -- a write-probe csak a PONTOS 'BLOCKED' string-et fogadja el megerősítésként (korábban: bármi, ami nem "WROTE"); előtte egy WSL-oldali `test -d` igazolja, hogy a célmappa a fordított útvonalon tényleg létezik, és a bash hívás stderr-jét `2>/dev/null`-ra váltva nem keveredik a stdout-ba. X3 -- a kód sosem tartalmazott HKLM-hivatkozást (a hash a task parancssorában utazik, a header ezt mindig helyesen írta le); a korábbi REVIEW (22426) HKLM-állítása téves volt, ez a kör pontos REVIEW-val korrigálja, visszamenőleg nem szerkeszthető kommentet nem módosítottunk.
+
+**Teszt:** új `store/gpu-driver-install-setup.selftest.sh` (17 statikus kontroll, pozitív a jelen kódon, negatív a beágyazott, pontos javítás-előtti (5c95c1c9) szövegen -- pwsh nincs a hoston, a tényleges Windows-oldali futást sem WhiteHat, sem RedHat nem tudta mérni, ugyanez a korlát itt is áll). Bekötve a `graph-tooling-selftests.test.ts`-be (floor: 17 ok-sor).
+
+**Elfogadási kritérium:** a selftest minden sora a javítás-előtti szövegen a ROSSZ irányba esik (a régi szöveg hiányolja az új mintákat), a javított szövegen a JÓ irányba -- ez a pozitív+negatív pár, amit a kártya kért.
+
+**Ki döntött:** RedHat adta a javítás irányát (22570, Fix-Direction sort szándékosan nem írt, hogy maga vihesse a re-gate-et), a kódot a backend írta.
+**Hivatkozás:** kártya 7857c82c, szülő 26c07c33, RedHat NO-GO 22570, MikroB dispatch 22572 (msg_id 14054), korábbi GO-k: WhiteHat 22466, QA2 22485.
+
+## 2026-10-23 14:55 -- MT-10c: cold memória -> lesson csomópont + about él (kártya 76c2efb1)
+
+**Döntés:** `src/kg/import-cold-memories.ts` -- determinisztikus importer, a mikrob memória-rendszer
+COLD tier `memories` sorait (minden agentre, nincs agent-szűrés) `lesson` tipusú kg_node-okká
+alakítja (title=a tartalom első nem-üres sora, body=a teljes tartalom, keywords=a memória saját
+keywords mezője, source_ref='memories:<id>'). Ha a sor szövege 8-hex kártya-ID-t vagy 7-40 hex
+commit-sha-t referál, `about` él jön létre a megfelelő csomópontra -- de KIZÁRÓLAG ha az a
+csomópont már létezik a gráfban (sem card, sem commit node nem jön létre csak az él kedvéért,
+mert a memóriák fleet-wide szabad szöveg, nincs hozzájuk kanban-projekt, amit egy fabrikált
+card-node `project` mezőjébe lehetne tenni). A `lesson` node partíciója ezért `_global`
+(project-map.ts GLOBAL_PARTITION).
+
+A kártya-ID-kinyerés az `import-decisions-log.ts` (MT-10b) már exportált `referencedCardIds`
+függvényét hasznosítja újra (8-hex token, csak akkor él, ha a `card:<id>` csomópont létezik). A
+commit-sha-kinyerés egy új, tágabb hex-token regex (7-40 karakter, a store.ts
+ANCHOR_SHA_PATTERN/GATE_SHA_PATTERN mintájára), ugyanazzal a "csak ha már létezik" elvvel.
+
+**Mutáció-ellenőrzés:** két mutáció próbáltatott és mindkettő elbukott a megfelelő teszteken (majd
+visszaállítva): (1) a commit-sha about-él létrehozás teljes kikapcsolása -- a teszt elkapta (2
+él helyett 1); (2) a `category = 'cold'` SQL-szűrő elhagyása -- a teszt elkapta (a hot sor is
+lesson csomóponttá vált volna, 4 helyett 3).
+
+**Ellenőrzés:** `npx vitest run src/__tests__/kg-import-cold-memories.test.ts` (saját ágon,
+agent/backend2/work, mutáció-visszaállítás utáni állapoton) -- 5/5 zöld; `npx tsc --noEmit -p .`
+tiszta. Teljes suite a landoláskor (`marveen-land.sh`) fut, a Gate-SHA onnan jön.
+
+**Ki döntött:** backend2 (kártya 76c2efb1), szülő: 81593084.
+**Hivatkozás:** kártya 76c2efb1 (szülő 81593084 bontás), lásd MT-10a/63206155, MT-10b/bb0cadd9,
+MT-10d/33e5e4ff fenti bejegyzéseit a testvér-importerekhez.
+
+## 2026-10-23 -- kártya 46ad2933, kiegészítés: a RedHat NO-GO (komment 22579) javítása és az átvételi szabály az 59c4815b fázisra
+
+**Kapcsolat:** a "kártya 46ad2933: morluto/rea és affaan-m/ECC due diligence" bejegyzés (2026-10-23, fentebb) kiegészítése. Ahol a kettő ütközik, EZ a bejegyzés érvényes. Okai: a RedHat CYBERED NO-GO (komment 22579) kimutatta, hogy a korábbi bejegyzés ADAPT-listája legalább két skillt feltétel nélkül átvehetőnek mondott, amelynek SZÖVEGE pinelés nélküli csomagot futtattat. A WhiteHat (a vizsgálat szerzője) a RedHat mind a hat állítását függetlenül újramérte a rögzített SHA-kon (rea `14e745950e1a645b9e79c0b26b951a1309ec5e84`, 5542 fájl; ECC `90606c8315ee09cafc303515c5f33024db6b9882`, 4627 fájl; külön üres könyvtárba, `git fetch --depth 1`, hookok és submodule nélkül, semmi nem futott): mind a hat igaz. Kód nem változott, telepítés nem történt.
+
+**Pontosítás a korábbi bejegyzéshez:** a "0 valódi inline végrehajtás" és a REVIEW "nincs végrehajtási szintaxis" állítás a fájlokra és a `!`-szintaxisra igaz (RedHat is megerősítette az ECC teljes fáján), de NEM fedte azt, amit a skill SZÖVEGE kér az ügynöktől. Egy tiltólista fájlokra és szintaxisra szól, a szöveg által kért végrehajtásra nem.
+
+**Visszavont és szigorított döntések:**
+
+- **rea `reverse-engineer-anything`: a "csak szövegként ADAPT" visszavonva, a skill átvétele REJECT.** A SKILL.md 47., 61., 66., 81., 89. sora `npx -y rea-agents@latest` parancsokat ír elő (`doctor`, `setup --client codex --yes`, `analyze-javascript-application`): pinelés nélküli `@latest`, `-y`, a `setup` MCP-kliens konfigot ír és a csomagolt skillt is telepíti (felülírja). A SKILL.md-ben 22 hivatkozás (a skill-könyvtárban 42 különböző URL, saját mérés) a `github.com/morluto/rea/blob/main` mozgó ágra mutat, vagyis a vizsgálat UTÁN módosítható utasítás-forrás. A skill REA MCP-eszközökre épül, amiket nem telepítünk. Névütközés a flotta saját `reverse-engineering` skilljével. Csak az ÖTLET (módszertan) jöhet át, kézzel megírt szövegként a meglévő `reverse-engineering` skillbe, Setup/doctor/npx szakasz és minden `blob/main` hivatkozás nélkül.
+- **ECC REJECT (az ötlet jöhet, a szöveg nem):** `security-scan` (pinelés nélküli `npx ecc-agentshield`, `npm install -g`, `init`, `scan --fix`, az `--opus` mód `ANTHROPIC_API_KEY`-t kér, a cél a `.claude/` könyvtár); `agent-payment-x402` (négy mozgó `raw.githubusercontent.com/okx/payments/main/.../SELLER.md` fetch-előírás, `EVM_PRIVATE_KEY`/`SVM_PRIVATE_KEY`/`WALLET_PRIVATE_KEY`, pénzmozgás, `origin: community`); `gateguard` (42 350 bájt, egy hook DOKUMENTÁCIÓJA hook nélkül, `pip install gateguard-ai` pinelés nélkül a 690. sorban, az első Edit/Write/Bash elutasítása tmux-pane-ben megállítja az ügynököt); `config-gc` (a megosztott `~/.claude`-ot, vagyis a teljes flotta skilljeit és memóriáját olvassa törlési jelöltként); `safety-guard` (PreToolUse hookot állít, de nem szállít, hamis védettség-érzet, `~/.claude/safety-guard.log`). A "feltétellel" lista megszűnik, a `safety-guard` az ADAPT-listáról is kikerül.
+- **`strategic-compact`: ADAPT csak a "Hook Setup" szakasz nélkül** (a 43-57. sor `~/.claude/settings.json`-ba PreToolUse command hookot ír elő). A flottának saját kontextus-tömörítő monitorja van.
+- **Javított ECC ADAPT-lista (17), forrás `skills/<név>/SKILL.md`, git blob (12 jegy):** security-review `3f26b0df6566`, agent-security-hardening `726cd3e2e01e`, mcp-dependency-review `4b08af8b05d4`, tdd-workflow `ad6517386574`, verification-loop `35cb4b7737ed`, search-first `3d2669e71ba5`, api-design `655d730e6449`, database-migrations `92d6d6930667`, postgres-patterns `12a3a4a05c22`, architecture-decision-records `84f2dd608b45`, hexagonal-architecture `54943754db2e`, context-budget `063e29a464e1`, strategic-compact `134e767151c4` (Hook Setup nélkül), ai-regression-testing `e8dac65b1792`, browser-qa `f6358d6ac8b4`, click-path-audit `ffc469829b6c`, e2e-testing `f9ca797a1bad`.
+
+**Átvételi szabály az 59c4815b backend lépéshez (a korábbi (a)-(d) feltételek mellé, ütközésnél ez nyer):**
+
+1. A forrás kizárólag az ECC `skills/<név>/SKILL.md` útvonal, a fenti git blob azonosítóval pinelve. A commit-SHA nem elég: a fán 5 skill-gyökér van (`skills`, `pi/core/skills`, `.agents/skills`, `.cursor/skills`, `docs/` fordítások), és 7 jelöltnek (security-review, mcp-dependency-review, tdd-workflow, verification-loop, api-design, strategic-compact, e2e-testing) eltérő tartalmú másolata van az `.agents/skills`-ben. Rossz gyökérből másolva más szöveg kerül be.
+2. Frontmatterből csak `name` és `description` maradhat. Mérve a 17-en: mind hordoz `metadata` kulcsot, a tdd-workflow `argument-hint`-et, a verification-loop `license`-et. Az ECC fán 4 skill `allowed-tools`-ban előengedélyezett Bash-t hordoz (videodb, inherit-legacy-style, mle-workflow, eval-harness): jelöltként most nincs köztük, de ha később jelölt lesz, a kulcs törlendő.
+3. HTML-komment és mozgó hivatkozás (`main`/`HEAD` ág URL, `@latest` vagy bármely dist-tag, verziótlan csomag) nem maradhat a másolatban. Mérve: 2 jelöltben van HTML-komment (security-review, ai-regression-testing), mindkettő ártalmatlan.
+4. A landolt másolaton kötelező: `command grep -nE 'npx|pip install|npm (i|install)|curl|wget|settings\.json|hooks|~/\.claude'` (a sima `grep` a `.gitignore`-t követi, ezért `command grep -a`), és minden találathoz írásos indok a kártyán. Mérve a 17 blobon: 9-nél 0 találat, 8-nál 1-8 (security-review 1, tdd-workflow 2, verification-loop 2, mcp-dependency-review 4, search-first 4, e2e-testing 4, database-migrations 8, strategic-compact 8 a Hook Setup törlése előtt). A találat nem tiltás, indoklási kötelezettség.
+5. Névütközés: a `security-review` a flotta bundled `security-review` skilljével, a rea-ötlet a `reverse-engineering` skillel ütközik. A project-szintű precedenciát nem mértem, ezért átnevezés vagy az ötlet beolvasztása a meglévőbe, nem párhuzamos azonos nevű skill.
+6. Proveniencia a nyilvános R4CK/mikrob repóba kerülő szövegnél (README, 10. szabály): `postgres-patterns` a 148. sorban "Based on Supabase Agent Skills (credit: Supabase team) (MIT License)", az upstream licencét nem ellenőriztem; `click-path-audit` `origin: community`, a repó MIT-je a közreműködő jogait nem igazolja.
+
+**Nem vizsgált (korlát, változatlan):** a 17 jelölt törzse soronként (a 4. pont szabálya ezt a backendre bízza), a többi ECC skill, a rea `src/`, az `agentshield` és `rea-agents` csomag kódja (a `security-scan` és rea-skill állításai a skill szövegéből valók, a csomagot nem olvastam).
+
+**Ki döntött:** a javítást a WhiteHat (cybersec) írja a RedHat leletei (X1-X6, komment 22579) alapján; a RedHat a javítási irányt javasolta, a delta re-gate-et ő viszi (WhiteHat a saját vizsgálatát nem gate-elheti), a funkcionális oldalt a QA2. A beépítés Peti 12023 keretén belül komponensenként történik.
+**Hivatkozás:** kártya 46ad2933, szülő 59c4815b, REVIEW 22543, QA2 FAIL 22443, RedHat NO-GO 22579, MikroB komment 22441 és dispatch 14057, előző bejegyzés fentebb.

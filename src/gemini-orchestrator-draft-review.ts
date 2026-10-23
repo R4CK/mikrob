@@ -420,6 +420,31 @@ export interface DraftReviewSweepSummary {
   results?: DraftReviewResult[]
 }
 
+/** F4 (card 6b7c2c25, WhiteHat GO 612058c2 komment 19967): once the shared hourly budget is
+ *  spent, every remaining eligible card in this tick would also fail the same reserveSlot()
+ *  check inside reviewOneCard -- retrying each one anyway (a real flock+python3 subprocess per
+ *  card, ~30s) only delays the next tick for no benefit. Stops dispatching new reviews after the
+ *  first hourly_cap_reached and gives the untried cards a distinct reason, so it stays visible
+ *  that they were skipped rather than individually checked and also capped. Extracted from the
+ *  sweep so this stop-early behavior is unit-testable without a real DB/filesystem/Gemini call. */
+export async function reviewCardsStoppingOnCapReached(
+  cardIds: readonly string[],
+  reviewFn: (id: string) => Promise<DraftReviewResult>,
+): Promise<DraftReviewResult[]> {
+  const results: DraftReviewResult[] = []
+  let capReached = false
+  for (const id of cardIds) {
+    if (capReached) {
+      results.push({ id, reviewed: false, reason: 'skipped_hourly_cap_reached' })
+      continue
+    }
+    const result = await reviewFn(id)
+    if (result.reason === 'hourly_cap_reached') capReached = true
+    results.push(result)
+  }
+  return results
+}
+
 /**
  * I/O wrapper (mirrors runGeminiOrchestratorSweep/runGeminiOrchestratorDraftSweep's shape): kill
  * switch + route gated, then reviews every card currently carrying a draft file, one at a time,
@@ -451,10 +476,7 @@ export async function runGeminiOrchestratorDraftReviewSweep(
     reserveSlot: reserveGhostCallSlot,
   }
 
-  const results: DraftReviewResult[] = []
-  for (const id of listCardIds()) {
-    results.push(await reviewOneCard(id, apiKey, deps))
-  }
+  const results = await reviewCardsStoppingOnCapReached(listCardIds(), (id) => reviewOneCard(id, apiKey, deps))
   const reviewedCount = results.filter((r) => r.reviewed).length
   console.log(`[gemini-orchestrator-draft-review] checked ${results.length} card(s), ${reviewedCount} reviewed.`)
   return { ran: true, results }

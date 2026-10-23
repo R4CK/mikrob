@@ -1,18 +1,21 @@
 # gpu-driver-install-launcher.ps1 -- hash-checking launcher for gpu-driver-install.ps1
-# (card 8b588834, GPU-driver figyelő (C), RedHat fix point 2).
+# (cards 8b588834/7857c82c, GPU-driver figyelő (C)).
 #
 # The scheduled task calls THIS script (with -ExecutionPolicy Bypass), not the main
 # gpu-driver-install.ps1 directly.  Before launching the main script, this script:
-#   1. Reads the expected SHA-256 from gpu-driver-install.sha256 (same directory).
+#   1. Reads the expected SHA-256: first from $args[0] (task command line, set by
+#      gpu-driver-install-setup.ps1 Phase 2 via schtasks /Change -- F1 fix), then from
+#      gpu-driver-install.sha256 in the same directory (fallback for manual invocation).
 #   2. Computes the actual SHA-256 of gpu-driver-install.ps1 (same directory).
 #   3. If they match: runs the main script (no params, no extra flags).
 #   4. If they DIFFER: logs and exits 1 -- fail-closed, no install.
 #
-# The hash file is written by gpu-driver-install-setup.ps1 (admin-only, Peti-run).
-# Because the directory is SYSTEM+Administrators-only (ACL set by setup.ps1), the neon
-# WSL user cannot tamper with either gpu-driver-install.ps1 OR gpu-driver-install.sha256.
-# This launcher adds defence-in-depth: even if the ACL is somehow bypassed, an attacker
-# who replaces the ps1 but not the hash file is blocked here.
+# F1 rationale: the hash file sits in the ACL-protected directory (SYSTEM+Administrators
+# only, set by setup.ps1 Phase 1), so neon cannot tamper with it.  But neon cannot READ it
+# either, which would have required WSL-side path introspection to verify.  Putting the
+# expected hash on the task command line makes the pinned value visible in the task
+# definition (admin-only), without requiring neon read-access to the secured directory.
+# The hash file remains as a fallback for manual/elevated invocations.
 #
 # Exit 0 = main script ran (or will run; it exits separately).
 # Exit 1 = hash mismatch, missing file, or error -- no install attempted.
@@ -35,14 +38,19 @@ if (-not (Test-Path $MainScript)) {
     Write-Log "FAIL: $MainScript not found"
     exit 1
 }
-if (-not (Test-Path $HashFile)) {
-    Write-Log "FAIL: $HashFile not found -- run gpu-driver-install-setup.ps1 first"
-    exit 1
-}
-
-$expectedHash = (Get-Content $HashFile -Raw).Trim().ToUpper()
-if ([string]::IsNullOrWhiteSpace($expectedHash)) {
-    Write-Log "FAIL: $HashFile is empty"
+# F1: read expected hash from task command line arg ($args[0]) if provided; fall back to file.
+if ($args.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($args[0])) {
+    $expectedHash = $args[0].Trim().ToUpper()
+    Write-Log "Expected hash from task command line: $expectedHash"
+} elseif (Test-Path $HashFile) {
+    $expectedHash = (Get-Content $HashFile -Raw).Trim().ToUpper()
+    if ([string]::IsNullOrWhiteSpace($expectedHash)) {
+        Write-Log "FAIL: $HashFile is empty"
+        exit 1
+    }
+    Write-Log "Expected hash from file (fallback): $expectedHash"
+} else {
+    Write-Log "FAIL: no hash on command line and $HashFile not found -- run gpu-driver-install-setup.ps1 Phase 2 first"
     exit 1
 }
 

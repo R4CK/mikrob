@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 
-const card = { id: 'card-1', title: 'Fix the thing', description: null as string | null, project: null as string | null }
+const card = { id: 'card-1', title: 'Fix the thing', description: null as string | null, project: null as string | null, status: 'done' as string }
 let comments: Array<{ id: number; author: string; content: string; created_at: number; automated: boolean }> = []
 
 vi.mock('../db.js', () => ({
@@ -42,6 +42,7 @@ beforeEach(() => {
   card.title = 'Fix the thing'
   card.description = null
   card.project = null
+  card.status = 'done'
   comments = [{ id: 1, author: 'backend', content: REVIEW_CONTENT, created_at: 500, automated: false }]
 })
 
@@ -143,6 +144,115 @@ describe('runCapture', () => {
     const count = kgDb.prepare("SELECT COUNT(*) AS n FROM kg_nodes WHERE type = 'solution'").get() as { n: number }
     expect(count.n).toBe(1)
     expect(second.solutionIds).toEqual(['sol:card-1:0'])
+    kgDb.close()
+  })
+
+  // F2 (card 2ace4db9, WhiteHat): AGREE alone is not enough -- a stale AGREE verdict sitting in
+  // the comments while the card itself is no longer 'done' (reopened after enqueue, before the
+  // worker ran) must not produce an active node.
+  it('F2: gate AGREE but card.status is not done (reopened) -> solution created as draft, never active', () => {
+    const kgDb = freshKgDb()
+    card.status = 'in_progress'
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps())
+    expect(result.outcome).toBe('captured')
+    const node = kgDb.prepare('SELECT * FROM kg_nodes WHERE id = ?').get(result.solutionIds[0]!) as Record<string, unknown>
+    expect(node.status).toBe('draft')
+    kgDb.close()
+  })
+
+  // F3 (card 2ace4db9, WhiteHat): a secret pattern surfacing only in a LATER draft item (not the
+  // REVIEW text itself, which the EK-MT-4 check above already covers) must not leave the earlier
+  // item's node already written -- the whole run fails cleanly, zero nodes, and the queue row
+  // lands in 'failed' rather than staying 'pending' forever.
+  it('F3: a secret shape in the SECOND draft item rolls back the first item too -- no partial write, no forever-pending row', () => {
+    const kgDb = freshKgDb()
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      draftFn: () => JSON.stringify([
+        { title: 'harmless fix' },
+        { title: 'second fix', body: 'leaked key AKIAIOSFODNN7EXAMPLE in the config' },
+      ]),
+    }))
+    expect(result.outcome).toBe('failed')
+    expect(result.solutionIds).toHaveLength(0)
+    const allNodes = kgDb.prepare('SELECT COUNT(*) AS n FROM kg_nodes').get() as { n: number }
+    expect(allNodes.n).toBe(0)
+    const q = kgDb.prepare('SELECT state FROM kg_capture_queue WHERE card_id = ?').get(card.id) as { state: string } | undefined
+    expect(q?.state).toBe('failed')
+    kgDb.close()
+  })
+
+  // F3 (card 2ace4db9, WhiteHat): draftFn throwing (e.g. the subprocess crashed) must retry a
+  // limited number of times, then fail the row cleanly instead of leaving it uncaught/pending.
+  it('F3: draftFn throwing retries a limited number of times, then fails the row cleanly', () => {
+    const kgDb = freshKgDb()
+    let calls = 0
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      draftFn: () => { calls++; throw new Error('local-llm.sh exited 1') },
+    }))
+    expect(result.outcome).toBe('failed')
+    expect(calls).toBeGreaterThan(1)
+    expect(calls).toBeLessThanOrEqual(3)
+    const q = kgDb.prepare('SELECT state FROM kg_capture_queue WHERE card_id = ?').get(card.id) as { state: string } | undefined
+    expect(q?.state).toBe('failed')
+    kgDb.close()
+  })
+
+  // F3: draftFn succeeding on a retry (transient failure) must still capture normally.
+  it('F3: draftFn succeeding on the second attempt still captures', () => {
+    const kgDb = freshKgDb()
+    let calls = 0
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      draftFn: () => {
+        calls++
+        if (calls === 1) throw new Error('transient')
+        return JSON.stringify([{ title: 'off-by-one fix' }])
+      },
+    }))
+    expect(result.outcome).toBe('captured')
+    expect(calls).toBe(2)
+    kgDb.close()
+  })
+
+  // F1 (card 2ace4db9, WhiteHat): a proven prompt-injection case produced a draft whose title
+  // carried a bidi-override character -- the validator must reject it rather than let it become
+  // an active node's title.
+  it('F1: a draft field containing a BIDI-override character is rejected, not stored', () => {
+    const kgDb = freshKgDb()
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      draftFn: () => JSON.stringify([{ title: 'fix‮gnp.exe‬ the loader' }]),
+    }))
+    expect(result.outcome).toBe('failed')
+    expect(result.reason).toBe('draft_parse_error')
+    const allNodes = kgDb.prepare('SELECT COUNT(*) AS n FROM kg_nodes').get() as { n: number }
+    expect(allNodes.n).toBe(0)
+    kgDb.close()
+  })
+
+  // F1: a draft title far beyond the kg-capture.txt spec (150 chars) is rejected outright rather
+  // than silently truncated by store.ts's own cap -- truncation would still ship a node built from
+  // an oversized, suspect model output.
+  it('F1: a draft title far over the spec length is rejected, not silently truncated', () => {
+    const kgDb = freshKgDb()
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      draftFn: () => JSON.stringify([{ title: 'x'.repeat(5000) }]),
+    }))
+    expect(result.outcome).toBe('failed')
+    expect(result.reason).toBe('draft_parse_error')
+    kgDb.close()
+  })
+
+  // F1: the REVIEW text handed to draftFn must be framed as data, not pasted in raw -- this is
+  // the actual injection vector (the model has no notion of "untrusted content" the way the
+  // agent-facing wrapUntrusted() convention gives Claude).
+  it('F1: the review text is framed as data before reaching draftFn, not passed raw', () => {
+    const kgDb = freshKgDb()
+    let seenPrompt = ''
+    runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      draftFn: (reviewText: string) => { seenPrompt = reviewText; return JSON.stringify([{ title: 'off-by-one fix' }]) },
+    }))
+    expect(seenPrompt).not.toBe(REVIEW_CONTENT)
+    expect(seenPrompt).toContain(REVIEW_CONTENT)
+    expect(seenPrompt.toUpperCase()).toContain('DATA')
     kgDb.close()
   })
 })

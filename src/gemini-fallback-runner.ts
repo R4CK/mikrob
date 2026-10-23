@@ -73,6 +73,14 @@ const SESSION_OUTAGE_PATH = join(STORE, 'mikrob-session-outage.json')
 // "forever" -- the failure mode this closes is a SIGKILL/OOM/host-restart that leaves the file
 // behind with nothing left alive to clear it.
 const SESSION_OUTAGE_STALE_MS = 15 * 60 * 1000
+// F3 (card 6b7c2c25, WhiteHat GO 612058c2 komment 19967): the staleness check above only ever
+// rejected a too-OLD heartbeat -- a future-dated one (clock skew, a corrupted/forged marker with
+// now+1 day, or a raw millisecond value mistaken for seconds) passed every existing check, since
+// `Date.now() - heartbeat * 1000` is simply very negative and `<= SESSION_OUTAGE_STALE_MS` is
+// still true. A small tolerance (the writer's own clock may run a few seconds ahead) stays
+// fail-safe-toward-Claude: outside it, the marker is no longer trusted, same direction as the
+// too-stale case.
+const SESSION_OUTAGE_FUTURE_TOLERANCE_MS = 60 * 1000
 
 export type GeminiEngageOn = 'newDevStop' | 'hardStopOnly'
 
@@ -171,7 +179,8 @@ export function readSessionOutageActive(): boolean {
     if (raw.active !== true) return false
     const heartbeat = raw.heartbeat
     if (typeof heartbeat !== 'number' || !Number.isFinite(heartbeat)) return false
-    return Date.now() - heartbeat * 1000 <= SESSION_OUTAGE_STALE_MS
+    const ageMs = Date.now() - heartbeat * 1000
+    return ageMs >= -SESSION_OUTAGE_FUTURE_TOLERANCE_MS && ageMs <= SESSION_OUTAGE_STALE_MS
   } catch {
     return false
   }

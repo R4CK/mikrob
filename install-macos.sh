@@ -37,11 +37,10 @@ INSTALL_STEP="init"
 # shellcheck source=install-lang.sh
 source "$(dirname "$0")/install-lang.sh"
 
-# #1874: the managed-settings.json writes below are machine-wide (org-policy layer)
-# and need root. Say what is written and why, ONCE, before the first of them asks
-# for a password. The text lives in install-lang.sh; the function stays here, so a
-# standalone run that fetched an older install-lang.sh still has it (an unknown
-# _t key just prints nothing).
+# #1963 (card 647e0b6f): the managed-settings.json writes below are machine-wide (org-policy
+# layer) and need root. Say what is written and why, ONCE, before the first of them asks for a
+# password. The text lives in install-lang.sh; the function stays here, so a standalone run
+# that fetched an older install-lang.sh still has it (an unknown _t key just prints nothing).
 managed_settings_notice() {
   if [ -n "${MANAGED_NOTICE_SHOWN:-}" ]; then
     return 0
@@ -1088,15 +1087,22 @@ if [ -d "$SCHED_TPL_DIR" ]; then
       continue
     fi
     mkdir -p "$target"
-    for f in "$tpl"*; do
-      [ -f "$f" ] || continue
-      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-          -e "s/{{CHAT_ID}}/${CHAT_ID:-0}/g" \
-          -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-          "$f" > "$target/$(basename "$f")"
+    # SEEDREFDIR1018 (upstream #2059, card 647e0b6f): a task may keep part of its
+    # text in a references/ subdir that its SKILL.md points at; it ships with the
+    # same templating, or the pointer lands on a file that does not exist.
+    for sub in "" "references/"; do
+      [ -z "$sub" ] || [ -d "$tpl$sub" ] || continue
+      mkdir -p "$target/$sub"
+      for f in "$tpl$sub"*; do
+        [ -f "$f" ] || continue
+        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s/{{CHAT_ID}}/${CHAT_ID:-0}/g" \
+            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+            "$f" > "$target/$sub$(basename "$f")"
+      done
     done
     echo -e "  ${GREEN}✓${NC} Utemezett feladat scaffoldolva: $task_name"
   done
@@ -1319,16 +1325,23 @@ if [ -d "$SEED_SCHED_DIR" ]; then
       continue
     fi
     mkdir -p "$target"
-    for f in "$tpl"*; do
-      [ -f "$f" ] || continue
-      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-          -e "s|{{PROJECT_ROOT}}|$INSTALL_DIR|g" \
-          -e "s/{{CHAT_ID}}/${CHAT_ID:-0}/g" \
-          -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-          "$f" > "$target/$(basename "$f")"
+    # SEEDREFDIR1018 (upstream #2059, card 647e0b6f): a task may keep part of its
+    # text in a references/ subdir that its SKILL.md points at; it ships with the
+    # same templating, or the pointer lands on a file that does not exist.
+    for sub in "" "references/"; do
+      [ -z "$sub" ] || [ -d "$tpl$sub" ] || continue
+      mkdir -p "$target/$sub"
+      for f in "$tpl$sub"*; do
+        [ -f "$f" ] || continue
+        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s|{{PROJECT_ROOT}}|$INSTALL_DIR|g" \
+            -e "s/{{CHAT_ID}}/${CHAT_ID:-0}/g" \
+            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+            "$f" > "$target/$sub$(basename "$f")"
+      done
     done
     SCHED_NEW=$((SCHED_NEW + 1))
   done
@@ -1449,12 +1462,21 @@ if [ "$WHISPER_RC" -ne 0 ]; then
   echo -e "    ${DIM}$(_t macos.whisper_skipped_hint)${NC}"
 fi
 
-# ffmpeg (audio/video processing)
+# ffmpeg (audio/video processing). Without Homebrew an unguarded `brew install
+# ffmpeg` was a fatal stop (upstream #2125, card 647e0b6f) -- same pattern as
+# the Ollama/Whisper blocks above: warn and move on, never abort the install.
 if ! command -v ffmpeg &>/dev/null; then
   echo -e "$(_t macos.ffmpeg_installing)"
-  brew install ffmpeg
+  if command -v brew &>/dev/null; then
+    brew install ffmpeg || true
+  fi
 fi
-echo -e "$(_t macos.ffmpeg_done)"
+if command -v ffmpeg &>/dev/null; then
+  echo -e "$(_t macos.ffmpeg_done)"
+else
+  warn "$(_t macos.ffmpeg_skipped)"
+  echo -e "    ${DIM}$(_t macos.ffmpeg_skipped_hint)${NC}"
+fi
 
 # TAILSCALE-STEP-BEGIN (kartya 12dc8a5c -- sentinel a src/__tests__ standalone tesztjenek, ne torold)
 # --- Tailscale (automatikus, kartya 12dc8a5c) ---
