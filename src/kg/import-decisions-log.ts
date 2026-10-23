@@ -13,13 +13,22 @@
 // re-running the import over the same file upserts the same rows rather than duplicating them.
 
 import type Database from 'better-sqlite3'
-import { upsertNode, upsertEdge } from './store.js'
+import { createHash } from 'node:crypto'
+import { upsertNode, upsertEdge, KgSecretError } from './store.js'
+import { mapProjectToPartition } from './project-map.js'
 
 export interface DecisionsImportReport {
   entriesParsed: number
   decisionsUpserted: number
   governsEdges: number
   cardRefsSkippedMissing: number
+  /** F3 (card 49b96b30, WhiteHat 22369): a secret shape in ONE entry used to roll back the whole
+   *  import (the per-entry upsertNode throw propagated out of the shared transaction). Counted and
+   *  reported separately now -- the entry is skipped, every other entry still imports. */
+  entriesRejectedSecret: number
+  /** The 1-indexed source line of each entry skipped for a secret shape, so a caller/operator can
+   *  find and fix it without re-deriving it from the count alone. */
+  secretRejectedLines: number[]
 }
 
 interface CardRow {
@@ -70,8 +79,20 @@ export function referencedCardIds(text: string): string[] {
   return [...seen]
 }
 
-function decisionNodeId(lineNumber: number): string {
-  return `decision:L${lineNumber}`
+// F1 (card 49b96b30, WhiteHat 22369): the old id (`decision:L<line-number>`) was neither stable
+// across files (two DECISIONS.md files with an entry on the same line collided on one node) nor
+// across time (the project-decisions-log skill's 90-day archive trims entries off the FRONT of
+// the file, shifting every later entry's line number -- the next import then overwrote an
+// unrelated node at the now-reused line number, leaving its `governs` edges pointing at the WRONG
+// content). The id is now derived from the entry's own content (title + body), scoped by project
+// and source file -- archiving an entry (removing it from this file) simply stops the node from
+// being touched again; it never gets reassigned to different content. `occurrence` disambiguates
+// two entries that happen to hash identically (e.g. an accidental copy-paste duplicate) within one
+// import run, so the second one gets its own node instead of silently overwriting the first.
+function decisionNodeId(project: string, sourcePath: string, entry: ParsedEntry, occurrence: number): string {
+  const digest = createHash('sha256').update(`${entry.title}\n${entry.body}`).digest('hex').slice(0, 16)
+  const suffix = occurrence > 0 ? `.${occurrence}` : ''
+  return `decision:${project}:${sourcePath}:${digest}${suffix}`
 }
 
 function cardNodeId(cardId: string): string {
@@ -104,23 +125,42 @@ export function importDecisionsLog(
     decisionsUpserted: 0,
     governsEdges: 0,
     cardRefsSkippedMissing: 0,
+    entriesRejectedSecret: 0,
+    secretRejectedLines: [],
   }
   const lookup = makeCardLookup(mainDb)
   const entries = parseEntries(markdown)
   report.entriesParsed = entries.length
+  const digestOccurrences = new Map<string, number>()
 
   const runImport = kgDb.transaction(() => {
     for (const entry of entries) {
-      const id = decisionNodeId(entry.lineNumber)
-      upsertNode(kgDb, {
-        id,
-        type: 'decision',
-        project,
-        title: entry.title || `(no title, line ${entry.lineNumber})`,
-        body: entry.body || null,
-        source_ref: `${sourcePath}:L${entry.lineNumber}`,
-        extractor: 'import:decisions_log',
-      })
+      const digestKey = `${project}:${sourcePath}:${entry.title}\n${entry.body}`
+      const occurrence = digestOccurrences.get(digestKey) ?? 0
+      digestOccurrences.set(digestKey, occurrence + 1)
+      const id = decisionNodeId(project, sourcePath, entry, occurrence)
+
+      // F3 (card 49b96b30, WhiteHat 22369): a secret shape in THIS entry must not roll back the
+      // ones already written in the same transaction (a SAVEPOINT) -- catch it here, count and
+      // record the line, skip straight to the next entry.
+      try {
+        upsertNode(kgDb, {
+          id,
+          type: 'decision',
+          project,
+          title: entry.title || `(no title, line ${entry.lineNumber})`,
+          body: entry.body || null,
+          source_ref: `${sourcePath}:L${entry.lineNumber}`,
+          extractor: 'import:decisions_log',
+        })
+      } catch (err) {
+        if (err instanceof KgSecretError) {
+          report.entriesRejectedSecret += 1
+          report.secretRejectedLines.push(entry.lineNumber)
+          continue
+        }
+        throw err
+      }
       report.decisionsUpserted += 1
 
       const cardIds = referencedCardIds(`${entry.title}\n${entry.body}`)
@@ -131,10 +171,14 @@ export function importDecisionsLog(
           continue
         }
         if (!kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get(cardNodeId(cardId))) {
+          // F2 (card 49b96b30, WhiteHat 22369): the card node's partition must be derived from the
+          // REFERENCED card's own project, same as import-from-relations.ts and MikroB's D2
+          // decision (3f6fc4ce comment 20814) -- not the calling project, which is the DECISIONS.md
+          // file's partition and may differ from the card it happens to mention.
           upsertNode(kgDb, {
             id: cardNodeId(cardId),
             type: 'card',
-            project,
+            project: mapProjectToPartition(card.project),
             title: card.title,
             source_ref: `kanban_cards:${cardId}`,
             extractor: 'import:decisions_log',
