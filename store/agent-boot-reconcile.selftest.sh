@@ -37,6 +37,7 @@ chmod +x "$TMP"/*.sh
 # live default when neither feature is engaged).
 NO_HARDSTOP="$TMP/no-such-hardstop.json"
 NO_PRIORITY="$TMP/no-such-priority.json"
+NO_PAUSE="$TMP/no-such-pause.json"
 
 common_env() { # $1 = case name
   local case_name="${1:?case name required}"
@@ -46,6 +47,7 @@ common_env() { # $1 = case name
   export AGENT_BOOT_RECONCILE_TELEGRAM_BIN="$TMP/telegram-recorder.sh"
   export AGENT_BOOT_RECONCILE_HARDSTOP_FILE="$NO_HARDSTOP"
   export AGENT_BOOT_RECONCILE_PRIORITY_CONFIG="$NO_PRIORITY"
+  export AGENT_BOOT_RECONCILE_PAUSE_FILE="$NO_PAUSE"
   export START_CALLS="$TMP/start-calls-$case_name.txt"
   export MESSAGE_CALLS="$TMP/message-calls-$case_name.txt"
   export TELEGRAM_CALLS="$TMP/telegram-calls-$case_name.txt"
@@ -322,6 +324,92 @@ OUT="$(bash "$BIN" 2>&1)"
 check "message-stopped: still started" "started:" "$OUT"
 check "message-stopped: telegram flags the stopped recipient" "backend" "$(cat "$TELEGRAM_CALLS")"
 unset MESSAGE_RECORDER_STOPPED
+
+# --- 16. card a4689243: manual-dispatch-pause ACTIVE -> real in_progress work is logged as
+#          "would start", nothing is actually started/messaged/telegrammed -------------------------
+common_env pauseactive
+echo '{"active": true, "reason": "Peti 11965"}' > "$TMP/fixtures/pause.json"
+export AGENT_BOOT_RECONCILE_PAUSE_FILE="$TMP/fixtures/pause.json"
+python3 -c "
+import json
+cards = [{'id':'cardQQQ','status':'in_progress','assignee':'backend'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "pause-active: would-start marker" "manual-dispatch-pause active -- would start:" "$OUT"
+check "pause-active: agent+card named in the log" "backend(cardQQQ)" "$OUT"
+check_absent "pause-active: no start call" "START" "$(cat "$START_CALLS")"
+check_absent "pause-active: no resume message" "MESSAGE" "$(cat "$MESSAGE_CALLS")"
+check_absent "pause-active: no telegram" "TELEGRAM" "$(cat "$TELEGRAM_CALLS")"
+unset AGENT_BOOT_RECONCILE_PAUSE_FILE
+
+# --- 17. pause file present but explicitly {"active": false} (lifted-in-place) -> normal start ------
+common_env pauseinactive
+echo '{"active": false}' > "$TMP/fixtures/pause2.json"
+export AGENT_BOOT_RECONCILE_PAUSE_FILE="$TMP/fixtures/pause2.json"
+python3 -c "
+import json
+cards = [{'id':'cardRRR','status':'in_progress','assignee':'backend'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "pause-inactive: started marker" "started:" "$OUT"
+check "pause-inactive: card id in resume message" "cardRRR" "$(cat "$MESSAGE_CALLS")"
+unset AGENT_BOOT_RECONCILE_PAUSE_FILE
+
+# --- 18. pause file present but CORRUPT (unparseable JSON) -> fail-closed, treated as active --------
+common_env pausecorrupt
+printf '{not valid json' > "$TMP/fixtures/pause3.json"
+export AGENT_BOOT_RECONCILE_PAUSE_FILE="$TMP/fixtures/pause3.json"
+python3 -c "
+import json
+cards = [{'id':'cardSSS','status':'in_progress','assignee':'backend'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+OUT="$(bash "$BIN" 2>&1)"
+check "pause-corrupt: fail-closed, would-start marker (not a normal start)" "manual-dispatch-pause active -- would start:" "$OUT"
+check_absent "pause-corrupt: no start call" "START" "$(cat "$START_CALLS")"
+unset AGENT_BOOT_RECONCILE_PAUSE_FILE
+
+# --- 19. mutation test: a copy of the script with the ENTIRE pause-check block deleted (simulating
+#          "the pause-ellenorzes kivetele", exactly the acceptance criterion) must turn case 16 RED --
+#          i.e. under the mutant, the paused agent gets started anyway. Proves case 16 is load-bearing,
+#          not vacuous. The block is found by its own markers (PAUSE_ACTIVE=0 ... matching fi), not a
+#          fixed line number, so this survives future edits to the script around it.
+common_env mutationcheck
+MUTANT="$TMP/agent-boot-reconcile.mutant.sh"
+awk '
+  /^PAUSE_ACTIVE=0$/ { print; skip=1; next }
+  skip && /^fi$/ { skip=0; next }
+  skip { next }
+  { print }
+' "$BIN" > "$MUTANT"
+chmod +x "$MUTANT"
+if ! diff -q "$BIN" "$MUTANT" >/dev/null 2>&1; then
+  echo "  ok   mutation: the pause-check block was actually found and stripped from the mutant"
+else
+  echo "  FAIL mutation: the mutant is byte-identical to the original -- the awk markers did not match, nothing was mutated"
+  fail=1
+fi
+echo '{"active": true, "reason": "Peti 11965"}' > "$TMP/fixtures/pause.json"
+export AGENT_BOOT_RECONCILE_PAUSE_FILE="$TMP/fixtures/pause.json"
+python3 -c "
+import json
+cards = [{'id':'cardTTT','status':'in_progress','assignee':'backend'}]
+json.dump(cards, open('$TMP/fixtures/kanban.json','w'))
+json.dump([{'name':'backend','running': False}], open('$TMP/fixtures/agents.json','w'))
+"
+MUT_OUT="$(bash "$MUTANT" 2>&1)"
+if printf '%s' "$MUT_OUT" | grep -q 'started:'; then
+  echo "  ok   mutation: with the pause-check removed, the paused agent gets started -- case 16 would catch this regression"
+else
+  echo "  FAIL mutation: removing the pause-check should have made the mutant start the agent anyway, but it still didn't -> $MUT_OUT"
+  fail=1
+fi
+unset AGENT_BOOT_RECONCILE_PAUSE_FILE
 
 if [ "$fail" -eq 0 ]; then
   echo "selftest: PASS"
