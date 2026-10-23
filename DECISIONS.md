@@ -21190,3 +21190,17 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 
 **Ki döntött:** a vizsgálat és a javaslat WhiteHat (cybersec) saját deliverable-je, a csillag-mérés elégségességét MikroB döntötte el (komment 22441); a beépítés tényleges jóváhagyása Peti 12023 keretén belül komponensenként történik. Gate: QA2 (komment 22443, FAIL a hiányzó DECISIONS-bejegyzés miatt, ez a javítás) + RedHat.
 **Hivatkozás:** kártya 46ad2933, szülő 59c4815b, REVIEW komment 22440, MikroB komment 22441, QA2 komment 22443, precedens: 3f6fc4ce (MT F0 GitHub-first due diligence).
+
+## 2026-10-23 -- kártya 28923621: persona-write-guard bekötve POST /api/agents-be (PERSONANOCLOBBER923)
+
+**Kontextus:** a 6b10a6b8 (upstream PICKERCLIKAPU923-kötegben, 4 új képességből a 3.) halasztott tétele. A `persona-write-guard.ts` modul (snapshotPersonaFile/writePersonaFileIfUnchanged) egy korábbi upstream merge-ből (9ce202399) már megvolt a fában, de a `969bfa85a` köteg-merge tudatosan NEM kötötte be a POST /api/agents handlerbe -- "left in place, unused, for a future dedicated wiring card" -- ez a kártya az a jövőbeli kártya.
+
+**Döntés:** a 9ce202399 eredeti diffje (routes/agents.ts hunk + két teszt: persona-gen-no-clobber.test.ts, persona-gen-no-clobber-route.test.ts) változtatás nélkül visszahelyezve. A generateClaudeMd/generateSoulMd generálás ELŐTT pillanatkép készül CLAUDE.md/SOUL.md-ről, és mind a siker-, mind a sablon-fallback ág csak akkor ír, ha a fájl azóta változatlan -- ha valaki PUT-tal kézzel módosította generálás közben, a kézi tartalom marad, a generált szöveg *.generated.md-ként mentve (csak a siker-ágon; a sablonnak nincs mit megőrizni), és a main agent system-üzenetben értesül.
+
+**Mutáció-ellenőrzés:** a javítás visszavonásával (a pontos, javítás előtti unconditional atomicWriteFileSync-es kód) a 15 tesztből 5 pirosra váltott (mindkét route-szintű "kézi fájl megmarad" eset, az egy-fájlos fallback eset, és a két forrás-szintű pin); 10 zöld maradt (a tiszta guard-függvény unit-tesztek, amik nem a route-ot futtatják).
+
+**Elfogadási kritérium:** 15/15 teszt zöld a javítással; tsc --noEmit -p . tiszta.
+
+**Gate-SHA:** 02bd502856f14bcb40b2135ae767e989d6d98de7
+**Ki döntött:** backend (card 28923621).
+**Hivatkozás:** kártya 28923621, előd upstream-kártya 6b10a6b8, forrás-commit 9ce202399, köteg-merge 969bfa85a (ami tudatosan ehhez a kártyához utalta a bekötést).
