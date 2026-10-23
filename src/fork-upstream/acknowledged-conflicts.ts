@@ -3498,6 +3498,36 @@ export interface ForkAnchor {
 }
 
 export const ACKNOWLEDGED_FORK_ANCHORS: Partial<Record<keyof typeof ACKNOWLEDGED_CONFLICTS, ForkAnchor>> = {
+  // Card 647e0b6f (fullstack/DevO, 2026-10-23): the install-lang.sh entry above NOT ADOPTS
+  // upstream's macos.ollama_* translation keys, because they only back upstream's inline
+  // Ollama-install step in install-macos.sh, which this fork deliberately does not run (Peti
+  // directive, EPIC ebc7b4dd) -- guarded by installer-no-llm-preinstall.test.ts. If
+  // 'macos.ollama_check' ever appears in install-lang.sh, either that directive was reversed or
+  // the keys were added as dead weight; either way this refusal needs re-reading.
+  'install-lang.sh': {
+    needle: 'macos.ollama_check',
+    file: 'install-lang.sh',
+    expect: 'absent',
+    because:
+      "the macos.ollama_* keys only back upstream's inline Ollama-install step in " +
+      "install-macos.sh, which this fork deliberately does not run (installer-no-llm-preinstall." +
+      "test.ts guards it) -- no fork code references these keys, so adding them would be dead " +
+      "weight, not a fix. If this key appears, that decision needs re-reading.",
+  },
+  // Card 647e0b6f (fullstack/DevO, 2026-10-23): the install-macos.sh entry above is a hunk-by-hunk
+  // decision; the most load-bearing NOT-ADOPTED item is the CLAUDE_VARIANT prompt removal --
+  // dropping it would delete a fork-only feature (the fresh/preconfigured install choice) with no
+  // replacement. CLAUDE_VARIANT_CHOICE (the prompt's read target) is the checkable fact: if it
+  // disappears from install-macos.sh, the fork-only feature was dropped and this refusal is stale.
+  'install-macos.sh': {
+    needle: 'CLAUDE_VARIANT_CHOICE',
+    file: 'install-macos.sh',
+    expect: 'present',
+    because:
+      "upstream's hunk removes the CLAUDE_VARIANT (fresh vs preconfigured) prompt entirely; this " +
+      "fork kept it because it is a fork-only feature with no upstream replacement. If " +
+      "CLAUDE_VARIANT_CHOICE disappears from install-macos.sh, that feature was silently dropped.",
+  },
   // Card 1eae1b41 (fullstack/DevO, 2026-10-17): the quarantine-reader.md entry above NOT ADOPTS
   // upstream's SSRF-protection block ("Always refused, in every posture"), deferring the decision
   // to a separate security-group follow-up card. If that section's heading text ever appears in
