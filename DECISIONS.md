@@ -21066,3 +21066,18 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 
 **Ki döntött:** fullstack/DevO (card ca72e5d4), szülő: c65add5a.
 **Hivatkozás:** kártya ca72e5d4 (szülő c65add5a bontás).
+
+---
+
+## 2026-10-23 -- agent-boot-reconcile.sh: manual-dispatch-pause tiszteletben tartása (card a4689243)
+
+**Mért hiba:** 2026-10-22 20:26 és 2026-10-23 07:21, a boot-reconcile timer két egymást követő körben elindította a parkolt flottát (fullstack, cybersec, cybered, qa, qa2), miközben az aktív `store/manual-dispatch-pause.json` (Peti 11965, "biztos pont") ezt tiltotta volna. A szkript a pause-fájlt egyáltalán nem olvasta -- `grep pause store/agent-boot-reconcile.sh` 0 találatot adott a javítás előtt.
+
+**Döntés:** a `weekly-hard-stop.json` már meglévő mintáját követve (F1a blokk) egy `PAUSE_ACTIVE` ellenőrzés került a kártya-szelektor és a tényleges start/resume hívás közé. Aktív pause alatt a szkript a WORK-listát továbbra is kiszámítja (ügynök + kártya-azonosító), de minden indítandó ügynököt csak egy `would start:` sorba naplóz, és NEM hívja meg az `/api/agents/<agent>/start`-ot vagy a resume-üzenetet. Fail-closed: ha a pause-fájl létezik, de nem parse-olható (sérült JSON), ugyanúgy aktívnak számít, mint egy explicit `{"active": true}` -- csak egy hiányzó fájl (vagy explicit `{"active": false}`, a feloldás élő mintája a `.lifted-<dátum>` átnevezés szerint) jelenti az inaktív állapotot.
+
+**Miért ez a forma, nem külön pause-specifikus log-ág:** a kártya elfogadási kritériuma kimondottan azt kérte, hogy a pause alatt a szkript "csak naplózza, mit indítana" -- ehhez a WORK-számítást változatlanul futtatni kell, csak a hatást (start/message hívás) kell elhagyni. Ez surgical change: a meglévő ciklus egyetlen ágazási pontján (`is_running` ellenőrzés után) dönt, nem új útvonalat épít a kártya-szelektor köré.
+
+**Mutáció-ellenőrzés:** a selftest (`agent-boot-reconcile.selftest.sh`, 19. eset) egy olyan mutált másolatot futtat, amiből a teljes pause-ellenőrző blokk ki van véve (awk-kal, a blokk saját határjelein, nem fix sorszámon) -- a mutált szkript a pause ellenére elindítja az ügynököt, bizonyítva hogy a 16. eset (pause aktív -> nincs start) valódi, nem vakon zöld ellenőrzés.
+
+**Ki döntött:** fullstack/DevO (card a4689243).
+**Hivatkozás:** kártya a4689243, kapcsolódó: 79d67d31 (ugyanaz a szkript, más hiba).
