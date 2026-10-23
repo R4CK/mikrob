@@ -56,6 +56,27 @@ done
 # HOPPER_LAUNCHER_PATH is optional (Hopper may not be installed/registered yet).
 HOPPER_LAUNCHER_PATH="${HOPPER_LAUNCHER_PATH:-}"
 
+# Resolve bwrap/env/node at FIXED, trusted absolute paths, never via a bare-name PATH search
+# (RedHat NO-GO, card ca1b763c, komment 23049): the registered PATH's first element is
+# $JAVA_HOME/bin, a directory owned and writable by the same user (neon) the wrapper and every
+# engine run as. A bare `bwrap`/`env`/`node` call resolves against THAT PATH -- a binary planted
+# there under one of these three names would run instead of the real one, before any isolation
+# takes effect. None of these candidate directories are user-writable.
+resolve_trusted_bin() {
+  local name="$1" cand
+  for cand in /usr/bin/"$name" /bin/"$name" /usr/local/bin/"$name"; do
+    if [ -x "$cand" ]; then
+      echo "$cand"
+      return 0
+    fi
+  done
+  echo "rea-bwrap-sandbox: $name not found at a trusted absolute path (/usr/bin, /bin, /usr/local/bin) -- refusing to start (fail-closed)" >&2
+  exit 1
+}
+ENV_BIN="$(resolve_trusted_bin env)"
+BWRAP_BIN="$(resolve_trusted_bin bwrap)"
+NODE_BIN="$(resolve_trusted_bin node)"
+
 REA_VERSION="6.7.0"
 REA_SCRIPT=""
 for pkg_json in "$HOME"/.npm/_npx/*/node_modules/rea-agents/package.json; do
@@ -116,7 +137,11 @@ fi
 # env -i wraps bwrap ITSELF (see the N1 fix note in the header comment): bwrap's own process
 # becomes pid 1 of the new pid namespace, so its environment must already be the minimal 7 names
 # before it starts, not stripped only for the node process it execs afterward.
-exec env -i \
+# $ENV_BIN/$BWRAP_BIN/$NODE_BIN are trusted absolute paths resolved above, not bare names --
+# the registered PATH itself still needs to be a minimal, allowed value for the sandboxed REA
+# process to use (rea-agents resolves its own child tools via it), it just must never be used to
+# look up bwrap/env/node themselves (RedHat NO-GO, komment 23049).
+exec "$ENV_BIN" -i \
   HOME="$HOME" \
   PATH="$PATH" \
   JAVA_HOME="$JAVA_HOME" \
@@ -124,5 +149,5 @@ exec env -i \
   REA_JADX_MCP_JAR="$REA_JADX_MCP_JAR" \
   REA_KUNA_COMMAND="$REA_KUNA_COMMAND" \
   ${HOPPER_LAUNCHER_PATH:+HOPPER_LAUNCHER_PATH="$HOPPER_LAUNCHER_PATH"} \
-bwrap "${BIND_ARGS[@]}" --new-session --die-with-parent \
-  node "$REA_SCRIPT" "${REA_ARGS[@]}"
+"$BWRAP_BIN" "${BIND_ARGS[@]}" --new-session --die-with-parent \
+  "$NODE_BIN" "$REA_SCRIPT" "${REA_ARGS[@]}"

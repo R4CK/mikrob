@@ -45,7 +45,7 @@ printf '  sh -c %s\n' \
 chmod +x "$PROBE"
 
 check "the real script's last line is still the expected node exec (so the probe swap below is valid)" \
-  "$([ "$LAST_LINE" = '  node "$REA_SCRIPT" "${REA_ARGS[@]}"' ] && echo 1 || echo 0)"
+  "$([ "$LAST_LINE" = '  "$NODE_BIN" "$REA_SCRIPT" "${REA_ARGS[@]}"' ] && echo 1 || echo 0)"
 DIFF_LINES="$(diff "$REAL" "$PROBE" | grep -c '^[<>]' || true)"
 check "the probe copy differs from the real script by exactly one line (the final exec target)" \
   "$([ "$DIFF_LINES" = "2" ] && echo 1 || echo 0)"
@@ -79,6 +79,34 @@ for allowed in HOME PATH JAVA_HOME GHIDRA_INSTALL_DIR REA_JADX_MCP_JAR REA_KUNA_
   check "pid 1 environ carries the allowed $allowed" \
     "$(printf '%s' "$PID1_SECTION" | grep -q "^${allowed}=" && echo 1 || echo 0)"
 done
+
+# Regression test for RedHat NO-GO (card ca1b763c, komment 23049): the registered PATH's first
+# element is $JAVA_HOME/bin, a directory owned by the SAME user (neon) running the wrapper and
+# every engine -- a binary planted there named bwrap/env/node would run instead of the real one
+# if the wrapper looked them up via a bare-name PATH search. Plant fake, sentinel-writing
+# bwrap/env/node in a throwaway dir, put it FIRST in PATH (exactly the threat shape), and confirm
+# the real wrapper never executes them.
+HIJACK_DIR="$WORK/hijack-bin"
+mkdir -p "$HIJACK_DIR"
+SENTINEL="$WORK/hijacked"
+for fake in bwrap env node; do
+  cat > "$HIJACK_DIR/$fake" <<EOF
+#!/usr/bin/env bash
+echo "$fake" >> "$SENTINEL"
+exit 1
+EOF
+  chmod +x "$HIJACK_DIR/$fake"
+done
+env -i \
+  HOME="$HOME" \
+  PATH="$HIJACK_DIR:/usr/bin:/bin" \
+  JAVA_HOME="/usr" \
+  GHIDRA_INSTALL_DIR="/usr" \
+  REA_JADX_MCP_JAR="/usr/bin/true" \
+  REA_KUNA_COMMAND="/usr/bin/true" \
+  bash "$REAL" doctor >/dev/null 2>&1 || true
+check "a bwrap/env/node planted first in PATH is never executed (resolved via trusted absolute path instead)" \
+  "$([ ! -f "$SENTINEL" ] && echo 1 || echo 0)"
 
 if [ "$FAIL" -eq 0 ]; then
   echo "selftest: $PASS passed, 0 failed"
