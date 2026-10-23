@@ -21467,3 +21467,38 @@ mutáció-ellenőrzött teszt, valódi dry-run landolással igazolva).
 
 **Hivatkozás:** kártya 4a769a34 (szülő c65add5a); `store/decisions-conflict-check.sh`,
 `store/marveen-land.sh`, `store/mopsion-land.sh`.
+
+## 2026-10-23 -- kártya 2c54029d: KG capture-pipeline validátor-pin, 11 láthatatlan karakterosztály, stillDone transakcióba
+
+**Kontextus:** RedHat GO-ja a 2ace4db9-en (komment 23005, nem blokkoló tételek) 3 apró tételt hagyott
+nyitva az f809b24c (F5) kódján: (1) a `parseDraft` saját `isSafeDraftField` kimenet-validátora
+(title/body/snippet/keywords) nulla teszt-lefedettséggel futott -- egy törlés minden meglévő tesztet
+zölden hagyott volna; (2) `UNSAFE_CHARS_RX` 11 további láthatatlan/formázó karakterosztályt hagyott
+ki (variation selector-ek, combining grapheme joiner, elavult formázó-karakterek, Hangul filler-ek,
+khmer inherent vowel, halfwidth Hangul filler, interlinear annotation anchor, egy zenei-jelölés
+formázó karakter); (3) `stillDone` a kgDb tranzakción KÍVÜL olvasódott (INFO, csak vizsgálandó).
+
+**Döntés:** (1) új reszt, ami egy BIDI-override karaktert tesz mind a 4 draft-mezőbe egyenként, és
+elvárja a `draft_parse_error`-t -- mutáció-ellenőrzéssel igazolva (a validátor sorainak kikommentezése
+a tesztet pirosra váltja). (2) `UNSAFE_CHARS_RX` kiegészítve `͏`, `ᅟ`, `ᅠ`, `឴`,
+`⁪-⁯`, `︀-️`, `ﾠ`, `￹`, `\u{1D173}`-tal, az X1(a) mintáját követő új
+reszttel. (3) `stillDone` olvasása áthelyezve a `kgDb.transaction()` callback ELEJÉRE -- ugyanazon a
+SAVEPOINT-on belül, a legkésőbbi lehetséges pontra az írás előtt.
+
+**Teszt:** 2 új reszt a `kg-capture-pipeline.test.ts`-ben (összesen 22). Mutáció-ellenőrzés mindkét
+érdemi tételre: a validátor-sorok kikommentezése -> az új "output-side validator" teszt PIROS; a
+regex-bővítés visszavétele -> az új "Finding 2" teszt PIROS. Javítás után: `kg-capture-pipeline.test.ts`
+22/22 ZÖLD, teljes kg-* család (14 fájl) 141/141 ZÖLD, `tsc --noEmit -p .` tiszta. A (3) tétel
+tisztán szinkron kódmozgatás, nincs await/IO a régi és az új olvasási pont között, ezért nem
+igényelt saját tesztet -- a meglévő X2 teszt (reopen draftFn közben) a transzakción belüli
+`getKanbanCard` hívást is lefedi.
+
+**Elfogadási kritérium:** mindhárom RedHat-tétel lezárva: (1) validátor mutáció-ellenőrzött teszttel
+fedett; (2) a 11 osztály a tisztításban és a tesztben is; (3) `stillDone` a tranzakción belülre
+mozgatva.
+
+**Ki döntött:** a tételek RedHat-tól jönnek (2ace4db9 GO, komment 23005), MikroB vette fel külön
+kártyára (2c54029d, szülő c65add5a), a kódot a backend írta.
+
+**Hivatkozás:** kártya 2c54029d (szülő c65add5a), 2ace4db9 (RedHat GO, komment 23005), f809b24c (F5,
+amin ezek a tételek nyíltak).

@@ -372,4 +372,54 @@ describe('runCapture', () => {
     expect(node.status).toBe('draft')
     kgDb.close()
   })
+
+  // Finding 1 (card f809b24c, RedHat 2ace4db9 GO, comment 23005, X1(d)): parseDraft's own
+  // isSafeDraftField checks on title/body/snippet/keywords had zero test coverage -- every existing
+  // test's draftFn mock only ever returns clean text, so deleting the validator would leave every
+  // test green. A draft item carrying a BIDI-override character in any of the four fields must fail
+  // the capture, not silently ship a poisoned node.
+  it('a draft item with a BIDI-override character in title/body/snippet/keywords fails the capture (output-side validator)', () => {
+    const unsafe = '‮' // RIGHT-TO-LEFT OVERRIDE
+    for (const field of ['title', 'body', 'snippet', 'keywords'] as const) {
+      const kgDb = freshKgDb()
+      const draft: Record<string, string> = { title: 'ok title' }
+      draft[field] = field === 'title' ? `bad${unsafe}title` : unsafe
+      const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+        draftFn: () => JSON.stringify([draft]),
+      }))
+      expect(result.outcome).toBe('failed')
+      expect(result.reason).toBe('draft_parse_error')
+      kgDb.close()
+    }
+  })
+
+  // Finding 2 (card f809b24c, RedHat 2ace4db9 GO, comment 23005): 11 further invisible/formatting
+  // classes were missing from UNSAFE_CHARS_RX (variation selectors, combining grapheme joiner,
+  // deprecated formatting characters, Hangul fillers, Khmer inherent vowel, halfwidth Hangul filler,
+  // interlinear annotation anchor, a musical-notation format character) -- same stripping test as
+  // X1(a), extended to this additional set.
+  it('Finding 2: the additional invisible/formatting character classes are stripped from the input too', () => {
+    const kgDb = freshKgDb()
+    const badChars = [
+      '︀', // VARIATION SELECTOR-1
+      '͏', // COMBINING GRAPHEME JOINER
+      '⁪', // INHIBIT SYMMETRIC SWAPPING
+      'ᅟ', // HANGUL CHOSEONG FILLER
+      'ᅠ', // HANGUL JUNGSEONG FILLER
+      '឴', // KHMER VOWEL INHERENT AQ
+      'ﾠ', // HALFWIDTH HANGUL FILLER
+      '￹', // INTERLINEAR ANNOTATION ANCHOR
+      '\u{1D173}', // MUSICAL SYMBOL BEGIN BEAM
+    ]
+    comments = [{
+      id: 12, author: 'backend', created_at: 500, automated: false,
+      content: `REVIEW: ${badChars.join('x')} done.\nGate-SHA: abc1234`,
+    }]
+    let seenPrompt = ''
+    runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      draftFn: (reviewText: string) => { seenPrompt = reviewText; return JSON.stringify([{ title: 'off-by-one fix' }]) },
+    }))
+    for (const ch of badChars) expect(seenPrompt).not.toContain(ch)
+    kgDb.close()
+  })
 })
