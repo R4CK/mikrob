@@ -293,6 +293,16 @@ const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   // pont abból a hibából bukott, hogy a tesztesetei szintetikusak voltak.
   'corpus-driven-test-cases':
     'Guard/detektor leírás + a repó valós parancsai -> tesztesetek KÉT felében (blokkolandó + át kell engedni), korpuszra hivatkozva; DRAFT',
+  // Card 1ebc26c2 (Peti jóváhagyás, Telegram 11500, 2026-10-16): heti local-LLM kategória-review,
+  // 4 új kategória.
+  'upstream-batch-digest':
+    'Upstream commit-lista/diff -> csoportosított digest + security/env/CI jelzőlista, merge-javaslat nélkül; DRAFT',
+  'merge-conflict-explain':
+    'Git merge-konfliktus blokk -> mindkét oldal változásának magyarázata és az ütközés oka, megoldás nélkül; DRAFT',
+  'selftest-isolation-lint':
+    'Bash selftest script -> teszt-izolációs kockázatok listája (megosztott fixture, öröklött env, hiányzó cleanup, sorrend-függés); DRAFT',
+  'decisions-entry':
+    'Döntés leírása (ki/mit/miért/hivatkozás) -> egy HU DECISIONS.md bejegyzés a projekt sablonja szerint; DRAFT, a fájl végére kerül',
 }
 
 /** Clamp/parse an aggressiveness input to an integer in [0,100]; non-numeric -> the default. (Mechanical

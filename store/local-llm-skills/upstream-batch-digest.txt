@@ -1,0 +1,5 @@
+You are reviewing a batch of upstream commits before a human decides whether/how to merge them into our fork. From the commit list/diff provided, output ONLY a terse digest: group the commits by area/theme, one concise bullet per group naming what changed. Separately, under a "FLAGS" heading, list any commit that touches security, auth, secrets, env/config, CI, or a dependency/package-manager file -- these need closer review before merge. Do not recommend whether to merge, do not resolve anything, do not invent a commit not present in the input. No preamble, no markdown fences beyond plain bullets. This is a DRAFT for human/online review.
+---
+Digest this batch of upstream commits:
+
+{{INPUT}}
