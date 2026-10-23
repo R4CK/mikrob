@@ -21,18 +21,27 @@ export interface CaptureQueueRow {
 /** Enqueues (or re-arms) a capture for one card. `kg_capture_queue.card_id` is the primary key --
  *  a card that closes, reopens and closes again must re-run capture, so a row already in a
  *  terminal state (done/failed/skipped) is reset to pending; a row already pending/mid-flight is
- *  left alone rather than restarting it out from under a worker that might be processing it. */
+ *  left alone rather than restarting it out from under a worker that might be processing it.
+ *
+ *  Attempts reset to 0 on every re-arm EXCEPT one case (RedHat 23045 B1 / the backfill.ts cap
+ *  that reads this field): a 'backfill' re-arm of a row the backfill itself already failed
+ *  ('backfill' reason, 'failed' state) keeps the running count instead of resetting it, so a
+ *  capped retry can actually be enforced across repeated backfill runs. Every other re-arm --
+ *  closed/reopen (genuinely new content), or a backfill retry of a row some OTHER path failed --
+ *  is a fresh attempt and resets to 0, as before. */
 export function enqueueCapture(kgDb: Database.Database, cardId: string, reason: CaptureReason, now: number): void {
-  const existing = kgDb.prepare('SELECT state FROM kg_capture_queue WHERE card_id = ?').get(cardId) as
-    | { state: CaptureState }
+  const existing = kgDb.prepare('SELECT state, reason FROM kg_capture_queue WHERE card_id = ?').get(cardId) as
+    | { state: CaptureState; reason: CaptureReason }
     | undefined
   if (existing && existing.state === 'pending') return
+  const keepAttempts = reason === 'backfill' && existing?.reason === 'backfill' && existing?.state === 'failed'
   kgDb.prepare(
     `INSERT INTO kg_capture_queue (card_id, reason, attempts, state, created_at, updated_at)
      VALUES (?, ?, 0, 'pending', ?, ?)
-     ON CONFLICT(card_id) DO UPDATE SET reason = excluded.reason, attempts = 0, state = 'pending',
+     ON CONFLICT(card_id) DO UPDATE SET reason = excluded.reason,
+       attempts = CASE WHEN ? THEN attempts ELSE 0 END, state = 'pending',
        last_error = NULL, updated_at = excluded.updated_at`,
-  ).run(cardId, reason, now, now)
+  ).run(cardId, reason, now, now, keepAttempts ? 1 : 0)
 }
 
 export function listPendingCaptures(kgDb: Database.Database, limit: number = 20): CaptureQueueRow[] {

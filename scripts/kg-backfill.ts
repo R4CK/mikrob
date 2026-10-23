@@ -13,89 +13,10 @@
  * (MODULTERV section 5) and never falls back online when the GPU gate holds, so a run that
  * reports haltedOnGpuHold just needs retrying later, not a different model.
  *
- * All the work is in runBackfillBatch(); this file is argv, wiring and printing.
+ * All the work is in src/kg/backfill-cli.ts's runBackfillCli() -- it lives there, not here, so a
+ * test can drive it with its collaborators mocked; a top-level script cannot be imported and
+ * re-run per test case (same reasoning as src/claude-plan-rotate-check-run.ts).
  */
-import { initDatabase, getDb } from '../src/db.js'
-import { getEffectiveSettingValue } from '../src/settings-store.js'
-import { getSettingDefinition, validateSettingValue } from '../src/config-registry.js'
-import { openKgDb, kgDbPath } from '../src/kg/store.js'
-import { runCapture, defaultDeps as defaultCaptureDeps } from '../src/kg/capture-pipeline.js'
-import {
-  runBackfillBatch,
-  defaultListCandidates,
-  defaultGpuGate,
-  defaultCaptureEnabled,
-} from '../src/kg/backfill.js'
+import { runBackfillCli, defaultBackfillCliDeps } from '../src/kg/backfill-cli.js'
 
-const argv = process.argv.slice(2)
-
-if (argv.includes('--help') || argv.includes('-h')) {
-  console.log(
-    [
-      'kg-backfill -- feed existing done cards into the knowledge graph, one batch at a time.',
-      '',
-      '  --limit <n>    cards to process this run (default: the KG_BACKFILL_BATCH setting)',
-      '  --db <path>    main (kanban) database to open (default: this checkout\'s store DB)',
-      '  --kg-db <path> knowledge-graph database to open (default: this checkout\'s store DB)',
-      '  --help         this text',
-    ].join('\n'),
-  )
-  process.exit(0)
-}
-
-function flagValue(name: string): string | undefined {
-  const i = argv.indexOf(name)
-  return i >= 0 ? argv[i + 1] : undefined
-}
-
-const dbPath = flagValue('--db')
-const kgDbPathArg = flagValue('--kg-db')
-const limitArg = flagValue('--limit')
-
-initDatabase(dbPath)
-const mainDb = getDb()
-const kgDb = openKgDb(kgDbPathArg ?? kgDbPath())
-
-// --limit goes through the SAME validator the /api/settings route uses for KG_BACKFILL_BATCH
-// (min 1, max 100, must be an integer) -- a typo like "--limit abc" or an out-of-range value
-// falls back to the configured default instead of silently opening onto the whole corpus
-// (RedHat 23045, X2).
-const batchDef = getSettingDefinition('KG_BACKFILL_BATCH')
-const defaultLimit = Number(getEffectiveSettingValue('KG_BACKFILL_BATCH'))
-let limit = defaultLimit
-if (limitArg !== undefined && batchDef) {
-  const validated = validateSettingValue(batchDef, limitArg)
-  if (validated.ok && typeof validated.value === 'number') {
-    limit = validated.value
-  } else {
-    console.error(
-      `kg-backfill: --limit "${limitArg}" invalid (${validated.error ?? 'nem ertelmezheto'}) -- a KG_BACKFILL_BATCH alapertelmezes (${defaultLimit}) megy.`,
-    )
-  }
-}
-
-const maxSolutions = Number(getEffectiveSettingValue('KG_MAX_SOLUTIONS_PER_CARD'))
-const captureDeps = defaultCaptureDeps()
-
-const report = runBackfillBatch(kgDb, limit, {
-  captureEnabled: defaultCaptureEnabled,
-  listCandidates: (n) => defaultListCandidates(mainDb, kgDb, n),
-  gpuGate: defaultGpuGate,
-  runOne: (cardId) => runCapture(mainDb, kgDb, cardId, maxSolutions, captureDeps),
-  now: () => Math.floor(Date.now() / 1000),
-})
-
-if (report.captureDisabled) {
-  console.log('SKIPPED -- KG_CAPTURE_ENABLED off. Nothing read or written.')
-} else {
-  console.log(`candidates:  ${report.candidates} (oldest-first, not yet in kg_capture_queue)`)
-  console.log(`processed:   ${report.processed}`)
-  console.log(`  active:    ${report.active}`)
-  console.log(`  draft:     ${report.draft}`)
-  console.log(`  failed:    ${report.failed}`)
-  console.log(`  skipped:   ${report.skipped}`)
-  console.log(`elapsed:     ${report.elapsedSec}s`)
-  if (report.haltedOnGpuHold) {
-    console.log('HALTED: GPU gate on HOLD -- stopped before another local-LLM call. Re-run later for the rest.')
-  }
-}
+runBackfillCli(process.argv.slice(2), defaultBackfillCliDeps())

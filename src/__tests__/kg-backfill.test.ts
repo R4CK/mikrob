@@ -1,6 +1,6 @@
 // MT-06 (card 7c9be2d8): EK-MT-12 -- processed/active/draft/failed/skipped counts, and the GPU
 // gate stops the batch before another local-LLM call rather than falling back online.
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { migrate } from '../kg/store.js'
 import { defaultListCandidates, runBackfillBatch, type BackfillDeps, type GpuGateResult } from '../kg/backfill.js'
@@ -199,5 +199,127 @@ describe('defaultListCandidates (RedHat 23045 X2: invalid limit)', () => {
     expect(defaultListCandidates(mainDb, kgDb, 0)).toEqual([])
     expect(defaultListCandidates(mainDb, kgDb, -5)).toEqual([])
     expect(defaultListCandidates(mainDb, kgDb, 1.5)).toEqual([])
+  })
+})
+
+describe('defaultListCandidates (RedHat delta 23081 item 1 / 23045 B1: bounded retry of a backfill failure)', () => {
+  function queueRow(kgDb: Database.Database, cardId: string, reason: string, state: string, attempts: number): void {
+    kgDb
+      .prepare(
+        `INSERT INTO kg_capture_queue (card_id, reason, attempts, state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 1, 1)`,
+      )
+      .run(cardId, reason, attempts, state)
+  }
+
+  it('a backfill-failed row below the retry cap is a candidate again', () => {
+    const mainDb = freshMainDb([{ id: 'c1', status: 'done', created_at: 1 }])
+    const kgDb = freshKgDb()
+    queueRow(kgDb, 'c1', 'backfill', 'failed', 1)
+    expect(defaultListCandidates(mainDb, kgDb, 10)).toEqual(['c1'])
+  })
+
+  it('a backfill-failed row AT the retry cap is excluded', () => {
+    const mainDb = freshMainDb([{ id: 'c1', status: 'done', created_at: 1 }])
+    const kgDb = freshKgDb()
+    queueRow(kgDb, 'c1', 'backfill', 'failed', 2)
+    expect(defaultListCandidates(mainDb, kgDb, 10)).toEqual([])
+  })
+
+  it('a failed row from a NON-backfill reason stays excluded regardless of attempts (unchanged prior behaviour)', () => {
+    const mainDb = freshMainDb([{ id: 'c1', status: 'done', created_at: 1 }])
+    const kgDb = freshKgDb()
+    queueRow(kgDb, 'c1', 'closed', 'failed', 0)
+    expect(defaultListCandidates(mainDb, kgDb, 10)).toEqual([])
+  })
+
+  it('pending, done and skipped queue rows stay excluded regardless of reason', () => {
+    const mainDb = freshMainDb([
+      { id: 'c1', status: 'done', created_at: 1 },
+      { id: 'c2', status: 'done', created_at: 2 },
+      { id: 'c3', status: 'done', created_at: 3 },
+    ])
+    const kgDb = freshKgDb()
+    queueRow(kgDb, 'c1', 'backfill', 'pending', 0)
+    queueRow(kgDb, 'c2', 'backfill', 'done', 0)
+    queueRow(kgDb, 'c3', 'backfill', 'skipped', 0)
+    expect(defaultListCandidates(mainDb, kgDb, 10)).toEqual([])
+  })
+})
+
+describe('runBackfillBatch (RedHat 23045 B2/B3: an exception from runOne must not abort the batch)', () => {
+  it('tallies a thrown error as failed, marks the queue row failed (not stranded pending), and keeps going', () => {
+    const kgDb = freshKgDb()
+    const calls: string[] = []
+    const deps: BackfillDeps = {
+      captureEnabled: () => true,
+      listCandidates: () => ['c1', 'c2', 'c3'],
+      gpuGate: () => admit,
+      runOne: (cardId) => {
+        calls.push(cardId)
+        if (cardId === 'c2') throw new Error('SQLITE_BUSY: database is locked')
+        return captured(cardId, [])
+      },
+      now: () => 5000,
+    }
+
+    const result = runBackfillBatch(kgDb, 10, deps)
+
+    // c3 must still run -- a thrown exception on c2 does not abort the rest of the batch.
+    expect(calls).toEqual(['c1', 'c2', 'c3'])
+    expect(result.processed).toBe(3)
+    expect(result.failed).toBe(1)
+
+    const row = kgDb.prepare(`SELECT state, reason FROM kg_capture_queue WHERE card_id = 'c2'`).get() as
+      | { state: string; reason: string }
+      | undefined
+    expect(row?.state).toBe('failed')
+    expect(row?.reason).toBe('backfill')
+  })
+})
+
+describe('defaultGpuGate (RedHat 23045 Q2/Q3: direct test of the real gate, not just the injected mock)', () => {
+  it('admits when the guard script exits 0', () => {
+    vi.resetModules()
+    vi.doMock('node:child_process', () => ({ execFileSync: () => 'ADMIT ok\n' }))
+    return import('../kg/backfill.js').then(({ defaultGpuGate: realGate }) => {
+      const result = realGate('/fake/script.sh')
+      expect(result.admit).toBe(true)
+      vi.doUnmock('node:child_process')
+      vi.resetModules()
+    })
+  })
+
+  it('does NOT admit when the guard script exits non-zero (HOLD) -- the error branch must stay fail-closed', () => {
+    vi.resetModules()
+    vi.doMock('node:child_process', () => ({
+      execFileSync: () => {
+        const err = new Error('Command failed') as Error & { stdout?: string }
+        err.stdout = 'HOLD gpu-util-hold\n'
+        throw err
+      },
+    }))
+    return import('../kg/backfill.js').then(({ defaultGpuGate: realGate }) => {
+      const result = realGate('/fake/script.sh')
+      expect(result.admit).toBe(false)
+      expect(result.detail).toContain('HOLD')
+      vi.doUnmock('node:child_process')
+      vi.resetModules()
+    })
+  })
+
+  it('does NOT admit when the script is missing (ENOENT) or times out', () => {
+    vi.resetModules()
+    vi.doMock('node:child_process', () => ({
+      execFileSync: () => {
+        throw new Error('ENOENT: no such file or directory')
+      },
+    }))
+    return import('../kg/backfill.js').then(({ defaultGpuGate: realGate }) => {
+      const result = realGate('/fake/missing.sh')
+      expect(result.admit).toBe(false)
+      vi.doUnmock('node:child_process')
+      vi.resetModules()
+    })
   })
 })

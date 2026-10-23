@@ -65,4 +65,58 @@ describe('kg capture queue', () => {
     expect(row.state).toBe('skipped')
     db.close()
   })
+
+  // RedHat 23045 B1 / 23081 item 1: backfill.ts's MAX_BACKFILL_RETRY_ATTEMPTS cap only means
+  // anything if attempts actually accumulates across backfill retries -- these pin that exact
+  // behaviour at the capture.ts layer (not just via defaultListCandidates' raw-SQL-seeded rows).
+  it('re-enqueuing a BACKFILL retry of a BACKFILL-failed row KEEPS the attempts count', () => {
+    const db = freshDb()
+    enqueueCapture(db, 'c1', 'backfill', 100)
+    markCaptureFailed(db, 'c1', 'boom', 150)
+    enqueueCapture(db, 'c1', 'backfill', 200)
+    const row = db.prepare('SELECT attempts, state, reason FROM kg_capture_queue WHERE card_id = ?').get('c1') as {
+      attempts: number
+      state: string
+      reason: string
+    }
+    expect(row.attempts).toBe(1)
+    expect(row.state).toBe('pending')
+    expect(row.reason).toBe('backfill')
+    db.close()
+  })
+
+  it('a SECOND backfill failure accumulates to attempts=2, reaching the retry cap', () => {
+    const db = freshDb()
+    enqueueCapture(db, 'c1', 'backfill', 100)
+    markCaptureFailed(db, 'c1', 'boom', 150)
+    enqueueCapture(db, 'c1', 'backfill', 200)
+    markCaptureFailed(db, 'c1', 'boom again', 250)
+    const row = db.prepare('SELECT attempts FROM kg_capture_queue WHERE card_id = ?').get('c1') as { attempts: number }
+    expect(row.attempts).toBe(2)
+    db.close()
+  })
+
+  it('re-enqueuing a CLOSED/REOPEN re-arm still resets attempts to 0 (new content, not a backfill retry)', () => {
+    const db = freshDb()
+    enqueueCapture(db, 'c1', 'backfill', 100)
+    markCaptureFailed(db, 'c1', 'boom', 150)
+    enqueueCapture(db, 'c1', 'reopen', 200)
+    const row = db.prepare('SELECT attempts, reason FROM kg_capture_queue WHERE card_id = ?').get('c1') as {
+      attempts: number
+      reason: string
+    }
+    expect(row.attempts).toBe(0)
+    expect(row.reason).toBe('reopen')
+    db.close()
+  })
+
+  it('a backfill re-arm of a row that failed for a DIFFERENT reason (closed) resets attempts to 0', () => {
+    const db = freshDb()
+    enqueueCapture(db, 'c1', 'closed', 100)
+    markCaptureFailed(db, 'c1', 'boom', 150)
+    enqueueCapture(db, 'c1', 'backfill', 200)
+    const row = db.prepare('SELECT attempts FROM kg_capture_queue WHERE card_id = ?').get('c1') as { attempts: number }
+    expect(row.attempts).toBe(0)
+    db.close()
+  })
 })

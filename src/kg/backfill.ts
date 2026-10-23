@@ -12,11 +12,19 @@
 import type Database from 'better-sqlite3'
 import { execFileSync } from 'node:child_process'
 import { getEffectiveSettingValue } from '../settings-store.js'
-import { enqueueCapture } from './capture.js'
+import { enqueueCapture, markCaptureFailed } from './capture.js'
 import type { CaptureRunResult } from './capture-pipeline.js'
 
 const MARVEEN_MAIN = process.env.MARVEEN_MAIN || '/home/neon/marveen'
 const GPU_GATE_TIMEOUT_MS = 10_000
+
+// RedHat 23045 B1: a card the backfill itself failed used to be excluded from candidate
+// selection forever (defaultListCandidates excluded every queued card_id, any state). Capped
+// retry instead of "never" or "unbounded": same ceiling as KG_DRAFT_MAX_ATTEMPTS
+// (capture-pipeline.ts) and the fleet's OFFLOAD_LEAF_MAX_ATTEMPTS convention. Enforceable only
+// because enqueueCapture (capture.ts) now keeps -- rather than resets -- attempts for this exact
+// case (a 'backfill' re-arm of a 'backfill'-failed row).
+const MAX_BACKFILL_RETRY_ATTEMPTS = 2
 
 export interface GpuGateResult {
   readonly admit: boolean
@@ -58,17 +66,26 @@ export function defaultCaptureEnabled(): boolean {
  *  comment is left to runCapture to decide (it already marks a card without one 'skipped') --
  *  duplicating that check here would be a second place that has to agree with the first.
  *  Checks the limit BEFORE pushing (RedHat 23045, X2): an invalid limit (NaN, 0, negative) yields
- *  zero candidates instead of the unbounded "NaN >= length never breaks" behaviour. */
+ *  zero candidates instead of the unbounded "NaN >= length never breaks" behaviour.
+ *  A card the BACKFILL itself previously failed is a candidate again, up to
+ *  MAX_BACKFILL_RETRY_ATTEMPTS (RedHat 23045 B1) -- every other queued state (pending, done,
+ *  skipped, or failed from a non-backfill reason) stays excluded, as before. */
 export function defaultListCandidates(
   mainDb: Database.Database,
   kgDb: Database.Database,
   limit: number,
 ): readonly string[] {
   if (!Number.isInteger(limit) || limit <= 0) return []
-  const queued = new Set(
-    (kgDb.prepare('SELECT card_id FROM kg_capture_queue').all() as { card_id: string }[]).map(
-      (r) => r.card_id,
-    ),
+  const queueRows = kgDb
+    .prepare('SELECT card_id, state, reason, attempts FROM kg_capture_queue')
+    .all() as { card_id: string; state: string; reason: string; attempts: number }[]
+  const excluded = new Set(
+    queueRows
+      .filter(
+        (r) =>
+          !(r.state === 'failed' && r.reason === 'backfill' && r.attempts < MAX_BACKFILL_RETRY_ATTEMPTS),
+      )
+      .map((r) => r.card_id),
   )
   const done = mainDb
     .prepare(`SELECT id FROM kanban_cards WHERE status = 'done' ORDER BY created_at ASC`)
@@ -76,7 +93,7 @@ export function defaultListCandidates(
   const out: string[] = []
   for (const row of done) {
     if (out.length >= limit) break
-    if (queued.has(row.id)) continue
+    if (excluded.has(row.id)) continue
     out.push(row.id)
   }
   return out
@@ -150,16 +167,28 @@ export function runBackfillBatch(kgDb: Database.Database, limit: number, deps: B
       break
     }
     enqueueCapture(kgDb, cardId, 'backfill', deps.now())
-    const result = deps.runOne(cardId)
     processed++
-    if (result.outcome === 'captured') {
-      const t = tallyNodeStatuses(kgDb, result.solutionIds)
-      active += t.active
-      draft += t.draft
-    } else if (result.outcome === 'failed') {
+    // RedHat 23045 B2/B3: runOne used to be called unguarded -- an exception from it (e.g. a
+    // write-path SQLITE_BUSY) used to abort the WHOLE batch without tallying, and left the
+    // queue row stuck on 'pending' forever (excluded from every future candidate list, same as
+    // a card actually in flight). Caught here, tallied as failed, and the row is explicitly
+    // flipped to 'failed' so it becomes a bounded-retry candidate again (defaultListCandidates),
+    // instead of staying a phantom 'pending' row that nothing will ever revisit.
+    try {
+      const result = deps.runOne(cardId)
+      if (result.outcome === 'captured') {
+        const t = tallyNodeStatuses(kgDb, result.solutionIds)
+        active += t.active
+        draft += t.draft
+      } else if (result.outcome === 'failed') {
+        failed++
+      } else {
+        skipped++
+      }
+    } catch (err) {
       failed++
-    } else {
-      skipped++
+      const message = err instanceof Error ? err.message : String(err)
+      markCaptureFailed(kgDb, cardId, message, deps.now())
     }
   }
 
