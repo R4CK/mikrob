@@ -21071,3 +21071,15 @@ skipped) / 33031 Tests (124 skipped) zöld, `lint-ratchet.sh`: egyetlen szabály
 **Ki döntött:** RedHat (a javítás iránya, komment 22524/22527 MikroB-en át), backend3 (a végrehajtás).
 
 **Hivatkozás:** kártya 8d625ccd, komment 22434 (QA2 FAIL), 22496 (backend3 első fix REVIEW), 22499 (QA2 PASS), 22524 (CYBERED NO-GO), 22527 (MikroB döntés), card 4aa87fdf (az eredeti réteg-döntés).
+
+## 2026-10-23 -- kártya 13b2648e: Köteg 18, négy retention-beállítás ÚJRADÖNTVE adoptáltra (card 4aa87fdf 2026-10-17 pont (5) felülírása)
+
+**Kontextus:** a card 4aa87fdf (2026-10-17) `src/config-registry.ts` drift-körének (5) pontja NEM adoptálta a négy upstream retention-beállítást (`CONVERSATION_LOG_RETENTION_DAYS`, `OTEL_SPAN_RETENTION_DAYS`, `AGENT_MESSAGE_RETENTION_DAYS`, `TOOL_CALL_LOG_RETENTION_DAYS`), azzal az indokkal, hogy mindegyik saját napi-sweep implementációt igényelne, amivel a fork akkor nem rendelkezett (grep-ellenőrzött, nulla találat). A Köteg 18 upstream-tartománya (d96e3a5e..55e18a33, konkrétan a `849c9cb80` commit) pont ezt hozta be: a négy registry-bejegyzést ÉS a hozzájuk tartozó teljes napi-sweep kódot (`src/db.ts`: `pruneConversationLog`/`pruneOtelSpans`/`pruneAgentMessages`/`pruneToolCallLogRetention`), mindegyiket saját beállítással kapuzva, mindegyik alapértelmezése 0 (örökre megőrzi, nem töröl automatikusan telepítéskor), az `agent_messages` tábla pedig továbbra is kiveszi a `pending`/`delivered` sorokat kortól függetlenül.
+
+**Döntés: a négy beállítás ADOPTÁLVA.** A merge tiszta, nem-konfliktusos volt (a `src/config-registry.ts` és `src/db.ts` érintett szakaszai upstream-oldalon jöttek, a fork oldalán nem volt ütköző tartalom). A korábbi NOT-ADOPTED indok (hiányzó sweep-implementáció) megszűnt, mert a sweep-kód MAGA is megérkezett ugyanabban a batch-ben -- nincs külön kártyára bontandó munka, a funkció teljes és tesztelt. A `src/fork-upstream/acknowledged-conflicts.ts` 'src/config-registry.ts' bejegyzése RE-DECIDED-del bővült, az `ACKNOWLEDGED_FORK_ANCHORS` anchor pedig a még nyitott (5. pont testvérei helyett a 6/7. pont) refúziókra (`WORKER_AUTOUPDATE`, `TELEGRAM_TOPICS_ENABLED`, `MEMORY_CONTENT_FILTER_STRICT_COMMANDS`) mozgatva, nem törölve -- egy fájl-szintű bejegyzésnek kell maradjon tripwire-je, amíg bármelyik refúziója nyitott.
+
+**Mérés:** `src/db.ts` grep-ellenőrzött: mind a négy prune-függvény jelen van, mindegyik `optInRetentionDays()`-en át a saját beállítását olvassa. `src/config-registry.ts` a négy regisztrációt tartalmazza, mindegyik `default: 0, min: 0`. Teljes `fleet-test.sh --ref <sha>` (lásd a kártya REVIEW-ját) zöld ezen a ponton.
+
+**Ki döntött:** backend3 (kártya 13b2648e, upstream-szinkron közbeni felfedezés), MikroB jóváhagyása (F5, komment 22674).
+
+**Hivatkozás:** kártya 13b2648e, card 4aa87fdf (az eredeti NOT-ADOPTED döntés), upstream commit 849c9cb80, komment 22670 (WhiteHat GO + F1 lelet), 22674 (MikroB döntés, F5).

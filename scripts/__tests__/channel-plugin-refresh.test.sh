@@ -23,6 +23,11 @@ trap 'rm -rf "$TMPD"' EXIT
 # The fake claude: one log line per call, "<config dir>|<args>", plus the env
 # it saw in a second file. FAKE_FAIL=<substring of a config dir> fails every
 # call made against that dir (exit 3); FAKE_FAIL_STEP=marketplace limits that
+# below -- scope it to $HOME_D (the case's own home dir), never the literal
+# "/home/" needle: this test's TMPD can itself sit under a real /home/ path
+# (TMPDIR set that way, e.g. fleet-test.sh's own TMPDIR), which would then also
+# match $INST's dir and fail BOTH, not just the one dir each case intends
+# (WhiteHat 22670, card 13b2648e, deterministic once TMPDIR is under /home/).
 # to the marketplace step.
 cat > "$TMPD/claude" <<'EOF'
 #!/bin/bash
@@ -136,7 +141,7 @@ echo "============================================================="
 fresh
 reg "$HOME_D/.claude" "$REG_WITH"
 reg "$INST/agents/a1/.claude-config" "$REG_WITH"
-FAKE_FAIL="/home/" run
+FAKE_FAIL="$HOME_D" run
 eq "the update step fails on one dir: exit 0" "0" "$RC"
 eq "...the next dir is still refreshed" "1" "$(grep -c 'a1/.claude-config|plugin update' "$FAKE_LOG")"
 case "$OUT" in *"FIGYELEM: slack-channel@marveen-marketplace frissitese nem sikerult"*"kilepesi kod 3"*) pass "...and the failure is logged with its exit code" ;; *) fail "...logged" "FIGYELEM ... kilepesi kod 3" "$OUT" ;; esac
@@ -144,13 +149,13 @@ case "$OUT" in *"0 frissitve, 1 naprakesz, 1 hibas"*) pass "...and counted" ;; *
 
 fresh
 reg "$HOME_D/.claude" "$REG_WITH"
-FAKE_FAIL="/home/" FAKE_FAIL_STEP=marketplace run
+FAKE_FAIL="$HOME_D" FAKE_FAIL_STEP=marketplace run
 eq "a failed marketplace update skips that dir's plugin update" "0" "$(grep -c 'plugin update slack' "$FAKE_LOG")"
 eq "...exit 0" "0" "$RC"
 
 fresh
 reg "$HOME_D/.claude" "$REG_WITH"
-OUT="$(FAKE_FAIL="/home/" bash -c 'set -e; (. "$1" && CHANNEL_PLUGIN_CLAUDE_BIN="$2" refresh_channel_plugins "$3" "$4") || true; echo after' _ "$LIB" "$TMPD/claude" "$INST" "$HOME_D" 2>&1)"
+OUT="$(FAKE_FAIL="$HOME_D" bash -c 'set -e; (. "$1" && CHANNEL_PLUGIN_CLAUDE_BIN="$2" refresh_channel_plugins "$3" "$4") || true; echo after' _ "$LIB" "$TMPD/claude" "$INST" "$HOME_D" 2>&1)"
 case "$OUT" in *"kilepesi kod 3"*after) pass "under set -e (as in update.sh) a failing refresh is logged and the script carries on" ;; *) fail "under set -e the script carries on" "after" "$OUT" ;; esac
 
 echo ""
@@ -203,7 +208,7 @@ gc_alive="no"; while read -r gp; do kill -0 "$gp" 2>/dev/null && gc_alive="yes (
 eq "...and the grandchild is gone" "no" "$gc_alive"
 fresh
 reg "$HOME_D/.claude" "$REG_WITH"
-PATH="$TMPD/path-perl" FAKE_FAIL="/home/" run
+PATH="$TMPD/path-perl" FAKE_FAIL="$HOME_D" run
 case "$OUT" in *"kilepesi kod 3"*) pass "under the perl limit a normal exit code passes through" ;; *) fail "exit code passes through" "kilepesi kod 3" "$OUT" ;; esac
 
 # coreutils timeout, when present, is the one used (a logging stand-in here).
