@@ -21653,3 +21653,27 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a lelet Cybersec-től jön (86b78648 GO, komment 5297, kártya 79aeaeb1 követő), a kódot/tesztet a backend írta.
 
 **Hivatkozás:** kártya 6dd721f8, Cybersec GO 86b78648 (komment 5297), előd 79aeaeb1.
+
+## 2026-10-24: 1bb57483 -- mcp-compress doctor keményítés (WhiteHat LOW-ok, 0f55f01e követő)
+
+**Kontextus:** WhiteHat GO @ 0f55f01e (komment 13254) három nem blokkoló LOW-ja a `store/mcp-compress.sh doctor` parancson. L1: FAIL esetén is `exit 0`-val tér vissza, egy hívó az exit kódra nem támaszkodhat. L2: a `~/.npm-tools/bin` PATH-ellenőrzés `grep -qx` pontos sztring-egyezést használt, ezért záró perjellel (`.../bin/`) vagy `../bin` relatív alakkal megkerülhető volt (mindkettőt WhiteHat mérte: hibásan "OK"-t adott, miközben a bin tényleg PATH-on volt). L3: az integrity-check a REGISTRY `dist.integrity`-jét veti össze a pinnelt értékkel -- egy publikált npm-verzió hash-e sosem változik, ezért ez a check a TELEPÍTETT fa lokális módosítását sosem venné észre.
+
+**Döntés:** L1: a doctor minden check-et egy `doctor_fail` flagbe gyűjt, és a végén azzal lép ki (korábban feltétel nélküli `exit 0`). L2: a PATH minden elemét és a célkönyvtárat is `realpath -m`-mel normalizálva hasonlítja össze (korábbi `grep -qx` helyett), így a záró-perjeles és a `../bin` alak is helyesen FAIL-t ad. L3: új `PINNED_TREE_SHA256` konstans -- a telepített `dist/` + `native/` fa MINDEN fájljának sha256-ja, útvonal-prefix nélkül (a `$PKG/` abszolút előtag levágva minden `sha256sum`-sorból, különben két tartalmilag azonos, de más útvonalon lévő fa más hash-t adna), majd ennek a listának a sha256-ja. A doctor ezt méri a TÉNYLEGESEN telepített fán és veti össze a pinnelt értékkel -- a registry-összevetés (régi check) megmarad kiegészítésként, nem helyettesítve.
+
+**Mutáció-ellenőrzés:** a javítás előtti (stash-elt) `mcp-compress.sh`-ra az új `mcp-compress.selftest.sh` 8 esetéből 6 PIROS lett (a tiszta telepítés és az érintetlen másolat esetén hiányzott a `tree:` sor, a három PATH-megkerülési alak mindegyike hamisan "OK"-t adott nonzero exit nélkül, a manipulált fa észrevétlen maradt) -- csak a hiányzó-csomag kontroll és egy skip-eset maradt zöld (ezek a doctor-blokk előtti/kívüli ágak, a javítás nem érintette őket). A javítás visszaállítása után 8/8 zöld. `bash -n` tiszta szintaxis-ellenőrzés.
+
+**Ki döntött:** a lelet WhiteHat-tól jön (0f55f01e GO, komment 13254), a kódot/tesztet a backend írta.
+
+**Hivatkozás:** kártya 1bb57483, WhiteHat GO 0f55f01e (komment 13254).
+
+## 2026-10-24: 6dd721f8 -- a flock korlátos és best-effort legyen (RedHat NO-GO, komment 23610, E3+E4)
+
+**Kontextus:** RedHat NO-GO a `a93ce2e8c` shán: a kártya F2-fixje (flock a decide+persist lépés körül) két blokkoló leletet hozott. E3: ha egy másik folyamat tartja a `$STATE.lock`-ot (pl. beragadt/SIGSTOP-olt hívás), az új flock HATÁRIDŐ NÉLKÜL várt rá -- a guard saját fejléce kimondja az invariánst, hogy sosem akaszt meg egy dispatchet, és ez az egyetlen korlátlan várakozás a kapuban, amit 7 hívó (card-build-route, offload-dispatch, local-llm-rag, gate-pretriage, i18n-draft, route-classify, local-llm) a dispatch előtt futtat. E4: egy LÉTEZŐ, de NEM ÍRHATÓ state-könyvtárnál (eltérően a már kezelt nem-létező könyvtár esettől) a `flock` a zárfájlt meg sem tudta nyitni, ezért a python3 el sem indult -- rc=66, verdikt-sor nélkül; minden hívó bármilyen nemnulla kódot HOLD-ként olvas, tehát egy rossz jogosultság csendben, véglegesen kikapcsolná a helyi-LLM utat.
+
+**Döntés:** a zárszerzés különálló fájlleíróra (fd 9) megy, `flock -w "${VRAM_GUARD_LOCK_WAIT_SECONDS:-3}" 9`-cel -- időtúllépés VAGY a zárfájl megnyitási hibája esetén a hívás ZÁR NÉLKÜL fut tovább (stderr-jelzéssel), ugyanaz a testtartás, mint a már meglévő hiányzó-könyvtár esetben: a pillanatnyi szintből dönt, nem a korábbi megerősített állapotból. Egy `trap ... EXIT` zárja az fd-t minden kilépési úton (a python3 heredoc saját `sys.exit()`-je is ezen megy át).
+
+**Mutáció-ellenőrzés:** két új selftest-eset (E3: külső zártartó 10 mp-ig, a guard a 3 mp-es alapértelmezett határidőn belül válaszol; E4: létező, de 555-ös jogú könyvtár, a hívás verdikt-sorral tér vissza HOLD-dal, nem rc=66-tal). A javítás előtti (stash-elt) `vram-guard-check.sh`-ra mindkét eset PIROS (E3: a guard a 9 mp-es külső időkorlátot is kifutotta; E4: `flock: cannot open lock file ... Permission denied`, rc=66), a többi 65 zöld marad. A javítás visszaállítása után `vram-guard-check.selftest.sh` 67/67 zöld, `vram-guard-wiring.selftest.sh` változatlanul 19/19. `bash -n` tiszta.
+
+**Ki döntött:** a lelet RedHat-tól jön (NO-GO, komment 23610, a `a93ce2e8c` shán), a javítás recept-jét is RedHat adta, a kódot/tesztet a backend írta.
+
+**Hivatkozás:** kártya 6dd721f8, RedHat NO-GO (komment 23610), MikroB re-dispatch (komment 23613).

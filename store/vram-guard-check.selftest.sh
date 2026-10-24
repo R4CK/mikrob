@@ -659,6 +659,45 @@ check "no-such-dir state path still answers (no lock-dir fallback breaks it)" 1 
   bash "$GUARD" --config "$cfg" --state "$tmpdir/lock-no-such-dir/state.json" --now 900000 \
     --metrics-json '{"used_mib":9600,"total_mib":10000}'
 
+# E3 (RedHat NO-GO, card 6dd721f8 comment 23610): the lock wait must be BOUNDED. Before this fix
+# the guard waited on `flock` forever behind an external holder; here the holder sits on the lock
+# for 10s while VRAM_GUARD_LOCK_WAIT_SECONDS defaults to 3s, so the guard must answer well before
+# the holder releases it -- a timing assertion, same shape as the existing lock-serializes case,
+# just inverted (there we assert it DOES wait a little; here we assert it does NOT wait long).
+e3_state="$(st e3-bounded-wait)"
+: > "$e3_state"
+( flock -x "$e3_state.lock" sleep 10 ) &
+e3_holder_pid=$!
+sleep 0.3
+e3_start=$(date +%s)
+timeout 9 bash "$GUARD" --config "$cfg" --state "$e3_state" --now 1000 \
+  --metrics-json '{"used_mib":9600,"total_mib":10000}' >/dev/null 2>&1
+e3_rc=$?
+e3_elapsed=$(( $(date +%s) - e3_start ))
+kill "$e3_holder_pid" 2>/dev/null
+wait "$e3_holder_pid" 2>/dev/null || true
+if [ "$e3_rc" = 124 ]; then
+  echo "FAIL e3-bounded-wait: the guard itself timed out (hit the outer 9s guard) -- the lock wait is not bounded"
+  failed=$((failed+1))
+elif [ "$e3_elapsed" -le 6 ]; then
+  passed=$((passed+1))
+else
+  echo "FAIL e3-bounded-wait: expected the guard to answer well before the external 10s holder releases (took ${e3_elapsed}s) -- the lock wait looks unbounded"
+  failed=$((failed+1))
+fi
+
+# E4 (RedHat NO-GO, card 6dd721f8 comment 23610): an EXISTING but unwritable state directory must
+# still produce a VERDICT line (from the current instantaneous reading, degraded hysteresis -- the
+# same posture as the existing persist-failure cases), not a silent non-zero exit with no verdict.
+# Before this fix `flock` could not even open the lock file there, so python3 never ran at all.
+e4_dir="$tmpdir/e4-unwritable"
+mkdir -p "$e4_dir"
+chmod 555 "$e4_dir"
+check "unwritable-but-existing state dir still gives a verdict (no silent hard-fail)" 1 "HOLD hard" \
+  bash "$GUARD" --config "$cfg" --state "$e4_dir/state.json" --now 1000 \
+    --metrics-json '{"used_mib":9600,"total_mib":10000}'
+chmod 755 "$e4_dir"
+
 if [ "$failed" -eq 0 ]; then
   echo "selftest: $passed passed, 0 failed"
   exit 0

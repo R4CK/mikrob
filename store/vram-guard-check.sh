@@ -361,13 +361,32 @@ probe_gpu_lock() {
 # directory does not exist yet (e.g. a deliberately-broken path used to test the persist-failure
 # branch), there is nothing to lock and no concurrent writer to race, so fall through unlocked
 # rather than failing the call over a lock file that cannot be created.
+#
+# Card 6dd721f8 follow-up (RedHat NO-GO, comment 23610, E3+E4): the lock above was unbounded, which
+# breaks the gate's own invariant (stated at the top of this file) that it never hangs or hard-fails
+# a dispatch decision. E3: an external holder of $STATE.lock meant this call waited forever for it.
+# E4: an EXISTING but unwritable state directory (unlike the already-handled missing-directory case
+# above) meant the lock file could not even be opened, so python3 never ran at all -- every caller
+# treats a non-zero exit as HOLD, so a bad permission silently disabled the local-LLM path for good,
+# with no verdict line to explain why. Both now fall through UNLOCKED instead, deciding from
+# whatever level is available right now -- the same posture this script had before the lock existed.
 STATE_DIR_FOR_LOCK="$(dirname "$STATE")"
+LOCK_WAIT_SECONDS="${VRAM_GUARD_LOCK_WAIT_SECONDS:-3}"
+# fd 9 stays open (and, if acquired, locked) for the duration of the python3 call below; always
+# release it on exit, including the sys.exit() inside the heredoc, which is why this is a trap and
+# not a plain close after the call. Closing an fd that was never opened is a harmless no-op here
+# (stderr suppressed, `|| true` absorbs the non-zero exit under `set -e`).
+trap 'exec 9>&- 2>/dev/null || true' EXIT
 if [ -d "$STATE_DIR_FOR_LOCK" ]; then
-  DECISION_RUNNER=(flock "$STATE.lock" python3 -)
-else
-  DECISION_RUNNER=(python3 -)
+  if exec 9>"$STATE.lock" 2>/dev/null; then
+    if ! flock -w "$LOCK_WAIT_SECONDS" 9 2>/dev/null; then
+      echo "vram-guard-check.sh: could not acquire $STATE.lock within ${LOCK_WAIT_SECONDS}s (held by another caller) -- deciding unlocked" >&2
+    fi
+  else
+    echo "vram-guard-check.sh: could not open $STATE.lock for writing (permission?) -- deciding unlocked" >&2
+  fi
 fi
-"${DECISION_RUNNER[@]}" "$CONFIG" "$STATE" "$METRICS_JSON" "$NOW" "$VRAM_GUARD_UNREADABLE" "$OWN_VRAM_MIB" "$LOCK_HELD" "$UTIL_SAMPLES_JSON" "$GPU_UTIL_HOLD_PCT" "$GATE_MIRROR" <<'PYEOF'
+python3 - "$CONFIG" "$STATE" "$METRICS_JSON" "$NOW" "$VRAM_GUARD_UNREADABLE" "$OWN_VRAM_MIB" "$LOCK_HELD" "$UTIL_SAMPLES_JSON" "$GPU_UTIL_HOLD_PCT" "$GATE_MIRROR" <<'PYEOF'
 import json
 import os
 import sys
