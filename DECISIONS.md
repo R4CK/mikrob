@@ -21641,3 +21641,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a lelet Cybersec-től jön (86b78648 GO, komment 5297, kártya 79aeaeb1 követő), a kódot/tesztet a backend írta.
 
 **Hivatkozás:** kártya 6dd721f8, Cybersec GO 86b78648 (komment 5297), előd 79aeaeb1.
+
+## 2026-10-24: 1bb57483 -- mcp-compress doctor keményítés (WhiteHat LOW-ok, 0f55f01e követő)
+
+**Kontextus:** WhiteHat GO @ 0f55f01e (komment 13254) három nem blokkoló LOW-ja a `store/mcp-compress.sh doctor` parancson. L1: FAIL esetén is `exit 0`-val tér vissza, egy hívó az exit kódra nem támaszkodhat. L2: a `~/.npm-tools/bin` PATH-ellenőrzés `grep -qx` pontos sztring-egyezést használt, ezért záró perjellel (`.../bin/`) vagy `../bin` relatív alakkal megkerülhető volt (mindkettőt WhiteHat mérte: hibásan "OK"-t adott, miközben a bin tényleg PATH-on volt). L3: az integrity-check a REGISTRY `dist.integrity`-jét veti össze a pinnelt értékkel -- egy publikált npm-verzió hash-e sosem változik, ezért ez a check a TELEPÍTETT fa lokális módosítását sosem venné észre.
+
+**Döntés:** L1: a doctor minden check-et egy `doctor_fail` flagbe gyűjt, és a végén azzal lép ki (korábban feltétel nélküli `exit 0`). L2: a PATH minden elemét és a célkönyvtárat is `realpath -m`-mel normalizálva hasonlítja össze (korábbi `grep -qx` helyett), így a záró-perjeles és a `../bin` alak is helyesen FAIL-t ad. L3: új `PINNED_TREE_SHA256` konstans -- a telepített `dist/` + `native/` fa MINDEN fájljának sha256-ja, útvonal-prefix nélkül (a `$PKG/` abszolút előtag levágva minden `sha256sum`-sorból, különben két tartalmilag azonos, de más útvonalon lévő fa más hash-t adna), majd ennek a listának a sha256-ja. A doctor ezt méri a TÉNYLEGESEN telepített fán és veti össze a pinnelt értékkel -- a registry-összevetés (régi check) megmarad kiegészítésként, nem helyettesítve.
+
+**Mutáció-ellenőrzés:** a javítás előtti (stash-elt) `mcp-compress.sh`-ra az új `mcp-compress.selftest.sh` 8 esetéből 6 PIROS lett (a tiszta telepítés és az érintetlen másolat esetén hiányzott a `tree:` sor, a három PATH-megkerülési alak mindegyike hamisan "OK"-t adott nonzero exit nélkül, a manipulált fa észrevétlen maradt) -- csak a hiányzó-csomag kontroll és egy skip-eset maradt zöld (ezek a doctor-blokk előtti/kívüli ágak, a javítás nem érintette őket). A javítás visszaállítása után 8/8 zöld. `bash -n` tiszta szintaxis-ellenőrzés.
+
+**Ki döntött:** a lelet WhiteHat-tól jön (0f55f01e GO, komment 13254), a kódot/tesztet a backend írta.
+
+**Hivatkozás:** kártya 1bb57483, WhiteHat GO 0f55f01e (komment 13254).

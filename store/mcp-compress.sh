@@ -54,6 +54,13 @@ PINNED_VERSION="0.36.0"
 # card bbde2831) -- a fixed version's published tarball hash never changes on npm, so a doctor-time
 # mismatch means the registry served something other than what was audited.
 PINNED_INTEGRITY="sha512-ws8ARYFc5UpVGKfn7rHPHzH1sw14NTyKdUhdwHHDuMzE0fL0Ug6JEhlFSoglOL0YMjgjYig8KLsDxItemq4wgA=="
+# sha256 over every file under dist/ and native/ in the INSTALLED tree (sorted paths, each file's own
+# sha256sum, then sha256sum of that list) -- card 1bb57483 (WhiteHat L3, 0f55f01e): PINNED_INTEGRITY
+# above only compares the registry's published tarball hash, which never changes once a version is
+# published, so it would still say OK even if the local tree had been modified after install. Recorded
+# at the same audit point as PINNED_INTEGRITY (QA2/Cybersec's `diff -rq` against the unpacked tarball
+# confirmed this installed tree was byte-identical to the audited 0.36.0 release).
+PINNED_TREE_SHA256="e6e89d6addf13c1845047967afc8ec2ce1c03651e34012b68f735e229839bf70"
 PKG="${MCP_COMPRESSOR_PKG:-$HOME/.npm-tools/lib/node_modules/@atlassian/mcp-compressor}"
 NPM_TOOLS_BIN="${MCP_COMPRESSOR_BIN_DIR:-$HOME/.npm-tools/bin}"
 LEVEL="high"
@@ -65,6 +72,9 @@ case "${1:-}" in
   doctor)
     echo "package: $PKG"
     echo "pinned:  $PINNED_VERSION"
+    # card 1bb57483 (WhiteHat LOW-ok, 0f55f01e): L1 -- doctor must exit non-zero on any FAIL below,
+    # so a caller using this as a gate can actually act on it. Tracked across all three checks.
+    doctor_fail=0
     node --input-type=module -e "
       import { VERSION, compressToolListing } from '$PKG/dist/index.js'
       console.log('version:', VERSION)
@@ -72,8 +82,23 @@ case "${1:-}" in
     " 2>&1 | sed 's/^/  /'
     # Condition 3 (card 0f55f01e): the 0.36.0 bin exposes an unchecked `llm pull` download+exec path
     # (dist/cli.js). This adapter never calls it, but only because nothing ever puts the bin on PATH.
-    if printf '%s' "$PATH" | tr ':' '\n' | grep -qx "$NPM_TOOLS_BIN"; then
-      echo "  PATH:    FAIL -- $NPM_TOOLS_BIN is on PATH (must never be; it exposes 'mcp-compressor llm pull', an unverified download+exec)"
+    # L2 (WhiteHat, card 1bb57483): a literal `grep -qx` against raw $PATH entries missed a trailing
+    # slash (`$NPM_TOOLS_BIN/`) or a `../bin`-style relative form that resolves to the same directory --
+    # both measured to report "OK" while the bin was actually on PATH. Normalize every PATH entry
+    # (and the target) with realpath before comparing.
+    bin_real="$(realpath -m "$NPM_TOOLS_BIN")"
+    path_hit=""
+    while IFS= read -r entry; do
+      [[ -z "$entry" ]] && continue
+      entry_real="$(realpath -m "$entry" 2>/dev/null)" || continue
+      if [[ "$entry_real" == "$bin_real" ]]; then
+        path_hit="$entry"
+        break
+      fi
+    done < <(printf '%s' "$PATH" | tr ':' '\n')
+    if [[ -n "$path_hit" ]]; then
+      echo "  PATH:    FAIL -- $NPM_TOOLS_BIN is on PATH (as '$path_hit', resolves to $bin_real; must never be; it exposes 'mcp-compressor llm pull', an unverified download+exec)"
+      doctor_fail=1
     else
       echo "  PATH:    OK -- $NPM_TOOLS_BIN is not on PATH"
     fi
@@ -84,8 +109,30 @@ case "${1:-}" in
       echo "  integrity: OK -- registry matches pinned $PINNED_INTEGRITY"
     else
       echo "  integrity: FAIL -- registry reports $live, pinned/audited $PINNED_INTEGRITY"
+      doctor_fail=1
     fi
-    exit 0 ;;
+    # L3 (WhiteHat, card 1bb57483): the check above only compares the REGISTRY's published tarball
+    # hash to the pin -- a published version's hash never changes, so this would still say "OK" even
+    # if the locally installed tree had been modified after install. Hash what is ACTUALLY on disk.
+    if [[ -d "$PKG/dist" ]]; then
+      # Strip the "$PKG/" prefix from each sha256sum line before the final hash: PKG is an
+      # absolute path that differs across installs/environments, and sha256sum's output includes
+      # the filename -- without stripping it, two byte-identical trees at different paths (or the
+      # same tree re-pinned after a reinstall to a different prefix) would hash differently even
+      # though no file content changed.
+      tree_hash="$(find "$PKG/dist" "$PKG/native" -type f -print0 2>/dev/null | sort -z | xargs -0 sha256sum 2>/dev/null | sed "s#  ${PKG}/#  #" | sha256sum | awk '{print $1}')"
+      if [[ -z "$tree_hash" ]]; then
+        echo "  tree:    SKIPPED -- could not hash the installed dist/native tree at $PKG"
+      elif [[ "$tree_hash" == "$PINNED_TREE_SHA256" ]]; then
+        echo "  tree:    OK -- installed dist/native tree matches pinned sha256 $PINNED_TREE_SHA256"
+      else
+        echo "  tree:    FAIL -- installed dist/native tree hash $tree_hash does not match pinned $PINNED_TREE_SHA256 (tree may have been modified after install)"
+        doctor_fail=1
+      fi
+    else
+      echo "  tree:    SKIPPED -- $PKG/dist not found"
+    fi
+    exit "$doctor_fail" ;;
   --level) LEVEL="${2:-high}"; shift 2 || true ;;
   -h|--help|'') : ;;
 esac
