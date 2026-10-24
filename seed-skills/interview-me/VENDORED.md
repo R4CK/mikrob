@@ -11,7 +11,7 @@ change it upstream, or fork it and re-point this entry.
 | commit date | 2026-09-22T21:05:38-07:00 |
 | vendored at | 2026-10-10T15:57:59+02:00 |
 | licence | see UPSTREAM-LICENSE next to this file (upstream: `LICENSE`) |
-| watch clone | /home/neon/marveen-agent-worktrees/backend3/store/adopted/addyosmani__agent-skills |
+| watch clone | {{INSTALL_DIR}}/store/adopted/addyosmani__agent-skills |
 
 
 
