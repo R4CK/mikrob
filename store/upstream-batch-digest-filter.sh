@@ -19,7 +19,7 @@
 # silently become an empty-but-"successful" call (fail-closed: no draft rather than a blind pass).
 set -euo pipefail
 
-out="$(python3 -c '
+out="$(python3 -I -c '
 import re, sys
 
 # A commit line (git log --oneline / `git log --format=%h %s`): a 7-40 char lowercase hex hash,
@@ -34,6 +34,11 @@ import re, sys
 # dropped, instead of being re-admitted as part of the matched commit line.
 COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}\s+\S.*$")
 
+# RedHat NO-GO K1 (komment 23553, bb1f9f6f delta-gate): -c without -I resolves sys.path[0] to the
+# calling agent cwd and still honours PYTHONPATH, so a planted re.py (or a PYTHONPATH entry) in
+# the working directory can silently shadow the stdlib re module used above and defeat the whole
+# filter. -I (isolated mode) ignores both, mirroring the same fix already applied to the
+# gemini-offload-call.sh redactor and seged-hivo.py/gemini-agy-call.sh (card f6f67dff R3).
 for line in sys.stdin.read().splitlines():
     if COMMIT_RE.match(line):
         print(line)
