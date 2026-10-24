@@ -56,11 +56,18 @@ const KG_DRAFT_MAX_ATTEMPTS = 2
 // through the first list -- variation selectors, combining grapheme joiner, deprecated formatting
 // characters, Hangul fillers, Khmer inherent vowel, halfwidth Hangul filler, interlinear annotation
 // anchor, and a musical-notation format character.
+// "szomszéd-karakter" gap (card f66b3652, RedHat 23202/23225): the class is a hand-picked list, not
+// a Unicode category, so the Cf/Cc neighbors of every character above were still unfiltered --
+// measured against Unicode 16.0 unicodedata: interlinear annotation terminator, Khmer vowel
+// inherent AA, more musical-notation format chars, the full Mongolian free-variation-selector
+// block, and the Arabic/Syriac/Kaithi/Egyptian-hieroglyph/shorthand format-control blocks.
 const UNSAFE_CHARS_RX = new RegExp(
-  '[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00ad\\u061c\\u180e' +
+  '[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F-\\u009F\\u00ad\\u061c' +
+    '\\u0600-\\u0605\\u06dd\\u070f\\u0890-\\u0891\\u08e2\\u180b-\\u180f' +
     '\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u2069\\u3164\\ufeff' +
-    '\\u034f\\u115f\\u1160\\u17b4\\u206a-\\u206f\\ufe00-\\ufe0f\\uffa0\\ufff9' +
-    '\\u{E0000}-\\u{E007F}\\u{E0100}-\\u{E01EF}\\u{1D173}]',
+    '\\u034f\\u115f\\u1160\\u17b4-\\u17b5\\u206a-\\u206f\\ufe00-\\ufe0f\\uffa0\\ufff9-\\ufffb' +
+    '\\u{110BD}\\u{110CD}\\u{13430}-\\u{1343F}\\u{1BCA0}-\\u{1BCA3}' +
+    '\\u{E0000}-\\u{E007F}\\u{E0100}-\\u{E01EF}\\u{1D173}-\\u{1D17A}]',
   'u',
 )
 const DRAFT_TITLE_MAX = 300
@@ -139,12 +146,25 @@ function latestReviewComment(comments: readonly KanbanComment[]): KanbanComment 
 // Here we only need "did this one comment, by itself, declare this sha", for which a line-scoped
 // substring is accurate enough and keeps the F5 logic independent of that scrubbing's edge cases.
 const GATE_SHA_LINE_TEST_RX = /^\s*Gate-SHA\s*:\s*.*$/gim
+// N1 (card f66b3652, RedHat 23225): a Gate-SHA line citing a SHORT sha (git's own short-sha
+// convention, e.g. a 7-12 char abbreviation) was not fedett ("covered"), because the old plain
+// substring test required the full closure sha to appear verbatim in the line -- a short sha on
+// the line is a substring of the full sha, not the other way round. Fail-closed (draft), but the
+// gap shrinks the active rate for no security reason, so match a hex token on the line against
+// the closure sha by mutual prefix, either direction, at 7+ hex chars (git's own minimum
+// unambiguous short-sha length).
+const SHA_TOKEN_RX = /[0-9a-f]{7,40}/gi
 function commentCitesSha(content: string, sha: string): boolean {
   GATE_SHA_LINE_TEST_RX.lastIndex = 0
   const needle = sha.toLowerCase()
   let m: RegExpExecArray | null
   while ((m = GATE_SHA_LINE_TEST_RX.exec(content)) !== null) {
-    if (m[0].toLowerCase().includes(needle)) return true
+    const line = m[0].toLowerCase()
+    SHA_TOKEN_RX.lastIndex = 0
+    let tok: RegExpExecArray | null
+    while ((tok = SHA_TOKEN_RX.exec(line)) !== null) {
+      if (needle.startsWith(tok[0]) || tok[0].startsWith(needle)) return true
+    }
   }
   return false
 }
@@ -348,7 +368,12 @@ export function runCapture(
   // 19) and the queue row stays pending across the reopen (enqueueCapture only guards entering
   // 'done', capture.ts's own doc comment). A solution may go active only while the card the gate
   // actually AGREE'd on is STILL done right now.
-  const allowedActiveCandidate = closure.verdict === 'AGREE' && card.status === 'done'
+  // N2 (card f66b3652, RedHat 23225): an AGREE verdict with no sha (gate-closure-check.py's AGREE
+  // line always carries one in practice, but a closureCheck is not guaranteed to) used to fall
+  // into the `else` branch below with allowedActive still true, anchoring the solution with
+  // gateSha === null -- an ACTIVE node with no Gate-SHA to point at. AGREE without a sha is "don't
+  // know what was agreed on", fail closed same as every other unknown-timing case here.
+  const allowedActiveCandidate = closure.verdict === 'AGREE' && card.status === 'done' && !!closure.sha
 
   // F5 (card f809b24c): when the verdict's timing is known, the review used as the ACTIVE node's
   // content source must be the one the gate actually covered (same Gate-SHA, written at or before

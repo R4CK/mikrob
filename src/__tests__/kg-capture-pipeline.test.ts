@@ -436,6 +436,82 @@ describe('runCapture', () => {
     for (const ch of badChars) expect(seenPrompt).not.toContain(ch)
     kgDb.close()
   })
+
+  // "szomszéd-karakter" gap (card f66b3652, RedHat 23202/23225): the class was a hand-picked list,
+  // not a Unicode category, so several Cf-neighbor codepoints RedHat measured against Unicode
+  // 16.0 unicodedata slipped through unfiltered. One representative per newly-added range.
+  it('neighbor-character gap: the codepoints RedHat measured as missing are now stripped too', () => {
+    const kgDb = freshKgDb()
+    const badChars = [
+      '\u{FFFA}', // INTERLINEAR ANNOTATION SEPARATOR (range extension of FFF9)
+      '\u{17B5}', // KHMER VOWEL INHERENT AA (range extension of 17B4)
+      '\u{1D174}', // MUSICAL SYMBOL END BEAM (range extension of 1D173)
+      '\u{180B}', // MONGOLIAN FREE VARIATION SELECTOR ONE
+      '\u{0600}', // ARABIC NUMBER SIGN
+      '\u{06DD}', // ARABIC END OF AYAH
+      '\u{070F}', // SYRIAC ABBREVIATION MARK
+      '\u{110BD}', // KAITHI NUMBER SIGN
+      '\u{13430}', // EGYPTIAN HIEROGLYPH VERTICAL JOINER
+      '\u{1BCA0}', // SHORTHAND FORMAT LETTER OVERLAP
+    ]
+    comments = [{
+      id: 13, author: 'backend', created_at: 500, automated: false,
+      content: `REVIEW: ${badChars.join('x')} done.\nGate-SHA: abc1234`,
+    }]
+    let seenPrompt = ''
+    runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      draftFn: (reviewText: string) => { seenPrompt = reviewText; return JSON.stringify([{ title: 'off-by-one fix' }]) },
+    }))
+    for (const ch of badChars) expect(seenPrompt).not.toContain(ch)
+    kgDb.close()
+  })
+
+  // V6/V7 (card f66b3652, RedHat 23202): the range-end characters (not just an interior sample)
+  // were never exercised, so a mutant shrinking the range (e.g. ︀-️ -> ︀-︎)
+  // would still pass every existing test. Pin the exact end of each range, in the output
+  // validator (rejects, does not silently strip -- isSafeDraftField's contract).
+  it('V6/V7: the END of the variation-selector and deprecated-formatting ranges is rejected in a draft field, not just the start', () => {
+    for (const unsafe of ['️', '⁯']) {
+      const kgDb = freshKgDb()
+      const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+        draftFn: () => JSON.stringify([{ title: `bad${unsafe}title` }]),
+      }))
+      expect(result.outcome).toBe('failed')
+      expect(result.reason).toBe('draft_parse_error')
+      kgDb.close()
+    }
+  })
+
+  // V15/V16 (card f66b3652, RedHat 23202): DRAFT_BODY_MAX/DRAFT_KEYWORDS_MAX had no test at the
+  // boundary, so a mutant multiplying either ceiling by 1000 left every existing test green (no
+  // test field was ever long enough to notice). Exactly one char over each ceiling must reject.
+  it('V15/V16: a body or keywords field one character over its length ceiling is rejected', () => {
+    const over = (n: number) => 'x'.repeat(n + 1)
+    for (const draft of [{ title: 'ok', body: over(3000) }, { title: 'ok', keywords: over(500) }]) {
+      const kgDb = freshKgDb()
+      const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+        draftFn: () => JSON.stringify([draft]),
+      }))
+      expect(result.outcome).toBe('failed')
+      expect(result.reason).toBe('draft_parse_error')
+      kgDb.close()
+    }
+  })
+
+  // N2 (card f66b3652, RedHat 23225): an AGREE verdict with no sha used to fall into the
+  // purely-latest else-branch with allowedActive still true -- an ACTIVE node anchored on
+  // gateSha === null. Not reachable from the real gate-closure-check.py (its AGREE line always
+  // carries a sha), but the same fail-open class as F-b, closed the same way: fail to draft.
+  it('N2: AGREE with no sha -> solution created as draft, never active (not reachable from the real script, same fail-open class as F-b)', () => {
+    const kgDb = freshKgDb()
+    const result = runCapture({} as Database.Database, kgDb, card.id, 3, deps({
+      closureCheck: (): ClosureResult => ({ verdict: 'AGREE', sha: null }),
+    }))
+    expect(result.outcome).toBe('captured')
+    const node = kgDb.prepare('SELECT * FROM kg_nodes WHERE id = ?').get(result.solutionIds[0]!) as Record<string, unknown>
+    expect(node.status).toBe('draft')
+    kgDb.close()
+  })
 })
 
 // F-a (card 2c54029d, WhiteHat 23016, from f809b24c's conditional GO comment 23015): the F5 tests
@@ -472,6 +548,24 @@ describe('earliestGateCommentAt / coveredReviewComment (pins M2, M4, M6)', () =>
       { id: 1, card_id: card.id, author: 'backend', content: 'REVIEW: fixed it.\nGate-SHA: abc1234', created_at: 100, automated: false },
     ]
     expect(coveredReviewComment(cs, 'abc1234', 200)?.id).toBe(1)
+  })
+
+  // N1 (card f66b3652, RedHat 23225): a REVIEW citing a git-style SHORT sha on its Gate-SHA line
+  // used to be uncovered against the full closure sha -- the old plain substring test required
+  // the full sha to appear verbatim in the line, and a 7-char abbreviation is a substring of the
+  // full sha, not the reverse. Fail-closed before (draft), but for no security reason.
+  it('N1: a Gate-SHA line citing a short (7-char) sha IS covered against the matching full sha', () => {
+    const cs = [
+      { id: 1, card_id: card.id, author: 'backend', content: 'REVIEW: fixed it.\nGate-SHA: abc1234', created_at: 100, automated: false },
+    ]
+    expect(coveredReviewComment(cs, 'abc1234999fedcba0123456789abcdef01234567', 200)?.id).toBe(1)
+  })
+
+  it('N1: a short sha that is NOT a prefix of the full sha is still NOT covered', () => {
+    const cs = [
+      { id: 1, card_id: card.id, author: 'backend', content: 'REVIEW: fixed it.\nGate-SHA: zzz9999', created_at: 100, automated: false },
+    ]
+    expect(coveredReviewComment(cs, 'abc1234999fedcba0123456789abcdef01234567', 200)).toBeNull()
   })
 })
 
