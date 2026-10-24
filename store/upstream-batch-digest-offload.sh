@@ -1,152 +1,66 @@
 #!/usr/bin/env bash
-# upstream-batch-digest-offload.sh -- the ONE entry point for the "upstream-batch-digest" local-
-# llm category's Gemini heavy-path fallback (card efe4aa40, MikroB decision komment 23269 point 2).
+# upstream-batch-digest-offload.sh -- thin, UNCONDITIONAL environment-sanitizing entry point.
+# The real logic lives in upstream-batch-digest-offload-impl.sh; this file's only job is to reach
+# it with a brand new, explicitly-listed environment, before a single byte of the real logic runs.
 #
-# Scope decision, stated explicitly (do not re-litigate without re-reading efe4aa40/23267/23269):
-#   - merge-conflict-explain does NOT get a Gemini fallback at all (point 1 of the same decision --
-#     its whole value comes from the real conflict-block content, which can never leave this
-#     machine). A local failure on that category falls back to the EXISTING convention: the
-#     responsible online agent just writes it, no script change needed, nothing to build.
-#   - upstream-batch-digest MAY use the Gemini fallback, but ONLY commit hash+subject text --
-#     --stat/filelist/diff must NEVER leave this filter. This script enforces that BEFORE the
-#     local attempt (not only before Gemini), via upstream-batch-digest-filter.sh.
-#   - CONTENT GATE (card d886e9c2, MikroB decision komment 23556 point (a), RedHat GO 23683): the
-#     --confirm-gemini-ok flag alone is a caller-controlled switch, not a gate -- any caller just
-#     passes it (RedHat Y2, komment 23553). Since there is no kanban leaf here to feed
-#     is_gemini_blocked's project/tags allowlist, this script instead reuses that SAME function's
-#     content-gate step (sensitive-keyword vocabulary) via offload-dispatch.sh's existing
-#     "--check-blocked PROJECT TAGS TITLE DESC" exposure (card 23a14c4b) -- project="mikrob" (this
-#     IS the fleet's own repo), tags="gemini-ok" (this call-site's OWN --confirm-gemini-ok IS the
-#     deliberate positive marker the tag check requires, card c23ea72f -- there is no kanban leaf
-#     to tag instead), title empty, desc=the FILTERED commit text (the exact text that would
-#     reach Gemini, so the sensitive-keyword content gate runs for real). This is checked IN
-#     ADDITION to --confirm-gemini-ok, which stays required (USAGE unchanged) -- the switch alone
-#     no longer opens the path by itself.
-#     Defense in depth beyond the hash+subject filter: gemini-offload-call.sh's own secret-shaped-
-#     token redaction still runs unconditionally on whatever text this script hands it.
+# WhiteHat F1'' (card 7b5cf804, delta-3 NO-GO @0b35ec0d, msg 14650): the previous fix's own wipe
+# attempt (`builtin unset -f $(builtin compgen -A function)`) is itself shadowable -- `builtin`,
+# `unset`, `compgen`, `command`, `declare` are ordinary builtins, not reserved words, so a caller
+# that exports a same-named function intercepts the wipe call before it can run (demonstrated
+# live, bash 5.3.9: export -f builtin as a no-op + export -f dirname pointing HERE at an attacker
+# directory -> the content gate bypassed entirely, rc=0, the Gemini-stub reached). There is no
+# in-process wipe immune to this: EVERY plain command name (including unset/compgen/declare/
+# command/builtin itself) goes through function lookup first -- only a shell KEYWORD (if, case,
+# [[) or a PATH-QUALIFIED command (containing a "/") skips that lookup entirely.
 #
-# USAGE:
-#   git log --stat <range> | upstream-batch-digest-offload.sh --caller <agent> --confirm-gemini-ok
+# The only construct that is unconditionally immune is therefore: start a BRAND NEW process with a
+# BRAND NEW environment (env -i, which drops every exported function along with every other env
+# var) before running ANY of the real logic, using nothing but keywords/parameter-expansion and
+# absolute paths to get there. This file does exactly that, and nothing else -- it is deliberately
+# too small to contain a second bug in the same class.
 #
-# HASH LENGTH (MikroB decision komment 23556, RedHat 23553 non-blocking Y3): use SHORT hashes
-# (git log --format='%h %s' or --abbrev-commit), not the full 40-char SHA-1 from a plain
-# `git log --stat`. gemini-offload-call.sh's own secret-shaped-token redactor rejects any 32+
-# char contiguous hex run (hex32 pattern) -- a full 40-char hash always fails the Gemini call,
-# turning every fallback attempt into case 3 (both local and Gemini failed) for no reason.
+# NO FLAG, ON PURPOSE. A gated version of this fix ( `if [[ -z "${UBD_CLEAN:-}" ]]; then <re-exec
+# into self>; else <real body>; fi` in a single file) was considered and rejected: the flag is
+# itself just another caller-settable env var -- a caller able to export functions can just as
+# easily export UBD_CLEAN=1 and skip the sanitizing re-exec entirely, landing straight in the
+# dirty environment the wipe was supposed to close (a strictly EASIER bypass than F1'', since it
+# needs no function export at all). Splitting into two files removes the flag, and therefore
+# removes anything to forge: THIS file always re-execs, unconditionally, on every invocation; the
+# impl file is reached only through that re-exec and never re-execs again (see its own header for
+# why it is then safe to use plain `dirname`/`cd`/`bash` there).
 #
-# Exit codes: 0 ok (stdout = the digest input text, output, or filtered commit list on dry-run) |
-#   1 filter rejected the input (nothing safe to send) | 2 local attempt failed and no Gemini
-#   fallback was available (flag off, budget capped, or --confirm-gemini-ok missing) | 3 both the
-#   local attempt and the Gemini fallback failed.
+# WHY "${0%/*}" AND NOT `dirname`: same reasoning as above -- `dirname` is a plain command name,
+# shadowable before the environment is clean. "${0%/*}" is bash's own suffix-removal parameter
+# expansion (not a command at all), immune by construction. The `case` below only handles the
+# (here, defensive-only) edge case of $0 containing no "/" at all (e.g. a bare PATH lookup) --
+# `case`/`esac` is a shell keyword, not a command, same immunity.
+#
+# THE ALLOWLIST BELOW is every env var the real implementation legitimately reads from its
+# caller's environment (verified by grepping upstream-batch-digest-offload-impl.sh and the
+# gemini-heavy-gate.sh it sources): the heavy-second-opinion flag file, the hourly-budget lock,
+# the helper script path, and the two hourly limits. PATH and HOME are the minimum a bash script
+# needs to run at all. Nothing else survives -- in particular, none of the UBD_FILTER/UBD_LOCAL_
+# LLM/UBD_GEMINI_OFFLOAD/UBD_SELFTEST_MODE/UBD_OFFLOAD_DISPATCH seams the F1/F1'/F2' fixes already
+# removed from the code are let back in by name here, and no caller-exported FUNCTION (regardless
+# of name) survives env -i at all.
+#
+# KNOWN, DEFERRED, OUT OF SCOPE FOR THIS CARD (WhiteHat F2'', msg 14650): GEMINI_HEAVY_FLAG /
+# GEMINI_AGY_HOURLY_LOCK / SEGED_HIVO_HELPERS / the two hourly limits are themselves still caller-
+# settable through this allowlist (the selftest genuinely needs them to exercise the real gate
+# logic against scratch files, not production ones). A caller able to set these can force the
+# heavy-second-opinion flag on or widen the hourly budget -- that is a feature-flag/budget bypass,
+# NOT a content-gate bypass (the sensitive-keyword vocabulary in offload-dispatch.sh --check-
+# blocked still runs unconditionally and is not on this allowlist at all). WhiteHat rated this LOW/
+# MEDIUM, did not exploit it, and explicitly left it out of this card's scope; track separately.
 set -uo pipefail
-
-# WhiteHat delta NO-GO F1' (card 7b5cf804, komment 23996, Gate-SHA f57ad35fedc1504325a10ed0057cf97c9e5036ff):
-# the F1 fix only unset a NAMED list of functions (env, bash, ...) -- an exported function with
-# ANY other name the script later calls as a bare command (demonstrated: `dirname`, used by the
-# HERE computation right below) shadows that command exactly the same way, redirecting HERE (and
-# therefore every $HERE-relative path this script trusts) into an attacker-controlled directory.
-# Fix: drop EVERY inherited function, not a named subset, via `builtin compgen`/`builtin unset`
-# (the builtin prefix means this can't itself be shadowed by a same-named exported function). This
-# must run before ANY other command in this script, including the HERE computation.
-builtin unset -f $(builtin compgen -A function) 2>/dev/null || true
-PATH=/usr/bin:/bin
-unset BASH_ENV ENV
-
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# WhiteHat delta NO-GO F2' (card 7b5cf804, komment 23996, MikroB decision komment 23997): the
-# UBD_SELFTEST_MODE gate on FILTER/LOCAL_LLM/GEMINI_OFFLOAD was itself just another caller-settable
-# environment variable -- a caller able to set UBD_FILTER could set UBD_SELFTEST_MODE alongside it.
-# MikroB's ruling: no risk-acceptance for this, structural fix only (consistent with F1'/F1, the
-# same "caller's environment" threat model). FILTER/LOCAL_LLM/GEMINI_OFFLOAD are now fixed paths,
-# never overridable from ANY environment variable. The selftest stubs local-llm.sh/gemini-
-# offload-call.sh by running a one-line-diff sed-generated PROBE COPY of this script instead (the
-# rea-bwrap-sandbox.selftest.sh "probe copy" pattern), not by setting an env var on the real script.
-FILTER="$HERE/upstream-batch-digest-filter.sh"
-LOCAL_LLM="$HERE/local-llm.sh"
-GEMINI_OFFLOAD="$HERE/gemini-offload-call.sh"
-# WhiteHat MEDIUM (card 7b5cf804, d886e9c2 GO @ a7742f46): the content gate below is the one
-# thing standing between a sensitive commit and Gemini -- it must NOT be overridable from the
-# caller's environment. No test (selftest or otherwise) ever sets UBD_OFFLOAD_DISPATCH, so the
-# seam bought nothing and only gave a caller a way to point it at a script that always exits 42.
-OFFLOAD_DISPATCH="$HERE/offload-dispatch.sh"
-
-CALLER=""
-CONFIRM_GEMINI_OK=0
-ARGS=()
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --caller) CALLER="$2"; shift 2 ;;
-    --confirm-gemini-ok) CONFIRM_GEMINI_OK=1; shift ;;
-    *) ARGS+=("$1"); shift ;;
-  esac
-done
-[[ -n "$CALLER" ]] || { echo "upstream-batch-digest-offload: --caller is required" >&2; exit 2; }
-
-# shellcheck source=/dev/null
-. "$HERE/gemini-heavy-gate.sh"
-
-# 1. FILTER FIRST, before the local attempt (MikroB decision point 2) -- same filtered text goes
-#    to local AND to the Gemini fallback, so there is no second, unfiltered copy anywhere.
-RAW="$(cat)"
-FILTERED="$(printf '%s' "$RAW" | bash "$FILTER")" || exit 1
-
-# 2. LOCAL ATTEMPT.
-if OUT="$(printf '%s' "$FILTERED" | "$LOCAL_LLM" --task upstream-batch-digest --caller "$CALLER" 2>/dev/null)"; then
-  printf '%s\n' "$OUT"
-  exit 0
-fi
-echo "upstream-batch-digest-offload: local attempt failed, considering Gemini fallback" >&2
-
-# 3. GEMINI FALLBACK -- gated by the f0b3b674 heavy flag + the shared hourly budget (reused,
-#    unmodified) AND this script's own explicit per-call opt-in (see the scope decision above)
-#    AND the is_gemini_blocked content gate (card d886e9c2, see the comment block above).
-if [[ "$CONFIRM_GEMINI_OK" != "1" ]]; then
-  echo "upstream-batch-digest-offload: no Gemini fallback (--confirm-gemini-ok not given)" >&2
-  exit 2
-fi
-# CONTENT GATE (card d886e9c2): the switch above is caller-controlled and not sufficient by
-# itself. Reuse is_gemini_blocked's own content-gate vocabulary via offload-dispatch.sh's
-# "--check-blocked" exposure, run on the FILTERED commit text (the exact text that would reach
-# Gemini) -- its own convention is exit 42 == allowed, anything else (including a crashed/missing
-# interpreter) == blocked, fail-closed.
-# WhiteHat MEDIUM (card 7b5cf804): BASH_ENV/ENV, if inherited from the caller's environment,
-# would be sourced by this `bash <scriptfile>` invocation BEFORE offload-dispatch.sh's own code
-# runs -- a caller-supplied file there could just `exit 42` and skip the real check entirely.
-# Strip both so the gate call always runs the real logic, regardless of caller environment.
-# WhiteHat NO-GO F1 (card 7b5cf804, komment 23922): absolute paths, so no PATH lookup for `env`/
-# `bash` happens at all (the unset -f/PATH pin above already strips inherited functions, this
-# closes the same hole even if something re-exported a function or re-widened PATH in between).
-CHECK_RC=0
-/usr/bin/env -u BASH_ENV -u ENV /bin/bash "$OFFLOAD_DISPATCH" --check-blocked mikrob "gemini-ok" "" "$FILTERED" >/dev/null 2>&1 || CHECK_RC=$?
-if [[ "$CHECK_RC" != 42 ]]; then
-  echo "upstream-batch-digest-offload: no Gemini fallback (content gate blocked)" >&2
-  exit 2
-fi
-if ! gemini_heavy_second_opinion_enabled; then
-  echo "upstream-batch-digest-offload: no Gemini fallback (heavy second-opinion flag is off)" >&2
-  exit 2
-fi
-SLOT_ID="upstream-batch-digest:$(date -u +%Y%m%dT%H%M%SZ)"
-if ! reserve_heavy_gemini_slot "$SLOT_ID"; then
-  echo "upstream-batch-digest-offload: no Gemini fallback (hourly budget capped)" >&2
-  exit 2
-fi
-# RedHat NO-GO K2 (komment 23553, bb1f9f6f delta-gate): sending $FILTERED bare gives Gemini a
-# commit list with NO instruction -- not a digest request, just raw upstream subject lines it is
-# free to interpret however it wants, and the local-llm-skills template's FLAGS requirement (flag
-# security/auth/secrets/env/CI/dependency commits) never reaches this path at all. Build the SAME
-# prompt the local attempt already used (system line + user template with {{INPUT}} substituted,
-# same escaping rule as local-llm.sh) and send THAT to Gemini instead of the bare filtered text.
-TEMPLATE="$HERE/local-llm-skills/upstream-batch-digest.txt"
-GEMINI_SYS="$(awk '/^---$/{exit} {print}' "$TEMPLATE")"
-GEMINI_USER_TPL="$(awk 'f{print} /^---$/{f=1}' "$TEMPLATE")"
-GEMINI_ESCAPED_INPUT="${FILTERED//\\/\\\\}"
-GEMINI_USER="${GEMINI_USER_TPL//\{\{INPUT\}\}/${GEMINI_ESCAPED_INPUT//&/\\&}}"
-GEMINI_PROMPT="$GEMINI_SYS
-$GEMINI_USER"
-if OUT="$(printf '%s' "$GEMINI_PROMPT" | bash "$GEMINI_OFFLOAD" 2>/dev/null)" && [[ -n "${OUT// }" ]]; then
-  printf '%s\n' "$OUT"
-  exit 0
-fi
-echo "upstream-batch-digest-offload: Gemini fallback also failed" >&2
-exit 3
+case "$0" in
+  */*) IMPL="${0%/*}/upstream-batch-digest-offload-impl.sh" ;;
+  *)   IMPL="./upstream-batch-digest-offload-impl.sh" ;;
+esac
+/usr/bin/env -i PATH=/usr/bin:/bin HOME="${HOME:-}" \
+  GEMINI_HEAVY_FLAG="${GEMINI_HEAVY_FLAG:-}" \
+  GEMINI_AGY_HOURLY_LOCK="${GEMINI_AGY_HOURLY_LOCK:-}" \
+  SEGED_HIVO_HELPERS="${SEGED_HIVO_HELPERS:-}" \
+  GEMINI_AGY_HOURLY_LIMIT="${GEMINI_AGY_HOURLY_LIMIT:-}" \
+  GEMINI_AGY_HEAVY_HOURLY_LIMIT="${GEMINI_AGY_HEAVY_HOURLY_LIMIT:-}" \
+  /bin/bash "$IMPL" "$@"
