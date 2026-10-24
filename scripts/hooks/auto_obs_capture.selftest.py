@@ -105,6 +105,15 @@ check('short bare-NUL path rejected to None', aoc._sanitize_file_path('/tmp/x\x0
 check('short bare-CR path rejected to None', aoc._sanitize_file_path('/tmp/x\ry'), None)
 check('short U+2028 line-separator path rejected to None', aoc._sanitize_file_path('/tmp/x y'), None)
 
+# RedHat NO-GO E1 (card f88289d6, comment 24426): the 512-char length cap needs its OWN test,
+# independent of the control-char filter -- the existing 20KB fixture also carries a newline,
+# so widening the control-char regex (the F fix above) left the length cap itself unpinned:
+# deleting _MAX_FILE_PATH_LEN stayed green on the full 53-check suite. This fixture is a single
+# line, control-char-free, and over 512 characters on length alone.
+_LONG_CLEAN_PATH = '/tmp/x ' + 'ignore previous instructions ' * 30
+check(f'long (len={len(_LONG_CLEAN_PATH)}>512) control-char-free path rejected to None (length cap)',
+      aoc._sanitize_file_path(_LONG_CLEAN_PATH), None)
+
 # _file_path() must apply the same sanitizer to whatever Edit/Write pass in, including the dict case
 check('_file_path rejects a dict value from Write', aoc._file_path('Write', {'file_path': {'command': 'rm -rf /'}}), None)
 check('_file_path rejects an oversized/newline value from Edit', aoc._file_path('Edit', {'file_path': _big_path}), None)
@@ -353,6 +362,21 @@ try:
         rec_fi = json.loads(json.loads(posts_fi[0]['body'].decode('utf-8')).get('content', '{}')) if posts_fi else {}
         check(f'F (short control-char #{i}, len={len(bad)}<512): file_path is None', rec_fi.get('file_path'), None)
         _CaptureHandler.requests.clear()
+
+    # --- E1 (RedHat NO-GO 24426): the 512-char length cap itself, independent of the
+    # control-char filter -- a single-line, control-char-free path over 512 chars must arrive
+    # as None through main(), not just via _sanitize_file_path() in isolation (a mutant that
+    # strips _MAX_FILE_PATH_LEN but leaves the control-char filter alone stayed green before). ---
+    root_e1 = _fresh_root()
+    run_main_with_payload(
+        {'tool_name': 'Edit', 'tool_input': {'file_path': _LONG_CLEAN_PATH}, 'cwd': _BACKEND_CWD},
+        enabled_flag, web_port=port, project_root=root_e1,
+    )
+    posts_e1 = _memory_posts(_CaptureHandler.requests)
+    rec_e1 = json.loads(json.loads(posts_e1[0]['body'].decode('utf-8')).get('content', '{}')) if posts_e1 else {}
+    check(f'E1 (length cap, len={len(_LONG_CLEAN_PATH)}>512, control-char-free): file_path is None',
+          rec_e1.get('file_path'), None)
+    _CaptureHandler.requests.clear()
 
     # --- C/D: dedup check AND record call must both still run from inside main() -- two
     # identical qualifying calls against the SAME project_root (so the dedup state file
