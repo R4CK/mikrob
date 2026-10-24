@@ -37,8 +37,15 @@ const FETCH_TIMEOUT_MS = 20_000
  *  `blobOf` parameter exists to avoid. */
 export type GitRunner = (args: readonly string[], cwd: string) => string
 
+// stdio is explicit (card be1df1b6): execFileSync's documented default sends a failing child's
+// stderr straight to THIS process's stderr, not just into the thrown error. blobOf() below calls
+// `git rev-parse <upstream>:<path>` for every conflicted file, including ones upstream genuinely
+// does not have -- git's own "fatal: path '...' exists on disk, but not in '<tree>'" then printed
+// as the literal first line of the --report output, ahead of the actual verdict, even though the
+// failure itself was already caught and handled (null = no upstream blob). Piping stderr captures
+// it on the thrown error instead of leaking it to the caller's terminal/log.
 export const realGit: GitRunner = (args, cwd) =>
-  execFileSync('git', [...args], { cwd, encoding: 'utf-8', timeout: FETCH_TIMEOUT_MS })
+  execFileSync('git', [...args], { cwd, encoding: 'utf-8', timeout: FETCH_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] })
 
 export interface DriftResult {
   /** false = the upstream remote is not configured or not reachable. NOT a failure: the check has

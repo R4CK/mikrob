@@ -312,3 +312,70 @@ describe('the sentinel for a delete/modify conflict is not treated as a corrupte
     expect(r.corruptedPins).toContain(ACK_FILE)
   })
 })
+
+// Card be1df1b6. A file acknowledged with the ABSENT_UPSTREAM_BLOB sentinel (the documented way to
+// record "this is a delete/modify conflict, there is no upstream blob to pin") stayed STALE on
+// every single run, because the stale check compared blobOf's `null` result against the sentinel
+// STRING directly -- `null !== ABSENT_UPSTREAM_BLOB` is always true. The one case the sentinel
+// exists to make settled could never actually settle; the real-world instance was
+// src/__tests__/email-approval-gate.test.ts, a fork-only CI wrapper upstream deleted outright.
+describe('an ABSENT_UPSTREAM_BLOB acknowledgement is CLEAN, not perpetually stale (card be1df1b6)', () => {
+  // classifyConflicts reads ACKNOWLEDGED_UPSTREAM_BLOBS/ACKNOWLEDGED_CONFLICTS directly, not
+  // through an injectable map -- so this exercises the REAL, live sentinel-pinned entry (the
+  // be1df1b6 decision added below) rather than a fixture, the same way the b5b7eb6b block above
+  // does for findCorruptedPins.
+  it('the real email-approval-gate.test.ts decision (be1df1b6) is CLEAN end to end, not unwatched or stale', () => {
+    const FILE = 'src/__tests__/email-approval-gate.test.ts'
+    const { git } = fakeGit({ conflicts: [FILE], blobs: {} })
+    const r = runDriftCheck('/repo', git)
+    expect(r.unwatched).not.toContain(FILE)
+    expect(r.stale.map((s) => s.file)).not.toContain(FILE)
+    expect(isClean(r)).toBe(true)
+  })
+
+  it('CONTROL: a sentinel-recorded file that unexpectedly GAINS a real upstream blob is still stale', () => {
+    // Proves the fix is scoped to the null/sentinel match, not "sentinel-pinned files are always
+    // clean" -- if upstream ever re-adds the path for real, that is exactly the re-decision case.
+    const FILE = 'src/__tests__/email-approval-gate.test.ts'
+    const { git } = fakeGit({ conflicts: [FILE], blobs: { [FILE]: 'f'.repeat(40) } })
+    const r = runDriftCheck('/repo', git)
+    expect(r.stale.map((s) => s.file)).toContain(FILE)
+  })
+})
+
+// Card be1df1b6. execFileSync's documented default sends a failing child's stderr straight to this
+// process's own stderr -- not just into the thrown error. blobOf() calls `git rev-parse
+// <upstream>:<path>` for every file in a delete/modify conflict, and git's own
+// "fatal: path '...' exists on disk, but not in '<tree>'" line used to print directly ahead of the
+// actual --report output, even though the failure was already caught and handled.
+describe('realGit does not leak a failing git call\'s stderr to the process (card be1df1b6)', () => {
+  it('a failing rev-parse does not write to process.stderr; the diagnostic stays on the thrown error', async () => {
+    const { mkdtempSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { execFileSync } = await import('node:child_process')
+    const { realGit } = await import('../fork-upstream/drift-check.js')
+
+    const repo = mkdtempSync(join(tmpdir(), 'drift-realgit-stderr-'))
+    try {
+      execFileSync('git', ['init', '--quiet'], { cwd: repo })
+      execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '--allow-empty', '--quiet', '-m', 'x'], { cwd: repo })
+
+      const writes: string[] = []
+      const spy = process.stderr.write.bind(process.stderr)
+      // @ts-expect-error -- test-local spy, restored in finally below
+      process.stderr.write = (chunk: unknown, ...rest: unknown[]) => {
+        writes.push(String(chunk))
+        return spy(chunk as never, ...(rest as []))
+      }
+      try {
+        expect(() => realGit(['rev-parse', 'HEAD:does-not-exist.txt'], repo)).toThrow()
+      } finally {
+        process.stderr.write = spy
+      }
+      expect(writes.some((w) => w.includes('fatal:'))).toBe(false)
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+})
