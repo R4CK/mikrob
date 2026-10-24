@@ -21690,6 +21690,44 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 
 **Hivatkozás:** kártya 99a4a2d4, előd ff7e1b0a, WhiteHat komment 6640.
 
+## 2026-10-24: 88fd0000 -- MT F5 follow-up: line_end escape, valódi-végrehajtású escape-teszt-pin, "Összes projekt" alapértelmezés (WhiteHat GO feltétellel, kártya 8bb7cf54 komment 20875)
+
+**Kontextus:** a 8bb7cf54 (MT-11 Megoldás-tár dashboard) WhiteHat GO-ja feltételes volt: F1 MEDIUM (a kódhorgony `line_end` mezője escape és típusőr nélkül, míg `line_start` typeof number őrt kapott -- a dashboard a flotta Bearer tokenjét localStorage-ban tartja, tehát egy nem-egész `line_end` token-lopás útja lenne, mihelyt a KG-backend adatot szolgáltat), F2 LOW (a teszt-csomag 0 escapeHtml-állítást tartalmazott, csak forrás-szöveg grep -- 6/6 escape-kivétel mutáns zölden maradt volna, az alapértelmezett hatókör regexe is vak volt a `project || '*'` alakra), F3 LOW (a "Saját projekt" alapértelmezés -- sem project, sem card_id -- a 20763 kontraktus szerint 400 project_or_card_id_required-et ad, zsákutca az oldal betöltésekor).
+
+**Döntés:** F1: `a.line_end` typeof number-őrt kap, azonos mintával mint `a.line_start`. F2: valódi végrehajtású teszt-harness (minimális Node DOM-stub, nincs jsdom), ami a tényleges `kgRenderResults`/`kgRenderDetail` függvényeket hívja meg támadó stringgel a 7 escape-pontra (találat cím/snippet/id-attribútum, részlet cím/snippet, horgony repo+path, szomszéd cím) plusz a line_end őrre és az alapértelmezett hatókörre (`kgCurrentQuery()` tényleges hívása, nem forrás-regex). F3: a "Saját projekt" (üres érték) opció eltávolítva, a projekt-választó egyetlen, előválasztott "Összes projekt" (`project=*`) opciót tartalmaz; a `kg.filter.default_scope` i18n-kulcs törölve (használaton kívüli), a `kg.filter.all_projects` felirat a kártya szövegéhez igazítva.
+
+**Mutáció-ellenőrzés:** mind a 8 pont (7 escapeHtml-hívás + a line_end típusőr) egyenként visszamutatva a javítás előtti alakra -- mindegyik PONTOSAN a saját célzott tesztjét vitte pirosra (8/8), majd visszaállítva, a teljes csomag 44/44 zöld. A projekt-választó HTML-szerkezeti tesztje a régi két-opciós markup-ra visszaállítva is pirosra vált.
+
+**Ki döntött:** a lelet WhiteHat-tól jön (8bb7cf54 GO feltétellel, komment 20875), a javítást és a teszteket fron-ted írta.
+
+**Hivatkozás:** kártya 88fd0000, előd 8bb7cf54 (WhiteHat GO komment 20875), Pair-BE ee9ee17b.
+
+## 2026-10-24: 5c874e26 -- resolveCommandPlaceholders() finding (b5b7eb6b/b388e2af) stale: a hiány már be volt zárva, csak nem lett visszavonva
+
+**Kontextus:** a kártya (backend3 saját b388e2af REVIEW-leletéből, 2026-09-29) azt állította, hogy az `acknowledged-conflicts.ts` command-task.ts bejegyzésének "ADOPT resolveCommandPlaceholders()" állítása mögött nincs kód -- grep szerint sem a függvény, sem a `{{PROJECT_ROOT}}`/`{{INSTALL_DIR}}` placeholder nem létezett a forrásfában aznap.
+
+**Döntés:** NEM kell adoptálni és NEM kell a bejegyzést NO-OP-ra javítani -- egy KÉSŐBBI kör (card 4aa87fdf, DevO, 2026-10-17) ezt már megépítette és a bejegyzést is frissítette ("GAP CLOSED" megjegyzés, `acknowledged-conflicts.ts` command-task.ts szakasza) -- a `resolveCommandPlaceholders()` DEFINIÁLVA ÉS BEKÖTVE van (`src/web/command-task.ts:98,110`), a `{{PROJECT_ROOT}}`/`{{INSTALL_DIR}}` konvenciót `schedule-runner.ts` és `agent-scaffold.ts` is használja. A 2026-09-29-es lelet egyszerűen sosem lett visszavonva/zárva, miután a kód 18 nappal később megépült. Friss grep + kódolvasás önállóan megerősítette mindkét állítást (a függvény léte és a híváspont).
+
+**Pótolt hiány, amit a re-ellenőrzés talált:** a híváspontot (command-task.ts:110) semmilyen teszt nem pinnelte VÉGPONTIG -- a `resolveCommandPlaceholders()` függvényt önmagában unit-tesztelte a `usage-collect-task-seed.test.ts`, de egy jövőbeli refaktor, ami a híváspontból kivenné a hívást, minden meglévő tesztet zölden hagyott volna. Új, valós-folyamatos integrációs teszt (`command-task-async.test.ts`): egy `{{PROJECT_ROOT}}`-ot tartalmazó parancsot futtat `runCommandTask`-on át, és a kimenetet a tényleges `PROJECT_ROOT`-tal veti össze.
+
+**Mutáció-ellenőrzés:** a híváspontból (`resolveCommandPlaceholders(task.command)` -> `task.command`) a hívás kivéve PONTOSAN ez az 1 új teszt lesz PIROS (`expected '{{PROJECT_ROOT}}' not to contain '{{PROJECT_ROOT}}'`), a fájl másik 5 tesztje zöld marad. Visszaállítva mind a 6 zöld. `tsc --noEmit -p .` tiszta.
+
+**Ki döntött:** backend3 (a kártya saját nyitója, most a saját maga felülvizsgálata és lezárása).
+
+**Hivatkozás:** kártya 5c874e26, előd b5b7eb6b/b388e2af, a bejegyzést frissítő kártya 4aa87fdf.
+
+## 2026-10-24: 99a4a2d4 delta -- RedHat NO-GO K1 zárva, a ciklusba-kötés pinelve (komment 23762)
+
+**Kontextus:** RedHat NO-GO a 40d51094 Gate-SHA-n (komment 23762), K1 blokkoló: az első verzió `trackedDirtySet`/`newlyDirty` fixture-tesztjei a két segédfüggvényt KÖZVETLENÜL hívták egy saját fixture-repón, nem a valódi `it.each` ciklus kódján. Mérve (hermetikus harness): (W1) a ciklus assertion-jét kitörölve mind a 7 "name-independent" fixture-teszt ZÖLD marad; (W2) a "before" pillanatkép a futás UTÁNRA mozgatva ugyanúgy ZÖLD. A kártya terméke maga az őr, tehát ez egy a termék saját mutáns-túlélése.
+
+**Döntés:** a ciklus törzsét (before pillanatkép, futtatás, newlyDirty, hibajelzés) egy közös `runGuardedSelftest(repoRoot, runner, file, args)` függvénybe emeltem, amit MOST mind a valódi `it.each` ciklus, MIND a fixture-tesztek hívnak (a fixture-repó `tracked.sh`/`probe.sh` fájljai a `<repo>/store/` alá kerültek, hogy a függvény `join(repoRoot,'store')` felbontása illeszkedjen). A függvény dob hibát piszkos fa esetén, amit az `it.each` eset és a `expect(() => ...).toThrow()` fixture-assertion egyaránt helyesen értelmez.
+
+**Mutáció-ellenőrzés (RedHat saját W1/W2 receptje szerint):** W1 -- a `runGuardedSelftest` dobás-ágát egy no-op `void dirtied`-re cserélve mind az 5 "catches" fixture-teszt PIROSRA vált (`expected [Function] to throw an error`), a maradék 2 (false-positive, scope) zöld marad. W2 -- a "before" pillanatkép-sort a futtatás UTÁNRA mozgatva ugyanaz az 5 teszt PIROS. Mindkét mutáció visszaállítva: 127/127 zöld. `tsc --noEmit -p .` tiszta.
+
+**Ki döntött:** a lelet RedHat-tól jön (K1, komment 23762), a javítást backend3 írta.
+
+**Hivatkozás:** kártya 99a4a2d4, előd ff7e1b0a, RedHat NO-GO 23762 (K1).
+
 ## 2026-10-24: ed7d7948 -- skill-coverage-report selftest-keményítés + 2 csendes-rossz lelet javítása (WhiteHat 23714 követő, 8a4a8b09)
 
 **Kontextus:** WhiteHat 23714 (8a4a8b09 config-only delta-gate) nem blokkoló leletei: F1 a selftest csak az alakot nézte a live DB/map ellen és mindig rc=0-val lépett ki; F2 a riport nem mondta ki a "nem látott != nem használt" különbséget; F3 a `--days`/`--agent` rossz értéke csendben hamis 0%-ot adott.
@@ -21717,6 +21755,20 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a lelet WhiteHat-tól jön (d886e9c2 GO, msg 14543), a javítást backend2 írta.
 
 **Hivatkozás:** kártya 7b5cf804, előd d886e9c2.
+
+## 2026-10-24: f88289d6 -- claude-mem (B), determinisztikus tool-megfigyelési napló (a claude-mem (A) 5a4bea2e plan-grilling verdiktjéből leválasztva)
+
+**Kontextus:** az 5a4bea2e plan-grilling verdikt (GO-WITH-CHANGES) a claude-mem (A) session-injekció mellé egy (B) részt is kimondott: egy PostToolUse-alapú tool-megfigyelési napló, SZIGORÚBB feltétellel mint az (A) -- csak determinisztikus metaadat (eszköz neve, sikeresség, fájlút, kártya-azonosító, commit-hash), SOHA szabad szöveg vagy tool-kimenet, saját ügynök-scope, feature flag alapból KI. Ez tudatosan más feltétel, mint a repóban már létező `activity_memory_capture.py` (kártya 4829ccff), ami rich-text összefoglalót ment (redakcióval), ezért a két mechanizmus egymás mellett él, nem helyettesíti egymást.
+
+**Döntés:** új, önálló hook (`scripts/hooks/auto_obs_capture.py`), ami a már meglévő, átvizsgált `activity_memory_capture.py`-beli szűrő-logikát (`_READ_ONLY_TOOLS`, `_READ_ONLY_COMMANDS`) importálja és újrahasznosítja ahelyett, hogy újraírná -- a kártya "érték-szűrő, puszta parancsnév nem elég" követelménye pontosan ez: egy Bash-hívás csak akkor minősül, ha a parancs TARTALMA nem olvasó jellegű, nem attól, hogy `tool_name == "Bash"`. Az exit-code mező 0/1, a `tool_response["is_error"]` booleanből levezetve -- a PostToolUse payload nem hordoz valódi process-return-code-ot Bash-re, ez a legőszintébb determinisztikus érték, ami rendelkezésre áll (explicit kimondott feltételezés, nem elhallgatott). A card-ID a hívó AKTUÁLIS, egyetlen `in_progress` kártyájából jön (`GET /api/kanban?status=in_progress&assignee=<agent>`); 0 vagy 2+ egyezésnél `null`, sosem tippelve. A commit-sha `git rev-parse --short HEAD` a hívás cwd-jén, best-effort. Feature flag: `store/auto-obs-capture-agents.json`, `enabled_agents` lista -- hiányzó vagy üres lista = mindenkire KI (ugyanaz a fail-safe alak, mint `session-memory-inject-agents.json`-nál). A memória-írás `category: "cold"` + `keywords: "auto-obs"`, agent_id mindig a hívó saját neve -- sosem `shared`.
+
+**Hatókör, amit ez a kártya NEM csinál:** nem kapcsolja be senkire a flaget (az `enabled_agents` lista üres marad), és nincs élő `settings.json`-wiring ebben a landolásban -- a képesség épül meg, az élesítés (élő settings.json + flag-lista bővítés + ügynök-session-újraindítás ütemezése) külön MikroB-döntés, pontosan úgy, ahogy a claude-mem (A) kapacitás-kártyái (5a4bea2e, 0a34377f) után is külön kártya (86d5de34) végezte az élesítést.
+
+**Mutáció-ellenőrzés:** `scripts/hooks/auto_obs_capture.selftest.py`, 23/23 eset zöld. Mutáció: egy naiv "csak tool_name==Bash" szűrőt szimulálva (a tényleges `_qualifies` helyett) 3/3 releváns eset PIROSRA vált (a `git log`/`cat` olvasó parancsokat hamisan minősítőnek jelölné) -- ez igazolja, hogy a teszt ténylegesen az "érték-szűrő, nem puszta parancsnév" követelményt őrzi, nem vacuous. A feature-flag kapu (hiányzó/korrupt/üres fájl -> fail-safe KI) külön esetekkel fedve. `python3 -m py_compile` + `ast.parse` tiszta szintaxis-ellenőrzés.
+
+**Ki döntött:** az (A)/(B) megosztás az 5a4bea2e plan-grilling verdiktből jön (MikroB), a konkrét (B) implementációt a backend tervezte és írta.
+
+**Hivatkozás:** kártya f88289d6, előd 5a4bea2e (plan-grilling verdikt, GO-WITH-CHANGES), testvér-kártya 86d5de34 (az (A) rész élesítése, minta a jövőbeli (B)-élesítéshez).
 
 ## 2026-10-24: 91b9f3c0 -- plan-grilling + interview-me skill elérhetetlen a flotta-ügynököknél
 
