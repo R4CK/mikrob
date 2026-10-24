@@ -34,9 +34,50 @@
 //
 // Scoped, not blanket: an existing MARVEEN_SSH_DIR is respected, so a test that
 // wants its own directory keeps it.
-import { mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+function isPidAlive(pid: number): boolean {
+  if (existsSync('/proc')) return existsSync(`/proc/${pid}`)
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// WhiteHat F1 (card 2564e877, gate on 87fd2f19): VITEST_POOL_ID restarts at 1 for every
+// `vitest run`, so two CONCURRENT full-suite runs (CLAUDE.md rule 17 allows up to 2 at
+// once) land on the same w1/w2/... path -- the entry-time rmSync below then wipes the
+// OTHER run's directory mid-run, a false red unrelated to any real test failure.
+// runId namespaces by the invoking run (process.ppid, stable across a run's workers,
+// distinct between separate `vitest run` invocations) so slot reuse only collides within
+// a single run, same as before. Exported so default-ssh-dir-seam.test.ts can call it
+// directly without re-triggering the module's own side effect below.
+export function resolveSeamDir(
+  root: string = join(tmpdir(), 'marveen-ssh-seam'),
+  runId: string = String(process.ppid || process.pid)
+): string {
+  // Prune directories left by runs whose main process is gone, so the per-run
+  // namespacing above doesn't bring back the unbounded accumulation this seam was
+  // built to avoid (1813 stale dirs, measured 2026-09-15, see below).
+  try {
+    for (const entry of readdirSync(root)) {
+      const m = /^r(\d+)$/.exec(entry)
+      if (!m || m[1] === runId || isPidAlive(Number(m[1]))) continue
+      rmSync(join(root, entry), { recursive: true, force: true })
+    }
+  } catch {
+    // root does not exist yet -- nothing to prune
+  }
+  // VITEST_POOL_ID is the pool slot, documented as 1..maxWorkers; process.pid is the
+  // fallback for a runner that does not set it. The segment is sanitised because it
+  // ends up in a path.
+  const slot = (process.env.VITEST_POOL_ID || String(process.pid)).replace(/[^A-Za-z0-9_-]/g, '_')
+  return join(root, `r${runId}`, `w${slot}`)
+}
 
 if (!process.env.MARVEEN_SSH_DIR) {
   // Bounded and reused, NOT mkdtemp. The first version of this file made a fresh
@@ -47,18 +88,14 @@ if (!process.env.MARVEEN_SSH_DIR) {
   // anyone counted (both measured 2026-09-15).
   // Shipping that would have been this PR's own thesis -- silent accumulation
   // nobody looks at -- reproduced inside the fix for it.
-  //
-  // VITEST_POOL_ID is the pool slot, documented as 1..maxWorkers, so the set of
-  // directories stays the size of the worker pool however many times the suite
-  // runs; process.pid is the fallback for a runner that does not set it. The
-  // segment is sanitised because it ends up in a path.
-  const slot = (process.env.VITEST_POOL_ID || String(process.pid)).replace(/[^A-Za-z0-9_-]/g, '_')
-  const seamDir = join(tmpdir(), 'marveen-ssh-seam', `w${slot}`)
+  const seamDir = resolveSeamDir()
   // Cleared on ENTRY, not on exit. Two things follow from that, both wanted:
   // a slot is handed to the next test file once this one is done, and wiping it
   // here is what keeps one file's authorized_keys out of the next file's
   // assertions -- without depending on a hook that never runs. Concurrent
-  // workers never share a slot, so no worker can wipe another's directory.
+  // workers never share a slot WITHIN a run, so no worker can wipe another
+  // worker's directory; resolveSeamDir's runId namespacing keeps separate
+  // concurrent RUNS apart too (F1 above).
   rmSync(seamDir, { recursive: true, force: true })
   mkdirSync(seamDir, { recursive: true })
   process.env.MARVEEN_SSH_DIR = seamDir

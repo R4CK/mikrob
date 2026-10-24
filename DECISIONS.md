@@ -21617,3 +21617,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** RedHat (lelet és javítási recept, komment 23202/23225), backend (implementáció).
 
 **Hivatkozás:** kártya f66b3652 (szülő c65add5a), előd 2c54029d (komment 23202 NO-GO, 23225 GO).
+
+## 2026-10-24: 87fd2f19 -- ssh-seam teszt-könyvtár ütközés párhuzamos vitest-futásnál (WhiteHat 2564e877 F1+F2)
+
+**Kontextus:** WhiteHat két LOW lelete a 2564e877 gate-en. F1: `default-ssh-dir-seam.ts` a scratch-könyvtárat `w<VITEST_POOL_ID>` néven adta, és a `VITEST_POOL_ID` minden `vitest run` indulásnál 1-től számol -- két EGYIDEJŰ teljes suite-futás (a CLAUDE.md 17. szabálya legfeljebb 2-t enged egyszerre) ugyanarra a `w1`/`w2`/... útra futott, és a belépéskori `rm -rf` az egyik futás könyvtárát a MÁSIK futás közben törölte -- hamis piros, ami egy gate-en helyes munkát küldött volna vissza `in_progress`-be. F2: a `/api/security/bridge-enroll` route catch-ágának ENROLL813 (`SshDirGuardError` -> `{status:500, code:'enroll813'}`) leképezése csak a `isSshDirGuardError()` osztályozó szintjén volt pinelve (`enroll-seam-fail-closed.test.ts`), a route-ágra magára nem volt teszt.
+
+**Döntés:** F1: a `w<slot>` útvonal elé egy `r<runId>` szegmens került (`runId = process.ppid || process.pid`, stabil egy futáson belül, külön minden `vitest run`-nál) -- így a slot-ütközés csak EGY futáson belül marad lehetséges, futások között nem. Hogy ez ne hozza vissza a korábbi korlátlan felhalmozást (1813 árva könyvtár, 2026-09-15), a `resolveSeamDir()` minden hívásnál letakarítja azokat a `r<pid>` könyvtárakat, amiknek a pid-je már nem él (`/proc/<pid>` ellenőrzés, `process.kill(pid,0)` eséssel nem-linuxra). F2: nem kódjavítás, csak teszt-pótlás -- `bridge-enroll.test.ts` új esete a route-ot valós `SshDirGuardError`-on futtatja át (a seam ideiglenes kikapcsolásával) és a HTTP válaszra ellenőriz, nem csak a classifier-függvényre.
+
+**Mutáció-ellenőrzés:** F1 -- a javítás előtti `default-ssh-dir-seam.ts`-re az új `default-ssh-dir-seam.test.ts` mindhárom tesztje PIROS (`resolveSeamDir is not a function`, mert a régi fájl nem exportálta), javítás visszaállítása után 3/3 zöld. F2 -- a route catch-ágának `isSshDirGuardError(err)` feltételét `false && ...`-ra mutálva az új teszt egyedül PIROSODIK (`enroll_failed` a várt `enroll813` helyett), a többi 16 bridge-enroll teszt zöld marad; a mutáció visszavonása után mind a 17 zöld. `tsc --noEmit -p .` tiszta.
+
+**Ki döntött:** a leletek WhiteHat-tól jönnek (2564e877 gate, F1+F2), a kódot/tesztet a backend írta.
+
+**Hivatkozás:** kártya 87fd2f19, WhiteHat gate 2564e877 (F1, F2).
