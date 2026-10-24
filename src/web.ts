@@ -78,6 +78,7 @@ import { tryHandleStuckIncidents } from './web/routes/stuck-incidents.js'
 import { tryHandlePrLedger } from './web/routes/pr-ledger.js'
 import { tryHandleHomoglyphs } from './web/routes/homoglyphs.js'
 import { tryHandleMemories } from './web/routes/memories.js'
+import { tryHandleKg } from './web/routes/kg.js'
 import { tryHandleMigrate } from './web/routes/migrate.js'
 import { tryHandleKanbanVerdicts } from './web/kanban-verdicts.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
@@ -247,6 +248,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandlePrLedger(routeCtx)) return
       if (await tryHandleHomoglyphs(routeCtx)) return
       if (await tryHandleMemories(routeCtx)) return
+      if (await tryHandleKg(routeCtx)) return
       if (await tryHandleMigrate(routeCtx)) return
       if (await tryHandleKanbanVerdicts(routeCtx)) return
       if (await tryHandleKanban(routeCtx)) return

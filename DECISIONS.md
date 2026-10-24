@@ -21755,3 +21755,19 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** az (A)/(B) megosztás az 5a4bea2e plan-grilling verdiktből jön (MikroB), a konkrét (B) implementációt a backend tervezte és írta.
 
 **Hivatkozás:** kártya f88289d6, előd 5a4bea2e (plan-grilling verdikt, GO-WITH-CHANGES), testvér-kártya 86d5de34 (az (A) rész élesítése, minta a jövőbeli (B)-élesítéshez).
+
+## 2026-10-24: 34c2d2a2 -- MT F1b (MT-03, MT-04): hibrid tudásgráf-keresés + dispatch-csomag
+
+**Kontextus:** a c65add5a fázis (Megoldás-tár és tudásgráf) MODULTERV-je szerinti F1b lépés, az F1 (ee9ee17b, backend2, MT-01/MT-02 alap sémát és store.ts-t landolta) után. Kontraktus: 3f6fc4ce komment 20763 (F1+F2 szigorítás, felülírja a 20727-es eredeti kontraktust) + MikroB-döntések 20758/20814/20822.
+
+**Döntés:** `GET /api/kg/search` és `GET /api/kg/for-card/:cardId` + `store/kg-search.sh` CLI, a `src/db.ts` memória-hybridSearch mintáját újrahasznosítva (FTS5 + nomic embedding RRF-fúzió, `generateEmbedding`/`cosineSimilarity` export a dupla embedding-kliens elkerülésére), kiegészítve horgony-egyezéssel és egy legfeljebb `KG_EXPAND_HOPS` ugrásnyi gráf-kiterjesztéssel a `kg_edges`-en. Hatókör-feloldás a D2/D3 kontraktus szerint: a hívó saját projektje (a `project` paraméterből vagy a `card_id`-ból levezetve) + a `_global` partíció mindig benne van; másik projekt csomópontja csak explicit `project=*` vagy lista kérésre látszik (EK-MT-10, mindkét irányban tesztelve). Mindkét végpont `KG_ENABLED` mögött, alapból OFF (404 `kg_disabled`).
+
+Új platform-beállítás (`src/config-registry.ts`, modul `knowledge-graph`): `KG_ENABLED`, `KG_TOPK`, `KG_MIN_SCORE` (nincs float típus a regiszterben, validált sztringként), `KG_EXPAND_HOPS`, `KG_INJECT_MAX_CHARS`, `KG_SNIPPET_MAX_LINES`. A `KG_ENABLED` olvasása a meglévő `store/kg-check-landing.sh` (F4, 9e2c33c2) shell-konvencióját is elfogadja ("on"/"off"), nem csak a config-registry kanonikus "1"/"0" alakját -- az a script a kártya előtt landolt, és közvetlenül a process-env-ből olvas, nem a settings-store-on át, tehát egy `.env` sor bármelyik alakja mindkét fogyasztót ugyanúgy kapcsolja.
+
+**Hatókör, amit ez a kártya NEM csinál:** `GET /api/kg/nodes/:id` (nincs a kártya címében, és semmilyen kártya nem jelölte sajátjának -- hiányzó gap, külön kártyát igényel, ha kell). Nincs tényleges embedding-írás a kg_nodes.embedding mezőbe sehol a kódbázisban ma (az F1/F2/F4/81593084 importerek sem írják) -- a vektor-ág ezért ma gyakorlatilag 0 jelöltön fut, kódban és teszttel lefedve, de élesben inert, amíg egy jövőbeli capture-kártya tölti. A `for-card` válasz `error_class`/`verdict` mezőinek pontos levezetése a D4-jegyzet ("a kontraktus F1 után frissül") konkrét követő-kommentje nélkül explicit feltételezésként készült: `verdict` a `finding` node saját `title`-jéből (import-findings.ts már "<GATE> <VERDICT>" alakban írja), `error_class` a `of_class` él másik végéről, a `decision` node-oknál `null` (nincs osztályozás-mechanizmus rá ma).
+
+**Mutáció-ellenőrzés:** `src/__tests__/kg-search.test.ts` (15 eset), `src/__tests__/kg-for-card.test.ts` (5 eset), `src/__tests__/kg-search-route.test.ts` (7 eset), összesen 27/27 zöld. Két célzott mutáció élesben lefuttatva és visszaállítva: (1) a `partitionWhere` project-szűrőjét no-op-ra cserélve az EK-MT-10 default-scope teszt azonnal PIROSRA váltott (idegen projekt szivárgott be); (2) a `kgEnabled()`-et mindig `true`-ra cserélve a KG_ENABLED=off 404-teszt PIROSRA váltott. Mindkettő visszaállítva, a teljes célzott suite zöld maradt utána.
+
+**Ki döntött:** a MODULTERV és az F0 kontraktus MikroB-tól (3f6fc4ce, 20727/20758/20763/20814/20822 kommentek), az F1b implementációt a backend tervezte és írta.
+
+**Hivatkozás:** kártya 34c2d2a2, fázis c65add5a (MODULTERV, komment 20665/20673), kontraktus 3f6fc4ce (F0, kommentek 20727/20758/20763/20814/20822), előd ee9ee17b (F1, MT-01/MT-02 alap).
