@@ -21715,3 +21715,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** backend3 (a kártya saját nyitója, most a saját maga felülvizsgálata és lezárása).
 
 **Hivatkozás:** kártya 5c874e26, előd b5b7eb6b/b388e2af, a bejegyzést frissítő kártya 4aa87fdf.
+
+## 2026-10-24: 99a4a2d4 delta -- RedHat NO-GO K1 zárva, a ciklusba-kötés pinelve (komment 23762)
+
+**Kontextus:** RedHat NO-GO a 40d51094 Gate-SHA-n (komment 23762), K1 blokkoló: az első verzió `trackedDirtySet`/`newlyDirty` fixture-tesztjei a két segédfüggvényt KÖZVETLENÜL hívták egy saját fixture-repón, nem a valódi `it.each` ciklus kódján. Mérve (hermetikus harness): (W1) a ciklus assertion-jét kitörölve mind a 7 "name-independent" fixture-teszt ZÖLD marad; (W2) a "before" pillanatkép a futás UTÁNRA mozgatva ugyanúgy ZÖLD. A kártya terméke maga az őr, tehát ez egy a termék saját mutáns-túlélése.
+
+**Döntés:** a ciklus törzsét (before pillanatkép, futtatás, newlyDirty, hibajelzés) egy közös `runGuardedSelftest(repoRoot, runner, file, args)` függvénybe emeltem, amit MOST mind a valódi `it.each` ciklus, MIND a fixture-tesztek hívnak (a fixture-repó `tracked.sh`/`probe.sh` fájljai a `<repo>/store/` alá kerültek, hogy a függvény `join(repoRoot,'store')` felbontása illeszkedjen). A függvény dob hibát piszkos fa esetén, amit az `it.each` eset és a `expect(() => ...).toThrow()` fixture-assertion egyaránt helyesen értelmez.
+
+**Mutáció-ellenőrzés (RedHat saját W1/W2 receptje szerint):** W1 -- a `runGuardedSelftest` dobás-ágát egy no-op `void dirtied`-re cserélve mind az 5 "catches" fixture-teszt PIROSRA vált (`expected [Function] to throw an error`), a maradék 2 (false-positive, scope) zöld marad. W2 -- a "before" pillanatkép-sort a futtatás UTÁNRA mozgatva ugyanaz az 5 teszt PIROS. Mindkét mutáció visszaállítva: 127/127 zöld. `tsc --noEmit -p .` tiszta.
+
+**Ki döntött:** a lelet RedHat-tól jön (K1, komment 23762), a javítást backend3 írta.
+
+**Hivatkozás:** kártya 99a4a2d4, előd ff7e1b0a, RedHat NO-GO 23762 (K1).
