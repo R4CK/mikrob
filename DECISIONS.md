@@ -21701,3 +21701,29 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a lelet WhiteHat-tól jön (8bb7cf54 GO feltétellel, komment 20875), a javítást és a teszteket fron-ted írta.
 
 **Hivatkozás:** kártya 88fd0000, előd 8bb7cf54 (WhiteHat GO komment 20875), Pair-BE ee9ee17b.
+
+## 2026-10-24: 5c874e26 -- resolveCommandPlaceholders() finding (b5b7eb6b/b388e2af) stale: a hiány már be volt zárva, csak nem lett visszavonva
+
+**Kontextus:** a kártya (backend3 saját b388e2af REVIEW-leletéből, 2026-09-29) azt állította, hogy az `acknowledged-conflicts.ts` command-task.ts bejegyzésének "ADOPT resolveCommandPlaceholders()" állítása mögött nincs kód -- grep szerint sem a függvény, sem a `{{PROJECT_ROOT}}`/`{{INSTALL_DIR}}` placeholder nem létezett a forrásfában aznap.
+
+**Döntés:** NEM kell adoptálni és NEM kell a bejegyzést NO-OP-ra javítani -- egy KÉSŐBBI kör (card 4aa87fdf, DevO, 2026-10-17) ezt már megépítette és a bejegyzést is frissítette ("GAP CLOSED" megjegyzés, `acknowledged-conflicts.ts` command-task.ts szakasza) -- a `resolveCommandPlaceholders()` DEFINIÁLVA ÉS BEKÖTVE van (`src/web/command-task.ts:98,110`), a `{{PROJECT_ROOT}}`/`{{INSTALL_DIR}}` konvenciót `schedule-runner.ts` és `agent-scaffold.ts` is használja. A 2026-09-29-es lelet egyszerűen sosem lett visszavonva/zárva, miután a kód 18 nappal később megépült. Friss grep + kódolvasás önállóan megerősítette mindkét állítást (a függvény léte és a híváspont).
+
+**Pótolt hiány, amit a re-ellenőrzés talált:** a híváspontot (command-task.ts:110) semmilyen teszt nem pinnelte VÉGPONTIG -- a `resolveCommandPlaceholders()` függvényt önmagában unit-tesztelte a `usage-collect-task-seed.test.ts`, de egy jövőbeli refaktor, ami a híváspontból kivenné a hívást, minden meglévő tesztet zölden hagyott volna. Új, valós-folyamatos integrációs teszt (`command-task-async.test.ts`): egy `{{PROJECT_ROOT}}`-ot tartalmazó parancsot futtat `runCommandTask`-on át, és a kimenetet a tényleges `PROJECT_ROOT`-tal veti össze.
+
+**Mutáció-ellenőrzés:** a híváspontból (`resolveCommandPlaceholders(task.command)` -> `task.command`) a hívás kivéve PONTOSAN ez az 1 új teszt lesz PIROS (`expected '{{PROJECT_ROOT}}' not to contain '{{PROJECT_ROOT}}'`), a fájl másik 5 tesztje zöld marad. Visszaállítva mind a 6 zöld. `tsc --noEmit -p .` tiszta.
+
+**Ki döntött:** backend3 (a kártya saját nyitója, most a saját maga felülvizsgálata és lezárása).
+
+**Hivatkozás:** kártya 5c874e26, előd b5b7eb6b/b388e2af, a bejegyzést frissítő kártya 4aa87fdf.
+
+## 2026-10-24: 99a4a2d4 delta -- RedHat NO-GO K1 zárva, a ciklusba-kötés pinelve (komment 23762)
+
+**Kontextus:** RedHat NO-GO a 40d51094 Gate-SHA-n (komment 23762), K1 blokkoló: az első verzió `trackedDirtySet`/`newlyDirty` fixture-tesztjei a két segédfüggvényt KÖZVETLENÜL hívták egy saját fixture-repón, nem a valódi `it.each` ciklus kódján. Mérve (hermetikus harness): (W1) a ciklus assertion-jét kitörölve mind a 7 "name-independent" fixture-teszt ZÖLD marad; (W2) a "before" pillanatkép a futás UTÁNRA mozgatva ugyanúgy ZÖLD. A kártya terméke maga az őr, tehát ez egy a termék saját mutáns-túlélése.
+
+**Döntés:** a ciklus törzsét (before pillanatkép, futtatás, newlyDirty, hibajelzés) egy közös `runGuardedSelftest(repoRoot, runner, file, args)` függvénybe emeltem, amit MOST mind a valódi `it.each` ciklus, MIND a fixture-tesztek hívnak (a fixture-repó `tracked.sh`/`probe.sh` fájljai a `<repo>/store/` alá kerültek, hogy a függvény `join(repoRoot,'store')` felbontása illeszkedjen). A függvény dob hibát piszkos fa esetén, amit az `it.each` eset és a `expect(() => ...).toThrow()` fixture-assertion egyaránt helyesen értelmez.
+
+**Mutáció-ellenőrzés (RedHat saját W1/W2 receptje szerint):** W1 -- a `runGuardedSelftest` dobás-ágát egy no-op `void dirtied`-re cserélve mind az 5 "catches" fixture-teszt PIROSRA vált (`expected [Function] to throw an error`), a maradék 2 (false-positive, scope) zöld marad. W2 -- a "before" pillanatkép-sort a futtatás UTÁNRA mozgatva ugyanaz az 5 teszt PIROS. Mindkét mutáció visszaállítva: 127/127 zöld. `tsc --noEmit -p .` tiszta.
+
+**Ki döntött:** a lelet RedHat-tól jön (K1, komment 23762), a javítást backend3 írta.
+
+**Hivatkozás:** kártya 99a4a2d4, előd ff7e1b0a, RedHat NO-GO 23762 (K1).
