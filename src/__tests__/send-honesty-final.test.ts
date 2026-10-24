@@ -199,7 +199,8 @@ describe('generated prod-tree post-checkout hook: honest alert delivery', () => 
     expect(r.status).toBe(0)
     expect(r.stderr).not.toContain('NEM ert celba')
     const body = readFileSync(stdinLog, 'utf-8')
-    const parsed = JSON.parse(body) // throws if the path broke the JSON out of shape
+    // throws if the path broke the JSON out of shape
+    const parsed = JSON.parse(body) as { from: string; to: string; content: string }
     expect(parsed.to).toBe('marveen') // not hijacked by the quote+colon in the repo path
     expect(Object.keys(parsed).sort()).toEqual(['content', 'from', 'to']) // no injected extra key
     expect(parsed.content).toContain(evilRepo) // the raw path survives, properly escaped
