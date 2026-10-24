@@ -24,10 +24,17 @@ import re, sys
 
 # A commit line (git log --oneline / `git log --format=%h %s`): a 7-40 char lowercase hex hash,
 # whitespace, then a non-empty subject. Nothing else is allowed through.
+#
+# Cybersec NO-GO (F1, komment 23461): reading physical lines (split on "\n" only) lets a single
+# physical line smuggle a --stat path / diff hunk header past the regex via an embedded logical
+# line boundary (\r, \v, \f, \x1c-\x1e, \x85, U+2028/2029) that the regex treats as ordinary text.
+# str.splitlines() splits on ALL of those boundaries (not just "\n"), so each resulting element is
+# a genuine single logical line before the regex ever sees it -- a hash alone on its own line
+# (the smuggled remainder after the boundary) fails the "hash + whitespace + subject" shape and is
+# dropped, instead of being re-admitted as part of the matched commit line.
 COMMIT_RE = re.compile(r"^[0-9a-f]{7,40}\s+\S.*$")
 
-for line in sys.stdin:
-    line = line.rstrip("\n")
+for line in sys.stdin.read().splitlines():
     if COMMIT_RE.match(line):
         print(line)
 ')"
