@@ -21864,3 +21864,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a lelet WhiteHat delta-3 NO-GO-jából jön (@0b35ec0d, msg 14650, MikroB re-dispatch), a két-fájlos szétválasztás és a flag-forgery elleni döntés backend2 saját elemzése (a WhiteHat javaslata egy if/else flag-gated single-file formát ajánlott, amit backend2 a forgery-kockázat miatt elvetett, és helyette a feltétel nélküli két-fájlos szétválasztást választotta).
 
 **Hivatkozás:** kártya 7b5cf804, az előző három bejegyzés ugyanerről a kártyáról feljebb, WhiteHat komment (msg 14650-ben idézve).
+
+## 2026-10-24: 27db86f4 -- backend-család CLAUDE.md: generált skill-katalógus -> 12(+2) soros feladattípus->skill tábla
+
+**Kontextus:** Peti 12184 (Telegram, 2026-10-24): "a backend családot egyben vidd" -- a backend/backend2/backend3 CLAUDE.md-ek `## Skill-használat: teljes skill-katalógus` szekciója (kártya 27b02677 generátora, 45 sor) a mért, tényleges használatnál (304 REVIEW `Skills:` sora, 30 nap) sokkal szélesebb volt, mint ami a napi munkához kell. Kiegészítés Peti 12191: a backend-család fókusza a kódírás a Karpathy loop szerint, a lehető legegyszerűbb és legbiztonságosabb kóddal.
+
+**Döntés:** `src/web/agent-scaffold.ts` `buildSkillUsageBody()` a `backend`/`backend2`/`backend3` nevekre (`BACKEND_FAMILY` halmaz) a generált, 45 soros katalógus helyett egy hand-picked, 14 soros (12 alap + 2 Peti-12191: biztonsági önellenőrzés + context7 friss doksi) feladattípus -> skill táblát ír, link-kel a teljes katalógusra (`store/skill-role-map.md`). Más ügynök (cybered, cybersec, fron-ted, stb.) generált blokkja változatlan -- a `SKILL_USAGE_DATA` és a régi render-logika érintetlen, csak egy új korai branch döntötte el, melyik ágat kapja a hívó neve. A `Core skilljeid` listából kikerült 4 tétel (`ci-cd-and-automation`, `crafter-intent-layer`, `full-value-audit`, `unlazy`) -- ezek nem a backend-fókusz (kódírás) részei, és a mért 30 napos adatban nulla/közeli-nulla használatúak voltak. A Szerep-bekezdés (vagy backend3 "Mit csinálsz" listája) egy új sort kapott a kódíró-fókuszról + Karpathy loop-ról; a Karpathy loop 8. lépése (REVIEW-formátum) két új sorral bővült: `Simplicity:` és `Security-self-check:`.
+
+**Megjegyzés a "Kész, ha" 1. pontjához:** a kártya grep-ellenőrzése (`working-backwards|usability-testing|writing-north-star-metrics` == 0) a GENERÁLT KATALÓGUS blokkra vonatkozott, az onnan tényleg el is tűnt -- de mindhárom seed-fájl egy MÁSIK, a kártyától független, kézzel írt szekciója (`writing-prds` testvér-skillek felsorolása) is megemlíti ugyanezeket a neveket, jogosan, más kontextusban. A nyers grep ezért nem 0-t ad a teljes fájlra; a generált blokkra szűkítve (a BEGIN/END markerek között) viszont igen. Ezt a diszkrepanciát a REVIEW is jelzi.
+
+**Ki döntött:** Peti (12184/12191, Telegram), a végrehajtást a backend tervezte és írta.
+
+**Hivatkozás:** kártya 27db86f4, fázis 527c9584, mért alap a kártya saját "Mért alap" bekezdése (304 REVIEW Skills: sor, 30 nap), előd kártya 27b02677 (a generátor eredeti megépítése, f0cefd85 audit alapján).
