@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # upstream-batch-digest-offload.sh -- thin, UNCONDITIONAL environment-sanitizing entry point.
 # The real logic lives in upstream-batch-digest-offload-impl.sh; this file's only job is to reach
 # it with a brand new, explicitly-listed environment, before a single byte of the real logic runs.
@@ -52,7 +52,33 @@
 # NOT a content-gate bypass (the sensitive-keyword vocabulary in offload-dispatch.sh --check-
 # blocked still runs unconditionally and is not on this allowlist at all). WhiteHat rated this LOW/
 # MEDIUM, did not exploit it, and explicitly left it out of this card's scope; track separately.
-set -uo pipefail
+#
+# RedHat KC3 (card 7b5cf804, NO-GO komment 24261, Gate-SHA 6a1b5a7e): this file used to start with
+# `set -uo pipefail`, itself an ordinary command name (a POSIX "special builtin", but bash still
+# lets a same-named FUNCTION intercept it outside posix mode) running BEFORE env -i. A caller-
+# exported `set` function with a DEBUG trap in its body hijacked the IMPL variable right before the
+# final line ran, redirecting it to an attacker script -- the exact same shadowing class as
+# F1''/F1, just one more command name that was missed. Fix: delete the line. This file has no
+# pipeline and no use for `nounset`, so there is nothing to replace it with -- the body below is
+# now a `case` (keyword), two parameter expansions, and one absolute-path /usr/bin/env invocation:
+# no other plain command name remains between the top of the file and env -i.
+#
+# RedHat KC5 (same gate): shebang changed from `#!/usr/bin/env bash` to `#!/bin/bash` -- the
+# `env bash` form does a PATH lookup for `bash` itself when this file is executed directly
+# (./upstream-batch-digest-offload.sh), so a caller-controlled PATH could substitute a fake `bash`
+# before this file's own first line ever runs. `#!/bin/bash` is resolved by the kernel from an
+# absolute path, no PATH lookup involved.
+#
+# RedHat KC4 (same gate, INFO -- cannot be fixed inside this file): if this script is invoked as
+# `bash upstream-batch-digest-offload.sh` (not executed directly), a caller-exported BASH_ENV/ENV
+# is sourced by that `bash` process's own startup, in the PARENT process, BEFORE this file's first
+# line runs -- env -i only protects the re-exec'd CHILD, not this file's own execution, and there
+# is no in-file fix (the sourcing happens before any of this file's code exists in that process).
+# Whoever wires up a caller for this script MUST invoke it either by direct execution
+# (./upstream-batch-digest-offload.sh, relying on the #!/bin/bash shebang above) or via
+# `/usr/bin/env -i PATH=/usr/bin:/bin HOME="$HOME" /bin/bash upstream-batch-digest-offload.sh`,
+# never as a bare `bash upstream-batch-digest-offload.sh` with an unsanitized caller environment.
+# No caller is wired up yet; this requirement carries forward to whichever card adds one.
 case "$0" in
   */*) IMPL="${0%/*}/upstream-batch-digest-offload-impl.sh" ;;
   *)   IMPL="./upstream-batch-digest-offload-impl.sh" ;;

@@ -380,6 +380,102 @@ out_r="$(LOCAL_OK=0 GEMINI_OK=1 GEMINI_HEAVY_FLAG="$GEMINI_HEAVY_FLAG" \
 check "R: normal operation through the real wrapper reaches the LAST failure mode (both local+Gemini tried, env -i allowlist preserved the needed vars all the way through)" 3 "" "$rc_r" "$out_r"
 rm -f "$GEMINI_HEAVY_FLAG"
 
+# S regresses RedHat KC3 (card 7b5cf804, NO-GO komment 24261, Gate-SHA 6a1b5a7e): the wrapper used
+# to open with `set -uo pipefail` -- a plain command name, running BEFORE env -i, shadowable by a
+# caller-exported function exactly like F1''/F1's builtin/unset/compgen/dirname. A `set` function
+# whose body installs a DEBUG trap can rewrite the IMPL variable between the case-statement
+# assignment and the final env -i line, redirecting the whole re-exec to an attacker script. The
+# fix (this commit) deletes the `set -uo pipefail` line entirely -- there is no command named `set`
+# left in the wrapper for the exported function to ever be called, so the DEBUG trap is never
+# installed and IMPL is never touched by it.
+echo "=== S. the F1''-class KC3 (RedHat, komment 24261): a caller-exported 'set' function with a DEBUG trap must not be able to redirect IMPL to an attacker script -- the wrapper no longer calls 'set' at all ==="
+SET_ATTACK_MARKER="$TMP/set-attack-marker"
+SET_ATTACK_IMPL="$TMP/set-attack-impl.sh"
+cat > "$SET_ATTACK_IMPL" <<EOF
+#!/bin/bash
+touch "$SET_ATTACK_MARKER"
+exit 0
+EOF
+chmod +x "$SET_ATTACK_IMPL"
+rm -f "$SET_ATTACK_MARKER"
+touch "$GEMINI_HEAVY_FLAG"
+out_s="$( (
+  export SET_ATTACK_IMPL
+  set() { trap 'IMPL="$SET_ATTACK_IMPL"' DEBUG; }
+  export -f set
+  GEMINI_HEAVY_FLAG="$GEMINI_HEAVY_FLAG" GEMINI_AGY_HOURLY_LOCK="$HEAVY_HOURLY_LOCK" \
+    SEGED_HIVO_HELPERS="$SEGED_HIVO_HELPERS" \
+    bash "$WRAPPER_SANDBOXED" --caller test --confirm-gemini-ok <<<"$SENSITIVE_INPUT"
+) )"; rc_s=$?
+rm -f "$GEMINI_HEAVY_FLAG"
+if [[ ! -e "$SET_ATTACK_MARKER" && "$rc_s" == 2 && "$out_s" == "" ]]; then
+  PASS=$((PASS+1)); echo "OK   S: exported set() + DEBUG trap did not redirect IMPL, attacker script never ran, content gate still blocks"
+else
+  FAIL=$((FAIL+1)); FAILED+=("S: set/DEBUG-trap IMPL hijack")
+  echo "FAIL S: marker_exists=$([[ -e "$SET_ATTACK_MARKER" ]] && echo yes || echo no) rc=$rc_s out='$out_s'"
+fi
+
+# T pins RedHat's W2/W3/W6/W8 (same gate): properties of the wrapper's env -i re-exec that were
+# NOT previously pinned by any test, so they could be silently removed without a single case going
+# red. Uses a dedicated env-dump sandbox (separate from WRAPPER_SANDBOXED/the content-gate stubs
+# above) whose IMPL is a one-line "dump my environment to a fixed file" probe -- the REAL,
+# unmodified wrapper re-execs into it exactly as it would the real impl, so whatever survives into
+# that dump is exactly what the real impl would see.
+ENVDUMP_HERE="$TMP/envdump-here"
+mkdir -p "$ENVDUMP_HERE"
+cp "$WRAPPER" "$ENVDUMP_HERE/upstream-batch-digest-offload.sh"
+ENVDUMP_OUT="$TMP/envdump.out"
+cat > "$ENVDUMP_HERE/upstream-batch-digest-offload-impl.sh" <<EOF
+#!/bin/bash
+env > "$ENVDUMP_OUT"
+EOF
+chmod +x "$ENVDUMP_HERE/upstream-batch-digest-offload.sh" "$ENVDUMP_HERE/upstream-batch-digest-offload-impl.sh"
+WRAPPER_ENVDUMP="$ENVDUMP_HERE/upstream-batch-digest-offload.sh"
+
+# Hostile PATH, prepended: fake env/date/cat binaries that leave their own marker if ever invoked.
+# W6 (bare `env` instead of the absolute /usr/bin/env) would let the fake `env` below hijack the
+# wrapper's own re-exec line; the others are unrelated commands included only to show a hostile
+# PATH entry generally does not get a chance to run anything before env -i.
+HOSTILE_PATH_DIR="$TMP/hostile-path"
+mkdir -p "$HOSTILE_PATH_DIR"
+FAKE_ENV_MARKER="$TMP/fake-env-marker"
+rm -f "$FAKE_ENV_MARKER"
+cat > "$HOSTILE_PATH_DIR/env" <<EOF
+#!/bin/bash
+touch "$FAKE_ENV_MARKER"
+exit 1
+EOF
+chmod +x "$HOSTILE_PATH_DIR/env"
+
+rm -f "$ENVDUMP_OUT"
+out_t="$(PATH="$HOSTILE_PATH_DIR:$PATH" BASH_ENV="$TMP/should-not-survive.sh" UBD_FILTER="$PASSTHROUGH_FILTER" \
+  GEMINI_HEAVY_FLAG="dummy-not-on-happy-path" \
+  "$WRAPPER_ENVDUMP" --caller test <<<"$COMMIT_INPUT" 2>&1)"; rc_t=$?
+
+T_OK=1
+T_WHY=""
+if [[ ! -e "$ENVDUMP_OUT" ]]; then
+  T_OK=0; T_WHY="$T_WHY envdump-missing(rc=$rc_t,out=$out_t)"
+fi
+if [[ -e "$FAKE_ENV_MARKER" ]]; then
+  T_OK=0; T_WHY="$T_WHY W6-fake-env-ran"
+fi
+if [[ -e "$ENVDUMP_OUT" ]] && ! grep -qx 'PATH=/usr/bin:/bin' "$ENVDUMP_OUT"; then
+  T_OK=0; T_WHY="$T_WHY W2-path-not-constant($(grep '^PATH=' "$ENVDUMP_OUT" 2>/dev/null))"
+fi
+if [[ -e "$ENVDUMP_OUT" ]] && grep -q '^BASH_ENV=' "$ENVDUMP_OUT"; then
+  T_OK=0; T_WHY="$T_WHY W3-bash-env-leaked"
+fi
+if [[ -e "$ENVDUMP_OUT" ]] && grep -q '^UBD_FILTER=' "$ENVDUMP_OUT"; then
+  T_OK=0; T_WHY="$T_WHY W8-ubd-filter-leaked"
+fi
+if [[ "$T_OK" == "1" ]]; then
+  PASS=$((PASS+1)); echo "OK   T: env -i re-exec (direct execution, KC5 shebang) keeps PATH constant (W2), drops BASH_ENV (W3) and UBD_FILTER (W8), and a hostile PATH 'env' never runs (W6)"
+else
+  FAIL=$((FAIL+1)); FAILED+=("T: W2/W3/W6/W8 env-sanitization pins")
+  echo "FAIL T:$T_WHY"
+fi
+
 echo "-------------------------------------------------------------"
 echo "passed: $PASS   failed: $FAIL"
 if [ "$FAIL" -gt 0 ]; then
