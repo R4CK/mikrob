@@ -24,7 +24,12 @@ function makeCtx(path: string, method = 'POST'): { ctx: RouteContext; getBody: (
     end: (body?: string) => { responseBody = body || '' },
   }
   return {
-    ctx: { req: {} as any, res: res as any, path, method, url },
+    // auth: session -- this fork gates POST /api/memories/backfill to a human
+    // credential (card ddeb2e17, RedHat O3); a plain fleet-token ctx gets 403
+    // before backfillEmbeddings() is ever called, which is not what this file
+    // is testing (the result-body shape), so the test simulates the owner's
+    // own session the same way the live route sees it.
+    ctx: { req: {} as any, res: res as any, path, method, url, auth: { kind: 'session' } },
     getBody: () => (responseBody ? JSON.parse(responseBody) : null),
     status: () => statusCode,
   }

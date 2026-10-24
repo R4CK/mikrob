@@ -650,8 +650,18 @@ def main():
     # would otherwise let an unchecked draft call through first.
     is_mcp_draft = bool(_DRAFT_TOOL.search(tool)) or (
         bool(_MULTIPLEX_TOOL.search(tool)) and _is_explicit_draft(tool_input))
-    is_mcp_send = bool(_SEND_TOOL.search(tool)) and not (
-        _MULTIPLEX_TOOL.search(tool) and not manage_email_is_send(tool_input))
+    # GMAILCONNECTOR914-class gap, caught here too (card 2337e4b0 delta on MAILCCGATE1016):
+    # _SEND_TOOL only matches literal send[-_]email/manage_email by name, so a connector
+    # reply/forward/send_message (mcp__claude_ai_Gmail__reply, no "send"/"email" substring)
+    # skipped the owner-CC check entirely and could reach level 3's plain allow with no copy
+    # to the owner. Scoped to the bare verbs GMAILCONNECTOR914 itself named (reply/forward/
+    # send_message and their aliases) -- NOT the whole "not in _EMAIL_SAFE_TOOL_RE" surface,
+    # which also catches update_draft (a draft edit, not a send; see the dedicated test for it).
+    _CONNECTOR_SEND_VERB_RE = re.compile(r"^(?:reply|reply_all|replyall|forward|send[-_]?message)$", re.I)
+    is_connector_send = bool(_EMAIL_SERVER_RE.search(tool)) and bool(
+        _CONNECTOR_SEND_VERB_RE.search(_bare_tool_name(tool)))
+    is_mcp_send = is_connector_send or (bool(_SEND_TOOL.search(tool)) and not (
+        _MULTIPLEX_TOOL.search(tool) and not manage_email_is_send(tool_input)))
     if is_mcp_draft or is_mcp_send:
         owner = owner_cc_address()
         if owner:

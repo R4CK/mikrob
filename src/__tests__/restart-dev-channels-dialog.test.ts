@@ -235,13 +235,16 @@ describe('wiring (source-level)', () => {
   const CHANNEL_MONITOR = readFileSync(join(__dirname, '../web/channel-monitor.ts'), 'utf-8')
 
   it('every start door (start, restart, context guard) reaches scheduleIdentitySetup after the spawn', () => {
-    const start = AGENT_PROCESS.slice(AGENT_PROCESS.indexOf('export async function startAgentProcess('))
+    // This fork wraps the exported start/restart entry points in withLifecycleLock
+    // (card RESTARTWAKE927-adjacent); the actual spawn + wiring lives in the
+    // *Unlocked implementation, not literally inside the exported function.
+    const start = AGENT_PROCESS.slice(AGENT_PROCESS.indexOf('async function startAgentProcessUnlocked('))
     const spawnAt = start.indexOf("runTmux(startTarget, ['new-session'")
     const identityAt = start.indexOf('scheduleIdentitySetup(session')
     expect(spawnAt).toBeGreaterThan(0)
     expect(identityAt).toBeGreaterThan(spawnAt)
-    const restart = AGENT_PROCESS.slice(AGENT_PROCESS.indexOf('export async function restartAgentProcess('))
-    expect(restart.slice(0, restart.indexOf('\n}\n'))).toContain('await startAgentProcess(name, opts)')
+    const restart = AGENT_PROCESS.slice(AGENT_PROCESS.indexOf('async function restartAgentProcessUnlocked('))
+    expect(restart.slice(0, restart.indexOf('\n}\n'))).toContain('await startAgentProcessUnlocked(name, opts)')
   })
 
   it('the identity setup answers startup dialogs BEFORE anything else touches the pane', () => {
