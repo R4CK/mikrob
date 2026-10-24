@@ -10,10 +10,12 @@
 // The primary test is behavioural: run a real slow child and prove timers still fire while it runs.
 // Under spawnSync the probe cannot tick at all, so a revert fails here rather than in a source grep.
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { runCommandTask } from '../web/command-task.js'
+import { PROJECT_ROOT } from '../config.js'
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SRC = readFileSync(join(REPO, 'src', 'web', 'command-task.ts'), 'utf-8')
@@ -57,6 +59,34 @@ describe('command task does not block the event loop (card 955f014e)', () => {
     // one-at-a-time ordering the scheduler relies on
     expect(runner).toMatch(/await runCommandTask\(/)
     expect(runner).not.toMatch(/^\s*runCommandTask\(/m)
+  })
+
+  // Card 5c874e26: resolveCommandPlaceholders() is defined and wired at this call site
+  // (acknowledged-conflicts.ts's own 'GAP CLOSED' note, src/web/command-task.ts:110), but nothing
+  // ran a PLACEHOLDER-BEARING command through runCommandTask end-to-end -- the function itself was
+  // unit-tested (usage-collect-task-seed.test.ts), the wiring was only confirmed by reading the
+  // source. A future refactor that drops the resolveCommandPlaceholders() call from this file's
+  // only call site would leave every existing test here green, because none of them pass a command
+  // containing {{PROJECT_ROOT}}/{{INSTALL_DIR}}. This pins the call site itself, the same real-
+  // process style as the rest of this file (no execFileSync/spawnSync mock).
+  it('resolves {{PROJECT_ROOT}} in the command before executing it (card 5c874e26)', async () => {
+    const outFile = join(tmpdir(), `command-task-placeholder-probe-${process.pid}-${Date.now()}.txt`)
+    try {
+      await runCommandTask(
+        {
+          name: 'test-placeholder-probe',
+          type: 'command',
+          command: `echo {{PROJECT_ROOT}} > '${outFile}'`,
+          timeoutMs: 5_000,
+        } as never,
+        Date.now(),
+      )
+      const content = readFileSync(outFile, 'utf-8').trim()
+      expect(content).not.toContain('{{PROJECT_ROOT}}')
+      expect(content).toBe(PROJECT_ROOT)
+    } finally {
+      rmSync(outFile, { force: true })
+    }
   })
 
   it('reports a timeout as a timeout, not as an exit code', async () => {
