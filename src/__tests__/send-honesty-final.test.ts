@@ -71,8 +71,7 @@ describe('watchdog-replay marker: POSITIVE CONTROL for the failure trace (Marvee
 })
 
 describe('generated prod-tree post-checkout hook: honest alert delivery', () => {
-  const setupRepoWithHook = (): { hook: string; repo: string } => {
-    const repo = join(stage, 'repo')
+  const setupRepoWithHook = (repo: string = join(stage, 'repo')): { hook: string; repo: string } => {
     mkdirSync(join(repo, 'scripts'), { recursive: true })
     mkdirSync(join(repo, 'store'), { recursive: true })
     execFileSync('git', ['-C', repo, 'init', '-q', '-b', 'develop'])
@@ -174,6 +173,36 @@ describe('generated prod-tree post-checkout hook: honest alert delivery', () => 
     // to be represented as anything but a single content-string byte.
     const parsed = JSON.parse(preFixBody)
     expect(parsed.to).toBe('attacker') // the injected second "to" key wins
+  })
+
+  // Cybersec F1 (kanban card 970166ce, komment 5974): the two tests above cover
+  // the quote-only (branch name) and the quote+colon ("to"-hijack) VECTORS as
+  // KNOWN-POSITIVEs on hand-glued bodies, but neither actually RUNS THE HOOK
+  // with a repository path carrying both characters -- so a regression that
+  // escapes only the branch name and leaves TOPLEVEL raw in a hand-formatted
+  // body would stay green here. This test runs the real, installed hook in a
+  // repo whose own path holds a quote AND a colon.
+  it('a repository PATH holding a quote and a colon still produces valid JSON, the right recipient, and no injected keys', () => {
+    const evilRepo = join(stage, 'r"3:x')
+    const { hook, repo } = setupRepoWithHook(evilRepo)
+    const bin = stubBin()
+    execFileSync('git', ['-C', repo, 'checkout', '-q', '-B', 'feature-probe'], {
+      env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, MARVEEN_PROD_CHECKOUT_OK: '1' },
+    })
+    const stdinLog = join(stage, 'curl-stdin-evilrepo.log')
+    const r = spawnSync('/bin/bash', [hook, 'a'.repeat(40), 'b'.repeat(40), '1'], {
+      cwd: repo,
+      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: stage, CURL_STDIN_LOG: stdinLog, CURL_STUB_HTTP: '200' },
+      encoding: 'utf-8',
+      timeout: 20000,
+    })
+    expect(r.status).toBe(0)
+    expect(r.stderr).not.toContain('NEM ert celba')
+    const body = readFileSync(stdinLog, 'utf-8')
+    const parsed = JSON.parse(body) // throws if the path broke the JSON out of shape
+    expect(parsed.to).toBe('marveen') // not hijacked by the quote+colon in the repo path
+    expect(Object.keys(parsed).sort()).toEqual(['content', 'from', 'to']) // no injected extra key
+    expect(parsed.content).toContain(evilRepo) // the raw path survives, properly escaped
   })
 })
 
