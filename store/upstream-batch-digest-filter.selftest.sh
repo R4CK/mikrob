@@ -54,6 +54,29 @@ echo "=== E. empty input -> exit 1, no stdout ==="
 out="$(printf '' | bash "$SCRIPT" 2>/dev/null)"; rc=$?
 check "E: empty input -> exit 1, empty stdout" 1 "" "$rc" "$out"
 
+echo "=== F. CR (\\r) smuggles a --stat path + hunk header onto the commit's physical line (Cybersec F1, komment 23461) ==="
+input=$'abc1234 fix: tweak\r src/auth/session-keys.ts | 14 ++\r@@ -10,3 +10,3 @@\n'
+out="$(printf '%s' "$input" | bash "$SCRIPT")"; rc=$?
+if [[ "$rc" -eq 0 && "$out" == "abc1234 fix: tweak" && "$out" != *"session-keys.ts"* && "$out" != *"@@"* ]]; then
+  PASS=$((PASS+1)); echo "OK   F: CR-joined stat/hunk stripped, only the commit subject survives"
+else
+  FAIL=$((FAIL+1)); FAILED+=("F: CR boundary"); echo "FAIL rc=$rc out='$out'"
+fi
+
+echo "=== G. NEL (U+0085) smuggles a path onto the SAME logical unit as a bare hash (Cybersec F1) ==="
+input=$'abc1234\xc2\x85/etc/shadow\n'
+out="$(printf '%s' "$input" | bash "$SCRIPT" 2>/dev/null)"; rc=$?
+check "G: NEL-joined bare-hash+path -> no commit shape, exit 1" 1 "" "$rc" "$out"
+
+echo "=== H. U+2028 LINE SEPARATOR smuggles a --stat path onto the commit's physical line (Cybersec F1) ==="
+input=$'abc1234 fix: tweak\xe2\x80\xa8 src/file.ts | 3 +\n'
+out="$(printf '%s' "$input" | bash "$SCRIPT")"; rc=$?
+if [[ "$rc" -eq 0 && "$out" == "abc1234 fix: tweak" && "$out" != *"src/file.ts"* ]]; then
+  PASS=$((PASS+1)); echo "OK   H: U+2028-joined stat path stripped, only the commit subject survives"
+else
+  FAIL=$((FAIL+1)); FAILED+=("H: U+2028 boundary"); echo "FAIL rc=$rc out='$out'"
+fi
+
 echo "-------------------------------------------------------------"
 echo "passed: $PASS   failed: $FAIL"
 if [ "$FAIL" -gt 0 ]; then

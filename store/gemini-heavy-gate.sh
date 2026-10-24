@@ -4,8 +4,11 @@
 # dispatch sweep (e.g. a direct --task CLI invocation, which has no leaf/project/tags to gate on)
 # can reuse the SAME switch and the SAME shared hourly budget, instead of re-deriving them.
 #
-# Pure extraction, no behavior change: offload-dispatch.sh sources this file instead of defining
-# these two functions inline. is_gemini_blocked() is NOT extracted here -- it is inherently
+# STANDALONE COPY, NOT a shared extraction (QA finding, komment 23454): offload-dispatch.sh still
+# defines these two functions INLINE, unchanged -- a real extraction broke the gemini-offload-
+# dispatch.test.ts literal-source-read tests (card f0b3b674 mutation-tested GOAL1/GOAL2 call-site
+# checks), so the attempt was reverted (see the efe4aa40 REVIEW, komment 23436). This file is only
+# used by upstream-batch-digest-offload.sh. is_gemini_blocked() is NOT duplicated here -- it is inherently
 # kanban-leaf-shaped (project/tags/title/desc allowlist + positive-marker check) and has no
 # meaningful equivalent for a bare CLI call with no card behind it; see
 # upstream-batch-digest-offload.sh for how that gap is covered for this card's one caller.
