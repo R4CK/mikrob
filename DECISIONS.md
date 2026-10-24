@@ -21727,3 +21727,17 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a lelet RedHat-tól jön (K1, komment 23762), a javítást backend3 írta.
 
 **Hivatkozás:** kártya 99a4a2d4, előd ff7e1b0a, RedHat NO-GO 23762 (K1).
+
+## 2026-10-24: ed7d7948 -- skill-coverage-report selftest-keményítés + 2 csendes-rossz lelet javítása (WhiteHat 23714 követő, 8a4a8b09)
+
+**Kontextus:** WhiteHat 23714 (8a4a8b09 config-only delta-gate) nem blokkoló leletei: F1 a selftest csak az alakot nézte a live DB/map ellen és mindig rc=0-val lépett ki; F2 a riport nem mondta ki a "nem látott != nem használt" különbséget; F3 a `--days`/`--agent` rossz értéke csendben hamis 0%-ot adott.
+
+**Döntés:** `store/skill-coverage-report.selftest.sh` fixture-alapra váltott (fixture skill-role-map + fixture SQLite skill_usage, pontos elvárt számokkal: fixtureagent 1/2 50%, otheragent 0/1 0%), 9 esettel, egy pct-mutációs esettel, `exit $((fail>0))`-dal. `store/skill-coverage-report.sh` kapott `--days` bash-szintű validációt (pozitív egész, egyébként HIBA+exit 1) és ismeretlen `--agent` validációt (HIBA+exit 1, nem a generikus "nincs adat" üzenet), plusz a "nem látott != nem használt" fejlécsort.
+
+**Mutáció-ellenőrzés:** `git stash` a javítás előtti `skill-coverage-report.sh`-ra, az új selftesttel futtatva a 3./6./8. eset PIROS (pass=6 fail=3), `git stash pop` után mind a 9 ZÖLD (pass=9 fail=0). Teljes `store-selftests-all-run.test.ts`: 128/128 zöld, nincs regresszió.
+
+**Nyitva marad:** a kártya saját Teendő(1) pontja (a 2026-10-25 06:07-es dream-engine futás tényleges DREAM.md kimenete) ma (2026-10-24) nem ellenőrizhető, mert az a futás még nem történt meg.
+
+**Ki döntött:** a lelet WhiteHat-tól jön (23714, 8a4a8b09-en), a javítást backend2 írta.
+
+**Hivatkozás:** kártya ed7d7948, előd 8a4a8b09, WhiteHat komment 23714.
