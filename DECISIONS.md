@@ -21717,3 +21717,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a lelet WhiteHat-tól jön (d886e9c2 GO, msg 14543), a javítást backend2 írta.
 
 **Hivatkozás:** kártya 7b5cf804, előd d886e9c2.
+
+## 2026-10-24: 91b9f3c0 -- plan-grilling + interview-me skill elérhetetlen a flotta-ügynököknél
+
+**Kontextus:** backend3 jelezte (acc197c8), hogy a Skill tool nem ismeri a `plan-grilling` skillt, kézzel kellett olvasnia a SKILL.md-t. Mérve: `plan-grilling` (CLAUDE.md 1b. szabály) és `interview-me` (CLAUDE.md 19. szabály, és a mérnöki ügynökök saját CLAUDE.md-jében is hivatkozva) egyik mérnöki (backend, backend2, backend3, fron-ted, fron-teddy, fullstack, elemzo) vagy gate-ügynöknél (qa, qa2, cybersec, cybersec2, cybered) sem volt jelen az `agents/<ügynök>/.claude/skills/` alatt, és `seed-fleet-agents/`-ben sem -- a meglévő `agent-skill-drift-sync.sh` csak a már valahol LÉTEZŐ skillek driftjét szinkronizálja testvérek közt, egy teljesen hiányzó skillt nem tud önmagától bevezetni.
+
+**Döntés:** `seed-skills/interview-me` felvétele (vendorolt másolat a globális `~/.claude/skills/interview-me`-ből, MIT, addyosmani/agent-skills, ugyanaz a VENDORED.md/UPSTREAM-LICENSE minta mint a többi vendorolt skillnél), és `seed-fleet-agents/<ügynök>/.claude/skills/{plan-grilling,interview-me}` felvétele a fent nevezett ügynökökhöz (interview-me csak a mérnöki ügynököknek, mert csak azok CLAUDE.md-je hivatkozza). A live `agents/<ügynök>/.claude/skills/` másolatok közvetlenül is felkerültek (gitignore-olt, nem ebben a commitban), hogy a Skill tool azonnal lássa, ne csak egy jövőbeli drift-sync futás után.
+
+**Mérés:** `agent-skill-drift-sync.sh --skill plan-grilling` a commit előtt mind a 12 célügynökre `current=12 missing=0`-t adott a live másolatokra; a seed-fleet-agents commit nélkül `skipped=N(no-canonical)` volt (a tool csak COMMITTED, tiszta forrást fogad el -- helyes, nem hiba).
+
+**Ki döntött:** a hiány backend3 jelzéséből derült ki (acc197c8), a kártyát (91b9f3c0) és a javítást backend2 vitte végig.
+
+**Hivatkozás:** kártya 91b9f3c0, forrás acc197c8.
