@@ -43,26 +43,20 @@ _kc_token_file() {
 }
 
 # SECURITY (card edb7559f): the token never goes in argv. `-H "Authorization: Bearer $(cat ...)"` is
-# readable from /proc/<pid>/cmdline by any local process for as long as the curl runs. A 0600 header
-# file, removed on EXIT, is the house pattern.
-_KC_HDR=""
-_kc_hdr() {
-  [ -n "$_KC_HDR" ] && { echo "$_KC_HDR"; return 0; }
-  local tf; tf="$(_kc_token_file)" || return 1
-  [ -f "$tf" ] || return 1
-  _KC_HDR="$(mktemp)" || return 1
-  chmod 600 "$_KC_HDR"
-  printf 'Authorization: Bearer %s\n' "$(cat "$tf")" > "$_KC_HDR"
-  echo "$_KC_HDR"
-}
-# The caller's own EXIT trap is not touched; this one is additive and idempotent.
-trap 'rm -f "$_KC_HDR"' EXIT
+# readable from /proc/<pid>/cmdline by any local process for as long as the curl runs. The header
+# travels via stdin (`-H @-`), the same house pattern as the root/backend CLAUDE.md curl examples --
+# no header file is written, so there is nothing to leave behind or clean up (card d28888cd: the
+# previous mktemp-based version ran `_kc_hdr` in a `h="$(_kc_hdr)"` command-substitution subshell,
+# so `_KC_HDR` was only ever set in that subshell and the parent's EXIT trap always removed an empty
+# path -- every call leaked a 0600 token file in /tmp).
 
 kanban_comment_card_id() { # the agent's current in_progress card, or empty
   local agent="${KANBAN_COMMENT_AGENT:-}"
   [ -n "$agent" ] || return 0
-  local h; h="$(_kc_hdr)" || return 0
-  curl -s --max-time 10 -H @"$h" "$KANBAN_COMMENT_API/api/kanban" 2>/dev/null \
+  local tf; tf="$(_kc_token_file)" || return 0
+  [ -f "$tf" ] || return 0
+  printf 'Authorization: Bearer %s\n' "$(cat "$tf")" \
+    | curl -s --max-time 10 -H @- "$KANBAN_COMMENT_API/api/kanban" 2>/dev/null \
     | python3 -c '
 import json,sys
 try: rows = json.load(sys.stdin)
@@ -77,18 +71,20 @@ for r in rows if isinstance(rows, list) else []:
 # online, not this agent's current one"), where kanban_comment's "the agent's own in_progress card"
 # lookup would name the wrong card entirely (card a1c4dc51). Never fails the caller.
 kanban_comment_on() { # $1 = card id, $2 = body, $3 = author override (default: $KANBAN_COMMENT_AGENT, else "unknown")
-  local card="$1" h payload author="${3:-${KANBAN_COMMENT_AGENT:-unknown}}"
+  local card="$1" tf payload author="${3:-${KANBAN_COMMENT_AGENT:-unknown}}"
   [ -n "$card" ] || return 0
-  h="$(_kc_hdr)" || return 0
+  tf="$(_kc_token_file)" || return 0
+  [ -f "$tf" ] || return 0
   # The body travels as JSON built by python, never by string-splicing into a printf template: a
   # comment carrying a quote or a newline would otherwise produce an invalid body, or worse, inject
   # a field (the shape Cybered flagged for raw printf JSON elsewhere in this repo).
   payload="$(python3 -c '
 import json,sys; print(json.dumps({"card_id":sys.argv[1],"author":sys.argv[2],"content":sys.argv[3]}))' \
     "$card" "$author" "$2")" || return 0
-  curl -s --max-time 10 -o /dev/null -H @"$h" \
-    -X POST "$KANBAN_COMMENT_API/api/kanban/$card/comments" -H 'Content-Type: application/json' \
-    --data-binary "$payload" 2>/dev/null || true
+  printf 'Authorization: Bearer %s\n' "$(cat "$tf")" \
+    | curl -s --max-time 10 -o /dev/null -H @- \
+      -X POST "$KANBAN_COMMENT_API/api/kanban/$card/comments" -H 'Content-Type: application/json' \
+      --data-binary "$payload" 2>/dev/null || true
 }
 
 kanban_comment() { # $1 = body. Silent no-op when there is no agent, card, token or API.

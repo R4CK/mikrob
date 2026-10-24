@@ -21910,3 +21910,17 @@ Regresszió: `offload-dispatch.selftest.sh` 88/88 zöld, 0 bukás (a fájl nem �
 **Ki döntött:** a lelet és a javítási recept RedHat-tól jön (NO-GO, komment 24261), a kivitelezés backend2-é. MikroB GATE-KIJELÖLÉSE a következő körre: QA + WhiteHat (cybersec), mert a javítás receptjét RedHat adta, ő nem gate-eli saját javaslatát.
 
 **Hivatkozás:** kártya 7b5cf804, előd delta-4 (8ffeb25ca, landolva 6a1b5a7ed-en), RedHat NO-GO komment 24261, MikroB re-dispatch komment 24263.
+
+## 2026-10-24: d28888cd -- kanban-comment-lib.sh: minden hívás token-fájlt hagyott a /tmp-ben (subshell _kc_hdr)
+
+**Kontextus:** ugyanaz a hibaosztály, mint a 34c2d2a2 F1 (kg-search.sh) és a c0408a1c M1 (suite-run): a `_kc_hdr()` függvényt a hívók `h="$(_kc_hdr)"` alakban hívták (eredeti 64. és 82. sor). Ez command-substitution subshell: a `_KC_HDR` csak a subshellben kapott értéket, a szülő `_KC_HDR` üres maradt, a szülő EXIT trapje mindig `rm -f ""`-t futtatott. Minden `kanban_comment`/`kanban_comment_on` hívás egy új, 0600-as `/tmp/tmp.*` fájlt hagyott hátra a valódi dashboard Bearer tokennel. Mérve 2026-10-24 19:30: 113 ilyen fájl a /tmp-ben 17:56 és 19:28 között, párosával, a landolások ütemében. Hívók: fleet-test.sh, marveen-land.sh, card-build-route.sh.
+
+**Döntés:** a mktemp-es header-fájl mechanizmus (`_KC_HDR` + `_kc_hdr()` + EXIT trap) teljesen törölve. A két hívási pont (`kanban_comment_card_id`, `kanban_comment_on`) most a CLAUDE.md házi mintáját követi fájl nélkül: `printf 'Authorization: Bearer %s\n' "$(cat "$tf")" | curl -H @- ...` -- a token stdinen megy a curlnek, nincs mit hátrahagyni vagy takarítani.
+
+**Ellenőrzés:** új `store/kanban-comment-lib.selftest.sh`, egyszer-használatos lokális HTTP-szerverrel. 6 hívás (5x `kanban_comment` + 1x `kanban_comment_on`) után a `/tmp/tmp.*` fájlok száma a valódi (fake) tokennel változatlan (0 -> 0) a javított kódon. Mutáció-ellenőrzés: a javítás előtti kódon (`git show HEAD:store/kanban-comment-lib.sh`) ugyanaz a teszt 11 leaked fájlt mér és PIROS lesz; a javítás visszaállítása után újra 3/3 zöld. A könyvtár három másik hívója (fleet-test.sh, marveen-land.sh, card-build-route.sh) átnézve: mindegyik csak a `kanban_comment`/`kanban_comment_on` publikus API-t hívja, nem duplikálja a `_kc_hdr` mintát, tehát nincs más javítandó hívó. A `cleancore-suite-run.sh` saját, külön másolata (a fájl fejlécében már dokumentált, más kártyák alatt gate-en lévő ismert duplikáció) ennek a kártyának szándékosan NEM része.
+
+**A már lerakott fájlok takarítása** (a kártya szerint) nem része ennek a kártyának; a 7dde8ebc token-rotáció érvényteleníti őket.
+
+**Ki döntött:** a lelet és a javítási irány Peti/MikroB kártyájából jön (d28888cd, a 34c2d2a2 F1 mintájára), a kivitelezés backend2-é.
+
+**Hivatkozás:** kártya d28888cd, előd-minta 34c2d2a2 (kg-search.sh F1 fix), c0408a1c (suite-run M1).
