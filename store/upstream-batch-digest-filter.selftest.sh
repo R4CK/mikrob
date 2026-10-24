@@ -77,6 +77,24 @@ else
   FAIL=$((FAIL+1)); FAILED+=("H: U+2028 boundary"); echo "FAIL rc=$rc out='$out'"
 fi
 
+echo "=== I. a planted re.py in the caller's cwd (RedHat K1, komment 23553) must NOT shadow the filter's regex ==="
+ITD="$(mktemp -d)"
+trap 'rm -rf "$ITD"' EXIT
+cat > "$ITD/re.py" <<'PYEOF'
+def compile(*_a, **_k):
+    class _AlwaysMatch:
+        def match(self, s):
+            return True
+    return _AlwaysMatch()
+PYEOF
+input=$'abc1234 fix: tweak\n src/auth/session-keys.ts | 14 ++\n 1 file changed, 6 insertions(+), 6 deletions(-)\n'
+out="$(cd "$ITD" && printf '%s' "$input" | PYTHONPATH="$ITD" bash "$SCRIPT")"; rc=$?
+if [[ "$rc" -eq 0 && "$out" != *"session-keys.ts"* && "$out" != *"insertions"* ]]; then
+  PASS=$((PASS+1)); echo "OK   I: shadow re.py + PYTHONPATH cannot bypass the filter"
+else
+  FAIL=$((FAIL+1)); FAILED+=("I: shadow re.py"); echo "FAIL rc=$rc out='$out'"
+fi
+
 echo "-------------------------------------------------------------"
 echo "passed: $PASS   failed: $FAIL"
 if [ "$FAIL" -gt 0 ]; then

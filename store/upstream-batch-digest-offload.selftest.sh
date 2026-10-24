@@ -85,11 +85,12 @@ echo "=== C. local fails, confirm given, heavy flag OFF -> exit 2, no Gemini cal
 out="$(run 0 1 --confirm-gemini-ok <<<"$COMMIT_INPUT")"; rc=$?
 check "C: heavy flag off -> exit 2" 2 "" "$rc" "$out"
 
-echo "=== D. local fails, confirm given, heavy flag ON, Gemini succeeds -> uses the FILTERED text ==="
+echo "=== D. local fails, confirm given, heavy flag ON, Gemini succeeds -> gets the digest INSTRUCTION + filtered text, no stat lines (RedHat K2, komment 23553) ==="
 touch "$GEMINI_HEAVY_FLAG"
 out="$(run 0 1 --confirm-gemini-ok <<<"$COMMIT_INPUT")"; rc=$?
-if [[ "$rc" -eq 0 && "$out" == "GEMINI-OK: abc1234 Fix the thing" ]]; then
-  PASS=$((PASS+1)); echo "OK   D: Gemini fallback used, with the filtered (stat-stripped) text"
+if [[ "$rc" -eq 0 && "$out" == *"abc1234 Fix the thing"* && "$out" == *"output ONLY a terse digest"* \
+      && "$out" == *"FLAGS"* && "$out" != *"local-llm.ts"* ]]; then
+  PASS=$((PASS+1)); echo "OK   D: Gemini fallback carries the digest instruction + filtered text, no stat lines"
 else
   FAIL=$((FAIL+1)); FAILED+=("D: gemini fallback"); echo "FAIL rc=$rc out='$out'"
 fi
@@ -99,6 +100,22 @@ echo "=== E. nothing-but-unsafe input (no commit line) -> exit 1 before any loca
 UNSAFE_ONLY=$' src/web/local-llm.ts | 12 +++++++------\n'
 out="$(run 1 1 --confirm-gemini-ok <<<"$UNSAFE_ONLY" 2>/dev/null)"; rc=$?
 check "E: filter rejects -> exit 1" 1 "" "$rc" "$out"
+
+echo "=== F. local fails, --confirm-gemini-ok MISSING but heavy flag ON -> still exit 2, no Gemini call (RedHat O3, komment 23553) ==="
+# Case B already covers confirm-missing+flag-off, where removing the confirm check still exits 2
+# via the flag-off gate (same observable rc/stdout) -- it does not actually pin the confirm check.
+# With the flag ON, a removed confirm check would fall through to a real (stubbed) Gemini call and
+# return rc=0 with output, diverging from this expectation.
+touch "$GEMINI_HEAVY_FLAG"
+out="$(run 0 1 <<<"$COMMIT_INPUT")"; rc=$?
+check "F: confirm flag missing, heavy flag on -> exit 2" 2 "" "$rc" "$out"
+rm -f "$GEMINI_HEAVY_FLAG"
+
+echo "=== G. local fails, confirm given, heavy flag ON, hourly budget exhausted -> exit 2, no Gemini call (RedHat O5, komment 23553) ==="
+touch "$GEMINI_HEAVY_FLAG"
+out="$(GEMINI_AGY_HEAVY_HOURLY_LIMIT=0 run 0 1 --confirm-gemini-ok <<<"$COMMIT_INPUT")"; rc=$?
+check "G: hourly budget capped -> exit 2" 2 "" "$rc" "$out"
+rm -f "$GEMINI_HEAVY_FLAG"
 
 echo "-------------------------------------------------------------"
 echo "passed: $PASS   failed: $FAIL"

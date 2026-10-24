@@ -23,6 +23,12 @@
 # USAGE:
 #   git log --stat <range> | upstream-batch-digest-offload.sh --caller <agent> --confirm-gemini-ok
 #
+# HASH LENGTH (MikroB decision komment 23556, RedHat 23553 non-blocking Y3): use SHORT hashes
+# (git log --format='%h %s' or --abbrev-commit), not the full 40-char SHA-1 from a plain
+# `git log --stat`. gemini-offload-call.sh's own secret-shaped-token redactor rejects any 32+
+# char contiguous hex run (hex32 pattern) -- a full 40-char hash always fails the Gemini call,
+# turning every fallback attempt into case 3 (both local and Gemini failed) for no reason.
+#
 # Exit codes: 0 ok (stdout = the digest input text, output, or filtered commit list on dry-run) |
 #   1 filter rejected the input (nothing safe to send) | 2 local attempt failed and no Gemini
 #   fallback was available (flag off, budget capped, or --confirm-gemini-ok missing) | 3 both the
@@ -79,7 +85,20 @@ if ! reserve_heavy_gemini_slot "$SLOT_ID"; then
   echo "upstream-batch-digest-offload: no Gemini fallback (hourly budget capped)" >&2
   exit 2
 fi
-if OUT="$(printf '%s' "$FILTERED" | bash "$GEMINI_OFFLOAD" 2>/dev/null)" && [[ -n "${OUT// }" ]]; then
+# RedHat NO-GO K2 (komment 23553, bb1f9f6f delta-gate): sending $FILTERED bare gives Gemini a
+# commit list with NO instruction -- not a digest request, just raw upstream subject lines it is
+# free to interpret however it wants, and the local-llm-skills template's FLAGS requirement (flag
+# security/auth/secrets/env/CI/dependency commits) never reaches this path at all. Build the SAME
+# prompt the local attempt already used (system line + user template with {{INPUT}} substituted,
+# same escaping rule as local-llm.sh) and send THAT to Gemini instead of the bare filtered text.
+TEMPLATE="$HERE/local-llm-skills/upstream-batch-digest.txt"
+GEMINI_SYS="$(awk '/^---$/{exit} {print}' "$TEMPLATE")"
+GEMINI_USER_TPL="$(awk 'f{print} /^---$/{f=1}' "$TEMPLATE")"
+GEMINI_ESCAPED_INPUT="${FILTERED//\\/\\\\}"
+GEMINI_USER="${GEMINI_USER_TPL//\{\{INPUT\}\}/${GEMINI_ESCAPED_INPUT//&/\\&}}"
+GEMINI_PROMPT="$GEMINI_SYS
+$GEMINI_USER"
+if OUT="$(printf '%s' "$GEMINI_PROMPT" | bash "$GEMINI_OFFLOAD" 2>/dev/null)" && [[ -n "${OUT// }" ]]; then
   printf '%s\n' "$OUT"
   exit 0
 fi
