@@ -8,7 +8,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$HERE/upstream-batch-digest-offload.sh"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+PROBE_IN_PLACE="$HERE/.upstream-batch-digest-offload.selftest-probe.sh"
+trap 'rm -rf "$TMP" "$PROBE_IN_PLACE"' EXIT
 
 PASS=0
 FAIL=0
@@ -49,6 +50,55 @@ exit 1
 EOF
 chmod +x "$STUB_GEMINI"
 
+# WhiteHat delta NO-GO F2' (card 7b5cf804, komment 23996, MikroB decision komment 23997): the
+# UBD_SELFTEST_MODE/UBD_LOCAL_LLM/UBD_GEMINI_OFFLOAD env-override seam was removed from the real
+# script (structural fix, no risk-acceptance). This selftest stubs local-llm.sh/gemini-offload-
+# call.sh instead by running a sed-generated PROBE copy of the real script (the rea-bwrap-sandbox.
+# selftest.sh "one-line-diff probe copy" pattern) with exactly the LOCAL_LLM/GEMINI_OFFLOAD
+# assignment lines swapped to absolute stub paths -- every other line (including HERE, FILTER,
+# OFFLOAD_DISPATCH, and the gemini-heavy-gate.sh source) is untouched, so the real script's actual
+# logic runs for everything this selftest is not deliberately stubbing out.
+HERE_LINE="$(grep -n '^HERE="\$(cd' "$SCRIPT" | head -1 | cut -d: -f1)"
+LOCAL_LLM_LINE="$(grep -n '^LOCAL_LLM="\$HERE/local-llm\.sh"$' "$SCRIPT" | head -1 | cut -d: -f1)"
+GEMINI_OFFLOAD_LINE="$(grep -n '^GEMINI_OFFLOAD="\$HERE/gemini-offload-call\.sh"$' "$SCRIPT" | head -1 | cut -d: -f1)"
+[[ -n "$HERE_LINE" && -n "$LOCAL_LLM_LINE" && -n "$GEMINI_OFFLOAD_LINE" ]] || {
+  echo "selftest: could not locate HERE/LOCAL_LLM/GEMINI_OFFLOAD anchor lines in $SCRIPT -- script shape changed, probe construction is unsafe" >&2
+  exit 1
+}
+
+# This probe (used by run()/run_realgate() below, A-K) hardcodes HERE too (3-line swap), so it can
+# live in $TMP regardless of its own location -- there is no attack to test here, and hardcoding
+# HERE keeps FILTER/OFFLOAD_DISPATCH/the gemini-heavy-gate.sh source resolving to the real store
+# directory no matter where this probe file physically sits.
+PROBE="$TMP/upstream-batch-digest-offload-probe.sh"
+sed \
+  -e "${HERE_LINE}c\\
+HERE=\"$HERE\"" \
+  -e "${LOCAL_LLM_LINE}c\\
+LOCAL_LLM=\"$STUB_LOCAL\"" \
+  -e "${GEMINI_OFFLOAD_LINE}c\\
+GEMINI_OFFLOAD=\"$STUB_GEMINI\"" \
+  "$SCRIPT" > "$PROBE"
+chmod +x "$PROBE"
+DIFF_LINES="$(diff "$SCRIPT" "$PROBE" | grep -c '^[<>]' || true)"
+check "the stub probe copy differs from the real script by exactly 3 lines (HERE + LOCAL_LLM + GEMINI_OFFLOAD)" "6" "" "$DIFF_LINES" ""
+
+# A SEPARATE probe for case O below: it must swap ONLY LOCAL_LLM/GEMINI_OFFLOAD to absolute stub
+# paths (so the attack cannot be tested by accidentally hitting the real network calls) while
+# leaving the HERE computation itself untouched (so the dirname-function attack has something
+# real to redirect). It lives NEXT TO the real script (not in $TMP), because HERE is computed from
+# this probe's OWN location via BASH_SOURCE, and FILTER/OFFLOAD_DISPATCH/the gemini-heavy-gate.sh
+# source must still resolve to the real store directory when the attack fails (the fixed-code case).
+sed \
+  -e "${LOCAL_LLM_LINE}c\\
+LOCAL_LLM=\"$STUB_LOCAL\"" \
+  -e "${GEMINI_OFFLOAD_LINE}c\\
+GEMINI_OFFLOAD=\"$STUB_GEMINI\"" \
+  "$SCRIPT" > "$PROBE_IN_PLACE"
+chmod +x "$PROBE_IN_PLACE"
+DIFF_LINES_O="$(diff "$SCRIPT" "$PROBE_IN_PLACE" | grep -c '^[<>]' || true)"
+check "the in-place O-probe differs from the real script by exactly 2 lines (LOCAL_LLM + GEMINI_OFFLOAD only, HERE untouched)" "4" "" "$DIFF_LINES_O" ""
+
 GEMINI_HEAVY_FLAG="$TMP/heavy-enabled"
 HEAVY_HOURLY_LOCK="$TMP/heavy.lock"
 
@@ -67,8 +117,7 @@ SEGED_HIVO_HELPERS="$HEAVY_TD/scripts/seged-hivo.py"
 run() {
   LOCAL_OK="${1:-0}" GEMINI_OK="${2:-0}" GEMINI_HEAVY_FLAG="$GEMINI_HEAVY_FLAG" \
     GEMINI_AGY_HOURLY_LOCK="$HEAVY_HOURLY_LOCK" SEGED_HIVO_HELPERS="$SEGED_HIVO_HELPERS" \
-    UBD_SELFTEST_MODE=1 UBD_LOCAL_LLM="$STUB_LOCAL" UBD_GEMINI_OFFLOAD="$STUB_GEMINI" \
-    bash "$SCRIPT" --caller test "${@:3}"
+    bash "$PROBE" --caller test "${@:3}"
 }
 
 COMMIT_INPUT=$'abc1234 Fix the thing\n src/web/local-llm.ts | 12 +++++++------\n'
@@ -123,8 +172,7 @@ rm -f "$GEMINI_HEAVY_FLAG"
 run_realgate() {
   LOCAL_OK="${1:-0}" GEMINI_OK="${2:-0}" GEMINI_HEAVY_FLAG="$GEMINI_HEAVY_FLAG" \
     GEMINI_AGY_HOURLY_LOCK="$HEAVY_HOURLY_LOCK" SEGED_HIVO_HELPERS="$SEGED_HIVO_HELPERS" \
-    UBD_SELFTEST_MODE=1 UBD_LOCAL_LLM="$STUB_LOCAL" UBD_GEMINI_OFFLOAD="$STUB_GEMINI" \
-    bash "$SCRIPT" --caller test "${@:3}"
+    bash "$PROBE" --caller test "${@:3}"
 }
 
 echo "=== H. local fails, confirm given, heavy flag ON, budget available, Gemini WOULD succeed, but the commit subject is sensitive -> the content gate blocks, exit 2, no Gemini call (card d886e9c2) ==="
@@ -189,10 +237,16 @@ out="$(UBD_OFFLOAD_DISPATCH="$STUB_ALWAYS_ALLOW" run_realgate 0 1 --confirm-gemi
 check "K: UBD_OFFLOAD_DISPATCH override is inert, sensitive content still blocked" 2 "" "$rc" "$out"
 rm -f "$GEMINI_HEAVY_FLAG"
 
-# L/M/N regress WhiteHat NO-GO F1/F2 (card 7b5cf804, komment 23922, Gate-SHA
+# L/M regress the ORIGINAL WhiteHat NO-GO F1 (card 7b5cf804, komment 23922, Gate-SHA
 # bffa6341ef399a75c696a4aa902cddb670d445c6): the J/env -u wrapper above does not help if `env`/
-# `bash` themselves are shadowed by an exported function or a PATH-prepended fake binary, and the
-# FILTER/LOCAL_LLM/GEMINI_OFFLOAD seams were overridable from ANY caller, not just the selftest.
+# `bash` themselves are shadowed by an exported function or a PATH-prepended fake binary.
+# N/O regress the DELTA NO-GO F2'/F1' (komment 23996, Gate-SHA
+# f57ad35fedc1504325a10ed0057cf97c9e5036ff): N -- the FILTER/LOCAL_LLM/GEMINI_OFFLOAD seams, gated
+# behind UBD_SELFTEST_MODE, were still just another caller-settable variable; O -- the named-list
+# `unset -f env bash awk date cat printf` from the F1 fix did not cover EVERY command the script
+# calls before the gate (e.g. `dirname`, used to compute HERE), so an exported function with any
+# OTHER name could redirect HERE (and therefore FILTER/OFFLOAD_DISPATCH/the gemini-heavy-gate.sh
+# source) into an attacker-controlled directory.
 
 echo "=== L. a bash function named 'env', exported by the CALLER, must not let a sensitive commit through (old code: rc=0, Gemini-stub received the subject) ==="
 touch "$GEMINI_HEAVY_FLAG"
@@ -217,21 +271,56 @@ out_m="$(PATH="$FAKE_BIN:$PATH" run_realgate 0 1 --confirm-gemini-ok <<<"$SENSIT
 check "M: PATH-prepended fake env -> content gate still blocks" 2 "" "$rc_m" "$out_m"
 rm -f "$GEMINI_HEAVY_FLAG"
 
-echo "=== N. UBD_FILTER override has NO EFFECT without UBD_SELFTEST_MODE (production mode): a malicious passthrough filter cannot let a filter-rejected input through ==="
+echo "=== N. UBD_FILTER + UBD_SELFTEST_MODE together, set by the caller on the REAL script, have NO EFFECT any more -- the seam is gone from the code, not just gated (WhiteHat delta F2', komment 23996) ==="
 PASSTHROUGH_FILTER="$TMP/passthrough-filter.sh"
 cat > "$PASSTHROUGH_FILTER" <<'EOF'
 #!/usr/bin/env bash
 cat
 EOF
 chmod +x "$PASSTHROUGH_FILTER"
-# No UBD_SELFTEST_MODE set here -- on fixed code UBD_FILTER is ignored and the real filter.sh
-# rejects UNSAFE_ONLY exactly as in case E, before any local/Gemini attempt (fast, no real call).
-# Bounded with timeout: on the pre-fix mutation (UBD_FILTER honored unconditionally) the malicious
-# filter would let UNSAFE_ONLY through unfiltered, and the script would proceed to call the REAL
-# local-llm.sh (not stubbed, since UBD_LOCAL_LLM is not set here either) -- that hangs rather than
-# failing fast, so the timeout turns an otherwise-indefinite mutation run into a bounded FAIL.
-out_n="$(timeout 10 env UBD_FILTER="$PASSTHROUGH_FILTER" bash "$SCRIPT" --caller test --confirm-gemini-ok <<<"$UNSAFE_ONLY" 2>/dev/null)"; rc_n=$?
-check "N: UBD_FILTER override inert without UBD_SELFTEST_MODE, unsafe input still rejected" 1 "" "$rc_n" "$out_n"
+# Set BOTH vars the delta NO-GO named (UBD_SELFTEST_MODE=1 AND UBD_FILTER=<passthrough>) directly
+# on the REAL script, not the probe -- this is exactly the F2' exploit: a caller able to set
+# UBD_FILTER could set UBD_SELFTEST_MODE alongside it. On fixed code neither is read at all, so the
+# real filter.sh rejects UNSAFE_ONLY exactly as in case E, before any local/Gemini attempt (fast).
+# Bounded with timeout: on a reintroduced seam this would let UNSAFE_ONLY through unfiltered and
+# fall through to the REAL local-llm.sh (not stubbed here), which hangs rather than failing fast.
+out_n="$(timeout 10 env UBD_SELFTEST_MODE=1 UBD_FILTER="$PASSTHROUGH_FILTER" bash "$SCRIPT" --caller test --confirm-gemini-ok <<<"$UNSAFE_ONLY" 2>/dev/null)"; rc_n=$?
+check "N: UBD_FILTER+UBD_SELFTEST_MODE override inert on the real script, unsafe input still rejected" 1 "" "$rc_n" "$out_n"
+
+echo "=== O. an exported 'dirname' function, which the F1 fix's named unset -f list did not cover, must not redirect HERE into an attacker-controlled directory (WhiteHat delta F1', komment 23996) ==="
+ATTACKER_DIR="$TMP/attacker-here"
+mkdir -p "$ATTACKER_DIR"
+# Attacker-controlled stand-ins for everything FILTER/OFFLOAD_DISPATCH/the gemini-heavy-gate.sh
+# source would resolve to if HERE got redirected here: a passthrough filter (so SENSITIVE_INPUT
+# survives), an always-allow content gate (exit 42, the "allowed" sentinel), and a heavy-gate stub
+# that reports the feature enabled and the slot reserved so the flow reaches GEMINI_OFFLOAD (which
+# $PROBE_IN_PLACE already pins to $STUB_GEMINI regardless of HERE, so no real Gemini call happens
+# even if the attack succeeds -- only the redirect itself, via OFFLOAD_DISPATCH's exit code and the
+# reached/not-reached stub call, is what this case measures).
+cat > "$ATTACKER_DIR/upstream-batch-digest-filter.sh" <<'EOF'
+#!/usr/bin/env bash
+cat
+EOF
+cat > "$ATTACKER_DIR/offload-dispatch.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 42
+EOF
+cat > "$ATTACKER_DIR/gemini-heavy-gate.sh" <<'EOF'
+gemini_heavy_second_opinion_enabled() { return 0; }
+reserve_heavy_gemini_slot() { return 0; }
+EOF
+chmod +x "$ATTACKER_DIR/upstream-batch-digest-filter.sh" "$ATTACKER_DIR/offload-dispatch.sh"
+touch "$GEMINI_HEAVY_FLAG"
+out_o="$( (
+  export ATTACKER_DIR
+  dirname() { echo "$ATTACKER_DIR"; }
+  export -f dirname
+  LOCAL_OK=0 GEMINI_OK=1 GEMINI_HEAVY_FLAG="$GEMINI_HEAVY_FLAG" \
+    GEMINI_AGY_HOURLY_LOCK="$HEAVY_HOURLY_LOCK" SEGED_HIVO_HELPERS="$SEGED_HIVO_HELPERS" \
+    bash "$PROBE_IN_PLACE" --caller test --confirm-gemini-ok <<<"$SENSITIVE_INPUT"
+) )"; rc_o=$?
+check "O: exported dirname function does not redirect HERE, content gate still blocks, Gemini-stub not reached" 2 "" "$rc_o" "$out_o"
+rm -f "$GEMINI_HEAVY_FLAG"
 
 echo "-------------------------------------------------------------"
 echo "passed: $PASS   failed: $FAIL"

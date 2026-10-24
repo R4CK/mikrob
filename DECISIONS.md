@@ -21793,3 +21793,15 @@ kártyára (49b96b30, szülő 81593084), a kódot a backend írta.
 **Ki döntött:** a lelet WhiteHat NO-GO-jából jön (komment 23922), a javítást backend2 írta.
 
 **Hivatkozás:** kártya 7b5cf804, delta-gate WhiteHat NO-GO 23922, előző döntés ugyanerről a kártyáról feljebb.
+
+## 2026-10-24: 7b5cf804 -- delta 2: WhiteHat delta NO-GO F1'/F2' (exportált tetszőleges fuggveny a HERE-szamitas elott, UBD_SELFTEST_MODE mint sima hivo-kornyezeti valtozo)
+
+**Kontextus:** WhiteHat delta NO-GO (komment 23996) @ f57ad35fedc1504325a10ed0057cf97c9e5036ff: az elozo kor (F1/F2) javitasa nem zarta le teljesen ugyanazt a tamadoi kepesseget (hivo kornyezete). F1': a nevesitett `unset -f env bash awk date cat printf` lista nem fedte a HERE-szamitashoz hasznalt `dirname`-et (vagy barmi mast, amit a script a kapu elott hiv) -- egy exportalt `dirname` fuggveny a HERE-t egy tamado altal kontrollalt konyvtarra allithatta, amin keresztul a FILTER/OFFLOAD_DISPATCH/a sourceolt gemini-heavy-gate.sh is a tamadoe lett (bizonyitva: a "fix auth bypass in login" targy elerte a Gemini-stubot, rc=0). F2': a FILTER/LOCAL_LLM/GEMINI_OFFLOAD seameket az elozo kor egy UBD_SELFTEST_MODE kapcsolo moge tette, de az is csak egy masik hivo-kornyezeti valtozo -- aki UBD_FILTER-t be tudja allitani, az UBD_SELFTEST_MODE-ot is.
+
+**Dontes (MikroB, komment 23997):** mindket lelet strukturalis javitast kapott, kockazat-elfogadas nelkul (kovetkezetlen lenne F1'-et blokkolonak tartani, F2'-t pedig elfogadni, ugyanaz a tamadoi kepesseg). F1': a script elejen `builtin unset -f $(builtin compgen -A function)` -- MINDEN orokolt fuggveny eldobasa (nem nevesitett lista), a `builtin` elotaggal, hogy az `unset`/`compgen` maga se legyen arnyekolhato; ez a HERE-szamitas ELOTT fut. F2': a FILTER/LOCAL_LLM/GEMINI_OFFLOAD most fix utak, UBD_SELFTEST_MODE/UBD_FILTER/UBD_LOCAL_LLM/UBD_GEMINI_OFFLOAD sehol nem olvasva a kodban; a selftest a valodi script egy sed-del keszult, egy-ket-soros-diff PROBE masolatan fut (a rea-bwrap-sandbox.selftest.sh "probe copy" mintaja), ami a LOCAL_LLM/GEMINI_OFFLOAD sorokat abszolut stub-utakra cserel, minden mast erintetlenul hagy.
+
+**Mutacio-ellenorzes:** a `builtin unset -f ...` sort visszaallitva a regi nevesitett listara, az O eset (exportalt `dirname`) PIROS lett (rc=0, "GEMINI-OK: " -- a tamadas tenylegesen atjutott a Gemini-stubig, a HERE a tamado konyvtarara allt). A FILTER/LOCAL_LLM/GEMINI_OFFLOAD sorokat visszaallitva a regi UBD_SELFTEST_MODE-feltetelre, az N eset PIROS lett (rc=2, mas uton mint az elvart rc=1, de ugyanugy elbuko -- a mutacio-detektalas igy is mukodik). Mindket mutacio utan a javitas visszaallitva, 17/17 eset ZOLD ismet (A-O). `store/offload-dispatch.selftest.sh`: 88/88 zold, nincs regresszio.
+
+**Ki döntött:** a lelet WhiteHat delta NO-GO-jabol jon (komment 23996), a dontes MikroB-tol (komment 23997), a javitast backend2 irta.
+
+**Hivatkozás:** kártya 7b5cf804, delta-gate WhiteHat delta NO-GO 23996, MikroB dontes 23997, elozo ket dontes ugyanerrol a kartyarol feljebb.

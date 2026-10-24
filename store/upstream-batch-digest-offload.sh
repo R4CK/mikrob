@@ -40,33 +40,30 @@
 #   local attempt and the Gemini fallback failed.
 set -uo pipefail
 
-# WhiteHat NO-GO F1 (card 7b5cf804, komment 23922, Gate-SHA bffa6341ef399a75c696a4aa902cddb670d445c6):
-# the caller's environment could shadow `env`/`bash` with an exported bash function (export -f env)
-# or a PATH-prepended fake binary, which defeats the `env -u BASH_ENV -u ENV bash ...` gate call
-# below even though BASH_ENV/ENV themselves are unset -- the function/PATH lookup happens BEFORE the
-# gate runs. Drop any inherited function with these names, pin PATH, and unset BASH_ENV/ENV so later
-# invocations (including the absolute-path gate call further down) cannot be shadowed this way.
-unset -f env bash awk date cat printf 2>/dev/null || true
+# WhiteHat delta NO-GO F1' (card 7b5cf804, komment 23996, Gate-SHA f57ad35fedc1504325a10ed0057cf97c9e5036ff):
+# the F1 fix only unset a NAMED list of functions (env, bash, ...) -- an exported function with
+# ANY other name the script later calls as a bare command (demonstrated: `dirname`, used by the
+# HERE computation right below) shadows that command exactly the same way, redirecting HERE (and
+# therefore every $HERE-relative path this script trusts) into an attacker-controlled directory.
+# Fix: drop EVERY inherited function, not a named subset, via `builtin compgen`/`builtin unset`
+# (the builtin prefix means this can't itself be shadowed by a same-named exported function). This
+# must run before ANY other command in this script, including the HERE computation.
+builtin unset -f $(builtin compgen -A function) 2>/dev/null || true
 PATH=/usr/bin:/bin
 unset BASH_ENV ENV
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# WhiteHat NO-GO F2 (card 7b5cf804, komment 23922): FILTER/LOCAL_LLM/GEMINI_OFFLOAD were overridable
-# from ANY caller's environment, not just the selftest's -- e.g. a caller-supplied UBD_FILTER could
-# let --stat lines through to Gemini, exactly the invariant upstream-batch-digest-filter.sh exists to
-# enforce. These seams stay (the selftest genuinely needs to stub local-llm.sh/gemini-offload-call.sh
-# to avoid a real Ollama/Gemini call), but are now gated behind a second, non-production variable the
-# selftest sets alongside them in its own bash invocation -- a production caller that does not set
-# UBD_SELFTEST_MODE gets the real paths regardless of what else it sets.
-if [[ "${UBD_SELFTEST_MODE:-0}" == "1" ]]; then
-  FILTER="${UBD_FILTER:-$HERE/upstream-batch-digest-filter.sh}"
-  LOCAL_LLM="${UBD_LOCAL_LLM:-$HERE/local-llm.sh}"
-  GEMINI_OFFLOAD="${UBD_GEMINI_OFFLOAD:-$HERE/gemini-offload-call.sh}"
-else
-  FILTER="$HERE/upstream-batch-digest-filter.sh"
-  LOCAL_LLM="$HERE/local-llm.sh"
-  GEMINI_OFFLOAD="$HERE/gemini-offload-call.sh"
-fi
+# WhiteHat delta NO-GO F2' (card 7b5cf804, komment 23996, MikroB decision komment 23997): the
+# UBD_SELFTEST_MODE gate on FILTER/LOCAL_LLM/GEMINI_OFFLOAD was itself just another caller-settable
+# environment variable -- a caller able to set UBD_FILTER could set UBD_SELFTEST_MODE alongside it.
+# MikroB's ruling: no risk-acceptance for this, structural fix only (consistent with F1'/F1, the
+# same "caller's environment" threat model). FILTER/LOCAL_LLM/GEMINI_OFFLOAD are now fixed paths,
+# never overridable from ANY environment variable. The selftest stubs local-llm.sh/gemini-
+# offload-call.sh by running a one-line-diff sed-generated PROBE COPY of this script instead (the
+# rea-bwrap-sandbox.selftest.sh "probe copy" pattern), not by setting an env var on the real script.
+FILTER="$HERE/upstream-batch-digest-filter.sh"
+LOCAL_LLM="$HERE/local-llm.sh"
+GEMINI_OFFLOAD="$HERE/gemini-offload-call.sh"
 # WhiteHat MEDIUM (card 7b5cf804, d886e9c2 GO @ a7742f46): the content gate below is the one
 # thing standing between a sensitive commit and Gemini -- it must NOT be overridable from the
 # caller's environment. No test (selftest or otherwise) ever sets UBD_OFFLOAD_DISPATCH, so the
