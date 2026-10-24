@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Readable } from 'node:stream'
+import type { RouteContext } from '../web/routes/types.js'
 
 // the label palette is normalized (a palette name such as `red` is stored and
 // served as #ff0000; a value that is not a colour is dropped), and a label
@@ -62,7 +63,7 @@ function call(method: string, path: string, payload: unknown) {
     end: (chunk?: unknown) => { if (chunk !== undefined) captured.body = String(chunk) },
     setHeader: () => {},
   }
-  return tryHandleKanban({ req, res, path, method, url: new URL(`http://localhost${path}`) } as any).then(handled => ({ handled, ...captured }))
+  return tryHandleKanban({ req, res, path, method, url: new URL(`http://localhost${path}`) } as unknown as RouteContext).then(handled => ({ handled, ...captured }))
 }
 
 describe('label colours with a legacy palette (KANBAN_LABEL_COLORS=red,#3b82f6)', () => {
