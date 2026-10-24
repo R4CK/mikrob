@@ -54,6 +54,47 @@ describe('kg store CRUD', () => {
     db.close()
   })
 
+  // Card 4ecd75d0 (WhiteHat 22805/23292, F-a): every kg-importer shares upsertNode as its one write
+  // path, but title/body/snippet/keywords used to reach kg_nodes unfiltered -- a tag character
+  // (U+E0041), an RLO override, a ZWSP and a C0 control all survived. Pinned here (store.ts, not
+  // per-importer) because that is the one place every caller already passes through.
+  it('upsertNode strips invisible/BIDI/control characters from title, body, snippet and keywords', () => {
+    const db = new Database(':memory:')
+    migrate(db)
+    const dirty = (clean: string) => `${clean}​‮\u{E0041}\u0001${clean}`
+    upsertNode(db, {
+      id: 'card:dirty1', type: 'card', project: 'marveen',
+      title: dirty('title'), body: dirty('body'), snippet: dirty('snip'), keywords: dirty('kw'),
+      source_ref: 'x', extractor: 'manual',
+    })
+    const row = getNode(db, 'card:dirty1')
+    expect(row?.title).toBe('titletitle')
+    expect(row?.body).toBe('bodybody')
+    expect(row?.snippet).toBe('snipsnip')
+    expect(row?.keywords).toBe('kwkw')
+    db.close()
+  })
+
+  // Sanitizing AFTER the secret-shape check would let an attacker dodge findSecretShape by
+  // inserting an invisible character inside the token (it would still reconstitute into the real
+  // secret once sanitized on display) -- order matters, pinned directly rather than inferred from
+  // the title/body test above, which uses clean-looking inputs that would pass either order.
+  it('upsertNode sanitizes BEFORE the secret-shape check, so an invisible character cannot smuggle a secret past it', () => {
+    const db = new Database(':memory:')
+    migrate(db)
+    const akia = `AKIA${'ABCDEFGHIJKLMNOP'}`
+    const smuggled = akia.slice(0, 4) + '​' + akia.slice(4) // ZWSP mid-token
+    expect(() =>
+      upsertNode(db, {
+        id: 'sol:leak2', type: 'solution', project: 'marveen', title: 'fix',
+        body: `use ${smuggled} as the key`, source_ref: 'kanban_comments:2',
+        extractor: 'manual',
+      }),
+    ).toThrow(KgSecretError)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM kg_nodes').get()).toEqual({ n: 0 })
+    db.close()
+  })
+
   it('upsertEdge is idempotent: a second identical edge changes nothing', () => {
     const db = new Database(':memory:')
     migrate(db)

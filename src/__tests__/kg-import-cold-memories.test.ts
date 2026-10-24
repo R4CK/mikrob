@@ -126,18 +126,26 @@ describe('importColdMemories (MT-10c, card 76c2efb1)', () => {
     expect(kgDb.prepare('SELECT COUNT(*) AS n FROM kg_edges').get()).toEqual(edgesAfterFirst)
   })
 
-  it('a failure partway through the run leaves NOTHING written (atomic, not partial)', () => {
+  // F-d (card 4ecd75d0, WhiteHat 22988/23292): the OLD behavior (a secret shape anywhere rolled
+  // back the WHOLE run) is exactly the bug this card closes -- same per-row isolation
+  // import-decisions-log.ts already has for the identical shape (card 49b96b30, F3).
+  it('F-d: a secret shape in ONE row is skipped and counted, every other row still imports', () => {
     const mainDb = makeMainDbFixture()
     const kgDb = new Database(':memory:')
     migrateKg(kgDb)
     // A secret-shaped token in the FIRST row's content makes upsertNode's assertNoSecretShape
-    // throw (store.ts), same technique as the other MT-10 importers' atomicity tests.
+    // throw (store.ts), same guard every kg_nodes write already passes through.
     mainDb
       .prepare(`UPDATE memories SET content = content || ' ghp_${'a'.repeat(36)}' WHERE id = 1`)
       .run()
 
-    expect(() => importColdMemories(mainDb, kgDb)).toThrow()
-    expect(kgDb.prepare('SELECT COUNT(*) AS n FROM kg_nodes').get()).toEqual({ n: 0 })
-    expect(kgDb.prepare('SELECT COUNT(*) AS n FROM kg_edges').get()).toEqual({ n: 0 })
+    const report = importColdMemories(mainDb, kgDb)
+
+    expect(report.rowsRejectedSecret).toBe(1)
+    expect(report.secretRejectedSources).toEqual(['memories:1'])
+    // Row 1 is skipped; rows 2 and 3 still land.
+    expect(report.lessonsUpserted).toBe(2)
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('lesson:memory:1')).toBeUndefined()
+    expect(kgDb.prepare('SELECT 1 FROM kg_nodes WHERE id = ?').get('lesson:memory:2')).toBeTruthy()
   })
 })
